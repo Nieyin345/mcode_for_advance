@@ -990,10 +990,13 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         };
       }
 
+      // Missing host approval IPC is not user consent. With no UI bridge
+      // available, the SDK must receive an explicit deny, never a silent allow.
       if (!requestApproval) {
-        return effectiveInput
-          ? { behavior: "allow", updatedInput: effectiveInput }
-          : { behavior: "allow" };
+        return {
+          behavior: "deny",
+          message: `操作 ${toolName} 需要真人审批，但当前宿主审批通道不可用；已拒绝执行`,
+        };
       }
       const r = await requestApproval({
         requestId: randomUUID(),

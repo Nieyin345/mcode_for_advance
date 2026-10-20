@@ -12,6 +12,13 @@ export function marketProgressFor(event: IpcMainInvokeEvent, requestId?: string)
   // next document if we retained only the WebContents reference.
   const frame = event?.senderFrame;
   const originalUrl = frame?.url;
+  // A long-running clone can finish after a navigation. With no original
+  // main-frame identity we cannot distinguish the initiating document from a
+  // later document using the same WebContents: fail closed, not window-wide.
+  if (!frame || !event?.sender || event.sender.mainFrame !== frame ||
+      frame.isDestroyed?.() || typeof originalUrl !== "string" ||
+      originalUrl.length === 0 || originalUrl.trim() !== originalUrl ||
+      /[\u0000-\u001f\u007f]/.test(originalUrl)) return undefined;
   // Revocation is permanent for this operation. A renderer can navigate away
   // and then back to the original URL; matching the URL again must not
   // resurrect the old clone/progress subscription.

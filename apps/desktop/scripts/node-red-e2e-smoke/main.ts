@@ -886,22 +886,31 @@ console.log("\nC. Gate C：迁移器产物 → 真 Node-RED 部署/读回（未�
     updatedAt: 1_760_000_000_000,
     nodes: [
       { id: "m_main", type: "mcode.main", title: "主代理", params: { instruction: "拆" }, position: { x: 10, y: 10 } },
-      { id: "m_agent", type: "mcode.agent", title: "子 agent", params: { instruction: "查" }, position: { x: 110, y: 10 } },
-      { id: "m_conv", type: "mcode.conversation", title: "对话", params: { instruction: "聊" }, position: { x: 210, y: 10 } },
-      { id: "m_branch", type: "mcode.branch", title: "岔路", params: { decider: "user" }, position: { x: 310, y: 10 } },
+      { id: "m_agent", type: "mcode.agent", title: "子 agent", params: { instruction: "查" }, capability: "write", position: { x: 110, y: 10 } },
+      { id: "m_conv", type: "mcode.conversation", title: "对话", params: { instruction: "聊\n第二行" }, position: { x: 210, y: 10 } },
+      { id: "m_branch", type: "mcode.branch", title: "岔路", params: { decider: "user", note: "分支说明\n第二行", outputVar: "route" }, position: { x: 310, y: 10 } },
       { id: "m_cond", type: "mcode.condition", title: "条件", params: { expression: { logic: "and", rules: [] } }, position: { x: 410, y: 10 } },
-      { id: "m_cmd", type: "mcode.command", title: "命令", params: { command: "echo hi" }, position: { x: 510, y: 10 } },
-      { id: "m_code", type: "mcode.code", title: "代码", params: { code: "return msg;", language: "node" }, position: { x: 610, y: 10 } },
-      { id: "m_trigger", type: "mcode.trigger", title: "触发", params: { triggerKind: "manual" }, position: { x: 710, y: 10 } },
+      { id: "m_cmd", type: "mcode.command", title: "命令", params: { command: "echo hi", timeoutMs: 1500 }, position: { x: 510, y: 10 } },
+      { id: "m_code", type: "mcode.code", title: "代码", params: { code: "return msg;", language: "node", timeoutMs: 5000 }, position: { x: 610, y: 10 } },
+      { id: "m_python", type: "mcode.code", title: "Python", params: { code: "print('hi')", language: "python", timeoutMs: 2500, input: "{{m_agent.payload}}" }, position: { x: 660, y: 10 } },
+      { id: "m_trigger", type: "mcode.trigger", title: "事件触发", params: { triggerKind: "event", task: "处理事件\n第二行", cron: "" }, position: { x: 710, y: 10 } },
+      { id: "m_schedule", type: "mcode.trigger", title: "定时触发", params: { triggerKind: "schedule", cron: "0 9 * * *" }, position: { x: 810, y: 10 } },
+      { id: "m_file", type: "mcode.trigger", title: "文件触发", params: { triggerKind: "file", paths: "src/**/*.ts" }, position: { x: 910, y: 10 } },
+      { id: "m_module", type: "mcode.module-capability", title: "模块能力", params: { moduleId: "core.files", contributionId: "inspect", path: "report.md" }, position: { x: 1010, y: 10 } },
+      { id: "m_node_red", type: "mcode.node-red", title: "HTTP 调用", params: { enginePath: "/api/flows", engineMethod: "PATCH", engineBody: "{\n  \"deploy\": true\n}" }, position: { x: 1110, y: 10 } },
     ],
     edges: [
       { id: "e1", from: "m_main", to: "m_agent" },
       { id: "e2", from: "m_agent", to: "m_conv" },
       { id: "e3", from: "m_conv", to: "m_branch" },
-      { id: "e4", from: "m_branch", to: "m_cond", label: "继续" },
-      { id: "e5", from: "m_branch", to: "m_cmd", label: "停" },
+      { id: "e4", from: "m_branch", to: "m_cond", label: "继续", note: "人工选择后继续" },
+      { id: "e5", from: "m_branch", to: "m_cmd", label: "停", note: "命令支路" },
       { id: "e6", from: "m_cond", to: "m_code", label: "true" },
       { id: "e7", from: "m_cond", to: "m_trigger", label: "false" },
+      { id: "e8", from: "m_main", to: "m_schedule" },
+      { id: "e9", from: "m_main", to: "m_file" },
+      { id: "e10", from: "m_main", to: "m_module" },
+      { id: "e11", from: "m_main", to: "m_node_red" },
     ],
   } as unknown as Parameters<typeof migrateWorkflowDoc>[0];
   const migrated = migrateWorkflowDoc(docForMigration, { types });
@@ -980,9 +989,190 @@ console.log("\nC. Gate C：迁移器产物 → 真 Node-RED 部署/读回（未�
       check("★【Gate C】读回里 x-mcode 元数据原样保留（nodeId/params）",
         (readById.get("n_m_main") as { "x-mcode"?: { nodeId?: string; params?: unknown } } | undefined)?.["x-mcode"]?.nodeId === "m_main",
         (readById.get("n_m_main") as Record<string, unknown> | undefined)?.["x-mcode"]);
+      const nativeAgent = readById.get("n_m_agent") as Record<string, unknown> | undefined;
+      const nativeConversation = readById.get("n_m_conv") as Record<string, unknown> | undefined;
+      const nativeBranch = readById.get("n_m_branch") as Record<string, unknown> | undefined;
+      const nativeCall = readById.get("n_m_node_red") as Record<string, unknown> | undefined;
+      const nativeCommand = readById.get("n_m_cmd") as Record<string, unknown> | undefined;
+      const nativeFunction = readById.get("n_m_code") as Record<string, unknown> | undefined;
+      const nativePython = readById.get("n_m_python") as Record<string, unknown> | undefined;
+      const nativeEvent = readById.get("n_m_trigger") as Record<string, unknown> | undefined;
+      check("★【Gate C】真实 Admin API v2 保留自定义节点表单字段与多行文本",
+        nativeAgent?.instruction === "查" && nativeAgent?.capability === "write"
+        && nativeConversation?.instruction === "聊\n第二行"
+        && nativeBranch?.note === "分支说明\n第二行",
+        { agent: nativeAgent, conversation: nativeConversation, branch: nativeBranch });
+      check("★【Gate C】真实 Admin API v2 保留 PATCH/多行 body 与原生执行器字段",
+        nativeCall?.engineMethod === "PATCH"
+        && nativeCall?.engineBody === "{\n  \"deploy\": true\n}"
+        && nativeCommand?.command === "echo hi" && nativeCommand?.timer === "1.5"
+        && Array.isArray(nativeCommand?.wires) && nativeCommand?.wires.length === 3
+        && nativeFunction?.func === "return msg;" && nativeFunction?.timeout === 5
+        && nativePython?.command === "python -c print('hi')" && nativePython?.timer === "2.5"
+        && Array.isArray(nativePython?.wires) && nativePython?.wires.length === 3,
+        { call: nativeCall, command: nativeCommand, function: nativeFunction, python: nativePython });
+      check("★【Gate C】真实 Admin API v2 保留 inject/watch 原生参数与 edgeMeta 注释",
+        readById.get("n_m_schedule")?.["crontab"] === "0 9 * * *"
+        && readById.get("n_m_file")?.["files"] === "src/**/*.ts"
+        && (nativeBranch?.["x-mcode"] as { edgeMeta?: Array<{label?: string;note?: string}> } | undefined)?.edgeMeta?.some(e => e.label === "继续" && e.note === "人工选择后继续") === true,
+        { schedule: readById.get("n_m_schedule"), file: readById.get("n_m_file"), edgeMeta: nativeBranch?.["x-mcode"] });
+      check("★【Gate C】code.input 不等价与输出契约差异有显式迁移报告",
+        migrated.report.lossy.some(issue => issue.nodeId === "m_python" && issue.message.includes("input JSON"))
+        && migrated.report.lossy.some(issue => issue.nodeId === "m_cmd" && issue.message.includes("产出契约"))
+        && migrated.report.lossy.some(issue => issue.nodeId === "m_code" && issue.message.includes("产出契约")),
+        migrated.report.lossy.filter(issue => issue.nodeId !== undefined && ["m_python","m_cmd","m_code"].includes(issue.nodeId)));
       check("★【Gate C】所有节点挂在 tab 下（z 指向 tab 的 id）",
         [...readById.values()].filter((n) => n.type !== "tab").every((n) => typeof n.z === "string" && readById.has(n.z as string)),
         [...readById.values()].map((n) => ({ id: n.id, z: n.z })));
+
+
+      check("★【Gate C FULL-2】真实 Node-RED GET 留存原生类型与唯一身份标记",
+        [...readById.values()].filter(n => n.type !== "tab").every(n => {
+          const meta = n["x-mcode"] as { nativeId?: string; nativeType?: string } | undefined;
+          return meta?.nativeId === n.id && meta?.nativeType === n.type;
+        }),
+        [...readById.values()].filter(n => n.type !== "tab").map(n => ({
+          id: n.id, type: n.type, native: (n["x-mcode"] as Record<string, unknown> | undefined)?.nativeId,
+          mappedType: (n["x-mcode"] as Record<string, unknown> | undefined)?.nativeType,
+        })));
+      const orphanedAgent = structuredClone(nativeAgent);
+      if (orphanedAgent) {
+        orphanedAgent.id = "new-native-id-after-original-deletion";
+        orphanedAgent.wires = [[]];
+      }
+      const { flowToWorkflowDoc: readEditorFlow } = await import("@main/workflowEngines/flowMigration.js");
+      const orphanedRestored = orphanedAgent
+        ? readEditorFlow({ id: "orphaned", label: "Orphaned Copy", nodes: [orphanedAgent as typeof migrated.flow.nodes[number]] })
+        : null;
+      check("★【Gate C FULL-2】原厂 GET 真正写权限节点复制后删除原件不能继承旧授权",
+        orphanedRestored !== null && orphanedRestored.nodes.length === 1
+        && orphanedRestored.nodes[0].id !== "m_agent"
+        && orphanedRestored.nodes[0].capability === "read"
+        && orphanedRestored.nodes[0].id.startsWith("mcode_copy_"),
+        orphanedRestored?.nodes);
+      const typeChangedCommand = structuredClone(nativeCommand);
+      if (typeChangedCommand) typeChangedCommand.type = "function";
+      let staleNativeTypeRejected = false;
+      try {
+        if (typeChangedCommand) {
+          readEditorFlow({ id: "typeChanged", label: "Type changed", nodes: [
+            typeChangedCommand as typeof migrated.flow.nodes[number],
+          ] });
+        }
+      } catch (err) { staleNativeTypeRejected = /native.*type|不一致/i.test((err as Error).message); }
+      check("★【Gate C FULL-2】原厂 GET 后节点原生类型替换时拒绝继承旧命令执行协议",
+        staleNativeTypeRejected);
+
+      // C2b. Real API-v2 editor save, not an in-memory change to the adapter:
+      // read native fields -> edit them -> POST with rev -> GET persisted fields
+      // -> reconstruct Mcode doc. Stale x-mcode.params must not win the edits.
+      const editedNative = structuredClone(readFlows);
+      const byNativeId = new Map(editedNative.map((n) => [String(n.id), n]));
+      const editNative = (id: string, patch: Record<string, unknown>): void => {
+        const node = byNativeId.get("n_" + id);
+        if (node) Object.assign(node, patch);
+      };
+      editNative("m_agent", { instruction: "原生改写指令", capability: "read", outputVar: "editedOutput" });
+      editNative("m_conv", { instruction: "新对话指令\\n第二行" });
+      editNative("m_branch", { decider: "model", note: "", outputVar: "newRoute" });
+      editNative("m_cmd", { command: "echo edited", timer: "3" });
+      editNative("m_code", { func: "return {...msg,payload:42};", timeout: 1.25 });
+      editNative("m_python", { command: "python -c print('edited')", timer: "4" });
+      editNative("m_trigger", { task: "新事件任务" });
+      editNative("m_schedule", { crontab: "0 10 * * *" });
+      editNative("m_file", { files: "tests/**/*.ts" });
+      editNative("m_module", { path: "" });
+      editNative("m_node_red", { engineMethod: "GET", engineBody: "" });
+      // Simulate a copied/stale plugin sidecar persisting through the actual
+      // upstream API. Native editor capability and wires remain authoritative.
+      const nativeAgentForSave = byNativeId.get("n_m_agent");
+      const rawAgentMeta = nativeAgentForSave?.["x-mcode"] as Record<string, unknown> | undefined;
+      if (rawAgentMeta) {
+        rawAgentMeta.params = { ...(rawAgentMeta.params as Record<string, unknown>), capability: "write" };
+        rawAgentMeta.unknown = {
+          id: "forged-node", type: "forged.type", capability: "write",
+          params: { instruction: "poisoned", capability: "write" },
+          position: { x: 999, y: 999 }, approvedUnknown: "retained",
+        };
+      }
+      const tabNative = editedNative.find((n) => n.type === "tab");
+      const rawTabMeta = tabNative?.["x-mcode"] as Record<string, unknown> | undefined;
+      if (rawTabMeta) {
+        rawTabMeta.unknown = { id: "forged-flow", builtin: true, nodes: [], edges: [], safeExtra: "retained" };
+      }
+      const editedDeploy = await fetchOn(portC, "/flows", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...authC },
+        body: JSON.stringify({ rev: revC, flows: editedNative }),
+      }, 15_000);
+      let editedRevision: string | null = null;
+      try { editedRevision = (JSON.parse(editedDeploy.text) as {rev?:string}).rev ?? null; } catch { /* explicit check below */ }
+      check("★【Gate C FULL-2】真引擎带 revision 部署原生字段变更成功", editedDeploy.status === 200 && typeof editedRevision === "string", {
+        status: editedDeploy.status, rev: editedRevision, body: editedDeploy.text.slice(0, 300),
+      });
+      const editedRead = await fetchOn(portC, "/flows", {
+        headers: { ...authC, "Node-RED-API-Version": "v2" },
+      }, 10_000);
+      let persistedNative: Array<Record<string, unknown>> = [];
+      try { persistedNative = (JSON.parse(editedRead.text) as {flows?:Array<Record<string,unknown>>}).flows ?? []; }
+      catch { /* explicit assertion */ }
+      const persistedById = new Map(persistedNative.map((n) => [n.id as string, n]));
+      check("★【Gate C FULL-2】真实 Node-RED GET 回来的编辑器属性已持久改变（包括清空）",
+        editedRead.status === 200 && persistedById.get("n_m_agent")?.instruction === "原生改写指令"
+        && persistedById.get("n_m_branch")?.note === ""
+        && persistedById.get("n_m_code")?.timeout === 1.25
+        && persistedById.get("n_m_module")?.path === ""
+        && persistedById.get("n_m_node_red")?.engineBody === "",
+        { status: editedRead.status, agent: persistedById.get("n_m_agent"), branch: persistedById.get("n_m_branch") });
+      const { flowToWorkflowDoc } = await import("@main/workflowEngines/flowMigration.js");
+      const restoredAfterNativeEdit = flowToWorkflowDoc({
+        ...migrated.flow,
+        nodes: persistedNative as unknown as typeof migrated.flow.nodes,
+        links: undefined,
+        "x-mcode": undefined, // the actual native API has no top-level Mcode metadata
+      });
+      const mcodeParam = (id: string, key: string): unknown =>
+        restoredAfterNativeEdit.nodes.find((n) => n.id === id)?.params[key];
+      check("★【Gate C FULL-2】真编辑 Mcode agent/branch/trigger/module/HTTP 字段逆映射成功",
+        mcodeParam("m_agent", "instruction") === "原生改写指令"
+        && restoredAfterNativeEdit.nodes.find((n) => n.id === "m_agent")?.capability === "read"
+        && mcodeParam("m_agent", "outputVar") === "editedOutput"
+        && mcodeParam("m_conv", "instruction") === "新对话指令\\n第二行"
+        && mcodeParam("m_branch", "decider") === "model"
+        && mcodeParam("m_branch", "note") === ""
+        && mcodeParam("m_trigger", "task") === "新事件任务"
+        && mcodeParam("m_module", "path") === ""
+        && mcodeParam("m_node_red", "engineMethod") === "GET"
+        && mcodeParam("m_node_red", "engineBody") === "");
+      check("★【Gate C FULL-2】原厂 API 持久化后，旧参数写权限不得复活",
+        mcodeParam("m_agent", "capability") === "read"
+        && restoredAfterNativeEdit.nodes.find((n) => n.id === "m_agent")?.capability === "read");
+      check("★【Gate C FULL-2】原厂 API 保留的恶意未知扩展字段不得覆盖正式节点/文档身份",
+        restoredAfterNativeEdit.id === "wf_gatec_engine"
+        && restoredAfterNativeEdit.builtin === false
+        && restoredAfterNativeEdit.nodes.some((n) => n.id === "m_agent" && n.type === "mcode.agent")
+        && !restoredAfterNativeEdit.nodes.some((n) => n.id === "forged-node")
+        && (restoredAfterNativeEdit as unknown as Record<string, unknown>).safeExtra === "retained"
+        && (restoredAfterNativeEdit.nodes.find((n) => n.id === "m_agent") as unknown as Record<string,unknown> | undefined)?.approvedUnknown === "retained");
+      check("★【Gate C FULL-2】真原生 exec/function/inject/watch 编辑同步并按秒毫秒转换",
+        mcodeParam("m_cmd", "command") === "echo edited"
+        && mcodeParam("m_cmd", "timeoutMs") === 3000
+        && mcodeParam("m_code", "code") === "return {...msg,payload:42};"
+        && mcodeParam("m_code", "timeoutMs") === 1250
+        && mcodeParam("m_python", "code") === "print('edited')"
+        && mcodeParam("m_python", "timeoutMs") === 4000
+        && mcodeParam("m_schedule", "cron") === "0 10 * * *"
+        && mcodeParam("m_file", "paths") === "tests/**/*.ts");
+      check("★【Gate C FULL-2】无法原生表达的 code.input 与不变的连线备注仍保留",
+        mcodeParam("m_python", "input") === "{{m_agent.payload}}"
+        && restoredAfterNativeEdit.edges.some((e) => e.id === "e4" && e.label === "继续" && e.note === "人工选择后继续"));
+      const staleNativeDeploy = await fetchOn(portC, "/flows", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...authC },
+        body: JSON.stringify({ rev: revC, flows: editedNative }),
+      }, 15_000);
+      check("★【Gate C FULL-2】旧 revision 不得覆盖真 Node-RED 新版本（409）", staleNativeDeploy.status === 409,
+        {status: staleNativeDeploy.status, body: staleNativeDeploy.text.slice(0, 200)});
 
       // C3. 未知节点硬事实：整组 flows 不启动。用行为证明 —— 同一台引擎上，
       //     一条**全原生节点**的注入流能跑；而迁移流里混入未知类型后，同一份部署的

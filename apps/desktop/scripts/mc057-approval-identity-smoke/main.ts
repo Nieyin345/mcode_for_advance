@@ -142,5 +142,37 @@ check("all pending ordinary approvals are revoked when window closes",
   (await Promise.all(firstBatch)).every(v=>v===false));
 check("★ excess approval fails closed without requiring renderer interaction",
   await overCapacity===false);
+// A disposed bridge belongs to a destroyed renderer lifecycle. An old
+// reference must never mint fresh install approvals after shutdown.
+const priorId = requestId;
+const postDispose = bridge.request(card, A);
+const postDisposeId = requestId;
+check("★ disposed bridge must not deliver a new approval card", postDisposeId === priorId);
+check("★ disposed bridge cannot accept a late fresh approval",
+  bridge.resolve({requestId:postDisposeId, approved:true}, A) === false);
+check("★ disposed bridge request settles as denial", await postDispose === false);
+// IPC data may be malformed at runtime despite static TypeScript typing.
+let malformedResult: boolean | null = null;
+let malformedThrew = false;
+try { malformedResult = bridgeWithoutWindow.resolve(null as never, A); }
+catch { malformedThrew = true; }
+check("★ malformed reply does not throw across the main-process approval IPC", !malformedThrew && malformedResult === false);
+// If a hostile in-process response has a throwing approved getter, the
+// previous implementation deleted pending BEFORE reading it and left the
+// original approval promise unsettled forever. Never strand a caller.
+let hostileReplyId = "";
+const hostileBridge = new NodeInstallApprovalBridge({send: (message) => { hostileReplyId = message.requestId; return true; }}, 100);
+const hostilePending = hostileBridge.request(card, A);
+let hostileThrew = false;
+let hostileConsumed = true;
+try {
+  const response = { requestId: hostileReplyId, get approved(): boolean { throw new Error("hostile approved getter"); } };
+  hostileConsumed = hostileBridge.resolve(response as never, A);
+} catch { hostileThrew = true; }
+check("★ hostile response getter must not throw or report approval accepted", !hostileThrew && hostileConsumed === false);
+const hostileSettled = await Promise.race([hostilePending.then(value => value === false),
+  new Promise<boolean>(resolve => setTimeout(() => resolve(false), 25))]);
+check("★ hostile response getter settles its pending approval with denial", hostileSettled);
+hostileBridge.dispose();
 console.log(`mc057-approval-identity-smoke:${total-failures}/${total}`);
 if(failures)process.exitCode=1;

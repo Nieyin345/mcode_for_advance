@@ -39,7 +39,9 @@ import {
   MCODE_NODE_PACK_VERSION,
   agentNodeHtml,
   assertMcodeNodePortResult,
+  createNodeInputLifecycle,
   normalizeAgentConfig,
+  snapshotMcodeNodeInvocation,
   registerMcodeAgentNodes,
   type McodeAgentNodeConfig,
   type McodeAgentPort,
@@ -73,43 +75,39 @@ export interface McodeNodeBasePayload {
   runId: string | null;
 }
 
-function basePayload(inputMsg: Record<string, unknown>, config: Cfg): McodeNodeBasePayload {
-  const normalized = normalizeAgentConfig(config);
-  const incoming = (inputMsg["mcode"] !== null && typeof inputMsg["mcode"] === "object"
-    ? inputMsg["mcode"]
-    : {}) as Record<string, unknown>;
+type Invocation = ReturnType<typeof snapshotMcodeNodeInvocation>;
+
+function basePayload(invocation: Invocation): McodeNodeBasePayload {
   return {
-    input: inputMsg["payload"] ?? null,
-    params: normalized.params,
-    nodeId: normalized.nodeId,
-    runId: typeof incoming["runId"] === "string" ? incoming["runId"] : null,
+    input: invocation.inputSnapshot,
+    params: invocation.paramsSnapshot,
+    nodeId: invocation.normalized.nodeId,
+    runId: invocation.runId,
   };
 }
 
-/** 通用产出：`msg.payload = { text, artifacts }`，`msg.mcode` 透传 + 合并。 */
+/** Host return uses the *same* invocation snapshot sent to the port. */
 function outputMsg(
-  inputMsg: Record<string, unknown>,
-  config: Cfg,
+  invocation: Invocation,
   result: { text: string; artifacts: Array<Record<string, unknown>>; runId?: string },
   extraMcode: Record<string, unknown> = {},
 ): Record<string, unknown> {
-  // Validate every custom node against the same Host RPC result contract.
-  assertMcodeNodePortResult(result);
-  const normalized = normalizeAgentConfig(config);
-  const incoming = (inputMsg["mcode"] !== null && typeof inputMsg["mcode"] === "object"
-    ? inputMsg["mcode"]
-    : {}) as Record<string, unknown>;
-  const runId = typeof incoming["runId"] === "string" ? incoming["runId"] : null;
+  const safeResult = assertMcodeNodePortResult(result);
+  const { normalized, incomingMcode, messageSnapshot, runId } = invocation;
+  const mcode: Record<string, unknown> = {
+    ...incomingMcode,
+    nodeId: normalized.nodeId,
+    runId: safeResult.runId ?? runId,
+    ...(normalized.outputVar !== null ? { outputVar: normalized.outputVar } : {}),
+    ...extraMcode,
+  };
+  // The new native editor's empty output binding takes precedence over the
+  // previous upstream message, exactly as it does for mcode-agent.
+  if (normalized.outputVar === null) delete mcode["outputVar"];
   return {
-    ...inputMsg,
-    payload: { text: result.text, artifacts: result.artifacts },
-    mcode: {
-      ...incoming,
-      nodeId: normalized.nodeId,
-      runId: result.runId ?? runId,
-      ...(normalized.outputVar !== null ? { outputVar: normalized.outputVar } : {}),
-      ...extraMcode,
-    },
+    ...messageSnapshot,
+    payload: { text: safeResult.text, artifacts: safeResult.artifacts },
+    mcode,
   };
 }
 
@@ -129,10 +127,10 @@ export async function runConversationNode(
   config: Cfg,
   port: McodeConversationPort,
 ): Promise<{ msg: Record<string, unknown> }> {
-  const base = basePayload(inputMsg, config);
-  const instruction = normalizeAgentConfig(config).instruction;
-  const result = await port.run({ ...base, instruction });
-  return { msg: outputMsg(inputMsg, config, result) };
+  const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
+  const base = basePayload(invocation);
+  const result = await port.run({ ...base, instruction: invocation.normalized.instruction });
+  return { msg: outputMsg(invocation, result) };
 }
 
 /* ── branch ── */
@@ -154,8 +152,18 @@ export async function runBranchNode(
   config: Cfg,
   port: McodeBranchPort,
 ): Promise<{ msg: Record<string, unknown>; port: number; label?: string }> {
-  const base = basePayload(inputMsg, config);
-  const portCount = Math.max(1, config.wires?.length ?? 1);
+  const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
+  const base = basePayload(invocation);
+  // Flows restored from disk are untrusted runtime objects, regardless of
+  // the TypeScript type of a native editor's wires array. Never authorize
+  // a Host routing decision using a synthetic/invalid output shape.
+  const wires = config.wires;
+  if (wires !== undefined && (!Array.isArray(wires)
+      || !wires.every((targets) => Array.isArray(targets)
+        && targets.every((target) => typeof target === "string")))) {
+    throw new Error("Node-RED branch wires invalid: expected string[][]");
+  }
+  const portCount = Math.max(1, wires?.length ?? 1);
   const chosen = await port.decide({
     ...base,
     portCount,
@@ -168,13 +176,11 @@ export async function runBranchNode(
     throw new Error("Host branch label invalid: expected a string");
   }
   const msg = outputMsg(
-    inputMsg,
-    config,
-    { text: "", artifacts: [] }, // branch 不产生产出，只选路；保留上游 payload 由 outputMsg 覆盖 —— 见下。
+    invocation,
+    { text: "", artifacts: [] }, // branch 只负责路由，原输入从调用时快照恢复。
     { branch: { port: chosen.port, ...(chosen.label !== undefined ? { label: chosen.label } : {}) } },
   );
-  // branch 不该把上游 payload 清成空产出：把上游 payload 原样放回。
-  msg["payload"] = inputMsg["payload"] ?? null;
+  msg["payload"] = invocation.inputSnapshot;
   delete (msg["mcode"] as Record<string, unknown>)["branchPort"];
   delete (msg["mcode"] as Record<string, unknown>)["branchLabel"];
   return { msg, port: chosen.port, ...(chosen.label !== undefined ? { label: chosen.label } : {}) };
@@ -195,8 +201,10 @@ export interface McodeTriggerPort {
  * {@link triggerMessage} 的产出交给 `emit`。
  */
 export function triggerMessage(config: Cfg, at: number = Date.now()): Record<string, unknown> {
-  const normalized = normalizeAgentConfig(config);
-  const kind = typeof normalized.params["triggerKind"] === "string" ? (normalized.params["triggerKind"] as string) : "manual";
+  const invocation = snapshotMcodeNodeInvocation({}, config);
+  const normalized = invocation.normalized;
+  const kind = typeof invocation.paramsSnapshot["triggerKind"] === "string"
+    ? invocation.paramsSnapshot["triggerKind"] as string : "manual";
   return {
     payload: { trigger: { kind, at } },
     mcode: { nodeId: normalized.nodeId, runId: null, triggerKind: kind },
@@ -205,15 +213,10 @@ export function triggerMessage(config: Cfg, at: number = Date.now()): Record<str
 
 /** trigger 订阅时交给 port 的 payload（供 port 决定触发源）。 */
 export function triggerSubscribePayload(config: Cfg): McodeNodeBasePayload & { triggerKind: string } {
-  const normalized = normalizeAgentConfig(config);
-  const kind = typeof normalized.params["triggerKind"] === "string" ? (normalized.params["triggerKind"] as string) : "manual";
-  return {
-    input: null,
-    params: normalized.params,
-    nodeId: normalized.nodeId,
-    runId: null,
-    triggerKind: kind,
-  };
+  const invocation = snapshotMcodeNodeInvocation({}, config);
+  const kind = typeof invocation.paramsSnapshot["triggerKind"] === "string"
+    ? invocation.paramsSnapshot["triggerKind"] as string : "manual";
+  return { ...basePayload(invocation), triggerKind: kind };
 }
 
 /* ── module-capability ── */
@@ -231,12 +234,13 @@ export async function runModuleCapabilityNode(
   config: Cfg,
   port: McodeModuleCapabilityPort,
 ): Promise<{ msg: Record<string, unknown> }> {
-  const base = basePayload(inputMsg, config);
+  const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
+  const base = basePayload(invocation);
   const moduleId = typeof base.params["moduleId"] === "string" ? (base.params["moduleId"] as string) : "";
   const contributionId = typeof base.params["contributionId"] === "string" ? (base.params["contributionId"] as string) : "";
   const path = typeof base.params["path"] === "string" ? (base.params["path"] as string) : "";
   const result = await port.run({ ...base, moduleId, contributionId, path });
-  return { msg: outputMsg(inputMsg, config, result) };
+  return { msg: outputMsg(invocation, result) };
 }
 
 /* ── node-red-call ── */
@@ -255,17 +259,21 @@ export async function runNodeRedCallNode(
   config: Cfg,
   port: McodeNodeRedCallPort,
 ): Promise<{ msg: Record<string, unknown> }> {
-  const base = basePayload(inputMsg, config);
+  const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
+  const base = basePayload(invocation);
   const enginePath = typeof base.params["enginePath"] === "string" ? (base.params["enginePath"] as string) : "";
-  const engineMethod = typeof base.params["engineMethod"] === "string" ? (base.params["engineMethod"] as string) : "GET";
+  // Keep a freshly-created native palette node aligned with the Mcode
+  // node-type manifest and Host executor: omitted/blank method means POST.
+  const nativeMethod = base.params["engineMethod"];
+  const engineMethod = typeof nativeMethod === "string" && nativeMethod.trim() !== ""
+    ? nativeMethod : "POST";
   const engineBody = typeof base.params["engineBody"] === "string" ? (base.params["engineBody"] as string) : null;
-  const result = await port.run({ ...base, enginePath, engineMethod, engineBody });
-  assertMcodeNodePortResult(result);
+  const result = assertMcodeNodePortResult(await port.run({ ...base, enginePath, engineMethod, engineBody }));
   if (result.status !== undefined && (!Number.isInteger(result.status)
     || result.status < 100 || result.status > 599)) {
     throw new Error("Host node-red-call status invalid: expected an HTTP status");
   }
-  const msg = outputMsg(inputMsg, config, result,
+  const msg = outputMsg(invocation, result,
     result.status !== undefined ? { engineStatus: result.status } : {});
   // Upstream Node-RED nodes can forge arbitrary msg.mcode properties. HTTP
   // status is authoritative only when the Host actually returned one.
@@ -305,24 +313,20 @@ function registerIoSugar(
   RED.nodes.registerType(type, function (this: NodeInstance, config: Cfg) {
     const node = this;
     RED.nodes.createNode(node, config);
-    // Node-RED can close this instance during a pending Host RPC on deploy.
-    // The Host call itself still owns cancellation; the thin node adapter
-    // must at least refuse publishing a stale result into the replaced graph.
-    let closed = false;
-    node.on("close", () => { closed = true; });
+    // Share the Agent node's redeploy lifecycle: an indefinitely pending Host
+    // call must not strand Node-RED's input accounting or publish into old wires.
+    const lifecycle = createNodeInputLifecycle(node);
     node.on("input", (msg, send, done) => {
-      if (closed) {
-        done(new Error("Node-RED 节点已关闭"));
-        return;
-      }
+      const finish = lifecycle.begin(done);
+      if (finish === null) return;
       void (async () => {
         try {
           const outcome = await run(msg, config);
-          if (!closed) send(outcome.msg);
-          done();
+          if (!lifecycle.isClosed()) send(outcome.msg);
+          finish();
         } catch (err) {
-          if (!closed) node.error(err, msg);
-          done(err instanceof Error ? err : new Error(String(err)));
+          if (!lifecycle.isClosed()) node.error(err, msg);
+          finish(lifecycle.isClosed() ? undefined : err instanceof Error ? err : new Error(String(err)));
         }
       })();
     });
@@ -348,26 +352,23 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
   RED.nodes.registerType(MCODE_BRANCH_NODE_TYPE, function (this: NodeInstance, config: Cfg) {
     const node = this;
     RED.nodes.createNode(node, config);
-    let closed = false;
-    node.on("close", () => { closed = true; });
+    const lifecycle = createNodeInputLifecycle(node);
     node.on("input", (msg, send, done) => {
-      if (closed) {
-        done(new Error("Node-RED 分支节点已关闭"));
-        return;
-      }
+      const finish = lifecycle.begin(done);
+      if (finish === null) return;
       void (async () => {
         try {
           const outcome = await runBranchNode(msg, config, getPorts().branch);
-          if (!closed) {
+          if (!lifecycle.isClosed()) {
             const portCount = Math.max(1, node.wires?.length ?? 1);
             const ports: Array<Record<string, unknown> | null> = Array.from({ length: portCount }, () => null);
             ports[outcome.port] = outcome.msg;
             send(ports);
           }
-          done();
+          finish();
         } catch (err) {
-          if (!closed) node.error(err, msg);
-          done(err instanceof Error ? err : new Error(String(err)));
+          if (!lifecycle.isClosed()) node.error(err, msg);
+          finish(lifecycle.isClosed() ? undefined : err instanceof Error ? err : new Error(String(err)));
         }
       })();
     });
@@ -378,13 +379,77 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
     const node = this;
     RED.nodes.createNode(node, config);
     let closed = false;
-    let dispose: (() => void) | void;
+    let active = false;
+    // Only synchronous subscribe() events are buffered. A port that floods
+    // before it returns its disposer cannot exhaust the main-process heap.
+    const maxBufferedTriggerEvents = 256;
+    const buffered: Array<Record<string, unknown>> = [];
+    let bufferOverflow = false;
+    let dispose: (() => void) | void = undefined;
     try {
-      dispose = getPorts().trigger.subscribe(triggerSubscribePayload(config), (msg) => {
-        // A queued event can still arrive after unsubscribe during redeploy.
-        if (!closed) node.send(msg);
+      // The same Host identity and structured-clone boundary protects a
+      // trigger's subscription even though triggers have no input callback.
+      const subscription = triggerSubscribePayload(config);
+      // The port receives a mutable transport payload. Capture the native
+      // identity before handing that object across the Host boundary.
+      const trustedNodeId = subscription.nodeId;
+      const trustedTriggerKind = subscription.triggerKind;
+      dispose = getPorts().trigger.subscribe(subscription, (msg) => {
+        if (closed) return; // A queued event can arrive after unsubscribe.
+        try {
+          if (msg === null || typeof msg !== "object" || Array.isArray(msg)) {
+            throw new Error("Host trigger event invalid: expected a message object");
+          }
+          // Event sources may reuse their message objects; detach them before
+          // publishing so later changes cannot alter downstream Node-RED data.
+          const event = structuredClone(msg) as Record<string, unknown>;
+          const rawMeta = event["mcode"];
+          if (rawMeta !== undefined && (rawMeta === null
+              || typeof rawMeta !== "object" || Array.isArray(rawMeta))) {
+            throw new Error("Host trigger event invalid: mcode metadata must be an object");
+          }
+          const meta = rawMeta === undefined ? {} : rawMeta as Record<string, unknown>;
+          // Trigger is a new flow root: it has no upstream signed runId,
+          // output binding or branch decision. Never import these as trusted
+          // mcode metadata from an event source, even when it reached the port.
+          // Preserve only the documented non-authority condition flag.
+          event["mcode"] = {
+            nodeId: trustedNodeId,
+            runId: null,
+            triggerKind: trustedTriggerKind,
+            ...(typeof meta["condition"] === "boolean" ? { condition: meta["condition"] } : {}),
+          };
+          // A Host port may synchronously emit and then reject subscribe().
+          // Publish only after it returns a callable cancellation handle.
+          if (active) node.send(event);
+          else if (buffered.length >= maxBufferedTriggerEvents) {
+            bufferOverflow = true;
+            closed = true;
+            buffered.length = 0;
+          } else buffered.push(event);
+        } catch (err) {
+          if (!closed) node.error(err);
+        }
       });
+      if (bufferOverflow) {
+        throw new Error("Host trigger synchronous event buffer exceeded");
+      }
+      if (typeof dispose !== "function") {
+        throw new Error("Host trigger subscription missing cancellation handle");
+      }
+      active = true;
+      for (const event of buffered.splice(0)) {
+        if (closed) break;
+        node.send(event);
+      }
     } catch (err) {
+      // Failed subscriptions must never publish buffered or later events.
+      closed = true;
+      buffered.length = 0;
+      if (typeof dispose === "function") {
+        try { dispose(); } catch { /* keep original failure */ }
+        dispose = undefined;
+      }
       node.error(err);
     }
     node.on("close", () => {
@@ -395,8 +460,10 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
         dispose = undefined;
         try {
           release();
-        } catch {
-          /* 清理失败不影响关停 */
+        } catch (err) {
+          // Surface failed Host cancellation. The local node stays closed,
+          // but the user must not be told the external source was stopped.
+          try { node.error(err); } catch { /* still finish Node-RED close */ }
         }
       }
     });
@@ -407,15 +474,15 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
 
 /* ── 编辑器 HTML（每类型最小三格参数；Node-RED 只认有同名 .html 的 .js） ── */
 
-function htmlFor(type: string, params: Array<{ id: string; label: string; kind: "text" | "select"; options?: string[] }>, extraDefs = ""): string {
+function htmlFor(type: string, params: Array<{ id: string; label: string; kind: "text" | "select" | "textarea"; options?: string[]; defaultValue?: string }>, extraDefs = ""): string {
   const rows = params.map((p) => p.kind === "select"
     ? `<div class="form-row"><label for="node-input-${p.id}">${p.label}</label><select id="node-input-${p.id}">${(p.options ?? []).map((o) => `<option value="${o}">${o}</option>`).join("")}</select></div>`
-    : `<div class="form-row"><label for="node-input-${p.id}">${p.label}</label><input type="text" id="node-input-${p.id}" placeholder="${p.label}"></div>`).join("\n  ");
+    : p.kind === "textarea" ? `<div class="form-row"><label for="node-input-${p.id}">${p.label}</label><textarea id="node-input-${p.id}" rows="4" placeholder="${p.label}"></textarea></div>` : `<div class="form-row"><label for="node-input-${p.id}">${p.label}</label><input type="text" id="node-input-${p.id}" placeholder="${p.label}"></div>`).join("\n  ");
   return `<script type="text/javascript">
   RED.nodes.registerType("${type}", {
     category: "mcode",
     color: "#8ea6b8",
-    defaults: { name: { value: "" }, ${params.map((p) => `${p.id}: { value: "" }`).join(", ")} },
+    defaults: { name: { value: "" }, ${params.map((p) => `${p.id}: { value: ${JSON.stringify(p.defaultValue ?? "")} }`).join(", ")} },
     inputs: ${type === MCODE_TRIGGER_NODE_TYPE ? 0 : 1},
     outputs: ${extraDefs === "multi" ? "function () { return Math.max(1, (this.wires && this.wires.length) || 1); }" : 1},
     icon: "font-awesome/fa-cube",
@@ -435,7 +502,7 @@ function htmlFor(type: string, params: Array<{ id: string; label: string; kind: 
 
 export function conversationNodeHtml(): string {
   return htmlFor(MCODE_CONVERSATION_NODE_TYPE, [
-    { id: "instruction", label: "Instruction", kind: "text" },
+    { id: "instruction", label: "Instruction", kind: "textarea" },
     { id: "capability", label: "Capability", kind: "select", options: ["read", "write"] },
     { id: "outputVar", label: "Output variable", kind: "text" },
   ]);
@@ -444,13 +511,13 @@ export function branchNodeHtml(): string {
   return htmlFor(MCODE_BRANCH_NODE_TYPE, [
     { id: "decider", label: "Decider (user/model)", kind: "select", options: ["user", "model"] },
     { id: "outputVar", label: "Output variable", kind: "text" },
-    { id: "note", label: "Note", kind: "text" },
+    { id: "note", label: "Note", kind: "textarea" },
   ], "multi");
 }
 export function triggerNodeHtml(): string {
   return htmlFor(MCODE_TRIGGER_NODE_TYPE, [
     { id: "triggerKind", label: "Trigger kind", kind: "select", options: ["manual", "schedule", "file", "event"] },
-    { id: "task", label: "Task", kind: "text" },
+    { id: "task", label: "Task", kind: "textarea" },
     { id: "cron", label: "Cron", kind: "text" },
   ]);
 }
@@ -464,8 +531,8 @@ export function moduleCapabilityNodeHtml(): string {
 export function nodeRedCallNodeHtml(): string {
   return htmlFor(MCODE_NODE_RED_CALL_NODE_TYPE, [
     { id: "enginePath", label: "Engine path", kind: "text" },
-    { id: "engineMethod", label: "Method", kind: "select", options: ["GET", "POST", "PUT", "DELETE"] },
-    { id: "engineBody", label: "Body", kind: "text" },
+    { id: "engineMethod", label: "Method", kind: "select", options: ["GET", "POST", "PUT", "PATCH", "DELETE"], defaultValue: "POST" },
+    { id: "engineBody", label: "Body", kind: "textarea" },
   ]);
 }
 

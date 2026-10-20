@@ -64,14 +64,17 @@ export type ModelChoice =
 export function parseModel(raw: string | null | undefined): ModelChoice | null {
   const s = (raw ?? "").trim();
   if (!s) return null;
-  if (s === TITLE_GEN_BUILTIN_MODEL_PREFIX || s.startsWith(`${TITLE_GEN_BUILTIN_MODEL_PREFIX}:`)) {
+  if (s === TITLE_GEN_BUILTIN_MODEL_PREFIX) return { builtin: true };
+  if (s.startsWith(`${TITLE_GEN_BUILTIN_MODEL_PREFIX}:`)) {
     const alias = s.slice(TITLE_GEN_BUILTIN_MODEL_PREFIX.length + 1);
-    return {
-      builtin: true,
-      alias: (TITLE_GEN_BUILTIN_ALIASES as readonly string[]).includes(alias) ? alias : undefined,
-    };
+    // A missing/unsupported explicit alias must not silently spend tokens on
+    // a different (default) Claude model than the one the user selected.
+    return (TITLE_GEN_BUILTIN_ALIASES as readonly string[]).includes(alias)
+      ? { builtin: true, alias }
+      : null;
   }
   const idx = s.indexOf(":");
+  if (idx === 0 || (idx > 0 && !s.slice(idx + 1).trim())) return null;
   return idx > 0 ? { builtin: false, id: s.slice(0, idx), role: s.slice(idx + 1) } : { builtin: false, id: s };
 }
 

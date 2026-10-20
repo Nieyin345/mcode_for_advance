@@ -72,7 +72,7 @@ export interface ModuleChangeOutcome {
    *  将来若引入异步收尾，失败也必须可见）。 */
   cancelFailures: Array<{ taskId: string; reason: string }>;
 }
-type LiveTask = { snapshot: ModuleTask; controller: AbortController; requestKey: string; fingerprint: string; timer: ReturnType<typeof setTimeout> };
+type LiveTask = { snapshot: ModuleTask; controller: AbortController; requestKey: string; fingerprint: string; timer: ReturnType<typeof setTimeout>; workflowGrantKey?: string };
 
 /** 【MC-036】签发 / 撤销授权的入参形状 —— 与记录同形但**不带** `grantedAt`(签发时补,
  * 撤销时按同一幂等键不参与匹配)。宿主自带的校验只认这几个字段,不在 IPC 层另写一份。 */
@@ -100,6 +100,10 @@ export class ModuleHost {
   private readonly modules = new Map<string, ModuleManifest>();
   private readonly builtinIds = new Set<string>();
   private readonly jobs = new Map<string, LiveTask>();
+  /** 已派发但未结束的非 task 能力调用；卸载/换执行体时同步撤销其信号。 */
+  private readonly activeInvocations = new Map<string, Set<AbortController>>();
+  /** 仅跟踪真正走 invokeForWorkflow 的 query/action，不误取消同模块的菜单调用。 */
+  private readonly activeWorkflowInvocations = new Map<string, Set<AbortController>>();
   private readonly requests = new Map<string, string>();
   private mutation: Promise<void> = Promise.resolve();
   constructor(private readonly options: {
@@ -383,9 +387,14 @@ export class ModuleHost {
       // 变化都撤。纯声明式模块（没有 program）没有可执行体，版本变化仍按发布单位撤
       // （新版本的能力面可能变）。清单完全相同（no-op 重装）不撤 —— 没换执行体。
       const previous = this.modules.get(manifest.id);
+      // 【MC-036】同版本、同源码不等于同执行权限。若清单新增 network、
+      // 改动允许的文件扩展名/贡献引用，旧工作流授权不能自动授权新的行为。
+      // 标题等纯展示元信息可正常更新，不无故撤销已获批准的只读任务。
       const executionChanged = previous !== undefined && (
         previous.version !== manifest.version
-        || (previous.program?.source ?? null) !== (manifest.program?.source ?? null)
+        || JSON.stringify(previous.program ?? null) !== JSON.stringify(manifest.program ?? null)
+        || JSON.stringify([...previous.permissions].sort()) !== JSON.stringify([...manifest.permissions].sort())
+        || JSON.stringify(previous.contributions) !== JSON.stringify(manifest.contributions)
       );
       // **事务顺序（失败方向即判据）**：先撤授权（收紧方向）、再写清单；清单写失败
       // 就把授权**回滚**回原样，于是「升级中途失败 → 旧版仍可执行、新版不落盘、
@@ -464,6 +473,9 @@ export class ModuleHost {
    * 与 `remove` 里原来那段内联循环是同一条判据；两处共用一个函数，避免漂移。 */
   private cancelRunningTasksOf(moduleId: string): ModuleChangeOutcome {
     const outcome: ModuleChangeOutcome = { moduleId, cancelledTasks: 0, cancelFailures: [] };
+    // Query / action 虽然不签发持久 job handle，仍可能在 await 的受控子进程中运行。
+    // 原先卸载仅取消 task，旧 query 会在模块删除后继续返回成功；这里同步请求取消。
+    for (const controller of this.activeInvocations.get(moduleId) ?? []) controller.abort();
     for (const job of [...this.jobs.values()]) {
       if (job.snapshot.moduleId !== moduleId || job.snapshot.status !== "running") continue;
       try {
@@ -490,19 +502,26 @@ export class ModuleHost {
     return this.serializeMutation(async () => {
       if (this.builtinIds.has(id)) throw Error("Builtin module cannot be removed");
       if (!this.modules.has(id)) throw Error("Unknown module");
-      await this.options.persist([...this.modules.values()].filter(m => m.id !== id && !this.builtinIds.has(m.id)));
-      // 【MC-036】把该模块的工作流授权一并撤掉:否则重新安装一份同名同版本的清单会
-      // **静默继承**旧授权 —— 卸载这件事在用户眼里等于"这个模块不再存在",它的旧许可
-      // 不该跟着一个新装上的副本复活。坏授权表时**拒绝卸载**?不:卸载本身是收紧,
-      // 但写不进去就不能假装撤了 —— 所以坏表时卸载照常、授权留到用户修复(表既然
-      // 读不懂,它本来就一条都不会生效,不会放宽)。
-      const archive = this.workflowGrants();
-      if (archive.state === "valid") {
-        const remaining = archive.grants.filter(grant => grant.moduleId !== id);
-        if (remaining.length !== archive.grants.length) {
-          try { await this.writeGrantsOrRefuse(remaining); }
-          catch { /* 落盘失败:表里那条授权因为模块已不在,任何判定都不会命中 —— 收紧,如实保留 */ }
+      // 【MC-036】卸载首先撤销旧授权，再持久化删清单。原实现先删除模块
+      // 再尝试撤授权、却吞掉撤销写盘错误：未来装回同名同版本会复活旧授权。
+      // 授权表坏掉/撤销失败时不能声称卸载成功；清单写盘失败需回滚已撤授权，
+      // 保持与升级 install 一致的 fail-closed 事务顺序。
+      const purged = await this.purgeWorkflowGrantsFor(id);
+      try {
+        await this.options.persist([...this.modules.values()].filter(m => m.id !== id && !this.builtinIds.has(m.id)));
+      } catch (error) {
+        if (purged !== null) {
+          try {
+            await this.writeGrantsOrRefuse(purged.restore);
+          } catch (rollbackError) {
+            throw Error(
+              "卸载写盘失败，且旧授权回滚也失败（模块仍在，授权需重新核对）："
+              + (error instanceof Error ? error.message : String(error))
+              + " / 回滚:" + (rollbackError instanceof Error ? rollbackError.message : String(rollbackError)),
+            );
+          }
         }
+        throw error;
       }
       this.modules.delete(id);
       // 【MC-035】撤销该模块派生的扩展能力 —— 能力注册表与模块清单同生共死:
@@ -650,7 +669,7 @@ export class ModuleHost {
     }
     // Reuse the menu's envelope, contribution, extension, realpath/known-root
     // authorization, task limits, cancellation and request-id deduplication.
-    return this.invoke(parsed);
+    return this.invoke(parsed, { requireWorkflowGrant: true });
   }
   /** 【MC-036】**签发**一条工作流运行授权。只有真人经桌面 IPC 调到这里 —— 本方法
    * 不暴露给工作流/Agent(IPC 侧在 `appControl/policy.ts` 钉 blocked)。宿主核验:
@@ -695,6 +714,14 @@ export class ModuleHost {
       const next = archive.grants.filter(existing => moduleWorkflowGrantKey(existing, CASE_INSENSITIVE_PATHS) !== key);
       if (next.length === archive.grants.length) return { revoked: false };
       await this.writeGrantsOrRefuse(next);
+      // 存档已确认落盘之后，撤销才真正生效。正在运行的工作流也必须
+      // 收到取消通知（菜单 query 与其它工作区 grant 不应受影响）。
+      for (const controller of this.activeWorkflowInvocations.get(key) ?? []) controller.abort();
+      for (const job of [...this.jobs.values()]) {
+        if (job.workflowGrantKey === key && job.snapshot.status === "running") {
+          this.cancel({ moduleId: job.snapshot.moduleId, taskId: job.snapshot.id });
+        }
+      }
       return { revoked: true };
     });
   }
@@ -709,7 +736,7 @@ export class ModuleHost {
     clearTimeout(job.timer);
     Object.assign(job.snapshot, { status, updatedAt: Date.now(), ...(result ? {result,progress:1} : {}), ...(error ? {error:error.slice(0,2000)} : {}) });
   }
-  async invoke(raw: unknown): Promise<ModuleReply> {
+  async invoke(raw: unknown, internal: { requireWorkflowGrant?: boolean } = {}): Promise<ModuleReply> {
     const input = ModuleInvokeSchema.parse(raw);
     await this.mutation;
     const module = this.modules.get(input.moduleId);
@@ -731,11 +758,10 @@ export class ModuleHost {
     // 让批准方看到"批的是哪个模块贡献、动哪个文件"。action 之外(query/task)不受影响。
     const refusal = actionInvocationRefusal(definition.kind, module.permissions, this.options.requestApproval !== undefined);
     if (refusal) throw moduleRefusalError(refusal.code, refusal.reason);
-    // 【MC-035】网络权限是**逐次**批准的,不只是安装时声明一次。
-    // 为什么:声明只回答"这个扩展有没有资格联网";装上之后它每次调用都出网,用户
-    // 再没有"这一次要不要"的选择。台账要求的是"真人授予/撤销"。action 已经被下面的
-    // 逐次审批覆盖(它本来就每次问),这里补的是 query/只读能力。
-    if (definition.kind !== "action" && declaresNetwork(module.permissions)) {
+    // 【MC-035】联网与写入是不同的真人授权：写权限审批不会说明「还将联网」。
+    // 因此 query/task 在需要时审批 network；同时声明 write+network 的 action
+    // 也必须先独立获准 network，再由下方既有 write 审批授权本次写入。
+    if (declaresNetwork(module.permissions)) {
       if (this.options.requestApproval === undefined) {
         throw moduleRefusalError("approval_unavailable", "这个扩展声明了网络权限,但当前没有审批通道 —— 不会在未经用户同意的情况下联网。");
       }
@@ -756,8 +782,6 @@ export class ModuleHost {
         await this.options.requestApproval!({
           moduleId: module.id, contributionId: contribution.id, capabilityId: definition.id,
           resource: structuredClone(resource), scope: "write",
-          // action 若同时声明 network,审批卡应当同时说明"会联网"(一次批准覆盖两件事)。
-          ...(declaresNetwork(module.permissions) ? {} : {}),
         });
       } catch (error) {
         // 审批端口拒绝(resolve=批准,reject=拒绝)。已经带拒绝标记的原样抛(不重复包);
@@ -768,9 +792,60 @@ export class ModuleHost {
       // 审批可能挂起等待用户;期间模块若被换/撤,按变化重来(与 authorize 后的同一取向)。
       if (this.modules.get(input.moduleId) !== module) throw Error("模块已变化,请按其当前定义重试");
     }
+    // 【MC-036】工作流授权在进入函数时读一次远远不够：authorize/真人审批
+    // 可能挂起，期间另一个调用撤销了授权。真正派发前必须以本次工作区重新核验。
+    // 普通用户菜单调用不带这个内部收紧标志，其本来就不需要工作流 grant。
+    if (internal.requireWorkflowGrant &&
+      !this.authorizedWorkflowTargetNow(module.id, contribution.id, resource.projectPath)) {
+      throw Error("工作流授权已撤销或变更，拒绝继续执行，请重新授权");
+    }
+    const workflowGrantKey = internal.requireWorkflowGrant && module.id.startsWith("user.")
+      ? moduleWorkflowGrantKey({
+          moduleId: module.id, moduleVersion: module.version,
+          contributionId: contribution.id, capabilityId: definition.id,
+          projectPath: resource.projectPath,
+        }, CASE_INSENSITIVE_PATHS)
+      : undefined;
     if (definition.kind !== "task") {
-      const value = definition.output.parse(await definition.run(resource, {signal:new AbortController().signal,progress:()=>{}}));
-      return {type:"result",value:structuredClone(value),view:structuredClone(contribution.view)};
+      const controller = new AbortController();
+      let running = this.activeInvocations.get(module.id);
+      if (!running) {
+        running = new Set<AbortController>();
+        this.activeInvocations.set(module.id, running);
+      }
+      running.add(controller);
+      let workflowRunning: Set<AbortController> | undefined;
+      if (workflowGrantKey !== undefined) {
+        workflowRunning = this.activeWorkflowInvocations.get(workflowGrantKey);
+        if (!workflowRunning) {
+          workflowRunning = new Set<AbortController>();
+          this.activeWorkflowInvocations.set(workflowGrantKey, workflowRunning);
+        }
+        workflowRunning.add(controller);
+      }
+      try {
+        const value = definition.output.parse(await definition.run(resource, {
+          signal: controller.signal, progress: () => {},
+        }));
+        // 执行体即使不理会 AbortSignal，卸载或替换之后的迟到成功也不能发布。
+        if (controller.signal.aborted || this.modules.get(input.moduleId) !== module) {
+          throw Error("模块已经卸载、替换或执行已取消，旧执行结果已丢弃");
+        }
+        // 其他进程/窗口可能直接改掉磁盘授权，当前宿主收不到 revoke 事件。
+        // 即使没有 AbortSignal，也必须在发布结果前重新确认授权仍然有效。
+        if (workflowGrantKey !== undefined &&
+          !this.authorizedWorkflowTargetNow(module.id, contribution.id, resource.projectPath)) {
+          throw Error("工作流授权已在执行期间撤销，拒绝发布旧授权下的结果");
+        }
+        return {type:"result",value:structuredClone(value),view:structuredClone(contribution.view)};
+      } finally {
+        running.delete(controller);
+        if (running.size === 0) this.activeInvocations.delete(module.id);
+        if (workflowRunning && workflowGrantKey !== undefined) {
+          workflowRunning.delete(controller);
+          if (workflowRunning.size === 0) this.activeWorkflowInvocations.delete(workflowGrantKey);
+        }
+      }
     }
     const requestKey = input.moduleId + ":" + input.requestId;
     const fingerprint = createHash("sha256").update(JSON.stringify([module, input.contributionId, resource.projectPath, resource.path])).digest("hex");
@@ -790,6 +865,7 @@ export class ModuleHost {
     const job: LiveTask = {
       snapshot: {id,moduleId:module.id,contributionId:contribution.id,resource,view:structuredClone(contribution.view),status:"running",progress:0,createdAt:Date.now(),updatedAt:Date.now()},
       controller, requestKey, fingerprint,
+      ...(workflowGrantKey === undefined ? {} : { workflowGrantKey }),
       // 这句 `error` 经 `moduleCapabilityExecutor` 的 `failedOutcome(snapshot.error)`
       // 直接**画在失败节点卡片上**,与执行器里其它失败原因(「模块能力执行入参不合法」
       // 「模块能力任务已经不可用」「模块能力任务失败」)同一口径,一律中文。
@@ -799,7 +875,18 @@ export class ModuleHost {
     void Promise.resolve().then(() => definition.run(resource, {
       signal:controller.signal,
       progress:(value) => { if (job.snapshot.status === "running" && Number.isFinite(value)) {job.snapshot.progress=Math.max(job.snapshot.progress,Math.min(1,Math.max(0,value)));job.snapshot.updatedAt=Date.now();} },
-    })).then(value => this.finish(job,"completed",definition.output.parse(value)), error => this.finish(job,"failed",undefined,error instanceof Error?error.message:String(error)))
+    })).then(value => {
+      if (job.snapshot.status !== "running") return;
+      // 其它进程撤销工作流授权时，这个宿主没有即时取消事件；
+      // 绝不能将工作流产生的迟到结果当成已授权完成写回。
+      if (job.workflowGrantKey !== undefined &&
+        !this.authorizedWorkflowTargetNow(module.id, contribution.id, resource.projectPath)) {
+        this.finish(job,"cancelled",undefined,"工作流授权已撤销，结果已拒绝发布");
+        job.controller.abort();
+        return;
+      }
+      this.finish(job,"completed",definition.output.parse(value));
+    }, error => this.finish(job,"failed",undefined,error instanceof Error?error.message:String(error)))
       .catch(error => this.finish(job,"failed",undefined,error instanceof Error?error.message:String(error)));
     return {type:"task",task:structuredClone(job.snapshot)};
   }

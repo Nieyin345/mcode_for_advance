@@ -59,10 +59,10 @@
  * Mcode 的 `workflow.approve`（工作流审查 + 真人点头）属于 MERGE-1 的存储合并，
  * 这里不新造第二套授权入口 —— `launchSpec` 只**读**标记，不提供写 API。
  */
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
-import { resolveProjectFlowDir } from "./projectFlowDir.js";
+import { bindProjectDirectoryIdentity, resolveProjectFlowDir } from "./projectFlowDir.js";
 import { log } from "@main/lib/logger.js";
 import { ensureEngineBootstrap } from "./bootstrapManifest.js";
 import {
@@ -144,6 +144,40 @@ RED.start().then(
 const ENGINE_IDS = ["node-red"] as const;
 
 /**
+ * 【ARC-006 MERGE-1】受管 Node-RED 目录的单一创建围栏。
+ *
+ * 仅信任配置好的 dataRoot() 本身；从 workflow-engines 起，任何中间目录或
+ * 项目叶子一旦被 Windows junction / POSIX symlink（或非目录实体）替代，
+ * 就不得跟随 mkdirSync({recursive:true}) 写到外部。先检查再创建，创建后复核，
+ * 缓存命中也必须重新经过这里，避免运行中替换目录后旁路。
+ *
+ * 这不是 OS 级原子沙箱：恶意进程在 lstat 与 mkdir 之间抢换仍有 TOCTOU；
+ * 完整对抗需要 handle-relative NOFOLLOW / 受限 OS 账户，在 ARC-006 Gate E 跟踪。
+ */
+function makeManagedEngineDirectory(root: string, segments: readonly string[]): string {
+  const checkExisting = (): void => {
+    let cursor = root;
+    for (const segment of segments) {
+      cursor = join(cursor, segment);
+      try {
+        const stat = lstatSync(cursor);
+        if (stat.isSymbolicLink() || !stat.isDirectory()) {
+          throw new Error(`受管工作流目录不允许链接或非目录路径：${cursor}`);
+        }
+      } catch (err) {
+        // 仅真正不存在的路径可以由受控 mkdir 创建；权限错误、循环链接等不得放行。
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+    }
+  };
+  checkExisting();
+  const dir = join(root, ...segments);
+  mkdirSync(dir, { recursive: true });
+  checkExisting();
+  return dir;
+}
+
+/**
  * 写入引导脚本。**【ARC-006 Gate B / P1-5】版本 + sha256 清单校验**（见
  * `bootstrapManifest.ts`）：内容一致则不动；旧版/被篡改/缺失清单时**先备份旧字节再
  * 原子替换**；替换失败 → 调用方**不得启动旧脚本**（返回 false）。同一目录下的
@@ -214,10 +248,12 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     if (!(ENGINE_IDS as readonly string[]).includes(engineId)) {
       throw new Error(`未知工作流引擎：${engineId}`);
     }
+    // 缓存只保留路径身份，不缓存“目录仍安全”这个瞬时结论：链接可运行中被替换。
+    const dir = makeManagedEngineDirectory(dataRoot(), ["workflow-engines", engineId]);
     const cached = this.dataDirs.get(engineId);
-    if (cached !== undefined) return cached;
-    const dir = join(dataRoot(), "workflow-engines", engineId);
-    mkdirSync(dir, { recursive: true });
+    if (cached !== undefined && cached !== dir) {
+      throw new Error(`工作流引擎数据目录在运行期间发生变化：${engineId}`);
+    }
     this.dataDirs.set(engineId, dir);
     return dir;
   }
@@ -242,13 +278,19 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     }
     // 先做纯身份判定、后建目录。旧写法提前调用 dataDirOf()，即使 projectId
     // 无效也会把默认单例目录创建出来，违反“非法输入无副作用”的资源边界。
-    const engineDir = join(dataRoot(), "workflow-engines", engineId);
+    const root = dataRoot();
+    const engineDir = join(root, "workflow-engines", engineId);
     const result = resolveProjectFlowDir(engineDir, projectId);
     if (!result.ok) throw new Error(`非法 projectId：${result.reason}`);
     // 默认项目保留 dataDirOf 的缓存和旧单例目录语义。
     if (result.legacy) return this.dataDirOf(engineId);
-    mkdirSync(result.dir, { recursive: true });
-    return result.dir;
+    const parts = relative(engineDir, result.dir).split(sep);
+    if (parts.some((part) => part === "" || part === "." || part === "..")) {
+      throw new Error("工作流项目目录不在受管引擎根内");
+    }
+    const dir = makeManagedEngineDirectory(root, ["workflow-engines", engineId, ...parts]);
+    bindProjectDirectoryIdentity(dir, result.projectId);
+    return dir;
   }
 
   launchSpec(engineId: string): WorkflowEngineLaunchSpec | null {

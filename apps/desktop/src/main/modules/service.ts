@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { mkdir, open, readFile, rename, unlink, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
@@ -48,7 +48,21 @@ async function createHost(): Promise<ModuleHost> {
     authorize:async resource=>{await resolveModuleResource(resource,isKnownWorkspaceRoot);},
     // 【MC-036】工作流运行授权:读侧现读文件(不缓存 → 撤销在下一次判定立刻生效);
     // 读不动(权限等)交给宿主按 fail-closed 处理。写侧 tmp+rename 原子写,与模块清单同一套。
-    readWorkflowGrants:()=>{try{return readFileSync(grantPath,"utf8");}catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return null;throw error;}},
+    readWorkflowGrants:()=>{
+      try {
+        // A workflow grant is an authorization record, not arbitrary content:
+        // following a symlink or hardlink out of this managed data root could
+        // accept someone else\'s valid-looking approval archive as our own.
+        const info = lstatSync(grantPath);
+        if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) {
+          throw Error("工作流授权表必须是独立普通文件（拒绝软/硬链接或特殊文件）");
+        }
+        return readFileSync(grantPath,"utf8");
+      } catch(error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      }
+    },
     persistWorkflowGrants:async text=>{
       // 一张授权表最多几十条;上限只为防"被外部写成一个巨大文件后整份读进内存"。
       if(Buffer.byteLength(text)>256*1024)throw Error("Workflow grant store exceeds 256 KiB");

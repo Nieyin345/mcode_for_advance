@@ -82,12 +82,108 @@ try{
    const noLedgerBlocked=await status(linkedRegistry);
    check("未安装任何受批插件时也不允许 node_modules 容器绕出 dataDir",
      noLedgerBlocked!==null&&/node_modules|链接|link|目录/.test(noLedgerBlocked),noLedgerBlocked);
-   const recorded=await linkedRegistry.recordInstall(meta);
-   check("链接父目录案例已真实登记宿主批准记录",recorded.ok,recorded);
+   // A read-only start gate previously rejected a junction but an install/write
+   // transaction could still follow it and write a new package OUTSIDE dataDir.
+   const externalRecord=join(externalModules,"node-red-contrib-external-write");
+   const tarball=Buffer.from("isolated package bytes for write path test");
+   const tarMeta={...meta,name:"node-red-contrib-external-write",
+     sha256:createHash("sha256").update(tarball).digest("hex")};
+   let written=false;let writeError="";
+   try {
+     const result=await linkedRegistry.installFromBytes(tarMeta,tarball);
+     written=result.ok;writeError=result.ok?"":result.reason;
+   }catch(e){writeError=String(e);}
+   check("安装事务不能越过 node_modules junction 写入外部目录",
+     !written&&/链接|link|目录|拒绝/.test(writeError),writeError);
+   let escaped=false;
+   try{await lstat(externalRecord);escaped=true;}catch{ /* expected missing */ }
+   check("拒绝安装不会在外部 node_modules 产生新包体",!escaped);
+
+   // Keep a positive approved ledger fixture for the *read* preflight regression:
+   // the test writes only its own synthetic ledger, not a real user's records.
+   await writeFile(join(linkedData,"engine-nodes.json"),JSON.stringify({
+     schema:"mcode.workflow-engine.nodes/v1",engineId:"node-red",
+     entries:[{...meta,installedAt:1,state:"installed"}],
+   }));
    const blocked=await status(linkedRegistry);
    check("node_modules 容器为外链 junction 时即使批准包根目录普通也必须拒启",
      blocked!==null&&/链接|link|目录|完整性|读取/.test(blocked),blocked);
    check("node_modules 外链拒启不能改动外部包体",(await readFile(join(siblingDir,"index.js"))).equals(bytes));
+ }
+ // The *dataDir itself* may be an external junction, even if child paths are
+ // normal directories and files. An approved record must never be published there.
+ const outsideDataDir=join(root,"outside-data-root");
+ await mkdir(outsideDataDir,{recursive:true});
+ const dataLink=join(root,"data-root-junction");
+ let dataLinkAvailable=true;
+ try{await symlink(outsideDataDir,dataLink,process.platform==="win32"?"junction":"dir");}
+ catch(e){dataLinkAvailable=false;console.log("  SKIP dataDir junction: "+String(e));}
+ if(dataLinkAvailable){
+   const alias=new EngineNodeRegistry({dataDir:dataLink,engineId:"node-red"});
+   let wrote=false;let reason="";
+   try{
+     const result=await alias.recordInstall({...meta,name:"node-red-contrib-dataroot"});
+     wrote=result.ok;reason=result.ok?"":result.reason;
+   }catch(e){reason=String(e);}
+   check("整个 dataDir 指向外部 junction 时任何批准记录写入必须拒绝",
+     !wrote&&/目录|链接|link|拒绝/.test(reason),reason);
+   let outsideLedger=false;
+   try{await lstat(join(outsideDataDir,"engine-nodes.json"));outsideLedger=true;}catch{/* absent */}
+   check("dataDir 外链拒绝路径不能在外部根生成新清单",!outsideLedger);
+ }
+ // npm scopes are a second level of parent directory that can be linked.
+ const scopedRoot=join(root,"scoped-write-engine");
+ const scopedOut=join(root,"external-scoped-parent");
+ await mkdir(join(scopedRoot,"node_modules"),{recursive:true});
+ await mkdir(scopedOut);
+ let scopeLinkAvailable=true;
+ try{await symlink(scopedOut,join(scopedRoot,"node_modules","@external"),
+   process.platform==="win32"?"junction":"dir");}
+ catch(e){scopeLinkAvailable=false;console.log("  SKIP npm scope junction: "+String(e));}
+ if(scopeLinkAvailable){
+   const scopedRegistry=new EngineNodeRegistry({dataDir:scopedRoot,engineId:"node-red"});
+   let wrote=false;let reason="";
+   try{
+     const result=await scopedRegistry.installFromBytes({...meta,name:"@external/unapproved",
+       sha256:createHash("sha256").update(bytes).digest("hex")},bytes);
+     wrote=result.ok;reason=result.ok?"":result.reason;
+   }catch(e){reason=String(e);}
+   check("npm scope 父目录为外链时不允许安装到外部位置",
+     !wrote&&/链接|link|目录|拒绝/.test(reason),reason);
+   let escaped=false;
+   try{await lstat(join(scopedOut,"unapproved"));escaped=true;}catch{/* absent */}
+   check("拒绝 scoped 安装不在外部目录留下可执行包",!escaped);
+   // A revoked scoped plugin in a preexisting ledger must not cause rm()
+   // to follow the linked @scope parent and erase an unrelated external file.
+   const externalPackage=join(scopedOut,"unapproved");
+   await mkdir(externalPackage,{recursive:true});
+   await writeFile(join(externalPackage,"index.js"),bytes);
+   await writeFile(join(scopedRoot,"engine-nodes.json"),JSON.stringify({
+     schema:"mcode.workflow-engine.nodes/v1",engineId:"node-red",
+     entries:[{...meta,name:"@external/unapproved",installedAt:1,state:"installed"}],
+   }));
+   let removed=false;let revokeReason="";
+   try{
+     const result=await scopedRegistry.revoke("@external/unapproved");
+     removed=result.ok;revokeReason=result.ok?"":result.reason;
+   }catch(e){revokeReason=String(e);}
+   check("撤销外链 scoped 包拒绝删除 dataDir 外部文件",
+     !removed&&/链接|link|目录|拒绝/.test(revokeReason),revokeReason);
+   check("拒绝撤权不会删除 scope junction 外的原有脚本",
+     (await readFile(join(externalPackage,"index.js"))).equals(bytes));
+ }
+ // Genuine scoped npm node packages should keep working when the scope is an
+ // ordinary directory: the security guard must not accidentally outlaw all scopes.
+ const safeScope=new EngineNodeRegistry({dataDir:join(root,"safe-scoped-engine"),engineId:"node-red"});
+ const scopedBytes=Buffer.from("isolated valid scoped npm package");
+ const safeMeta={...meta,name:"@trusted/normal-package",
+   sha256:createHash("sha256").update(scopedBytes).digest("hex")};
+ const scopedInstall=await safeScope.installFromBytes(safeMeta,scopedBytes);
+ check("正常普通目录的 scoped 插件应允许成功安装",scopedInstall.ok,scopedInstall);
+ if(scopedInstall.ok){
+   check("scoped 插件发布出的字节与原批准 tarball 相同",
+     (await readFile(join(safeScope.packagePath(safeMeta.name),"package.tgz"))).equals(scopedBytes));
+   check("scoped 插件在启动前通过合法清单和完整性验证",await status(safeScope)===null);
  }
  // Nested executable hardlinks must be rejected too, not only root index.js.
  const nestedSource=join(root,"nested-source");

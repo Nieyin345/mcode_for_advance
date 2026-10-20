@@ -100,7 +100,7 @@ function parseStyleFrontmatter(md: string): { name?: string; description?: strin
  *  CLI matches on; the filename (sans extension) is the fallback when the
  *  file has no frontmatter name. Unreadable files degrade to that same
  *  fallback instead of failing the whole list. */
-function listUserStyles(includeAmbiguous = false): OutputStyleEntry[] {
+function listUserStyles(includeAmbiguous = false): OutputStyleEntry[] | null {
   let files: string[];
   try {
     // A user-scope directory replaced by a junction must not silently load
@@ -109,6 +109,12 @@ function listUserStyles(includeAmbiguous = false): OutputStyleEntry[] {
     const dir = lstatSync(USER_STYLE_DIR);
     if (!dir.isDirectory() || dir.isSymbolicLink()) return [];
     files = readdirSync(USER_STYLE_DIR);
+    // Read-only discovery runs on the Electron main thread, potentially
+    // during every provider turn. A hostile/accidental directory with many
+    // small markdown files cannot trigger an unbounded synchronous scan.
+    // null signals "discovery unavailable", not "no custom names" — do not
+    // synthesize builtin options that a hidden custom style may shadow.
+    if (files.length > 128) return null;
   } catch {
     return []; // new install or unreadable directory; no external fallback
   }
@@ -126,7 +132,12 @@ function listUserStyles(includeAmbiguous = false): OutputStyleEntry[] {
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 512 * 1024) continue;
       const fm = parseStyleFrontmatter(readFileSync(path, "utf-8"));
       if (fm.name?.trim()) name = fm.name.trim();
-      description = fm.description?.trim() || undefined;
+      // This string becomes a persisted SDK setting and an option ID.
+      // Reject values that cannot be safely displayed or matched exactly by
+      // the CLI instead of silently normalizing them to a different style.
+      if (name.length > 256 || /[\u0000-\u001f\u007f]/.test(name)) continue;
+      const summary = fm.description?.trim() || undefined;
+      description = summary && summary.length > 2048 ? summary.slice(0, 2048) : summary;
     } catch {
       // Invalid/unreadable candidate is NOT the same as a valid .md without
       // frontmatter. Don't create phantom options that can shadow builtins.
@@ -154,6 +165,7 @@ export function listOutputStyles(): OutputStyleEntry[] {
   // user files both claim "default", hiding those ambiguous custom files
   // must NOT resurrect a builtin "default" that the CLI may never select.
   const discovered = listUserStyles(true);
+  if (discovered === null) return [];
   const counts = new Map<string, number>();
   for (const style of discovered) counts.set(style.id, (counts.get(style.id) ?? 0) + 1);
   const userStyles = discovered.filter(style => counts.get(style.id) === 1);
@@ -169,5 +181,10 @@ export function listOutputStyles(): OutputStyleEntry[] {
  * never configured → inject nothing. */
 export async function getOutputStyleSetting(): Promise<string | null> {
   await awaitDb();
-  return SettingRepo.get(AGENT_OUTPUT_STYLE_SETTING_KEY) || null;
+  const stored = SettingRepo.get(AGENT_OUTPUT_STYLE_SETTING_KEY);
+  // A deleted/renamed or now-ambiguous custom style is not a valid live
+  // selection. The upstream CLI silently falls back to default for unknown
+  // style IDs, which otherwise makes the UI believe a ghost style is active.
+  if (!stored) return null;
+  return listOutputStyles().some(style => style.id === stored) ? stored : null;
 }

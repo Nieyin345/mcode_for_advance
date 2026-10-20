@@ -465,12 +465,15 @@ function registerToolCallGuard(
       };
     }
 
-    // ⑥ Host-moderated approval via IPC. When no bridge is wired, fall open
-    //    (fail-open matches the Claude provider's behavior when requestApproval
-    //    is undefined).
+    // ⑥ Host-moderated approval via IPC. A missing bridge is NOT implicit
+    //    consent: SDK may start a turn without an attached approval window.
+    //    The host must never let that condition run a side-effecting tool.
     const requestApproval = ctx.requestApproval;
     if (!requestApproval) {
-      return;
+      return {
+        block: true,
+        reason: `操作 ${toolName} 需要真人审批，但当前没有可用的宿主审批通道；已拒绝执行`,
+      };
     }
     const r = await requestApproval({
       requestId: randomUUID(),
@@ -633,11 +636,11 @@ function registerPlanModeTools(
         // PlanApprovalPrompt. The agent loop is blocked here (same-turn).
         const requestPlanApproval = ctx.requestPlanApproval;
         if (!requestPlanApproval) {
-          // No bridge wired — fail open (exit plan mode without approval).
-          planMode.active = false;
-          ctx.emit({ type: "mode.change", sessionId, mode: "default", source: "model" });
+          // Missing host UI/IPC is not the user's approval. Keep the in-process
+          // plan gate active; never emit a default-mode transition.
+          ctx.emit({ type: "plan.update", sessionId, plan, phase: "drafting" });
           return {
-            content: [{ type: "text", text: "计划审批不可用,已自动退出计划模式。" }],
+            content: [{ type: "text", text: "计划审批通道不可用，尚未获得用户批准；已拒绝退出计划模式。请保持计划模式，待宿主恢复审批后重新提交。" }],
             details: {},
           };
         }
@@ -681,12 +684,10 @@ function registerPlanModeTools(
           details: {},
         };
       } catch (err) {
-        // Interrupted (user abort / session dispose) — clean up plan mode
-        // state so a stale read-only gate doesn't linger. Re-throw so the
-        // agent loop records the tool as failed.
-        planMode.active = false;
-        ctx.emit({ type: "plan.update", sessionId, plan: "", phase: "cleared" });
-        ctx.emit({ type: "mode.change", sessionId, mode: "default", source: "model" });
+        // A transport failure or interrupted approval is NOT an approval.
+        // Keep the plan gate active even when the tool call fails: otherwise
+        // the next mutating tool could run as if the user had approved.
+        ctx.emit({ type: "plan.update", sessionId, plan, phase: "drafting" });
         throw err;
       }
     },

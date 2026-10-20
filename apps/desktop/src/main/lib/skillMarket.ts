@@ -12,7 +12,7 @@
  */
 import { promoteMarketCatalog, type MarketProgressSink } from "@main/lib/marketClone.js";
 import { classifyMarketRegistry, marketRegistryCorruptMessage, recheckMarketRegistryBeforeWrite, type MarketRegistryRead } from "@main/lib/marketRegistry.js";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { fetchGithubSkillIndex, downloadGithubSkill, parseGithubSkillIndex, githubSkillSource, GITHUB_INDEX_FILE, type GithubSkillIndex } from "@main/lib/githubSkillCatalog.js";
@@ -49,25 +49,68 @@ const RECORDS_FILE = "markets.json";
 const SCAN_SKIP = new Set([".git", "node_modules", ".github"]);
 /** Upper bound on entries per catalog — a mis-added monorepo must not hang the panel. */
 const MAX_ENTRIES = 2000;
+/** Local catalogs may contain arbitrarily many folders without SKILL.md;
+ * limiting found skills alone does not constrain main-process disk traversal. */
+const MAX_SCAN_DIRECTORIES = 2000;
+/** Even a single local folder can contain millions of non-skill entries. */
+const MAX_SCAN_ITEMS = 8192;
+/** Cached GitHub indexes are untrusted local JSON and read synchronously. */
+const MAX_GITHUB_INDEX_BYTES = 8 * 1024 * 1024;
 
 function recordsPath(): string {
   return path.join(skillMarketsRoot(), RECORDS_FILE);
 }
 
-/** 逐条校验(顶层形状合法时用)——个别坏行丢弃,不阻塞整表。 */
+/** A malformed persisted source cannot be silently dropped before a later write. */
 function parseRecordList(value: unknown): MarketRecord[] | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as { markets?: unknown };
   if (!Array.isArray(raw.markets)) return null;
-  return raw.markets.filter(
+  // This is the user-approved source registry, not disposable search results.
+  // Filtering malformed rows means remove/add/refresh would rewrite a shorter
+  // array and permanently destroy bytes the user might need to recover.
+  if (!raw.markets.every(
     (r): r is MarketRecord =>
       !!r &&
       typeof (r as MarketRecord).name === "string" &&
       SKILL_MARKET_NAME_RE.test((r as MarketRecord).name) &&
       !!(r as MarketRecord).source &&
       ((r as MarketRecord).source.kind === "git" || (r as MarketRecord).source.kind === "local") &&
-      typeof (r as MarketRecord).source.ref === "string",
-  );
+      typeof (r as MarketRecord).source.ref === "string" &&
+      (r as MarketRecord).source.ref.trim().length > 0 &&
+      typeof (r as MarketRecord).addedAt === "string" &&
+      ((r as MarketRecord).fetchedAt === undefined || typeof (r as MarketRecord).fetchedAt === "string") &&
+      ((r as MarketRecord).builtin === undefined || typeof (r as MarketRecord).builtin === "boolean"),
+  )) return null;
+  const seenNames = new Set<string>();
+  const seenSources = new Set<string>();
+  for (const rec of raw.markets as MarketRecord[]) {
+    // Builtin market identity belongs to the application, not to arbitrary
+    // bytes in markets.json. A persisted local/foreign source must never
+    // hide an official market by stealing its reserved name, nor make a
+    // custom source undeletable by setting builtin:true.
+    const reserved = BUILTIN_SKILL_MARKETS.find((b) => marketNamesEqual(b.name, rec.name));
+    const officialBySource = rec.source.kind === "git"
+      ? BUILTIN_SKILL_MARKETS.find((b) =>
+        normalizeGitUrl(b.url) === normalizeGitUrl(rec.source.ref))
+      : undefined;
+    if ((reserved && (!officialBySource || !marketNamesEqual(reserved.name, officialBySource.name)))
+      || (officialBySource && !marketNamesEqual(rec.name, officialBySource.name))
+      || (rec.builtin === true && !reserved)) return null;
+    const name = process.platform === "win32" ? rec.name.toLowerCase() : rec.name;
+    const source = rec.source.kind === "git"
+      ? normalizeGitUrl(rec.source.ref)
+      : path.resolve(rec.source.ref);
+    const location = process.platform === "win32" ? source.toLowerCase() : source;
+    const key = `${rec.source.kind}:${location}`;
+    // A duplicate name makes remove-by-name erase both entries. A duplicate
+    // source under two aliases makes later refresh/cache ownership ambiguous.
+    // Do not deduplicate silently: callers need the original bytes to repair.
+    if (seenNames.has(name) || seenSources.has(key)) return null;
+    seenNames.add(name);
+    seenSources.add(key);
+  }
+  return raw.markets as MarketRecord[];
 }
 
 /**
@@ -81,6 +124,21 @@ function parseRecordList(value: unknown): MarketRecord[] | null {
 function readRecordsState(): MarketRegistryRead<MarketRecord> {
   let raw: string | null = null;
   try {
+    // A market file hard-linked to an unrelated path exposes external bytes
+    // as supposedly user-approved local sources. Refuse both that alias and
+    // file symlinks before reading; a regular records file has exactly one
+    // directory entry and is not a link.
+    assertPlainDirectoryAncestorsSync(path.dirname(recordsPath()), "技能市场记录路径");
+    const meta = lstatSync(recordsPath());
+    if (!meta.isFile() || meta.isSymbolicLink() || meta.nlink !== 1) {
+      return { kind: "corrupt", reason: "市场记录文件不是独立普通文件（链接/硬链接或特殊类型）" };
+    }
+    // A corrupted or hostile persisted list must not consume unbounded memory
+    // in the Electron main process merely because the market panel opened.
+    // 4 MiB is far above a normal set of user-approved catalog identities.
+    if (meta.size > 4 * 1024 * 1024) {
+      return { kind: "corrupt", reason: "技能市场记录文件超过 4 MiB 安全上限" };
+    }
     raw = readFileSync(recordsPath(), "utf8");
   } catch (err) {
     // 文件不存在 = absent(合法初始态);别的读失败(EACCES 等)= corrupt ——
@@ -109,11 +167,95 @@ function freshRecordsForWrite(): { ok: true; records: MarketRecord[] } | { ok: f
   return fresh.ok ? { ok: true, records: fresh.base } : fresh;
 }
 
+/** The read path has no async entry point. Use the same no-link ancestor
+ * invariant before adopting records/index data supplied through configured
+ * directories, including a Windows Junction at a parent of the JSON file. */
+function assertPlainDirectoryAncestorsSync(location: string, label: string): void {
+  let dir = path.resolve(location);
+  for (;;) {
+    try {
+      const info = lstatSync(dir);
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        throw new Error(`${label}包含链接 / Junction 或非常规目录：${dir}`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+}
+
+/** A perfectly normal leaf directory can still be reached through an
+ * ancestor Junction. Inspect every existing path component with lstat, not
+ * stat/realpath, before filesystem writes or adopting a local skill tree.
+ * This is a static guard, not a kernel-level defense against live swaps. */
+async function assertPlainDirectoryAncestors(location: string, label: string): Promise<void> {
+  let dir = path.resolve(location);
+  for (;;) {
+    try {
+      const info = await fs.lstat(dir);
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        throw new Error(`${label}包含链接 / Junction 或非常规目录：${dir}`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+}
+
+/** Market records must never be written through a symlink in any ancestor. */
+async function assertWritableMarketRoot(root: string): Promise<void> {
+  await assertPlainDirectoryAncestors(root, "技能市场数据路径");
+  await fs.mkdir(root, { recursive: true });
+  await assertPlainDirectoryAncestors(root, "技能市场数据路径");
+}
+
+/** The final fresh-read / merge / publish must be one transaction across Node processes. */
+async function withRecordsTransaction<T>(task: () => Promise<T>): Promise<T> {
+  const root = skillMarketsRoot();
+  await assertWritableMarketRoot(root);
+  const lockPath = path.join(root, ".markets-write.lock");
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try {
+      await fs.mkdir(lockPath);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (Date.now() >= deadline) {
+        throw new Error("技能市场记录被其他进程占用或旧锁未核对：" + lockPath);
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    }
+  }
+  try {
+    return await task();
+  } finally {
+    // Never reclaim stale or somebody else's lock. Only remove our empty directory.
+    await fs.rmdir(lockPath);
+  }
+}
+
 async function writeRecords(records: MarketRecord[]): Promise<void> {
-  await fs.mkdir(skillMarketsRoot(), { recursive: true });
-  const tmp = `${recordsPath()}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, JSON.stringify({ version: 1, markets: records }, null, 2) + "\n", "utf8");
-  await fs.rename(tmp, recordsPath());
+  await assertWritableMarketRoot(skillMarketsRoot());
+  // A fixed PID suffix collides when two async writers share the process.
+  const tmp = `${recordsPath()}.tmp-${randomUUID()}`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify({ version: 1, markets: records }, null, 2) + "\n",
+      { encoding: "utf8", flag: "wx" });
+    await fs.rename(tmp, recordsPath());
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
+function marketNamesEqual(a: string, b: string): boolean {
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function normalizeGitUrl(url: string): string {
@@ -131,7 +273,7 @@ function withBuiltins(records: MarketRecord[]): MarketRecord[] {
       : r,
   );
   for (const b of BUILTIN_SKILL_MARKETS) {
-    if (known.has(normalizeGitUrl(b.url)) || out.some((r) => r.name === b.name)) continue;
+    if (known.has(normalizeGitUrl(b.url)) || out.some((r) => marketNamesEqual(r.name, b.name))) continue;
     out.push({ name: b.name, source: { kind: "git", ref: b.url }, addedAt: "", builtin: true });
   }
   return out;
@@ -163,8 +305,22 @@ function catalogDir(rec: MarketRecord): string {
 }
 
 function cachedGithubIndex(rec: MarketRecord): GithubSkillIndex | null {
-  const file = path.join(catalogDir(rec), GITHUB_INDEX_FILE);
-  if (rec.source.kind !== "git" || !existsSync(file)) return null;
+  if (rec.source.kind !== "git") return null;
+  const root = catalogDir(rec);
+  assertPlainDirectoryAncestorsSync(root, "技能市场 Git 索引路径");
+  const file = path.join(root, GITHUB_INDEX_FILE);
+  let info: ReturnType<typeof lstatSync>;
+  try { info = lstatSync(file); }
+  catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) {
+    throw new Error("技能市场索引不是独立普通文件，拒绝符号链接/硬链接，请刷新");
+  }
+  if (info.size > MAX_GITHUB_INDEX_BYTES) {
+    throw new Error("技能市场缓存索引大小超出 8 MiB 安全上限，请刷新");
+  }
   const index = parseGithubSkillIndex(readFileSync(file, "utf8"));
   const source = githubSkillSource(rec.source.ref);
   if (source.owner.toLowerCase() !== index.source.owner.toLowerCase() || source.repo.toLowerCase() !== index.source.repo.toLowerCase() || source.ref !== index.source.ref) throw new Error("技能索引与来源不符，请刷新");
@@ -172,13 +328,30 @@ function cachedGithubIndex(rec: MarketRecord): GithubSkillIndex | null {
 }
 
 /** Every directory holding a SKILL.md (not descending into a skill). */
-async function findSkillDirs(dir: string, out: string[], depth = 0): Promise<void> {
-  if (out.length >= MAX_ENTRIES || depth > 8) return;
+async function findSkillDirs(
+  dir: string, out: string[], depth = 0, budget = { visited: 0, items: 0 },
+): Promise<void> {
+  if (depth > 8) return;
+  // Count ALL visited directories, including empty folders and node trees
+  // with no SKILL.md, instead of only the successfully discovered skills.
+  budget.visited += 1;
+  if (budget.visited > MAX_SCAN_DIRECTORIES) {
+    throw new Error(`技能市场目录扫描超过 ${MAX_SCAN_DIRECTORIES} 个目录上限，请选择更小的技能仓库`);
+  }
+  if (out.length >= MAX_ENTRIES) return;
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
+  } catch (err) {
+    // Directory IO errors during enumeration mean this is not a complete
+    // catalog. A partial list can silently hide approved skills and then be
+    // published as though it described the entire source.
+    const code = (err as NodeJS.ErrnoException).code;
+    throw new Error(`技能市场目录扫描失败(${code ?? "unknown"})：${dir}`);
+  }
+  budget.items += entries.length;
+  if (budget.items > MAX_SCAN_ITEMS) {
+    throw new Error(`技能市场目录扫描条目超过 ${MAX_SCAN_ITEMS} 个条目上限，请选择更小的技能仓库`);
   }
   if (entries.some((e) => e.isFile() && e.name === "SKILL.md")) {
     out.push(dir);
@@ -190,10 +363,18 @@ async function findSkillDirs(dir: string, out: string[], depth = 0): Promise<voi
     .filter((e) => !(depth === 0 && /^templates?$/i.test(e.name)))
     .map((e) => e.name)
     .sort();
-  for (const name of subdirs) await findSkillDirs(path.join(dir, name), out, depth + 1);
+  for (const name of subdirs) await findSkillDirs(path.join(dir, name), out, depth + 1, budget);
 }
 
 async function readHead(file: string): Promise<string> {
+  let meta: Awaited<ReturnType<typeof fs.lstat>>;
+  try { meta = await fs.lstat(file); }
+  catch { return ""; }
+  // SKILL.md itself is user-visible/AI-consumed input. The directory may be
+  // perfectly ordinary yet that file can be a hardlink to outside content.
+  if (!meta.isFile() || meta.isSymbolicLink() || meta.nlink !== 1) {
+    throw new Error("SKILL.md 不是独立普通文件（链接或硬链接），拒绝读取外部内容：" + file);
+  }
   try {
     const fh = await fs.open(file, "r");
     try {
@@ -250,19 +431,29 @@ export function skillMarketsCorrupt(): { reason: string } | null {
 
 export async function listSkillMarkets(): Promise<SkillMarketState[]> {
   const libRoot = defaultSkillsRoot();
+  // Listing is read-only, but must not report external files as installed if
+  // any SDK library ancestor is a symlink/Windows junction.
+  let trustedSkillsRoot = true;
+  try { await assertPlainDirectoryAncestors(libRoot, "技能安装目标路径"); }
+  catch { trustedSkillsRoot = false; }
   const out: SkillMarketState[] = [];
   for (const rec of withBuiltins(readRecords())) {
     const dir = catalogDir(rec);
     let cloned = existsSync(dir);
     let scanned: ScannedSkill[] = [];
-    if (cloned) { try { scanned = await scanCatalog(rec); } catch { cloned = false; } }
+    if (cloned) {
+      try {
+        await assertPlainDirectoryAncestors(dir, "技能市场来源路径");
+        scanned = await scanCatalog(rec);
+      } catch { cloned = false; }
+    }
     const skills: SkillMarketEntry[] = cloned
       ? scanned.map((s) => ({
           market: rec.name,
           name: s.name,
           description: s.description,
           relPath: s.relPath,
-          installed: existsSync(path.join(libRoot, s.name)),
+          installed: trustedSkillsRoot && installedSkillState(path.join(libRoot, s.name)) === "installed",
         }))
       : [];
     out.push({
@@ -278,6 +469,29 @@ export async function listSkillMarkets(): Promise<SkillMarketState[]> {
   return out;
 }
 
+/** Corrupted persisted sources may still be on disk while a network request
+ * is in flight. A cached index must not be published from that failed request. */
+class MarketChangedDuringFetchError extends Error {
+  constructor(message: string, readonly corrupt: boolean) { super(message); }
+}
+
+/** Refresh may heal malformed JSON, but must not replace a cache entry
+ * that is a hardlink/symlink to someone else's file. */
+async function assertIndependentCachedIndex(rec: MarketRecord): Promise<void> {
+  const file = path.join(catalogDir(rec), GITHUB_INDEX_FILE);
+  try {
+    const info = await fs.lstat(file);
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) {
+      throw new Error("技能索引缓存不是独立普通文件，拒绝覆盖链接或硬链接");
+    }
+    if (info.size > MAX_GITHUB_INDEX_BYTES) {
+      throw new Error("技能索引缓存超过 8 MiB 安全上限，拒绝用刷新掩盖异常文件");
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+}
+
 /** Replace an index only after a complete successful metadata fetch. Legacy
  * checkout caches remain readable until the first successful refresh. */
 async function fetchGitCatalog(
@@ -285,14 +499,21 @@ async function fetchGitCatalog(
   progress?: MarketProgressSink,
   beforePromote?: () => void,
 ): Promise<void> {
+  // The index cache path itself might have been swapped to a Junction since
+  // the market was approved. Never even fetch metadata for an external cache
+  // root, and recheck after network await before promoting a staged index.
+  await assertPlainDirectoryAncestors(catalogDir(rec), "技能市场 Git 缓存路径");
+  await assertIndependentCachedIndex(rec);
   let previous: GithubSkillIndex | null = null;
   try { previous = cachedGithubIndex(rec); } catch { /* refresh replaces a damaged index */ }
   const index = await fetchGithubSkillIndex(rec.source.ref, rec.name, progress, previous ?? undefined);
+  await assertPlainDirectoryAncestors(catalogDir(rec), "技能市场 Git 缓存路径");
+  await assertIndependentCachedIndex(rec);
   // 刷新网络请求可能耗时很久；调用方在缓存目录被替换之前可再次验证
   // 来源是否仍属于这次刷新，避免已删除/同名换源者的旧索引覆盖新缓存。
   beforePromote?.();
   const root = skillMarketsRoot();
-  await fs.mkdir(root, { recursive: true });
+  await assertWritableMarketRoot(root);
   const staging = path.join(root, `.index-${randomUUID()}`);
   try {
     await fs.mkdir(staging);
@@ -326,6 +547,9 @@ export async function addSkillMarket(input: {
       defaultName = parsed.repo ? `${parsed.owner}-${parsed.repo}` : sanitizeName(path.basename(parsed.url));
     } else {
       ref = path.resolve(ref);
+      // Reject a source that is only reachable through an ancestor Junction
+      // before registering it as an approved executable-skills catalog.
+      await assertPlainDirectoryAncestors(ref, "技能市场本地来源路径");
       if (!existsSync(ref) || !statSync(ref).isDirectory()) return { ok: false, error: `目录不存在:${ref}` };
       if (records.some((r) => r.source.kind === "local" && path.resolve(r.source.ref) === ref)) {
         return { ok: false, error: `这个目录已经在市场里了:${ref}` };
@@ -334,10 +558,10 @@ export async function addSkillMarket(input: {
     }
     let name = input.name ?? sanitizeName(defaultName);
     if (!SKILL_MARKET_NAME_RE.test(name)) return { ok: false, error: `市场名称不合法:${name}` };
-    if (records.some((r) => r.name === name)) {
+    if (records.some((r) => marketNamesEqual(r.name, name))) {
       if (input.name) return { ok: false, error: `同名市场已存在:${name}` };
       let i = 2;
-      while (records.some((r) => r.name === `${name}-${i}`)) i += 1;
+      while (records.some((r) => marketNamesEqual(r.name, `${name}-${i}`))) i += 1;
       name = `${name}-${i}`;
     }
     const rec: MarketRecord = { name, source: { kind: input.kind, ref }, addedAt: new Date().toISOString() };
@@ -346,8 +570,25 @@ export async function addSkillMarket(input: {
         // 网络请求结束但缓存尚未提升时，检查是否有另一窗口抢先注册了同名源。
         // 不能先覆盖对方缓存，再在记录冲突分支把这个同名目录删掉。
         const current = readRecordsState();
-        if (current.kind === "ok" && current.records.some((r) => r.name === name)) {
-          throw new Error(`同名市场已存在:${name}(添加期间由其他窗口创建)`);
+        if (current.kind === "corrupt") {
+          throw new MarketChangedDuringFetchError(
+            marketRegistryCorruptMessage("技能市场", current.reason), true);
+        }
+        if (state.kind === "ok" && current.kind === "absent") {
+          throw new MarketChangedDuringFetchError("技能市场记录在下载期间消失，请检查并重试", false);
+        }
+        if (current.kind === "ok") {
+          if (current.records.some((r) => marketNamesEqual(r.name, name))) {
+            throw new Error(`同名市场已存在:${name}(添加期间由其他窗口创建)`);
+          }
+          // Another window can register the same Git repository under a
+          // different market name during the fetch. Reject before publishing
+          // any cache; the later ledger duplicate check alone leaves a stale
+          // orphan catalog for a transaction that did not receive approval.
+          if (current.records.some((r) => r.source.kind === "git"
+            && normalizeGitUrl(r.source.ref) === normalizeGitUrl(rec.source.ref))) {
+            throw new Error(`该 Git 市场来源在下载期间已由其他窗口登记：${rec.source.ref}`);
+          }
         }
       });
       rec.fetchedAt = new Date().toISOString();
@@ -361,33 +602,75 @@ export async function addSkillMarket(input: {
     // 【MC-037】写回前**重读**记录:fetch/scan 的 await 窗口内记录可能被并发
     // 改写或砸坏。从前这里用 `readRecords()`(损坏时 = [])当旧清单,坏档会被
     // 这次成功添加整表覆盖;现在损坏 → 拒绝,健康 → 以 fresh 为准合并。
-    const fresh = freshRecordsForWrite();
-    if (!fresh.ok) return fresh;
-    if (fresh.records.some((r) => r.name === name)) {
-      // 这里仍做第二次检查；两次检查之间若有人建了同名源，拒绝覆盖记录。
-      // 不能 rm(catalogDir) —— 此时同名缓存的归属已不可信。
-      return { ok: false, error: `同名市场已存在:${name}(记录在添加期间被其他操作更新)` };
-    }
-    // 与原落盘语义一致:内置市场只在内存里合并,不随这次写落盘。
-    await writeRecords([...fresh.records, rec]);
-    return { ok: true, name };
+    return await withRecordsTransaction(async () => {
+      const fresh = freshRecordsForWrite();
+      if (!fresh.ok) return fresh;
+      if (fresh.records.some((r) => marketNamesEqual(r.name, name))) {
+        return { ok: false, error: `同名市场已存在:${name}(记录在添加期间被其他操作更新)` };
+      }
+      // 如果并行窗口中别人用另一个别名注册了同一份来源，也只能
+      // 保留一份记录；入口处的去重快照已过期，必须在提交锁内重复检查。
+      const duplicateSource = fresh.records.some((r) =>
+        r.source.kind === rec.source.kind && (
+          r.source.kind === "git"
+            ? normalizeGitUrl(r.source.ref) === normalizeGitUrl(rec.source.ref)
+            : path.resolve(r.source.ref) === path.resolve(rec.source.ref)
+        ));
+      if (duplicateSource) {
+        return { ok: false, error: `该市场来源在添加期间已由其他窗口登记：${rec.source.ref}` };
+      }
+      // 同一锁内重读最新 records 并完整落盘，两个成功添加不能相互覆盖。
+      await writeRecords([...fresh.records, rec]);
+      return { ok: true, name };
+    });
   } catch (err) {
-    return { ok: false, error: (err as Error).message };
+    return { ok: false, error: (err as Error).message,
+      ...(err instanceof MarketChangedDuringFetchError && err.corrupt ? { corrupt: true } : {}) };
+  }
+}
+
+/** Only cache indexes we can positively attribute to the same approved Git
+ * source are Mcode-owned scratch data. Old checkout directories, mismatched
+ * indexes and extra user files must survive source deregistration. */
+async function removeOwnedGitMarketCache(rec: MarketRecord): Promise<void> {
+  if (rec.source.kind !== "git") return;
+  const cache = catalogDir(rec);
+  try {
+    await assertPlainDirectoryAncestors(cache, "技能市场缓存删除路径");
+    const names = await fs.readdir(cache);
+    // Modern GitHub catalog cache contains only our signed-off index. A
+    // checkout or cache with extra files might belong to a user/legacy tool.
+    if (names.length !== 1 || names[0] !== GITHUB_INDEX_FILE) return;
+    const meta = await fs.lstat(path.join(cache, GITHUB_INDEX_FILE));
+    if (!meta.isFile() || meta.isSymbolicLink()) return;
+    if (!cachedGithubIndex(rec)) return;
+    await fs.rm(cache, { recursive: true, force: true });
+  } catch {
+    // Removing an approved source must not become destructive when its cache
+    // is missing, replaced, damaged or inaccessible.
   }
 }
 
 export async function removeSkillMarket(name: string): Promise<{ ok: boolean; error?: string; corrupt?: boolean }> {
-  // 【MC-037】损坏时不能拿降级空表判"市场不存在"(那是谎,来源可能就在坏字节里)。
-  const state = readRecordsState();
-  if (state.kind === "corrupt") {
-    return { ok: false, error: marketRegistryCorruptMessage("技能市场", state.reason), corrupt: true };
+  try {
+    return await withRecordsTransaction(async () => {
+      // Read/check/write in the same transaction as concurrent add/refresh.
+      const state = readRecordsState();
+      if (state.kind === "corrupt") {
+        return { ok: false, error: marketRegistryCorruptMessage("技能市场", state.reason), corrupt: true };
+      }
+      const rec = withBuiltins(state.kind === "ok" ? state.records : []).find((r) => r.name === name);
+      if (!rec) return { ok: false, error: `市场不存在:${name}` };
+      if (rec.builtin) return { ok: false, error: "内置市场不能移除" };
+      await writeRecords((state.kind === "ok" ? state.records : []).filter((r) => r.name !== name));
+      // A market name alone does not establish ownership over all files at
+      // its cached path. Only delete verified Mcode index-only Git caches.
+      await removeOwnedGitMarketCache(rec);
+      return { ok: true };
+    });
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
   }
-  const rec = withBuiltins(state.kind === "ok" ? state.records : []).find((r) => r.name === name);
-  if (!rec) return { ok: false, error: `市场不存在:${name}` };
-  if (rec.builtin) return { ok: false, error: "内置市场不能移除" };
-  await writeRecords((state.kind === "ok" ? state.records : []).filter((r) => r.name !== name));
-  if (rec.source.kind === "git") await fs.rm(catalogDir(rec), { recursive: true, force: true }).catch(() => {});
-  return { ok: true };
 }
 
 export async function refreshSkillMarket(name: string, progress?: MarketProgressSink): Promise<{ ok: boolean; error?: string; corrupt?: boolean }> {
@@ -399,14 +682,23 @@ export async function refreshSkillMarket(name: string, progress?: MarketProgress
   const rec = withBuiltins(state.kind === "ok" ? state.records : []).find((r) => r.name === name);
   if (!rec) return { ok: false, error: `市场不存在:${name}` };
   if (rec.source.kind === "local") {
-    return existsSync(catalogDir(rec)) ? { ok: true } : { ok: false, error: `目录不存在:${rec.source.ref}` };
+    try {
+      await assertPlainDirectoryAncestors(catalogDir(rec), "技能市场本地来源路径");
+      return existsSync(catalogDir(rec)) ? { ok: true } : { ok: false, error: `目录不存在:${rec.source.ref}` };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
   }
   try {
     await fetchGitCatalog(rec, progress, () => {
       const current = readRecordsState();
-      // 坏档由下方 freshRecordsForWrite() 以 corrupt:true 的原有合同处理；
-      // 健康表/缺失表则先拒绝已经删除或身份改变的来源，缓存也不能偷换。
-      if (current.kind === "corrupt") return;
+      // A damaged registry must stop BEFORE cached index promotion. Returning
+      // here would overwrite a healthy old cache even though fresh write later
+      // rejects the corrupt ledger.
+      if (current.kind === "corrupt") {
+        throw new MarketChangedDuringFetchError(
+          marketRegistryCorruptMessage("技能市场", current.reason), true);
+      }
       const sameName = current.kind === "ok" ? current.records.find((r) => r.name === rec.name) : undefined;
       if (!sameName && !rec.builtin) throw new Error(`市场 ${name} 在刷新期间已被移除，请重新打开市场列表`);
       if (sameName && (
@@ -415,35 +707,34 @@ export async function refreshSkillMarket(name: string, progress?: MarketProgress
     });
     // 【MC-037】写回前重读:刷新是长操作,窗口内记录可能被改写/砸坏。
     // 从前这里用 `readRecords()`(损坏时 = [])当基准,坏档会被 fetchedAt 回写覆盖。
-    const fresh = freshRecordsForWrite();
-    if (!fresh.ok) return fresh;
-    const records = fresh.records;
-    const fetchedAt = new Date().toISOString();
-    const idx = records.findIndex((r) => r.name === name);
-    // 【MC-037 后续时序】刷新完成前，另一窗口可能已删除/替换该来源。
-    // 不能把旧的网络结果重新写成被用户删除的自定义市场，更不能给同名的新市场
-    // 标记一次从未执行过的刷新。新装机内置市场没有落盘记录属于正常初态，
-    // 只有这种内置记录允许首次写入 fetchedAt。
-    if (idx < 0) {
-      if (!rec.builtin) {
-        return { ok: false, error: `市场 ${name} 在刷新期间已被移除，请重新打开市场列表` };
+    return await withRecordsTransaction(async () => {
+      const fresh = freshRecordsForWrite();
+      if (!fresh.ok) return fresh;
+      const records = fresh.records;
+      const fetchedAt = new Date().toISOString();
+      const idx = records.findIndex((r) => r.name === name);
+      if (idx < 0) {
+        if (!rec.builtin) {
+          return { ok: false, error: `市场 ${name} 在刷新期间已被移除，请重新打开市场列表` };
+        }
+        records.push({ ...rec, addedAt: rec.addedAt || fetchedAt, fetchedAt });
+      } else {
+        const current = records[idx];
+        if (
+          current.source.kind !== rec.source.kind ||
+          current.source.ref !== rec.source.ref ||
+          current.addedAt !== rec.addedAt
+        ) {
+          return { ok: false, error: `市场 ${name} 在刷新期间已被替换，请重新打开市场列表` };
+        }
+        records[idx] = { ...current, fetchedAt };
       }
-      records.push({ ...rec, addedAt: rec.addedAt || fetchedAt, fetchedAt });
-    } else {
-      const current = records[idx];
-      if (
-        current.source.kind !== rec.source.kind ||
-        current.source.ref !== rec.source.ref ||
-        current.addedAt !== rec.addedAt
-      ) {
-        return { ok: false, error: `市场 ${name} 在刷新期间已被替换，请重新打开市场列表` };
-      }
-      records[idx] = { ...current, fetchedAt };
-    }
-    await writeRecords(records);
-    return { ok: true };
+      await writeRecords(records);
+      return { ok: true };
+    });
   } catch (err) {
-    return { ok: false, error: (err as Error).message };
+    return { ok: false, error: (err as Error).message,
+      ...(err instanceof MarketChangedDuringFetchError && err.corrupt ? { corrupt: true } : {}) };
   }
 }
 
@@ -459,6 +750,60 @@ export function skillMarketBundle(market: string): { id: string; label: string; 
   return { id: `market--${rec.name}`, label: rec.name, source: rec.source.ref };
 }
 
+/** The target is an executable SDK skills library, never follow a junction into
+ * an unrelated folder just because the config root happens to point there. */
+/** Only a real directory with a real SKILL.md counts as installed.
+ * A junction, dangling symlink, or incomplete directory must not make the UI
+ * claim success or cause a silent "already installed" skip. */
+function installedSkillState(dest: string): "absent" | "installed" | "conflict" {
+  let info: ReturnType<typeof lstatSync>;
+  try { info = lstatSync(dest); }
+  catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+    return "conflict";
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) return "conflict";
+  try {
+    const skill = lstatSync(path.join(dest, "SKILL.md"));
+    return skill.isFile() && !skill.isSymbolicLink() ? "installed" : "conflict";
+  } catch { return "conflict"; }
+}
+
+async function assertWritableSkillsRoot(libRoot: string): Promise<void> {
+  await assertPlainDirectoryAncestors(libRoot, "技能安装目标路径");
+  await fs.mkdir(libRoot, { recursive: true });
+  await assertPlainDirectoryAncestors(libRoot, "技能安装目标路径");
+}
+
+/** Local catalogs and downloaded archives are untrusted. An installed skill
+ * must not carry an absolute symlink/junction that reads outside its own tree.
+ * Always inspect both the original and a staged copy before publication. */
+async function assertSkillTreeHasNoLinks(root: string): Promise<void> {
+  await assertPlainDirectoryAncestors(root, "技能源路径");
+  const info = await fs.lstat(root);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error("技能来源包含链接或非普通目录：" + root);
+  }
+  const pending = [root];
+  while (pending.length) {
+    const dir = pending.pop() as string;
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const item of entries) {
+      const full = path.join(dir, item.name);
+      if (item.isSymbolicLink() || (!item.isDirectory() && !item.isFile())) {
+        throw new Error("技能目录包含外部链接或特殊文件：" + full);
+      }
+      if (item.isDirectory()) pending.push(full);
+      if (item.isFile()) {
+        const fileInfo = await fs.lstat(full);
+        if (!fileInfo.isFile() || fileInfo.isSymbolicLink() || fileInfo.nlink !== 1) {
+          throw new Error("技能包含链接到外部数据的文件，拒绝安装：" + full);
+        }
+      }
+    }
+  }
+}
+
 export async function installSkillsFromMarket(
   market: string,
   names: readonly string[],
@@ -471,14 +816,35 @@ export async function installSkillsFromMarket(
   // 结束 IPC,而不是像其它写操作一样返回 {ok:false, error} 让界面显示"刷新市场"指引。
   let remoteIndex: ReturnType<typeof cachedGithubIndex>;
   try {
+    // Do this before even scanning SKILL.md: catalog metadata can itself
+    // contain private data outside a previously approved local source if the
+    // directory was replaced by a Junction between registration and install.
+    await assertPlainDirectoryAncestors(catalogDir(rec), "技能市场安装来源路径");
+    if (rec.source.kind === "local") {
+      const info = await fs.lstat(catalogDir(rec));
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        throw new Error("本地技能市场来源不是独立普通目录");
+      }
+    }
     remoteIndex = cachedGithubIndex(rec);
   } catch (err) {
     return { ok: false, error: (err as Error).message, imported: [], skipped: [], errors: [] };
   }
-  const catalog = await scanCatalog(rec);
+  // Cached/local index reads can fail independently of the source root
+  // preflight. Keep IPC responses structured rather than throwing into the
+  // renderer when a SKILL.md hardlink/unsafe catalog appears.
+  let catalog: ScannedSkill[];
+  try { catalog = await scanCatalog(rec); }
+  catch (err) {
+    return { ok: false, error: (err as Error).message, imported: [], skipped: [], errors: [] };
+  }
   const byName = new Map(catalog.map((s) => [s.name, s]));
   const libRoot = defaultSkillsRoot();
-  await fs.mkdir(libRoot, { recursive: true });
+  try {
+    await assertWritableSkillsRoot(libRoot);
+  } catch (err) {
+    return { ok: false, error: (err as Error).message, imported: [], skipped: [], errors: [] };
+  }
   const imported: string[] = [];
   const skipped: string[] = [];
   const errors: Array<{ name: string; error: string }> = [];
@@ -489,22 +855,46 @@ export async function installSkillsFromMarket(
       continue;
     }
     const dest = path.join(libRoot, name);
-    if (existsSync(dest)) {
+    const initial = installedSkillState(dest);
+    if (initial === "installed") {
       skipped.push(name);
       continue;
     }
+    if (initial === "conflict") {
+      errors.push({ name, error: "技能目录已存在但不是完整普通技能（可能是 Junction/链接或半安装），请人工检查" });
+      continue;
+    }
     try {
-      if (remoteIndex) {
-        const staging = path.join(path.dirname(libRoot), `.skill-install-${randomUUID()}`);
-        try {
+      // Download and local copy both publish by one same-filesystem rename:
+      // never make a half-copied skill visible at its final SDK path.
+      const staging = path.join(libRoot, `.skill-install-${randomUUID()}`);
+      try {
+        if (remoteIndex) {
           await downloadGithubSkill(remoteIndex, hit.relPath, staging, progress);
-          if (existsSync(dest)) { skipped.push(name); continue; }
+        } else {
+          await assertSkillTreeHasNoLinks(hit.dir);
+          await fs.cp(hit.dir, staging, { recursive: true, filter: (src) => path.basename(src) !== ".git" });
+        }
+        await assertSkillTreeHasNoLinks(staging);
+        await assertWritableSkillsRoot(libRoot);
+        const current = installedSkillState(dest);
+        if (current === "installed") { skipped.push(name); continue; }
+        if (current === "conflict") {
+          throw new Error("目标技能目录存在不安全链接或不完整目录，拒绝覆盖");
+        }
+        try {
           await fs.rename(staging, dest);
-        } finally { await fs.rm(staging, { recursive: true, force: true }).catch(() => {}); }
-      } else {
-        await fs.cp(hit.dir, dest, { recursive: true, filter: (src) => path.basename(src) !== ".git" });
+          imported.push(name);
+        } catch (err) {
+          // Another window may have published the same skill while our copy
+          // was staged. Do not merge/overwrite the winner's files.
+          const raced = installedSkillState(dest);
+          if (raced === "installed") skipped.push(name);
+          else throw err;
+        }
+      } finally {
+        await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
       }
-      imported.push(name);
     } catch (err) {
       errors.push({ name, error: (err as Error).message });
     }

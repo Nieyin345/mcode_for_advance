@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, symlink, truncate, writeFile } from 'node:fs/promises';
+import { link, mkdir, symlink, truncate, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EXAMPLE_MODULE, ResourceSchema, ResultSchema, type ModuleInvoke, type ModuleReply, type ModuleResult } from '@contracts/modules';
-import { ModuleCatalogSchema } from '@contracts/moduleCapability';
+import { ModuleCatalogSchema, serializeModuleWorkflowGrants } from '@contracts/moduleCapability';
 import { ModuleHost } from '../../src/main/modules/ModuleHost.js';
 import { fileCapabilities, resolveModuleResource } from '../../src/main/modules/fileCapabilities.js';
 import { getModuleHost } from '../../src/main/modules/service.js';
@@ -352,6 +352,25 @@ await test('service stays lazy and publishes both real built-in contributions', 
   ]);
   const answer = await workflow(serviceHost, input('core.file-report', 'info', 'service-query'));
   assert.equal(answer.type, 'result');
+});
+await test('linked workflow grant archive is rejected, not trusted as local approval', async () => {
+  const serviceHost = await getModuleHost();
+  const dataRoot = process.env.MODULE_CATALOG_TEST_DATA_ROOT;
+  assert.ok(dataRoot, 'test must have isolated dataRoot');
+  const managedDir = join(dataRoot, 'ui-modules');
+  await mkdir(managedDir, { recursive: true });
+  const foreign = join(outside, 'foreign-workflow-grants.json');
+  const grantFile = join(managedDir, 'workflow-grants.json');
+  await writeFile(foreign, serializeModuleWorkflowGrants([]), 'utf8');
+  await link(foreign, grantFile);
+  try {
+    assert.equal(serviceHost.workflowGrantStatus().archive, 'corrupt',
+      'hardlinked external approval table must not be trusted even if valid JSON');
+  } finally {
+    await unlink(grantFile);
+  }
+  assert.equal(serviceHost.workflowGrantStatus().archive, 'absent',
+    'an absent local grant archive must stay fail-closed');
 });
 console.log(`${passed} module catalog/workflow checks passed; ${failed} failed`);
 if (failed) process.exitCode = 1;

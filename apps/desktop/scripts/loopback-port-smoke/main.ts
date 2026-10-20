@@ -181,6 +181,40 @@ function fakeServer(ports: number[]) {
   check("no-address: closes the socket after rejecting", srv.calls.includes("close:done"), srv.calls.join(" "));
 }
 
+/* ───── onBind is a diagnostic for EACH bound attempt ───── */
+{
+  const srv=fakeServer([6667,54333]);
+  const advertised:number[]=[];
+  const result=await listenOnDialablePort(srv as unknown as Server,(port)=>advertised.push(port));
+  check('trust registration picks the dialable port',result===54333);
+  // The only production caller uses this to log blocked draws. Publishing
+  // trusted origins is the responsibility of the returned accepted port.
+  check('diagnostic callback records blocked and accepted bind attempts',
+    JSON.stringify(advertised)===JSON.stringify([6667,54333]),advertised.join(','));
+}
+{
+  const srv=fakeServer([5060,54335]);
+  let failed=false;
+  let chosen=0;
+  try {
+    chosen=await listenOnDialablePort(srv as unknown as Server,(port)=>{
+      if(isBlockedPort(port))throw new Error('published forbidden origin');
+    });
+  } catch { failed=true; }
+  check('diagnostic callback failure closes bound socket and aborts startup',
+    failed&&chosen===0&&srv.calls.includes("close:done"),
+    JSON.stringify({failed,chosen,calls:srv.calls}));
+}
+{
+  const srv=fakeServer([6667,6668,6669,6697,6000]);
+  const advertised:number[]=[];
+  try {await listenOnDialablePort(srv as unknown as Server,(p)=>advertised.push(p));}
+  catch {/* exhausted expected */}
+  check('all blocked attempts remain diagnosable without publishing an accepted port',
+    JSON.stringify(advertised)===JSON.stringify([6667,6668,6669,6697,6000]),
+    advertised.join(','));
+}
+
 /* ───────────────────────────── report ───────────────────────────── */
 
 if (failures.length > 0) {

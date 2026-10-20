@@ -50,9 +50,10 @@
  * Run: bash scripts/flow-migration-smoke/run.sh
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { acquireOsFileLease } from "@main/lib/osFileLease.js";
 import type { WorkflowDoc, WorkflowEdge, WorkflowNode } from "@contracts/workflow";
 import type { NodeRunner, NodeTypeManifest } from "@contracts/nodeType";
 import { MODULE_CAPABILITY_RUNNER_KIND } from "@contracts/moduleCapability";
@@ -209,6 +210,24 @@ console.log("\n1. 7 种 runner.kind 全映射，未知语义逐条点名");
   check("★ 每条边都产出一条 link", links.length === richDoc.edges.length, { links: links.length, edges: richDoc.edges.length });
   check("★ 报告版本号可复核", report.migratorVersion === FLOW_MIGRATOR_VERSION);
 
+  // v3 changes only the adapter mapping, not the format of an old saved
+  // sidecar-only flow. A pre-v3 archive that lacks native editor properties
+  // must still read its original instruction/capability from x-mcode.params.
+  const legacy = structuredClone(flow);
+  const priorAgent = legacy.nodes.find((n) => n["x-mcode"]?.nodeId === "n_agent");
+  if (priorAgent !== undefined) {
+    delete priorAgent["instruction"];
+    delete priorAgent["capability"];
+    delete priorAgent["outputVar"];
+    const original = richDoc.nodes.find((n) => n.id === "n_agent");
+    const restored = flowToWorkflowDoc(legacy).nodes.find((n) => n.id === "n_agent");
+    check("★【MERGE-0 v3】缺少原生顶层表单字段的旧存档仍按 sidecar 回读",
+      restored !== undefined && original !== undefined
+        && restored.params["instruction"] === original.params["instruction"]
+        && restored.params["capability"] === original.params["capability"],
+      { original: original?.params, restored: restored?.params });
+  }
+
   // MERGE-0 四条未知语义：遇到必须列，不静默丢。
   const items = report.needsHumanDecision;
   const itemOf = (n: number): typeof items => items.filter((i) => i.merge0Item === n);
@@ -267,7 +286,7 @@ console.log("\n1. 7 种 runner.kind 全映射，未知语义逐条点名");
   // 内置确认不重复：condition/command/code(JS) 没有自定义替身。
   eq("★【节点统一】condition 仍走内置 switch（无自定义替身）", effectiveNodeRedTypeOf("condition", {}), "switch");
   eq("★【节点统一】command 仍走内置 exec", effectiveNodeRedTypeOf("command", { command: "echo hi" }), "exec");
-  check("★【节点统一】migratorVersion 升到 2（规则变更可追溯）", FLOW_MIGRATOR_VERSION === 2, FLOW_MIGRATOR_VERSION);
+  check("★【MERGE-0】v4 原生克隆身份/类型护栏版本可追溯", FLOW_MIGRATOR_VERSION === 4, FLOW_MIGRATOR_VERSION);
 
   // 端口规则：branch = 每条出边一个口；condition = true 口 0 / false 口 1。
   const branchNode = flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_branch");
@@ -532,6 +551,9 @@ console.log("\n8. projectFlowDir：项目隔离 + 默认项目兼容");
     ["含分隔符", "a/b"],
     ["含反斜杠", "a\\b"],
     ["NUL", "a\u0000b"],
+    ["孤立高代理项 U+D800", "\uD800"],
+    ["孤立高代理项 U+D801（原与 U+D800 目录碰撞）", "\uD801"],
+    ["孤立低代理项 U+DC00", "\uDC00"],
     ["超长", "x".repeat(201)],
   ] as const;
   for (const [label, id] of invalid) {
@@ -592,6 +614,62 @@ console.log("\n9. nodeRedStorage：CAS 保存、坏档不装空、项目隔离�
     "x-mcode": { docId, marker },
   });
 
+  // ARC-006：两条合法项目 ID 真实的 SHA-256 前8位碰撞。
+  // 不能只在 registry 校验；NodeRedFlowStorage 是另一条直接读/写入口。
+  {
+    const a = "p".repeat(40) + "-195";
+    const b = "p".repeat(40) + "-92702";
+    const first = await storage.saveFlow(a, "wf_collision", flowOf("wf_collision", "project-first") as never, {expectedRevision:null});
+    check("★ project hash 碰撞前第一个项目能正常保存 flow", first.ok === true, first);
+    const wrongLoad = storage.loadFlow(b, "wf_collision");
+    check("★ 碰撞第二项目不能读取第一个项目原文",
+      wrongLoad.ok === false && wrongLoad.kind === "invalid-project", wrongLoad);
+    const wrongSave = await storage.saveFlow(b, "wf_collision", flowOf("wf_collision", "project-other") as never, {expectedRevision:null});
+    check("★ 碰撞第二项目不能覆盖或创建第一个项目 flow",
+      wrongSave.ok === false && wrongSave.kind === "invalid-project", wrongSave);
+    const unchanged = storage.loadFlow(a, "wf_collision");
+    check("★ 碰撞后第一个项目的 flow 原内容仍有效",
+      unchanged.ok && (unchanged.flow as unknown as { "x-mcode": { marker: string } })["x-mcode"].marker === "project-first",
+      unchanged);
+  }
+
+  // 直接存储入口原来只 mkdirSync(projects) 并不检查目录重解析点。
+  // registry 拒 junction 不代表绕过 registry 的 NodeRedFlowStorage 同样安全。
+  {
+    const subroot = join(root, "storage-link-probe");
+    const external = join(root, "storage-link-outside");
+    mkdirSync(subroot, {recursive:true});
+    mkdirSync(external, {recursive:true});
+    writeFileSync(join(external, "sentinel.txt"), "external-owned", "utf8");
+    let linked = false;
+    try {
+      try {
+        symlinkSync(external, join(subroot, PROJECTS_DIR), process.platform === "win32" ? "junction" : "dir");
+        linked = true;
+      } catch (err) {
+        console.log("  SKIP junction fixture（当前 OS 权限不足）：" + (err as Error).message);
+      }
+      if (linked) {
+        check("★ 存储层测试确实创建了一个 OS 项目目录链接",
+          lstatSync(join(subroot, PROJECTS_DIR)).isSymbolicLink());
+        const isolatedStore = new NodeRedFlowStorage(subroot);
+        const saved = await isolatedStore.saveFlow("junction-project", "wf_junction",
+          flowOf("wf_junction", "must-not-escape") as never, {expectedRevision:null});
+        check("★ 存储层拒绝沿 junction 向项目根外写 flow",
+          saved.ok === false && saved.kind === "invalid-project", saved);
+        check("★ 项目目录逃逸拒写后外部 sentinel 原字节仍在",
+          readFileSync(join(external, "sentinel.txt"), "utf8") === "external-owned");
+        check("★ 逃逸目标不允许产生新的项目目录或身份标记",
+          readdirSync(external).length === 1);
+      }
+    } finally {
+      if (linked) {
+        if (process.platform === "win32") rmdirSync(join(subroot, PROJECTS_DIR));
+        else unlinkSync(join(subroot, PROJECTS_DIR));
+      }
+    }
+  }
+
   // ★ 健康往返（防空过）：保存 → 读回 → revision 一致。
   {
     const flow = flowOf("wf_store_ok", "v1");
@@ -606,6 +684,23 @@ console.log("\n9. nodeRedStorage：CAS 保存、坏档不装空、项目隔离�
       read.ok ? read.flow : read);
     // revision 对同一内容稳定：重新算一遍。
     check("★ revision 是内容哈希（同内容稳定）", read.ok === true && flowRevision(read.flow) === read.revision);
+    if (created.ok) {
+      const realFlowFile = join(storage.projectDir("proj_store_a"), FLOWS_SUBDIR,
+        `${safeFlowFileName("wf_store_ok")}.json`);
+      const release = await acquireOsFileLease(realFlowFile + ".mcode-lock", 2000);
+      let finished = false;
+      const pending = storage.saveFlow("proj_store_a", "wf_store_ok", flowOf("wf_store_ok", "v2") as never,
+        {expectedRevision:created.revision}).then((value) => {
+        finished = true;
+        return value;
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 180));
+      check("★ OS 文件租约被占时 NodeRed flow 保存不能提前完成", !finished);
+      await release();
+      const updated = await pending;
+      check("★ 释放 OS 文件租约后 flow CAS 能正常保存", updated.ok === true, updated);
+      check("★ OS 文件租约释放后无遗留锁", !existsSync(realFlowFile + ".mcode-lock"));
+    }
   }
 
   // ★ 两个客户端带同一 expectedRevision 并发保存 → 一成一败，败者 conflict + currentRevision。
@@ -709,7 +804,7 @@ console.log("\n9. nodeRedStorage：CAS 保存、坏档不装空、项目隔离�
 
   // ★ 未知 flowId 与清单的 corrupt 条目。
   {
-    const invalidIds = ["", "..", "a/b", "C:x", "x".repeat(201)];
+    const invalidIds = ["", "..", "a/b", "C:x", "x".repeat(201), "\uD800", "\uD801", "a\uDC00"];
     for (const id of invalidIds) {
       const r = storage.loadFlow("proj_store_c", id);
       check(`★ 非法 flowId 被拒：${JSON.stringify(id).slice(0, 12)}`, !r.ok && r.kind === "invalid-flow-id", r);

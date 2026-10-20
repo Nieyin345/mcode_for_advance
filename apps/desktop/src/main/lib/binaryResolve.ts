@@ -8,7 +8,7 @@
  * may not be executable at runtime (permissions, broken symlink, etc.).
  */
 import { accessSync, constants, statSync } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { decodeOutput } from "./outBuf.js";
 
@@ -50,7 +50,7 @@ export function whereFirstOnPath(name: string): string | null {
     }));
     for (const line of out.split(/\r?\n/)) {
       const p = line.trim();
-      if (p && runnableFile(p)) return p;
+      if (p && runnableFile(p)) return resolve(p);
     }
   } catch {
     // `where` unavailable / not on PATH
@@ -69,7 +69,7 @@ export function whereFirstOnPath(name: string): string | null {
 export function which(name: string): string | null {
   // Absolute / relative path that already exists - trust the caller.
   if (name.includes("/") || name.includes("\\")) {
-    return runnableFile(name) ? name : null;
+    return runnableFile(name) ? resolve(name) : null;
   }
 
   if (process.platform === "win32") {
@@ -95,7 +95,7 @@ export function which(name: string): string | null {
       join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", `${name}.exe`),
     ];
     for (const c of candidates) {
-      if (runnableFile(c)) return c;
+      if (runnableFile(c)) return resolve(c);
     }
     return null;
   }
@@ -105,11 +105,11 @@ export function which(name: string): string | null {
   for (const dir of pathEnv.split(delimiter)) {
     if (!dir) continue;
     const full = join(dir, name);
-    if (runnableFile(full)) return full;
+    if (runnableFile(full)) return resolve(full);
   }
   // Common absolute locations.
   for (const full of [`/bin/${name}`, `/usr/bin/${name}`, `/usr/local/bin/${name}`]) {
-    if (runnableFile(full)) return full;
+    if (runnableFile(full)) return resolve(full);
   }
   return null;
 }
@@ -168,7 +168,7 @@ export function resolveGitBash(): string | null {
 function resolveGitBashUncached(): string | null {
   // Reuse the same runnable-file predicate as which(): a directory named
   // bash.exe must not eclipse a later real Git Bash executable.
-  const exists = (p: string): string | null => (runnableFile(p) ? p : null);
+  const exists = (p: string): string | null => (runnableFile(p) ? resolve(p) : null);
 
   // 1. Well-known install dirs (Git for Windows is often NOT on PATH).
   const pf = process.env["ProgramFiles"] ?? "C:\\Program Files";

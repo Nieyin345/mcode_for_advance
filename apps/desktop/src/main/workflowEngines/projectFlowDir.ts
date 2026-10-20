@@ -18,9 +18,10 @@
  *  1. **同 projectId 稳定**：纯函数，只依赖 projectId 与引擎根目录；不读盘、不缓存。
  *  2. **不同 projectId 隔离**：`<engineDir>/projects/<safe>/`，`safe` 由 projectId
  *     经**白名单折叠**得来（只留 `[A-Za-z0-9_-]`，其余折 `-`），并附 `projectId`
- *     的哈希后缀 —— 两个不同 id 即使折叠后同名（`a/b` 与 `a:b` 都折成 `a-b`），
- *     哈希不同 → 目录不同。哈希是 8 位十六进制（碰撞概率 ~2^-32，且只在同一引擎根
- *     的少量项目之间）；碰撞时**不同 id 仍共享目录**这一点由哈希长度兜底，不是靠猜。
+ *     的 8 位十六进制哈希后缀。它只能降低常规折叠碰撞概率，不能证明不同
+ *     projectId 必然有不同目录：确有不同合法 ID 产生相同 32-bit SHA 后缀。
+ *     生产读写必须调用 bindProjectDirectoryIdentity，对盘上完整 projectId 做精确
+ *     校验；即使两个 ID 纯路径算出同一地址，后一个也必须拒绝访问第一份资料。
  *  3. **非法 id 拒绝**：空串、纯空白、`.`/`..`、含路径分隔符或盘符、含控制字符、
  *     超长（> 200）一律拒绝（`{ ok: false, reason }`），**绝不**回退成默认目录
  *     （那会让一条坏 id 悄悄写进共享目录）。
@@ -41,6 +42,7 @@
  * 并在返回前用 `path.resolve` 复核仍在引擎根之内（纵深防御）。
  */
 import { createHash } from "node:crypto";
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, writeSync } from "node:fs";
 import { resolve, join } from "node:path";
 
 /** 「没有项目」的归一 id。传 null/undefined 与此值都落到旧目录（兼容）。 */
@@ -80,6 +82,12 @@ export function validateProjectId(projectId: unknown): { ok: true; id: string } 
   if (/^[A-Za-z]:/.test(id)) return { ok: false, reason: "projectId 不能是盘符路径" };
   // 控制字符（含 NUL）：文件名层面不可控。
   if (/[\u0000-\u001f\u007f]/.test(id)) return { ok: false, reason: "projectId 不能含控制字符" };
+  // Node UTF-8 replaces *different* unpaired UTF-16 surrogates with the same
+  // U+FFFD bytes. Since safeProjectDirName hashes UTF-8, those distinct IDs
+  // would otherwise resolve to the exact same project/credentials directory.
+  if (/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(id)) {
+    return { ok: false, reason: "projectId 不能包含孤立的 UTF-16 代理项" };
+  }
   return { ok: true, id };
 }
 
@@ -89,6 +97,87 @@ export function safeProjectDirName(projectId: string): string {
   const base = folded.length > 0 ? folded.slice(0, 40) : "project";
   const hash = createHash("sha256").update(projectId, "utf8").digest("hex").slice(0, 8);
   return `${base}-${hash}`;
+}
+
+/**
+ * 存储层可直接被调，不能假定所有调用都先走生产 registry 的目录围栏。
+ * 检查可信 engineDir 自身和项目相对目录每一层；先 lstat 再创建，创建后
+ * 再 lstat，拒绝已有 junction/symlink/非目录，绝不 mkdir 跟到外部去。
+ * OS stat/mkdir 之间的恶意并发替换仍需 handle-relative NOFOLLOW 才能彻底挡住。
+ */
+export function ensureProjectDirectoryNoLinks(engineDir: string, projectDir: string, legacy: boolean): void {
+  const root = resolve(engineDir);
+  const segments = legacy ? [root] : [root, join(root, PROJECTS_DIR), projectDir];
+  for (const candidate of segments) {
+    const check = (): void => {
+      try {
+        const stat = lstatSync(candidate);
+        if (stat.isSymbolicLink() || !stat.isDirectory()) {
+          throw new Error(`受管 Node-RED 项目目录不是独立目录：${candidate}`);
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+    };
+    check();
+    mkdirSync(candidate, { recursive: true });
+    check();
+  }
+}
+
+/** 项目目录的精确归属（不是哈希前缀），只供宿主自己管理。 */
+export const PROJECT_IDENTITY_FILE = ".mcode-project-id.json";
+
+/**
+ * 旧目录名只含 32-bit SHA：不同 projectId 可以碰撞，不能把旧 hash
+ * 无条件当成项目身份。保留旧目录名以免原 flows/credentials 突然不可见，
+ * 但任何生产存储入口在读/写前必须先查磁盘上的完整 projectId。
+ *
+ * 只能为真正的空目录首次绑定；历史有内容但没有身份的目录要显式拒绝，
+ * 留给受控迁移。绝不能盲目将它认作眼前 projectId（会跨项目读错凭据）。
+ * 同路径同时绑定由 O_EXCL 保障只有一个胜者。拒绝特殊文件/硬链接。
+ */
+export function bindProjectDirectoryIdentity(dir: string, projectId: string): void {
+  const marker = join(dir, PROJECT_IDENTITY_FILE);
+  let present = false;
+  try {
+    const stat = lstatSync(marker);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+      throw new Error("工作流项目身份标记必须是独立普通文件");
+    }
+    present = true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  if (!present) {
+    // 只允许空的新建目录绑定；有旧 flow/credential 即使合法也不猜归属。
+    if (readdirSync(dir).length > 0) {
+      throw new Error("工作流项目旧目录已有内容但缺少完整项目身份，拒绝自动接管；须先受控迁移");
+    }
+    let fd: number | undefined;
+    try {
+      fd = openSync(marker, "wx", 0o600);
+      writeSync(fd, JSON.stringify({ projectId, version: 1 }));
+      fsyncSync(fd);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      // 另一个并发请求已经绑定；稍后通过下面的完整内容比较判归属。
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+  }
+  const stat = lstatSync(marker);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+    throw new Error("工作流项目身份标记不是独立普通文件，拒绝加载");
+  }
+  let saved: unknown;
+  try { saved = JSON.parse(readFileSync(marker, "utf8")); }
+  catch { throw new Error("工作流项目身份标记损坏，拒绝加载"); }
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)
+      || (saved as {version?: unknown}).version !== 1
+      || (saved as {projectId?: unknown}).projectId !== projectId) {
+    throw new Error("工作流项目身份与目录上已有的完整 projectId 不符（哈希碰撞），拒绝跨项目读写");
+  }
 }
 
 /**

@@ -3,10 +3,21 @@ import type { McpServerConfig } from "@contracts/ipc";
 /** Renderer may see the names of env/header entries, never their values.
  * Empty strings in this editing view mean 'keep the stored value on save'. */
 export function maskMcpConfig(config: McpServerConfig): McpServerConfig {
-  if (config.type === "http" || config.type === "sse") {
-    return { ...config, ...(config.headers ? { headers: Object.fromEntries(Object.keys(config.headers).map((k) => [k, ""])) } : {}) };
+  // Imported/older records are not guaranteed to respect the transport
+  // discriminant. Always scrub BOTH credential containers before exposing
+  // an editing copy to the renderer; a shallow spread of an HTTP record with
+  // stale env (or a stdio record with stale headers) otherwise leaks secrets.
+  const masked = { ...config } as McpServerConfig & {
+    headers?: Record<string, string>;
+    env?: Record<string, string>;
+  };
+  if (masked.headers) {
+    masked.headers = Object.fromEntries(Object.keys(masked.headers).map(key => [key, ""]));
   }
-  return { ...config, ...(config.env ? { env: Object.fromEntries(Object.keys(config.env).map((k) => [k, ""])) } : {}) };
+  if (masked.env) {
+    masked.env = Object.fromEntries(Object.keys(masked.env).map(key => [key, ""]));
+  }
+  return masked;
 }
 
 /** Replace nonempty values, retain existing keys left blank, remove deleted

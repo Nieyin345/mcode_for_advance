@@ -678,6 +678,66 @@ try {
       /WorkflowEngineNodeMetaSchema = z\.object\(\{[\s\S]*?\}\)\.strict\(\)/.test(contract)
       && !/WorkflowEngineNodeMetaSchema = z\.object\(\{[\s\S]*?approvedByUser[\s\S]*?\}\)\.strict\(\)/.test(contract));
   }
+
+  /* ══════════ Registry-held approval identity: old positive card may NOT
+   * overwrite pending-remove. Entire test uses temporary directories and a
+   * legitimate local EngineNodeRegistry, not a mocked install function. */
+  console.log("\nRegistry 持锁提交时审批预期状态与当前状态一致");
+  {
+    const sourceDir = join(temp, "cas-source");
+    const code = Buffer.from("module.exports = { test: true };\n", "utf8");
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(join(sourceDir, "index.js"), code);
+    const packageHash = stableDirectoryHash([{ path: "index.js", bytes: code }]);
+    if (packageHash === null) throw new Error("合法安装夹具的 stableDirectoryHash 不应失败");
+    const name = "node-red-contrib-cas";
+    const meta = installRequest({ name, sha256: packageHash });
+    const dataDir = join(temp, "cas-registry");
+    const registry = new EngineNodeRegistry({ dataDir, engineId: "node-red" });
+    await registry.recordInstall(meta);
+    const approvedState = await registry.readState();
+    const oldEntry = approvedState.kind === "ok" ? approvedState.entries[0]! : null;
+    check("CAS fixture begins with approved installed metadata", oldEntry !== null);
+    if (oldEntry !== null) {
+      const expected = JSON.stringify(oldEntry);
+      // Revocation happens while another window has an approval card open.
+      // The test changes the trusted registry *before* the final guarded
+      // transaction, without installing any real third-party executable.
+      const revoked = { ...oldEntry, state: "pending-remove" as const };
+      await writeFile(join(dataDir, ENGINE_NODE_REGISTRY_FILENAME),
+        JSON.stringify({ schema: "mcode.workflow-engine.nodes/v1", engineId: "node-red", entries: [revoked] }));
+      const guardedInstall = registry.installFromDirectory.bind(registry) as unknown as (
+        m: ReturnType<typeof installRequest>, dir: string, before: string,
+      ) => Promise<{ ok: boolean; reason?: string }>;
+      const denied = await guardedInstall(meta, sourceDir, expected);
+      check("★ registry commit rejects stale card after pending-remove", !denied.ok, denied);
+      const after = await registry.readState();
+      check("★ denied stale install preserves revoked record", after.kind === "ok" && after.entries[0]?.state === "pending-remove", after);
+      check("★ denied stale install writes no package files", !existsSync(join(registry.packagePath(name), "index.js")));
+      const directRegister = await registry.recordInstall(meta);
+      check("★ direct recordInstall cannot clear a pending-remove revocation", !directRegister.ok, directRegister);
+      check("★ direct registration denial preserves pending-remove",
+        (await registry.readState()).kind === "ok" && (await registry.readState()).entries[0]?.state === "pending-remove");
+      // The digest can remain unchanged when a different writer replaces the
+      // installation approval/declared capabilities.
+      const changed = { ...oldEntry, source: "changed-outside-card" };
+      await writeFile(join(dataDir, ENGINE_NODE_REGISTRY_FILENAME),
+        JSON.stringify({ schema: "mcode.workflow-engine.nodes/v1", engineId: "node-red", entries: [changed] }));
+      const mismatch = await guardedInstall(meta, sourceDir, expected);
+      check("★ registry commit detects same-hash changed manifest identity", !mismatch.ok, mismatch);
+      check("★ changed manifest remains intact on stale install", (await registry.readState()).kind === "ok" &&
+        (await registry.readState()).entries[0]?.source === "changed-outside-card");
+    }
+
+    const freshDir = join(temp, "cas-fresh");
+    const freshRegistry = new EngineNodeRegistry({ dataDir: freshDir, engineId: "node-red" });
+    const freshGuarded = freshRegistry.installFromDirectory.bind(freshRegistry) as unknown as (
+      m: ReturnType<typeof installRequest>, dir: string, before: string,
+    ) => Promise<{ ok: boolean; reason?: string }>;
+    const first = await freshGuarded(meta, sourceDir, "absent");
+    check("★ stable missing-target approved first install still succeeds", first.ok, first);
+    check("★ approved first install persists package bytes", existsSync(join(freshRegistry.packagePath(name), "index.js")));
+  }
 } finally {
   await rm(temp, { recursive: true, force: true });
 }

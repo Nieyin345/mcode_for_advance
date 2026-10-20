@@ -130,13 +130,17 @@ for(const [label,variant] of [
 // snapshot guard isn't merely denying ALL legitimate reinstall operations.
 {
   const stable={kind:"ok",entries:[{name:meta.name,sha256:meta.sha256,version:"1.0.0",state:"installed",approvedByUser:true,capabilities:["network"]}]};
-  let reads=0,approved=0,installed=0;
+  let reads=0,approved=0,installed=0,lockExpectation:unknown=null;
   const registry={
     readState:async()=>{reads++;return stable;},
-    installFromDirectory:async()=>{installed++;return {ok:true,entry:{name:meta.name}};},
+    installFromDirectory:async(_meta:unknown,_dir:unknown,expected:unknown)=>{
+      installed++;lockExpectation=expected;return {ok:true,entry:{name:meta.name}};
+    },
   } as unknown as EngineNodeRegistry;
   const result=await run(registry,async()=>{approved++;return true;});
   test("★ unchanged approved same-hash reinstall remains possible after a fresh human click",
     result.ok===true&&approved===1&&reads===2&&installed===1,{result,approved,reads,installed});
+  test("★ approval route forwards the exact reviewed target snapshot into locked Registry publish",
+    lockExpectation===JSON.stringify(stable.entries[0]),lockExpectation);
 }
 console.log(`node-install-approval-error-smoke: ${pass}/${pass+fail}`);if(fail)process.exitCode=1;

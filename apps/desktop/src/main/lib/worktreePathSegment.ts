@@ -9,6 +9,12 @@ function windowsAlias(name: string): boolean {
 
 /** Safe directory segments for legacy managed worktrees. No filesystem calls. */
 export function worktreeRepoSegment(repoBasename: string): string {
+  // Distinct unpaired UTF-16 code units become the SAME U+FFFD bytes in
+  // Node's UTF-8 crypto hash, so their sanitized name + hash would alias the
+  // same managed Git worktree folder. Reject rather than silently merge.
+  if (/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(repoBasename)) {
+    throw new Error('无效的仓库目录名：包含孤立的 UTF-16 代理项');
+  }
   const sanitized = repoBasename.replace(/[^A-Za-z0-9._-]+/g, '-');
   if (repoBasename === '' || repoBasename === '.' || repoBasename === '..') return 'repo';
   // Preserve the path of EXISTING normal repositories: old managed worktrees

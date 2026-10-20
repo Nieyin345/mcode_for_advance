@@ -147,6 +147,72 @@ await (async () => {
     eq("★ outputVar 标注在 msg.mcode 上", (outcome.msg.mcode as { outputVar?: string }).outputVar, "结果");
   }
 
+  // FULL-2: when a migrated node is edited using the native Node-RED
+  // palette, top-level properties are the editor's canonical state. Stale
+  // x-mcode.params must not silently override the user's saved edits.
+  {
+    const editorConfig: McodeAgentNodeConfig = {
+      id: "native-red-edited",
+      instruction: "用户在原生画布的新指令",
+      capability: "read",
+      outputVar: "new-output",
+      "x-mcode": {
+        nodeId: "original-mcode-id",
+        params: {
+          instruction: "旧迁移指令",
+          capability: "write",
+          outputVar: "old-output",
+          "x-unrelated": {keep: true},
+        },
+      },
+    };
+    const port = recordingPort();
+    const outcome = await runAgentNode({payload:"native-editor"},editorConfig,port);
+    eq("★ 原生 Node-RED 编辑器修改 instruction 优先于旧 x-mcode.params",port.calls[0]?.instruction,
+      "用户在原生画布的新指令");
+    eq("★ 原生编辑器把 write 降为 read 后 Host 不再收到旧 write",port.calls[0]?.capability,"read");
+    eq("★ Host params 同步使用原生编辑后的 instruction 而非旧 sidecar",
+      port.calls[0]?.params["instruction"],"用户在原生画布的新指令");
+    eq("★ Host params 不保留过时的 write 能力",
+      port.calls[0]?.params["capability"],"read");
+    eq("★ 原生编辑器新的输出变量覆盖旧迁移值",
+      (outcome.msg.mcode as {outputVar?:string}).outputVar,"new-output");
+    eq("★ 旧 sidecar 的未知附加字段原样保留",
+      port.calls[0]?.params["x-unrelated"],{keep:true});
+    eq("★ 迁移项目节点身份不因表单编辑变化",port.calls[0]?.nodeId,"original-mcode-id");
+    eq("★ 原生用户覆盖配置不回写/篡改旧迁移 metadata",
+      (editorConfig["x-mcode"]?.params as Record<string, unknown>)["instruction"],"旧迁移指令");
+  }
+  {
+    const editedBlank=normalizeAgentConfig({
+      id:"native-clear",
+      instruction:"",
+      capability:"invalid",
+      outputVar:"",
+      "x-mcode": {params: {instruction:"stale",capability:"write",outputVar:"stale-result","custom":13}},
+    });
+    eq("★ 显式清空原生编辑器指令不能复活旧 sidecar",editedBlank.instruction,"");
+    eq("★ 原生权限坏值必须拒用旧 write 并降为 read",editedBlank.capability,"read");
+    eq("★ 显式清空输出变量不能复活旧 sidecar",editedBlank.outputVar,null);
+    eq("★ 同步传给 Host 的 params 也不再含清空前旧指令",editedBlank.params["instruction"],"");
+    eq("★ Host params 对无效权限拒绝保留旧 write",editedBlank.params["capability"],"read");
+    check("★ 原生表单清空 outputVar 时 Host params 不复活旧结果",!editedBlank.params["outputVar"]);
+    eq("★ 未知原迁移参数依旧保留",editedBlank.params["custom"],13);
+  }
+
+  // A cleared editor output variable must not inherit a stale name from upstream msg.mcode.
+  {
+    const outcome = await runAgentNode(
+      { payload: "x", mcode: { runId: "upstream-run", outputVar: "upstream-old", extra: "keep" } },
+      { id: "cleared-output", outputVar: "" },
+      recordingPort(),
+    );
+    check("★ 清空 outputVar 不透传上游旧 outputVar",
+      !Object.prototype.hasOwnProperty.call(outcome.msg.mcode, "outputVar"));
+    eq("★ 清理旧 outputVar 时保留其他 mcode 元数据",
+      (outcome.msg.mcode as Record<string, unknown>)["extra"], "keep");
+  }
+
   // 缺 instruction / 类型不对 → 安全默认，不抛。
   {
     const normalized = normalizeAgentConfig({ instruction: 42, capability: "exec", outputVar: 7 } as McodeAgentNodeConfig);
@@ -179,6 +245,160 @@ await (async () => {
       }
       check("★ malformed Host Agent RPC result cannot pass as a successful Node-RED message", caught, bad);
     }
+  }
+
+  // ARC-006: bad Host artifact metadata must fail closed before a Node-RED
+  // success message is published. Optional fields are part of the wire contract.
+  {
+    const invalidArtifacts: unknown[] = [
+      [{ kind: "", uri: "file:///ok" }],
+      [{ kind: "file", uri: "" }],
+      [{ kind: "file", uri: "file:///ok", name: 12 }],
+      [{ kind: "file", uri: "file:///ok", mimeType: ["text/plain"] }],
+      [{ kind: "file", uri: "file:///ok", sizeBytes: -1 }],
+      [{ kind: "file", uri: "file:///ok", sizeBytes: Number.POSITIVE_INFINITY }],
+      [{ kind: "file", uri: "file:///ok", sizeBytes: 1.5 }],
+      [{ kind: "file", uri: "file:///ok", callback: () => "unsafe IPC value" }],
+      [{ kind: "file", uri: "file:///ok", extra: Symbol("not cloneable") }],
+    ];
+    for (const artifacts of invalidArtifacts) {
+      let rejected = false;
+      try { await runAgentNode({}, { id: "artifact-boundary" }, { run: async () =>
+        ({ text: "do not send", artifacts }) as never }); }
+      catch { rejected = true; }
+      check("★ 非法 Host artifact 字段不得作为成功消息发布", rejected, artifacts);
+    }
+    for (const runId of ["", "  "]) {
+      let rejected = false;
+      try {
+        await runAgentNode({}, { id: "invalid-host-run-id" }, { run: async () => ({
+          text: "must reject", artifacts: [], runId,
+        }) });
+      } catch { rejected = true; }
+      check("★ 空白 Host runId 不得作为已签发的真实运行身份", rejected, { runId });
+    }
+    const accepted = await runAgentNode({}, { id: "artifact-valid" }, { run: async () => ({
+      text: "ok", artifacts: [{ kind: "file", uri: "file:///ok", name: "ok.txt", mimeType: "text/plain", sizeBytes: 0 }],
+    }) });
+    eq("★ 合法 artifact 可保留可选文件元数据",
+      (accepted.msg.payload as { artifacts: unknown[] }).artifacts.length, 1);
+    const hostResult = {
+      text: "original",
+      artifacts: [{ kind: "file", uri: "file:///original", name: "before" }],
+      runId: "host-run-1",
+    };
+    const immutable = await runAgentNode({}, { id: "host-result-snapshot" }, { run: async () => hostResult });
+    hostResult.text = "changed after Host response";
+    hostResult.artifacts[0]!.uri = "file:///mutated";
+    hostResult.artifacts[0]!.name = "after";
+    const outgoing = immutable.msg.payload as { text: string; artifacts: Array<{ uri: string; name: string }> };
+    eq("★ Host port late mutation cannot change emitted text", outgoing.text, "original");
+    eq("★ Host port late mutation cannot change emitted artifact URI", outgoing.artifacts[0]?.uri, "file:///original");
+    eq("★ Host port late mutation cannot change emitted artifact name", outgoing.artifacts[0]?.name, "before");
+  }
+
+  // Node identity is mandatory for a real Host RPC. A malformed flow cannot
+  // silently ask the Host to execute a node with no identity.
+  {
+    let calls = 0;
+    let rejected = false;
+    try {
+      await runAgentNode({}, { id: "" }, { run: async () => { calls++; return { text: "bad", artifacts: [] }; } });
+    } catch { rejected = true; }
+    check("★ 缺失 Node-RED 节点身份必须在调用 Host 前拒绝", rejected && calls === 0, { rejected, calls });
+  }
+
+  // Node-RED may mutate the original msg while the Host RPC is pending. The
+  // late result must retain invocation-time metadata, not trust later edits.
+  {
+    let resolveHost!: (value: { text: string; artifacts: [] }) => void;
+    let sawInvocation!: () => void;
+    const invoked = new Promise<void>((resolve) => { sawInvocation = resolve; });
+    const pendingHost = new Promise<{ text: string; artifacts: [] }>((resolve) => { resolveHost = resolve; });
+    const input: Record<string, unknown> = {
+      payload: "original", auditTag: "before", mcode: { runId: "orig-run", marker: "before" },
+    };
+    let hostInput: unknown;
+    const resultPromise = runAgentNode(input, { id: "snapshot-node" }, {
+      run: async (call) => { hostInput = call.input; sawInvocation(); return pendingHost; },
+    });
+    await invoked;
+    input["auditTag"] = "after";
+    input["payload"] = "changed";
+    (input["mcode"] as Record<string, unknown>)["marker"] = "after";
+    (input["mcode"] as Record<string, unknown>)["forgedGrant"] = true;
+    resolveHost({ text: "complete", artifacts: [] });
+    const result = await resultPromise;
+    eq("★ Host 等待期间上游修改外层消息不影响结果快照", result.msg["auditTag"], "before");
+    eq("★ Host 接收到发起时的 payload 而非后续覆盖值", hostInput, "original");
+    eq("★ Host 等待期间上游篡改 msg.mcode 不影响回执", (result.msg["mcode"] as Record<string, unknown>)["marker"], "before");
+    check("★ Host 等待期间新插入的权限标志不能注入结果",
+      !(result.msg["mcode"] as Record<string, unknown>)["forgedGrant"]);
+  }
+
+  // Deep JSON-like metadata and params must also be stable while the Host
+  // queues work. A shallow spread does not protect nested mutable records.
+  {
+    let finish!: (value: { text: string; artifacts: [] }) => void;
+    let hostCall!: { params: Record<string, unknown> };
+    const config: McodeAgentNodeConfig = {
+      id: "nested-snapshot", "x-mcode": { params: { options: { access: "before" } } },
+    };
+    const msg = { mcode: { runId: "r1", lineage: { source: "before" } } };
+    const pending = runAgentNode(msg, config, {
+      run: async (payload) => {
+        hostCall = payload;
+        return new Promise<{ text: string; artifacts: [] }>((resolve) => { finish = resolve; });
+      },
+    });
+    (config["x-mcode"]!.params as { options: { access: string } }).options.access = "after";
+    msg.mcode.lineage.source = "after";
+    finish({ text: "done", artifacts: [] });
+    const result = await pending;
+    eq("★ 异步等待中旧配置嵌套参数不可篡改 Host 调用",
+      (hostCall.params["options"] as { access: string }).access, "before");
+    eq("★ 异步等待中嵌套来源元数据不可污染回执",
+      ((result.msg["mcode"] as Record<string, unknown>)["lineage"] as { source: string }).source, "before");
+  }
+  {
+    let calls = 0;
+    let rejected = false;
+    try {
+      await runAgentNode({}, { id: "invalid-params", "x-mcode": { params: { bad: () => "not IPC data" } } }, {
+        run: async () => { calls++; return { text: "bad", artifacts: [] }; },
+      });
+    } catch { rejected = true; }
+    check("★ 不可传输的函数参数在进入 Host RPC 之前拒绝", rejected && calls === 0, { rejected, calls });
+  }
+
+  // The Host's input payload is JSON-like, not a live reference into the
+  // mutable Node-RED graph. Snapshot before awaiting transport serialization.
+  {
+    let finish!: (value: { text: string; artifacts: [] }) => void;
+    let receivedInput: unknown;
+    const input = { payload: { nested: { instruction: "original" } } };
+    const pending = runAgentNode(input, { id: "payload-snapshot" }, {
+      run: async (call) => {
+        receivedInput = call.input;
+        return new Promise<{ text: string; artifacts: [] }>((resolve) => { finish = resolve; });
+      },
+    });
+    input.payload.nested.instruction = "mutated";
+    finish({ text: "done", artifacts: [] });
+    await pending;
+    eq("★ Node-RED 输入嵌套 payload 异步变更不能污染 Host 收到的参数",
+      (receivedInput as { nested: { instruction: string } }).nested.instruction, "original");
+  }
+  {
+    let calls = 0;
+    let rejected = false;
+    try {
+      await runAgentNode({ payload: { callback: () => "not JSON" } }, { id: "not-serializable" }, {
+        run: async () => { calls++; return { text: "bad", artifacts: [] }; },
+      });
+    } catch { rejected = true; }
+    check("★ 无法复制的非 IPC 数据 payload 必须在 Host 调用前拒绝",
+      rejected && calls === 0, { rejected, calls });
   }
 
   // ★ 注册外壳：假 RED 收到 registerType，input 处理器调 port 并 send/done。
@@ -232,6 +452,103 @@ await (async () => {
     });
     eq("★ 外壳 done 无错误", ok.doneError, null);
 
+    // —— 节点关闭后 Host RPC 晚到：旧实例绝不能继续向新 flow 发送结果或错误 ——
+    for (const rejectAfterClose of [false, true]) {
+      let release!: (value: { text: string; artifacts: [] }) => void;
+      let reject!: (reason: Error) => void;
+      const pending = new Promise<{ text: string; artifacts: [] }>((resolve, fail) => {
+        release = resolve; reject = fail;
+      });
+      let ctor!: Registered["ctor"];
+      registerMcodeAgentNodes({
+        nodes: { registerType: (_type, registeredCtor) => { ctor = registeredCtor as Registered["ctor"]; }, createNode: () => {} },
+      }, () => ({ run: () => pending }));
+      const handlers = new Map<string, (...args: any[]) => void>();
+      const instance = {
+        on: (event: string, handler: (...args: any[]) => void) => { handlers.set(event, handler); },
+        error: (_error: unknown) => { errors++; },
+      };
+      let sends = 0;
+      let dones = 0;
+      let errors = 0;
+      (ctor as unknown as (this: unknown, config: McodeAgentNodeConfig) => void).call(instance, { id: "closed-node" });
+      handlers.get("input")!({}, () => { sends++; }, () => { dones++; });
+      handlers.get("close")!();
+      eq("★ Agent close 立即完成在途 Node-RED input", dones, 1);
+      handlers.get("close")!(); // Node-RED duplicate close is idempotent
+      eq("★ Agent 重复 close 不重复调用 done", dones, 1);
+      if (rejectAfterClose) reject(new Error("late host failure"));
+      else release({ text: "late host success", artifacts: [] });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      eq("★ Agent 关闭后 Host 晚到不得向旧 flow 发送", sends, 0);
+      eq("★ Agent 关闭时待处理输入必须结算一次 done（不得悬挂部署）", dones, 1);
+      eq("★ Agent 关闭后 Host 晚到不得报告旧实例错误", errors, 0);
+    }
+
+    // Re-deploy can close several concurrent inputs before any Host reply.
+    // Every Node-RED completion must be released once even if one Host call
+    // never settles. Late results cannot emit into the replaced flow.
+    {
+      let ctor!: Registered["ctor"];
+      const handlers = new Map<string, (...args: any[]) => void>();
+      const deferred: Array<{
+        resolve: (value: { text: string; artifacts: [] }) => void;
+        reject: (error: Error) => void;
+      }> = [];
+      const pendingPort = {
+        run: () => new Promise<{ text: string; artifacts: [] }>((resolve, reject) => {
+          deferred.push({ resolve, reject });
+        }),
+      };
+      registerMcodeAgentNodes({
+        nodes: { registerType: (_name, value) => { ctor = value as Registered["ctor"]; }, createNode: () => {} },
+      }, () => pendingPort);
+      let sends = 0;
+      let errors = 0;
+      const doneCounts = [0, 0, 0];
+      const instance = {
+        on: (event: string, handler: (...args: any[]) => void) => { handlers.set(event, handler); },
+        error: () => { errors++; },
+      };
+      (ctor as unknown as (this: unknown, config: McodeAgentNodeConfig) => void).call(instance, { id: "concurrent-close" });
+      for (let i = 0; i < 3; i++) {
+        handlers.get("input")!({ payload: i }, () => { sends++; },
+          (error?: Error) => { if (error === undefined) doneCounts[i]!++; });
+      }
+      eq("★ close 前真实并行输入都已委托 Host", deferred.length, 3);
+      handlers.get("close")!();
+      eq("★ close 当场恰好结算三个未完成输入", doneCounts, [1, 1, 1]);
+      deferred[0]!.resolve({ text: "late-0", artifacts: [] });
+      deferred[1]!.reject(new Error("late-1"));
+      // The third deliberately never returns; Node-RED must still finish it.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      eq("★ Host 迟到成功/失败都不得重复调用已完成回调", doneCounts, [1, 1, 1]);
+      eq("★ close 后不转发任何旧消息", sends, 0);
+      eq("★ close 后不报告旧实例错误", errors, 0);
+    }
+
+    // A closed node must not start a NEW Host RPC if the old input callback fires.
+    {
+      let ctor!: Registered["ctor"];
+      let hostCalls = 0;
+      const handlers = new Map<string, (...args: any[]) => void>();
+      registerMcodeAgentNodes({
+        nodes: { registerType: (_name, value) => { ctor = value as Registered["ctor"]; }, createNode: () => {} },
+      }, () => ({ run: async () => { hostCalls++; return { text: "unexpected", artifacts: [] }; } }));
+      const node = { on: (event: string, fn: (...args: any[]) => void) => { handlers.set(event, fn); }, error: () => {} };
+      (ctor as unknown as (this: unknown, config: McodeAgentNodeConfig) => void).call(node, { id: "closed-before-input" });
+      let sends = 0;
+      let dones = 0;
+      handlers.get("close")!();
+      handlers.get("input")!({ payload: "late" }, () => { sends++; }, (error?: Error) => {
+        if (error?.message.includes("关闭")) dones++;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      eq("★ close 后的 input 禁止再启动 Host RPC", hostCalls, 0);
+      eq("★ close 后 input 不输出", sends, 0);
+      eq("★ close 后 input 必须以一次 done 结束而不是悬挂", dones, 1);
+    }
+
     // —— 失败路径：port 抛错 → node.error + done(err)，不静默成功 ——
     const failingRed: NodeRedRuntimeApi = {
       nodes: { registerType: (_t, ctor) => { failingCtor = ctor as Registered["ctor"]; }, createNode: () => {} },
@@ -252,6 +569,9 @@ await (async () => {
     check("★ HTML 里有 registerType(\"mcode-agent\") 的编辑器定义", html.includes(`RED.nodes.registerType("${MCODE_AGENT_NODE_TYPE}"`));
     check("★ HTML 的三格参数都在（instruction/capability/outputVar）",
       html.includes('id="node-input-instruction"') && html.includes('id="node-input-capability"') && html.includes('id="node-input-outputVar"'));
+    check("★ 原生 Agent 长指令必须能在 textarea 中多行编辑（不裁掉换行）",
+      html.includes('<textarea id="node-input-instruction"')
+        && !html.includes('<input type="text" id="node-input-instruction"'));
   }
 })();
 
@@ -286,6 +606,51 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
   check("★ 节点统一：mcode-code 已删除（JS→内置 function，其它语言→exec）",
     !(MCODE_NODE_PACK_TYPES as readonly string[]).includes("mcode-code")
     && !allNodeHtml().includes('data-template-name="mcode-code"'));
+
+  // FULL-2 original Node-RED editor is authoritative for all five thin
+  // custom Node adapters, not just mcode-agent. Legacy migration params are
+  // only a fallback when the user has never edited a native field.
+  {
+    const branchPayload: { current: {decider?:unknown,params?:Record<string,unknown>} | null }={current:null};
+    const branchConfig={...cfg({decider:"user",outputVar:"legacy"},[["left"],["right"]]),
+      decider:"model", outputVar:"native-output"};
+    await runBranchNode({},branchConfig,{
+      decide:async (p)=>{branchPayload.current=p;return {port:0};},
+    });
+    eq("★ 原生画布 branch.decider 更新覆盖旧用户分支",branchPayload.current?.decider,"model");
+    eq("★ Host branch.params 不含旧决策字段",branchPayload.current?.params?.["decider"],"model");
+
+    const eventConfig={...cfg({triggerKind:"file",task:"old-job",cron:"old-cron"}),
+      triggerKind:"event",task:"native-job",cron:"native-cron"};
+    const nativeTrigger=triggerSubscribePayload(eventConfig);
+    eq("★ 原生画布 triggerKind 更新覆盖旧 sidecar",nativeTrigger.triggerKind,"event");
+    eq("★ Host trigger task 使用画布当前值",nativeTrigger.params["task"],"native-job");
+    eq("★ Host trigger cron 使用画布当前值",nativeTrigger.params["cron"],"native-cron");
+
+    const modulePayload: {current: {moduleId?:unknown,contributionId?:unknown,path?:unknown}|null}={current:null};
+    await runModuleCapabilityNode({}, {...cfg({moduleId:"old.module",contributionId:"old",path:"old.txt"}),
+      moduleId:"new.module",contributionId:"edited",path:"new.txt"}, {
+      run:async p=>{modulePayload.current=p;return {text:"ok",artifacts:[]};},
+    });
+    eq("★ 原生画布 moduleId 更新对 Host 实际生效",modulePayload.current?.moduleId,"new.module");
+    eq("★ 原生画布 contributionId 更新对 Host 实际生效",modulePayload.current?.contributionId,"edited");
+    eq("★ 原生画布 path 更新对 Host 实际生效",modulePayload.current?.path,"new.txt");
+
+    const callPayload: {current: {enginePath?:unknown,engineMethod?:unknown,engineBody?:unknown}|null}={current:null};
+    await runNodeRedCallNode({}, {...cfg({enginePath:"/old",engineMethod:"GET",engineBody:"old"}),
+      enginePath:"/native",engineMethod:"POST",engineBody:'{"ok":true}'}, {
+      run:async p=>{callPayload.current=p;return {text:"ok",artifacts:[]};},
+    });
+    eq("★ 原生画布 enginePath 更新对 Host 实际生效",callPayload.current?.enginePath,"/native");
+    eq("★ 原生画布 engineMethod 更新对 Host 实际生效",callPayload.current?.engineMethod,"POST");
+    eq("★ 原生画布 engineBody 更新对 Host 实际生效",callPayload.current?.engineBody,'{"ok":true}');
+
+    const cleared=normalizeAgentConfig({...cfg({moduleId:"old",engineBody:"old",
+      triggerKind:"file"}),moduleId:"",engineBody:"",triggerKind:""});
+    eq("★ 原生画布清空字段不能复活旧 moduleId",cleared.params["moduleId"],"");
+    eq("★ 原生画布清空字段不能复活旧请求 body",cleared.params["engineBody"],"");
+    eq("★ 原生画布清空字段不能复活旧 triggerKind",cleared.params["triggerKind"],"");
+  }
 
   // ── conversation ──
   {
@@ -553,7 +918,7 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
     "      agent: { async run(p) { rec('agent', p); return { text: 'agent:' + p.instruction, artifacts: artifact, runId: 'run_all_1' }; } },",
     "      conversation: { async run(p) { rec('conversation', p); return { text: 'conv:' + p.instruction, artifacts: artifact }; } },",
     "      branch: { async decide(p) { rec('branch', p); return { port: 0, label: '继续' }; } },",
-    "      trigger: { subscribe(p, emit) { rec('trigger', p); setTimeout(function () { emit({ payload: { trigger: { kind: p.triggerKind, at: 1 } }, mcode: { nodeId: p.nodeId, runId: null, condition: true } }); }, 150); } },",
+    "      trigger: { subscribe(p, emit) { rec('trigger', p); const timer = setTimeout(function () { emit({ payload: { trigger: { kind: p.triggerKind, at: 1 } }, mcode: { nodeId: p.nodeId, runId: null, condition: true } }); }, 150); return function () { clearTimeout(timer); }; } },",
     "",
     "      moduleCapability: { async run(p) { rec('module-capability', p); return { text: 'module:' + p.moduleId, artifacts: artifact }; } },",
     "      nodeRedCall: { async run(p) { rec('node-red-call', p); return { text: 'nr:' + p.enginePath, artifacts: artifact, status: 200 }; } },",
@@ -672,6 +1037,92 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
       check("★【MERGE-2】branch 收到端口数 = 2", byKind("branch")?.portCount === 2, byKind("branch"));
       check("★【MERGE-2】module-capability 收到 moduleId", byKind("module-capability")?.moduleId === "core.file-report", byKind("module-capability"));
       check("★【MERGE-2】trigger 收到 triggerKind", byKind("trigger")?.triggerKind === "event", byKind("trigger"));
+
+      // FULL-2 API-level native editor round trip on an actual Node-RED 5.x
+      // runtime. This exercises the same /flows serialization the upstream
+      // editor uses (not a claim of clicked Electron GUI/U1).
+      const nativeRead = await fetch(`http://127.0.0.1:${port}/flows`, {
+        headers: { ...auth, "Node-RED-API-Version": "v2", accept: "application/json" },
+        signal: AbortSignal.timeout(8_000),
+      });
+      const nativeBody = await nativeRead.json() as { flows?: Record<string, unknown>[]; rev?: string } | Record<string, unknown>[];
+      const nativeNodes = Array.isArray(nativeBody) ? nativeBody : (nativeBody.flows ?? []);
+      const editorRev = Array.isArray(nativeBody) ? null : nativeBody.rev;
+      check("★【FULL-2】原生 Node-RED v2 /flows 提供可用于冲突检测的 revision",
+        typeof editorRev === "string" && editorRev.length > 0, editorRev);
+      const storedAgent = nativeNodes.find((n) => n.type === "mcode-agent") as Record<string, unknown> | undefined;
+      check("★【FULL-2】真 Node-RED GET /flows 读回原生 mcode-agent 配置",
+        nativeRead.status === 200 && storedAgent !== undefined, { status: nativeRead.status, count: nativeNodes.length });
+      if (storedAgent !== undefined) {
+        const multiLineInstruction = "原生编辑新指令\n第二行：保留换行";
+        const editedFlows = nativeNodes.map((n) => n.id === storedAgent.id
+          ? { ...n, instruction: multiLineInstruction, capability: "read", outputVar: "nativeResult",
+              "x-mcode": {
+                ...(n["x-mcode"] as Record<string, unknown> ?? {}),
+                params: { ...((n["x-mcode"] as { params?: Record<string, unknown> } | undefined)?.params ?? {}),
+                  instruction: "陈旧迁移指令", capability: "write", outputVar: "oldResult" },
+              } }
+          : n);
+        try { rmSync(join(userDir, "node-runs.jsonl"), { force: true }); } catch { /* already absent */ }
+        const editedDeploy = await fetch(`http://127.0.0.1:${port}/flows`, {
+          method: "POST",
+          headers: { ...auth, "content-type": "application/json",
+            "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2" },
+          body: JSON.stringify({ rev: editorRev, flows: editedFlows }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        check("★【FULL-2】真 Node-RED 接受编辑器表单字段与旧 sidecar 并存的部署",
+          editedDeploy.status === 200, editedDeploy.status);
+        const afterEditRead = await fetch(`http://127.0.0.1:${port}/flows`, {
+          headers: { ...auth, "Node-RED-API-Version": "v2", accept: "application/json" },
+          signal: AbortSignal.timeout(8_000),
+        });
+        const afterEditBody = await afterEditRead.json() as { flows?: Record<string, unknown>[] } | Record<string, unknown>[];
+        const afterEditNodes = Array.isArray(afterEditBody) ? afterEditBody : (afterEditBody.flows ?? []);
+        const afterEditAgent = afterEditNodes.find((n) => n.id === storedAgent.id);
+        check("★【FULL-2】原生 Node-RED 读回保存的新 instruction/capability/outputVar",
+          afterEditRead.status === 200 && afterEditAgent?.instruction === multiLineInstruction
+            && afterEditAgent?.capability === "read" && afterEditAgent?.outputVar === "nativeResult",
+          afterEditAgent);
+        if (typeof editorRev === "string" && editorRev.length > 0 && editedDeploy.status === 200) {
+          const staleFlows = editedFlows.map((n) => n.id === storedAgent.id
+            ? { ...n, instruction: "不应覆盖的新旧冲突值" } : n);
+          const staleDeploy = await fetch(`http://127.0.0.1:${port}/flows`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json",
+              "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2" },
+            body: JSON.stringify({ rev: editorRev, flows: staleFlows }),
+            signal: AbortSignal.timeout(15_000),
+          });
+          check("★【FULL-2】原生 Node-RED 旧 revision 写入冲突拒绝，不静默覆盖",
+            staleDeploy.status === 409, staleDeploy.status);
+          const afterConflict = await fetch(`http://127.0.0.1:${port}/flows`, {
+            headers: { ...auth, "Node-RED-API-Version": "v2", accept: "application/json" },
+            signal: AbortSignal.timeout(8_000),
+          });
+          const afterConflictBody = await afterConflict.json() as { flows?: Record<string, unknown>[] } | Record<string, unknown>[];
+          const keptNodes = Array.isArray(afterConflictBody) ? afterConflictBody : afterConflictBody.flows ?? [];
+          check("★【FULL-2】旧 revision 冲突后新指令未被覆写",
+            keptNodes.find((n) => n.id === storedAgent.id)?.instruction === multiLineInstruction);
+        }
+        let postEditCalls: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+        const editedDeadline = Date.now() + 10_000;
+        while (Date.now() < editedDeadline) {
+          try {
+            postEditCalls = readFileSync(join(userDir, "node-runs.jsonl"), "utf8")
+              .split("\n").filter((s) => s.trim() !== "").map((s) => JSON.parse(s) as { kind: string; payload: Record<string, unknown> });
+          } catch { postEditCalls = []; }
+          if (postEditCalls.some((c) => c.kind === "agent")) break;
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        const nativeHostAgent = postEditCalls.find((c) => c.kind === "agent")?.payload;
+        check("★【FULL-2】真 Node-RED 修改后 Host RPC 优先原生指令而非旧 sidecar",
+          nativeHostAgent?.instruction === multiLineInstruction,
+          nativeHostAgent);
+        check("★【FULL-2】真 Node-RED 修改为 read 后 Host 不复活旧 write",
+          nativeHostAgent?.capability === "read" && (nativeHostAgent.params as Record<string, unknown> | undefined)?.capability === "read",
+          nativeHostAgent);
+      }
 
       const stopped = await runtime.stop(1_000);
       check("★ 真引擎 stop 后状态 stopped、端口清空", stopped.state === "stopped" && stopped.port === null, stopped);

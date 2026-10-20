@@ -10,6 +10,20 @@ assert.deepEqual(mergeMcpSecretEdits(stdio, { ...masked, env: {} }).env, {});
 const remote = { type: "http" as const, url: "https://example.invalid/mcp", headers: { Authorization: "Bearer SECRET" } };
 assert.equal(JSON.stringify(maskMcpConfig(remote)).includes("Bearer SECRET"), false);
 assert.deepEqual(mergeMcpSecretEdits(remote, maskMcpConfig(remote)), remote);
+// Older/imported server records may carry both env and headers, regardless
+// of the active transport discriminant. A shallow spread must never leak
+// the unused secret container into the renderer's config editing form.
+const importedRemote = {
+  ...remote, env: { LEGACY_CREDENTIAL: "legacy-remote-environment-secret" },
+};
+const maskedImportedRemote = maskMcpConfig(importedRemote as any);
+assert.equal(JSON.stringify(maskedImportedRemote).includes("legacy-remote-environment-secret"), false,
+  "HTTP masked editing view must not leak unused env fields");
+const importedStdio = {
+  ...stdio, headers: { Authorization: "Bearer stale-http-credential" },
+};
+assert.equal(JSON.stringify(maskMcpConfig(importedStdio as any)).includes("stale-http-credential"), false,
+  "stdio masked editing view must not leak unused HTTP headers");
 // A stdio MCP server can keep the same executable while changing the script
 // in args/cwd. Such a new endpoint must never inherit blank masked secrets.
 const oldScript = { ...stdio, args: ["old-server.mjs"], cwd: "C:/safe-old" };

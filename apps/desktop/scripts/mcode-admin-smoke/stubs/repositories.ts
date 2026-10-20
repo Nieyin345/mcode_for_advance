@@ -75,6 +75,12 @@ export const SettingRepo = {
   set(key: string, value: string): void {
     settings.set(key, value);
   },
+  /** Model the production single-statement condition on this in-memory map. */
+  compareAndSet(key: string, expected: string | null, next: string): boolean {
+    if ((settings.get(key) ?? null) !== expected) return false;
+    settings.set(key, next);
+    return true;
+  },
 };
 
 /**

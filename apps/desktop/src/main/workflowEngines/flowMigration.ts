@@ -4,7 +4,7 @@
  * ## 它做什么(以及刻意不做什么)
  *
  * 把 Mcode 的 `WorkflowDoc`（`nodes` / `edges` / `schemaVersion`）映射成 Node-RED
- * flows.json 的 `nodes` / `links` 形状，并产出一份**可复核的迁移报告**；反向
+ * flows.json 的 `nodes` / `wires` 形状（Mcode 边注释另存 `links` sidecar），并产出**可复核的迁移报告**；反向
  * {@link flowToWorkflowDoc} 至少能把本模块生成的 flow 读回来做往返对比。
  *
  * **本切片不接存储、不改运行时**：不读盘、不写库、不 spawn 引擎、不碰 `runtimeSupervisor`
@@ -32,8 +32,8 @@
  * | `branch` | `mcode-branch` | 每条出边一个输出口（`decider: user` 需人裁决） |
  * | `condition` | `switch` | 输出 1 = `true` 边，输出 2 = `false` 边 |
  * | `trigger` | `mcode-trigger` | 无输入，单输出 |
- * | `command` | `exec` | 单输出；entry 形态走 `mcode-command-entry` |
- * | `code` | `function`（node）/ `mcode-code`（其它语言） | 单输出 |
+ * | `command` | `exec` | Node-RED 内置 3 输出口；Mcode 普通边先接 stdout |
+ * | `code` | `function`（node）/ `exec`（其它语言） | function 单输出；exec 3 输出 |
  * | `module-capability` | `mcode-module-capability` | 单输出 |
  * | `node-red` | `mcode-node-red-call` | 单输出 |
  *
@@ -44,18 +44,20 @@
  *
  * ## 边的表示
  *
- * Node-RED 的 link 是 `{ id, source, sourcePort, target, targetPort }`；一条输出口
- * 只能连一条 link，所以 **1→N 的出边由 Node-RED 的 link-out/link-in 中转**（端口
- * 上放一个 `link out` 节点，目标侧放 `link in`）。本模块生成的是**语义等价形状**：
- * 节点 ports 数按 kind 定，`links` 按 `(sourceNode, sourcePort)` 分组 —— 一组多条时
- * 生成中转节点。`flowToWorkflowDoc` 走同一条规则的反向，保证往返。
+ * 原版 Node-RED 的真实连接事实源是 `node.wires[port][]`（同一输出口可扇出多目标）；
+ * 本模块内部 `links` 只用于保存 Mcode 边 ID/label/note 等原生 wires 无法表达的字段。
+ * 真实 Admin API 仅提交节点数组，反向恢复时以 wires 为准，旧边注释通过源节点的
+ * `x-mcode.edgeMeta` 按完整 native 连接身份匹配；未匹配的副本与改线不得复用旧授权。
  *
  * ## 往返的已知边界
  *
  * - `position` 换成 Node-RED 的 `x`/`y`，四舍五入到整数（Node-RED 编辑器的画布单位）；
  *   往返后可能差 <1px —— 报告里 `lossy.details` 会点名（不静默）。
- * - Mcode 的边在 Node-RED 侧是"端口上的连接"，边自己的 `label` / `note` 存在 link 的
- *   `x-mcode-edge` 里；`branch` 的选项顺序 = 端口顺序（`outgoingEdgesOf` 的文档顺序）。
+ * - Mcode 的边在 Node-RED 侧是"端口上的连接"，边自己的 `label` / `note` 在
+ *   迁移 sidecar 的 `x-mcode-edge` 与源节点的 `x-mcode.edgeMeta` 中保留；
+ *   `branch` 的选项顺序 = 端口顺序（`outgoingEdgesOf` 的文档顺序）。
+ * - Native type 改变须明确重新映射；原生复制后的新 native ID 不继承老节点的写权限，
+ *   即使用户已经把老原件删除。真实 Editor UI 权限审计仍须另做 U1。
  */
 import {
   edgeOptionNameOf,
@@ -139,13 +141,30 @@ export interface NodeRedNode {
   /** 契约外字段与 Mcode 身份：原样带走。 */
   "x-mcode"?: {
     nodeId?: string;
+    /** Original Node-RED native identity. Copy/paste preserves unknown metadata
+     * but regenerates node.id; this allows us to rekey orphaned copies. */
+    nativeId?: string;
     type?: string;
+    /** Type emitted by the original palette adapter (not the Mcode runner).
+     * A changed native type with stale x-mcode metadata is an unsafe edit. */
+    nativeType?: string;
     title?: string;
     params?: Record<string, unknown>;
     capability?: string;
     position?: { x: number; y: number };
     unknown?: Record<string, unknown>;
     unknownPosition?: Record<string, unknown>;
+    /** Edge notes are not native wires properties. Keep them on the source
+     * node, which survives upstream GET /flows, tied to exact native IDs. */
+    edgeMeta?: Array<{
+      sourceNativeId: string;
+      targetNativeId: string;
+      sourcePort: number;
+      edgeId: string;
+      label?: string;
+      note?: string;
+      unknown?: Record<string, unknown>;
+    }>;
   };
   [key: string]: unknown;
 }
@@ -201,8 +220,16 @@ export interface NodeRedFlow {
  * v2（2026-10-19 节点统一）：`trigger` 按 triggerKind 分流到内置 `inject`/`watch`
  * （仅应用事件保留 `mcode-trigger`）；`code` 删除 `mcode-code`，非 JS 语言走
  * `exec` + 解释器前缀。
+ * v3（2026-10-20 原生双向回读）：从 Node-RED 原生顶层字段按当前
+ * editor/runtime 配置恢复 params（明确清空不得被 x-mcode 旧字段覆盖），
+ * x-mcode.edgeMeta 在真正的 nodes[]/wires[] 保存形状下按连线身份回收。
+ * 旧 v2 flow 没有新增元数据也可按存量 fallback 读回；版本号区分映射规则。
+ * v4（2026-10-20 克隆身份防护）：原版 Node-RED 编辑器复制节点时，
+ * x-mcode.nativeId/nativeType 与真实 native id/type 绑定；克隆不能复用
+ * 原 Mcode 节点身份、旧审批或特权，变更原生类型的旧 sidecar 不可复活。
+ * 旧 v2/v3 没有 nativeId/nativeType 时仍按遗留兼容规则读取。
  */
-export const FLOW_MIGRATOR_VERSION = 2;
+export const FLOW_MIGRATOR_VERSION = 4;
 
 /* ── runner.kind → Node-RED 节点类型 ── */
 
@@ -280,12 +307,240 @@ export function execCommandForCode(params: Record<string, unknown>): string | nu
   return code.trim() === "" ? prefix : `${prefix} ${code}`;
 }
 
+/**
+ * Populate only fields that the original Node-RED node form actually edits.
+ * Mcode-only values stay in x-mcode.params; native form values must be present
+ * at top level or the upstream editor will load blanks and overwrite them.
+ */
+function nativeNodeConfigOf(
+  kind: NodeRunnerKind | "unknown",
+  effectiveType: string,
+  node: WorkflowNode,
+): Record<string, unknown> {
+  const params = node.params;
+  const stringOf = (key: string, fallback = ""): string =>
+    typeof params[key] === "string" ? params[key] as string : fallback;
+  const timeoutMs = typeof params["timeoutMs"] === "number"
+    && Number.isSafeInteger(params["timeoutMs"]) && (params["timeoutMs"] as number) > 0
+    ? params["timeoutMs"] as number : 0;
+  // Node-RED 5.0.8 exec.timer and function.timeout are in seconds; Mcode
+  // timeoutMs is milliseconds. Convert units here, not in the host runtime.
+  const timeout = timeoutMs > 0 ? String(timeoutMs / 1000) : "";
+  const config: Record<string, unknown> = {};
+
+  if (kind === "prompt" || kind === "conversation") {
+    config.instruction = stringOf("instruction");
+    config.capability = node.capability === "write" ? "write"
+      : node.capability === "read" ? "read"
+      : params["capability"] === "write" ? "write" : "read";
+    config.outputVar = stringOf("outputVar");
+  } else if (kind === "branch") {
+    config.decider = params["decider"] === "model" ? "model" : "user";
+    config.outputVar = stringOf("outputVar");
+    config.note = stringOf("note");
+  } else if (kind === "trigger" && effectiveType === "mcode-trigger") {
+    config.triggerKind = stringOf(TRIGGER_KIND_KEY, "event");
+    config.task = stringOf("task");
+    config.cron = stringOf(TRIGGER_CRON_KEY);
+  } else if (kind === MODULE_CAPABILITY_RUNNER_KIND) {
+    config.moduleId = stringOf("moduleId");
+    config.contributionId = stringOf("contributionId");
+    config.path = stringOf("path");
+  } else if (kind === NODE_RED_RUNNER_KIND) {
+    config.enginePath = stringOf("enginePath");
+    config.engineMethod = stringOf("engineMethod", "POST");
+    config.engineBody = stringOf("engineBody");
+  } else if (kind === "command" && effectiveType === "exec") {
+    config.command = stringOf("command");
+    config.timer = timeout;
+    config.addpay = false;
+    config.append = "";
+    config.useSpawn = false;
+  } else if (kind === "code" && effectiveType === "function") {
+    config.func = stringOf("code");
+    config.outputs = 1;
+    config.timeout = timeout === "" ? 0 : Number(timeout);
+    config.initialize = "";
+    config.finalize = "";
+    config.libs = [];
+  } else if (kind === "code" && effectiveType === "exec") {
+    config.command = execCommandForCode(params) ?? "";
+    config.timer = timeout;
+    config.addpay = false;
+    config.append = "";
+    config.useSpawn = false;
+  }
+  return config;
+}
+
+function hasOwnField(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function mutableRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+}
+
+/** External flows.json can carry arbitrary x-mcode.unknown dictionaries.
+ * Preserve actual extensions without letting a copied/forged unknown value
+ * replace canonical fields derived from the editor and Host-owned metadata. */
+function safeUnknownFields(value: unknown, reserved: readonly string[]): Record<string, unknown> {
+  const fields = mutableRecord(value);
+  const excluded = new Set(reserved);
+  const result: Record<string, unknown> = Object.create(null);
+  for (const [key, entry] of Object.entries(fields)) {
+    if (key === "__proto__" || key === "constructor" || key === "prototype" || excluded.has(key)) continue;
+    result[key] = entry;
+  }
+  return result;
+}
+
+function nativeStringField(node: NodeRedNode, field: string): string | undefined {
+  if (!hasOwnField(node, field)) return undefined;
+  const value = node[field];
+  return typeof value === "string" ? value : value === null ? "" : undefined;
+}
+
+function applyNativeTimeout(params: Record<string, unknown>, node: NodeRedNode, field: "timer" | "timeout"): void {
+  if (!hasOwnField(node, field)) return;
+  const raw = node[field];
+  if (raw === "" || raw === null || raw === undefined || raw === 0 || raw === "0") {
+    // Empty native timer means unlimited. Preserve an explicit zero, but
+    // remove a stale positive timeout that the user cleared in the editor.
+    if (params["timeoutMs"] !== 0) delete params["timeoutMs"];
+    return;
+  }
+  const seconds = typeof raw === "number" ? raw
+    : typeof raw === "string" && /^\d+(?:\.\d+)?$/.test(raw.trim()) ? Number(raw.trim()) : NaN;
+  const milliseconds = Math.round(seconds * 1000);
+  if (Number.isSafeInteger(milliseconds) && milliseconds > 0) params["timeoutMs"] = milliseconds;
+}
+
+/** Read back editable fields owned by original Node-RED forms. A present empty
+ * string is an intentional clear and must override stale migration metadata. */
+function paramsFromNativeNode(node: NodeRedNode, savedParams: unknown): Record<string, unknown> {
+  const params = { ...mutableRecord(savedParams) };
+  const assign = (field: string, key = field, defaultValue = "", required = false): void => {
+    const value = nativeStringField(node, field);
+    if (value === undefined) return;
+    // Optional native form fields are materialized as empty strings by the
+    // editor even when Mcode never had that parameter. Avoid inventing empty
+    // params on an untouched round-trip, while still honoring explicit clears.
+    if (required || hasOwnField(params, key) || value !== defaultValue) params[key] = value;
+  };
+
+  switch (node.type) {
+    case "mcode-agent":
+    case "mcode-conversation":
+      assign("instruction", "instruction", "", true);
+      assign("outputVar");
+      // The native capability form is a *different* authority from stale
+      // x-mcode.params: if the old doc stored a capability param, update that
+      // copy as well or a later Host path may resurrect write permission.
+      if (hasOwnField(params, "capability")) {
+        params["capability"] = node["capability"] === "write" ? "write" : "read";
+      }
+      break;
+    case "mcode-branch":
+      assign("decider", "decider", "user");
+      assign("outputVar");
+      assign("note");
+      break;
+    case "mcode-trigger":
+      assign("triggerKind", "triggerKind", "event");
+      assign("task", "task", "", true);
+      assign("cron");
+      break;
+    case "mcode-module-capability":
+      assign("moduleId", "moduleId", "", true);
+      assign("contributionId", "contributionId", "", true);
+      assign("path", "path", "", true);
+      break;
+    case "mcode-node-red-call":
+      assign("enginePath", "enginePath", "", true);
+      assign("engineMethod", "engineMethod", "POST");
+      assign("engineBody");
+      break;
+    default:
+      break;
+  }
+
+  // The native command node and code nodes share Node-RED's exec config,
+  // but represent different Mcode contracts. Discriminate by saved Mcode
+  // params, then translate only the representation we know how to invert.
+  if (node.type === "exec") {
+    const rawCommand = nativeStringField(node, "command");
+    if (rawCommand !== undefined) {
+      if (hasOwnField(params, "code") || typeof params["language"] === "string") {
+        const languagePrefixes = Object.entries(EXEC_LANGUAGE_PREFIX)
+          .sort((a, b) => b[1].length - a[1].length);
+        const matched = languagePrefixes.find(([, prefix]) =>
+          rawCommand === prefix || rawCommand.startsWith(prefix + " "));
+        if (matched) {
+          const originalLanguage = typeof params["language"] === "string" ? params["language"] as string : undefined;
+          const knownLanguages = new Set(["python", "shell", "powershell"]);
+          // Unknown Mcode languages are emitted with a documented Python
+          // fallback. On an untouched round-trip, that fallback prefix must
+          // not silently rewrite the original language declaration.
+          if (originalLanguage === undefined || knownLanguages.has(originalLanguage) || matched[0] !== "python") {
+            params["language"] = matched[0];
+          }
+          params["code"] = rawCommand === matched[1] ? "" : rawCommand.slice(matched[1].length + 1);
+        } else {
+          // Keep the native edit visible as code text. It remains within the
+          // existing Mcode code runner contract, never an arbitrary command node.
+          params["code"] = rawCommand;
+        }
+      } else if (hasOwnField(params, "command")) {
+        params["command"] = rawCommand;
+      }
+    }
+    applyNativeTimeout(params, node, "timer");
+  } else if (node.type === "function"
+    && (hasOwnField(params, "code") || typeof params["language"] === "string")) {
+    assign("func", "code");
+    applyNativeTimeout(params, node, "timeout");
+  }
+
+  if (node.type === "inject" && (hasOwnField(params, TRIGGER_KIND_KEY) || hasOwnField(params, TRIGGER_CRON_KEY))) {
+    const crontab = nativeStringField(node, "crontab");
+    if (crontab !== undefined) {
+      if (hasOwnField(params, TRIGGER_CRON_KEY) || crontab.trim() !== "") params[TRIGGER_CRON_KEY] = crontab;
+      if (crontab.trim() !== "") params[TRIGGER_KIND_KEY] = "schedule";
+      else if (params[TRIGGER_KIND_KEY] !== "schedule") params[TRIGGER_KIND_KEY] = "manual";
+    }
+  } else if (node.type === "watch" && (hasOwnField(params, TRIGGER_KIND_KEY) || hasOwnField(params, TRIGGER_PATHS_KEY))) {
+    assign("files", TRIGGER_PATHS_KEY);
+    params[TRIGGER_KIND_KEY] = "file";
+  }
+  return params;
+}
+
+function capabilityFromNativeNode(
+  node: NodeRedNode,
+  savedCapability: WorkflowNode["capability"] | undefined,
+): WorkflowNode["capability"] | undefined {
+  if ((node.type === "mcode-agent" || node.type === "mcode-conversation")
+    && hasOwnField(node, "capability")) {
+    const nativeCapability = node["capability"] === "write" ? "write" : "read";
+    // "read" is the native editor default. If the original Mcode node had no
+    // explicit capability, don't manufacture a new field on an untouched flow.
+    if (savedCapability === undefined && nativeCapability === "read") return undefined;
+    return nativeCapability;
+  }
+  return savedCapability;
+}
+
 /** 这个 runner 的输出端口数（`branch` = 出边数，调用方另算；`trigger` 无输入）。 */
-function outputPortCountOf(kind: NodeRunnerKind | "unknown", outDegree: number): number {
+function outputPortCountOf(kind: NodeRunnerKind | "unknown", outDegree: number, effectiveType: string): number {
   if (kind === "branch") return Math.max(1, outDegree);
-  // condition → 原生 switch **固定两个输出口**（true / false）。2026-10-19 真引擎
-  // 实测：只给 1 个口时，switch 的 else 分支（口 1）消息被直接丢弃 —— 下游静默不动。
+  // condition → 原生 switch 固定两个输出口（true / false）。
   if (kind === "condition") return 2;
+  // Node-RED 5.0.8's built-in exec has three fixed outputs: stdout, stderr,
+  // and return code. Keep all three wire slots even when the Mcode graph only
+  // attaches a downstream edge to stdout (port 0).
+  if (effectiveType === "exec") return 3;
   return 1;
 }
 
@@ -496,9 +751,8 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     const nodeRedId = nodeIds.get(node.id)!;
     const outDegree = doc.edges.filter((e) => e.from === node.id).length;
     const nodeUnknown = unknownKeysForNode(unknownPaths, index);
-    const outPorts = outputPortCountOf(kind, outDegree);
-
     const effectiveType = kind === "unknown" ? "mcode-unknown" : effectiveNodeRedTypeOf(kind, node.params);
+    const outPorts = outputPortCountOf(kind, outDegree, effectiveType);
     if (kind === "unknown") {
       unmapped.push({
         nodeId: node.id,
@@ -534,9 +788,9 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
       builtinConfig.append = "";
       builtinConfig.useSpawn = false;
       builtinConfig.timer = "";
-      // 注意：exec 的 stdio 消息按口分（stdout→口0、stderr→口1、退出码→口2）。迁移器
-      // 只给 code 节点 1 个输出口 —— stdout 正常到口 0；stderr/退出码落到不存在的口会
-      // 被 Node-RED 丢弃（本片的最小语义，报告 lossy 点名；MERGE-3 接 Host 执行器时替换）。
+      // Node-RED 5.0.8 exec 固定三口（stdout→口0、stderr→口1、退出码→口2），上面
+      // outputPortCountOf 已保留三组 wires 槽位；Mcode 边仍只有通用出边，不会自动绑定
+      // stderr/退出码输出，剩余差异由迁移报告点名，后续 Host 执行器再统一结果契约。
     }
 
     const nrNode: NodeRedNode = {
@@ -547,6 +801,7 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
       y: Math.round(node.position.y),
       wires: Array.from({ length: outPorts }, () => [] as string[]),
       ...builtinConfig,
+      ...nativeNodeConfigOf(kind, effectiveType, node),
       // condition → 原生 switch 的**最小可执行形状**（2026-10-19 真引擎实测：
       // 只写 type:"switch" 不给 rules/property 时，switch 没有任何规则、消息不会
       // 转发到任何一个口 —— 整条下游静默不动）。按 `msg.mcode.condition`（布尔）
@@ -567,7 +822,9 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
         : {}),
       "x-mcode": {
         nodeId: node.id,
+        nativeId: nodeRedId,
         type: node.type,
+        nativeType: effectiveType,
         title: node.title,
         params: node.params,
         ...(node.capability !== undefined ? { capability: node.capability } : {}),
@@ -595,6 +852,23 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
           "condition 迁为原生 switch，规则暂为「msg.mcode.condition 为 true → 口 0，否则口 1」；"
           + "Mcode 的完整表达式求值（{{上游.字段}} / and-or / op）由 Host 侧承担（MERGE-3 接 mcode-condition），"
           + "此前该节点只保证整组能启动、消息按布尔分流。",
+      });
+    }
+    if ((kind === "code" || kind === "command")
+      && (effectiveType === "exec" || effectiveType === "function")) {
+      lossy.push({
+        code: "lossy",
+        nodeId: node.id,
+        message: "Mcode code/command 的产出契约（exitCode/stdout/stderr 及变量绑定）与原版 Node-RED function/exec 的 msg.payload、三路 stdout/stderr/return-code 消息不同；Mcode 普通出边目前只连原生输出口 0，完整产出映射须由 Host 适配器处理。",
+      });
+    }
+    if (kind === "code" && node.params["input"] !== undefined
+      && node.params["input"] !== null
+      && !(typeof node.params["input"] === "string" && node.params["input"].trim() === "")) {
+      lossy.push({
+        code: "lossy",
+        nodeId: node.id,
+        message: "code 的 input JSON 参数保留在 x-mcode.params，但原版 Node-RED function/exec 没有等价的 Mcode input-template/stdin 接口；原生运行不会自动应用该参数，须由 Host 执行器接管或在迁移确认中显式处理。",
       });
     }
     for (const issue of humanDecisionIssuesOf(node, kind, node.params)) {
@@ -706,6 +980,28 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     if (source?.wires !== undefined && source.wires[port] !== undefined) {
       source.wires[port].push(...targets);
     }
+  }
+
+  // The upstream Node-RED flows.json stores only nodes[]/wires[], never
+  // our top-level links sidecar. Attach unchanged edge annotations to each
+  // source native node so an actual editor GET /flows can round-trip them.
+  // A copied node inherits the metadata but NOT its original native id; the
+  // inverse adapter rejects that stale sourceNativeId instead of silently
+  // assigning an old approval/label to an unrelated new connection.
+  const nativeNodes = new Map([...nodeRedOf.values()].map((node) => [node.id, node]));
+  for (const link of links) {
+    const source = nativeNodes.get(link.source)?.["x-mcode"];
+    if (!source) continue;
+    const annotation = link["x-mcode-edge"];
+    (source.edgeMeta ??= []).push({
+      sourceNativeId: link.source,
+      targetNativeId: link.target,
+      sourcePort: link.sourcePort,
+      edgeId: annotation?.edgeId ?? link.id,
+      ...(annotation?.label !== undefined ? { label: annotation.label } : {}),
+      ...(annotation?.note !== undefined ? { note: annotation.note } : {}),
+      ...(annotation?.unknown !== undefined ? { unknown: annotation.unknown } : {}),
+    });
   }
 
   const flowId = nodeRedIdOf("flow", doc.id, usedIds);
@@ -822,13 +1118,92 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
   const liveName = tab?.label !== undefined && tab.label !== meta?.name
     ? tab.label : (meta?.name ?? tab?.label ?? flow.label);
   const nrToMcodeNode = new Map<string, string>();
+  // The upstream Node-RED editor allocates a fresh native id on duplicate,
+  // but carries unknown fields such as x-mcode.nodeId across unchanged.
+  // Without healing that identity, duplicate/paste creates two WorkflowDoc
+  // nodes with the SAME Mcode ID, breaking edges, CAS and later deployments.
+  // Prefer the migrated native ID (the original) as keeper, then choose a
+  // deterministic lexical keeper if this flow came from another editor.
+  const claimedGroups = new Map<string, NodeRedNode[]>();
+  for (const nrNode of flow.nodes) {
+    if (nrNode.type === "tab") continue;
+    const claimed = nrNode["x-mcode"]?.nodeId ?? nrNode.id;
+    const group = claimedGroups.get(claimed) ?? [];
+    group.push(nrNode);
+    claimedGroups.set(claimed, group);
+  }
+  const reservedNodeIds = new Set(claimedGroups.keys());
+  const assignCopyIdentity = (node: NodeRedNode): void => {
+    const base = "mcode_copy_" + createHash("sha256").update(node.id).digest("hex").slice(0, 20);
+    let candidate = base;
+    let ordinal = 2;
+    while (reservedNodeIds.has(candidate)) candidate = `${base}_${ordinal++}`;
+    reservedNodeIds.add(candidate);
+    nrToMcodeNode.set(node.id, candidate);
+  };
+  for (const [claimed, group] of [...claimedGroups].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+    const sorted = [...group].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    // Native duplication copies x-mcode.nodeId AND x-mcode.nativeId. If the
+    // original node is deleted, even a *single* surviving copy must receive
+    // a new Mcode identity; otherwise it inherits the deleted approval.
+    const originalsWithNativeMarker = sorted.filter(n =>
+      typeof n["x-mcode"]?.nativeId === "string" && n["x-mcode"]?.nativeId === n.id);
+    const hasNativeMarker = sorted.some(n => typeof n["x-mcode"]?.nativeId === "string");
+    const original = originalsWithNativeMarker[0]
+      ?? (hasNativeMarker ? undefined :
+        sorted.find(n => n.id === foldedNodeRedId("n", claimed)) ?? sorted[0]);
+    if (original !== undefined) nrToMcodeNode.set(original.id, claimed);
+    for (const clone of sorted) {
+      if (clone !== original) assignCopyIdentity(clone);
+    }
+  }
+/**
+ * Native palette replacement is NOT a metadata edit. A Node-RED node changed
+ * from exec to function but still carrying x-mcode.type=mcode.command cannot
+ * safely be translated back as the old Mcode command runner. Preserve
+ * backward compatibility for legacy (no nativeType) files by inferring only
+ * canonical built-in Mcode types; other third-party node types stay opaque.
+ */
+function expectedNativeType(meta: NonNullable<NodeRedNode["x-mcode"]>): string | undefined {
+  if (typeof meta.nativeType === "string" && meta.nativeType.length > 0) return meta.nativeType;
+  switch (meta.type) {
+    case "mcode.agent": return "mcode-agent";
+    case "mcode.main":
+    case "mcode.conversation": return "mcode-conversation";
+    case "mcode.branch": return "mcode-branch";
+    case "mcode.command": return "exec";
+    case "mcode.condition": return "switch";
+    case "mcode.node-red": return "mcode-node-red-call";
+    case "mcode.module-capability": return "mcode-module-capability";
+    case "mcode.code": return meta.params?.["language"] === "node" ? "function" : "exec";
+    case "mcode.trigger": {
+      const kind = meta.params?.["triggerKind"];
+      if (kind === "schedule" || kind === "manual") return "inject";
+      if (kind === "file") return "watch";
+      return "mcode-trigger";
+    }
+    default: return undefined;
+  }
+}
+
   const nodes: WorkflowNode[] = [];
   for (const nrNode of flow.nodes) {
     // tab 是迁移器生成的容器（文档级元数据挂在它身上），不是 Mcode 节点 —— 读回时跳过。
     // Mcode 的类型 id 形如 `作者.名字`，不可能叫 `tab`，所以这个跳过不吞用户节点。
     if (nrNode.type === "tab") continue;
     const x = nrNode["x-mcode"];
-    const nodeId = x?.nodeId ?? nrNode.id;
+    const nodeId = nrToMcodeNode.get(nrNode.id) ?? x?.nodeId ?? nrNode.id;
+    // A native palette node type can be replaced while Node-RED preserves
+    // unknown x-mcode sidecar properties. Do not allow an edited Function
+    // node to be re-imported as an old command/agent type with stale params.
+    const expected = x !== undefined ? expectedNativeType(x) : undefined;
+    if (expected !== undefined && expected !== nrNode.type
+      // Older snapshots without a type marker legitimately used a
+      // mcode-unknown placeholder when their node-pack was missing. Keep
+      // that non-executable archive readable, not silently executable.
+      && !(x?.nativeType === undefined && nrNode.type === "mcode-unknown")) {
+      throw new Error(`Node-RED native type 不一致：节点 ${nrNode.id}（Mcode ${nodeId}），原为 ${expected}，现为 ${nrNode.type}；拒绝套用旧 x-mcode 参数，须明确重新映射`);
+    }
     nrToMcodeNode.set(nrNode.id, nodeId);
     const originalPosition = x?.position;
     const moved = originalPosition !== undefined &&
@@ -837,19 +1212,34 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
     const position = moved
       ? { x: nrNode.x ?? originalPosition!.x, y: nrNode.y ?? originalPosition!.y }
       : (originalPosition ?? { x: nrNode.x ?? 0, y: nrNode.y ?? 0 });
+    const nativeParams = paramsFromNativeNode(nrNode, x?.params);
+    const capability = capabilityFromNativeNode(
+      nrNode,
+      x?.capability as WorkflowNode["capability"] | undefined,
+    );
     const node: WorkflowNode = {
       id: nodeId,
       type: x?.type ?? nrNode.type,
       title: nrNode.name ?? x?.title ?? "",
-      params: x?.params ?? {},
+      params: nativeParams,
       position: {
         x: position.x,
         y: position.y,
-        ...(x?.unknownPosition ?? {}),
+        ...safeUnknownFields(x?.unknownPosition, ["x", "y"]),
       } as WorkflowNode["position"],
-      ...(x?.capability !== undefined ? { capability: x.capability as WorkflowNode["capability"] } : {}),
-      ...(x?.unknown ?? {}),
+      ...(capability !== undefined ? { capability } : {}),
+      ...safeUnknownFields(x?.unknown, ["id", "type", "title", "params", "position", "capability"]),
     };
+    // Native "Duplicate" assigns a new native ID but copies x-mcode and
+    // its prior write privilege verbatim. A new Mcode node identity must not
+    // silently inherit the original node's approval/security declaration.
+    if (x?.nodeId !== undefined && nodeId !== x.nodeId) {
+      if (node.capability === "write") node.capability = "read";
+      if ((nrNode.type === "mcode-agent" || nrNode.type === "mcode-conversation")
+        && node.params["capability"] === "write") {
+        node.params["capability"] = "read";
+      }
+    }
     nodes.push(node);
   }
 
@@ -858,15 +1248,37 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
   const edges: Array<WorkflowEdge & Record<string, unknown>> = [];
   if (flow.links !== undefined && sidecarMatchesNativeWires(flow.nodes, flow.links)) {
     const links = [...flow.links].sort((a, b) => (a.source === b.source ? a.sourcePort - b.sourcePort : 0));
+    const linkIdCounts = new Map<string, number>();
+    for (const link of links) {
+      const id = link["x-mcode-edge"]?.edgeId ?? link.id;
+      linkIdCounts.set(id, (linkIdCounts.get(id) ?? 0) + 1);
+    }
+    const occupied = new Set(
+      [...linkIdCounts].filter(([, n]) => n === 1).map(([id]) => id),
+    );
     for (const link of links) {
       const x = link["x-mcode-edge"];
+      const savedId = x?.edgeId ?? link.id;
+      let edgeId = savedId;
+      if ((linkIdCounts.get(savedId) ?? 0) > 1) {
+        // Imported/duplicated sidecar metadata may carry the same edgeId on
+        // two distinct native links. Native identities, not copied x-mcode
+        // labels, decide which links must receive unique recovered IDs.
+        const base = "e_" + createHash("sha256")
+          .update(JSON.stringify([link.source, link.sourcePort, link.target, link.id]))
+          .digest("hex").slice(0, 24);
+        edgeId = base;
+        let ordinal = 2;
+        while (occupied.has(edgeId)) edgeId = `${base}_${ordinal++}`;
+        occupied.add(edgeId);
+      }
       const edge: WorkflowEdge & Record<string, unknown> = {
-        id: x?.edgeId ?? link.id,
+        id: edgeId,
         from: nrToMcodeNode.get(link.source) ?? link.source,
         to: nrToMcodeNode.get(link.target) ?? link.target,
         ...(x?.label !== undefined ? { label: x.label } : {}),
         ...(x?.note !== undefined ? { note: x.note } : {}),
-        ...(x?.unknown ?? {}),
+        ...safeUnknownFields(x?.unknown, ["id", "from", "to", "label", "note"]),
       };
       edges.push(edge);
     }
@@ -884,6 +1296,50 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
       queue.push(old);
       oldByConnection.set(key, queue);
     }
+    // Actual native GET /flows has no top-level links. Restore annotations
+    // only for the exact source-native-id + port + target-native-id of a
+    // still-connected wire; edited/new wires remain canonical.
+    if (flow.links === undefined) {
+      for (const sourceNode of flow.nodes) {
+        const annotations = sourceNode["x-mcode"]?.edgeMeta;
+        if (!Array.isArray(annotations)) continue;
+        for (const annotation of annotations) {
+          if (!annotation || typeof annotation !== "object"
+            || annotation.sourceNativeId !== sourceNode.id
+            || typeof annotation.targetNativeId !== "string"
+            || typeof annotation.edgeId !== "string"
+            || !Number.isInteger(annotation.sourcePort)
+            || annotation.sourcePort < 0) continue;
+          const key = connectionKey(sourceNode.id, annotation.sourcePort, annotation.targetNativeId);
+          const queue = oldByConnection.get(key) ?? [];
+          queue.push({
+            id: annotation.edgeId,
+            source: sourceNode.id,
+            sourcePort: annotation.sourcePort,
+            target: annotation.targetNativeId,
+            targetPort: 0,
+            "x-mcode-edge": {
+              edgeId: annotation.edgeId,
+              ...(typeof annotation.label === "string" ? { label: annotation.label } : {}),
+              ...(typeof annotation.note === "string" ? { note: annotation.note } : {}),
+              ...(annotation.unknown && typeof annotation.unknown === "object"
+                && !Array.isArray(annotation.unknown) ? { unknown: annotation.unknown } : {}),
+            },
+          });
+          oldByConnection.set(key, queue);
+        }
+      }
+    }
+    // The native editor does not persist Mcode edge IDs. Keep the historic
+    // readable fallback for ordinary links, but two distinct pairs such as
+    // (a_b,c) and (a,b_c) both fold into e_a_b_c. Precompute all candidate
+    // IDs before assigning any, so a change in Node-RED array order cannot
+    // arbitrarily decide which connection keeps the ambiguous ID.
+    const pending: Array<{
+      edge: WorkflowEdge & Record<string, unknown>;
+      identity: string;
+    }> = [];
+    const repeats = new Map<string, number>();
     for (const nrNode of flow.nodes) {
       if (nrNode.wires === undefined) continue;
       const from = nrToMcodeNode.get(nrNode.id) ?? nrNode.id;
@@ -892,20 +1348,47 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
         for (const targetNrId of targets) {
           const to = nrToMcodeNode.get(targetNrId) ?? targetNrId;
           n += 1;
-          const saved = oldByConnection.get(connectionKey(nrNode.id, port, targetNrId))?.shift();
+          const key = connectionKey(nrNode.id, port, targetNrId);
+          const occurrence = (repeats.get(key) ?? 0) + 1;
+          repeats.set(key, occurrence);
+          const saved = oldByConnection.get(key)?.shift();
           const metadata = saved?.["x-mcode-edge"];
           const edgeId = metadata?.edgeId ?? `e_${from}_${to}${n > 1 ? `_${n}` : ""}`;
           const label = metadata?.label ?? (nrNode.type === "switch"
             ? (port === 1 ? "false" : port === 0 ? "true" : undefined)
             : undefined);
-          edges.push({
-            id: edgeId, from, to,
-            ...(label !== undefined ? { label } : {}),
-            ...(metadata?.note !== undefined ? { note: metadata.note } : {}),
-            ...(metadata?.unknown ?? {}),
-          } as WorkflowEdge);
+          pending.push({
+            identity: JSON.stringify([nrNode.id, port, targetNrId, occurrence]),
+            edge: {
+              id: edgeId, from, to,
+              ...(label !== undefined ? { label } : {}),
+              ...(metadata?.note !== undefined ? { note: metadata.note } : {}),
+              ...safeUnknownFields(metadata?.unknown, ["id", "from", "to", "label", "note"]),
+            } as WorkflowEdge,
+          });
         }
       });
+    }
+    const candidateCounts = new Map<string, number>();
+    for (const { edge } of pending) {
+      candidateCounts.set(edge.id, (candidateCounts.get(edge.id) ?? 0) + 1);
+    }
+    const usedEdgeIds = new Set(
+      pending.filter(({ edge }) => candidateCounts.get(edge.id) === 1).map(({ edge }) => edge.id),
+    );
+    for (const { edge, identity } of pending) {
+      if ((candidateCounts.get(edge.id) ?? 0) > 1) {
+        // JSON tuple boundaries, original native node IDs and per-connection
+        // occurrence make collision repair stable even when editor reorders
+        // nodes or names contain arbitrary separators.
+        const base = "e_" + createHash("sha256").update(identity).digest("hex").slice(0, 24);
+        let candidate = base;
+        let counter = 2;
+        while (usedEdgeIds.has(candidate)) candidate = `${base}_${counter++}`;
+        edge.id = candidate;
+        usedEdgeIds.add(candidate);
+      }
+      edges.push(edge);
     }
   }
 
@@ -924,7 +1407,11 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
     edges,
     builtin: meta?.builtin ?? false,
     updatedAt: meta?.updatedAt ?? 0,
-    ...(meta?.unknown ?? {}),
+    ...safeUnknownFields(meta?.unknown, [
+      "id", "name", "description", "icon", "prompt", "frameworkNote",
+      "trigger", "schemaVersion", "inputSchema", "outputSchema",
+      "nodes", "edges", "builtin", "updatedAt",
+    ]),
   } as WorkflowDoc;
 }
 

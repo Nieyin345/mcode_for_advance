@@ -1171,7 +1171,22 @@ console.log("\n守望命令模板");
 
   // 【MC-054】显式重建:备份原值 → 校验 → 重建(部分损坏的常用法:保住读得出的好条目)。
   SettingRepo.set("automation.watch.templates", JSON.stringify(mixed));
-  const rebuilt = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
+  // 【MC-054】真实隔离 SettingRepo 已有历史备份，模拟两个修复恰好发生在同一毫秒。
+  // 旧实现仅用 Date.now() 作为键，会静默覆盖之前已有的不可逆坏档原文字节。
+  const fixedBackupNow = 1760849999123;
+  const priorBackupKey = "automation.watch.templates.corrupt-" + fixedBackupNow;
+  const priorBackupBytes = "OLD_BACKUP_MUST_NOT_BE_OVERWRITTEN\\n{legacy raw bytes}";
+  SettingRepo.set(priorBackupKey, priorBackupBytes);
+  const restoreClock = Date.now;
+  let rebuilt: Record<string, unknown>;
+  try {
+    Date.now = () => fixedBackupNow;
+    rebuilt = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
+  } finally {
+    Date.now = restoreClock;
+  }
+  eq("★ MC-054:同毫秒已有备份不能被显式修复覆盖", SettingRepo.get(priorBackupKey), priorBackupBytes);
+  check("★ MC-054:重建返回新且不与旧备份冲突的键", typeof rebuilt.backupKey === "string" && rebuilt.backupKey !== priorBackupKey, rebuilt.backupKey);
   eq("★ MC-054:显式重建成功", rebuilt.ok, true);
   check(
     "★ MC-054:重建返回备份键",
@@ -1192,10 +1207,55 @@ console.log("\n守望命令模板");
     ["a", "d"],
   );
   SettingRepo.delete(rebuilt.backupKey as string);
+  SettingRepo.delete(priorBackupKey);
 
   // 没坏的时候「重建」要拒绝(不静默做用户没要的事)。
   const noNeed = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
   eq("★ MC-054:文件没坏时显式重建拒绝(不做多余动作)", noNeed.ok, false);
+
+  // 【MC-054】首读遭临时 IO 错误，随后真实原件又能读到：这不等于原件真的
+  // corrupt。旧代码把 read_error 也视作可重建，省略 templates 时清空整表。
+  const healthyBeforeGlitch = JSON.stringify([{ id: "stable", name: "原健康模板", command: "echo keep" }]);
+  SettingRepo.set("automation.watch.templates", healthyBeforeGlitch);
+  const realGetBeforeGlitch = SettingRepo.get;
+  let faultCount = 0;
+  (SettingRepo as { get: (key: string) => string | null }).get = (key: string) => {
+    if (key === "automation.watch.templates" && faultCount++ === 0) {
+      throw new Error("MC054_TRANSIENT_READ_ERROR_TEST_ONLY");
+    }
+    return realGetBeforeGlitch(key);
+  };
+  let rebuildOnReadError: Record<string, unknown>;
+  try {
+    rebuildOnReadError = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
+  } finally {
+    (SettingRepo as { get: (key: string) => string | null }).get = realGetBeforeGlitch;
+  }
+  eq("★ MC-054:瞬时读错不能触发显式重建并清空原本健康模板", rebuildOnReadError.ok, false);
+  eq("★ MC-054:读错之后现存健康模板原始字节不变", SettingRepo.get("automation.watch.templates"), healthyBeforeGlitch);
+
+  // MC-054 并发窗口：先读到部分损坏旧数据，在备份前另一写入者已修成健康
+  // 新版本；旧实现会备份新的原件，却根据旧 partial 列表回写，丢掉对方更新。
+  const partialBeforeConcurrentUpdate = JSON.stringify(mixed);
+  const concurrentHealthyRaw = JSON.stringify([{ id: "newer", name: "并发恢复的新模板", command: "echo newest" }]);
+  SettingRepo.set("automation.watch.templates", partialBeforeConcurrentUpdate);
+  const originalGetForConcurrent = SettingRepo.get;
+  let matchedReads = 0;
+  (SettingRepo as { get: (key: string) => string | null }).get = (key: string) => {
+    if (key === "automation.watch.templates" && matchedReads++ === 1) {
+      SettingRepo.set("automation.watch.templates", concurrentHealthyRaw);
+    }
+    return originalGetForConcurrent(key);
+  };
+  let rebuildWithStalePartial: Record<string, unknown>;
+  try {
+    rebuildWithStalePartial = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
+  } finally {
+    (SettingRepo as { get: (key: string) => string | null }).get = originalGetForConcurrent;
+  }
+  eq("★ MC-054:重建期间原模板被并发修改应拒绝过期快照", rebuildWithStalePartial.ok, false);
+  eq("★ MC-054:过期快照被拒后并发更新的原始字节保持不变",
+    SettingRepo.get("automation.watch.templates"), concurrentHealthyRaw);
 
   // 健康状态下正常保存照旧(没被上面的拒写卡死)。【MC-054 第十七轮】现在必须带
   // revision —— 否则连健康态也拒(那正是修复:旧调用方不再被静默放行)。

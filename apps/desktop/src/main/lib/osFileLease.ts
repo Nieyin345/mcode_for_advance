@@ -38,6 +38,15 @@ const LEASE_FRESH_GRACE_MS = 5_000;
 
 interface LeaseRecord { host: string; pid: number; token: string; createdAt: number; }
 
+function isCompleteLeaseRecord(value: unknown): value is LeaseRecord {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const rec = value as Partial<LeaseRecord>;
+  return typeof rec.host === "string" && rec.host.length > 0
+    && typeof rec.pid === "number" && Number.isSafeInteger(rec.pid) && rec.pid > 0
+    && typeof rec.token === "string" && rec.token.trim().length > 0
+    && typeof rec.createdAt === "number" && Number.isFinite(rec.createdAt) && rec.createdAt > 0;
+}
+
 function leaseOwnerAlive(rec: LeaseRecord): boolean {
   if (rec.host !== hostname()) return Date.now() - rec.createdAt < LEASE_STALE_MS;
   try {
@@ -62,9 +71,9 @@ async function tryAcquireOsLease(lockPath: string, token: string): Promise<boole
   // 另一进程此刻读到的可能是**空/半截**内容 —— 绝不能就此判「陈旧」去删活锁(那等于没有锁),
   // 见 doc-ops-smoke 里两独立进程用例暴露的抢锁竞态。
   const raw = await fs.readFile(lockPath, "utf8").catch(() => "");
-  let existing: LeaseRecord | null = null;
-  try { existing = JSON.parse(raw) as LeaseRecord; } catch { existing = null; }
-  if (existing && Number.isFinite(existing.pid)) {
+  let existing: unknown;
+  try { existing = JSON.parse(raw) as unknown; } catch { existing = null; }
+  if (isCompleteLeaseRecord(existing)) {
     if (!leaseOwnerAlive(existing)) await fs.rm(lockPath, { force: true }).catch(() => undefined);
     return false;
   }

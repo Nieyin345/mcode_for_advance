@@ -15,6 +15,7 @@
 import type { IpcMain } from "electron";
 import { dialog } from "electron";
 import { readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import type { AutomationRunEntry, AutomationRunStep, AutomationTriggerFacts, PersistedWorkflowRunLite, WatchCommandTemplate } from "@contracts/ipc";
 import { diagnoseTriggerFacts } from "@contracts/ipc";
 import { shouldRetryOutcome } from "@contracts/nodeType";
@@ -624,8 +625,8 @@ const WATCH_TEMPLATES_KEY = "automation.watch.templates";
 type WatchTemplatesHealth =
   | { state: "absent" }
   | { state: "valid"; templates: WatchCommandTemplate[] }
-  | { state: "partial"; templates: WatchCommandTemplate[]; problems: string[] }
-  | { state: "corrupt"; detail: string }
+  | { state: "partial"; templates: WatchCommandTemplate[]; problems: string[]; raw: string }
+  | { state: "corrupt"; detail: string; raw: string }
   | { state: "read_error"; detail: string };
 
 function classifyWatchTemplates(): WatchTemplatesHealth {
@@ -640,9 +641,9 @@ function classifyWatchTemplates(): WatchTemplatesHealth {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    return { state: "corrupt", detail: `不是合法的 JSON:${(err as Error).message}` };
+    return { state: "corrupt", detail: `不是合法的 JSON:${(err as Error).message}`, raw };
   }
-  if (!Array.isArray(parsed)) return { state: "corrupt", detail: "存的不是数组" };
+  if (!Array.isArray(parsed)) return { state: "corrupt", detail: "存的不是数组", raw };
   const templates: WatchCommandTemplate[] = [];
   const problems: string[] = [];
   for (const item of parsed) {
@@ -650,7 +651,7 @@ function classifyWatchTemplates(): WatchTemplatesHealth {
     if (check.success) templates.push(check.data);
     else problems.push(check.error.issues[0]?.message ?? "形状不对");
   }
-  if (problems.length > 0) return { state: "partial", templates, problems };
+  if (problems.length > 0) return { state: "partial", templates, problems, raw };
   return { state: "valid", templates };
 }
 
@@ -703,6 +704,12 @@ function rebuildCorruptWatchTemplates(
   if (health.state === "absent" || health.state === "valid") {
     return { ok: false, error: "命令模板没有损坏,不需要重建(直接普通保存即可)" };
   }
+  // 【MC-054】第一次 IO 读错不代表原件内容损坏。若随后读取突然成功，
+  // 旧逻辑会把健康原件当 corrupt 备份，再以 [] 覆盖所有模板。
+  // 读错必须先恢复可读性并重新分类，绝不以失败快照进入任何重建路径。
+  if (health.state === "read_error") {
+    return { ok: false, error: `命令模板当前无法读取(${health.detail})，不能证明文件损坏，也不能安全重建；请先恢复读取后重新打开面板。` };
+  }
   let original: string | null = null;
   try {
     original = SettingRepo.get(WATCH_TEMPLATES_KEY);
@@ -712,7 +719,27 @@ function rebuildCorruptWatchTemplates(
   if (original === null || original.length === 0) {
     return { ok: false, error: "命令模板的原值读不出来,连备份都做不了" };
   }
-  const backupKey = `${WATCH_TEMPLATES_KEY}.corrupt-${Date.now()}`;
+  // 【MC-054】分类时见过的坏档必须仍是同一份原始字节。若期间有人修复
+  // 或修改设置，绝不能备份了别人的新内容，却按旧 partial 快照重建清空。
+  // 此比较与同主进程同步写入一起防止本地旧快照覆盖；跨进程仍需真正事务 CAS。
+  if (original !== health.raw) {
+    return { ok: false, error: "命令模板在检查损坏情况后已被其他操作更改，已拒绝按过期快照重建；请重新读取当前模板。" };
+  }
+  // 同一毫秒内可能已有历史备份。不能把「修复损坏数据」变成覆盖旧原件。
+  // 随机 UUID 让不同重建调用各有独立键；写前仍核验目标不存在，若设置读
+  // 失败则 fail-closed（绝不猜测为空）。普通保存与重建始终共用此唯一入口。
+  let backupKey = "";
+  try {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const candidate = `${WATCH_TEMPLATES_KEY}.corrupt-${Date.now()}-${randomUUID()}`;
+      if (SettingRepo.get(candidate) !== null) continue;
+      backupKey = candidate;
+      break;
+    }
+  } catch (err) {
+    return { ok: false, error: `无法检查命令模板备份是否已存在:${(err as Error).message} —— 未重建,原值未动` };
+  }
+  if (backupKey === "") return { ok: false, error: "无法分配不冲突的备份键，原值未动" };
   try {
     SettingRepo.set(backupKey, original);
   } catch (err) {

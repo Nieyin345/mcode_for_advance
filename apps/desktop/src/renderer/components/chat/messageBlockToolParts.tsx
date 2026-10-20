@@ -14,6 +14,8 @@
  * 尾部那对 `import` + `export` 是**再导出**（放那里是为了避开循环依赖），原地没动。
  */
 import { countLines } from "@renderer/lib/lineDiff.js";
+import { safeStringify } from "./toolInputSerialize.js";
+export { safeStringify };
 import { useState, useMemo, type ComponentType } from "react";
 import {
   IconFileSearch,
@@ -129,14 +131,6 @@ const TOOL_ICON_MAP: Record<string, ComponentType<{ size?: number; className?: s
 export function ToolIcon({ name, className }: { name: string; className?: string }) {
   const Icon = TOOL_ICON_MAP[name] ?? IconRobot;
   return <Icon size={13} className={cn("shrink-0", className)} />;
-}
-
-export function safeStringify(v: unknown): string {
-  try {
-    return typeof v === "string" ? v : JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
-  }
 }
 
 /** Locale-aware text for module-level helper functions (no hook access).

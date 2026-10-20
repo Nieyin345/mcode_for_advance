@@ -31,7 +31,7 @@
  * 值里的 `${VAR}` / `${VAR:-默认}` 投递前按本机环境变量展开(与 Claude Code 一致),
  * 所以密钥可以不写进项目文件。
  */
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -45,6 +45,7 @@ import {
 import { SettingRepo } from "@main/store/repositories.js";
 import { describeMcpConfig, parseMcpConfig } from "@main/lib/mcpConfig.js";
 import { normPathKey } from "@main/lib/pathNorm.js";
+import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 
 export const PROJECT_MCP_FILE = ".mcp.json";
 
@@ -123,14 +124,10 @@ function serversOf(obj: Record<string, unknown>): Record<string, unknown> {
 
 async function writeProjectFile(projectPath: string, obj: Record<string, unknown>): Promise<void> {
   const file = projectMcpFile(projectPath);
-  // MC-040: a same-millisecond PID+Date.now() suffix can collide between two
-  // concurrent writers (`<file>.<pid>.<Date.now()>.tmp`). randomUUID makes the
-  // staging name unique regardless of timing, so two writers never share (and
-  // thus never corrupt) one temp file; the atomic rename still makes the swap
-  // itself all-or-nothing.
-  const tmp = `${file}.${randomUUID()}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(obj, null, 2)}\n`, "utf8");
-  await fs.rename(tmp, file);
+  // MCP 配置也是用户数据，不可另造弱化版临时 rename。
+  // 与文档保存统一复用原子文件助手：独立临时文件+fsync+失败清理，
+  // 既有 symlink/hardlink 必须拒写（否则会静默解除用户其他入口）。
+  await atomicReplaceFile(file, `${JSON.stringify(obj, null, 2)}\n`);
 }
 
 /* ── MC-040: per-project write serialization ──

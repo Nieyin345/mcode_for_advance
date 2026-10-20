@@ -107,38 +107,87 @@ export function normalizeAgentConfig(config: McodeAgentNodeConfig): {
   const params = "params" in xmcode ? xmcode.params : undefined;
   const rawParams = params !== null && typeof params === "object" && !Array.isArray(params)
     ? params as Record<string, unknown> : {};
-  // instruction 优先取迁移器放在 x-mcode.params 里的原文（Mcode 侧参数），其次节点配置
-  // 的顶层 instruction（编辑器里手填的那种）。
-  const instruction = typeof rawParams["instruction"] === "string"
-    ? (rawParams["instruction"] as string)
-    : typeof safeConfig.instruction === "string" ? safeConfig.instruction : "";
-  const capability = safeConfig.capability === "write" || rawParams["capability"] === "write" ? "write" : "read";
-  const outputVar = typeof safeConfig.outputVar === "string" && safeConfig.outputVar.trim() !== ""
-    ? safeConfig.outputVar.trim()
-    : typeof rawParams["outputVar"] === "string" && (rawParams["outputVar"] as string).trim() !== ""
-      ? (rawParams["outputVar"] as string).trim()
-      : null;
+  // The upstream Node-RED editor owns instruction/capability/outputVar once a
+  // property exists on the native node. x-mcode.params is a migration fallback,
+  // NOT a second editable source of truth. Using sidecar-first semantics
+  // silently resurrects old instructions/write permissions after a user edits
+  // them in the real editor, including when a field is intentionally cleared.
+  const hasNative = (key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(safeConfig, key);
+  const instruction = hasNative("instruction")
+    ? (typeof safeConfig.instruction === "string" ? safeConfig.instruction : "")
+    : (typeof rawParams["instruction"] === "string" ? rawParams["instruction"] : "");
+  const capability: "read" | "write" = hasNative("capability")
+    ? (safeConfig.capability === "write" ? "write" : "read")
+    : (rawParams["capability"] === "write" ? "write" : "read");
+  const nativeOutputVar = hasNative("outputVar");
+  const rawOutputVar = nativeOutputVar ? safeConfig.outputVar : rawParams["outputVar"];
+  const outputVar = typeof rawOutputVar === "string" && rawOutputVar.trim() !== ""
+    ? rawOutputVar.trim() : null;
+  // Host consumers also receive params; do not pass stale privileged values
+  // there after normalizing top-level native-editor properties.
+  const effectiveParams: Record<string, unknown> = { ...rawParams };
+  if (hasNative("instruction")) effectiveParams["instruction"] = instruction;
+  if (hasNative("capability")) effectiveParams["capability"] = capability;
+  if (nativeOutputVar) {
+    if (outputVar === null) delete effectiveParams["outputVar"];
+    else effectiveParams["outputVar"] = outputVar;
+  }
+  // The other native Node-RED palette forms are equally authoritative:
+  // branch, trigger, module-capability and node-red-call must not execute
+  // stale x-mcode.params after a user edits their real editor fields.
+  // Preserve unknown migration metadata; overwrite only fields actually
+  // exposed by the upstream Node-RED node form and present in the native node.
+  for (const key of [
+    "decider", "note", "triggerKind", "task", "cron",
+    "moduleId", "contributionId", "path",
+    "enginePath", "engineMethod", "engineBody",
+  ]) {
+    if (hasNative(key)) {
+      effectiveParams[key] = typeof safeConfig[key] === "string" ? safeConfig[key] : "";
+    }
+  }
   const nodeId = typeof xmcode.nodeId === "string" && xmcode.nodeId !== ""
     ? xmcode.nodeId
     : typeof safeConfig.id === "string" ? safeConfig.id : "";
-  return { instruction, capability, outputVar, nodeId, params: rawParams };
+  return { instruction, capability, outputVar, nodeId, params: effectiveParams };
 }
 
 /** Host RPC boundary validator shared by agent, conversation, module and
  * node-red-call. TypeScript signatures do not validate dynamic IPC payloads.
  * A malformed response must reach Node-RED Catch, not emit a success message.
  */
-export function assertMcodeNodePortResult(result: unknown): void {
+export function assertMcodeNodePortResult<T>(result: T): T {
   if (result === null || typeof result !== "object"
     || typeof (result as { text?: unknown }).text !== "string"
     || !Array.isArray((result as { artifacts?: unknown }).artifacts)
-    || !(result as { artifacts: unknown[] }).artifacts.every(
-      (item) => item !== null && typeof item === "object"
-        && typeof (item as { kind?: unknown }).kind === "string"
-        && typeof (item as { uri?: unknown }).uri === "string")
+    || !(result as unknown as { artifacts: unknown[] }).artifacts.every(
+      (item) => {
+        if (item === null || typeof item !== "object" || Array.isArray(item)) return false;
+        const artifact = item as {
+          kind?: unknown; uri?: unknown; name?: unknown;
+          mimeType?: unknown; sizeBytes?: unknown;
+        };
+        return typeof artifact.kind === "string" && artifact.kind.trim() !== ""
+          && typeof artifact.uri === "string" && artifact.uri.trim() !== ""
+          && (artifact.name === undefined || typeof artifact.name === "string")
+          && (artifact.mimeType === undefined || typeof artifact.mimeType === "string")
+          && (artifact.sizeBytes === undefined
+            || (typeof artifact.sizeBytes === "number"
+              && Number.isSafeInteger(artifact.sizeBytes) && artifact.sizeBytes >= 0));
+      })
     || ((result as { runId?: unknown }).runId !== undefined
-      && typeof (result as { runId?: unknown }).runId !== "string")) {
+      && (typeof (result as { runId?: unknown }).runId !== "string"
+        || (result as unknown as { runId: string }).runId.trim() === ""))) {
     throw new Error("Host RPC result invalid: expected { text, artifacts, runId? }");
+  }
+  // The Host transport can return mutable objects or extra custom metadata.
+  // A function/symbol hidden in an artifact cannot pass Node-RED IPC. Make a
+  // detached result at the same trust boundary instead of leaking references.
+  try {
+    return structuredClone(result);
+  } catch {
+    throw new Error("Host RPC result invalid: non-cloneable output");
   }
 }
 
@@ -148,6 +197,44 @@ export interface McodeAgentNodeOutcome {
   msg: Record<string, unknown>;
   /** port 的原始结果（外壳不用，单测/诊断用）。 */
   result: McodeAgentRunResult;
+}
+
+/**
+ * One trust boundary for every native Mcode Host-backed Node-RED type.
+ * Captures the invocation-time identity, native editor params, provenance and
+ * payload BEFORE an async Host RPC. Do not trust mutable upstream messages
+ * or let one node type bypass the Agent identity/clone checks.
+ */
+export function snapshotMcodeNodeInvocation(
+  inputMsg: Record<string, unknown>,
+  config: McodeAgentNodeConfig,
+): {
+  normalized: ReturnType<typeof normalizeAgentConfig>;
+  messageSnapshot: Record<string, unknown>;
+  incomingMcode: Record<string, unknown>;
+  paramsSnapshot: Record<string, unknown>;
+  inputSnapshot: unknown;
+  runId: string | null;
+} {
+  const normalized = normalizeAgentConfig(config);
+  if (normalized.nodeId.trim() === "") {
+    throw new Error("Host Agent node identity missing; refusing execution");
+  }
+  const messageSnapshot = { ...inputMsg };
+  const rawMcode = messageSnapshot["mcode"];
+  let incomingMcode: Record<string, unknown>;
+  let paramsSnapshot: Record<string, unknown>;
+  let inputSnapshot: unknown;
+  try {
+    incomingMcode = rawMcode !== null && typeof rawMcode === "object" && !Array.isArray(rawMcode)
+      ? structuredClone(rawMcode as Record<string, unknown>) : {};
+    paramsSnapshot = structuredClone(normalized.params);
+    inputSnapshot = structuredClone(messageSnapshot["payload"] ?? null);
+  } catch {
+    throw new Error("Host Agent invocation data is not cloneable");
+  }
+  const runId = typeof incomingMcode["runId"] === "string" ? incomingMcode["runId"] : null;
+  return { normalized, messageSnapshot, incomingMcode, paramsSnapshot, inputSnapshot, runId };
 }
 
 /**
@@ -162,25 +249,21 @@ export async function runAgentNode(
   config: McodeAgentNodeConfig,
   port: McodeAgentPort,
 ): Promise<McodeAgentNodeOutcome> {
-  const normalized = normalizeAgentConfig(config);
-  const incomingMcode = (inputMsg["mcode"] !== null && typeof inputMsg["mcode"] === "object"
-    ? inputMsg["mcode"]
-    : {}) as Record<string, unknown>;
-  const runId = typeof incomingMcode["runId"] === "string" ? incomingMcode["runId"] : null;
+  const { normalized, messageSnapshot, incomingMcode,
+    paramsSnapshot, inputSnapshot, runId } = snapshotMcodeNodeInvocation(inputMsg, config);
   const payload: McodeAgentRunPayload = {
     instruction: normalized.instruction,
-    input: inputMsg["payload"] ?? null,
+    input: inputSnapshot,
     capability: normalized.capability,
     nodeId: normalized.nodeId,
     runId,
-    params: normalized.params,
+    params: paramsSnapshot,
   };
-  const result = await port.run(payload);
-  // All six Node-RED bridge node types share one Host result validator.
-  assertMcodeNodePortResult(result);
+  // Validate and detach the Host result before exposing it downstream.
+  const result = assertMcodeNodePortResult(await port.run(payload));
   // 产出形状与 Mcode 侧「这一步交什么」一致：text + artifacts。
   const msg: Record<string, unknown> = {
-    ...inputMsg,
+    ...messageSnapshot,
     payload: { text: result.text, artifacts: result.artifacts },
     mcode: {
       ...incomingMcode,
@@ -189,6 +272,11 @@ export async function runAgentNode(
       ...(normalized.outputVar !== null ? { outputVar: normalized.outputVar } : {}),
     },
   };
+  // An upstream node's outputVar is not this node's output binding. Clearing
+  // the native editor field must remove it instead of inheriting stale metadata.
+  if (normalized.outputVar === null) {
+    delete (msg["mcode"] as Record<string, unknown>)["outputVar"];
+  }
   return { msg, result };
 }
 
@@ -211,11 +299,55 @@ export interface NodeRedRuntimeApi {
 
 /** Node-RED 节点实例的最小面（注册函数里用到的部分）。 */
 export interface NodeRedNodeLike {
+  on(event: "close", listener: () => void): void;
   on(event: "input", listener: (msg: Record<string, unknown>, send: (m: unknown) => void, done: (err?: Error) => void) => void): void;
   error(err: unknown, msg?: Record<string, unknown>): void;
   status?(status: Record<string, unknown>): void;
   warn?(msg: string): void;
   id?: string;
+}
+
+/**
+ * Shared lifecycle for Mcode thin Host RPC nodes. Node-RED owns the executor;
+ * this adapter only closes its input accounting on redeploy. A Host RPC may
+ * never settle (e.g. lost approval or connection), so close must synchronously
+ * release every pending done() exactly once without publishing a stale result.
+ * Physical Host cancellation is a separate, still unimplemented contract.
+ */
+export function createNodeInputLifecycle(node: NodeRedNodeLike): {
+  isClosed(): boolean;
+  begin(done: (err?: Error) => void): ((err?: Error) => void) | null;
+} {
+  let closed = false;
+  const pending = new Set<(err?: Error) => void>();
+  node.on("close", () => {
+    if (closed) return;
+    closed = true;
+    for (const finish of [...pending]) {
+      try {
+        finish();
+      } catch (err) {
+        // A broken Node-RED done() callback must not strand the other
+        // inputs or abort redeploy. Report it, but keep closing siblings.
+        try { node.error(err); } catch { /* close must still continue */ }
+      }
+    }
+  });
+  return {
+    isClosed: () => closed,
+    begin(done) {
+      if (closed) {
+        done(new Error("Node-RED 节点已关闭"));
+        return null;
+      }
+      const finish = (err?: Error): void => {
+        if (!pending.delete(finish)) return;
+        done(err);
+      };
+      pending.add(finish);
+      return finish;
+    },
+  };
 }
 
 /** Node-RED 节点 HTML（编辑器 palette 里的外观；不含执行逻辑）。 */
@@ -244,7 +376,7 @@ export function agentNodeHtml(): string {
   </div>
   <div class="form-row">
     <label for="node-input-instruction"><i class="fa fa-pencil"></i> Instruction</label>
-    <input type="text" id="node-input-instruction" placeholder="What this step does">
+    <textarea id="node-input-instruction" rows="5" placeholder="What this step does"></textarea>
   </div>
   <div class="form-row">
     <label for="node-input-capability"><i class="fa fa-shield"></i> Capability</label>
@@ -275,15 +407,18 @@ export function registerMcodeAgentNodes(RED: NodeRedRuntimeApi, getPort: () => M
     // Node-RED 约定（核心节点同形）：先建基类节点 —— 否则这个实例没有 wires/_flow，
     // send() 会抛 "Node object is not a node-red Node"（真引擎实测抓到）。
     RED.nodes.createNode(node, config);
+    const lifecycle = createNodeInputLifecycle(node);
     node.on("input", (msg, send, done) => {
+      const finish = lifecycle.begin(done);
+      if (finish === null) return;
       void (async () => {
         try {
           const outcome = await runAgentNode(msg, config, getPort());
-          send(outcome.msg);
-          done();
+          if (!lifecycle.isClosed()) send(outcome.msg);
+          finish();
         } catch (err) {
-          node.error(err, msg);
-          done(err instanceof Error ? err : new Error(String(err)));
+          if (!lifecycle.isClosed()) node.error(err, msg);
+          finish(lifecycle.isClosed() ? undefined : err instanceof Error ? err : new Error(String(err)));
         }
       })();
     });

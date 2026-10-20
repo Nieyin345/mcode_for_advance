@@ -47,10 +47,11 @@
  *     这条 flow 的文件）。
  */
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, mkdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
-import { resolveProjectFlowDir } from "./projectFlowDir.js";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
+import { bindProjectDirectoryIdentity, ensureProjectDirectoryNoLinks, resolveProjectFlowDir } from "./projectFlowDir.js";
 import type { NodeRedFlow } from "./flowMigration.js";
 import {
   flowExecutableUnderTrust,
@@ -103,6 +104,11 @@ export function validateFlowId(flowId: unknown): { ok: true; id: string } | { ok
   if (/[\\/]/.test(flowId)) return { ok: false, reason: "flowId 不能含路径分隔符（/ 或 \\）" };
   if (/^[A-Za-z]:/.test(flowId)) return { ok: false, reason: "flowId 不能是盘符路径" };
   if (/[\u0000-\u001f\u007f]/.test(flowId)) return { ok: false, reason: "flowId 不能含控制字符" };
+  // Node UTF-8 把所有孤立 UTF-16 surrogate 都编码成同一 U+FFFD。
+  // 不拒绝时两个本不相同的 id 会散列到同一文件，造成数据身份冲突。
+  if (/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(flowId)) {
+    return { ok: false, reason: "flowId 不能包含孤立 UTF-16 代理项" };
+  }
   return { ok: true, id: flowId };
 }
 
@@ -119,10 +125,20 @@ function looksLikeFlow(value: unknown): value is NodeRedFlow {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const flow = value as Record<string, unknown>;
   if (!Array.isArray(flow["nodes"])) return false;
-  // 每个节点必须是带 id/type 的对象 —— 只到这一层，不重写引擎的完整 schema。
-  return flow["nodes"].every((n) => n !== null && typeof n === "object" && !Array.isArray(n)
-    && typeof (n as Record<string, unknown>)["id"] === "string"
-    && typeof (n as Record<string, unknown>)["type"] === "string");
+  // Node-RED 以节点 id 作为 wires/部署关联的唯一身份。空/重复 id
+  // 不仅是不完整的 JSON；后续节点定位和批准 revision 都会指向歧义对象。
+  // 只校验引擎必需的身份边界，不在此复制 Node-RED 的全部节点 schema。
+  const seen = new Set<string>();
+  return flow["nodes"].every((n) => {
+    if (n === null || typeof n !== "object" || Array.isArray(n)) return false;
+    const id = (n as Record<string, unknown>)["id"];
+    const type = (n as Record<string, unknown>)["type"];
+    if (typeof id !== "string" || id.trim().length === 0
+        || typeof type !== "string" || type.trim().length === 0
+        || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }
 
 /** 已落盘 flow 的 docId 是其身份，不能只用 nodes[] 判定可执行。 */
@@ -188,13 +204,46 @@ export class NodeRedFlowStorage {
   projectDir(projectId: string | null | undefined): string {
     const resolved = resolveProjectFlowDir(this.engineDir, projectId);
     if (!resolved.ok) throw new Error(`非法 projectId：${resolved.reason}`);
-    mkdirSync(resolved.dir, { recursive: true });
+    ensureProjectDirectoryNoLinks(this.engineDir, resolved.dir, resolved.legacy);
+    if (!resolved.legacy) bindProjectDirectoryIdentity(resolved.dir, resolved.projectId);
     return resolved.dir;
   }
 
-  private flowsDirOf(projectId: string | null | undefined): string {
+  /** A read must not create a never-used project directory/identity marker.
+   * Once the directory exists, all read paths still pass projectDir() for
+   * the normal full-ID marker and no-link checks. */
+  private projectExistsForRead(projectId: string | null | undefined): boolean {
+    const resolved = resolveProjectFlowDir(this.engineDir, projectId);
+    if (!resolved.ok) throw new Error(`非法 projectId：${resolved.reason}`);
+    try {
+      lstatSync(resolved.dir);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  /** Ensure the final flows/ component is a real directory, not a junction.
+   * A trusted project/ marker says nothing about user-editable descendants.
+   * Both read and write entry points must pass through this same boundary. */
+  private flowsDirOf(projectId: string | null | undefined, create = true): string {
     const dir = join(this.projectDir(projectId), FLOWS_SUBDIR);
-    mkdirSync(dir, { recursive: true });
+    const check = (): boolean => {
+      try {
+        const stat = lstatSync(dir);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) {
+          throw new Error("Node-RED flows/ 不是独立目录（链接或特殊文件），拒绝跨目录读写");
+        }
+        return true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw err;
+      }
+    };
+    if (!check() && create) mkdirSync(dir);
+    // Verify again after creation, including when the directory already existed.
+    check();
     return dir;
   }
 
@@ -208,12 +257,30 @@ export class NodeRedFlowStorage {
     if (!valid.ok) return { ok: false, kind: "invalid-flow-id", reason: valid.reason };
     let dir: string;
     try {
-      dir = this.projectDir(projectId);
+      if (!this.projectExistsForRead(projectId)) {
+        return { ok: false, kind: "missing", reason: `「${flowId}」不存在` };
+      }
+      // A read must not create flows/, but it must check the same no-link
+      // fence as the saving/listing paths before inspecting any flow bytes.
+      dir = this.flowsDirOf(projectId, false);
     } catch (err) {
       return { ok: false, kind: "invalid-project", reason: err instanceof Error ? err.message : String(err) };
     }
-    const file = join(dir, FLOWS_SUBDIR, `${safeFlowFileName(valid.id)}.json`);
-    if (!existsSync(file)) return { ok: false, kind: "missing", reason: `「${flowId}」不存在` };
+    const file = join(dir, `${safeFlowFileName(valid.id)}.json`);
+    // The file name is a capability boundary: never load a symlink, shared
+    // hardlink, directory or special file as trusted flow bytes. A hardlink
+    // can alias a valid-looking JSON file outside this managed project.
+    try {
+      const stat = lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+        return { ok: false, kind: "corrupt", reason: "flow 存档必须是独立普通文件，拒绝链接或特殊文件" };
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return { ok: false, kind: "missing", reason: `「${flowId}」不存在` };
+      }
+      return { ok: false, kind: "io-error", reason: err instanceof Error ? err.message : String(err) };
+    }
     let text: string;
     try {
       text = readFileSync(file, "utf8");
@@ -248,27 +315,40 @@ export class NodeRedFlowStorage {
   ): Promise<SaveFlowResult> {
     const valid = validateFlowId(flowId);
     if (!valid.ok) return Promise.resolve({ ok: false, kind: "invalid-flow-id", reason: valid.reason });
-    // TypeScript 边界不能代替运行时校验：未知 IPC / 插件输入不得写出不可读的 flow。
-    if (!looksLikeFlow(flow)) {
+    // Snapshot untrusted caller input *before* entering the asynchronous
+    // per-file save queue. Otherwise the caller can change nodes or metadata
+    // after validation, and the queue would persist different bytes.
+    // JSON round-trip also rejects cycles/BigInt/getters that cannot become
+    // a durable Node-RED JSON archive, instead of rejecting via Promise throw.
+    let inputSnapshot: NodeRedFlow;
+    try {
+      inputSnapshot = JSON.parse(JSON.stringify(flow)) as NodeRedFlow;
+    } catch (err) {
+      return Promise.resolve({
+        ok: false, kind: "corrupt",
+        reason: `待保存 flow 无法序列化为 JSON：${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+    // Validate the exact snapshot to be stored, not a mutable caller object.
+    if (!looksLikeFlow(inputSnapshot)) {
       return Promise.resolve({ ok: false, kind: "corrupt", reason: "待保存 flow 形状非法（缺 nodes[] 或节点缺 id/type）" });
     }
-    const suppliedMeta: unknown = (flow as { "x-mcode"?: unknown })["x-mcode"];
+    const suppliedMeta: unknown = (inputSnapshot as { "x-mcode"?: unknown })["x-mcode"];
     if (suppliedMeta !== undefined && suppliedMeta !== null &&
         (typeof suppliedMeta !== "object" || Array.isArray(suppliedMeta))) {
       return Promise.resolve({ ok: false, kind: "corrupt", reason: "x-mcode 元数据必须是对象" });
     }
-    let file: string;
-    try {
-      file = this.filePathOf(projectId, valid.id);
-    } catch (err) {
-      return Promise.resolve({ ok: false, kind: "invalid-project", reason: err instanceof Error ? err.message : String(err) });
+    // Runtime IPC/MCP inputs are not guaranteed to satisfy the TS signature.
+    // Validate before even creating the per-project flows/ directory.
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      return Promise.resolve({ ok: false, kind: "io-error", reason: "保存参数必须包含 expectedRevision" });
     }
     const expected = options.expectedRevision;
     if (expected !== null && typeof expected !== "string") {
       return Promise.resolve({ ok: false, kind: "io-error", reason: "expectedRevision 必须是字符串或 null" });
     }
     // docId 一致性（本次写入的内容自身）：缺失补上，不同 → 拒绝。
-    const meta = (flow as { "x-mcode"?: Record<string, unknown> })["x-mcode"];
+    const meta = (inputSnapshot as { "x-mcode"?: Record<string, unknown> })["x-mcode"];
     if (meta !== undefined && meta !== null && typeof meta === "object") {
       const docId = meta["docId"];
       if (docId !== undefined && docId !== valid.id) {
@@ -279,8 +359,19 @@ export class NodeRedFlowStorage {
         });
       }
     }
+    // Only a completely validated payload may claim a project identity or
+    // create its flows/ directory. In particular, a drifted docId is a
+    // rejected request, not a reason to materialize new project metadata.
+    let file: string;
+    try {
+      file = this.filePathOf(projectId, valid.id);
+    } catch (err) {
+      return Promise.resolve({ ok: false, kind: "invalid-project", reason: err instanceof Error ? err.message : String(err) });
+    }
 
     return serialize(file, async () => {
+      try {
+        return await withOsFileLease(file, async () => {
       // 盘上现状
       let current: FlowFileRecord | null = null;
       if (existsSync(file)) {
@@ -322,7 +413,7 @@ export class NodeRedFlowStorage {
       }
       // 补齐 docId 再落盘（迁移器已有；手写 flow 也统一收口）。
       const nextFlow: NodeRedFlow = {
-        ...flow,
+        ...inputSnapshot,
         "x-mcode": { ...(meta ?? {}), docId: valid.id },
       } as NodeRedFlow;
       const revision = flowRevision(nextFlow);
@@ -332,6 +423,15 @@ export class NodeRedFlowStorage {
         return { ok: false as const, kind: "io-error" as const, reason: err instanceof Error ? err.message : String(err), currentRevision };
       }
       return { ok: true as const, flowId: valid.id, revision, created: current === null };
+        });
+      } catch (err) {
+        // Lease acquisition and directory revalidation may fail after the
+        // request has already joined the queue. The public save API promises
+        // an explicit result, not an unhandled rejected Promise.
+        return { ok: false as const, kind: "io-error" as const,
+          reason: `Flow 保存的跨进程租约/磁盘操作失败：${err instanceof Error ? err.message : String(err)}`,
+          currentRevision: null };
+      }
     });
   }
 
@@ -382,11 +482,15 @@ export class NodeRedFlowStorage {
   listFlows(projectId: string | null | undefined): ListFlowsResult {
     let dir: string;
     try {
-      dir = this.flowsDirOf(projectId);
+      // Both a never-used project and an empty flows/ must remain untouched.
+      // Do not claim a new project identity merely by opening a read-only UI.
+      if (!this.projectExistsForRead(projectId)) return { ok: true, entries: [] };
+      dir = this.flowsDirOf(projectId, false);
     } catch (err) {
       return { ok: false, kind: "invalid-project", reason: err instanceof Error ? err.message : String(err) };
     }
     const entries: ListFlowsEntry[] = [];
+    if (!existsSync(dir)) return { ok: true, entries };
     let names: string[];
     try {
       names = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
@@ -398,6 +502,10 @@ export class NodeRedFlowStorage {
       let parsed: unknown = null;
       let reason: string | undefined;
       try {
+        const stat = lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+          throw new Error("flow 存档是硬/软链接或特殊文件，拒绝信任和执行");
+        }
         parsed = JSON.parse(readFileSync(file, "utf8"));
       } catch (err) {
         reason = err instanceof Error ? err.message : String(err);

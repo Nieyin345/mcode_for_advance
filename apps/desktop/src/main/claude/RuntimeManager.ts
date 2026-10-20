@@ -26,7 +26,7 @@ import { BridgeRegistry } from "@main/providers/bridge/bridgeRegistry.js";
 import { mobileEventBus } from "@main/mobile/MobileEventBus.js";
 import { invalidateUsageStats } from "@main/lib/usageStats.js";
 import { log } from "@main/lib/logger.js";
-import { pendingBackflowPrompt, pendingCreationMemoryPrompt, clearBackflow } from "@main/lib/pendingBackflow.js";
+import { pendingBackflowBatch, pendingCreationMemoryPrompt, clearBackflowThrough } from "@main/lib/pendingBackflow.js";
 import { clearAgentMail, mailNoticeText, peekAgentMailBatch, setDeliveryPort, type MailNotice } from "@main/lib/agentMail.js";
 import { readTaskOutputFile } from "@main/lib/taskOutput.js";
 import { resolveAgentPrompt, resolveWorkflowPrompt } from "@main/orchestration/prompt.js";
@@ -1597,7 +1597,8 @@ class RuntimeManager {
     //
     // **只看不取**(`peek`):回合真的起来了才清(见下面 `clearBackflow`)—— 先在发之前
     // take 的话,回合没起成那一段就永久丢了,而用户只会发现助手"没记住刚才那些产出"。
-    const backflow = pendingBackflowPrompt(session.id);
+    const backflowBatch = pendingBackflowBatch(session.id);
+    const backflow = backflowBatch.text;
 
     // **别的代理捎来的话也在这里带进去**(见 `lib/agentMail.ts`)。同一个时机、同一个
     // 理由:主进程插不进提供方那边的会话记录,唯一能保证被看见的就是下一轮的提示词。
@@ -1671,7 +1672,9 @@ class RuntimeManager {
     }), input.memoryTrace);
     // 回合起来了,那两段才算真的送到了 —— 见上面 `peekBackflow` 那段注释。
     if (handle !== null && backflowAll.length > 0) {
-      clearBackflow(session.id);
+      // New workflow results can arrive during awaited provider.startTurn.
+      // Only the batch embedded in req.prompt has actually been delivered.
+      clearBackflowThrough(session.id, backflowBatch.through);
       // 只确认本轮 peek 时读到的前缀。startTurn 尚未返回时新来的信
       // 不在 req.prompt 里,绝不能用“清空整份收件箱”把它也删掉。
       if (mail.length > 0) clearAgentMail(session.id, mailBatch.through);

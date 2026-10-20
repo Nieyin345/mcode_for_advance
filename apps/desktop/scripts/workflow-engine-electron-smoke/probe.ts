@@ -35,12 +35,13 @@
  * - 不碰用户数据根：electron-host.cjs 把所有 app 路径重指到套件 mktemp 目录；
  * - 引擎进程 env 由 `EngineRuntime` 完整替换（只给 PATH/SystemRoot/白名单）。
  */
-import { BrowserWindow, ipcMain, webContents } from "electron";
+import { BrowserWindow, ipcMain, session, webContents } from "electron";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { DocumentViewHost } from "@main/document/documentViewHost.js";
-import { registerDocumentViewHandlers } from "@main/ipc/documentView.js";
+import { DocumentViewCredentialBroker, readEngineAdminToken } from "@main/document/documentViewCredentialBroker.js";
+import { isApprovedDocumentViewOpen, registerDocumentViewHandlers } from "@main/ipc/documentView.js";
 import { registerWorkflowEngineHandlers } from "@main/ipc/workflowEngine.js";
 import {
   EngineRuntime,
@@ -49,7 +50,6 @@ import {
   NODE_RED_MIN_NODE,
   type EngineRuntimePorts,
 } from "@main/workflowEngines/runtimeSupervisor.js";
-import { listenOnDialablePort } from "@main/lib/loopbackPort.js";
 import { rpcHandlerFor, registeredRpcChannels } from "@main/appControl/registry.js";
 import { IPC, type DocViewListResult, type DocViewResult, type WorkflowEngineResult } from "@contracts/ipc";
 import type { WebContents } from "electron";
@@ -129,23 +129,13 @@ export async function runWorkflowEngineProbe(dir: string): Promise<void> {
   assert(launch.env?.ELECTRON_RUN_AS_NODE === "1", "生产 launchSpec 没给 ELECTRON_RUN_AS_NODE —— 真 Electron 下引擎会起成 GUI 进程");
   assert(typeof launch.env?.MCODE_ENGINE_ADMIN_TOKEN === "string" && launch.probeIdentity?.adminToken === launch.env.MCODE_ENGINE_ADMIN_TOKEN,
     "生产 launchSpec 没有把宿主控制面令牌同时放进 env 与 probeIdentity");
-  //
-  // ⚠️ 端口分配**不用** `defaultEngineRuntimePorts.allocatePort`：那一份把
-  // `listenOnDialablePort(server, onBind)` 的 `onBind(port, attempt)` 误当成
-  // `(err, port)` 解构 —— 首个 attempt 的 port 是 truthy，于是每一启动都以
-  // 「分配端口失败：<端口号>」进 failed（真 bug，本片范围不允许改
-  // `workflowEngines/`，已在报告中点名）。这里按 loopbackPort 的**真实契约**
-  // 注入同一判据的实现；spawn/probe/now/sleep 仍走生产默认，验的仍是生产路径。
-  const allocatePort = async (): Promise<number> => {
-    const { createServer } = await import("node:http");
-    const server = createServer();
-    try {
-      return await listenOnDialablePort(server);
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  };
-  const ports: EngineRuntimePorts = { ...defaultEngineRuntimePorts, allocatePort };
+  // The old probe used a local allocatePort override to mask a production
+  // callback/signature bug. That runtime bug has since been fixed. Use the
+  // production allocator directly so future regressions fail this true
+  // Electron process+HTTP user-journey test instead of being hidden by a stub.
+  const ports: EngineRuntimePorts = defaultEngineRuntimePorts;
+  assert(ports.allocatePort === defaultEngineRuntimePorts.allocatePort,
+    "真实 Electron U1 探针必须测试生产默认端口分配器，不可注入自实现掩盖回归");
   const runtime = new EngineRuntime(ENGINE_ID, ports);
   const registry = {
     get: (engineId: string): EngineRuntime | null => (engineId === ENGINE_ID ? runtime : null),
@@ -162,8 +152,18 @@ export async function runWorkflowEngineProbe(dir: string): Promise<void> {
         : null,
   };
 
-  const host = new DocumentViewHost({ getMainWindow: () => win as unknown as never });
-  registerDocumentViewHandlers(ipcMain, host, () => true);
+  const credentialBroker = new DocumentViewCredentialBroker({
+    readToken: (engineId) => engineId === ENGINE_ID ? readEngineAdminToken(engineDataDir) : null,
+    runningPort: (engineId) => engineId === ENGINE_ID && runtime.status().state === "running"
+      ? runtime.status().port : null,
+    getSession: () => session.defaultSession,
+  });
+  const host = new DocumentViewHost({
+    getMainWindow: () => win as unknown as never,
+    editorCredentials: credentialBroker,
+  });
+  registerDocumentViewHandlers(ipcMain, host, () => true,
+    undefined, (input) => isApprovedDocumentViewOpen(input, null));
   registerWorkflowEngineHandlers(ipcMain, { registry, launchSpec: (id) => registry.launchSpec(id) });
 
   /** 调**真实注册的那个函数对象**（register* 同时交给真 ipcMain 与 recordRpcHandler）。 */
@@ -250,7 +250,7 @@ export async function runWorkflowEngineProbe(dir: string): Promise<void> {
 
     await check("真 WebContentsView 经 documentView.open 加载编辑器地址成功（origin 是引擎端口）", async () => {
       const opened = await invoke<DocViewResult>(IPC.DOCUMENT_VIEW_OPEN, {
-        docId: DOC_ID, url: editorUrl, bounds: ENGINE_BOUNDS, visible: true,
+        docId: DOC_ID, url: editorUrl, bounds: ENGINE_BOUNDS, visible: true, workflowEngineId: ENGINE_ID,
       });
       assert(opened.ok, `open 失败：${JSON.stringify(opened)}`);
       const snap = host.list();
@@ -265,6 +265,32 @@ export async function runWorkflowEngineProbe(dir: string): Promise<void> {
       assert(mark === `loaded:http://127.0.0.1:${enginePort}`, `页面 origin 不符：${mark}`);
       assert(snap[0].lastFailure === undefined, `加载失败：${JSON.stringify(snap[0].lastFailure)}`);
       assert(appliedBounds(DOC_ID).x === ENGINE_BOUNDS.x, "原生视图几何没有应用");
+    });
+
+    await check("真实 Electron 编辑器视图获取宿主注入的控制面权限、外部调用仍 401", async () => {
+      // The renderer never receives the raw token: Broker injects only the
+      // bound webContentsId and exact engine origin on the main-process side.
+      const token = readEngineAdminToken(engineDataDir);
+      if (token === null || token.length === 0) {
+        throw new Error("生产生成的 Host 控制面令牌不可用");
+      }
+      assert(!editorUrl.includes(token), "禁止将 Host 令牌拼到编辑器 URL");
+      const credentialBinding = credentialBroker.debugState();
+      assert(credentialBinding.length === 1 && credentialBinding[0]?.docId === DOC_ID
+        && credentialBinding[0]?.engineId === ENGINE_ID
+        && credentialBinding[0]?.webContentsId === viewOf(DOC_ID).id,
+        "真实视图凭据未绑定到正确的 webContentsId + 引擎");
+      assert(!JSON.stringify(host.list()).includes(token)
+        && !JSON.stringify(credentialBinding).includes(token)
+        && !JSON.stringify(runtime.status()).includes(token),
+        "Host 令牌不得进入视图/引擎状态/凭据诊断快照");
+      const unauthorized = await fetch(`http://127.0.0.1:${enginePort}/settings`,
+        { signal: AbortSignal.timeout(5000) });
+      assert(unauthorized.status === 401, "没有 webContents 身份的宿主直接请求应被拒");
+      const authorizedStatus = await evaluate<number>(viewOf(DOC_ID),
+        "fetch('/settings').then(r => r.status)");
+      assert(authorizedStatus === 200,
+        `真实 WebContentsView 发出的 Node-RED /settings 应获得宿主 Header，实际 ${authorizedStatus}`);
     });
 
     await check("编辑器页面里的请求真的到达引擎进程（deploy 端到端）", async () => {
@@ -310,14 +336,32 @@ export async function runWorkflowEngineProbe(dir: string): Promise<void> {
       const wcBefore = liveWebContentsCount();
       const remote = await invoke<DocViewResult>(IPC.DOCUMENT_VIEW_OPEN, {
         docId: "u1-remote", url: "https://example.com/editor", bounds: ENGINE_BOUNDS, visible: true,
+        workflowEngineId: ENGINE_ID,
       });
       assert(remote.ok === false, "远程 URL 应被拒");
       const remoteReason = (remote as { reason?: string }).reason ?? "";
       assert(/example\.com/.test(remoteReason), `拒绝原因应点名主机：${remoteReason}`);
       const disguised = await invoke<DocViewResult>(IPC.DOCUMENT_VIEW_OPEN, {
         docId: "u1-disguised", url: `http://localhost.evil.com:${enginePort}/`, bounds: ENGINE_BOUNDS, visible: true,
+        workflowEngineId: ENGINE_ID,
       });
       assert(disguised.ok === false, "伪装回环后缀应被拒");
+      // The new FULL-1 Host policy requires a declared workflow engine
+      // identity for *any* loopback URL. A bare localhost address is not
+      // authority, even when the URL itself is otherwise valid.
+      const unnamed = await invoke<DocViewResult>(IPC.DOCUMENT_VIEW_OPEN, {
+        docId: "u1-no-engine-identity", url: editorUrl,
+        bounds: ENGINE_BOUNDS, visible: true,
+      });
+      assert(unnamed.ok === false && /受信|引擎|匹配/.test(unnamed.reason ?? ""),
+        "没有 workflowEngineId 不得打开真实引擎回环视图");
+      const foreignPort = enginePort === 65535 ? enginePort - 1 : enginePort + 1;
+      const mismatched = await invoke<DocViewResult>(IPC.DOCUMENT_VIEW_OPEN, {
+        docId: "u1-engine-wrong-port", url: `http://127.0.0.1:${foreignPort}/`,
+        bounds: ENGINE_BOUNDS, visible: true, workflowEngineId: ENGINE_ID,
+      });
+      assert(mismatched.ok === false && /端口/.test(mismatched.reason ?? ""),
+        "声明正确引擎但回环端口不匹配必须由凭据边界拒绝");
       await delay(150);
       assert(liveWebContentsCount() === wcBefore, `被拒后 webContents 数量变了：${wcBefore} → ${liveWebContentsCount()}`);
       assert(host.list().length === 1, `被拒后不应多出视图：${host.list().length}`);
@@ -354,6 +398,8 @@ export async function runWorkflowEngineProbe(dir: string): Promise<void> {
       assert(closed.ok, `close 失败：${JSON.stringify(closed)}`);
       await until(() => view.isDestroyed(), "webContents 销毁", 8000);
       assert(host.list().length === 0, `close 后快照应为空：${JSON.stringify(host.list())}`);
+      assert(credentialBroker.debugState().length === 0,
+        "视图 close 必须立即撤销 Host 编辑器令牌绑定，不能残留到租约自然过期");
       await until(() => liveWebContentsCount() === wcBaseline, `webContents 总数回到基线（当前 ${liveWebContentsCount()}，基线 ${wcBaseline}）`, 8000);
       const listed = await invoke<DocViewListResult>(IPC.DOCUMENT_VIEW_LIST);
       assert(listed.views.length === 0, `list 仍有视图：${JSON.stringify(listed.views)}`);
@@ -366,7 +412,7 @@ export async function runWorkflowEngineProbe(dir: string): Promise<void> {
       // 用一个**合法回环** URL 再 open：围栏会放行，拒绝必须来自"宿主已释放"，
       // 否则这条断言会被 URL 围栏替宿主"挡"成假绿。
       const after = await invoke<DocViewResult>(IPC.DOCUMENT_VIEW_OPEN, {
-        docId: "u1-after-dispose", url: `http://127.0.0.1:${enginePort}/`, bounds: ENGINE_BOUNDS, visible: true,
+        docId: "u1-after-dispose", url: `http://127.0.0.1:${enginePort}/`, bounds: ENGINE_BOUNDS, visible: true, workflowEngineId: ENGINE_ID,
       });
       // 围栏会放行（回环），所以拒绝只能来自"宿主已释放" —— 否则这条断言会被
       // URL 围栏替宿主"挡"成假绿。

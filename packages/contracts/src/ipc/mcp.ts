@@ -488,8 +488,35 @@ export function buildMcpMarketConfig(
   option: McpMarketOption,
   values: Readonly<Record<string, string>>,
 ): { config?: McpServerConfig; missing: string[] } {
-  const val = (key: string): string => (values[key] ?? "").trim();
-  const missing = option.inputs.filter((i) => i.required && !val(i.key)).map((i) => i.key);
+  // Registry-provided option keys are untrusted metadata. Read only explicitly
+  // provided values: a missing "toString"/"constructor" key must not read an
+  // inherited function and throw while building the install config.
+  const val = (key: string): string => {
+    if (!values || !Object.prototype.hasOwnProperty.call(values, key)) return "";
+    const input: unknown = values[key];
+    return typeof input === "string" ? input.trim() : "";
+  };
+  // Even direct calls with a malformed option (e.g. from stale serialized
+  // metadata) must not put JS prototype property names or CRLF header names
+  // into SDK env/header configuration. Return a non-installable result rather
+  // than silently dropping a required secret.
+  const prototypeNames = new Set([
+    "__proto__", "constructor", "prototype", "toString", "toLocaleString",
+    "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+  ]);
+  const invalidKeys = option.inputs.filter((i) =>
+    i.kind === "env"
+      ? !/^[A-Za-z_][A-Za-z0-9_]*$/.test(i.name) || prototypeNames.has(i.name)
+      : i.kind === "header"
+        ? !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(i.name)
+          || prototypeNames.has(i.name)
+          || /[\x00-\x1f\x7f]/.test(val(i.key))
+        : false,
+  ).map((i) => i.key);
+  const missing = [...new Set([
+    ...invalidKeys,
+    ...option.inputs.filter((i) => i.required && !val(i.key)).map((i) => i.key),
+  ])];
   if (missing.length > 0) return { missing };
   const env: Record<string, string> = {};
   const headers: Record<string, string> = {};
@@ -511,6 +538,15 @@ export function buildMcpMarketConfig(
       if (a.flag) args.push(a.flag);
       args.push(v);
     }
+    // Docker's "-e NAME" copies NAME from the host environment. Only emit
+    // these flags for inputs the user actually supplied: optional blank
+    // registry fields must never pull inherited process secrets into a container.
+    // Place the flags before the image argument, after the fixed run options.
+    if (option.command === "docker" && args[0] === "run") {
+      const insertion = args[1] === "-i" && args[2] === "--rm" ? 3 : 1;
+      const forwarded = Object.keys(env).flatMap((name) => ["-e", name]);
+      args.splice(insertion, 0, ...forwarded);
+    }
     return {
       missing,
       config: {
@@ -519,6 +555,27 @@ export function buildMcpMarketConfig(
         ...(Object.keys(env).length ? { env } : {}),
       },
     };
+  }
+  // The market UI normally supplies sanitized remote endpoint options, but
+  // older serialized metadata and direct IPC callers can bypass that parser.
+  // Reject credential-bearing, non-network, fragment and malformed endpoints
+  // here too, before writing them into any SDK's persisted MCP configuration.
+  try {
+    // contracts is built without DOM lib types; both Electron/browser and
+    // Node provide this runtime constructor, but do not assume DOM typings.
+    const URLConstructor = (globalThis as unknown as {
+      URL?: new (input: string) => {
+        protocol: string; username: string; password: string; hash: string;
+      };
+    }).URL;
+    if (!URLConstructor) return { missing: ["url"] };
+    const address = new URLConstructor(option.url ?? "");
+    if (!["https:", "http:"].includes(address.protocol)
+      || address.username || address.password || address.hash) {
+      return { missing: ["url"] };
+    }
+  } catch {
+    return { missing: ["url"] };
   }
   return {
     missing,

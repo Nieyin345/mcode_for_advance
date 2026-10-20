@@ -29,12 +29,19 @@ let nextBackflowSequence = 0;
 // Backflow may contain large workflow/tool output. Keep a bounded in-memory
 // handoff rather than creating an unbounded next-turn prompt / main-process
 // allocation. Reject before mutating the queue: never silently drop a result.
+const MAX_PENDING_SESSIONS = 64;
 const MAX_BACKFLOW_ENTRIES = 1024;
 const MAX_BACKFLOW_CHARS = 4 * 1024 * 1024;
 function assertBackflowBudget(entries: readonly PendingBackflowEntry[], body: string): void {
   if (entries.length >= MAX_BACKFLOW_ENTRIES || body.length > MAX_BACKFLOW_CHARS
     || entries.reduce((sum, entry) => sum + entry.text.length, body.length) > MAX_BACKFLOW_CHARS) {
     throw new RangeError("待并回上下文超过内存预算，请缩短工作流输出后重试");
+  }
+}
+
+function assertSessionCapacity(sessionId: string): void {
+  if (!pending.has(sessionId) && pending.size >= MAX_PENDING_SESSIONS) {
+    throw new RangeError("待并回会话已达全局资源上限，请先消费或清理旧会话结果");
   }
 }
 
@@ -47,6 +54,7 @@ export function queueBackflow(sessionId: string, text: string): void {
   const body = text.trim();
   if (body.length === 0) return;
   const list = pending.get(sessionId) ?? [];
+  assertSessionCapacity(sessionId);
   assertBackflowBudget(list, body);
   list.push({ text: body, sequence: ++nextBackflowSequence });
   pending.set(sessionId, list);
@@ -101,6 +109,7 @@ export function replaceBackflowSource(sessionId: string, source: string, text: s
   const list = (pending.get(sessionId) ?? []).filter(entry => entry.source !== source);
   const body = text.trim();
   if (body) {
+    assertSessionCapacity(sessionId);
     assertBackflowBudget(list, body);
     list.push({ source, text: body, sequence: ++nextBackflowSequence });
   }

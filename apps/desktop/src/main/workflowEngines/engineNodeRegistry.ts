@@ -88,6 +88,16 @@ export type EngineNodeRegistryState =
   | { kind: "ok"; entries: EngineNodeRecord[] }
   | { kind: "corrupt"; entries: []; reason: string };
 
+/** Stable Host identity of ONE approved package, shared by the approval
+ * route and the exclusive registry write transaction. An absent registry is
+ * distinct from an existing registry with no entry for this name. Corrupt
+ * registries can never produce an approval fingerprint. */
+export function engineNodeTargetFingerprint(state: EngineNodeRegistryState, name: string): string | null {
+  if (state.kind === "corrupt") return null;
+  if (state.kind === "absent") return "absent";
+  return JSON.stringify(state.entries.find((entry) => entry.name === name) ?? null);
+}
+
 /** 安装请求。`capabilities` 与 `ModuleManifest.permissions` 是同一套词表。 */
 export interface EngineNodeInstallRequest {
   name: string;
@@ -143,7 +153,38 @@ const nodeFs: EngineNodeRegistryFs = {
    * 该逻辑不对付有权修改 dataDir 的恶意同机进程，也不保证断电 fsync。
    */
   async withExclusiveWrite<T>(path: string, task: () => Promise<T>): Promise<T> {
-    await mkdir(dirname(path), { recursive: true });
+    const dataDir = dirname(path);
+    await mkdir(dataDir, { recursive: true });
+    // 启动验证只保护读侧：在真实安装/撤权/登记事务中，dataDir、
+    // node_modules 或 @scope 本身若是 junction/软链接，任何 mkdir/rename/rm
+    // 都可能通过父路径访问 dataDir 外的文件。必须在取锁及第一个写盘
+    // 动作之前 fail-closed，不能等下次引擎启动才检查。
+    const dataInfo = await lstat(dataDir);
+    if (!dataInfo.isDirectory() || dataInfo.isSymbolicLink()) {
+      throw Error("Node-RED 插件清单数据根不是独立普通目录（拒绝目录链接）： " + dataDir);
+    }
+    const modules = join(dataDir, "node_modules");
+    let moduleInfo: Awaited<ReturnType<typeof lstat>> | null = null;
+    try {
+      moduleInfo = await lstat(modules);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (moduleInfo !== null) {
+      if (!moduleInfo.isDirectory() || moduleInfo.isSymbolicLink()) {
+        throw Error("Node-RED 插件安装父目录不是独立普通目录（拒绝链接）： " + modules);
+      }
+      // Scoped npm names add a second parent component. One scope junction
+      // could otherwise let uninstall/rollback delete bytes outside dataDir.
+      for (const dir of await readdir(modules, { withFileTypes: true })) {
+        if (!dir.name.startsWith("@")) continue;
+        const scopePath = join(modules, dir.name);
+        const info = await lstat(scopePath);
+        if (!info.isDirectory() || info.isSymbolicLink()) {
+          throw Error("Node-RED 插件 npm scope 不是独立普通目录（拒绝链接）： " + scopePath);
+        }
+      }
+    }
     const lockPath = `${path}.lock`;
     const deadline = Date.now() + 4000;
     for (;;) {
@@ -379,6 +420,12 @@ export class EngineNodeRegistry {
     if (state.kind === "corrupt") {
       // 读不懂的账不能拿来做"保留哪些条目"的决定 —— 拒绝写回，显式报原因。
       return { ok: false, reason: `可执行体清单已损坏，拒绝写入（先修复或备份后删除）：${state.reason}` };
+    }
+    // pending-remove is an active revocation, not an ordinary installed
+    // version. No direct recordInstall, tarball or directory installer may
+    // silently turn it back into an approved executable during cleanup.
+    if (state.entries.some((item) => item.name === request.name && item.state === "pending-remove")) {
+      return { ok: false, reason: `节点包 ${request.name} 正在撤权或卸载，拒绝重新登记批准` };
     }
     const entry: EngineNodeRecord = {
       name: request.name,
@@ -859,16 +906,32 @@ export class EngineNodeRegistry {
   async installFromDirectory(
     meta: EngineNodeInstallRequest,
     sourceDir: string,
+    expectedTargetFingerprint?: string,
   ): Promise<{ ok: true; entry: EngineNodeRecord } | { ok: false; reason: string }> {
-    return this.withWriteTransaction(() => this.installFromDirectoryUnlocked(meta, sourceDir));
+    return this.withWriteTransaction(() =>
+      this.installFromDirectoryUnlocked(meta, sourceDir, expectedTargetFingerprint));
   }
 
   private async installFromDirectoryUnlocked(
     meta: EngineNodeInstallRequest,
     sourceDir: string,
+    expectedTargetFingerprint?: string,
   ): Promise<{ ok: true; entry: EngineNodeRecord } | { ok: false; reason: string }> {
     const valid = validateInstall(meta);
     if (!valid.ok) return valid;
+    // This check is INSIDE the same exclusive transaction that stages and
+    // publishes the actual executable. No compliant Registry writer can
+    // revoke or replace this approved identity after the guard and before
+    // publication, unlike a read performed by the UI approval route.
+    if (expectedTargetFingerprint !== undefined) {
+      const lockedState = await this.readState();
+      const actual = engineNodeTargetFingerprint(lockedState, meta.name);
+      if (actual === null || actual !== expectedTargetFingerprint ||
+          (lockedState.kind === "ok" &&
+            lockedState.entries.some((entry) => entry.name === meta.name && entry.state === "pending-remove"))) {
+        return { ok: false, reason: "审批期间节点包登记身份或撤权状态已改变，拒绝使用旧授权发布可执行体" };
+      }
+    }
     const fsPort = this.fs;
     if (fsPort.readTree === undefined || fsPort.writeBytes === undefined) {
       return { ok: false, reason: "当前宿主没有目录安装通道，已拒绝安装（fail-closed）" };
@@ -922,6 +985,18 @@ export class EngineNodeRegistry {
     let hadOld = false;
     let newPlaced = false;
     try {
+      // npm scoped packages publish into node_modules/@scope/name. The staging
+      // folder is unscoped, so the target's @scope parent may not exist yet.
+      // Create the normal parent before rename; if it is a junction/link or
+      // special file, do not publish anything there.
+      if (meta.name.startsWith("@")) {
+        const scope = meta.name.slice(0, meta.name.indexOf("/"));
+        const scopeParent = join(this.dataDir, "node_modules", scope);
+        await fsPort.mkdir(scopeParent);
+        if (fsPort.kindOf && await fsPort.kindOf(scopeParent) !== "directory") {
+          throw Error("Node-RED 插件 npm scope 不是普通目录（链接/特殊文件），拒绝发布：" + scopeParent);
+        }
+      }
       try {
         await fsPort.rename(target, backup);
         hadOld = true;

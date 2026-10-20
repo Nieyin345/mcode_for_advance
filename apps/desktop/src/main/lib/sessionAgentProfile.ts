@@ -38,6 +38,7 @@ import {
 } from "@contracts/agentProfile";
 import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
 import { log } from "@main/lib/logger.js";
+import { safeErrorMessage } from "@main/lib/safeErrorMessage.js";
 import { managedAgentProfilePathError } from "@main/orchestration/agentProfiles.js";
 
 /** 一份档案能当会话角色用,结果就是这两样:落进会话行的快照 + 会话标题。 */
@@ -81,7 +82,7 @@ export function loadAgentProfileForSession(
   try {
     text = readFileSync(file, "utf-8");
   } catch (err) {
-    return { ok: false, error: `档案读不了:${(err as Error).message}` };
+    return { ok: false, error: `档案读不了:${safeErrorMessage(err)}` };
   }
   const parsed = parseAgentProfile(text);
   if ("error" in parsed) return { ok: false, error: `档案读不了:${parsed.error}` };
@@ -123,7 +124,7 @@ export function sessionMemorySnapshot(projectId: string): string {
   try {
     return scopedMemorySnapshot(projectId);
   } catch (err) {
-    log.warn(`[sessionMemory] 取记忆快照失败,这个对话不注记忆:${(err as Error).message}`);
+    log.warn(`[sessionMemory] 取记忆快照失败,这个对话不注记忆:${safeErrorMessage(err)}`);
     return "";
   }
 }

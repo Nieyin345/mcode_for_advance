@@ -1365,9 +1365,9 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
         ctx.emit({ type: "plan.update", sessionId: req.sessionId, plan, phase: "ready" });
         const requestPlanApproval = ctx.requestPlanApproval;
         if (!requestPlanApproval) {
-          planMode.active = false;
-          ctx.emit({ type: "mode.change", sessionId: req.sessionId, mode: "default", source: "model" });
-          return text("计划审批不可用,已自动退出计划模式。");
+          // 宿主审批桥未安装不等于用户批准。保留 Plan gate，拒绝执行。
+          ctx.emit({ type: "plan.update", sessionId: req.sessionId, plan, phase: "drafting" });
+          return fail("计划审批通道不可用，尚未获得用户批准；已拒绝退出计划模式。");
         }
         try {
           const decision = await requestPlanApproval({ requestId: randomUUID(), plan });
@@ -1382,9 +1382,9 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
           ctx.emit({ type: "plan.update", sessionId: req.sessionId, plan, phase: "drafting" });
           return text(`计划被用户拒绝。原因:${reason}。你仍处于计划模式,请修改计划后重新调用 exit_plan_mode。`);
         } catch (err) {
-          planMode.active = false;
-          ctx.emit({ type: "plan.update", sessionId: req.sessionId, plan: "", phase: "cleared" });
-          ctx.emit({ type: "mode.change", sessionId: req.sessionId, mode: "default", source: "model" });
+          // 审批 IPC 中断/抛错同样没有真人许可；外层 catch 返回失败工具结果，
+          // 此处只还原计划卡的草稿态，不得发送 default 使下一工具绕过审批。
+          ctx.emit({ type: "plan.update", sessionId: req.sessionId, plan, phase: "drafting" });
           throw err;
         }
       }

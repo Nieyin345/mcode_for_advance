@@ -113,9 +113,23 @@ try {
   check("successful promotion releases its own lock", !(await fs.readdir(root)).some(name => name.endsWith(".mcode-promote.lock")));
   check("valid promotion replaces catalog",await fs.readFile(path.join(destination,"new"),"utf8")==="new");
   const messages: any[]=[];
-  const sink=marketProgressFor({sender:{isDestroyed:()=>false,send:(...args:any[])=>messages.push(args)}} as any,"owner-id");
+  const ownerFrame={url:"file:///app/market.html",isDestroyed:()=>false};
+  const sink=marketProgressFor({sender:{isDestroyed:()=>false,mainFrame:ownerFrame,send:(...args:any[])=>messages.push(args)},senderFrame:ownerFrame} as any,"owner-id");
   sink?.({phase:"clone",message:"Receiving objects: 20%",elapsedMs:100});
   check("progress only sent to initiating sender with correlation",messages.length===1&&messages[0][1].payload.requestId==="owner-id");
+  const missingFrameMessages:unknown[]=[];
+  const missingFrame=marketProgressFor({sender:{isDestroyed:()=>false,send:(...args:any[])=>missingFrameMessages.push(args)}} as any,"missing-frame");
+  missingFrame?.({phase:"clone",message:"privileged progress",elapsedMs:100});
+  check("★ missing initiating document identity cannot receive future progress",missingFrame===undefined&&missingFrameMessages.length===0);
+  const childFrame={url:"file:///app/child.html",isDestroyed:()=>false};
+  const mainFrame={url:"file:///app/main.html",isDestroyed:()=>false};
+  const childSink=marketProgressFor({sender:{mainFrame,isDestroyed:()=>false,send:(...args:any[])=>missingFrameMessages.push(args)},senderFrame:childFrame} as any,"foreign-frame");
+  childSink?.({phase:"clone",message:"foreign document",elapsedMs:110});
+  check("★ non-main-frame IPC cannot subscribe to privileged market progress",childSink===undefined&&missingFrameMessages.length===0);
+  const brokenFrame={url:"",isDestroyed:()=>false};
+  const badSink=marketProgressFor({sender:{mainFrame:brokenFrame,isDestroyed:()=>false,send:(...args:any[])=>missingFrameMessages.push(args)},senderFrame:brokenFrame} as any,"blank-origin");
+  badSink?.({phase:"clone",message:"blank origin",elapsedMs:110});
+  check("★ empty origin cannot bind a long-running privileged progress stream",badSink===undefined&&missingFrameMessages.length===0);
   check("legacy calls need no progress channel",marketProgressFor({} as any)===undefined);
   check("oversized renderer request correlation is not forwarded",
     marketProgressFor({} as any,"a".repeat(10000)) === undefined);

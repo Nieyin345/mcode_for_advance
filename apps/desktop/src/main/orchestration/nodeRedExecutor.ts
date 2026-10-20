@@ -78,6 +78,51 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 // CONNECT/TRACE 或带 CRLF 的非标准方法直接交给可替换的 HTTP 适配器。
 const HTTP_IN_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 
+// HTTP-in 只接受应用层数据头。工作流输入不可信：不能由模型/上游节点
+// 改写同端口管理身份、Host 或 hop-by-hop 传输边界，亦不能伪造反向代理来源。
+const BLOCKED_HTTP_IN_HEADERS = new Set([
+  "authorization", "proxy-authorization", "cookie", "cookie2", "host",
+  "connection", "proxy-connection", "keep-alive", "transfer-encoding",
+  "content-length", "content-type", "te", "trailer", "upgrade", "forwarded",
+  "x-real-ip", "expect", "x-original-url", "x-rewrite-url",
+  "x-http-method-override", "x-method-override",
+  // 标准 JS 对象上的原型/内置成员并不是 HTTP-in 数据字段。
+  "__proto__", "prototype", "constructor", "tostring", "valueof",
+  "hasownproperty", "isprototypeof", "propertyisenumerable",
+  "tolocalestring", "__definegetter__", "__definesetter__",
+  "__lookupgetter__", "__lookupsetter__",
+]);
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9a-zA-Z-]+$/;
+function checkedDataHeaders(raw: Record<string, string> | undefined):
+  | { ok: true; headers: Record<string, string> }
+  | { ok: false; reason: string } {
+  const headers: Record<string, string> = Object.create(null) as Record<string, string>;
+  headers["content-type"] = "application/json";
+  if (raw === undefined) return { ok: true, headers };
+  if (raw === null || Array.isArray(raw) || typeof raw !== "object") {
+    return { ok: false, reason: "HTTP-in 请求头必须是普通键值对象" };
+  }
+  const entries = Object.entries(raw);
+  if (entries.length > 40) return { ok: false, reason: "HTTP-in 请求头数量超过限制" };
+  let total = 0;
+  for (const [name, value] of entries) {
+    const key = name.toLowerCase();
+    if (!HEADER_NAME.test(name) || BLOCKED_HTTP_IN_HEADERS.has(key)
+        || key.startsWith("x-forwarded-") || key.startsWith("sec-") || key.startsWith("proxy-")) {
+      return { ok: false, reason: `HTTP-in 请求头不允许传输/认证/代理字段：${name.slice(0, 64)}` };
+    }
+    if (typeof value !== "string" || /[\x00-\x1f\x7f]/.test(value)) {
+      return { ok: false, reason: `HTTP-in 请求头值含控制字符或类型不合法：${name}` };
+    }
+    total += name.length + value.length;
+    if (value.length > 8192 || total > 32768) {
+      return { ok: false, reason: "HTTP-in 请求头过长" };
+    }
+    headers[name] = value;
+  }
+  return { ok: true, headers };
+}
+
 /** 同端口 ≠ 同进程：真实 EngineRuntime.status 总带宿主生成的 epoch。
  * 旧注入型状态口如果双方都缺 epoch，兼容既有假 SDK/历史测试，不能把
  * 那条 fallback 称为实例身份保证；单边有 epoch 却缺对侧必须拒绝。 */
@@ -189,6 +234,18 @@ export function nodeRedExecutor(ports: NodeRedExecutorPorts): NodeExecutor {
           retryable: false,
         };
       }
+      // Host 发起执行前必须验真实结构：直接注入的 engineRequest 是从
+      // 调度器/IPC 传入，不保证 runtime 等同于 TypeScript 编译时的声明。
+      // 数组 path 会被 URL 隐式转为 "/api/flow"；对象 body 会被 fetch
+      // 转为 "[object Object]"；数字 method 会在 toUpperCase 时抛到执行器外。
+      if (typeof spec.path !== "string" || spec.path.trim() === ""
+          || (spec.method != null && typeof spec.method !== "string")
+          || (spec.body != null && typeof spec.body !== "string")) {
+        return {
+          status: "failed", summary: "", retryable: false,
+          error: "Node-RED HTTP-in 请求结构非法（路径/方法/正文必须是文本）",
+        };
+      }
       const checked = checkEngineRequestUrl(spec.path, status.port);
       if (!checked.ok) {
         return { status: "failed", summary: "", error: checked.reason, retryable: false };
@@ -200,6 +257,10 @@ export function nodeRedExecutor(ports: NodeRedExecutorPorts): NodeExecutor {
           error: "HTTP-in 请求方法不在允许范围（GET/POST/PUT/PATCH/DELETE）",
           retryable: false,
         };
+      }
+      const checkedHeaders = checkedDataHeaders(spec.headers);
+      if (!checkedHeaders.ok) {
+        return { status: "failed", summary: "", error: checkedHeaders.reason, retryable: false };
       }
       const controller = new AbortController();
       const onAbort = (): void => controller.abort();
@@ -213,7 +274,7 @@ export function nodeRedExecutor(ports: NodeRedExecutorPorts): NodeExecutor {
         const res = await ports.fetch({
           url: checked.url,
           method,
-          headers: { "content-type": "application/json", ...(spec.headers ?? {}) },
+          headers: checkedHeaders.headers,
           body: spec.body ?? null,
           signal: controller.signal,
         });

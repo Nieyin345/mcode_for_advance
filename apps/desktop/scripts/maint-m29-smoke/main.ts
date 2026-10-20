@@ -43,6 +43,9 @@ const {
   readAutomationEventChain,
   EVENT_CHAIN_PREFIX,
   EVENT_CHAIN_LIMIT,
+  runWithAutomationOrigin,
+  currentAutomationOrigin,
+  withAmbientAutomationOrigin,
 } = await import("@main/orchestration/automationEventOrigin.js");
 const { initDb } = await import("@main/store/db.js");
 const { SettingRepo } = await import("@main/store/repositories.js");
@@ -172,11 +175,46 @@ console.log("\n2a. withAutomationOrigin · 每个事件一份克隆,来源只有
   const retargeted = { ...source, sessionId: "s2" } as RuntimeEvent;
   inheritAutomationOrigin(emitted[0]!, retargeted);
   eq("inherit 带过去了", automationOriginOf(retargeted)?.workflowIds.join(","), "wf_root");
+  // Host timestamp/retarget adapters may recycle an event object. Copying
+  // an *unlabelled* source onto an already-labelled destination must clear
+  // the old turn's trusted WeakMap tag rather than leaking false provenance.
+  inheritAutomationOrigin(source, retargeted);
+  eq("★ inheriting an untagged event clears a reused target's stale origin",
+    automationOriginOf(retargeted), undefined);
 
   // 没来源的包装:照发,不挂东西。
   const bare: RuntimeEvent[] = [];
   withAutomationOrigin((e) => bare.push(e), undefined)(source);
   eq("无来源的事件不带 origin", automationOriginOf(bare[0]!), undefined);
+}
+
+console.log("\n2aa. Host async provenance: an explicit untagged nested run clears outer ancestry");
+{
+  const hostEvent = (type: string) => ({ type, sessionId: "host" } as RuntimeEvent);
+  await runWithAutomationOrigin({ workflowIds:["wf_A"] }, async () => {
+    eq("outer automation context is tagged", currentAutomationOrigin()?.workflowIds.join(","), "wf_A");
+    const outer = withAmbientAutomationOrigin(hostEvent("outer"));
+    eq("outer host event has workflow A",automationOriginOf(outer)?.workflowIds.join(","),"wf_A");
+    await runWithAutomationOrigin(undefined, async () => {
+      eq("★ explicit untagged nested execution MUST mask outer workflow A",
+        currentAutomationOrigin(), undefined);
+      const untagged = withAmbientAutomationOrigin(hostEvent("independent"));
+      eq("★ untagged nested host event must not inherit workflow A",
+        automationOriginOf(untagged), undefined);
+      await Promise.resolve();
+      eq("★ async continuation of untagged execution stays untagged",
+        currentAutomationOrigin(), undefined);
+    });
+    eq("outer workflow A context resumes intact after nested untagged run",
+      currentAutomationOrigin()?.workflowIds.join(","),"wf_A");
+  });
+  eq("origin does not leak outside async scope",currentAutomationOrigin(),undefined);
+  const [a,b] = await Promise.all([
+    runWithAutomationOrigin({workflowIds:["wf_A"]},async()=>{await Promise.resolve();return currentAutomationOrigin()?.workflowIds.join(",");}),
+    runWithAutomationOrigin({workflowIds:["wf_B"]},async()=>{await Promise.resolve();return currentAutomationOrigin()?.workflowIds.join(",");}),
+  ]);
+  eq("concurrent automation scope A keeps its origin",a,"wf_A");
+  eq("concurrent automation scope B keeps its origin",b,"wf_B");
 }
 
 console.log("\n2b. readAutomationEventChain · 会话级兜底链的读法");

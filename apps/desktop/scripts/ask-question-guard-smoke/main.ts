@@ -43,5 +43,44 @@ own["toString"]="I choose custom";
 check("真正 own key 即使名为 toString 仍应算用户回答",
   formatAnswersForModel(own,[{question:"toString",header:"b",multiSelect:false,options:[]}])==="toString: I choose custom");
 
+// SDK/plugin payloads are dynamic; accessor properties can throw without an
+// Error shape. One malicious question/option must not abort unrelated prompts.
+const safeParse = (input:unknown) => {
+  try { return {threw:false,items:parseQuestions(input)}; }
+  catch { return {threw:true,items:[] as ReturnType<typeof parseQuestions>}; }
+};
+const badRoot=safeParse({get questions(){throw Object.create(null);}});
+check("★ throwing questions getter cannot escape native AskUserQuestion",
+ !badRoot.threw&&badRoot.items.length===0);
+const badWrapper=safeParse({questions:{get item(){throw Object.create(null);}}});
+check("★ throwing XML item wrapper cannot crash the question parser",
+ !badWrapper.threw&&badWrapper.items.length===0);
+const badRow=safeParse({questions:[
+ {get question(){throw Object.create(null);}},
+ {question:"healthy",options:[{label:"Yes"}]},
+]});
+check("★ malicious row getter is skipped without hiding a later valid question",
+ !badRow.threw&&badRow.items.length===1&&badRow.items[0].question==="healthy");
+const badOption=safeParse({questions:[{question:"pick",
+ options:[{get label(){throw Object.create(null);}},{label:"safe"}]}]});
+check("★ malformed option getter does not discard other safe options",
+ !badOption.threw&&badOption.items.length===1&&badOption.items[0].options.map(x=>x.label).join()==="safe");
+const indexed=Array.from({length:2},()=>({question:"good",options:[]})) as Array<Record<string,unknown>>;
+Object.defineProperty(indexed,"0",{get(){throw Object.create(null);}});
+const badArray=safeParse({questions:indexed});
+check("★ throwing question-array index is isolated from later valid entries",
+ !badArray.threw&&badArray.items.length===1&&badArray.items[0].question==="good");
+const indexedOptions=Array.from({length:2},()=>({label:"safe"})) as Array<Record<string,unknown>>;
+Object.defineProperty(indexedOptions,"0",{get(){throw Object.create(null);}});
+const badArrayOption=safeParse({questions:[{question:"choose",options:indexedOptions}]});
+check("★ throwing option-array index is isolated from the next valid option",
+ !badArrayOption.threw&&badArrayOption.items.length===1&&badArrayOption.items[0].options.length===1);
+const getterAnswers=Object.create(null) as Record<string,string>;
+Object.defineProperty(getterAnswers,"pick",{enumerable:true,get(){throw Object.create(null);}});
+let answerText="THREW";
+try {answerText=formatAnswersForModel(getterAnswers,[{header:"Pick",question:"pick",multiSelect:false,options:[]}]);}
+catch {/* If a corrupt renderer answer throws, model completion must not crash. */}
+check("★ throwing answer getter cannot invent a reply or crash user question flow",
+ answerText==="pick: (no answer)",answerText);
 console.log(`ask-question-guard-smoke: ${total-failures}/${total} PASS`);
 if (failures) process.exitCode=1;

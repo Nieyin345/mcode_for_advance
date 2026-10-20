@@ -10,17 +10,14 @@ import type { NodeTypeManifest } from "@contracts/nodeType";
 import { createHash } from "node:crypto";
 import type { WorkflowDoc, WorkflowReviewInfo } from "@contracts/workflow";
 import { SettingRepo } from "@main/store/repositories.js";
+import { parseFlowTrust, type FlowTrustRecord } from "@main/workflowEngines/flowTrustGate.js";
 
 export type WorkflowOrigin = "import" | "ai";
 
 const REVIEW_PREFIX = "workflow.review.v1.";
-const SHA256_HEX = /^[0-9a-f]{64}$/;
-
-interface ReviewRecord {
-  origin: WorkflowOrigin;
-  approvedRevision: string | null;
-  reviewedAt?: number;
-}
+/** Node-RED and the legacy execution runner share ONE approval parser, so
+ * a malformed record can never be executable through only one engine. */
+type ReviewRecord = FlowTrustRecord;
 
 /** JSON with sorted object keys, so irrelevant property insertion order cannot
  * turn a reviewed document into a different revision. Array order IS relevant:
@@ -55,27 +52,12 @@ export function workflowRevision(doc: WorkflowDoc): string {
 function recordOf(id: string): ReviewRecord | null {
   const raw = SettingRepo.get(`${REVIEW_PREFIX}${id}`);
   if (raw === null || raw === "") return null;
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (typeof value === "object" && value !== null) {
-      const entry = value as Record<string, unknown>;
-      if (entry.origin === "import" || entry.origin === "ai") {
-        return {
-          origin: entry.origin,
-          approvedRevision:
-            typeof entry.approvedRevision === "string" && SHA256_HEX.test(entry.approvedRevision)
-              ? entry.approvedRevision
-              : null,
-          ...(typeof entry.reviewedAt === "number" && Number.isFinite(entry.reviewedAt)
-            ? { reviewedAt: entry.reviewedAt }
-            : {}),
-        };
-      }
-    }
-  } catch {
-    // A malformed marker is never interpreted as consent.
-  }
-  return { origin: "import", approvedRevision: null };
+  const parsed = parseFlowTrust(raw);
+  // An explicit but corrupt marker is NOT an absent (legacy local) marker.
+  // Keep it pending without laundering invalid reviewedAt or giant JSON into
+  // a valid approvedRevision. Both native/legacy runners use this same rule.
+  if (!parsed.ok) return { origin: "import", approvedRevision: null };
+  return parsed.record;
 }
 
 /** Call BEFORE saving the new document. A crash between the two writes leaves
@@ -108,17 +90,34 @@ export function approveWorkflowRevision(
   doc: WorkflowDoc,
   expectedRevision: string,
 ): { ok: true; review: WorkflowReviewInfo } | { ok: false; error: string } {
-  const record = recordOf(doc.id);
-  if (record === null) return { ok: false, error: "这份工作流没有待审查的外来版本" };
+  const key = `${REVIEW_PREFIX}${doc.id}`;
+  const raw = SettingRepo.get(key);
+  if (raw === null || raw === "") {
+    return { ok: false, error: "这份工作流没有待审查的外来版本" };
+  }
+  // Interpret precisely the SAME snapshot displayed by this approval action.
+  // Reading again through recordOf could observe a concurrent corrupt marker,
+  // treat it as pending and accidentally overwrite it as approved.
+  const parsed = parseFlowTrust(raw);
+  if (!parsed.ok) {
+    return { ok: false, error: "工作流审批记录损坏或超出大小限制；请先修复审批账本，再重新申请审查" };
+  }
+  const record = parsed.record;
   const revision = workflowRevision(doc);
   if (revision !== expectedRevision) {
     return { ok: false, error: "审查期间工作流已更新，请重新打开并检查最新版本" };
   }
+  // Condition and mutation are ONE SQLite statement on the Host's canonical
+  // in-memory DB. A second writer in this process cannot alter the marker
+  // between a separate check and write; never upgrade corrupted raw to consent.
   const reviewedAt = Date.now();
-  SettingRepo.set(
-    `${REVIEW_PREFIX}${doc.id}`,
+  if (!SettingRepo.compareAndSet(
+    key,
+    raw,
     JSON.stringify({ origin: record.origin, approvedRevision: revision, reviewedAt }),
-  );
+  )) {
+    return { ok: false, error: "审查期间审批账本已改变，请重新打开并检查最新审批状态" };
+  }
   return { ok: true, review: { origin: record.origin, revision, pending: false, reviewedAt } };
 }
 

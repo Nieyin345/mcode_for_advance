@@ -41,5 +41,14 @@ check('★ two long repo names sharing first 300 characters must not alias',
   worktreeRepoSegment('a'.repeat(300)+'one') !== worktreeRepoSegment('a'.repeat(300)+'two'));
 check('existing safe short basename keeps old on-disk path',
   worktreeRepoSegment('normal.Repo-v2') === 'normal.Repo-v2');
+// Node's UTF-8 encoder collapses every different unmatched UTF-16 surrogate
+// to U+FFFD. The managed repo basename hash would then become identical for
+// two distinct Windows UTF-16 names, aliasing their worktree storage.
+for(const invalid of ["\uD800repo","\uD801repo","repo\uDC00"]) {
+ check('★ lone UTF-16 surrogate repository identity must be refused',
+   rejects(()=>worktreeRepoSegment(invalid)));
+}
+check('valid paired surrogate UTF-16 repo name remains supported',
+  worktreeRepoSegment('repo😀') !== worktreeRepoSegment('repo😁'));
 console.log(`worktree-path-guard-smoke: ${pass}/${pass+fail}`);
 if(fail)process.exitCode=1;

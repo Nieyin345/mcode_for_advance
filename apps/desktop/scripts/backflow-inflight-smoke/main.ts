@@ -61,6 +61,28 @@ check("source replacement still works within queue resource budget",
  flow.pendingBackflowPrompt(stableId).includes("updated")
  && !flow.pendingBackflowPrompt(stableId).includes("earlier"));
 flow.dropBackflow(stableId);
+// Session-level limits alone still permit unlimited sessions to retain
+// 4MiB each. New session 65 must fail before changing existing work.
+const active = Array.from({ length: 64 }, (_, n) => budgetId + "-session-" + n);
+for (const key of active) flow.queueBackflow(key, "preserve-" + key);
+const originalActive = flow.pendingBackflowPrompt(active[0]);
+const extra = budgetId + "-session-overflow";
+let sessionCapRejected = false;
+try { flow.queueBackflow(extra, "overflow"); }
+catch { sessionCapRejected = true; }
+check("backflow bounds number of independent sessions with buffered results", sessionCapRejected);
+check("rejected 65th session neither creates a phantom queue nor erases oldest work",
+  flow.pendingBackflowPrompt(extra) === "" && flow.pendingBackflowPrompt(active[0]) === originalActive);
+let replaceCapRejected = false;
+try { flow.replaceBackflowSource(extra, "memory.creation-snapshot", "new overflow"); }
+catch { replaceCapRejected = true; }
+check("source-replacement API also applies the global session budget", replaceCapRejected);
+flow.dropBackflow(active[0]);
+let resumed = true;
+try { flow.queueBackflow(extra, "permitted-after-drop"); } catch { resumed = false; }
+check("dropping one session permits subsequent legitimate handoff", resumed && flow.pendingBackflowPrompt(extra).includes("permitted-after-drop"));
+for (const key of active) flow.dropBackflow(key);
+flow.dropBackflow(extra);
 const runtime = readFileSync("src/main/claude/RuntimeManager.ts", "utf8");
 check("production RuntimeManager captures batch before provider start", runtime.includes("pendingBackflowBatch(session.id)"));
 check("production RuntimeManager clears only acknowledged batch", runtime.includes("clearBackflowThrough(session.id, backflowBatch.through)"));

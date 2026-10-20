@@ -46,6 +46,7 @@
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { initDb } from "@main/store/db.js";
 import { MessageRepo, ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { createOrReuseSession } from "@main/lib/sessionStart.js";
@@ -662,6 +663,38 @@ console.log("\n档案身份/物理目录围栏：文件名匹配 + Windows junct
     }
     fs.renameSync(moved, realDir);
   }
+}
+
+console.log("\nFULL-1: profile reader must never rethrow non-Error disk adapter failures");
+{
+  const { loadAgentProfileForSession } = await import("@main/lib/sessionAgentProfile.js");
+  const physical = path.join(agentProfilesDir(), PROFILE_A + ".json");
+  // Exercise the SAME import readFileSync path as the production loader.
+  // Node's documented syncBuiltinESMExports keeps ESM named imports in sync.
+  // Non-target reads forward to the actual fs, and the override is restored.
+  const fsApi = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const originalRead = fsApi.readFileSync;
+  const thrownValues: Array<{label:string,value:unknown}> = [
+    {label:"null",value:null},
+    {label:"message getter throws",value:Object.defineProperty(new Error("damaged"),"message",{
+      get(){throw Object.create(null);}
+    })},
+  ];
+  for (const injected of thrownValues) {
+    (fsApi as unknown as {readFileSync:(...args:unknown[])=>unknown}).readFileSync = ((...args:unknown[]) => {
+      if (String(args[0]) === physical) throw injected.value;
+      return (originalRead as (...inner:unknown[])=>unknown)(...args);
+    });
+    syncBuiltinESMExports();
+    let threw=false;let result:ReturnType<typeof loadAgentProfileForSession>|null=null;
+    try { result = loadAgentProfileForSession(PROFILE_A,agentProfilesDir());}
+    catch {threw=true;}
+    finally {fsApi.readFileSync=originalRead;syncBuiltinESMExports();}
+    check(`★ ${injected.label}: reader returns explicit failure instead of throwing another error`,
+      !threw && result?.ok===false && result.error.startsWith("档案读不了:"),{threw,result});
+  }
+  eq("readFileSync restored and healthy profile still loads",
+    loadAgentProfileForSession(PROFILE_A,agentProfilesDir()).ok,true);
 }
 
 console.log(`\n${total - failures}/${total} 通过`);

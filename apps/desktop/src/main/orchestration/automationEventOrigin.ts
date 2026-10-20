@@ -28,6 +28,7 @@ export function automationOriginOf(event: RuntimeEvent): AutomationEventOrigin |
 export function inheritAutomationOrigin(from: RuntimeEvent, to: RuntimeEvent): void {
   const origin = origins.get(from);
   if (origin !== undefined) origins.set(to, origin);
+  else origins.delete(to); // A reused target must not keep a previous turn's label.
 }
 
 /** One immutable snapshot per provider turn, never a mutable session-level tag.
@@ -57,12 +58,14 @@ export function withAutomationOrigin(
  * 用 `AsyncLocalStorage` 而不是模块级变量:节点是并发跑的,一个全局变量会把 A 的来源
  * 记到 B 的事件上。存的是**不可变快照**(同 `snapshotAutomationOrigin` 的规矩)。
  */
-const ambient = new AsyncLocalStorage<AutomationEventOrigin>();
+// A nested explicitly untagged run must MASK the parent automation origin;
+// undefined is an intentional store value, not a reason to skip run().
+const ambient = new AsyncLocalStorage<AutomationEventOrigin | undefined>();
 
 /** 在这段异步作用域里发出的宿主事件都算作 `origin` 引出的。 */
 export function runWithAutomationOrigin<T>(origin: AutomationEventOrigin | undefined, fn: () => T): T {
   const captured = snapshotAutomationOrigin(origin);
-  return captured === undefined ? fn() : ambient.run(captured, fn);
+  return ambient.run(captured, fn);
 }
 
 /** 当前异步作用域的来源链(不在自动化里跑 = undefined)。 */

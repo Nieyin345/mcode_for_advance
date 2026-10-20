@@ -53,6 +53,28 @@ export const SettingRepo = {
     persist();
   },
 
+  /** Single-statement optimistic compare-and-set on the in-memory SQLite DB.
+   * Unlike separate get()+set(), a local concurrent writer cannot insert a
+   * different value between the check and mutation. This is NOT multi-process
+   * CAS across independent sql.js database snapshots on disk; only the Host
+   * process owning getDb() may treat the returned success as an approval.
+   *
+   * expected=null requires a truly ABSENT row (existing "" differs).
+   * Existing values, including "", can be replaced only if equal to expected.
+   * No persistence write is scheduled on a conflict or failed expectation.
+   */
+  compareAndSet(key: string, expected: string | null, next: string): boolean {
+    const db = getDb();
+    if (expected === null) {
+      db.run("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", [v(key), v(next)]);
+    } else {
+      db.run("UPDATE settings SET value = ? WHERE key = ? AND value = ?", [v(next), v(key), v(expected)]);
+    }
+    if (db.getRowsModified() !== 1) return false;
+    persist();
+    return true;
+  },
+
   /** 一次 upsert 多个键 —— **同一事务 + 只 `persist()` 一次**(它重写整个库文件)。
    *
    *  【MC-083 残余】给"主键 + 它的 `.last-good` 备份必须同时落盘"这类成对写用:

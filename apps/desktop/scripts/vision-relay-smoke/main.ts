@@ -67,11 +67,8 @@ async function main(): Promise<void> {
   // 内置 Claude 三种写法。
   eq("'@claude' 解析成本机默认", JSON.stringify(parseModel("@claude")), JSON.stringify({ builtin: true, alias: undefined }));
   eq("'@claude:haiku' 带别名", JSON.stringify(parseModel("@claude:haiku")), JSON.stringify({ builtin: true, alias: "haiku" }));
-  eq(
-    "别名不在名单里 → 回落成本机默认(不是空字符串)",
-    JSON.stringify(parseModel("@claude:gpt-9")),
-    JSON.stringify({ builtin: true, alias: undefined }),
-  );
+  eq("★ 无效 @claude 别名不能静默换成本机默认模型",parseModel("@claude:gpt-9"),null);
+  eq("★ 自定义模型冒号后没选角色/模型不得偷偷走默认",parseModel("cfg-id:"),null);
 
   // 自定义模型:configId:modelId。
   eq(
@@ -91,8 +88,8 @@ async function main(): Promise<void> {
   );
   eq(
     "冒号在开头(空 configId)不被当成自定义模型",
-    JSON.stringify(parseModel(":model")),
-    JSON.stringify({ builtin: false, id: ":model" }),
+    parseModel(":model"),
+    null,
   );
 
   // label:写进工具返回值,用户靠它知道是哪只"眼睛"在转述。

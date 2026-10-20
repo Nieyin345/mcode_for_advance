@@ -39,6 +39,7 @@
  */
 import {
   EngineNodeRegistry,
+  engineNodeTargetFingerprint,
   type EngineNodeInstallRequest,
   type EngineNodeRecord,
 } from "./engineNodeRegistry.js";
@@ -119,8 +120,9 @@ async function existingHash(registry: EngineNodeRegistry, name: string): Promise
     if (existing?.state === "pending-remove") {
       return { ok: false, reason: `节点包 ${name} 正在撤销批准/卸载，必须先完成清理才能重新申请安装` };
     }
+    // Identical normalization to Registry's locked publish precondition.
     return { ok: true, hash: existing?.sha256 ?? null,
-      fingerprint: JSON.stringify(existing ?? null) };
+      fingerprint: engineNodeTargetFingerprint(state, name)! };
   } catch (error) {
     return { ok: false, reason: `可执行体清单读取失败，拒绝安装：${safeErrorMessage(error)}` };
   }
@@ -248,7 +250,9 @@ export async function installEngineNode(options: {
   };
   let result: Awaited<ReturnType<EngineNodeRegistry["installFromDirectory"]>>;
   try {
-    result = await registry.installFromDirectory(installMeta, sourceDir);
+    // The Registry validates this expectation AGAIN under its exclusive
+    // publish transaction. The UI-side second read alone had a TOCTOU gap.
+    result = await registry.installFromDirectory(installMeta, sourceDir, prior.fingerprint);
   } catch (error) {
     return { ok: false, code: "install_failed", reason: `节点包安装失败：${safeErrorMessage(error)}` };
   }

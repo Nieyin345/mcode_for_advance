@@ -1312,5 +1312,23 @@ console.log("\n【MC-048】模板事务围栏(单一异步变更协议)");
 }
 
 
+/* ARC-005: a tool block may carry undefined/opaque SDK input. The ticker
+ * calls safeStringify(input).slice(0, 2048) during React render, so this
+ * shared helper must always return a runtime string, not just declare one. */
+section("ARC-005: tool input tooltip is a total string function");
+{
+  const { safeStringify } = await import("../../src/renderer/components/chat/toolInputSerialize.js");
+  for (const value of [undefined, Symbol("opaque"), () => 1]) {
+    const actual: unknown = safeStringify(value);
+    check("★ non-JSON tool input stays a string safe for the ticker tooltip",
+      typeof actual === "string" && typeof (actual as string).slice(0, 2048) === "string",
+      { valueType: typeof value, actualType: typeof actual });
+  }
+  const cycle: Record<string, unknown> = {};
+  cycle.self = cycle;
+  check("★ cyclic tool input is serialized without throwing", typeof safeStringify(cycle) === "string");
+  eq("★ regular JSON input is not changed", safeStringify({ id: 1 }), '{\n  "id": 1\n}');
+}
+
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

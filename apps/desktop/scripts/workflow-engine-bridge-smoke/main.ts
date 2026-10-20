@@ -336,5 +336,82 @@ const spec = { [NODE_RED_PATH_PARAM]: "/api/flow", [NODE_RED_METHOD_PARAM]: "POS
   eq("★ 同端口新实例不能自动重试旧进程抛错", outcome.retryable, false);
 }
 
+/* ══════════ 6. HTTP-in 自定义头与受监管请求头隔离 ══════════ */
+{
+  const seen: NodeRedFetchRequest[] = [];
+  const exec = nodeRedExecutor({
+    engine: { status: () => running },
+    fetch: async (req) => {
+      seen.push(req);
+      return { status: 200, text: '{"ok":true}', truncated: false };
+    },
+  });
+  const blocked: Array<Record<string, string>> = [
+    { Host: "evil.example" },
+    { Authorization: "Bearer from-untrusted-workflow" },
+    { Cookie: "mcode-admin-token=untrusted" },
+    { "content-length": "0" },
+    { "transfer-encoding": "chunked" },
+    { Connection: "upgrade" },
+    { Forwarded: "host=evil.example" },
+    { "X-Forwarded-Host": "evil.example" },
+    { "X-Trace": "safe\r\nHost: evil.example" },
+    JSON.parse('{"__proto__":"spoofed-prototype"}') as Record<string, string>,
+    { constructor: "spoofed-constructor" },
+    { toString: "spoofed-toString" },
+    { "X-Original-URL": "/flows" },
+    { "X-Rewrite-URL": "/flows" },
+    { "X-HTTP-Method-Override": "DELETE" },
+  ];
+  for (const headers of blocked) {
+    const context = ctx({});
+    context.input.engineRequest = { path: "/api/flow", method: "POST", headers, body: '{"safe":true}' };
+    const denied = await exec.execute(context);
+    check("★ 不可信 HTTP-in 请求头在宿主 fetch 前被拒绝: " + Object.keys(headers)[0],
+      denied.status === "failed" && denied.retryable === false && denied.outputs === undefined,
+      denied);
+  }
+  eq("★ 上述禁止头没有任何一个到达本机 Node-RED", seen.length, 0);
+  const valid = ctx({});
+  valid.input.engineRequest = {
+    path: "/api/flow", method: "POST",
+    headers: { "x-mcode-trace": "safe-123", Accept: "application/json" }, body: "{}",
+  };
+  const accepted = await exec.execute(valid);
+  eq("★ 普通数据面追踪头仍正常执行", accepted.status, "success");
+  eq("★ 有效自定义头原样到达宿主请求", seen[0]?.headers["x-mcode-trace"], "safe-123");
+  eq("★ 受控请求仍自动包含 JSON content-type", seen[0]?.headers["content-type"], "application/json");
+}
+
+/* ══════════ 7. 直接传入执行器的非可信请求形状不得靠 JS 隐式强转 ══════════ */
+{
+  let calls = 0;
+  const exec = nodeRedExecutor({
+    engine: { status: () => running },
+    fetch: async () => {
+      calls++;
+      return { status: 200, text: "{}", truncated: false };
+    },
+  });
+  const malformed: Array<{ label: string; spec: unknown }> = [
+    { label: "path 数组不得自动按 URL 字符串处理",
+      spec: { path: ["/api/flow"], method: "POST", body: "{}" } },
+    { label: "method 数字不得触发未捕获 TypeError",
+      spec: { path: "/api/flow", method: 3, body: "{}" } },
+    { label: "body 对象不得被 fetch 隐式强转成 object 字符串",
+      spec: { path: "/api/flow", method: "POST", body: { secret: "not-text" } } },
+  ];
+  for (const {label, spec} of malformed) {
+    const context = ctx({});
+    context.input.engineRequest = spec as never;
+    const settled = await Promise.allSettled([exec.execute(context)]);
+    check("★ 畸形 HTTP-in 形状 fail-closed: " + label,
+      settled[0]?.status === "fulfilled"
+      && settled[0].value.status === "failed" && settled[0].value.retryable === false,
+      settled[0]);
+  }
+  eq("★ 畸形请求不能发出 HTTP 请求", calls, 0);
+}
+
 console.log(`\nworkflow-engine-bridge-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

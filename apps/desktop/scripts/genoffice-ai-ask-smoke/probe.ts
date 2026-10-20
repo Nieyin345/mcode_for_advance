@@ -634,16 +634,28 @@ export async function runAiAskProbe(dir: string): Promise<void> {
       assert(saved.magic === "PK", `不是 zip/docx（魔数 ${saved.magic}）`);
       assert(saved.size > 1000, `字节数过小: ${saved.size}`);
     });
-    // 状态栏：成功与失败都经 `.status-msg`（App.tsx:7805）。保存成功后 vendor
-    // 写「已自动保存 (hh:mm:ss)」（file-actions.ts:1257）。
-    const statusText = await js<string>(`(() => {
-      const el = document.querySelector('.status-msg');
-      return el ? el.textContent : '';
-    })()`);
+    // The file becomes visible as soon as the host writes it, while the
+    // vendor still parses/rebases the saved DOCX before updating React state.
+    // Do not race that UI completion with a one-shot status read. This bounded
+    // poll still fails if a save error appears or no success message arrives.
+    let statusText = "";
+    const statusHistory: string[] = [];
+    const statusDeadline = Date.now() + 8000;
+    do {
+      const next = await js<string>(`(() => {
+        const el = document.querySelector('.status-msg');
+        return el ? el.textContent : '';
+      })()`);
+      if (next !== statusText) statusHistory.push(next);
+      statusText = next;
+      if (statusText.includes("保存失败") || /已保存|已自动保存/.test(statusText)) break;
+      await delay(120);
+    } while (Date.now() < statusDeadline);
     evidence.statusText = statusText;
-    await check("★ 健康保存不误报：状态栏无「保存失败」，出现已保存/自动保存", () => {
-      assert(!statusText.includes("保存失败"), `状态栏误报: ${statusText}`);
-      assert(/已保存|已自动保存/.test(statusText), `状态栏没有成功提示: ${statusText}`);
+    evidence.statusHistory = statusHistory;
+    await check("★ 健康保存不误报：状态栏无「保存失败」，最终出现已保存/自动保存", () => {
+      assert(!statusText.includes("保存失败"), `状态栏误报: ${JSON.stringify(statusHistory)}`);
+      assert(/已保存|已自动保存/.test(statusText), `状态栏没有最终成功提示: ${JSON.stringify(statusHistory)}`);
     });
     // 落盘内容与编辑器一致（docx 是压缩包，正文 XML 不保证字节级可见；这里认
     // 「新文件 + sha256 与 seed 不同」——内容由第 8 条 marker 断言钉住）。

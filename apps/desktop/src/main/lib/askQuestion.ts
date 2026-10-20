@@ -24,38 +24,69 @@ function readStr(v: unknown): string {
  */
 export function parseQuestions(input: unknown): AskUserQuestionItem[] {
   if (!input || typeof input !== "object") return [];
-  const raw = (input as { questions?: unknown }).questions;
   let arr: unknown[] | null = null;
-  if (Array.isArray(raw)) {
-    arr = raw;
-  } else if (raw && typeof raw === "object" && "item" in raw) {
-    const inner = (raw as Record<string, unknown>).item;
-    arr = Array.isArray(inner) ? inner : null;
+  try {
+    // SDK/plugin objects are not necessarily JSON-decoded plain records:
+    // getters and Proxies can throw non-Error values while being inspected.
+    const raw = (input as { questions?: unknown }).questions;
+    if (Array.isArray(raw)) {
+      arr = raw;
+    } else if (raw && typeof raw === "object" && "item" in raw) {
+      const inner = (raw as Record<string, unknown>).item;
+      arr = Array.isArray(inner) ? inner : null;
+    }
+  } catch {
+    return [];
   }
   if (!arr) return [];
   const out: AskUserQuestionItem[] = [];
-  for (const item of arr) {
+  let count: number;
+  try { count = Math.min(arr.length, 128); }
+  catch { return []; }
+  for (let index = 0; index < count; index++) {
+    // Even array index access may be an SDK/plugin getter that throws.
+    let item: unknown;
+    try { item = arr[index]; }
+    catch { continue; }
     if (!item || typeof item !== "object") continue;
-    const obj = item as Record<string, unknown>;
-    const question = readStr(obj.question);
-    const header = readStr(obj.header) || question.slice(0, 24);
-    const multiSelect = obj.multiSelect === true || obj.multiSelect === "true";
-    const rawOpts = obj.options;
-    let optsArr: unknown[] | null = null;
-    if (Array.isArray(rawOpts)) {
-      optsArr = rawOpts;
-    } else if (rawOpts && typeof rawOpts === "object" && "item" in rawOpts) {
-      const inner = (rawOpts as Record<string, unknown>).item;
-      // Some SDK/XML serializers emit an object or scalar instead of an
-      // array. Do not let that malformed wrapper throw before the host can
-      // render a question; ignore its options rather than coercing it.
-      optsArr = Array.isArray(inner) ? inner : null;
+    try {
+      const obj = item as Record<string, unknown>;
+      const question = readStr(obj.question);
+      const header = readStr(obj.header) || question.slice(0, 24);
+      const multiSelect = obj.multiSelect === true || obj.multiSelect === "true";
+      let optsArr: unknown[] | null = null;
+      try {
+        const rawOpts = obj.options;
+        if (Array.isArray(rawOpts)) {
+          optsArr = rawOpts;
+        } else if (rawOpts && typeof rawOpts === "object" && "item" in rawOpts) {
+          const inner = (rawOpts as Record<string, unknown>).item;
+          optsArr = Array.isArray(inner) ? inner : null;
+        }
+      } catch {
+        // A broken options getter should not hide a valid question.
+      }
+      const options: AskUserQuestionItem["options"] = [];
+      try {
+        const optionCount = Math.min(optsArr?.length ?? 0, 128);
+        for (let optionIndex = 0; optionIndex < optionCount; optionIndex++) {
+          try {
+            const rawOption = optsArr![optionIndex];
+            if (!rawOption || typeof rawOption !== "object") continue;
+            const option = rawOption as Record<string, unknown>;
+            const label = readStr(option.label);
+            if (label) options.push({ label, description: readStr(option.description) || undefined });
+          } catch {
+            // Drop only this malformed index/option, not the question.
+          }
+        }
+      } catch {
+        // An untrustworthy option array cannot remove a valid question.
+      }
+      if (question) out.push({ header, question, multiSelect, options });
+    } catch {
+      // An invalid SDK accessor affects only its own question.
     }
-    const options = (optsArr ?? [])
-      .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
-      .map((o) => ({ label: readStr(o.label), description: readStr(o.description) || undefined }))
-      .filter((o) => o.label);
-    if (question) out.push({ header, question, multiSelect, options });
   }
   return out;
 }
@@ -76,15 +107,19 @@ export function formatAnswersForModel(
   for (const q of questions) {
     // Answers are a user-owned map. A question named "constructor" or
     // "toString" must not pick up Object.prototype as a fake user choice.
-    const v = Object.prototype.hasOwnProperty.call(answers, q.question)
-      ? answers[q.question]
-      : undefined;
-    if (v == null) {
-      lines.push(`${q.question}: (no answer)`);
-    } else {
-      const joined = Array.isArray(v) ? v.join(", ") : v;
-      lines.push(`${q.question}: ${joined}`);
+    let answer: string | null = null;
+    try {
+      const v = Object.prototype.hasOwnProperty.call(answers, q.question)
+        ? answers[q.question]
+        : undefined;
+      if (typeof v === "string") answer = v;
+      else if (Array.isArray(v) && v.every(item => typeof item === "string")) {
+        answer = v.join(", ");
+      }
+    } catch {
+      // A malformed renderer answer is not proof of a user choice.
     }
+    lines.push(`${q.question}: ${answer ?? "(no answer)"}`);
   }
   return lines.join("\n");
 }

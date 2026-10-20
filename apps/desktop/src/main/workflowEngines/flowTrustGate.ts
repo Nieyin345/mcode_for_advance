@@ -58,6 +58,9 @@ export type FlowTrustParseResult =
   | { ok: false; reason: "trust-corrupt"; detail: string };
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
+/** Origin + revision + optional timestamp is a small scalar record. Never
+ * parse arbitrarily large external settings content in the execution gate. */
+const MAX_FLOW_TRUST_RECORD_CHARS = 64 * 1024;
 
 /**
  * 解析 trust 原文。**三态严格区分**：
@@ -67,6 +70,9 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
  */
 export function parseFlowTrust(raw: string | null | undefined): FlowTrustParseResult {
   if (raw === null || raw === undefined || raw === "") return { ok: false, reason: "untrusted" };
+  if (typeof raw !== "string" || raw.length > MAX_FLOW_TRUST_RECORD_CHARS) {
+    return { ok: false, reason: "trust-corrupt", detail: "审批记录类型或长度非法（超出 64 Ki 字符预算）" };
+  }
   let value: unknown;
   try {
     value = JSON.parse(raw);

@@ -92,7 +92,7 @@
  *
  * Run: bash scripts/mcp-ipc-smoke/run.sh
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { IpcMain } from "electron";
@@ -1368,6 +1368,31 @@ console.log("\n项目级 MCP:信任绑项目身份 / 超大文件拒读 / 写串
     raceList.servers.every((s) => s.trusted) && raceList.servers.length === 2,
     raceList.servers,
   );
+
+  // ── 项目 MCP 文件被硬链接后，rename 会使不同入口静默分叉。
+  // 同一文件两路径指向同一 inode 的情况下不允许以"保存成功"掩盖分裂。
+  const hardlinkDir = makeProject("linked-write", {});
+  const hardlinkFile = join(hardlinkDir, PROJECT_MCP_FILE);
+  const hardlinkOriginal = join(projRoot, "linked-original.mcp.json");
+  writeFileSync(hardlinkOriginal, JSON.stringify({ mcpServers: { untouched: { command: "stay" } } }));
+  rmSync(hardlinkFile);
+  linkSync(hardlinkOriginal, hardlinkFile);
+  check("★ 项目 MCP 文件与原件是真实 NTFS 硬链接",
+    lstatSync(hardlinkFile).nlink >= 2 && lstatSync(hardlinkOriginal).nlink >= 2);
+  let hardlinkRefused = false;
+  try {
+    const res = await saveProjectMcp(hardlinkDir, "should-not-write", { command: "danger" });
+    hardlinkRefused = !res.ok;
+  } catch {
+    hardlinkRefused = true;
+  }
+  check("★ 项目 .mcp.json 多个硬链接时必须拒绝覆盖其中一条",
+    hardlinkRefused);
+  check("★ 拒绝后两个路径的内容与链接数保持不变",
+    readFileSync(hardlinkFile, "utf8") === readFileSync(hardlinkOriginal, "utf8")
+    && lstatSync(hardlinkFile).nlink >= 2);
+  check("★ 拒绝后文件没有写入不可信的新 MCP 条目",
+    !readFileSync(hardlinkOriginal, "utf8").includes("should-not-write"));
 
   // 【MC-040 复核补充】大小写变体的**同一**物理项目必须共用一把锁。Windows/darwin 上
   // `raceDir` 与 `raceDir.toUpperCase()` 指向同一目录;从前锁键用裸 `path.resolve`,

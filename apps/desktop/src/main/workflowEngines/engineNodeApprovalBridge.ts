@@ -67,6 +67,9 @@ export class NodeInstallApprovalBridge {
   private readonly pending = new Map<string, PendingInstallApproval>();
   private readonly sender: NodeInstallApprovalSender;
   private readonly timeoutMs: number;
+  /** Closing the Host lifecycle is terminal; old bridge references cannot
+   * mint new approval tickets when a window or service is torn down. */
+  private disposed = false;
 
   constructor(sender: NodeInstallApprovalSender, timeoutMs = NODE_INSTALL_APPROVAL_TIMEOUT_MS) {
     this.sender = sender;
@@ -78,6 +81,7 @@ export class NodeInstallApprovalBridge {
    * 卡片字段来自调用方（`describeEngineNodeInstall` 的输出），本桥不加工。
    */
   request(card: Omit<WorkflowEngineNodeInstallApprovalMessage, "channel" | "requestId">, expectedSenderId: number): Promise<boolean> {
+    if (this.disposed) return Promise.resolve(false);
     // 不接受无身份/合成 IPC：Agent 不能通过随便填一个 requestId 获得真人授权。
     if (!Number.isSafeInteger(expectedSenderId) || expectedSenderId < 1) return Promise.resolve(false);
     if (this.pending.size >= MAX_PENDING_NODE_INSTALL_APPROVALS) {
@@ -126,13 +130,26 @@ export class NodeInstallApprovalBridge {
 
   /** 渲染端的应答。找不到 `requestId`（已超时 / 已被另一次回答）→ false，不抛。 */
   resolve(input: WorkflowEngineNodeInstallRespondInput, actualSenderId: number): boolean {
-    const pending = this.pending.get(input.requestId);
+    // Validate untrusted runtime IPC before looking up a one-use ticket.
+    if (this.disposed || !input || typeof input !== "object" || !Number.isSafeInteger(actualSenderId)) return false;
+    let requestId: string;
+    try {
+      if (typeof input.requestId !== "string") return false;
+      requestId = input.requestId;
+    } catch { return false; }
+    const pending = this.pending.get(requestId);
     // 错误窗口即使知道 UUID 也不能消费/批准（保留给真正发起窗口）。
     if (pending === undefined || !pending.delivered || pending.expectedSenderId !== actualSenderId) return false;
+    // Decode the decision before consuming the ticket. An in-process adapter
+    // can provide a throwing getter despite TypeScript and IPC contracts;
+    // on failure ALWAYS settle pending as false instead of stranding a Promise.
+    let approved = false;
+    let valid = true;
+    try { approved = input.approved === true; } catch { valid = false; }
     clearTimeout(pending.timer);
-    this.pending.delete(input.requestId);
-    pending.resolve(input.approved === true);
-    return true;
+    this.pending.delete(requestId);
+    pending.resolve(valid && approved);
+    return valid;
   }
 
   /**
@@ -154,6 +171,7 @@ export class NodeInstallApprovalBridge {
 
   /** 测试/退出用：把未决请求全部按拒绝兑现（不留下永远挂着的 Promise）。 */
   dispose(): void {
+    this.disposed = true;
     for (const [requestId, pending] of [...this.pending]) {
       clearTimeout(pending.timer);
       this.pending.delete(requestId);

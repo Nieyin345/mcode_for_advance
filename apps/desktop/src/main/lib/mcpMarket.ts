@@ -30,16 +30,39 @@ export const OFFICIAL_MCP_REGISTRY: McpMarketSource = {
 };
 
 const FETCH_TIMEOUT_MS = 20_000;
+const MAX_REGISTRY_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_SAME_ORIGIN_REDIRECTS = 3;
 const PAGE_SIZE = 30;
 
 function parseUserSources(value: unknown): McpMarketSource[] | null {
   if (!Array.isArray(value)) return null;
-  return value
-    .filter(
-      (s): s is McpMarketSource =>
-        !!s && typeof s.id === "string" && typeof s.url === "string" && typeof s.label === "string",
-    )
-    .map((s) => ({ id: s.id, label: s.label, url: s.url, builtin: false }));
+  // Source records are persisted user approvals, not disposable search hits.
+  // Silently filtering one malformed row produces an apparently healthy list;
+  // a subsequent remove/add would overwrite the original array and destroy
+  // that row. Fail closed for MCP source writes while preserving the exact
+  // underlying settings value for manual recovery.
+  const identities = new Set<string>();
+  const locations = new Set<string>();
+  if (!value.every((s: unknown) => {
+    if (!s || typeof s !== "object" || Array.isArray(s)) return false;
+    const source = s as Record<string, unknown>;
+    if (typeof source.id !== "string" || !source.id.trim()
+      || typeof source.url !== "string" || !source.url.trim()
+      || typeof source.label !== "string") return false;
+    const id = source.id.toLowerCase();
+    const base = normalizeRegistryBase(source.url);
+    // Identical ids (including the reserved built-in), or aliases to the same
+    // normalized Registry URL, make remove-by-id ambiguous. Preserve raw data
+    // and surface corruption; never silently collapse/overwrite these rows.
+    if (!base || id === OFFICIAL_MCP_REGISTRY.id || identities.has(id)
+      || locations.has(base.toLowerCase())) return false;
+    identities.add(id);
+    locations.add(base.toLowerCase());
+    return true;
+  })) return null;
+  return value.map((s: Record<string, unknown>) => ({
+    id: s.id as string, label: s.label as string, url: s.url as string, builtin: false,
+  }));
 }
 
 /**
@@ -55,7 +78,7 @@ function readUserSourcesState(): MarketRegistryRead<McpMarketSource> {
     // 读口本身失败(DB 未就绪等):同样绝不能假装"没有来源"。
     return { kind: "corrupt", reason: `读取失败(${(err as Error).message})` };
   }
-  return classifyMarketRegistry(raw, parseUserSources, "MCP 注册中心");
+  return classifyMarketRegistry(raw, parseUserSources, "MCP 注册中心", "来源列表或某一条记录的字段不完整");
 }
 
 /** 读侧降级出口:损坏 → 空表(列表继续展示内置官方来源)。 */
@@ -83,6 +106,9 @@ export function normalizeRegistryBase(input: string): string | null {
     return null;
   }
   if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  // URLs carrying userinfo silently lost credentials when reduced to origin.
+  // Reject rather than saving a different source than the user entered.
+  if (u.username || u.password) return null;
   u.search = "";
   u.hash = "";
   const p = u.pathname.replace(/\/+$/, "").replace(/\/v0(?:\.\d+)?(?:\/servers)?$/i, "");
@@ -101,13 +127,60 @@ function describeFetchError(err: unknown): string {
 }
 
 async function getJson(url: string): Promise<{ status: number; body: unknown }> {
-  const res = await fetch(url, {
-    headers: { accept: "application/json", "user-agent": "Mcode" },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    redirect: "follow",
-  });
-  if (!res.ok) return { status: res.status, body: null };
-  return { status: res.status, body: (await res.json()) as unknown };
+  const originalOrigin = new URL(url).origin;
+  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  let target = url;
+  for (let redirects = 0; redirects <= MAX_SAME_ORIGIN_REDIRECTS; redirects++) {
+    // Automatic redirects can silently turn a user-added registry into a
+    // request to a different authority (including an internal service).
+    const res = await fetch(target, {
+      headers: { accept: "application/json", "user-agent": "Mcode" },
+      signal,
+      redirect: "manual",
+    });
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const location = res.headers.get("location");
+      if (!location || redirects === MAX_SAME_ORIGIN_REDIRECTS) {
+        throw Error("MCP 注册中心重定向次数过多或目标缺失");
+      }
+      const next = new URL(location, target);
+      if (next.origin !== originalOrigin || !["https:", "http:"].includes(next.protocol)
+          || next.username !== "" || next.password !== "") {
+        throw Error("MCP 注册中心重定向目标不属于原来源，已拒绝跨来源请求");
+      }
+      target = next.toString();
+      await res.body?.cancel();
+      continue;
+    }
+    if (!res.ok) return { status: res.status, body: null };
+    // Registry JSON is untrusted network input. A timeout alone does not bound
+    // the bytes buffered by Response.json() before parsing.
+    const declared = Number(res.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > MAX_REGISTRY_RESPONSE_BYTES) {
+      await res.body?.cancel();
+      throw Error("MCP 注册中心响应过大，已超过字节预算");
+    }
+    if (!res.body) throw Error("MCP 注册中心返回空响应体");
+    const reader = res.body.getReader();
+    const buffers: Uint8Array[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_REGISTRY_RESPONSE_BYTES) {
+          await reader.cancel();
+          throw Error("MCP 注册中心响应过大，已超过字节预算");
+        }
+        buffers.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return { status: res.status, body: JSON.parse(Buffer.concat(buffers).toString("utf8")) as unknown };
+  }
+  throw Error("MCP 注册中心重定向次数过多");
 }
 
 /** `/v0.1/servers` first; registries that predate the freeze only answer `/v0`. */
@@ -226,9 +299,15 @@ function convertArgs(list: unknown, prefix: string, inputs: McpMarketInput[]): M
   return out;
 }
 
+const PROTOTYPE_PROPERTY_NAMES = new Set([
+  "__proto__", "constructor", "prototype", "toString", "toLocaleString",
+  "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+]);
+
 function envInputs(list: unknown): McpMarketInput[] {
   return objs(list)
-    .filter((e) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(str(e.name)))
+    .filter((e) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(str(e.name))
+      && !PROTOTYPE_PROPERTY_NAMES.has(str(e.name)))
     .map((e) => ({
       key: `env:${str(e.name)}`,
       kind: "env" as const,
@@ -247,15 +326,43 @@ const RUNNERS: Record<string, { command: string; label: string }> = {
   nuget: { command: "dnx", label: "dnx (NuGet)" },
 };
 
+function safePackageIdentifier(registryType: string, identifier: string): boolean {
+  // Untrusted registry values occupy a positional CLI argument immediately
+  // after runner flags. A leading '-' can be interpreted as another npx/uvx/
+  // docker/dnx option rather than as the intended package or image.
+  if (!identifier || identifier.length > 255 || identifier.startsWith("-")
+      || /[\s\x00-\x1f\x7f]/.test(identifier)) return false;
+  if (registryType === "npm") {
+    return /^(?:@[A-Za-z0-9][A-Za-z0-9._~-]*\/)?[A-Za-z0-9][A-Za-z0-9._~-]*$/.test(identifier);
+  }
+  if (registryType === "oci") {
+    return /^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$/.test(identifier);
+  }
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(identifier);
+}
+
 function packageOption(pkg: Obj, index: number): McpMarketOption | null {
   const registryType = str(pkg.registryType ?? pkg.registry_type).toLowerCase();
+  // Registry metadata is untrusted. A plain object inherits properties
+  // from Object.prototype; those are not configured runtimes and must never
+  // become install choices with undefined commands/labels.
+  if (!Object.prototype.hasOwnProperty.call(RUNNERS, registryType)) return null;
   const runner = RUNNERS[registryType];
   const identifier = str(pkg.identifier ?? pkg.name);
-  if (!runner || !identifier) return null;
+  if (!runner || !safePackageIdentifier(registryType, identifier)) return null;
   const transport = str((pkg.transport as Obj | undefined)?.type) || "stdio";
   if (transport !== "stdio") return null; // a local http server needs a URL we cannot know
   const version = str(pkg.version);
-  const command = str(pkg.runtimeHint ?? pkg.runtime_hint) || runner.command;
+  // A registry-controlled version becomes part of one executable argv token.
+  // Reject malformed control/whitespace/flag-like variants instead of silently
+  // constructing a different install target.
+  if (version.length > 128 || version.startsWith("-") || /[\s\x00-\x1f\x7f]/.test(version)) return null;
+  // Registry metadata is not an approval to run arbitrary local executables.
+  // A compromised registry could otherwise replace "npx" with a shell via
+  // runtimeHint, and the generated install choice would carry that command.
+  const hinted = str(pkg.runtimeHint ?? pkg.runtime_hint);
+  if (hinted && hinted !== runner.command) return null;
+  const command = runner.command;
   const inputs: McpMarketInput[] = envInputs(pkg.environmentVariables ?? pkg.environment_variables);
   const runtimeArgs = convertArgs(pkg.runtimeArguments ?? pkg.runtime_arguments, "rt", inputs);
   const packageArgs = convertArgs(pkg.packageArguments ?? pkg.package_arguments, "pk", inputs);
@@ -263,7 +370,10 @@ function packageOption(pkg: Obj, index: number): McpMarketOption | null {
   const args: McpMarketArg[] = [];
   if (command === "docker") {
     args.push({ value: "run" }, { value: "-i" }, { value: "--rm" });
-    for (const e of inputs.filter((x) => x.kind === "env")) args.push({ value: "-e" }, { value: e.name });
+    // Do not eagerly add docker -e NAME for optional inputs: Docker forwards
+    // the host's NAME when no value is specified, exposing a secret the user
+    // never chose to share. buildMcpMarketConfig inserts -e only for actual
+    // values supplied in its env map.
     args.push(...runtimeArgs);
     const tagged = /:[^/]+$/.test(identifier) || identifier.includes("@sha256:");
     args.push({ value: pinned && !tagged ? `${identifier}:${version}` : identifier });
@@ -286,9 +396,17 @@ function remoteOption(remote: Obj, index: number): McpMarketOption | null {
   const type = str(remote.type).toLowerCase();
   const kind = type === "sse" ? "sse" : type === "streamable-http" || type === "http" ? "http" : null;
   const url = str(remote.url);
-  if (!kind || !/^https?:\/\//i.test(url)) return null;
+  if (!kind) return null;
+  try {
+    const u = new URL(url);
+    if (!["https:", "http:"].includes(u.protocol) || u.username || u.password || u.hash) return null;
+  } catch { return null; }
   const inputs: McpMarketInput[] = objs(remote.headers)
-    .filter((h) => str(h.name))
+    .filter((h) => {
+      const name = str(h.name);
+      return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)
+        && !["__proto__", "prototype", "constructor"].includes(name.toLowerCase());
+    })
     .map((h) => ({
       key: `header:${str(h.name)}`,
       kind: "header" as const,
