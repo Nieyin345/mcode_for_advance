@@ -73,7 +73,7 @@ export function EmptyThreadWelcome({ projectName }: EmptyThreadWelcomeProps) {
   const today = usage?.summary;
 
   return (
-    <div className="mb-4 flex animate-[home-fade-up_160ms_ease-out] flex-col items-center gap-1.5">
+    <div className="mb-4 flex animate-[home-fade-up_var(--dur-base)_var(--ease-out)] flex-col items-center gap-1.5">
       <h2 className="text-2xl font-semibold tracking-tight text-content">
         {projectName
           ? t("chatStream.welcome.withProject", { name: projectName })

@@ -1465,7 +1465,10 @@ button.chat-ledger-head:hover {
  * 窗口判定，历史水合/滚动重挂载不重放）；chat-enter 只打在运行中回合的流式
  * 行上 —— 新块随流到达时上浮入场，历史行保持静态。 */
 .chat-bubble-in {
-  animation: chat-bubble-in 0.32s var(--chat-ease-out) both;
+  /* 【ARC-005 V2】时长/曲线走共享动效词表（--dur-sheet + --ease-enter）。
+   * 原 0.32s 与 --chat-ease-out 的曲线值恰好等于上游 --cds-ease-enter，
+   * 这里只是把它们收进共享 token，不再各留一份字面量。 */
+  animation: chat-bubble-in var(--dur-sheet) var(--ease-enter) both;
 }
 
 @keyframes chat-bubble-in {
@@ -1480,7 +1483,7 @@ button.chat-ledger-head:hover {
 }
 
 .chat-enter {
-  animation: chat-enter 0.32s var(--chat-ease-out) both;
+  animation: chat-enter var(--dur-sheet) var(--ease-enter) both;
 }
 
 @keyframes chat-enter {
