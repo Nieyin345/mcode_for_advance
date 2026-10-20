@@ -149,3 +149,24 @@ T06 的 OS 隔离在 Linux/macOS 上是真做了的（`unshare --net` / `sandbox
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜T11 执行结果（Windows 实机 Node 22.21.1）
+
+- **源码提交 SHA**：`5ac27b0508ba5751376d4a376d2d6546484a0cd2`（`fix(T11): narrow Windows egress sandbox rejection`；未 push）。
+- **修改文件（仅本卡片范围）**：
+  - `apps/desktop/src/main/modules/permissionedProcessRunner.ts`
+  - `apps/desktop/src/main/modules/ModuleHost.ts`
+  - `apps/desktop/scripts/mc035-egress-isolation-smoke/main.ts`
+  - `apps/desktop/scripts/mc035-egress-probe/main.ts`
+  - `apps/desktop/scripts/module-extension-lifecycle-smoke/main.ts`
+- **旧红例 → 新绿例（E1）**：原先 `module-protocol-integrity-smoke` 6/15、`module-extension-lifecycle-smoke` 整套安装抛错；现执行：
+  `node apps/desktop/scripts/run-smokes.mjs module-protocol-integrity-smoke module-extension-lifecycle-smoke mc035-egress-isolation-smoke`
+  → `3 pass, 0 fail`（各套分别 **15/15、160/160、20/20 PASS**）。日志目录：`apps/desktop/.tmp/smoke-runs/1792532278775-31116-sFShUP/`（三个对应 `.log` 文件）。
+- **类型与提交门禁（E1）**：在仓库根执行 `pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json`、`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json`、`git diff --check`，全部 exit 0。Linux/macOS `egressMode` 分支由编译期/纯函数断言保持 `os-sandbox`；本轮**没有**在 Linux/macOS 真实内核上重跑 OS 探针。
+- **变异验证一（E1）**：临时把 Windows 的 `egressMode(...,false)` 改回 `os-sandbox`（恢复全部无网络扩展必须 OS 沙箱的旧行为）→ `module-protocol-integrity-smoke` 回到 **6/15**、`module-extension-lifecycle-smoke` 安装失败；三套 **0 pass, 3 fail**。红例日志：`apps/desktop/.tmp/smoke-runs/1792532215488-29312-EMrf0j/`。恢复源代码后 SHA256 与变异前 **逐字节一致**。
+- **变异验证二（E1）**：临时去掉安装核验与执行的 `NETWORK_GUARD` 注入，保留源码定义 → `mc035-egress-isolation-smoke` **13/20**，其中「Windows no-network execution enforces production NETWORK_GUARD」确切变红，五路探针亦失败。红例日志：`apps/desktop/.tmp/smoke-runs/1792532249061-8080-pRs1WI/`。恢复后 `permissionedProcessRunner.ts` 的 SHA256 **4a5e39e85ddad97247a2891873c1c9ecaf46c73759e4ddb1366be91d35bc49e6**，与变异前完全一致；再次重跑三套全绿。
+- **Windows 真实调用链（E1+E2）**：`ModuleHost.prepareProgramBindings` 的 `allowNetwork: declaresNetwork(manifest.permissions)` → `runPermissionedProcess` → `egressMode(win32,false)="js-guard-only"` → `unapprovedNetworkLaunch()` 选 `process.execPath`（不伪称 OS 沙箱） → Node `--permission` + `NETWORK_GUARD + BOOTSTRAP` → 受控工厂求值/能力调用 → `ResultSchema` 校验 → 宿主附加 `_mcodeEgressIsolation: "js-guard-only; OS egress isolation unavailable"` → `ModuleHost.invoke` 的 `ModuleReply.value`。
+- **降级诊断可见性**：返回字段 `ModuleReply.value._mcodeEgressIsolation` 经结果协议供上层/IPC/调试日志读取；不依赖扩展自行报告、也不能伪装 OS 沙箱。**没有改 renderer**；普通 UI 是否主动呈现这一非贡献视图字段仍待 UI 层确认，不声称已经显示 toast。
+- **声明 network 的 Windows 扩展**：安装 `ModuleHost.install` 的 `requireNetworkExtensionSupport()` 在核验/持久化前拒绝，报 `egress_isolation_unavailable` 并指引换支持 OS 沙箱的平台或移除权限；已有持久清单在恢复后执行 `prepareProgramBindings` 里仍拒绝。生命周期 smoke 验证了安装拒绝、不落盘、不注册、恢复后调用拒绝。直接调用底层 `runPermissionedProcess(allowNetwork:true)` 仍是**已有显式授权语义**，不代表受 `ModuleHost` 身份和逐次审批以外的隐含授权。
+- **fail-open/剩余风险**：Windows JS 守卫不是 OS 网络沙箱，不承诺抵挡所有底层系统调用或未知网络入口；保留这一明确限制，不能把 Windows 本轮判为 MC-035 的 OS 完全隔离/U1。Linux/macOS OS 分支未实机重跑；真实 Electron 安装/渲染/提示也未做 U1。调用方若绕过宿主直接传 `allowNetwork:true` 属于底层 API 信任前提，需要独立安全审查，不能宣称零 fail-open。
+- **验收判据**：1 ✅ 15/15；2 ✅ 160/160；3 ✅ 20/20（≥14）；4 ✅ 真 `net.connect` 在 JS 守卫下被拒；5 ✅ 双包 tsc；6 ✅ 两类变异见红、逐字节还原及最终重跑全绿。没有修改任务索引状态、其它 AI 的在飞文件、Linux/macOS 沙箱实现或 `NETWORK_GUARD` 拦截清单。
