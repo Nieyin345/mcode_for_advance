@@ -22,6 +22,25 @@ export async function ensureEngineNodeReady(registry: EngineNodeRegistry): Promi
   }
   const after = await registry.readState();
   if (after.kind === "corrupt") throw new Error(`节点清单不可读：${after.reason}`);
+  // A previously existing approval ledger disappearing during recovery is
+  // not equivalent to a fresh Node-RED installation. Do not quietly proceed
+  // with an empty approval history, even if the current directory scanner
+  // happens to find no plugins at this instant.
+  if (initial.kind === "ok" && after.kind === "absent") {
+    throw new Error("节点清单在恢复过程中消失，拒绝按新安装空清单启动");
+  }
+  if (initial.kind === "ok" && after.kind === "ok") {
+    // The recovery routines may finish deleting pending-remove entries,
+    // but never delete or re-authorize an already installed approval.
+    // A concurrent writer that rewrites/deletes an installed row must not
+    // silently turn this start preflight into a fresh empty ledger.
+    for (const approved of initial.entries.filter((item) => item.state === "installed")) {
+      const current = after.entries.find((item) => item.name === approved.name);
+      if (current === undefined || JSON.stringify(current) !== JSON.stringify(approved)) {
+        throw new Error(`已批准节点记录在预检过程中被替换或消失：${approved.name}`);
+      }
+    }
+  }
   if (after.entries.some((item) => item.state === "pending-remove")) {
     throw new Error("节点卸载/撤权尚未完成，拒绝启动或安装新节点");
   }
@@ -38,5 +57,15 @@ export async function ensureEngineNodeReady(registry: EngineNodeRegistry): Promi
   const orphans = await registry.findUnregisteredNodePackages();
   if (orphans.blocked.length > 0) {
     throw new Error(`存在未登记/未批准的 Node-RED 可执行节点：${orphans.blocked.map((x) => `${x.name}: ${x.reason}`).join("；")}`);
+  }
+  // Package verification and orphan scanning are both asynchronous. Re-read
+  // the exact approved snapshot after these operations: if another writer
+  // removed/replaced it while we scanned, neither an earlier hash verification
+  // nor a now-empty directory is authority to start executable nodes.
+  const finalState = await registry.readState();
+  if (finalState.kind === "corrupt" ||
+      finalState.kind !== after.kind ||
+      JSON.stringify(finalState.entries) !== JSON.stringify(after.entries)) {
+    throw new Error("节点批准清单在完整性预检期间变动，拒绝启动并要求重新预检");
   }
 }
