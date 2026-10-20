@@ -34,7 +34,7 @@ import {
 } from "@contracts/toolProfile";
 import type { EffectiveToolInventory } from "@contracts/effectiveToolInventory";
 
-import { buildEngineToolInventory } from "./effectiveToolInventory.js";
+import { buildEngineToolInventory } from "@main/orchestration/effectiveToolInventory.js";
 
 /** 无显式画像时的默认画像名。`full` = 现有全量行为,经**显式**画像分支走到,不是省略。 */
 export const DEFAULT_TOOL_PROFILE_NAME: ToolProfileName = FULL_PROFILE_NAME;
@@ -69,10 +69,16 @@ export function applyToolBudget(
   if (!budget || (budget.maxTools === undefined && budget.maxTokens === undefined)) {
     return selection.selected;
   }
+  // Runtime SDK requests and restored settings bypass TS-only declarations.
+  // NaN/Infinity would make every budget comparison false and leak all tools.
+  if (budget.maxTools !== undefined && (!Number.isSafeInteger(budget.maxTools) || budget.maxTools < 0) ||
+      budget.maxTokens !== undefined && (!Number.isSafeInteger(budget.maxTokens) || budget.maxTokens < 0)) {
+    throw new Error("工具预算无效：maxTools/maxTokens 必须是非负安全整数");
+  }
   const tokenByName = new Map(selection.inventory.tools.map((t) => [t.name, t.estimatedTokens]));
   const floor = new Set(ESSENTIAL_TOOL_NAMES);
   // floor 恒留(用原始形态名匹配:Claude 侧是 mcp__<server>__app_api_call)。
-  const bare = (n: string): string => n.replace(/^mcp__[a-z0-9-]+__/i, "");
+  const bare = (n: string): string => n.replace(/^mcp__[a-z0-9_-]+?__/i, "");
   const kept: string[] = [];
   let tokens = 0;
   const fits = (name: string): boolean => {
@@ -203,7 +209,7 @@ export function claudeToolSelectionOptions(
   // `@contracts/toolProfile` 文件头那条安全约束)。显式并集,不用「省略」兜底。
   for (const name of CLAUDE_HARNESS_BUILTINS) kept.add(name);
   const tools = [...kept].sort();
-  const prefix = /^mcp__([a-z0-9-]+)__/i;
+  const prefix = /^mcp__([a-z0-9_-]+?)__/i;
   const keep = new Set<string>();
   for (const name of selection.selected) {
     const m = prefix.exec(name);
