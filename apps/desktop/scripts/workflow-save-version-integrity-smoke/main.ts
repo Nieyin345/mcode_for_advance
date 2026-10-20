@@ -9,7 +9,7 @@ const snapshot = (value: unknown) => ({ id: "wf_test", title: "demo", nodes: [{ 
 const hash = (value: unknown) => workflowSaveVersion(snapshot(value));
 const rejects = (value: unknown) => {
   try { hash(value); return false; } catch (err) {
-    return err instanceof Error && /invalid|invalid value|无效|不支持|循环引用/.test(err.message);
+    return err instanceof Error && /invalid|invalid value|无效|不支持|循环引用|拒绝计算保存修订/.test(err.message);
   }
 };
 const base = hash({ a: 1, b: [true, "value"] });
@@ -25,6 +25,23 @@ check("★ function cannot silently disappear from persisted version", rejects({
 const cyclic: { self?: unknown } = {};
 cyclic.self = cyclic;
 check("★ cyclic values fail with controlled invalid JSON diagnostic", rejects(cyclic));
+const serializedDifferent = { x: 1 };
+Object.defineProperty(serializedDifferent, 'toJSON', {
+  enumerable: false, value: () => ({ x: 999 }),
+});
+check("★ non-enumerable toJSON cannot make revision differ from actual persisted JSON", rejects(serializedDifferent));
+let getterReads = 0;
+const accessor: Record<string, unknown> = {};
+Object.defineProperty(accessor, "x", {
+  enumerable: true,
+  get() { return ++getterReads; },
+});
+check("★ getters cannot mutate values between canonical filter and persisted JSON", rejects(accessor));
+check("★ a getter must not be executed just to compute a workflow revision", getterReads === 0, getterReads);
+check("ordinary JSON data field named toJSON remains valid (no callable serializer)",
+  typeof hash({ toJSON: "data-field", amount: 1 }) === "string");
+check("normal JSON optional undefined fields still canonicalize compatibly",
+  hash({ a: 1, skipped: undefined }) === hash({ a: 1 }));
 check("workflow staleness detects persisted edit", workflowSaveIsStale(snapshot(2), hash(1)));
 console.log("workflow-save-version-integrity-smoke:" + (total - fails) + "/" + total + " 通过");
 if (fails > 0) process.exitCode = 1;

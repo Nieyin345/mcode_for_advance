@@ -19,22 +19,47 @@ function canonical(value: unknown, ancestors = new WeakSet<object>()): unknown {
   if (ancestors.has(value)) throw new Error("工作流版本包含循环引用，拒绝计算保存修订");
   ancestors.add(value);
   try {
+    // A non-enumerable own toJSON is still invoked by JSON.stringify on the
+    // document passed to persistence, yet would be silently omitted by
+    // Object.keys. The revision would then identify DIFFERENT stored bytes.
+    // Accessor properties are also unsafe: reading once in a filter and
+    // again in a map may observe two values or execute arbitrary effects.
+    const serializer = Object.getOwnPropertyDescriptor(value, "toJSON");
+    // A plain data field named "toJSON" is valid persisted JSON. Only a
+    // callable override (or a getter that could return one) changes native
+    // JSON.stringify's meaning and must fail closed.
+    if (serializer && (!("value" in serializer) || typeof serializer.value === "function")) {
+      throw new Error("工作流版本包含自定义 JSON 序列化，拒绝计算保存修订");
+    }
+    if (Object.getOwnPropertySymbols(value).length > 0) {
+      throw new Error("工作流版本包含不支持的符号键，拒绝计算保存修订");
+    }
     if (Array.isArray(value)) {
       return Array.from({ length: value.length }, (_, i) => {
-        if (!Object.prototype.hasOwnProperty.call(value, i)) {
-          throw new Error("工作流版本包含空数组位置，拒绝计算保存修订");
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+        if (!descriptor || !("value" in descriptor)) {
+          throw new Error("工作流版本包含空数组位置或访问器，拒绝计算保存修订");
         }
-        return canonical(value[i], ancestors);
+        return canonical(descriptor.value, ancestors);
       });
     }
     const prototype: unknown = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
       throw new Error("工作流版本包含不支持的对象类型，拒绝计算保存修订");
     }
-    const fields = value as Record<string, unknown>;
-    return Object.fromEntries(Object.keys(fields).sort()
-      .filter((key) => fields[key] !== undefined)
-      .map((key) => [key, canonical(fields[key], ancestors)]));
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const entries: Array<[string, unknown]> = [];
+    for (const key of Object.keys(descriptors).sort()) {
+      const descriptor = descriptors[key];
+      if (!descriptor || !("value" in descriptor)) {
+        throw new Error("工作流版本包含动态访问器，拒绝计算保存修订");
+      }
+      if (!descriptor.enumerable || descriptor.value === undefined) continue;
+      entries.push([key, canonical(descriptor.value, ancestors)]);
+    }
+    // No Object.prototype.toJSON inheritance during the final stringify.
+    return Object.assign(Object.create(null) as Record<string, unknown>,
+      Object.fromEntries(entries));
   } finally {
     ancestors.delete(value);
   }
