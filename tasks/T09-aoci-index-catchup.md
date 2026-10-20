@@ -128,3 +128,12 @@
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。每完成一轮写一行。 -->
+
+### 2026-10-20｜执行阻塞（本轮未做 AOCI 索引修改）
+
+- **阻塞原因**：用户指定的入口 `tasks/T09.md` 不存在（`ENOENT`）；`tasks/README.md` 仅列出 `tasks/T09-aoci-index-catchup.md` 为 T09 实际文件。依 `tasks/_PROMPT_TEMPLATE.md` 的「要求与仓库现状不符时停止、不猜」约束，停止执行索引写入。
+- **第二阻塞**：当前远程连接暴露的工具中没有 `aoci_rules`、`aoci_header`、`aoci_maintain`、`aoci_update_entry`、`aoci_overview` 接口。`where aoci` 返回退出码 1；`.mcp.json` 中虽然指定了 AOCI MCP 可执行文件，但它没有作为本会话的可调用 MCP 工具暴露。为避免绕过 AOCI 当前运行合同和原子批次校验，未直接编辑任何 AOCI 管理文件。
+- **本轮命令与摘要**：`git status --short`：` M .aoci/baseline.json`（开工前即已存在的其他改动，未触碰）；`git ls-files tasks/T09-aoci-index-catchup.md`：文件受 Git 追踪；`where aoci`：FAIL（找不到命令）。未建立运行日志文件；AOCI 命令 PASS 0 / FAIL 0 / 未调用 5 种接口。
+- **维护计数**：`aoci_maintain` 0 轮；最终 `remaining` 未知（文中 819 是历史记录，非本轮测量）；新条目 0，`S:-` 0（比例不适用）；`aoci_update_entry` 拒绝数 0（未提交）；`whole_index_tokens` 未能实测（文中 392693 为旧参考值）。
+- **验收结果**：① `aligned:true` / `remaining:0` **未达成**；② 10 条抽样 **未执行**；③ 未提交任何批次（无法验证整批原子性）；④ `safe_repair_action` **未执行**（无接口/响应）。未新增测试断言，变异验证及 `cmp` 不适用。
+- **改动及风险**：仅在本任务文件结果回写区记录阻塞，不修改源码、台账及 `aoci.txt`、`aoci.code.txt`、`aoci.meta.txt`、`.aoci/` 等受工具管理文件。索引积压未消除；既有 `.aoci/baseline.json` 工作树改动保留。提交 SHA 将在下一条回写中记录。
