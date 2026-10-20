@@ -131,6 +131,9 @@ try {
   route?.({phase:"clone",message:"must never leak after navigation",elapsedMs:110});
   check("new document must not receive progress from previous frame",routed.length===1);
   frame.url="file:///app/settings.html";
+  route?.({phase:"clone",message:"old task resurrected after going back",elapsedMs:115});
+  check("navigating away and back cannot resurrect a stale progress sink",routed.length===1);
+
   const nextFrame={url:frame.url,isDestroyed:()=>false};
   sender.mainFrame=nextFrame;
   route?.({phase:"clone",message:"must not leak after same-origin reload",elapsedMs:120});

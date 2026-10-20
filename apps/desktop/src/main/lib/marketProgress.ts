@@ -12,12 +12,20 @@ export function marketProgressFor(event: IpcMainInvokeEvent, requestId?: string)
   // next document if we retained only the WebContents reference.
   const frame = event?.senderFrame;
   const originalUrl = frame?.url;
+  // Revocation is permanent for this operation. A renderer can navigate away
+  // and then back to the original URL; matching the URL again must not
+  // resurrect the old clone/progress subscription.
+  let revoked = false;
   return progress => {
     try {
       const sender = event?.sender;
-      if (!sender || sender.isDestroyed?.()) return;
-      if (frame && (frame.isDestroyed?.() || frame.url !== originalUrl || sender.mainFrame !== frame)) return;
+      if (revoked) return;
+      if (!sender || sender.isDestroyed?.()) { revoked = true; return; }
+      if (frame && (frame.isDestroyed?.() || frame.url !== originalUrl || sender.mainFrame !== frame)) {
+        revoked = true;
+        return;
+      }
       sender.send(IPC.MARKET_PROGRESS, { channel: IPC.MARKET_PROGRESS, payload: { ...progress, requestId } });
-    } catch { /* closing a settings window must not fail the catalog operation */ }
+    } catch { revoked = true; /* closing a settings window must not fail the catalog operation */ }
   };
 }
