@@ -586,7 +586,7 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
   };
 
   return (
-    <div className="rounded-lg border border-edge bg-surface">
+    <div className="rounded-[var(--radius-card)] border border-edge bg-surface">
       {/* ── Header ── */}
       <div className="flex flex-col gap-1 border-b border-edge px-2.5 py-1.5">
         {/* Row 1: repo name (gets the full row width so long names aren't

@@ -372,7 +372,7 @@ function TurnSection({
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-lg border bg-surface transition-colors",
+        "overflow-hidden rounded-[var(--radius-card)] border bg-surface transition-colors",
         live ? "border-warning/50" : "border-edge",
       )}
     >
