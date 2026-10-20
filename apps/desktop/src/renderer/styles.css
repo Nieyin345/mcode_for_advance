@@ -3061,14 +3061,10 @@ html[data-reduce-motion="true"] .cds-quiet-dots > i {
   border-top-color: transparent;
 }
 
-/* 顶栏与标签条的横向分隔线在 workspace 下也走发丝档（半透明 + 0.5px），
- * 与竖分隔一致；classic 不变。 */
-[data-ui-shell-variant="workspace"] [data-cds-titlebar] {
-  border-bottom-color: rgb(var(--edge) / 0.55);
-}
-[data-ui-shell-variant="workspace"] [data-cds-titlebar] > div:first-child {
-  border-bottom-width: 0.5px;
-}
+/* 【修正】顶栏本身没有 border（接缝是中央画布的 border-t，已在 workspace 下
+ * 置透明），所以上一版在这里写的 border-bottom-color/width 是**空规则**——
+ * 没有 border-style 时它们不渲染任何东西。删除，避免"看起来像做了发丝边"
+ * 的死 CSS 误导后续维护。 */
 
 /* 卡片/面板在 workspace 下统一用 CDS 面板圆角（10px）与发丝阴影。 */
 [data-ui-shell-variant="workspace"] [data-arc005-starter-card] {
