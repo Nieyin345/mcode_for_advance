@@ -133,6 +133,9 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
    */
   const [sel, setSel] = useState<SelectionToolbarState | null>(null);
   const [quote, setQuote] = useState<SelectionToolbarState | null>(null);
+  // Text and its source file form one snapshot. The quote toolbar is invalid
+  // immediately when the central target changes, before effects can run.
+  const [selectionOwner, setSelectionOwner] = useState<FileViewTarget | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   /**
@@ -168,6 +171,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     const onUp = () => {
       // 让浏览器先落定选区再读（`mouseup` 那一刻 `getSelection()` 还是旧的）。
       window.setTimeout(() => {
+        if (useFileViewStore.getState().target !== target) return;
         const s = window.getSelection();
         const text = s?.toString().trim() ?? "";
         const root = bodyRef.current;
@@ -179,6 +183,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         if (!node || !root.contains(node)) return;
         const r = s.getRangeAt(0).getBoundingClientRect();
         if (r.width === 0 && r.height === 0) return;
+        setSelectionOwner(target);
         setSel({
           rect: { top: r.top, bottom: r.bottom, left: r.left, right: r.right },
           text,
@@ -190,7 +195,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     };
     document.addEventListener("mouseup", onUp);
     return () => document.removeEventListener("mouseup", onUp);
-  }, []);
+  }, [target]);
 
   /**
    * 引用落到哪 —— **只落草稿、不替用户发**（与对话里那条逐字同一个做法：
@@ -202,6 +207,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
    */
   const quoteTo = useCallback(
     (t2: QuoteTarget, text: string) => {
+      if (useFileViewStore.getState().target !== target || selectionOwner !== target) return;
       const quoted = text.trim();
       setQuote(null);
       setSel(null);
@@ -228,12 +234,15 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         sessionId: t2.id,
       });
     },
-    [t, absPath, visibleName],
+    [t, absPath, visibleName, target, selectionOwner],
   );
 
   // 换目标回到根 —— 上一个目录里翻到一半的子文件对这一条没有意义。
   useEffect(() => {
     setName(target.name);
+    setSel(null);
+    setQuote(null);
+    setSelectionOwner(null);
     // 换文件了旧路径就作废 —— 不然引用时会拿上一个文件的路径。
     setAbsPath(null);
   }, [target]);
@@ -485,16 +494,18 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       {body}
 
       {/* 选中一段文字 → 只有「复制 / 引用给…」两个按钮（见 state 那段）。 */}
-      {sel && !quote && (
+      {sel && selectionOwner === target && !quote && (
         <SelectionToolbar
           state={sel}
-          onQuote={setQuote}
+          onQuote={(selection) => {
+            if (useFileViewStore.getState().target === target) setQuote(selection);
+          }}
           onClose={() => setSel(null)}
         />
       )}
       {/* 引用给谁 —— 复用对话那一套（`SelectionQuoteMenu`）。它的目标列表第一行是
           **右栏此刻展开的那条**，所以"引用到当前展开对话"是这个列表的默认那一项。 */}
-      {quote && (
+      {quote && selectionOwner === target && (
         <SelectionQuoteMenu
           state={quote}
           // 文件里没有"当前会话"这个概念：把空串传进去，列表就只剩

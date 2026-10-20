@@ -197,5 +197,70 @@ console.log("\n【ARC-005】迟到外部打开失败不能污染新的 FileViewe
     { attempt });
   stub.shell.openFile = async () => ({ ok: true });
 }
+console.log("\n【ARC-005】切文件后选区与引用菜单不能携旧来源继续挂在新文档");
+{
+  const originalAdd = document.addEventListener.bind(document);
+  const originalRemove = document.removeEventListener.bind(document);
+  let mouseUp: (() => void) | undefined;
+  (document as unknown as { addEventListener: (name: string, handler: () => void) => void }).addEventListener =
+    (name, handler) => { if (name === "mouseup") mouseUp = handler; };
+  (document as unknown as { removeEventListener: (name: string, handler: () => void) => void }).removeEventListener =
+    (name, handler) => { if (name === "mouseup" && mouseUp === handler) mouseUp = undefined; };
+  const win = window as unknown as { setTimeout: typeof setTimeout; getSelection: () => unknown };
+  win.setTimeout = setTimeout;
+  win.getSelection = () => ({
+    toString: () => "QUOTE_FROM_OLD_A",
+    rangeCount: 1,
+    anchorNode: {},
+    getRangeAt: () => ({ getBoundingClientRect: () => ({
+      top: 10, bottom: 20, left: 10, right: 100, width: 90, height: 10,
+    }) }),
+    removeAllRanges: () => {},
+  });
+  const A = { source: { kind: "project" as const, ref: "D:\\proj\\selection-A.md" }, name: "selection-A.md" };
+  const B = { source: { kind: "project" as const, ref: "D:\\proj\\selection-B.md" }, name: "selection-B.md" };
+  useFileViewStore.setState({ target: A, dirty: false });
+  __mount(() => FileViewer({ target: useFileViewStore.getState().target! }));
+  await __flush();
+  const rootRef = __nodes().find(n => n.type === "div" &&
+    n.props.ref && typeof n.props.ref === "object")?.props.ref as
+      ({ current: { contains: (node: unknown) => boolean } | null }) | undefined;
+  if (rootRef) rootRef.current = { contains: () => true };
+  mouseUp?.();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  await __flush();
+  const getSelectedToolbar = () => __nodes().find(n =>
+    (n.props.state as { text?: string } | undefined)?.text === "QUOTE_FROM_OLD_A" &&
+    typeof n.props.onQuote === "function");
+  const aToolbar = getSelectedToolbar();
+  check("selection inside A creates an actionable quote toolbar", !!aToolbar);
+  useFileViewStore.getState().open(B);
+  __render();
+  check("★★ switching from A to B cannot paint A's selected text toolbar",
+    !getSelectedToolbar(), { toolbarStillVisible: !!getSelectedToolbar() });
+  await __flush();
+  // Reopen A for the independent quote-picker regression.
+  useFileViewStore.getState().open(A);
+  __render(); await __flush();
+  const nextRef = __nodes().find(n => n.type === "div" &&
+    n.props.ref && typeof n.props.ref === "object")?.props.ref as
+      ({ current: { contains: (node: unknown) => boolean } | null }) | undefined;
+  if (nextRef) nextRef.current = { contains: () => true };
+  mouseUp?.(); await new Promise(resolve => setTimeout(resolve, 0)); await __flush();
+  const freshToolbar = getSelectedToolbar();
+  if (freshToolbar) (freshToolbar.props.onQuote as ((selected: unknown) => void) | undefined)?.(freshToolbar.props.state);
+  await __flush();
+  check("quote picker is present while still on A",
+    __nodes().some(n => n.type !== "div" &&
+      (n.props.state as { text?: string } | undefined)?.text === "QUOTE_FROM_OLD_A" &&
+      typeof n.props.onPick === "function"));
+  useFileViewStore.getState().open(B);
+  __render();
+  check("★★ switching to B must remove the stale A quote picker before any action",
+    !__nodes().some(n => (n.props.state as { text?: string } | undefined)?.text === "QUOTE_FROM_OLD_A" &&
+      typeof n.props.onPick === "function"));
+  (document as unknown as { addEventListener: typeof document.addEventListener }).addEventListener = originalAdd;
+  (document as unknown as { removeEventListener: typeof document.removeEventListener }).removeEventListener = originalRemove;
+}
 console.log(`\nfile-viewer-basedir-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);
