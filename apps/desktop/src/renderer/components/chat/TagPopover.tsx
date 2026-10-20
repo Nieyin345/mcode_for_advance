@@ -170,11 +170,11 @@ export function TagPopover({
     return (
       <div ref={popoverRef} style={style} className="z-30">
         {dataUrl === null ? (
-          <div className="flex items-center gap-1.5 rounded-md bg-surface/95 px-2.5 py-1.5 text-[11px] text-content-subtle shadow-lg">
+          <div className="flex items-center gap-1.5 rounded-[var(--radius-btn-xs)] bg-surface/95 px-2.5 py-1.5 text-[11px] text-content-subtle shadow-[var(--shadow-popover)]">
             <IconLoader2 size={12} className="animate-spin" /> {t("chat.tagPopover.loadingImage")}
           </div>
         ) : !dataUrl ? (
-          <div className="flex flex-col items-center gap-1.5 rounded-md bg-surface/95 px-4 py-3 text-center text-content-subtle shadow-lg">
+          <div className="flex flex-col items-center gap-1.5 rounded-[var(--radius-btn-xs)] bg-surface/95 px-4 py-3 text-center text-content-subtle shadow-[var(--shadow-popover)]">
             <IconPhotoOff size={24} className="opacity-70" />
             <p className="text-[11px]">{t("chat.tagPopover.imageFailed")}</p>
           </div>
@@ -185,7 +185,7 @@ export function TagPopover({
             onClick={() => setNatural((n) => !n)}
             title={natural ? t("chat.tagPopover.shrink") : t("chat.tagPopover.enlarge")}
             className={cn(
-              "rounded-md shadow-2xl",
+              "rounded-[var(--radius-btn-xs)] shadow-[var(--shadow-popover)]",
               natural ? "cursor-zoom-out" : "cursor-zoom-in",
             )}
             style={
@@ -204,7 +204,7 @@ export function TagPopover({
     <div
       ref={popoverRef}
       style={style}
-      className="z-30 flex max-h-60 w-[min(28rem,calc(100vw-16px))] flex-col overflow-hidden rounded-md border border-edge bg-surface shadow-2xl"
+      className="z-30 flex max-h-60 w-[min(28rem,calc(100vw-16px))] flex-col overflow-hidden rounded-[var(--radius-btn-xs)] border border-edge bg-surface shadow-[var(--shadow-popover)]"
     >
       {/* Header: char count + copy/close */}
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-edge bg-surface-muted px-2 py-1">
