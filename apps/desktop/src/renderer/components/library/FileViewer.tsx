@@ -124,9 +124,24 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
    * `pending`（非 null）就是"有一个待确认的切换"，`proceed` 是用户确认后真正执行的切换。
    */
   const [pendingLeave, setPendingLeave] = useState<{ proceed: () => void } | null>(null);
+  // B can replace the pending leave intent while A's save is still in flight.
+  const pendingLeaveRef = useRef<{ proceed: () => void } | null>(null);
+  const cancelPendingLeave = useCallback((expected: { proceed: () => void } | null) => {
+    if (pendingLeaveRef.current !== expected) return;
+    pendingLeaveRef.current = null;
+    setPendingLeave(null);
+  }, []);
   useEffect(() => {
     // Identity-guarded cleanup: A's late unmount must not remove B's dialog.
-    return setFileOpenGuard((_next, proceed) => setPendingLeave({ proceed }));
+    const dispose = setFileOpenGuard((_next, proceed) => {
+      const request = { proceed };
+      pendingLeaveRef.current = request;
+      setPendingLeave(request);
+    });
+    return () => {
+      dispose();
+      pendingLeaveRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -474,7 +489,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         open={pendingLeave !== null}
         onOpenChange={(o) => {
           // 取消（Esc / 点外部 / 取消按钮）→ 什么都不做，留在原文件。
-          if (!o) setPendingLeave(null);
+          if (!o) cancelPendingLeave(pendingLeave);
         }}
       >
         <Dialog.Portal>
@@ -487,17 +502,18 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
               {t("library.pdfViewer.leaveUnsavedBody")}
             </Dialog.Description>
             <div className="mt-4 flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={() => setPendingLeave(null)}>
+              <Button variant="ghost" size="sm" onClick={() => cancelPendingLeave(pendingLeave)}>
                 {t("common.cancel")}
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => {
-                  // 放弃改动 → 直接走。
-                  const p = pendingLeave?.proceed;
-                  setPendingLeave(null);
-                  p?.();
+                  // Only the still-active request may discard and leave.
+                  const expected = pendingLeave;
+                  if (!expected || pendingLeaveRef.current !== expected) return;
+                  cancelPendingLeave(expected);
+                  expected.proceed();
                 }}
               >
                 {t("library.pdfViewer.discardChanges")}
@@ -506,15 +522,13 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
                 variant="primary"
                 size="sm"
                 onClick={async () => {
-                  // 保存成功才离开；失败留在原地（错误由 PDF 的保存条显示）。
+                  // An older save may complete after a newer leave intent exists.
+                  const expected = pendingLeave;
+                  if (!expected || pendingLeaveRef.current !== expected) return;
                   const ok = await saveCurrentPreview();
-                  if (!ok) {
-                    setPendingLeave(null);
-                    return;
-                  }
-                  const p = pendingLeave?.proceed;
-                  setPendingLeave(null);
-                  p?.();
+                  if (pendingLeaveRef.current !== expected) return;
+                  cancelPendingLeave(expected);
+                  if (ok) expected.proceed();
                 }}
               >
                 {t("library.pdfViewer.saveAnnotations")}

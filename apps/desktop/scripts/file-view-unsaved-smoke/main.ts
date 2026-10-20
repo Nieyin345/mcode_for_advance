@@ -384,6 +384,42 @@ console.log("\n【UI-012】同一稳定回调复注册必须用登记代次而�
     staleOk === false, staleOk);
 }
 
+console.log("\n【UI-012】保存期间目标已切换则旧回执不得允许离开或污染新文件提示");
+{
+  reset();
+  useToastStore.getState().clear();
+  useFileViewStore.getState().open(libTarget("save-old-A.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  let finishA!: (ok: boolean) => void;
+  setFileSaveHandler(() => new Promise(resolve => { finishA = resolve; }));
+  const oldPending = saveCurrentPreview();
+  // User independently discarded A and switched to B before old save settled.
+  useFileViewStore.getState().setDirty(false);
+  useFileViewStore.getState().open(libTarget("save-new-B.pdf"));
+  finishA(true);
+  const oldSuccess = await oldPending;
+  check("★★ late A save success cannot authorize navigation from document B",
+    oldSuccess === false && refOf() === "save-new-B.pdf", { oldSuccess, target: refOf() });
+  useToastStore.getState().clear();
+}
+{
+  reset();
+  useToastStore.getState().clear();
+  useFileViewStore.getState().open(libTarget("failed-old-A.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  let failA!: (reason: Error) => void;
+  setFileSaveHandler(() => new Promise((_resolve, reject) => { failA = reject; }));
+  const oldPending = saveCurrentPreview();
+  useFileViewStore.getState().setDirty(false);
+  useFileViewStore.getState().open(libTarget("clean-new-B.pdf"));
+  failA(new Error("SYNTHETIC_STALE_A_FAILURE"));
+  const oldFailure = await oldPending;
+  check("★★ stale A save failure must not show error toast on current B",
+    oldFailure === false && refOf() === "clean-new-B.pdf" && useToastStore.getState().toasts.length === 0,
+    { oldFailure, target: refOf(), toasts: useToastStore.getState().toasts.map(t => t.title) });
+  useToastStore.getState().clear();
+}
+
 console.log(`\nfile-view-unsaved-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);
 

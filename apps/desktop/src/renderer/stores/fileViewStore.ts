@@ -152,12 +152,14 @@ export async function saveCurrentPreview(): Promise<boolean> {
   // interpreted by FileViewer as consent to abandon unsaved annotations.
   const save = saveCurrent;
   const registration = saveHandlerRegistration;
+  const targetAtStart = useFileViewStore.getState().target;
   if (save === null) return false;
   try {
     const saved = await save();
     // A's late success must not count as success for B's newly registered
     // preview, even when B reused the same stable callback function.
-    if (registration !== saveHandlerRegistration || saved !== true) return false;
+    if (registration !== saveHandlerRegistration ||
+        useFileViewStore.getState().target !== targetAtStart || saved !== true) return false;
     if (useFileViewStore.getState().dirty) {
       useToastStore.getState().push({
         kind: "error",
@@ -168,6 +170,9 @@ export async function saveCurrentPreview(): Promise<boolean> {
     }
     return true;
   } catch {
+    // A removed PDF must not show its delayed error on the newer document.
+    if (registration !== saveHandlerRegistration ||
+        useFileViewStore.getState().target !== targetAtStart) return false;
     // Do not display arbitrary rejected Error text: third-party callbacks can
     // contain paths or credentials. The user still gets an observable error.
     useToastStore.getState().push({
