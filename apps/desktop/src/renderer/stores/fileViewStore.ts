@@ -178,6 +178,9 @@ export const useFileViewStore = create<FileViewState>((set) => ({
       if (request !== leaveRequestSeq || useFileViewStore.getState().target !== prevTarget) return;
       set({ target, dirty: false });
       void import("./sessionStore.js").then(({ useSessionStore, isCenterShowingDocument }) => {
+        // Opening the side pane is a consequence of THIS navigation, not an
+        // independent command. Ignore an import that resolves after close/B.
+        if (request !== leaveRequestSeq || useFileViewStore.getState().target !== target) return;
         const st = useSessionStore.getState();
         // **例外（2026-09-27）**：主页面本来就是文档页（上一份预览还在，或正开着可编辑
         // 文件）→ 右栏保持现状，不再展开主对话。判据与 `openFileInIde` 共用一份。

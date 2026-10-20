@@ -23,6 +23,7 @@
  * Run: scripts/file-view-unsaved-smoke/run.sh
  */
 import "./prelude.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
   useFileViewStore,
   setFileOpenGuard,
@@ -230,6 +231,38 @@ console.log("\n【UI-012】旧 FileViewer cleanup 不可解绑新实例的确认
   check("removing the active B guard must fail closed while the current PDF is dirty",
     nextCalls === 1 && refOf() === "a.pdf",
     { nextCalls, target: refOf() });
+}
+
+console.log("\n【UI-012/ARC-005】迟到的打开后侧栏展开不可覆盖后续导航");
+{
+  await new Promise<void>(resolve => setTimeout(resolve, 0)); // settle earlier opens
+  reset();
+  useSessionStore.setState({ rightOpen: false, rightPanelTab: "files", activeSessionId: null });
+  useFileViewStore.getState().open(libTarget("abandoned.pdf"));
+  useFileViewStore.getState().close(); // before dynamic sessionStore import resolves
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  check("★★ async right-pane activation from a file already closed must be ignored",
+    useSessionStore.getState().rightOpen === false && useSessionStore.getState().rightPanelTab === "files",
+    { rightOpen: useSessionStore.getState().rightOpen, tab: useSessionStore.getState().rightPanelTab });
+}
+{
+  reset();
+  useSessionStore.setState({ rightOpen: false, rightPanelTab: "files", activeSessionId: null });
+  useFileViewStore.getState().open(libTarget("quick-A.pdf"));
+  useFileViewStore.getState().open(libTarget("quick-B.pdf"));
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  check("★★ stale A cannot open the right pane after B replaces its target",
+    useSessionStore.getState().rightOpen === false && refOf() === "quick-B.pdf",
+    { rightOpen: useSessionStore.getState().rightOpen, target: refOf() });
+}
+{
+  reset();
+  useSessionStore.setState({ rightOpen: false, rightPanelTab: "files", activeSessionId: null });
+  useFileViewStore.getState().open(libTarget("live.pdf"));
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  check("still-current initial file still activates normal right-pane workflow",
+    useSessionStore.getState().rightOpen === true && useSessionStore.getState().rightPanelTab === "flow",
+    { rightOpen: useSessionStore.getState().rightOpen, tab: useSessionStore.getState().rightPanelTab });
 }
 
 console.log(`\nfile-view-unsaved-smoke:${checks - failures}/${checks} 通过`);
