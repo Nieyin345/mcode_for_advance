@@ -64,6 +64,11 @@ await build({
   outfile: join(dir, "documentViewPreload.js"),
   logLevel: "error",
   external: ["electron"],
+  alias: {
+    "@main/document/docsVendorPreload.js": existsSync(join(resolve(desktop, "../.."), "genoffice/apps/docs/src/preload/mcode-view.ts"))
+      ? join(resolve(desktop, "../.."), "genoffice/apps/docs/src/preload/mcode-view.ts")
+      : join(desktop, "src/main/document/docsVendorPreload.ts"),
+  },
 });
 
 const require = createRequire(join(desktop, "package.json"));

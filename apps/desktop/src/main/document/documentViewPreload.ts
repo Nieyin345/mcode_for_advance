@@ -97,6 +97,7 @@
  * 页面能触及的能力面。
  */
 import { contextBridge, ipcRenderer } from "electron";
+import { mcodeDocsViewAvailable, installMcodeDocsViewPreload } from "@main/document/docsVendorPreload.js";
 
 /** 页面允许请求的宿主动作 —— 只有这两条。字符串是**宿主侧监听的那两条**
  *  （`main/ipc/documentView.ts` 的内部通道），与 vendor 的 `docs:open-path` 无关。 */
@@ -602,5 +603,9 @@ const slidesApi = {
   getLayouts: (): Promise<null> => Promise.resolve(null),
 };
 
-contextBridge.exposeInMainWorld("desktop", Object.freeze(api));
+// ARC-007: the native Docs view preload now lives in the GenOffice git branch.
+// Only when that ignored snapshot is missing do we retain the legacy restricted
+// bridge. Slides stays on its pre-existing path until its own migration.
+if (mcodeDocsViewAvailable) installMcodeDocsViewPreload();
+else contextBridge.exposeInMainWorld("desktop", Object.freeze(api));
 contextBridge.exposeInMainWorld("slidesApi", Object.freeze(slidesApi));

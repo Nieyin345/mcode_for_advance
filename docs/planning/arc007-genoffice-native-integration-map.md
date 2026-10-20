@@ -38,6 +38,15 @@
 5. **首步试点**：仅 Docs —— vendor preload + 策略表替换手写 preload，注册 vendor docs handler，真 Electron 打开→编辑→保存→重开；通过后按 Slides → Sheets → PDF → MD → HTML 滚动。
 6. 边界不变：不引入 GenOffice Agent loop/账号/云 AI/第二套存储；不碰 `ee/`；复用不豁免真人审批、路径围栏、许可核验与失败回滚。
 
+### 2026-10-20｜Docs 单页试点：受限原生 preload + scoped native IPC（有界 DEV_CLAIM）
+
+- **独立 vendor Git**：基线 `73ba918083b5e2bedff7633925c3d7f625e04449`；分支 `mcode/integration`；本地提交 `8d379b1d7db7721a4982aaab8f904f624a59a832`（只修改 `genoffice/apps/docs/src/preload/mcode-view.ts`、`genoffice/apps/docs/src/main/mcode-ipc.ts`）。可以用 `git -C genoffice checkout mcode/integration` 检查；**不可把 Mcode 主仓 HEAD 当成 vendor 提交**。
+- **可重建补丁**：`patches/genoffice/0001-feat-docs-add-scoped-Mcode-native-preload-and-IPC-bo.patch`，由 `git -C genoffice format-patch 73ba918..8d379b1` 导出并纳入 Mcode 主仓。另一个全新 checkout 先 checkout 原版基线，再在 vendor Git 仓执行 `git am ../patches/genoffice/*.patch`（运行时路径相对 `genoffice/`），不要仅靠被忽略的本地 vendor 文件。
+- **复用与权限界面**：`mcode-view.ts` 保留上游 Docs `DesktopApi` 接口名、事件签名，给 WebContentsView 单独暴露白名单（默认拒绝）：文档打开/保存/打开回执/脏文档确认转到 Mcode 既有 DocumentViewHost 的 sender 身份、工作区围栏、CAS 和 OS 租约；原版完整 `index.ts` 继续供 GenOffice 单体使用，Mcode 的旧 `documentViewPreload.ts` Docs 桩只在 vendor 源缺失时退回。源仍以 vendor 分支为权威，Mcode 构建通过精确 alias 选择。
+- **vendor 主进程**：`mcode-ipc.ts` 导出可供 Mcode 主进程 require/打包的 `registerDocsIpc(ipc, isDocsSender)`；只迁原厂字体度量与 Chromium 拼写语言（3 个 `mcode:docs:native-*` handler），每次入口均验证视图 sender。**不直接注册原厂 `docs-main.ts` 原有的全局 `registerDocsIpc()`**，其功能还包含文件对话框、任意路径读取/写入、AI、聊天与存储，整体接入会绕过 Mcode 安全层。
+- **验证事实（有界）**：`document-view-open-smoke`、`document-view-host-smoke`、`document-view-electron-smoke`、`document-view-vendor-page-smoke` **4/4 suites PASS**（真 Electron 的两套均运行）；`document-view-host-smoke` 原 500/500 + vendor 新 46/46；`npx tsc --noEmit -p apps/desktop/tsconfig.json`、`npx tsc --noEmit -p genoffice/apps/docs/tsconfig.json` PASS。运行 `node apps/desktop/scripts/document-view-host-smoke/mutate-native-docs.mjs`，撤去 `docs:save` channel 路由后套件 **exit 1 真红**，再还原并以 `cmp -s` 核对逐字节一致。验收日志 `apps/desktop/.tmp/smoke-runs/1792485425376-22960-HdNJAl`。
+- **remaining（不伪报完成）**：目前 scoped vendor 主进程**仅迁 3 条只读/设备级 IPC**，原版 `docs-main.ts` 的加密/受控导出/文件打开后的业务能力尚未做逐功能 Mcode 围栏适配；`index.ts` 本身没有整体替换，Mcode 缺 vendor 时仍含旧 docs 桩；没有完整原版 Docs 所有菜单/附件/选区 AI 等价与复杂 DOCX 保真/重开矩阵，也没有安装版/跨 OS U1 或独立审核。**ARC-007 整包 DEV/REVIEW 双空不变**；本次仅是 Docs 的安全边界与原厂页面首轮试点。
+
 ## 最小回归与分阶段放行
 
 - **E1/E2**：`node apps/desktop/scripts/run-smokes.mjs document-view-renderer-smoke document-view-host-smoke document-view-open-smoke slides-edit-smoke slides-preload-abi-smoke genoffice-cli-smoke genoffice-ai-ask-smoke release-readiness-smoke`；前后记录准确 PASS/FAIL 及特定 CLI 错误来源。各格式的 vendor 测试应优先直接执行 `genoffice/apps/<module>/tests` 的现有测试，必要时仅增加宿主 IPC/身份/资源接线的新测试；禁止从零重写格式测试体系。

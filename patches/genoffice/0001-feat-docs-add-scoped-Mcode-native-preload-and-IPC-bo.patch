@@ -1,0 +1,227 @@
+From 8d379b1d7db7721a4982aaab8f904f624a59a832 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Tue, 20 Oct 2026 16:42:31 +0800
+Subject: [PATCH] feat(docs): add scoped Mcode-native preload and IPC boundary
+
+---
+ apps/docs/src/main/mcode-ipc.ts     |  56 +++++++++++
+ apps/docs/src/preload/mcode-view.ts | 144 ++++++++++++++++++++++++++++
+ 2 files changed, 200 insertions(+)
+ create mode 100644 apps/docs/src/main/mcode-ipc.ts
+ create mode 100644 apps/docs/src/preload/mcode-view.ts
+
+diff --git a/apps/docs/src/main/mcode-ipc.ts b/apps/docs/src/main/mcode-ipc.ts
+new file mode 100644
+index 0000000..8e2b3fc
+--- /dev/null
++++ b/apps/docs/src/main/mcode-ipc.ts
+@@ -0,0 +1,56 @@
++/**
++ * ARC-007: embeddable, **scoped** GenOffice Docs main-process IPC.
++ *
++ * The original docs-main.ts registerDocsIpc() remains the full standalone
++ * application's owner of dialogs, filesystem, AI, chat, attachments and
++ * project storage.  It MUST NOT be called inside Mcode (global channels would
++ * bypass DocumentViewHost).  This entry extracts only original read-only
++ * system-font metrics and Chromium spellchecker operations and requires an
++ * Mcode-owned sender check on every invocation.
++ *
++ * The native editor's actual DOCX parse/edit/export logic runs in its
++ * unmodified renderer; document bytes and CAS saves stay with Mcode.
++ */
++import { familyVerticalMetrics } from '@genoffice/font-metrics'
++import type { IpcMain, IpcMainInvokeEvent } from 'electron'
++
++const FONT = 'mcode:docs:native-font-metrics'
++const LANGUAGES = 'mcode:docs:native-spell-languages'
++const SET_LANGUAGES = 'mcode:docs:native-spell-set-languages'
++export const MCODE_NATIVE_DOCS_CHANNELS = [FONT, LANGUAGES, SET_LANGUAGES] as const
++
++/** registerDocsIpc() is intentionally require-safe in a foreign Electron
++ * main process: no app lifecycle ownership, global IPC overrides, or disk
++ * side effects on import. A supplied sender guard is mandatory, fail-closed.
++ */
++export function registerDocsIpc(
++  ipc: Pick<IpcMain, 'handle' | 'removeHandler'>,
++  isDocsSender: (sender: unknown) => boolean,
++): () => void {
++  const authorized = (event: IpcMainInvokeEvent): boolean => {
++    try { return !!event?.sender && isDocsSender(event.sender) === true }
++    catch { return false }
++  }
++  ipc.handle(FONT, (event, family) => {
++    if (!authorized(event) || typeof family !== 'string' ||
++        family.length > 128 || !family.trim()) return null
++    try { return familyVerticalMetrics(family) }
++    catch { return null }
++  })
++  ipc.handle(LANGUAGES, (event) => {
++    if (!authorized(event)) return { active: [], available: [] }
++    const s = event.sender.session
++    return { active: s.getSpellCheckerLanguages(), available: s.availableSpellCheckerLanguages }
++  })
++  ipc.handle(SET_LANGUAGES, (event, raw) => {
++    if (!authorized(event)) return { active: [], available: [] }
++    const s = event.sender.session
++    const available = new Set(s.availableSpellCheckerLanguages)
++    const langs = Array.isArray(raw)
++      ? raw.filter((l): l is string => typeof l === 'string' && available.has(l))
++      : []
++    if (langs.length > 0) s.setSpellCheckerLanguages(langs)
++    return { active: s.getSpellCheckerLanguages(), available: [...available] }
++  })
++  return () => { for (const channel of MCODE_NATIVE_DOCS_CHANNELS) ipc.removeHandler(channel) }
++}
+diff --git a/apps/docs/src/preload/mcode-view.ts b/apps/docs/src/preload/mcode-view.ts
+new file mode 100644
+index 0000000..d4afc71
+--- /dev/null
++++ b/apps/docs/src/preload/mcode-view.ts
+@@ -0,0 +1,144 @@
++/**
++ * ARC-007 / Mcode WebContentsView edition of GenOffice Docs' native preload.
++ *
++ * Origin: apps/docs/src/preload/index.ts (73ba918).  Keep the native renderer
++ * DesktopApi ABI, but publish only the capabilities that have a real Mcode
++ * fenced host counterpart.  The original standalone preload is unchanged.
++ *
++ * This module is the only Docs preload implementation bundled by Mcode.
++ * The Mcode legacy docs bridge is used ONLY if the vendor source is absent.
++ * Never expose ipcRenderer, webUtils, projectApi, drop-open or an unconstrained
++ * invoke/send method to a renderer.  Absent API methods are an intentional
++ * fail-closed feature test, not a fake-success implementation.
++ */
++import { contextBridge, ipcRenderer } from 'electron'
++import type { IpcRendererEvent } from 'electron'
++import type { DesktopApi, MenuCommand } from '../shared/ipc'
++
++type Route = Readonly<{ kind: 'invoke' | 'send' | 'on'; to: string }>
++
++/** Exact channel table.  Unknown channels are rejected *before* Electron IPC.
++ * In particular docs:open, docs:save-as/to, docs:open-decrypt, files:*, ai:*,
++ * kb:*, project:*, print/export and clipboard writes are not reachable.
++ * Opening and saving go solely through Mcode's sender-bound DocumentViewHost.
++ */
++export const MCODE_DOCS_CHANNEL_POLICY: Readonly<Record<string, Route>> = Object.freeze({
++  'docs:open-path': { kind: 'invoke', to: 'mcode:document-view:read-opened' },
++  'docs:save': { kind: 'invoke', to: 'mcode:document-view:save' },
++  'docs:save-new': { kind: 'invoke', to: 'mcode:document-view:save' },
++  'docs:confirm-document-replace': { kind: 'invoke', to: 'mcode:document-view:confirm-replace' },
++  'docs:recent': { kind: 'invoke', to: 'mcode:document-view:open-committed' },
++  'docs:font-metrics': { kind: 'invoke', to: 'mcode:docs:native-font-metrics' },
++  'docs:spell-languages': { kind: 'invoke', to: 'mcode:docs:native-spell-languages' },
++  'docs:spell-set-languages': { kind: 'invoke', to: 'mcode:docs:native-spell-set-languages' },
++  'docs:close-check-result': { kind: 'send', to: 'mcode:document-view:close-check-result' },
++  'docs:close-check': { kind: 'on', to: 'mcode:document-view:close-check' },
++  'menu:command': { kind: 'on', to: 'menu:command' },
++})
++
++function route(channel: string, kind: Route['kind']): string {
++  const rule = Object.hasOwn(MCODE_DOCS_CHANNEL_POLICY, channel)
++    ? MCODE_DOCS_CHANNEL_POLICY[channel]
++    : undefined
++  if (!rule || rule.kind !== kind) {
++    throw new Error(`Mcode Docs preload denied ${kind} channel: ${channel}`)
++  }
++  return rule.to
++}
++
++function invokeDocs(channel: string, payload?: unknown): Promise<unknown> {
++  return ipcRenderer.invoke(route(channel, 'invoke'), payload)
++}
++
++function sendDocs(channel: string, payload: unknown): void {
++  ipcRenderer.send(route(channel, 'send'), payload)
++}
++
++function onDocs<T extends unknown[]>(
++  channel: string,
++  handler: (...args: T) => void,
++): () => void {
++  const target = route(channel, 'on')
++  const listener = (_event: IpcRendererEvent, ...args: unknown[]): void =>
++    handler(...(args as T))
++  ipcRenderer.on(target, listener)
++  return () => ipcRenderer.removeListener(target, listener)
++}
++
++function saveBytes(data: ArrayBuffer | Uint8Array): Uint8Array {
++  // Always make a copy of renderer-owned bytes, do not accept strings/objects.
++  if (!(data instanceof ArrayBuffer) && !(data instanceof Uint8Array)) {
++    throw new TypeError('Docs save expects binary document bytes')
++  }
++  return new Uint8Array(data instanceof Uint8Array ? data.slice() : data.slice(0))
++}
++
++const noop = (): void => {}
++const noSubscription = (): (() => void) => noop
++
++/**
++ * Original DesktopApi method names and callback signatures are retained.
++ * Only path-independent UI defaults stay local; all document content, file
++ * identity, workspace scope, conflict/version checks and persistence are
++ * handled by Mcode, never by the vendor's standalone main IPC handlers.
++ */
++export const mcodeDocsDesktopApi = Object.freeze({
++  openDocxPath: async (_path: string) => {
++    // The caller's path is untrusted. The host chooses its pendingOpen.
++    const reply = await invokeDocs('docs:open-path', {})
++    if (reply && typeof reply === 'object' && (reply as { ok?: unknown }).ok === true) {
++      return ((reply as { result?: unknown }).result ?? null) as Awaited<ReturnType<DesktopApi['openDocxPath']>>
++    }
++    return null
++  },
++  confirmDocumentReplace: () => invokeDocs('docs:confirm-document-replace', {}) as Promise<boolean>,
++  saveDocx: (_path: string, data: ArrayBuffer | Uint8Array, auto?: boolean) =>
++    invokeDocs('docs:save', { bytes: saveBytes(data), auto: auto === true }) as ReturnType<DesktopApi['saveDocx']>,
++  saveDocxNew: (defaultName: string, data: ArrayBuffer | Uint8Array) =>
++    invokeDocs('docs:save-new', {
++      newDocument: true,
++      defaultName: typeof defaultName === 'string' ? defaultName : '',
++      bytes: saveBytes(data),
++    }) as ReturnType<DesktopApi['saveDocxNew']>,
++  onMenuCommand: (handler: (command: MenuCommand, payload?: string) => void) =>
++    onDocs<[MenuCommand, string?]>('menu:command', handler),
++  onCloseCheck: (handler: () => void) => onDocs('docs:close-check', handler),
++  reportCloseCheck: (state: { dirty?: unknown }) =>
++    sendDocs('docs:close-check-result', { dirty: state?.dirty === true }),
++  fontMetrics: (family: string) => invokeDocs('docs:font-metrics', family) as ReturnType<DesktopApi['fontMetrics']>,
++  spellLanguages: () => invokeDocs('docs:spell-languages') as ReturnType<DesktopApi['spellLanguages']>,
++  spellSetLanguages: (langs: string[]) => invokeDocs('docs:spell-set-languages', langs) as ReturnType<DesktopApi['spellSetLanguages']>,
++  getRecentFiles: () => {
++    // Native file-actions calls this after a successful open; Mcode uses it
++    // as the commit acknowledgement, but stores no second recent-files list.
++    void invokeDocs('docs:recent', { accepted: true }).catch(noop)
++    return Promise.resolve([] as string[])
++  },
++  getLanguage: () => Promise.resolve('zh' as const),
++  getTheme: () => Promise.resolve('system' as const),
++  getDocumentTheme: () => Promise.resolve('follow' as const),
++  getAutoSaveDefault: () => Promise.resolve({ on: true, updatedAt: 0 }),
++  onThemeChanged: noSubscription,
++  onLanguageChanged: noSubscription,
++  onDocumentThemeChanged: noSubscription,
++  armContextMenu: noop,
++  // Initial renderer effects and new-blank path use these native API hooks.
++  // No second chat, persisted settings, password store, export queue or AI.
++  getAiSettings: () => Promise.resolve({ provider: 'genspark', providers: {} }) as ReturnType<DesktopApi['getAiSettings']>,
++  consumePendingOpenDocx: () => Promise.resolve(null),
++  consumeNewBlankDoc: () => Promise.resolve(false),
++  consumeAiDocContent: () => Promise.resolve(null),
++  consumeHeadlessExport: () => Promise.resolve(null),
++  onOpenDocx: noSubscription,
++  onRenamedDocx: noSubscription,
++  onZoteroRequest: noSubscription,
++  docPasswordIntentRevision: () => Promise.resolve(0),
++  discardDocPasswordIntents: (_throughRevision: number) => Promise.resolve({ ok: true }),
++} satisfies Partial<DesktopApi>)
++
++// Imported as a build-time source dependency by Mcode's documentViewPreload.
++// Vendor-absent builds alias the same module name to a stub (value = false).
++export const mcodeDocsViewAvailable = true
++export function installMcodeDocsViewPreload(): void {
++  contextBridge.exposeInMainWorld('desktop', mcodeDocsDesktopApi)
++}
+-- 
+2.52.0.windows.1
+

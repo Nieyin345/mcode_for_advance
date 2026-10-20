@@ -43,3 +43,18 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --outfile="$OUT/leaseChild.mjs" --log-level=error
 
 MCODE_SMOKE_DATA_ROOT="$DATA" MCODE_DV_LEASE_CHILD="$OUT/leaseChild.mjs" node "$OUT/smoke.mjs"
+
+# ARC-007: exercise the actual vendor-native Docs preload + scoped main
+# registrar. Do not silently fall back to the old hand-written Mcode docs stub.
+VENDOR_DOCS="../../genoffice/apps/docs/src/preload/mcode-view.ts"
+VENDOR_IPC="../../genoffice/apps/docs/src/main/mcode-ipc.ts"
+if [[ -f "$VENDOR_DOCS" && -f "$VENDOR_IPC" ]]; then
+  "$ESBUILD" scripts/document-view-host-smoke/nativeDocs.ts \
+    --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
+    --alias:electron=./scripts/document-view-host-smoke/stubs/nativeDocsElectron.ts \
+    --alias:@genoffice/font-metrics=./scripts/document-view-host-smoke/stubs/nativeDocsFonts.ts \
+    --outfile="$OUT/nativeDocs.mjs" --log-level=error
+  node "$OUT/nativeDocs.mjs"
+else
+  echo "document-view-host-smoke: SKIP vendor Docs boundary (gitignored source missing)"
+fi

@@ -97,6 +97,7 @@ import { link, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { issueDocumentHandoff, revokeDocumentHandoffs } from "./documentViewHandoff.js";
+import { mcodeNativeDocsIpcAvailable, registerDocsIpc } from "@main/document/docsVendorIpc.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 import type { EditorCredentialPort } from "./documentViewCredentialBroker.js";
 
@@ -452,6 +453,23 @@ export class DocumentViewHost {
     this.beforeAtomicReplace = ports.beforeAtomicReplace ?? (() => undefined);
     this.confirmDirty = ports.confirmDirty ?? null;
     this.editorCredentials = ports.editorCredentials ?? null;
+    // ARC-007: native Docs main capabilities are registered only in the
+    // production host. Never register GenOffice's standalone global handlers:
+    // they own file dialogs/AI/storage and would bypass our CAS fence.
+    if (ports.createView === undefined && mcodeNativeDocsIpcAvailable) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { ipcMain } = require("electron") as typeof import("electron");
+        registerDocsIpc(ipcMain, (sender: unknown): boolean => {
+          const id = this.docIdForSender(sender);
+          const live = id === null ? null : this.views.get(id);
+          return live !== null && live !== undefined &&
+            live.workflowEngineId === null && live.editor !== "slides";
+        });
+      } catch (err) {
+        log.error(`native Docs IPC not installed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /**

@@ -229,12 +229,21 @@ export default defineConfig({
           // 用**精确匹配**的 alias 数组项而不是对象键：对象键在 Rollup 的 alias
           // 插件里是前缀匹配，`@main` 那条会把 `@main/document/...` 也一起吞掉
           // （顺序敏感）。精确正则保证只有这一个说明符被改写。
+          find: /^@main\/document\/docsVendorIpc\.js$/,
+          replacement: existsSync(resolve("../../genoffice/apps/docs/src/main/mcode-ipc.ts"))
+            ? resolve("../../genoffice/apps/docs/src/main/mcode-ipc.ts")
+            : resolve("src/main/document/docsVendorIpc.ts"),
+        },
+        {
           find: /^@main\/document\/slidesVendorModules\.js$/,
           replacement: existsSync(resolve("../../genoffice/packages/pptx-engine/package.json"))
             ? resolve("src/main/document/slidesVendorModules.ts")
             : resolve("src/main/document/slidesVendorModulesStub.ts"),
         },
         ...slidesVendorAliases(),
+        ...(existsSync(resolve("../../genoffice/packages/font-metrics/src/index.ts"))
+          ? [{ find: "@genoffice/font-metrics", replacement: resolve("../../genoffice/packages/font-metrics/src/index.ts") }]
+          : []),
         { find: "@contracts", replacement: resolve("../../packages/contracts/src") },
         { find: "@main", replacement: resolve("src/main") },
         // Only the pure translation core is shared with main; never externalize this source alias.
@@ -263,9 +272,19 @@ export default defineConfig({
       rollupOptions: { external: ["electron"] },
     },
     resolve: {
-      alias: {
-        "@contracts": resolve("../../packages/contracts/src"),
-      },
+      alias: [
+        {
+          // ARC-007: bundle the vendor's own sandboxed Docs view preload.
+          // genoffice/ is a separate ignored Git clone. Missing source must
+          // retain the old restricted Mcode stub rather than enabling IPC.
+          find: /^@main\\/document\\/docsVendorPreload\\.js$/,
+          replacement: existsSync(resolve("../../genoffice/apps/docs/src/preload/mcode-view.ts"))
+            ? resolve("../../genoffice/apps/docs/src/preload/mcode-view.ts")
+            : resolve("src/main/document/docsVendorPreload.ts"),
+        },
+        { find: "@contracts", replacement: resolve("../../packages/contracts/src") },
+        { find: "@main", replacement: resolve("src/main") },
+      ],
     },
   },
   renderer: {
