@@ -31,6 +31,8 @@
  * 记一行,其余照跑。用 `console.warn`(不是 `@main/lib/logger`)是为了保住这个叶子的
  * **零依赖** —— 那个 logger 会 `import { app } from "electron"`(见文件头那条理由)。
  */
+import { safeErrorMessage } from "./safeErrorMessage.js";
+
 export type SessionCleanupHook = (sessionId: string) => void;
 
 /** 「项目真的被删了」的收尾钩子。第二个参数是**删之前**读到的项目根路径 ——
@@ -55,9 +57,16 @@ export function runSessionCleanupHooks(sessionId: string): void {
   // the deletion already in progress (or recursively expand the iterator).
   for (const fn of [...hooks]) {
     try {
-      fn(sessionId);
+      // TS void hooks may still return a Promise at runtime. Deletion is
+      // synchronous; observe a rejected async cleanup to avoid crashing the
+      // host with an unhandledRejection, but do NOT imply it was awaited.
+      const pending: unknown = (fn as (id: string) => unknown)(sessionId);
+      if (pending && typeof (pending as PromiseLike<void>).then === "function") {
+        void Promise.resolve(pending).catch(err =>
+          console.warn(`runSessionCleanupHooks(${sessionId}) async failure: ${safeErrorMessage(err)}`));
+      }
     } catch (err) {
-      console.warn(`runSessionCleanupHooks(${sessionId}) failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`runSessionCleanupHooks(${sessionId}) failed: ${safeErrorMessage(err)}`);
     }
   }
 }
@@ -74,10 +83,14 @@ export function runProjectCleanupHooks(projectId: string, projectPath: string): 
   // Registration changes during cleanup belong to a later deletion.
   for (const fn of [...projectHooks]) {
     try {
-      fn(projectId, projectPath);
+      const pending: unknown = (fn as (id: string, path: string) => unknown)(projectId, projectPath);
+      if (pending && typeof (pending as PromiseLike<void>).then === "function") {
+        void Promise.resolve(pending).catch(err =>
+          console.warn(`runProjectCleanupHooks(${projectId}) async failure: ${safeErrorMessage(err)}`));
+      }
     } catch (err) {
       console.warn(
-        `runProjectCleanupHooks(${projectId}) failed: ${err instanceof Error ? err.message : String(err)}`,
+        `runProjectCleanupHooks(${projectId}) failed: ${safeErrorMessage(err)}`,
       );
     }
   }
