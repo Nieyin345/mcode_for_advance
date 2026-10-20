@@ -1330,5 +1330,57 @@ section("ARC-005: tool input tooltip is a total string function");
   eq("★ regular JSON input is not changed", safeStringify({ id: 1 }), '{\n  "id": 1\n}');
 }
 
+/* 【ARC-005 V2】View Transition 封装的三条分支。
+ * withViewTransition 是一个总函数：支持 startViewTransition 就异步包一层，
+ * 否则同步执行。这里用最小 document/window 桩验证三种环境下的**更新确实发生**
+ * 且没有抛错 —— 它是"会话切换不丢更新"的最后一道保险。 */
+section("ARC-005: withViewTransition 在三种环境下都执行更新");
+{
+  const { withViewTransition } = await import("../../src/renderer/lib/viewTransition.js");
+  const g = globalThis as unknown as { document?: unknown; window?: unknown };
+  const saved = { document: g.document, window: g.window };
+  let ran = 0;
+
+  {
+    let started = 0;
+    const doc = {
+      documentElement: { getAttribute: () => null },
+      startViewTransition: (cb: () => void) => { started++; cb(); return { finished: Promise.resolve() }; },
+    };
+    g.document = doc;
+    g.window = { matchMedia: () => ({ matches: false }) };
+    ran = 0;
+    withViewTransition(() => { ran++; });
+    eq("★ 支持 VT 时更新执行一次", ran, 1);
+    eq("★ 支持 VT 时 startViewTransition 被调用一次", started, 1);
+  }
+
+  {
+    g.document = { documentElement: { getAttribute: () => null } };
+    g.window = { matchMedia: () => ({ matches: false }) };
+    ran = 0;
+    let threw = false;
+    try { withViewTransition(() => { ran++; }); } catch { threw = true; }
+    eq("★ 不支持 VT 时仍执行更新", ran, 1);
+    check("★ 不支持 VT 时不抛错", !threw);
+  }
+
+  {
+    let started = 0;
+    g.document = {
+      documentElement: { getAttribute: (k: string) => (k === "data-reduce-motion" ? "true" : null) },
+      startViewTransition: (cb: () => void) => { started++; cb(); return { finished: Promise.resolve() }; },
+    };
+    g.window = { matchMedia: () => ({ matches: false }) };
+    ran = 0;
+    withViewTransition(() => { ran++; });
+    eq("★ 减少动效时更新仍执行", ran, 1);
+    eq("★ 减少动效时不启动 VT", started, 0);
+  }
+
+  g.document = saved.document;
+  g.window = saved.window;
+}
+
 console.log(`\nrenderer-pure-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
