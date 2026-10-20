@@ -84,6 +84,8 @@ interface DeckSession {
   revision: string;
   /** Any edit made while savePptxToFile is awaiting invalidates that save. */
   editEpoch: number;
+  /** Vendor mutation/render failed after touching deck; reload before saving. */
+  saveTainted: boolean;
   fitWidthPx: number;
   undo: unknown[];
   redo: unknown[];
@@ -228,6 +230,7 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
       filePath,
       revision: createHash("sha256").update(bytes).digest("hex"),
       editEpoch: 0,
+      saveTainted: false,
       fitWidthPx: width,
       undo: [],
       redo: [],
@@ -242,6 +245,9 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
   ): Promise<{ bytes: number } | { reason: string } | null> {
     const session = this.sessions.get(webContentsId);
     if (!session || session.docId !== docId || session.filePath !== filePath) return null;
+    if (session.saveTainted) {
+      return { reason: "SLIDES_NATIVE_SESSION_UNCERTAIN:原厂编辑或渲染中途失败，请重新打开文档再保存" };
+    }
     const epoch = this.sessionEpochs.get(webContentsId);
     if (!epoch || dirname(filePath) === "") return null;
     const editEpoch = session.editEpoch;
@@ -289,7 +295,17 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
           }
           await rename(stage, real);
           session.revision = stagedHash;
-          this.engine.commitSaved(session.opened);
+          try {
+            this.engine.commitSaved(session.opened);
+          } catch {
+            // The OS rename has ALREADY committed the complete document.
+            // Neither "save failed, try again" nor a false success is safe:
+            // the native archive's committed cursor may now be inconsistent.
+            session.saveTainted = true;
+            return {
+              reason: "SLIDES_POST_COMMIT_UNCERTAIN:文件已写入磁盘，但原厂提交状态失败；请重新打开文档确认保存结果",
+            };
+          }
           return { bytes: stagedInfo.size };
         } finally {
           await rm(stageDir, { recursive: true, force: true });
@@ -305,27 +321,31 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     docId: string,
   ): Promise<{ slideCount: number; slides: unknown[]; index: number } | null> {
     const session = this.sessions.get(webContentsId);
-    if (!session || session.docId !== docId) return null;
+    if (!session || session.docId !== docId || session.saveTainted) return null;
     const deck = session.opened as VendorDeck;
-    // vendor `slides:add-blank-slide`（slides-main.ts:2770）的同一事务：插在当前页
-    // 之后。宿主没有"当前页"概念 → 固定插在最后一页之后（页面后续以返回的
-    // slides 树重绘，index 与 vendor 语义一致）。
-    const sourceIndex = Math.max(0, deck.deck.slides.length - 1);
-    session.undo.push(this.snapshot(deck));
-    const result = this.ops.runTxn(session.opened, {
-      ops: [{ op: "addBlankSlide", target: { slide: sourceIndex } }],
-    });
-    if (!result.applied) {
-      session.undo.pop();
+    // A vendor command may change the model BEFORE throwing. Invalidate any
+    // in-flight serializer before even starting native ops.
+    session.editEpoch++;
+    try {
+      const sourceIndex = Math.max(0, deck.deck.slides.length - 1);
+      session.undo.push(this.snapshot(deck));
+      const result = this.ops.runTxn(session.opened, {
+        ops: [{ op: "addBlankSlide", target: { slide: sourceIndex } }],
+      });
+      if (!result.applied && !result.failures?.length) {
+        session.undo.pop();
+        return null;
+      }
+      if (!result.applied || result.failures?.length) {
+        session.saveTainted = true;
+        return null;
+      }
+      const slides = renderSlides(this.render, deck, session.fitWidthPx);
+      return { slideCount: deck.deck.slides.length, slides, index: deck.deck.slides.length - 1 };
+    } catch {
+      session.saveTainted = true;
       return null;
     }
-    // addBlankSlide mutates the exact same native deck as editText. A staged
-    // save started before this operation must not claim to have saved it.
-    session.editEpoch++;
-    // The original Slides UI's addBlankSlide() consumes the full updated
-    // RenderSlide[] and the inserted index, not merely the new slide count.
-    const slides = renderSlides(this.render, deck, session.fitWidthPx);
-    return { slideCount: deck.deck.slides.length, slides, index: deck.deck.slides.length - 1 };
   }
 
   async editText(
@@ -336,32 +356,40 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     text: string,
   ): Promise<{ text: string; renderedSlide: Record<string, unknown> } | null> {
     const session = this.sessions.get(webContentsId);
-    if (!session || session.docId !== docId) return null;
-    session.undo.push(this.snapshot(session.opened as VendorDeck));
-    const result = this.ops.runTxn(session.opened, {
-      ops: [
-        {
+    if (!session || session.docId !== docId || session.saveTainted) return null;
+    // Native runTxn can partly mutate a model before it throws. An in-flight
+    // save must be invalidated even if the UI never receives a success reply.
+    session.editEpoch++;
+    try {
+      session.undo.push(this.snapshot(session.opened as VendorDeck));
+      const result = this.ops.runTxn(session.opened, {
+        ops: [{
           op: "setText",
           target: { slide: slideIndex, el: elementId },
           paragraphs: [{ runs: [{ text }] }],
-        },
-      ],
-    });
-    if (!result.applied) {
-      session.undo.pop();
+        }],
+      });
+      if (!result.applied && !result.failures?.length) {
+        session.undo.pop();
+        return null;
+      }
+      if (!result.applied || result.failures?.length) {
+        session.saveTainted = true;
+        return null;
+      }
+      const deck = session.opened as VendorDeck;
+      const slide = deck.deck.slides[slideIndex] as { nodes?: unknown[] } | undefined;
+      const nodesText = flattenNodeText(slide?.nodes ?? []);
+      const renderedSlide = renderSlides(this.render, deck, session.fitWidthPx)[slideIndex];
+      if (!renderedSlide || typeof renderedSlide !== "object") {
+        session.saveTainted = true;
+        return null;
+      }
+      return { text: nodesText.length > 0 ? nodesText : text, renderedSlide: renderedSlide as Record<string, unknown> };
+    } catch {
+      session.saveTainted = true;
       return null;
     }
-    session.editEpoch++;
-    // 回读：用渲染树里该元素的文本作为"替换后的纯文本"（与 vendor 的返回同一语义）。
-    const deck = session.opened as VendorDeck;
-    const slide = deck.deck.slides[slideIndex] as { nodes?: unknown[] } | undefined;
-    const nodesText = flattenNodeText(slide?.nodes ?? []);
-    // The vendor editor uses the returned RenderSlide's `nodes` to replace
-    // its on-screen slide. A text-only acknowledgement would silently leave
-    // the canvas stale even though the deck mutation succeeded.
-    const renderedSlide = renderSlides(this.render, deck, session.fitWidthPx)[slideIndex];
-    if (!renderedSlide || typeof renderedSlide !== "object") return null;
-    return { text: nodesText.length > 0 ? nodesText : text, renderedSlide: renderedSlide as Record<string, unknown> };
   }
 
   /** 浅快照（vendor `takeSnapshot` 的简化版）：undo 只在失败回滚时用。 */

@@ -190,6 +190,101 @@ check("★ same webContents stale/incorrect docId cannot mutate other document",
   (await saver.editText(126,"imposter",0,"x","BAD"))===null,null);
 saver.release(126);
 
+/* Native vendor may mutate its in-memory deck and THEN throw, or return a
+   partial failure / an unrenderable updated slide. None of those is a
+   safely committed UI edit. Do not later save a deck the user never saw. */
+for(const kind of ["throw-add","throw-edit","render-add","render-edit","partial-add"] as const){
+ const target=join(root,`unsafe-native-${kind}.pptx`);
+ writeFileSync(target,"SAFE_ORIGINAL");
+ let nativeSaves=0;
+ let nativeCommits=0;
+ const vendorMutation={
+   engine:{
+     async openPptx(){return {deck:{slides:[{id:"SAFE_ORIGINAL",nodes:[]}],size:{cx:10,cy:10}}};},
+     async savePptxToFile(opened:unknown,dest:string){
+       nativeSaves++;
+       writeFileSync(dest,(opened as {deck:{slides:Array<{id:string}>}}).deck.slides.map(s=>s.id).join("|"));
+     },
+     async createBlankPptx(){return new Uint8Array([1]);},
+     commitSaved(){nativeCommits++;}
+   },
+   render:{
+     HeuristicMetrics:class{},
+     buildRenderSlide(slide:unknown){
+       if(kind.startsWith("render") && (slide as {id:string}).id==="CHANGED"){
+         throw new Error("SYNTHETIC_VENDOR_RENDER_FAILURE");
+       }
+       return slide;
+     }
+   },
+   ops:{
+     runTxn(opened:unknown){
+       const slides=(opened as {deck:{slides:Array<{id:string,nodes:unknown[]}>}}).deck.slides;
+       if(kind.endsWith("add"))slides.push({id:"CHANGED",nodes:[]});
+       else slides[0]!.id="CHANGED";
+       if(kind.startsWith("throw"))throw new Error("SYNTHETIC_PARTIAL_VENDOR_MUTATION");
+       if(kind==="partial-add")return {applied:true,failures:[{index:0,error:"partial failure"}]};
+       return {applied:true};
+     }
+   }
+ };
+ const unsafe=new VendorSlidesExecutor(vendorMutation as never);
+ const wc=300+["throw-add","throw-edit","render-add","render-edit","partial-add"].indexOf(kind);
+ check(`★ ${kind}: fixture native PPTX opened`,(await unsafe.openDeck(wc,kind,target,1280))!==null,null);
+ let result:unknown,threw=false;
+ try{result=kind.endsWith("add")?await unsafe.addBlankSlide(wc,kind):await unsafe.editText(wc,kind,0,"element","CHANGED");}
+ catch{threw=true;}
+ check(`★ ${kind}: failed/partial native mutation must not be reported as successful`,
+   threw||result===null,{result,threw});
+ const uncertain=await unsafe.saveDeck(wc,kind,target);
+ check(`★ ${kind}: poisoned native session may not save modified model after failed UI edit`,
+   uncertain!==null && "reason" in uncertain && uncertain.reason.includes("SESSION_UNCERTAIN") &&
+   readFileSync(target,"utf8")==="SAFE_ORIGINAL" && nativeSaves===0 && nativeCommits===0,
+   {uncertain,bytes:readFileSync(target,"utf8"),nativeSaves,nativeCommits});
+ unsafe.release(wc);
+}
+
+/* Native commitSaved runs AFTER atomic disk rename. If it throws, bytes
+   are already visible; reporting plain null gives a false "not saved"
+   message, and reusing the uncommitted vendor model can corrupt follow-ups. */
+{
+ const published=join(root,"post-commit-original.pptx");
+ writeFileSync(published,"POST_COMMIT_OLD");
+ let shouldThrow=true;
+ let saveCount=0;
+ const vendorCommit={
+   engine:{
+     async openPptx(){return {deck:{slides:[{id:"POST_COMMIT_MODEL",nodes:[]}],size:{cx:4,cy:4}}};},
+     async savePptxToFile(_model:unknown,to:string){saveCount++;writeFileSync(to,"POST_COMMIT_NEW");},
+     async createBlankPptx(){return new Uint8Array([1]);},
+     commitSaved(){if(shouldThrow)throw Error("SYNTHETIC_COMMIT_FAILED");},
+   },
+   render:{HeuristicMetrics:class{},buildRenderSlide(slide:unknown){return slide;}},
+   ops:{runTxn(){return {applied:false};}}
+ };
+ const host=new VendorSlidesExecutor(vendorCommit as never);
+ check("★ post-commit probe opens existing native file",(await host.openDeck(390,"doc",published,1200))!==null,null);
+ const first=await host.saveDeck(390,"doc",published);
+ check("★ failed commitSaved reports uncertain disk commit, not plain unsaved",
+   first!==null&&"reason" in first&&first.reason.includes("POST_COMMIT_UNCERTAIN"),
+   {first,bytes:readFileSync(published,"utf8")});
+ check("★ native serializer already published intact new bytes",
+   readFileSync(published,"utf8")==="POST_COMMIT_NEW",readFileSync(published,"utf8"));
+ shouldThrow=false;
+ const retry=await host.saveDeck(390,"doc",published);
+ check("★ uncertain vendor state cannot save again until reopen",
+   retry!==null&&"reason" in retry&&retry.reason.includes("SESSION_UNCERTAIN")&&saveCount===1,
+   {retry,saveCount});
+ host.release(390);
+ check("★ reopening authoritative disk file clears taint",
+   (await host.openDeck(391,"new-doc",published,1200))!==null,null);
+ const healthy=await host.saveDeck(391,"new-doc",published);
+ check("★ reopened fresh vendor session can save again",
+   healthy!==null&&"bytes" in healthy&&healthy.bytes===Buffer.byteLength("POST_COMMIT_NEW"),
+   healthy);
+ host.release(391);
+}
+
 }finally{rmSync(root,{recursive:true,force:true});}
 console.log(`slides-executor-session-epoch-smoke: ${passed}/${passed+failed}`);
 if(failed)process.exitCode=1;
