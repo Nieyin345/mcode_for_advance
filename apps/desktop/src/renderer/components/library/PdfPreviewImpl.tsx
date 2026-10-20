@@ -104,6 +104,9 @@ export function PdfPreview({
   // Each path / document load has one generation. A pending PDFium export or
   // Host IPC response from an old document must not mutate the next page.
   const documentEpochRef = useRef(0);
+  // The toolbar and the "save before navigation" guard can invoke save()
+  // concurrently. Coalesce one in-flight save per document generation.
+  const saveInFlightRef = useRef<{ epoch: number; promise: Promise<boolean> } | null>(null);
   const [indexWarning, setIndexWarning] = useState<string | null>(null);
   const [indexReload, setIndexReload] = useState(0);
   /** 保存（把批注导出并写回文件）的状态机。 */
@@ -249,81 +252,95 @@ export function PdfPreview({
   const save = useCallback(async (): Promise<boolean> => {
     if (!filePath) return false;
     const epoch = documentEpochRef.current;
-    const savedEditEpoch = annotationEditEpochRef.current;
-    const stillCurrent = () => epoch === documentEpochRef.current;
-    setSaveState("saving");
-    setSaveErr(null);
-    try {
-      if (!loadedRevision) throw new Error("PDF 原始版本尚未确认，请重新打开文件再保存");
-      const registry = await viewerRef.current?.registry;
-      if (!stillCurrent()) return false;
-      /**
-       * ⚠️ **不能写成 `registry.getPlugin("export")?.provides()`。**
-       *
-       * `getPlugin` 的声明返回 `Plugin | undefined`，而 `Plugin` 上的
-       * `provides` 在类型里**也是可选的** —— TS 认为 `?.provides` 之后仍可能是
-       * undefined，于是 `.provides()` 这个调用点直接报 "possibly undefined"。
-       *
-       * 它的**运行时**契约其实很硬：export 插件随 viewer 一起注册（snippet 那套
-       * 默认全挂），`getPlugin("export")` 一定拿得到、`provides()` 一定给得出
-       * `saveAsCopy`。所以这里把 `getPlugin` 的**返回值整体收窄**成一个具体形状，
-       * 拿到的东西不对就明确报错，而不是靠类型上的可选链把问题糊过去。
-       */
-      const getPlugin = (registry as unknown as {
-        getPlugin?: (name: string) => { provides: () => unknown } | undefined;
-      } | null)?.getPlugin;
-      const plugin = getPlugin ? getPlugin.call(registry, "export")?.provides() : undefined;
-      const saveAsCopy = (plugin as { saveAsCopy?: unknown } | undefined)?.saveAsCopy as
-        | (() => { toPromise: () => Promise<ArrayBuffer> })
-        | undefined;
-      if (typeof saveAsCopy !== "function") {
-        throw new Error(t("library.pdfViewer.saveFailed"));
-      }
+    if (saveInFlightRef.current?.epoch === epoch) {
+      // The second caller should await the SAME pending Host operation,
+      // never export/write a competing copy against an identical CAS.
+      return saveInFlightRef.current.promise;
+    }
+    const operation = (async (): Promise<boolean> => {
+      const savedEditEpoch = annotationEditEpochRef.current;
+      const stillCurrent = () => epoch === documentEpochRef.current;
+      setSaveState("saving");
+      setSaveErr(null);
+      try {
+        if (!loadedRevision) throw new Error("PDF 原始版本尚未确认，请重新打开文件再保存");
+        const registry = await viewerRef.current?.registry;
+        if (!stillCurrent()) return false;
+        /**
+         * ⚠️ **不能写成 `registry.getPlugin("export")?.provides()`。**
+         *
+         * `getPlugin` 的声明返回 `Plugin | undefined`，而 `Plugin` 上的
+         * `provides` 在类型里**也是可选的** —— TS 认为 `?.provides` 之后仍可能是
+         * undefined，于是 `.provides()` 这个调用点直接报 "possibly undefined"。
+         *
+         * 它的**运行时**契约其实很硬：export 插件随 viewer 一起注册（snippet 那套
+         * 默认全挂），`getPlugin("export")` 一定拿得到、`provides()` 一定给得出
+         * `saveAsCopy`。所以这里把 `getPlugin` 的**返回值整体收窄**成一个具体形状，
+         * 拿到的东西不对就明确报错，而不是靠类型上的可选链把问题糊过去。
+         */
+        const getPlugin = (registry as unknown as {
+          getPlugin?: (name: string) => { provides: () => unknown } | undefined;
+        } | null)?.getPlugin;
+        const plugin = getPlugin ? getPlugin.call(registry, "export")?.provides() : undefined;
+        const saveAsCopy = (plugin as { saveAsCopy?: unknown } | undefined)?.saveAsCopy as
+          | (() => { toPromise: () => Promise<ArrayBuffer> })
+          | undefined;
+        if (typeof saveAsCopy !== "function") {
+          throw new Error(t("library.pdfViewer.saveFailed"));
+        }
 
-      // `Task` → Promise。它自己的 `toPromise()` 就是干这个的。
-      const buf = await saveAsCopy.call(plugin).toPromise();
-      // A new file/child PDF has superseded the old preview. Do not send the
-      // orphaned export to Host, even if PDFium returned perfectly valid data.
-      if (!stillCurrent()) return false;
-      if (!buf || buf.byteLength === 0) throw new Error(t("library.pdfViewer.saveFailed"));
+        // `Task` → Promise。它自己的 `toPromise()` 就是干这个的。
+        const buf = await saveAsCopy.call(plugin).toPromise();
+        // A new file/child PDF has superseded the old preview. Do not send the
+        // orphaned export to Host, even if PDFium returned perfectly valid data.
+        if (!stillCurrent()) return false;
+        if (!buf || buf.byteLength === 0) throw new Error(t("library.pdfViewer.saveFailed"));
 
-      // 字节 → base64。分块拼，别用 `String.fromCharCode(...arr)` ——
-      // 十几 MB 的论文会把调用栈撑爆（"Maximum call stack size exceeded"）。
-      const u8 = new Uint8Array(buf);
-      let bin = "";
-      const CHUNK = 0x8000;
-      for (let i = 0; i < u8.length; i += CHUNK) {
-        bin += String.fromCharCode(...u8.subarray(i, i + CHUNK));
-      }
-      const exportedRevision = await pdfRevision(toArrayBuffer(u8));
-      if (!stillCurrent()) return false;
-      const r = await api.library.writeHighlights({
-        pdfPath: filePath,
-        bytesBase64: btoa(bin),
-        expectedRevision: loadedRevision,
-      });
-      if (!stillCurrent()) return false; // Old Host response cannot stamp B as saved.
-      if (!r.ok) throw new Error(r.error ?? t("library.pdfViewer.saveFailed"));
-      setLoadedRevision(exportedRevision);
-      if (annotationEditEpochRef.current !== savedEditEpoch) {
-        // The saved snapshot predates edits the user made while waiting.
-        // Do not clear unsaved state or let navigation treat this as a full
-        // save; retain the current viewer, advance CAS and request retry.
-        setSaveState("error");
-        setSaveErr("保存过程中出现新批注：之前的快照已写入，但新批注尚未保存，请再次保存");
+        // 字节 → base64。分块拼，别用 `String.fromCharCode(...arr)` ——
+        // 十几 MB 的论文会把调用栈撑爆（"Maximum call stack size exceeded"）。
+        const u8 = new Uint8Array(buf);
+        let bin = "";
+        const CHUNK = 0x8000;
+        for (let i = 0; i < u8.length; i += CHUNK) {
+          bin += String.fromCharCode(...u8.subarray(i, i + CHUNK));
+        }
+        const exportedRevision = await pdfRevision(toArrayBuffer(u8));
+        if (!stillCurrent()) return false;
+        const r = await api.library.writeHighlights({
+          pdfPath: filePath,
+          bytesBase64: btoa(bin),
+          expectedRevision: loadedRevision,
+        });
+        if (!stillCurrent()) return false; // Old Host response cannot stamp B as saved.
+        if (!r.ok) throw new Error(r.error ?? t("library.pdfViewer.saveFailed"));
+        setLoadedRevision(exportedRevision);
+        if (annotationEditEpochRef.current !== savedEditEpoch) {
+          // The saved snapshot predates edits the user made while waiting.
+          // Do not clear unsaved state or let navigation treat this as a full
+          // save; retain the current viewer, advance CAS and request retry.
+          setSaveState("error");
+          setSaveErr("保存过程中出现新批注：之前的快照已写入，但新批注尚未保存，请再次保存");
+          return false;
+        }
+        setSaveState("saved");
+        markDirty(false);
+        return true;
+      } catch (err) {
+        // An old failed save may arrive after navigation; its error belongs to
+        // A, not the newly selected B's UI or dirty-state ledger.
+        if (stillCurrent()) {
+          setSaveState("error");
+          setSaveErr((err as Error).message);
+        }
         return false;
       }
-      setSaveState("saved");
-      markDirty(false);
-      return true;
-    } catch (err) {
-      // An old failed save may arrive after navigation; its error belongs to
-      // A, not the newly selected B's UI or dirty-state ledger.
-      if (stillCurrent()) {
-        setSaveState("error");
-        setSaveErr((err as Error).message);
-      }
-      return false;
+    })();
+    saveInFlightRef.current = { epoch, promise: operation };
+    try {
+      return await operation;
+    } finally {
+      // A's late completion must not tear down B's newer save slot.
+      if (saveInFlightRef.current?.promise === operation) saveInFlightRef.current = null;
     }
   }, [filePath, loadedRevision, t]);
 

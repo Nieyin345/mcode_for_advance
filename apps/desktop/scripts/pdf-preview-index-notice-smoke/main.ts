@@ -216,5 +216,64 @@ check("retry without newer changes finally marks annotation state clean",
  && __text().includes("library.pdfViewer.savedToast"),
  {retryOK,dirty:useFileViewStore.getState().dirty,text:__text()});
 
+// Save can be entered from the PDF button AND the file-view navigation guard,
+// so disabling one button does not prevent concurrent exports. Both callers
+// must join ONE active snapshot/Host write rather than race the same CAS.
+show("C:/fake-libraries/two-save-callers.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);
+await __flush();
+const pendingExports:Array<(data:ArrayBuffer)=>void>=[];
+let exportCount=0;
+attachExport(()=>{exportCount++;return new Promise(resolve=>pendingExports.push(resolve));});
+const sharedSave=getSaveHandler();
+if(!sharedSave)throw Error("two-caller save handler missing");
+const beforeCoalescedWrites=writes.length;
+const firstRequest=sharedSave();
+const secondRequest=sharedSave();
+await Promise.resolve();
+await Promise.resolve();
+check("★★ two save callers use just one live PDFium export",
+ exportCount===1,{exportCount});
+for(const finish of pendingExports)finish(exported.buffer.slice(0));
+const [firstResult,secondResult]=await Promise.all([firstRequest,secondRequest]);
+await __flush();
+check("★★ two save callers issue exactly one Host CAS write",
+ writes.length===beforeCoalescedWrites+1,
+ {writesAfter:writes.length,writesBefore:beforeCoalescedWrites,exportCount});
+check("both callers receive the same committed save result",
+ firstResult===true && secondResult===true,{firstResult,secondResult});
+
+// A's save is pending and B is selected. B must have a new single-flight
+// slot; completion of A cannot release or cancel B's in-flight slot.
+show("C:/fake-libraries/epoch-A.pdf",async()=>({highlights:[],revision:null}));
+__mount(render);
+await __flush();
+let finishSaveA!:(data:ArrayBuffer)=>void;
+attachExport(()=>new Promise(resolve=>{finishSaveA=resolve}));
+const saveOld=getSaveHandler();
+if(!saveOld)throw Error("old epoch save missing");
+const waitingA=saveOld();
+await Promise.resolve();await Promise.resolve();
+show("C:/fake-libraries/epoch-B.pdf",async()=>({highlights:[],revision:null}));
+__render();await __flush();
+let finishSaveB!:(data:ArrayBuffer)=>void;
+attachExport(()=>new Promise(resolve=>{finishSaveB=resolve}));
+const saveNew=getSaveHandler();
+if(!saveNew)throw Error("new epoch save missing");
+const waitingB=saveNew();
+await Promise.resolve();await Promise.resolve();
+check("★★ new document can start its own export while A is pending",
+ typeof finishSaveB==="function", {a:!!finishSaveA,b:!!finishSaveB});
+if(finishSaveA)finishSaveA(exported.buffer.slice(0));
+const oldResult=await waitingA;
+if(finishSaveB)finishSaveB(exported.buffer.slice(0));
+const newResult=await waitingB;
+await __flush();
+check("stale A returns false while B's independent save commits",
+ oldResult===false && newResult===true,
+ {oldResult,newResult,final:writes.at(-1)});
+check("only the B document is submitted to Host after the switch",
+ writes.at(-1)?.pdfPath==="C:/fake-libraries/epoch-B.pdf",writes.at(-1));
+
 console.log("pdf-preview-index-notice-smoke:"+(assertions-failures)+"/"+assertions+" PASS");
 if(failures)process.exitCode=1;
