@@ -41,7 +41,7 @@ import {
   type NodeParamBinding,
 } from "@contracts/nodeType";
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
-import { spawnRun, type SpawnFn } from "@main/lib/spawnRun.js";
+import { spawnRun, nativeAbortState, type SpawnFn } from "@main/lib/spawnRun.js";
 import { markTruncatedTail } from "@main/lib/outBuf.js";
 import { safeErrorMessage } from "@main/lib/ipcError.js";
 
@@ -237,7 +237,9 @@ export async function runEntryScript(
 ): Promise<NodeOutcome> {
   const { script, manifestDir, interpreter, args: extraArgs, input, bindings, timeoutMs, signal, onProgress } = args;
 
-  if (signal.aborted) return { status: "cancelled", summary: "" };
+  const aborted = nativeAbortState(signal);
+  if (aborted === null) return { status: "failed", summary: "", error: "脚本 signal 必须是有效 AbortSignal" };
+  if (aborted) return { status: "cancelled", summary: "" };
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647) {
     return { status: "failed", summary: "", error: "脚本 timeoutMs 必须是 0–2147483647 的整数毫秒" };
   }

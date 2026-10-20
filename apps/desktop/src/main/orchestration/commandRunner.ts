@@ -26,7 +26,7 @@
 import { COMMAND_OUTPUT_TAIL_CHARS, commandOf } from "@contracts/nodeType";
 import { NODE_STDOUT_PROTOCOL_PREFIX, type NodeArtifact, type NodeOutcome } from "@contracts/nodeType";
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
-import { spawnRun, type SpawnFn } from "@main/lib/spawnRun.js";
+import { spawnRun, nativeAbortState, type SpawnFn } from "@main/lib/spawnRun.js";
 import { markTruncatedTail } from "@main/lib/outBuf.js";
 import { safeErrorMessage } from "@main/lib/ipcError.js";
 
@@ -145,7 +145,19 @@ export async function runCommandNode(
     return { status: "failed", summary: "", error: "命令节点没有填要跑的命令" };
   }
   // 预中止:**根本不 spawn** —— 用户已经按了停止,没有理由再起一个进程。
-  if (signal.aborted) return { status: "cancelled", summary: "" };
+  const aborted = nativeAbortState(signal);
+  if (aborted === null) return { status: "failed", summary: "", error: "命令 signal 必须是有效 AbortSignal" };
+  if (aborted) return { status: "cancelled", summary: "" };
+  // Direct module/IPC callers can bypass the validated NodeInput builder.
+  // An invalid timer (NaN, negative, fractional, overflowing) can disable the
+  // watchdog or make Node schedule an unintended 1ms immediate timeout.
+  if (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs)
+    || timeoutMs < 0 || timeoutMs > 2_147_483_647) {
+    return { status: "failed", summary: "", error: "命令 timeoutMs 必须是 0–2147483647 的整数毫秒" };
+  }
+  if (cwd !== undefined && (typeof cwd !== "string" || cwd.trim().length === 0)) {
+    return { status: "failed", summary: "", error: "命令 cwd 工作目录必须是非空路径字符串" };
+  }
 
   // JSON.stringify can throw on BigInt, circular references, or arbitrary
   // user-supplied toJSON getters (which may even throw null-prototype objects).

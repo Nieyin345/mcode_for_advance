@@ -28,7 +28,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { NODE_STDOUT_PROTOCOL_PREFIX, type NodeOutcome } from "@contracts/nodeType";
 import { normalizeNodeArtifacts } from "./artifactRefs.js";
-import { spawnRun, MAX_LINE_BYTES } from "@main/lib/spawnRun.js";
+import { spawnRun, nativeAbortState, MAX_LINE_BYTES } from "@main/lib/spawnRun.js";
 import { markTruncatedTail } from "@main/lib/outBuf.js";
 import { safeErrorMessage } from "@main/lib/ipcError.js";
 import { resolvePythonExe } from "@main/lib/pythonResolve.js";
@@ -121,7 +121,9 @@ export async function runCodeNode(a: {
   if (typeof a.code !== "string" || !a.code.trim()) {
     return { status: "failed", summary: "", error: "代码节点没有填写有效代码文本" };
   }
-  if (a.signal.aborted) return { status: "cancelled", summary: "" };
+  const aborted = nativeAbortState(a.signal);
+  if (aborted === null) return { status: "failed", summary: "", error: "代码节点 signal 必须是有效 AbortSignal" };
+  if (aborted) return { status: "cancelled", summary: "" };
   if (a.language !== "python" && a.language !== "node"
     && a.language !== "shell" && a.language !== "powershell") {
     return { status: "failed", summary: "", error: "代码节点 language 无效，拒绝替换解释器" };

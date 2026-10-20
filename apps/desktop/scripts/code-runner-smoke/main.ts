@@ -320,5 +320,17 @@ console.log("\nProtocol progress · invalid percentage must not reach UI");
   }
 }
 
+console.log("\nDirect code API rejects forged cancellation");
+{
+  for(const bad of [null,{},Object.create(null),{get aborted(){throw Object.create(null);}}]){
+    let outcome:Awaited<ReturnType<typeof runCodeNode>>|undefined;
+    let rejected=false;
+    try {outcome=await runCodeNode({code:"console.log('never')",language:"node",
+      timeoutMs:1000,signal:bad as AbortSignal});} catch {rejected=true;}
+    check("★ code API returns structured failed outcome for forged AbortSignal",
+      !rejected&&outcome?.status==="failed"&&typeof outcome.error==="string",
+      {status:outcome?.status,rejected});
+  }
+}
 console.log(`\n${failures === 0 ? "PASS" : "FAIL"}: ${total} checks`);
 if (failures > 0) process.exit(1);

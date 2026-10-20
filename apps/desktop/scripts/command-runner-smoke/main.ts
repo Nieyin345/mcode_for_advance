@@ -458,5 +458,216 @@ console.log("\n§3 无换行长流:在途残行受单行预算约束(不再 Buff
   check("三行都在", run.stdout.includes("line-3"), run.stdout);
 }
 
+console.log("\nFULL-1 shared command/spawn direct safety boundaries");
+{
+  let starts = 0;
+  const spawn = (() => {
+    starts++;
+    const child = fakeChild({ pid: 934 });
+    queueMicrotask(() => {
+      (child as unknown as { emitExit: (code:number|null, signal:NodeJS.Signals|null)=>void }).emitExit(0,null);
+    });
+    return child;
+  }) as unknown as SpawnFn;
+  for (const timeoutMs of [NaN, Infinity, -1, 1.5, 2_147_483_648, "200" as unknown as number]) {
+    let result: Awaited<ReturnType<typeof runCommandNode>> | undefined;
+    let rejected=false;
+    try { result=await runCommandNode({command:"echo never",timeoutMs,signal:controller().signal},{spawn}); }
+    catch { rejected=true; }
+    check("★ invalid command timeout fails closed before any process spawn",
+      !rejected && result?.status==="failed" && /timeout|超时|毫秒/.test(String(result.error)),
+      {timeoutMs:String(timeoutMs),status:result?.status,error:result?.error,rejected});
+  }
+  for (const cwd of [{unsafe:true} as unknown as string, 22 as unknown as string, "" ]) {
+    let result: Awaited<ReturnType<typeof runCommandNode>> | undefined;
+    let rejected=false;
+    try { result=await runCommandNode({command:"echo never",cwd,timeoutMs:0,signal:controller().signal},{spawn}); }
+    catch { rejected=true; }
+    check("★ malformed command cwd fails before native process creation",
+      !rejected && result?.status==="failed" && /cwd|工作目录|路径/.test(String(result.error)),
+      {cwd,status:result?.status,error:result?.error,rejected});
+  }
+  eq("★ direct invalid invocation must never reach a spawned command",starts,0);
+}
+
+{
+  const malicious=Object.create(null) as Record<string,unknown>;
+  const badToString={toString(){throw Object.create(null);}};
+  for(const thrown of [malicious,badToString]) {
+    const spawn=(()=>{throw thrown;}) as unknown as SpawnFn;
+    let result:Awaited<ReturnType<typeof runCommandNode>>|undefined;
+    let rejected=false;
+    try { result=await runCommandNode({command:"echo safe",timeoutMs:500,
+       signal:controller().signal},{spawn}); } catch { rejected=true; }
+    check("★ noncoercible native spawn error becomes a structured failed outcome",
+      !rejected&&result?.status==="failed"&&typeof result.error==="string",
+      {result,rejected});
+  }
+  const malformedSpawn=(()=>null) as unknown as SpawnFn;
+  let malformed:Awaited<ReturnType<typeof runCommandNode>>|undefined;
+  let malformedRejected=false;
+  try { malformed=await runCommandNode({command:"echo safe",timeoutMs:500,
+     signal:controller().signal},{spawn:malformedSpawn}); } catch { malformedRejected=true; }
+  check("★ malformed native spawn return fails without unhandled rejection",
+    !malformedRejected&&malformed?.status==="failed",
+    {status:malformed?.status,error:malformed?.error,malformedRejected});
+}
+
+// Shared process owner must enforce the same invariant even when called
+// directly by an extension/hook/SDK without CommandRunner's guard.
+{
+  let starts=0;
+  const spawn=(()=>{
+    starts++;
+    const child=fakeChild({pid:939});
+    queueMicrotask(()=>{(child as unknown as {emitExit:(c:number|null,s:NodeJS.Signals|null)=>void}).emitExit(0,null);});
+    return child;
+  }) as unknown as SpawnFn;
+  for(const timeoutMs of [NaN,Infinity,-3,0.25,2_147_483_648,"25" as unknown as number]){
+    let result:Awaited<ReturnType<typeof spawnRun>>|undefined;
+    let rejected=false;
+    try{result=await spawnRun({command:"echo cannot run",timeoutMs,limitBytes:128,
+      signal:controller().signal,spawn});}
+    catch{rejected=true;}
+    check("★ shared spawnRun rejects invalid watchdog before creating a process",
+      !rejected && result?.spawnError instanceof Error && result.code===null,
+      {timeoutMs:String(timeoutMs),code:result?.code,error:result?.spawnError?.message,rejected});
+  }
+  eq("★ all rejected shared watchdog requests create zero processes",starts,0);
+}
+
+// If OutBuf construction throws after spawn, the child has no listeners,
+// timeout or abort guard. These parameters must be validated pre-spawn.
+{
+  let starts=0;
+  const fake = (()=> {
+    starts++;
+    const child=fakeChild({pid:947});
+    queueMicrotask(()=>{(child as unknown as {emitExit:(c:number|null,s:NodeJS.Signals|null)=>void}).emitExit(0,null);});
+    return child;
+  }) as unknown as SpawnFn;
+  const bad = [
+    {limitBytes:NaN},
+    {limitBytes:-1},
+    {limitBytes:Infinity},
+    {maxLineBytes:NaN},
+    {maxLineBytes:Infinity},
+    {command:42 as unknown as string},
+    {stdin:{x:1} as unknown as string},
+    {args:[12] as unknown as string[]},
+    {cwd:{x:1} as unknown as string},
+  ];
+  for(const change of bad) {
+    let result:Awaited<ReturnType<typeof spawnRun>>|undefined;
+    let rejected=false;
+    try {
+      result=await spawnRun({command:"echo not allowed",timeoutMs:0,limitBytes:1024,
+        signal:controller().signal,spawn:fake,...change});
+    } catch {rejected=true;}
+    check("★ shared spawnRun rejects malformed capture/command/argv/stdin before spawn",
+      !rejected && result?.code===null && result.spawnError instanceof Error,
+      {field:Object.keys(change),error:result?.spawnError?.message,rejected,code:result?.code});
+  }
+  eq("★ invalid shared-process inputs cause zero OS launches",starts,0);
+}
+
+console.log("\nFULL-1 bad AbortSignal must not create an unmanaged OS child");
+{
+  const poisoned = Object.create(null) as AbortSignal;
+  const throwingAborted = Object.create(null) as Record<string,unknown>;
+  Object.defineProperty(throwingAborted,"aborted",{get(){throw Object.create(null);}});
+  const throwingListener = {
+    aborted: false,
+    addEventListener(){throw Object.create(null);},
+    removeEventListener(){throw Object.create(null);},
+  };
+  const signalFixtures: Array<{label:string;signal:AbortSignal}> = [
+    {label:"null",signal:null as unknown as AbortSignal},
+    {label:"empty object",signal:{} as AbortSignal},
+    {label:"null-prototype",signal:poisoned},
+    {label:"throwing aborted getter",signal:throwingAborted as unknown as AbortSignal},
+    {label:"throwing listener",signal:throwingListener as unknown as AbortSignal},
+  ];
+  for(const {label,signal} of signalFixtures){
+    let starts=0;
+    const spawn=(()=>{
+      starts++;
+      const child=fakeChild({pid:989});
+      queueMicrotask(()=>{(child as unknown as {emitExit:(code:number|null,s:NodeJS.Signals|null)=>void}).emitExit(0,null);});
+      return child;
+    }) as unknown as SpawnFn;
+    let result:Awaited<ReturnType<typeof spawnRun>>|undefined;
+    let rejected=false;
+    try {result=await spawnRun({command:"echo bad signal",timeoutMs:0,
+      limitBytes:1024,signal,spawn});} catch {rejected=true;}
+    check("★ bad signal is rejected before OS process creation: "+label,
+      !rejected&&result?.code===null&&result.spawnError instanceof Error&&starts===0,
+      {status:result?.code,error:result?.spawnError?.message,starts,rejected});
+  }
+  // Valid signals must still preserve cancellation and regular completion.
+  const abort=AbortSignal.abort("cancelled");
+  let abortStarts=0;
+  const abortSpawn=(()=>{
+    abortStarts++;
+    const child=fakeChild({pid:990});
+    queueMicrotask(()=>{(child as unknown as {emitExit:(code:number|null,s:NodeJS.Signals|null)=>void}).emitExit(0,null);});
+    return child;
+  }) as unknown as SpawnFn;
+  const abortResult=await spawnRun({command:"echo cancelled",signal:abort,timeoutMs:0,
+    limitBytes:1024,spawn:abortSpawn});
+  check("★ genuine pre-aborted signal reports cancelled (and does not throw)",
+    abortResult.killedBy.abort&&!abortResult.spawnError,
+    {abortStarts,abortResult});
+}
+
+console.log("\nFULL-1 valid cancellation identity / race controls");
+{
+  const pre=AbortSignal.abort();
+  let preStarts=0;
+  const spawn=(()=>{preStarts++;return fakeChild();}) as unknown as SpawnFn;
+  const rejected=await spawnRun({command:"never",timeoutMs:0,limitBytes:200,
+    signal:pre,spawn});
+  check("★ pre-aborted native signal cancels before any OS spawn",
+    rejected.killedBy.abort&&preStarts===0&&!rejected.spawnError,
+    {preStarts,killedBy:rejected.killedBy,error:rejected.spawnError?.message});
+  for(const phase of ["during-spawn","after-listener"] as const) {
+    const ctrl=new AbortController();
+    const fake=fakeChild() as ChildProcess&{
+      emitExit:(code:number|null,signal:NodeJS.Signals|null)=>void;
+    };
+    let killed=0;
+    (fake as unknown as {kill:()=>boolean}).kill=()=>{
+      killed++;
+      queueMicrotask(()=>fake.emitExit(null,"SIGTERM"));
+      return true;
+    };
+    const spawn=(()=>{
+      if(phase==="during-spawn")ctrl.abort();
+      else queueMicrotask(()=>ctrl.abort());
+      return fake;
+    }) as unknown as SpawnFn;
+    const out=await spawnRun({command:"dummy",timeoutMs:0,limitBytes:200,
+      signal:ctrl.signal,spawn});
+    check("★ legitimate abort during native spawn/listener registration cancels child: "+phase,
+      out.killedBy.abort&&killed>0&&!out.spawnError,
+      {phase,killed,killedBy:out.killedBy,error:out.spawnError?.message});
+  }
+}
+
+console.log("\nDirect command API rejects forged cancellation before spawn");
+{
+  let launches=0;
+  const fake=(()=>{launches++;return fakeChild();}) as unknown as SpawnFn;
+  for(const bad of [null,{},Object.create(null),{get aborted(){throw Object.create(null);}}]){
+    let outcome:Awaited<ReturnType<typeof runCommandNode>>|undefined;
+    let rejected=false;
+    try {outcome=await runCommandNode({command:"never",timeoutMs:1000,
+      signal:bad as AbortSignal},{spawn:fake});} catch {rejected=true;}
+    check("★ command API returns a failed outcome for forged AbortSignal",
+      !rejected&&outcome?.status==="failed"&&typeof outcome.error==="string",
+      {status:outcome?.status,rejected});
+  }
+  eq("★ malformed direct command signals launch no child",launches,0);
+}
 console.log(`\n${total - failures}/${total} checks passed${failures === 0 ? "" : ` — ${failures} FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

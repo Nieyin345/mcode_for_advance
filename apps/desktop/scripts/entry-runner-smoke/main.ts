@@ -605,6 +605,21 @@ console.log("\nbind · argv / env / stdin");
   eq("entry script invalid percentage keeps human message",progress[1]?.message,"high");
 }
 
+// The entry runner can be called directly by third-party modules rather
+// than through the scheduler. Forged cancellation must never reject a run.
+{
+  for(const bad of [null,{},Object.create(null),{get aborted(){throw Object.create(null);}}]){
+    const fake=recordingSpawn({stdout:"SHOULD_NOT_RUN"});
+    let outcome:Awaited<ReturnType<typeof runEntryScript>>|undefined;
+    let rejected=false;
+    try{outcome=await runEntryScript({script:"./count.py",manifestDir:PLUGIN,
+      timeoutMs:1000,signal:bad as AbortSignal},{spawn:fake.spawn});}
+    catch{rejected=true;}
+    check("★ entry API rejects forged AbortSignal as failed outcome without spawn",
+      !rejected&&outcome?.status==="failed"&&fake.calls.length===0,
+      {status:outcome?.status,rejected,spawns:fake.calls.length});
+  }
+}
 try {
   rmSync(ROOT, { recursive: true, force: true });
 } catch {

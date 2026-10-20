@@ -39,6 +39,7 @@
 
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { OutBuf, decodeOutput } from "@main/lib/outBuf.js";
+import { safeErrorMessage } from "@main/lib/ipcError.js";
 
 /** `node:child_process` 的 `spawn` 的形状 —— 留一个缝,冒烟脚本能塞假的进来。 */
 export type SpawnFn = typeof nodeSpawn;
@@ -279,6 +280,22 @@ function splitLines(
   return { lines, rest, truncated: trunc };
 }
 
+/** Read AbortSignal using its native branded getter. A forged getter may throw
+ * arbitrary values; a direct plugin/IPC caller must get a normal failed
+ * outcome rather than leaving a child running after a rejected Promise.
+ * null = invalid; true/false are the actual cancellation state.
+ */
+export function nativeAbortState(value: unknown): boolean | null {
+  try {
+    const getter = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")?.get;
+    if (!getter) return null;
+    const state: unknown = getter.call(value);
+    return typeof state === "boolean" ? state : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 起一个进程,等它退出。**这个 promise 一定 settle**:退出、超时、中止,三条路都通。
  *
@@ -300,6 +317,53 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
     stdoutLineTruncated: false, stderrLineTruncated: false, killedBy, ...extra,
   });
 
+  // This is the single native-process mechanism used by hooks, code and
+  // command nodes. Reject untrusted timers even when callers bypass their
+  // own input schemas; Node otherwise silently disables or overflows timers.
+  if (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs)
+    || timeoutMs < 0 || timeoutMs > 2_147_483_647) {
+    return empty({ spawnError: new Error("spawnRun timeoutMs 必须是 0–2147483647 的整数毫秒") });
+  }
+
+  // Invalid output budgets used to throw *after* spawning (OutBuf's
+  // constructor), leaving a live child without listeners, cleanup or timeout.
+  // Validate all native launch settings before the OS can create a process.
+  if (typeof limitBytes !== "number" || !Number.isSafeInteger(limitBytes) || limitBytes < 0) {
+    return empty({ spawnError: new Error("spawnRun 输出字节上限必须是非负安全整数") });
+  }
+  const lineBudget = options.maxLineBytes ?? MAX_LINE_BYTES;
+  if (typeof lineBudget !== "number" || !Number.isSafeInteger(lineBudget)
+    || lineBudget < 0 || lineBudget > 16 * MAX_LINE_BYTES) {
+    return empty({ spawnError: new Error("spawnRun 单行字节上限必须是 0–16777216 的整数") });
+  }
+  if (typeof command !== "string" || !command.trim() || command.includes("\0")) {
+    return empty({ spawnError: new Error("spawnRun 命令必须是有效非空文本") });
+  }
+  if (args !== undefined && (!Array.isArray(args)
+    || !args.every((arg) => typeof arg === "string" && !arg.includes("\0")))) {
+    return empty({ spawnError: new Error("spawnRun 参数必须是有效字符串数组") });
+  }
+  if (stdin !== undefined && typeof stdin !== "string") {
+    return empty({ spawnError: new Error("spawnRun stdin 必须是字符串") });
+  }
+  if (cwd !== undefined && (typeof cwd !== "string" || !cwd.trim() || cwd.includes("\0"))) {
+    return empty({ spawnError: new Error("spawnRun cwd 必须是有效工作目录字符串") });
+  }
+
+  // AbortSignal is an OS-child lifetime authority, not an optional duck type.
+  // A null, fabricated object or throwing getter previously made spawnRun
+  // launch a child and only then reject, leaving an unmanaged process.
+  // Invoke the native getter (brand checked) so an overridden own getter or
+  // listener method cannot run hostile code after child creation.
+  const wasAborted = nativeAbortState(signal);
+  if (wasAborted === null) {
+    return empty({ spawnError: new Error("spawnRun signal 必须是有效 AbortSignal") });
+  }
+  if (wasAborted) {
+    killedBy.abort = true;
+    return empty({});
+  }
+
   let child: ChildProcess;
   try {
     child = spawn(
@@ -314,9 +378,17 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
         stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       },
     );
+    // Fake/foreign SpawnFn implementations may fail without throwing and
+    // return a non-child. Validate before registering handlers or timers so
+    // callers always receive the ordinary failed NodeOutcome path.
+    if (child === null || typeof child !== "object" || typeof child.on !== "function"
+      || typeof child.once !== "function") {
+      throw new TypeError("spawn 没有返回有效子进程");
+    }
   } catch (err) {
-    // `shell: true` 时 spawn 几乎不抛(错误走 error 事件),这一拦兜的是后一种。
-    return empty({ spawnError: err instanceof Error ? err : new Error(String(err)) });
+    // The thrown value itself may have no prototype or a hostile toString.
+    // Never turn a failed spawn into a second unhandled rejection.
+    return empty({ spawnError: new Error(safeErrorMessage(err)) });
   }
 
   let spawnError: Error | undefined;
@@ -385,8 +457,11 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
     killedBy.abort = true;
     killTree(child);
   };
-  if (signal.aborted) onAbort();
-  else signal.addEventListener("abort", onAbort, { once: true });
+  // Use the native EventTarget interface rather than caller-provided method
+  // overrides. The signal's internal slot was verified before spawning.
+  EventTarget.prototype.addEventListener.call(signal, "abort", onAbort, { once: true });
+  // Cover aborts racing between the initial check and listener registration.
+  if (nativeAbortState(signal) === true) onAbort();
 
   if (stdin !== undefined && child.stdin) {
     try {
@@ -405,7 +480,7 @@ export async function spawnRun(options: SpawnRunOptions): Promise<SpawnRunResult
   );
 
   if (timer !== undefined) clearTimeout(timer);
-  signal.removeEventListener("abort", onAbort);
+  EventTarget.prototype.removeEventListener.call(signal, "abort", onAbort);
 
   // **等 stdio 排空,但只等一小会儿。**
   //
