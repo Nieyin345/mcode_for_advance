@@ -47,6 +47,15 @@ const server: Server = createServer((req, res) => {
     res.end(typeof body === "string" ? body : JSON.stringify(body));
   };
   // Fake-only hostile gateways: each is confined to this loopback server.
+  if (req.url?.startsWith("/cross-api-ok/")) {
+    if (req.url?.endsWith("/v1/messages")) send(200, { choices: [{ message: { content: "openai shape at anthropic route" } }] });
+    else send(200, { content: [{ type: "text", text: "anthropic shape at openai route" }] });
+    return;
+  }
+  if (req.url?.startsWith("/list-error-with-data/")) {
+    send(200, { error: { message: "invalid API key" }, data: [{ id: "fake-premium-model" }] });
+    return;
+  }
   if (req.url?.startsWith("/false-ok/")) {
     send(200, { error: { message: "model unauthorized" } });
     return;
@@ -213,11 +222,32 @@ try {
     }
   }
 
+  {
+    let refused = false;
+    try { await listEndpointModels({ baseUrl: base + "/list-error-with-data", apiKey: "fixture-key" }); }
+    catch { refused = true; }
+    check("gateway JSON with error plus model data must not populate settings", refused);
+  }
+
+  {
+    seen.length = 0;
+    const { models } = await listEndpointModels({ baseUrl: base + "/v1", apiKey: "sk-prefix" });
+    check("standard /v1 model base returns working model entries", models.includes("alpha"), models);
+    check("model list with a /v1 base does not request /v1/v1/models or replay key", seen.length === 1 && seen[0].url === "/v1/models", seen);
+  }
+
   /* ── 2. 连通性测试 ── */
   console.log("\n2. 连通性测试");
   {
     const r = await probeEndpoint({ baseUrl: base, apiKey: "sk-1", model: "alpha" });
     check("★ 通的端点判成功", r.ok === true, r);
+  }
+  {
+    seen.length = 0;
+    const r = await probeEndpoint({ baseUrl: base + "/v1", apiKey: "sk-prefix", model: "alpha" });
+    check("user-configured /v1 API base is not accidentally doubled", r.ok, r);
+    check("probe uses exactly the /v1/messages path with /v1 configured base",
+      seen.length === 1 && seen[0].url === "/v1/messages", seen);
   }
   {
     // 打到一个只回 500 的路径（模拟「模型名不对」）→ 必须判失败，不能只看连得上。
@@ -227,7 +257,7 @@ try {
   }
 
   /* ── 2b. Fake 2xx is not evidence a model answered ── */
-  for (const badGateway of ["false-ok", "html-ok", "empty-ok", "malformed-ok", "empty-array-ok", "bogus-content-ok", "empty-tool-calls-ok", "invalid-tool-calls-ok", "invalid-content-parts-ok"]) {
+  for (const badGateway of ["false-ok", "html-ok", "empty-ok", "malformed-ok", "empty-array-ok", "bogus-content-ok", "empty-tool-calls-ok", "invalid-tool-calls-ok", "invalid-content-parts-ok", "cross-api-ok"]) {
     const r = await probeEndpoint({ baseUrl: base + "/" + badGateway, apiKey: "test-only-secret", model: "alpha" });
     check("200/204 without an actual model reply is not a successful connection (" + badGateway + ")", !r.ok, r);
   }
@@ -267,6 +297,18 @@ try {
     check("authentication rejection remains visible", !r.ok && (r.error ?? "").includes("401"), r);
     check("gateway echo of Authorization never leaks to model settings UI",
       !(r.error ?? "").includes("sk-localsecretXYZ"), r.error);
+  }
+
+  {
+    const brokenKey = "fixture-only-secret-NEVER-SHOW" + String.fromCharCode(13, 10) + "x-test: value";
+    const probe = await probeEndpoint({ baseUrl: base, apiKey: brokenKey, model: "alpha" });
+    check("invalid credential headers never echo the supplied API key in probe error",
+      !probe.ok && !(probe.error ?? "").includes("fixture-only-secret-NEVER-SHOW"), probe.error);
+    let listError = "";
+    try { await listEndpointModels({ baseUrl: base, apiKey: brokenKey }); }
+    catch (err) { listError = (err as Error).message; }
+    check("invalid credential headers never echo supplied API key in model-list error",
+      listError.length > 0 && !listError.includes("fixture-only-secret-NEVER-SHOW"), listError);
   }
 
   /* ── 3b. A probe's deadline covers both fallback routes, not each separately ── */

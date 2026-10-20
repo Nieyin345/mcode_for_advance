@@ -58,7 +58,12 @@ function assertHttpUrl(raw: string): URL {
 /** 把 base URL 与「模型列表」的相对路径拼起来，避免 `//` 或丢掉已有路径段。 */
 function joinUrl(base: string, suffix: string): string {
   const trimmed = base.replace(/\/+$/, "");
-  const path = suffix.startsWith("/") ? suffix : `/${suffix}`;
+  let path = suffix.startsWith("/") ? suffix : `/${suffix}`;
+  // Many official OpenAI-compatible endpoints are configured as .../v1.
+  // Do not turn that into .../v1/v1/messages, or duplicate model requests.
+  if (new URL(trimmed).pathname.endsWith("/v1") && path.startsWith("/v1/")) {
+    path = path.slice(3);
+  }
   return `${trimmed}${path}`;
 }
 
@@ -104,6 +109,17 @@ async function fetchWithTimeout(
   }
 }
 
+/** A Fetch/Headers validation error may quote an invalid Authorization value
+ * in full, including CR/LF. Those messages reach the settings UI. Strip all
+ * explicitly configured header values (not just recognized key names) as
+ * well as the API key before surfacing transport failures. */
+function redactAuthFailure(message: string, apiKey?: string, headers?: Record<string, string>): string {
+  const values = [apiKey, ...Object.values(headers ?? {})]
+    .filter((part): part is string => typeof part === "string" && part.length > 0)
+    .sort((a, b) => b.length - a.length);
+  return values.reduce((text, value) => text.split(value).join("[redacted]"), message);
+}
+
 /**
  * 问端点「你有哪些模型」。两种常见形态都试：
  *  - Anthropic 风格：`GET {base}/v1/models`，`data: [{id}]`；
@@ -134,7 +150,7 @@ export async function listEndpointModels(args: {
   if (args.anthropicVersion) headers["anthropic-version"] = "2023-06-01";
 
   // 两条候选路径都试；先 /v1/models（Anthropic 与多数网关），再 /models。
-  const candidates = [joinUrl(base, "/v1/models"), joinUrl(base, "/models")];
+  const candidates = [...new Set([joinUrl(base, "/v1/models"), joinUrl(base, "/models")])];
   let lastError = "";
   for (const url of candidates) {
     // Time spent on the first candidate counts against the entire lookup;
@@ -145,7 +161,7 @@ export async function listEndpointModels(args: {
     try {
       res = await fetchWithTimeout(url, { method: "GET", headers }, remaining);
     } catch (err) {
-      lastError = (err as Error).message;
+      lastError = redactAuthFailure((err as Error).message, args.apiKey, args.headers);
       continue;
     }
     if (!res.ok) {
@@ -157,6 +173,11 @@ export async function listEndpointModels(args: {
       body = JSON.parse(res.text);
     } catch {
       lastError = "端点返回的不是 JSON";
+      continue;
+    }
+    if (body && typeof body === "object" && !Array.isArray(body)
+      && Object.prototype.hasOwnProperty.call(body, "error")) {
+      lastError = "端点返回模型列表时同时报告了错误";
       continue;
     }
     const ids = extractModelIds(body);
@@ -218,15 +239,13 @@ export async function probeEndpoint(args: {
   const deadline = Date.now() + Math.min(timeoutMs, ENDPOINT_PROBE_TIMEOUT_MS);
   // Some gateways reflect Authorization or custom credential headers in
   // diagnostics. These error strings reach the settings UI; never echo keys.
-  const secrets = [args.apiKey, ...Object.entries(args.headers ?? {})
-    .filter(([name]) => /authorization|api[-_]?key|token|secret|cookie|password/i.test(name))
-    .map(([, value]) => value)].filter((value): value is string => typeof value === "string" && value.length > 0);
   const redact = (text: string): string =>
-    secrets.reduce((body, secret) => body.split(secret).join("[redacted]"), text);
+    redactAuthFailure(text, args.apiKey, args.headers);
   const attempt = async (
     url: string,
     body: unknown,
     extraHeaders: Record<string, string>,
+    protocol: "anthropic" | "openai",
   ): Promise<EndpointProbeResult> => {
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -244,7 +263,7 @@ export async function probeEndpoint(args: {
     try {
       res = await fetchWithTimeout(url, { method: "POST", headers, body: JSON.stringify(body) }, remaining);
     } catch (err) {
-      return { ok: false, error: (err as Error).message };
+      return { ok: false, error: redact((err as Error).message) };
     }
     if (res.ok) {
       // HTTP 2xx alone also describes HTML login pages, empty 204 responses,
@@ -283,8 +302,7 @@ export async function probeEndpoint(args: {
               || contentParts || toolCalls
               || (typeof message.refusal === "string" && message.refusal.length > 0);
           });
-        if ((hasAnthropicReply && record?.error === undefined)
-          || (hasOpenAiReply && record?.error === undefined)) {
+        if (record?.error === undefined && (protocol === "anthropic" ? hasAnthropicReply : hasOpenAiReply)) {
           return { ok: true, detail: `连接成功(${args.model})` };
         }
       } catch { /* Invalid JSON cannot prove a model responded. */ }
@@ -305,12 +323,14 @@ export async function probeEndpoint(args: {
     joinUrl(base, "/v1/messages"),
     { model: args.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
     { "anthropic-version": "2023-06-01" },
+    "anthropic",
   );
   if (anthropic.ok) return anthropic;
   const openai = await attempt(
     joinUrl(base, "/v1/chat/completions"),
     { model: args.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
     {},
+    "openai",
   );
   if (openai.ok) return openai;
   // 两条都不通：把 OpenAI 那条的错误报出去（多数第三方网关是这条），
