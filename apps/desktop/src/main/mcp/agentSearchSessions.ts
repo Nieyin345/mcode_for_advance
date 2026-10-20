@@ -1,4 +1,4 @@
-import { createReadStream, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
@@ -20,6 +20,8 @@ const MAX_SEARCH_SESSIONS_PER_OWNER = 12;
 const MAX_SEARCH_SESSIONS_TOTAL = 48;
 const MAX_STORED_RESULTS = 5_000;
 const MAX_RESULT_LINE_CHARS = 500;
+/** Content search refuses a single oversized file before readline allocates an unbounded line. */
+const MAX_CONTENT_SEARCH_FILE_BYTES = 8 * 1024 * 1024;
 const COMPLETED_TTL_MS = 10 * 60_000;
 /**
  * 遍历项目时**不往里走**的目录名 —— **唯一一份**。
@@ -375,15 +377,29 @@ async function walkDir(
     if (state.stopped || state.results.length >= state.maxResults) return;
     if (!opts.includeHidden && entry.name.startsWith(".")) continue;
     const abs = path.join(dir, entry.name);
-    if (opts.canRead && !opts.canRead(abs)) continue;
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
+      if (opts.canRead && !opts.canRead(abs)) {
+        recordScopeSkip(state);
+        continue;
+      }
       await walkDir(state, root, abs, opts, depth + 1);
       continue;
     }
     if (!entry.isFile() && !entry.isSymbolicLink()) continue;
     const rel = path.relative(root, abs).replace(/\\/g, "/");
     await visitFile(state, abs, rel, opts);
+  }
+}
+
+/** A denied file/dir may be known from readdir but is *not* public search output.
+ * Preserve the incompleteness count without disclosing the denied path name. */
+function recordScopeSkip(state: SearchSession): void {
+  state.partial = true;
+  state.skippedCount += 1;
+  const label = "<读取范围受限>（存在未获授权的路径）";
+  if (state.skippedPaths.length < MAX_SKIPPED_PATHS && !state.skippedPaths.includes(label)) {
+    state.skippedPaths.push(label);
   }
 }
 
@@ -412,8 +428,14 @@ async function visitFile(
   rel: string,
   opts: { canRead?: (absolutePath: string) => boolean; matcher: (value: string) => boolean; fileMatcher: RegExp | null; includeHidden: boolean; contextLines: number },
 ): Promise<void> {
-  if (state.stopped || opts.canRead && !opts.canRead(abs)) return;
+  if (state.stopped) return;
+  // file_pattern excludes a file before any read is attempted: lack of
+  // permission to *excluded* files must not manufacture a partial search.
   if (opts.fileMatcher && !opts.fileMatcher.test(rel)) return;
+  if (opts.canRead && !opts.canRead(abs)) {
+    recordScopeSkip(state);
+    return;
+  }
   state.scannedFiles += 1;
   if (state.type === "files") {
     if (!state.stopped && (opts.matcher(path.basename(rel)) || opts.matcher(rel))) state.results.push(rel);
@@ -429,25 +451,26 @@ async function visitFile(
     recordSkip(state, state.root, abs, errnoText(err));
     return;
   }
+  let stream: ReturnType<typeof fd.createReadStream> | null = null;
   try {
     const stat = await fd.stat();
+    if (!stat.isFile() || stat.size > MAX_CONTENT_SEARCH_FILE_BYTES) {
+      recordSkip(state, state.root, abs, `单文件正文扫描预算 8 MiB，大小 ${stat.size} 字节或不是普通文件`);
+      return;
+    }
     const head = Buffer.alloc(Math.min(stat.size, 8192));
     if (head.length > 0) await fd.read(head, 0, head.length, 0);
     // 二进制文件**有意**不搜(同 ripgrep),不是"漏搜",不进 skipped。
     if (head.includes(0)) return;
-  } catch (err) {
-    // 读头部失败(磁盘错误/权限):同样如实登记,不抛。
-    recordSkip(state, state.root, abs, errnoText(err));
-    return;
-  } finally {
-    await fd.close().catch(() => {});
-  }
 
   const before: Array<{ n: number; text: string }> = [];
   const pending: Array<{ n: number; lines: string[]; remaining: number }> = [];
   let lineNo = 0;
   try {
-    const rl = createInterface({ input: createReadStream(abs, { encoding: "utf8" }), crlfDelay: Infinity });
+    // Reuse the same opened handle as the header/stat inspection. Opening
+    // the path again allows a symlink/file swap to stream another document.
+    stream = fd.createReadStream({ encoding: "utf8", start: 0, autoClose: false });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
     for await (const raw of rl) {
       if (state.stopped || state.results.length + pending.length >= state.maxResults) break;
       lineNo += 1;
@@ -489,6 +512,13 @@ async function visitFile(
   for (const p of pending) {
     if (state.results.length >= state.maxResults) break;
     state.results.push(`${rel}:${p.n}\n${p.lines.join("\n")}`);
+  }
+  } catch (err) {
+    // Header/stat errors must not silently certify a complete search.
+    recordSkip(state, state.root, abs, errnoText(err));
+  } finally {
+    stream?.destroy();
+    await fd.close().catch(() => {});
   }
 }
 

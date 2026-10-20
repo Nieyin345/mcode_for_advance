@@ -29,7 +29,7 @@
  *
  * Run: scripts/maint-m14-smoke/run.sh
  */
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, chmodSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, chmodSync, readdirSync, renameSync, promises as fsPromises } from "node:fs";
 import { rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { homedir, platform, tmpdir } from "node:os";
@@ -576,6 +576,109 @@ async function main(): Promise<void> {
       eq(`★ ${type} 手动停止前无结果时不得停止后补写搜索结果`,
         isolated.list(owner)[0]?.totalResults ?? -1, 0);
       isolated.disposeOwner(owner);
+    }
+  }
+
+  // C2d A denied subpath is skipped intentionally for confidentiality, but
+  // the corresponding search is *not exhaustive*. Report partial (without
+  // opening it), not completed+partial=false.
+  {
+    const dir = join(work, "denied-search");
+    mkdirSync(dir, {recursive: true});
+    writeFileSync(join(dir, "allowed.txt"), "NEEDLE_OK\n");
+    writeFileSync(join(dir, "denied.txt"), "NEEDLE_SECRET\n");
+    const search = createAgentSearchSessions();
+    const r = await search.start({
+      ownerSessionId: "deny-scope", type: "content", pattern: "NEEDLE",
+      root: dir, literalSearch: true, waitMs: 1_500,
+      canRead: (p) => !p.endsWith("denied.txt"),
+    });
+    const detail = await search.read({ ownerSessionId: "deny-scope", searchId: r.searchId, waitMs: 1_500 });
+    check("★ 拒绝读取子文件时仍保留允许文件结果",
+      detail.results.some(s => s.includes("NEEDLE_OK")) && !detail.results.some(s => s.includes("NEEDLE_SECRET")), detail.results);
+    check("★ 不可读子文件导致 partial，不可宣称搜索完整",
+      detail.partial && detail.skippedPaths.some(s => s.includes("读取范围受限"))
+      && !detail.skippedPaths.some(s => s.includes("denied.txt"))
+      && detail.skippedCount >= 1, detail);
+  }
+
+  // C2d-2 Denied subdirectories are incomplete, but an excluded file glob
+  // must not make an otherwise exhaustive search look partial.
+  {
+    const dir = join(work, "denied-filter-search");
+    const forbidden = join(dir, "forbidden");
+    mkdirSync(forbidden, { recursive: true });
+    writeFileSync(join(forbidden, "hidden.ts"), "DO_NOT_READ\n");
+    writeFileSync(join(dir, "allowed.ts"), "VISIBLE_OK\n");
+    writeFileSync(join(dir, "ignored.txt"), "FILTERED_OUT\n");
+    const search = createAgentSearchSessions();
+    const denied = await search.start({
+      ownerSessionId: "deny-dir", type: "content", pattern: "VISIBLE_OK",
+      root: dir, literalSearch: true, waitMs: 1_500,
+      canRead: (p) => !p.includes("forbidden"),
+    });
+    const deniedPage = await search.read({ ownerSessionId: "deny-dir", searchId: denied.searchId, waitMs: 1_500 });
+    check("★ 未授权子目录跳过时仍要如实 partial", deniedPage.partial && deniedPage.skippedPaths.some(s => s.includes("读取范围受限"))
+      && !deniedPage.skippedPaths.some(s => s.includes("forbidden")), deniedPage);
+    const filtered = await search.start({
+      ownerSessionId: "deny-filter", type: "content", pattern: "VISIBLE_OK",
+      root: dir, filePattern: "*.ts", literalSearch: true, waitMs: 1_500,
+      canRead: (p) => !p.endsWith("ignored.txt") && !p.includes("forbidden"),
+    });
+    const filteredPage = await search.read({ ownerSessionId: "deny-filter", searchId: filtered.searchId, waitMs: 1_500 });
+    check("★ file_pattern 排除的文件不应凭空增加 skippedCount",
+      filteredPage.partial && filteredPage.skippedCount === 1
+        && !filteredPage.skippedPaths.some(s => s.includes("ignored.txt")), filteredPage);
+  }
+
+  // C2e Content search needs a per-file budget: an unbounded single UTF-8
+  // line can otherwise consume arbitrary memory before readline truncation.
+  {
+    const huge = join(work, "huge-content.log");
+    writeFileSync(huge, "A".repeat(8 * 1024 * 1024 + 1) + "NEEDLE_TOO_LARGE");
+    const search = createAgentSearchSessions();
+    const r = await search.start({
+      ownerSessionId: "large-search", type: "content", pattern: "NEEDLE_TOO_LARGE",
+      root: huge, literalSearch: true, waitMs: 2_000,
+    });
+    const detail = await search.read({ownerSessionId: "large-search", searchId: r.searchId, waitMs: 2_000});
+    check("★ 超大单文件搜索跳过且显式报告扫描预算",
+      detail.status === "completed" && detail.partial && detail.totalResults === 0
+      && detail.skippedPaths.some(s => /8 MiB/.test(s)), detail);
+  }
+
+  // C2f Deterministic file-swap regression: switch a *path* after the first
+  // approved handle opens. Old search opened a second handle for readline,
+  // thereby scanning a different version from its header check.
+  {
+    const origin = join(work, "identity-source.txt");
+    const replacement = join(work, "identity-replacement.txt");
+    const moved = join(work, "identity-old.txt");
+    writeFileSync(origin, "ORIGINAL_ONLY\n");
+    writeFileSync(replacement, "SWAPPED_SECRET\n");
+    const originalOpen = fsPromises.open;
+    let injected = 0;
+    (fsPromises as {open: typeof originalOpen}).open = (async (...args: Parameters<typeof originalOpen>) => {
+      const handle = await originalOpen(...args);
+      if (String(args[0]) === origin && injected === 0) {
+        injected++;
+        renameSync(origin, moved);
+        renameSync(replacement, origin);
+      }
+      return handle;
+    }) as typeof originalOpen;
+    try {
+      const search = createAgentSearchSessions();
+      const r = await search.start({
+        ownerSessionId: "identity-search", type: "content",
+        pattern: "SWAPPED_SECRET", root: origin, literalSearch: true, waitMs: 1_500,
+      });
+      const detail = await search.read({ownerSessionId: "identity-search", searchId: r.searchId, waitMs: 1_500});
+      eq("★ 真实文件交换夹具被执行", injected, 1);
+      check("★ 搜索正文与头部验证属于同一个打开的文件版本",
+        !detail.results.some(s => s.includes("SWAPPED_SECRET")) && detail.totalResults === 0, detail);
+    } finally {
+      (fsPromises as {open: typeof originalOpen}).open = originalOpen;
     }
   }
 
