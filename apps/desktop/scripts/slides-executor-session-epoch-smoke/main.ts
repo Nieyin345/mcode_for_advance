@@ -74,6 +74,28 @@ check("★ no saveable native session survives malformed renderer tree",
   executor.sessionCount===0,executor.sessionCount);
 check("★ malformed-render deck cannot overwrite original file",
   (await executor.saveDeck(89,"bad-shape",badShape))===null,readFileSync(badShape,"utf8"));
+// Native OpenResult.size comes from PPTX model EMU size. Reject the malformed
+// model at the executor, *before* publishing the saveable session, not just
+// later at SlidesBridge/UI result validation.
+(vendor.render as {buildRenderSlide:(s:unknown)=>unknown}).buildRenderSlide=(slide)=>slide;
+for (const [name,size] of [
+  ["NO-SIZE",undefined],
+  ["ZERO-WIDTH",{cx:0,cy:9144000}],
+  ["ZERO-HEIGHT",{cx:9144000,cy:0}],
+  ["NAN-WIDTH",{cx:NaN,cy:9144000}],
+  ["INFINITE-HEIGHT",{cx:9144000,cy:Infinity}],
+] as const){
+  const invalidFile=join(root,name+".pptx");
+  writeFileSync(invalidFile,name);
+  const opening=executor.openDeck(90,"doc-"+name,invalidFile,1200);
+  for(let i=0;i<50&&!waiting.has(name);i++)await new Promise(r=>setTimeout(r,2));
+  waiting.get(name)!.resolve({deck:{slides:[{id:name,nodes:[]}],...(size?{size}:{})}});
+  const openedResult=await opening;
+  check("★ native executor rejects invalid OpenResult EMU dimensions "+name,
+    openedResult===null,openedResult);
+  check("★ invalid native dimensions never register saveable deck "+name,
+    executor.sessionCount===0,executor.sessionCount);
+}
 /* FULL-1 Slides native vendor save, Host revision, no silent overwrite:
    real mkdtemp files + actual bundled VendorSlidesExecutor with fake native vendor ports. */
 const base=join(root,"real-vendor.pptx"), failTarget=join(root,"bad-vendor.pptx");
@@ -209,7 +231,7 @@ saver.release(126);
 /* Native vendor may mutate its in-memory deck and THEN throw, or return a
    partial failure / an unrenderable updated slide. None of those is a
    safely committed UI edit. Do not later save a deck the user never saw. */
-for(const kind of ["throw-add","throw-edit","render-add","render-edit","partial-add"] as const){
+for(const kind of ["throw-add","throw-edit","render-add","render-edit","silent-render-add","silent-render-edit","partial-add"] as const){
  const target=join(root,`unsafe-native-${kind}.pptx`);
  writeFileSync(target,"SAFE_ORIGINAL");
  let nativeSaves=0;
@@ -227,6 +249,9 @@ for(const kind of ["throw-add","throw-edit","render-add","render-edit","partial-
    render:{
      HeuristicMetrics:class{},
      buildRenderSlide(slide:unknown){
+       if(kind.startsWith("silent-render") && (slide as {id:string}).id==="CHANGED"){
+         return {widthPx:1280}; // vendor returned object, but native nodes absent
+       }
        if(kind.startsWith("render") && (slide as {id:string}).id==="CHANGED"){
          throw new Error("SYNTHETIC_VENDOR_RENDER_FAILURE");
        }
@@ -245,7 +270,7 @@ for(const kind of ["throw-add","throw-edit","render-add","render-edit","partial-
    }
  };
  const unsafe=new VendorSlidesExecutor(vendorMutation as never);
- const wc=300+["throw-add","throw-edit","render-add","render-edit","partial-add"].indexOf(kind);
+ const wc=300+["throw-add","throw-edit","render-add","render-edit","silent-render-add","silent-render-edit","partial-add"].indexOf(kind);
  check(`★ ${kind}: fixture native PPTX opened`,(await unsafe.openDeck(wc,kind,target,1280))!==null,null);
  let result:unknown,threw=false;
  try{result=kind.endsWith("add")?await unsafe.addBlankSlide(wc,kind):await unsafe.editText(wc,kind,0,"element","CHANGED");}

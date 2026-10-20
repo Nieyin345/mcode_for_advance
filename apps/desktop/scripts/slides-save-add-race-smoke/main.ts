@@ -66,7 +66,13 @@ ok("★ native vendor before=true keeps its original two-operation atomic insert
     readNativeTxn()?.ops[1]?.op==="moveSlide" && readNativeTxn()?.ops[1]?.to===1,
   {insertedBefore,latestTxn});
 const priorCount=insertedBefore?.slideCount;
+const getNativeEpoch=()=>(executor as unknown as {sessions:Map<number,{editEpoch:number}>})
+  .sessions.get(101)?.editEpoch;
+const epochBeforeInvalid=getNativeEpoch();
 const rejected=await executor.addBlankSlide(101,"actual-doc",Number.MAX_SAFE_INTEGER,true);
+ok("★ an invalid slide selection does not cancel a valid in-flight save epoch",
+  epochBeforeInvalid===getNativeEpoch(),
+  {epochBeforeInvalid,epochAfterInvalid:getNativeEpoch()});
 ok("★ invalid sourceIndex rejected before mutating the original deck",
   rejected===null && (executor as unknown as {sessions:Map<number,{opened:{deck:{slides:unknown[]}}}>})
     .sessions.get(101)?.opened.deck.slides.length===priorCount,

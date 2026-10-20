@@ -33,6 +33,19 @@ const brokenOpen=await new SlidesBridge(make({openDeck:async()=>({
 })})).openDeck(1,"doc","/a.pptx",1280);
 check("★ vendor open with corrupt slide render nodes must not count as opened",
   brokenOpen.ok===false,brokenOpen);
+for (const [name,size] of [
+  ["missing native size",undefined],
+  ["zero width",{cx:0,cy:9144000}],
+  ["zero height",{cx:9144000,cy:0}],
+  ["NaN width",{cx:NaN,cy:9144000}],
+  ["infinite height",{cx:9144000,cy:Infinity}],
+  ["fractional width",{cx:9144000.5,cy:9144000}],
+] as const) {
+  const result=await new SlidesBridge(make({openDeck:async()=>({
+    openResult:{path:"/a.pptx",slides:[{nodes:[]}],...(size===undefined?{}:{size})}
+  })})).openDeck(1,"doc","/a.pptx",1280);
+  check("★ original native slide size rejects "+name,result.ok===false,result);
+}
 const wrongOpen=await new SlidesBridge(make({openDeck:async()=>({
   openResult:{path:"/someone-elses-file.pptx",slides:[],size:{cx:100,cy:100}}
 })})).openDeck(1,"doc","/a.pptx",1280);

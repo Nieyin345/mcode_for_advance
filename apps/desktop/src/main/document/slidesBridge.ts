@@ -100,6 +100,16 @@ function hasNativeRenderNodes(value: unknown): boolean {
     Array.isArray((value as { nodes?: unknown }).nodes);
 }
 
+/** Upstream OpenResult.size (genoffice/apps/slides/src/shared/ipc.ts:91)
+ * stores slide dimensions in EMUs. Never hand zero, NaN, infinity, or
+ * missing dimensions to the original renderer as an apparently valid deck. */
+function hasNativeSlideSize(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const { cx, cy } = value as { cx?: unknown; cy?: unknown };
+  return typeof cx === "number" && Number.isSafeInteger(cx) && cx > 0 &&
+    typeof cy === "number" && Number.isSafeInteger(cy) && cy > 0;
+}
+
 /** 「vendor 主进程未装配」的唯一文案 —— 套件按它断言 fail-closed。 */
 export const SLIDES_BRIDGE_UNAVAILABLE = "slides 编辑通道不可用：vendor 主进程未装配";
 
@@ -152,6 +162,7 @@ export class SlidesBridge {
       }
       if (!result.openResult || typeof result.openResult !== "object" ||
           (result.openResult as { path?: unknown }).path !== filePath ||
+          !hasNativeSlideSize((result.openResult as { size?: unknown }).size) ||
           !Array.isArray((result.openResult as { slides?: unknown }).slides) ||
           !(result.openResult as { slides: unknown[] }).slides.every(hasNativeRenderNodes)) {
         return { ok: false, reason: "打开失败：原厂未返回可渲染的幻灯片树" };

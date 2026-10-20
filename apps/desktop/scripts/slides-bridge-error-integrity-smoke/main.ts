@@ -27,7 +27,7 @@ check("no vendor integration fails closed",JSON.stringify(await missing.addSlide
 const normal=new SlidesBridge({
 async addBlankSlide(){return {slideCount:1,slides:[{id:"one",nodes:[]}],index:0};},
 async editText(){return {text:"new",renderedSlide:{nodes:[{id:"part"}]}};},
-async openDeck(){return {openResult:{path:"/fixture/a.pptx",slides:[{id:"one",nodes:[]}]}};},
+async openDeck(){return {openResult:{path:"/fixture/a.pptx",slides:[{id:"one",nodes:[]}],size:{cx:9144000,cy:5143500}}};},
 async saveDeck(){return {bytes:120};}
 });
 check("vendor healthy add keeps full slides",JSON.stringify(await normal.addSlide(1,"view"))===JSON.stringify({ok:true,slideCount:1,slides:[{id:"one",nodes:[]}],index:0}),await normal.addSlide(1,"view"));

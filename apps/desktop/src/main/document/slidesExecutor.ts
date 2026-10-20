@@ -134,21 +134,22 @@ function renderSlides(
   );
 }
 
+/** A native pptx-render RenderSlide requires RenderNode[] nodes.
+ * Always validate before publishing ANY saveable vendor model mutation; an
+ * L2 SlidesBridge refusal alone cannot roll back an already changed deck. */
+function hasNativeRenderTree(value: unknown): boolean {
+  return value !== null && typeof value === "object" &&
+    Array.isArray((value as { nodes?: unknown }).nodes);
+}
+
 /** 生成 `OpenResult`（vendor `shared/ipc.ts:91-98` 的形状）。 */
-function toOpenResult(opened: VendorDeck, filePath: string, slides: unknown[]): {
+function toOpenResult(filePath: string, slides: unknown[], size: { cx: number; cy: number }): {
   path: string;
   slides: unknown[];
   size: { cx: number; cy: number };
 } {
-  const size = opened.deck.size as { cx?: unknown; cy?: unknown };
-  return {
-    path: filePath,
-    slides,
-    size: {
-      cx: typeof size.cx === "number" ? size.cx : 12192000,
-      cy: typeof size.cy === "number" ? size.cy : 6858000,
-    },
-  };
+  // Never fabricate a default EMU page size for corrupt vendor results.
+  return { path: filePath, slides, size };
 }
 
 export class VendorSlidesExecutor implements SlidesEditExecutor {
@@ -216,6 +217,12 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     const deck = opened as VendorDeck;
     if (!stillCurrent()) return null;
     if (!deck || !deck.deck || !Array.isArray(deck.deck.slides)) return null;
+    // Native deck size is an indispensable part of the PPTX model. Do not
+    // silently substitute 13.333x7.5in fallback dimensions: besides
+    // misleading the renderer, that would retain a saveable broken deck.
+    const size = deck.deck.size as { cx?: unknown; cy?: unknown } | null;
+    if (!size || typeof size.cx !== "number" || !Number.isSafeInteger(size.cx) || size.cx <= 0 ||
+        typeof size.cy !== "number" || !Number.isSafeInteger(size.cy) || size.cy <= 0) return null;
     // Rendering can fail after the vendor parser accepts a damaged deck.
     // Publish the saveable session only after every native RenderSlide exists.
     // Otherwise a failed Open could still save a partially parsed document.
@@ -226,8 +233,7 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     // The SlidesBridge checks this before reporting success to the renderer,
     // but reject it here too or a visual-open failure still leaves a
     // saveable native session that could overwrite a real presentation.
-    if (!slides.every((slide) => slide !== null && typeof slide === "object" &&
-        Array.isArray((slide as { nodes?: unknown }).nodes))) return null;
+    if (!slides.every(hasNativeRenderTree)) return null;
     this.sessions.set(webContentsId, {
       opened,
       docId,
@@ -237,7 +243,7 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
       saveTainted: false,
       fitWidthPx: width,
     });
-    return { openResult: toOpenResult(deck, filePath, slides) };
+    return { openResult: toOpenResult(filePath, slides, { cx: size.cx, cy: size.cy }) };
   }
 
   async saveDeck(
@@ -327,13 +333,15 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     const session = this.sessions.get(webContentsId);
     if (!session || session.docId !== docId || session.saveTainted) return null;
     const deck = session.opened as VendorDeck;
-    // A vendor command may change the model BEFORE throwing. Invalidate any
-    // in-flight serializer before even starting native ops.
-    session.editEpoch++;
     try {
       const anchor = sourceIndex ?? Math.max(0, deck.deck.slides.length - 1);
       if (!Number.isSafeInteger(anchor) || anchor < 0 ||
           (deck.deck.slides.length > 0 && anchor >= deck.deck.slides.length)) return null;
+      // Only a real native operation can mutate the model. A rejected page
+      // index must not invalidate an otherwise valid in-flight save. Once
+      // input is valid, invalidate BEFORE the vendor transaction (which can
+      // mutate the deck even when it later reports failure).
+      session.editEpoch++;
       // Original slides-main.ts:2770-2793 inserts after the selected slide;
       // the before variant is the *same original two-op transaction*:
       // insert after source, then move the old source after the new slide.
@@ -351,6 +359,10 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
         return null;
       }
       const slides = renderSlides(this.render, deck, session.fitWidthPx);
+      if (!slides.every(hasNativeRenderTree)) {
+        session.saveTainted = true;
+        return null;
+      }
       return { slideCount: deck.deck.slides.length, slides, index: before ? anchor : anchor + 1 };
     } catch {
       session.saveTainted = true;
@@ -389,7 +401,7 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
       const slide = deck.deck.slides[slideIndex] as { nodes?: unknown[] } | undefined;
       const nodesText = flattenNodeText(slide?.nodes ?? []);
       const renderedSlide = renderSlides(this.render, deck, session.fitWidthPx)[slideIndex];
-      if (!renderedSlide || typeof renderedSlide !== "object") {
+      if (!hasNativeRenderTree(renderedSlide)) {
         session.saveTainted = true;
         return null;
       }
