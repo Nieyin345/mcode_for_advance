@@ -232,6 +232,12 @@ function measureBounds(el: HTMLElement): DocViewRect | null {
  * `webApi` 的 `webUnsupported` 是**同步抛出**的（`.catch` 接不住，必须 try/catch）。
  * 留一个 unhandled rejection 或同步异常会让 React 19 整棵卸载。
  */
+/** A file's docId is intentionally stable across tabs and re-mounts.
+ * A previous component's delayed open acknowledgement must not destroy a
+ * newer component's *same* native view. Track renderer owners separately
+ * from the durable host identity; the Host stays sole file/revision owner. */
+const activeNativePaneOwners = new Map<string, symbol>();
+
 function closeQuietly(docId: string): void {
   try {
     void api.documentView.close({ docId }).catch(() => {});
@@ -276,6 +282,8 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
     const stage = stageRef.current;
     if (stage === null) return;
 
+    const owner = Symbol(docId);
+    activeNativePaneOwners.set(docId, owner);
     let disposed = false;
     let raf = 0;
     let attempts = 0;
@@ -299,7 +307,10 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
           if (disposed) {
             // open 在路上的时候组件卸载了：立即关一次，否则视图会被创建出来
             // 变成没人管得到的孤儿（原生视图不随 DOM 卸载，见文件头）。
-            closeQuietly(docId);
+            // Cleanup has already issued close. The *only* case requiring
+            // another close is an orphan where no newer component owns this
+            // docId. Closing unconditionally would destroy the fresh view.
+            if (!activeNativePaneOwners.has(docId)) closeQuietly(docId);
             return;
           }
           if (!result.ok) {
@@ -312,7 +323,12 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
             (opened) => {
               if (!opened.ok && !disposed) setOpenError(opened.reason);
             },
-            () => { /* 打开失败不覆盖 open 成功的事实;页面失败另有 lastFailure */ },
+            (err: unknown) => {
+              // Transport failures do not appear in host.list().lastFailure:
+              // no page-side request was accepted. Surface this distinct
+              // error instead of silently leaving a blank native editor.
+              if (!disposed) setOpenError(err instanceof Error ? err.message : String(err));
+            },
           );
         },
         (err: unknown) => {
@@ -374,8 +390,12 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
       cancelAnimationFrame(raf);
       observer?.disconnect();
       window.removeEventListener("resize", schedule);
-      // **原生视图不随 DOM 卸载** —— 这里必须显式销毁，理由见文件头。
-      closeQuietly(docId);
+      // **原生视图不随 DOM 卸载**；only the latest mount can close
+      // this stable docId. A stale cleanup/ack must not close a replacement.
+      if (activeNativePaneOwners.get(docId) === owner) {
+        activeNativePaneOwners.delete(docId);
+        closeQuietly(docId);
+      }
     };
     // url/docId 变了要重建视图；retryNonce 是显式重试。t 只影响错误文案。
     // eslint-disable-next-line react-hooks/exhaustive-deps

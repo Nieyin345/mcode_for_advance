@@ -53,6 +53,8 @@ import {
   api,
   documentViewCalls,
   __plan,
+  __deferNextOpen,
+  __rejectOpenPathOnce,
   __resetCalls,
   __setCapabilities,
   capabilityCalls,
@@ -370,6 +372,29 @@ section("2. 组件生命周期：open / bounds / close");
   eq("卸载后 ResizeObserver 已断开（无残留观察）", __observedCount(), 0);
 }
 
+/* ══════════════════ 2b. 同一文件被快速关闭/重开时，过期 open 回执不能关闭新视图 ══════════════════ */
+
+section("2b. 慢 open 回执不得把第二个新挂载的原生编辑器销毁");
+{
+  resetWorld({ available: true, path: CLI_PATH });
+  const resolveFirst = __deferNextOpen();
+  await mountPane(OFFICE_FILE);
+  eq("旧挂载发起 open 但尚未结束", ops("open").length, 1);
+  await unmountPane();
+  eq("旧挂载卸载会立即 close", ops("close").length, 1);
+  // A *new* React component has the same stable docId for the same file.
+  // Its open has finished, and the native view is now its live editor.
+  await mountPane(OFFICE_FILE);
+  eq("重新挂载同一份文档确实发起第二次 open", ops("open").length, 2);
+  const beforeLateAck = ops("close").length;
+  resolveFirst({ ok: true });
+  for (let i = 0; i < 8; i++) await __flush();
+  eq("★ 前一代迟到的 open 成功回执不能 close 当前新编辑器",
+    ops("close").length, beforeLateAck);
+  await unmountPane();
+  eq("新挂载最终卸载仍会 close 一次", ops("close").length, beforeLateAck + 1);
+}
+
 /* ══════════════════ 3. 编辑器页未构建 / CLI 缺失 ══════════════════ */
 
 section("3. 编辑器页未构建：显式说明，不装空白");
@@ -434,6 +459,19 @@ section("4b. openPath 被拒（工作区外/宿主拒绝）时显示原因");
   check("前提：确实发过 openPath", ops("openPath").length > 0, ops("openPath").length);
   const text = uiText();
   check("★ 界面显示宿主给的拒绝原因原文", text.includes("文件不在已知工作区内"), text);
+  await unmountPane();
+}
+
+/* ================== 4b2. openPath rejected transport must be visible ================== */
+section("4b2. openPath IPC 直接拒绝也不能静默白屏");
+{
+  resetWorld({ available: true, path: CLI_PATH });
+  __rejectOpenPathOnce("文档读取服务连接中断");
+  await mountPane(OFFICE_FILE);
+  for (let i = 0; i < 6; i++) await __flush();
+  check("前提：已经尝试 openPath", ops("openPath").length === 1, ops("openPath").length);
+  check("★ openPath Promise rejected 时必须显示错误并允许重试",
+    uiText().includes("文档读取服务连接中断"), uiText());
   await unmountPane();
 }
 

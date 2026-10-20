@@ -20,12 +20,23 @@ let seq = 0;
 export const documentViewCalls: DocumentViewCall[] = [];
 /** 每个方法下一次返回的结果；默认全部成功。 */
 const plans = new Map<string, DocViewResult>();
+let deferredNextOpen: { promise: Promise<DocViewResult>; resolve: (value: DocViewResult) => void } | null = null;
+let rejectNextOpenPath: string | null = null;
+export function __rejectOpenPathOnce(reason: string): void { rejectNextOpenPath = reason; }
+export function __deferNextOpen(): (value: DocViewResult) => void {
+  let resolve!: (value: DocViewResult) => void;
+  const promise = new Promise<DocViewResult>((r) => { resolve = r; });
+  deferredNextOpen = { promise, resolve };
+  return resolve;
+}
 export function __plan(method: DocumentViewCall["method"], result: DocViewResult): void {
   plans.set(method, result);
 }
 export function __resetCalls(): void {
   documentViewCalls.length = 0;
   plans.clear();
+  deferredNextOpen = null;
+  rejectNextOpenPath = null;
 }
 
 type CapabilityPlan =
@@ -40,10 +51,20 @@ export const capabilityCalls: number[] = [];
 const documentView = {
   open: (input: unknown): Promise<DocViewResult> => {
     documentViewCalls.push({ method: "open", input, seq: ++seq });
+    if (deferredNextOpen !== null) {
+      const pending = deferredNextOpen;
+      deferredNextOpen = null;
+      return pending.promise;
+    }
     return Promise.resolve(plans.get("open") ?? { ok: true });
   },
   openPath: (input: unknown): Promise<DocViewResult> => {
     documentViewCalls.push({ method: "openPath", input, seq: ++seq });
+    if (rejectNextOpenPath !== null) {
+      const reason = rejectNextOpenPath;
+      rejectNextOpenPath = null;
+      return Promise.reject(new Error(reason));
+    }
     return Promise.resolve(plans.get("openPath") ?? { ok: true });
   },
   bounds: (input: unknown): Promise<DocViewResult> => {

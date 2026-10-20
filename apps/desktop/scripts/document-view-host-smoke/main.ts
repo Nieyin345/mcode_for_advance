@@ -1838,6 +1838,48 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
     writeFileSync(good, goodBytes);
   }
 
+  // 17d2. Async readFile must not complete an old request after the
+  // native view switched documents, was closed, or lost workspace access.
+  // Otherwise the page can receive A's handoff bytes while settlePendingOpen
+  // commits B's docId/file revision (a cross-file CAS/data-integrity break).
+  {
+    const other = join17(ws, "good-other.docx");
+    const third = join17(ws, "good-third.docx");
+    writeFileSync(other, Buffer.concat([Buffer.from("PK\u0003\u0004", "latin1"), Buffer.alloc(96, 3)]));
+    writeFileSync(third, Buffer.concat([Buffer.from("PK\u0003\u0004", "latin1"), Buffer.alloc(96, 9)]));
+    eq("race view created", host.open({docId:"p0-race",url:FILE_URL,bounds:BOUNDS,visible:false}), {ok:true});
+    eq("prepare A", host.openPath("p0-race",third,within), {ok:true});
+    const staleRead = host.readOpened("p0-race",within);
+    eq("switch to B while A is still being read", host.openPath("p0-race",other,within), {ok:true});
+    const staleResult = await staleRead;
+    check("★ late readOpened A cannot return bytes under new pending B",
+      !staleResult.ok, staleResult);
+    const latest = await host.readOpened("p0-race",within);
+    check("latest B can still be opened and returned",
+      latest.ok && latest.result.path === other, latest);
+    if (latest.ok) {
+      const {takeDocumentHandoff} = await import("@main/document/documentViewHandoff.js");
+      takeDocumentHandoff(latest.result.dataUrl);
+    }
+    eq("prepare A for close race", host.openPath("p0-race",third,within), {ok:true});
+    const closedRead = host.readOpened("p0-race",within);
+    eq("close view during read",host.close("p0-race"),{ok:true});
+    const afterClose = await closedRead;
+    check("★ close during async read does not create an orphan handoff",
+      !afterClose.ok, afterClose);
+
+    eq("reopen for permission race",host.open({docId:"p0-race",url:FILE_URL,bounds:BOUNDS,visible:false}),{ok:true});
+    eq("prepare A before workspace revocation",host.openPath("p0-race",third,within),{ok:true});
+    let stillAllowed = true;
+    const dynamicPermission = (): boolean => stillAllowed;
+    const revokedRead = host.readOpened("p0-race",dynamicPermission);
+    stillAllowed = false;
+    const afterRevocation = await revokedRead;
+    check("★ workspace removal while bytes are being read must reject handoff",
+      !afterRevocation.ok, afterRevocation);
+    host.close("p0-race");
+  }
+
   // 17e. confirmDocumentReplace：真实 dirty 来源 + fail-closed + 端口驱动。
   {
     eq("不脏 → 允许替换", await host.confirmDocumentReplace("p0-1"), true);

@@ -797,6 +797,18 @@ export class DocumentViewHost {
     } catch (err) {
       return { ok: false, reason: `无法读取文档：${err instanceof Error ? err.message : String(err)}` };
     }
+    // readFile is asynchronous: meanwhile the user may switch A→B, close
+    // the native view, or revoke the workspace. Without a post-await guard
+    // the old read would mint A's handoff token while the pending session
+    // already belongs to B (or no longer exists), mixing bytes and revision.
+    if (this.views.get(docId) !== live ||
+        live.pendingOpen !== pending ||
+        live.view.webContents.isDestroyed?.() === true) {
+      return { ok: false, reason: "读取期间文档视图已关闭或切换，拒绝过期字节响应" };
+    }
+    if (!withinWorkspace(pending.filePath)) {
+      return { ok: false, reason: "读取期间文件已不在已知工作区内，拒绝字节响应" };
+    }
     if (bytes.length === 0) return { ok: false, reason: "文档为空（拒绝把空文件交给页面）" };
     if (bytes.length > DOC_VIEW_SAVE_MAX_BYTES) {
       return { ok: false, reason: `文档过大：${bytes.length} 字节（上限 ${DOC_VIEW_SAVE_MAX_BYTES}）` };
