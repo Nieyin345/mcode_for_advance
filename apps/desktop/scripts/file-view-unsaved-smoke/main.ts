@@ -128,8 +128,12 @@ console.log("\n【UI-012】重入打开相同目标与旧离开确认令牌");
   reset();
   useFileViewStore.getState().open(libTarget("a.pdf"));
   useFileViewStore.getState().setDirty(true);
+  const originalPreview = useFileViewStore.getState().target;
   useFileViewStore.getState().open(libTarget("a.pdf"));
   check("★★ reopening the same file cannot silently erase unsaved annotations", hasUnsavedChanges() === true);
+  check("★★ reopening the same file must preserve target identity and skip PDF byte reload",
+    useFileViewStore.getState().target === originalPreview,
+    { original: originalPreview, now: useFileViewStore.getState().target });
 }
 {
   reset();

@@ -160,16 +160,18 @@ export const useFileViewStore = create<FileViewState>((set) => ({
     // 在写入之前先看一眼中间是不是已经在显示文档 —— set 之后这个判据永远为真。
     const prevTarget = useFileViewStore.getState().target;
     const request = ++leaveRequestSeq;
-    // Reopening the currently edited file refreshes its target metadata but
-    // must not clear edits. It also supersedes any prior leave confirmation.
+    // Reopening the current file is a true no-op: changing target identity
+    // would rerun FileViewer's [target] fetch and reload PDFium over edits.
+    // Still invalidate any older pending leave confirmation above.
     const sameFile = prevTarget !== null && sameTarget(prevTarget, target);
+    if (sameFile) return;
     // 【UI-012】真正执行切换这一下。有未保存改动时，先由登记进来的离开确认
     //(`setFileOpenGuard`，FileViewer 挂载时登记)**问过用户**再走到这里 ——
     // 从前无论如何都静默 `set({ target })`，于是没点「保存批注」就切文件时，
     // 内存里的批注无声消失。确认通过(或本就没有未保存改动)才真正切。
     const proceed = (): void => {
       if (request !== leaveRequestSeq || useFileViewStore.getState().target !== prevTarget) return;
-      set({ target, dirty: sameFile ? useFileViewStore.getState().dirty : false });
+      set({ target, dirty: false });
       void import("./sessionStore.js").then(({ useSessionStore, isCenterShowingDocument }) => {
         const st = useSessionStore.getState();
         // **例外（2026-09-27）**：主页面本来就是文档页（上一份预览还在，或正开着可编辑
