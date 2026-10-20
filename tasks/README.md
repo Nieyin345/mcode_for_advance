@@ -31,10 +31,13 @@
 | 编号 | 标题 | 类型 | 依赖 | 状态 |
 |---|---|---|---|---|
 | T01 | 真 Electron 逐屏视觉基线（浅/深/窄窗） | ARC-005 U1 | 无 | ✅ 完成（后由 T12 补到 39/39） |
-| T02 | 自由 Pane 网格停靠与布局恢复 | ARC-005 核心缺口 | 无 | 未开始 |
+| T02 | 自由 Pane 停靠（照抄 ArtifactsSplitPaneResizer） | ARC-005 核心缺口 | 无 | 未开始 |
 | T03 | ARC-006 Gate D：唯一执行器/触发器接线 | ARC-006 | 无 | 已完成（原派活范围；落盘为增量，见 T10） |
 | T04 | 手机远程全量 UI 对齐 | ARC-005 | 无 | ✅ 完成（96 断言，27 处 44px 修复；test:all 12 红与它无关） |
-| T05 | GenOffice Docs 全功能迁移（第二轮） | ARC-007 | 上游已具备 | 未开始 |
+| T05 | ~~GenOffice Docs 全功能迁移~~ | — | — | **已拆分为 T05a/b/c** |
+| T05a | Docs 迁移一：纯文档操作（6 组） | ARC-007 | 无 | 未开始 |
+| T05b | Docs 迁移二：需权限操作（10 个 handler） | ARC-007 | T05a | 未开始 |
+| T05c | Docs 迁移三：明确不要的（12 个 ai:*） | ARC-007 | 无 | 未开始（只写说明） |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（回归已由 T11 修好；OS 隔离仍未覆盖 Windows） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05 | 阻塞 |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |
@@ -83,6 +86,30 @@
 - **T05c 明确不要的**（云 AI、用户身份、遥测）—— 只需在 `mcode-ipc.ts` 写清为什么不要。
 
 拆分工作我可以直接做，你说一声。
+
+### 已完成的「复用审计」（2026-10-21）
+
+用户问「有没有该抄却自己写的东西」。逐项核对 `open-claude-ui/code-examples/`
+（33 个逆向件）与仓库现有实现，结论：
+
+| 项目 | 逆向有 | 我们 | 判定 |
+|---|---|---|---|
+| 双栏分割拖拽 | `ArtifactsSplitPaneResizer` | 只有两向 dock | **该抄没抄 → T02** |
+| 滚动跟随 | `useClaudeScrollPinning` | `LegendList` + turn 折叠悬挂 | 不重复（解决不同问题） |
+| 响应式断点 | `ContainerResponsiveBar` 4 档 | 我们 7 档容器查询 | 设计取舍，非重复 |
+| 确认弹窗 | `ConfirmationDialog`（要 framer-motion） | 226 行带业务逻辑 | 不重复（仓库无 framer-motion） |
+| 按钮 | `CdsButton` | `ui/button.tsx` | 已统一（自建的 CdsButton 已删） |
+| 图片灯箱 | `MediaLightboxViewer` | 411 行接真实预览 | 不重复 |
+| 动效弹簧 | 4 个 spring 预设 | `linear()` 采样 | 不重复（纯 CSS） |
+
+**顺手修掉一个真实死代码**：`--spring-btn` 定义完整但全仓零调用，已删除并把
+断言翻成反向（`9d968d70`）。
+
+**仍未复用的**：`DraggableSessionList`（会话拖放）、`CoworkAgentCanvas`（画布）、
+`StreamingDiffViewer`、`ModelSwitcherWithTokenGauge` —— 这些是**我们还没有对应功能**，
+不是重复。要做时应当直接抄，不要从零写。
+
+---
 
 ### 已知未修（如实留档）
 
