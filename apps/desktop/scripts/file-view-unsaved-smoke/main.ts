@@ -209,6 +209,29 @@ console.log("\n【UI-012】确认桥缺席时未保存改动必须 fail-closed")
     useFileViewStore.getState().target === null, useFileViewStore.getState().target);
 }
 
+console.log("\n【UI-012】旧 FileViewer cleanup 不可解绑新实例的确认桥");
+{
+  reset();
+  useFileViewStore.getState().open(libTarget("a.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  let oldCalls = 0, nextCalls = 0;
+  const disposeOld = setFileOpenGuard(() => { oldCalls++; });
+  const disposeNext = setFileOpenGuard(() => { nextCalls++; });
+  // Before this fix FileViewer's cleanup was setFileOpenGuard(null), wiping
+  // the newer B dialog. Replay exactly that old shape when no disposer exists.
+  if (typeof disposeOld === "function") disposeOld();
+  else setFileOpenGuard(null);
+  useFileViewStore.getState().open(libTarget("b.pdf"));
+  check("★★ late cleanup of viewer A must keep B's unsaved confirmation handler",
+    nextCalls === 1 && oldCalls === 0 && refOf() === "a.pdf",
+    { oldCalls, nextCalls, target: refOf() });
+  if (typeof disposeNext === "function") disposeNext();
+  useFileViewStore.getState().open(libTarget("c.pdf"));
+  check("removing the active B guard must fail closed while the current PDF is dirty",
+    nextCalls === 1 && refOf() === "a.pdf",
+    { nextCalls, target: refOf() });
+}
+
 console.log(`\nfile-view-unsaved-smoke:${checks - failures}/${checks} 通过`);
 if (failures > 0) process.exit(1);
 

@@ -110,8 +110,13 @@ let saveCurrent: (() => Promise<boolean>) | null = null;
 let leaveRequestSeq = 0;
 
 /** 登记/注销离开确认(FileViewer 挂载时登记、卸载时传 null)。 */
-export function setFileOpenGuard(guard: ((next: FileViewTarget | null, proceed: () => void) => void) | null): void {
+export function setFileOpenGuard(guard: ((next: FileViewTarget | null, proceed: () => void) => void) | null): () => void {
   openGuard = guard;
+  // React can mount B's FileViewer before A's old effect cleanup runs.
+  // Only that old registration may be disposed; never unlink the new dialog.
+  return () => {
+    if (openGuard === guard) openGuard = null;
+  };
 }
 
 /** Register the active preview save handler. The returned disposer is identity-guarded:

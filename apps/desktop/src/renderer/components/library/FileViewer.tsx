@@ -125,8 +125,8 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
    */
   const [pendingLeave, setPendingLeave] = useState<{ proceed: () => void } | null>(null);
   useEffect(() => {
-    setFileOpenGuard((_next, proceed) => setPendingLeave({ proceed }));
-    return () => setFileOpenGuard(null);
+    // Identity-guarded cleanup: A's late unmount must not remove B's dialog.
+    return setFileOpenGuard((_next, proceed) => setPendingLeave({ proceed }));
   }, []);
 
   useEffect(() => {
