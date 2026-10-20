@@ -98,7 +98,7 @@ const FileClipboardContext = createContext<FileClipboardValue | null>(null);
  *  the styling used by the Git panel's context menu (GitRepoCard) so the two
  *  surfaces stay visually consistent. */
 const MENU_POPUP_CLASS = cn(
-  "z-50 min-w-[160px] rounded-md border border-edge bg-surface py-1 shadow-2xl",
+  "z-50 min-w-[160px] rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
   "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
   "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
   "transition-[transform,opacity] duration-100",
