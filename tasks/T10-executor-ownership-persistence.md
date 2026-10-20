@@ -136,3 +136,14 @@ T03（提交 `14880aeff`）已经把 owner 判据接进了四条真实生产路�
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜T10 执行回写
+
+- **源码提交**：`cb1d2ba9e4d143f7dae348376ac5477136586609`（仅 T10 所属 5 个源码/测试文件；未 push）。证据等级：E1（隔离磁盘与 fake Node-RED child）+ E2（生产装配）。
+- **修改文件**：`fileExecutorOwnershipStore.ts`（新增）、`executorOwnership.ts`（懒加载生产持久化、损坏时拒绝 legacy）、`nodeRedOwnership.ts`（重启时原生 owner 领回）、`atomicFile.ts`（原子同步写供同步 store 使用）、`executor-gate-d-smoke/main.ts`（仅扩现有网）。
+- **验收**：`node apps/desktop/scripts/run-smokes.mjs executor-gate-d-smoke automation-smoke node-red-e2e-smoke` → 三套 PASS（`executor-gate-d-smoke: 81/81`，原 62 个断言保留）；日志 `apps/desktop/.tmp/smoke-runs/1792532078133-30408-lAChii/`。双包 `tsc --noEmit -p apps/desktop/tsconfig.json` + `tsc --noEmit -p packages/contracts/tsconfig.json` 均退出 0。测试使用各自临时数据根，不触及用户真实库。
+- **变异验证**：① 临时撤掉 `insert` 落盘 → 真实重建 registry 断言 **RED**（`actual:null, expected:mcode`）；② 损坏 owner 分支临时恢复 legacy fail-open → “corruption must not default to mcode” **RED**；两次均自动逐字节还原新模块；随后三套正式回归全绿。
+- **写入顺序与崩溃后果**：新的原生 flow 先同步原子写入 owner 再让 Node-RED Deploy；失败时回滚新增 claim，成功后才释放被移除的 claim。中途崩溃的保守方向是「owner 多于 flows」，重启启动交叉检查按 `nativeFlowIds()` 补充缺失原生 owner、释放已消失的原生 owner；文件坏档保存为 `executor-ownership.json.corrupt-<timestamp>-<uuid>`，拒绝旧 runner 自动接管。
+- **用户可见性**：主进程日志 `[executor-ownership]` 告警；`FileExecutorOwnershipStore.diagnostics()` 给出结构化 `legacyBlocked` 与事件，**尚未接入设置页**，因此 UI 目前没有专门提示。
+- **剩余风险 / 完整原子性边界**：owner 持久写失败会在提交内存 claim 之前抛错（安全拒绝，不 fail-open）；但跨**两个独立 Mcode 主进程**的 owner 文件没有 OS 互斥/CAS，因此多进程抢占仍可能互相覆盖，尚无双 OS 进程 U1 证据。原生 Deploy 已返回成功而**释放旧 owner**落盘失败时，仍只能保留多余 owner 并日志告警，不能在当前父子消息协议里回滚已成功写入的 `flows.json`；这是剩余的严格双文件事务缺口（安全方向：不提前让第二端执行）。
+- **大 `list()` 评估**：读的是内存 Map，热路径不做文件 IO；`list()` 是 O(n) 复制，owner 数巨大时有内存/CPU 成本，按任务边界未做分页优化。
