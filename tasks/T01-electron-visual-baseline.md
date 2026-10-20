@@ -129,3 +129,16 @@ ARC-005 的整包验收要求「逐屏对照 Claude Desktop 的真实视觉」�
 - 未完成/未验证：...
 - 剩余风险：...
 -->
+
+### 2026-10-20 执行结果（T01，U1 部分达成）
+
+- 源码与矩阵提交：`8e9e2e34054e74438f8cde3870eab566d6a86923`（只包含 T01 新增脚手架与 V4 参考矩阵增量，未改产品源码）。
+- 改动文件：`apps/desktop/scripts/arc005-visual-baseline/{build.mjs,probe.ts,compare.mjs,run.sh,README.md,api-stub.js,bridge.cjs,electron-host.cjs,windowStub.ts}`；`docs/design/claude-code-reference-matrix.md` 追加第十二节 V4 实测。
+- 命令与结果：`"C:\\Program Files\\Git\\bin\\bash.exe" apps/desktop/scripts/arc005-visual-baseline/run.sh` 退出 0；`.tmp/arc005-visual/` 39 份同名 JSON，**真实 Electron capturePage PNG 16 张**，其余 23 格含明确 `data-missing`（7 类高依赖屏的浅/深/窄窗各 3 格：Diff、侧聊、终端、编辑器、预览、并行侧栏、项目切换；“窗口缩窄”浅色和深色不是窄窗的 2 格）。保留空缺，不用空白/替身截图冒充。
+- 上游比对：`node apps/desktop/scripts/arc005-visual-baseline/compare.mjs` 产出 `.tmp/arc005-visual/diff.md`，退出码 2 表示如实发现未登记差异；637 条登记值相符，247 条矩阵已有已知差异，**13 条未登记差异只有 1 个独立根因**：暗色 `--edge` 实测 `44 44 42`（`#2c2c2a`），矩阵 §二旧值 `#c3c2b7`，暗色 13 屏重复 13 次。逐条可通过 `<screen>-<theme>-<width>.json` 的 `snapshot.tokens` 与 `snapshot.measured` 复核。
+- 待测项实测：矩阵 V4 追加了 13×3 结果，并给出原“待测”的 **工具、权限审批、设置菜单三个窄窗格** 的 font-size、line-height、background、radius、padding、bounds 真实数值；未擅自改动原判定或宣称 Claude Desktop 已实测。
+- 变异验证：仅临时把 `.tmp/arc005-visual/empty-light-1280.json` 的 `snapshot.tokens["--surface"]` 改为 `255 0 255`，比较器未登记差异由 13 增为 14 并在 diff 中出现错误值；还原后回到 13；前后 SHA-256 均为 `c0b9f86a65ac83fa21a580cc83688231b0f6c55c8c3eebd0383e008563e740b6`，二进制 Buffer/cmp 相同。证据：`.tmp/arc005-visual/mutation.json`。
+- 全量回归：`pnpm test:all` **未全绿**，退出 1；`run-smokes.test.mjs` 12/12 PASS，另 495 个 smoke 套件 **483 PASS / 12 FAIL**。红例：`collaboration-commit-audit-smoke`、`maint-m22-smoke`、`document-router-smoke`、`html-preview-electron-smoke`、`maint-m07-smoke`、`maint-m35-smoke`、`mcode-node-pack-smoke`、`module-extension-lifecycle-smoke`、`module-protocol-integrity-smoke`、`release-readiness-smoke`、`updater-tools-smoke`、`vscode-l1-smoke`。日志路径：`apps/desktop/.tmp/smoke-runs/1792493668848-29820-6HJvNk/`。本执行对话未修改以上红例对应业务/测试源码；无法将它们归因为 T01。
+- 运行环境：**Electron 44.4.5**，Windows 内核版本 **10.0.22000**，**devicePixelRatio 1.75（175% DPI）**；窄窗请求 1024×640，网页 viewport 实际 1024×614（窗口框架占高）。
+- 验收判据结论：**#2、#3、#4 达成；#1 部分达成**（39 格都有 JSON 与缺失原因，但只有 16 格实际拍图、23 格尚需完整宿主支持）；**#5 未达成**（495 套件中 12 红例）。另有上游 Claude 用户安装版未取证，因此不能据此放行 ARC-005 整包。
+- 剩余风险：可复跑的基线工具已建立，但真实项目/终端/侧聊/文档场景尚无独立安全夹具；暗色 `--edge` 旧矩阵登记需要后续审查决定是否更新。本任务遵守仅增加基线、不修产品代码的边界。
