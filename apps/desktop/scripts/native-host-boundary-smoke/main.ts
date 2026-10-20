@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DocumentViewCredentialBroker, readEngineAdminToken } from "../../src/main/document/documentViewCredentialBroker.js";
 import {
-  issueDocumentHandoff, takeDocumentHandoff, pendingDocumentHandoffCount,
+  issueDocumentHandoff, takeDocumentHandoff, pendingDocumentHandoffCount, handoffResponseBodyView,
 } from "../../src/main/document/documentViewHandoff.js";
 let pass = 0, fail = 0;
 function check(name: string, ok: boolean, details?: unknown) {
@@ -64,6 +64,15 @@ const second=takeDocumentHandoff(u2);
 check("★ 前一个 40MiB 文档没有被新打开的文档静默挤失",first?.[0]===0xa1);
 check("★ 后一个 40MiB 文档也能正常交付",second?.[0]===0xb2);
 check("★ Buffer 输入应按原厂语义传同一份内存，不能在 Host 再拷贝整份 DOCX",first===a && second===b);
+const nativeResponseView=handoffResponseBodyView(a);
+check("GenOffice protocol response must share DOCX backing memory, not allocate another large copy",
+  nativeResponseView.buffer===a.buffer && nativeResponseView.byteOffset===a.byteOffset && nativeResponseView.byteLength===a.byteLength);
+a[1]=0xc3;
+check("protocol response view sees original buffered DOCX bytes without extra buffer duplication",
+  nativeResponseView[1]===0xc3);
+const handoffSource = readFileSync("src/main/document/documentViewHandoff.ts", "utf8");
+check("actual Electron media protocol response uses shared view, not a copied Uint8Array",
+  handoffSource.includes("new Response(handoffResponseBodyView(handed)") && !handoffSource.includes("new Uint8Array(handed)"));
 check("一次性 URL 第二次取应失败",takeDocumentHandoff(u1)===null && takeDocumentHandoff(u2)===null);
 check("二份交付后内存计数归零",pendingDocumentHandoffCount()===0);
 const urls:string[]=[];

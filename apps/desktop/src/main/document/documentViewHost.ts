@@ -96,7 +96,7 @@ import { existsSync } from "node:fs";
 import { link, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { issueDocumentHandoff } from "./documentViewHandoff.js";
+import { issueDocumentHandoff, revokeDocumentHandoffs } from "./documentViewHandoff.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 import type { EditorCredentialPort } from "./documentViewCredentialBroker.js";
 
@@ -412,6 +412,8 @@ function resolveViewPreload(): string | undefined {
 
 export class DocumentViewHost {
   private readonly views = new Map<string, LiveDocumentView>();
+  /** Per-Host identity prevents same docId in a second window being revoked. */
+  private readonly handoffOwner = {};
   /**
    * 【ARC-007 DocumentSessionRegistry】打开会话表：归一化物理路径 → 会话。
    * 本切片保证一条路径至多一个持有者（见文件头「打开会话表」）；`docId → key`
@@ -670,6 +672,7 @@ export class DocumentViewHost {
 
   /** 销毁一个视图。不存在 = 已经关了，幂等成功（与 BrowserManager.close 同）。 */
   close(docId: string): DocViewResult {
+    revokeDocumentHandoffs(docId, this.handoffOwner);
     // 【ARC-006 Gate A 缺口】凭据绑定与视图同生共死（先于 views.delete 摘，
     // 保证「视图不在了但令牌还给它的 webContents id 发」不存在）。
     this.editorCredentials?.release(docId);
@@ -757,6 +760,9 @@ export class DocumentViewHost {
     live.pendingOpen = { docId, filePath, requestedAt: Date.now() };
     try {
       live.view.webContents.send?.(VENDOR_MENU_COMMAND_CHANNEL, VENDOR_OPEN_PATH_COMMAND, filePath);
+      // A second open request supersedes unclaimed bytes from this view.
+      // Do not revoke when a rejected request fails before notification.
+      revokeDocumentHandoffs(docId, this.handoffOwner);
     } catch (err) {
       live.pendingOpen = null;
       return { ok: false, reason: `发送打开通知失败：${err instanceof Error ? err.message : String(err)}` };
@@ -823,6 +829,7 @@ export class DocumentViewHost {
       docId,
       filePath: pending.filePath,
       sha256: hash,
+      owner: this.handoffOwner,
     });
     return {
       ok: true,
@@ -854,11 +861,14 @@ export class DocumentViewHost {
     }
     if (!accepted) {
       live.pendingOpen = null;
+      revokeDocumentHandoffs(docId, this.handoffOwner);
       log.info(`document view open-path: rejected by page ${docId} ${pending.filePath}`);
       return { ok: true };
     }
     if (!withinWorkspace(pending.filePath)) {
       live.pendingOpen = null;
+      // Revoked workspace grants must revoke unclaimed DOCX bytes too.
+      revokeDocumentHandoffs(docId, this.handoffOwner);
       return { ok: false, reason: `文件已不在已知工作区内：${pending.filePath}` };
     }
     const claim = this.claimOpenedPath(docId, pending.filePath, live.view.webContents);
@@ -1578,6 +1588,7 @@ export class DocumentViewHost {
   /** 销毁全部（主窗口 closed / 应用退出）。幂等。 */
   closeAll(): void {
     for (const [docId, live] of [...this.views]) {
+      revokeDocumentHandoffs(docId, this.handoffOwner);
       // 【ARC-006 Gate A 缺口】凭据绑定随视图一起摘（窗口没了，视图就是孤儿，
       // 令牌不能再发给一个已销毁的 webContents id）。
       this.editorCredentials?.release(docId);

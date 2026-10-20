@@ -64,6 +64,8 @@ interface HandoffEntry {
   docId: string;
   filePath: string;
   sha256: string;
+  /** Opaque identity of the owning DocumentViewHost instance. */
+  owner?: object;
   expires: number;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -96,7 +98,7 @@ function evictFor(bytes: number): void {
  */
 export function issueDocumentHandoff(
   bytes: Uint8Array,
-  meta: { docId: string; filePath: string; sha256: string },
+  meta: { docId: string; filePath: string; sha256: string; owner?: object },
 ): string {
   // DocumentViewHost already supplies a Buffer from readFile. Copying it
   // again doubles native memory pressure for a large DOCX. Keep the same
@@ -111,6 +113,7 @@ export function issueDocumentHandoff(
     docId: meta.docId,
     filePath: meta.filePath,
     sha256: meta.sha256,
+    owner: meta.owner,
     expires: Date.now() + HANDOFF_TTL_MS,
     timer,
   });
@@ -128,6 +131,18 @@ export function takeDocumentHandoff(url: string): Buffer | null {
   drop(token);
   if (entry.expires <= Date.now()) return null;
   return entry.bytes;
+}
+
+/** Revoke unclaimed DOCX responses belonging to a destroyed editor view.
+ * Only the originating Host invokes this. Already-taken bytes remain owned
+ * by Electron's fetch response and are not invalidated by closing the view. */
+export function revokeDocumentHandoffs(docId: string, owner: object): void {
+  // docIds are stable file-derived IDs, not globally unique between separate
+  // Host/window instances. Never discard another Host's identically named
+  // document while closing our own view.
+  for (const [token, entry] of pending) {
+    if (entry.docId === docId && entry.owner === owner) drop(token);
+  }
 }
 
 /** 诊断：当前挂起的 handoff 数（套件断言"没有泄漏的未消费响应"）。 */
@@ -160,6 +175,13 @@ export function registerDocumentHandoffSchemePrivileged(): void {
   }
 }
 
+/** A view over an existing Buffer, not `new Uint8Array(buffer)` which
+ * copies a potentially 1GiB DOCX in the protocol response path. The
+ * outstanding Buffer is retained by the response until Electron consumes it. */
+export function handoffResponseBodyView(bytes: Buffer): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength);
+}
+
 /** app ready 之后调：接上协议处理。幂等。 */
 export function initDocumentHandoffProtocol(): void {
   const protocol = electronProtocol();
@@ -169,7 +191,7 @@ export function initDocumentHandoffProtocol(): void {
     protocol.handle(DOCUMENT_HANDOFF_SCHEME, (request) => {
       const handed = takeDocumentHandoff(request.url);
       if (handed === null) return new Response(null, { status: 404 });
-      return new Response(new Uint8Array(handed), {
+      return new Response(handoffResponseBodyView(handed), {
         headers: {
           "Content-Type": "application/octet-stream",
           "Content-Length": String(handed.byteLength),

@@ -1897,6 +1897,62 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
     eq("待打开请求已清空", host.pendingOpenFor("p0-1"), null);
   }
 
+  // 17b2. Closing a docs view must revoke *unclaimed* byte URLs immediately.
+  // The original vendor TTL is 60 seconds; retaining large abandoned DOCX
+  // bodies after the view dies is both a memory leak and a stale capability.
+  {
+    const { takeDocumentHandoff, issueDocumentHandoff } = await import("@main/document/documentViewHandoff.js");
+    const independent = Buffer.from([0x51, 0x52]);
+    const independentUrl = issueDocumentHandoff(independent, { docId: "another-independent-view", filePath: good, sha256: "independent" });
+    eq("准备待取消的文档", host.openPath("p0-1", good, within), { ok: true });
+    const closing = await host.readOpened("p0-1", within);
+    check("创建尚未领取的字节 URL", closing.ok && !!(closing as any).result?.dataUrl, closing);
+    const abandonedUrl = closing.ok ? String((closing as any).result.dataUrl) : "";
+    const secondWindow = makeFakeWindow();
+    const otherHost = new DocumentViewHost({ getMainWindow: () => secondWindow, createView: makeFakeView });
+    otherHost.open({ docId: "p0-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+    eq("另一个宿主使用相同 docId 打开相同文件", otherHost.openPath("p0-1", good, within), { ok: true });
+    const otherRead = await otherHost.readOpened("p0-1", within);
+    const otherToken = otherRead.ok ? otherRead.result.dataUrl : "";
+    check("第二个宿主确实发行了相同 docId 下另一份合法字节", otherRead.ok && otherToken !== "", otherRead);
+    host.close("p0-1");
+    check("文档 close 立即撤销未领取的原 DOCX 字节", takeDocumentHandoff(abandonedUrl) === null);
+    check("关闭一个文档不可误撤销另一个视图的未领取字节", takeDocumentHandoff(independentUrl) === independent);
+    check("相同 docId 在另一窗口的未领取字节不可被本宿主误撤销", takeDocumentHandoff(otherToken)?.equals(goodBytes) === true);
+    otherHost.close("p0-1");
+    host.open({ docId: "p0-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+    eq("再次准备另一份待取消交接", host.openPath("p0-1", good, within), { ok: true });
+    const closingAll = await host.readOpened("p0-1", within);
+    const abandonedAll = closingAll.ok ? String((closingAll as any).result.dataUrl) : "";
+    check("closeAll 测试先获得待领取URL", closingAll.ok && abandonedAll !== "", closingAll);
+    host.closeAll();
+    check("整个宿主关闭时撤销所有未领取的 DOCX 字节", takeDocumentHandoff(abandonedAll) === null);
+  }
+
+  // 17b3. A superseded or rejected open may not keep a stale dataUrl
+  // readable for the full vendor 60s TTL.
+  {
+    const { takeDocumentHandoff } = await import("@main/document/documentViewHandoff.js");
+    host.open({ docId: "p0-1", url: FILE_URL, bounds: BOUNDS, visible: true });
+    eq("准备首次待领取文件", host.openPath("p0-1", good, within), { ok: true });
+    const first = await host.readOpened("p0-1", within);
+    const firstUrl = first.ok ? first.result.dataUrl : "";
+    eq("原视图准备另一轮打开", host.openPath("p0-1", good, within), { ok: true });
+    check("新文档打开请求淘汰同视图尚未领取的旧 URL", takeDocumentHandoff(firstUrl) === null);
+
+    const second = await host.readOpened("p0-1", within);
+    const secondUrl = second.ok ? second.result.dataUrl : "";
+    eq("页面拒绝/取消待开文档", host.settlePendingOpen("p0-1", false, within), { ok: true });
+    check("页面取消打开后旧一次性字节立即失效", takeDocumentHandoff(secondUrl) === null);
+    eq("重新准备工作区即将撤销的文档", host.openPath("p0-1", good, within), { ok: true });
+    const revokedWorkspaceRead = await host.readOpened("p0-1", within);
+    const revokedWorkspaceUrl = revokedWorkspaceRead.ok ? revokedWorkspaceRead.result.dataUrl : "";
+    const denied = host.settlePendingOpen("p0-1", true, () => false);
+    check("页面确认前工作区已撤销应拒绝提交", !denied.ok);
+    check("工作区撤销时旧文档字节 URL 同时撤销", takeDocumentHandoff(revokedWorkspaceUrl) === null);
+    host.close("p0-1");
+  }
+
   // 17c. 坏档/空档/跨路径：issue 之前被拒，且不占会话。
   {
     host.close("p0-1");
