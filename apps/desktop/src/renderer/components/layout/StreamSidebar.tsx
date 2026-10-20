@@ -41,7 +41,6 @@ import {
   IconGitBranch,
   IconGitFork,
   IconLayoutSidebarLeftExpand,
-  IconLoader2,
   IconMoon,
   IconPin,
   IconPinnedFilled,
@@ -52,6 +51,7 @@ import {
   IconX,
 } from "@renderer/lib/icons.js";
 import { cn } from "@renderer/lib/cn.js";
+import { StatusDot } from "@renderer/components/ui/cds/StatusDot.js";
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { projectDisplayColor, projectInitial } from "@renderer/lib/projectAvatar.js";
 import { isMac } from "@renderer/lib/platform.js";
@@ -1019,9 +1019,11 @@ function StreamCard({
 
   const statusLabel = (() => {
     if (status.kind === "working") {
+      // 运行中：CDS 呼吸状态点替代转圈图标（上游 StatusIndicators 的 running 语义；
+      // 转圈在密集侧栏里与"加载中"混淆，呼吸点表达的是"心跳"）。
       return (
-        <span className="flex items-center gap-1 font-semibold text-[#0369a1] dark:text-[#38bdf8]">
-          <IconLoader2 size={11} className="animate-spin" />
+        <span className="flex items-center gap-1 font-semibold text-accent-strong">
+          <StatusDot kind="running" />
           {t("layout.stream.statusWorking", { dur: formatRunningDuration(now - status.startedAt) })}
         </span>
       );
@@ -1033,13 +1035,20 @@ function StreamCard({
         </span>
       );
     }
+    // 【ARC-005 V2】状态改用 CDS 6px 状态点（上游 StatusIndicators 同款几何/动效），
+    // 文字保留：状态点是"一眼可见"的层次，文字给读屏与首次使用者。
     if (status.kind === "failed") {
-      return <span className="font-semibold text-danger">{t("layout.stream.statusFailed")}</span>;
+      return (
+        <span className="flex items-center gap-1 font-semibold text-danger">
+          <StatusDot kind="error" />
+          {t("layout.stream.statusFailed")}
+        </span>
+      );
     }
     if (status.kind === "done") {
       return (
         <span className="flex items-center gap-1 font-semibold text-accent-strong">
-          <IconCheck size={12} />
+          <StatusDot kind="ready" />
           {t("layout.stream.statusDone")}
         </span>
       );
