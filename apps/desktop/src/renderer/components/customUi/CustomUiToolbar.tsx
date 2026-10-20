@@ -50,7 +50,7 @@ export function CustomUiToolbar() {
         onClick={() => setCollapsed(false)}
         title={t("customUi.toolbar.expand")}
         aria-label={t("customUi.toolbar.expand")}
-        className="group flex h-full w-3 shrink-0 flex-col items-center border-t border-edge-panel bg-surface-muted pt-2 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+        className="group flex h-full w-3 shrink-0 flex-col items-center border-t border-edge-panel/60 bg-surface-muted pt-2 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
       >
         <IconChevronLeft size={10} className="shrink-0 opacity-60 group-hover:opacity-100" />
       </button>
@@ -68,14 +68,14 @@ export function CustomUiToolbar() {
   return (
     <div
       data-testid="custom-ui-toolbar"
-      className="flex h-full w-10 shrink-0 flex-col items-center gap-1 border-t border-edge-panel bg-surface-muted py-1.5"
+      className="flex h-full w-10 shrink-0 flex-col items-center gap-1 border-t border-edge-panel/60 bg-surface-muted py-1.5"
     >
       <button
         type="button"
         onClick={() => setCollapsed(true)}
         title={t("customUi.toolbar.collapse")}
         aria-label={t("customUi.toolbar.collapse")}
-        className="flex h-5 w-7 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+        className="flex h-5 w-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
       >
         <IconChevronRight size={12} />
       </button>
