@@ -133,3 +133,11 @@ export function clampLayout(layout: PaneLayout): PaneLayout;
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜路径不匹配，按任务模板停工
+
+- 用户派发路径：`tasks/T02.md`；实际检查 `agent_read_file` 返回 ENOENT。`tasks/README.md` 指明任务文件必须使用磁盘中的完整文件名，错误简写时应停工；实际磁盘文件为 `tasks/T02-free-pane-grid.md`。本记录仅记载阻塞，不将本文件擅自视作已授权的执行路径。
+- 本轮只读取资料并核实工作树；**未修改产品/测试源码、未运行 6 套 smoke、未运行双包 tsc 或 Electron、未做变异验证，验收 1–7 均未执行**。
+- 指令冲突/处理：`tasks/_PROMPT_TEMPLATE.md` 要求文件不存在时停止且记录原因；故不进行任务实现，不声明任何验收通过。
+- 复核命令/输出：`agent_read_file(tasks/T02.md)` → ENOENT；`agent_list_dir(tasks)` → 存在 `T02-free-pane-grid.md`；`git status --short` → 4 处既有其他对话未提交文件（本轮未碰）。
+- 改动文件：仅 `tasks/T02-free-pane-grid.md`（阻塞记录）；不涉及修复源码。无 PASS/FAIL 测试计数、无测试日志、无变异验证/cmp 结果。剩余风险：T02 全部功能与验收尚未开始，需用准确任务路径重新派发。
