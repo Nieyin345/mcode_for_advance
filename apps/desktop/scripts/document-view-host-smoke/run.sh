@@ -14,12 +14,13 @@
 # 这一套不碰 sql.js / 设置表;dataRoot 桩照例挂上,任何意外触碰都会在没设
 # MCODE_SMOKE_DATA_ROOT 时**直接抛**,不会回落到用户的真数据根。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
 
 OUT=$(mktemp -d /tmp/mcode-document-view-host-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-document-view-host-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$SCRIPT_DIR/../lib/esbuild-path.sh"
 
 # `--banner` 那一行非有不可(与其它套件相同):sql.js 的 asm 构建里有 require(...),
 # 而定死的 ESM 输出没有 require。
