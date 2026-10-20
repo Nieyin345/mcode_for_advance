@@ -47,7 +47,17 @@ export function EmptyState({
         className,
       )}
     >
-      {Icon && <Icon size={24} className="mb-1 text-content-muted" />}
+      {/* 【ARC-005 V2】图标走 CDS 的次级文字色 + 14→24 的既定档位；空态是
+          "安静的存在"，不抢主内容。颜色从 content-muted 提到 subtle 会太淡、
+          提到 content 会太抢，保持 muted 但加一圈发丝底盘（上游空态同款）。 */}
+      {Icon && (
+        <span
+          aria-hidden="true"
+          className="mb-1.5 flex h-10 w-10 items-center justify-center rounded-full bg-surface-muted text-content-muted"
+        >
+          <Icon size={20} />
+        </span>
+      )}
       <div className="text-[0.8571em] font-medium text-content-subtle">
         {title}
       </div>
