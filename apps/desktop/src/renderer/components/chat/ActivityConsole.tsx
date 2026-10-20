@@ -938,7 +938,7 @@ export function ActivityConsole({
 
       {/* Header: identity + what this kind is doing right now + actions. */}
       <div className="flex shrink-0 items-center gap-2 px-3 py-2.5">
-        <span className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-[9px]", meta.icoCls)}>
+        <span className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-btn-xs)]", meta.icoCls)}>
           <Ico size={15} />
         </span>
         <span className="min-w-0 flex-1">
@@ -951,7 +951,7 @@ export function ActivityConsole({
               type="button"
               onClick={rightAction.run}
               title={rightAction.label}
-              className="grid h-6 w-6 place-items-center rounded-[7px] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+              className="grid h-6 w-6 place-items-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
             >
               <IconLayoutSidebarRightExpand size={13} />
             </button>
@@ -960,7 +960,7 @@ export function ActivityConsole({
             type="button"
             onClick={onClose}
             title={t("chatStream.activity.close")}
-            className="grid h-6 w-6 place-items-center rounded-[7px] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+            className="grid h-6 w-6 place-items-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
           >
             <IconX size={13} />
           </button>
