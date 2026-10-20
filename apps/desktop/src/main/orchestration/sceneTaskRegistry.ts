@@ -93,6 +93,11 @@ export function isTerminalState(state: SceneTaskState): boolean {
 /** A typed invocation can still originate in malformed restored JSON or SDK output.
  * Reject malformed shape before it can disable depth, fan-out, or time limits. */
 function invalidInvocationReason(inv: TaskInvocation): string | null {
+  // Restored task JSON and SDK extension calls can pass malformed runtime
+  // values despite their TS declaration. Fail closed with a registry refusal.
+  if (!inv || typeof inv !== "object" || Array.isArray(inv)) {
+    return "任务参数必须是对象";
+  }
   for (const key of ["sceneId", "taskId", "originAgentId", "providerId", "budgetAccountId"] as const) {
     if (typeof inv[key] !== "string" || inv[key].trim().length === 0) {
       return `${key} 必须是非空字符串`;
@@ -135,11 +140,11 @@ export class SceneTaskRegistry {
    * invocation —— 到这里就是宿主铸的,没有可被伪造的父值。
    */
   createRootTask(inv: TaskInvocation): RegistryResult<SceneTask> {
+    const invalid = invalidInvocationReason(inv);
+    if (invalid) return refuse("INVALID_TASK", `任务创建参数无效:${invalid}`);
     if (inv.parentTaskId !== null) {
       return refuse("PARENT_NOT_FOUND", `根任务不能带 parentTaskId(${inv.parentTaskId})`);
     }
-    const invalid = invalidInvocationReason(inv);
-    if (invalid) return refuse("INVALID_TASK", `任务创建参数无效:${invalid}`);
     if (this.tasks.has(inv.taskId)) {
       return refuse("DUPLICATE_TASK", `任务 id 已存在:${inv.taskId}`);
     }
