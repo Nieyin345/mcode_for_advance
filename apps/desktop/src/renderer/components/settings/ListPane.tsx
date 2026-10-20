@@ -27,7 +27,8 @@
  */
 import type { ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
-import { EmptyState, Skeleton, Spinner } from "@renderer/components/ui/index.js";
+import { EmptyState, Spinner } from "@renderer/components/ui/index.js";
+import { CdsSkeleton } from "@renderer/components/ui/cds/CdsSkeleton.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
 export function ListPane({
@@ -87,10 +88,12 @@ export function ListPane({
       <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
         {children}
         {state === "loading" && (
+          // 【ARC-005 V2】骨架屏换成 CDS 斜向扫光（上游 StatusIndicators 同款
+          // 2s / 105°），与列表行同高，加载完成时布局不跳。
           <div className="space-y-1.5 px-1 pt-0.5">
-            <Skeleton className="h-9" />
-            <Skeleton className="h-9" />
-            <Skeleton className="h-9 w-4/5" />
+            <CdsSkeleton className="h-9" />
+            <CdsSkeleton className="h-9" />
+            <CdsSkeleton className="h-9 w-4/5" />
           </div>
         )}
         {state === "empty" && empty ? <EmptyState className="py-6" title={empty} /> : null}
