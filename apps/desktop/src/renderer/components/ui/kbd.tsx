@@ -27,7 +27,8 @@ const kbdVariants = cva("inline-flex items-center", {
 const keycapVariants = cva(
   // Keycap: raised box with a subtle bottom edge for depth, consistent with
   // the `rounded border border-edge` kbd style used across the app.
-  "inline-flex items-center justify-center rounded border border-edge bg-surface/70 font-medium text-content-subtle shadow-[0_1px_0_rgba(0,0,0,0.06)]",
+  // 【ARC-005 V2】键帽圆角走 CDS 小控件档（6px），与按钮/输入框一致。
+  "inline-flex items-center justify-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface/70 font-medium text-content-subtle shadow-[0_1px_0_rgba(0,0,0,0.06)]",
   {
     variants: {
       size: {
