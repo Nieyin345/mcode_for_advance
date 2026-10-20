@@ -86,6 +86,7 @@ https://<隧道域名>/mcp/<密钥>
 - 显式 agent 示例：Unix 传已确认的 socket 路径；Windows OpenSSH 传已确认的命名管道 `\\.\pipe\openssh-ssh-agent`。不要用文件存在性检查判断命名管道可用性。工具不会启停 agent 或加入密钥。
 - `agent_ssh_connect` 未就绪时返回 `isError=true`；已经创建连接记录的结果包含 `connection_id`、`state`、`last_error`、`reconnect_attempt`。认证/配置错误不会自动重试；网络中断可沿用原来明确配置的凭据重连。改变认证字段不会误用旧的已认证连接。
 - `agent_remote_job_logs.max_bytes` 范围为 **4–60000**，小于 4 明确报错，以容纳完整 UTF-8 字符。继续读取使用返回的 `next_cursor`。任务结束不等于日志已读尽，应同时检查是否仍有未读日志。
+- `agent_process_stop` 是受当前对话身份约束的可重试停止请求，不是任意 OS PID kill 或立即退出的保证；Windows 进程树停止可能暂时返回真实 `running`，客户端应使用 `agent_process_read` 的游标查询直到 `stopped/timed_out/exited`。重复 stop 不会叠加终止请求，不会把已超时的进程重新标成“用户停止”；停止请求一旦发出，不再接收 stdin 写入。对话销毁或应用退出会主动唤醒其在途 read/stop 并明确报告会话失效，不能等待到最长 55 秒后返回已经失效的旧结果。以上为隔离无头行为，真实跨 OS 子进程树停止仍需 U1 验证。
 
 ### 开关的实际效果
 

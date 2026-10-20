@@ -93,6 +93,8 @@ interface ProcessSession {
   startedAt: number;
   status: ProcessStatus;
   forcedStatus: ProcessStatus | null;
+  /** Owner eviction invalidates all in-flight reads/stops immediately. */
+  disposed: boolean;
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   buffer: string;
@@ -269,7 +271,7 @@ export function createAgentProcessSessions(options?: { maxRunningTotal?: number 
     waitMs: number,
     maxChars: number,
   ): Promise<void> => {
-    if (waitMs <= 0 || session.status !== "running" || session.endCursor > cursor) return;
+    if (waitMs <= 0 || session.disposed || session.status !== "running" || session.endCursor > cursor) return;
     const target = cursor + maxChars;
     await new Promise<void>((resolve) => {
       let timer: NodeJS.Timeout;
@@ -283,7 +285,7 @@ export function createAgentProcessSessions(options?: { maxRunningTotal?: number 
       };
       const wake = (): void => {
         // (4) 进程结束 —— 立刻回,这是最该马上告诉模型的事。
-        if (session.status !== "running") {
+        if (session.disposed || session.status !== "running") {
           done();
           return;
         }
@@ -319,7 +321,7 @@ export function createAgentProcessSessions(options?: { maxRunningTotal?: number 
         resolve();
       };
       const wake = (): void => {
-        if (session.status !== "running") done();
+        if (session.disposed || session.status !== "running") done();
       };
       timer = setTimeout(done, waitMs);
       session.waiters.add(wake);
@@ -404,6 +406,7 @@ export function createAgentProcessSessions(options?: { maxRunningTotal?: number 
         startedAt: Date.now(),
         status: "running",
         forcedStatus: null,
+        disposed: false,
         exitCode: null,
         signal: null,
         buffer: "",
@@ -452,13 +455,14 @@ export function createAgentProcessSessions(options?: { maxRunningTotal?: number 
       // 默认等到"有输出 / 进程结束 / 攒满一次可返回量"——见 MAX_PROCESS_WAIT_MS。
       // 早先默认 0(立刻返回),那是空轮询的直接来源。
       await waitForOutput(session, cursor, input.waitMs ?? MAX_PROCESS_WAIT_MS, input.maxChars ?? DEFAULT_READ_CHARS);
+      if (session.disposed) throw new Error(`进程会话 ${session.id} 已销毁，不能继续读取`);
       return snapshot(session, cursor, input.maxChars);
     },
 
     async write(input) {
       const session = requireOwned(input.ownerSessionId, input.processId);
-      if (session.status !== "running") {
-        throw new Error(`进程 ${session.id} 已经是 ${session.status},不能再写 stdin`);
+      if (session.status !== "running" || session.forcedStatus !== null || session.disposed) {
+        throw new Error(`进程 ${session.id} 已请求停止/超时或已经是 ${session.status},不能再写 stdin`);
       }
       if (!session.child.stdin || session.child.stdin.destroyed) {
         throw new Error(`进程 ${session.id} 的 stdin 已关闭`);
@@ -469,6 +473,7 @@ export function createAgentProcessSessions(options?: { maxRunningTotal?: number 
         session.child.stdin!.write(payload, (err) => (err ? reject(err) : resolve()));
       });
       await waitForOutput(session, cursor, input.waitMs ?? 250, input.maxChars ?? DEFAULT_READ_CHARS);
+      if (session.disposed) throw new Error(`进程会话 ${session.id} 已销毁，不能继续写入`);
       return snapshot(session, cursor, input.maxChars);
     },
 
@@ -476,15 +481,21 @@ export function createAgentProcessSessions(options?: { maxRunningTotal?: number 
       const session = requireOwned(input.ownerSessionId, input.processId);
       const cursor = input.cursor ?? session.endCursor;
       if (session.status === "running") {
-        session.forcedStatus = "stopped";
-        append(session, "\n[process stop requested]\n");
-        terminate(session);
+        // Stop/timeout are competing terminal intents; the first one wins.
+        // A second stop must never enqueue a second taskkill or rewrite
+        // a pending timeout into an apparently user-requested stop.
+        if (session.forcedStatus === null) {
+          session.forcedStatus = "stopped";
+          append(session, "\n[process stop requested]\n");
+          terminate(session);
+        }
         // Windows taskkill /T may be queued behind other child-tree cleanup.
         // Wait a little longer for the actual ChildProcess close event, but
         // never manufacture a terminal status if the OS has not confirmed it:
         // a still-running result remains observable/retryable by read/stop.
         await waitForExit(session, 3_000);
       }
+      if (session.disposed) throw new Error(`进程会话 ${session.id} 已销毁，停止请求无法继续读取`);
       return snapshot(session, cursor, input.maxChars);
     },
 
@@ -505,12 +516,13 @@ export function createAgentProcessSessions(options?: { maxRunningTotal?: number 
     disposeOwner(ownerSessionId) {
       for (const session of [...sessions.values()]) {
         if (session.ownerSessionId !== ownerSessionId) continue;
+        session.disposed = true;
         if (session.status === "running") {
-          session.forcedStatus = "stopped";
+          if (session.forcedStatus === null) session.forcedStatus = "stopped";
           terminate(session);
         }
-        // Wake any in-flight read/write wait so it returns instead of idling
-        // out its waitMs against a conversation that no longer exists.
+        // In-flight callers already hold this session reference, so they
+        // must observe disposed=true, wake immediately and fail explicitly.
         notify(session);
         sessions.delete(session.id);
       }
@@ -518,9 +530,14 @@ export function createAgentProcessSessions(options?: { maxRunningTotal?: number 
 
     disposeAll() {
       for (const session of sessions.values()) {
-        if (session.status !== "running") continue;
-        session.forcedStatus = "stopped";
-        terminate(session);
+        session.disposed = true;
+        if (session.status === "running") {
+          if (session.forcedStatus === null) session.forcedStatus = "stopped";
+          terminate(session);
+        }
+        // An app shutdown also invalidates any pending long-poll operation;
+        // child.close may arrive later (or never, for a stubborn child tree).
+        notify(session);
       }
     },
   };

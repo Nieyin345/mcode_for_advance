@@ -338,6 +338,86 @@ async function main(): Promise<void> {
   eq("disposeOwner 不波及 B 运行中的进程", procs.list(B).filter((p) => p.status === "running").length, 1);
   await procs.stop({ ownerSessionId: B, processId: keptProc.processId });
 
+  // B7a In-flight reads must not keep a defunct owner waiting up to the
+  // public MCP 55s default after connection/session eviction.
+  {
+    const isolated = createAgentProcessSessions();
+    const live = await isolated.start({ ownerSessionId: "dispose-race", command: cmd(IDLE), cwd: work, waitMs: 0 });
+    let startedWait = false;
+    const pending = isolated.read({
+      ownerSessionId: "dispose-race", processId: live.processId,
+      cursor: live.nextCursor, waitMs: 10_000,
+    }).then(() => "unexpected resolved", (error: unknown) => String(error));
+    await new Promise<void>((resolve) => setTimeout(resolve, 60));
+    startedWait = true;
+    const begun = Date.now();
+    isolated.disposeOwner("dispose-race");
+    const reply = await Promise.race([
+      pending,
+      new Promise<string>((resolve) => setTimeout(() => resolve("still blocked"), 1_200)),
+    ]);
+    check("★ owner 销毁会立即唤醒阻塞中的 read 并明确拒绝已释放会话",
+      startedWait && /进程会话.*已销毁/.test(reply) && Date.now() - begun < 1_200,
+      { reply, elapsedMs: Date.now() - begun });
+    eq("★ 已销毁 owner 不遗留 process list", isolated.list("dispose-race").length, 0);
+  }
+
+  // B7b Concurrent stops must issue a single termination request, not
+  // two taskkill trees and duplicate stop banners for one process.
+  {
+    const isolated = createAgentProcessSessions();
+    const live = await isolated.start({ ownerSessionId: "stop-race", command: cmd(IDLE), cwd: work, waitMs: 0 });
+    const stop1 = isolated.stop({ ownerSessionId: "stop-race", processId: live.processId, cursor: 0 });
+    const stop2 = isolated.stop({ ownerSessionId: "stop-race", processId: live.processId, cursor: 0 });
+    const [result1, result2] = await Promise.all([stop1, stop2]);
+    const count = (result2.output.match(/\[process stop requested\]/g) ?? []).length;
+    eq("★ 并发 stop 只发出一条真实 stop requested", count, 1);
+    check("★ 并发 stop 不伪造提前退出", ["running", "stopped"].includes(result1.status)
+      && ["running", "stopped"].includes(result2.status), { one: result1.status, two: result2.status });
+  }
+
+  // B7c If taskkill is still in flight, a follow-up stdin write must not
+  // sneak in merely because ChildProcess.close has not been delivered yet.
+  {
+    const isolated = createAgentProcessSessions();
+    const live = await isolated.start({ ownerSessionId: "write-race", command: cmd(ECHO), cwd: work, waitMs: 0 });
+    const stopping = isolated.stop({ ownerSessionId: "write-race", processId: live.processId });
+    await rejectsWith("★ stop 已请求但 close 未到时 stdin 必须拒绝",
+      () => isolated.write({ ownerSessionId: "write-race", processId: live.processId, input: "must-not-run", waitMs: 0 }),
+      /已请求停止|已经是 stopped/);
+    await stopping;
+  }
+
+  // B7d Closing an owner during an in-flight stop invalidates its tool call.
+  // The OS may not have closed yet, but no orphaned conversation may receive
+  // a stale (apparently successful) response after its capability is revoked.
+  {
+    const isolated = createAgentProcessSessions();
+    const live = await isolated.start({ ownerSessionId: "stop-owner-race", command: cmd(IDLE), cwd: work, waitMs: 0 });
+    const stopping = isolated.stop({ ownerSessionId: "stop-owner-race", processId: live.processId });
+    isolated.disposeOwner("stop-owner-race");
+    await rejectsWith("★ owner 消失期间在途 stop 返回已销毁而非旧快照",
+      () => stopping, /进程会话.*已销毁/);
+  }
+
+  // B7e App shutdown must wake pending long-poll reads, too: waiting for the
+  // shell to exit is not sufficient if process-tree cleanup is delayed.
+  {
+    const isolated = createAgentProcessSessions();
+    const live = await isolated.start({ ownerSessionId: "exit-race", command: cmd(IDLE), cwd: work, waitMs: 0 });
+    const pending = isolated.read({
+      ownerSessionId: "exit-race", processId: live.processId,
+      cursor: live.nextCursor, waitMs: 10_000,
+    }).then(() => "unexpected resolved", (error: unknown) => String(error));
+    isolated.disposeAll();
+    const reply = await Promise.race([
+      pending,
+      new Promise<string>((resolve) => setTimeout(() => resolve("still blocked"), 1_200)),
+    ]);
+    check("★ 应用退出立即取消所有尚在阻塞的 read",
+      /进程会话.*已销毁/.test(reply), reply);
+  }
+
   // B8 【MC-063】**端点全局容量**:per-owner 上限挡不住"多开几个对话各占一点"把物理机
   // 堆满。用注入的小全局上限验它真的按**总量**挡(而不是只按 owner 挡)。
   {
