@@ -1408,8 +1408,8 @@ function AttachmentCard({
         className={cn(
           "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition-colors",
           open
-            ? "border-accent bg-accent/20 text-accent"
-            : "border-accent/40 bg-accent/10 text-accent hover:border-accent/70 hover:bg-accent/20",
+            ? "border-edge bg-surface-hover text-content"
+            : "border-edge bg-surface-muted/60 text-content-muted hover:border-edge/80 hover:bg-surface-hover hover:text-content",
         )}
       >
         {isFile ? (

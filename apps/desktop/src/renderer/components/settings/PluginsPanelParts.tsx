@@ -1447,7 +1447,7 @@ export function MarketplacePane({
             <button
               type="button"
               onClick={() => setAddOpen(true)}
-              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-edge px-3 py-2 text-[0.8571em] font-medium text-content-muted transition-colors hover:border-accent/45 hover:text-accent"
+              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-edge px-3 py-2 text-[0.8571em] font-medium text-content-muted transition-colors hover:border-edge/80 hover:bg-surface-hover hover:text-content"
             >
               <IconPlus size={13} />
               {t("settings.plugins.mpAddMarketplace")}

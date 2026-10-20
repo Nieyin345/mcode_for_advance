@@ -166,7 +166,7 @@ export function FileLink({
           onKeyDown={handleKeyDown}
           className={cn(
             "cursor-pointer rounded-[2px] underline decoration-dotted decoration-accent/60 underline-offset-2",
-            "text-accent hover:bg-accent/10",
+            "text-content-muted hover:bg-surface-hover hover:text-content",
             loading && "opacity-60",
           )}
         >

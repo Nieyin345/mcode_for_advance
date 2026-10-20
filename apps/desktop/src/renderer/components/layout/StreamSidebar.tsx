@@ -1049,7 +1049,7 @@ function StreamCard({
     }
     if (status.kind === "input") {
       return (
-        <span className="font-semibold text-[#b45309] dark:text-[#fbbf24]">
+        <span className="font-semibold text-warning">
           {t("layout.stream.statusInput")}
         </span>
       );
@@ -1233,7 +1233,7 @@ function StreamCard({
                 {worktreeBranch || session.worktreePath.split(/[/\\/]/).pop()}
               </span>
               {worktreeUnmerged && (
-                <span className="flex shrink-0 items-center gap-1 text-[9.5px] text-[#b45309] dark:text-[#fbbf24]" title={t("layout.stream.unmerged")}>
+                <span className="flex shrink-0 items-center gap-1 text-[9.5px] text-warning" title={t("layout.stream.unmerged")}>
                   <span className="h-[5px] w-[5px] rounded-full bg-[#d97706] dark:bg-[#f59e0b]" aria-hidden />
                   {t("layout.stream.unmerged")}
                 </span>
