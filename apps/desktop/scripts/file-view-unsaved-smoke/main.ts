@@ -24,6 +24,7 @@
  */
 import "./prelude.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import {
   useFileViewStore,
   setFileOpenGuard,
@@ -296,6 +297,40 @@ console.log("\n【UI-012】旧确认桥卸载/替换时已颁发的 proceed 必�
   check("new viewer B's confirmation still commits its own navigation",
     refOf() === "c.pdf", refOf());
   liveDispose();
+}
+
+console.log("\n【UI-012】保存回调异常与伪成功不得使脏文件离开");
+{
+  reset();
+  useToastStore.getState().clear();
+  useFileViewStore.getState().open(libTarget("faulty.pdf"));
+  useFileViewStore.getState().setDirty(true);
+  setFileSaveHandler(() => { throw new Error("SYNTHETIC_PRIVATE_DETAIL"); });
+  let threwResult: unknown = "exception";
+  try { threwResult = await saveCurrentPreview(); } catch { /* old behavior throws; check below */ }
+  check("★★ sync throwing save callback becomes false without leaking an unhandled error",
+    threwResult === false && hasUnsavedChanges(), { threwResult, dirty: hasUnsavedChanges() });
+  check("★★ save exception is visibly disclosed without printing arbitrary callback detail",
+    useToastStore.getState().toasts.some(t => t.kind === "error" && t.title.includes("保存")) &&
+      !useToastStore.getState().toasts.some(t => t.body?.includes("SYNTHETIC_PRIVATE_DETAIL")),
+    useToastStore.getState().toasts.map(t => t.title));
+
+  useToastStore.getState().clear();
+  setFileSaveHandler(async () => { throw new Error("SYNTHETIC_REJECTION"); });
+  let rejectedResult: unknown = "exception";
+  try { rejectedResult = await saveCurrentPreview(); } catch { /* old behavior rejects */ }
+  check("★★ rejected save promise becomes false and dirty state remains guarded",
+    rejectedResult === false && hasUnsavedChanges(), { rejectedResult, dirty: hasUnsavedChanges() });
+
+  useToastStore.getState().clear();
+  setFileSaveHandler(async () => true);
+  const falseSuccess = await saveCurrentPreview();
+  check("★★ save reporting success while document stays dirty cannot authorize navigation",
+    falseSuccess === false && hasUnsavedChanges(), { falseSuccess, dirty: hasUnsavedChanges() });
+  useFileViewStore.getState().setDirty(false);
+  const cleanSuccess = await saveCurrentPreview();
+  check("normal completed clean save still returns true", cleanSuccess === true, cleanSuccess);
+  useToastStore.getState().clear();
 }
 
 console.log(`\nfile-view-unsaved-smoke:${checks - failures}/${checks} 通过`);

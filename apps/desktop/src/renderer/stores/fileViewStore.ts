@@ -25,6 +25,7 @@
  * 看的是哪个"。
  */
 import { create } from "zustand";
+import { useToastStore } from "./toastStore.js";
 
 /** 预览的来源。决定 `FileViewer` 走哪条 RPC 去取字节。 */
 export type FileSource =
@@ -139,8 +140,32 @@ export function setFileSaveHandler(save: (() => Promise<boolean>) | null): () =>
 
 /** 用户选了「保存」时调用 —— 返回是否成功(失败则不切换)。 */
 export async function saveCurrentPreview(): Promise<boolean> {
-  if (saveCurrent === null) return false;
-  return saveCurrent();
+  // A missing handler, a failed save, or an outdated snapshot must never be
+  // interpreted by FileViewer as consent to abandon unsaved annotations.
+  const save = saveCurrent;
+  if (save === null) return false;
+  try {
+    const saved = await save();
+    if (saved !== true) return false;
+    if (useFileViewStore.getState().dirty) {
+      useToastStore.getState().push({
+        kind: "error",
+        title: "当前文件仍有未保存的修改",
+        body: "保存回执与未保存状态不一致，已阻止离开文件，请检查后重试。",
+      });
+      return false;
+    }
+    return true;
+  } catch {
+    // Do not display arbitrary rejected Error text: third-party callbacks can
+    // contain paths or credentials. The user still gets an observable error.
+    useToastStore.getState().push({
+      kind: "error",
+      title: "当前文件保存失败",
+      body: "保存未完成，修改仍予保留；请在当前文件中检查并重试。",
+    });
+    return false;
+  }
 }
 
 export const useFileViewStore = create<FileViewState>((set) => ({
