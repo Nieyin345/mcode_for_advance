@@ -622,7 +622,7 @@ function WorkflowCanvasToolbar({
           {/* z-50 在 Positioner 上:floating-ui 用 transform 定位,会在 Popup 那层
               造出新的层叠上下文(见 `WorkflowDropdown` 同款注释)。 */}
           <Menu.Positioner side="bottom" align="start" sideOffset={4} className="z-50">
-            <Menu.Popup className="max-h-[320px] min-w-[280px] overflow-y-auto rounded-lg border border-edge bg-surface py-1 shadow-2xl">
+            <Menu.Popup className="max-h-[320px] min-w-[280px] overflow-y-auto rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]">
               {/* 档案排在**类型前面**:这是一个"我想再建一个那样的步骤"的动作,比
                   "我要一种新节点"更常发生,而往下翻才能找到自己存过的东西很烦。 */}
               {usableProfiles.length > 0 && (

@@ -223,7 +223,7 @@ export function InsertVarMenu({
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner side="bottom" align="start">
-          <Menu.Popup className="z-50 max-h-[280px] min-w-[200px] max-w-[320px] overflow-y-auto rounded-lg border border-edge bg-surface py-1.5 shadow-2xl">
+          <Menu.Popup className="z-50 max-h-[280px] min-w-[200px] max-w-[320px] overflow-y-auto rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]">
             {groups.length === 0 ? (
               // **空的时候也要能点开** —— 那句话本身就在教这个功能怎么才有东西可选。
               <p className="px-3 py-1.5 text-[0.7143em] leading-relaxed text-content-subtle">

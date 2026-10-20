@@ -451,7 +451,7 @@ function InstallMenu({
         <Menu.Positioner side="bottom" align="end" sideOffset={6} className="z-[60]">
           <Menu.Popup
             className={cn(
-              "min-w-[180px] origin-top-right rounded-lg border border-edge bg-surface p-1 shadow-2xl",
+              "min-w-[180px] origin-top-right rounded-[var(--radius-btn-xs)] border border-edge bg-surface p-1 shadow-[var(--shadow-popover)]",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
               "transition-[transform,opacity] duration-100",

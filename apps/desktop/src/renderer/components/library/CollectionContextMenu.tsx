@@ -198,7 +198,7 @@ export function CollectionContextMenu({
         <Menu.Positioner anchor={anchor} side="bottom" align="start" className="z-50">
           <Menu.Popup
             className={cn(
-              "min-w-[190px] origin-top-left rounded-md border border-edge bg-surface py-1 shadow-2xl",
+              "min-w-[190px] origin-top-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
             )}

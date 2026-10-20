@@ -305,7 +305,7 @@ export function ProfileRow({
           </Menu.Trigger>
           <Menu.Portal>
             <Menu.Positioner side="bottom" align="start" sideOffset={4} className="z-50">
-              <Menu.Popup className="max-h-[260px] min-w-[240px] overflow-y-auto rounded-lg border border-edge bg-surface py-1 shadow-2xl">
+              <Menu.Popup className="max-h-[260px] min-w-[240px] overflow-y-auto rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]">
                 {profiles.length === 0 ? (
                   <div className="px-3 py-1.5 text-[0.7143em] leading-snug text-content-subtle">
                     {t("settings.workflows.profileEmpty")}

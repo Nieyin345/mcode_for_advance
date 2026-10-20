@@ -256,7 +256,7 @@ export function AgentProfilesView({
             </Menu.Trigger>
             <Menu.Portal>
               <Menu.Positioner side="bottom" align="start" sideOffset={4} className="z-50">
-                <Menu.Popup className="max-h-[260px] min-w-[200px] overflow-y-auto rounded-lg border border-edge bg-surface py-1 shadow-2xl">
+                <Menu.Popup className="max-h-[260px] min-w-[200px] overflow-y-auto rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]">
                   {runnableTypes.map((entry) => (
                     <Menu.Item
                       key={entry.id}
