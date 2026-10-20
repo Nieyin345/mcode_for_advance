@@ -23,12 +23,33 @@
 
 ---
 
+## 开工前第 0 步：确认 AOCI 工具真的可用（否则立刻停）
+
+**这一步不通过，后面全部做不了** —— AOCI 的写入只能走 MCP 工具，
+CLI（`aoci.exe`）只有 scope 管理，**没有任何 authoring 命令**。
+所以「工具不在」时不要尝试手改 `aoci.code.txt` / `.aoci/`，那会破坏索引。
+
+检查：能不能调用 `aoci_maintain` 这个工具？
+
+- **能** → 继续下面。
+- **不能** → 立刻在回写区写「阻塞：本会话未暴露 AOCI MCP 工具」并停止。
+  同时把下面这两条信息一并写进去，方便宿主排查：
+  - `.mcp.json` 里配置的是 `D:/destop/work_space/work_for_reseach/tools/aoci/aoci.exe`
+    （已确认该文件存在），参数 `--repo <仓库根> mcp`；
+  - 本会话可用的工具里有没有名字含 `aoci` 的项。
+
+  **不要**用 Bash 直接跑 `aoci.exe` 的 scope 命令试图绕过 —— 那改的是 scope 策略
+  不是索引条目，且会与 MCP 侧状态打架。
+
 ## 开工前必读
 
 1. `audit-ledgers/README.md`（规则，但本任务不改台账）
 2. **AOCI 的合同文档**：先调 `aoci_rules`（如果可用），再调 `aoci_header`
    拿到当前的 Meta 与标签字典。**每个会话都要重新拿一次**，不要沿用旧对话里的。
 3. 本文件的「作者化规范」一节（下面）。
+
+> 文件名提示：本任务是 `tasks/T09-aoci-index-catchup.md`。若指令里写的是
+> `tasks/T09.md`，以本文件为准 —— 先 `ls tasks/ | grep T09` 找到实际文件再读。
 
 ---
 

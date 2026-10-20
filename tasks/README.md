@@ -16,6 +16,8 @@
 2. 打开 [`_PROMPT_TEMPLATE.md`](_PROMPT_TEMPLATE.md)，复制代码块里的整段指令。
 3. 把里面唯一一处 `tasks/XXXX.md` 换成该任务的路径，例如
    `tasks/T01-electron-visual-baseline.md`。
+   **文件名必须与磁盘一致** —— 不确定就先 `ls tasks/ | grep T01` 看实际名字，
+   写成 `T01.md` 会让执行对话在第一步就 ENOENT 停住（T09 已经踩过一次）。
 4. 发给一个全新对话。它会自己读任务文件、读台账规则、干活、回写结果。
 5. 做完之后回来告诉我编号，我核对结果与台账，决定是否放行。
 
