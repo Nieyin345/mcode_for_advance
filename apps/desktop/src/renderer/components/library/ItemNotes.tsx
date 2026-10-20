@@ -24,7 +24,7 @@ import { IconLoader2, IconPencil, IconPlus, IconTrash } from "@renderer/lib/icon
 
 /** 段落输入框的样式 —— 与 GitPanel 那种"写一段话"的输入同款(不是单行 Input)。 */
 const TEXTAREA_CLASS =
-  "w-full resize-y rounded-md border border-edge-input bg-surface px-2.5 py-1.5 " +
+  "w-full resize-y rounded-[var(--radius-btn-xs)] border border-edge-input bg-surface px-2.5 py-1.5 " +
   "text-[0.8571em] leading-relaxed text-content outline-none focus:border-accent";
 
 export function ItemNotes({ item }: { item: LibraryItem }) {
