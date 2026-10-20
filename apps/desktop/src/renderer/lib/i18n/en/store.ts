@@ -21,6 +21,7 @@ export const en = {
   "store.toast.rewindPartial": "Undone, but {n} of {total} file(s) weren't restored",
   "store.toast.rewindConflicts": "{n} file(s) changed again afterwards — left untouched to avoid overwriting the newer edits",
   "store.toast.settingSaveFailed": "Couldn't save the setting",
+  "store.toast.paneLayoutRepaired": "Damaged pane layout: default layout restored",
   "store.toast.sessionOpFailed": "Action failed",
   "store.toast.questionReplyFailed": "Your answer wasn't delivered — press Submit again to retry",
   "store.toast.questionDismissFailed": "The skip wasn't delivered — this turn may still be waiting on you",

@@ -38,11 +38,12 @@ import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
 import { DEFAULT_GESTURE_SETTINGS } from "@renderer/lib/gestures.js";
 import { DEFAULT_EDITOR_THEME_CHOICE, parseEditorThemeChoice, type EditorThemeChoice, type EditorThemeId } from "@renderer/lib/editorThemes.js";
-import { DISPLAY_MODE_SETTING_KEY, TAB_BAR_MULTI_ROW_SETTING_KEY, LEFTBAR_MODE_SETTING_KEY, THEME_STYLE_SETTING_KEY, UI_LOCALE_SETTING_KEY, DEFAULT_PROVIDER_ID, UI_CHAT_FONT_SIZE_SETTING_KEY, UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY, UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY, WORKFLOW_MAX_PARALLEL_SETTING_KEY, UI_USER_MSG_COLOR_SETTING_KEY, UI_ACCENT_COLOR_SETTING_KEY, UI_RIGHT_PANEL_TAB_SETTING_KEY, UI_VOICE_LANG_SETTING_KEY, UI_VOICE_ENGINE_SETTING_KEY, UI_VOICE_MIC_PERMISSION_SETTING_KEY, UI_VOICE_MODEL_DIR_SETTING_KEY, UI_IDE_OPEN_FILES_SETTING_KEY, UI_IDE_ACTIVE_FILE_SETTING_KEY, UI_IDE_EXPANDED_DIRS_SETTING_KEY, UI_IDE_EDITOR_MODE_SETTING_KEY, UI_GIT_DIFF_OPEN_MODE_SETTING_KEY, UI_COMMIT_GEN_MODEL_SETTING_KEY, UI_COMMIT_GEN_PROMPT_SETTING_KEY, UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY, UI_COMPOSER_MODEL_SETTING_KEY, UI_TITLE_GEN_ENABLED_SETTING_KEY, UI_TITLE_GEN_MODEL_SETTING_KEY, UI_VISION_RELAY_MODEL_SETTING_KEY, AGENT_OUTPUT_STYLE_SETTING_KEY, UI_GIT_COLLAPSED_REPOS_SETTING_KEY, UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY, UI_PANE_WIDTHS_SETTING_KEY, UI_PROJECT_VIEW_SETTING_KEY, UI_PROJECT_GROUPS_SETTING_KEY, UI_LAST_PROJECT_SETTING_KEY, UI_LAST_SESSION_SETTING_KEY, UI_STREAM_SCOPE_SETTING_KEY, UI_SHORTCUTS_SETTING_KEY, UI_GESTURES_SETTING_KEY, UI_CHAT_DENSITY_SETTING_KEY, UI_REDUCE_MOTION_SETTING_KEY, UI_SHELL_SETTING_KEY, UI_EDITOR_THEME_SETTING_KEY, AUTO_ARCHIVE_SETTING_KEY, DEFAULT_AUTO_ARCHIVE_CONFIG, parseAutoArchiveConfig, SESSION_WORKTREE_DEFAULT_SETTING_KEY, WORKTREE_NAMES_SETTING_KEY, PROJECT_COLORS_SETTING_KEY, ShortcutBindingsSchema, GestureSettingsSchema, RightPanelTabSchema, type AutoArchiveConfig, type DisplayMode, type LeftBarMode, type Locale, type VoiceEngine, type GestureSettings, type GestureSequence, type ChatDensity, type ReduceMotion, type ShellPreference, type ProjectView, type GitWorktreeInfo, type ProjectGroupsMeta, type RightPanelTab, type IdeEditorMode, type GitDiffOpenMode, type FileViewMode, type CustomCommand, type SkillInfo, type ProviderInfo, type ProviderHealthCheckResult, type ProviderHealthStatusCode, type ShortcutBindings, type Accelerator, type LspLanguageState, type LspStateChangedPayload, type RuntimeAgentState, type RuntimeProgressPayload, type PickedElement, type BrowserDevicePreset, type BrowserOrientation } from "@contracts/ipc";
+import { DISPLAY_MODE_SETTING_KEY, TAB_BAR_MULTI_ROW_SETTING_KEY, LEFTBAR_MODE_SETTING_KEY, THEME_STYLE_SETTING_KEY, UI_LOCALE_SETTING_KEY, DEFAULT_PROVIDER_ID, UI_CHAT_FONT_SIZE_SETTING_KEY, UI_RIGHT_PANEL_FONT_SIZE_SETTING_KEY, UI_PASTE_TAG_THRESHOLD_CHARS_SETTING_KEY, WORKFLOW_MAX_PARALLEL_SETTING_KEY, UI_USER_MSG_COLOR_SETTING_KEY, UI_ACCENT_COLOR_SETTING_KEY, UI_RIGHT_PANEL_TAB_SETTING_KEY, UI_VOICE_LANG_SETTING_KEY, UI_VOICE_ENGINE_SETTING_KEY, UI_VOICE_MIC_PERMISSION_SETTING_KEY, UI_VOICE_MODEL_DIR_SETTING_KEY, UI_IDE_OPEN_FILES_SETTING_KEY, UI_IDE_ACTIVE_FILE_SETTING_KEY, UI_IDE_EXPANDED_DIRS_SETTING_KEY, UI_IDE_EDITOR_MODE_SETTING_KEY, UI_GIT_DIFF_OPEN_MODE_SETTING_KEY, UI_COMMIT_GEN_MODEL_SETTING_KEY, UI_COMMIT_GEN_PROMPT_SETTING_KEY, UI_CONFLICT_RESOLVE_MODEL_SETTING_KEY, UI_COMPOSER_MODEL_SETTING_KEY, UI_TITLE_GEN_ENABLED_SETTING_KEY, UI_TITLE_GEN_MODEL_SETTING_KEY, UI_VISION_RELAY_MODEL_SETTING_KEY, AGENT_OUTPUT_STYLE_SETTING_KEY, UI_GIT_COLLAPSED_REPOS_SETTING_KEY, UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY, UI_PANE_WIDTHS_SETTING_KEY, UI_PANE_LAYOUT_SETTING_KEY, UI_PROJECT_VIEW_SETTING_KEY, UI_PROJECT_GROUPS_SETTING_KEY, UI_LAST_PROJECT_SETTING_KEY, UI_LAST_SESSION_SETTING_KEY, UI_STREAM_SCOPE_SETTING_KEY, UI_SHORTCUTS_SETTING_KEY, UI_GESTURES_SETTING_KEY, UI_CHAT_DENSITY_SETTING_KEY, UI_REDUCE_MOTION_SETTING_KEY, UI_SHELL_SETTING_KEY, UI_EDITOR_THEME_SETTING_KEY, AUTO_ARCHIVE_SETTING_KEY, DEFAULT_AUTO_ARCHIVE_CONFIG, parseAutoArchiveConfig, SESSION_WORKTREE_DEFAULT_SETTING_KEY, WORKTREE_NAMES_SETTING_KEY, PROJECT_COLORS_SETTING_KEY, ShortcutBindingsSchema, GestureSettingsSchema, RightPanelTabSchema, type AutoArchiveConfig, type DisplayMode, type LeftBarMode, type Locale, type VoiceEngine, type GestureSettings, type GestureSequence, type ChatDensity, type ReduceMotion, type ShellPreference, type ProjectView, type GitWorktreeInfo, type ProjectGroupsMeta, type RightPanelTab, type IdeEditorMode, type GitDiffOpenMode, type FileViewMode, type CustomCommand, type SkillInfo, type ProviderInfo, type ProviderHealthCheckResult, type ProviderHealthStatusCode, type ShortcutBindings, type Accelerator, type LspLanguageState, type LspStateChangedPayload, type RuntimeAgentState, type RuntimeProgressPayload, type PickedElement, type BrowserDevicePreset, type BrowserOrientation } from "@contracts/ipc";
 import type { ThemeStyle } from "@contracts/theme";
 // 【ARC-005 V1】外壳偏好的默认值 + 防卫式解析(叶子模块,只 import 契约)。
 import { DEFAULT_SHELL_PREF, parseShellPref } from "@renderer/components/shell/shellPrefs.js";
 import { parsePaneDock } from "@renderer/components/layout/paneDock.js";
+import { DEFAULT_PANE_LAYOUT, movePane } from "@renderer/components/layout/paneLayout.js";
 import { createCoalescedPaneWriter, mayApplyPaneHydration, withoutLocallyEditedPaneFields } from "./paneWidthWriteQueue.js";
 import { parseSavedPaneLayout } from "./paneLayoutPrefs.js";
 
@@ -251,7 +252,7 @@ function forceDeltaFlush(): void {
  * the settings table only gets hit once, ~400ms after the last move. The
  * timer is module-scoped so successive adjust calls reset the same timer. */
 let paneWidthPersistTimer: ReturnType<typeof setTimeout> | null = null;
-type PanePersistedField = "leftWidthPct" | "rightWidth" | "rightDock" | "bottomTerminalHeight" | "editorWidthPct";
+type PanePersistedField = "leftWidthPct" | "rightWidth" | "rightDock" | "paneLayout" | "bottomTerminalHeight" | "editorWidthPct";
 let paneLayoutRevision = 0; // incremented for every local drag/reset/dock action
 let initialPaneLayoutRevision = 0; // captured before first-paint and deferred settings reads
 const paneLayoutLocalEdits = new Set<PanePersistedField>();
@@ -261,8 +262,9 @@ const paneLayoutLocalEdits = new Set<PanePersistedField>();
 const paneWidthWriter = createCoalescedPaneWriter(
   () => useSessionStore.getState(),
   (s: SessionState) => api.setting.set({
-    key: UI_PANE_WIDTHS_SETTING_KEY,
+    key: UI_PANE_LAYOUT_SETTING_KEY,
     value: JSON.stringify({
+      paneLayout: s.paneLayout,
       leftPct: s.leftWidthPct,
       right: s.rightWidth,
       dock: s.rightDock,
@@ -785,6 +787,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   leftWidthPct: LEFT_WIDTH_PCT_DEFAULT,
   rightWidth: 360,
   rightDock: "right",
+  paneLayout: DEFAULT_PANE_LAYOUT,
   bottomTerminalHeight: 280,
   editorWidthPct: 50,
   // ─────────────── L 引擎与模型 ───────────────
@@ -933,6 +936,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           UI_LAST_PROJECT_SETTING_KEY,
           UI_LAST_SESSION_SETTING_KEY,
           UI_STREAM_SCOPE_SETTING_KEY,
+          UI_PANE_LAYOUT_SETTING_KEY,
           UI_PANE_WIDTHS_SETTING_KEY,
           UI_COMPOSER_MODEL_SETTING_KEY,
           SESSION_WORKTREE_DEFAULT_SETTING_KEY,
@@ -949,25 +953,45 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // frame and native browser placement. Restore them with the FIRST settings
     // batch, never after the pane/Monaco/Chromium tree has already mounted.
     const firstPaintLayout = parseSavedPaneLayout(fp[UI_PANE_WIDTHS_SETTING_KEY]);
-    if (firstPaintLayout) {
-      const patch: Partial<SessionState> = { rightDock: firstPaintLayout.dock };
-      if (firstPaintLayout.leftPct !== undefined) {
-        patch.leftWidthPct = clampLeftWidthPct(firstPaintLayout.leftPct);
+    const canonicalPrefs = parseSavedPaneLayout(fp[UI_PANE_LAYOUT_SETTING_KEY]);
+    const canonicalCorrupt = !!fp[UI_PANE_LAYOUT_SETTING_KEY] &&
+      (!canonicalPrefs || !canonicalPrefs.paneLayout || !!canonicalPrefs.repaired?.length);
+    const restoredPrefs = canonicalCorrupt ? { dock: "right" as const, paneLayout: DEFAULT_PANE_LAYOUT }
+      : canonicalPrefs ?? firstPaintLayout;
+    if (canonicalCorrupt) {
+      // Corruption must be visible to the user; never use partial untrusted geometry.
+      useToastStore.getState().push({
+        kind: "warning",
+        title: translate(get().locale, "store.toast.paneLayoutRepaired"),
+      });
+    }
+    if (restoredPrefs) {
+      const parsedLayout = canonicalCorrupt ? DEFAULT_PANE_LAYOUT :
+        canonicalPrefs?.paneLayout ??
+        movePane(DEFAULT_PANE_LAYOUT, "right", restoredPrefs.dock, 0);
+      const patch: Partial<SessionState> = {
+        rightDock: parsedLayout.placements.find(p => p.id === "right")?.side === "left" ? "left" : "right",
+        paneLayout: parsedLayout,
+        // Legacy two-way dock remains authoritative only when migrating once.
+        ...(firstPaintLayout && !canonicalPrefs ? { rightDock: firstPaintLayout.dock } : {}),
+      };
+      if (restoredPrefs.leftPct !== undefined) {
+        patch.leftWidthPct = clampLeftWidthPct(restoredPrefs.leftPct);
       }
-      if (firstPaintLayout.right !== undefined) {
+      if (restoredPrefs.right !== undefined) {
         const leftPct = paneLayoutLocalEdits.has("leftWidthPct")
           ? get().leftWidthPct
-          : firstPaintLayout.leftPct ?? get().leftWidthPct;
+          : restoredPrefs.leftPct ?? get().leftWidthPct;
         patch.rightWidth = clampRightWidth(
-          firstPaintLayout.right,
+          restoredPrefs.right,
           centerRightRowWidth(get().leftOpen, leftPct),
         );
       }
-      if (firstPaintLayout.bottomTerminal !== undefined) {
-        patch.bottomTerminalHeight = clampBottomTerminalHeight(firstPaintLayout.bottomTerminal);
+      if (restoredPrefs.bottomTerminal !== undefined) {
+        patch.bottomTerminalHeight = clampBottomTerminalHeight(restoredPrefs.bottomTerminal);
       }
-      if (firstPaintLayout.editor !== undefined) {
-        patch.editorWidthPct = clampEditorWidthPct(firstPaintLayout.editor);
+      if (restoredPrefs.editor !== undefined) {
+        patch.editorWidthPct = clampEditorWidthPct(restoredPrefs.editor);
       }
       const next = mayApplyPaneHydration(initialPaneLayoutRevision, paneLayoutRevision)
         ? patch
@@ -4568,9 +4592,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
   setRightDock: (dock) => {
     const side = parsePaneDock(dock);
-    if (get().rightDock === side) return;
-    set({ rightDock: side });
+    if (get().rightDock === side && get().paneLayout.placements.find(p => p.id === "right")?.side === side) return;
+    set({ rightDock: side, paneLayout: movePane(get().paneLayout, "right", side, 0) });
+    paneLayoutLocalEdits.add("paneLayout");
     schedulePaneWidthPersist(get, "rightDock");
+  },
+  moveLayoutPane: (id, side, order) => {
+    const next = movePane(get().paneLayout, id, side, order);
+    const rightSide = next.placements.find(p => p.id === "right")?.side;
+    set({ paneLayout: next, rightDock: rightSide === "left" ? "left" : "right" });
+    paneLayoutLocalEdits.add("rightDock");
+    schedulePaneWidthPersist(get, "paneLayout");
   },
   adjustRightWidth: (deltaPx) => {
     const s = get();

@@ -31,6 +31,7 @@ import { Project, Session, SessionBookmark } from "@contracts/session";
 import { ThemeStyle } from "@contracts/theme";
 import { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import type { PaneDock } from "@renderer/components/layout/paneDock.js";
+import type { PaneLayout, DockSide } from "@renderer/components/layout/paneLayout.js";
 
 /** One browser tab, shared across the sidebar and overlay containers. `id` is
  *  renderer-local; `browserId` is the main-process view id. All
@@ -933,6 +934,8 @@ export interface SessionState {
   rightWidth: number;
   /** Which side of the center workspace hosts the SAME IDE panel tree. */
   rightDock: PaneDock;
+  /** Canonical, versioned workspace pane graph. */
+  paneLayout: PaneLayout;
   /** Bottom terminal bar height in px (when expanded). */
   bottomTerminalHeight: number;
   /** Editor-column share of the center pane, as a percentage 0–100. The chat
@@ -1560,6 +1563,7 @@ export interface SessionState {
   setRightOpen: (open: boolean) => void;
   /** Persist left/right docking without remounting right panel children. */
   setRightDock: (dock: PaneDock) => void;
+  moveLayoutPane: (id: "left" | "right" | "bottom" | "editor", side: DockSide, order: number) => void;
   /** Toggle the bottom terminal bar open/closed (direct set). NOT persisted. */
   setBottomTerminalOpen: (open: boolean) => void;
   /** Toggle the browser panel open/closed (direct set). NOT persisted. */

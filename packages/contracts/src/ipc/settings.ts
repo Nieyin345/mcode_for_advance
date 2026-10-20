@@ -560,6 +560,8 @@ export type SetVoiceModelDirResult = z.infer<typeof SetVoiceModelDirResultSchema
  * Hydrated + clamped in sessionStore.init(); written (debounced) on drag end.
  */
 export const UI_PANE_WIDTHS_SETTING_KEY = "ui.paneWidths";
+/** Canonical v1 free-docking layout. ui.paneWidths is a read-only migration source. */
+export const UI_PANE_LAYOUT_SETTING_KEY = "ui.paneLayout";
 
 /**
  * Setting key under which the user's custom user-message background color

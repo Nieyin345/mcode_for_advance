@@ -148,6 +148,7 @@ export const en = {
   /** The right panel's terminal/task list tab (see TaskListPanel.tsx). */
   "layout.tabTasks": "Tasks",
   "layout.openBrowser": "Open browser",
+  "layout.movePane": "Drag to move workspace pane",
   "layout.closeSidebarBrowser": "Close sidebar browser",
 
   /* ── side chat (right-panel ask tab) ── */

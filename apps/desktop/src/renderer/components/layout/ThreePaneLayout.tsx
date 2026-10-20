@@ -1,9 +1,12 @@
-import { useEffect, useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent, type ReactNode } from "react";
+import { useI18n } from "@renderer/lib/i18n/index.js";
+import { DndContext, PointerSensor, useDraggable, useSensor, useSensors, type DragEndEvent, type DragMoveEvent } from "@dnd-kit/core";
 import { cn } from "@renderer/lib/cn.js";
 import { Divider } from "./Divider.js";
 import { shouldMountRightPane } from "./rightPaneKeepAlive.js";
 import { dockFlexOrder, dockSideAtPoint, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, type PaneDock } from "./paneDock.js";
 import type { ShellVariant } from "../shell/shellPrefs.js";
+import { computeSplitDrag, dockSideAtRect, DEFAULT_PANE_LAYOUT, SPLIT_SNAP_RATIO, type DockSide, type PaneId, type PaneLayout } from "./paneLayout.js";
 
 interface Props {
   /** ARC-005: 只影响几何 class，不切换主区组件身份（PTY/编辑器需保活）。 */
@@ -18,6 +21,9 @@ interface Props {
   rightOpen: boolean;
   rightDock?: PaneDock;
   onChangeRightDock?: (side: PaneDock) => void;
+  paneLayout?: PaneLayout;
+  onMovePane?: (id: PaneId, side: DockSide, order: number) => void;
+  onChangeRightOpen?: (open: boolean) => void;
   /** Bottom-bar terminal node (keep-alive: always mounted). */
   bottomTerminal?: ReactNode;
   /** Whether the bottom terminal bar is expanded. When false the bar collapses
@@ -59,6 +65,18 @@ interface Props {
  *
  * overflow-hidden is preserved on xterm ancestors (FitAddon breaks under a
  * scrolling ancestor) — do not change those to overflow-y-auto. */
+/** Separate dnd-kit grip preserves the existing native drag/keyboard handle. */
+function PaneDndHandle({ onStart }: { onStart: (x: number, y: number) => void }) {
+  const { t } = useI18n();
+  const { setNodeRef, listeners, attributes, isDragging } = useDraggable({ id: "mcode-pane-right" });
+  return <button ref={setNodeRef} type="button" data-testid="pane-dnd-handle"
+    aria-label={t("layout.movePane")} title={t("layout.movePane")}
+    {...attributes} {...listeners}
+    onPointerDownCapture={(e) => { if (e.button === 0) onStart(e.clientX, e.clientY); }}
+    className="absolute right-1 top-9 z-30 h-5 w-5 cursor-grab rounded text-content-muted hover:bg-surface-hover"
+    style={{ opacity: isDragging ? 0.5 : 1 }}>⋮</button>;
+}
+
 export function ThreePaneLayout({
   variant = "classic",
   left,
@@ -69,6 +87,9 @@ export function ThreePaneLayout({
   rightOpen,
   rightDock = "right",
   onChangeRightDock,
+  paneLayout = DEFAULT_PANE_LAYOUT,
+  onMovePane,
+  onChangeRightOpen,
   bottomTerminal,
   bottomTerminalOpen = false,
   leftWidth,
@@ -82,6 +103,72 @@ export function ThreePaneLayout({
   onResetRight,
   onResetBottomTerminal,
 }: Props) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const dndOrigin = useRef({ x: 0, y: 0 });
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  const rightPlacement = paneLayout.placements.find(p => p.id === "right");
+  const rightAtBottom = rightPlacement?.side === "bottom";
+  const bottomShare = rightPlacement?.sizePct ?? 30;
+  // Keep live drag previews local; Escape cancels without persisting a write.
+  const [splitPreview, setSplitPreview] = useState<number | null>(null);
+  const [splitDragging, setSplitDragging] = useState(false);
+  const [dndDragging, setDndDragging] = useState(false);
+  const paneDragging = splitDragging || dndDragging;
+  const splitRef = useRef<{ id: number; x: number; width: number; startRatio: number } | null>(null);
+  const applySplit = (e: PointerEvent<HTMLDivElement>) => {
+    const current = splitRef.current;
+    if (!current || e.pointerId !== current.id) return;
+    const computed = computeSplitDrag(current.startRatio, e.clientX - current.x, current.width);
+    if (!computed.moved) return;
+    setSplitPreview(current.width * (rightDock === "left" ? computed.ratio : 1 - computed.ratio));
+  };
+  const endSplit = (e: PointerEvent<HTMLDivElement>) => {
+    const current = splitRef.current;
+    if (!current || current.id !== e.pointerId) return;
+    splitRef.current = null;
+    setSplitDragging(false);
+    setSplitPreview(null);
+    const computed = computeSplitDrag(current.startRatio, e.clientX - current.x, current.width);
+    if (computed.moved) {
+      if ((computed.collapsed === "right" && rightDock === "right") ||
+          (computed.collapsed === "left" && rightDock === "left")) {
+        onChangeRightOpen?.(false);
+      } else {
+        const initial = current.width * (rightDock === "left" ? current.startRatio : 1-current.startRatio);
+        const final = current.width * (rightDock === "left" ? computed.ratio : 1-computed.ratio);
+        onResizeRight?.(rightDock === "left" ? final - initial : initial - final);
+      }
+    }
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+  };
+  useEffect(() => {
+    const cancel = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !splitRef.current) return;
+      e.preventDefault();
+      const id = splitRef.current.id;
+      splitRef.current = null; setSplitDragging(false); setSplitPreview(null);
+      if (rootRef.current?.hasPointerCapture(id)) rootRef.current.releasePointerCapture(id);
+    };
+    const blur = () => { splitRef.current = null; setSplitDragging(false); setSplitPreview(null); };
+    window.addEventListener("keydown", cancel);
+    window.addEventListener("blur", blur);
+    return () => { window.removeEventListener("keydown", cancel); window.removeEventListener("blur", blur); };
+  }, []);
+  const onDockMove = (event: DragMoveEvent) => {
+    const b = rootRef.current?.getBoundingClientRect();
+    if (b) setDockPreview(dockSideAtRect(dndOrigin.current.x + event.delta.x,
+      dndOrigin.current.y + event.delta.y, b.left, b.top, b.width, b.height));
+  };
+  const onDockEnd = (event: DragEndEvent) => {
+    const b = rootRef.current?.getBoundingClientRect();
+    if (b && onMovePane) {
+      const side = dockSideAtRect(dndOrigin.current.x + event.delta.x,
+        dndOrigin.current.y + event.delta.y, b.left, b.top, b.width, b.height);
+      if (side) onMovePane("right", side, 0);
+    }
+    setDockPreview(null);
+    setDndDragging(false);
+  };
   // Avoid mounting expensive right-panel contents before the user first opens
   // that pane. Thereafter retain the SAME React identity when it is collapsed.
   const [hasOpenedRight, setHasOpenedRight] = useState(rightOpen);
@@ -91,7 +178,7 @@ export function ThreePaneLayout({
   const rightEverMounted = shouldMountRightPane(rightOpen, hasOpenedRight);
   // Reordering stable flex children avoids remounting Chromium/Monaco/PTY.
   const order = dockFlexOrder(rightDock);
-  const [dockPreview, setDockPreview] = useState<PaneDock | null>(null);
+  const [dockPreview, setDockPreview] = useState<DockSide | null>(null);
   // Closing or moving the panel invalidates any outstanding HTML5 drag hover.
   // A lost dragend (e.g. over native WebContentsView) must not strand its ghost.
   useEffect(() => {
@@ -132,7 +219,42 @@ export function ThreePaneLayout({
     setDockPreview(null);
   };
   return (
-    <>
+    <DndContext sensors={sensors} onDragStart={() => setDndDragging(true)} onDragMove={onDockMove} onDragEnd={onDockEnd}
+      onDragCancel={() => { setDockPreview(null); setDndDragging(false); }}>
+      <div ref={rootRef}
+        data-pane-dragging={paneDragging ? "true" : undefined}
+        className="relative flex h-full min-h-0 min-w-0 flex-1 flex-wrap"
+        style={{ "--pane-bottom-share": `${bottomShare}%` } as CSSProperties}
+        onDoubleClickCapture={(e) => {
+          if (!(e.target as HTMLElement).closest('[data-divider="vertical"]') || !onResizeRight) return;
+          const width = e.currentTarget.getBoundingClientRect().width;
+          if (width <= 0) return;
+          const current = rightWidthPct === undefined ? (rightWidth ?? 360) : width * rightWidthPct / 100;
+          const target = width * (1 - SPLIT_SNAP_RATIO);
+          e.preventDefault(); e.stopPropagation();
+          onResizeRight(rightDock === "left" ? target - current : current - target);
+        }}
+        onPointerDownCapture={(e) => {
+          if (!rightOpen || rightAtBottom || !onResizeRight || !e.isPrimary || e.button !== 0 || e.detail > 1) return;
+          const dividers = Array.from(e.currentTarget.querySelectorAll('[data-divider="vertical"]'));
+          const target = (e.target as HTMLElement).closest('[data-divider="vertical"]');
+          if (!target || target !== dividers[dividers.length - 1]) return;
+          const b = e.currentTarget.getBoundingClientRect();
+          if (b.width <= 0) return;
+          const size = rightWidthPct === undefined ? (rightWidth ?? 360) : b.width * rightWidthPct / 100;
+          splitRef.current = { id: e.pointerId, x: e.clientX, width: b.width,
+            startRatio: rightDock === "left" ? size / b.width : 1 - size / b.width };
+          setSplitDragging(true);
+          e.preventDefault(); e.stopPropagation();
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerMoveCapture={applySplit}
+        onPointerUpCapture={endSplit}
+        onPointerCancelCapture={(e) => {
+          if (splitRef.current?.id === e.pointerId) {
+            splitRef.current = null; setSplitDragging(false); setSplitPreview(null);
+          }
+        }}>
       {/* Left sidebar — only used by the settings page since the workspace
          moved its full-height sidebar up to App.tsx. Square corners (no
          arcs). bg-surface-muted matches the settings overlay backdrop so the
@@ -167,6 +289,7 @@ export function ThreePaneLayout({
          Stacks the center content above an optional bottom terminal bar. */}
       <main className={cn(
         "relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden border-t border-edge-panel bg-surface",
+        rightAtBottom ? "h-[calc(100%-var(--pane-bottom-share))]" : "h-full",
         variant === "workspace"
           ? (rightDock === "left" ? "rounded-tr-[10px] rounded-br-[10px]" : "rounded-tl-[10px] rounded-bl-[10px]")
           : (rightDock === "left" ? "rounded-tr-3xl rounded-br-3xl" : "rounded-tl-3xl rounded-bl-3xl"),
@@ -177,7 +300,7 @@ export function ThreePaneLayout({
           <div data-testid="pane-dock-preview" data-dock-preview={dockPreview} aria-hidden="true"
             className={cn(
               "pointer-events-none absolute inset-y-0 z-50 w-1/2 border-2 border-dashed border-accent bg-accent/10",
-              dockPreview === "left" ? "left-0" : "right-0",
+              dockPreview === "left" ? "left-0" : dockPreview === "bottom" ? "bottom-0 h-1/3 w-full" : "right-0",
             )} />
         )}
         <div className="min-h-0 flex-1 overflow-hidden">{center}</div>
@@ -209,14 +332,21 @@ export function ThreePaneLayout({
         )}
       </main>
 
-      {toolbar && <div data-pane-toolbar="" className="flex h-full shrink-0" style={{ order: order.toolbar }}>{toolbar}</div>}
+      {toolbar && <div data-pane-toolbar="" className={cn("flex shrink-0", rightAtBottom ? "h-[calc(100%-var(--pane-bottom-share))]" : "h-full")} style={{ order: order.toolbar }}>{toolbar}</div>}
 
-      {rightOpen && onResizeRight && (
+      {rightOpen && onResizeRight && !rightAtBottom && (
         <Divider
           orientation="vertical"
           className={rightDock === "left" ? "order-3" : "order-4"}
           onResize={onResizeRight}
-          onDoubleClick={onResetRight}
+          onDoubleClick={() => {
+            const width = rootRef.current?.getBoundingClientRect().width ?? 0;
+            if (width > 0) {
+              const current = rightWidthPct === undefined ? (rightWidth ?? 360) : width * rightWidthPct / 100;
+              const target = width * (1 - SPLIT_SNAP_RATIO);
+              onResizeRight(rightDock === "left" ? target - current : current - target);
+            } else onResetRight?.();
+          }}
         />
       )}
       {/* Right sidebar — square corners (no arcs; the seam with the center
@@ -231,18 +361,24 @@ export function ThreePaneLayout({
           aria-hidden={!rightOpen}
           inert={!rightOpen}
           style={{
+            position: "relative",
             order: order.aside,
             // Preserve the stored width across window shrink/restore,
             // but keep the center usable on a very narrow viewport. Include
             // the adjacent toolbar/drag handle in the remaining-width budget.
             maxWidth: "calc(80% - 48px)",
-            width: rightWidthPct !== undefined ? `${rightWidthPct}%` : rightWidth,
+            width: splitPreview ?? (rightWidthPct !== undefined ? `${rightWidthPct}%` : rightWidth),
+            ...(rightAtBottom ? { width: "100%", maxWidth: "100%", height: `${bottomShare}%`, flexBasis: "100%" } : {}),
             display: rightOpen ? "flex" : "none",
           }}
         >
-          <div className={cn("min-h-0 flex-1 overflow-hidden border-edge-panel/60", rightDock === "left" ? "border-r" : "border-l")}>{right}</div>
+          <PaneDndHandle onStart={(x, y) => { dndOrigin.current = { x, y }; }} />
+          <div className={cn("min-h-0 flex-1 overflow-hidden border-edge-panel/60", rightDock === "left" ? "border-r" : "border-l")} style={paneDragging ? { pointerEvents: "none" } : undefined}>{right}</div>
+          {paneDragging && <div data-pane-iframe-shield="" className="pointer-events-none absolute inset-0 z-50 bg-transparent" aria-hidden="true" />}
         </aside>
       )}
-    </>
+      {paneDragging && <div data-pane-drag-shield="" className="pointer-events-none absolute inset-0 z-40" aria-hidden="true" />}
+      </div>
+    </DndContext>
   );
 }

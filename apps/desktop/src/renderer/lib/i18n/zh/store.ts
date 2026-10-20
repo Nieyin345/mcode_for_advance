@@ -30,6 +30,7 @@ export const zh = {
   "store.toast.rewindPartial": "撤销完成,但有 {n} / {total} 个文件没还原",
   "store.toast.rewindConflicts": "{n} 个文件之后又改过,为避免覆盖新改动没有动它们",
   "store.toast.settingSaveFailed": "设置没能保存",
+  "store.toast.paneLayoutRepaired": "面板布局文件损坏，已恢复默认布局",
   // 会话 / 项目行操作(改名、归档、删除、置顶、分组)落库失败 —— 主进程会抛
   // (`session not found` / `project not found` / zod / IO),而渲染端**没有**全局
   // unhandledrejection 监听,调用点几乎全是裸 `void storeAction(...)`。抛出去只落进

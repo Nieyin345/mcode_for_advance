@@ -574,6 +574,8 @@ export interface ClassicShellProps {
  */
 export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftWidthPct, handleLeftResize, resetLeftWidthPct, setLeftOpen, rightOpen, setRightOpen, bottomTerminalOpen, setBottomTerminalOpen, widePanelOpen, widePanelPct, rightWidth, rightDock, bottomTerminalHeight, handleWidePanelResize, adjustRightWidth, adjustBottomTerminalHeight, resetWidePanelPct, resetRightWidth, resetBottomTerminalHeight }: ClassicShellProps) {
   const setRightDock = useSessionStore((s) => s.setRightDock);
+  const paneLayout = useSessionStore((s) => s.paneLayout);
+  const moveLayoutPane = useSessionStore((s) => s.moveLayoutPane);
   // Both rightWidth (px) and widePanelPct (%) currently subtract their drag
   // input. The handle moves to the other side when docked left, so invert.
   const handleDockedResize = (deltaPx: number) => {
@@ -653,6 +655,9 @@ export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftW
             rightWidth={rightWidth}
             rightDock={rightDock}
             onChangeRightDock={setRightDock}
+            paneLayout={paneLayout}
+            onMovePane={moveLayoutPane}
+            onChangeRightOpen={setRightOpen}
             rightWidthPct={widePanelOpen ? widePanelPct : undefined}
             bottomTerminalHeight={bottomTerminalHeight}
             onResizeRight={handleDockedResize}

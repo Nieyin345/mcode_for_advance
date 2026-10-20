@@ -159,6 +159,7 @@ export const zh = {
   "layout.tabPreview": "预览",
   "layout.preview.empty": "在左边点一个文件，这里会显示它。",
   "layout.openBrowser": "打开浏览器",
+  "layout.movePane": "拖拽移动工作区面板",
   "layout.closeSidebarBrowser": "关闭侧边栏浏览器",
 
   /* ── side chat (right-panel ask tab) ── */
