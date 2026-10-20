@@ -3000,3 +3000,52 @@ html[data-reduce-motion="true"] .cds-quiet-dots > i {
     animation: none !important;
   }
 }
+
+/* ═══════════ 【ARC-005 V2】壳结构对齐（workspace 变体作用域） ═══════════
+ *
+ * 上游 Claude 桌面的框架特征（`open-claude-ui/docs/v2/03-架构重构与对比分析.md`
+ * §3.1 / 逆向报告 §3.5）：
+ *  - 侧栏与画布之间是 **0.5px 发丝边**，不是 1px 实线；
+ *  - 顶部工具条 45px 拖拽带，控件 24–32px；
+ *  - 面板之间靠色阶差 + 圆角缺口分隔，不靠重描边。
+ *
+ * 这里只改 workspace 变体；classic / 设置覆盖层 / 手机 / GenOffice 内嵌页
+ * 完全不受影响（选择器全部带 [data-ui-shell-variant="workspace"] 前缀）。
+ * 所有值仍走语义 token，不写死颜色。
+ */
+
+/* 发丝边：Divider 的视觉线换成 0.5px 的 CDS 发丝（上游 border-0.5）——
+ * 用一个半透明 0.5px 内描边替代整条 1px 实线，拖动热区宽度不变。 */
+[data-ui-shell-variant="workspace"] [data-divider] > div[aria-hidden],
+[data-ui-shell-variant="workspace"] [data-divider] > div.pointer-events-none {
+  background: rgb(var(--edge) / 0.55);
+  width: 0.5px;
+}
+[data-ui-shell-variant="workspace"] [data-divider][data-divider="horizontal"] > div.pointer-events-none {
+  width: auto;
+  height: 0.5px;
+}
+
+/* 顶栏：上游 45px 拖拽带的高度语义；Mcode 保持 40px 以兼容现有窗口控制
+ * 按钮的布局断言，但把底色与侧栏拉平，让整个外壳读成一整块画布。 */
+[data-ui-shell-variant="workspace"] [data-cds-titlebar] > div:first-child {
+  background: rgb(var(--surface-muted));
+}
+
+/* 中央画布与右栏之间的接缝：workspace 下不画左边框，靠色阶差分隔
+ * （与侧栏同一取向）。边框类在 ThreePaneLayout 里是工具类，这里用更高
+ * 优先级覆盖为透明。 */
+[data-ui-shell-variant="workspace"] [data-cds-aside] > div {
+  border-left-color: transparent;
+  border-right-color: transparent;
+}
+
+/* 中央画布顶部：与顶栏同色，接缝不出现一条深色线。 */
+[data-ui-shell-variant="workspace"] [data-cds-center] {
+  border-top-color: transparent;
+}
+
+/* 卡片/面板在 workspace 下统一用 CDS 面板圆角（10px）与发丝阴影。 */
+[data-ui-shell-variant="workspace"] [data-arc005-starter-card] {
+  border-radius: var(--radius-panel);
+}

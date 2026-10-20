@@ -84,6 +84,7 @@ export function Divider({ orientation, onResize, onDoubleClick, hideLine = false
           e.preventDefault(); e.stopPropagation(); onDoubleClick();
         } else if (e.key === "Escape") finish();
       }}
+      data-divider={vertical ? "vertical" : "horizontal"}
       className={cn("group/divider relative z-10 shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-accent-strong", vertical ? "w-px" : "h-px", className)}
     >
       <div

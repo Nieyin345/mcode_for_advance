@@ -170,7 +170,7 @@ export function ThreePaneLayout({
         variant === "workspace"
           ? (rightDock === "left" ? "rounded-tr-[10px] rounded-br-[10px]" : "rounded-tl-[10px] rounded-bl-[10px]")
           : (rightDock === "left" ? "rounded-tr-3xl rounded-br-3xl" : "rounded-tl-3xl rounded-bl-3xl"),
-      )} style={{ order: order.center }} onDragOverCapture={handleDockDragOver}
+      )} data-cds-center="" style={{ order: order.center }} onDragOverCapture={handleDockDragOver}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDockPreview(null); }}
         onDropCapture={handleDockDrop}>
         {dockPreview && (
@@ -226,6 +226,7 @@ export function ThreePaneLayout({
          internally, and xterm FitAddon breaks under a scrolling ancestor. */}
       {rightEverMounted && (
         <aside
+          data-cds-aside=""
           className="flex h-full min-w-0 shrink-0 flex-col overflow-hidden border-t border-edge-panel bg-surface"
           aria-hidden={!rightOpen}
           inert={!rightOpen}

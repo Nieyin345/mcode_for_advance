@@ -110,6 +110,7 @@ export function Titlebar({
 
   return (
     <div
+      data-cds-titlebar=""
       className="flex h-10 shrink-0 items-stretch"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
