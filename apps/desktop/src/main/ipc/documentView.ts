@@ -335,7 +335,7 @@ export function registerDocumentViewHandlers(
       if (webContentsId === null) {
         return { ok: false, reason: "当前视图没有 webContents id，无法定位 slides 会话" };
       }
-      return await slides.addSlide(webContentsId, resolved);
+      return await slides.addSlide(webContentsId, resolved, input.sourceIndex, input.before);
     } catch (err) {
       return slidesFailed(err);
     }

@@ -21,8 +21,14 @@ const SAVE = "mcode:document-view:slides-save";
 setupInvoke((_ch) => ({ ok: false, reason: "vendor is unavailable" }));
 check("★ failed addBlankSlide must return null (not truthy {ok:false})",
   await api.addBlankSlide({ sourceIndex: 0, fitWidthPx: 1280 }), null);
-check("★ addBlankSlide still sends no user-supplied session identity",
-  getCalls().map((x) => [x.channel, x.payload]), [[ADD, {}]]);
+check("★ addBlankSlide forwards the vendor-selected source slide but no user session identity",
+  getCalls().map((x) => [x.channel, x.payload]),
+  [[ADD, { sourceIndex: 0 }]]);
+setupInvoke((_ch) => ({ ok: false, reason: "preview only" }));
+await api.addBlankSlide({ sourceIndex: 3, fitWidthPx: 1280, before: true });
+check("★ insertion before the first/selected slide preserves vendor before semantics",
+  getCalls().map((x) => [x.channel, x.payload]),
+  [[ADD, { sourceIndex: 3, before: true }]]);
 setupInvoke((_ch) => ({ ok: false, reason: "element not found" }));
 check("★ failed editText must return null (not truthy {ok:false})",
   await api.editText({ slideIndex: 0, sourceId: "fake-element", paragraphs: [{ runs: [{ text: "hello" }] }] }), null);

@@ -459,15 +459,18 @@ const slidesApi = {
    *  宿主回 `{ ok:false, reason }`，preload 转为 vendor 的 null 失败值，
    *  防止原版 Slides 页面把 truthy 拒绝信封误当成功的渲染树。
    *
-   *  `sourceIndex`/`fitWidthPx` 等 vendor 参数由宿主固定（当前页之后插入、
-   *  FIT_WIDTH=1280），页面给的值不参与决策；`slideIndex`/`elementId`/`text`
+   *  原厂 UI 的 sourceIndex/before 是插入位置语义，必须保留；
+   *  fitWidthPx 则由宿主固定为 1280，页面给的值不参与决策；
+   *  `slideIndex`/`elementId`/`text`
    *  原样转发给 vendor 执行器。 */
-  addBlankSlide: (op: { sourceIndex?: number; fitWidthPx?: number }): Promise<{
+  addBlankSlide: (op: { sourceIndex?: number; fitWidthPx?: number; before?: boolean }): Promise<{
     slides: unknown[];
     index: number;
   } | null> => {
-    void op;
-    return (ipcRenderer.invoke(SLIDES_ADD_SLIDE_CHANNEL, {}) as Promise<{
+    return (ipcRenderer.invoke(SLIDES_ADD_SLIDE_CHANNEL, {
+      ...(op?.sourceIndex !== undefined ? { sourceIndex: op.sourceIndex } : {}),
+      ...(op?.before !== undefined ? { before: op.before } : {}),
+    }) as Promise<{
       ok?: boolean;
       slides?: unknown[];
       index?: number;

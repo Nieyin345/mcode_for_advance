@@ -45,7 +45,7 @@ import { safeErrorMessage } from "@main/lib/ipcError.js";
 export interface SlidesEditExecutor {
   /** vendor `slides:add-blank-slide`（`slides-main.ts:2770`）语义：
    *  在当前页之后加一张空白页，返回新的页数与新页 index。 */
-  addBlankSlide(webContentsId: number, docId: string): Promise<{ slideCount: number; slides: unknown[]; index: number } | null>;
+  addBlankSlide(webContentsId: number, docId: string, sourceIndex?: number, before?: boolean): Promise<{ slideCount: number; slides: unknown[]; index: number } | null>;
   /** vendor `slides:edit-text`（`slides-main.ts:1507`）语义：把某页某元素的文本
    *  替换为 `text`，返回该元素替换后的纯文本（vendor 可能把它折成多个 run）。 */
   editText(
@@ -116,10 +116,10 @@ export class SlidesBridge {
     return this.executor !== null;
   }
 
-  async addSlide(webContentsId: number, docId: string): Promise<SlidesEditResult> {
+  async addSlide(webContentsId: number, docId: string, sourceIndex?: number, before?: boolean): Promise<SlidesEditResult> {
     if (this.executor === null) return { ok: false, reason: SLIDES_BRIDGE_UNAVAILABLE };
     try {
-      const result = await this.executor.addBlankSlide(webContentsId, docId);
+      const result = await this.executor.addBlankSlide(webContentsId, docId, sourceIndex, before);
       if (result === null) {
         return { ok: false, reason: "slides 视图会话不存在（vendor 主进程没有这个 webContents 的打开会话）" };
       }

@@ -181,7 +181,12 @@ export const DOCUMENT_VIEW_SLIDES_SAVE_CHANNEL = "mcode:document-view:slides-sav
 /** `documentView:slidesAddSlide` 的入参：生产视图 preload 实际发送 `{}`。
  *  docId 是历史兼容的**可选一致性提示**，不用于授权或选择目标会话；
  *  新页位置仍由 vendor `addBlankSlide` 语义决定。 */
-export const DocViewSlidesAddSlideSchema = z.object({ docId: DocIdSchema.optional() }).strict();
+export const DocViewSlidesAddSlideSchema = z.object({
+  docId: DocIdSchema.optional(),
+  /** Original vendor AddBlankSlideOp position. Never accepts a file/session. */
+  sourceIndex: z.number().int().min(0).max(100_000).optional(),
+  before: z.boolean().optional(),
+}).strict();
 export type DocViewSlidesAddSlideInput = z.infer<typeof DocViewSlidesAddSlideSchema>;
 
 /** `documentView:slidesEditText` 的入参。

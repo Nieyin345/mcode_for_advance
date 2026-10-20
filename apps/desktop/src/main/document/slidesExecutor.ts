@@ -87,8 +87,6 @@ interface DeckSession {
   /** Vendor mutation/render failed after touching deck; reload before saving. */
   saveTainted: boolean;
   fitWidthPx: number;
-  undo: unknown[];
-  redo: unknown[];
 }
 
 /**
@@ -224,6 +222,12 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     const width = fitWidthPx > 0 ? fitWidthPx : DEFAULT_FIT_WIDTH_PX;
     const slides = renderSlides(this.render, deck, width);
     if (!stillCurrent()) return null;
+    // pptx-render's native RenderSlide always has a RenderNode[] nodes field.
+    // The SlidesBridge checks this before reporting success to the renderer,
+    // but reject it here too or a visual-open failure still leaves a
+    // saveable native session that could overwrite a real presentation.
+    if (!slides.every((slide) => slide !== null && typeof slide === "object" &&
+        Array.isArray((slide as { nodes?: unknown }).nodes))) return null;
     this.sessions.set(webContentsId, {
       opened,
       docId,
@@ -232,8 +236,6 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
       editEpoch: 0,
       saveTainted: false,
       fitWidthPx: width,
-      undo: [],
-      redo: [],
     });
     return { openResult: toOpenResult(deck, filePath, slides) };
   }
@@ -319,6 +321,8 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
   async addBlankSlide(
     webContentsId: number,
     docId: string,
+    sourceIndex?: number,
+    before = false,
   ): Promise<{ slideCount: number; slides: unknown[]; index: number } | null> {
     const session = this.sessions.get(webContentsId);
     if (!session || session.docId !== docId || session.saveTainted) return null;
@@ -327,13 +331,19 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     // in-flight serializer before even starting native ops.
     session.editEpoch++;
     try {
-      const sourceIndex = Math.max(0, deck.deck.slides.length - 1);
-      session.undo.push(this.snapshot(deck));
+      const anchor = sourceIndex ?? Math.max(0, deck.deck.slides.length - 1);
+      if (!Number.isSafeInteger(anchor) || anchor < 0 ||
+          (deck.deck.slides.length > 0 && anchor >= deck.deck.slides.length)) return null;
+      // Original slides-main.ts:2770-2793 inserts after the selected slide;
+      // the before variant is the *same original two-op transaction*:
+      // insert after source, then move the old source after the new slide.
       const result = this.ops.runTxn(session.opened, {
-        ops: [{ op: "addBlankSlide", target: { slide: sourceIndex } }],
+        ops: [
+          { op: "addBlankSlide", target: { slide: anchor } },
+          ...(before ? [{ op: "moveSlide", target: { slide: anchor }, to: anchor + 1 }] : []),
+        ],
       });
       if (!result.applied && !result.failures?.length) {
-        session.undo.pop();
         return null;
       }
       if (!result.applied || result.failures?.length) {
@@ -341,7 +351,7 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
         return null;
       }
       const slides = renderSlides(this.render, deck, session.fitWidthPx);
-      return { slideCount: deck.deck.slides.length, slides, index: deck.deck.slides.length - 1 };
+      return { slideCount: deck.deck.slides.length, slides, index: before ? anchor : anchor + 1 };
     } catch {
       session.saveTainted = true;
       return null;
@@ -361,7 +371,6 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     // save must be invalidated even if the UI never receives a success reply.
     session.editEpoch++;
     try {
-      session.undo.push(this.snapshot(session.opened as VendorDeck));
       const result = this.ops.runTxn(session.opened, {
         ops: [{
           op: "setText",
@@ -370,7 +379,6 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
         }],
       });
       if (!result.applied && !result.failures?.length) {
-        session.undo.pop();
         return null;
       }
       if (!result.applied || result.failures?.length) {
@@ -392,10 +400,6 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
     }
   }
 
-  /** 浅快照（vendor `takeSnapshot` 的简化版）：undo 只在失败回滚时用。 */
-  private snapshot(deck: VendorDeck): unknown {
-    return { slides: deck.deck.slides.map((slide) => slide) };
-  }
 }
 
 /** 渲染树节点的纯文本（与 vendor 页面 `flatten` 的判据一致：text.lines[].runs[]）。 */

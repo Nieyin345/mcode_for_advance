@@ -8,7 +8,7 @@ const root=mkdtempSync(join(tmpdir(),"mcode-slides-epoch-"));
 function requireNoStages(dir:string):boolean{return readdirSync(dir).every(name=>!name.startsWith(".mcode-slides-stage-"));}
 function deferred<T>(){let resolve!:(arg:T)=>void; const promise=new Promise<T>(r=>resolve=r);return {promise,resolve};}
 const waiting=new Map<string,ReturnType<typeof deferred<unknown>>>();
-const makeDeck=(name:string)=>({deck:{slides:[{id:name}],size:{cx:1,cy:1}}});
+const makeDeck=(name:string)=>({deck:{slides:[{id:name,nodes:[]}],size:{cx:1,cy:1}}});
 const vendor={
 engine:{
  openPptx(bytes:Uint8Array){const name=new TextDecoder().decode(bytes);const d=deferred<unknown>();waiting.set(name,d);return d.promise;},
@@ -58,6 +58,22 @@ try{await broken;}catch{caught=true;}
 check("malformed renderer error is visibly reported",caught,null);
 check("failed render must not publish a saveable opened session",executor.sessionCount===0,executor.sessionCount);
 check("failed render cannot save broken deck",(await executor.saveDeck(88,"doc-BROKEN",pathBroken))===null,null);
+// The native vendor may return an object but no RenderSlide.nodes. The
+// outer SlidesBridge already rejects the malformed OpenResult; the executor
+// must not retain that failed open as a saveable session.
+const badShape=join(root,"BAD-SHAPE.pptx");
+writeFileSync(badShape,"BAD-SHAPE");
+const shapeOpen=executor.openDeck(89,"bad-shape",badShape,1200);
+for(let i=0;i<50&&!waiting.has("BAD-SHAPE");i++)await new Promise(r=>setTimeout(r,2));
+(vendor.render as {buildRenderSlide:(s:unknown)=>unknown}).buildRenderSlide=()=>({widthPx:1280});
+waiting.get("BAD-SHAPE")!.resolve(makeDeck("BAD-SHAPE"));
+const badShapeResult=await shapeOpen;
+check("★ native slides malformed renderer result is not published as successful open",
+  badShapeResult===null,badShapeResult);
+check("★ no saveable native session survives malformed renderer tree",
+  executor.sessionCount===0,executor.sessionCount);
+check("★ malformed-render deck cannot overwrite original file",
+  (await executor.saveDeck(89,"bad-shape",badShape))===null,readFileSync(badShape,"utf8"));
 /* FULL-1 Slides native vendor save, Host revision, no silent overwrite:
    real mkdtemp files + actual bundled VendorSlidesExecutor with fake native vendor ports. */
 const base=join(root,"real-vendor.pptx"), failTarget=join(root,"bad-vendor.pptx");

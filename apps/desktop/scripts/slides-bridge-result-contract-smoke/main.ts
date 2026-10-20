@@ -43,6 +43,16 @@ const badText=await new SlidesBridge(make({editText:async()=>({
 })})).editText(1,"doc",0,"shape","new");
 check("★ text edit cannot acknowledge a missing vendor text value",
   badText.ok===false,badText);
+let forwarded: unknown[] | null=null;
+const positional=new SlidesBridge(make({addBlankSlide:async(...args)=>{
+  forwarded=args;
+  return {slideCount:2,slides:[{nodes:[]},{nodes:[]}],index:0};
+}}));
+const positioned=await positional.addSlide(31,"native-doc",0,true);
+check("★ L2 bridge passes original sourceIndex/before to single vendor executor",
+  JSON.stringify(forwarded)===JSON.stringify([31,"native-doc",0,true]) &&
+  positioned.ok===true && "index" in positioned && positioned.index===0,
+  {forwarded,positioned});
 const normal=new SlidesBridge(make({}));
 const a=await normal.addSlide(1,"doc");
 check("valid native add response unchanged",a.ok===true,a);
