@@ -219,7 +219,10 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
         const metadata = {
           schema:1,screen,title,condition:condition.id,requested:{width:condition.width,height:condition.height,dark:condition.dark},
           electron:process.versions.electron,windows:process.getSystemVersion?.()??process.platform,
-          dpi:win.webContents.getZoomFactor(),deviceScaleFactor:win.getContentBounds ? await js("window.devicePixelRatio") : null,
+          // devicePixelRatio 只能从渲染进程读；BrowserWindow.getContentBounds 恒存在，
+          // 用它当条件会让 TS 判成恒真（TS2774）。真正可能失败的是 js() 本身，
+          // 交给下面 probe.ok 的分支处理，这里直接读。
+          dpi:win.webContents.getZoomFactor(),deviceScaleFactor:probe.ok ? await js("window.devicePixelRatio") : null,
           probe,snapshot,
           ...(probe.ok?{}:{"data-missing":probe.reason || "场景未实际渲染"}),
         };

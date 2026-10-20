@@ -30,16 +30,17 @@
 
 | 编号 | 标题 | 类型 | 依赖 | 状态 |
 |---|---|---|---|---|
-| T01 | 真 Electron 逐屏视觉基线（浅/深/窄窗） | ARC-005 U1 | 无 | 进行中 |
+| T01 | 真 Electron 逐屏视觉基线（浅/深/窄窗） | ARC-005 U1 | 无 | 部分完成（16/39 格实拍，工具已建） |
 | T02 | 自由 Pane 网格停靠与布局恢复 | ARC-005 核心缺口 | 无 | 未开始 |
 | T03 | ARC-006 Gate D：唯一执行器/触发器接线 | ARC-006 | 无 | 已完成（原派活范围；落盘为增量，见 T10） |
 | T04 | 手机远程全量 UI 对齐 | ARC-005 | 无 | 未开始 |
 | T05 | GenOffice Docs 全功能迁移（第二轮） | ARC-007 | 上游已具备 | 未开始 |
-| T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 进行中 |
+| T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成 · **引入回归**（Windows 扩展全拒） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05 | 阻塞 |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | 未开始 |
 | T09 | ~~AOCI 索引补录~~ | — | — | **已取消**（用户决定不再用 AOCI） |
 | T10 | executor owner 注册表落盘（增量，原派活未含） | ARC-006 | T03 | 未开始 |
+| T11 | Windows 上收窄 egress fail-closed（修 T06 回归） | MC-035 回归 | T06 | **未开始（最高优先）** |
 
 状态取值：`未开始` / `进行中` / `待我核对` / `已完成` / `阻塞`。
 执行对话**不要**改这张表的「状态」列 —— 它由我维护。你只需在自己的任务文件里回写。
@@ -53,6 +54,20 @@
   变异验证）→ 必要时自己复跑 → 更新统一台账 `audit-ledgers/Mcode_统一审查台账.md`
 - 与你交涉方向与优先级
 - **不再自己写业务代码**，除非是核对时发现的小修补或你直接点名
+
+---
+
+## 当前已知回归（派活前必读）
+
+**T06 在 Windows 上把「所有未声明 network 权限的可执行扩展」拒之门外。**
+`permissionedProcessRunner.egressLaunch()` 在 `win32` 直接抛
+`egress_isolation_unavailable`，而 `ModuleHost` 对所有未声明 `network` 的扩展都会走这条路径。
+实测 `module-protocol-integrity-smoke` 与 `module-extension-lifecycle-smoke` 双双全红
+（`0 pass, 2 fail`）。
+
+这是**安全换兼容**的自觉取舍（fail-closed 比 fail-open 好），但产品上等于「Windows 用户
+一个扩展都装不了」。下一张卡应当是 **T11：Windows 上把 fail-closed 收窄到真正需要网络
+的扩展**，而不是撤掉隔离。
 
 ---
 
