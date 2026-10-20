@@ -20,7 +20,7 @@
  * Visual language matches FileMentionPicker.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
+import { openEscapeLayer, claimEscape, isTopEscapeLayer } from "@renderer/lib/escapeLayer.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconCommand, IconSparkles, IconTerminal } from "@renderer/lib/icons.js";
@@ -145,14 +145,29 @@ export function SlashCommandPicker({
   commandsLenRef.current = commands.length;
   activeIdxRef.current = activeIdx;
 
+  // Do not re-register an overlay every time a command list changes.
   useEffect(() => {
     if (!open) return;
-    // 【ARC-005 V2】Esc 关最内层（与其它对话弹层同一条纪律）。
     const closeEscapeLayer = openEscapeLayer("chat.slash-command-picker");
+    return () => closeEscapeLayer();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       // IME composition keys (candidate confirm / pinyin Space) belong to the
       // input method, not the picker.
-      if (e.isComposing || e.keyCode === 229) return;
+      if (e.isComposing || e.key === "Process" || e.keyCode === 229) return;
+      // Lower pickers still have window capture listeners. Do not consume the
+      // upper layer’s arrows/Enter/Tab or interfere with editor modifiers.
+      if (!isTopEscapeLayer("chat.slash-command-picker")) return;
+      if (e.target instanceof Element && e.target.closest('[role="dialog"], [role="alertdialog"]')) return;
+      // Its visible Skill/Command/Engine tab buttons must remain usable by
+      // keyboard when focus moves from the composer to the picker itself.
+      if (e.target instanceof Element && e.target.closest("button") &&
+          (e.key === "Enter" || e.key === " " || e.key === "Tab")) return;
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.repeat && (e.key === "Enter" || e.key === "Tab")) return;
       if (e.key === "Escape") {
         if (!claimEscape("chat.slash-command-picker")) return;
         e.preventDefault();
@@ -208,10 +223,7 @@ export function SlashCommandPicker({
       }
     };
     window.addEventListener("keydown", onKey, true);
-    return () => {
-      closeEscapeLayer();
-      window.removeEventListener("keydown", onKey, true);
-    };
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [open, commands, onPickSkill, onPickCommand, onPickEngineCommand, onClose, skillCmds.length, activeBuiltinCmds.length, engineCmds.length]);
 
   if (!open || !anchorRect) return null;

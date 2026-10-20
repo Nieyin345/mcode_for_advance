@@ -14,7 +14,7 @@
  * 清单由主进程的 `library.manifest` 生成(见 makeLibraryTag 的说明)。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
+import { openEscapeLayer, claimEscape, isTopEscapeLayer } from "@renderer/lib/escapeLayer.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
@@ -84,6 +84,9 @@ export function LibraryPicker({
    *  挂载 effect 跑两遍(开发期)—— 只靠 `itemsOf`(异步生效)挡不住,第二遍会**再发一次**
    *  `library.list`。ref 同步写,第二遍读得到,才真正只发一次。 */
   const loadedRef = useRef<Set<string>>(new Set());
+  // Scope each async library.list result to one open episode; a stale load
+  // must not populate the next picker after closing/reopening in another UI.
+  const requestGenerationRef = useRef(0);
 
   /** 拉一个分类的条目（首次）。手动点 chevron（`expand`）与 `autoExpandItems` 的
    *  预展开共用这一份。
@@ -93,16 +96,26 @@ export function LibraryPicker({
   const loadItems = (id: string) => {
     if (loadedRef.current.has(id)) return;
     loadedRef.current.add(id);
+    const generation = requestGenerationRef.current;
     setItemsOf((prev) => ({ ...prev, [id]: prev[id] ?? "loading" }));
     void api.library
       .list({ collectionId: id, limit: 200 })
-      .then((res) => setItemsOf((cur) => ({ ...cur, [id]: res.items })))
-      // 拉不到就当空列表 —— 选择器不该因为一个分类读不动就整个崩掉
-      .catch(() => setItemsOf((cur) => ({ ...cur, [id]: [] })));
+      .then((res) => {
+        if (generation !== requestGenerationRef.current) return;
+        setItemsOf((cur) => ({ ...cur, [id]: res.items }));
+      })
+      // 拉不到就当空列表，但旧一轮失败不能清掉新一轮结果。
+      .catch(() => {
+        if (generation !== requestGenerationRef.current) return;
+        setItemsOf((cur) => ({ ...cur, [id]: [] }));
+      });
   };
 
   useEffect(() => {
+    requestGenerationRef.current++;
     if (open) {
+      loadedRef.current.clear();
+      setItemsOf({});
       setQuery("");
       setActiveIdx(0);
       setSelected(new Set());
@@ -116,7 +129,10 @@ export function LibraryPicker({
       void loadCollections();
       // 打开即聚焦搜索框,用户可以直接打字过滤
       const id = setTimeout(() => inputRef.current?.focus(), 0);
-      return () => clearTimeout(id);
+      return () => {
+        requestGenerationRef.current++;
+        clearTimeout(id);
+      };
     }
     return undefined;
   }, [open, loadCollections]);
@@ -242,14 +258,29 @@ export function LibraryPicker({
   };
 
   // 键盘:↑↓ 导航、空格/回车勾选、Esc 关闭。捕获阶段,免得被编辑器的按键处理吃掉。
+  // The overlay position is tied only to open/close, not item loading or
+  // selection updates; otherwise an old picker can jump above a new one.
+  useEffect(() => {
+    if (!open) return;
+    const closeEscapeLayer = openEscapeLayer("chat.library-picker");
+    return () => closeEscapeLayer();
+  }, [open]);
+
   useEffect(() => {
     if (!open) return undefined;
-    // 【ARC-005 V2】Esc 关最内层（与 TagPopover / FileMentionPicker 同一条纪律）。
-    const closeEscapeLayer = openEscapeLayer("chat.library-picker");
     const onKey = (e: KeyboardEvent) => {
       // IME composition keys (candidate confirm / pinyin Space) belong to the
       // input method, not the picker.
-      if (e.isComposing || e.keyCode === 229) return;
+      if (e.isComposing || e.key === "Process" || e.keyCode === 229) return;
+      if (!isTopEscapeLayer("chat.library-picker")) return;
+      if (e.target instanceof Element && e.target.closest('[role="dialog"], [role="alertdialog"]')) return;
+      // The search input needs literal spaces for multiword queries; and the
+      // focused expand/row/Add buttons should keep native Enter/Space.
+      if (e.key === " " && e.target === inputRef.current) return;
+      if (e.target instanceof Element && rootRef.current?.contains(e.target) &&
+          e.target.closest("button") && (e.key === "Enter" || e.key === " ")) return;
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.repeat && (e.key === "Enter" || e.key === " ")) return;
       if (e.key === "Escape") {
         if (!claimEscape("chat.library-picker")) return;
         e.preventDefault();
@@ -258,6 +289,7 @@ export function LibraryPicker({
         return;
       }
       if (e.key === "ArrowDown") {
+        if (options.length === 0) return;
         e.preventDefault();
         e.stopPropagation();
         setActiveIdx((i) => Math.min(i + 1, options.length - 1));
@@ -280,10 +312,7 @@ export function LibraryPicker({
       }
     };
     document.addEventListener("keydown", onKey, true);
-    return () => {
-      closeEscapeLayer();
-      document.removeEventListener("keydown", onKey, true);
-    };
+    return () => document.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, options, activeIdx, selected, excluded, onClose]);
 

@@ -6,7 +6,7 @@
  * ↑↓ move, Enter/Tab confirm, Esc close.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
+import { openEscapeLayer, claimEscape, isTopEscapeLayer } from "@renderer/lib/escapeLayer.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
@@ -48,7 +48,9 @@ export function FileMentionPicker({
   const [files, setFiles] = useState<FileSearchEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  // Keep selected file identities, not only paths from the currently filtered
+  // search page: multi-query attachment must not silently drop earlier picks.
+  const [selectedEntries, setSelectedEntries] = useState<Map<string, FileSearchEntry>>(() => new Map());
   // attach mode owns a local search input (no textarea to drive it).
   const [localQuery, setLocalQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
@@ -62,7 +64,7 @@ export function FileMentionPicker({
   // Reset transient state when reopened.
   useEffect(() => {
     if (open) {
-      setSelected(new Set());
+      setSelectedEntries(new Map());
       setLocalQuery("");
       setActiveIdx(0);
       if (mode === "attach") {
@@ -70,7 +72,7 @@ export function FileMentionPicker({
         requestAnimationFrame(() => inputRef.current?.focus());
       }
     }
-  }, [open, mode]);
+  }, [open, mode, projectPath]);
 
   // Keep the selection on the first row while the user types, mirroring the
   // SlashCommandPicker. The debounced search also resets on result, but this
@@ -82,14 +84,17 @@ export function FileMentionPicker({
 
   // Debounced search driven by the effective query.
   useEffect(() => {
-    if (!open) return;
-    if (!projectPath) {
+    // Bump the epoch even on close or project loss. Clearing a timer alone
+    // does not invalidate file.search promises already waiting for IPC.
+    const myId = ++reqIdRef.current;
+    if (!open || !projectPath) {
       setFiles([]);
       setLoading(false);
       return;
     }
+    // Do not allow Enter/Tab to pick a result from a previous query or root.
+    setFiles([]);
     setLoading(true);
-    const myId = ++reqIdRef.current;
     const t = window.setTimeout(() => {
       void api.file
         .search({
@@ -109,7 +114,10 @@ export function FileMentionPicker({
           setLoading(false);
         });
     }, DEBOUNCE_MS);
-    return () => window.clearTimeout(t);
+    return () => {
+      reqIdRef.current++;
+      window.clearTimeout(t);
+    };
   }, [open, projectPath, effectiveQuery]);
 
   // Keep active row in view.
@@ -130,22 +138,22 @@ export function FileMentionPicker({
 
   const toggleAttach = useCallback((file: FileSearchEntry) => {
     if (exclude.has(file.path)) return;
-    setSelected((prev) => {
-      const next = new Set(prev);
+    setSelectedEntries((prev) => {
+      const next = new Map(prev);
       if (next.has(file.path)) next.delete(file.path);
-      else next.add(file.path);
+      else next.set(file.path, file);
       return next;
     });
   }, [exclude]);
 
   const confirmAttach = useCallback(() => {
-    const picked = files.filter((f) => selected.has(f.path) && !exclude.has(f.path));
+    const picked = Array.from(selectedEntries.values()).filter((f) => !exclude.has(f.path));
     if (picked.length === 0 && files[activeIdx] && !exclude.has(files[activeIdx].path)) {
       onPick([files[activeIdx]]);
       return;
     }
     if (picked.length > 0) onPick(picked);
-  }, [files, selected, exclude, activeIdx, onPick]);
+  }, [files, selectedEntries, exclude, activeIdx, onPick]);
 
   /** Open the native OS file picker so the user can attach files from OUTSIDE
    *  the project root (unlike `file.search`, which main scopes to known
@@ -171,14 +179,33 @@ export function FileMentionPicker({
   // through `onKeyDownFromParent` by calling the exported helper… Actually we
   // attach a capturing keydown on window while open so arrows work even if
   // focus is on the attach button.
+  // Opening, not result refresh, determines overlay order. A changing
+  // search result must not promote this picker above another already opened.
   useEffect(() => {
     if (!open) return;
-    // 【ARC-005 V2】Esc 关最内层（与 TagPopover 同一条纪律）。
     const closeEscapeLayer = openEscapeLayer("chat.file-mention-picker");
+    return () => closeEscapeLayer();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       // IME composition keys (candidate confirm / pinyin Space) belong to the
       // input method, not the picker.
-      if (e.isComposing || e.keyCode === 229) return;
+      if (e.isComposing || e.key === "Process" || e.keyCode === 229) return;
+      // The window capture listener remains mounted beneath another picker.
+      // Only the last-opened escape layer may own ANY navigation/selection key.
+      if (!isTopEscapeLayer("chat.file-mention-picker")) return;
+      // A native dialog or nested confirmation owns its focused input.
+      if (e.target instanceof Element && e.target.closest('[role="dialog"], [role="alertdialog"]')) return;
+      // Attach mode exposes actual buttons (including the native OS file
+      // chooser): do not turn their Enter/Space into a row selection.
+      if (mode === "attach" && e.key === "Tab") return;
+      if (mode === "attach" && (e.key === "Enter" || e.key === " ") &&
+          e.target instanceof Element && rootRef.current?.contains(e.target) &&
+          e.target.closest("button")) return;
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.repeat && (e.key === "Enter" || e.key === "Tab")) return;
       if (e.key === "Escape") {
         if (!claimEscape("chat.file-mention-picker")) return;
         e.preventDefault();
@@ -187,6 +214,7 @@ export function FileMentionPicker({
         return;
       }
       if (e.key === "ArrowDown") {
+        if (files.length === 0) return;
         e.preventDefault();
         e.stopPropagation();
         setActiveIdx((i) => Math.min(files.length - 1, i + 1));
@@ -212,10 +240,7 @@ export function FileMentionPicker({
     };
     // Capture so we beat textarea Enter-to-send.
     window.addEventListener("keydown", onKey, true);
-    return () => {
-      closeEscapeLayer();
-      window.removeEventListener("keydown", onKey, true);
-    };
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [open, files, activeIdx, mode, confirmMention, confirmAttach, onClose]);
 
   // Click outside the picker to close. Mirrors the ModelDropdown / TagPopover
@@ -266,13 +291,13 @@ export function FileMentionPicker({
             placeholder={t("chat.mention.searchPlaceholder")}
             className="h-6 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle"
           />
-          {selected.size > 0 && (
+          {selectedEntries.size > 0 && (
             <button
               type="button"
               className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-surface hover:brightness-110"
               onClick={confirmAttach}
             >
-              {t("chat.mention.addN", { n: selected.size })}
+              {t("chat.mention.addN", { n: selectedEntries.size })}
             </button>
           )}
         </div>
@@ -319,7 +344,7 @@ export function FileMentionPicker({
           files.map((f, idx) => {
             const already = exclude.has(f.path);
             const isActive = idx === activeIdx;
-            const isSel = selected.has(f.path);
+            const isSel = selectedEntries.has(f.path);
             return (
               <button
                 key={f.path}
