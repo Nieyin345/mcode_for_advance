@@ -33,7 +33,7 @@
 | **代码与回归验收闭环（2026-10-22）** | **T49** 扩展 API | `tasks/T49-extension-api-surface.md` | 实现 `2af6b0ec`、结果 `f1198793`、权限映射修复 `5861511b`；总控独立复跑 17/17 suites PASS，双包 tsc PASS；不再派发 T49 |
 | **已收尾（2026-10-21）** | `document-router-smoke` PDF 路由断言尾项 | `apps/desktop/scripts/document-router-smoke/main.ts`、`apps/desktop/scripts/file-viewer-basedir-smoke/main.ts` | 代码提交 `e9e2dbf53c27bbead3171654ea0ac812323fbfcd`；路由 133/133、GenOffice 路由 52/52、真实 FileViewer PDF 组件 25/25；未改产品路由；T80 完整 22 套批次本次未重跑 |
 
-**验收口径**：任务卡交付完成 ≠ ARC/UXG 正式双勾。T72 的 G0–G5 尚未全闭环；T83 已 fail-closed，但需 T86 补齐 provider 同轮工具协议，再另开 renderer 接线卡；T84 的 Hosted 媒体门禁已通过静态/隔离验证，真实 Electron U1 仍待验；T85 仅交付 G0/G1，G2–G5 保持 blocked；T76 发现的许可证和上游 pin 问题是真实发行阻断，不因专项 Smoke 通过而放行；T49 的权限映射覆盖缺口仍需收尾。所有测试只用虚构文件/隔离数据库/本地 mock；不对真实帐号/文件或公网进行破坏性测试。
+**验收口径**：任务卡交付完成 ≠ ARC/UXG 正式双勾。T72 的 G0–G5 尚未全闭环；T83 已 fail-closed，但需 T86 补齐 provider 同轮工具协议，再另开 renderer 接线卡；T84 的 Hosted 媒体门禁已通过静态/隔离验证，真实 Electron U1 仍待验；T85 仅交付 G0/G1，G2–G5 保持 blocked；T76 发现的许可证和上游 pin 问题是真实发行阻断，不因专项 Smoke 通过而放行；T49 的权限映射尾项已由 `5861511b` 修复，并经总控独立复跑 17/17 suites 与双包 tsc 通过。所有测试只用虚构文件/隔离数据库/本地 mock；不对真实帐号/文件或公网进行破坏性测试。
 
 ---
 
