@@ -59,6 +59,15 @@ Mcode 是 Claude 桌面端风格：暖灰、圆角更大、间距更松。
 
 ---
 
+## 前置条件（不满足就不要开工）
+
+- **必须等 T42 提交**。两者都改 `workflowEngines/registry.ts` 的 `BOOTSTRAP`
+  字符串常量；同时做会互相覆盖。
+- 开工前先 `git log --oneline -3 -- apps/desktop/src/main/workflowEngines/registry.ts`，
+  确认 T42 的 `nodesDir` 已经在里面。不在就**停**，在回写区写「阻塞：等待 T42」。
+
+---
+
 ## 开工前必读
 
 1. `audit-ledgers/README.md`。

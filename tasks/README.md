@@ -100,7 +100,7 @@
 | T25 | 原子写与冲突副本的故障注入回归（maint-m07 9 红） | 数据安全 | 无 | ✅ 完成（`8f43c24e`；总控独立复跑 4/4 PASS） |
 | T26 | 修好三套自坏的 smoke 脚手架 | 测试基础设施 | 无 | ✅ 完成（`f98df6ff`；总控独立复跑 2/2 PASS） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | ✅ 完成（`41c42f03`；12/12 套件 + 变异 2/2；未做真 Node-RED 未部署 flow 端到端） |
-| T28 | **GenOffice pdf / markdown / html 接入**（直接调原厂 `createXxxView`） | **ARC-007 主线** | T22，且 **T07 已完成 ✅** | **可派**（原厂已导出完整视图工厂，Mcode 却手搓了一套 preload） |
+| T28 | **GenOffice pdf / markdown / html 接入**（直接调原厂 `createXxxView`） | **ARC-007 主线** | T22 | ✅ 完成（`858d3c7b`；12/12 套件 + 2 变异；未做真 Electron GUI 端到端） |
 | T29 | **GenOffice sheets / slides 接入**（同上，含 `queueWorkbookForView`） | **ARC-007 主线** | T22，且 **T28 完成后** | **待派**（sheets 的 `createSheetsView` 与 slides 的 `createSlidesView` 都能直接用） |
 | T42 | **把 Mcode 节点包装进 Node-RED**（`nodesDir` + bundle + 清单校验） | **ARC-006 主线** | 无 | **可派**（1,380 行节点代码已写好，生产零调用 —— 这是唯一断点） |
 | T43 | 节点的 `McodeAgentPort` 生产实现（接到三引擎/审批/ModuleHost） | ARC-006 主线 | T42 | 待派 |
@@ -342,21 +342,30 @@ docs 已有可抄的：`genoffice/apps/docs/src/main/mcode-ai.ts`（206 行）�
 | sheets | ❌ 未接（`createSheetsView` 一直可用） | **T29** |
 | slides | ⚠️ 自搓了 3 个操作（原厂 155 条已在 `createSlidesView` 里） | **T29** |
 
-### 可派顺序（**T07 已完成，文档线解锁**）
+### 可派顺序（**2026-10-21 14:20 更新**）
 
-| 顺序 | 任务 | 状态 |
-|---|---|---|
-| **1** | **T28**（pdf / markdown / html） | **现在可派** ✅ |
-| **2** | **T29**（sheets / slides） | 等 T28 产出的 `mcode-view-ai.ts` |
-| — | T24（设置页） | 在飞 |
+**已完成的**：T01–T08、T10–T23、T25、T26、T28
+**在飞**：T24（设置页批次 10）
+**当前可派**：
 
-**T28 可以立刻派。** 它改 `GenofficeViewHostPane.tsx` + `documentViewHost.ts`，
-T07 已经把这两个文件提交了，不会再撞。
+| 卡 | 文件 | 改哪 | 冲突 |
+|---|---|---|---|
+| **T52** smoke 急救 | `T52-smoke-rescue.md` | `scripts/` + `electron.vite.config.ts` | 无 |
+| **T48** 扩展权限模型 | `T48-extension-permission-model.md` | `contracts/modules.ts` + `appControl/` | 无 |
+| **T42** Node-RED 节点包 | `T42-node-red-node-pack-install.md` | `workflowEngines/` | 与 T47 抢 `registry.ts` |
+| **T47** Node-RED 主题 | `T47-node-red-editor-theme.md` | `resources/node-red/` + BOOTSTRAP | **与 T42 抢同一个 `BOOTSTRAP` 常量** |
+| **T29** GenOffice sheets/slides | `T29-genoffice-sheets-slides.md` | `main/document/` | 无（T28 已提交） |
 
-**T29 必须等 T28** —— 两者共用那份 AI 桥实现，且都改同一批文件。
-T28 的卡里要求产出 `mcode-view-ai.ts`，T29 直接复用。
+**T42 与 T47 必须串行** —— 两者都改 `workflowEngines/registry.ts` 的 `BOOTSTRAP`
+字符串常量（T42 加 `nodesDir`、T47 加 `editorTheme`），同时做会撞。
+建议先 T42，提交后再 T47。
 
-### T07 留下的两条未验（不在 T28/T29 范围内，如实留档）
+**T29 的前置已满足**：T28（`858d3c7b`）产出了
+`genofficeViewAiVendor.ts` + `patches/genoffice/0010-*`，T29 直接复用。
+
+**不要碰 `components/settings/`** —— T24 在飞。
+
+### T07 留下的三条未验（不在 T28/T29 范围内，如实留档）
 
 - 真 Node-RED 编辑器里输入并拖动一条**未部署**的 flow，然后换 pane —— 没做。
   回写只验证了原生 `WebContentsView` 的反导航机制等价物。

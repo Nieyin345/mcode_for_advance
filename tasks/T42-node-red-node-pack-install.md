@@ -79,6 +79,17 @@ RED.nodes.registerType("mcode-agent", { category, color, defaults, inputs, outpu
 
 ---
 
+## 前置条件（不满足就不要开工）
+
+- **无前置**。可以直接派。
+- **但必须与 T47 串行**：两者都改 `workflowEngines/registry.ts` 的 `BOOTSTRAP`
+  字符串常量（本卡加 `nodesDir`，T47 加 `editorTheme`）。
+  本卡先做，提交后再放行 T47。
+- 若发现 T47 已经先改了 `BOOTSTRAP`，**不要覆盖它的改动** ——
+  在已有内容上追加 `nodesDir`，并把 `version` 再 +1。
+
+---
+
 ## 开工前必读
 
 1. `audit-ledgers/README.md`（规则）。

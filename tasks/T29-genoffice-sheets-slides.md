@@ -180,14 +180,29 @@ Mcode 已经有这份的移植（`genoffice/apps/docs/src/main/mcode-ai.ts`）�
   `slidesEditText` / `openPath`）**先保留**，等新路验证通过再决定删不删。
   （仓库硬规矩：不删旧能力，未迁移完成前继续用 fallback。）
 
-### 第 4 步：AI 桥（与 T28 共用同一份）
+### 第 4 步：AI 桥（**T28 已经做好了，直接复用**）
 
-- slides 的 `registerSlidesIpc()` 会调 `registerSlidesOnlyAiIpc()`，
-  后者**不注册** `ai:stream` —— 它假设别人先注册了。
-- sheets 传 `includeAiHandlers: false` 后也不会自己注册。
-- **所以宿主必须提供 `ai:stream`**。这份实现与 T28 的完全一样，
-  由 T28 产出（`mcode-view-ai.ts`）。
-- 本卡若先于 T28 开工，则自己产出同一份，后续 T28 直接复用 —— 不要写两份。
+T28（`858d3c7b`）已经产出并接线：
+
+| 文件 | 作用 |
+|---|---|
+| `apps/desktop/src/main/document/genofficeViewAiVendor.ts` | vendor AI 桥的静态入口 |
+| `apps/desktop/src/main/document/genofficeViewAiVendorStub.ts` | 无 vendor 快照时的 fail-closed 替身 |
+| `patches/genoffice/0010-feat-pdf-markdown-html-scoped-mcode-ai.patch` | 对应的 vendor 侧改动 |
+
+`genofficeViewFactories.ts` 已经用它装配了 pdf / markdown / html 三个 app 的 AI。
+
+**本卡要做的**：sheets 与 slides 的 AI 也走**同一份**桥。
+
+- slides：`registerSlidesIpc()` 会调 `registerSlidesOnlyAiIpc()`，后者**不注册** `ai:stream`
+  （它假设别人先注册）。所以 slides 天然依赖宿主提供 —— 复用 T28 的桥即可。
+- sheets：`createSheetsView({ includeAiHandlers: false })` 已经跳过它自己的 AI，
+  同样靠宿主提供。
+
+**具体做法**：在 `genofficeViewFactories.ts` 里给 sheets / slides 也接上
+`genofficeViewAiVendor`，方法与 pdf / markdown / html 一致。
+
+**不要**新造第二份 AI 桥实现。T28 的那份已经过 12 套回归 + 2 个变异验证。
 
 ### 第 5 步：能力报告
 

@@ -230,6 +230,17 @@ P ∉ 授权表 → 拒绝，错误消息说「这个扩展没有 P 权限」
 
 ---
 
+## 前置条件（不满足就不要开工）
+
+- **无前置**。可以直接派。
+- 但要知道**会有并行任务同时改 `appControl/` 或 `workflowEngines/`**：
+  T52 改 `scripts/`，T42/T47 改 `workflowEngines/`，T29 改 `document/`。
+  本卡主要改 `packages/contracts/src/modules.ts` + `main/appControl/policy.ts`，
+  与它们不重叠；但 `main/appControl/tools.ts` 如果被别的卡改了，
+  合入时要以当前内容为准。
+
+---
+
 ## 开工前必读
 
 1. `audit-ledgers/README.md`。
