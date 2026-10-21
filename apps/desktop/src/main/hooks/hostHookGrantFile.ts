@@ -67,6 +67,7 @@ export function isHostHookGrantShape(x: unknown): x is HostHookGrant {
   if (!(g.version === undefined || typeof g.version === "string")) return false;
   if (!Array.isArray(g.events) || g.events.some((e) => typeof e !== "string")) return false;
   if (typeof g.commandDigest !== "string") return false;
+  if (!(g.actionKind === undefined || g.actionKind === "command" || g.actionKind === "agent" || g.actionKind === "workflow")) return false;
   if (!(g.matcherDigest === undefined || typeof g.matcherDigest === "string")) return false;
   if (typeof g.issuedAt !== "number" || typeof g.expiresAt !== "number") return false;
   if (typeof g.revoked !== "boolean") return false;

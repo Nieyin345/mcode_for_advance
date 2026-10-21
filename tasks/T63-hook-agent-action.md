@@ -153,3 +153,15 @@ hook 触发代理 → 代理用工具 → 工具触发 hook → 又触发代理 
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### T63 执行结果（2026-10-21）
+
+- **Schema 与旧格式**：`HookSpecSchema` 新增 `action` 判别联合：`{kind:"command",command}`、`{kind:"agent",profileId}`、`{kind:"workflow",workflowId}`。原 `command` 字段继续可读；解析时无 `action` 的旧记录自动生成 `{kind:"command",command}`，不要求重写 `hooks.json`，既有命令执行器仍为 `runHookCommand`。测试覆盖原文保持不变、非法 action 被拒。
+- **深度**：`MAX_HOOK_DEPTH=3`，从父会话读取深度并在派生会话写入 `hookDepth + 1`。到第 4 层在起代理前拒绝，留下 `skipped` 原因与 `denied` 计数；既允许合理的三层组合，也避免递归触发雪崩。无全局深度变量。
+- **跨会话传递**：`Session.hookDepth` 落在 SQLite `sessions.hook_depth`（旧库默认 0，随会话持久化）；hook 派生的代理/流程子会话继承新深度，工作流节点会话创建和复用时都同步父会话深度。两条同时在飞的会话分别断言了深度 3 与深度 1，互不污染。
+- **授权**：`HostHookGrant.actionKind` 将旧授权默认解释为 `command`；对用户定义的 agent/workflow hook，主进程基于保存的 hook ID、action 参数、事件与 matcher 生成来源摘要，显式桌面按钮单独签发 24 小时的有界授权；不允许用户输入自签摘要。真启动前复验并扣预算。旧 command grant 不能放行 agent/workflow，改动 action 参数后旧授权失效。
+- **载荷**：`HookPayload` 原事件（包括工具参数、session 等）序列化为 JSON，通过 `runtimeManager.sendTurn` 的 `prompt` 发给目标代理，通过 `startWorkflowRun({prompt})` 传给工作流；被启动的独立子会话先落库、后调度。
+- **执行链路**：`hook-agent-smoke` 用真实 `HookRunner` → 真实默认拒绝/授权 → 真实 SQLite 子会话落库 → 真实 `launchHookAction` → 调用模型/工作流入口的整条宿主链验证成功；无头测试仅以注入桩替代外部模型和工作流实际推理，不冒充在线 LLM 已完成一次任务。
+- **回归**：`node apps/desktop/scripts/run-smokes.mjs hook-agent-smoke hook-runner-smoke hooks-ipc-smoke hooks-smoke hook-exec-smoke hooks-native-note-smoke renderer-pure-smoke startup-wiring-smoke session-store-smoke` → **9 pass / 0 fail**，日志 `apps/desktop/.tmp/smoke-runs/1792585769610-9976-XulU0N`；`pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` 与 `pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` 均为 **exit 0**。
+- **变异测试**：把 `nextDepth > MAX_HOOK_DEPTH` 临时放宽成 `nextDepth > MAX_HOOK_DEPTH + 1`，`hook-runner-smoke` 按预期红（第四层不再被拒，日志 `apps/desktop/.tmp/smoke-runs/1792585355880-31248-F7EhTk`）；把 `hostHookGrantCovers` 的 `actionKind` 比较临时删除，同套件按预期红（command 授权错误放行 agent，日志 `apps/desktop/.tmp/smoke-runs/1792585431812-34312-wJKpaw`）。两处变异已恢复，原文件 Git blob 哈希与变异前一致。
+- **验收结论**：9 条验收判据均已达到，**无未达成项**。修改仅限 T63 必要契约、主进程、会话深度持久化、设置页及回归测试，未更动事件/匹配定义和工作流执行算法。

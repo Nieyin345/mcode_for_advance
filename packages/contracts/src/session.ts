@@ -147,6 +147,8 @@ export interface Session {
    * 那个接口,是为了不让 session.ts 反向依赖 agentProfile.ts(那个文件已经 import 了
    * nodeType,再牵进 session 会绕成一圈)。
    */
+  /** T63: ancestor agent/workflow hook launches, persisted per session (never global). */
+  hookDepth?: number;
   agentProfile?: {
     id: string;
     name: string;

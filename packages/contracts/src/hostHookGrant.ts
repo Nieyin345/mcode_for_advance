@@ -40,6 +40,8 @@ export interface HostHookSource {
   version: string | undefined;
   /** hook 命令的**内容摘要**(sha256 或稳定指纹)—— 命令被改过就不该沿用旧授权。 */
   commandDigest: string;
+  /** T63: command approvals never authorize launching an agent or workflow. */
+  actionKind?: "command" | "agent" | "workflow";
   /** 原生事件名(如 `PreToolUse`),与统一 HookEvent 分开记(映射在判定时做)。 */
   nativeEvent: string;
   /**
@@ -63,6 +65,8 @@ export interface HostHookGrant {
   events: string[];
   /** 命令摘要绑定(空 = 不绑定命令)。 */
   commandDigest: string;
+  /** Missing in old persisted grants means command. */
+  actionKind?: "command" | "agent" | "workflow";
   /**
    * 【MC-061 复审】**matcher 摘要**绑定(空 = 不绑定 matcher,向后兼容旧授权)。
    * 与 `commandDigest` 同一条纪律:matcher 被放宽(它管得着的工具/路径变多)= 来源变了,
@@ -108,6 +112,7 @@ export function isHostHookGrantActive(grant: HostHookGrant, now: number): boolea
  */
 export function hostHookGrantCovers(grant: HostHookGrant, source: HostHookSource): boolean {
   return (
+    (grant.actionKind ?? "command") === (source.actionKind ?? "command") &&
     grant.pluginId === source.pluginId &&
     (grant.version === undefined || grant.version === source.version) &&
     (grant.events.length === 0 || grant.events.includes(source.nativeEvent)) &&

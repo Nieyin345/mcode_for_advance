@@ -25,6 +25,7 @@
  */
 import { createHash } from "node:crypto";
 import { IPC } from "@contracts/ipc";
+import { hookActionOf, type HookSpec } from "@contracts/hook";
 import {
   decideHostHookExecution,
   hostHookGrantCovers,
@@ -64,6 +65,19 @@ export function hostHookSourceOf(input: {
     nativeEvent: input.nativeEvent,
     // 【MC-061 复审】matcher 摘要:空/未声明 → 空串(不绑定,向后兼容);有值 → 摘要。
     matcherDigest: input.matcher === undefined || input.matcher === "" ? "" : hostHookCommandDigest(input.matcher),
+  };
+}
+
+/** T63: user-authored agent/workflow grant identity, computed exclusively by host. */
+export function authoredHookSourceOf(spec: HookSpec): HostHookSource {
+  const action = hookActionOf(spec);
+  return {
+    pluginId: `user-hook:${spec.id}`,
+    version: undefined,
+    nativeEvent: spec.event,
+    actionKind: action.kind,
+    commandDigest: hostHookCommandDigest(JSON.stringify(action)),
+    matcherDigest: spec.matcher ? hostHookCommandDigest(spec.matcher) : "",
   };
 }
 
@@ -283,9 +297,10 @@ function grantIdempotencyKey(input: {
   events: readonly string[];
   commandDigest: string;
   matcherDigest: string;
+  actionKind: "command" | "agent" | "workflow";
 }): string {
   const events = [...new Set(input.events)].sort().join(",");
-  return [input.pluginId, input.version ?? "", events, input.commandDigest, input.matcherDigest].join("\u0000");
+  return [input.pluginId, input.version ?? "", events, input.commandDigest, input.matcherDigest, input.actionKind].join("\u0000");
 }
 
 /**
@@ -308,6 +323,7 @@ export function issueHostHookGrant(input: {
   events?: string[];
   commandDigest?: string;
   matcherDigest?: string;
+  actionKind?: "command" | "agent" | "workflow";
   maxRuns?: number;
   ttlMs: number;
   now: number;
@@ -326,6 +342,7 @@ export function issueHostHookGrant(input: {
     events: input.events ?? [],
     commandDigest,
     matcherDigest,
+    actionKind: input.actionKind ?? "command",
   });
   // 已有**有效且预算未用尽**的同来源授权 → 复用它(幂等):不新建第二条覆盖同一来源的活授权。
   // ⚠️ 已用尽的**不复用**(否则"重新授权"救不回那份 maxRuns 用完的授权,见函数头)。
@@ -338,6 +355,7 @@ export function issueHostHookGrant(input: {
       events: g.events,
       commandDigest: g.commandDigest,
       matcherDigest: g.matcherDigest ?? "",
+      actionKind: g.actionKind ?? "command",
     });
     if (same === key) return g;
   }
@@ -349,6 +367,7 @@ export function issueHostHookGrant(input: {
     events: [...(input.events ?? [])],
     commandDigest,
     matcherDigest,
+    ...(input.actionKind !== undefined ? { actionKind: input.actionKind } : {}),
     issuedAt: input.now,
     expiresAt: input.now + input.ttlMs,
     revoked: false,

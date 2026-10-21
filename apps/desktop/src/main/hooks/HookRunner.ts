@@ -35,6 +35,8 @@ import { homedir } from "node:os";
 import type { RuntimeEvent } from "@contracts/runtime";
 import {
   HOOK_EVENT_OF,
+  MAX_HOOK_DEPTH,
+  hookActionOf,
   coalesceWindowMs,
   decideDelivery,
   decideRetry,
@@ -50,7 +52,7 @@ import { HookRunRepo, ProjectRepo, SessionRepo, type HookRunRow } from "@main/st
 import { log } from "@main/lib/logger.js";
 import { uid } from "@main/utils.js";
 import { createEventSubjects } from "./eventSubjects.js";
-import { decidePluginHookExecution, hostHookCommandDigest, recordHostHookRun } from "./hostHookGrants.js";
+import { authoredHookSourceOf, decidePluginHookExecution, hostHookCommandDigest, recordHostHookRun } from "./hostHookGrants.js";
 import type { HostHookSource } from "@contracts/hostHookGrant";
 import { pluginHookSpecsFrom, type EnabledPluginHookDeclaration, type PluginHookSpecEntry } from "./pluginHooks.js";
 import { runHookCommand } from "./runCommand.js";
@@ -155,6 +157,11 @@ class HookRunner {
    * 撤权/过期即时生效,不给排队留窗口。用户手写的钩子不在表里 → 不受此闸。
    */
   private pluginSources = new Map<string, HostHookSource>();
+  /** Installed by main/index; tests inject an isolated launch port. */
+  private actionLauncher: ((spec: HookSpec, payload: HookPayload, nextDepth: number) => Promise<void>) | null = null;
+  setActionLauncher(launch: (spec: HookSpec, payload: HookPayload, nextDepth: number) => Promise<void>): void {
+    this.actionLauncher = launch;
+  }
 
   /**
    * 【MC-061】审计落盘的**出口** —— 一条插件 hook 执行记录的持久去处。默认是 `HookRunRepo`
@@ -254,7 +261,9 @@ class HookRunner {
       startedAt,
       status: "running",
     };
-    Object.assign(record, await runHookCommand(effectiveSpec(spec, resolveDeliveryPolicy(spec)), payload), {
+    Object.assign(record, hookActionOf(spec).kind === "command"
+      ? await runHookCommand(effectiveSpec(spec, resolveDeliveryPolicy(spec)), payload)
+      : { status: "skipped", error: "代理和工作流动作只能由真实事件触发，试跑不会启动后台会话" }, {
       durationMs: Date.now() - startedAt,
     });
     return record;
@@ -323,6 +332,7 @@ class HookRunner {
       cwd,
       ...(toolName !== undefined ? { toolName } : {}),
       data: e,
+      hookDepth: e.sessionId === "(system)" ? 0 : (SessionRepo.get(e.sessionId)?.hookDepth ?? 0),
     };
 
     // 【MC-061】被授权挡下的插件 hook:**记 skipped + denied/budgetExhausted 计数**。这是
@@ -490,11 +500,38 @@ class HookRunner {
           log.info(`[hooks] 「${spec.name}」记账时已无可用授权(预算用尽 / 撤权),不执行`);
           break;
         }
+        // T63: agent/workflow actions require their OWN user grant, independent
+        // from command approvals; depth travels with the persisted child session.
+        const hookAction = hookActionOf(spec);
+        if (hookAction.kind !== "command") {
+          const nextDepth = (payload.hookDepth ?? 0) + 1;
+          if (nextDepth > MAX_HOOK_DEPTH) {
+            this.pushRun(spec, payload, "skipped", `hook 递归深度上限 ${MAX_HOOK_DEPTH}，第 ${nextDepth} 层被拒绝`);
+            this.bumpCount(spec.id, "denied");
+            break;
+          }
+          if (this.actionLauncher === null) {
+            this.pushRun(spec, payload, "skipped", "代理启动入口尚未装配，拒绝执行");
+            this.bumpCount(spec.id, "denied");
+            break;
+          }
+          const source = authoredHookSourceOf(spec);
+          const grant = decidePluginHookExecution(source, spec.event, Date.now());
+          if (grant.decide !== "allowed" || !recordHostHookRun(source, Date.now())) {
+            this.pushRun(spec, payload, "skipped", grant.decide === "allowed" ? "授权执行预算已用尽" : grant.reason);
+            this.bumpCount(spec.id, "denied");
+            break;
+          }
+        }
         // 每一次真起进程都算一次 accepted(重试也是真起了一个进程)。放在记账之后:accepted
         // 的口径是"真的起了进程",而预算用尽那次**没起**进程。
         this.bumpCount(spec.id, "accepted");
         const record = this.pushRun(spec, payload, "running");
-        const result = await runHookCommand(effective, payload);
+        const result: Partial<HookRun> = hookActionOf(spec).kind === "command"
+          ? await runHookCommand({ ...effective, command: (hookActionOf(spec) as { command: string }).command }, payload)
+          : await this.actionLauncher!(spec, payload, (payload.hookDepth ?? 0) + 1)
+              .then(() => ({ status: "ok" as const }))
+              .catch((error: unknown) => ({ status: "failed" as const, error: String(error) }));
         Object.assign(record, result, { durationMs: Date.now() - record.startedAt });
         // 【MC-061】收口了 —— 用**同一个 runId** 把终态(ok/failed/timeout)+ 退出码 / 耗时 /
         // 原因覆盖进审计行(同一行 upsert,不是新建一行)。这样"这一条跑成没有"只有一个答案。

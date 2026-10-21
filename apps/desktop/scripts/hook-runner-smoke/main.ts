@@ -1664,6 +1664,135 @@ console.log("\n审计表有界轮转(prune:只留最近 N 行)");
   eq("prune(0) 清空该表", Repo.prune(0) >= 0 && Repo.list(50).length, 0);
 }
 
+/* ──────────────── T63. Agent/workflow actions, ancestry and grants ──────────────── */
+console.log("\nT63: command compatibility, agent action, per-session recursion, separate grants");
+{
+  const { HookSpecSchema, hookActionOf, MAX_HOOK_DEPTH } = await import("@contracts/hook");
+  const { authoredHookSourceOf, issueHostHookGrant, resetHostHookGrants, listHostHookGrants } =
+    await import("@main/hooks/hostHookGrants.js");
+  const { decideHostHookExecution } = await import("@contracts/hostHookGrant");
+  const legacy = HookSpecSchema.safeParse({
+    id: "legacy-t63", name: "旧命令", event: "turn.done", enabled: false,
+    command: "echo legacy",
+  });
+  check("T63: 旧 hooks.json 仅带 command 仍合法", legacy.success);
+  eq("T63: 旧命令自动迁移到 command action", legacy.success ? hookActionOf(legacy.data).kind : "parse-error", "command");
+  const legacyAction = legacy.success ? hookActionOf(legacy.data) : null;
+  eq("T63: 旧命令原文未改变", legacyAction?.kind === "command" ? legacyAction.command : "", "echo legacy");
+  check("T63: agent action 缺 profileId 必须拒绝", !HookSpecSchema.safeParse({
+    id: "bad-t63", name: "bad", event: "tool.use", enabled: true,
+    action: { kind: "agent" },
+  }).success);
+
+  hookRunner.setPluginHookSource(() => []);
+  resetHostHookGrants();
+  const actionHook = HookSpecSchema.parse({
+    id: "h_t63_agent", name: "agent action T63", event: "tool.use", enabled: true,
+    action: { kind: "agent", profileId: "p_validT63" },
+  });
+  const src = authoredHookSourceOf(actionHook);
+  check("T63: agent action 是独立来源", src.actionKind === "agent" && src.pluginId.includes(actionHook.id), src);
+  const cmdOnly = issueHostHookGrant({
+    pluginId: src.pluginId, events: [src.nativeEvent], commandDigest: src.commandDigest,
+    matcherDigest: src.matcherDigest, actionKind: "command", maxRuns: 3,
+    now: Date.now(), ttlMs: 60_000,
+  });
+  eq("T63: command 授权不能启动 agent（授权实际拒绝）",
+    decideHostHookExecution(src, "tool.use", [cmdOnly], Date.now()).decide, "denied");
+  const otherAction = { ...src, actionKind: "workflow" as const };
+  eq("T63: command 授权也不能启动 workflow",
+    decideHostHookExecution(otherAction, "tool.use", [cmdOnly], Date.now()).decide, "denied");
+
+  const launches: Array<{ sessionId: string; nextDepth: number; kind: string; profileId?: string }> = [];
+  hookRunner.setActionLauncher(async (hook, payload, nextDepth) => {
+    const action = hookActionOf(hook);
+    launches.push({ sessionId: payload.session.id, nextDepth, kind: action.kind,
+      profileId: action.kind === "agent" ? action.profileId : undefined });
+  });
+  writeHooks([actionHook]);
+  const emitT63 = (sessionId: string, id: number): void =>
+    rt.emit({ type: "tool.use", sessionId, toolName: "Write",
+      toolCallId: `t63_${id}`, input: {}, requiresApproval: false } satisfies RuntimeEvent);
+
+  // A command-only authorization MUST not be accidentally consumed as an agent grant.
+  emitT63(SESSION, 1);
+  await until("T63: command-only grant produces an observable denial",
+    () => (hookRunner.deliveryCountsOf(actionHook.id)?.denied ?? 0) >= 1);
+  eq("T63: command-only grant dispatched zero agents", launches.length, 0);
+
+  issueHostHookGrant({
+    pluginId: src.pluginId, events: [src.nativeEvent],
+    commandDigest: src.commandDigest, matcherDigest: src.matcherDigest,
+    actionKind: "agent", maxRuns: 10, now: Date.now(), ttlMs: 60_000,
+  });
+  // Child sessions are truly persisted: nested events read hookDepth back from the DB.
+  const parent = SessionRepo.get(SESSION)!;
+  const testSession = (id: string, depth: number): void =>
+    SessionRepo.create({ ...parent, id, title: `T63 ${id}`, hookDepth: depth,
+      kind: "side", parentSessionId: SESSION, nodeId: null, createdAt: Date.now(), updatedAt: Date.now() });
+  testSession("t63_chain0", 0);
+  testSession("t63_chain1", 1);
+  testSession("t63_chain2", 2);
+  testSession("t63_chain3", 3);
+  testSession("t63_other0", 0);
+  eq("T63: session depth survives storage roundtrip", SessionRepo.get("t63_chain2")?.hookDepth, 2);
+  for (let i = 0; i < 3; i++) {
+    emitT63(`t63_chain${i}`, 2 + i);
+    await until(`T63 depth ${i} dispatched`, () => launches.length === i + 1);
+    await until(`T63 depth ${i} settled`, () =>
+      !hookRunner.listRuns().some((r) => r.hookId === actionHook.id && r.status === "running"));
+    await new Promise((r) => setTimeout(r, 15));
+  }
+  eq("T63: agent hook forwards an isolated profileId", launches[0]?.profileId, "p_validT63");
+  eq("T63: ancestor depth increments to 3", launches[2]?.nextDepth, MAX_HOOK_DEPTH);
+  emitT63("t63_chain3", 9);
+  await until("T63: fourth layer denied", () =>
+    hookRunner.listRuns().some((r) => r.hookId === actionHook.id && r.sessionId === "t63_chain3" && r.status === "skipped"));
+  eq("T63: fourth layer did not launch a fourth agent", launches.length, 3);
+  check("T63: fourth layer has explicit depth error", hookRunner.listRuns().some((r) =>
+    r.hookId === actionHook.id && r.sessionId === "t63_chain3" &&
+    (r.error ?? "").includes("递归深度上限")));
+
+  emitT63("t63_other0", 10);
+  await until("T63: independent session dispatches after blocked fourth layer", () => launches.length === 4);
+  eq("T63: independent session starts from its own depth", launches[3]?.nextDepth, 1);
+  check("T63: two sessions do not share one global hookDepth", launches[3]?.sessionId === "t63_other0");
+
+  // TRUE overlap: both launches are held open at once under the existing maxConcurrency
+  // policy; their depths must remain branch-local, not one mutable global counter.
+  const pending: Array<{ sessionId: string; nextDepth: number; release: () => void }> = [];
+  hookRunner.setActionLauncher((_hook, payload, nextDepth) =>
+    new Promise<void>((resolve) => {
+      pending.push({ sessionId: payload.session.id, nextDepth, release: resolve });
+    }));
+  writeHooks([{ ...actionHook, deliveryPolicy: { kind: "BEST_EFFORT", maxConcurrency: 2 } }]);
+  await until("T63: previous independent launch settled", () =>
+    !hookRunner.listRuns().some((r) => r.hookId === actionHook.id && r.status === "running"));
+  await new Promise((r) => setTimeout(r, 50));
+  emitT63("t63_chain2", 20);
+  await until("T63: first concurrent launch enters", () => pending.length === 1);
+  emitT63("t63_other0", 21);
+  await until("T63: two sessions concurrently in flight", () => pending.length === 2);
+  check("T63: two distinct concurrent branches started", new Set(pending.map((p) => p.sessionId)).size === 2, pending);
+  eq("T63: concurrent high-depth branch remains at depth 3",
+    pending.find((p) => p.sessionId === "t63_chain2")?.nextDepth, 3);
+  eq("T63: concurrent fresh branch remains at depth 1",
+    pending.find((p) => p.sessionId === "t63_other0")?.nextDepth, 1);
+  for (const p of pending) p.release();
+  await until("T63: concurrent launches settled",
+    () => !hookRunner.listRuns().some((r) => r.hookId === actionHook.id && r.status === "running"));
+
+  // Revision of an action changes the source digest: an old approval cannot authorize it.
+  const changed = { ...actionHook, action: { kind: "workflow" as const, workflowId: "wf_t63" } };
+  const newSrc = authoredHookSourceOf(changed);
+  check("T63: action kind+params changes grant identity",
+    newSrc.actionKind === "workflow" && newSrc.commandDigest !== src.commandDigest);
+  eq("T63: agent grant cannot approve workflow", decideHostHookExecution(newSrc, "tool.use",
+    listHostHookGrants(), Date.now()).decide, "denied");
+  resetHostHookGrants();
+  writeHooks([]);
+}
+
 rmSync(DATA, { recursive: true, force: true });
 rmSync(WORK, { recursive: true, force: true });
 

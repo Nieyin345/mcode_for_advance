@@ -33,6 +33,8 @@ import { Button, ConfirmDialog, EmptyState, ErrorNote, Field, InfoHint, Input, S
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
   HOOK_EVENTS,
+  HookSpecSchema,
+  hookActionOf,
   hookSubjectOf,
   type HookAuditEntry,
   type HookEvent,
@@ -269,7 +271,7 @@ export function HooksPanel() {
     setSaving(true);
     setSaveError(null);
     try {
-      const res = await api.hooks.save({ hook: draft });
+      const res = await api.hooks.save({ hook: HookSpecSchema.parse(draft) });
       if (!res.ok) {
         setSaveError(res.error ?? t("settings.hooks.saveFailed"));
         return;
@@ -313,7 +315,7 @@ export function HooksPanel() {
       //
       // 走 toast 而不是 `setSaveError`:这个开关在**列表行**上,没选中任何一条时编辑器
       // 根本不渲染(`saveError` 也就没地方显示)—— 错误必须挂在一条**始终可见**的通道上。
-      const res = await api.hooks.save({ hook: next });
+      const res = await api.hooks.save({ hook: HookSpecSchema.parse(next) });
       if (!res.ok) {
         useToastStore.getState().push({
           kind: "error",
@@ -336,7 +338,7 @@ export function HooksPanel() {
     setTesting(true);
     setTestRun(null);
     try {
-      const res = await api.hooks.test({ hook: draft });
+      const res = await api.hooks.test({ hook: HookSpecSchema.parse(draft) });
       setTestRun(res.run);
       // 试跑不进记录环(它不是真事件),但**它可能触发别的钩子**——真事件才会。
       // 这里顺手刷一下记录,让"试跑把一个真钩子带起来了"也看得见。
@@ -345,6 +347,17 @@ export function HooksPanel() {
       setSaveError((err as Error).message);
     } finally {
       setTesting(false);
+    }
+  };
+
+  const authorize = async (): Promise<void> => {
+    if (!draft) return;
+    try {
+      const res = await api.hooks.issueHostHookGrant({ hookId: draft.id });
+      if (!res.ok) throw new Error(res.error ?? "授权失败");
+      useToastStore.getState().push({ kind: "info", title: "代理/工作流动作已单独授权（24 小时）" });
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -469,6 +482,8 @@ export function HooksPanel() {
               testing={testing}
               testRun={testRun}
               onSave={() => void save()}
+              onAuthorize={() => void authorize()}
+              canAuthorize={saved !== undefined && !dirty && hookActionOf(draft!).kind !== "command"}
               onTest={() => void test()}
               onRemove={() => setConfirmRemove(true)}
             />
@@ -607,6 +622,8 @@ function HookEditor({
   testing,
   testRun,
   onSave,
+  onAuthorize,
+  canAuthorize,
   onTest,
   onRemove,
 }: {
@@ -620,6 +637,8 @@ function HookEditor({
   testing: boolean;
   testRun: HookRun | null;
   onSave: () => void;
+  onAuthorize: () => void;
+  canAuthorize: boolean;
   onTest: () => void;
   onRemove: () => void;
 }) {
@@ -715,15 +734,39 @@ function HookEditor({
         </>
       )}
 
-      <Field className="mb-2" label={t("settings.hooks.fieldCommand")} hint={t("settings.hooks.commandHint")}>
-        <Textarea
-          value={draft.command}
-          spellCheck={false}
-          placeholder={t("settings.hooks.commandPlaceholder")}
-          onChange={(e) => onChange({ command: e.target.value })}
-          className="min-h-[80px] w-full resize-y rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] leading-relaxed text-content placeholder:font-sans placeholder:text-content-subtle focus:border-accent focus:outline-none"
-        />
+      <Field className="mb-2" label="动作类型">
+        <Select.Root value={hookActionOf(draft).kind} onValueChange={(kind) => {
+          if (kind === "agent") onChange({ action: { kind: "agent", profileId: "" } });
+          else if (kind === "workflow") onChange({ action: { kind: "workflow", workflowId: "" } });
+          else onChange({ action: { kind: "command", command: draft.command } });
+        }}>
+          <Select.Trigger className="w-full"><Select.Value /></Select.Trigger>
+          <Select.Portal><Select.Positioner className="z-50"><Select.Popup><Select.List>
+            <Select.Item value="command"><Select.ItemText>Shell 命令</Select.ItemText></Select.Item>
+            <Select.Item value="agent"><Select.ItemText>代理档案</Select.ItemText></Select.Item>
+            <Select.Item value="workflow"><Select.ItemText>工作流</Select.ItemText></Select.Item>
+          </Select.List></Select.Popup></Select.Positioner></Select.Portal>
+        </Select.Root>
       </Field>
+      {hookActionOf(draft).kind === "command" ? (
+        <Field className="mb-2" label={t("settings.hooks.fieldCommand")} hint={t("settings.hooks.commandHint")}>
+          <Textarea
+            value={(hookActionOf(draft) as { kind: "command"; command: string }).command}
+            spellCheck={false}
+            placeholder={t("settings.hooks.commandPlaceholder")}
+            onChange={(e) => onChange({ command: e.target.value, action: { kind: "command", command: e.target.value } })}
+            className="min-h-[80px] w-full resize-y rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] leading-relaxed text-content placeholder:font-sans placeholder:text-content-subtle focus:border-accent focus:outline-none"
+          />
+        </Field>
+      ) : (
+        <Field className="mb-2" label={hookActionOf(draft).kind === "agent" ? "代理档案 ID" : "工作流 ID"} hint="保存后还需要单独点击授权，命令授权不能启动代理">
+          <Input type="text" value={hookActionOf(draft).kind === "agent"
+            ? (hookActionOf(draft) as { kind: "agent"; profileId: string }).profileId
+            : (hookActionOf(draft) as { kind: "workflow"; workflowId: string }).workflowId}
+            onChange={(e) => onChange({ action: hookActionOf(draft).kind === "agent"
+              ? { kind: "agent", profileId: e.target.value } : { kind: "workflow", workflowId: e.target.value } })} />
+        </Field>
+      )}
 
       <Field className="mb-2" label={t("settings.hooks.fieldTimeout")}>
         <Input
@@ -754,6 +797,11 @@ function HookEditor({
           {testing ? t("settings.hooks.testing") : t("settings.hooks.test")}
         </Button>
         <InfoHint>{t("settings.hooks.testHint")}</InfoHint>
+        {hookActionOf(draft).kind !== "command" && (
+          <Button variant="secondary" size="sm" disabled={!canAuthorize} onClick={onAuthorize}>
+            单独授权动作（24h）
+          </Button>
+        )}
         <Button variant="ghost" size="sm" onClick={onRemove} className="ml-auto gap-1 text-danger">
           <IconTrash size={12} />
           {t("settings.hooks.remove")}
@@ -767,6 +815,8 @@ function HookEditor({
           <span className="text-danger">{saveError}</span>
         ) : problem === "name" ? (
           <span className="text-warning">{t("settings.hooks.nameRequired")}</span>
+        ) : problem === "profileId" || problem === "workflowId" ? (
+          <span className="text-warning">请填写有效的代理档案或工作流 ID</span>
         ) : problem === "command" ? (
           <span className="text-warning">{t("settings.hooks.commandRequired")}</span>
         ) : justSaved && !dirty ? (

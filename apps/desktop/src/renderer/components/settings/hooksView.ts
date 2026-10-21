@@ -9,6 +9,7 @@
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
   hookSubjectOf,
+  hookActionOf,
   type HookEvent,
   type HookSpec,
 } from "@contracts/hook";
@@ -35,6 +36,7 @@ export function newHookDraft(): HookSpec {
     name: "",
     event: "tool.use",
     command: "",
+    action: { kind: "command", command: "" },
     enabled: false,
     timeoutMs: DEFAULT_HOOK_TIMEOUT_MS,
   };
@@ -43,7 +45,10 @@ export function newHookDraft(): HookSpec {
 /** 这条草稿能不能存 —— 名称和命令都填了。 */
 export function hookDraftProblem(draft: HookSpec): string | null {
   if (draft.name.trim().length === 0) return "name";
-  if (draft.command.trim().length === 0) return "command";
+  const action = hookActionOf(draft);
+  if (action.kind === "command" && action.command.trim().length === 0) return "command";
+  if (action.kind === "agent" && action.profileId.trim().length === 0) return "profileId";
+  if (action.kind === "workflow" && action.workflowId.trim().length === 0) return "workflowId";
   return null;
 }
 
@@ -64,7 +69,7 @@ export function isHookDirty(draft: HookSpec, saved: HookSpec | undefined): boole
   return (
     draft.name !== saved.name ||
     draft.event !== saved.event ||
-    draft.command !== saved.command ||
+    JSON.stringify(hookActionOf(draft)) !== JSON.stringify(hookActionOf(saved)) ||
     draft.enabled !== saved.enabled ||
     (draft.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS) !== (saved.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS) ||
     !sameMatcher

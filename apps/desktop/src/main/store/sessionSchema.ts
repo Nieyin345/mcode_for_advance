@@ -207,6 +207,9 @@ export const SESSION_COLUMNS: readonly SessionColumn[] = [
   { name: "agent_profile", def: "TEXT", inCreate: false, key: "agentProfile",
     bind: (s) => v(s.agentProfile ? JSON.stringify(s.agentProfile) : null),
     read: (r) => (r.agent_profile ? safeJson(r.agent_profile) : null) as Session["agentProfile"] },
+  // T63: branch-local hook recursion ancestry survives new agent sessions and restarts.
+  { name: "hook_depth", def: "INTEGER NOT NULL DEFAULT 0", inCreate: false, key: "hookDepth",
+    bind: (s) => v(s.hookDepth ?? 0), read: (r) => Number(r.hook_depth ?? 0) },
 ];
 
 /** CREATE TABLE 语句由 inCreate 列生成。db.ts 的 migrate() 大 SQL 模板里插值,

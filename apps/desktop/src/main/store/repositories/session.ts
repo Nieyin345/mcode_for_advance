@@ -582,6 +582,13 @@ export const SessionRepo = {
    * 「主会话已删除」那段)是同一个语义:解析不到发起会话时,「注入到发起会话」
    * 那一步就该**明确失败**,而不是悄悄发到上一条会话里。
    */
+  /** T63: refresh the persisted recursion ancestry when a reusable node belongs to a new run. */
+  setHookDepth(id: string, depth: number): void {
+    if (!Number.isInteger(depth) || depth < 0) throw new Error("hookDepth must be nonnegative integer");
+    getDb().run("UPDATE sessions SET hook_depth = ? WHERE id = ?", [v(depth), v(id)]);
+    persist();
+  },
+
   setParentSessionId(id: string, parentSessionId: string | null): void {
     getDb().run("UPDATE sessions SET parent_session_id = ?, updated_at = ? WHERE id = ?", [
       v(parentSessionId),

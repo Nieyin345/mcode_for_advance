@@ -596,6 +596,19 @@ export function decideRetry(input: {
 
 /* ── 一条钩子 ── */
 
+/** T63: action is an explicit sum type; command remains the legacy input shape. */
+export const HookActionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("command"), command: z.string().min(1).max(2000) }),
+  z.object({ kind: z.literal("agent"), profileId: z.string().min(1).max(200) }),
+  z.object({ kind: z.literal("workflow"), workflowId: z.string().min(1).max(200) }),
+]);
+export type HookAction = z.infer<typeof HookActionSchema>;
+export const MAX_HOOK_DEPTH = 3;
+/** Reads old in-memory HookSpec values too (plugins and pre-migration callers). */
+export function hookActionOf(spec: { action?: HookAction; command?: string }): HookAction {
+  return spec.action ?? { kind: "command", command: spec.command ?? "" };
+}
+
 export const HookSpecSchema = z.object({
   /** `h_` 前缀 + 随机。 */
   id: z.string().min(1),
@@ -612,7 +625,8 @@ export const HookSpecSchema = z.object({
    */
   matcher: z.string().max(200).optional(),
   /** 要跑的 shell 命令。**它会以你的身份在这台机器上执行。** */
-  command: z.string().min(1).max(2000),
+  command: z.string().max(2000).default(""),
+  action: HookActionSchema.optional(),
   /** 关掉的钩子不跑,但留在列表里 —— 与"删掉"是两件事(要偶尔用一次的那种)。 */
   enabled: z.boolean(),
   /** 超时(毫秒)。默认 {@link DEFAULT_HOOK_TIMEOUT_MS}。超时的进程会被杀掉。 */
@@ -634,8 +648,20 @@ export const HookSpecSchema = z.object({
    * `timeoutMs`)。见 {@link DeliveryPolicy} 那一段的取舍说明。
    */
   deliveryPolicy: DeliveryPolicySchema.optional(),
-});
-export type HookSpec = z.infer<typeof HookSpecSchema>;
+}).superRefine((spec, ctx) => {
+  const action = hookActionOf(spec);
+  if (action.kind === "command" && action.command.trim().length === 0) {
+    ctx.addIssue({ code: "too_small", minimum: 1, inclusive: true, type: "string", path: ["command"], message: "String must contain at least 1 character(s)" });
+  }
+}).transform((spec) => ({
+  ...spec,
+  action: hookActionOf(spec),
+  // Existing callers still consume .command; only the explicit action determines execution.
+  command: hookActionOf(spec).kind === "command" ? (hookActionOf(spec) as { command: string }).command : "",
+}));
+// Keep existing typed command hook producers source-compatible. All parsed persisted
+// records have a discriminated action; older in-memory constructors may omit it.
+export type HookSpec = Omit<z.output<typeof HookSpecSchema>, "action"> & { action?: HookAction };
 
 /** 默认超时。够跑一个脚本,又不至于让一堆卡死的进程攒着。 */
 export const DEFAULT_HOOK_TIMEOUT_MS = 30_000;
@@ -778,6 +804,8 @@ export interface HookPayload {
   toolName?: string;
   /** 原始事件。 */
   data: unknown;
+  /** Current ancestry, read from session metadata; never shared globally. */
+  hookDepth?: number;
 }
 
 /** 传给命令的环境变量名 —— 只有这几个,其余信息走 stdin 的 JSON。 */

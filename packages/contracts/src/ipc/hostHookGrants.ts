@@ -62,7 +62,9 @@ const HostHookGrantEvents = z.array(z.string().min(1).max(120)).max(64);
 export const HostHookGrantIssueSchema = z
   .object({
     /** 贡献这条 hook 的插件名(manifest name)。 */
-    pluginId: z.string().min(1).max(200),
+    pluginId: z.string().min(1).max(200).optional(),
+    /** T63: a saved user hook; host derives event, kind, and digest, never trusts renderer-supplied action. */
+    hookId: z.string().min(1).max(200).optional(),
     /** 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。 */
     version: z.string().max(120).optional(),
     /** 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。 */
@@ -78,7 +80,8 @@ export const HostHookGrantIssueSchema = z
     /** matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。 */
     matcher: z.string().max(200).optional(),
   })
-  .strict();
+  .strict()
+  .refine((x) => (x.pluginId !== undefined) !== (x.hookId !== undefined), "必须且只能指定插件或用户 hook");
 export type HostHookGrantIssueInput = z.infer<typeof HostHookGrantIssueSchema>;
 
 /** 撤销一份授权(按 `grantId`)。 */

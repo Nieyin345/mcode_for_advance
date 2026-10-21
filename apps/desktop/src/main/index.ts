@@ -37,6 +37,7 @@ import { initUpdater } from "@main/updater.js";
 import { initAutoArchiver } from "@main/session/AutoArchiver.js";
 import { notificationManager } from "@main/notifications/NotificationManager.js";
 import { hookRunner } from "@main/hooks/HookRunner.js";
+import { launchHookAction } from "@main/hooks/agentActions.js";
 import { enabledPluginHookDeclarations } from "@main/plugins/pluginManager.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { hasActiveRun } from "@main/orchestration/runner.js";
@@ -359,6 +360,7 @@ app.whenReady().then(async () => {
       // 现读当前状态才对得上(与 `getEnabledPlugins` 每次调用重扫同一取舍;宿主侧有一个
       // 1 秒 TTL 只挡一轮里的重复扫描,判定仍每条事件现算,撤权即时生效)。
       hookRunner.setPluginHookSource((cwd) => enabledPluginHookDeclarations(cwd));
+      hookRunner.setActionLauncher(launchHookAction);
       hookRunner.start();
     } catch (err) {
       log.error(`HookRunner failed to start: ${(err as Error).message}`);

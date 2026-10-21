@@ -1,0 +1,1 @@
+export function getWorkflow(id: string) { return id === "wf_t63_valid" ? { id, nodes: [{ id: "n" }] } : null; }

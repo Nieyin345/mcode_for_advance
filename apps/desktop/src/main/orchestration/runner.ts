@@ -2852,8 +2852,13 @@ function nodeSessionOf(
       });
       if (providerChanged) SessionRepo.updateClaudeSessionId(existing.id, null);
     }
+    // A reused node row can belong to a new ancestry. Persist it before sendTurn
+    // so nested hook events cannot observe the previous run's smaller depth.
+    if ((existing.hookDepth ?? 0) !== (conversation.hookDepth ?? 0)) {
+      SessionRepo.setHookDepth(existing.id, conversation.hookDepth ?? 0);
+    }
     return {
-      ...existing, providerId, model, effort, permissionMode, workflowId: conversation.workflowId,
+      ...existing, hookDepth: conversation.hookDepth ?? 0, providerId, model, effort, permissionMode, workflowId: conversation.workflowId,
       customModelId, claudeSessionId: providerChanged ? null : existing.claudeSessionId,
     };
   }
@@ -2865,6 +2870,7 @@ function nodeSessionOf(
     providerId,
     claudeSessionId: null,
     kind: "node",
+    hookDepth: conversation.hookDepth ?? 0,
     parentSessionId: conversation.id,
     // 图上哪一格 —— (对话, 节点) 是这一行的身份,见 `Session.nodeId`。
     nodeId: node.id,

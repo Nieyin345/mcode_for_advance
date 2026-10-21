@@ -44,6 +44,7 @@ import { classifyHooksFile, readHooks, rebuildCorruptHooksFile, removeHook, save
 import { HookRunRepo, type HookRunRow } from "@main/store/repositories.js";
 import {
   hostHookCommandDigest,
+  authoredHookSourceOf,
   issueHostHookGrant,
   listHostHookGrants,
   revokeHostHookGrant,
@@ -151,6 +152,27 @@ export function registerHookHandlers(ipcMain: IpcMain): void {
     // `ttlMs` / `now` 由**宿主**给 —— 不是从 input 读(schema 里根本没有这两个字段)。
     // 摘要也由**宿主**算:调用方给的是命令/matcher **原文**(渲染端算不了 sha256),
     // 走**唯一一份** `hostHookCommandDigest` —— 与面板、执行通道同一份来源身份。
+    // Explicit user-only approval of an existing saved non-command action.
+    // No caller-provided digest/kind may widen this authorization.
+    if (input.hookId !== undefined) {
+      const saved = readHooks().hooks.find((hook) => hook.id === input.hookId);
+      if (!saved || !saved.action || saved.action.kind === "command") {
+        return { ok: false, error: "找不到已保存的代理/工作流 hook，拒绝授权" };
+      }
+      const source = authoredHookSourceOf(saved);
+      try {
+        const grant = issueHostHookGrant({
+          pluginId: source.pluginId, version: source.version,
+          events: [source.nativeEvent], commandDigest: source.commandDigest,
+          matcherDigest: source.matcherDigest, actionKind: source.actionKind,
+          maxRuns: HOST_HOOK_GRANT_MAX_RUNS,
+          ttlMs: HOST_HOOK_GRANT_TTL_MS, now: Date.now(),
+        });
+        return { ok: true, grant };
+      } catch (err) {
+        return { ok: false, error: `签发失败:${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
     const commandDigest =
       input.command !== undefined
         ? hostHookCommandDigest(input.command)
@@ -162,7 +184,7 @@ export function registerHookHandlers(ipcMain: IpcMain): void {
     // 签发失败(fail-safe 落盘异常等)不吞:返回 `{ok:false}` 让界面显示"授权未生效"。
     try {
       const grant = issueHostHookGrant({
-        pluginId: input.pluginId,
+        pluginId: input.pluginId!,
         ...(input.version !== undefined ? { version: input.version } : {}),
         ...(input.events !== undefined ? { events: input.events } : {}),
         ...(commandDigest !== undefined ? { commandDigest } : {}),
