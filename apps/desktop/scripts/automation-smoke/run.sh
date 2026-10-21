@@ -54,10 +54,12 @@ printf 'export * from "./stubs/runner.js";\n' > "$OUT/runner.js"
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --external:./runner.js \
   --external:./stubs/runner.js \
+  --external:sherpa-onnx-node \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/claude/RuntimeManager.js=./scripts/automation-smoke/stubs/runtimeManager.ts \
   --alias:@main/plugins/pluginManager.js=./scripts/mcode-admin-smoke/stubs/pluginManager.ts \
+  --alias:node:fs/promises=fs/promises \
   --alias:node:fs=./scripts/automation-smoke/stubs/fsSync.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 

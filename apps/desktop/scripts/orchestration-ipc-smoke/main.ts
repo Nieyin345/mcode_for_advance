@@ -1055,7 +1055,9 @@ resetSent();
   const clean = obj(obj(await callAsync(IPC.WORKFLOW_GET, { id: "wf_clean" })).workflow);
   check(
     "干净文档保存后不凭空多出字段(与契约键集合一致)",
-    Object.keys(clean).sort().join(",") === Object.keys(goodDoc()).sort().join(","),
+    // WorkflowRepo.parseWorkflowDoc canonicalizes the optional default engine to "mcode" on read.
+    // That is a recognized contract field, not an unexpected or injected extension field.
+    Object.keys(clean).sort().join(",") === [...Object.keys(goodDoc()), "engine"].sort().join(",") && clean.engine === "mcode",
     Object.keys(clean),
   );
 }

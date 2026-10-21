@@ -17,6 +17,7 @@ node "$ESBUILD" scripts/event-vertical-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --external:./runner.js --external:./stubs/runner.js \
+  --external:sherpa-onnx-node \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/claude/RuntimeManager.js=./scripts/automation-smoke/stubs/runtimeManager.ts \

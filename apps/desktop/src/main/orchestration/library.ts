@@ -192,6 +192,9 @@ export function shippedContentRevision(doc: WorkflowDoc): string {
   const content: Record<string, unknown> = { ...doc };
   delete content.updatedAt;
   delete content.builtin;
+  // WorkflowRepo parses legacy rows with a default engine = "mcode".
+  // Normalize that optional default before comparing persisted vs shipped content.
+  if (content.engine === "mcode") delete content.engine;
   return createHash("sha256").update(stableJson(content)).digest("hex");
 }
 
