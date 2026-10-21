@@ -93,6 +93,27 @@
 
 **GenOffice 独立提交及可重放补丁**：`684d9dc`、`d8671f6`、`d6eb48e`、`bd08868`、`2fa633a`；Mcode 主仓内 `patches/genoffice/0002-*.patch` 至 `0006-*.patch`，与原 `0001-*.patch` 按序应用。T05a 仅覆盖上述低风险能力，后续 T05b/T05c 不在此回合擅自扩展。
 
+### 2026-10-21｜T05b Docs 需权限操作逐 handler 状态（严格限定本任务）
+
+本表的“已接”指**受控 IPC 路由与可测宿主操作**，不代表原厂图片导出整条用户旅程通过；对端是 `genoffice/apps/docs/src/main/mcode-privileged.ts`，入口是 `preload/mcode-view.ts` 的受限策略表，Mcode 通过 `DocumentViewHost` 按真实 webContents sender 绑定 `docsPrivilegedPorts`。原任务表列了 9 条，原厂另有必需的 `docs:write-export-image`，补作第 10 条。
+
+| 原厂 handler | 迁移状态 / 复用而非重造 | 隔离 E1 验证方式 |
+|---|---|---|
+| `docs:pick-image` | **已接**。转调宿主 `pickFilesForUser`（与 `api.pickFiles` 共用唯一选择器），只读取用户所选图片、≤5MiB；取消返回 null | H: 伪造 sender 禁止选取；真实批准 sender 路由与 pickImage 端口 |
+| `docs:save-image-as` | **部分**。调用宿主 `showSaveDialog`、`findContainingWorkspaceRoot` 及 `atomicReplaceFile`；仅允许受限 data:image base64，原厂 lazy/远程 src 不代取、不伪装成功 | H: 未授权不调用保存对话框；越界路径拒写与合法原子写；变异撤掉物理围栏必红 |
+| `docs:pick-export-images-target` | **已接（受控目录选择）**。复用 `pickFolderForUser`；仅工作区目录，签发当前 sender 独有临时 PDF 路径；不准任意临时目录 | H: 外部目录返回 null、批准工作区目录给受限 token |
+| `docs:take-export-pdf` | **已接（读取/删除，整条导出待接）**。只接受本 sender 的一次性 PDF token + 围栏 + 80MiB 上限，成功读取后由宿主删除临时件；上游 `exportPdf` 本卡不能迁，所以原厂“先导出 PDF 再拆图片”的用户旅程仍未闭环 | H: 外部/伪造路径拒绝；宿主签发 temp 可读，随后不可复用 |
+| `docs:printers` | **已接**。委托被授权视图的 Chromium `getPrintersAsync`，只返回 name/displayName，绝不写环境清单日志 | H: 非视图 sender 不能枚举；丢弃其它打印机字段 |
+| `docs:print` | **已接**。复用 Mcode 宿主已有 `dialog.showMessageBox` 的真人确认模式（与 dirty close 相同 UI），每次提示且默认取消；仅批准后调用 Chromium print；参数需校验 | H: 未授权不调打印；首次否决、下一次批准、再否决，调用次数 0→1→1；撤确认变异必红 |
+| `files:pick` | **已接**。复用 Mcode `pickFilesForUser`，用户亲选的文件按 sender 暂存 grant，校验大小/扩展名再返回元信息 | H: 伪造 sender 无 chooser；亲选项目外文件仅 metadata，选中后可加 |
+| `files:add` | **已接**。仅接受 Mcode 工作区文件或当前 sender 亲选的路径；有大小/扩展名限制 | H: 外部任意路径拒绝、工作区文件和已有用户选择放行 |
+| `files:read-image` | **已接**。即使 picker 选中了工作区外文件，仍严格只读取工作区内图片，≤5MiB | H: 越界路径拒绝且响应不含字节，工作区内图片 base64 读取 |
+| `docs:write-export-image` | **已接（导出链待接）**。原表漏计第十条，绑定用户选中的目录、拒绝 `../`、复用宿主 `atomicReplaceFile`，不允许任意路径写入；整条链仍依赖未迁的 `exportPdf` | H: 伪造 sender、越界目录/文件名拒绝，批准目录写 PNG |
+
+**权限边界与现存缺口**：所有 10 个 IPC 都要匹配**活着的 Mcode Docs sender**；未授权一律返回含原因的 `{ok:false,error}`，不会进入文件/打印端口。没有第二个文件选择器；`dialog:pickFiles` 与本卡共用 `pickFilesForUser`，`dialog:pickFolder` 共用 `pickFolderForUser`。没有自建审批存储/令牌服务；打印使用已有宿主 `showMessageBox`，不会跨次保留批准。路径围栏的唯一工作区判定来源仍是 Mcode `findContainingWorkspaceRoot`，vendor 另验真实路径不会跟随 symlink/junction 越界。待完成的原厂能力：`exportPdf`、lazy src 图片保存、`files:read` 附件文本读取，这些不属于 T05b 表里的 10 个受控 handler；没有通过本卡烟测而冒称可用。
+
+**证据**：`node apps/desktop/scripts/run-smokes.mjs document-view-host-smoke document-view-open-smoke document-view-electron-smoke document-view-vendor-page-smoke document-view-renderer-smoke` 5/5 PASS（`apps/desktop/.tmp/smoke-runs/1792548627596-27172-g2FUq2`，含原 T05a 链）。`npx tsc --noEmit -p apps/desktop/tsconfig.json`、`-p packages/contracts/tsconfig.json`、`-p genoffice/apps/docs/tsconfig.json` 全绿。变异脚本 `node apps/desktop/scripts/document-view-host-smoke/mutate-t05b.mjs`：撤掉真实路径围栏时 exit 1、越界断言红；撤掉打印确认时 exit 1、未确认不打印断言红；每次变异源文件逐字节恢复。此前针对**权限 IPC 本身**尚无真正 OS 弹窗/打印机 U1 体验验收，故不声称用户旅程已通过。
+
 ### 2026-10-19｜GenOffice 原生 Shell 缺构建导致反复弹窗：实证与修复
 
 - **先前的 E1 红例（保留历史，不再认定当前仍红）**：`document-view-renderer/host/open` 3/3 PASS（`1792397455478-38608-xWCSjH`），`genoffice-cli-smoke` 曾 38/40 FAIL（`1792397336995-18772-cM4mtM`），表现为 `conversion_failed` 而非预期 `app_unavailable`。用户随后截图原生 Windows 错误窗：`Unable to find Electron app at .../genoffice/apps/shell` 与 `Cannot find .../out/main/index.js`。

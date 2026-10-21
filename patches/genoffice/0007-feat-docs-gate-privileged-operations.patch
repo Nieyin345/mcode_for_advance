@@ -1,0 +1,404 @@
+From 02d8683ca3f19cf404a48c3f1625140ea5175b46 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Wed, 21 Oct 2026 10:16:58 +0800
+Subject: [PATCH] feat(docs): gate privileged operations through Mcode host
+
+---
+ apps/docs/src/main/mcode-ipc.ts        |  14 +-
+ apps/docs/src/main/mcode-privileged.ts | 269 +++++++++++++++++++++++++
+ apps/docs/src/preload/mcode-view.ts    |  34 +++-
+ 3 files changed, 310 insertions(+), 7 deletions(-)
+ create mode 100644 apps/docs/src/main/mcode-privileged.ts
+
+diff --git a/apps/docs/src/main/mcode-ipc.ts b/apps/docs/src/main/mcode-ipc.ts
+index b34f951..6870b33 100644
+--- a/apps/docs/src/main/mcode-ipc.ts
++++ b/apps/docs/src/main/mcode-ipc.ts
+@@ -17,6 +17,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFil
+ import { dirname, join } from 'node:path'
+ import type { IpcMain, IpcMainEvent, IpcMainInvokeEvent } from 'electron'
+ import { ClickClaims } from '../shared/context-menu-claims'
++import { registerDocsPrivilegedIpc, type DocsPrivilegedPorts } from './mcode-privileged'
+ 
+ const FONT = 'mcode:docs:native-font-metrics'
+ const LANGUAGES = 'mcode:docs:native-spell-languages'
+@@ -41,7 +42,7 @@ export const MCODE_NATIVE_DOCS_CHANNELS = [FONT, LANGUAGES, SET_LANGUAGES, UI_LA
+ // Electron has one ipcMain. More than one DocumentViewHost may be created
+ // (production singleton plus test hosts); the registrar must not collide or
+ // leave handlers tied to the *first* stale host. Authorize against live owners.
+-const activeOwners = new Set<{ guard: (sender: unknown) => boolean; language: () => 'zh' | 'en' }>()
++const activeOwners = new Set<{ guard: (sender: unknown) => boolean; language: () => 'zh' | 'en'; privileged: () => DocsPrivilegedPorts | null }>()
+ let releaseNativeHandlers: (() => void) | null = null
+ 
+ function spellingWord(raw: unknown): string | null {
+@@ -75,8 +76,9 @@ export function registerDocsIpc(
+   // Must be supplied by Mcode's authoritative dataRoot() (not Electron's
+   // userData or GenOffice's standalone profile). Missing root = no writes.
+   getDataRoot: () => string = () => { throw new Error('Mcode data root not supplied') },
++  privileged: () => DocsPrivilegedPorts | null = () => null,
+ ): () => void {
+-  const owner = { guard: isDocsSender, language: getUiLanguage }
++  const owner = { guard: isDocsSender, language: getUiLanguage, privileged }
+   activeOwners.add(owner)
+   if (releaseNativeHandlers !== null) return () => { activeOwners.delete(owner) }
+   const authorized = (event: { sender?: unknown }): boolean => {
+@@ -257,7 +259,15 @@ export function registerDocsIpc(
+     if (langs.length > 0) s.setSpellCheckerLanguages(langs)
+     return { active: s.getSpellCheckerLanguages(), available: [...available] }
+   })
++  const releasePrivileged = registerDocsPrivilegedIpc(ipc, (event) => {
++    if (!authorized(event)) return null
++    for (const host of activeOwners) {
++      try { if (host.guard(event.sender) === true) return host.privileged() } catch { /* fail closed */ }
++    }
++    return null
++  })
+   releaseNativeHandlers = () => {
++    releasePrivileged()
+     for (const id of [...ownedBySender.keys()]) dropIgnored(id)
+     for (const [channel, listener] of onMessage) ipc.removeListener(channel, listener)
+     for (const channel of MCODE_NATIVE_DOCS_CHANNELS) ipc.removeHandler(channel)
+diff --git a/apps/docs/src/main/mcode-privileged.ts b/apps/docs/src/main/mcode-privileged.ts
+new file mode 100644
+index 0000000..fbb3a69
+--- /dev/null
++++ b/apps/docs/src/main/mcode-privileged.ts
+@@ -0,0 +1,269 @@
++/**
++ * T05b: privileged Docs IPC capabilities. The vendor never opens its own
++ * dialogs or has access to Mcode's project database. Every capability is a
++ * host-supplied port, selected by the actual sender's live DocumentViewHost.
++ */
++import type { IpcMain, IpcMainInvokeEvent } from 'electron'
++import { readFileSync, realpathSync, statSync } from 'node:fs'
++import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
++import { randomUUID } from 'node:crypto'
++
++export interface DocsPrivilegedPorts {
++  pickFiles(filters?: Array<{ name: string; extensions: string[] }>): Promise<string[]>
++  pickImage(): Promise<{ base64: string; mime: 'image/png' | 'image/jpeg' | 'image/gif'; name: string } | null>
++  pickDirectory(): Promise<string | null>
++  saveTarget(name: string, ext: string): Promise<string | null>
++  confirmPrint(): Promise<boolean>
++  /** The Mcode pathGuard, not a vendor-owned list of workspace roots. */
++  workspaceRoot(path: string): string | null
++  /** Mcode's single atomic file writer, never node:fs.writeFile. */
++  atomicWrite(path: string, bytes: Uint8Array): Promise<void>
++  /** Remove only a consumed export temp, after validating its host-issued token. */
++  removeExportTemp(path: string): Promise<void>
++}
++
++type Event = IpcMainInvokeEvent
++type Permission = { sender?: Event['sender'] }
++type PortsFor = (event: Permission) => DocsPrivilegedPorts | null
++const prefix = 'mcode:docs:privileged-'
++export const DOCS_PRIVILEGED_CHANNELS = [
++  'pick-image', 'save-image-as', 'pick-export-images-target', 'take-export-pdf',
++  'printers', 'print', 'files-pick', 'files-add', 'files-read-image', 'write-export-image',
++].map((name) => prefix + name)
++
++const IMAGE_MIME: Readonly<Record<string, string>> = Object.freeze({
++  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
++  gif: 'image/gif', webp: 'image/webp',
++})
++const EXTENSIONS = new Set([
++  'txt', 'md', 'markdown', 'json', 'csv', 'tsv', 'xml', 'html', 'htm', 'yaml',
++  'yml', 'js', 'jsx', 'ts', 'tsx', 'py', 'java', 'c', 'h', 'cpp', 'go',
++  'rs', 'rb', 'sh', 'sql', 'css', 'doc', 'docx', 'pdf', 'pptx', 'ppt',
++  'xlsx', 'xlsm', 'xls', ...Object.keys(IMAGE_MIME),
++])
++const ATTACHMENT_LIMIT = 20 * 1024 * 1024
++const IMAGE_LIMIT = 5 * 1024 * 1024
++const EXPORT_LIMIT = 80 * 1024 * 1024
++const denied = (reason: string) => ({ ok: false as const, error: reason })
++
++function within(root: string, path: string): boolean {
++  const rel = relative(root, path)
++  return rel === '' || (rel !== '..' && !rel.startsWith('..\\') &&
++    !rel.startsWith('../') && !isAbsolute(rel))
++}
++
++/** Enforce BOTH Mcode's persisted workspace decision and physical containment.
++ * A symlink/junction pointing outside the permitted root cannot escape. */
++function fenced(ports: DocsPrivilegedPorts, raw: unknown, writing = false): string | null {
++  if (typeof raw !== 'string' || !isAbsolute(raw) || raw.length > 4096) return null
++  const absolute = resolve(raw)
++  let root: string | null
++  try { root = ports.workspaceRoot(absolute) } catch { return null }
++  if (!root || !isAbsolute(root)) return null
++  try {
++    const realRoot = realpathSync(root)
++    const physical = writing
++      ? join(realpathSync(dirname(absolute)), basename(absolute))
++      : realpathSync(absolute)
++    if (!within(realRoot, physical)) return null
++    return absolute
++  } catch { return null }
++}
++
++function base64Bytes(raw: unknown, max: number): Uint8Array | null {
++  if (typeof raw !== 'string' || !raw.length || raw.length > Math.ceil(max * 4 / 3) + 8 ||
++      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(raw)) return null
++  const buf = Buffer.from(raw, 'base64')
++  return buf.length <= max && buf.length > 0 ? buf : null
++}
++
++function attachment(path: string): { meta?: { path: string; name: string; ext: string; sizeBytes: number }; error?: string } {
++  const name = basename(path)
++  const ext = extname(name).slice(1).toLowerCase()
++  if (!EXTENSIONS.has(ext)) return { error: name + ': unsupported attachment extension' }
++  try {
++    const st = statSync(path)
++    if (!st.isFile() || st.size > ATTACHMENT_LIMIT ||
++      (Object.hasOwn(IMAGE_MIME, ext) && st.size > IMAGE_LIMIT)) {
++      return { error: name + ': attachment is not a regular file or exceeds the size limit' }
++    }
++    return { meta: { path, name, ext, sizeBytes: st.size } }
++  } catch { return { error: name + ': file cannot be accessed' } }
++}
++
++export function registerDocsPrivilegedIpc(
++  ipc: Pick<IpcMain, 'handle' | 'removeHandler'>,
++  portsFor: PortsFor,
++): () => void {
++  // Grants never come from renderer booleans/paths: only Mcode's own chooser.
++  const picked = new Map<number, Set<string>>()
++  const exportDirs = new Map<number, string>()
++  const tempPdfs = new Map<number, string>()
++  const seen = new WeakSet<object>()
++  const cleanupSender = (event: Event): void => {
++    if (!seen.has(event.sender)) {
++      seen.add(event.sender)
++      event.sender.once?.('destroyed', () => {
++        picked.delete(event.sender.id)
++        exportDirs.delete(event.sender.id)
++        tempPdfs.delete(event.sender.id)
++      })
++    }
++  }
++  const handle = (name: string, fn: (event: Event, ...args: unknown[]) => unknown): void => {
++    ipc.handle(prefix + name, (event, ...args) => {
++      const ports = portsFor(event)
++      if (!ports) return denied('Mcode Docs permission denied: not an authorized live document view')
++      cleanupSender(event)
++      return fn(event, ...args)
++    })
++  }
++  handle('pick-image', async (event) => {
++    const ports = portsFor(event)!
++    try { return await ports.pickImage() }
++    catch { return null }
++  })
++  handle('files-pick', async (event) => {
++    const ports = portsFor(event)!
++    try {
++      const paths = await ports.pickFiles([{ name: 'Documents', extensions: [...EXTENSIONS] }])
++      if (!paths.length) return null
++      const grants = picked.get(event.sender.id) ?? new Set<string>()
++      for (const path of paths) if (typeof path === 'string' && isAbsolute(path)) grants.add(resolve(path))
++      picked.set(event.sender.id, grants)
++      const accepted = []; const rejected = []
++      for (const path of paths) {
++        const result = attachment(path)
++        if (result.meta) accepted.push(result.meta)
++        else rejected.push(result.error ?? 'file refused')
++      }
++      return { accepted, rejected }
++    } catch { return { accepted: [], rejected: ['Mcode file picker unavailable'] } }
++  })
++  handle('files-add', (event, paths) => {
++    const ports = portsFor(event)!
++    if (!Array.isArray(paths) || paths.length > 32) return { accepted: [], rejected: ['invalid attachment paths'] }
++    const accepted = []; const rejected = []
++    for (const path of paths) {
++      if (typeof path !== 'string' || !isAbsolute(path) ||
++          (!fenced(ports, path) && !picked.get(event.sender.id)?.has(resolve(path)))) {
++        rejected.push('attachment path outside Mcode workspace or user selection')
++        continue
++      }
++      const result = attachment(path)
++      if (result.meta) accepted.push(result.meta)
++      else rejected.push(result.error ?? 'file refused')
++    }
++    return { accepted, rejected }
++  })
++  handle('files-read-image', (event, raw) => {
++    const ports = portsFor(event)!
++    const file = fenced(ports, raw)
++    if (!file) return denied('image path outside Mcode workspace')
++    const ext = extname(file).slice(1).toLowerCase()
++    if (!Object.hasOwn(IMAGE_MIME, ext)) return denied('not a supported image')
++    try {
++      const stat = statSync(file)
++      if (!stat.isFile() || stat.size > IMAGE_LIMIT) return denied('image exceeds size limit')
++      return { ok: true, base64: readFileSync(file).toString('base64'), mime: IMAGE_MIME[ext] }
++    } catch { return denied('image cannot be read') }
++  })
++  handle('printers', async (event) => {
++    try {
++      // Return only printer identity needed by the Docs UI. Never log OS inventory.
++      const printers = await event.sender.getPrintersAsync()
++      return printers.map((p) => ({ name: p.name, displayName: p.displayName || p.name }))
++    } catch { return [] }
++  })
++  handle('print', async (event, rawScale, rawJob) => {
++    const ports = portsFor(event)!
++    // Every attempt requires a fresh *human* approval (no persisted or renderer grant).
++    if (!await ports.confirmPrint().catch(() => false)) return denied('print was not confirmed by the user')
++    if (rawScale !== undefined &&
++        (typeof rawScale !== 'number' || !Number.isFinite(rawScale) || rawScale <= 0 || rawScale > 5)) {
++      return denied('invalid print scale')
++    }
++    const job = rawJob as { deviceName?: unknown; copies?: unknown; collate?: unknown; duplex?: unknown } | null
++    if (job !== null && job !== undefined && (typeof job !== 'object' || Array.isArray(job) ||
++        (job.deviceName !== null && job.deviceName !== undefined && typeof job.deviceName !== 'string') ||
++        (typeof job.deviceName === 'string' && job.deviceName.length > 256) ||
++        (job.copies !== undefined && (!Number.isInteger(job.copies) || (job.copies as number) < 1 || (job.copies as number) > 99)) ||
++        (job.collate !== undefined && typeof job.collate !== 'boolean') ||
++        (job.duplex !== undefined && !['simplex', 'longEdge', 'shortEdge'].includes(String(job.duplex))))) {
++      return denied('invalid printer options')
++    }
++    return new Promise((resolveReply) => event.sender.print({
++      margins: { marginType: 'none' },
++      ...(typeof rawScale === 'number' ? { scaleFactor: Math.round(rawScale * 100) } : {}),
++      ...(job?.deviceName !== null && job?.deviceName !== undefined
++        ? { silent: true, deviceName: job.deviceName as string } : {}),
++      ...(job?.copies !== undefined ? { copies: job.copies as number } : {}),
++      ...(job?.collate !== undefined ? { collate: job.collate as boolean } : {}),
++      ...(job?.duplex !== undefined ? { duplexMode: job.duplex as 'simplex' | 'longEdge' | 'shortEdge' } : {}),
++    }, (ok, error) => resolveReply(ok ? { ok: true } : denied(error || 'printer canceled'))))
++  })
++  handle('save-image-as', async (event, src) => {
++    const ports = portsFor(event)!
++    if (typeof src !== 'string') return denied('invalid image source')
++    const match = /^data:image\/(png|jpeg|gif|webp);base64,(.*)$/s.exec(src)
++    if (!match) return denied('only embedded image data can be saved by Mcode')
++    const bytes = base64Bytes(match[2], IMAGE_LIMIT)
++    if (!bytes) return denied('invalid or oversized image')
++    const ext = match[1] === 'jpeg' ? 'jpg' : match[1]!
++    try {
++      const target = await ports.saveTarget('image.' + ext, ext)
++      if (!target) return denied('image save canceled')
++      const file = fenced(ports, target, true)
++      if (!file || extname(file).toLowerCase() !== '.' + ext) return denied('image save target outside Mcode workspace')
++      await ports.atomicWrite(file, bytes)
++      return { ok: true, path: file }
++    } catch { return denied('Mcode image save failed') }
++  })
++  handle('pick-export-images-target', async (event) => {
++    const ports = portsFor(event)!
++    const dir = await ports.pickDirectory().catch(() => null)
++    const safe = dir ? fenced(ports, dir) : null
++    if (!safe) return null
++    try { if (!statSync(safe).isDirectory()) return null } catch { return null }
++    const temp = join(safe, '.mcode-docs-export-' + randomUUID() + '.pdf')
++    if (!fenced(ports, temp, true)) return null
++    exportDirs.set(event.sender.id, safe)
++    tempPdfs.set(event.sender.id, temp)
++    return { dir: safe, pdfPath: temp }
++  })
++  handle('take-export-pdf', async (event, raw) => {
++    const ports = portsFor(event)!
++    const expected = tempPdfs.get(event.sender.id)
++    tempPdfs.delete(event.sender.id)
++    if (!expected || raw !== expected || !fenced(ports, expected)) {
++      return denied('PDF is not an authorized workspace export temp')
++    }
++    try {
++      const st = statSync(expected)
++      if (!st.isFile() || st.size > EXPORT_LIMIT) return denied('export PDF exceeds size limit')
++      // Deliberately do not delete an unverified path; caller only receives
++      // bytes from an exact host-issued export token.
++      return { ok: true, base64: readFileSync(expected).toString('base64') }
++    } catch { return denied('authorized export PDF is not available') }
++    finally { await ports.removeExportTemp(expected).catch(() => undefined) }
++  })
++  handle('write-export-image', async (event, rawDir, rawName, rawBytes) => {
++    const ports = portsFor(event)!
++    const allowedDir = exportDirs.get(event.sender.id)
++    if (!allowedDir || rawDir !== allowedDir || !fenced(ports, allowedDir) ||
++        typeof rawName !== 'string' || !/^[^/\\]+\.png$/i.test(rawName) ||
++        rawName === '.' || rawName === '..') {
++      return denied('image export target is not a user-approved workspace folder')
++    }
++    const bytes = base64Bytes(rawBytes, IMAGE_LIMIT)
++    if (!bytes) return denied('invalid or oversized PNG')
++    const file = join(allowedDir, rawName)
++    if (!fenced(ports, file, true)) return denied('image export escapes workspace')
++    try { await ports.atomicWrite(file, bytes); return { ok: true, path: file } }
++    catch { return denied('Mcode image export write failed') }
++  })
++  return () => {
++    for (const ch of DOCS_PRIVILEGED_CHANNELS) ipc.removeHandler(ch)
++    picked.clear(); exportDirs.clear(); tempPdfs.clear()
++  }
++}
+diff --git a/apps/docs/src/preload/mcode-view.ts b/apps/docs/src/preload/mcode-view.ts
+index d5cac98..c7a5f70 100644
+--- a/apps/docs/src/preload/mcode-view.ts
++++ b/apps/docs/src/preload/mcode-view.ts
+@@ -18,8 +18,9 @@ import type { DesktopApi, MenuCommand } from '../shared/ipc'
+ type Route = Readonly<{ kind: 'invoke' | 'send' | 'sync' | 'on'; to: string }>
+ 
+ /** Exact channel table.  Unknown channels are rejected *before* Electron IPC.
+- * In particular docs:open, docs:save-as/to, docs:open-decrypt, files:*, ai:*,
+- * kb:*, project:*, print/export and clipboard writes are not reachable.
++ * In particular docs:open, docs:save-as/to, docs:open-decrypt, ai:*,
++ * kb:*, project:* and clipboard writes are not reachable. Privileged
++ * files/print routes resolve ONLY to sender-scoped Mcode approval handlers.
+  * Opening and saving go solely through Mcode's sender-bound DocumentViewHost.
+  */
+ export const MCODE_DOCS_CHANNEL_POLICY: Readonly<Record<string, Route>> = Object.freeze({
+@@ -28,6 +29,16 @@ export const MCODE_DOCS_CHANNEL_POLICY: Readonly<Record<string, Route>> = Object
+   'docs:save-new': { kind: 'invoke', to: 'mcode:document-view:save' },
+   'docs:confirm-document-replace': { kind: 'invoke', to: 'mcode:document-view:confirm-replace' },
+   'docs:recent': { kind: 'invoke', to: 'mcode:document-view:open-committed' },
++  'docs:pick-image': { kind: 'invoke', to: 'mcode:docs:privileged-pick-image' },
++  'docs:save-image-as': { kind: 'invoke', to: 'mcode:docs:privileged-save-image-as' },
++  'docs:pick-export-images-target': { kind: 'invoke', to: 'mcode:docs:privileged-pick-export-images-target' },
++  'docs:take-export-pdf': { kind: 'invoke', to: 'mcode:docs:privileged-take-export-pdf' },
++  'docs:write-export-image': { kind: 'invoke', to: 'mcode:docs:privileged-write-export-image' },
++  'docs:printers': { kind: 'invoke', to: 'mcode:docs:privileged-printers' },
++  'docs:print': { kind: 'invoke', to: 'mcode:docs:privileged-print' },
++  'files:pick': { kind: 'invoke', to: 'mcode:docs:privileged-files-pick' },
++  'files:add': { kind: 'invoke', to: 'mcode:docs:privileged-files-add' },
++  'files:read-image': { kind: 'invoke', to: 'mcode:docs:privileged-files-read-image' },
+   'app:get-language': { kind: 'invoke', to: 'mcode:docs:native-ui-language' },
+   'docs:system-locale': { kind: 'invoke', to: 'mcode:docs:native-system-locale' },
+   'docs:font-metrics': { kind: 'invoke', to: 'mcode:docs:native-font-metrics' },
+@@ -57,8 +68,8 @@ function route(channel: string, kind: Route['kind']): string {
+   return rule.to
+ }
+ 
+-function invokeDocs(channel: string, payload?: unknown): Promise<unknown> {
+-  return ipcRenderer.invoke(route(channel, 'invoke'), payload)
++function invokeDocs(channel: string, ...payload: unknown[]): Promise<unknown> {
++  return ipcRenderer.invoke(route(channel, 'invoke'), ...payload)
+ }
+ 
+ function sendDocs(channel: string, payload: unknown): void {
+@@ -107,7 +118,20 @@ async function readHostPendingDocx(): Promise<Awaited<ReturnType<DesktopApi['ope
+  * handled by Mcode, never by the vendor's standalone main IPC handlers.
+  */
+ export const mcodeDocsDesktopApi = Object.freeze({
+-  // Docs owns no OS dialogs. Mcode must prepare an authorized file first.
++  // Documents stay with Mcode's CAS host. Privileged OS operations below
++  // are separately scoped to the live sender and Mcode's *existing* UI.
++  pickImage: () => invokeDocs('docs:pick-image') as ReturnType<DesktopApi['pickImage']>,
++  saveImageAs: (src: string) => invokeDocs('docs:save-image-as', src) as ReturnType<DesktopApi['saveImageAs']>,
++  pickExportImagesTarget: () => invokeDocs('docs:pick-export-images-target') as ReturnType<DesktopApi['pickExportImagesTarget']>,
++  takeExportPdf: (path: string) => invokeDocs('docs:take-export-pdf', path) as ReturnType<DesktopApi['takeExportPdf']>,
++  writeExportImage: (dir: string, name: string, base64: string) =>
++    invokeDocs('docs:write-export-image', dir, name, base64) as ReturnType<DesktopApi['writeExportImage']>,
++  listPrinters: () => invokeDocs('docs:printers') as ReturnType<DesktopApi['listPrinters']>,
++  print: (scale?: number, job?: Parameters<DesktopApi['print']>[1]) =>
++    invokeDocs('docs:print', scale, job) as ReturnType<DesktopApi['print']>,
++  pickAttachments: () => invokeDocs('files:pick') as ReturnType<DesktopApi['pickAttachments']>,
++  addAttachmentPaths: (paths: string[]) => invokeDocs('files:add', paths) as ReturnType<DesktopApi['addAttachmentPaths']>,
++  readAttachmentImage: (path: string) => invokeDocs('files:read-image', path) as ReturnType<DesktopApi['readAttachmentImage']>,
+   openDocx: readHostPendingDocx,
+   openDocxPath: (_path: string) => readHostPendingDocx(),
+   confirmDocumentReplace: () => invokeDocs('docs:confirm-document-replace', {}) as Promise<boolean>,
+-- 
+2.52.0.windows.1
+

@@ -56,9 +56,8 @@ function pickImageMime(ext: string): PickedImage["mimeType"] | undefined {
     : undefined;
 }
 
-export function registerDialogHandlers(ipcMain: IpcMain): void {
-  // ── multi-file picker (project-external files allowed) ──
-  ipcMain.handle(IPC.DIALOG_PICK_FILES, async (_evt, raw) => {
+/** Reused by Docs' privileged boundary: one picker implementation for all callers. */
+export async function pickFilesForUser(raw?: unknown): Promise<{ paths: string[] }> {
     // 全字段可选(`title` / `filters` 都 `.optional()`),所以无参调用收到 `undefined`
     // 时 `z.object({}).parse(undefined)` 会抛根级 `Required` —— 与 `file:pickImages`
     // (同文件下面那条)是**同一条规矩的孪生**:那条已经写成 `parse(raw ?? {})`
@@ -72,15 +71,21 @@ export function registerDialogHandlers(ipcMain: IpcMain): void {
     });
     if (result.canceled || result.filePaths.length === 0) return { paths: [] };
     return { paths: result.filePaths };
-  });
+}
+
+/** Same Mcode folder chooser used by the app and embedded editors. */
+export async function pickFolderForUser(): Promise<{ path: string | null }> {
+  const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+  if (result.canceled || result.filePaths.length === 0) return { path: null };
+  return { path: result.filePaths[0] ?? null };
+}
+
+export function registerDialogHandlers(ipcMain: IpcMain): void {
+  ipcMain.handle(IPC.DIALOG_PICK_FILES, (_evt, raw) => pickFilesForUser(raw));
 
   // ── folder picker: lets the renderer ask for a project directory ──
   // Raw string channel (pre-typed-contract era); kept as-is for back-compat.
-  ipcMain.handle("dialog:pickFolder", async () => {
-    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
-    if (result.canceled || result.filePaths.length === 0) return { path: null };
-    return { path: result.filePaths[0] };
-  });
+  ipcMain.handle("dialog:pickFolder", () => pickFolderForUser());
 
   // ── image picker: dialog + main-side read → base64 (composer 图片 button) ──
   ipcMain.handle(IPC.FILE_PICK_IMAGES, async (_evt, raw) => {

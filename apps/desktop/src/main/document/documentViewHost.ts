@@ -100,6 +100,7 @@ import { basename, dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { issueDocumentHandoff, revokeDocumentHandoffs } from "./documentViewHandoff.js";
 import { mcodeNativeDocsIpcAvailable, registerDocsIpc } from "@main/document/docsVendorIpc.js";
+import type { DocsPrivilegedPorts } from "./docsPrivilegedPorts.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 import type { EditorCredentialPort } from "./documentViewCredentialBroker.js";
 
@@ -447,6 +448,8 @@ export class DocumentViewHost {
   /** 【ARC-007 P1/GA1】视图关闭/释放时的清理端口（装配层注入 slides 执行器的
    *  `release(webContentsId)`）。宿主只负责"什么时候"调；"调谁"由装配层决定。 */
   private viewDisposer: ((webContentsId: number) => void) | null = null;
+  /** T05b: Mcode-owned file/print approvals; no adapter means fail-closed. */
+  private docsPrivileged: DocsPrivilegedPorts | null = null;
   /** 已经挂过 `closed` 清理钩子的那个窗口（换窗口时先摘旧的）。 */
   private cleanupWindow: DocumentViewHostWindow | null = null;
   private cleanupHandler: (() => void) | null = null;
@@ -471,7 +474,7 @@ export class DocumentViewHost {
           const live = id === null ? null : this.views.get(id);
           return live !== null && live !== undefined &&
             live.workflowEngineId === null && live.editor !== "slides";
-        }, uiLocale, dataRoot);
+        }, uiLocale, dataRoot, () => this.docsPrivileged);
       } catch (err) {
         log.error(`native Docs IPC not installed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -1203,6 +1206,11 @@ export class DocumentViewHost {
    * 【ARC-007 P0】装配期注入脏替换确认（生产是 `dialog.showMessageBox` 的真人
    * 确认，见 `ipc/index.ts`）。只在装配期调用一次；无头套件可注入自动应答。
    */
+  /** Inject only the authoritative host services, not renderer-provided grants. */
+  setDocsPrivilegedPorts(ports: DocsPrivilegedPorts | null): void {
+    this.docsPrivileged = ports;
+  }
+
   setConfirmDirty(
     fn: ((input: { docId: string; filePath: string | null }) => Promise<boolean>) | null,
   ): void {

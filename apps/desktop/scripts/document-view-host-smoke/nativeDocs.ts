@@ -6,6 +6,8 @@
 import { calls, replies, exposed, listeners } from './stubs/nativeDocsElectron'
 import { mcodeDocsDesktopApi as api, MCODE_DOCS_CHANNEL_POLICY as policy, installMcodeDocsViewPreload } from '../../../../genoffice/apps/docs/src/preload/mcode-view'
 import { registerDocsIpc, MCODE_NATIVE_DOCS_CHANNELS } from '../../../../genoffice/apps/docs/src/main/mcode-ipc'
+import { DOCS_PRIVILEGED_CHANNELS, type DocsPrivilegedPorts } from '../../../../genoffice/apps/docs/src/main/mcode-privileged'
+import { runPrivilegedBoundarySmoke } from './privilegedDocs'
 
 let count = 0
 function check(name: string, yes: unknown): void {
@@ -18,16 +20,35 @@ async function main() {
   installMcodeDocsViewPreload()
   check('vendor factory publishes desktop API', exposed.get('desktop') === api)
   for (const key of ['openDocxDecrypt', 'saveDocxTo', 'saveDocxAs',
-    'pickAttachments', 'copyImageToClipboard', 'aiChat', 'aiStream',
+    'copyImageToClipboard', 'aiChat', 'aiStream',
     'kbRead', 'readAttachment', 'getPathForFile', 'projectApi'] as const) {
     check('high-risk API omitted: ' + key, !(key in api))
   }
   for (const ch of ['docs:open', 'docs:save-as', 'docs:save-to', 'docs:open-decrypt',
-    'docs:copy-image-to-clipboard', 'files:pick', 'ai:stream', 'project:appendChat'] as const) {
+    'docs:copy-image-to-clipboard', 'ai:stream', 'project:appendChat'] as const) {
     check('dangerous channel not whitelisted: ' + ch, !(ch in policy))
   }
   check('default channel strategy does not route unknown channels',
-    Object.keys(policy).length === 22 && Object.isFrozen(policy))
+    Object.keys(policy).length === 32 && Object.isFrozen(policy))
+  // Every T05b DesktopApi method MUST route to the scoped host endpoint,
+  // never to a standalone global docs:* / files:* handler.
+  const privilegedPreloadCases: Array<[string, () => Promise<unknown>]> = [
+    ['pick-image', () => api.pickImage()],
+    ['save-image-as', () => api.saveImageAs('data:image/png;base64,AQID')],
+    ['pick-export-images-target', () => api.pickExportImagesTarget()],
+    ['take-export-pdf', () => api.takeExportPdf('/not/approved.pdf')],
+    ['printers', () => api.listPrinters()],
+    ['print', () => api.print()],
+    ['files-pick', () => api.pickAttachments()],
+    ['files-add', () => api.addAttachmentPaths(['/not/approved'])],
+    ['files-read-image', () => api.readAttachmentImage('/not/approved')],
+    ['write-export-image', () => api.writeExportImage('/not/approved', 'p.png', 'AQID')],
+  ]
+  for (const [name, call] of privilegedPreloadCases) {
+    await call()
+    check('T05b preload routes ' + name + ' only to scoped host IPC',
+      last().channel === 'mcode:docs:privileged-' + name)
+  }
 
   const savedData = new Uint8Array([80, 75, 3, 4])
   replies.set('mcode:document-view:save', { ok: true })
@@ -94,18 +115,18 @@ async function main() {
 
   // Native main registrar: no global docs:* handlers. Sender authorization
   // is mandatory at every invocation including mutations.
-  const handlers = new Map<string, (event: unknown, raw?: unknown) => unknown>()
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   const removed: string[] = []
   const onHandlers = new Map<string, (event: unknown, raw?: unknown) => unknown>()
   const fakeIpc = {
-    handle: (ch: string, fn: (event: unknown, raw?: unknown) => unknown) => { handlers.set(ch, fn) },
+    handle: (ch: string, fn: (event: unknown, ...args: unknown[]) => unknown) => { handlers.set(ch, fn) },
     removeHandler: (ch: string) => { handlers.delete(ch); removed.push(ch) },
     on: (ch: string, fn: (event: unknown, raw?: unknown) => unknown) => { onHandlers.set(ch, fn) },
     removeListener: (ch: string) => { onHandlers.delete(ch) },
   }
   const smokeDataRoot = process.env.MCODE_SMOKE_DATA_ROOT
   if (!smokeDataRoot) throw new Error('isolated Mcode smoke data root required')
-  const dispose = registerDocsIpc(fakeIpc as never, (sender) => sender === approved, () => 'en', () => smokeDataRoot)
+  const dispose = registerDocsIpc(fakeIpc as never, (sender) => sender === approved, () => 'en', () => smokeDataRoot, () => approved.__ports)
   check('scoped native handlers installed, including UI and locale', handlers.size >= 5 && MCODE_NATIVE_DOCS_CHANNELS.every((ch) => handlers.has(ch)))
   const words = new Set<string>()
   let replacements = 0
@@ -118,7 +139,7 @@ async function main() {
     getSpellCheckerLanguages() { return this.active },
     setSpellCheckerLanguages(next: string[]) { this.active = next },
   }
-  const approved = { id: 123, session: spell, isDestroyed: () => false, focus: () => {}, sendInputEvent: () => { kicks++ }, replaceMisspelling: () => { replacements++ }, once: (_event: string, _cb: () => void) => {}, on: (_event: string, _cb: (...args: unknown[]) => void) => {} }
+  const approved = { id: 123, session: spell, __ports: null as DocsPrivilegedPorts | null, __print: null as null | ((cb: (ok: boolean, error?: string) => void) => void), print: (_options: unknown, cb: (ok: boolean, error?: string) => void) => approved.__print?.(cb), getPrintersAsync: async () => [{name: 'fake-queue', displayName: 'Isolated Test Printer', status: 9, options: {secret: 'must-not-return'}}], isDestroyed: () => false, focus: () => {}, sendInputEvent: () => { kicks++ }, replaceMisspelling: () => { replacements++ }, once: (_event: string, _cb: () => void) => {}, on: (_event: string, _cb: (...args: unknown[]) => void) => {} }
   const forged = { id: 124, session: spell }
   const invoke = (ch: string, sender: unknown, raw?: unknown): unknown =>
     handlers.get(ch)!({ sender }, raw)
@@ -150,12 +171,13 @@ async function main() {
   check('claim is synchronous', claimEvent.returnValue === true)
   check('context armed only once', rightClicks.length === 1)
   const disposeSecond = registerDocsIpc(fakeIpc as never, (sender) => sender === forged, () => 'zh')
-  check('additional DocumentViewHost shares registrar without duplicate IPC handles', handlers.size === MCODE_NATIVE_DOCS_CHANNELS.length)
+  check('additional DocumentViewHost shares registrar without duplicate IPC handles', handlers.size === MCODE_NATIVE_DOCS_CHANNELS.length + DOCS_PRIVILEGED_CHANNELS.length)
   check('second host can authorize its own sender', invoke('mcode:docs:native-ui-language', forged) === 'zh')
   disposeSecond()
   check('removed second host cannot retain privileged access', invoke('mcode:docs:native-ui-language', forged) === null)
+  await runPrivilegedBoundarySmoke(handlers, approved, forged, smokeDataRoot, check)
   dispose()
-  check('native registrations can be released', handlers.size === 0 && onHandlers.size === 0 && removed.length === MCODE_NATIVE_DOCS_CHANNELS.length)
+  check('native registrations can be released', handlers.size === 0 && onHandlers.size === 0 && removed.length === MCODE_NATIVE_DOCS_CHANNELS.length + DOCS_PRIVILEGED_CHANNELS.length)
   console.log(`native-docs-boundary: ${count}/${count} PASS`)
 }
 main().catch((e) => { console.error(e); process.exitCode = 1 })

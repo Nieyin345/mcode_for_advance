@@ -6,6 +6,7 @@ import { resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
 import { registerWorkflowEngineHandlers } from "./workflowEngine.js";
 import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
 import { documentViewHost } from "@main/document/documentViewHost.js";
+import { docsPrivilegedPorts } from "@main/document/docsPrivilegedPorts.js";
 // 【ARC-007 P1/GA1】slides 执行器与桥：**静态** import（而非运行时
 // require("@main/...") —— 那是构建器 alias，打包后无法解析）。
 // vendor 快照缺失时的降级在 **seam** 里：slidesVendorModules 被别名到 stub，
@@ -189,6 +190,8 @@ export function registerIpcHandlers(): void {
   // 【ARC-007 P0】打开链的真实 dirty 来源已由 preload 的 `reportCloseCheck`
   // 上报进宿主；这里只补「脏时由真人确认是否放弃未保存修改」的端口 ——
   // 与关闭守卫同一个取向：默认按钮是**取消**（不丢用户修改）。
+  // T05b: use Mcode's existing pickers, pathGuard and modal approval UI.
+  documentViewHost.setDocsPrivilegedPorts(docsPrivilegedPorts);
   documentViewHost.setConfirmDirty(async ({ filePath }) => {
     const options = {
       type: "warning" as const,
