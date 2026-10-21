@@ -354,3 +354,12 @@ ModuleResult  // 与 app_api_call 同形状
   - `pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json`：exit 0。
 - **验收判据状态**：本次前唯一未达成的判据 8（完整 module 回归全绿）现已通过；判据 3/4/6 的 auth、blocked、cancel 变异，以及本次映射缺项变异均证明断言能按预期变红。结合既有回写和本轮复验，T49 的 10 条验收判据均已满足。
 - **并行工作区保护**：`apiCatalog.generated.ts` 以及 `.aoci/baseline.json`、T76 的 smoke/回写文件、`ipc/settingsTransfer.ts` 等其他未提交修改均保留在原处，没有纳入本次提交；本次只提交 T49 的生成器、映射条目和权限 Smoke。
+
+
+### 2026-10-22｜总控独立复验：workflowEngine.load 尾项关闭
+
+- 修复提交：`5861511b08bb707e8e36a500ce185e67fc3a3e53`（`fix(T49): preserve workflow load approval boundary in extension map`）。此修复只改 `gen-module-permission-map.mjs`、`module-permissions-smoke/main.ts` 与 `packages/contracts/src/appPermission.ts`，通过现有权限映射生成器将 `workflowEngine.load` 纳入正确映射，保留 `DANGER` / 用户审批边界；未改 workflow 实现、`policy.ts` 或 API catalog。
+- 总控独立执行完整 17-suite 回归命令：`node apps/desktop/scripts/run-smokes.mjs module-app-call-smoke module-catalog-smoke module-catalog-ui-smoke module-contract-smoke module-contributions-smoke module-executor-smoke module-extension-lifecycle-smoke module-file-identity-smoke module-grant-revoke-safety-smoke module-permissions-smoke module-phase2-e2e-smoke module-phase2-security-smoke module-platform-smoke module-protocol-integrity-smoke module-ui-smoke module-workflow-smoke extension-authoring-smoke`，结果 **17 PASS / 0 FAIL**，日志目录 `apps/desktop/.tmp/smoke-runs/1792599733616-13504-qqrm4s/`。
+- 单独复跑 `node apps/desktop/scripts/run-smokes.mjs module-permissions-smoke`：**PASS**，日志目录 `apps/desktop/.tmp/smoke-runs/1792599709992-5856-Vc7Lc1/`。
+- 总控复跑 `pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` 与 `pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json`：两项 exit 0。
+- 结论：此前唯一失败的闭世界映射判据已达成；本轮代码/回归/双包类型检查闭环。真实在线模型或独立扩展 AI 试写不在本次新增复验范围。
