@@ -13,6 +13,7 @@ import {
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
 import { useNarrowViewport } from "@renderer/hooks/useNarrowViewport.js";
+import { ModelTokenGauge } from "./ContextCapacityPanel.js";
 
 /**
  * Model picker for the composer toolbar.
@@ -54,9 +55,12 @@ function hostOf(url: string): string {
 
 export function ModelDropdown({
   layout = "pill",
+  sessionId,
 }: {
   /** Presentation: pill segment ("pill") vs settings row ("row"). */
   layout?: "pill" | "row";
+  /** Never fall back to foreground tab for a side-chat pane's gauge. */
+  sessionId?: string;
 }) {
   const stacked = layout === "row";
   // Stacked rows cascade their menu to the RIGHT of the list; on a
@@ -83,6 +87,7 @@ export function ModelDropdown({
   const providers = useSessionStore((s) => s.providers);
   const piAvailableModels = useSessionStore((s) => s.piAvailableModels);
   const codexAvailableModels = useSessionStore((s) => s.codexAvailableModels);
+  const snapshot = useSessionStore((s) => sessionId ? s.contextSnapshotBySession[sessionId] : undefined);
 
   const provider = providers.find((p) => p.id === providerId);
   const isPi = provider?.id === "pi-sdk";
@@ -280,6 +285,10 @@ export function ModelDropdown({
               "transition-[transform,opacity] duration-100",
             )}
           >
+            {/* REA ModelSwitcherWithTokenGauge: preserve the existing live,
+                provider-specific model matrix and show the REAL pane-local
+                context capacity/cache breakdown (never sample 200k data). */}
+            <ModelTokenGauge snapshot={snapshot} />
             {/* Built-in aliases (provider-declared). Claude and Pi both hide
                 this section: Claude users pick from their configured gateway
                 endpoints (the "模型列表" section below); Pi has no built-in

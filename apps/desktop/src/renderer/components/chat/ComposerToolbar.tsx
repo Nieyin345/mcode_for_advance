@@ -123,7 +123,7 @@ export function ComposerToolbar({
   if (layout === "row") {
     return (
       <div className="flex w-72 flex-col items-stretch gap-0.5">
-        <ModelDropdown layout="row" />
+        <ModelDropdown layout="row" sessionId={sessionId} />
         <EffortChip layout="row" />
         <PermissionChip layout="row" />
         <WorkflowDropdown layout="row" />
@@ -171,7 +171,7 @@ export function ComposerToolbar({
           <span className="composer-minipill-mid" aria-hidden />
         </>
       )}
-      <ModelDropdown layout="pill" />
+      <ModelDropdown layout="pill" sessionId={sessionId} />
       {/* 工作模式选择器（默认 / 文献检索 / 文献精读 / 文献写作 / 文献评审 / 代码编辑）。
           模式跟着会话走，与模型选择同一套机制；除默认与检索外都会变成系统提示词片段。
           绑哪个文献库仍由「+」菜单里的「文献库」负责 —— 药丸上不重复这个入口。 */}
