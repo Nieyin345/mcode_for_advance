@@ -42,6 +42,7 @@ import { Mention, type MentionNodeAttrs } from "@tiptap/extension-mention";
 import { cn } from "@renderer/lib/cn.js";
 import { useUiPrefsStore } from "@renderer/lib/uiPrefs.js";
 import type { SkillInfo } from "@contracts/ipc";
+import { composerEditorHeightCap, isPostCompositionEnter } from "./composerPhysicalRules.js";
 
 /** Sync the `is-empty` class the placeholder CSS rule keys on (styles.css).
  *  Tiptap v3 adds no such class on its own (and no Placeholder extension is
@@ -244,6 +245,25 @@ export const ComposerEditor = forwardRef<
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // T18 / RichComposerWithMentions: Safari can deliver a non-composing Enter
+  // immediately after compositionend; Tiptap must not forward it to onEnter.
+  const lastCompositionEndRef = useRef(-1);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const updateCap = () => {
+      const remPx = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16;
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      host.style.setProperty("--composer-editor-cap", `${composerEditorHeightCap(viewportHeight, remPx)}px`);
+    };
+    updateCap();
+    window.addEventListener("resize", updateCap);
+    window.visualViewport?.addEventListener("resize", updateCap);
+    return () => {
+      window.removeEventListener("resize", updateCap);
+      window.visualViewport?.removeEventListener("resize", updateCap);
+    };
+  }, []);
   // Mirror the callbacks in refs so the editor (created once) always calls the
   // latest closures without needing to recreate the editor.
   const onChangeRef = useRef(onChange);
@@ -309,11 +329,28 @@ export const ComposerEditor = forwardRef<
         view.dispatch(view.state.tr.insertText(text));
         return true;
       },
+      // WebKit's post-composition false Enter must not submit or insert a line.
+      handleDOMEvents: {
+        compositionend: (_view, event) => {
+          lastCompositionEndRef.current = event.timeStamp;
+          return false;
+        },
+      },
       // Enter sends (parent decides send vs enqueue); Shift+Enter = newline.
       // Suppress Enter during IME composition (so confirming a candidate
       // doesn't send the message). Ctrl/Cmd+Enter is passed through as a
       // modifier — the parent uses it for "插话"(塞进正在跑的那一轮)。
       handleKeyDown: (view, event) => {
+        if (isPostCompositionEnter(
+          event.key,
+          event.timeStamp,
+          lastCompositionEndRef.current,
+          window.navigator.vendor,
+          event.ctrlKey || event.metaKey,
+        )) {
+          event.preventDefault();
+          return true;
+        }
         // 发送键可在 设置 → 常规 里换成 Ctrl/⌘+Enter(lib/uiPrefs.ts)。那种模式下:
         // Enter / Shift+Enter 换行,Ctrl/⌘+Enter 发送(=默认模式的 Enter),
         // Ctrl/⌘+Shift+Enter 插话(=默认模式的 Ctrl+Enter)。

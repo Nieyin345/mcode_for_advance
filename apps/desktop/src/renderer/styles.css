@@ -2211,7 +2211,10 @@ button.chat-ledger-head:hover {
      box to jump on the first keystroke. Content grows freely up to max-height,
      then scrolls internally. */
   min-height: 3rem; /* ~2 lines at text-sm leading-relaxed */
-  max-height: 18rem; /* 288px — mirrors the textarea's max-h-72 */
+  /* T18 / upstream ChatComposer: 40svh or 24rem, whichever is smaller.
+     The JS-derived variable follows visualViewport during mobile keyboard
+     resize; CSS min() is the fallback before hydration. */
+  max-height: var(--composer-editor-cap, min(40svh, 24rem));
   overflow-y: auto;
   word-break: break-word;
   white-space: pre-wrap;
@@ -3162,8 +3165,8 @@ html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
   transition-duration: var(--dur-fast);
   transition-timing-function: var(--ease-snap);
 }
-/* 编辑器自适应高度：上游 min 48px / max 384px。Mcode 现为 3rem/18rem，
- * workspace 下对齐上游下限，上限保留 18rem（比上游松，长提示不早出滚动条）。 */
+/* 编辑器自适应高度：T18 统一走 --composer-editor-cap (40svh / 24rem)，
+ * workspace 只保留上游 3rem 下限，避免该主题重新覆盖共享上限。 */
 [data-ui-shell-variant="workspace"] .composer-host .ProseMirror {
   min-height: 3rem;
 }
