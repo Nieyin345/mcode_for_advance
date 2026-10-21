@@ -1,3 +1,4 @@
+import { useCustomCommandsStore } from "@renderer/stores/customCommandsStore.js";
 import { useEffect, useMemo, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
@@ -142,12 +143,12 @@ function CommandsSection() {
 
   // Read this project's commands from the store. Selector returns a stable
   // ref (EMPTY constant) when the project has no saved commands.
-  const commands = useSessionStore((s) =>
+  const commands = useCustomCommandsStore((s) =>
     selectedId ? s.customCommandsByProject[selectedId] ?? EMPTY : EMPTY,
   );
-  const addCustomCommand = useSessionStore((s) => s.addCustomCommand);
-  const updateCustomCommand = useSessionStore((s) => s.updateCustomCommand);
-  const removeCustomCommand = useSessionStore((s) => s.removeCustomCommand);
+  const addCustomCommand = useCustomCommandsStore((s) => s.addCustomCommand);
+  const updateCustomCommand = useCustomCommandsStore((s) => s.updateCustomCommand);
+  const removeCustomCommand = useCustomCommandsStore((s) => s.removeCustomCommand);
 
   // Dialog state: null = closed; otherwise the draft being edited (blank id =
   // add mode, non-blank id = edit mode).

@@ -1,3 +1,4 @@
+import { useBrowserStore } from "@renderer/stores/browserStore.js";
 /**
  * Hide the embedded browser's OS-level WebContentsView while a renderer-DOM
  * overlay/popup is open — but only when that popup actually reaches the
@@ -32,7 +33,7 @@ export function useSuppressBrowserView(
   open: boolean,
   popupRef?: RefObject<HTMLElement | null> | ReadonlyArray<RefObject<HTMLElement | null>>,
 ): void {
-  const suppressBrowserView = useSessionStore((s) => s.suppressBrowserView);
+  const suppressBrowserView = useBrowserStore((s) => s.suppressBrowserView);
   // Ref mirror so the effect deps stay [open] — callers may pass inline ref
   // arrays whose identity changes per render, and refs are read lazily here.
   const popupRefRef = useRef(popupRef);

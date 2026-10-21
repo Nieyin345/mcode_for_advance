@@ -17,6 +17,9 @@ import { setSendTurnStub, setSessionMessagesStub, setSkillsListStub, setTruncate
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useBrowserStore } from "@renderer/stores/browserStore.js";
+import { useGitStore } from "@renderer/stores/gitStore.js";
+import { useCustomCommandsStore } from "@renderer/stores/customCommandsStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { ChatMessage, SessionState } from "@renderer/stores/sessionStore.js";
 import { applyDeltaEntries, applySessionDeletedState, pendingInterruptDone, resyncAfterTurn } from "@renderer/stores/sessionStoreHelpers.js";
@@ -2215,6 +2218,98 @@ console.log("\n[ARC005 UIK7-044] 用户显式布局保存失败不可静默：�
     useToastStore.getState().toasts.some((toast)=>toast.kind==="error" && toast.title.length>0));
   useToastStore.getState().clear();
   setSettingSetStub(null);
+}
+
+// T66 baseline: semantic read/write/readback and stable persistence keys before extracting stores.
+console.log("\n[T66] browser / git / project commands behaviour and persistence");
+{
+  const s = useSessionStore;
+  const writes: Array<{ key: string; value: string }> = [];
+  setSettingSetStub(async (input: unknown) => {
+    writes.push(input as { key: string; value: string });
+    return { ok: true };
+  });
+  s.getState().setBrowserTabs([]);
+  s.getState().setBrowserTabCount(-3);
+  eq("browser tab count clamps negative", s.getState().browserTabCount, 0);
+  s.getState().setBrowserDeviceToolbarOpen(true);
+  eq("browser toolbar toggle readback", s.getState().browserDeviceToolbarOpen, true);
+  const tab = { id: "t66-tab", browserId: "t66-1", url: "https://example.invalid/a",
+    title: "A", loading: false, canGoBack: false, canGoForward: false,
+    pickMode: false, device: "desktop" as const };
+  s.getState().addBrowserTab(tab);
+  s.getState().patchBrowserTab("t66-1", { title: "patched" });
+  eq("browser patch targets browserId", s.getState().browserTabs[0]?.title, "patched");
+  s.getState().setBrowserActiveTabId("t66-tab");
+  eq("browser activation readback", s.getState().browserActiveTabId, "t66-tab");
+  s.getState().suppressBrowserView(true);
+  s.getState().suppressBrowserView(false);
+  eq("browser view suppression is reversible", s.getState().browserViewSuppressed, 0);
+  eq("adopt existing browser preserves user device", s.getState().adoptAgentBrowserTab("t66-1", { url: "https://example.invalid/b", device: "iphone" }), false);
+  eq("agent navigation patches URL", s.getState().browserTabs[0]?.url, "https://example.invalid/b");
+  s.getState().openUrlInBrowser("https://example.invalid/next");
+  eq("browser external URL staged", s.getState().pendingBrowserUrl, "https://example.invalid/next");
+  eq("browser external URL switches sidebar", s.getState().rightPanelTab, "browser");
+  eq("browser external URL opens right pane", s.getState().rightOpen, true);
+  s.getState().removeBrowserTab("t66-tab");
+  eq("browser remove readback", s.getState().browserTabs.length, 0);
+
+  const gitTab = (id: string) => ({ id, filePath: id, before: "before", title: id,
+    repoPath: "D:/t66-fake", source: "working" as const });
+  s.getState().openGitDiffDialogTab(gitTab("g1"));
+  s.getState().openGitDiffDialogTab(gitTab("g2"));
+  s.getState().openGitDiffDialogTab({ ...gitTab("g1"), before: "updated" });
+  eq("git dialog dedups by id", s.getState().gitDiffDialogTabs.length, 2);
+  eq("git dialog refreshes same tab", s.getState().gitDiffDialogTabs[0]?.before, "updated");
+  s.getState().closeGitDiffDialogTab("g1");
+  eq("git dialog closes just selected tab", s.getState().gitDiffDialogTabs.length, 1);
+  s.getState().closeGitDiffDialogTab("g2");
+  eq("git dialog closes when empty", s.getState().gitDiffDialogOpen, false);
+  s.setState({ activeProjectId: "t66-a" });
+  s.getState().setGitDiffPair("fake-file", { before: "A" });
+  s.setState({ activeProjectId: "t66-b" });
+  s.getState().setGitDiffPair("fake-file", { before: "B", after: "C" });
+  eq("git diff isolated by project", s.getState().gitDiffByProject["t66-a"]?.["fake-file"]?.before, "A");
+  eq("git diff other project retained", s.getState().gitDiffByProject["t66-b"]?.["fake-file"]?.after, "C");
+  s.getState().clearGitDiffBefore("fake-file");
+  check("git diff cleared only from active project", !s.getState().gitDiffByProject["t66-b"]?.["fake-file"]
+    && s.getState().gitDiffByProject["t66-a"]?.["fake-file"]?.before === "A");
+  s.getState().setGitDiffOpenMode("dialog");
+  s.getState().toggleCollapsedGitRepo("D:/t66-fake");
+  eq("git collapsed repo readback", s.getState().collapsedGitRepos["D:/t66-fake"], true);
+
+  s.getState().setCustomCommandsByProject("t66-a", [{ id: "cmd1", name: "a", command: "echo hi" }]);
+  s.getState().updateCustomCommand("t66-a", { id: "cmd1", name: "changed", command: "echo hi" });
+  eq("custom command edit readback", s.getState().customCommandsByProject["t66-a"]?.[0]?.name, "changed");
+  s.getState().addCustomCommand("t66-b", { name: "b", command: "echo b" });
+  eq("custom commands scoped by project", s.getState().customCommandsByProject["t66-b"]?.length, 1);
+  s.getState().removeCustomCommand("t66-a", "cmd1");
+  eq("custom command remove readback", s.getState().customCommandsByProject["t66-a"]?.length, 0);
+  eq("git diff persistence key untouched", writes.find((w) => w.key === "ui.gitDiffOpenMode")?.value, "dialog");
+  check("git collapse persistence key untouched", writes.some((w) => w.key === "ui.gitCollapsedRepos"));
+  check("custom commands persistence key untouched", writes.some((w) => w.key === "ui.customCommandsByProject"));
+  setSettingSetStub(null);
+}
+
+// The domain stores are now real Zustand owners, not dead copy-pasted helpers.
+console.log("\n[T66] direct domain actions / legacy facade observe identical state");
+{
+  useBrowserStore.getState().setBrowserTabCount(-7);
+  eq("split browser action still clamps", useBrowserStore.getState().browserTabCount, 0);
+  eq("browser facade observes independent store", useSessionStore.getState().browserTabCount, 0);
+  useBrowserStore.getState().setBrowserTabCount(4);
+  eq("browser facade receives independent mutation", useSessionStore.getState().browserTabCount, 4);
+  useSessionStore.setState({ browserTabCount: 2 });
+  eq("legacy direct setState reaches browser owner", useBrowserStore.getState().browserTabCount, 2);
+  useGitStore.getState().setGitDiffDialogViewMode("tabs");
+  eq("git view readback in owner", useGitStore.getState().gitDiffDialogViewMode, "tabs");
+  eq("legacy Git selector observes owner", useSessionStore.getState().gitDiffDialogViewMode, "tabs");
+  useSessionStore.setState({ activeProjectId: "t66-a" });
+  useGitStore.getState().setGitDiffBefore("owner-file", "owner-before");
+  eq("git owner reads active project through injected bridge", useGitStore.getState().gitDiffByProject["t66-a"]?.["owner-file"]?.before, "owner-before");
+  useCustomCommandsStore.getState().setCustomCommandsByProject("t66-owner", [{ id: "id", name: "n", command: "echo n" }]);
+  eq("custom command owner readback", useCustomCommandsStore.getState().customCommandsByProject["t66-owner"]?.[0]?.name, "n");
+  eq("legacy custom command selector observes owner", useSessionStore.getState().customCommandsByProject["t66-owner"]?.[0]?.name, "n");
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

@@ -1,3 +1,4 @@
+import { useCustomCommandsStore } from "@renderer/stores/customCommandsStore.js";
 import { useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
@@ -50,12 +51,12 @@ export function TerminalCommandsMenu({
 }) {
   const { t } = useI18n();
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
-  const commands = useSessionStore((s) =>
+  const commands = useCustomCommandsStore((s) =>
     activeProjectId ? s.customCommandsByProject[activeProjectId] ?? EMPTY : EMPTY,
   );
-  const addCustomCommand = useSessionStore((s) => s.addCustomCommand);
-  const updateCustomCommand = useSessionStore((s) => s.updateCustomCommand);
-  const removeCustomCommand = useSessionStore((s) => s.removeCustomCommand);
+  const addCustomCommand = useCustomCommandsStore((s) => s.addCustomCommand);
+  const updateCustomCommand = useCustomCommandsStore((s) => s.updateCustomCommand);
+  const removeCustomCommand = useCustomCommandsStore((s) => s.removeCustomCommand);
 
   const [menuOpen, setMenuOpen] = useState(false);
   // Dialog state: null = closed; otherwise the draft being edited (blank id =

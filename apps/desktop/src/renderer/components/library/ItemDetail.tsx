@@ -1,3 +1,4 @@
+import { useBrowserStore } from "@renderer/stores/browserStore.js";
 /**
  * 右栏:文献详情。
  *
@@ -49,7 +50,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
  */
 export function ItemMetadata({ item }: { item: LibraryItem }) {
   const { t } = useI18n();
-  const openUrlInBrowser = useSessionStore((s) => s.openUrlInBrowser);
+  const openUrlInBrowser = useBrowserStore((s) => s.openUrlInBrowser);
   if (!item.url && !item.language) return null;
   return (
     <div>

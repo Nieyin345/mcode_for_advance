@@ -1,3 +1,4 @@
+import { useBrowserStore } from "@renderer/stores/browserStore.js";
 import { useEffect, useMemo, useState } from "react";
 import { GenofficeViewHostPane } from "@renderer/components/ide/GenofficeViewHostPane.js";
 import { stableDocId } from "@renderer/components/ide/GenofficeViewHostPane.js";
@@ -78,7 +79,7 @@ export function RightPanel() {
     if (pinnedDoc) setVisitedDocs(previous => previous.has(pinnedDoc) ? previous : new Set([...previous, pinnedDoc]));
     if (pinnedFlow) setVisitedFlows(previous => previous.has(pinnedFlow) ? previous : new Set([...previous, pinnedFlow]));
   }, [pinnedDoc, pinnedFlow]);
-  const browserTabCount = useSessionStore((s) => s.browserTabCount);
+  const browserTabCount = useBrowserStore((s) => s.browserTabCount);
   const widePanelOpen = useSessionStore((s) => s.widePanelOpen);
   const setWidePanelOpen = useSessionStore((s) => s.setWidePanelOpen);
   const rightDock = useSessionStore((s) => s.rightDock);

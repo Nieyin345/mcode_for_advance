@@ -1,3 +1,4 @@
+import { useGitStore } from "@renderer/stores/gitStore.js";
 /**
  * `GitRepoCard` 的**子组件与工具**（从 `GitRepoCard.tsx` 拆出）。
  *
@@ -674,9 +675,9 @@ function FileRow({
 }) {
   const { t } = useI18n();
   const openFileInIde = useSessionStore((s) => s.openFileInIde);
-  const setGitDiffPair = useSessionStore((s) => s.setGitDiffPair);
-  const gitDiffOpenMode = useSessionStore((s) => s.gitDiffOpenMode);
-  const openGitDiffDialogTab = useSessionStore((s) => s.openGitDiffDialogTab);
+  const setGitDiffPair = useGitStore((s) => s.setGitDiffPair);
+  const gitDiffOpenMode = useGitStore((s) => s.gitDiffOpenMode);
+  const openGitDiffDialogTab = useGitStore((s) => s.openGitDiffDialogTab);
   const [diffTally, setDiffTally] = useState<{ adds: number; dels: number } | null>(null);
 
   const absPath = joinPath(repoPath, file.path);

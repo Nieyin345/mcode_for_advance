@@ -1,3 +1,4 @@
+import { useGitStore } from "@renderer/stores/gitStore.js";
 import { useMemo } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
@@ -56,8 +57,8 @@ export function SettingsGitPanel() {
   const customModels = useSessionStore((s) => s.customModels);
 
   // ── Git diff open mode ──
-  const gitDiffOpenMode = useSessionStore((s) => s.gitDiffOpenMode);
-  const setGitDiffOpenMode = useSessionStore((s) => s.setGitDiffOpenMode);
+  const gitDiffOpenMode = useGitStore((s) => s.gitDiffOpenMode);
+  const setGitDiffOpenMode = useGitStore((s) => s.setGitDiffOpenMode);
 
   // Build a flat list of selectable models: one entry per (config, model).
   // Each entry's value is `"configId:modelId"`, label is `"供应商名 → 模型id"`.

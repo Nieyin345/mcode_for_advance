@@ -1,7 +1,8 @@
 // ───────────────────────────────────────────────────────────────────────────
 // 职责分区（2026-10-15）
 //
-// 本文件是全局唯一的会话 store；下面的巨大对象字面量按「域」分区，
+// 本文件保留会话/项目骨架及旧调用方兼容入口；T66 已把 Browser、Git diff、
+// 项目自定义命令迁到独立 Zustand store。下面其余对象仍按「域」分区，
 // 分区名前缀（A–M / 0）与清单来自 docs/design/sessionStore-领域划界.md
 // 的「附：13 个域」一节。每个域块前有一行注释头：
 //
@@ -12,16 +13,19 @@
 // 正是 6061 行 action 里平均只碰 3.5 个成员、140 个只碰 ≤2 个的原因：
 // 不是逻辑纠缠，是缺归档。先归位，再谈别的。
 //
-// 为什么分区而不是拆成多个 store：164 个 state 字段**全部**被外部文件引用
-// （model 被 87 个文件读、locale 被 70 个），拆 store 会制造 164 条跨 store
-// import；而 state 字面量只占全文件 1.7%，收益上限极低、代价极高。详见
-// docs/design/sessionStore-领域划界.md —— 那里的结论是「该搬的是类型和
-// 设置镜像（已搬），不是 state」。
+// T66 采用逐域迁移：三个独立 store 负责真实状态和动作；旧 SessionState
+// 字段/动作仍由 sessionStoreDomainBridge 兼容同步，以免跨域消费方突变。
+// 后续只有等剩余调用方切走，才可以移除兼容字段；消息/回合大段逻辑
+// 仍属于会话主干，拆它需另开任务（见 tasks/T66-session-store-split.md）。
 //
 // 分区不改变任何行为：它只是注释边界。分区内成员的**顺序**是历史顺序，
 // 未按域重排（重排会改动代码行，本约束不允许）。
 // ───────────────────────────────────────────────────────────────────────────
 import { create } from "zustand";
+import { useBrowserStore } from "./browserStore.js";
+import { useGitStore } from "./gitStore.js";
+import { connectSessionStoreDomains } from "./sessionStoreDomainBridge.js";
+import { useCustomCommandsStore } from "./customCommandsStore.js";
 import type { Project, Session, SessionBookmark } from "@contracts/session";
 import type { SessionRunningSnapshotEvent, TurnFilesEvent, CompactResultEvent, TurnRewoundEvent, RuntimeEvent, NodeArtifact, NodeExecutionRecord, PermissionMode, EffortLevel, AskUserQuestionItem, ApprovalRequestEvent, PlanApprovalRequestEvent, PlanUpdateEvent, WorkflowNodeResultEvent, WorkflowChoiceOption, SubagentSnapshot, TranscriptBlock, ContextSnapshot, TurnUsageRecord, EngineCommandInfo } from "@contracts/runtime";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
@@ -4517,70 +4521,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
   // ─────────────── H 浏览器面板 ───────────────
-  setBrowserTabCount: (count) => set({ browserTabCount: Math.max(0, count) }),
-  setBrowserDeviceToolbarOpen: (open) => set({ browserDeviceToolbarOpen: open }),
-  suppressBrowserView: (suppressed) =>
-    set((s) => ({ browserViewSuppressed: Math.max(0, s.browserViewSuppressed + (suppressed ? 1 : -1)) })),
-  setBrowserTabs: (tabs) => set({ browserTabs: tabs }),
-  setBrowserActiveTabId: (id) => set({ browserActiveTabId: id }),
-  addBrowserTab: (tab) => set((s) => ({ browserTabs: [...s.browserTabs, tab] })),
-  removeBrowserTab: (id) =>
-    set((s) => ({ browserTabs: s.browserTabs.filter((t) => t.id !== id) })),
-  patchBrowserTab: (browserId, patch) =>
-    set((s) => ({
-      browserTabs: s.browserTabs.map((t) => (t.browserId === browserId ? { ...t, ...patch } : t)),
-    })),
-  openUrlInBrowser: (url) => {
-    // Reveal the browser sidebar + stage the URL. BrowserPanel opens it in a
-    // NEW tab: when tabs already exist it creates one for the URL; when none
-    // exist (panel first opened) the first-tab effect loads it into the
-    // initial tab.
-    get().setRightPanelTab("browser");
-    set({ rightOpen: true, pendingBrowserUrl: url });
-  },
-  adoptAgentBrowserTab: (browserId, info) => {
-    const s = get();
-    const existing = s.browserTabs.find((t) => t.browserId === browserId);
-    if (existing) {
-      // Already adopted — refresh url/title ONLY and activate it. We must NOT
-      // overwrite device/orientation/customWidth/customHeight: the user may have
-      // manually selected a device preset or custom size, and an agent
-      // navigation (which defaults device to "desktop") must never clobber that
-      // selection. Chromium device emulation also persists across navigations,
-      // so the main process keeps the user's emulation without re-applying.
-      if (info.url || info.title) {
-        set({
-          browserTabs: s.browserTabs.map((t) =>
-            t.browserId === browserId
-              ? {
-                  ...t,
-                  ...(typeof info.url === "string" ? { url: info.url } : {}),
-                  ...(typeof info.title === "string" ? { title: info.title } : {}),
-                }
-              : t,
-          ),
-        });
-      }
-      if (s.browserActiveTabId !== existing.id) set({ browserActiveTabId: existing.id });
-      return false;
-    }
-    // Register a new tab for the agent-created view. device comes from the
-    // agent's navigate call (default desktop = no emulation, full viewport).
-    const tab: BrowserTab = {
-      id: `agent-${browserId}`,
-      browserId,
-      url: info.url ?? "",
-      title: info.title ?? "",
-      loading: false,
-      canGoBack: false,
-      canGoForward: false,
-      pickMode: false,
-      device: info.device ?? "desktop",
-      orientation: info.orientation,
-    };
-    set({ browserTabs: [...s.browserTabs, tab], browserActiveTabId: tab.id });
-    return true;
-  },
+  setBrowserTabCount: (...args: Parameters<SessionState["setBrowserTabCount"]>) => useBrowserStore.getState().setBrowserTabCount(...args),
+  setBrowserDeviceToolbarOpen: (...args: Parameters<SessionState["setBrowserDeviceToolbarOpen"]>) => useBrowserStore.getState().setBrowserDeviceToolbarOpen(...args),
+  suppressBrowserView: (...args: Parameters<SessionState["suppressBrowserView"]>) => useBrowserStore.getState().suppressBrowserView(...args),
+  setBrowserTabs: (...args: Parameters<SessionState["setBrowserTabs"]>) => useBrowserStore.getState().setBrowserTabs(...args),
+  setBrowserActiveTabId: (...args: Parameters<SessionState["setBrowserActiveTabId"]>) => useBrowserStore.getState().setBrowserActiveTabId(...args),
+  addBrowserTab: (...args: Parameters<SessionState["addBrowserTab"]>) => useBrowserStore.getState().addBrowserTab(...args),
+  removeBrowserTab: (...args: Parameters<SessionState["removeBrowserTab"]>) => useBrowserStore.getState().removeBrowserTab(...args),
+  patchBrowserTab: (...args: Parameters<SessionState["patchBrowserTab"]>) => useBrowserStore.getState().patchBrowserTab(...args),
+  openUrlInBrowser: (...args: Parameters<SessionState["openUrlInBrowser"]>) => useBrowserStore.getState().openUrlInBrowser(...args),
+  adoptAgentBrowserTab: (...args: Parameters<SessionState["adoptAgentBrowserTab"]>) => useBrowserStore.getState().adoptAgentBrowserTab(...args),
 
   // ── Draggable pane sizes ──
   // adjust* apply an incremental delta (from the drag handle) to the current
@@ -6786,36 +6736,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   // ─────────────── M 项目级自定义命令 ───────────────
-  setCustomCommandsByProject: (projectId, commands) => {
-    set((s) => ({
-      customCommandsByProject: { ...s.customCommandsByProject, [projectId]: commands },
-    }));
-    void api.setting
-      .set({ key: UI_CUSTOM_COMMANDS_BY_PROJECT_SETTING_KEY, value: JSON.stringify(get().customCommandsByProject) })
-      .catch((err) => console.error("setting.set(customCommandsByProject) failed:", err));
-  },
+  setCustomCommandsByProject: (...args: Parameters<SessionState["setCustomCommandsByProject"]>) => useCustomCommandsStore.getState().setCustomCommandsByProject(...args),
 
-  addCustomCommand: (projectId, cmd) => {
-    const prev = get().customCommandsByProject[projectId] ?? [];
-    const next: CustomCommand = { ...cmd, id: `cmd-${Date.now().toString(36)}` };
-    get().setCustomCommandsByProject(projectId, [...prev, next]);
-  },
+  addCustomCommand: (...args: Parameters<SessionState["addCustomCommand"]>) => useCustomCommandsStore.getState().addCustomCommand(...args),
 
-  updateCustomCommand: (projectId, cmd) => {
-    const prev = get().customCommandsByProject[projectId] ?? [];
-    get().setCustomCommandsByProject(
-      projectId,
-      prev.map((c) => (c.id === cmd.id ? cmd : c)),
-    );
-  },
+  updateCustomCommand: (...args: Parameters<SessionState["updateCustomCommand"]>) => useCustomCommandsStore.getState().updateCustomCommand(...args),
 
-  removeCustomCommand: (projectId, id) => {
-    const prev = get().customCommandsByProject[projectId] ?? [];
-    get().setCustomCommandsByProject(
-      projectId,
-      prev.filter((c) => c.id !== id),
-    );
-  },
+  removeCustomCommand: (...args: Parameters<SessionState["removeCustomCommand"]>) => useCustomCommandsStore.getState().removeCustomCommand(...args),
 
   // ─────────────── F 编辑器 / IDE ───────────────
   openFileInIde: (filePath, opts) => {
@@ -7410,59 +7337,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   // ─────────────── G Git ───────────────
-  setGitDiffOpenMode: (mode) => {
-    set({ gitDiffOpenMode: mode });
-    void api.setting
-      .set({ key: UI_GIT_DIFF_OPEN_MODE_SETTING_KEY, value: mode })
-      .catch((err) => console.error("setting.set(gitDiffOpenMode) failed:", err));
-  },
+  setGitDiffOpenMode: (...args: Parameters<SessionState["setGitDiffOpenMode"]>) => useGitStore.getState().setGitDiffOpenMode(...args),
 
-  openGitDiffDialogTab: (tab) => {
-    set((s) => {
-      // Dedup by file path: re-clicking the same file refreshes its snapshot
-      // and moves it to the end (most-recent) rather than opening a duplicate.
-      const existing = s.gitDiffDialogTabs.find((t) => t.id === tab.id);
-      const tabs = existing
-        ? s.gitDiffDialogTabs.map((t) => (t.id === tab.id ? { ...t, ...tab } : t))
-        : [...s.gitDiffDialogTabs, tab];
-      return {
-        gitDiffDialogTabs: tabs,
-        gitDiffDialogActiveId: tab.id,
-        // Opening a tab always surfaces the dialog.
-        gitDiffDialogOpen: true,
-      };
-    });
-  },
+  openGitDiffDialogTab: (...args: Parameters<SessionState["openGitDiffDialogTab"]>) => useGitStore.getState().openGitDiffDialogTab(...args),
 
-  closeGitDiffDialogTab: (id) => {
-    set((s) => {
-      const idx = s.gitDiffDialogTabs.findIndex((t) => t.id === id);
-      if (idx === -1) return {};
-      const tabs = s.gitDiffDialogTabs.filter((t) => t.id !== id);
-      // If the closed tab was active, shift to an adjacent one (prefer the
-      // previous; otherwise the next; otherwise none).
-      let activeId = s.gitDiffDialogActiveId;
-      let open = s.gitDiffDialogOpen;
-      if (activeId === id) {
-        activeId = tabs[idx - 1]?.id ?? tabs[idx]?.id ?? null;
-        // No tabs left -> close the dialog too.
-        open = tabs.length > 0;
-      }
-      return { gitDiffDialogTabs: tabs, gitDiffDialogActiveId: activeId, gitDiffDialogOpen: open };
-    });
-  },
+  closeGitDiffDialogTab: (...args: Parameters<SessionState["closeGitDiffDialogTab"]>) => useGitStore.getState().closeGitDiffDialogTab(...args),
 
-  setGitDiffDialogActive: (id) => {
-    set({ gitDiffDialogActiveId: id });
-  },
+  setGitDiffDialogActive: (...args: Parameters<SessionState["setGitDiffDialogActive"]>) => useGitStore.getState().setGitDiffDialogActive(...args),
 
-  setGitDiffDialogOpen: (open) => {
-    set({ gitDiffDialogOpen: open });
-  },
+  setGitDiffDialogOpen: (...args: Parameters<SessionState["setGitDiffDialogOpen"]>) => useGitStore.getState().setGitDiffDialogOpen(...args),
 
-  setGitDiffDialogViewMode: (mode) => {
-    set({ gitDiffDialogViewMode: mode });
-  },
+  setGitDiffDialogViewMode: (...args: Parameters<SessionState["setGitDiffDialogViewMode"]>) => useGitStore.getState().setGitDiffDialogViewMode(...args),
 
   // ─────────────── F 编辑器 / IDE ───────────────
   toggleDirExpanded: (dirPath) => {
@@ -7504,32 +7389,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   // ─────────────── G Git ───────────────
-  setGitDiffBefore: (filePath, before) => {
-    get().setGitDiffPair(filePath, { before });
-  },
+  setGitDiffBefore: (...args: Parameters<SessionState["setGitDiffBefore"]>) => useGitStore.getState().setGitDiffBefore(...args),
 
-  setGitDiffPair: (filePath, pair) => {
-    const pid = get().activeProjectId;
-    if (!pid) return;
-    set((s) => ({
-      gitDiffByProject: {
-        ...s.gitDiffByProject,
-        [pid]: { ...(s.gitDiffByProject[pid] ?? {}), [filePath]: pair },
-      },
-    }));
-  },
+  setGitDiffPair: (...args: Parameters<SessionState["setGitDiffPair"]>) => useGitStore.getState().setGitDiffPair(...args),
 
-  clearGitDiffBefore: (filePath) => {
-    const pid = get().activeProjectId;
-    if (!pid) return;
-    set((s) => {
-      const projMap = s.gitDiffByProject[pid];
-      if (!projMap || !(filePath in projMap)) return {};
-      const next = { ...projMap };
-      delete next[filePath];
-      return { gitDiffByProject: { ...s.gitDiffByProject, [pid]: next } };
-    });
-  },
+  clearGitDiffBefore: (...args: Parameters<SessionState["clearGitDiffBefore"]>) => useGitStore.getState().clearGitDiffBefore(...args),
 
   setCommitGenModel: (modelId) => {
     set({ commitGenModel: modelId });
@@ -7582,21 +7446,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   // ─────────────── G Git ───────────────
-  toggleCollapsedGitRepo: (repoPath) => {
-    set((s) => {
-      const next = { ...s.collapsedGitRepos };
-      if (next[repoPath]) {
-        delete next[repoPath]; // remove key when expanding
-      } else {
-        next[repoPath] = true;
-      }
-      void api.setting
-        .set({ key: UI_GIT_COLLAPSED_REPOS_SETTING_KEY, value: JSON.stringify(next) })
-        .catch((err) => console.error("setting.set(gitCollapsedRepos) failed:", err));
-      return { collapsedGitRepos: next };
-    });
-  },
+  toggleCollapsedGitRepo: (...args: Parameters<SessionState["toggleCollapsedGitRepo"]>) => useGitStore.getState().toggleCollapsedGitRepo(...args),
 }));
+
+connectSessionStoreDomains(useSessionStore);
 
 // Stable empty arrays (e.g. EMPTY_MESSAGES, EMPTY_TODOS) are exported
 // directly at their declaration site (see the "Stable empty arrays" block

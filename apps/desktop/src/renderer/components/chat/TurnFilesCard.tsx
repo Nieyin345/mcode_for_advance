@@ -5,6 +5,7 @@ import { basename } from "@renderer/lib/path.js";
 import { api } from "@renderer/lib/api.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useGitStore } from "@renderer/stores/gitStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import { ConfirmDialog } from "@renderer/components/ui/index.js";
@@ -320,12 +321,12 @@ function FileRow({ entry }: { entry: TurnFileEntry }) {
     // Wide-panel (3:7) mode has NO center editor column — a center-mode open
     // would write invisible store state. Route to the floating diff dialog
     // there too, so the click always surfaces a visible side-by-side diff.
-    if (store.gitDiffOpenMode === "dialog" || store.widePanelOpen) {
+    if (useGitStore.getState().gitDiffOpenMode === "dialog" || store.widePanelOpen) {
       // Dialog open-mode: open (or refresh) a diff tab in the floating dialog.
       // `after` is omitted on purpose - DiffPane reads the live working-tree
       // file from disk, which is exactly the post-turn content we want to diff
       // against the frozen `before` snapshot.
-      store.openGitDiffDialogTab({
+      useGitStore.getState().openGitDiffDialogTab({
         id: `${entry.filePath}::turn`,
         filePath: entry.filePath,
         before: entry.before,

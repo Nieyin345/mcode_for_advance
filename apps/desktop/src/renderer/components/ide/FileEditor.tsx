@@ -1,3 +1,5 @@
+import { useBrowserStore } from "@renderer/stores/browserStore.js";
+import { useGitStore } from "@renderer/stores/gitStore.js";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import Editor, { DiffEditor, useMonaco } from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
@@ -341,7 +343,7 @@ export function HtmlPreviewButton({ filePath, projectPath }: { filePath: string;
   return (
     <button
       type="button"
-      onClick={() => useSessionStore.getState().openUrlInBrowser(localPathToFileUrl(filePath))}
+      onClick={() => useBrowserStore.getState().openUrlInBrowser(localPathToFileUrl(filePath))}
       className={cn(
         "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
         "text-content-muted hover:bg-surface-hover hover:text-content",
@@ -2649,7 +2651,7 @@ function useGitDiffPair(
   filePath: string,
 ): { before: string; after?: string } | undefined {
   const pid = useSessionStore((s) => s.activeProjectId);
-  const projMap = useSessionStore((s) =>
+  const projMap = useGitStore((s) =>
     pid ? s.gitDiffByProject[pid] : undefined,
   );
   return projMap?.[filePath];

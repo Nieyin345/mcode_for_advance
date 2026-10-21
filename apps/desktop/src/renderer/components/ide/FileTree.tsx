@@ -1,3 +1,4 @@
+import { useBrowserStore } from "@renderer/stores/browserStore.js";
 import { FileMenuEntries } from "../customUi/FileMenuEntries.js";
 import { CustomUiCustomizeItem } from "../customUi/CustomUiMenuItems.js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -1423,7 +1424,7 @@ function FileNodeRow({
                 builtins={{
                   addToChat: { run: () => enqueueChatFile(path) },
                   openInBrowser: /\.html?$/i.test(path)
-                    ? { run: () => useSessionStore.getState().openUrlInBrowser(localPathToFileUrl(path)) }
+                    ? { run: () => useBrowserStore.getState().openUrlInBrowser(localPathToFileUrl(path)) }
                     : undefined,
                 }}
                 before={<MenuSeparator />}

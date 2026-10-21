@@ -180,3 +180,16 @@ grep -rn "useSessionStore" apps/desktop/src/renderer/ | wc -l
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### T66 执行回写（2026-10-21）
+
+- **独立 store**：`browserStore.ts` 92 行（10 个动作）、`gitStore.ts` 100 行（10 个动作）、`customCommandsStore.ts` 34 行（4 个动作）；另有 `sessionStoreDomainBridge.ts` 65 行（兼容旧入口）。
+- **主文件**：`sessionStore.ts` 从开工读取的 7,604 行缩到 7,456 行（命令 `python -c "len(...splitlines())"`）。**未降到 3,000 行**：此次卡限定先拆 Browser、Git 和一个自选域，余下大部分是会话消息/回合、初始化、IDE、布局、模型等仍直接相互依赖的主干；任务书明确说拆消息子系统须另开卡；为保证纯重构语义，未越界硬拆。接受判据 2 的“或说明原因”，但绝不宣称完成 3,000 行目标。
+- **跨 store 与循环依赖**：域 store 内部使用自身的 `getState()`，跨域（浏览器触发右栏、Git 需要活动项目）由 session 层注入回调；互相不运行时反向 import；`sessionStoreDomainBridge` 保留旧调用方 `useSessionStore` 和已有 `setState` 兼容（从独立域向主 store 同步、旧写入也能同步回域），不修改既有 `SessionState` 类型形状。无新增显式运行时循环依赖。
+- **引用清点**：迁移前 renderer 下 **138 文件 / 1,066 处** `useSessionStore` 字面引用；先自动迁移纯域读取 **43 处（12 文件）**，后手动处理复合 selector、Git 动作及浏览器待处理 URL；重扫为 **138 文件 / 1,017 处**。各文件逐一静态巡检清单见 `tasks/T66-reference-audit.md`，简单的单字段旧域 selector 检查遗留 **0 处**。剩余属于会话/布局/复合读取及旧兼容行为，没有作为独立域重复管理。
+- **不可进一步独立的组**：消息/回合与 init、项目切换及编辑器布局有实际跨组依赖，当前刻意保留会话主 store，并用兼容 bridge 支持历史消费者；`customUiStore.ts` 原本为自定义 UI 独立实现，与本次按项目的“自定义命令”不是同域，不重复拆它。
+- **持久化**：未更改任何设置 storage key、`localStorage` 键或既有类型形状。模拟 `setting.set` 的断言验证 `ui.gitDiffOpenMode`、`ui.gitCollapsedRepos`、`ui.customCommandsByProject` 原键仍写入；IDE/其他存储位置未迁移。
+- **护栏 / 变异**：先给 `session-store-smoke` 加 Browser、Git、CustomCommands 行为和 key 断言；主 store 变异 `setBrowserTabCount` 删除负数钳制，观察到 **322/323**（FAIL）；恢复后绿。迁出后对 `browserStore.ts` 同一动作再变异，观察到 **329/332**（FAIL，3 条红断言）；恢复后 `node scripts/run-smokes.mjs session-store-smoke` PASS（332/332）。
+- **类型检查**：`pnpm typecheck` 双包通过（contracts + desktop，3/3 turbo tasks）。
+- **全量现有回归**：`pnpm test` 的 critical 17 套中 **16 PASS、1 FAIL**，失败为 `mcp-endpoint-smoke` 的 esbuild 构建（单独重跑同样失败；测试所涉主进程文件正在被其他并行任务修改，本任务未修改该套件）。所以**判据 1 的“所有现有测试全绿”未达成**；不能以 session-store-smoke 全绿冒充整体全绿。
+- **并行工作树保护**：开工时 `stores/` 干净；其他人对主进程/hooks 等有未提交工作，本提交只暂存 T66 所列文件，不清理不覆盖他人改动。

@@ -1,3 +1,4 @@
+import { useGitStore } from "@renderer/stores/gitStore.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
@@ -45,15 +46,15 @@ import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.j
  */
 export function GitDiffDialog() {
   const { t } = useI18n();
-  const open = useSessionStore((s) => s.gitDiffDialogOpen);
-  const tabs = useSessionStore((s) => s.gitDiffDialogTabs);
-  const activeId = useSessionStore((s) => s.gitDiffDialogActiveId);
-  const viewMode = useSessionStore((s) => s.gitDiffDialogViewMode);
-  const setOpen = useSessionStore((s) => s.setGitDiffDialogOpen);
-  const closeTab = useSessionStore((s) => s.closeGitDiffDialogTab);
-  const setActive = useSessionStore((s) => s.setGitDiffDialogActive);
-  const setViewMode = useSessionStore((s) => s.setGitDiffDialogViewMode);
-  const openGitDiffDialogTab = useSessionStore((s) => s.openGitDiffDialogTab);
+  const open = useGitStore((s) => s.gitDiffDialogOpen);
+  const tabs = useGitStore((s) => s.gitDiffDialogTabs);
+  const activeId = useGitStore((s) => s.gitDiffDialogActiveId);
+  const viewMode = useGitStore((s) => s.gitDiffDialogViewMode);
+  const setOpen = useGitStore((s) => s.setGitDiffDialogOpen);
+  const closeTab = useGitStore((s) => s.closeGitDiffDialogTab);
+  const setActive = useGitStore((s) => s.setGitDiffDialogActive);
+  const setViewMode = useGitStore((s) => s.setGitDiffDialogViewMode);
+  const openGitDiffDialogTab = useGitStore((s) => s.openGitDiffDialogTab);
 
   // The active tab to render. Falls back to the first tab if the stored active
   // id no longer matches any tab (defensive - should not normally happen).
@@ -144,7 +145,7 @@ export function GitDiffDialog() {
       // If the tab is already open, just activate it (content was snapshot at
       // open time; re-clicking the Git panel row refreshes — sidebar navigate
       // prefers snappy switch).
-      const existing = useSessionStore.getState().gitDiffDialogTabs.find((t) => t.id === tabId);
+      const existing = useGitStore.getState().gitDiffDialogTabs.find((t) => t.id === tabId);
       if (existing) {
         setActive(tabId);
         return;

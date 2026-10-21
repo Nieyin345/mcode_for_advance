@@ -1,3 +1,4 @@
+import { useBrowserStore } from "@renderer/stores/browserStore.js";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
@@ -136,21 +137,21 @@ export function BrowserPanel({ mode, selected = false }: BrowserPanelProps) {
   const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const projects = useSessionStore((s) => s.projects);
   const enqueueChatElement = useSessionStore((s) => s.enqueueChatElement);
-  const setBrowserTabCount = useSessionStore((s) => s.setBrowserTabCount);
+  const setBrowserTabCount = useBrowserStore((s) => s.setBrowserTabCount);
   // Device-toolbar visibility (DevTools-style row under the address bar).
-  const deviceToolbarOpen = useSessionStore((s) => s.browserDeviceToolbarOpen);
-  const setDeviceToolbarOpen = useSessionStore((s) => s.setBrowserDeviceToolbarOpen);
+  const deviceToolbarOpen = useBrowserStore((s) => s.browserDeviceToolbarOpen);
+  const setDeviceToolbarOpen = useBrowserStore((s) => s.setBrowserDeviceToolbarOpen);
   // Suppression counter: while > 0 a renderer-DOM overlay (image lightbox,
   // etc.) needs to cover the OS-level view, so we hide it. See the effect below.
-  const suppressed = useSessionStore((s) => s.browserViewSuppressed);
+  const suppressed = useBrowserStore((s) => s.browserViewSuppressed);
   // Shared tabs state (lifted to the store so both containers see the same list).
-  const tabs = useSessionStore((s) => s.browserTabs);
-  const activeTabId = useSessionStore((s) => s.browserActiveTabId);
-  const setTabs = useSessionStore((s) => s.setBrowserTabs);
-  const setActiveTabId = useSessionStore((s) => s.setBrowserActiveTabId);
-  const addTab = useSessionStore((s) => s.addBrowserTab);
-  const removeTab = useSessionStore((s) => s.removeBrowserTab);
-  const patchTabInStore = useSessionStore((s) => s.patchBrowserTab);
+  const tabs = useBrowserStore((s) => s.browserTabs);
+  const activeTabId = useBrowserStore((s) => s.browserActiveTabId);
+  const setTabs = useBrowserStore((s) => s.setBrowserTabs);
+  const setActiveTabId = useBrowserStore((s) => s.setBrowserActiveTabId);
+  const addTab = useBrowserStore((s) => s.addBrowserTab);
+  const removeTab = useBrowserStore((s) => s.removeBrowserTab);
+  const patchTabInStore = useBrowserStore((s) => s.patchBrowserTab);
 
   /** Pending HTTP Basic Auth request pushed by main ("authRequest" event).
    *  Non-null shows the login dialog (view hidden while it's up). */
@@ -247,7 +248,7 @@ export function BrowserPanel({ mode, selected = false }: BrowserPanelProps) {
 
   /** URL staged by an external "open in browser" entry (e.g. the file-tree
    *  context menu) to be loaded into a new tab. Consumed by the effects below. */
-  const pendingBrowserUrl = useSessionStore((s) => s.pendingBrowserUrl);
+  const pendingBrowserUrl = useBrowserStore((s) => s.pendingBrowserUrl);
 
   /** Resolve the active project's path (needed for browser.create). */
   const projectPath = activeProjectId
@@ -564,7 +565,7 @@ export function BrowserPanel({ mode, selected = false }: BrowserPanelProps) {
   // 一次渲染才同步,那正是重复创建的窗口。
   useEffect(() => {
     if (!isActive) return;
-    const live = useSessionStore.getState().browserTabs;
+    const live = useBrowserStore.getState().browserTabs;
     if (live.length > 0) {
       // 已经有标签页了 → 复位标记,这样用户**手动关光**之后还能再建一个
       initialTabCreated = false;
@@ -578,8 +579,8 @@ export function BrowserPanel({ mode, selected = false }: BrowserPanelProps) {
     // mid-create re-renders and re-runs the pendingBrowserUrl effect below,
     // which — with tabsRef already length 1 and the URL still staged — would
     // open the SAME url in a second, duplicate tab.
-    const pending = useSessionStore.getState().pendingBrowserUrl;
-    if (pending) useSessionStore.setState({ pendingBrowserUrl: null });
+    const pending = useBrowserStore.getState().pendingBrowserUrl;
+    if (pending) useBrowserStore.getState().setPendingBrowserUrl(null);
     void createTab(pending ?? undefined)
       .then((tab) => {
         // 建成才置位:失败(比如缺 projectPath)不该把后面的重试也挡掉
@@ -589,7 +590,7 @@ export function BrowserPanel({ mode, selected = false }: BrowserPanelProps) {
         // Restore the URL if the initial create failed outright, so the
         // request isn't silently dropped (the pending effect will retry once
         // a tab exists).
-        if (pending) useSessionStore.setState({ pendingBrowserUrl: pending });
+        if (pending) useBrowserStore.getState().setPendingBrowserUrl(pending);
       })
       .finally(() => {
         initialTabInFlight = false;
@@ -609,8 +610,8 @@ export function BrowserPanel({ mode, selected = false }: BrowserPanelProps) {
     // stale — React StrictMode (dev) re-invokes effects with the SAME captured
     // value after the first run already consumed the URL; without this guard
     // one "open in browser" click creates TWO identical tabs.
-    if (useSessionStore.getState().pendingBrowserUrl !== url) return;
-    useSessionStore.setState({ pendingBrowserUrl: null }); // consume before async create
+    if (useBrowserStore.getState().pendingBrowserUrl !== url) return;
+    useBrowserStore.getState().setPendingBrowserUrl(null); // consume before async create
     void createTab(url);
   }, [isActive, pendingBrowserUrl, createTab]);
 

@@ -5,6 +5,7 @@ import { joinPath, basename } from "@renderer/lib/path.js";
 import { formatRelativeTime, formatFullTime } from "@renderer/lib/time.js";
 import type { GitRepo, GitCommitInfo, GitCommitFile, GitCommitFileStatus } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import { useGitStore } from "@renderer/stores/gitStore.js";
 import {
   IconArrowLeft,
   IconGitCommit,
@@ -211,10 +212,10 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
       const store = useSessionStore.getState();
       // Wide-panel (3:7) mode has no center editor column — a center-mode
       // open would be invisible, so the floating dialog takes it there too.
-      if (store.gitDiffOpenMode === "dialog" || store.widePanelOpen) {
+      if (useGitStore.getState().gitDiffOpenMode === "dialog" || store.widePanelOpen) {
         // Dialog open-mode: open (or refresh) a history diff tab in the
         // floating dialog (both blobs supplied - DiffPane won't touch disk).
-        store.openGitDiffDialogTab({
+        useGitStore.getState().openGitDiffDialogTab({
           id: absPath,
           filePath: absPath,
           before,
@@ -225,7 +226,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
         });
         return;
       }
-      store.setGitDiffPair(absPath, { before, after });
+      useGitStore.getState().setGitDiffPair(absPath, { before, after });
       store.openFileInIde(absPath, { diff: true });
     } catch (err) {
       if (seq !== fileSeqRef.current) return;

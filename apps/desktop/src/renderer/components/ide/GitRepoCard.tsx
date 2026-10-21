@@ -1,3 +1,4 @@
+import { useGitStore } from "@renderer/stores/gitStore.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import { api } from "@renderer/lib/api.js";
@@ -108,8 +109,8 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
   const [mergePreviewLoading, setMergePreviewLoading] = useState(false);
   const [mergePreviewData, setMergePreviewData] = useState<GitMergePreviewResult | null>(null);
   const [merging, setMerging] = useState(false);
-  const collapsedGitRepos = useSessionStore((s) => s.collapsedGitRepos);
-  const toggleCollapsedGitRepo = useSessionStore((s) => s.toggleCollapsedGitRepo);
+  const collapsedGitRepos = useGitStore((s) => s.collapsedGitRepos);
+  const toggleCollapsedGitRepo = useGitStore((s) => s.toggleCollapsedGitRepo);
   const collapsed = !!collapsedGitRepos[repo.path];
 
   const refresh = useCallback(async () => {
