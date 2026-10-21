@@ -120,3 +120,21 @@ Mcode 有对应语义层：
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+
+### 2026-10-21 执行结果（T17 / 六件独立提交）
+
+| 件 | 接入结果 | 独立提交 | 逆向物理规则、真实接线与取舍 |
+|---|---|---|---|
+| #1 DraggableSessionList | 已接入 StreamSidebar 平铺会话列表 | `1554b38bf8925e7dbf48f65ad6272061083c049c` | dnd-kit 现有 PointerSensor 4px 激活死区、-1.5° 拖拽倾斜与模糊发丝阴影、2px 插入导轨、Alt+Up/Down 键盘重排；拖拽可跨置顶/最近，真实 `setSessionPinned` 更新置顶，稳定 id 相对顺序存 renderer localStorage；LeftBarParts 的项目/工作树层级不更动，防止破坏项目管理。 |
+| #2 StreamingDiffViewer | 已接入 DiffView + GitDiffDialog | `8c4c44316947be4bda5976c2a09af6cc0ba52927` | 增量数据行保留已有 DOM 身份、字符级共同前后缀高亮、旧/新行号 tabular-nums、实时 chunk 跨行合并；GitDiffDialog 可切换行内统一与原 Monaco 分屏对比。保留 Monaco 的 model dispose/恢复机制；不额外引入 tree-sitter/依赖，继续使用现有 LCS lineDiff。 |
+| #3 ModelSwitcherWithTokenGauge | 已接入 ModelDropdown | `d7b97f369d124c528302070940093f7912cb3519` | 24px SVG、半径 10、动态 dashoffset、>80% 预警；上下文与缓存拆分来自实际 `contextSnapshotBySession[sessionId]`，继续使用原有多 provider 模型矩阵/选择动作；没有复制静态 Demo 模型/200k 令牌数据。 |
+| #4 ReasoningAmbientGlow | 已接入 ThinkingAccordion | `2d0a21c13065748d8431a0c40866ddedaf244c1f` | 1.8s 暖光呼吸边框、非对称 3s 扫光、1.1s 底部流光，`live` 停止即移除光效；额外修正为逆向 1.2s 三相点（180ms 错峰），覆盖既有思考态 1.9s wave，仅作用 live。尊重 reduced motion。 |
+| #5 McpToolDecisionCard | 已接入 MessageBlocks MCP 工具调用 + ApprovalPrompt 真授权 | `0745cb53caceccca7ae33cfe2a653d075ac2b2e0` | pending/running/settled 真实状态隔离；可展示 user_denied/policy_denied/PERMISSIONS_ERROR；MCP 授权真实 onDecide 连接 allow once / always allow / deny（保留按危险工具禁止 always 的守卫与授权消抖）。未照搬演示件 `setTimeout(1200)` 假成功；保留已有工具输入/结果只读审查和折叠。 |
+| #6 ContainerResponsiveBar | 已接入 ComposerToolbar | `7d9daf1f77d19feb10c5e93c52d0ff09bb2f135b` | 具名 container query，按卡片实际宽度 576/480/384/320px 四档压缩，最窄水平滚动；保留原 composer single-pill、附加、模型、思考档位、权限、上下文环及独立发送按钮。 |
+
+**测试/变异**：六个 `*.test.mjs` 中合计 10 个行为断言均绿；每件分别将核心判断/映射暂时改错后得到红例，恢复再绿。`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` 和 `pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` 均通过。
+
+**smoke**：首批相关 12 套全部通过，日志 `apps/desktop/.tmp/smoke-runs/1792547597221-8452-865g7F/`。第二批 8 套中 7 套通过，1 套 `session-store-smoke` 失败；重复单独复跑仍 294/297，通过检查 294，失败 3 项全部是旧布局写回/停靠恢复：`左侧停靠写入单条防抖 settings JSON`、`恢复后的停靠侧与用户设置一致`、`老四个 pane 尺寸仍一并保存`。日志 `apps/desktop/.tmp/smoke-runs/1792547783712-39712-iZdLul/session-store-smoke.log`。这批未修改 sessionStore/paneLayout/ThreePaneLayout 等布局实现，故在 T17 渲染端六件范围内不改这 3 项；**验收判据 #3（现有相关 smoke 全绿）尚未达成**。
+
+**差异与兼容**：颜色只映射 Mcode semantic tokens；把会话相对顺序保存在 renderer 而不是新增 IPC；真正的 MCP 权限状态只能由现有 ApprovalPrompt/引擎驱动，故不照搬 demo 假计时状态机；真实代码高亮继续用已有 diff LCS/Monaco，不引新解析依赖。没有为逆向效果删除任何既有会话管理、Monaco 对比、模型提供方能力或审批防护。原有未提交的主进程/测试及其他协作对话改动保持原样。
