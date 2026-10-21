@@ -83,8 +83,19 @@ check("T47 bootstrap actively mounts the injected CSS via editorTheme.page.css",
 check("Host injects the shipped CSS absolute path and explicitly fails missing assets",
   registry.includes("MCODE_ENGINE_THEME_CSS: resolveMcodeNodeRedThemeCss()") &&
   registry.includes("throw new Error(\"Node-RED Mcode 主题资源缺失"));
-check("Bootstrap changed content implies new manifest version 2",
-  bootstrapManifest.includes("BOOTSTRAP_VERSION = 2"));
+// Version is monotonic and shared with the manifest writer and integrity guard.
+// T42 added nodesDir after T47 installed the theme (v2 -> v3): testing
+// a fixed historical release number here makes valid future upgrades red.
+const versionMatch = bootstrapManifest.match(/^export const BOOTSTRAP_VERSION\s*=\s*(\d+);/m);
+const bootstrapVersion = versionMatch === null ? NaN : Number(versionMatch[1]);
+check("Theme bootstrap uses a monotonic manifest version with runtime SHA guards",
+  Number.isSafeInteger(bootstrapVersion) && bootstrapVersion >= 2 &&
+  bootstrapManifest.includes("version: BOOTSTRAP_VERSION") &&
+  bootstrapManifest.includes("sha256: sha256Of(content)") &&
+  bootstrapManifest.includes("manifest.bootstrap.version === BOOTSTRAP_VERSION") &&
+  bootstrapManifest.includes("manifest.bootstrap.sha256 === expectedHash") &&
+  bootstrapManifest.includes("sha256OfBuffer(currentBytes) === expectedHash"),
+  `version=${String(bootstrapVersion)}`);
 check("Release copies theme CSS next to packaged Node-RED vendor",
   pack.includes("from: resources/node-red") && pack.includes("to: node-red/mcode-theme"));
 console.log("node-red-theme-smoke:"+pass+"/"+(pass+failed)+" through");

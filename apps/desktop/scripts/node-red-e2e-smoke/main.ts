@@ -410,11 +410,25 @@ try {
   evidence("production GET /", { status: editor.status, bytes: editor.text.length });
   check("★【P0-1】编辑器 GET / 真响应 200 且是 Node-RED 编辑器页",
     editor.status === 200 && editor.text.includes("red-ui-editor") && editor.text.includes("<title>Node-RED</title>"));
-  // T47: actual Node-RED Express serving the host-injected stylesheet, not
-  // merely a source-string check. Media query switches without engine restart.
-  check("★【T47】编辑器 HTML 引用了宿主注入的自定义主题",
-    editor.text.includes("theme/css/mcode-theme-auto.css"));
-  const themeResponse = await fetchOn(portA, "/theme/css/mcode-theme-auto.css");
+  // T47: Node-RED HTML-escapes slashes in href (`theme&#x2F;css&#x2F;...`).
+  // Decode actual HTML attribute values before verifying that the editor loads
+  // the stylesheet; a bare CSS endpoint returning 200 does not prove linkage.
+  const decodeHtmlAttribute = (s: string): string => s
+    .replace(/&#(?:x([0-9a-f]+)|([0-9]+));/gi, (_, hex: string | undefined, dec: string | undefined) =>
+      String.fromCodePoint(Number.parseInt(hex ?? dec ?? "", hex === undefined ? 10 : 16)))
+    .replace(/&amp;/gi, "&");
+  const editorStylesheets = [...editor.text.matchAll(/<link\b[^>]*>/gi)]
+    .map(([tag]) => decodeHtmlAttribute(tag))
+    .filter((tag) => /\brel\s*=\s*["']stylesheet["']/i.test(tag))
+    .map((tag) => tag.match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1] ?? "")
+    .filter(Boolean);
+  evidence("production stylesheet hrefs (HTML-decoded)", editorStylesheets);
+  const themePath = editorStylesheets
+    .map((href) => new URL(href, "http://localhost/").pathname)
+    .find((path) => path === "/theme/css/mcode-theme-auto.css");
+  check("★【T47】编辑器 HTML 真实引用宿主注入的主题样式表",
+    themePath !== undefined, { stylesheets: editorStylesheets });
+  const themeResponse = await fetchOn(portA, themePath ?? "/theme/css/mcode-theme-auto.css");
   check("★【T47】生产 Node-RED 确实托管了浅/深两套 CSS 变量",
     themeResponse.status === 200
       && themeResponse.text.includes("--red-ui-primary-background: #fcfcfb")
