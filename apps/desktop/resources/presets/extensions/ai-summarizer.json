@@ -1,0 +1,57 @@
+{
+  "apiVersion": 1,
+  "id": "user.ai-summarizer",
+  "version": "1.0.0",
+  "title": {
+    "zh": "AI 文件摘要",
+    "en": "AI summarizer"
+  },
+  "permissions": [
+    "files.read",
+    "project.read",
+    "session.send"
+  ],
+  "contributions": [
+    {
+      "id": "summarize",
+      "slot": "files.context",
+      "title": {
+        "zh": "生成 AI 摘要",
+        "en": "Summarize with AI"
+      },
+      "extensions": [
+        ".txt",
+        ".md",
+        ".ts",
+        ".js"
+      ],
+      "capability": "module.summarize",
+      "view": {
+        "title": {
+          "zh": "摘要会话",
+          "en": "Summary session"
+        },
+        "fields": [
+          {
+            "key": "sessionId",
+            "title": {
+              "zh": "会话 ID",
+              "en": "Session ID"
+            }
+          },
+          {
+            "key": "sent",
+            "title": {
+              "zh": "已发送",
+              "en": "Sent"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "program": {
+    "source": "({\n  summarize: async (resource) => {\n    const fs = require(\"node:fs\");\n    const path = require(\"node:path\");\n    const content = fs.readFileSync(resource.path, \"utf8\").slice(0, 3000);\n    const projects = await mcode.api.call(\"project.list\", {});\n    const matches = (projects.projects || []).filter(p =>\n      typeof p.path === \"string\" && p.path.toLowerCase() === resource.projectPath.toLowerCase());\n    if (matches.length !== 1) throw Error(\"找不到唯一的当前项目，已拒绝跨项目发送摘要\");\n    const created = await mcode.api.call(\"claude.startSession\", {\n      projectId: matches[0].id, title: \"文件摘要：\" + path.basename(resource.path),\n      kind: \"chat\", effort: \"default\", permissionMode: \"default\"\n    });\n    if (!created.session || typeof created.session.id !== \"string\") throw Error(\"未能创建 AI 会话\");\n    await mcode.api.call(\"claude.sendTurn\", {\n      sessionId: created.session.id,\n      prompt: \"请总结文件 \" + path.basename(resource.path) + \" 的内容，并列出要点。\\n\\n\" + content\n    });\n    return { sessionId: created.session.id, sent: true };\n  }\n})",
+    "timeoutMs": 30000
+  }
+}

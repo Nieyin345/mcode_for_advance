@@ -32,6 +32,77 @@ export interface AppApiTutorial {
   pitfalls?: readonly string[];
 }
 
+/**
+ * T51: full extension authoring topic, packaged into the application (not a docs/
+ * file lookup). The permission list is supplied by the canonical contracts source.
+ * NOTE: program.source is an OBJECT EXPRESSION evaluated by the isolated runner,
+ * not a CommonJS exports.* module; ModuleResult is a flat scalar record.
+ */
+export function extensionAuthoringGuide(permissions: readonly string[]): string {
+  const manifest = {
+    apiVersion: 1,
+    id: "user.line-counter",
+    version: "1.0.0",
+    title: { zh: "行数统计", en: "Line counter" },
+    permissions: ["files.read"],
+    contributions: [{
+      id: "count", slot: "files.context",
+      title: { zh: "统计行数", en: "Count lines" },
+      extensions: [".ts", ".js", ".md"],
+      capability: "module.count",
+      view: { title: { zh: "行数统计", en: "Line count" },
+        fields: [{ key: "lines", title: { zh: "行数", en: "Lines" } }] },
+    }],
+    program: {
+      source: '({ count: async (resource) => { const fs = require("node:fs"); const content = fs.readFileSync(resource.path, "utf8"); return { lines: content.split("\\n").length }; } })',
+      timeoutMs: 10000,
+    },
+  };
+  return [
+    "# extensions — AI 编写 Mcode 扩展",
+    "",
+    "## a) manifest 清单（完整可安装格式）",
+    "清单是一个 JSON 对象，下面的 program.source 是 JavaScript 对象表达式（不是 exports.count）。",
+    "```json", JSON.stringify(manifest, null, 2), "```",
+    "贡献点支持 files.context（文件菜单，须带 view.title 和 view.fields）、command（命令名）、view（视图）、settings（设置项）；各自必填字段与可用图标按 ModuleContributionSchema 校验。",
+    "capability 必须写 module.<短名>；宿主在安装时分配 module.<模块 slug>.<短名>，不要自行拼完整 id。",
+    "",
+    "## b) 可申请权限（来自 ModulePermissionSchema）",
+    ...permissions.map(p => "- `" + p + "` — " + (({
+      "files.read": "读文件", "files.write": "写文件", "resource.read": "访问当前资源",
+      "resource.write": "修改当前资源", "session.send": "向对话发送内容",
+      "workflow.run": "运行工作流", "library.read": "读资料库",
+      "modules.install": "安装扩展", "network": "网络访问（须满足 OS 沙箱）",
+    } as Record<string, string>)[p] ?? "相应功能域权限")),
+    "",
+    "## c) 常用 API（面板与隔离扩展不能混用）",
+    "- file.readFile / file.writeFile：文件读写；分别需 files.read / files.write。",
+    "- claude.startSession / claude.sendTurn：创建 AI 对话并发送请求；需 session.send（session.send 不是 RPC 方法）。",
+    "- workflow.run：运行工作流；需 workflow.run。",
+    "- library.search：搜资料库；需 library.read。",
+    "- extensionStore.get / extensionStore.set：扩展存储；需 modules.read / modules.write。",
+    "- document.read：读文档；依实际映射查看。",
+    "使用 app_api_list({query}) 查其余方法，app_api_describe({method}) 查实际参数。",
+    "这些方法经 T49 的宿主 core.app.call 桥接，在隔离 program 子进程中用 await mcode.api.call(method,input) 调用；每次由宿主校验扩展身份和已获权限，代码不能自行授权。",
+    "",
+    "## d) 可运行的最小程序",
+    "```js", manifest.program.source, "```",
+    "它用 Node 内置 fs 读取**本次经宿主校验并授权的 resource.path**，返回 {lines:number}。",
+    "ModuleResult 必须是扁平对象，值只能是 string/number/boolean/null，不能返回 {ok, fields} 嵌套对象。",
+    "要运行它：先 extension_validate({manifest})；然后 app_api_call({method:'modules.install',input:{manifest,confirmReadAccess:true,confirmExecutableCode:true,grantedPermissions:['files.read']}})，安装时必须经真人审批。",
+    "",
+    "## e) 常见错误",
+    "- 忘记 permissions：Schema 拒绝安装，运行时 API 越权也会拒绝。",
+    "- require('http') / 网络访问：未声明 network 时守卫拦截；Windows 无可验证 OS 沙箱时默认拒绝可执行扩展，需用户在设置里显式确认风险降级。",
+    "- 返回 {ok:true,fields:{...}}：不符合 ModuleResult 的扁平标量形状，调用失败。",
+    "- program.source 写成 exports.count：工厂求值不是对象，安装核验失败。",
+    "- 把 session.send 当成真实 RPC 方法：实际使用 claude.startSession / claude.sendTurn，调用前先用 app_api_list 核实。",
+    "",
+    "## 安装的批准",
+    "modules.install 始终属于高风险 agent 操作；清单权限及静态 API 调用应展示在用户批准信息中，不能由 AI 自授权。",
+  ].join("\n");
+}
+
 export const APP_API_TUTORIALS: readonly AppApiTutorial[] = [
   {
     id: "create-automation",

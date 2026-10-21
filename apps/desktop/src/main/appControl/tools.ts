@@ -81,6 +81,7 @@ import {
   type AppPolicyLevel,
 } from "./policy.js";
 import { guideFor, guideOverview, guideTopics } from "./guide.js";
+import { validateExtension } from "./extensionValidate.js";
 import { APP_API_TUTORIALS, tutorialsMatchingWord } from "./appApiTutorials.js";
 import {
   describeWorkflowToolParams,
@@ -486,6 +487,26 @@ const PLAN_GRANT_TTL_MS = 30 * 60 * 1000;
  * 这正是 ARC-004 的硬判据:**agent / system 不能给自己发授权** —— 只有真人在卡上点的
  * 「允许」才铸得出 grant。
  */
+/**
+ * T51: install approval card must be intelligible BEFORE consent. Never grants
+ * rights: the existing danger gate still requires the user's fresh decision.
+ */
+export function extensionInstallApprovalSummary(input: unknown): string {
+  if (!input || typeof input !== "object") return "\n扩展清单：未提供";
+  const manifest = (input as { manifest?: unknown }).manifest;
+  if (!manifest || typeof manifest !== "object") return "\n扩展清单：未提供";
+  const m = manifest as { id?: unknown; permissions?: unknown; program?: { source?: unknown } };
+  const permissions = Array.isArray(m.permissions)
+    ? m.permissions.filter((p): p is string => typeof p === "string").slice(0, 41)
+    : [];
+  const source = typeof m.program?.source === "string" ? m.program.source : "";
+  const calledApis = [...new Set([...source.matchAll(/(?:mcode\.api\.call|app_api_call)\s*\(\s*["']([^"']+)["']/g)].map(v => v[1]!))].slice(0, 20);
+  return "\n扩展 ID：" + (typeof m.id === "string" ? m.id.slice(0, 100) : "(缺失)") +
+    "\n清单申请权限：" + (permissions.join(", ") || "(无)") +
+    "\n程序静态 API 调用（仅识别字面量，动态调用无法列尽）：" + (calledApis.join(", ") || "(未识别出)") +
+    "\n批准后将安装上述扩展；取消则不安装。";
+}
+
 export async function gateAppAction(
   ctx: ProviderContext,
   level: AppPolicyLevel,
@@ -902,7 +923,7 @@ const UI_ACTIONS = [
 ] as const;
 
 /** 只读 / 界面类工具名(引擎侧若要按名字预放行可以用;真正的闸门在 handler 里)。 */
-export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set(["app_api_list", "app_api_describe", "app_api_tutorial", "app_guide", "app_ui_state", "app_panel_api_list"]);
+export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set(["app_api_list", "app_api_describe", "app_api_tutorial", "app_guide", "app_ui_state", "app_panel_api_list", "extension_validate"]);
 
 /* ─────────────────── 自定义面板/扩展的对外接口(给 agent 查)─────────────────── */
 
@@ -1056,6 +1077,18 @@ function panelApiList(args: { method?: string; slot?: string }): ToolResult {
 
 export function appMcpTools(): McpToolSpec[] {
   return [
+    {
+      name: "extension_validate",
+      description: "只检查扩展清单、权限、贡献点和隔离程序工厂。不会安装/落盘/调用扩展业务能力；可安装不等于已授予权限。受控核验进程不可用时明确返回不可安装。",
+      inputSchema: {
+        manifest: z.unknown().describe("ModuleManifest 完整 JSON 对象"),
+        programSource: z.string().max(64 * 1024).optional().describe("可选，覆盖 manifest.program.source"),
+      },
+      handler: async (args: { manifest: unknown; programSource?: string }) => {
+        const result = await validateExtension(args.manifest, args.programSource);
+        return text(JSON.stringify({ status: result.installable ? "可以安装" : "不可安装", ...result }, null, 2));
+      },
+    },
     {
       name: "app_api_list",
       description:
@@ -1286,13 +1319,14 @@ export function appMcpTools(): McpToolSpec[] {
           const domains = topics.filter((t) => t.kind === "domain");
           const tools = topics.filter((t) => t.kind === "workflow-tool");
           const caps = topics.filter((t) => t.kind === "extension-capability");
+          const authoring = topics.filter((t) => t.kind === "authoring-guide");
           // 扩展目录取不到时**如实说**(硬规矩 3):此刻列不出已装扩展能力,不是"没有扩展"。
           const sources = caps.length === 0 && overview.moduleCatalogError
             ? `(扩展能力目录此刻取不到:${overview.moduleCatalogError};功能域与工作流工具不受影响)`
             : "";
           return text(
             [
-              `共 ${topics.length} 个 topic(功能域 ${domains.length} / 已发布工作流工具 ${tools.length} / 扩展能力 ${caps.length}):`,
+              `共 ${topics.length} 个 topic(功能域 ${domains.length} / 已发布工作流工具 ${tools.length} / 扩展能力 ${caps.length} / 开发指南 ${authoring.length}):`,
               "",
               "一、功能域(方法目录 + 权限档)",
               ...domains.map((t) => `- ${t.id}:${t.summary}`),
@@ -1304,6 +1338,9 @@ export function appMcpTools(): McpToolSpec[] {
               ...(caps.length > 0
                 ? caps.map((t) => `- ${t.id}:${t.summary}`)
                 : [sources || "(没有已装的扩展能力;宿主内置能力会列在这里)"]),
+              "",
+              "四、扩展开发指南",
+              ...authoring.map((t) => `- ${t.id}:${t.summary}`),
               "",
               `下一步:app_guide({topic:"<主题 id>"}) 看该主题的权限档与示例;方法级细节用 app_api_describe。`,
             ].join("\n"),
@@ -2610,7 +2647,7 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
               entry.policy.level,
               entry.method,
               args.input,
-              `${entry.method}${entry.policy.reason ? `:${entry.policy.reason}` : entry.doc ? `:${clipLine(entry.doc, 160)}` : ""}`,
+              `${entry.method}${entry.policy.reason ? `:${entry.policy.reason}` : entry.doc ? `:${clipLine(entry.doc, 160)}` : ""}${entry.method === "modules.install" ? extensionInstallApprovalSummary(args.input) : ""}`,
               entry.policy.reason,
               () => signPlanGrantForUserApproval(entry, args, sessionId),
             );

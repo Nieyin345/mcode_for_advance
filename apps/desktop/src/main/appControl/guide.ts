@@ -43,6 +43,8 @@
  * 调用形式并明说参数形状去 `app_api_describe` 看。
  */
 import type { ApiCatalogEntry } from "./apiCatalog.generated.js";
+import { MODULE_PERMISSION_NAMES } from "@contracts/appPermission";
+import { extensionAuthoringGuide } from "./appApiTutorials.js";
 import { API_CATALOG } from "./apiCatalog.generated.js";
 import {
   APP_POLICY_LEVEL_LABEL,
@@ -65,7 +67,7 @@ import {
 import type { ModuleCapabilityDescriptor } from "@contracts/moduleCapability";
 
 /** topic 的三种来源。`kind` 只用于展示分组与 badge,不参与检索判定。 */
-export type GuideTopicKind = "domain" | "workflow-tool" | "extension-capability";
+export type GuideTopicKind = "domain" | "workflow-tool" | "extension-capability" | "authoring-guide";
 
 export interface GuideTopic {
   /** 稳定 id(域前缀 / `workflow.run.<名字>` / 能力 id)。 */
@@ -156,7 +158,9 @@ export async function guideTopics(): Promise<GuideTopic[]> {
 export async function guideOverview(): Promise<{ topics: GuideTopic[]; moduleCatalogError?: string }> {
   const sources = await currentGuideSources();
   return {
-    topics: buildGuideTopics(sources),
+    // Built-in authoring documentation is not a discovered RPC domain. Keep
+    // buildGuideTopics() pure so its domain set still matches API_CATALOG.
+    topics: [...buildGuideTopics(sources), { id: "extensions", kind: "authoring-guide" as const, title: "extensions — 创建扩展", summary: "AI 编写扩展的 manifest、权限、API、可运行示例与常见错误" }],
     ...(sources.moduleCatalogError ? { moduleCatalogError: sources.moduleCatalogError } : {}),
   };
 }
@@ -217,6 +221,7 @@ export function buildGuideTopics(sources: GuideSources): GuideTopic[] {
 export function buildGuideDetail(topic: string, sources: GuideSources): GuideEntry | null {
   const id = topic.trim();
   if (!id) return null;
+  if (id === "extensions") return { title: "extensions — 创建扩展", body: extensionAuthoringGuide(MODULE_PERMISSION_NAMES), permissions: [...MODULE_PERMISSION_NAMES], examples: [] };
 
   const domainMethods = sources.catalog.filter((entry) => domainOfMethod(entry.method) === id);
   if (domainMethods.length > 0) return domainDetail(id, domainMethods, sources);

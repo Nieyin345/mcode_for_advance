@@ -18,7 +18,7 @@ export function appToolDescriptors(): Array<{ name: string; description: string;
 }
 
 export function isAppToolName(name: string): boolean {
-  return name.startsWith("app_") && appMcpTools().some((t) => t.name === name);
+  return (name.startsWith("app_") || name === "extension_validate") && appMcpTools().some((t) => t.name === name);
 }
 
 export function invokeAppEngineTool(name: string, args: unknown, sessionId: string, ctx: ProviderContext): Promise<ToolResult> {

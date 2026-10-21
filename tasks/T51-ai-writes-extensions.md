@@ -249,3 +249,16 @@ T48 之后，`modules.install` 应该是一个**可授权**的权限（`modules.
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜T51 执行记录（E1；U1 待验）
+
+- 范围：main/appControl 的 `app_guide extensions`（五段文档，实际 ModuleManifest 工厂形状）、`extension_validate`（Schema + T48 权限映射 + JS 语法 + T49 受控程序工厂核验 + 字面量 API 权限提示）、`modules.install` 的 danger 审批详情、三个可安装模板、专项 smoke、回归卡 `tasks/T51-real-ai-regression.md`。未放松隔离，不改 ModuleHost 授权/blocked 表。
+- E1：`node apps/desktop/scripts/run-smokes.mjs extension-authoring-smoke agent-guide-smoke` 两套通过（日志：`apps/desktop/.tmp/smoke-runs/1792572397681-26256-pa5he5`）；合法/非法权限/程序语法/未声明 API 静态提醒/贡献非法/审批权限详情均有断言。
+- 模板：`hello-world`、`line-counter`、`ai-summarizer` 三个均通过真实受控核验、真实 `ModuleHost.install` 与隔离 `ModuleHost.invoke`；`ai-summarizer` 借 T49 桥接向模拟宿主 RPC 依次调用 `project.list` / `claude.startSession` / `claude.sendTurn`，**未调用真实在线模型**，不能冒充 U1。
+- 变异：`node apps/desktop/scripts/extension-authoring-smoke/mutate.cjs` 两处真实源码变异均变红（权限 X 提示 / 扩展主题消失），完成后原 SHA 自动恢复；结果 2/2。
+- TSC：`pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` 与 `pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` 均通过。
+- 模块回归：14 个 `module-*-smoke` 曾为 12/14；复测 `module-catalog-smoke` 已通过，目前可确认为 **13/14**；**`module-phase2-e2e-smoke`** 仍失败在独立的原生窗口流程（`FULL native persistence/UI plus real scheduler and browser negative states completed: native-window, 1 !== 0`，证据 `apps/desktop/.tmp/p2-06-e2e-ElcPTJ`），不属本卡允许修改的 ModuleHost/原生 UI 实现。
+- 真 AI 从零写扩展第一次是否成功：**没有执行真实 Agent U1 对话，无法判定**；回归卡已写明一句话到审批、调用的取证步骤。扩展文档是否使 AI 一次写对、AI 是否照抄模板、用户更喜欢扩展还是一次性 app_api_call：均需 U1/用户反馈，当前不伪造结论。
+- 静态权限校验能力：能识别字面量 `mcode.api.call("method")` 的缺失权限并提示；动态拼接方法名、别名、间接调用无法静态证明，真实执行必须由 T49 宿主逐次拦截。
+- 模板工程价值：`line-counter` 对文件右键功能的最小闭环最直观；`ai-summarizer` 覆盖 T49 的 RPC 通道，但真实在线模型的 U1 尚未覆盖。
+- 验收判据：#1/#2/#3(E1)/#5(E1)/#7/#8 已有证据；**#4 未达（真实 AI U1 未执行）；#6 未达（module-phase2-e2e-smoke 原生窗口失败）**。

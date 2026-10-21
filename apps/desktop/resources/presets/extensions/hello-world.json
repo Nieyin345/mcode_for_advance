@@ -1,0 +1,48 @@
+{
+  "apiVersion": 1,
+  "id": "user.hello-world",
+  "version": "1.0.0",
+  "title": {
+    "zh": "显示文件名",
+    "en": "hello-world"
+  },
+  "permissions": [
+    "files.read"
+  ],
+  "contributions": [
+    {
+      "id": "hello",
+      "slot": "files.context",
+      "title": {
+        "zh": "显示文件名",
+        "en": "显示文件名"
+      },
+      "extensions": [
+        ".txt",
+        ".md",
+        ".ts",
+        ".js"
+      ],
+      "capability": "module.hello",
+      "view": {
+        "title": {
+          "zh": "显示文件名",
+          "en": "显示文件名"
+        },
+        "fields": [
+          {
+            "key": "filename",
+            "title": {
+              "zh": "filename",
+              "en": "filename"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "program": {
+    "source": "({ hello: async (resource) => ({ filename: require(\"node:path\").basename(resource.path) }) })",
+    "timeoutMs": 10000
+  }
+}

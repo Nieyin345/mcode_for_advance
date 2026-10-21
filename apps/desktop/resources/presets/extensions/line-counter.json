@@ -1,0 +1,48 @@
+{
+  "apiVersion": 1,
+  "id": "user.line-counter",
+  "version": "1.0.0",
+  "title": {
+    "zh": "统计行数",
+    "en": "line-counter"
+  },
+  "permissions": [
+    "files.read"
+  ],
+  "contributions": [
+    {
+      "id": "count",
+      "slot": "files.context",
+      "title": {
+        "zh": "统计行数",
+        "en": "统计行数"
+      },
+      "extensions": [
+        ".txt",
+        ".md",
+        ".ts",
+        ".js"
+      ],
+      "capability": "module.count",
+      "view": {
+        "title": {
+          "zh": "统计行数",
+          "en": "统计行数"
+        },
+        "fields": [
+          {
+            "key": "lines",
+            "title": {
+              "zh": "lines",
+              "en": "lines"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "program": {
+    "source": "({ count: async (resource) => ({ lines: require(\"node:fs\").readFileSync(resource.path, \"utf8\").split(\"\\n\").length }) })",
+    "timeoutMs": 10000
+  }
+}
