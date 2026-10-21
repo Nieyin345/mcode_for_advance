@@ -1,11 +1,11 @@
-# T35｜Node-RED 编辑器主题：让它的风格与 Mcode 一致
+# T47｜Node-RED 编辑器主题：让它的风格与 Mcode 一致
 
 | 项目 | 值 |
 |---|---|
-| 编号 | T35 |
+| 编号 | T47 |
 | 类型 | **ARC-006**（用户：node red 的风格可能不对，需要调整） |
 | 优先级 | **高** —— 用户点名要的视觉调整 |
-| 建议并发 | 改 `resources/` + `registry.ts` 的 BOOTSTRAP；**与 T33 改同一批 UI，建议串行** |
+| 建议并发 | 改 `resources/` + `registry.ts` 的 BOOTSTRAP；**与 T45 改同一批 UI，建议串行** |
 | 预计规模 | 中 |
 
 ---

@@ -1,11 +1,11 @@
-# T32｜mcode 节点包：表单本地化、图标、分类与调色板
+# T44｜mcode 节点包：表单本地化、图标、分类与调色板
 
 | 项目 | 值 |
 |---|---|
-| 编号 | T32 |
+| 编号 | T44 |
 | 类型 | ARC-006（Node-RED 节点包的外观） |
 | 优先级 | 中 |
-| 建议并发 | 改 `workflowEngines/mcodeNode*.ts`；**先完成 T30** |
+| 建议并发 | 改 `workflowEngines/mcodeNode*.ts`；**先完成 T42** |
 | 预计规模 | 小 |
 
 ---
@@ -127,7 +127,7 @@ Mcode 侧只需要在**生成**这些文件时读一下当前语言，或者在�
 
 **输出端口数由 `defaults.outputs` 决定**，但 Node-RED 的 `switch` 节点做了
 「运行时改端口数」（`oneditprepare` 里改 `outputs`）。`mcode-branch` 要不要照做，
-取决于 T31 里 branch 的语义定稿 —— **先读 T31 的回写区**。
+取决于 T43 里 branch 的语义定稿 —— **先读 T43 的回写区**。
 
 ---
 

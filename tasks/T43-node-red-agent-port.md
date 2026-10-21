@@ -1,11 +1,11 @@
-# T31｜`McodeAgentPort` 的生产实现 —— 节点真正跑在 Mcode 三引擎上
+# T43｜`McodeAgentPort` 的生产实现 —— 节点真正跑在 Mcode 三引擎上
 
 | 项目 | 值 |
 |---|---|
-| 编号 | T31 |
+| 编号 | T43 |
 | 类型 | **ARC-006 主线**（用户：Node-RED 只加和 AI 交互的节点，引擎用我们自己的） |
 | 优先级 | **高** |
-| 建议并发 | 改 `src/main/workflowEngines/`；**必须先完成 T30** |
+| 建议并发 | 改 `src/main/workflowEngines/`；**必须先完成 T42** |
 | 预计规模 | 中到大 |
 
 ---
@@ -121,7 +121,7 @@ env: { ...(options.env ?? {}), NODE_PATH: ..., ... }, // env 完全替换
 `McodeAgentRunResult` 现在是 `{ text, artifacts }`。
 `runtimeManager` 的回合产出是事件流（`turn.done` / `message` / 工具事件）。
 
-- **不要**在 T31 里发明第二套结果模型 —— 复用 `orchestration/runner.ts` 已有的
+- **不要**在 T43 里发明第二套结果模型 —— 复用 `orchestration/runner.ts` 已有的
   「一次节点运行 = 一个 nodeSession」的做法（`nodeSessionOf(对话, 节点)`）。
 - 从那个会话里取最后一条助手消息当 `text`，产出物走既有的 artifact 引用。
 

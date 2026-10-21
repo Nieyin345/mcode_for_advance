@@ -283,9 +283,8 @@ T07 已经做了 docs 与 Node-RED 的 pane 化，本阶段补其它四个。
 
 | 阶段 | 卡 | 状态 |
 |---|---|---|
-| 1 | T28 | 待派 |
+| 1 | T28 | 进行中（已回写，未提交） |
 | 1 | T29 | 等 T28 |
-| 1 | T30 | 等 T29 |
 | 2 | T31 | 等阶段 1 完成（否则 AI 面板没有宿主可挂） |
 | 2 | T32 / T33 | **先验证 A 路线，再写卡** |
 | 3 | T34–T36 | 可与阶段 1 并行（都是 CLI / 包，不碰渲染端） |
@@ -293,16 +292,28 @@ T07 已经做了 docs 与 Node-RED 的 pane 化，本阶段补其它四个。
 | 5 | T38 | 等阶段 1 |
 | 6 | T39–T41 | 最后 |
 
-**可立即并行开的**：T28（阶段 1）+ T34（阶段 3，CLI 能力）。
-两者文件边界不重叠。
+**Node-RED 线**（编号 T42–T47，与本表的 T30–T41 **不重叠**）：
+
+| 卡 | 内容 | 前置 |
+|---|---|---|
+| **T42** | 节点包装进 Node-RED（`nodesDir` + bundle + 清单校验） | 无 —— **可立即派** |
+| **T43** | `McodeAgentPort` 生产实现（接到三引擎/审批/ModuleHost） | T42 |
+| **T44** | 节点包 i18n / 图标 / 分类 / 帮助 | T42 |
+| **T45** | 删手写画布，切到原厂编辑器 | T42 |
+| **T46** | 执行归属（原生调度器 vs Node-RED 运行时） | T45 |
+| **T47** | 编辑器主题（官方 `build-custom-theme.js`） | 无 |
+
+**可立即并行开的**：T28（阶段 1，在飞）+ **T42**（Node-RED 线第一张）。
+两者文件边界不重叠（`document/` vs `workflowEngines/`）。
+T47 也可以并行（只改 `resources/` + BOOTSTRAP）。
 
 ---
 
 ## 七、待验证的问题（写卡前必须先回答）
 
 1. **`createXxxView` 能否被 `DocumentViewHost` 直接托管** —— T28 的第一件事。
-2. **AgentSkill 的 `executeTool` 依赖渲染端编辑器实例** —— 确认后 T32 改题目。
-3. **`ai:stream` 的 `request` 里带什么** —— 决定 T31 的契约形状。
+2. **AgentSkill 的 `executeTool` 依赖渲染端编辑器实例** —— 确认后 T44 改题目。
+3. **`ai:stream` 的 `request` 里带什么** —— 决定 T43 的契约形状。
 4. **六个 app 的 preload 各有多少条通道会越出 pane 边界** —— 决定 T28/T29 要不要额外拦截。
 5. **xlsx sidecar（Rust 可执行）在 Mcode 的两种布局下怎么定位** —— T29 的阻塞点。
 
@@ -395,17 +406,17 @@ module.exports = function (RED) {
 
 | 卡 | 内容 | 前置 |
 |---|---|---|
-| **T30** | 把节点包装进 Node-RED（`nodesDir` + bundle + 清单校验） | 无 —— **可立即派** |
-| **T31** | `McodeAgentPort` 的生产实现（6 个 port 接到三引擎/审批/ModuleHost） | T30 |
-| **T32** | 节点表单的 i18n、图标、分类、帮助文本 | T30 |
-| **T33** | 工作流 UI：**删掉**手写 `WorkflowCanvas`（685 行），切到原厂编辑器 | T30 |
-| **T35** | Node-RED 编辑器主题（官方 `build-custom-theme.js`，238 变量映射） | 无（UI 相关，与 T33 建议串行） |
-| **T34** | 执行归属：原生调度器 vs Node-RED 运行时 | T33 |
+| **T42** | 把节点包装进 Node-RED（`nodesDir` + bundle + 清单校验） | 无 —— **可立即派** |
+| **T43** | `McodeAgentPort` 的生产实现（6 个 port 接到三引擎/审批/ModuleHost） | T42 |
+| **T44** | 节点表单的 i18n、图标、分类、帮助文本 | T42 |
+| **T45** | 工作流 UI：**删掉**手写 `WorkflowCanvas`（685 行），切到原厂编辑器 | T42 |
+| **T47** | Node-RED 编辑器主题（官方 `build-custom-theme.js`，238 变量映射） | 无（UI 相关，与 T45 建议串行） |
+| **T46** | 执行归属：原生调度器 vs Node-RED 运行时 | T45 |
 
 **用户 2026-10-21 决策**：「之前手写的不要了，改一改 node red 的就行，
-node red 的风格可能不对，需要调整」—— 拆成 T33（删画布 + 切入口）与 T35（主题）。
+node red 的风格可能不对，需要调整」—— 拆成 T45（删画布 + 切入口）与 T47（主题）。
 
-## N9. 主题定制（T35 的依据）
+## N9. 主题定制（T47 的依据）
 
 Node-RED 官方就支持定制主题，`node-red/scripts/build-custom-theme.js` 头部：
 
@@ -440,11 +451,11 @@ Node-RED 官方就支持定制主题，`node-red/scripts/build-custom-theme.js` 
 - `flowToWorkflowDoc(flow)` —— 反向
 - `roundTripMismatchPaths(doc, roundTripped)` —— **往返丢数据检测**
 
-**T33 的第一步不是删画布，是量清楚这三个函数的能力边界。**
+**T45 的第一步不是删画布，是量清楚这三个函数的能力边界。**
 
-## N8. 执行归属问题（T34 的由来）
+## N8. 执行归属问题（T46 的由来）
 
-T30/T31 做完后，两条执行链都能跑同一张图：
+T42/T43 做完后，两条执行链都能跑同一张图：
 
 ```
 Mcode 原生：scheduler.ts → runner.ts → runtimeManager.sendTurn
@@ -453,7 +464,7 @@ Node-RED ：runtime → mcode-agent 节点 → port → runtimeManager.sendTurn
 
 **同一个终点（三引擎），两条调度路径。** 已有 `executorOwnership.ts` /
 `nodeRedOwnership.ts` / `flowTrustGate.ts` 在做 flow 级归属，
-但还没有「整张图归哪个执行器」的判据。T34 负责补。
+但还没有「整张图归哪个执行器」的判据。T46 负责补。
 
 ## N6. 与 GenOffice 线的对照
 
@@ -462,6 +473,6 @@ Node-RED ：runtime → mcode-agent 节点 → port → runtimeManager.sendTurn
 | 上游源码 | `genoffice/`（gitignored 快照） | `node-red/`（gitignored 快照） |
 | 渲染端 | 六个 app，43 万行，原样 | `editor-client`，原样 |
 | 宿主层 | **重造了 4,740 行**（待 T28/T29 改回） | ✅ 官方 embedding，没问题 |
-| AI 替换 | `ai:stream` 桥（待 T31/T32） | 节点 port（待 T31） |
+| AI 替换 | `ai:stream` 桥（待 T43/T44） | 节点 port（待 T43） |
 | 扩展点 | AI skill（渲染端） | 自定义节点（`nodesDir`） |
 | 上游改动 | 9 个补丁，全在 `apps/docs/` | **0 个补丁** |

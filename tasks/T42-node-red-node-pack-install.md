@@ -1,8 +1,8 @@
-# T30｜把 Mcode 节点包装进 Node-RED（补上唯一的断点）
+# T42｜把 Mcode 节点包装进 Node-RED（补上唯一的断点）
 
 | 项目 | 值 |
 |---|---|
-| 编号 | T30 |
+| 编号 | T42 |
 | 类型 | **ARC-006 主线**（用户：Node-RED 也是直接搬，二开加节点） |
 | 优先级 | **高** —— 这是 Node-RED 线上唯一的断点 |
 | 建议并发 | 改 `src/main/workflowEngines/`；与 T28/T29 不冲突（那两张改 `document/`） |

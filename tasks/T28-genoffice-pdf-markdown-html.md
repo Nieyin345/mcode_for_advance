@@ -269,3 +269,28 @@ hosts: { docs: true, slides: hostsSlidesOverride ?? slidesBridge.available, shee
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+
+### 2026-10-21 执行回写（T28）
+
+**源码实现与工厂落点**
+
+- `DocumentViewHostPorts.createView` 在原有构造器形态之外增加 `{vendor(openPath,kind)}`；生产另有 `setVendorViewFactory` 注入原厂工厂。`open` 的 PDF/Markdown/HTML 分支只允许初始化时通过已知工作区围栏的真实文件，沿用宿主 attach/bounds/hide/show/focus/diagnostic/close；原厂自建 preload、初始授权与页面导航，宿主不重复 `loadURL`。同一个 docId 不能偷偷换文件或换视图类型；不同 docId 不能持有相同物理文件。
+- 原厂 `createPdfView`、`createMarkdownView`、`createHtmlView` 直接从 gitignored GenOffice 源码导入，在 `genofficeNativeVendor.ts` 单一接缝装配；快照不存在时由 `electron.vite.config.ts` 的**精确别名**指向 `genofficeNativeVendorStub.ts`。实际阻碍不是宿主缺少生命周期 API，而是原厂 `genoffice-app://` 自定义协议、三份完整主进程依赖、运行时 preload/renderer 静态资源；现已做协议与部署目录装配。主进程 bundler 曾先遇到原项目坏的 preload 正则与 `docx-engine/lazy-media` 子路径解析，修正 alias 后本地 main build 已通过一次；最终修改后正在复跑。
+- 资源路径**只有两套**：开发 `<repo>/genoffice/apps/{pdf|markdown|html}/out/{preload/index.js,renderer/index.html}`；安装 `<resources>/genoffice/apps/{pdf|markdown|html}/out/{preload/index.js,renderer/index.html}`。由既有 CLI 的 `genoffice/packages/cli/dist/genoffice.cjs` 和 `genoffice/cli/genoffice.cjs` 两套可信后缀反推出目录，不接受第三套路径。原厂视图采用固定 `genoffice-app://{host}/index.html` 身份，由主进程 factory 实际决定页面内容，Pane 不再拼 vendor 的 file URL。
+- `document.capabilities.hosts.pdf/markdown/html` 分别由对端实际资源与 factory 装配结果报告。不可用时 Pane 显示显式错误，不影响现有 PDF 预览、Milkdown、OnlyOffice 默认回退。
+- 原厂 `openGeneratedPath` 最终应该转交 Mcode 的 `FileEditor` 文档打开入口（新 tab/切换现有文件），**不是**资料库自动收录：生成文件仍须通过主进程工作区围栏。目前按任务给定的安全占位返回 `false`，原厂走揭示文件的降级，不伪称新 tab 已打开。
+
+**Preload 与 Pane 边界核对**
+
+- 原厂三个 `src/preload/index.ts` 中 `ipcRenderer` 调用表达式计数（按 `invoke/send/on`）分别为 PDF **56/4/11 = 71**、Markdown **44/5/15 = 64**、HTML **39/7/13 = 59**；是调用位点数，**不是**等价于 71/64/59 个独立 channel，且不包含原厂封装的拖拽工具内部注册。确实会越出 Pane 的类型有系统文件打开/另存为对话框、打印与 PDF 导出、证书选择、附件/图片选择、HTML 演示全屏/新标签、浏览器外链以及拖拽打开系统文件；应用设置与文件上下文菜单也不完全属于视图内 DOM。宿主已限制初始文件路径、页面身份以及原厂 `setWindowOpenHandler` 自带的外链处理，但这些原厂系统副作用并未逐通道换成 Mcode 自有审批（因此不能把原厂所有功能都算作已通过宿主围栏）。后续需要和 FileEditor/系统对话框能力边界协调，此处不扩到上游主进程业务改造。
+- 三者的 `ai:stream/get-settings/cancel` 通过一个 upstream `mcode-view-ai.ts` handler 接同一 Mcode SDK 会话，handler 以真实 `event.sender` 反查宿主绑定 `sessionId + filePath`；`docsAiPorts` 对实际选择的 Pi/Claude/Codex session、工作区匹配和人类批准再次检查。页面自报 session 与文件路径被忽略，陌生 sender/失效 session 直接拒绝。vendor 侧单独提交并产出 `patches/genoffice/0010-*`。
+
+**验证记录与未实证部分**
+
+- `pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json`、`pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` 通过。
+- `npm run typecheck -w @genoffice/pdf && npm run typecheck -w @genoffice/markdown && npm run typecheck -w @genoffice/html` 通过。
+- `node apps/desktop/scripts/run-smokes.mjs document-view-electron-smoke document-view-host-smoke document-view-open-smoke document-view-renderer-smoke document-view-vendor-page-smoke arc005-pane-dock-keys-smoke arc005-pane-docking-smoke arc005-pane-electron-smoke arc005-pane-first-paint-smoke arc005-pane-free-grid-smoke arc005-pane-layout-edges-smoke arc005-pane-write-race-smoke`：**12/12 PASS**，日志 `apps/desktop/.tmp/smoke-runs/1792559391141-29124-xfFo8D`。
+- 新增 `genoffice-native-view-smoke`：原厂工厂签收授权初始文件、三个格式的 open→unchanged→close 字节一致、宿主边界外文件拒绝、sender AI 身份、非法 openPath 拒绝、resize/hide/show 不重建也不重载、真实 AI 桥的 SDK 路由/取消与陌生 sender/失效 session；无快照 stub bundle 与降级 5 项断言：**PASS**，恢复后的绿例日志 `apps/desktop/.tmp/smoke-runs/1792559808001-31496-a8fo0v`。
+- 确定性变异：`documentViewHost.ts` 撤掉 `withinWorkspace` 时越界打开断言**红**；`mcode-view-ai.ts` 撤掉 `describe(session)` 权限检查时失效 session 断言**红**；两者自动恢复并校验源码哈希，恢复后 suite 复绿。
+- **未实证**：真实 Electron 视图上三格式用户手动编辑/保存再从外部查看器回读（含 PDF AI 面板真实网络模型回复）未做端到端 GUI 验证；stub 别名已模拟快照缺失构建成功，但“从构建配置撤掉 stub alias → 真正移除 vendor 快照 → 完整打包失败”的第三组破坏性变异未在多任务共享工作树执行。对此不声称验收已通过。

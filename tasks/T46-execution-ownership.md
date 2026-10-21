@@ -1,11 +1,11 @@
-# T34｜执行归属：Mcode 原生调度器 vs Node-RED 运行时
+# T46｜执行归属：Mcode 原生调度器 vs Node-RED 运行时
 
 | 项目 | 值 |
 |---|---|
-| 编号 | T34 |
+| 编号 | T46 |
 | 类型 | **ARC-006 主线**（架构决策） |
-| 优先级 | **高** —— T33 做完后必须回答，否则会出现「两套执行器跑同一张图」 |
-| 建议并发 | 改 `workflowEngines/` + `orchestration/`；**先完成 T33** |
+| 优先级 | **高** —— T45 做完后必须回答，否则会出现「两套执行器跑同一张图」 |
+| 建议并发 | 改 `workflowEngines/` + `orchestration/`；**先完成 T45** |
 | 预计规模 | 中 |
 
 ---
@@ -33,7 +33,7 @@ Mcode 现在有**两套工作流执行器**：
 | 续跑 | `runStore` | Node-RED 自己的 context |
 | 审批 | `approvalBridge` | 也是 `runtimeManager`（经 port） |
 
-**T30/T31 做完之后，两边都能跑同一张图的语义。** 这会带来真实问题：
+**T42/T43 做完之后，两边都能跑同一张图的语义。** 这会带来真实问题：
 
 - 同一张图被两边同时跑 → 两次执行、两倍 token
 - `executorOwnership.ts` 的 owner 注册表只有一份，两边抢同一把锁
@@ -62,7 +62,7 @@ Mcode 现在有**两套工作流执行器**：
 4. `apps/desktop/src/main/workflowEngines/flowTrustGate.ts` **全文**。
 5. `apps/desktop/src/main/orchestration/scheduler.ts` 的派发逻辑与并发上限。
 6. `apps/desktop/src/main/workflowEngines/registry.ts:120-200` 的部署握手。
-7. T33 的回写区 —— 它回答了迁移器能到什么程度。
+7. T45 的回写区 —— 它回答了迁移器能到什么程度。
 
 ---
 
@@ -79,7 +79,7 @@ Mcode 现在有**两套工作流执行器**：
   新图一律 `node-red`。
 
 **倾向 A**，理由：用户的要求是「Node-RED 直接搬」，
-留一套并行执行器就是留两套语义要维护。但**要先量迁移成功率**（T33 第 1 步）：
+留一套并行执行器就是留两套语义要维护。但**要先量迁移成功率**（T45 第 1 步）：
 如果大量旧图迁不过去，A 会破坏用户既有工作流，那时选 B。
 
 **这条判断必须写进回写区，不能凭感觉选。**
@@ -109,10 +109,10 @@ Mcode 现在有**两套工作流执行器**：
 `WorkflowBoardPanel` 读 `workflowLive` 事件，那是 Mcode 原生调度器发出的。
 
 - Node-RED 执行时，这些事件由谁发？
-- T31 的 port 实现里，`mcode-agent` 节点的执行已经在 `runtimeManager` 里了 ——
+- T43 的 port 实现里，`mcode-agent` 节点的执行已经在 `runtimeManager` 里了 ——
   能不能从那里补发 `workflow.node.*` 事件？
 
-**这是 T34 最实的一块**：让运行看板在两种引擎下都能工作。
+**这是 T46 最实的一块**：让运行看板在两种引擎下都能工作。
 
 ---
 
