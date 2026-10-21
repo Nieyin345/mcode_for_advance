@@ -888,6 +888,7 @@ const workflowEngine: Api["workflowEngine"] = {
   stop: () => webUnsupported("workflowEngine.stop"),
   status: () => webUnsupported("workflowEngine.status"),
   list: () => webUnsupported("workflowEngine.list"),
+  load: () => webUnsupported("workflowEngine.load"),
   // 【ARC-006 Gate E】节点包安装是**桌面机器上的可执行代码**,手机端不做(与整个
   // workflowEngine 命名空间同一取舍);审批卡也只画在桌面设置页。
   nodesList: () => webUnsupported("workflowEngine.nodesList"),

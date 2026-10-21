@@ -38,6 +38,7 @@ await withAuditPage(here,async page=>{
     check('choosing a second workflow keeps native entry',await page.eval(`!!document.querySelector('${nativeEntry}')`));
     await page.eval(`document.querySelector('${nativeEntry} button').click()`);
     await page.waitFor('document.querySelector("#workflows-panel-engines")?.classList.contains("flex")');
+    check('native entry loads the selected B rather than previously selected A',await page.eval('__audit.nativeLoads.at(-1)==="audit-workflow-b"'));
     check('native entry really navigates to engine tab',await page.eval('document.querySelector("#workflows-panel-engines").classList.contains("flex")'));
     await page.screenshot('native-workflow-entry.png');
   });

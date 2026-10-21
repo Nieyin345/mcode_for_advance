@@ -656,6 +656,14 @@ export function EngineNodePackagesSection() {
 export function EngineRuntimePanel({ active: activeTab = true, engineId, editorOnly = false }: { active?: boolean; engineId?: string; editorOnly?: boolean }) {
   const { t } = useI18n();
   const listRead = useRpc(() => api.workflowEngine.list(), []);
+  // T59: a library-load can restart the engine while this panel is docked.
+  // Refresh the authoritative runtime status, including the new editor URL.
+  const refreshOnNativeLoad = listRead.refetch;
+  useEffect(() => {
+    const refresh = (): void => { void refreshOnNativeLoad(); };
+    window.addEventListener("mcode:native-canvas-loaded", refresh);
+    return () => window.removeEventListener("mcode:native-canvas-loaded", refresh);
+  }, [refreshOnNativeLoad]);
   const engines = listRead.data?.engines ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = engines.find((e) => e.engineId === (engineId ?? selectedId)) ?? (engineId ? null : engines[0] ?? null);

@@ -1044,6 +1044,7 @@ const api = {
     stop: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_STOP, input)) as RpcMap["workflowEngine.stop"],
     status: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_STATUS, input)) as RpcMap["workflowEngine.status"],
     list: (() => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_LIST)) as RpcMap["workflowEngine.list"],
+    load: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_LOAD, input)) as RpcMap["workflowEngine.load"],
     // 【ARC-006 Gate E】节点包：列表只读；安装的审批由主进程推送（见
     // `onNodeInstallApproval`）、渲染端经 respond 回布尔。
     nodesList: (() => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_NODES_LIST)) as RpcMap["workflowEngine.nodesList"],

@@ -26,6 +26,8 @@ export const WORKFLOW_ENGINE_START_CHANNEL = "workflowEngine:start";
 export const WORKFLOW_ENGINE_STOP_CHANNEL = "workflowEngine:stop";
 export const WORKFLOW_ENGINE_STATUS_CHANNEL = "workflowEngine:status";
 export const WORKFLOW_ENGINE_LIST_CHANNEL = "workflowEngine:list";
+/** T59: explicitly load a library document into the native editor canvas. */
+export const WORKFLOW_ENGINE_LOAD_CHANNEL = "workflowEngine:load";
 /** 【ARC-006 Gate E】已装节点包（只读）。 */
 export const WORKFLOW_ENGINE_NODES_LIST_CHANNEL = "workflowEngine:nodesList";
 /** 【ARC-006 Gate E】安装一个节点包（主进程路由 `installEngineNode`，审批硬前置）。 */
@@ -55,6 +57,15 @@ export const WorkflowEngineStatusSchema = z.object({
   engineId: EngineIdSchema,
 }).strict();
 export type WorkflowEngineStatusInput = z.infer<typeof WorkflowEngineStatusSchema>;
+
+export const WorkflowEngineLoadSchema = z.object({
+  workflowId: z.string().min(1).max(200),
+  confirmReplace: z.boolean().default(false),
+}).strict();
+export type WorkflowEngineLoadInput = z.input<typeof WorkflowEngineLoadSchema>;
+export type WorkflowEngineLoadResult =
+  | { ok: true }
+  | { ok: false; reason: string; requiresConfirmation?: boolean };
 
 /**
  * 一次引擎操作的统一结果。

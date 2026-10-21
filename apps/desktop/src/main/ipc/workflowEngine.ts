@@ -27,6 +27,8 @@ import {
   WorkflowEngineStatusSchema,
   WorkflowEngineNodeInstallSchema,
   WorkflowEngineNodeInstallRespondSchema,
+  WorkflowEngineLoadSchema,
+  type WorkflowEngineLoadResult,
   type WorkflowEngineListResult,
   type WorkflowEngineResult,
   type WorkflowEngineStatusView,
@@ -62,6 +64,8 @@ export interface WorkflowEngineHandlerPorts {
   registry: WorkflowEngineRegistry;
   /** 取某个引擎的启动参数；未配置返回 null。 */
   launchSpec(engineId: string): WorkflowEngineLaunchSpec | null;
+  /** T59: one host-controlled entry shared by UI and Agent app_api. */
+  load?(workflowId: string, confirmReplace: boolean): Promise<WorkflowEngineLoadResult>;
   /** 【ARC-006 Gate E】启动前验证可执行节点清单、处理可信的崩溃备份并恢复撤权。
    *  抛错必须阻断 spawn；纯状态机测试可不装配。 */
   beforeStart?(engineId: string): Promise<void>;
@@ -166,6 +170,18 @@ export function registerWorkflowEngineHandlers(ipc: IpcMain, ports: WorkflowEngi
   };
   recordRpcHandler(IPC.WORKFLOW_ENGINE_LIST, onList);
   ipc.handle(IPC.WORKFLOW_ENGINE_LIST, onList);
+
+  const onLoad = async (_evt: unknown, raw: unknown): Promise<WorkflowEngineLoadResult> => {
+    try {
+      const input = WorkflowEngineLoadSchema.parse(raw);
+      if (!ports.load) return { ok: false, reason: "工作流原生装载未配置" };
+      return await ports.load(input.workflowId, input.confirmReplace);
+    } catch (err) {
+      return { ok: false, reason: errText(err) };
+    }
+  };
+  recordRpcHandler(IPC.WORKFLOW_ENGINE_LOAD, onLoad);
+  ipc.handle(IPC.WORKFLOW_ENGINE_LOAD, onLoad);
 
   // 【ARC-006 Gate E】节点包：列表只读、安装走审批硬前置、respond 只兑现一次请求。
   // 三条都过 `recordRpcHandler`（与其它域同一条纪律）；安装的审批由 `nodes.install`

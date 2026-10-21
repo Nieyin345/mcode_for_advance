@@ -181,3 +181,12 @@ T46 定了 `engine: "mcode" | "node-red"`。
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜T59 执行结果
+
+- **时机选择 A（启动前装载）**：`WorkflowNativeEditorEntry` 先调用 `workflowEngine.load`（IPC + `recordRpcHandler`，与 Agent 共用），宿主读取已保存的 `WorkflowDoc` 与节点清单并迁移，只把该文档的 `tab + nodes` 作为 **真实** `flows.json` 内容；引擎随后从这个文件启动。没有发 `POST /flows`，不会产生 `mcode-deploy-final`，因此不调用 T58 的 `syncDeployedNativeWorkflows`，不产生回写环。契约、preload 和 web 不支持桩均补齐。
+- **引擎正在运行/编辑器草稿**：先比较磁盘中已有原生画布；不同，或引擎正在运行/失败态，均要求用户明确确认。提示“尚未 Deploy 的编辑可能丢失”；确认后先 stop 成功，再启动前按 `nodeRedStorage` 的跨进程文件租约 + 原子替换写入。旧 `flows.json` 备份为内容 SHA 命名的不可变文件。启动失败按同一租约回滚，且只在文件未被其他写者改变时恢复；失败不跳编辑器。库内未保存草稿时禁用装载。单进程多次装载经串行队列，A→B→A 使用相同路径。
+- **类型/引擎纪律**：只接收明示 `engine: "node-red"`，对 `mcode`/遗留未声明值拒绝并提示先显式切换；不修改原文 engine。迁移报告中 `unmapped`、`needsHumanDecision`、`lossy` 任意非空都显式拒绝并列出原因，不会悄悄丢数据；`flowMigration.ts`、T46 归属判据、T58 回写源码均未修改。
+- **13 份现有图**：T45 的 13/13 是纯函数往返数据保真，不是这 13 份 `engine: "node-red"` 的真原生画布可视证明。本次没有对 13 张逐一在真实 Electron/Node-RED 里验证布局；不能声称已在原厂 UI 全部显示正确。带需人工裁决/损失的图会被本次严格装载围栏拒绝。
+- **隔离动态/变异证据 E1**：新增 `workflow-native-load-smoke`（独立临时目录、假 runtime、仅虚构图），17/17：A→B→A 读到对应 tab、确认前不写、切换后备份、运行中 stop/start、失败回滚、`mcode` 归属不变、缺失映射与舍入损失拒绝、库 `updatedAt` 不变。浏览器 `workflow-ui-smoke` 补了选中 B 的原生装载请求断言。撤掉 `replaceNativeCanvas` 再跑，8/17 且判据 1 红；恢复后改为装载成功时模拟误写库 `updatedAt`，14/17 且判据 3 红；最终源码均原样恢复，重跑 `workflow-native-load-smoke` 绿。
+- **回归**：`node apps/desktop/scripts/run-smokes.mjs` 共 17 套 T59 相关 workflow/flow-migration/executor-gate-d 绿色（日志 `apps/desktop/.tmp/smoke-runs/1792577855324-35732-WCODN1`）；`workflow-seed-smoke` **仍失败**，现存的旧构建脚本引用不存在的 `scripts/run-store-smoke/stubs/electron.ts`，还在旧组合中拉入缺少可打包的 `cpu-features`/GenOffice 资产。已隔离排查但未跨出本卡范围修改它；故**验收判据 6 未完全达成**。`pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` + `apps/desktop/tsconfig.json` 均通过。真 Electron 中 13 图画布人工验看留待 U1，不冒充 E1。

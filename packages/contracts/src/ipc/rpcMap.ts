@@ -20,6 +20,7 @@ import {
   WORKFLOW_ENGINE_STOP_CHANNEL,
   WORKFLOW_ENGINE_STATUS_CHANNEL,
   WORKFLOW_ENGINE_LIST_CHANNEL,
+  WORKFLOW_ENGINE_LOAD_CHANNEL,
 } from "./workflowEngine.js";
 import type {
   WorkflowEngineStartInput,
@@ -27,6 +28,8 @@ import type {
   WorkflowEngineStatusInput,
   WorkflowEngineResult,
   WorkflowEngineListResult,
+  WorkflowEngineLoadInput,
+  WorkflowEngineLoadResult,
   WorkflowEngineNodesListResult,
   WorkflowEngineNodeInstallInput,
   WorkflowEngineNodeInstallResult,
@@ -1180,6 +1183,8 @@ export interface RpcMap {
   "workflowEngine.status": (input: WorkflowEngineStatusInput) => Promise<WorkflowEngineResult>;
   /** 【ARC-006 WF-INT】列出所有已知引擎的状态。 */
   "workflowEngine.list": () => Promise<WorkflowEngineListResult>;
+  /** T59: load an existing node-red-owned Mcode document into the native canvas. */
+  "workflowEngine.load": (input: WorkflowEngineLoadInput) => Promise<WorkflowEngineLoadResult>;
   /** 【ARC-006 Gate E】列出已安装的第三方节点包（只读）。清单损坏时 `corrupt` 带原因，
    *  `nodes` 为空 —— 不把"读不懂"伪装成"没装”。 */
   "workflowEngine.nodesList": () => Promise<WorkflowEngineNodesListResult>;
@@ -2171,6 +2176,7 @@ export const IPC = {
   WORKFLOW_ENGINE_STOP: WORKFLOW_ENGINE_STOP_CHANNEL,
   WORKFLOW_ENGINE_STATUS: WORKFLOW_ENGINE_STATUS_CHANNEL,
   WORKFLOW_ENGINE_LIST: WORKFLOW_ENGINE_LIST_CHANNEL,
+  WORKFLOW_ENGINE_LOAD: WORKFLOW_ENGINE_LOAD_CHANNEL,
   // 【ARC-006 Gate E】节点包安装：列表只读；安装走审批硬前置；respond 是审批应答。
   WORKFLOW_ENGINE_NODES_LIST: WORKFLOW_ENGINE_NODES_LIST_CHANNEL,
   WORKFLOW_ENGINE_NODE_INSTALL: WORKFLOW_ENGINE_NODE_INSTALL_CHANNEL,

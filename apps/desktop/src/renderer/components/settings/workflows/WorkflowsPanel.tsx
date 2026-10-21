@@ -81,6 +81,9 @@ const VIEWS: ReadonlyArray<{ id: WorkflowsView; labelKey: MessageId }> = [
 export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
   const { t } = useI18n();
   const [view, setView] = useState<WorkflowsView>("library");
+  // A native flows.json swap restarts Node-RED; remount its status/view so an
+  // old editor WebContentsView cannot keep showing the previous canvas.
+  const [nativeCanvasEpoch, setNativeCanvasEpoch] = useState(0);
   // 一次性焦点:技能/插件页的「节点」反查点一行时带的"要打开哪一份"(见 store 的
   // `settingsFocusWorkflowId`)。这里只负责**切到库那一页**;真正打开那份图、用完清掉
   // 由 `WorkflowLibraryView` 做(它才拿得到 `openWorkflow`)。
@@ -205,7 +208,7 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
           onSaveProfile={saveProfile}
           onRemoveProfile={removeProfile}
           focusWorkflowId={focusWorkflowId}
-          onOpenNativeEditor={() => setView("engines")}
+          onOpenNativeEditor={() => { setNativeCanvasEpoch(n => n + 1); setView("engines"); }}
         />
       </div>
       {/* 节点类型与代理档案这两页只有工作流那边有(`views` 里已经筛掉了),所以这整块
@@ -257,7 +260,7 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
         aria-labelledby={tabId(prefix, "engines")}
         className={cn("min-h-0 flex-1 flex-col", view === "engines" ? "flex" : "hidden")}
       >
-        <EngineRuntimePanel active={view === "engines" && !flowDocked} />
+        <EngineRuntimePanel key={nativeCanvasEpoch} active={view === "engines" && !flowDocked} />
       </div>
     </div>
   );

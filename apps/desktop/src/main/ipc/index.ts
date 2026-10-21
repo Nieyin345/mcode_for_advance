@@ -5,6 +5,9 @@ import { registerDocumentViewHandlers, isApprovedDocumentViewOpen } from "./docu
 import { resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
 import { registerWorkflowEngineHandlers } from "./workflowEngine.js";
 import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
+import { loadWorkflowIntoNative } from "@main/workflowEngines/nativeLibraryLoad.js";
+import { getWorkflow } from "@main/orchestration/library.js";
+import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { documentViewHost } from "@main/document/documentViewHost.js";
 import { docsPrivilegedPorts } from "@main/document/docsPrivilegedPorts.js";
 import { docsAiPorts } from "@main/document/docsAiPorts.js";
@@ -263,6 +266,19 @@ export function registerIpcHandlers(): void {
   registerWorkflowEngineHandlers(ipc, {
     registry: workflowEngineRegistry,
     launchSpec: (engineId) => workflowEngineRegistry.launchSpec(engineId),
+    load: async (workflowId, confirmReplace) => {
+      await awaitDb();
+      const runtime = workflowEngineRegistry.get("node-red");
+      if (!runtime) return { ok: false, reason: "Node-RED 引擎未注册" };
+      return loadWorkflowIntoNative(workflowId, {
+        get: getWorkflow,
+        types: async () => new Map((await loadNodeTypes()).entries.map(entry => [entry.id, entry.manifest])),
+        dataDir: () => workflowEngineRegistry.dataDirOf("node-red"),
+        runtime,
+        beforeStart: ensureEngineNodesReady,
+        launchSpec: () => workflowEngineRegistry.launchSpec("node-red"),
+      }, confirmReplace);
+    },
     beforeStart: async (engineId) => {
       if (engineId === "node-red") await ensureEngineNodesReady();
     },

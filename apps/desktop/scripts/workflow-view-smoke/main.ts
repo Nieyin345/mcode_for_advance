@@ -2127,18 +2127,18 @@ check(
 check("卡片:出线口一直是十字光标", plainCard.includes("cursor-crosshair"));
 
 console.log("\nWorkflowNativeEditorEntry");
-const nativeEntryZh = withLocale("zh", () => html(createElement(WorkflowNativeEditorEntry, { onOpen: () => {} })));
-const nativeEntryEn = withLocale("en", () => html(createElement(WorkflowNativeEditorEntry, { onOpen: () => {} })));
+const nativeEntryZh = withLocale("zh", () => html(createElement(WorkflowNativeEditorEntry, { workflowId: "flow_A", dirty: false, onOpen: () => {} })));
+const nativeEntryEn = withLocale("en", () => html(createElement(WorkflowNativeEditorEntry, { workflowId: "flow_A", dirty: false, onOpen: () => {} })));
 check("工作流库有原厂编辑器入口", button(nativeEntryZh, "打开 Node-RED 编辑器").found);
 check("原厂编辑器入口说明仅已带 Mcode 标记的部署会同步", nativeEntryZh.includes("部署成功后才同步回本列表"));
 check("原厂编辑器有英语入口", button(nativeEntryEn, "Open Node-RED editor").found);
 check("入口不自行画边/节点", !nativeEntryZh.includes("workflow-edge-arrow") && !nativeEntryZh.includes("data-workflow-viewport"));
 const nativeLibrarySrc = readFileSync("src/renderer/components/settings/workflows/WorkflowLibraryView.tsx", "utf8");
 const nativePanelSrc = readFileSync("src/renderer/components/settings/workflows/WorkflowsPanel.tsx", "utf8");
-check("工作流详情已换成原厂编辑器入口", nativeLibrarySrc.includes("<WorkflowNativeEditorEntry onOpen={onOpenNativeEditor} />"));
-check("编辑按钮切到已挂载的引擎页签", nativePanelSrc.includes('onOpenNativeEditor={() => setView("engines")}'));
+check("工作流详情已换成原厂编辑器入口", nativeLibrarySrc.includes("workflowId={baseline.id} dirty={dirty || saving} onOpen={onOpenNativeEditor}"));
+check("编辑按钮切到已挂载的引擎页签", nativePanelSrc.includes('onOpenNativeEditor={() => { setNativeCanvasEpoch(n => n + 1); setView("engines"); }}'));
 check("自动化也能打开同一引擎编辑页", nativePanelSrc.includes('v.id === "library" || v.id === "engines"'));
-check("仍由同一个 EngineRuntimePanel 承载原厂编辑器", nativePanelSrc.includes('<EngineRuntimePanel active={view === "engines" && !flowDocked} />'));
+check("仍由同一个 EngineRuntimePanel 承载原厂编辑器", nativePanelSrc.includes('<EngineRuntimePanel key={nativeCanvasEpoch} active={view === "engines" && !flowDocked} />'));
 
 console.log("\nCSS 变量名(写错了不报错,只会画不出来)");
 // 这条机械校验是拿一次真事故换来的:画布上的边写着 `rgb(var(--edge-panel))`,而主题

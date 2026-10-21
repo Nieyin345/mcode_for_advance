@@ -1148,7 +1148,7 @@ export function WorkflowLibraryView({
             ) : working && baseline ? (
               catalog ? (
                 <>
-                  <WorkflowNativeEditorEntry onOpen={onOpenNativeEditor} />
+                  <WorkflowNativeEditorEntry key={baseline.id} workflowId={baseline.id} dirty={dirty || saving} onOpen={onOpenNativeEditor} />
                   <div className={cn("min-h-0 shrink-0", inspectorOpen ? "flex" : "hidden")}>
                   <NodeInspector
                     doc={working}

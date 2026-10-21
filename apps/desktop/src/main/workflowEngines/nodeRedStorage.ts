@@ -47,12 +47,13 @@
  *     这条 flow 的文件）。
  */
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync, mkdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 import { withOsFileLease } from "@main/lib/osFileLease.js";
 import { bindProjectDirectoryIdentity, ensureProjectDirectoryNoLinks, resolveProjectFlowDir } from "./projectFlowDir.js";
-import type { NodeRedFlow } from "./flowMigration.js";
+import type { NodeRedFlow, NodeRedNode } from "./flowMigration.js";
+import { nativeFlowIdsOfNodes } from "./nodeRedOwnership.js";
 import {
   flowExecutableUnderTrust,
   type FlowExecutableResult,
@@ -531,4 +532,78 @@ export class NodeRedFlowStorage {
     }
     return { ok: true, entries };
   }
+}
+
+
+/** T59: the actual Node-RED startup canvas is <engineDir>/flows.json,
+ * NOT the per-document archive at flows/<flow-id>.json above.
+ * Read it strictly: a broken/linked native file may never become an empty
+ * canvas or be silently overwritten.
+ */
+export function readNativeCanvas(engineDir: string): string | null {
+  const path = join(engineDir, "flows.json");
+  let stat: ReturnType<typeof lstatSync>;
+  try { stat = lstatSync(path); }
+  catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+    throw new Error("Node-RED flows.json 不是独立普通文件，拒绝装载覆盖");
+  }
+  const bytes = readFileSync(path, "utf8");
+  let parsed: unknown;
+  try { parsed = JSON.parse(bytes); }
+  catch { throw new Error("Node-RED flows.json 无法解析，拒绝覆盖"); }
+  nativeFlowIdsOfNodes(parsed);
+  return bytes;
+}
+
+export interface NativeCanvasWrite {
+  changed: boolean;
+  rollback(): Promise<void>;
+}
+
+/** Write the whole native canvas only while the runtime is stopped.
+ * Keep the prior deployed graph under a content-addressed immutable backup;
+ * use the same atomic file primitive and cross-process file lease as normal
+ * NodeRedFlowStorage. Rollback refuses to clobber a later unrelated write.
+ */
+export async function replaceNativeCanvas(engineDir: string, nodes: readonly NodeRedNode[]): Promise<NativeCanvasWrite> {
+  nativeFlowIdsOfNodes(nodes);
+  const path = join(engineDir, "flows.json");
+  const next = JSON.stringify(nodes, null, 2);
+  let previous: string | null = null;
+  const changed = await withOsFileLease(path, async () => {
+    previous = readNativeCanvas(engineDir);
+    if (previous !== null && JSON.stringify(JSON.parse(previous)) === JSON.stringify(nodes)) return false;
+    if (previous !== null) {
+      const digest = createHash("sha256").update(previous).digest("hex");
+      const backup = join(engineDir, `.mcode-flows-backup-${digest}.json`);
+      if (existsSync(backup)) {
+        const info = lstatSync(backup);
+        if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || readFileSync(backup, "utf8") !== previous) {
+          throw new Error("Node-RED flows.json 备份身份冲突，拒绝覆盖");
+        }
+      } else {
+        await atomicReplaceFile(backup, previous);
+      }
+    }
+    await atomicReplaceFile(path, next);
+    return true;
+  });
+  const old = previous;
+  return {
+    changed,
+    rollback: async () => {
+      if (!changed) return;
+      await withOsFileLease(path, async () => {
+        if (readNativeCanvas(engineDir) !== next) {
+          throw new Error("装载失败后画布已被其他操作修改，拒绝覆盖回滚");
+        }
+        if (old === null) unlinkSync(path);
+        else await atomicReplaceFile(path, old);
+      });
+    },
+  };
 }

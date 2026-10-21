@@ -252,10 +252,10 @@ console.log(`\nworkflow-engine-runtime-smoke:${total - failures}/${total} 通过
   // 【Gate E / MC-057】新增节点包读/安装/审批应答后不能再把合法新增通道当回归。
   // 反向也要抓：这里列的全部必须注册且受审计，不允许悄悄出现未知通道。
   const expectedChannels = [
-    IPC.WORKFLOW_ENGINE_LIST, IPC.WORKFLOW_ENGINE_START, IPC.WORKFLOW_ENGINE_STATUS, IPC.WORKFLOW_ENGINE_STOP,
+    IPC.WORKFLOW_ENGINE_LIST, IPC.WORKFLOW_ENGINE_LOAD, IPC.WORKFLOW_ENGINE_START, IPC.WORKFLOW_ENGINE_STATUS, IPC.WORKFLOW_ENGINE_STOP,
     IPC.WORKFLOW_ENGINE_NODES_LIST, IPC.WORKFLOW_ENGINE_NODE_INSTALL, IPC.WORKFLOW_ENGINE_NODE_INSTALL_RESPOND,
   ];
-  eq("★ workflowEngine 七条已声明通道精确注册（不允许未知通道）",
+  eq("★ workflowEngine 八条已声明通道精确注册（不允许未知通道）",
     [...handlers.keys()].sort(), [...expectedChannels].sort());
   const rpc = new Set(registeredRpcChannels());
   eq("★ 所有 workflowEngine 通道都进 recordRpcHandler（并非只校验旧四条）",
