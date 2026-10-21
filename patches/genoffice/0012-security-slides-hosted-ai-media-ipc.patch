@@ -1,0 +1,115 @@
+From 355e667353ad90da7d0b3c6823fad0f525b729c3 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Wed, 21 Oct 2026 22:52:58 +0800
+Subject: [PATCH] security(slides): fail closed for hosted ai media ipc
+
+Mcode-hosted Slides has no approval/session-aware adapter for these independent original AI/media handlers. Keep the original handlers for standalone GenOffice and install readable denials for the eight Slides-only ai:* channels in hosted mode. Generic standalone AI IPC is unchanged.
+
+Source-Repository: https://github.com/genspark-ai/genoffice
+
+Upstream-Base: aba076cc9b292461cc419288ee555e524f6250e1
+
+License: Apache-2.0 (repository LICENSE)
+---
+ apps/slides/src/main/ai-ipc.ts             |  7 +++-
+ apps/slides/src/main/slides-ai-boundary.ts | 49 ++++++++++++++++++++++
+ apps/slides/src/main/slides-main.ts        |  2 +-
+ 3 files changed, 56 insertions(+), 2 deletions(-)
+ create mode 100644 apps/slides/src/main/slides-ai-boundary.ts
+
+diff --git a/apps/slides/src/main/ai-ipc.ts b/apps/slides/src/main/ai-ipc.ts
+index 178f0ec..f64187d 100644
+--- a/apps/slides/src/main/ai-ipc.ts
++++ b/apps/slides/src/main/ai-ipc.ts
+@@ -65,6 +65,7 @@ import type { AiRunFailure } from '../shared/ipc'
+ import { EMU_PER_PX_96 } from '@genoffice/pptx-render'
+ import { tm } from './i18n-main'
+ import { pushHistory, rebuildSlide, scheduleHistoryNotify, sessions } from './session-state'
++import { registerSlidesAiBoundary } from './slides-ai-boundary'
+ 
+ // ---- AI settings + streaming proxy (the main process does the networking to avoid renderer CORS; implementation shared via @genoffice/ai-provider) ----
+ 
+@@ -333,7 +334,11 @@ export function registerAiIpc(): void {
+ // generic ai:* channels are registered by docs-main.registerAiIpc, and slides' registerAiIpc is
+ // never called; docs does not have these channels, so putting them in the wrong place raises
+ // "No handler registered".
+-export function registerSlidesOnlyAiIpc(): void {
++export function registerSlidesOnlyAiIpc(isMcodeHosted = false): void {
++  registerSlidesAiBoundary(ipcMain, isMcodeHosted, registerOriginalSlidesOnlyAiIpc)
++}
++
++function registerOriginalSlidesOnlyAiIpc(): void {
+   // gsk (Genspark CLI) capabilities: AI image generation / media analysis. Returns an error prompt when not logged in.
+   ipcMain.handle(
+     'ai:generate-image',
+diff --git a/apps/slides/src/main/slides-ai-boundary.ts b/apps/slides/src/main/slides-ai-boundary.ts
+new file mode 100644
+index 0000000..74e41e9
+--- /dev/null
++++ b/apps/slides/src/main/slides-ai-boundary.ts
+@@ -0,0 +1,49 @@
++/*
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Mcode-specific boundary for the original Slides AI/media IPC handlers.
++ * The upstream algorithms remain unchanged; Hosted mode fails closed until
++ * the capability is explicitly integrated with Mcode's approval/session path.
++ */
++import type { IpcMain } from 'electron'
++
++export const SLIDES_ONLY_AI_CHANNELS = [
++  'ai:generate-image',
++  'ai:analyze-media',
++  'ai:insert-image-url',
++  'ai:replace-picture-url',
++  'ai:save-sidecar',
++  'ai:save-style-template',
++  'ai:list-style-templates',
++  'ai:load-style-template',
++] as const
++
++export const MCODE_SLIDES_AI_UNAVAILABLE =
++  'Mcode 宿主尚未授权 Slides 原厂云 AI／媒体能力；请通过 Mcode 已审批的 AI 能力操作。'
++
++/**
++ * Register the original handlers only for standalone GenOffice.
++ *
++ * Mcode-hosted Slides currently has no approval/session-aware adapter for
++ * these independent handlers. Install readable denials under the same channel
++ * names instead of leaving them reachable through raw ipcMain. This is
++ * intentionally fail-closed for every sender until a separate approved
++ * adapter can bind sender + file + session + version at invocation time.
++ */
++export function registerSlidesAiBoundary(
++  ipc: Pick<IpcMain, 'handle'>,
++  isMcodeHosted: boolean,
++  registerOriginal: () => void,
++): 'blocked' | 'standalone' {
++  if (!isMcodeHosted) {
++    registerOriginal()
++    return 'standalone'
++  }
++
++  for (const channel of SLIDES_ONLY_AI_CHANNELS) {
++    ipc.handle(channel, () => {
++      throw new Error(MCODE_SLIDES_AI_UNAVAILABLE)
++    })
++  }
++  return 'blocked'
++}
+diff --git a/apps/slides/src/main/slides-main.ts b/apps/slides/src/main/slides-main.ts
+index f9d42e3..b2379d0 100644
+--- a/apps/slides/src/main/slides-main.ts
++++ b/apps/slides/src/main/slides-main.ts
+@@ -4832,7 +4832,7 @@ export function registerSlidesIpc(): void {
+   // aggregate mode only calls this function) ──
+   registerPresenterIpc()
+ 
+-  registerSlidesOnlyAiIpc()
++  registerSlidesOnlyAiIpc(mcodePane.isMcodeHosted())
+ }
+ 
+ // ── project-store IPC (standalone mode) ───────────────────────────────────
+-- 
+2.52.0.windows.1
+
