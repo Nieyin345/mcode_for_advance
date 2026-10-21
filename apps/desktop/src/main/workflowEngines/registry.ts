@@ -67,6 +67,9 @@ import { dataRoot } from "@main/lib/dataRoot.js";
 import { bindProjectDirectoryIdentity, resolveProjectFlowDir } from "./projectFlowDir.js";
 import { log } from "@main/lib/logger.js";
 import { ensureEngineBootstrap } from "./bootstrapManifest.js";
+import { ensureNodePack } from "./nodePackManifest.js";
+import { NodePackHost } from "./nodePackHost.js";
+import { productionNodePackServices } from "@main/workflowEngines/nodePackProductionPorts.js";
 import {
   EngineRuntime,
   createEngineLaunchSpec,
@@ -98,6 +101,7 @@ RED.init(server, {
   httpAdminRoot: "/",
   httpNodeRoot: "/api",
   userDir,
+  nodesDir: [require("node:path").join(__dirname, "mcode-node-pack")],
   // 固定的 flow 文件名：不随机器 hostname 漂移，宿主才能确定性地管这一份流。
   flowFile: "flows.json",
   // 凭据密钥由宿主注入（见 launchSpec 的 NODE_RED_CREDENTIAL_SECRET）。
@@ -347,12 +351,15 @@ export function isFlowTrusted(dataDir: string): boolean {
 export class OwnedNodeRedRuntime extends EngineRuntime {
   private ownedFlowIds: string[] = [];
   private pendingDeploy: { id: string; flowIds: string[]; added: string[] } | null = null;
+  private nodePackHost: NodePackHost | null = null;
   constructor(engineId: string, ports: EngineRuntimePorts, private readonly ownership: ExecutorOwnershipRegistry) {
     super(engineId, ports);
     this.onTerminated(() => this.releaseOwned());
   }
 
   private releaseOwned(): void {
+    this.nodePackHost?.dispose();
+    this.nodePackHost = null;
     const ids = [...this.ownedFlowIds, ...(this.pendingDeploy?.added ?? [])];
     this.ownedFlowIds = [];
     this.pendingDeploy = null;
@@ -428,10 +435,16 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     if (state === "running" || state === "starting") return super.start(options);
     if (this.ownedFlowIds.length > 0) throw new Error("旧引擎租约未释放，拒绝再次启动");
     this.ownedFlowIds = claimNativeFlows(this.ownership, nativeFlowIds(options.dataDir));
+    this.nodePackHost = new NodePackHost(productionNodePackServices(
+      () => this.status(), options.probeIdentity?.adminToken,
+    ));
     try {
       const status = await super.start({
         ...options,
-        onMessage: (message, respond) => this.onDeployMessage(message, respond),
+        onMessage: (message, respond) => {
+          if (this.nodePackHost?.handle(message, respond)) return;
+          this.onDeployMessage(message, respond);
+        },
       });
       if (status.state !== "running" && status.state !== "starting" && !this.hasLiveChild()) this.releaseOwned();
       return status;
@@ -536,6 +549,11 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     // **绝不**带着盘上的旧/被篡改脚本启动。
     if (!writeEngineBootstrap(engineId, dir)) {
       log.error(`[workflow-engine:${engineId}] 引导脚本未能升级/恢复，拒绝启动引擎（不会执行旧脚本）`);
+      return null;
+    }
+    const nodePack = ensureNodePack(dir, engineId);
+    if (!nodePack.ok) {
+      log.error(`[workflow-engine:${engineId}] 节点包校验失败，拒绝启动：${nodePack.reason}`);
       return null;
     }
     // 【P1-4】启动参数由**唯一**的共享生成器收口（Electron-as-Node 模式、打包路径、

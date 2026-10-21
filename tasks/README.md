@@ -101,14 +101,14 @@
 | T26 | 修好三套自坏的 smoke 脚手架 | 测试基础设施 | 无 | ✅ 完成（`f98df6ff`；总控独立复跑 2/2 PASS） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | ✅ 完成（`41c42f03`；12/12 套件 + 变异 2/2；未做真 Node-RED 未部署 flow 端到端） |
 | T28 | **GenOffice pdf / markdown / html 接入**（直接调原厂 `createXxxView`） | **ARC-007 主线** | T22 | ✅ 完成（`858d3c7b`；12/12 套件 + 2 变异；未做真 Electron GUI 端到端） |
-| T29 | **GenOffice sheets / slides 接入**（同上，含 `queueWorkbookForView`） | **ARC-007 主线** | T22，且 **T28 完成后** | **待派**（sheets 的 `createSheetsView` 与 slides 的 `createSlidesView` 都能直接用） |
+| T29 | **GenOffice sheets / slides 接入**（同上，含 `queueWorkbookForView`） | **ARC-007 主线** | T22 | **部分完成**（`dc974b2c` 接线；真实 xlsx/pptx 编辑与 AI 回复未验，xlsx sidecar 二进制缺失） |
 | T42 | **把 Mcode 节点包装进 Node-RED**（`nodesDir` + bundle + 清单校验） | **ARC-006 主线** | 无 | **可派**（1,380 行节点代码已写好，生产零调用 —— 这是唯一断点） |
 | T43 | 节点的 `McodeAgentPort` 生产实现（接到三引擎/审批/ModuleHost） | ARC-006 主线 | T42 | 待派 |
 | T44 | 节点包 i18n / 图标 / 分类 / 帮助文本 | ARC-006 | T42 | 待派 |
 | T45 | **工作流 UI：删手写画布（685 行），切到 Node-RED 原厂编辑器** | ARC-006 主线 | T42 | 待派 |
 | T46 | 执行归属：原生调度器 vs Node-RED 运行时 | ARC-006 主线 | T45 | 待派 |
-| T47 | **Node-RED 编辑器主题**（官方 build-custom-theme，238 变量映射） | ARC-006 | 无（可与 T45 并行，但都改 UI，建议串行） | 待派 |
-| T48 | **扩展权限模型**：安装时一次性授权（手机应用式），438 个 RPC 全部可授权 | **扩展主线** | 无 | **可派**（现在只有 3 个权限值，与「操作所有内容」差三个数量级） |
+| T47 | **Node-RED 编辑器主题**（官方 build-custom-theme） | ARC-006 | 无 | ✅ 完成（`1566a414`；20 个变量映射，其余沿用原厂；发现卡里写的 token 名不存在，用了真实存在的） |
+| T48 | **扩展权限模型**：安装时一次性授权（手机应用式） | **扩展主线** | 无 | ✅ 完成（`0b414a62`） |
 | T49 | **扩展调用面**：把 438 个 RPC 暴露给扩展（`core.app.call`） | **扩展主线** | T48 | 待派 |
 | T50 | **扩展 UI 贡献点**：命令 / 侧栏面板 / 设置项 | 扩展主线 | T48 | 待派 |
 | T51 | **让 AI 会写扩展**：`app_guide` topic + `extension_validate` + 模板 | **扩展主线** | T48、T49 | 待派 |
@@ -342,28 +342,40 @@ docs 已有可抄的：`genoffice/apps/docs/src/main/mcode-ai.ts`（206 行）�
 | sheets | ❌ 未接（`createSheetsView` 一直可用） | **T29** |
 | slides | ⚠️ 自搓了 3 个操作（原厂 155 条已在 `createSlidesView` 里） | **T29** |
 
-### 可派顺序（**2026-10-21 14:20 更新**）
+### 可派顺序（**2026-10-21 14:45 更新**）
 
-**已完成的**：T01–T08、T10–T23、T25、T26、T28
-**在飞**：T24（设置页批次 10）
-**当前可派**：
+**已完成**：T01–T08、T10–T23、T25、T26、T28、T47、T48
+**部分完成**：T29（接线完成 `dc974b2c`；真实 xlsx/pptx 编辑与 AI 回复未验，
+xlsx sidecar 二进制不在盘上）
+**在飞**：T24（设置页）、T52、T42
 
-| 卡 | 文件 | 改哪 | 冲突 |
-|---|---|---|---|
-| **T52** smoke 急救 | `T52-smoke-rescue.md` | `scripts/` + `electron.vite.config.ts` | 无 |
-| **T48** 扩展权限模型 | `T48-extension-permission-model.md` | `contracts/modules.ts` + `appControl/` | 无 |
-| **T42** Node-RED 节点包 | `T42-node-red-node-pack-install.md` | `workflowEngines/` | 与 T47 抢 `registry.ts` |
-| **T47** Node-RED 主题 | `T47-node-red-editor-theme.md` | `resources/node-red/` + BOOTSTRAP | **与 T42 抢同一个 `BOOTSTRAP` 常量** |
-| **T29** GenOffice sheets/slides | `T29-genoffice-sheets-slides.md` | `main/document/` | 无（T28 已提交） |
+**当前真正可派的只有 T42**（T52 已在飞、T48 已完成）。
 
-**T42 与 T47 必须串行** —— 两者都改 `workflowEngines/registry.ts` 的 `BOOTSTRAP`
-字符串常量（T42 加 `nodesDir`、T47 加 `editorTheme`），同时做会撞。
-建议先 T42，提交后再 T47。
+| 卡 | 文件 | 状态 |
+|---|---|---|
+| **T42** Node-RED 节点包 | `T42-node-red-node-pack-install.md` | **可派**（无回写、无提交） |
+| T43 / T44 / T45 / T46 | Node-RED 后续四张 | 等 T42 |
+| T49 / T50 / T51 | 扩展后续三张 | T48 已完成，**可以派** |
+| T29 续篇 | 需要 xlsx sidecar 二进制 | 见下 |
 
-**T29 的前置已满足**：T28（`858d3c7b`）产出了
-`genofficeViewAiVendor.ts` + `patches/genoffice/0010-*`，T29 直接复用。
+**T49 / T50 / T51 的前置（T48）已满足**，现在都可以派：
 
-**不要碰 `components/settings/`** —— T24 在飞。
+| 卡 | 改哪 | 冲突 |
+|---|---|---|
+| **T49** 扩展调用面 | `main/modules/` | 无 |
+| **T50** 扩展 UI 贡献点 | `contracts/modules.ts` + 渲染端 | 与 T24 抢 `components/settings/`（T24 在飞时不要派） |
+| **T51** 让 AI 写扩展 | `appControl/` | 无 |
+
+### T29 的阻塞（如实记录）
+
+`dc974b2c` 只做到接线。卡在：
+
+- `genoffice/apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe` **不存在**
+- 没有它，「打开真实 xlsx」这条根本验不了
+- 回写还指出原厂 sheets/slides 有**至少 12 类**越出 Pane 的 IPC 未做逐条围栏审查
+
+**需要先决定**：是构建 sidecar（要 Rust 工具链），还是接受「xlsx 暂不可用」的降级。
+这不是执行对话能定的，要用户拍板。
 
 ### T07 留下的三条未验（不在 T28/T29 范围内，如实留档）
 
