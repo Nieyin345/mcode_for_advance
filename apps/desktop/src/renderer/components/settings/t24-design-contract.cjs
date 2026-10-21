@@ -1,6 +1,6 @@
 /** T24 UI refactor contract: scoped structural checks for source-only mutation tests.
- * Usage: node t24-design-contract.cjs shell|small
- * Mutation: set T24_MUTATION=shell|small, expect nonzero exit.
+ * Usage: node t24-design-contract.cjs shell|small|mid
+ * Mutation: set T24_MUTATION=shell|small|mid, expect nonzero exit.
  * Functional behavior stays under the existing settings *-smoke suites.
  */
 const assert = require('node:assert/strict');
@@ -29,8 +29,19 @@ if (batch === 'shell') {
   check(about.includes('return <ErrorNote tone="warning"'), 'update errors use shared ErrorNote');
   check(market.includes('<Badge variant="success"'), 'market installed states use shared Badge');
   check(market.includes('<Card className="overflow-hidden">'), 'market catalog uses shared Card');
+} else if (batch === 'mid') {
+  const gov = read('GovernancePanel.tsx');
+  let usage = read('UsagePanel.tsx');
+  const notifications = read('NotificationsPanel.tsx');
+  const style = read('OutputStylePanel.tsx');
+  if (process.env.T24_MUTATION === 'mid') usage = usage.replace('<ErrorNote>{error}</ErrorNote>', '<div>{error}</div>');
+  check(gov.includes('<Segmented'), 'governance tabs must use shared CDS segmented control');
+  check(usage.includes('<ErrorNote>{error}</ErrorNote>'), 'usage error must use shared ErrorNote');
+  check(usage.includes('<LoadingNote label={t("common.loading")}'), 'usage loading must use shared LoadingNote');
+  check(notifications.includes('<EmptyState title={t("settings.notifications.projectEmpty")}'), 'project empty state must be shared');
+  check(style.includes('<ErrorNote>{t("settings.outputStyle.loadFailed")}</ErrorNote>'), 'style loading failure must use shared ErrorNote');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

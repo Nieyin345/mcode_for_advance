@@ -21,7 +21,7 @@ import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { NotificationPrefs } from "@contracts/ipc";
 import { DEFAULT_NOTIFICATION_PREFS, normalizeNotificationPrefs } from "@contracts/ipc";
-import { Input, Switch } from "@renderer/components/ui/index.js";
+import { EmptyState, Input, Switch } from "@renderer/components/ui/index.js";
 import { setCachedNotificationPrefs } from "@renderer/lib/notifPrefsCache.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
@@ -214,7 +214,7 @@ export function NotificationsPanel() {
 
       <SettingsSection title={t("settings.notifications.projectSection")}>
         {liveProjects.length === 0 ? (
-          <div className="px-4 py-3 text-xs text-content-subtle">{t("settings.notifications.projectEmpty")}</div>
+          <EmptyState title={t("settings.notifications.projectEmpty")} className="py-5" />
         ) : (
           liveProjects.map((p) => (
             <SettingRow key={p.id} title={p.name} desc={p.path}>

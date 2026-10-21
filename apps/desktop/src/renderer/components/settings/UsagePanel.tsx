@@ -26,8 +26,8 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { fmtCost, fmtTokens } from "@renderer/lib/contextWindow.js";
-import { Button, Card, Input } from "@renderer/components/ui/index.js";
-import { IconChartBar, IconLoader2 } from "@renderer/lib/icons.js";
+import { Button, Card, ErrorNote, Input, LoadingNote } from "@renderer/components/ui/index.js";
+import { IconChartBar } from "@renderer/lib/icons.js";
 import { WORKFLOW_MAX_PARALLEL_MAX, WORKFLOW_MAX_PARALLEL_MIN } from "@contracts/ipc";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingRow } from "./SettingRow.js";
@@ -251,17 +251,10 @@ export function UsagePanel() {
         }
       />
 
-      {error && (
-        <div className="rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
-          {error}
-        </div>
-      )}
+      {error && <ErrorNote>{error}</ErrorNote>}
 
       {loading && !result ? (
-        <div className="flex items-center justify-center gap-2 py-10 text-[0.7857em] text-content-subtle">
-          <IconLoader2 size={14} className="animate-spin" />
-          {t("common.loading")}
-        </div>
+        <LoadingNote label={t("common.loading")} className="py-10" />
       ) : (
         <>
           {/* ───────── 区间汇总 ───────── */}
@@ -280,9 +273,7 @@ export function UsagePanel() {
           <SettingsSection title={t("settings.usage.heatmap.title")}>
             <div className="px-4 py-3">
               {cells.length === 0 ? (
-                <div className="py-4 text-center text-[0.7143em] text-content-subtle">
-                  {t("common.loading")}
-                </div>
+                <LoadingNote label={t("common.loading")} className="py-4" />
               ) : (
                 <div className="flex w-full gap-1.5">
                   {/* weekday labels — h/gap mirror the cell grid so rows align */}

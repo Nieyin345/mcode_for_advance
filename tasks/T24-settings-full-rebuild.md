@@ -182,3 +182,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5 pass/0 fail，日志 `apps/desktop/.tmp/smoke-runs/1792553046539-24040-iEMG0r`；`npx tsc --noEmit -p apps/desktop/tsconfig.json && npx tsc --noEmit -p packages/contracts/tsconfig.json`：双包 0 错。
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs small` PASS；`set T24_MUTATION=small&& node ... small` 人为将迁移错误的 `ErrorNote` 还原成自绘 div 后，按预期断言失败（exit=1）。断言是结构验证，功能仍由现有 smoke 负责。
 - 功能核对：逐项核对 `DataRootPanel` 的读/重试/选择目录/迁移/重启、`AboutPanel` 的版本显示/复制/检查/下载/安装状态、`MarketView` 的搜索/来源切换/新增/安装/刷新/删除绑定未更动；Electron 面板与焦点烟测全绿。
+
+### 2026-10-21｜批次 3：用量、通知、输出样式、治理页签
+
+- 改动：`UsagePanel` 的加载占位与热力图等待状态改 `LoadingNote`、错误块改 `ErrorNote`；`NotificationsPanel` 项目空态改 `EmptyState`；`OutputStylePanel` 刷新按钮改 `Button` 并使用 CDS 控件圆角，读取错误改 `ErrorNote`、初载加入 `LoadingNote`；`GovernancePanel` 自绘双 tab 改 `cds/Segmented`（保留两个业务子视图），用共享键盘交互与磁吸 token。
+- 原语：均复用现有控件；本批无需扩展；功能 bug：未发现。未触动用量拉取/重试序号、通知持久化/回滚、输出样式 selection RPC、治理渲染分支。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 pass，日志 `apps/desktop/.tmp/smoke-runs/1792553465851-7760-srKpxF`；双包 `npx tsc --noEmit -p apps/desktop/tsconfig.json && npx tsc --noEmit -p packages/contracts/tsconfig.json`：0 错。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs mid` PASS；`set T24_MUTATION=mid&& node ... mid`：恢复旧用量自绘错误块后 exit=1（预期红）。
+- 行为核对：4 页控制分支、状态字段与传入回调不变；旧 Electron 面板与焦点回归均绿。真实通知/安装副作用未人工触发。

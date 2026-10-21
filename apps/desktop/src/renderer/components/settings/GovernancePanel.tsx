@@ -9,7 +9,7 @@
  * (「写计划 → 本人批准 → 只递 grantId 执行」)。
  */
 import { useState } from "react";
-import { cn } from "@renderer/lib/cn.js";
+import { Segmented } from "@renderer/components/ui/cds/Segmented.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { SceneDeployPanel } from "./SceneDeployPanel.js";
 import { UnattendedPlanPanel } from "./UnattendedPlanPanel.js";
@@ -20,22 +20,20 @@ export function GovernancePanel(): React.JSX.Element {
   const { t } = useI18n();
   const [tab, setTab] = useState<GovernanceTab>("scene");
 
-  const tabClass = (active: boolean): string =>
-    cn(
-      "rounded px-2.5 py-1 text-[0.7857em] font-medium transition-colors",
-      active ? "bg-surface text-content" : "text-content-muted hover:text-content",
-    );
-
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* 子页签 —— 两半的导航;样式与设置页的 section 列表一致。 */}
-      <div className="mb-3 flex shrink-0 items-center gap-1 border-b border-edge pb-2">
-        <button type="button" className={tabClass(tab === "scene")} onClick={() => setTab("scene")}>
-          {t("sceneDeploy.nav")}
-        </button>
-        <button type="button" className={tabClass(tab === "unattended")} onClick={() => setTab("unattended")}>
-          {t("unattended.title")}
-        </button>
+      <div className="mb-3 shrink-0 border-b border-edge pb-2">
+        <Segmented
+          label={t("sceneDeploy.nav")}
+          className="w-full max-w-80"
+          value={tab}
+          onChange={(next) => setTab(next as GovernanceTab)}
+          items={[
+            { id: "scene", label: t("sceneDeploy.nav") },
+            { id: "unattended", label: t("unattended.title") },
+          ]}
+        />
       </div>
       <div className="min-h-0 flex-1">{tab === "scene" ? <SceneDeployPanel /> : <UnattendedPlanPanel />}</div>
     </div>

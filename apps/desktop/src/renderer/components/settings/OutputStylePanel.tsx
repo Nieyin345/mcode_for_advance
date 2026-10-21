@@ -1,9 +1,10 @@
+import { Button } from "@renderer/components/ui/button.js";
 import { useCallback, useEffect, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Select } from "@renderer/components/ui/index.js";
+import { ErrorNote, LoadingNote, Select } from "@renderer/components/ui/index.js";
 import { IconRefresh } from "@renderer/lib/icons.js";
 import type { OutputStyleEntry } from "@contracts/ipc";
 import { SettingRow } from "./SettingRow.js";
@@ -161,22 +162,26 @@ export function OutputStylePanel() {
               </Select.Positioner>
             </Select.Portal>
           </Select.Root>
-          <button
+          <Button
+            variant="ghost"
+            size="icon"
             type="button"
             onClick={refresh}
             title={t("settings.outputStyle.refresh")}
             aria-label={t("settings.outputStyle.refresh")}
             className={cn(
-              "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
+              "flex shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] p-0.5 transition-colors",
               "text-content-subtle hover:bg-surface-hover hover:text-content",
             )}
           >
             <IconRefresh size={14} />
-          </button>
+          </Button>
         </div>
       </SettingRow>
       {loadError ? (
-        <p className="text-[0.7857em] text-danger">{t("settings.outputStyle.loadFailed")}</p>
+        <div className="px-4 py-2"><ErrorNote>{t("settings.outputStyle.loadFailed")}</ErrorNote></div>
+      ) : styles === null ? (
+        <LoadingNote label={t("common.loading")} className="py-3" />
       ) : null}
     </SettingsSection>
   );
