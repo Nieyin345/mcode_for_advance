@@ -27,7 +27,7 @@
 | **第三轮：可开独占 Electron 窗口** | **T71** 六原生文档 GUI U1 | `tasks/T71-genoffice-six-native-gui-acceptance.md` | T30/T73 均已提交；**与 T77 串行**，只用隔离样本 |
 | **第三轮：与 T71 错峰** | **T77** Node-RED GUI U1 | `tasks/T77-node-red-native-electron-ui-acceptance.md` | T79/T73 均已提交，**必须独占 Electron**；仅隔离样本 |
 | **原 owner 收尾** | **T49** 扩展 API | `tasks/T49-extension-api-surface.md` | 仍有未提交的主进程/测试；**不再派第二个人**；T73 已交付退出施工区 |
-| **不新派，待现有脚本 owner 清场** | `document-router-smoke` 1 条 PDF 判据冲突 | `apps/desktop/scripts/document-router-smoke/main.ts` | 先比对新 `genofficeAppForPath` 与旧 `documentKindOf` 的行为；判据转化不能削弱 PDF 内容/路径/预览/权限正负例；当前文件 dirty，禁止抢写 |
+| **已收尾（2026-10-21）** | `document-router-smoke` PDF 路由断言尾项 | `apps/desktop/scripts/document-router-smoke/main.ts`、`apps/desktop/scripts/file-viewer-basedir-smoke/main.ts` | 代码提交 `e9e2dbf53c27bbead3171654ea0ac812323fbfcd`；路由 133/133、GenOffice 路由 52/52、真实 FileViewer PDF 组件 25/25；未改产品路由；T80 完整 22 套批次本次未重跑 |
 
 **验收口径**：任务卡交付完成 ≠ ARC/UXG 正式双勾。T72 的 G0–G5 还没有迁移实现和真 UI；T75 找到 production `tool-call` 缺失与 Slides 原厂云媒体 IPC 授权疑点（静态 E2，尚非实际外呼证据）；T83/T84/T85 分工解决。所有测试只用虚构文件/隔离数据库/本地 mock；T49/T73 共享工作树并发期间不运行全量 `--all`，不对真实帐号/文件或公网进行破坏性测试。
 

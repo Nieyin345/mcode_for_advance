@@ -57,7 +57,7 @@ T69 独立复跑 `arc005-focus-ownership-smoke/run.sh` 得到 `-V系统找不到
   | arc005-picker-layer-smoke | PASS | 原断言执行，exit 0 |
   | arc005-recorder-input-smoke | PASS | 原断言执行，exit 0 |
   | design-tokens-smoke | PASS | 原断言执行，exit 0 |
-  | document-router-smoke | **FAIL** | 124/125，`★ 资料库查看器 pdf 分支走 documentKindOf` 原有结构断言不满足；不是 shell 错误，本任务禁止动测试断言及产品 FileViewer，留待该域 owner |
+  | document-router-smoke | **PASS（尾项收尾）** | T30 后的旧 `documentKindOf` 源码断言已按共享 `genofficeAppForPath` 语义修正；指定命令 **133/133**，真实 `FileViewer` 组件回归 **25/25**；详见下方尾项收尾记录 |
   | engine-bootstrap-integrity-smoke | PASS | 原断言执行，exit 0 |
   | engine-secret-integrity-smoke | PASS | 原断言执行，exit 0 |
   | engine-secret-path-safety-smoke | PASS | 原断言执行，exit 0 |
@@ -73,5 +73,15 @@ T69 独立复跑 `arc005-focus-ownership-smoke/run.sh` 得到 `-V系统找不到
   | workflow-extension-seams-smoke | PASS | 原断言执行，exit 0 |
   | workflow-native-load-smoke | PASS | 原隔离 dataRoot + 原断言，exit 0 |
 - **负控（E1）**：先在已修复 `arc005-focus-ownership-smoke/run.sh` 临时把 `source` 精确改回旧 `find ... | sort -V | tail -1`，相同 Windows Bash 立即 **exit 1**、同样 `-V系统找不到指定的文件。`；恢复原 `source` 后在最后 22 套全量重跑中该套 **PASS**。恢复前后此文件 SHA256 逐字节相同：`793f135956c54bc84bdd494e3f24116d58400067c7ec80358f50678447443255`。
-- **不回归**：`node node_modules/typescript/bin/tsc --noEmit -p packages/contracts/tsconfig.json` exit 0；`node node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json` exit 0；`git diff --check -- apps/desktop/scripts` exit 0。22 套中的 21 套真 PASS、1 套真实断言仍红，未删/跳断言，也未拿 shell 修复冒充业务全绿。
-- **按判据回写**：① 22/22 环境首错已清，逐 suite 如上；② 代表性和 21 套通过，但 `document-router-smoke` 仍有 1 条原有断言红，故**未完全达成**；③ Windows E1 + 语义版本合成验证已做，Linux/macOS 原生 E1 **未覆盖**；④ 负控红→恢复 hash 一致、双包 TS 绿，已达成；⑤ 仅本卡独占文件列入提交，不接触 T81/产品，已达成。
+- **不回归（T80 原执行批次）**：`node node_modules/typescript/bin/tsc --noEmit -p packages/contracts/tsconfig.json` exit 0；`node node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json` exit 0；`git diff --check -- apps/desktop/scripts` exit 0。原 22 套批次当时为 21 PASS、`document-router-smoke` 124/125；本次只定向重跑 PDF 路由相关套件，未重跑完整 22 套批次。
+- **按判据回写**：① T80 原执行批次的 Windows shell 首错已清；② PDF 路由尾项现已通过独立定向复验，但本次未重跑完整 22 套批次；③ Windows E1 + 语义版本合成验证已做，Linux/macOS 原生 E1 **未覆盖**；④ 负控红→恢复 hash 一致、双包 TS 绿，已达成；⑤ T80 原提交边界未改动。
+
+### document-router-smoke PDF 路由尾项收尾（2026-10-21）
+
+- **代码提交**：`e9e2dbf53c27bbead3171654ea0ac812323fbfcd`（仅测试文件，不改产品路由）。
+- **根因**：T30 将原厂 app 识别收敛到 `genofficeAppForPath`，旧结构断言却要求 `FileViewer` 必须直接调用 `documentKindOf(visibleName) === "pdf"`。这测试的是旧实现形状，而不是 PDF 的实际显示行为。
+- **真实 MIME 边界**：项目文件 `readBinaryGuarded` 使用 `BINARY_MIME[ext] ?? "application/octet-stream"`，其 MIME 表只覆盖图片，所以项目 `.pdf` 可真实返回 `application/octet-stream`；资料库 `readEntryFile` 对 `.pdf` 映射 `application/pdf`。两条来源都已在 smoke 中核对。共享路由令 `.pdf` 在通用 MIME 下仍进入 `PdfPreview`。
+- **定向实测**：`node apps/desktop/scripts/run-smokes.mjs document-router-smoke` **133/133 PASS**；`node apps/desktop/scripts/genoffice-file-routing-smoke/run.mjs` **52/52 PASS**（含两条真实 RED 变异）；`node apps/desktop/scripts/run-smokes.mjs file-viewer-basedir-smoke` **25/25 PASS**，实际驱动 `FileViewer` 并检查 PDF bytes 与子文件 path 传给 `PdfPreview`。
+- **未知后缀 / MIME 冲突**：未知后缀 + 通用 MIME 不进入 PDF/Office；未知后缀 + `application/pdf` 按内容 MIME 回退到 `PdfPreview`；`.pdf` + `application/octet-stream` 仍走 `PdfPreview`；`.pdf.exe` 不冒充 PDF；未知后缀不默认走 Docs。
+- **产品修复判断**：未发现需要改动产品代码的缺陷；保留现有共享路由和 MIME 回退，不恢复重复格式判断。
+- **本尾项未达成判据**：无。**范围外未复验**：T80 的完整 22 套批次本次没有重跑，Linux/macOS 原生 E1 仍未覆盖。
