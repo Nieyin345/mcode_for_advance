@@ -393,13 +393,54 @@ module.exports = function (RED) {
 
 ## N5. 卡片
 
-| 卡 | 内容 | 状态 |
+| 卡 | 内容 | 前置 |
 |---|---|---|
-| **T30** | 把节点包装进 Node-RED（`nodesDir` + build bundle + 清单校验） | 待派 |
-| **T31** | `McodeAgentPort` 的生产实现（6 个 port 接到三引擎/审批/ModuleHost） | 等 T30 |
-| **T32** | 节点表单的 i18n 与图标（不改 Node-RED 主题） | 等 T30 |
+| **T30** | 把节点包装进 Node-RED（`nodesDir` + bundle + 清单校验） | 无 —— **可立即派** |
+| **T31** | `McodeAgentPort` 的生产实现（6 个 port 接到三引擎/审批/ModuleHost） | T30 |
+| **T32** | 节点表单的 i18n、图标、分类、帮助文本 | T30 |
+| **T33** | 工作流 UI：从手写 `WorkflowCanvas`（685 行）切到 Node-RED 原厂编辑器 | T30 |
+| **T34** | 执行归属：Mcode 原生调度器 vs Node-RED 运行时，整图归属 + 双向 fail-closed | T33 |
 
-**T30 与 T28 可以并行** —— 前者改 `workflowEngines/`，后者改 `document/`，零重叠。
+**T30 / T32 / T33 之间文件边界**：
+- T30 改 `workflowEngines/`（主进程）
+- T32 改 `mcodeNode*.ts` 的 HTML 部分（与 T30 的文件重叠，但**只改 HTML 与 locale**，
+  建议 T32 在 T30 之后做）
+- T33 改 `renderer/components/settings/workflows/`（渲染端）
+
+**T33 与 T30 不冲突**（主进程 vs 渲染端），但 T33 的判据 5「用户能在编辑器里看到
+6 个 mcode 节点」依赖 T30，所以派 T33 时要说明这一点。
+
+## N7. 工作流 UI 的现状（实读）
+
+**两套画布并存**：
+
+| 画布 | 位置 | 行数 | 用途 |
+|---|---|---|---|
+| `WorkflowCanvas.tsx` | `settings/workflows/` | **685** | 手写的二维拖拽画布 |
+| Node-RED 原厂编辑器 | `editor-client` 的 `red.min.js` | 原厂 | 已作为 `WebContentsView` 嵌进 Pane（`EngineRuntimePanel.tsx:232`） |
+
+`WorkflowCanvas.tsx` 文件头自己写着「不引入 dnd-kit —— 仓库里没有自由二维拖拽的先例」。
+**这就是「因为找不到现成的所以手写」的证据。** 而原厂编辑器已经能用了。
+
+迁移器已经准备好（`flowMigration.ts`，1,473 行）：
+- `migrateWorkflowDoc(doc)` —— Mcode 图 → Node-RED flow
+- `flowToWorkflowDoc(flow)` —— 反向
+- `roundTripMismatchPaths(doc, roundTripped)` —— **往返丢数据检测**
+
+**T33 的第一步不是删画布，是量清楚这三个函数的能力边界。**
+
+## N8. 执行归属问题（T34 的由来）
+
+T30/T31 做完后，两条执行链都能跑同一张图：
+
+```
+Mcode 原生：scheduler.ts → runner.ts → runtimeManager.sendTurn
+Node-RED ：runtime → mcode-agent 节点 → port → runtimeManager.sendTurn
+```
+
+**同一个终点（三引擎），两条调度路径。** 已有 `executorOwnership.ts` /
+`nodeRedOwnership.ts` / `flowTrustGate.ts` 在做 flow 级归属，
+但还没有「整张图归哪个执行器」的判据。T34 负责补。
 
 ## N6. 与 GenOffice 线的对照
 
