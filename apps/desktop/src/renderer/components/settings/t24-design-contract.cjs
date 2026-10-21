@@ -178,8 +178,22 @@ if (batch === 'shell') {
   check(header.includes('text-[length:var(--chat-fs-sm)]'), 'panel header consumes shared CDS font token');
   check(section.includes('text-[length:var(--chat-fs-sm)]'), 'section header consumes shared CDS font token');
   check(row.includes('text-[length:var(--chat-fs-xs)]'), 'setting row consumes shared CDS font token');
+} else if (batch === 'workflow-status') {
+  let nodes=read('workflows/NodeTypesView.tsx');
+  const profiles=read('workflows/AgentProfilesView.tsx');
+  const runtime=read('workflows/EngineRuntimePanel.tsx');
+  const library=read('workflows/WorkflowLibraryView.tsx');
+  const runs=read('workflows/AutomationRunSection.tsx');
+  const inspector=read('workflows/NodeInspectorParts.tsx');
+  if(process.env.T24_MUTATION==='workflow-status') nodes=nodes.replace('<ErrorNote className="mb-3" icon={IconAlertTriangle}>','<div className="mb-3">');
+  check(nodes.includes('<ErrorNote className="mb-3" icon={IconAlertTriangle}>'),'node type error uses shared ErrorNote');
+  check(profiles.includes('<EmptyState'), 'agent profiles empty state uses shared EmptyState');
+  check(runtime.includes('{busy ? <Spinner size="xs" /> : <IconRefresh'), 'engine refresh uses Spinner');
+  check(library.includes('<LoadingNote label={t("common.loading")} className="flex-1" />'), 'workflow library uses shared LoadingNote');
+  check(runs.includes('<NativeSelect aria-label={t("settings.automation.runTrigger")}'), 'automation trigger uses native-semantics shared control');
+  check(inspector.includes('<ErrorNote className="text-[0.7143em]">{error}</ErrorNote>'), 'inspector inline error uses ErrorNote');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions|form-controls|model-split|status-surfaces|status-core|shared-typography\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions|form-controls|model-split|status-surfaces|status-core|shared-typography|workflow-status\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

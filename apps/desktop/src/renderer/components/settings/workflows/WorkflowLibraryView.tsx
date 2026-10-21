@@ -42,12 +42,15 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog } from "@renderer/components/ui/index.js";
+import { EmptyState } from "@renderer/components/ui/empty-state.js";
+import { ErrorNote } from "@renderer/components/ui/error-note.js";
+import { LoadingNote } from "@renderer/components/ui/spinner.js";
 import { makeAgentProfileId, profileFromParams, type AgentProfile } from "@contracts/agentProfile";
 import { MAIN_NODE_TYPE_ID, TRIGGER_NODE_TYPE_ID, type NodeTypeCatalog } from "@contracts/nodeType";
 import type { WorkflowDoc, WorkflowListEntry, WorkflowNode, WorkflowPosition, WorkflowReviewInfo } from "@contracts/workflow";
 import { workflowDisplayName, workflowIcon } from "@renderer/lib/workflowLabels.js";
 import { isEditableTarget } from "@renderer/lib/shortcuts.js";
-import { IconLoader2, IconAlertTriangle, IconArrowsSplit, IconDownload, IconPlus, IconRefresh } from "@renderer/lib/icons.js";
+import { IconAlertTriangle, IconArrowsSplit, IconDownload, IconPlus, IconRefresh } from "@renderer/lib/icons.js";
 import {
   isDocDirty,
   forSave,
@@ -986,27 +989,19 @@ export function WorkflowLibraryView({
               />
             ))}
             {visible?.length === 0 && (
-              <div className="px-2 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
-                {t(labels.empty)}
-              </div>
+              <EmptyState title={t(labels.empty)} className="py-4" />
             )}
             {entries === null && listError === null && (
-              <div className="flex items-center justify-center gap-2 py-4 text-[0.7143em] text-content-subtle">
-                <IconLoader2 size={12} className="animate-spin" />
-                {t("common.loading")}
-              </div>
+              <LoadingNote label={t("common.loading")} className="py-4" />
             )}
             {listError !== null && (
-              <div className="px-2 py-3 text-[0.7143em] leading-relaxed text-danger">
-                <div>{t("settings.workflows.loadFailed", { error: listError })}</div>
-                {/* 【MC-026 复核·设置页读失败】库列表读失败必须给**重试入口** ——
-                    从前这里只有一行红字,用户想再读一次只能切走再切回来(那也不是
-                    用户知道的一条"再试一次"的路径)。重试真的重发 `workflow.list`。 */}
-                <Button variant="ghost" size="sm" onClick={() => void loadList()} className="mt-1 gap-1">
+              <ErrorNote className="mx-2 my-2"
+                action={<Button variant="ghost" size="sm" onClick={() => void loadList()} className="gap-1">
                   <IconRefresh size={12} />
                   {t("common.retry")}
-                </Button>
-              </div>
+                </Button>}>
+                {t("settings.workflows.loadFailed", { error: listError })}
+              </ErrorNote>
             )}
           </nav>
           <div className="border-t border-edge p-1.5">
@@ -1154,15 +1149,9 @@ export function WorkflowLibraryView({
               这一页本来就该宽。 */}
           <div className="flex min-h-0 min-w-0 flex-1 gap-4">
             {docLoading ? (
-              <div className="flex flex-1 items-center justify-center gap-2 text-[0.7857em] text-content-subtle">
-                <IconLoader2 size={14} className="animate-spin" />
-                {t("common.loading")}
-              </div>
+              <LoadingNote label={t("common.loading")} className="flex-1" />
             ) : docError !== null ? (
-              <div className="flex flex-1 items-start gap-2 text-[0.7857em] leading-relaxed text-danger">
-                <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
-                {docError}
-              </div>
+              <ErrorNote icon={IconAlertTriangle} className="flex-1">{docError}</ErrorNote>
             ) : working && baseline ? (
               catalog ? (
                 <>
@@ -1206,21 +1195,15 @@ export function WorkflowLibraryView({
               ) : catalogError !== null ? (
                 // 清单读不进来的时候**必须在这一页说**:用户卡住的正是这一个页签,而
                 // 解释与重试按钮在"节点类型"那一边 —— 他不会想到去那儿找一个画布的错。
-                <div className="flex flex-1 flex-col items-start justify-center gap-2 text-[0.7857em] leading-relaxed text-danger">
-                  <span className="flex items-start gap-2">
-                    <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
-                    {t("settings.workflows.nodeTypesLoadFailed", { error: catalogError })}
-                  </span>
-                  <Button variant="secondary" size="sm" onClick={onRetryCatalog} className="gap-1">
+                <ErrorNote icon={IconAlertTriangle} className="flex-1"
+                  action={<Button variant="secondary" size="sm" onClick={onRetryCatalog} className="gap-1">
                     <IconRefresh size={12} />
                     {t("common.retry")}
-                  </Button>
-                </div>
+                  </Button>}>
+                  {t("settings.workflows.nodeTypesLoadFailed", { error: catalogError })}
+                </ErrorNote>
               ) : (
-                <div className="flex flex-1 items-center justify-center gap-2 text-[0.7857em] text-content-subtle">
-                  <IconLoader2 size={14} className="animate-spin" />
-                  {t("common.loading")}
-                </div>
+                <LoadingNote label={t("common.loading")} className="flex-1" />
               )
             ) : (
               <EmptyDetail />

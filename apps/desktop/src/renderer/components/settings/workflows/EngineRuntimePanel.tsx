@@ -43,7 +43,7 @@ import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useApprovalArming } from "@renderer/hooks/useApprovalArming.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { Badge, Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
+import { Badge, Button, ErrorNote, LoadingNote, Spinner } from "@renderer/components/ui/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import { IconAlertTriangle, IconPlayerPlay, IconPlayerStop, IconRefresh } from "@renderer/lib/icons.js";
 import type { DocViewRect, WorkflowEngineStatusView } from "@contracts/ipc";
@@ -364,7 +364,7 @@ export function EngineRow({
             }}
             title={t("settings.workflows.engine.refreshStatus")}
           >
-            <IconRefresh size={12} className={cn(busy && "animate-spin")} />
+            {busy ? <Spinner size="xs" /> : <IconRefresh size={12} />}
           </Button>
         </div>
       </div>

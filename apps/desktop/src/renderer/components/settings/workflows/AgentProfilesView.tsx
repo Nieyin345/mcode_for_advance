@@ -42,7 +42,7 @@
 import { useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, Input } from "@renderer/components/ui/index.js";
+import { Button, EmptyState, ErrorNote, Input, LoadingNote } from "@renderer/components/ui/index.js";
 import { Menu } from "@base-ui/react/menu";
 import { makeAgentProfileId, type AgentProfile } from "@contracts/agentProfile";
 import { defaultParamsOf, isNodeRunnable, type NodeTypeCatalog } from "@contracts/nodeType";
@@ -50,7 +50,6 @@ import {
   IconAlertTriangle,
   IconCheck,
   IconChevronDown,
-  IconLoader2,
   IconPlus,
   IconTrash,
 } from "@renderer/lib/icons.js";
@@ -286,26 +285,20 @@ export function AgentProfilesView({
             坏文件**不静默丢弃** —— 用户看到的现象会是"我存的档案不见了",而这里是
             他唯一能知道为什么的地方。 */}
         {error !== null && (
-          <div className="mb-2 flex items-start gap-2 rounded border border-edge p-2 text-[0.7857em] leading-relaxed text-danger">
-            <IconAlertTriangle size={13} className="mt-0.5 shrink-0" />
-            {error}
-          </div>
+          <ErrorNote className="mb-2" icon={IconAlertTriangle}>{error}</ErrorNote>
         )}
         {problems.length > 0 && (
-          <div className="mb-2 rounded border border-warning/40 bg-warning/5 p-2.5">
-            <div className="flex items-center gap-2 text-[0.7857em] font-medium text-content">
-              <IconAlertTriangle size={13} className="shrink-0 text-warning" />
-              {t("settings.agentProfiles.brokenFiles", { n: problems.length })}
-            </div>
+          <ErrorNote tone="warning" className="mb-2" icon={IconAlertTriangle}
+            title={t("settings.agentProfiles.brokenFiles", { n: problems.length })}>
             <ul className="mt-1 space-y-0.5">
               {problems.map((problem) => (
                 <li key={problem.file} className="text-[0.7143em] leading-relaxed">
                   <code className="break-all text-content-muted">{problem.file}</code>
-                  <div className="text-danger">{problem.error}</div>
+                  <div>{problem.error}</div>
                 </li>
               ))}
             </ul>
-          </div>
+          </ErrorNote>
         )}
 
         {activeGroup === null && draft === null ? (
@@ -313,19 +306,13 @@ export function AgentProfilesView({
           // 空列表和"还在读"是两件事。
           <div className="flex flex-1 flex-col items-center justify-center gap-2 py-8 text-center">
             {loading ? (
-              <div className="flex items-center gap-2 text-[0.7857em] text-content-subtle">
-                <IconLoader2 size={14} className="animate-spin" />
-                {t("common.loading")}
-              </div>
+              <LoadingNote label={t("common.loading")} />
             ) : (
-              <>
-                <p className="text-[0.7857em] text-content-muted">
-                  {t("settings.workflows.profilesEmpty")}
-                </p>
-                <p className="max-w-[420px] text-[0.7143em] leading-relaxed text-content-subtle">
-                  {t("settings.workflows.profilesIntro")}
-                </p>
-              </>
+              <EmptyState
+                title={t("settings.workflows.profilesEmpty")}
+                desc={t("settings.workflows.profilesIntro")}
+                className="py-8"
+              />
             )}
           </div>
         ) : (

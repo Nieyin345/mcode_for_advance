@@ -25,9 +25,8 @@
  * 而档案在回答"我配的那几份东西在哪"** —— 后者随档案变多会变得很长,把前者挤下去;
  * 而前者是**说明书**,读一次就够了。现在档案有自己的页签(见 `AgentProfilesView`)。
  */
-import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button } from "@renderer/components/ui/index.js";
+import { Button, EmptyState, ErrorNote, LoadingNote, Spinner } from "@renderer/components/ui/index.js";
 import {
   isNodeRunnable,
   showsNodeCapability,
@@ -35,7 +34,7 @@ import {
   type NodeTypeEntry,
   type NodeTypeSource,
 } from "@contracts/nodeType";
-import { IconAlertTriangle, IconLoader2, IconRefresh } from "@renderer/lib/icons.js";
+import { IconAlertTriangle, IconRefresh } from "@renderer/lib/icons.js";
 import { groupNodeTypes } from "./workflowView.js";
 import { WorkflowBadge, type WorkflowBadgeTone } from "./WorkflowBadge.js";
 
@@ -88,49 +87,40 @@ export function NodeTypesView({
           disabled={loading}
           className="shrink-0 gap-1"
         >
-          <IconRefresh size={12} className={cn(loading && "animate-spin")} />
+          {loading ? <Spinner size="xs" /> : <IconRefresh size={12} />}
           {t("common.refresh")}
         </Button>
       </div>
 
       {error !== null && (
-        <div className="mb-3 flex items-start gap-2 rounded border border-edge p-2.5 text-[0.7857em] leading-relaxed text-danger">
-          <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
+        <ErrorNote className="mb-3" icon={IconAlertTriangle}>
           {t("settings.workflows.nodeTypesLoadFailed", { error })}
-        </div>
+        </ErrorNote>
       )}
 
       {loading && catalog === null && (
-        <div className="flex items-center gap-2 py-8 text-[0.7857em] text-content-subtle">
-          <IconLoader2 size={14} className="animate-spin" />
-          {t("common.loading")}
-        </div>
+        <LoadingNote label={t("common.loading")} className="py-8" />
       )}
 
       {catalog !== null && catalog.problems.length > 0 && (
-        <div className="mb-3 rounded border border-warning/40 bg-warning/5 p-2.5">
-          <div className="flex items-center gap-2 text-[0.7857em] font-medium text-content">
-            <IconAlertTriangle size={13} className="shrink-0 text-warning" />
-            {t("settings.workflows.problemsTitle", { n: catalog.problems.length })}
-          </div>
-          <p className="mt-1 text-[0.7143em] leading-relaxed text-content-subtle">
+        <ErrorNote tone="warning" className="mb-3" icon={IconAlertTriangle}
+          title={t("settings.workflows.problemsTitle", { n: catalog.problems.length })}>
+          <p className="text-[0.7143em] leading-relaxed">
             {t("settings.workflows.problemsHint")}
           </p>
           <ul className="mt-1.5 space-y-1">
             {catalog.problems.map((problem) => (
               <li key={problem.file} className="text-[0.7143em] leading-relaxed">
                 <code className="break-all text-content-muted">{problem.file}</code>
-                <div className="text-danger">{problem.error}</div>
+                <div>{problem.error}</div>
               </li>
             ))}
           </ul>
-        </div>
+        </ErrorNote>
       )}
 
       {catalog !== null && groups.length === 0 && (
-        <p className="py-6 text-center text-[0.7857em] text-content-subtle">
-          {t("settings.workflows.nodeTypesEmpty")}
-        </p>
+        <EmptyState title={t("settings.workflows.nodeTypesEmpty")} className="py-6" />
       )}
 
       {groups.map((group) => (

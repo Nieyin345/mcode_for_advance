@@ -311,3 +311,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs status-core`、`shared-typography` 均 PASS；`set T24_MUTATION=status-core&& node ... status-core` 撤回 Hooks audit 的 ErrorNote，以及 `set T24_MUTATION=shared-typography&& node ... shared-typography` 撤回 SettingRow CDS 字体 token 后均预期 exit=1（红例）。
 - 焦点专项：本批以后的 `settings-focus-electron-smoke` 两次单跑/混跑均在 Electron 系统窗口丢失 OS focus 处中断（probe 报 `Focus U1 infrastructure interruption`，不是应用焦点圈逃逸）；批次 14 的相同套件此前 9/9 全绿。不将当前异常当作业务 bug，也不能将判据 3 的当次运行报成全绿。
 - 判据当前限制：63/63 **设计 token 依赖**达标，但 `workflows/` 等其他子视图仍可见部分自绘提示，判据 2 尚未完全证明；全包 typecheck 判据 4 受范围外错误阻塞；判据 6 无法宣称逐一手动覆盖全部 63 屏的实际账号/联网/磁盘副作用操作，已记录仅旧 smoke 与局部事件/回调核对。
+
+### 2026-10-21｜批次 16：工作流设置子视图的状态/错误/加载块
+
+- 范围仅 `components/settings/workflows/`：`AgentProfilesView`、`NodeTypesView`、`EngineRuntimePanel`、`WorkflowLibraryView`、`AutomationRunSection`、`NodeInspectorParts`。代理档案/节点类型的列表错误、坏配置诊断、未加载/空数据状态改 `ErrorNote(tone)`、`LoadingNote`、`EmptyState`；工作流库列表/详情/节点目录读失败保留原重试事件，改统一 `ErrorNote(action)` 与加载/空态；引擎与类型刷新旋转图标改 `Spinner`；自动化手动触发的原生 `select` 改 `NativeSelect`（保留原生 option、受控值、disabled、onChange）；检查器编辑错误改 `ErrorNote`。安装包授权弹框是有 `alertdialog` / Esc 拒绝约定的独立交互，故不误替换成纯错误告警。
+- 原语：均复用已有 `ui/` 组件，不添加新的 DOM 事件/IPC 业务逻辑；发现的设置项本身功能 bug：未发现。安全敏感的真实安装/信任/自动化派发未进行破坏性触发。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs workflow-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke frontend-smoke`：5/5 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792567508652-39156-yTESqn`；之前完整设置与市场回归 8/8 绿。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs workflow-status` PASS；`set T24_MUTATION=workflow-status&& node ... workflow-status` 将 NodeTypes 的错误恢复为自绘 div，预期 exit=1（红例）。
+- 功能核对：工作流库的 list/read/retry/save/stash/review 审批 callbacks 与 data 字段未变；自动化选触发器 `value/onChange/disabled` 未变；工作流画布 UI 真浏览器 smoke 通过。仍有 `workflows/` 专用属性编辑器和部分权限提示使用原生槽控/自绘警告（需逐处验证、不能在未验时宣称判据 2 已全达成）。

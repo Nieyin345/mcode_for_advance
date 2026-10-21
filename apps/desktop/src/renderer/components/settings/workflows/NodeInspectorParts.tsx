@@ -10,6 +10,7 @@ import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { Button, Input, Select } from "@renderer/components/ui/index.js";
+import { ErrorNote } from "@renderer/components/ui/error-note.js";
 import { paramsForProfile, type AgentProfile } from "@contracts/agentProfile";
 import {
   NODE_FLOW_RECORD_PARAM_KEY,
@@ -390,7 +391,7 @@ export function ProfileRow({
         </div>
       )}
       {error !== null && (
-        <p className="text-[0.7143em] leading-relaxed text-danger">{error}</p>
+        <ErrorNote className="text-[0.7143em]">{error}</ErrorNote>
       )}
     </div>
   );

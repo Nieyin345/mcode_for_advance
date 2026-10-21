@@ -8,6 +8,7 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { Button, ErrorNote } from "@renderer/components/ui/index.js";
+import { NativeSelect } from "@renderer/components/ui/native-controls.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { formatFullTime } from "@renderer/lib/time.js";
 import { IconPlayerPlay, IconRefresh } from "@renderer/lib/icons.js";
@@ -128,22 +129,22 @@ export function AutomationRunSection({ doc, catalog, dirty = false }: {
           {fact && (fact.droppedUndelivered ?? 0) > 0 && <p className="break-words text-warning">
             {t("settings.automation.facts.droppedUndelivered", { n: fact.droppedUndelivered ?? 0 })}
           </p>}
-          {fact && latestFailureOf(fact) && <p className="break-words text-danger">{latestFailureOf(fact)}</p>}
+          {fact && latestFailureOf(fact) && <ErrorNote className="break-words">{latestFailureOf(fact)}</ErrorNote>}
         </div>;
       })}
     </div>
     <label className="mt-3 mb-1 block text-[0.7857em] text-content-muted">
       {t("settings.automation.runTrigger")}
-      <select aria-label={t("settings.automation.runTrigger")} className="mt-1 w-full rounded border border-edge bg-surface p-1 text-content"
+      <NativeSelect aria-label={t("settings.automation.runTrigger")} className="mt-1 w-full"
         value={triggerNodeId ?? ""} disabled={busy || dirty} onChange={e => setSelectedTrigger(e.target.value)}>
         {triggers.map(n => <option key={n.id} value={n.id}>{nodeTitle(n, findNodeType(catalog.entries, n.type))}</option>)}
-      </select>
+      </NativeSelect>
     </label>
     <Button variant="secondary" size="sm" className="gap-1" disabled={!triggerNodeId || busy || dirty || running} onClick={() => void runNow()}>
       <IconPlayerPlay size={11}/>{t("settings.automation.runNow")}
     </Button>
-    {dirty ? <p role="status" className="mt-1 text-[0.7143em] text-warning">{t("settings.automation.saveBeforeRun")}</p>
-      : !trigger ? <p className="mt-1 text-[0.7143em] text-warning">{t("settings.automation.runNoTrigger")}</p>
+    {dirty ? <ErrorNote tone="warning" className="mt-1 text-[0.7143em]">{t("settings.automation.saveBeforeRun")}</ErrorNote>
+      : !trigger ? <ErrorNote tone="warning" className="mt-1 text-[0.7143em]">{t("settings.automation.runNoTrigger")}</ErrorNote>
       : <p className="mt-1 text-[0.7143em] text-content-subtle">{t("settings.automation.runNowHint", { name: nodeTitle(trigger, findNodeType(catalog.entries, trigger.type)) })}</p>}
     <p className="mt-1 text-[0.7143em] text-content-subtle">{t("settings.automation.manualPayloadHint")}</p>
     {notice && <ErrorNote className="mt-2">{notice}</ErrorNote>}
