@@ -481,10 +481,54 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
 
 /* ── 编辑器 HTML（每类型最小三格参数；Node-RED 只认有同名 .html 的 .js） ── */
 
+/** Native editor icon names verified in Node-RED's bundled Font Awesome 4 CSS. */
+const nodeEditorUi: Record<string, {
+  icon: string; input: string; output: string; approval: string;
+}> = {
+  [MCODE_CONVERSATION_NODE_TYPE]: {
+    icon: "fa-comments",
+    input: "Input: msg.payload and the instruction are sent to the selected visible Mcode chat session.",
+    output: "Output: one msg.payload with { text, artifacts }; msg.mcode includes the run ID.",
+    approval: "Approval: native model tool actions can require Mcode user approval; the capability field does not grant permission.",
+  },
+  [MCODE_BRANCH_NODE_TYPE]: {
+    icon: "fa-random",
+    input: "Input: msg.payload is preserved; decider selects a Host-backed user or model decision.",
+    output: "Output: original msg.payload is sent to exactly one of the configured outputs (zero-based port index).",
+    approval: "Approval: user decisions require a Host dialog and cancellation stops routing; model decisions may invoke normal tool approvals.",
+  },
+  [MCODE_TRIGGER_NODE_TYPE]: {
+    icon: "fa-bolt",
+    input: "Input: no incoming msg.payload (zero-input node); the Host subscribes to the configured event source.",
+    output: "Output: the Host event's msg.payload is emitted on the single output.",
+    approval: "Approval: this node never grants permission; event subscription uses Host authorization and does not itself display an approval dialog.",
+  },
+  [MCODE_MODULE_CAPABILITY_NODE_TYPE]: {
+    icon: "fa-puzzle-piece",
+    input: "Input: msg.payload and module ID, contribution ID, path and authorized project path go to the Host module invocation.",
+    output: "Output: Host result becomes msg.payload with { text, artifacts }.",
+    approval: "Approval: module capability permission is checked by the Mcode Host; missing or denied grants block execution.",
+  },
+  [MCODE_NODE_RED_CALL_NODE_TYPE]: {
+    icon: "fa-retweet",
+    input: "Input: msg.payload accompanies the configured Node-RED API path, method and body.",
+    output: "Output: response becomes msg.payload with { text, artifacts }; HTTP status is stored in msg.mcode.engineStatus.",
+    approval: "Approval: GET is Host scoped; POST /flows requires user deployment approval and ownership checks. Other mutations are rejected.",
+  },
+};
 function htmlFor(type: string, params: Array<{ id: string; label: string; kind: "text" | "select" | "textarea"; options?: string[]; defaultValue?: string }>, extraDefs = ""): string {
-  const rows = params.map((p) => p.kind === "select"
-    ? `<div class="form-row"><label for="node-input-${p.id}"><span data-i18n="mcode.label.${p.id}">${p.label}</span></label><select id="node-input-${p.id}">${(p.options ?? []).map((o) => `<option value="${o}">${o}</option>`).join("")}</select></div>`
-    : p.kind === "textarea" ? `<div class="form-row"><label for="node-input-${p.id}"><span data-i18n="mcode.label.${p.id}">${p.label}</span></label><textarea id="node-input-${p.id}" rows="4" placeholder="${p.label}"></textarea></div>` : `<div class="form-row"><label for="node-input-${p.id}"><span data-i18n="mcode.label.${p.id}">${p.label}</span></label><input type="text" id="node-input-${p.id}" placeholder="${p.label}"></div>`).join("\n  ");
+  const ui = nodeEditorUi[type];
+  if (!ui) throw new Error("Unknown Mcode editor type: " + type);
+  const rows = params.map((p) => {
+    const label = '<label for="node-input-' + p.id + '" data-i18n="[title]mcode.tooltip.' + p.id + '"><span data-i18n="mcode.label.' + p.id + '">' + p.label + '</span></label>';
+    const control = p.kind === "select"
+      ? '<select id="node-input-' + p.id + '">' + (p.options ?? []).map((o) =>
+        '<option value="' + o + '" data-i18n="mcode.option.' + o + '">' + o + '</option>').join("") + '</select>'
+      : p.kind === "textarea"
+        ? '<textarea id="node-input-' + p.id + '" rows="4" placeholder="' + p.label + '" data-i18n="[placeholder]mcode.placeholder.' + p.id + '"></textarea>'
+        : '<input type="text" id="node-input-' + p.id + '" placeholder="' + p.label + '" data-i18n="[placeholder]mcode.placeholder.' + p.id + '">';
+    return '<div class="form-row">' + label + control + '</div>';
+  }).join("\n  ");
   return `<script type="text/javascript">
   RED.nodes.registerType("${type}", {
     category: "mcode",
@@ -492,17 +536,19 @@ function htmlFor(type: string, params: Array<{ id: string; label: string; kind: 
     defaults: { name: { value: "" }, ${params.map((p) => `${p.id}: { value: ${JSON.stringify(p.defaultValue ?? "")} }`).join(", ")} },
     inputs: ${type === MCODE_TRIGGER_NODE_TYPE ? 0 : 1},
     outputs: ${extraDefs === "multi" ? "function () { return Math.max(1, (this.wires && this.wires.length) || 1); }" : 1},
-    icon: "font-awesome/fa-cube",
+    icon: "font-awesome/${ui.icon}",
     label: function () { return this.name || "${type}"; },
     paletteLabel: "${type}",
   });
 </script>
 <script type="text/html" data-template-name="${type}">
-  <div class="form-row"><label for="node-input-name"><i class="fa fa-tag"></i> <span data-i18n="common.label.name">Name</span></label><input type="text" id="node-input-name" placeholder="Name"></div>
+  <div class="form-row"><label for="node-input-name" data-i18n="[title]mcode.tooltip.name"><i class="fa fa-tag"></i> <span data-i18n="common.label.name">Name</span></label><input type="text" id="node-input-name" placeholder="Name" data-i18n="[placeholder]common.label.name"></div>
   ${rows}
 </script>
 <script type="text/html" data-help-name="${type}">
-  <p>Mcode ${type} node (minimal: delegates execution to the host-issued port).</p>
+  <p data-i18n="mcode.help.input">Input: ${ui.input.slice("Input: ".length)}</p>
+  <p data-i18n="mcode.help.output">Output: ${ui.output.slice("Output: ".length)}</p>
+  <p data-i18n="mcode.help.approval">Approval: ${ui.approval.slice("Approval: ".length)}</p>
 </script>
 `;
 }

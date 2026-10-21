@@ -42,3 +42,14 @@ T70 源码矩阵显示 `mcode-agent` 使用 `fa-user`，而 `mcodeNodeTypes.ts:h
 ## 结果回写区
 
 <!-- 执行对话仅追加证据、提交 SHA、实际命令/计数、原红→新绿、变异/恢复、未验风险。 -->
+
+### 2026-10-21｜T79 实施与隔离验收（E1+E2）
+
+- **修改范围**：`mcodeNodePack.ts`（agent 编辑器字段及帮助）、`mcodeNodeTypes.ts`（另五节点原生 HTML 图标/表单/help）、`nodePackManifest.ts`（Node-RED 原生 en-US / zh-CN locale）、`mcode-node-pack-smoke/main.ts`、新增同目录 `paletteChecks.ts` / `paletteOnly.ts`。**未修改** Node-RED 上游、Host 端口和运行算法及禁写路径。
+- **E2 图标核实**：从已捆绑的 `node-red/packages/node_modules/@node-red/editor-client/public/vendor/font-awesome/css/font-awesome.min.css` 实检，`fa-user`、`fa-comments`、`fa-random`、`fa-bolt`、`fa-puzzle-piece`、`fa-retweet` 均存在；弃用缺席的 `fa-code-branch`。六节点 icon 6/6 不同，`category: "mcode"` 不变，Node-RED `registerType` / template / help 三段保留；`mcode-branch` 动态 `outputs` 表达式不变。
+- **全字段原厂 i18n**：标签、输入/文本框 placeholder、label tooltip、所有 select option 均通过 Node-RED `data-i18n` 属性加载 `locales/en-US|zh-CN/<type>.json`；下拉 `value` 和运行时属性 ID 均保持原文不翻译。六帮助按节点分别准确说明 `msg.payload` 输入/输出、宿主会话/模块授权、人机分支弹窗、只读 API 与 `POST /flows` 审批语义，不声称执行节点自行授权。
+- **先红后绿（E1）**：仅加断言时，旧代码 `mcode-node-pack-smoke:240/372`（132 条新增功能缺口红例）；修复后再增加真实 HTTP 双语断言与中英文内容相异校验，最终 `mcode-node-pack-smoke:390/390`，独立快速版 `T79 palette 189/189`。
+- **变异 E1**（日志 `apps/desktop/.tmp/t79-mutations-e1.log`）：①分支图标改成已占用图标 `181/183` 红；②删除 agent placeholder `182/183` 红；③删除 agent 选项 i18n `182/183` 红；④删除 agent `data-help-name` `179/183` 红；⑤写错审批帮助翻译 key `182/183` 红。五项均退出码 1、报精确断言，原文件逐一恢复后 SHA256 与变异前一致。
+- **正式命令/日志**：`node apps/desktop/scripts/run-smokes.mjs mcode-node-pack-smoke node-red-e2e-smoke workflow-engine-runtime-smoke` → **3/3 PASS**，独立日志 `apps/desktop/.tmp/smoke-runs/1792591082844-26096-E81lbo`；`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json && pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` → **0 errors**。独立 E1 在真 Node-RED 上 GET 六类型 × 两种语言共 **12 个 locale HTTP**，均逐字段与生成清单一致；Node-RED 原生节点部署、停止/重启及 manifest 校验未回归。独立图标/本地化/帮助断言与真编辑器资源联动。
+- **未验边界**：**真实 Electron GUI U1 pending**：未执行原生画布六节点逐一拖入、切 zh-CN/en-US、右键帮助和持久化目视；需与 T77 串行。**不宣称 T43 整卡或 ARC-006 整包验收**。本片不修 T70 超时或跨 session 审批问题。
+- **提交**：仅 stage 本卡所有权源码、专属测试及本任务文件；完整提交 SHA 由执行对话的最终回执和 `git rev-parse HEAD` 标识，不包含其它并发任务的未提交更改。

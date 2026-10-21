@@ -380,28 +380,30 @@ export function agentNodeHtml(): string {
 </script>
 <script type="text/html" data-template-name="${MCODE_AGENT_NODE_TYPE}">
   <div class="form-row">
-    <label for="node-input-name"><i class="fa fa-tag"></i> <span data-i18n="common.label.name">Name</span></label>
-    <input type="text" id="node-input-name" placeholder="Name">
+    <label for="node-input-name" data-i18n="[title]mcode.tooltip.name"><i class="fa fa-tag"></i> <span data-i18n="common.label.name">Name</span></label>
+    <input type="text" id="node-input-name" placeholder="Name" data-i18n="[placeholder]common.label.name">
   </div>
   <div class="form-row">
-    <label for="node-input-instruction"><i class="fa fa-pencil"></i> <span data-i18n="mcode.label.instruction">Instruction</span></label>
-    <textarea id="node-input-instruction" rows="5" placeholder="What this step does"></textarea>
+    <label for="node-input-instruction" data-i18n="[title]mcode.tooltip.instruction"><i class="fa fa-pencil"></i> <span data-i18n="mcode.label.instruction">Instruction</span></label>
+    <textarea id="node-input-instruction" rows="5" placeholder="What this step does" data-i18n="[placeholder]mcode.placeholder.instruction"></textarea>
   </div>
   <div class="form-row">
-    <label for="node-input-capability"><i class="fa fa-shield"></i> <span data-i18n="mcode.label.capability">Capability</span></label>
-    <select id="node-input-capability"><option value="read">read</option><option value="write">write</option></select>
+    <label for="node-input-capability" data-i18n="[title]mcode.tooltip.capability"><i class="fa fa-shield"></i> <span data-i18n="mcode.label.capability">Capability</span></label>
+    <select id="node-input-capability"><option value="read" data-i18n="mcode.option.read">read</option><option value="write" data-i18n="mcode.option.write">write</option></select>
   </div>
   <div class="form-row">
-    <label for="node-input-outputVar"><i class="fa fa-code"></i> <span data-i18n="mcode.label.outputVar">Output variable</span></label>
-    <input type="text" id="node-input-outputVar" placeholder="outputVar">
+    <label for="node-input-outputVar" data-i18n="[title]mcode.tooltip.outputVar"><i class="fa fa-code"></i> <span data-i18n="mcode.label.outputVar">Output variable</span></label>
+    <input type="text" id="node-input-outputVar" placeholder="Output variable" data-i18n="[placeholder]mcode.placeholder.outputVar">
   </div>
   <div class="form-row">
-    <label for="node-input-sessionId"><i class="fa fa-comments"></i> <span data-i18n="mcode.label.sessionId">Mcode session ID</span></label>
-    <input type="text" id="node-input-sessionId" placeholder="Existing visible Mcode session ID">
+    <label for="node-input-sessionId" data-i18n="[title]mcode.tooltip.sessionId"><i class="fa fa-comments"></i> <span data-i18n="mcode.label.sessionId">Mcode session ID</span></label>
+    <input type="text" id="node-input-sessionId" placeholder="Existing visible Mcode session ID" data-i18n="[placeholder]mcode.placeholder.sessionId">
   </div>
 </script>
 <script type="text/html" data-help-name="${MCODE_AGENT_NODE_TYPE}">
-  <p>Runs one Mcode agent step through the host-issued port. Outputs <code>msg.payload = { text, artifacts }</code>.</p>
+  <p data-i18n="mcode.help.input">Input: msg.payload is combined with the instruction and sent to the selected visible Mcode session.</p>
+  <p data-i18n="mcode.help.output">Output: one msg.payload with { text, artifacts }; msg.mcode carries the run ID.</p>
+  <p data-i18n="mcode.help.approval">Approval: Host session permissions still apply. Tool actions may require user approval; selecting write is not authorization.</p>
 </script>
 `;
 }

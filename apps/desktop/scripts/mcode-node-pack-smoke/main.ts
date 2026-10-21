@@ -61,6 +61,8 @@ import {
   type NodeRedRuntimeApi,
 } from "@main/workflowEngines/mcodeNodePack.js";
 import { migrateWorkflowDoc } from "@main/workflowEngines/flowMigration.js";
+import { checkPaletteResources } from "./paletteChecks.js";
+import { expectedNodePackFiles } from "@main/workflowEngines/nodePackManifest.js";
 import { builtinManifestById } from "@main/orchestration/nodeTypes.js";
 
 let failures = 0;
@@ -92,6 +94,9 @@ function recordingPort(): McodeAgentPort & { calls: McodeAgentRunPayload[] } {
     },
   };
 }
+
+/* ══════════ T79. 原生编辑器资源的独立契约 ══════════ */
+checkPaletteResources(check);
 
 /* ══════════ A. 纯逻辑：输入/输出形状 ══════════ */
 console.log("\nA. 纯逻辑：runAgentNode 输入/输出 + 注册外壳");
@@ -1025,6 +1030,26 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
       check("★【T42】真 Node-RED 把受管节点包作为独立模块加载并注册中文 i18n",
         zhCatalog.status === 200 && zhLabels.mcode?.label?.instruction === "指令",
         { status: zhCatalog.status, zhLabels });
+      // T79: test every real upstream locale endpoint, not just one static file.
+      const localizedFiles = expectedNodePackFiles();
+      for (const language of ["en-US", "zh-CN"] as const) {
+        for (const type of MCODE_NODE_PACK_TYPES) {
+          const expected = JSON.parse(localizedFiles["locales/" + language + "/" + type + ".json"]!) as {
+            mcode: Record<string, Record<string, string>>;
+          };
+          const response = await fetch("http://127.0.0.1:" + port +
+            "/locales/mcode-node-pack/" + type + "?lng=" + language,
+            { signal: AbortSignal.timeout(8_000) });
+          const actual = await response.json() as { mcode?: Record<string, Record<string, string>> };
+          const mismatch = Object.entries(expected.mcode).flatMap(([section, entries]) =>
+            Object.entries(entries).filter(([key, value]) =>
+              actual.mcode?.[section]?.[key] !== value)
+              .map(([key]) => section + "." + key));
+          check("★【T79】真 Node-RED HTTP locale " + type + " " + language + " 全字段一致",
+            response.status === 200 && mismatch.length === 0,
+            { status: response.status, mismatch });
+        }
+      }
       const htmlRes = await fetch(`http://127.0.0.1:${port}/nodes`, {
         headers: { ...auth, accept: "text/html" }, signal: AbortSignal.timeout(8_000),
       });
