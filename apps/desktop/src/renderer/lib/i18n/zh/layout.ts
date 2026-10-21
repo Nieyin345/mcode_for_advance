@@ -165,6 +165,10 @@ export const zh = {
   "layout.preview.empty": "在左边点一个文件，这里会显示它。",
   "layout.openBrowser": "打开浏览器",
   "layout.movePane": "拖拽移动工作区面板",
+  "layout.paneDocument": "把当前 DOCX 停靠到面板",
+  "layout.paneFlow": "Node-RED 编辑器",
+  "layout.paneRestore": "返回原有面板",
+  "layout.paneDocumentMoved": "文档已在可停靠面板中打开",
   "layout.closeSidebarBrowser": "关闭侧边栏浏览器",
 
   /* ── side chat (right-panel ask tab) ── */

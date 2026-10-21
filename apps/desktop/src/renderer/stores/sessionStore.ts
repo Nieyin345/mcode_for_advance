@@ -43,7 +43,7 @@ import type { ThemeStyle } from "@contracts/theme";
 // 【ARC-005 V1】外壳偏好的默认值 + 防卫式解析(叶子模块,只 import 契约)。
 import { DEFAULT_SHELL_PREF, parseShellPref } from "@renderer/components/shell/shellPrefs.js";
 import { parsePaneDock } from "@renderer/components/layout/paneDock.js";
-import { DEFAULT_PANE_LAYOUT, LAYOUT_PRESETS, clampLayout, copyPaneLayout, movePane, setPaneSizePct } from "@renderer/components/layout/paneLayout.js";
+import { DEFAULT_PANE_LAYOUT, LAYOUT_PRESETS, clampLayout, copyPaneLayout, movePane, moveHostedPane, hostedPaneContent, withHostedPaneContent, setPaneSizePct, withPaneContent } from "@renderer/components/layout/paneLayout.js";
 import { createCoalescedPaneWriter, mayApplyPaneHydration, withoutLocallyEditedPaneFields } from "./paneWidthWriteQueue.js";
 import { parseSavedPaneLayout } from "./paneLayoutPrefs.js";
 
@@ -4600,15 +4600,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setRightDock: (dock) => {
     const side = parsePaneDock(dock);
     if (get().rightDock === side && get().paneLayout.placements.find(p => p.id === "right")?.side === side) return;
-    set({ rightDock: side, paneLayout: movePane(get().paneLayout, "right", side, 0) });
+    set({ rightDock: side, paneLayout: moveHostedPane(get().paneLayout, side, 0) });
     paneLayoutLocalEdits.add("paneLayout");
     schedulePaneWidthPersist(get, "rightDock");
   },
   moveLayoutPane: (id, side, order) => {
-    const next = movePane(get().paneLayout, id, side, order);
+    const next = id === "right" ? moveHostedPane(get().paneLayout, side, order)
+      : movePane(get().paneLayout, id, side, order);
     const rightSide = next.placements.find(p => p.id === "right")?.side;
     set({ paneLayout: next, rightDock: rightSide === "left" ? "left" : "right" });
     paneLayoutLocalEdits.add("rightDock");
+    schedulePaneWidthPersist(get, "paneLayout");
+  },
+  setLayoutPaneContent: (id, content) => {
+    const next = id === "right" ? withHostedPaneContent(get().paneLayout, content)
+      : withPaneContent(get().paneLayout, id, content);
+    set({ paneLayout: next });
     schedulePaneWidthPersist(get, "paneLayout");
   },
   setPaneRightSizePct: (pct, containerWidth, persist = true) => {
@@ -4629,7 +4636,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   applyPaneLayoutPreset: (preset) => {
     if (get().widePanelOpen) get().setWidePanelOpen(false);
     const base = preset === "default" ? DEFAULT_PANE_LAYOUT : LAYOUT_PRESETS[preset];
-    const paneLayout = clampLayout(copyPaneLayout(base));
+    const currentContent = hostedPaneContent(get().paneLayout);
+    const paneLayout = currentContent?.kind === "flow" || currentContent?.kind === "document"
+      ? withHostedPaneContent(clampLayout(copyPaneLayout(base)), currentContent)
+      : clampLayout(copyPaneLayout(base));
     const leftPct = paneLayout.placements.find(p => p.id === "left")?.sizePct ?? 0;
     const rightPct = paneLayout.placements.find(p => p.id === "right")?.sizePct ?? 30;
     const leftOpen = leftPct > 0;

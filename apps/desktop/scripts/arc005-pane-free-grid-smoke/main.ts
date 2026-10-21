@@ -5,7 +5,7 @@ import {
   parsePaneLayout, DEFAULT_PANE_LAYOUT, movePane, clampLayout, dockSideAtRect,
   computeSplitDrag, SPLIT_COLLAPSE_THRESHOLD, SPLIT_DEAD_ZONE_PX,
   SPLIT_MIN_LEFT_PX, SPLIT_MIN_RIGHT_PX, SPLIT_SNAP_RATIO,
-  LAYOUT_PRESETS, setPaneSizePct, copyPaneLayout,
+  LAYOUT_PRESETS, setPaneSizePct, copyPaneLayout, withHostedPaneContent, moveHostedPane, hostedPaneContent,
 } from "../../src/renderer/components/layout/paneLayout.js";
 import { parseSavedPaneLayout } from "../../src/renderer/stores/paneLayoutPrefs.js";
 import { createCoalescedPaneWriter } from "../../src/renderer/stores/paneWidthWriteQueue.js";
@@ -31,6 +31,33 @@ for (const [name, value] of [
   assert.ok(parsed.repaired.length>0);
 });
 check("valid v1 roundtrip with zero repair", () => assert.deepEqual(parsePaneLayout(good),{layout:good,repaired:[]}));
+check("T07 document and flow placements survive serialization, restart and 3-way docking", () => {
+  for (const content of [
+    { kind: "document", documentId: "C:\\\\workspace\\\\draft.docx" },
+    { kind: "flow", flowId: "node-red" },
+  ] as const) {
+    const pinned = withHostedPaneContent(good, content);
+    for (const side of ["left", "right", "bottom"] as const) {
+      const moved = moveHostedPane(pinned, side, 0);
+      const restarted = parseSavedPaneLayout(JSON.stringify({ paneLayout: moved }));
+      assert.deepEqual(restarted?.paneLayout?.placements.find(p => p.id === side)?.content, content);
+      assert.deepEqual(restarted?.paneLayout && hostedPaneContent(restarted.paneLayout), content);
+      assert.equal(restarted?.paneLayout?.placements.find(p => p.id === "right")?.side, side);
+      assert.equal(restarted?.repaired?.length, 0);
+    }
+  }
+});
+check("T07 old layouts remain valid and malformed content fails closed", () => {
+  assert.equal(parsePaneLayout(good).repaired.length, 0);
+  const base = withHostedPaneContent(good, {kind:"flow", flowId:"node-red"});
+  for (const content of [{kind:"flow",flowId:"../bad"}, {kind:"document",documentId:""},
+    {kind:"builtin",id:"unknown"}, {kind:"builtin",id:{toString:8}}, {kind:"flow",flowId:8}]) {
+    const invalid = structuredClone(base);
+    invalid.placements.find(p => p.id === "right")!.content = content as never;
+    assert.ok(parsePaneLayout(invalid).repaired.length > 0);
+    assert.deepEqual(parsePaneLayout(invalid).layout, good);
+  }
+});
 check("moves right pane through all 3 dock zones without dropping members",()=>{
   for (const side of ["left","right","bottom"] as const) {
     const moved = movePane(good,"right",side,0);

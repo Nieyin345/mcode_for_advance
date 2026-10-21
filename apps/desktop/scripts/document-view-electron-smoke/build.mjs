@@ -26,7 +26,20 @@ import { createRequire } from "node:module";
 const suite = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(suite, "../..");
 const pnpm = resolve(desktop, "../../node_modules/.pnpm");
-if (process.argv.length > 2) throw Error("Unknown test option");
+const mutation = process.argv[2] ?? null;
+if (process.argv.length > 3 || (mutation !== null && !["--mutate-bounds", "--mutate-reload"].includes(mutation)))
+  throw Error("Unknown test option");
+// Test-only esbuild substitution. Product source is never modified and mutation
+// output runs in its own isolated Electron profile, exactly like the green run.
+const hostPath = resolve(desktop, "src/main/document/documentViewHost.ts");
+const hostOriginal = readFileSync(hostPath, "utf8");
+const hook = "if (live.visible) this.applyBounds(live);";
+const mutatedHost = mutation === null ? null : hostOriginal.replace(hook,
+  mutation === "--mutate-bounds"
+    ? "if (live.visible) { /* T07 injected: bounds forwarding removed */ }"
+    : "if (live.visible) { this.applyBounds(live); this.navigate(live); /* T07 injected reload */ }");
+if (mutation !== null && (mutatedHost === hostOriginal || !hostOriginal.includes(hook)))
+  throw Error("T07 mutation injection missed its precise production target");
 
 const esbuildDir = readdirSync(pnpm).find((n) => n.startsWith("esbuild@"));
 if (!esbuildDir) throw Error("Installed esbuild required (no install/network fallback)");
@@ -53,6 +66,15 @@ await build({
   // 拖上了语音引擎的原生模块（sherpa-onnx .node）。探针**显式注入**自己的窗口，
   // 用不到默认解析器 —— 换桩即可，与 document-view-host-smoke 同一手法。
   alias: { "@main/window.js": join(suite, "stubs/window.ts") },
+  ...(mutatedHost === null ? {} : { plugins: [{
+    name: "t07-memory-mutation",
+    setup(ctx) {
+      ctx.onLoad({ filter: /[\\/]documentViewHost\.ts$/ }, args =>
+        resolve(args.path) === hostPath
+          ? { contents: mutatedHost, loader: "ts", resolveDir: dirname(hostPath) }
+          : undefined);
+    },
+  }] }),
 });
 await build({
   entryPoints: [join(desktop, "src/main/document/documentViewPreload.ts")],

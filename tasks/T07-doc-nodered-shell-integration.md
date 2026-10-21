@@ -180,3 +180,17 @@ type PaneContent =
 - T03 + T10 完成：owner 注册表已落盘。
 
 **重新派发时按当前版本的前置条件判定，不要沿用上一条的结论。**
+
+### 2026-10-21｜T07 执行回写：原生文档 / Node-RED 共享可停靠 Shell
+
+- **源码事实校正**：Node-RED 编辑器的现行实现是 `EngineRuntimePanel → documentView.open({workflowEngineId}) → WebContentsView`，并非 iframe。保留已有主进程回环鉴权注入、安全围栏与稳定 `workflow-engine-<engineId>` 身份；没有另造 iframe，也没有触碰 Node-RED 或 GenOffice vendor 源码。
+- **布局与接线**：`PanePlacement.content` 增加文档/流程区分，拒绝非法持久化内容；`withHostedPaneContent / moveHostedPane` 随右侧可移动宿主迁移到真实 `left/right/bottom` 槽位，并在 `sessionStore` 的旧布局持久化队列内保存。右栏提供 DOC/NR/恢复入口，三向停靠沿用 Shell 的稳定 React 树与原生视图；补上右栏 HTML5 拖动到 bottom 的命中区和预览。已缓存渲染两类原生编辑器，切页显隐不卸载，且原生视图按照 pane 占位 DOM 的 `getBoundingClientRect` 更新；增加纯位置移动的主动同步（`ResizeObserver` 不检测平移）。`FileEditor` 在文档已停靠时避免创建第二个同一 docId 的原生宿主。Node-RED 已停靠时，设置页只保留管理面板、禁用其第二个重叠视图。
+- **回归**：`node apps/desktop/scripts/run-smokes.mjs document-view-host-smoke document-view-open-smoke document-view-electron-smoke document-view-vendor-page-smoke document-view-renderer-smoke arc005-pane-docking-smoke arc005-pane-dock-keys-smoke arc005-pane-electron-smoke arc005-pane-first-paint-smoke arc005-pane-free-grid-smoke arc005-pane-layout-edges-smoke arc005-pane-write-race-smoke` 已有一次完整 **12 pass / 0 fail**；日志：`apps/desktop/.tmp/smoke-runs/1792556999492-14088-HtALJQ`。最终小幅解析器收紧后在下一轮重新执行；完整结果以末次日志为准。双包 `pnpm --filter @mcode/desktop exec tsc --noEmit -p tsconfig.json`、`pnpm --filter @mcode/contracts exec tsc --noEmit -p tsconfig.json` 均退出 0。
+- **新增针对性断言**：`arc005-pane-free-grid-smoke` 检查文档/flow 内容三向迁移与 JSON 恢复、非法 payload fail-closed；`document-view-electron-smoke/probe.ts` 在**真实 Electron WebContentsView** 上按右→左→底更新宿主 bounds，并断言 webContents id、URL、页面模拟未保存状态全部不变（使用自制本地编辑页，不触碰真实用户文档）。
+- **变异红例**：`node apps/desktop/scripts/document-view-electron-smoke/mutations.mjs` **2/2 通过**。esbuild **内存替换** `documentViewHost.ts` 的 `setBounds` 跟随逻辑后，“真实 WebContentsView 位置/尺寸未跟随”转红；强制 `navigate` 后，“移动导致页面未保存状态丢失”转红。均不修改正式源码，两个子进程的 Electron userData/dataRoot 均在独立 .tmp 目录。
+- **裁剪问答**：宿主坐标、宽高与视图保活在真 Electron 下已验证；未在完整应用中对圆角/裁剪逐像素截图，**不能判定**边界阴影或圆角是否被原生 OS 子视图盖住。
+- **未部署改动问答**：Node-RED 现状不是 iframe，所以 `contentWindow` 身份不可用；本轮验证的是两者共同的原生 `WebContentsView` 反导航机制，测试页的未保存状态在移动中保留。**没有实际运行 Node-RED 编辑器并输入/拖动一条未部署 flow**，因此不能声称真实 Node-RED UI 的未部署改动已完成端到端验收。
+- **原厂 UI 问答**：未修改 vendor 的工具栏、菜单、字体或图标。尚无完整原厂页面截图/手动交互对照可证明某个具体元素与 Mcode 风格发生可见冲突；外围面板用已有 `border-edge-panel/bg-surface/rounded` tokens，不编造“已确认冲突清单”。
+- **覆盖界限**：真实 Electron 探针模拟了三组目标坐标而非完整 App 内拖拽手势；实际带 document/flow 内容的**整窗退出重启并重开真正编辑器**未做。因此第 1、3 条的完整端到端 UI 行为仍需人工/真 App 验收；第 2、6 条里的 iframe 字面身份判据与现行 WebContentsView 架构不适配，不能声明“iframe contentWindow 不变”。已覆盖功能等价的原生视图身份和两项变异红例。
+
+- **末次复测确认（解析器严格类型判据收紧之后）**：同一 12 套完整执行再次 **12 pass / 0 fail**，日志 `apps/desktop/.tmp/smoke-runs/1792557090474-7264-iNNaAp`。因此验收 4、5 通过；变异证据如上。

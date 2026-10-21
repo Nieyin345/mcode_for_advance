@@ -97,6 +97,7 @@ export function FileEditor({
   filePath: string;
   projectPath: string;
 }) {
+  const { t } = useI18n();
   // View mode is scoped to the active project's bucket.
   //
   // ## 默认档（2026-09-21 改）：md 进**所见即所得**
@@ -136,6 +137,8 @@ export function FileEditor({
    * 的构建产物。两个偏好都只经工具栏显式进入，默认档一个字没动。
    */
   const useGenofficeView = office && genofficeReady && viewModePref === "genoffice-view";
+  const documentDocked = useSessionStore((s) => s.paneLayout?.placements?.some(p =>
+    p.content?.kind === "document" && p.content.documentId === filePath));
   const defaultMode: FileViewMode = markdown || office
     ? "wysiwyg"
     : isPdfFile(filePath)
@@ -244,7 +247,11 @@ export function FileEditor({
         ) : effectiveMode === "genoffice" ? (
           <GenofficeDocumentPane key={filePath} filePath={filePath} />
         ) : effectiveMode === "genoffice-view" ? (
-          <GenofficeViewHostPane key={filePath} filePath={filePath} />
+          documentDocked ? (
+            <div className="flex h-full items-center justify-center text-content-muted" data-document-docked="">
+              {t("layout.paneDocumentMoved")}
+            </div>
+          ) : <GenofficeViewHostPane key={filePath} filePath={filePath} />
         ) : effectiveMode === "wysiwyg" ? (
           office ? (
             <OnlyOfficeEditorPane

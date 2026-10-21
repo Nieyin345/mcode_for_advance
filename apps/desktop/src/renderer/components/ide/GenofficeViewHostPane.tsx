@@ -247,9 +247,13 @@ function closeQuietly(docId: string): void {
   }
 }
 
-export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
+export function GenofficeViewHostPane({ filePath, active = true }: { filePath: string; active?: boolean }) {
   const { t } = useI18n();
   const mcodeSessionId = useSessionStore((s) => s.activeSessionId);
+  // A dock may translate the stage without changing its width/height.
+  // ResizeObserver alone does not report pure translations.
+  const dockSide = useSessionStore((s) => s.paneLayout?.placements?.find(p =>
+    p.content?.kind === "document" && p.content.documentId === filePath)?.side);
   // 读能力报告走 useRpc（硬规矩 7）；本组件只用它拿 CLI 路径推仓库根。
   const caps = useRpc(() => api.document.capabilities(), [], { toastOnError: false });
   const [openError, setOpenError] = useState<string | null>(null);
@@ -262,6 +266,8 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
   const [saveConflict, setSaveConflict] = useState<{ message: string; at: number } | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   const docId = useMemo(() => stableDocId(filePath), [filePath]);
   const host = editorHostForPath(filePath);
@@ -300,7 +306,7 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
         docId,
         url,
         bounds,
-        visible: true,
+        visible: activeRef.current,
         ...(host === "slides" ? { editor: "slides" as const } : {}),
         ...(host === "docs" && mcodeSessionId ? { mcodeSessionId } : {}),
       });
@@ -320,6 +326,9 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
             setOpenError(result.reason);
             return;
           }
+          // Switching away while open is in flight must not leave an OS child
+          // view floating above another pane.
+          if (!activeRef.current) void api.documentView.hide({ docId }).catch(() => {});
           // 【ARC-007】open 成功后再请求"打开这份文档":视图里是编辑器起始页,
           // 不请求的话用户看到的是空白文档。宿主侧会核对路径在工作区内。
           void api.documentView.openPath({ docId, filePath }).then(
@@ -341,7 +350,7 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
     };
 
     const sync = (): void => {
-      if (disposed) return;
+      if (disposed || !activeRef.current) return;
       const bounds = measureBounds(stage);
       if (bounds === null) return;
       const key = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
@@ -403,6 +412,24 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
     // url/docId 变了要重建视图；retryNonce 是显式重试。t 只影响错误文案。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docId, url, retryNonce]);
+
+  // A cached document pane retains the same native view while another content
+  // tab is selected. Hide/show moves the OS child without destroying its editor.
+  useEffect(() => {
+    if (url === null) return;
+    try {
+      if (!active) {
+        void api.documentView.hide({ docId }).catch(() => {});
+      } else {
+        const bounds = stageRef.current && measureBounds(stageRef.current);
+        if (bounds) {
+          void api.documentView.bounds({ docId, bounds })
+            .then((result) => result.ok ? api.documentView.show({ docId }) : undefined)
+            .catch(() => {});
+        }
+      }
+    } catch { /* native views are unavailable in the web fallback */ }
+  }, [active, docId, url, dockSide]);
 
   // 【ARC-007】轮询宿主快照里的 lastFailure。为什么是轮询而不是事件:
   // 宿主当前只有 list() 一条读口(没有推送通道),而这条诊断的价值是"出问题时

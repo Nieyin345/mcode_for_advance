@@ -6,7 +6,11 @@ import { dockSideAtPoint } from "./paneDock.js";
 
 export type PaneId = "left" | "right" | "bottom" | "editor";
 export type DockSide = "left" | "right" | "bottom";
-export interface PanePlacement { id: PaneId; side: DockSide; order: number; sizePct: number; }
+export type PaneContent =
+  | { kind: "builtin"; id: "chat" | "files" | "git" | "terminal" }
+  | { kind: "document"; documentId: string }
+  | { kind: "flow"; flowId: string };
+export interface PanePlacement { id: PaneId; side: DockSide; order: number; sizePct: number; content?: PaneContent; }
 export interface PaneLayout { version: 1; placements: PanePlacement[]; }
 const IDS: readonly PaneId[] = ["left", "right", "bottom", "editor"];
 const SIDES: readonly DockSide[] = ["left", "right", "bottom"];
@@ -90,7 +94,23 @@ export function parsePaneLayout(input: unknown): { layout: PaneLayout; repaired:
       return { layout: freshDefault(), repaired: ["invalid-order"] };
     if (typeof sizePct !== "number" || !Number.isFinite(sizePct) || sizePct < 0 || sizePct > 100)
       return { layout: freshDefault(), repaired: ["invalid-sizePct"] };
-    placements.push({ id: id as PaneId, side: side as DockSide, order: order as number, sizePct });
+    // Old persisted layouts have no content. New ones must be strictly shaped:
+    // never trust a serialized document/flow identifier as a URL or path.
+    let content: PaneContent | undefined;
+    if ("content" in value && value.content !== undefined) {
+      const c = value.content;
+      if (!isRecord(c)) return { layout: freshDefault(), repaired: ["invalid-content"] };
+      if (c.kind === "builtin" && typeof c.id === "string" && ["chat", "files", "git", "terminal"].includes(c.id)) {
+        content = { kind: "builtin", id: c.id as "chat" | "files" | "git" | "terminal" } as PaneContent;
+      } else if (c.kind === "document" && typeof c.documentId === "string" &&
+          c.documentId.length > 0 && c.documentId.length <= 4096) {
+        content = { kind: "document", documentId: c.documentId };
+      } else if (c.kind === "flow" && typeof c.flowId === "string" &&
+          /^[a-z0-9-]{1,100}$/.test(c.flowId)) {
+        content = { kind: "flow", flowId: c.flowId };
+      } else return { layout: freshDefault(), repaired: ["invalid-content"] };
+    }
+    placements.push({ id: id as PaneId, side: side as DockSide, order: order as number, sizePct, ...(content ? { content } : {}) });
   }
   if (seen.size !== IDS.length) return { layout: freshDefault(), repaired: ["missing-id"] };
   for (const side of SIDES) {
@@ -126,6 +146,45 @@ export function clampLayout(layout: PaneLayout): PaneLayout {
       return k === undefined ? p : { ...p, sizePct: p.sizePct * k };
     }),
   };
+}
+
+/** Change the payload without remounting a pane or changing its placement. */
+export function withPaneContent(layout: PaneLayout, id: PaneId, content: PaneContent | undefined): PaneLayout {
+  const base = clampLayout(layout);
+  if (!IDS.includes(id)) return base;
+  return { version: 1, placements: base.placements.map(p => {
+    if (p.id !== id) return p;
+    if (content !== undefined) return { ...p, content };
+    const { content: _removed, ...withoutContent } = p;
+    return withoutContent;
+  }) };
+}
+
+/** The movable right host renders whichever physical zone it occupies.
+ * Store the editor payload on that zone's own left/right/bottom placement,
+ * not permanently on "right"; moving rebinds metadata, not its React view. */
+export function hostedPaneContent(layout: PaneLayout): PaneContent | undefined {
+  const right = layout.placements.find(p => p.id === "right");
+  const zone = right?.side ?? "right";
+  return layout.placements.find(p => p.id === zone)?.content ?? right?.content;
+}
+export function withHostedPaneContent(layout: PaneLayout, content: PaneContent | undefined): PaneLayout {
+  const base = clampLayout(layout);
+  const zone = base.placements.find(p => p.id === "right")?.side ?? "right";
+  return { version: 1, placements: base.placements.map(p => {
+    if (p.id === zone && content !== undefined) return { ...p, content };
+    if (p.id === zone || p.content?.kind === "document" || p.content?.kind === "flow") {
+      const { content: _removed, ...withoutContent } = p;
+      return withoutContent;
+    }
+    return p;
+  }) };
+}
+export function moveHostedPane(layout: PaneLayout, side: DockSide, order: number): PaneLayout {
+  const content = hostedPaneContent(layout);
+  const moved = movePane(layout, "right", side, order);
+  return content?.kind === "document" || content?.kind === "flow"
+    ? withHostedPaneContent(moved, content) : moved;
 }
 
 export function movePane(layout: PaneLayout, id: PaneId, side: DockSide, order: number): PaneLayout {

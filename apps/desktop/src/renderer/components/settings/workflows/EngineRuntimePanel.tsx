@@ -42,6 +42,7 @@ import { api } from "@renderer/lib/api.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useApprovalArming } from "@renderer/hooks/useApprovalArming.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { Badge, Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import { IconAlertTriangle, IconPlayerPlay, IconPlayerStop, IconRefresh } from "@renderer/lib/icons.js";
@@ -149,6 +150,18 @@ export function EngineRow({
   const stageRef = useRef<HTMLDivElement | null>(null);
   const docId = useMemo(() => engineDocId(status.engineId), [status.engineId]);
   const badge = engineStateBadge(status.state);
+  const dockSide = useSessionStore((s) => s.paneLayout?.placements?.find(p =>
+    p.content?.kind === "flow" && p.content.flowId === status.engineId)?.side);
+  // Pure reordering can move a native view without causing ResizeObserver to fire.
+  // Re-measure in a post-layout frame; never call open/loadURL to move it.
+  useEffect(() => {
+    if (!active || !status.editorUrl || !dockSide) return;
+    const raf = requestAnimationFrame(() => {
+      const bounds = stageRef.current && measureBounds(stageRef.current);
+      if (bounds) void api.documentView.bounds({ docId, bounds }).catch(() => {});
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [dockSide, active, status.editorUrl, docId]);
 
   const run = async (kind: "start" | "stop"): Promise<void> => {
     setBusy(true);
@@ -640,12 +653,12 @@ export function EngineNodePackagesSection() {
   );
 }
 
-export function EngineRuntimePanel({ active: activeTab = true }: { active?: boolean }) {
+export function EngineRuntimePanel({ active: activeTab = true, engineId, editorOnly = false }: { active?: boolean; engineId?: string; editorOnly?: boolean }) {
   const { t } = useI18n();
   const listRead = useRpc(() => api.workflowEngine.list(), []);
   const engines = listRead.data?.engines ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = engines.find((e) => e.engineId === selectedId) ?? engines[0] ?? null;
+  const selected = engines.find((e) => e.engineId === (engineId ?? selectedId)) ?? (engineId ? null : engines[0] ?? null);
 
   if (listRead.loading && listRead.data === undefined) {
     return <LoadingNote label={t("common.loading")} />;
@@ -675,7 +688,7 @@ export function EngineRuntimePanel({ active: activeTab = true }: { active?: bool
     <div className="flex h-full min-h-0 flex-col gap-2">
       {/* 只有一个引擎时也画这一行导航：注册表是开放的（加第二个引擎只多一条），
           而"当前看的是哪一个"在有两个之后必须有地方可点。 */}
-      {engines.length > 1 && (
+      {!editorOnly && engines.length > 1 && (
         <div className="flex gap-1" role="tablist">
           {engines.map((engine) => {
             const activeRow = engine.engineId === selected?.engineId;
@@ -712,11 +725,11 @@ export function EngineRuntimePanel({ active: activeTab = true }: { active?: bool
       )}
       {/* 回调通道的预留位（桥 2）。放在引擎行下面而不是列表之上：它描述的是
           "引擎能对 Mcode 做什么"，是引擎配置的一部分，不是操作入口。 */}
-      <EngineCallbackSection />
-      <EngineNodePackagesSection />
-      <div className="text-[0.7143em] text-content-subtle">
+      {!editorOnly && <EngineCallbackSection />}
+      {!editorOnly && <EngineNodePackagesSection />}
+      {!editorOnly && <div className="text-[0.7143em] text-content-subtle">
         {t("settings.workflows.engine.footnote")}
-      </div>
+      </div>}
     </div>
   );
 }

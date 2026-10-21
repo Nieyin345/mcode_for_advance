@@ -85,6 +85,7 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
   // `settingsFocusWorkflowId`)。这里只负责**切到库那一页**;真正打开那份图、用完清掉
   // 由 `WorkflowLibraryView` 做(它才拿得到 `openWorkflow`)。
   const focusWorkflowId = useSessionStore((s) => s.settingsFocusWorkflowId);
+  const flowDocked = useSessionStore((s) => s.paneLayout?.placements?.some(p => p.content?.kind === "flow") ?? false);
   useEffect(() => {
     if (focusWorkflowId) setView("library");
   }, [focusWorkflowId]);
@@ -256,7 +257,7 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
             aria-labelledby={tabId(prefix, "engines")}
             className={cn("min-h-0 flex-1 flex-col", view === "engines" ? "flex" : "hidden")}
           >
-            <EngineRuntimePanel active={view === "engines"} />
+            <EngineRuntimePanel active={view === "engines" && !flowDocked} />
           </div>
         </>
       )}

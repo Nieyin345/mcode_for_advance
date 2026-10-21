@@ -31,7 +31,7 @@ import { Project, Session, SessionBookmark } from "@contracts/session";
 import { ThemeStyle } from "@contracts/theme";
 import { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import type { PaneDock } from "@renderer/components/layout/paneDock.js";
-import type { PaneLayout, DockSide } from "@renderer/components/layout/paneLayout.js";
+import type { PaneLayout, DockSide, PaneContent } from "@renderer/components/layout/paneLayout.js";
 
 /** One browser tab, shared across the sidebar and overlay containers. `id` is
  *  renderer-local; `browserId` is the main-process view id. All
@@ -1564,6 +1564,7 @@ export interface SessionState {
   /** Persist left/right docking without remounting right panel children. */
   setRightDock: (dock: PaneDock) => void;
   moveLayoutPane: (id: "left" | "right" | "bottom" | "editor", side: DockSide, order: number) => void;
+  setLayoutPaneContent: (id: "left" | "right" | "bottom" | "editor", content: PaneContent | undefined) => void;
   /** Update the right placement continuously, save only when a drag commits. */
   setPaneRightSizePct: (pct: number, containerWidth: number, persist?: boolean) => void;
   /** Reuse the same durable layout snapshot for all presets and reset. */

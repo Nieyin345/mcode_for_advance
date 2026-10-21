@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parsePaneDock, dockSideAtPoint, dockResizeDelta, dockFlexOrder, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID } from "../../src/renderer/components/layout/paneDock.js";
+import { dockSideAtRect } from "../../src/renderer/components/layout/paneLayout.js";
 const src=(path:string)=>readFileSync(resolve("src/renderer",path),"utf8");
 const store=src("stores/sessionStore.ts"),types=src("stores/sessionStoreTypes.ts");
 const layout=src("components/layout/ThreePaneLayout.tsx"),rail=src("components/layout/RightPanel.tsx");
@@ -38,7 +39,12 @@ check("Left dock mirrors center corner radius instead of leaving clipped notch",
 check("Drag target preview is hidden from screen readers",
   layout.includes('data-testid="pane-dock-preview"') && layout.includes('aria-hidden="true"'));
 check("Right pane drag is a private-only HTML5 operation",rail.includes("PANE_DOCK_MIME")&&rail.includes("RIGHT_PANE_DRAG_ID")&&rail.includes("onDragStart")&&layout.includes("e.dataTransfer.getData(PANE_DOCK_MIME)"));
-check("Drag target honors workspace left/right geometry",layout.includes("dockSideAtPoint(e.clientX")&&layout.includes("onDropCapture="));
+check("Drag target honors workspace left/right/bottom geometry",
+  layout.includes("dockSideAtRect(e.clientX, e.clientY, bounds.left, bounds.top, bounds.width, bounds.height)") &&
+  layout.includes('onMovePane?.("right", "bottom", 0)') && layout.includes("onDropCapture=") &&
+  dockSideAtRect(100, 100, 0, 0, 800, 600) === "left" &&
+  dockSideAtRect(700, 100, 0, 0, 800, 600) === "right" &&
+  dockSideAtRect(400, 550, 0, 0, 800, 600) === "bottom");
 check("Keyboard-accessible dock switch is available",rail.includes("onClick={() => setRightDock(rightDock === \"left\" ? \"right\" : \"left\")}")&&rail.includes("aria-label={dockTitle}"));
 check("Right/left docking flips normal and wide split resize sign",shell.includes("dockResizeDelta(deltaPx, rightDock)")&&shell.includes("onResizeRight={handleDockedResize}"));
 console.log("arc005-pane-docking "+ok+"/"+(ok+fail));if(fail)process.exitCode=1;

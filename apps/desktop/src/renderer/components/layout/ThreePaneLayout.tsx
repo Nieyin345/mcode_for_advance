@@ -4,7 +4,7 @@ import { DndContext, PointerSensor, useDraggable, useSensor, useSensors, type Dr
 import { cn } from "@renderer/lib/cn.js";
 import { Divider } from "./Divider.js";
 import { shouldMountRightPane } from "./rightPaneKeepAlive.js";
-import { dockFlexOrder, dockSideAtPoint, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, type PaneDock } from "./paneDock.js";
+import { dockFlexOrder, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, type PaneDock } from "./paneDock.js";
 import type { ShellVariant } from "../shell/shellPrefs.js";
 import { computeSplitDrag, dockSideAtRect, DEFAULT_PANE_LAYOUT, SPLIT_SNAP_RATIO, type DockSide, type PaneId, type PaneLayout } from "./paneLayout.js";
 
@@ -227,10 +227,10 @@ export function ThreePaneLayout({
     };
   }, []);
   const handleDockDragOver = (e: DragEvent<HTMLElement>) => {
-    if (!rightOpen || !onChangeRightDock ||
+    if (!rightOpen || (!onChangeRightDock && !onMovePane) ||
         !Array.from(e.dataTransfer.types).includes(PANE_DOCK_MIME)) return;
     const bounds = e.currentTarget.getBoundingClientRect();
-    const side = dockSideAtPoint(e.clientX, bounds.left, bounds.width);
+    const side = dockSideAtRect(e.clientX, e.clientY, bounds.left, bounds.top, bounds.width, bounds.height);
     if (!side) return;
     e.preventDefault();
     // This is an internal pane drag: consume it before nested chat/editor
@@ -240,14 +240,16 @@ export function ThreePaneLayout({
     setDockPreview((prior) => prior === side ? prior : side);
   };
   const handleDockDrop = (e: DragEvent<HTMLElement>) => {
-    if (!rightOpen || !onChangeRightDock ||
+    if (!rightOpen || (!onChangeRightDock && !onMovePane) ||
         e.dataTransfer.getData(PANE_DOCK_MIME) !== RIGHT_PANE_DRAG_ID) return;
     const bounds = e.currentTarget.getBoundingClientRect();
-    const side = dockSideAtPoint(e.clientX, bounds.left, bounds.width);
+    const side = dockSideAtRect(e.clientX, e.clientY, bounds.left, bounds.top, bounds.width, bounds.height);
     if (side) {
       e.preventDefault();
       e.stopPropagation();
-      onChangeRightDock(side);
+      if (side === "bottom") onMovePane?.("right", "bottom", 0);
+      else if (onChangeRightDock) onChangeRightDock(side);
+      else onMovePane?.("right", side, 0);
     }
     setDockPreview(null);
   };
@@ -334,8 +336,9 @@ export function ThreePaneLayout({
         {dockPreview && (
           <div data-testid="pane-dock-preview" data-dock-preview={dockPreview} aria-hidden="true"
             className={cn(
-              "pointer-events-none absolute inset-y-0 z-50 w-1/2 border-2 border-dashed border-accent bg-accent/10",
-              dockPreview === "left" ? "left-0" : dockPreview === "bottom" ? "bottom-0 h-1/3 w-full" : "right-0",
+              "pointer-events-none absolute z-50 border-2 border-dashed border-accent bg-accent/10",
+              dockPreview === "bottom" ? "bottom-0 h-1/3 w-full" :
+                dockPreview === "left" ? "inset-y-0 left-0 w-1/2" : "inset-y-0 right-0 w-1/2",
             )} />
         )}
         <div className="min-h-0 flex-1 overflow-hidden">{center}</div>

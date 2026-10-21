@@ -154,6 +154,10 @@ export const en = {
   "layout.tabTasks": "Tasks",
   "layout.openBrowser": "Open browser",
   "layout.movePane": "Drag to move workspace pane",
+  "layout.paneDocument": "Dock current DOCX in pane",
+  "layout.paneFlow": "Node-RED editor",
+  "layout.paneRestore": "Return to original pane",
+  "layout.paneDocumentMoved": "Document is open in the dockable pane",
   "layout.closeSidebarBrowser": "Close sidebar browser",
 
   /* ── side chat (right-panel ask tab) ── */

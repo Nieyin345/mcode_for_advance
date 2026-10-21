@@ -213,6 +213,29 @@ export async function runDocumentViewProbe(dir: string): Promise<void> {
       assert(snap[0].lastFailure === undefined, `加载失败: ${JSON.stringify(snap[0].lastFailure)}`);
     });
 
+    await check("T07 原生 Pane 右左底切换：bounds 跟随且未部署编辑状态不丢", async () => {
+      const wc = viewWebContents("u1-doc");
+      const originalId = wc.id;
+      const originalUrl = wc.getURL();
+      await wc.executeJavaScript("document.body.dataset.unsavedT07 = 'not yet saved'");
+      for (const bounds of [
+        { x: 540, y: 40, width: 300, height: 410 },
+        { x: 30, y: 40, width: 300, height: 410 },
+        { x: 30, y: 490, width: 760, height: 140 },
+      ]) {
+        const changed = host.setBounds("u1-doc", bounds);
+        assert(changed.ok, "T07 设置 pane 坐标失败: " + JSON.stringify(changed));
+        assert(JSON.stringify(appliedBounds("u1-doc")) === JSON.stringify(bounds),
+          "真实 WebContentsView 位置/尺寸未跟随: " + JSON.stringify(appliedBounds("u1-doc")));
+        assert(viewWebContents("u1-doc").id === originalId, "原生视图重新创建");
+        assert(wc.getURL() === originalUrl, "文档页面意外导航");
+        assert(await wc.executeJavaScript("document.body.dataset.unsavedT07") === "not yet saved",
+          "移动导致页面未保存状态丢失");
+      }
+      const restored = host.setBounds("u1-doc", { x: 20, y: 30, width: 500, height: 400 });
+      assert(restored.ok, "恢复原测试坐标失败");
+    });
+
     await check("真 Electron 文档视图拒绝页面自行导航到另一个本地文件", async () => {
       const view = viewWebContents("u1-doc");
       const trustedUrl = view.getURL();

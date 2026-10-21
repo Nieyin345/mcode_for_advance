@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { GenofficeViewHostPane } from "@renderer/components/ide/GenofficeViewHostPane.js";
+import { stableDocId } from "@renderer/components/ide/GenofficeViewHostPane.js";
+import { hostedPaneContent } from "./paneLayout.js";
+import { EngineRuntimePanel } from "@renderer/components/settings/workflows/EngineRuntimePanel.js";
+import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { customUiLabel, type CustomUiItem } from "@contracts/customUi";
 import type { RightPanelTab } from "@contracts/ipc";
@@ -56,6 +61,22 @@ export function RightPanel() {
   const { t, locale } = useI18n();
   const tab = useSessionStore((s) => s.rightPanelTab);
   const setTab = useSessionStore((s) => s.setRightPanelTab);
+  const content = useSessionStore((s) => s.paneLayout?.placements
+    ? hostedPaneContent(s.paneLayout) : undefined);
+  const setContent = useSessionStore((s) => s.setLayoutPaneContent);
+  const setRightOpen = useSessionStore((s) => s.setRightOpen);
+  const settingsOpen = useSessionStore((s) => s.settingsOpen);
+  const activeFile = useSessionStore((s) => s.activeProjectId
+    ? s.ideActiveFileByProject[s.activeProjectId] ?? null : null);
+  const dockableDoc = activeFile && /\.docx$/i.test(activeFile) ? activeFile : null;
+  const pinnedDoc = content?.kind === "document" ? content.documentId : null;
+  const pinnedFlow = content?.kind === "flow" ? content.flowId : null;
+  const [visitedDocs, setVisitedDocs] = useState<ReadonlySet<string>>(() => new Set());
+  const [visitedFlows, setVisitedFlows] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    if (pinnedDoc) setVisitedDocs(previous => previous.has(pinnedDoc) ? previous : new Set([...previous, pinnedDoc]));
+    if (pinnedFlow) setVisitedFlows(previous => previous.has(pinnedFlow) ? previous : new Set([...previous, pinnedFlow]));
+  }, [pinnedDoc, pinnedFlow]);
   const browserTabCount = useSessionStore((s) => s.browserTabCount);
   const widePanelOpen = useSessionStore((s) => s.widePanelOpen);
   const setWidePanelOpen = useSessionStore((s) => s.setWidePanelOpen);
@@ -97,6 +118,7 @@ export function RightPanel() {
   const target = useWorkspaceTarget();
 
   const showBuiltin = (id: RightPanelTab) => {
+    setContent("right", undefined);
     setActiveCustom(null);
     setTab(id);
   };
@@ -223,6 +245,31 @@ export function RightPanel() {
             );
           })}
         </div>
+        {/* Native document and Node-RED share the same movable shell. Their
+            component trees are cached instead of keyed by docking position:
+            flex reorder must never navigate an unsaved editor. */}
+        <div className="flex shrink-0 items-center gap-0.5 border-l border-edge/60 pl-1">
+          <RailButton active={pinnedDoc !== null} onClick={() => {
+            if (!dockableDoc) return;
+            setContent("right", { kind: "document", documentId: dockableDoc });
+            setActiveCustom(null);
+            setRightOpen(true);
+          }} title={t("layout.paneDocument")}>
+            <span aria-hidden="true" className="font-mono text-[10px]">DOC</span>
+          </RailButton>
+          <RailButton active={pinnedFlow !== null} onClick={() => {
+            setContent("right", { kind: "flow", flowId: "node-red" });
+            setActiveCustom(null);
+            setRightOpen(true);
+          }} title={t("layout.paneFlow")}>
+            <span aria-hidden="true" className="font-mono text-[10px]">NR</span>
+          </RailButton>
+          {(pinnedDoc !== null || pinnedFlow !== null) && (
+            <RailButton active={false} onClick={() => setContent("right", undefined)} title={t("layout.paneRestore")}>
+              <span aria-hidden="true">×</span>
+            </RailButton>
+          )}
+        </div>
         {/* Native HTML drag source + click/keyboard alternative. Drag this handle
             onto the left/right half of the chat/editor to change the dock;
             a click/Enter/Space toggles the same persistent side. */}
@@ -283,9 +330,30 @@ export function RightPanel() {
           sidebar (mobile-first) renders inline here; the PC-fullscreen overlay
           is rendered at the App root and covers the whole workspace. */}
       <div className="relative min-h-0 flex-1 overflow-hidden">
+        {Array.from(visitedDocs).map(path => {
+          const selected = pinnedDoc === path && !settingsOpen;
+          return <div key={path} className="h-full min-h-0 overflow-hidden rounded-md border border-edge-panel bg-surface"
+            data-pane-document={path} style={{ display: selected ? "block" : "none" }}
+            inert={!selected} aria-hidden={!selected}>
+            <div className="h-full min-h-0" onMouseDown={() => {
+              try { void api.documentView.focus({ docId: stableDocId(path) }).catch(() => {}); } catch { /* web fallback */ }
+            }}>
+              <GenofficeViewHostPane filePath={path} active={selected} />
+            </div>
+          </div>;
+        })}
+        {Array.from(visitedFlows).map(engineId => {
+          const selected = pinnedFlow === engineId && !settingsOpen;
+          return <div key={engineId} className="h-full min-h-0 overflow-hidden rounded-md border border-edge-panel bg-surface"
+            data-pane-flow={engineId} style={{ display: selected ? "block" : "none" }}
+            inert={!selected} aria-hidden={!selected}>
+            <EngineRuntimePanel engineId={engineId} editorOnly active={selected} />
+          </div>;
+        })}
+        <div className={pinnedDoc || pinnedFlow ? "hidden h-full" : "h-full"} inert={!!(pinnedDoc || pinnedFlow)} aria-hidden={!!(pinnedDoc || pinnedFlow)}>
         {CACHED_BUILTIN_RIGHT_TABS.map((id) => {
           if (!shouldMountCachedBuiltin(id, tab, visitedBuiltinTabs)) return null;
-          const selected = !activeCustom && tab === id;
+          const selected = !activeCustom && !pinnedDoc && !pinnedFlow && tab === id;
           return (
             <div
               key={id}
@@ -319,6 +387,7 @@ export function RightPanel() {
         {!activeCustom && tab === "flow" && <WorkflowBoardPanel />}
         {!activeCustom && tab === "tasks" && <TaskListPanel />}
         {!activeCustom && tab === "preview" && <PreviewPanel />}
+        </div>
       </div>
     </div>
   );
