@@ -5,8 +5,10 @@ import {
   parsePaneLayout, DEFAULT_PANE_LAYOUT, movePane, clampLayout, dockSideAtRect,
   computeSplitDrag, SPLIT_COLLAPSE_THRESHOLD, SPLIT_DEAD_ZONE_PX,
   SPLIT_MIN_LEFT_PX, SPLIT_MIN_RIGHT_PX, SPLIT_SNAP_RATIO,
+  LAYOUT_PRESETS, setPaneSizePct, copyPaneLayout,
 } from "../../src/renderer/components/layout/paneLayout.js";
 import { parseSavedPaneLayout } from "../../src/renderer/stores/paneLayoutPrefs.js";
+import { createCoalescedPaneWriter } from "../../src/renderer/stores/paneWidthWriteQueue.js";
 
 let passed = 0; let failed = 0;
 const check = (name: string, fn: () => void) => {
@@ -92,6 +94,86 @@ check("pixel clamps 380 left and 420 right when feasible",()=>{
   assert.equal(computeSplitDrag(0.5,300,1200).ratio,780/1200);
 });
 check("snap constant exactly 50/50",()=> assert.equal(SPLIT_SNAP_RATIO,0.5));
+check("T23 pointer movement continuously updates right placement with same-side clamp", () => {
+  const start = 0.5;
+  const sizes: number[] = [];
+  let current = copyPaneLayout(good);
+  for (const delta of [-60, -120, -180]) {
+    const result = computeSplitDrag(start, delta, 1200);
+    assert.equal(result.moved, true);
+    current = setPaneSizePct(current, "right", (1 - result.ratio) * 100);
+    sizes.push(current.placements.find(p => p.id === "right")!.sizePct);
+    for (const side of ["left", "right", "bottom"]) {
+      assert.ok(current.placements.filter(p => p.side === side)
+        .reduce((n, p) => n + p.sizePct, 0) <= 100);
+    }
+    assert.equal(parsePaneLayout(current).repaired.length, 0);
+  }
+  assert.ok(sizes[0] < sizes[1] && sizes[1] < sizes[2]);
+  sizes.forEach((value, i) => assert.ok(Math.abs(value - [55, 60, 65][i]) < 1e-8));
+});
+check("T23 fold thresholds at 18/82, on both dock sides and recover", () => {
+  for (const side of ["left", "right"] as const) {
+    const percent = (ratio: number) => 100 * (side === "left" ? ratio : 1 - ratio);
+    const low = computeSplitDrag(0.5, -385, 1200);
+    const high = computeSplitDrag(0.5, 385, 1200);
+    assert.equal(low.collapsed, "left");
+    assert.equal(high.collapsed, "right");
+    assert.equal(percent(side === "left" ? low.ratio : high.ratio), 0, "right pane collapses");
+    assert.equal(percent(side === "left" ? high.ratio : low.ratio), 100, "center pane collapses");
+    const folded = setPaneSizePct(good, "right", 0);
+    assert.equal(folded.placements.find(p => p.id === "right")!.sizePct, 0);
+    const restored = setPaneSizePct(folded, "right", 30);
+    assert.equal(restored.placements.find(p => p.id === "right")!.sizePct, 30);
+  }
+});
+check("T23 pixel min 380/420 with actual updated placements", () => {
+  const width = 1200;
+  const toLeft = computeSplitDrag(0.5, -300, width);
+  const toRight = computeSplitDrag(0.5, 300, width);
+  assert.equal(toLeft.ratio * width, 380);
+  assert.equal((1 - toRight.ratio) * width, 420);
+  assert.equal(setPaneSizePct(good, "right", (1 - toLeft.ratio) * 100)
+    .placements.find(p => p.id === "right")!.sizePct, 100 * (1 - 380 / width));
+  assert.equal(setPaneSizePct(good, "right", (1 - toRight.ratio) * 100)
+    .placements.find(p => p.id === "right")!.sizePct, 35);
+});
+check("T23 three presets preserve exactly requested percentages and clamp invariants", () => {
+  for (const [key, left, right] of [
+    ["chat", 18, 22], ["editor", 0, 60], ["balanced", 22, 50],
+  ] as const) {
+    const preset = clampLayout(copyPaneLayout(LAYOUT_PRESETS[key]));
+    assert.equal(parsePaneLayout(preset).repaired.length, 0);
+    assert.equal(preset.placements.find(p => p.id === "left")?.sizePct, left);
+    assert.equal(preset.placements.find(p => p.id === "right")?.sizePct, right);
+    assert.ok(preset.placements.filter(p => p.side === "right").reduce((n,p) => n+p.sizePct,0) <= 100);
+  }
+});
+check("T23 one-step reset returns full default without aliasing the preset", () => {
+  const damaged = setPaneSizePct(LAYOUT_PRESETS.editor, "right", 83);
+  assert.notDeepEqual(damaged, DEFAULT_PANE_LAYOUT);
+  const reset = clampLayout(copyPaneLayout(DEFAULT_PANE_LAYOUT));
+  assert.deepEqual(reset, good);
+  reset.placements[0].sizePct = 77;
+  assert.equal(DEFAULT_PANE_LAYOUT.placements[0].sizePct, 24);
+});
+const persisted: string[] = [];
+let latestLayout = good;
+const writer = createCoalescedPaneWriter(
+  () => latestLayout, async value => { persisted.push(JSON.stringify(value)); },
+  error => { throw error; },
+);
+for (const delta of [-60, -120, -180]) {
+  const drag = computeSplitDrag(0.5, delta, 1200);
+  latestLayout = setPaneSizePct(latestLayout, "right", (1 - drag.ratio) * 100);
+}
+// Same snapshot coalescing queue as sessionStore; the drag commits once.
+await writer.request();
+check("T23 drag release persists the final clamped placement", () => {
+  assert.equal(persisted.length, 1);
+  assert.deepEqual(JSON.parse(persisted[0]), latestLayout);
+  assert.equal(latestLayout.placements.find(p => p.id === "right")?.sizePct, 65);
+});
 const layout = readFileSync(resolve("src/renderer/components/layout/ThreePaneLayout.tsx"),"utf8");
 const store = readFileSync(resolve("src/renderer/stores/sessionStore.ts"),"utf8");
 const shell = readFileSync(resolve("src/renderer/components/shell/ClassicShell.tsx"),"utf8");
@@ -116,7 +198,7 @@ check("★ 50/50 吸附走直接设定，不走 delta 双重取反",()=>{
   // rightDock === "left" 时符号抵消错位。必须存在直接设定路径并被使用。
   assert.ok(layout.includes("onSetRightWidth(target)"),
     "双击必须优先走 onSetRightWidth(直接设宽)");
-  assert.ok(layout.includes("if (onSetRightWidth) { onSetRightWidth(target); return; }"),
+  assert.ok(layout.includes("if (onSetRightWidth) { onSetRightWidth(target); onSetPaneRightSizePct?.(50, width, true); return; }"),
     "直接设定必须在 delta 兜底之前 return");
   assert.ok(!/onDoubleClick[\s\S]{0,600}?onResizeRight\(rightDock === "left" \(target - current\) : current - target\)\s*;\s*\}\}/.test(layout)
     || layout.indexOf("onSetRightWidth(target)") < layout.indexOf('onResizeRight(rightDock === "left" ? target - current'),

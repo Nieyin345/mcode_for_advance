@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { Menu } from "@base-ui/react/menu";
+import { withViewTransition } from "@renderer/lib/viewTransition.js";
 import { cn } from "@renderer/lib/cn.js";
 import { isMac, platform } from "@renderer/lib/platform.js";
 import { trafficLightSpacerWidth } from "./trafficLights.js";
@@ -250,6 +252,7 @@ export function Titlebar({
             <div data-arc005-titlebar-actions="" className="flex shrink-0 items-center gap-1">
             {/* Editor column toggle - shows/hides the center-pane editor column
                 without closing the open file. Sits right of the branch pill. */}
+            {!isBrowserOverlay && <PanePresetMenu />}
             {!isBrowserMode && <EditorColumnToggle />}
             {/* Worktree merge-back (Land) — session-scoped, right-aligned with
                 the panel toggles. Shown only while the active session runs in
@@ -306,6 +309,40 @@ export function Titlebar({
         )}
       </div>
     </div>
+  );
+}
+
+/** T23: one reachable entry point for preset layout and reset. It changes
+ * only geometry and keeps the existing PTY/Monaco/RightPanel tree mounted. */
+function PanePresetMenu() {
+  const { t } = useI18n();
+  const apply = useSessionStore((s) => s.applyPaneLayoutPreset);
+  const choose = (preset: "chat" | "editor" | "balanced" | "default") =>
+    withViewTransition(() => apply(preset));
+  const itemClass = "flex w-full cursor-default items-center px-3 py-2 text-left text-xs text-content outline-none data-[highlighted]:bg-surface-hover";
+  return (
+    <Menu.Root>
+      <Menu.Trigger
+        data-testid="pane-layout-presets"
+        className="rounded px-2 py-1 text-xs text-content-muted hover:bg-surface-hover hover:text-content"
+        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        aria-label={t("layout.panePresets")}
+        title={t("layout.panePresets")}
+      >
+        {t("layout.panePresets")}
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner side="bottom" align="end" sideOffset={6}>
+          <Menu.Popup className="z-50 min-w-[170px] rounded-lg border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]">
+            <Menu.Item className={itemClass} onClick={() => choose("chat")}>{t("layout.presetChat")}</Menu.Item>
+            <Menu.Item className={itemClass} onClick={() => choose("editor")}>{t("layout.presetEditor")}</Menu.Item>
+            <Menu.Item className={itemClass} onClick={() => choose("balanced")}>{t("layout.presetBalanced")}</Menu.Item>
+            <div className="my-1 border-t border-edge" />
+            <Menu.Item className={itemClass} onClick={() => choose("default")}>{t("layout.presetReset")}</Menu.Item>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   );
 }
 

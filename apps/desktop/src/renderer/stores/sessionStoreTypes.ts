@@ -1564,6 +1564,10 @@ export interface SessionState {
   /** Persist left/right docking without remounting right panel children. */
   setRightDock: (dock: PaneDock) => void;
   moveLayoutPane: (id: "left" | "right" | "bottom" | "editor", side: DockSide, order: number) => void;
+  /** Update the right placement continuously, save only when a drag commits. */
+  setPaneRightSizePct: (pct: number, containerWidth: number, persist?: boolean) => void;
+  /** Reuse the same durable layout snapshot for all presets and reset. */
+  applyPaneLayoutPreset: (preset: "chat" | "editor" | "balanced" | "default") => void;
   /** Toggle the bottom terminal bar open/closed (direct set). NOT persisted. */
   setBottomTerminalOpen: (open: boolean) => void;
   /** Toggle the browser panel open/closed (direct set). NOT persisted. */

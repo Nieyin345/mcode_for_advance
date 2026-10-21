@@ -43,7 +43,7 @@ import type { ThemeStyle } from "@contracts/theme";
 // 【ARC-005 V1】外壳偏好的默认值 + 防卫式解析(叶子模块,只 import 契约)。
 import { DEFAULT_SHELL_PREF, parseShellPref } from "@renderer/components/shell/shellPrefs.js";
 import { parsePaneDock } from "@renderer/components/layout/paneDock.js";
-import { DEFAULT_PANE_LAYOUT, movePane } from "@renderer/components/layout/paneLayout.js";
+import { DEFAULT_PANE_LAYOUT, LAYOUT_PRESETS, clampLayout, copyPaneLayout, movePane, setPaneSizePct } from "@renderer/components/layout/paneLayout.js";
 import { createCoalescedPaneWriter, mayApplyPaneHydration, withoutLocallyEditedPaneFields } from "./paneWidthWriteQueue.js";
 import { parseSavedPaneLayout } from "./paneLayoutPrefs.js";
 
@@ -4463,7 +4463,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (open && get().widePanelOpen) return;
     set({ leftOpen: open });
   },
-  setRightOpen: (open) => set({ rightOpen: open }),
+  setRightOpen: (open) => {
+    const s = get();
+    // A 0%-width pane may be reopened from the existing titlebar toggle.
+    if (open && s.paneLayout.placements.find(p => p.id === "right")?.sizePct === 0) {
+      set({ rightOpen: true, paneLayout: setPaneSizePct(s.paneLayout, "right", 30) });
+      schedulePaneWidthPersist(get, "paneLayout");
+    } else set({ rightOpen: open });
+  },
   setBottomTerminalOpen: (open) => set({ bottomTerminalOpen: open }),
   setBrowserPanelOpen: (open) => {
     // Opening the fullscreen overlay forces the right panel closed so the
@@ -4602,6 +4609,41 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const rightSide = next.placements.find(p => p.id === "right")?.side;
     set({ paneLayout: next, rightDock: rightSide === "left" ? "left" : "right" });
     paneLayoutLocalEdits.add("rightDock");
+    schedulePaneWidthPersist(get, "paneLayout");
+  },
+  setPaneRightSizePct: (pct, containerWidth, persist = true) => {
+    if (!Number.isFinite(pct) || !Number.isFinite(containerWidth) || containerWidth <= 0) return;
+    const s = get();
+    const paneLayout = setPaneSizePct(s.paneLayout, "right", pct);
+    const width = clampRightWidth(pct * containerWidth / 100,
+      centerRightRowWidth(s.leftOpen, s.leftWidthPct));
+    set({ paneLayout, rightWidth: width });
+    // Protect live pointer edits from an earlier deferred hydration too.
+    paneLayoutLocalEdits.add("paneLayout");
+    paneLayoutLocalEdits.add("rightWidth");
+    // Live drag updates are synchronous but are not saved until pointerup.
+    if (persist) {
+      schedulePaneWidthPersist(get, "paneLayout");
+    }
+  },
+  applyPaneLayoutPreset: (preset) => {
+    if (get().widePanelOpen) get().setWidePanelOpen(false);
+    const base = preset === "default" ? DEFAULT_PANE_LAYOUT : LAYOUT_PRESETS[preset];
+    const paneLayout = clampLayout(copyPaneLayout(base));
+    const leftPct = paneLayout.placements.find(p => p.id === "left")?.sizePct ?? 0;
+    const rightPct = paneLayout.placements.find(p => p.id === "right")?.sizePct ?? 30;
+    const leftOpen = leftPct > 0;
+    set({
+      paneLayout, rightDock: "right", rightOpen: true, leftOpen,
+      leftWidthPct: leftPct,
+      rightWidth: clampRightWidth(
+        centerRightRowWidth(leftOpen, leftPct) * rightPct / 100,
+        centerRightRowWidth(leftOpen, leftPct),
+      ),
+    });
+    paneLayoutLocalEdits.add("rightWidth");
+    paneLayoutLocalEdits.add("rightDock");
+    paneLayoutLocalEdits.add("leftWidthPct");
     schedulePaneWidthPersist(get, "paneLayout");
   },
   adjustRightWidth: (deltaPx) => {

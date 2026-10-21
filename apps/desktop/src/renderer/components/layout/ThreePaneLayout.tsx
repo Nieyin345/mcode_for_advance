@@ -46,6 +46,8 @@ interface Props {
   onResizeRight?: (deltaPx: number) => void;
   /** 【T02】双击 50/50 吸附用：直接设目标像素宽。不传则退化为 delta 路径。 */
   onSetRightWidth?: (px: number) => void;
+  /** T23: update placement size live, persist the final release via the existing queue. */
+  onSetPaneRightSizePct?: (pct: number, containerWidth: number, persist: boolean) => void;
   onResizeBottomTerminal?: (deltaPx: number) => void;
   onResetLeft?: () => void;
   onResetRight?: () => void;
@@ -101,6 +103,7 @@ export function ThreePaneLayout({
   onResizeLeft,
   onResizeRight,
   onSetRightWidth,
+  onSetPaneRightSizePct,
   onResizeBottomTerminal,
   onResetLeft,
   onResetRight,
@@ -118,12 +121,39 @@ export function ThreePaneLayout({
   const [dndDragging, setDndDragging] = useState(false);
   const paneDragging = splitDragging || dndDragging;
   const splitRef = useRef<{ id: number; x: number; width: number; startRatio: number } | null>(null);
+  const splitRightPct = (ratio: number) => 100 * (rightDock === "left" ? ratio : 1 - ratio);
+  const restoreSplit = () => {
+    const current = splitRef.current;
+    if (current) onSetPaneRightSizePct?.(splitRightPct(current.startRatio), current.width, false);
+    splitRef.current = null;
+    setSplitDragging(false);
+    setSplitPreview(null);
+  };
+  // Pointer geometry is owned by Divider's capture; the parent only translates
+  // its pointer stream into a continuously updated, versioned placement.
+  const resizeSplitWithDivider = (delta: number) => {
+    if (splitRef.current) return; // root capture handles the current pointer
+    if (onSetPaneRightSizePct) {
+      const width = rootRef.current?.getBoundingClientRect().width ?? 0;
+      if (width <= 0) return;
+      const start = rightDock === "left" ? (rightPlacement?.sizePct ?? 30) / 100
+        : 1 - (rightPlacement?.sizePct ?? 30) / 100;
+      const result = computeSplitDrag(start, delta, width);
+      if (result.moved) {
+        onSetPaneRightSizePct(splitRightPct(result.ratio), width, true);
+        if (result.collapsed === rightDock) onChangeRightOpen?.(false);
+      }
+      return;
+    }
+    onResizeRight?.(delta);
+  };
   const applySplit = (e: PointerEvent<HTMLDivElement>) => {
     const current = splitRef.current;
     if (!current || e.pointerId !== current.id) return;
     const computed = computeSplitDrag(current.startRatio, e.clientX - current.x, current.width);
     if (!computed.moved) return;
     setSplitPreview(current.width * (rightDock === "left" ? computed.ratio : 1 - computed.ratio));
+    onSetPaneRightSizePct?.(splitRightPct(computed.ratio), current.width, false);
   };
   const endSplit = (e: PointerEvent<HTMLDivElement>) => {
     const current = splitRef.current;
@@ -133,30 +163,30 @@ export function ThreePaneLayout({
     setSplitPreview(null);
     const computed = computeSplitDrag(current.startRatio, e.clientX - current.x, current.width);
     if (computed.moved) {
-      if ((computed.collapsed === "right" && rightDock === "right") ||
-          (computed.collapsed === "left" && rightDock === "left")) {
-        onChangeRightOpen?.(false);
+      if (onSetPaneRightSizePct) {
+        onSetPaneRightSizePct(splitRightPct(computed.ratio), current.width, true);
+        if (computed.collapsed === rightDock) onChangeRightOpen?.(false);
       } else {
-        const initial = current.width * (rightDock === "left" ? current.startRatio : 1-current.startRatio);
-        const final = current.width * (rightDock === "left" ? computed.ratio : 1-computed.ratio);
-        onResizeRight?.(rightDock === "left" ? final - initial : initial - final);
+        if (computed.collapsed === rightDock) onChangeRightOpen?.(false);
+        else {
+          const initial = current.width * (rightDock === "left" ? current.startRatio : 1-current.startRatio);
+          const final = current.width * (rightDock === "left" ? computed.ratio : 1-computed.ratio);
+          onResizeRight?.(rightDock === "left" ? final - initial : initial - final);
+        }
       }
     }
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   };
   useEffect(() => {
     const cancel = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || !splitRef.current) return;
       e.preventDefault();
-      const id = splitRef.current.id;
-      splitRef.current = null; setSplitDragging(false); setSplitPreview(null);
-      if (rootRef.current?.hasPointerCapture(id)) rootRef.current.releasePointerCapture(id);
+      restoreSplit();
     };
-    const blur = () => { splitRef.current = null; setSplitDragging(false); setSplitPreview(null); };
+    const blur = () => { restoreSplit(); };
     window.addEventListener("keydown", cancel);
     window.addEventListener("blur", blur);
     return () => { window.removeEventListener("keydown", cancel); window.removeEventListener("blur", blur); };
-  }, []);
+  }, [rightDock, onSetPaneRightSizePct]);
   const onDockMove = (event: DragMoveEvent) => {
     const b = rootRef.current?.getBoundingClientRect();
     if (b) setDockPreview(dockSideAtRect(dndOrigin.current.x + event.delta.x,
@@ -237,7 +267,7 @@ export function ThreePaneLayout({
           // 【T02】直接设目标宽度，不走 delta：
           // delta 会经 `dockResizeDelta` 与 `adjustRightWidth` 内部各取反一次，
           // 在 rightDock === "left" 时两次抵消错位，吸附落点就不是 50%。
-          if (onSetRightWidth) { onSetRightWidth(target); return; }
+          if (onSetRightWidth) { onSetRightWidth(target); onSetPaneRightSizePct?.(50, width, true); return; }
           const current = rightWidthPct === undefined ? (rightWidth ?? 360) : width * rightWidthPct / 100;
           onResizeRight(rightDock === "left" ? target - current : current - target);
         }}
@@ -252,15 +282,13 @@ export function ThreePaneLayout({
           splitRef.current = { id: e.pointerId, x: e.clientX, width: b.width,
             startRatio: rightDock === "left" ? size / b.width : 1 - size / b.width };
           setSplitDragging(true);
-          e.preventDefault(); e.stopPropagation();
-          e.currentTarget.setPointerCapture(e.pointerId);
+          // Divider captures its own pointer. Do not stop propagation or
+          // steal capture from its keyboard/IME-safe interaction owner.
         }}
         onPointerMoveCapture={applySplit}
         onPointerUpCapture={endSplit}
         onPointerCancelCapture={(e) => {
-          if (splitRef.current?.id === e.pointerId) {
-            splitRef.current = null; setSplitDragging(false); setSplitPreview(null);
-          }
+          if (splitRef.current?.id === e.pointerId) restoreSplit();
         }}>
       {/* Left sidebar — only used by the settings page since the workspace
          moved its full-height sidebar up to App.tsx. Square corners (no
@@ -345,13 +373,14 @@ export function ThreePaneLayout({
         <Divider
           orientation="vertical"
           className={rightDock === "left" ? "order-3" : "order-4"}
-          onResize={onResizeRight}
+          onResize={resizeSplitWithDivider}
           onDoubleClick={() => {
             const width = rootRef.current?.getBoundingClientRect().width ?? 0;
             if (width > 0) {
               const current = rightWidthPct === undefined ? (rightWidth ?? 360) : width * rightWidthPct / 100;
               const target = width * (1 - SPLIT_SNAP_RATIO);
-              onResizeRight(rightDock === "left" ? target - current : current - target);
+              if (onSetRightWidth) { onSetRightWidth(target); onSetPaneRightSizePct?.(50, width, true); }
+              else onResizeRight(rightDock === "left" ? target - current : current - target);
             } else onResetRight?.();
           }}
         />
@@ -374,6 +403,7 @@ export function ThreePaneLayout({
             // but keep the center usable on a very narrow viewport. Include
             // the adjacent toolbar/drag handle in the remaining-width budget.
             maxWidth: "calc(80% - 48px)",
+            ...(rightPlacement?.sizePct === 100 ? { maxWidth: "calc(100% - 48px)" } : {}),
             width: splitPreview ?? (rightWidthPct !== undefined ? `${rightWidthPct}%` : rightWidth),
             ...(rightAtBottom ? { width: "100%", maxWidth: "100%", height: `${bottomShare}%`, flexBasis: "100%" } : {}),
             display: rightOpen ? "flex" : "none",

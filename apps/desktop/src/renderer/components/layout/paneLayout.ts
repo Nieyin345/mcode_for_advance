@@ -20,6 +20,50 @@ export const DEFAULT_PANE_LAYOUT: PaneLayout = {
     { id: "editor", side: "right", order: 1, sizePct: 50 },
   ],
 };
+/** Presets keep the virtual editor slot at zero so the visible right pane
+ * receives its requested share rather than being proportionally squeezed. */
+export const LAYOUT_PRESETS: Record<"chat" | "editor" | "balanced", PaneLayout> = {
+  chat: { version: 1, placements: [
+    { id: "left", side: "left", order: 0, sizePct: 18 },
+    { id: "right", side: "right", order: 0, sizePct: 22 },
+    { id: "bottom", side: "bottom", order: 0, sizePct: 30 },
+    { id: "editor", side: "right", order: 1, sizePct: 0 },
+  ] },
+  editor: { version: 1, placements: [
+    { id: "left", side: "left", order: 0, sizePct: 0 },
+    { id: "right", side: "right", order: 0, sizePct: 60 },
+    { id: "bottom", side: "bottom", order: 0, sizePct: 30 },
+    { id: "editor", side: "right", order: 1, sizePct: 0 },
+  ] },
+  balanced: { version: 1, placements: [
+    { id: "left", side: "left", order: 0, sizePct: 22 },
+    { id: "right", side: "right", order: 0, sizePct: 50 },
+    { id: "bottom", side: "bottom", order: 0, sizePct: 30 },
+    { id: "editor", side: "right", order: 1, sizePct: 0 },
+  ] },
+};
+export type PanePreset = keyof typeof LAYOUT_PRESETS;
+export function copyPaneLayout(layout: PaneLayout): PaneLayout {
+  return { version: 1, placements: layout.placements.map(p => ({ ...p })) };
+}
+
+/** A targeted drag should not lose its requested ratio to an invisible,
+ * same-side placement: shrink siblings into the remaining space instead. */
+export function setPaneSizePct(layout: PaneLayout, id: PaneId, sizePct: number): PaneLayout {
+  const base = clampLayout(layout);
+  if (!Number.isFinite(sizePct)) return base;
+  const target = base.placements.find(p => p.id === id);
+  if (!target) return base;
+  const size = Math.max(0, Math.min(100, sizePct));
+  const siblings = base.placements.filter(p => p.id !== id && p.side === target.side);
+  const siblingSum = siblings.reduce((sum, p) => sum + p.sizePct, 0);
+  const siblingScale = siblingSum > 100 - size ? (100 - size) / siblingSum : 1;
+  return clampLayout({ version: 1, placements: base.placements.map(p =>
+    p.id === id ? { ...p, sizePct: size } :
+    p.side === target.side ? { ...p, sizePct: p.sizePct * siblingScale } : p,
+  ) });
+}
+
 const freshDefault = (): PaneLayout => ({
   version: 1, placements: DEFAULT_PANE_LAYOUT.placements.map(p => ({ ...p })),
 });

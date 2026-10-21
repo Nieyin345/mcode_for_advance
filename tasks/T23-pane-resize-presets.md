@@ -120,3 +120,12 @@ export const LAYOUT_PRESETS = {
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 执行结果（T23）
+
+- 实现：`paneLayout.ts` 新增三种 `LAYOUT_PRESETS`、`setPaneSizePct`，保持同侧份额总和 ≤ 100；`ThreePaneLayout` 复用原有 `Divider` 指针捕获，拖动时直接更新右栏 `PanePlacement.sizePct`，松手由 `sessionStore.setPaneRightSizePct(..., true)` 提交到已有 `schedulePaneWidthPersist` → 400ms 防抖 → `createCoalescedPaneWriter` → `ui.paneLayout`。键盘调整即时提交；Escape 恢复起始尺寸，不落库。保留双击直接像素设宽并同步 50% 的 placement。
+- 折叠与恢复：指针比例 <18% / >82% 产生 0%/100% 折叠。右 Pane 被折叠后可从顶栏「显示右侧栏」恢复为 30%；中心区域被折叠后从「布局」下拉选预设或重置恢复。可行窗口宽度下按左 380px / 右 420px 限制拖动值。
+- 预设：聊天优先 left18% / right22%，编辑器优先 left0% / right60%，对半 left22% / right50%；editor 虚拟份额为 0，避免同侧夹取抢占右栏实际比例；bottom30%。顶栏 `Menu` 单入口，切换 `withViewTransition`，重置深拷贝 `DEFAULT_PANE_LAYOUT`，不重挂载 Pane 子树。
+- 验收：1、2、3、4、5、6、8 已通过。原套 `arc005-pane-free-grid-smoke` 新增比例流、同侧夹取、两侧折叠和恢复、像素最小宽、预设、重置、单次队列落盘的行为断言；同套 `mutations.mjs` 对内存中的产物做阈值删除、最小宽删除变异，均证明断言转红（不改产品源码）。七套 `arc005-pane-*-smoke`：7 pass / 0 fail（`apps/desktop/.tmp/smoke-runs/1792552488619-29508-UHkPCh`，含真实 Electron PTY/Monaco 保活）。
+- **未通过判据 7**：`pnpm typecheck` contracts 成功、desktop 因范围外 `src/main/mcp/hostMcpStdio.ts:257,268,274` 三处 TS2349 失败；该文件未被本任务改动。遵守「不改主进程」边界，未擅自修复。
+- 此轮保持其他并行任务的工作区文件原样，未触碰 `paneDock.ts`、`Divider.tsx`、Node-RED、`ComposerEditor.tsx` 或主进程。

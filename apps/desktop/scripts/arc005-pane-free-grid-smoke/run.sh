@@ -7,3 +7,5 @@ OUT="$(mktemp -d "${TMPDIR:-/tmp}/mcode-pane-grid.XXXXXX")"
 trap 'rm -rf "$OUT"' EXIT
 "$ESBUILD" scripts/arc005-pane-free-grid-smoke/main.ts --bundle --platform=node --format=esm --tsconfig=tsconfig.json --outfile="$OUT/smoke.mjs" --log-level=error
 node "$OUT/smoke.mjs"
+# T23: in-memory fault injection must make behavior assertions red.
+node "$HERE/mutations.mjs"
