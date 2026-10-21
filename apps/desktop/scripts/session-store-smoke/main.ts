@@ -24,7 +24,7 @@ import { outputRowsOf } from "@renderer/components/chat/outputRows.js";
 import { normWorktreeKey } from "@renderer/lib/worktree.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
 import type { Session } from "@contracts/session";
-import { UI_PANE_WIDTHS_SETTING_KEY, type SkillInfo } from "@contracts/ipc";
+import { UI_PANE_WIDTHS_SETTING_KEY, UI_PANE_LAYOUT_SETTING_KEY, type SkillInfo } from "@contracts/ipc";
 import { parsePaneDock } from "@renderer/components/layout/paneDock.js";
 import type { ContextSnapshot, SessionListEntry, TurnFileEntry } from "@contracts/runtime";
 
@@ -2091,9 +2091,11 @@ console.log("\n[UI-036] 通知去重按身份:不同审批各出一张,同事件
 console.log("\n[ARC005 UIK7-039] 真实 Zustand 左右停靠的即时值与隔离 setting IPC 持久化");
 {
   const saved: string[] = [];
+  // 【T02】规范键已从 UI_PANE_WIDTHS_SETTING_KEY 换成 UI_PANE_LAYOUT_SETTING_KEY
+  // （`sessionStore.ts` 的 paneWidthWriter）。旧键只剩首帧迁移读取。
   setSettingSetStub(async (input: unknown) => {
     const row = input as { key?: string; value?: string };
-    if (row.key === UI_PANE_WIDTHS_SETTING_KEY && typeof row.value === "string") {
+    if (row.key === UI_PANE_LAYOUT_SETTING_KEY && typeof row.value === "string") {
       saved.push(row.value);
     }
     return { ok: true };
@@ -2110,6 +2112,11 @@ console.log("\n[ARC005 UIK7-039] 真实 Zustand 左右停靠的即时值与隔�
   eq("★ 恢复后的停靠侧与用户设置一致", parsePaneDock(restored.dock), "left");
   check("★ 老四个 pane 尺寸仍一并保存", ["leftPct", "right", "editor", "bottomTerminal"]
     .every((key) => typeof restored[key] === "number" && Number.isFinite(restored[key])));
+  // 【T02】新键还带 v1 paneLayout；缺它说明写回退回了旧形状。
+  check("★ 新键携带 v1 paneLayout", (() => {
+    const layout = restored.paneLayout as { version?: number; placements?: unknown[] } | undefined;
+    return layout?.version === 1 && Array.isArray(layout.placements) && layout.placements.length === 4;
+  })());
   setSettingSetStub(null);
 }
 
