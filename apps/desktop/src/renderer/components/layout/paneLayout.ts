@@ -59,11 +59,28 @@ export function parsePaneLayout(input: unknown): { layout: PaneLayout; repaired:
 export function clampLayout(layout: PaneLayout): PaneLayout {
   const verified = parsePaneLayout(layout);
   if (verified.repaired.length) return verified.layout;
+  const singles = verified.layout.placements.map(p => ({
+    ...p, sizePct: Math.min(100, Math.max(0, p.sizePct)),
+  }));
+  // 同侧多个 pane 的 sizePct 之和必须 ≤ 100：否则两条分割线会互相推挤，
+  // 右栏被挤出容器。按比例缩，谁也拿不到比原来更大的份额。
+  const bySide = new Map<DockSide, typeof singles>();
+  for (const p of singles) {
+    const list = bySide.get(p.side) ?? [];
+    list.push(p);
+    bySide.set(p.side, list);
+  }
+  const scale = new Map<string, number>();
+  for (const [, list] of bySide) {
+    const sum = list.reduce((n, p) => n + p.sizePct, 0);
+    if (sum > 100 && sum > 0) for (const p of list) scale.set(p.id, 100 / sum);
+  }
   return {
     version: 1,
-    placements: verified.layout.placements.map(p => ({
-      ...p, sizePct: Math.min(100, Math.max(0, p.sizePct)),
-    })),
+    placements: scale.size === 0 ? singles : singles.map(p => {
+      const k = scale.get(p.id);
+      return k === undefined ? p : { ...p, sizePct: p.sizePct * k };
+    }),
   };
 }
 

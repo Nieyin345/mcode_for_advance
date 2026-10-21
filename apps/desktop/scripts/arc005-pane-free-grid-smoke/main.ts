@@ -37,6 +37,33 @@ check("moves right pane through all 3 dock zones without dropping members",()=>{
     assert.equal(new Set(moved.placements.map(p=>p.id)).size,4);
   }
 });
+check("★ 同侧多 pane 尺寸之和 ≤ 100（按比例缩，不放大任何一方）",()=>{
+  // 缺这条时两条分割线会互相推挤、右栏被挤出容器。判据是「和」不是「单值」——
+  // 每个都 ≤100 仍然可能加起来 180。
+  const crowded = { version: 1, placements: [
+    { id: "left", side: "left", order: 0, sizePct: 20 },
+    { id: "right", side: "right", order: 0, sizePct: 60 },
+    { id: "editor", side: "right", order: 1, sizePct: 60 },
+    { id: "bottom", side: "bottom", order: 0, sizePct: 30 },
+  ] } as never;
+  const out = clampLayout(crowded);
+  const rightSum = out.placements.filter(p => p.side === "right")
+    .reduce((n, p) => n + p.sizePct, 0);
+  assert.ok(rightSum <= 100 + 1e-9, "right side sum " + rightSum);
+  // 原比例应保留：60:60 → 50:50
+  const r = out.placements.filter(p => p.side === "right").sort((a, b) => a.order - b.order);
+  assert.ok(Math.abs(r[0].sizePct - r[1].sizePct) < 1e-9, "ratio not preserved");
+  // 单侧不拥挤时不得被改
+  const roomy = { version: 1, placements: [
+    { id: "left", side: "left", order: 0, sizePct: 20 },
+    { id: "right", side: "right", order: 0, sizePct: 30 },
+    { id: "editor", side: "right", order: 1, sizePct: 25 },
+    { id: "bottom", side: "bottom", order: 0, sizePct: 30 },
+  ] } as never;
+  const kept = clampLayout(roomy);
+  assert.equal(kept.placements.find(p => p.id === "right")!.sizePct, 30);
+  assert.equal(kept.placements.find(p => p.id === "editor")!.sizePct, 25);
+});
 check("clamp accepts proper v1 only",()=>{
   assert.equal(clampLayout(good).placements.length,4);
   assert.equal(clampLayout({version:1,placements:[]} as never).placements.length,4);
