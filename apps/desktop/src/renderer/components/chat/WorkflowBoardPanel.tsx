@@ -275,14 +275,19 @@ export function WorkflowBoardPanel() {
   /** 这个对话的现场。取**最近一次开始**的那一次 —— 一个对话同时只跑一张图
    *  (`graphRunIntent` 保证了),留"最近"是为了执行完之后还看得见刚才那张图的收场状态。 */
   const run: LiveRun | null = useMemo(() => {
-    if (!sessionId) return null;
+    if (!sessionId && !workflowId) return null;
     let best: LiveRun | null = null;
     for (const r of Object.values(live.runs)) {
-      if (r.sessionId !== sessionId) continue;
+      // Pure Node-RED nodes have no chat session. Show their trusted,
+      // workflow-scoped run only on the board for that selected workflow;
+      // never claim they ran inside the active conversation.
+      const nativeForSelected = !!workflowId && r.workflowId === workflowId
+        && r.sessionId === "@node-red-runboard:" + workflowId;
+      if (r.sessionId !== sessionId && !nativeForSelected) continue;
       if (!best || r.startedAt > best.startedAt) best = r;
     }
     return best;
-  }, [live.runs, sessionId]);
+  }, [live.runs, sessionId, workflowId]);
 
   /** 画哪张图:这次运行按的那张优先(见文件头「图长什么样是另读一次」)。 */
   const boardWorkflowId = boardWorkflowIdOf(run, workflowId);

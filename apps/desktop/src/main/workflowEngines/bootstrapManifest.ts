@@ -53,7 +53,7 @@ import { join } from "node:path";
 import { log } from "@main/lib/logger.js";
 
 /** 当前引导脚本形态的版本。**改 BOOTSTRAP 内容时 +1**（清单与判据都靠它）。 */
-export const BOOTSTRAP_VERSION = 3;
+export const BOOTSTRAP_VERSION = 4;
 
 /** 清单文件名（引擎 dataDir 下）。 */
 export const BOOTSTRAP_MANIFEST_FILENAME = "bootstrap.manifest.json";

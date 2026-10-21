@@ -10,6 +10,14 @@ import { getModuleHost } from "@main/modules/service.js";
 import type { NodePackHostServices, NodePackAction } from "./nodePackHost.js";
 import type { EngineRuntimeStatus } from "./runtimeSupervisor.js";
 
+import type { RuntimeEvent } from "@contracts/runtime";
+
+/** T60: one Host emitter for Node-RED native stages and Mcode Host-backed
+ * stages. Do not create a parallel event bus or a fake Agent session. */
+export function emitNativeRunboardEvent(event: RuntimeEvent): void {
+  runtimeManager.emitExternal(event);
+}
+
 type Payload = Record<string, unknown>;
 const asString = (v: unknown): string => typeof v === "string" ? v : "";
 const paramsOf = (payload: Payload): Payload => {

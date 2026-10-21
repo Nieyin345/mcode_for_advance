@@ -220,3 +220,15 @@ if (message.kind === "mcode-node-event") {
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+
+### 2026-10-21｜T60 执行结果
+
+- **真实 Node-RED 5.x 事件形状纠偏（E2 + E1）**：`@node-red/runtime/lib/api/comms.js` 将 `node-status`（`{id, status:{fill,shape,text}}`）和 `runtime-event`（`{id,payload,retain}`，如 `runtime-deploy`/`runtime-state`）分别监听；**不存在** `runtime-event.id === "node-status"` 的节点执行流。未改 `node-red/` 上游。默认原生 `inject → debug` 在一次输入时不调用 `node.status()`，因此关联这次输入的 `node-status` 为 **0 条**；真实的 `onReceive/onComplete` 共 **4 条**（两个节点各 running/settled 1 条）。不能把 deploy/start 的全局 `runtime-event` 误计为节点执行事件。
+- **接线**：引导脚本订阅 Node-RED 官方 `RED.hooks.onReceive/onComplete`、`RED.events.on("node-status")` 与 runtime-state（仅清理旧关联）；子进程 IPC **只发送节点 id/tab id/type/名称、`_msgid`、阶段、失败标志及截断状态文字，不发送原始 msg/输出**。宿主 `OwnedNodeRedRuntime` 以 T46 现有 `nativeTabs`、部署成功后的节点索引和 executor ownership 核对身份，转成同一 `runtimeManager.emitExternal` 的 `workflow.node.progress/result`；`BOOTSTRAP_VERSION` 3 → 4。只有已登记的 tab/node 能进入看板；原生节点独立使用 `@node-red-runboard:<workflowId>` 会话标识，避免冒充真实聊天。右侧看板在当前选中 workflowId 相等时也读取对应的原生运行。Mcode Host-backed `mcode-*` 类型在子进程采集入口排除，沿用 T46 原事件，不重复上报；父进程对同 runId/nodeId 的多次红灯与完成事件只记一条终态。
+- **fill 观察（E1）**：真引擎 `exec` 退出非零时见 `blue`（进程开始）、`red`（执行失败）和空状态（清理），看板终态为 failed；上游 exec 的 spawn 分支还用 `yellow` 表示非零退出，因此宿主红/黄都按失败处理。常见 `green` 仅表示节点自身所声明的成功状态，不能把它当所有节点必发的事件；没有状态的 inject/debug 以 `onComplete` 成功为准。原厂消息内容属于 `debug` 节点内部 `sendDebug`/comms debug 通道；`node-status` 与 hooks 的本片 IPC 没有原始输出，本片按边界不展示产出内容。
+- **引擎停止/重启**：子进程退出后 Host 清理 tab/节点索引和 ownership；重启按持久化 `flows.json` 重建归属和采集，**不从盘上恢复旧执行中的节点状态**。Renderer `workflowLive` 本来就是内存快照，已完成的旧卡仍可能留在进程内直到裁剪/用户清理，不宣称自动清空全部旧卡。
+- **隔离真实引擎断言（E1）**：`apps/desktop/scripts/mcode-node-pack-smoke/main.ts` 真正以 Node-RED Admin POST /flows 部署原生 `inject → debug` 及会非零退出的 `exec`，POST /inject 触发，断言两原生节点有运行/成功收场、exec 失败、三个节点各只有一条终态、独立 tab 使用独立 namespace；再次部署带 `x-mcode.docId` 的原生节点 tab，断言归属进指定 Mcode 工作流；Mcode-agent/conversation 等已有 Host-backed 节点不从原生 hooks 重复出事件。
+- **绿例与命令**：`node apps/desktop/scripts/run-smokes.mjs mcode-node-pack-smoke node-red-e2e-smoke workflow-engine-runtime-smoke` → **3/3 PASS**，日志 `apps/desktop/.tmp/smoke-runs/1792577709804-17092-tlTYlu`；`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json && pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` → **0 errors**。
+- **变异红例（E1，均原样还原）**：①禁用 `onReceive.mcode-runboard` 时 `mcode-node-pack-smoke` **183/187**、inject/debug 的运行态断言红（实际 Node-RED 没有原题写的 `runtime-event.id=node-status`，只能按真实事件源撤掉采集）；②撤掉子进程 `mcode-*` 类型过滤后 **186/187**，Mcode 不重复断言红，能抓到来自 `mcode-agent`/`mcode-conversation` 的额外原生事件；回滚后 3/3 全绿。两次变异未修改 `node-red/`。
+- **验收边界**：验收 #1 的 **Mcode 库工作流（有 `x-mcode.docId` 的 tab）**已取得真实引擎事件 + 宿主关联的无头断言（E1），但未进行真 Electron 手工打开看板的 U1 点击验证；不把无头 E1 冒充 U1。纯 Node-RED **没有库内对应文档的独立 tab**可产生带隔离 ID 的状态事件，但按 T58 规则不自动伪造 Mcode 工作流记录，不能声称它在选中的 Mcode 对话看板里自动出现。原题 #6 指定的 `runtime-event` 移除变异基于不成立的 Node-RED 事件前提，已用真实起作用的 `onReceive` 删除变异替代。产出内容属于后续卡，本片不取。

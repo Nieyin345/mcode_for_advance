@@ -944,11 +944,21 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
 
   if (launch !== null) {
     const tailBox: { get: (() => string) | null } = { get: null };
+    const nativeChildMessages: Record<string, unknown>[] = [];
+    const nativeBoardEvents: Record<string, unknown>[] = [];
     const ports = {
       ...defaultEngineRuntimePorts,
       spawn: (spec: Parameters<typeof defaultEngineRuntimePorts.spawn>[0]) => {
         const child = defaultEngineRuntimePorts.spawn(spec);
         tailBox.get = () => child.tailOutput();
+        const receive = child.onMessage?.bind(child);
+        child.onMessage = (listener) => receive?.((message) => {
+          if (message && typeof message === "object"
+            && String((message as Record<string, unknown>)["kind"]).startsWith("mcode-native-node-")) {
+            nativeChildMessages.push(message as Record<string, unknown>);
+          }
+          listener(message);
+        });
         return child;
       },
     };
@@ -979,7 +989,8 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
         return () => clearTimeout(timer);
       },
     };
-    const runtime = new OwnedNodeRedRuntime("node-red", ports, nativeOwnership, hostServices);
+    const runtime = new OwnedNodeRedRuntime("node-red", ports, nativeOwnership, hostServices,
+      undefined, undefined, (event) => nativeBoardEvents.push(event as unknown as Record<string, unknown>));
     try {
       const status = await runtime.start({
         engineId: "node-red",
@@ -1102,6 +1113,14 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
       check("★【MERGE-2】module-capability 收到 moduleId", byKind("module-capability")?.moduleId === "core.file-report", byKind("module-capability"));
       check("★【MERGE-2】trigger 收到 triggerKind", byKind("trigger")?.triggerKind === "event", byKind("trigger"));
 
+      // T60: Native runtime hook filter must not send mcode-agent/conversation
+      // into the parallel board channel: those nodes already use Host ports.
+      const mcodeIds = new Set(migrated.flow.nodes.filter((n) => String(n.type).startsWith("mcode-"))
+        .map((n) => n.id));
+      check("★【T60】Mcode 节点没有经原生 hooks 二次发看板阶段事件",
+        !nativeChildMessages.some((m) => mcodeIds.has(String(m["nodeId"]))),
+        nativeChildMessages.filter((m) => mcodeIds.has(String(m["nodeId"]))).slice(0, 4));
+
       // FULL-2 API-level native editor round trip on an actual Node-RED 5.x
       // runtime. This exercises the same /flows serialization the upstream
       // editor uses (not a claim of clicked Electron GUI/U1).
@@ -1188,6 +1207,107 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
           nativeHostAgent);
       }
 
+      // T60: real upstream inject/debug do not call status() for each input.
+      // Verify two visible stages from actual onReceive/onComplete hooks, plus
+      // exec's red status, via the *same* production child IPC/Host mapper.
+      nativeBoardEvents.length = 0;
+      nativeChildMessages.length = 0;
+      const nativeTab = "t60_native_tab";
+      const nativeDeploy = [
+        { id: nativeTab, type: "tab", label: "T60 isolated", disabled: false, info: "", env: [] },
+        { id: "t60_inject", type: "inject", z: nativeTab, name: "native inject", props: [{ p: "payload", v: "x", vt: "str" }],
+          repeat: "", once: false, x: 100, y: 100, wires: [["t60_debug", "t60_exec"]] },
+        { id: "t60_debug", type: "debug", z: nativeTab, name: "native debug", active: true,
+          tosidebar: true, complete: "payload", targetType: "msg", x: 240, y: 100, wires: [] },
+        { id: "t60_exec", type: "exec", z: nativeTab, name: "native fail", command: "exit 9",
+          addpay: false, append: "", useSpawn: "false", x: 240, y: 200, wires: [[], [], []] },
+      ];
+      const t60DeployResponse = await fetch(`http://127.0.0.1:${port}/flows`, {
+        method: "POST",
+        headers: { ...auth, "content-type": "application/json", "Node-RED-Deployment-Type": "full",
+          "Node-RED-API-Version": "v2" },
+        body: JSON.stringify({ flows: nativeDeploy }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      check("★【T60】真 Node-RED 原生 inject/debug/exec 已部署（200）",
+        t60DeployResponse.status === 200, t60DeployResponse.status);
+      // Node-RED's 200 deploy response can precede the new nodes' async
+      // start; a 404 during this window is not evidence of a broken hook.
+      let injectStatus = 0;
+      const injectReadyDeadline = Date.now() + 8000;
+      while (Date.now() < injectReadyDeadline) {
+        const injected = await fetch(`http://127.0.0.1:${port}/inject/t60_inject`, {
+          method: "POST", headers: auth, signal: AbortSignal.timeout(1500),
+        }).catch(() => null);
+        injectStatus = injected?.status ?? 0;
+        if (injectStatus === 200) break;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      check("★【T60】原生 inject API 手动触发一次（200）", injectStatus === 200, injectStatus);
+      const telemetryDeadline = Date.now() + 8000;
+      while (Date.now() < telemetryDeadline && !["t60_inject", "t60_debug", "t60_exec"].every((id) =>
+        nativeBoardEvents.some((event) => event["nodeId"] === id && event["type"] === "workflow.node.result"))) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      for (const nodeId of ["t60_inject", "t60_debug"]) {
+        check("★【T60】真实 inject → debug 看板显示 " + nodeId + " 运行及成功收场",
+          nativeBoardEvents.some((event) => event["nodeId"] === nodeId && event["type"] === "workflow.node.progress")
+          && nativeBoardEvents.some((event) => event["nodeId"] === nodeId && event["type"] === "workflow.node.result"
+            && event["status"] === "success"),
+          nativeBoardEvents.filter((event) => event["nodeId"] === nodeId));
+      }
+      check("★【T60】真实 exec 返回非零进程码 → 看板失败（红色）",
+        nativeBoardEvents.some((event) => event["nodeId"] === "t60_exec"
+          && event["type"] === "workflow.node.result" && event["status"] === "failed"),
+        nativeBoardEvents.filter((event) => event["nodeId"] === "t60_exec"));
+      check("★【T60】一轮运行每个原生节点仅一条终态事件（不重复计数）",
+        ["t60_inject", "t60_debug", "t60_exec"].every((id) =>
+          nativeBoardEvents.filter((event) => event["nodeId"] === id
+            && event["type"] === "workflow.node.result").length === 1),
+        nativeBoardEvents);
+      const t60Events = nativeBoardEvents.filter((event) =>
+        ["t60_inject", "t60_debug", "t60_exec"].includes(String(event["nodeId"])));
+      check("★【T60】宿主仅归属于受信原生 tab，不伪造聊天会话",
+        t60Events.length >= 6 && t60Events.every((event) =>
+          event["workflowId"] === "@node-red-native:" + nativeTab
+          && event["sessionId"] === "@node-red-runboard:@node-red-native:" + nativeTab),
+        t60Events);
+      console.log("  [T60 probe] native child message histogram:",
+        JSON.stringify(nativeChildMessages.reduce<Record<string, number>>((acc, m) => {
+          const key = String(m["kind"]) + ":" + String(m["nodeId"]) + ":" + String(m["stage"] ?? m["fill"] ?? "");
+          acc[key] = (acc[key] ?? 0) + 1;
+          return acc;
+        }, {})));
+      // The same pure native nodes inside a Mcode-owned tab must be routed
+      // into that selected workflow's board, not the standalone tab namespace.
+      const taggedDeploy = nativeDeploy.map((node) => node.id === nativeTab
+        ? { ...node, "x-mcode": { docId: doc.id } } : node);
+      const taggedRes = await fetch(`http://127.0.0.1:${port}/flows`, {
+        method: "POST", headers: { ...auth, "content-type": "application/json",
+          "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2" },
+        body: JSON.stringify({ flows: taggedDeploy }), signal: AbortSignal.timeout(15_000),
+      });
+      check("★【T60】含原生节点的 Mcode 文档 tab 正常部署", taggedRes.status === 200, taggedRes.status);
+      nativeBoardEvents.length = 0;
+      const taggedReadyDeadline = Date.now() + 8000;
+      let taggedInjected = false;
+      while (Date.now() < taggedReadyDeadline) {
+        const response = await fetch(`http://127.0.0.1:${port}/inject/t60_inject`, {
+          method: "POST", headers: auth, signal: AbortSignal.timeout(1500),
+        }).catch(() => null);
+        if (response?.status === 200) { taggedInjected = true; break; }
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      const taggedEventsDeadline = Date.now() + 8000;
+      while (Date.now() < taggedEventsDeadline && !nativeBoardEvents.some((e) =>
+        e["nodeId"] === "t60_debug" && e["type"] === "workflow.node.result")) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      check("★【T60】宿主按已登记的 x-mcode.docId 将原生节点归到选中的工作流看板",
+        taggedInjected && nativeBoardEvents.some((e) => e["nodeId"] === "t60_debug"
+          && e["type"] === "workflow.node.result" && e["workflowId"] === doc.id
+          && e["sessionId"] === "@node-red-runboard:" + doc.id),
+        nativeBoardEvents.filter((e) => e["nodeId"] === "t60_debug"));
       const stopped = await runtime.stop(1_000);
       check("★ 真引擎 stop 后状态 stopped、端口清空", stopped.state === "stopped" && stopped.port === null, stopped);
       const restarted = await runtime.start({

@@ -69,9 +69,10 @@ import { log } from "@main/lib/logger.js";
 import { ensureEngineBootstrap } from "./bootstrapManifest.js";
 import { ensureNodePack } from "./nodePackManifest.js";
 import { NodePackHost, type NodePackHostServices } from "./nodePackHost.js";
-import { productionNodePackServices } from "@main/workflowEngines/nodePackProductionPorts.js";
+import { productionNodePackServices, emitNativeRunboardEvent } from "@main/workflowEngines/nodePackProductionPorts.js";
 import { assertNativeEngineSelection } from "./workflowEngineSelection.js";
 import { getWorkflow } from "@main/orchestration/library.js";
+import type { RuntimeEvent } from "@contracts/runtime";
 import type { WorkflowDoc } from "@contracts/workflow";
 import {
   EngineRuntime,
@@ -127,6 +128,71 @@ RED.init(server, {
     },
   },
   logging: { console: { level: "warn" } },
+});
+
+// T60: Status is a *different* event from runtime-event in Node-RED 5.x.
+// The native inject/debug nodes do not publish a status for every input, so
+// observe the documented message lifecycle hooks too. No message body leaves
+// the child: only identifiers, node type, stage, and bounded status text.
+const nativeRuns = new Map();
+const latestNativeRun = new Map();
+function publishNativeNode(node, msg, stage, error) {
+  if (!node || typeof node.id !== "string" || typeof node.z !== "string"
+      || typeof node.type !== "string" || node.type.startsWith("mcode-")
+      || typeof process.send !== "function") return;
+  const id = msg && typeof msg._msgid === "string" && msg._msgid.length <= 128
+    ? msg._msgid : null;
+  if (!id) return;
+  const key = node.id + ":" + id;
+  if (stage === "running") {
+    nativeRuns.set(key, { runId: id, failed: false });
+    latestNativeRun.set(node.id, id);
+  }
+  const tracked = nativeRuns.get(key);
+  const failed = !!error || !!(tracked && tracked.failed);
+  try {
+    process.send({
+      kind: "mcode-native-node-stage", nodeId: node.id, tabId: node.z,
+      nodeType: node.type, title: String(node.name || node.type).slice(0, 160),
+      runId: id, stage, failed, at: Date.now(),
+    });
+  } catch (_) {}
+  if (stage === "settled") {
+    nativeRuns.delete(key);
+    if (latestNativeRun.get(node.id) === id) latestNativeRun.delete(node.id);
+  }
+}
+RED.hooks.add("onReceive.mcode-runboard", function (event) {
+  publishNativeNode(event && event.destination && event.destination.node,
+    event && event.msg, "running");
+});
+RED.hooks.add("onComplete.mcode-runboard", function (event) {
+  publishNativeNode(event && event.node && event.node.node,
+    event && event.msg, "settled", event && event.error);
+});
+RED.events.on("node-status", function (event) {
+  if (!event || typeof event.id !== "string" || !event.status) return;
+  const latest = latestNativeRun.get(event.id);
+  const tracked = latest && nativeRuns.get(event.id + ":" + latest);
+  if (!tracked) return;
+  const fill = event.status.fill;
+  // Red and yellow are failures (exec uses yellow for nonzero rc).
+  if (fill === "red" || fill === "yellow") tracked.failed = true;
+  if (typeof process.send !== "function") return;
+  try {
+    process.send({
+      kind: "mcode-native-node-status", nodeId: event.id, runId: tracked.runId,
+      fill, text: String(event.status.text || "").slice(0, 160), at: Date.now(),
+    });
+  } catch (_) {}
+});
+RED.events.on("runtime-event", function (event) {
+  // runtime-event covers deploy/engine notifications, NOT node-status.
+  if (event && event.id === "runtime-state" && event.payload
+      && event.payload.state === "stop") {
+    nativeRuns.clear();
+    latestNativeRun.clear();
+  }
 });
 
 // Gate D: a *real* Node-RED admin deploy must reserve owners in the parent
@@ -356,6 +422,70 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
   private pendingDeploy: { id: string; flowIds: string[]; added: string[]; flows: unknown } | null = null;
   private nodePackHost: NodePackHost | null = null;
   private nativeTabs = new Map<string, string>();
+  private nativeNodes = new Map<string, { tabId: string; nodeId: string; type: string; title: string }>();
+  private nativeSettled = new Set<string>();
+  private indexNativeNodes(flows: unknown): void {
+    const next = new Map<string, { tabId: string; nodeId: string; type: string; title: string }>();
+    if (Array.isArray(flows)) for (const item of flows) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const n = item as Record<string, unknown>;
+      const id = n["id"], type = n["type"], z = n["z"];
+      if (typeof id !== "string" || typeof type !== "string" || typeof z !== "string"
+          || type.startsWith("mcode-") || !this.nativeTabs.has(z)) continue;
+      const meta = n["x-mcode"];
+      const originalId = meta && typeof meta === "object" && !Array.isArray(meta)
+        ? (meta as Record<string, unknown>)["nodeId"] : undefined;
+      next.set(id, { tabId: z, nodeId: typeof originalId === "string" && originalId
+        ? originalId : id, type, title: typeof n["name"] === "string" && n["name"]
+        ? n["name"] as string : type });
+    }
+    this.nativeNodes = next;
+    this.nativeSettled.clear();
+  }
+  private onNativeNodeMessage(message: unknown): boolean {
+    if (!message || typeof message !== "object" || Array.isArray(message)) return false;
+    const msg = message as Record<string, unknown>;
+    if (msg["kind"] !== "mcode-native-node-stage" && msg["kind"] !== "mcode-native-node-status") return false;
+    const rawId = msg["nodeId"], runId = msg["runId"];
+    if (typeof rawId !== "string" || typeof runId !== "string" || !runId || runId.length > 128) return true;
+    const node = this.nativeNodes.get(rawId);
+    if (!node || (msg["tabId"] !== undefined && msg["tabId"] !== node.tabId)) return true;
+    const workflowId = this.nativeTabs.get(node.tabId);
+    if (!workflowId || !this.ownedFlowIds.includes(workflowId)
+        || this.ownership.executorOwnerOf(workflowId) !== "node-red") return true;
+    // Node-RED native triggers do not belong to a chat session. Use a separate
+    // stable session namespace, never attribute them to an arbitrary conversation.
+    const sessionId = "@node-red-runboard:" + workflowId;
+    const key = runId + ":" + rawId;
+    const base = { sessionId, workflowId, runId, nodeId: node.nodeId };
+    const emit = (e: Record<string, unknown>) => {
+      (this.nativeEventSink ?? emitNativeRunboardEvent)(e as unknown as RuntimeEvent);
+    };
+    if (msg["kind"] === "mcode-native-node-status") {
+      const fill = msg["fill"];
+      if (fill !== "red" && fill !== "yellow") return true;
+      if (this.nativeSettled.has(key)) return true;
+      this.nativeSettled.add(key);
+      if (this.nativeSettled.size > 4096) this.nativeSettled.delete(this.nativeSettled.values().next().value!);
+      emit({ ...base, type: "workflow.node.result", nodeType: node.type, title: node.title,
+        status: "failed", summary: "", error: typeof msg["text"] === "string"
+          ? msg["text"].slice(0, 160) : "Node-RED node failed" });
+      return true;
+    }
+    if (msg["stage"] === "running") {
+      this.nativeSettled.delete(key);
+      emit({ ...base, type: "workflow.node.progress", nodeType: node.type, title: node.title,
+        phase: "running", message: "Node-RED 节点执行中" });
+    } else if (msg["stage"] === "settled" && !this.nativeSettled.has(key)) {
+      this.nativeSettled.add(key);
+      if (this.nativeSettled.size > 4096) this.nativeSettled.delete(this.nativeSettled.values().next().value!);
+      const failed = msg["failed"] === true;
+      emit({ ...base, type: "workflow.node.result", nodeType: node.type, title: node.title,
+        status: failed ? "failed" : "success", summary: "",
+        ...(failed ? { error: "Node-RED node failed" } : {}) });
+    }
+    return true;
+  }
   private tabMap(nodes: unknown): Map<string, string> {
     const map = new Map<string, string>();
     if (!Array.isArray(nodes)) return map;
@@ -376,7 +506,8 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
       const { syncDeployedNativeWorkflows } = await import("./nativeLibrarySync.js");
       return syncDeployedNativeWorkflows(flows);
     },
-    private readonly lookupDoc?: (id: string) => WorkflowDoc | null) {
+    private readonly lookupDoc?: (id: string) => WorkflowDoc | null,
+    private readonly nativeEventSink?: (event: RuntimeEvent) => void) {
     super(engineId, ports);
     this.onTerminated(() => this.releaseOwned());
   }
@@ -385,6 +516,8 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     this.nodePackHost?.dispose();
     this.nodePackHost = null;
     this.nativeTabs.clear();
+    this.nativeNodes.clear();
+    this.nativeSettled.clear();
     const ids = [...this.ownedFlowIds, ...(this.pendingDeploy?.added ?? [])];
     this.ownedFlowIds = [];
     this.pendingDeploy = null;
@@ -417,6 +550,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
         }
         this.ownedFlowIds = pending.flowIds;
         this.nativeTabs = this.tabMap(pending.flows);
+        this.indexNativeNodes(pending.flows);
         // A real editor deploy has committed. Only now mirror the same native
         // nodes back to the existing workflow library, via its guarded save.
         // A failed mirror is logged, not misreported as an ownership rollback.
@@ -471,6 +605,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     this.ownedFlowIds = claimNativeFlows(this.ownership, nativeFlowIds(options.dataDir, (nodes) => {
       if (this.lookupDoc) assertNativeEngineSelection(nodes, this.lookupDoc);
       this.nativeTabs = this.tabMap(nodes);
+      this.indexNativeNodes(nodes);
     }));
     this.nodePackHost = new NodePackHost(this.nodeServices ?? productionNodePackServices(
       () => this.status(), options.probeIdentity?.adminToken,
@@ -484,6 +619,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
         ...options,
         onMessage: (message, respond) => {
           if (this.nodePackHost?.handle(message, respond)) return;
+          if (this.onNativeNodeMessage(message)) return;
           this.onDeployMessage(message, respond);
         },
       });
