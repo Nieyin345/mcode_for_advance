@@ -196,7 +196,7 @@ try {
 
   /* ── 1b. 【MC-097】故障注入 E1:崩溃 / 租约失效下的原子性与可恢复性 ──────────────
    * 真实 Electron 两端并发做不了(那是无头套件之外的事),但「写临时文件 / rename 崩了会怎样」
-   * 可以在**不改生产代码**的前提下注入:用 esbuild 把 `node:fs/promises` 换成一份转发壳
+   * 可以在**不改生产代码**的前提下注入:用 esbuild 拦截两种 `fs/promises` 导入并换成转发壳
    * (`fsFaultShim.ts`),让 `open`(临时文件创建)或 `rename`(原子替换提交步)按需失败。壳里
    * 未设故障开关时逐调用转发真实实现。断言的是**用户能看到的事实**:原文件一个字节都没动、
    * 磁盘上没留下半截临时文件、卡死的租约能被下一个写者回收、失败者释放锁后别人写得进。 */
@@ -443,14 +443,14 @@ try {
     check("★ MC-024:健康路径写入的内容真的落盘", readFileSync(p, "utf-8"), attempted);
     check("★ MC-024:健康路径不产生冲突副本", readdirSync(join(projectRoot, "src")).filter((n) => n.includes(".conflict-")).length, copiesBefore);
 
-    // ⑤ 副本自身写失败(rename 崩溃)→ 冲突结论不变,但**不谎报** conflictPath;
+    // ⑤ 副本发布失败(link 崩溃)→ 冲突结论不变,但**不谎报** conflictPath;
     //    原文件仍不动、副本不留半截、临时文件不残留。
     {
       const p2 = join(projectRoot, "src", "mc024-copy-fails.ts");
       writeFileSync(p2, "EXTERNAL-2\n", "utf-8");
       const stale2 = (await readFileGuarded(p2)).version;
       writeFileSync(p2, "EXTERNAL-2-CHANGED\n", "utf-8");
-      setFsFault({ failRename: (target) => basename(target).includes(".conflict-") });
+      setFsFault({ failLink: (target) => basename(target).includes(".conflict-") });
       let failedCopy: { ok?: boolean; conflict?: boolean; conflictPath?: string };
       try {
         failedCopy = await call(IPC.FILE_WRITE, { filePath: p2, content: "MUST-NOT-LAND\n", expectedVersion: stale2 });

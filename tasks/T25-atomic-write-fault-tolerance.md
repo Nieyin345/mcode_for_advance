@@ -129,3 +129,14 @@ FAIL listDir 也认(projectPath 与 dirPath 同一份写法)  {"actual":2,"expec
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 · T25 执行回写（E1/E2）
+
+- **范围/版本**：开工基线 Git HEAD `5eaa4ad7`；仅调整 `apps/desktop/scripts/maint-m07-smoke/{fsFaultShim.ts,run.cjs,main.ts}` 的故障注入机制，以及 `apps/desktop/src/main/ipc/files.ts` 的冲突副本错误回包。不改断言语义，不改 `atomicFile.ts`、`conflictCopy.ts` 的正式实现。其它执行对话的未提交文件保留原状。
+- **原注入失效根因（E2）**：原 harness 仅对 `node:fs/promises` 设置 esbuild alias，而 `lib/atomicFile.ts` 实际 `import ... from "fs/promises"`，`rename/open` 注入被绕过，生产代码没有绕过原子写。现改成 esbuild resolve 插件同时拦截带/不带 `node:` 的导入，仅对 shim 自身的真实系统调用放行，避免递归。将 MC-024 的失败注入从错误的“冲突命名上的 rename”改为实际 `link(staging, target)` 发布点。
+- **原文件保护（E2 + E1）**：`atomicReplaceFile` 现有实现本来就为同目录 `open(tmp,wx)` → write → chmod（非 Windows）→ `handle.sync()`（fsync）→ close → `rename(tmp,target)`；捕获写入/rename 失败后清理 tmp 并抛错。修正故障注入后，rename/open 报错时原文件逐字节不变、无 `.mcode-tmp` 残留，主套件前提「注入后首发写入确实失败」为真。
+- **冲突副本（E2 + E1）**：`writeConflictCopy` 先用原子写保存 `.mcode-stage`，再经 `link(staging, conflictPath)` no-clobber 发布，`finally` 清理 stage。以前注入 `rename` 且把目标误判为 `.conflict-`，没有命中 stage 的 rename，导致假成功。现在注入 `link` 失败，产品原有异常传递/清理生效；IPC 失败回包为 `{ok:false,conflict:true,error:"冲突副本保存失败: <实际错误>"}`，没有 `conflictPath`，日志也保留实际原因。
+- **listDir 的 2 条问题（E1）**：不是 `projectPath/dirPath` 大小写或斜杠的物理路径去重缺陷，而是前述失效注入多生成了真实存在的 `mc024-copy-fails.conflict-*.ts`；该测试先删正常冲突副本，却没清除原本应写失败的这一份。修正注入后目录确为 1 条；原有同一位置大小写变体守卫也通过。
+- **验收**：`node apps/desktop/scripts/maint-m07-smoke/run.cjs` → **103/103**；`node apps/desktop/scripts/run-smokes.mjs maint-m07-smoke atomic-file-smoke file-restore-atomic-smoke library-trash-smoke` → **4 pass / 0 fail**。任务卡示例 `file-write-lease-smoke`、`file-write-cas-smoke` 目录不存在（按任务允许的实际存在套件替换）。`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` 和 `pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` 均 exit 0。
+- **变异证据（E1）**：暂时将 `atomicFile.ts` 的 rename 失败分支改为“直接覆盖目标后仍抛错”，跑同一主套件 → **101/103**，恰好“原文件逐字节不变”和“崩溃后读回原内容”2 条红；还原后 `git diff --exit-code -- atomicFile.ts` 通过。暂时将 `conflictCopy.ts` 的 link 异常吞掉并伪报路径 → **102/103**，“副本写失败不谎报 conflictPath”明确红；还原后 `git diff --exit-code -- conflictCopy.ts` 通过。两处原代码均已逐字节还原（Git diff 为 0），本轮不提交变异代码。
+- **验收未达成**：无。边界：本轮仅做隔离 E1 / 源码 E2，未宣称完成整产品 Electron U1 或全量其它任务的 smoke。

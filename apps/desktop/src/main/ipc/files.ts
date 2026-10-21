@@ -567,8 +567,11 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
               log.warn(`file.writeFile conflict copy saved: ${conflictPath}`);
               return { ok: false, conflict: true, conflictPath } as const;
             } catch (copyErr) {
-              log.error(`file.writeFile conflict copy failed for ${input.filePath}: ${(copyErr as Error).message}`);
-              return { ok: false, conflict: true } as const;
+              const reason = (copyErr as Error).message;
+              log.error(`file.writeFile conflict copy failed for ${input.filePath}: ${reason}`);
+              // 保留 CAS 冲突事实，但把另存失败的真实原因回给调用者；
+              // conflictPath 缺席，绝不暗示本次内容已安全保存。
+              return { ok: false, conflict: true, error: `冲突副本保存失败: ${reason}` } as const;
             }
           }
         }

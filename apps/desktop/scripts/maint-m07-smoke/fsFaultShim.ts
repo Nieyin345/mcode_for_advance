@@ -1,23 +1,25 @@
 /**
- * 【MC-097 E1 故障注入夹具】—— `node:fs/promises` 的**转发壳**。
+ * 【MC-097 E1 故障注入夹具】—— `fs/promises` 的**转发壳**。
  *
- * 只在 `maint-m07-smoke/run.cjs` 里经 esbuild `--alias:node:fs/promises=...` 换掉真实的
- * `node:fs/promises`,让 `rename`(原子替换的提交步)或 `open`(临时文件创建步)按需失败 ——
+ * 只在 `maint-m07-smoke/run.cjs` 里经 esbuild resolve 插件拦截 `fs/promises`
+ * 与 `node:fs/promises`，让 `rename`、`open`、`link` 按需失败 ——
  * 用来模拟「写临时文件 / rename 这一步崩了」。**没有设置故障开关时逐调用转发到真实实现**
  * (跨进程 / 正常写入用例照常走真 fs)。生产代码 `ipc/files.ts` **一行未改**;这不是第二套实现,
  * 只是把系统调用换成一个可控的替身。
  *
- * 为什么用 `node:` 前缀做 alias、壳里 import 裸名 `fs/promises`:壳自己若也走 `node:fs/promises`,
- * 会被同一条 alias 再换一次 → 自我递归(实测)。裸名 `fs/promises` 是同一模块但**不**被 alias 命中,
- * 于是壳里的 `real` 指向真实实现。
+ * `atomicFile.ts` 实际 import 裸名 `fs/promises`，冲突副本 import `node:fs/promises`。
+ * 插件对壳自身的导入放行，壳从 `node:fs/promises` 透传原生 API 避免重入；提交点
+ * 是 `link(staging, conflictPath)`，需要单独注入 link，而不是对 rename 设虚假目标。
  */
-import * as real from "fs/promises";
+import * as real from "node:fs/promises";
 
 export interface FsFault {
   /** 命中则 `rename` 抛错(模拟 rename 阶段崩溃)。 */
   failRename?: (target: string) => boolean;
   /** 命中则 `open` 抛错(模拟临时文件创建阶段崩溃)。 */
   failOpen?: (path: string) => boolean;
+  /** 命中则 `link` 抛错(模拟冲突副本的 no-clobber 发布失败)。 */
+  failLink?: (target: string) => boolean;
 }
 
 export function setFsFault(f: FsFault | null): void {
@@ -49,4 +51,12 @@ export function open(
   return real.open(path as never, flags as never, mode as never) as unknown as Promise<unknown>;
 }
 
-export * from "fs/promises";
+export async function link(existingPath: string | URL, newPath: string | URL): Promise<void> {
+  const f = fault();
+  if (f?.failLink?.(String(newPath))) {
+    throw Object.assign(new Error(`E1 注入:link 失败 ${String(newPath)}`), { code: "EIO" });
+  }
+  return real.link(existingPath, newPath);
+}
+
+export * from "node:fs/promises";
