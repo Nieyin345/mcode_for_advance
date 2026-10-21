@@ -10,7 +10,30 @@
 
 ---
 
-## 第一波验收后的下一波派发（2026-10-21，最新；下方旧历史派发表已过期）
+## 22:07 第二轮总控验收与第三轮派卡（**最新生效**；以下旧派发表仅供历史追溯）
+
+> **当前第二轮**：用户反馈除 T73 未完成外，T30/T72/T74/T75/T79/T80/T81 已完成。总控核到 7 张卡对应提交、结果回写，且独立 E1：`genoffice-file-routing-smoke` 52/52（含两变异）、`t74-genoffice-headless-smoke` 1/1 套、`mcode-node-pack-smoke` 1/1 套、`runtime-node-modules-smoke` + `library-import-smoke` 2/2、`arc005-focus-ownership-smoke` 1/1、双包 TS 2/2；`document-router-smoke` **124/125 FAIL**，旧测试要求 PDF 经 `documentKindOf(visibleName)`，T30 新源以 `genofficeAppForPath(visibleName)` 和 MIME 判 PDF；暂定**测试语义待复核**，不是确认的生产 PDF 错误，且该测试脚本目前有其它执行者的未提交修改，**不可擅自覆盖**。
+>
+> T80 回写的 22 个环境首错修复后 **21 PASS / 1 FAIL（document-router）**，T81 自验 Windows 27/27；T72/T75 为审查成果，不是 FULL-3/GenOffice 六 AI 的实现闭环。T73 正在改 `BrowserManager.ts`/`browserPicker.ts`/`electron.vite.config.ts` 和新测试，仍无提交、没有结果回写；T49 的 `modules/*`/`appControl/*` 也仍 dirty。**禁止把正在施工的 T73/T49 视为失败或签收**。
+
+| 派发窗口 | 新 / 已备任务 | 准确文件路径 | 文件边界、门禁 |
+|---|---|---|---|
+| **第三轮：优先立即派** | **T84** Slides 原厂 `ai:*` 未授权媒体通道隔离 | `tasks/T84-genoffice-slides-ai-ipc-boundary.md` | P0 安全；限 Slides 上游 Mcode-hosted guard + `patches/genoffice`，不能发真实云调用 |
+| **第三轮：优先立即派** | **T83** GenOffice 三 SDK 原生工具调用桥 | `tasks/T83-genoffice-mcode-native-tool-calls.md` | P0 功能；独占 `main/document/docsAiPorts.ts` 和新结构化 tool transport；**不抢 T49 appControl** |
+| **第三轮：立即可派** | **T85** Node-RED 旧图 G0/G1 无损迁移预检 | `tasks/T85-node-red-migration-preflight-proof.md` | P1；仅 `workflowMigrationPreflight.ts` 等干运行测试；不得删旧运行器或动用户数据库 |
+| **第三轮：立即可派** | **T76** 两原厂安装资源/许可完整性 | `tasks/T76-vendor-release-resource-integrity.md` | 独占 `apps/desktop/build/stage-*/verify-*`；安装包大构建与 Electron 测试错峰 |
+| **第三轮：立即可派** | **T78** UI 39 真实场景证据和差距审计 | `tasks/T78-arc005-visual-baseline-gap-audit.md` | 只读；不抢 Electron，也不修改渲染 UI |
+| **第三轮：立即可派** | **T82** emit-path 过期事件扫描断言 | `tasks/T82-emit-path-smoke-event-shape.md` | 仅独占 `scripts/emit-path-smoke/main.ts`，产品事件层只读 |
+| **等待 Electron 清场** | **T71** 六原生文档 GUI U1 | `tasks/T71-genoffice-six-native-gui-acceptance.md` | T30 已提交，但必须先等 T73 退出 Electron 测试；且与 T77 串行 |
+| **等待 Electron 清场** | **T77** Node-RED GUI U1 | `tasks/T77-node-red-native-electron-ui-acceptance.md` | T79 已提交，但必须先等 T73 / T71；仅隔离样本 |
+| **原 owner 收尾** | **T73** Browser 沙箱；**T49** 扩展 API | 各原任务卡 | **不再派第二个人**，让原执行对话提交和回写 |
+| **不新派，待现有脚本 owner 清场** | `document-router-smoke` 1 条 PDF 判据冲突 | `apps/desktop/scripts/document-router-smoke/main.ts` | 先比对新 `genofficeAppForPath` 与旧 `documentKindOf` 的行为；判据转化不能削弱 PDF 内容/路径/预览/权限正负例；当前文件 dirty，禁止抢写 |
+
+**验收口径**：任务卡交付完成 ≠ ARC/UXG 正式双勾。T72 的 G0–G5 还没有迁移实现和真 UI；T75 找到 production `tool-call` 缺失与 Slides 原厂云媒体 IPC 授权疑点（静态 E2，尚非实际外呼证据）；T83/T84/T85 分工解决。所有测试只用虚构文件/隔离数据库/本地 mock；T49/T73 共享工作树并发期间不运行全量 `--all`，不对真实帐号/文件或公网进行破坏性测试。
+
+---
+
+## 第一波验收后的下一波派发（2026-10-21，历史；下方旧历史派发表已过期）
 
 > **第一波交付验收完成（非 ARC/UXG 整包双勾）**：T64 `a1690047`、T65 `b41d41e4`、T69 `d3f021db`、T70 `941de215`，四张卡各有提交/回写。总控在 HEAD `9efe0b46`（工作树部分 T49 dirty）独立复跑 `framework-prompt-smoke` 1/1、`ide-quote-snapshot-smoke` 26/26 断言、`scheduler-smoke`/`scheduler-data-smoke`/`scheduler-flow-smoke` 3/3、双包 tsc 0 error；T69 原日志 SHA 与报告相同，60 个不同失败套件（嵌套 Electron `FAIL SPE` 并非新套件）；T70 17/17 判据静态对照。**T65 字面判据 #2 引用早已删除的 `NoteEditor`，是旧卡前提失效；没有重建**。尚无真实 Electron/在线三 SDK/U1 和全仓稳定 HEAD 复测。T49 `main/modules/*`、`main/appControl/*` 仍在飞，不能再派新 owner。**下一波首选 T73、T74、T79、T80、T81、T30、T72、T75；可再加 T76/T78/T82。** 所有任务用 `tasks/_PROMPT_TEMPLATE.md` 的准确文件路径分别派发，彼此不要碰共享文件。
 
