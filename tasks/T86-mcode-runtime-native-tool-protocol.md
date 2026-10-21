@@ -42,3 +42,22 @@
 ## 结果回写区
 
 <!-- 执行对话只追加：源码版本、红→绿、原始命令/计数、变异及还原 hash、每家 SDK 的能力结论与 remaining。 -->
+
+### 2026-10-22 执行回写
+
+- **实现提交**：`eae1f385980902daa5e1bf6fa036d5451f898fc2`（基线 `ffa5ede98779f8e391f78c0ae6f0be1600aead3c`）。本次只提交 T86 的 9 个文件；其他工作树修改保留，未混入提交。
+- **红→绿**：新增 `t86-runtime-native-tool-protocol-smoke`。Host dispatcher 现按 request/session/call 绑定校验工具 allowlist、JSON Schema 子集、输入/结果大小、用户审批/既有 session grant、`dontAsk`、取消和迟到回执；回执必须回显同一 `sessionId` 与 `callId`。工具 schema 与函数分离，函数不进入 `StartTurnRequest`，也不拼进 prompt。
+- **三家 SDK 结论**：
+  - **Claude — supported（原生入口）**：每轮建立 in-process MCP server，工具 handler 等待 Host 回执并将 success/error 返回同一 query。缺 Host callback 会显式失败。隔离 MCP handler harness 通过；未运行在线模型/真实 SDK query，**U1 pending**。
+  - **Pi — supported（原生入口，E1 正例）**：通过 `customTools.execute` 注册 TypeBox schema；隔离 harness 证明 Host 结果回到同一模拟 SDK turn，下一步可继续。`app_external__` 前缀用于走现有 Pi `app_*` 宿主工具策略入口，但真正 schema、审批、session 与取消判定仍由 Host dispatcher 执行。未运行在线模型，**U1 pending**。
+  - **Codex — supported（原生入口）**：通过 `dynamicTools` 注册本轮工具，并在 `item/tool/call` 请求中等待 Host 结果后回复同一 turn。Codex resume 可能保留旧动态工具描述，因此使用 namespaced 名称并按当前 request allowlist 拒绝 stale call。隔离 app-server request/reply harness 通过；未运行真实 app-server/在线模型，**U1 pending**。
+- **验证命令**：
+  - `pnpm --dir apps/desktop typecheck` — PASS。
+  - `pnpm --dir packages/contracts typecheck` — PASS。
+  - `pnpm --dir apps/desktop exec node scripts/run-smokes.mjs t86-runtime-native-tool-protocol-smoke document-view-host-smoke genoffice-native-view-smoke claude-underscore-mcp-smoke claude-ipc-smoke pi-loader-smoke pi-approval-unavailable-smoke codex-effort-smoke provider-context-smoke engine-regressions-smoke engine-parity-matrix-smoke t83-mcode-editor-tool-bridge-smoke engine-tools-smoke engine-capability-matrix-smoke genoffice-ai-ask-smoke` — PASS，15 suites。
+  - 单独复跑 `pnpm --dir apps/desktop exec node scripts/run-smokes.mjs t86-runtime-native-tool-protocol-smoke` — PASS。
+- **确定性变异**：
+  1. 将 request-local `tools.get(call.name)` 映射改为恒定 `undefined`，T86 smoke 非零退出，正例/取消 harness 失败；恢复后通过。
+  2. 移除 `call.sessionId !== options.sessionId` 校验，T86 smoke 非零退出，跨 session 负控失败；恢复后通过。
+  - 恢复后的 `apps/desktop/src/main/providers/nativeToolProtocol.ts` SHA-256：`5eee3db82ee6a3753e8a4331eb69e948c286a441f9c997306a665423a94a76ef`。
+- **边界 / remaining**：未修改 `docsAiPorts.ts`、`nativeEditorToolTransport.ts`、T49 `appControl` 或 GenOffice 上游；`t83-mcode-editor-tool-bridge-smoke` 通过，T83 fail-closed gate 保留。此提交只补齐协议与 SDK 适配入口，**不代表 renderer IPC、实际选区编辑、tool result、undo/save 已接通**；需另派 T31-A 集成卡并完成 U1 真实 UI/SDK 验证。
