@@ -36,3 +36,15 @@ T69 把 `emit-path-smoke` 归 B 类，历史 `main.ts` 的 event sink 静态扫�
 ## 结果回写区
 
 <!-- 执行对话仅追加证据、提交 SHA、实际命令/计数、原红→新绿、变异/恢复、未验风险。 -->
+
+
+### 2026-10-21｜T82 执行结果（Mcode 执行对话）
+
+- **原红例（E1）**：修改前 `apps/desktop/scripts/emit-path-smoke/main.ts` SHA256 `8996492fc75b62a9d7543bba7ea78d6fc99627500a0a551ed2e4770d038826e1`。使用仓库的 esbuild 0.25.1 将 `scripts/emit-path-smoke/main.ts` 打包到 `.tmp/emit-path-smoke-baseline.mjs` 后运行，得到 **34/36**；仅两条断言红，分别定位到 `workflowEngines/nodePackProductionPorts.ts:18` 的 `emitExternal(event: RuntimeEvent)` 与 `:57` 的 `{ ...event, ... } as Parameters<typeof runtimeManager.emitExternal>[0]`。原因是旧扫描器把合法动态事件来源一律当成未知；没有删掉未知事件报警，也没有改生产源码。
+- **修复范围**：仅 `apps/desktop/scripts/emit-path-smoke/main.ts`。扫描器通过 AST 只接受两类可证明动态来源：①参数显式导入并标注为 `RuntimeEvent`；②元数据展开包装的类型可从同文件 const producer 的全部直接调用点穷尽追踪到事件名字面量。producer 调用逃逸、非字面量、未知属性覆盖、普通 `unknown`/cast、非法事件名仍 fail-closed。原有事件类型、路径、接线出口、安全哨兵断言均保留；新增合法来源、错误路径、未知 cast、非法 producer 类型等自检，**原 36 条断言未减少，当前共 41 条**。
+- **原 Smoke 红→绿**：`node apps/desktop/scripts/run-smokes.mjs emit-path-smoke` → **41/41 PASS**（日志目录 `apps/desktop/.tmp/smoke-runs/1792594464292-35432-nHVDri`）。原两处假阳性消失，生产源码 27 个发出点仍在扫描范围内；动态 producer 的事件类型纳入契约表检查，hookable 动态来源也继续受禁止走 broadcast 的路径判据约束。
+- **T60 事件回归（E1）**：`node apps/desktop/scripts/run-smokes.mjs mcode-node-pack-smoke node-red-e2e-smoke workflow-engine-runtime-smoke` → **3/3 PASS**（日志目录 `apps/desktop/.tmp/smoke-runs/1792594466143-30516-urF5VU`）。
+- **变异 / 恢复**：仅把自检中的合法 `RuntimeEvent` 动态来源 sink 从 `runtimeManager.emitExternal(event)` 临时改成 `broadcastRuntimeEvent(event)`，Smoke 变为 **40/41，exit 1**，明确命中“合法 RuntimeEvent 参数的动态来源可被识别”负例。恢复后文件 SHA256 与变异前逐字节一致：`2d666d78e85b572ae2e351a653a8afc0058f0663ff857031f3562a99061a3f08`；临时备份已删除。非法 producer 类型和未约束 cast 也有独立负控。
+- **TypeScript**：`pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` → **0 errors**。当前工作树执行 `pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` 时，报错来自并行文件 `apps/desktop/scripts/file-viewer-basedir-smoke/main.ts:137:79`：`TS18046: 'node.type' is of type 'unknown'`；该文件不属于 T82，未越权修改。此前有一次桌面包 typecheck 在并行任务落入工作树前通过，但当前最终状态的桌面包 typecheck 判据仍未达成。
+- **提交与边界**：代码提交 SHA `143e13a5b38c9f34951170df3fbb845fb257df07`（`test(smoke): trace constrained dynamic event producers`）。本任务没有改 `nodePackProductionPorts.ts`、`main/workflowEngines/*`、`main/orchestration/*`、`packages/contracts/*` 或 T79 生产源码；其它并行工作树变更未暂存。
+- **验收结论**：判据 1、2、4 达成；判据 3 **未完全达成**，原因仅为当前并行文件 `file-viewer-basedir-smoke/main.ts:137:79` 的桌面包 TypeScript 错误。T82 自身 Smoke 及 T60 三套回归通过，contracts typecheck 通过；不将并行错误误报为本任务修复，也不越权处理。
