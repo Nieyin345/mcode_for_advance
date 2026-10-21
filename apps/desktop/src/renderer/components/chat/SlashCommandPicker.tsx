@@ -34,6 +34,7 @@ import {
   type EngineCommand,
 } from "@renderer/lib/slashCommands.js";
 import type { SkillInfo } from "@contracts/ipc";
+import { useComposerPickerPlacement } from "./useComposerPickerPlacement.js";
 
 type TabKind = "skill" | "command" | "engine";
 
@@ -97,6 +98,7 @@ export function SlashCommandPicker({
   const [activeTab, setActiveTab] = useState<TabKind>("skill");
   const [activeIdx, setActiveIdx] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
 
   // The list currently rendered by the active tab.
   const commands =
@@ -226,20 +228,18 @@ export function SlashCommandPicker({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open, commands, onPickSkill, onPickCommand, onPickEngineCommand, onClose, skillCmds.length, activeBuiltinCmds.length, engineCmds.length]);
 
-  if (!open || !anchorRect) return null;
-
-  const top = Math.max(8, anchorRect.top - 8);
-  const left = anchorRect.left;
-  const width = Math.min(Math.max(anchorRect.width, 280), 420);
+  const placement = useComposerPickerPlacement(open, anchorRect, popupRef, 420);
+  if (!open || !placement) return null;
 
   return (
     <div
+      ref={popupRef}
       className="fixed z-[70] flex max-h-64 flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl"
       style={{
-        left,
-        width,
-        top,
-        transform: "translateY(-100%)",
+        left: placement.left,
+        width: placement.width,
+        top: placement.top,
+        maxHeight: placement.maxHeight,
       }}
       onMouseDown={(e) => e.preventDefault()}
     >

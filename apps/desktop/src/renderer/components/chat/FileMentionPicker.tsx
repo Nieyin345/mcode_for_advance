@@ -12,6 +12,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { IconFile, IconLoader2, IconPaperclip, IconSearch, IconUpload } from "@renderer/lib/icons.js";
 import type { FileSearchEntry } from "@contracts/ipc";
+import { useComposerPickerPlacement } from "./useComposerPickerPlacement.js";
 
 export type FileMentionPickerMode = "mention" | "attach";
 
@@ -328,11 +329,8 @@ export function FileMentionPicker({
     return () => document.removeEventListener("mousedown", onDown);
   }, [open, onClose]);
 
-  if (!open || !anchorRect) return null;
-
-  const top = Math.max(8, anchorRect.top - 8);
-  const left = anchorRect.left;
-  const width = Math.min(Math.max(anchorRect.width, 280), 480);
+  const placement = useComposerPickerPlacement(open, anchorRect, rootRef, 480);
+  if (!open || !placement) return null;
 
   return (
     <div
@@ -341,11 +339,10 @@ export function FileMentionPicker({
         "fixed z-[70] flex max-h-64 flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl",
       )}
       style={{
-        left,
-        width,
-        // Grow upward from the anchor top.
-        top,
-        transform: "translateY(-100%)",
+        left: placement.left,
+        width: placement.width,
+        top: placement.top,
+        maxHeight: placement.maxHeight,
       }}
       // In mention mode, prevent mousedown from stealing focus from the
       // textarea (keyboard stays there). In attach mode we WANT focus in our
