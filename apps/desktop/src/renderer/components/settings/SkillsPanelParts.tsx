@@ -26,6 +26,8 @@ import { IconSparkles, IconFileText, IconFolder, IconPlus, IconTrash, IconLoader
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { moveTabFocus, isReadOnlySkill, type NewForm } from "@renderer/components/settings/SkillsPanel.js";
 import { Textarea } from "@renderer/components/ui/textarea.js";
+import { Input } from "@renderer/components/ui/input.js";
+import { Checkbox } from "@renderer/components/ui/native-controls.js";
 
 /** Source badge for a skill row / editor header. Single implementation so the
  *  list and the editor can never disagree about what a source is called —
@@ -256,7 +258,7 @@ export function NewSkillForm({
           </>
         }
       >
-        <input
+        <Input
           type="text"
           value={form.name}
           onChange={(e) => update("name", e.target.value)}
@@ -268,7 +270,7 @@ export function NewSkillForm({
       </Field>
 
       <Field className="mb-2" label={t("settings.skills.fieldDesc")}>
-        <input
+        <Input
           type="text"
           value={form.description}
           onChange={(e) => update("description", e.target.value)}
@@ -683,7 +685,7 @@ export function ImportSkillsDialog({
                 {t("settings.skills.githubTitle")}
               </div>
               <div className="mt-1.5 flex items-center gap-1.5">
-                <input
+                <Input
                   type="text"
                   value={ghUrl}
                   onChange={(e) => setGhUrl(e.target.value)}
@@ -845,8 +847,8 @@ export function ImportSkillsDialog({
                                   : "hover:bg-surface-hover/60",
                             )}
                           >
-                            <input
-                              type="checkbox"
+                            <Checkbox
+
                               checked={isChecked}
                               disabled={isExisting}
                               onChange={() => toggle(s.sourcePath)}

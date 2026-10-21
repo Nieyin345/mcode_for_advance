@@ -60,6 +60,7 @@ import {
   IconX,
 } from "@renderer/lib/icons.js";
 import { ENGINES, deliveredTo, type InstallResult, type PanelOps, type TabId, PluginEngineKeys, EngineDeliveryTable, EcosystemBadge, PluginAvatar, pluginHaystack } from "@renderer/components/settings/PluginsPanel.js";
+import { Checkbox } from "@renderer/components/ui/native-controls.js";
 
 export function PanelTabs({
   tab,
@@ -526,8 +527,8 @@ function PluginRow({
     <div>
       <div className="flex items-center gap-2.5 px-3 py-2.5">
         {/* 勾选：批量启用/停用/删除的源。点勾不能顺带展开详情 —— 两件事。 */}
-        <input
-          type="checkbox"
+        <Checkbox
+
           checked={checked}
           onChange={(e) => onCheckedChange(e.target.checked)}
           onClick={(e) => e.stopPropagation()}

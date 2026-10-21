@@ -53,6 +53,7 @@ import { BUILTINS, CUSTOM_ICONS, DEFAULT_ACTION_ICON, type IconComponent } from 
 import { PanelFrame } from "../customUi/PanelFrame.js";
 import { FIELD, LABEL, itemOf, isLibraryKind, type Draft } from "./CustomUiPanel.js";
 import { Textarea } from "@renderer/components/ui/textarea.js";
+import { NativeSelect, Checkbox } from "@renderer/components/ui/native-controls.js";
 
 /** 面板 HTML 的大编辑器(Monaco)—— 懒加载,单独一个文件就是为了能切出独立 chunk
  *  (Monaco 不许进设置页的静态图,见 `settings-lazy-smoke`)。 */
@@ -212,11 +213,11 @@ export function ItemEditor({
           <div className="grid grid-cols-2 gap-3">
             <label className={LABEL}>
               <span>{t("customUi.editor.labelZh")}</span>
-              <input className={FIELD} value={draft.labelZh} onChange={(e) => set("labelZh", e.target.value)} maxLength={60} />
+              <Input className={FIELD} value={draft.labelZh} onChange={(e) => set("labelZh", e.target.value)} maxLength={60} />
             </label>
             <label className={LABEL}>
               <span>{t("customUi.editor.labelEn")}</span>
-              <input className={FIELD} value={draft.labelEn} onChange={(e) => set("labelEn", e.target.value)} maxLength={60} />
+              <Input className={FIELD} value={draft.labelEn} onChange={(e) => set("labelEn", e.target.value)} maxLength={60} />
             </label>
           </div>
 
@@ -252,18 +253,18 @@ export function ItemEditor({
             {whenKeys.includes("extensions") && (
               <label className={LABEL}>
                 <span>{t("customUi.editor.extensions")}</span>
-                <input className={FIELD} value={draft.extensions} onChange={(e) => set("extensions", e.target.value)} placeholder=".pdf, .md" />
+                <Input className={FIELD} value={draft.extensions} onChange={(e) => set("extensions", e.target.value)} placeholder=".pdf, .md" />
               </label>
             )}
             {kind === "item" && (
               <label className={LABEL}>
                 <span>{t("customUi.editor.requires")}</span>
-                <select className={FIELD} value={draft.requires} onChange={(e) => set("requires", e.target.value as Draft["requires"])}>
+                <NativeSelect className={FIELD} value={draft.requires} onChange={(e) => set("requires", e.target.value as Draft["requires"])}>
                   <option value="">{t("customUi.editor.requires.none")}</option>
                   <option value="file">{t("customUi.editor.requires.file")}</option>
                   <option value="pdf">{t("customUi.editor.requires.pdf")}</option>
                   <option value="markdown">{t("customUi.editor.requires.markdown")}</option>
-                </select>
+                </NativeSelect>
               </label>
             )}
             {isLibrary && kind !== "group" && (groups.data?.groups.length ?? 0) > 0 && (
@@ -274,8 +275,8 @@ export function ItemEditor({
                 <div className="flex flex-wrap gap-3">
                   {groups.data?.groups.map((g) => (
                     <label key={g.id} className="flex items-center gap-1.5 text-xs text-content">
-                      <input
-                        type="checkbox"
+                      <Checkbox
+
                         checked={draft.groupIds.includes(g.id)}
                         onChange={(e) =>
                           set("groupIds", e.target.checked ? [...draft.groupIds, g.id] : draft.groupIds.filter((x) => x !== g.id))
@@ -317,7 +318,7 @@ export function ItemEditor({
                 {draft.slot !== "rightPanel.tab" && (
                   <label className={LABEL}>
                     <span>{t("customUi.editor.viewTitle")}</span>
-                    <input className={FIELD} value={draft.viewTitle} onChange={(e) => set("viewTitle", e.target.value)} />
+                    <Input className={FIELD} value={draft.viewTitle} onChange={(e) => set("viewTitle", e.target.value)} />
                   </label>
                 )}
                 <label className={LABEL}>
@@ -344,7 +345,7 @@ export function ItemEditor({
                 </div>
                 {isLibrary && (
                   <label className="flex items-center gap-2 text-xs text-content">
-                    <input type="checkbox" checked={draft.promptAttach} onChange={(e) => set("promptAttach", e.target.checked)} />
+                    <Checkbox  checked={draft.promptAttach} onChange={(e) => set("promptAttach", e.target.checked)} />
                     {t("customUi.editor.promptAttach")}
                   </label>
                 )}
@@ -375,7 +376,7 @@ export function ItemEditor({
                       <HintLabel hint={noRunTarget ? t("customUi.editor.automationHintToolbar") : t("customUi.editor.automationHint")}>
                         {t("customUi.editor.automation")}
                       </HintLabel>
-                      <select
+                      <NativeSelect
                         className={FIELD}
                         value={draft.workflowId}
                         onChange={(e) => onChange({ ...draft, workflowId: e.target.value, triggerNodeId: "" })}
@@ -390,11 +391,11 @@ export function ItemEditor({
                         {draft.workflowId && !automations.some((w) => w.id === draft.workflowId) && (
                           <option value={draft.workflowId}>{draft.workflowId}</option>
                         )}
-                      </select>
+                      </NativeSelect>
                     </div>
                     <label className={LABEL}>
                       <span>{t("customUi.editor.trigger")}</span>
-                      <select className={FIELD} value={draft.triggerNodeId} onChange={(e) => set("triggerNodeId", e.target.value)}>
+                      <NativeSelect className={FIELD} value={draft.triggerNodeId} onChange={(e) => set("triggerNodeId", e.target.value)}>
                         <option value="">—</option>
                         {triggers.map((f) => (
                           <option key={f.nodeId} value={f.nodeId}>
@@ -404,7 +405,7 @@ export function ItemEditor({
                         {draft.triggerNodeId && !triggers.some((f) => f.nodeId === draft.triggerNodeId) && (
                           <option value={draft.triggerNodeId}>{draft.triggerNodeId}</option>
                         )}
-                      </select>
+                      </NativeSelect>
                     </label>
                   </div>
                 )}
@@ -414,7 +415,7 @@ export function ItemEditor({
                 {canSkipWhen && (
                   <div className={LABEL}>
                     <HintLabel hint={t("customUi.editor.skipWhenHint")}>{t("customUi.editor.skipWhen")}</HintLabel>
-                    <select
+                    <NativeSelect
                       className={FIELD}
                       value={draft.skipRequires}
                       onChange={(e) => set("skipRequires", e.target.value as Draft["skipRequires"])}
@@ -423,7 +424,7 @@ export function ItemEditor({
                       <option value="markdown">{t("customUi.editor.skipWhen.markdown")}</option>
                       <option value="pdf">{t("customUi.editor.skipWhen.pdf")}</option>
                       <option value="file">{t("customUi.editor.skipWhen.file")}</option>
-                    </select>
+                    </NativeSelect>
                   </div>
                 )}
                 {/* 目标怎么用:展开成一批,还是只当落点。空分类那条路全靠它(见 targetMode)。
@@ -431,8 +432,8 @@ export function ItemEditor({
                     落点、条目 / 文件不是"地方",在别处勾了运行时必报错。 */}
                 {canTargetContext && (
                   <label className="flex items-center gap-2 text-[0.8571em]">
-                    <input
-                      type="checkbox"
+                    <Checkbox
+
                       className=""
                       checked={draft.targetIsContext}
                       onChange={(e) => set("targetIsContext", e.target.checked)}
@@ -446,7 +447,7 @@ export function ItemEditor({
                     <HintLabel hint={t("customUi.editor.inputsHint")}>{t("customUi.editor.inputs")}</HintLabel>
                     {draft.inputs.map((row, idx) => (
                       <div key={idx} className="flex items-center gap-2">
-                        <select
+                        <NativeSelect
                           className={cn(FIELD, "w-24 shrink-0")}
                           value={row.kind}
                           onChange={(e) =>
@@ -455,23 +456,23 @@ export function ItemEditor({
                         >
                           <option value="text">{t("customUi.editor.inputs.kindText")}</option>
                           <option value="files">{t("customUi.editor.inputs.kindFiles")}</option>
-                        </select>
-                        <input
+                        </NativeSelect>
+                        <Input
                           className={cn(FIELD, "w-28 shrink-0 font-mono")}
                           placeholder="key"
                           value={row.key}
                           onChange={(e) => set("inputs", draft.inputs.map((r, j) => (j === idx ? { ...r, key: e.target.value } : r)))}
                           spellCheck={false}
                         />
-                        <input
+                        <Input
                           className={cn(FIELD, "min-w-0 flex-1")}
                           placeholder={t("customUi.editor.inputs.labelPh")}
                           value={row.labelZh}
                           onChange={(e) => set("inputs", draft.inputs.map((r, j) => (j === idx ? { ...r, labelZh: e.target.value } : r)))}
                         />
                         <label className="flex shrink-0 items-center gap-1 text-xs text-content">
-                          <input
-                            type="checkbox"
+                          <Checkbox
+
                             checked={row.required}
                             onChange={(e) => set("inputs", draft.inputs.map((r, j) => (j === idx ? { ...r, required: e.target.checked } : r)))}
                           />
@@ -506,7 +507,7 @@ export function ItemEditor({
                   <HintLabel hint={draft.slot === "rightPanel.tab" ? t("customUi.editor.fileHintTab") : t("customUi.editor.fileHintToolbar")}>
                     {t("customUi.editor.filePath")}
                   </HintLabel>
-                  <input
+                  <Input
                     className={cn(FIELD, "font-mono")}
                     value={draft.filePath}
                     onChange={(e) => set("filePath", e.target.value)}
@@ -520,7 +521,7 @@ export function ItemEditor({
             {draft.actionType === "openTab" && (
               <label className={LABEL}>
                 <span>{t("customUi.editor.openTab")}</span>
-                <select className={FIELD} value={draft.openTab} onChange={(e) => set("openTab", e.target.value)}>
+                <NativeSelect className={FIELD} value={draft.openTab} onChange={(e) => set("openTab", e.target.value)}>
                   <option value="">—</option>
                   {tabChoices.map((c) => (
                     <option key={c.key} value={c.key}>
@@ -530,14 +531,14 @@ export function ItemEditor({
                   {draft.openTab && !tabChoices.some((c) => c.key === draft.openTab) && (
                     <option value={draft.openTab}>{draft.openTab}</option>
                   )}
-                </select>
+                </NativeSelect>
               </label>
             )}
             {draft.actionType === "url" && (
               <>
                 <div className={LABEL}>
                   <HintLabel hint={t("customUi.editor.urlHint")}>{t("customUi.editor.url")}</HintLabel>
-                  <input
+                  <Input
                     className={cn(FIELD, "font-mono")}
                     value={draft.url}
                     onChange={(e) => set("url", e.target.value)}
@@ -552,7 +553,7 @@ export function ItemEditor({
               <>
                 <div className={LABEL}>
                   <HintLabel hint={t("customUi.editor.shellHint")}>{t("customUi.editor.shellCommand")}</HintLabel>
-                  <input
+                  <Input
                     className={cn(FIELD, "font-mono")}
                     value={draft.shellCommand}
                     onChange={(e) => set("shellCommand", e.target.value)}
@@ -561,7 +562,7 @@ export function ItemEditor({
                   />
                 </div>
                 <label className="flex items-center gap-2 text-xs text-content">
-                  <input type="checkbox" checked={draft.shellConfirm} onChange={(e) => set("shellConfirm", e.target.checked)} />
+                  <Checkbox  checked={draft.shellConfirm} onChange={(e) => set("shellConfirm", e.target.checked)} />
                   {t("customUi.editor.shellConfirm")}
                 </label>
               </>
@@ -571,7 +572,7 @@ export function ItemEditor({
                 {draft.slot !== "rightPanel.tab" && (
                   <label className={LABEL}>
                     <span>{t("customUi.editor.panelTitle")}</span>
-                    <input
+                    <Input
                       className={FIELD}
                       value={draft.panelTitle}
                       onChange={(e) => set("panelTitle", e.target.value)}
@@ -623,11 +624,11 @@ export function ItemEditor({
                 </div>
                 <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
                   <label className="flex items-center gap-2 text-xs text-content">
-                    <input type="checkbox" checked={draft.panelConfirm} onChange={(e) => set("panelConfirm", e.target.checked)} />
+                    <Checkbox  checked={draft.panelConfirm} onChange={(e) => set("panelConfirm", e.target.checked)} />
                     {t("customUi.editor.panelConfirm")}
                   </label>
                   <label className="flex items-center gap-2 text-xs text-content">
-                    <input type="checkbox" checked={draft.panelNetwork} onChange={(e) => set("panelNetwork", e.target.checked)} />
+                    <Checkbox  checked={draft.panelNetwork} onChange={(e) => set("panelNetwork", e.target.checked)} />
                     {t("customUi.editor.panelNetwork")}
                   </label>
                 </div>

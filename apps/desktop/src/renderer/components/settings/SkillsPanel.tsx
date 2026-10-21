@@ -65,6 +65,8 @@ import type {
 import { SKILL_NAME_RE } from "@contracts/ipc";
 // 子组件从 `SkillsPanelParts.tsx` 拆出（纯搬迁，见那边文件头）。
 import { SourceBadge, EmptyDetail, SkillSourceEditor, NewSkillForm, ImportSkillsDialog } from "@renderer/components/settings/SkillsPanelParts.js";
+import { Input } from "@renderer/components/ui/input.js";
+import { Checkbox } from "@renderer/components/ui/native-controls.js";
 
 /** Stable empty array so the panel's skill list has a stable reference when
  *  empty (avoiding needless re-renders — same convention as sessionStore's
@@ -1187,7 +1189,7 @@ export function SkillsPanel() {
             </>
           }
         >
-            <input
+            <Input
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -1241,8 +1243,8 @@ export function SkillsPanel() {
                       `indeterminate` 表示包内选中了一部分。放在组标题上、且在折叠状态下
                       也显示 —— 折着就能整包勾，不用先展开。 */}
                   {groupMode === "bundle" && groupSelectable(g.skills).length > 0 && (
-                    <input
-                      type="checkbox"
+                    <Checkbox
+
                       checked={groupAllChecked(g.skills)}
                       ref={(el) => {
                         if (el) el.indeterminate = groupSomeChecked(g.skills);
@@ -1305,8 +1307,8 @@ export function SkillsPanel() {
                       {/* 勾选框：复制的源。占位一直留着（不可复制的那些画一个空位），
                           否则列表里名字的左边缘会参差不齐。 */}
                       {canCopy ? (
-                        <input
-                          type="checkbox"
+                        <Checkbox
+
                           checked={isChecked}
                           onChange={() => toggleChecked(s.name)}
                           // 点勾不能顺带打开编辑器 —— 两者是两件事。

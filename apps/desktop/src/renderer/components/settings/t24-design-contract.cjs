@@ -119,8 +119,16 @@ if (batch === 'shell') {
     if (name==='SkillsPanel' && process.env.T24_MUTATION==='large-actions') src=src.replace('<Button variant="ghost" size={null}', '<button');
     check(!/<button\b/.test(src.replace(/`<button>`/g,'')), name + ': all custom actions use Button');
   }
+} else if (batch === 'form-controls') {
+  const names=['CustomUiPanelParts','SkillsPanel','SkillsPanelParts','PluginsPanelParts'];
+  for(const name of names){
+    let src=read(name+'.tsx');
+    if(name==='CustomUiPanelParts' && process.env.T24_MUTATION==='form-controls') src=src.replace('<NativeSelect', '<select');
+    check(!/<input\b|<select\b/.test(src), name+': native forms must reuse UI primitives');
+  }
+  check(read('CustomUiPanelParts.tsx').includes('<NativeSelect'), 'multimode custom UI selection uses NativeSelect');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions|form-controls\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

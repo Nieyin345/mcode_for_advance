@@ -268,3 +268,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs skills-management-ui-smoke plugins-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：7/7 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792564273613-19788-W9e38B`。双包 tsc 仍有与本批无关的并发 GenOffice / contracts 错误；本批 TypeScript 接口在既有 TSX/ESBuild smoke 中通过。
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs large-actions` PASS；`set T24_MUTATION=large-actions&& node ... large-actions` 撤回 SkillsPanel 一处共享 Button 后 exit=1（预期红）。
 - 行为核对：技能列表行复选框命中、批量启停/删除、项目复制、工程选择、插件/技能市场互动在独立浏览器测试通过；所有替换继续透传业务回调、aria 与 disabled，未改业务数据流。新增功能 bug：无；结构回归已修复。
+
+### 2026-10-21｜批次 12：复杂面板原生多类型表单归一
+
+- 改动：`CustomUiPanelParts`、`SkillsPanel`、`SkillsPanelParts`、`PluginsPanelParts` 的原生输入（文本、搜索、原生下拉及勾选）改为 `ui/Input`、`ui/NativeSelect`、`ui/Checkbox`。其中 NativeSelect 仍为真正的 HTML select，原 `<option>`、值与 onChange 保留；Checkbox 仍是真正 input type=checkbox，保留 checked/ref/事件、用户选中状态。所有业务事件与校验保持不变，原生自绘 form 在这 4 个文件中清零。
+- 原语：复用既有 UI 原语（新增 native-controls 于上批），没改已有行为；本批未发现设置功能 bug。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs skills-management-ui-smoke plugins-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：7/7 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792564471353-29236-O5kNrQ`。
+- 变异：`node .../t24-design-contract.cjs form-controls` PASS；`set T24_MUTATION=form-controls&& node ... form-controls` 将一个 NativeSelect 退回原生 select，结构断言 exit=1（预期红）。
+- 行为核对：技能批量勾选/复制、插件市场、焦点、Custom UI 初始加载及设置 smoke 保持绿；类型验证受同期仓库范围外 GenOffice 和 contracts 改动影响仍非全绿，未修改这些范围外文件。
