@@ -97,8 +97,17 @@ await withAuditPage(fileURLToPath(new URL('.',import.meta.url)),async page=>{
  const libPicks=await page.eval('JSON.stringify(labPicks)');
  check('★ library picker ignores Space/Enter while IME is composing', !libPicks.includes('"library"') && await page.eval(`document.querySelector('#pickers [data-picker-mode=library]')!==null`), libPicks);
  await openPicker('library',`document.querySelector('#pickers')?.textContent.includes('Alpha')`);
- await key(libInput,{key:' '}); await key(libInput,{key:'Enter'}); await page.sleep(100);
- check('control: library picker toggles + confirms on real Space/Enter', (await page.eval('JSON.stringify(labPicks)')).includes('Alpha'), await page.eval('JSON.stringify(labPicks)'));
+ // Space inside the search box is literal query input, not a selection shortcut.
+ // When focus is in the composer, Space toggles the active library row; Enter
+ // in the search box then confirms the picked entry. Assert the visible Add CTA
+ // and the actual payload, not an incidental close event.
+ await key(libInput,{key:' '});
+ const searchSpaceSafe=await page.eval(`document.querySelector('#pickers [data-picker-mode=library]')!==null && !document.querySelector('#pickers input')?.parentElement?.querySelector('button')`);
+ await key(host,{key:' '}); await page.sleep(100);
+ const selectionVisible=await page.eval(`!!document.querySelector('#pickers input')?.parentElement?.querySelector('button')`);
+ await key(libInput,{key:'Enter'}); await page.sleep(100);
+ const confirmed=await page.eval('labPicks');
+ check('control: library picker toggles + confirms on real Space/Enter', searchSpaceSafe && selectionVisible && confirmed.some(p=>p.kind==='library' && p.v.length===1 && p.v[0].key==='c:c1' && p.v[0].name==='Alpha'), {searchSpaceSafe,selectionVisible,confirmed});
 });
 const failed=results.filter(r=>!r.ok).length;
 console.log(`\n${results.length-failed}/${results.length} passed`);

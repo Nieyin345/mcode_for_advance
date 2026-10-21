@@ -47,6 +47,9 @@ export function resetRenameCalls(): void {
 export const existsSync = real.existsSync;
 export const readdirSync = real.readdirSync;
 export const statSync = real.statSync;
+export const lstatSync = real.lstatSync;
+export const accessSync = real.accessSync;
+export const constants = real.constants;
 export const mkdirSync = real.mkdirSync;
 export const writeFileSync = real.writeFileSync;
 export const readFileSync = real.readFileSync;

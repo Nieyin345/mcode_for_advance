@@ -118,3 +118,13 @@ FAIL control: library picker toggles + confirms on real Space/Enter
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜T26 执行结果
+
+- **updater-tools（桩滞后原因）**：`managedToolRoots.ts` 为目录/可执行文件的符号链接与可执行权限校验新增了 `lstatSync`、`accessSync`、`constants` 导入；本套 `stubs/fs.ts` 是显式命名导出的 `node:fs` 代理，未随产品依赖增补，导致 esbuild 在断言前报缺少 export。现补齐为 `real.lstatSync`、`real.accessSync`、`real.constants`，仍只拦异步 rename。扫描 `apps/desktop/scripts`，引用该 `fs.ts` 的只有 `updater-tools-smoke/run.sh` 两条 alias（`node:fs` 和 `node:fs/promises`）；没有其它套件共用这份桩。
+- **maint-m22（断言 bug，非产品 bug）**：真实 `LibraryPicker` 明确规定搜索框里的 Space 应保留给多词搜索（`e.target === inputRef.current` 时返回），只有非搜索框目标上的 Space 才勾选；选中数为零时 Enter 执行 `onClose()`，原脚手架对搜索框连续派发 Space/Enter，因此只录到 `close:library`，符合产品行为。现仍保留第 16 条 control 断言：搜索框 Space 不误选、编辑器焦点上的 Space 使「添加」按钮出现、Enter 后 `onPick` 带回 `[{key:'c:c1',name:'Alpha'}]`；不是删断言或把 close 当成功。
+- **picker prelude 合并判定：不可合并**。`maint-m22` 采用真正的 Chromium/CDP、`mocks.js` 和浏览器原生 `window/document`，本来就没有 `pickers-prelude.ts`；`maint-m35` 才使用 `pickers-prelude.ts` 向 Node fakeReact 运行时注入最小 DOM、`setTimeout/clearTimeout`。二者不是同源两份，保持独立，未触碰正在由其他任务修改的 M35 prelude。
+- **验收记录**：`node apps/desktop/scripts/run-smokes.mjs updater-tools-smoke maint-m22-smoke maint-m35-smoke`：三套均 PASS；updater-tools **136/136**、maint-m22 **16/16**、maint-m35 主套件 **8/8** 且 **pickers:all passed**。日志：`apps/desktop/.tmp/smoke-runs/1792555281327-26480-otFKc3/`。未删除断言，产品源码未修改。
+- **双包 tsc**：`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` 与 `pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` 均退出码 0。
+- **变异验证**：仅暂时移除新增的 `export const lstatSync = real.lstatSync;`，重跑 updater-tools 退出码 **1**，esbuild 精确报 `No matching export ... for import "lstatSync"`（`managedToolRoots.ts:18`）；日志：`apps/desktop/.tmp/smoke-runs/1792555350269-41112-GKWCER/updater-tools-smoke.log`。随后逐字节恢复，恢复前/后原件 SHA-256 均为 `ce052d48a49de5281dc81283dabdad625de73853013d8016d39d8f64f7690d75`。
+- **验收结论**：6/6 判据满足。
