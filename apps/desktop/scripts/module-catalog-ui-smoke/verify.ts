@@ -123,7 +123,7 @@ await withAuditPage(dir,async(page:Page)=>{
   const ids=await page.eval("[...document.querySelectorAll('[data-testid=capability-entry]')].map(e=>e.dataset.capabilityId).sort()") as string[];
   assert.deepEqual(ids,host.catalog().capabilities.map(c=>c.id).sort());assert.equal(await page.eval("!!document.querySelector('[data-testid=capability-catalog-error]')"),false);pass("keyboard retry recovers and lists exactly the capabilities registered by the real host");
   const kinds=await page.eval("Object.fromEntries([...document.querySelectorAll('[data-testid=capability-entry]')].map(e=>[e.dataset.capabilityId,e.querySelector('[data-testid=capability-kind]').textContent.trim()]))") as Record<string,string>;
-  assert.deepEqual(kinds,{"core.file.info":"查询","core.file.inspect":"任务"});
+  assert.deepEqual(kinds,{"core.app.call":"写入操作","core.file.info":"查询","core.file.inspect":"任务"});
   assert.match(await text("[data-capability-id='core.file.inspect'] [data-testid=capability-used-by]"),/我的文件报告/);pass("capability kind and the host contributions using it are shown");
   await page.screenshot("catalog-real.png");
   await open("","legacy","UI 扩展");await page.waitFor(inDialog("[data-testid=capability-entry]"));

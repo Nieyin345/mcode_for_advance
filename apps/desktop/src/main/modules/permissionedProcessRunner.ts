@@ -46,6 +46,7 @@
  * 可以给出"这个扩展试图越界"的明确诊断,而不是一句笼统的失败。
  */
 import { spawnRun } from "@main/lib/spawnRun.js";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { ResultSchema, type ModuleResult } from "@contracts/modules";
 import { ISOLATION_FAILURE_CODES, ISOLATION_FAILURE_MARKER } from "./isolatedActionRunner.js";
@@ -64,6 +65,8 @@ export interface PermissionedProcessOptions {
   allowNetwork?: boolean;
   timeoutMs: number;
   signal: AbortSignal;
+  /** If provided, activate a bounded duplex NDJSON channel for mcode.api.call. */
+  onAppCall?: (method: string, input: unknown) => Promise<unknown>;
 }
 
 /**
@@ -549,6 +552,9 @@ export async function runPermissionedProcess(
     catch (e) { throw failure("isolated_denied", String(e)); }
   }
   const bootstrap = options.allowNetwork === true ? BOOTSTRAP : NETWORK_GUARD + BOOTSTRAP;
+  if (options.onAppCall) {
+    return runDuplexAppProcess(options, launch, mode, proof, payload);
+  }
   // 单行协议在 `spawnRun` 里按字节切行;上限给足一个结果窗(32 个字段 × 4 KiB 余量)。
   const result = await spawnRun({
     command: launch.command,
@@ -625,4 +631,170 @@ export function permissionedFailure(error: unknown): { code: PermissionedFailure
   if (typeof code !== "string" || typeof reason !== "string") return null;
   if (!(PERMISSIONED_FAILURE_CODES as readonly string[]).includes(code)) return null;
   return { code: code as PermissionedFailureCode, reason };
+}
+
+
+/** Duplex extension program bootstrap. The network/Node permission guards are installed
+ * before this code; only the trusted host can answer RPC requests over stdin. */
+const DUPLEX_BOOTSTRAP = String.raw`
+"use strict";
+const MAX=8*1024*1024;
+let incoming="", initial=null, nextId=1, completed=false;
+const waiting=new Map();
+const write=process.stdout.write.bind(process.stdout);
+const emit=(value, done)=>write("@@mcode:ext-result "+JSON.stringify(value)+"\n",done);
+function dispatchLine(line) {
+  if (initial===null) {
+    if (line.length>MAX) throw Error("extension input too large");
+    initial=JSON.parse(line);
+    void execute(initial);
+    return;
+  }
+  const reply=JSON.parse(line);
+  if (!reply || reply.__mcode_reply!==1 || !Number.isInteger(reply.id)) throw Error("invalid RPC reply");
+  const item=waiting.get(reply.id);
+  if (!item) throw Error("unknown RPC reply id");
+  waiting.delete(reply.id);
+  if (reply.ok===true) item.resolve(reply.result);
+  else item.reject(Error(typeof reply.error==="string"?reply.error:"extension RPC denied"));
+}
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk=>{
+  incoming+=chunk;
+  if (incoming.length>MAX) {process.stderr.write("extension protocol input exceeded limit\n");process.exit(79);}
+  let end;
+  while((end=incoming.indexOf("\n"))!==-1) {
+    const line=incoming.slice(0,end); incoming=incoming.slice(end+1);
+    try {dispatchLine(line);} catch(e) {process.stderr.write("invalid extension RPC input: "+String(e)+"\n");process.exit(79);}
+  }
+});
+async function execute(p) {
+  try {
+    if(typeof mcodeNetworkGuardSelfCheck==="function")mcodeNetworkGuardSelfCheck();
+    const guardTimer=typeof mcodeNetworkGuardSelfCheck==="function"?setInterval(()=>{
+      try{mcodeNetworkGuardSelfCheck()}catch(e){process.stderr.write("network_guard_integrity_failed\n");process.exit(78);}
+    },50):null;
+    if(guardTimer)guardTimer.unref();
+    const api=Object.freeze({call:(method,input)=>{
+      if(completed) return Promise.reject(Error("extension already finished"));
+      if(typeof method!=="string"||method.length>128||!/^[a-zA-Z][a-zA-Z0-9]*\.[a-zA-Z][a-zA-Z0-9]*$/.test(method))
+        return Promise.reject(Error("invalid RPC method"));
+      if(nextId>128||waiting.size>=8) return Promise.reject(Error("extension RPC quota exceeded (128 calls, 8 concurrent)"));
+      const id=nextId++;
+      let encoded;
+      try {encoded=JSON.stringify({__mcode_call:1,id,method,input});}
+      catch(e){return Promise.reject(e);}
+      if(encoded.length>65536) return Promise.reject(Error("extension RPC request exceeds 64 KiB"));
+      return new Promise((resolve,reject)=>{
+        waiting.set(id,{resolve,reject});
+        write("@@mcode:ext-call "+encoded+"\n");
+      });
+    }});
+    Object.defineProperty(globalThis,"mcode",{value:Object.freeze({api}),writable:false,configurable:false});
+    const factory=(0,eval)("("+p.source+")");
+    if(!factory||typeof factory!=="object")throw Error("扩展程序工厂没有求出对象");
+    const fn=factory[p.capability];
+    if(typeof fn!=="function")throw Error("扩展程序没有声明能力 "+p.capability);
+    const result=await fn(p.resource);
+    if(waiting.size>0)throw Error("extension ended with pending RPC calls");
+    if(typeof mcodeNetworkGuardSelfCheck==="function")mcodeNetworkGuardSelfCheck();
+    completed=true;
+    emit({ok:true,result,proof:p.proof},()=>process.exit(0));
+  }catch(e) {
+    completed=true;
+    const message=String(e&&e.message||e);
+    const denied=/ERR_ACCESS_DENIED|Access to this API has been restricted|ERR_ACCESS_PERMISSION|permission/i.test(message);
+    emit({ok:false,code:denied?"denied":"failed",message,proof:p.proof},()=>process.exit(0));
+  }
+}
+`;
+
+/** The legacy single-shot protocol remains untouched for existing callers. This
+ * opt-in channel enforces process, output, request-count and concurrency bounds. */
+async function runDuplexAppProcess(
+  options: PermissionedProcessOptions, launch: EgressLaunch, mode: EgressMode,
+  proof: string, payload: string,
+): Promise<ModuleResult> {
+  const bootstrap = options.allowNetwork === true ? DUPLEX_BOOTSTRAP : NETWORK_GUARD + DUPLEX_BOOTSTRAP;
+  return new Promise<ModuleResult>((resolve, reject) => {
+    const child = spawn(launch.command,
+      [...launch.prefix, ...permissionArgs(options.resource.path, options.allowWrite), "-e", bootstrap],
+      { env: permissionedEnv(), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    let out = "", stderr = "", total = 0, calls = 0, inFlight = 0;
+    let resultLine: BootReply | null = null, results = 0;
+    let overflow = false, timedOut = false, aborted = false, spawnError: Error | null = null;
+    let ended = false;
+    const kill = (): void => { if (!child.killed) child.kill(); };
+    const timer = setTimeout(() => {timedOut = true; kill();}, options.timeoutMs);
+    const cancel = (): void => { aborted = true; kill(); };
+    if (options.signal.aborted) cancel();
+    else options.signal.addEventListener("abort", cancel, {once:true});
+    const sendReply = (reply: Record<string, unknown>): void => {
+      if (ended || !child.stdin.writable) return;
+      const encoded = JSON.stringify(reply);
+      if (encoded.length>256*1024) {overflow=true;kill();return;}
+      child.stdin.write(encoded+"\n");
+    };
+    const acceptLine = (line: string): void => {
+      if (line.startsWith("@@mcode:ext-result ")) {
+        results++;
+        if(results===1)resultLine=parseReply(line);
+        else {overflow=true;kill();}
+        return;
+      }
+      if (!line.startsWith("@@mcode:ext-call ")) return;
+      let call: any;
+      try {call=JSON.parse(line.slice("@@mcode:ext-call ".length));}
+      catch {overflow=true;kill();return;}
+      if (!call || call.__mcode_call!==1 || !Number.isSafeInteger(call.id) ||
+          call.id<1 || call.id>128 || typeof call.method!=="string" || call.method.length>128 ||
+          ++calls>128 || inFlight>=8 || Buffer.byteLength(line)>65536) {
+        overflow=true; kill();return;
+      }
+      inFlight++;
+      void Promise.resolve().then(()=>options.onAppCall!(call.method,call.input))
+        .then(value=>sendReply({__mcode_reply:1,id:call.id,ok:true,result:value,proof}),
+          error=>sendReply({__mcode_reply:1,id:call.id,ok:false,error:String(error instanceof Error?error.message:error).slice(0,2000),proof}))
+        .finally(()=>{inFlight--;});
+    };
+    child.stdout.on("data", (chunk: Buffer) => {
+      total+=chunk.length;
+      if(total>256*1024) {overflow=true;kill();return;}
+      out+=chunk.toString("utf8");
+      let end: number;
+      while((end=out.indexOf("\n"))!==-1) {
+        const line=out.slice(0,end);out=out.slice(end+1);
+        acceptLine(line);
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {stderr=(stderr+chunk.toString("utf8")).slice(-4000);});
+    child.on("error", (error: Error) => {spawnError=error;});
+    child.on("close", (code: number|null) => {
+      ended=true;clearTimeout(timer);options.signal.removeEventListener("abort",cancel);
+      if (aborted) return reject(failure("isolated_cancelled","扩展执行已取消。"));
+      if (timedOut) return reject(failure("isolated_timeout","扩展执行超时("+options.timeoutMs+" 毫秒),已终止。"));
+      if (spawnError) return reject(failure("isolated_spawn_failed","扩展执行进程启动失败:"+spawnError.message));
+      if (overflow || code!==0 || out.length>0 || results!==1 || !resultLine) {
+        return reject(failure("isolated_crash","扩展双向协议异常或子进程崩溃(exit="+code+"). "+stderr.slice(-400)));
+      }
+      if(resultLine.proof!==proof) return reject(failure("isolated_crash","扩展结果关联值不匹配"));
+      if(resultLine.ok!==true) {
+        const message=typeof resultLine.message==="string"?resultLine.message:"扩展程序执行失败";
+        if(resultLine.code==="denied") return reject(failure("isolated_denied",message));
+        return reject(Error(message));
+      }
+      const validated=ResultSchema.safeParse(resultLine.result);
+      if(!validated.success) return reject(failure("isolated_crash","扩展程序返回值不符合 ModuleResult 合同"));
+      if(mode==="js-guard-only") {
+        const diagnostic=ResultSchema.safeParse({
+          ...validated.data, _mcodeEgressIsolation:"js-guard-only; OS egress isolation unavailable",
+        });
+        if(!diagnostic.success) return reject(failure("isolated_crash","扩展返回值没有空间携带隔离诊断"));
+        return resolve(diagnostic.data);
+      }
+      resolve(validated.data);
+    });
+    child.stdin.on("error",()=>{});
+    child.stdin.write(payload+"\n");
+  });
 }

@@ -117,7 +117,8 @@ await test('catalog targets are derived solely from registered built-in read-onl
 await test('the host catalog is JSON-safe and satisfies the frozen catalog schema', () => {
   const serialized = JSON.stringify(host.catalog());
   const parsed = ModuleCatalogSchema.parse(JSON.parse(serialized));
-  assert.equal(parsed.capabilities.length, 2);
+  assert.equal(parsed.capabilities.length, 3);
+  assert.ok(parsed.capabilities.some(cap => cap.id === "core.app.call" && cap.kind === "action"));
   assert.equal(parsed.workflowTargets?.length, 2);
   assert.equal(parsed.modules.length, 2);
 });

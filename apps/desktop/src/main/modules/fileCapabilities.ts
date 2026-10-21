@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -43,6 +44,15 @@ const inspectionMetadata: ModuleCapabilityMetadata = {
   permissions: ["resource.read"], inputSchema: fileInputSchema, outputSchema: inspectionOutputSchema,
   supportsCancellation: true,
   limits: {maxFileBytes: 32 * 1024 * 1024, taskTimeoutMs: 30_000},
+};
+const appCallMetadata: ModuleCapabilityMetadata = {
+  schemaVersion:1, version:"1.0.0",
+  title:{zh:"扩展调用主进程 API",en:"Extension application API bridge"},
+  description:{zh:"宿主绑定身份并验证安装授权的 RPC 代理；仅供隔离扩展内部调用，不作为外部菜单动作。",en:"Host-owned, grant-checked RPC bridge for isolated extensions only."},
+  permissions:["resource.read","resource.write"],
+  inputSchema:{type:"object",required:["method"],properties:{method:{type:"string"}},additionalProperties:true},
+  outputSchema:{type:"object",additionalProperties:{type:["string","number","boolean","null"]}},
+  supportsCancellation:false,
 };
 const fileInfoMetadata: ModuleCapabilityMetadata = {
   schemaVersion: 1, version: "1.0.0",
@@ -111,7 +121,7 @@ async function openAuthorizedFile(
     throw error;
   }
 }
-export function fileCapabilities(knownRoot: (path:string)=>boolean): Capability<ModuleResource>[] {
+export function fileCapabilities(knownRoot: (path:string)=>boolean): Capability<any>[] {
   const inspect = async (resource:ModuleResource, context:CapabilityContext) => {
     const file=await openAuthorizedFile(resource,knownRoot);
     try {
@@ -137,7 +147,8 @@ export function fileCapabilities(knownRoot: (path:string)=>boolean): Capability<
   // 【MC-035】id/kind **不在这里手写**:从 `builtinCapabilityCatalogue` 取,两条实现按
   // id 挂上去。catalogue 里加了而这里没实现 → 下面那个 `throw` 会**立刻**在注册期炸,
   // 而不是让能力目录与真实注册各说各话。
-  const implementations: Record<string, Capability<ModuleResource>> = {
+  const implementations: Record<string, Capability<any>> = {
+    "core.app.call": {id:"core.app.call",kind:"action",metadata:appCallMetadata,input:z.object({method:z.string().min(1),input:z.unknown().optional()}).strict(),output:ResultSchema,run:async()=>{throw Error("core.app.call only accepts host-bound calls from a running extension");}},
     "core.file.inspect": {id:"core.file.inspect",kind:"task",metadata:inspectionMetadata,input:ResourceSchema,output:ResultSchema,run:inspect},
     "core.file.info": {id:"core.file.info",kind:"query",metadata:fileInfoMetadata,input:ResourceSchema,output:ResultSchema,run:async resource=>{
       const file=await openAuthorizedFile(resource,knownRoot);

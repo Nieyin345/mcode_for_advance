@@ -25,7 +25,8 @@
 import { dialog } from "electron";
 import { getMainWindow } from "@main/window.js";
 import { dialogText } from "@main/lib/dialogText.js";
-import { configureModuleApprovalPort, type ModuleApprovalPort } from "@main/modules/service.js";
+import { configureModuleApprovalPort, configureModuleAppCallPort, type ModuleApprovalPort } from "@main/modules/service.js";
+import { invokeExtensionAppCall } from "@main/appControl/tools.js";
 
 /** 把一个审批请求映射成原生确认框,拿到用户的 yes/no。**只做这一个决定**。 */
 const nativeModuleApprovalPort: ModuleApprovalPort = async (request) => {
@@ -62,4 +63,5 @@ const nativeModuleApprovalPort: ModuleApprovalPort = async (request) => {
 /** 启动装配入口(由 `main/index.ts` 调)。装上之后不回退。 */
 export function assembleModuleApprovalPort(): void {
   configureModuleApprovalPort(nativeModuleApprovalPort);
+  configureModuleAppCallPort(invokeExtensionAppCall);
 }

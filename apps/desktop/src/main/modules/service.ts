@@ -25,6 +25,10 @@ export type ModuleApprovalPort = (request: ActionApprovalRequest) => Promise<voi
 let approvalPort: ModuleApprovalPort | null = null;
 /** 装配期唯一入口(由 `index.ts` 调 `assembleModuleApprovalPort()`)。传 `null` 可卸载,仅测试用。 */
 export function configureModuleApprovalPort(next: ModuleApprovalPort | null): void { approvalPort = next; }
+/** No tools.ts import here: smoke bundles must not pull in Electron/GenOffice/native modules. */
+export type ModuleAppCallPort = (moduleId: string, method: string, input: unknown, signal: AbortSignal) => Promise<unknown>;
+let appCallPort: ModuleAppCallPort | null = null;
+export function configureModuleAppCallPort(next: ModuleAppCallPort | null): void { appCallPort = next; }
 /** 宿主注入的审批端口实现:有真端口就交它,没有就 **fail-closed 抛 `approval_unavailable`**
  *  (命令没执行 → 上层按 REJECTED 归类)。判定只有这一处,宿主不 import 本函数之外的东西。 */
 export async function requestModuleActionApproval(request: ActionApprovalRequest): Promise<void> {
@@ -109,6 +113,10 @@ async function createHost(): Promise<ModuleHost> {
     // 该函数 fail-closed 抛 `approval_unavailable` —— 于是"有通道"(这个选项存在)与"通道真能
     // 问用户"统一由那一个端口决定,宿主不再需要一个"有没有通道"的布尔。
     requestApproval: requestModuleActionApproval,
+    invokeAppCall: async (moduleId, method, input, signal) => {
+      if (!appCallPort) throw moduleRefusalError("approval_unavailable", "扩展 RPC 宿主调用通路未装配，拒绝执行");
+      return appCallPort(moduleId, method, input, signal);
+    },
     // 【MC-035】扩展程序的两个生产端口:
     //  - 资源解析:与 `authorize` 走**同一个** `resolveModuleResource` —— 授权判定与
     //    真实路径解析不各写一份,扩展进程的 `--allow-fs-read` 拿到的就是被判定过的那个路径;

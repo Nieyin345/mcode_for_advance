@@ -126,6 +126,8 @@ export class ModuleHost {
     /** Independent user-consent ledger. Read on each authorization decision; absent is NOT consent. */
     readModulePermissions?(): string | null;
     persistModulePermissions?(text: string): Promise<void>;
+    /** Trusted host adapter into invokeAppTool. Never supplied by extension source/IPC. */
+    invokeAppCall?(moduleId: string, method: string, input: unknown, signal: AbortSignal): Promise<unknown>;
     /** 【MC-035】资源 → **真实路径**的解析(生产注入 `resolveModuleResource`)。扩展进程的
      *  `--allow-fs-read` 必须按真实路径放行,否则符号链接/junction 会让"允许读 A"实际
      *  读到 B。缺省退回字面路径(仅测试/无文件系统宿主使用)。 */
@@ -313,6 +315,7 @@ export class ModuleHost {
             allowNetwork: declaresNetwork(manifest.permissions),
             timeoutMs,
             signal: context.signal,
+            onAppCall: (method, input) => this.callAppFromExtension(manifest, method, input, context.signal),
           });
         },
       }));
@@ -391,6 +394,19 @@ export class ModuleHost {
     if (!grant) throw moduleRefusalError("scope_denied", "这个扩展没有有效的安装权限授权");
     try { assertAppMethodPermission(method,grant.granted); }
     catch (error) { throw moduleRefusalError("scope_denied",error instanceof Error ? error.message : String(error)); }
+  }
+  /** The child may ask for RPCs, but only this trusted host knows the installed identity.
+   * Revalidate per call, including after revocation or replacement during a long RPC. */
+  private async callAppFromExtension(manifest: ModuleManifest, method: string, input: unknown, signal: AbortSignal): Promise<unknown> {
+    if (signal.aborted || this.modules.get(manifest.id) !== manifest) throw Error("扩展执行已取消或替换");
+    if (!this.capabilities.has("core.app.call")) throw Error("core.app.call 宿主能力未注册");
+    if (!this.options.invokeAppCall) throw Error("core.app.call 宿主 RPC 通道不可用");
+    this.authorizeAppMethod(manifest.id, method);
+    if (signal.aborted) throw Error("扩展执行已取消");
+    const value = await this.options.invokeAppCall(manifest.id, method, input, signal);
+    if (signal.aborted || this.modules.get(manifest.id) !== manifest) throw Error("扩展执行已取消或替换");
+    this.authorizeAppMethod(manifest.id, method);
+    return value;
   }
   /** Host-validated grant update; never accepts permissions absent from the installed manifest. */
   setPermissions(raw: unknown): Promise<ModuleCatalog> {

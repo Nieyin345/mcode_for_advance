@@ -2483,7 +2483,15 @@ export function appApiBindingId(sessionId: string, method: string, input: unknow
 /**
  * 唯一入口。引擎侧(Claude 进程内 MCP / Codex 动态工具 / Pi 扩展)都调它。
  */
-export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: string, ctx: ProviderContext): Promise<ToolResult> {
+/** Host-only injected extension check; not part of the model/tool argument schema. */
+type TrustedExtensionCall = {
+  authorize(method: string): Promise<void>;
+  acceptResult(result: unknown): void;
+};
+export async function invokeAppTool(
+  name: string, rawArgs: unknown, sessionId: string, ctx: ProviderContext,
+  trustedExtension?: TrustedExtensionCall,
+): Promise<ToolResult> {
   const spec = appMcpTools().find((t) => t.name === name);
   if (!spec) return fail(`未知的 Mcode 控制工具:${name}`);
   try {
@@ -2527,6 +2535,8 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
             }),
           );
         }
+
+        if (trustedExtension) await trustedExtension.authorize(entry.method);
 
         // ── 可信操作账本(MC-067):先原子领取,再执行副作用 ────────────────
         // 幂等去重只对**模型自选的幂等键**有意义(不带 operation_id 时每次都是随机唯一 id,
@@ -2640,7 +2650,7 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         // 否则走 `gateAppAction`;它只会在**用户本人新鲜点头**那一刻回调
         // `signPlanGrantForUserApproval`,把这次批准的来源与作用域铸成 grant(ARC-004 签发端)。
         // 完全访问的系统默认放行 / 已记的「始终允许」**不**触发签发 —— agent / system 不能给自己发授权。
-        const denied = grantAuthorized
+        const denied = trustedExtension || grantAuthorized
           ? null
           : await gateAppAction(
               ctx,
@@ -2710,6 +2720,7 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         // ── 真正执行 RPC(到这里一定被调一次)──────────────────────────────
         let result: unknown;
         try {
+          if (trustedExtension) await trustedExtension.authorize(entry.method);
           // 【MC-092】记忆这类**按项目隔离**的方法,agent 走通用 `app_api_call` 时也要绑上
           // 宿主铸的会话项目身份 —— 否则模型能带 `projects/<别的项目>/…` 读写任意项目记忆,
           // 或 `list` 出全部(专用记忆工具本来就有这道隔离,通用路从前没有)。作用域只包
@@ -2783,6 +2794,10 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
         //    那正是 ARC-009 要修的洞:失败的返回值会把 Agent 推去重复执行一个已落定的
         //    非幂等操作。通知失败 → SUCCEEDED_WITH_WARNINGS,并**保留可观测的 warning**。
         let op: OperationResult;
+        if (trustedExtension) {
+          await trustedExtension.authorize(entry.method);
+          trustedExtension.acceptResult(redactValue(slimSessions(result)));
+        }
         try {
           notifyAppSettingWrite(entry.method, args.input);
           op = makeOp("SUCCEEDED", entry.method, operationId);
@@ -2830,4 +2845,25 @@ export async function invokeAppTool(name: string, rawArgs: unknown, sessionId: s
   } catch (err) {
     return fail(errText(err));
   }
+}
+
+/** Host-owned ModuleHost identity -> the existing invokeAppTool dispatch and policy. */
+export async function invokeExtensionAppCall(
+  moduleId: string, method: string, input: unknown, signal: AbortSignal,
+): Promise<unknown> {
+  const { getModuleHost } = await import("../modules/service.js");
+  const host = await getModuleHost();
+  let accepted = false;
+  let payload: unknown;
+  const authorize = async (requested: string): Promise<void> => {
+    if (signal.aborted) throw Error("扩展 RPC 已取消");
+    host.authorizeAppMethod(moduleId, requested);
+  };
+  const reply = await invokeAppTool(
+    "app_api_call", { method, input }, "extension:" + moduleId, {} as ProviderContext,
+    { authorize, acceptResult(result) { accepted = true; payload = result; } },
+  );
+  if (signal.aborted) throw Error("扩展 RPC 已取消");
+  if (!accepted) throw Error(textBlocksOf(reply).join("\n") || "扩展 RPC 被拒绝");
+  return payload;
 }

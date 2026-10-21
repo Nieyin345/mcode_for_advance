@@ -49,4 +49,5 @@ export interface BuiltinCapabilityEntry {
 export const BUILTIN_CAPABILITY_CATALOGUE: readonly BuiltinCapabilityEntry[] = [
   { id: "core.file.inspect", kind: "task", source: "host" },
   { id: "core.file.info", kind: "query", source: "host" },
+  { id: "core.app.call", kind: "action", source: "host" },
 ];
