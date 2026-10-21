@@ -57,7 +57,7 @@ function parseWorkflowDoc(raw: string, rowId: string): WorkflowDoc {
   if (checked.data.id !== rowId) return invalid("持久行 ID 与文档 ID 不匹配");
   // Preserve unknown fields on read. The workflow import/export layer owns
   // their round-trip policy; using checked.data here would silently strip them.
-  return decoded as WorkflowDoc;
+  return { ...(decoded as Record<string, unknown>), engine: checked.data.engine ?? "mcode" } as WorkflowDoc;
 }
 
 function getWorkflowRow(id: string): WorkflowRow | null {

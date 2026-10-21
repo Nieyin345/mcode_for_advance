@@ -126,6 +126,7 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { transcriptText } from "@main/claude/nodeTranscript.js";
 import { createBuiltinExecutionEngine, createWorkflowInputBuilder } from "./executionEngine.js";
 import { sharedExecutorOwnership } from "@main/workflowEngines/executorOwnership.js";
+import { assertWorkflowExecutor } from "@main/workflowEngines/workflowEngineSelection.js";
 import { conversationQueue } from "./conversationQueue.js";
 import { libraryRoot } from "@main/library/paths.js";
 import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
@@ -941,6 +942,7 @@ export async function startWorkflowRun(args: {
     : args.originSessionId ?? null;
   const doc = getWorkflow(session.workflowId);
   if (!doc || doc.nodes.length === 0) return null;
+  assertWorkflowExecutor(doc, "mcode");
   const reviewError = workflowReviewError(doc);
   if (reviewError !== null) {
     // Direct callers must not bypass the UI or automation preflight.

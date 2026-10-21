@@ -374,6 +374,7 @@ export function WorkflowLibraryView({
     });
     return off;
   }, [openWorkflow]);
+
   /** 正在删这份文档。删除期间**不许再发保存** —— `WorkflowRepo.save` 是 upsert,
    *  晚到的那一次会把刚删掉的那一行写回去。 */
   const removingRef = useRef(false);
@@ -1041,6 +1042,16 @@ export function WorkflowLibraryView({
               {entry?.shippedUpdate && (
                 <WorkflowBadge tone="info">{t("settings.workflows.badgeShippedUpdate")}</WorkflowBadge>
               )}
+              <label className="flex items-center gap-2 text-[0.7857em] text-content-muted">
+                执行引擎
+                <select aria-label="工作流执行引擎" value={working.engine ?? "mcode"}
+                  onChange={(event) => handleUpdateWorkflow({ engine: event.target.value as "mcode" | "node-red" })}
+                  className="rounded border border-edge bg-surface px-2 py-1 text-content"
+                  disabled={saving}>
+                  <option value="mcode">Mcode（旧工作流）</option>
+                  <option value="node-red">Node-RED</option>
+                </select>
+              </label>
               {/* 保存 / 放弃 + 状态行。**摆在标题行,和"我在编辑哪个工作流"同一行** ——
                   这是这一页唯一一处"整份文档"的位置,而这两个动作正是文档级的。
                   自动保存那会儿没有这一块,因为没有什么可点的。

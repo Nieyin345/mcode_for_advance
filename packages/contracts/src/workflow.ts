@@ -257,8 +257,14 @@ export const WorkflowTriggerSchema = z.enum(WORKFLOW_TRIGGERS);
  * `review` / `code`),用户自建的用 `wf_` 前缀。这样 `sessions.composer_mode` 列的
  * 已有值不需要任何迁移(见 `db.ts`),而两种 id 天然不会撞。
  */
+export const WORKFLOW_ENGINES = ["mcode", "node-red"] as const;
+export type WorkflowEngine = (typeof WORKFLOW_ENGINES)[number];
+export const WorkflowEngineSchema = z.enum(WORKFLOW_ENGINES);
+
+/** Legacy documents retain their original runner. New documents explicitly opt into Node-RED. */
 export const WorkflowDocSchema = z.object({
   id: z.string().min(1),
+  engine: WorkflowEngineSchema.optional(),
   /** 名称**不能为空** —— 库里一行没有名字,列表、选择器、确认框里都会显示成一片空白。
    *  界面上存盘前也拦了一道(`settings/workflows/workflowView.ts` 的
    *  `missingRequiredName`,调度自动保存的那一处用它决定"先不发"),这里是兜底:
@@ -357,6 +363,7 @@ export interface WorkflowReviewInfo {
  *  编辑器打开某一个时才走 `workflow.get` 取完整文档。 */
 export const WorkflowListEntrySchema = z.object({
   id: z.string(),
+  engine: WorkflowEngineSchema.optional(),
   name: z.string(),
   description: z.string().optional(),
   icon: z.string().optional(),

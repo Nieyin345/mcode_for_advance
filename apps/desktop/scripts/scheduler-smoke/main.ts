@@ -20,6 +20,20 @@ const diamond = docOf(
   [edge("A", "C"), edge("A", "D"), edge("B", "D")],
 );
 
+// T46 direct scheduler guard: the legacy runner must reject a Node-RED-owned
+// graph even when a caller bypasses startWorkflowRun/IPC entirely.
+{
+  const h = makePorts();
+  let rejected: unknown;
+  try {
+    await runWorkflow({ doc: { ...diamond, engine: "node-red" }, prompt: "不可执行",
+      ports: h.ports, signal: controller().signal });
+  } catch (error) { rejected = error; }
+  check("T46 调度器拒绝 node-red 归属的图", rejected instanceof Error
+    && rejected.message.includes("node-red") && rejected.message.includes("拒绝"));
+  eq("T46 越界图一个节点也没调度", h.calls.length, 0);
+}
+
 {
   const h = makePorts({ delayMs: (id) => (id === "A" ? 30 : id === "B" ? 90 : 5) });
   const result = await runWorkflow({

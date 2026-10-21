@@ -61,6 +61,8 @@ export interface McodeAgentRunPayload {
   nodeId: string;
   /** 本次运行的 id（Host 注入；没有就是 null）。 */
   runId: string | null;
+  /** Native tab membership, verified independently against Host-owned flow metadata. */
+  tabId?: string;
   /** 迁移器带过来的其余参数（未知字段原样交给 port）。 */
   params: Record<string, unknown>;
 }
@@ -215,6 +217,7 @@ export function snapshotMcodeNodeInvocation(
   paramsSnapshot: Record<string, unknown>;
   inputSnapshot: unknown;
   runId: string | null;
+  tabId?: string;
 } {
   const normalized = normalizeAgentConfig(config);
   if (normalized.nodeId.trim() === "") {
@@ -233,8 +236,12 @@ export function snapshotMcodeNodeInvocation(
   } catch {
     throw new Error("Host Agent invocation data is not cloneable");
   }
-  const runId = typeof incomingMcode["runId"] === "string" ? incomingMcode["runId"] : null;
-  return { normalized, messageSnapshot, incomingMcode, paramsSnapshot, inputSnapshot, runId };
+  // Node-RED assigns _msgid at injection and preserves it across wires.
+  // Use it when no Mcode runId exists so all steps share one board run.
+  const runId = typeof incomingMcode["runId"] === "string" ? incomingMcode["runId"]
+    : typeof messageSnapshot["_msgid"] === "string" ? messageSnapshot["_msgid"] : null;
+  return { normalized, messageSnapshot, incomingMcode, paramsSnapshot, inputSnapshot, runId,
+    ...(typeof config.z === "string" ? { tabId: config.z } : {}) };
 }
 
 /**
@@ -257,6 +264,7 @@ export async function runAgentNode(
     capability: normalized.capability,
     nodeId: normalized.nodeId,
     runId,
+    ...(typeof config.z === "string" ? { tabId: config.z } : {}),
     params: paramsSnapshot,
   };
   // Validate and detach the Host result before exposing it downstream.

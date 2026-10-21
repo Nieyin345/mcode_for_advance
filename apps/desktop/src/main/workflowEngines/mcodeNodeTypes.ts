@@ -73,6 +73,7 @@ export interface McodeNodeBasePayload {
   params: Record<string, unknown>;
   nodeId: string;
   runId: string | null;
+  tabId?: string;
 }
 
 type Invocation = ReturnType<typeof snapshotMcodeNodeInvocation>;
@@ -83,6 +84,7 @@ function basePayload(invocation: Invocation): McodeNodeBasePayload {
     params: invocation.paramsSnapshot,
     nodeId: invocation.normalized.nodeId,
     runId: invocation.runId,
+    ...(invocation.tabId !== undefined ? { tabId: invocation.tabId } : {}),
   };
 }
 

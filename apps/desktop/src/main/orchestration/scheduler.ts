@@ -1,5 +1,6 @@
 import { shellCommandTemplateError } from "./commandTemplateSafety.js";
 import { commandOf } from "@contracts/nodeType";
+import { assertWorkflowExecutor } from "@main/workflowEngines/workflowEngineSelection.js";
 /**
  * 工作流调度器 —— 把一张 `WorkflowDoc` 按依赖推到底。
  *
@@ -2332,6 +2333,9 @@ class Run {
 
 /** 跑一张图 —— **唯一入口**，后面的活全在 {@link Run} 里。 */
 export async function runWorkflow(args: RunArgs): Promise<RunResult> {
+  // Even direct scheduler callers must obey Host engine ownership. An API or
+  // future automation entry may bypass runner.startWorkflowRun entirely.
+  assertWorkflowExecutor(args.doc, "mcode");
   return new Run().run(args);
 }
 

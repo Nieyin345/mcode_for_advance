@@ -199,6 +199,7 @@ export interface NodeRedFlow {
   "x-mcode"?: {
     docId: string;
     name: string;
+    engine?: WorkflowDoc["engine"];
     description?: string;
     icon?: string;
     prompt?: string;
@@ -1024,6 +1025,7 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
   const docMeta: NonNullable<NodeRedFlow["x-mcode"]> = {
     docId: doc.id,
     name: doc.name,
+    ...(doc.engine !== undefined ? { engine: doc.engine } : {}),
     ...(doc.description !== undefined ? { description: doc.description } : {}),
     ...(doc.icon !== undefined ? { icon: doc.icon } : {}),
     ...(doc.prompt !== undefined ? { prompt: doc.prompt } : {}),
@@ -1395,6 +1397,7 @@ function expectedNativeType(meta: NonNullable<NodeRedNode["x-mcode"]>): string |
   return {
     id: meta?.docId ?? flow.id,
     name: liveName,
+    ...(meta ? (meta.engine !== undefined ? { engine: meta.engine } : {}) : { engine: "node-red" }),
     ...(meta?.description !== undefined ? { description: meta.description } : {}),
     ...(meta?.icon !== undefined ? { icon: meta.icon } : {}),
     ...(meta?.prompt !== undefined ? { prompt: meta.prompt } : {}),
@@ -1408,7 +1411,7 @@ function expectedNativeType(meta: NonNullable<NodeRedNode["x-mcode"]>): string |
     builtin: meta?.builtin ?? false,
     updatedAt: meta?.updatedAt ?? 0,
     ...safeUnknownFields(meta?.unknown, [
-      "id", "name", "description", "icon", "prompt", "frameworkNote",
+      "id", "name", "engine", "description", "icon", "prompt", "frameworkNote",
       "trigger", "schemaVersion", "inputSchema", "outputSchema",
       "nodes", "edges", "builtin", "updatedAt",
     ]),
@@ -1434,7 +1437,7 @@ export function roundTripMismatchPaths(doc: WorkflowDoc, roundTripped: WorkflowD
     paths.push(path);
   };
   const knownDocKeys = [
-    "id", "name", "description", "icon", "prompt", "frameworkNote", "trigger", "schemaVersion",
+    "id", "name", "engine", "description", "icon", "prompt", "frameworkNote", "trigger", "schemaVersion",
     "inputSchema", "outputSchema", "builtin", "updatedAt",
   ] as const;
   for (const key of knownDocKeys) {

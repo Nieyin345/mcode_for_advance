@@ -86,6 +86,7 @@ export function missingRequiredName(doc: WorkflowDoc): boolean {
  * 比它会让"刚存完"立刻又判成脏,同一个死循环。
  */
 export function isDocDirty(working: WorkflowDoc, baseline: WorkflowDoc): boolean {
+  if (working.engine !== baseline.engine) return true;
   if (working.prompt !== baseline.prompt || working.frameworkNote !== baseline.frameworkNote) return true;
   if (working.nodes !== baseline.nodes || working.edges !== baseline.edges) return true;
   if (isIdentityLocked(baseline)) return false;

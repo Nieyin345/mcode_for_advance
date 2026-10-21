@@ -18,7 +18,11 @@ const paramsOf = (payload: Payload): Payload => {
   return p as Payload;
 };
 const MAX_TEXT = 256_000;
-async function runSelectedSession(payload: Payload, promptOverride?: string): Promise<{ text: string; artifacts: []; runId: string }> {
+async function runSelectedSession(
+  payload: Payload, promptOverride?: string,
+  resolveWorkflow?: (tabId: string) => string | null,
+  nodeType = "mcode-agent",
+): Promise<{ text: string; artifacts: []; runId: string }> {
   const params = paramsOf(payload);
   const sessionId = asString(params.sessionId);
   if (!sessionId) throw Error("Mcode sessionId is required; select an existing visible session in the node editor");
@@ -35,6 +39,17 @@ async function runSelectedSession(payload: Payload, promptOverride?: string): Pr
     : typeof input === "string" ? input : JSON.stringify(input)].filter(Boolean).join("\n\n");
   if (!prompt.trim()) throw Error("Mcode agent instruction/input is empty");
   if (prompt.length > 30_000) throw Error("Mcode agent prompt too large");
+  // Only Host-verified tab membership can nominate the workflowId. A Node-RED
+  // msg/sidecar is untrusted and cannot choose another workflow's board.
+  const workflowId = resolveWorkflow?.(asString(payload.tabId)) ?? null;
+  const nodeId = asString(payload.nodeId);
+  const runId = asString(payload.runId) || randomUUID();
+  const title = asString(payload.nodeTitle) || nodeId;
+  const emitStep = (event: Record<string, unknown>): void => {
+    if (workflowId && nodeId) runtimeManager.emitExternal({
+      ...event, sessionId, workflowId, runId, nodeId,
+    } as Parameters<typeof runtimeManager.emitExternal>[0]);
+  };
   let text = "";
   let eventError: string | null = null;
   let terminal: string | null = null;
@@ -47,13 +62,20 @@ async function runSelectedSession(payload: Payload, promptOverride?: string): Pr
     else if (event.type === "turn.done") terminal = event.reason;
   });
   try {
+    emitStep({ type: "workflow.node.queued" });
+    emitStep({ type: "workflow.node.progress", nodeType, title, phase: "running", message: "Node-RED 节点已开始执行" });
     const handle = await runtimeManager.sendTurn(session, { prompt, cwd });
     if (!handle) throw Error("Mcode session busy; native engine did not accept this turn");
     await handle.done;
     if (eventError) throw Error(eventError);
     if (terminal !== "end_turn") throw Error("Mcode native engine did not finish normally: " + (terminal ?? "no turn.done"));
     if (text.length >= MAX_TEXT) throw Error("Mcode agent response exceeded output limit");
-    return { text, artifacts: [], runId: randomUUID() };
+    emitStep({ type: "workflow.node.result", nodeType, title, status: "success", summary: text });
+    return { text, artifacts: [], runId };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    emitStep({ type: "workflow.node.result", nodeType, title, status: "failed", summary: "", error: reason });
+    throw err;
   } finally {
     unsubscribe();
   }
@@ -94,11 +116,13 @@ async function chooseBranch(payload: Payload): Promise<{ port: number }> {
 export function productionNodePackServices(
   getStatus: () => EngineRuntimeStatus,
   adminToken: string | undefined,
+  resolveWorkflow?: (tabId: string) => string | null,
 ): NodePackHostServices {
   return {
     async execute(operation: NodePackAction, payload: Payload): Promise<unknown> {
       if (operation === "agent.run" || operation === "conversation.run")
-        return runSelectedSession(payload);
+        return runSelectedSession(payload, undefined, resolveWorkflow,
+          operation === "agent.run" ? "mcode-agent" : "mcode-conversation");
       if (operation === "branch.decide") return chooseBranch(payload);
       if (operation === "module.invoke") {
         const p = paramsOf(payload);

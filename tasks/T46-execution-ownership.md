@@ -154,3 +154,12 @@ Mcode 现在有**两套工作流执行器**：
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜T46 执行结果
+
+- **最终判据：B（整图显式双引擎归属）**。T45 对仓库可见 5 份自带、7 份预设、1 份示例的已知字段往返给出 13/13，但这**不是用户现存数据库的全量统计**，而且不等于全部节点执行语义可无损迁移。未取得/遍历用户真实库，不虚报迁移成功总数或覆盖率；贸然选 A 删除旧调度器会破坏既有图，因此保留原生调度器只供旧图。所有新建工作流的默认引擎为 `node-red`，仓库旧行缺 `engine` 经 `WorkflowRepo.parseWorkflowDoc` 读取后补 `mcode`，库保存显式写 `engine`。
+- **一图一执行器**：`scheduler.runWorkflow` 和 `runner.startWorkflowRun` 都在派发前以同一 `assertWorkflowExecutor` 阻止 `node-red` 图进入原生调度器；Node-RED 宿主的启动及经认证的 `POST /flows` 部署握手，以库内引擎归属核对已标记的 `x-mcode.docId`，拒绝把 `mcode` 图作为原生流执行（不信任网络请求中声称的 engine 字段）。底层 owner CAS 未改，跨进程 flowId 排他仍通过 `executorOwnership` 协议；port 侧共享同一 native owner 租约，不为每步重建所有权。Node-RED 独立原生 tab 不自动伪装成库内 Mcode workflow。
+- **切换**：`workflowEngineSelection.ts` 在引擎切换前调用 `migrateWorkflowDoc`、`flowToWorkflowDoc`、`roundTripMismatchPaths`，把 `unmapped` / 人工裁决 / 语义损失和已知字段差异列到拒绝原因；反向切换要求先停运行中的 Node-RED，再只读其真实 `flows.json` 取得唯一 docId 对应 tab，禁止拿旧 SQL 快照替代真实 flow；拒绝未知、损坏和有全局配置节点的模糊迁移；检查全部完成后再做现有 CAS。UI 显示选择框和保存错误。新增测试含旧记录默认值、双向拒绝、双向无损与拒绝案例。
+- **看板**：不引入第二套事件事实源。Node-RED `mcode-agent`/`mcode-conversation` 通过 `nodePackProductionPorts.runSelectedSession` 已有的 RuntimeManager Host 端口发 `workflow.node.queued/progress/result`，节点真实结束后才报成功/失败；nodeId 和 tabId 经 Host-owned 原生 tab 映射归入工作流，`_msgid` 作为整轮 runId 的传播后备值。原生 Mcode 的事件保持不变。两种引擎都从 `workflowLive` 消费同一类事件，列表/编辑入口只有一份工作流 + 选择引擎，不另造第二个工作流入口。
+- **测试**：`workflow-engine-selection-smoke`、`scheduler-smoke`、`mcode-node-pack-smoke` 通过；`executor-gate-d`、`executor-ownership`、`flow-migration(-identity)`、相关 `workflow-*` 套件复测 16/17，唯一失败的 `workflow-ui-smoke` 当时浏览器未能启动，之后单独复跑已通过（之后选出的 11 个相关套件一起全绿）。两项变异：禁用 `assertWorkflowExecutor` 后归属测试 9/12（红），删除实际 `scheduler.runWorkflow` 守卫后 `scheduler-smoke` 109/111（红）；禁用 `checkEngineSwitch` 后迁移测试 10/12（红）；全部还原为绿。包级 tsc 最终输出及提交 SHA 以随后实测为准。
+- **尚未全覆盖**：验收 #5 对 **Node-RED 纯原生 `inject/switch/watch/exec`** 等不经过 Mcode Host port 的节点，当前无法逐步补发 `workflow.node.*`；Mcode Host-backed 节点已接线。用户真实数据库的迁移成功/失败总数无法在仓库隔离夹具内给出，不把 13/13 误写成用户真实统计。

@@ -70,6 +70,9 @@ import { ensureEngineBootstrap } from "./bootstrapManifest.js";
 import { ensureNodePack } from "./nodePackManifest.js";
 import { NodePackHost, type NodePackHostServices } from "./nodePackHost.js";
 import { productionNodePackServices } from "@main/workflowEngines/nodePackProductionPorts.js";
+import { assertNativeEngineSelection } from "./workflowEngineSelection.js";
+import { getWorkflow } from "@main/orchestration/library.js";
+import type { WorkflowDoc } from "@contracts/workflow";
 import {
   EngineRuntime,
   createEngineLaunchSpec,
@@ -352,12 +355,28 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
   private ownedFlowIds: string[] = [];
   private pendingDeploy: { id: string; flowIds: string[]; added: string[]; flows: unknown } | null = null;
   private nodePackHost: NodePackHost | null = null;
+  private nativeTabs = new Map<string, string>();
+  private tabMap(nodes: unknown): Map<string, string> {
+    const map = new Map<string, string>();
+    if (!Array.isArray(nodes)) return map;
+    for (const value of nodes) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const node = value as Record<string, unknown>;
+      if (node["type"] !== "tab" || typeof node["id"] !== "string") continue;
+      const meta = node["x-mcode"];
+      const docId = meta && typeof meta === "object" && !Array.isArray(meta)
+        ? (meta as Record<string, unknown>)["docId"] : undefined;
+      map.set(node["id"], typeof docId === "string" ? docId : "@node-red-native:" + node["id"]);
+    }
+    return map;
+  }
   constructor(engineId: string, ports: EngineRuntimePorts, private readonly ownership: ExecutorOwnershipRegistry,
     private readonly nodeServices?: NodePackHostServices,
     private readonly syncLibrary: (flows: unknown) => Promise<unknown> = async flows => {
       const { syncDeployedNativeWorkflows } = await import("./nativeLibrarySync.js");
       return syncDeployedNativeWorkflows(flows);
-    }) {
+    },
+    private readonly lookupDoc?: (id: string) => WorkflowDoc | null) {
     super(engineId, ports);
     this.onTerminated(() => this.releaseOwned());
   }
@@ -365,6 +384,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
   private releaseOwned(): void {
     this.nodePackHost?.dispose();
     this.nodePackHost = null;
+    this.nativeTabs.clear();
     const ids = [...this.ownedFlowIds, ...(this.pendingDeploy?.added ?? [])];
     this.ownedFlowIds = [];
     this.pendingDeploy = null;
@@ -396,6 +416,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
           }
         }
         this.ownedFlowIds = pending.flowIds;
+        this.nativeTabs = this.tabMap(pending.flows);
         // A real editor deploy has committed. Only now mirror the same native
         // nodes back to the existing workflow library, via its guarded save.
         // A failed mirror is logged, not misreported as an ownership rollback.
@@ -421,7 +442,10 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
       return;
     }
     let nextIds: string[];
-    try { nextIds = nativeFlowIdsOfNodes(msg["flows"]); }
+    try {
+      if (this.lookupDoc) assertNativeEngineSelection(msg["flows"], this.lookupDoc);
+      nextIds = nativeFlowIdsOfNodes(msg["flows"]);
+    }
     catch (err) { reject(err instanceof Error ? err.message : String(err)); return; }
     const added: string[] = [];
     try {
@@ -444,9 +468,16 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     const state = this.status().state;
     if (state === "running" || state === "starting") return super.start(options);
     if (this.ownedFlowIds.length > 0) throw new Error("旧引擎租约未释放，拒绝再次启动");
-    this.ownedFlowIds = claimNativeFlows(this.ownership, nativeFlowIds(options.dataDir));
+    this.ownedFlowIds = claimNativeFlows(this.ownership, nativeFlowIds(options.dataDir, (nodes) => {
+      if (this.lookupDoc) assertNativeEngineSelection(nodes, this.lookupDoc);
+      this.nativeTabs = this.tabMap(nodes);
+    }));
     this.nodePackHost = new NodePackHost(this.nodeServices ?? productionNodePackServices(
       () => this.status(), options.probeIdentity?.adminToken,
+      (tabId) => {
+        const docId = this.nativeTabs.get(tabId);
+        return docId && this.ownership.executorOwnerOf(docId) === "node-red" ? docId : null;
+      },
     ));
     try {
       const status = await super.start({
@@ -483,7 +514,8 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     if (!(ENGINE_IDS as readonly string[]).includes(engineId)) return null;
     let runtime = this.runtimes.get(engineId);
     if (runtime === undefined) {
-      runtime = new OwnedNodeRedRuntime(engineId, this.runtimePorts, this.ownership, undefined, this.nativeLibrarySync);
+      runtime = new OwnedNodeRedRuntime(engineId, this.runtimePorts, this.ownership, undefined,
+        this.nativeLibrarySync, this.runtimePorts === defaultEngineRuntimePorts ? (id) => getWorkflow(id) : undefined);
       this.runtimes.set(engineId, runtime);
     }
     return runtime;

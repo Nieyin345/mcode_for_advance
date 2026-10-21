@@ -5,7 +5,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExecutorOwnershipRegistry } from "./executorOwnership.js";
 
-export function nativeFlowIds(dataDir: string): string[] {
+export function nativeFlowIds(dataDir: string, authorizeNodes?: (nodes: unknown) => void): string[] {
   const path = join(dataDir, "flows.json");
   let raw: string;
   try {
@@ -19,6 +19,7 @@ export function nativeFlowIds(dataDir: string): string[] {
   let parsed: unknown;
   try { parsed = JSON.parse(raw); }
   catch { throw new Error("Node-RED flows.json 损坏：拒绝在未知 flow 上启用触发器"); }
+  authorizeNodes?.(parsed);
   return nativeFlowIdsOfNodes(parsed);
 }
 

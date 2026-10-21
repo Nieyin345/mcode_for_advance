@@ -23,6 +23,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { readFileSync, lstatSync } from "node:fs";
+import { join } from "node:path";
 import type { WorkflowDoc, WorkflowListEntry } from "@contracts/workflow";
 import { makeWorkflowId, uniqueWorkflowName } from "@contracts/workflow";
 import { WORKFLOW_PINNED_DEFAULTS_SETTING_KEY } from "@contracts/ipc";
@@ -37,11 +39,13 @@ import { workflowSaveIsStale, workflowSaveVersion } from "./workflowSaveVersion.
 import { clearWorkflowReview, requireWorkflowReview, workflowReviewError, type WorkflowOrigin } from "./workflowTrust.js";
 import { importWorkflowDoc as parseWorkflowText, validateWorkflowDoc, exportWorkflowDoc } from "./workflowValidation.js";
 import { materializePresetScriptsFor } from "@main/workflows/presetScripts.js";
+import { checkEngineSwitch, effectiveWorkflowEngine, nativeFlowForWorkflow } from "@main/workflowEngines/workflowEngineSelection.js";
 
 function summarize(doc: WorkflowDoc, pinned: boolean, shippedUpdate = false): WorkflowListEntry {
   return {
     id: doc.id,
     name: doc.name,
+    engine: doc.engine ?? "mcode",
     ...(doc.description ? { description: doc.description } : {}),
     ...(doc.icon ? { icon: doc.icon } : {}),
     // 内置退役:这两个字段恒为 false,留着是契约兼容(见文件头),别再拿它们分叉行为。
@@ -346,13 +350,36 @@ export async function saveWorkflow(
     .filter((w) => w.id !== doc.id)
     .map((w) => w.name);
 
-  // No awaits between this CAS check and the synchronous repository write.
-  // A renderer draft based on an old GUI/AI/import revision must not silently
-  // overwrite the newer document (including canvas-only changes or deletes).
+  const previous = getWorkflow(doc.id);
+  if (previous !== null && effectiveWorkflowEngine(previous) !== effectiveWorkflowEngine(derived.doc)) {
+    let nativeFlow;
+    if (effectiveWorkflowEngine(previous) === "node-red") {
+      // A Node-RED -> Mcode switch must inspect the *actual* native tab, not
+      // reserialize the possibly stale SQL mirror. Stop the executor first.
+      try {
+        const { workflowEngineRegistry } = await import("@main/workflowEngines/registry.js");
+        const runtime = workflowEngineRegistry.get("node-red");
+        const state = runtime?.status().state;
+        if (state === "running" || state === "starting")
+          return { ok: false, error: "请先停止 Node-RED 执行器，再切换引擎，以免运行中出现双执行" };
+        const filename = join(workflowEngineRegistry.dataDirOf("node-red"), "flows.json");
+        const stat = lstatSync(filename);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
+          return { ok: false, error: "Node-RED flows.json 不是独立普通文件，拒绝读取不可信来源" };
+        nativeFlow = nativeFlowForWorkflow(JSON.parse(readFileSync(filename, "utf8")), previous.id);
+      } catch (error) {
+        return { ok: false, error: `Node-RED → Mcode 无法验证真实 flow：${error instanceof Error ? error.message : String(error)}` };
+      }
+    }
+    const checked = checkEngineSwitch(previous, effectiveWorkflowEngine(derived.doc), types, nativeFlow);
+    if (!checked.ok) return { ok: false, error: checked.reason };
+  }
+  // All asynchronous validation must happen BEFORE CAS: no await between
+  // freshness check and the synchronous SQL write.
   if (opts.expectedRevision !== undefined && workflowSaveIsStale(getWorkflow(doc.id), opts.expectedRevision)) {
     return { ok: false, error: "工作流已被其他写者修改或删除；请保留草稿并重新打开最新版本后再合并" };
   }
-  const saved = { ...derived.doc, name: uniqueWorkflowName(derived.doc.name, others), updatedAt: Date.now() };
+  const saved = { ...derived.doc, engine: effectiveWorkflowEngine(derived.doc), name: uniqueWorkflowName(derived.doc.name, others), updatedAt: Date.now() };
   // The marker is written first: even a crash after this point cannot leave
   // an imported/AI-edited executable doc trusted by default. Validation has
   // already finished, so rejected imports do not disarm the previous version.

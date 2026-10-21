@@ -53,7 +53,7 @@ export { makeNodeId, makeWorkflowId };
  * 工作流也允许另附一段说明,见 `graphPromptNote`)。
  */
 export function newWorkflowDoc(id: string, name: string): WorkflowDoc {
-  return { id, name, prompt: "", nodes: [], edges: [], builtin: false, updatedAt: 0 };
+  return { id, name, engine: "node-red", prompt: "", nodes: [], edges: [], builtin: false, updatedAt: 0 };
 }
 
 /**
