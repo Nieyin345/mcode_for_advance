@@ -25,7 +25,7 @@ import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { EngineCapabilityMatrix } from "./EngineCapabilityMatrix.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
-import { Button, ErrorNote, Field, Input, Spinner } from "@renderer/components/ui/index.js";
+import { Button, EmptyState, ErrorNote, Field, Input, Spinner } from "@renderer/components/ui/index.js";
 import { Textarea } from "@renderer/components/ui/textarea.js";
 
 /** 引擎的展示名（不本地化 —— 品牌名）。 */
@@ -105,13 +105,13 @@ function EngineCard({
       ) : (
         <div className="space-y-3">
           {rows.length === 0 ? (
-            <p className="text-sm text-content-muted">{t("settings.engineTools.noneKnown")}</p>
+            <EmptyState title={t("settings.engineTools.noneKnown")} className="py-4" />
           ) : (
             <div className="flex flex-wrap gap-2">
               {rows.map((name) => {
                 const on = selected.has(name);
                 return (
-                  <button
+                  <Button variant="ghost" size={null}
                     key={name}
                     type="button"
                     onClick={() => toggle(name)}
@@ -125,7 +125,7 @@ function EngineCard({
                     title={on ? t("settings.engineTools.clickToEnable") : t("settings.engineTools.clickToDisable")}
                   >
                     {name}
-                  </button>
+                  </Button>
                 );
               })}
             </div>

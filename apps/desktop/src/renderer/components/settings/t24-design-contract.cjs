@@ -74,8 +74,20 @@ if (batch === 'shell') {
     if(name==='SkillPresetsView' && process.env.T24_MUTATION === 'skill-buttons') s=s.replace('<Button variant="ghost" size={null}', '<button');
     check(!/<button\b/.test(s),name+': native action not permitted');
   }
+} else if (batch === 'runtime') {
+  let runtime=read('RuntimesPanel.tsx');
+  const browser=read('SettingsBrowserPanel.tsx');
+  const terminal=read('SettingsTerminalPanel.tsx');
+  const title=read('TitleGenPanel.tsx');
+  const tools=read('EngineToolsPanel.tsx');
+  if(process.env.T24_MUTATION === 'runtime') runtime=runtime.replace('<Badge variant="success">', '<span>');
+  check(runtime.includes('<Badge variant="success">'), 'runtime install status uses Badge');
+  check(runtime.includes('<LoadingNote label={t("settings.runtimes.loading")}'), 'runtime list loading uses LoadingNote');
+  check(runtime.includes('<ErrorNote className="mt-1.5"'), 'runtime failure uses ErrorNote');
+  check(browser.includes('<ErrorNote tone="warning"'), 'browser encryption warning uses ErrorNote');
+  for(const [n,s] of [['browser',browser],['terminal',terminal],['title',title],['tools',tools]]) check(!/<button\b/.test(s), n+': native action not permitted');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

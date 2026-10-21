@@ -22,6 +22,7 @@ import { IconRobot } from "@renderer/lib/icons.js";
 import { SettingRow } from "./SettingRow.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { Textarea } from "@renderer/components/ui/textarea.js";
+import { Button } from "@renderer/components/ui/button.js";
 
 /**
  * Thread-title generation settings.
@@ -263,7 +264,7 @@ export function TitleGenPanel() {
             )}
           />
           {stylePrompt.length > 0 && (
-            <button
+            <Button variant="ghost" size={null}
               type="button"
               disabled={!titleGenEnabled}
               onClick={() => {
@@ -273,7 +274,7 @@ export function TitleGenPanel() {
               className="text-[0.7857em] text-content-subtle hover:text-content"
             >
               {t("settings.titleGen.promptReset")}
-            </button>
+            </Button>
           )}
         </div>
       </SettingRow>

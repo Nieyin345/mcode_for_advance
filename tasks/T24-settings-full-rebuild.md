@@ -237,3 +237,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - **未做**：`Skeleton` 用量仍为 0。这不是缺陷 —— 设置页的加载态是「有内容的局部刷新」，
   `LoadingNote`/`Spinner` 更合适；`Skeleton` 留给整屏首次渲染的场景。若后续要求补，
   另开卡，不在本卡内加码。
+
+### 2026-10-21｜批次 8：浏览器、终端、Runtime、标题生成、工具权限设置
+
+- 改动：`SettingsBrowserPanel`、`SettingsTerminalPanel`、`RuntimesPanel`、`TitleGenPanel`、`EngineToolsPanel` 的剩余原生动作按钮统一成 `ui/Button` 且保留旧 onClick/disabled/尺寸；`RuntimesPanel` 自绘加载提示→`LoadingNote`、安装失败提示→`ErrorNote`、下载中图标→`Spinner`、安装/更新/已装/未装状态胶囊→`Badge`；`SettingsBrowserPanel` 保管库加密告警→`ErrorNote(tone=warning)`、缓存清理结果→`Badge`/`ErrorNote`；`EngineToolsPanel` 无已知工具的自绘空态→`EmptyState`。
+- 原语：均复用已有 ui，无额外扩展。功能 bug：未发现（保留保管库的加密不可用高可见警告）。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792554867352-14552-MNmFsV`；双包 tsc：0 错。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs runtime` PASS；`set T24_MUTATION=runtime&& node ... runtime` 将运行时已安装 Badge 退化为 span 后 exit=1（预期红）。
+- 行为核对：Runtime 安装、重新安装、更新、删除、路径复制/显示及进度事件流没变；Browser 安全警告、缓存清理、Terminal 控件/标题生成和 EngineTools 权限选择回调没变；Electron 焦点测试通过。

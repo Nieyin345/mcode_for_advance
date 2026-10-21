@@ -62,13 +62,13 @@ export function ShellSection() {
       <ErrorNote title={t(labelKey)} className="mt-1">
         {shell.error}
         {!shell.ready && (
-          <button
+          <Button variant="ghost" size={null}
             type="button"
             onClick={shell.retry}
             className="ml-2 rounded border border-current px-1.5 py-0.5 text-[0.7857em] font-medium"
           >
             {t("common.retry")}
-          </button>
+          </Button>
         )}
       </ErrorNote>
     ) : null;
@@ -262,22 +262,22 @@ function CommandsSection() {
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                      <button
+                      <Button variant="ghost" size={null}
                         type="button"
                         className="rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-content"
                         title={t("common.edit")}
                         onClick={() => openEdit(cmd)}
                       >
                         <IconPencil size={13} />
-                      </button>
-                      <button
+                      </Button>
+                      <Button variant="ghost" size={null}
                         type="button"
                         className="rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-danger"
                         title={t("common.delete")}
                         onClick={() => remove(cmd.id)}
                       >
                         <IconTrash size={13} />
-                      </button>
+                      </Button>
                     </div>
                   </li>
                 ))}

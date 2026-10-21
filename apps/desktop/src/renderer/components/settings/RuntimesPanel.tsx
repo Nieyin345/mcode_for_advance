@@ -20,7 +20,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button } from "@renderer/components/ui/index.js";
+import { Badge, Button, ErrorNote, LoadingNote, Spinner } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { ToolchainSection } from "./ToolchainSection.js";
@@ -32,7 +32,6 @@ import {
   IconX,
   IconRefresh,
   IconTrash,
-  IconLoader2,
   IconAlertTriangle,
   IconDownload,
   IconPackage,
@@ -94,10 +93,7 @@ export function RuntimesPanel() {
 
       <SettingsSection title={t("settings.runtimes.section")}>
         {runtimes.length === 0 ? (
-          <div className="flex items-center justify-center gap-2 px-4 py-8 text-[0.85em] text-content-subtle">
-            <IconLoader2 size={14} className="animate-spin" />
-            {t("settings.runtimes.loading")}
-          </div>
+          <LoadingNote label={t("settings.runtimes.loading")} />
         ) : (
           runtimes.map((rt) => (
             <RuntimeRow key={rt.agent} state={rt} progress={progress[rt.agent]} onReload={reloadRuntimes} />
@@ -243,7 +239,7 @@ function RuntimeRow({
     <div className="px-4 py-2">
       <div className="flex items-center gap-3">
         {/* Expand toggle */}
-        <button
+        <Button variant="ghost" size={null}
           type="button"
           onClick={() => setExpanded(!expanded)}
           aria-expanded={expanded}
@@ -254,7 +250,7 @@ function RuntimeRow({
           title={t("settings.runtimes.toggleDetails")}
         >
           {expanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
-        </button>
+        </Button>
 
         {/* Name column: brand icon + name + status badge */}
         <div className="flex w-44 shrink-0 items-center gap-2">
@@ -264,7 +260,7 @@ function RuntimeRow({
         </div>
 
         {/* Detail line (click also expands; full path on hover) */}
-        <button
+        <Button variant="ghost" size={null}
           type="button"
           onClick={() => setExpanded(!expanded)}
           aria-expanded={expanded}
@@ -272,14 +268,14 @@ function RuntimeRow({
           title={state.activePath ?? undefined}
         >
           {details.join("  ·  ")}
-        </button>
+        </Button>
 
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-1">
           {!state.installed ? (
             <Button variant={state.source === null ? "primary" : "outline"} size="sm" onClick={doInstall} disabled={installing}>
               {installing ? (
-                <IconLoader2 size={12} className="animate-spin" />
+                <Spinner size="xs" />
               ) : (
                 <IconDownload size={12} />
               )}
@@ -289,12 +285,12 @@ function RuntimeRow({
             <>
               {state.updateAvailable && (
                 <Button variant="primary" size="sm" onClick={doInstall} disabled={installing}>
-                  {installing ? <IconLoader2 size={12} className="animate-spin" /> : <IconDownload size={12} />}
+                  {installing ? <Spinner size="xs" /> : <IconDownload size={12} />}
                   {t("settings.runtimes.update")}
                 </Button>
               )}
               <Button variant="ghost" size="sm" onClick={doInstall} disabled={installing} title={t("settings.runtimes.reinstall")}>
-                {installing ? <IconLoader2 size={12} className="animate-spin" /> : <IconRefresh size={12} />}
+                {installing ? <Spinner size="xs" /> : <IconRefresh size={12} />}
               </Button>
               <Button variant="outline" size="sm" onClick={doRemove} disabled={installing}>
                 <IconTrash size={12} />
@@ -335,7 +331,7 @@ function RuntimeRow({
               <span className="block min-w-0 flex-1 truncate font-mono text-content-muted" title={activePath}>
                 {activePath}
               </span>
-              <button
+              <Button variant="ghost" size={null}
                 type="button"
                 onClick={doCopyPath}
                 className="ml-2 flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[0.92em] text-content-subtle hover:bg-surface-hover hover:text-content"
@@ -343,15 +339,15 @@ function RuntimeRow({
               >
                 {copied ? <IconCheck size={11} className="text-accent" /> : <IconCopy size={11} />}
                 {copied ? t("settings.runtimes.copied") : t("settings.runtimes.copy")}
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost" size={null}
                 type="button"
                 onClick={() => void api.shell.showItemInFolder({ path: activePath })}
                 className="ml-1 flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[0.92em] text-content-subtle hover:bg-surface-hover hover:text-content"
                 title={t("settings.runtimes.reveal")}
               >
                 <IconFolderOpen size={11} />
-              </button>
+              </Button>
             </DetailRow>
           )}
         </div>
@@ -374,10 +370,7 @@ function RuntimeRow({
 
       {/* Error (action failure or last failed attempt) */}
       {(actionError || state.lastError) && (
-        <div className="mt-1.5 flex items-start gap-1.5 rounded bg-danger/10 px-2 py-1 text-[0.7857em] text-danger">
-          <IconAlertTriangle size={11} className="mt-px shrink-0" />
-          <span className="min-w-0 break-words">{actionError ?? state.lastError}</span>
-        </div>
+        <ErrorNote className="mt-1.5" icon={IconAlertTriangle}>{actionError ?? state.lastError}</ErrorNote>
       )}
     </div>
   );
@@ -410,40 +403,29 @@ function StatusBadge({ state }: { state: RuntimeAgentState }) {
   const { t } = useI18n();
   if (state.installing) {
     return (
-      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.72em] text-accent">
-        <IconLoader2 size={9} className="animate-spin" />
-        {t("settings.runtimes.statusInstalling")}
-      </span>
+      <Badge variant="accent"><Spinner size="xs" />{t("settings.runtimes.statusInstalling")}</Badge>
     );
   }
   if (state.updateAvailable) {
     return (
-      <span className="inline-flex shrink-0 items-center rounded-full bg-warning/10 px-1.5 py-0.5 text-[0.72em] text-warning">
-        {t("settings.runtimes.statusUpdate")}
-      </span>
+      <Badge variant="warning">{t("settings.runtimes.statusUpdate")}</Badge>
     );
   }
   if (state.installed) {
     return (
-      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.72em] text-accent">
-        <IconCheck size={9} />
-        {t("settings.runtimes.statusInstalled")}
-      </span>
+      <Badge variant="success"><IconCheck size={9} />{t("settings.runtimes.statusInstalled")}</Badge>
     );
   }
   if (state.source === "dev" || state.source === "bundled") {
     return (
-      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-hover px-1.5 py-0.5 text-[0.72em] text-content-muted">
+      <Badge variant="neutral">
         {state.source === "dev"
           ? t("settings.runtimes.statusDev")
           : t("settings.runtimes.statusBundled")}
-      </span>
+      </Badge>
     );
   }
   return (
-    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-hover px-1.5 py-0.5 text-[0.72em] text-content-subtle">
-      <IconX size={9} />
-      {t("settings.runtimes.statusNotInstalled")}
-    </span>
+    <Badge variant="neutral"><IconX size={9} />{t("settings.runtimes.statusNotInstalled")}</Badge>
   );
 }

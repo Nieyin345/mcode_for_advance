@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, ErrorNote, Input, Switch } from "@renderer/components/ui/index.js";
+import { Badge, Button, ConfirmDialog, ErrorNote, Input, Switch } from "@renderer/components/ui/index.js";
 import { useSettingValue } from "@renderer/hooks/useSettingValue.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -109,13 +109,13 @@ export function ScreenshotDirRow() {
         <ErrorNote title={t(s.ready ? "settings.saveFailed" : "settings.loadFailed")} className="mt-1">
           {errText}
           {!s.ready && (
-            <button
+            <Button variant="ghost" size={null}
               type="button"
               onClick={s.retry}
               className="ml-2 rounded border border-current px-1.5 py-0.5 text-[0.7857em] font-medium"
             >
               {t("common.retry")}
-            </button>
+            </Button>
           )}
         </ErrorNote>
       )}
@@ -181,13 +181,13 @@ export function DataDirRow() {
         <ErrorNote title={t(s.ready ? "settings.saveFailed" : "settings.loadFailed")} className="mt-1">
           {errText}
           {!s.ready && (
-            <button
+            <Button variant="ghost" size={null}
               type="button"
               onClick={s.retry}
               className="ml-2 rounded border border-current px-1.5 py-0.5 text-[0.7857em] font-medium"
             >
               {t("common.retry")}
-            </button>
+            </Button>
           )}
         </ErrorNote>
       )}
@@ -248,9 +248,7 @@ export function PersistLoginRow() {
         <>
           {/* 【MC-023】加密不可用 → 明确说"已停用持久化 + 为什么",不再静默明文降级。 */}
           {enabled && vault && !vault.encryptionAvailable && (
-            <div className="mt-1 rounded border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] leading-relaxed text-warning">
-              {t("settings.browser.vaultEncryptionUnavailable")}
-            </div>
+            <ErrorNote tone="warning" className="mt-1 text-[11px]">{t("settings.browser.vaultEncryptionUnavailable")}</ErrorNote>
           )}
           {/* 【MC-023】保存被拒的**具体原因**(加密抛错/旧明文擦除失败)—— 只有布尔位
               不够:encryptionAvailable=true 而 encryptString 抛错时上面那条不会出现,
@@ -273,13 +271,13 @@ export function PersistLoginRow() {
           {vaultError !== null && (
             <ErrorNote title={t("settings.loadFailed")} className="mt-1">
               {vaultError}
-              <button
+              <Button variant="ghost" size={null}
                 type="button"
                 onClick={() => void loadVault()}
                 className="ml-2 rounded border border-current px-1.5 py-0.5 text-[0.7857em] font-medium"
               >
                 {t("common.retry")}
-              </button>
+              </Button>
             </ErrorNote>
           )}
           {vault?.plaintextErased && (
@@ -291,13 +289,13 @@ export function PersistLoginRow() {
             <ErrorNote title={t(s.ready ? "settings.saveFailed" : "settings.loadFailed")} className="mt-1">
               {error ?? s.error}
               {!s.ready && (
-                <button
+                <Button variant="ghost" size={null}
                   type="button"
                   onClick={s.retry}
                   className="ml-2 rounded border border-current px-1.5 py-0.5 text-[0.7857em] font-medium"
                 >
                   {t("common.retry")}
-                </button>
+                </Button>
               )}
             </ErrorNote>
           )}
@@ -355,12 +353,8 @@ function CacheSection() {
           >
             {busy ? t("settings.browser.clearing") : t("settings.browser.clearCache")}
           </Button>
-          {result === "ok" && (
-            <span className="text-[0.7857em] text-accent">{t("settings.browser.clearOk")}</span>
-          )}
-          {result === "error" && (
-            <span className="text-[0.7857em] text-danger">{t("settings.browser.clearFailed")}</span>
-          )}
+          {result === "ok" && <Badge variant="success">{t("settings.browser.clearOk")}</Badge>}
+          {result === "error" && <ErrorNote>{t("settings.browser.clearFailed")}</ErrorNote>}
         </div>
       </SettingRow>
       <ConfirmDialog
