@@ -1,0 +1,60 @@
+From 684d9dc420a3837c37be318acc36c2c4bf201978 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Wed, 21 Oct 2026 08:13:58 +0800
+Subject: [PATCH 2/6] feat(docs): scope open lifecycle to Mcode handoff
+
+---
+ apps/docs/src/preload/mcode-view.ts | 23 ++++++++++++++---------
+ 1 file changed, 14 insertions(+), 9 deletions(-)
+
+diff --git a/apps/docs/src/preload/mcode-view.ts b/apps/docs/src/preload/mcode-view.ts
+index d4afc71..76a7cf0 100644
+--- a/apps/docs/src/preload/mcode-view.ts
++++ b/apps/docs/src/preload/mcode-view.ts
+@@ -76,6 +76,16 @@ function saveBytes(data: ArrayBuffer | Uint8Array): Uint8Array {
+ const noop = (): void => {}
+ const noSubscription = (): (() => void) => noop
+ 
++// Lifecycle consumers share the same *host-issued* one-shot document handoff.
++// Neither the Open button nor startup may pick a filesystem path in a Docs view.
++async function readHostPendingDocx(): Promise<Awaited<ReturnType<DesktopApi['openDocxPath']>>> {
++  const reply = await invokeDocs('docs:open-path', {})
++  if (reply && typeof reply === 'object' && (reply as { ok?: unknown }).ok === true) {
++    return ((reply as { result?: unknown }).result ?? null) as Awaited<ReturnType<DesktopApi['openDocxPath']>>
++  }
++  return null
++}
++
+ /**
+  * Original DesktopApi method names and callback signatures are retained.
+  * Only path-independent UI defaults stay local; all document content, file
+@@ -83,14 +93,9 @@ const noSubscription = (): (() => void) => noop
+  * handled by Mcode, never by the vendor's standalone main IPC handlers.
+  */
+ export const mcodeDocsDesktopApi = Object.freeze({
+-  openDocxPath: async (_path: string) => {
+-    // The caller's path is untrusted. The host chooses its pendingOpen.
+-    const reply = await invokeDocs('docs:open-path', {})
+-    if (reply && typeof reply === 'object' && (reply as { ok?: unknown }).ok === true) {
+-      return ((reply as { result?: unknown }).result ?? null) as Awaited<ReturnType<DesktopApi['openDocxPath']>>
+-    }
+-    return null
+-  },
++  // Docs owns no OS dialogs. Mcode must prepare an authorized file first.
++  openDocx: readHostPendingDocx,
++  openDocxPath: (_path: string) => readHostPendingDocx(),
+   confirmDocumentReplace: () => invokeDocs('docs:confirm-document-replace', {}) as Promise<boolean>,
+   saveDocx: (_path: string, data: ArrayBuffer | Uint8Array, auto?: boolean) =>
+     invokeDocs('docs:save', { bytes: saveBytes(data), auto: auto === true }) as ReturnType<DesktopApi['saveDocx']>,
+@@ -125,7 +130,7 @@ export const mcodeDocsDesktopApi = Object.freeze({
+   // Initial renderer effects and new-blank path use these native API hooks.
+   // No second chat, persisted settings, password store, export queue or AI.
+   getAiSettings: () => Promise.resolve({ provider: 'genspark', providers: {} }) as ReturnType<DesktopApi['getAiSettings']>,
+-  consumePendingOpenDocx: () => Promise.resolve(null),
++  consumePendingOpenDocx: readHostPendingDocx,
+   consumeNewBlankDoc: () => Promise.resolve(false),
+   consumeAiDocContent: () => Promise.resolve(null),
+   consumeHeadlessExport: () => Promise.resolve(null),
+-- 
+2.52.0.windows.1
+

@@ -55,7 +55,7 @@ if [[ -f "$VENDOR_DOCS" && -f "$VENDOR_IPC" ]]; then
     --alias:electron=./scripts/document-view-host-smoke/stubs/nativeDocsElectron.ts \
     --alias:@genoffice/font-metrics=./scripts/document-view-host-smoke/stubs/nativeDocsFonts.ts \
     --outfile="$OUT/nativeDocs.mjs" --log-level=error
-  node "$OUT/nativeDocs.mjs"
+  MCODE_SMOKE_DATA_ROOT="$DATA" node "$OUT/nativeDocs.mjs"
 else
   echo "document-view-host-smoke: SKIP vendor Docs boundary (gitignored source missing)"
 fi

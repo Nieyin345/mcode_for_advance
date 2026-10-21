@@ -48,6 +48,10 @@ await build({
   logLevel: "error",
   external: ["electron"],
   alias: {
+    // Test the *actual* native Docs registrar used in production, not the
+    // absent-vendor stub. This caught a missing availability export in T05a.
+    "@main/document/docsVendorIpc.js": join(vendorRoot, "apps/docs/src/main/mcode-ipc.ts"),
+    "@genoffice/font-metrics": join(vendorRoot, "packages/font-metrics/src/index.ts"),
     "@genoffice/docx-engine": join(vendorRoot, "packages/docx-engine/src/index.ts"),
     // pptx-ops 依赖 docx-engine 的 math 子路径（公式文本）；只 alias 包根会把
     // 子路径拼成 `<index.ts>/math`（实测 esbuild 报错）。

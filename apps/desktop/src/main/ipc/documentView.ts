@@ -201,7 +201,11 @@ export function registerDocumentViewHandlers(
       /* 上报是 best-effort；坏形状忽略 */
     }
   };
+  // Native and legacy Docs preloads use ipcRenderer.send, not invoke.
+  // Keep the invoke endpoint for deterministic fake-Ipc callers; both use
+  // the exact same sender-bound state handler, never parallel dirty logic.
   ipc.handle("mcode:document-view:close-check-result", onCloseCheckResult);
+  if (typeof ipc.on === 'function') ipc.on('mcode:document-view:close-check-result', onCloseCheckResult);
 
   // IpcMain.handle 的监听器形参带类型化的 event；本模块的 handler 全都不读它，
   // 按 `(event: unknown, raw: unknown)` 声明即可结构兼容 recordRpcHandler。
@@ -262,7 +266,7 @@ export function registerDocumentViewHandlers(
 
   const onClose = async (_evt: unknown, raw: unknown): Promise<DocViewResult> => {
     try {
-      return host.close(DocViewCloseSchema.parse(raw).docId);
+      return await host.closeWithDirtyProtection(DocViewCloseSchema.parse(raw).docId);
     } catch (err) {
       return failed(err);
     }

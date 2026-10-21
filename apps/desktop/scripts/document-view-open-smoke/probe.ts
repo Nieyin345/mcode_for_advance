@@ -32,7 +32,7 @@
  */
 import { BrowserWindow, ipcMain } from "electron";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync as mkdirFs, readFileSync } from "node:fs";
+import { existsSync, mkdirSync as mkdirFs, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -189,6 +189,9 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
   const outsidePath = join(outsideDir, "escape.docx");
   await writeFile(outsidePath, "outside");
   const withinWorkspace = (p: string): boolean =>
+    // T05a mutation harness: bypass only in isolated smoke child process.
+    // The existing outside-path assertion MUST become red with this flag.
+    process.env.MCODE_T05A_MUTATE_SCOPE === "1" ||
     p.replace(/\\/g, "/").toLowerCase().startsWith(workspace.replace(/\\/g, "/").toLowerCase());
 
   // ── mock AI settings（页面首帧要它；本套件不测 AI） ──
@@ -240,6 +243,9 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
     handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
       recordedHandlers.set(channel, listener);
       (ipcMain as unknown as { handle(c: string, l: unknown): void }).handle(channel, listener);
+    },
+    on(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
+      (ipcMain as unknown as { on(c: string, l: unknown): void }).on(channel, listener);
     },
   } as unknown as Electron.IpcMain;
   registerDocumentViewHandlers(recordingIpc, host, withinWorkspace, slidesBridgeForProbe);
@@ -752,6 +758,88 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
         throw new Error("config.slidesPagePath 缺失 —— genoffice/apps/slides/out/renderer/index.html 未构建");
       });
     }
+
+    // T05a: true-Electron clean close: a loaded DOCX must survive without
+    // rewrite. Both content hash AND mtime are observed, not only save replies.
+    const cleanId = "t05a-clean";
+    const cleanPath = join(workspace, "t05a-clean.docx");
+    await writeFile(cleanPath, fixture);
+    const cleanBefore = statSync(cleanPath);
+    const cleanHash = createHash("sha256").update(readFileSync(cleanPath)).digest("hex");
+    const cleanOpen = host.open({
+      docId: cleanId,
+      url: pathToFileURL(config.pagePath).toString() + config.urlSuffix,
+      bounds: { x: 0, y: 0, width: 1200, height: 800 },
+      visible: true,
+    });
+    await check("T05a clean: open native Docs page", () => {
+      assert(cleanOpen.ok, JSON.stringify(cleanOpen));
+    });
+    const cleanWebContents = host.webContentsOf(cleanId) as Electron.WebContents | null;
+    if (cleanWebContents !== null) {
+      for (let tries = 0; tries < 100; tries++) {
+        const ready = await cleanWebContents.executeJavaScript("document.readyState === 'complete'").catch(() => false);
+        if (ready) break;
+        await delay(100);
+      }
+    }
+    await delay(500);
+    const cleanPrepared = host.openPath(cleanId, cleanPath, withinWorkspace);
+    await check("T05a clean: requested DOCX is workspace scoped", () => {
+      assert(cleanPrepared.ok, JSON.stringify(cleanPrepared));
+    });
+    const cleanStart = Date.now();
+    while (host.sessionFor(cleanId) === null && Date.now() - cleanStart < 30000) await delay(150);
+    await check("T05a clean: native renderer acknowledged opened DOCX", () => {
+      assert(host.sessionFor(cleanId)?.filePath === cleanPath, "native editor never committed clean document");
+    });
+    // The following actions execute against the REAL vendor Docs preload
+    // and REAL native Mcode IPC registrar inside Electron, on a scoped DOCX.
+    if (cleanWebContents !== null) {
+      const native = await cleanWebContents.executeJavaScript(`(async () => {
+        const d = window.desktop;
+        const locale = await d.getSystemLocale();
+        const language = await d.getLanguage();
+        const metrics = await d.fontMetrics('Arial');
+        const langs = await d.spellLanguages();
+        const added = await d.spellAddWord('t05atestword');
+        const ignored = await d.spellIgnoreWord('t05aignored');
+        const recovery = await d.writeRecoveryCopy('C:/outside/recovery.docx', new Uint8Array([80,75,3,4]).buffer);
+        const intentRevision = await d.docPasswordIntentRevision();
+        const replaceOK = await d.confirmDocumentReplace();
+        d.armContextMenu();
+        d.claimContextMenu(71);
+        d.reportViewMenuState({ aiSidebar: false, darkCanvas: false });
+        const unlisten = d.onContextMenuRequest(() => {});
+        unlisten();
+        return { locale, language, fontSafe: metrics === null || typeof metrics === 'object',
+          languages: Array.isArray(langs.active), added, ignored, recovery,
+          intentRevision, replaceOK, context: true };
+      })()`, true) as { locale: string; language: string; fontSafe: boolean;
+        languages: boolean; added: boolean; ignored: boolean; recovery: { ok: boolean };
+        intentRevision: number; replaceOK: boolean; context: boolean };
+      await check('T05a group 2: native language/locale/font registered in real Electron', () => {
+        assert(typeof native.locale === 'string' && native.locale.length > 0 &&
+          (native.language === 'zh' || native.language === 'en') && native.fontSafe, JSON.stringify(native));
+      });
+      await check('T05a group 3: spell dictionaries use scoped native Electron session', () => {
+        assert(native.languages && native.added && native.ignored, JSON.stringify(native));
+      });
+      await check('T05a group 4: no second recovery writer or unsanctioned password store', () => {
+        assert(native.recovery.ok === false && native.intentRevision === 0 && native.replaceOK, JSON.stringify(native));
+      });
+      await check('T05a group 5: context menu and view-menu state are scoped', () => {
+        assert(native.context, JSON.stringify(native));
+      });
+    }
+    const cleanClose = await host.closeWithDirtyProtection(cleanId);
+    await check("T05a clean: native dirty check allows unmodified close", () => {
+      assert(cleanClose.ok, JSON.stringify(cleanClose));
+    });
+    await check("T05a clean: close preserves bytes and mtime (no stealth rewrite)", () => {
+      assert(createHash("sha256").update(readFileSync(cleanPath)).digest("hex") === cleanHash, "close modified document bytes");
+      assert(statSync(cleanPath).mtimeMs === cleanBefore.mtimeMs, "close changed file mtime");
+    });
 
   } finally {
     if (debuggerAttached) { try { wc.debugger.detach(); } catch { /* 已分离 */ } }

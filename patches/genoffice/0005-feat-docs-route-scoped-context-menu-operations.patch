@@ -1,0 +1,159 @@
+From bd0886823d5762f21c04541eff5bd71a9f862fdb Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Wed, 21 Oct 2026 08:35:53 +0800
+Subject: [PATCH 5/6] feat(docs): route scoped context menu operations
+
+---
+ apps/docs/src/main/mcode-ipc.ts     | 53 +++++++++++++++++++++++++++--
+ apps/docs/src/preload/mcode-view.ts | 19 +++++++++--
+ 2 files changed, 67 insertions(+), 5 deletions(-)
+
+diff --git a/apps/docs/src/main/mcode-ipc.ts b/apps/docs/src/main/mcode-ipc.ts
+index 36eb410..0729208 100644
+--- a/apps/docs/src/main/mcode-ipc.ts
++++ b/apps/docs/src/main/mcode-ipc.ts
+@@ -15,7 +15,8 @@ import { familyVerticalMetrics } from '@genoffice/font-metrics'
+ import { app, session } from 'electron'
+ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+ import { join } from 'node:path'
+-import type { IpcMain, IpcMainInvokeEvent } from 'electron'
++import type { IpcMain, IpcMainEvent, IpcMainInvokeEvent } from 'electron'
++import { ClickClaims } from '../shared/context-menu-claims'
+ 
+ const FONT = 'mcode:docs:native-font-metrics'
+ const LANGUAGES = 'mcode:docs:native-spell-languages'
+@@ -27,6 +28,9 @@ const SPELL_IGNORE = 'mcode:docs:native-spell-ignore-word'
+ const SPELL_REPLACE = 'mcode:docs:native-spell-replace'
+ const SPELL_DIAG = 'mcode:docs:native-spell-diag'
+ const RESPELL = 'mcode:docs:native-respell-kick'
++const CONTEXT_ARM = 'mcode:docs:native-context-menu-arm'
++const CONTEXT_CLAIM = 'mcode:docs:native-context-menu-claim'
++const VIEW_MENU_STATE = 'mcode:docs:native-view-menu-state'
+ export const MCODE_NATIVE_DOCS_CHANNELS = [FONT, LANGUAGES, SET_LANGUAGES, UI_LANGUAGE, SYSTEM_LOCALE,
+   SPELL_ADD, SPELL_IGNORE, SPELL_REPLACE, SPELL_DIAG, RESPELL] as const
+ 
+@@ -55,11 +59,11 @@ function saveIgnoreJournal(ignored: Map<string, Set<number>>): boolean {
+  * side effects on import. A supplied sender guard is mandatory, fail-closed.
+  */
+ export function registerDocsIpc(
+-  ipc: Pick<IpcMain, 'handle' | 'removeHandler'>,
++  ipc: Pick<IpcMain, 'handle' | 'removeHandler' | 'on' | 'removeListener'>,
+   isDocsSender: (sender: unknown) => boolean,
+   getUiLanguage: () => 'zh' | 'en' = () => 'zh',
+ ): () => void {
+-  const authorized = (event: IpcMainInvokeEvent): boolean => {
++  const authorized = (event: { sender?: unknown }): boolean => {
+     try { return !!event?.sender && isDocsSender(event.sender) === true }
+     catch { return false }
+   }
+@@ -167,6 +171,48 @@ export function registerDocsIpc(
+       await new Promise((resolve) => setTimeout(resolve, 120))
+     } catch { /* destroyed while respelling */ }
+   })
++  const contextClaims = new Map<number, ClickClaims>()
++  const armedContexts = new Set<number>()
++  const viewMenuStates = new Map<number, { aiSidebar: boolean; darkCanvas: boolean }>()
++  const onMessage: Array<[string, (event: IpcMainEvent, ...args: unknown[]) => void]> = []
++  const listen = (channel: string, listener: (event: IpcMainEvent, ...args: unknown[]) => void): void => {
++    ipc.on(channel, listener)
++    onMessage.push([channel, listener])
++  }
++  listen(CONTEXT_CLAIM, ((event: IpcMainEvent, raw: unknown) => {
++    event.returnValue = false
++    if (!authorized(event) || typeof raw !== 'number' || !Number.isSafeInteger(raw) || raw < 0) return
++    let claims = contextClaims.get(event.sender.id)
++    if (!claims) { claims = new ClickClaims(); contextClaims.set(event.sender.id, claims) }
++    claims.claim(raw, Date.now())
++    event.returnValue = true
++  }) as (event: IpcMainEvent, ...args: unknown[]) => void)
++  listen(CONTEXT_ARM, ((event: IpcMainEvent) => {
++    if (!authorized(event)) return
++    const wc = event.sender
++    if (armedContexts.has(wc.id)) return
++    armedContexts.add(wc.id)
++    wc.on('context-menu', (contextEvent, params) => {
++      if (wc.isDestroyed() || !authorized({ sender: wc })) return
++      const seq = contextClaims.get(wc.id)?.take(Date.now()) ?? null
++      if (seq === null) return
++      // The native browser menu must not cover the renderer's claimed menu.
++      contextEvent.preventDefault()
++      wc.send('mcode:docs:native-context-menu', {
++        seq, misspelledWord: params.misspelledWord, suggestions: params.dictionarySuggestions,
++      })
++    })
++    wc.once('destroyed', () => {
++      contextClaims.delete(wc.id)
++      armedContexts.delete(wc.id)
++      viewMenuStates.delete(wc.id)
++    })
++  }) as (event: IpcMainEvent, ...args: unknown[]) => void)
++  listen(VIEW_MENU_STATE, ((event: IpcMainEvent, raw: unknown) => {
++    if (!authorized(event)) return
++    const s = raw as { aiSidebar?: unknown; darkCanvas?: unknown } | null
++    viewMenuStates.set(event.sender.id, { aiSidebar: s?.aiSidebar === true, darkCanvas: s?.darkCanvas === true })
++  }) as (event: IpcMainEvent, ...args: unknown[]) => void)
+   ipc.handle(FONT, (event, family) => {
+     if (!authorized(event) || typeof family !== 'string' ||
+         family.length > 128 || !family.trim()) return null
+@@ -190,6 +236,7 @@ export function registerDocsIpc(
+   })
+   return () => {
+     for (const id of [...ownedBySender.keys()]) dropIgnored(id)
++    for (const [channel, listener] of onMessage) ipc.removeListener(channel, listener)
+     for (const channel of MCODE_NATIVE_DOCS_CHANNELS) ipc.removeHandler(channel)
+   }
+ }
+diff --git a/apps/docs/src/preload/mcode-view.ts b/apps/docs/src/preload/mcode-view.ts
+index c719d07..998e3db 100644
+--- a/apps/docs/src/preload/mcode-view.ts
++++ b/apps/docs/src/preload/mcode-view.ts
+@@ -15,7 +15,7 @@ import { contextBridge, ipcRenderer } from 'electron'
+ import type { IpcRendererEvent } from 'electron'
+ import type { DesktopApi, MenuCommand } from '../shared/ipc'
+ 
+-type Route = Readonly<{ kind: 'invoke' | 'send' | 'on'; to: string }>
++type Route = Readonly<{ kind: 'invoke' | 'send' | 'sync' | 'on'; to: string }>
+ 
+ /** Exact channel table.  Unknown channels are rejected *before* Electron IPC.
+  * In particular docs:open, docs:save-as/to, docs:open-decrypt, files:*, ai:*,
+@@ -38,6 +38,10 @@ export const MCODE_DOCS_CHANNEL_POLICY: Readonly<Record<string, Route>> = Object
+   'docs:spell-replace': { kind: 'invoke', to: 'mcode:docs:native-spell-replace' },
+   'docs:spell-diag': { kind: 'invoke', to: 'mcode:docs:native-spell-diag' },
+   'docs:respell-kick': { kind: 'invoke', to: 'mcode:docs:native-respell-kick' },
++  'docs:context-menu-arm': { kind: 'send', to: 'mcode:docs:native-context-menu-arm' },
++  'docs:context-menu-claim': { kind: 'sync', to: 'mcode:docs:native-context-menu-claim' },
++  'docs:context-menu': { kind: 'on', to: 'mcode:docs:native-context-menu' },
++  'docs:view-menu-state': { kind: 'send', to: 'mcode:docs:native-view-menu-state' },
+   'docs:close-check-result': { kind: 'send', to: 'mcode:document-view:close-check-result' },
+   'docs:close-check': { kind: 'on', to: 'mcode:document-view:close-check' },
+   'menu:command': { kind: 'on', to: 'menu:command' },
+@@ -60,6 +64,9 @@ function invokeDocs(channel: string, payload?: unknown): Promise<unknown> {
+ function sendDocs(channel: string, payload: unknown): void {
+   ipcRenderer.send(route(channel, 'send'), payload)
+ }
++function syncDocs(channel: string, payload: unknown): unknown {
++  return ipcRenderer.sendSync(route(channel, 'sync'), payload)
++}
+ 
+ function onDocs<T extends unknown[]>(
+   channel: string,
+@@ -142,7 +149,15 @@ export const mcodeDocsDesktopApi = Object.freeze({
+   onThemeChanged: noSubscription,
+   onLanguageChanged: noSubscription,
+   onDocumentThemeChanged: noSubscription,
+-  armContextMenu: noop,
++  armContextMenu: () => sendDocs('docs:context-menu-arm', null),
++  claimContextMenu: (seq: number) => {
++    if (Number.isSafeInteger(seq) && seq >= 0) syncDocs('docs:context-menu-claim', seq)
++  },
++  onContextMenuRequest: (handler) => onDocs('docs:context-menu', handler),
++  reportViewMenuState: (state) => sendDocs('docs:view-menu-state', {
++    aiSidebar: state?.aiSidebar === true,
++    darkCanvas: state?.darkCanvas === true,
++  }),
+   // Initial renderer effects and new-blank path use these native API hooks.
+   // No second chat, persisted settings, password store, export queue or AI.
+   getAiSettings: () => Promise.resolve({ provider: 'genspark', providers: {} }) as ReturnType<DesktopApi['getAiSettings']>,
+-- 
+2.52.0.windows.1
+

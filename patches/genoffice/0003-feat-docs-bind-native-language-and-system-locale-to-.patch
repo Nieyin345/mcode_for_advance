@@ -1,0 +1,84 @@
+From d8671f6ed75532d0260d9686bb31d63ec25faaf6 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Wed, 21 Oct 2026 08:16:35 +0800
+Subject: [PATCH 3/6] feat(docs): bind native language and system locale to
+ Mcode host
+
+---
+ apps/docs/src/main/mcode-ipc.ts     | 16 +++++++++++++++-
+ apps/docs/src/preload/mcode-view.ts |  8 +++++++-
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/apps/docs/src/main/mcode-ipc.ts b/apps/docs/src/main/mcode-ipc.ts
+index 8e2b3fc..e693263 100644
+--- a/apps/docs/src/main/mcode-ipc.ts
++++ b/apps/docs/src/main/mcode-ipc.ts
+@@ -12,12 +12,15 @@
+  * unmodified renderer; document bytes and CAS saves stay with Mcode.
+  */
+ import { familyVerticalMetrics } from '@genoffice/font-metrics'
++import { app } from 'electron'
+ import type { IpcMain, IpcMainInvokeEvent } from 'electron'
+ 
+ const FONT = 'mcode:docs:native-font-metrics'
+ const LANGUAGES = 'mcode:docs:native-spell-languages'
+ const SET_LANGUAGES = 'mcode:docs:native-spell-set-languages'
+-export const MCODE_NATIVE_DOCS_CHANNELS = [FONT, LANGUAGES, SET_LANGUAGES] as const
++const UI_LANGUAGE = 'mcode:docs:native-ui-language'
++const SYSTEM_LOCALE = 'mcode:docs:native-system-locale'
++export const MCODE_NATIVE_DOCS_CHANNELS = [FONT, LANGUAGES, SET_LANGUAGES, UI_LANGUAGE, SYSTEM_LOCALE] as const
+ 
+ /** registerDocsIpc() is intentionally require-safe in a foreign Electron
+  * main process: no app lifecycle ownership, global IPC overrides, or disk
+@@ -26,11 +29,22 @@ export const MCODE_NATIVE_DOCS_CHANNELS = [FONT, LANGUAGES, SET_LANGUAGES] as co
+ export function registerDocsIpc(
+   ipc: Pick<IpcMain, 'handle' | 'removeHandler'>,
+   isDocsSender: (sender: unknown) => boolean,
++  getUiLanguage: () => 'zh' | 'en' = () => 'zh',
+ ): () => void {
+   const authorized = (event: IpcMainInvokeEvent): boolean => {
+     try { return !!event?.sender && isDocsSender(event.sender) === true }
+     catch { return false }
+   }
++  ipc.handle(UI_LANGUAGE, (event) => {
++    if (!authorized(event)) return null
++    try { return getUiLanguage() }
++    catch { return null }
++  })
++  ipc.handle(SYSTEM_LOCALE, (event) => {
++    if (!authorized(event)) return null
++    try { return app.getSystemLocale() }
++    catch { return null }
++  })
+   ipc.handle(FONT, (event, family) => {
+     if (!authorized(event) || typeof family !== 'string' ||
+         family.length > 128 || !family.trim()) return null
+diff --git a/apps/docs/src/preload/mcode-view.ts b/apps/docs/src/preload/mcode-view.ts
+index 76a7cf0..e751a1f 100644
+--- a/apps/docs/src/preload/mcode-view.ts
++++ b/apps/docs/src/preload/mcode-view.ts
+@@ -28,6 +28,8 @@ export const MCODE_DOCS_CHANNEL_POLICY: Readonly<Record<string, Route>> = Object
+   'docs:save-new': { kind: 'invoke', to: 'mcode:document-view:save' },
+   'docs:confirm-document-replace': { kind: 'invoke', to: 'mcode:document-view:confirm-replace' },
+   'docs:recent': { kind: 'invoke', to: 'mcode:document-view:open-committed' },
++  'app:get-language': { kind: 'invoke', to: 'mcode:docs:native-ui-language' },
++  'docs:system-locale': { kind: 'invoke', to: 'mcode:docs:native-system-locale' },
+   'docs:font-metrics': { kind: 'invoke', to: 'mcode:docs:native-font-metrics' },
+   'docs:spell-languages': { kind: 'invoke', to: 'mcode:docs:native-spell-languages' },
+   'docs:spell-set-languages': { kind: 'invoke', to: 'mcode:docs:native-spell-set-languages' },
+@@ -119,7 +121,11 @@ export const mcodeDocsDesktopApi = Object.freeze({
+     void invokeDocs('docs:recent', { accepted: true }).catch(noop)
+     return Promise.resolve([] as string[])
+   },
+-  getLanguage: () => Promise.resolve('zh' as const),
++  getLanguage: async () => (await invokeDocs('app:get-language') === 'en' ? 'en' : 'zh') as 'zh' | 'en',
++  getSystemLocale: async () => {
++    const value = await invokeDocs('docs:system-locale')
++    return typeof value === 'string' ? value : ''
++  },
+   getTheme: () => Promise.resolve('system' as const),
+   getDocumentTheme: () => Promise.resolve('follow' as const),
+   getAutoSaveDefault: () => Promise.resolve({ on: true, updatedAt: 0 }),
+-- 
+2.52.0.windows.1
+

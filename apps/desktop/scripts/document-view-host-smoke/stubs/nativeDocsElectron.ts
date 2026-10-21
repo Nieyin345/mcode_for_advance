@@ -9,6 +9,7 @@ export const ipcRenderer = {
     return replies.get(channel);
   },
   send: (channel: string, ...args: unknown[]) => { calls.push({ channel, args }); },
+  sendSync: (channel: string, ...args: unknown[]) => { calls.push({ channel, args }); return true }, 
   on: (channel: string, listener: Handler) => {
     listeners.set(channel, [...(listeners.get(channel) || []), listener]);
   },
@@ -16,4 +17,6 @@ export const ipcRenderer = {
     listeners.set(channel, (listeners.get(channel) || []).filter((x) => x !== listener));
   },
 };
+export const app = { getSystemLocale: () => 'ja-JP', getPath: (_key: string) => process.env.MCODE_SMOKE_DATA_ROOT || '.' };
+export const session = { defaultSession: { removeWordFromSpellCheckerDictionary: (_word: string) => true } };
 export const contextBridge = { exposeInMainWorld: (name: string, api: unknown) => exposed.set(name, api) };

@@ -1,0 +1,202 @@
+From d6eb48eab863f528f775bf80d2abcb475a3bed40 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Wed, 21 Oct 2026 08:21:29 +0800
+Subject: [PATCH 4/6] feat(docs): add host-scoped native spelling operations
+
+---
+ apps/docs/src/main/mcode-ipc.ts     | 131 +++++++++++++++++++++++++++-
+ apps/docs/src/preload/mcode-view.ts |  10 +++
+ 2 files changed, 138 insertions(+), 3 deletions(-)
+
+diff --git a/apps/docs/src/main/mcode-ipc.ts b/apps/docs/src/main/mcode-ipc.ts
+index e693263..36eb410 100644
+--- a/apps/docs/src/main/mcode-ipc.ts
++++ b/apps/docs/src/main/mcode-ipc.ts
+@@ -12,7 +12,9 @@
+  * unmodified renderer; document bytes and CAS saves stay with Mcode.
+  */
+ import { familyVerticalMetrics } from '@genoffice/font-metrics'
+-import { app } from 'electron'
++import { app, session } from 'electron'
++import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
++import { join } from 'node:path'
+ import type { IpcMain, IpcMainInvokeEvent } from 'electron'
+ 
+ const FONT = 'mcode:docs:native-font-metrics'
+@@ -20,7 +22,33 @@ const LANGUAGES = 'mcode:docs:native-spell-languages'
+ const SET_LANGUAGES = 'mcode:docs:native-spell-set-languages'
+ const UI_LANGUAGE = 'mcode:docs:native-ui-language'
+ const SYSTEM_LOCALE = 'mcode:docs:native-system-locale'
+-export const MCODE_NATIVE_DOCS_CHANNELS = [FONT, LANGUAGES, SET_LANGUAGES, UI_LANGUAGE, SYSTEM_LOCALE] as const
++const SPELL_ADD = 'mcode:docs:native-spell-add-word'
++const SPELL_IGNORE = 'mcode:docs:native-spell-ignore-word'
++const SPELL_REPLACE = 'mcode:docs:native-spell-replace'
++const SPELL_DIAG = 'mcode:docs:native-spell-diag'
++const RESPELL = 'mcode:docs:native-respell-kick'
++export const MCODE_NATIVE_DOCS_CHANNELS = [FONT, LANGUAGES, SET_LANGUAGES, UI_LANGUAGE, SYSTEM_LOCALE,
++  SPELL_ADD, SPELL_IGNORE, SPELL_REPLACE, SPELL_DIAG, RESPELL] as const
++
++function spellingWord(raw: unknown): string | null {
++  if (typeof raw !== 'string' || raw.length > 128) return null
++  const word = raw.trim()
++  return word && !/[\r\n\0]/.test(word) ? word : null
++}
++
++// Electron spell dictionaries live in the host's session/userData. Never use
++// GenOffice's userDataPath here. Ignore All is temporary; a small journal in
++// Mcode's userData permits crash cleanup on the next startup, not a second store.
++function ignoreJournalPath(): string { return join(app.getPath('userData'), 'mcode-docs-ignored-words.json') }
++function saveIgnoreJournal(ignored: Map<string, Set<number>>): boolean {
++  try {
++    const path = ignoreJournalPath()
++    mkdirSync(app.getPath('userData'), { recursive: true })
++    writeFileSync(path, JSON.stringify([...ignored.keys()]), 'utf8')
++    return true
++  } catch { return false }
++}
++
+ 
+ /** registerDocsIpc() is intentionally require-safe in a foreign Electron
+  * main process: no app lifecycle ownership, global IPC overrides, or disk
+@@ -45,6 +73,100 @@ export function registerDocsIpc(
+     try { return app.getSystemLocale() }
+     catch { return null }
+   })
++  const ignored = new Map<string, Set<number>>()
++  const ownedBySender = new Map<number, Set<string>>()
++  const spellSessionBySender = new Map<number, IpcMainInvokeEvent['sender']['session']>()
++  // Clean an orphaned temporary Ignore All from a previous crashed process.
++  try {
++    const path = ignoreJournalPath()
++    if (existsSync(path)) {
++      const words: unknown = JSON.parse(readFileSync(path, 'utf8'))
++      if (Array.isArray(words)) for (const word of words) {
++        const w = spellingWord(word)
++        if (w) session.defaultSession.removeWordFromSpellCheckerDictionary(w)
++      }
++    }
++    saveIgnoreJournal(ignored)
++  } catch { /* keep all new Ignore All operations fail-closed if journal unavailable */ }
++  const dropIgnored = (id: number): void => {
++    const words = ownedBySender.get(id)
++    if (!words) return
++    ownedBySender.delete(id)
++    const s = spellSessionBySender.get(id)
++    spellSessionBySender.delete(id)
++    for (const word of words) {
++      const holders = ignored.get(word)
++      holders?.delete(id)
++      if (holders?.size === 0) {
++        ignored.delete(word)
++        s?.removeWordFromSpellCheckerDictionary(word)
++      }
++    }
++    saveIgnoreJournal(ignored)
++  }
++  ipc.handle(SPELL_ADD, (event, raw) => {
++    if (!authorized(event)) return false
++    const word = spellingWord(raw)
++    if (word === null) return false
++    // Explicit Add to Dictionary turns a temporary ignore into a permanent word.
++    if (ignored.has(word)) {
++      ignored.delete(word)
++      for (const words of ownedBySender.values()) words.delete(word)
++      if (!saveIgnoreJournal(ignored)) return false
++    }
++    try { return event.sender.session.addWordToSpellCheckerDictionary(word) }
++    catch { return false }
++  })
++  ipc.handle(SPELL_IGNORE, (event, raw) => {
++    if (!authorized(event)) return false
++    const word = spellingWord(raw)
++    const id = event.sender.id
++    if (word === null || !Number.isSafeInteger(id)) return false
++    let holders = ignored.get(word)
++    if (!holders) { holders = new Set(); ignored.set(word, holders) }
++    const added = !holders.has(id)
++    holders.add(id)
++    if (!saveIgnoreJournal(ignored)) {
++      if (added) holders.delete(id)
++      if (!holders.size) ignored.delete(word)
++      return false
++    }
++    let words = ownedBySender.get(id)
++    if (!words) {
++      words = new Set(); ownedBySender.set(id, words)
++      spellSessionBySender.set(id, event.sender.session)
++      event.sender.once('destroyed', () => dropIgnored(id))
++    }
++    words.add(word)
++    try { return event.sender.session.addWordToSpellCheckerDictionary(word) }
++    catch { dropIgnored(id); return false }
++  })
++  ipc.handle(SPELL_REPLACE, (event, raw) => {
++    if (!authorized(event)) return
++    const word = spellingWord(raw)
++    if (word) try { event.sender.replaceMisspelling(word) } catch { /* no selection */ }
++  })
++  ipc.handle(SPELL_DIAG, (event, raw) => {
++    if (!authorized(event) || typeof raw !== 'string' || raw.length > 500) return
++    try {
++      const path = join(app.getPath('userData'), 'mcode-docs-spell-diag.log')
++      if (existsSync(path) && statSync(path).size > 256 * 1024) {
++        const tail = readFileSync(path, 'utf8').slice(-128 * 1024)
++        writeFileSync(path, tail.slice(Math.max(0, tail.indexOf('\n') + 1)), 'utf8')
++      }
++      appendFileSync(path, `${new Date().toISOString()} ${raw.replace(/[\r\n]/g, ' ')}\n`)
++    } catch { /* logging must not break editing */ }
++  })
++  ipc.handle(RESPELL, async (event) => {
++    if (!authorized(event) || event.sender.isDestroyed()) return
++    try {
++      event.sender.focus()
++      event.sender.sendInputEvent({ type: 'keyDown', keyCode: 'Space' })
++      event.sender.sendInputEvent({ type: 'char', keyCode: ' ' })
++      event.sender.sendInputEvent({ type: 'keyUp', keyCode: 'Space' })
++      await new Promise((resolve) => setTimeout(resolve, 120))
++    } catch { /* destroyed while respelling */ }
++  })
+   ipc.handle(FONT, (event, family) => {
+     if (!authorized(event) || typeof family !== 'string' ||
+         family.length > 128 || !family.trim()) return null
+@@ -66,5 +188,8 @@ export function registerDocsIpc(
+     if (langs.length > 0) s.setSpellCheckerLanguages(langs)
+     return { active: s.getSpellCheckerLanguages(), available: [...available] }
+   })
+-  return () => { for (const channel of MCODE_NATIVE_DOCS_CHANNELS) ipc.removeHandler(channel) }
++  return () => {
++    for (const id of [...ownedBySender.keys()]) dropIgnored(id)
++    for (const channel of MCODE_NATIVE_DOCS_CHANNELS) ipc.removeHandler(channel)
++  }
+ }
+diff --git a/apps/docs/src/preload/mcode-view.ts b/apps/docs/src/preload/mcode-view.ts
+index e751a1f..c719d07 100644
+--- a/apps/docs/src/preload/mcode-view.ts
++++ b/apps/docs/src/preload/mcode-view.ts
+@@ -33,6 +33,11 @@ export const MCODE_DOCS_CHANNEL_POLICY: Readonly<Record<string, Route>> = Object
+   'docs:font-metrics': { kind: 'invoke', to: 'mcode:docs:native-font-metrics' },
+   'docs:spell-languages': { kind: 'invoke', to: 'mcode:docs:native-spell-languages' },
+   'docs:spell-set-languages': { kind: 'invoke', to: 'mcode:docs:native-spell-set-languages' },
++  'docs:spell-add-word': { kind: 'invoke', to: 'mcode:docs:native-spell-add-word' },
++  'docs:spell-ignore-word': { kind: 'invoke', to: 'mcode:docs:native-spell-ignore-word' },
++  'docs:spell-replace': { kind: 'invoke', to: 'mcode:docs:native-spell-replace' },
++  'docs:spell-diag': { kind: 'invoke', to: 'mcode:docs:native-spell-diag' },
++  'docs:respell-kick': { kind: 'invoke', to: 'mcode:docs:native-respell-kick' },
+   'docs:close-check-result': { kind: 'send', to: 'mcode:document-view:close-check-result' },
+   'docs:close-check': { kind: 'on', to: 'mcode:document-view:close-check' },
+   'menu:command': { kind: 'on', to: 'menu:command' },
+@@ -115,6 +120,11 @@ export const mcodeDocsDesktopApi = Object.freeze({
+   fontMetrics: (family: string) => invokeDocs('docs:font-metrics', family) as ReturnType<DesktopApi['fontMetrics']>,
+   spellLanguages: () => invokeDocs('docs:spell-languages') as ReturnType<DesktopApi['spellLanguages']>,
+   spellSetLanguages: (langs: string[]) => invokeDocs('docs:spell-set-languages', langs) as ReturnType<DesktopApi['spellSetLanguages']>,
++  spellAddWord: (word: string) => invokeDocs('docs:spell-add-word', word) as Promise<boolean>,
++  spellIgnoreWord: (word: string) => invokeDocs('docs:spell-ignore-word', word) as Promise<boolean>,
++  spellReplace: (word: string) => invokeDocs('docs:spell-replace', word) as Promise<void>,
++  spellDiag: (line: string) => { void invokeDocs('docs:spell-diag', line).catch(noop) },
++  respellKick: () => invokeDocs('docs:respell-kick') as Promise<void>,
+   getRecentFiles: () => {
+     // Native file-actions calls this after a successful open; Mcode uses it
+     // as the commit acknowledgement, but stores no second recent-files list.
+-- 
+2.52.0.windows.1
+

@@ -83,6 +83,8 @@
  */
 import { getMainWindow } from "@main/window.js";
 import { log } from "@main/lib/logger.js";
+import { uiLocale } from "@main/lib/dialogText.js";
+import { dataRoot } from "@main/lib/dataRoot.js";
 import { atomicReplaceFile } from "@main/lib/atomicFile.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
 import { withOsFileLease } from "@main/lib/osFileLease.js";
@@ -413,6 +415,10 @@ function resolveViewPreload(): string | undefined {
 
 export class DocumentViewHost {
   private readonly views = new Map<string, LiveDocumentView>();
+  private nativeDocsRelease: (() => void) | null = null;
+  /** One pending close probe per view; never trust a stale cached clean flag. */
+  private readonly closeCheckWaiters = new Map<string, (received: boolean) => void>();
+  private readonly protectedCloses = new Map<string, Promise<DocViewResult>>();
   /** Per-Host identity prevents same docId in a second window being revoked. */
   private readonly handoffOwner = {};
   /**
@@ -460,12 +466,12 @@ export class DocumentViewHost {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { ipcMain } = require("electron") as typeof import("electron");
-        registerDocsIpc(ipcMain, (sender: unknown): boolean => {
+        this.nativeDocsRelease = registerDocsIpc(ipcMain, (sender: unknown): boolean => {
           const id = this.docIdForSender(sender);
           const live = id === null ? null : this.views.get(id);
           return live !== null && live !== undefined &&
             live.workflowEngineId === null && live.editor !== "slides";
-        });
+        }, uiLocale, dataRoot);
       } catch (err) {
         log.error(`native Docs IPC not installed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -1151,6 +1157,48 @@ export class DocumentViewHost {
       live.pageDirtyEpoch === epoch;
   }
 
+  /** T05a: native Docs close is a two-phase operation. Never destroy a page
+   * solely because its *previous* dirty report said clean. Query the live page,
+   * fail closed on timeout, and reuse the exact Mcode replacement guard for
+   * unsaved edits. Concurrent close clicks share this one probe/decision. */
+  async closeWithDirtyProtection(docId: string): Promise<DocViewResult> {
+    const pending = this.protectedCloses.get(docId);
+    if (pending) return pending;
+    const live = this.views.get(docId);
+    if (!live) return this.close(docId);
+    if (live.editor === 'slides' || live.workflowEngineId !== null) return this.close(docId);
+    const task = (async (): Promise<DocViewResult> => {
+      const contents = live.view.webContents;
+      if (typeof contents.send !== 'function' || contents.isDestroyed?.() === true) {
+        return { ok: false, reason: '无法查询编辑器未保存状态，拒绝关闭' };
+      }
+      const answered = await new Promise<boolean>((resolve) => {
+        const timeout = setTimeout(() => {
+          this.closeCheckWaiters.delete(docId);
+          resolve(false);
+        }, 2000);
+        this.closeCheckWaiters.set(docId, (received) => {
+          clearTimeout(timeout);
+          this.closeCheckWaiters.delete(docId);
+          resolve(received);
+        });
+        try { contents.send!('mcode:document-view:close-check'); }
+        catch { clearTimeout(timeout); this.closeCheckWaiters.delete(docId); resolve(false); }
+      });
+      if (!answered) return { ok: false, reason: '编辑器未响应关闭检查；为保护未保存内容，拒绝关闭' };
+      if (this.views.get(docId) !== live || contents.isDestroyed?.() === true) {
+        return { ok: false, reason: '关闭检查期间视图已发生变化，拒绝过期关闭请求' };
+      }
+      if (!(await this.confirmDocumentReplace(docId))) {
+        return { ok: false, reason: '文档有未保存修改，且没有取得有效的放弃修改确认' };
+      }
+      return this.close(docId);
+    })();
+    this.protectedCloses.set(docId, task);
+    try { return await task; }
+    finally { if (this.protectedCloses.get(docId) === task) this.protectedCloses.delete(docId); }
+  }
+
   /**
    * 【ARC-007 P0】装配期注入脏替换确认（生产是 `dialog.showMessageBox` 的真人
    * 确认，见 `ipc/index.ts`）。只在装配期调用一次；无头套件可注入自动应答。
@@ -1171,6 +1219,7 @@ export class DocumentViewHost {
     if (!live) return;
     live.pageDirty = dirty === true;
     live.pageDirtyEpoch += 1;
+    this.closeCheckWaiters.get(docId)?.(true);
   }
 
   /** 【ARC-007 P0】只读诊断：这个视图当前的待打开请求（没有则 null）。 */
@@ -1636,6 +1685,8 @@ export class DocumentViewHost {
   dispose(): void {
     this.disposed = true;
     this.closeAll();
+    this.nativeDocsRelease?.();
+    this.nativeDocsRelease = null;
     if (this.cleanupWindow !== null && this.cleanupHandler !== null) {
       try {
         this.cleanupWindow.removeListener?.("closed", this.cleanupHandler);

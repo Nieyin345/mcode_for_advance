@@ -660,7 +660,20 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
   eq("handler hide 成功", await call(DOCUMENT_VIEW_HIDE_CHANNEL, { docId: "ipc-1" }), { ok: true });
   eq("handler show 成功", await call(DOCUMENT_VIEW_SHOW_CHANNEL, { docId: "ipc-1" }), { ok: true });
   eq("handler focus 成功", await call(DOCUMENT_VIEW_FOCUS_CHANNEL, { docId: "ipc-1" }), { ok: true });
-  eq("handler close 成功", await call(DOCUMENT_VIEW_CLOSE_CHANNEL, { docId: "ipc-1" }), { ok: true });
+  // T05a: close MUST first ask the native Docs renderer for current dirty state.
+  // A stale cached `pageDirty=false` must not bypass an unresponsive renderer.
+  // Mutation control removes the Mcode dirty-close guard ONLY in the smoke.
+  // The same assertions must reject that deliberate regression.
+  if (process.env.MCODE_T05A_MUTATE_DIRTY === '1') {
+    host.closeWithDirtyProtection = async (docId: string) => host.close(docId);
+  }
+  const closeWithoutResponse = call(DOCUMENT_VIEW_CLOSE_CHANNEL, { docId: "ipc-1" });
+  check("★ close sends a fresh close-check to page", created[0].sends.some((s) => s.channel === "mcode:document-view:close-check"));
+  host.reportPageDirty("ipc-1", true);
+  check("★ unsaved close is refused", (await closeWithoutResponse).ok === false && !created[0].closed);
+  const closeClean = call(DOCUMENT_VIEW_CLOSE_CHANNEL, { docId: "ipc-1" });
+  host.reportPageDirty("ipc-1", false);
+  eq("handler close clean succeeds", await closeClean, { ok: true });
   eq("close 后视图销毁", created[0].closed, true);
   check("show 不存在的 docId 经 handler 返回 ok:false", (await call(DOCUMENT_VIEW_SHOW_CHANNEL, { docId: "ghost" })).ok === false);
   host.dispose();

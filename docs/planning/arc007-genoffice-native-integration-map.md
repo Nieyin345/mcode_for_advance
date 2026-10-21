@@ -53,6 +53,46 @@
 - **真 Electron U1**：六格式各至少一份包含复杂内容的隔离样例，用户 UI 与 Agent 两种入口共同编辑、保存重开和对比结构/渲染，不可缺失/篡改未知行、公式、备注、图片或版式。真实构建完成的成品 `resources/genoffice`、安全 preload、AI tool bridge 与三 SDK 按格式独立验收。
 - **发布门禁**：缺少任何声明 `available=true` 的原版资源即失败；没有打包就显式 `available=false` 且界面给出可执行说明。与 node-red/扩展一样，**功能广度由原开源项目决定，Mcode 不另造一套删减版**。
 
+### 2026-10-21｜T05a Docs 纯操作迁移逐项复核（仅本任务范围）
+
+本节是 T05a 的**逐 handler 技术状态**，不是 ARC-007 整体双勾。验证键：**H** = `document-view-host-smoke`（含 vendor/native 边界）；**E** = `document-view-open-smoke`（真 Electron + 原版 Docs 页面/工作区 DOCX/保存重开），**E-5** = 新增 clean close 段内真实调用 native bridge；**P** = `document-view-electron-smoke`、`document-view-vendor-page-smoke`。未列真迁移的地方明确保留 fail-closed，不以空值假装功能等价。
+
+| 组 | 原厂 handler | 状态与 Mcode 对端（以及不迁原因） | 可复验判据 |
+| --- | --- | --- | --- |
+| 1 生命周期 | `docs:open` | **迁：受限**。只领取宿主已有的 pending DOCX，绝不展示原厂任意路径文件对话框 | H: open button scoped；E: opened DOCX DOM |
+| 1 | `docs:open-path` | **迁**。忽略渲染端自带路径，仅 `read-opened` 领取 Mcode 一次性授权字节 | H: caller path ignored；E: openPath/DOM |
+| 1 | `docs:consume-pending-open` | **迁：受限**。领取同一个 Host pending grant；无授权返回 null | H: scoped startup；E: startup/native open |
+| 1 | `docs:consume-new-blank` | **暂不迁**。Mcode 不持有 GenOffice 单体 `pendingNewBlankIds`；明确 false，不能凭空创建宿主文件 | H: API only returns false；E: startup clean |
+| 1 | `docs:save-new` | **迁：受限**。沿 `mcode:document-view:save` 进入 `DocumentViewHost.saveNewFile`；仅已授权工作区目录、唯一名称 | H: save-new payload；E: DOCX save/reopen |
+| 1 | `docs:recent` | **部分迁**。用作打开后 `open-committed` 回执；不另建 GenOffice recent 列表，返回空列表 | H: commit route；E: session committed |
+| 1 | `docs:consume-ai-doc-content` | **暂不迁**。GenOffice 单体 AI 队列没有 Mcode 授权来源；返回 null，待 T05c 的受审 AI 接线 | H: API restricted；E: no AI sidecar |
+| 2 语言字体 | `app:get-language` | **迁**。`uiLocale()` 从 Mcode 设置决定，非固定中文 | H: zh/en callbacks；E-5: language |
+| 2 | `docs:system-locale` | **迁**。返回 Mcode Electron `app.getSystemLocale()`，先过 sender guard | H: mock ja-JP；E-5: non-empty system locale |
+| 2 | `docs:font-metrics` | **复核原轮且真实可用**：原 `familyVerticalMetrics` + 已授权 WebContents 校验；本轮补齐 `mcodeNativeDocsIpcAvailable=true`，修正主仓别名实际不注册问题 | H: actual vendor resolver；E-5: metrics/null typed |
+| 3 拼写 | `docs:spell-diag` | **迁：受限**。500 字符上限，日志写在 Mcode `dataRoot()/docs` | H: native channel；E-5: real IPC |
+| 3 | `docs:spell-ignore-word` | **迁：受限**。按 sender 授权、忽略词 journal 在 Mcode `dataRoot()/docs/ignored-words.json`，退出释放、崩溃启动清理 | H: allowed/denied；E-5: real dictionary |
+| 3 | `docs:spell-add-word` | **迁**。校验字符串，由 Mcode Electron session 调 Chromium 字典；不调用 GenOffice 独立主进程 | H: allowed/denied；E-5: real add |
+| 3 | `docs:spell-replace` | **迁**。授权后调用当前 sender 的 Blink replaceMisspelling | H: no foreign replacement；E-5: API present |
+| 3 | `docs:spell-languages` | **复核原轮**：sender session 原生取 active/available，拒绝不受信 sender | H: native session；E-5: active array |
+| 3 | `docs:spell-set-languages` | **复核原轮**：仅已安装语言代码可选，外来/非法值过滤 | H: invalid filtered；E-5: native bridge |
+| 3 | `docs:respell-kick` | **迁**。sender guard 后对当前视图送 Chromium trusted Space 键输入 | H: 3 input events；E-5: IPC |
+| 4 恢复/确认 | `docs:write-recovery` | **未迁，显式拒写**（`ok:false`）。Mcode `fileSnapshot` 是 UTF-8 的 Agent turn rewind，不能用它伪装二进制 DOCX crash-recovery；不写第二套 GenOffice recovery 存储 | H: fail-closed；E-5: rejection + clean file hash/mtime |
+| 4 | `docs:confirm-document-replace` | **迁**。`DocumentViewHost.confirmDocumentReplace` 用 real dirty + Mcode 真人确认/过期代次保护 | H: approval race；E-5: clean replace |
+| 4 | `docs:password-intent-revision` | **未迁原厂加密 store**。本机没有 Mcode 授权的密码意图服务；零版本仅表示无已接入意图，`discardDocPasswordIntents` 明确 `ok:false` | H: no fake mutation success；E-5: revision=0 |
+| 5 上下文菜单 | `docs:context-menu-claim` | **迁**。原 `ClickClaims` 计时 FIFO，sender 约束，`sendSync` 回执 | H: sync claim；E-5: native synchronous route |
+| 5 | `docs:context-menu-arm` | **迁：受限**。当前 sender 的 `context-menu` 回传拼写建议；不给原厂全局菜单/window 资源 | H: arm once；E-5: subscribe/arm |
+| 5 | `docs:view-menu-state` | **部分迁**。记录当前视图限型 checkbox 状态；Mcode 不使用原厂应用全局 `Menu`，故不回写 GenOffice 菜单 | H: guarded route；E-5: state reporting |
+| 6 关闭 | `docs:close-check-result` | **迁**。修复 preload `send` 与主进程 `handle` 错配，按 sender 接收 `ipc.on`，新鲜 query + 2s 超时 fail-closed + Mcode 脏文件确认 | H: dirty-close assertions；E-5: clean close |
+| 6 | `docs:close-save-result` | **暂不迁**。Mcode 当前关闭确认只提供放弃/取消，无原厂 `close-save-request` 驱动路径；不能假称已收到保存回执，更不能因此自动关 | H: close guards；E-5: no implicit write |
+
+**组内范围总结**：①4 项迁、1 项部分、2 项暂不迁；②3 项迁（字体复核、语言/OS locale 补齐）；③7 项迁（其中 2 项复核原轮）；④1 项迁、2 项暂不迁；⑤2 项迁、1 项部分；⑥1 项迁、1 项暂不迁。原轮原生 **3 handlers** 指 `font-metrics`、`spell-languages`、`spell-set-languages`，源码确实调用原厂字体/Chromium，但旧 vendor 模块**缺 `mcodeNativeDocsIpcAvailable` 出口**会导致 Mcode 生产主进程根本不注册；本轮已补修并以真 Electron 捕捉原先红例。语言/系统区域码不属于原轮已生效的三个 handler。
+
+**存储边界**：新增忽略词 journal/诊断日志使用 Mcode `dataRoot()/docs/`，而不是 GenOffice standalone 的 `userDataPath`。Chromium 自己的拼写词典由 **Mcode Electron WebContents.session** 管理，Electron 底层 profile 缓存位置仍受宿主 Electron 管理（不等同于可迁移的 Mcode `dataRoot`）；不会在 GenOffice 独立 app 的 userData 写入。文档字节、打开会话、CAS 和原子替换仍只在 Mcode DocumentViewHost。二进制 DOCX 恢复**没有被冒充为** Mcode 的纯文本 `fileSnapshot`，新恢复写入被拒，未来若要完整恢复需在宿主增加同一份文件授权/原子写协议，属于未完成能力。
+
+**验证**：`node apps/desktop/scripts/run-smokes.mjs document-view-open-smoke document-view-host-smoke document-view-electron-smoke document-view-vendor-page-smoke` **4/4 PASS**（日志 `apps/desktop/.tmp/smoke-runs/1792546844372-28556-78bxRZ`；真 Electron clean DOCX 开启、四组 native 路由、关闭后 hash + mtime 均未变）；`npx tsc --noEmit -p apps/desktop/tsconfig.json`、`npx tsc --noEmit -p genoffice/apps/docs/tsconfig.json`、`npx tsc --noEmit -p packages/contracts/tsconfig.json` 均 PASS。独立环境变量变异：`set MCODE_T05A_MUTATE_SCOPE=1&& node apps/desktop/scripts/run-smokes.mjs document-view-open-smoke` **exit 1 真红**（跨工作区路径误放行）；`set MCODE_T05A_MUTATE_DIRTY=1&& node apps/desktop/scripts/run-smokes.mjs document-view-host-smoke` **exit 1 真红**（未保存关闭未被拒）；未修改生产源码来做变异。
+
+**GenOffice 独立提交及可重放补丁**：`684d9dc`、`d8671f6`、`d6eb48e`、`bd08868`、`2fa633a`；Mcode 主仓内 `patches/genoffice/0002-*.patch` 至 `0006-*.patch`，与原 `0001-*.patch` 按序应用。T05a 仅覆盖上述低风险能力，后续 T05b/T05c 不在此回合擅自扩展。
+
 ### 2026-10-19｜GenOffice 原生 Shell 缺构建导致反复弹窗：实证与修复
 
 - **先前的 E1 红例（保留历史，不再认定当前仍红）**：`document-view-renderer/host/open` 3/3 PASS（`1792397455478-38608-xWCSjH`），`genoffice-cli-smoke` 曾 38/40 FAIL（`1792397336995-18772-cM4mtM`），表现为 `conversion_failed` 而非预期 `app_unavailable`。用户随后截图原生 Windows 错误窗：`Unable to find Electron app at .../genoffice/apps/shell` 与 `Cannot find .../out/main/index.js`。

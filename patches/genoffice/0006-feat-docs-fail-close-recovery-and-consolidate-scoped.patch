@@ -1,0 +1,186 @@
+From 2fa633afbe31a14ec3bbcb929c631ae3c828767d Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Wed, 21 Oct 2026 09:46:00 +0800
+Subject: [PATCH 6/6] feat(docs): fail-close recovery and consolidate scoped
+ native IPC lifecycle
+
+---
+ apps/docs/src/main/mcode-ipc.ts     | 61 +++++++++++++++++++++--------
+ apps/docs/src/preload/mcode-view.ts |  7 +++-
+ 2 files changed, 51 insertions(+), 17 deletions(-)
+
+diff --git a/apps/docs/src/main/mcode-ipc.ts b/apps/docs/src/main/mcode-ipc.ts
+index 0729208..b34f951 100644
+--- a/apps/docs/src/main/mcode-ipc.ts
++++ b/apps/docs/src/main/mcode-ipc.ts
+@@ -14,7 +14,7 @@
+ import { familyVerticalMetrics } from '@genoffice/font-metrics'
+ import { app, session } from 'electron'
+ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+-import { join } from 'node:path'
++import { dirname, join } from 'node:path'
+ import type { IpcMain, IpcMainEvent, IpcMainInvokeEvent } from 'electron'
+ import { ClickClaims } from '../shared/context-menu-claims'
+ 
+@@ -31,9 +31,19 @@ const RESPELL = 'mcode:docs:native-respell-kick'
+ const CONTEXT_ARM = 'mcode:docs:native-context-menu-arm'
+ const CONTEXT_CLAIM = 'mcode:docs:native-context-menu-claim'
+ const VIEW_MENU_STATE = 'mcode:docs:native-view-menu-state'
++// Build alias used by Mcode's DocumentViewHost must advertise real availability.
++// Without this export the destructured flag is undefined and no native IPC
++// registers in production even when this vendor module is bundled.
++export const mcodeNativeDocsIpcAvailable = true
+ export const MCODE_NATIVE_DOCS_CHANNELS = [FONT, LANGUAGES, SET_LANGUAGES, UI_LANGUAGE, SYSTEM_LOCALE,
+   SPELL_ADD, SPELL_IGNORE, SPELL_REPLACE, SPELL_DIAG, RESPELL] as const
+ 
++// Electron has one ipcMain. More than one DocumentViewHost may be created
++// (production singleton plus test hosts); the registrar must not collide or
++// leave handlers tied to the *first* stale host. Authorize against live owners.
++const activeOwners = new Set<{ guard: (sender: unknown) => boolean; language: () => 'zh' | 'en' }>()
++let releaseNativeHandlers: (() => void) | null = null
++
+ function spellingWord(raw: unknown): string | null {
+   if (typeof raw !== 'string' || raw.length > 128) return null
+   const word = raw.trim()
+@@ -43,11 +53,11 @@ function spellingWord(raw: unknown): string | null {
+ // Electron spell dictionaries live in the host's session/userData. Never use
+ // GenOffice's userDataPath here. Ignore All is temporary; a small journal in
+ // Mcode's userData permits crash cleanup on the next startup, not a second store.
+-function ignoreJournalPath(): string { return join(app.getPath('userData'), 'mcode-docs-ignored-words.json') }
+-function saveIgnoreJournal(ignored: Map<string, Set<number>>): boolean {
++function ignoreJournalPath(dataRoot: () => string): string { return join(dataRoot(), 'docs', 'ignored-words.json') }
++function saveIgnoreJournal(ignored: Map<string, Set<number>>, dataRoot: () => string): boolean {
+   try {
+-    const path = ignoreJournalPath()
+-    mkdirSync(app.getPath('userData'), { recursive: true })
++    const path = ignoreJournalPath(dataRoot)
++    mkdirSync(dirname(path), { recursive: true })
+     writeFileSync(path, JSON.stringify([...ignored.keys()]), 'utf8')
+     return true
+   } catch { return false }
+@@ -62,15 +72,27 @@ export function registerDocsIpc(
+   ipc: Pick<IpcMain, 'handle' | 'removeHandler' | 'on' | 'removeListener'>,
+   isDocsSender: (sender: unknown) => boolean,
+   getUiLanguage: () => 'zh' | 'en' = () => 'zh',
++  // Must be supplied by Mcode's authoritative dataRoot() (not Electron's
++  // userData or GenOffice's standalone profile). Missing root = no writes.
++  getDataRoot: () => string = () => { throw new Error('Mcode data root not supplied') },
+ ): () => void {
++  const owner = { guard: isDocsSender, language: getUiLanguage }
++  activeOwners.add(owner)
++  if (releaseNativeHandlers !== null) return () => { activeOwners.delete(owner) }
+   const authorized = (event: { sender?: unknown }): boolean => {
+-    try { return !!event?.sender && isDocsSender(event.sender) === true }
+-    catch { return false }
++    if (!event?.sender) return false
++    for (const host of activeOwners) {
++      try { if (host.guard(event.sender) === true) return true } catch { /* disposed host */ }
++    }
++    return false
+   }
+   ipc.handle(UI_LANGUAGE, (event) => {
+     if (!authorized(event)) return null
+-    try { return getUiLanguage() }
+-    catch { return null }
++    for (const host of activeOwners) {
++      try { if (host.guard(event.sender) === true) return host.language() }
++      catch { /* not this owner */ }
++    }
++    return null
+   })
+   ipc.handle(SYSTEM_LOCALE, (event) => {
+     if (!authorized(event)) return null
+@@ -82,7 +104,7 @@ export function registerDocsIpc(
+   const spellSessionBySender = new Map<number, IpcMainInvokeEvent['sender']['session']>()
+   // Clean an orphaned temporary Ignore All from a previous crashed process.
+   try {
+-    const path = ignoreJournalPath()
++    const path = ignoreJournalPath(getDataRoot)
+     if (existsSync(path)) {
+       const words: unknown = JSON.parse(readFileSync(path, 'utf8'))
+       if (Array.isArray(words)) for (const word of words) {
+@@ -90,7 +112,7 @@ export function registerDocsIpc(
+         if (w) session.defaultSession.removeWordFromSpellCheckerDictionary(w)
+       }
+     }
+-    saveIgnoreJournal(ignored)
++    saveIgnoreJournal(ignored, getDataRoot)
+   } catch { /* keep all new Ignore All operations fail-closed if journal unavailable */ }
+   const dropIgnored = (id: number): void => {
+     const words = ownedBySender.get(id)
+@@ -106,7 +128,7 @@ export function registerDocsIpc(
+         s?.removeWordFromSpellCheckerDictionary(word)
+       }
+     }
+-    saveIgnoreJournal(ignored)
++    saveIgnoreJournal(ignored, getDataRoot)
+   }
+   ipc.handle(SPELL_ADD, (event, raw) => {
+     if (!authorized(event)) return false
+@@ -116,7 +138,7 @@ export function registerDocsIpc(
+     if (ignored.has(word)) {
+       ignored.delete(word)
+       for (const words of ownedBySender.values()) words.delete(word)
+-      if (!saveIgnoreJournal(ignored)) return false
++      if (!saveIgnoreJournal(ignored, getDataRoot)) return false
+     }
+     try { return event.sender.session.addWordToSpellCheckerDictionary(word) }
+     catch { return false }
+@@ -130,7 +152,7 @@ export function registerDocsIpc(
+     if (!holders) { holders = new Set(); ignored.set(word, holders) }
+     const added = !holders.has(id)
+     holders.add(id)
+-    if (!saveIgnoreJournal(ignored)) {
++    if (!saveIgnoreJournal(ignored, getDataRoot)) {
+       if (added) holders.delete(id)
+       if (!holders.size) ignored.delete(word)
+       return false
+@@ -153,7 +175,8 @@ export function registerDocsIpc(
+   ipc.handle(SPELL_DIAG, (event, raw) => {
+     if (!authorized(event) || typeof raw !== 'string' || raw.length > 500) return
+     try {
+-      const path = join(app.getPath('userData'), 'mcode-docs-spell-diag.log')
++      const path = join(getDataRoot(), 'docs', 'spell-diag.log')
++      mkdirSync(dirname(path), { recursive: true })
+       if (existsSync(path) && statSync(path).size > 256 * 1024) {
+         const tail = readFileSync(path, 'utf8').slice(-128 * 1024)
+         writeFileSync(path, tail.slice(Math.max(0, tail.indexOf('\n') + 1)), 'utf8')
+@@ -234,9 +257,15 @@ export function registerDocsIpc(
+     if (langs.length > 0) s.setSpellCheckerLanguages(langs)
+     return { active: s.getSpellCheckerLanguages(), available: [...available] }
+   })
+-  return () => {
++  releaseNativeHandlers = () => {
+     for (const id of [...ownedBySender.keys()]) dropIgnored(id)
+     for (const [channel, listener] of onMessage) ipc.removeListener(channel, listener)
+     for (const channel of MCODE_NATIVE_DOCS_CHANNELS) ipc.removeHandler(channel)
+   }
++  return () => {
++    activeOwners.delete(owner)
++    if (activeOwners.size > 0) return
++    releaseNativeHandlers?.()
++    releaseNativeHandlers = null
++  }
+ }
+diff --git a/apps/docs/src/preload/mcode-view.ts b/apps/docs/src/preload/mcode-view.ts
+index 998e3db..d5cac98 100644
+--- a/apps/docs/src/preload/mcode-view.ts
++++ b/apps/docs/src/preload/mcode-view.ts
+@@ -168,8 +168,13 @@ export const mcodeDocsDesktopApi = Object.freeze({
+   onOpenDocx: noSubscription,
+   onRenamedDocx: noSubscription,
+   onZoteroRequest: noSubscription,
++  // Password intents have no Mcode Host-managed encrypted DOCX transaction yet.
++  // Do not claim a successful mutation or instantiate GenOffice's password store.
+   docPasswordIntentRevision: () => Promise.resolve(0),
+-  discardDocPasswordIntents: (_throughRevision: number) => Promise.resolve({ ok: true }),
++  discardDocPasswordIntents: (_throughRevision: number) => Promise.resolve({ ok: false }),
++  // FileSnapshot is UTF-8 turn rewind (not binary DOCX crash recovery); until
++  // Host recovery is wired to its single atomic writer, refuse the operation.
++  writeRecoveryCopy: (_path: string, _data: ArrayBuffer) => Promise.resolve({ ok: false }),
+ } satisfies Partial<DesktopApi>)
+ 
+ // Imported as a build-time source dependency by Mcode's documentViewPreload.
+-- 
+2.52.0.windows.1
+
