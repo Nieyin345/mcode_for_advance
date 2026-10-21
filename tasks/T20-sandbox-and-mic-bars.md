@@ -115,3 +115,24 @@ Mcode 有 HTML 预览（`fileEditorKinds.ts` 的 `canPreviewHtml`，走
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜执行回写（T20；源码提交 `442006052bbd00fc3e7f78b771755de586767777`）
+
+**范围与现状审计（E2）**：加载非宿主 HTML 的实际入口共四类：
+1. `apps/desktop/src/renderer/components/customUi/PanelFrame.tsx`：**iframe**，`sandbox="allow-scripts allow-forms allow-modals"`、无 `allow-same-origin`，已满足隔离；本轮新增原文断言和变异红例。
+2. `apps/desktop/src/main/browser/BrowserManager.ts`：浏览器面板和 `htmlPreviewDecision → openUrlInBrowser` 复用同一 **WebContentsView**，`contextIsolation:true`、`nodeIntegration:false`，但 **`sandbox:false`**。原因是 `browserPicker.mjs` ESM preload 依赖非沙箱加载。本任务明令只允许改渲染端及必要的 `documentViewHost`，不能在 T20 擅改该主进程文件/预加载器，故验收 1 **未达成**。
+3. `apps/desktop/src/main/document/documentViewHost.ts`：文档/工作流编辑器 **WebContentsView**，`sandbox:true` + `contextIsolation:true` + `nodeIntegration:false`，无须改动（该文件在并行开发中曾有未提交改动，T20 未覆盖）。
+4. `apps/desktop/src/main/browser/browserManagerSupport.ts` 的打印 PDF 隐藏 **BrowserWindow**：`sandbox:true`；不属于 iframe。
+`apps/desktop/src/main/window.ts` 是可信宿主窗口（非加载不可信页面入口），不计入这四类。WebContentsView 不存在 HTML `sandbox` 属性；以 Electron `webPreferences` 三项和浏览器会话分区作等价审计。
+
+**实际改动**：
+- 新增 `EpitaxyIframeBridge.tsx` 与 `epitaxySecurity.ts`：7 个 MIME 精确分流，HTML/SVG 使用禁 `allow-same-origin` 的沙箱 iframe，其他 5 类仅以转义文本展示，未知 MIME fail-closed；校验消息来自 iframe、opaque `null` origin，敏感通道仅在 `event.userActivation?.isActive` 且 `isTrusted` 时放行。特别**不**使用容易被宿主先前点击污染的 `navigator.userActivation.hasBeenActive`。Chromium 普通 MessageEvent 可能根本不提供 `userActivation`，此时拒绝操作而非放宽门禁。注意：当前 Mcode 没有把 7 MIME 工件接入已有浏览器文件预览；此组件尚无生产调用方，**不能以该组件的断言冒充原有自定义面板消息桥全面安全**（验收 2 未完全覆盖实际加载链）。
+- 新增 `LiveMicActivityBars.tsx`：六个独立 FFT 频段、connecting CSS 交错动画、active 用真 `MediaStream` 和 RAF 更新高度，idle 静态；复用现有 `useTickerReducedMotion`（系统与用户自定），停止/卸载释放 AudioContext 与 RAF；无 framer-motion。仅给 `useVoiceInput` 暴露现有音频流、在 `MicButton` 旁添加装饰性条，录音按钮既有 start/stop/cancel/快捷键行为不变。
+
+**验证（E1）**：
+- `node apps/desktop/scripts/run-smokes.mjs t20-sandbox-mic-smoke`：PASS（7 MIME、iframe 与 WebContentsView 静态配置、合成消息门禁、三态、6 频段、reduced motion、FFT 资源回收）。
+- `node apps/desktop/scripts/t20-sandbox-mic-smoke/mutate.mjs`：PASS；精确向 `PanelFrame` 的 iframe 添加 `allow-same-origin` 后，原断言**变红**，并校验源码逐字节还原。再跑 T20 smoke PASS。
+- `pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` 和 `pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json`：双包 PASS。
+- `node apps/desktop/scripts/run-smokes.mjs html-preview-electron-smoke browser-smoke browser-file-url-boundary-smoke browser-occluder-rect-smoke browser-pure-smoke browser-script-injection-smoke browser-tabs-a11y-smoke browser-tool-parity-smoke browser-uuid-entropy-smoke custom-ui-smoke`：9 PASS / 1 FAIL。失败项 `html-preview-electron-smoke`：`Timed out: initial blank tab`；单独复跑仍同样失败。两次失败日志位于 `apps/desktop/.tmp/smoke-runs/1792550979121-35224-Vpzbsy`、`1792551033324-27776-8Slv6J`，因此**不能**声明验收 4 达成。
+
+**验收逐条**：1 未达成（BrowserManager sandbox:false）；2 部分达成（新 Epitaxy 桥纯函数与渲染断言已绿，但原有 PanelFrame 消息链未统一走门禁）；3 达成（有三态/音频行为的隔离断言，未做真麦克风 U1）；4 未达成（HTML 预览 Electron 用例两次红）；5 达成；6 达成。**剩余边界**应另由浏览器宿主负责人处理，T20 不越权修改 `BrowserManager` 或其 ESM preload。
