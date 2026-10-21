@@ -90,7 +90,7 @@
 | T19 | Node-RED 源码 vendor 第一步：落地 + 解析链路 | ARC-006 | T13 | ✅ 完成（vendor 5.0.8 / 解析+T19 fallback / afterPack 校验） |
 | T20 | 工件预览沙箱 + 语音活动条（第三批逆向件） | ARC-005 UI+安全 | 无 | ✅ 完成（7 MIME 分流 + 真 MediaStream 六频段） |
 | T21 | 顶栏 macOS 红绿灯避让 + 附件磁贴（第四批逆向件） | ARC-005 UI | 无 | ✅ 完成（74/zoom 公式 + 7.5rem 磁贴 + 智能截断） |
-| T22 | Docs 后续切片：exportPdf 整链 / lazy-media 三类源 / files:read | ARC-007 | T05c | 未开始 |
+| T22 | Docs 后续切片：exportPdf 整链 / lazy-media 三类源 / files:read | ARC-007 | T05c | ✅ 完成（PDF 本地拆页 + 图片源四类策略 + 附件读取） |
 | T23 | Pane 剩余能力：可调分割线 + 布局预设 + 重置 | ARC-005 UI | T02 | ✅ 完成（比例流 + 18%/82% 折叠 + 三预设 + 重置） |
 | T24 | 设置页全面重构（63 面板 / 26,303 行对齐 CDS） | ARC-005 UI | 无 | **进行中**（批次 1–2 完成：外壳 + DataRoot/About/MarketView） |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
