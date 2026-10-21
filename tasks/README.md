@@ -115,8 +115,8 @@
 | T52 | **smoke 急救**：501 套里 25 套红，其中 15 套是构建就崩 | **测试基础设施** | 无 | ⚠️ **已修构建链，验收受阻**（503 套全量 481/22，原红复测 17 转绿、5 条其它域断言仍红；见任务回写区） |
 | T53 | **T29 续篇**：用真实 sidecar 验完 xlsx / pptx | ARC-007 | T29 | **可派**（sidecar 已从上游 v0.11.0 提取并实测能打开真实 xlsx） |
 | T54 | 原厂 sheets/slides 的 Pane 外 IPC 围栏 + T42 报的两条红 | 安全 + 回归 | T53 | 待派 |
-| T55 | Node-RED 两条回归：主题 manifest 版本 + e2e 断言 | 回归修复 | 无 | **可派** |
-| T56 | 三套 UI/策略回归：module-ui / skills-nodes-ui / vscode-l1 | 回归修复 | 无 | **可派**（vscode-l1 那条是 T16 的 fail-closed 正确生效，测试没跟上） |
+| T55 | Node-RED 两条回归：主题 manifest 版本 + e2e 断言 | 回归修复 | 无 | ✅ 完成（`42a40ae8`；两条都是断言过时，4/4 套件 PASS） |
+| T56 | 三套 UI/策略回归 | 回归修复 | 无 | ✅ 完成（`1934a722`；10/10 + 23/23 + 27/27，三条全是测试过期） |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | ✅ 完成（见上） |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |
@@ -346,25 +346,23 @@ docs 已有可抄的：`genoffice/apps/docs/src/main/mcode-ai.ts`（206 行）�
 | sheets | ❌ 未接（`createSheetsView` 一直可用） | **T29** |
 | slides | ⚠️ 自搓了 3 个操作（原厂 155 条已在 `createSlidesView` 里） | **T29** |
 
-### 可派顺序（**2026-10-21 15:35 更新**）
+### 可派顺序（**2026-10-21 16:20 更新**）
 
-**已完成**：T01–T08、T10–T23、T25–T28、T42、T47、T48
+**已完成**：T01–T08、T10–T23、T24–T28、T42、T47、T48、T52、T55、T56
 **接线完成待验**：T29（`dc974b2c`）→ 验收补齐见 **T53**
-**在飞**：T24（设置页）、T52
+**在飞**：无（全量 smoke 正在复跑）
 
-**当前可派**：
+**当前可派（五张，互不冲突）**：
 
-| 卡 | 文件 | 改哪 | 冲突 |
-|---|---|---|---|
-| **T53** T29 续篇（真实 sidecar 验 xlsx/pptx） | `T53-genoffice-sheet-slide-verification.md` | `scripts/` 新增断言 | 无 |
-| **T49** 扩展调用面 | `T49-extension-api-surface.md` | `main/modules/` | 无 |
-| **T51** 让 AI 写扩展 | `T51-ai-writes-extensions.md` | `appControl/` | 无 |
-| **T45** 删手写画布 | `T45-workflow-canvas-to-node-red.md` | `settings/workflows/`（渲染端） | T42 已完成，可开 |
-| **T44** 节点包 i18n | `T44-node-red-node-pack-i18n.md` | `mcodeNodePack` HTML | T42 已做大部分，先核再补 |
+| 卡 | 文件 | 改哪 |
+|---|---|---|
+| **T53** T29 续篇（真实 sidecar 验 xlsx/pptx） | `T53-genoffice-sheet-slide-verification.md` | `scripts/genoffice-native-view-smoke/` |
+| **T49** 扩展调用面 | `T49-extension-api-surface.md` | `main/modules/` |
+| **T51** 让 AI 写扩展 | `T51-ai-writes-extensions.md` | `main/appControl/` |
+| **T45** 删手写画布 | `T45-workflow-canvas-to-node-red.md` | `renderer/components/settings/workflows/` |
+| **T50** 扩展 UI 贡献点 | `T50-extension-ui-contributions.md` | `contracts/modules.ts` + 渲染端（T24 已完成，不再冲突） |
 
-**T54 等 T53**（先验功能再收紧边界）。
-**T50 暂缓** —— 与在飞的 T24 抢 `components/settings/`。
-**T46 等 T45**。
+**等前置**：T54 等 T53、T46 等 T45、T44 先核 T42 已做到哪。
 
 ### xlsx sidecar 已就位（T53 的前置）
 
