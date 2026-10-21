@@ -8,6 +8,8 @@ import { mcodeDocsDesktopApi as api, MCODE_DOCS_CHANNEL_POLICY as policy, instal
 import { registerDocsIpc, MCODE_NATIVE_DOCS_CHANNELS } from '../../../../genoffice/apps/docs/src/main/mcode-ipc'
 import { DOCS_PRIVILEGED_CHANNELS, type DocsPrivilegedPorts } from '../../../../genoffice/apps/docs/src/main/mcode-privileged'
 import { runPrivilegedBoundarySmoke } from './privilegedDocs'
+import { MCODE_DOCS_AI_HANDLERS, type DocsAiPorts } from '../../../../genoffice/apps/docs/src/main/mcode-ai'
+import { checkAiBoundary } from './nativeAi'
 
 let count = 0
 function check(name: string, yes: unknown): void {
@@ -20,16 +22,16 @@ async function main() {
   installMcodeDocsViewPreload()
   check('vendor factory publishes desktop API', exposed.get('desktop') === api)
   for (const key of ['openDocxDecrypt', 'saveDocxTo', 'saveDocxAs',
-    'copyImageToClipboard', 'aiChat', 'aiStream',
+    'copyImageToClipboard',
     'kbRead', 'readAttachment', 'getPathForFile', 'projectApi'] as const) {
     check('high-risk API omitted: ' + key, !(key in api))
   }
   for (const ch of ['docs:open', 'docs:save-as', 'docs:save-to', 'docs:open-decrypt',
-    'docs:copy-image-to-clipboard', 'ai:stream', 'project:appendChat'] as const) {
+    'docs:copy-image-to-clipboard', 'project:appendChat'] as const) {
     check('dangerous channel not whitelisted: ' + ch, !(ch in policy))
   }
   check('default channel strategy does not route unknown channels',
-    Object.keys(policy).length === 32 && Object.isFrozen(policy))
+    Object.keys(policy).length === 47 && Object.isFrozen(policy))
   // Every T05b DesktopApi method MUST route to the scoped host endpoint,
   // never to a standalone global docs:* / files:* handler.
   const privilegedPreloadCases: Array<[string, () => Promise<unknown>]> = [
@@ -49,6 +51,20 @@ async function main() {
     check('T05b preload routes ' + name + ' only to scoped host IPC',
       last().channel === 'mcode:docs:privileged-' + name)
   }
+
+  const aiCases: Array<[string, () => Promise<unknown>]> = [
+    ['get-settings', () => api.getAiSettings()], ['stream', () => api.aiStream({requestId:'test',settings: {} as never,system:'',messages:[]})],
+    ['stream-cancel', () => api.aiStreamCancel('test')], ['chat', () => api.aiChat({settings:{} as never,system:'',user:'hello'})],
+    ['gsk-status', () => api.aiGskStatus()],
+  ]
+  for (const [name, fn] of aiCases) {
+    await fn()
+    check('T05c vendor AI call routes only to scoped Mcode backend: ' + name,
+      last().channel === 'mcode:docs:ai-' + name)
+  }
+  const aiStop = api.onAiStream(() => {})
+  check('T05c AI stream responds over Mcode-scoped event only', listeners.has('mcode:docs:ai-stream-chunk'))
+  aiStop()
 
   const savedData = new Uint8Array([80, 75, 3, 4])
   replies.set('mcode:document-view:save', { ok: true })
@@ -126,7 +142,8 @@ async function main() {
   }
   const smokeDataRoot = process.env.MCODE_SMOKE_DATA_ROOT
   if (!smokeDataRoot) throw new Error('isolated Mcode smoke data root required')
-  const dispose = registerDocsIpc(fakeIpc as never, (sender) => sender === approved, () => 'en', () => smokeDataRoot, () => approved.__ports)
+  const dispose = registerDocsIpc(fakeIpc as never, (sender) => sender === approved, () => 'en', () => smokeDataRoot, () => approved.__ports,
+    (sender) => sender === approved && approved.__ai ? {ports: approved.__ai, context:{sessionId:'mcode-session',filePath:'/sandbox/doc.docx'}} : null)
   check('scoped native handlers installed, including UI and locale', handlers.size >= 5 && MCODE_NATIVE_DOCS_CHANNELS.every((ch) => handlers.has(ch)))
   const words = new Set<string>()
   let replacements = 0
@@ -139,8 +156,8 @@ async function main() {
     getSpellCheckerLanguages() { return this.active },
     setSpellCheckerLanguages(next: string[]) { this.active = next },
   }
-  const approved = { id: 123, session: spell, __ports: null as DocsPrivilegedPorts | null, __print: null as null | ((cb: (ok: boolean, error?: string) => void) => void), print: (_options: unknown, cb: (ok: boolean, error?: string) => void) => approved.__print?.(cb), getPrintersAsync: async () => [{name: 'fake-queue', displayName: 'Isolated Test Printer', status: 9, options: {secret: 'must-not-return'}}], isDestroyed: () => false, focus: () => {}, sendInputEvent: () => { kicks++ }, replaceMisspelling: () => { replacements++ }, once: (_event: string, _cb: () => void) => {}, on: (_event: string, _cb: (...args: unknown[]) => void) => {} }
-  const forged = { id: 124, session: spell }
+  const approved = { id: 123, session: spell, __ports: null as DocsPrivilegedPorts | null, __ai: null as DocsAiPorts | null, send: (_ch: string, _value: unknown) => {},  __print: null as null | ((cb: (ok: boolean, error?: string) => void) => void), print: (_options: unknown, cb: (ok: boolean, error?: string) => void) => approved.__print?.(cb), getPrintersAsync: async () => [{name: 'fake-queue', displayName: 'Isolated Test Printer', status: 9, options: {secret: 'must-not-return'}}], isDestroyed: () => false, focus: () => {}, sendInputEvent: () => { kicks++ }, replaceMisspelling: () => { replacements++ }, once: (_event: string, _cb: () => void) => {}, on: (_event: string, _cb: (...args: unknown[]) => void) => {} }
+  const forged = { id: 124, session: spell, isDestroyed: () => false, send: (_channel: string, _message: unknown) => {} }
   const invoke = (ch: string, sender: unknown, raw?: unknown): unknown =>
     handlers.get(ch)!({ sender }, raw)
   check('unauthorized font read denied', invoke('mcode:docs:native-font-metrics', forged, 'Arial') === null)
@@ -171,13 +188,14 @@ async function main() {
   check('claim is synchronous', claimEvent.returnValue === true)
   check('context armed only once', rightClicks.length === 1)
   const disposeSecond = registerDocsIpc(fakeIpc as never, (sender) => sender === forged, () => 'zh')
-  check('additional DocumentViewHost shares registrar without duplicate IPC handles', handlers.size === MCODE_NATIVE_DOCS_CHANNELS.length + DOCS_PRIVILEGED_CHANNELS.length)
+  check('additional DocumentViewHost shares registrar without duplicate IPC handles', handlers.size === MCODE_NATIVE_DOCS_CHANNELS.length + DOCS_PRIVILEGED_CHANNELS.length + MCODE_DOCS_AI_HANDLERS.length)
   check('second host can authorize its own sender', invoke('mcode:docs:native-ui-language', forged) === 'zh')
   disposeSecond()
   check('removed second host cannot retain privileged access', invoke('mcode:docs:native-ui-language', forged) === null)
   await runPrivilegedBoundarySmoke(handlers, approved, forged, smokeDataRoot, check)
+  await checkAiBoundary(handlers, approved, forged, check)
   dispose()
-  check('native registrations can be released', handlers.size === 0 && onHandlers.size === 0 && removed.length === MCODE_NATIVE_DOCS_CHANNELS.length + DOCS_PRIVILEGED_CHANNELS.length)
+  check('native registrations can be released', handlers.size === 0 && onHandlers.size === 0 && removed.length === MCODE_NATIVE_DOCS_CHANNELS.length + DOCS_PRIVILEGED_CHANNELS.length + MCODE_DOCS_AI_HANDLERS.length)
   console.log(`native-docs-boundary: ${count}/${count} PASS`)
 }
 main().catch((e) => { console.error(e); process.exitCode = 1 })

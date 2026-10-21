@@ -114,6 +114,31 @@
 
 **证据**：`node apps/desktop/scripts/run-smokes.mjs document-view-host-smoke document-view-open-smoke document-view-electron-smoke document-view-vendor-page-smoke document-view-renderer-smoke` 5/5 PASS（`apps/desktop/.tmp/smoke-runs/1792548627596-27172-g2FUq2`，含原 T05a 链）。`npx tsc --noEmit -p apps/desktop/tsconfig.json`、`-p packages/contracts/tsconfig.json`、`-p genoffice/apps/docs/tsconfig.json` 全绿。变异脚本 `node apps/desktop/scripts/document-view-host-smoke/mutate-t05b.mjs`：撤掉真实路径围栏时 exit 1、越界断言红；撤掉打印确认时 exit 1、未确认不打印断言红；每次变异源文件逐字节恢复。此前针对**权限 IPC 本身**尚无真正 OS 弹窗/打印机 U1 体验验收，故不声称用户旅程已通过。
 
+### 2026-10-21｜T05c Docs AI 面板：12 个原厂 handler 归属、受控接线与剩余项
+
+原厂 AI 侧栏原封保留在 `genoffice/apps/docs/src/renderer/ai/`；仅 Mcode 视图使用 `mcode-view.ts` 的受限预载，路由到 `mcode-ipc.ts → mcode-ai.ts`，**绝不注册** standalone `docs-main.ts` 的 `registerAiIpc`、`streamForProvider`、`chatForProvider`、GenSpark 登录或 GenOffice 网络搜索。原厂其他五种编辑器未改。每条下面的 **H** 指 `document-view-host-smoke` 的原版 vendor fake-IPC + fake Mcode 适配器断言；**S** 指同套的真实 `docsAiPorts.ts` + 假 SDK 三引擎验证；**P** 指真实 Electron vendor-page 首帧无异常（不等同在线模型回合）。
+
+| 原厂 handler | 本卡归属和实际状态 | 验证与剩余 |
+|---|---|---|
+| `ai:get-settings` | **替代（部分）**：只读 Mcode 宿主选中的会话引擎/模型，不读取 GenOffice AI 配置、无云密钥；对原厂设置 ABI 返回不含密钥的兼容对象（外观仍显示 Codex，实际可为 Claude/Pi，待 UI 精确标识） | H: 模型标识来自 Mcode session；P: 首帧 |
+| `ai:set-settings` | **不迁**：明确拒绝原厂账户/模型配置写入，提示到 Mcode 设置修改 | H: 拒绝附文字 |
+| `ai:stream` | **改造（部分）**：选择文本/指令/上下文压缩为有界 typed request，权限绑定到 Mcode shell 当时选中的会话；用户每次批准之后通过 `RuntimeManager.sendTurn` 调当前会话固有 provider，`RuntimeManager.subscribe` 事件回流 native `onAiStream`。**只回流文字**，不伪造 GenOffice 工具调用、未证明原版 Agent tool 编辑写回完成 | H: 伪造 sender/参数拒绝、批准后 fake SDK 流式；S: Claude/Pi/Codex 三种 provider 身份经真实转发器送入 `RuntimeManager.sendTurn`，并把 Mcode `userMessage` 回显到主会话 |
+| `ai:stream-cancel` | **改造**：只能取消当前 sender 持有的 requestId 的 AbortController/TurnHandle，拒绝跨视图取消 | H: 跨视图取消拒绝；取消/销毁路径需真运行时端到端进一步验证 |
+| `ai:chat` | **改造**：复用与 `ai:stream` 同一条宿主三 SDK 转发，收集文本为 one-shot；仍然每次确认 | H: chat 真经过同一 fake Mcode 端口 |
+| `ai:codex-models` | **复用（部分）**：只展示宿主 Mcode 选中会话的模型；不探测/启动 GenOffice 自己的 Codex CLI，未做完整全引擎模型目录 | H: 不走 vendor API |
+| `ai:custom-models` | **不迁**：GenOffice BYOK endpoint 不可用，Mcode 模型配置唯一事实源 | H: 明确拒绝 |
+| `ai:gsk-login` | **不迁**：GenSpark 登录/凭据恢复/浏览器登录全禁用；提示 Mcode 三 SDK | H: 明确拒绝 |
+| `ai:web-search` | **不迁**：GenOffice 云搜索禁用，可从 Mcode 会话使用已有受审搜索工具 | H: 拒绝文字 |
+| `ai:image-search` | **不迁**：GenOffice 图搜禁用，可由 Mcode provider 工具链实现 | H: 拒绝文字 |
+| `ai:media-test` | **不迁**：GenOffice BYOK 媒体配置/测试禁用 | H: 拒绝文字 |
+| `ai:search-test` | **不迁**：GenOffice 搜索 Key 测试禁用 | H: 拒绝文字 |
+
+额外审查（原 T05c 的“12 条”表遗漏）：standalone 还有 `ai:gsk-status`、`ai:fetch-image`；本轮也显式限制为云端未登录/不可用，避免原厂 AI UI 悄悄恢复云侧能力。文档其它 `docs:analyze-media` 等云媒体入口仍未迁入 Mcode preload，缺失而非放行。
+
+**实际调用链**：Mcode 主窗口的 `GenofficeViewHostPane` 传当前 `activeSessionId` → `DocumentViewHost` 绑定 view + 权威已打开文档路径 → 原版 GenOffice `AiPanel/createElectronTransport` 调 `window.desktop.aiStream` → `mcode-view.ts` 只允许 `mcode:docs:ai-stream` → `mcode-ai.ts` 精确验证 sender/会话绑定并逐次请求 `dialog.showMessageBox` 用户确认 → `docsAiPorts.resolveDocsAiSession` 再核 provider 属于三 SDK 且文档属于对应工作区 → `RuntimeManager.sendTurn`/ProviderRegistry 执行，原有 SDK 工具请求由 `ApprovalBridge` 审批 → `RuntimeManager.subscribe` 推 `text.delta/turn.done` → `mcode:docs:ai-stream-chunk` → `AiPanel`。Mcode 会话另收到同一用户请求 `userMessage`。**注意**：宿主确认使用 Mcode 已有 Electron `dialog.showMessageBox` 模态 UI（与保存/打印同一种），没有新造授权持久化；模型实际工具审批仍走原有 `ApprovalBridge`，但并不是把这条内部 IPC 本身包装成 `app_api_call`，如需逐字满足“经 app_api_call”形式仍有集成缺口。
+
+**E1 / E2 / remaining**：`document-view-host-smoke` 新增 12+2 受控通道归属检查、默认拒绝与每次确认断言，以及真实主进程 SDK dispatch adapter 的 Claude/Pi/Codex 三种假 SDK 回放。`document-view-vendor-page-smoke` 在真 Electron 渲染原版 Docs 页面且无首帧异常；没有拿真实用户配置和在线模型跑一轮，所以 **T05c 判据 2（原生面板发真实指令并在 Mcode 会话看得到回合）尚无 U1 证据**。此外，原厂 Agent tool → GenOffice 选区替换/插入的完整闭环没有实现，不得将“文字 streaming 已接”冒称全部编辑能力。Mcode 新选中会话在已有视图存续时还没有热切换绑定，仍使用该视图打开时所选会话，故应在 UI 明示/接线前视为后续缺口。
+
 ### 2026-10-19｜GenOffice 原生 Shell 缺构建导致反复弹窗：实证与修复
 
 - **先前的 E1 红例（保留历史，不再认定当前仍红）**：`document-view-renderer/host/open` 3/3 PASS（`1792397455478-38608-xWCSjH`），`genoffice-cli-smoke` 曾 38/40 FAIL（`1792397336995-18772-cM4mtM`），表现为 `conversion_failed` 而非预期 `app_unavailable`。用户随后截图原生 Windows 错误窗：`Unable to find Electron app at .../genoffice/apps/shell` 与 `Cannot find .../out/main/index.js`。

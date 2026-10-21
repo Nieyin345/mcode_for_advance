@@ -117,6 +117,16 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
   ipcMain.handle("mcode:document-view:read-opened", () => ({ ok: false, reason: "probe: 不打开文件" }));
   ipcMain.handle("mcode:document-view:open-committed", () => ({ ok: true }));
   ipcMain.handle("mcode:document-view:confirm-replace", () => false);
+  // T05c: mounted Docs requests the host-owned AI settings/login status in
+  // its first effect. This probe has no selected Mcode session: return a
+  // credential-free, explicitly disabled compatibility configuration.
+  ipcMain.handle("mcode:docs:ai-get-settings", () => ({
+    provider: "codex", providers: { codex: { apiKey: "", cliPath: "", model: "" } },
+    gskToolsEnabled: false, error: "No Mcode session in isolated page probe",
+  }));
+  ipcMain.handle("mcode:docs:ai-gsk-status", () => ({
+    loggedIn: false, error: "GenOffice cloud account disabled in Mcode",
+  }));
 
   const pageEvidence: Array<Record<string, unknown>> = [];
 

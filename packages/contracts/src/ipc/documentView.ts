@@ -86,6 +86,10 @@ export const DocViewOpenSchema = z.object({
    *
    *  省略 = 普通文档视图（docs 语义），现有调用方行为不变。 */
   editor: z.enum(["slides"]).optional(),
+  /** T05c: the Mcode shell's selected conversation at view creation; never
+   * accepted as an approval grant or a provider override. Main validates
+   * this session against the actual opened document's workspace. */
+  mcodeSessionId: z.string().min(1).max(200).optional(),
 });
 export type DocViewOpenInput = z.infer<typeof DocViewOpenSchema>;
 

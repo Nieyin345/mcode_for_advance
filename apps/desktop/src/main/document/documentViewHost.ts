@@ -101,6 +101,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { issueDocumentHandoff, revokeDocumentHandoffs } from "./documentViewHandoff.js";
 import { mcodeNativeDocsIpcAvailable, registerDocsIpc } from "@main/document/docsVendorIpc.js";
 import type { DocsPrivilegedPorts } from "./docsPrivilegedPorts.js";
+import type { DocsAiPorts } from "./docsAiPorts.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 import type { EditorCredentialPort } from "./documentViewCredentialBroker.js";
 
@@ -263,6 +264,8 @@ interface LiveDocumentView {
    *  打开时那份文件** —— 否则一个被投毒的编辑器页就能覆盖工作区里任意的 `.docx`。
    *  取值为 null 表示视图里还没有文档（只有起始页），此时保存一律拒绝。 */
   openedFilePath: string | null;
+  /** T05c: Mcode shell-selected conversation; never selected by the vendor. */
+  mcodeSessionId: string | null;
   /** 最近一次加载/渲染失败(诊断用;成功后清空)。 */
   lastFailure?: { kind: "load" | "render-gone"; reason: string; at: number };
   /** 【ARC-007】**打开时的内容版本**（`fileContentVersion` 的 sha256；文件当时不存在
@@ -450,6 +453,7 @@ export class DocumentViewHost {
   private viewDisposer: ((webContentsId: number) => void) | null = null;
   /** T05b: Mcode-owned file/print approvals; no adapter means fail-closed. */
   private docsPrivileged: DocsPrivilegedPorts | null = null;
+  private docsAi: DocsAiPorts | null = null;
   /** 已经挂过 `closed` 清理钩子的那个窗口（换窗口时先摘旧的）。 */
   private cleanupWindow: DocumentViewHostWindow | null = null;
   private cleanupHandler: (() => void) | null = null;
@@ -474,7 +478,13 @@ export class DocumentViewHost {
           const live = id === null ? null : this.views.get(id);
           return live !== null && live !== undefined &&
             live.workflowEngineId === null && live.editor !== "slides";
-        }, uiLocale, dataRoot, () => this.docsPrivileged);
+        }, uiLocale, dataRoot, () => this.docsPrivileged, (sender) => {
+          const docId = this.docIdForSender(sender);
+          const live = docId === null ? null : this.views.get(docId);
+          if (!live || live.editor === "slides" || live.workflowEngineId !== null ||
+              !live.mcodeSessionId || !live.openedFilePath || !this.docsAi) return null;
+          return { ports: this.docsAi, context: { sessionId: live.mcodeSessionId, filePath: live.openedFilePath } };
+        });
       } catch (err) {
         log.error(`native Docs IPC not installed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -538,6 +548,7 @@ export class DocumentViewHost {
       // （或反之）时，打开/保存链必须跟着切 —— 否则 slides 页会拿到 docx 的
       // OpenDocxResult、docs 页会拿到 OpenResult。
       existing.editor = input.editor ?? null;
+      existing.mcodeSessionId = input.mcodeSessionId ?? null;
       if (urlChanged) this.navigate(existing);
       if (input.visible) {
         if (!existing.visible) {
@@ -573,6 +584,7 @@ export class DocumentViewHost {
       bounds: input.bounds,
       visible: false,
       openedFilePath: null,
+      mcodeSessionId: input.mcodeSessionId ?? null,
       openedFileRevision: null,
       workflowEngineId: engineId,
       editor: input.editor ?? null,
@@ -1209,6 +1221,10 @@ export class DocumentViewHost {
   /** Inject only the authoritative host services, not renderer-provided grants. */
   setDocsPrivilegedPorts(ports: DocsPrivilegedPorts | null): void {
     this.docsPrivileged = ports;
+  }
+
+  setDocsAiPorts(ports: DocsAiPorts | null): void {
+    this.docsAi = ports;
   }
 
   setConfirmDirty(

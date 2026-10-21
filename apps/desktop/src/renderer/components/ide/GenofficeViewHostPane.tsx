@@ -86,6 +86,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@renderer/lib/api.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
@@ -248,6 +249,7 @@ function closeQuietly(docId: string): void {
 
 export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
   const { t } = useI18n();
+  const mcodeSessionId = useSessionStore((s) => s.activeSessionId);
   // 读能力报告走 useRpc（硬规矩 7）；本组件只用它拿 CLI 路径推仓库根。
   const caps = useRpc(() => api.document.capabilities(), [], { toastOnError: false });
   const [openError, setOpenError] = useState<string | null>(null);
@@ -300,6 +302,7 @@ export function GenofficeViewHostPane({ filePath }: { filePath: string }) {
         bounds,
         visible: true,
         ...(host === "slides" ? { editor: "slides" as const } : {}),
+        ...(host === "docs" && mcodeSessionId ? { mcodeSessionId } : {}),
       });
       lastKey = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
       void pending.then(

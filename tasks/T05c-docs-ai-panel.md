@@ -138,3 +138,11 @@ GenOffice 的 AI 选区弹框 / 侧栏
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜T05c 执行回写（AI 请求受控接线；真在线/文档写回 U1 未达成）
+
+- **任务归属**：12 项原厂 `ai:*` 逐项的“改造/复用/不迁”理由与断言、额外 2 个云入口 `ai:gsk-status`/`ai:fetch-image`，已写入 `docs/planning/arc007-genoffice-native-integration-map.md` 的 T05c 表。GenOffice 原版 `AiPanel` 没删除，原版 `docs-main.ts:registerAiIpc` 的云 `streamForProvider` / `chatForProvider` / Genspark 登录没有装配进 Mcode。界面兼容用的设置对象不携带真实密钥。云账号和搜索探测返回明确拒绝。
+- **受控链**：Mcode 主窗口 `GenofficeViewHostPane` 打开 Docs 时携 `activeSessionId` → `DocumentViewHost` 将会话绑定到真实 webContents 与已打开文件 → vendor `mcode-view.ts` 只开放精确的 `mcode:docs:ai-*` → `genoffice/apps/docs/src/main/mcode-ai.ts` 核实 sender / 请求大小 / 授权 / 每次确认 → Mcode `docsAiPorts.ts` 根据权威 `SessionRepo` 的 `providerId`（只允许已注册的 Claude/Pi/Codex）和工作区校验调用 `RuntimeManager.sendTurn` → `RuntimeManager.subscribe` 的实时文本经 `mcode:docs:ai-stream-chunk` 回到原版 Docs AI panel，`userMessage` 同时进入 Mcode 的运行时会话。未收到引擎真实结束事件按失败处理。AI 面板提供方的云配置和伪造的 session/provider 字段绝不决定执行者。
+- **确认路径**：每次指令先通过现有 Electron `dialog.showMessageBox` 模态确认（默认取消），危险全文修改不继承上一次许可；三 SDK 内实际工具调用保留 Mcode 原有 `ApprovalBridge`。**没有**新造授权令牌或 GenOffice 云权限链，但**也没有**将该通道直接接入 `app_api_call` 方法级审批器，此形式上的差异如实记入集成地图。
+- **E1 / E2**：`node apps/desktop/scripts/run-smokes.mjs document-view-host-smoke document-view-open-smoke document-view-electron-smoke document-view-vendor-page-smoke document-view-renderer-smoke` 5/5 PASS（`apps/desktop/.tmp/smoke-runs/1792550447582-39928-W1ZRRq`）。`document-view-host-smoke` 内新增对 14 个原版云端口的非直连受限接线/云拒绝测试，以及 `docsAiPorts.ts` 的三 fake-SDK 真实执行函数链断言；真实 Electron vendor-page 首帧无未捕获异常。三套 tsc `apps/desktop` / `packages/contracts` / `genoffice/apps/docs` 全绿。变异脚本 `node apps/desktop/scripts/document-view-host-smoke/mutate-t05c.mjs`：撤 Mcode SDK 路由→测试 exit 1；撤用户逐次确认→测试 exit 1，随后文件均逐字节恢复。
+- **验收剩余**：第 **2** 条 **未达成**：没有真在线三 SDK 在真 Electron Docs AI 面板里发指令、在 Mcode 会话中观察真实结果的 U1 证据；原厂 AI Agent 工具调用→选区插入/替换也尚无完整回填能力。其余第 1/3/4/5/6/7 条有针对性的静态/动态证据；仅 E1/E2 不能替代 U1。该切片不代表 ARC-007 整包交付完成。
