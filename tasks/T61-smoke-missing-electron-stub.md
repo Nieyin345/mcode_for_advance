@@ -155,3 +155,14 @@ grep -rln "run-store-smoke/stubs/" apps/desktop/scripts/ | wc -l
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 执行回写（T61）
+
+- 基线 HEAD：`89c56a8b608de45f9080716e4bf7e3a275d7f086`。仅修改两个 `run.sh`、新增共享 `scripts/run-store-smoke/stubs/electron.ts`；没有改产品源码或删除断言。
+- **真实红例**：以 `apps/desktop` 为 cwd 运行 `bash scripts/workflow-seed-smoke/run.sh` 与 `bash scripts/published-tools-smoke/run.sh`，两者均在 esbuild 阶段报告 `Could not resolve "./scripts/run-store-smoke/stubs/electron.ts" (originally "electron")`，还报告 sherpa-onnx 平台原生 `.node` 文件无 loader（初轮约 32 条构建错误）；补齐桩后仍有 10 条原生打包错误。因此判定 **B：缺 Electron 桩 + 构建配置过时**，不是套件断言过时。
+- **修法**：新增共享 Electron 桩，真实代理 `app.getPath("userData")` 到必须显式提供的 `MCODE_SMOKE_DATA_ROOT`（未设置立即抛，不碰真实用户库）；与 `safeStorage` 等无头行为约束兼容，其余非本测职责的 API fail-loud。两套构建追加 `--alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts` 隔离无关 GenOffice vendor；原生 `sherpa-onnx-node`、`cpu-features` 用 `--external`，其调用未在断言路径发生。`ssh2` 不外置（实测若外置，临时 bundle 从 `/tmp` 解析不到裸包），保留打包以免运行时错误；保留既有 ESM `--banner`。
+- **两个目标全绿**：`workflow-seed-smoke` 四进程依次 `4/4+7/7+3/3+12/12=26/26`；`published-tools-smoke` `27/27`，均运行实际断言（非仅打包绿）。
+- **共享引用方核查**：`git grep -l "run-store-smoke/stubs/" -- apps/desktop/scripts` 命中 128 个文件，跨 116 套；另以内容搜索核实共 116 套、225 行引用。**直接引用缺失 `run-store-smoke/stubs/electron.ts` 的只有上述 2 套**。命令 `node scripts/run-smokes.mjs <116 个关联套件名>` 已逐套运行，结果 **112 PASS / 4 FAIL**，日志 `apps/desktop/.tmp/smoke-runs/1792578963294-23664-z32qDg/`。四个失败：`app-control-smoke` 的 catalog 缺 `workflowEngine.load`（569/570）；`automation-smoke` 的旧 `--alias:node:fs` 连带破坏 `node:fs/promises` 的解析；`event-vertical-smoke` 对 sherpa 平台 `.node` 原生模块未外置；`orchestration-ipc-smoke` 既有工作流字段/出厂更新标记断言红（430/433）。这些套件没有引用新共享 `electron.ts`，未越界替其它任务修它们。**验收判据 3 的“无第三套坏的”严格意义未达成**，但没有第三套遇到本次报告的缺失 `electron.ts` 故障。
+- **双包类型检查**：`../../node_modules/.bin/tsc.cmd --noEmit -p tsconfig.json` 分别于 `apps/desktop`、`packages/contracts` 执行，均 exit 0。
+- **变异验证**：将共享桩 `export const safeStorage` 临时改成 `const safeStorage`，重新执行 `published-tools-smoke`，esbuild 按预期报 `No matching export ... for import "safeStorage"`（`secretStore.ts`、`BrowserManager.ts`）；随后逐字恢复该导出，目标测试与 116 套批跑均在恢复后进行。判据 5 已达成。
+- **remaining**：仅判据 3 的关联套件全绿尚未达成；上述 4 个旧红例各有独立根因，不在 T61 的两套构建与共享 Electron 桩修复范围。任务仍有价值：MC-053/ARC-006 导入保真与 MC-041 发布工具闭环都恢复了动态保护。

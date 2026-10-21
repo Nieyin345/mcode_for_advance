@@ -21,6 +21,8 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:electron=./scripts/run-store-smoke/stubs/electron.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
+  --external:sherpa-onnx-node --external:cpu-features \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"
