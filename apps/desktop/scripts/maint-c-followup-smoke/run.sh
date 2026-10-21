@@ -7,7 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 OUT=$(mktemp -d /tmp/mcode-maint-cf-smoke.XXXXXX)
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 

@@ -37,7 +37,8 @@ DATA=$(mktemp -d /tmp/mcode-lib-delete-data.XXXXXX)
 # convert.ts),而 `require.resolve` 那一句在**模块加载时**就跑(`pdfText.ts` 顶层
 # 里算 cMap 目录)。软链一份真的进去,而不是设 NODE_PATH —— 后者只管 CJS 而 pdf.js
 # 自己那条动态 import 走 ESM(ESM 不认 NODE_PATH)。
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 

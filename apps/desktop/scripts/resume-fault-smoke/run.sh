@@ -21,7 +21,8 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
 # 外置的相对依赖:每条都要单独 esbuild 成同名 .js 铺在 bundle 旁边,并让主 bundle
 # `--external` 它。用 `--packages=external` 让裸 specifier(electron 等)也从 bundle
 # 位置解析 —— 故先在 OUT 下放一个 node_modules 软链。
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 # 让铺在 OUT 里的 .js 桩被当作 ES module(否则 node 会对每个文件重解析并打警告)。
 printf '{"type":"module"}\n' > "$OUT/package.json"
 

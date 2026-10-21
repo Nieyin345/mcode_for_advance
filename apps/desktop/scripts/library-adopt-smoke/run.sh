@@ -34,7 +34,8 @@ DATA=$(mktemp -d /tmp/mcode-adopt-data.XXXXXX)
 # 而 esbuild 把 bundle 打进了临时目录 —— 那儿没有 node_modules,本地抽取就会以
 # "Cannot find module" 失败,而那看起来和"被测代码坏了"一模一样。软链一份进去
 # (不设 NODE_PATH:那条路只管 CJS,而 pdf.js 自己那条动态 import 走 ESM)。
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 
 # 权限注入是"手动"的(icacls 不是对称的:父目录上事后新建的子目录不会继承那个拒绝 ACE)
 # —— 所以退出时必须把注入过的路径逐个反转,否则临时目录删不掉。main.ts 自己会反转它注入

@@ -4,7 +4,8 @@ cd "$(dirname "$0")/../.."
 OUT=$(mktemp -d /tmp/mcode-library-writeback.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-library-writeback-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/library-pdf-writeback-host-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

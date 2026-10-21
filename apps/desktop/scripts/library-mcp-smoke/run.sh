@@ -30,7 +30,8 @@ DATA=$(mktemp -d /tmp/mcode-lib-mcp-data.XXXXXX)
 #
 # 软链一份真的进去,而不是设 `NODE_PATH`:后者只管 CJS 的 require,而 pdf.js 自己那条
 # 动态 import 走的是 ESM(ESM 不认 NODE_PATH)。软链对两种都成立。
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 

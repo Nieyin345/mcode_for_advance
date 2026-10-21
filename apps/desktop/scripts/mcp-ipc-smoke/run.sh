@@ -83,7 +83,8 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # 给 bundle 一个 node_modules 视野:若干模块在**运行期**从 bundle 自己位置解析依赖
 # (同 library-trash-smoke / claude-ipc-smoke 那一行)。
-ln -s "$DESKTOP/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$DESKTOP/node_modules"
 
 # 真的 `~/.mcode` 在**改之前**长什么样 —— main.ts 的第 0 节靠它判断此刻用的到底是不是
 # 临时目录(在那里读 `homedir()` 是没用的,读到的已经是下面这个改过的值)。

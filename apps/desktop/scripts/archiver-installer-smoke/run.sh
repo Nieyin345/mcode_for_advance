@@ -49,7 +49,8 @@ trap 'rm -rf "$OUT" "$CLEAN_OUT" "$DATA" "$RUNTIMES" "$RUNTIMES_CLEAN"' EXIT
 # “探不到任何来源”的全部实现。tar 是通过 `await import("tar")` 在**运行期**从
 # bundle 自己的位置解析的,而 bundle 在临时目录里、那儿没有 node_modules。
 # 软链一份真的进去,而不是设 NODE_PATH(后者只管 CJS,而 tar 7 的入口是 ESM)。
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 **sql.js** 的:它的 asm 构建里有 `require("node:fs")`,而定死的

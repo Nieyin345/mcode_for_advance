@@ -5,7 +5,8 @@ OUT=$(mktemp -d /tmp/mcode-pdf-highlights.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 # Keep the real, already-installed pdfjs-dist package external to esbuild.
 # Its worker/browser branches must be resolved by Node, not bundled.
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/pdf-highlights-integrity-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

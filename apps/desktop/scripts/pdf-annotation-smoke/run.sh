@@ -19,7 +19,8 @@ cd "$(dirname "$0")/../.."
 
 OUT=$(mktemp -d /tmp/mcode-pdf-annot-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/pdf-annotation-smoke/main.ts \

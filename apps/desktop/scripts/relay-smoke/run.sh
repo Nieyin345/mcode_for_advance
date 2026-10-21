@@ -48,7 +48,8 @@ OUT=$(mktemp -d /tmp/mcode-relay-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-relay-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `--banner` 给 sql.js:它的 asm 构建里有 `require("node:fs")` / `require("node:crypto")`,

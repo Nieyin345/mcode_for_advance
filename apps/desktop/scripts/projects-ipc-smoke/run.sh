@@ -26,7 +26,8 @@ cd "$(dirname "$0")/../.."
 
 OUT=$(mktemp -d /tmp/mcode-projects-ipc-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-projects-ipc-data.XXXXXX)
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 

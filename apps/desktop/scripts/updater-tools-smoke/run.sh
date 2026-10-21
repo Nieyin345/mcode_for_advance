@@ -77,7 +77,8 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # 被外置的那几个模块要在 `$OUT` 里能被解析到 node 内建以外的依赖;`--platform=node`
 # 把内建标成 external,所以只需要一份 node_modules 让 esbuild 自己找得到它的运行时。
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 
 BANNER='import { createRequire as __cr } from "node:module"; const require = __cr(import.meta.url);'
 

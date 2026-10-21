@@ -28,7 +28,8 @@ trap 'rm -rf "$OUT" "$DATA" "$HOME_DIR"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # `--packages=external` 让裸 specifier(electron 等)从 bundle 位置解析 —— 先软链 node_modules。
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 printf '{"type":"module"}\n' > "$OUT/package.json"
 
 COMMON=(

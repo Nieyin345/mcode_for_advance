@@ -37,7 +37,8 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 # 给 bundle 一个 node_modules 视野:sql.js 的 wasm 在运行期从 bundle 自己位置解析。
-ln -s "$DESKTOP/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$DESKTOP/node_modules"
 
 HOME="$FAKE_HOME" USERPROFILE="$FAKE_HOME" \
   MCODE_SMOKE_DATA_ROOT="$DATA" \

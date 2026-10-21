@@ -12,8 +12,28 @@ DATA=$(mktemp -d /tmp/mcode-lib-import-data.XXXXXX)
 # 从 bundle 自己的位置解析,而 esbuild 把 bundle 打进临时目录,那儿没有 node_modules。
 # 本套的「PDF 导入」那一段会真的走 `extractPdfMetadata` → 这条链,所以这对搭配是必需的
 # (同 `library-intake-smoke` 里那一段,理由一致)。
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
+
+# Exercise the actual external pdfjs-dist from the bundle's temporary directory.
+# The import workflow stores PDFs; a separate parse makes module resolution
+# mandatory instead of allowing a missing optional dependency to go unnoticed.
+cat > "$OUT/verify-pdf-runtime.mjs" <<'PDF_PROBE'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
+const require = createRequire(import.meta.url);
+assert.match(require.resolve('pdfjs-dist/package.json'), /pdfjs-dist[\\/]package\.json$/);
+const pdf = await getDocument({ data: new Uint8Array(readFileSync(process.argv[2])) }).promise;
+assert.ok(pdf.numPages >= 1, 'real PDF page count');
+const page = await pdf.getPage(1);
+assert.ok((await page.getTextContent()).items.length > 0, 'real PDF text extraction');
+await pdf.destroy();
+console.log('runtime pdfjs-dist resolve + true PDF parse PASS');
+PDF_PROBE
+node "$OUT/verify-pdf-runtime.mjs" "$PWD/scripts/fixtures/sample-paper.pdf"
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
 # 换掉 `@main/window.js` 与 `@main/claude/RuntimeManager.js`(理由见那两个 stub):

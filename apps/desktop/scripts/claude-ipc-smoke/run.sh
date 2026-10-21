@@ -35,7 +35,8 @@ OUT=$(mktemp -d /tmp/mcode-claude-ipc-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-claude-ipc-data.XXXXXX)
 # 给 bundle 一个 node_modules 视野:若干模块在运行期从 bundle 自己位置解析依赖
 # (同 library-trash-smoke 那一行)。
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 

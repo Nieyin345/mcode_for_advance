@@ -23,7 +23,8 @@ DATA=$(mktemp -d /tmp/mcode-memcodex-data.XXXXXX)
 HOMEDIR=$(mktemp -d /tmp/mcode-memcodex-home.XXXXXX)
 # 给 bundle 一个 node_modules 视野(打包产物是 ESM,`--packages=external` 留了几条
 # 由它自己 `import` 的依赖,运行期从 bundle 的位置解析)。
-ln -s "$PWD/node_modules" "$OUT/node_modules"
+source scripts/lib/runtime-node-modules.sh
+mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA" "$HOMEDIR"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
