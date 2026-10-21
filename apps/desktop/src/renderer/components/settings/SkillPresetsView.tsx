@@ -116,14 +116,14 @@ export function SkillPresetsView({
             {t("settings.skills.presetsHint")}
           </span>
         </div>
-        <button
+        <Button variant="ghost" size={null}
           type="button"
           onClick={() => setEditing({ id: "", name: "", skills: [], createdAt: 0, updatedAt: 0 })}
           className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[0.8571em] text-content-muted transition-colors hover:bg-surface-hover/60 hover:text-content"
         >
           <IconPlus size={12} />
           {t("settings.skills.presetNew")}
-        </button>
+        </Button>
       </div>
 
       {/* 刷新失败但旧表还在:横幅说原因,表保持可读(重试就是下面那颗按钮)。 */}
@@ -163,7 +163,7 @@ export function SkillPresetsView({
         return (
           <div key={p.id} className="border-b border-edge/60 last:border-b-0">
             <div className="flex items-center gap-2 px-3 py-1.5">
-              <button
+              <Button variant="ghost" size={null}
                 type="button"
                 onClick={() => toggle(p.id)}
                 className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
@@ -177,30 +177,30 @@ export function SkillPresetsView({
                 <span className="shrink-0 text-[0.7857em] text-content-subtle">
                   {t("settings.skills.presetCount", { n: p.skills.length })}
                 </span>
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost" size={null}
                 type="button"
                 title={t("settings.skills.presetApply")}
                 onClick={() => onCopyPreset(p.skills)}
                 className="shrink-0 rounded p-1 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
               >
                 <IconCopy size={13} />
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost" size={null}
                 type="button"
                 onClick={() => setEditing(p)}
                 className="shrink-0 rounded px-1.5 py-0.5 text-[0.7857em] text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content"
               >
                 {t("common.edit")}
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost" size={null}
                 type="button"
                 title={t("settings.skills.presetDelete")}
                 onClick={() => setPendingDelete(p)}
                 className="shrink-0 rounded p-1 text-content-subtle/60 transition-colors hover:bg-danger/10 hover:text-danger"
               >
                 <IconTrash size={12} />
-              </button>
+              </Button>
             </div>
             {open && (
               <div className="flex flex-wrap gap-1.5 px-3 pb-2 pl-8">
@@ -335,7 +335,7 @@ function PresetEditor({
           {candidates.map((s) => {
             const on = picked.has(s.name);
             return (
-              <button
+              <Button variant="ghost" size={null}
                 key={s.name}
                 type="button"
                 onClick={() =>
@@ -355,19 +355,19 @@ function PresetEditor({
               >
                 <IconSparkles size={11} />
                 {s.name}
-              </button>
+              </Button>
             );
           })}
         </div>
       </div>
       <div className="flex items-center justify-end gap-2">
-        <button
+        <Button variant="ghost" size={null}
           type="button"
           onClick={onCancel}
           className="rounded px-2 py-1 text-[0.8571em] text-content-muted transition-colors hover:bg-surface-hover/60 hover:text-content"
         >
           {t("settings.skills.presetCancel")}
-        </button>
+        </Button>
         <Button variant="primary" disabled={busy || !name.trim()} onClick={() => void save()}>
           {t("settings.skills.presetSave")}
         </Button>

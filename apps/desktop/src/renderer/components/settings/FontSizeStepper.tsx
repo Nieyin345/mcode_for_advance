@@ -1,6 +1,7 @@
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconMinus, IconPlus } from "@renderer/lib/icons.js";
+import { Button } from "@renderer/components/ui/button.js";
 
 /**
  * Font-size stepper - a compact "−  value  +" control used by the
@@ -69,7 +70,7 @@ function StepperButton({
   children: React.ReactNode;
 }) {
   return (
-    <button
+    <Button variant="ghost" size={null}
       type="button"
       title={title}
       disabled={disabled}
@@ -81,6 +82,6 @@ function StepperButton({
       )}
     >
       {children}
-    </button>
+    </Button>
   );
 }

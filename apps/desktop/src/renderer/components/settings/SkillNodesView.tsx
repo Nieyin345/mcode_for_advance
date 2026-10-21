@@ -38,6 +38,7 @@ import {
   type ReferenceUse,
   type UnreadWorkflow,
 } from "./nodesUsageView.js";
+import { Button } from "@renderer/components/ui/button.js";
 
 export function SkillNodesView({
   skills,
@@ -185,7 +186,7 @@ export function SkillNodesView({
                 const selected =
                   selectedRef !== null && selectedRef.kind === u.kind && selectedRef.refId === u.refId;
                 return (
-                  <button
+                  <Button variant="ghost" size={null}
                     key={`${u.kind}:${u.refId}:${u.nodeTitle ?? ""}:${i}`}
                     type="button"
                     aria-current={selected ? "true" : undefined}
@@ -213,7 +214,7 @@ export function SkillNodesView({
                         ? t("settings.skills.nodesFromWorkflow")
                         : t("settings.skills.nodesFromProfile")}
                     </span>
-                  </button>
+                  </Button>
                 );
               })}
             </div>

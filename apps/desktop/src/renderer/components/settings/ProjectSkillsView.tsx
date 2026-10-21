@@ -295,7 +295,7 @@ export function ProjectSkillsView({
           <span className="text-[0.7857em] font-medium text-content-muted">
             {t("settings.skills.copySelected", { n: selected.length })}
           </span>
-          <button
+          <Button variant="ghost" size={null}
             type="button"
             onClick={onClearSelection}
             className={cn(
@@ -304,11 +304,11 @@ export function ProjectSkillsView({
             )}
           >
             {t("settings.skills.clearSelection")}
-          </button>
+          </Button>
         </div>
       ) : (
         // 可点 —— 点了直接切到总库那一栏去勾。不然用户得自己找到那个 tab。
-        <button
+        <Button variant="ghost" size={null}
           type="button"
           onClick={onGoToLibrary}
           className={cn(
@@ -319,7 +319,7 @@ export function ProjectSkillsView({
           <span className="font-medium text-accent">{t("settings.skills.tabLibrary")}</span>
           {" — "}
           {t("settings.skills.copyHintWhere", { tab: t("settings.skills.tabLibrary") })}
-        </button>
+        </Button>
       )}
 
       <ConfirmDialog

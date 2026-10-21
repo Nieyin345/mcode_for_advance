@@ -214,3 +214,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 PASS；日志 `apps/desktop/.tmp/smoke-runs/1792554406599-35604-YyT58Z`；双包 tsc：0 错。
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs textarea` PASS；`set T24_MUTATION=textarea&& node ... textarea` 把 `CustomUiPanelParts` 一个 Textarea 标签变回原生后 exit=1（预期红）。
 - 功能核对：更换的标签仍是真实 HTML `<textarea>`，React 的 onChange/onKeyDown/value/ref/disabled/placeholder 等原属性原样透传；未改变任何业务 onChange 或持久化逻辑。对复杂持久化写操作只做旧烟测，不做破坏性手点。
+
+### 2026-10-21｜批次 7：Skills 项目/节点/预设与字体步进器动作
+
+- 改动：`SkillNodesView`、`SkillPresetsView`、`SkillProjectOverview`、`ProjectSkillsView`、`FontSizeStepper` 5 组件的原生自绘 `<button>` 全部改为共享 `Button variant=ghost size=null`（原 className、事件、键盘、title、disabled 与焦点接线透传；size=null 防止注入默认 h-6 干扰布局）。
+- 原语：全部复用已有 Button；未扩展；设置功能 bug：本批未发现。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792554587057-32932-elfZjy`；双包 tsc：0 错。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs skill-buttons` PASS；`set T24_MUTATION=skill-buttons&& node ... skill-buttons` 将预设动作复原为原生 button 后 exit=1（预期红）。
+- 行为核对：各触发回调、启停/加载条件、展开关闭/新增删除/编辑与字体数值增减路径不变；焦点烟测未回归。

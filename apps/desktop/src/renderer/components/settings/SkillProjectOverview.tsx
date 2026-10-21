@@ -89,14 +89,14 @@ export function SkillProjectOverview({ refreshKey }: { refreshKey: number }) {
               {t("settings.skills.overviewProblems", { n: data.problems.length })}
             </span>
           )}
-          <button
+          <Button variant="ghost" size={null}
             type="button"
             disabled={loading}
             onClick={() => void load()}
             className="rounded px-1.5 py-0.5 text-[0.7857em] text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content disabled:opacity-50"
           >
             {t("settings.skills.overviewRefresh")}
-          </button>
+          </Button>
         </div>
       </div>
 

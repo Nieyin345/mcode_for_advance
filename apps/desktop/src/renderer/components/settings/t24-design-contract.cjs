@@ -67,8 +67,15 @@ if (batch === 'shell') {
     check(content.includes('<Textarea'), name + ': shared Textarea must be used');
     check(!/<textarea\b/.test(content), name + ': no native textarea');
   }
+} else if (batch === 'skill-buttons') {
+  const names=['SkillNodesView','SkillPresetsView','SkillProjectOverview','ProjectSkillsView','FontSizeStepper'];
+  for(const name of names){
+    let s=read(name+'.tsx');
+    if(name==='SkillPresetsView' && process.env.T24_MUTATION === 'skill-buttons') s=s.replace('<Button variant="ghost" size={null}', '<button');
+    check(!/<button\b/.test(s),name+': native action not permitted');
+  }
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);
