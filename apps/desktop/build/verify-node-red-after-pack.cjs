@@ -67,6 +67,31 @@ function verifyNodeRedResource(inputRoot) {
       throw new Error("Packaged Node-RED " + key + " digest mismatch");
     }
   }
+  const licenseManifestPath = path.join(root, "licenses", "node-red", "manifest.json");
+  const hasLicenseManifest = fs.existsSync(licenseManifestPath);
+  const thirdPartyLicenseFields = [
+    ["licenses/node-red/manifest.json", "thirdPartyLicenseManifestSha256"],
+    ["licenses/node-red/THIRD-PARTY-LICENSES.txt", "thirdPartyLicenseNoticeSha256"],
+  ];
+  if (hasLicenseManifest) {
+    const thirdPartyLicenseRoot = requiredDirectory(root, "licenses/node-red");
+    assertSafeTree(thirdPartyLicenseRoot);
+    for (const [relative, key] of thirdPartyLicenseFields) {
+      const file = required(root, relative);
+      if (typeof marker[key] !== "string" || !/^[a-f0-9]{64}$/.test(marker[key])
+          || hashFile(file) !== marker[key]) {
+        throw new Error("Packaged Node-RED " + key + " digest mismatch");
+      }
+    }
+    if (typeof marker.thirdPartyLicensesTreeSha256 !== "string"
+        || !/^[a-f0-9]{64}$/.test(marker.thirdPartyLicensesTreeSha256)
+        || hashTree(thirdPartyLicenseRoot, "mcode.node-red.licenses.tree.v1") !== marker.thirdPartyLicensesTreeSha256) {
+      throw new Error("Packaged Node-RED third-party license tree digest mismatch");
+    }
+  } else if (thirdPartyLicenseFields.some(([, key]) => marker[key] != null)
+      || marker.thirdPartyLicensesTreeSha256 != null) {
+    throw new Error("Packaged Node-RED third-party license manifest missing");
+  }
   const pkg = JSON.parse(fs.readFileSync(required(root, files[0][0]), "utf8"));
   if (pkg.name !== "node-red" || pkg.version !== VERSION) {
     throw new Error("Packaged Node-RED package version mismatch");
@@ -108,8 +133,12 @@ function verifyNodeRedResource(inputRoot) {
     const unresolved = inventory.packages.filter(item => item.status !== "collected");
     const details = unresolved.map(item =>
       item.name + "@" + item.version + " [" + item.status + "; license="
-      + (item.license == null ? "unknown" : JSON.stringify(item.license)) + "; " + item.path + "]"
+      + (item.license == null ? "unknown" : JSON.stringify(item.license)) + "; " + item.path
+      + (item.releaseBlocker ? "; reason=" + item.releaseBlocker.reason : "") + "]"
     );
+    if (inventory.summary.unknownSpdxExpressions) details.push("unknown SPDX expressions=" + inventory.summary.unknownSpdxExpressions);
+    if (inventory.summary.unmatchedLicenseManifestEntries) details.push("unmatched license manifest entries=" + inventory.summary.unmatchedLicenseManifestEntries);
+    if (inventory.summary.unmatchedReleaseBlockers) details.push("unmatched release blockers=" + inventory.summary.unmatchedReleaseBlockers);
     throw new Error("Node-RED third-party license coverage incomplete; release blocked: "
       + details.join("; "));
   }

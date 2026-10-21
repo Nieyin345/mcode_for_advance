@@ -1,0 +1,397 @@
+{
+  "format": "mcode.node-red.third-party-license-source-manifest.v1",
+  "nodeRedVersion": "5.0.8",
+  "nodeRedSourceCommit": "935b8d3e12ec8be064f3a72ac6547131f778a7b1",
+  "inventoryType": "license-coverage-audit-not-sbom",
+  "entries": [
+    {
+      "packageName": "@node-rs/bcrypt-win32-x64-msvc",
+      "version": "1.10.7",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/@node-rs%2fbcrypt-win32-x64-msvc/1.10.7",
+        "tarballUrl": "https://registry.npmjs.org/@node-rs/bcrypt-win32-x64-msvc/-/bcrypt-win32-x64-msvc-1.10.7.tgz",
+        "tarballIntegrity": "sha512-hdw7tGmN1DxVAMTzICLdaHpXjy+4rxaxnBMgI8seG1JL5e3VcRGsd1/1vVDogVp2cbsmgq+6d6yAY+D9lW/DCg==",
+        "tarballSha1": "811c8ba7b00a5cca43e6b9caf0636149392eb020",
+        "repositoryUrl": "https://github.com/napi-rs/node-rs",
+        "revision": "83ca124b3e3968c945708136d6ff68d0e0549582"
+      },
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/napi-rs/node-rs/blob/83ca124b3e3968c945708136d6ff68d0e0549582/LICENSE",
+          "sourceRevision": "83ca124b3e3968c945708136d6ff68d0e0549582",
+          "sourceFileName": "LICENSE",
+          "path": "materials/@node-rs/bcrypt-win32-x64-msvc/1.10.7/LICENSE",
+          "sha256": "c748f2e7f93fadae76fcb1ccf6b4199e2a4013611871b5fa61000d11a50011c7"
+        }
+      ]
+    },
+    {
+      "packageName": "agent-base",
+      "version": "6.0.2",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/agent-base/6.0.2",
+        "tarballUrl": "https://registry.npmjs.org/agent-base/-/agent-base-6.0.2.tgz",
+        "tarballIntegrity": "sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==",
+        "tarballSha1": "49fff58577cfee3f37176feab4c22e00f86d7f77",
+        "repositoryUrl": "https://github.com/TooTallNate/node-agent-base",
+        "revision": "c4b8ea2e1a11bae023bb09b708050a50418204e9"
+      },
+      "licenseSourceNote": "The exact package source revision contains no license file. The complete MIT text is from the official consolidated upstream proxy-agent repository; the package revision and license-source revision are recorded separately.",
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/TooTallNate/node-https-proxy-agent/blob/4813885d3f4e2ff837878ceffdba656a71dc31f0/packages/agent-base/LICENSE",
+          "sourceRevision": "4813885d3f4e2ff837878ceffdba656a71dc31f0",
+          "sourceFileName": "LICENSE",
+          "path": "materials/agent-base/6.0.2/LICENSE",
+          "sha256": "8d8c55319c7729d57be811c747452636688d54f19701ee0752b6b15ad3771d9a"
+        }
+      ]
+    },
+    {
+      "packageName": "boolbase",
+      "version": "1.0.0",
+      "licenseExpression": "ISC",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/boolbase/1.0.0",
+        "tarballUrl": "https://registry.npmjs.org/boolbase/-/boolbase-1.0.0.tgz",
+        "tarballIntegrity": "sha512-JZOSA7Mo9sNGB8+UjSgzdLtokWAky1zbztM3WRLCbZ70/3cTANmQmOdR7y2g+J0e2WXywy1yS468tY+IruqEww==",
+        "tarballSha1": "68dff5fbe60c51eb37725ea9e3ed310dcc1e776e",
+        "repositoryUrl": "https://github.com/fb55/boolbase",
+        "revision": "9837d5bf4f30390ac6384a6bc605ca2d69ade4bf",
+        "revisionEvidence": "Upstream package.json at this commit declares boolbase@1.0.0 and ISC; the commit has no LICENSE file."
+      },
+      "licenseSourceNote": "The exact package source revision has no LICENSE file. The complete ISC text is from the official upstream repository LICENSE at the recorded license-source revision.",
+      "materials": [
+        {
+          "licenseId": "ISC",
+          "sourceUrl": "https://github.com/fb55/boolbase/blob/54811f01c797a6bb1c263183ae90b7dd627e0638/LICENSE",
+          "sourceRevision": "54811f01c797a6bb1c263183ae90b7dd627e0638",
+          "sourceFileName": "LICENSE",
+          "path": "materials/boolbase/1.0.0/LICENSE",
+          "sha256": "cdf4d87ae0a6c160227263bf4e39a0a10e30e89ae7256e0f7ac7bde0836552c6"
+        }
+      ]
+    },
+    {
+      "packageName": "colors",
+      "version": "1.0.3",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/colors/1.0.3",
+        "tarballUrl": "https://registry.npmjs.org/colors/-/colors-1.0.3.tgz",
+        "tarballIntegrity": "sha512-pFGrxThWcWQ2MsAz6RtgeWe4NK2kUE1WfsrvvlctdII745EW9I0yflqhe7++M5LEc7bV2c/9/5zc8sFcpL0Drw==",
+        "tarballSha1": "0433f44d809680fdeb60ed260f1b0c262e82a40b",
+        "repositoryUrl": "https://github.com/Marak/colors.js",
+        "revision": "e9e6557cc0fa26dba1a20b0d45e92de982f4047c"
+      },
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/Marak/colors.js/blob/e9e6557cc0fa26dba1a20b0d45e92de982f4047c/MIT-LICENSE.txt",
+          "sourceRevision": "e9e6557cc0fa26dba1a20b0d45e92de982f4047c",
+          "sourceFileName": "MIT-LICENSE.txt",
+          "path": "materials/colors/1.0.3/MIT-LICENSE.txt",
+          "sha256": "44bb8ad1e40e4f995686b99eb610f118b1a1e936b19678ecfe167fa1d78903b0"
+        }
+      ]
+    },
+    {
+      "packageName": "cookie-signature",
+      "version": "1.0.6",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/cookie-signature/1.0.6",
+        "tarballUrl": "https://registry.npmjs.org/cookie-signature/-/cookie-signature-1.0.6.tgz",
+        "tarballIntegrity": "sha512-QADzlaHc8icV8I7vbaJXJwod9HWYp8uCqf1xa4OfNu1T7JVxQIrUgOWtHdNDtPiywmFbiS12VjotIXLrKM3orQ==",
+        "tarballSha1": "e303a882b342cc3ee8ca513a79999734dab3ae2c",
+        "repositoryUrl": "https://github.com/visionmedia/node-cookie-signature",
+        "revision": "391b56cf44d88c493491b7e3fc53208cfb976d2a"
+      },
+      "licenseSourceNote": "The exact package source revision contains no LICENSE file. The complete MIT text is from the official upstream repository's LICENSE at the recorded license-source revision; the exact package revision is retained separately.",
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/visionmedia/node-cookie-signature/blob/b7bd4cb9500bfa5e696143f51d61e5f24f7a625d/LICENSE",
+          "sourceRevision": "b7bd4cb9500bfa5e696143f51d61e5f24f7a625d",
+          "sourceFileName": "LICENSE",
+          "path": "materials/cookie-signature/1.0.6/LICENSE",
+          "sha256": "0dd4e47333485760cf8c265db5a5e24ae8d7401064c6f2e19793ee81a5bef42f"
+        }
+      ]
+    },
+    {
+      "packageName": "cookie-signature",
+      "version": "1.0.7",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/cookie-signature/1.0.7",
+        "tarballUrl": "https://registry.npmjs.org/cookie-signature/-/cookie-signature-1.0.7.tgz",
+        "tarballIntegrity": "sha512-NXdYc3dLr47pBkpUCHtKSwIOQXLVn8dZEuywboCOJY/osA0wFSLlSawr3KN8qXJEyX66FcONTH8EIlVuK0yyFA==",
+        "tarballSha1": "ab5dd7ab757c54e60f37ef6550f481c426d10454",
+        "repositoryUrl": "https://github.com/visionmedia/node-cookie-signature",
+        "revision": "432ea0c14fbdd8d24354820faff2c6f6d2426757"
+      },
+      "licenseSourceNote": "The exact package source revision contains no LICENSE file. The complete MIT text is from the official upstream repository's LICENSE at the recorded license-source revision; the exact package revision is retained separately.",
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/visionmedia/node-cookie-signature/blob/b7bd4cb9500bfa5e696143f51d61e5f24f7a625d/LICENSE",
+          "sourceRevision": "b7bd4cb9500bfa5e696143f51d61e5f24f7a625d",
+          "sourceFileName": "LICENSE",
+          "path": "materials/cookie-signature/1.0.7/LICENSE",
+          "sha256": "0dd4e47333485760cf8c265db5a5e24ae8d7401064c6f2e19793ee81a5bef42f"
+        }
+      ]
+    },
+    {
+      "packageName": "https-proxy-agent",
+      "version": "5.0.1",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/https-proxy-agent/5.0.1",
+        "tarballUrl": "https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-5.0.1.tgz",
+        "tarballIntegrity": "sha512-dFcAjpTQFgoLMzC2VwU+C/CbS7uRL0lWmxDITmqm7C+7F0Odmj6s9l6alZc6AELXhrnggM2CeWSXHGOdX2YtwA==",
+        "tarballSha1": "c59ef224a04fe8b754f3db0063a25ea30d0005d6",
+        "repositoryUrl": "https://github.com/TooTallNate/node-https-proxy-agent",
+        "revision": "d0d80cc0482f20495aa8595f802e1a9f3b1b3409"
+      },
+      "licenseSourceNote": "The exact package source revision contains no LICENSE file. The complete MIT text is from the official upstream repository's package-specific LICENSE at the recorded consolidated-repository revision.",
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/TooTallNate/node-https-proxy-agent/blob/4813885d3f4e2ff837878ceffdba656a71dc31f0/packages/https-proxy-agent/LICENSE",
+          "sourceRevision": "4813885d3f4e2ff837878ceffdba656a71dc31f0",
+          "sourceFileName": "LICENSE",
+          "path": "materials/https-proxy-agent/5.0.1/LICENSE",
+          "sha256": "8d8c55319c7729d57be811c747452636688d54f19701ee0752b6b15ad3771d9a"
+        }
+      ]
+    },
+    {
+      "packageName": "@npmcli/agent",
+      "version": "4.0.2",
+      "licenseExpression": "ISC",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/@npmcli%2fagent/4.0.2",
+        "tarballUrl": "https://registry.npmjs.org/@npmcli/agent/-/agent-4.0.2.tgz",
+        "tarballIntegrity": "sha512-EUEuWAxnL07Sp5/iC/1X6Xj+XThUvnbei9zfRWZdEXa7lss9RTHMhAHBeg+MZ5To9s/gGaSI+UwZTPdYMvKSeg==",
+        "tarballSha1": "9e659c2474294cb88bd382fef5d3857dc14fcbf6",
+        "repositoryUrl": "https://github.com/npm/agent",
+        "revision": "db7852869c74ceb8985d7c36b291a2e7a866741c"
+      },
+      "licenseSourceNote": "The exact package source revision has no complete license file. The complete npm ISC license template is from the official npm/template-oss source used by npm-maintained packages; the package's own ISC metadata and source revision are retained separately.",
+      "materials": [
+        {
+          "licenseId": "ISC",
+          "sourceUrl": "https://github.com/npm/template-oss/blob/f3ddd0d28b1456a18aac2aaa860d65c31650a2fd/LICENSE.md",
+          "sourceRevision": "f3ddd0d28b1456a18aac2aaa860d65c31650a2fd",
+          "sourceFileName": "LICENSE.md",
+          "path": "materials/@npmcli/agent/4.0.2/LICENSE.md",
+          "sha256": "27d998b503b18cdb16c49e93da04069a99ba8a1d7e18d67146de8e242f9a6d21"
+        }
+      ]
+    },
+    {
+      "packageName": "@sigstore/verify",
+      "version": "3.1.1",
+      "licenseExpression": "Apache-2.0",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/@sigstore%2fverify/3.1.1",
+        "tarballUrl": "https://registry.npmjs.org/@sigstore/verify/-/verify-3.1.1.tgz",
+        "tarballIntegrity": "sha512-qv7+G3J2cc6wwFj3yKvXOamzqhMwSk1ogPGmhpS8iXllcPrJaIIBA+4HbttlHVu1pqWTdmaCH/WE7UOC51kdoA==",
+        "tarballSha1": "13c1c1cff28fe81f662de29d85ba5ae048fcbd8d",
+        "repositoryUrl": "https://github.com/sigstore/sigstore-js",
+        "revision": "c1dc7d4778a450787fc72b083f2490ad02b714c6"
+      },
+      "materials": [
+        {
+          "licenseId": "Apache-2.0",
+          "sourceUrl": "https://github.com/sigstore/sigstore-js/blob/c1dc7d4778a450787fc72b083f2490ad02b714c6/LICENSE",
+          "sourceRevision": "c1dc7d4778a450787fc72b083f2490ad02b714c6",
+          "sourceFileName": "LICENSE",
+          "path": "materials/@sigstore/verify/3.1.1/LICENSE",
+          "sha256": "364a130d2ca340bd56eb1e6d045fc6929bb0f9d0aa018f2c1949b29517e1cdd0"
+        }
+      ]
+    },
+    {
+      "packageName": "cssesc",
+      "version": "3.0.0",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/cssesc/3.0.0",
+        "tarballUrl": "https://registry.npmjs.org/cssesc/-/cssesc-3.0.0.tgz",
+        "tarballIntegrity": "sha512-/Tb/JcjK111nNScGob5MNtsntNM1aCNUDipB/TkwZFhyDrrE47SOx/18wF2bbjgc3ZzCSKW1T5nt5EbFoAz/Vg==",
+        "tarballSha1": "37741919903b868565e1c09ea747445cd18983ee",
+        "repositoryUrl": "https://github.com/mathiasbynens/cssesc",
+        "revision": "cb894eb42f27c8d3cd793f16afe35b3ab38000a1"
+      },
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/mathiasbynens/cssesc/blob/cb894eb42f27c8d3cd793f16afe35b3ab38000a1/LICENSE-MIT.txt",
+          "sourceRevision": "cb894eb42f27c8d3cd793f16afe35b3ab38000a1",
+          "sourceFileName": "LICENSE-MIT.txt",
+          "path": "materials/cssesc/3.0.0/LICENSE-MIT.txt",
+          "sha256": "483acb265f182907d1caf6cff9c16c96f31325ed23792832cc5d8b12d5f88c8a"
+        }
+      ]
+    },
+    {
+      "packageName": "postcss-selector-parser",
+      "version": "7.1.4",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/postcss-selector-parser/7.1.4",
+        "tarballUrl": "https://registry.npmjs.org/postcss-selector-parser/-/postcss-selector-parser-7.1.4.tgz",
+        "tarballIntegrity": "sha512-HeP7D2wyhkR+XaK6v4W8oRF62Dsz4flyuczALJp61GckGm42u1saSSJ/0auvcBqxs3jMRFEcPK34At/0JBKdOg==",
+        "tarballSha1": "69dc7a526517572ff6b150e352b36a016017b485",
+        "repositoryUrl": "https://github.com/postcss/postcss-selector-parser",
+        "revision": "4a7e4e3685db8ab8e52e51ecdbe8162a8568f70c"
+      },
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/postcss/postcss-selector-parser/blob/4a7e4e3685db8ab8e52e51ecdbe8162a8568f70c/LICENSE-MIT",
+          "sourceRevision": "4a7e4e3685db8ab8e52e51ecdbe8162a8568f70c",
+          "sourceFileName": "LICENSE-MIT",
+          "path": "materials/postcss-selector-parser/7.1.4/LICENSE-MIT",
+          "sha256": "2998094b38f7ace25f141fb36f334d8338f65a1812978d618b1161f4d77ae10e"
+        }
+      ]
+    },
+    {
+      "packageName": "spdx-exceptions",
+      "version": "2.5.0",
+      "licenseExpression": "CC-BY-3.0",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/spdx-exceptions/2.5.0",
+        "tarballUrl": "https://registry.npmjs.org/spdx-exceptions/-/spdx-exceptions-2.5.0.tgz",
+        "tarballIntegrity": "sha512-PiU42r+xO4UbUS1buo3LPJkjlO7430Xn5SVAhdpzzsPHsjbYVflnnFdATgabnLude+Cqu25p6N+g2lw/PFsa4w==",
+        "tarballSha1": "5d607d27fc806f66d7b64a766650fa890f04ed66",
+        "repositoryUrl": "https://github.com/kemitchell/spdx-exceptions.json",
+        "revision": "3aa64bec339abc6a3eca00c3436aaa7e154b8799"
+      },
+      "licenseSourceNote": "The exact upstream repository does not include a full CC-BY-3.0 legalcode file; the complete canonical legalcode is sourced from the official SPDX license-list data repository at the recorded revision.",
+      "materials": [
+        {
+          "licenseId": "CC-BY-3.0",
+          "sourceUrl": "https://github.com/spdx/license-list-data/blob/31ba1a50e5397e00a304dbadc76531740e89ee48/text/CC-BY-3.0.txt",
+          "sourceRevision": "31ba1a50e5397e00a304dbadc76531740e89ee48",
+          "sourceFileName": "CC-BY-3.0.txt",
+          "path": "materials/spdx-exceptions/2.5.0/CC-BY-3.0.txt",
+          "sha256": "e6bc9e9c474700b708f568bac9e5a8a9bcb2b1dad53442f5ba449fcb848b8e76"
+        }
+      ]
+    },
+    {
+      "packageName": "spdx-license-ids",
+      "version": "3.0.23",
+      "licenseExpression": "CC0-1.0",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/spdx-license-ids/3.0.23",
+        "tarballUrl": "https://registry.npmjs.org/spdx-license-ids/-/spdx-license-ids-3.0.23.tgz",
+        "tarballIntegrity": "sha512-CWLcCCH7VLu13TgOH+r8p1O/Znwhqv/dbb6lqWy67G+pT1kHmeD/+V36AVb/vq8QMIQwVShJ6Ssl5FPh0fuSdw==",
+        "tarballSha1": "b069e687b1291a32f126893ed76a27a745ee2133",
+        "repositoryUrl": "https://github.com/jslicense/spdx-license-ids",
+        "revision": "a2a975daf48bbc2afdc8e7c304405b44c656fd53"
+      },
+      "licenseSourceNote": "The exact upstream repository does not include a full CC0-1.0 legalcode file; the complete canonical legalcode is sourced from the official SPDX license-list data repository at the recorded revision.",
+      "materials": [
+        {
+          "licenseId": "CC0-1.0",
+          "sourceUrl": "https://github.com/spdx/license-list-data/blob/31ba1a50e5397e00a304dbadc76531740e89ee48/text/CC0-1.0.txt",
+          "sourceRevision": "31ba1a50e5397e00a304dbadc76531740e89ee48",
+          "sourceFileName": "CC0-1.0.txt",
+          "path": "materials/spdx-license-ids/3.0.23/CC0-1.0.txt",
+          "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499"
+        }
+      ]
+    },
+    {
+      "packageName": "type-fest",
+      "version": "4.41.0",
+      "licenseExpression": "(MIT OR CC0-1.0)",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/type-fest/4.41.0",
+        "tarballUrl": "https://registry.npmjs.org/type-fest/-/type-fest-4.41.0.tgz",
+        "tarballIntegrity": "sha512-TeTSQ6H5YHvpqVwBRcnLDCBnDOHWYu7IvGbHT6N8AOymcr9PJGjc1GTtiWZTYg0NCgYwvnYWEkVChQAr9bjfwA==",
+        "tarballSha1": "6ae1c8e5731273c2bf1f58ad39cbae2c91a46c58",
+        "repositoryUrl": "https://github.com/sindresorhus/type-fest",
+        "revision": "68469722a9521122b6cb40376c4c4544aef28228"
+      },
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/sindresorhus/type-fest/blob/68469722a9521122b6cb40376c4c4544aef28228/license-mit",
+          "sourceRevision": "68469722a9521122b6cb40376c4c4544aef28228",
+          "sourceFileName": "license-mit",
+          "path": "materials/type-fest/4.41.0/license-mit",
+          "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+        },
+        {
+          "licenseId": "CC0-1.0",
+          "sourceUrl": "https://github.com/sindresorhus/type-fest/blob/68469722a9521122b6cb40376c4c4544aef28228/license-cc0",
+          "sourceRevision": "68469722a9521122b6cb40376c4c4544aef28228",
+          "sourceFileName": "license-cc0",
+          "path": "materials/type-fest/4.41.0/license-cc0",
+          "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499"
+        }
+      ]
+    },
+    {
+      "packageName": "cli-table",
+      "version": "0.3.11",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/cli-table/0.3.11",
+        "tarballUrl": "https://registry.npmjs.org/cli-table/-/cli-table-0.3.11.tgz",
+        "tarballIntegrity": "sha512-IqLQi4lO0nIB4tcdTpN4LCB9FI3uqrJZK7RC515EnhZ6qBaglkIgICb1wjeAqpdoOabm1+SuQtkXIPdYC93jhQ==",
+        "tarballSha1": "ac69cdecbe81dccdba4889b9a18b7da312a9d3ee",
+        "repositoryUrl": "https://github.com/Automattic/cli-table",
+        "revision": "8d8fcd820dac4968f301369af2543514175b0582"
+      },
+      "metadataOverride": {
+        "reviewed": true,
+        "licenseExpression": "MIT",
+        "reason": "The package and lock metadata omit the license field. The full LICENSE file at the exact package source revision was verified byte-for-byte against the installed package's LICENSE; this override fills metadata only and does not change license terms.",
+        "fileName": "LICENSE",
+        "sourceUrl": "https://github.com/Automattic/cli-table/blob/8d8fcd820dac4968f301369af2543514175b0582/LICENSE",
+        "sourceRevision": "8d8fcd820dac4968f301369af2543514175b0582",
+        "sha256": "ca3d2af003b3a718fc9d43e5d232955d5e089c8b5d8b01fcbe9fa26f1e76f0b0"
+      },
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/Automattic/cli-table/blob/8d8fcd820dac4968f301369af2543514175b0582/LICENSE",
+          "sourceRevision": "8d8fcd820dac4968f301369af2543514175b0582",
+          "sourceFileName": "LICENSE",
+          "path": "materials/cli-table/0.3.11/LICENSE",
+          "sha256": "ca3d2af003b3a718fc9d43e5d232955d5e089c8b5d8b01fcbe9fa26f1e76f0b0"
+        }
+      ]
+    }
+  ],
+  "blockers": [
+    {
+      "packageName": "pause",
+      "version": "0.0.1",
+      "status": "release-blocker",
+      "licenseExpression": null,
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/pause/0.0.1",
+        "unpkgFileListUrl": "https://unpkg.com/pause@0.0.1/?meta",
+        "tarballUrl": "https://registry.npmjs.org/pause/-/pause-0.0.1.tgz",
+        "tarballIntegrity": "sha512-KG8UEiEVkR3wGEb4m5yZkVCzigAD+cVEJck2CzYZO37ZGJfctvVptVO192MwrtPhzONn6go8ylnOdMhKqi4nfg==",
+        "tarballSha1": "1d408b3fdb76923b9543d96fb4c9dfd535d9cb5d",
+        "repositoryUrl": null,
+        "revision": null
+      },
+      "reason": "The exact npm registry metadata has no license, repository, homepage, or gitHead. The exact published package file list contains no LICENSE, LICENCE, or COPYING file. No authoritative license grant or full license text for pause@0.0.1 could be confirmed; no SPDX expression is inferred. Release must remain blocked until an authoritative grant/text is found or a separately reviewed dependency replacement removes this package."
+    }
+  ]
+}
