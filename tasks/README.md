@@ -10,26 +10,28 @@
 
 ---
 
-## 第三轮六卡已派出：当前执行队列与下一步（2026-10-21，最新生效）
+## 第三轮六卡状态复核（2026-10-21 23:15，最新生效）
 
-> **派发状态（用户于本轮确认）**：T83、T84、T85、T76、T82、T78 六张均已派出，视为 in-flight；不要重复派发，也不要因尚无回写就判失败。等每个执行对话按卡片追加提交 SHA、测试命令/计数、未达成判据，再由总控独立验收。若 T71/T77 尚未派出，按 **先 T71、完成退出 Electron 后再 T77** 的串行顺序安排，绝不可并行启动两个 Electron GUI 验收。PDF `document-router-smoke` 尾项和 T49 扩展 API 尾项仍交给各自原 owner 收尾。\n>\n> **第二轮 T30/T72/T73/T74/T75/T79/T80/T81 八卡均已提交、完成本卡交付**。T73 在本次总控审查期间先提交功能 `c3672167`、随后回写 `7442ebcb`；总控独立执行 `t73-browser-sandbox-smoke/run.cjs` **5/5 PASS**、真实 Electron `native.cjs` **PASS**（隔离 WebContentsView、spoof 拒绝与合法拾取）。其余七卡也有提交与回写，且总控独立 E1：`genoffice-file-routing-smoke` 52/52（含两变异）、`t74-genoffice-headless-smoke` 1/1 套、`mcode-node-pack-smoke` 1/1 套、`runtime-node-modules-smoke` + `library-import-smoke` 2/2、`arc005-focus-ownership-smoke` 1/1、双包 TS 2/2；`document-router-smoke` **124/125 FAIL**，旧测试要求 PDF 经 `documentKindOf(visibleName)`，T30 新源以 `genofficeAppForPath(visibleName)` 和 MIME 判 PDF；暂定**测试语义待复核**，不是确认的生产 PDF 错误，且该测试脚本目前有其它执行者的未提交修改，**不可擅自覆盖**。
+> **派发事实**：T83、T84、T85、T76、T82、T78 六张均已派出。当前并非六张都在施工：T84/T82/T78 已有交付回写，T83 已提交 fail-closed 能力门但仍有功能判据未达成，T76/T85 的源码还在工作树中施工。请勿重复派发、覆盖或清理在飞文件。PDF 路由尾项已关闭；T49 由新建的原任务收尾对话继续处理。T71/T77 仍需独占 Electron，先 T71、退出后再 T77。
+> **第二轮 T30/T72/T73/T74/T75/T79/T80/T81 八卡均已提交、完成本卡交付**。T73 在本次总控审查期间先提交功能 `c3672167`、随后回写 `7442ebcb`；总控独立执行 `t73-browser-sandbox-smoke/run.cjs` **5/5 PASS**、真实 Electron `native.cjs` **PASS**（隔离 WebContentsView、spoof 拒绝与合法拾取）。其余七卡也有提交与回写，且总控独立 E1：`genoffice-file-routing-smoke` 52/52（含两变异）、`t74-genoffice-headless-smoke` 1/1 套、`mcode-node-pack-smoke` 1/1 套、`runtime-node-modules-smoke` + `library-import-smoke` 2/2、`arc005-focus-ownership-smoke` 1/1、双包 TS 2/2；`document-router-smoke` 原 124/125 失败已由 `e9e2dbf5` 修正测试判据、`e290df57` 回写关闭；总控最终复核路由 133/133、GenOffice 路由 52/52、FileViewer PDF 25/25，通过且未改产品路由。
 >
-> T80 回写的 22 个环境首错修复后 **21 PASS / 1 FAIL（document-router）**，T81 自验 Windows 27/27；T72/T75 为审查成果，不是 FULL-3/GenOffice 六 AI 的实现闭环。T73 的 `BrowserManager.ts`/`browserPicker.ts`/`electron.vite.config.ts` 已提交，不再有该卡未提交热区；T49 的 `modules/*`/`appControl/*` 仍 dirty，**只允许原 owner 收尾**。T73 的真实发行包/真实站点 U1、T71/T77 的完整原生编辑器 GUI U1 仍需另验。
+> T80 回写的 22 个环境首错历史结果为 **21 PASS / 1 PDF 旧断言 FAIL**，后者已在上方关闭；T80 的完整 22 套批次尚未由总控重新复跑，T81 自验 Windows 27/27；T72/T75 为审查成果，不是 FULL-3/GenOffice 六 AI 的实现闭环。T73 的 `BrowserManager.ts`/`browserPicker.ts`/`electron.vite.config.ts` 已提交，不再有该卡未提交热区；T49 的 `modules/*`/`appControl/*` 仍 dirty，**只允许原 owner 收尾**。T73 的真实发行包/真实站点 U1、T71/T77 的完整原生编辑器 GUI U1 仍需另验。
 
 | 派发窗口 | 新 / 已备任务 | 准确文件路径 | 文件边界、门禁 |
 |---|---|---|---|
-| **第三轮：已派出 / 执行中** | **T84** Slides 原厂 `ai:*` 未授权媒体通道隔离 | `tasks/T84-genoffice-slides-ai-ipc-boundary.md` | P0 安全；限 Slides 上游 Mcode-hosted guard + `patches/genoffice`，不能发真实云调用 |
-| **第三轮：已派出 / 执行中** | **T83** GenOffice 三 SDK 原生工具调用桥 | `tasks/T83-genoffice-mcode-native-tool-calls.md` | P0 功能；独占 `main/document/docsAiPorts.ts` 和新结构化 tool transport；**不抢 T49 appControl** |
-| **第三轮：已派出 / 执行中** | **T85** Node-RED 旧图 G0/G1 无损迁移预检 | `tasks/T85-node-red-migration-preflight-proof.md` | P1；仅 `workflowMigrationPreflight.ts` 等干运行测试；不得删旧运行器或动用户数据库 |
-| **第三轮：已派出 / 执行中** | **T76** 两原厂安装资源/许可完整性 | `tasks/T76-vendor-release-resource-integrity.md` | 独占 `apps/desktop/build/stage-*/verify-*`；安装包大构建与 Electron 测试错峰 |
-| **第三轮：已派出 / 执行中** | **T78** UI 39 真实场景证据和差距审计 | `tasks/T78-arc005-visual-baseline-gap-audit.md` | 只读；不抢 Electron，也不修改渲染 UI |
-| **第三轮：已派出 / 执行中** | **T82** emit-path 过期事件扫描断言 | `tasks/T82-emit-path-smoke-event-shape.md` | 仅独占 `scripts/emit-path-smoke/main.ts`，产品事件层只读 |
+| **已提交；保留 U1/类型检查尾项** | **T84** Slides 原厂 `ai:*` 未授权媒体通道隔离 | `tasks/T84-genoffice-slides-ai-ipc-boundary.md` | 代码 `c4887d5a`；29/29 回写，独立 smoke 1/1 PASS；真实 Electron/授权 U1 未做，desktop tsc 有并行阻断 |
+| **已提交能力门；功能前置未满足** | **T83** GenOffice 三 SDK 原生工具调用桥 | `tasks/T83-genoffice-mcode-native-tool-calls.md` | 代码 `309c3ab5`；19/19 fail-closed smoke；三 SDK 均 needs upstream，原生同轮工具结果尚未实现；T86 前置卡已生成，需派发 |
+| **下一步可派：解除 T83 前置** | **T86** Mcode 三 SDK 请求级结构化工具协议 | `tasks/T86-mcode-runtime-native-tool-protocol.md` | T83 已证明当前缺少 per-turn schema / 同轮 renderer result callback；只改 provider contract / RuntimeManager / 三 SDK adapter，不改 T83/T49 文件 |
+| **施工中；尚未提交** | **T85** Node-RED 旧图 G0/G1 无损迁移预检 | `tasks/T85-node-red-migration-preflight-proof.md` | 新增 preflight API / smoke 仍在工作树；无结果回写；T83 曾记录此文件阻断 desktop tsc，最终类型检查待复跑 |
+| **施工中；尚未提交** | **T76** 两原厂安装资源/许可完整性 | `tasks/T76-vendor-release-resource-integrity.md` | 四个 stage/verify 脚本当前有未提交修改；尚无 smoke 与结果回写；不宣称 installer 已验证 |
+| **审计交付完成** | **T78** UI 39 真实场景证据和差距审计 | `tasks/T78-arc005-visual-baseline-gap-audit.md` | 审计 `9cb27dec`，回写 `f4fd9bb9`；39 场景分类完成，但真实 Claude 安装版对照/U1 不在本卡范围 |
+| **已提交；类型检查尾项受阻** | **T82** emit-path 过期事件扫描断言 | `tasks/T82-emit-path-smoke-event-shape.md` | 代码 `143e13a5`、回写 `7ca737cd`；41/41，3 套事件回归通过，独立 4/4 PASS；desktop tsc 被并行文件错误阻断 |
 | **第三轮：可开独占 Electron 窗口** | **T71** 六原生文档 GUI U1 | `tasks/T71-genoffice-six-native-gui-acceptance.md` | T30/T73 均已提交；**与 T77 串行**，只用隔离样本 |
 | **第三轮：与 T71 错峰** | **T77** Node-RED GUI U1 | `tasks/T77-node-red-native-electron-ui-acceptance.md` | T79/T73 均已提交，**必须独占 Electron**；仅隔离样本 |
 | **原 owner 收尾** | **T49** 扩展 API | `tasks/T49-extension-api-surface.md` | 仍有未提交的主进程/测试；**不再派第二个人**；T73 已交付退出施工区 |
 | **已收尾（2026-10-21）** | `document-router-smoke` PDF 路由断言尾项 | `apps/desktop/scripts/document-router-smoke/main.ts`、`apps/desktop/scripts/file-viewer-basedir-smoke/main.ts` | 代码提交 `e9e2dbf53c27bbead3171654ea0ac812323fbfcd`；路由 133/133、GenOffice 路由 52/52、真实 FileViewer PDF 组件 25/25；未改产品路由；T80 完整 22 套批次本次未重跑 |
 
-**验收口径**：任务卡交付完成 ≠ ARC/UXG 正式双勾。T72 的 G0–G5 还没有迁移实现和真 UI；T75 找到 production `tool-call` 缺失与 Slides 原厂云媒体 IPC 授权疑点（静态 E2，尚非实际外呼证据）；T83/T84/T85 分工解决。所有测试只用虚构文件/隔离数据库/本地 mock；T49/T73 共享工作树并发期间不运行全量 `--all`，不对真实帐号/文件或公网进行破坏性测试。
+**验收口径**：任务卡交付完成 ≠ ARC/UXG 正式双勾。T72 的 G0–G5 还没有迁移实现和真 UI；T75 找到 production `tool-call` 缺失与 Slides 原厂云媒体 IPC 授权疑点（静态 E2，尚非实际外呼证据）；T83 已安全 fail-closed 并证明需先做 T86 的 provider 同轮工具协议，再另开 renderer 接线卡；T84 负责 Slides Hosted IPC 门禁，T85 只负责只读迁移预检。所有测试只用虚构文件/隔离数据库/本地 mock；T49/T73 共享工作树并发期间不运行全量 `--all`，不对真实帐号/文件或公网进行破坏性测试。
 
 ---
 
