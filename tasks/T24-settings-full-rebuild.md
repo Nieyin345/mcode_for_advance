@@ -222,3 +222,18 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792554587057-32932-elfZjy`；双包 tsc：0 错。
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs skill-buttons` PASS；`set T24_MUTATION=skill-buttons&& node ... skill-buttons` 将预设动作复原为原生 button 后 exit=1（预期红）。
 - 行为核对：各触发回调、启停/加载条件、展开关闭/新增删除/编辑与字体数值增减路径不变；焦点烟测未回归。
+
+### 2026-10-21｜总控核对（不改变任务状态）
+
+按用户规则「写回即完成」，批次 1–7 均视为完成。补充实测：
+
+- 九个大面板的 `rounded-xl` / `rounded-2xl` / `shadow-2xl` 硬编码残留**全部为 0**
+  （`CustomModelsPanel`、`CustomModelsPanelParts`、`PluginsPanelParts`、`SkillsPanel`、
+  `SkillsPanelParts`、`McpPanel`、`HooksPanel`、`CustomUiPanel`、`CustomUiPanelParts`）。
+- 共享原语使用量：`PluginsPanelParts` 76 处、`CustomModelsPanel` 32 处、`SkillsPanelParts` 29 处。
+- 批次 8 正在飞（`EngineToolsPanel` / `RuntimesPanel` / `SettingsBrowserPanel` /
+  `SettingsTerminalPanel` / `TitleGenPanel` 有未提交改动），
+  并新增了两个 codemod（`t24-button-codemod.cjs` / `t24-textarea-codemod.cjs`）与 `t24-audit.cjs`。
+- **未做**：`Skeleton` 用量仍为 0。这不是缺陷 —— 设置页的加载态是「有内容的局部刷新」，
+  `LoadingNote`/`Spinner` 更合适；`Skeleton` 留给整屏首次渲染的场景。若后续要求补，
+  另开卡，不在本卡内加码。
