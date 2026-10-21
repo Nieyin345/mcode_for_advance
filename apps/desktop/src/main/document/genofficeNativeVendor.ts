@@ -13,7 +13,24 @@ import { configureHtmlRuntime, createHtmlView } from "../../../../../genoffice/a
 import { configureSheetsRuntime, createSheetsView, queueWorkbookForView } from "@main/document/genofficeSheetsEntry.js";
 // @ts-ignore — optional upstream checkout; the original slides main registers its own IPC.
 import { configureSlidesRuntime, createSlidesView } from "@main/document/genofficeSlidesEntry.js";
-import type { DocumentViewLike } from "./documentViewHost.js";
+import { documentViewHost, type DocumentViewLike } from "./documentViewHost.js";
+import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
+import { log } from "@main/lib/logger.js";
+
+/** Authoritative owner/path checks, injected into the vendor IPC facade. */
+const paneGuard = (kind: "sheets" | "slides") => ({
+  ownsSender(sender: unknown): boolean {
+    const id = documentViewHost.docIdForSender(sender);
+    return id !== null && documentViewHost.editorOf(id) === kind;
+  },
+  containsPath(path: string): boolean { return findContainingWorkspaceRoot(path) !== null; },
+  documentPath(sender: unknown): string | null {
+    return documentViewHost.vendorAiContextForSender(sender)?.filePath ?? null;
+  },
+  audit(channel: string, category: "A" | "B" | "C", outcome: string): void {
+    log.info(`[genoffice-pane-${kind}] ${category} ${channel}: ${outcome}`);
+  },
+});
 
 export const vendorAvailable = true;
 type RuntimePaths = {
@@ -29,12 +46,13 @@ export function configureNativeRuntimes(roots: Record<"pdf" | "markdown" | "html
   configurePdfRuntime(roots.pdf);
   configureMarkdownRuntime(roots.markdown);
   configureHtmlRuntime(roots.html);
-  configureSheetsRuntime({ ...roots.sheets, sidecarPath: roots.sheets.sidecarPath });
+  configureSheetsRuntime({ ...roots.sheets, sidecarPath: roots.sheets.sidecarPath, mcodePaneGuard: paneGuard("sheets") });
   configureSlidesRuntime({
     preloadPath: roots.slides.preloadPath,
     rendererDevUrl: roots.slides.rendererDevUrl,
     rendererFilePath: roots.slides.rendererFilePath ?? roots.slides.rendererFile,
     openGeneratedPath: roots.slides.openGeneratedPath,
+    mcodePaneGuard: paneGuard("slides"),
   });
 }
 export function createNativeView(path: string | null, kind: "pdf" | "markdown" | "html" | "sheets" | "slides"): DocumentViewLike {

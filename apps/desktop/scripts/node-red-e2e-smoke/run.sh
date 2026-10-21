@@ -36,6 +36,7 @@ export MCODE_NR_E2E_ROOT="$E2E_ROOT"
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/workflowEngines/nodePackProductionPorts.js=./scripts/mcode-node-pack-smoke/productionPortsStub.ts \
+  --external:sherpa-onnx-node \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 node "$OUT/smoke.mjs"
@@ -52,6 +53,7 @@ if [[ -f ".tmp/node-red-release/manifest.json" ]]; then
     --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
     --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/workflowEngines/nodePackProductionPorts.js=./scripts/mcode-node-pack-smoke/productionPortsStub.ts \
+    --external:sherpa-onnx-node \
     --outfile="$OUT/vendor.mjs" --log-level=error
   node "$OUT/vendor.mjs"
 else

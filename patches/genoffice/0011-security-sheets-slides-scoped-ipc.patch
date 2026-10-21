@@ -1,0 +1,416 @@
+From aba076cc9b292461cc419288ee555e524f6250e1 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Wed, 21 Oct 2026 17:43:36 +0800
+Subject: [PATCH] security(T54): guard GenOffice sheet and slide IPC by owning
+ pane
+
+---
+ apps/sheets/src/main/mcode-sheets-dialog.ts |   2 +
+ apps/sheets/src/main/mcode-sheets-scoped.ts | 208 ++++++++++++++++++++
+ apps/sheets/src/main/pdf-export.ts          |   3 +-
+ apps/sheets/src/main/sheets-main.ts         |  17 +-
+ apps/slides/src/main/session-state.ts       |   3 +
+ apps/slides/src/main/slides-main.ts         |  23 ++-
+ 6 files changed, 247 insertions(+), 9 deletions(-)
+ create mode 100644 apps/sheets/src/main/mcode-sheets-dialog.ts
+ create mode 100644 apps/sheets/src/main/mcode-sheets-scoped.ts
+
+diff --git a/apps/sheets/src/main/mcode-sheets-dialog.ts b/apps/sheets/src/main/mcode-sheets-dialog.ts
+new file mode 100644
+index 0000000..071d7f3
+--- /dev/null
++++ b/apps/sheets/src/main/mcode-sheets-dialog.ts
+@@ -0,0 +1,2 @@
++import { mcodeSheetsPane } from './mcode-sheets-scoped'
++export const mcodeScopedSheetsDialog = mcodeSheetsPane.dialog
+diff --git a/apps/sheets/src/main/mcode-sheets-scoped.ts b/apps/sheets/src/main/mcode-sheets-scoped.ts
+new file mode 100644
+index 0000000..e381693
+--- /dev/null
++++ b/apps/sheets/src/main/mcode-sheets-scoped.ts
+@@ -0,0 +1,208 @@
++/**
++ * T54: per-pane security boundary for GenOffice's original IPC handlers.
++ *
++ * The original handlers remain the implementation; only their invoke/sender
++ * boundary and the native file picker results are constrained by Mcode.
++ * No host means standalone GenOffice behavior is unchanged.
++ */
++import { AsyncLocalStorage } from 'node:async_hooks'
++import { isAbsolute, join } from 'node:path'
++import { dialog as electronDialog, ipcMain as electronIpcMain } from 'electron'
++import type { Dialog, IpcMain } from 'electron'
++
++export type McodePaneKind = 'sheets' | 'slides'
++export interface McodePaneGuard {
++  ownsSender(sender: unknown): boolean
++  containsPath(path: string): boolean
++  documentPath(sender: unknown): string | null
++  audit(channel: string, category: 'A' | 'B' | 'C', outcome: string): void
++}
++
++interface CallScope {
++  sender: unknown
++  guard: McodePaneGuard
++}
++
++const SHEETS_BLOCKED = new Set([
++  'sheets:capture-screen-sources',
++  'sheets:capture-screen-source',
++])
++const SLIDES_BLOCKED = new Set([
++  'slides:font-install-local',
++  'slides:font-download',
++  'slides:save-recording',
++  'slides:microphone-access',
++])
++const ALLOWED_EFFECTS = new Set([
++  'workbook:print', 'workbook:list-printers', 'shell:open-external',
++  'slides:print', 'slides:show-fullscreen',
++])
++const PATH_OPERATIONS = new Set([
++  'workbook:select', 'workbook:select-for-merge', 'workbook:reopen',
++  'workbook:open-for-merge', 'workbook:save', 'workbook:export-pdf',
++  'workbook:export-csv', 'workbook:create-document', 'shell:read-local-image',
++  'sheets:files-pick', 'sheets:files-add', 'sheets:files-read-image',
++  'slides:open', 'slides:open-path', 'slides:save', 'slides:save-as',
++  'slides:edit-background', 'slides:edit-image-fill', 'slides:pick-picture-file',
++  'slides:insert-image', 'slides:insert-media', 'slides:insert-model3d',
++  'slides:add-media-bytes',
++  'slides:pick-export-dir', 'slides:export-images',
++  'slides:pick-export-pdf-path', 'slides:save-picture', 'slides:export-pdf',
++])
++
++function category(channel: string): 'A' | 'B' | 'C' | null {
++  if (SHEETS_BLOCKED.has(channel) || SLIDES_BLOCKED.has(channel)) return 'B'
++  if (ALLOWED_EFFECTS.has(channel)) return 'C'
++  if (PATH_OPERATIONS.has(channel)) return 'A'
++  return null
++}
++
++function assertAllowedPath(guard: McodePaneGuard, channel: string, candidate: unknown): void {
++  if (typeof candidate !== 'string' || !candidate || !isAbsolute(candidate) ||
++      !guard.containsPath(candidate)) {
++    guard.audit(channel, 'A', 'denied: outside Mcode workspace')
++    throw new Error('Mcode 工作区围栏：文件路径不在已授权的工作区内')
++  }
++}
++
++function directPaths(channel: string, args: unknown[]): unknown[] {
++  const op = args[0] as Record<string, unknown> | undefined
++  switch (channel) {
++    case 'workbook:reopen':
++    case 'slides:open-path':
++    case 'sheets:files-read-image':
++      return [args[0]]
++    case 'workbook:open-for-merge':
++    case 'sheets:files-add':
++      return Array.isArray(args[0]) ? args[0] : [null]
++    case 'shell:read-local-image':
++      return [op?.path]
++    case 'workbook:save':
++    case 'workbook:export-csv':
++      return op?.targetPath === undefined ? [] : [op.targetPath]
++    case 'workbook:export-pdf':
++      return op?.outPath === undefined ? [] : [op.outPath]
++    case 'slides:export-images': {
++      // The renderer controls both the directory and basename; a ../ basename
++      // would otherwise escape after joining. Guard the *resulting* filename.
++      if (typeof op?.dir !== 'string' || typeof op.baseName !== 'string' ||
++          op.baseName.length === 0 || op.baseName.includes(String.fromCharCode(0)) ||
++          !Array.isArray(op.pngsBase64) || op.pngsBase64.length > 1000) return [null]
++      const padding = op.pngsBase64.length >= 100 ? 3 : 2
++      return [op.dir, ...op.pngsBase64.map((_, i) =>
++        join(op.dir as string, `${op.baseName}-${String(i + 1).padStart(padding, '0')}.png`))]
++    }
++    case 'slides:export-pdf':
++      return [op?.filePath]
++    case 'slides:add-media-bytes':
++      return op && 'path' in op ? [op.path] : []
++    default:
++      return []
++  }
++}
++
++function isScopedChannel(channel: string): boolean {
++  return /^(?:slides:|sheets:|workbook:|shell:)/.test(channel)
++}
++
++export function createMcodePaneIpc(
++  upstreamIpc: IpcMain,
++  upstreamDialog: Dialog,
++  kind: McodePaneKind,
++): {
++  ipcMain: IpcMain
++  dialog: Dialog
++  configure(guard: McodePaneGuard | undefined): void
++  isMcodeHosted(): boolean
++  defaultDocumentDirectory(sender: unknown): string | null
++} {
++  let guard: McodePaneGuard | undefined
++  const current = new AsyncLocalStorage<CallScope>()
++
++  const check = (channel: string, sender: unknown, args: unknown[]): McodePaneGuard | null => {
++    if (!guard || !isScopedChannel(channel)) return null
++    if (!guard.ownsSender(sender)) {
++      throw new Error('Mcode 安全围栏：未授权的文档视图不能调用原厂 IPC')
++    }
++    const group = category(channel)
++    if (group === 'B') {
++      guard.audit(channel, group, 'denied')
++      throw new Error('Mcode 安全限制：屏幕采集／录制或本机字体安装尚未授权')
++    }
++    if (channel === 'shell:open-external') {
++      const link = args[0]
++      if (typeof link !== 'string' || !/^https?:\/\//i.test(link)) {
++        guard.audit(channel, 'C', 'denied: non-http(s) URL')
++        throw new Error('Mcode 安全限制：只允许打开 HTTP/HTTPS 外部链接')
++      }
++    }
++    for (const path of directPaths(channel, args)) assertAllowedPath(guard, channel, path)
++    // Implicit save must target a document already admitted by DocumentViewHost;
++    // anonymous draft saves in the vendor's global default directory are unsafe.
++    if (channel === 'slides:save') {
++      assertAllowedPath(guard, channel, guard.documentPath(sender))
++    }
++    if (group) guard.audit(channel, group, 'allowed')
++    return guard
++  }
++
++  const ipcMain = new Proxy(upstreamIpc, {
++    get(target, prop, receiver) {
++      if (prop === 'handle') return (channel: string, handler: (...args: any[]) => unknown) =>
++        target.handle(channel, (event, ...args) => {
++          const owner = check(channel, event.sender, args)
++          return owner ? current.run({ sender: event.sender, guard: owner }, () => handler(event, ...args))
++            : handler(event, ...args)
++        })
++      if (prop === 'on') return (channel: string, listener: (...args: any[]) => void) =>
++        target.on(channel, (event, ...args) => {
++          const owner = check(channel, event.sender, args)
++          if (owner) current.run({ sender: event.sender, guard: owner }, () => listener(event, ...args))
++          else listener(event, ...args)
++        })
++      const value = Reflect.get(target, prop, receiver) as unknown
++      return typeof value === 'function' ? value.bind(target) : value
++    },
++  }) as IpcMain
++
++  // Pickers are invoked deep inside original handlers. Validating only their
++  // input would miss the *chosen* write target: validate returned paths before
++  // the original code can read, write, or install anything.
++  const dialog = new Proxy(upstreamDialog, {
++    get(target, prop, receiver) {
++      if (prop === 'showOpenDialog' || prop === 'showSaveDialog') return async (...args: unknown[]) => {
++        const session = current.getStore()
++        if (guard && !session) throw new Error('Mcode 安全围栏：文件对话框没有已验证的视图来源')
++        const method = target[prop].bind(target) as (...params: unknown[]) => Promise<unknown>
++        const response = await method(...args)
++        if (session && response && typeof response === 'object') {
++          const result = response as { canceled?: boolean; filePath?: string; filePaths?: string[] }
++          if (!result.canceled) {
++            for (const file of result.filePaths ?? (result.filePath ? [result.filePath] : [])) {
++              assertAllowedPath(session.guard, String(prop), file)
++            }
++          }
++        }
++        return response
++      }
++      const value = Reflect.get(target, prop, receiver) as unknown
++      return typeof value === 'function' ? value.bind(target) : value
++    },
++  }) as Dialog
++
++  return {
++    ipcMain,
++    dialog,
++    configure(next) { guard = next },
++    isMcodeHosted: () => guard !== undefined,
++    defaultDocumentDirectory(sender) {
++      if (!guard || !guard.ownsSender(sender)) return null
++      const path = guard.documentPath(sender)
++      if (!path || !isAbsolute(path) || !guard.containsPath(path)) return null
++      return path
++    },
++  }
++}
++
++/** Shared with the PDF exporter, which must use the SAME async IPC context. */
++export const mcodeSheetsPane = createMcodePaneIpc(electronIpcMain, electronDialog, 'sheets')
+diff --git a/apps/sheets/src/main/pdf-export.ts b/apps/sheets/src/main/pdf-export.ts
+index 3c32866..fb134ff 100644
+--- a/apps/sheets/src/main/pdf-export.ts
++++ b/apps/sheets/src/main/pdf-export.ts
+@@ -6,7 +6,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+ 
+-import { BrowserWindow, dialog } from 'electron'
++import { BrowserWindow } from 'electron'
++import { mcodeScopedSheetsDialog as dialog } from './mcode-sheets-dialog'
+ 
+ import { isHeadlessMode, showSaveDialogWithMemory } from '@genoffice/electron-utils'
+ 
+diff --git a/apps/sheets/src/main/sheets-main.ts b/apps/sheets/src/main/sheets-main.ts
+index 7db52a4..6b79dd2 100644
+--- a/apps/sheets/src/main/sheets-main.ts
++++ b/apps/sheets/src/main/sheets-main.ts
+@@ -11,6 +11,8 @@ import {
+ } from 'node:fs'
+ import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+ import { refreshCsvDigest } from './csv-digest'
++import { mcodeSheetsPane as mcodePane, type McodePaneGuard } from './mcode-sheets-scoped'
++const { ipcMain, dialog } = mcodePane
+ import { createServer } from 'node:http'
+ import { basename, dirname, isAbsolute, join } from 'node:path'
+ 
+@@ -18,8 +20,6 @@ import {
+   app,
+   BrowserWindow,
+   desktopCapturer,
+-  dialog,
+-  ipcMain,
+   Menu,
+   net,
+   screen,
+@@ -1666,6 +1666,8 @@ interface SheetsRuntimeConfig {
+   openGeneratedPath?: (path: string) => boolean
+   /** Host-owned cross-app document creator (the shell routes docx/pdf/md into Docs). */
+   createDocument?: (request: SheetsAiHostDocumentRequest) => Promise<WorkbookCreateDocumentResult>
++  /** Mcode-only sender/path authorization; absent in standalone GenOffice. */
++  mcodePaneGuard?: McodePaneGuard
+ }
+ 
+ let runtime: SheetsRuntimeConfig = {
+@@ -1677,6 +1679,13 @@ let runtime: SheetsRuntimeConfig = {
+ 
+ export function configureSheetsRuntime(config: SheetsRuntimeConfig): void {
+   runtime = config
++  mcodePane.configure(config.mcodePaneGuard)
++}
++
++function guardedGeneratedDirectory(sender: unknown): string {
++  const opened = mcodePane.defaultDocumentDirectory(sender)
++  if (!opened) throw new Error('Mcode 工作区围栏：不能在工作区之外创建文档')
++  return dirname(opened)
+ }
+ 
+ /** After writing an exported/AI-generated file: open it in the right tab
+@@ -3301,7 +3310,7 @@ export function registerSheetsIpc(): void {
+       try {
+         if (request.type === 'csv') {
+           const filePath = uniquePathIn(
+-            configuredDefaultSaveDir(app),
++            mcodePane.isMcodeHosted() ? guardedGeneratedDirectory(event.sender) : configuredDefaultSaveDir(app),
+             `${sanitizeGeneratedFileBase(request.title)}.csv`,
+           )
+           // UTF-8 BOM so Excel decodes the reopened file correctly (same as exportCsv)
+@@ -3315,7 +3324,7 @@ export function registerSheetsIpc(): void {
+         if (request.type === 'xlsx') {
+           const buffer = await sheetCsvToXlsxBuffer(request.content, request.sheetName ?? 'Sheet1')
+           const filePath = uniquePathIn(
+-            configuredDefaultSaveDir(app),
++            mcodePane.isMcodeHosted() ? guardedGeneratedDirectory(event.sender) : configuredDefaultSaveDir(app),
+             `${sanitizeGeneratedFileBase(request.title)}.xlsx`,
+           )
+           await atomicWriteFile(filePath, buffer)
+diff --git a/apps/slides/src/main/session-state.ts b/apps/slides/src/main/session-state.ts
+index 78cf1b3..bd0cbdd 100644
+--- a/apps/slides/src/main/session-state.ts
++++ b/apps/slides/src/main/session-state.ts
+@@ -6,6 +6,7 @@
+  */
+ import { BrowserWindow, webContents } from 'electron'
+ import type { WebContents } from 'electron'
++import type { McodePaneGuard } from '../../../sheets/src/main/mcode-sheets-scoped'
+ import { join } from 'node:path'
+ import {
+   materializeSlide,
+@@ -31,6 +32,7 @@ export interface RuntimePaths {
+   rendererFilePath?: string | undefined
+   /** Shell router used to open exported PDFs in a new GenOffice tab. */
+   openGeneratedPath?: (path: string) => boolean
++  mcodePaneGuard?: McodePaneGuard
+ }
+ 
+ export const runtime: RuntimePaths = {
+@@ -44,6 +46,7 @@ export function configureSlidesRuntime(paths: RuntimePaths): void {
+   runtime.rendererDevUrl = paths.rendererDevUrl
+   runtime.rendererFilePath = paths.rendererFilePath
+   runtime.openGeneratedPath = paths.openGeneratedPath
++  runtime.mcodePaneGuard = paths.mcodePaneGuard
+ }
+ 
+ // One session per renderer process (standalone window or shell tab), keyed by webContents.id
+diff --git a/apps/slides/src/main/slides-main.ts b/apps/slides/src/main/slides-main.ts
+index cda4808..f9d42e3 100644
+--- a/apps/slides/src/main/slides-main.ts
++++ b/apps/slides/src/main/slides-main.ts
+@@ -9,8 +9,8 @@ import {
+   app,
+   BrowserWindow,
+   desktopCapturer,
+-  dialog,
+-  ipcMain,
++  dialog as electronDialog,
++  ipcMain as electronIpcMain,
+   Menu,
+   nativeImage,
+   session as electronSession,
+@@ -26,6 +26,9 @@ import { createHash, randomUUID } from 'node:crypto'
+ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+ import { basename, dirname, join, resolve } from 'node:path'
+ import { cleanupExpiredGeneratedPages } from './generated-page-temp'
++import { createMcodePaneIpc } from '../../../sheets/src/main/mcode-sheets-scoped'
++const mcodePane = createMcodePaneIpc(electronIpcMain, electronDialog, 'slides')
++const { ipcMain, dialog } = mcodePane
+ import { exportSlidesPdf } from './pdf-export'
+ import { printSlidesHtml } from './print-window'
+ import { gskApiKey, gskSlideGenerate, setGskProxyUrl } from '@genoffice/ai-search'
+@@ -421,7 +424,10 @@ function trackSlidesWebContents(wc: WebContents): void {
+   // browser instead of spawning an in-app window with remote content.
+   wc.setWindowOpenHandler(({ url }) => {
+     const target = safeExternalUrl(url)
+-    if (target) void shell.openExternal(target)
++    if (target && (!mcodePane.isMcodeHosted() || /^https?:\/\//i.test(target))) {
++      if (mcodePane.isMcodeHosted()) console.info('[mcode-pane] C allow slides external link')
++      void shell.openExternal(target)
++    }
+     return { action: 'deny' }
+   })
+   wc.once('destroyed', () => {
+@@ -1337,6 +1343,7 @@ let ipcRegistered = false
+ 
+ export function registerSlidesIpc(): void {
+   if (ipcRegistered) return
++  mcodePane.configure(runtime.mcodePaneGuard)
+   ipcRegistered = true
+ 
+   // AI-generated slide pages land in app-owned temp directories; sweep
+@@ -1354,6 +1361,8 @@ export function registerSlidesIpc(): void {
+     try {
+       electronSession.defaultSession.setDisplayMediaRequestHandler(
+         (_request, callback) => {
++          // T54: Mcode has no consent/recording port. Never enumerate screens.
++          if (mcodePane.isMcodeHosted()) { callback({}); return }
+           desktopCapturer
+             .getSources({ types: ['screen', 'window'] })
+             .then((sources) => {
+@@ -4576,7 +4585,13 @@ export function registerSlidesIpc(): void {
+     if (!session) return { ok: false, error: 'no file open' }
+     // Untitled (new blank file): the first save lands silently in the drafts folder (Save As keeps its dialog)
+     if (!session.path) {
+-      const draftsDir = getDraftsDir()
++      const mcodeDocument = mcodePane.defaultDocumentDirectory(e.sender)
++      if (mcodePane.isMcodeHosted() && !mcodeDocument) {
++        throw new Error('Mcode 工作区围栏：无法在工作区外创建演示文稿')
++      }
++      const draftsDir = mcodeDocument && mcodePane.isMcodeHosted()
++        ? dirname(mcodeDocument)
++        : getDraftsDir()
+       if (!existsSync(draftsDir)) mkdirSync(draftsDir, { recursive: true })
+       session.path = pickDraftPath(draftsDir, tm('untitledDeck'))
+       await pushRecent(session.path)
+-- 
+2.52.0.windows.1
+
