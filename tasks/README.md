@@ -135,6 +135,46 @@
 
 ---
 
+## 共享依赖处于编辑中时，任何套件都跑不起来（2026-10-21 踩坑）
+
+**`packages/contracts/` 是全局共享依赖。** 只要它有未提交的改动（哪怕只改了一半），
+所有 bundle 它的主进程套件都会在 **import 阶段**崩溃，不是断言失败。
+
+实测：T50 在改 `modules.ts` 的 `contributions` 为 `discriminatedUnion`，
+期间 `skills-nodes-ui` / `vscode-l1` / `node-red-e2e` 三套全崩：
+
+```
+TypeError: Cannot read properties of undefined (reading 'type')
+    at Object.create (...) at ../../packages/contracts/src/modules.ts:4497
+```
+
+**这不是那些套件的回归，是共享依赖的半成品状态。**
+
+**做法**：
+- 派「改 `packages/contracts/`」的卡时，**明确告知用户：在此期间任何人的
+  `test:all` / 全量 smoke 都会假红**
+- 想跑全量，先确认 `git status --short packages/contracts/` 干净
+- 改 contracts 的任务应该**尽快提交**，不要长时间挂着半成品
+
+---
+
+## 全量 smoke 与在飞任务冲突（2026-10-21 踩坑）
+
+**有任务在跑 Electron 探针时，不要启动 `run-all-smokes.sh`。**
+
+`document-view-*` 五套、`arc005-pane-electron`、`genoffice-native-view-smoke`
+这些都会启动**真 Electron 进程**。全量 smoke 会把它们全部拉起来，
+与在飞任务的探针抢 `.tmp/` 与 pdf.js 的 wasm 资源 —— 实测结果是
+Electron 主进程弹「A JavaScript error occurred in the main process」然后崩溃。
+
+**做法**：
+- 全量 smoke 只在**没有任务在飞**时跑
+- 或者先用 `MCODE_SMOKE_JOBS=1 MCODE_SMOKE_HEAVY_JOBS=1` 降并发，
+  但仍然不能与在飞的 Electron 套件同时跑
+- 想做「当前基线」时，挑**不碰 Electron** 的子集跑，别跑全量
+
+---
+
 ## 编号规则（2026-10-21 立，踩过一次坑）
 
 **每张新卡的编号必须先用 `ls tasks/T*.md | sort -V` 查一遍，不能凭印象。**
