@@ -124,7 +124,7 @@ const safeVendor={
     commitSaved(){commits++;}
   },
   render:{HeuristicMetrics:class{},buildRenderSlide(slide:unknown){return slide;}},
-  ops:{runTxn(){return {applied:false};}}
+  ops:{runTxn(){return {applied:true};}}
 };
 const saver=new VendorSlidesExecutor(safeVendor as never);
 check("★ vendor fake open original document",(await saver.openDeck(121,"owner",base,1200))!==null,null);
@@ -139,6 +139,8 @@ check("★ old vendor must NOT have written directly to target without CAS",
 saver.release(121);
 
 check("★ vendor fake opens second real file",(await saver.openDeck(122,"owner",failTarget,1200))!==null,null);
+check("★ vendor save-fault fixture has an unsaved edit",
+  (await saver.editText(122,"owner",0,"fake-node","EDIT"))!==null,null);
 saveFault=true;
 const failedVendor=await saver.saveDeck(122,"owner",failTarget);
 check("★ vendor write fails after staging partial: original PPTX must survive",
@@ -160,6 +162,8 @@ writeFileSync(closed,"STILL-ORIGINAL");
 blocked=true;
 check("★ native session opened for close during write",
   (await saver.openDeck(123,"owner",closed,1200))!==null,null);
+check("★ close-during-save fixture has an unsaved edit",
+  (await saver.editText(123,"owner",0,"fake-node","EDIT"))!==null,null);
 const inFlight=saver.saveDeck(123,"owner",closed);
 await entering;
 saver.release(123);
@@ -177,6 +181,8 @@ entering=new Promise<void>(r=>{enteredSave=()=>r();});
 blocked=true;
 check("★ vendor opens target for external modification during async serialization",
   (await saver.openDeck(124,"owner",concurrent,1200))!==null,null);
+check("★ external-write race fixture has an unsaved edit",
+  (await saver.editText(124,"owner",0,"fake-node","EDIT"))!==null,null);
 const externalSaving=saver.saveDeck(124,"owner",concurrent);
 await entering;
 writeFileSync(concurrent,"EXTERNAL-NEWER-VERSION");
@@ -198,6 +204,8 @@ entering=new Promise<void>(r=>{enteredSave=()=>r();});
 blocked=true;
 check("★ vendor opens for model edit during in-flight serializer",
   (await saver.openDeck(125,"owner",editedWhileSaving,1200))!==null,null);
+check("★ model-write race fixture has an unsaved edit",
+  (await saver.editText(125,"owner",0,"fake-node","EDIT"))!==null,null);
 const modelSaving=saver.saveDeck(125,"owner",editedWhileSaving);
 await entering;
 (safeVendor.ops as {runTxn:(opened:unknown,request:unknown)=>unknown}).runTxn=(opened,request)=>{
@@ -227,6 +235,43 @@ check("★ same webContents stale/incorrect docId cannot mutate other document",
   (await saver.addBlankSlide(126,"imposter"))===null&&
   (await saver.editText(126,"imposter",0,"x","BAD"))===null,null);
 saver.release(126);
+
+// T57: even a fake serializer that always rewrites bytes must never be called
+// on an unchanged deck, including after a successful edited save. An empty
+// source is different: opening synthesizes a blank model that must be saved.
+const repeat=join(root,"native-noop-save.pptx");
+writeFileSync(repeat,"UNCHANGED");
+blocked=false;
+savedPaths=[];
+check("★ T57 clean source opens",(await saver.openDeck(127,"clean",repeat,1200))!==null,null);
+const cleanSave=await saver.saveDeck(127,"clean",repeat);
+check("★ T57 no-edit save keeps original bytes and never calls vendor serializer",
+  cleanSave!==null && "bytes" in cleanSave && cleanSave.bytes===9 &&
+    readFileSync(repeat,"utf8")==="UNCHANGED" && savedPaths.length===0,
+  {cleanSave,savedPaths});
+check("★ T57 accepted edit marks deck unsaved",
+  (await saver.editText(127,"clean",0,"fake-node","EDIT"))!==null,null);
+const dirtySave=await saver.saveDeck(127,"clean",repeat);
+check("★ T57 edited save still writes vendor bytes",
+  dirtySave!==null && "bytes" in dirtySave && readFileSync(repeat,"utf8")==="NEW-CONTENT" &&
+    savedPaths.length===1,{dirtySave,savedPaths});
+const repeatSave=await saver.saveDeck(127,"clean",repeat);
+check("★ T57 second save after successful commit is a physical no-op",
+  repeatSave!==null && "bytes" in repeatSave && repeatSave.bytes===11 &&
+    savedPaths.length===1 && readFileSync(repeat,"utf8")==="NEW-CONTENT",
+  {repeatSave,savedPaths});
+saver.release(127);
+const zero=join(root,"native-zero-source.pptx");
+writeFileSync(zero,"");
+savedPaths=[];
+check("★ T57 empty PPTX source opens as synthesized native deck",
+  (await saver.openDeck(128,"empty",zero,1200))!==null,null);
+const blankFirstSave=await saver.saveDeck(128,"empty",zero);
+check("★ T57 first save of empty source materializes generated blank deck",
+  blankFirstSave!==null && "bytes" in blankFirstSave && blankFirstSave.bytes===11 &&
+    savedPaths.length===1 && readFileSync(zero,"utf8")==="NEW-CONTENT",
+  {blankFirstSave,savedPaths});
+saver.release(128);
 
 /* Native vendor may mutate its in-memory deck and THEN throw, or return a
    partial failure / an unrenderable updated slide. None of those is a
@@ -301,10 +346,12 @@ for(const kind of ["throw-add","throw-edit","render-add","render-edit","silent-r
      commitSaved(){if(shouldThrow)throw Error("SYNTHETIC_COMMIT_FAILED");},
    },
    render:{HeuristicMetrics:class{},buildRenderSlide(slide:unknown){return slide;}},
-   ops:{runTxn(){return {applied:false};}}
+   ops:{runTxn(){return {applied:true};}}
  };
  const host=new VendorSlidesExecutor(vendorCommit as never);
  check("★ post-commit probe opens existing native file",(await host.openDeck(390,"doc",published,1200))!==null,null);
+ check("★ post-commit failure fixture has an unsaved edit",
+   (await host.editText(390,"doc",0,"fake-node","EDIT"))!==null,null);
  const first=await host.saveDeck(390,"doc",published);
  check("★ failed commitSaved reports uncertain disk commit, not plain unsaved",
    first!==null&&"reason" in first&&first.reason.includes("POST_COMMIT_UNCERTAIN"),

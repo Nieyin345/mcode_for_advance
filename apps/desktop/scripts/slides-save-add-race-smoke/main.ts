@@ -28,13 +28,19 @@ const executor=new VendorSlidesExecutor({
  render:{HeuristicMetrics:class{},buildRenderSlide:(slide:unknown)=>slide},
  ops:{runTxn(opened:unknown,req:unknown){
   latestTxn=req as typeof latestTxn;
-  (opened as {deck:{slides:{id:string;nodes:unknown[]}[]}}).deck.slides.push({id:"added",nodes:[]});
+  // Model an accepted text edit without adding a page: the first save must
+  // actually serialize an unsaved change for the add-during-save race.
+  if ((req as {ops:Array<{op:string}>}).ops[0]?.op !== "setText") {
+   (opened as {deck:{slides:{id:string;nodes:unknown[]}[]}}).deck.slides.push({id:"added",nodes:[]});
+  }
   return {applied:true};
  }}
 } as never);
 try{
 const opened=await executor.openDeck(101,"actual-doc",file,1200);
 ok("vendor original file opens",opened!==null);
+ok("vendor has an unsaved text edit before async save",
+  (await executor.editText(101,"actual-doc",0,"fake-node","EDIT"))!==null);
 const firstSave=executor.saveDeck(101,"actual-doc",file);
 await entered.promise;
 const appended=await executor.addBlankSlide(101,"actual-doc");

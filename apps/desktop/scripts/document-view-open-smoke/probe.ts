@@ -97,6 +97,7 @@ async function makeFixtureDocx(): Promise<Uint8Array> {
 
 /** 【ARC-007 P1/GA1】slides 唯一文本（与 DOCX 的区分开，避免跨断言串证据）。 */
 const SLIDES_UNIQUE_TEXT = "MCODE-P1-SLIDES-9c4e";
+const SLIDES_EDITED_TEXT = `${SLIDES_UNIQUE_TEXT}-changed`;
 
 /** 生成含指定文本的合法 pptx（vendor `createBlankPptx` + `addElement` 同一实现）。 */
 async function makePptxWithText(text: string): Promise<Uint8Array> {
@@ -656,13 +657,13 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
         if (editTarget !== null) {
           const target = editTarget as { slideIndex: number; elementId: string };
           const editedReply = (await ipcMainInvokeFrom(slideWc, "mcode:document-view:slides-edit-text", {
-            slideIndex: target.slideIndex, elementId: target.elementId, text: SLIDES_UNIQUE_TEXT,
+            slideIndex: target.slideIndex, elementId: target.elementId, text: SLIDES_EDITED_TEXT,
           })) as { ok?: boolean; reason?: string; nodes?: unknown[] };
           await check("★ slides Mcode 宿主：真实无 docId 改文字返回可消费的 RenderSlide.nodes", () => {
             assert(editedReply.ok === true && Array.isArray(editedReply.nodes),
               JSON.stringify(editedReply).slice(0, 450));
-            assert(flattenRenderText([{ nodes: editedReply.nodes }]).includes(SLIDES_UNIQUE_TEXT),
-              "返回的 RenderSlide 不包含目标文本");
+            assert(flattenRenderText([{ nodes: editedReply.nodes }]).includes(SLIDES_EDITED_TEXT),
+              "返回的 RenderSlide 不包含新写入的文本");
           });
         }
         // ── 真页面消费（React 状态 → Konva 画布/缩略图）：等状态栏显示打开的文件名。
@@ -727,7 +728,7 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
           assert(reopenOpen.ok === true, JSON.stringify(reopenOpen));
           assert(reopenRead.ok === true, JSON.stringify(reopenRead).slice(0, 300));
           const text = flattenRenderText(reopenRead.result?.slides ?? []);
-          assert(text.includes(SLIDES_UNIQUE_TEXT), text.slice(0, 300));
+          assert(text.includes(SLIDES_EDITED_TEXT), `新会话未读到编辑后的文字：${text.slice(0, 300)}`);
         });
         host.close(reopenDocId);
         // ── 工作区外：生产 openPath 在准备阶段就拒（页面/执行器都拿不到路径）。

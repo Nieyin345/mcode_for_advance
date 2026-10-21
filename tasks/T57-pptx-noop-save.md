@@ -172,3 +172,17 @@ return await withOsFileLease(filePath, async (real) => {
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+## 2026-10-21 执行与验收回写
+
+- **修改范围**：`apps/desktop/src/main/document/slidesExecutor.ts`；仅同步强化三处相关回归护栏：`scripts/slides-executor-session-epoch-smoke/main.ts`、`scripts/slides-save-add-race-smoke/main.ts`、`scripts/document-view-open-smoke/probe.ts`。未改 `genoffice/`、`packages/contracts/`、`documentViewHost.ts`、XLSX 路径或 T53 的 `real.ts` 断言。
+- **根因与判据**：`editEpoch` 仅在 `addBlankSlide`（输入校验后、vendor transaction 前）和 `editText`（vendor transaction 前）递增，可保守表示“可能有未保存编辑”（事务后来拒绝仍保持保守状态，不把部分更改误判为干净）。新增 `savedEpoch`：正常文件打开时为 `0`、每次成功写盘并 `commitSaved` 后更新为当前 `editEpoch`；零字节源文件初始化为 `-1`，保证第一次保存一定物化空白文档。无需给两个编辑入口重复添加 `dirty` 标志。
+- **锁与冲突**：`saveDeck` 在原有 `withOsFileLease` 内、`lstat` 合法性及原路径 SHA256 CAS 检查之后才判断 `editEpoch === savedEpoch`；未修改直接返回现存字节数，不创建 staging、不调用 vendor serializer、不 rename。外部修改仍返回 VERSION_CONFLICT；失败或 `commitSaved` 异常仍按原有路径 fail-closed/标记 session tainted。
+- **重序列化定量证据（E1）**：用真实 `createBlankPptx → openPptx → savePptxToFile` 在隔离临时目录重现：原件 **5630 B**，重序列化后 **5806 B（+176 B）**，SHA256 不同；两份 ZIP 均有 **11 个非目录 part**，文件名集合一致，逐个解压比较 **11/11 part 字节相同**。差异在 ZIP 容器层（重压缩/头部或布局），不是该样例的 OOXML 内容变化。
+- **为何不选 staging 对比后不 rename**：仅比较两个 ZIP 整体 SHA256 仍会因上述 176 B 差异而误判，不能实现无修改字节保持；改为逐个解压比对 part 又增加一次完整序列化、IO/CPU/磁盘暂存与复杂度。保存前直接用宿主维护的会话编辑代数判据，既免重序列化，也保留全部编辑写盘路径。
+- **另存为**：仅 `saveDeck` 的“保存回打开原路径”走短路，`savePptxToFile` 原厂写盘接口不变；隔离测试中调用 vendor 写入不同目标 `saved-as.pptx`，文件存在且大小 **5806 B**（E1）。Mcode 此执行器自身没有另存为 API，未扩展接口。
+- **原始红例（E1）**：修复前 `node apps/desktop/scripts/run-smokes.mjs genoffice-native-view-smoke`：`PPTX open/no-edit/save is byte-identical` 红、**20/21**。
+- **修复后回归（E1）**：同一套 `genoffice-native-view-smoke` 的原始不可修改断言转绿，真实原厂文件测试 **21/21**；`document-view-electron/host/open/renderer/vendor-page-smoke` 五套 + `arc005-pane-dock-keys/docking/electron/first-paint/free-grid/layout-edges/write-race-smoke` 七套，合计 13 套 **13/13 PASS**。额外 `slides-executor-session-epoch-smoke`、`slides-save-add-race-smoke` **2/2 PASS**（相关假执行器现在先做真实意义上的编辑，避免无编辑保存进入不应进入的竞态测试）。`document-view-open-smoke` 现以**不同于原文的新文字**编辑、保存，再通过新视图/新会话确认新文字保留；对应套件 PASS。另补“首次无编辑不调用 serializer／编辑后保存／重复保存不调用 serializer／零字节首存物化”的断言，PASS。
+- **变异验证（E1）**：临时将 `if (session.editEpoch === session.savedEpoch)` 条件禁用，重跑未修改的 T53 真实测试，唯一旧红例再次失败、**20/21**；随后按二进制备份恢复，源文件 SHA256 恢复校验通过（`4F1662BFC01FEB6AA99809FE1C265CD88415D7F9D5ED0D2CCBB046F0E7596456`）。
+- **类型检查**：`pnpm typecheck`（双包），结果以本次执行终态记录为准。
+- **remaining**：本卡所有功能验收以隔离 E1 / 源码 E2 为证；未把这些冒充手工 U1/独立复核。

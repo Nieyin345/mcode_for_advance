@@ -84,6 +84,8 @@ interface DeckSession {
   revision: string;
   /** Any edit made while savePptxToFile is awaiting invalidates that save. */
   editEpoch: number;
+  /** Last edit epoch durably written to the original file. */
+  savedEpoch: number;
   /** Vendor mutation/render failed after touching deck; reload before saving. */
   saveTainted: boolean;
   fitWidthPx: number;
@@ -240,6 +242,9 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
       filePath,
       revision: createHash("sha256").update(bytes).digest("hex"),
       editEpoch: 0,
+      // An empty source is opened using a generated blank deck. Its first save
+      // must materialize that deck, not acknowledge an unchanged 0-byte file.
+      savedEpoch: bytes.length === 0 ? -1 : 0,
       saveTainted: false,
       fitWidthPx: width,
     });
@@ -274,6 +279,11 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
         if (await fileContentVersion(real) !== session.revision) {
           return { reason: "SLIDES_FILE_VERSION_CONFLICT:演示文稿已被外部编辑，拒绝覆盖新版本" };
         }
+
+        // The vendor always rebuilds the ZIP, even without edits. Keep the
+        // original bytes and metadata untouched when this session is clean;
+        // still take the OS lease and verify the revision before acknowledging.
+        if (session.editEpoch === session.savedEpoch) return { bytes: original.size };
 
         // The original GenOffice pptx-engine still serializes every slide,
         // animation and unknown archive part. The Host only changes where
@@ -314,6 +324,7 @@ export class VendorSlidesExecutor implements SlidesEditExecutor {
               reason: "SLIDES_POST_COMMIT_UNCERTAIN:文件已写入磁盘，但原厂提交状态失败；请重新打开文档确认保存结果",
             };
           }
+          session.savedEpoch = editEpoch;
           return { bytes: stagedInfo.size };
         } finally {
           await rm(stageDir, { recursive: true, force: true });
