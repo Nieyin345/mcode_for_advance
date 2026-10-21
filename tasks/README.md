@@ -75,13 +75,13 @@
 | T04 | 手机远程全量 UI 对齐 | ARC-005 | 无 | ✅ 完成（96 断言，27 处 44px 修复；test:all 12 红与它无关） |
 | T05 | ~~GenOffice Docs 全功能迁移~~ | — | — | **已拆分为 T05a/b/c** |
 | T05a | Docs 迁移一：纯文档操作（6 组） | ARC-007 | 无 | ✅ 完成（25 handler 逐项登记；6 patch 可复现） |
-| T05b | Docs 迁移二：需权限操作（10 个 handler） | ARC-007 | T05a | 进行中（10 路已接线；同对话继续 T05c） |
-| T05c | Docs AI 面板：默认拒绝 + 经三 SDK 可用（12 个 ai:*） | ARC-007 | T05b | 进行中（同对话） |
+| T05b | Docs 迁移二：需权限操作（10 个 handler） | ARC-007 | T05a | ✅ 完成（10/10 受控接线 + 两变异；三处遗留见 T22） |
+| T05c | Docs AI 面板：默认拒绝 + 经三 SDK 可用（12 个 ai:*） | ARC-007 | T05b | **进行中**（`mcode-ai.ts` / `nativeAi.ts` / `mutate-t05c.mjs` 已在写） |
 | T18 | 输入框重做（复用 RichComposerWithMentions + ChatComposer） | ARC-005 UI | 无 | ✅ 完成（19/19 行为断言 + 两变异；未替换 Tiptap） |
 | T19 | Node-RED 源码 vendor 第一步：落地 + 解析链路 | ARC-006 | T13 | ✅ 完成（vendor 5.0.8 / 解析+T19 fallback / afterPack 校验） |
 | T20 | 工件预览沙箱 + 语音活动条（第三批逆向件） | ARC-005 UI+安全 | 无 | 未开始 |
 | T21 | 顶栏 macOS 红绿灯避让 + 附件磁贴（第四批逆向件） | ARC-005 UI | 无 | 未开始 |
-| T22 | 补完 T05b 三处遗留（exportPdf / lazy-media / files:read） | ARC-007 | T05b/T05c | 未开始（等 T05c 回写后再评估是否仍需要） |
+| T22 | 补完 T05b 三处遗留（exportPdf / lazy-media / files:read） | ARC-007 | T05c | 未开始 |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05 | 阻塞 |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |
