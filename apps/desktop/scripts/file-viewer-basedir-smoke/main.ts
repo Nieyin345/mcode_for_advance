@@ -46,7 +46,7 @@ const stub = {
       calls.push({ fn: "readFile", input });
       if (state.uiDirectory) {
         return input.relPath
-          ? { content: { type: "binary" as const, mime: "application/pdf", base64: "JVBERi0xLjQ=" } }
+          ? { content: { type: "binary" as const, mime: state.binaryMime, base64: "JVBERi0xLjQ=" } }
           : { content: { type: "dir" as const, files: [{ name: "chapter.pdf", isDir: false }] } };
       }
       return { content: { type: "text" as const, text: "# md\n![](images/1.png)" } };
@@ -64,18 +64,23 @@ const stub = {
   shell: { openFile: async (_args?: unknown): Promise<{ ok: boolean; error?: string }> => ({ ok: true }) },
   setting: { set: () => Promise.resolve({ ok: true }), get: () => Promise.resolve(null) },
 };
-const state = { entryRoot: "", uiDirectory: false };
+const state = { entryRoot: "", uiDirectory: false, binaryMime: "application/pdf" };
 (globalThis as Record<string, unknown>).window = { api: stub };
 
 const { FileViewer, loadViewData } = await import("@renderer/components/library/FileViewer.js");
 const { useFileViewStore, setFileOpenGuard } = await import("@renderer/stores/fileViewStore.js");
 const { __mount, __render, __flush, __nodes } = await import("./fakeReact.js");
+const { PdfPreview } = await import("@renderer/components/library/PdfPreview.js");
+const { OnlyOfficeEditorPane } = await import("@renderer/components/ide/OnlyOfficeEditorPane.js");
 
 const ROOT = "D:\\lib\\my-tree"; // 条目根(linked 目录)
 const currentChild = (): string | null => {
   const target = useFileViewStore.getState().target;
   return target?.source.kind === "library" ? target.source.relPath ?? null : null;
 };
+const hasComponent = (component: unknown): boolean => __nodes().some(
+  (node) => node.type === component,
+);
 
 console.log("\n【MC-086】目录 linked 里翻进子文件 → baseDir 是 md 自己的目录");
 {
@@ -123,6 +128,55 @@ console.log("\n【ARC-007】目录选文件和子PDF返回必须走文件预览�
   // Render the navigated PDF as a real FileViewer root, then simulate an
   // unsaved vendor annotation. The child must expose a way back to its folder,
   // and back must ask the SAME dirty-confirmation owner as any other exit.
+  useFileViewStore.setState({
+    target: { source: { kind: "library", ref: "linked-tree", relPath: "chapter.pdf" }, name: "my-tree" },
+    dirty: true,
+  });
+  __render();
+  await __flush();
+  const actualPdfNode = __nodes().find((node) => node.type === PdfPreview);
+  check("actual FileViewer passes PDF bytes and the child file path to PdfPreview",
+    actualPdfNode?.props.bytes instanceof Uint8Array &&
+    actualPdfNode.props.filePath === joinPath(ROOT, "chapter.pdf") &&
+    !hasComponent(OnlyOfficeEditorPane),
+    { hasPdfPreview: !!actualPdfNode, filePath: actualPdfNode?.props.filePath });
+
+  // The PDF suffix is the shared GenOffice route. A generic MIME must not
+  // demote a known PDF into unknown/Office rendering.
+  state.binaryMime = "application/octet-stream";
+  useFileViewStore.setState({
+    target: { source: { kind: "library", ref: "linked-tree", relPath: "chapter.pdf" }, name: "my-tree" },
+    dirty: false,
+  });
+  __render();
+  await __flush();
+  check("known .pdf still renders PdfPreview when MIME is application/octet-stream",
+    hasComponent(PdfPreview) && !hasComponent(OnlyOfficeEditorPane));
+
+  // Unknown extensions are not silently assigned a native editor. A PDF MIME
+  // can still describe the actual bytes and intentionally selects PdfPreview.
+  state.binaryMime = "application/octet-stream";
+  useFileViewStore.setState({
+    target: { source: { kind: "library", ref: "linked-tree", relPath: "mystery.bin" }, name: "my-tree" },
+    dirty: false,
+  });
+  __render();
+  await __flush();
+  check("unknown suffix with generic MIME does not route to PdfPreview or Office",
+    !hasComponent(PdfPreview) && !hasComponent(OnlyOfficeEditorPane));
+
+  state.binaryMime = "application/pdf";
+  useFileViewStore.setState({
+    target: { source: { kind: "library", ref: "linked-tree", relPath: "mystery.bin" }, name: "my-tree" },
+    dirty: false,
+  });
+  __render();
+  await __flush();
+  check("unknown suffix with application/pdf MIME uses PDF content fallback, not Office",
+    hasComponent(PdfPreview) && !hasComponent(OnlyOfficeEditorPane));
+
+  // Restore the known PDF fixture and dirty state for the existing navigation
+  // guard assertions below.
   useFileViewStore.setState({
     target: { source: { kind: "library", ref: "linked-tree", relPath: "chapter.pdf" }, name: "my-tree" },
     dirty: true,

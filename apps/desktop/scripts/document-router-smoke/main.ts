@@ -25,6 +25,7 @@ import {
   isTextualDocumentKind,
   type DocumentKind,
 } from "@contracts/documentKind";
+import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
 import {
   isOnlyOfficeEditablePath,
   isOnlyOfficeSupportedPath,
@@ -137,11 +138,50 @@ section("5. 四个消费点不再各写一份扩展名分支");
   check("编辑器分类器不再留本地图片 switch", !editorKinds.includes("case \".tiff\":"));
 
   const viewer = read("src/renderer/components/library/FileViewer.tsx");
-  check("★ 资料库查看器 md 分支走 documentKindOf", viewer.includes('documentKindOf(name) === "markdown"'));
-  check("★ 资料库查看器 pdf 分支走 documentKindOf", viewer.includes('documentKindOf(name) === "pdf"'));
+  const preview = read("src/renderer/components/library/FilePreview.tsx");
+  // 【过时断言修正】7b52bfa9 把这里的 `name` 改成了 `visibleName`（子导航改走
+  // 受控 file target 后，显示名才是判据来源）。断言跟着改，判据本身不变。
+  check("★ 资料库查看器 md 分支走 documentKindOf", /documentKindOf\(visibleName\) === "markdown"/.test(viewer));
+  // T30 deliberately routes GenOffice app identity through the shared vendor map;
+  // `documentKindOf` remains Mcode's broader content kind, not the app selector.
+  const pdfRoute = genofficeAppForPath("papers/report.PDF");
+  eq("★ T30: .PDF 路由到原厂 pdf app", pdfRoute, "pdf");
+  eq("T30: 未知后缀不默认归入 docs", genofficeAppForPath("papers/unknown.bin"), undefined);
+  eq("T30: .pdf.exe 不冒充 PDF", genofficeAppForPath("papers/report.pdf.exe"), undefined);
+  const pdfBranchStart = viewer.indexOf('if (mime === "application/pdf" || nativeApp === "pdf")');
+  const officeBranchStart = viewer.indexOf('if (isOnlyOfficeSupportedPath(visibleName))', pdfBranchStart);
+  const pdfBranch = pdfBranchStart >= 0 && officeBranchStart > pdfBranchStart
+    ? viewer.slice(pdfBranchStart, officeBranchStart)
+    : "";
+  check("★ 真实 PDF 的共享路由会进入 PdfPreview", pdfRoute === "pdf" &&
+    /nativeApp === "pdf"/.test(pdfBranch) && /<PdfPreview/.test(pdfBranch) &&
+    !/OnlyOfficeEditorPane/.test(pdfBranch));
+  check("PDF MIME 可作为未知扩展名的内容回退，但未知后缀不默认走 Docs",
+    /mime === "application\/pdf"/.test(pdfBranch) &&
+    genofficeAppForPath("papers/unknown.bin") === undefined &&
+    !viewer.includes("GenofficeViewHostPane"));
+  check("PDF 分支先于 OnlyOffice 回退分支",
+    pdfBranchStart >= 0 && officeBranchStart > pdfBranchStart);
+
+  const projectFileIpc = read("src/main/ipc/files.ts");
+  const projectMimeTable = read("src/main/ipc/filesTextCodec.ts");
+  const libraryFileImport = read("src/main/library/fileImport.ts");
+  check("项目二进制读取允许 PDF MIME 为 application/octet-stream，故需扩展名路由兜底",
+    projectFileIpc.includes('const mime = BINARY_MIME[ext] ?? "application/octet-stream"') &&
+    !projectMimeTable.includes('pdf: "application/pdf"'));
+  check("资料库读取按 .pdf 扩展名提供 application/pdf MIME",
+    libraryFileImport.includes('".pdf": "application/pdf"'));
+
+  const previewPdfStart = preview.indexOf('if (content.mime === "application/pdf" || nativeApp === "pdf")');
+  const previewPdfEnd = preview.indexOf('if (isOnlyOfficeSupportedPath(viewing))', previewPdfStart);
+  const previewPdfBranch = previewPdfStart >= 0 && previewPdfEnd > previewPdfStart
+    ? preview.slice(previewPdfStart, previewPdfEnd)
+    : "";
+  check("★ 资料库侧栏预览也用共享 PDF 路由并渲染 PdfPreview",
+    /nativeApp === "pdf"/.test(previewPdfBranch) && /<PdfPreview/.test(previewPdfBranch) &&
+    !/OnlyOfficeEditorPane/.test(previewPdfBranch));
   check("资料库查看器不再写 ext === \"md\"", !viewer.includes('ext === "md"'));
 
-  const preview = read("src/renderer/components/library/FilePreview.tsx");
   check("★ 资料库预览 md 分支走 documentKindOf", preview.includes('documentKindOf(viewing) === "markdown"'));
   check("资料库预览不再自带 extOf 实现", preview.includes("const extOf = documentExtension") && !preview.includes('base.lastIndexOf(".")'));
   // 断言只看**代码行**:历史注释里保留旧写法的说明是允许的(上面已迁移)。
