@@ -25,8 +25,8 @@ import { useCallback, useEffect, useState } from "react";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
-import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
-import { IconFolder, IconLoader2 } from "@renderer/lib/icons.js";
+import { Button, Card, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
+import { IconFolder } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingRow } from "./SettingRow.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -107,10 +107,7 @@ export function DataRootPanel() {
     return (
       <section className={`mx-auto w-full ${PANEL_MAX_W.form} space-y-4`}>
         <PanelHeader title={t("settings.dataRoot.title")} />
-        <div className="flex items-center gap-2 py-3 text-xs text-content-muted">
-          <IconLoader2 size={13} className="animate-spin" />
-          {t("settings.dataRoot.restarting")}
-        </div>
+        <LoadingNote label={t("settings.dataRoot.restarting")} />
       </section>
     );
   }
@@ -142,7 +139,7 @@ export function DataRootPanel() {
               <LoadingNote label={t("common.loading")} className="justify-start px-0 py-1.5" />
             ) : (
               <div
-                className="flex min-w-0 items-center gap-1.5 rounded-md border border-edge bg-surface-muted px-2.5 py-1.5 font-mono text-xs text-content"
+                className="flex min-w-0 items-center gap-1.5 rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted px-2.5 py-1.5 font-mono text-xs text-content"
                 title={info.root}
               >
                 <IconFolder size={12} className="shrink-0 text-content-subtle" />
@@ -155,13 +152,13 @@ export function DataRootPanel() {
                 {t("settings.dataRoot.move")}
               </Button>
             </div>
-            {error && <div className="text-[0.7857em] text-red-500">{error}</div>}
+            {error && <ErrorNote>{error}</ErrorNote>}
           </div>
         </SettingRow>
 
         {/* 目录树 —— 直接回答「我的东西在哪」。三个库的落点都标出来。 */}
         <SettingRow layout="vertical" title={t("settings.dataRoot.treeTitle")}>
-          <div className="rounded border border-edge bg-surface/40 p-3">
+          <Card className="bg-surface-muted/40 p-3">
             <TreeRow name="mcode.db" note={t("settings.dataRoot.tree.db")} />
             <TreeRow
               name="library/"
@@ -173,7 +170,7 @@ export function DataRootPanel() {
             <TreeRow name="notes/" note={t("settings.dataRoot.tree.notes")} depth={1} />
             <TreeRow name="collections/" note={t("settings.dataRoot.tree.collections")} depth={1} />
             <TreeRow name="exports/" note={t("settings.dataRoot.tree.exports")} depth={1} />
-          </div>
+          </Card>
         </SettingRow>
 
         {/* 手工搬法。放在最后、说清与按钮的区别 —— 它不会复制任何东西。

@@ -3,7 +3,7 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { formatBytes } from "@renderer/lib/format.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button } from "@renderer/components/ui/index.js";
+import { Button, Card, ErrorNote, Spinner } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import {
   IconCopy,
@@ -268,7 +268,7 @@ export function AboutPanel() {
       {/* App identity */}
       <div className="mt-6 flex w-full max-w-md flex-col items-center text-center">
         <div
-          className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-accent/10 text-accent"
+          className="mb-4 flex h-16 w-16 items-center justify-center rounded-[var(--radius-dialog)] bg-accent/10 text-accent"
           aria-hidden
         >
           <SiGithub size={32} />
@@ -285,7 +285,7 @@ export function AboutPanel() {
       </div>
 
       {/* Runtime info rows */}
-      <div className="mt-8 w-full max-w-md divide-y divide-edge rounded-lg border border-edge">
+      <Card className="mt-8 w-full max-w-md divide-y divide-edge">
         {rows.map((row) => (
           <div
             key={row.label}
@@ -297,7 +297,7 @@ export function AboutPanel() {
             </span>
           </div>
         ))}
-      </div>
+      </Card>
 
       {/* Update status banner */}
       <UpdateBanner
@@ -342,7 +342,7 @@ export function AboutPanel() {
           className="gap-1.5"
         >
           {updateState.kind === "checking" ? (
-            <IconRefresh size={14} className="animate-spin" />
+            <Spinner size="xs" label={t("settings.about.checking")} />
           ) : (
             <IconExternalLink size={14} />
           )}
@@ -385,13 +385,9 @@ function UpdateBanner({
         ? `${formatBytes(state.transferred)} / ${formatBytes(state.total)}`
         : formatBytes(state.transferred);
     return (
-      <div
-        className={cn(
-          "mt-6 flex w-full max-w-md flex-col gap-2 rounded-lg border border-accent/30 bg-accent/5 px-4 py-3",
-        )}
-      >
+      <Card className="mt-6 flex w-full max-w-md flex-col gap-2 border-accent/30 bg-accent/5 px-4 py-3">
         <div className="flex items-center gap-2.5">
-          <IconRefresh size={16} className="shrink-0 animate-spin text-accent" />
+          <Spinner size="sm" label={t("settings.about.downloading", { p: percent.toFixed(0) })} />
           <span className="truncate text-[0.8571em] text-content">
             {t("settings.about.downloading", { p: percent.toFixed(0) })}
           </span>
@@ -406,7 +402,7 @@ function UpdateBanner({
             style={{ width: `${percent}%` }}
           />
         </div>
-      </div>
+      </Card>
     );
   }
 
@@ -464,13 +460,15 @@ function UpdateBanner({
       break;
   }
 
+  if (tone === "warning") {
+    return <ErrorNote tone="warning" className="mt-6 w-full max-w-md" icon={IconAlertTriangle}>{message}</ErrorNote>;
+  }
+
   return (
-    <div
+    <Card
       className={cn(
-        "mt-6 flex w-full max-w-md items-center justify-between gap-3 rounded-lg border px-4 py-3",
+        "mt-6 flex w-full max-w-md items-center justify-between gap-3 px-4 py-3",
         tone === "accent" && "border-accent/30 bg-accent/5",
-        tone === "muted" && "border-edge bg-surface",
-        tone === "warning" && "border-warning/30 bg-warning/5",
       )}
     >
       <div className="flex min-w-0 items-center gap-2.5">
@@ -488,6 +486,6 @@ function UpdateBanner({
           {action.label}
         </Button>
       )}
-    </div>
+    </Card>
   );
 }

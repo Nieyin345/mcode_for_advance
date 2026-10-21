@@ -12,10 +12,9 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, Card, EmptyState, InfoHint, Input, LoadingNote } from "@renderer/components/ui/index.js";
+import { Badge, Button, Card, EmptyState, InfoHint, Input, LoadingNote, Spinner } from "@renderer/components/ui/index.js";
 import {
   IconFolderOpen,
-  IconLoader2,
   IconPlus,
   IconRefresh,
   IconSearch,
@@ -165,25 +164,27 @@ export function MarketView({
             onClick={onRefreshAll}
             disabled={busy || sources.length === 0}
           >
-            <IconRefresh size={13} className={cn("text-content-subtle", refreshingAll && "animate-spin")} />
+            {refreshingAll ? <Spinner size="xs" /> : <IconRefresh size={13} className="text-content-subtle" />}
           </Button>
         )}
       </div>
 
       <div className="mb-2.5 flex flex-none items-center gap-2">
         <div className="min-w-0 overflow-x-auto">
-          <div className="flex w-fit items-center gap-0.5 rounded-lg border border-edge bg-surface/40 p-0.5">
+          <div className="flex w-fit items-center gap-0.5 rounded-[var(--radius-btn-md)] border border-edge bg-surface/40 p-0.5">
             {sources.map((src) => {
               const isActive = src.id === activeId;
               return (
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
                   key={src.id}
                   type="button"
                   title={src.title}
                   aria-pressed={isActive}
                   onClick={() => onSelect(src.id)}
                   className={cn(
-                    "flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1 text-[0.7857em] font-medium transition-colors",
+                    "flex h-7 shrink-0 items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-3 text-[length:var(--chat-fs-xxs)] font-medium transition-colors",
                     isActive ? "bg-surface-hover text-content" : "text-content-muted hover:text-content",
                   )}
                 >
@@ -191,7 +192,7 @@ export function MarketView({
                   {src.count !== undefined && (
                     <span className="tabular-nums text-[0.8571em] text-content-subtle">{src.count}</span>
                   )}
-                </button>
+                </Button>
               );
             })}
           </div>
@@ -209,9 +210,9 @@ export function MarketView({
       </div>
 
       {/* Kept mounted while closed so a half-typed address survives. */}
-      <div
+      <Card
         className={cn(
-          "mb-2.5 flex-none rounded-xl border border-dashed border-edge-input bg-surface-muted/35 p-2",
+          "mb-2.5 flex-none border-dashed border-edge-input bg-surface-muted/35 p-2",
           addOpen ? "block" : "hidden",
         )}
       >
@@ -234,7 +235,7 @@ export function MarketView({
             onClick={() => void submitAdd()}
             disabled={busy || !addValue.trim()}
           >
-            {addBusy ? <IconLoader2 size={12} className="animate-spin" /> : <IconPlus size={12} />}
+            {addBusy ? <Spinner size="xs" /> : <IconPlus size={12} />}
             {t("settings.market.add")}
           </Button>
           {onAddLocal && (
@@ -257,30 +258,23 @@ export function MarketView({
             <IconX size={13} className="text-content-subtle" />
           </Button>
         </div>
-      </div>
+      </Card>
 
       <div className="pb-4">
         {loading && !catalog ? (
           <LoadingNote label={t("settings.market.loading")} />
         ) : !catalog ? (
-          <Card className="rounded-xl">
+          <Card>
             <EmptyState className="py-6" title={t("settings.market.noSources")} />
           </Card>
         ) : (
-          <div className="overflow-hidden rounded-xl border border-edge bg-surface">
+          <Card className="overflow-hidden">
             <div className="flex items-center gap-2 border-b border-edge bg-surface-muted/35 px-3 py-2.5">
-              <span
-                className={cn(
-                  "shrink-0 rounded px-1.5 py-0.5 text-[0.72em]",
-                  catalog.kindMono ? "bg-info/10 font-mono text-info" : "bg-surface-muted text-content-muted",
-                )}
-              >
+              <Badge variant={catalog.kindMono ? "accent" : "neutral"} className={cn("shrink-0", catalog.kindMono && "font-mono")}>
                 {catalog.kind}
-              </span>
+              </Badge>
               {catalog.builtin && (
-                <span className="shrink-0 rounded bg-surface-hover px-1.5 py-0.5 text-[0.72em] text-content-muted">
-                  {t("settings.plugins.mpBuiltin")}
-                </span>
+                <Badge variant="neutral">{t("settings.plugins.mpBuiltin")}</Badge>
               )}
               <span className="min-w-0 flex-1 truncate font-mono text-[0.7857em] text-content-subtle" title={catalog.ref}>
                 {catalog.ref}
@@ -294,10 +288,7 @@ export function MarketView({
                   onClick={catalog.onRefresh}
                   disabled={busy}
                 >
-                  <IconRefresh
-                    size={13}
-                    className={cn("text-content-subtle hover:text-content", catalog.refreshing && "animate-spin")}
-                  />
+                  {catalog.refreshing ? <Spinner size="xs" /> : <IconRefresh size={13} className="text-content-subtle hover:text-content" />}
                 </Button>
               )}
               {catalog.onRemove && (
@@ -336,9 +327,7 @@ export function MarketView({
                     )}
                   </div>
                   {row.installed ? (
-                    <span className="shrink-0 rounded bg-surface-hover px-1.5 py-0.5 text-[0.75em] text-content-muted">
-                      {t("settings.plugins.mpInstalled")}
-                    </span>
+                    <Badge variant="success" className="shrink-0">{t("settings.plugins.mpInstalled")}</Badge>
                   ) : (
                     <Button
                       variant="secondary"
@@ -348,14 +337,14 @@ export function MarketView({
                       disabled={busy || row.installDisabled === true}
                       title={row.installTitle}
                     >
-                      {row.installing ? <IconLoader2 size={12} className="animate-spin" /> : t("settings.plugins.mpInstall")}
+                      {row.installing ? <Spinner size="xs" /> : t("settings.plugins.mpInstall")}
                     </Button>
                   )}
                 </div>
               ))
             )}
             {!notice && footer}
-          </div>
+          </Card>
         )}
       </div>
     </div>
