@@ -42,3 +42,28 @@
 ## 结果回写区
 
 <!-- 只在下面追加：提交 SHA、旧红→新绿、原始命令/日志、变异/还原字节、剩余未验；不得覆盖本任务正文。 -->
+
+
+### 2026-10-21 T74 执行回写（T34 无头切片）
+
+**实现 SHA**：087307ba17623436ab262c6b6e27c78ec3314982。只改 apps/desktop/src/main/document/genofficeCli.ts，新增 apps/desktop/scripts/t74-genoffice-headless-smoke/ 三文件。沿用 GenofficePorts、requireWorkspacePath（真实路径/junction 围栏）、invoke（spawnRun、最小环境、超时、AbortSignal、原厂 JSON envelope）；未引入新执行器，未改 vendor、appControl、RPC 或 contracts。
+
+**原厂命令和真实 CLI 参数矩阵**（上游 genoffice/packages/cli/src/cli.ts defaultRegistry() + commands/*.ts）：
+
+| 命令 | 上游真实调用与依赖 | 本卡 wrapper 与结果 |
+|---|---|---|
+| create | create --type pptx/xlsx/docx/pdf --ops/-spec/-from SOURCE --out TARGET [--force] | createFromFile 限 docx --from HTML fragment 或 xlsx --from CSV/JSON，输出新文件、拒绝 force。**PASS**：真实 HTML→DOCX→独立 docsRead；真实 CSV→XLSX→独立 sheet check；源文件 SHA256 均未改变。PPTX ops/spec 可能间接引用外部文件、Markdown 可能引用图片，PDF 需要 headless app：本卡 **unsupported**。 |
+| merge | merge TEMPLATE.docx/pptx/xlsx --data json-file/inline-json/- --out TARGET [--strict] [--force] | mergeTemplate 仅 JSON 对象经 stdin（--data -），默认 --strict，只能新输出。**PASS**：DOCX 模板→新文件→独立 docsRead；模板字节未改变。PPTX/XLSX 分支未单独验真（XLSX 可能需 sidecar），不冒称通过。 |
+| selection | selection FILE --json；原厂用 controlEndpoint/controlRequest 请求正在运行的 GenOffice GUI 选区 | **unsupported（真 GUI 依赖，不能无头假造）**。真实 CLI 结果 exit 4 / app_unavailable，测试 PASS。 |
+| render | render FILE --out DIR [--page n] [--scale n] [--el ids] [--grid] | 既有 pdfRender 负责单页；新增 renderPdfPages 仅 PDF，允许指定页/全页/缩放，但输出目录必须全新。**PASS**：原厂 PDFium 落 PNG→独立检查 PNG magic 与源 PDF SHA256。非 PDF 渲染需要 GenOffice headless-export/GUI，**unsupported**。 |
+| txn | defaultRegistry 没有 txn 顶层命令；commands/txn.ts 是事务结果辅助 | **unsupported（未注册）**。真实 CLI 结果 exit 1 / unknown_command，测试 PASS。 |
+
+**旧红→新绿**：先编写测试，原始构建红（No matching export: createFromFile、mergeTemplate、renderPdfPages）；加入最窄 wrapper 后，真 vendor CLI（genoffice/packages/cli/dist/genoffice.cjs）在随机临时工作区跑出 36/36 PASS。覆盖输出已存在时拒绝而非覆盖、越界输入/输出、相对路径、junction 读写逃逸、损坏模板、不合法 JSON、CLI 缺失时 unavailable、预先 AbortSignal 取消、重复调用、真实落盘和独立读回。没有非法输出，也未修改用户原件。
+
+**回归与类型检查**：node apps/desktop/scripts/run-smokes.mjs genoffice-cli-smoke genoffice-format-gates-smoke document-read-smoke → 3/3 PASS，日志 apps/desktop/.tmp/smoke-runs/1792590714394-31400-IEfB5l；node apps/desktop/scripts/run-smokes.mjs t74-genoffice-headless-smoke → 1/1 PASS（内部 36/36），日志 apps/desktop/.tmp/smoke-runs/1792591000141-4416-OcC8nh。node_modules/.bin/tsc.cmd --noEmit -p apps/desktop/tsconfig.json 以及 -p packages/contracts/tsconfig.json 双包 exit 0；git diff --check 通过。
+
+**两组故障变异**：node apps/desktop/scripts/t74-genoffice-headless-smoke/mutate.cjs → T74_MUTATIONS 2/2 RED_CONFIRMED_AND_BYTE_IDENTICAL。① 撤掉 create 的工作区围栏，越界源/目标、相对路径、junction 断言转红。② 撤掉 invoke 的 CLI 缺失检查，原本 unavailable 变 failed，缺资源断言转红。每次原地变异后 finally 恢复原始 Buffer、逐字节比较；恢复 SHA256=256c48e7e9d12104829169c7944c3a835f0efdfc620ed245c8d14b745816441c。
+
+**下一张 Agent 可调用任务的准确差距**：本卡仅主进程 typed exports，**没有** app_api_list/describe/call、MCP 或 IPC 接线。未来 T49 合并后，应由唯一可信授权入口对 create/merge/render 分别定义严格 DTO、输出目标确认、并发互斥及期望版本/CAS；没有 CAS 前绝不能放行 --force、原始 --ops/--spec 或任意路径型 --data。PPTX 素材、Markdown 图片、XLSX merge、GUI selection、非 PDF render、txn 需要独立能力/资源和回读验收，不在本卡内伪称完成。
+
+**验收**：限定范围 1–6 均达成；selection、txn、非 PDF render 明确 unsupported 属正确拒绝，不是已实现功能。未作危险的 GUI/RPC/覆盖接线。
