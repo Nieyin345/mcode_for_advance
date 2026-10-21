@@ -40,3 +40,13 @@ T72 已确认 T46 每图唯一 engine ownership 只是**兼容过渡**：旧 Mco
 ## 结果回写区
 
 <!-- 执行对话只追加：实际提交、旧红→新绿、源码/上游 SHA、失败负控、测试命令与计数、仍未满足的 U1，不要覆盖正文。 -->
+
+
+### T85 执行结果（2026-10-21）
+
+- 实现提交：96825dc90b5d75f9ae405547b9d2f956433ace10；上游基线：1c74a2faf29d44ac54e4c5eda912b6ca5ccd94e1。
+- 新增纯只读 WorkflowMigrationPreflight DTO/API：只读取显式标记的隔离导出副本或虚构输入；检查文件身份/硬链接/路径越界、UTF-8/JSON、schema、源 hash 与 revision；复用既有迁移适配器做 round-trip 与语义门禁；报告未知依赖、原生多 tab/全局配置/悬空引用、审批/在途/Runboard 历史、触发语义及 G0–G5 放行状态。报告不含绝对源路径；credential-like field path / workflow identity 做脱敏；activationAllowed 始终为 false。
+- F-A～I 及附加负例：34/34 断言通过；两次相同快照 manifestHash 稳定；源文件在扫描期间 byte-for-byte 不变。截断 JSON、缺失文件、篡改 hash/revision、跨目录路径、硬链接、原型污染 key、损坏 isolation marker 均明确拒绝/不可读。
+- 红色变异负控：移除未知 Mcode 节点门禁后，F-B 专项断言失败；移除 trigger 语义门禁后，顶层 legacy trigger 专项断言失败。变异只在 OS 临时副本执行，源码 SHA-256 前后保持 10cea9dfa3087b0236f9913ff448d7088bf96945bbbddf463cdb756158766a79。
+- 测试：node scripts/run-smokes.mjs t85-workflow-migration-preflight-smoke flow-migration-smoke flow-migration-identity-smoke flow-snapshot-isolation-smoke workflow-engine-selection-smoke executor-ownership-smoke executor-gate-d-smoke node-red-e2e-smoke（8/8 suites pass；T85 34/34）；pnpm exec tsc --noEmit -p tsconfig.json（apps/desktop，pass）；pnpm --filter @mcode/contracts typecheck（pass）；git diff --check（pass，只有其他在飞文件的 CRLF 警告）。
+- 验收判据：本卡 G0/G1 的 1–5 均通过；无本卡验收判据未达成。T77 U1 的真实 Electron 编辑、Deploy/GET、SQL 回读及重启持久化未在本卡执行；G2–G5 仍明确 blocked，未触发真实 workflow、未 Deploy、未写生产库/flows.json，未删除旧 runner。U1/NR-M1/M2/M3 需后续任务独立验收。
