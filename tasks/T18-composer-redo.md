@@ -1,0 +1,121 @@
+# T18｜输入框重做（复用 RichComposerWithMentions + ChatComposer）
+
+| 项目 | 值 |
+|---|---|
+| 编号 | T18 |
+| 类型 | ARC-005 UI（复用 `open-claude-ui` 的逆向成果） |
+| 优先级 | 高 —— 输入框是最高频的交互面 |
+| 建议并发 | 只改渲染端，可与 T05b / T19 并行 |
+| 预计规模 | 大 |
+
+---
+
+## 目标
+
+把输入框做成 Claude 桌面端的形态。**照着抄，不要自己设计。**
+
+`open-claude-ui/code-examples/` 里有三个相关的逆向件：
+
+| 件 | 行数 | 它能给你什么 |
+|---|---|---|
+| **`RichComposerWithMentions.tsx`** | 约 400 | `@` 提及的完整交互：触发检测、浮层定位、键盘导航、选中插入、光标恢复 |
+| **`ChatComposer.tsx`** | 约 300 | 输入框本体：自动增高、占位符、快捷键、附件区 |
+| **`ChatComposerChin.tsx`** | 约 200 | 底部那条「下巴」：模型/努力/权限、发送键、工具条 |
+
+Mcode 现在用的是 `ComposerEditor.tsx`（626 行，Tiptap）+ `ChatPane` 里的内联结构。
+**不要推翻 Tiptap**——它是真实编辑器，有 IME、撤销、粘贴处理。要抄的是
+**外壳、几何、交互规则**，不是替换编辑器内核。
+
+---
+
+## 开工前必读
+
+1. 三个逆向件**全文**。
+2. `apps/desktop/src/renderer/components/chat/ComposerEditor.tsx`（626 行）——
+   现在的编辑器，读懂它已经处理了什么（IME、粘贴、撤销、@ 触发）。
+3. `apps/desktop/src/renderer/components/chat/ChatPane.tsx` 里 composer 那一段
+   （搜索 `composer-card`）—— 外壳、发送键、工具条都在这儿。
+4. `apps/desktop/src/renderer/styles.css` 的 `.composer-*` 段 —— 已有大量
+   CSS（minipill、lvl bars、sweep、spring），**先看有什么，别重复写**。
+5. `CLAUDE.md` 硬规矩第 7 条。
+
+---
+
+## 执行内容
+
+### 第 1 步：先画差距表，再动手
+
+读完后产出一张表：
+
+| 能力 | 逆向件有 | Mcode 现在有 | 差距 |
+|---|---|---|---|
+| @ 提及 | ? | ComposerEditor 的 mention 扩展 | ? |
+| 自动增高 | ? | ? | ? |
+| 附件区 | ? | 已有 attach 按钮 | ? |
+| 「下巴」布局 | ? | 已有 minipill | ? |
+| 键盘快捷键 | ? | ? | ? |
+| 浮层定位 | ? | 已有 `@floating-ui` | ? |
+
+**只在有差距的行上动手。** 已经做好的不要重写——那是"为了抄而抄"。
+
+### 第 2 步：按差距逐项补
+
+每项单独提交，提交信息写清「抄了哪个逆向件的哪条规则」。
+
+**重点抄这些物理规则**（它们是 Claude 手感的核心）：
+
+- `@` 浮层的**定位与翻转**（上方空间不足时翻到下方）
+- 提及列表的**键盘导航**（上/下/Enter/Tab/Esc，与 IME 守卫）
+- 输入框的**自动增高上限**（超过后内部滚动，不是无限长）
+- 「下巴」的**容器查询折叠**（窄时只留图标）
+- 发送键的**状态机**（不可发送 / 可发送 / 运行中变停止）
+
+### 第 3 步：不要丢现有能力
+
+Tiptap 已经处理的东西**必须保留**：
+
+- IME 组合输入（中文/日文）
+- 粘贴处理（长文本转 tag、图片粘贴）
+- 撤销/重做
+- `@` 触发的现有扩展（`mention` + `suggestion`）
+- 拖放文件到输入框
+
+替换前先跑一遍相关 smoke（`ime-enter-smoke`、`ime-enter-smoke`、
+`attach-links-smoke`、`content-tag-smoke`），记下当前断言。
+
+---
+
+## 边界（不要碰）
+
+- **只改渲染端**（`apps/desktop/src/renderer/**`）。
+- **不要替换 Tiptap**（`ComposerEditor.tsx` 的内核不动，只改外壳与交互规则）。
+- **不加依赖**（`framer-motion` 不装；`@floating-ui` 已有）。
+- 不改 `MessageBlocks` / `MessageRow`（T17 刚动过）。
+- 不改主进程、contracts。
+- 不改 `open-claude-ui/`。
+
+---
+
+## 验收判据
+
+1. 第 1 步的差距表完整，**只在有差距的行上动手**。
+2. 每一项都有**行为断言**（不是源码字符串）：提及键盘导航真的移动选中项、
+   自动增高真的到上限后停止、发送键真的在三个状态间切换。
+3. **IME 相关 smoke 全绿**（`ime-enter-smoke` 等）—— 这是硬底线。
+4. 现有 composer 相关 smoke 全绿。
+5. 双包 tsc 干净。
+6. **变异验证**：撤掉自动增高上限 → 断言红；撤掉浮层翻转 → 断言红。
+
+---
+
+## 回写区要回答
+
+- 差距表里哪几行真的有差距？哪几行 Mcode 已经做好了？
+- 抄了哪些物理规则？哪条改了、为什么？
+- Tiptap 的哪些现有能力必须保住？有没有丢？
+
+---
+
+## 结果回写区
+
+<!-- 执行对话：在下面追加，不要覆盖。 -->
