@@ -37,3 +37,15 @@ T01 的首轮 39 场景中只有 16 张真 Electron 截图，T12 后宣称 39/39
 ## 结果回写区
 
 <!-- 只在下面追加：提交 SHA、旧红→新绿、原始命令/日志、变异/还原字节、剩余未验；不得覆盖本任务正文。 -->
+
+### 2026-10-21 执行回写（T78｜静态差距审计，未运行 Electron）
+
+- **审计基线**：Mcode HEAD `143e13a5b38c9f34951170df3fbb845fb257df07`；`open-claude-ui` HEAD `638800b8a4cee4513c8763c3df0ecf8a77b32379`，MIT 许可。只读了现有 T01/T12 基线、T15/T17/T21/T23/T24 回写、参考矩阵、上游 CDS CSS/许可、layout/chat/IDE 相关源码及 T64/T65/T30 当前边界；没有启动 Electron、没有跑 smoke。
+- **产物**：完整 39 行逐格来源/主题/请求尺寸/实际 viewport/PNG+JSON 状态/fixture/上游对照缺失、可观测性统计、差异分类和 4 条有边界的后续卡建议，写入 `.tmp/t78-arc005-visual-gap-audit.md`；分析脚本 `.tmp/t78-arc005-audit.mjs`。存档真实路径是仓库根 `.tmp/arc005-visual/`（不是任务开工项误写的 `apps/desktop/.tmp/arc005-visual/`）。
+- **计数**：现存历史证据为 manifest 39/39、PNG 39/39、JSON 39/39、CAPTURED 39/39、probe.ok 39/39、data-missing 0；这不是本轮重拍或重新验收。15 格为真实 App/store + 虚构隔离数据；另 24 格为独立组件/渲染器/展示桩。空白页 0/39。全部场景缺用户安装版 Claude 对照截图。
+- **已证实的差距**：13 条未登记差异同属深色 `--edge` 一个根因（实际 `#2c2c2a`，矩阵旧值 `#c3c2b7`，需补主题维度而非改产品 token）；`titlebar` 选择器 3/39 命中设置页内层 HEADER、`composer` 0/39（真实 ComposerEditor 是 contenteditable）、`tool-row` 39/39 有误命中 rail 的风险；焦点/键盘、溢出和 Pane 折叠/右栏 bounds 均未采集；请求 1280×800 的部分格实际 viewport 在 1284×751、1270×714、1267×738 间变化，JSON 顶层 `dpi` 实为 zoomFactor=1，DPR 为 1.75。
+- **路径审计**：会话列表/项目列表是真组件但数据虚构；发送未执行；审批是隔离 pending 请求且只验 alertdialog 存在；窄窗只验 viewport+editor stub；编辑器无 Monaco；终端无 PTY；预览只覆盖 Markdown；侧聊 probe 只验外层 wrapper，可能在 WorkflowBoardPanel 子树失败时假绿；Node-RED 在本 39 格中覆盖 0/39，复用已有 T77 原生 Electron U1 卡，不重复派卡。
+- **差异分类结论**：没有证据足以认定生产 UI 功能已断裂，也不能判用户旅程通过。焦点/键盘与可访问性、内容溢出、多 Pane 折叠以及微小装饰差异均标“证据不足”，不虚报 U1/逐像素一致。T24 设置和 T65 FileEditor 选段不重开、不修改；建议卡避开 T64/T65/T30 与 shared Store；侧聊卡明确延期并依赖隔离 WorkflowBoard IPC。
+- **命令/验证**：`node .tmp/t78-arc005-audit.mjs` → exit 0，静态输出 39 行，PNG/JSON 计数与 manifest 一致。只读审计无需变异，N/A；未修改产品源码、旧夹具/快照或其他执行者的 dirty 文件。已有 `.tmp/arc005-visual/mutation-t12.json` 记录历史 13→14→13 的变异/还原，本轮未重跑。
+- **验收判据**：#1 通过（39/39 逐行分类且计数准确）；#2 通过（列出多项可操作缺口并区分证据不足与产品缺陷）；#3 通过（4 条边界建议，明确避开 T24/T64/T65/T30/shared Store）；#4 通过（只读，无产品源码/旧快照修改，无 U1 误报）。真实 Claude 安装版对照图及真实用户旅程仍待后续独立 U1 取证，这属于明确保留项，不是本卡审计步骤未完成。
+- **审计结果提交 SHA**：待提交后补录。
