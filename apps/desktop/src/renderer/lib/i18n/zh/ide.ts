@@ -292,6 +292,8 @@ export const zh = {
 
   /* ── git diff dialog ── */
   "ide.diff.title": "查看差异",
+  "ide.diff.toInline": "切换为逐行差异（高亮字符变化）",
+  "ide.diff.toMonaco": "切换为 Monaco 对比编辑器",
   "ide.diff.switchToSingle": "切换为单标签模式",
   "ide.diff.switchToTabs": "切换为标签模式",
   "ide.diff.exitFullscreen": "退出全屏",

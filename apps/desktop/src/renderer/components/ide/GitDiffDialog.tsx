@@ -16,6 +16,8 @@ import {
   IconChevronRight,
 } from "@renderer/lib/icons.js";
 import { DiffPane } from "./FileEditor.js";
+import { DiffView } from "../chat/DiffView.js";
+import { lineDiff } from "@renderer/lib/lineDiff.js";
 import type { GitFileStatus, GitStatusResult } from "@contracts/ipc";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
@@ -73,6 +75,11 @@ export function GitDiffDialog() {
   const openSeqRef = useRef(0);
   // Fullscreen is a transient view toggle — resets each time the dialog opens.
   const [fullscreen, setFullscreen] = useState(false);
+  // REA StreamingDiffViewer: opt-in inline granular diff; Monaco remains the
+  // default, with its model disposal/restore and all existing capabilities.
+  const [inlineDiffOpen, setInlineDiffOpen] = useState(false);
+  const inlineRows = useMemo(() => activeTab && activeTab.after !== undefined
+    ? lineDiff(activeTab.before, activeTab.after) : [], [activeTab]);
 
   // The embedded browser's page is an OS-level WebContentsView floating above
   // all renderer DOM, so this dialog would be covered by it while the browser
@@ -208,6 +215,16 @@ export function GitDiffDialog() {
               >
                 {isTabsMode ? <IconSquare size={15} /> : <IconColumns3 size={15} />}
               </button>
+              <button
+                type="button"
+                onClick={() => setInlineDiffOpen((value) => !value)}
+                title={inlineDiffOpen ? t("ide.diff.toMonaco") : t("ide.diff.toInline")}
+                aria-label={inlineDiffOpen ? t("ide.diff.toMonaco") : t("ide.diff.toInline")}
+                aria-pressed={inlineDiffOpen}
+                className={cn("rounded px-2 py-1 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content", inlineDiffOpen && "text-accent")}
+              >
+                {inlineDiffOpen ? t("ide.diff.toMonaco") : t("ide.diff.toInline")}
+              </button>
               {/* Fullscreen toggle — expand the dialog to fill the work area. */}
               <button
                 type="button"
@@ -327,12 +344,16 @@ export function GitDiffDialog() {
                   don't leak across files. DiffPane owns its own dispose ordering. */}
               <div className="min-h-0 flex-1">
                 {activeTab ? (
-                  <DiffPane
-                    key={activeTab.id}
-                    filePath={activeTab.filePath}
-                    before={activeTab.before}
-                    after={activeTab.after}
-                  />
+                  inlineDiffOpen && activeTab.after !== undefined ? (
+                    <DiffView key={`${activeTab.id}:inline`} diff={inlineRows} scrollClassName="h-full" />
+                  ) : (
+                    <DiffPane
+                      key={activeTab.id}
+                      filePath={activeTab.filePath}
+                      before={activeTab.before}
+                      after={activeTab.after}
+                    />
+                  )
                 ) : (
                   <div className="flex h-full items-center justify-center text-[11px] text-content-subtle">
                     {t("ide.diff.noDiff")}

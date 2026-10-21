@@ -3265,3 +3265,8 @@ html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
   scrollbar-width: none;
 }
 [data-chat-root] .composer-chips:has(> .composer-minipill[data-fluid-tier="micro"])::-webkit-scrollbar { display: none; }
+
+/* REA StreamingDiffViewer: changed *characters* inside the existing
+   semantic +/- row, not a second background for the entire diff line. */
+.diff-add .diff-inline-change { background: rgb(var(--diff-add-bg) / .24); border-radius: 2px; }
+.diff-del .diff-inline-change { background: rgb(var(--diff-del-bg) / .24); border-radius: 2px; }

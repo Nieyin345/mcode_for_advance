@@ -284,6 +284,8 @@ export const en = {
 
   /* ── git diff dialog ── */
   "ide.diff.title": "View diff",
+  "ide.diff.toInline": "Switch to inline diff with character highlights",
+  "ide.diff.toMonaco": "Switch to Monaco diff editor",
   "ide.diff.switchToSingle": "Switch to single-tab mode",
   "ide.diff.switchToTabs": "Switch to tabs mode",
   "ide.diff.exitFullscreen": "Exit fullscreen",

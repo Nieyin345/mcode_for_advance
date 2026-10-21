@@ -1,4 +1,6 @@
+import { useRef } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { reconcileStreamingRows, inlineDiffParts } from "./diffStreaming.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { lineDiff } from "@renderer/lib/lineDiff.js";
 
@@ -24,6 +26,11 @@ export function DiffView({
   scrollClassName?: string;
 }) {
   const { t } = useI18n();
+  // REA StreamingDiffViewer: retain completed row identities as the streaming
+  // tail grows; any changed tail is replaced without touching stable rows.
+  const lastRowsRef = useRef<ReturnType<typeof annotateDiffWithLineNumbers>>([]);
+  const rows = reconcileStreamingRows(lastRowsRef.current, annotateDiffWithLineNumbers(diff));
+  lastRowsRef.current = rows;
   if (diff.length === 0) {
     return (
       <div className="rounded-[var(--radius-code)] bg-surface-muted/60 p-2 text-content-subtle [font-size:var(--chat-fs-xs)]">
@@ -35,7 +42,6 @@ export function DiffView({
   // no old-side number; a deleted line has no new-side; equal lines have
   // both. Numbers give the user a stable "where am I" reference while
   // reviewing the patch.
-  const rows = annotateDiffWithLineNumbers(diff);
 
   return (
     // 【ARC-005 V2】代码/Diff 圆角走 CDS 的 --radius-code（12px），与代码块一致。
@@ -48,18 +54,30 @@ export function DiffView({
         // 收进浅/深两套定义（含 forced-colors 的形状区分）。
         const opBg =
           d.op === "delete" ? "diff-del" : d.op === "insert" ? "diff-add" : "diff-context";
+        const paired = d.op === "delete"
+          ? (rows[i + 1]?.op === "insert" ? rows[i + 1] : rows[i - 1]?.op === "insert" ? rows[i - 1] : null)
+          : d.op === "insert"
+            ? (rows[i - 1]?.op === "delete" ? rows[i - 1] : rows[i + 1]?.op === "delete" ? rows[i + 1] : null)
+            : null;
+        const parts = paired && (d.op === "delete" || d.op === "insert")
+          ? inlineDiffParts(d.op === "delete" ? d.text : paired.text, d.op === "insert" ? d.text : paired.text)
+          : null;
         return (
           <div key={i} className={cn("flex items-start whitespace-pre", opBg)}>
-            <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right text-content-subtle">
+            <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right tabular-nums text-content-subtle">
               {d.oldNo ?? ""}
             </span>
-            <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right text-content-subtle">
+            <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right tabular-nums text-content-subtle">
               {d.newNo ?? ""}
             </span>
             <span className="w-3 shrink-0 select-none pl-1 text-content-subtle">
               {d.op === "delete" ? "−" : d.op === "insert" ? "+" : " "}
             </span>
-            <span className="flex-1 pl-1 pr-2">{d.text || "\u00A0"}</span>
+            <span className="flex-1 pl-1 pr-2">{parts
+              ? (d.op === "delete" ? parts.before : parts.after).map((part, j) => (
+                  <span key={j} className={part.changed ? "diff-inline-change" : undefined}>{part.text}</span>
+                ))
+              : d.text || "\u00A0"}</span>
           </div>
         );
       })}
