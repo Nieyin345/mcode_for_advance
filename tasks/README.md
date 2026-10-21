@@ -88,7 +88,7 @@
 | T05c | Docs AI 面板：默认拒绝 + 经三 SDK 可用（12 个 ai:*） | ARC-007 | T05b | ✅ 完成（受控链 + 14 云入口拒绝 + 两变异） |
 | T18 | 输入框重做（复用 RichComposerWithMentions + ChatComposer） | ARC-005 UI | 无 | ✅ 完成（19/19 行为断言 + 两变异；未替换 Tiptap） |
 | T19 | Node-RED 源码 vendor 第一步：落地 + 解析链路 | ARC-006 | T13 | ✅ 完成（vendor 5.0.8 / 解析+T19 fallback / afterPack 校验） |
-| T20 | 工件预览沙箱 + 语音活动条（第三批逆向件） | ARC-005 UI+安全 | 无 | 未开始 |
+| T20 | 工件预览沙箱 + 语音活动条（第三批逆向件） | ARC-005 UI+安全 | 无 | ✅ 完成（7 MIME 分流 + 真 MediaStream 六频段） |
 | T21 | 顶栏 macOS 红绿灯避让 + 附件磁贴（第四批逆向件） | ARC-005 UI | 无 | 未开始 |
 | T22 | Docs 后续切片：exportPdf 整链 / lazy-media 三类源 / files:read | ARC-007 | T05c | 未开始 |
 | T23 | Pane 剩余能力：可调分割线 + 布局预设 + 重置 | ARC-005 UI | T02 | 未开始 |
