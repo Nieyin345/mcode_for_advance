@@ -101,8 +101,8 @@
 | T26 | 修好三套自坏的 smoke 脚手架 | 测试基础设施 | 无 | ✅ 完成（`f98df6ff`；总控独立复跑 2/2 PASS） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | ✅ 完成（`41c42f03`；12/12 套件 + 变异 2/2；未做真 Node-RED 未部署 flow 端到端） |
 | T28 | **GenOffice pdf / markdown / html 接入**（直接调原厂 `createXxxView`） | **ARC-007 主线** | T22 | ✅ 完成（`858d3c7b`；12/12 套件 + 2 变异；未做真 Electron GUI 端到端） |
-| T29 | **GenOffice sheets / slides 接入**（同上，含 `queueWorkbookForView`） | **ARC-007 主线** | T22 | **部分完成**（`dc974b2c` 接线；真实 xlsx/pptx 编辑与 AI 回复未验，xlsx sidecar 二进制缺失） |
-| T42 | **把 Mcode 节点包装进 Node-RED**（`nodesDir` + bundle + 清单校验） | **ARC-006 主线** | 无 | **可派**（1,380 行节点代码已写好，生产零调用 —— 这是唯一断点） |
+| T29 | **GenOffice sheets / slides 接入**（同上，含 `queueWorkbookForView`） | **ARC-007 主线** | T22 | **接线完成**（`dc974b2c`）；验收补齐见 **T53**（sidecar 已就位） |
+| T42 | **把 Mcode 节点包装进 Node-RED**（`nodesDir` + bundle + 清单校验） | **ARC-006 主线** | 无 | ✅ 完成（`9d390a7e`；六节点真运行；报告两条独立红项转 T54） |
 | T43 | 节点的 `McodeAgentPort` 生产实现（接到三引擎/审批/ModuleHost） | ARC-006 主线 | T42 | 待派 |
 | T44 | 节点包 i18n / 图标 / 分类 / 帮助文本 | ARC-006 | T42 | 待派 |
 | T45 | **工作流 UI：删手写画布（685 行），切到 Node-RED 原厂编辑器** | ARC-006 主线 | T42 | 待派 |
@@ -113,6 +113,8 @@
 | T50 | **扩展 UI 贡献点**：命令 / 侧栏面板 / 设置项 | 扩展主线 | T48 | 待派 |
 | T51 | **让 AI 会写扩展**：`app_guide` topic + `extension_validate` + 模板 | **扩展主线** | T48、T49 | 待派 |
 | T52 | **smoke 急救**：501 套里 25 套红，其中 15 套是构建就崩 | **测试基础设施** | 无 | **可派**（实测：`html2docx` 的 `?raw` 让 15 套 bundle 失败） |
+| T53 | **T29 续篇**：用真实 sidecar 验完 xlsx / pptx | ARC-007 | T29 | **可派**（sidecar 已从上游 v0.11.0 提取并实测能打开真实 xlsx） |
+| T54 | 原厂 sheets/slides 的 Pane 外 IPC 围栏 + T42 报的两条红 | 安全 + 回归 | T53 | 待派 |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | ✅ 完成（见上） |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |
@@ -342,40 +344,40 @@ docs 已有可抄的：`genoffice/apps/docs/src/main/mcode-ai.ts`（206 行）�
 | sheets | ❌ 未接（`createSheetsView` 一直可用） | **T29** |
 | slides | ⚠️ 自搓了 3 个操作（原厂 155 条已在 `createSlidesView` 里） | **T29** |
 
-### 可派顺序（**2026-10-21 14:45 更新**）
+### 可派顺序（**2026-10-21 15:35 更新**）
 
-**已完成**：T01–T08、T10–T23、T25、T26、T28、T47、T48
-**部分完成**：T29（接线完成 `dc974b2c`；真实 xlsx/pptx 编辑与 AI 回复未验，
-xlsx sidecar 二进制不在盘上）
-**在飞**：T24（设置页）、T52、T42
+**已完成**：T01–T08、T10–T23、T25–T28、T42、T47、T48
+**接线完成待验**：T29（`dc974b2c`）→ 验收补齐见 **T53**
+**在飞**：T24（设置页）、T52
 
-**当前真正可派的只有 T42**（T52 已在飞、T48 已完成）。
+**当前可派**：
 
-| 卡 | 文件 | 状态 |
-|---|---|---|
-| **T42** Node-RED 节点包 | `T42-node-red-node-pack-install.md` | **可派**（无回写、无提交） |
-| T43 / T44 / T45 / T46 | Node-RED 后续四张 | 等 T42 |
-| T49 / T50 / T51 | 扩展后续三张 | T48 已完成，**可以派** |
-| T29 续篇 | 需要 xlsx sidecar 二进制 | 见下 |
+| 卡 | 文件 | 改哪 | 冲突 |
+|---|---|---|---|
+| **T53** T29 续篇（真实 sidecar 验 xlsx/pptx） | `T53-genoffice-sheet-slide-verification.md` | `scripts/` 新增断言 | 无 |
+| **T49** 扩展调用面 | `T49-extension-api-surface.md` | `main/modules/` | 无 |
+| **T51** 让 AI 写扩展 | `T51-ai-writes-extensions.md` | `appControl/` | 无 |
+| **T45** 删手写画布 | `T45-workflow-canvas-to-node-red.md` | `settings/workflows/`（渲染端） | T42 已完成，可开 |
+| **T44** 节点包 i18n | `T44-node-red-node-pack-i18n.md` | `mcodeNodePack` HTML | T42 已做大部分，先核再补 |
 
-**T49 / T50 / T51 的前置（T48）已满足**，现在都可以派：
+**T54 等 T53**（先验功能再收紧边界）。
+**T50 暂缓** —— 与在飞的 T24 抢 `components/settings/`。
+**T46 等 T45**。
 
-| 卡 | 改哪 | 冲突 |
-|---|---|---|
-| **T49** 扩展调用面 | `main/modules/` | 无 |
-| **T50** 扩展 UI 贡献点 | `contracts/modules.ts` + 渲染端 | 与 T24 抢 `components/settings/`（T24 在飞时不要派） |
-| **T51** 让 AI 写扩展 | `appControl/` | 无 |
+### xlsx sidecar 已就位（T53 的前置）
 
-### T29 的阻塞（如实记录）
+总控从上游 `v0.11.0` 安装包提取，**没有装 Rust、没有编译**：
 
-`dc974b2c` 只做到接线。卡在：
+| 项 | 值 |
+|---|---|
+| 来源 | `GenOfficeSetup-v0.11.0-x64.exe` → 包内 `resources/native/xlsx-sidecar.exe` |
+| 落点 | `genoffice/apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe` |
+| SHA-256 | `9e455b569179359d3b85768bac2619cb2628caf1ef1f44771b3652ef738925a5` |
+| 大小 | 8,890,488 字节 |
+| 实测 | 打开真实 `blank.xlsx` 返回 `ok:true`，解析出 Sheet1 |
 
-- `genoffice/apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe` **不存在**
-- 没有它，「打开真实 xlsx」这条根本验不了
-- 回写还指出原厂 sheets/slides 有**至少 12 类**越出 Pane 的 IPC 未做逐条围栏审查
-
-**需要先决定**：是构建 sidecar（要 Rust 工具链），还是接受「xlsx 暂不可用」的降级。
-这不是执行对话能定的，要用户拍板。
+版本 `v0.11.0` 与基线 `apps/shell` 的 `0.11.0` 一致 —— **不要换成更新或更老的 release**，
+sidecar 有协议版本号会直接拒绝。完整来源与复现方法见同目录 `PROVENANCE.md`。
 
 ### T07 留下的三条未验（不在 T28/T29 范围内，如实留档）
 
