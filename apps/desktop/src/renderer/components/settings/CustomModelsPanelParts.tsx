@@ -373,9 +373,9 @@ export function ModelListSection({
         <span className="text-[0.7857em] font-medium text-content-muted">
           {t("settings.customModels.modelListTitle", { n: count })}
         </span>
-        <button type="button" onClick={onAdd} className="flex items-center gap-1 text-[0.7857em] text-content-muted hover:text-content">
+        <Button variant="ghost" size={null} type="button" onClick={onAdd} className="flex items-center gap-1 text-[0.7857em] text-content-muted hover:text-content">
           <IconPlus size={11} /> {t("settings.customModels.addModel")}
-        </button>
+        </Button>
       </div>
       {isEmpty && (
         <p className="rounded border border-dashed border-edge px-2 py-3 text-center text-[0.7143em] text-content-subtle">
@@ -482,14 +482,14 @@ export function ProviderFormShell({
 
       {advanced ? (
         <div data-slot="advanced">
-          <button
+          <Button variant="ghost" size={null}
             type="button"
             onClick={() => setAdvancedOpen((v) => !v)}
             className="flex items-center gap-1 pt-1 text-[0.7857em] text-content-subtle hover:text-content-muted"
           >
             <IconChevronRight size={12} className={cn("transition-transform", advancedOpen && "rotate-90")} />
             {t("settings.customModels.advancedSection")}
-          </button>
+          </Button>
           {advancedOpen && (
             <div className="mt-1 space-y-2 rounded border border-edge bg-surface/50 p-2">{advanced}</div>
           )}

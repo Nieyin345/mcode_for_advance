@@ -40,6 +40,7 @@ import {
   IconChevronDown,
   IconChevronRight,
 } from "@renderer/lib/icons.js";
+import { Input } from "@renderer/components/ui/input.js";
 
 export function SkillPresetsView({
   librarySkills,
@@ -310,7 +311,7 @@ function PresetEditor({
         <label className="w-20 shrink-0 text-[0.8571em] text-content-muted">
           {t("settings.skills.presetName")}
         </label>
-        <input
+        <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={t("settings.skills.presetNamePh")}

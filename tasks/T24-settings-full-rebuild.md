@@ -276,3 +276,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs skills-management-ui-smoke plugins-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：7/7 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792564471353-29236-O5kNrQ`。
 - 变异：`node .../t24-design-contract.cjs form-controls` PASS；`set T24_MUTATION=form-controls&& node ... form-controls` 将一个 NativeSelect 退回原生 select，结构断言 exit=1（预期红）。
 - 行为核对：技能批量勾选/复制、插件市场、焦点、Custom UI 初始加载及设置 smoke 保持绿；类型验证受同期仓库范围外 GenOffice 和 contracts 改动影响仍非全绿，未修改这些范围外文件。
+
+### 2026-10-21｜批次 13：大型自定义模型配置按 AST 拆分并扫清剩余原生表单
+
+- 改动：`CustomModelsPanel.tsx` 原 2029 行，按 TypeScript AST 顶层 `CodexProviderForm` 声明边界提取到 `CustomModelsCodexForm.tsx`，主文件缩至 1882 行；Codex 表单业务 JSX 与回调原样移动、类型仅做 `export interface` 以保持类型引用，不引入运行时循环。主文件及 `CustomModelsPanelParts` 自绘原生动作按钮→`ui/Button`，主文件复选框→`ui/Checkbox`；`SkillPresetsView` 剩余文本输入→`ui/Input`。至此根 `components/settings/*.tsx` 静态 AST 检查无 `<button>`、`<input>`、`<select>`、`<textarea>` 原生自绘表单标签（主任务许可保留 native 包裹在 ui 原语内部）。
+- 原语：复用 Button/Checkbox/Input，无扩展。功能 bug：本批未发现。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs custom-models-ui-smoke skills-management-ui-smoke plugins-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：8/8 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792564726575-32512-hF9Kkz`。双包 tsc 全局被其他并发任务的 GenOffice API/types 与 contracts 变更阻塞；通过输出筛选 `components/settings/`、`components/ui/native-controls` 未有本批新增错误。
+- 变异：`node .../t24-design-contract.cjs model-split` PASS；`set T24_MUTATION=model-split&& node ... model-split` 撤回模型表单共享 Button 后 exit=1（预期红）。
+- 行为核对：Codex/Claude/Pi 模型配置界面、保存/测试、技能预设表单在真实 Chromium `custom-models-ui-smoke`、`skills-management-ui-smoke` 中全绿；数据持久化函数逻辑未变。业务行为不做破坏性公网/账户手工操作。

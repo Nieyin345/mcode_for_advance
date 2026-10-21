@@ -127,8 +127,19 @@ if (batch === 'shell') {
     check(!/<input\b|<select\b/.test(src), name+': native forms must reuse UI primitives');
   }
   check(read('CustomUiPanelParts.tsx').includes('<NativeSelect'), 'multimode custom UI selection uses NativeSelect');
+} else if (batch === 'model-split') {
+  const panel=read('CustomModelsPanel.tsx');
+  let parts=read('CustomModelsPanelParts.tsx');
+  const codex=read('CustomModelsCodexForm.tsx');
+  const presets=read('SkillPresetsView.tsx');
+  if(process.env.T24_MUTATION==='model-split') parts=parts.replace('<Button variant="ghost" size={null}', '<button');
+  check(panel.split('\n').length < 2000, 'custom model root must be <2000 lines');
+  check(panel.includes('import { CodexProviderForm } from "./CustomModelsCodexForm.js"'), 'root imports split codex form');
+  check(codex.includes('export function CodexProviderForm'), 'codex form source extracted');
+  check(!/<button\b/.test(parts), 'model parts native button must be gone');
+  check(presets.includes('<Input'), 'skill preset name uses shared Input');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions|form-controls\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions|form-controls|model-split\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);
