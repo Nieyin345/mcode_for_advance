@@ -99,6 +99,8 @@
 | T24 | 设置页全面重构（63 面板 / 26,303 行对齐 CDS） | ARC-005 UI | 无 | **进行中**（批次 1–3 完成；批次 4 在飞） |
 | T25 | 原子写与冲突副本的故障注入回归（maint-m07 9 红） | 数据安全 | 无 | **进行中** |
 | T26 | 修好三套自坏的 smoke 脚手架 | 测试基础设施 | 无 | ✅ 完成（`f98df6ff`；总控独立复跑 2/2 PASS） |
+| T28 | **GenOffice pdf / markdown / html 接入**（直接调原厂 `createXxxView`） | **ARC-007 主线** | T22，且 **T07 完成后** | **待派**（原厂已导出完整视图工厂，Mcode 却手搓了一套 preload） |
+| T29 | **GenOffice sheets / slides 接入**（同上，含 `queueWorkbookForView`） | **ARC-007 主线** | T22，且 **T28 完成后** | **待派**（sheets 的 `createSheetsView` 与 slides 的 `createSlidesView` 都能直接用） |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | **可派**（前置条件已修正：证据改为 `document-view-*` 五套） |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |
@@ -248,19 +250,77 @@ vendor 独立 Git + 固定基线 commit + `mcode/integration` 分支 + 补丁存
 
 ## 下一步（总控判定，2026-10-21）
 
-**现在可派 4 张，按优先级：**
+**主线是 GenOffice 六 app 全功能接入** —— 用户原话：
+「genoffice的要求是基本他的所有功能都保留，只是把助手ai替换掉，用我们项目的ai」
 
-| 优先 | 任务 | 为什么是它 | 边界 |
-|---|---|---|---|
-| **1** | **T25 原子写故障注入** | 数据安全债。6 条是「崩溃时原文件被半写/被覆盖」，2 条是「副本没写成却报成功」——直接违反硬规矩「坏东西显式报出来」 | `lib/atomicFile.ts` + 冲突副本路径；**不要与文件写路径任务并行** |
-| **2** | **T26 smoke 脚手架修复** | `updater-tools` 构建期就断 = 那块的代码完全没有网 | 只改 `scripts/` 下的 stub/prelude/run.sh |
-| **3** | **T07 文档/Node-RED 同壳整合** | 前置条件已修正（原来引用的 `docs-vendor-parity-smoke` 不存在，是写 T05 卡时的笔误） | `documentViewHost` + Node-RED iframe 保活 |
-| — | T24 批次 4 | **在飞，不要派**（`PluginsPanelParts.tsx` 有未提交改动） | — |
+### 已实读源码的关键结论（不再是推测）
 
-这三张可以**同时全派**，也可以只派其中几张 —— 它们之间没有顺序依赖，文件边界也不重叠。
+GenOffice 自己有一套完整的壳：`genoffice/apps/shell/src/main/`。
+它给六个 app 各建一个 `WebContentsView` 塞进主窗口，方式是：
 
-T25 与 T26 都是「先让网恢复」的性质 —— 网没恢复之前，后面任何重构都是裸奔。
-排在前面的只是**价值**顺序（先止血），不是开工顺序。
+```ts
+// shell/src/main/index.ts:507-547 —— 每个 app 一次
+configureXxxRuntime({ preloadPath, rendererUrl, rendererFile, openGeneratedPath, createDocument })
+// shell/src/main/tab-manager.ts:338-470 —— 每个 app 一个
+const view = createXxxView(openPath)
+this.shellWindow.contentView.addChildView(view)
+```
+
+**六个 app 全部已导出视图工厂**（可逐行核对）：
+
+| app | 工厂函数 |
+|---|---|
+| docs | `docs-main.ts:6433 createDocsView(openPath)` |
+| sheets | `sheets-main.ts:2444 createSheetsView({includeAiHandlers, openingWorkbook})` |
+| slides | `slides-main.ts:5051 createSlidesView(openPath)` |
+| pdf | `pdf-main.ts:2042 createPdfView(openPath)` |
+| markdown | `markdown-main.ts:1327 createMarkdownView(openPath)` |
+| html | `html-main.ts:1941 createHtmlView(openPath)` |
+
+**Mcode 的 `DocumentViewHost` 已经具备所需全部能力**
+（`contentView.addChildView` / `setBounds` / 保活 / 焦点 / 崩溃诊断）。
+它缺的只有「谁来造这个 view」。
+
+**AI 的真相**：
+- `ai:stream` 只在 docs（`docs-main.ts:4084`）和 slides（`ai-ipc.ts:172`）里注册过；
+  pdf / markdown / html 的主进程**根本没有 AI 实现**。
+- 但六个 app 的渲染端 `ai/transport.ts` 完全同形（各 18 行），
+  都在调同一个通道。
+- 原厂壳自己也是 `registerAiIpc()`（docs 的那份）一份供全六 app 使用
+  （`shell/src/main/index.ts:6625`）。
+
+→ **「把 AI 换成我们的」= 提供一份 `ai:stream`/`ai:stream-chunk`/`ai:stream-cancel`
+实现，挂到 Mcode 的 session 上。六个 app 共用一份。**
+docs 已有可抄的：`genoffice/apps/docs/src/main/mcode-ai.ts`（206 行）。
+
+### 六条线现状
+
+| app | 宿主对端 | 卡 |
+|---|---|---|
+| docs | ✅ 完整（T05a/b/c + T22） | 无 |
+| pdf | ❌ 未接（主进程 AI 也没实现） | **T28** |
+| markdown | ❌ 未接（同上） | **T28** |
+| html | ❌ 未接（同上） | **T28** |
+| sheets | ❌ 未接（`createSheetsView` 一直可用） | **T29** |
+| slides | ⚠️ 自搓了 3 个操作（原厂 155 条已在 `createSlidesView` 里） | **T29** |
+
+### 可派顺序（**串行，不能并行**）
+
+| 顺序 | 任务 | 为什么必须串行 |
+|---|---|---|
+| **1** | **T07**（在飞） | 改 `GenofficeViewHostPane` / `RightPanel` / `paneLayout` / `FileEditor` |
+| **2** | **T28** | 改同一个 `GenofficeViewHostPane` + `DocumentViewHost` |
+| **3** | **T29** | 同上，且依赖 T28 产出的 `mcode-view-ai.ts` |
+
+三张卡都改 `GenofficeViewHostPane.tsx` 与 `documentViewHost.ts`，**必须串行**。
+
+**完全独立的可并行任务**：
+- **T25**（`lib/atomicFile.ts`，数据安全）
+- **T24**（`components/settings/`，设置页 UI，在飞）
+
+---
+
+## 旧：T25/T26/T07 那轮的推荐（已被上面的主线取代）
 
 ---
 

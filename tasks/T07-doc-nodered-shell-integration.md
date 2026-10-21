@@ -43,15 +43,25 @@
 
 > 「原生 GenOffice/Node-RED 在同一个 Shell 的视觉整合」
 
-现状：
+现状（2026-10-21 实读源码后的更正）：
 
-- GenOffice Docs 是 `WebContentsView`（独立的原生视图），浮在三栏布局之上，
-  有自己的 bounds/focus 管理。
-- Node-RED 编辑器是 iframe（在右栏的 flow tab 里）。
-- 两者**都不在 Pane 模型里** —— 它们不能被拖动、不能进底部、不能和编辑器并排。
+- GenOffice Docs 是 `WebContentsView`（`DocumentViewHost` 托管），浮在三栏布局之上。
+- **Node-RED 编辑器也已经是 `WebContentsView`**，同样走 `DocumentViewHost`
+  （`EngineRuntimePanel.tsx:219` 的 `api.documentView.open({ workflowEngineId })`，
+  `RightPanel.tsx:343-348` 的 `data-pane-flow` 分支）。**不是 iframe。**
+  本卡早期版本写成「iframe」，与当前源码不符 —— 更正。
+- 两者都已经在 **`paneLayout` 的 `content` 字段里**（`{kind:"document"}` / `{kind:"flow"}`），
+  但**只对 `right` 这一个 pane** 生效：`RightPanel.tsx:259` 写死 `setContent("right", ...)`，
+  `paneLayout` 的 `content` 分支虽然支持任意 `PaneId`，但没有任何入口把
+  document/flow 放到 left 或 bottom。
 
-T02 做完之后，Pane 模型有了 `PaneId` 的概念，但 `document` 与 `flow` 还是"特殊面板"。
-本任务把它们变成**一等公民**。
+所以本任务的核心不再是「把它们搬进 Pane 模型」（T02 之后已经能做），
+而是：
+
+1. 让 **left / bottom 也能承载** document / flow；
+2. 让拖拽换边时**视图不重建**（当前 `DocumentViewHost` 已有保活，需要验证
+   跨 pane 移动时是否真的复用了同一个 `LiveDocumentView`）；
+3. 视觉整合（边框/圆角/焦点环与其它 pane 一致）。
 
 ---
 
