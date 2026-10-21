@@ -254,7 +254,11 @@ export function runHostMcpStdio(remote: HostMcpRemote, streams: HostMcpStdioStre
       inFlight.then(() => resolve());
     };
 
-    input.on("data", (chunk: Buffer | string) => {
+    // 【类型收窄】`NodeJS.ReadableStream.on` 在 @types/node 里是两个互不兼容的
+    // 重载组成的联合，直接调用会报 TS2349（"不是可调用的"）。只用到 EventEmitter
+    // 的 on，收窄到那一层即可；运行时行为不变（ReadableStream 本来就继承它）。
+    const inputEvents = input as NodeJS.EventEmitter;
+    inputEvents.on("data", (chunk: Buffer | string) => {
       buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
       let idx = buffer.indexOf("\n");
       while (idx >= 0) {
@@ -265,13 +269,13 @@ export function runHostMcpStdio(remote: HostMcpRemote, streams: HostMcpStdioStre
         idx = buffer.indexOf("\n");
       }
     });
-    input.on("end", () => {
+    inputEvents.on("end", () => {
       // 最后一行可能没有换行符。
       if (buffer.trim()) enqueue(buffer);
       buffer = "";
       finish();
     });
-    input.on("error", () => finish());
+    inputEvents.on("error", () => finish());
     // 输出端断开(客户端走了)同样收束;再写也没有意义。
     (output as NodeJS.EventEmitter).on?.("error", () => finish());
   });
