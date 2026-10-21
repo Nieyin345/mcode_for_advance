@@ -206,3 +206,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke plugins-ui-smoke`：6/6 PASS（含真实 Chromium 插件 UI）；日志 `apps/desktop/.tmp/smoke-runs/1792554175683-23488-QsBI9d`；双包 tsc：0 错。
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs plugins` PASS；`set T24_MUTATION=plugins&& node ... plugins` 将插件列表 `Card` 退回裸 div 后按预期 exit=1（红例）。
 - 功能核对：插件筛选、市场切换、下载安装、刷新与批量操作的 onClick / disabled / 数据路径未变；`plugins-ui-smoke` 真实浏览器回归 PASS。
+
+### 2026-10-21｜批次 6：跨面板统一多行输入原语（12 组件）
+
+- 改动：新增 `ui/Textarea`（透传 React 原生 textarea 全部事件、组合输入、ref、aria 与原 className；统一 CDS 控件半径、边框、聚焦态），并在 `ui/index.ts` 导出。把 `AppearanceExtras`、`CustomUiPanelParts`、`EngineToolsPanel`、`HooksPanel`、`LibraryTypesPanel`、`McpPanelParts`、`SceneDeployPanel`、`SettingsGitPanel`、`SettingsTerminalPanel`、`SkillsPanelParts`、`TitleGenPanel`、`UnattendedPlanPanel` 共 12 个组件原生自绘 textarea 替换成共享原语（18 个开启标签）；保留草稿状态、输入校验、键盘与组合输入逻辑。
+- 原语：旧 `ui/` 没有 Textarea，新增只拓展，不改任何现有控件行为；功能 bug：未发现。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 PASS；日志 `apps/desktop/.tmp/smoke-runs/1792554406599-35604-YyT58Z`；双包 tsc：0 错。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs textarea` PASS；`set T24_MUTATION=textarea&& node ... textarea` 把 `CustomUiPanelParts` 一个 Textarea 标签变回原生后 exit=1（预期红）。
+- 功能核对：更换的标签仍是真实 HTML `<textarea>`，React 的 onChange/onKeyDown/value/ref/disabled/placeholder 等原属性原样透传；未改变任何业务 onChange 或持久化逻辑。对复杂持久化写操作只做旧烟测，不做破坏性手点。

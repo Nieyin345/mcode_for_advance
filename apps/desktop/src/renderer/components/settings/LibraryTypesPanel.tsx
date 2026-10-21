@@ -42,6 +42,7 @@ import { IconBook, IconLoader2, IconX } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 /** 一行提示词:左侧名字,行尾可选归属说明,下面一个 textarea。 */
 function PromptRow({
@@ -64,7 +65,7 @@ function PromptRow({
         <span className="min-w-0 truncate text-xs font-medium text-content">{label}</span>
         {sub && <span className="ml-auto min-w-0 truncate text-[0.7857em] text-content-subtle">{sub}</span>}
       </div>
-      <textarea
+      <Textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}

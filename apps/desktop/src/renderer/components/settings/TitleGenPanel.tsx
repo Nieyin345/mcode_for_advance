@@ -21,6 +21,7 @@ import { Input, Select, Switch } from "@renderer/components/ui/index.js";
 import { IconRobot } from "@renderer/lib/icons.js";
 import { SettingRow } from "./SettingRow.js";
 import { SettingsSection } from "./SettingsSection.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 /**
  * Thread-title generation settings.
@@ -248,7 +249,7 @@ export function TitleGenPanel() {
 
       <SettingRow title={t("settings.titleGen.promptTitle")} desc={t("settings.titleGen.promptDesc")}>
         <div className="flex w-full flex-col items-end gap-1.5">
-          <textarea
+          <Textarea
             value={stylePrompt}
             disabled={!titleGenEnabled}
             onChange={(e) => setStylePrompt(e.target.value)}

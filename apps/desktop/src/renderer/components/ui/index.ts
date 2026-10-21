@@ -14,6 +14,8 @@ export { ClickableRow } from "./clickable-row.js";
 
 export { Input } from "./input.js";
 export type { InputProps } from "./input.js";
+export { Textarea } from "./textarea.js";
+export type { TextareaProps } from "./textarea.js";
 
 export { Dialog } from "./dialog.js";
 export type {

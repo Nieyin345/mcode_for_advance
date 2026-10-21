@@ -26,6 +26,7 @@ import { SettingsSection } from "./SettingsSection.js";
 import { EngineCapabilityMatrix } from "./EngineCapabilityMatrix.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
 import { Button, ErrorNote, Field, Input, Spinner } from "@renderer/components/ui/index.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 /** 引擎的展示名（不本地化 —— 品牌名）。 */
 const ENGINE_LABEL: Record<string, string> = { claude: "Claude", pi: "Pi", codex: "Codex" };
@@ -152,7 +153,7 @@ function EngineCard({
           {/* 【MC-043】工具使用说明 —— 与上面的禁用勾选是**两件事**:这段只进提示词,
               不改任何权限。Codex 也支持(它不是"禁用",是"怎么写说明")。 */}
           <Field label={t("settings.engineTools.guidanceLabel")}>
-            <textarea
+            <Textarea
               value={guidance}
               onChange={(e) => setGuidance(e.target.value)}
               placeholder={t("settings.engineTools.guidancePlaceholder")}

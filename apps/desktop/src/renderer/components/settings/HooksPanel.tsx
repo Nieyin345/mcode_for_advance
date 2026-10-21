@@ -59,6 +59,7 @@ import {
   newHookDraft,
   type HookEngineId,
 } from "./hooksView.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 /**
  * 事件 → 词条。**两张表都标成 `MessageId` 而不是 `string`** —— 那样键名写错时 tsc
@@ -719,7 +720,7 @@ function HookEditor({
       )}
 
       <Field className="mb-2" label={t("settings.hooks.fieldCommand")} hint={t("settings.hooks.commandHint")}>
-        <textarea
+        <Textarea
           value={draft.command}
           spellCheck={false}
           placeholder={t("settings.hooks.commandPlaceholder")}

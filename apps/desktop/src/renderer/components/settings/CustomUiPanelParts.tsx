@@ -52,6 +52,7 @@ import {
 import { BUILTINS, CUSTOM_ICONS, DEFAULT_ACTION_ICON, type IconComponent } from "../customUi/registry.js";
 import { PanelFrame } from "../customUi/PanelFrame.js";
 import { FIELD, LABEL, itemOf, isLibraryKind, type Draft } from "./CustomUiPanel.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 /** 面板 HTML 的大编辑器(Monaco)—— 懒加载,单独一个文件就是为了能切出独立 chunk
  *  (Monaco 不许进设置页的静态图,见 `settings-lazy-smoke`)。 */
@@ -321,7 +322,7 @@ export function ItemEditor({
                 )}
                 <label className={LABEL}>
                   <span>{t("customUi.editor.viewBody")}</span>
-                  <textarea
+                  <Textarea
                     className={cn(FIELD, "h-40 font-mono")}
                     value={draft.viewBody}
                     onChange={(e) => set("viewBody", e.target.value)}
@@ -335,7 +336,7 @@ export function ItemEditor({
               <>
                 <div className={LABEL}>
                   <HintLabel hint={t("customUi.editor.promptHint")}>{t("customUi.editor.promptTemplate")}</HintLabel>
-                  <textarea
+                  <Textarea
                     className={cn(FIELD, "h-36")}
                     value={draft.promptTemplate}
                     onChange={(e) => set("promptTemplate", e.target.value)}
@@ -354,7 +355,7 @@ export function ItemEditor({
               <>
                 <label className={LABEL}>
                   <span>{t("customUi.editor.copyTemplate")}</span>
-                  <textarea
+                  <Textarea
                     className={cn(FIELD, "h-24 font-mono")}
                     value={draft.copyTemplate}
                     onChange={(e) => set("copyTemplate", e.target.value)}
@@ -600,7 +601,7 @@ export function ItemEditor({
                       {t("customUi.editor.panelPreview")}
                     </Button>
                   </div>
-                  <textarea
+                  <Textarea
                     className={cn(FIELD, "h-[340px] resize-y whitespace-pre font-mono text-xs leading-relaxed")}
                     value={draft.panelHtml}
                     onChange={(e) => set("panelHtml", e.target.value)}
@@ -735,7 +736,7 @@ export function AdvancedSection() {
     <div className="space-y-4">
       <SettingsSection title={t("customUi.advanced.json")} desc={t("customUi.advanced.jsonHint")}>
         <div className="space-y-2 p-3">
-          <textarea
+          <Textarea
             data-testid="custom-ui-json"
             className={cn(FIELD, "h-48 font-mono")}
             value={text}

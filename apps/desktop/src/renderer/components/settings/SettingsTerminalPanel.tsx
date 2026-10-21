@@ -19,6 +19,7 @@ import {
   IconTerminal2,
   IconFolder,
 } from "@renderer/lib/icons.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 /**
  * Terminal settings - shell override + per-project quick-commands.
@@ -310,7 +311,7 @@ function CommandsSection() {
               </label>
               <label className="flex flex-col gap-1">
                 <span className="text-[11px] font-medium text-content-muted">{t("settings.terminal.commandLabel")}</span>
-                <textarea
+                <Textarea
                   value={editing?.command ?? ""}
                   placeholder={t("settings.terminal.commandPlaceholder")}
                   rows={3}

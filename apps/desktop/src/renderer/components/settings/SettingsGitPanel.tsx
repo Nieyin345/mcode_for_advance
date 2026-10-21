@@ -11,6 +11,7 @@ import { SettingRow } from "./SettingRow.js";
 import { WorktreeRootSetting } from "./WorktreeRootSetting.js";
 import type { GitDiffOpenMode } from "@contracts/ipc";
 import type { ReactNode } from "react";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 const GIT_DIFF_OPEN_MODE_OPTIONS: { value: GitDiffOpenMode; labelKey: MessageId; icon: ReactNode }[] = [
   { value: "center", labelKey: "settings.git.openCenter", icon: <IconCode size={14} className="text-content-muted" /> },
@@ -192,7 +193,7 @@ export function SettingsGitPanel() {
           title={t("settings.git.promptTitle")}
           desc={t("settings.git.promptDesc")}
         >
-          <textarea
+          <Textarea
             value={commitGenPrompt}
             onChange={(e) => setCommitGenPrompt(e.target.value)}
             placeholder={t("settings.git.promptPlaceholder")}

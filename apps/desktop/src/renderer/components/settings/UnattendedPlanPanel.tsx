@@ -55,6 +55,7 @@ import {
   type UnattendedPlanProblem,
   type UnattendedPlanState,
 } from "./unattendedPlanView.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 /** 预判问题 → i18n(判据在纯函数里,文案在这里 —— 两边分开才喂得进无头 smoke)。 */
 function problemMessage(t: (k: MessageId, p?: Record<string, string | number>) => string, p: UnattendedPlanProblem): string {
@@ -260,7 +261,7 @@ export function UnattendedPlanPanel(): React.JSX.Element {
             onChange={(e) => dispatch({ type: "editRow", operationId: op.operationId, field: "title", value: e.target.value })}
             className="mb-1.5"
           />
-          <textarea
+          <Textarea
             value={op.prompt}
             placeholder={t("unattended.operationPromptPlaceholder")}
             aria-label={`${t("unattended.operationPromptLabel")} ${idx + 1}`}

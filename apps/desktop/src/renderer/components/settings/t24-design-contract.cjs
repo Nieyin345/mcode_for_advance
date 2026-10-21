@@ -59,8 +59,16 @@ if (batch === 'shell') {
   check(p.includes('<Badge variant="success"'), 'installed marker uses shared Badge');
   check(p.includes('{fetching ? <Spinner size="xs" />'), 'catalog refresh uses shared Spinner');
   check(!p.includes('rounded-xl'), 'no hardcoded large radius in large plugins view');
+} else if (batch === 'textarea') {
+  const names = ['AppearanceExtras','CustomUiPanelParts','EngineToolsPanel','HooksPanel','LibraryTypesPanel','McpPanelParts','SceneDeployPanel','SettingsGitPanel','SettingsTerminalPanel','SkillsPanelParts','TitleGenPanel','UnattendedPlanPanel'];
+  for (const name of names) {
+    let content = read(name + '.tsx');
+    if (name === 'CustomUiPanelParts' && process.env.T24_MUTATION === 'textarea') content = content.replace('<Textarea', '<textarea');
+    check(content.includes('<Textarea'), name + ': shared Textarea must be used');
+    check(!/<textarea\b/.test(content), name + ': no native textarea');
+  }
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

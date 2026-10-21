@@ -25,6 +25,7 @@ import { Button, Dialog, EmptyState, ErrorNote, Field, InfoHint, LoadingNote } f
 import { IconSparkles, IconFileText, IconFolder, IconPlus, IconTrash, IconLoader2 } from "@renderer/lib/icons.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { moveTabFocus, isReadOnlySkill, type NewForm } from "@renderer/components/settings/SkillsPanel.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 /** Source badge for a skill row / editor header. Single implementation so the
  *  list and the editor can never disagree about what a source is called —
@@ -168,7 +169,7 @@ export function SkillSourceEditor({
       ) : loading ? (
         <LoadingNote label={t("common.loading")} />
       ) : (
-        <textarea
+        <Textarea
           data-testid="skill-source-input"
           aria-label={t("settings.skills.rawSource")}
           value={content ?? ""}
@@ -278,7 +279,7 @@ export function NewSkillForm({
       </Field>
 
       <Field className="mb-2" label={t("settings.skills.fieldBody")}>
-        <textarea
+        <Textarea
           value={form.body}
           onChange={(e) => update("body", e.target.value)}
           spellCheck={false}

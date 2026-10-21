@@ -21,6 +21,7 @@ import {
   MCP_NAME_RE,
 } from "@contracts/ipc";
 import { GLOBAL_ORIGIN_KEY, originKey, KindBadge } from "@renderer/components/settings/McpPanel.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 const inputCls =
   "min-w-0 w-full rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
@@ -287,7 +288,7 @@ export function AddServerDialog({
                 </Field>
                 <Field label={t("settings.mcp.fEnv")} hint={t("settings.mcp.fEnvHint")}>
                   {editServer && <p className="mb-1 text-xs text-content-muted">{t("settings.mcp.secretEditHint")}</p>}
-                  <textarea
+                  <Textarea
                     value={envJson}
                     onChange={(e) => setEnvJson(e.target.value)}
                     className={textareaCls}
@@ -310,7 +311,7 @@ export function AddServerDialog({
                 </Field>
                 <Field label={t("settings.mcp.fHeaders")} hint={t("settings.mcp.fHeadersHint")}>
                   {editServer && <p className="mb-1 text-xs text-content-muted">{t("settings.mcp.secretEditHint")}</p>}
-                  <textarea
+                  <Textarea
                     value={headersJson}
                     onChange={(e) => setHeadersJson(e.target.value)}
                     className={textareaCls}

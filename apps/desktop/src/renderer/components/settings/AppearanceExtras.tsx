@@ -19,6 +19,7 @@ import {
 } from "@renderer/lib/uiPrefs.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 const SANS_SUGGESTIONS = [
   "Microsoft YaHei UI",
@@ -213,7 +214,7 @@ export function CustomCssSection() {
         desc={t("settings.appearance.customCssDesc")}
         htmlFor="setting-custom-css"
       >
-        <textarea
+        <Textarea
           id="setting-custom-css"
           value={draft}
           maxLength={CUSTOM_CSS_MAX}

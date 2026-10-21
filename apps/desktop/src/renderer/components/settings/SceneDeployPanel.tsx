@@ -84,6 +84,7 @@ import {
   type ScenePreviewResult,
   type SceneStepHoldReason,
 } from "./sceneDeployView.js";
+import { Textarea } from "@renderer/components/ui/textarea.js";
 
 /** 部署 / 步骤状态 → 徽标变体。 */
 const DEPLOY_STATUS_VARIANT: Record<SceneDeploymentWire["status"], "neutral" | "accent" | "success" | "warning" | "danger"> = {
@@ -338,7 +339,7 @@ export function SceneDeployPanel() {
 
       {/* ───────── 声明输入 ───────── */}
       <Field className="mb-3" label={t("sceneDeploy.specLabel")}>
-        <textarea
+        <Textarea
           value={state.specText}
           spellCheck={false}
           placeholder={t("sceneDeploy.specPlaceholder")}
