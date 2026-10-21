@@ -39,8 +39,11 @@ export function __resetCalls(): void {
   rejectNextOpenPath = null;
 }
 
+type CapabilityHosts = NonNullable<
+  import("@contracts/ipc/document").DocumentCapabilities["hosts"]
+>;
 type CapabilityPlan =
-  | { kind: "ok"; cli: { available: boolean; path: string | null }; hosts?: { docs: boolean; slides: boolean; sheets: boolean } }
+  | { kind: "ok"; cli: { available: boolean; path: string | null }; hosts?: CapabilityHosts }
   | { kind: "error"; message: string };
 let capabilityPlan: CapabilityPlan = { kind: "ok", cli: { available: false, path: null } };
 export function __setCapabilities(next: CapabilityPlan): void {
