@@ -378,3 +378,16 @@ P ∉ 授权表 → 拒绝，错误消息说「这个扩展没有 P 权限」
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 T48 执行回写
+
+- **方法归档**：任务书记录 438，现场最新 API 目录 442 个方法。生成的权限映射覆盖全部 442 项；实际 RPC 使用 37 类权限，另含 4 类保留/兼容权限，共 41 类。76 个原有 blocked/凭据方法标记为不可委托 null；完整性检查没有遗漏。
+- **BLOCKED 的处理**：claude.approve、workflow.approve、hooks.issueHostHookGrant、modules.issueWorkflowGrant 是用户本人决定类；customModel.getToken 等是明文凭据本体。它们属于结构性不可委托，不是一般权限不足。原先的 BLOCKED 表没有放开任何一项；新增的 modules.setPermissions 也在 blocked，防止扩展自己给自己授权。
+- **授权表**：ui-modules/module-permissions.json 是独立版本 1 记录：modules[moduleId] = {granted, grantedAt, manifestVersion, fingerprint}。与 workflow-grants.json 各自独立存储，不能统一为相同授权含义：前者是扩展 API 权限集合，后者还有贡献/工作区范围；复用独立普通文件、原子 rename 策略。
+- **升级提示**：安装面根据清单权限按域分组，逐项勾选。高风险四项 code.execute / terminal.run / network / modules.install 默认取消勾选，原 blocked 示例显示为灰色不可勾。覆盖安装遇到版本、代码或权限清单变化而未重新授权，宿主拒绝；用户在设置列表逐项调整授权后立即生效。
+- **复合权限**：document.convert 同时要求 document.read 与 document.edit，只有都已授权才能通过映射判据。
+- **撤权及在途任务**：setPermissions 对权限减少时取消该模块在途任务（协作式 Abort），并在执行结束前重新核实权限，防止撤权后的迟到结果发布；不声称能 OS 级强杀正在执行的扩展代码。
+- **验收限制**：已完成持久化、动作执行许可、宿主 RPC 授权检查及 blocked 判定，但通用 panelApiCall 尚无可验证的已安装扩展身份来源，无法安全绑定模块级授权并在全体 442 个方法上自动放行。不能信任面板脚本自称 moduleId，更不能直接把 approved:true 当用户点头。判据 3、4 针对通用 RPC 的端到端入口仍未完全达到。专项 smoke 覆盖安装 3 项、已授权 action 免弹卡、缺权限拒绝、blocked、升级撤权，且 3 个变异验证都观察到预期红例。
+- **类型检查**：contracts tsc 通过；desktop tsc 当前单条错误位于同时开发的 document-view-renderer-smoke/main.ts 第 564 行（slidesNative 未纳入所需类型），非本任务修改，判据 9 尚未全绿。
+
+- **回归证据**：统一入口 node apps/desktop/scripts/run-smokes.mjs 运行 11 个既有 module-* 加 1 个新增 module-permissions-smoke，最后一次输出为 12 pass / 0 fail；后者的 3 个变异场景分别使授权缺失、blocked、升级授权失效判据转红。判据 8 与 10 达成。

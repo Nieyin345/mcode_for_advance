@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MODULE_PERMISSION_NAMES } from "./appPermission.js";
 import type { ModuleCapabilityDescriptor, ModuleWorkflowGrantCandidate, ModuleWorkflowGrantStatus, ModuleWorkflowTarget } from "./moduleCapability.js";
 
 /** v1 is a declarative, read-only extension surface, NOT a JavaScript sandbox.
@@ -92,12 +93,13 @@ export function resolvedContributionCapability(moduleId: string, capabilityRef: 
  * `z.enum([...])`。加 `network` 时立刻分叉 —— 清单接受了、元数据 schema 没接，
  * 表现是能力目录面板拿到一个没有标签的权限。现在两处都从这里取。
  */
+export const ModulePermissionSchema = z.enum(MODULE_PERMISSION_NAMES);
 export const ModulePermissionListSchema = z
-  .array(z.enum(["resource.read", "resource.write", "network"]))
+  .array(ModulePermissionSchema)
   .min(1)
-  .max(3)
+  .max(MODULE_PERMISSION_NAMES.length)
   .refine((p) => new Set(p).size === p.length, "Duplicate permission");
-export type ModulePermission = z.infer<typeof ModulePermissionListSchema>[number];
+export type ModulePermission = z.infer<typeof ModulePermissionSchema>;
 
 export const ModuleManifestSchema = z.object({
   apiVersion: z.literal(1),
@@ -168,8 +170,8 @@ export function missingCapabilityPermission(
   kind: ModuleCapabilityDescriptor["kind"],
   permissions: readonly string[],
 ): "resource.read" | "resource.write" | undefined {
-  if (!permissions.includes("resource.read")) return "resource.read";
-  if (kind === "action" && !permissions.includes("resource.write")) return "resource.write";
+  if (!permissions.includes("resource.read") && !permissions.includes("files.read")) return "resource.read";
+  if (kind === "action" && !permissions.includes("resource.write") && !permissions.includes("files.write")) return "resource.write";
   return undefined;
 }
 
@@ -253,7 +255,7 @@ export function actionInvocationRefusal(
   approvalChannelAvailable: boolean,
 ): ModuleRefusal | undefined {
   if (kind !== "action") return undefined;
-  if (!permissions.includes("resource.write")) return { code: "scope_denied", reason: "action 能力执行需要模块声明 resource.write 权限" };
+  if (!permissions.includes("resource.write") && !permissions.includes("files.write")) return { code: "scope_denied", reason: "action 能力执行需要模块声明 resource.write 权限" };
   if (!approvalChannelAvailable) return { code: "approval_unavailable", reason: "action 能力执行需要审批通道,当前环境没有可用的审批通道,为安全起见未执行。" };
   return undefined;
 }
@@ -280,6 +282,8 @@ export type ModuleReply = { type: "result"; value: ModuleResult; view: ModuleCon
 export interface ModuleCatalog {
   modules: ModuleManifest[];
   capabilities: ModuleCapabilityDescriptor[];
+  /** Per-module consent from the host's checked, version-bound ledger. Null = no valid consent. */
+  modulePermissions?: Record<string, { granted: ModulePermission[]; grantedAt: string } | null>;
   /** Host-derived read-only targets. Missing means unavailable, not all modules.
    *  【MC-036】内置目标 + **有宿主核验工作流授权**的用户模块目标。 */
   workflowTargets?: ModuleWorkflowTarget[];

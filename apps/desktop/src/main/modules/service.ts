@@ -43,12 +43,39 @@ export function getModuleHost(): Promise<ModuleHost> {
 /** 【MC-036】工作流授权的落点 —— 与模块清单同目录的独立文件(理由见
  *  `@contracts/moduleCapability` 的 `MODULE_WORKFLOW_GRANT_FILE_VERSION` 注释)。 */
 const workflowGrantPath = (dir: string): string => join(dir, "workflow-grants.json");
+const modulePermissionPath = (dir: string): string => join(dir, "module-permissions.json");
+/** Only regular, singly-linked grant files are trusted; absent is not consent. */
+function readGrantFile(path: string): string | null {
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) throw Error("授权表必须是独立普通文件");
+    if (info.size > 256 * 1024) throw Error("授权表超过 256 KiB");
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+async function writeGrantFile(dir: string, path: string, body: string): Promise<void> {
+  if (Buffer.byteLength(body) > 256 * 1024) throw Error("授权表超过 256 KiB");
+  await mkdir(dir, {recursive:true});
+  const temp = join(dir, "permission-" + randomUUID() + ".tmp");
+  try {
+    const file = await open(temp, "wx");
+    try { await file.writeFile(body, "utf8"); await file.sync(); }
+    finally { await file.close(); }
+    await rename(temp, path);
+  } finally { await unlink(temp).catch(() => {}); }
+}
 async function createHost(): Promise<ModuleHost> {
   const dir=join(dataRoot(),"ui-modules"),path=join(dir,"manifests.json"),grantPath=workflowGrantPath(dir);
+  const permissionPath = modulePermissionPath(dir);
   configureEgressConsentStoragePath(join(dir,"js-only-egress-consent.json"));
   configureJsOnlyEgressConsentReader(getJsOnlyEgressConsent);
   const host=new ModuleHost({
     authorize:async resource=>{await resolveModuleResource(resource,isKnownWorkspaceRoot);},
+    readModulePermissions: () => readGrantFile(permissionPath),
+    persistModulePermissions: (text) => writeGrantFile(dir, permissionPath, text),
     // 【MC-036】工作流运行授权:读侧现读文件(不缓存 → 撤销在下一次判定立刻生效);
     // 读不动(权限等)交给宿主按 fail-closed 处理。写侧 tmp+rename 原子写,与模块清单同一套。
     readWorkflowGrants:()=>{

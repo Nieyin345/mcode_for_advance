@@ -25,7 +25,7 @@ const KIND_BADGE: Record<CapabilityKind, "neutral" | "accent" | "warning"> = {
   task: "accent",
   action: "warning",
 };
-const PERMISSION_LABEL: Record<Permission, MessageId> = {
+const PERMISSION_LABEL: Partial<Record<Permission, MessageId>> = {
   "resource.read": "ide.modules.permissionResourceRead",
   "resource.write": "ide.modules.permissionResourceWrite",
   // 【MC-035】网络是显式权限 —— 用户必须在安装/查看能力时看到"这个扩展要联网",
@@ -139,7 +139,7 @@ export function CapabilityCatalogPanel({
                       <p data-testid="capability-permissions">
                         <span className="text-content-subtle">{t("ide.modules.permissions")}</span>
                         {meta.permissions.length > 0
-                          ? meta.permissions.map((permission) => t(PERMISSION_LABEL[permission])).join(" / ")
+                          ? meta.permissions.map((permission) => PERMISSION_LABEL[permission] ? t(PERMISSION_LABEL[permission]!) : permission).join(" / ")
                           : t("ide.modules.permissionsNone")}
                       </p>
                       <p data-testid="capability-cancellation" className="text-content-subtle">

@@ -14,6 +14,8 @@ import {
   type ModuleWorkflowGrantRequest,
 } from "@contracts/moduleCapability";
 import { createIsolatedActionRun } from "./isolatedActionRunner.js";
+import { ModulePermissionArchiveSchema, assertModuleGrants, type ModulePermissionArchive, type ModulePermissionRecord } from "@contracts/modulePermissions";
+import { assertAppMethodPermission, type ModulePermission } from "@contracts/appPermission";
 import { runPermissionedProcess, verifyPermissionedProgram, requireNetworkExtensionSupport } from "./permissionedProcessRunner.js";
 
 /** Windows/macOS 的文件系统大小写不敏感 —— 授权路径比对与幂等键据此折叠大小写
@@ -121,6 +123,9 @@ export class ModuleHost {
     /** 【MC-036】授权存档的**写侧**：把新原文交回宿主注入的持久化(tmp+rename 原子写)。
      * 缺省 = 没有持久化通道 → 签发被拒(fail-closed:授权必须跨重启有效,不能只活在内存里)。 */
     persistWorkflowGrants?(text: string): Promise<void>;
+    /** Independent user-consent ledger. Read on each authorization decision; absent is NOT consent. */
+    readModulePermissions?(): string | null;
+    persistModulePermissions?(text: string): Promise<void>;
     /** 【MC-035】资源 → **真实路径**的解析(生产注入 `resolveModuleResource`)。扩展进程的
      *  `--allow-fs-read` 必须按真实路径放行,否则符号链接/junction 会让"允许读 A"实际
      *  读到 B。缺省退回字面路径(仅测试/无文件系统宿主使用)。 */
@@ -198,7 +203,7 @@ export class ModuleHost {
   }
   private validate(raw: unknown): ModuleManifest {
     const manifest = ModuleManifestSchema.parse(raw);
-    if (!manifest.permissions.includes("resource.read")) throw Error("resource.read permission required");
+    if (!manifest.permissions.includes("resource.read") && !manifest.permissions.includes("files.read")) throw Error("resource.read or files.read permission required");
     for (const c of manifest.contributions) {
       // 【MC-035】`module.<短名>` 是**扩展程序能力**:它的实现不在注册表里等着被引用,
       // 而是由本模块的 `program` 在安装期派生(见 prepareProgramBindings)。这里只挡形状 —— 短名
@@ -210,7 +215,7 @@ export class ModuleHost {
         if (manifest.program === undefined) throw Error("Module capability requires a program declaration");
         // 扩展能力默认按只读对待;`resource.write` 只影响执行期权限,不改变准入 ——
         // 程序是否真被放行写,由 invoke 的 action 判定 + OS 权限参数共同决定。
-        if (!manifest.permissions.includes("resource.read")) throw Error("resource.read permission required");
+        if (!manifest.permissions.includes("resource.read") && !manifest.permissions.includes("files.read")) throw Error("resource.read or files.read permission required");
         continue;
       }
       // `module.` 前缀但不是合法单段短名(如 `module.a.b`):**明确拒绝**,不落进
@@ -265,7 +270,7 @@ export class ModuleHost {
    */
   private prepareProgramBindings(manifest: ModuleManifest): Array<{ id: string; record: ErasedCapability }> {
     if (manifest.program === undefined) return [];
-    const isAction = manifest.permissions.includes("resource.write");
+    const isAction = manifest.permissions.includes("resource.write") || manifest.permissions.includes("files.write");
     const prepared: Array<{ id: string; record: ErasedCapability }> = [];
     const bound = new Set<string>();
     for (const contribution of manifest.contributions) {
@@ -355,9 +360,62 @@ export class ModuleHost {
     this.mutation = next.then(() => {}, () => {});
     return next;
   }
-  install(raw: unknown): Promise<ModuleChangeResult> {
+  /** Freshly read, shape-checked. A damaged ledger is never silently replaced. */
+  private modulePermissionArchive(): ModulePermissionArchive {
+    const raw = this.options.readModulePermissions?.() ?? null;
+    if (raw === null) return {version:1, modules:{}};
+    try { return ModulePermissionArchiveSchema.parse(JSON.parse(raw)); }
+    catch (error) { throw Error("扩展权限授权表损坏，已拒绝执行或修改：" + (error instanceof Error ? error.message : String(error))); }
+  }
+  private manifestFingerprint(manifest: ModuleManifest): string {
+    return createHash("sha256").update(JSON.stringify([
+      manifest.id, manifest.version, [...manifest.permissions].sort(), manifest.program ?? null, manifest.contributions,
+    ])).digest("hex");
+  }
+  private effectiveGrants(module: ModuleManifest): ModulePermissionRecord | null {
+    const record = this.modulePermissionArchive().modules[module.id];
+    return record && record.manifestVersion === module.version && record.fingerprint === this.manifestFingerprint(module)
+      ? record : null;
+  }
+  private async writeModulePermissions(archive: ModulePermissionArchive): Promise<void> {
+    if (!this.options.persistModulePermissions) throw Error("扩展权限必须持久化，当前宿主没有授权写入通道");
+    await this.options.persistModulePermissions(JSON.stringify(ModulePermissionArchiveSchema.parse(archive), null, 2));
+  }
+  /** Pure host-side RPC authorization for trusted extension dispatchers only.
+   *  The caller identity must be bound by the host (never from iframe/agent parameters).
+   *  A blocked method is NEVER delegable, regardless of claimed grants. */
+  authorizeAppMethod(moduleId: string, method: string): void {
+    const manifest = this.modules.get(moduleId);
+    if (!manifest || !moduleId.startsWith("user.")) throw moduleRefusalError("scope_denied", "找不到已安装的用户扩展");
+    const grant = this.effectiveGrants(manifest);
+    if (!grant) throw moduleRefusalError("scope_denied", "这个扩展没有有效的安装权限授权");
+    try { assertAppMethodPermission(method,grant.granted); }
+    catch (error) { throw moduleRefusalError("scope_denied",error instanceof Error ? error.message : String(error)); }
+  }
+  /** Host-validated grant update; never accepts permissions absent from the installed manifest. */
+  setPermissions(raw: unknown): Promise<ModuleCatalog> {
+    return this.serializeMutation(async () => {
+      const input = raw as { moduleId?: string; grantedPermissions?: ModulePermission[] };
+      const module = typeof input?.moduleId === "string" ? this.modules.get(input.moduleId) : undefined;
+      if (!module || !module.id.startsWith("user.")) throw Error("只能修改已安装用户扩展的权限");
+      const granted = input.grantedPermissions;
+      if (!Array.isArray(granted)) throw Error("缺少 grantedPermissions");
+      assertModuleGrants(module, granted);
+      const archive = this.modulePermissionArchive();
+      const before = archive.modules[module.id]?.granted ?? [];
+      archive.modules[module.id] = {granted:[...granted],grantedAt:new Date().toISOString(),manifestVersion:module.version,fingerprint:this.manifestFingerprint(module)};
+      await this.writeModulePermissions(archive);
+      if (before.some(permission => !granted.includes(permission))) this.cancelRunningTasksOf(module.id);
+      return this.catalog();
+    });
+  }
+  install(raw: unknown, grantedPermissions?: readonly ModulePermission[]): Promise<ModuleChangeResult> {
     return this.serializeMutation(async () => {
       const manifest = this.validate(raw);
+      if (grantedPermissions !== undefined) assertModuleGrants(manifest, grantedPermissions);
+      if (grantedPermissions === undefined && manifest.permissions.some(p => p !== "resource.read" && p !== "resource.write" && p !== "network")) {
+        throw Error("新权限模型的扩展必须在安装时逐项确认授权");
+      }
       if (!manifest.id.startsWith("user.")) throw Error("External IDs must start with user.");
       if (!this.modules.has(manifest.id) && this.modules.size >= 32) throw Error("Module limit reached");
       // Windows 不能安全提供声明 network 的扩展执行环境；安装阶段就给出明确指引。
@@ -406,10 +464,35 @@ export class ModuleHost {
       // 留下「新代码带着旧授权」的放宽 —— 那正是要堵的洞。
       // 崩溃窗口（撤了授权、清单还没写就断电）最坏是旧版少一条授权：收紧、可重新
       // 授权，不是放宽。
+      // Validate stale consent BEFORE any write or workflow grant purge; failure must not
+      // invalidate a still-installed version's authorization.
+      const priorConsent = this.modulePermissionArchive().modules[manifest.id];
+      if (executionChanged && grantedPermissions === undefined && priorConsent?.granted.length) {
+        throw Error("扩展的权限或执行内容已变化，请重新逐项同意授权");
+      }
       const purged = executionChanged ? await this.purgeWorkflowGrantsFor(manifest.id) : null;
+      // Consent is bound to a version and an execution fingerprint, not a module ID alone.
+      const permissionArchive = this.modulePermissionArchive();
+      const oldPermissionArchive = structuredClone(permissionArchive);
+      const previousRecord = permissionArchive.modules[manifest.id];
+      if (grantedPermissions !== undefined) {
+        permissionArchive.modules[manifest.id] = {
+          granted:[...grantedPermissions], grantedAt:new Date().toISOString(),
+          manifestVersion:manifest.version, fingerprint:this.manifestFingerprint(manifest),
+        };
+      } else if (executionChanged && previousRecord) {
+        delete permissionArchive.modules[manifest.id];
+        if (previousRecord.granted.length) throw Error("扩展的权限或执行内容已变化，请重新逐项同意授权");
+      }
+      const permissionsChanged = JSON.stringify(permissionArchive) !== JSON.stringify(oldPermissionArchive);
       try {
+        if (permissionsChanged) await this.writeModulePermissions(permissionArchive);
         await this.options.persist([...next.values()].filter(m => !this.builtinIds.has(m.id)));
       } catch (error) {
+        if (permissionsChanged) {
+          try { await this.writeModulePermissions(oldPermissionArchive); }
+          catch (rollbackError) { throw Error("安装失败且权限回滚失败，已拒绝后续调用：" + String(rollbackError)); }
+        }
         if (purged !== null) {
           try {
             await this.writeGrantsOrRefuse(purged.restore);
@@ -511,9 +594,18 @@ export class ModuleHost {
       // 授权表坏掉/撤销失败时不能声称卸载成功；清单写盘失败需回滚已撤授权，
       // 保持与升级 install 一致的 fail-closed 事务顺序。
       const purged = await this.purgeWorkflowGrantsFor(id);
+      const permissionArchive = this.modulePermissionArchive();
+      const oldPermissionArchive = structuredClone(permissionArchive);
+      delete permissionArchive.modules[id];
+      const permissionsChanged = JSON.stringify(permissionArchive) !== JSON.stringify(oldPermissionArchive);
       try {
+        if (permissionsChanged) await this.writeModulePermissions(permissionArchive);
         await this.options.persist([...this.modules.values()].filter(m => m.id !== id && !this.builtinIds.has(m.id)));
       } catch (error) {
+        if (permissionsChanged) {
+          try { await this.writeModulePermissions(oldPermissionArchive); }
+          catch (rollbackError) { throw Error("卸载失败且权限回滚失败，已拒绝后续调用：" + String(rollbackError)); }
+        }
         if (purged !== null) {
           try {
             await this.writeGrantsOrRefuse(purged.restore);
@@ -651,8 +743,16 @@ export class ModuleHost {
     const capabilities: ModuleCapabilityDescriptor[] = [...this.capabilities.values()].map(({id,kind,metadata}) => ({
       id, kind, ...(metadata === undefined ? {} : {metadata}),
     }));
+    // Only display grants that still match the installed code and manifest.
+    const modulePermissions: Record<string, { granted: ModulePermission[]; grantedAt: string } | null> = {};
+    for (const module of this.modules.values()) {
+      if (module.id.startsWith("user.")) {
+        const record = this.effectiveGrants(module);
+        modulePermissions[module.id] = record ? {granted:[...record.granted],grantedAt:record.grantedAt} : null;
+      }
+    }
     return structuredClone({
-      modules: [...this.modules.values()], capabilities, workflowTargets,
+      modules: [...this.modules.values()], capabilities, workflowTargets, modulePermissions,
       workflowGrantCandidates: this.grantCandidates(archive),
       workflowGrantStatus: archive.state === "corrupt" ? { archive: "corrupt", reason: archive.reason } : { archive: archive.state },
     });
@@ -760,12 +860,27 @@ export class ModuleHost {
     // 拒绝时抛**带 code 的拒绝**(命令没执行 → 上层按 REJECTED 归类,绝不误报成 UNCERTAIN)。
     // 资源作用域已由上面的 `authorize(resource)` 建立,审批请求把同一资源一并交上去,
     // 让批准方看到"批的是哪个模块贡献、动哪个文件"。action 之外(query/task)不受影响。
-    const refusal = actionInvocationRefusal(definition.kind, module.permissions, this.options.requestApproval !== undefined);
+    const record = this.modulePermissionArchive().modules[module.id];
+    const grant = this.effectiveGrants(module);
+    if (record !== undefined && grant === null) throw moduleRefusalError("scope_denied", "扩展权限或版本已变化，必须重新授权");
+    // Legacy installs (without a user-consent record) retain the old per-invocation approval
+    // until migrated. Installs with a record NEVER fall back to prompt-based approval.
+    const explicit = grant !== null;
+    const requireGrant = (permission: ModulePermission): void => {
+      if (explicit && !grant.granted.includes(permission)) {
+        throw moduleRefusalError("scope_denied", `这个扩展没有 ${permission} 权限`);
+      }
+    };
+    requireGrant(module.permissions.includes("files.read") ? "files.read" : "resource.read");
+    if (definition.kind === "action") requireGrant(module.permissions.includes("files.write") ? "files.write" : "resource.write");
+    if (module.program && module.permissions.includes("code.execute")) requireGrant("code.execute");
+    if (declaresNetwork(module.permissions)) requireGrant("network");
+    const refusal = actionInvocationRefusal(definition.kind, module.permissions, explicit || this.options.requestApproval !== undefined);
     if (refusal) throw moduleRefusalError(refusal.code, refusal.reason);
     // 【MC-035】联网与写入是不同的真人授权：写权限审批不会说明「还将联网」。
     // 因此 query/task 在需要时审批 network；同时声明 write+network 的 action
     // 也必须先独立获准 network，再由下方既有 write 审批授权本次写入。
-    if (declaresNetwork(module.permissions)) {
+    if (declaresNetwork(module.permissions) && !explicit) {
       if (this.options.requestApproval === undefined) {
         throw moduleRefusalError("approval_unavailable", "这个扩展声明了网络权限,但当前没有审批通道 —— 不会在未经用户同意的情况下联网。");
       }
@@ -780,7 +895,7 @@ export class ModuleHost {
       }
       if (this.modules.get(input.moduleId) !== module) throw Error("模块已变化,请按其当前定义重试");
     }
-    if (definition.kind === "action") {
+    if (definition.kind === "action" && !explicit) {
       // 无审批通道已在上一步被拒,故这里 `requestApproval` 必存在;resolve 放行,reject 原样抛。
       try {
         await this.options.requestApproval!({
@@ -795,6 +910,14 @@ export class ModuleHost {
       }
       // 审批可能挂起等待用户;期间模块若被换/撤,按变化重来(与 authorize 后的同一取向)。
       if (this.modules.get(input.moduleId) !== module) throw Error("模块已变化,请按其当前定义重试");
+    }
+    // Revoking or changing a grant while the old approval UI is suspended must not
+    // allow dispatch under stale consent.
+    if (explicit) {
+      const now = this.effectiveGrants(module);
+      if (!now || JSON.stringify(now.granted.slice().sort()) !== JSON.stringify(grant.granted.slice().sort())) {
+        throw moduleRefusalError("scope_denied", "扩展授权已变更，拒绝执行");
+      }
     }
     // 【MC-036】工作流授权在进入函数时读一次远远不够：authorize/真人审批
     // 可能挂起，期间另一个调用撤销了授权。真正派发前必须以本次工作区重新核验。
@@ -837,6 +960,10 @@ export class ModuleHost {
         }
         // 其他进程/窗口可能直接改掉磁盘授权，当前宿主收不到 revoke 事件。
         // 即使没有 AbortSignal，也必须在发布结果前重新确认授权仍然有效。
+        if (explicit && (!this.effectiveGrants(module) ||
+          JSON.stringify(this.effectiveGrants(module)?.granted.slice().sort()) !== JSON.stringify(grant.granted.slice().sort()))) {
+          throw Error("扩展授权已在执行期间撤销，拒绝发布旧授权结果");
+        }
         if (workflowGrantKey !== undefined &&
           !this.authorizedWorkflowTargetNow(module.id, contribution.id, resource.projectPath)) {
           throw Error("工作流授权已在执行期间撤销，拒绝发布旧授权下的结果");
@@ -883,6 +1010,12 @@ export class ModuleHost {
       if (job.snapshot.status !== "running") return;
       // 其它进程撤销工作流授权时，这个宿主没有即时取消事件；
       // 绝不能将工作流产生的迟到结果当成已授权完成写回。
+      if (explicit && (!this.effectiveGrants(module) ||
+        JSON.stringify(this.effectiveGrants(module)?.granted.slice().sort()) !== JSON.stringify(grant.granted.slice().sort()))) {
+        this.finish(job, "cancelled", undefined, "扩展授权已撤销，结果已拒绝发布");
+        job.controller.abort();
+        return;
+      }
       if (job.workflowGrantKey !== undefined &&
         !this.authorizedWorkflowTargetNow(module.id, contribution.id, resource.projectPath)) {
         this.finish(job,"cancelled",undefined,"工作流授权已撤销，结果已拒绝发布");

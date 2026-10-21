@@ -118,7 +118,7 @@ export async function runNativeProbe(dir: string, phase: string): Promise<void> 
       assert.ok(catalog.workflowTargets?.some(t => t.moduleId === "core.file-report" && t.contributionId === "info"));
       assert.equal(await js("typeof window.api.modules.invokeForWorkflow"), "undefined");
       // 【MC-036】公开面新增两条**真人授权**入口;注意 `invokeForWorkflow` 仍不得出现在 preload 上。
-      assert.deepEqual(await js("Object.keys(window.api.modules).sort()"), ["cancel", "catalog", "egressConsentGet", "egressConsentSet", "install", "invoke", "issueWorkflowGrant", "remove", "revokeWorkflowGrant", "task", "tasks"]);
+      assert.deepEqual(await js("Object.keys(window.api.modules).sort()"), ["cancel", "catalog", "egressConsentGet", "egressConsentSet", "install", "invoke", "issueWorkflowGrant", "remove", "revokeWorkflowGrant", "setPermissions", "task", "tasks"]);
       assert.equal(await js("typeof window.require"), "undefined");
     });
     if (process.platform === "win32") {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { LocalizedTextSchema, ModuleInvokeSchema, ModuleManifestSchema, ModulePermissionListSchema, resolvedContributionCapability } from "./modules.js";
+import { LocalizedTextSchema, ModuleInvokeSchema, ModuleManifestSchema, ModulePermissionListSchema, ModulePermissionSchema, resolvedContributionCapability } from "./modules.js";
 
 /** Discovery only: this bounded subset is NOT a runtime JSON Schema engine.
  * Runtime input/output Zod checks and host authorization remain authoritative. */
@@ -404,6 +404,10 @@ export type ModuleWorkflowGrantStatus = z.infer<typeof ModuleWorkflowGrantStatus
 export const ModuleCatalogSchema = z.object({
   modules: z.array(ModuleManifestSchema).max(32),
   capabilities: z.array(ModuleCapabilityDescriptorSchema).max(128),
+  modulePermissions: z.record(z.object({
+    granted: ModulePermissionListSchema.or(z.array(ModulePermissionSchema).length(0)),
+    grantedAt: z.string().datetime(),
+  }).strict().nullable()).optional(),
   workflowTargets: z.array(ModuleWorkflowTargetSchema).max(384).optional(),
   workflowGrantCandidates: z.array(ModuleWorkflowGrantCandidateSchema).max(384).optional(),
   workflowGrantStatus: ModuleWorkflowGrantStatusSchema.optional(),

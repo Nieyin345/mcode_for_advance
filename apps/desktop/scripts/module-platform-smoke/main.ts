@@ -64,7 +64,7 @@ setTestHost(host);
 const ipcHandlers=new Map<string,(event:never,raw:unknown)=>unknown>();
 const ipcStub:Pick<IpcMain,"handle">={handle(channel,handler){ipcHandlers.set(channel,handler);}};
 registerModuleHandlers(ipcStub as IpcMain);
-await test("all eleven IPC routes registered, including T16 user-only consent",()=>{assert.equal(ipcHandlers.size,11);assert.ok(ipcHandlers.has(IPC.MODULE_EGRESS_CONSENT_GET));assert.ok(ipcHandlers.has(IPC.MODULE_EGRESS_CONSENT_SET));});
+await test("all eleven IPC routes registered, including T16 user-only consent",()=>{assert.equal(ipcHandlers.size,12);assert.ok(ipcHandlers.has(IPC.MODULE_SET_PERMISSIONS));assert.ok(ipcHandlers.has(IPC.MODULE_EGRESS_CONSENT_GET));assert.ok(ipcHandlers.has(IPC.MODULE_EGRESS_CONSENT_SET));});
 await test("IPC install rejects absent explicit consent",()=>assert.rejects(Promise.resolve(ipcHandlers.get(IPC.MODULE_INSTALL)!({} as never,{manifest}))));
 await test("IPC invoke rejects unknown caller fields",()=>assert.rejects(Promise.resolve(ipcHandlers.get(IPC.MODULE_INVOKE)!({} as never,{moduleId:"core.inspect",contributionId:"inspect",resource,requestId:"badipc",trusted:true}))));
 await test("IPC catalog calls the same host",async()=>{const catalog=await ipcHandlers.get(IPC.MODULE_CATALOG)!({} as never,undefined);assert.deepEqual(catalog,host.catalog());});

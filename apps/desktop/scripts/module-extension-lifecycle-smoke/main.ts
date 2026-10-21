@@ -1140,7 +1140,7 @@ try {
     check("★ RpcMap 的 modules.install/remove 返回 ModuleChangeResult",
       /"modules\.install"[\s\S]{0,120}?ModuleChangeResult/.test(rpcMap) && /"modules\.remove"[\s\S]{0,120}?ModuleChangeResult/.test(rpcMap));
     check("★ IPC handler 原样透传 host 回包(不重新包一层、不丢字段)",
-      /MODULE_INSTALL[\s\S]{0,200}?return \(await getModuleHost\(\)\)\.install\(input\.manifest\)/.test(ipcSrc)
+      /MODULE_INSTALL[\s\S]{0,200}?return \(await getModuleHost\(\)\)\.install\(input\.manifest, input\.grantedPermissions\)/.test(ipcSrc)
       && /MODULE_REMOVE[\s\S]{0,200}?return \(await getModuleHost\(\)\)\.remove\(input\.moduleId\)/.test(ipcSrc));
     check("★ 渲染端 install 成功后把回包交给 reportChange",
       /const result=await api\.modules\.install\(\{[\s\S]{0,400}?reportChange\(result\)/.test(uiSrc));

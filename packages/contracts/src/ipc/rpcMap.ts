@@ -160,6 +160,7 @@ export interface RpcMap {
   "modules.issueWorkflowGrant": (input: import("../moduleCapability.js").ModuleWorkflowGrantRequest) => Promise<import("../modules.js").ModuleCatalog>;
   /** 【MC-036】撤销一条工作流运行授权(同一 (模块,版本,贡献,能力,工作区) 幂等键)。 */
   "modules.revokeWorkflowGrant": (input: import("../moduleCapability.js").ModuleWorkflowGrantRequest) => Promise<import("../modules.js").ModuleCatalog>;
+  "modules.setPermissions": (input: import("../modulePermissions.js").ModulePermissionUpdateInput) => Promise<import("../modules.js").ModuleCatalog>;
   /** MC-035: explicitly acknowledged, revocable JS-only sandbox downgrade. UI only. */
   "modules.egressConsentGet": () => Promise<{enabled:boolean;osIsolation:boolean}>;
   "modules.egressConsentSet": (input:{enabled:boolean;acknowledgeRisk:true}) => Promise<{enabled:boolean;osIsolation:boolean}>;
@@ -1679,6 +1680,7 @@ export const IPC = {
   // 【MC-036】工作流运行授权的签发 / 撤销 —— 只供桌面设置页的真人点击;agent 侧 blocked。
   MODULE_ISSUE_WORKFLOW_GRANT: "modules:issueWorkflowGrant",
   MODULE_REVOKE_WORKFLOW_GRANT: "modules:revokeWorkflowGrant",
+  MODULE_SET_PERMISSIONS: "modules:setPermissions",
   MODULE_EGRESS_CONSENT_GET: "modules:egressConsentGet",
   MODULE_EGRESS_CONSENT_SET: "modules:egressConsentSet",
   /** 扩展专用数据区(见 `@contracts/extensionStore`)。渠道字符串本体钉在契约模块里。 */

@@ -1,5 +1,6 @@
 import type { IpcMain } from "electron";
 import { IPC, ModuleInstallSchema, ModuleInvokeSchema, ModuleRemoveSchema, ModuleTaskRefSchema, ModuleWorkspaceSchema } from "@contracts/ipc";
+import { ModulePermissionUpdateSchema } from "@contracts/modulePermissions";
 import { ModuleWorkflowGrantSchema } from "@contracts/moduleCapability";
 import { getModuleHost } from "@main/modules/service.js";
 import { getJsOnlyEgressConsent, setJsOnlyEgressConsent } from "@main/modules/egressConsent.js";
@@ -31,8 +32,11 @@ export function registerModuleHandlers(ipcMain:IpcMain):void {
   // 任务"；取消失败原因原样带回（不静默）。`ModuleHost` 返回的就是这个形状，这一层
   // 只透传，不再包第二份。
   ipcMain.handle(IPC.MODULE_INSTALL,async(_event,raw:unknown)=>{
-    const input=ModuleInstallSchema.parse(raw);return (await getModuleHost()).install(input.manifest);
+    const input=ModuleInstallSchema.parse(raw);return (await getModuleHost()).install(input.manifest, input.grantedPermissions);
   });
+  // User-only edit path. appControl.policy blocks this method for agents/panels.
+  ipcMain.handle(IPC.MODULE_SET_PERMISSIONS,async(_event,raw:unknown)=>
+    (await getModuleHost()).setPermissions(ModulePermissionUpdateSchema.parse(raw)));
   ipcMain.handle(IPC.MODULE_REMOVE,async(_event,raw:unknown)=>{
     const input=ModuleRemoveSchema.parse(raw);return (await getModuleHost()).remove(input.moduleId);
   });

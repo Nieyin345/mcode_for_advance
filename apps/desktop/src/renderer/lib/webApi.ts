@@ -1223,6 +1223,7 @@ export function createWebApi(): Api {
       // 网页壳明确 unsupported,不是忘了接(与整个 modules 面同一取舍)。
       issueWorkflowGrant: async () => webUnsupported("modules.issueWorkflowGrant"),
       revokeWorkflowGrant: async () => webUnsupported("modules.revokeWorkflowGrant"),
+      setPermissions: async () => webUnsupported("modules.setPermissions"),
       // Desktop-only user risk acknowledgment: never expose it through mobile/web.
       egressConsentGet: async () => webUnsupported("modules.egressConsentGet"),
       egressConsentSet: async () => webUnsupported("modules.egressConsentSet"),

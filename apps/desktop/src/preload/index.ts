@@ -20,6 +20,7 @@ const api = {
     // 钉 blocked,`app_api_call` 到不了 —— 这两条不是模型可用的自动化授权通道。
     issueWorkflowGrant: ((input) => ipcRenderer.invoke(IPC.MODULE_ISSUE_WORKFLOW_GRANT,input)) as RpcMap["modules.issueWorkflowGrant"],
     revokeWorkflowGrant: ((input) => ipcRenderer.invoke(IPC.MODULE_REVOKE_WORKFLOW_GRANT,input)) as RpcMap["modules.revokeWorkflowGrant"],
+    setPermissions: ((input) => ipcRenderer.invoke(IPC.MODULE_SET_PERMISSIONS,input)) as RpcMap["modules.setPermissions"],
     egressConsentGet: (() => ipcRenderer.invoke(IPC.MODULE_EGRESS_CONSENT_GET)) as RpcMap["modules.egressConsentGet"],
     egressConsentSet: ((input) => ipcRenderer.invoke(IPC.MODULE_EGRESS_CONSENT_SET,input)) as RpcMap["modules.egressConsentSet"],
   },

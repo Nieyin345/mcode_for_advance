@@ -2,6 +2,8 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { EXAMPLE_MODULE, ModuleManifestSchema, type ModuleCatalog, type ModuleManifest, type ModuleContribution, type ModuleReply, type ModuleTask } from "@contracts/modules";
 import { createModuleClient } from "@contracts/moduleClient";
+import { defaultModuleGrants } from "@contracts/modulePermissions";
+import { MODULE_HIGH_RISK_PERMISSIONS, type ModulePermission } from "@contracts/appPermission";
 import { api } from "@renderer/lib/api.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
@@ -31,6 +33,10 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
   const [riskAcknowledged,setRiskAcknowledged]=useState(false);
   const busyRef=useRef(false),alive=useRef(true);
   const [draft,setDraft]=useState(JSON.stringify(EXAMPLE_MODULE,null,2)),[consent,setConsent]=useState(false),[codeConsent,setCodeConsent]=useState(false);
+  const [granted,setGranted]=useState<ModulePermission[]>(() => defaultModuleGrants(EXAMPLE_MODULE));
+  const draftManifest=(()=>{try{return ModuleManifestSchema.parse(JSON.parse(draft));}catch{return null;}})();
+  const requested = draftManifest?.permissions ?? [];
+  const groups = [...new Set(requested.map(p=>p.split(".")[0]))];
   // 【MC-035】草稿里是否声明了执行程序 —— 决定"执行代码"那份同意需不需要出现。
   // 解析失败(草稿写坏)时不显示,安装时会由 schema 给出更准确的错误。
   const draftHasProgram=(()=>{try{return (JSON.parse(draft) as {program?:unknown}).program!==undefined;}catch{return false;}})();
@@ -71,7 +77,7 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
     await mutate(async()=>{
       const manifest=ModuleManifestSchema.parse(JSON.parse(draft));
       const result=await api.modules.install({
-        manifest,confirmReadAccess:true,
+        manifest,confirmReadAccess:true,grantedPermissions:granted,
         // 【MC-035】可执行扩展的第二次同意由 UI 的独立勾选框给出;纯声明式模块不传。
         ...(manifest.program!==undefined?{confirmExecutableCode:true as const}:{}),
       });
@@ -105,11 +111,48 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
         <div className="space-y-2">{catalog.data?.modules.map(m=><div key={m.id} className="flex items-center gap-2 rounded border border-edge p-2 text-sm">
           <span className="flex-1">{text(m.title)} <code className="text-xs text-content-muted">{m.id} · {m.version}</code></span>
           {!m.id.startsWith("core.") && <Button disabled={busy} onClick={()=>void mutate(async()=>{const result=await api.modules.remove({moduleId:m.id});reportChange(result);await catalog.refetch();await history.refetch();})}>{t("ide.modules.remove")}</Button>}
+          {!m.id.startsWith("core.") && <section className="w-full space-y-1" data-testid={`module-grants-${m.id}`}>
+            <p className="text-xs font-semibold">{t("ide.modules.granted")}</p>
+            {!catalog.data?.modulePermissions?.[m.id] && <p className="text-xs text-content-muted">{t("ide.modules.noGrant")}</p>}
+            <div className="flex flex-wrap gap-x-3 gap-y-1">
+              {m.permissions.map(permission=><label key={permission} className="flex items-center gap-1 text-xs">
+                <input type="checkbox" disabled={busy} checked={catalog.data?.modulePermissions?.[m.id]?.granted.includes(permission)??false}
+                  onChange={event=>void mutate(async()=>{
+                    const before=catalog.data?.modulePermissions?.[m.id]?.granted ?? [];
+                    const next=event.target.checked ? [...before,permission] : before.filter(p=>p!==permission);
+                    await api.modules.setPermissions({moduleId:m.id,grantedPermissions:next});
+                    await catalog.refetch();
+                  })}/>
+                <code>{permission}</code>{MODULE_HIGH_RISK_PERMISSIONS.has(permission) && <span>{t("ide.modules.highRisk")}</span>}
+              </label>)}
+            </div>
+          </section>}
         </div>)}</div>
         <CapabilityCatalogPanel catalog={catalog.data} loading={catalog.loading} error={catalog.error} onRetry={()=>void catalog.refetch()}/>
         <label className="block space-y-2 text-sm"><span>{t("ide.modules.manifest")}</span>
-          <textarea data-testid="module-manifest" className="h-52 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-xs" value={draft} onChange={e=>{setDraft(e.target.value);setConsent(false);setCodeConsent(false);}} spellCheck={false}/>
+          <textarea data-testid="module-manifest" className="h-52 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-xs" value={draft} onChange={e=>{setDraft(e.target.value);setConsent(false);setCodeConsent(false);
+            try{setGranted(defaultModuleGrants(ModuleManifestSchema.parse(JSON.parse(e.target.value))));}catch{setGranted([]);}
+          }} spellCheck={false}/>
         </label>
+        <section className="space-y-2 rounded border border-edge p-3" data-testid="module-permission-picker">
+          <p className="text-sm font-semibold">{t("ide.modules.permissionsRequest")}</p>
+          <p className="text-xs text-content-muted">{t("ide.modules.upgradeConsent")}</p>
+          {groups.map(group=><div key={group} className="space-y-1">
+            <p className="text-xs font-medium">{group}</p>
+            <div className="flex flex-wrap gap-x-4 gap-y-2">{requested.filter(permission=>permission.startsWith(group+".")).map(permission=><label key={permission} className="flex items-center gap-2 text-xs">
+              <input type="checkbox" checked={granted.includes(permission)}
+                onChange={event=>setGranted(before=>event.target.checked ? [...before,permission] : before.filter(p=>p!==permission))}/>
+              <code>{permission}</code>{MODULE_HIGH_RISK_PERMISSIONS.has(permission) && <span className="text-warning">{t("ide.modules.highRisk")}</span>}
+            </label>)}</div>
+          </div>)}
+          <fieldset className="space-y-1 border-t border-edge pt-2" disabled data-testid="module-permissions-nondelegable">
+            <legend className="text-xs text-content-muted">{t("ide.modules.nondelegable")}</legend>
+            {["claude.approve","workflow.approve","customModel.getToken"].map(method=><label key={method} className="flex items-center gap-2 text-xs text-content-muted">
+              <input type="checkbox" disabled checked={false}/><code>{method}</code>
+            </label>)}
+          </fieldset>
+          {draftManifest===null && <p className="text-xs text-warning">{t("ide.modules.manifest")}</p>}
+        </section>
         <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/>{t("ide.modules.consent")}</label>
         {/* 【MC-035】执行代码是**另一件事**:与只读声明的同意分开勾。清单里没有 program 时
             不出现 —— 不给纯声明式模块制造"你到底同意了啥"的歧义。 */}

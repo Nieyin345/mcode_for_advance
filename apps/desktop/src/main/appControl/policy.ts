@@ -76,6 +76,7 @@ const BLOCKED: Record<string, string> = {
   // `app_api_call` 与 `mcp.api.call` 都够不到;真正够得到的只有桌面设置页。
   "modules.issueWorkflowGrant": "用户模块的工作流运行授权只能由用户在模块设置里授权",
   "modules.revokeWorkflowGrant": "用户模块的工作流运行授权只能由用户本人撤销",
+  "modules.setPermissions": "扩展安装权限只能由用户在扩展设置页本人授权或撤销",
   "modules.egressConsentGet": "扩展网络隔离降级开关仅在桌面设置页操作",
   "modules.egressConsentSet": "网络隔离风险许可只能由用户本人在桌面设置页确认",
   "customModel.getToken": "API Key / 令牌不给模型",
