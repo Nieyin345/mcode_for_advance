@@ -50,6 +50,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/lib/mcpConfig.js=./scripts/memory-codex-smoke/stubs/mcpConfig.ts \
   --alias:@main/lib/mcpEngines.js=./scripts/memory-codex-smoke/stubs/mcpEngines.ts \
   --alias:@main/document/slidesVendorModules.js=./src/main/document/slidesVendorModulesStub.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 # ⚠️ 两个变量都是**安全前提**,不是一个指纹:

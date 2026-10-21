@@ -33,6 +33,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:node-pty=./scripts/mcp-ipc-smoke/stubs/nodePty.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 # 给 bundle 一个 node_modules 视野:sql.js 的 wasm 在运行期从 bundle 自己位置解析。

@@ -26,6 +26,7 @@ if [[ -z "$ESBUILD" ]]; then echo "Missing existing esbuild; dependencies must b
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
   --external:ssh2 \
+  --alias:electron=./scripts/mobile-pairing-smoke/stubs/electron.ts \
   --alias:@main/lib/logger.js=./scripts/mcp-endpoint-smoke/stub-logger.ts \
   --alias:@main/mcp/libraryServer.js=./scripts/mcp-endpoint-smoke/stubs/libraryServer.ts \
   --alias:@main/lib/dataRoot.js=./scripts/mcode-admin-smoke/stubs/dataRoot.ts \
@@ -33,6 +34,7 @@ if [[ -z "$ESBUILD" ]]; then echo "Missing existing esbuild; dependencies must b
   --alias:@main/plugins/pluginManager.js=./scripts/mcode-admin-smoke/stubs/pluginManager.ts \
   --alias:@main/orchestration/broadcast.js=./scripts/mcode-admin-smoke/stubs/broadcast.ts \
   --alias:@main/memory/broadcast.js=./scripts/mcp-endpoint-smoke/stubs/memoryBroadcast.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 # esbuild folds pdfjs into smoke.mjs but its fake-worker loader still resolves

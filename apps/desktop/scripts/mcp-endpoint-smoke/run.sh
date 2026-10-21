@@ -38,6 +38,8 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/plugins/pluginManager.js=./scripts/mcode-admin-smoke/stubs/pluginManager.ts \
   --alias:@main/orchestration/broadcast.js=./scripts/mcode-admin-smoke/stubs/broadcast.ts \
   --alias:@main/memory/broadcast.js=./scripts/mcp-endpoint-smoke/stubs/memoryBroadcast.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
+  --alias:electron=./scripts/mobile-pairing-smoke/stubs/electron.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 # esbuild folds pdfjs into smoke.mjs but its fake-worker loader still resolves

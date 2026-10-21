@@ -23,6 +23,7 @@ export const ErrorNote = Pass;
 export const Spinner = Pass;
 export const Field = Pass;
 export const Badge = Pass;
+export const Card = Pass; // T52: settings projects now render the common Card wrapper
 export const Skeleton = Pass;
 export const LoadingNote = Pass;
 export const Switch = Pass;

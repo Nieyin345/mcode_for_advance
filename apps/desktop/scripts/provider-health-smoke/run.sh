@@ -48,6 +48,7 @@ COMMON=(
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:electron=./scripts/resume-fault-smoke/stubs/electron.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --alias:@main/providers/codex-sdk/codexBinaryResolve.js=./scripts/provider-health-smoke/stubs/codexBinaryResolve.ts \
   --alias:@anthropic-ai/claude-agent-sdk=./scripts/provider-health-smoke/stubs/claudeSdk.ts \
   --alias:node:child_process=./scripts/provider-health-smoke/stubs/childProcess.ts \

@@ -559,13 +559,13 @@ function scanMainHandlers(globals: Map<string, string>): HandlerScan {
           continue;
         }
         // 只在"实参长得像 IPC 通道"时才抱怨:别的东西(`req.on("error")`)是绝大多数。
-        if (/^\s*(IPC\.|"[a-z][a-zA-Z0-9_]*:[^"]*")/.test(` ${src.slice(open + 1, open + 40)}`)) {
+        if (/^\s*(IPC\.|["'][a-z][a-zA-Z0-9_]*:[^"']*["'])/.test(` ${src.slice(open + 1, open + 40)}`)) {
           otherReceivers.push({ file: rel, line, receiver, raw });
         }
         continue;
       }
 
-      const am = /^\s*(?:IPC\.([A-Z0-9_]+)|"([^"]+)"|([A-Z][A-Z0-9_]*))/.exec(
+      const am = /^\s*(?:IPC\.([A-Z0-9_]+)|"([^"]+)"|'([^']+)'|([A-Z][A-Z0-9_]*))/.exec(
         src.slice(open + 1, open + 80),
       );
       /**
@@ -576,7 +576,7 @@ function scanMainHandlers(globals: Map<string, string>): HandlerScan {
        * 这是本套自己最容易犯的错(`ipc/memory.ts` 的注释里写着那两份值是刻意同一份)。
        */
       const channel = am
-        ? (am[2] ?? (am[1] ? channelOf(am[1]) : undefined) ?? locals.get(am[3]) ?? globals.get(am[3]))
+        ? (am[2] ?? am[3] ?? (am[1] ? channelOf(am[1]) : undefined) ?? locals.get(am[4]) ?? globals.get(am[4]))
         : undefined;
       const site: HandlerSite = { file: rel, line, channel: channel ?? null, raw };
       sites.push(site);

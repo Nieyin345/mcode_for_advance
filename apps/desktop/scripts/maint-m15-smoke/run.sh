@@ -38,6 +38,7 @@ P=./scripts/mobile-pairing-smoke/stubs
   --alias:@main/browser/BrowserManager.js=$P/browserManager.ts \
   --alias:@main/workflows/seed.js=$P/workflowsSeed.ts \
   --alias:@main/claude/RuntimeManager.js=$P/runtimeManager.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 MCODE_SMOKE_DATA_ROOT="$DATA" MAINT_M15_BOX="$BOX" node "$OUT/smoke.mjs"

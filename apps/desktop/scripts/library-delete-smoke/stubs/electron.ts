@@ -37,6 +37,9 @@ export const app = {
 };
 
 export const nativeTheme = { shouldUseDarkColors: false };
+// T52: native Office view registration is transitively imported but never invoked.
+export const protocol = { registerSchemesAsPrivileged: notHere("protocol.registerSchemesAsPrivileged"), handle: notHere("protocol.handle") };
+export const net = { fetch: notHere("net.fetch") };
 
 /** 本套自己造了一个 `ipcMain`(记名替身,从它身上取 handler),这个**一定不该**被用到。 */
 export const ipcMain = { handle: notHere("electron.ipcMain.handle") };

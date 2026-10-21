@@ -40,7 +40,9 @@ pw.__hpeReady = false;
 let setFile: ((p: string) => void) | null = null;
 pw.__hpeSetFile = (p) => setFile?.(p);
 
-useSessionStore.setState({ locale: "zh" });
+// The real sidebar only activates while its owning right pane is visible.
+// A bare test harness has rightOpen=false by default, unlike the production mount.
+useSessionStore.setState({ locale: "zh", rightOpen: true });
 
 function Harness() {
   const [filePath, setFilePath] = useState<string>("");
@@ -63,7 +65,7 @@ function Harness() {
         ) : null}
       </div>
       <div className="relative min-h-0 flex-1">
-        <BrowserPanel mode="sidebar" />
+        <BrowserPanel mode="sidebar" selected />
       </div>
     </div>
   );

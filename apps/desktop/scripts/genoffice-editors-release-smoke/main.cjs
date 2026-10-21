@@ -27,6 +27,12 @@ function createCli() {
   for (const name of ["LICENSE", "LICENSE.pdfium"]) {
     put(path.join(vendor, "node_modules/@embedpdf/pdfium", name));
   }
+  // Native Sheets/Slides now require their original preload entry points,
+  // and Sheets needs its Rust sidecar; stage smoke fixtures must model both.
+  for (const name of ["sheets", "slides"]) {
+    put(path.join(vendor, "apps", name, "out/preload/index.js"), "// original vendor preload fixture");
+  }
+  put(path.join(vendor, "apps/sheets/native/xlsx-engine/target/release", process.platform === "win32" ? "xlsx-sidecar.exe" : "xlsx-sidecar"));
 }
 function renderDir(name) { return path.join(vendor, "apps", name, "out", "renderer"); }
 function makeRenderer(name) {
@@ -134,7 +140,10 @@ try {
   put(path.join(renderDir("html"), "assets", "html.js"), "window.vendor = true;");
   verify("Electron-builder hook actually configured", () => {
     const config = fs.readFileSync(path.join(__dirname, "../../electron-builder.yml"), "utf8");
-    assert.match(config, /afterPack:\s*\.\/build\/verify-genoffice-editors-after-pack\.cjs/);
+    // T19 unified afterPack hook retains GenOffice verification and adds Node-RED.
+    assert.match(config, /afterPack:\s*\.\/build\/verify-vendor-after-pack\.cjs/);
+    const hook = fs.readFileSync(path.join(__dirname, "../../build/verify-vendor-after-pack.cjs"), "utf8");
+    assert.match(hook, /verify-genoffice-editors-after-pack\.cjs/);
   });
   const winOut = path.join(base, "win-unpacked");
   const winResources = path.join(winOut, "resources", "genoffice");

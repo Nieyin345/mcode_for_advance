@@ -66,6 +66,7 @@ const __dirname = __dn(__f2p(import.meta.url));"
   --alias:@main/browser/BrowserManager.js=./scripts/mobile-pairing-smoke/stubs/browserManager.ts \
   --alias:@main/workflows/seed.js=./scripts/mobile-pairing-smoke/stubs/workflowsSeed.ts \
   --alias:@main/claude/RuntimeManager.js=./scripts/mobile-pairing-smoke/stubs/runtimeManager.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

@@ -84,6 +84,9 @@ export const dialog = notHereObj;
 export const nativeImage = notHereObj;
 export const safeStorage = notHereObj;
 export const session = notHereObj;
+// T52: import signatures of GenOffice protocol wiring (fail-closed if invoked).
+export const protocol = notHereObj;
+export const net = notHereObj;
 export const Notification = NotHereClass;
 
 /** 纯类型,运行期不该存在 —— 留个值让 `import type` 被误写成普通 import 时炸。 */

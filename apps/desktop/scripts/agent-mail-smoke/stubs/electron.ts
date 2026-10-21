@@ -62,6 +62,10 @@ export const shell = {
   showItemInFolder: notHere("shell.showItemInFolder"),
 };
 export const session = { fromPartition: notHere("session.fromPartition") };
+// Native view registration is only pulled into this smoke's import graph;
+// fail loudly if an agent-mail assertion ever invokes the unrelated scheme API.
+export const protocol = { registerSchemesAsPrivileged: notHere("protocol.registerSchemesAsPrivileged"), handle: notHere("protocol.handle") };
+export const net = { fetch: notHere("net.fetch") };
 export const ipcMain = { handle: notHere("electron.ipcMain.handle") };
 export const dialog = {
   showSaveDialog: notHere("dialog.showSaveDialog"),

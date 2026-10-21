@@ -40,6 +40,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/library/broadcast.js=./scripts/mcode-admin-smoke/stubs/libraryBroadcast.ts \
   --alias:@main/mcp/libraryServer.js=./scripts/mcp-endpoint-smoke/stubs/libraryServer.ts \
   --alias:@main/window.js=./scripts/library-mcp-smoke/stubs/window.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 MCODE_SMOKE_DATA_ROOT="$DATA" node "$OUT/smoke.mjs"

@@ -59,7 +59,12 @@ await esbuild.build({
   logLevel: "error",
   external: ["electron", "ssh2", "cpu-features", "sherpa-onnx-node"],
   loader: { ".md": "text" },
-  alias: { "@main/window.js": join(suite, "stubs/window.ts") },
+  alias: {
+    "@main/window.js": join(suite, "stubs/window.ts"),
+    // T52: the scene probe never creates a native Office view; Vite ?raw vendor
+    // browser scripts are not parseable by this headless esbuild CJS bundle.
+    "@main/document/genofficeNativeVendor.js": join(desktop, "src/main/document/genofficeNativeVendorStub.ts"),
+  },
 });
 
 /* ── 2. 渲染端:真 SceneDeployPanel 的 IIFE + Tailwind CSS + 页面 ──

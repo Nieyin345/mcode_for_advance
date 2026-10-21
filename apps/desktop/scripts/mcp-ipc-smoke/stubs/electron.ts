@@ -63,6 +63,9 @@ export const safeStorage = {
 
 export const BrowserWindow = { getAllWindows: notHere("BrowserWindow.getAllWindows") };
 export const nativeTheme = { shouldUseDarkColors: false };
+// T52: native Office view registration is transitively imported but not tested here.
+export const protocol = { registerSchemesAsPrivileged: notHere("protocol.registerSchemesAsPrivileged"), handle: notHere("protocol.handle") };
+export const net = { fetch: notHere("net.fetch") };
 export const shell = {
   openPath: notHere("shell.openPath"),
   openExternal: notHere("shell.openExternal"),

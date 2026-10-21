@@ -985,6 +985,7 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   // （下载条、已选元素条、计划/侧聊的待处理提示、选择引用、恢复/合并向导
   // 的注意力图标、拖放目标、手势录制中的按键、LSP 成功已改 success）。
   const TINT10_ALLOWED = [
+    "chat/McpToolDecisionCard.tsx", // 真 MCP 执行中的状态徽标（非选择/开关态）
     "browser/DownloadBar.tsx",
     "browser/PickedElementsBar.tsx",
     "chat/ContentTagChip.tsx",

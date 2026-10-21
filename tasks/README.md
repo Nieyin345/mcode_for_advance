@@ -112,7 +112,7 @@
 | T49 | **扩展调用面**：把 438 个 RPC 暴露给扩展（`core.app.call`） | **扩展主线** | T48 | 待派 |
 | T50 | **扩展 UI 贡献点**：命令 / 侧栏面板 / 设置项 | 扩展主线 | T48 | 待派 |
 | T51 | **让 AI 会写扩展**：`app_guide` topic + `extension_validate` + 模板 | **扩展主线** | T48、T49 | 待派 |
-| T52 | **smoke 急救**：501 套里 25 套红，其中 15 套是构建就崩 | **测试基础设施** | 无 | **可派**（实测：`html2docx` 的 `?raw` 让 15 套 bundle 失败） |
+| T52 | **smoke 急救**：501 套里 25 套红，其中 15 套是构建就崩 | **测试基础设施** | 无 | ⚠️ **已修构建链，验收受阻**（503 套全量 481/22，原红复测 17 转绿、5 条其它域断言仍红；见任务回写区） |
 | T53 | **T29 续篇**：用真实 sidecar 验完 xlsx / pptx | ARC-007 | T29 | **可派**（sidecar 已从上游 v0.11.0 提取并实测能打开真实 xlsx） |
 | T54 | 原厂 sheets/slides 的 Pane 外 IPC 围栏 + T42 报的两条红 | 安全 + 回归 | T53 | 待派 |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
@@ -252,7 +252,7 @@ vendor 独立 Git + 固定基线 commit + `mcode/integration` 分支 + 补丁存
   本来就是 tmp→fsync→rename 正确实现。唯一真实缺陷是 `ipc/files.ts` 冲突副本
   保存失败时没把原因回给调用者 —— 已修成 `{ok:false, conflict:true, error}`
   且不带 `conflictPath`。现 103/103，总控独立复跑 4/4 套件全绿。
-- `test:all` 当前仍是**红**的，不能声称全绿。
+- **T52 修复后待复核基线（2026-10-21）**：全量 503 套最初 481 PASS / 22 FAIL（并行开发中的中间快照），对 22 失败逐套复测后有 17 套通过；剩余 `module-ui`、`node-red-theme`、`node-red-e2e`、`skills-nodes-ui`、`vscode-l1` 五套仍有真实断言失败。**`test:all` 仍是红的，不能声称全绿**；具体日志/修复与验收缺口见 `tasks/T52-smoke-rescue.md`。
 
 ---
 

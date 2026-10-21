@@ -63,6 +63,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/window.js=./scripts/orchestration-ipc-smoke/stubs/window.ts \
   --alias:@main/claude/RuntimeManager.js=./scripts/frontend-smoke/stubs/runtimeManager.ts \
   --alias:@main/plugins/pluginManager.js=./scripts/orchestration-ipc-smoke/stubs/pluginManager.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

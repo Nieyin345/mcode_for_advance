@@ -243,15 +243,12 @@ export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(),
   mkdirSync(logRoot, { recursive: true });
   const logDir = mkdtempSync(join(logRoot, `${Date.now()}-${process.pid}-`));
   logger.log(`Smoke logs: ${logDir}`);
-  // 并发档:**按机器核数**定,显式 `jobs` / env 优先覆盖。
-  //   轻量套件(无头,CPU 几乎闲置) → min(8, 核数) —— 它们等 IO 多,开满才不浪费。
-  // 并发档:**内存是瓶颈**(每个真浏览器套件起一个 Chrome,几百 MB 起),不是核数。
-  //   轻量套件(无头 node 进程,各几十 MB) → min(6, 核数)。
-  //   浏览器套件(Chrome + 打包页,各几百 MB) → min(3, 核数/4) —— 保守,宁慢勿 OOM。
-  //   显式 `jobs` / `MCODE_SMOKE_JOBS` / `MCODE_SMOKE_HEAVY_JOBS` 可覆盖。
+  // T52: Windows 0x1A memory faults and Chrome/esbuild bursts make CPU-core-based
+  // concurrency unreliable. Proven local budget for the full smoke batch: 2
+  // light + 1 browser. Explicit jobs/environment overrides remain supported.
   const cores = cpus().length;
-  const totalJobs = Math.max(1, jobs ?? (Number(process.env.MCODE_SMOKE_JOBS) || Math.min(6, cores)));
-  const heavyJobs = Math.max(1, jobs ?? (Number(process.env.MCODE_SMOKE_HEAVY_JOBS) || Math.min(3, Math.ceil(cores / 4))));
+  const totalJobs = Math.max(1, jobs ?? (Number(process.env.MCODE_SMOKE_JOBS) || Math.min(2, cores)));
+  const heavyJobs = Math.max(1, jobs ?? (Number(process.env.MCODE_SMOKE_HEAVY_JOBS) || 1));
   logger.log(`Running ${selected.length} suites (light ×${totalJobs}, browser ×${heavyJobs})`);
 
   // 浏览器套件单独一条通道(它们各起一个 Chrome,吃内存);其余走主通道。
@@ -265,7 +262,11 @@ export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(),
 
   const runOneLogged = async (name) => {
     const logFile = join(logDir, `${name}.log`);
-    const result = await runOne(bash, name, appDir, logFile, timeoutMs);
+    // automation-smoke drives hundreds of real persisted trigger fixtures and a
+    // second Node process; 240s is below its measured isolated Windows runtime.
+    // Keep the normal bound for every other suite; don't turn timeouts off.
+    const suiteTimeoutMs = name === "automation-smoke" ? Math.max(timeoutMs, 600_000) : timeoutMs;
+    const result = await runOne(bash, name, appDir, logFile, suiteTimeoutMs);
     if (result.ok) logger.log(`PASS  ${name}`);
     else {
       failed++;

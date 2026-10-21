@@ -57,6 +57,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/lib/logger.js=./scripts/session-subchat-smoke/stubs/logger.ts \
   --alias:electron=./scripts/agent-mail-smoke/stubs/electron.ts \
   --alias:@main/window.js=./scripts/agent-mail-smoke/stubs/window.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

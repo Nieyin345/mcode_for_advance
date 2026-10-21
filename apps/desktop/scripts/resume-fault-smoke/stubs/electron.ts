@@ -76,6 +76,7 @@ export const nativeImage = {
 export const nativeTheme = { shouldUseDarkColors: false, on: () => {}, themeSource: "system" };
 
 export const protocol = { handle: () => {}, registerSchemesAsPrivileged: () => {} };
+export const net = { fetch: () => { throw new Error('provider-health/resume-fault smoke must not invoke native Office net.fetch'); } };
 
 export const Notification = class {
   static isSupported() {

@@ -24,7 +24,8 @@ const actionStart = titlebar.indexOf("data-arc005-titlebar-actions");
 const context = titleStart < 0 || actionStart < 0 ? "" : titlebar.slice(titleStart, actionStart);
 check("★ 工作区信息有弹性、可剪裁的单个上下文条且主窗口不重建", titleStart > 0 &&
   /min-w-0/.test(context) && /flex-1/.test(context) && /overflow-hidden/.test(context) &&
-  titlebar.includes('className="flex h-10 shrink-0 items-stretch"'));
+  // Native titlebar height is platform-dependent: macOS traffic lights need 45px.
+  titlebar.includes('className={cn("flex shrink-0 items-stretch", isMac ? "h-[45px]" : "h-10")}'));
 check("★ 4 个共享上下文源都保留，未变为静态假标签",
   ["<ActiveThreadTitle />","<ActiveProjectChip />","<ToolbarBranchIndicator />","<ActiveWorktreeChip />"]
     .every((name) => context.includes(name)));

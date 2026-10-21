@@ -65,6 +65,7 @@ COMMON=(
   --alias:@main/lib/binaryResolve.js=./scripts/resume-fault-smoke/stubs/binaryResolve.ts \
   --alias:@anthropic-ai/claude-agent-sdk=./scripts/skill-delivery-smoke/stubs/claudeSdk.ts \
   --alias:@earendil-works/pi-coding-agent=./scripts/skill-delivery-smoke/stubs/piSdkLoader.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --external:./sdkBinaryPath.js \
   --external:./CodexAppServerClient.js \
   --external:./piSdkLoader.js \

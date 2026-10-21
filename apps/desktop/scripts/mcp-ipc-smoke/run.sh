@@ -78,6 +78,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/plugins/pluginManager.js=./scripts/mcp-ipc-smoke/stubs/pluginManager.ts \
   --alias:@main/terminal/TerminalManager.js=./scripts/mcp-ipc-smoke/stubs/terminalManager.ts \
   --alias:node-pty=./scripts/mcp-ipc-smoke/stubs/nodePty.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 # 给 bundle 一个 node_modules 视野:若干模块在**运行期**从 bundle 自己位置解析依赖

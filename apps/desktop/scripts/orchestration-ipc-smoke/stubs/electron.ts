@@ -57,6 +57,8 @@ export const BrowserWindow = { getAllWindows: notHere("BrowserWindow.getAllWindo
  * 进来的(`library/downloader.ts` → …),而 BrowserManager 在本套里**一次都不会被调到**
  * (它管的是内嵌浏览器下载那一路)。给成员只为让打包过 —— 真调到要立刻显形。
  */
+export const net = { fetch: () => { throw new Error('orchestration-ipc-smoke must not fetch via native Office view'); } };
+export const protocol = { handle: () => { throw new Error('orchestration-ipc-smoke must not register native Office views'); }, registerSchemesAsPrivileged: () => { throw new Error('orchestration-ipc-smoke must not register native Office views'); } };
 export const session = {
   fromPartition: notHere("session.fromPartition"),
   defaultSession: notHere("session.defaultSession"),
