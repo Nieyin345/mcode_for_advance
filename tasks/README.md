@@ -69,8 +69,8 @@
 | T10 | executor owner 注册表落盘（增量，原派活未含） | ARC-006 | T03 | ✅ 完成（81/81；跨进程 CAS 与部署回滚仍缺） |
 | T11 | Windows 上收窄 egress fail-closed（修 T06 回归） | MC-035 回归 | T06 | ✅ 完成（6/6；两套原红已复绿） |
 | T12 | 视觉基线补完：7 类高依赖屏的真实夹具 | ARC-005 U1 | T01 | ✅ 完成（39/39，0 data-missing） |
-| T13 | Node-RED 源码集成调查（按 GenOffice 模式） | ARC-006 | 无 | 未开始（纯调查，不改产品代码） |
-| T14 | 扩展系统二开（复用 ModuleHost + Theia 兼容层） | ARC-006 | 无 | 未开始 |
+| T13 | Node-RED 源码集成调查（按 GenOffice 模式） | ARC-006 | 无 | ✅ 完成（锁 5.0.8 / `935b8d3`；Apache-2.0 可二开） |
+| T14 | 扩展系统二开（复用 ModuleHost + Theia 兼容层） | ARC-006 | 无 | ✅ 完成（Theia 拆不动→降级薄映射；25/25） |
 | T15 | 真 Electron 下的 Pane U1（T02 剩余两条） | ARC-005 U1 | T02 | 未开始 |
 
 状态取值：`未开始` / `进行中` / `待我核对` / `已完成` / `阻塞`。
