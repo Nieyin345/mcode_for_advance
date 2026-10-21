@@ -45,7 +45,7 @@
  *
  * Run: bash scripts/mcode-node-pack-smoke/run.sh
  */
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -928,8 +928,11 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
     "};",
     "",
   ].join("\n");
-  writeFileSync(join(nodesDir, "mcode-node-pack.js"), runnerJs, "utf8");
-  writeFileSync(join(nodesDir, "mcode-node-pack.html"), allNodeHtml(), "utf8");
+  // T42: the production registry now installs six managed node sets itself.
+  // Do not install the historical all-types fake CJS alongside them: duplicate
+  // registration would shadow the actual IPC transport and disable the flow.
+  void runnerJs;
+  void allNodeHtml;
 
   const registry = new ProductionWorkflowEngineRegistry();
   const registryDataDir = registry.dataDirOf("node-red");
@@ -950,7 +953,33 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
       },
     };
     const nativeOwnership = createInMemoryExecutorOwnership();
-    const runtime = new OwnedNodeRedRuntime("node-red", ports, nativeOwnership);
+    // Keep the old exercise's deterministic fake outputs, but inject them at
+    // the REAL parent-side NodePackHost (the child always uses process.send).
+    const hostServices = {
+      execute: async (operation: string, payload: Record<string, unknown>) => {
+        const kind = ({
+          "agent.run": "agent", "conversation.run": "conversation",
+          "branch.decide": "branch", "module.invoke": "module-capability",
+          "node-red.call": "node-red-call",
+        } as Record<string, string>)[operation] ?? operation;
+        appendFileSync(join(userDir, "node-runs.jsonl"), JSON.stringify({ kind, payload }) + "\n");
+        const artifacts = [{ kind: "file", uri: "file:///tmp/mcode-node-output.txt", mimeType: "text/plain" }];
+        if (operation === "branch.decide") return { port: 0, label: "继续" };
+        if (operation === "agent.run") return { text: "agent:" + payload.instruction, artifacts, runId: "run_all_1" };
+        if (operation === "conversation.run") return { text: "conv:" + payload.instruction, artifacts };
+        if (operation === "module.invoke") return { text: "module:" + payload.moduleId, artifacts };
+        return { text: "nr:" + payload.enginePath, artifacts, status: 200 };
+      },
+      subscribe: (payload: Record<string, unknown>, emit: (msg: Record<string, unknown>) => void) => {
+        appendFileSync(join(userDir, "node-runs.jsonl"), JSON.stringify({ kind: "trigger", payload }) + "\n");
+        const timer = setTimeout(() => emit({
+          payload: { trigger: { kind: payload.triggerKind, at: 1 } },
+          mcode: { condition: true },
+        }), 150);
+        return () => clearTimeout(timer);
+      },
+    };
+    const runtime = new OwnedNodeRedRuntime("node-red", ports, nativeOwnership, hostServices);
     try {
       const status = await runtime.start({
         engineId: "node-red",
@@ -979,6 +1008,23 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
       const packEntries = nodeList.filter((n) => n.types?.some((t) => (MCODE_NODE_PACK_TYPES as readonly string[]).includes(t)));
       check("★【MERGE-2】7 个类型都没有加载错误（err 缺席）",
         packEntries.every((n) => n.err === undefined), packEntries.map((n) => n.err));
+      const zhCatalog = await fetch("http://127.0.0.1:" + port +
+        "/locales/mcode-node-pack/mcode-agent?lng=zh-CN", { signal: AbortSignal.timeout(8_000) });
+      const zhLabels = (await zhCatalog.json()) as { mcode?: { label?: { instruction?: string } } };
+      check("★【T42】真 Node-RED 把受管节点包作为独立模块加载并注册中文 i18n",
+        zhCatalog.status === 200 && zhLabels.mcode?.label?.instruction === "指令",
+        { status: zhCatalog.status, zhLabels });
+      const htmlRes = await fetch(`http://127.0.0.1:${port}/nodes`, {
+        headers: { ...auth, accept: "text/html" }, signal: AbortSignal.timeout(8_000),
+      });
+      const paletteHtml = await htmlRes.text();
+      check("★【T42】真 Node-RED 编辑器返回 6 种 Mcode 节点表单、调色板分组和图标",
+        htmlRes.status === 200 && MCODE_NODE_PACK_TYPES.every((type) =>
+          paletteHtml.includes(`data-template-name="${type}"`))
+        && (paletteHtml.match(/category: "mcode"/g) ?? []).length >= 6
+        && (paletteHtml.match(/icon: "font-awesome\//g) ?? []).length >= 6,
+        { status: htmlRes.status, templateCount: (paletteHtml.match(/data-template-name="mcode-/g) ?? []).length });
+
 
       // ② 部署整张迁移流 + 一条原生 HTTP-in 活体探针（同一份部署）。
       const probeTab = { id: "tab_probe_all", type: "tab", label: "probe", disabled: false, info: "", env: [] };
@@ -1144,6 +1190,32 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
 
       const stopped = await runtime.stop(1_000);
       check("★ 真引擎 stop 后状态 stopped、端口清空", stopped.state === "stopped" && stopped.port === null, stopped);
+      const restarted = await runtime.start({
+        engineId: "node-red",
+        dataDir: userDir,
+        command: launch.command,
+        args: (nextPort, nextDataDir) => launch.args(nextPort, nextDataDir),
+        env: { ...(launch.env ?? {}), MCODE_NODE_PACK_USER_DIR: userDir },
+        ...(launch.probeIdentity !== undefined ? { probeIdentity: launch.probeIdentity } : {}),
+        readyTimeoutMs: 20_000,
+      });
+      check("★【T42】真 Node-RED 停止再启动成功，受管节点包仍可加载",
+        restarted.state === "running" && restarted.port !== null, restarted);
+      if (restarted.port !== null) {
+        const again = await fetch(`http://127.0.0.1:${restarted.port}/nodes`, {
+          headers: { ...auth, accept: "application/json" },
+          signal: AbortSignal.timeout(8_000),
+        });
+        const list = (await again.json()) as Array<{ types?: string[]; err?: unknown }>;
+        const typesAgain = new Set(list.flatMap((item) => item.types ?? []));
+        check("★【T42】真引擎重启后六节点仍全部存在且加载无错误",
+          again.status === 200 && MCODE_NODE_PACK_TYPES.every((type) => typesAgain.has(type))
+            && !list.some((entry) => entry.types?.some((type) =>
+              (MCODE_NODE_PACK_TYPES as readonly string[]).includes(type)) && entry.err !== undefined),
+          { status: again.status, missing: MCODE_NODE_PACK_TYPES.filter((type) => !typesAgain.has(type)) });
+      }
+      await runtime.stop(1_000);
+
     } finally {
       try {
         await runtime.stop(1_000);

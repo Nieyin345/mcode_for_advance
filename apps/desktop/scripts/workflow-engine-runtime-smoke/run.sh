@@ -19,6 +19,7 @@ if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
   --tsconfig=tsconfig.json \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --alias:@main/workflowEngines/nodePackProductionPorts.js=./scripts/mcode-node-pack-smoke/productionPortsStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 MCODE_SMOKE_DATA_ROOT="$DATA" node "$OUT/smoke.mjs"

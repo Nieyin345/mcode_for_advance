@@ -15,7 +15,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-OUT=$(mktemp -d /tmp/mcode-node-pack.XXXXXX)
+# Externals (ssh2) resolve from the generated ESM file; keep it under desktop/node_modules reach.
+mkdir -p .tmp
+OUT=$(mktemp -d ./.tmp/mcode-node-pack.XXXXXX)
 # 本套私有的数据根（并行隔离；junction 在 main.ts 里建）。
 DATA=$(mktemp -d /tmp/mcode-node-pack-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
@@ -40,6 +42,11 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --tsconfig=tsconfig.json \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --alias:@main/workflowEngines/nodePackProductionPorts.js=./scripts/mcode-node-pack-smoke/productionPortsStub.ts \
+  --external:sherpa-onnx-node \
+  --external:cpu-features \
+  --external:ssh2 \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 # 本套私有的数据根由 run.sh 用 mktemp 建；共享安装树的**位置**通过

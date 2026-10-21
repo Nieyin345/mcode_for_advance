@@ -338,18 +338,23 @@ function registerIoSugar(
  * `registerMcodeNodePack(RED)` 调用。`getPorts` 是宿主注入点（生产 = Host RPC，
  * 测试 = 假实现）。
  */
-export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => McodeNodePorts): void {
-  registerMcodeAgentNodes(RED, () => getPorts().agent);
-
-  registerIoSugar(RED, MCODE_CONVERSATION_NODE_TYPE, (msg, config) =>
-    runConversationNode(msg, config, getPorts().conversation));
-  registerIoSugar(RED, MCODE_MODULE_CAPABILITY_NODE_TYPE, (msg, config) =>
-    runModuleCapabilityNode(msg, config, getPorts().moduleCapability));
-  registerIoSugar(RED, MCODE_NODE_RED_CALL_NODE_TYPE, (msg, config) =>
-    runNodeRedCallNode(msg, config, getPorts().nodeRedCall));
+export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => McodeNodePorts, onlyType?: string): void {
+  // Node-RED loads each <type>.js as its own node set. Register exactly the
+  // matching type from that file; the old all-types entry remains for tests.
+  if (!onlyType || onlyType === MCODE_AGENT_NODE_TYPE)
+    registerMcodeAgentNodes(RED, () => getPorts().agent);
+  if (!onlyType || onlyType === MCODE_CONVERSATION_NODE_TYPE)
+    registerIoSugar(RED, MCODE_CONVERSATION_NODE_TYPE, (msg, config) =>
+      runConversationNode(msg, config, getPorts().conversation));
+  if (!onlyType || onlyType === MCODE_MODULE_CAPABILITY_NODE_TYPE)
+    registerIoSugar(RED, MCODE_MODULE_CAPABILITY_NODE_TYPE, (msg, config) =>
+      runModuleCapabilityNode(msg, config, getPorts().moduleCapability));
+  if (!onlyType || onlyType === MCODE_NODE_RED_CALL_NODE_TYPE)
+    registerIoSugar(RED, MCODE_NODE_RED_CALL_NODE_TYPE, (msg, config) =>
+      runNodeRedCallNode(msg, config, getPorts().nodeRedCall));
 
   // ── branch：1 入 N 出，按端口 send ──
-  RED.nodes.registerType(MCODE_BRANCH_NODE_TYPE, function (this: NodeInstance, config: Cfg) {
+  if (!onlyType || onlyType === MCODE_BRANCH_NODE_TYPE) RED.nodes.registerType(MCODE_BRANCH_NODE_TYPE, function (this: NodeInstance, config: Cfg) {
     const node = this;
     RED.nodes.createNode(node, config);
     const lifecycle = createNodeInputLifecycle(node);
@@ -375,7 +380,7 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
   } as unknown as new (config: Cfg) => NodeRedNodeLike);
 
   // ── trigger：0 入 1 出，订阅 port 并在触发时 send ──
-  RED.nodes.registerType(MCODE_TRIGGER_NODE_TYPE, function (this: NodeInstance, config: Cfg) {
+  if (!onlyType || onlyType === MCODE_TRIGGER_NODE_TYPE) RED.nodes.registerType(MCODE_TRIGGER_NODE_TYPE, function (this: NodeInstance, config: Cfg) {
     const node = this;
     RED.nodes.createNode(node, config);
     let closed = false;
@@ -469,15 +474,15 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
     });
   } as unknown as new (config: Cfg) => NodeRedNodeLike);
 
-  RED.log?.info?.(`[mcode-node-pack] registered ${MCODE_NODE_PACK_TYPES.length} types (v${MCODE_NODE_PACK_VERSION})`);
+  RED.log?.info?.(`[mcode-node-pack] registered ${onlyType ?? MCODE_NODE_PACK_TYPES.join(", ")} (v${MCODE_NODE_PACK_VERSION})`);
 }
 
 /* ── 编辑器 HTML（每类型最小三格参数；Node-RED 只认有同名 .html 的 .js） ── */
 
 function htmlFor(type: string, params: Array<{ id: string; label: string; kind: "text" | "select" | "textarea"; options?: string[]; defaultValue?: string }>, extraDefs = ""): string {
   const rows = params.map((p) => p.kind === "select"
-    ? `<div class="form-row"><label for="node-input-${p.id}">${p.label}</label><select id="node-input-${p.id}">${(p.options ?? []).map((o) => `<option value="${o}">${o}</option>`).join("")}</select></div>`
-    : p.kind === "textarea" ? `<div class="form-row"><label for="node-input-${p.id}">${p.label}</label><textarea id="node-input-${p.id}" rows="4" placeholder="${p.label}"></textarea></div>` : `<div class="form-row"><label for="node-input-${p.id}">${p.label}</label><input type="text" id="node-input-${p.id}" placeholder="${p.label}"></div>`).join("\n  ");
+    ? `<div class="form-row"><label for="node-input-${p.id}"><span data-i18n="mcode.label.${p.id}">${p.label}</span></label><select id="node-input-${p.id}">${(p.options ?? []).map((o) => `<option value="${o}">${o}</option>`).join("")}</select></div>`
+    : p.kind === "textarea" ? `<div class="form-row"><label for="node-input-${p.id}"><span data-i18n="mcode.label.${p.id}">${p.label}</span></label><textarea id="node-input-${p.id}" rows="4" placeholder="${p.label}"></textarea></div>` : `<div class="form-row"><label for="node-input-${p.id}"><span data-i18n="mcode.label.${p.id}">${p.label}</span></label><input type="text" id="node-input-${p.id}" placeholder="${p.label}"></div>`).join("\n  ");
   return `<script type="text/javascript">
   RED.nodes.registerType("${type}", {
     category: "mcode",
@@ -491,7 +496,7 @@ function htmlFor(type: string, params: Array<{ id: string; label: string; kind: 
   });
 </script>
 <script type="text/html" data-template-name="${type}">
-  <div class="form-row"><label for="node-input-name"><i class="fa fa-tag"></i> Name</label><input type="text" id="node-input-name" placeholder="Name"></div>
+  <div class="form-row"><label for="node-input-name"><i class="fa fa-tag"></i> <span data-i18n="common.label.name">Name</span></label><input type="text" id="node-input-name" placeholder="Name"></div>
   ${rows}
 </script>
 <script type="text/html" data-help-name="${type}">
@@ -505,6 +510,7 @@ export function conversationNodeHtml(): string {
     { id: "instruction", label: "Instruction", kind: "textarea" },
     { id: "capability", label: "Capability", kind: "select", options: ["read", "write"] },
     { id: "outputVar", label: "Output variable", kind: "text" },
+    { id: "sessionId", label: "Mcode session ID", kind: "text" },
   ]);
 }
 export function branchNodeHtml(): string {
@@ -512,6 +518,7 @@ export function branchNodeHtml(): string {
     { id: "decider", label: "Decider (user/model)", kind: "select", options: ["user", "model"] },
     { id: "outputVar", label: "Output variable", kind: "text" },
     { id: "note", label: "Note", kind: "textarea" },
+    { id: "sessionId", label: "Mcode session ID (model decision)", kind: "text" },
   ], "multi");
 }
 export function triggerNodeHtml(): string {
@@ -526,6 +533,7 @@ export function moduleCapabilityNodeHtml(): string {
     { id: "moduleId", label: "Module id", kind: "text" },
     { id: "contributionId", label: "Contribution id", kind: "text" },
     { id: "path", label: "Path", kind: "text" },
+    { id: "projectPath", label: "Authorized project path", kind: "text" },
   ]);
 }
 export function nodeRedCallNodeHtml(): string {

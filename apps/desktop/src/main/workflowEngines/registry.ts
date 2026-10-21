@@ -68,7 +68,7 @@ import { bindProjectDirectoryIdentity, resolveProjectFlowDir } from "./projectFl
 import { log } from "@main/lib/logger.js";
 import { ensureEngineBootstrap } from "./bootstrapManifest.js";
 import { ensureNodePack } from "./nodePackManifest.js";
-import { NodePackHost } from "./nodePackHost.js";
+import { NodePackHost, type NodePackHostServices } from "./nodePackHost.js";
 import { productionNodePackServices } from "@main/workflowEngines/nodePackProductionPorts.js";
 import {
   EngineRuntime,
@@ -352,7 +352,8 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
   private ownedFlowIds: string[] = [];
   private pendingDeploy: { id: string; flowIds: string[]; added: string[] } | null = null;
   private nodePackHost: NodePackHost | null = null;
-  constructor(engineId: string, ports: EngineRuntimePorts, private readonly ownership: ExecutorOwnershipRegistry) {
+  constructor(engineId: string, ports: EngineRuntimePorts, private readonly ownership: ExecutorOwnershipRegistry,
+    private readonly nodeServices?: NodePackHostServices) {
     super(engineId, ports);
     this.onTerminated(() => this.releaseOwned());
   }
@@ -435,7 +436,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     if (state === "running" || state === "starting") return super.start(options);
     if (this.ownedFlowIds.length > 0) throw new Error("旧引擎租约未释放，拒绝再次启动");
     this.ownedFlowIds = claimNativeFlows(this.ownership, nativeFlowIds(options.dataDir));
-    this.nodePackHost = new NodePackHost(productionNodePackServices(
+    this.nodePackHost = new NodePackHost(this.nodeServices ?? productionNodePackServices(
       () => this.status(), options.probeIdentity?.adminToken,
     ));
     try {

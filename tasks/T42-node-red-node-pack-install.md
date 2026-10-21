@@ -217,3 +217,13 @@ nodesDir: [ path.join(__dirname, "mcode-node-pack") ],
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### T42 执行回写（2026-10-21）
+
+- **上游扫描实证**：`@node-red/registry/lib/localfilesystem.js#getNodeFiles` 同时扫描 `<userDir>/nodes/` 和 `settings.nodesDir`。此卡使用受管 `<dataDir>/mcode-node-pack/`，包含独立 `package.json` 声明六节点；Node-RED 将它识别为 `mcode-node-pack` 模块并装载 `locales/en-US|zh-CN/`，不是把它当无命名空间的内置 `node-red` 本地文件。真实 `/locales/mcode-node-pack/mcode-agent?lng=zh-CN` 回包含“指令”。
+- **构建**：`build/build-node-pack.cjs` 使用 esbuild 把六节点运行时与 IPC 客户端打成**单个可 require 的 CJS 21246 字节**，构建输出内嵌在 `nodePackBundle.generated.ts`，生产 `build` 自动先生成；每节点独立 `.js/.html` 与 12 个 locale 文件统一列入 `mcode.workflow-engine.node-pack/v1` 清单（包安装版 v2、各文件 SHA-256）。`bootstrap.cjs` 是被完整性清单管理的字符串模板，不是 TS 模块，故不参与这次 esbuild；`BOOTSTRAP_VERSION` 从 T47 既有的 2 升至 3。
+- **进程协议**：复用 Node-RED 子进程现有 `process.send`，节点调用使用独立的 `mcode-node-request/reply/event/unsubscribe` 种类和请求 ID，对部署握手 `mcode-deploy-prepare/reply/final` 不产生 ID 冲突；Host 侧路由到 `RuntimeManager`（Claude/Pi/Codex 既有会话）、人工 branch 弹框、`ModuleHost.invoke`、引擎已授权 Admin HTTP API 和应用事件订阅。未绑定可用会话、拒绝审批、断开的 Host IPC 均失败而非假成功。子进程单包无三 SDK/Electron/ModuleHost 导入。
+- **节点表单**：原六份 HTML 原本均有 `category:"mcode"`、图标、基本帮助；现在补原生 `sessionId` / `projectPath` 字段以及 `data-i18n` 与中英文语言目录。未更改 Node-RED CSS、主题或上游源码。
+- **验收执行**：`mcode-node-pack-smoke`、`t42-node-pack-smoke`、`workflow-engine-runtime-smoke` 均通过；真 Node-RED `GET /nodes` 六节点、原生编辑器配置、真实流执行与主进程 IPC、中文 locale、同引擎停止再启动均已实测。节点清单篡改恢复/缺失 IPC 的拒绝路径有无头断言。
+- **仍未证明**：① Electron 实际拖拽六节点并打开 debug 面板（对应验收 2 和 3 的 GUI 细节；已证明真 HTTP API 配置持久化和 Mcode agent 经 Host 假服务执行）；② 在真实三 SDK 审批场景下审批卡是否正常出现（当前验证用 Host 假服务）；③ 完整三种源码级“撤修复→冒烟必红”的原位变异运行（现有测试覆盖源文本围栏、断线拒绝与字节篡改恢复，但未全部原位变异）。
+- **现存独立红项**：`node-red-e2e-smoke` 105/106，仅 T47 编辑器主页注入 CSS 链接断言失败（实际主题 CSS 响应 200）；`packages/contracts` tsc 通过；`apps/desktop` 全包 tsc 被 `scripts/document-view-renderer-smoke/main.ts:564` 非 T42 的 `slidesNative` 类型错误阻断，T42 相关文件的增量语义诊断无错误。保留并行任务修改，不在此卡改 T47 / document。

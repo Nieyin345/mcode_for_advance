@@ -10,7 +10,7 @@
   "scripts": {
     "postinstall": "node build/ensure-electron.cjs",
     "dev": "electron-vite dev",
-    "build": "node --max-old-space-size=8192 node_modules/electron-vite/bin/electron-vite.js build",
+    "build": "node build/build-node-pack.cjs && node --max-old-space-size=8192 node_modules/electron-vite/bin/electron-vite.js build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test scripts/run-smokes.test.mjs && node scripts/run-smokes.mjs --critical",

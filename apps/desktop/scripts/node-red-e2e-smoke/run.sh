@@ -35,6 +35,7 @@ export MCODE_NR_E2E_ROOT="$E2E_ROOT"
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --alias:@main/workflowEngines/nodePackProductionPorts.js=./scripts/mcode-node-pack-smoke/productionPortsStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 node "$OUT/smoke.mjs"
@@ -50,6 +51,7 @@ if [[ -f ".tmp/node-red-release/manifest.json" ]]; then
     --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
     --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
     --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --alias:@main/workflowEngines/nodePackProductionPorts.js=./scripts/mcode-node-pack-smoke/productionPortsStub.ts \
     --outfile="$OUT/vendor.mjs" --log-level=error
   node "$OUT/vendor.mjs"
 else

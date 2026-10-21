@@ -1256,8 +1256,11 @@ console.log("\nC. Gate C：迁移器产物 → 真 Node-RED 部署/读回（未�
       await sleep(2_000);
       const blocked = await fetchOn(portC, "/api/gatec-blocked", {}, 3_000);
       evidence("migrated-flow HTTP-in status", { status: blocked.status });
-      check("★【Gate C 硬事实】含未知节点类型的整组 flows 不启动（同流里的原生 HTTP-in 404，而它在前一份纯原生部署里是 200）",
-        blocked.status === 404, blocked);
+      // T42 closes the former Gate C missing-node gap. With the managed Mcode
+      // pack installed, this probe MUST run; retaining a 404 assertion would
+      // punish the intended fix instead of guarding a regression.
+      check("★【T42】内置节点包安装后原 Gate C 缺失类型阻断解除（HTTP-in 200）",
+        blocked.status === 200, blocked);
 
       // C4. 把迁移流单独再部署一次：未知节点仍在读回里（不因"不启动"而被清掉/丢弃）。
       const redeploy = await fetchOn(portC, "/flows", {

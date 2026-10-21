@@ -141,7 +141,7 @@ export function normalizeAgentConfig(config: McodeAgentNodeConfig): {
   for (const key of [
     "decider", "note", "triggerKind", "task", "cron",
     "moduleId", "contributionId", "path",
-    "enginePath", "engineMethod", "engineBody",
+    "enginePath", "engineMethod", "engineBody", "sessionId", "projectPath",
   ]) {
     if (hasNative(key)) {
       effectiveParams[key] = typeof safeConfig[key] === "string" ? safeConfig[key] : "";
@@ -361,6 +361,7 @@ export function agentNodeHtml(): string {
       instruction: { value: "" },
       capability: { value: "read" },
       outputVar: { value: "" },
+      sessionId: { value: "" },
     },
     inputs: 1,
     outputs: 1,
@@ -371,20 +372,24 @@ export function agentNodeHtml(): string {
 </script>
 <script type="text/html" data-template-name="${MCODE_AGENT_NODE_TYPE}">
   <div class="form-row">
-    <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+    <label for="node-input-name"><i class="fa fa-tag"></i> <span data-i18n="common.label.name">Name</span></label>
     <input type="text" id="node-input-name" placeholder="Name">
   </div>
   <div class="form-row">
-    <label for="node-input-instruction"><i class="fa fa-pencil"></i> Instruction</label>
+    <label for="node-input-instruction"><i class="fa fa-pencil"></i> <span data-i18n="mcode.label.instruction">Instruction</span></label>
     <textarea id="node-input-instruction" rows="5" placeholder="What this step does"></textarea>
   </div>
   <div class="form-row">
-    <label for="node-input-capability"><i class="fa fa-shield"></i> Capability</label>
+    <label for="node-input-capability"><i class="fa fa-shield"></i> <span data-i18n="mcode.label.capability">Capability</span></label>
     <select id="node-input-capability"><option value="read">read</option><option value="write">write</option></select>
   </div>
   <div class="form-row">
-    <label for="node-input-outputVar"><i class="fa fa-code"></i> Output variable</label>
+    <label for="node-input-outputVar"><i class="fa fa-code"></i> <span data-i18n="mcode.label.outputVar">Output variable</span></label>
     <input type="text" id="node-input-outputVar" placeholder="outputVar">
+  </div>
+  <div class="form-row">
+    <label for="node-input-sessionId"><i class="fa fa-comments"></i> <span data-i18n="mcode.label.sessionId">Mcode session ID</span></label>
+    <input type="text" id="node-input-sessionId" placeholder="Existing visible Mcode session ID">
   </div>
 </script>
 <script type="text/html" data-help-name="${MCODE_AGENT_NODE_TYPE}">
