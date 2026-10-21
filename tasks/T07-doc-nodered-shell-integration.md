@@ -129,3 +129,12 @@ type PaneContent =
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜前置条件未满足，按 T07 第 13–21 行停工
+
+- **阻塞：等待 T05**。`tasks/README.md` 标注原 T05 已拆成 T05a/T05b/T05c，三张切片虽标完成，但原 T05 的结果回写区为空；T07 要求的 `apps/desktop/scripts/docs-vendor-parity-smoke/` 不存在，无法证明「T05 全功能迁移已完成，docs-vendor-parity-smoke 全绿」。此硬前置条件尚未满足，依照 T07 明文要求不进入实现。
+- **任务路径提示**：本次派发的是 `tasks/T07`，实际文件为 `tasks/T07-doc-nodered-shell-integration.md`；直接读取简写路径返回 ENOENT。依据 `tasks/README.md` 和 `_PROMPT_TEMPLATE.md`，任务路径应使用磁盘上的完整文件名。本次仅在实际 T07 文件记录阻塞事实。
+- T02 有 `8e4867578a97768357dce9d28c9f515b3b74c1c4` 实现记录，索引标完成；T03 有 `14880aeff0aba3067c8d5735d2cf5ee69d3386cf` 原派活完成记录，owner 落盘增量 T10 索引标完成。未将这些已有记录当作本轮复测。
+- **本轮操作**：只读 T07、T02、T03、T05、`tasks/README.md`、`tasks/_PROMPT_TEMPLATE.md`、`audit-ledgers/README.md`，核对 `git status --short`、提交记录及缺失的 `docs-vendor-parity-smoke` 目录。仅追加本任务文件，不修改业务/测试源码、GenOffice/Node-RED 上游或其他任务文件，不 push。
+- **验收判据 1–6：均未执行，全部不能声明达成**；无 Electron 探针、无 smoke PASS/FAIL 结果、无双包 tsc、无变异红/绿与 cmp 数据（前置阻塞，未开工）。剩余风险是 T05 原验收证据缺失；解除硬前置后才能启动 T07 的验证。
+- **提交 SHA**：本阻塞记录的提交 SHA 见本文件后续回写。
