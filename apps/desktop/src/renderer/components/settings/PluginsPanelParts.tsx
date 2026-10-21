@@ -101,18 +101,20 @@ function FilterButton({
   onClick: () => void;
 }) {
   return (
-    <button
+    <Button
+      variant="ghost"
+      size={null}
       type="button"
       aria-pressed={active}
       onClick={onClick}
       className={cn(
-        "flex items-center gap-1 rounded-md px-2 py-1 text-[0.7857em] transition-colors",
+        "flex items-center gap-1 rounded-[var(--radius-btn-xs)] px-2 py-1 text-[0.7857em] transition-colors",
         active ? "bg-surface-hover font-semibold text-content" : "text-content-muted hover:text-content",
       )}
     >
       {label}
       <span className="tabular-nums text-[0.92em] text-content-subtle">{count}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -357,11 +359,11 @@ export function InstalledPane({
         {!loaded ? (
           <LoadingNote label={t("settings.plugins.loading")} />
         ) : plugins.length === 0 ? (
-          <Card className="rounded-xl">
+          <Card>
             <EmptyState className="py-6" icon={IconPuzzle} title={t("settings.plugins.empty")} />
           </Card>
         ) : filtered.length === 0 ? (
-          <Card className="rounded-xl">
+          <Card>
             <EmptyState
               className="py-6"
               title={
@@ -374,7 +376,7 @@ export function InstalledPane({
             />
           </Card>
         ) : (
-          <div className="divide-y divide-edge overflow-hidden rounded-xl border border-edge bg-surface">
+          <Card className="divide-y divide-edge overflow-hidden">
             {filtered.map((p) => (
               <PluginRow
                 key={p.name}
@@ -398,7 +400,7 @@ export function InstalledPane({
                 onRemove={() => onRemove(p)}
               />
             ))}
-          </div>
+          </Card>
         )}
       </div>
 
@@ -1401,11 +1403,13 @@ export function MarketplacePane({
         {marketplaces.length > 0 ? (
           <>
             <div className="min-w-0 overflow-x-auto">
-              <div className="flex w-fit items-center gap-0.5 rounded-lg border border-edge bg-surface/40 p-0.5">
+              <div className="flex w-fit items-center gap-0.5 rounded-[var(--radius-btn-md)] border border-edge bg-surface/40 p-0.5">
                 {marketplaces.map((mp) => {
                   const isActive = mp.name === active?.name;
                   return (
-                    <button
+                    <Button
+                      variant="ghost"
+                      size={null}
                       key={mp.name}
                       type="button"
                       title={mp.sourceRef}
@@ -1414,7 +1418,7 @@ export function MarketplacePane({
                         setQuery("");
                       }}
                       className={cn(
-                        "flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1 text-[0.7857em] font-medium transition-colors",
+                        "flex shrink-0 items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-3 py-1 text-[0.7857em] font-medium transition-colors",
                         isActive
                           ? "bg-surface-hover text-content"
                           : "text-content-muted hover:text-content",
@@ -1425,7 +1429,7 @@ export function MarketplacePane({
                       <span className="tabular-nums text-[0.8571em] text-content-subtle">
                         {mp.plugins.length}
                       </span>
-                    </button>
+                    </Button>
                   );
                 })}
               </div>
@@ -1444,22 +1448,24 @@ export function MarketplacePane({
         ) : (
           loaded &&
           !addOpen && (
-            <button
+            <Button
+              variant="outline"
+              size={null}
               type="button"
               onClick={() => setAddOpen(true)}
-              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-edge px-3 py-2 text-[0.8571em] font-medium text-content-muted transition-colors hover:border-edge/80 hover:bg-surface-hover hover:text-content"
+              className="flex w-full items-center justify-center gap-1.5 rounded-[var(--radius-card)] border border-dashed border-edge px-3 py-2 text-[0.8571em] font-medium text-content-muted transition-colors hover:border-edge/80 hover:bg-surface-hover hover:text-content"
             >
               <IconPlus size={13} />
               {t("settings.plugins.mpAddMarketplace")}
-            </button>
+            </Button>
           )
         )}
       </div>
 
       {/* Add form — kept mounted while closed so a half-typed URL survives. */}
-      <div
+      <Card
         className={cn(
-          "mb-2.5 flex-none rounded-xl border border-dashed border-edge-input bg-surface-muted/35 p-2",
+          "mb-2.5 flex-none border-dashed border-edge-input bg-surface-muted/35 p-2",
           addOpen ? "block" : "hidden",
         )}
       >
@@ -1482,7 +1488,7 @@ export function MarketplacePane({
             disabled={ops.busyKey === "mp:add" || !mpUrl.trim()}
           >
             {ops.busyKey === "mp:add" ? (
-              <IconLoader2 size={12} className="animate-spin" />
+              <Spinner size="xs" />
             ) : (
               <IconPlus size={12} />
             )}
@@ -1507,17 +1513,17 @@ export function MarketplacePane({
             <IconX size={13} className="text-content-subtle" />
           </Button>
         </div>
-      </div>
+      </Card>
 
       <div className="pb-4">
         {!loaded ? (
           <LoadingNote label={t("settings.plugins.loading")} />
         ) : marketplaces.length === 0 ? (
-          <Card className="rounded-xl">
+          <Card>
             <EmptyState className="py-6" title={t("settings.plugins.mpEmpty")} />
           </Card>
         ) : q && entries.length === 0 ? (
-          <Card className="rounded-xl">
+          <Card>
             <EmptyState className="py-6" title={t("settings.plugins.mpSearchEmpty", { query: query.trim() })} />
           </Card>
         ) : active ? (
@@ -1558,22 +1564,13 @@ function MarketplaceCatalog({
   const fetching = busyKey === `mp:refresh:${marketplace.name}`;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-edge bg-surface">
+    <Card className="overflow-hidden">
       <div className="flex items-center gap-2 border-b border-edge bg-surface-muted/35 px-3 py-2.5">
-        <span
-          className={cn(
-            "shrink-0 rounded px-1.5 py-0.5 text-[0.72em]",
-            marketplace.sourceKind === "git"
-              ? "bg-info/10 font-mono text-info"
-              : "bg-surface-muted text-content-muted",
-          )}
-        >
+        <Badge variant={marketplace.sourceKind === "git" ? "accent" : "neutral"} className="font-mono">
           {marketplace.sourceKind === "git" ? "git" : t("settings.plugins.source.local-dir")}
-        </span>
+        </Badge>
         {marketplace.builtin && (
-          <span className="shrink-0 rounded bg-surface-hover px-1.5 py-0.5 text-[0.72em] text-content-muted">
-            {t("settings.plugins.mpBuiltin")}
-          </span>
+          <Badge variant="neutral">{t("settings.plugins.mpBuiltin")}</Badge>
         )}
         <span className="text-[0.92em]">
           <EcosystemBadge ecosystem={marketplace.ecosystem} />
@@ -1591,10 +1588,7 @@ function MarketplaceCatalog({
           onClick={onRefresh}
           disabled={busy}
         >
-          <IconRefresh
-            size={13}
-            className={cn("text-content-subtle hover:text-content", fetching && "animate-spin")}
-          />
+          {fetching ? <Spinner size="xs" /> : <IconRefresh size={13} className="text-content-subtle hover:text-content" />}
         </Button>
         {/* Shipped catalogs carry no remove action (the main process refuses it
             too) — this just keeps a dead control off the screen. */}
@@ -1644,9 +1638,7 @@ function MarketplaceCatalog({
               )}
             </div>
             {entry.installed ? (
-              <span className="shrink-0 rounded bg-surface-hover px-1.5 py-0.5 text-[0.75em] text-content-muted">
-                {t("settings.plugins.mpInstalled")}
-              </span>
+              <Badge variant="success" className="shrink-0">{t("settings.plugins.mpInstalled")}</Badge>
             ) : (
               <Button
                 variant="secondary"
@@ -1658,7 +1650,7 @@ function MarketplaceCatalog({
                 title={entry.appsOnly ? t("settings.plugins.mpAppsOnlyTitle") : undefined}
               >
                 {busyKey === `mpEntry:${marketplace.name}/${entry.name}` ? (
-                  <IconLoader2 size={12} className="animate-spin" />
+                  <Spinner size="xs" />
                 ) : (
                   t("settings.plugins.mpInstall")
                 )}
@@ -1667,7 +1659,7 @@ function MarketplaceCatalog({
           </div>
         ))
       )}
-    </div>
+    </Card>
   );
 }
 

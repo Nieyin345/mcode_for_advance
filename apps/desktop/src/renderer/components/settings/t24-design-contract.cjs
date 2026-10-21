@@ -51,8 +51,16 @@ if (batch === 'shell') {
   check(market.includes('<ErrorNote className="mb-2">'), 'MCP market errors use shared ErrorNote');
   check(market.includes('{saving && <Spinner size="xs" />}'), 'MCP install uses shared Spinner');
   check(appearance.includes('<Button variant="ghost" size={null}'), 'appearance native button replaced');
+} else if (batch === 'plugins') {
+  let p = read('PluginsPanelParts.tsx');
+  if (process.env.T24_MUTATION === 'plugins') p = p.replace('<Card className="divide-y divide-edge overflow-hidden">', '<div className="divide-y divide-edge overflow-hidden">');
+  check(p.includes('<Card className="divide-y divide-edge overflow-hidden">'), 'installed-plugin list uses shared Card');
+  check(p.includes('<Card className="overflow-hidden">'), 'plugin marketplace catalog uses shared Card');
+  check(p.includes('<Badge variant="success"'), 'installed marker uses shared Badge');
+  check(p.includes('{fetching ? <Spinner size="xs" />'), 'catalog refresh uses shared Spinner');
+  check(!p.includes('rounded-xl'), 'no hardcoded large radius in large plugins view');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

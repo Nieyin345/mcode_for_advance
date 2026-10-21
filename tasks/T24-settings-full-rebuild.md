@@ -198,3 +198,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792553811002-14712-9LatL2`；双包 `npx tsc --noEmit -p apps/desktop/tsconfig.json && npx tsc --noEmit -p packages/contracts/tsconfig.json`：0 错。
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs wide` PASS；`set T24_MUTATION=wide&& node ... wide` 把隧道错误重新改为自绘元素后 exit=1（预期红）。
 - 功能核对：远程控制警告仍在原来两条分支显示，沙箱缺失维持 fail-closed，隧道启停/重置配置与 MCP 来源/选择安装方式/安装校验回调不变；现有 Electron settings suites 全绿；实际公网启用/安装未进行破坏性人工试验。
+
+### 2026-10-21｜批次 5：PluginsPanelParts 大型插件列表与市场卡
+
+- 改动：`PluginsPanelParts.tsx` 的筛选/来源/添加按钮用 `Button`，源导航与添加动作替换 CDS 按钮/卡片圆角 token，已装列表、市场目录与源地址表单改 `Card`，来源类别/内置/已装状态改 `Badge`，市场刷新与安装中状态改 `Spinner`。保留过滤器 `aria-pressed`、展开态、批量操作、安装/删除/更新事件绑定。
+- 原语：全为复用 `Button/Card/Badge/Spinner`，本批无需扩展；功能 bug：未发现。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke plugins-ui-smoke`：6/6 PASS（含真实 Chromium 插件 UI）；日志 `apps/desktop/.tmp/smoke-runs/1792554175683-23488-QsBI9d`；双包 tsc：0 错。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs plugins` PASS；`set T24_MUTATION=plugins&& node ... plugins` 将插件列表 `Card` 退回裸 div 后按预期 exit=1（红例）。
+- 功能核对：插件筛选、市场切换、下载安装、刷新与批量操作的 onClick / disabled / 数据路径未变；`plugins-ui-smoke` 真实浏览器回归 PASS。
