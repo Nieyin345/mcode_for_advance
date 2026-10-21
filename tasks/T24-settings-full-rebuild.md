@@ -165,3 +165,12 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。每完成一批写一段。 -->
+
+### 2026-10-21｜批次 1：设置外壳与导航
+
+- 改动：`SettingsPage.tsx`。左侧导航统一 `ui/Button`，active 保留色条并增 `aria-current=page`；分组分隔、CDS 圆角/字体 token、内容区间距与层级调整；懒加载兜底从自绘 `IconLoader2` 换为 `ui/LoadingNote`。已有五组与全部深链/能力门控保留。
+- 原语：Button、LoadingNote（均未扩展）；设置功能 bug：本批未发现。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5 pass/0 fail，日志 `apps/desktop/.tmp/smoke-runs/1792552547829-40684-YVvs9s`。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs shell`：PASS；`set T24_MUTATION=shell&& node ... shell`：预期 ASSERTION FAILED（撤回导航 Button，断言变红）。属于结构断言；交互回归另由 Electron smoke 验证。
+- 行为核对：settings-layout-smoke 覆盖分组导航、手动点击/深链、旧 data-root/office 等入口；settings-focus-electron-smoke 覆盖焦点与 Escape。无功能逻辑改动。
+- 双包 tsc：`apps/desktop` 既有 `src/main/mcp/hostMcpStdio.ts:257/268/274` TS2349（不在 T24 边界内，未修改），故双包全绿判据尚未满足。

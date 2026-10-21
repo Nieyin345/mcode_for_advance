@@ -32,7 +32,7 @@ import {
   IconRocket,
   type TablerIconProps,
 } from "@renderer/lib/icons.js";
-import { IconLoader2 } from "@renderer/lib/icons.js";
+import { Button, LoadingNote } from "@renderer/components/ui/index.js";
 import { escapeClosesSettings } from "@renderer/components/ui/confirm-dialog.js";
 
 /**
@@ -130,17 +130,14 @@ const MemoryExplorerPanel = lazy(() => PANEL_LOADERS.MemoryExplorerPanel().then(
 
 /** Suspense fallback: stays blank for fast (prefetched) loads, spins only if it drags. */
 function PanelLoading() {
+  const { t } = useI18n();
   const [show, setShow] = useState(false);
   useEffect(() => {
     const id = setTimeout(() => setShow(true), 150);
     return () => clearTimeout(id);
   }, []);
   if (!show) return null;
-  return (
-    <div className="flex justify-center py-10 text-content-subtle">
-      <IconLoader2 size={18} className="animate-spin" />
-    </div>
-  );
+  return <LoadingNote label={t("common.loading")} className="py-10" />;
 }
 
 /**
@@ -340,12 +337,13 @@ export function SettingsPage() {
     <ThreePaneLayout
       left={
         <nav
-          className="px-2 py-3"
+          data-settings-nav=""
+          className="h-full min-h-0 overflow-y-auto border-r border-edge bg-surface px-3 py-4"
           style={{ fontSize: "var(--right-panel-font-size)" }}
         >
           {NAV_GROUPS.map((group, gi) => (
-            <div key={group.labelKey} className={gi === 0 ? "pb-1" : "pb-1 pt-4"}>
-              <div className="px-3 pb-1 text-[0.7143em] font-medium uppercase tracking-wider text-content-subtle">
+            <div key={group.labelKey} className={gi === 0 ? "pb-1" : "border-t border-edge/60 pb-1 pt-3 mt-3"}>
+              <div className="px-3 pb-2 text-[length:var(--chat-fs-xxs)] font-semibold uppercase tracking-[0.08em] text-content-subtle">
                 {t(group.labelKey)}
               </div>
               <div className="space-y-0.5">
@@ -359,16 +357,20 @@ export function SettingsPage() {
                   const isActive = item.id === active;
                   const Icon = item.icon;
                   return (
-                    <button
+                    <Button
                       key={item.id}
+                      type="button"
+                      variant="ghost"
+                      size="md"
+                      aria-current={isActive ? "page" : undefined}
                       onClick={() => setActive(item.id)}
                       // 【ARC-005 V2】导航项改用 CDS 控件档圆角与 32px 行高，
                       // 与侧栏会话行、分段控件同一密度；激活态保留左侧 accent 竖条
                       // （颜色之外的第二个可辨信号）。
                       className={cn(
-                        "relative flex h-8 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-3 text-left transition-colors",
+                        "relative flex h-9 w-full items-center justify-start gap-2 rounded-[var(--radius-btn-md)] px-3 text-left text-[length:var(--chat-fs-xs)] transition-colors",
                         isActive
-                          ? "bg-surface-hover font-medium text-content"
+                          ? "bg-surface-muted font-semibold text-content"
                           : "text-content-muted hover:bg-surface-hover hover:text-content",
                       )}
                     >
@@ -383,7 +385,7 @@ export function SettingsPage() {
                         )}
                       />
                       {t(item.labelKey)}
-                    </button>
+                    </Button>
                   );
                 })}
               </div>
@@ -410,7 +412,8 @@ export function SettingsPage() {
           // The initial 20px gap comes from PanelHeader's own `mt-5` instead —
           // a sticky element's self-margin positions it at rest but does not
           // offset where it sticks.
-          className="min-h-0 h-full overflow-y-auto px-6 pb-5"
+          data-settings-content=""
+          className="min-h-0 h-full overflow-y-auto bg-surface-muted/20 px-6 pb-5"
           style={{ fontSize: "var(--right-panel-font-size)" }}
         >
           <Suspense key={active} fallback={<PanelLoading />}>
