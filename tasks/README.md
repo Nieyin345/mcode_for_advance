@@ -102,6 +102,7 @@
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | ✅ 完成（`41c42f03`；12/12 套件 + 变异 2/2；未做真 Node-RED 未部署 flow 端到端） |
 | T28 | **GenOffice pdf / markdown / html 接入**（直接调原厂 `createXxxView`） | **ARC-007 主线** | T22，且 **T07 已完成 ✅** | **可派**（原厂已导出完整视图工厂，Mcode 却手搓了一套 preload） |
 | T29 | **GenOffice sheets / slides 接入**（同上，含 `queueWorkbookForView`） | **ARC-007 主线** | T22，且 **T28 完成后** | **待派**（sheets 的 `createSheetsView` 与 slides 的 `createSlidesView` 都能直接用） |
+| T30 | **把 Mcode 节点包装进 Node-RED**（`nodesDir` + bundle + 清单校验） | **ARC-006 主线** | 无 | **可派**（1,380 行节点代码已写好，生产零调用 —— 这是唯一断点） |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | ✅ 完成（见上） |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |

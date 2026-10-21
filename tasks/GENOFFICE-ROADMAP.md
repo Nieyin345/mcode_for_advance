@@ -305,3 +305,109 @@ T07 已经做了 docs 与 Node-RED 的 pane 化，本阶段补其它四个。
 3. **`ai:stream` 的 `request` 里带什么** —— 决定 T31 的契约形状。
 4. **六个 app 的 preload 各有多少条通道会越出 pane 边界** —— 决定 T28/T29 要不要额外拦截。
 5. **xlsx sidecar（Rust 可执行）在 Mcode 的两种布局下怎么定位** —— T29 的阻塞点。
+
+---
+
+# 附录：Node-RED 这条线（同一原则，另一条主线）
+
+> 用户原话：
+> **「node red部分，和genoffice的原则也是，直接搬过来，二开，只不过添加一些和ai交互的节点之类的，就是我们的mcode有的，或者是修改一下node red有的节点」**
+
+## N1. 现状（实读，2026-10-21）
+
+**已经做对了，而且比 GenOffice 那条线更彻底**：
+
+| 层 | 状态 | 证据 |
+|---|---|---|
+| Node-RED 5.0.8 源码 vendor | ✅ | `node-red/`，独立 Git，Apache-2.0，`mcode/integration` 分支，HEAD `935b8d3` |
+| 运行时拉起 | ✅ **官方 embedding 形状** | `registry.ts:85-260` 的 `BOOTSTRAP`，用 `RED.init(server, {...})` |
+| 编辑器嵌入 | ✅ | 原厂 `red.min.js` 作为 `WebContentsView`（T07） |
+| 认证 | ✅ | 宿主令牌，无令牌 401 |
+| 部署审批 | ✅ | `POST /flows` 走 `process.send` 握手，其余写操作 423 |
+| safeMode | ✅ | 默认开，只有宿主写可信标记才放开 |
+| 引导脚本完整性 | ✅ | `bootstrapManifest.ts` 版本 + sha256 + 篡改检测 |
+
+**关键差异**：Node-RED 这条线**没有「宿主层重造」的问题**。
+引导脚本就是 `RED.init()`，没有替代任何原厂实现。
+
+## N2. 唯一的断点
+
+`apps/desktop/src/main/workflowEngines/` 下有 **1,380 行**自定义节点代码：
+
+- `mcodeNodePack.ts` —— `mcode-agent`（纯逻辑 + 注册外壳 + **真实 HTML**，`agentNodeHtml():354`）
+- `mcodeNodeTypes.ts` —— 另外 5 个（`mcode-conversation` / `mcode-branch` /
+  `mcode-trigger` / `mcode-module-capability` / `mcode-node-red-call`）
+
+**没有接进生产**：
+
+```
+grep -rn "registerMcodeAgentNodes" apps/desktop/src/main/   → 无输出（生产零调用）
+grep -rn "registerMcodeAgentNodes" apps/desktop/scripts/   → 只有测试
+```
+
+同时 `McodeAgentPort` 只有测试替身，没有生产实现。
+
+**节点写好了，但没有装进 Node-RED，也没有东西执行它们。**
+
+## N3. Node-RED 的扩展方式（零上游改动）
+
+一个节点 = 同目录下一对同名文件：
+
+```js
+// <type>.js
+module.exports = function (RED) {
+  function Ctor(config) { RED.nodes.createNode(this, config); }
+  RED.nodes.registerType("mcode-agent", Ctor);
+};
+```
+
+```html
+<!-- <type>.html —— 编辑器加载 -->
+<script type="text/javascript">RED.nodes.registerType("mcode-agent", { category, color, defaults, inputs, outputs, icon });</script>
+<script type="text/html" data-template-name="mcode-agent"> 表单 </script>
+<script type="text/html" data-help-name="mcode-agent"> 帮助 </script>
+```
+
+**发现机制**：扫 `nodesDir`（`node-red/settings.js:58-63`），有同名 `.js` + `.html` 即认作节点。
+
+## N4. 不改原生节点，只做补充
+
+`core/function/`：`function`（写 JS）、`switch`、`change`、`range`、`template`、
+`delay`、`trigger`、`exec`。
+`core/network/`：`http in`/`http request`、`mqtt`、`websocket`、`tcp`、`udp`。
+
+**这些全部保留，一个不改。** Mcode 的 6 个节点是补充：
+
+| Mcode 节点 | 原生做不到的事 |
+|---|---|
+| `mcode-agent` | 跑一次三引擎 agent，输出 `{text, artifacts}` |
+| `mcode-conversation` | 跑一轮主对话（用户可见） |
+| `mcode-branch` | 「模型决策」分支（原生 `switch` 只能按值比较） |
+| `mcode-trigger` | 订阅 Mcode 应用事件（手动/定时/文件变化已并入原生 `inject`/`watch`） |
+| `mcode-module-capability` | 调用扩展系统的能力 |
+| `mcode-node-red-call` | 反向调用引擎 API |
+
+**迁移器的映射方向已经是对的**（`mcodeNodeTypes.ts` 头注写死）：
+`condition` → 原生 `switch`，`command` → 原生 `exec`，
+`code` → 原生 `function`/`exec` + 解释器前缀。
+
+## N5. 卡片
+
+| 卡 | 内容 | 状态 |
+|---|---|---|
+| **T30** | 把节点包装进 Node-RED（`nodesDir` + build bundle + 清单校验） | 待派 |
+| **T31** | `McodeAgentPort` 的生产实现（6 个 port 接到三引擎/审批/ModuleHost） | 等 T30 |
+| **T32** | 节点表单的 i18n 与图标（不改 Node-RED 主题） | 等 T30 |
+
+**T30 与 T28 可以并行** —— 前者改 `workflowEngines/`，后者改 `document/`，零重叠。
+
+## N6. 与 GenOffice 线的对照
+
+| | GenOffice | Node-RED |
+|---|---|---|
+| 上游源码 | `genoffice/`（gitignored 快照） | `node-red/`（gitignored 快照） |
+| 渲染端 | 六个 app，43 万行，原样 | `editor-client`，原样 |
+| 宿主层 | **重造了 4,740 行**（待 T28/T29 改回） | ✅ 官方 embedding，没问题 |
+| AI 替换 | `ai:stream` 桥（待 T31/T32） | 节点 port（待 T31） |
+| 扩展点 | AI skill（渲染端） | 自定义节点（`nodesDir`） |
+| 上游改动 | 9 个补丁，全在 `apps/docs/` | **0 个补丁** |
