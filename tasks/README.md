@@ -99,10 +99,11 @@
 | T24 | 设置页全面重构（63 面板 / 26,303 行对齐 CDS） | ARC-005 UI | 无 | **进行中**（批次 1–3 完成；批次 4 在飞） |
 | T25 | 原子写与冲突副本的故障注入回归（maint-m07 9 红） | 数据安全 | 无 | ✅ 完成（`8f43c24e`；总控独立复跑 4/4 PASS） |
 | T26 | 修好三套自坏的 smoke 脚手架 | 测试基础设施 | 无 | ✅ 完成（`f98df6ff`；总控独立复跑 2/2 PASS） |
-| T28 | **GenOffice pdf / markdown / html 接入**（直接调原厂 `createXxxView`） | **ARC-007 主线** | T22，且 **T07 完成后** | **待派**（原厂已导出完整视图工厂，Mcode 却手搓了一套 preload） |
+| T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | ✅ 完成（`41c42f03`；12/12 套件 + 变异 2/2；未做真 Node-RED 未部署 flow 端到端） |
+| T28 | **GenOffice pdf / markdown / html 接入**（直接调原厂 `createXxxView`） | **ARC-007 主线** | T22，且 **T07 已完成 ✅** | **可派**（原厂已导出完整视图工厂，Mcode 却手搓了一套 preload） |
 | T29 | **GenOffice sheets / slides 接入**（同上，含 `queueWorkbookForView`） | **ARC-007 主线** | T22，且 **T28 完成后** | **待派**（sheets 的 `createSheetsView` 与 slides 的 `createSlidesView` 都能直接用） |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
-| T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | **可派**（前置条件已修正：证据改为 `document-view-*` 五套） |
+| T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | ✅ 完成（见上） |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |
 | T09 | ~~AOCI 索引补录~~ | — | — | **已取消**（用户决定不再用 AOCI） |
 | T10 | executor owner 注册表落盘（增量，原派活未含） | ARC-006 | T03 | ✅ 完成（81/81；跨进程 CAS 与部署回滚仍缺） |
@@ -308,21 +309,26 @@ docs 已有可抄的：`genoffice/apps/docs/src/main/mcode-ai.ts`（206 行）�
 | sheets | ❌ 未接（`createSheetsView` 一直可用） | **T29** |
 | slides | ⚠️ 自搓了 3 个操作（原厂 155 条已在 `createSlidesView` 里） | **T29** |
 
-### 可派顺序（**串行，不能并行**）
+### 可派顺序（**T07 已完成，文档线解锁**）
 
-| 顺序 | 任务 | 为什么必须串行 |
+| 顺序 | 任务 | 状态 |
 |---|---|---|
-| **1** | **T07**（在飞） | 改 `GenofficeViewHostPane` / `RightPanel` / `paneLayout` / `FileEditor` |
-| **2** | **T28** | 改同一个 `GenofficeViewHostPane` + `DocumentViewHost` |
-| **3** | **T29** | 同上，且依赖 T28 产出的 `mcode-view-ai.ts` |
+| **1** | **T28**（pdf / markdown / html） | **现在可派** ✅ |
+| **2** | **T29**（sheets / slides） | 等 T28 产出的 `mcode-view-ai.ts` |
+| — | T24（设置页） | 在飞 |
 
-三张卡都改 `GenofficeViewHostPane.tsx` 与 `documentViewHost.ts`，**必须串行**。
+**T28 可以立刻派。** 它改 `GenofficeViewHostPane.tsx` + `documentViewHost.ts`，
+T07 已经把这两个文件提交了，不会再撞。
 
-**当前在飞**：T07、T24。
-**已完成可腾位置**：T25 ✅、T26 ✅。
+**T29 必须等 T28** —— 两者共用那份 AI 桥实现，且都改同一批文件。
+T28 的卡里要求产出 `mcode-view-ai.ts`，T29 直接复用。
 
-**T28 的唯一前置是 T07 落地**（两者都改 `GenofficeViewHostPane.tsx`）。
-T07 一提交，立刻派 T28，不需要等我确认。
+### T07 留下的两条未验（不在 T28/T29 范围内，如实留档）
+
+- 真 Node-RED 编辑器里输入并拖动一条**未部署**的 flow，然后换 pane —— 没做。
+  回写只验证了原生 `WebContentsView` 的反导航机制等价物。
+- 带 document/flow 内容的**整窗退出重启后重开真编辑器** —— 没做。
+- 圆角/裁剪是否被原生 OS 子视图盖住 —— 未逐像素截图，不能判定。
 
 ---
 
