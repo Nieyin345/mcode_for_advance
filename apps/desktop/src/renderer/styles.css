@@ -856,6 +856,14 @@ body {
   animation-duration: 2.2s;
 }
 
+/* T20: connecting uses the existing equalizer animation; active is driven by
+   microphone FFT via requestAnimationFrame, idle is static. Explicit Mcode
+   reduced-motion overrides and OS reduced-motion both stop the pulse. */
+.live-mic-bars[data-mode="connecting"][data-reduced="false"] .live-mic-bar {
+  transform-origin: center;
+  animation: live-eq-bounce 1.8s ease-in-out infinite;
+}
+
 @keyframes live-eq-bounce {
   0%,
   100% {

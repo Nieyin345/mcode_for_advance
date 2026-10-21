@@ -59,6 +59,8 @@ interface UseVoiceInputResult {
   stop: () => Promise<string>;
   /** Discard the active listen without returning text. */
   cancel: () => Promise<void>;
+  /** The current mic stream, for a display-only activity visualizer. */
+  audioStream: MediaStream | null;
   /** A friendly mic error message (permission denied / no device), or null. */
   micError: string | null;
   /** Clear the mic-error state. */
@@ -77,6 +79,7 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
   onFinalRef.current = onFinal;
 
   const [busy, setBusy] = useState(false);
+  const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
 
   // Refs to live audio + session resources so the async capture callbacks
@@ -176,6 +179,7 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
   const teardownAudio = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    setAudioStream(null);
     void ctxRef.current?.close().catch(() => {});
     ctxRef.current = null;
     pendingRef.current = null;
@@ -258,6 +262,7 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
         return;
       }
       streamRef.current = micRes.ok;
+      setAudioStream(micRes.ok);
 
       // Native-rate context — see header note for why NOT 16000.
       const stream = micRes.ok;
@@ -290,6 +295,7 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
         stream.getTracks().forEach((t) => t.stop());
         void ctx.close().catch(() => {});
         streamRef.current = null;
+        setAudioStream(null);
         ctxRef.current = null;
         void api.voice.cancel({ sessionId }).catch(() => {});
         sessionIdRef.current = null;
@@ -306,6 +312,7 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
       if (!stale()) setMicError(String((err as Error)?.message ?? err));
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
+      setAudioStream(null);
       void ctxRef.current?.close().catch(() => {});
       ctxRef.current = null;
       pendingRef.current = null;
@@ -370,5 +377,5 @@ export function useVoiceInput(options: UseVoiceInputOptions = {}): UseVoiceInput
     };
   }, []);
 
-  return { busy, start, stop, cancel, micError, clearMicError };
+  return { busy, start, stop, cancel, audioStream, micError, clearMicError };
 }

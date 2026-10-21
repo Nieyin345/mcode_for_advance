@@ -20,6 +20,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { useVoiceInput } from "@renderer/hooks/useVoiceInput.js";
+import { LiveMicActivityBars, voiceModeOf } from "./LiveMicActivityBars.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import {
   registerVoiceHandle,
@@ -105,7 +106,7 @@ function MicButtonDesktop({
     lastWrittenRef.current = text;
   };
 
-  const { busy, start, stop, cancel, micError, clearMicError } = useVoiceInput({
+  const { busy, start, stop, cancel, audioStream, micError, clearMicError } = useVoiceInput({
     lang: voiceLang,
     onPartial: (text) => applyLiveText(text),
     onFinal: (text) => {
@@ -264,28 +265,33 @@ function MicButtonDesktop({
       : t("chat.voice.toggleTitle");
 
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={handleClick}
-      title={title}
-      aria-label={
-        listening ? t("chat.voice.stopListening") : t("chat.voice.startListening")
-      }
-      className={cn(
-        "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-content-muted transition-all duration-150 ease-out",
-        "hover:scale-110 hover:bg-surface-hover hover:text-content active:scale-95",
-        listening && "bg-accent/10 text-accent hover:text-accent",
-        "disabled:scale-100 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-muted",
+    <span className="inline-flex shrink-0 items-center gap-0.5">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={handleClick}
+        title={title}
+        aria-label={
+          listening ? t("chat.voice.stopListening") : t("chat.voice.startListening")
+        }
+        className={cn(
+          "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-content-muted transition-all duration-150 ease-out",
+          "hover:scale-110 hover:bg-surface-hover hover:text-content active:scale-95",
+          listening && "bg-accent/10 text-accent hover:text-accent",
+          "disabled:scale-100 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-muted",
+        )}
+      >
+        {listening ? (
+          <IconWaveSine size={18} className="animate-pulse" />
+        ) : disabled ? (
+          <IconMicrophoneOff size={18} />
+        ) : (
+          <IconMicrophone size={18} />
+        )}
+      </button>
+      {listening && (
+        <LiveMicActivityBars mode={voiceModeOf(armed, busy)} audioStream={audioStream} size={20} />
       )}
-    >
-      {listening ? (
-        <IconWaveSine size={18} className="animate-pulse" />
-      ) : disabled ? (
-        <IconMicrophoneOff size={18} />
-      ) : (
-        <IconMicrophone size={18} />
-      )}
-    </button>
+    </span>
   );
 }
