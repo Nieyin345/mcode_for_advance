@@ -336,7 +336,7 @@ export function AppearancePanel() {
             {USER_BUBBLE_PRESETS.map((p) => {
               const active = userMessageColor === p.triplet && !pendingUserHex;
               return (
-                <button
+                <Button variant="ghost" size={null}
                   key={p.triplet}
                   type="button"
                   onClick={() => {
@@ -402,7 +402,7 @@ export function AppearancePanel() {
             {ACCENT_PRESETS.map((p) => {
               const active = accentColor === p.triplet && !pendingAccentHex;
               return (
-                <button
+                <Button variant="ghost" size={null}
                   key={p.triplet}
                   type="button"
                   onClick={() => {

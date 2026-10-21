@@ -40,8 +40,19 @@ if (batch === 'shell') {
   check(usage.includes('<LoadingNote label={t("common.loading")}'), 'usage loading must use shared LoadingNote');
   check(notifications.includes('<EmptyState title={t("settings.notifications.projectEmpty")}'), 'project empty state must be shared');
   check(style.includes('<ErrorNote>{t("settings.outputStyle.loadFailed")}</ErrorNote>'), 'style loading failure must use shared ErrorNote');
+} else if (batch === 'wide') {
+  let remote = read('RemoteControlPanel.tsx');
+  const market = read('McpMarketView.tsx');
+  const appearance = read('AppearancePanel.tsx');
+  if (process.env.T24_MUTATION === 'wide') remote = remote.replace('<ErrorNote>{status.tunnelError}</ErrorNote>', '<p>{status.tunnelError}</p>');
+  check(remote.includes('<ErrorNote>{status.tunnelError}</ErrorNote>'), 'remote tunnel failure uses shared ErrorNote');
+  check(remote.includes('<Badge variant={status?.enabled ? "warning" : "neutral"}>'), 'remote status uses shared Badge');
+  check(remote.includes('<Card className="space-y-1.5 bg-surface/40 p-2.5">'), 'remote tunnel uses shared Card');
+  check(market.includes('<ErrorNote className="mb-2">'), 'MCP market errors use shared ErrorNote');
+  check(market.includes('{saving && <Spinner size="xs" />}'), 'MCP install uses shared Spinner');
+  check(appearance.includes('<Button variant="ghost" size={null}'), 'appearance native button replaced');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

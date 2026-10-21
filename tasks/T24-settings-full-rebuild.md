@@ -190,3 +190,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 pass，日志 `apps/desktop/.tmp/smoke-runs/1792553465851-7760-srKpxF`；双包 `npx tsc --noEmit -p apps/desktop/tsconfig.json && npx tsc --noEmit -p packages/contracts/tsconfig.json`：0 错。
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs mid` PASS；`set T24_MUTATION=mid&& node ... mid`：恢复旧用量自绘错误块后 exit=1（预期红）。
 - 行为核对：4 页控制分支、状态字段与传入回调不变；旧 Electron 面板与焦点回归均绿。真实通知/安装副作用未人工触发。
+
+### 2026-10-21｜批次 4：外观、远程控制、MCP 市场
+
+- 改动：`AppearancePanel` 两处自绘原生按钮切成 `Button`（原控制回调/视觉尺寸保留）；`RemoteControlPanel` 公网危险提示、沙箱失效提示、隧道错误改为 `ErrorNote`，状态标签→`Badge`，隧道/控制行容器→`Card`，手写转圈→`Spinner`；`McpMarketView` 搜索源错误/损坏数据/安装失败→`ErrorNote`，来源选项标签→`Badge`，加载/安装忙态→`Spinner`，选方式按钮→`Button`，安装名称字段→`Field` + `Input` 关联。
+- 原语：复用 Button/Card/Badge/ErrorNote/Spinner/Field，不扩展。功能 bug：未发现；公网控制与 MCP 配置保存调用不改。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792553811002-14712-9LatL2`；双包 `npx tsc --noEmit -p apps/desktop/tsconfig.json && npx tsc --noEmit -p packages/contracts/tsconfig.json`：0 错。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs wide` PASS；`set T24_MUTATION=wide&& node ... wide` 把隧道错误重新改为自绘元素后 exit=1（预期红）。
+- 功能核对：远程控制警告仍在原来两条分支显示，沙箱缺失维持 fail-closed，隧道启停/重置配置与 MCP 来源/选择安装方式/安装校验回调不变；现有 Electron settings suites 全绿；实际公网启用/安装未进行破坏性人工试验。

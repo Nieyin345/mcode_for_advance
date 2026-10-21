@@ -25,19 +25,21 @@ import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import {
+  Badge,
   Button,
+  Card,
   ErrorNote,
   HintLabel,
   InfoHint,
   Input,
   LoadingNote,
   Select,
+  Spinner,
   Switch,
 } from "@renderer/components/ui/index.js";
 import {
   IconCopy,
   IconCheck,
-  IconLoader2,
   IconPlugConnected,
   IconAlertTriangle,
 } from "@renderer/lib/icons.js";
@@ -200,7 +202,7 @@ function TunnelCard({
           })
         }
       >
-        {busy ? <IconLoader2 size={13} className="mr-1 animate-spin" /> : null}
+        {busy ? <Spinner size="xs" className="mr-1" /> : null}
         {t("settings.remoteControl.saveTunnel")}
       </Button>
     </div>
@@ -426,10 +428,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
             <InfoHint>{t("settings.remoteControl.desc")}</InfoHint>
           </h2>
         </div>
-        <p className="flex items-start gap-1.5 rounded border border-danger/30 bg-danger/5 px-2 py-1.5 text-[0.7143em] leading-relaxed text-danger">
-          <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
-          <span>{t("settings.remoteControl.warning")}</span>
-        </p>
+        <ErrorNote icon={IconAlertTriangle} className="text-[0.7143em]">{t("settings.remoteControl.warning")}</ErrorNote>
         <ErrorNote
           title={t("settings.remoteControl.loadFailed")}
           action={
@@ -462,10 +461,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
       </div>
 
       {/* 警告 —— 不折叠、不藏。用户按开关之前就该读到。 */}
-      <p className="flex items-start gap-1.5 rounded border border-danger/30 bg-danger/5 px-2 py-1.5 text-[0.7143em] leading-relaxed text-danger">
-        <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
-        <span>{t("settings.remoteControl.warning")}</span>
-      </p>
+      <ErrorNote icon={IconAlertTriangle} className="text-[0.7143em]">{t("settings.remoteControl.warning")}</ErrorNote>
 
       {/* 沙箱目录 —— **必须用户自己选**，不猜。公网来的文件工具只能在这个项目里动。 */}
       <div className="space-y-1">
@@ -475,12 +471,9 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
         {/* 【MC-018】显式选过的项目失效时**明确提示**，而不是静默回退到第一个项目 ——
             那个回退会把公网授权扩到用户没选过的目录。此时公网调用已被 fail closed。 */}
         {status?.sandboxProjectMissing ? (
-          <p className="flex items-start gap-1.5 rounded border border-danger/30 bg-danger/5 px-2 py-1.5 text-[0.7143em] leading-relaxed text-danger">
-            <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
-            <span>
-              {t("settings.remoteControl.sandboxMissing", { id: status.sandboxProjectMissingId ?? "" })}
-            </span>
-          </p>
+          <ErrorNote icon={IconAlertTriangle} className="text-[0.7143em]">
+            {t("settings.remoteControl.sandboxMissing", { id: status.sandboxProjectMissingId ?? "" })}
+          </ErrorNote>
         ) : null}
         <Select.Root
           value={status?.sandboxProjectId ?? ""}
@@ -519,21 +512,16 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
       </div>
 
       {/* 开关 */}
-      <div className="flex items-center justify-between gap-2 rounded border border-edge bg-surface/40 px-2.5 py-2">
+      <Card className="flex items-center justify-between gap-2 bg-surface/40 px-2.5 py-2">
         <div className="flex items-center gap-1.5">
           <span className="flex text-[0.7857em] font-medium text-content-muted">
             {t("settings.remoteControl.toggleLabel")}
           </span>
-          <span
-            className={cn(
-              "rounded px-1.5 py-0.5 text-[0.7143em]",
-              status?.enabled ? "bg-warning/15 text-warning" : "bg-surface-muted text-content-subtle",
-            )}
-          >
+          <Badge variant={status?.enabled ? "warning" : "neutral"}>
             {status?.enabled
               ? t("settings.customModels.publicMcpOn")
               : t("settings.customModels.publicMcpOff")}
-          </span>
+          </Badge>
         </div>
         <Switch
           checked={status?.enabled ?? false}
@@ -541,7 +529,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
           onCheckedChange={(v) => void run(() => api.publicMcp.setEnabled({ enabled: v }))}
           label={t("settings.remoteControl.toggleLabel")}
         />
-      </div>
+      </Card>
 
       {status?.enabled && (
         <TunnelCard
@@ -554,7 +542,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
       )}
 
       {status?.enabled && (
-        <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
+        <Card className="space-y-1.5 bg-surface/40 p-2.5">
           {/* 一键隧道 —— external 模式下 Mcode 不起进程(隧道是用户自己在外面跑的),
               按钮留着只会让人以为"没点所以没通"。 */}
           <div className={cn("flex items-center gap-2", status.tunnelMode === "external" && "hidden")}>
@@ -570,7 +558,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
               )}
             >
               {busy || status?.tunnelPhase === "starting" || status?.tunnelPhase === "reconnecting" ? (
-                <IconLoader2 size={13} className="mr-1 animate-spin" />
+                <Spinner size="xs" className="mr-1" />
               ) : (
                 <IconPlugConnected size={13} className="mr-1" />
               )}
@@ -583,9 +571,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
                     : t("settings.customModels.publicMcpStartTunnel")}
             </Button>
             {status?.tunnelPhase === "ready" && (
-              <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[0.7143em] text-accent">
-                {t("settings.customModels.publicMcpTunnelReady")}
-              </span>
+              <Badge variant="success">{t("settings.customModels.publicMcpTunnelReady")}</Badge>
             )}
           </div>
 
@@ -597,7 +583,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
                 status.tunnelPhase === "ready" ? "text-accent" : "text-content-subtle",
               )}
             >
-              {status.tunnelPhase === "starting" && <IconLoader2 size={12} className="animate-spin" />}
+              {status.tunnelPhase === "starting" && <Spinner size="xs" />}
               {status.tunnelPhase === "ready"
                 ? t("settings.remoteControl.externalReady")
                 : t("settings.remoteControl.externalProbing")}
@@ -605,9 +591,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
           )}
 
           {status?.tunnelPhase === "failed" && status.tunnelError && (
-            <p className="rounded border border-danger/30 bg-danger/5 px-1.5 py-1 text-[0.6428em] leading-relaxed text-danger">
-              {status.tunnelError}
-            </p>
+            <ErrorNote>{status.tunnelError}</ErrorNote>
           )}
 
           {fullUrl && (
@@ -636,7 +620,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
             onClick={() => void run(() => api.publicMcp.regenerateSecret())}
           >
             {busy ? (
-              <IconLoader2 size={13} className="mr-1 animate-spin" />
+              <Spinner size="xs" className="mr-1" />
             ) : (
               <IconPlugConnected size={13} className="mr-1" />
             )}
@@ -650,7 +634,7 @@ export function RemoteControlPanel({ onError }: { onError: (msg: string) => void
             {t("settings.remoteControl.basicToolsOnly")}
           </p>
 
-        </div>
+        </Card>
       )}
 
       {status?.enabled && (

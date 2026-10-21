@@ -18,8 +18,7 @@ import {
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, Dialog, Input } from "@renderer/components/ui/index.js";
-import { IconLoader2 } from "@renderer/lib/icons.js";
+import { Badge, Button, Dialog, ErrorNote, Field, Input, Spinner } from "@renderer/components/ui/index.js";
 import { MarketView, type MarketRow } from "./MarketView.js";
 
 export function McpMarketView({
@@ -150,12 +149,7 @@ export function McpMarketView({
     badges: (
       <span className="inline-flex shrink-0 items-center gap-0.5">
         {e.options.map((o) => (
-          <span
-            key={o.id}
-            className="rounded bg-surface-muted px-1 py-px font-mono text-[10px] leading-tight text-content-muted"
-          >
-            {o.command ?? o.label}
-          </span>
+          <Badge key={o.id} className="font-mono text-[10px]">{o.command ?? o.label}</Badge>
         ))}
       </span>
     ),
@@ -179,14 +173,10 @@ export function McpMarketView({
   return (
     <div className={className}>
       {error && (
-        <div role="alert" className="mb-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
-          {error}
-        </div>
+        <ErrorNote className="mb-2">{error}</ErrorNote>
       )}
       {sourcesCorrupt && !error && (
-        <div role="alert" className="mb-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
-          {t("settings.market.recordsCorrupt", { reason: sourcesCorrupt })}
-        </div>
+        <ErrorNote className="mb-2">{t("settings.market.recordsCorrupt", { reason: sourcesCorrupt })}</ErrorNote>
       )}
       {note && !error && (
         <div role="status" className="mb-2 rounded border border-accent/30 bg-accent/5 px-3 py-2 text-[0.7857em] text-content">
@@ -249,7 +239,7 @@ export function McpMarketView({
                 onClick={() => void search(active.id, trimmed, nextCursor)}
                 disabled={busyKey != null}
               >
-                {busyKey === "more" && <IconLoader2 size={12} className="animate-spin" />}
+                {busyKey === "more" && <Spinner size="xs" />}
                 {t("settings.mcpMarket.loadMore")}
               </Button>
             </div>
@@ -390,37 +380,38 @@ function McpMarketInstallDialog({
                 <div className="mb-1 text-[0.92em] font-medium text-content">{t("settings.mcpMarket.method")}</div>
                 <div className="flex flex-wrap gap-1" role="radiogroup">
                   {entry.options.map((o) => (
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       key={o.id}
                       type="button"
                       role="radio"
                       aria-checked={o.id === option?.id}
                       onClick={() => setOptionId(o.id)}
                       className={cn(
-                        "rounded border px-2.5 py-1 text-[0.92em] transition-colors",
+                        "h-7 rounded-[var(--radius-btn-xs)] border px-2.5 text-[0.92em] transition-colors",
                         o.id === option?.id
                           ? "border-edge/80 bg-surface-hover font-medium text-content ring-1 ring-inset ring-edge/70"
                           : "border-edge bg-surface text-content-muted hover:text-content",
                       )}
                     >
                       {o.label}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </div>
             )}
 
-            <label className="block">
-              <span className="mb-1 block text-[0.92em] font-medium text-content">{t("settings.mcpMarket.name")}</span>
+            <Field label={t("settings.mcpMarket.name")} htmlFor="mcp-market-install-name" error={nameError} className="block">
               <Input
+                id="mcp-market-install-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="h-7 font-mono text-[0.92em]"
                 spellCheck={false}
                 aria-invalid={nameError != null}
               />
-              {nameError && <span className="mt-0.5 block text-[0.85em] text-danger">{nameError}</span>}
-            </label>
+            </Field>
 
             {option && option.inputs.length > 0 && (
               <div className="space-y-2">
@@ -467,9 +458,7 @@ function McpMarketInstallDialog({
               </p>
             )}
             {error && (
-              <div role="alert" className="rounded border border-danger/40 bg-danger/5 px-2.5 py-1.5 text-[0.92em] text-danger">
-                {error}
-              </div>
+              <ErrorNote>{error}</ErrorNote>
             )}
           </div>
           <div className="flex justify-end gap-2 border-t border-edge px-4 py-3">
@@ -482,7 +471,7 @@ function McpMarketInstallDialog({
               onClick={() => void submit()}
               disabled={saving || !option || nameError != null || (preview?.missing.length ?? 0) > 0}
             >
-              {saving && <IconLoader2 size={12} className="animate-spin" />}
+              {saving && <Spinner size="xs" />}
               {t("settings.mcpMarket.install")}
             </Button>
           </div>
