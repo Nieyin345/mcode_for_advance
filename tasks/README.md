@@ -10,7 +10,25 @@
 
 ---
 
-## 第四轮交付复核（2026-10-22，最新生效）
+## 并行扩容第五波（2026-10-22，最新派发入口）
+
+> **用户已派** T89、T90、T91、T92，四卡均视为**在飞**，不能重复派发或由第二执行对话抢文件。新扩容只安排与其**无写入交叉**且前置 T72/T78/T85 已满足的切片。当前工作树的其他 6 个既有 dirty 文件（AOCI/maint/orchestration-ipc/release-readiness/apiCatalog/settingsTransfer）属于其他历史写入，不可覆盖、reset、批量提交或趁手清理。
+>
+> **当前可继续立即派五张**：T93、T94、T95、T96、T97。前三条关键架构为 T93/T94/T97，UI 测试证据为 T95/T96。T93/T94/T97 不代表用户旧工作流获准进入 G2；只能在虚构数据和隔离环境做对账、防重、跨进程 CAS E1。T95 默认不启动 Electron，T96 首先跑隔离 React/DOM；不要与 T71/T77 实机 Electron 抢窗口。各执行者不得自行运行全量 `--all` 或抢占共享 `.tmp` 日志根。
+>
+> | 任务 | 任务文件（独立写区） | 本轮目的 |
+> |---|---|---|
+> | **T93｜P0** | `tasks/T93-node-red-deploy-library-reconciliation-gate.md` | Node-RED Deploy 2xx 后 SQL CAS/库镜像失败：增加可查的成功/冲突/UNCERTAIN 对账，独占 `nativeLibrarySync.ts` 与 `registry.ts` 中部署镜像局部 |
+> | **T94｜P0** | `tasks/T94-legacy-trigger-owner-handoff-guard.md` | 防旧 AutomationRunner 为 `engine:node-red` 安装旧 cron/watch/event、阻挡 late fire，独占 `automationRunner.ts` |
+> | **T97｜P0** | `tasks/T97-executor-ownership-cross-process-cas.md` | 两个 OS 进程争抢 `executor-ownership.json` 的 CAS 证明与必要最小修复，独占 `fileExecutorOwnershipStore.ts` |
+> | **T95｜P1** | `tasks/T95-arc005-visual-probe-false-positive-gates.md` | 修复 T78 证实的视觉 probe 误命中/sidechat 假阳性/焦点与 Pane 测量缺失，仅改 ARC005 测试工具 |
+> | **T96｜P1** | `tasks/T96-approval-card-keyboard-denial-regression.md` | 审批卡意外 Enter、Esc、IME、隐藏 pane、危险操作授权键盘隔离；只改批准卡及新 Smoke |
+
+**前置和串行**：T92 集成中的 `main/document/**` 由原对话独占；T89–T91 只回写各自许可证来源卡，不得与下一张许可整合卡抢 manifest。T71 六编辑器原生 GUI 需等 T92 提交、稳定窗口；T77 Node-RED GUI 需等 T93/T94/T97 关键源收敛，且与 T71 **严格串行**。没有用户数据/许可证证据不能发布、不能强行迁移；未满足判据必须如实记录。任务卡交付 ≠ ARC/FULL 整包正式放行。
+
+---
+
+## 第四轮交付复核（2026-10-22，历史留档）
 
 > **本轮交付复核**：T86/T87/T88 均有实现提交与结果回写，总控已独立复跑专项验证。T86：实现 `eae1f385`、回写 `0fa79a05`；T86 + 14 个相关套件 **15/15 PASS**，desktop/contracts typecheck PASS；协议 E1 通过，但真实在线 SDK/U1 与 GenOffice renderer 工具往返仍未完成，下一张集成卡为 T92。T87：实现 `fe6ee970`、回写 `95ee4b5e`；patch stack 重放树与 pinned HEAD tree 均为 `2b6c91f2…`，新 Smoke **70/70 PASS**，GenOffice release **25/25 PASS**、T76 **24/24 PASS**，但只有 **8/18** 项有准确版本的完整许可证全文，另 10 项仍阻断严格发行。T88：实现 `c3614bdc`、回写 `ffa5ede9`；新 Smoke 内部 **13/13 PASS**，T76 **24/24 PASS**，双包 typecheck PASS；唯一未决包为 `pause@0.0.1`，门禁正确保持 `releaseEligible=false`。因此两条发行线仍不可签 installer。新一波 T89/T90（GenOffice 缺失许可证来源分组取证）、T91（pause 来源取证）、T92（GenOffice renderer 工具同轮往返接线）已拆卡，可并行；T89–T91 只读取证并只回写各自任务卡，不碰共享 manifest。T49 的权限映射尾项由 `5861511b` 修复；总控独立复跑 17 个 module/authoring suites **17/17 PASS**，双包 tsc 通过。PDF 路由尾项已关闭。T71/T77 仍须独占 Electron，按 T92 收敛后先 T71、退出后再 T77。
 > **第二轮 T30/T72/T73/T74/T75/T79/T80/T81 八卡均已提交、完成本卡交付**。T73 在本次总控审查期间先提交功能 `c3672167`、随后回写 `7442ebcb`；总控独立执行 `t73-browser-sandbox-smoke/run.cjs` **5/5 PASS**、真实 Electron `native.cjs` **PASS**（隔离 WebContentsView、spoof 拒绝与合法拾取）。其余七卡也有提交与回写，且总控独立 E1：`genoffice-file-routing-smoke` 52/52（含两变异）、`t74-genoffice-headless-smoke` 1/1 套、`mcode-node-pack-smoke` 1/1 套、`runtime-node-modules-smoke` + `library-import-smoke` 2/2、`arc005-focus-ownership-smoke` 1/1、双包 TS 2/2；`document-router-smoke` 原 124/125 失败已由 `e9e2dbf5` 修正测试判据、`e290df57` 回写关闭；总控最终复核路由 133/133、GenOffice 路由 52/52、FileViewer PDF 25/25，通过且未改产品路由。
