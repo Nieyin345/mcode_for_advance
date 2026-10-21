@@ -58,6 +58,10 @@ import {
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useRgStatus } from "@renderer/lib/useRgStatus.js";
+import { useModuleContributions, contributionsOf } from "@renderer/components/modules/ModuleContributions.js";
+import { createModuleClient } from "@contracts/moduleClient";
+import { CUSTOM_ICONS } from "@renderer/components/customUi/registry.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 
 /** Translator signature used by the module-level copy helpers below. */
 type Translator = (key: MessageId, params?: Record<string, string | number>) => string;
@@ -156,8 +160,9 @@ type AsyncResult<T> = undefined | { loading: true } | { loading: false; value: T
 /* ───────────────────────── component ───────────────────────── */
 
 export function CommandPalette() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const open = useSessionStore((s) => s.commandPaletteOpen);
+  const moduleCatalog = useModuleContributions(open);
   const setOpen = useSessionStore((s) => s.setCommandPaletteOpen);
   // Subscribe to overrides so <kbd> hints update live when the user rebinds.
   const overrides = useSessionStore((s) => s.shortcutOverrides);
@@ -197,7 +202,32 @@ export function CommandPalette() {
   // without a remount) and inject each command's effective shortcut hint.
   const commandItems = useMemo<(CommandDef & { kind: "command" })[]>(() => {
     if (!open) return [];
-    return collectCommands(useSessionStore.getState()).map((cmd) => {
+    const builtin = collectCommands(useSessionStore.getState());
+    // Extension commands join the SAME palette group and use the SAME host invoke
+    // as file-menu modules. Labels name the extension to avoid collisions.
+    const extensions: CommandDef[] = contributionsOf(moduleCatalog.data,"command").map(({module,contribution})=>({
+      id:"extension:"+module.id+":"+contribution.id,
+      label:contribution.title[locale]+" · "+module.title[locale]+" ("+contribution.command+")",
+      group:"view",
+      keywords:[contribution.command,module.id,contribution.title.zh,contribution.title.en],
+      icon:contribution.icon ? CUSTOM_ICONS[contribution.icon] : undefined,
+      perform:async(s)=>{
+        const projectPath = s.projects.find(p=>p.id===s.activeProjectId)?.path;
+        const path = s.activeProjectId ? s.ideActiveFileByProject[s.activeProjectId] : undefined;
+        if (!projectPath || !path) {
+          useToastStore.getState().push({kind:"error",title:locale==="zh"?"扩展命令需要先打开工作区文件":"Open a workspace file before running this extension command"});
+          return;
+        }
+        try {
+          const result = await createModuleClient(api.modules,module.id).invoke(contribution.id,{projectPath,path},crypto.randomUUID());
+          const value = result.type==="result" ? result.value : {status:result.task.status,id:result.task.id};
+          useToastStore.getState().push({kind:"info",title:contribution.title[locale],body:JSON.stringify(value).slice(0,700)});
+        } catch(error) {
+          useToastStore.getState().push({kind:"error",title:contribution.title[locale],body:error instanceof Error?error.message:String(error)});
+        }
+      },
+    }));
+    return [...builtin,...extensions].map((cmd) => {
       const effective = resolveShortcut(cmd.id, overrides);
       return {
         ...cmd,
@@ -205,7 +235,7 @@ export function CommandPalette() {
         kind: "command" as const,
       };
     });
-  }, [open, overrides]);
+  }, [open, overrides, moduleCatalog.data, locale]);
 
   // Drive the async searches off the live query + active scope. Only the
   // searches the current scope includes are fired, so picking e.g. "线程" never

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MODULE_PERMISSION_NAMES } from "./appPermission.js";
+import { CUSTOM_UI_ICONS } from "./customUi.js";
 import type { ModuleCapabilityDescriptor, ModuleWorkflowGrantCandidate, ModuleWorkflowGrantStatus, ModuleWorkflowTarget } from "./moduleCapability.js";
 
 /** v1 is a declarative, read-only extension surface, NOT a JavaScript sandbox.
@@ -101,6 +102,62 @@ export const ModulePermissionListSchema = z
   .refine((p) => new Set(p).size === p.length, "Duplicate permission");
 export type ModulePermission = z.infer<typeof ModulePermissionSchema>;
 
+/** A view remains declared fields; HTML/JS belongs to customUi, never a module manifest. */
+export const ModuleFieldsSchema = z.array(z.object({
+  key: z.string().regex(/^[a-zA-Z][a-zA-Z0-9]*$/).max(60),
+  title: LocalizedTextSchema,
+}).strict()).min(1).max(20);
+export const ModuleDisplayViewSchema = z.object({
+  title: LocalizedTextSchema,
+  fields: ModuleFieldsSchema,
+}).strict();
+export type ModuleDisplayView = z.infer<typeof ModuleDisplayViewSchema>;
+
+/** Reuse the host-controlled icon registry, not arbitrary SVG or URL. */
+export const MODULE_CONTRIBUTION_ICONS = CUSTOM_UI_ICONS;
+const ModuleIconSchema = z.enum(MODULE_CONTRIBUTION_ICONS);
+const ContributionBase = {
+  id: LocalId,
+  title: LocalizedTextSchema,
+  capability: Id,
+};
+const ModuleSettingBase = {
+  key: z.string().min(1).max(80).regex(/^[a-zA-Z][a-zA-Z0-9]*$/),
+  title: LocalizedTextSchema,
+  description: LocalizedTextSchema.optional(),
+};
+export const ModuleSettingPropertySchema = z.discriminatedUnion("type", [
+  z.object({...ModuleSettingBase, type:z.literal("string"), default:z.string().max(4096)}).strict(),
+  z.object({...ModuleSettingBase, type:z.literal("number"), default:z.number().finite()}).strict(),
+  z.object({...ModuleSettingBase, type:z.literal("boolean"), default:z.boolean()}).strict(),
+  z.object({...ModuleSettingBase, type:z.literal("enum"), enum:z.array(z.string().min(1).max(100)).min(1).max(30), default:z.string().min(1).max(100)})
+    .strict(),
+]).refine(p=>p.type!=="enum" || p.enum.includes(p.default),"Default must occur in enum");
+export type ModuleSettingProperty = z.infer<typeof ModuleSettingPropertySchema>;
+export const ModuleContributionSchema = z.discriminatedUnion("slot", [
+  z.object({
+    ...ContributionBase, slot:z.literal("files.context"),
+    extensions:z.array(z.string().regex(/^\.[a-z0-9]+$/).max(20)).max(20).optional(),
+    view:ModuleDisplayViewSchema,
+  }).strict(),
+  z.object({
+    ...ContributionBase, slot:z.literal("command"),
+    command:z.string().regex(/^[a-z][a-zA-Z0-9]*\.[a-zA-Z][a-zA-Z0-9.-]{1,80}$/),
+    icon:ModuleIconSchema.optional(),
+  }).strict(),
+  z.object({
+    ...ContributionBase, slot:z.literal("view"),
+    location:z.enum(["right","left","bottom"]),
+    icon:ModuleIconSchema.optional(),
+    view:z.object({kind:z.literal("fields"),fields:ModuleFieldsSchema}).strict(),
+  }).strict(),
+  z.object({
+    ...ContributionBase, slot:z.literal("settings"),
+    properties:z.array(ModuleSettingPropertySchema).min(1).max(30)
+      .refine(p=>new Set(p.map(x=>x.key)).size===p.length,"Duplicate setting key"),
+  }).strict(),
+]);
+
 export const ModuleManifestSchema = z.object({
   apiVersion: z.literal(1),
   id: Id,
@@ -115,17 +172,7 @@ export const ModuleManifestSchema = z.object({
    *  `permissionedProcessRunner` 的网络拦截)。写上它只是「请求」—— 宿主仍会在
    *  执行前把网络能力作为一次待批准项交给用户(与 `resource.write` 同一纪律)。 */
   permissions: ModulePermissionListSchema,
-  contributions: z.array(z.object({
-    id: LocalId,
-    slot: z.literal("files.context"),
-    title: LocalizedTextSchema,
-    extensions: z.array(z.string().regex(/^\.[a-z0-9]+$/).max(20)).max(20).optional(),
-    capability: Id,
-    view: z.object({
-      title: LocalizedTextSchema,
-      fields: z.array(z.object({ key: z.string().regex(/^[a-zA-Z][a-zA-Z0-9]*$/).max(60), title: LocalizedTextSchema }).strict()).min(1).max(20),
-    }).strict(),
-  }).strict()).min(1).max(12),
+  contributions: z.array(ModuleContributionSchema).min(1).max(12),
   /** 【MC-035】可执行扩展包的程序声明(见 {@link ModuleProgramSchema})。**可选**:纯声明式
    *  模块(只引用宿主内置能力)继续原样工作,不因新增字段而被拒(old-manifest compatible)。 */
   program: ModuleProgramSchema.optional(),
@@ -153,6 +200,13 @@ export const ModuleManifestSchema = z.object({
   );
 export type ModuleManifest = z.infer<typeof ModuleManifestSchema>;
 export type ModuleContribution = ModuleManifest["contributions"][number];
+
+/** One result envelope for file menus, side views and commands (legacy snapshots stay readable). */
+export function moduleContributionView(c: ModuleContribution): ModuleDisplayView {
+  if (c.slot === "files.context") return c.view;
+  if (c.slot === "view") return { title:c.title, fields:c.view.fields };
+  return { title:c.title, fields:[] };
+}
 
 /**
  * 【MC-060】模块能力权限的**单一判定** —— 一份权限声明要为「这个种类的能力」放行,还缺哪条。
@@ -270,7 +324,7 @@ export interface ModuleTask {
   moduleId: string;
   contributionId: string;
   resource: ModuleResource;
-  view: ModuleContribution["view"];
+  view: ModuleDisplayView;
   status: "running" | "completed" | "failed" | "cancelled";
   progress: number;
   createdAt: number;
@@ -278,7 +332,7 @@ export interface ModuleTask {
   result?: ModuleResult;
   error?: string;
 }
-export type ModuleReply = { type: "result"; value: ModuleResult; view: ModuleContribution["view"] } | { type: "task"; task: ModuleTask };
+export type ModuleReply = { type: "result"; value: ModuleResult; view: ModuleDisplayView } | { type: "task"; task: ModuleTask };
 export interface ModuleCatalog {
   modules: ModuleManifest[];
   capabilities: ModuleCapabilityDescriptor[];

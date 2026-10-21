@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { z } from "zod";
 import {
-  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, ResultSchema, missingCapabilityPermission, actionInvocationRefusal, declaresNetwork, moduleRefusal, moduleRefusalError,
+  ModuleManifestSchema, ModuleInvokeSchema, ModuleTaskRefSchema, ResourceSchema, ResultSchema, moduleContributionView, missingCapabilityPermission, actionInvocationRefusal, declaresNetwork, moduleRefusal, moduleRefusalError,
   extensionCapabilityShortName, extensionCapabilityAssignment, MODULE_CAPABILITY_PREFIX,
   type ModuleManifest, type ModuleInvoke, type ModuleResource, type ModuleResult, type ModuleTask,
   type ModuleReply, type ModuleCatalog, type ModuleTaskRef, type ModuleChangeResult,
@@ -849,7 +849,7 @@ export class ModuleHost {
     const definition = this.capabilities.get(this.capabilityIdOf(module, contribution.capability));
     if (!definition) throw Error("能力不可用");
     const resource = ResourceSchema.parse(input.resource);
-    if (contribution.extensions && !contribution.extensions.some(ext => resource.path.toLowerCase().endsWith(ext))) throw Error("不支持的文件类型");
+    if (contribution.slot === "files.context" && contribution.extensions && !contribution.extensions.some(ext => resource.path.toLowerCase().endsWith(ext))) throw Error("不支持的文件类型");
     await this.options.authorize(resource);
     // Authorization may await disk IO while a module is replaced/removed.
     if (this.modules.get(input.moduleId) !== module) throw Error("模块已变化,请按其当前定义重试");
@@ -968,7 +968,7 @@ export class ModuleHost {
           !this.authorizedWorkflowTargetNow(module.id, contribution.id, resource.projectPath)) {
           throw Error("工作流授权已在执行期间撤销，拒绝发布旧授权下的结果");
         }
-        return {type:"result",value:structuredClone(value),view:structuredClone(contribution.view)};
+        return {type:"result",value:structuredClone(value),view:structuredClone(moduleContributionView(contribution))};
       } finally {
         running.delete(controller);
         if (running.size === 0) this.activeInvocations.delete(module.id);
@@ -994,7 +994,7 @@ export class ModuleHost {
     }
     const id = randomUUID(), controller = new AbortController();
     const job: LiveTask = {
-      snapshot: {id,moduleId:module.id,contributionId:contribution.id,resource,view:structuredClone(contribution.view),status:"running",progress:0,createdAt:Date.now(),updatedAt:Date.now()},
+      snapshot: {id,moduleId:module.id,contributionId:contribution.id,resource,view:structuredClone(moduleContributionView(contribution)),status:"running",progress:0,createdAt:Date.now(),updatedAt:Date.now()},
       controller, requestKey, fingerprint,
       ...(workflowGrantKey === undefined ? {} : { workflowGrantKey }),
       // 这句 `error` 经 `moduleCapabilityExecutor` 的 `failedOutcome(snapshot.error)`

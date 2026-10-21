@@ -18,6 +18,7 @@ import { TaskListPanel } from "@renderer/components/ide/TaskListPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
 import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
+import { ModuleViewDock, useModuleContributions, contributionsOf, ModuleIcon } from "@renderer/components/modules/ModuleContributions.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { openCustomUiSettings, useCustomUiStore } from "@renderer/stores/customUiStore.js";
 import { resolveSlotEntries, type BuiltinRuntime } from "@renderer/components/customUi/CustomUiMenuItems.js";
@@ -116,10 +117,15 @@ export function RightPanel() {
   const activeCustomId = useCustomUiStore((s) => s.activeTab);
   const setActiveCustom = useCustomUiStore((s) => s.setActiveTab);
   const target = useWorkspaceTarget();
+  const moduleCatalog = useModuleContributions();
+  const moduleViews = contributionsOf(moduleCatalog.data,"view").filter(({contribution})=>contribution.location==="right");
+  const [activeModuleView,setActiveModuleView] = useState(false);
+  const moduleVisible = activeModuleView && moduleViews.length>0;
 
   const showBuiltin = (id: RightPanelTab) => {
     setContent("right", undefined);
     setActiveCustom(null);
+    setActiveModuleView(false);
     setTab(id);
   };
 
@@ -236,7 +242,7 @@ export function RightPanel() {
               <div key={e.key} className="shrink-0">
                 <RailButton
                   active={activeCustom?.id === e.item.id}
-                  onClick={() => setActiveCustom(e.item.id)}
+                  onClick={() => {setActiveModuleView(false);setActiveCustom(e.item.id);}}
                   title={customUiLabel(e.item.label, locale)}
                 >
                   <Icon size={16} className="shrink-0" />
@@ -245,6 +251,7 @@ export function RightPanel() {
             );
           })}
         </div>
+        {moduleViews.length>0 && <RailButton active={moduleVisible} onClick={()=>{setActiveModuleView(true);setContent("right",undefined);setActiveCustom(null);}} title={`${locale==="zh"?"扩展视图":"Extension views"} · ${moduleViews.length}`}><ModuleIcon name={moduleViews[0].contribution.icon}/></RailButton>}
         {/* Native document and Node-RED share the same movable shell. Their
             component trees are cached instead of keyed by docking position:
             flex reorder must never navigate an unsaved editor. */}
@@ -353,7 +360,7 @@ export function RightPanel() {
         <div className={pinnedDoc || pinnedFlow ? "hidden h-full" : "h-full"} inert={!!(pinnedDoc || pinnedFlow)} aria-hidden={!!(pinnedDoc || pinnedFlow)}>
         {CACHED_BUILTIN_RIGHT_TABS.map((id) => {
           if (!shouldMountCachedBuiltin(id, tab, visitedBuiltinTabs)) return null;
-          const selected = !activeCustom && !pinnedDoc && !pinnedFlow && tab === id;
+          const selected = !moduleVisible && !activeCustom && !pinnedDoc && !pinnedFlow && tab === id;
           return (
             <div
               key={id}
@@ -371,7 +378,7 @@ export function RightPanel() {
         })}
         {cachedPanelIds.map((e) => {
           if (e.kind !== "custom") return null;
-          const selected = activeCustom?.id === e.item.id;
+          const selected = !moduleVisible && activeCustom?.id === e.item.id;
           return (
             <div key={e.item.id} className="h-full min-h-0"
               style={{ display: selected ? "block" : "none" }}
@@ -380,13 +387,14 @@ export function RightPanel() {
             </div>
           );
         })}
-        {activeCustom && activeCustom.action.type !== "panel" && (
+        {!moduleVisible && activeCustom && activeCustom.action.type !== "panel" && (
           <CustomTabView key={activeCustom.id} item={activeCustom} target={target} />
         )}
-        {!activeCustom && tab === "turns" && <TurnFlowPanel />}
-        {!activeCustom && tab === "flow" && <WorkflowBoardPanel />}
-        {!activeCustom && tab === "tasks" && <TaskListPanel />}
-        {!activeCustom && tab === "preview" && <PreviewPanel />}
+        {moduleVisible && !pinnedDoc && !pinnedFlow && <ModuleViewDock location="right" />}
+        {!moduleVisible && !activeCustom && tab === "turns" && <TurnFlowPanel />}
+        {!moduleVisible && !activeCustom && tab === "flow" && <WorkflowBoardPanel />}
+        {!moduleVisible && !activeCustom && tab === "tasks" && <TaskListPanel />}
+        {!moduleVisible && !activeCustom && tab === "preview" && <PreviewPanel />}
         </div>
       </div>
     </div>

@@ -28,6 +28,7 @@ import { SessionTabs } from "../layout/SessionTabs.js";
 import { UnifiedTabsBar } from "../layout/UnifiedTabsBar.js";
 import { RightPanel } from "../layout/RightPanel.js";
 import { BottomTerminalBar } from "../layout/BottomTerminalBar.js";
+import { ModuleViewDock } from "../modules/ModuleContributions.js";
 import { OpenTabsBar } from "../ide/OpenTabsBar.js";
 import { CustomUiToolbar } from "../customUi/CustomUiToolbar.js";
 import { useSessionStore } from "../../stores/sessionStore.js";
@@ -106,6 +107,7 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({
         style={{ flexGrow: 0, flexBasis: `${leftWidthPct}%` }}
       >
         <WorkspaceSidebarContents mode={leftBarMode} />
+        <div className="max-h-[38vh] shrink-0 overflow-y-auto empty:hidden"><ModuleViewDock location="left" /></div>
       </aside>
       {leftOpen && (
         <Divider

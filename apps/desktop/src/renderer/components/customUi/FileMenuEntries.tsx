@@ -37,7 +37,7 @@ export function FileMenuEntries({
     const lower = path.toLowerCase();
     return surface.catalog.modules.flatMap((module) =>
       module.contributions
-        .filter((c) => !c.extensions || c.extensions.some((ext) => lower.endsWith(ext)))
+        .filter((c) => c.slot === "files.context" && (!c.extensions || c.extensions.some((ext) => lower.endsWith(ext))))
         .map((contribution) => ({
           key: moduleKey(module.id, contribution.id),
           label: contribution.title[locale],

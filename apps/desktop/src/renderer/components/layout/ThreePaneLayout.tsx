@@ -3,6 +3,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { DndContext, PointerSensor, useDraggable, useSensor, useSensors, type DragEndEvent, type DragMoveEvent } from "@dnd-kit/core";
 import { cn } from "@renderer/lib/cn.js";
 import { Divider } from "./Divider.js";
+import { ModuleViewDock } from "@renderer/components/modules/ModuleContributions.js";
 import { shouldMountRightPane } from "./rightPaneKeepAlive.js";
 import { dockFlexOrder, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, type PaneDock } from "./paneDock.js";
 import type { ShellVariant } from "../shell/shellPrefs.js";
@@ -368,6 +369,7 @@ export function ThreePaneLayout({
             </div>
           </>
         )}
+        {bottomTerminal && <div className="max-h-[30vh] shrink-0 overflow-y-auto empty:hidden"><ModuleViewDock location="bottom" /></div>}
       </main>
 
       {toolbar && <div data-pane-toolbar="" className={cn("flex shrink-0", rightAtBottom ? "h-[calc(100%-var(--pane-bottom-share))]" : "h-full")} style={{ order: order.toolbar }}>{toolbar}</div>}

@@ -193,7 +193,7 @@ export function ModuleToolsButton() {
 export function ModuleMenuItems({path}:{path:string}) {
   const context=useContext(Surface),{locale}=useI18n();
   if(!context)return null;
-  const entries=context.catalog?.modules.flatMap(module=>module.contributions.filter(c=>!c.extensions||c.extensions.some(ext=>path.toLowerCase().endsWith(ext))).map(contribution=>({module,contribution})))??[];
+  const entries=context.catalog?.modules.flatMap(module=>module.contributions.filter(c=>c.slot === "files.context" && (!c.extensions||c.extensions.some(ext=>path.toLowerCase().endsWith(ext)))).map(contribution=>({module,contribution})))??[];
   if(!entries.length)return null;
   return <><ContextMenu.Separator className="my-1 h-px bg-edge"/>{entries.map(({module,contribution})=><ContextMenu.Item key={module.id+":"+contribution.id} disabled={context.busy} onClick={()=>void context.invoke(module,contribution,path)} className="flex w-full items-center px-3 py-1.5 text-xs text-content outline-none data-[highlighted]:bg-surface-muted data-[disabled]:opacity-50">{contribution.title[locale]}</ContextMenu.Item>)}</>;
 }
@@ -225,7 +225,7 @@ export function ModuleResultDialog({reply,onClose}:{reply:ModuleReply;onClose:()
       </div>}
       {read.error && <ErrorNote action={<Button onClick={()=>void read.refetch()}>{t("common.retry")}</Button>}>{read.error.message}</ErrorNote>}
       {(error||task?.error) && <ErrorNote>{error??task?.error}</ErrorNote>}
-      {result && <dl className="space-y-3">{view.fields.map(field=><div key={field.key} className="rounded border border-edge p-3"><dt className="text-xs text-content-muted">{field.title[locale]}</dt><dd className="mt-1 break-all font-mono text-sm">{Object.hasOwn(result,field.key)?String(result[field.key]):"—"}</dd></div>)}</dl>}
+      {result && <dl className="space-y-3">{(view.fields.length ? view.fields : Object.keys(result).map(key=>({key,title:{zh:key,en:key}}))).map(field=><div key={field.key} className="rounded border border-edge p-3"><dt className="text-xs text-content-muted">{field.title[locale]}</dt><dd className="mt-1 break-all font-mono text-sm">{Object.hasOwn(result,field.key)?String(result[field.key]):"—"}</dd></div>)}</dl>}
     </Dialog.Popup></Dialog.Portal>
   </Dialog.Root>;
 }

@@ -239,3 +239,12 @@ Mcode 已有的 `customUi` 基础设施直接复用。
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 T50 执行回写
+
+- **三个贡献点**：`command`、`view`（right/left/bottom）、`settings` 均通过 `ModuleContributionSchema` 的严格 `discriminatedUnion("slot")` 解析；保留既有 `files.context`。未知属性拒绝，命令 ID 必须满足任务书正则；图标复用 `@contracts/customUi` 的 `CUSTOM_UI_ICONS`，实际开放 23 个宿主已知图标，无 SVG/URL 自注入。
+- **耗时主要在 UI 接线**：命令须合进既有 Cmd/Ctrl+K 的统一命令组，并在名称附模块标题/命令 ID 与内置命令区分；视图分散于 `RightPanel`、工作区左栏及 `ThreePaneLayout` 底部，分别保留原页面生命周期。三个位置的声明字段适合轻量状态/统计/信息查看，复杂可交互布局或任意 HTML 应复用既有 `customUi` 沙箱（不在本卡引入）。
+- **视图执行**：打开时以宿主 `ModuleHost.invoke` 执行，刷新按钮重试；`task` 类型轮询宿主 task 快照，不构造 HTML。继续遵守既有权限边界：宿主要求已打开工作区内真实普通文件，因此无活动文件时只显示提示，不伪造资源或改授权。
+- **扩展设置**：统一 `设置 → 扩展 → 扩展设置` 入口，按扩展/贡献组装四种控件（string、number、boolean、enum），在滚动列表中逐组展示；值通过 `extensionStore.get/set`，以实际 moduleId 隔离，不写核心 `setting.set`。扩展多时列表可能较长，折叠/搜索留给独立优化卡。
+- **验收证据**：`node apps/desktop/scripts/module-contributions-smoke/build.mjs` 10/10 PASS（严格契约、真实宿主命令/视图调用、存储目标与界面接线）；`node apps/desktop/scripts/module-contributions-smoke/ui-build.mjs` 5/5 PASS（真实浏览器命令面板执行、三个位置渲染/刷新、设置真实写入扩展存储）；`--mutate-slot` 与 `--mutate-settings` 均返回非零、命中要求的红例。已有 `module-ui-smoke`、`module-workflow-smoke`、`module-catalog-ui-smoke` 等回归通过。
+- **仍未满足**：判据 5：完整 `module-*` 复跑最终尚余 `module-phase2-e2e-smoke` 失败；其 `native-window.log` 是工作流原生界面等待 `[role=button][title="File inspection"]` 超时，其他阶段均通过。判据 6：`contracts tsc` 通过，`desktop tsc` 当前报另一并发任务新文件 `apps/desktop/scripts/extension-authoring-smoke/main.ts:57` 的 `string | undefined` 类型错误；本卡触及的类型错误已排除。上述两项不擅自跨卡修改。

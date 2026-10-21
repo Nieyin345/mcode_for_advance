@@ -45,11 +45,11 @@ const test = async (name: string, fn: () => unknown): Promise<void> => {
 };
 
 const MODULE_ID = "core.file-report";
-const view: ModuleContribution["view"] = {
+const view: Extract<ModuleContribution,{slot:"files.context"}>["view"] = {
   title: { zh: "结果", en: "Result" },
   fields: [{ key: "bytes", title: { zh: "大小", en: "Bytes" } }],
 };
-const infoView: ModuleContribution["view"] = {
+const infoView: Extract<ModuleContribution,{slot:"files.context"}>["view"] = {
   title: { zh: "文件信息", en: "File information" },
   fields: [
     { key: "bytes", title: { zh: "字节数", en: "Bytes" } },

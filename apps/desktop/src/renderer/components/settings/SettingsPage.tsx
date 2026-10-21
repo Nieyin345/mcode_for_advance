@@ -61,6 +61,7 @@ const PANEL_LOADERS = {
   AgentSshTrustPanel: () => import("./AgentSshTrustPanel.js"),
   EngineToolsPanel: () => import("./EngineToolsPanel.js"),
   PluginsPanel: () => import("./PluginsPanel.js"),
+  ModuleSettingsPanel: () => import("../modules/ModuleContributions.js"),
   AppearancePanel: () => import("./AppearancePanel.js"),
   ShortcutsPanel: () => import("./ShortcutsPanel.js"),
   GesturesPanel: () => import("./GesturesPanel.js"),
@@ -113,6 +114,7 @@ const McpPanel = lazy(() => PANEL_LOADERS.McpPanel().then((m) => ({ default: m.M
 const AgentSshTrustPanel = lazy(() => PANEL_LOADERS.AgentSshTrustPanel().then((m) => ({ default: m.AgentSshTrustPanel })));
 const EngineToolsPanel = lazy(() => PANEL_LOADERS.EngineToolsPanel().then((m) => ({ default: m.EngineToolsPanel })));
 const PluginsPanel = lazy(() => PANEL_LOADERS.PluginsPanel().then((m) => ({ default: m.PluginsPanel })));
+const ModuleSettingsPanel = lazy(() => PANEL_LOADERS.ModuleSettingsPanel().then((m) => ({ default: m.ModuleSettingsPanel })));
 const AppearancePanel = lazy(() => PANEL_LOADERS.AppearancePanel().then((m) => ({ default: m.AppearancePanel })));
 const ShortcutsPanel = lazy(() => PANEL_LOADERS.ShortcutsPanel().then((m) => ({ default: m.ShortcutsPanel })));
 const GesturesPanel = lazy(() => PANEL_LOADERS.GesturesPanel().then((m) => ({ default: m.GesturesPanel })));
@@ -156,7 +158,7 @@ function PanelLoading() {
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "skills" | "workflows" | "automation" | "hooks" | "scene-deploy" | "mcp" | "agent-ssh" | "engine-tools" | "memory" | "plugins" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "skills" | "workflows" | "automation" | "hooks" | "scene-deploy" | "mcp" | "agent-ssh" | "engine-tools" | "memory" | "plugins" | "extension-settings" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -216,6 +218,7 @@ const NAV_GROUPS: NavGroup[] = [
     labelKey: "settings.navGroup.extensions",
     items: [
       { id: "plugins", labelKey: "settings.nav.plugins", icon: IconPuzzle },
+      { id: "extension-settings", labelKey: "settings.nav.extensionSettings", icon: IconAdjustmentsHorizontal },
       { id: "skills", labelKey: "settings.nav.skills", icon: IconSparkles },
       // 钩子与自动化同属"什么时候跑"，但钩子不属于任何一张图，对每次对话/节点
       // 都生效；它跟着扩展走（由插件/用户脚本提供），因此留在本组。
@@ -443,6 +446,7 @@ export function SettingsPage() {
             {active === "engine-tools" && <EngineToolsPanel />}
             {active === "memory" && <MemoryExplorerPanel />}
             {active === "plugins" && <PluginsPanel />}
+            {active === "extension-settings" && <ModuleSettingsPanel />}
             {active === "notifications" && <NotificationsPanel />}
             {active === "git" && <SettingsGitPanel />}
             {active === "terminal" && <SettingsTerminalPanel />}

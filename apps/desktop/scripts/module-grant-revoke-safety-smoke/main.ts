@@ -81,7 +81,9 @@ async function rejected(promise:Promise<unknown>):Promise<boolean> {
 }
 {
   const f=fixture();await f.setup();
-  const modified:ModuleManifest={...f.base,contributions:[{...f.base.contributions[0]!,extensions:[".pdf"]}]};
+  const first = f.base.contributions[0]!;
+  if (first.slot !== "files.context") throw Error("fixture must be a file-context contribution");
+  const modified:ModuleManifest={...f.base,contributions:[{...first,extensions:[".pdf"]}]};
   await f.host.install(modified);
   check("★ 同版本更换贡献允许文件类型必须撤销先前工作流授权",f.targets().length===0);
   const afterContributionChange=f.archived();
