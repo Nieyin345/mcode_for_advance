@@ -149,15 +149,26 @@ export async function runPaneProbe(dir:string):Promise<boolean>{
   for(const malformed of ['json','structure']){
    const page=await makeWindow(malformed);
    const label=malformed==='json'?'CORRUPTION_JSON':'CORRUPTION_STRUCTURE';
+   // Toast 是 React 渲染的，页面刚就绪时可能还没进 DOM。
+   // 轮询等它出现（最多 5s）：这验的是「用户最终看得到」，不是「首帧就有」。
    const snapshot=await page.js<{
     actual:unknown;defaults:unknown;centerVisible:boolean;toastRendered:boolean;errors:string[];
-   }>(`(() => ({
-     actual:window.__store.getState().paneLayout,
-     defaults:window.__defaultPaneLayout,
-     centerVisible:(() => { const el=document.querySelector('[data-cds-center]'); const r=el?.getBoundingClientRect(); return !!r && r.width>200 && r.height>100; })(),
-     toastRendered:document.body.innerText.includes('面板布局文件损坏，已恢复默认布局'),
-     errors:window.__uncaught
-    }))()`);
+   }>(`(async () => {
+     const read = () => ({
+       actual:window.__store.getState().paneLayout,
+       defaults:window.__defaultPaneLayout,
+       centerVisible:(() => { const el=document.querySelector('[data-cds-center]'); const r=el?.getBoundingClientRect(); return !!r && r.width>200 && r.height>100; })(),
+       toastRendered:document.body.innerText.includes('面板布局文件损坏，已恢复默认布局'),
+       errors:window.__uncaught
+     });
+     const deadline = Date.now() + 5000;
+     let snap = read();
+     while (!snap.toastRendered && Date.now() < deadline) {
+       await new Promise(r => setTimeout(r, 100));
+       snap = read();
+     }
+     return snap;
+   })()`);
    await check(label,()=>{
     assert(JSON.stringify(snapshot.actual)===JSON.stringify(snapshot.defaults),'corrupt layout not default '+JSON.stringify(snapshot.actual));
     assert(snapshot.centerVisible,'restored workspace is blank or has invalid geometry');
