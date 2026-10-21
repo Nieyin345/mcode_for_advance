@@ -28,7 +28,7 @@
  * - 不 import Electron / DB —— 纯 Node，可被无头套件直接驱动。
  */
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { spawnRun } from "@main/lib/spawnRun.js";
 
 /** CLI 的 JSON 信封（与 GenOffice `result.ts` 同形，只取需要的字段）。 */
@@ -437,4 +437,120 @@ export async function convertFile(
   const args = ["convert", input, "--to", to, "--out", out, "--json"];
   if (options.force) args.push("--force");
   return invoke(ports, args, options.signal ? { signal: options.signal } : {});
+}
+
+
+/**
+ * T74 — safe, non-CAS headless subset of the original GenOffice create command.
+ * Deliberately uses --from only: pptx ops/spec and Markdown images may
+ * reference further files that the caller's workspace gate has not approved.
+ * New outputs only: --force must wait for document revision/CAS authorization.
+ */
+export async function createFromFile(
+  ports: GenofficePorts,
+  type: "docx" | "xlsx",
+  source: string,
+  out: string,
+  options: { header?: boolean; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, source, "创建源文件")
+    ?? requireWorkspacePath(ports, out, "创建输出路径");
+  if (refusal !== null) return headlessRefused(refusal);
+  if (type !== "docx" && type !== "xlsx") return headlessRefused("该 create 类型未通过无头路径审核");
+  const sourceExt = extname(source).toLowerCase();
+  const targetExt = extname(out).toLowerCase();
+  if (targetExt !== "." + type) return headlessRefused("create 输出扩展名必须匹配类型");
+  // HTML uses the upstream restricted fragment parser, without local file
+  // resolution. CSV/JSON contain literal table cells, not external assets.
+  if (type === "docx" && sourceExt !== ".html" && sourceExt !== ".htm") {
+    return headlessRefused("docx create 仅开放原厂 HTML fragment；Markdown 图片路径尚未逐一围栏");
+  }
+  if (type === "xlsx" && sourceExt !== ".csv" && sourceExt !== ".json") {
+    return headlessRefused("xlsx create 仅开放 CSV/JSON");
+  }
+  if (options.header && type !== "xlsx") return headlessRefused("header 仅用于 xlsx");
+  const occupied = refuseExistingOutput(out, "create 输出文件");
+  if (occupied !== null) return headlessRefused(occupied);
+  if (options.signal?.aborted) return headlessCancelled();
+  const args = ["create", "--type", type, "--from", source, "--out", out, "--json"];
+  if (options.header) args.push("--header");
+  return invoke(ports, args, options.signal ? { signal: options.signal } : {});
+}
+
+/**
+ * T74 — source template is read-only; values arrive over stdin, never as an
+ * arbitrary file path. --strict defaults on to prevent partial replacement.
+ * No --force or in-place write is permitted without a revision check.
+ */
+export async function mergeTemplate(
+  ports: GenofficePorts,
+  template: string,
+  data: Record<string, unknown>,
+  out: string,
+  options: { strict?: boolean; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, template, "合并模板路径")
+    ?? requireWorkspacePath(ports, out, "合并输出路径");
+  if (refusal !== null) return headlessRefused(refusal);
+  const ext = extname(template).toLowerCase();
+  if (![".docx", ".pptx", ".xlsx"].includes(ext) || ext !== extname(out).toLowerCase()) {
+    return headlessRefused("merge 模板和新输出必须同为 docx、pptx 或 xlsx");
+  }
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    return headlessRefused("merge 数据必须是 JSON object");
+  }
+  const stdin = editorOpsStdin(data);
+  if (stdin === null) return refusedEditorOps();
+  const occupied = refuseExistingOutput(out, "merge 输出文件");
+  if (occupied !== null) return headlessRefused(occupied);
+  if (options.signal?.aborted) return headlessCancelled();
+  const args = ["merge", template, "--data", "-", "--out", out, "--json"];
+  if (options.strict !== false) args.push("--strict");
+  return invoke(ports, args, { stdin, ...(options.signal ? { signal: options.signal } : {}) });
+}
+
+/**
+ * T74 — whole-PDF render (the original pdfRender already wraps single pages).
+ * Word/Excel/PowerPoint rendering requires the external GenOffice headless app.
+ * A new directory avoids overwriting existing preview images.
+ */
+export async function renderPdfPages(
+  ports: GenofficePorts,
+  pdf: string,
+  outDir: string,
+  options: { page?: number; scale?: number; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, pdf, "渲染源文件")
+    ?? requireWorkspacePath(ports, outDir, "渲染输出目录");
+  if (refusal !== null) return headlessRefused(refusal);
+  if (extname(pdf).toLowerCase() !== ".pdf") return headlessRefused("无头 render 仅支持 PDF；其他格式需要原厂应用");
+  if (options.page !== undefined && (!Number.isInteger(options.page) || options.page < 1)) {
+    return headlessRefused("render page 必须是大于零的整数");
+  }
+  const scale = options.scale ?? 1;
+  if (!Number.isFinite(scale) || scale <= 0 || scale > 4) return headlessRefused("render scale 超出 0..4");
+  const occupied = refuseExistingOutput(outDir, "渲染输出目录");
+  if (occupied !== null) return headlessRefused(occupied);
+  if (options.signal?.aborted) return headlessCancelled();
+  const args = ["render", pdf, "--out", outDir, "--scale", String(scale), "--json"];
+  if (options.page !== undefined) args.push("--page", String(options.page));
+  return invoke(ports, args, options.signal ? { signal: options.signal } : {});
+}
+
+function headlessRefused(reason: string): GenofficeResult {
+  return { ok: false, kind: "refused", envelope: null, reason };
+}
+function headlessCancelled(): GenofficeResult {
+  return { ok: false, kind: "failed", envelope: null, reason: "GenOffice CLI 操作已取消" };
+}
+function refuseExistingOutput(path: string, label: string): string | null {
+  // No CAS/overwrite approval is available in this adapter; the upstream CLI
+  // could otherwise use --force to overwrite another document or GUI session.
+  try {
+    lstatSync(path);
+    return label + " 已存在；无 CAS/覆盖授权，拒绝改写";
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return label + " 状态无法确认，拒绝写入";
+  }
 }
