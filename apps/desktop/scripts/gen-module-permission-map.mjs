@@ -38,9 +38,19 @@ const overrides = {
   "document.convert":["document.read","document.edit"], "workflow.run":["workflow.run"], "automation.run":["workflow.run"],
   "modules.install":["modules.install"], "modules.remove":["modules.install"],
 };
+// Extension RPCs bypass invokeAppTool's interactive approval gate once the host has
+// authenticated the extension. Keep this method's policyFor level as "danger" for
+// ordinary app_api_call, but never delegate it through the grant-only extension path.
+const nonDelegableOverrides = new Set([
+  "workflowEngine.load", // Stops a running engine and overwrites the native canvas draft.
+]);
+for (const method of nonDelegableOverrides) {
+  if (!methods.includes(method)) throw Error("Non-delegable override references unknown RPC method " + method);
+  if (policyFor(method).level !== "danger") throw Error("Non-delegable override must retain danger policy: " + method);
+}
 const mapped = Object.fromEntries(methods.map(method=>{
   const policy = policyFor(method);
-  if (policy.level === "blocked") return [method,null];
+  if (policy.level === "blocked" || nonDelegableOverrides.has(method)) return [method,null];
   if (overrides[method]) return [method,overrides[method]];
   const [domain,verb] = method.split(".",2);
   const isRead = policy.level === "read" || policy.level === "ui";

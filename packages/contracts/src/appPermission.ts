@@ -1204,6 +1204,7 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "workflowEngine.list": [
     "workflow.read"
   ],
+  "workflowEngine.load": null,
   "workflowEngine.nodeInstall": [
     "workflow.write"
   ],

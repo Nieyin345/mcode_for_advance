@@ -19,12 +19,19 @@ await check("All current RPC methods have a closed-world permission mapping", ()
   for (const method of methods) assert.ok(Object.hasOwn(APP_METHOD_PERMISSIONS,method), "Unmapped RPC method: "+method);
   for (const method of methods) {
     const required = permissionsForAppMethod(method);
-    if (policyFor(method).level === "blocked") assert.equal(required, null, method);
+    if (policyFor(method).level === "blocked" || method === "workflowEngine.load") assert.equal(required, null, method);
     else {
       assert.ok(Array.isArray(required) && required.length > 0, method);
       for (const permission of required ?? []) assert.ok((MODULE_PERMISSION_NAMES as readonly string[]).includes(permission),method);
     }
   }
+});
+await check("Dangerous workflow load keeps app policy but cannot be delegated to extensions", () => {
+  const policy = policyFor("workflowEngine.load");
+  assert.equal(policy.level, "danger");
+  assert.match(policy.reason ?? "", /停止运行中的引擎并覆盖画布上的未部署草稿/);
+  assert.equal(permissionsForAppMethod("workflowEngine.load"), null);
+  assert.throws(() => assertAppMethodPermission("workflowEngine.load", [...MODULE_PERMISSION_NAMES]), /不可委托/);
 });
 await check("Nondelegable approvals and credentials cannot be granted", () => {
   const all = [...MODULE_PERMISSION_NAMES];
