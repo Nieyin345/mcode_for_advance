@@ -184,5 +184,5 @@ return await withOsFileLease(filePath, async (real) => {
 - **原始红例（E1）**：修复前 `node apps/desktop/scripts/run-smokes.mjs genoffice-native-view-smoke`：`PPTX open/no-edit/save is byte-identical` 红、**20/21**。
 - **修复后回归（E1）**：同一套 `genoffice-native-view-smoke` 的原始不可修改断言转绿，真实原厂文件测试 **21/21**；`document-view-electron/host/open/renderer/vendor-page-smoke` 五套 + `arc005-pane-dock-keys/docking/electron/first-paint/free-grid/layout-edges/write-race-smoke` 七套，合计 13 套 **13/13 PASS**。额外 `slides-executor-session-epoch-smoke`、`slides-save-add-race-smoke` **2/2 PASS**（相关假执行器现在先做真实意义上的编辑，避免无编辑保存进入不应进入的竞态测试）。`document-view-open-smoke` 现以**不同于原文的新文字**编辑、保存，再通过新视图/新会话确认新文字保留；对应套件 PASS。另补“首次无编辑不调用 serializer／编辑后保存／重复保存不调用 serializer／零字节首存物化”的断言，PASS。
 - **变异验证（E1）**：临时将 `if (session.editEpoch === session.savedEpoch)` 条件禁用，重跑未修改的 T53 真实测试，唯一旧红例再次失败、**20/21**；随后按二进制备份恢复，源文件 SHA256 恢复校验通过（`4F1662BFC01FEB6AA99809FE1C265CD88415D7F9D5ED0D2CCBB046F0E7596456`）。
-- **类型检查**：`pnpm typecheck`（双包），结果以本次执行终态记录为准。
-- **remaining**：本卡所有功能验收以隔离 E1 / 源码 E2 为证；未把这些冒充手工 U1/独立复核。
+- **类型检查**：首次 `pnpm typecheck` 通过（3/3）。最终复跑遇到并行工作区另一条任务尚未收敛的 **2 处 TS2353**：`apps/desktop/src/main/document/genofficeNativeVendor.ts:49,55` 将 `mcodePaneGuard` 传入当前不接受该字段的 Sheets/Slides runtime 参数类型；contracts 通过，但 desktop 检查失败（2/3 完成，退出码 2）。该文件是其他并行任务的未提交修改（`git diff` 可核），本卡边界禁止越界修改。**验收第 7 条在最终共享工作树未达成**。
+- **remaining**：**验收 7 未达成**（并行 `genofficeNativeVendor.ts` 的 `mcodePaneGuard` 类型错误，须由该文件归属任务处理并复跑双包 tsc）；验收 1–6、8 已达成。本卡功能验收以隔离 E1 / 源码 E2 为证；未把这些冒充手工 U1/独立复核。
