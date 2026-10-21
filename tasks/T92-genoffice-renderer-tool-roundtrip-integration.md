@@ -47,6 +47,8 @@
 
 ### 2026-10-22｜T92 范围门禁：阻塞，未解除 T83 fail-closed（E2 + E1）
 
+- **阻塞证据提交**：`6cb87b3b9f3dee0abf8e25692e16f28ebaae5978`（仅本任务卡；未交付 T92 功能源码）。
+
 - **只读前置核验**：T83 `docsAiPorts.ts` 在带 tools 的请求上依旧调用 `nativeEditorToolBridgeBlockReason`，返回 `unsupported:`，未调用 `RuntimeManager.sendTurn`；T86 `provider.ts` 已具备 `externalTools` / `externalToolHandler`，`RuntimeManager.sendTurn` 已透传，协议前置具备。未触碰 T86/T49/GenOffice/DocumentViewHost。
 - **sender → view/document 已有宿主身份来源（E2）**：`documentViewHost.ts:1735` 的 `docIdForSender` 用 Electron `webContents` 对象同一性匹配；Docs `registerDocsIpc` 的 owner 源于此（约 483–493 行），`vendorAiContextForSender`（约 1081 行）绑定其他 GenOffice 格式的 session/path。不能让 renderer 自报身份代替这些绑定。
 - **最窄阻塞点（E2）**：GenOffice `agent-core/src/electron-transport.ts` 当前只定义 renderer→Host 的 `start/cancel` 与 Host→renderer 的 `tool-call/done`；`agent-core/src/loop.ts` 的 `finishTurn()`（约 1176、1217、1285 行）在收到 `tool-call` + `done` 后调用 renderer 的 `skill.executeTool`，将结果留在本地 `history`，再用**下一次新的** `ai:stream` 请求发送历史。`genoffice/apps/docs/src/preload/mcode-view.ts` 的严格 `MCODE_DOCS_CHANNEL_POLICY` 仅暴露 `ai:stream` / `ai:stream-cancel` / `ai:stream-chunk`，没有携带原始 `requestId/callId` 的独立 tool-result ACK；`genoffice/apps/docs/src/main/mcode-ai.ts` 的已注册 IPC 同样没有该 handler。因此 Host 无法在原 T86 `externalToolHandler` 等待期间获得可验证的、与最初 renderer 请求及 tool call 显式绑定的回执；把下一轮 renderer 上报的历史当本轮执行成功会绕过本卡要求的显式回执/跨请求防串线，不能代替它。`apps/desktop/src/main/document/docsVendorIpc.ts` 虽在可写表，却是 vendor 缺失时的 fallback stub；`electron.vite.config.ts:239-241` 生产将其 alias 到只读的 `genoffice/apps/docs/src/main/mcode-ipc.ts`，修改该 stub 不能为生产 renderer 新增回执路径。
