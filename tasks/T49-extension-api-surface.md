@@ -302,3 +302,55 @@ ModuleResult  // 与 app_api_call 同形状
 - 任务归属需要按历史台账统一：`tasks/T69-60-smoke-failure-triage.md` 的后续建议 #6 与 `tasks/T67-catalog-drift.md` 已明确将 `APP_METHOD_PERMISSIONS` 缺少 `workflowEngine.load` 归到 T49 收尾边界。该尾项是 **T48 既有权限映射生成/覆盖问题**，不是改 Node-RED 工作流实现；不要改 `apiCatalog.generated.ts`、`policy.ts` 或工作流运行器，也不要手工另造第二份权限表。
 - 请原 T49 执行对话继续收尾：检查 `apps/desktop/scripts/gen-module-permission-map.mjs`、`policyFor("workflowEngine.load")` 和当前 API catalog 的 Git 状态；按既有 `policyFor`/域映射规则确定它应映射为 `workflow.write` 还是需要显式非委托 override，再用现有生成器更新 `packages/contracts/src/appPermission.ts`。生成前若 `apiCatalog.generated.ts` 仍有并行未提交修改，不得暂存/提交该文件；先确认其来源和快照稳定性。然后复跑 `module-permissions-smoke`、完整 17-suite 命令、双包 TypeScript 与相关变异验证，并追加最终回写及提交 SHA。
 - **当前 T49 不可标记全部验收完成**：判据 8 仍未达成；保持同一个 T49 owner 收尾，不另派重复 owner，不以其它 16 套通过替代权限映射覆盖判据。
+
+
+### 2026-10-22 T49 权限映射尾项收尾
+
+- **代码提交 SHA**：`5861511b08bb707e8e36a500ce185e67fc3a3e53`（`fix(T49): preserve workflow load approval boundary in extension map`）。
+- **本次提交文件（仅 3 个）**：
+  - `apps/desktop/scripts/gen-module-permission-map.mjs`
+  - `packages/contracts/src/appPermission.ts`
+  - `apps/desktop/scripts/module-permissions-smoke/main.ts`
+  没有修改或暂存 `apps/desktop/src/main/appControl/apiCatalog.generated.ts`、`policy.ts`、工作流实现或其他任务文件。提交前暂存区只包含上述三个文件，`git diff --check` 通过。
+
+- **策略判断与生成依据**：
+  - 在干净的临时 worktree（基于提交 `77a8f7f4335f781332f4c21b32d6a7b6864697e0`）中运行现有生成器：`node --experimental-strip-types apps/desktop/scripts/gen-module-permission-map.mjs`。生成器报告 440 RPC methods、37 used permissions、41 total permissions、74 blocked。
+  - 该快照中的 `policyFor("workflowEngine.load")` 实测为 `level: "danger"`，原因是“加载工作流会停止运行中的引擎并覆盖画布上的未部署草稿”；生成后的映射为 `"workflowEngine.load": null`。
+  - `invokeExtensionAppCall` 通过可信扩展路径进入 `invokeAppTool`；此路径不会弹出普通的逐次 `gateAppAction` 审批。若映射为 `workflow.write`，扩展已获得该域 grant 后即可绕过此方法原有的每次人工确认。因此采用生成器中的显式 `nonDelegableOverrides`，并在生成时校验该方法仍存在于 catalog 且 `policyFor` 仍为 `danger`。这只拒绝扩展委托，不改 `policy.ts`，不把全局策略改为 `blocked`，也不改变普通 `app_api_call` 的 danger 审批语义。
+  - 因主工作区的 `apiCatalog.generated.ts` 有其他任务的未提交修改，没有用该混合快照运行生成器。只把干净快照生成结果中 `workflowEngine.load: null` 这一项带入当前生成文件，保留了其余现有映射；共享 catalog 未暂存、未提交。
+
+- **专项权限 Smoke**：`node apps/desktop/scripts/run-smokes.mjs module-permissions-smoke` → **1 suite PASS**；日志 `apps/desktop/.tmp/smoke-runs/1792599267211-39988-bH8QeB/module-permissions-smoke.log`，11 PASS / 0 FAIL。闭世界映射覆盖断言通过；新增断言验证 `workflowEngine.load` 仍为 danger、保留具体风险原因、扩展映射为 `null)，并且即使给出全部权限也会被拒绝。该日志中的 auth、blocked、upgrade 三组变异均触发预期红例。
+
+- **权限映射变异验证**：临时移除 `packages/contracts/src/appPermission.ts` 中生成的 `workflowEngine.load` 条目后，执行同一 `module-permissions-smoke`，预期失败已复现：日志 `apps/desktop/.tmp/smoke-runs/1792599321500-33988-WgX7Ig/module-permissions-smoke.log`，退出码 1，9 PASS / 2 FAIL；其中闭世界断言明确报 `Unmapped RPC method: workflowEngine.load`，新加的危险方法非委托断言也失败。脚本在 `finally` 中恢复原始字节，并以 Buffer 逐字节比较确认 `appPermission.ts` 恢复一致；临时变异脚本已删除。
+
+- **T49 app-call 专项及原有变异**：`node apps/desktop/scripts/run-smokes.mjs module-app-call-smoke` → 1 suite PASS；日志 `apps/desktop/.tmp/smoke-runs/1792599332555-36444-g8xU0n/module-app-call-smoke.log`，13 PASS / 0 FAIL。auth、blocked、cancel 三组变异均产生预期红例；真实 fixture 读取、假 AI provider、未授权拒绝、隔离、限额、超时、撤权取消及迟到响应检查均通过。
+
+- **完整 17-suite 回归命令**：
+  `node apps/desktop/scripts/run-smokes.mjs module-app-call-smoke module-catalog-smoke module-catalog-ui-smoke module-contract-smoke module-contributions-smoke module-executor-smoke module-extension-lifecycle-smoke module-file-identity-smoke module-grant-revoke-safety-smoke module-permissions-smoke module-phase2-e2e-smoke module-phase2-security-smoke module-platform-smoke module-protocol-integrity-smoke module-ui-smoke module-workflow-smoke extension-authoring-smoke`
+  - 结果：**17 PASS / 0 FAIL**。日志根目录：`apps/desktop/.tmp/smoke-runs/1792599361870-24836-yVOVUq/`。
+
+| Smoke | PASS / FAIL | 日志 |
+|---|---:|---|
+| `module-app-call-smoke` | 13 / 0 | `module-app-call-smoke.log` |
+| `module-catalog-smoke` | 21 / 0 | `module-catalog-smoke.log` |
+| `module-catalog-ui-smoke` | 26 / 0 | `module-catalog-ui-smoke.log` |
+| `module-contract-smoke` | 118 / 0 | `module-contract-smoke.log` |
+| `module-contributions-smoke` | 15 / 0 | `module-contributions-smoke.log` |
+| `module-executor-smoke` | 30 / 0 | `module-executor-smoke.log` |
+| `module-extension-lifecycle-smoke` | 160 / 0 | `module-extension-lifecycle-smoke.log` |
+| `module-file-identity-smoke` | 9 / 0 | `module-file-identity-smoke.log` |
+| `module-grant-revoke-safety-smoke` | 34 / 0 | `module-grant-revoke-safety-smoke.log` |
+| `module-permissions-smoke` | 11 / 0 | `module-permissions-smoke.log` |
+| `module-phase2-e2e-smoke` | 99 / 0 | `module-phase2-e2e-smoke.log` |
+| `module-phase2-security-smoke` | 32 / 0 | `module-phase2-security-smoke.log` |
+| `module-platform-smoke` | 33 / 0 | `module-platform-smoke.log` |
+| `module-protocol-integrity-smoke` | 15 / 0 | `module-protocol-integrity-smoke.log` |
+| `module-ui-smoke` | 10 / 0 | `module-ui-smoke.log` |
+| `module-workflow-smoke` | 41 / 0 | `module-workflow-smoke.log` |
+| `extension-authoring-smoke` | 24 / 0 | `extension-authoring-smoke.log` |
+
+- **双包 TypeScript**：
+  - `pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json`：exit 0。
+  - `pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json`：exit 0。
+- **验收判据状态**：本次前唯一未达成的判据 8（完整 module 回归全绿）现已通过；判据 3/4/6 的 auth、blocked、cancel 变异，以及本次映射缺项变异均证明断言能按预期变红。结合既有回写和本轮复验，T49 的 10 条验收判据均已满足。
+- **并行工作区保护**：`apiCatalog.generated.ts` 以及 `.aoci/baseline.json`、T76 的 smoke/回写文件、`ipc/settingsTransfer.ts` 等其他未提交修改均保留在原处，没有纳入本次提交；本次只提交 T49 的生成器、映射条目和权限 Smoke。
