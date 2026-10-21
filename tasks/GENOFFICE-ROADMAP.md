@@ -398,17 +398,30 @@ module.exports = function (RED) {
 | **T30** | 把节点包装进 Node-RED（`nodesDir` + bundle + 清单校验） | 无 —— **可立即派** |
 | **T31** | `McodeAgentPort` 的生产实现（6 个 port 接到三引擎/审批/ModuleHost） | T30 |
 | **T32** | 节点表单的 i18n、图标、分类、帮助文本 | T30 |
-| **T33** | 工作流 UI：从手写 `WorkflowCanvas`（685 行）切到 Node-RED 原厂编辑器 | T30 |
-| **T34** | 执行归属：Mcode 原生调度器 vs Node-RED 运行时，整图归属 + 双向 fail-closed | T33 |
+| **T33** | 工作流 UI：**删掉**手写 `WorkflowCanvas`（685 行），切到原厂编辑器 | T30 |
+| **T35** | Node-RED 编辑器主题（官方 `build-custom-theme.js`，238 变量映射） | 无（UI 相关，与 T33 建议串行） |
+| **T34** | 执行归属：原生调度器 vs Node-RED 运行时 | T33 |
 
-**T30 / T32 / T33 之间文件边界**：
-- T30 改 `workflowEngines/`（主进程）
-- T32 改 `mcodeNode*.ts` 的 HTML 部分（与 T30 的文件重叠，但**只改 HTML 与 locale**，
-  建议 T32 在 T30 之后做）
-- T33 改 `renderer/components/settings/workflows/`（渲染端）
+**用户 2026-10-21 决策**：「之前手写的不要了，改一改 node red 的就行，
+node red 的风格可能不对，需要调整」—— 拆成 T33（删画布 + 切入口）与 T35（主题）。
 
-**T33 与 T30 不冲突**（主进程 vs 渲染端），但 T33 的判据 5「用户能在编辑器里看到
-6 个 mcode 节点」依赖 T30，所以派 T33 时要说明这一点。
+## N9. 主题定制（T35 的依据）
+
+Node-RED 官方就支持定制主题，`node-red/scripts/build-custom-theme.js` 头部：
+
+```
+1. Copy packages/node_modules/@node-red/editor-client/src/sass/colors.scss
+   and change the values.
+2. Run this script with --in <your file>.
+3. Save output with --out.
+4. Set editorTheme.page.css in settings.
+5. Restart Node-RED.
+```
+
+**所以改风格零上游改动。** 只需：复制 `colors.scss`（238 个变量）→ 改有对应关系的
+→ 跑构建 → 在 `RED.init()` 加 `editorTheme.page.css`。
+
+**这比「改 41 个 SCSS 文件」省一个数量级。**
 
 ## N7. 工作流 UI 的现状（实读）
 
