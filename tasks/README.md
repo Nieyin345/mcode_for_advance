@@ -78,7 +78,7 @@
 | T05b | Docs 迁移二：需权限操作（10 个 handler） | ARC-007 | T05a | ✅ 完成（10/10 受控接线 + 两变异；图片导出链等留在 T05c 之后的切片） |
 | T05c | Docs AI 面板：默认拒绝 + 经三 SDK 可用（12 个 ai:*） | ARC-007 | T05b | 未开始 |
 | T18 | 输入框重做（复用 RichComposerWithMentions + ChatComposer） | ARC-005 UI | 无 | ✅ 完成（19/19 行为断言 + 两变异；未替换 Tiptap） |
-| T19 | Node-RED 源码 vendor 第一步：落地 + 解析链路 | ARC-006 | T13 | 未开始（**建议优先**） |
+| T19 | Node-RED 源码 vendor 第一步：落地 + 解析链路 | ARC-006 | T13 | ✅ 完成（vendor 5.0.8 / 解析+T19 fallback / afterPack 校验） |
 | T20 | 工件预览沙箱 + 语音活动条（第三批逆向件） | ARC-005 UI+安全 | 无 | 未开始 |
 | T21 | 顶栏 macOS 红绿灯避让 + 附件磁贴（第四批逆向件） | ARC-005 UI | 无 | 未开始 |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
