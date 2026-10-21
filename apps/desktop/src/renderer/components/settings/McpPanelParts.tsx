@@ -10,8 +10,7 @@ import { useEffect, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button, Dialog, InfoHint, Select } from "@renderer/components/ui/index.js";
-import { IconLoader2 } from "@renderer/lib/icons.js";
+import { Badge, Button, Dialog, ErrorNote, Field, Input, LoadingNote, Select } from "@renderer/components/ui/index.js";
 import {
   MCP_RESERVED_NAME,
   isReservedMcpServerName,
@@ -22,25 +21,7 @@ import {
 } from "@contracts/ipc";
 import { GLOBAL_ORIGIN_KEY, originKey, KindBadge } from "@renderer/components/settings/McpPanel.js";
 import { Textarea } from "@renderer/components/ui/textarea.js";
-
-const inputCls =
-  "min-w-0 w-full rounded border border-edge bg-surface px-2 py-1 font-mono text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
-
-const textareaCls =
-  "min-h-[64px] w-full resize-y rounded border border-edge bg-surface px-2 py-1.5 font-mono text-[0.7857em] leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";
-
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    // div 而不是 label:ⓘ 是个 button,包在 label 里会抢走「点标题聚焦输入框」的目标。
-    <div className="mb-2 block w-full">
-      <span className="mb-0.5 flex items-center gap-1.5 text-[0.7857em] font-medium text-content-muted">
-        {label}
-        {hint && <InfoHint>{hint}</InfoHint>}
-      </span>
-      {children}
-    </div>
-  );
-}
+import { Checkbox } from "@renderer/components/ui/native-controls.js";
 
 /** Parse a JSON object of string→string (env / headers). Returns an error
  *  message on invalid input, else the record (undefined when text is empty).
@@ -228,19 +209,20 @@ export function AddServerDialog({
           </Dialog.Description>
           <Dialog.Close />
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-            <Field label={t("settings.mcp.fName")} hint={t("settings.mcp.fNameHint")}>
-              <input
+            <Field className="mb-2 w-full" label={t("settings.mcp.fName")} htmlFor="mcp-add-name" hint={t("settings.mcp.fNameHint")}>
+              <Input
+                id="mcp-add-name"
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="my-server"
-                className={inputCls}
+                className="text-[0.7857em]"
                 spellCheck={false}
                 autoFocus
                 disabled={editServer != null}
               />
             </Field>
-            <Field label={t("settings.mcp.fType")}>
+            <Field className="mb-2 w-full" label={t("settings.mcp.fType")}>
               <Select.Root value={type} onValueChange={(v) => setType(v as "stdio" | "http" | "sse")}>
                 <Select.Trigger className="w-full">
                   <Select.Value>{(val: string) => val}</Select.Value>
@@ -266,32 +248,35 @@ export function AddServerDialog({
             </Field>
             {type === "stdio" ? (
               <>
-                <Field label={t("settings.mcp.fCommand")} hint={t("settings.mcp.fCommandHint")}>
-                  <input
+                <Field className="mb-2 w-full" label={t("settings.mcp.fCommand")} htmlFor="mcp-add-command" hint={t("settings.mcp.fCommandHint")}>
+                  <Input
+                    id="mcp-add-command"
                     type="text"
                     value={command}
                     onChange={(e) => setCommand(e.target.value)}
                     placeholder="npx -y @modelcontextprotocol/server-filesystem"
-                    className={inputCls}
+                    className="text-[0.7857em]"
                     spellCheck={false}
                   />
                 </Field>
-                <Field label={t("settings.mcp.fArgs")} hint={t("settings.mcp.fArgsHint")}>
-                  <input
+                <Field className="mb-2 w-full" label={t("settings.mcp.fArgs")} htmlFor="mcp-add-args" hint={t("settings.mcp.fArgsHint")}>
+                  <Input
+                    id="mcp-add-args"
                     type="text"
                     value={args}
                     onChange={(e) => setArgs(e.target.value)}
                     placeholder="--port 3000"
-                    className={inputCls}
+                    className="text-[0.7857em]"
                     spellCheck={false}
                   />
                 </Field>
-                <Field label={t("settings.mcp.fEnv")} hint={t("settings.mcp.fEnvHint")}>
+                <Field className="mb-2 w-full" label={t("settings.mcp.fEnv")} htmlFor="mcp-add-env" hint={t("settings.mcp.fEnvHint")}>
                   {editServer && <p className="mb-1 text-xs text-content-muted">{t("settings.mcp.secretEditHint")}</p>}
                   <Textarea
+                    id="mcp-add-env"
                     value={envJson}
                     onChange={(e) => setEnvJson(e.target.value)}
-                    className={textareaCls}
+                    className="min-h-[64px] resize-y text-[0.7857em] leading-relaxed"
                     spellCheck={false}
                     placeholder='{"API_KEY": "xxx"}'
                   />
@@ -299,29 +284,31 @@ export function AddServerDialog({
               </>
             ) : (
               <>
-                <Field label="URL" hint={t("settings.mcp.fUrlHint")}>
-                  <input
+                <Field className="mb-2 w-full" label="URL" htmlFor="mcp-add-url" hint={t("settings.mcp.fUrlHint")}>
+                  <Input
+                    id="mcp-add-url"
                     type="text"
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
                     placeholder="https://example.com/mcp"
-                    className={inputCls}
+                    className="text-[0.7857em]"
                     spellCheck={false}
                   />
                 </Field>
-                <Field label={t("settings.mcp.fHeaders")} hint={t("settings.mcp.fHeadersHint")}>
+                <Field className="mb-2 w-full" label={t("settings.mcp.fHeaders")} htmlFor="mcp-add-headers" hint={t("settings.mcp.fHeadersHint")}>
                   {editServer && <p className="mb-1 text-xs text-content-muted">{t("settings.mcp.secretEditHint")}</p>}
                   <Textarea
+                    id="mcp-add-headers"
                     value={headersJson}
                     onChange={(e) => setHeadersJson(e.target.value)}
-                    className={textareaCls}
+                    className="min-h-[64px] resize-y text-[0.7857em] leading-relaxed"
                     spellCheck={false}
                     placeholder='{"Authorization": "Bearer xxx"}'
                   />
                 </Field>
               </>
             )}
-            {error && <div className="mt-1 text-[0.7857em] text-danger">{error}</div>}
+            {error && <ErrorNote className="mt-1">{error}</ErrorNote>}
           </div>
           <div className="flex items-center gap-2 border-t border-edge px-4 py-3">
             <div className="flex-1" />
@@ -462,7 +449,7 @@ export function ImportMcpDialog({
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
             {loading ? (
               <div className="flex items-center justify-center gap-2 py-8 text-[0.7857em] text-content-subtle">
-                <IconLoader2 size={14} className="animate-spin" />
+                <LoadingNote label={t("common.loading")} />
                 {t("settings.scanning")}
               </div>
             ) : sources.length === 0 ? (
@@ -510,8 +497,7 @@ export function ImportMcpDialog({
                                   : "hover:bg-surface-hover/60",
                             )}
                           >
-                            <input
-                              type="checkbox"
+                            <Checkbox
                               checked={isChecked}
                               disabled={isExisting}
                               onChange={() => toggle(key)}
@@ -524,9 +510,7 @@ export function ImportMcpDialog({
                                 </span>
                                 <KindBadge kind={s.kind} />
                                 {isExisting && (
-                                  <span className="shrink-0 rounded bg-surface-hover px-1 text-[9px] text-content-subtle">
-                                    {t("settings.importExisting")}
-                                  </span>
+                                  <Badge variant="neutral" className="shrink-0 text-[9px]">{t("settings.importExisting")}</Badge>
                                 )}
                               </div>
                               <p className="truncate font-mono text-[0.7143em] text-content-subtle" title={s.detail}>

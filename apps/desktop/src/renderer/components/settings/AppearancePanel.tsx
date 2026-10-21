@@ -6,7 +6,7 @@ import { api } from "@renderer/lib/api.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { hexToTriplet, tripletToHex } from "@renderer/lib/colorUtils.js";
 import { useSessionStore, CHAT_FONT_SIZE_MIN, CHAT_FONT_SIZE_MAX, RIGHT_PANEL_FONT_SIZE_MIN, RIGHT_PANEL_FONT_SIZE_MAX } from "@renderer/stores/sessionStore.js";
-import { Button, Select } from "@renderer/components/ui/index.js";
+import { Button, ColorInput, Select } from "@renderer/components/ui/index.js";
 import { IconRefresh, IconSun, IconMoon, IconDeviceDesktop, IconSquare, IconBrush } from "@renderer/lib/icons.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { editorThemePresetsForMode } from "@renderer/lib/editorThemes.js";
@@ -356,9 +356,8 @@ export function AppearancePanel() {
                 />
               );
             })}
-            <input
+            <ColorInput
               id="setting-usercolor"
-              type="color"
               value={userColorHex}
               onChange={(e) => {
                 const hex = e.target.value;
@@ -366,7 +365,7 @@ export function AppearancePanel() {
                 setPendingUserHex(hex);
                 if (triplet) void setUserMessageColor(triplet);
               }}
-              className="h-7 w-10 cursor-pointer rounded border border-edge bg-transparent p-0.5"
+              className="h-7 w-10 rounded-[var(--radius-btn-xs)]"
             />
             <Button
               variant="ghost"
@@ -422,9 +421,8 @@ export function AppearancePanel() {
                 />
               );
             })}
-            <input
+            <ColorInput
               id="setting-accent"
-              type="color"
               value={accentHex}
               onChange={(e) => {
                 const hex = e.target.value;
@@ -432,7 +430,7 @@ export function AppearancePanel() {
                 setPendingAccentHex(hex);
                 if (triplet) void setAccentColor(triplet);
               }}
-              className="h-7 w-10 cursor-pointer rounded border border-edge bg-transparent p-0.5"
+              className="h-7 w-10 rounded-[var(--radius-btn-xs)]"
             />
             <Button
               variant="ghost"

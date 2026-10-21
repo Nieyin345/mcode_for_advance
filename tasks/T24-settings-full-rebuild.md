@@ -253,3 +253,10 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792555276125-31172-pzAp7p`；双包 tsc：0 错。
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs mcp-lsp` PASS；`set T24_MUTATION=mcp-lsp&& node ... mcp-lsp` 把 LSP 标签字段的 Field 撤回后 exit=1（预期红）。
 - 行为核对：LSP 自定义路径/参数/JAVA_HOME 更改与保存的 onChange/onClick 透传，输入标签动态唯一 id；MCP OAuth/复制/导入/新增、插件启用/项目筛选、分类树和增删规则逻辑未改；相关 Electron 回归通过。
+
+### 2026-10-21｜批次 10：原生语义控件与 MCP 对话框字段、项目权限卡
+
+- 改动：`ui/native-controls.tsx` 新增 `Checkbox` / `NativeSelect` / `ColorInput`，原生表单交互、change/value/ref 透传，收敛 CDS `--radius-btn-xs`、焦点态/禁用态。`AppearancePanel` 色彩选择→`ColorInput`；`LibraryTypesPanel` 树勾选→`Checkbox`；`McpPanel` 勾选→`Checkbox`；`McpPanelParts` 4 个服务字段 `<input>`→`Input`、自绘字段→`Field`、导入勾选→`Checkbox`、加载/错误/现有标签→`LoadingNote`/`ErrorNote`/`Badge`；`ProjectMcpView` 项目列表/复制区→`Card`，空态/加载态→`EmptyState`/`LoadingNote`，可信度/协议标签→`Badge`，坏记录警告→`ErrorNote`，复制勾选→`Checkbox`。明确跳过不属于本任务的主进程改动。
+- 原语：为保留 native 复选框与颜色板语义而扩展 ui，只增不改旧原语。`mcp-ui-smoke` 的固定 ui/index mock 不导出新 `Checkbox`，故 MCP 3 个使用方改从 `ui/native-controls.js` 直接导入；首次跑 mcp-ui-smoke 1 fail（mock 找不到导出），调整 import 后 6/6 全绿。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs mcp-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：6/6 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792563743443-30832-mnkIXz`。`node .../t24-design-contract.cjs native` PASS，`set T24_MUTATION=native&& node ... native` 预期 exit=1（撤回 MCP 导入 Checkbox 断言必红）。
+- 功能核对：MCP 导入勾选及保存配置、信任、项目复制逻辑无修改，颜色选择仍为浏览器原生 input type=color、复选框仍为 input type=checkbox，aria/label、禁用与回调不变。外部并发工作造成全局双包 tsc 失败：`genofficeViewFactories.ts` 与 GenOffice slides 大量 API 缺失、`packages/contracts/src/modules.ts` 导出冲突、`moduleCapability.ts` Zod 类型等均不在 T24 范围；`tsc` 日志中过滤 `components/settings` / `components/ui/native-controls` 未出现本批新增类型错误。功能 bug：本批未发现。

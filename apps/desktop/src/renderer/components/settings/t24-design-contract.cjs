@@ -99,8 +99,21 @@ if (batch === 'shell') {
   check(mcp.includes('<ErrorNote>{error}</ErrorNote>'), 'MCP error uses ErrorNote');
   check(project.includes('<Card className="bg-surface/40">'), 'project plugin list uses Card');
   check(library.includes('<Input\n                value={extDraft}'), 'library extension editor uses Input');
+} else if (batch === 'native') {
+  const lib = read('LibraryTypesPanel.tsx');
+  const appearance = read('AppearancePanel.tsx');
+  let dialog = read('McpPanelParts.tsx');
+  const project = read('ProjectMcpView.tsx');
+  if (process.env.T24_MUTATION === 'native') dialog = dialog.replace('<Checkbox\n                              checked={isChecked}', '<input\n                              checked={isChecked}');
+  check(lib.includes('<Checkbox\n        checked={checked}'), 'library checkbox uses CDS');
+  check(appearance.includes('<ColorInput\n              id="setting-usercolor"'), 'appearance palette uses CDS color input');
+  check(dialog.includes('<Field className="mb-2 w-full"'), 'MCP dialog fields use shared Field');
+  check(dialog.includes('<Checkbox\n                              checked={isChecked}'), 'MCP import selection uses shared checkbox');
+  check(dialog.includes('<ErrorNote className="mt-1">{error}</ErrorNote>'), 'dialog error uses ErrorNote');
+  check(project.includes('<Badge variant="warning"'), 'untrusted MCP badge uses shared Badge');
+  check(project.includes('<LoadingNote label={t("common.loading")}'), 'project load state uses LoadingNote');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

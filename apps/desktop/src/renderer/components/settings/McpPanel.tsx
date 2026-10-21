@@ -30,6 +30,7 @@ import {
   Spinner,
   Switch,
 } from "@renderer/components/ui/index.js";
+import { Checkbox } from "@renderer/components/ui/native-controls.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { SettingRow } from "./SettingRow.js";
@@ -687,8 +688,7 @@ export function McpPanel() {
             <SettingRow
               key={rowKey(s)}
               leading={
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={checked.has(s.name)}
                   onChange={(e) =>
                     setChecked((prev) => {

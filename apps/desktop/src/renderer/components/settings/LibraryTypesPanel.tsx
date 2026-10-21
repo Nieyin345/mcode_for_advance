@@ -37,7 +37,7 @@ import type { LibraryCollection } from "@contracts/library";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
-import { Button, HintLabel, Input, Spinner } from "@renderer/components/ui/index.js";
+import { Button, Checkbox, HintLabel, Input, Spinner } from "@renderer/components/ui/index.js";
 import { IconBook, IconX } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -96,8 +96,7 @@ function SuppressCheck({
       className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-surface-hover"
       style={{ paddingLeft: `${8 + depth * 16}px` }}
     >
-      <input
-        type="checkbox"
+      <Checkbox
         checked={checked}
         onChange={onToggle}
         className="h-3 w-3 shrink-0 accent-accent"

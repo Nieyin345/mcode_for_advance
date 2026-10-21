@@ -17,8 +17,9 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import { Button, ConfirmDialog, ErrorNote } from "@renderer/components/ui/index.js";
-import { IconCopy, IconLoader2, IconPencil, IconPlus, IconServer, IconShieldCheck, IconTrash } from "@renderer/lib/icons.js";
+import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
+import { IconCopy, IconPencil, IconPlus, IconServer, IconShieldCheck, IconTrash } from "@renderer/lib/icons.js";
+import { Checkbox } from "@renderer/components/ui/native-controls.js";
 import { ProjectPicker } from "./ScopeTabs.js";
 
 export function ProjectMcpView({
@@ -118,9 +119,7 @@ export function ProjectMcpView({
 
   if (!project || !projectPath) {
     return (
-      <div className="flex h-full items-center justify-center px-6 text-center">
-        <p className="text-[0.8571em] leading-relaxed text-content-muted">{t("settings.mcp.projectNoProject")}</p>
-      </div>
+      <EmptyState title={t("settings.mcp.projectNoProject")} className="h-full" />
     );
   }
 
@@ -130,13 +129,13 @@ export function ProjectMcpView({
 
   return (
     <div className="flex min-h-0 flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-edge bg-surface/40 px-3 py-2">
+      <Card className="flex flex-wrap items-center justify-between gap-3 bg-surface/40 px-3 py-2">
         <ProjectPicker project={project} projects={projects} onSelect={onSelectProject} disabled={busy !== null} />
         <Button variant="secondary" size="sm" className="gap-1" onClick={() => onAdd(projectPath)} disabled={busy !== null || !!data?.error}>
           <IconPlus size={12} />
           {t("settings.mcp.addServer")}
         </Button>
-      </div>
+      </Card>
 
       <p className="px-1 text-[0.7857em] leading-relaxed text-content-subtle">
         {t("settings.mcp.projectHint", { file: ".mcp.json" })}
@@ -144,16 +143,11 @@ export function ProjectMcpView({
 
       {(error || data?.error) && <ErrorNote>{error ?? data?.error}</ErrorNote>}
 
-      <div className="rounded-md border border-edge bg-surface/40">
+      <Card className="bg-surface/40">
         {loading && !data ? (
-          <div className="flex items-center justify-center gap-2 py-6 text-[0.7857em] text-content-subtle">
-            <IconLoader2 size={14} className="animate-spin" />
-            {t("common.loading")}
-          </div>
+          <LoadingNote label={t("common.loading")} className="py-6" />
         ) : servers.length === 0 ? (
-          <div className="px-4 py-6 text-center text-[0.7857em] text-content-subtle">
-            {t("settings.mcp.projectEmpty")}
-          </div>
+          <EmptyState title={t("settings.mcp.projectEmpty")} className="py-6" />
         ) : (
           servers.map((s) => {
             const key = `p:${s.name}`;
@@ -163,18 +157,13 @@ export function ProjectMcpView({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <span className="truncate font-mono text-[0.8571em] font-medium text-content">{s.name}</span>
-                    <span className="shrink-0 rounded bg-surface-hover px-1 text-[9px] uppercase leading-tight text-content-subtle">{s.kind}</span>
+                    <Badge variant="neutral" className="shrink-0 text-[9px] uppercase">{s.kind}</Badge>
                     {s.trusted ? (
-                      <span className="shrink-0 rounded bg-success/12 px-1 text-[9px] leading-tight text-success">
-                        {t("settings.mcp.projectTrusted")}
-                      </span>
+                      <Badge variant="success" className="shrink-0 text-[9px]">{t("settings.mcp.projectTrusted")}</Badge>
                     ) : (
-                      <span
-                        className="shrink-0 rounded bg-warning/15 px-1 text-[9px] leading-tight text-warning"
-                        title={t("settings.mcp.projectUntrustedHint")}
-                      >
+                      <Badge variant="warning" className="shrink-0 text-[9px]" title={t("settings.mcp.projectUntrustedHint")}>
                         {t("settings.mcp.projectUntrusted")}
-                      </span>
+                      </Badge>
                     )}
                   </div>
                   <div className="truncate font-mono text-[0.7143em] text-content-subtle" title={s.detail}>{s.detail}</div>
@@ -202,14 +191,12 @@ export function ProjectMcpView({
           })
         )}
         {data && data.invalid.length > 0 && (
-          <div className="border-t border-edge px-3 py-2 text-[0.7143em] text-warning">
-            {t("settings.mcp.projectInvalid", { names: data.invalid.join(", ") })}
-          </div>
+          <ErrorNote tone="warning" className="m-3">{t("settings.mcp.projectInvalid", { names: data.invalid.join(", ") })}</ErrorNote>
         )}
-      </div>
+      </Card>
 
       {/* ── 从总库复制 ── */}
-      <div className="rounded-md border border-edge bg-surface/40">
+      <Card className="bg-surface/40">
         <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
           <span className="text-[0.7857em] font-medium text-content-muted">{t("settings.mcp.projectCopyTitle")}</span>
           <Button variant="primary" size="sm" className="gap-1" disabled={busy !== null || !!data?.error} onClick={() => void copy()}>
@@ -218,7 +205,7 @@ export function ProjectMcpView({
           </Button>
         </div>
         {copyable.length === 0 ? (
-          <div className="px-3 py-4 text-center text-[0.7857em] text-content-subtle">{t("settings.mcp.projectCopyEmpty")}</div>
+          <EmptyState title={t("settings.mcp.projectCopyEmpty")} className="py-4" />
         ) : (
           <div className="flex flex-wrap gap-1.5 px-3 py-2">
             {copyable.map((s) => {
@@ -228,15 +215,14 @@ export function ProjectMcpView({
                 <label
                   key={s.name}
                   className={cn(
-                    "flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[0.7857em]",
+                    "flex cursor-pointer items-center gap-1 rounded-[var(--radius-btn-xs)] border px-1.5 py-0.5 font-mono text-[0.7857em]",
                     on ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "border-edge text-content-muted",
                     inProject && "cursor-default opacity-50",
                   )}
                   title={inProject ? t("settings.mcp.projectCopyExists") : s.detail}
                 >
-                  <input
-                    type="checkbox"
-                    className="h-3 w-3 accent-accent"
+                  <Checkbox
+                    className="h-3 w-3"
                     checked={on}
                     disabled={inProject}
                     onChange={() =>
@@ -255,7 +241,7 @@ export function ProjectMcpView({
           </div>
         )}
         <p className="px-3 pb-2 text-[0.7143em] leading-relaxed text-content-subtle">{t("settings.mcp.projectCopyWarn", { var: "${VAR}" })}</p>
-      </div>
+      </Card>
 
       <ConfirmDialog
         open={pendingRemove !== null}
