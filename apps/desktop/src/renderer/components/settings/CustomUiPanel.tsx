@@ -50,7 +50,7 @@ import { translate, useI18n, type MessageId } from "@renderer/lib/i18n/index.js"
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useCustomUiStore } from "@renderer/stores/customUiStore.js";
 import { selectActiveEnvPath, useSessionStore } from "@renderer/stores/sessionStore.js";
-import { Button, ConfirmDialog, ErrorNote, HintLabel, Switch } from "@renderer/components/ui/index.js";
+import { Badge, Button, ConfirmDialog, EmptyState, ErrorNote, HintLabel, LoadingNote, Switch } from "@renderer/components/ui/index.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { ModuleSurface, ModuleToolsButton } from "@renderer/components/modules/ModuleSurface.js";
 import {
@@ -665,9 +665,9 @@ export function CustomUiPanel() {
         <div className="min-w-0 flex-1 space-y-3">
           <SettingsSection title={t("customUi.entries.title")} desc={t(`customUi.slotHint.${slot}` as MessageId)}>
             {!loaded ? (
-              <div className="px-3 py-3 text-xs text-content-subtle">{t("common.loading")}</div>
+              <LoadingNote label={t("common.loading")} className="px-3 py-3" />
             ) : rows.length === 0 ? (
-              <div className="px-3 py-3 text-xs text-content-subtle">{t("customUi.entries.empty")}</div>
+              <EmptyState title={t("customUi.entries.empty")} className="py-4" />
             ) : (
               rows.map((r, i) => {
                 const Icon = r.icon;
@@ -677,9 +677,7 @@ export function CustomUiPanel() {
                     <span className={cn("min-w-0 flex-1 truncate text-xs", r.hidden ? "text-content-subtle line-through" : "text-content")}>
                       {r.label}
                     </span>
-                    <span className="shrink-0 rounded border border-edge px-1.5 py-px text-[0.7143em] text-content-subtle">
-                      {t(`customUi.source.${r.source}` as MessageId)}
-                    </span>
+                    <Badge variant="neutral" className="shrink-0">{t(`customUi.source.${r.source}` as MessageId)}</Badge>
                     {automationMissing(r.item) && (
                       <span
                         className="shrink-0 rounded border border-danger/40 px-1.5 py-px text-[0.7143em] text-danger"

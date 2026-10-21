@@ -31,7 +31,7 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import { Button, ConfirmDialog, ErrorNote } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
 import {
   IconPlus,
   IconSparkles,
@@ -102,7 +102,7 @@ export function SkillPresetsView({
         {loadError}
       </ErrorNote>
     ) : (
-      <div className="px-2 py-3 text-[0.8571em] text-content-subtle">{t("common.loading")}</div>
+      <LoadingNote label={t("common.loading")} className="px-2 py-3" />
     );
   }
 

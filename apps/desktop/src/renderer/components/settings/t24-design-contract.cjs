@@ -138,8 +138,24 @@ if (batch === 'shell') {
   check(codex.includes('export function CodexProviderForm'), 'codex form source extracted');
   check(!/<button\b/.test(parts), 'model parts native button must be gone');
   check(presets.includes('<Input'), 'skill preset name uses shared Input');
+} else if (batch === 'status-surfaces') {
+  const custom=read('CustomUiPanel.tsx');
+  let models=read('CustomModelsPanelParts.tsx');
+  const library=read('LibraryTypesPanel.tsx');
+  const mcp=read('McpPanelParts.tsx');
+  const presets=read('SkillPresetsView.tsx');
+  const tree=read('WorktreeRootSetting.tsx');
+  const deploy=read('SceneDeployPanel.tsx');
+  if(process.env.T24_MUTATION==='status-surfaces')models=models.replace('<ErrorNote>{error}</ErrorNote>', '<div>{error}</div>');
+  check(custom.includes('<EmptyState title={t("customUi.entries.empty")}'), 'custom UI empty uses EmptyState');
+  check(models.includes('<ErrorNote>{error}</ErrorNote>'), 'models error uses shared ErrorNote');
+  check(library.includes('<ErrorNote className="whitespace-pre-wrap break-all">'), 'library save error uses ErrorNote');
+  check(mcp.includes('<ErrorNote className="mt-2">{error}</ErrorNote>'), 'MCP import errors use ErrorNote');
+  check(presets.includes('<LoadingNote label={t("common.loading")}'), 'skill preset loading uses LoadingNote');
+  check(tree.includes('<LoadingNote label={t("common.loading")}'), 'worktree loading uses LoadingNote');
+  check(deploy.includes('<ErrorNote className="mt-1">{t("sceneDeploy.stepError"'), 'deployment step failure uses ErrorNote');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions|form-controls|model-split\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions|form-controls|model-split|status-surfaces\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

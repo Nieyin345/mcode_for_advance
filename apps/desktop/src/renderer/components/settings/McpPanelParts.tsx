@@ -549,7 +549,7 @@ export function ImportMcpDialog({
               </div>
             )}
 
-            {error && <div className="mt-2 text-[0.7857em] text-danger">{error}</div>}
+            {error && <ErrorNote className="mt-2">{error}</ErrorNote>}
           </div>
           <div className="flex items-center gap-2 border-t border-edge px-4 py-3">
             <span className="text-[0.7143em] text-content-subtle">

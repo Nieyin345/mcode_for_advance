@@ -284,3 +284,20 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs custom-models-ui-smoke skills-management-ui-smoke plugins-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：8/8 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792564726575-32512-hF9Kkz`。双包 tsc 全局被其他并发任务的 GenOffice API/types 与 contracts 变更阻塞；通过输出筛选 `components/settings/`、`components/ui/native-controls` 未有本批新增错误。
 - 变异：`node .../t24-design-contract.cjs model-split` PASS；`set T24_MUTATION=model-split&& node ... model-split` 撤回模型表单共享 Button 后 exit=1（预期红）。
 - 行为核对：Codex/Claude/Pi 模型配置界面、保存/测试、技能预设表单在真实 Chromium `custom-models-ui-smoke`、`skills-management-ui-smoke` 中全绿；数据持久化函数逻辑未变。业务行为不做破坏性公网/账户手工操作。
+
+### 2026-10-21｜批次 14：补齐小/中型面板的状态表面
+
+- 改动：`SkillPresetsView`、`CustomUiPanel`、`CustomModelsPanelParts`、`LibraryTypesPanel`、`McpPanelParts`、`SceneDeployPanel`、`WorktreeRootSetting` 的自绘加载/空态/错误文本/来源状态改为共享 `LoadingNote`、`EmptyState`、`ErrorNote`、`Badge`、`Spinner`；保留原条件渲染、业务回调、风险级别和 i18n 文案。模型表单 `data-slot=error` 仍保留作为真实浏览器测试定位锚点。
+- 原语：全部复用 ui，无新原语。外观结构改造期间未发现业务功能 bug。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs custom-models-ui-smoke skills-management-ui-smoke plugins-ui-smoke mcp-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：9/9 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792565273306-43516-r7StKC`。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs status-surfaces` PASS；`set T24_MUTATION=status-surfaces&& node ... status-surfaces` 将模型错误提示恢复为自绘 div，exit=1（预期红）。
+- 功能核对：模型配置、插件、MCP、Skills 和设置页的事件、焦点与真实浏览器回归均绿；没有改变持久化/删除/下载的业务调用。
+
+### 当前全任务验收未闭环说明（供后续继续）
+
+- 判据 1：未能证明全部 63 个面板都完成 CDS token 与 Claude 布局骨架；尚有部分叶子组件未重构。
+- 判据 2：虽已清除 `components/settings/*.tsx` 的原生 button/input/select/textarea 自绘表单，仍有部分面板/工作流子视图自绘状态、错误提示、圆角与徽标（例如 `HooksPanel`、`CustomModelsPanel`、`PluginsPanelParts`、`ToolchainSection` 和 `workflows/` 子组件），须继续逐处统一。
+- 判据 3：本对话已跑相关主要 suites 均通过，最终 9/9 PASS。
+- 判据 4：完整双包 tsc 在此时被其他并发任务修改的 `genoffice`/`apps/desktop/src/main/document` 与 `packages/contracts` 等文件错误阻断（不是 T24 范围，未改）；无法宣称全局类型检查零错。本任务涉及的 `components/settings/` 和 `components/ui/native-controls` 在本次 tsc 输出筛选中无新增错误。
+- 判据 5：全部已提交批次都记录至少一条「撤回原语→断言红」变异测试。
+- 判据 6：已有 smoke 和限定的状态/回调人工核对，但尚未逐一覆盖 63 屏全部设置项的行为；不能宣称完整功能等价验收。

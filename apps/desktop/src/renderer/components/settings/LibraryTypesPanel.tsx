@@ -37,7 +37,7 @@ import type { LibraryCollection } from "@contracts/library";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
-import { Button, Checkbox, HintLabel, Input, Spinner } from "@renderer/components/ui/index.js";
+import { Button, Checkbox, ErrorNote, HintLabel, Input, Spinner } from "@renderer/components/ui/index.js";
 import { IconBook, IconX } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
@@ -351,12 +351,8 @@ export function LibraryTypesPanel() {
         </div>
       )}
       {/* 保存失败:显示 error 原文(后端原话;分类逐条的失败各占一行) */}
-      {saveError && <div className="whitespace-pre-wrap break-all text-[0.7857em] text-danger">{saveError}</div>}
-      {loadError && (
-        <div className="break-all text-[0.7857em] text-danger">
-          {t("settings.libraryTypes.loadFailed", { error: loadError })}
-        </div>
-      )}
+      {saveError && <ErrorNote className="whitespace-pre-wrap break-all">{saveError}</ErrorNote>}
+      {loadError && <ErrorNote className="break-all">{t("settings.libraryTypes.loadFailed", { error: loadError })}</ErrorNote>}
 
       {/* ── 大类提示词:注入在该大类清单的最前面 ── */}
       <SettingsSection title={t("settings.libraryTypes.section.group")}>

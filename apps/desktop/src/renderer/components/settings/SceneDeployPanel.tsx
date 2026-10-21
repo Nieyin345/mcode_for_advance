@@ -624,7 +624,7 @@ function DeploymentResult({ deployment, observed }: { deployment: SceneDeploymen
               <span className="min-w-0 flex-1 truncate font-mono text-content">{s.actionId}</span>
               <Badge variant={STEP_STATUS_VARIANT[s.status]} className="shrink-0">{t(stepKey)}</Badge>
             </div>
-            {s.error && <div className="mt-0.5 text-danger">{t("sceneDeploy.stepError", { error: s.error })}</div>}
+            {s.error && <ErrorNote className="mt-1">{t("sceneDeploy.stepError", { error: s.error })}</ErrorNote>}
             {s.compensation && (
               <div className={cn("mt-0.5", s.compensation.applied ? "text-content-subtle" : "text-warning")}>
                 {t("sceneDeploy.stepCompensation", { reason: s.compensation.reason })}

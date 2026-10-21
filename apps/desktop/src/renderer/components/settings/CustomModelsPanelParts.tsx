@@ -16,7 +16,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button, HintLabel, Input, Select, Tooltip } from "@renderer/components/ui/index.js";
+import { Button, ErrorNote, HintLabel, Input, Select, Spinner, Tooltip } from "@renderer/components/ui/index.js";
 import {
   IconPlus,
   IconTrash,
@@ -216,7 +216,7 @@ export function SecretInput({
           aria-label={revealed ? t("settings.customModels.hidePlain") : t("settings.customModels.showPlain")}
         >
           {loading ? (
-            <IconLoader2 size={13} className="animate-spin" />
+            <Spinner size="xs" />
           ) : revealed ? (
             <IconEyeOff size={13} />
           ) : (
@@ -411,7 +411,7 @@ export function EndpointActionRow({
   return (
     <div className="flex items-center gap-2">
       <Button variant="outline" size="sm" onClick={onClick} disabled={disabled}>
-        {busy ? <IconLoader2 size={12} className="mr-1 animate-spin" /> : <span className="mr-1">{icon}</span>}
+        {busy ? <Spinner size="xs" className="mr-1" /> : <span className="mr-1">{icon}</span>}
         {label}
       </Button>
       <span className="text-[0.7143em] text-content-subtle">{hint}</span>
@@ -497,9 +497,7 @@ export function ProviderFormShell({
       ) : null}
 
       {error ? (
-        <div data-slot="error" className="rounded border border-danger/40 bg-danger/10 px-2 py-1.5 text-[0.7857em] text-danger">
-          {error}
-        </div>
+        <div data-slot="error"><ErrorNote>{error}</ErrorNote></div>
       ) : null}
 
       <div data-slot="actions">{actions}</div>

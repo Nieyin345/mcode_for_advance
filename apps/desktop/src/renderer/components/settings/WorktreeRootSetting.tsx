@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { WORKTREE_ROOT_SETTING_KEY } from "@contracts/ipc";
-import { Button, ErrorNote } from "@renderer/components/ui/index.js";
-import { IconFolder, IconLoader2 } from "@renderer/lib/icons.js";
+import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
+import { IconFolder } from "@renderer/lib/icons.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
 /**
@@ -52,10 +52,7 @@ export function WorktreeRootSetting() {
 
   if (!loaded) {
     return (
-      <div className="flex items-center gap-1.5 py-2 text-xs text-content-subtle">
-        <IconLoader2 size={12} className="animate-spin" />
-        {t("common.loading")}
-      </div>
+      <LoadingNote label={t("common.loading")} className="py-2" />
     );
   }
 
