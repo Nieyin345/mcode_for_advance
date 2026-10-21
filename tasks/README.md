@@ -10,20 +10,20 @@
 
 ---
 
-## 22:16 第二轮八卡全部交付与第三轮派卡（**最新生效**；下文旧派发表仅历史）
+## 第三轮六卡已派出：当前执行队列与下一步（2026-10-21，最新生效）
 
-> **第二轮 T30/T72/T73/T74/T75/T79/T80/T81 八卡均已提交、完成本卡交付**。T73 在本次总控审查期间先提交功能 `c3672167`、随后回写 `7442ebcb`；总控独立执行 `t73-browser-sandbox-smoke/run.cjs` **5/5 PASS**、真实 Electron `native.cjs` **PASS**（隔离 WebContentsView、spoof 拒绝与合法拾取）。其余七卡也有提交与回写，且总控独立 E1：`genoffice-file-routing-smoke` 52/52（含两变异）、`t74-genoffice-headless-smoke` 1/1 套、`mcode-node-pack-smoke` 1/1 套、`runtime-node-modules-smoke` + `library-import-smoke` 2/2、`arc005-focus-ownership-smoke` 1/1、双包 TS 2/2；`document-router-smoke` **124/125 FAIL**，旧测试要求 PDF 经 `documentKindOf(visibleName)`，T30 新源以 `genofficeAppForPath(visibleName)` 和 MIME 判 PDF；暂定**测试语义待复核**，不是确认的生产 PDF 错误，且该测试脚本目前有其它执行者的未提交修改，**不可擅自覆盖**。
+> **派发状态（用户于本轮确认）**：T83、T84、T85、T76、T82、T78 六张均已派出，视为 in-flight；不要重复派发，也不要因尚无回写就判失败。等每个执行对话按卡片追加提交 SHA、测试命令/计数、未达成判据，再由总控独立验收。若 T71/T77 尚未派出，按 **先 T71、完成退出 Electron 后再 T77** 的串行顺序安排，绝不可并行启动两个 Electron GUI 验收。PDF `document-router-smoke` 尾项和 T49 扩展 API 尾项仍交给各自原 owner 收尾。\n>\n> **第二轮 T30/T72/T73/T74/T75/T79/T80/T81 八卡均已提交、完成本卡交付**。T73 在本次总控审查期间先提交功能 `c3672167`、随后回写 `7442ebcb`；总控独立执行 `t73-browser-sandbox-smoke/run.cjs` **5/5 PASS**、真实 Electron `native.cjs` **PASS**（隔离 WebContentsView、spoof 拒绝与合法拾取）。其余七卡也有提交与回写，且总控独立 E1：`genoffice-file-routing-smoke` 52/52（含两变异）、`t74-genoffice-headless-smoke` 1/1 套、`mcode-node-pack-smoke` 1/1 套、`runtime-node-modules-smoke` + `library-import-smoke` 2/2、`arc005-focus-ownership-smoke` 1/1、双包 TS 2/2；`document-router-smoke` **124/125 FAIL**，旧测试要求 PDF 经 `documentKindOf(visibleName)`，T30 新源以 `genofficeAppForPath(visibleName)` 和 MIME 判 PDF；暂定**测试语义待复核**，不是确认的生产 PDF 错误，且该测试脚本目前有其它执行者的未提交修改，**不可擅自覆盖**。
 >
 > T80 回写的 22 个环境首错修复后 **21 PASS / 1 FAIL（document-router）**，T81 自验 Windows 27/27；T72/T75 为审查成果，不是 FULL-3/GenOffice 六 AI 的实现闭环。T73 的 `BrowserManager.ts`/`browserPicker.ts`/`electron.vite.config.ts` 已提交，不再有该卡未提交热区；T49 的 `modules/*`/`appControl/*` 仍 dirty，**只允许原 owner 收尾**。T73 的真实发行包/真实站点 U1、T71/T77 的完整原生编辑器 GUI U1 仍需另验。
 
 | 派发窗口 | 新 / 已备任务 | 准确文件路径 | 文件边界、门禁 |
 |---|---|---|---|
-| **第三轮：优先立即派** | **T84** Slides 原厂 `ai:*` 未授权媒体通道隔离 | `tasks/T84-genoffice-slides-ai-ipc-boundary.md` | P0 安全；限 Slides 上游 Mcode-hosted guard + `patches/genoffice`，不能发真实云调用 |
-| **第三轮：优先立即派** | **T83** GenOffice 三 SDK 原生工具调用桥 | `tasks/T83-genoffice-mcode-native-tool-calls.md` | P0 功能；独占 `main/document/docsAiPorts.ts` 和新结构化 tool transport；**不抢 T49 appControl** |
-| **第三轮：立即可派** | **T85** Node-RED 旧图 G0/G1 无损迁移预检 | `tasks/T85-node-red-migration-preflight-proof.md` | P1；仅 `workflowMigrationPreflight.ts` 等干运行测试；不得删旧运行器或动用户数据库 |
-| **第三轮：立即可派** | **T76** 两原厂安装资源/许可完整性 | `tasks/T76-vendor-release-resource-integrity.md` | 独占 `apps/desktop/build/stage-*/verify-*`；安装包大构建与 Electron 测试错峰 |
-| **第三轮：立即可派** | **T78** UI 39 真实场景证据和差距审计 | `tasks/T78-arc005-visual-baseline-gap-audit.md` | 只读；不抢 Electron，也不修改渲染 UI |
-| **第三轮：立即可派** | **T82** emit-path 过期事件扫描断言 | `tasks/T82-emit-path-smoke-event-shape.md` | 仅独占 `scripts/emit-path-smoke/main.ts`，产品事件层只读 |
+| **第三轮：已派出 / 执行中** | **T84** Slides 原厂 `ai:*` 未授权媒体通道隔离 | `tasks/T84-genoffice-slides-ai-ipc-boundary.md` | P0 安全；限 Slides 上游 Mcode-hosted guard + `patches/genoffice`，不能发真实云调用 |
+| **第三轮：已派出 / 执行中** | **T83** GenOffice 三 SDK 原生工具调用桥 | `tasks/T83-genoffice-mcode-native-tool-calls.md` | P0 功能；独占 `main/document/docsAiPorts.ts` 和新结构化 tool transport；**不抢 T49 appControl** |
+| **第三轮：已派出 / 执行中** | **T85** Node-RED 旧图 G0/G1 无损迁移预检 | `tasks/T85-node-red-migration-preflight-proof.md` | P1；仅 `workflowMigrationPreflight.ts` 等干运行测试；不得删旧运行器或动用户数据库 |
+| **第三轮：已派出 / 执行中** | **T76** 两原厂安装资源/许可完整性 | `tasks/T76-vendor-release-resource-integrity.md` | 独占 `apps/desktop/build/stage-*/verify-*`；安装包大构建与 Electron 测试错峰 |
+| **第三轮：已派出 / 执行中** | **T78** UI 39 真实场景证据和差距审计 | `tasks/T78-arc005-visual-baseline-gap-audit.md` | 只读；不抢 Electron，也不修改渲染 UI |
+| **第三轮：已派出 / 执行中** | **T82** emit-path 过期事件扫描断言 | `tasks/T82-emit-path-smoke-event-shape.md` | 仅独占 `scripts/emit-path-smoke/main.ts`，产品事件层只读 |
 | **第三轮：可开独占 Electron 窗口** | **T71** 六原生文档 GUI U1 | `tasks/T71-genoffice-six-native-gui-acceptance.md` | T30/T73 均已提交；**与 T77 串行**，只用隔离样本 |
 | **第三轮：与 T71 错峰** | **T77** Node-RED GUI U1 | `tasks/T77-node-red-native-electron-ui-acceptance.md` | T79/T73 均已提交，**必须独占 Electron**；仅隔离样本 |
 | **原 owner 收尾** | **T49** 扩展 API | `tasks/T49-extension-api-surface.md` | 仍有未提交的主进程/测试；**不再派第二个人**；T73 已交付退出施工区 |
