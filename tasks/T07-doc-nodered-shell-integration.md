@@ -153,3 +153,20 @@ type PaneContent =
 - **本轮操作**：只读 T07、T02、T03、T05、`tasks/README.md`、`tasks/_PROMPT_TEMPLATE.md`、`audit-ledgers/README.md`，核对 `git status --short`、提交记录及缺失的 `docs-vendor-parity-smoke` 目录。仅追加本任务文件，不修改业务/测试源码、GenOffice/Node-RED 上游或其他任务文件，不 push。
 - **验收判据 1–6：均未执行，全部不能声明达成**；无 Electron 探针、无 smoke PASS/FAIL 结果、无双包 tsc、无变异红/绿与 cmp 数据（前置阻塞，未开工）。剩余风险是 T05 原验收证据缺失；解除硬前置后才能启动 T07 的验证。
 - **阻塞记录提交 SHA**：`5e1c2e9e639188dda657a70f5b3969a2f442efb6`（仅任务回写；未提交任何业务/测试实现）。
+
+### 2026-10-21｜总控注记：上一条阻塞**已作废**，T07 可重派
+
+上一条阻塞报告（含 `24a41180` 那次提交）是在**本文件前置条件修正之前**跑的。
+它的判定是对的 —— 当时的卡确实要求一个不存在的套件 —— 但那个要求本身是错的，
+已在 `2120087f` 修正：
+
+- 证据改为真实存在的五套 `document-view-*`（T22 回写区记录 5/5 通过）。
+- 明确写入「不存在 `docs-vendor-parity-smoke`，也不要去找它」。
+- 补上完整文件名，避免 `tasks/T07` 简写导致 ENOENT。
+
+**前置条件现状（总控实测）**：
+- T02 + T23 完成：`paneLayout.ts` / `ThreePaneLayout.tsx` 在盘上，7 套 `arc005-pane-*` 全绿。
+- T05a/b/c + T22 完成：五套 `document-view-*` 在盘上，`mutate-t22.mjs` / `mutate-t05b.mjs` 可执行。
+- T03 + T10 完成：owner 注册表已落盘。
+
+**重新派发时按当前版本的前置条件判定，不要沿用上一条的结论。**
