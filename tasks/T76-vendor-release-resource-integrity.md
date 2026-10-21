@@ -88,3 +88,10 @@
 2. 补齐 GenOffice 18 个 notice section 的准确许可全文后，在 pinned clean checkout 重新生成并复验 strict bundle。
 3. 为 Node-RED 15 个缺文包补入可追溯许可文本，查证 `cli-table@0.3.11`、`pause@0.0.1` 的授权；重新运行 Node-RED staging（需明确允许其在临时目录执行 `npm ci`）后再做真实 afterPack。
 4. 真实 installer 与安装后 U1 仍未验；当前 staged Node-RED 资源旧于新 manifest schema，不能作为新门禁的通过证据。
+
+
+### 总控复核补充（2026-10-22）：GenOffice pin mismatch 的真实原因与后续任务
+
+- 进一步只读检查确认：lock 中的 `baseRevision=cbec600ace9c930b2646b6739cf6df3741bb9d6a`，第一条已审查补丁为 `73ba918083b5e2bedff7633925c3d7f625e04449`；当前 `genoffice` HEAD `355e667353ad90da7d0b3c6823fad0f525b729c3` 是该补丁之后的 **12 个 Mcode integration commits**，并且仓库有对应 `patches/genoffice/0001..0012` 文件，nested checkout 干净。
+- 因此不能直接回退到 `73ba...`，也不能仅把锁 SHA 改成 `355e...`。现有 `verify-genoffice-upstream.cjs` 的 lineage schema 只描述单一 `approvedPatch`，未描述 12 个后续 patch series；后续应验证“批准的上游基线 + 第一条已审查补丁 + 精确的 12 个 Mcode patch + 预期最终 HEAD/tree”，并在临时副本重放 patch 栈证明可重现。这个后续任务为 **T87**。
+- Node-RED 的许可证覆盖独立归入 **T88**，可与 T87 并行；两张卡分别拥有自己的 staging/verifier 文件和独立 Smoke，不共享修改 T76 原 Smoke。两卡通过前不得执行真实 installer，不得把模拟 staging 记成发行验收。

@@ -10,9 +10,9 @@
 
 ---
 
-## 第三轮交付复核（2026-10-21 23:50，最新生效）
+## 第三轮交付复核（2026-10-22，最新生效）
 
-> **派发与验收事实**：T83、T84、T85、T76、T82、T78 六卡均已派出。T84/T82/T78 已交付；T83 的 fail-closed 能力门已提交，但真实同轮工具结果回传尚未实现。T85 已提交 G0/G1 预检，34/34 断言与两项变异通过；G2–G5 仍按设计阻断。T76 的 24/24 资源门禁通过，但发现真实发布阻断（GenOffice pin/许可文本、Node-RED 许可覆盖），不能签真实 installer。T49 代码和结果回写均已提交，但 17 个 module/authoring suites 为 16 PASS / 1 FAIL，缺失 `workflowEngine.load` 权限映射仍需收尾。请勿重复派发、覆盖或清理其他执行对话的修改。PDF 路由尾项已关闭。T86 已准备好、尚待派发；T71/T77 仍需独占 Electron，先 T71、退出后再 T77。
+> **派发与验收事实**：T83、T84、T85、T76、T82、T78 六卡均已派出。T84/T82/T78 已交付；T83 的 fail-closed 能力门已提交，但真实同轮工具结果回传尚未实现。T85 已提交 G0/G1 预检，34/34 断言与两项变异通过；G2–G5 仍按设计阻断。T76 的 24/24 资源门禁通过，但发现真实发行阻断（GenOffice patch lineage/许可证文本、Node-RED 许可证覆盖），不能签真实 installer。总控确认 GenOffice 当前 HEAD `355e6673` 是第一条批准补丁 `73ba9180` 之后的 12 个 Mcode patch commits，仓库已有对应 `patches/genoffice/0001..0012`；现有 verifier 只表达单补丁，不能简单回退或改 SHA。后续卡 T87（GenOffice lineage + 18 项 notice）与 T88（Node-RED 许可证覆盖）已准备，可并行但尚未派发。T49 代码和结果回写均已提交，但 17 个 module/authoring suites 为 16 PASS / 1 FAIL，缺失 `workflowEngine.load` 权限映射仍需收尾。请勿重复派发、覆盖或清理其他执行对话的修改。PDF 路由尾项已关闭。T86、T87、T88 均已准备、尚待派发；T71/T77 仍需独占 Electron，先 T71、退出后再 T77。
 > **第二轮 T30/T72/T73/T74/T75/T79/T80/T81 八卡均已提交、完成本卡交付**。T73 在本次总控审查期间先提交功能 `c3672167`、随后回写 `7442ebcb`；总控独立执行 `t73-browser-sandbox-smoke/run.cjs` **5/5 PASS**、真实 Electron `native.cjs` **PASS**（隔离 WebContentsView、spoof 拒绝与合法拾取）。其余七卡也有提交与回写，且总控独立 E1：`genoffice-file-routing-smoke` 52/52（含两变异）、`t74-genoffice-headless-smoke` 1/1 套、`mcode-node-pack-smoke` 1/1 套、`runtime-node-modules-smoke` + `library-import-smoke` 2/2、`arc005-focus-ownership-smoke` 1/1、双包 TS 2/2；`document-router-smoke` 原 124/125 失败已由 `e9e2dbf5` 修正测试判据、`e290df57` 回写关闭；总控最终复核路由 133/133、GenOffice 路由 52/52、FileViewer PDF 25/25，通过且未改产品路由。
 >
 > T80 回写的 22 个环境首错历史结果为 **21 PASS / 1 PDF 旧断言 FAIL**，后者已关闭；T80 的完整 22 套批次尚未由总控重新复跑，T81 自验 Windows 27/27。T72/T75 为审查成果，不是 FULL-3/GenOffice 六 AI 的实现闭环。T73 的 `BrowserManager.ts`/`browserPicker.ts`/`electron.vite.config.ts` 已提交。T49 的代码提交 `2af6b0ec`、结果回写提交 `f1198793` 已存在；当前双包 TypeScript 检查通过，`module-contributions-smoke` 和 `module-phase2-e2e-smoke` 已转绿，但 `module-permissions-smoke` 仍因 `workflowEngine.load` 缺少 `APP_METHOD_PERMISSIONS` 映射而失败。T67/T69 将该映射缺口归到 T49 收尾边界，尚不能签 T49 全部验收。T76 的真实发行包与许可证闭环、T73 真实发行包/真实站点 U1、T71/T77 完整原生编辑器 GUI U1 仍需另验。
@@ -23,7 +23,9 @@
 | **已提交能力门；功能前置未满足** | **T83** GenOffice 三 SDK 原生工具调用桥 | `tasks/T83-genoffice-mcode-native-tool-calls.md` | 代码 `309c3ab5`；19/19 fail-closed smoke；独立相关回归 6/6、当前双包 tsc PASS；真实同轮工具结果未实现，需先派发 T86，随后再建 renderer 接线集成卡 |
 | **下一步可派（尚未派发）** | **T86** Mcode 三 SDK 请求级结构化工具协议 | `tasks/T86-mcode-runtime-native-tool-protocol.md` | T83 已证明当前缺少 per-turn schema / 同轮 renderer result callback；只改 provider contract / RuntimeManager / 三 SDK adapter，不改 T83/T49 文件；可与权限映射尾项并行 |
 | **已提交；G0/G1 验收通过** | **T85** Node-RED 旧图 G0/G1 无损迁移预检 | `tasks/T85-node-red-migration-preflight-proof.md` | 实现 `96825dc9`、结果 `d5674cdb`；34/34、两项变异按预期失败、相关迁移回归 8/8；当前双包 tsc PASS；G2–G5、真实用户数据和 Deploy 仍明确阻断 |
-| **已提交；发现发行阻断** | **T76** 两原厂安装资源/许可完整性 | `tasks/T76-vendor-release-resource-integrity.md` | 实现 `ab9149eb`、结果 `4eed981f`；专项 24/24、GenOffice release 25/25；GenOffice pin 不一致、18 个 notice 缺全文，Node-RED 15 个依赖缺许可文本、2 个许可元数据未知；未跑真实 installer/U1 |
+| **已提交；发现发行阻断** | **T76** 两原厂安装资源/许可完整性 | `tasks/T76-vendor-release-resource-integrity.md` | 实现 `ab9149eb`、结果 `4eed981f`；专项 24/24、GenOffice release 25/25；GenOffice 12-patch lineage 与 18 个 notice 全文待闭环，Node-RED 15 个依赖缺许可文本、`cli-table`/`pause` 元数据待核实；未跑真实 installer/U1 |
+| **下一步可并行（尚未派发）** | **T87** GenOffice 上游补丁链与 18 项许可证 notice | `tasks/T87-genoffice-patch-lineage-and-license-notices.md` | 验证 `cbec600a → 73ba9180 → 12 个 patch → 355e6673` 可重现；严格 notice 18/18 全文；不改嵌套 `genoffice/**`，不跑 installer |
+| **下一步可并行（尚未派发）** | **T88** Node-RED 第三方许可证覆盖 | `tasks/T88-node-red-third-party-license-closure.md` | 15 个依赖补齐版本级许可全文，核实 `cli-table@0.3.11` 与 `pause@0.0.1`；不改 `node-red/**`/现有 node_modules，不执行 npm ci |
 | **审计交付完成** | **T78** UI 39 真实场景证据和差距审计 | `tasks/T78-arc005-visual-baseline-gap-audit.md` | 审计 `9cb27dec`，回写 `f4fd9bb9`；39 场景分类完成，但真实 Claude 安装版对照/U1 不在本卡范围 |
 | **已提交；当前独立复核通过** | **T82** emit-path 过期事件扫描断言 | `tasks/T82-emit-path-smoke-event-shape.md` | 代码 `143e13a5`、回写 `7ca737cd`；41/41，独立复跑 `emit-path-smoke` PASS，当前 contracts/desktop tsc 均 PASS；旧回写中的并行 TS 阻断已不再复现 |
 | **第三轮：可开独占 Electron 窗口** | **T71** 六原生文档 GUI U1 | `tasks/T71-genoffice-six-native-gui-acceptance.md` | T30/T73 均已提交；**与 T77 串行**，只用隔离样本 |
