@@ -10,7 +10,23 @@
 
 ---
 
-## 并行扩容第五波（2026-10-22，最新派发入口）
+## T89–T92 交付验收及 T98 前置（2026-10-22，**最新生效**）
+
+> 用户确认 T89/T90/T91/T92 四个执行对话均已结束。**实际只有 T92 的核心功能验收未达**（安全阻断，并非跑坏既有主链）；T89/T90/T91 按“只读取证任务”边界已交付，但许可证未被集成进正式 bundle。总控独立复跑 `node apps/desktop/scripts/run-smokes.mjs t83-mcode-editor-tool-bridge-smoke t86-runtime-native-tool-protocol-smoke` **2/2 PASS**；这仅证明 fail-closed 和 SDK 模拟协议仍正常，不能冒称 GenOffice 真实编辑器同轮工具链已成。
+
+| 任务 | 回写提交 | 最终结论 | 后续 |
+|---|---|---|---|
+| **T89** | `d2292363` | 5/5 精确包完成取证：3 个发布包 README 含准确版本完整 MIT 文本；2 个 `@electron-internal/extract-zip@1.0.5`、`lazy-val@1.0.5` **UNRESOLVED** | README 法律全文是否可纳入 notice 需后续严格审查；不得宣称发行解锁 |
+| **T90** | `d65dff48` | 5/5 精确包完成取证：3 个 README 含完整原文；2 个 `ot-text-unicode@4.0.0`（ISC metadata vs MIT README 冲突）、`react-remove-scroll-bar@2.3.8` **UNRESOLVED** | 需要精确发布授权确认；不能用相邻版本/泛化 SPDX 代替 |
+| **T91** | `5b993462` | `pause@0.0.1` 从签署官方 v0.0.1 tag、精确 npm tgz 与逐字节匹配 README 确认完整 MIT 原文，研究验收达成 | **还未整合入 T88 manifest/notice**，严格 Node-RED 发布门禁保持 fail-closed |
+| **T92** | `6cb87b3b`、`a7091fc4` | **BLOCKED**；原生 `AgentSkill.executeTool` 没有 Host 同轮 requestId/callId 受信 ACK。T92 判据 #1–#5 未达，#6 仅未越界 | **先派 T98**，再让原 T92 续接 Host 的 docsAiPorts 与 nativeEditorToolTransport，禁止直接放宽 T83 门禁 |
+| **T98｜可立即派发（P0）** | 任务文件 `tasks/T98-genoffice-scoped-tool-result-ack.md` | 只改 GenOffice Mcode-hosted Docs 的原生工具结果 ACK/严格 preload IPC；需有批准的新增 patch 与完整 lineage 重放 | 独占 vendor Docs 与 patches/genoffice、upstream lock；**不改 T92 的 Mcode 主进程文件**；可与 T93–T97 并行 |
+
+> T93–T97 仍按下方第五波任务卡派发与各自独占文件执行。除非执行者回写，**不因为新卡建立就假称 T93–T97 已派出**。T71/77 真人 Electron 验收仍串行，T71 等 T98+T92 先建立稳定功能版本。正式发行继续受 GenOffice 4 个精确许可证证据缺口和 Node-RED notice 尚未整合的阻断，不可因为 T91 的研究结论标志发布通过。
+
+---
+
+## 并行扩容第五波（2026-10-22，历史派发表，未核实际派出）
 
 > **用户已派** T89、T90、T91、T92，四卡均视为**在飞**，不能重复派发或由第二执行对话抢文件。新扩容只安排与其**无写入交叉**且前置 T72/T78/T85 已满足的切片。当前工作树的其他 6 个既有 dirty 文件（AOCI/maint/orchestration-ipc/release-readiness/apiCatalog/settingsTransfer）属于其他历史写入，不可覆盖、reset、批量提交或趁手清理。
 >

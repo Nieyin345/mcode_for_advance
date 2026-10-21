@@ -55,3 +55,9 @@
 - **隔离旧红证据**：`node apps/desktop/scripts/run-smokes.mjs t83-mcode-editor-tool-bridge-smoke t86-runtime-native-tool-protocol-smoke` → **2 PASS / 0 FAIL**，原始日志目录 `apps/desktop/.tmp/smoke-runs/1792605090687-42040-meCsyU`。其中 T83 的负向 E1 明确验证结构化 `replace_selection` 请求被 `unsupported` 拦截且 provider 未调用（从正向往返判据看仍为旧红）；T86 仅验证 Host↔fake renderer 的 SDK 同轮协议，不代表真实 GenOffice executor 已接通。
 - **停止/边界**：按本任务的 fail-closed、安全/只读边界，在没有受信的 renderer→Host 结果 ACK 及原 requestId/callId 验证通道前停止；不通过解析纯文本 JSON、任意 `ai:stream` 历史、main 中复制 executor 或向 vendor preload 注入未经授权 IPC 来伪造完成。需总控先明确批准一个可写的 renderer/preload 协议窄切片（保持原厂 `AgentSkill.executeTool` 原地执行），之后才能完成 T92 主链。
 - **验收**：#1–#5 均未达成（未建立真实工具同轮回执、正向/负控独立 T92 smoke、两项变异及 T92 完整回归/typecheck）；#6 只满足**未越界更改**，未有实现提交及完整验收证据。真实 Electron/三家在线模型 U1 仍留空。未运行任何计费模型或真实用户文档测试。
+
+### 2026-10-22｜总控协调：T98 前置协议卡已建立，T92 保持 blocked
+
+- 复核 T89–T92 四卡后，确认 **T92 是唯一功能性未完成卡**：`docsAiPorts.ts` 仍 fail-closed，T83/T86 独立复跑 2/2 套件 PASS，但本卡 #1–#5 未满足；未有本卡功能实现提交。
+- 已建立 `tasks/T98-genoffice-scoped-tool-result-ack.md`，专属写入 GenOffice Docs renderer/preload/main/agent-core 的 Mcode-only、requestId/callId 工具结果 ACK，并要求升级已审查 patch lineage；**不准 T92 擅自改 GenOffice 原厂、T86 或上游通道**。
+- **执行顺序**：T98 提交并验收协议后，再让 T92 原执行对话继续其既定 `docsAiPorts.ts`/`nativeEditorToolTransport.ts` Host 接线与隔离正向工具往返；T98 自身不构成 T92 完成。若 T98 证明协议不可安全实现，则 T92 继续 blocked，不恢复不安全的纯文本结果冒充工具执行。
