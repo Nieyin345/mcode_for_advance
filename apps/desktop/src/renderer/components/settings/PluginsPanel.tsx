@@ -259,7 +259,7 @@ export function PluginEngineKeys({
               })
             : t("settings.plugins.engineOff", { engine: e.label });
         return (
-          <button
+          <Button variant="ghost" size={null}
             key={e.id}
             type="button"
             disabled={busy || !can}
@@ -279,7 +279,7 @@ export function PluginEngineKeys({
             )}
           >
             {e.label}
-          </button>
+          </Button>
         );
       })}
     </span>
@@ -588,14 +588,14 @@ export function PluginsPanel() {
         <ErrorNote
           className="mt-2 flex-none"
           action={
-            <button
+            <Button variant="ghost" size={null}
               type="button"
               className="text-content-subtle hover:text-content"
               title={t("common.close")}
               onClick={() => setError(null)}
             >
               <IconX size={13} />
-            </button>
+            </Button>
           }
         >
           {error}

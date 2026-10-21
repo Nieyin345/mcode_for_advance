@@ -23,6 +23,11 @@ import {
   Button,
   ConfirmDialog,
   Dialog,
+  EmptyState,
+  ErrorNote,
+  Input,
+  LoadingNote,
+  Spinner,
   Switch,
 } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
@@ -33,7 +38,6 @@ import {
   IconPlus,
   IconTrash,
   IconDownload,
-  IconLoader2,
   IconExternalLink,
   IconLockOpen,
   IconPencil,
@@ -151,7 +155,7 @@ function EngineVisibilityChips({
         // 插件层(插件面板)对这个引擎关掉了:这一格怎么点都送不到,画成虚线框提示去插件页。
         const blocked = blockedBy?.[engine] === false;
         return (
-          <button
+          <Button variant="ghost" size={null}
             key={engine}
             type="button"
             role="switch"
@@ -174,7 +178,7 @@ function EngineVisibilityChips({
             )}
           >
             {engine === "claude" ? "Claude" : "Codex"}
-          </button>
+          </Button>
         );
       })}
     </div>
@@ -214,7 +218,7 @@ function OAuthRowActions({
           onClick={onUnauthorize}
           title={t("settings.mcp.unauthorizeHint")}
         >
-          {busy ? <IconLoader2 size={12} className="animate-spin" /> : <IconLockOpen size={12} />}
+          {busy ? <Spinner size="xs" /> : <IconLockOpen size={12} />}
           {t("settings.mcp.unauthorize")}
         </Button>
       </>
@@ -237,7 +241,7 @@ function OAuthRowActions({
         onClick={onAuthorize}
         title={t("settings.mcp.authorizeHint")}
       >
-        {busy ? <IconLoader2 size={12} className="animate-spin" /> : <IconExternalLink size={12} />}
+        {busy ? <Spinner size="xs" /> : <IconExternalLink size={12} />}
         {t("settings.mcp.authorize")}
       </Button>
     </>
@@ -540,22 +544,18 @@ export function McpPanel() {
 
       <div className={cn("flex flex-wrap items-center justify-end gap-2", view === "library" ? "" : "hidden")}>
         {view === "library" && (
-          <input
+          <Input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t("settings.mcp.searchPlaceholder")}
             aria-label={t("settings.mcp.searchPlaceholder")}
-            className="w-[200px] rounded border border-edge bg-surface px-2 py-1 text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+            className="w-[200px] text-[0.7857em]"
           />
         )}
       </div>
 
-      {error && (
-        <div className="rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
-          {error}
-        </div>
-      )}
+      {error && <ErrorNote>{error}</ErrorNote>}
 
       {view === "project" && (
         <ProjectMcpView
@@ -629,7 +629,7 @@ export function McpPanel() {
             disabled={genofficeBusy}
             onClick={() => void installGenoffice()}
           >
-            {genofficeBusy ? <IconLoader2 size={12} className="animate-spin" /> : <IconDownload size={12} />}
+            {genofficeBusy ? <Spinner size="xs" /> : <IconDownload size={12} />}
             {t(genofficeInstalled ? "settings.mcp.genofficeReinstall" : "settings.mcp.genofficeInstall")}
           </Button>
         </SettingRow>
@@ -679,16 +679,9 @@ export function McpPanel() {
           {t("settings.mcp.managedFileNote")}
         </p>
         {loading ? (
-          <div className="flex items-center justify-center gap-2 py-6 text-[0.7857em] text-content-subtle">
-            <IconLoader2 size={14} className="animate-spin" />
-            {t("common.loading")}
-          </div>
+          <LoadingNote label={t("common.loading")} className="py-6" />
         ) : userServers.length === 0 ? (
-          <div className="px-4 py-4 text-center text-[0.7143em] leading-relaxed text-content-subtle">
-            {t("settings.mcp.userEmpty1")}
-            <br />
-            {t("settings.mcp.userEmpty2")}
-          </div>
+          <EmptyState title={t("settings.mcp.userEmpty1")} desc={t("settings.mcp.userEmpty2")} className="py-4" />
         ) : (
           userServers.map((s) => (
             <SettingRow

@@ -12,8 +12,8 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
-import { Button, ErrorNote, Switch } from "@renderer/components/ui/index.js";
-import { IconLoader2, IconPuzzle } from "@renderer/lib/icons.js";
+import { Badge, Button, Card, EmptyState, ErrorNote, Input, LoadingNote, Switch } from "@renderer/components/ui/index.js";
+import { IconPuzzle } from "@renderer/lib/icons.js";
 import { ProjectPicker } from "./ScopeTabs.js";
 
 const ENGINES: ReadonlyArray<{ id: PluginEngineId; provider: string; label: string }> = [
@@ -92,38 +92,31 @@ export function ProjectPluginsView({
 
   if (!project || !projectPath) {
     return (
-      <div className="flex h-full items-center justify-center px-6 text-center">
-        <p className="text-[0.8571em] leading-relaxed text-content-muted">{t("settings.plugins.projectNoProject")}</p>
-      </div>
+      <EmptyState title={t("settings.plugins.projectNoProject")} className="h-full" />
     );
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto pr-1">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-edge bg-surface/40 px-3 py-2">
+      <Card className="flex flex-wrap items-center justify-between gap-3 bg-surface/40 px-3 py-2">
         <ProjectPicker project={project} projects={projects} onSelect={onSelectProject} disabled={busy !== null} />
-        <input
+        <Input
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t("settings.plugins.searchPlaceholder")}
           aria-label={t("settings.plugins.searchPlaceholder")}
-          className="w-[200px] rounded border border-edge bg-surface px-2 py-1 text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+          className="w-[200px] text-[0.7857em]"
         />
-      </div>
+      </Card>
       <p className="px-1 text-[0.7857em] leading-relaxed text-content-subtle">{t("settings.plugins.projectHint")}</p>
       {error && <ErrorNote>{error}</ErrorNote>}
 
-      <div className="rounded-md border border-edge bg-surface/40">
+      <Card className="bg-surface/40">
         {rows === null ? (
-          <div className="flex items-center justify-center gap-2 py-6 text-[0.7857em] text-content-subtle">
-            <IconLoader2 size={14} className="animate-spin" />
-            {t("common.loading")}
-          </div>
+          <LoadingNote label={t("common.loading")} className="py-6" />
         ) : visible.length === 0 ? (
-          <div className="px-4 py-6 text-center text-[0.7857em] text-content-subtle">
-            {rows.length === 0 ? t("settings.plugins.projectEmpty") : t("settings.plugins.searchEmpty", { query: query.trim() })}
-          </div>
+          <EmptyState className="py-6" title={rows.length === 0 ? t("settings.plugins.projectEmpty") : t("settings.plugins.searchEmpty", { query: query.trim() })} />
         ) : (
           visible.map((r) => {
             const custom = r.override !== undefined;
@@ -134,17 +127,15 @@ export function ProjectPluginsView({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <span className="truncate text-[0.8571em] font-medium text-content">{r.name}</span>
-                    <span
-                      className={cn(
-                        "shrink-0 rounded px-1 text-[9px] leading-tight",
-                        custom ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "bg-surface-hover text-content-subtle",
-                      )}
+                    <Badge
+                      variant={custom ? "accent" : "neutral"}
                       title={custom ? undefined : t("settings.plugins.projectFollowHint", {
                         state: r.globalEnabled ? t("settings.plugins.projectGlobalOn") : t("settings.plugins.projectGlobalOff"),
                       })}
+                      className="shrink-0 text-[9px]"
                     >
                       {custom ? t("settings.plugins.projectCustom") : t("settings.plugins.projectFollow")}
-                    </span>
+                    </Badge>
                   </div>
                   {r.description && (
                     <div className="truncate text-[0.7143em] text-content-subtle" title={r.description}>{r.description}</div>
@@ -156,7 +147,7 @@ export function ProjectPluginsView({
                     const on = r.engines[e.id];
                     const delivered = r.deliveredProviderIds.includes(e.provider);
                     return (
-                      <button
+                      <Button variant="ghost" size={null}
                         key={e.id}
                         type="button"
                         role="switch"
@@ -173,7 +164,7 @@ export function ProjectPluginsView({
                         )}
                       >
                         {e.label}
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -196,7 +187,7 @@ export function ProjectPluginsView({
             );
           })
         )}
-      </div>
+      </Card>
     </div>
   );
 }

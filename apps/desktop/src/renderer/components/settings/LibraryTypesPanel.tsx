@@ -37,8 +37,8 @@ import type { LibraryCollection } from "@contracts/library";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
-import { Button, HintLabel } from "@renderer/components/ui/index.js";
-import { IconBook, IconLoader2, IconX } from "@renderer/lib/icons.js";
+import { Button, HintLabel, Input, Spinner } from "@renderer/components/ui/index.js";
+import { IconBook, IconX } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
@@ -335,7 +335,7 @@ export function LibraryTypesPanel() {
           <Button variant="outline" size="sm" disabled={busy || !groups || !suppress} onClick={() => void save()}>
             {busy ? (
               <>
-                <IconLoader2 size={12} className="animate-spin" />
+                <Spinner size="xs" />
                 {t("settings.libraryTypes.saving")}
               </>
             ) : (
@@ -363,7 +363,7 @@ export function LibraryTypesPanel() {
       <SettingsSection title={t("settings.libraryTypes.section.group")}>
         {!groups ? (
           <div className="flex items-center gap-2 px-4 py-3 text-xs text-content-muted">
-            <IconLoader2 size={13} className="animate-spin" />
+            <Spinner size="xs" />
           </div>
         ) : (
           groups.map((g) => (
@@ -385,7 +385,7 @@ export function LibraryTypesPanel() {
       <SettingsSection title={t("settings.libraryTypes.section.collection")}>
         {!collections ? (
           <div className="flex items-center gap-2 px-4 py-3 text-xs text-content-muted">
-            <IconLoader2 size={13} className="animate-spin" />
+            <Spinner size="xs" />
           </div>
         ) : promptRows.length === 0 ? (
           <div className="px-4 py-3 text-xs text-content-muted">{t("settings.libraryTypes.noCollections")}</div>
@@ -413,7 +413,7 @@ export function LibraryTypesPanel() {
       <SettingsSection title={t("settings.libraryTypes.section.suppress")} desc={t("settings.libraryTypes.suppressHint")}>
         {!suppress ? (
           <div className="flex items-center gap-2 px-4 py-3 text-xs text-content-muted">
-            <IconLoader2 size={13} className="animate-spin" />
+            <Spinner size="xs" />
           </div>
         ) : (
           <>
@@ -473,18 +473,18 @@ export function LibraryTypesPanel() {
                   className="inline-flex items-center gap-1 rounded bg-surface-muted px-1.5 py-0.5 text-[0.7857em] text-content"
                 >
                   {ext}
-                  <button
+                  <Button variant="ghost" size={null}
                     onClick={() => removeExt(ext)}
                     title={t("settings.libraryTypes.delete")}
                     className="text-content-subtle hover:text-content"
                   >
                     <IconX size={10} />
-                  </button>
+                  </Button>
                 </span>
               ))}
               {/* 输入框 + 添加:回车与按钮走同一条路。规范化用契约里那个纯函数 ——
                   与主进程落库时同一个,不会出现"界面显示 .ZIP、实际存了 .zip"的失配。 */}
-              <input
+              <Input
                 value={extDraft}
                 onChange={(e) => setExtDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -494,7 +494,7 @@ export function LibraryTypesPanel() {
                   }
                 }}
                 placeholder={t("settings.libraryTypes.suppressExtPh")}
-                className="w-40 rounded border border-edge bg-surface px-2 py-0.5 text-[0.7857em] text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+                className="w-40 py-0.5 text-[0.7857em]"
               />
               <Button variant="outline" size="sm" onClick={addExt} disabled={extDraft.trim().length === 0}>
                 {t("settings.libraryTypes.suppressExtAdd")}

@@ -245,3 +245,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792554867352-14552-MNmFsV`；双包 tsc：0 错。
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs runtime` PASS；`set T24_MUTATION=runtime&& node ... runtime` 将运行时已安装 Badge 退化为 span 后 exit=1（预期红）。
 - 行为核对：Runtime 安装、重新安装、更新、删除、路径复制/显示及进度事件流没变；Browser 安全警告、缓存清理、Terminal 控件/标题生成和 EngineTools 权限选择回调没变；Electron 焦点测试通过。
+
+### 2026-10-21｜批次 9：语言服务、MCP、插件项目视图、资料库分类
+
+- 改动：`LspLanguagesPanel`、`McpPanel`、`PluginsPanel`、`ProjectPluginsView`、`LibraryTypesPanel` 中的自绘动作按钮统一为 `Button`；LSP 状态胶囊统一 `Badge`，健康检查/服务端报错→`Badge`/`ErrorNote`，加载中图标→`Spinner`，3 个路径/参数输入和自绘 `Field` 改共享 `Field/Input`（id 以 language 做唯一关联，保留 click-to-focus）。MCP 搜索输入→`Input`，异常→`ErrorNote`，空总库→`EmptyState`，加载→`LoadingNote`，按钮转圈→`Spinner`；项目插件的搜索→`Input`、卡片→`Card`、初载/空态→`LoadingNote`/`EmptyState`、覆盖来源标签→`Badge`；资料库拓展名输入→`Input`，自绘转圈→`Spinner`。
+- 原语：全复用现有 ui，未扩展；功能 bug：未发现。MCP/分类树选择中的原生 checkbox 保留当前 native 语义，后续单独迁移。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：5/5 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792555276125-31172-pzAp7p`；双包 tsc：0 错。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs mcp-lsp` PASS；`set T24_MUTATION=mcp-lsp&& node ... mcp-lsp` 把 LSP 标签字段的 Field 撤回后 exit=1（预期红）。
+- 行为核对：LSP 自定义路径/参数/JAVA_HOME 更改与保存的 onChange/onClick 透传，输入标签动态唯一 id；MCP OAuth/复制/导入/新增、插件启用/项目筛选、分类树和增删规则逻辑未改；相关 Electron 回归通过。

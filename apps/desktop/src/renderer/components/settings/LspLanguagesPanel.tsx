@@ -19,7 +19,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button, Switch, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
+import { Badge, Button, Field, Input, Switch, ErrorNote, LoadingNote, Spinner } from "@renderer/components/ui/index.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import type { LspLanguageId, LspLanguageState } from "@contracts/ipc";
@@ -27,7 +27,6 @@ import {
   IconCheck,
   IconX,
   IconRefresh,
-  IconLoader2,
   IconAlertTriangle,
   IconStethoscope,
   IconChevronDown,
@@ -286,7 +285,7 @@ function LanguageRow({
     <div className="px-4 py-2">
       <div className="flex items-center gap-3">
         {/* Expand toggle */}
-        <button
+        <Button variant="ghost" size={null}
           type="button"
           onClick={toggleExpanded}
           className={cn(
@@ -296,7 +295,7 @@ function LanguageRow({
           title={t("settings.lsp.toggleDetails")}
         >
           {expanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
-        </button>
+        </Button>
 
         {/* Name column: icon + name + status badge */}
         <div className="flex w-44 shrink-0 items-center gap-2">
@@ -306,26 +305,26 @@ function LanguageRow({
         </div>
 
         {/* Detail line: server · installer hint (click expands) */}
-        <button
+        <Button variant="ghost" size={null}
           type="button"
           onClick={toggleExpanded}
           className="min-w-0 flex-1 truncate text-left text-[0.7857em] text-content-subtle hover:text-content-muted"
           title={state.serverPath ?? undefined}
         >
           {"hintKey" in meta ? t(meta.hintKey) : meta.hint}
-        </button>
+        </Button>
 
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-1">
           {!state.installed ? (
             <Button variant="primary" size="sm" onClick={doInstall} disabled={busy}>
-              {busy ? <IconLoader2 size={12} className="animate-spin" /> : <IconDownload size={12} />}
+              {busy ? <Spinner size="xs" /> : <IconDownload size={12} />}
               {t("settings.lsp.install")}
             </Button>
           ) : (
             <>
               <Button variant="ghost" size="sm" onClick={doInstall} disabled={busy} title={t("settings.lsp.reinstall")}>
-                {busy ? <IconLoader2 size={12} className="animate-spin" /> : <IconRefresh size={12} />}
+                {busy ? <Spinner size="xs" /> : <IconRefresh size={12} />}
               </Button>
               <Button variant="ghost" size="sm" onClick={doHealthCheck} disabled={busy} title={t("settings.lsp.healthCheck")}>
                 <IconStethoscope size={12} />
@@ -353,7 +352,7 @@ function LanguageRow({
             </span>
             {state.serverPath && (
               <>
-                <button
+                <Button variant="ghost" size={null}
                   type="button"
                   onClick={doCopyPath}
                   className="ml-2 flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[0.92em] text-content-subtle hover:bg-surface-hover hover:text-content"
@@ -361,15 +360,15 @@ function LanguageRow({
                 >
                   {copied ? <IconCheck size={11} className="text-accent" /> : <IconCopy size={11} />}
                   {copied ? t("settings.lsp.copied") : t("settings.lsp.copy")}
-                </button>
-                <button
+                </Button>
+                <Button variant="ghost" size={null}
                   type="button"
                   onClick={() => void api.shell.showItemInFolder({ path: state.serverPath! })}
                   className="ml-1 flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[0.92em] text-content-subtle hover:bg-surface-hover hover:text-content"
                   title={t("settings.lsp.reveal")}
                 >
                   <IconFolderOpen size={11} />
-                </button>
+                </Button>
               </>
             )}
           </DetailRow>
@@ -393,26 +392,29 @@ function LanguageRow({
 
           {/* Custom overrides: path / args / (java) JDK home */}
           <div className="space-y-1.5 border-t border-edge pt-2">
-            <Field label={t("settings.lsp.serverPathLabel")}>
-              <input
-                className={inputCls}
+            <Field label={t("settings.lsp.serverPathLabel")} htmlFor={`lsp-server-path-${state.language}`}>
+              <Input
+                id={`lsp-server-path-${state.language}`}
+                className="flex-1"
                 value={pathInput}
                 onChange={(e) => setPathInput(e.target.value)}
                 placeholder={t("settings.lsp.serverPathPlaceholder")}
               />
             </Field>
-            <Field label={t("settings.lsp.argsLabel")}>
-              <input
-                className={inputCls}
+            <Field label={t("settings.lsp.argsLabel")} htmlFor={`lsp-server-args-${state.language}`}>
+              <Input
+                id={`lsp-server-args-${state.language}`}
+                className="flex-1"
                 value={argsInput}
                 onChange={(e) => setArgsInput(e.target.value)}
                 placeholder={t("settings.lsp.argsPlaceholder")}
               />
             </Field>
             {state.language === "java" && (
-              <Field label={t("settings.lsp.javaHomeLabel")}>
-                <input
-                  className={inputCls}
+              <Field label={t("settings.lsp.javaHomeLabel")} htmlFor={`lsp-java-home-${state.language}`}>
+                <Input
+                  id={`lsp-java-home-${state.language}`}
+                  className="flex-1"
                   value={javaHomeInput}
                   onChange={(e) => setJavaHomeInput(e.target.value)}
                   placeholder={t("settings.lsp.javaHomePlaceholder")}
@@ -421,7 +423,7 @@ function LanguageRow({
             )}
             <div className="flex justify-end">
               <Button variant="primary" size="sm" onClick={doSavePath} disabled={savingPath}>
-                {savingPath ? <IconLoader2 size={12} className="animate-spin" /> : t("common.save")}
+                {savingPath ? <Spinner size="xs" /> : t("common.save")}
               </Button>
             </div>
           </div>
@@ -439,13 +441,13 @@ function LanguageRow({
           {/* Install log */}
           {state.installLog && (
             <div className="border-t border-edge pt-1.5">
-              <button
+              <Button variant="ghost" size={null}
                 type="button"
                 onClick={() => setShowLog(!showLog)}
                 className="text-content-subtle hover:text-content-muted"
               >
                 {showLog ? t("settings.lsp.hideLog") : t("settings.lsp.showLog")}
-              </button>
+              </Button>
               {showLog && (
                 <pre className="mt-1 max-h-40 overflow-auto rounded bg-surface-muted/40 p-2 font-mono text-[0.92em] text-content-muted whitespace-pre-wrap">
                   {state.installLog}
@@ -458,29 +460,14 @@ function LanguageRow({
 
       {/* Health check result */}
       {healthResult && (
-        <div
-          className={cn(
-            "mt-1.5 flex items-center gap-1.5 rounded px-2 py-1 text-[0.7857em]",
-            healthResult.startsWith("✓")
-              ? "bg-success/10 text-success"
-              : "bg-danger/10 text-danger",
-          )}
-        >
-          {healthResult.startsWith("✓") ? (
-            <IconCheck size={12} />
-          ) : (
-            <IconAlertTriangle size={12} />
-          )}
-          {healthResult}
-        </div>
+        healthResult.startsWith("✓")
+          ? <Badge variant="success" className="mt-1.5"><IconCheck size={12} />{healthResult}</Badge>
+          : <ErrorNote icon={IconAlertTriangle} className="mt-1.5">{healthResult}</ErrorNote>
       )}
 
       {/* Server error (e.g. "jdtls requires at least Java 21") */}
       {state.lastError && !state.running && (
-        <div className="mt-1.5 flex items-start gap-1.5 rounded bg-danger/10 px-2 py-1.5 text-[0.7857em] text-danger">
-          <IconAlertTriangle size={12} className="mt-px shrink-0" />
-          <span className="min-w-0 break-words">{state.lastError}</span>
-        </div>
+        <ErrorNote icon={IconAlertTriangle} className="mt-1.5">{state.lastError}</ErrorNote>
       )}
     </div>
   );
@@ -492,32 +479,21 @@ function StatusBadge({ state }: { state: LspLanguageState }) {
   const { t } = useI18n();
   if (state.installing) {
     return (
-      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.72em] text-accent">
-        <IconLoader2 size={9} className="animate-spin" />
-        {t("settings.lsp.statusInstalling")}
-      </span>
+      <Badge variant="accent"><Spinner size="xs" />{t("settings.lsp.statusInstalling")}</Badge>
     );
   }
   if (state.running) {
     return (
-      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.72em] text-accent">
-        <IconCheck size={9} />
-        {t("settings.lsp.statusRunning")}
-      </span>
+      <Badge variant="success"><IconCheck size={9} />{t("settings.lsp.statusRunning")}</Badge>
     );
   }
   if (state.installed) {
     return (
-      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-hover px-1.5 py-0.5 text-[0.72em] text-content-muted">
-        {t("settings.lsp.statusInstalled")}
-      </span>
+      <Badge variant="neutral">{t("settings.lsp.statusInstalled")}</Badge>
     );
   }
   return (
-    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-hover px-1.5 py-0.5 text-[0.72em] text-content-subtle">
-      <IconX size={9} />
-      {t("settings.lsp.statusNotInstalled")}
-    </span>
+    <Badge variant="neutral"><IconX size={9} />{t("settings.lsp.statusNotInstalled")}</Badge>
   );
 }
 
@@ -529,15 +505,3 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
     </div>
   );
 }
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="mb-0.5 block text-content-muted">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-const inputCls =
-  "min-w-0 flex-1 w-full rounded border border-edge bg-surface px-2 py-1 font-mono text-content placeholder:text-content-subtle focus:border-accent focus:outline-none";

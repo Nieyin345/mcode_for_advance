@@ -86,8 +86,21 @@ if (batch === 'shell') {
   check(runtime.includes('<ErrorNote className="mt-1.5"'), 'runtime failure uses ErrorNote');
   check(browser.includes('<ErrorNote tone="warning"'), 'browser encryption warning uses ErrorNote');
   for(const [n,s] of [['browser',browser],['terminal',terminal],['title',title],['tools',tools]]) check(!/<button\b/.test(s), n+': native action not permitted');
+} else if(batch === 'mcp-lsp') {
+  let lsp=read('LspLanguagesPanel.tsx');
+  const mcp=read('McpPanel.tsx');
+  const project=read('ProjectPluginsView.tsx');
+  const library=read('LibraryTypesPanel.tsx');
+  if(process.env.T24_MUTATION === 'mcp-lsp') lsp=lsp.replace('<Field label={t("settings.lsp.serverPathLabel")}', '<label label={t("settings.lsp.serverPathLabel")}');
+  check(lsp.includes('<Field label={t("settings.lsp.serverPathLabel")}'), 'LSP path uses shared Field');
+  check(lsp.includes('<Badge variant="success">'), 'LSP status uses shared Badge');
+  check(lsp.includes('<ErrorNote icon={IconAlertTriangle}'), 'LSP errors use ErrorNote');
+  check(mcp.includes('<EmptyState title={t("settings.mcp.userEmpty1")}'), 'MCP empty result uses EmptyState');
+  check(mcp.includes('<ErrorNote>{error}</ErrorNote>'), 'MCP error uses ErrorNote');
+  check(project.includes('<Card className="bg-surface/40">'), 'project plugin list uses Card');
+  check(library.includes('<Input\n                value={extDraft}'), 'library extension editor uses Input');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);
