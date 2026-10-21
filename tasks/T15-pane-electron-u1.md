@@ -90,3 +90,13 @@ T02 交付了三向停靠与 50/50 吸附（双击双重取反已由总控修复
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 · T15 Electron U1 执行记录
+
+- 实现：仅新增 `apps/desktop/scripts/arc005-pane-electron-smoke/`（`build.mjs`、`probe.ts`、`run.sh`、`api-stub.js`、`bridge.cjs`、`electron-host.cjs`）；真 Electron 运行真 `App` / `ThreePaneLayout` / `TerminalView` / Monaco；独立假项目、隔离用户目录和终端 API，不触及用户实际文件或 PTY。
+- U1/E1 正例：`node apps/desktop/scripts/arc005-pane-electron-smoke/build.mjs`：正常包 9/9 PASS（真输入事件完成 right → left → right 停靠；xterm 容器及会话标识不变、terminal.create 不重复且 kill 不新增；Monaco model 数量/URI 和编辑器 DOM 身份不变；非法 JSON / 非法结构首屏默认布局、可见中文 Toast、无未捕获异常）。
+- 变异 E1：build 时仅在 esbuild 内存里把 ThreePaneLayout 中心主面板加 `key={rightDock}` → `PTY_STABLE` / `MONACO_STABLE` 预期 FAIL；把初始化损坏恢复 Toast 分支静默化 → `CORRUPTION_NOTICE` 预期 FAIL；正常包和两种变异共用校验、最终退出码 0，两个原始源码文件的 SHA-256 在试验前后完全一致。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs arc005-pane-dock-keys-smoke arc005-pane-docking-smoke arc005-pane-first-paint-smoke arc005-pane-free-grid-smoke arc005-pane-layout-edges-smoke arc005-pane-write-race-smoke arc005-pane-electron-smoke` → 7 PASS / 0 FAIL；日志 `apps/desktop/.tmp/smoke-runs/1792542378342-31992-eOX4IA/`（现有六套 + 新增一套）。
+- 类型检查：`node node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json` 和 `node node_modules/typescript/bin/tsc --noEmit -p packages/contracts/tsconfig.json` → 两者 exit 0。
+- 结果：本任务 4 条验收判据均达成；独立复核仍由其他角色负责，不据此宣称 ARC-005 整包完成。
+
