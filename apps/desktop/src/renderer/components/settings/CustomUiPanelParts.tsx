@@ -226,7 +226,7 @@ export function ItemEditor({
               {CUSTOM_UI_ICONS.map((name) => {
                 const Icon = CUSTOM_ICONS[name];
                 return (
-                  <button
+                  <Button variant="ghost" size={null}
                     key={name}
                     type="button"
                     title={name}
@@ -237,7 +237,7 @@ export function ItemEditor({
                     )}
                   >
                     <Icon size={14} />
-                  </button>
+                  </Button>
                 );
               })}
             </div>
@@ -296,7 +296,7 @@ export function ItemEditor({
             </legend>
             <div className="flex flex-wrap gap-1">
               {actionTypes.map((type) => (
-                <button
+                <Button variant="ghost" size={null}
                   key={type}
                   type="button"
                   onClick={() => set("actionType", type)}
@@ -308,7 +308,7 @@ export function ItemEditor({
                   {t(
                     (draft.slot === "rightPanel.tab" ? `customUi.editor.tabAction.${type}` : `customUi.editor.action.${type}`) as MessageId,
                   )}
-                </button>
+                </Button>
               ))}
             </div>
 
@@ -638,9 +638,9 @@ export function ItemEditor({
                   <div className="overflow-hidden rounded-md border border-edge" data-testid="custom-ui-panel-preview-box">
                     <div className="flex h-7 items-center gap-2 border-b border-edge bg-surface-muted px-2 text-[0.7857em] text-content-subtle">
                       <span className="flex-1">{t("customUi.editor.panelPreviewing")}</span>
-                      <button type="button" className="hover:text-content" onClick={() => setPreview(null)}>
+                      <Button variant="ghost" size={null} type="button" className="hover:text-content" onClick={() => setPreview(null)}>
                         {t("customUi.editor.panelPreviewClose")}
-                      </button>
+                      </Button>
                     </div>
                     {usesSampleTarget && (
                       <p

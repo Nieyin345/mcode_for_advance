@@ -112,8 +112,15 @@ if (batch === 'shell') {
   check(dialog.includes('<ErrorNote className="mt-1">{error}</ErrorNote>'), 'dialog error uses ErrorNote');
   check(project.includes('<Badge variant="warning"'), 'untrusted MCP badge uses shared Badge');
   check(project.includes('<LoadingNote label={t("common.loading")}'), 'project load state uses LoadingNote');
+} else if (batch === 'large-actions') {
+  const names=['HooksPanel','CustomUiPanel','CustomUiPanelParts','SkillsPanel','SkillsPanelParts','PluginsPanelParts'];
+  for (const name of names) {
+    let src=read(name+'.tsx');
+    if (name==='SkillsPanel' && process.env.T24_MUTATION==='large-actions') src=src.replace('<Button variant="ghost" size={null}', '<button');
+    check(!/<button\b/.test(src.replace(/`<button>`/g,'')), name + ': all custom actions use Button');
+  }
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

@@ -313,14 +313,14 @@ export function InstalledPane({
             ops.setError(msg);
           }}
         />
-        <button
+        <Button variant="ghost" size={null}
           type="button"
           className="shrink-0 rounded p-0.5 text-content-subtle hover:text-content"
           title={t("common.close")}
           onClick={() => setInstallFormOpen(false)}
         >
           <IconX size={13} />
-        </button>
+        </Button>
       </div>
 
       {/* 勾选批量条：勾了插件才出现。批量启用/停用/卸载。 */}
@@ -535,7 +535,7 @@ function PluginRow({
           aria-label={plugin.name}
           data-plugin-check={plugin.name}
         />
-        <button
+        <Button variant="ghost" size={null}
           type="button"
           className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
           onClick={onExpand}
@@ -591,7 +591,7 @@ function PluginRow({
               </span>
             )}
           </span>
-        </button>
+        </Button>
         <PluginEngineKeys plugin={plugin} busy={enginesBusy} onToggle={onEngine} />
         <Switch
           checked={on}

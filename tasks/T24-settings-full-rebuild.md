@@ -260,3 +260,11 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 原语：为保留 native 复选框与颜色板语义而扩展 ui，只增不改旧原语。`mcp-ui-smoke` 的固定 ui/index mock 不导出新 `Checkbox`，故 MCP 3 个使用方改从 `ui/native-controls.js` 直接导入；首次跑 mcp-ui-smoke 1 fail（mock 找不到导出），调整 import 后 6/6 全绿。
 - 回归：`node apps/desktop/scripts/run-smokes.mjs mcp-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：6/6 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792563743443-30832-mnkIXz`。`node .../t24-design-contract.cjs native` PASS，`set T24_MUTATION=native&& node ... native` 预期 exit=1（撤回 MCP 导入 Checkbox 断言必红）。
 - 功能核对：MCP 导入勾选及保存配置、信任、项目复制逻辑无修改，颜色选择仍为浏览器原生 input type=color、复选框仍为 input type=checkbox，aria/label、禁用与回调不变。外部并发工作造成全局双包 tsc 失败：`genofficeViewFactories.ts` 与 GenOffice slides 大量 API 缺失、`packages/contracts/src/modules.ts` 导出冲突、`moduleCapability.ts` Zod 类型等均不在 T24 范围；`tsc` 日志中过滤 `components/settings` / `components/ui/native-controls` 未出现本批新增类型错误。功能 bug：本批未发现。
+
+### 2026-10-21｜批次 11：大面板原生动作按钮收敛
+
+- 改动：`HooksPanel`、`CustomUiPanel`、`CustomUiPanelParts`、`SkillsPanel`、`SkillsPanelParts`、`PluginsPanelParts` 的原生 `<button>` 改为共享 `Button variant=ghost size=null`，保留原事件、disabled、role、aria 和局部尺寸；`MarketView` 的 `Badge` 改深路径导入以兼容 skills-management-ui-smoke 的静态 mock。
+- 原语：复用已有 `Button`；无扩展。真实浏览器烟测首跑发现技能列表按钮改为 `inline-flex` 后双行内容横排，覆盖复选框命中区域，导致 5 条技能选择/复制用例失败；将 `SkillsPanel` 行动作加 `flex-col items-stretch justify-start`，保留原上下两行和左侧复选框命中。修复后技能专项 1/1 绿，完整回归 7/7 绿。该问题属于本批外观结构引入的交互回归，已当批修复。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs skills-management-ui-smoke plugins-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke settings-focus-electron-smoke frontend-smoke`：7/7 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792564273613-19788-W9e38B`。双包 tsc 仍有与本批无关的并发 GenOffice / contracts 错误；本批 TypeScript 接口在既有 TSX/ESBuild smoke 中通过。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs large-actions` PASS；`set T24_MUTATION=large-actions&& node ... large-actions` 撤回 SkillsPanel 一处共享 Button 后 exit=1（预期红）。
+- 行为核对：技能列表行复选框命中、批量启停/删除、项目复制、工程选择、插件/技能市场互动在独立浏览器测试通过；所有替换继续透传业务回调、aria 与 disabled，未改业务数据流。新增功能 bug：无；结构回归已修复。

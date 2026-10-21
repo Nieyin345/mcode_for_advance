@@ -170,7 +170,7 @@ function GroupEngineSwitches({
         const allOn = skills.every((s) => s.perEngine?.[e] !== false);
         const blocked = skills.length > 0 && skills.every((s) => pluginBlocks(s, e));
         return (
-          <button
+          <Button variant="ghost" size={null}
             key={e}
             type="button"
             disabled={busy}
@@ -189,7 +189,7 @@ function GroupEngineSwitches({
             )}
           >
             {e === "claude" ? "C" : e === "codex" ? "X" : "P"}
-          </button>
+          </Button>
         );
       })}
     </span>
@@ -221,7 +221,7 @@ function RowEngineSwitches({
         const on = skill.perEngine?.[e] !== false;
         const blocked = pluginBlocks(skill, e);
         return (
-          <button
+          <Button variant="ghost" size={null}
             key={e}
             type="button"
             disabled={busy}
@@ -241,7 +241,7 @@ function RowEngineSwitches({
             )}
           >
             {e === "claude" ? "C" : e === "codex" ? "X" : "P"}
-          </button>
+          </Button>
         );
       })}
     </span>
@@ -1050,7 +1050,7 @@ export function SkillsPanel() {
                 (s) => checked.has(s.name) && s.perEngine?.[e] === false,
               );
               return (
-                <button
+                <Button variant="ghost" size={null}
                   key={e}
                   type="button"
                   disabled={bulkBusy}
@@ -1063,7 +1063,7 @@ export function SkillsPanel() {
                   )}
                 >
                   {engineLabel(e)}
-                </button>
+                </Button>
               );
             })}
           </span>
@@ -1109,21 +1109,21 @@ export function SkillsPanel() {
               {/* 全选 / 清空 —— 勾选是「复制到项目」的源，所以这两个按钮只在有东西
                   可勾时出现。放在这里而不是底部：勾选发生在列表里，操作也该在附近。 */}
               {checked.size > 0 ? (
-                <button
+                <Button variant="ghost" size={null}
                   type="button"
                   onClick={() => setChecked(new Set())}
                   className="rounded px-1.5 py-0.5 text-[0.9em] font-normal text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content"
                 >
                   {t("settings.skills.clearSelection")}
-                </button>
+                </Button>
               ) : (
-                <button
+                <Button variant="ghost" size={null}
                   type="button"
                   onClick={selectAllCopyable}
                   className="rounded px-1.5 py-0.5 text-[0.9em] font-normal text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content"
                 >
                   {t("settings.skills.selectAll")}
-                </button>
+                </Button>
               )}
             </>
           }
@@ -1131,7 +1131,7 @@ export function SkillsPanel() {
             <>
               {/* Grouping mode: bundle (by source) is the default — it answers
                   "这是什么、从哪来的" and carries the group switches. */}
-              <button
+              <Button variant="ghost" size={null}
                 type="button"
                 onClick={() => setGroupMode("bundle")}
                 className={cn(
@@ -1140,8 +1140,8 @@ export function SkillsPanel() {
                 )}
               >
                 {t("settings.skills.modeBundle")}
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost" size={null}
                 type="button"
                 onClick={() => setGroupMode("engine")}
                 className={cn(
@@ -1150,7 +1150,7 @@ export function SkillsPanel() {
                 )}
               >
                 {t("settings.skills.modeEngine")}
-              </button>
+              </Button>
             </>
           }
           count={panelSkills.length}
@@ -1317,11 +1317,11 @@ export function SkillsPanel() {
                       ) : (
                         <span className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                       )}
-                      <button
+                      <Button variant="ghost" size={null}
                         type="button"
                         onClick={() => startEdit(s)}
                         disabled={saving || deleting || bulkBusy}
-                        className="min-w-0 flex-1 text-left"
+                        className="min-w-0 flex-1 flex-col items-stretch justify-start text-left"
                       >
                         <div className="flex items-center gap-1.5">
                           <IconSparkles size={13} className="shrink-0 text-content-subtle" />
@@ -1335,7 +1335,7 @@ export function SkillsPanel() {
                             {s.description || t("settings.skills.noDesc")}
                           </span>
                         </div>
-                      </button>
+                      </Button>
                       {/* 这一条的引擎权限,不用点开右侧编辑器就能看见、能改。
                           ⚠️ **必须在那个 `<button>` 外面**：button 不能套 button。 */}
                       <RowEngineSwitches

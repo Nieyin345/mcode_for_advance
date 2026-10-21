@@ -643,7 +643,7 @@ export function CustomUiPanel() {
           {CUSTOM_UI_SLOTS.map((s) => {
             const count = config.items.filter((i) => i.slot === s).length;
             return (
-              <button
+              <Button variant="ghost" size={null}
                 key={s}
                 type="button"
                 onClick={() => setSlot(s)}
@@ -656,7 +656,7 @@ export function CustomUiPanel() {
               >
                 <span className="truncate">{t(`customUi.slot.${s}` as MessageId)}</span>
                 {count > 0 && <span className="shrink-0 text-[0.8571em] text-content-subtle">{count}</span>}
-              </button>
+              </Button>
             );
           })}
         </nav>
@@ -732,7 +732,7 @@ export function CustomUiPanel() {
               {templateOpen && (
                 <div className="absolute left-0 top-full z-20 mt-1 min-w-[240px] rounded-md border border-edge bg-surface py-1 shadow-xl">
                   {TEMPLATES_BY_SLOT[slot].map((tpl) => (
-                    <button
+                    <Button variant="ghost" size={null}
                       key={tpl.id}
                       type="button"
                       className="block w-full px-3 py-1.5 text-left text-xs text-content-muted hover:bg-surface-muted hover:text-content"
@@ -742,7 +742,7 @@ export function CustomUiPanel() {
                       }}
                     >
                       {t(tpl.labelKey)}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               )}

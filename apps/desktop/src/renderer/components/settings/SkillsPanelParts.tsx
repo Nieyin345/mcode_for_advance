@@ -130,7 +130,7 @@ export function SkillSourceEditor({
               const blocked = pluginEngines?.[engine] === false;
               const label = engine === "claude" ? "Claude" : engine === "codex" ? "Codex" : "Pi";
               return (
-                <button
+                <Button variant="ghost" size={null}
                   key={engine}
                   type="button"
                   role="switch"
@@ -153,7 +153,7 @@ export function SkillSourceEditor({
                   )}
                 >
                   {engine === "claude" ? "Claude" : engine === "codex" ? "Codex" : "Pi"}
-                </button>
+                </Button>
               );
             })}
           </div>
@@ -602,13 +602,13 @@ export function ImportSkillsDialog({
         </span>
         <div className="flex-1" />
         {hasLocalPick ? (
-          <button
+          <Button variant="ghost" size={null}
             type="button"
             onClick={clearLocalFolder}
             className="text-[0.7143em] text-content-subtle hover:text-content"
           >
             {t("settings.skills.clear")}
-          </button>
+          </Button>
         ) : null}
       </div>
       <div className="mt-1.5 flex items-start gap-2">
@@ -771,7 +771,7 @@ export function ImportSkillsDialog({
                     const picked = items.filter((s) => selected.has(s.sourcePath)).length;
                     const isActive = tool === activeTool;
                     return (
-                      <button
+                      <Button variant="ghost" size={null}
                         key={tool}
                         type="button"
                         role="tab"
@@ -802,7 +802,7 @@ export function ImportSkillsDialog({
                             {picked}
                           </span>
                         )}
-                      </button>
+                      </Button>
                     );
                   })}
                 </div>
@@ -818,7 +818,7 @@ export function ImportSkillsDialog({
                         {t("settings.skills.skillCount", { n: activeItems.length })}
                       </span>
                       <div className="flex-1" />
-                      <button
+                      <Button variant="ghost" size={null}
                         type="button"
                         onClick={toggleSelectAllForActive}
                         disabled={importableItems.length === 0}
@@ -827,7 +827,7 @@ export function ImportSkillsDialog({
                         {allActiveSelected
                           ? t("settings.skills.deselectAll")
                           : t("settings.skills.selectAll")}
-                      </button>
+                      </Button>
                     </div>
                     <div className="space-y-0.5">
                       {activeItems.map((s) => {

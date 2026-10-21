@@ -391,13 +391,13 @@ export function HooksPanel() {
                切换别的钩子,借那些操作间接重拉 —— 用户看不出"再试一次"这条路径。 */
             <div className="flex items-start gap-3">
               <div className="min-w-0 flex-1">{t("settings.hooks.loadFailed", { error: listError })}</div>
-              <button
+              <Button variant="ghost" size={null}
                 type="button"
                 onClick={() => void load()}
                 className="shrink-0 rounded border border-current px-2 py-0.5 hover:bg-surface-hover/60"
               >
                 {t("common.retry")}
-              </button>
+              </Button>
             </div>
           ) : null}
           {/* 【MC-051】整份文件损坏:普通保存会被拒(保住原字节),必须显式重建。 */}
@@ -406,14 +406,14 @@ export function HooksPanel() {
               <div className="min-w-0 flex-1">
                 {t(fileHealth === "corrupt" ? "settings.hooks.fileCorrupt" : "settings.hooks.fileReadError")}
               </div>
-              <button
+              <Button variant="ghost" size={null}
                 type="button"
                 disabled={rebuilding}
                 onClick={() => void rebuildCorrupt()}
                 className="shrink-0 rounded border border-danger/40 px-2 py-0.5 text-danger hover:bg-danger/10 disabled:opacity-50"
               >
                 {rebuilding ? t("settings.hooks.rebuilding") : t("settings.hooks.rebuild")}
-              </button>
+              </Button>
             </div>
           )}
           {rebuildBackup !== null && (
@@ -491,13 +491,13 @@ export function HooksPanel() {
           {runsError !== null && (
             <div className="rounded bg-danger/10 px-1.5 py-1 text-[0.7857em] text-danger" title={runsError}>
               <div>{t("settings.hooks.runsReadError", { message: runsError })}</div>
-              <button
+              <Button variant="ghost" size={null}
                 type="button"
                 onClick={() => void loadRuns()}
                 className="mt-0.5 rounded border border-danger/40 px-1.5 py-0.5 hover:bg-danger/10"
               >
                 {t("common.retry")}
-              </button>
+              </Button>
             </div>
           )}
           {runs.map((run) => (
@@ -575,7 +575,7 @@ function HookRow({
         active ? "bg-surface-muted" : "hover:bg-surface-hover/60",
       )}
     >
-      <button type="button" onClick={onSelect} className="min-w-0 flex-1 text-left">
+      <Button variant="ghost" size={null} type="button" onClick={onSelect} className="min-w-0 flex-1 text-left">
         <span
           className={cn(
             "block truncate text-[0.7857em]",
@@ -588,7 +588,7 @@ function HookRow({
           {t(EVENT_LABELS[hook.event])}
           {hook.matcher && hookSubjectOf(hook.event) !== null ? ` · ${hook.matcher}` : ""}
         </span>
-      </button>
+      </Button>
       <Switch
         checked={hook.enabled}
         onCheckedChange={onToggle}
@@ -832,7 +832,7 @@ function RunRow({
   const hasDetail = Boolean(run.stdout || run.stderr || run.error);
   return (
     <div className="rounded">
-      <button
+      <Button variant="ghost" size={null}
         type="button"
         onClick={onToggle}
         disabled={!hasDetail}
@@ -860,7 +860,7 @@ function RunRow({
         {run.exitCode !== undefined && run.exitCode !== 0 && (
           <span className="shrink-0 tabular-nums text-danger">exit {run.exitCode}</span>
         )}
-      </button>
+      </Button>
       {expanded && hasDetail && (
         <div className="px-1.5 pb-1.5">
           {run.error && (

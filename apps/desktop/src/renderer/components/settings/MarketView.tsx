@@ -12,7 +12,8 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Badge, Button, Card, EmptyState, InfoHint, Input, LoadingNote, Spinner } from "@renderer/components/ui/index.js";
+import { Button, Card, EmptyState, InfoHint, Input, LoadingNote, Spinner } from "@renderer/components/ui/index.js";
+import { Badge } from "@renderer/components/ui/badge.js";
 import {
   IconFolderOpen,
   IconPlus,
