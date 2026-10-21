@@ -76,7 +76,8 @@
 | T05 | ~~GenOffice Docs 全功能迁移~~ | — | — | **已拆分为 T05a/b/c** |
 | T05a | Docs 迁移一：纯文档操作（6 组） | ARC-007 | 无 | ✅ 完成（25 handler 逐项登记；6 patch 可复现） |
 | T05b | Docs 迁移二：需权限操作（10 个 handler） | ARC-007 | T05a | 未开始 |
-| T05c | Docs 迁移三：明确不要的（12 个 ai:*） | ARC-007 | 无 | 未开始（只写说明） |
+| T05c | Docs AI 面板：默认拒绝 + 经三 SDK 可用（12 个 ai:*） | ARC-007 | T05b | 未开始 |
+| T18 | 输入框重做（复用 RichComposerWithMentions + ChatComposer） | ARC-005 UI | 无 | 未开始 |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05 | 阻塞 |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |
