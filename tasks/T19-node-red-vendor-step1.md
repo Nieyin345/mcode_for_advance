@@ -136,3 +136,14 @@ git checkout -b mcode/integration 935b8d3e12ec8be064f3a72ac6547131f778a7b1
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 执行结果（T19，ARC-006 切片）
+
+- **源码基线**：`node-red/` 经 GitHub `--depth 1 --branch 5.0.8` clone，独立分支 `mcode/integration`，HEAD `935b8d3e12ec8be064f3a72ac6547131f778a7b1`；独立 Git 工作树 tracked files 干净，主仓 `.gitignore` 的 `/node-red/` 生效。原厂代码没有补丁/改动，`npm ci && npm run build` 成功，`red.min.js` 已生成。
+- **体积测量（E1）**：原厂原始 Git 跟踪文件约 34.09 MiB（T13 基线）；本次 `node-red/` 构建及 `npm ci` 后含 `.git` 与完整开发依赖约 **352.01 MiB**；其中 `packages/node_modules` **61.45 MiB**，开发用根 `node_modules` **278.27 MiB**（不可整包交付）。发行 staging `apps/desktop/.tmp/node-red-release` **115.56 MiB**，为 upstream packages + 独立 `npm ci --omit=dev --ignore-scripts` 的生产依赖 + 原厂 LICENSE / 上游锁文件 / 哈希 manifest。
+- **解析（E1）**：`runtimeSupervisor.createEngineLaunchSpec` 按 `resources/node-red` / app-relative `../node-red` / `../../node-red` 的固定候选目录查找 `packages/node_modules/node-red/package.json`，只接受官方 `5.0.8` 且编辑器资产和运行依赖存在；vendor 通过时注入仅有两个官方目录的子进程 `NODE_PATH`。vendor 缺失或版本不符后回退数据根已有 npm 包并显式调用回调记日志，不扩大第三方社区节点解析优先级；两路径都有断言。
+- **发布资源（E1 + E2）**：`apps/desktop/package.json` 在 package 命令加入 vendor 构建/stage（没有上游目录时自动 clone 固定提交）；`electron-builder.yml` 的 `extraResources` 复制 `.tmp/node-red-release` 至 `resources/node-red`，包含 `packages/node_modules/node-red`、`@node-red/{runtime,editor-api,editor-client}`、`node_modules/express` 等生产依赖、`red.min.js`、LICENSE、锁文件和 `manifest.json`。单一 afterPack hook 保留原有 GenOffice 验证，同时验证 Node-RED 版本、固定源码提交、包/编辑器/锁文件 SHA256、依赖和许可证；本地 staging + 模拟 afterPack resources 校验 **PASS**。没有修改 `electron.vite.config.ts`（0 行），上游 CJS 没被打进主进程 bundle。**未运行完整 electron-builder 安装器制作**，因此不宣称本次已经交付可安装的产物。
+- **真实运行（E1）**：`node-red-e2e-smoke/vendor.ts` 用隔离数据目录 + 模拟真实 extraResources，生产 `ProductionWorkflowEngineRegistry.launchSpec` 解析 vendor（数据根没有 npm node-red），生产 `EngineRuntime` 实际 spawn 子进程 `running`；`GET /` 原版 editor 返回 200 且 Node-RED 页面完整，带宿主 token 的 `GET /settings` 明确返回 `version:5.0.8`；匿名 `GET /settings` 为 401，`POST /flows` 无父进程 owner 握手回复为 423（fail-closed），BOOTSTRAP 仍只监听 `127.0.0.1`，原有 `adminAuth`、owner handshake 无任何功能变更。
+- **回归验证（E1）**：`node apps/desktop/scripts/run-smokes.mjs workflow-engine-runtime-smoke node-red-e2e-smoke mcode-node-pack-smoke` → **3 PASS / 0 FAIL**（日志：`apps/desktop/.tmp/smoke-runs/1792549938526-30324-3wgoCx`，vendor 真进程也在该套件中执行）；`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` 与 `pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` → **均 exit 0**。
+- **变异验证（E1）**：`node apps/desktop/scripts/workflow-engine-runtime-smoke/mutate-t19.mjs` → 原始代码绿；复制源码至独立临时文件并注入「开发 vendor 候选路径改错」，专门的 vendor 优先路径断言**必红**；注入「删除版本拒绝条件」，`5.0.7` 回退断言**必红**。不改共享工作树、无需恢复生产源码。
+- **任务验收 #1–#7**：按本卡列出的七项均取得对应证据；完整 installer 在本任务中的范围是打包接线和 afterPack 防坏包门禁，实机完整 installer 的发布体积及桌面用户旅程仍属后续发布验收，不扩展为 ARC-006 全包已完成。
