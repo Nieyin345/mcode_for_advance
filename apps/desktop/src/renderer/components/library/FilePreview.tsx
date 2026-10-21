@@ -22,6 +22,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import type { LibraryItem } from "@contracts/library";
 import { isOnlyOfficeSupportedPath, type LibraryFileContent } from "@contracts/ipc";
 import { documentExtension, documentKindOf } from "@contracts/documentKind";
+import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { joinPath } from "@renderer/lib/path.js";
 import { api } from "@renderer/lib/api.js";
@@ -207,6 +208,9 @@ export function FilePreview({
    */
   const viewing = relPath ?? (which === "md" ? (pdfPath ?? item.mdPath ?? "transcript.md") : (item.filePath ?? item.pdfPath ?? item.mdPath ?? item.id));
   const ext = extOf(viewing);
+  // Native app identity is shared with the IDE. This *does not* grant library
+  // files workspace authorization or switch a read-only preview to an editor.
+  const nativeApp = genofficeAppForPath(viewing);
 
   const open = (name: string, isDir: boolean) => {
     setRelPath(relPath ? `${relPath}/${name}` : name);
@@ -302,7 +306,7 @@ export function FilePreview({
           <div className="p-4 text-[0.8571em] text-content-muted">{t("templates.preview.emptyFile")}</div>
         );
       }
-      if (documentKindOf(viewing) === "markdown") {
+      if (nativeApp === "markdown" && documentKindOf(viewing) === "markdown") {
         return (
           <div className="h-full overflow-y-auto">
             <Suspense fallback={<div className="p-4"><IconLoader2 size={14} className="animate-spin" /></div>}>
@@ -326,7 +330,7 @@ export function FilePreview({
         </div>
       );
     }
-    if (content.mime === "application/pdf" || documentKindOf(viewing) === "pdf") {
+    if (content.mime === "application/pdf" || nativeApp === "pdf") {
       const bytes = base64ToBytes(content.base64);
       // 字节直接喂给阅读器,不再走一次 readPdf(那条路只认条目的 pdfPath)。
       // 目录条目的 entryPath 是目录本身；读的是 relPath 指向的子 PDF，
@@ -359,7 +363,7 @@ export function FilePreview({
         </span>
       </div>
     );
-  }, [loading, error, content, relPath, ext, viewing, item, pdfPath, t]);
+  }, [loading, error, content, relPath, ext, viewing, nativeApp, item, pdfPath, t]);
 
   return (
     // `ref` 挂在根那一层 —— 选中的文字必须落在这一整块里才算数（同 `FileViewer`）。

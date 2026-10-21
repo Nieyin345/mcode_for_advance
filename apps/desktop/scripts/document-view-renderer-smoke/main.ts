@@ -289,6 +289,32 @@ section("1. 编辑器页 URL 与 docId（纯函数）");
   check("超长深路径的 docId 仍 ≤ 200", stableDocId(deepPath).length <= 200, stableDocId(deepPath).length);
 }
 
+/* T30: same six vendor app choices, but no path-only choice can grant a
+ * resource or workspace. Missing CLI must never create even an empty view. */
+section("1b. 六格式一致路由与缺资源拒绝");
+{
+  for (const [suffix, app] of [
+    ["docx", "docs"], ["xlsx", "sheets"], ["pptx", "slides"],
+    ["pdf", "pdf"], ["md", "markdown"], ["html", "html"],
+  ] as const) {
+    const file = "/workspace/report." + suffix;
+    eq("T30 vendor route: " + suffix, editorHostForPath(file), app);
+    resetWorld({ available: false, path: null });
+    await mountPane(file);
+    check("T30 " + suffix + " missing resources: zero native open",
+      ops("open").length === 0);
+    check("T30 " + suffix + " missing resources: explicit explanation",
+      uiText().length > 0);
+    await unmountPane();
+  }
+  resetWorld({ available: true, path: CLI_PATH });
+  await mountPane("/workspace/not-an-editor.bin");
+  eq("T30 unknown suffix must not silently open docs", editorHostForPath("/workspace/not-an-editor.bin"), undefined);
+  check("T30 unknown suffix: fail closed without creating a view", ops("open").length === 0);
+  check("T30 unknown suffix: user sees unsupported-format reason", uiText().includes("没有对应的 GenOffice"));
+  await unmountPane();
+}
+
 /* ══════════════════ 2. 挂载 → open；ResizeObserver → bounds；卸载 → close ══════════════════ */
 
 section("2. 组件生命周期：open / bounds / close");

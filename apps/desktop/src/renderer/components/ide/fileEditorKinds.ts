@@ -12,6 +12,7 @@
  * **纯搬迁，函数体逐字节一致。**
  */
 import { documentKindOf } from "@contracts/documentKind";
+import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
 import { isPathWithin, resolveRelativePath } from "@renderer/lib/path.js";
 
 /* ── 【ARC-005】HTML 本地预览入口的接受判据 ──
@@ -38,7 +39,7 @@ export type HtmlPreviewDecision = { ok: true } | { ok: false; reason: HtmlPrevie
  * 绕过 `PdfPreview` 的读取与报错）。
  */
 export function htmlPreviewDecision(filePath: string, projectPath: string): HtmlPreviewDecision {
-  if (documentKindOf(filePath) !== "html") return { ok: false, reason: "not-html" };
+  if (genofficeAppForPath(filePath) !== "html") return { ok: false, reason: "not-html" };
   // 先折叠 `.` / `..`（`isPathWithin` 是**词法**段比较，不做规范化）—— 否则
   // `proj/../other/x.html` 会以 `proj` 前缀混过去。绝对路径在 resolveRelativePath
   // 里原地规范化，不会被 baseDir 拼接。
@@ -64,12 +65,14 @@ export function canPreviewHtml(filePath: string, projectPath: string): boolean {
  *  那一支"。 */
 export function isPdfFile(filePath: string): boolean {
   // 【ARC-007】判据收口到 `@contracts/documentKind` —— 与资料库/移动端同一份。
-  return documentKindOf(filePath) === "pdf";
+  return genofficeAppForPath(filePath) === "pdf";
 }
 
 /** True for `.md` / `.markdown` files - gates Milkdown/source and adapts legacy preview preferences. */
 export function isMarkdown(filePath: string): boolean {
-  return documentKindOf(filePath) === "markdown";
+  // Vendor also handles txt/json in its Markdown app; those stay source text
+  // in the IDE, not Milkdown. UI kind and vendor routing are separate policies.
+  return genofficeAppForPath(filePath) === "markdown" && documentKindOf(filePath) === "markdown";
 }
 
 /** True for image files the editor can preview via the `app-resource://`

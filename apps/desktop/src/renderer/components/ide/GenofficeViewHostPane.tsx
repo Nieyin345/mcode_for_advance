@@ -91,40 +91,14 @@ import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
 import type { DocViewRect } from "@contracts/ipc";
-import { documentExtension } from "@contracts/documentKind";
+import { genofficeAppForPath, type GenofficeApp } from "@contracts/genofficeFileRoute";
 
 /** GenOffice 编辑器 module 名（与 vendor 的 `rendererUrl` host 同名）。 */
-export type GenofficeEditorHost = "docs" | "sheets" | "slides" | "pdf" | "markdown" | "html";
+export type GenofficeEditorHost = GenofficeApp;
 
-/**
- * 文件 → 编辑器 module 的路由。
- *
- * 与 vendor `apps/shell/src/main/app-routing.ts` 的 `appForPath` **同一条判据**
- * （那边是唯一权威；这里只覆盖 `isOnlyOfficeSupportedPath` 能放进本面板的扩
- * 展名子集）。老格式（doc/rtf/xls/ppt…）vendor 走"转换后打开"，当前宿主没有
- * 转换通道，落到 docs 起始页 —— 这是已知边界，不是路由判据本身的猜测。
- */
-export function editorHostForPath(filePath: string): GenofficeEditorHost {
-  switch (documentExtension(filePath)) {
-    case "pdf": return "pdf";
-    case "md":
-    case "markdown": return "markdown";
-    case "htm":
-    case "html": return "html";
-    case "xlsx":
-    case "xlsm":
-    case "xltx":
-    case "ods":
-      return "sheets";
-    case "pptx":
-    case "pptm":
-    case "potx":
-    case "odp":
-      return "slides";
-    default:
-      return "docs";
-  }
-}
+/** Pure vendor app choice only: unsupported extensions must never default to docs.
+ * This deliberately does not decide authorization or renderer/sidecar readiness. */
+export const editorHostForPath = genofficeAppForPath;
 
 /**
  * 【ARC-007】哪些编辑器页在宿主里有**打开对端**。
@@ -143,7 +117,7 @@ export function editorHostForPath(filePath: string): GenofficeEditorHost {
  *  - **sheets**：**没有**对端（打开需要宿主交出一份 vendor 主进程组装好的
  *    `WorkbookFile`，含 sessionId 与分块读取的会话）。本切片未接，恒为 false。
  */
-export function hasHostOpenChannel(host: GenofficeEditorHost, slidesHost = false,
+export function hasHostOpenChannel(host: GenofficeEditorHost | undefined, slidesHost = false,
   nativeHosts: Partial<Record<"pdf" | "markdown" | "html" | "sheets" | "slides", boolean>> = {}): boolean {
   return host === "docs" || (host === "slides" && (slidesHost || nativeHosts.slides === true)) ||
     ((host === "pdf" || host === "markdown" || host === "html" || host === "sheets") && nativeHosts[host] === true);
@@ -288,14 +262,14 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
   // 【ARC-007】只给有宿主对端的编辑器页算 URL：没有对端时建视图只会得到一张
   // vendor 页面自身启动逻辑炸掉的空面板。`null` 让下面两个 effect 全部跳过。
   const url =
-    cliPath !== null && hasHostOpenChannel(host, slidesHostAvailable, nativeHosts)
+    cliPath !== null && host !== undefined && hasHostOpenChannel(host, slidesHostAvailable, nativeHosts)
       ? host === "pdf" || host === "markdown" || host === "html" || host === "sheets" ||
           (host === "slides" && nativeHosts.slides === true)
         ? `genoffice-app://${host}/index.html`
         : editorPageUrl(cliPath, host)
       : null;
   /** 没有打开对端的编辑器页：**显式降级**分支（与"未构建"是两回事，文案与原因也分开）。 */
-  const unsupportedHost = hasHostOpenChannel(host, slidesHostAvailable, nativeHosts) ? null : host;
+  const unsupportedHost = host === undefined ? "unrecognized" : hasHostOpenChannel(host, slidesHostAvailable, nativeHosts) ? null : host;
 
   useEffect(() => {
     if (url === null) return;
@@ -484,7 +458,9 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
         <div className="p-3">
           <ErrorNote title={t("ide.genoffice.viewHostUnsupported")} tone="warning">
             <div>
-              {unsupportedHost === "pdf" || unsupportedHost === "markdown" || unsupportedHost === "html" || unsupportedHost === "sheets"
+              {unsupportedHost === "unrecognized"
+                ? "该格式没有对应的 GenOffice 原厂编辑器；已拒绝打开（未使用 docs 兜底）。"
+                : unsupportedHost === "pdf" || unsupportedHost === "markdown" || unsupportedHost === "html" || unsupportedHost === "sheets"
                 ? `${unsupportedHost} 原厂视图不可用：缺少 GenOffice 快照、预加载/渲染资源${unsupportedHost === "sheets" ? "或 Rust xlsx-sidecar" : ""}。请构建对应 app 后重试。`
                 : t(unsupportedHost === "slides" ? "ide.genoffice.viewHostUnsupportedSlides" : "ide.genoffice.viewHostUnsupportedSheets")}
             </div>

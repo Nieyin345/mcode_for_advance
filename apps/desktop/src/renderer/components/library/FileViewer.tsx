@@ -41,6 +41,7 @@ import {
 import { type FileViewTarget, useFileViewStore, setFileOpenGuard, saveCurrentPreview } from "@renderer/stores/fileViewStore.js";
 import { isOnlyOfficeSupportedPath } from "@contracts/ipc";
 import { documentKindOf } from "@contracts/documentKind";
+import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
 import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { Button } from "@renderer/components/ui/button.js";
@@ -113,6 +114,9 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   // A linked directory's target.name is the entry root, not its child file.
   // Use the active child identity for its title, kind and quoted context.
   const visibleName = relPath ? relPath.slice(relPath.lastIndexOf("/") + 1) : name;
+  // Shared upstream app route; whether a project/library file is allowed to
+  // open in a native view is a separate host authorization/capability check.
+  const nativeApp = genofficeAppForPath(visibleName);
 
   /**
    * **在文件里选一段文字 → 引用给某条对话**（2026-09-21）。
@@ -407,7 +411,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       // md 走聊天那套渲染(标题/表格/代码块都在);其余原样等宽摆出来。
       // ⚠️ 不把 .tex / .cls 之类也塞进 Markdown 渲染:`#` 在 LaTeX 里是宏参数,
       //    重排之后那份源码就没法读了。
-      if (documentKindOf(visibleName) === "markdown") {
+      if (nativeApp === "markdown" && documentKindOf(visibleName) === "markdown") {
         return (
           // ⚠️ **滚动容器交给 `ChunkedMarkdown` 自己**（`scroll="self"` 是默认值）。
           //    这一层只给尺寸（`min-h-0 flex-1`），**不能**再写 `overflow-y-auto` ——
@@ -448,7 +452,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         </div>
       );
     }
-    if (mime === "application/pdf" || documentKindOf(visibleName) === "pdf") {
+    if (mime === "application/pdf" || nativeApp === "pdf") {
       return (
         <PdfPreview
           item={itemOf(target)}
