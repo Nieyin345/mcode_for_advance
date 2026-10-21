@@ -3,6 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { configureEgressConsentStoragePath, getJsOnlyEgressConsent, setJsOnlyEgressConsent } from "../../src/main/modules/egressConsent.js";
+import { configureJsOnlyEgressConsentReader } from "../../src/main/modules/permissionedProcessRunner.js";
 import { ModuleHost } from "../../src/main/modules/ModuleHost.js";
 import { VscodeL1Bridge, readMinimalVsix } from "../../src/main/modules/vscodeL1Bridge.js";
 
@@ -82,6 +84,11 @@ exports.activate = function(context) {
     async (resource) => "hello " + resource.path.split(/[\\\\/]/).pop()));
 };`;
 const temp = await mkdtemp(join(tmpdir(), "mcode-vsix-l1-"));
+// Equivalent to the host-only modules.egressConsentSet({ enabled: true,
+// acknowledgeRisk: true }) IPC after a human opted in. Isolated temporary
+// storage; never touches the real desktop preference or user profile.
+configureEgressConsentStoragePath(join(temp, "js-only-egress-consent.json"));
+configureJsOnlyEgressConsentReader(getJsOnlyEgressConsent);
 try {
   const path = join(temp, "demo.txt");
   await writeFile(path, "fixture");
@@ -113,6 +120,20 @@ try {
       { confirmReadAccess: true, confirmExecutableCode: false }), /confirmExecutableCode|Invalid|literal/);
     assert.equal(persistCalls, 0);
     assert.equal(host.catalog().modules.some(x => x.id === "user.acme.demo"), false);
+  });
+
+  await test("Windows executable extensions fail closed before any JS-only downgrade", async () => {
+    if (process.platform !== "win32") return;
+    assert.equal(getJsOnlyEgressConsent(), false, "No approval must be the default");
+    await assert.rejects(VscodeL1Bridge.install(host, vsix(manifest, entry),
+      { confirmReadAccess: true, confirmExecutableCode: true }), /egress_isolation_unavailable/);
+    assert.equal(persistCalls, 0, "Rejected extension must not persist");
+    assert.equal(host.catalog().modules.some(x => x.id === "user.acme.demo"), false);
+  });
+
+  await test("explicit persisted host-only JS guard downgrade is enabled for isolated fixture", async () => {
+    await setJsOnlyEgressConsent(true);
+    assert.equal(getJsOnlyEgressConsent(), true);
   });
 
   let bridge: VscodeL1Bridge;
@@ -387,6 +408,8 @@ exports.activate = (context) => {
     assert.equal(host.catalog().capabilities.some(x => x.id === "module.acme.demo.run"), false);
   });
 } finally {
+  configureJsOnlyEgressConsentReader(null);
+  configureEgressConsentStoragePath(null);
   await rm(temp, { recursive: true, force: true });
 }
 console.log("vscode-l1-smoke: " + passed + "/" + (passed + failed) + " PASS");

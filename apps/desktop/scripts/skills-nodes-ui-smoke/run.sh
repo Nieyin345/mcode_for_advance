@@ -19,6 +19,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:react-dom=./scripts/ime-enter-smoke/reactDomStub.ts \
   --alias:@tabler/icons-react=./scripts/skills-nodes-ui-smoke/iconsStub.cjs \
   --alias:@renderer/lib/api.js=./scripts/skills-nodes-ui-smoke/api-stub.ts \
+  --alias:@renderer/components/ui/button.js=./scripts/skills-nodes-ui-smoke/buttonStub.ts \
   --external:@renderer/lib/monacoSetup.js \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
