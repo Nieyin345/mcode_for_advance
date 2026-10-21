@@ -13,6 +13,7 @@ import { pathWithin } from "@main/lib/pathGuard.js";
 import { getMainWindow } from "@main/window.js";
 import type { RuntimeEvent } from "@contracts/runtime";
 import type { TurnHandle } from "@contracts/provider";
+import { nativeEditorToolBridgeBlockReason } from "./nativeEditorToolTransport.js";
 
 export type DocsAiChunk = {
   requestId: string;
@@ -100,13 +101,24 @@ export async function dispatchDocsAiTurn(
 ): Promise<void> {
   const context = env.lookup(request.context);
   if (!context) throw new Error("当前 Mcode 会话不可用，或文档不属于该会话的工作区");
-  if (signal.aborted) throw new Error("Mcode AI 请求已取消");
-  const prompt = docsAiPrompt(request);
-  if (!prompt) throw new Error("文档 AI 指令为空");
-  let ended = false;
   const emit = (chunk: Omit<DocsAiChunk, "requestId">) => {
     if (!signal.aborted) onChunk({ requestId: request.requestId, ...chunk });
   };
+  if (signal.aborted) throw new Error("Mcode AI 请求已取消");
+
+  // GenOffice always sends its renderer-owned AgentSkill schemas. Do not
+  // silently drop them and pretend the native editor tools ran: the current
+  // RuntimeManager/provider contract only supports Mcode-owned tools and
+  // cannot return a renderer tool result to the same model turn.
+  const unsupported = nativeEditorToolBridgeBlockReason(context.session.providerId, request);
+  if (unsupported) {
+    emit({ type: "error", error: unsupported });
+    return;
+  }
+
+  const prompt = docsAiPrompt(request);
+  if (!prompt) throw new Error("文档 AI 指令为空");
+  let ended = false;
   const unsubscribe = env.subscribe((event) => {
     if (event.sessionId !== context.session.id || signal.aborted) return;
     if (event.type === "text.delta") emit({ type: "delta", text: event.text });
