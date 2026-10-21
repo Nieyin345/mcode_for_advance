@@ -132,3 +132,14 @@ Tiptap 已经处理的东西**必须保留**：
 | 浮层定位 | 上/下随空间翻转 | FileMentionPicker / SlashCommandPicker 固定 top=anchor.top-8 + translateY(-100%) | 缺空间翻转与防溢出（补同一共享位置计算） |
 
 基线：`node scripts/run-smokes.mjs ime-enter-smoke attach-links-smoke content-tag-smoke arc005-picker-layer-smoke`，4/4 PASS；工作树存在其他任务的未提交 main/document 改动，本任务不碰它们。
+
+### 2026-10-21 执行结果／验收证据
+
+- **真正差距**：@/slash 浮层固定上开无翻转、小视口下编辑区 18rem 固定上限不随视口变化、WebKit compositionend 后 500ms 内伪 Enter 误提交风险。**已有且保留**：Tiptap 编辑内核、真实文件查询与 @ 触发、↑↓/Enter/Tab/Esc、普通 IME/229 守卫、历史撤销重做、长粘贴与图片粘贴转 tag、文件拖放、附件显示删除、minipill 与容器查询、send/stop/queue 语义。
+- **采用逆向物理规则**：共享浮层布局依据可用空间上/下翻转并限制高度与横向溢出（RichComposerWithMentions）；编辑区以 `min(40svh,24rem)` 且最小 3rem 自然增长、超上限内部滚动（ChatComposer）；WebKit 500ms post-composition 虚假 Enter 守卫（RichComposerWithMentions）；发送状态归入单一决策（ChatComposer/ChatComposerChin），保留 Mcode 的运行中非空输入“排队”路径而不是盲目覆盖为停止。下巴/附件/命令键本来已有，未重写。
+- **变更文件**：`components/chat/{composerPhysicalRules.ts,useComposerPickerPlacement.ts,FileMentionPicker.tsx,SlashCommandPicker.tsx,ComposerEditor.tsx,ChatPane.tsx}`、`styles.css`，以及渲染目录下的 `components/chat/tests/t18-*`。
+- **E1 动态行为断言**：`"C:\\Program Files\\Git\\bin\\bash.exe" src/renderer/components/chat/tests/t18-run.sh`（cwd `apps/desktop`）：19/19 PASS。运行真实 `FileMentionPicker`、真实事件处理器（fake React hooks 调度，仅替换 RPC/i18n），验证 ↑↓ 选中项真实迁移、Tab 选中第二条、Esc 关闭、IME 阻断选择、近顶时渲染到下方；同一生产规则动态验证视口限高、浮层防溢出、发送禁用/可发/停止/排队切换以及 WebKit 误 Enter 保护。
+- **E1 变异红例**：撤除定位规则的翻转分支 → `floating @ menu flips below near top` FAIL（17/18 PASS、exit 1）；恢复；撤除高度规则的 `24rem` 上限 → `auto-grow stops at 24rem on tall viewport` FAIL（17/18 PASS、exit 1）；恢复后 19/19 PASS。
+- **关联回归**：修改前 `node scripts/run-smokes.mjs ime-enter-smoke attach-links-smoke content-tag-smoke arc005-picker-layer-smoke` → 4/4 PASS；修改后 `node scripts/run-smokes.mjs ime-enter-smoke attach-links-smoke content-tag-smoke conversation-queue-smoke arc005-picker-layer-smoke arc005-file-picker-error-smoke arc005-library-picker-search-smoke frontend-smoke arc005-chrome-polish-smoke` → 9/9 PASS。
+- **类型检查**：`npx tsc --noEmit -p apps/desktop/tsconfig.json && npx tsc --noEmit -p packages/contracts/tsconfig.json` → 0 error；`git diff --check` → PASS。
+- **剩余**：本任务列出的六项无未达成；E1 无头 + E2 源码，**未做真 Electron 人工操作（U1，不在 T18 验收六条内）**。不替换 Tiptap，不改主进程/contracts/MessageBlocks/MessageRow/open-claude-ui，无新依赖，不覆盖他人并发改动。
