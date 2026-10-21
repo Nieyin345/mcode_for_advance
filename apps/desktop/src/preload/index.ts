@@ -20,6 +20,8 @@ const api = {
     // 钉 blocked,`app_api_call` 到不了 —— 这两条不是模型可用的自动化授权通道。
     issueWorkflowGrant: ((input) => ipcRenderer.invoke(IPC.MODULE_ISSUE_WORKFLOW_GRANT,input)) as RpcMap["modules.issueWorkflowGrant"],
     revokeWorkflowGrant: ((input) => ipcRenderer.invoke(IPC.MODULE_REVOKE_WORKFLOW_GRANT,input)) as RpcMap["modules.revokeWorkflowGrant"],
+    egressConsentGet: (() => ipcRenderer.invoke(IPC.MODULE_EGRESS_CONSENT_GET)) as RpcMap["modules.egressConsentGet"],
+    egressConsentSet: ((input) => ipcRenderer.invoke(IPC.MODULE_EGRESS_CONSENT_SET,input)) as RpcMap["modules.egressConsentSet"],
   },
   /** 扩展专用数据区(报告 E12):一个扩展一块私有键值存储,坐落在
    *  `<数据根>/extensions/<扩展 id>/store.json`(见 `@contracts/extensionStore`)。 */

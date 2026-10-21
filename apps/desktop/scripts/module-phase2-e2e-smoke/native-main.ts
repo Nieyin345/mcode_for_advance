@@ -118,9 +118,27 @@ export async function runNativeProbe(dir: string, phase: string): Promise<void> 
       assert.ok(catalog.workflowTargets?.some(t => t.moduleId === "core.file-report" && t.contributionId === "info"));
       assert.equal(await js("typeof window.api.modules.invokeForWorkflow"), "undefined");
       // 【MC-036】公开面新增两条**真人授权**入口;注意 `invokeForWorkflow` 仍不得出现在 preload 上。
-      assert.deepEqual(await js("Object.keys(window.api.modules).sort()"), ["cancel", "catalog", "install", "invoke", "issueWorkflowGrant", "remove", "revokeWorkflowGrant", "task", "tasks"]);
+      assert.deepEqual(await js("Object.keys(window.api.modules).sort()"), ["cancel", "catalog", "egressConsentGet", "egressConsentSet", "install", "invoke", "issueWorkflowGrant", "remove", "revokeWorkflowGrant", "task", "tasks"]);
       assert.equal(await js("typeof window.require"), "undefined");
     });
+    if (process.platform === "win32") {
+      await check("T16 real Electron preload + IPC persists and revokes explicit network isolation downgrade", async () => {
+        assert.deepEqual(await js("window.api.modules.egressConsentGet()"), {enabled:false,osIsolation:false});
+        await assert.rejects(
+          () => js("window.api.modules.egressConsentSet({enabled:true})"),
+          /acknowledgeRisk|literal|invalid/i,
+          "missing explicit acknowledgment must not grant consent",
+        );
+        assert.deepEqual(await js("window.api.modules.egressConsentGet()"), {enabled:false,osIsolation:false});
+        assert.deepEqual(await js("window.api.modules.egressConsentSet({enabled:true,acknowledgeRisk:true})"),
+          {enabled:true,osIsolation:false});
+        assert.match(await readFile(join(dir,"data/ui-modules/js-only-egress-consent.json"),"utf8"),
+          /"enabled":true/, "approval must be durably stored in dedicated file");
+        assert.deepEqual(await js("window.api.modules.egressConsentSet({enabled:false,acknowledgeRisk:true})"),
+          {enabled:false,osIsolation:false});
+        assert.deepEqual(await js("window.api.modules.egressConsentGet()"), {enabled:false,osIsolation:false});
+      });
+    }
     if (phase === "create") {
       await check("real save/import IPC reject forged fields and invalid paths before persistence", async () => {
         const before = getWorkflow(id); assert.ok(before);

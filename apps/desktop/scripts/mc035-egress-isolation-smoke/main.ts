@@ -1,10 +1,13 @@
 /** MC-035 OS capability/fail-closed regression and malicious-bootstrap probes. */
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, linkSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
+import { configureEgressConsentStoragePath, getJsOnlyEgressConsent, setJsOnlyEgressConsent } from "../../src/main/modules/egressConsent.js";
 import {
   diagnoseEgressIsolation, verifyPermissionedProgram,
   runPermissionedProcess, permissionedFailure, egressMode, requireNetworkExtensionSupport,
+  configureJsOnlyEgressConsentReader,
 } from "../../src/main/modules/permissionedProcessRunner.js";
 
 let total = 0, failed = 0;
@@ -30,9 +33,31 @@ if (process.platform === "win32") {
   check("non-Windows capability probe returns explicit support or failure",true,
     diagnostic.supported || /egress_isolation_unavailable/.test(diagnostic.detail));
 }
-const verify = await verifyPermissionedProgram('({ inspect: async () => ({text:"UNTRUSTED_EXECUTED"}) })',["inspect"]);
+const benignSource='({ inspect: async () => ({text:"UNTRUSTED_EXECUTED"}) })';
+const consentDir=mkdtempSync(join(tmpdir(),"mc035-user-consent-"));
+const consentPath=join(consentDir,"ui-modules","js-only-egress-consent.json");
+configureEgressConsentStoragePath(consentPath);
+configureJsOnlyEgressConsentReader(getJsOnlyEgressConsent);
+check("new consent store is disabled by default",false,getJsOnlyEgressConsent());
+const deniedByDefault=await verifyPermissionedProgram(benignSource,["inspect"]);
 if (process.platform === "win32") {
-  check("Windows JS-guard-only factory verification succeeds",true,verify.ok);
+  check("Windows without persisted consent rejects install before eval",true,
+    !deniedByDefault.ok && /egress_isolation_unavailable/.test(deniedByDefault.reason));
+  const deniedInvocation=await runPermissionedProcess({
+    source:benignSource,capability:"inspect",
+    resource:{path:"not-a-real-file",projectPath:"."},
+    allowWrite:false,timeoutMs:4000,signal:new AbortController().signal,
+  }).then(()=>null,error=>error);
+  check("Windows default-deny rejects execution with isolated_denied",true,
+    permissionedFailure(deniedInvocation)?.code==="isolated_denied"
+    && /egress_isolation_unavailable/.test(String(deniedInvocation)));
+  await setJsOnlyEgressConsent(true);
+  check("explicit user risk approval is durably recorded",true,getJsOnlyEgressConsent());
+  // Re-install the reader simulates a fresh service instance reading the file.
+  configureJsOnlyEgressConsentReader(getJsOnlyEgressConsent);
+  check("saved consent persists across reader recreation",true,getJsOnlyEgressConsent());
+  const verify=await verifyPermissionedProgram(benignSource,["inspect"]);
+  check("Windows JS-guard-only factory verification succeeds only after consent",true,verify.ok);
   const attempt = await runPermissionedProcess({
     source:'({inspect:async()=>({text:"normal"})})',
     capability:"inspect",resource:{path:"not-a-real-file",projectPath:"."},
@@ -50,9 +75,24 @@ if (process.platform === "win32") {
     String(blocked.text).includes("network_access_denied") &&
     "_mcodeEgressIsolation" in blocked &&
     blocked._mcodeEgressIsolation==="js-guard-only; OS egress isolation unavailable");
+  await setJsOnlyEgressConsent(false);
+  check("disable switch revokes persisted approval",false,getJsOnlyEgressConsent());
+  const revoked=await verifyPermissionedProgram(benignSource,["inspect"]);
+  check("revoking consent immediately rejects new installs",true,
+    !revoked.ok && /egress_isolation_unavailable/.test(revoked.reason));
+  writeFileSync(consentPath,"{corrupt","utf8");
+  check("corrupt consent archive cannot silently grant execution",false,getJsOnlyEgressConsent());
+  await setJsOnlyEgressConsent(true);
+  check("explicit reapproval writes a valid archive",true,getJsOnlyEgressConsent());
+  const other=join(consentDir,"external-consent.json");
+  writeFileSync(other,'{"version":1,"enabled":true}',"utf8");
+  // Link substitution must NOT smuggle in somebody else's approval record.
+  rmSync(consentPath);
+  linkSync(other,consentPath);
+  check("hardlinked approval archive is rejected",false,getJsOnlyEgressConsent());
 } else if (!diagnostic.supported) {
   check("failed OS capability probe must reject factory installation",true,
-    !verify.ok && /egress_isolation_unavailable/.test(verify.reason));
+    !deniedByDefault.ok && /egress_isolation_unavailable/.test(deniedByDefault.reason));
   const attempt = await runPermissionedProcess({
     source:'({inspect:async()=>({text:"UNTRUSTED_EXECUTED"})})',
     capability:"inspect",resource:{path:"not-a-real-file",projectPath:"."},
@@ -62,7 +102,7 @@ if (process.platform === "win32") {
     !attempt.ok && permissionedFailure(attempt.error)?.code==="isolated_denied" &&
     /egress_isolation_unavailable/.test(String(attempt.error)));
 } else {
-  check("verified OS sandbox accepts a benign factory",true,verify.ok);
+  check("verified OS sandbox accepts a benign factory",true,deniedByDefault.ok);
   const result = await runPermissionedProcess({
     source:'({inspect:async()=>({text:"allowed-inside-OS-sandbox"})})',
     capability:"inspect",resource:{path:"not-a-real-file",projectPath:"."},
@@ -70,6 +110,10 @@ if (process.platform === "win32") {
   }).then(value=>value.text,error=>String(error));
   check("real isolated process runs benign extension","allowed-inside-OS-sandbox",result);
 }
+
+configureJsOnlyEgressConsentReader(null);
+configureEgressConsentStoragePath(null);
+rmSync(consentDir,{recursive:true,force:true});
 
 // Extract the exact production bootstrap; do not create a fake or copy of the guard.
 const source = readFileSync(resolve(process.cwd(),"src/main/modules/permissionedProcessRunner.ts"),"utf8");

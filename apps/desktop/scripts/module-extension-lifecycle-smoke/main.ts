@@ -20,13 +20,15 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ModuleHost } from "../../src/main/modules/ModuleHost.js";
 import { fileCapabilities, resolveModuleResource } from "../../src/main/modules/fileCapabilities.js";
-import { runPermissionedProcess, permissionedFailure, permissionArgs, verifyPermissionedProgram } from "../../src/main/modules/permissionedProcessRunner.js";
+import { runPermissionedProcess, permissionedFailure, permissionArgs, verifyPermissionedProgram, configureJsOnlyEgressConsentReader } from "../../src/main/modules/permissionedProcessRunner.js";
 import { ModuleManifestSchema, ResourceSchema, ResultSchema } from "@contracts/modules";
 import { ModuleCatalogSchema } from "@contracts/moduleCapability";
 import { hostCapabilityDeclarationsFromCatalog, collectCapabilityInventory } from "../../src/main/orchestration/capabilityResolver.js";
 import { ModuleInstallSchema as IpcInstallSchema } from "@contracts/ipc";
 import { createHash } from "node:crypto";
 
+// Existing positive lifecycle controls explicitly opt into the Windows JS-only downgrade.
+configureJsOnlyEgressConsentReader(() => true);
 let total = 0, failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
   total++;

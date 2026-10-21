@@ -4,8 +4,10 @@
  * An untrusted extension must not convert a failed child process into "verified"/"successful"
  * by printing a protocol-looking line to stdout.
  */
-import { verifyPermissionedProgram, runPermissionedProcess, permissionedFailure } from "../../src/main/modules/permissionedProcessRunner.js";
+import { verifyPermissionedProgram, runPermissionedProcess, permissionedFailure, configureJsOnlyEgressConsentReader } from "../../src/main/modules/permissionedProcessRunner.js";
 
+// This suite simulates a user who explicitly enabled the unsafe JS-only downgrade.
+configureJsOnlyEgressConsentReader(() => true);
 let total = 0, failed = 0;
 function check(label: string, pass: boolean, detail?: unknown): void {
   total++;

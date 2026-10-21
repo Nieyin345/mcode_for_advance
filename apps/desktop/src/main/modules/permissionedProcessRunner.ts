@@ -352,11 +352,29 @@ export function requireNetworkExtensionSupport(): void {
     throw Error("egress_isolation_unavailable: 这台 Windows 机器没有可验证的 OS 网络沙箱，无法安装或运行声明 network 的可执行扩展；请在支持 OS 网络隔离的平台安装，或移除 network 权限。");
   }
 }
+/**
+ * Explicit JS-only downgrade is a *host-owned persisted user setting*, not a
+ * manifest field, environmental variable or per-invocation option (which the
+ * untrusted caller could self-grant). Reader is injected by the production
+ * module service and evaluated on EVERY installation verification/invocation:
+ * revocation is immediate; missing/throwing reader fails closed.
+ */
+let jsOnlyEgressConsentReader: (() => boolean) | null = null;
+export function configureJsOnlyEgressConsentReader(reader: (() => boolean) | null): void {
+  jsOnlyEgressConsentReader = reader;
+}
+export function hasJsOnlyEgressConsent(): boolean {
+  try { return jsOnlyEgressConsentReader?.() === true; } catch { return false; }
+}
 /** One launch decision for installer and runtime, never skip a required OS probe. */
 async function unapprovedNetworkLaunch(): Promise<EgressLaunch> {
-  return egressMode(process.platform, false) === "js-guard-only"
-    ? { command: process.execPath, prefix: [] }
-    : egressLaunch();
+  if (egressMode(process.platform, false) === "js-guard-only") {
+    if (!hasJsOnlyEgressConsent()) {
+      throw Error("egress_isolation_unavailable: Windows 无 OS 网络沙箱；默认拒绝运行所有可执行扩展。请在「设置 → 扩展 → 模块管理」明确启用仅 JS 网络守卫的风险降级，或换用有 OS 隔离的平台。");
+    }
+    return { command: process.execPath, prefix: [] };
+  }
+  return egressLaunch();
 }
 let cachedEgressLaunch: Promise<EgressLaunch> | undefined;
 const EGRESS_PROBE = String.raw`

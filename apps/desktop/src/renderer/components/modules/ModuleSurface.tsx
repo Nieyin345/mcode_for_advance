@@ -28,6 +28,7 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
   const [manager,setManager]=useState(false),[reply,setReply]=useState<ModuleReply|null>(null);
   useSuppressBrowserView(manager || reply !== null);
   const [busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null);
+  const [riskAcknowledged,setRiskAcknowledged]=useState(false);
   const busyRef=useRef(false),alive=useRef(true);
   const [draft,setDraft]=useState(JSON.stringify(EXAMPLE_MODULE,null,2)),[consent,setConsent]=useState(false),[codeConsent,setCodeConsent]=useState(false);
   // 【MC-035】草稿里是否声明了执行程序 —— 决定"执行代码"那份同意需不需要出现。
@@ -35,6 +36,7 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
   const draftHasProgram=(()=>{try{return (JSON.parse(draft) as {program?:unknown}).program!==undefined;}catch{return false;}})();
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;};},[]);
   const history=useRpc(()=>api.modules.tasks({projectPath}),[projectPath],{enabled:manager,toastOnError:false});
+  const egress=useRpc(()=>api.modules.egressConsentGet(),[],{enabled:manager,toastOnError:false});
   const mutate=async(fn:()=>Promise<void>)=>{
     if(busyRef.current)return;
     busyRef.current=true;setBusy(true);setError(null);
@@ -85,6 +87,21 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
         <Dialog.Title>{t("ide.modules.title")}</Dialog.Title><Dialog.Close/>
         <Dialog.Description>{t("ide.modules.boundary")}</Dialog.Description>
         {error && <ErrorNote>{error}</ErrorNote>}
+        {egress.error && <ErrorNote>{egress.error.message}</ErrorNote>}
+        {!egress.loading && egress.data?.osIsolation===false && <section className="space-y-2 rounded border border-warning/60 p-3" data-testid="module-egress-downgrade">
+          <p className="text-sm font-semibold">{t("ide.modules.egressTitle")}</p>
+          <p className="text-xs text-content-muted">{t("ide.modules.egressWarning")}</p>
+          <p role="status" className="text-xs">{t(egress.data.enabled?"ide.modules.egressEnabled":"ide.modules.egressDisabled")}</p>
+          {!egress.data.enabled && <label className="flex gap-2 text-xs" data-testid="module-egress-acknowledgment">
+            <input type="checkbox" checked={riskAcknowledged} onChange={e=>setRiskAcknowledged(e.target.checked)}/>
+            {t("ide.modules.egressAck")}
+          </label>}
+          <Button disabled={busy||(!egress.data.enabled&&!riskAcknowledged)} onClick={()=>void mutate(async()=>{
+            await api.modules.egressConsentSet({enabled:!egress.data!.enabled,acknowledgeRisk:true});
+            setRiskAcknowledged(false);
+            await egress.refetch();
+          })}>{t(egress.data.enabled?"ide.modules.egressDisable":"ide.modules.egressEnable")}</Button>
+        </section>}
         <div className="space-y-2">{catalog.data?.modules.map(m=><div key={m.id} className="flex items-center gap-2 rounded border border-edge p-2 text-sm">
           <span className="flex-1">{text(m.title)} <code className="text-xs text-content-muted">{m.id} · {m.version}</code></span>
           {!m.id.startsWith("core.") && <Button disabled={busy} onClick={()=>void mutate(async()=>{const result=await api.modules.remove({moduleId:m.id});reportChange(result);await catalog.refetch();await history.refetch();})}>{t("ide.modules.remove")}</Button>}
@@ -96,6 +113,7 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
         <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/>{t("ide.modules.consent")}</label>
         {/* 【MC-035】执行代码是**另一件事**:与只读声明的同意分开勾。清单里没有 program 时
             不出现 —— 不给纯声明式模块制造"你到底同意了啥"的歧义。 */}
+        {draftHasProgram && egress.data?.osIsolation===false && <p role="alert" className="text-xs text-warning">{t("ide.modules.egressInstallNotice")}</p>}
         {draftHasProgram && <label className="flex items-center gap-2 text-xs" data-testid="module-code-consent">
           <input type="checkbox" checked={codeConsent} onChange={e=>setCodeConsent(e.target.checked)}/>{t("ide.modules.codeConsent")}
         </label>}

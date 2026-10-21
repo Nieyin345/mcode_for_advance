@@ -283,7 +283,9 @@ await check("未知贡献失败而不是落到模型", async () => {
 });
 await check("真实主进程 IPC 与 preload 原样携带元数据、工作流目标与授权分面", async () => {
   registerModuleHandlers(fakeIpcMain);
-  assert.equal(handlers.size, 9);
+  assert.equal(handlers.size, 11); // T16 adds get/set for the user-only Windows egress downgrade
+  assert.ok(handlers.has(IPC.MODULE_EGRESS_CONSENT_GET));
+  assert.ok(handlers.has(IPC.MODULE_EGRESS_CONSENT_SET));
   const api = preloadApi();
   const catalog = await api.modules.catalog();
   ModuleCatalogSchema.parse(catalog);

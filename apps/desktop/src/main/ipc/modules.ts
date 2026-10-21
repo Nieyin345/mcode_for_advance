@@ -2,12 +2,29 @@ import type { IpcMain } from "electron";
 import { IPC, ModuleInstallSchema, ModuleInvokeSchema, ModuleRemoveSchema, ModuleTaskRefSchema, ModuleWorkspaceSchema } from "@contracts/ipc";
 import { ModuleWorkflowGrantSchema } from "@contracts/moduleCapability";
 import { getModuleHost } from "@main/modules/service.js";
+import { getJsOnlyEgressConsent, setJsOnlyEgressConsent } from "@main/modules/egressConsent.js";
+import { z } from "zod";
+import { diagnoseEgressIsolation } from "@main/modules/permissionedProcessRunner.js";
 
 /** 【MC-036】授权变更的入参形状(与记录同形,不带 `grantedAt`)。宿主的 issue/revoke 会
  *  再按**现场清单**核验模块/版本/贡献/能力;IPC 层只挡形状与非对象。 */
 const GrantChangeSchema = ModuleWorkflowGrantSchema.omit({ grantedAt: true });
 
 export function registerModuleHandlers(ipcMain:IpcMain):void {
+  // Only the desktop module settings UI exposes this consent; app_api_call is blocked.
+  // Every invocation re-reads the saved preference: disabling takes effect immediately.
+  ipcMain.handle(IPC.MODULE_EGRESS_CONSENT_GET,async()=>{
+    await getModuleHost(); // configure managed storage in the real dataRoot first
+    return {enabled:getJsOnlyEgressConsent(),osIsolation:(await diagnoseEgressIsolation()).supported};
+  });
+  ipcMain.handle(IPC.MODULE_EGRESS_CONSENT_SET,async(_event,raw:unknown)=>{
+    const input=z.object({enabled:z.boolean(),acknowledgeRisk:z.literal(true)}).strict().parse(raw);
+    // Never write consent on other OSes just to bypass a failed OS probe.
+    if(process.platform!=="win32")throw Error("该开关仅用于 Windows 无 OS 网络沙箱的平台");
+    await getModuleHost();
+    await setJsOnlyEgressConsent(input.enabled);
+    return {enabled:getJsOnlyEgressConsent(),osIsolation:false};
+  });
   ipcMain.handle(IPC.MODULE_CATALOG,async()=> (await getModuleHost()).catalog());
   // 【ARC-006 Gate E】安装/卸载的回包带**变更诊断**（`cancelledTasks` / `cancelFailures`）：
   // 升级换执行体或卸载时运行中的旧任务会被协作式取消，UI 据此提示"已取消 N 个运行中

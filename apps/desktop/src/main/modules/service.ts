@@ -8,7 +8,8 @@ import { isKnownWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { EXAMPLE_MODULE, ModuleManifestSchema, moduleRefusalError, type ModuleManifest } from "@contracts/modules";
 import { ModuleHost, type ActionApprovalRequest } from "./ModuleHost.js";
 import { fileCapabilities, resolveModuleResource } from "./fileCapabilities.js";
-import { verifyPermissionedProgram } from "./permissionedProcessRunner.js";
+import { configureJsOnlyEgressConsentReader, verifyPermissionedProgram } from "./permissionedProcessRunner.js";
+import { configureEgressConsentStoragePath, getJsOnlyEgressConsent } from "./egressConsent.js";
 
 /**
  * 【MC-060】**生产审批端口** —— 一个 `action` 能力**每次执行**前,宿主经它拿到用户批准。
@@ -44,6 +45,8 @@ export function getModuleHost(): Promise<ModuleHost> {
 const workflowGrantPath = (dir: string): string => join(dir, "workflow-grants.json");
 async function createHost(): Promise<ModuleHost> {
   const dir=join(dataRoot(),"ui-modules"),path=join(dir,"manifests.json"),grantPath=workflowGrantPath(dir);
+  configureEgressConsentStoragePath(join(dir,"js-only-egress-consent.json"));
+  configureJsOnlyEgressConsentReader(getJsOnlyEgressConsent);
   const host=new ModuleHost({
     authorize:async resource=>{await resolveModuleResource(resource,isKnownWorkspaceRoot);},
     // 【MC-036】工作流运行授权:读侧现读文件(不缓存 → 撤销在下一次判定立刻生效);
