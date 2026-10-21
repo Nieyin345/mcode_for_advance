@@ -5,6 +5,7 @@ import { Button } from "@renderer/components/ui/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useApprovalArming } from "@renderer/hooks/useApprovalArming.js";
 import { toolSummary } from "./activityShared.js";
+import { mcpApprovalVerdict } from "./mcpDecision.js";
 import { APP_DANGER_APPROVAL_PREFIX } from "@contracts/appControl";
 import {
   IconAlertTriangle,
@@ -84,6 +85,7 @@ export function ApprovalPrompt({
   const summary = toolSummary(toolName, input);
   // mcode-app 的高风险操作每次都要本人点:不给「始终允许」(主进程那头也不认)。
   const allowAlways = !toolName.startsWith(APP_DANGER_APPROVAL_PREFIX);
+  const isMcp = toolName.startsWith("mcp__");
 
   // Focus the CARD, never the "允许" button (ARC-005): with focus on the
   // alertdialog itself, a stray Enter has no action to activate. Also bring
@@ -184,7 +186,7 @@ export function ApprovalPrompt({
       {/* Footer: always-allow checkbox + buttons. Stays on a single row at
           the bottom of the card. */}
       <div className="flex items-center justify-between gap-2 border-t border-edge pt-2.5">
-        {allowAlways ? (
+        {allowAlways && !isMcp ? (
           <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-content-muted">
             <input
               type="checkbox"
@@ -195,7 +197,7 @@ export function ApprovalPrompt({
             {t("chat.approval.alwaysAllow", { tool: toolName })}
           </label>
         ) : (
-          <span className="text-[11px] text-warning">{t("chat.approval.everyTime")}</span>
+          <span className="text-[11px] text-warning">{isMcp ? toolName.split("__")[1] : t("chat.approval.everyTime")}</span>
         )}
         <div className="flex items-center gap-1.5">
           <Button
@@ -207,13 +209,37 @@ export function ApprovalPrompt({
             <IconX size={12} />
             {t("chat.approval.deny")}
           </Button>
+          {/* The REA three-decision MCP array routes to the existing, armed
+              approval queue callback: no optimistic execution or local allow
+              cache. Unsafe tools never acquire an always-allow action. */}
+          {isMcp && allowAlways && (
+            <button
+              type="button"
+              disabled={!allowArmed}
+              onClick={() => {
+                if (!promptActive || !allowArmed) return;
+                const verdict = mcpApprovalVerdict("always_allow");
+                onDecide(verdict.granted, verdict.always);
+              }}
+              className="rounded px-2 py-1 text-[11px] font-medium text-content-muted transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+              title={t("chat.approval.alwaysAllow", { tool: toolName })}
+            >
+              {t("chat.approval.alwaysAllow", { tool: toolName })}
+            </button>
+          )}
           {/* Primary confirm action uses the warning token (amber) to keep the
               "permission grant" semantic distinct from QuestionPrompt's green
               submit — the Button component has no warning variant, so this is
               a single purpose-built button rather than <Button variant>. */}
           <button
             type="button"
-            onClick={() => decide(true)}
+            onClick={() => {
+              if (isMcp) {
+                if (!promptActive || !allowArmed) return;
+                const verdict = mcpApprovalVerdict("allow_once");
+                onDecide(verdict.granted, verdict.always);
+              } else decide(true);
+            }}
             disabled={!allowArmed}
             aria-disabled={!allowArmed}
             title={t("chat.approval.allowTitle")}

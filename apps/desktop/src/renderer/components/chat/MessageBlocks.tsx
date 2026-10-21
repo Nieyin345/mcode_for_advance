@@ -52,6 +52,7 @@ import { isImageFilePath, tagKindOfAttachment, type ContentTag } from "@renderer
 import { BUILT_IN_COMMANDS } from "@renderer/lib/slashCommands.js";
 import { isAgentMailTool } from "@renderer/lib/agentMail.js";
 import { AgentMailOutCard } from "./AgentMailCard.js";
+import { McpToolDecisionCard } from "./McpToolDecisionCard.js";
 
 /** Map of absolute file path → its pre-turn content. Built from the
  *  `turn.files` event payload so the Write tool card can diff the new
@@ -1705,7 +1706,7 @@ function GenericToolCard({
   const summaryToolPath = extractToolFilePath(block.toolName, block.input);
   const approvalBroken = isPlanApprovalChannelFailure(block);
 
-  return (
+  const card = (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
         onClick={(e) => toggleHoldPosition(e, setOpen)}
@@ -1755,6 +1756,13 @@ function GenericToolCard({
       )}
     </div>
   );
+  // Real MCP tool status derives from the engine block. Authorization itself
+  // stays with ApprovalPrompt; this is never a fake decision timer.
+  return block.toolName.startsWith("mcp__") ? (
+    <McpToolDecisionCard toolName={block.toolName} status={block.status} result={resultPreview(block.result)}>
+      {card}
+    </McpToolDecisionCard>
+  ) : card;
 }
 
 /**

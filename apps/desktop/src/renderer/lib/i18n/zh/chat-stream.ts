@@ -30,6 +30,12 @@ export const zh = {
   // ── MessageBlocks: thinking / tool cards ──
   "chatStream.thinking": "思考",
   "chatStream.tool.input": "输入",
+  "chatStream.mcp.running": "执行中",
+  "chatStream.mcp.success": "已完成",
+  "chatStream.mcp.user_denied": "用户拒绝",
+  "chatStream.mcp.policy_denied": "策略拦截",
+  "chatStream.mcp.permissions_error": "授权失败",
+  "chatStream.mcp.error": "执行失败",
   "chatStream.tool.result": "结果",
   "chatStream.lineCount": "{n} 行",
   "chatStream.emptyPlaceholder": "(空)",
