@@ -230,15 +230,15 @@ ModuleResult  // 与 app_api_call 同形状
 
 ### 2026-10-21 T49 执行回写
 
-- **调用面与唯一实现**：在宿主内置能力目录新增 \`core.app.call\`（action）；隔离 \`program.source\` 运行期挂入 \`mcode.api.call(method,input)\`。主进程装配时将可信的模块调用端口接到已有 \`invokeAppTool("app_api_call")\`，再走既有的 \`findEntry\` / \`policyFor\` / T48 \`authorizeAppMethod\` / \`callRpc\` / 结果判定。模块 ID 由 \`ModuleHost\` 绑定（不信任子进程传入的 moduleId）；授权在派发前、结果发布前重新核验。未安装/未授权/blocked 全部拒绝；安装同意的写与 danger 方法跳过逐次审批，但不放开 blocked。
-- **协议兼容**：旧 \`runPermissionedProcess\` 无 \`onAppCall\` 时保留原来的 \`spawnRun\` 单次 stdin → stdout 协议；仅宿主提供回调时启用双向 NDJSON，子进程 stdout \`@@mcode:ext-call\` 发请求，stdin \`__mcode_reply\` 回包，\`@@mcode:ext-result\` 发最终结果。继续使用同一组文件系统 \`--permission\` 参数、\`NETWORK_GUARD\`、OS egress 决策。失败码 \`isolated_timeout\`、\`isolated_cancelled\`、\`isolated_crash\`、\`isolated_denied\` 保留。
-- **额度与长任务**：一次扩展能力运行最多 128 次 RPC 请求、最多 8 条并发、单条请求 64 KiB，双向协议总输出 256 KiB，保留模块 program.timeoutMs 的墙钟上限。长 \`claude.sendTurn\` 可以 await 结果；目前没有单独进度事件，取消通过 AbortSignal 终止子进程并拒绝迟到结果；正在进行的外部 RPC 已落定的副作用不能保证撤回。
-- **真实方法名**：任务示例里的 \`session.send\` 是授权域名，不是现有 RPC 方法。真实可调方法为 \`claude.startSession\` / \`claude.sendTurn\`，\`file.readFile\` 的实际入参为 \`{filePath}\`。测试与 AI 指南采用真实形状。
-- **隔离与跨扩展存储**：\`mcode.api.call\` 不能直接声明他人模块身份；\`extensionStore.*\` 仍经过既有 \`runWithUnboundAgentExtensionScope\`，因此不能通过通用 agent RPC 访问其他扩展的数据区；扩展自己的存储须走已有宿主绑定接口。 \`child_process\`、未授权 HTTP 出站的负例均按预期失败；Windows JS 守卫降级仅在测试中以明确注入允许，生产仍由用户设置控制。
-- **AI 文档**：\`app_guide({topic:"extensions"})\` 的清单模板、权限名和方法说明由 T51 同时接入的 \`extensionAuthoringGuide\` 提供，并明确 \`mcode.api.call\` 用法。专项 \`extension-authoring-smoke\` 通过；本任务以实际 \`ModuleManifestSchema\` 清单安装 + 程序源运行作为可运行模板验证，未执行独立 AI 模型实时生成插件的端到端试写。
-- **专项验证**：\`node apps/desktop/scripts/run-smokes.mjs module-app-call-smoke\` 基线 7 pass / 0 fail，运行真实 fixture 文件、假 AI provider、无授权、blocked、隔离、撤权取消；三组变异分别撤掉宿主授权校验、blocked 判定、AbortSignal 监听，均触发对应断言红例，详见 \`apps/desktop/.tmp/module-app-call-*/{baseline,auth,blocked,cancel}.log\`。
-- **回归限制**：新加 \`core.app.call\` 后已更新模块能力目录两个旧的定长断言；module-catalog/module-catalog-ui/module-workflow、extension-authoring 等通过。16 条 module-* 汇总检查中 \`module-contributions-smoke\`（并行 T50 的 task/result 断言）与 \`module-phase2-e2e-smoke\`（native-window 工作流 UI 找不到 File inspection）尚未全绿，不归到 T49 权限/协议处理，判据 8 暂未达成。
-- **类型检查**：contracts \`node_modules\\.bin\\tsc --noEmit -p packages/contracts/tsconfig.json\` exit 0；desktop 同命令另行复跑验收。
+- **调用面与唯一实现**：在宿主内置能力目录新增 `core.app.call`（action）；隔离 `program.source` 运行期挂入 `mcode.api.call(method,input)`。主进程装配时将可信的模块调用端口接到已有 `invokeAppTool("app_api_call")`，再走既有的 `findEntry` / `policyFor` / T48 `authorizeAppMethod` / `callRpc` / 结果判定。模块 ID 由 `ModuleHost` 绑定（不信任子进程传入的 moduleId）；授权在派发前、结果发布前重新核验。未安装/未授权/blocked 全部拒绝；安装同意的写与 danger 方法跳过逐次审批，但不放开 blocked。
+- **协议兼容**：旧 `runPermissionedProcess` 无 `onAppCall` 时保留原来的 `spawnRun` 单次 stdin → stdout 协议；仅宿主提供回调时启用双向 NDJSON，子进程 stdout `@@mcode:ext-call` 发请求，stdin `__mcode_reply` 回包，`@@mcode:ext-result` 发最终结果。继续使用同一组文件系统 `--permission` 参数、`NETWORK_GUARD`、OS egress 决策。失败码 `isolated_timeout`、`isolated_cancelled`、`isolated_crash`、`isolated_denied` 保留。
+- **额度与长任务**：一次扩展能力运行最多 128 次 RPC 请求、最多 8 条并发、单条请求 64 KiB，双向协议总输出 256 KiB，保留模块 program.timeoutMs 的墙钟上限。长 `claude.sendTurn` 可以 await 结果；目前没有单独进度事件，取消通过 AbortSignal 终止子进程并拒绝迟到结果；正在进行的外部 RPC 已落定的副作用不能保证撤回。
+- **真实方法名**：任务示例里的 `session.send` 是授权域名，不是现有 RPC 方法。真实可调方法为 `claude.startSession` / `claude.sendTurn`，`file.readFile` 的实际入参为 `{filePath}`。测试与 AI 指南采用真实形状。
+- **隔离与跨扩展存储**：`mcode.api.call` 不能直接声明他人模块身份；`extensionStore.*` 仍经过既有 `runWithUnboundAgentExtensionScope`，因此不能通过通用 agent RPC 访问其他扩展的数据区；扩展自己的存储须走已有宿主绑定接口。 `child_process`、未授权 HTTP 出站的负例均按预期失败；Windows JS 守卫降级仅在测试中以明确注入允许，生产仍由用户设置控制。
+- **AI 文档**：`app_guide({topic:"extensions"})` 的清单模板、权限名和方法说明由 T51 同时接入的 `extensionAuthoringGuide` 提供，并明确 `mcode.api.call` 用法。专项 `extension-authoring-smoke` 通过；本任务以实际 `ModuleManifestSchema` 清单安装 + 程序源运行作为可运行模板验证，未执行独立 AI 模型实时生成插件的端到端试写。
+- **专项验证**：`node apps/desktop/scripts/run-smokes.mjs module-app-call-smoke` 基线 7 pass / 0 fail，运行真实 fixture 文件、假 AI provider、无授权、blocked、隔离、撤权取消；三组变异分别撤掉宿主授权校验、blocked 判定、AbortSignal 监听，均触发对应断言红例，详见 `apps/desktop/.tmp/module-app-call-*/{baseline,auth,blocked,cancel}.log`。
+- **回归限制**：新加 `core.app.call` 后已更新模块能力目录两个旧的定长断言；module-catalog/module-catalog-ui/module-workflow、extension-authoring 等通过。16 条 module-* 汇总检查中 `module-contributions-smoke`（并行 T50 的 task/result 断言）与 `module-phase2-e2e-smoke`（native-window 工作流 UI 找不到 File inspection）尚未全绿，不归到 T49 权限/协议处理，判据 8 暂未达成。
+- **类型检查**：contracts `node_modules\\.bin\\tsc --noEmit -p packages/contracts/tsconfig.json` exit 0；desktop 同命令另行复跑验收。
 
 ### 2026-10-21 T49 收尾验收回写
 
@@ -294,3 +294,11 @@ ModuleResult  // 与 app_api_call 同形状
 - **类型检查**：`pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` exit 0；`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` exit 0。两项均在最终 smoke 源码修改后重跑。
 - **协议、安全与 AI 文档核对**：旧调用方不传 `onAppCall` 时仍走原 `spawnRun` 单次协议；`module-protocol-integrity-smoke` 15/15、`module-extension-lifecycle-smoke` 160/160 通过。双向路径仍用原 `NETWORK_GUARD`、`permissionArgs` 和 `permissionedEnv`，不放松 Node `--permission`；取消和超时的失败码断言通过。通用 RPC 的 `extensionStore.*` 仍走原 `runWithUnboundAgentExtensionScope`，没有新增跨扩展 storage 通道。T51 的 `extension-authoring-smoke` 实际调用 `app_guide({topic:"extensions"})` 并通过 24/24；本轮 AI 按该主题模式试写并运行了最小 file-summary 扩展，真实读取 fixture、调用假 `claude.sendTurn` 并返回摘要结果。此处验证的是文档模式 + 假 provider 的可运行性，没有调用外部真实模型。
 - **附加检查**：提交前 `git diff --check` 通过；暂存区仅含上列 12 个 T49 实现/测试文件。
+
+
+### 2026-10-21｜总控独立复核与收尾要求
+
+- 总控复跑 16 个 `module-*` 套件：**15 PASS / 1 FAIL**；唯一失败仍是 `module-permissions-smoke` 的闭世界映射断言，缺少 `workflowEngine.load`。另行复跑 `module-app-call-smoke`、`module-contributions-smoke`、`module-phase2-e2e-smoke` 均 PASS；`packages/contracts` 与 `apps/desktop` TypeScript 检查均 PASS。
+- 任务归属需要按历史台账统一：`tasks/T69-60-smoke-failure-triage.md` 的后续建议 #6 与 `tasks/T67-catalog-drift.md` 已明确将 `APP_METHOD_PERMISSIONS` 缺少 `workflowEngine.load` 归到 T49 收尾边界。该尾项是 **T48 既有权限映射生成/覆盖问题**，不是改 Node-RED 工作流实现；不要改 `apiCatalog.generated.ts`、`policy.ts` 或工作流运行器，也不要手工另造第二份权限表。
+- 请原 T49 执行对话继续收尾：检查 `apps/desktop/scripts/gen-module-permission-map.mjs`、`policyFor("workflowEngine.load")` 和当前 API catalog 的 Git 状态；按既有 `policyFor`/域映射规则确定它应映射为 `workflow.write` 还是需要显式非委托 override，再用现有生成器更新 `packages/contracts/src/appPermission.ts`。生成前若 `apiCatalog.generated.ts` 仍有并行未提交修改，不得暂存/提交该文件；先确认其来源和快照稳定性。然后复跑 `module-permissions-smoke`、完整 17-suite 命令、双包 TypeScript 与相关变异验证，并追加最终回写及提交 SHA。
+- **当前 T49 不可标记全部验收完成**：判据 8 仍未达成；保持同一个 T49 owner 收尾，不另派重复 owner，不以其它 16 套通过替代权限映射覆盖判据。
