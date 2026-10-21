@@ -8,15 +8,14 @@ OUT=$(mktemp -d /tmp/mcode-flow-migration.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-flow-migration-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-ESBUILD=$(find ../../node_modules/.pnpm -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)
-if [[ -z "$ESBUILD" ]]; then ESBUILD="npx esbuild"; fi
+source "scripts/lib/esbuild-path.sh"
 
 # 【T10 后续】本套现在还 import `executorOwnership`，它拉进落盘实现
 # （`fileExecutorOwnershipStore.ts`），后者 import `@main/lib/dataRoot.js` 与
 # `@main/lib/logger.js` —— 两个都 import electron，无头里跑不起来。
 # 与其它套件一致：两个换桩，并给 esbuild 补 require/__dirname。
 # DATA 同时喂给 MCODE_FLOW_MIGRATION_DATA（备份落盘）与 MCODE_SMOKE_DATA_ROOT（dataRoot 桩）。
-"$ESBUILD" scripts/flow-migration-smoke/main.ts \
+mcode_esbuild scripts/flow-migration-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; import { fileURLToPath as __fu } from 'node:url'; import { dirname as __dn } from 'node:path'; const require = __cr(import.meta.url); const __filename = __fu(import.meta.url); const __dirname = __dn(__filename);" \

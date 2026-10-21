@@ -23,6 +23,53 @@
 #
 # ⚠️ 本文件**必须**被 `source`,不能 `bash` 执行(那样变量传不回来)。
 
+# 版本比较依赖 Node（smoke 本身也依赖 Node），不依赖 Windows 自带的 sort.exe。
+# 只接受 pnpm esbuild@<semver> 路径，版本不可识别时 fail-closed，不随意挑一个旧版本。
+_mcode_latest_esbuild() {
+  node -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", chunk => { input += chunk; });
+    process.stdin.on("end", () => {
+      function parse(path) {
+        const dir = path.match(/(?:^|[\\/])esbuild@([^\\/]+)(?:[\\/]|$)/);
+        if (!dir) return null;
+        const match = dir[1].match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+        return match ? [Number(match[1]), Number(match[2]), Number(match[3]),
+          match[4] === undefined ? null : match[4].split(".")] : null;
+      }
+      function compare(a, b) {
+        for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
+        if (a[3] === null || b[3] === null) return a[3] === null ? (b[3] === null ? 0 : 1) : -1;
+        for (let i = 0; i < Math.max(a[3].length, b[3].length); i++) {
+          const x = a[3][i], y = b[3][i];
+          if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+          const xn = /^(0|[1-9]\d*)$/.test(x), yn = /^(0|[1-9]\d*)$/.test(y);
+          if (xn && yn) { const d = BigInt(x) - BigInt(y); if (d !== 0n) return d > 0n ? 1 : -1; }
+          else if (xn !== yn) return xn ? -1 : 1;
+          else if (x !== y) return x < y ? -1 : 1;
+        }
+        return 0;
+      }
+      const valid = input.split(/\r?\n/).filter(Boolean)
+        .map(path => ({ path, version: parse(path) }))
+        .filter(item => item.version !== null);
+      valid.sort((a, b) => compare(a.version, b.version) || (a.path < b.path ? -1 : 1));
+      if (valid.length) process.stdout.write(valid[valid.length - 1].path + "\n");
+    });
+  '
+}
+
+# 统一入口，保留 npx 回退且不让 npx 联网安装；原先 "$ESBUILD"="npx esbuild"
+# 会被当成一个带空格的可执行文件名，无法真正回退。
+mcode_esbuild() {
+  if [[ "$ESBUILD" == "npx esbuild" ]]; then
+    npm_config_offline=true npx --no-install esbuild "$@"
+  else
+    "$ESBUILD" "$@"
+  fi
+}
+
 # 1) 环境变量直给
 if [[ -n "${MCODE_ESBUILD:-}" && -x "$MCODE_ESBUILD" ]]; then
   ESBUILD="$MCODE_ESBUILD"
@@ -46,13 +93,13 @@ _PNPM="$_ROOT/../../node_modules/.pnpm"
 ESBUILD=""
 if [[ -d "$_PNPM" ]]; then
   # shellcheck disable=SC2012  # 目录名可控,ls 够用且比 find 快 30 倍
-  _HIT="$(ls -d "$_PNPM"/esbuild@*/node_modules/esbuild/bin/esbuild 2>/dev/null | sort -V | tail -1)"
+  _HIT="$(ls -d "$_PNPM"/esbuild@*/node_modules/esbuild/bin/esbuild 2>/dev/null | _mcode_latest_esbuild)" || true
   if [[ -n "$_HIT" && -x "$_HIT" ]]; then ESBUILD="$_HIT"; fi
 fi
 
 # 4) 递归兜底(布局变了才走到)
 if [[ -z "$ESBUILD" ]]; then
-  _FOUND="$(find "$_PNPM" -path "*esbuild/bin/esbuild" -type f 2>/dev/null | sort -V | tail -1)"
+  _FOUND="$(find "$_PNPM" -path "*esbuild/bin/esbuild" -type f 2>/dev/null | _mcode_latest_esbuild)" || true
   if [[ -n "$_FOUND" && -x "$_FOUND" ]]; then ESBUILD="$_FOUND"; fi
 fi
 
