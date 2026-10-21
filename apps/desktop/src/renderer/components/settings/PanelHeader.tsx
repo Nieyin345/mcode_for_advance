@@ -55,7 +55,7 @@ export function PanelHeader({
     >
       <div className="flex min-w-0 items-center gap-2">
         {Icon && <Icon size={16} className="shrink-0 text-accent" />}
-        <h2 className="truncate text-[0.9286em] font-semibold leading-tight text-content">
+        <h2 className="truncate text-[length:var(--chat-fs-sm)] font-semibold leading-tight text-content">
           {title}
         </h2>
         {hint && <InfoHint side="bottom">{hint}</InfoHint>}

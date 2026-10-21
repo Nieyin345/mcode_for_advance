@@ -19,6 +19,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import type { MessageId } from "@renderer/lib/i18n/core.js";
 import { cn } from "@renderer/lib/cn.js";
 import { SettingsSection } from "./SettingsSection.js";
+import { Badge } from "@renderer/components/ui/badge.js";
 import { IconCheck, IconMinus } from "@renderer/lib/icons.js";
 
 /** 引擎展示名（品牌名，不翻译）。 */
@@ -44,7 +45,7 @@ function BaseCapabilityCell({ impl, toolName, note, disabledByPolicy, t }: {
         <div className="mt-0.5 text-[0.857em] text-content-subtle/60">—</div>
       )}
       {disabledByPolicy && (
-        <div className="mt-0.5 text-[0.786em] text-danger">{t("settings.engineMatrix.base.disabledByPolicy" as MessageId)}</div>
+        <Badge variant="danger" className="mt-0.5">{t("settings.engineMatrix.base.disabledByPolicy" as MessageId)}</Badge>
       )}
       {note && <div className="mt-0.5 text-[0.786em] text-content-subtle">{note}</div>}
     </div>

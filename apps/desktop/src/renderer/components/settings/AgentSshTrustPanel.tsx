@@ -27,12 +27,11 @@ import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
-import { Button, EmptyState, ErrorNote } from "@renderer/components/ui/index.js";
+import { Button, EmptyState, ErrorNote, LoadingNote, Spinner } from "@renderer/components/ui/index.js";
 import {
   IconShieldCheck,
   IconShieldLock,
   IconAlertTriangle,
-  IconLoader2,
   IconCopy,
   IconCheck,
 } from "@renderer/lib/icons.js";
@@ -102,13 +101,11 @@ function PendingCard({
         {t("settings.agentSsh.verifyHint")}
       </p>
       {host.lastError && (
-        <p className="rounded bg-danger/10 px-1.5 py-1 text-[0.6428em] leading-relaxed text-danger">
-          {host.lastError}
-        </p>
+        <ErrorNote className="text-[0.6428em]">{host.lastError}</ErrorNote>
       )}
       <div className="flex items-center gap-1.5">
         <Button variant="outline" size="sm" disabled={busy} onClick={() => onDecision(true)}>
-          {busy ? <IconLoader2 size={13} className="mr-1 animate-spin" /> : <IconShieldCheck size={13} className="mr-1" />}
+          {busy ? <Spinner size="xs" className="mr-1" /> : <IconShieldCheck size={13} className="mr-1" />}
           {t("settings.agentSsh.approve")}
         </Button>
         <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDecision(false)}>
@@ -137,7 +134,7 @@ function TrustedRow({
           {host.hostPort}
         </span>
         <Button variant="ghost" size="sm" disabled={busy} className="shrink-0" onClick={onRevoke}>
-          {busy ? <IconLoader2 size={12} className="mr-1 animate-spin" /> : null}
+          {busy ? <Spinner size="xs" className="mr-1" /> : null}
           {t("settings.agentSsh.revoke")}
         </Button>
       </div>
@@ -221,17 +218,11 @@ export function AgentSshTrustPanel() {
       )}
 
       {/* 警告 —— 不折叠、不藏。用户点「批准」之前就该读到。 */}
-      <p className="flex items-start gap-1.5 rounded border border-danger/30 bg-danger/5 px-2 py-1.5 text-[0.7143em] leading-relaxed text-danger">
-        <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
-        <span>{t("settings.agentSsh.warning")}</span>
-      </p>
+      <ErrorNote icon={IconAlertTriangle} className="text-[0.7143em]">{t("settings.agentSsh.warning")}</ErrorNote>
 
       <SettingsSection title={t("settings.agentSsh.pendingTitle")}>
         {loading && pending.length === 0 ? (
-          <p className="flex items-center gap-1.5 text-[0.7143em] text-content-subtle">
-            <IconLoader2 size={13} className="animate-spin" />
-            {t("common.loading")}
-          </p>
+          <LoadingNote label={t("common.loading")} />
         ) : pending.length === 0 ? (
           <EmptyState icon={IconShieldLock} title={t("settings.agentSsh.pendingEmpty")} desc={t("settings.agentSsh.pendingEmptyDesc")} />
         ) : (

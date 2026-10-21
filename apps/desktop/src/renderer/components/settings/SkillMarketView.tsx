@@ -12,6 +12,7 @@ import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useMarketProgress } from "./useMarketProgress.js";
 import { MarketView, type MarketRow } from "./MarketView.js";
+import { ErrorNote } from "@renderer/components/ui/error-note.js";
 
 export function SkillMarketView({
   className,
@@ -194,14 +195,10 @@ export function SkillMarketView({
     <div className={className}>
       {marketProgress.status}
       {error && (
-        <div role="alert" className="mb-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
-          {error}
-        </div>
+        <ErrorNote className="mb-2">{error}</ErrorNote>
       )}
       {recordsCorrupt && !error && (
-        <div role="alert" className="mb-2 rounded border border-danger/40 bg-danger/5 px-3 py-2 text-[0.7857em] text-danger">
-          {t("settings.market.recordsCorrupt", { reason: recordsCorrupt })}
-        </div>
+        <ErrorNote className="mb-2">{t("settings.market.recordsCorrupt", { reason: recordsCorrupt })}</ErrorNote>
       )}
       {note && !error && (
         <div role="status" className="mb-2 rounded border border-accent/30 bg-accent/5 px-3 py-2 text-[0.7857em] text-content">

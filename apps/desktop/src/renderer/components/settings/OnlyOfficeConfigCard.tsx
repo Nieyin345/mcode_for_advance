@@ -20,11 +20,10 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@renderer/lib/api.js";
-import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, Input } from "@renderer/components/ui/index.js";
+import { Badge, Button, ErrorNote, Input, Spinner } from "@renderer/components/ui/index.js";
 import type { OnlyOfficeConfig } from "@contracts/ipc";
-import { IconCheck, IconLoader2, IconSettings } from "@renderer/lib/icons.js";
+import { IconCheck, IconSettings } from "@renderer/lib/icons.js";
 
 const EMPTY: OnlyOfficeConfig = { serverUrl: "", jwtSecret: "", callbackHost: "" };
 
@@ -167,7 +166,7 @@ export function OnlyOfficeConfigCard({ onReload }: { onReload: () => Promise<voi
           <IconSettings size={12} />
           {open ? t("settings.toolchain.onlyoffice.hide") : t("settings.toolchain.onlyoffice.configure")}
         </Button>
-        {busy === "detecting" && !open && <IconLoader2 size={12} className="animate-spin text-content-subtle" />}
+        {busy === "detecting" && !open && <Spinner size="xs" className="text-content-subtle" />}
         {!open && cfg.serverUrl && (
           <span className="truncate font-mono text-[0.7143em] text-content-subtle" title={cfg.serverUrl}>
             {cfg.serverUrl}
@@ -176,15 +175,9 @@ export function OnlyOfficeConfigCard({ onReload }: { onReload: () => Promise<voi
       </div>
 
       {note && (
-        <div
-          className={cn(
-            "mt-1 flex items-start gap-1 text-[0.7857em] leading-relaxed",
-            note.kind === "ok" ? "text-success" : note.kind === "warn" ? "text-warning" : "text-danger",
-          )}
-        >
-          {note.kind === "ok" && <IconCheck size={12} className="mt-0.5 shrink-0" />}
-          <span className="min-w-0 break-all">{note.text}</span>
-        </div>
+        note.kind === "ok"
+          ? <Badge variant="success" className="mt-1 max-w-full break-all" role="status"><IconCheck size={12} />{note.text}</Badge>
+          : <ErrorNote tone={note.kind === "warn" ? "warning" : "danger"} className="mt-1 break-all">{note.text}</ErrorNote>
       )}
 
       {open && (
@@ -212,7 +205,7 @@ export function OnlyOfficeConfigCard({ onReload }: { onReload: () => Promise<voi
           )}
           <div className="flex items-center gap-1.5 pt-0.5">
             <Button size="sm" disabled={busy !== "idle"} onClick={() => void saveAndTest()} className="gap-1">
-              {busy === "saving" && <IconLoader2 size={12} className="animate-spin" />}
+              {busy === "saving" && <Spinner size="xs" />}
               {t("settings.toolchain.onlyoffice.saveAndTest")}
             </Button>
             <Button
@@ -222,7 +215,7 @@ export function OnlyOfficeConfigCard({ onReload }: { onReload: () => Promise<voi
               onClick={() => void autoFill(false)}
               className="gap-1"
             >
-              {busy === "detecting" && <IconLoader2 size={12} className="animate-spin" />}
+              {busy === "detecting" && <Spinner size="xs" />}
               {t("settings.toolchain.onlyoffice.autoFill")}
             </Button>
           </div>

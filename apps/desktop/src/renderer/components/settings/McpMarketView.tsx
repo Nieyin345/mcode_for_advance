@@ -421,7 +421,7 @@ function McpMarketInstallDialog({
                       <span className="font-mono text-[0.92em] text-content">{inputLabel(i)}</span>
                       {i.required && <span className="text-[0.85em] text-danger">*</span>}
                       {i.secret && (
-                        <span className="rounded bg-warning/10 px-1 text-[0.78em] text-warning">{t("settings.mcpMarket.secret")}</span>
+                        <Badge variant="warning">{t("settings.mcpMarket.secret")}</Badge>
                       )}
                     </span>
                     <Input

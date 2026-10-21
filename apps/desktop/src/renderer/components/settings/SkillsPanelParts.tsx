@@ -21,8 +21,8 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import type { ExternalSkillInfo, SkillSource, SkillTool, SkillEngineState } from "@contracts/ipc";
-import { Button, Dialog, EmptyState, ErrorNote, Field, InfoHint, LoadingNote } from "@renderer/components/ui/index.js";
-import { IconSparkles, IconFileText, IconFolder, IconPlus, IconTrash, IconLoader2 } from "@renderer/lib/icons.js";
+import { Button, Dialog, EmptyState, ErrorNote, Field, InfoHint, LoadingNote, Spinner } from "@renderer/components/ui/index.js";
+import { IconSparkles, IconFileText, IconFolder, IconPlus, IconTrash } from "@renderer/lib/icons.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { moveTabFocus, isReadOnlySkill, type NewForm } from "@renderer/components/settings/SkillsPanel.js";
 import { Textarea } from "@renderer/components/ui/textarea.js";
@@ -703,7 +703,7 @@ export function ImportSkillsDialog({
                   disabled={ghBusy || !ghUrl.trim()}
                   className="shrink-0 gap-1"
                 >
-                  {ghBusy && <IconLoader2 size={12} className="animate-spin" />}
+                  {ghBusy && <Spinner size="xs" />}
                   {ghBusy ? t("settings.skills.githubImporting") : t("settings.skills.githubImportBtn")}
                 </Button>
               </div>

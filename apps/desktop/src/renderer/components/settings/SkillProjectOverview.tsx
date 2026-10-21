@@ -25,8 +25,8 @@ import type { SkillsProjectOverviewResult } from "@contracts/ipc";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, ErrorNote } from "@renderer/components/ui/index.js";
-import { IconAlertTriangle, IconFolderOpen, IconLoader2, IconSparkles } from "@renderer/lib/icons.js";
+import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
+import { IconAlertTriangle, IconFolderOpen, IconSparkles } from "@renderer/lib/icons.js";
 
 export function SkillProjectOverview({ refreshKey }: { refreshKey: number }) {
   const { t } = useI18n();
@@ -69,10 +69,7 @@ export function SkillProjectOverview({ refreshKey }: { refreshKey: number }) {
         {loadError}
       </ErrorNote>
     ) : (
-      <div className="flex items-center gap-2 px-2 py-3 text-[0.8571em] text-content-subtle">
-        <IconLoader2 size={13} className="animate-spin" />
-        {t("common.loading")}
-      </div>
+      <LoadingNote label={t("common.loading")} className="px-2 py-3" />
     );
   }
 

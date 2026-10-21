@@ -5,7 +5,7 @@ import { PANEL_MAX_W } from "./panelWidth.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button, ConfirmDialog, ErrorNote, HintLabel, Input, Select, Switch, Tooltip } from "@renderer/components/ui/index.js";
+import { Button, ConfirmDialog, ErrorNote, HintLabel, Input, Select, Spinner, Switch, Tooltip } from "@renderer/components/ui/index.js";
 import {
   IconPlus,
   IconTrash,
@@ -13,7 +13,6 @@ import {
   IconChevronRight,
   IconEye,
   IconEyeOff,
-  IconLoader2,
   IconCheck,
   IconCopy,
   IconKey,
@@ -1494,7 +1493,7 @@ function ClaudeProviderForm({
                     disabled={test.status === "testing"}
                     title={t("settings.customModels.testWithModel")}
                   >
-                    {testingThis ? <IconLoader2 size={12} className="animate-spin" /> : <IconPlugConnected size={12} />}
+                    {testingThis ? <Spinner size="xs" /> : <IconPlugConnected size={12} />}
                   </Button>
                   {/* 展开看这个模型的思考强度档位映射（与 Pi 同一交互）。 */}
                   <Button
@@ -1600,7 +1599,7 @@ function ClaudeProviderForm({
                   onClick={() => void regenerate()}
                 >
                   {regenerating ? (
-                    <IconLoader2 size={13} className="mr-1 animate-spin" />
+                    <Spinner size="xs" className="mr-1" />
                   ) : (
                     <IconPlugConnected size={13} className="mr-1" />
                   )}
@@ -1820,7 +1819,7 @@ function PiProviderForm({
                       title={t("settings.customModels.testWithModel")}
                     >
                       {test.status === "testing" && test.idx === idx
-                        ? <IconLoader2 size={12} className="animate-spin" />
+                        ? <Spinner size="xs" />
                         : <IconPlugConnected size={12} />}
                     </Button>
                     <Button variant="ghost" size={null} type="button" onClick={() => setExpandedModel(expandedModel === idx ? null : idx)} className="rounded p-0.5 text-content-muted hover:bg-surface-hover" title={expandedModel === idx ? t("settings.customModels.collapse") : t("settings.customModels.expandModel")}>

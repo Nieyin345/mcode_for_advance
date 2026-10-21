@@ -36,14 +36,14 @@ export function SettingsSection({
     <section className={cn("space-y-1.5", className)}>
       <div className="flex items-center gap-1.5 px-1">
         {Icon && <Icon size={15} className="shrink-0 text-content-muted" />}
-        <h3 className="text-[0.9286em] font-semibold text-content">
+        <h3 className="text-[length:var(--chat-fs-sm)] font-semibold text-content">
           {title}
         </h3>
         {/* 纯文字说明收进 ⓘ(见 InfoHint);带结构的说明照旧铺出来。 */}
         {typeof desc === "string" && desc !== "" && <InfoHint>{desc}</InfoHint>}
       </div>
       {desc && typeof desc !== "string" && (
-        <p className="px-1 text-[0.7857em] leading-relaxed text-content-subtle">
+        <p className="px-1 text-[length:var(--chat-fs-xxs)] leading-relaxed text-content-subtle">
           {desc}
         </p>
       )}

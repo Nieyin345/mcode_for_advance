@@ -1,8 +1,8 @@
 /** T24: AST-extracted Codex provider form; keep the model state in the parent module. */
 import { useState } from "react";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { Button, HintLabel, Input, Switch } from "@renderer/components/ui/index.js";
-import { IconDownload, IconLoader2, IconPlugConnected, IconTrash } from "@renderer/lib/icons.js";
+import { Button, HintLabel, Input, Spinner, Switch } from "@renderer/components/ui/index.js";
+import { IconDownload, IconPlugConnected, IconTrash } from "@renderer/lib/icons.js";
 import { type TestState, Field, SecretInput, HeadersEditor, EndpointActionRow, ModelListSection, ProviderFormShell, FormActions } from "./CustomModelsPanelParts.js";
 import type { CodexFormState, CodexModelFormState } from "./CustomModelsPanel.js";
 
@@ -117,7 +117,7 @@ export function CodexProviderForm({
                 title={t("settings.customModels.testWithModel")}
               >
                 {test.status === "testing" && test.idx === idx
-                  ? <IconLoader2 size={12} className="animate-spin" />
+                  ? <Spinner size="xs" />
                   : <IconPlugConnected size={12} />}
               </Button>
               <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>

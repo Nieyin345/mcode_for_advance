@@ -44,7 +44,6 @@ import {
 import { useMarketProgress } from "./useMarketProgress.js";
 import {
   IconPuzzle,
-  IconLoader2,
   IconTrash,
   IconAlertTriangle,
   IconChevronRight,
@@ -819,7 +818,7 @@ function HookGrantsSection({ plugin }: { plugin: PluginState }) {
                     data-testid={`hook-authorize-${plugin.name}-${hook.event}`}
                     onClick={() => void authorize(hook)}
                   >
-                    {issuing && <IconLoader2 size={12} className="animate-spin" />}
+                    {issuing && <Spinner size="xs" />}
                     {t("settings.plugins.hookGrants.authorize")}
                   </Button>
                 )}
@@ -892,7 +891,7 @@ function HookGrantsSection({ plugin }: { plugin: PluginState }) {
                     onClick={() => void revoke(g.grantId)}
                   >
                     {revoking ? (
-                      <IconLoader2 size={12} className="animate-spin" />
+                      <Spinner size="xs" />
                     ) : (
                       <IconLock size={12} />
                     )}
@@ -1190,7 +1189,7 @@ function GitInstallForm({
         onClick={() => void submit()}
         disabled={busy || !url.trim()}
       >
-        {busy && <IconLoader2 size={12} className="animate-spin" />}
+        {busy && <Spinner size="xs" />}
         {t("settings.plugins.installGitAction")}
       </Button>
     </>
@@ -1385,13 +1384,9 @@ export function MarketplacePane({
           onClick={() => void refreshAll()}
           disabled={ops.busyKey != null || marketplaces.length === 0}
         >
-          <IconRefresh
-            size={13}
-            className={cn(
-              "text-content-subtle",
-              ops.busyKey?.startsWith("mp:refresh:") && "animate-spin",
-            )}
-          />
+          {ops.busyKey?.startsWith("mp:refresh:")
+            ? <Spinner size="xs" className="text-content-subtle" />
+            : <IconRefresh size={13} className="text-content-subtle" />}
         </Button>
       </div>
 

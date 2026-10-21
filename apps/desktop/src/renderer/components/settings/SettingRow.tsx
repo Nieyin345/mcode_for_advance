@@ -57,13 +57,13 @@ function RowHead({
   return (
     <>
       <div className="flex min-w-0 items-center gap-1.5">
-        <TitleTag {...(isLabel ? { htmlFor } : {})} className="text-[0.8571em] font-medium text-content">
+        <TitleTag {...(isLabel ? { htmlFor } : {})} className="text-[length:var(--chat-fs-xs)] font-medium text-content">
           {title}
         </TitleTag>
         {hasHint && <InfoHint>{hint}</InfoHint>}
         {asHint && <InfoHint>{desc}</InfoHint>}
       </div>
-      {!asHint && desc && <div className="mt-0.5 text-[0.7857em] leading-relaxed text-content-subtle">{desc}</div>}
+      {!asHint && desc && <div className="mt-0.5 text-[length:var(--chat-fs-xxs)] leading-relaxed text-content-subtle">{desc}</div>}
       {descExtra && <div className="mt-0.5">{descExtra}</div>}
     </>
   );

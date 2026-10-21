@@ -489,16 +489,16 @@ export function HooksPanel() {
         >
           {/* 读不出来 ≠ 没执行过。原因与重试(「刷新记录」同一入口)都摆在这一栏里。 */}
           {runsError !== null && (
-            <div className="rounded bg-danger/10 px-1.5 py-1 text-[0.7857em] text-danger" title={runsError}>
-              <div>{t("settings.hooks.runsReadError", { message: runsError })}</div>
-              <Button variant="ghost" size={null}
-                type="button"
-                onClick={() => void loadRuns()}
-                className="mt-0.5 rounded border border-danger/40 px-1.5 py-0.5 hover:bg-danger/10"
-              >
-                {t("common.retry")}
-              </Button>
-            </div>
+            <ErrorNote
+              className="text-[0.7857em]"
+              action={
+                <Button variant="ghost" size="sm" type="button" onClick={() => void loadRuns()}>
+                  {t("common.retry")}
+                </Button>
+              }
+            >
+              {t("settings.hooks.runsReadError", { message: runsError })}
+            </ErrorNote>
           )}
           {runs.map((run) => (
             <RunRow
@@ -519,16 +519,12 @@ export function HooksPanel() {
           empty={t("settings.hooks.auditEmpty")}
         >
           {auditError !== null && (
-            <div className="rounded bg-danger/10 px-1.5 py-1 text-[0.7857em] text-danger" title={auditError}>
-              {t("settings.hooks.auditReadError", { message: auditError })}
-            </div>
+            <ErrorNote className="text-[0.7857em]">{t("settings.hooks.auditReadError", { message: auditError })}</ErrorNote>
           )}
           {/* 整个 `hooks.runs` 都拒绝了:审计这一栏同样拿不到东西 —— 不许画成
               「还没有钩子被执行过」,与左边那一栏共用同一句错误。 */}
           {runsError !== null && auditError === null && (
-            <div className="rounded bg-danger/10 px-1.5 py-1 text-[0.7857em] text-danger" title={runsError}>
-              {t("settings.hooks.auditReadError", { message: runsError })}
-            </div>
+            <ErrorNote className="text-[0.7857em]">{t("settings.hooks.auditReadError", { message: runsError })}</ErrorNote>
           )}
           {audit.map((entry) => (
             <AuditRow key={entry.runId} entry={entry} />
@@ -801,7 +797,7 @@ function TestResult({ run }: { run: HookRun }) {
           <span className="tabular-nums text-content-subtle">exit {run.exitCode}</span>
         )}
       </div>
-      {run.error && <div className="mt-1 text-danger">{run.error}</div>}
+      {run.error && <ErrorNote className="mt-1">{run.error}</ErrorNote>}
       {run.stdout && (
         <pre className="mt-1 max-h-[160px] overflow-auto whitespace-pre-wrap break-all font-mono text-content-muted">
           {run.stdout}
@@ -863,9 +859,7 @@ function RunRow({
       </Button>
       {expanded && hasDetail && (
         <div className="px-1.5 pb-1.5">
-          {run.error && (
-            <div className="text-[0.7143em] leading-relaxed text-danger">{run.error}</div>
-          )}
+          {run.error && <ErrorNote className="text-[0.7143em]">{run.error}</ErrorNote>}
           {run.stdout && (
             <pre className="mt-1 max-h-[140px] overflow-auto whitespace-pre-wrap break-all rounded bg-surface-muted/50 p-1.5 font-mono text-[0.7143em] text-content-muted">
               {run.stdout}

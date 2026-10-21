@@ -555,13 +555,12 @@ function PreflightReport({ preflight }: { preflight: ScenePreflightWire }) {
   return (
     <div>
       {preflight.ok ? (
-        <div className="flex items-center gap-1.5 text-accent">
+        <Badge variant="success">
           <IconCircleCheck size={13} />
           {t("sceneDeploy.preflightOk", { n: preflight.checkedCapabilities })}
-        </div>
+        </Badge>
       ) : (
-        <div className="text-danger">
-          <div className="font-medium">{t("sceneDeploy.preflightMissing")}</div>
+        <ErrorNote title={t("sceneDeploy.preflightMissing")}>
           {preflight.requiredGaps.map((g) => (
             <div key={`req:${g.kind}:${g.id}`} className="font-mono">
               {g.reason === "incompatible"
@@ -569,11 +568,10 @@ function PreflightReport({ preflight }: { preflight: ScenePreflightWire }) {
                 : t("sceneDeploy.gapMissing", { kind: g.kind, id: g.id, detail: g.detail })}
             </div>
           ))}
-        </div>
+        </ErrorNote>
       )}
       {optionalGaps.length > 0 && (
-        <div className="mt-1 text-warning">
-          <div className="font-medium">{t("sceneDeploy.preflightOptional")}</div>
+        <ErrorNote tone="warning" title={t("sceneDeploy.preflightOptional")} className="mt-1">
           {optionalGaps.map((g) => (
             <div key={`opt:${g.kind}:${g.id}`} className="font-mono">
               {g.reason === "incompatible"
@@ -581,7 +579,7 @@ function PreflightReport({ preflight }: { preflight: ScenePreflightWire }) {
                 : t("sceneDeploy.gapMissing", { kind: g.kind, id: g.id, detail: g.detail })}
             </div>
           ))}
-        </div>
+        </ErrorNote>
       )}
     </div>
   );

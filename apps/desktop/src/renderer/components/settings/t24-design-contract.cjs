@@ -154,8 +154,32 @@ if (batch === 'shell') {
   check(presets.includes('<LoadingNote label={t("common.loading")}'), 'skill preset loading uses LoadingNote');
   check(tree.includes('<LoadingNote label={t("common.loading")}'), 'worktree loading uses LoadingNote');
   check(deploy.includes('<ErrorNote className="mt-1">{t("sceneDeploy.stepError"'), 'deployment step failure uses ErrorNote');
+} else if (batch === 'status-core') {
+  let hooks = read('HooksPanel.tsx');
+  const trusted = read('AgentSshTrustPanel.tsx');
+  const models = read('CustomModelsPanel.tsx');
+  const codex = read('CustomModelsCodexForm.tsx');
+  const plugins = read('PluginsPanelParts.tsx');
+  const tools = read('ToolchainSection.tsx');
+  const market = read('SkillMarketView.tsx');
+  if (process.env.T24_MUTATION === 'status-core') hooks = hooks.replace('<ErrorNote className="text-[0.7857em]">{t("settings.hooks.auditReadError", { message: auditError })}</ErrorNote>', '<div>{t("settings.hooks.auditReadError", { message: auditError })}</div>');
+  check(hooks.includes('<ErrorNote className="text-[0.7857em]">{t("settings.hooks.auditReadError", { message: auditError })}</ErrorNote>'), 'hook audit failure uses ErrorNote');
+  check(trusted.includes('<LoadingNote label={t("common.loading")}'), 'SSH loading uses shared LoadingNote');
+  check(models.includes('<Spinner size="xs"'), 'models testing uses Spinner');
+  check(codex.includes('<Spinner size="xs"'), 'split Codex testing uses Spinner');
+  check(plugins.includes('<Spinner size="xs"'), 'plugin hooks use Spinner');
+  check(tools.includes('<Badge variant={state.ok ? "success" : "warning"}'), 'toolchain status uses Badge');
+  check(market.includes('<ErrorNote className="mb-2">'), 'skill market errors use ErrorNote');
+} else if (batch === 'shared-typography') {
+  const header=read('PanelHeader.tsx');
+  const section=read('SettingsSection.tsx');
+  let row=read('SettingRow.tsx');
+  if(process.env.T24_MUTATION==='shared-typography') row=row.replace('text-[length:var(--chat-fs-xs)]', 'text-[0.8571em]');
+  check(header.includes('text-[length:var(--chat-fs-sm)]'), 'panel header consumes shared CDS font token');
+  check(section.includes('text-[length:var(--chat-fs-sm)]'), 'section header consumes shared CDS font token');
+  check(row.includes('text-[length:var(--chat-fs-xs)]'), 'setting row consumes shared CDS font token');
 } else {
-  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions|form-controls|model-split|status-surfaces\n');
+  process.stderr.write('Usage: node t24-design-contract.cjs shell|small|mid|wide|plugins|textarea|skill-buttons|runtime|mcp-lsp|native|large-actions|form-controls|model-split|status-surfaces|status-core|shared-typography\n');
   process.exit(2);
 }
 process.stdout.write(`T24 ${batch} design contract OK\n`);

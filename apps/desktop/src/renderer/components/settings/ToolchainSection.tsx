@@ -25,7 +25,7 @@ import { useCallback, useEffect, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
-import { Button } from "@renderer/components/ui/index.js";
+import { Badge, Button, ErrorNote, LoadingNote, Spinner } from "@renderer/components/ui/index.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { OnlyOfficeConfigCard } from "./OnlyOfficeConfigCard.js";
 import type { ToolchainToolId, ToolchainToolState } from "@contracts/ipc";
@@ -33,7 +33,6 @@ import {
   IconAlertTriangle,
   IconCheck,
   IconDownload,
-  IconLoader2,
   IconPackage,
   IconRefresh,
   IconTrash,
@@ -138,12 +137,9 @@ export function ToolchainSection() {
       desc={t("settings.toolchain.desc")}
     >
       {fatal ? (
-        <div className="px-4 py-6 text-center text-[0.85em] text-content-subtle">{fatal}</div>
+        <ErrorNote className="mx-4 my-3">{fatal}</ErrorNote>
       ) : loading && tools.length === 0 ? (
-        <div className="flex items-center justify-center gap-2 px-4 py-6 text-[0.85em] text-content-subtle">
-          <IconLoader2 size={14} className="animate-spin" />
-          {t("settings.toolchain.checking")}
-        </div>
+        <LoadingNote className="px-4 py-6" label={t("settings.toolchain.checking")} />
       ) : (
         <>
           {tools.map((tool) => (
@@ -216,7 +212,7 @@ function ToolRow({
       <div className="flex items-start gap-2.5">
         <div className="mt-0.5 shrink-0">
           {installing ? (
-            <IconLoader2 size={15} className="animate-spin text-accent" />
+            <Spinner size="sm" className="text-accent" />
           ) : state.ok ? (
             <IconCheck size={15} className="text-success" />
           ) : (
@@ -227,14 +223,9 @@ function ToolRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-[0.8571em] font-medium text-content">{metaLabel}</span>
-            <span
-              className={cn(
-                "shrink-0 rounded px-1 text-[9px] leading-tight",
-                state.ok ? "bg-success/12 text-success" : "bg-warning/12 text-warning",
-              )}
-            >
+            <Badge variant={state.ok ? "success" : "warning"} className="shrink-0 text-[9px]">
               {state.ok ? t("settings.toolchain.ready") : t("settings.toolchain.missing")}
-            </span>
+            </Badge>
           </div>
 
           {/* 细节行:一句用途 + 事实(版本 / 缺什么 / 路径)。缺什么用机器名拼,
@@ -270,17 +261,13 @@ function ToolRow({
           )}
 
           {(actionError || state.lastError) && (
-            <div className="mt-1 text-[0.7857em] leading-relaxed text-danger">
-              {actionError || state.lastError}
-            </div>
+            <ErrorNote className="mt-1">{actionError || state.lastError}</ErrorNote>
           )}
 
           {/* 唯一能找到的 Python 是某个程序自带的(LibreOffice 等)—— 如实提醒,
               别让用户以为这是自己终端里那个 python。见契约 `bundledBy` 的说明。 */}
           {state.bundledBy && (
-            <div className="mt-1 text-[0.7857em] leading-relaxed text-warning/90">
-              {t("settings.toolchain.bundledPython", { name: state.bundledBy })}
-            </div>
+            <ErrorNote tone="warning" className="mt-1">{t("settings.toolchain.bundledPython", { name: state.bundledBy })}</ErrorNote>
           )}
 
           {/* ONLYOFFICE 不是一个 PATH 上的可执行文件而是一套服务,所以它比别的项

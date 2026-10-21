@@ -301,3 +301,13 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 判据 4：完整双包 tsc 在此时被其他并发任务修改的 `genoffice`/`apps/desktop/src/main/document` 与 `packages/contracts` 等文件错误阻断（不是 T24 范围，未改）；无法宣称全局类型检查零错。本任务涉及的 `components/settings/` 和 `components/ui/native-controls` 在本次 tsc 输出筛选中无新增错误。
 - 判据 5：全部已提交批次都记录至少一条「撤回原语→断言红」变异测试。
 - 判据 6：已有 smoke 和限定的状态/回调人工核对，但尚未逐一覆盖 63 屏全部设置项的行为；不能宣称完整功能等价验收。
+
+### 2026-10-21｜批次 15：全 63 可视组件 CDS 依赖闭合、状态收敛与统一排版 token
+
+- 改动：`PanelHeader`、`SettingsSection`、`SettingRow` 文本梯度改为 `--chat-fs-sm/xs/xxs`；`AgentSshTrustPanel`、`OnlyOfficeConfigCard`、`ToolchainSection`、`CustomModelsPanel`、`CustomModelsCodexForm`、`SkillsPanelParts`、`PluginsPanelParts`、`SkillProjectOverview` 的手写等待图标替换为 `Spinner`/`LoadingNote`，并把相关错误/告警/状态改为 `ErrorNote`/`Badge`；`HooksPanel` 执行记录和审计读失败自绘错误改为 `ErrorNote` 且保留重试动作；`SkillMarketView`、`McpMarketView` 市场诊断和敏感参数提示用 `ErrorNote`/`Badge`；`SceneDeployPanel` 预检缺失和非阻断缺口用 `ErrorNote`，通过状态用 `Badge`；`EngineCapabilityMatrix` 策略禁用状态改为 `Badge`。只改设置页与 UI 原语的调用，不碰主进程或 contracts。
+- 结构核对：增加 `t24-token-graph.cjs`，按 TypeScript import/export 依赖检查每个视觉组件是否直接或经 `ui/` 原语消费 `--radius-*`/`--shadow-*`/`--chat-fs-*`；当前 **63/63 可视 TSX 通过**，目录另一个 `useMarketProgress.tsx` 为非渲染 hook，不计屏幕；`t24-control-inventory.cjs` 静态 AST 扫描根设置目录剩余原生 JSX `button/input/select/textarea` 为 **0**（在 UI 原语内部保留真实原生 HTML 行为）。该证明针对设计 token 的可达性，并非逐屏像素对齐截图。
+- 原语：复用 `Spinner`/`LoadingNote`/`ErrorNote`/`Badge`/现有 Card；本批没有扩展原语，不改变任何设置业务 API/数据流。功能 bug：无新发现。
+- 回归：`node apps/desktop/scripts/run-smokes.mjs custom-models-ui-smoke skills-management-ui-smoke plugins-ui-smoke mcp-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke frontend-smoke`：**8/8 PASS**，日志 `apps/desktop/.tmp/smoke-runs/1792566981742-4948-Cs9NeG`；`npx tsc --noEmit -p packages/contracts/tsconfig.json`：PASS；`apps/desktop` 全包 tsc 的最近一次独立检查仅有 1 条范围外错误 `apps/desktop/scripts/document-view-renderer-smoke/main.ts:564 TS2353`（`slidesNative` 字段不在契约），本批 settings/ui 改动 0 条错误，未越界修。
+- 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs status-core`、`shared-typography` 均 PASS；`set T24_MUTATION=status-core&& node ... status-core` 撤回 Hooks audit 的 ErrorNote，以及 `set T24_MUTATION=shared-typography&& node ... shared-typography` 撤回 SettingRow CDS 字体 token 后均预期 exit=1（红例）。
+- 焦点专项：本批以后的 `settings-focus-electron-smoke` 两次单跑/混跑均在 Electron 系统窗口丢失 OS focus 处中断（probe 报 `Focus U1 infrastructure interruption`，不是应用焦点圈逃逸）；批次 14 的相同套件此前 9/9 全绿。不将当前异常当作业务 bug，也不能将判据 3 的当次运行报成全绿。
+- 判据当前限制：63/63 **设计 token 依赖**达标，但 `workflows/` 等其他子视图仍可见部分自绘提示，判据 2 尚未完全证明；全包 typecheck 判据 4 受范围外错误阻塞；判据 6 无法宣称逐一手动覆盖全部 63 屏的实际账号/联网/磁盘副作用操作，已记录仅旧 smoke 与局部事件/回调核对。
