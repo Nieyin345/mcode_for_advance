@@ -48,3 +48,39 @@
 ## 结果回写区
 
 <!-- 只追加：提交 SHA、旧红→新绿、命令/输出、patch stack tree hash、license sources/hashes、变异/还原与 remaining。 -->
+
+## T87 结果回写（2026-10-22）
+
+### 提交与上游 lineage
+- 实现提交 SHA：`fe6ee970eae57e64e0438994e1ac790795b735c0`。
+- lock schema 升为 v2，固定上游基线 `cbec600ace9c930b2646b6739cf6df3741bb9d6a`、首条审查补丁 `73ba918083b5e2bedff7633925c3d7f625e04449`、12 个 patch 的顺序/提交身份/父提交/SHA-256，以及最终 HEAD `355e667353ad90da7d0b3c6823fad0f525b729c3` 和 tree `2b6c91f23922a8c5a915d6e351dfbf19db6de082`。
+- 新 Smoke 从 `73ba9180` 临时 checkout 重放 12 个 patch；12 个中间 tree 均逐一匹配对应上游提交，最终 tree 与当前干净 checkout 完全一致：`2b6c91f23922a8c5a915d6e351dfbf19db6de082`。真实 `genoffice/**` 和原始 `THIRD-PARTY-NOTICES.txt` 未修改。
+
+### 测试结果
+- `node apps/desktop/scripts/t87-genoffice-provenance-license-smoke/main.cjs`：**70/70 PASS**。覆盖缺失/重排/篡改 patch、额外提交、tracked/untracked dirty、8 份可用许可证逐份删除/篡改及字节/hash 还原、错误版本映射、strict staging 与 afterPack fail-closed。
+- `node apps/desktop/scripts/genoffice-editors-release-smoke/main.cjs`：**25/25 PASS**。
+- `node apps/desktop/scripts/t76-vendor-release-integrity-smoke/main.cjs`：**24/24 PASS**。
+- 对 `verify-genoffice-upstream.cjs`、`stage-genoffice-resources.cjs`、`verify-genoffice-editors-after-pack.cjs`、T87 Smoke 执行 `node --check`：全部 PASS。
+- `pnpm --filter @mcode/desktop typecheck`：PASS；`pnpm --filter @mcode/contracts typecheck`：PASS。
+- `MCODE_INCLUDE_GENOFFICE_BUNDLE=1 node apps/desktop/build/verify-genoffice-upstream.cjs`：PASS。
+- 严格 staging 命令以 exit 1 拒绝发行（预期）：它明确列出下述 10 项缺失全文；未运行真实 installer，也未宣称 Win/macOS/Linux U1 通过。
+
+### 许可证来源与 SHA-256
+来源清单：`apps/desktop/build/vendor-licenses/genoffice/manifest.json`，SHA-256 `bbb9f634477e715bbf1f7a47eecc89e26560aa951c6f283f8b7d1bb6f018f165`。18 个精确 package@version 的 npm tarball 均从官方 registry 下载并通过各自 `sha512-` SRI 校验；清单固定包名、版本、SPDX、上游 revision/URL、tarball URL/SRI、全文 SHA-256 或明确的缺失证据。
+
+已追溯并收录 8 份完整上游许可证文本：
+- `@napi-rs/canvas-win32-x64-msvc@1.0.3`：上游 commit `2aa648fb4ed83fbe87af77922ecf89153184f8b5` 的 `LICENSE`；SHA-256 `8802fecf9da4367bc23bcf20b21cc143785fc6c92b152f3fa7fbe6ce08d344d6`。
+- `@nodable/entities@3.0.0`：上游 commit `d2070d76a8ba07e6c7fa142caeb51ffd756e47eb` 的 `LICENSE`；SHA-256 `750cb3fb6362804957ef52caaf9b5c824015be44d494637330d7cd8834d31d40`。
+- `@univerjs/protocol@0.25.1`：上游 tag `v0.25.1` / commit `c9c8607471013f110b7a401d79bfb248e59faa1c` 的 Apache-2.0 `LICENSE`；SHA-256 `a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9`。
+- `emoji-regex@8.0.0`：上游 commit `a9f2e514523d4c0931974aff5059052da10c52c5` 的 `LICENSE-MIT.txt`；SHA-256 `483acb265f182907d1caf6cff9c16c96f31325ed23792832cc5d8b12d5f88c8a`。
+- `franc-min@6.2.0`：上游 commit `3f9f0b51a96c5df32a407dad865a3011ac0fa2d1` 的 `license`；SHA-256 `f5e0c5c44706ddda7ac2f9096f848222f1e0e90f88643955041c2735be84592b`。
+- `is-potential-custom-element-name@1.0.1`：上游 commit `e24778654416e14cfcf259253b916e32e53aaa75` 的 `LICENSE-MIT.txt`；SHA-256 `483acb265f182907d1caf6cff9c16c96f31325ed23792832cc5d8b12d5f88c8a`。
+- `punycode@2.3.1`：上游 commit `9e1b2cda98d215d3a73fcbfe93c62e021f4ba768` 的 `LICENSE-MIT.txt`；SHA-256 `483acb265f182907d1caf6cff9c16c96f31325ed23792832cc5d8b12d5f88c8a`。
+- `saxes@6.0.0`：上游 commit `211fa0ebec9b628affc09219199639887174bfc3` 的 `LICENSE`；SHA-256 `0fac2374380621b22e6b50451057721a9c52935b02d16d106a9f04897f061d0e`。
+
+仍缺准确版本完整全文的 10 项：`@electron-internal/extract-zip@1.0.5`、`fastdom@1.0.12`、`hash.js@1.1.7`、`isarray@1.0.0`、`lazy-val@1.0.5`、`ot-json1@1.0.2`、`ot-text-unicode@4.0.0`、`react-remove-scroll-bar@2.3.8`、`strictdom@1.0.1`、`unicount@1.1.0`。这些版本的完整 npm tarball 均无可用的完整法务文本；其中 `fastdom`、`ot-json1`、`ot-text-unicode`、`react-remove-scroll-bar` 的发布 `gitHead` 目前无法从上游已公告 refs 取回，其余对应源码树没有跟踪完整 license 文件。所缺证据是这些准确发布版本/commit 的上游全文或可验证的源归档；没有从 SPDX 标签、README 或相似版本推定，也没有写 placeholder。
+
+### 剩余风险 / 验收判定
+- 验收 1、3、4：通过；patch lineage 可复现，所有负例拒绝，T87/T76/GenOffice smoke 与双包 typecheck 通过。
+- **验收 2 未达成**：只有 8/18 项具备可追溯完整全文，strict bundle gate 按要求 fail-closed；18/18 notice 和严格发行包尚未完成。
+- 原始上游 notice 保持原样；普通开发包仍可 opt-out。待补齐上述 10 项准确来源全文后，才能生成并验证最终 18/18 notice。
