@@ -3270,3 +3270,24 @@ html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
    semantic +/- row, not a second background for the entire diff line. */
 .diff-add .diff-inline-change { background: rgb(var(--diff-add-bg) / .24); border-radius: 2px; }
 .diff-del .diff-inline-change { background: rgb(var(--diff-del-bg) / .24); border-radius: 2px; }
+
+/* T17 DraggableSessionList REA: drop indicator is a 2px insertion rail;
+   dragged row has -1.5deg tilt and soft brand hairline from StreamCard.
+   4px pointer deadzone is configured in dnd-kit PointerSensor. */
+[data-stream-session-row][data-session-drop]::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 2px;
+  background: rgb(var(--accent));
+  box-shadow: 0 0 6px rgb(var(--accent) / .22);
+  z-index: 30;
+  pointer-events: none;
+}
+[data-stream-session-row][data-session-drop="before"]::after { top: -2px; }
+[data-stream-session-row][data-session-drop="after"]::after { bottom: -2px; }
+@media (prefers-reduced-motion: reduce) {
+  [data-stream-session-row][data-session-drop]::after { transition: none; }
+}

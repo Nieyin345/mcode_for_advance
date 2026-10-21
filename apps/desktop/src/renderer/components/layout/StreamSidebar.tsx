@@ -28,6 +28,10 @@
  */
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
+import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent, type DragMoveEvent } from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { keyboardMoveSidebarSession, moveSidebarSession, sortSessionsForSidebar, type SessionDragOrder } from "./sessionDragOrder.js";
 import {
   IconArchive,
   IconInbox,
@@ -181,6 +185,52 @@ function StreamSidebarBase() {
   const archiveSession = useSessionStore((s) => s.archiveSession);
   const deleteSession = useSessionStore((s) => s.deleteSession);
   const setSessionPinned = useSessionStore((s) => s.setSessionPinned);
+  // REA DraggableSessionList: project-native pin API remains authoritative;
+  // relative ordering stays renderer-side, persisted by stable session ids.
+  const [sessionOrder, setSessionOrder] = useState<SessionDragOrder>(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("mcode.stream.sessionOrder.v1") ?? "null");
+      if (saved && Array.isArray(saved.pinned) && Array.isArray(saved.recent)) {
+        return { pinned: saved.pinned.filter((id: unknown) => typeof id === "string"),
+          recent: saved.recent.filter((id: unknown) => typeof id === "string") };
+      }
+    } catch { /* disabled storage (e.g. privacy mode): still work in memory */ }
+    return { pinned: [], recent: [] };
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem("mcode.stream.sessionOrder.v1", JSON.stringify(sessionOrder)); }
+    catch { /* non-persistent mode */ }
+  }, [sessionOrder]);
+  const visibleOrderRef = useRef<SessionDragOrder>({ pinned: [], recent: [] });
+  const [dropTarget, setDropTarget] = useState<{ id: string; after: boolean } | null>(null);
+  const sessionDragSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+  const commitVisibleOrder = useCallback((next: SessionDragOrder) => {
+    const visible = new Set([...visibleOrderRef.current.pinned, ...visibleOrderRef.current.recent]);
+    setSessionOrder((prev) => ({
+      pinned: [...next.pinned, ...prev.pinned.filter((id) => !visible.has(id))],
+      recent: [...next.recent, ...prev.recent.filter((id) => !visible.has(id))],
+    }));
+  }, []);
+  const onSessionKeyboardMove = useCallback((id: string, delta: -1 | 1) => {
+    commitVisibleOrder(keyboardMoveSidebarSession(visibleOrderRef.current, id, delta));
+  }, [commitVisibleOrder]);
+  const onSessionDragMove = useCallback((event: DragMoveEvent) => {
+    if (!event.over) { setDropTarget(null); return; }
+    const moving = event.active.rect.current.translated;
+    const midpoint = event.over.rect.top + event.over.rect.height / 2;
+    setDropTarget({ id: String(event.over.id), after: !!moving && moving.top + moving.height / 2 > midpoint });
+  }, []);
+  const onSessionDragEnd = useCallback((event: DragEndEvent) => {
+    if (event.over) {
+      const targetId = String(event.over.id);
+      const activeId = String(event.active.id);
+      const changed = moveSidebarSession(visibleOrderRef.current, activeId, targetId,
+        dropTarget?.id === targetId && dropTarget.after);
+      commitVisibleOrder(changed);
+      if (changed.changedPin) void setSessionPinned(activeId, changed.toPinned);
+    }
+    setDropTarget(null);
+  }, [commitVisibleOrder, dropTarget, setSessionPinned]);
   const forkSession = useSessionStore((s) => s.forkSession);
   const renameSession = useSessionStore((s) => s.renameSession);
   const renameWorktree = useSessionStore((s) => s.renameWorktree);
@@ -504,6 +554,8 @@ function StreamSidebarBase() {
           onDelete={() => setConfirmDelete({ kind: "session", id: s.id, title: s.title })}
           onContext={(x, y) => setCtxMenu({ session: s, x, y })}
           registerNode={registerNode}
+          dropPosition={dropTarget?.id === s.id ? (dropTarget.after ? "after" : "before") : null}
+          onKeyboardMove={(delta) => onSessionKeyboardMove(s.id, delta)}
         />
       );
     },
@@ -512,7 +564,7 @@ function StreamSidebarBase() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [projectById, projectColors, nowTick, activeSessionId, runningBySession, runningTurnStartedAt,
       pendingQuestionBySession, turnErrorBySession, unreadBySession, worktreeOf, localBranchOf,
-      openTab, startSession, setSessionPinned, archiveSession, registerNode],
+      openTab, startSession, setSessionPinned, archiveSession, registerNode, dropTarget, onSessionKeyboardMove],
   );
 
   const liveSessions = useMemo(
@@ -523,6 +575,9 @@ function StreamSidebarBase() {
     () => pinnedSessions.filter(scopeMatches),
     [pinnedSessions, scopeMatches],
   );
+  const orderedPinned = useMemo(() => sortSessionsForSidebar(pinnedList, sessionOrder.pinned), [pinnedList, sessionOrder.pinned]);
+  const orderedLive = useMemo(() => sortSessionsForSidebar(liveSessions, sessionOrder.recent), [liveSessions, sessionOrder.recent]);
+  visibleOrderRef.current = { pinned: orderedPinned.map((s) => s.id), recent: orderedLive.map((s) => s.id) };
 
   const { effective: effectiveTheme } = useTheme();
   const toggleTheme = () => {
@@ -746,10 +801,18 @@ function StreamSidebarBase() {
             {t("layout.stream.empty")}
           </div>
         ) : (
-          <ul className="space-y-0.5">
-            {pinnedList.map((s) => renderCard(s, { pinned: true }))}
-            {pinnedList.length > 0 && <div className="mx-2.5 my-1.5 h-px bg-edge/60" aria-hidden />}
-            {liveSessions.map((s) => renderCard(s, { pinned: false }))}
+          <DndContext
+            sensors={sessionDragSensors}
+            collisionDetection={closestCenter}
+            onDragMove={onSessionDragMove}
+            onDragEnd={onSessionDragEnd}
+            onDragCancel={() => setDropTarget(null)}
+          >
+            <SortableContext items={[...orderedPinned, ...orderedLive].map((s) => s.id)} strategy={verticalListSortingStrategy}>
+              <ul className="space-y-0.5">
+            {orderedPinned.map((s) => renderCard(s, { pinned: true }))}
+            {orderedPinned.length > 0 && <li className="mx-2.5 my-1.5 h-px bg-edge/60" aria-hidden />}
+            {orderedLive.map((s) => renderCard(s, { pinned: false }))}
             {streamHasMore && (
               <li>
                 <button
@@ -768,7 +831,9 @@ function StreamSidebarBase() {
                 </button>
               </li>
             )}
-          </ul>
+              </ul>
+            </SortableContext>
+          </DndContext>
         )}
 
         {/* Archive shelf — collapsed by default (the tree's bin contents). */}
@@ -989,7 +1054,7 @@ export const StreamSidebar = memo(StreamSidebarBase);
 function StreamCard({
   session, projectName, projectColor, status, now, active, pinned,
   worktreeBranch, worktreeUnmerged, localBranch, onSelect, onNewSession, onTogglePin, onArchive, onDelete,
-  onContext, registerNode,
+  onContext, registerNode, dropPosition, onKeyboardMove,
 }: {
   session: Session;
   projectName: string;
@@ -1015,7 +1080,10 @@ function StreamCard({
   onDelete: () => void;
   onContext: (x: number, y: number) => void;
   registerNode: (id: string, el: HTMLLIElement | null) => void;
+  dropPosition?: "before" | "after" | null;
+  onKeyboardMove?: (delta: -1 | 1) => void;
 }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: session.id });
   const { t } = useI18n();
   const [pendingConfirm, setPendingConfirm] = useState<null | "archive" | "delete">(null);
   const [hovered, setHovered] = useState(false);
@@ -1081,13 +1149,29 @@ function StreamCard({
 
   return (
     <li
-      ref={(el) => registerNode(session.id, el)}
+      ref={(el) => { setNodeRef(el); registerNode(session.id, el); }}
+      {...attributes}
+      {...listeners}
       data-stream-session-row=""
+      data-session-drop={dropPosition || undefined}
+      style={{
+        transform: `${CSS.Transform.toString(transform) ?? ""}${isDragging ? " rotate(-1.5deg)" : ""}`.trim() || undefined,
+        transition,
+        boxShadow: isDragging ? "0 10px 24px rgb(var(--content) / .14), 0 0 0 1px rgb(var(--accent) / .5)" : undefined,
+      }}
       tabIndex={0}
       aria-current={active ? "page" : undefined}
       onClick={() => { setPendingConfirm(null); onSelect(); }}
       onKeyDown={(e) => {
-        if (e.target !== e.currentTarget || e.nativeEvent.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+        // REA Alt+Up/Down reorder (no pointer required). Ignore keystrokes
+        // originating from card action buttons.
+        if (e.target !== e.currentTarget || e.nativeEvent.isComposing || e.ctrlKey || e.metaKey) return;
+        if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+          e.preventDefault();
+          onKeyboardMove?.(e.key === "ArrowUp" ? -1 : 1);
+          return;
+        }
+        if (e.altKey) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           setPendingConfirm(null);
@@ -1115,6 +1199,7 @@ function StreamCard({
           ? "bg-surface-hover text-content"
           : "text-content-muted hover:bg-surface-hover/60",
         recede && "opacity-75 transition-opacity hover:opacity-100",
+        isDragging && "relative z-20 bg-surface opacity-90 backdrop-blur-sm",
       )}
     >
       {active && (
