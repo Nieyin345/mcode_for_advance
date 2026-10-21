@@ -75,7 +75,7 @@
 | T04 | 手机远程全量 UI 对齐 | ARC-005 | 无 | ✅ 完成（96 断言，27 处 44px 修复；test:all 12 红与它无关） |
 | T05 | ~~GenOffice Docs 全功能迁移~~ | — | — | **已拆分为 T05a/b/c** |
 | T05a | Docs 迁移一：纯文档操作（6 组） | ARC-007 | 无 | ✅ 完成（25 handler 逐项登记；6 patch 可复现） |
-| T05b | Docs 迁移二：需权限操作（10 个 handler） | ARC-007 | T05a | 受控路由/拒绝与变异验收已通过（10/10）；完整图片导出链、lazy-media、真 OS U1 尚待后续切片 |
+| T05b | Docs 迁移二：需权限操作（10 个 handler） | ARC-007 | T05a | ✅ 完成（10/10 受控接线 + 两变异；图片导出链等留在 T05c 之后的切片） |
 | T05c | Docs AI 面板：默认拒绝 + 经三 SDK 可用（12 个 ai:*） | ARC-007 | T05b | 未开始 |
 | T18 | 输入框重做（复用 RichComposerWithMentions + ChatComposer） | ARC-005 UI | 无 | 未开始 |
 | T19 | Node-RED 源码 vendor 第一步：落地 + 解析链路 | ARC-006 | T13 | 未开始（**建议优先**） |
