@@ -125,8 +125,13 @@ export function FileEditor({
   // viewModePref 都读它。放在后面会在首次渲染抛 TDZ（"Cannot access 'pid'
   // before initialization"），markdown-mode-smoke 的沙箱正是这样抓到的。
   const pid = useSessionStore((s) => s.activeProjectId);
-  const genoffice = useRpc(() => api.document.capabilities(), [], { enabled: office, toastOnError: false });
+  const nativeViewCandidate = markdown || isPdfFile(filePath) || /\.html?$/i.test(filePath);
+  const genoffice = useRpc(() => api.document.capabilities(), [], { enabled: office || nativeViewCandidate, toastOnError: false });
   const genofficeReady = genoffice.data?.cli.available === true;
+  const nativeViewReady = genofficeReady && (office ||
+    (isPdfFile(filePath) && genoffice.data?.hosts?.pdf === true) ||
+    (markdown && genoffice.data?.hosts?.markdown === true) ||
+    (/\.html?$/i.test(filePath) && genoffice.data?.hosts?.html === true));
   const viewModePref = useSessionStore((s) =>
     pid ? s.ideFileViewModeByProject[pid]?.[filePath] : undefined,
   );
@@ -136,7 +141,7 @@ export function FileEditor({
    * 取代：结构化视图无宿主也能用（诊断/回退面），可视化视图依赖 GenOffice 编辑器页
    * 的构建产物。两个偏好都只经工具栏显式进入，默认档一个字没动。
    */
-  const useGenofficeView = office && genofficeReady && viewModePref === "genoffice-view";
+  const useGenofficeView = nativeViewReady && viewModePref === "genoffice-view";
   const documentDocked = useSessionStore((s) => s.paneLayout?.placements?.some(p =>
     p.content?.kind === "document" && p.content.documentId === filePath));
   const defaultMode: FileViewMode = markdown || office
@@ -218,7 +223,7 @@ export function FileEditor({
           setViewMode(filePath, useGenoffice ? "wysiwyg" : "genoffice")
         }
         genofficeViewActive={useGenofficeView}
-        canUseGenofficeView={office && genofficeReady}
+        canUseGenofficeView={nativeViewReady}
         onToggleGenofficeView={() =>
           setViewMode(filePath, useGenofficeView ? "wysiwyg" : "genoffice-view")
         }

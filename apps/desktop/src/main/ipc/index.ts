@@ -19,6 +19,8 @@ import { docsAiPorts } from "@main/document/docsAiPorts.js";
 // slidesVendorModules 被别名到 stub， VendorSlidesExecutor.create() 返回 null。
 import { VendorSlidesExecutor } from "@main/document/slidesExecutor.js";
 import { slidesBridge } from "@main/document/slidesBridge.js";
+import { configureGenofficeNativeViews, makeGenofficeNativeView, nativeHostStatus } from "@main/document/genofficeViewFactories.js";
+import { registerGenofficeViewAiIpc } from "@main/document/genofficeViewAiVendor.js";
 import { DocumentViewCredentialBroker, readEngineAdminToken } from "@main/document/documentViewCredentialBroker.js";
 import { EngineNodeRegistry } from "@main/workflowEngines/engineNodeRegistry.js";
 import { ensureEngineNodeReady } from "@main/workflowEngines/engineNodeReadiness.js";
@@ -139,6 +141,19 @@ export function registerIpcHandlers(): void {
   registerProjectInitHandlers(ipc);
   registerSceneHandlers(ipc);
   registerDocumentHandlers(ipc);
+  // T28: choose the actual upstream factory only after resource validation.
+  configureGenofficeNativeViews(resolveGenofficeCliPath(documentRepoRoot()));
+  documentViewHost.setVendorViewFactory(
+    Object.values(nativeHostStatus()).some(Boolean) ? makeGenofficeNativeView : null,
+    (p) => findContainingWorkspaceRoot(p) !== null,
+  );
+  if (Object.values(nativeHostStatus()).some(Boolean)) {
+    // AI never trusts a renderer-provided project, file path, engine, or session.
+    registerGenofficeViewAiIpc(ipcMain, (sender) => {
+      const context = documentViewHost.vendorAiContextForSender(sender);
+      return context ? { context, ports: docsAiPorts } : null;
+    });
+  }
   // 【ARC-007】受控文档视图宿主(GenOffice 编辑器页的 WebContentsView)。
   // 与 `document.*` 区别:那条是 CLI 读写能力,这条是**视图生命周期**;
   // 宿主单例由 `main/index.ts` 的退出路径 `dispose()`。

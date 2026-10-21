@@ -85,7 +85,9 @@ export const DocViewOpenSchema = z.object({
    *  `slidesBridge` 的执行器构造，页面**不接触任意路径**。
    *
    *  省略 = 普通文档视图（docs 语义），现有调用方行为不变。 */
-  editor: z.enum(["slides"]).optional(),
+  editor: z.enum(["slides", "pdf", "markdown", "html"]).optional(),
+  /** Vendor factory 的初始路径，只给 pdf/markdown/html；主进程先过物理工作区围栏。 */
+  filePath: z.string().min(1).max(4096).optional(),
   /** T05c: the Mcode shell's selected conversation at view creation; never
    * accepted as an approval grant or a provider override. Main validates
    * this session against the actual opened document's workspace. */

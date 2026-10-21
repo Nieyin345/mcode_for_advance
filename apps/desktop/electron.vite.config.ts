@@ -48,6 +48,8 @@ function slidesVendorAliases(): Array<{ find: string; replacement: string }> {
     { find: "@genoffice/pptx-engine/custgeom", replacement: pkg("pptx-engine", "custgeom.ts") },
     { find: "@genoffice/pptx-engine/background-promote", replacement: pkg("pptx-engine", "background-promote.ts") },
     { find: "@genoffice/docx-engine/math", replacement: pkg("docx-engine", "math.ts") },
+    { find: "@genoffice/docx-engine/lazy-media", replacement: pkg("docx-engine", "lazy-media.ts") },
+    { find: "@genoffice/docx-engine/zip-splice", replacement: pkg("docx-engine", "zip-splice.ts") },
     { find: "@genoffice/agent-core/redact-range", replacement: pkg("agent-core", "redact-range.ts") },
     { find: "@genoffice/pptx-engine", replacement: pkg("pptx-engine", "index.ts") },
     { find: "@genoffice/pptx-render", replacement: pkg("pptx-render", "index.ts") },
@@ -235,6 +237,19 @@ export default defineConfig({
             : resolve("src/main/document/docsVendorIpc.ts"),
         },
         {
+          find: /^@main\/document\/genofficeViewAiVendor\.js$/,
+          replacement: existsSync(resolve("../../genoffice/apps/pdf/src/main/mcode-view-ai.ts"))
+            ? resolve("src/main/document/genofficeViewAiVendor.ts")
+            : resolve("src/main/document/genofficeViewAiVendorStub.ts"),
+        },
+        {
+          find: /^@main\/document\/genofficeNativeVendor\.js$/,
+          replacement: ["pdf", "markdown", "html"].every(kind =>
+            existsSync(resolve("../../genoffice/apps", kind, "src/main", `${kind}-main.ts`)))
+            ? resolve("src/main/document/genofficeNativeVendor.ts")
+            : resolve("src/main/document/genofficeNativeVendorStub.ts"),
+        },
+        {
           find: /^@main\/document\/slidesVendorModules\.js$/,
           replacement: existsSync(resolve("../../genoffice/packages/pptx-engine/package.json"))
             ? resolve("src/main/document/slidesVendorModules.ts")
@@ -277,7 +292,7 @@ export default defineConfig({
           // ARC-007: bundle the vendor's own sandboxed Docs view preload.
           // genoffice/ is a separate ignored Git clone. Missing source must
           // retain the old restricted Mcode stub rather than enabling IPC.
-          find: /^@main\\/document\\/docsVendorPreload\\.js$/,
+          find: /^@main\/document\/docsVendorPreload\.js$/,
           replacement: existsSync(resolve("../../genoffice/apps/docs/src/preload/mcode-view.ts"))
             ? resolve("../../genoffice/apps/docs/src/preload/mcode-view.ts")
             : resolve("src/main/document/docsVendorPreload.ts"),

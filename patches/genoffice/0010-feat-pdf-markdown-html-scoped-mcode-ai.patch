@@ -1,0 +1,223 @@
+From 9959e731e650f9eb51bf19937df2e07e967fe244 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Wed, 21 Oct 2026 13:13:24 +0800
+Subject: [PATCH] feat(pdf): bridge native view AI through Mcode session
+
+---
+ apps/pdf/src/main/mcode-view-ai.ts | 207 +++++++++++++++++++++++++++++
+ 1 file changed, 207 insertions(+)
+ create mode 100644 apps/pdf/src/main/mcode-view-ai.ts
+
+diff --git a/apps/pdf/src/main/mcode-view-ai.ts b/apps/pdf/src/main/mcode-view-ai.ts
+new file mode 100644
+index 0000000..bdf1c4b
+--- /dev/null
++++ b/apps/pdf/src/main/mcode-view-ai.ts
+@@ -0,0 +1,207 @@
++/**
++ * T05c: host-owned GenOffice AI channel boundary. No import of @genoffice/ai-provider
++ * or cloud account state, and no standalone ai:* registration in Mcode.
++ * Every call resolves a live sender and Mcode-selected session at invocation.
++ */
++import type { IpcMain, IpcMainInvokeEvent } from 'electron'
++
++export type ViewAiChunk = {
++  requestId: string
++  type: 'delta' | 'reasoning' | 'done' | 'error' | 'ping'
++  text?: string
++  error?: string
++  stopReason?: string
++}
++export type ViewAiContext = { sessionId: string; filePath: string }
++export type ViewAiRequest = {
++  requestId: string
++  system?: string
++  messages?: unknown
++  user?: string
++  tools?: unknown
++  context: ViewAiContext
++}
++export interface ViewAiPorts {
++  describe(context: ViewAiContext): { ok: true; provider: string; model: string } | { ok: false; error: string }
++  confirm(context: ViewAiContext, dangerous: boolean): Promise<boolean>
++  run(request: ViewAiRequest, onChunk: (chunk: ViewAiChunk) => void, signal: AbortSignal): Promise<void>
++}
++
++const prefix = 'ai:'
++export const MCODE_VIEW_AI_HANDLERS = [
++  'get-settings', 'set-settings', 'open-model-settings', 'stream', 'stream-cancel', 'chat',
++  'codex-models', 'custom-models', 'gsk-login',
++  'web-search', 'image-search', 'media-test', 'search-test',
++  // Two extra upstream endpoints omitted by the original task's 12-item table:
++  'gsk-status', 'fetch-image',
++] as const
++export const MCODE_VIEW_AI_EVENT = prefix + 'stream-chunk'
++const UNAVAILABLE = '请通过 Mcode 中已选择的 Claude / Pi / Codex 引擎使用文档 AI；GenOffice 云账户和云 API 未连接'
++const reject = (reason = UNAVAILABLE) => ({ ok: false as const, error: reason })
++
++interface Scoped {
++  context: ViewAiContext
++  ports: ViewAiPorts
++}
++type Owner = (sender: unknown) => Scoped | null
++
++function validRequestId(raw: unknown): raw is string {
++  return typeof raw === 'string' && raw.length >= 1 && raw.length <= 120 &&
++    /^[A-Za-z0-9_.:-]+$/.test(raw)
++}
++function limitedRequest(raw: unknown, context: ViewAiContext): ViewAiRequest | null {
++  if (!raw || typeof raw !== 'object') return null
++  const input = raw as Record<string, unknown>
++  if (!validRequestId(input.requestId) ||
++      (input.system !== undefined && (typeof input.system !== 'string' || input.system.length > 100_000)) ||
++      !Array.isArray(input.messages) || input.messages.length > 100 ||
++      (input.tools !== undefined && (!Array.isArray(input.tools) || input.tools.length > 100))) return null
++  return {
++    requestId: input.requestId,
++    system: input.system as string | undefined,
++    messages: input.messages,
++    tools: input.tools,
++    // Ignore request.sessionId, provider, settings and arbitrary cwd: those
++    // are not authority to select credentials/provider/workspace.
++    context,
++  }
++}
++
++export function registerViewAiIpc(
++  ipc: Pick<IpcMain, 'handle' | 'removeHandler'>,
++  scoped: Owner,
++): () => void {
++  const running = new Map<number, Map<string, AbortController>>()
++  const listening = new WeakSet<object>()
++  const authorized = (event: IpcMainInvokeEvent): Scoped | null => {
++    try {
++      const candidate = scoped(event.sender)
++      if (!candidate || !candidate.ports.describe(candidate.context).ok) return null
++      if (!listening.has(event.sender)) {
++        listening.add(event.sender)
++        event.sender.once('destroyed', () => {
++          const mine = running.get(event.sender.id)
++          for (const controller of mine?.values() ?? []) controller.abort()
++          running.delete(event.sender.id)
++        })
++      }
++      return candidate
++    } catch { return null }
++  }
++  const channel = (name: typeof MCODE_VIEW_AI_HANDLERS[number], fn:
++    (event: IpcMainInvokeEvent, authority: Scoped | null, ...args: unknown[]) => unknown): void => {
++    ipc.handle(prefix + name, (event, ...args) => fn(event, authorized(event), ...args))
++  }
++  const stream = async (
++    event: IpcMainInvokeEvent, authority: Scoped | null, raw: unknown,
++    sink?: (chunk: ViewAiChunk) => void,
++  ): Promise<void> => {
++    const send = (chunk: ViewAiChunk) => {
++      if (event.sender.isDestroyed?.() !== true) {
++        if (sink) sink(chunk)
++        else event.sender.send(MCODE_VIEW_AI_EVENT, chunk)
++      }
++    }
++    const requestId = (raw && typeof raw === 'object' && 'requestId' in raw)
++      ? (raw as { requestId?: unknown }).requestId : undefined
++    if (!validRequestId(requestId)) {
++      send({ requestId: 'invalid-request', type: 'error', error: '文档 AI 请求缺少有效 requestId' })
++      return
++    }
++    if (!authority) {
++      send({ requestId, type: 'error', error: UNAVAILABLE })
++      return
++    }
++    const request = limitedRequest(raw, authority.context)
++    if (!request) {
++      send({ requestId, type: 'error', error: '无效或过大的 GenOffice AI 请求' })
++      return
++    }
++    const mine = running.get(event.sender.id) ?? new Map<string, AbortController>()
++    if (mine.has(requestId)) {
++      send({ requestId, type: 'error', error: '重复 GenOffice AI 请求已拒绝' })
++      return
++    }
++    const controller = new AbortController()
++    mine.set(requestId, controller)
++    running.set(event.sender.id, mine)
++    try {
++      // Every prompt requires a fresh user confirmation, so potential whole
++      // document rewrites/batch edits cannot silently inherit prior approvals.
++      if (!await authority.ports.confirm(authority.context, true)) {
++        send({ requestId, type: 'error', error: '用户未批准本次 Mcode 文档 AI 操作' })
++        return
++      }
++      // A new request can be canceled while the confirmation modal is open.
++      if (controller.signal.aborted) {
++        send({ requestId, type: 'error', error: '文档 AI 已取消' })
++        return
++      }
++      await authority.ports.run(request, send, controller.signal)
++    } catch (error) {
++      send({ requestId, type: 'error', error: error instanceof Error ? error.message : 'Mcode AI 调用失败' })
++    } finally {
++      if (running.get(event.sender.id) === mine && mine.get(requestId) === controller) {
++        mine.delete(requestId)
++        if (!mine.size) running.delete(event.sender.id)
++      }
++    }
++  }
++
++  channel('get-settings', (_event, authority) => {
++    // Compatibility shape only: no real vendor API credentials are ever
++    // returned, and native GenOffice model selection/set settings is disabled.
++    const description = authority?.ports.describe(authority.context)
++    const model = description?.ok ? description.model : ''
++    return {
++      provider: 'codex',
++      providers: { codex: { apiKey: '', cliPath: '', model } },
++      gskToolsEnabled: false,
++      mcodeEngine: description?.ok ? description.provider : null,
++      ...(description?.ok ? {} : { error: UNAVAILABLE }),
++    }
++  })
++  channel('open-model-settings', () => reject('请在 Mcode 的引擎设置里管理模型'))
++  channel('set-settings', () => reject('请在 Mcode 的引擎与模型设置中修改配置；不保存 GenOffice 云密钥'))
++  channel('codex-models', (_event, authority) => {
++    const d = authority?.ports.describe(authority.context)
++    return d?.ok ? { models: d.model ? [d.model] : [], defaultModel: d.model } : { models: [], defaultModel: '', error: UNAVAILABLE }
++  })
++  channel('custom-models', () => reject('模型列表由 Mcode 会话统一管理；GenOffice 自定义云端点不可用'))
++  channel('gsk-login', () => reject('GenSpark 云账户登录已禁用；请使用 Mcode 的 Claude / Pi / Codex'))
++  channel('gsk-status', () => ({ loggedIn: false, error: 'GenOffice 云账户不可用，请使用 Mcode 三引擎' }))
++  for (const name of ['web-search', 'image-search', 'media-test', 'search-test', 'fetch-image'] as const) {
++    channel(name, () => reject('GenOffice 云搜索/媒体服务不可用；请通过 Mcode 的受控工具调用'))
++  }
++  channel('stream', (event, authority, raw) => stream(event, authority, raw))
++  channel('stream-cancel', (event, _authority, raw) => {
++    if (!validRequestId(raw)) return reject('无效的请求编号')
++    const controller = running.get(event.sender.id)?.get(raw)
++    if (!controller) return reject('这条 GenOffice AI 请求不存在或已结束')
++    controller.abort()
++    return { ok: true }
++  })
++  channel('chat', async (event, authority, raw) => {
++    if (!raw || typeof raw !== 'object') return reject('无效的聊天请求')
++    const r = raw as { system?: unknown; user?: unknown }
++    if (typeof r.user !== 'string' || r.user.length > 30_000) return reject('无效的聊天文本')
++    const input = {
++      requestId: 'chat-' + Date.now() + '-' + Math.random().toString(36).slice(2),
++      system: typeof r.system === 'string' ? r.system : '',
++      messages: [{ role: 'user', content: r.user }],
++      tools: [],
++    }
++    let text = ''
++    let failure: string | null = null
++    await stream(event, authority, input, (chunk) => {
++      if (chunk.type === 'delta') text += chunk.text ?? ''
++      if (chunk.type === 'error') failure = chunk.error ?? UNAVAILABLE
++    })
++    return failure ? reject(failure) : { ok: true, content: text }
++  })
++  return () => {
++    for (const pending of running.values()) for (const controller of pending.values()) controller.abort()
++    running.clear()
++    for (const name of MCODE_VIEW_AI_HANDLERS) ipc.removeHandler(prefix + name)
++  }
++}

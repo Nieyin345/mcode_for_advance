@@ -160,7 +160,10 @@ export interface DocumentViewHostPorts {
   /** 主窗口解析（生产传 `@main/window.js` 的 getMainWindow；无头套件传假窗口）。 */
   getMainWindow(): DocumentViewHostWindow | null;
   /** 视图构造器；缺省惰性取 `electron.WebContentsView`。 */
-  createView?: (webPreferences: DocumentViewWebPreferences) => DocumentViewLike;
+  createView?: ((webPreferences: DocumentViewWebPreferences) => DocumentViewLike)
+    | { vendor: (openPath: string | null, kind: "pdf" | "markdown" | "html") => DocumentViewLike };
+  /** Vendor 的路径围栏与普通 document.* 共用主进程判据；未注入时拒绝。 */
+  withinWorkspace?: (path: string) => boolean;
   /** 【ARC-007】**诊断/测试接缝**：在保存租约内、版本比较通过之后、`atomicReplaceFile`
    *  之前调用。生产不传（no-op）。存在的唯一理由是让回归网能**确定性地**把"胜者
    *  持锁的窗口"拉长 —— 从而断言落败者在租约串行下真的没走到替换那一步；没有它，
@@ -297,7 +300,7 @@ interface LiveDocumentView {
   workflowEngineId: string | null;
   /** 【ARC-007 P1/GA1】编辑器域（`open` 的 `editor` 字段）。`"slides"` 时
    *  `openPath`/保存走 slides 通道（vendor 解析器构造 `OpenResult`）。 */
-  editor: "slides" | null;
+  editor: "slides" | "pdf" | "markdown" | "html" | null;
   /** 【ARC-007 P0】**待打开请求**：`openPath` 准备的路径，等页面经 `readOpened`
    *  拉取一次性字节响应；页面回执（`settlePendingOpen`）后才登记会话。
    *  失败/拒绝不占会话、不改 CAS 基准。 */
@@ -435,6 +438,8 @@ export class DocumentViewHost {
   private readonly sessionKeyByDocId = new Map<string, string>();
   private readonly getWindow: () => DocumentViewHostWindow | null;
   private readonly createView: (webPreferences: DocumentViewWebPreferences) => DocumentViewLike;
+  private vendorCreateView: ((path: string | null, kind: "pdf" | "markdown" | "html") => DocumentViewLike) | null;
+  private withinWorkspace: (path: string) => boolean;
   private readonly beforeAtomicReplace: (realPath: string) => void | Promise<void>;
   /** 【ARC-007 P0】脏替换确认端口（见 `DocumentViewHostPorts.confirmDirty`）。 */
   private confirmDirty: ((input: { docId: string; filePath: string | null }) => Promise<boolean>) | null;
@@ -462,7 +467,9 @@ export class DocumentViewHost {
 
   constructor(ports: DocumentViewHostPorts) {
     this.getWindow = ports.getMainWindow;
-    this.createView = ports.createView ?? defaultCreateView;
+    this.createView = typeof ports.createView === "function" ? ports.createView : defaultCreateView;
+    this.vendorCreateView = ports.createView && typeof ports.createView !== "function" ? ports.createView.vendor : null;
+    this.withinWorkspace = ports.withinWorkspace ?? (() => false);
     this.beforeAtomicReplace = ports.beforeAtomicReplace ?? (() => undefined);
     this.confirmDirty = ports.confirmDirty ?? null;
     this.editorCredentials = ports.editorCredentials ?? null;
@@ -491,6 +498,13 @@ export class DocumentViewHost {
     }
   }
 
+  /** 生产装配：只有三个原厂 runtime/资源都准备好之后才注入，失败就保留禁用。 */
+  setVendorViewFactory(factory: ((path: string | null, kind: "pdf" | "markdown" | "html") => DocumentViewLike) | null,
+    withinWorkspace?: (path: string) => boolean): void {
+    this.vendorCreateView = factory;
+    this.withinWorkspace = withinWorkspace ?? (() => false);
+  }
+
   /**
    * 打开（或复用）一个文档视图。同 docId 重复 open = 复用同一个 view：
    * URL 变了才重新导航，bounds/可见性总是按入参更新。
@@ -500,8 +514,25 @@ export class DocumentViewHost {
    * webContents）。
    */
   open(input: DocViewOpenInput): DocViewResult {
-    const checked = checkDocumentViewUrl(input.url);
+    const kind = input.editor === "pdf" || input.editor === "markdown" || input.editor === "html" ? input.editor : null;
+    // The vendor factory navigates itself to its own fixed privileged scheme.
+    // The renderer supplies only this exact non-navigating identity marker.
+    const checked = kind !== null
+      ? input.url === `genoffice-app://${kind}/index.html`
+        ? { ok: true as const, url: input.url }
+        : { ok: false as const, reason: "原厂视图必须使用固定的 genoffice-app 页面身份" }
+      : checkDocumentViewUrl(input.url);
     if (!checked.ok) return { ok: false, reason: checked.reason };
+    if (kind !== null) {
+      if (!this.vendorCreateView) return { ok: false, reason: `${kind} 原厂视图未装配（资源或 runtime 不可用）` };
+      if (!input.filePath || !this.withinWorkspace(input.filePath) || !existsSync(input.filePath) || physicalPath(input.filePath) === null)
+        return { ok: false, reason: "原厂视图的文件不存在，或不在已知工作区内" };
+      if (input.workflowEngineId) return { ok: false, reason: "原厂文档视图不能使用工作流凭据" };
+      const holder = this.sessions.get(physicalPath(input.filePath)!);
+      if (holder && holder.docId !== input.docId) return { ok: false, reason: `文件已被 ${holder.docId} 持有` };
+    } else if (input.filePath !== undefined) {
+      return { ok: false, reason: "普通文档视图不能传入原厂文件路径" };
+    }
     if (this.disposed) return { ok: false, reason: "文档视图宿主已释放" };
 
     // 【ARC-006 Gate A 缺口】引擎编辑器页的凭据注入：**先预检、后建视图**。
@@ -525,6 +556,11 @@ export class DocumentViewHost {
 
     const existing = this.views.get(input.docId);
     if (existing) {
+      if (kind !== null && (existing.editor !== kind || physicalPath(existing.openedFilePath ?? "") !== physicalPath(input.filePath!))) {
+        return { ok: false, reason: "原厂视图不允许复用 docId 切换文件或编辑器类型" };
+      }
+      if (kind === null && (existing.editor === "pdf" || existing.editor === "markdown" || existing.editor === "html"))
+        return { ok: false, reason: "原厂视图不能复用为普通文档视图" };
       // 【ARC-006 Gate A 缺口】每次 open（含复用）都重新核验并续上凭据绑定：
       // 绑定带空闲租约，过期后页面会 401；用户重新打开/面板重渲染就是新的使用
       // 意图，这里按当下的引擎状态（端口/令牌）重新判定 —— 引擎已停则如实失败。
@@ -567,10 +603,12 @@ export class DocumentViewHost {
 
     let view: DocumentViewLike;
     try {
-      view = this.createView({
-        contextIsolation: true, nodeIntegration: false, sandbox: true,
-        ...(resolveViewPreload() !== undefined ? { preload: resolveViewPreload()! } : {}),
-      });
+      view = kind !== null
+        ? this.vendorCreateView!(input.filePath!, kind)
+        : this.createView({
+            contextIsolation: true, nodeIntegration: false, sandbox: true,
+            ...(resolveViewPreload() !== undefined ? { preload: resolveViewPreload()! } : {}),
+          });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error(`document view create failed: ${msg}`);
@@ -622,7 +660,15 @@ export class DocumentViewHost {
     // 【ARC-007】诊断钩子要在导航**之前**装上，否则首帧的失败会漏掉。
     this.watchFailures(live);
     this.views.set(input.docId, live);
-    this.navigate(live);
+    if (kind !== null) {
+      // 原厂构造器已经装载原版 preload、授权指定路径并发起导航；不重复 loadURL。
+      const claim = this.claimOpenedPath(input.docId, input.filePath!, view.webContents);
+      if (!claim.ok) { this.close(input.docId); return { ok: false, reason: claim.reason }; }
+      live.openedFilePath = claim.session.filePath;
+      live.openedFileRevision = claim.session.revision;
+    } else {
+      this.navigate(live);
+    }
     if (input.visible) {
       live.visible = true;
       this.applyBounds(live);
@@ -763,6 +809,11 @@ export class DocumentViewHost {
     }
     if (!withinWorkspace(filePath)) {
       return { ok: false, reason: `文件不在已知工作区内：${filePath}` };
+    }
+    if (live.editor === "pdf" || live.editor === "markdown" || live.editor === "html") {
+      // 原厂 createXxxView(path) 首帧自行 consumePending；openPath 只校验而不再推送。
+      return physicalPath(filePath) !== null && physicalPath(filePath) === physicalPath(live.openedFilePath ?? "")
+        ? { ok: true } : { ok: false, reason: "原厂视图仅能打开初始授权的文件" };
     }
     if (typeof live.view.webContents.send !== "function") {
       return { ok: false, reason: "当前视图不支持接收打开请求" };
@@ -1019,8 +1070,17 @@ export class DocumentViewHost {
   }
 
   /** 【ARC-007 P1/GA1】只读诊断：这个视图的编辑器域（未声明 = null）。 */
-  editorOf(docId: string): "slides" | null {
+  editorOf(docId: string): LiveDocumentView["editor"] {
     return this.views.get(docId)?.editor ?? null;
+  }
+
+  /** AI 请求始终以实际 sender 和宿主打开的文件绑定会话；页面提供的 sessionId 无效。 */
+  vendorAiContextForSender(sender: unknown): { sessionId: string; filePath: string } | null {
+    const id = this.docIdForSender(sender);
+    const live = id === null ? null : this.views.get(id);
+    if (!live || (live.editor !== "pdf" && live.editor !== "markdown" && live.editor !== "html") ||
+        !live.mcodeSessionId || !live.openedFilePath || !this.withinWorkspace(live.openedFilePath)) return null;
+    return { sessionId: live.mcodeSessionId, filePath: live.openedFilePath };
   }
 
   /** 【ARC-007 P1/GA1】缓存一次已解析的 slides `OpenResult`（重拉不重复解析；

@@ -89,7 +89,12 @@ export function isApprovedDocumentViewOpen(input: DocViewOpenInput, cliPath: str
       (url.protocol === "http:" || url.protocol === "https:");
   }
   if (input.url.trim() !== input.url || /[\u0000-\u001f\u007f]/.test(input.url)) return false;
-  if (url.protocol !== "file:" || url.username || url.password || cliPath === null) return false;
+  if (url.username || url.password || cliPath === null) return false;
+  const editor = input.editor === "slides" || input.editor === "pdf" || input.editor === "markdown" || input.editor === "html" ? input.editor : "docs";
+  const vendor = editor === "pdf" || editor === "markdown" || editor === "html";
+  if (vendor !== (input.filePath !== undefined)) return false;
+  if (vendor) return url.href === `genoffice-app://${editor}/index.html`;
+  if (url.protocol !== "file:") return false;
   const native = cliPath.replace(/\\/g, "/");
   let root: string;
   if (native.endsWith("/genoffice/packages/cli/dist/genoffice.cjs")) {
@@ -99,9 +104,7 @@ export function isApprovedDocumentViewOpen(input: DocViewOpenInput, cliPath: str
   } else {
     return false;
   }
-  const editor = input.editor === "slides" ? "slides" : "docs";
   const allowed = pathToFileURL(join(root, "apps", editor, "out", "renderer", "index.html")).href;
-  // The native renderer's host=tab protocol is fixed by editorPageUrl.
   // Paths with query tricks, fragment routing or a mismatched editor type
   // cannot be elevated to a privileged Mcode WebContentsView.
   return url.href === allowed + "?mode=tab";
@@ -215,6 +218,8 @@ export function registerDocumentViewHandlers(
       if (!authorizeOpen(input)) {
         return { ok: false, reason: "文档视图 URL 未匹配已安装的原厂编辑器或受信工作流引擎" };
       }
+      if (input.filePath !== undefined && !withinWorkspace(input.filePath))
+        return { ok: false, reason: "原厂视图拒绝打开工作区以外的路径" };
       return host.open(input);
     } catch (err) {
       return failed(err);

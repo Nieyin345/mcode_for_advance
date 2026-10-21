@@ -26,6 +26,7 @@ import {
 import { documentKindOf } from "@contracts/documentKind";
 import { resolveGenofficeCliPath, docsRead, docsApply, slidesRead, slidesApply, sheetRead, sheetApply, convertFile, guideOps, type GenofficeResult } from "@main/document/genofficeCli.js";
 import { slidesBridge } from "@main/document/slidesBridge.js";
+import { nativeHostStatus } from "@main/document/genofficeViewFactories.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
 import { withOsFileLease } from "@main/lib/osFileLease.js";
@@ -320,7 +321,7 @@ function capabilitiesStatic(): DocumentCapabilities {
     // 【ARC-007 P1/GA1】打开对端是**装配事实**：docs 恒有（宿主直接下发路径）；
     // slides 取决于宿主有没有装配执行器（生产在 `ipc/index.ts` 装配 vendor 解析器，
     // 未装配时 true 就变成一句谎话）；sheets 本切片未接，恒 false。
-    hosts: { docs: true, slides: hostsSlidesOverride ?? slidesBridge.available, sheets: false },
+    hosts: { docs: true, slides: hostsSlidesOverride ?? slidesBridge.available, sheets: false, ...nativeHostStatus() },
     local: [
       "docx read/apply（纯 Node）",
       "pptx read/apply/create（纯 Node）",

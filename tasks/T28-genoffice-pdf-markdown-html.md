@@ -294,3 +294,5 @@ hosts: { docs: true, slides: hostsSlidesOverride ?? slidesBridge.available, shee
 - 新增 `genoffice-native-view-smoke`：原厂工厂签收授权初始文件、三个格式的 open→unchanged→close 字节一致、宿主边界外文件拒绝、sender AI 身份、非法 openPath 拒绝、resize/hide/show 不重建也不重载、真实 AI 桥的 SDK 路由/取消与陌生 sender/失效 session；无快照 stub bundle 与降级 5 项断言：**PASS**，恢复后的绿例日志 `apps/desktop/.tmp/smoke-runs/1792559808001-31496-a8fo0v`。
 - 确定性变异：`documentViewHost.ts` 撤掉 `withinWorkspace` 时越界打开断言**红**；`mcode-view-ai.ts` 撤掉 `describe(session)` 权限检查时失效 session 断言**红**；两者自动恢复并校验源码哈希，恢复后 suite 复绿。
 - **未实证**：真实 Electron 视图上三格式用户手动编辑/保存再从外部查看器回读（含 PDF AI 面板真实网络模型回复）未做端到端 GUI 验证；stub 别名已模拟快照缺失构建成功，但“从构建配置撤掉 stub alias → 真正移除 vendor 快照 → 完整打包失败”的第三组破坏性变异未在多任务共享工作树执行。对此不声称验收已通过。
+
+- 增补最终检查：GenOffice **全 monorepo** 的 `npm run typecheck`（包括 26+ workspace 包）**exit=0**；Mcode desktop 与 contracts 的 tsc 在最终协议合并后再次 **exit=0**。Electron 特权协议的三个既有/新增 scheme 统一在 `app.ready` 前**单次注册**，无快照 stub 冒烟同时断言此三项。
