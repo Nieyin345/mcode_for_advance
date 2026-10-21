@@ -104,6 +104,9 @@ RED.init(server, {
   credentialSecret: process.env.NODE_RED_CREDENTIAL_SECRET || false,
   // 未审批的持久化 flow 不进入 runtime 执行；只有宿主写下的可信标记才放开。
   safeMode,
+  // T47: single editor stylesheet. Chromium prefers-color-scheme switches the
+  // light/dark variables immediately; never restart a running flow to retheme.
+  editorTheme: { page: { css: process.env.MCODE_ENGINE_THEME_CSS || "" } },
   // 控制面认证：只认宿主签发的那一个令牌。没有 default 匿名用户 —— 未带
   // Authorization: Bearer <token> 的客户端访问 Admin API 一律 401。
   adminAuth: {
@@ -254,6 +257,22 @@ RED.start().then(
 `;
 
 const ENGINE_IDS = ["node-red"] as const;
+
+/** T47: resolve the Node-RED theme shipped as a real file (outside ASAR).
+ * In development the same tracked CSS lives under apps/desktop/resources.
+ * A missing stylesheet must not silently launch an unthemed editor. */
+export function resolveMcodeNodeRedThemeCss(options?: { resourcesPath?: string; cwd?: string }): string {
+  const base = options?.cwd ?? process.cwd();
+  const resources = options?.resourcesPath ?? process.resourcesPath;
+  const candidates = [
+    ...(resources ? [join(resources, "node-red", "mcode-theme", "mcode-theme-auto.css")] : []),
+    join(base, "resources", "node-red", "mcode-theme-auto.css"),
+    join(base, "apps", "desktop", "resources", "node-red", "mcode-theme-auto.css"),
+  ];
+  const css = candidates.find((path) => existsSync(path));
+  if (!css) throw new Error("Node-RED Mcode 主题资源缺失：" + candidates.join(" | "));
+  return css;
+}
 
 /**
  * 【ARC-006 MERGE-1】受管 Node-RED 目录的单一创建围栏。
@@ -541,6 +560,7 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
         env: {
           // 只有宿主写下的可信标记才让持久化 flow 进入 runtime（见 isFlowTrusted）。
           MCODE_ENGINE_TRUSTED: isFlowTrusted(dir) ? "1" : "0",
+          MCODE_ENGINE_THEME_CSS: resolveMcodeNodeRedThemeCss(),
         },
       });
     } catch (err) {

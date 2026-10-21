@@ -410,6 +410,17 @@ try {
   evidence("production GET /", { status: editor.status, bytes: editor.text.length });
   check("★【P0-1】编辑器 GET / 真响应 200 且是 Node-RED 编辑器页",
     editor.status === 200 && editor.text.includes("red-ui-editor") && editor.text.includes("<title>Node-RED</title>"));
+  // T47: actual Node-RED Express serving the host-injected stylesheet, not
+  // merely a source-string check. Media query switches without engine restart.
+  check("★【T47】编辑器 HTML 引用了宿主注入的自定义主题",
+    editor.text.includes("theme/css/mcode-theme-auto.css"));
+  const themeResponse = await fetchOn(portA, "/theme/css/mcode-theme-auto.css");
+  check("★【T47】生产 Node-RED 确实托管了浅/深两套 CSS 变量",
+    themeResponse.status === 200
+      && themeResponse.text.includes("--red-ui-primary-background: #fcfcfb")
+      && themeResponse.text.includes("@media (prefers-color-scheme: dark)")
+      && themeResponse.text.includes("--red-ui-primary-background: #151515"),
+    { status: themeResponse.status, bytes: themeResponse.text.length });
 
   // —— A4. 无凭据客户端一律被拒（控制面） ——
   const noAuthFlows = await fetchOn(portA, "/flows");
@@ -680,7 +691,7 @@ try {
     const specB = portsB.specs[0];
     const specKeys = Object.keys(specB?.env ?? {}).sort();
     const expectedSpec = [
-      "HOST", "NODE_RED_CREDENTIAL_SECRET", "MCODE_ENGINE_ADMIN_TOKEN", "MCODE_ENGINE_TRUSTED", "NODE_PATH", "PATH", "PORT",
+      "HOST", "NODE_RED_CREDENTIAL_SECRET", "MCODE_ENGINE_ADMIN_TOKEN", "MCODE_ENGINE_THEME_CSS", "MCODE_ENGINE_TRUSTED", "NODE_PATH", "PATH", "PORT",
       ...(process.platform === "win32" ? ["SystemRoot"] : []),
     ].sort();
     check("★ env 在 spawn spec 里**完全替换**：宿主白名单 + 引擎凭据/控制面令牌（无宿主密钥）",

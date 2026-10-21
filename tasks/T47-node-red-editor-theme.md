@@ -241,3 +241,49 @@ RED.init(server, {
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 T47 实施与验收记录
+
+**范围与证据**：开工 HEAD 67157d5d5edd028618e7180bc803724d0317dde5；执行期间其它任务的提交持续推进 HEAD，本轮只提交 T47 文件。未改 node-red 原厂源码、原生节点色、画布网格、document 或 WorkflowBoardPanel。
+
+**来源与变量（E1/E2）**：读取 apps/desktop/src/renderer/styles.css 和 CDS 原始色阶。原厂 colors.scss 有 238 个 SCSS 声明；有直接或同视觉角色映射的为 20 个，剩下 218 个沿用原厂对应浅色设置或原厂 dark-colors.scss 暗色对应值。亮/暗色值以下表为准。宿主目前没有任务卡所列的 --surface-raised、--text-primary/secondary/tertiary 或 --edge-panel 独立 token，分别用实际存在的 --surface/--surface-muted、--content/--content-muted/--content-subtle 和 --panel-edge 对齐，不虚构宿主 token。
+
+| Node-RED SCSS | Mcode token / 映射依据 |
+|---|---|
+| $primary-background | --surface：#fcfcfb / #151515 |
+| $secondary-background | 高层表面，亮 #ffffff / 暗 #20201f（--surface-muted 近似；无 --surface-raised） |
+| $secondary-background-selected | --surface-hover：#f0efec / #2c2c2a |
+| $secondary-background-hover | --surface-hover：#f0efec / #2c2c2a |
+| $tertiary-background | --surface-muted：#f9f9f7 / #20201f |
+| $primary-text-color | --content：#151515 / #f9f9f7 |
+| $secondary-text-color | --content-muted：#52514e / #b4b3a8 |
+| $tertiary-text-color | --content-subtle：#6d6b67 / #97958d |
+| $header-text-color | --content：#151515 / #f9f9f7 |
+| $text-color-error | --danger：#dc2626 / #f87171 |
+| $text-color-warning | --warning：#b45309 / #fbbf24 |
+| $text-color-success | --success：#047857 / #10b981 |
+| $text-color-link | --accent：#c25124 / #ec835a |
+| $shadow | --shadow-popover 语义近似：rgba(0,0,0,.12) / rgba(0,0,0,.35)，不是复制完整多层 box-shadow |
+| $primary-border-color | --edge：#c3c2b7 / #2c2c2a |
+| $secondary-border-color | --panel-edge：#d2d1c7 / #2c2c2a |
+| $tertiary-border-color | --input-edge：#b4b3a8 / #383835 |
+| $form-input-focus-color | --accent：#c25124 / #ec835a |
+| $primary-font | 与 styles.css 一致：-apple-system, BlinkMacSystemFont, Segoe UI, system-ui, PingFang SC, Microsoft YaHei UI, Microsoft YaHei, sans-serif |
+| $primary-font-size | --chat-font-size 默认 14px；Node-RED 独立页面不动态继承用户在宿主所设的字号 |
+
+**不映射的 218 项（E2）**：原厂 Node-RED 独有的节点分类色/节点状态、画布网格、节点连线和分组、调试/差异语义、语法高亮、用户头像及第三方品牌色在自身浅暗原厂定义中继续保留；不把其含义强行改成 Mcode token。明暗主题专项断言比较原厂与拷贝的 $palette-*、$node-*、$view-grid-color、$github-*，均通过。
+
+**主题生成与大小（E1）**：通过 node apps/desktop/resources/node-red/build-theme.mjs 调用官方 build-custom-theme.js 生成、去掉不确定时间戳以可复现。浅色 mcode-theme-light.css：10,759 B；深色 mcode-theme-dark.css：10,900 B；媒体查询合并 mcode-theme-auto.css：21,878 B（十进制字节）。源 SCSS 和三个 CSS 均在 apps/desktop/resources/node-red 进仓。
+
+**注入与切换（E2 + 静态 E1）**：registry.ts BOOTSTRAP 在 RED.init 中只增加 editorTheme.page.css，值读 MCODE_ENGINE_THEME_CSS；启动规格通过宿主注入固定的主题资源绝对路径，缺失时报错而不默默使用默认主题。bootstrapManifest.ts 版本 1→2；electron-builder.yml 通过 extraResources 把 CSS 放到 resources/node-red/mcode-theme。仅注入一份 mcode-theme-auto.css，其 :root 和 @media (prefers-color-scheme: dark) 定义亮/暗 CSS 变量；Electron 的 nativeTheme.themeSource 变化会让 Chromium 媒体查询动态重新计算，理论上切色无需重启 Node-RED 引擎，flow 不被中断。真实 Electron 页面运行时换色的 U1 截图未获得，不能声称已完成该视觉旅程。
+
+**字体/视觉边界（E2/E3）**：Node-RED 原厂界面使用 --red-ui-* 色彩变量，因此画布背景、调色板、侧栏及文本能适用本主题；常见按钮圆角 6px、菜单/侧栏容器圆角 8px。节点自身颜色、SVG 画布网格及第三方内联或独立 CSS 不应强制覆盖。字体族已一致，但窄面板是否因字体替换造成溢出/换行仍缺真实 Electron 截图证据。
+
+**实测（E1）**：
+- node apps/desktop/scripts/run-smokes.mjs node-red-theme-smoke engine-bootstrap-integrity-smoke ：2 PASS / 0 FAIL。
+- node-red-theme-smoke 覆盖亮暗 token、20 项映射、238 变量声明、原厂节点/网格不变、媒体查询、主题路径注入、版本与安装配置；在单独复制文件中去掉 editorTheme.page.css，该套特定视觉接线断言变红；正常源码恢复绿，未更改共享业务源码。
+- node-red-e2e-smoke 第一轮真引擎 103/104，唯一 FAIL 为旧测试的 spawn 环境白名单不认识 MCODE_ENGINE_THEME_CSS；已修订预期并追加真 CSS URL 断言。第二轮并行工作树的新增原生 sherpa-onnx-*.node 引起 esbuild 无 loader；临时外置原生插件仍被并行改动的 genofficeSheetsEntry / genofficeSlidesEntry 无法解析与 html2docx 构建错误拦住，因此**修订后的真引擎套件仍未绿**。
+- workflow-engine-runtime-smoke 第一轮绿，后因相同并行构建错误重跑未绿。其它 bootstrap-* 关联套件未穷举完成，不能称既有套件全部通过。
+- npx tsc --noEmit -p packages/contracts/tsconfig.json 及 -p apps/desktop/tsconfig.json 运行时均在 TypeScript 5.7.2 内部 getModifierFlagsWorker 崩溃：Cannot read properties of undefined (reading 'kind')。双包 tsc 未通过。
+
+**逐条验收结论**：1 CSS 变量断言通过（无 U1 截图）；2 深色变量断言通过（无 U1 截图）；3 20 项明晰映射通过；4 节点/网格原厂保留断言通过；5 理论和静态媒体断言完成，**真实换色未动态验证**；6 **未达成**（现有 e2e/runtime 及所有 bootstrap-* 未全绿）；7 **未达成**（两包 tsc 崩溃）；8 变异红绿通过。

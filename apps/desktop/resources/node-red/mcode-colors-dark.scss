@@ -1,0 +1,376 @@
+// Mcode T47: values mapped from apps/desktop/src/renderer/styles.css.
+// Upstream node semantic, grid and branded palette colors stay unchanged per mode.
+// The full token correspondence is in tasks/T47-node-red-editor-theme.md.
+$accent: #ec835a;
+$accent-hover: #a21212;
+$accent-active: #7a0e0e;
+$canvas-bg: #0e0e12;
+$bg-0: #08080e;
+$bg-1: #15151a;
+$bg-2: #1b1b23;
+$bg-3: #1e1e27;
+$bg-4: #22222c;
+$border-1: #252527;
+$border-2: #2a2a2c;
+$neutral-mid: #888888;
+$text-primary: #f0f0f0;
+$text-header: #e0e0e0;
+$text-secondary: #aaaaaa;
+$text-tertiary: #9a9a9a;
+$text-disabled: #7a7a7b;
+$primary-color: $text-primary;
+$secondary-color: $bg-4;
+$ace-keyword: $accent;
+$ace-operator: #00d4c8;
+$ace-literal: #f1a10d;
+$ace-other-const: $text-secondary;
+$ace-function: $accent;
+$ace-class: #00d4c8;
+$ace-string: #4cc38a;
+$ace-tag: #ff6369;
+$ace-comment: #8a8a8a;
+$ace-invalid-bg: #c82829;
+$ace-deprecated-bg: #8959a8;
+$ace-cursor: $accent;
+$ace-fold: $accent;
+
+/**
+ * Copyright JS Foundation and other contributors, http://js.foundation
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ **/
+
+$primary-font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+$primary-font-size: 14px;
+$monospace-font: Menlo, Consolas, 'DejaVu Sans Mono', Courier, monospace;
+
+$primary-background: #151515;//#0ff;
+
+$secondary-background: #20201f;//#ff0;
+$secondary-background-selected: #2c2c2a;//#e9e900;
+$secondary-background-inactive: #14141b;//#f0f000;
+$secondary-background-hover: #2c2c2a;//#dd0;
+$secondary-background-disabled: #13131a;//#fafa0;
+
+$tertiary-background:  #20201f;//#f0f;
+
+$shadow: rgba(0, 0, 0, 0.35);
+
+// Main body text
+$primary-text-color: #f9f9f7;//#0f0;
+// UI control label text
+$secondary-text-color: #b4b3a8;//#00f;
+$secondary-text-color-focus: #cccccc;//#009;
+$secondary-text-color-hover: $accent;//#006;
+$secondary-text-color-active: $accent;//#006;
+$secondary-text-color-selected: #dddddd;//#00A;
+$secondary-text-color-inactive: $text-secondary;//#006;
+$secondary-text-color-disabled: $text-disabled;//#00C;
+$secondary-text-color-disabled-active: #8a8a8b;//#009;
+$secondary-text-color-disabled-inactive: #707072;//#00A;
+
+// Sub label text
+$tertiary-text-color: #97958d;//#90f;
+// Heading text
+$header-text-color: #f9f9f7;//#f00;
+
+$text-color-error: #f87171;
+$text-color-warning: #fbbf24;
+$text-color-success: #10b981;
+$text-color-code: #00d4c8;
+$text-color-link: #ec835a;
+
+// GitHub style markdown alert accent colours
+$text-color-markdown-alert-note: $secondary-text-color;
+$text-color-markdown-alert-tip: $text-color-success;
+$text-color-markdown-alert-important: #3a5bc7;
+$text-color-markdown-alert-warning: $text-color-warning;
+$text-color-markdown-alert-caution: $text-color-error;
+
+
+$primary-border-color: #2c2c2a;//#f00;
+$secondary-border-color: #2c2c2a;//#0f0;
+$tertiary-border-color: #383835;//#00f;
+
+$border-color-error: #e5484d;
+$border-color-warning: #e2a336;
+$border-color-success: #30a46c;
+
+$form-background: $bg-2;
+$form-placeholder-color: #8a8a8a;
+$form-text-color: $text-primary;
+$form-text-color-disabled: $text-disabled;
+$form-input-focus-color: #ec835a;
+$form-input-border-color:  $border-2;
+$form-input-border-selected-color:  $accent;//#f0f;
+$form-input-border-error-color: #e5484d;
+$form-input-background: $canvas-bg;
+$form-input-background-disabled: $bg-1;
+$form-button-background: $bg-4;
+
+$form-tips-background: #120c00;
+
+
+$text-editor-color: $text-primary;//#00f;
+$text-editor-background: $bg-0;
+$text-editor-color-disabled: #555555;
+$text-editor-background-disabled: #13131a;
+$text-editor-gutter-background: $bg-1;//#ee0;
+$text-editor-gutter-color: #808080;//#00e;
+$text-editor-gutter-active-line-background: $bg-2;//#dd0;
+$text-editor-active-line-background: $bg-3;//#ee0;
+$text-editor-selection-background: #162040;//#e0e;
+
+$event-log-background: $bg-0;
+$event-log-color: $text-header;
+$event-log-active-line-background: $bg-1;
+$event-log-selection-background: $bg-4;
+
+
+
+
+$list-item-color: $text-primary;
+$list-item-secondary-color: $text-secondary;
+$list-item-background: $bg-2;
+$list-item-background-disabled: #14141b;
+$list-item-background-hover: $bg-3;
+$list-item-background-selected: $bg-4;
+$list-item-border-selected: $accent;
+
+$tab-text-color-active: $text-header;
+$tab-text-color-inactive: #808080;
+$tab-text-color-disabled-active: $text-disabled;
+$tab-text-color-disabled-inactive: $border-2;
+
+$tab-badge-color: $text-tertiary;
+$tab-background: $bg-2;
+$tab-background-active: $bg-2;
+$tab-background-selected: $bg-4;
+$tab-background-inactive: $bg-1;
+$tab-background-hover: $bg-3;
+$tab-hover-overlay: rgba(255, 255, 255, 0.06);
+
+$palette-header-background: $canvas-bg;
+$palette-header-color: $text-header;
+$palette-content-background: $bg-2;
+
+$scrollbar-handle-background: $border-2;
+
+$workspace-button-background: $bg-1;
+$workspace-button-background-hover: $bg-3;
+$workspace-button-background-active: $bg-4;
+$workspace-button-background-selected: $bg-4;
+$workspace-button-border-selected: #444444;
+$workspace-button-border-selected-inverse: #444444;
+
+$workspace-button-color: $text-secondary;
+$workspace-button-color-disabled: $text-disabled;
+$workspace-button-color-focus: $accent;
+$workspace-button-color-hover: $accent;
+$workspace-button-color-active: $text-primary;
+$workspace-button-color-selected: $accent;
+
+$workspace-button-color-primary: #fff;
+$workspace-button-background-primary: #bb0000;
+$workspace-button-background-primary-hover: $accent-hover;
+$workspace-button-color-focus-outline: $accent;
+
+$shade-color: rgba(0, 0, 0, 0.45);
+
+$popover-background: $bg-1;
+$popover-border: $border-1;
+$popover-color: $text-primary;
+$popover-button-border-color: $border-2;
+$popover-button-border-color-hover: $accent;
+
+$tooltip-background: #1e1e1e;
+$tooltip-border: $tooltip-background;
+$tooltip-color: #eee;
+
+$diff-text-header-color: $text-secondary;
+$diff-text-header-background: $bg-1;
+$diff-state-color: $text-primary;
+$diff-state-prefix-color: #808080;
+$diff-state-added: #4cc38a;
+$diff-state-deleted: #ff6369;
+$diff-state-changed: #f1a10d;
+$diff-state-changed-background: #180e00;
+$diff-state-unchanged: #8d8d8d;
+$diff-state-unchanged-background: $bg-2;
+
+$diff-state-conflicted: $accent;
+$diff-state-moved: #00d4c8;
+$diff-state-conflict: $accent;
+$diff-state-conflict-background: #0c1428;
+
+$diff-state-added-background: #061510;
+$diff-state-added-border: #0a2e1c;
+$diff-state-added-header-background: #081812;
+$diff-state-added-header-border: #0a2e1c;
+
+$diff-state-deleted-background: #1a0408;
+$diff-state-deleted-border: #300810;
+$diff-state-deleted-header-background: #200608;
+$diff-state-deleted-header-border: #300810;
+
+$diff-merge-header-color: $accent;
+$diff-merge-header-background: #0c1428;
+$diff-merge-header-border-color: $border-1;
+
+$menuBackground: $bg-1;
+$menuDivider: $border-1;
+$menuColor: $text-primary;
+$menuActiveColor: $accent;
+$menuActiveBackground: $bg-4;
+$menuDisabledColor: #555555;
+$menuHoverColor: $text-primary;
+$menuHoverBackground: $bg-4;
+$menuCaret: #777777;
+
+$view-navigator-background: rgba(14, 14, 18, 0.9);
+
+$view-lasso-stroke: $accent;
+$view-lasso-fill: rgba(232, 74, 74, 0.12);
+
+$view-background: $canvas-bg;
+$view-grid-color: #282828;
+
+$node-label-color: #191919;
+$node-port-label-color: $text-secondary;
+$node-border: $neutral-mid;
+$node-border-unknown: #ff6369;
+$node-border-placeholder: $text-secondary;
+$node-background-placeholder: $text-primary;
+
+$node-port-background: #b8b8b8;
+$node-port-background-hover: $accent;
+$node-icon-color: $text-primary;
+$node-icon-background-color: rgba(255, 255, 255, 0.07);
+$node-icon-background-color-fill: #fff;
+$node-icon-background-color-opacity: 0.07;
+$node-icon-border-color: #fff;
+$node-icon-border-color-opacity: 0.08;
+
+$node-config-background: $canvas-bg;
+$node-config-icon-container-disabled: #444444;
+
+$node-link-port-background: $bg-4;
+
+$node-status-error-border: #CE2C31;
+$node-status-error-background: #641723;
+$node-status-changed-border: #006a8a;
+$node-status-changed-background: #00d4c8;
+
+$node-status-colors: (
+    red:    #ff6369,
+    green:  #4cc38a,
+    yellow: #ffcb47,
+    blue:   #5cb3ff,
+    grey:   #777777
+);
+
+
+$node-selected-color: $accent;
+$port-selected-color: $accent;
+
+$link-color: $neutral-mid;
+$link-link-color: $neutral-mid;
+$link-disabled-color: #444444;
+$link-link-active-color: $accent;
+$link-unknown-color: #ff6369;
+
+$clipboard-textarea-background: $canvas-bg;
+
+
+$header-background: $canvas-bg;
+$header-button-border: $border-1;
+$header-button-background: $canvas-bg;
+$header-button-background-hover: $bg-1;
+$header-button-background-active: $bg-2;
+$header-accent: $canvas-bg;
+
+$header-menu-color: $text-primary;
+$header-menu-color-disabled: $text-disabled;
+$header-menu-heading-color:$text-primary;
+$header-menu-sublabel-color: $text-secondary;
+$header-menu-background: $bg-1;
+$header-menu-item-hover: $bg-4;
+$header-menu-item-border-active: $bg-4;
+$headerMenuItemDivider: $border-1;
+$headerMenuCaret: #777777;
+
+
+$deploy-button-color: #ffffff;
+$deploy-button-color-active: $text-header;
+$deploy-button-color-disabled: #8a8a8a;
+$deploy-button-border-color: $border-1;
+$deploy-button-background: #bb0000;
+$deploy-button-background-hover: $accent-hover;
+$deploy-button-background-active: $accent-active;
+$deploy-button-background-disabled:  $bg-4;
+$deploy-button-background-disabled-hover: #2a2a2d;
+
+
+$vcCommitShaColor: #00d4c8;
+
+$dnd-background: rgba(255, 255, 255, 0.1);
+$dnd-color: $text-primary;
+
+$notification-border-default: $accent;
+$notification-border-success: #30a46c;
+$notification-border-warning: #e2a336;
+$notification-border-error: #e5484d;
+
+$debug-message-background: $bg-2;
+$debug-message-background-hover: $bg-3;
+
+$debug-message-text-color: $text-primary;
+$debug-message-text-color-meta: $text-secondary;
+$debug-message-text-color-object-key: $accent;
+$debug-message-text-color-msg-type-other: $text-primary;
+$debug-message-text-color-msg-type-string: #00d4c8;
+$debug-message-text-color-msg-type-null: $text-tertiary;
+$debug-message-text-color-msg-type-meta: $text-tertiary;
+$debug-message-text-color-msg-type-number: #4cc38a;
+
+$debug-message-border: $border-1;
+$debug-message-border-hover: $border-2;
+$debug-message-border-warning: #e2a336;
+$debug-message-border-error: #e5484d;
+
+$group-default-fill: none;
+$group-default-fill-opacity: 1;
+$group-default-stroke: #555555;
+$group-default-stroke-opacity: 1;
+$group-default-label-color: $text-primary;
+
+$tourGuide-border: $accent;
+$tourGuide-heading-color: $accent;
+
+$grip-color: $border-2;
+
+$icons-flow-color: $text-secondary;
+
+$spinner-color: $accent;
+
+$tab-icon-color: $accent;
+
+// Anonymous User Colors
+$user-profile-text-color: $text-primary;
+$user-profile-colors: (
+    1: $accent,
+    2: #00d4c8,
+    3: #4cc38a,
+    4: #ff6369,
+    5: #f1a10d
+);

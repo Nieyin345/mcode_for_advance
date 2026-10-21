@@ -122,6 +122,12 @@ extraResources:
     to: node-red
     filter:
       - "**/*"
+  # T47: the official custom-theme CSS must be present as a real disk file,
+  # because Node-RED editorTheme.page.css serves it via Express sendFile.
+  - from: resources/node-red
+    to: node-red/mcode-theme
+    filter:
+      - "*.css"
 
 # ARC-007: post-copy gate rechecks the six ORIGINAL GenOffice renderer trees
 # when MCODE_INCLUDE_GENOFFICE_EDITORS=1. An opt-in package with one missing
