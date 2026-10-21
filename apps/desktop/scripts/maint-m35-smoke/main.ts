@@ -138,7 +138,12 @@ await scenario("revealFile / openFile 的 {ok:false} 在每个调用方都报出
     for (const m of code.matchAll(re)) {
       sites++;
       const body = code.slice(m.index!, m.index! + 500);
-      assert.ok(/\.then\(/.test(body), `${label} 第 ${sites} 处: 没接回包(仍是 void 一丢了事)`);
+      // 回包必须被接住 —— `.then(...)` 与 `await` 两种写法都算；判的是「有没有接」，
+      // 不是「用哪种写法」（PdfPreviewImpl 用 await 并检查 !res.ok，旧断言只认 .then
+      // 会把它误判成没接）。
+      const head = code.slice(Math.max(0, m.index! - 80), m.index!);
+      const awaited = /\bawait\s+$/.test(head);
+      assert.ok(awaited || /\.then\(/.test(body), `${label} 第 ${sites} 处: 没接回包(仍是 void 一丢了事)`);
       assert.ok(/!res\.ok/.test(body), `${label} 第 ${sites} 处: 不看 {ok:false}`);
       assert.ok(body.includes("useToastStore"), `${label} 第 ${sites} 处: 失败没报出来`);
     }

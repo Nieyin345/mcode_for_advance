@@ -94,7 +94,7 @@
 | T23 | Pane 剩余能力：可调分割线 + 布局预设 + 重置 | ARC-005 UI | T02 | ✅ 完成（比例流 + 18%/82% 折叠 + 三预设 + 重置） |
 | T24 | 设置页全面重构（63 面板 / 26,303 行对齐 CDS） | ARC-005 UI | 无 | **进行中**（批次 1–3 完成；剩批次 4 大面板 7 个） |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
-| T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05 | 阻塞 |
+| T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | **可派**（前置条件已修正：证据改为 `document-view-*` 五套） |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |
 | T09 | ~~AOCI 索引补录~~ | — | — | **已取消**（用户决定不再用 AOCI） |
 | T10 | executor owner 注册表落盘（增量，原派活未含） | ARC-006 | T03 | ✅ 完成（81/81；跨进程 CAS 与部署回滚仍缺） |
@@ -194,9 +194,11 @@ vendor 独立 Git + 固定基线 commit + `mcode/integration` 分支 + 补丁存
 
 ### 已知未修（如实留档）
 
-- `maint-m35-smoke` **7/8**：`PdfPreviewImpl` 里 `revealFile`/`openFile` 的
-  `{ok:false}` 回包没被接住，失败被静默吞掉。这是**真实产品缺陷**
-  （违反「坏东西显式报出来」），不属于脚手架问题，应当单独修。
+- ~~`maint-m35-smoke` **7/8**：`PdfPreviewImpl` 里 `revealFile`/`openFile` 的
+  `{ok:false}` 回包没被接住，失败被静默吞掉。~~ **已由总控修复**：产品代码本身是对的
+  （`await` + `!res.ok` + toast），是断言只认 `.then(` 写法、把 `await` 误判成没接。
+  断言已改为「`await` 或 `.then(` 任一」，变异（改成 `await` 丢掉回包）能准确变红；
+  现 8/8。
 - `maint-m22`、`maint-m07`、`updater-tools` 三套仍红，原因未逐一诊断。
 - `test:all` 当前仍是**红**的，不能声称全绿。
 

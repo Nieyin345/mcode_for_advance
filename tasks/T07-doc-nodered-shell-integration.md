@@ -12,13 +12,28 @@
 
 ## 前置条件（不满足就不要开工）
 
-- **T02 已完成**：自由 Pane 模型（`paneLayout.ts`）已落地并能持久化。
-  没有它，文档/Node-RED 面板只能挤在现有的单一右栏里，整合会变成又一次特例。
-- **T05 已完成**：Docs 的全功能迁移已完成，`docs-vendor-parity-smoke` 全绿。
-- **T03 已完成**：Gate D 的 owner 注册表已落盘（Node-RED 面板要显示"这条 flow 归谁"）。
+- **T02 + T23 已完成**：自由 Pane 模型（`paneLayout.ts`）已落地、能持久化、能拖比例、有预设。
+  证据：`8e486757` / `12dfd270` / `161583a1` / `ed2e3b02` + T23 回写区；
+  7 套 `arc005-pane-*-smoke` 全绿。
+- **T05a / T05b / T05c + T22 已完成**：Docs 的全功能迁移。
+  证据：`apps/desktop/scripts/document-view-host-smoke` /
+  `document-view-open-smoke` / `document-view-electron-smoke` /
+  `document-view-vendor-page-smoke` / `document-view-renderer-smoke` **五套**全绿
+  （T22 回写区记录 5/5 通过）；T22 的 `mutate-t22.mjs` 与 T05b 的 `mutate-t05b.mjs`
+  两个变异脚本可用。
+
+  > ⚠️ **不存在 `docs-vendor-parity-smoke`，也不要去找它。** 那是写 T05 卡时凭空
+  > 提出的套件名，T05 实际拆成 T05a/b/c 后用的是上面五套 `document-view-*`。
+  > T07 早期版本把它写成硬前置，导致一轮执行对话误判阻塞——已修正。
+
+- **T03 + T10 已完成**：Gate D 的 owner 注册表已落盘
+  （证据：`14880ae` 原派活 + T10 增量；Node-RED 面板要显示"这条 flow 归谁"）。
 
 如果这三项里任意一项没完成，**读到这里就停**，在回写区写「阻塞：等待 T0x」，
 不要再往下做。
+
+> **本文件路径**：`tasks/T07-doc-nodered-shell-integration.md`。
+> 派发时请给完整文件名，`tasks/T07` 这类简写会 ENOENT。
 
 ---
 
@@ -112,7 +127,7 @@ type PaneContent =
 1. 文档 pane 可以停在 left / right / bottom 三个位置，`WebContentsView` 跟随且不重建。
 2. Node-RED iframe 可以停在任意 pane，拖动后不重载。
 3. 布局持久化能记住 document/flow pane，重启后正确恢复。
-4. 现有 `document-view-*` 四套 + `arc005-pane-*` 六套全绿。
+4. 现有 `document-view-*` **五套** + `arc005-pane-*` **七套**全绿。
 5. 双包 tsc 干净。
 6. **变异验证**：撤掉 bounds 跟随 → 拖动断言变红；撤掉 iframe 保活 → 重载断言变红。
 
