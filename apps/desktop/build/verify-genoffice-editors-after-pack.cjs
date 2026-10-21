@@ -7,7 +7,9 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  EDITOR_APPS, assertRendererAssetsReady, assertVendorTreeSafe, hashResourceTree, hashRendererTree, hashFile, assertThirdPartyNoticeComplete,
+  EDITOR_APPS, assertRendererAssetsReady, assertVendorTreeSafe, hashResourceTree, hashRendererTree, hashFile,
+  assertThirdPartyNoticeComplete, assertThirdPartyNoticeMatchesManifest,
+  validateGenofficeLicenseManifest, REQUIRED_GENOFFICE_LICENSE_PACKAGES,
 } = require("./stage-genoffice-resources.cjs");
 
 /** lstat every ancestor: fs.stat/realpath(renderer) alone misses a junction
@@ -92,7 +94,8 @@ function verifyPackagedLicenseAssets(root, info) {
   const strictBuild = process.env.MCODE_INCLUDE_GENOFFICE_BUNDLE === "1";
   if (!info.bundled) {
     if (info.licenseBundleVersion !== undefined || info.licenseAssetsSha256 !== undefined
-      || info.chromiumLicenseElectronVersion !== undefined) {
+      || info.chromiumLicenseElectronVersion !== undefined || info.licenseSourceManifestSha256 !== undefined
+      || info.licenseSourcePackageCount !== undefined || info.licenseBundleTestFixture !== undefined) {
       throw new Error("GenOffice opt-out manifest retains stale license integrity metadata");
     }
     return;
@@ -102,12 +105,50 @@ function verifyPackagedLicenseAssets(root, info) {
     if (strictBuild) throw new Error("GenOffice strict release is missing its license bundle integrity manifest");
     return; // Legacy fixtures remain readable; the release entrypoint always emits a versioned manifest.
   }
-  if (![1, 2].includes(version) || (strictBuild && version !== 2)) {
+  if (![1, 2, 3].includes(version) || (strictBuild && ![2, 3].includes(version))) {
     throw new Error("GenOffice license bundle version is invalid or incomplete for this release mode");
+  }
+  if (version !== 3 && (info.licenseSourceManifestSha256 !== undefined || info.licenseSourcePackageCount !== undefined)) {
+    throw new Error("GenOffice license bundle downgrade discarded its source-manifest version");
+  }
+  if (version === 2 && strictBuild && info.licenseBundleTestFixture !== true) {
+    throw new Error("GenOffice strict release v2 license bundle is missing its reviewed source-manifest provenance");
+  }
+  if (version !== 2 && info.licenseBundleTestFixture !== undefined) {
+    throw new Error("GenOffice license bundle has unexpected test-fixture marker");
   }
   const legacy = ["GenOffice-LICENSE", "GenOffice-NOTICE", "PDFium-LICENSE", "PDFium-LICENSE.pdfium"];
   const complete = [...legacy, "GenOffice-THIRD-PARTY-NOTICES.txt", "LICENSES.chromium.html"];
-  const expected = version === 2 ? complete : legacy;
+  let sourceValidation = null;
+  let expected = version === 1 ? legacy : complete;
+  if (version === 3) {
+    if (typeof info.licenseSourceManifestSha256 !== "string"
+        || !/^[0-9a-f]{64}$/.test(info.licenseSourceManifestSha256)
+        || info.licenseSourcePackageCount !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length) {
+      throw new Error("GenOffice v3 license source-manifest digest/package-count metadata is missing or invalid");
+    }
+    const manifestPath = path.join(root, "licenses", "GenOffice-THIRD-PARTY-LICENSES.json");
+    let manifestStat;
+    try { manifestStat = fs.lstatSync(manifestPath); }
+    catch (err) {
+      if (err?.code === "ENOENT") throw new Error("GenOffice packaged license source manifest missing: " + manifestPath);
+      throw err;
+    }
+    if (!manifestStat.isFile() || manifestStat.isSymbolicLink() || manifestStat.size === 0
+        || hashFile(manifestPath) !== info.licenseSourceManifestSha256) {
+      throw new Error("GenOffice packaged license source manifest digest/identity mismatch");
+    }
+    sourceValidation = validateGenofficeLicenseManifest({
+      manifestPath,
+      licenseRoot: path.join(root, "licenses", "GenOffice-Third-Party-Licenses"),
+      requireComplete: true,
+    });
+    expected = [
+      ...complete,
+      "GenOffice-THIRD-PARTY-LICENSES.json",
+      ...sourceValidation.items.map(item => "GenOffice-Third-Party-Licenses/" + item.licenseFile),
+    ];
+  }
   const digests = info.licenseAssetsSha256;
   if (!digests || typeof digests !== "object" || Array.isArray(digests)
     || JSON.stringify(Object.keys(digests).sort()) !== JSON.stringify([...expected].sort())
@@ -127,11 +168,13 @@ function verifyPackagedLicenseAssets(root, info) {
     }
     if (hashFile(file) !== digests[name]) throw new Error("GenOffice packaged license resource digest mismatch: " + name);
   }
-  if (version === 2) {
+  if (version === 2 || version === 3) {
     if (typeof info.chromiumLicenseElectronVersion !== "string" || !/^\d+\.\d+\.\d+/.test(info.chromiumLicenseElectronVersion)) {
       throw new Error("GenOffice complete license bundle is missing the source Electron version for Chromium licenses");
     }
-    assertThirdPartyNoticeComplete(path.join(root, "licenses", "GenOffice-THIRD-PARTY-NOTICES.txt"));
+    const noticePath = path.join(root, "licenses", "GenOffice-THIRD-PARTY-NOTICES.txt");
+    assertThirdPartyNoticeComplete(noticePath);
+    if (version === 3) assertThirdPartyNoticeMatchesManifest(fs.readFileSync(noticePath, "utf8"), sourceValidation);
   } else if (info.chromiumLicenseElectronVersion !== undefined) {
     throw new Error("GenOffice legacy license manifest has unexpected Chromium license metadata");
   }
@@ -266,4 +309,5 @@ function verifyAfterPack(context) {
 
 module.exports = verifyAfterPack;
 module.exports.verifyPackagedGenofficeEditorAssets = verifyPackagedGenofficeEditorAssets;
+module.exports.verifyPackagedLicenseAssets = verifyPackagedLicenseAssets;
 module.exports.verifyPhysicalDirChain = verifyPhysicalDirChain;

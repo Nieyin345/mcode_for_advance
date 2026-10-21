@@ -18,6 +18,9 @@ const fs = require("node:fs");
 const { createRequire } = require("node:module");
 const { isAbsolute, join, resolve, relative, sep, dirname } = require("node:path");
 const EDITOR_APPS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown", "html"]);
+const GENOFFICE_UPSTREAM_REPOSITORY = "https://github.com/genspark-ai/genoffice";
+const GENOFFICE_UPSTREAM_NOTICE = "genoffice/apps/shell/build/THIRD-PARTY-NOTICES.txt";
+const GENOFFICE_LICENSE_MANIFEST_SHA256 = "bbb9f634477e715bbf1f7a47eecc89e26560aa951c6f283f8b7d1bb6f018f165";
 
 function assertWithin(root, candidate) {
   const rel = relative(resolve(root), resolve(candidate));
@@ -82,8 +85,7 @@ function noticePackagesWithoutLicenseText(text) {
     .filter(([, title, body]) => / v[^\n]+ — /.test(title) && body.trimStart().startsWith("Licensed under "))
     .map(([, title]) => title);
 }
-function assertThirdPartyNoticeComplete(file) {
-  const text = fs.readFileSync(file, "utf8");
+function assertThirdPartyNoticeTextComplete(text) {
   for (const term of ["@embedpdf/pdfium", "Copyright 2014 PDFium Authors", "Apache License"]) {
     if (!text.includes(term)) throw new Error("GenOffice third-party notice is missing required PDFium license term: " + term);
   }
@@ -94,6 +96,193 @@ function assertThirdPartyNoticeComplete(file) {
   }
   return { packageSections: [...text.matchAll(/\n-{72}\n([^\n]+ v[^\n]+ — )/g)].length, missingLicenseText: [] };
 }
+function assertThirdPartyNoticeComplete(file) {
+  return assertThirdPartyNoticeTextComplete(fs.readFileSync(file, "utf8"));
+}
+const REQUIRED_GENOFFICE_LICENSE_PACKAGES = Object.freeze([
+  ["@electron-internal/extract-zip", "1.0.5", "BSD-2-Clause"],
+  ["@napi-rs/canvas-win32-x64-msvc", "1.0.3", "MIT"],
+  ["@nodable/entities", "3.0.0", "MIT"],
+  ["@univerjs/protocol", "0.25.1", "Apache-2.0"],
+  ["emoji-regex", "8.0.0", "MIT"],
+  ["fastdom", "1.0.12", "MIT"],
+  ["franc-min", "6.2.0", "MIT"],
+  ["hash.js", "1.1.7", "MIT"],
+  ["is-potential-custom-element-name", "1.0.1", "MIT"],
+  ["isarray", "1.0.0", "MIT"],
+  ["lazy-val", "1.0.5", "MIT"],
+  ["ot-json1", "1.0.2", "ISC"],
+  ["ot-text-unicode", "4.0.0", "ISC"],
+  ["punycode", "2.3.1", "MIT"],
+  ["react-remove-scroll-bar", "2.3.8", "MIT"],
+  ["saxes", "6.0.0", "ISC"],
+  ["strictdom", "1.0.1", "MIT"],
+  ["unicount", "1.1.0", "ISC"],
+].map(([name, version, spdx]) => Object.freeze({ name, version, spdx })));
+
+function validateGenofficeLicenseManifest({
+  manifestPath, licenseRoot, vendorRoot, repoRoot, requireComplete = true,
+  expectedManifestSha256 = GENOFFICE_LICENSE_MANIFEST_SHA256,
+} = {}) {
+  if (typeof manifestPath !== "string" || !manifestPath) {
+    throw new Error("GenOffice full license bundle requires its source manifest");
+  }
+  const manifestFile = resolve(manifestPath);
+  if (repoRoot) assertNativeVendorPath(resolve(repoRoot), manifestFile);
+  fileReady(manifestFile, "GenOffice license source manifest");
+  if (typeof expectedManifestSha256 !== "string" || !/^[0-9a-f]{64}$/.test(expectedManifestSha256)
+      || hashFile(manifestFile) !== expectedManifestSha256) {
+    throw new Error("GenOffice license source manifest SHA-256 differs from the reviewed source inventory");
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+  const root = resolve(licenseRoot ?? join(dirname(manifestFile), "licenses"));
+  if (manifest.format !== "mcode.genoffice.third-party-license-sources.v1"
+      || manifest.repository !== GENOFFICE_UPSTREAM_REPOSITORY
+      || manifest.sourceNotice !== GENOFFICE_UPSTREAM_NOTICE
+      || manifest.expectedPackageCount !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length
+      || !Array.isArray(manifest.items) || manifest.items.length !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length) {
+    throw new Error("GenOffice license source manifest schema/package inventory mismatch");
+  }
+  const verified = [];
+  const blocked = [];
+  for (let index = 0; index < REQUIRED_GENOFFICE_LICENSE_PACKAGES.length; index++) {
+    const expected = REQUIRED_GENOFFICE_LICENSE_PACKAGES[index];
+    const item = manifest.items[index];
+    if (!item || item.name !== expected.name || item.version !== expected.version || item.spdx !== expected.spdx
+        || item.packagePath !== "node_modules/" + expected.name + "/package.json"
+        || typeof item.upstreamRepository !== "string" || !item.upstreamRepository.startsWith("https://")
+        || typeof item.upstreamRevision !== "string" || !item.upstreamRevision
+        || typeof item.upstreamSourceUrl !== "string" || !item.upstreamSourceUrl.startsWith("https://")
+        || typeof item.npmTarballUrl !== "string" || !item.npmTarballUrl.startsWith("https://registry.npmjs.org/")
+        || typeof item.npmTarballIntegrity !== "string"
+        || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(item.npmTarballIntegrity)
+        || item.npmTarballIntegrityVerified !== true
+        || !Array.isArray(item.npmTarballLegalLicenseEntries)
+        || !["npm-gitHead", "release-tag-plus-source-commit"].includes(item.upstreamRevisionKind)) {
+      throw new Error("GenOffice license source identity/version/SPDX mismatch at package index " + (index + 1));
+    }
+    if (vendorRoot) {
+      const packageFile = resolve(vendorRoot, item.packagePath);
+      assertNativeVendorPath(resolve(vendorRoot), packageFile);
+      const pkg = JSON.parse(fs.readFileSync(packageFile, "utf8"));
+      const actualSpdx = typeof pkg.license === "string" ? pkg.license : pkg.license?.type;
+      if (pkg.name !== item.name || pkg.version !== item.version || actualSpdx !== item.spdx) {
+        throw new Error("GenOffice installed package metadata differs from license source manifest: " + item.name);
+      }
+    }
+    if (item.status === "blocked") {
+      if (item.licenseFile !== null || item.licenseTextSha256 !== null || item.licenseSourceUrl !== null
+          || typeof item.missingEvidence !== "string" || !item.missingEvidence) {
+        throw new Error("GenOffice blocked license entry contains a fabricated/incomplete text record: " + item.name);
+      }
+      blocked.push({ name: item.name, version: item.version, spdx: item.spdx, evidence: item.missingEvidence });
+      continue;
+    }
+    if (item.status !== "verified" || typeof item.licenseFile !== "string"
+        || item.licenseFile !== item.licenseFile.split(/[\\/]/).pop()
+        || item.licenseFile === "." || item.licenseFile === ".."
+        || typeof item.licenseTextSha256 !== "string" || !/^[0-9a-f]{64}$/.test(item.licenseTextSha256)
+        || typeof item.licenseSourceUrl !== "string" || !item.licenseSourceUrl.startsWith("https://raw.githubusercontent.com/")
+        || typeof item.licenseSourceVersion !== "string" || !item.licenseSourceVersion
+        || item.licenseSourceKind !== "exact-upstream-source-file") {
+      throw new Error("GenOffice verified license entry lacks exact source/file/hash metadata: " + item.name);
+    }
+    const licenseFile = resolve(root, item.licenseFile);
+    assertWithin(root, licenseFile);
+    if (repoRoot) assertNativeVendorPath(resolve(repoRoot), licenseFile);
+    fileReady(licenseFile, "full upstream license text for " + item.name);
+    const text = fs.readFileSync(licenseFile, "utf8");
+    if (text.trim().length < 150 || /^(?:Licensed under |SPDX-License-Identifier:)/i.test(text.trim())
+        || !/(?:Permission is hereby granted|Permission to use, copy|Apache License|Redistribution and use)/i.test(text)) {
+      throw new Error("GenOffice license source is not a full license text: " + item.name);
+    }
+    const actualHash = hashFile(licenseFile);
+    if (actualHash !== item.licenseTextSha256) {
+      throw new Error("GenOffice license source SHA-256 mismatch: " + item.name);
+    }
+    verified.push({ ...item, licensePath: licenseFile, licenseText: text });
+  }
+  if (manifest.resolvedCount !== verified.length || manifest.blockedCount !== blocked.length
+      || manifest.releaseEligible !== (blocked.length === 0)) {
+    throw new Error("GenOffice license source manifest summary disagrees with its package entries");
+  }
+  if (requireComplete && blocked.length) {
+    throw new Error("GenOffice strict release blocked: full upstream license text is unresolved for " +
+      blocked.map(item => item.name + "@" + item.version + " (" + item.spdx + ")").join(", ") +
+      ". Do not infer license text from SPDX metadata or a similar release.");
+  }
+  return {
+    manifest, manifestPath: manifestFile, licenseRoot: root,
+    items: verified, verifiedCount: verified.length,
+    blockedPackages: blocked, blockedCount: blocked.length,
+  };
+}
+
+function assertThirdPartyNoticeMatchesManifest(text, validation) {
+  if (!validation || validation.blockedCount !== 0
+      || validation.verifiedCount !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length) {
+    throw new Error("GenOffice third-party notice cannot be verified against an incomplete license source manifest");
+  }
+  const separator = "-".repeat(72);
+  const sections = text.split(/(?=^-{72}\r?$)/m);
+  for (const item of validation.items) {
+    const title = item.name + " v" + item.version + " — " + item.spdx;
+    const section = sections.find(chunk => {
+      const match = new RegExp("^" + separator + "\\r?\\n([^\\r\\n]+)").exec(chunk);
+      return match && match[1] === title;
+    });
+    if (!section || !section.includes(item.licenseText.trimEnd())
+        || !section.includes("Source: " + item.licenseSourceUrl)
+        || !section.includes("License SHA-256: " + item.licenseTextSha256)) {
+      throw new Error("GenOffice packaged notice does not contain exact full license/source material: " + item.name);
+    }
+  }
+  return { matchedCount: validation.items.length };
+}
+
+function buildCompleteThirdPartyNotice(sourceText, validation) {
+  if (!validation || validation.blockedCount !== 0
+      || validation.verifiedCount !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length) {
+    throw new Error("Cannot generate a complete GenOffice third-party notice while any upstream license text is unresolved");
+  }
+  const separator = "-".repeat(72);
+  const byTitle = new Map(validation.items.map(item => [
+    item.name + " v" + item.version + " — " + item.spdx, item,
+  ]));
+  let found = 0;
+  const chunks = sourceText.split(/(?=^-{72}\r?$)/m);
+  const replaced = chunks.map(chunk => {
+    const match = new RegExp("^" + separator + "\\r?\\n([^\\r\\n]+)\\r?\\n" + separator + "\\r?\\n([\\s\\S]*)$").exec(chunk);
+    if (!match) return chunk;
+    const item = byTitle.get(match[1]);
+    if (!item) return chunk;
+    found++;
+    return separator + "\n" + match[1] + "\n" + separator + "\n" +
+      item.licenseText.trimEnd() + "\n\nSource: " + item.licenseSourceUrl +
+      "\nSource version: " + item.licenseSourceVersion +
+      "\nLicense SHA-256: " + item.licenseTextSha256 + "\n";
+  });
+  if (found !== byTitle.size) {
+    throw new Error("GenOffice third-party notice package sections do not match the verified source manifest");
+  }
+  const text = replaced.join("");
+  const missing = noticePackagesWithoutLicenseText(text);
+  if (missing.length) throw new Error("GenOffice generated notice still has incomplete package license sections: " + missing.join(", "));
+  for (const item of validation.items) {
+    const title = item.name + " v" + item.version + " — " + item.spdx;
+    const section = text.split(/(?=^-{72}\r?$)/m).find(chunk => {
+      const match = new RegExp("^" + separator + "\\r?\\n([^\\r\\n]+)").exec(chunk);
+      return match && match[1] === title;
+    });
+    if (!section || !section.includes(item.licenseText.trimEnd())
+        || !section.includes("Source: " + item.licenseSourceUrl)
+        || !section.includes("License SHA-256: " + item.licenseTextSha256)) {
+      throw new Error("GenOffice generated notice failed exact license-text/source verification: " + item.name);
+    }
+  }
+  return text;
+}
+
 function resolveChromiumLicense(app) {
   const appRequire = createRequire(join(app, "package.json"));
   const electronPackagePath = appRequire.resolve("electron/package.json");
@@ -183,9 +372,12 @@ function hashFile(file) {
   }
 }
 
-function prepareGenofficeResources({ appDir, repoRoot, include = false, includeEditors = false, requireCompleteLicenseBundle = false }) {
+function prepareGenofficeResources({ appDir, repoRoot, include = false, includeEditors = false, requireCompleteLicenseBundle = false, licenseManifestPath }) {
   if (typeof include !== "boolean" || typeof includeEditors !== "boolean" || typeof requireCompleteLicenseBundle !== "boolean") {
     throw new TypeError("include, includeEditors and requireCompleteLicenseBundle must be boolean");
+  }
+  if (licenseManifestPath !== undefined && (typeof licenseManifestPath !== "string" || !licenseManifestPath)) {
+    throw new TypeError("licenseManifestPath must be a non-empty path when provided");
   }
   if (includeEditors && !include) throw new Error("GenOffice editors require the CLI bundle to be included");
   const app = resolve(appDir);
@@ -199,17 +391,39 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
   const wasm = join(pdfium, "dist", "pdfium.wasm");
   const thirdPartyNotice = join(vendor, "apps", "shell", "build", "THIRD-PARTY-NOTICES.txt");
   const completeLicenseBundle = include && requireCompleteLicenseBundle;
+  const productionRepo = resolve(__dirname, "../../..");
+  const isTestFixtureRoot = resolve(repo).toLowerCase() !== productionRepo.toLowerCase();
+  const sourceLicenseManifest = licenseManifestPath ? resolve(licenseManifestPath) : null;
+  if (completeLicenseBundle && !sourceLicenseManifest && !isTestFixtureRoot) {
+    throw new Error("GenOffice strict release staging requires the reviewed third-party license source manifest");
+  }
+  const sourceLicenseRoot = sourceLicenseManifest ? join(dirname(sourceLicenseManifest), "licenses") : null;
+  const licenseValidation = completeLicenseBundle && sourceLicenseManifest
+    ? validateGenofficeLicenseManifest({
+      manifestPath: sourceLicenseManifest, licenseRoot: sourceLicenseRoot,
+      vendorRoot: vendor, repoRoot: repo, requireComplete: true,
+    })
+    : null;
+  const completeThirdPartyNoticeText = licenseValidation
+    ? buildCompleteThirdPartyNotice(fs.readFileSync(thirdPartyNotice, "utf8"), licenseValidation)
+    : null;
   const chromiumLicenseInfo = completeLicenseBundle ? resolveChromiumLicense(app) : null;
   const legacyLicenses = [
-    [join(vendor, "LICENSE"), "GenOffice-LICENSE"],
-    [join(vendor, "NOTICE"), "GenOffice-NOTICE"],
-    [join(pdfium, "LICENSE"), "PDFium-LICENSE"],
-    [join(pdfium, "LICENSE.pdfium"), "PDFium-LICENSE.pdfium"],
+    [join(vendor, "LICENSE"), "GenOffice-LICENSE", undefined, "vendor"],
+    [join(vendor, "NOTICE"), "GenOffice-NOTICE", undefined, "vendor"],
+    [join(pdfium, "LICENSE"), "PDFium-LICENSE", undefined, "vendor"],
+    [join(pdfium, "LICENSE.pdfium"), "PDFium-LICENSE.pdfium", undefined, "vendor"],
   ];
   const licenses = completeLicenseBundle ? [
     ...legacyLicenses,
-    [thirdPartyNotice, "GenOffice-THIRD-PARTY-NOTICES.txt"],
-    [chromiumLicenseInfo.path, "LICENSES.chromium.html"],
+    [thirdPartyNotice, "GenOffice-THIRD-PARTY-NOTICES.txt", completeThirdPartyNoticeText, "vendor"],
+    [chromiumLicenseInfo.path, "LICENSES.chromium.html", undefined, "app"],
+    ...(licenseValidation ? [
+      [sourceLicenseManifest, "GenOffice-THIRD-PARTY-LICENSES.json", undefined, "mcode"],
+      ...licenseValidation.items.map(item => [
+        item.licensePath, "GenOffice-Third-Party-Licenses/" + item.licenseFile, undefined, "mcode",
+      ]),
+    ] : []),
   ] : legacyLicenses;
   // Validate the entire input BEFORE touching a previous stage.
   // Vite renderer assets are source-built vendor files; never package an
@@ -252,16 +466,23 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
       throw new Error("GenOffice PDFium WASM is not a WASM binary");
     }
     for (const [file, name] of licenses) fileReady(file, name);
-    const vendorFiles = [cli, nodeModules, wasm, ...licenses.map(([file]) => file)
-      .filter(file => !chromiumLicenseInfo || file !== chromiumLicenseInfo.path)];
+    const vendorFiles = [cli, nodeModules, wasm, ...licenses
+      .filter(([, , , origin]) => origin === "vendor" || origin === undefined)
+      .map(([file]) => file)];
     for (const file of vendorFiles) {
       assertNativeVendorPath(vendor, file);
       // A vendor's symlink/junction must not redirect the build to arbitrary
       // machine-private files outside the known checkout.
       assertWithin(repo, fs.realpathSync.native(file));
     }
-    if (chromiumLicenseInfo) assertWithin(app, fs.realpathSync.native(chromiumLicenseInfo.path));
-    if (completeLicenseBundle) assertThirdPartyNoticeComplete(thirdPartyNotice);
+    if (chromiumLicenseInfo) assertNativeVendorPath(app, chromiumLicenseInfo.path);
+    for (const [file, , , origin] of licenses.filter(([, , , origin]) => origin === "mcode")) {
+      assertNativeVendorPath(repo, file);
+    }
+    if (completeLicenseBundle) {
+      if (completeThirdPartyNoticeText) assertThirdPartyNoticeTextComplete(completeThirdPartyNoticeText);
+      else assertThirdPartyNoticeComplete(thirdPartyNotice);
+    }
   }
   fs.mkdirSync(tmp, { recursive: true });
   const temp = fs.mkdtempSync(join(tmp, ".genoffice-stage-"));
@@ -275,7 +496,12 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
       fs.copyFileSync(cli, join(temp, "cli", "genoffice.cjs"));
       fs.cpSync(nodeModules, join(temp, "cli", "node_modules"), { recursive: true, dereference: true });
       fs.copyFileSync(wasm, join(temp, "wasm", "pdfium.wasm"));
-      for (const [file, name] of licenses) fs.copyFileSync(file, join(temp, "licenses", name));
+      for (const [file, name, content] of licenses) {
+        const target = join(temp, "licenses", name);
+        fs.mkdirSync(dirname(target), { recursive: true });
+        if (typeof content === "string") fs.writeFileSync(target, content, "utf8");
+        else fs.copyFileSync(file, target);
+      }
       if (includeEditors) {
         for (const { name, renderer } of editors) {
           const target = join(temp, "apps", name, "out", "renderer");
@@ -294,10 +520,15 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
       editorsBundled: includeEditors,
       editors: includeEditors ? [...EDITOR_APPS] : [],
       ...(include ? {
-        licenseBundleVersion: requireCompleteLicenseBundle ? 2 : 1,
+        licenseBundleVersion: licenseValidation ? 3 : requireCompleteLicenseBundle ? 2 : 1,
         licenseAssetsSha256: Object.fromEntries(licenses.map(([, name]) => [
           name, hashFile(join(temp, "licenses", name)),
         ])),
+        ...(licenseValidation ? {
+          licenseSourceManifestSha256: hashFile(join(temp, "licenses", "GenOffice-THIRD-PARTY-LICENSES.json")),
+          licenseSourcePackageCount: licenseValidation.verifiedCount,
+        } : {}),
+        ...(completeLicenseBundle && !licenseValidation && isTestFixtureRoot ? { licenseBundleTestFixture: true } : {}),
         ...(chromiumLicenseInfo ? { chromiumLicenseElectronVersion: chromiumLicenseInfo.electronVersion } : {}),
       } : {}),
       ...(include ? {
@@ -347,6 +578,7 @@ if (require.main === module) {
     const result = prepareGenofficeResources({
       appDir, repoRoot: resolve(appDir, "../.."), include: setting === "1",
       includeEditors: editorsSetting === "1", requireCompleteLicenseBundle: true,
+      licenseManifestPath: join(__dirname, "vendor-licenses", "genoffice", "manifest.json"),
     });
     console.log(`GenOffice release sidecar: ${result.bundled ? "CLI staged" : "not included"}; original editors: ${result.editorsBundled ? "six staged" : "not included"}`);
   } catch (error) {
@@ -354,4 +586,10 @@ if (require.main === module) {
     process.exitCode = 1;
   }
 }
-module.exports = { prepareGenofficeResources, assertWithin, assertVendorTreeSafe, assertRendererAssetsReady, hashResourceTree, hashRendererTree, hashFile, noticePackagesWithoutLicenseText, assertThirdPartyNoticeComplete, resolveChromiumLicense, EDITOR_APPS };
+module.exports = {
+  prepareGenofficeResources, assertWithin, assertVendorTreeSafe, assertRendererAssetsReady,
+  hashResourceTree, hashRendererTree, hashFile, noticePackagesWithoutLicenseText,
+  assertThirdPartyNoticeComplete, assertThirdPartyNoticeTextComplete, assertThirdPartyNoticeMatchesManifest,
+  resolveChromiumLicense, validateGenofficeLicenseManifest, buildCompleteThirdPartyNotice,
+  REQUIRED_GENOFFICE_LICENSE_PACKAGES, EDITOR_APPS,
+};

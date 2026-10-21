@@ -1,15 +1,128 @@
 {
-  "format": "mcode.genoffice.upstream-lock.v1",
+  "format": "mcode.genoffice.upstream-lock.v2",
   "repository": "https://github.com/genspark-ai/genoffice",
-  "revision": "73ba918083b5e2bedff7633925c3d7f625e04449",
   "baseRevision": "cbec600ace9c930b2646b6739cf6df3741bb9d6a",
   "approvedPatch": {
     "revision": "73ba918083b5e2bedff7633925c3d7f625e04449",
+    "parentRevision": "cbec600ace9c930b2646b6739cf6df3741bb9d6a",
+    "subject": "fix(pdf): use privately owned atomic save temporary files",
     "paths": [
       "apps/pdf/src/main/atomic-write.ts",
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
+  "revision": "355e667353ad90da7d0b3c6823fad0f525b729c3",
+  "expectedTree": "2b6c91f23922a8c5a915d6e351dfbf19db6de082",
+  "patchSeries": [
+    {
+      "index": 1,
+      "file": "patches/genoffice/0001-feat-docs-add-scoped-Mcode-native-preload-and-IPC-bo.patch",
+      "revision": "8d379b1d7db7721a4982aaab8f904f624a59a832",
+      "parentRevision": "73ba918083b5e2bedff7633925c3d7f625e04449",
+      "sha256": "0fdb71b158f6edcf20f82bdfa2ac8c8c06c444ab08035aa890e737bfa3c087c0",
+      "bytes": 11147,
+      "subject": "feat(docs): add scoped Mcode-native preload and IPC boundary"
+    },
+    {
+      "index": 2,
+      "file": "patches/genoffice/0002-feat-docs-scope-open-lifecycle-to-Mcode-handoff.patch",
+      "revision": "684d9dc420a3837c37be318acc36c2c4bf201978",
+      "parentRevision": "8d379b1d7db7721a4982aaab8f904f624a59a832",
+      "sha256": "bcf18b61f0d298e8ffceab8e1be70b3ccf5561cf6404dbcadcac17060f0d188d",
+      "bytes": 3122,
+      "subject": "feat(docs): scope open lifecycle to Mcode handoff"
+    },
+    {
+      "index": 3,
+      "file": "patches/genoffice/0003-feat-docs-bind-native-language-and-system-locale-to-.patch",
+      "revision": "d8671f6ed75532d0260d9686bb31d63ec25faaf6",
+      "parentRevision": "684d9dc420a3837c37be318acc36c2c4bf201978",
+      "sha256": "ec8150e00da014262c52fe26485f415a0701c66aee867ab18768d106573961b3",
+      "bytes": 4107,
+      "subject": "feat(docs): bind native language and system locale to Mcode host"
+    },
+    {
+      "index": 4,
+      "file": "patches/genoffice/0004-feat-docs-add-host-scoped-native-spelling-operations.patch",
+      "revision": "d6eb48eab863f528f775bf80d2abcb475a3bed40",
+      "parentRevision": "d8671f6ed75532d0260d9686bb31d63ec25faaf6",
+      "sha256": "5a167c6a8534d69163ee4ad1796e90d7d06769c2c286091173d1992688d80201",
+      "bytes": 9954,
+      "subject": "feat(docs): add host-scoped native spelling operations"
+    },
+    {
+      "index": 5,
+      "file": "patches/genoffice/0005-feat-docs-route-scoped-context-menu-operations.patch",
+      "revision": "bd0886823d5762f21c04541eff5bd71a9f862fdb",
+      "parentRevision": "d6eb48eab863f528f775bf80d2abcb475a3bed40",
+      "sha256": "faa58b5fc7f77b0893d2fa502424a8bce7f046893dce653241987ae38c56a379",
+      "bytes": 8263,
+      "subject": "feat(docs): route scoped context menu operations"
+    },
+    {
+      "index": 6,
+      "file": "patches/genoffice/0006-feat-docs-fail-close-recovery-and-consolidate-scoped.patch",
+      "revision": "2fa633afbe31a14ec3bbcb929c631ae3c828767d",
+      "parentRevision": "bd0886823d5762f21c04541eff5bd71a9f862fdb",
+      "sha256": "38da2edb59f840913c611aeea79145661428f8c438a657f35b3bb88d49ccc1fa",
+      "bytes": 9180,
+      "subject": "feat(docs): fail-close recovery and consolidate scoped native IPC lifecycle"
+    },
+    {
+      "index": 7,
+      "file": "patches/genoffice/0007-feat-docs-gate-privileged-operations.patch",
+      "revision": "02d8683ca3f19cf404a48c3f1625140ea5175b46",
+      "parentRevision": "2fa633afbe31a14ec3bbcb929c631ae3c828767d",
+      "sha256": "295276dee4d889ec8f0a5ea90d0437277756a31868c44becb99a5709e07b4dbd",
+      "bytes": 21931,
+      "subject": "feat(docs): gate privileged operations through Mcode host"
+    },
+    {
+      "index": 8,
+      "file": "patches/genoffice/0008-feat-docs-bridge-native-ai-via-mcode-sessions.patch",
+      "revision": "bb7f67cc72056c0327030369a1156b92bbe37e7d",
+      "parentRevision": "02d8683ca3f19cf404a48c3f1625140ea5175b46",
+      "sha256": "3ceae9c45b592a327fa2a7c44af48fd284cb7a918ba70a74cf4422b9ed8522d4",
+      "bytes": 16722,
+      "subject": "feat(docs): bridge native AI panel to Mcode sessions"
+    },
+    {
+      "index": 9,
+      "file": "patches/genoffice/0009-feat-docs-scoped-export-media-and-files-read.patch",
+      "revision": "545c83b8a1abc69af2f7499a22d1c49b0c62d8e7",
+      "parentRevision": "bb7f67cc72056c0327030369a1156b92bbe37e7d",
+      "sha256": "b80bda2dd6f4215ff9dcf2e3f64e84e4f8c44a3e9f3e3d0daa027007f5f825c1",
+      "bytes": 22555,
+      "subject": "feat(docs): complete scoped PDF export and attachment media routes"
+    },
+    {
+      "index": 10,
+      "file": "patches/genoffice/0010-feat-pdf-markdown-html-scoped-mcode-ai.patch",
+      "revision": "9959e731e650f9eb51bf19937df2e07e967fe244",
+      "parentRevision": "545c83b8a1abc69af2f7499a22d1c49b0c62d8e7",
+      "sha256": "a093c109577962a51eaa0ddfdf3df6968e94dd1d8b5185c6de3535456d6594f9",
+      "bytes": 10069,
+      "subject": "feat(pdf): bridge native view AI through Mcode session"
+    },
+    {
+      "index": 11,
+      "file": "patches/genoffice/0011-security-sheets-slides-scoped-ipc.patch",
+      "revision": "aba076cc9b292461cc419288ee555e524f6250e1",
+      "parentRevision": "9959e731e650f9eb51bf19937df2e07e967fe244",
+      "sha256": "2f45a4632a38f7a394c5ddffb6a3fd6c515d7f9081e9f07e1504831644b3feed",
+      "bytes": 17941,
+      "subject": "security(T54): guard GenOffice sheet and slide IPC by owning pane"
+    },
+    {
+      "index": 12,
+      "file": "patches/genoffice/0012-security-slides-hosted-ai-media-ipc.patch",
+      "revision": "355e667353ad90da7d0b3c6823fad0f525b729c3",
+      "parentRevision": "aba076cc9b292461cc419288ee555e524f6250e1",
+      "sha256": "881f66dfc32c09050831e5760ef040a9e2e2a8588e9ab9a19ad284389817b5fa",
+      "bytes": 4808,
+      "subject": "security(slides): fail closed for hosted ai media ipc"
+    }
+  ],
   "license": "Apache-2.0",
   "editors": [
     "docs",
@@ -18,5 +131,6 @@
     "pdf",
     "markdown",
     "html"
-  ]
+  ],
+  "licenseSourceManifest": "apps/desktop/build/vendor-licenses/genoffice/manifest.json"
 }
