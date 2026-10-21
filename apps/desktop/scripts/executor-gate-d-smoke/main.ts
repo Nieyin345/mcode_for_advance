@@ -6,6 +6,9 @@ import { FileExecutorOwnershipStore, OWNERSHIP_FILE } from "@main/workflowEngine
 import { join } from "node:path";
 import { ExecutorOwnershipRegistry, InMemoryExecutorOwnershipStore, sharedExecutorOwnership } from "@main/workflowEngines/executorOwnership.js";
 import { ProductionWorkflowEngineRegistry } from "@main/workflowEngines/registry.js";
+import { syncNativeLibraryDocs } from "@main/workflowEngines/nativeLibrarySync.js";
+import { migrateWorkflowDoc } from "@main/workflowEngines/flowMigration.js";
+import type { WorkflowDoc } from "@contracts/workflow";
 import type { EngineChildProcess, EngineRuntimePorts } from "@main/workflowEngines/runtimeSupervisor.js";
 
 let total = 0, failed = 0;
@@ -226,7 +229,33 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
       };
     },
   };
-  const bridge = new ProductionWorkflowEngineRegistry(bridgePorts, live);
+  // T58: feed a real migrated native document through the same authenticated
+  // prepare/final messages that Node-RED's POST /flows produces.
+  const originalDoc: WorkflowDoc = {
+    id: "gate-d-next", name: "Native library test", schemaVersion: "1",
+    builtin: false, updatedAt: 0,
+    nodes: [{ id: "inspect", type: "mcode.fixture", title: "Before native edit",
+      position: { x: 100, y: 100 }, params: {} }],
+    edges: [],
+  };
+  const libraryDocs = new Map([[originalDoc.id, originalDoc]]);
+  const libraryEvents: string[] = [];
+  let libraryCalls = 0;
+  const sync = async (flows: unknown): Promise<void> => {
+    libraryCalls++;
+    await syncNativeLibraryDocs(flows, {
+      get: id => libraryDocs.get(id) ?? null,
+      revision: doc => JSON.stringify(doc),
+      save: async (doc, expected) => {
+        const old = libraryDocs.get(doc.id);
+        if (!old || JSON.stringify(old) !== expected) return { ok: false, error: "CAS" };
+        libraryDocs.set(doc.id, doc);
+        return { ok: true };
+      },
+      changed: id => { libraryEvents.push(id); },
+    });
+  };
+  const bridge = new ProductionWorkflowEngineRegistry(bridgePorts, live, sync);
   writeFileSync(flowsPath, JSON.stringify(nativeFlow(flowId)), "utf8");
   const server = bridge.get("node-red")!;
   eq("★ deploy bridge: production runtime running", (await server.start(options)).state, "running");
@@ -240,13 +269,18 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
   eq("★ rejected hot deploy preserves original owner", live.executorOwnerOf(flowId), "node-red");
   check("★ competing mcode owner releases", live.release("gate-d-other", "mcode").ok);
 
-  deliver?.({ kind: "mcode-deploy-prepare", id: "accepted", flows: [
-    { id: "next-tab", type: "tab", "x-mcode": { docId: "gate-d-next" } },
-  ] });
+  const nativeEdited = structuredClone(migrateWorkflowDoc(originalDoc).flow.nodes);
+  nativeEdited.find(n => n.type !== "tab")!.name = "After editor Deploy";
+  deliver?.({ kind: "mcode-deploy-prepare", id: "accepted", flows: nativeEdited });
   check("★ native hot deploy preflights successfully", replies.at(-1)?.id === "accepted" && replies.at(-1)?.ok === true, replies.at(-1));
   eq("★ new owner is reserved BEFORE engine can deploy", live.executorOwnerOf("gate-d-next"), "node-red");
   eq("★ previous owner remains reserved until deploy commits", live.executorOwnerOf(flowId), "node-red");
   deliver?.({ kind: "mcode-deploy-final", id: "accepted", success: true });
+  await Promise.resolve();
+  eq("T58 actual native editor title saves back into Mcode workflow library",
+    libraryDocs.get("gate-d-next")?.nodes[0].title, "After editor Deploy");
+  eq("T58 changed Mcode workflow is broadcast to library view", libraryEvents.join(","), "gate-d-next");
+  eq("T58 sync fires exactly once on confirmed deploy", libraryCalls, 1);
   eq("★ committed deploy releases removed flow", live.executorOwnerOf(flowId), null);
   eq("★ committed deploy retains next flow", live.executorOwnerOf("gate-d-next"), "node-red");
 
@@ -255,6 +289,7 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
   ] });
   eq("★ candidate flow reserved while deployment pending", live.executorOwnerOf("gate-d-abort"), "node-red");
   deliver?.({ kind: "mcode-deploy-final", id: "abort", success: false });
+  eq("T58 failed native deploy never writes workflow library", libraryCalls, 1);
   eq("★ failed deploy rolls back new claim", live.executorOwnerOf("gate-d-abort"), null);
   eq("★ failed deploy keeps current flow", live.executorOwnerOf("gate-d-next"), "node-red");
   eq("T10 failed deploy rollback left memory and disk exactly consistent",

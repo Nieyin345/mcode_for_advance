@@ -1402,7 +1402,7 @@ export const zh = {
   "settings.workflows.tabEngines": "第三方引擎",
   "settings.workflows.nativeEditorTitle": "使用 Node-RED 原厂编辑器",
   "settings.workflows.openNativeEditor": "打开 Node-RED 编辑器",
-  "settings.workflows.nativeEditorNote": "手写画布已移除。原厂编辑器使用独立的 flows.json；当前还不会自动载入本列表中选中的工作流，也不会把部署结果自动写回工作流库。请勿将编辑器中的部署视为已保存到本列表。",
+  "settings.workflows.nativeEditorNote": "手写画布已移除。当前不会自动载入列表中选中的工作流；仅已在原厂编辑器中的、带 Mcode 文档标记的工作流，部署成功后才同步回本列表。原厂独立流程不会自动导入。",
   "settings.workflows.engine.start": "启动",
   "settings.workflows.engine.stop": "停止",
   "settings.workflows.engine.refreshStatus": "刷新状态",

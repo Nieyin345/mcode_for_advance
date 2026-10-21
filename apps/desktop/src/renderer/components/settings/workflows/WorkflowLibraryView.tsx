@@ -357,6 +357,23 @@ export function WorkflowLibraryView({
    *  (`WorkflowRepo.save` 里的 `persist()` 重写整个 sqlite 文件),而连点两下「保存」、
    *  或者保存期间又去删这份文档,两次写会撞在一起。 */
   const inflight = useRef<{ promise: Promise<void> } | null>(null);
+
+  // T58: a committed native deployment updates the DB, but the selected
+  // library document remains mounted while the engine tab is visible. Refresh
+  // that exact document from the authoritative workflow.get response; never
+  // stomp an unsaved draft or a save currently in flight.
+  useEffect(() => {
+    const off = window.api?.on?.workflowsChanged?.((event) => {
+      const prefix = "node-red:deploy:";
+      if (!event?.reason?.startsWith(prefix)) return;
+      const id = event.reason.slice(prefix.length);
+      const current = latest.current;
+      if (!current || current.working.id !== id || inflight.current
+        || isDocDirty(current.working, current.baseline)) return;
+      void openWorkflow(id);
+    });
+    return off;
+  }, [openWorkflow]);
   /** 正在删这份文档。删除期间**不许再发保存** —— `WorkflowRepo.save` 是 upsert,
    *  晚到的那一次会把刚删掉的那一行写回去。 */
   const removingRef = useRef(false);

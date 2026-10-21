@@ -16,6 +16,8 @@ import { registerWorkflowHandlers } from "@main/ipc/orchestration.js";
 import { getWorkflow, saveWorkflow } from "@main/orchestration/library.js";
 import { exportWorkflowDoc } from "@main/orchestration/workflowValidation.js";
 import { workflowReviewOf, workflowRevision } from "@main/orchestration/workflowTrust.js";
+import { migrateWorkflowDoc } from "@main/workflowEngines/flowMigration.js";
+import { syncDeployedNativeWorkflows } from "@main/workflowEngines/nativeLibrarySync.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
 import { decodeSnapshot } from "@main/orchestration/runStore.js";
 import { getModuleHost } from "@main/modules/service.js";
@@ -51,8 +53,10 @@ export async function runNativeProbe(dir: string, phase: string): Promise<void> 
     win!.webContents.sendInputEvent({ type: "mouseUp", ...pos, button, clickCount: 1 });
     await delay(75);
   }
-  async function chooseWorkflow(): Promise<void> { await click("button", name); await wait("document.querySelector('[role=button][title=\"File inspection\"]')"); }
-  async function openInspector(): Promise<void> { await click('[role=button][title="File inspection"]'); await wait("document.querySelector('[data-testid=module-capability-fields]') && !document.querySelector('[data-testid=module-target-loading]')"); }
+  async function chooseWorkflow(): Promise<void> {
+    await click("button", name);
+    await wait("document.querySelector('section[aria-label] button')");
+  }
   // capturePage is awaited explicitly; no image or API success reply is fabricated.
   async function screenshot(file: string): Promise<void> {
     // Hidden Electron windows may return their previous compositor frame even
@@ -83,7 +87,7 @@ export async function runNativeProbe(dir: string, phase: string): Promise<void> 
         id, name, trigger: "manual", schemaVersion: "1", builtin: false, updatedAt: 0,
         nodes: [
           { id: "start", type: "mcode.trigger", title: "Manual start", position: { x: 0, y: 0 }, params: { triggerKind: "manual", enabled: false, project: projectId, task: "Explicit isolated read-only file inspection" } },
-          { id: "inspect", type: "mcode.module-capability", title: "File inspection", position: { x: 320, y: 0 }, params: { moduleId: "core.file-report", contributionId: "info", path: "before.txt" } },
+          { id: "inspect", type: "mcode.module-capability", title: "File inspection", position: { x: 320, y: 0 }, params: { moduleId: "core.file-report", contributionId: "inspect", path: "{{trigger.kind}}.txt" } },
           { id: "info", type: "mcode.module-capability", title: "Downstream info", position: { x: 640, y: 0 }, params: { moduleId: "core.file-report", contributionId: "info", path: "{{File inspection.sha256}}.txt" } },
         ],
         edges: [{ id: "e1", from: "start", to: "inspect" }, { id: "e2", from: "inspect", to: "info" }],
@@ -151,31 +155,44 @@ export async function runNativeProbe(dir: string, phase: string): Promise<void> 
           assert.deepEqual(getWorkflow(id), before, "a rejected save changed the previous persisted version");
         }
       });
-      await chooseWorkflow(); await openInspector();
-      await check("production node inspector selects a host target and saves a path template through native IPC", async () => {
-        await click('[data-testid="module-target-trigger"]');
-        await click('[data-testid="module-target-option"]', 'SHA-256');
-        await wait("document.querySelector('[data-testid=module-target-summary]')?.textContent.includes('core.file.inspect')");
-        await js(`(()=>{const e=document.querySelector('[data-testid=module-capability-fields] input[type=text]');if(!e)throw Error('No path field');const proto=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(e,'{{trigger.kind}}.txt');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-        await wait("[...document.querySelectorAll('button')].some(b=>b.textContent.trim()==='保存'&&!b.disabled)");
-        await click("button", "保存", "left", true);
-        await until(() => getWorkflow(id)?.nodes[1].params.path === "{{trigger.kind}}.txt", "UI save persisted");
-        assert.deepEqual(getWorkflow(id)?.nodes[1].params, { moduleId: "core.file-report", contributionId: "inspect", path: "{{trigger.kind}}.txt" });
+      await check("native deploy writes node title to actual SQLite workflows and flags untrusted review", async () => {
+        const source = getWorkflow(id); assert.ok(source);
+        const nativeNodes = migrateWorkflowDoc(source).flow.nodes;
+        const info = nativeNodes.find(node => node["x-mcode"]?.nodeId === "info");
+        assert.ok(info); info.name = "Renamed in Node-RED";
+        assert.deepEqual(await syncDeployedNativeWorkflows(nativeNodes), [id]);
+        const stored = getWorkflow(id); assert.ok(stored);
+        assert.equal(stored.nodes.find(node => node.id === "info")?.title, "Renamed in Node-RED");
+        assert.equal(workflowReviewOf(stored)?.pending, true, "external editor must revoke old trust");
+        const live = await js<{ workflow: WorkflowDoc }>(`window.api.workflow.get({id:${JSON.stringify(id)}})`);
+        assert.equal(live.workflow.nodes.find(node => node.id === "info")?.title, "Renamed in Node-RED");
+        const approved = await js<{ ok: boolean }>(`window.api.workflow.approve({id:${JSON.stringify(id)},revision:${JSON.stringify(workflowRevision(stored))}})`);
+        assert.equal(approved.ok, true, "explicit reviewer approval restores execution");
+        await flushDb();
+      });
+      await chooseWorkflow();
+      await check("native workflow library opens the Node-RED entry; real IPC retains the configured graph", async () => {
+        await wait("document.querySelector('section[aria-label] button')");
+        const persisted = getWorkflow(id); assert.ok(persisted);
+        assert.deepEqual(persisted.nodes[1].params, { moduleId: "core.file-report", contributionId: "inspect", path: "{{trigger.kind}}.txt" });
+        const fromPreload = await js<{ workflow: WorkflowDoc }>(`window.api.workflow.get({id:${JSON.stringify(id)}})`);
+        assert.deepEqual(fromPreload.workflow.nodes[1].params, persisted.nodes[1].params);
         await flushDb();
         assert.equal((await readFile(join(dir, "data/mcode.db"))).subarray(0, 15).toString(), "SQLite format 3");
-        await chooseWorkflow(); await openInspector();
-        await wait("document.querySelector('[data-testid=module-capability-fields] input[type=text]')?.value==='{{trigger.kind}}.txt'");
         await screenshot("configured.png");
       });
     } else {
       await check("new Electron process reopens the real SQLite configuration and run outcomes", async () => {
         assert.deepEqual(getWorkflow(id)?.nodes[1].params, { moduleId: "core.file-report", contributionId: "inspect", path: "{{trigger.kind}}.txt" });
+        assert.equal(getWorkflow(id)?.nodes.find(node => node.id === "info")?.title, "Renamed in Node-RED", "node title must survive real SQLite restart");
         const rows = WorkflowRunRepo.listForAutomationWorkflow(id, 20);
         assert.ok(rows.some(row => row.status === "success"));
         const snapshot = decodeSnapshot(rows.find(row => row.status === "success")!.payload); assert.ok(snapshot);
         assert.equal(new Map(snapshot.state.outcomes).get("inspect")?.outputs?.sha256, digest);
-        await chooseWorkflow(); await openInspector();
-        assert.equal(await js("document.querySelector('[data-testid=module-capability-fields] input[type=text]').value"), "{{trigger.kind}}.txt");
+        await chooseWorkflow();
+        await wait("document.querySelector('section[aria-label] button')");
+        const fromPreload = await js<{ workflow: WorkflowDoc }>(`window.api.workflow.get({id:${JSON.stringify(id)}})`);
+        assert.deepEqual(fromPreload.workflow.nodes[1].params, getWorkflow(id)?.nodes[1].params);
         await screenshot("reopened.png");
       });
     }

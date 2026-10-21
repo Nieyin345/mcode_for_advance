@@ -146,3 +146,24 @@ T45 说的：
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+
+### 2026-10-21 T58 执行回写
+
+- **A / 旧画布冒烟**：`workflow-ui-smoke` 改验原厂入口、可访问性、跳转、显式保存/草稿、英文本地化/自动化入口和原生部署广播刷新（含不覆盖脏草稿），**20/20、0 个夹具错误**。与 `workflow-view-smoke` 的重叠是原厂入口/列表基本行为；后者主要是无头组件/状态/逻辑断言，前者独有真 Chromium 渲染、Tab/ARIA、导航切换、跨页草稿及广播后渲染，故保留，不退役。
+- **B / 原生 Electron E2E**：仅摘掉依赖已删除画布 DOM 的「选节点卡 → 检查器改贡献点/路径」操作；初始化即采用受校验的合法模块贡献点参数（`inspect` + `{{trigger.kind}}.txt`），并以原厂编辑器入口和**真实 IPC/SQLite** 读回替代。保留恶意保存/导入拒绝、SQLite 重启持久化、自动化运行/重复运行、信任审核/审批/版本、宿主文件哈希/下游路径、权限授予撤销、菜单、取消和零模型调用等非画布断言。复跑 `module-phase2-e2e-smoke` **10/10 composite**（独立 Electron 子进程 create/reopen 的完整凭据、真实调度链均通过），不是以删除断言冒充变绿。
+- **C / 保存回写**：在 `OwnedNodeRedRuntime` 已有认证 `mcode-deploy-prepare` / `mcode-deploy-final success=true` 路径，部署前保留候选原生 nodes、成功后调用 `nativeLibrarySync.ts`；按 tab 的 `x-mcode.docId` + `z` 还原为 `WorkflowDoc`，仅更新已存在的 Mcode 文档；复用 `saveWorkflow`（校验、CAS、重新要求审核）持久化并广播 `node-red:deploy:<id>`。失败、结果不明及原厂独立 tab 均不写库；重载当前未脏的库文档，防止回到库仍看到旧标题，脏草稿不被广播覆盖。覆盖：`executor-gate-d-smoke` **85/85**（真正 deploy prepare/final 路径，模拟原厂改名后新标题进入库、广播、失败不写）；`module-phase2-e2e-smoke` 的新增断言在**隔离真实 SQLite** 上验证反向映射、落库、公开 workflow.get、外部改动审核闸门/明确批准以及新 Electron 进程重启后的标题。
+- **反向映射边界**：`flowToWorkflowDoc` 对迁移器生成且保留 `x-mcode` 的节点，能从原生 `name` 读回标题，基于真实 `wires` 还原连线并保留对应侧车元数据；不承诺无侧车的任意第三方原生节点/全局配置或改变底层节点 type 后的全部语义可无损反向迁移。同步错误显式日志，不谎报已存入库。
+- **T45 的①**：**未解决**。本卡解决已有 Mcode 标记/已在原厂内的 flow 经 Deploy 回写；点击工作流库中某份文档目前仅跳到原厂编辑器页，**没有把选中的该份文档自动装入 Node-RED 画布**。本任务没有扩成独立导入/双向自动加载方案。
+- **回归命令**：`node apps/desktop/scripts/run-smokes.mjs workflow-ui-smoke workflow-view-smoke executor-gate-d-smoke flow-migration-smoke workflow-engine-runtime-smoke` → 5/5 PASS；`node apps/desktop/scripts/run-smokes.mjs module-phase2-e2e-smoke` → PASS。日志 `apps/desktop/.tmp/smoke-runs/1792574752232-38588-TiunoC/` 和 `1792574586598-20320-kaynQi/`。
+- **变异（验收 6）**：临时把 `registry.ts` 内的 `this.syncLibrary(pending.flows)` 替换为一个成功但不回写的 Promise，复跑 `executor-gate-d-smoke` → **81/85、退出 1**，其中「Native editor title saves back into Mcode workflow library」正确变红（旧标题未变；广播和调用计数也变红）。日志 `apps/desktop/.tmp/smoke-runs/1792574787053-43440-ZxbOQG/`。已恢复原代码并确认正例回归通过。
+- **双包 tsc（验收 5）**：`node node_modules/typescript/bin/tsc --noEmit -p packages/contracts/tsconfig.json` **PASS**；`node node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json` **FAIL**，仅两条：`src/main/document/genofficeNativeVendor.ts:49,55` 向未声明 `mcodePaneGuard` 的 GenOffice 参数类型传值（并行 T52/ARC-007 的未完成工作区修改，非本卡）。按「不扩范围、不动别的任务代码」不修此处。**验收 5 未达成**。
+
+### 2026-10-21 执行复核（当前工作树，未宣告整卡完成）
+
+- 基线 HEAD `0a2065962098106425e5ef0f8b4b5c360900a10e`；检查时 T58 关联的 `workflow-ui-smoke`、`module-phase2-e2e-smoke`、`registry.ts`、`flowMigration.ts`、工作流库及新建 `nativeLibrarySync.ts` 已有未提交修改。本轮未覆盖这些并行修改。
+- `node apps/desktop/scripts/run-smokes.mjs workflow-ui-smoke`：PASS（1/1）。
+- `node apps/desktop/scripts/run-smokes.mjs module-phase2-e2e-smoke workflow-view-smoke flow-migration-smoke workflow-engine-runtime-smoke`：PASS（4/4）。
+- `pnpm --filter @mcode/contracts typecheck && pnpm --filter @mcode/desktop typecheck`：PASS。
+- 静态链路：`OwnedNodeRedRuntime` 接 `mcode-deploy-final` 成功后调用 `syncDeployedNativeWorkflows`，其通过 `flowToWorkflowDoc` 与 `saveWorkflow(..., untrustedOrigin: 'import')` 回写。`module-phase2-e2e-smoke` 含标题改动→同步→SQLite/IPC 展示→重启后保留的 E1 断言；旧画布断言已替换。`workflow-ui-smoke` 保留入口跳转、选中态、草稿/保存/通知刷新独有 UI 断言，旧画布交互由 `workflow-view-smoke` 等现存测试覆盖。
+- **仍未达成完整验收**：判据 6 尚无撤掉保存回写的实际红例；判据 3 的真实 Node-RED 编辑器点击 Deploy→回写全链路尚无 U1/完整 E2E 证据（当前只证实同步函数及宿主界面回读）。T45 的①（选中库文档在原厂编辑器内可拖拽保存）也尚未获得 U1 保证；`flowToWorkflowDoc` 对任意上游原生节点的完整无损回转不可承诺，未知/不可映射语义仍应走迁移报告。

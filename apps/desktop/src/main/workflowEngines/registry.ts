@@ -350,10 +350,14 @@ export function isFlowTrusted(dataDir: string): boolean {
 /** Production runtime owns each native tab from before spawn to child exit. */
 export class OwnedNodeRedRuntime extends EngineRuntime {
   private ownedFlowIds: string[] = [];
-  private pendingDeploy: { id: string; flowIds: string[]; added: string[] } | null = null;
+  private pendingDeploy: { id: string; flowIds: string[]; added: string[]; flows: unknown } | null = null;
   private nodePackHost: NodePackHost | null = null;
   constructor(engineId: string, ports: EngineRuntimePorts, private readonly ownership: ExecutorOwnershipRegistry,
-    private readonly nodeServices?: NodePackHostServices) {
+    private readonly nodeServices?: NodePackHostServices,
+    private readonly syncLibrary: (flows: unknown) => Promise<unknown> = async flows => {
+      const { syncDeployedNativeWorkflows } = await import("./nativeLibrarySync.js");
+      return syncDeployedNativeWorkflows(flows);
+    }) {
     super(engineId, ports);
     this.onTerminated(() => this.releaseOwned());
   }
@@ -392,6 +396,11 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
           }
         }
         this.ownedFlowIds = pending.flowIds;
+        // A real editor deploy has committed. Only now mirror the same native
+        // nodes back to the existing workflow library, via its guarded save.
+        // A failed mirror is logged, not misreported as an ownership rollback.
+        void this.syncLibrary(pending.flows)
+          .catch(err => log.error(`Native Node-RED deploy saved but library sync failed: ${String(err)}`));
       } else if (msg["uncertain"] === true) {
         // The client may disconnect after native deployment has begun. It is
         // unsafe to give its flows to Mcode until this engine actually stops.
@@ -427,7 +436,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
       reject(err instanceof Error ? err.message : String(err));
       return;
     }
-    this.pendingDeploy = { id, flowIds: nextIds, added };
+    this.pendingDeploy = { id, flowIds: nextIds, added, flows: structuredClone(msg["flows"]) };
     send({ kind: "mcode-deploy-reply", id, ok: true });
   }
 
@@ -461,6 +470,7 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
   constructor(
     private readonly runtimePorts: EngineRuntimePorts = defaultEngineRuntimePorts,
     private readonly ownership: ExecutorOwnershipRegistry = sharedExecutorOwnership,
+    private readonly nativeLibrarySync?: (flows: unknown) => Promise<unknown>,
   ) {}
   /** 每个引擎的数据目录（首次 launchSpec 时创建）。 */
   private readonly dataDirs = new Map<string, string>();
@@ -473,7 +483,7 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     if (!(ENGINE_IDS as readonly string[]).includes(engineId)) return null;
     let runtime = this.runtimes.get(engineId);
     if (runtime === undefined) {
-      runtime = new OwnedNodeRedRuntime(engineId, this.runtimePorts, this.ownership);
+      runtime = new OwnedNodeRedRuntime(engineId, this.runtimePorts, this.ownership, undefined, this.nativeLibrarySync);
       this.runtimes.set(engineId, runtime);
     }
     return runtime;

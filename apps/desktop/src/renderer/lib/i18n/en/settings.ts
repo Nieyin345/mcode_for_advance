@@ -1402,7 +1402,7 @@ export const en = {
   "settings.workflows.tabEngines": "Third-party engines",
   "settings.workflows.nativeEditorTitle": "Node-RED native editor",
   "settings.workflows.openNativeEditor": "Open Node-RED editor",
-  "settings.workflows.nativeEditorNote": "The hand-built canvas has been removed. Node-RED edits its separate flows.json; the selected library workflow is not imported automatically, and deploying in Node-RED does not save changes back to this library yet.",
+  "settings.workflows.nativeEditorNote": "The hand-built canvas has been removed. The selected library workflow is not imported automatically. A successful Node-RED deploy syncs only existing Mcode-tagged workflows back to this library; standalone native tabs are not imported.",
   "settings.workflows.engine.start": "Start",
   "settings.workflows.engine.stop": "Stop",
   "settings.workflows.engine.refreshStatus": "Refresh status",

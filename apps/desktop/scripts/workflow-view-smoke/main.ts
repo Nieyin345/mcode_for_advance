@@ -2130,7 +2130,7 @@ console.log("\nWorkflowNativeEditorEntry");
 const nativeEntryZh = withLocale("zh", () => html(createElement(WorkflowNativeEditorEntry, { onOpen: () => {} })));
 const nativeEntryEn = withLocale("en", () => html(createElement(WorkflowNativeEditorEntry, { onOpen: () => {} })));
 check("工作流库有原厂编辑器入口", button(nativeEntryZh, "打开 Node-RED 编辑器").found);
-check("原厂编辑器入口不伪称已经自动保存到工作流库", nativeEntryZh.includes("不会把部署结果自动写回工作流库"));
+check("原厂编辑器入口说明仅已带 Mcode 标记的部署会同步", nativeEntryZh.includes("部署成功后才同步回本列表"));
 check("原厂编辑器有英语入口", button(nativeEntryEn, "Open Node-RED editor").found);
 check("入口不自行画边/节点", !nativeEntryZh.includes("workflow-edge-arrow") && !nativeEntryZh.includes("data-workflow-viewport"));
 const nativeLibrarySrc = readFileSync("src/renderer/components/settings/workflows/WorkflowLibraryView.tsx", "utf8");

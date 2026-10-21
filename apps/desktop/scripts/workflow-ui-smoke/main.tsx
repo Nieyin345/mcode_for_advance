@@ -54,7 +54,7 @@ const docs: Record<string,WorkflowDoc> = {
   'audit-workflow-b': {...clone(workflow),id:'audit-workflow-b',name:'第二条普通工作流'},
   [automation.id]: clone(automation),
 };
-const workflowListeners = new Set<() => void>();
+const workflowListeners = new Set<(event?: {reason:string}) => void>();
 type RunStatus = 'running'|'success'|'failed';
 let status: RunStatus = 'running';
 let hasRun = false;
@@ -116,14 +116,14 @@ Object.assign(apiImpl,impl);
 interface AuditWindow {
   __apiImpl: typeof apiImpl;
   __apiCalls?: string[];
-  api: {platform:string;on:{workflowsChanged:(fn:()=>void)=>()=>void}};
+  api: {platform:string;on:{workflowsChanged:(fn:(event?:{reason:string})=>void)=>()=>void}};
   __audit:{docs:typeof docs;saves:typeof saves;runCalls:typeof runCalls;completeRun:()=>void;emitWorkflowChange:()=>void};
   __ready:boolean;
 }
 const w=window as unknown as AuditWindow;
 w.__apiImpl=apiImpl;
 w.api={platform:'win32',on:{workflowsChanged:(fn)=>{workflowListeners.add(fn);return()=>{workflowListeners.delete(fn);};}}};
-w.__audit={docs,saves,runCalls,completeRun:()=>{status='success';},emitWorkflowChange:()=>{for(const fn of workflowListeners)fn();}};
+w.__audit={docs,saves,runCalls,completeRun:()=>{status='success';},emitWorkflowChange:()=>{for(const fn of workflowListeners)fn({reason:'node-red:deploy:audit-workflow'});}};
 useSessionStore.setState({
   settingsSection: scenario.startsWith('automation') ? 'automation' : 'workflows',
   locale:query.get('locale')==='en'?'en':'zh',
