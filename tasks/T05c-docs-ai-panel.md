@@ -5,7 +5,7 @@
 | 编号 | T05c |
 | 类型 | ARC-007（T05 拆分第三张） |
 | 优先级 | 中高 |
-| 建议并发 | **不要与 T05b 同时派**（都改 `genoffice/` 与 `src/main/document/`） |
+| 建议并发 | **可与 T05b 并行**（AI 通道在新文件 `mcode-ai-ipc.ts`，不碰 T05b 正在改的 `mcode-ipc.ts`） |
 | 预计规模 | 中大 |
 
 ---
@@ -74,8 +74,14 @@ GenOffice 的 AI 选区弹框 / 侧栏
 这是本卡的主要工作，不是逐个迁 handler。
 
 - GenOffice 的 AI 面板发起请求时，**不**走它自己的 `ai:*`，而走一条新的
-  窄通道：`mcode-ipc.ts` 里加一个 handler，把「选区文本 + 指令 + 文档上下文」
-  转成 Mcode 的 typed action。
+  窄通道。**通道放在新文件 `genoffice/apps/docs/src/main/mcode-ai-ipc.ts`**，
+  `mcode-ipc.ts` 里只加一行注册调用。
+
+  > 为什么独立文件：T05b 正在同一个 `mcode-ipc.ts` 里加 10 个权限 handler。
+  > 两个执行对话同时改同一份文件会互相覆盖。独立文件让两条线可以并行，
+  > 代价只是多一个模块。
+
+  这个 handler 把「选区文本 + 指令 + 文档上下文」转成 Mcode 的 typed action。
 - 这个 action 经 `app_api_call` 的既有审批链（不是新开一条）。
 - 执行由当前会话选中的 provider（Claude / Pi / Codex）完成。
 - 流式结果回填到 GenOffice 的编辑器（它有自己的 selection/insert API）。
@@ -108,7 +114,8 @@ GenOffice 的 AI 选区弹框 / 侧栏
 - **不要**删掉 GenOffice 的 AI 面板 UI（用户要的是能用的面板）。
 - 不要碰 sheets / slides / pdf / markdown / html。
 - 不要碰 `genoffice/ee/`。
-- 与 T05b 的文件边界重叠：**先确认 T05b 已完成**再开。
+- **不要修改 `mcode-ipc.ts` 里 T05b 正在加的那 10 个 handler**；只允许在文件末尾加一行
+  `registerMcodeAiIpc(...)` 调用。
 
 ---
 

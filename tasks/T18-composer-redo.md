@@ -119,3 +119,16 @@ Tiptap 已经处理的东西**必须保留**：
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 执行对话／开工差距表（对照三份逆向件全文）
+
+| 能力 | 逆向件 | Mcode 开工现状 | 差距及处理 |
+|---|---|---|---|
+| @ 提及 | 检测与插入、键盘导航及 IME 防误提交 | ChatPane.recomputePicker + FileMentionPicker + Tiptap chip；实文件搜索、键盘 ↑↓/Enter/Tab/Esc、阻止 IME 期间选中 | 主功能已有，不重写；WebKit compositionend 后虚假 Enter 缺二次防护（补） |
+| 自动增高 | 原生 field-sizing/content；min 48px / max min(40svh, 24rem)，内部滚动 | Tiptap .ProseMirror 由内容自然撑高，min 3rem，max 固定 18rem，overflow-y auto | 上限未随小视口变化（补响应式 cap，保留内部滚动及 Tiptap） |
+| 附件区 | 标签列、删除、+ 添加内容 | ChatPane tags/pendingImages、file drop/paste/clipboard、attach picker、去重 | 核心能力已有，不重复 |
+| 「下巴」布局 | 20px 外框、模型/思考/权限工具条与发送反馈 | composer-card + ComposerToolbar minipill + ComposerToolbarToggle + T17 容器查询压缩 + send 动画 | 已有，不另造 |
+| 键盘快捷键 | Enter/Shift+Enter，菜单 ↑↓/Enter/Tab/Esc，IME 守卫 | ComposerEditor 按 sendKey 支持 Enter 与 Ctrl/Cmd+Enter；picker 有 ↑↓/Enter/Tab/Esc，IME 与 229 守卫 | 主功能已有；仅补 WebKit 合成后误回车防护 |
+| 浮层定位 | 上/下随空间翻转 | FileMentionPicker / SlashCommandPicker 固定 top=anchor.top-8 + translateY(-100%) | 缺空间翻转与防溢出（补同一共享位置计算） |
+
+基线：`node scripts/run-smokes.mjs ime-enter-smoke attach-links-smoke content-tag-smoke arc005-picker-layer-smoke`，4/4 PASS；工作树存在其他任务的未提交 main/document 改动，本任务不碰它们。
