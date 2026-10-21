@@ -26,7 +26,185 @@ function gitOutput(vendor, ...args) {
   return result.stdout.trim();
 }
 function hashFile(file) {
-  return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  const hash = createHash("sha256");
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  const fd = fs.openSync(file, "r");
+  try {
+    let n;
+    while ((n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) hash.update(chunk.subarray(0, n));
+    return hash.digest("hex");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+function hashTree(root, namespace) {
+  const hash = createHash("sha256");
+  hash.update(namespace + "\0");
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  function visit(dir, subpath = "") {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })
+      .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const rel = subpath ? subpath + "/" + entry.name : entry.name;
+      const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) throw new Error("Node-RED release tree symlink denied: " + rel);
+      if (entry.isDirectory()) { visit(full, rel); continue; }
+      if (!entry.isFile()) throw new Error("Node-RED release tree unsupported filesystem object: " + rel);
+      hash.update(rel, "utf8");
+      hash.update("\0");
+      const fd = fs.openSync(full, "r");
+      try {
+        const size = fs.fstatSync(fd).size;
+        hash.update(String(size));
+        hash.update("\0");
+        let n, bytes = 0;
+        while ((n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+          bytes += n;
+          hash.update(chunk.subarray(0, n));
+        }
+        if (bytes !== size) throw new Error("Node-RED release file changed during hash: " + rel);
+      } finally {
+        fs.closeSync(fd);
+      }
+      hash.update("\0");
+    }
+  }
+  visit(root);
+  return hash.digest("hex");
+}
+const LICENSE_TEXT_NAME = /^(license|licence|copying)(\..*)?$/i;
+const LICENSE_RESOURCE_NAME = /^(license|licence|copying|notice)(\..*)?$/i;
+function safePackageJson(file) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0) {
+    throw new Error("Node-RED license inventory package metadata invalid: " + file);
+  }
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+function collectPackageEntries(root, modulesRelative, lock) {
+  const found = [];
+  const rootModules = path.join(root, ...modulesRelative.split("/"));
+  function scanModules(modulesDir, relativeModules) {
+    const rootStat = fs.lstatSync(modulesDir);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error("Node-RED license inventory dependency root unsafe: " + modulesDir);
+    }
+    const entries = fs.readdirSync(modulesDir, { withFileTypes: true })
+      .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    for (const entry of entries) {
+      if (entry.name === ".bin" || entry.name === ".package-lock.json") continue;
+      const full = path.join(modulesDir, entry.name);
+      const stat = fs.lstatSync(full);
+      if (stat.isSymbolicLink()) throw new Error("Node-RED license inventory symlink denied: " + full);
+      if (!stat.isDirectory()) continue;
+      if (entry.name.startsWith("@")) {
+        for (const scoped of fs.readdirSync(full, { withFileTypes: true })
+          .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+          if (!scoped.isDirectory()) throw new Error("Node-RED scoped package entry invalid: " + path.join(full, scoped.name));
+          const packageDir = path.join(full, scoped.name);
+          const packagePath = relativeModules + "/" + entry.name + "/" + scoped.name;
+          addPackage(packageDir, packagePath);
+        }
+      } else {
+        addPackage(full, relativeModules + "/" + entry.name);
+      }
+    }
+  }
+  function addPackage(packageDir, packagePath) {
+    const stat = fs.lstatSync(packageDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Node-RED package directory unsafe: " + packageDir);
+    const metadataFile = path.join(packageDir, "package.json");
+    const pkg = safePackageJson(metadataFile);
+    if (typeof pkg.name !== "string" || !pkg.name || typeof pkg.version !== "string" || !pkg.version) {
+      throw new Error("Node-RED package name/version missing: " + metadataFile);
+    }
+    const licenseFiles = [];
+    for (const entry of fs.readdirSync(packageDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !LICENSE_RESOURCE_NAME.test(entry.name)) continue;
+      const file = path.join(packageDir, entry.name);
+      const fileStat = fs.lstatSync(file);
+      if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.size === 0) {
+        throw new Error("Node-RED package license/notice file invalid: " + file);
+      }
+      licenseFiles.push({
+        name: entry.name,
+        path: packagePath + "/" + entry.name,
+        sha256: hashFile(file),
+        size: fileStat.size,
+        licenseText: LICENSE_TEXT_NAME.test(entry.name),
+      });
+    }
+    licenseFiles.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    const lockEntry = packagePath.startsWith("node_modules/") ? lock.packages?.[packagePath] : null;
+    const packageLicense = pkg.license ?? pkg.licenses ?? null;
+    const lockLicense = lockEntry?.license ?? null;
+    const license = packageLicense ?? lockLicense;
+    const licenseMetadataConflict = packageLicense != null && lockLicense != null
+      && JSON.stringify(packageLicense) !== JSON.stringify(lockLicense);
+    const lockEntryMissing = packagePath.startsWith("node_modules/") && !lockEntry;
+    const lockVersionMismatch = Boolean(lockEntry?.version && lockEntry.version !== pkg.version);
+    const licenseTextPresent = licenseFiles.some(file => file.licenseText);
+    let status = "collected";
+    if (!license) status = "unknown-license";
+    else if (licenseMetadataConflict) status = "license-metadata-conflict";
+    else if (lockEntryMissing || lockVersionMismatch) status = "lock-mismatch";
+    else if (!licenseTextPresent) status = "license-text-missing";
+    found.push({
+      name: pkg.name,
+      version: pkg.version,
+      path: packagePath,
+      packageJsonSha256: hashFile(metadataFile),
+      packageLicense,
+      lockLicense,
+      license,
+      licenseMetadataConflict,
+      lockEntryMissing,
+      lockVersionMismatch,
+      licenseTextPresent,
+      licenseFiles,
+      status,
+    });
+    const nestedModules = path.join(packageDir, "node_modules");
+    if (fs.existsSync(nestedModules)) scanModules(nestedModules, packagePath + "/node_modules");
+  }
+  scanModules(rootModules, modulesRelative);
+  return found;
+}
+function createNodeRedLicenseInventory(root) {
+  const lockPath = path.join(root, "package-lock.json");
+  const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  const packages = [
+    ...collectPackageEntries(root, "node_modules", lock),
+    ...collectPackageEntries(root, "packages/node_modules", lock),
+  ].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const unknownLicenseMetadata = packages.filter(item => !item.license).length;
+  const missingLicenseText = packages.filter(item => !item.licenseTextPresent).length;
+  const conflictingLicenseMetadata = packages.filter(item => item.licenseMetadataConflict).length;
+  const missingLockEntries = packages.filter(item => item.lockEntryMissing).length;
+  const lockVersionMismatches = packages.filter(item => item.lockVersionMismatch).length;
+  const releaseEligible = unknownLicenseMetadata === 0 && missingLicenseText === 0
+    && conflictingLicenseMetadata === 0 && missingLockEntries === 0 && lockVersionMismatches === 0;
+  return {
+    format: "mcode.node-red.third-party-license-inventory.v1",
+    inventoryType: "license-coverage-audit-not-sbom",
+    sourceCommit: BASE_COMMIT,
+    packageLockSha256: hashFile(lockPath),
+    packages,
+    summary: {
+      packageCount: packages.length,
+      unknownLicenseMetadata,
+      missingLicenseText,
+      conflictingLicenseMetadata,
+      missingLockEntries,
+      lockVersionMismatches,
+      releaseEligible,
+    },
+  };
+}
+function writeNodeRedLicenseInventory(root) {
+  const inventory = createNodeRedLicenseInventory(root);
+  const target = path.join(root, "third-party-license-inventory.json");
+  fs.writeFileSync(target, JSON.stringify(inventory, null, 2) + "\n", "utf8");
+  return { inventory, sha256: hashFile(target) };
 }
 function assertFile(file) {
   if (!fs.existsSync(file) || !fs.statSync(file).isFile() || fs.statSync(file).size === 0) {
@@ -51,7 +229,7 @@ function prepareNodeRedResources({ appDir, repoRoot, install = true } = {}) {
   }
   const commit = gitOutput(vendor, "rev-parse", "HEAD");
   if (commit !== BASE_COMMIT) throw new Error("Node-RED vendor commit mismatch: " + commit);
-  if (gitOutput(vendor, "status", "--porcelain", "--untracked-files=no") !== "") {
+  if (gitOutput(vendor, "status", "--porcelain", "--untracked-files=all") !== "") {
     throw new Error("Node-RED vendor tracked files are modified; refusing release");
   }
   const packages = path.join(vendor, "packages", "node_modules");
@@ -90,11 +268,18 @@ function prepareNodeRedResources({ appDir, repoRoot, install = true } = {}) {
     fs.copyFileSync(rootLock, path.join(tmp, "package-lock.json"));
     assertSafeTree(path.join(tmp, "packages"));
     assertSafeTree(path.join(tmp, "node_modules"));
+    const packageTreeSha256 = hashTree(path.join(tmp, "packages"), "mcode.node-red.packages.tree.v1");
+    const dependenciesTreeSha256 = hashTree(path.join(tmp, "node_modules"), "mcode.node-red.dependencies.tree.v1");
+    const licenseInventory = writeNodeRedLicenseInventory(tmp);
     fs.writeFileSync(path.join(tmp, "manifest.json"), JSON.stringify({
       format: "mcode.node-red.release.v1", version: VERSION, sourceCommit: BASE_COMMIT,
       editorSha256: hashFile(path.join(tmp, "packages", "node_modules", "@node-red", "editor-client", "public", "red", "red.min.js")),
       packageSha256: hashFile(path.join(tmp, "packages", "node_modules", "node-red", "package.json")),
       lockSha256: hashFile(path.join(tmp, "package-lock.json")),
+      licenseSha256: hashFile(path.join(tmp, "LICENSE")),
+      licenseInventorySha256: licenseInventory.sha256,
+      packageTreeSha256,
+      dependenciesTreeSha256,
     }, null, 2) + "\n");
     if (fs.existsSync(destination)) { fs.renameSync(destination, backup); previous = true; }
     try { fs.renameSync(tmp, destination); }
@@ -107,12 +292,24 @@ function prepareNodeRedResources({ appDir, repoRoot, install = true } = {}) {
 }
 if (require.main === module) {
   try {
-    console.log("Staged Node-RED vendor:", prepareNodeRedResources({
+    const staged = prepareNodeRedResources({
       appDir: path.resolve(__dirname, ".."), repoRoot: path.resolve(__dirname, "../../.."),
-    }));
+    });
+    const inventory = JSON.parse(fs.readFileSync(path.join(staged, "third-party-license-inventory.json"), "utf8"));
+    console.log("Node-RED third-party license coverage:", JSON.stringify(inventory.summary));
+    if (!inventory.summary.releaseEligible) {
+      console.warn("Node-RED release afterPack gate will reject unresolved third-party license coverage:");
+      for (const item of inventory.packages.filter(item => item.status !== "collected")) {
+        console.warn("  " + item.name + "@" + item.version + " [" + item.status + "] " + item.path);
+      }
+    }
+    console.log("Staged Node-RED vendor:", staged);
   } catch (error) {
     console.error(error);
     process.exitCode = 1;
   }
 }
-module.exports = { prepareNodeRedResources, hashFile, BASE_COMMIT, VERSION };
+module.exports = {
+  prepareNodeRedResources, hashFile, hashTree, assertSafeTree, createNodeRedLicenseInventory,
+  writeNodeRedLicenseInventory, BASE_COMMIT, VERSION,
+};
