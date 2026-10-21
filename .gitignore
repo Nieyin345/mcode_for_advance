@@ -68,5 +68,7 @@ apps/desktop/build/pi-runtime-dist/
 
 # GenOffice 开源文档内核(vendor 快照,固定 commit 1f306a2;见 docs/planning/genoffice-integration-frontend-redesign.md)
 /genoffice/
+# Node-RED 5.0.8 原厂源码，固定 935b8d3，独立 git 分支 mcode/integration
+/node-red/
 # open-claude-ui(ARC-005 的 CDS 令牌与组件参考;MIT;token 由 apps/desktop/scripts/gen-cds-tokens.mjs 提取)
 /open-claude-ui/

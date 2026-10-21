@@ -21,7 +21,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { EngineRuntime, type EngineChildProcess, type EngineRuntimePorts, type EngineSpawnSpec } from "@main/workflowEngines/runtimeSupervisor.js";
 import {
   BOOTSTRAP_MANIFEST_FILENAME,
@@ -716,6 +716,57 @@ console.log("\n12. 共享 launch spec 生成器（createEngineLaunchSpec）");
     getAppPath: () => null,
     ...overrides,
   });
+
+  // T19: the same production resolver must prefer a 5.0.8 vendor over npm and
+  // report npm fallback explicitly when source is absent/bad. These assertions
+  // are targeted at the real path candidate and version-guard branches.
+  {
+    const top = mkdtempSync(join(tmpdir(), "mcode-t19-vendor-"));
+    const app = join(top, "apps", "desktop");
+    const vendor = join(top, "node-red");
+    const vendorPkg = join(vendor, "packages", "node_modules", "node-red", "package.json");
+    const editor = join(vendor, "packages", "node_modules", "@node-red", "editor-client", "public", "red", "red.min.js");
+    mkdirSync(join(vendor, "node_modules"), { recursive: true });
+    mkdirSync(join(vendor, "packages", "node_modules", "node-red"), { recursive: true });
+    mkdirSync(join(vendor, "packages", "node_modules", "@node-red", "editor-client", "public", "red"), { recursive: true });
+    mkdirSync(app, { recursive: true });
+    writeFileSync(vendorPkg, JSON.stringify({ name: "node-red", version: "5.0.8" }));
+    writeFileSync(editor, "/* red editor fixture */");
+    let selected = "";
+    const make = (resourcesPath?: string) => createEngineLaunchSpec({
+      engineId: "node-red", dataDir: dir, entryFile: bootstrap,
+      installPackage: "node-red", minNodeVersion: NODE_RED_MIN_NODE,
+      environment: { execPath: process.execPath, nodeVersion: "24.21.0", isElectron: false,
+        getAppPath: () => app, ...(resourcesPath ? { resourcesPath } : {}) },
+      onPackageResolution: (result) => { selected = result.source; },
+    });
+    const good = make();
+    check("★【T19】开发态 ../../node-red 解析优先 vendor（改错路径会红）",
+      selected === "vendor" && Boolean(good.env?.NODE_PATH?.startsWith(join(vendor, "packages", "node_modules"))),
+      { selected, nodePath: good.env?.NODE_PATH });
+    check("★【T19】NODE_PATH 仅含官方 vendor 两级依赖，不注入用户 npm/社区节点",
+      good.env?.NODE_PATH === [join(vendor, "packages", "node_modules"), join(vendor, "node_modules")].join(delimiter));
+    writeFileSync(vendorPkg, JSON.stringify({ name: "node-red", version: "5.0.7" }));
+    const invalidVersion = make();
+    check("★【T19】vendor 错误版本必须选择 npm fallback（删掉版本校验会红）",
+      selected === "npm" && invalidVersion.env?.NODE_PATH === "");
+    rmSync(vendor, { recursive: true, force: true });
+    const absent = make();
+    check("★【T19】vendor 缺失时 npm fallback 可用并显式报告",
+      selected === "npm" && absent.env?.NODE_PATH === "");
+    const packedRoot = join(top, "resources");
+    const packedVendor = join(packedRoot, "node-red");
+    mkdirSync(join(packedVendor, "packages", "node_modules", "node-red"), { recursive: true });
+    mkdirSync(join(packedVendor, "packages", "node_modules", "@node-red", "editor-client", "public", "red"), { recursive: true });
+    mkdirSync(join(packedVendor, "node_modules"), { recursive: true });
+    writeFileSync(join(packedVendor, "packages", "node_modules", "node-red", "package.json"),
+      JSON.stringify({ name: "node-red", version: "5.0.8" }));
+    writeFileSync(join(packedVendor, "packages", "node_modules", "@node-red", "editor-client", "public", "red", "red.min.js"), "/* packaged editor */");
+    const packed = make(packedRoot);
+    check("★【T19】打包 resources/node-red 被优先识别",
+      selected === "vendor" && Boolean(packed.env?.NODE_PATH?.startsWith(join(packedVendor, "packages", "node_modules"))));
+    rmSync(top, { recursive: true, force: true });
+  }
 
   // ★ Electron 二进制 → env 必须含 ELECTRON_RUN_AS_NODE=1，版本按内嵌 Node 判。
   {

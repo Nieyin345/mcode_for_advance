@@ -11,8 +11,8 @@
  *
  * Node-RED 不在 Mcode 的主依赖树里（它是可选能力，见方案文档的取舍 1）。它装没装
  * 是**运行时**才知道的事，所以 `launchSpec()` 每次现解析：
- *   - 先看宿主的数据根下有没有用户安装的 `node-red`（`<dataRoot>/workflow-engines/node-red/`）；
- *   - 没有就返回 null，IPC 那边回"没有配置启动命令"，界面据此显示安装指引。
+ *   - 首选固定 5.0.8 vendor（开发 repo checkout / 打包 resources/node-red）；
+ *   - vendor 不可用时显式记录并回退到旧的 npm 包，均缺失才返回 null。
  *
  * ## 数据目录
  *
@@ -511,12 +511,7 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
   launchSpec(engineId: string): WorkflowEngineLaunchSpec | null {
     if (!(ENGINE_IDS as readonly string[]).includes(engineId)) return null;
     const dir = this.dataDirOf(engineId);
-    // 用户/宿主安装的 node-red：<dataDir>/node_modules/node-red。
-    const nodeRedMain = join(dir, "node_modules", "node-red", "package.json");
-    if (!existsSync(nodeRedMain)) {
-      log.warn(`[workflow-engine:${engineId}] 未安装：找不到 ${nodeRedMain}`);
-      return null;
-    }
+    // 实现包由唯一 launch spec 解析器选择；不能在这里提前要求 npm 存在。
     const bootstrapPath = join(dir, "bootstrap.cjs");
     // 【P1-5】完整性校验失败 → 返回 null（IPC 回"没有配置启动命令"并带原因），
     // **绝不**带着盘上的旧/被篡改脚本启动。
@@ -537,6 +532,10 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
         entryFile: bootstrapPath,
         installPackage: "node-red",
         minNodeVersion: NODE_RED_MIN_NODE,
+        onPackageResolution: (result) => {
+          if (result.source === "vendor") log.info(`[workflow-engine:${engineId}] Node-RED vendor 5.0.8: ${result.directory}`);
+          else log.warn(`[workflow-engine:${engineId}] Node-RED npm fallback: ${result.reason}; ${result.directory}`);
+        },
         adminTokenFile: join(dir, ".engine-admin-token"),
         secretFile: dir,
         env: {

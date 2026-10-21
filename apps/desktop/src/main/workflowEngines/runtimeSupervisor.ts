@@ -66,7 +66,7 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, existsSync, fsyncSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { log } from "@main/lib/logger.js";
 
 export type EngineRuntimeState = "stopped" | "starting" | "running" | "failed";
@@ -638,6 +638,8 @@ export interface EngineLaunchEnvironment {
   getAppPath(): string | null;
   /** Electron 下内嵌 Node 的版本（默认用当前进程的 —— 同一二进制的同一运行时）。 */
   electronNodeVersion?: string;
+  /** Electron extraResources 的磁盘根；无头套件可注入打包布局。 */
+  resourcesPath?: string;
 }
 
 function defaultLaunchEnvironment(): EngineLaunchEnvironment {
@@ -646,6 +648,7 @@ function defaultLaunchEnvironment(): EngineLaunchEnvironment {
     nodeVersion: process.versions.node,
     isElectron: typeof process.versions.electron === "string",
     getAppPath: defaultGetAppPath,
+    ...(typeof process.resourcesPath === "string" ? { resourcesPath: process.resourcesPath } : {}),
   };
 }
 
@@ -711,6 +714,63 @@ export interface EngineLaunchSpecOptions {
   /** 缺省时读取/生成 `.engine-secret` 的目录（默认 `dataDir` 本身）。 */
   secretFile?: string;
   environment?: EngineLaunchEnvironment;
+  /** 供生产注册表显式记录 vendor / npm fallback 的解析结果。 */
+  onPackageResolution?: (result: NodeRedPackageResolution) => void;
+}
+
+export const NODE_RED_VENDOR_VERSION = "5.0.8";
+export interface NodeRedPackageResolution {
+  source: "vendor" | "npm";
+  directory: string;
+  reason?: string;
+  nodePath?: string;
+}
+
+/**
+ * 固定路径、固定版本的 Node-RED 官方发行源码优先；既存 npm 安装是显式 fallback。
+ * 路径只能来自 Electron app 根和 resources 根，绝不扫描 cwd 或用户安装的社区节点。
+ * NODE_PATH 只交给子进程，且仅包含 vendor 官方包与锁定的生产依赖。
+ */
+export function resolveNodeRedPackage(options: {
+  dataDir: string;
+  getAppPath: () => string | null;
+  resourcesPath?: string;
+}): NodeRedPackageResolution {
+  const appPath = options.getAppPath();
+  const candidates = [
+    ...(options.resourcesPath ? [join(options.resourcesPath, "node-red")] : []),
+    ...(appPath && !appPath.endsWith("app.asar")
+      ? [resolve(appPath, "..", "node-red"), resolve(appPath, "..", "..", "node-red")]
+      : []),
+  ];
+  const rejected: string[] = [];
+  for (const dir of [...new Set(candidates)]) {
+    const pkg = join(dir, "packages", "node_modules", "node-red", "package.json");
+    if (!existsSync(pkg)) { rejected.push(`${dir}: package missing`); continue; }
+    try {
+      const info = JSON.parse(readFileSync(pkg, "utf8")) as { name?: string; version?: string };
+      if (info.name !== "node-red" || info.version !== NODE_RED_VENDOR_VERSION) {
+        rejected.push(`${dir}: unexpected vendor version ${String(info.version)}`);
+        continue;
+      }
+      if (!existsSync(join(dir, "node_modules"))
+        || !existsSync(join(dir, "packages", "node_modules", "@node-red", "editor-client", "public", "red", "red.min.js"))) {
+        rejected.push(`${dir}: vendor production dependencies/editor missing`);
+        continue;
+      }
+      return {
+        source: "vendor", directory: dir,
+        nodePath: [join(dir, "packages", "node_modules"), join(dir, "node_modules")].join(delimiter),
+      };
+    } catch (error) {
+      rejected.push(`${dir}: unreadable vendor metadata (${error instanceof Error ? error.message : String(error)})`);
+    }
+  }
+  const npmPackage = join(options.dataDir, "node_modules", "node-red", "package.json");
+  if (!existsSync(npmPackage)) {
+    throw new Error(`Node-RED vendor unavailable (${rejected.join("; ") || "no configured vendor path"}); npm fallback missing: ${npmPackage}`);
+  }
+  return { source: "npm", directory: dirname(npmPackage), reason: rejected.join("; ") || "vendor not configured" };
 }
 
 /**
@@ -734,9 +794,15 @@ export interface EngineLaunchSpecOptions {
  */
 export function createEngineLaunchSpec(options: EngineLaunchSpecOptions): EngineLaunchSpec {
   const environment = options.environment ?? defaultLaunchEnvironment();
-  const packageJson = join(options.dataDir, "node_modules", options.installPackage, "package.json");
-  if (!existsSync(packageJson)) {
-    throw new Error(`引擎 ${options.engineId} 未安装：找不到 ${packageJson}`);
+  const nodeRedSource = options.installPackage === "node-red"
+    ? resolveNodeRedPackage({ dataDir: options.dataDir, getAppPath: environment.getAppPath, resourcesPath: environment.resourcesPath })
+    : null;
+  if (nodeRedSource) options.onPackageResolution?.(nodeRedSource);
+  else {
+    const packageJson = join(options.dataDir, "node_modules", options.installPackage, "package.json");
+    if (!existsSync(packageJson)) {
+      throw new Error(`引擎 ${options.engineId} 未安装：找不到 ${packageJson}`);
+    }
   }
   const entry = resolveEngineEntry({
     entryFile: options.entryFile,
@@ -757,6 +823,8 @@ export function createEngineLaunchSpec(options: EngineLaunchSpecOptions): Engine
   const secret = readOrCreateSecret(join(options.secretFile ?? options.dataDir, ".engine-secret"));
   const env: NodeJS.ProcessEnv = {
     ...(options.env ?? {}),
+    // 显式覆盖调用者传来的 NODE_PATH，防止社区节点抢在官方依赖前面。
+    ...(nodeRedSource ? { NODE_PATH: nodeRedSource.nodePath ?? "" } : {}),
     NODE_RED_CREDENTIAL_SECRET: secret,
   };
   let probeIdentity: EngineLaunchSpec["probeIdentity"];

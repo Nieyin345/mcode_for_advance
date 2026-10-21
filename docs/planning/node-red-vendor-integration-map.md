@@ -8,6 +8,8 @@
 
 本次**只在 `.tmp/T13-node-red-5.0.8/` 克隆及实验**，没有创建正式 `node-red/`，未改 `apps/desktop/src/**`、`genoffice/` 或手写画布。实施 vendor、许可清单与安装包增量在后续经用户确认的卡片完成。
 
+**T19 已 vendor（2026-10-21）**：根目录 `node-red/` 为独立 Git checkout，`mcode/integration` 分支，HEAD `935b8d3e12ec8be064f3a72ac6547131f778a7b1`（Node-RED 5.0.8，Apache-2.0）；主 Git 通过 `/node-red/` 忽略该目录。打包由 `apps/desktop/build/stage-node-red-resources.cjs` 从固定版本构建，独立安装 production-only 依赖并 stage 到 resources；不得以此声明 ARC-006 整包交付。
+
 ## 一、上游逐项取证（固定 5.0.8）
 
 | 要回答的事实 | 现场观察 / 命令输出 | 可核查的上游证据 |

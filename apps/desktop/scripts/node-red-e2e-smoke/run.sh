@@ -38,3 +38,20 @@ export MCODE_NR_E2E_ROOT="$E2E_ROOT"
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 node "$OUT/smoke.mjs"
+
+# T19: when a verified vendor release stage is available, also run the real
+# production registry against that stage (npm fallback absent), checking the
+# editor HTTP page, version, adminAuth and owner handshake. A no-vendor CI run
+# is explicitly reported as unverified, not silently counted as a vendor pass.
+if [[ -f ".tmp/node-red-release/manifest.json" ]]; then
+  "$ESBUILD" scripts/node-red-e2e-smoke/vendor.ts \
+    --bundle --platform=node --format=esm \
+    --tsconfig=tsconfig.json \
+    --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
+    --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
+    --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+    --outfile="$OUT/vendor.mjs" --log-level=error
+  node "$OUT/vendor.mjs"
+else
+  echo "SKIP: T19 real vendor editor verification (release stage missing)"
+fi

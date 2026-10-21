@@ -680,11 +680,13 @@ try {
     const specB = portsB.specs[0];
     const specKeys = Object.keys(specB?.env ?? {}).sort();
     const expectedSpec = [
-      "HOST", "NODE_RED_CREDENTIAL_SECRET", "MCODE_ENGINE_ADMIN_TOKEN", "MCODE_ENGINE_TRUSTED", "PATH", "PORT",
+      "HOST", "NODE_RED_CREDENTIAL_SECRET", "MCODE_ENGINE_ADMIN_TOKEN", "MCODE_ENGINE_TRUSTED", "NODE_PATH", "PATH", "PORT",
       ...(process.platform === "win32" ? ["SystemRoot"] : []),
     ].sort();
     check("★ env 在 spawn spec 里**完全替换**：宿主白名单 + 引擎凭据/控制面令牌（无宿主密钥）",
       deepEqual(specKeys, expectedSpec), { actual: specKeys, expected: expectedSpec });
+    check("★【T19】NODE_PATH 只能是空 npm fallback 或经过版本校验的 vendor 路径",
+      specB?.env?.NODE_PATH === "" || Boolean(specB?.env?.NODE_PATH?.includes("node-red")));
     check("★ 宿主自定义变量没有泄漏进 spawn spec（canary 缺席）",
       !specKeys.some((k) => k.toLowerCase() === "mcode_e2e_secret_canary"));
     check("★ spawn spec 不含任何 ANTHROPIC_*/OPENAI_* 宿主密钥",
