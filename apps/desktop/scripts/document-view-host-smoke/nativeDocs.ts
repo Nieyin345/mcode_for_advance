@@ -23,7 +23,7 @@ async function main() {
   check('vendor factory publishes desktop API', exposed.get('desktop') === api)
   for (const key of ['openDocxDecrypt', 'saveDocxTo', 'saveDocxAs',
     'copyImageToClipboard',
-    'kbRead', 'readAttachment', 'getPathForFile', 'projectApi'] as const) {
+    'kbRead', 'getPathForFile', 'projectApi'] as const) {
     check('high-risk API omitted: ' + key, !(key in api))
   }
   for (const ch of ['docs:open', 'docs:save-as', 'docs:save-to', 'docs:open-decrypt',
@@ -31,7 +31,7 @@ async function main() {
     check('dangerous channel not whitelisted: ' + ch, !(ch in policy))
   }
   check('default channel strategy does not route unknown channels',
-    Object.keys(policy).length === 47 && Object.isFrozen(policy))
+    Object.keys(policy).length === 51 && Object.isFrozen(policy))
   // Every T05b DesktopApi method MUST route to the scoped host endpoint,
   // never to a standalone global docs:* / files:* handler.
   const privilegedPreloadCases: Array<[string, () => Promise<unknown>]> = [
@@ -45,6 +45,10 @@ async function main() {
     ['files-add', () => api.addAttachmentPaths(['/not/approved'])],
     ['files-read-image', () => api.readAttachmentImage('/not/approved')],
     ['write-export-image', () => api.writeExportImage('/not/approved', 'p.png', 'AQID')],
+    ['export-pdf', () => api.exportPdf('test.docx', 12240, 15840)],
+    ['print-pdf-buffer', () => api.printPdfBuffer(12240, 15840)],
+    ['save-merged-pdf', () => api.saveMergedPdf('test', ['AQID'])],
+    ['files-read', () => api.readAttachment('/not/approved', 0, 100)],
   ]
   for (const [name, call] of privilegedPreloadCases) {
     await call()

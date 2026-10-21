@@ -4,7 +4,10 @@
  * All dialogs require an actual user's interaction; absence = deny.
  */
 import { dialog, BrowserWindow } from "electron";
-import { basename, extname } from "node:path";
+import { basename, extname, join } from "node:path";
+import { mkdirSync, realpathSync } from "node:fs";
+import { dataRoot } from "@main/lib/dataRoot.js";
+import { fetchApprovedDocsImage } from "./docsRemoteImage.js";
 import { readFile, stat, rm } from "node:fs/promises";
 import { pickFilesForUser, pickFolderForUser } from "@main/ipc/dialog.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
@@ -15,6 +18,9 @@ export interface DocsPrivilegedPorts {
   pickImage(): Promise<{ base64: string; mime: "image/png" | "image/jpeg" | "image/gif"; name: string } | null>;
   pickDirectory(): Promise<string | null>;
   saveTarget(name: string, ext: string): Promise<string | null>;
+  savePdfTarget(name: string): Promise<string | null>;
+  exportTempRoot(): string;
+  fetchApprovedImage(url: string): Promise<{ base64: string; mime: string }>;
   confirmPrint(): Promise<boolean>;
   workspaceRoot(path: string): string | null;
   atomicWrite(path: string, bytes: Uint8Array): Promise<void>;
@@ -61,6 +67,18 @@ export const docsPrivilegedPorts: DocsPrivilegedPorts = {
       : await dialog.showSaveDialog(opts);
     return response.canceled ? null : response.filePath ?? null;
   },
+  async savePdfTarget(name) {
+    const opts = { title: "导出 PDF", defaultPath: basename(name).replace(/\.docx$/i, "") + ".pdf", filters: [{ name: "PDF", extensions: ["pdf"] }] };
+    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+    const reply = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+    return reply.canceled ? null : reply.filePath ?? null;
+  },
+  exportTempRoot() {
+    const dir = join(dataRoot(), "docs", "export-tmp");
+    mkdirSync(dir, { recursive: true });
+    return realpathSync(dir);
+  },
+  fetchApprovedImage: fetchApprovedDocsImage,
   async confirmPrint() {
     // Same Mcode modal approval pattern as DocumentViewHost.confirmDirty.
     // This prompt is issued EVERY invocation: no cached grant/silent printing.

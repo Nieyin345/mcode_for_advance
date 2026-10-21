@@ -52,6 +52,7 @@ VENDOR_IPC="../../genoffice/apps/docs/src/main/mcode-ipc.ts"
 if [[ -f "$VENDOR_DOCS" && -f "$VENDOR_IPC" ]]; then
   "$ESBUILD" scripts/document-view-host-smoke/nativeDocs.ts \
     --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
+    --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
     --alias:electron=./scripts/document-view-host-smoke/stubs/nativeDocsElectron.ts \
     --alias:@genoffice/font-metrics=./scripts/document-view-host-smoke/stubs/nativeDocsFonts.ts \
     --outfile="$OUT/nativeDocs.mjs" --log-level=error

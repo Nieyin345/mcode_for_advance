@@ -38,6 +38,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { DocumentViewHost } from "@main/document/documentViewHost.js";
+import { docsPrivilegedPorts } from "@main/document/docsPrivilegedPorts.js";
 import { registerDocumentViewHandlers } from "@main/ipc/documentView.js";
 import { SlidesBridge } from "@main/document/slidesBridge.js";
 import { VendorSlidesExecutor } from "@main/document/slidesExecutor.js";
@@ -223,6 +224,7 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   const host = new DocumentViewHost({ getMainWindow: () => win as unknown as DocumentViewHostWindow });
+  host.setDocsPrivilegedPorts(docsPrivilegedPorts); // T22: mirror production host wiring, not a standalone GenOffice channel.
   // 真确认端口：默认**同意**（测试里显式改为拒绝以覆盖「未保存拒绝」）。
   let confirmAnswer = true;
   const confirmCalls: Array<{ docId: string; filePath: string | null }> = [];
@@ -831,6 +833,50 @@ export async function runOpenProtocolProbe(dir: string): Promise<void> {
       await check('T05a group 5: context menu and view-menu state are scoped', () => {
         assert(native.context, JSON.stringify(native));
       });
+      // T22 real Electron: the DOCX is already opened and committed. Drive
+      // its real sandboxed preload -> real sender-bound privileged IPC ->
+      // Chromium printToPDF -> Mcode atomic disk writer -> approved temp reader
+      // -> PNG writer. Only the Mcode picker and path service are stubbed to
+      // deterministic, test-owned workspace destinations (no human UI/DB).
+      const originalPickDirectory = docsPrivilegedPorts.pickDirectory;
+      const originalWorkspaceRoot = docsPrivilegedPorts.workspaceRoot;
+      try {
+        docsPrivilegedPorts.pickDirectory = async () => workspace;
+        docsPrivilegedPorts.workspaceRoot = () => workspace;
+        const exportResult = await cleanWebContents.executeJavaScript(`(async () => {
+          const bridge = window.desktop;
+          const destination = await bridge.pickExportImagesTarget();
+          if (!destination) return { error: 'Mcode destination picker failed' };
+          const exported = await bridge.exportPdf('t22-opened.docx', 11906, 16838, destination.pdfPath);
+          if (!exported.ok) return { error: exported.error ?? 'Chromium PDF print failed' };
+          const pdf = await bridge.takeExportPdf(destination.pdfPath);
+          if (!pdf.ok || typeof pdf.base64 !== 'string') return { error: pdf.error ?? 'PDF temp handoff failed' };
+          // Exercise the approved image writer; original pdf.js page rasterization
+          // is verified separately by the GenOffice renderer suite. In a
+          // hidden Electron window the vendor's preview-triggered exportImages
+          // may not settle without a visible pagination preview.
+          const pngData = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==';
+          const written = await bridge.writeExportImage(destination.dir, 't22-page-01.png', pngData);
+          return { pdfSize: atob(pdf.base64).length,
+            pdfSignature: atob(pdf.base64).slice(0, 5),
+            imagePath: written.path, imageOK: written.ok,
+            outputDir: destination.dir, tempPath: destination.pdfPath };
+        })()`, true) as {error?:string;pdfSize?:number;pdfSignature?:string;imagePath?:string;imageOK?:boolean;outputDir?:string;tempPath?:string};
+        await check('T22 真 Electron：已打开 DOCX→受信临时 PDF→实际 PDF 字节→图片写盘通道', () => {
+          assert(!exportResult.error && exportResult.pdfSignature === '%PDF-' &&
+            (exportResult.pdfSize ?? 0) > 100 &&
+            exportResult.imageOK === true &&
+            exportResult.outputDir === workspace &&
+            exportResult.imagePath === join(workspace, 't22-page-01.png'),
+            JSON.stringify(exportResult));
+          assert(readFileSync(exportResult.imagePath!).subarray(0,8)
+            .equals(Buffer.from([137,80,78,71,13,10,26,10])), 'written image is not a PNG');
+          assert(!existsSync(exportResult.tempPath!), 'PDF temporary file leaked');
+        });
+      } finally {
+        docsPrivilegedPorts.pickDirectory = originalPickDirectory;
+        docsPrivilegedPorts.workspaceRoot = originalWorkspaceRoot;
+      }
     }
     const cleanClose = await host.closeWithDirtyProtection(cleanId);
     await check("T05a clean: native dirty check allows unmodified close", () => {

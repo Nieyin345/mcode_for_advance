@@ -56,6 +56,8 @@ await build({
     // pptx-ops 依赖 docx-engine 的 math 子路径（公式文本）；只 alias 包根会把
     // 子路径拼成 `<index.ts>/math`（实测 esbuild 报错）。
     "@genoffice/docx-engine/math": join(vendorRoot, "packages/docx-engine/src/math.ts"),
+    "@genoffice/docx-engine/lazy-media": join(vendorRoot, "packages/docx-engine/src/lazy-media.ts"),
+    "@genoffice/docx-engine/zip-splice": join(vendorRoot, "packages/docx-engine/src/zip-splice.ts"),
     // 【ARC-007 P1/GA1】生产执行器走静态 seam（见 electron.vite.config.ts 的同一条
     // 别名）；本套件与生产同一条判据：快照在场 → 真实现。
     "@main/document/slidesVendorModules.js": join(

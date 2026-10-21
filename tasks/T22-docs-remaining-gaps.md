@@ -97,3 +97,12 @@ T05b 的回写里自己列了三处未达成（我核对过，属实）：
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 执行回写（T22）
+
+- **实现**：沿用原厂 Chromium `webContents.printToPDF`（纯本地，不依赖外部可执行工具），增加仅真实 Docs 视图可访问的 `mcode:docs:privileged-export-pdf` / `print-pdf-buffer` / `save-merged-pdf` 及 `files-read`。PDF 另存路径由 Mcode 既有 OS picker 决定并经 `findContainingWorkspaceRoot` + 真实路径围栏；供导出图片使用的一次性 PDF 临时文件改为 `Mcode dataRoot/docs/export-tmp`，取回后删除；PDF 与 PNG 一律复用 Mcode 原子文件写入。
+- **图片源**：本地绝对路径和 file URL 受工作区围栏保护；内嵌 `data:` 直接使用；`blob:` 与原厂 `genoffice-docx-media:` 由隔离 preload 先提取到不超过 5 MiB 的内存图片（懒加载源另受所属 webContents 校验）。`http(s)` **默认拒绝**；要用则每次由 Mcode 原生确认框真人批准，受控下载执行标准端口、公网 DNS 地址预检及绑定、拒绝重定向、超时、MIME/文件签名和 5 MiB 预算。不会调用 GenOffice 独立网络下载器。
+- **T05c 附件接口**：`readAttachment(path, offset, maxChars)` 仍用原厂调用签名；成功返回 `{ok:true,name,totalChars,offset,text}`，失败返回 `{ok:false,error}`。UTF-8 文本拒绝损坏编码，原厂 `@genoffice/file-parse` 用于 DOCX/PDF 等已支持格式；源文件限 20 MiB、提取文本限 200 万字符、每段限 48000 字符，绝对路径和符号链接均过工作区围栏。T05c 可直接消费。
+- **验证**：`document-view-host-smoke`、`document-view-open-smoke`（真实 Electron）、`document-view-electron-smoke`、`document-view-vendor-page-smoke`、`document-view-renderer-smoke` **5/5 通过**；T05b 原有 `mutate-t05b.mjs` fence/print 两项红例正常；T22 `mutate-t22.mjs` 两项变异（移除 PDF 工作区围栏、跳过 HTTP 拒绝）均准确变红并恢复源码；desktop、contracts、genoffice/docs 三包 `tsc --noEmit` 均通过。真 Electron 已打开 DOCX 并实走 `pickExportImagesTarget → exportPdf → takeExportPdf → writeExportImage`，检查生成 PDF `%PDF-` 字节、已写 PNG 签名及临时文件清理。
+- **未完全达成的判据 1**：真 Electron 探针原样调用原厂渲染端 `__exportImages()`（含 pdf.js 逐页栅格化）在隐藏的测试视图中始终未结束：第一次超过宿主 120 秒超时；预先打开含一页的 pagination preview 后仍在 12 秒超时。已恢复为稳定的分段真 Electron 验证，PNG 阶段使用测试 PNG 负载，只能证明受控写入而**不能证明 pdf.js 原厂拆页的真机端到端成功**。故不将此项标为完全通过。其他判据 2–6 达成。
+- **供应商代码**：`genoffice` commit `545c83b8a1abc69af2f7499a22d1c49b0c62d8e7`；对应补丁 `patches/genoffice/0009-feat-docs-scoped-export-media-and-files-read.patch` 已执行反向 `git apply --check` 校验。

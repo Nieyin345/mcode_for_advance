@@ -1,0 +1,398 @@
+From 545c83b8a1abc69af2f7499a22d1c49b0c62d8e7 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Wed, 21 Oct 2026 11:26:40 +0800
+Subject: [PATCH] feat(docs): complete scoped PDF export and attachment media
+ routes
+
+---
+ apps/docs/src/main/lazy-media.ts       |   5 +-
+ apps/docs/src/main/mcode-privileged.ts | 206 +++++++++++++++++++++++--
+ apps/docs/src/preload/mcode-view.ts    |  36 ++++-
+ 3 files changed, 236 insertions(+), 11 deletions(-)
+
+diff --git a/apps/docs/src/main/lazy-media.ts b/apps/docs/src/main/lazy-media.ts
+index 713d771..a8f96cc 100644
+--- a/apps/docs/src/main/lazy-media.ts
++++ b/apps/docs/src/main/lazy-media.ts
+@@ -226,9 +226,12 @@ export function pointLazyMediaAt(
+ }
+ 
+ /** the picture behind a lazy URL, or null when it is not served (any more) */
+-export async function readLazyMedia(url: string): Promise<{ body: Buffer; mime: string } | null> {
++export async function readLazyMedia(url: string, ownerId?: number): Promise<{ body: Buffer; mime: string } | null> {
+   const ref = parseLazyMediaUrl(url)
+   if (!ref || !isLazyMediaPart(ref.partPath)) return null
++  // Mcode's renderer-scoped privileged route passes its actual webContents id.
++  // No image from another document owner may be fetched by knowing its hash.
++  if (ownerId !== undefined && !sources.get(ref.hash)?.owners.has(ownerId)) return null
+   const zip = await sourceZip(ref.hash)
+   const entry = zip?.entries.get(ref.partPath)
+   if (!zip || !entry || (entry.method !== 0 && entry.method !== 8)) return null
+diff --git a/apps/docs/src/main/mcode-privileged.ts b/apps/docs/src/main/mcode-privileged.ts
+index fbb3a69..730eb8c 100644
+--- a/apps/docs/src/main/mcode-privileged.ts
++++ b/apps/docs/src/main/mcode-privileged.ts
+@@ -5,6 +5,12 @@
+  */
+ import type { IpcMain, IpcMainInvokeEvent } from 'electron'
+ import { readFileSync, realpathSync, statSync } from 'node:fs'
++import { fileURLToPath } from 'node:url'
++import { parseFileToText } from '@genoffice/file-parse'
++import { PDFDocument } from 'pdf-lib'
++import { validPrintGeometry, printScaleOption } from './print-args'
++import { addPdfInternalLinks } from './pdf-links'
++import { readLazyMedia } from './lazy-media'
+ import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
+ import { randomUUID } from 'node:crypto'
+ 
+@@ -13,6 +19,9 @@ export interface DocsPrivilegedPorts {
+   pickImage(): Promise<{ base64: string; mime: 'image/png' | 'image/jpeg' | 'image/gif'; name: string } | null>
+   pickDirectory(): Promise<string | null>
+   saveTarget(name: string, ext: string): Promise<string | null>
++  savePdfTarget(name: string): Promise<string | null>
++  exportTempRoot(): string
++  fetchApprovedImage(url: string): Promise<{ base64: string; mime: string }>
+   confirmPrint(): Promise<boolean>
+   /** The Mcode pathGuard, not a vendor-owned list of workspace roots. */
+   workspaceRoot(path: string): string | null
+@@ -29,6 +38,7 @@ const prefix = 'mcode:docs:privileged-'
+ export const DOCS_PRIVILEGED_CHANNELS = [
+   'pick-image', 'save-image-as', 'pick-export-images-target', 'take-export-pdf',
+   'printers', 'print', 'files-pick', 'files-add', 'files-read-image', 'write-export-image',
++  'export-pdf', 'print-pdf-buffer', 'save-merged-pdf', 'files-read',
+ ].map((name) => prefix + name)
+ 
+ const IMAGE_MIME: Readonly<Record<string, string>> = Object.freeze({
+@@ -44,6 +54,9 @@ const EXTENSIONS = new Set([
+ const ATTACHMENT_LIMIT = 20 * 1024 * 1024
+ const IMAGE_LIMIT = 5 * 1024 * 1024
+ const EXPORT_LIMIT = 80 * 1024 * 1024
++const TEXT_LIMIT = 2_000_000
++const TEXT_CHUNK = 48_000
++const TEXT_EXTENSIONS = new Set(['txt','md','markdown','json','csv','tsv','xml','html','htm','yaml','yml','js','jsx','ts','tsx','py','java','c','h','cpp','go','rs','rb','sh','sql','css'])
+ const denied = (reason: string) => ({ ok: false as const, error: reason })
+ 
+ function within(root: string, path: string): boolean {
+@@ -70,6 +83,18 @@ function fenced(ports: DocsPrivilegedPorts, raw: unknown, writing = false): stri
+   } catch { return null }
+ }
+ 
++/** Export temps are NOT in the workspace: the only trusted root is Mcode's
++ * configured data root, supplied by a host port, and checked physically. */
++function fencedTemp(ports: DocsPrivilegedPorts, raw: unknown, writing = false): string | null {
++  if (typeof raw !== 'string' || !isAbsolute(raw) || raw.length > 4096) return null
++  try {
++    const root = realpathSync(ports.exportTempRoot())
++    const absolute = resolve(raw)
++    const physical = writing ? join(realpathSync(dirname(absolute)), basename(absolute)) : realpathSync(absolute)
++    return within(root, physical) && physical !== root ? absolute : null
++  } catch { return null }
++}
++
+ function base64Bytes(raw: unknown, max: number): Uint8Array | null {
+   if (typeof raw !== 'string' || !raw.length || raw.length > Math.ceil(max * 4 / 3) + 8 ||
+       !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(raw)) return null
+@@ -99,6 +124,7 @@ export function registerDocsPrivilegedIpc(
+   const picked = new Map<number, Set<string>>()
+   const exportDirs = new Map<number, string>()
+   const tempPdfs = new Map<number, string>()
++  const pdfTargets = new Map<number, Set<string>>()
+   const seen = new WeakSet<object>()
+   const cleanupSender = (event: Event): void => {
+     if (!seen.has(event.sender)) {
+@@ -107,6 +133,7 @@ export function registerDocsPrivilegedIpc(
+         picked.delete(event.sender.id)
+         exportDirs.delete(event.sender.id)
+         tempPdfs.delete(event.sender.id)
++        pdfTargets.delete(event.sender.id)
+       })
+     }
+   }
+@@ -168,6 +195,38 @@ export function registerDocsPrivilegedIpc(
+       return { ok: true, base64: readFileSync(file).toString('base64'), mime: IMAGE_MIME[ext] }
+     } catch { return denied('image cannot be read') }
+   })
++  handle('files-read', async (event, rawPath, rawOffset, rawMaxChars) => {
++    const ports = portsFor(event)!
++    const path = fenced(ports, rawPath)
++    if (!path) return denied('attachment path outside Mcode workspace')
++    const name = basename(path)
++    const ext = extname(path).slice(1).toLowerCase()
++    if (!EXTENSIONS.has(ext) || Object.hasOwn(IMAGE_MIME, ext)) return denied('attachment has no supported text content')
++    if (typeof rawOffset !== 'number' || !Number.isSafeInteger(rawOffset) || rawOffset < 0 ||
++        typeof rawMaxChars !== 'number' || !Number.isSafeInteger(rawMaxChars) || rawMaxChars < 1) {
++      return denied('invalid attachment text offset or length')
++    }
++    try {
++      const meta = statSync(path)
++      if (!meta.isFile() || meta.size > ATTACHMENT_LIMIT) return denied('attachment exceeds 20 MiB size limit')
++      let text: string
++      if (TEXT_EXTENSIONS.has(ext)) {
++        // Reject lossy decoding instead of silently corrupting the AI context.
++        text = new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(path))
++        if (text.includes('\\0')) return denied('binary data is not a text attachment')
++      } else {
++        const parsed = await parseFileToText(path)
++        if (!parsed.ok || parsed.kind !== 'text' || typeof parsed.text !== 'string') {
++          return denied(parsed.error ?? 'attachment text extraction failed')
++        }
++        text = parsed.text
++      }
++      if (text.length > TEXT_LIMIT) return denied('extracted attachment text exceeds 2 million characters')
++      const offset = rawOffset
++      const size = Math.min(rawMaxChars, TEXT_CHUNK)
++      return { ok: true, name, totalChars: text.length, offset, text: text.slice(offset, offset + size) }
++    } catch { return denied('attachment cannot be decoded or read') }
++  })
+   handle('printers', async (event) => {
+     try {
+       // Return only printer identity needed by the Docs UI. Never log OS inventory.
+@@ -202,14 +261,140 @@ export function registerDocsPrivilegedIpc(
+       ...(job?.duplex !== undefined ? { duplexMode: job.duplex as 'simplex' | 'longEdge' | 'shortEdge' } : {}),
+     }, (ok, error) => resolveReply(ok ? { ok: true } : denied(error || 'printer canceled'))))
+   })
++
++  /** Original Chromium printToPDF path. A supplied target is usable only when
++   * this exact sender obtained it from Mcode's picker or export-temp gate. */
++  const pdfOutput = async (event: Event, rawName: unknown, rawPath: unknown):
++    Promise<{ path: string; temp: boolean } | { error: string }> => {
++    const ports = portsFor(event)!
++    const temp = tempPdfs.get(event.sender.id)
++    if (typeof rawPath === 'string') {
++      if (rawPath === temp && fencedTemp(ports, rawPath, true)) return { path: rawPath, temp: true }
++      if (pdfTargets.get(event.sender.id)?.has(rawPath) && fenced(ports, rawPath, true)) {
++        return { path: rawPath, temp: false }
++      }
++      return { error: 'PDF export path not approved by Mcode or outside workspace' }
++    }
++    if (rawPath !== undefined && rawPath !== null) return { error: 'invalid PDF output path' }
++    const name = typeof rawName === 'string' && rawName.length <= 256
++      ? basename(rawName) : 'document.docx'
++    const target = await ports.savePdfTarget(name).catch(() => null)
++    if (!target) return { error: 'PDF export canceled by the user' }
++    if (!portsFor(event) || !fenced(ports, target, true) || extname(target).toLowerCase() !== '.pdf') {
++      return { error: 'PDF output target outside Mcode workspace' }
++    }
++    const grants = pdfTargets.get(event.sender.id) ?? new Set<string>()
++    grants.add(target)
++    pdfTargets.set(event.sender.id, grants)
++    return { path: target, temp: false }
++  }
++  const printPdf = async (event: Event, width: unknown, height: unknown, scale: unknown): Promise<Buffer> => {
++    if (!validPrintGeometry(width, height, scale)) throw Error('invalid page size or scale')
++    const printed = await event.sender.printToPDF({
++      printBackground: true,
++      pageSize: { width: (width as number) / 1440, height: (height as number) / 1440 },
++      margins: { top: 0, bottom: 0, left: 0, right: 0 },
++      ...printScaleOption(scale),
++    })
++    if (printed.length > EXPORT_LIMIT) throw Error('export PDF exceeds 80 MiB')
++    return printed
++  }
++  const applyLinks = async (data: Buffer, links: unknown): Promise<Buffer> => {
++    if (!Array.isArray(links) || !links.length) return data
++    const pdf = await PDFDocument.load(data)
++    if (!addPdfInternalLinks(pdf, links)) return data
++    return Buffer.from(await pdf.save())
++  }
++  handle('export-pdf', async (event, name, width, height, rawPath, scale, links) => {
++    if (!validPrintGeometry(width, height, scale)) return denied('invalid page size or scale')
++    const target = await pdfOutput(event, name, rawPath)
++    if ('error' in target) return denied(target.error)
++    const ports = portsFor(event)
++    if (!ports) return denied('Mcode Docs view closed during export')
++    try {
++      const bytes = await applyLinks(await printPdf(event, width, height, scale), links)
++      if (bytes.length > EXPORT_LIMIT) return denied('PDF exceeds 80 MiB')
++      if (!(target.temp ? fencedTemp(ports, target.path, true) : fenced(ports, target.path, true))) {
++        return denied('PDF output path left its authorized root')
++      }
++      await ports.atomicWrite(target.path, bytes)
++      return { ok: true, path: target.path }
++    } catch (err) {
++      return { ok: false, error: err instanceof Error ? err.message : 'PDF export failed', path: target.path }
++    }
++  })
++  handle('print-pdf-buffer', async (event, width, height, scale) => {
++    try { return { ok: true, base64: (await printPdf(event, width, height, scale)).toString('base64') } }
++    catch (err) { return denied(err instanceof Error ? err.message : 'PDF print chunk failed') }
++  })
++  handle('save-merged-pdf', async (event, name, parts, rawPath, links) => {
++    if (!Array.isArray(parts) || !parts.length || parts.length > 100) return denied('invalid PDF fragment count')
++    let sum = 0
++    const decoded: Uint8Array[] = []
++    for (const encoded of parts) {
++      const data = base64Bytes(encoded, EXPORT_LIMIT)
++      if (!data || (sum += data.length) > EXPORT_LIMIT) return denied('PDF fragments exceed 80 MiB')
++      decoded.push(data)
++    }
++    const target = await pdfOutput(event, name, rawPath)
++    if ('error' in target) return denied(target.error)
++    const ports = portsFor(event)
++    if (!ports) return denied('Mcode Docs view closed during merge')
++    try {
++      const merged = await PDFDocument.create()
++      for (const part of decoded) {
++        const source = await PDFDocument.load(part)
++        const pages = await merged.copyPages(source, source.getPageIndices())
++        for (const page of pages) merged.addPage(page)
++      }
++      if (Array.isArray(links)) addPdfInternalLinks(merged, links)
++      const data = await merged.save()
++      if (data.length > EXPORT_LIMIT) return denied('merged PDF exceeds 80 MiB')
++      if (!(target.temp ? fencedTemp(ports, target.path, true) : fenced(ports, target.path, true))) {
++        return denied('merged PDF target left its authorized root')
++      }
++      await ports.atomicWrite(target.path, data)
++      return { ok: true, path: target.path }
++    } catch (err) { return denied(err instanceof Error ? err.message : 'PDF merge failed') }
++  })
+   handle('save-image-as', async (event, src) => {
+     const ports = portsFor(event)!
+     if (typeof src !== 'string') return denied('invalid image source')
+-    const match = /^data:image\/(png|jpeg|gif|webp);base64,(.*)$/s.exec(src)
+-    if (!match) return denied('only embedded image data can be saved by Mcode')
+-    const bytes = base64Bytes(match[2], IMAGE_LIMIT)
+-    if (!bytes) return denied('invalid or oversized image')
+-    const ext = match[1] === 'jpeg' ? 'jpg' : match[1]!
++    let body: Uint8Array | null = null
++    let mime: string | null = null
++    const embedded = /^data:image\/(png|jpeg|gif|webp);base64,(.*)$/s.exec(src)
++    if (embedded) {
++      mime = embedded[1]!
++      body = base64Bytes(embedded[2], IMAGE_LIMIT)
++    } else if (/^https?:\/\//i.test(src)) {
++      try {
++        const downloaded = await ports.fetchApprovedImage(src)
++        mime = downloaded.mime.replace(/^image\//, '')
++        body = base64Bytes(downloaded.base64, IMAGE_LIMIT)
++      } catch (err) { return denied(err instanceof Error ? err.message : 'Mcode network image download denied') }
++    } else if (src.startsWith('genoffice-docx-media:')) {
++      const lazy = await readLazyMedia(src, event.sender.id).catch(() => null)
++      if (lazy && lazy.body.length <= IMAGE_LIMIT && /^image\/(png|jpeg|gif|webp)$/.test(lazy.mime)) {
++        body = lazy.body; mime = lazy.mime.slice(6)
++      }
++      if (!body) return denied('lazy media unavailable in the current document')
++    } else {
++      let local: string | null = null
++      try { local = src.startsWith('file://') ? fileURLToPath(src) : (isAbsolute(src) ? src : null) } catch { /* reject */ }
++      const safe = local ? fenced(ports, local) : null
++      if (!safe) return denied('image source outside Mcode workspace or unsupported blob URL')
++      const candidate = extname(safe).slice(1).toLowerCase()
++      mime = candidate === 'jpg' ? 'jpeg' : candidate
++      if (!Object.hasOwn(IMAGE_MIME, candidate)) return denied('unsupported local image')
++      try {
++        const st = statSync(safe)
++        if (!st.isFile() || st.size > IMAGE_LIMIT) return denied('local image exceeds 5 MiB')
++        body = readFileSync(safe)
++      } catch { return denied('local image cannot be read') }
++    }
++    if (!body || !mime || body.length > IMAGE_LIMIT) return denied('invalid or oversized image')
++    const bytes = body
++    const ext = mime === 'jpeg' ? 'jpg' : mime
+     try {
+       const target = await ports.saveTarget('image.' + ext, ext)
+       if (!target) return denied('image save canceled')
+@@ -225,8 +410,11 @@ export function registerDocsPrivilegedIpc(
+     const safe = dir ? fenced(ports, dir) : null
+     if (!safe) return null
+     try { if (!statSync(safe).isDirectory()) return null } catch { return null }
+-    const temp = join(safe, '.mcode-docs-export-' + randomUUID() + '.pdf')
+-    if (!fenced(ports, temp, true)) return null
++    let temp: string
++    try {
++      temp = join(ports.exportTempRoot(), 'mcode-docs-export-' + randomUUID() + '.pdf')
++    } catch { return null }
++    if (!fencedTemp(ports, temp, true)) return null
+     exportDirs.set(event.sender.id, safe)
+     tempPdfs.set(event.sender.id, temp)
+     return { dir: safe, pdfPath: temp }
+@@ -235,7 +423,7 @@ export function registerDocsPrivilegedIpc(
+     const ports = portsFor(event)!
+     const expected = tempPdfs.get(event.sender.id)
+     tempPdfs.delete(event.sender.id)
+-    if (!expected || raw !== expected || !fenced(ports, expected)) {
++    if (!expected || raw !== expected || !fencedTemp(ports, expected)) {
+       return denied('PDF is not an authorized workspace export temp')
+     }
+     try {
+@@ -264,6 +452,6 @@ export function registerDocsPrivilegedIpc(
+   })
+   return () => {
+     for (const ch of DOCS_PRIVILEGED_CHANNELS) ipc.removeHandler(ch)
+-    picked.clear(); exportDirs.clear(); tempPdfs.clear()
++    picked.clear(); exportDirs.clear(); tempPdfs.clear(); pdfTargets.clear()
+   }
+ }
+diff --git a/apps/docs/src/preload/mcode-view.ts b/apps/docs/src/preload/mcode-view.ts
+index 656e142..564de16 100644
+--- a/apps/docs/src/preload/mcode-view.ts
++++ b/apps/docs/src/preload/mcode-view.ts
+@@ -34,11 +34,15 @@ export const MCODE_DOCS_CHANNEL_POLICY: Readonly<Record<string, Route>> = Object
+   'docs:pick-export-images-target': { kind: 'invoke', to: 'mcode:docs:privileged-pick-export-images-target' },
+   'docs:take-export-pdf': { kind: 'invoke', to: 'mcode:docs:privileged-take-export-pdf' },
+   'docs:write-export-image': { kind: 'invoke', to: 'mcode:docs:privileged-write-export-image' },
++  'docs:export-pdf': { kind: 'invoke', to: 'mcode:docs:privileged-export-pdf' },
++  'docs:print-pdf-buffer': { kind: 'invoke', to: 'mcode:docs:privileged-print-pdf-buffer' },
++  'docs:save-merged-pdf': { kind: 'invoke', to: 'mcode:docs:privileged-save-merged-pdf' },
+   'docs:printers': { kind: 'invoke', to: 'mcode:docs:privileged-printers' },
+   'docs:print': { kind: 'invoke', to: 'mcode:docs:privileged-print' },
+   'files:pick': { kind: 'invoke', to: 'mcode:docs:privileged-files-pick' },
+   'files:add': { kind: 'invoke', to: 'mcode:docs:privileged-files-add' },
+   'files:read-image': { kind: 'invoke', to: 'mcode:docs:privileged-files-read-image' },
++  'files:read': { kind: 'invoke', to: 'mcode:docs:privileged-files-read' },
+   'ai:get-settings': { kind: 'invoke', to: 'mcode:docs:ai-get-settings' },
+   'ai:set-settings': { kind: 'invoke', to: 'mcode:docs:ai-set-settings' },
+   'ai:stream': { kind: 'invoke', to: 'mcode:docs:ai-stream' },
+@@ -136,17 +140,47 @@ export const mcodeDocsDesktopApi = Object.freeze({
+   // Documents stay with Mcode's CAS host. Privileged OS operations below
+   // are separately scoped to the live sender and Mcode's *existing* UI.
+   pickImage: () => invokeDocs('docs:pick-image') as ReturnType<DesktopApi['pickImage']>,
+-  saveImageAs: (src: string) => invokeDocs('docs:save-image-as', src) as ReturnType<DesktopApi['saveImageAs']>,
++  saveImageAs: async (src: string) => {
++    // Only blob:/docx-media: are dereferenced in the isolated browser process.
++    // Never let a renderer-supplied http(s) URL invoke fetch here: it must go
++    // through the Mcode main-process one-shot approval and pinned DNS route.
++    if (/^(blob:|genoffice-docx-media:)/i.test(src)) {
++      try {
++        const response = await fetch(src)
++        if (!response.ok) return { ok: false, error: 'lazy image could not be loaded' }
++        const data = await response.blob()
++        const mime = data.type.toLowerCase()
++        if (!/^image\/(png|jpeg|gif|webp)$/.test(mime) || data.size > 5 * 1024 * 1024) {
++          return { ok: false, error: 'lazy image is not a supported image under 5 MiB' }
++        }
++        const bytes = new Uint8Array(await data.arrayBuffer())
++        let binary = ''
++        for (let i = 0; i < bytes.length; i += 8192) {
++          binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
++        }
++        src = 'data:' + mime + ';base64,' + btoa(binary)
++      } catch { return { ok: false, error: 'lazy/blob image cannot be loaded by this view' } }
++    }
++    return invokeDocs('docs:save-image-as', src) as ReturnType<DesktopApi['saveImageAs']>
++  },
+   pickExportImagesTarget: () => invokeDocs('docs:pick-export-images-target') as ReturnType<DesktopApi['pickExportImagesTarget']>,
+   takeExportPdf: (path: string) => invokeDocs('docs:take-export-pdf', path) as ReturnType<DesktopApi['takeExportPdf']>,
+   writeExportImage: (dir: string, name: string, base64: string) =>
+     invokeDocs('docs:write-export-image', dir, name, base64) as ReturnType<DesktopApi['writeExportImage']>,
++  exportPdf: (name: string, w: number, h: number, path?: string, scale?: number, links?: Parameters<DesktopApi['exportPdf']>[5]) =>
++    invokeDocs('docs:export-pdf', name, w, h, path, scale, links) as ReturnType<DesktopApi['exportPdf']>,
++  printPdfBuffer: (w: number, h: number, scale?: number) =>
++    invokeDocs('docs:print-pdf-buffer', w, h, scale) as ReturnType<DesktopApi['printPdfBuffer']>,
++  saveMergedPdf: (name: string, parts: string[], path?: string, links?: Parameters<DesktopApi['saveMergedPdf']>[3]) =>
++    invokeDocs('docs:save-merged-pdf', name, parts, path, links) as ReturnType<DesktopApi['saveMergedPdf']>,
+   listPrinters: () => invokeDocs('docs:printers') as ReturnType<DesktopApi['listPrinters']>,
+   print: (scale?: number, job?: Parameters<DesktopApi['print']>[1]) =>
+     invokeDocs('docs:print', scale, job) as ReturnType<DesktopApi['print']>,
+   pickAttachments: () => invokeDocs('files:pick') as ReturnType<DesktopApi['pickAttachments']>,
+   addAttachmentPaths: (paths: string[]) => invokeDocs('files:add', paths) as ReturnType<DesktopApi['addAttachmentPaths']>,
+   readAttachmentImage: (path: string) => invokeDocs('files:read-image', path) as ReturnType<DesktopApi['readAttachmentImage']>,
++  readAttachment: (path: string, offset: number, maxChars: number) =>
++    invokeDocs('files:read', path, offset, maxChars) as ReturnType<DesktopApi['readAttachment']>,
+   openDocx: readHostPendingDocx,
+   openDocxPath: (_path: string) => readHostPendingDocx(),
+   confirmDocumentReplace: () => invokeDocs('docs:confirm-document-replace', {}) as Promise<boolean>,
+-- 
+2.52.0.windows.1
+

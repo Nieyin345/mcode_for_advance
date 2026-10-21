@@ -20,3 +20,9 @@ export const ipcRenderer = {
 export const app = { getSystemLocale: () => 'ja-JP', getPath: (_key: string) => process.env.MCODE_SMOKE_DATA_ROOT || '.' };
 export const session = { defaultSession: { removeWordFromSpellCheckerDictionary: (_word: string) => true } };
 export const contextBridge = { exposeInMainWorld: (name: string, api: unknown) => exposed.set(name, api) };
+
+/** Imports used by upstream file-parser / lazy-media modules; they must never
+ * access Electron protocols from the isolated IPC smoke. */
+export const webUtils = { getPathForFile: () => '' };
+export const net = { fetch: () => { throw Error('network must not be reached in smoke') } };
+export const protocol = { isProtocolHandled: () => false, handle: () => { throw Error('no protocol registration allowed') } };
