@@ -24,9 +24,10 @@
  * UA (the Electron/app tail is stripped) — sign-in flows refuse webview UAs.
  */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  app,
   ipcMain,
   safeStorage,
   shell,
@@ -305,6 +306,21 @@ class BrowserManagerImpl {
     const ses = browserSession();
     let view: WebContentsView;
     try {
+      const adjacentPreload = join(__dirname, "../preload/browserPicker.cjs");
+      // Isolated Electron smoke bundles the main probe into a temporary dir,
+      // while development still has the real preload under the app's out/.
+      // This fallback is strictly dev-only AND must come from an Electron-Vite
+      // project directory; packaged apps may only use the adjacent artifact.
+      const devPreload = join(process.cwd(), "out/preload/browserPicker.cjs");
+      const pickerPreload = !app.isPackaged && !existsSync(adjacentPreload)
+        && existsSync(join(process.cwd(), "electron.vite.config.ts"))
+        && existsSync(devPreload) ? devPreload : adjacentPreload;
+      // Electron otherwise logs a missing preload and still displays an
+      // untrusted page. Reject the view entirely instead of silently losing
+      // the picker security boundary in an incomplete dev/package build.
+      if (process.versions.electron && !existsSync(pickerPreload)) {
+        throw new Error("缺少沙箱浏览器预加载文件 browserPicker.cjs");
+      }
       view = new WebContentsView({
         webPreferences: {
           // The browser runs on its own persistent partition (browserSession),
@@ -313,16 +329,13 @@ class BrowserManagerImpl {
           // via the browser.dataDir setting) instead of mixing with app data.
           session: ses,
           // contextIsolation stays on so the page can't touch the preload's
-          // scope; the browserPicker preload exposes only mcodeBridge.pickElement.
-          // sandbox is OFF because the preload is built as ESM (.mjs) and
-          // sandboxed preloads only support require() - ESM import would silently
-          // fail to load, leaving window.mcodeBridge undefined. This mirrors the
-          // main window's preload config (which is also sandbox:false + ESM).
-          // The preload still grants no Node capability to the page itself.
-          preload: join(__dirname, "../preload/browserPicker.mjs"),
+          // scope. This dedicated CommonJS preload runs with Electron's
+          // sandboxed require('electron') polyfill; the main window's ESM preload
+          // is NOT shared with untrusted browser pages.
+          preload: pickerPreload,
           contextIsolation: true,
           nodeIntegration: false,
-          sandbox: false,
+          sandbox: true,
         },
       });
     } catch (err) {
@@ -477,6 +490,9 @@ class BrowserManagerImpl {
     ipcMain.on("__mcode_pick_result__", (evt: IpcMainEvent, data: unknown) => {
       const browserId = this.wcToBrowser.get(evt.sender.id);
       if (!browserId) return;
+      // Only the top-level preload is an authorized picker origin. Never let
+      // an untrusted subframe inherit a tab's picker authority.
+      if (evt.senderFrame && evt.senderFrame !== evt.sender.mainFrame) return;
       // `window.mcodeBridge.pickElement` is callable by ANY page script, not
       // only by our injected picker — and in sidebar mode a pick result goes
       // straight into the chat composer. So: accept it only while the user has

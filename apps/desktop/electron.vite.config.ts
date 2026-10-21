@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, wri
 import { resolve, join } from "node:path";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
-import type { Plugin } from "vite";
+import { transformWithEsbuild, type Plugin } from "vite";
 
 // No build-time `.gz` / `.br` copies any more: they only served the mobile
 // HTTP server and added ~26MB to every installer. serveMobileStatic.ts now
@@ -282,7 +282,25 @@ export default defineConfig({
     },
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin(), {
+      name: "mcode:browser-picker-sandbox-cjs",
+      async generateBundle(_options, bundle) {
+        // electron-vite 3 allows one preload output format only. Preserve the
+        // main window's ESM preload and generate a second standalone CJS asset
+        // from the already-bundled picker chunk for sandboxed WebContentsView.
+        const picker = bundle["browserPicker.mjs"];
+        if (!picker || picker.type !== "chunk") {
+          throw new Error("[mcode:picker] missing browserPicker.mjs preload chunk");
+        }
+        const result = await transformWithEsbuild(picker.code, "browserPicker.js", {
+          loader: "js", format: "cjs", target: "node22",
+        });
+        if (!result.code.includes('require("electron")') && !result.code.includes("require('electron')")) {
+          throw new Error("[mcode:picker] sandboxed preload missing require('electron')");
+        }
+        this.emitFile({ type: "asset", fileName: "browserPicker.cjs", source: result.code });
+      },
+    }],
     build: {
       // Two preload bundles:
       //  - index: the main window's preload (contextBridge API).
@@ -296,6 +314,9 @@ export default defineConfig({
           browserPicker: "src/preload/browserPicker.ts",
         },
       },
+      // One ESM build; the preload plugin emits the companion CJS picker.
+      // Keep browserPicker.mjs for the existing release asset check, while
+      // the T73 gate verifies browserPicker.cjs in dev and packaged outputs.
       rollupOptions: { external: ["electron"] },
     },
     resolve: {
