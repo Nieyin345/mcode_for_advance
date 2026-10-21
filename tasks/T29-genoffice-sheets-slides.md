@@ -261,3 +261,19 @@ T28（`858d3c7b`）已经产出并接线：
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 T29 执行记录（主仓工作树）
+
+- **原厂接线**：沿用 T28 的 `genofficeNativeVendor` / `genofficeViewFactories`，直接调用 upstream `configureSheetsRuntime`、`createSheetsView({ includeAiHandlers: false, openingWorkbook: true })`、`queueWorkbookForView(webContents, path)`，以及 `configureSlidesRuntime`、`createSlidesView(openPath)`。沿用 T28 的唯一 AI IPC 桥，宿主的 `vendorAiContextForSender` 增加 sheets/slides-native 的 webContents / Mcode session 绑定。原有 slidesBridge/slidesExecutor 路径保持 fallback；没有改动 `genoffice/` 上游源码与 modules。
+- **路径/资源防线**：`DocumentViewHost.open` 在创建原厂视图、排队 workbook/幻灯片前，要求明确的 `filePath`、工作区围栏、存在的实际文件、physicalPath 与唯一持有会话；slides 原生使用固定 `genoffice-app://slides/index.html`，旧 `file://…/slides/index.html?mode=tab` 分支照旧。页面不得选择初始路径。固定 scheme 仍由宿主受限协议负责，避免任意 file:// 提权。无原厂 preload/renderer 时状态 false；sheets 没有 Rust 二进制时报告 false，不创建空白视图。
+- **sidecar 两种路径**：开发 = `genoffice/apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar[.exe]`；安装 = `resources/genoffice/native/xlsx-sidecar[.exe]`（按 Mcode 自有 `resources/genoffice` 而非原厂壳直接 `resources/native`）。两者均调用**原厂** `XlsxSidecarClient`，未新造 JS 读写实现。此工作树**未发现** `target/release/xlsx-sidecar.exe`；不能声称真实 XLSX 编辑通过。发行构建 opt-in 增加原厂 sheets/slides preload 与 sidecar staging，并在资源缺失时前置失败（不可悄悄打包一个不可用的编辑器）。
+- **路径授权问题**：`queueWorkbookForView` 自身只把路径存入 `queuedWorkbookPaths`，**没有工作区围栏**。Mcode 的前置围栏必须放在调用 queue **之前**，当前宿主即这样执行；不能把原厂 queue 当作授权器。但原厂 sheets/slides 后续的文件对话框、显式路径 IPC 的完整逐条围栏**尚未完成独立安全审查**。
+- **是否必须改 `createSheetsView`**：不必改。配置后用原厂 create，再用原厂 queue，避免实现重复视图内核。
+- **slides 越出 Pane 的 IPC**：原厂声称的 155 条未完成逐条枚举核算。已静态发现**至少 12 类/处**含 Pane 外副作用或入口：打开/另存文件对话框、字体本机安装、插入图片/媒体文件对话框、导出目录/PDF 文件选择、图片保存、打印、PDF 导出新 BrowserWindow、全屏、系统 shell 打开外链、屏幕采集/录制等。它们的 sender/路径围栏应另经原厂 IPC 独立安全验收；这次**不声称 155 条已安全迁移**。
+- **旧代码判断**：`slidesBridge.ts`、`slidesExecutor.ts`、`slidesVendorModules.ts` 仍用于原生视图未装配时的 legacy slides 路线，不能删；`OnlyOfficeEditorPane` 继续保留原有独立路线。
+- **自动验证**：
+  - 真 Electron/Vite 构建 `node --max-old-space-size=8192 node_modules/electron-vite/bin/electron-vite.js build` **exit 0**（初跑遇子路径包别名失败，补 upstream named-action 等别名后重跑通过）。
+  - `node scripts/run-smokes.mjs document-view-host-smoke document-view-renderer-smoke document-view-open-smoke document-view-vendor-page-smoke document-view-electron-smoke genoffice-native-view-smoke`：五套 `document-view-*` 与一套 native 基线全通过（分批验证；初跑 renderer 两条 T28 的过时文案断言已更新后重跑 2/2）。native fake host 新增 sheets/slides 的单文件绑定、越界拒绝、同文件打开、隐藏/重显、关闭时字节未变；renderer 新增 native 固定 scheme / 初始文件绑定断言。真实工作区文件内容验收**不能**由 fake fixture 代替。
+  - 七套 `arc005-pane-*`：`apps/desktop/.tmp/smoke-runs/1792564538650-22104-uNghZG`，7/7 通过；同批 renderer 也通过。
+  - `packages/contracts` 类型检查见并发的 `packages/contracts/src/modules.ts` TS2484 报错；`apps/desktop` TypeScript 5.7.2 存在长时检查及 TypeScript 内部 `getModifierFlagsWorker` 崩溃；**不能**声称三包 tsc 全绿。
+- **逐项验收（诚实状态）**：第 6 条（资源缺失状态与降级）通过；第 7 条（5 + 7 既有 smoke）通过；第 1-4 条（真实 XLSX/PPTX 编辑/保存/独立回读/不改动保存字节）、第 5 条（两个原厂 app 的真实 AI 回复）、第 8 条（三包 tsc 无红）、第 9 条（3 项红例变异验证）**未达成或无可复核证据**。注意：这是完成原厂入口和测试接线后的**部分实现**，非 T29 全部验收完成。

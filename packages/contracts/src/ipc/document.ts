@@ -102,5 +102,5 @@ export interface DocumentCapabilities {
    *
    *  ⚠️ 这是**装配事实**，不是"页面有没有某个 API"：只有宿主真的能给出
    *  `OpenResult`/`OpenDocxResult` 时才为 true。 */
-  hosts?: { docs: boolean; slides: boolean; sheets: boolean; pdf?: boolean; markdown?: boolean; html?: boolean };
+  hosts?: { docs: boolean; slides: boolean; sheets: boolean; slidesNative?: boolean; pdf?: boolean; markdown?: boolean; html?: boolean };
 }

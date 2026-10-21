@@ -15,11 +15,11 @@ function check(name: string, ok: boolean, detail?: unknown): void {
 }
 const root = mkdtempSync(join(tmpdir(), "mcode-t28-native-"));
 const outside = mkdtempSync(join(tmpdir(), "mcode-t28-outside-"));
-const kinds = ["pdf", "markdown", "html"] as const;
-const bodies = ["%PDF-1.7\nT28 unchanged\n", "# T28 Markdown\n", "<p>T28 HTML</p>\n"];
+const kinds = ["pdf", "markdown", "html", "sheets", "slides"] as const;
+const bodies = ["%PDF-1.7\nT28 unchanged\n", "# T28 Markdown\n", "<p>T28 HTML</p>\n", "fixture XLSX bytes", "fixture PPTX bytes"];
 try {
   for (const [idx, kind] of kinds.entries()) {
-    const path = join(root, "sample." + ({ pdf:"pdf",markdown:"md",html:"html" } as const)[kind]);
+    const path = join(root, "sample." + ({ pdf:"pdf",markdown:"md",html:"html",sheets:"xlsx",slides:"pptx" } as const)[kind]);
     const outsidePath = join(outside, "outside." + kind);
     writeFileSync(path, bodies[idx]!);
     writeFileSync(outsidePath, "secret");

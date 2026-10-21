@@ -511,14 +511,16 @@ section("4c. sheets 无对端 / slides 能力未装配：明说原因，不建�
     const text = uiText();
     check(`★ ${format}：标题明说「打开暂不可用」`, text.includes("打开暂不可用"), text);
     if (format === "表格") {
-      check("★ 表格：原因点名 vendor 的打开通道 workbook:select", text.includes(vendorChannel), text);
+      check("★ 表格：依赖原厂 Rust xlsx-sidecar（缺失时明确拒绝）", text.includes("xlsx-sidecar"), text);
       check("表格：原因点名 vendor 主进程", text.includes("GenOffice 自己的主进程"), text);
     } else {
       check("★ 演示文稿：原因点名能力报告 hosts.slides（装配事实，不是通道名）", text.includes(vendorChannel), text);
       check("演示文稿：原因点名 GenOffice 解析器（不是「我们没做」）", text.includes("GenOffice 的演示文稿解析器"), text);
       check("★ 演示文稿：不再声称 slides:open-path 是唯一缺口（已接）", !text.includes("slides:open-path"), text);
     }
-    check(`${format}：给出仍可用的替代入口（OnlyOffice / 结构化视图）`, text.includes("OnlyOffice") && text.includes("GenOffice 结构化视图"), text);
+    check(`${format}：缺依赖时给出明确恢复方式`, format === "表格"
+      ? text.includes("请构建对应 app 后重试")
+      : text.includes("OnlyOffice") && text.includes("GenOffice 结构化视图"), text);
     check(`★ ${format}：不是「编辑器页未构建」的误报`, !text.includes("GenOffice 编辑器页未构建"), text);
     check(`${format}：不残留「加载中」`, !text.includes("加载中…"), text);
     // 显式降级是警告（tone=warning，role=status），不是"出错了"的红色警报。
@@ -548,6 +550,26 @@ section("4c. sheets 无对端 / slides 能力未装配：明说原因，不建�
     eq("openPath 带面板的 filePath", (paths.at(-1)?.input as { filePath?: string } | undefined)?.filePath, "/workspace/talk.pptx");
     const text = uiText();
     check("★ 能力就绪时不再显示降级说明", !text.includes("打开暂不可用"), text);
+    await unmountPane();
+  }
+
+  // T29: real upstream views use an immutable genoffice-app identity + an
+  // already authorized initial path, not the old slides renderer file URL.
+  for (const [file, kind] of [
+    ["/workspace/budget.xlsx", "sheets"],
+    ["/workspace/talk.pptx", "slides"],
+  ] as const) {
+    resetWorld({ available: true, path: CLI_PATH });
+    __setCapabilities({ kind: "ok", cli: { available: true, path: CLI_PATH },
+      hosts: { docs: true, sheets: true, slides: true, slidesNative: true } });
+    await mountPane(file);
+    for (let i = 0; i < 6; i++) await __flush();
+    const opens = ops("open");
+    eq(`T29 ${kind}: native view opened exactly once`, opens.length, 1);
+    const input = (opens[0]?.input ?? {}) as {url?:string; editor?:string; filePath?:string};
+    eq(`T29 ${kind}: fixed scheme (no renderer-selected navigation)`, input.url, `genoffice-app://${kind}/index.html`);
+    eq(`T29 ${kind}: editor domain declared`, input.editor, kind);
+    eq(`T29 ${kind}: authorized initial path reaches factory`, input.filePath, file);
     await unmountPane();
   }
 

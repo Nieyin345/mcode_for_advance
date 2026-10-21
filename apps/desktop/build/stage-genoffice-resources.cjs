@@ -165,6 +165,11 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
   const editors = EDITOR_APPS.map((name) => ({
     name, renderer: join(vendor, "apps", name, "out", "renderer"),
   }));
+  const nativePreloads = ["sheets", "slides"].map(name => ({
+    name, preload: join(vendor, "apps", name, "out", "preload"),
+  }));
+  const sidecarExe = process.platform === "win32" ? "xlsx-sidecar.exe" : "xlsx-sidecar";
+  const sidecarBin = join(vendor, "apps", "sheets", "native", "xlsx-engine", "target", "release", sidecarExe);
   if (includeEditors) {
     for (const { name, renderer } of editors) {
       assertNativeVendorPath(vendor, renderer);
@@ -175,6 +180,16 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
       assertWithin(vendor, fs.realpathSync.native(renderer));
       assertRendererAssetsReady(renderer, name);
     }
+    for (const { name, preload } of nativePreloads) {
+      assertNativeVendorPath(vendor, preload);
+      dirReady(preload, `${name} original preload`);
+      const entry = join(preload, "index.js");
+      assertNativeVendorPath(vendor, entry);
+      fileReady(entry, `${name} original preload entry`);
+      assertVendorTreeSafe(vendor, preload);
+    }
+    assertNativeVendorPath(vendor, sidecarBin);
+    fileReady(sidecarBin, "Rust xlsx-sidecar (required for native Sheets)");
   }
   if (include) {
     fileReady(cli, "CLI");
@@ -210,6 +225,11 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
           const target = join(temp, "apps", name, "out", "renderer");
           fs.cpSync(renderer, target, { recursive: true, dereference: false });
         }
+        for (const { name, preload } of nativePreloads) {
+          fs.cpSync(preload, join(temp, "apps", name, "out", "preload"), { recursive: true, dereference: false });
+        }
+        fs.mkdirSync(join(temp, "native"), { recursive: true });
+        fs.copyFileSync(sidecarBin, join(temp, "native", sidecarExe));
       }
     }
     fs.writeFileSync(join(temp, "availability.json"), JSON.stringify({

@@ -12,10 +12,11 @@ import { DOCUMENT_HANDOFF_SCHEME } from "./documentViewHandoff.js";
 import { PANEL_SCHEME } from "@contracts/customUiPanel";
 import type { DocumentViewLike } from "./documentViewHost.js";
 
-export type NativeKind = "pdf" | "markdown" | "html";
+export type NativeKind = "pdf" | "markdown" | "html" | "sheets" | "slides";
 export type NativeHostStatus = Record<NativeKind, boolean>;
-const kinds: readonly NativeKind[] = ["pdf", "markdown", "html"];
-let status: NativeHostStatus = { pdf: false, markdown: false, html: false };
+const kinds: readonly NativeKind[] = ["pdf", "markdown", "html", "sheets", "slides"];
+const unavailable = (): NativeHostStatus => ({ pdf: false, markdown: false, html: false, sheets: false, slides: false });
+let status: NativeHostStatus = unavailable();
 let roots: Record<NativeKind, string> | null = null;
 
 export function nativeHostStatus(): NativeHostStatus { return { ...status }; }
@@ -37,27 +38,34 @@ function regularFile(file: string): boolean {
 }
 
 export function configureGenofficeNativeViews(cliPath: string | null): NativeHostStatus {
-  status = { pdf: false, markdown: false, html: false };
+  status = unavailable();
   roots = null;
   const base = nativeViewsRoot(cliPath);
   if (!vendorAvailable || !base) return nativeHostStatus();
-  const dirs = { pdf: join(base, "pdf", "out"), markdown: join(base, "markdown", "out"), html: join(base, "html", "out") };
+  const dirs = Object.fromEntries(kinds.map(kind => [kind, join(base, kind, "out")])) as Record<NativeKind, string>;
+  // Same upstream layout as shell/index.ts. Never guess another Rust executable.
+  const sidecarExe = process.platform === "win32" ? "xlsx-sidecar.exe" : "xlsx-sidecar";
+  const isRelease = cliPath!.replace(/\\/g, "/").endsWith("/genoffice/cli/genoffice.cjs");
+  const sidecarPath = isRelease
+    ? join(dirname(base), "native", sidecarExe)
+    : join(base, "sheets", "native", "xlsx-engine", "target", "release", sidecarExe);
   const configured = Object.fromEntries(kinds.map(kind => [kind, {
     preloadPath: join(dirs[kind], "preload", "index.js"),
     rendererFile: join(dirs[kind], "renderer", "index.html"),
-    // Keep the original vendor genoffice-app:// scheme, not file:// workarounds.
     rendererUrl: undefined,
-    // Cross-document opening must pass back through the Mcode file panel.
-    // Until a cross-pane router is injected, upstream explicitly reports false.
+    ...(kind === "slides" ? { rendererFilePath: join(dirs[kind], "renderer", "index.html") } : {}),
+    ...(kind === "sheets" ? { sidecarPath } : {}),
+    // Cross-pane opening must first pass Mcode's workspace authorization.
     openGeneratedPath: (_path: string) => false,
-  }])) as Record<NativeKind, { preloadPath: string; rendererFile: string; rendererUrl?: string; openGeneratedPath: (path: string) => boolean }>;
+  }])) as Record<NativeKind, { preloadPath: string; rendererFile: string; rendererUrl?: string; rendererFilePath?: string; sidecarPath?: string; openGeneratedPath: (path: string) => boolean }>;
   for (const kind of kinds) status[kind] = regularFile(configured[kind].preloadPath) && regularFile(configured[kind].rendererFile);
+  status.sheets = status.sheets && regularFile(sidecarPath);
   if (kinds.some(kind => status[kind])) {
     try {
       configureNativeRuntimes(configured);
       roots = Object.fromEntries(kinds.filter(kind => status[kind]).map(kind => [kind, join(dirs[kind], "renderer")])) as Record<NativeKind, string>;
     } catch {
-      status = { pdf: false, markdown: false, html: false };
+      status = unavailable();
       roots = null;
     }
   }
@@ -84,7 +92,7 @@ export function registerGenofficeNativeScheme(): void {
   ]);
 }
 
-/** One bounded scheme endpoint for the three original renderer bundles. */
+/** One bounded scheme endpoint for the five original renderer bundles. */
 export function installGenofficeNativeProtocol(): void {
   protocol.handle("genoffice-app", (request) => {
     let url: URL;

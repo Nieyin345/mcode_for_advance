@@ -161,7 +161,7 @@ export interface DocumentViewHostPorts {
   getMainWindow(): DocumentViewHostWindow | null;
   /** 视图构造器；缺省惰性取 `electron.WebContentsView`。 */
   createView?: ((webPreferences: DocumentViewWebPreferences) => DocumentViewLike)
-    | { vendor: (openPath: string | null, kind: "pdf" | "markdown" | "html") => DocumentViewLike };
+    | { vendor: (openPath: string | null, kind: "pdf" | "markdown" | "html" | "sheets" | "slides") => DocumentViewLike };
   /** Vendor 的路径围栏与普通 document.* 共用主进程判据；未注入时拒绝。 */
   withinWorkspace?: (path: string) => boolean;
   /** 【ARC-007】**诊断/测试接缝**：在保存租约内、版本比较通过之后、`atomicReplaceFile`
@@ -300,7 +300,7 @@ interface LiveDocumentView {
   workflowEngineId: string | null;
   /** 【ARC-007 P1/GA1】编辑器域（`open` 的 `editor` 字段）。`"slides"` 时
    *  `openPath`/保存走 slides 通道（vendor 解析器构造 `OpenResult`）。 */
-  editor: "slides" | "pdf" | "markdown" | "html" | null;
+  editor: "slides" | "sheets" | "pdf" | "markdown" | "html" | null;
   /** 【ARC-007 P0】**待打开请求**：`openPath` 准备的路径，等页面经 `readOpened`
    *  拉取一次性字节响应；页面回执（`settlePendingOpen`）后才登记会话。
    *  失败/拒绝不占会话、不改 CAS 基准。 */
@@ -438,7 +438,7 @@ export class DocumentViewHost {
   private readonly sessionKeyByDocId = new Map<string, string>();
   private readonly getWindow: () => DocumentViewHostWindow | null;
   private readonly createView: (webPreferences: DocumentViewWebPreferences) => DocumentViewLike;
-  private vendorCreateView: ((path: string | null, kind: "pdf" | "markdown" | "html") => DocumentViewLike) | null;
+  private vendorCreateView: ((path: string | null, kind: "pdf" | "markdown" | "html" | "sheets" | "slides") => DocumentViewLike) | null;
   private withinWorkspace: (path: string) => boolean;
   private readonly beforeAtomicReplace: (realPath: string) => void | Promise<void>;
   /** 【ARC-007 P0】脏替换确认端口（见 `DocumentViewHostPorts.confirmDirty`）。 */
@@ -499,7 +499,7 @@ export class DocumentViewHost {
   }
 
   /** 生产装配：只有三个原厂 runtime/资源都准备好之后才注入，失败就保留禁用。 */
-  setVendorViewFactory(factory: ((path: string | null, kind: "pdf" | "markdown" | "html") => DocumentViewLike) | null,
+  setVendorViewFactory(factory: ((path: string | null, kind: "pdf" | "markdown" | "html" | "sheets" | "slides") => DocumentViewLike) | null,
     withinWorkspace?: (path: string) => boolean): void {
     this.vendorCreateView = factory;
     this.withinWorkspace = withinWorkspace ?? (() => false);
@@ -514,7 +514,8 @@ export class DocumentViewHost {
    * webContents）。
    */
   open(input: DocViewOpenInput): DocViewResult {
-    const kind = input.editor === "pdf" || input.editor === "markdown" || input.editor === "html" ? input.editor : null;
+    const kind = input.editor === "pdf" || input.editor === "markdown" || input.editor === "html" || input.editor === "sheets" ||
+      (input.editor === "slides" && input.url === "genoffice-app://slides/index.html") ? input.editor : null;
     // The vendor factory navigates itself to its own fixed privileged scheme.
     // The renderer supplies only this exact non-navigating identity marker.
     const checked = kind !== null
@@ -559,7 +560,8 @@ export class DocumentViewHost {
       if (kind !== null && (existing.editor !== kind || physicalPath(existing.openedFilePath ?? "") !== physicalPath(input.filePath!))) {
         return { ok: false, reason: "原厂视图不允许复用 docId 切换文件或编辑器类型" };
       }
-      if (kind === null && (existing.editor === "pdf" || existing.editor === "markdown" || existing.editor === "html"))
+      if (kind === null && (existing.editor === "pdf" || existing.editor === "markdown" || existing.editor === "html" || existing.editor === "sheets" ||
+        (existing.editor === "slides" && existing.url === "genoffice-app://slides/index.html")))
         return { ok: false, reason: "原厂视图不能复用为普通文档视图" };
       // 【ARC-006 Gate A 缺口】每次 open（含复用）都重新核验并续上凭据绑定：
       // 绑定带空闲租约，过期后页面会 401；用户重新打开/面板重渲染就是新的使用
@@ -810,7 +812,8 @@ export class DocumentViewHost {
     if (!withinWorkspace(filePath)) {
       return { ok: false, reason: `文件不在已知工作区内：${filePath}` };
     }
-    if (live.editor === "pdf" || live.editor === "markdown" || live.editor === "html") {
+    if (live.editor === "pdf" || live.editor === "markdown" || live.editor === "html" || live.editor === "sheets" ||
+        (live.editor === "slides" && live.url === "genoffice-app://slides/index.html")) {
       // 原厂 createXxxView(path) 首帧自行 consumePending；openPath 只校验而不再推送。
       return physicalPath(filePath) !== null && physicalPath(filePath) === physicalPath(live.openedFilePath ?? "")
         ? { ok: true } : { ok: false, reason: "原厂视图仅能打开初始授权的文件" };
@@ -1078,7 +1081,8 @@ export class DocumentViewHost {
   vendorAiContextForSender(sender: unknown): { sessionId: string; filePath: string } | null {
     const id = this.docIdForSender(sender);
     const live = id === null ? null : this.views.get(id);
-    if (!live || (live.editor !== "pdf" && live.editor !== "markdown" && live.editor !== "html") ||
+    if (!live || (live.editor !== "pdf" && live.editor !== "markdown" && live.editor !== "html" &&
+        live.editor !== "sheets" && !(live.editor === "slides" && live.url === "genoffice-app://slides/index.html")) ||
         !live.mcodeSessionId || !live.openedFilePath || !this.withinWorkspace(live.openedFilePath)) return null;
     return { sessionId: live.mcodeSessionId, filePath: live.openedFilePath };
   }

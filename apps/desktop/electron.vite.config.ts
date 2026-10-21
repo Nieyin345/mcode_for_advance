@@ -45,12 +45,16 @@ function slidesVendorAliases(): Array<{ find: string; replacement: string }> {
   return [
     { find: "@genoffice/pptx-engine/table-grid", replacement: pkg("pptx-engine", "table-grid.ts") },
     { find: "@genoffice/pptx-engine/identity", replacement: pkg("pptx-engine", "identity.ts") },
+    { find: "@genoffice/pptx-engine/named-action", replacement: pkg("pptx-engine", "named-action.ts") },
     { find: "@genoffice/pptx-engine/custgeom", replacement: pkg("pptx-engine", "custgeom.ts") },
     { find: "@genoffice/pptx-engine/background-promote", replacement: pkg("pptx-engine", "background-promote.ts") },
     { find: "@genoffice/docx-engine/math", replacement: pkg("docx-engine", "math.ts") },
     { find: "@genoffice/docx-engine/lazy-media", replacement: pkg("docx-engine", "lazy-media.ts") },
     { find: "@genoffice/docx-engine/zip-splice", replacement: pkg("docx-engine", "zip-splice.ts") },
     { find: "@genoffice/agent-core/redact-range", replacement: pkg("agent-core", "redact-range.ts") },
+    { find: "@genoffice/pptx-ops/font-size", replacement: pkg("pptx-ops", "font-size.ts") },
+    { find: "@genoffice/pptx-ops/op-docs", replacement: pkg("pptx-ops", "op-docs.ts") },
+    { find: "@genoffice/pptx-render/auto-num", replacement: pkg("pptx-render", "auto-num.ts") },
     { find: "@genoffice/pptx-engine", replacement: pkg("pptx-engine", "index.ts") },
     { find: "@genoffice/pptx-render", replacement: pkg("pptx-render", "index.ts") },
     { find: "@genoffice/pptx-ops", replacement: pkg("pptx-ops", "index.ts") },
@@ -244,10 +248,18 @@ export default defineConfig({
         },
         {
           find: /^@main\/document\/genofficeNativeVendor\.js$/,
-          replacement: ["pdf", "markdown", "html"].every(kind =>
+          replacement: ["pdf", "markdown", "html", "sheets", "slides"].every(kind =>
             existsSync(resolve("../../genoffice/apps", kind, "src/main", `${kind}-main.ts`)))
             ? resolve("src/main/document/genofficeNativeVendor.ts")
             : resolve("src/main/document/genofficeNativeVendorStub.ts"),
+        },
+        {
+          find: /^@main\/document\/genofficeSheetsEntry\.js$/,
+          replacement: resolve("../../genoffice/apps/sheets/src/main/sheets-main.ts"),
+        },
+        {
+          find: /^@main\/document\/genofficeSlidesEntry\.js$/,
+          replacement: resolve("../../genoffice/apps/slides/src/main/slides-main.ts"),
         },
         {
           find: /^@main\/document\/slidesVendorModules\.js$/,

@@ -144,9 +144,9 @@ export function editorHostForPath(filePath: string): GenofficeEditorHost {
  *    `WorkbookFile`，含 sessionId 与分块读取的会话）。本切片未接，恒为 false。
  */
 export function hasHostOpenChannel(host: GenofficeEditorHost, slidesHost = false,
-  nativeHosts: Partial<Record<"pdf" | "markdown" | "html", boolean>> = {}): boolean {
-  return host === "docs" || (host === "slides" && slidesHost) ||
-    ((host === "pdf" || host === "markdown" || host === "html") && nativeHosts[host] === true);
+  nativeHosts: Partial<Record<"pdf" | "markdown" | "html" | "sheets" | "slides", boolean>> = {}): boolean {
+  return host === "docs" || (host === "slides" && (slidesHost || nativeHosts.slides === true)) ||
+    ((host === "pdf" || host === "markdown" || host === "html" || host === "sheets") && nativeHosts[host] === true);
 }
 
 /**
@@ -283,12 +283,14 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
   // `document.capabilities.hosts` 由主进程报告（docs 恒真；slides 取决于 vendor
   // 执行器是否装配；sheets 未接恒假）。
   const slidesHostAvailable = caps.data?.hosts?.slides === true;
-  const nativeHosts = { pdf: caps.data?.hosts?.pdf, markdown: caps.data?.hosts?.markdown, html: caps.data?.hosts?.html };
+  const nativeHosts = { pdf: caps.data?.hosts?.pdf, markdown: caps.data?.hosts?.markdown, html: caps.data?.hosts?.html,
+    sheets: caps.data?.hosts?.sheets, slides: caps.data?.hosts?.slidesNative };
   // 【ARC-007】只给有宿主对端的编辑器页算 URL：没有对端时建视图只会得到一张
   // vendor 页面自身启动逻辑炸掉的空面板。`null` 让下面两个 effect 全部跳过。
   const url =
     cliPath !== null && hasHostOpenChannel(host, slidesHostAvailable, nativeHosts)
-      ? host === "pdf" || host === "markdown" || host === "html"
+      ? host === "pdf" || host === "markdown" || host === "html" || host === "sheets" ||
+          (host === "slides" && nativeHosts.slides === true)
         ? `genoffice-app://${host}/index.html`
         : editorPageUrl(cliPath, host)
       : null;
@@ -318,9 +320,10 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
         bounds,
         visible: activeRef.current,
         ...(host === "slides" ? { editor: "slides" as const } : {}),
-        ...((host === "pdf" || host === "markdown" || host === "html")
+        ...((host === "pdf" || host === "markdown" || host === "html" || host === "sheets")
           ? { editor: host, filePath } : {}),
-        ...(mcodeSessionId && host !== "slides" ? { mcodeSessionId } : {}),
+        ...(host === "slides" && nativeHosts.slides === true ? { filePath } : {}),
+        ...(mcodeSessionId && (host !== "slides" || nativeHosts.slides === true) ? { mcodeSessionId } : {}),
       });
       lastKey = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
       void pending.then(
@@ -481,11 +484,9 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
         <div className="p-3">
           <ErrorNote title={t("ide.genoffice.viewHostUnsupported")} tone="warning">
             <div>
-              {unsupportedHost === "pdf" || unsupportedHost === "markdown" || unsupportedHost === "html"
-                ? `${unsupportedHost} 原厂视图尚未装配：缺少 GenOffice 快照或预加载/渲染资源。请构建对应 app 后重试。`
-                : t(unsupportedHost === "sheets"
-                  ? "ide.genoffice.viewHostUnsupportedSheets"
-                  : "ide.genoffice.viewHostUnsupportedSlides")}
+              {unsupportedHost === "pdf" || unsupportedHost === "markdown" || unsupportedHost === "html" || unsupportedHost === "sheets"
+                ? `${unsupportedHost} 原厂视图不可用：缺少 GenOffice 快照、预加载/渲染资源${unsupportedHost === "sheets" ? "或 Rust xlsx-sidecar" : ""}。请构建对应 app 后重试。`
+                : t(unsupportedHost === "slides" ? "ide.genoffice.viewHostUnsupportedSlides" : "ide.genoffice.viewHostUnsupportedSheets")}
             </div>
           </ErrorNote>
         </div>

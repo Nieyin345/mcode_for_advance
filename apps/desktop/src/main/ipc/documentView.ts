@@ -90,8 +90,9 @@ export function isApprovedDocumentViewOpen(input: DocViewOpenInput, cliPath: str
   }
   if (input.url.trim() !== input.url || /[\u0000-\u001f\u007f]/.test(input.url)) return false;
   if (url.username || url.password || cliPath === null) return false;
-  const editor = input.editor === "slides" || input.editor === "pdf" || input.editor === "markdown" || input.editor === "html" ? input.editor : "docs";
-  const vendor = editor === "pdf" || editor === "markdown" || editor === "html";
+  const editor = input.editor === "slides" || input.editor === "sheets" || input.editor === "pdf" || input.editor === "markdown" || input.editor === "html" ? input.editor : "docs";
+  const vendor = editor === "sheets" || editor === "pdf" || editor === "markdown" || editor === "html" ||
+    (editor === "slides" && input.url === "genoffice-app://slides/index.html");
   if (vendor !== (input.filePath !== undefined)) return false;
   if (vendor) return url.href === `genoffice-app://${editor}/index.html`;
   if (url.protocol !== "file:") return false;

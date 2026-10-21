@@ -321,7 +321,7 @@ function capabilitiesStatic(): DocumentCapabilities {
     // 【ARC-007 P1/GA1】打开对端是**装配事实**：docs 恒有（宿主直接下发路径）；
     // slides 取决于宿主有没有装配执行器（生产在 `ipc/index.ts` 装配 vendor 解析器，
     // 未装配时 true 就变成一句谎话）；sheets 本切片未接，恒 false。
-    hosts: { docs: true, slides: hostsSlidesOverride ?? slidesBridge.available, sheets: false, ...nativeHostStatus() },
+    hosts: { docs: true, ...nativeHostStatus(), slides: hostsSlidesOverride ?? (nativeHostStatus().slides || slidesBridge.available), slidesNative: nativeHostStatus().slides },
     local: [
       "docx read/apply（纯 Node）",
       "pptx read/apply/create（纯 Node）",
