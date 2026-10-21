@@ -3477,6 +3477,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ engines: WorkflowEngineStatusView[] }"
  },
  {
+  "method": "workflowEngine.load",
+  "channel": "workflowEngine:load",
+  "doc": "T59: load an existing node-red-owned Mcode document into the native canvas.",
+  "input": "{ workflowId: string; confirmReplace?: boolean | undefined }",
+  "inputFull": "{ workflowId: string; confirmReplace?: boolean | undefined }",
+  "output": "{ ok: true } | { ok: false; reason: string; requiresConfirmation?: boolean | undefined }"
+ },
+ {
   "method": "workflowEngine.nodeInstall",
   "channel": "workflowEngine:nodeInstall",
   "doc": "【ARC-006 Gate E】安装一个节点包（本地目录）。审批是**硬前置**：主进程向渲染端 推送审批卡并等待应答，超时/无渲染端一律拒绝。**输入里没有 `approvedByUser`**。",

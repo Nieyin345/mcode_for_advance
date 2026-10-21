@@ -158,3 +158,16 @@ read | ui | write | danger | blocked
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 开发执行记录（E1 动态 / E2 源码）
+
+- **根因 / 生成方式（E2）**：存在显式生成器 `apps/desktop/scripts/gen-app-api-catalog.mjs`，从 `packages/contracts/src/ipc/rpcMap.ts` 取方法与类型、从 `apps/desktop/src/preload/index.ts` 解析通道，输出 `apps/desktop/src/main/appControl/apiCatalog.generated.ts`。生成器不是运行时扫描，也不会在编辑 RpcMap/preload 时自动执行。T59 新加了 RPC 与 preload，但当时未重跑这个手工生成步骤，也未在提交前通过 `app-control-smoke` 的已有集合对齐断言，导致生成产物漏项。
+- **修复（E2）**：在 `apps/desktop` 执行 `node scripts/gen-app-api-catalog.mjs`，生成目录共 **443** 项，其中 `workflowEngine.load` 的 channel 为 `workflowEngine:load`，入参说明含 `workflowId`、`confirmReplace`。**没有手改生成物**。只将这一条新增项的 hunk 计入 T67 提交，其余原有、并行任务的 catalog 差异保持未暂存。
+- **权限档（E2）**：`policy.ts` 为 `workflowEngine.load` 显式归 **danger**（用户每次亲自审批；不因完全访问绕过）。它会停正在运行的引擎、覆盖 `flows.json` / 画布未部署草稿，风险大于 `start` / `stop`；其它六个 `workflowEngine.*` 原有分档与策略规则未动。
+- **防漂移断言（E1）**：`apps/desktop/scripts/app-control-smoke/main.ts` 原有“catalog 与 RpcMap 集合逐条对齐”断言保留；将漏匹配数字/下划线的方法名正则升级为 **TypeScript AST 读取 RpcMap 全部属性签名**，补 `members.length` 和方法数的防空过断言，并增加 `workflowEngine.load` 通道/输入描述、`danger` 两条回归断言。为了在 ESM 无头 smoke 中加载 TypeScript 编译器，`app-control-smoke/run.sh` 将 `typescript` 标记 external（由仓库依赖解析）。
+- **全量对比（E1）**：AST 遍历 RpcMap 与 catalog 两个集合，`missing=[]`、`extra=[]`；没有发现别的 RpcMap 方法缺目录。无名称为 `api-catalog-*` 的独立 smoke 套件（目录搜索确认），目录同步检验由 `app-control-smoke` 承担。
+- **旧红 → 新绿（E1）**：`node apps/desktop/scripts/run-smokes.mjs app-control-smoke` 修复前 **569/570**，`missing=["workflowEngine.load"]`；修复后含新增断言 **572/572 PASS**，日志 `apps/desktop/.tmp/smoke-runs/1792584518173-11380-HRq5gj/app-control-smoke.log`。
+- **变异验证（E1）**：仅在受控脚本内临时从生成产物删除 **整个 `workflowEngine.load` entry**，同一 `app-control-smoke` 实测 **570/572 FAIL**，失败为“catalog 与 RpcMap 对齐”及“load 生成通道/入参说明”；日志 `apps/desktop/.tmp/smoke-runs/1792584505743-35248-cQo9Dq/app-control-smoke.log`。脚本 `finally` 还原原文件，原文逐字一致 `T67_RESTORED=True`；还原后再次复跑 **572/572 PASS**。
+- **类型检查（E1）**：`pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` exit 0；`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` exit 0。
+- **补充观察（非本卡验收项）**：`agent-guide-smoke` PASS；并行开发中的 `module-permissions-smoke` 在 T48 的封闭式权限映射测试报 `Unmapped RPC method: workflowEngine.load`，该映射属于独立的 T49 模块权限施工范围，T67 未越界修改。需对应任务自行跟进，不能把它当作 T67 已验绿的套件。
+- **本卡六项验收**：全部达成（第 2 项的原有 570 条全部通过，另有 2 条新增断言，故现为 572/572）。未做真实 Electron 用户旅程测试；该测试不在本卡判据中。

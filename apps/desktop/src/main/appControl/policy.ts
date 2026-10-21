@@ -189,6 +189,9 @@ const DANGER: Record<string, string> = {
   // 审批卡由主进程推给渲染端（`workflowEngine:nodeInstallApproval`），handler 不接受
   // 任何 approvedByUser 字段。
   "workflowEngine.nodeInstall": "安装第三方节点包(可执行代码,会由引擎进程 require)",
+  // 【T67】加载资料库工作流会停掉正在运行的引擎并覆写 flows.json / 未部署草稿。
+  // 比单纯 start/stop 的影响更大,Agent 每次调用都必须经用户本人确认。
+  "workflowEngine.load": "加载工作流会停止运行中的引擎并覆盖画布上的未部署草稿",
   // 【ARC-007】GenOffice 安装入口 = 往真相层写一条会在本机拉起 `genoffice mcp`
   // 进程的 stdio 条目(围栏是此刻的工作区根快照)。与 `mcp.save` 同档 ——
   // 用户点的那一下与「新增 MCP server」是同一件事,只是配置由 Mcode 自己生成。

@@ -14,6 +14,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import type { ProviderContext, ApprovalRequest, ProviderApprovalDecision } from "@contracts/provider";
 import { APP_DANGER_APPROVAL_PREFIX, APP_CONTROL_RENDERER_GLOBAL } from "@contracts/appControl";
 import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
@@ -2721,13 +2722,18 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
 // 判据用**集合**而不是计数:数目相等而成员不同的情形,恰恰是计数容差最容易放过的那种。
 {
   const catalogMethods = new Set(API_CATALOG.map((e) => e.method));
+  // 【T67】用 TS AST 读取 RpcMap 真正的属性签名,而不是只匹配大小写字母的正则：
+  // 将来方法名出现数字/下划线、换行等仍要参与对齐；无法解析也不能假绿。
+  const rpcFile = ts.createSourceFile("rpcMap.ts", src("../../packages/contracts/src/ipc/rpcMap.ts"), ts.ScriptTarget.Latest, true);
+  const rpcIface = rpcFile.statements.find((node): node is ts.InterfaceDeclaration => ts.isInterfaceDeclaration(node) && node.name.text === "RpcMap");
   const rpcMethods = new Set(
-    (src("../../packages/contracts/src/ipc/rpcMap.ts").match(/^\s+"([a-zA-Z]+\.[a-zA-Z.]+)":/gm) ?? [])
-      .map((m) => m.trim().replace(/^"|":$/g, "")),
+    rpcIface?.members.map((member) =>
+      ts.isPropertySignature(member) && member.name && ts.isStringLiteral(member.name) ? member.name.text : "",
+    ).filter(Boolean) ?? [],
   );
-  // 防"空过":正则改一行、或 rpcMap 的写法变了,两个集合双双变空 —— 上面那条对齐断言
-  // 就成了"0 个缺、0 个多"的假绿。先钉住解析确实取到了东西。
-  check("RpcMap 解析得到方法名（防断言空过）", rpcMethods.size > 300, rpcMethods.size);
+  check("★ T67: RpcMap 每条属性都可被漂移检测解析(防部分空过)",
+    rpcIface !== undefined && rpcMethods.size > 300 && rpcMethods.size === rpcIface.members.length,
+    { parsed: rpcMethods.size, total: rpcIface?.members.length });
   const missing = [...rpcMethods].filter((m) => !catalogMethods.has(m)).sort();
   const extra = [...catalogMethods].filter((m) => !rpcMethods.has(m)).sort();
   check(
@@ -2735,11 +2741,17 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
     missing.length === 0 && extra.length === 0,
     { missing, extra, hint: "跑一次 node scripts/gen-app-api-catalog.mjs" },
   );
-  // 钉住那两条曾漂移的:光对齐还不够,它们必须**真的在**清单里(免得将来又被别的手法漏掉)。
+  // 钉住历史漂移与 T59 新增的方法：通道/参数描述来自生成脚本,不能只有方法名。
   check(
     "engineTools.get / engineTools.set 在清单里",
     catalogMethods.has("engineTools.get") && catalogMethods.has("engineTools.set"),
   );
+  const load = API_CATALOG.find((e) => e.method === "workflowEngine.load");
+  check("★ T67: workflowEngine.load 生成了通道及完整参数描述",
+    load?.channel === "workflowEngine:load" &&
+      load.input.includes("workflowId") && load.input.includes("confirmReplace"), load);
+  check("★ T67: 加载工作流归 danger(每次需用户审批)",
+    policyFor("workflowEngine.load").level === "danger", policyFor("workflowEngine.load"));
 }
 
 /* ── 自动化事实/诊断的 Agent 可读面 ──

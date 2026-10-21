@@ -30,6 +30,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
   --external:ssh2 \
+  --external:typescript \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --alias:@main/window.js=./scripts/app-control-smoke/stubs/window.ts \
   --alias:@main/claude/RuntimeManager.js=./scripts/app-control-smoke/stubs/runtimeManager.ts \
