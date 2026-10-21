@@ -42,3 +42,20 @@ T20 回写已定位：`BrowserManager.ts` 创建加载任意外部 URL 的 `WebC
 ## 结果回写区
 
 <!-- 只在下面追加：提交 SHA、旧红→新绿、原始命令/日志、变异/还原字节、剩余未验；不得覆盖本任务正文。 -->
+
+### 2026-10-21｜T73 执行回写（代码提交 `c367216741c1b37befda34de3330ca21800aec9e`）
+
+**源码与旧红→新绿（E1/E2）**：`BrowserManagerImpl.spawnView` 旧构造参数 `sandbox:false`、ESM `browserPicker.mjs`；新构造参数 `sandbox:true`、`contextIsolation:true`、`nodeIntegration:false`、专用 `browserPicker.cjs`，仍使用原 `browserSession()`。浏览器新窗口仍复用 `spawnView`。不存在实际 preload 时 Electron 视图创建 fail-closed；仅未打包开发态允许在 Electron-Vite 项目工作目录下解析存在的 `out/preload/browserPicker.cjs`（隔离 HTML 预览探针所需），打包态不回退。IPC 限定登记的 `webContents`、启用的 pickMode 与顶层 `senderFrame`；预载隔离世界凭 `isTrusted` 同步 click + 命中该 DOM 元素的 selector 才放行 picker，并在预载内从 DOM 读取 HTML/URL/预览，拒绝页面自报字段、合成点击、重复调用。页面没有 Node/原始 IPC 桥。
+
+**构建（E1）**：Electron-Vite 3.1.0 拒绝 preload 多输出格式（实测构建报 `The electron vite preload config does not support multiple outputs`）；改为单次 ESM preload build 的 `generateBundle` 钩子额外输出 `browserPicker.cjs`，原 `index.mjs` 与 `browserPicker.mjs` 保留，缺 picker chunk/缺 `require("electron")` 时构建失败。最终 `cd apps/desktop && node node_modules/electron-vite/bin/electron-vite.js build --logLevel error` **PASS（exit 0）**；实际 `out/preload/index.mjs`、`browserPicker.mjs`、`browserPicker.cjs` 均已生成。未修改在飞的 `scripts/release-readiness-smoke/check-reviewed.cjs` 或只读的 `check-unpacked.cjs`。
+
+**专项、旧回归与真 Electron（E1）**：
+- `node apps/desktop/scripts/t73-browser-sandbox-smoke/run.cjs` **5/5 PASS**（真实 `spawnView` 方法编译执行、preload 缺失拒绝、picker 主进程 sender/pickMode/frame 正反例、预载原 CJS 转译 IPC 正反例、配置产物契约）。
+- `node apps/desktop/scripts/t73-browser-sandbox-smoke/native.cjs` **PASS**：Electron 44.4.5 隔离 `WebContentsView` 真实加载构建出的 CJS preload，网页 `typeof require/process` 为 `undefined`，伪造调用/合成点击无 IPC，真实鼠标点击后 `pickResult` 到达，`senderFrame === sender.mainFrame`。测试只用匿名 data: 页面和独立临时 session/目录，未触真实用户 Cookie 或账户。
+- `node apps/desktop/scripts/run-smokes.mjs t73-browser-sandbox-smoke browser-smoke browser-file-url-boundary-smoke browser-script-injection-smoke browser-tool-parity-smoke html-preview-electron-smoke` **6 PASS / 0 FAIL**；日志 `apps/desktop/.tmp/smoke-runs/1792591520779-26140-Iygfyj`。额外 `browser-occluder-rect-smoke browser-pure-smoke browser-tabs-a11y-smoke browser-uuid-entropy-smoke t20-sandbox-mic-smoke ipc-wiring-smoke` **6 PASS / 0 FAIL**，日志 `apps/desktop/.tmp/smoke-runs/1792591330282-35756-XF7dvL`。
+- `node apps/desktop/node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json`、`node apps/desktop/node_modules/typescript/bin/tsc --noEmit -p packages/contracts/tsconfig.json` **均 PASS**。
+- `node apps/desktop/scripts/t73-browser-sandbox-smoke/asar-fixture.cjs` **PASS**：隔离构造 ASAR 含旧 ESM 与新 CJS，新增 `verify-package.cjs` 严格验证 3 preload 与构建字节哈希；删 `browserPicker.cjs` 后 **RED**。这只是隔离打包资源校验，不是正式安装包验收。
+
+**两项变异（E1）**：`node apps/desktop/scripts/t73-browser-sandbox-smoke/mutate.cjs`：`sandbox:true → false` 后专项断言 **RED / exit 1**；切断 `browserPicker.ts` 的正向 IPC 频道后 **RED / exit 1**；均 `finally` 写回备份并比较 SHA256 原始字节一致（运行时 `BrowserManager.ts` SHA `c40e6034d8028a8f0bc345b8593bf6bce6700c4a5be95092e65c1758063858d8`，`browserPicker.ts` SHA `713cd288ec64ab31bd6cd90fbf725ced93e55357237282dacc555ad6bb6717f2`；前者后续仅删掉一处行尾空格并精准提交，最终版本亦已过专项、编译和 smoke）。`git diff --check` PASS。
+
+**验收界限 / remaining**：1、2、5、6 已有 E1 证据；3 已有真实 Electron 隔离点选和 HTML 预览 smoke，但**整个真实用户产品旅程 U1 仍未验**（例如正式发布应用的交互、真实登录站点行为）；4 开发产物存在、构建与隔离 ASAR 资源校验通过，但**没有实测 Windows win-unpacked 真发行包执行 `verify-package.cjs` / 全套发布资源门禁**，不能宣称真实打包 U1 全达成。7 已遵守文件独占与精准提交，未碰 T49/T64/T65 在飞文件；本回写仅追加本任务卡，等待后续独立复核。
