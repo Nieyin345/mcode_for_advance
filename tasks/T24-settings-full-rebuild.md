@@ -319,3 +319,12 @@ node apps/desktop/scripts/run-smokes.mjs settings-layout-smoke settings-panel-sm
 - 回归：`node apps/desktop/scripts/run-smokes.mjs workflow-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke frontend-smoke`：5/5 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792567508652-39156-yTESqn`；之前完整设置与市场回归 8/8 绿。
 - 变异：`node apps/desktop/src/renderer/components/settings/t24-design-contract.cjs workflow-status` PASS；`set T24_MUTATION=workflow-status&& node ... workflow-status` 将 NodeTypes 的错误恢复为自绘 div，预期 exit=1（红例）。
 - 功能核对：工作流库的 list/read/retry/save/stash/review 审批 callbacks 与 data 字段未变；自动化选触发器 `value/onChange/disabled` 未变；工作流画布 UI 真浏览器 smoke 通过。仍有 `workflows/` 专用属性编辑器和部分权限提示使用原生槽控/自绘警告（需逐处验证、不能在未验时宣称判据 2 已全达成）。
+
+### 2026-10-21｜T24 当轮验收复核（批次 16 后）
+
+- 判据 1：通过。按 `t24-token-graph.cjs` 静态 import/export 图，63/63 可视 settings TSX 组件均直接或经共享 `ui/` 消费 CDS radius/shadow/font token（非可视 `useMarketProgress.tsx` 不计）；这不等同于 63 屏逐像素截图。
+- 判据 2：**尚未全部通过**。根目录 63 个可视组件已经没有原生 button/input/select/textarea 自绘标签，并将主要空态/加载态/错误/徽标统一，但 `workflows/` 的底层属性编辑器、审批/授权展示、部分交互槽仍有保留的 native/select 与自绘告警，必须逐项验证语义后才能删完。
+- 判据 3：通过。批次 16 的 `workflow-ui-smoke settings-layout-smoke settings-panel-smoke settings-panels-electron-smoke frontend-smoke` 5/5 PASS；此前 8/8 浏览器与市场套件 PASS；本次独立重跑 `settings-focus-electron-smoke` 1/1 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792567605184-43032-WSqaTD`。之前 Electron 失去 OS 焦点的 U1 基础设施中断在本次独立回归中不再出现。
+- 判据 4：**未通过**。当次完整 `node node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json --pretty false` exit=2，唯一错误 `apps/desktop/scripts/document-view-renderer-smoke/main.ts:564 TS2353`（`slidesNative` 缺少类型声明，完全在 T24 写边界之外）。`packages/contracts` 单包 tsc PASS，不越界修改外部文件。
+- 判据 5：通过。各批次都有 `T24_MUTATION=...` 模拟撤回对应 UI 原语、断言 exit=1 的红例；新增工作流子视图亦通过此检查。
+- 判据 6：**未全部通过**。Settings/Workflow/Skills/Models/MCP/Plugins 的主要真实浏览器与 Electron 回归已跑，但全部 63 屏涉及外部账户、安装、网络、系统凭据、磁盘持久化的每一项操作尚无逐项的实机等价证据，不冒称已验。
