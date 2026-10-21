@@ -55,6 +55,7 @@ import { resolveEngineExcludedToolsForProvider, resolveEngineToolGuidanceForProv
 import { registerAgentEngineSession } from "@main/mcp/agentEngineBridge.js";
 import { turnContextSections } from "@main/providers/contextPrompt.js";
 import { piToolsAllowlist, resolveEngineToolSelection } from "@main/orchestration/toolSelection.js";
+import { buildPiExternalTools } from "@main/providers/nativeToolSchemas.js";
 
 export class PiAgentSdkProvider implements AgentProvider {
   readonly id = "pi-sdk";
@@ -90,6 +91,9 @@ export class PiAgentSdkProvider implements AgentProvider {
   };
 
   async startTurn(req: StartTurnRequest, ctx: ProviderContext): Promise<TurnHandle> {
+    if (req.externalTools?.length && !ctx.invokeExternalTool) {
+      throw new Error("unsupported: Pi external tools require a host result callback");
+    }
     const sdk = await loadPiSdk();
     const ac = new AbortController();
     // 会话 cwd 登进 agent 桥(agent_read_document 等解析相对路径用)。见 mcp/agentEngineBridge.ts。
@@ -329,8 +333,8 @@ export class PiAgentSdkProvider implements AgentProvider {
     // renderCall is contravariant in its args, so it doesn't structurally
     // satisfy the fully-generic ToolDefinition. The bash def keeps its own
     // schema (validated args unchanged); only the array slot is widened.
-    const customTools: import("@earendil-works/pi-coding-agent").ToolDefinition<any, any, any>[] =
-      process.platform === "win32"
+    const customTools: import("@earendil-works/pi-coding-agent").ToolDefinition<any, any, any>[] = [
+      ...(process.platform === "win32"
         ? [
             createMntNormalizingReadTool(sdk, req.cwd),
             ...(gitBash
@@ -339,7 +343,9 @@ export class PiAgentSdkProvider implements AgentProvider {
                 ]
               : []),
           ]
-        : [];
+        : []),
+      ...(buildPiExternalTools(req.externalTools ?? [], req.sessionId, ctx.invokeExternalTool, ac.signal) as unknown as import("@earendil-works/pi-coding-agent").ToolDefinition<any, any, any>[]),
+    ];
 
     const { session } = await sdk.createAgentSession({
       cwd: req.cwd,

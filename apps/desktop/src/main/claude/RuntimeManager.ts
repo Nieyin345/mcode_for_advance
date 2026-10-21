@@ -14,7 +14,8 @@ import { sendToRenderer, hasLiveRendererWindow } from "@main/window.js";
 import { IPC, TURN_BUDGET_SETTING_KEY, RUNTIME_FALLBACK_MODELS_SETTING_KEY } from "@contracts/ipc";
 import type { RuntimeEvent, PermissionMode, ContextSnapshot, TurnUsageRecord, TurnFileEntry, UserMessageEvent, UpstreamIssueEvent, TranscriptBlock, SubagentSnapshot } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
-import type { ProviderContext, TurnHandle, StartTurnRequest, UserInputAnswers, PlanApprovalDecision } from "@contracts/provider";
+import type { ProviderContext, TurnHandle, StartTurnRequest, UserInputAnswers, PlanApprovalDecision, ExternalToolDefinition, ExternalToolHandler } from "@contracts/provider";
+import { createExternalToolDispatcher, validateExternalToolDefinitions } from "@main/providers/nativeToolProtocol.js";
 import { providerRegistry } from "@main/providers/registry.js";
 import { SessionRepo, ProjectRepo, SettingRepo, MessageRepo } from "@main/store/repositories.js";
 import { CustomModelStore } from "@main/lib/secretStore.js";
@@ -1141,6 +1142,9 @@ class RuntimeManager {
       mcpServerNames?: string[];
       pluginNames?: string[];
       images?: { data: string; mimeType: string }[];
+      /** Request-local structured tools. Definitions are serializable; the handler remains host-only. */
+      externalTools?: ExternalToolDefinition[];
+      externalToolHandler?: ExternalToolHandler;
       /** The originating client's user message (id / createdAt / display
        *  blocks). Echoed to every client as a `user.message` RuntimeEvent so
        *  a prompt typed on one device (phone ⇄ PC) renders on the others in
@@ -1244,6 +1248,15 @@ class RuntimeManager {
     input: Parameters<RuntimeManager["sendTurn"]>[1],
     rt: SessionRuntime,
   ): Promise<TurnHandle | null> {
+    // Validate the request-scoped protocol before any turn side effects. Functions stay
+    // in this host-only input and are never copied into StartTurnRequest or prompt text.
+    const externalTools = input.externalTools === undefined
+      ? undefined
+      : validateExternalToolDefinitions(input.externalTools);
+    if (externalTools && externalTools.length > 0 && !input.externalToolHandler) {
+      throw new Error("unsupported: request-scoped external tools require a host result handler");
+    }
+
     // 在修改文件快照、轮次计数、预算状态之前验证。配置失效绝不能把原本
     // 发给自定义端点的内容改投默认端点;错误要送到渲染端和手机 SSE,
     // 同时抛给发送方的 IPC/RPC(手机即使没连 SSE 也能看到失败原因)。
@@ -1652,6 +1665,7 @@ class RuntimeManager {
       // 轮预算：host 侧统一强制（三引擎一致）；Claude native 的
       // maxTurns / maxBudgetUsd 在 provider 里照着传，算双保险。
       budget: rt.budget,
+      externalTools: externalTools && externalTools.length > 0 ? externalTools : undefined,
       // 【MC-100/101 生产侧画像来源】本入口是生产路径上**发起** StartTurnRequest 的地方 ——
       // 在这里按会话种类派生画像(side Q&A → chat 桶;其余 → 显式 full)。派生是**显式**的:
       // 推不出更小画像就**显式**取 full,而不是省略参数(见 `@contracts/toolProfile` 文件头)。
@@ -1662,14 +1676,58 @@ class RuntimeManager {
       fallbackModels: rt.fallbackModels.length > 0 ? rt.fallbackModels : undefined,
     };
 
-    const handle = await traceMemoryTurn(session, rt.turnCount, memorySections, req, () => provider.startTurn(req, {
+    const externalToolAbort = new AbortController();
+    const requestApproval = approvalBridge.makeApprovalHandler(session.id, emit);
+    const providerContext: ProviderContext = {
       ...rt.ctx, emit,
       // These host callbacks emit too; use this turn's immutable provenance,
       // not the session-level handlers captured by bindSession.
-      requestApproval: approvalBridge.makeApprovalHandler(session.id, emit),
+      requestApproval,
       requestUserInput: approvalBridge.makeUserInputHandler(session.id, emit),
       requestPlanApproval: approvalBridge.makePlanApprovalHandler(session.id, emit),
-    }), input.memoryTrace);
+    };
+    const externalToolDispatcher = externalTools && externalTools.length > 0 && input.externalToolHandler
+      ? createExternalToolDispatcher({
+          sessionId: session.id,
+          tools: externalTools,
+          handler: input.externalToolHandler,
+          requestApproval,
+          isToolAlwaysAllowed: (sessionId, toolName) => approvalBridge.isAlwaysAllowed(sessionId, toolName),
+          isDontAskMode: (sessionId) => approvalBridge.getPermissionMode(sessionId) === "dontAsk",
+          signal: externalToolAbort.signal,
+        })
+      : null;
+    if (externalToolDispatcher) providerContext.invokeExternalTool = externalToolDispatcher.invoke;
+
+    let handle: TurnHandle | null;
+    try {
+      handle = await traceMemoryTurn(
+        session, rt.turnCount, memorySections, req,
+        () => provider.startTurn(req, providerContext),
+        input.memoryTrace,
+      );
+    } catch (error) {
+      externalToolDispatcher?.close();
+      externalToolAbort.abort();
+      throw error;
+    }
+    if (externalToolDispatcher) {
+      const interrupt = handle?.interrupt.bind(handle);
+      if (handle && interrupt) {
+        handle.interrupt = () => {
+          externalToolDispatcher.close();
+          externalToolAbort.abort();
+          interrupt();
+        };
+        void handle.done.finally(() => {
+          externalToolDispatcher.close();
+          externalToolAbort.abort();
+        }).catch(() => undefined);
+      } else {
+        externalToolDispatcher.close();
+        externalToolAbort.abort();
+      }
+    }
     // 回合起来了,那两段才算真的送到了 —— 见上面 `peekBackflow` 那段注释。
     if (handle !== null && backflowAll.length > 0) {
       // New workflow results can arrive during awaited provider.startTurn.

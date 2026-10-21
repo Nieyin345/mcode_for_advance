@@ -115,6 +115,36 @@ export interface BuiltinModelOption {
   supplier?: string;
 }
 
+/** A JSON-serializable tool schema that exists for exactly one provider turn. */
+export interface ExternalToolDefinition {
+  /** Provider-neutral name supplied by the request owner. */
+  name: string;
+  description: string;
+  /** JSON Schema object schema; executable handlers never cross this contract. */
+  inputSchema: Record<string, unknown>;
+}
+
+/** A single structured tool invocation routed back to the host that owns this turn. */
+export interface ExternalToolCall {
+  sessionId: string;
+  /** SDK call id, or a host-generated unique id when the SDK does not expose one. */
+  callId: string;
+  name: string;
+  input: unknown;
+}
+
+/** Tool results are explicit: failures and cancellation can never masquerade as success. */
+export type ExternalToolResult =
+  | { sessionId: string; callId: string; status: "success"; result: unknown }
+  | { sessionId: string; callId: string; status: "error"; error: string }
+  | { sessionId: string; callId: string; status: "cancelled"; error?: string };
+
+/** Internal host callback. It is deliberately not part of the serializable tool definitions. */
+export type ExternalToolHandler = (
+  call: ExternalToolCall,
+  signal: ProviderAbortSignal,
+) => Promise<ExternalToolResult>;
+
 /** Request to start one turn/conversation. Provider-neutral equivalent of the
  * old TurnRequest (which was coupled to claude CLI flags). */
 export interface StartTurnRequest {
@@ -254,6 +284,8 @@ export interface StartTurnRequest {
   /** **工具预算**(MC-100):画像选择之后按数量 / 粗估 token 再收一刀。floor(发现通道)恒不裁。
    *  缺席 = 不限。 */
   toolBudget?: ToolBudget;
+  /** Request-scoped external tool definitions. Only these definitions are visible for this turn. */
+  externalTools?: ExternalToolDefinition[];
 }
 
 /** Approval request passed from provider → host (for canUseTool-style callbacks). */
@@ -348,6 +380,13 @@ export interface PlanApprovalDecision {
 export interface ProviderContext {
   /** Emit a normalized runtime event to the renderer. */
   emit(e: RuntimeEvent): void;
+
+  /**
+   * Invoke a request-scoped external tool and await its structured result in the same SDK turn.
+   * The host binds this callback to the originating session/request and enforces schema + approval.
+   * Providers must not invent a successful result when the callback is absent or rejects.
+   */
+  invokeExternalTool?(call: ExternalToolCall, signal?: ProviderAbortSignal): Promise<ExternalToolResult>;
 
   /** Request user approval before a tool runs. The provider awaits the promise;
    * the host bridges it to the renderer (approval.request event → user clicks

@@ -102,6 +102,7 @@ import { APP_MCP_SERVER } from "@contracts/appControl";
 // 审批闸门(哪些工具不用问用户)只有一份 —— 它得与网页端那条通路共用,见该文件头。
 import { BROWSER_MCP_SERVER, shouldAutoApprove } from "@main/providers/toolGate.js";
 import { loadCreateMcpServer } from "@main/mcp/sdk.js";
+import { buildClaudeExternalSdkTools } from "@main/providers/nativeToolSchemas.js";
 import { buildBrowserMcpServer } from "./ClaudeBrowserMcpServer.js";
 import { AGENT_ENGINE_MCP_SERVER, buildAgentEngineMcpServer, registerAgentEngineSession } from "@main/mcp/agentEngineBridge.js";
 import { loadSubagents, subagentsToAgentsRecord } from "@main/claude/subagentStore.js";
@@ -511,6 +512,9 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
   }
 
   async startTurn(req: StartTurnRequest, ctx: ProviderContext): Promise<TurnHandle> {
+    if (req.externalTools?.length && !ctx.invokeExternalTool) {
+      throw new Error("unsupported: Claude external tools require a host result callback");
+    }
     const ac = new AbortController();
     // 把本轮会话的 cwd 登进 agent 桥 —— agent_read_document 等要它解析相对路径
     // (见 mcp/agentEngineBridge.ts)。每轮登记,覆盖旧值即可。
@@ -796,6 +800,10 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
     const requestPlanApproval = ctx.requestPlanApproval;
 
     const canUseTool: CanUseTool = async (toolName, input, opts) => {
+      // Request-scoped renderer tools are approved by the host dispatcher immediately
+      // before execution. Avoid a second SDK-level approval prompt; this is not an allow
+      // bypass because the handler itself rejects without the host approval channel.
+      if (toolName.startsWith("mcp__mcode-renderer-tools__")) return { behavior: "allow" };
       // Shared memory handlers perform fail-closed approval even when SDK modes bypass hooks.
       if (toolName.startsWith(`mcp__${MEMORY_MCP_SERVER}__memory_`)) return { behavior: "allow" };
       // mcode-app 同理:放行在这里,审批在 handler 里按「调的是哪个功能」分档做(main/appControl/tools.ts)。
@@ -1468,6 +1476,29 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
         `claude turn narrowed: session=${req.sessionId} mcp=[${Object.keys(kept).join(",")}] ` +
           `plugins=[${enabledPlugins.map((p) => p.name).join(",")}]`,
       );
+    }
+
+    // Native in-process MCP tools keep the result in this query/SDK turn. This
+    // server is attached after tool-profile/MCP narrowing because its lifetime is
+    // the current request, not a user-managed MCP server or reusable session asset.
+    if (req.externalTools?.length) {
+      const createSdkMcpServer = await loadCreateMcpServer();
+      const nativeTools = buildClaudeExternalSdkTools(
+        req.externalTools,
+        req.sessionId,
+        ctx.invokeExternalTool,
+        ac.signal,
+      );
+      const server = createSdkMcpServer({
+        name: "mcode-renderer-tools",
+        version: "1.0.0",
+        timeout: 600_000,
+        tools: nativeTools as never[],
+      });
+      options.mcpServers = {
+        ...(options.mcpServers ?? {}),
+        "mcode-renderer-tools": server,
+      };
     }
 
     const gate = makeSettleGate();

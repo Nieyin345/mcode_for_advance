@@ -60,7 +60,9 @@ import type {
   ApprovalRequest,
   EngineCommandEntry,
   ProviderHealthCheckContext,
+  ProviderAbortSignal,
 } from "@contracts/provider";
+import { codexExternalToolDescriptors, dispatchCodexExternalToolCall } from "@main/providers/nativeToolProtocol.js";
 import type { ServerRequestFrame } from "./CodexAppServerClient.js";
 import { CodexAppServerClient } from "./CodexAppServerClient.js";
 import { CodexMessageAdapter } from "./CodexMessageAdapter.js";
@@ -355,6 +357,9 @@ export class CodexAgentSdkProvider implements AgentProvider {
   };
 
   async startTurn(req: StartTurnRequest, ctx: ProviderContext): Promise<TurnHandle> {
+    if (req.externalTools?.length && !ctx.invokeExternalTool) {
+      throw new Error("unsupported: Codex external tools require a host result callback");
+    }
     const ac = new AbortController();
     // 会话 cwd 登进 agent 桥(agent_read_document 等解析相对路径用)。见 mcp/agentEngineBridge.ts。
     registerAgentEngineSession(req.sessionId, req.cwd);
@@ -558,6 +563,7 @@ export class CodexAgentSdkProvider implements AgentProvider {
         planMode,
         activeTurn,
         browserToolsEnabled,
+        signal: ac.signal,
       }),
     );
     const unsubscribe = client.onNotification((frame) => adapter.handleNotification(frame));
@@ -583,8 +589,11 @@ export class CodexAgentSdkProvider implements AgentProvider {
           modelProvider: providerId,
           developerInstructions,
           // Experimental (requires initialize capabilities.experimentalApi):
-          // register Mcode's host-side tools (ask/plan/browser).
-          dynamicTools: codexDynamicToolsForProfile(buildDynamicTools(browserToolsEnabled), codexToolSelection),
+          // register Mcode's host-side tools (ask/plan/browser) plus this request's native tools.
+          dynamicTools: [
+            ...codexDynamicToolsForProfile(buildDynamicTools(browserToolsEnabled), codexToolSelection),
+            ...codexExternalToolDescriptors(req.externalTools ?? []),
+          ],
         };
         let threadId: string | null = null;
         // 【MC-057】这次是否**要求**恢复一个已有的 Codex 线程。要求了却恢复失败,必须明确
@@ -603,7 +612,10 @@ export class CodexAgentSdkProvider implements AgentProvider {
             const resumed = (await client.request("thread/resume", {
               threadId: req.resumeProviderSessionId,
               excludeTurns: true,
-              dynamicTools: codexDynamicToolsForProfile(buildDynamicTools(browserToolsEnabled), codexToolSelection),
+              dynamicTools: [
+                ...codexDynamicToolsForProfile(buildDynamicTools(browserToolsEnabled), codexToolSelection),
+                ...codexExternalToolDescriptors(req.externalTools ?? []),
+              ],
               cwd: req.cwd,
               sandbox,
               approvalPolicy,
@@ -1112,6 +1124,8 @@ interface RequestDeps {
    *  thread rollout and thread/resume cannot re-register them — a resumed
    *  thread keeps advertising browser_* even when disabled. */
   browserToolsEnabled: boolean;
+  /** Turn abort signal also gates any in-flight request-scoped tool call. */
+  signal: ProviderAbortSignal;
 }
 
 /** Dispatch the server's request frames: approvals, user input, dynamic
@@ -1257,6 +1271,20 @@ async function invokeDynamicTool(p: Record<string, unknown>, deps: RequestDeps):
   const { ctx, req, planMode } = deps;
   const text = (t: string): unknown => ({ success: true, contentItems: [{ type: "inputText", text: t }] });
   const fail = (t: string): unknown => ({ success: false, contentItems: [{ type: "inputText", text: t }] });
+
+  // The app-server may retain dynamicTools in a resumed thread's rollout. The
+  // adapter bridge only dispatches a namespaced tool when its definition is in
+  // THIS request's allowlist; stale definitions therefore fail closed.
+  const externalDispatch = await dispatchCodexExternalToolCall({
+    sdkToolName: name,
+    callId: p.callId,
+    input: args,
+    sessionId: req.sessionId,
+    tools: req.externalTools ?? [],
+    invokeExternalTool: ctx.invokeExternalTool,
+    signal: deps.signal,
+  });
+  if (externalDispatch.matched) return externalDispatch.response;
 
   if (isAppToolName(name)) {
     const result = await invokeAppEngineTool(name, args, req.sessionId, ctx);
