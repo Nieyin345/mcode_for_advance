@@ -3200,3 +3200,40 @@ html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
 @keyframes cds-vt-fade-in {
   from { opacity: 0; }
 }
+
+/* T17 / ReasoningAmbientGlow: REA 1.8s warm halo, asymmetric 3s shimmer,
+   1.2s three-phase dots already supplied by cds-quiet-dots, 1.1s sweep.
+   Use Mcode semantic RGB tokens; settled thinking cannot animate. */
+[data-reasoning-glow="active"] {
+  border-radius: var(--radius-code);
+  box-shadow: 0 0 0 2px rgb(var(--accent) / .12), 0 0 24px -4px rgb(var(--accent) / .18);
+  animation: reasoning-halo-breathe 1.8s ease-in-out infinite alternate;
+}
+[data-reasoning-glow="active"] > button { position: relative; z-index: 1; }
+.reasoning-shimmer {
+  background: linear-gradient(90deg, rgb(var(--accent)), rgb(var(--content)) 35%, rgb(var(--surface)) 50%, rgb(var(--content)) 65%, rgb(var(--accent)));
+  background-size: 250% 100%;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: reasoning-text-shine 3s linear infinite;
+}
+.reasoning-sweep {
+  display: block;
+  height: 2px;
+  width: 33.333%;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgb(var(--accent)), transparent);
+  animation: reasoning-linear-sweep 1.1s cubic-bezier(.45,0,.55,1) infinite;
+}
+@keyframes reasoning-halo-breathe {
+  from { box-shadow: 0 0 0 2px rgb(var(--accent) / .08), 0 0 12px -4px rgb(var(--accent) / .12); }
+  to { box-shadow: 0 0 0 2px rgb(var(--accent) / .2), 0 0 32px -4px rgb(var(--accent) / .28); }
+}
+@keyframes reasoning-text-shine {
+  0%, 15% { background-position: 83.333% 0; animation-timing-function: cubic-bezier(.714,.121,.211,.888); }
+  85%, 100% { background-position: 16.667% 0; }
+}
+@keyframes reasoning-linear-sweep { from { transform: translateX(-100%); } to { transform: translateX(350%); } }
+@media (prefers-reduced-motion: reduce) {
+  [data-reasoning-glow="active"], .reasoning-shimmer, .reasoning-sweep { animation: none; }
+}

@@ -1783,8 +1783,9 @@ function ThinkingAccordion({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const isOpen = live || open;
+  const ambient = reasoningAmbientState(live);
   return (
-    <div className="[font-size:var(--chat-fs-sm)]" data-cds-thinking={live ? "live" : "done"}>
+    <div className="relative [font-size:var(--chat-fs-sm)]" data-cds-thinking={live ? "live" : "done"} data-reasoning-glow={ambient.glow ? "active" : "idle"}>
       <button
         onClick={(e) => {
           // 生成中剥夺折叠权（上游同一互斥物理）。
@@ -1804,7 +1805,7 @@ function ThinkingAccordion({
         ) : (
           <IconBulb size={13} className="shrink-0 text-content-subtle" />
         )}
-        <span className="shrink-0 whitespace-nowrap font-medium text-content-muted">{label}</span>
+        <span className={cn("shrink-0 whitespace-nowrap font-medium text-content-muted", ambient.shimmer && "reasoning-shimmer")}>{label}</span>
         <span className="min-w-0 flex-1 truncate text-content-subtle">{hint}</span>
         {!live && <Chevron open={isOpen} className="ml-auto" />}
       </button>
@@ -1818,6 +1819,7 @@ function ThinkingAccordion({
           </div>
         </div>
       </div>
+      {ambient.sweep && <span className="reasoning-sweep" aria-hidden="true" />}
     </div>
   );
 }
@@ -1886,6 +1888,7 @@ import {
  *  与这里共用。这里再导出一次,让既有的 import 方(`CurrentOpTicker` / `TurnFlowPanel`)
  *  不必改。 */
 import { toolSummary } from "./activityShared.js";
+import { reasoningAmbientState } from "./reasoningAmbient.js";
 // `countContentLines` / `ToolIcon` 的定义搬去了 ./messageBlockToolParts.jsx，
 // 但**外部**（CurrentOpTicker / chat-linecount-smoke）是从本文件 import 它们的 ——
 // 在这里原样再导出，那些 import 一行都不用改。
