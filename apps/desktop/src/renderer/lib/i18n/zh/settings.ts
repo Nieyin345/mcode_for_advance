@@ -3,6 +3,17 @@
  * Keys: `settings.*`. Owned by the settings/* migration batch.
  */
 export const zh = {
+  "settings.framework.title": "框架提示词",
+  "settings.framework.desc": "自定义工作流的引导话术；运行时事实与系统协议不可修改。",
+  "settings.framework.default": "当前：默认",
+  "settings.framework.customized": "当前：自定义（已修改）",
+  "settings.framework.locked": "不可编辑 · 系统注入",
+  "settings.framework.edit": "编辑",
+  "settings.framework.cancel": "取消",
+  "settings.framework.reset": "恢复默认",
+  "settings.framework.save": "保存",
+  "settings.framework.emptyHint": "清空并保存会使用默认值。",
+  "settings.framework.nextRun": "已保存；下一次工作流运行生效，正在执行的运行不受影响。",
   "settings.workflow.commandTemplateUnsafe": "命令正文不允许插入动态变量（{{...}}）。请改用固定命令，在脚本中读取 JSON stdin 的 trigger、userInput、upstreamOutputs 字段。不会自动改写此工作流。",
   // ── left nav (SettingsPage) ──
   "settings.nav.general": "常规",

@@ -1,5 +1,7 @@
 import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
 import { uiLocale } from "@main/lib/dialogText.js";
+import { dataRoot } from "@main/lib/dataRoot.js";
+import { readFrameworkOverrides } from "./frameworkPromptStore.js";
 import { readAutomationEventChain, runWithAutomationOrigin, snapshotAutomationOrigin, withAutomationOrigin } from "./automationEventOrigin.js";
 /**
  * 一个节点在界面上叫什么:**用户起的标题 > 清单里的名字 > 类型 id**。
@@ -2050,6 +2052,9 @@ export async function startWorkflowRun(args: {
     locale: () => uiLocale(),
     buildInput: createWorkflowInputBuilder({ sessionId: session.id, runId }),
     memorySnapshot: (query) => scopedMemorySnapshot(session.projectId, query ?? prompt),
+    // Snapshot when this workflow run starts. Editing settings cannot mutate
+    // a running workflow; a separate conversation/run reads the new files.
+    frameworkOverrides: readFrameworkOverrides(dataRoot()),
     // 清单**一次读完**再按 id 查:`loadNodeTypes()` 是刻意不缓存的(每次都要扫插件
     // 目录、读并解析每一个清单文件,而它底下还会把每个启用的插件的技能/命令/agent
     // 文件再读一遍)。按节点调 = 同一批文件读 N 遍,而这里 N 就是图的大小。

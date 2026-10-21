@@ -17,6 +17,7 @@ import { SettingsSection } from "./SettingsSection.js";
 import { TitleGenPanel } from "./TitleGenPanel.js";
 import { VisionRelayPanel } from "./VisionRelayPanel.js";
 import { OutputStylePanel } from "./OutputStylePanel.js";
+import { FrameworkPromptPanel } from "./FrameworkPromptPanel.js";
 import { SettingsTransferSection } from "./SettingsTransferSection.js";
 import { TurnBudgetPanel, FallbackModelsPanel } from "./RuntimePolicyPanel.js";
 
@@ -625,6 +626,7 @@ export function GeneralPanel() {
 
       {/* ── 输出风格 (self-contained section) ── */}
       <OutputStylePanel />
+      <FrameworkPromptPanel />
 
       <SettingsTransferSection />
     </section>

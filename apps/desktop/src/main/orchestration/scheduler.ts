@@ -144,6 +144,7 @@ import { checkNodeCapabilities, requirementsForNode } from "./capabilityResolver
 // 怎么摆是 `schedulerPrompt.ts` 的事 —— 调度器不碰库,也不需要知道"哪个 id 属于
 // 哪一类"是怎么查出来的。
 import type { ContextLine } from "./contextInherit.js";
+import type { FrameworkOverrides } from "./frameworkSections.js";
 
 // 提示词这一层拆去了 `schedulerPrompt.ts`(给模型看的东西怎么拼:计划、上游、记录、
 // 资料分组)。这里只剩"什么时候需要一份提示词"。依赖保持单向:scheduler →
@@ -198,6 +199,8 @@ export interface RunPorts {
    * pipeline while adding trusted run identity; ordinary test ports keep the default. */
   buildInput?: typeof buildNodeInput;
   memorySnapshot?: (query?: string) => string;
+  /** Per-run captured framework text (never re-read during a running workflow). */
+  frameworkOverrides?: FrameworkOverrides;
   /** 拿一个节点类型的清单。没有 = 这个类型没装(别人分享来的图会走到这里)。 */
   manifestOf(typeId: string): Promise<NodeTypeManifest | undefined>;
   /**
@@ -1531,6 +1534,7 @@ class Run {
         ),
         nodeId: node.id,
         plan: this.plan,
+        frameworkOverrides: this.ports.frameworkOverrides,
         // 这一步的权限档位(报告 P3):`read` 会以 plan 模式跑，写类工具一律弹审批。
         // 递到提示词那一层，让模型**一开始就知道自己能不能写**，而不是做到一半撞墙。
         capability: node.capability ?? manifest.capability,

@@ -228,6 +228,8 @@ export interface ModelInputScope {
   criteriaNote?: string;
   /** 工作流级的追加框架说明(`WorkflowDoc.frameworkNote`)。见 `composeNodePrompt`。 */
   frameworkNote?: string;
+  /** User framework sections frozen for the lifetime of this workflow run. */
+  frameworkOverrides?: import("./frameworkSections.js").FrameworkOverrides;
   /**
    * **这一步是不是这张图的根**(`plan` 的第 0 层,也就是"用户那句话进来的那一格")。
    *
@@ -436,6 +438,7 @@ export function buildNodeInput(
     nodeId: scope.nodeId,
     plan: scope.plan,
     ...(scope.frameworkNote !== undefined ? { frameworkNote: scope.frameworkNote } : {}),
+    ...(scope.frameworkOverrides !== undefined ? { frameworkOverrides: scope.frameworkOverrides } : {}),
     skills,
     context,
     ...(scope.arrival ? { arrival: scope.arrival } : {}),

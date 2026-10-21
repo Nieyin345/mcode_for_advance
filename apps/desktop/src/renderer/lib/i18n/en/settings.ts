@@ -1,5 +1,16 @@
 /** English mirror of `zh/settings.ts`. */
 export const en = {
+  "settings.framework.title": "Framework prompts",
+  "settings.framework.desc": "Customize workflow framing; runtime facts and system protocols stay protected.",
+  "settings.framework.default": "Current: default",
+  "settings.framework.customized": "Current: customized",
+  "settings.framework.locked": "Read-only · system-injected",
+  "settings.framework.edit": "Edit",
+  "settings.framework.cancel": "Cancel",
+  "settings.framework.reset": "Restore default",
+  "settings.framework.save": "Save",
+  "settings.framework.emptyHint": "Saving an empty value restores the default.",
+  "settings.framework.nextRun": "Saved. The next workflow run will use it; active runs remain unchanged.",
   "settings.workflow.commandTemplateUnsafe": "Dynamic variables ({{...}}) are not allowed in shell command source. Use a fixed command and read trigger, userInput and upstreamOutputs from JSON stdin in your script. This workflow has not been rewritten automatically.",
   // ── left nav (SettingsPage) ──
   "settings.nav.general": "General",

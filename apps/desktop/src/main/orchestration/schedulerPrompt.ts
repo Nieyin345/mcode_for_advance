@@ -32,6 +32,8 @@ import {
   kindLabel,
   type ContextLine,
 } from "./contextInherit.js";
+import { frameworkText, type FrameworkOverrides } from "./frameworkSections.js";
+export { FRAMEWORK_SECTIONS } from "./frameworkSections.js";
 
 /* ────────────────────────── 整条流程 ────────────────────────── */
 
@@ -103,17 +105,19 @@ export function planOf(doc: WorkflowDoc, titleOf: (id: string) => string): Workf
  * 的最大值 + 1",所以同层的两个节点之间不可能有路径)。拉成一条"1、2、3"会撒一个谎
  * ——好像它们排着队。所以并列的写成一行,并说明它们之间没有先后。
  */
-function planSection(plan: WorkflowPlan, nodeId: string, hasUpstreamText: boolean): string {
+function planSection(plan: WorkflowPlan, nodeId: string, hasUpstreamText: boolean, overrides?: FrameworkOverrides): string {
   const total = plan.reduce((n, layer) => n + layer.length, 0);
   if (total <= 1) {
     // 只有一步:没有"位置"可言,别硬凑一段。
-    return "## 流程位置\n本流程只有一步,即你负责的这一步。";
+    return overrides?.flow?.trim()
+      ? `## 流程位置\n${frameworkText("flow", overrides).replaceAll("{{total}}", "1")}`
+      : "## 流程位置\n本流程只有一步,即你负责的这一步。";
   }
 
   const mine = findStep(plan, nodeId);
   const lines: string[] = [
     "## 流程位置",
-    `本流程共 ${total} 步,每一步由一名独立的助手完成,彼此之间不共享上下文。你负责其中一步:`,
+    frameworkText("flow", overrides).replaceAll("{{total}}", String(total)),
     "",
   ];
   plan.forEach((layer, i) => {
@@ -525,6 +529,8 @@ export function composeNodePrompt(args: {
    * 的一部分,摆远了就成了另一条指令。原样使用,不进 i18n。
    */
   frameworkNote?: string;
+  /** Snapshot of user-editable framework wording, captured once at run start. */
+  frameworkOverrides?: FrameworkOverrides;
   skills?: string[];
   /** **已经筛好的**资料(见 {@link ContextLine})。渲染成 `## 这一步可以读的资料` 那一段。 */
   context?: readonly ContextLine[];
@@ -580,7 +586,7 @@ export function composeNodePrompt(args: {
   const hasUpstreamText = hasRecord || args.upstream.trim().length > 0;
   // **放在最前面**:它是这一整段话的读法说明。摆在后面的话,模型已经先读过"用户要
   // 一篇综述"了,那时再告诉它"你只负责第一步"是往回拽,效果差得多。
-  sections.push(planSection(args.plan, args.nodeId, hasUpstreamText));
+  sections.push(planSection(args.plan, args.nodeId, hasUpstreamText, args.frameworkOverrides));
   // 权限档位说明 —— 紧随框架段:和"你怎么读这一步"同一层,而且必须先于"我要做什么"
   // 让模型知道自己的手脚。空串等于没有(报告 P3)。
   if (args.permissionNote !== undefined && args.permissionNote.trim().length > 0) {
@@ -655,7 +661,7 @@ export function composeNodePrompt(args: {
     (args.outputVars ?? "").trim(),
   ].filter((s) => s.length > 0);
   if (outputParts.length > 0) {
-    sections.push(`## 这一步要产出什么\n${outputParts.join("\n\n")}`);
+    sections.push(`${frameworkText("output", args.frameworkOverrides)}\n${outputParts.join("\n\n")}`);
   }
   return sections.join("\n\n");
 }

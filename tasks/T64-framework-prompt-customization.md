@@ -146,3 +146,14 @@ export const FRAMEWORK_SECTIONS = [
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+## T64 执行回写（2026-10-21）
+
+- **拆分结果**：`FRAMEWORK_SECTIONS` 共 4 段：`flow`（整条流程；可编辑引导话术，步骤图/上下游位置和终末节点职责仍由系统计算）、`output`（产出的样子；可编辑产出节标题/开头，变量约束保持系统生成）、`memory`（记忆快照；灰显/不可编辑）、`protocol`（权限与工具协议；灰显/不可编辑）。单节点默认话术继续保留原文。
+- **只读原因**：`memory` 来自系统的上下文检索，`protocol` 是权限/固定条件/工具或决策调用协议。灰显且显示明确说明，IPC 和存储层固定 allowlist 二次拒绝写入。
+- **落盘方式**：文件 `<dataRoot>/context/framework/flow.md`、`output.md`，与 `instructions.md` 同一数据根，便于本地编辑、备份、搬迁。缺失或仅空白使用硬编码原文；恢复默认删除覆盖文件；非法读写异常不静默吞掉。
+- **生效时机及 UI**：设置 → 常规 → 输出风格旁的「框架提示词」。可编辑段含「编辑」「保存」「恢复默认」及默认/自定义状态。成功保存提示「下一次工作流运行生效，正在执行的运行不受影响」。`runner` 创建 `RunPorts` 时对文件只读一次，调度阶段使用该次运行的固定快照。
+- **两对话隔离**：有 E1 断言：旧工作流 A 执行期间修改文件，同时发起 B；A 所有节点仍含旧话术，B 节点采用新话术且互不串话。
+- **验证**：隔离 `framework-prompt-smoke` 23/23；现有 `scheduler-smoke` 111/111、`scheduler-data-smoke` 211/211、`scheduler-flow-smoke` 243/243、`orchestration-ipc-smoke` 433/433；`pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` 和 `pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` 均 exit 0。
+- **变异验证**：临时把 `readOverride` 的「仅空白视为默认」撤掉，`空文件不应作为覆盖值` 断言红（22/23）；逐字恢复代码后 23/23 绿。所有文件操作和工作流夹具均在临时目录执行，无真实用户数据。
+- **证据级别 / 剩余项**：存储 + 提示词 + 调度隔离 E1；设置 UI 灰显与 IPC/preload 链 E2（含静态断言）；未进行真实 Electron 手工操作 U1，本卡未把它列为独立验收判据。

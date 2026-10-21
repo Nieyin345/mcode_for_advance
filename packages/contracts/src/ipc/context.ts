@@ -21,6 +21,27 @@ export const ContextSaveSchema = z.object({
 });
 export type ContextSaveInput = z.infer<typeof ContextSaveSchema>;
 
+/* ── Workflow framework prompt wording (T64) ── */
+export const FrameworkListSchema = z.object({});
+export const FrameworkEditableIdSchema = z.enum(["flow", "output"]);
+export const FrameworkSaveSchema = z.object({
+  id: FrameworkEditableIdSchema,
+  content: z.string().max(200_000),
+});
+export const FrameworkResetSchema = z.object({ id: FrameworkEditableIdSchema });
+export type FrameworkSaveInput = z.infer<typeof FrameworkSaveSchema>;
+export type FrameworkResetInput = z.infer<typeof FrameworkResetSchema>;
+
+export interface FrameworkSectionEntry {
+  id: "flow" | "output" | "memory" | "protocol";
+  title: string;
+  description: string;
+  editable: boolean;
+  defaultContent: string;
+  content: string;
+  customized: boolean;
+}
+
 /* ── 工具上下文占用(设置面板) ──
  *  按引擎静态枚举 Mcode 可控部分的工具 schema,chars/4 估算 token。
  *  引擎内置工具由 CLI 注入、Mcode 不可控,只给一条说明行不逐个列。 */

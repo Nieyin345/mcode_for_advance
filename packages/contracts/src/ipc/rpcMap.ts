@@ -112,7 +112,7 @@ import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, Skil
   SkillMarketState, SkillsMarketListInput, SkillsMarketAddInput, SkillsMarketNameInput, SkillsMarketInstallInput, SkillsMarketInstallResult } from "./skills.js";
 import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState, McpGenofficeInstallInput, McpGenofficeInstallResult, McpProjectListInput, McpProjectListResult, McpProjectSaveInput, McpProjectRemoveInput, McpProjectTrustInput, McpProjectCopyInput, McpProjectCopyResult, McpMarketSource, McpMarketSourcesInput, McpMarketSourceAddInput, McpMarketSourceRemoveInput, McpMarketSearchInput, McpMarketSearchResult } from "./mcp.js";
 import type { AgentSshListInput, AgentSshPendingHost, AgentSshTrustedHost, AgentSshApproveInput, AgentSshHostPortInput } from "./agentSsh.js";
-import type { ContextGetInput, ContextSaveInput, ToolsUsageGetInput, ToolsUsageResult } from "./context.js";
+import type { ContextGetInput, ContextSaveInput, ToolsUsageGetInput, ToolsUsageResult, FrameworkSaveInput, FrameworkResetInput, FrameworkSectionEntry } from "./context.js";
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
@@ -825,6 +825,10 @@ export interface RpcMap {
    *  `warnings` carries per-target notes (e.g. an unmanaged hand-written file
    *  was left untouched). */
   "context.save": (input: ContextSaveInput) => Promise<{ ok: boolean; error?: string; warnings?: string[] }>;
+  /** List each editable/read-only framework section and its current effective text. */
+  "framework.list": (input: Record<string, never>) => Promise<{ sections: FrameworkSectionEntry[] }>;
+  "framework.save": (input: FrameworkSaveInput) => Promise<{ sections: FrameworkSectionEntry[] }>;
+  "framework.reset": (input: FrameworkResetInput) => Promise<{ sections: FrameworkSectionEntry[] }>;
   /** Static per-tool context-usage estimate for one engine. */
   "tools.usage": (input: ToolsUsageGetInput) => Promise<ToolsUsageResult>;
   /** Output styles (settings panel): list built-in + user styles. The
@@ -2055,6 +2059,9 @@ export const IPC = {
   // Context hosting (settings panel): global instructions / tool usage
   CONTEXT_GET: "context:get",
   CONTEXT_SAVE: "context:save",
+  FRAMEWORK_LIST: "framework:list",
+  FRAMEWORK_SAVE: "framework:save",
+  FRAMEWORK_RESET: "framework:reset",
   TOOLS_USAGE: "tools:usage",
   // Output styles (settings panel): list built-in + user styles
   OUTPUT_STYLE_LIST: "outputStyle:list",

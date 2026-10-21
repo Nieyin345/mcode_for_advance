@@ -15,6 +15,9 @@ import {
   IPC,
   ContextGetSchema,
   ContextSaveSchema,
+  FrameworkListSchema,
+  FrameworkSaveSchema,
+  FrameworkResetSchema,
   ToolsUsageGetSchema,
   type ToolUsageGroup,
   type ToolUsageItem,
@@ -22,6 +25,7 @@ import {
 } from "@contracts/ipc";
 import type { McpToolSpec } from "@main/mcp/sdk.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
+import { listFrameworkSections, saveFrameworkSection, resetFrameworkSection } from "@main/orchestration/frameworkPromptStore.js";
 import { errText } from "@main/lib/ipcError.js";
 import { estimateToolTokensSafely } from "@main/lib/tokenEstimate.js";
 import { workflowMcpTools } from "@main/mcp/mcodeServer.js";
@@ -85,6 +89,23 @@ export function registerContextHandlers(ipcMain: IpcMain): void {
       input.content,
       { force: true },
     );
+  });
+
+  ipcMain.handle(IPC.FRAMEWORK_LIST, (_evt, raw) => {
+    FrameworkListSchema.parse(raw ?? {});
+    return { sections: listFrameworkSections(dataRoot()) };
+  });
+
+  ipcMain.handle(IPC.FRAMEWORK_SAVE, (_evt, raw) => {
+    const { id, content } = FrameworkSaveSchema.parse(raw);
+    saveFrameworkSection(dataRoot(), id, content);
+    return { sections: listFrameworkSections(dataRoot()) };
+  });
+
+  ipcMain.handle(IPC.FRAMEWORK_RESET, (_evt, raw) => {
+    const { id } = FrameworkResetSchema.parse(raw);
+    resetFrameworkSection(dataRoot(), id);
+    return { sections: listFrameworkSections(dataRoot()) };
   });
 
   ipcMain.handle(IPC.TOOLS_USAGE, async (_evt, raw) => {

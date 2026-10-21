@@ -1210,6 +1210,14 @@ export function createWebApi(): Api {
       approve: async () => webUnsupported("unattended.approve"),
       run: async () => webUnsupported("unattended.run"),
     } satisfies Api["unattended"],
+    // Framework wording edits are local-desktop settings: mobile may show the
+    // shared general panel, so return an explicit rejection instead of throwing
+    // synchronously via the unknown-namespace proxy (which unmounts React).
+    framework: {
+      list: async () => webUnsupported("framework.list"),
+      save: async () => webUnsupported("framework.save"),
+      reset: async () => webUnsupported("framework.reset"),
+    } satisfies Api["framework"],
     // Module installation/execution is desktop-only in v1. Reject explicitly;
     // no new mobile whitelist or paired-device capability is implied.
     modules: {

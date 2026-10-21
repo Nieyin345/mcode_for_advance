@@ -772,6 +772,13 @@ const api = {
       ipcRenderer.invoke(IPC.CONTEXT_SAVE, input)) as RpcMap["context.save"],
   },
 
+  /** T64 — configurable workflow framework wording (per-run snapshots). */
+  framework: {
+    list: ((input) => ipcRenderer.invoke(IPC.FRAMEWORK_LIST, input)) as RpcMap["framework.list"],
+    save: ((input) => ipcRenderer.invoke(IPC.FRAMEWORK_SAVE, input)) as RpcMap["framework.save"],
+    reset: ((input) => ipcRenderer.invoke(IPC.FRAMEWORK_RESET, input)) as RpcMap["framework.reset"],
+  },
+
   /** 工具上下文占用(设置面板):按引擎静态枚举 Mcode 可控的工具 schema 估算。 */
   tools: {
     usage: ((input) => ipcRenderer.invoke(IPC.TOOLS_USAGE, input)) as RpcMap["tools.usage"],
