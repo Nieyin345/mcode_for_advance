@@ -97,8 +97,8 @@
 | T22 | Docs 后续切片：exportPdf 整链 / lazy-media 三类源 / files:read | ARC-007 | T05c | ✅ 完成（PDF 本地拆页 + 图片源四类策略 + 附件读取） |
 | T23 | Pane 剩余能力：可调分割线 + 布局预设 + 重置 | ARC-005 UI | T02 | ✅ 完成（比例流 + 18%/82% 折叠 + 三预设 + 重置） |
 | T24 | 设置页全面重构（63 面板 / 26,303 行对齐 CDS） | ARC-005 UI | 无 | **进行中**（批次 1–3 完成；批次 4 在飞） |
-| T25 | 原子写与冲突副本的故障注入回归（maint-m07 9 红） | 数据安全 | 无 | **待派**（6 条是崩溃时原文件被半写/被覆盖，真实缺陷） |
-| T26 | 修好三套自坏的 smoke 脚手架 | 测试基础设施 | 无 | **待派**（updater-tools 构建期就断 = 零覆盖） |
+| T25 | 原子写与冲突副本的故障注入回归（maint-m07 9 红） | 数据安全 | 无 | **进行中** |
+| T26 | 修好三套自坏的 smoke 脚手架 | 测试基础设施 | 无 | ✅ 完成（`f98df6ff`；总控独立复跑 2/2 PASS） |
 | T06 | MC-035 OS 级网络出站隔离 | MC-035 复核失败项 | 无 | 部分完成（判据 2/3/6 未达成：Windows 无 OS 沙箱、Linux/macOS 无 Node 五路实证） |
 | T07 | 文档/Node-RED 同壳整合 | ARC-005+007 | T02, T05, T23 | **可派**（前置条件已修正：证据改为 `document-view-*` 五套） |
 | T08 | 三引擎能力对齐收尾 | ARC-003 | 无 | ✅ 完成（27 类×3 引擎矩阵；跨层去重是真实缺陷，只记录未改） |
@@ -203,12 +203,13 @@ vendor 独立 Git + 固定基线 commit + `mcode/integration` 分支 + 补丁存
 - ~~`maint-m35-smoke` **7/8**~~ **已由总控修复**：产品代码本身是对的
   （`await` + `!res.ok` + toast），是断言只认 `.then(` 写法、把 `await` 误判成没接。
   断言已改为「`await` 或 `.then(` 任一」，变异能准确变红；现 8/8。
-- **`maint-m07-smoke` 94/103（9 红）** → **T25**。6 条是故障注入下原文件被半写/被覆盖，
+- ~~`updater-tools-smoke` 构建期就断~~ **T26 已修**（`f98df6ff`）：桩补齐
+  `accessSync`/`constants`/`lstatSync`，现 136/136。总控独立复跑确认。
+- ~~`maint-m22-smoke` 15/16~~ **T26 已修**（`f98df6ff`）：判定是**断言 bug 不是产品 bug** ——
+  搜索框里的 Space 本来就应该留给多词搜索，原脚手架误当勾选。现 16/16，
+  且没有删断言（第 16 条改成判真实行为：搜索框 Space 不误选、编辑器焦点 Space 出「添加」按钮）。
+- **`maint-m07-smoke` 94/103（9 红）** → **T25 进行中**。6 条是故障注入下原文件被半写/被覆盖，
   2 条是冲突副本写失败仍谎报 conflictPath，1 条是 `listDir` 同一物理目录返回 2 份。
-- **`updater-tools-smoke` 构建期就断** → **T26**。`managedToolRoots.ts` 现在 import
-  `accessSync`/`constants`/`lstatSync`，而 stub 的 `fs.ts` 没导出它们。
-- **`maint-m22-smoke` 15/16** → **T26**。一条 picker Space/Enter 的 control 断言，
-  需先判定是产品 bug 还是断言 bug。
 - `test:all` 当前仍是**红**的，不能声称全绿。
 
 ---
