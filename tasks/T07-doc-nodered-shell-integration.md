@@ -137,4 +137,4 @@ type PaneContent =
 - T02 有 `8e4867578a97768357dce9d28c9f515b3b74c1c4` 实现记录，索引标完成；T03 有 `14880aeff0aba3067c8d5735d2cf5ee69d3386cf` 原派活完成记录，owner 落盘增量 T10 索引标完成。未将这些已有记录当作本轮复测。
 - **本轮操作**：只读 T07、T02、T03、T05、`tasks/README.md`、`tasks/_PROMPT_TEMPLATE.md`、`audit-ledgers/README.md`，核对 `git status --short`、提交记录及缺失的 `docs-vendor-parity-smoke` 目录。仅追加本任务文件，不修改业务/测试源码、GenOffice/Node-RED 上游或其他任务文件，不 push。
 - **验收判据 1–6：均未执行，全部不能声明达成**；无 Electron 探针、无 smoke PASS/FAIL 结果、无双包 tsc、无变异红/绿与 cmp 数据（前置阻塞，未开工）。剩余风险是 T05 原验收证据缺失；解除硬前置后才能启动 T07 的验证。
-- **提交 SHA**：本阻塞记录的提交 SHA 见本文件后续回写。
+- **阻塞记录提交 SHA**：`5e1c2e9e639188dda657a70f5b3969a2f442efb6`（仅任务回写；未提交任何业务/测试实现）。
