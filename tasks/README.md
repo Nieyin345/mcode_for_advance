@@ -10,6 +10,31 @@
 
 ---
 
+## 第一波已派后的新增并行工作（2026-10-21，最新；优先于下文任何旧派发表）
+
+> 第一波 **T64/T65/T69/T70 均已产生提交**：T64 `a1690047`、T65 `b41d41e4`、T69 `d3f021db`、T70 `941de215`。这些卡有回写，但仍按独立验收规则核剩余项。T65 明确 `NoteEditor` 已删除，不能复活过期入口。T49 的 `main/modules/*`、`main/appControl/*` 仍未提交，不重复派这些热区。**现在可释放 T30（等 T65）和 T72（等 T70）**。
+
+| 并行层 | 编号 | 实际文件名 | 可写热区与注意 |
+|---|---|---|---|
+| **现在可派** | **T73** 浏览器沙箱恢复 | `T73-browser-sandbox-preload-migration.md` | `main/browser/BrowserManager.ts` + 专用 `browserPicker` preload；与 T64/T65/T49 不重叠。实机 Electron 跑法与别的 UI 卡错峰 |
+| **现在可派** | **T74** GenOffice 原厂无头 CLI 适配 | `T74-genoffice-cli-headless-operations.md` | 只占 `main/document/genofficeCli.ts` + 新测试；**不碰** T49 的 appControl/RPC |
+| **现在可派** | **T75** 六编辑器 AgentSkill/AI 链审查 | `T75-genoffice-agent-skills-six-app-audit.md` | 只读六原厂应用源码及 Mcode AI 桥，不改已有实现 |
+| **现在可派** | **T76** 原厂资源与打包许可证门禁 | `T76-vendor-release-resource-integrity.md` | 仅 `apps/desktop/build/stage-*/verify-*` 指定文件和新测试，不碰 dirty 的 `release-readiness-smoke`；不与完整 installer 构建并行 |
+| **现在可派** | **T78** UI 39 场景真实基线/差距复审 | `T78-arc005-visual-baseline-gap-audit.md` | 只读 T01/T12 的基线和 `open-claude-ui`；不运行竞争性 Electron |
+| **现在可派** | **T79** Node-RED 六节点图标/双语/帮助缺口 | `T79-node-red-node-palette-i18n-help.md` | T70 已定位具体源码红例；独占 `workflowEngines/mcodeNodeTypes.ts` / 节点 HTML + locale |
+| **现在可派** | **T80** Windows sort -V 导致的 22 套 smoke 构建失败 | `T80-windows-sort-v-smoke-portability.md` | 独占 T69 指定 22 个 `run.sh` 及 `scripts/lib/esbuild-path.sh` |
+| **现在可派** | **T81** Windows 临时 node_modules 链接导致的 27 套 smoke 失败 | `T81-windows-node-modules-symlink-smokes.md` | 独占 T69 指定 27 个**不与 T80 重叠**的 `run.sh` 和新 helper |
+| **现在可派** | **T82** emit-path 事件扫描旧断言纠偏 | `T82-emit-path-smoke-event-shape.md` | 只改 `scripts/emit-path-smoke/main.ts`；生产事件通路只读 |
+| **现在可派** | **T30** 六编辑器格式唯一路由 | `T30-genoffice-unified-file-routing.md` | **T65 已提交**；注意 `document-router-smoke/main.ts` 仍有其他在飞修改，不覆盖 |
+| **现在可派** | **T72** Node-RED 唯一工作流权威差距 | `T72-node-red-single-authority-gap-audit.md` | **T70 已提交**；只读审计，不删除旧调度器 |
+| **等 T79 后** | **T77** Node-RED 真实 Electron 编辑器/Deploy U1 | `T77-node-red-native-electron-ui-acceptance.md` | 独占 Electron；**不能**与 T71 或其它真实 UI 探针并行；只写新夹具 |
+| **已解除前置** | T30、T72 | 详见上方“现在可派” | T65 和 T70 已提交，按新任务卡的文件互斥检查即可 |
+| **原计划第三波** | T71 | 详见下文 | T71 **等 T30** 且独占 Electron |
+
+**并发约束**：代码修改可多对话，但全量 smoke / Electron 探针 / installer 构建需要资源门禁，尤其不能同时跑多个完整 `--all`。T80 与 T81 只在 T69 的 22+27 个不重叠 `run.sh` 下工作，**共享 `scripts/lib/esbuild-path.sh` 归 T80**，T81 只写自己的 helper；不要用同一个 temp 路径和 node_modules 测试夹具。T73 的 `electron.vite.config.ts` 局部变动不允许 T76 写，T76 只做 staging/verify。T49 的未提交代码不得被 T73/T74/T76 顺手覆盖。T69 的 60 红历史混合快照经审计归类 A50/B6/D3/E1/C0，**不是当前产品 60 个明确 Bug**。真模型/生产文件/账号/用户安装器均不得用于破坏性验证。
+
+---
+
 ## 最新总控派活入口（2026-10-21 晚；优先于本文下方旧时点“可派顺序”）
 
 > 当前仓库 HEAD：`1bfc4adc`。本轮已核对任务回写、相关提交、工作树与正式台账规则。**任务卡写回 ≠ 任务所有判据全达成 ≠ 独立复核通过 ≠ ARC/FULL 整体验收**。本轮在有未提交代码的情况下不启动全量 smoke，不自签正式双勾。
