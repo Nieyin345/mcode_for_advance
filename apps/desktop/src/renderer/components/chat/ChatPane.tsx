@@ -65,6 +65,7 @@ import { QuestionPrompt } from "./QuestionPrompt.js";
 import { ApprovalPrompt } from "./ApprovalPrompt.js";
 import { PlanApprovalPrompt } from "./PlanApprovalPrompt.js";
 import { ComposerEditor, type ComposerEditorHandle } from "./ComposerEditor.js";
+import { composerSendAction } from "./composerPhysicalRules.js";
 import { CdsSkeleton } from "@renderer/components/ui/cds/CdsSkeleton.js";
 import { ContentTagChip } from "./ContentTagChip.js";
 import { TagPopover } from "./TagPopover.js";
@@ -1373,6 +1374,9 @@ function ChatPaneForSession({
    *  flips to send — which enqueues the prompt into the 排队 chips instead of
    *  starting a new turn. */
   const hasComposerContent = value.trim() !== "" || tags.length > 0 || pendingImages.length > 0;
+  // T18 / ChatComposer: one action decision for the actual rendered button.
+  // While busy, a nonempty draft queues; only an empty draft shows Stop.
+  const sendAction = composerSendAction(sessionBusy, hasComposerContent);
 
   // ── Composer draft persistence ──
   // The store's composerDraftBySession holds each thread's unsent input so it
@@ -3635,7 +3639,7 @@ function ChatPaneForSession({
                     collapsed tiers the label folds away through the same grid
                     shell mechanism, leaving the brand icon. */}
                 <ProviderDropdown compact={composerTier >= 1} />
-                {sessionBusy && !hasComposerContent ? (
+                {sendAction === "stop" ? (
                   <button
                     // ⚠️ **必须带上 `sessionId`。** 不带的话 `interrupt()` 回落到
                     // 全局 `activeSessionId` —— 而右栏「问答」那条侧边会话的
@@ -3655,11 +3659,11 @@ function ChatPaneForSession({
                   </button>
                 ) : (
                   <button
-                    onClick={sessionBusy ? () => void enqueueGuarded() : () => void sendGuarded()}
-                    disabled={!hasComposerContent}
-                    title={sessionBusy ? t("chat.enqueue") : t("chat.send")}
-                    aria-label={sessionBusy ? t("chat.enqueue") : t("chat.send")}
-                    data-ready={hasComposerContent ? "1" : "0"}
+                    onClick={sendAction === "enqueue" ? () => void enqueueGuarded() : () => void sendGuarded()}
+                    disabled={sendAction === "disabled"}
+                    title={sendAction === "enqueue" ? t("chat.enqueue") : t("chat.send")}
+                    aria-label={sendAction === "enqueue" ? t("chat.enqueue") : t("chat.send")}
+                    data-ready={sendAction === "disabled" ? "0" : "1"}
                     onAnimationEnd={() => setSendLaunching(false)}
                     className={cn(
                       "composer-send inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-surface shadow-sm transition-all duration-150 ease-out",
