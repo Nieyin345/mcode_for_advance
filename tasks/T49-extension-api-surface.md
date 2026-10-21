@@ -227,3 +227,70 @@ ModuleResult  // 与 app_api_call 同形状
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 T49 执行回写
+
+- **调用面与唯一实现**：在宿主内置能力目录新增 \`core.app.call\`（action）；隔离 \`program.source\` 运行期挂入 \`mcode.api.call(method,input)\`。主进程装配时将可信的模块调用端口接到已有 \`invokeAppTool("app_api_call")\`，再走既有的 \`findEntry\` / \`policyFor\` / T48 \`authorizeAppMethod\` / \`callRpc\` / 结果判定。模块 ID 由 \`ModuleHost\` 绑定（不信任子进程传入的 moduleId）；授权在派发前、结果发布前重新核验。未安装/未授权/blocked 全部拒绝；安装同意的写与 danger 方法跳过逐次审批，但不放开 blocked。
+- **协议兼容**：旧 \`runPermissionedProcess\` 无 \`onAppCall\` 时保留原来的 \`spawnRun\` 单次 stdin → stdout 协议；仅宿主提供回调时启用双向 NDJSON，子进程 stdout \`@@mcode:ext-call\` 发请求，stdin \`__mcode_reply\` 回包，\`@@mcode:ext-result\` 发最终结果。继续使用同一组文件系统 \`--permission\` 参数、\`NETWORK_GUARD\`、OS egress 决策。失败码 \`isolated_timeout\`、\`isolated_cancelled\`、\`isolated_crash\`、\`isolated_denied\` 保留。
+- **额度与长任务**：一次扩展能力运行最多 128 次 RPC 请求、最多 8 条并发、单条请求 64 KiB，双向协议总输出 256 KiB，保留模块 program.timeoutMs 的墙钟上限。长 \`claude.sendTurn\` 可以 await 结果；目前没有单独进度事件，取消通过 AbortSignal 终止子进程并拒绝迟到结果；正在进行的外部 RPC 已落定的副作用不能保证撤回。
+- **真实方法名**：任务示例里的 \`session.send\` 是授权域名，不是现有 RPC 方法。真实可调方法为 \`claude.startSession\` / \`claude.sendTurn\`，\`file.readFile\` 的实际入参为 \`{filePath}\`。测试与 AI 指南采用真实形状。
+- **隔离与跨扩展存储**：\`mcode.api.call\` 不能直接声明他人模块身份；\`extensionStore.*\` 仍经过既有 \`runWithUnboundAgentExtensionScope\`，因此不能通过通用 agent RPC 访问其他扩展的数据区；扩展自己的存储须走已有宿主绑定接口。 \`child_process\`、未授权 HTTP 出站的负例均按预期失败；Windows JS 守卫降级仅在测试中以明确注入允许，生产仍由用户设置控制。
+- **AI 文档**：\`app_guide({topic:"extensions"})\` 的清单模板、权限名和方法说明由 T51 同时接入的 \`extensionAuthoringGuide\` 提供，并明确 \`mcode.api.call\` 用法。专项 \`extension-authoring-smoke\` 通过；本任务以实际 \`ModuleManifestSchema\` 清单安装 + 程序源运行作为可运行模板验证，未执行独立 AI 模型实时生成插件的端到端试写。
+- **专项验证**：\`node apps/desktop/scripts/run-smokes.mjs module-app-call-smoke\` 基线 7 pass / 0 fail，运行真实 fixture 文件、假 AI provider、无授权、blocked、隔离、撤权取消；三组变异分别撤掉宿主授权校验、blocked 判定、AbortSignal 监听，均触发对应断言红例，详见 \`apps/desktop/.tmp/module-app-call-*/{baseline,auth,blocked,cancel}.log\`。
+- **回归限制**：新加 \`core.app.call\` 后已更新模块能力目录两个旧的定长断言；module-catalog/module-catalog-ui/module-workflow、extension-authoring 等通过。16 条 module-* 汇总检查中 \`module-contributions-smoke\`（并行 T50 的 task/result 断言）与 \`module-phase2-e2e-smoke\`（native-window 工作流 UI 找不到 File inspection）尚未全绿，不归到 T49 权限/协议处理，判据 8 暂未达成。
+- **类型检查**：contracts \`node_modules\\.bin\\tsc --noEmit -p packages/contracts/tsconfig.json\` exit 0；desktop 同命令另行复跑验收。
+
+### 2026-10-21 T49 收尾验收回写
+
+- **实现提交 SHA**：`2af6b0ec`（`fix(T49): finish extension app call regression checks`）。
+- **本次实现提交文件**：
+  - `apps/desktop/src/main/appControl/tools.ts`
+  - `apps/desktop/src/main/modules/ModuleHost.ts`
+  - `apps/desktop/src/main/modules/builtinCapabilityCatalogue.ts`
+  - `apps/desktop/src/main/modules/fileCapabilities.ts`
+  - `apps/desktop/src/main/modules/moduleApproval.ts`
+  - `apps/desktop/src/main/modules/permissionedProcessRunner.ts`
+  - `apps/desktop/src/main/modules/service.ts`
+  - `apps/desktop/scripts/module-app-call-smoke/main.ts`
+  - `apps/desktop/scripts/module-app-call-smoke/build.mjs`
+  - `apps/desktop/scripts/module-app-call-smoke/run.sh`
+  - `apps/desktop/scripts/module-catalog-smoke/main.ts`（仅更新新增 host capability 对应的定长断言）
+  - `apps/desktop/scripts/module-catalog-ui-smoke/verify.ts`（仅更新新增 host capability 对应的定长断言）
+  - 未纳入 `apiCatalog.generated.ts`、T76/T82/T83/T84/T50 或其他执行对话的文件；共享 smoke 文件只提交了上述 T49 所属 hunk。
+
+- **专项命令与变异验证**：最终单独执行 `node apps/desktop/scripts/run-smokes.mjs module-app-call-smoke`，13 PASS / 0 FAIL；日志：`apps/desktop/.tmp/smoke-runs/1792597063230-3776-ppr7sW/module-app-call-smoke.log`。断言覆盖真实 fixture 的 `file.readFile`、假 AI provider 的 `claude.sendTurn`、未授权拒绝、blocked 拒绝、`child_process` / HTTP 出站拒绝、128 次调用上限、8 并发上限、64 KiB 单请求上限、256 KiB stdout 上限、timeout、撤权取消和迟到结果不发布。变异产物：`apps/desktop/.tmp/module-app-call-IRpmg7/{baseline,auth,blocked,cancel}.log`；auth / blocked / cancel 三组均触发各自预期断言红例。
+- **变异源字节证据**：在最终专项复验前，以二进制方式备份 `ModuleHost.ts`、`appPermission.ts`、`permissionedProcessRunner.ts`；变异由 esbuild `onLoad` 在内存中施加，不写原文件。运行后对三个原文件分别执行 `fc /b`，均输出“找不到差异”；备份目录随后仅清理本次创建的目录。没有对源文件做变异后恢复，也没有碰其他工作区修改。
+
+- **完整 module 回归实际命令**：
+  `node apps/desktop/scripts/run-smokes.mjs module-app-call-smoke module-catalog-smoke module-catalog-ui-smoke module-contract-smoke module-contributions-smoke module-executor-smoke module-extension-lifecycle-smoke module-file-identity-smoke module-grant-revoke-safety-smoke module-permissions-smoke module-phase2-e2e-smoke module-phase2-security-smoke module-platform-smoke module-protocol-integrity-smoke module-ui-smoke module-workflow-smoke extension-authoring-smoke`
+  - 结果：17 个 suite 中 16 PASS / 1 FAIL；日志根目录：`apps/desktop/.tmp/smoke-runs/1792597183171-14268-pi0Ca9/`。下表为各日志中的 PASS/FAIL 断言计数，日志文件均位于该目录：
+
+| Smoke | PASS / FAIL | 日志文件 |
+|---|---:|---|
+| `module-app-call-smoke` | 13 / 0 | `module-app-call-smoke.log` |
+| `module-catalog-smoke` | 21 / 0 | `module-catalog-smoke.log` |
+| `module-catalog-ui-smoke` | 26 / 0 | `module-catalog-ui-smoke.log` |
+| `module-contract-smoke` | 118 / 0 | `module-contract-smoke.log` |
+| `module-contributions-smoke` | 15 / 0（构建/契约 10 + UI 5） | `module-contributions-smoke.log` |
+| `module-executor-smoke` | 30 / 0 | `module-executor-smoke.log` |
+| `module-extension-lifecycle-smoke` | 160 / 0 | `module-extension-lifecycle-smoke.log` |
+| `module-file-identity-smoke` | 9 / 0 | `module-file-identity-smoke.log` |
+| `module-grant-revoke-safety-smoke` | 34 / 0 | `module-grant-revoke-safety-smoke.log` |
+| `module-permissions-smoke` | 9 / 1 | `module-permissions-smoke.log` |
+| `module-phase2-e2e-smoke` | 99 / 0 | `module-phase2-e2e-smoke.log` |
+| `module-phase2-security-smoke` | 32 / 0 | `module-phase2-security-smoke.log` |
+| `module-platform-smoke` | 33 / 0 | `module-platform-smoke.log` |
+| `module-protocol-integrity-smoke` | 15 / 0 | `module-protocol-integrity-smoke.log` |
+| `module-ui-smoke` | 10 / 0 | `module-ui-smoke.log` |
+| `module-workflow-smoke` | 41 / 0（workflow 38 + shared save guard 3） | `module-workflow-smoke.log` |
+| `extension-authoring-smoke` | 24 / 0 | `extension-authoring-smoke.log` |
+
+- **两个重点回归最终原因**：
+  - `module-contributions-smoke`：本轮当前版本 10/10 构建/契约断言通过，另 5/5 UI 断言通过；日志见上表，不再沿用旧失败记录。
+  - `module-phase2-e2e-smoke`：当前 4 个 stage 全部 exit 0。native Electron 创建阶段 14/14、重新打开阶段 8/8，证据为 `apps/desktop/.tmp/p2-06-native-q6rLuv/result.json`、`create-checks.json`、`reopen-checks.json`；总阶段结果为 `apps/desktop/.tmp/p2-06-e2e-mLclQh/result.json`。当前 smoke 源码已没有旧的 `[role=button][title="File inspection"]` 定位器，现行原生 UI 路径实测通过；旧超时在当前版本不可复现，证据指向旧测试定位器/测试路径，而非 T49 RPC 回归或本轮 T50 UI 接线。未修改 T50 文件。
+
+- **唯一未通过项及边界**：`module-permissions-smoke` 为 9 PASS / 1 FAIL，失败断言为 `All current RPC methods have a closed-world permission mapping`，具体是 `Unmapped RPC method: workflowEngine.load`。该方法已在 HEAD 的 API catalog 中，`policy.ts` 将其标为 DANGER，但未出现在干净的 T48 `packages/contracts/src/appPermission.ts` 映射中；本次 T49 改动没有触及该映射。由于任务边界明确禁止修改工作流相关代码，且擅自补授权限会改变危险方法的扩展可调用面，本轮不越界添加 grant。**验收判据 8（现有全部 module-* suite 全绿）仍未达成**；需要 T48/工作流权限映射所有者另行决策并修复。
+
+- **类型检查**：`pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` exit 0；`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` exit 0。两项均在最终 smoke 源码修改后重跑。
+- **协议、安全与 AI 文档核对**：旧调用方不传 `onAppCall` 时仍走原 `spawnRun` 单次协议；`module-protocol-integrity-smoke` 15/15、`module-extension-lifecycle-smoke` 160/160 通过。双向路径仍用原 `NETWORK_GUARD`、`permissionArgs` 和 `permissionedEnv`，不放松 Node `--permission`；取消和超时的失败码断言通过。通用 RPC 的 `extensionStore.*` 仍走原 `runWithUnboundAgentExtensionScope`，没有新增跨扩展 storage 通道。T51 的 `extension-authoring-smoke` 实际调用 `app_guide({topic:"extensions"})` 并通过 24/24；本轮 AI 按该主题模式试写并运行了最小 file-summary 扩展，真实读取 fixture、调用假 `claude.sendTurn` 并返回摘要结果。此处验证的是文档模式 + 假 provider 的可运行性，没有调用外部真实模型。
+- **附加检查**：提交前 `git diff --check` 通过；暂存区仅含上列 12 个 T49 实现/测试文件。
