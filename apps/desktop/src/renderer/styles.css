@@ -3237,3 +3237,31 @@ html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
 @media (prefers-reduced-motion: reduce) {
   [data-reasoning-glow="active"], .reasoning-shimmer, .reasoning-sweep { animation: none; }
 }
+
+/* T17 ContainerResponsiveBar — host is the measured `.composer-chips`, not
+   viewport. REA 576/480/384/320 compression with full action preservation. */
+[data-chat-root] .composer-chips { container: composer-toolbar / inline-size; }
+@container composer-toolbar (width < 576px) {
+  [data-chat-root] .composer-minipill-seg { padding-inline: 5px; }
+  [data-chat-root] .composer-minipill-ringseg { padding-inline: 5px; }
+}
+@container composer-toolbar (width < 480px) {
+  [data-chat-root] .composer-minipill { padding-inline: 2px; }
+  [data-chat-root] .composer-minipill-mid { opacity: .35; }
+  [data-chat-root] .composer-minipill-seg { padding-inline: 4px; }
+}
+@container composer-toolbar (width < 384px) {
+  [data-chat-root] .composer-minipill-seg { gap: 0; padding-inline: 3px; }
+  [data-chat-root] .composer-minipill-ringseg { padding-inline: 3px; }
+  [data-chat-root] .composer-minipill .composer-lblwrap { grid-template-columns: 0fr; }
+}
+@container composer-toolbar (width < 320px) {
+  [data-chat-root] .composer-minipill { min-width: max-content; gap: 0; }
+  [data-chat-root] .composer-minipill-seg { padding-inline: 2px; }
+  [data-chat-root] .composer-minipill-ringseg { padding-inline: 2px; }
+}
+[data-chat-root] .composer-chips:has(> .composer-minipill[data-fluid-tier="micro"]) {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+[data-chat-root] .composer-chips:has(> .composer-minipill[data-fluid-tier="micro"])::-webkit-scrollbar { display: none; }

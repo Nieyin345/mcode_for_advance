@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+import { composerFluidTier } from "./composerFluidTier.js";
 import { ComposerCustomButtons } from "@renderer/components/customUi/CustomSlotHosts.js";
 import { MemoryAssistantButton } from "./MemoryAssistantButton.js";
 import { useSessionStore, EMPTY_USAGE } from "@renderer/stores/sessionStore.js";
@@ -82,6 +84,21 @@ export function ComposerToolbar({
   onNewSubChat?: (session: { id: string; title: string }) => void;
 }) {
   const { t } = useI18n();
+  // REA ContainerResponsiveBar: observe the actual composer chips container,
+  // not the window (split-pane and side-chat widths differ). Controls remain
+  // mounted at every tier; <320px is horizontally scrollable, not hidden.
+  const pillRef = useRef<HTMLDivElement>(null);
+  const [fluidTier, setFluidTier] = useState(() => composerFluidTier(576));
+  useEffect(() => {
+    if (layout !== "pill") return;
+    const parent = pillRef.current?.parentElement;
+    if (!parent) return;
+    const measure = () => setFluidTier(composerFluidTier(parent.clientWidth));
+    const observer = new ResizeObserver(measure);
+    observer.observe(parent);
+    measure();
+    return () => observer.disconnect();
+  }, [layout]);
   // Context-window snapshot for THIS pane's session. Drives the ring segment
   // (pill) / status row (row layout). Undefined until the first
   // token-usage.updated event arrives (or a persisted snapshot is hydrated
@@ -139,7 +156,7 @@ export function ComposerToolbar({
   const hasAttach =
     !!onPickFiles && !!onPickImages && !!onPickLibraries && !!onSlashCommand;
   return (
-    <div className="composer-minipill" data-compact={compact ? "1" : "0"}>
+    <div ref={pillRef} className="composer-minipill" data-fluid-tier={fluidTier} data-compact={compact ? "1" : "0"}>
       {hasAttach && (
         <>
           <AttachMenuButton
