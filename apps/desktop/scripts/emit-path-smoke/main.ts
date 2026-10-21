@@ -243,6 +243,10 @@ function walk(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
+type DynamicSource =
+  | { kind: "runtime-event-contract" }
+  | { kind: "producer-literals"; types: string[] };
+
 interface Site {
   file: string;
   line: number;
@@ -251,6 +255,8 @@ interface Site {
   path: "broadcast" | "external";
   /** 事件名;null = 解析不出来(那本身是一条失败断言)。 */
   type: string | null;
+  /** 只有能证明参数契约或穷尽本地 producer 时，才允许动态 type。 */
+  dynamic?: DynamicSource;
 }
 
 const sites: Site[] = [];
@@ -374,21 +380,161 @@ function unwrapMetadataEmitters(text: string, wiring?: string[]): string {
   return text;
 }
 
+function enclosingFunctionLike(node: TypeScript.Node): TypeScript.FunctionLikeDeclaration | undefined {
+  for (let current: TypeScript.Node | undefined = node.parent; current; current = current.parent) {
+    if (ts.isFunctionDeclaration(current) || ts.isFunctionExpression(current) || ts.isArrowFunction(current)
+      || ts.isMethodDeclaration(current) || ts.isConstructorDeclaration(current)
+      || ts.isGetAccessorDeclaration(current) || ts.isSetAccessorDeclaration(current)) return current;
+  }
+  return undefined;
+}
+
+function propertyNameText(name: TypeScript.PropertyName | undefined): string | null {
+  if (name && (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))) return name.text;
+  return null;
+}
+
+function importsRuntimeEvent(sourceFile: TypeScript.SourceFile): boolean {
+  return sourceFile.statements.some((statement) => {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)
+      || statement.moduleSpecifier.text !== "@contracts/runtime") return false;
+    const bindings = statement.importClause?.namedBindings;
+    return !!bindings && ts.isNamedImports(bindings) && bindings.elements.some((element) =>
+      element.name.text === "RuntimeEvent" && (!element.propertyName || element.propertyName.text === "RuntimeEvent"));
+  });
+}
+
+function hasRuntimeEventParameterType(parameter: TypeScript.ParameterDeclaration, sourceFile: TypeScript.SourceFile): boolean {
+  return !!parameter.type && ts.isTypeReferenceNode(parameter.type) && ts.isIdentifier(parameter.type.typeName)
+    && parameter.type.typeName.text === "RuntimeEvent" && importsRuntimeEvent(sourceFile);
+}
+
+/**
+ * 只解析 `emitStep({ ...event, metadata } as Parameters<typeof runtimeManager.emitExternal>[0])` 这一类
+ * 动态包装：事件类型必须能从同文件里该 const 的**全部直接调用点**穷尽回溯到字符串字面量。
+ * 任一调用逃逸、非字面量、未知属性覆盖或不再使用指定契约类型，都 fail-closed。
+ */
+function resolveProducerLiteralTypes(
+  call: TypeScript.CallExpression,
+  sourceFile: TypeScript.SourceFile,
+  nodes: TypeScript.Node[],
+): string[] | undefined {
+  if (call.arguments.length !== 1 || !ts.isAsExpression(call.arguments[0])) return undefined;
+  const argument = call.arguments[0];
+  if (argument.type.getText(sourceFile).replace(/\s+/g, "") !== "Parameters<typeofruntimeManager.emitExternal>[0]")
+    return undefined;
+  let eventObject: TypeScript.Expression = argument.expression;
+  while (ts.isParenthesizedExpression(eventObject)) eventObject = eventObject.expression;
+  if (!ts.isObjectLiteralExpression(eventObject) || eventObject.properties.length === 0) return undefined;
+  const first = eventObject.properties[0];
+  if (!ts.isSpreadAssignment(first) || !ts.isIdentifier(first.expression)
+    || eventObject.properties.filter(ts.isSpreadAssignment).length !== 1) return undefined;
+  const eventParameterName = first.expression.text;
+  for (const property of eventObject.properties.slice(1)) {
+    if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) return undefined;
+    const key = propertyNameText(property.name);
+    if (key === null || key === "type") return undefined;
+  }
+
+  const owner = enclosingFunctionLike(call);
+  if (!owner || !owner.parameters.some((parameter) => ts.isIdentifier(parameter.name)
+    && parameter.name.text === eventParameterName)) return undefined;
+  if (!ts.isArrowFunction(owner)) return undefined;
+  const binding = owner.parent;
+  if (!ts.isVariableDeclaration(binding) || binding.initializer !== owner || !ts.isIdentifier(binding.name)
+    || !ts.isVariableDeclarationList(binding.parent) || !(binding.parent.flags & ts.NodeFlags.Const)) return undefined;
+
+  const producerName = binding.name.text;
+  const references = nodes.filter((candidate): candidate is TypeScript.Identifier =>
+    ts.isIdentifier(candidate) && candidate.text === producerName);
+  const calls: TypeScript.CallExpression[] = [];
+  for (const reference of references) {
+    if (reference === binding.name) continue;
+    if (!ts.isCallExpression(reference.parent) || reference.parent.expression !== reference) return undefined;
+    calls.push(reference.parent);
+  }
+  if (calls.length === 0) return undefined;
+
+  const types: string[] = [];
+  for (const producerCall of calls) {
+    if (producerCall.arguments.length !== 1 || ts.isSpreadElement(producerCall.arguments[0])) return undefined;
+    let producerArgument = producerCall.arguments[0];
+    while (ts.isParenthesizedExpression(producerArgument)) producerArgument = producerArgument.expression;
+    if (!ts.isObjectLiteralExpression(producerArgument)) return undefined;
+    const type = typeAtTopLevel(producerArgument.getText(sourceFile));
+    if (type === null || type.length === 0) return undefined;
+    types.push(type);
+  }
+  return types;
+}
+
+/** 识别两种有边界的动态来源；普通 unknown/any/cast 不在豁免名单里。 */
+function resolveDynamicSource(
+  call: TypeScript.CallExpression,
+  sourceFile: TypeScript.SourceFile,
+  nodes: TypeScript.Node[],
+): DynamicSource | undefined {
+  if (call.arguments.length !== 1 || ts.isSpreadElement(call.arguments[0])) return undefined;
+  const argument = call.arguments[0];
+  if (ts.isIdentifier(argument)) {
+    const owner = enclosingFunctionLike(call);
+    const parameter = owner?.parameters.find((candidate) => ts.isIdentifier(candidate.name)
+      && candidate.name.text === argument.text);
+    if (parameter && hasRuntimeEventParameterType(parameter, sourceFile)) return { kind: "runtime-event-contract" };
+  }
+  const types = resolveProducerLiteralTypes(call, sourceFile, nodes);
+  return types && types.length > 0 ? { kind: "producer-literals", types } : undefined;
+}
+
+function siteHasResolvedType(site: Site): boolean {
+  return site.type !== null || site.dynamic?.kind === "runtime-event-contract"
+    || (site.dynamic?.kind === "producer-literals" && site.dynamic.types.length > 0);
+}
+
+function siteTypes(site: Site): string[] | undefined {
+  if (site.type !== null) return [site.type];
+  if (site.dynamic?.kind === "producer-literals") return site.dynamic.types;
+  return undefined;
+}
+
+function siteMayBeHookable(site: Site): boolean {
+  if (site.dynamic?.kind === "runtime-event-contract") return true;
+  return (siteTypes(site) ?? []).some((type) => hookEventFor(type) !== null);
+}
+
+function siteOnlyHasNonHookableTypes(site: Site): boolean {
+  if (site.dynamic?.kind === "runtime-event-contract") return false;
+  const types = siteTypes(site);
+  return !!types && types.length > 0 && types.every((type) => hookEventFor(type) === null);
+}
+
 /** 扫一份源码,把发出点找出来。抽成函数是为了让下面那段自检能喂人造样本。 */
 function scanSource(text: string, rel: string, wiring?: string[]): Site[] {
   text = unwrapMetadataEmitters(text, wiring);
+  const tree = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true);
+  const nodes: TypeScript.Node[] = [];
+  const visit = (node: TypeScript.Node): void => { nodes.push(node); ts.forEachChild(node, visit); };
+  visit(tree);
   const blanked = blankStrings(text);
   const out: Site[] = [];
   for (const m of blanked.matchAll(/(?<![\w$])(broadcastRuntimeEvent|emitExternal)\s*\(/g)) {
     const name = m[1];
     const open = m.index + m[0].length - 1;
     if (isDeclaration(text, open)) continue;
+    const call = nodes.find((candidate): candidate is TypeScript.CallExpression => {
+      if (!ts.isCallExpression(candidate)) return false;
+      const callee = candidate.expression;
+      const calleeName = ts.isPropertyAccessExpression(callee) ? callee.name : callee;
+      return ts.isIdentifier(calleeName) && calleeName.text === name && calleeName.getStart(tree) === m.index;
+    });
+    const type = typeAtTopLevel(balancedArg(text, open));
     out.push({
       file: rel,
       line: text.slice(0, m.index).split("\n").length,
       func: enclosingFunction(text, m.index),
       path: name === "broadcastRuntimeEvent" ? "broadcast" : "external",
-      type: typeAtTopLevel(balancedArg(text, open)),
+      type,
+      ...(type === null && call ? { dynamic: resolveDynamicSource(call, tree, nodes) } : {}),
     });
   }
   return out;
@@ -523,6 +669,65 @@ console.log("\n扫描器自检(能不能认出把通路写错的那种)");
     "<自检:包装内动态事件类型>",
   );
   check("包装不掩盖动态类型的未知状态", dynamicWrapped.some((site) => site.type === null), dynamicWrapped);
+
+  const typedDynamic = scanSource(
+    `import type { RuntimeEvent } from "@contracts/runtime";\nfunction forward(event: RuntimeEvent) { runtimeManager.emitExternal(event); }`,
+    "<自检:契约约束的动态来源>",
+  );
+  check(
+    "合法 RuntimeEvent 参数的动态来源可被识别",
+    typedDynamic.length === 1 && typedDynamic[0].type === null
+      && typedDynamic[0].dynamic?.kind === "runtime-event-contract" && typedDynamic[0].path === "external",
+    typedDynamic,
+  );
+  const typedDynamicWrong = scanSource(
+    `import type { RuntimeEvent } from "@contracts/runtime";\nfunction forward(event: RuntimeEvent) { broadcastRuntimeEvent(event); }`,
+    "<自检:契约约束的动态错误通路>",
+  );
+  check(
+    "合法动态来源走 broadcast 仍会被总判据判为危险",
+    typedDynamicWrong.length === 1 && typedDynamicWrong[0].path === "broadcast"
+      && typedDynamicWrong.filter((site) => site.path === "broadcast" && siteMayBeHookable(site)).length === 1,
+    typedDynamicWrong,
+  );
+  const producerDynamic = scanSource(
+    `const emitStep = (event: Record<string, unknown>): void => {\n` +
+      `  runtimeManager.emitExternal({ ...event, sessionId: "s" } as Parameters<typeof runtimeManager.emitExternal>[0]);\n` +
+      `};\n emitStep({ type: "workflow.node.queued" }); emitStep({ type: "workflow.node.result" });`,
+    "<自检:可追溯的动态 producer>",
+  );
+  check(
+    "动态包装只接受可穷尽追踪的 producer 字面量",
+    producerDynamic.length === 1 && producerDynamic[0].dynamic?.kind === "producer-literals"
+      && producerDynamic[0].dynamic.types.length === 2
+      && producerDynamic[0].dynamic.types[0] === "workflow.node.queued"
+      && producerDynamic[0].dynamic.types[1] === "workflow.node.result",
+    producerDynamic,
+  );
+  const unknownDynamic = scanSource(
+    `function forward(event: unknown) { runtimeManager.emitExternal(event as Parameters<typeof runtimeManager.emitExternal>[0]); }`,
+    "<自检:不可信的动态来源>",
+  );
+  check(
+    "未知动态来源即使 cast 到 emitter 契约也不能绕过未知报警",
+    unknownDynamic.length === 1 && unknownDynamic[0].type === null && unknownDynamic[0].dynamic === undefined,
+    unknownDynamic,
+  );
+  const invalidProducer = scanSource(
+    `const emitStep = (event: Record<string, unknown>): void => {\n` +
+      `  runtimeManager.emitExternal({ ...event, sessionId: "s" } as Parameters<typeof runtimeManager.emitExternal>[0]);\n` +
+      `};\n emitStep({ type: "not.a.RuntimeEvent" });`,
+    "<自检:非法 producer 事件类型>",
+  );
+  check(
+    "producer 中的非法字面量事件名不会被动态解析洗白",
+    invalidProducer.length === 1 && invalidProducer[0].dynamic?.kind === "producer-literals"
+      && invalidProducer[0].dynamic.types.length === 1
+      && invalidProducer[0].dynamic.types[0] === "not.a.RuntimeEvent"
+      && !Object.keys(HOOK_EVENT_OF).includes(invalidProducer[0].dynamic.types[0]),
+    invalidProducer,
+  );
+
   // 形状二(直接把事件对象包起来)同样不许藏住通路或事件名。
   const ambientWrapped = scanSource(
     `runtimeManager.emitExternal(withAmbientAutomationOrigin({ type: "library.item.imported", sessionId: "(system)" }));`,
@@ -592,8 +797,8 @@ const hookEventNames = new Set(Object.keys(HOOK_EVENT_OF));
 check(`扫到了发出点(共 ${sites.length} 个,分布在 ${filesWithEmit.length} 个文件)`, sites.length > 0);
 check(
   "每条发出点都拿到了事件名(没有解析不出来的)",
-  sites.every((s) => typeof s.type === "string" && s.type.length > 0),
-  sites.filter((s) => !s.type).map((s) => `${s.file}:${s.line} ${s.func}`),
+  sites.every(siteHasResolvedType),
+  sites.filter((site) => !siteHasResolvedType(site)).map((site) => `${site.file}:${site.line} ${site.func}`),
 );
 // 接线点被 `unwrapMetadataEmitters` 挖掉了,不会出现在 `sites` 里 —— 但"它接的是哪个
 // 出口"必须单独有人看。注入一个 `broadcastRuntimeEvent` 会让下游每一条发出点都被
@@ -603,10 +808,19 @@ check(
   wiringSinks.every((sink) => sink === "emitExternal"),
   wiringSinks,
 );
+const invalidContractSites = sites.flatMap((site) => {
+  if (site.type !== null) return hookEventNames.has(site.type) ? [] : [`${site.file}:${site.line} ${site.type}`];
+  if (site.dynamic?.kind === "runtime-event-contract") return [];
+  if (site.dynamic?.kind === "producer-literals") {
+    return site.dynamic.types.filter((type) => !hookEventNames.has(type))
+      .map((type) => `${site.file}:${site.line} ${type}`);
+  }
+  return [`${site.file}:${site.line} ${site.func} (未解析动态来源)`];
+});
 check(
   "拿到的事件名都在 RuntimeEvent 契约表里",
-  sites.every((s) => s.type !== null && hookEventNames.has(s.type)),
-  sites.filter((s) => s.type !== null && !hookEventNames.has(s.type)).map((s) => s.type),
+  invalidContractSites.length === 0,
+  invalidContractSites,
 );
 check(
   "已知有发出调用的文件都在扫描范围里",
@@ -647,7 +861,7 @@ function hookEventFor(type: string): string | null {
 }
 
 console.log("\n总判据:钩子挂得上的事件,不许走只发界面的那条路");
-const hookable = sites.filter((s) => s.type !== null && hookEventFor(s.type) !== null);
+const hookable = sites.filter(siteMayBeHookable);
 check(`一次扫到 ${hookable.length} 个"钩子挂得上"的发出点`, hookable.length > 0);
 const wrongPath = hookable.filter((s) => s.path === "broadcast");
 check(
@@ -668,8 +882,9 @@ check(
 );
 check(
   "走 broadcast 的那几条在契约表里都是 null",
-  stillBroadcast.every((s) => s.type !== null && hookEventFor(s.type) === null),
-  stillBroadcast.filter((s) => s.type !== null && hookEventFor(s.type) !== null).map((s) => s.type),
+  stillBroadcast.every(siteOnlyHasNonHookableTypes),
+  stillBroadcast.filter((site) => !siteOnlyHasNonHookableTypes(site)).map((site) =>
+    `${site.file}:${site.line} ${site.type ?? site.dynamic?.kind ?? "unknown"}`),
 );
 
 /* ────────────────── 检查 4:无人值守那一段的哨兵 ────────────────── */
