@@ -1,5 +1,5 @@
 /**
- * 工作流库:左边是库列表(内置六个 + 用户自建),中间是画布,右边是检查器。
+ * 工作流库：左侧选文档，中部入口跳往 Node-RED 原厂编辑器，右侧保留文档检查器。
  *
  * ## 数据从哪来
  *
@@ -47,7 +47,7 @@ import { ErrorNote } from "@renderer/components/ui/error-note.js";
 import { LoadingNote } from "@renderer/components/ui/spinner.js";
 import { makeAgentProfileId, profileFromParams, type AgentProfile } from "@contracts/agentProfile";
 import { MAIN_NODE_TYPE_ID, TRIGGER_NODE_TYPE_ID, type NodeTypeCatalog } from "@contracts/nodeType";
-import type { WorkflowDoc, WorkflowListEntry, WorkflowNode, WorkflowPosition, WorkflowReviewInfo } from "@contracts/workflow";
+import type { WorkflowDoc, WorkflowListEntry, WorkflowNode, WorkflowReviewInfo } from "@contracts/workflow";
 import { workflowDisplayName, workflowIcon } from "@renderer/lib/workflowLabels.js";
 import { isEditableTarget } from "@renderer/lib/shortcuts.js";
 import { IconAlertTriangle, IconArrowsSplit, IconDownload, IconPlus, IconRefresh } from "@renderer/lib/icons.js";
@@ -63,14 +63,9 @@ import {
   type WorkflowPurpose,
 } from "./workflowView.js";
 import {
-  addNode as addNodeTo,
-  connect,
   makeWorkflowId,
-  moveNode,
   newAutomationDoc,
   newWorkflowDoc,
-  relayout,
-  removeEdge,
   removeNode as removeNodeFrom,
   seedMainAgent,
   seedTrigger,
@@ -79,8 +74,8 @@ import {
   updateNode,
 } from "./workflowEdit.js";
 import { WorkflowBadge } from "./WorkflowBadge.js";
+import { WorkflowNativeEditorEntry } from "./WorkflowNativeEditorEntry.js";
 import { mergeSavedWorkflow, normalizeDraft, WorkflowEditHistory } from "./workflowDraftState.js";
-import { WorkflowCanvas } from "./WorkflowCanvas.js";
 import { NodeInspector } from "./NodeInspector.js";
 import { SaveStateLine, type SaveState } from "./SaveStateLine.js";
 import { WorkflowListRow } from "./WorkflowListRow.js";
@@ -161,10 +156,9 @@ export function WorkflowLibraryView({
   onSaveProfile,
   onRemoveProfile,
   focusWorkflowId,
+  onOpenNativeEditor,
 }: {
-  /** 这一栏在编**工作流**还是**自动化**。两者共用这一整个视图 —— 同一张画布、同一个
-   *  检查器、同一套保存与草稿,差别只有三处:列哪些、新建出来的带不带触发器、以及
-   *  检查器里多不多那段「触发方式」。 */
+  /** 工作流与自动化共用库/检查器与保存草稿；图形编辑统一转到原厂 Node-RED。 */
   purpose: WorkflowPurpose;
   catalog: NodeTypeCatalog | null;
   /** 清单读失败的原因。**必须传下来** —— 画布画不出来时,这一页是唯一能解释为什么
@@ -182,6 +176,8 @@ export function WorkflowLibraryView({
    * 打开并**清掉**这个意图(见下面的 effect)—— 不清的话关掉设置再打开会又选它。
    */
   focusWorkflowId?: string | null;
+  /** Route to the existing authenticated Node-RED editor; do not create a second canvas. */
+  onOpenNativeEditor: () => void;
 }) {
   const { t, locale } = useI18n();
   const labels = PURPOSE_LABELS[purpose];
@@ -824,21 +820,7 @@ export function WorkflowLibraryView({
     [stashDraft, refreshDrafts, loadList, openWorkflow],
   );
 
-  /* ── 画布动作 ── */
-
-  const handleAddNode = (typeId: string, profileId?: string) => {
-    if (!working || !catalog) return;
-    const manifest = catalog.entries.find((e) => e.id === typeId)?.manifest;
-    if (!manifest) return;
-    // 档案找不到(刚好被删了 / 读坏了)**照样建一个空白的** —— 用户点的是"加一个这种
-    // 节点",而档案只是让参数先填好。为了少一份档案而什么都不发生是最差的结果。
-    const profile = profileId ? profiles.find((p) => p.id === profileId) : undefined;
-    const next = addNodeTo(working, manifest, profile ? { profile } : undefined);
-    edit(next);
-    // 新节点立刻选中:用户加它就是为了配它,而画布上多一张卡片不会自己说明它是谁。
-    const added = next.nodes[next.nodes.length - 1];
-    setSelectedNodeId(added.id);
-  };
+  /* ── 文档与检查器动作（不再实现自绘图形操作） ── */
 
   /**
    * 把当前选中的那个节点的参数存成一份档案。
@@ -920,11 +902,6 @@ export function WorkflowLibraryView({
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedNodeId]);
 
-  const handleMoveNode = (id: string, position: WorkflowPosition) => {
-    if (!working) return;
-    edit(moveNode(working, id, position));
-  };
-
   const handleUpdateNode = (id: string, patch: Partial<Omit<WorkflowNode, "id">>) => {
     if (!working) return;
     const current = latest.current?.working;
@@ -942,18 +919,6 @@ export function WorkflowLibraryView({
   const handleSetDependency = (nodeId: string, depId: string, on: boolean) => {
     if (!working) return;
     edit(setDependency(working, nodeId, depId, on));
-  };
-
-  // 画布上拉出来的那条线。成环的拖拽在画布那边就被拦下了(目标会当场变红),
-  // 所以走到这里的都是合法的。
-  const handleConnect = (from: string, to: string) => {
-    if (!working) return;
-    edit(connect(working, from, to));
-  };
-
-  const handleRemoveEdge = (edgeId: string) => {
-    if (!working) return;
-    edit(removeEdge(working, edgeId));
   };
 
   // 分支节点的选项名 / 说明(见 `WorkflowEdge`)。改的是**边**,不是节点参数 ——
@@ -1155,18 +1120,7 @@ export function WorkflowLibraryView({
             ) : working && baseline ? (
               catalog ? (
                 <>
-                  <WorkflowCanvas key={working.id}
-                    doc={working}
-                    catalog={catalog}
-                    profiles={profiles}
-                    selectedNodeId={selectedNodeId}
-                    onSelectNode={(id) => { setSelectedNodeId(id); if (id !== null) setInspectorOpen(true); }}
-                    onMoveNode={handleMoveNode}
-                    onAddNode={handleAddNode}
-                    onRelayout={() => edit(relayout(working))}
-                    onConnect={handleConnect}
-                    onRemoveEdge={handleRemoveEdge}
-                  />
+                  <WorkflowNativeEditorEntry onOpen={onOpenNativeEditor} />
                   <div className={cn("min-h-0 shrink-0", inspectorOpen ? "flex" : "hidden")}>
                   <NodeInspector
                     doc={working}

@@ -166,3 +166,12 @@ grep -rn "WorkflowCanvas\|workflowLayout\|workflowEdit" apps/desktop/src/
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21｜T45 执行结果
+
+- **迁移前核对**：对仓库可见的 5 份内置、7 份可选预设、1 份示例工作流逐一运行 `roundTripMismatchPaths(doc, flowToWorkflowDoc(migrateWorkflowDoc(doc).flow))`：**13/13 已知字段完整往返，0 份丢失**。此项不是用户数据库全量审计；未提供 `types` 时节点会列作 `unmapped`，不等于原生部署已具备相同执行语义。
+- **入口改动**：库详情改为 `<WorkflowNativeEditorEntry>`，按钮切到已有 `EngineRuntimePanel` / 宿主认证的 Node-RED 原厂编辑器；自动化共用此引擎入口。界面明确提示编辑器使用独立 `flows.json`，**没有把当前库中选中的文档自动装入，也没有原厂部署结果回写到 workflow 库的通道**。未假称此链路已经闭环。
+- **移除规模**：删除 `WorkflowCanvas.tsx` **685 行**；`apps/desktop/src/` 中 `WorkflowCanvas` 命中为 0。`workflowLayout.ts` 仍由 `WorkflowNodeCard`、`workflowEdgeLabels`、`workflowEdit` 使用；`workflowEdit.ts` 仍由 `WorkflowLibraryView`、`NodeInspector` / `NodeInspectorParts` 使用，因此两文件按要求保留。
+- **主题分工**：主题源码和发布资产来自独立 T47，本卡未触碰 `node-red/`、`registry.ts` 或样式资产。Node-RED 上游颜色快照 238 个 SCSS 变量；T47 测试锁定 **19 项关键色彩/字号映射**（其余按上游保留）。`mcode-theme-auto.css` 用 `prefers-color-scheme: dark` 即时切换，不必为明暗切换重启运行引擎；现有 `node-red-theme-smoke`、`theme-ipc-smoke` 均绿。单独把 `editorTheme.page.css` 注入从测试用 registry 文本移除后，**主题冒烟按预期变红**；真实源码未被改变。
+- **测试**：`workflow-view-smoke`、`flow-migration-smoke`、`flow-editor-authority-smoke`、`settings-form-lifecycle-smoke`、`workflow-engine-bridge-smoke`、`workflow-engine-runtime-smoke`、`node-red-theme-smoke`、`theme-ipc-smoke` 通过。把入口导航改回 library 时 `workflow-view-smoke` 由 763/763 变为 762/763（红）；还原后全绿。
+- **未闭环验收**：①原厂入口可打开但**不能保证选中库文档在原厂编辑器内拖拽/保存**；②**原厂保存回写工作流库缺失**；⑥旧 `workflow-ui-smoke` 浏览器夹具仍以已删除的自绘画布 DOM 为前提而失败；相关 `settings-panels-electron-smoke` 在并行修改的 ModuleViewDock `contributionsOf(...).flatMap` 抛错；⑦ `packages/contracts` tsc 通过、`apps/desktop` tsc 因并行扩展模块 `packages/contracts/src/modules.ts` 的 `extensions` 等类型报错未全绿。涉及工作流 UI/桥接新增源码的类型错误已清理。真实运行中的 Node-RED 拖拽/保存效果没有虚报成已验收。

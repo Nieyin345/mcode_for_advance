@@ -103,7 +103,7 @@ import { AgentProfilesView } from "@renderer/components/settings/workflows/Agent
 import { groupProfiles } from "@renderer/components/settings/workflows/agentProfileGroups.js";
 import { WorkflowListRow } from "@renderer/components/settings/workflows/WorkflowListRow.js";
 import { WorkflowNodeCard } from "@renderer/components/settings/workflows/WorkflowNodeCard.js";
-import { WorkflowCanvas } from "@renderer/components/settings/workflows/WorkflowCanvas.js";
+import { WorkflowNativeEditorEntry } from "@renderer/components/settings/workflows/WorkflowNativeEditorEntry.js";
 import { BranchChoiceCard } from "@renderer/components/chat/BranchChoiceCard.js";
 import { BRANCH_STOP_CHOICE } from "@contracts/nodeType";import type { RuntimeEvent } from "@contracts/runtime";import {  __applyWorkflowLiveEvent,  __resetWorkflowLive,  __workflowLiveSnapshot,  dismissSettled,} from "@renderer/lib/workflowLive.js";import type {  LiveNode,  WorkflowLiveSnapshot,} from "@renderer/lib/workflowLive.js";
 import { WorkflowsPanel } from "@renderer/components/settings/workflows/WorkflowsPanel.js";
@@ -2126,68 +2126,19 @@ check(
 // 当下在不在拉线无关。
 check("卡片:出线口一直是十字光标", plainCard.includes("cursor-crosshair"));
 
-console.log("\nWorkflowCanvas");
-function renderCanvas(doc: WorkflowDoc, locale: "zh" | "en"): string {
-  return withLocale(locale, () =>
-    html(
-      createElement(WorkflowCanvas, {
-        doc,
-        catalog: CATALOG,
-        profiles: [],
-        selectedNodeId: null,
-        onSelectNode: () => {},
-        onMoveNode: () => {},
-        onAddNode: () => {},
-        onRelayout: () => {},
-        onConnect: () => {},
-        onRemoveEdge: () => {},
-      }),
-    ),
-  );
-}
-const emptyCanvas = renderCanvas(CUSTOM, "zh");
-check("空图给出上手话术", emptyCanvas.includes("这张图还是空的"));
-check("空图也留着「添加节点」按钮", buttonContaining(emptyCanvas, "添加节点").found);
-check("空图时「整理布局」是禁用的", button(emptyCanvas, "整理布局").disabled === true);
-
-const diamondCanvas = renderCanvas(DIAMOND, "zh");
-check("画布:每张卡片都在", ["A", "B", "C", "D"].every((id) => diamondCanvas.includes(`>${id}<`)));
-check("画布:四条边画出来了", (diamondCanvas.match(/<path[^>]*marker-end/g) ?? []).length >= 4);
-check("画布:边带箭头", diamondCanvas.includes("workflow-edge-arrow"));
-check("画布:规模写在工具条上", diamondCanvas.includes("4 个节点 · 4 条依赖"));
-check("画布:节点按坐标绝对定位", /style="left:\d+px;top:\d+px;width:\d+px;height:\d+px"/.test(diamondCanvas));
-check("画布:有卡片时「整理布局」可用", button(diamondCanvas, "整理布局").disabled === false);
-// 1.5px 的线不好点,所以每条边多画了一条 12px 宽的透明带当命中区;点它不仅删边,
-// 悬停时还会变红并长出那个 × 钮(见 `WorkflowCanvas`)。
-check("画布:边有可点的命中区", diamondCanvas.includes('stroke="transparent"'));
-check("画布:点线的意思写在提示里", diamondCanvas.includes("点选连线，再用删除按钮"));
-check("画布:悬停时用另一个颜色的箭头", diamondCanvas.includes("workflow-edge-arrow-hover"));
-
-// 回头边在真画布上真的换了道。DIAMOND 没有回头的边,所以单独造一张:分支 B 有一条
-// 往回流到 A 的边(环上有岔路口才合法,不过画布只管画,合法性是存盘校验的事)。
-// 坐标整体挪到很右边,是为了让画布宽度**不被最小宽度兜住** —— 否则"宽度把车道留出来
-// 了"那条断言在两种情况下都会成立,等于什么都没测。
-const loopDoc: WorkflowDoc = {
-  ...DIAMOND,
-  nodes: DIAMOND.nodes.map((n) => ({ ...n, position: { x: n.position.x + 900, y: n.position.y } })),
-  edges: [...DIAMOND.edges, { id: edgeId("B", "A"), from: "B", to: "A" }],
-};
-const loopCanvas = renderCanvas(loopDoc, "zh");
-const loopLane = backEdgeLanes(loopDoc.nodes, loopDoc.edges).get(edgeId("B", "A")) as number;
-check("画布:回头边绕到旁边的空当上", loopLane !== undefined && loopCanvas.includes(`${loopLane} `), loopLane);
-check(
-  "画布:回头边是折线(有圆角),不是那条直的贝塞尔",
-  (loopCanvas.match(/Q /g) ?? []).length >= 4,
-);
-// 车道的宽度得先算进画布,不然最外面那条会画到画布外 —— 画布就是内层那个固定尺寸的
-// div,超出去的部分既不显示也滚不到。
-const loopWidth = canvasSize(loopDoc.nodes, [loopLane]).width;
-check("画布:宽度确实比没有车道时宽", loopWidth > canvasSize(loopDoc.nodes).width);
-check(
-  "画布:按留出车道之后的宽度渲染",
-  loopCanvas.includes(`width:${loopWidth}px`),
-  { loopWidth, bare: canvasSize(loopDoc.nodes).width },
-);
+console.log("\nWorkflowNativeEditorEntry");
+const nativeEntryZh = withLocale("zh", () => html(createElement(WorkflowNativeEditorEntry, { onOpen: () => {} })));
+const nativeEntryEn = withLocale("en", () => html(createElement(WorkflowNativeEditorEntry, { onOpen: () => {} })));
+check("工作流库有原厂编辑器入口", button(nativeEntryZh, "打开 Node-RED 编辑器").found);
+check("原厂编辑器入口不伪称已经自动保存到工作流库", nativeEntryZh.includes("不会把部署结果自动写回工作流库"));
+check("原厂编辑器有英语入口", button(nativeEntryEn, "Open Node-RED editor").found);
+check("入口不自行画边/节点", !nativeEntryZh.includes("workflow-edge-arrow") && !nativeEntryZh.includes("data-workflow-viewport"));
+const nativeLibrarySrc = readFileSync("src/renderer/components/settings/workflows/WorkflowLibraryView.tsx", "utf8");
+const nativePanelSrc = readFileSync("src/renderer/components/settings/workflows/WorkflowsPanel.tsx", "utf8");
+check("工作流详情已换成原厂编辑器入口", nativeLibrarySrc.includes("<WorkflowNativeEditorEntry onOpen={onOpenNativeEditor} />"));
+check("编辑按钮切到已挂载的引擎页签", nativePanelSrc.includes('onOpenNativeEditor={() => setView("engines")}'));
+check("自动化也能打开同一引擎编辑页", nativePanelSrc.includes('v.id === "library" || v.id === "engines"'));
+check("仍由同一个 EngineRuntimePanel 承载原厂编辑器", nativePanelSrc.includes('<EngineRuntimePanel active={view === "engines" && !flowDocked} />'));
 
 console.log("\nCSS 变量名(写错了不报错,只会画不出来)");
 // 这条机械校验是拿一次真事故换来的:画布上的边写着 `rgb(var(--edge-panel))`,而主题
@@ -2512,12 +2463,12 @@ console.log("\nEngineCallbackSection(桥 2 预留位:如实说「还不能用」
 console.log("\nWorkflowsPanel(自动化:同一块面板的另一种用法)");
 const autoPanel = withLocale("zh", () => html(createElement(WorkflowsPanel, { purpose: "automation" })));
 check("自动化面板:标题换了", autoPanel.includes("自动化"));
-check("自动化面板:页签只剩「库」", !autoPanel.includes('id="automation-tab-nodeTypes"'));
+check("自动化面板:保留库与原厂引擎两个入口", !autoPanel.includes('id="automation-tab-nodeTypes"') && autoPanel.includes('id="automation-tab-engines"'));
 check("自动化面板:节点类型那块整块不渲染", !autoPanel.includes('id="automation-panel-nodeTypes"'));
 // 档案那一页同样不渲染:自动化那一页根本画不出能套档案的节点(它的起点是触发器)。
 check("自动化面板:代理档案那块整块不渲染", !autoPanel.includes('id="automation-panel-profiles"'));
-// 引擎页也一样 —— 第三方引擎的编辑器是"工作流"这件事的延伸,不是触发器。
-check("自动化面板:第三方引擎那块整块不渲染", !autoPanel.includes('id="automation-panel-engines"'));
+// Automation is a native Node-RED flow too: share the same hosted editor.
+check("自动化面板:原厂引擎页可用", autoPanel.includes('id="automation-panel-engines"'));
 // id 带前缀 —— 两个用途的面板各自挂在自己的设置页上,id 撞了就是同一份 DOM id 出现
 // 两次(按 id 找元素的地方会被第一个截胡)。
 check("自动化面板:库那块挂在 automation- 前缀下", autoPanel.includes('id="automation-panel-library"'));
@@ -2665,12 +2616,6 @@ const otherType = renderInspector(withNode, "zh", withNode.nodes[0].id, "workflo
 // 只列**同类型**的:一份给别的类型存的参数套到这个节点上只会留下一堆它不认识的键,
 // 而 `validateNodeParams` 看不出问题(它只看清单声明过的)。
 check("别的类型的档案不出现在这个节点上", !otherType.includes("读论文"));
-
-// 加了引擎参数的清单在画布上照样画得出来(新来源不能把渲染端弄挂)。卡片按标题画 ——
-// `withNode` 那个节点的标题就是清单名。
-const canvasWithEngine = renderCanvas(withNode, "zh");
-check("画布:带引擎来源的节点照常画出来", canvasWithEngine.includes(`>${AGENT_MANIFEST.name}<`));
-check("画布:引擎参数没填也不当成错误", !canvasWithEngine.includes("类型没装"));
 
 console.log("\n设置页宽度(写死一个宽度就会和别的页对不齐)");
 // 这条机械校验也是拿一次真事故换来的:钩子、技能、模型配置、工作流各写了 `max-w-6xl`
@@ -2900,17 +2845,7 @@ console.log("\n分支节点:选项在出边上");
     );
   }
 
-  // 画布:选项名贴在线的中点上 —— 不然图上只有几根说不出名字的线。
-  const branchCanvas = renderCanvas(doc, "zh");
-  check("画布上画出了选项名", branchCanvas.includes(">再来一轮<"));
-  check("没起名字的那条不画字", !branchCanvas.includes(">进查重<"));
-  // 它是**说明**,不是命中区:那一整条线都是"点一下删掉这条依赖"的热区
-  // (见 `edgeRemoveHint`),让这几个字抢走点击的话,用户想看清楚会被删掉一条边。
-  check(
-    "选项名不吃点击(pointer-events: none)",
-    /<text[^>]*pointer-events:\s*none[^>]*>\s*再来一轮/.test(branchCanvas),
-    branchCanvas.slice(branchCanvas.indexOf("再来一轮") - 120, branchCanvas.indexOf("再来一轮") + 20),
-  );
+  // Native Node-RED owns the graphical representation of branch labels.
 }
 
 // ── 岔路口那张卡 ────────────────────────────────────────────────────────

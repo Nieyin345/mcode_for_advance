@@ -19,6 +19,7 @@ export const zh = {
   "settings.nav.engineTools": "引擎工具",
   "settings.nav.memory": "记忆与上下文",
   "settings.nav.plugins": "插件",
+  "settings.nav.extensionSettings": "扩展设置",
   "settings.nav.notifications": "消息通知",
   "settings.nav.git": "Git",
   "settings.nav.terminal": "终端",
@@ -1399,6 +1400,9 @@ export const zh = {
 
   // ── 第三方工作流引擎（ARC-006 NR2，页签 + EngineRuntimePanel）──
   "settings.workflows.tabEngines": "第三方引擎",
+  "settings.workflows.nativeEditorTitle": "使用 Node-RED 原厂编辑器",
+  "settings.workflows.openNativeEditor": "打开 Node-RED 编辑器",
+  "settings.workflows.nativeEditorNote": "手写画布已移除。原厂编辑器使用独立的 flows.json；当前还不会自动载入本列表中选中的工作流，也不会把部署结果自动写回工作流库。请勿将编辑器中的部署视为已保存到本列表。",
   "settings.workflows.engine.start": "启动",
   "settings.workflows.engine.stop": "停止",
   "settings.workflows.engine.refreshStatus": "刷新状态",

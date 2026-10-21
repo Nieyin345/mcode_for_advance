@@ -120,7 +120,7 @@ export const MAIN_DEFAULT_INSTRUCTION =
  *   两处一致。不用 `firstFreeSlot` —— 那个是给"往已有的图上加"用的,新图本来就是空的。
  * - **指令预填**(见 `MAIN_DEFAULT_INSTRUCTION`):必填项留空的话这份图根本存不下去。
  * - **已经有了就原样返回**:不叠第二个。这条同时是"一份图只有它一个"的兜底(菜单那边
- *   还会在插入前拦一道,见 `WorkflowCanvas` 的工具条)。
+ *   还会在插入前拦一道,见 `旧版画布` 的工具条)。
  */
 export function seedMainAgent(doc: WorkflowDoc, manifest: NodeTypeManifest): WorkflowDoc {
   if (doc.nodes.some((n) => n.type === MAIN_NODE_TYPE_ID)) return doc;
@@ -364,7 +364,7 @@ function reachableFrom(
  * 把两个参数写反(反了就是一条**倒着**的依赖,而图上看起来只像是箭头画反了)。
  *
  * 成环的判断**不在这里**:画布在拖的过程中就要拿它给目标卡片标红(见
- * `WorkflowCanvas.targetAt`),等到这里已经太晚了。
+ * `旧版画布.targetAt`),等到这里已经太晚了。
  */
 export function connect(doc: WorkflowDoc, from: string, to: string): WorkflowDoc {
   return setDependency(doc, to, from, true);

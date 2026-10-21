@@ -113,6 +113,7 @@ const panelEl =
       onSaveProfile={async () => true}
       onRemoveProfile={async () => {}}
       focusWorkflowId="auto-1"
+      onOpenNativeEditor={() => {}}
     />
   ) : (
     <CustomModelsPanel />

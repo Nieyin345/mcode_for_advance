@@ -10,13 +10,13 @@
  *
  * ## 四个页签,一个 section
  *
- * - **工作流库**:六个内置 + 用户自建的。选中一个,中间是**画布**(加节点、拖动、
- *   连依赖),右边是检查器(选中节点就配那个节点,没选就配工作流本体)。
+ * - **工作流库**：文档列表与检查器，中部入口改为既有 Node-RED 原厂编辑器；
+ *   不再维护自己的拖拽/连线画布。
  * - **节点类型**:节点引用什么类型、每种类型要什么参数、哪些清单读不进来。
  * - **代理档案**:存下来的那几份配置**,按节点类型分成组** —— 每个类型一组、每组下面
  *   是那个类型的档案,点开就能改(见 `AgentProfilesView` 的新文件头)。
- * - **第三方引擎**(ARC-006 NR2):外部工作流引擎(如 Node-RED)的进程起停与它
- *   自己的编辑器(见 `EngineRuntimePanel`)。
+ * - **第三方引擎**(ARC-006 NR2)：Node-RED 原厂编辑器的唯一宿主和引擎起停页
+ *   （见 `EngineRuntimePanel`）。
  *
  * 它们合成一个页签而不是三个设置项:节点类型是**工作流的底座**(没有类型就没有
  * 节点),档案是"某个类型的一组参数"(没有类型就没有档案)—— 三者是同一条线上的
@@ -90,9 +90,9 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
     if (focusWorkflowId) setView("library");
   }, [focusWorkflowId]);
   const isAutomation = purpose === "automation";
-  // 自动化只有"库"这一个页签,而另外两页的文案(「工作流库」)也不适用 ——
-  // 所以页签集合是按用途筛出来的,不是写死两份。
-  const views = isAutomation ? VIEWS.filter((v) => v.id === "library") : VIEWS;
+  // 自动化和工作流共用原厂引擎；节点类型与档案说明仍只在工作流页展示。
+  // Both workflow and automation libraries use the same native Node-RED editor.
+  const views = isAutomation ? VIEWS.filter((v) => v.id === "library" || v.id === "engines") : VIEWS;
   const prefix = isAutomation ? "automation" : "workflows";
 
   const catalogRead = useRpc(() => api.workflow.nodeTypes(), [], { toastOnError: false });
@@ -205,6 +205,7 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
           onSaveProfile={saveProfile}
           onRemoveProfile={removeProfile}
           focusWorkflowId={focusWorkflowId}
+          onOpenNativeEditor={() => setView("engines")}
         />
       </div>
       {/* 节点类型与代理档案这两页只有工作流那边有(`views` 里已经筛掉了),所以这整块
@@ -247,20 +248,17 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
               onRemove={removeProfile}
             />}
           </div>
-          {/* 【ARC-006 NR2】第三方引擎页。与另外两页同一套隐藏方式（hidden 类），
-              但多传一个 `active`：引擎运行时是 OS 级原生视图，不认 CSS 的
-              display:none，切走时必须让行自己 hide 掉它，否则它会浮在这里盖住
-              别的页签。 */}
-          <div
-            id={panelId(prefix, "engines")}
-            role="tabpanel"
-            aria-labelledby={tabId(prefix, "engines")}
-            className={cn("min-h-0 flex-1 flex-col", view === "engines" ? "flex" : "hidden")}
-          >
-            <EngineRuntimePanel active={view === "engines" && !flowDocked} />
-          </div>
         </>
       )}
+      {/* One authenticated WebContentsView, shared by the two libraries. */}
+      <div
+        id={panelId(prefix, "engines")}
+        role="tabpanel"
+        aria-labelledby={tabId(prefix, "engines")}
+        className={cn("min-h-0 flex-1 flex-col", view === "engines" ? "flex" : "hidden")}
+      >
+        <EngineRuntimePanel active={view === "engines" && !flowDocked} />
+      </div>
     </div>
   );
 }

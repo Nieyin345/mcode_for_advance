@@ -16,6 +16,7 @@ export const en = {
   "settings.nav.engineTools": "Engine tools",
   "settings.nav.memory": "Memory & Context",
   "settings.nav.plugins": "Plugins",
+  "settings.nav.extensionSettings": "Extension Settings",
   "settings.nav.notifications": "Notifications",
   "settings.nav.git": "Git",
   "settings.nav.terminal": "Terminal",
@@ -1399,6 +1400,9 @@ export const en = {
 
   // ── Third-party workflow engines (ARC-006 NR2, tab + EngineRuntimePanel) ──
   "settings.workflows.tabEngines": "Third-party engines",
+  "settings.workflows.nativeEditorTitle": "Node-RED native editor",
+  "settings.workflows.openNativeEditor": "Open Node-RED editor",
+  "settings.workflows.nativeEditorNote": "The hand-built canvas has been removed. Node-RED edits its separate flows.json; the selected library workflow is not imported automatically, and deploying in Node-RED does not save changes back to this library yet.",
   "settings.workflows.engine.start": "Start",
   "settings.workflows.engine.stop": "Stop",
   "settings.workflows.engine.refreshStatus": "Refresh status",

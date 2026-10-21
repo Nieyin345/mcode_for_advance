@@ -493,6 +493,7 @@ console.log("\n【MC-026 复核】自动化:库列表读失败可重试;保存�
       profileError: null,
       onSaveProfile: async () => true,
       onRemoveProfile: async () => {},
+      onOpenNativeEditor: () => {},
     }),
   );
   await __flush();
@@ -526,6 +527,7 @@ console.log("\n【MC-026 复核】自动化:打开文档失败要说出来(不�
       profileError: null,
       onSaveProfile: async () => true,
       onRemoveProfile: async () => {},
+      onOpenNativeEditor: () => {},
       focusWorkflowId: "auto-1",
     }),
   );
@@ -544,6 +546,7 @@ console.log("\n【MC-026 复核】自动化:打开文档失败要说出来(不�
       profileError: null,
       onSaveProfile: async () => true,
       onRemoveProfile: async () => {},
+      onOpenNativeEditor: () => {},
       focusWorkflowId: "auto-1",
     }),
   );
@@ -569,6 +572,7 @@ console.log("\n【MC-026 复核】自动化:保存失败时错误可见、编辑
       profileError: null,
       onSaveProfile: async () => true,
       onRemoveProfile: async () => {},
+      onOpenNativeEditor: () => {},
       focusWorkflowId: "auto-1",
     }),
   );
