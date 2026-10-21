@@ -25,6 +25,7 @@ import { OnlyOfficeEditorPane } from "./OnlyOfficeEditorPane.js";
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { makeQuoteTag } from "@renderer/lib/contentTag.js";
+import { captureMonacoCitationSelection, subscribeMonacoCitationChanges } from "./monacoCitationSelection.js";
 // LSP provider bridge: registers definition/references/hover providers, syncs
 // documents, and applies diagnostics markers to the model.
 import {
@@ -790,53 +791,21 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
    */
   const [mdSel, setMdSel] = useState<SelectionToolbarState | null>(null);
   const [mdQuote, setMdQuote] = useState<SelectionToolbarState | null>(null);
+  // A file may change while the next model is still loading: never let the
+  // old selection be quoted with the incoming file's path as its origin.
+  useEffect(() => {
+    setMdSel(null);
+    setMdQuote(null);
+  }, [filePath]);
   /** 鼠标是不是正按在编辑器里（拖选中）。见上面那段"触发时机"。 */
   const draggingRef = useRef(false);
 
-  /**
-   * 把 Monaco 的选区换算成 `SelectionToolbarState`（浮层要的那几个数）。
-   *
-   * ⚠️ 坐标要的是**视口坐标**（`position: fixed`），而 Monaco 给的
-   * `getScrolledVisiblePosition` 是**相对编辑器容器**的 —— 必须加上容器的
-   * `getBoundingClientRect()`，否则浮层会跑到编辑器外面去（编辑器不在页面左上角时）。
-   */
-  const readMonacoSelection = useCallback((): SelectionToolbarState | null => {
-    const ed = editorRef.current;
-    const model = ed?.getModel();
-    const sel = ed?.getSelection();
-    if (!ed || !model || !sel || sel.isEmpty()) return null;
-
-    const text = model.getValueInRange(sel).trim();
-    if (!text) return null;
-
-    const node = ed.getDomNode();
-    if (!node) return null;
-    const box = node.getBoundingClientRect();
-    const start = ed.getScrolledVisiblePosition({ lineNumber: sel.startLineNumber, column: sel.startColumn });
-    const end = ed.getScrolledVisiblePosition({ lineNumber: sel.endLineNumber, column: sel.endColumn });
-    if (!start || !end) return null;
-
-    const left = box.left + Math.min(start.left, end.left);
-    const right = box.left + Math.max(start.left, end.left) + 1;
-    const top = box.top + Math.min(start.top, end.top);
-    const bottom = box.top + Math.max(start.top, end.top) + (start.height || 18);
-
-    return {
-      rect: { top, bottom, left, right },
-      text,
-      // 编辑器里没有"消息"这个概念 —— 空串。书签那个按钮因此不画
-      // （它靠 messageId 定位，见 `SelectionToolbar` 的 props 说明）。
-      messageId: "",
-      role: "assistant",
-      // 【MC-098】把行号范围**和 text 一起冻结**在这一份快照里 —— 引用落草稿时必须读这份,
-      // 而不是在用户选定目标那一刻现读 `getSelection()`(那时选区可能已经变了,行号会与
-      // text 对不上)。选到下一行行首(整行选中的常见形态)不算那一行。
-      lines: {
-        start: sel.startLineNumber,
-        end: sel.endColumn === 1 && sel.endLineNumber > sel.startLineNumber ? sel.endLineNumber - 1 : sel.endLineNumber,
-      },
-    };
-  }, []);
+  // Freeze text, capped source lines and viewport coordinates in one snapshot.
+  // The toolbar receives the same SelectionToolbarState as DOM-based callers.
+  const readMonacoSelection = useCallback(
+    (): SelectionToolbarState | null => captureMonacoCitationSelection(editorRef.current),
+    [],
+  );
 
   /** 引用落到哪 —— **只落草稿，不替用户发**（与另外两处逐字同一个做法）。
    *
@@ -1099,6 +1068,8 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
   const flipTo = (path: string, forProjectPath: string) => {
     const prev = readyCtxRef.current;
     if (prev?.path === path) return;
+    setMdSel(null);
+    setMdQuote(null);
     flipSeqRef.current += 1;
     saveSeqRef.current += 1;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -1439,6 +1410,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
       draggingRef.current = true;
     };
     const onDragEnd = () => {
+      if (!draggingRef.current) return;
       draggingRef.current = false;
       setMdSel(readMonacoSelection());
     };
@@ -1446,13 +1418,20 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
     // 松手可能落在编辑器外面（拖到别处松开）—— 挂到 window 上才收得到。
     window.addEventListener("mouseup", onDragEnd);
 
-    const selSub = editor_.onDidChangeCursorSelection(() => {
-      if (draggingRef.current) return; // 拖选中：等松手（见上）
-      setMdSel(readMonacoSelection());
-    });
+    const selSub = subscribeMonacoCitationChanges(
+      editor_,
+      () => draggingRef.current, // 拖选中：等松手（见上）
+      setMdSel,
+    );
 
-    // 编辑器被点失焦 / 内容被替换时，旧选区就不该再挂着浮层了。
+    // Monaco's blur fires when SelectionQuoteMenu autofocuses its search
+    // input. Hide the toolbar, but DO NOT destroy the open quote picker.
     const blurSub = editor_.onDidBlurEditorWidget(() => {
+      setMdSel(null);
+    });
+    // Monaco's internal scroll does not consistently emit a DOM scroll event
+    // that reaches SelectionToolbar's document listener. Hide stale anchors.
+    const citationScrollSub = editor_.onDidScrollChange(() => {
       setMdSel(null);
       setMdQuote(null);
     });
@@ -1470,6 +1449,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
       window.removeEventListener("mouseup", onDragEnd);
       selSub.dispose();
       blurSub.dispose();
+      citationScrollSub.dispose();
     });
 
     // Restore the scroll position / cursor from a previous visit of this
@@ -1705,6 +1685,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
       {mdSel && !mdQuote && (
         <SelectionToolbar
           state={mdSel}
+          selectionSource="monaco"
           onQuote={(s) => setMdQuote(s)}
           onClose={() => setMdSel(null)}
         />

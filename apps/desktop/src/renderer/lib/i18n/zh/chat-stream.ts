@@ -330,6 +330,7 @@ export const zh = {
 
   // ── 引用到上下文(选中文字 → 选一个目标会话,落进它的输入框草稿)──
   "chatStream.quote.action": "引用到上下文",
+  "chatStream.quote.selectionTruncated": "选区过长，仅引用前 {lines} 行／{chars} 字符",
   "chatStream.quote.title": "引用给",
   "chatStream.quote.searchPlaceholder": "搜索会话…",
   "chatStream.quote.current": "当前",

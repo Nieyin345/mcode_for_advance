@@ -134,3 +134,16 @@ editor.onDidChangeCursorSelection((e) => {
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### 2026-10-21 执行记录（T65）
+
+- **实际现状**：任务描述写于旧版本。当前 `NoteEditor.tsx` 已在 2026-09-26 删除（`docs/planning/优化方向.md` §3.19，仓库无引用）；在用的 Monaco 编辑器是 `FileEditor.tsx` / `EditPane`。其选段引用链早已接好，但缺超长保护，且 DOM `selectionchange` / 引用菜单搜索框 autofocus 导致旧工具栏或菜单误关闭；Monaco 内部滚动也未显式处理。**没有复活废弃的 NoteEditor。**
+- **共用接口**：`SelectionToolbarState` 继续统一承载 `rect`、`text`、`messageId`、`role`、`lines?`，加了可选 `truncated?: { maxLines, maxChars }`；组件加可选 `selectionSource?: "dom" | "monaco"`，默认 DOM，两处原调用保持不变；Monaco 不触发 DOM selectionchange 关闭。仍是同一个 `SelectionToolbar` 和 `SelectionQuoteMenu`。
+- **坐标**：`captureMonacoCitationSelection` 使用 Monaco `getSelection` / `getModel().getValueInRange` / `getScrolledVisiblePosition`，加 `getDomNode().getBoundingClientRect()` 得到 viewport `position:fixed` 坐标；只用可见端点，端点都不可见则隐藏。
+- **滚动**：通过 `onDidScrollChange` 清掉引用条及定位失效的引用菜单；`document` 捕获 scroll 仍覆盖 DOM 两处。
+- **多光标**：`getSelections().length > 1` 直接隐藏，避免产生不明确的来源。
+- **上限**：200 行或 12,000 字符（先达者生效），共享工具栏显示明确截断提示，截断文本和行号在同一快照中；切文件 / 引用菜单失焦也不会把新文件与旧选区错配。
+- **引用落点**：保持 `makeQuoteTag` → `useSessionStore.getState().quoteIntoComposer(target.id, tag)`，未修改 `attachToChat.ts`。
+- **测试**：`node scripts/ide-quote-snapshot-smoke/build.mjs`（在 `apps/desktop` cwd）26/26 PASS；覆盖 FileEditor 真 React 函数 + 假 Monaco 选区事件 → 共享工具栏 → 目标菜单 → composer 标签、滚动隐藏、坐标、多光标、截断 UI、DOM 工具栏原行为。`pnpm exec tsc --noEmit -p apps/desktop/tsconfig.json` PASS；`pnpm exec tsc --noEmit -p packages/contracts/tsconfig.json` PASS。
+- **变异验证**：把 `subscribeMonacoCitationChanges` 的 `onDidChangeCursorSelection` 临时换成 `onDidScrollChange`，该 smoke 立即红（`选中后弹出引用工具条` FAIL，退出码 1）；精确还原后 26/26 绿，原文件 SHA256 `555c346b0dd9ce574ad1bd46253dc023e410f895ea6b03f9760bfcd270384742`。
+- **未满足（按任务字面判据）**：**#2** 要求在已被删除且无调用者的 `NoteEditor` 里选中文字出现工具栏（有断言），现版本已无此入口，无法履行；没有为了满足过期文件名而扩大范围重建它。其余 #1、#3～#8 在现存入口通过上述无头 E1/tsc/变异测试；未宣称真 Electron 手工 U1 验收。

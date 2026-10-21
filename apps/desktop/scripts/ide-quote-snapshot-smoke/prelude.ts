@@ -14,6 +14,14 @@ const globalTarget = globalThis as unknown as Record<string, unknown>;
 // 不隔离就会在 tsconfig 的全局作用域里重复声明同一批变量。
 export {};
 
+const documentListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+export function __fireDocumentEvent(type: string): void {
+  for (const cb of documentListeners.get(type) ?? []) cb();
+}
+export function __resetDocumentListeners(): void {
+  documentListeners.clear();
+}
+
 if (typeof globalTarget.window === "undefined") {
   // 真的 lib/api.ts 会做 `window.api ?? createWebApi()`。给个空 api 走 ?? 左支 ——
   // createWebApi 在 node 下会去摸 fetch/localStorage,能免则免。
@@ -36,8 +44,13 @@ if (typeof globalTarget.document === "undefined") {
     documentElement: { classList: { contains: () => false, add: () => {}, remove: () => {} }, setAttribute: () => {}, lang: "zh" },
     body: { appendChild: () => {}, removeChild: () => {} },
     createElement: () => ({ style: {}, setAttribute: () => {}, appendChild: () => {}, remove: () => {} }),
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (type: string, cb: (...a: unknown[]) => void) => {
+      if (!documentListeners.has(type)) documentListeners.set(type, new Set());
+      documentListeners.get(type)?.add(cb);
+    },
+    removeEventListener: (type: string, cb: (...a: unknown[]) => void) => {
+      documentListeners.get(type)?.delete(cb);
+    },
     querySelector: () => null,
     visibilityState: "visible",
   };

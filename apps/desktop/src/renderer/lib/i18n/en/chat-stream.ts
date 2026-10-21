@@ -341,6 +341,7 @@ export const en = {
 
   // ── Quote to context (select text → pick a target session, lands in its composer draft) ──
   "chatStream.quote.action": "Quote to context",
+  "chatStream.quote.selectionTruncated": "Selection too long: quoting at most {lines} lines / {chars} characters",
   "chatStream.quote.title": "Quote to",
   "chatStream.quote.searchPlaceholder": "Search sessions…",
   "chatStream.quote.current": "current",

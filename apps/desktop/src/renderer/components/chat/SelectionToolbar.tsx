@@ -36,16 +36,21 @@ export interface SelectionToolbarState {
    * B。只有消息流的选中没有行号概念(缺省不带)。
    */
   lines?: { start: number; end: number };
+  /** Only Monaco may clip very long source selections; show an explicit warning. */
+  truncated?: { maxLines: number; maxChars: number };
 }
 
 export function SelectionToolbar({
   state,
+  selectionSource = "dom",
   onAddBookmark,
   onAskSideChat,
   onQuote,
   onClose,
 }: {
   state: SelectionToolbarState;
+  /** DOM selections collapse on selectionchange; Monaco selections do not. */
+  selectionSource?: "dom" | "monaco";
   /**
    * 加书签。**不给就不画这个按钮**（2026-09-21）。
    *
@@ -75,6 +80,7 @@ export function SelectionToolbar({
       if (e.key === "Escape") onClose();
     };
     const onSelectionChange = () => {
+      if (selectionSource === "monaco") return;
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || sel.toString().trim().length === 0) onClose();
     };
@@ -90,7 +96,7 @@ export function SelectionToolbar({
       document.removeEventListener("selectionchange", onSelectionChange);
       document.removeEventListener("scroll", onClose, true);
     };
-  }, [onClose]);
+  }, [onClose, selectionSource]);
 
   // Reset the copy check feedback after a moment so it doesn't linger.
   useEffect(() => {
@@ -177,6 +183,16 @@ export function SelectionToolbar({
       >
         <IconQuote size={12} />
       </button>
+      {/* The displayed excerpt and the quote sent to the composer use the
+          same capped snapshot; never silently truncate a large selection. */}
+      {state.truncated && (
+        <span className="max-w-48 text-[10px] text-warning" role="status">
+          {t("chatStream.quote.selectionTruncated", {
+            lines: state.truncated.maxLines,
+            chars: state.truncated.maxChars,
+          })}
+        </span>
+      )}
       {/* 自定义 UI「选中文字」挂载位(R39) */}
       <SelectionCustomButtons text={state.text} onDone={onClose} />
     </div>,

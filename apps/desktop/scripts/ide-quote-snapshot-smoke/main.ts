@@ -30,14 +30,16 @@
  *
  * Run: scripts/ide-quote-snapshot-smoke/run.sh
  */
-import "./prelude.js";
-import { __mount, __flush, __nodes } from "./fakeReact.js";
+import { __fireDocumentEvent, __resetDocumentListeners } from "./prelude.js";
+import { __mount, __flush, __nodes, __text } from "./fakeReact.js";
+import { readFileSync } from "node:fs";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { registerModel } from "@renderer/lib/editorModelCache.js";
 import { EditPane } from "@renderer/components/ide/FileEditor.js";
 import { SelectionToolbar } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { Editor } from "@monaco-editor/react";
+import { captureMonacoCitationSelection, MAX_MONACO_QUOTE_CHARS, MAX_MONACO_QUOTE_LINES } from "@renderer/components/ide/monacoCitationSelection.js";
 
 let failures = 0;
 let checks = 0;
@@ -99,6 +101,8 @@ function makeEditor(model: ReturnType<typeof makeModel>) {
   let sel: Sel = { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 };
   const selListeners: Array<() => void> = [];
   const blurListeners: Array<() => void> = [];
+  const scrollListeners: Array<() => void> = [];
+  let multiCursor = false;
   const domNode = {
     getBoundingClientRect: () => ({ left: 100, top: 50, right: 900, bottom: 650, width: 800, height: 600 }),
     addEventListener: () => {},
@@ -106,7 +110,13 @@ function makeEditor(model: ReturnType<typeof makeModel>) {
   };
   const editor = {
     getModel: () => model,
-    getSelection: () => ({ ...sel, isEmpty: () => EMPTY(sel) }),
+    getSelection: () => ({
+      ...sel, isEmpty: () => EMPTY(sel),
+      getStartPosition: () => ({ lineNumber: sel.startLineNumber, column: sel.startColumn }),
+      getEndPosition: () => ({ lineNumber: sel.endLineNumber, column: sel.endColumn }),
+    }),
+    getSelections: () => multiCursor ? [sel, sel] : [sel],
+    __setMultiCursor: (v: boolean) => { multiCursor = v; },
     /** 测试用:把"当前选区"改成另一处(模拟用户在引用菜单开着时又选了一段)。 */
     __setSelection: (s: Sel) => {
       sel = s;
@@ -134,11 +144,16 @@ function makeEditor(model: ReturnType<typeof makeModel>) {
       blurListeners.push(cb);
       return { dispose: () => {} };
     },
-    onDidScrollChange: () => ({ dispose: () => {} }),
+    onDidScrollChange: (cb: () => void) => {
+      scrollListeners.push(cb);
+      return { dispose: () => {} };
+    },
     onDidLayoutChange: () => ({ dispose: () => {} }),
     __emitSelectionChange: () => {
       for (const cb of selListeners) cb();
     },
+    __emitScroll: () => { for (const cb of scrollListeners) cb(); },
+    __emitBlur: () => { for (const cb of blurListeners) cb(); },
   };
   return editor;
 }
@@ -194,12 +209,16 @@ async function run() {
 
     const toolbar = nodesOfType(SelectionToolbar)[0];
     check("选中后弹出引用工具条", !!toolbar);
+    check("Monaco 用独立选区来源，DOM selectionchange 不得关掉引用条", toolbar?.props.selectionSource === "monaco");
     // 点「引用」→ setMdQuote(state):把这份快照交给目标选择浮层。
     (toolbar.props.onQuote as (s: unknown) => void)(toolbar.props.state);
     await __flush();
 
     const menu = nodesOfType(SelectionQuoteMenu)[0];
     check("打开引用目标浮层", !!menu);
+    editor.__emitBlur(); // SelectionQuoteMenu autofocus 必须允许失焦而不关闭菜单
+    await __flush();
+    check("引用菜单输入框聚焦导致 Monaco 失焦时，目标菜单仍在", nodesOfType(SelectionQuoteMenu).length === 1);
     const menuState = menu.props.state as { text: string };
     check("冻结快照的正文 == A 那一行", menuState.text === "AAAA first line of selection", menuState.text);
     // 正控:不改选区,直接选定目标。
@@ -252,6 +271,73 @@ async function run() {
       !!tag && !tag.content.includes("(line 3)") && !tag.content.includes("CCCC third line"),
       tag?.content,
     );
+  }
+
+  /* ── T65：Monaco viewport/scroll/multi-cursor/selection cap ── */
+  {
+    editor.__setSelection(lineSel(2, "BBBB second line of selection"));
+    editor.__emitSelectionChange();
+    await __flush();
+    check("滚动之前工具栏存在", nodesOfType(SelectionToolbar).length === 1);
+    editor.__emitScroll();
+    await __flush();
+    check("Monaco 内部滚动后工具栏隐藏，不停在旧屏幕位置", nodesOfType(SelectionToolbar).length === 0);
+
+    editor.__setMultiCursor(true);
+    editor.__emitSelectionChange();
+    await __flush();
+    check("多光标不生成含糊的引用工具栏", nodesOfType(SelectionToolbar).length === 0);
+    editor.__setMultiCursor(false);
+
+    editor.__setSelection(lineSel(2, "BBBB second line of selection"));
+    const snap = captureMonacoCitationSelection(editor as never);
+    check("编辑器相对位置换算为视口坐标", snap?.rect.left === 100 + 29 * 8 && snap?.rect.top === 50 + 18, snap?.rect);
+    check("选段快照固定来源行号", snap?.lines?.start === 2 && snap.lines.end === 2, snap?.lines);
+  }
+  {
+    const many = Array.from({ length: 250 }, (_, i) => `line-${i + 1}-value`).join("\n");
+    const huge = makeModel(many);
+    const longEd = makeEditor(huge);
+    longEd.__setSelection({ startLineNumber: 1, startColumn: 1, endLineNumber: 250, endColumn: 11 });
+    const snap = captureMonacoCitationSelection(longEd as never);
+    check("超长 250 行仅截前 200 行", snap?.lines?.end === MAX_MONACO_QUOTE_LINES && !snap.text.includes("line-201-value"), snap?.lines);
+    check("超大选区携带可展示的截断提示", snap?.truncated?.maxLines === 200 && snap.truncated.maxChars === 12000, snap?.truncated);
+    // Mount the REAL shared toolbar: Monaco bypasses DOM selectionchange while
+    // chat/file preview continue to use that event for collapse dismissal.
+    __resetDocumentListeners();
+    let monacoClosed = 0;
+    __mount(() => SelectionToolbar({
+      state: snap!, selectionSource: "monaco",
+      onQuote: () => {}, onClose: () => { monacoClosed++; },
+    }));
+    await __flush();
+    check("超大选区工具栏实际显示截断提示", __text().includes("选区过长") && __text().includes("200"), __text());
+    (window as unknown as { getSelection: () => unknown }).getSelection = () => ({
+      isCollapsed: true, toString: () => "",
+    });
+    __fireDocumentEvent("selectionchange");
+    check("Monaco 非 DOM 选区不因 document.selectionchange 误关闭", monacoClosed === 0, monacoClosed);
+    __fireDocumentEvent("scroll");
+    check("Monaco 工具栏滚动仍会关闭", monacoClosed === 1, monacoClosed);
+
+    __resetDocumentListeners();
+    let domClosed = 0;
+    __mount(() => SelectionToolbar({
+      state: { ...snap!, truncated: undefined },
+      onQuote: () => {}, onClose: () => { domClosed++; },
+    }));
+    await __flush();
+    __fireDocumentEvent("selectionchange");
+    check("消息/文献预览复用的 DOM 工具栏仍在选区折叠时关闭", domClosed === 1, domClosed);
+    check("普通消息/预览工具栏没有 Monaco 截断提示", !__text().includes("选区过长"), __text());
+    const chat = readFileSync("src/renderer/components/chat/ChatPane.tsx", "utf8");
+    const viewer = readFileSync("src/renderer/components/library/FileViewer.tsx", "utf8");
+    check("消息与文献预览仍调用同一个 SelectionToolbar", chat.includes("<SelectionToolbar") && viewer.includes("<SelectionToolbar"));
+    const single = makeModel("X".repeat(MAX_MONACO_QUOTE_CHARS + 400));
+    const charsEd = makeEditor(single);
+    charsEd.__setSelection({ startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: MAX_MONACO_QUOTE_CHARS + 401 });
+    const clipped = captureMonacoCitationSelection(charsEd as never);
+    check("单行巨量文字也被硬字符上限截断", clipped?.text.length === MAX_MONACO_QUOTE_CHARS && !!clipped.truncated, clipped?.text.length);
   }
 
   console.log(`\nide-quote-snapshot-smoke:${checks - failures}/${checks} 通过`);
