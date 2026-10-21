@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
-import { isMac } from "@renderer/lib/platform.js";
+import { isMac, platform } from "@renderer/lib/platform.js";
+import { trafficLightSpacerWidth } from "./trafficLights.js";
 import {
   IconArrowLeft,
   IconLayoutSidebarLeftExpand,
@@ -72,6 +73,41 @@ export function Titlebar({
   onBack,
 }: Props) {
   const { t } = useI18n();
+  // Renderer-only adaptation of ClaudeDesktopHeader. The app does not expose
+  // Electron's native getZoomFactor/isFullScreen IPC: DOM fullscreen is observed
+  // directly and post-mount zoom changes are inferred from device pixel ratio.
+  // A genuine native macOS fullscreen / preexisting app zoom still needs
+  // macOS validation; never expose an untrusted window.electronAPI bridge.
+  const [macWindowState, setMacWindowState] = useState({ fullscreen: false, zoomFactor: 1 });
+  useEffect(() => {
+    if (!isMac) return;
+    const baselineDpr = window.devicePixelRatio || 1;
+    const media = window.matchMedia("(display-mode: fullscreen)");
+    const update = () => {
+      const ratio = (window.devicePixelRatio || baselineDpr) / baselineDpr;
+      setMacWindowState({
+        fullscreen: Boolean(document.fullscreenElement) || media.matches,
+        zoomFactor: ratio * (window.visualViewport?.scale || 1),
+      });
+    };
+    update();
+    window.addEventListener("resize", update);
+    document.addEventListener("fullscreenchange", update);
+    window.visualViewport?.addEventListener("resize", update);
+    media.addEventListener("change", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      document.removeEventListener("fullscreenchange", update);
+      window.visualViewport?.removeEventListener("resize", update);
+      media.removeEventListener("change", update);
+    };
+  }, []);
+  // If LeftBar owns the mac traffic lights, the main titlebar must not add
+  // another left inset. Settings/fullscreen starts at x=0, so it owns the slot.
+  const trafficLightInset = trafficLightSpacerWidth(
+    platform, macWindowState.fullscreen, macWindowState.zoomFactor,
+    leftOpen && mode !== "settings",
+  );
   // Settings renders its OWN titlebar inside the full-window settings overlay
   // (see App.tsx SettingsOverlay) — this instance is then covered and must NOT
   // re-render on the flip: it reads `mode` only, never `settingsOpen`. That
@@ -111,7 +147,7 @@ export function Titlebar({
   return (
     <div
       data-cds-titlebar=""
-      className="flex h-10 shrink-0 items-stretch"
+      className={cn("flex shrink-0 items-stretch", isMac ? "h-[45px]" : "h-10")}
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       <div
@@ -123,8 +159,9 @@ export function Titlebar({
           // reserves the room). Whenever the sidebar is NOT visible — closed,
           // or hidden because settings goes fullscreen — this bar starts at
           // x=0 and must reserve the space itself.
-          isMac && !(leftOpen && !isSettings) && "pl-[78px]",
         )}
+        style={trafficLightInset > 0 ? { paddingLeft: trafficLightInset } : undefined}
+        data-traffic-light-inset={trafficLightInset}
       >
         {isSettings ? (
           <>

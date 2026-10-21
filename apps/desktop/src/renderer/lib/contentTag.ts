@@ -81,6 +81,8 @@ export interface ContentTag {
   content: string;
   /** Absolute path of the dragged file. Only set when kind === "file". */
   filePath?: string;
+  /** Unshortened display name; needed by attachment tiles to preserve extension. */
+  fileName?: string;
   /**
    * **附件键**。kind === "library" 时用它去重、排除已添加、以及 picker 里的选中态。
    * 四种形态(与主进程 `library/manifest.ts` 的解析逐字对应):
@@ -248,6 +250,7 @@ export function makeFileTag(filePath: string, displayName?: string): ContentTag 
     preview,
     content: `@${filePath}`,
     filePath,
+    fileName: name,
   };
 }
 

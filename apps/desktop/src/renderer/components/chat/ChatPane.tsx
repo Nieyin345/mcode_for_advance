@@ -68,6 +68,7 @@ import { ComposerEditor, type ComposerEditorHandle } from "./ComposerEditor.js";
 import { composerSendAction } from "./composerPhysicalRules.js";
 import { CdsSkeleton } from "@renderer/components/ui/cds/CdsSkeleton.js";
 import { ContentTagChip } from "./ContentTagChip.js";
+import { AttachmentTile } from "./AttachmentTile.js";
 import { TagPopover } from "./TagPopover.js";
 import { FileMentionPicker, type FileMentionPickerMode } from "./FileMentionPicker.js";
 import { LibraryPicker } from "./LibraryPicker.js";
@@ -3490,56 +3491,53 @@ function ChatPaneForSession({
             )}
             {tags.length > 0 && (
               <div className="flex flex-wrap gap-1 px-2 pt-2">
-                {tags.map((tag) => (
-                  <ContentTagChip
-                    key={tag.id}
-                    ref={(el) => {
+                {tags.map((tag) => {
+                  const props = {
+                    ref: (el: HTMLSpanElement | null) => {
                       if (el) chipRefs.current.set(tag.id, el);
                       else chipRefs.current.delete(tag.id);
-                    }}
-                    tag={tag}
-                    open={openTagId === tag.id}
-                    onToggle={() => {
+                    },
+                    open: openTagId === tag.id,
+                    onToggle: () => {
                       setOpenTagId((cur) => {
-                        if (cur === tag.id) return null; // closing
-                        // Opening: capture this chip's box so the popover can
-                        // anchor to its top-right corner.
+                        if (cur === tag.id) return null;
+                        // Preserve the original chip-anchored popover behavior.
                         const el = chipRefs.current.get(tag.id);
                         if (el) setAnchorRect(el.getBoundingClientRect());
                         return tag.id;
                       });
-                    }}
-                    onRemove={() => {
+                    },
+                    onRemove: () => {
                       setTags((prev) => prev.filter((t) => t.id !== tag.id));
                       chipRefs.current.delete(tag.id);
                       setOpenTagId((cur) => (cur === tag.id ? null : cur));
-                    }}
-                  />
-                ))}
+                    },
+                  };
+                  // File references are non-text attachments; pasted text,
+                  // citations, browser elements and library manifests stay chips.
+                  return tag.kind === "file" ? (
+                    <AttachmentTile
+                      key={tag.id}
+                      {...props}
+                      name={tag.fileName ?? tag.filePath?.split(/[/\\\\]/).pop() ?? tag.preview}
+                      removeLabel={t("chat.tag.removeTitle")}
+                    />
+                  ) : (
+                    <ContentTagChip key={tag.id} {...props} tag={tag} />
+                  );
+                })}
               </div>
             )}
             {pendingImages.length > 0 && (
               <div className="flex flex-wrap gap-1.5 px-2 pt-2">
                 {pendingImages.map((img) => (
-                  <div
+                  <AttachmentTile
                     key={img.id}
-                    className="composer-tag-in group relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-edge bg-surface"
-                    title={img.name}
-                  >
-                    <img
-                      src={img.dataUrl}
-                      alt={img.name}
-                      className="h-full w-full object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removePendingImage(img.id)}
-                      aria-label={t("chat.removeImageName", { name: img.name })}
-                      className="absolute right-0.5 top-0.5 hidden h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white transition-colors hover:bg-black/80 group-hover:flex"
-                    >
-                      <IconX size={12} />
-                    </button>
-                  </div>
+                    name={img.name}
+                    imageSrc={img.dataUrl}
+                    onRemove={() => removePendingImage(img.id)}
+                    removeLabel={t("chat.removeImageName", { name: img.name })}
+                  />
                 ))}
               </div>
             )}
