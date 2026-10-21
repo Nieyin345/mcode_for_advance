@@ -97,7 +97,7 @@
 | T22 | Docs 后续切片：exportPdf 整链 / lazy-media 三类源 / files:read | ARC-007 | T05c | ✅ 完成（PDF 本地拆页 + 图片源四类策略 + 附件读取） |
 | T23 | Pane 剩余能力：可调分割线 + 布局预设 + 重置 | ARC-005 UI | T02 | ✅ 完成（比例流 + 18%/82% 折叠 + 三预设 + 重置） |
 | T24 | 设置页全面重构（63 面板 / 26,303 行对齐 CDS） | ARC-005 UI | 无 | **进行中**（批次 1–3 完成；批次 4 在飞） |
-| T25 | 原子写与冲突副本的故障注入回归（maint-m07 9 红） | 数据安全 | 无 | **进行中** |
+| T25 | 原子写与冲突副本的故障注入回归（maint-m07 9 红） | 数据安全 | 无 | ✅ 完成（`8f43c24e`；总控独立复跑 4/4 PASS） |
 | T26 | 修好三套自坏的 smoke 脚手架 | 测试基础设施 | 无 | ✅ 完成（`f98df6ff`；总控独立复跑 2/2 PASS） |
 | T28 | **GenOffice pdf / markdown / html 接入**（直接调原厂 `createXxxView`） | **ARC-007 主线** | T22，且 **T07 完成后** | **待派**（原厂已导出完整视图工厂，Mcode 却手搓了一套 preload） |
 | T29 | **GenOffice sheets / slides 接入**（同上，含 `queueWorkbookForView`） | **ARC-007 主线** | T22，且 **T28 完成后** | **待派**（sheets 的 `createSheetsView` 与 slides 的 `createSlidesView` 都能直接用） |
@@ -210,8 +210,12 @@ vendor 独立 Git + 固定基线 commit + `mcode/integration` 分支 + 补丁存
 - ~~`maint-m22-smoke` 15/16~~ **T26 已修**（`f98df6ff`）：判定是**断言 bug 不是产品 bug** ——
   搜索框里的 Space 本来就应该留给多词搜索，原脚手架误当勾选。现 16/16，
   且没有删断言（第 16 条改成判真实行为：搜索框 Space 不误选、编辑器焦点 Space 出「添加」按钮）。
-- **`maint-m07-smoke` 94/103（9 红）** → **T25 进行中**。6 条是故障注入下原文件被半写/被覆盖，
-  2 条是冲突副本写失败仍谎报 conflictPath，1 条是 `listDir` 同一物理目录返回 2 份。
+- ~~`maint-m07-smoke` 94/103~~ **T25 已修**（`8f43c24e`）：**9 条红几乎全是脚手架**
+  —— 故障注入只拦了 `node:fs/promises`，而 `atomicFile.ts` 用的是 `fs/promises`，
+  注入被绕过；MC-024 还注错了点（rename 而非 link）。产品侧 `atomicReplaceFile`
+  本来就是 tmp→fsync→rename 正确实现。唯一真实缺陷是 `ipc/files.ts` 冲突副本
+  保存失败时没把原因回给调用者 —— 已修成 `{ok:false, conflict:true, error}`
+  且不带 `conflictPath`。现 103/103，总控独立复跑 4/4 套件全绿。
 - `test:all` 当前仍是**红**的，不能声称全绿。
 
 ---
@@ -314,9 +318,11 @@ docs 已有可抄的：`genoffice/apps/docs/src/main/mcode-ai.ts`（206 行）�
 
 三张卡都改 `GenofficeViewHostPane.tsx` 与 `documentViewHost.ts`，**必须串行**。
 
-**完全独立的可并行任务**：
-- **T25**（`lib/atomicFile.ts`，数据安全）
-- **T24**（`components/settings/`，设置页 UI，在飞）
+**当前在飞**：T07、T24。
+**已完成可腾位置**：T25 ✅、T26 ✅。
+
+**T28 的唯一前置是 T07 落地**（两者都改 `GenofficeViewHostPane.tsx`）。
+T07 一提交，立刻派 T28，不需要等我确认。
 
 ---
 
