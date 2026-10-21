@@ -141,3 +141,21 @@ memory_forget  // { file }                       → 删除
 ## 结果回写区
 
 <!-- 执行对话：在下面追加，不要覆盖。 -->
+
+### T62 执行回写（2026-10-21）
+
+- **三个工具**：仓库已在 `apps/desktop/src/main/mcp/memoryServer.ts` 的 `memoryMcpTools()` 中提供 `memory_write`、`memory_search`、`memory_forget`，且已接到 `mcode-memory` MCP 服务和各引擎调用/宿主审批链。实际位于**独立记忆 MCP 文件**，不是 `mcodeServer.ts`；为避免相同工具重复注册和实现分叉，本任务没有另造第二套。写入直接调用 `saveMemoryFile`，删除调用 `deleteMemoryFile`，检索调用 `searchMemory`；`notifyMemoryChanged` 驱动已有记忆面板刷新。
+- **写入纪律**：`apps/desktop/src/main/memory/policy.ts` 中 `MEMORY_LAYER_INSTRUCTIONS` 新增明确的「记用户稳定角色/专长/偏好、项目长期背景、从代码文件读不出来的事实；不记代码模式、git 历史、任务临时状态」。`apps/desktop/src/main/claude/RuntimeManager.ts` 的提示词装配引用这一常量（系统级约束，不只是工具描述）。
+- **相关度策略**：本次**保留** `memorySnapshotFor` 的按时间兜底与原有单条/条数/整段截断闸；模型可以通过现成 `memory_search` 主动调用 `searchMemory` 的相关度评分检索，属于任务允许的渐进方案。未擅自改自动注入算法。
+- **轻量入口**：`apps/desktop/src/renderer/components/chat/MessageBlocks.tsx` 中，成功的 `memory_write` 工具卡下方展示小型「记忆与上下文 ↗」入口；点击 `setSettingsOpen(true, "memory")` 进入原有 `MemoryExplorerPanel`，可查看、编辑、删除模型写入的记忆。未改面板既有逻辑。
+- **真 AI 试跑**：没有真实引擎在线回合，不能声称模型已经主动调用；做了真实 MCP handler + 面板 IPC + 快照的隔离动态验证（E1）。
+
+**验收与证据：**
+1. **通过 E1**：`memory_write` 后真实 `memory:list` IPC 可见（与 `MemoryExplorerPanel` 同一数据源），有断言。
+2. **通过 E2 + 变异验证**：代码检查要求 `memory_write` 显式调用 `saveMemoryFile`；改成直接写文件后该 T62 断言确实红。
+3. **通过 E1**：「以后引用都用 APA」写入后 `memorySnapshotFor(["preferences"])` 包含原文。
+4. **通过 E1**：`memory_search` 关键词命中新写 APA 条目。
+5. **通过 E1**：`memory_forget` 后新快照和面板 IPC 列表都不再出现。
+6. **通过 E1**：`node apps/desktop/scripts/run-smokes.mjs memory-assistant-row-identity-smoke memory-codex-smoke memory-handoff-atomic-smoke memory-injection-smoke memory-injection-ui-smoke memory-list-integrity-smoke memory-review-smoke memory-smoke`：8/8 通过。
+7. **通过**：最终复跑 `node_modules\.bin\tsc.cmd --noEmit -p packages/contracts/tsconfig.json` 与 `node_modules\.bin\tsc.cmd --noEmit -p apps/desktop/tsconfig.json` 均 exit=0，双包 tsc 干净。此前桌面包曾因别的并行任务文件（`app-control-smoke`、`session-store-smoke`、`HooksPanel`）报错；这些文件后来由并行执行者修改，最终复验已通过，本任务未修改那些文件。
+8. **通过 E1**：将记忆写入调用临时替换为直接写文件，`memory-smoke` 红（294/305）；恢复后将两条写入纪律临时移出 `MEMORY_LAYER_INSTRUCTIONS`，`memory-smoke` 红（303/305），其中两项 T62 提示词断言红；恢复原文后记忆套件 8/8 通过。变异仅在隔离数据根下测试，最终已还原。

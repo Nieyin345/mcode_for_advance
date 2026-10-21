@@ -1724,6 +1724,16 @@ function GenericToolCard({
         )}
         <Chevron open={open} />
       </button>
+      {/* AI 写入成功后，给一个不打断对话的入口；点开既有记忆面板即可编辑。 */}
+      {(block.toolName.endsWith("__memory_write") || block.toolName === "memory_write") &&
+        block.status === "done" && resultPreview(block.result).includes("已记下「") && (
+          <button type="button"
+            className="ml-2 mb-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-content-muted hover:bg-surface-hover hover:text-content [font-size:var(--chat-fs-xs)]"
+            onClick={() => useSessionStore.getState().setSettingsOpen(true, "memory")}
+          >
+            <IconNotebook size={12} />{t("settings.nav.memory")} ↗
+          </button>
+        )}
       {approvalBroken && (
         // Amber (not red): the turn's context is intact and the model usually
         // self-recovers by writing the plan file — the user just approves via

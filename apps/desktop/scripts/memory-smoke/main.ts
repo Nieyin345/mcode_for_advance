@@ -1,4 +1,5 @@
 import { MEMORY_WORKFLOWS } from "@main/orchestration/memoryWorkflows.js";
+import { MEMORY_LAYER_INSTRUCTIONS } from "@main/memory/policy.js";
 import { validateWorkflowDoc } from "@main/orchestration/workflowValidation.js";
 import { scopedMemorySnapshot } from "@main/memory/retrieval.js";
 import { memoryHistory, readHistory, restoreMemory, readMemoryFileWithRaw } from "@main/memory/store.js";
@@ -746,6 +747,39 @@ console.log("\n流程记录:这一层只负责照搬,不自己判谁该读");
   eq("被拒绝的操作不改变最新正文", readMemoryFile(path).content.trim(), "v2");
   const latest = readMemoryFile(path).revision;
   eq("真实工具最新版本删除成功", (await invoke("memory_forget", { path, expectedRevision: latest })).isError, undefined);
+
+  // T62: 从模型的 MCP 入口写入，经面板所用的真实 IPC 列表可见，再由新一轮
+  // snapshot/关键词检索取回；删除后新一轮 snapshot 不再含有这条用户长期偏好。
+  {
+    const title = "引用格式偏好";
+    const memoPath = "projects/p_memory/preferences/引用格式偏好.md";
+    const content = "用户要求以后引用都用 APA 格式。";
+    const saved = await invoke("memory_write", { category: "preferences", title, content });
+    eq("T62 AI 写入 APA 偏好成功", saved.isError, undefined);
+    const { registerMemoryHandlers } = await import("@main/ipc/memory.js");
+    const handlers = new Map<string, (evt: unknown, raw: unknown) => unknown>();
+    registerMemoryHandlers({ handle: (ch: string, fn: never) => handlers.set(ch, fn) } as never);
+    const panelList = handlers.get("memory:list")!(null, {}) as { files: Array<{ path: string; title: string }> };
+    check("T62 面板通过真实 IPC 列表看到模型写入的条目", panelList.files.some(f => f.path === memoPath && f.title === title));
+    check("T62 新对话快照包含 APA 长期偏好", memorySnapshotFor(["preferences"]).includes(content));
+    const found = await invoke("memory_search", { query: "APA 引用格式", limit: 12 });
+    check("T62 关键词可搜到刚写的 APA 条目", textOf(found).includes(memoPath));
+    eq("T62 删除成功", (await invoke("memory_forget", { path: memoPath, expectedRevision: readMemoryFile(memoPath).revision })).isError, undefined);
+    check("T62 删除后新快照不再出现 APA 偏好", !memorySnapshotFor(["preferences"]).includes(content));
+    check("T62 删除后面板 IPC 列表也无此条", !(handlers.get("memory:list")!(null, {}) as { files: Array<{ path: string }> }).files.some(f => f.path === memoPath));
+  }
+
+  // 源码合同：无头验证不需要真实模型，但硬要求「与面板共用 saveMemoryFile」
+  // 和写入纪律必须位于真系统提示词里，不能只写在工具描述上。
+  {
+    const server = readFileSync("src/main/mcp/memoryServer.ts", "utf8");
+    const policy = readFileSync("src/main/memory/policy.ts", "utf8");
+    const ui = readFileSync("src/renderer/components/chat/MessageBlocks.tsx", "utf8");
+    check("T62 memory_write 必须显式调用共享 saveMemoryFile", /saveMemoryFile\(\{\s*path,\s*content:\s*args\.content/.test(server));
+    check("T62 系统提示词确实包含角色/项目背景/不可从代码读出三类长期记忆", MEMORY_LAYER_INSTRUCTIONS.includes("角色、专长与偏好") && MEMORY_LAYER_INSTRUCTIONS.includes("项目长期背景") && MEMORY_LAYER_INSTRUCTIONS.includes("无法从代码和项目文件重新读出来") && policy.includes("MEMORY_LAYER_INSTRUCTIONS"));
+    check("T62 系统提示词明确排除代码模式、git 历史与临时状态", MEMORY_LAYER_INSTRUCTIONS.includes("不记代码模式") && MEMORY_LAYER_INSTRUCTIONS.includes("不记 git 历史") && MEMORY_LAYER_INSTRUCTIONS.includes("不记本次任务的临时状态"));
+    check("T62 对话工具卡存在成功后可跳往记忆面板的轻量入口", ui.includes('block.toolName.endsWith("__memory_write")') && ui.includes('setSettingsOpen(true, "memory")') && ui.includes('block.status === "done"'));
+  }
 
   // ★ **读出来的正文必须能原样存回去(「读→存」不动点)。** 存盘时正文前面带着
   //   frontmatter 分隔行留下的换行,而 `saveMemoryFile` 只收尾、不收首 —— 若 `memory_read`
