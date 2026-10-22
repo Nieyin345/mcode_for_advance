@@ -10,7 +10,29 @@
 
 ---
 
-## T89–T92 交付验收及 T98 完成、T92 恢复执行（2026-10-22，**最新生效**）
+## Orca 源码对照第一波：六张只读调查 + 一张依赖汇总（2026-10-22，**最新派发入口**）
+
+> **方向确定：继续 Mcode，Orca `ea60ec5d7cb9b542d2b5b3fd986acfc8861e4560` 作为固定的**本地源码参考**。先做源码级能力/安全/体验对照，再决定首个最小 Mcode 优化试验，**不直接换 Orca 底座、不复制大块代码、不将 Orca 独立 Git 仓合入 Mcode 主仓**。Orca 自身 `package.json` 版本为 `1.4.214`（该 SHA 的版本，并非宣布市场最新）。证据准则见 `.scratch/orca-mcode-comparison/spec.md`；依赖图 `.scratch/orca-mcode-comparison/map.md`。任务报告统一归属 `docs/research/orca-mcode/`。
+
+**可立即并行派发：T99–T104。每张均只读两个源码仓库、独占自己一份新报告及本任务卡的结果回写区，与既有 T92–T97 及其他 dirty 代码不交叉。**
+
+| 派发 | 任务与精确任务卡 | 核对主题 / 唯一报告 |
+|---|---|---|
+| **立即，P1** | **T99** `tasks/T99-worktree-lifecycle.md` | worktree / 项目 identity / Git 工作区生命周期；`docs/research/orca-mcode/T99-worktree-lifecycle.md` |
+| **立即，P1** | **T100** `tasks/T100-agent-runtime-pty.md` | Agent 进程/PTY/多任务与重连恢复；`docs/research/orca-mcode/T100-agent-runtime-pty.md` |
+| **立即，P1** | **T101** `tasks/T101-diff-review.md` | diff、逐行审查、Git 交付、base-ref 漂移；`docs/research/orca-mcode/T101-diff-review.md` |
+| **立即，P1** | **T102** `tasks/T102-remote-cli.md` | CLI/SSH/Host 与移动远程工作区；`docs/research/orca-mcode/T102-remote-cli.md` |
+| **立即，P1** | **T103** `tasks/T103-ui-ux.md` | 布局、焦点/任务可见性、三栏工作台体验；`docs/research/orca-mcode/T103-ui-ux.md` |
+| **立即，P1** | **T104** `tasks/T104-ipc-extensibility.md` | IPC 授权、Agent 自控、插件/自动化互通；`docs/research/orca-mcode/T104-ipc-extensibility.md` |
+| **待六张报告均完成，勿现在派** | **T105** `tasks/T105-integration-decision.md` | 只汇总六份结果、Top 3 与一个最小安全 PoC 候选；`docs/research/orca-mcode/T105-integration-decision.md` |
+
+**执行方式**：每个新的 Mcode 执行对话复制 `tasks/_PROMPT_TEMPLATE.md` 并替换唯一任务文件路径。全部新卡都有 `## Required Skills`（`research`/ `codebase-design`/ `frontend-design`/ `writing-for-agents` 按场景选择），执行者先读、但不得按 Skill 指示另开子代理或扩大写区。每张须证明至少三条两仓入口调用链、至少五个事实对照、两个以上异常/恢复边界，标 E2/E3、不凭目录名判断“Orca 有 Mcode 无”。静态调查不运行真实 UI/Electron、不动模型账号/用户数据、不做无意义红绿变异。研究者**只提交自己报告与 T 卡结果**。
+
+**与在飞工作区隔离**：现有 T92 Host 接线、T93/T94/T97 Node-RED、T95/T96 UI 验证仍按原独占区，不中断、不重派；T71/T77 Electron 真机验收仍串行。首次 Mcode 代码优化卡只有 T105 汇总**并经总控复核后**再建立。Orca 根目录被 Mcode `.gitignore` 例外忽略，本地独立 Git `mcode/integration` 分支不可 fetch/reset；完整发行仍受既有许可证证据及真实 U1 阻断。
+
+---
+
+## T89–T92 交付验收及 T98 完成、T92 恢复执行（2026-10-22，历史阶段，不是最新派发入口）
 
 > 用户确认 T89/T90/T91/T92 四个执行对话均已结束。**实际只有 T92 的核心功能验收未达**（安全阻断，并非跑坏既有主链）；T89/T90/T91 按“只读取证任务”边界已交付，但许可证未被集成进正式 bundle。总控独立复跑 T98、T83、T86 与 GenOffice 编辑器发行专项 **4/4 套件 PASS**；这证明 ACK 协议和代表回归通过，**不代表 T92 Host 同轮集成或真实 Electron U1 已完成**。
 
