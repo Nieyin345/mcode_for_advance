@@ -87,3 +87,15 @@
 ## 结果回写区
 
 <!-- 仅追加：报告位置和 SHA、提交 SHA、证据定位摘要、逐条验收 PASS/FAIL、remaining。 -->
+
+
+### 2026-10-22｜T104 执行回写
+
+- 报告：docs/research/orca-mcode/T104-ipc-extensibility.md
+- 报告 SHA-256：bfd74e42a3c12249e8e651a2eed197721c5313562d101eacf5e4d74ebdc5c3df
+- 报告提交 SHA：13ad37404038e20c63946f710350656985f2bbd9（只包含本报告）。
+- Orca 固定 SHA：ea60ec5d7cb9b542d2b5b3fd986acfc8861e4560。Mcode 源码审查期间 HEAD 从 35904aa56d8190b4b3ee101c8e050156aab21e32 前进到 2bcad370da1867f6745aff49f66635a354c17910，随后在提交前前进到 06bfe758ee9323810894dd7a2dc5c7a9712f1d16；并行提交/dirty 文件均保留。
+- 结论计数：等价已有 3、部分已有 5、与定位冲突 1、真缺失 0、证据不足 0。主要证据为 E2 静态源码；component-review gate 的 host-side fingerprint 风险为 E3，未动态验证。
+- 验证：git status --short（提交前确认本报告是唯一新增文件）；git diff --cached --name-only 仅列出本报告；git diff --cached --check 退出码 0；git commit --only -m T104 -- docs/research/orca-mcode/T104-ipc-extensibility.md 成功，SHA 为 13ad37404038e20c63946f710350656985f2bbd9。提交后 git status --short 未再列出本报告，其他并行改动仍在且未暂存。
+- 验收：1 PASS（三条入口→副作用/状态调用链及双仓定位）；2 PASS（9 项矩阵有分类与证据）；3 PASS（关键授权/恢复边界、3 个未执行反例设计、Top 2 借鉴点与 1 个 no-go）；4 PASS（只提交唯一报告，未改 Orca/产品源码/其他任务文件）；5 PASS（区分 E2/E3，明确未做 E1/U1）。
+- Remaining：只读研究任务未运行测试、typecheck、smoke、Electron、Agent 回合或真实用户旅程。Mcode provider-plugin 的 component-review gate 目前由 UI 发起，而 main 的 setPluginEnabled 未校验 reviewed fingerprint；这是静态架构风险，不是已动态证明的利用。若 review 必须是安全不变量，应另立代码任务验证 host-side fingerprint gate。
