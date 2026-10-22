@@ -50,15 +50,13 @@ task being completed and accepted.
 
 ## Relationship with Mcode execution tasks
 
-The existing `tasks/` directory remains authoritative for formal Mcode
-execution cards and their acceptance evidence.
+The `tasks/README.md` index is authoritative for formal Mcode execution cards and acceptance evidence.
 
-- Existing T-numbered tasks remain in `tasks/`; never migrate or renumber them.
-- Use `.scratch/` when the engineering skills need a feature specification,
-  exploratory questions, or a dependency graph.
-- When an approved planning ticket must be delegated to an independent Mcode
-  execution conversation, create or update the corresponding `tasks/Txx-*.md`
-  card according to the existing Mcode task workflow.
+- New execution cards start at `tasks/T0-*.md` and continue with the next unused integer.
+- Legacy cards are preserved unchanged under `tasks/archive/legacy-2026-10-22/`; do not reuse legacy IDs or interpret archived statuses as fresh acceptance.
+- Formal MC/ARC/UXG IDs and statuses in `audit-ledgers/` are not renumbered.
+- Use `.scratch/` when engineering skills need a feature specification, exploratory questions, or a dependency graph.
+- When an approved planning ticket must be delegated to an independent Mcode execution conversation, create a bounded `tasks/T<number>-*.md` card and link the planning spec/ticket path when applicable.
 - Link the planning spec/ticket path from the execution card.
 - Do not duplicate the entire specification in the execution card. Include
   only the context required to execute the bounded task.

@@ -104,7 +104,7 @@ preload (contextBridge + zod 校验)
 
 Engineering Skill specs and planning tickets live as local Markdown files under `.scratch/<feature-slug>/`. Use one `spec.md` per feature and one file per ticket under `issues/`. See `docs/agents/issue-tracker.md`.
 
-The existing `tasks/` directory remains the authoritative execution and acceptance ledger for Mcode's T-numbered tasks. Do not migrate, renumber, or replace existing tasks when using `.scratch/`. Every newly created T-numbered task card must include a `## Required Skills` section listing only relevant skills and their purpose; do not bulk-add all installed skills or rewrite existing cards.
+The authoritative execution ledger is `tasks/README.md`. New execution cards start at `tasks/T0-*.md`; legacy cards are preserved unchanged under `tasks/archive/legacy-2026-10-22/` with an SHA-256 inventory. Do not reuse legacy T numbers or treat archived status as fresh acceptance. Formal MC/ARC/UXG defect and architecture IDs in `audit-ledgers/` remain unchanged. Every new T task card must include a `## Required Skills` section listing only relevant skills and their purpose; do not bulk-add all installed skills or rewrite archived cards.
 
 ### Triage labels
 
