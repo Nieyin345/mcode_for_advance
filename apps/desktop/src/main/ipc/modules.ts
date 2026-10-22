@@ -6,10 +6,17 @@ import { getModuleHost } from "@main/modules/service.js";
 import { getJsOnlyEgressConsent, setJsOnlyEgressConsent } from "@main/modules/egressConsent.js";
 import { z } from "zod";
 import { diagnoseEgressIsolation } from "@main/modules/permissionedProcessRunner.js";
+import { resolveInstallDecision } from "@main/modules/installConsentPolicy.js";
 
 /** 【MC-036】授权变更的入参形状(与记录同形,不带 `grantedAt`)。宿主的 issue/revoke 会
  *  再按**现场清单**核验模块/版本/贡献/能力;IPC 层只挡形状与非对象。 */
 const GrantChangeSchema = ModuleWorkflowGrantSchema.omit({ grantedAt: true });
+
+/** 【T18】安装卡决策的宿主侧收窄（`allow-always` 只认真实桌面发送方）。
+ *  实现在 `modules/installConsentPolicy.ts`（纯函数，不 import electron）——
+ *  无头套件直接 import 那一份，不必把整个 IPC 面拖进 bundle。这里原样再导出，
+ *  让 `ipc/modules.ts` 的调用方继续能从同一个入口拿到它。 */
+export { resolveInstallDecision };
 
 export function registerModuleHandlers(ipcMain:IpcMain):void {
   // Only the desktop module settings UI exposes this consent; app_api_call is blocked.
@@ -31,8 +38,11 @@ export function registerModuleHandlers(ipcMain:IpcMain):void {
   // 升级换执行体或卸载时运行中的旧任务会被协作式取消，UI 据此提示"已取消 N 个运行中
   // 任务"；取消失败原因原样带回（不静默）。`ModuleHost` 返回的就是这个形状，这一层
   // 只透传，不再包第二份。
-  ipcMain.handle(IPC.MODULE_INSTALL,async(_event,raw:unknown)=>{
-    const input=ModuleInstallSchema.parse(raw);return (await getModuleHost()).install(input.manifest, input.grantedPermissions);
+  // 【T18】`installConsent` 是安装卡片的三态选择；`deny` 在宿主里**先于任何写盘**抛出。
+  ipcMain.handle(IPC.MODULE_INSTALL,async(event,raw:unknown)=>{
+    const input=ModuleInstallSchema.parse(raw);
+    const decision=resolveInstallDecision(input,event);
+    return (await getModuleHost()).install(input.manifest, input.grantedPermissions, decision);
   });
   // User-only edit path. appControl.policy blocks this method for agents/panels.
   ipcMain.handle(IPC.MODULE_SET_PERMISSIONS,async(_event,raw:unknown)=>

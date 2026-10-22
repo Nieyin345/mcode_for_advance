@@ -407,7 +407,16 @@ export const ModuleCatalogSchema = z.object({
   modulePermissions: z.record(z.object({
     granted: ModulePermissionListSchema.or(z.array(ModulePermissionSchema).length(0)),
     grantedAt: z.string().datetime(),
+    /** 【T18】这次授权是「允许一次」(session,重启后重新询问) 还是「始终允许」
+     *  (persistent)。旧宿主没有该字段 —— UI 按 persistent 显示即可。 */
+    duration: z.enum(["persistent", "session"]).optional(),
   }).strict().nullable()).optional(),
+  /** 【T18】「允许一次」在重启后失效的记录（只供 UI 重新询问，不是有效授权）。 */
+  moduleStaleConsents: z.record(z.object({
+    granted: ModulePermissionListSchema.or(z.array(ModulePermissionSchema).length(0)),
+    grantedAt: z.string().datetime(),
+    reason: z.literal("restart"),
+  }).strict()).optional(),
   workflowTargets: z.array(ModuleWorkflowTargetSchema).max(384).optional(),
   workflowGrantCandidates: z.array(ModuleWorkflowGrantCandidateSchema).max(384).optional(),
   workflowGrantStatus: ModuleWorkflowGrantStatusSchema.optional(),

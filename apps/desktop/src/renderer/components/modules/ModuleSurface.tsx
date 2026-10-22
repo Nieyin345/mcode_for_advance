@@ -12,6 +12,7 @@ import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { CapabilityCatalogPanel } from "./CapabilityCatalogPanel.js";
+import { ModuleInstallConsentHost, useInstallConsentCard } from "./ModuleInstallConsentCard.js";
 
 export interface SurfaceContext {
   catalog:ModuleCatalog | undefined;
@@ -67,17 +68,44 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
       setError(t("ide.modules.changeCancelFailed",{count:failures.length})+"："+failures.map(f=>f.reason).join("；"));
     }
   };
+  /** 【T18】菜单调用一个**「允许一次」已因重启失效**的扩展时，先按原授权子集
+   *  重新弹卡（允许一次 / 始终允许 / 拒绝）。拒绝则不调用 —— 换来的是一句明确的
+   *  「需要重新授权」，而不是一个莫名其妙的失败。持久授权不会走到这里
+   *  （`moduleStaleConsents` 只收 `reason:"restart"` 的会话级记录）。 */
+  const ensureConsent=async(module:ModuleManifest):Promise<boolean>=>{
+    const stale=catalog.data?.moduleStaleConsents?.[module.id];
+    if(!stale)return true;
+    const decision=await installCard.request({manifest:module,granted:stale.granted.filter((p):p is ModulePermission=>module.permissions.includes(p)),upgrading:false,origin:"desktop"});
+    if(decision==="deny")return false;
+    await api.modules.install({
+      manifest:module,confirmReadAccess:true,grantedPermissions:stale.granted.filter(p=>module.permissions.includes(p)),installConsent:decision,
+      ...(module.program!==undefined?{confirmExecutableCode:true as const}:{}),
+    });
+    await catalog.refetch();
+    return true;
+  };
   const invoke=async(module:ModuleManifest,contribution:ModuleContribution,path:string)=>{
     await mutate(async()=>{
+      if(!(await ensureConsent(module)))throw Error(t("ide.modules.consentCard.reconsentRequired"));
       const result=await createModuleClient(api.modules,module.id).invoke(contribution.id,{projectPath,path},crypto.randomUUID());
       if(alive.current)setReply(result);
     });
   };
+  /** 【T18】安装必须经过**安装卡**（允许一次 / 始终允许 / 拒绝）。清单面板负责
+   *  收集"声明了什么 / 这次授予哪些"，卡片负责拿到**三态决定**；「拒绝」/ 关闭 /
+   *  Esc 一律不调用 `api.modules.install` —— 拒绝 = 不写盘。 */
+  const installCard = useInstallConsentCard();
   const install=async()=>{
     await mutate(async()=>{
       const manifest=ModuleManifestSchema.parse(JSON.parse(draft));
+      const decision=await installCard.request({
+        manifest, granted,
+        upgrading:Boolean(catalog.data?.modules.some(m=>m.id===manifest.id && !m.id.startsWith("core."))),
+        origin:"desktop",
+      });
+      if(decision==="deny")return; // 拒绝：磁盘无任何写入
       const result=await api.modules.install({
-        manifest,confirmReadAccess:true,grantedPermissions:granted,
+        manifest,confirmReadAccess:true,grantedPermissions:granted,installConsent:decision,
         // 【MC-035】可执行扩展的第二次同意由 UI 的独立勾选框给出;纯声明式模块不传。
         ...(manifest.program!==undefined?{confirmExecutableCode:true as const}:{}),
       });
@@ -87,6 +115,9 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
   };
   return <Surface.Provider value={{catalog:catalog.data,busy,openManager:()=>setManager(true),invoke}}>
     {children}
+    {/* 【T18】安装卡挂在这里（`App` 根也挂一份）—— 夹具只渲染 ModuleSurface 时
+        卡片仍然在树上；两份在场时只有持有者画卡。 */}
+    <ModuleInstallConsentHost />
     {error && !manager && <ErrorNote action={<Button onClick={()=>setError(null)}>{t("common.close")}</Button>}>{error}</ErrorNote>}
     <Dialog.Root open={manager} onOpenChange={setManager}>
       <Dialog.Portal><Dialog.Backdrop/><Dialog.Popup className="max-h-[85vh] w-[min(92vw,760px)] space-y-4 overflow-auto p-5">

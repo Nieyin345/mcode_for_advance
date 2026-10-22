@@ -7,6 +7,7 @@ import { AskChoiceDialog } from "./components/chat/AskChoiceDialog.js";
 import { BrowserPanel } from "./components/browser/BrowserPanel.js";
 import { Toaster } from "./components/layout/Toaster.js";
 import { CustomUiHost } from "./components/customUi/CustomUiHost.js";
+import { ModuleInstallConsentHost } from "./components/modules/ModuleInstallConsentCard.js";
 import { ClassicShell } from "./components/shell/ClassicShell.js";
 import { shellVariantOf } from "./components/shell/WorkspaceShell.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
@@ -308,6 +309,10 @@ export function App() {
       {/* 自定义 UI 的视图浮窗 + 批量运行确认(菜单点完就关了,弹出来的东西得挂在根上)。
           顺带在应用起来时读一次自定义 UI 配置。 */}
       <CustomUiHost />
+      {/* 【T18】安装权限卡（允许一次 / 始终允许 / 拒绝）—— 根级挂一个：任何入口
+          （设置页清单面板、Agent 回合、以后的工作台按钮）发起安装都要经过它，
+          没有待确认安装时渲染 null。 */}
+      <ModuleInstallConsentHost />
       <BrowserPanel mode="overlay" />
       {/* Wide-mode plan dialog - mounts over the wide 3:7 workspace (fixed
           overlay below the titlebar) when a plan tab is open. Mounted here

@@ -18,6 +18,9 @@ import { ModulePermissionArchiveSchema, assertModuleGrants, type ModulePermissio
 import { assertAppMethodPermission, type ModulePermission } from "@contracts/appPermission";
 import { runPermissionedProcess, verifyPermissionedProgram, requireNetworkExtensionSupport } from "./permissionedProcessRunner.js";
 
+/** 【T18】安装卡片的三种结论（见 {@link ModuleHost.install}）。 */
+export type ModuleInstallDecision = "allow-once" | "allow-always" | "deny";
+
 /** Windows/macOS 的文件系统大小写不敏感 —— 授权路径比对与幂等键据此折叠大小写
  *  (与 `lib/pathGuard.samePath` 同一平台判据;[MC-036])。 */
 const CASE_INSENSITIVE_PATHS = process.platform === "win32" || process.platform === "darwin";
@@ -141,6 +144,10 @@ export class ModuleHost {
      *  事务内取消掉运行中任务之后回调一次；生产装配把它写进日志/诊断，无头套件可
      *  直接收集。缺省 = 不报告（诊断不改变事务结果）。 */
     onChanged?(outcome: ModuleChangeOutcome): void;
+    /** 【T18】**本次进程启动身份**（缺省 = {@link ModuleHost.BOOT_ID}）。
+     *  「允许一次」的授权记录绑着它；套件在同一进程里构造第二个宿主时传入不同值，
+     *  即可真实模拟「重启之后」。生产**不要**注入 —— 每个进程一个随机值是安全属性。 */
+    bootId?: string;
   }) {}
 
   /** 【MC-035】构造一条能力注册记录 —— **只校验、只构造,不碰任何注册表**。
@@ -363,6 +370,15 @@ export class ModuleHost {
     this.mutation = next.then(() => {}, () => {});
     return next;
   }
+  /** 【T18】本次进程启动的**随机身份** —— 「允许一次」的授权记录里带上它；
+   *  重启后 bootId 变了,旧记录一律失效(→ 重新询问)。随机而非常量,保证每次
+   *  启动都不同;同一进程内多次构造宿主共用它,安装期间的每一次读取不会自相矛盾。
+   *  套件要模拟"另一次启动"时给宿主注入别的 `bootId`(见构造函数选项)。 */
+  static readonly BOOT_ID: string = randomUUID();
+  /** 本宿主实例的启动身份（生产恒为 {@link BOOT_ID}；套件可注入别的值模拟重启）。 */
+  private get bootId(): string {
+    return this.options.bootId ?? ModuleHost.BOOT_ID;
+  }
   /** Freshly read, shape-checked. A damaged ledger is never silently replaced. */
   private modulePermissionArchive(): ModulePermissionArchive {
     const raw = this.options.readModulePermissions?.() ?? null;
@@ -375,10 +391,28 @@ export class ModuleHost {
       manifest.id, manifest.version, [...manifest.permissions].sort(), manifest.program ?? null, manifest.contributions,
     ])).digest("hex");
   }
+  /** 【T18】记录是否仍然有效 —— 时效 + 绑定一起判:
+   *
+   *  - 版本与执行指纹必须与**当前清单**一致（清单/权限集/程序任何变化 → 失效）。
+   *  - `duration: "session"`（允许一次）还必须属于**本次进程启动**：bootId 不符
+   *    （= 重启过）→ 失效。重启后同一扩展再次激活会重新询问。
+   *  - 缺省 `duration` 一律按持久决策（旧存档没有该字段）。
+   *
+   *  任何"读不懂"的情况（缺失、坏记录）都是失效 —— 绝不当作已授权。 */
   private effectiveGrants(module: ModuleManifest): ModulePermissionRecord | null {
     const record = this.modulePermissionArchive().modules[module.id];
-    return record && record.manifestVersion === module.version && record.fingerprint === this.manifestFingerprint(module)
-      ? record : null;
+    if (!record || record.manifestVersion !== module.version || record.fingerprint !== this.manifestFingerprint(module)) return null;
+    if (record.duration === "session" && record.bootId !== this.bootId) return null;
+    return record;
+  }
+  /** 【T18】一条**因重启而失效**的「允许一次」记录（版本/指纹仍与当前清单匹配，
+   *  只是 bootId 不是本次）。只给 UI 当"重新询问时预填哪些权限"的线索 ——
+   *  `effectiveGrants` 对它返回 null，invoke 照常拒绝。 */
+  private staleSessionRecord(module: ModuleManifest): ModulePermissionRecord | null {
+    const record = this.modulePermissionArchive().modules[module.id];
+    if (!record || record.manifestVersion !== module.version || record.fingerprint !== this.manifestFingerprint(module)) return null;
+    if (record.duration !== "session" || record.bootId === this.bootId) return null;
+    return record;
   }
   private async writeModulePermissions(archive: ModulePermissionArchive): Promise<void> {
     if (!this.options.persistModulePermissions) throw Error("扩展权限必须持久化，当前宿主没有授权写入通道");
@@ -408,7 +442,8 @@ export class ModuleHost {
     this.authorizeAppMethod(manifest.id, method);
     return value;
   }
-  /** Host-validated grant update; never accepts permissions absent from the installed manifest. */
+  /** Host-validated grant update; never accepts permissions absent from the installed manifest.
+   *  用户在设置页改权限 = 一次**显式**的本人操作,按持久决策记录(与安装卡「始终允许」同档)。 */
   setPermissions(raw: unknown): Promise<ModuleCatalog> {
     return this.serializeMutation(async () => {
       const input = raw as { moduleId?: string; grantedPermissions?: ModulePermission[] };
@@ -419,14 +454,28 @@ export class ModuleHost {
       assertModuleGrants(module, granted);
       const archive = this.modulePermissionArchive();
       const before = archive.modules[module.id]?.granted ?? [];
-      archive.modules[module.id] = {granted:[...granted],grantedAt:new Date().toISOString(),manifestVersion:module.version,fingerprint:this.manifestFingerprint(module)};
+      archive.modules[module.id] = {granted:[...granted],grantedAt:new Date().toISOString(),manifestVersion:module.version,fingerprint:this.manifestFingerprint(module),duration:"persistent"};
       await this.writeModulePermissions(archive);
       if (before.some(permission => !granted.includes(permission))) this.cancelRunningTasksOf(module.id);
       return this.catalog();
     });
   }
-  install(raw: unknown, grantedPermissions?: readonly ModulePermission[]): Promise<ModuleChangeResult> {
+  /** 【T18】`decision` 是安装卡片的**三态结论**，由调用方在用户点过卡之后给出
+   *  （IPC 层按发起方收紧，见 `ipc/modules.ts`）：
+   *
+   *  - `"deny"`        —— **拒绝 = 不写盘**：在**任何**副作用（校验后的持久化、
+   *    授权表、能力注册）发生之前抛出明确错误。不是"先装了再禁用"。
+   *  - `"allow-once"`  —— 允许一次：授权记录带本次 `BOOT_ID`，重启后
+   *    `effectiveGrants` 判其失效（重新询问），本次进程内安装 + 运行有效。
+   *  - `"allow-always"`—— 始终允许：持久记录；仍绑定版本 + 执行指纹，
+   *    清单/权限集/程序任一变化即失效并强制重新同意。
+   *
+   *  记录一旦过期，下一次 `install` 走 `executionChanged` 分支强制重新征求同意。 */
+  install(raw: unknown, grantedPermissions?: readonly ModulePermission[], decision: ModuleInstallDecision = "allow-once"): Promise<ModuleChangeResult> {
     return this.serializeMutation(async () => {
+      // 拒绝是**第一件事**：在解析/校验/任何持久化之前就结束。这条顺序本身就是
+      // 安全属性（拒绝 = 磁盘零写入）—— 变异验证会把它撤掉看断言变红。
+      if (decision === "deny") throw Error("用户拒绝了这次安装，未写入任何内容");
       const manifest = this.validate(raw);
       if (grantedPermissions !== undefined) assertModuleGrants(manifest, grantedPermissions);
       if (grantedPermissions === undefined && manifest.permissions.some(p => p !== "resource.read" && p !== "resource.write" && p !== "network")) {
@@ -486,16 +535,30 @@ export class ModuleHost {
       if (executionChanged && grantedPermissions === undefined && priorConsent?.granted.length) {
         throw Error("扩展的权限或执行内容已变化，请重新逐项同意授权");
       }
+      // 【T18】「允许一次」的记录在**重启后**已失效（bootId 不符）。此时即便清单
+      // 一字未变，再装一次也**必须携带一次新的授权决定** —— 不能拿一条过期的会话
+      // 授权静默续期。判据复用 `effectiveGrants`（同一条链路），不另写一遍。
+      if (!executionChanged && grantedPermissions === undefined && previous !== undefined
+        && priorConsent !== undefined && this.effectiveGrants(previous) === null) {
+        throw Error("上一次「允许一次」的授权已在重启后失效，请重新确认授权");
+      }
       const purged = executionChanged ? await this.purgeWorkflowGrantsFor(manifest.id) : null;
       // Consent is bound to a version and an execution fingerprint, not a module ID alone.
       const permissionArchive = this.modulePermissionArchive();
       const oldPermissionArchive = structuredClone(permissionArchive);
       const previousRecord = permissionArchive.modules[manifest.id];
+      /** 【T18】「允许一次」= `duration:"install"` → 记录带本次 bootId,重启即失效。
+       *  「始终允许」= `duration:"always"` → 持久记录（仍受版本/指纹绑定）。
+       *  两种都必须绑定**当前版本 + 执行指纹**:旧决策绝不能放行新权限。 */
+      const consentRecord = (grants: readonly ModulePermission[]) => ({
+        granted:[...grants], grantedAt:new Date().toISOString(),
+        manifestVersion:manifest.version, fingerprint:this.manifestFingerprint(manifest),
+        ...(decision === "allow-once"
+          ? {duration:"session" as const, bootId:this.bootId}
+          : {duration:"persistent" as const}),
+      });
       if (grantedPermissions !== undefined) {
-        permissionArchive.modules[manifest.id] = {
-          granted:[...grantedPermissions], grantedAt:new Date().toISOString(),
-          manifestVersion:manifest.version, fingerprint:this.manifestFingerprint(manifest),
-        };
+        permissionArchive.modules[manifest.id] = consentRecord(grantedPermissions);
       } else if (executionChanged && previousRecord) {
         delete permissionArchive.modules[manifest.id];
         if (previousRecord.granted.length) throw Error("扩展的权限或执行内容已变化，请重新逐项同意授权");
@@ -760,15 +823,26 @@ export class ModuleHost {
       id, kind, ...(metadata === undefined ? {} : {metadata}),
     }));
     // Only display grants that still match the installed code and manifest.
-    const modulePermissions: Record<string, { granted: ModulePermission[]; grantedAt: string } | null> = {};
+    const modulePermissions: Record<string, { granted: ModulePermission[]; grantedAt: string; duration?: "persistent" | "session" } | null> = {};
+    /** 【T18】最近一次「允许一次」在**重启后**失效的记录。只是给 UI 的重新询问
+     *  入口（按原授权子集再弹一次安装卡）；invoke / authorizeAppMethod 只认
+     *  `effectiveGrants`，不碰这张表 —— 它**不是**授权。 */
+    const moduleStaleConsents: Record<string, { granted: ModulePermission[]; grantedAt: string; reason: "restart" }> = {};
     for (const module of this.modules.values()) {
-      if (module.id.startsWith("user.")) {
-        const record = this.effectiveGrants(module);
-        modulePermissions[module.id] = record ? {granted:[...record.granted],grantedAt:record.grantedAt} : null;
+      if (!module.id.startsWith("user.")) continue;
+      const record = this.effectiveGrants(module);
+      // 【T18】会话级授权在目录里带上 `duration:"session"` —— 设置页据此显示
+      // 「仅本次运行有效」,而不是把它当成永久授权。
+      modulePermissions[module.id] = record
+        ? {granted:[...record.granted],grantedAt:record.grantedAt,duration:record.duration === "session" ? "session" : "persistent"}
+        : null;
+      if (!record) {
+        const stale = this.staleSessionRecord(module);
+        if (stale) moduleStaleConsents[module.id] = {granted:[...stale.granted],grantedAt:stale.grantedAt,reason:"restart"};
       }
     }
     return structuredClone({
-      modules: [...this.modules.values()], capabilities, workflowTargets, modulePermissions,
+      modules: [...this.modules.values()], capabilities, workflowTargets, modulePermissions, moduleStaleConsents,
       workflowGrantCandidates: this.grantCandidates(archive),
       workflowGrantStatus: archive.state === "corrupt" ? { archive: "corrupt", reason: archive.reason } : { archive: archive.state },
     });

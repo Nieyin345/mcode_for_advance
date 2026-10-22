@@ -337,7 +337,11 @@ export interface ModuleCatalog {
   modules: ModuleManifest[];
   capabilities: ModuleCapabilityDescriptor[];
   /** Per-module consent from the host's checked, version-bound ledger. Null = no valid consent. */
-  modulePermissions?: Record<string, { granted: ModulePermission[]; grantedAt: string } | null>;
+  modulePermissions?: Record<string, { granted: ModulePermission[]; grantedAt: string; duration?: "persistent" | "session" } | null>;
+  /** 【T18】已失效的**「允许一次」**决策：记录存在、版本/指纹仍然匹配，但属于
+   *  **上一次进程启动**。内容只供 UI 在"再次激活"时**按原授权子集重新询问** ——
+   *  它**不是**有效授权（`modulePermissions` 对同一模块此时为 null，invoke 照常拒绝）。 */
+  moduleStaleConsents?: Record<string, { granted: ModulePermission[]; grantedAt: string; reason: "restart" }>;
   /** Host-derived read-only targets. Missing means unavailable, not all modules.
    *  【MC-036】内置目标 + **有宿主核验工作流授权**的用户模块目标。 */
   workflowTargets?: ModuleWorkflowTarget[];
