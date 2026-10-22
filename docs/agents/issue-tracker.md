@@ -76,6 +76,19 @@ The `tasks/README.md` index is authoritative for formal Mcode execution cards an
 If a planning ticket and a T task disagree about execution scope, stop and
 reconcile the conflict before modifying code. Do not silently broaden a task.
 
+## Wayfinding operations
+
+Used by `/wayfinder`. The **map** is a file with one **child** file per ticket. This section was missing from this repo's tracker doc; it is restored here from the canonical setup skill (`setup-matt-pocock-skills/issue-tracker-local.md`) because `wayfinder` explicitly requires it.
+
+- **Map**: `.scratch/<effort>/map.md` — the Notes / Decisions-so-far / Fog body. One map per effort; it is the canonical artifact, not a summary of the tickets.
+- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research` / `prototype` / `grilling` / `task`); a `Status:` line records `claimed` / `resolved`.
+- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
+- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; lowest number wins.
+- **Claim**: set `Status: claimed` and save **before** any work starts, so a parallel session does not pick the same ticket.
+- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+
+Wayfinding tickets resolve **decisions**, not implementation slices. Resolving one does not close any `tasks/` card; when an approved decision needs code, create a bounded `tasks/T<number>-*.md` card per the section above.
+
 ## Publishing
 
 When an engineering skill says "publish to the issue tracker", write to

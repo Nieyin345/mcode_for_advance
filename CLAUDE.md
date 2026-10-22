@@ -4,11 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-Mcode：本地优先的通用 Agent 桌面客户端（Electron + React 19 + TypeScript），pnpm + turbo monorepo（`apps/desktop` + `packages/contracts`）。它不自己实现 Agent 能力，而是把三家引擎（Claude Code SDK / Pi / Codex）接进来，上面提供工作流编排、自动化触发器、资料库、插件系统。本 fork 定位是学术研究工作台。
+Mcode：本地优先的通用 Agent 桌面客户端（Electron + React 19 + TypeScript），pnpm + turbo monorepo（`apps/desktop` + `packages/contracts`）。它不自己实现 Agent 能力，而是把三家引擎（Claude Code SDK / Pi / Codex）接进来，上面提供工作流编排、自动化触发器、资料库、插件系统。
 
-两份更深的文档，改代码前值得翻：
+**目标用户是技术型个人用户与小团队，不是某个垂直领域。** 场景能力（科研、写作、法律、金融……）全部通过扩展、工作流、自动化组合出来，不许硬编码进宿主；科研数据分析/报告生成只是端到端验收用例。扩展是长期主线，近期四条线是 UI 工作台 / GenOffice 六编辑器 / Node-RED 工作流 / 共享底层能力。产品决策以 `docs/planning/mcode-product-roadmap.md` 为准（Grilling Q1–Q51 恢复稿见 `.scratch/mcode-product-roadmap/`）。
 
-- **`AGENTS.md`**（402 行）—— 逐子系统的权威指南：进程架构、SDK 消息适配、rewind/文件快照、编辑器驻留、组件与图标规范、Codex 协议硬事实、浏览器工具、插件系统等。
+三份更深的文档，改代码前值得翻：
+
+- **`AGENTS.md`**（520 行）—— 逐子系统的权威指南：进程架构、SDK 消息适配、rewind/文件快照、编辑器驻留、组件与图标规范、Codex 协议硬事实、浏览器工具、插件系统等。
+- **`docs/planning/mcode-product-roadmap.md`** —— 用户确认的产品路线：产品定义、四条主线、任务/验收/执行环境规则。
 - **`docs/planning/Status-and-Plan.md`** —— 现状与任务书：已完成能力清单、后续工作（A/B/C/D 四档优先级）、本文档第四节的硬规矩。同目录下还有 `优化方向.md`（优化指导 + 进度台账）、`前端待办.md`。
 
 ## 常用命令
@@ -62,19 +65,20 @@ bash apps/desktop/scripts/<name>-smoke/run.sh
    ↕ 唯一桥:window.api
 preload (contextBridge + zod 校验)
    ↕ IPC
-主进程 (Node.js): 25 个模块目录
+主进程 (Node.js): 33 个模块目录
    orchestration/ library/ memory/ mobile/ plugins/ browser/ lsp/ terminal/ relay/ …
 ```
 
 看懂这几条才动得了手：
 
-1. **契约先行**。IPC 方法（`RpcMap` 313 个）的 schema 定义在 `packages/contracts/src/ipc/`（按域拆 22 个模块）→ preload 白名单 → 主进程 handler。加一条 IPC 要走全三层，缺一层调用端就看不到。
-2. **AgentProvider 抽象**。每家引擎一个 Provider + 一个 MessageAdapter，把各家事件归一成 provider 中立的 `RuntimeEvent`。行为对齐（预算、回退、结构化输出、子代理、elicitation）在各 Provider 里做。第四个 provider 是网页模型（浏览器扩展桥驱动真实网页 LLM 页面）。
-3. **工作流编排**。图模型 + 调度器（就绪即派发、并发上限默认 4）+ 十个内置节点类型（`nodeTypes.ts` 的 `BUILTIN_NODE_TYPES`）。执行分派只有一个入口：`manifest.runner.kind` 查注册表，没有就落兜底（模型轮；`module-capability` 例外——缺执行器时 fail-closed）。插件可注册自己的节点类型。关键区分：**子 agent 节点跑在隐藏子会话；主代理（`mcode.main`）与对话节点跑在主对话里**，用户看得见。
+1. **契约先行**。IPC 方法（`RpcMap` 446 个）的 schema 定义在 `packages/contracts/src/ipc/`（按域拆 32 个模块，索引是 `rpcMap.ts`）→ preload 白名单 → 主进程 handler。加一条 IPC 要走全三层，缺一层调用端就看不到。
+2. **AgentProvider 抽象**。每家引擎一个 Provider + 一个 MessageAdapter，把各家事件归一成 provider 中立的 `RuntimeEvent`。行为对齐（预算、回退、结构化输出、子代理、elicitation）在各 Provider 里做。第四个 provider 是网页模型（浏览器扩展桥驱动真实网页 LLM 页面）。**SDK 不锁死版本**：升级要过兼容矩阵与回归，不许静默切换引擎。
+3. **工作流编排**。图模型 + 调度器（就绪即派发、并发上限默认 4）+ **10 个**内置节点类型（`nodeTypes.ts:612` 的 `BUILTIN_NODE_TYPES`）。执行分派只有一个入口：`manifest.runner.kind` 查注册表，没有就落兜底（模型轮；`module-capability` 例外——缺执行器时 fail-closed）。插件可注册自己的节点类型。关键区分：**子 agent 节点跑在隐藏子会话；主代理（`mcode.main`）与对话节点跑在主对话里**，用户看得见。
+   **方向注意**：产品路线已定 Node-RED 为唯一工作流/自动化内核（原生画布 + runtime + registry + nodes），上述自有图模型是迁移期现状，不是目标终态。迁移期内**禁止长期保留两套执行器或双触发**，见 `docs/planning/node-red-vendor-integration-map.md`。
 4. **sql.js 持久化**（纯 WASM SQLite，**没有 FTS5**，全文检索走 ripgrep）。统一数据根。
 5. **i18n**：zh/en 双词典在 `lib/i18n/{zh,en}/`，**zh 是 `MessageId` 类型的源**——缺 key 直接 typecheck 失败。用户可见的字符串不许硬编码。
 
-## 硬规矩（来自 docs/planning/Status-and-Plan.md，实测救过场）
+## 硬规矩（来自 docs/planning/Status-and-Plan.md 与产品路线，实测救过场）
 
 1. **先补测试，再动刀**。大重构前给要改的路径写断言。
 2. **共享实现只有一份**。「用户点的」和「AI 调的」必须走同一个函数。
@@ -87,6 +91,12 @@ preload (contextBridge + zod 校验)
    仍在事件处理器里显式 `await api.*`。老代码不强迁：动到哪个面板，顺手迁哪个面板。
    界面的空状态 / 错误提示 / 加载态 / 表单行 / 状态徽标，先看 `components/ui/` 的
    `EmptyState` / `ErrorNote` / `Spinner` / `Skeleton` / `Field` / `Badge`，没有再造。
+8. **执行完成 ≠ 验收通过**。任务由验收证据决定是否完成；失败就返修、重验或请求用户介入，
+   不许拿「报告已写」「测试跑绿」冒充产品通过。E1/headless 不等于真实 Electron U1。
+9. **AI 可配置但不可自授权**。AI 能发现、提议、生成、配置能力；需要授权的操作仍由用户批准，
+   未知或损坏状态 fail-closed。「AI 能控制功能」不等于「能绕过权限」。
+10. **执行环境由用户选，AI 不调度**。项目可记住默认环境、单任务可覆盖；环境不可用就明确报错，
+    不自动切换到别的环境。
 
 ## 环境事实（踩过的坑）
 
@@ -97,6 +107,27 @@ preload (contextBridge + zod 校验)
 - preload 不热更：改 preload 后「新命名空间 = undefined」说明没真正重启 dev，不是写错了。
 - Windows 子进程输出是控制台代码页（中文机器 GBK）：解码先严格试 UTF-8、失败退回 GBK，用原始字节，别数替换字符。
 - **无头验证数据时，`dataRoot` 必须指向 `mcode.db` 的副本**——sql.js 重写整个文件，指向真库会毁数据。
+
+## 产品主线与复用来源
+
+**最终效果 = Claude 桌面端的 UI；其余能力一律优先复用上游源码做二开，不从零写。** 遇到「要不要自己实现」时，先按 L1→L4 找证据：
+
+| 线 | 复用什么（仓库内已有） | 许可 |
+|---|---|---|
+| UI 工作台 | `open-claude-ui/` Claude 桌面端逆向成果（CDS token 由 `gen-cds-tokens.mjs` 提取） | MIT |
+| 文档 | `genoffice/` 六原生编辑器（docs/sheets/slides/pdf/markdown/html） | Apache-2.0（`ee/` 企业条款不得拷入） |
+| 工作流 | `node-red/` 5.0.8 源码（原生画布 + runtime + registry + nodes） | Apache-2.0 |
+| 扩展 | `ModuleHost` + VS Code API 薄映射（`docs/planning/extension-vscode-compat.md`） | 各自审查 |
+
+L1 直接复用 → L2 薄宿主适配 → L3 可审计 fork → L4 最小自有逻辑（L4 必须附「已检索上游仍无对应能力」的源码证据）。三条线共享的硬边界：**不另造 Agent loop**、**不造第二套 Office/工作流/插件运行时**、**不引入默认 YOLO/跳过审批**。
+
+## 执行任务体系
+
+- **正式执行卡**在 `tasks/T<number>-*.md`，索引 `tasks/README.md`；旧卡归档在 `tasks/archive/legacy-2026-10-22/`，编号不复用、状态不作新验收。
+- 派活按**独占文件边界**拆，不按问题名称拆：同一文件同一时间只能有一个执行对话负责。开工先声明精确可写文件集，发现重叠即停。
+- 每张卡必须有 `## Required Skills`（只列相关的）、独占写入边界、验收判据、旧红→新绿要求、结果回写区。
+- **写回即完成**：执行对话把结果追加到卡末尾就算交付；有遗留另开新卡，不做「部分完成」的二次判定。
+- 规划票在 `.scratch/<feature-slug>/`（`spec.md` + `map.md` + `issues/`），它不替代 T 卡的执行验收。产品路线恢复稿在 `.scratch/mcode-product-roadmap/`。
 
 ## Agent skills
 
