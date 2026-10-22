@@ -131,7 +131,7 @@ L1 直接复用 → L2 薄宿主适配 → L3 可审计 fork → L4 最小自有
 
 ## Agent skills
 
-44 个 skill 装在本机 `.claude/skills/`（该目录被 gitignore，不进版本库）。名字、来源、用途、能否由模型自行调用的完整清单在 **`docs/agents/installed-skills.md`**。新建 T 卡时 `## Required Skills` 只从那份清单选。
+46 个 skill 装在本机 `.claude/skills/`（该目录被 gitignore，不进版本库）。名字、来源、用途、能否由模型自行调用的完整清单在 **`docs/agents/installed-skills.md`**。新建 T 卡时 `## Required Skills` 只从那份清单选。
 
 ### Issue tracker
 

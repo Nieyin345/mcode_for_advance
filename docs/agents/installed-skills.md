@@ -12,6 +12,17 @@
 |---|---|---|
 | `mcode-smoke` | 模型 | Mcode 无头 smoke 的写法：esbuild 打包 + `--alias` 换桩 + `fakeIpc`；隔离会动磁盘/数据的代码；变异验证。也回答「改这个文件该跑哪几套」。**这个仓库改主进程代码必读。** |
 
+## 领域补充（2026-10-23 新增）
+
+按六条主线的实际缺口装的，每个都直接服务具体任务卡。
+
+| Skill | 许可 | 服务哪张卡 | 用途 |
+|---|---|---|---|
+| `playwright-skill` | MIT（testdino.com, v2.8.0） | **T16**、T7、T8 | 79 份 Playwright 1.64 参考：locator、断言、fixture、视觉回归、CI 分片、trace 分析。**Electron 测试的评估基准。** |
+| `dependency-license-audit` | Apache-2.0 | **T10**、T11 | 只读依赖许可审计，按策略（ASF A/B/X 或 allowlist）分类。**不修改 manifest/lockfile**，与本仓库的 release gate 不冲突。 |
+
+**还没装的缺口**（按价值排序）：VS Code 扩展 API 兼容、Node-RED 节点开发。前者可由 `docs/planning/extension-vscode-compat.md` 的 19KB 分级表部分顶替；后者目前靠读 `node-red/` 上游源码。
+
 ## Matt Pocock 工程技能（第三方）
 
 来源：`setup-matt-pocock-skills` 安装的一整套。分两组，区别是能否由模型自行触发。
