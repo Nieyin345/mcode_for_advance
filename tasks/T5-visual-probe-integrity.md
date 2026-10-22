@@ -21,4 +21,4 @@
 - **变异验证**：把 `probe-assertions.ts` 里 5 处 `"wrong-container"` 全部改写成 `"real"` 后重跑 → `22/27 PASS`，**5 条红**，分别是 settings header lookalike、composer 容器外、tool rail lookalike、message 容器外、tool scene 仅 rail lookalike。随后从备份**逐字节还原**（`cmp` 确认相同），重跑 `27/27 PASS`。
 - **证据边界**：本套件是**无头 DOM E1**（`main.ts` 零处引用 electron，跑在 `node:vm` 的合成文档上），**不是真实 Electron U1**。T5 卡要求的正是 DOM/E1 边界，故判据达成。
 - **未做**：真实 Electron 下逐屏视觉对照仍属 ARC-005 V4，不在本卡范围。
-- **提交 SHA**：`PENDING`
+- **提交 SHA**：`d250a159`
