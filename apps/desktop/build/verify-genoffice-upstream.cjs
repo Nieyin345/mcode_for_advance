@@ -14,8 +14,8 @@ const FORMAT = "mcode.genoffice.upstream-lock.v2";
 const REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const BASE_REVISION = "cbec600ace9c930b2646b6739cf6df3741bb9d6a";
 const APPROVED_PATCH_REVISION = "73ba918083b5e2bedff7633925c3d7f625e04449";
-const FINAL_REVISION = "355e667353ad90da7d0b3c6823fad0f525b729c3";
-const FINAL_TREE = "2b6c91f23922a8c5a915d6e351dfbf19db6de082";
+const FINAL_REVISION = "635dee2f6a38d7f0a3aec31a487afc3e2369a5cf";
+const FINAL_TREE = "532e6727eb1f4e94e686cee1ab55a99bddf8f6f0";
 const LICENSE_SOURCE_MANIFEST = "apps/desktop/build/vendor-licenses/genoffice/manifest.json";
 const APPROVED_PATHS = Object.freeze([
   "apps/pdf/src/main/atomic-write.ts",
@@ -33,7 +33,8 @@ const PATCHES = Object.freeze([
   { file: "patches/genoffice/0009-feat-docs-scoped-export-media-and-files-read.patch", revision: "545c83b8a1abc69af2f7499a22d1c49b0c62d8e7", parentRevision: "bb7f67cc72056c0327030369a1156b92bbe37e7d", sha256: "b80bda2dd6f4215ff9dcf2e3f64e84e4f8c44a3e9f3e3d0daa027007f5f825c1" },
   { file: "patches/genoffice/0010-feat-pdf-markdown-html-scoped-mcode-ai.patch", revision: "9959e731e650f9eb51bf19937df2e07e967fe244", parentRevision: "545c83b8a1abc69af2f7499a22d1c49b0c62d8e7", sha256: "a093c109577962a51eaa0ddfdf3df6968e94dd1d8b5185c6de3535456d6594f9" },
   { file: "patches/genoffice/0011-security-sheets-slides-scoped-ipc.patch", revision: "aba076cc9b292461cc419288ee555e524f6250e1", parentRevision: "9959e731e650f9eb51bf19937df2e07e967fe244", sha256: "2f45a4632a38f7a394c5ddffb6a3fd6c515d7f9081e9f07e1504831644b3feed" },
-  { file: "patches/genoffice/0012-security-slides-hosted-ai-media-ipc.patch", revision: FINAL_REVISION, parentRevision: "aba076cc9b292461cc419288ee555e524f6250e1", sha256: "881f66dfc32c09050831e5760ef040a9e2e2a8588e9ab9a19ad284389817b5fa" },
+  { file: "patches/genoffice/0012-security-slides-hosted-ai-media-ipc.patch", revision: "355e667353ad90da7d0b3c6823fad0f525b729c3", parentRevision: "aba076cc9b292461cc419288ee555e524f6250e1", sha256: "881f66dfc32c09050831e5760ef040a9e2e2a8588e9ab9a19ad284389817b5fa" },
+  { file: "patches/genoffice/0013-feat-docs-ack-native-tool-results-in-hosted-turn.patch", revision: FINAL_REVISION, parentRevision: "355e667353ad90da7d0b3c6823fad0f525b729c3", sha256: "7572ccf2650806cd7707f43d8e011d21ad1545e01ecbdbccbe15df6eb672409c" },
 ]);
 
 function runGit(directory, ...args) {
@@ -154,7 +155,7 @@ function assertUpstreamRevision({ repoRoot, lockPath } = {}) {
   const actualCommits = runGit(vendor, "rev-list", "--reverse", BASE_REVISION + "..HEAD")
     .split(/\r?\n/).filter(Boolean);
   if (!sameJson(actualCommits, expectedCommits.map(entry => entry.revision))) {
-    throw new Error("GenOffice commit lineage mismatch: expected approved patch plus exactly 12 ordered Mcode commits; actual " +
+    throw new Error("GenOffice commit lineage mismatch: expected approved patch plus exactly 13 ordered Mcode commits; actual " +
       actualCommits.join(", "));
   }
   if (runGit(vendor, "rev-parse", BASE_REVISION) !== BASE_REVISION) {
@@ -245,7 +246,7 @@ if (require.main === module) {
   try {
     const result = verifyReleaseSource({ repoRoot: path.resolve(__dirname, "../../..") });
     console.log(result.checked
-      ? `GenOffice original upstream approved: ${result.revision} (base ${result.baseRevision}, 12 patches, tree ${result.tree})`
+      ? `GenOffice original upstream approved: ${result.revision} (base ${result.baseRevision}, 13 patches, tree ${result.tree})`
       : "GenOffice upstream gate: opt-out, no vendor source required");
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));

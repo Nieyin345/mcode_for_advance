@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "355e667353ad90da7d0b3c6823fad0f525b729c3",
-  "expectedTree": "2b6c91f23922a8c5a915d6e351dfbf19db6de082",
+  "revision": "635dee2f6a38d7f0a3aec31a487afc3e2369a5cf",
+  "expectedTree": "532e6727eb1f4e94e686cee1ab55a99bddf8f6f0",
   "patchSeries": [
     {
       "index": 1,
@@ -121,16 +121,18 @@
       "sha256": "881f66dfc32c09050831e5760ef040a9e2e2a8588e9ab9a19ad284389817b5fa",
       "bytes": 4808,
       "subject": "security(slides): fail closed for hosted ai media ipc"
+    },
+    {
+      "index": 13,
+      "file": "patches/genoffice/0013-feat-docs-ack-native-tool-results-in-hosted-turn.patch",
+      "revision": "635dee2f6a38d7f0a3aec31a487afc3e2369a5cf",
+      "parentRevision": "355e667353ad90da7d0b3c6823fad0f525b729c3",
+      "sha256": "7572ccf2650806cd7707f43d8e011d21ad1545e01ecbdbccbe15df6eb672409c",
+      "bytes": 65835,
+      "subject": "feat(docs): ack native tool results in hosted turn"
     }
   ],
   "license": "Apache-2.0",
-  "editors": [
-    "docs",
-    "sheets",
-    "slides",
-    "pdf",
-    "markdown",
-    "html"
-  ],
+  "editors": ["docs", "sheets", "slides", "pdf", "markdown", "html"],
   "licenseSourceManifest": "apps/desktop/build/vendor-licenses/genoffice/manifest.json"
 }

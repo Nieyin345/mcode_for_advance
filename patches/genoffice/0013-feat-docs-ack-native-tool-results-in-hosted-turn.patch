@@ -1,0 +1,1512 @@
+From 635dee2f6a38d7f0a3aec31a487afc3e2369a5cf Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Thu, 22 Oct 2026 15:29:27 +0800
+Subject: [PATCH] feat(docs): ack native tool results in hosted turn
+
+---
+ apps/docs/src/main/mcode-ai.ts                | 476 ++++++++++++++++--
+ apps/docs/src/preload/mcode-view.ts           | 117 +++--
+ apps/docs/src/renderer/ai/transport.ts        |  21 +-
+ apps/docs/src/shared/ipc.ts                   |  16 +
+ packages/agent-core/src/electron-transport.ts | 150 +++++-
+ packages/agent-core/src/loop.ts               | 326 +++++++++++-
+ 6 files changed, 1020 insertions(+), 86 deletions(-)
+
+diff --git a/apps/docs/src/main/mcode-ai.ts b/apps/docs/src/main/mcode-ai.ts
+index 2fff9ff..50041a6 100644
+--- a/apps/docs/src/main/mcode-ai.ts
++++ b/apps/docs/src/main/mcode-ai.ts
+@@ -4,13 +4,21 @@
+  * Every call resolves a live sender and Mcode-selected session at invocation.
+  */
+ import type { IpcMain, IpcMainInvokeEvent } from 'electron'
++import type {
++  AgentToolCall,
++  AgentToolDef,
++  DocsAiToolResultAck,
++  DocsAiToolResultStatus,
++} from '../shared/ipc'
+ 
+ export type DocsAiChunk = {
+   requestId: string
+-  type: 'delta' | 'reasoning' | 'done' | 'error' | 'ping'
++  type: 'delta' | 'reasoning' | 'tool-call' | 'done' | 'error' | 'ping'
+   text?: string
+   error?: string
+   stopReason?: string
++  toolCall?: AgentToolCall
++  toolDefinition?: AgentToolDef
+ }
+ export type DocsAiContext = { sessionId: string; filePath: string }
+ export type DocsAiRequest = {
+@@ -18,25 +26,51 @@ export type DocsAiRequest = {
+   system?: string
+   messages?: unknown
+   user?: string
+-  tools?: unknown
++  tools: AgentToolDef[]
+   context: DocsAiContext
+ }
++export type DocsAiToolResult = { status: DocsAiToolResultStatus; output: string }
++/** Host-supplied definition is required; renderer-provided tool lists are not authority. */
++export type DocsAiToolResultHandler = (
++  call: AgentToolCall,
++  hostToolDefinition: AgentToolDef,
++) => Promise<DocsAiToolResult>
+ export interface DocsAiPorts {
+-  describe(context: DocsAiContext): { ok: true; provider: string; model: string } | { ok: false; error: string }
++  describe(
++    context: DocsAiContext,
++  ): { ok: true; provider: string; model: string } | { ok: false; error: string }
+   confirm(context: DocsAiContext, dangerous: boolean): Promise<boolean>
+-  run(request: DocsAiRequest, onChunk: (chunk: DocsAiChunk) => void, signal: AbortSignal): Promise<void>
++  /** Host adapters must call this for each native SDK tool call and await the renderer ACK. */
++  run(
++    request: DocsAiRequest,
++    onChunk: (chunk: DocsAiChunk) => void,
++    signal: AbortSignal,
++    invokeRendererTool?: DocsAiToolResultHandler,
++  ): Promise<void>
+ }
+ 
+ const prefix = 'mcode:docs:ai-'
+ export const MCODE_DOCS_AI_HANDLERS = [
+-  'get-settings', 'set-settings', 'stream', 'stream-cancel', 'chat',
+-  'codex-models', 'custom-models', 'gsk-login',
+-  'web-search', 'image-search', 'media-test', 'search-test',
++  'get-settings',
++  'set-settings',
++  'stream',
++  'stream-cancel',
++  'tool-result',
++  'chat',
++  'codex-models',
++  'custom-models',
++  'gsk-login',
++  'web-search',
++  'image-search',
++  'media-test',
++  'search-test',
+   // Two extra upstream endpoints omitted by the original task's 12-item table:
+-  'gsk-status', 'fetch-image',
++  'gsk-status',
++  'fetch-image',
+ ] as const
+ export const MCODE_DOCS_AI_EVENT = prefix + 'stream-chunk'
+-const UNAVAILABLE = '请通过 Mcode 中已选择的 Claude / Pi / Codex 引擎使用文档 AI；GenOffice 云账户和云 API 未连接'
++const UNAVAILABLE =
++  '请通过 Mcode 中已选择的 Claude / Pi / Codex 引擎使用文档 AI；GenOffice 云账户和云 API 未连接'
+ const reject = (reason = UNAVAILABLE) => ({ ok: false as const, error: reason })
+ 
+ interface Scoped {
+@@ -46,32 +80,205 @@ interface Scoped {
+ type Owner = (sender: unknown) => Scoped | null
+ 
+ function validRequestId(raw: unknown): raw is string {
+-  return typeof raw === 'string' && raw.length >= 1 && raw.length <= 120 &&
++  return (
++    typeof raw === 'string' &&
++    raw.length >= 1 &&
++    raw.length <= 120 &&
+     /^[A-Za-z0-9_.:-]+$/.test(raw)
++  )
+ }
++const MAX_TOOL_DEFINITIONS = 100
++const MAX_TOOL_SCHEMA_BYTES = 128 * 1024
++const MAX_TOOL_CALL_BYTES = 64 * 1024
++const MAX_TOOL_RESULT_BYTES = 64 * 1024
++const MAX_PENDING_TOOL_CALLS = 8
++const MAX_TOOL_CALLS_PER_REQUEST = 32
++const DEFAULT_TOOL_RESULT_ACK_TIMEOUT_MS = 60_000
++const TOOL_ACK_TIMEOUT_OUTPUT =
++  'Timed out waiting for a trusted renderer tool-result ACK; the result was not accepted'
++
++function validToolName(raw: unknown): raw is string {
++  return typeof raw === 'string' && raw.length <= 128 && /^[A-Za-z0-9_.:-]+$/.test(raw)
++}
++function utf8Bytes(value: string): number {
++  return new TextEncoder().encode(value).byteLength
++}
++function plainRecord(value: unknown): value is Record<string, unknown> {
++  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
++  const prototype = Object.getPrototypeOf(value)
++  return prototype === Object.prototype || prototype === null
++}
++function jsonRecordWithin(raw: unknown, maxBytes: number): Record<string, unknown> | null {
++  if (!plainRecord(raw)) return null
++  try {
++    const json = JSON.stringify(raw)
++    if (typeof json !== 'string' || utf8Bytes(json) > maxBytes) return null
++    const clone: unknown = JSON.parse(json)
++    return plainRecord(clone) ? clone : null
++  } catch {
++    return null
++  }
++}
++function parseToolDefinitions(raw: unknown): AgentToolDef[] | null {
++  if (!Array.isArray(raw) || raw.length > MAX_TOOL_DEFINITIONS) return null
++  const result: AgentToolDef[] = []
++  const names = new Set<string>()
++  let totalBytes = 0
++  for (const value of raw) {
++    if (
++      !plainRecord(value) ||
++      Object.keys(value).some((key) => !['name', 'description', 'inputSchema'].includes(key))
++    )
++      return null
++    if (
++      !validToolName(value.name) ||
++      names.has(value.name) ||
++      typeof value.description !== 'string' ||
++      value.description.length > 4_000
++    )
++      return null
++    const inputSchema = jsonRecordWithin(value.inputSchema, MAX_TOOL_SCHEMA_BYTES)
++    if (!inputSchema) return null
++    const definition = {
++      name: value.name,
++      description: value.description,
++      inputSchema,
++    } as AgentToolDef
++    const serialized = JSON.stringify(definition)
++    totalBytes += utf8Bytes(serialized)
++    if (totalBytes > MAX_TOOL_SCHEMA_BYTES) return null
++    names.add(value.name)
++    result.push(definition)
++  }
++  return result
++}
++function parseToolDefinition(raw: unknown): AgentToolDef | null {
++  const definitions = parseToolDefinitions([raw])
++  return definitions?.[0] ?? null
++}
++function canonicalJson(value: unknown): string {
++  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
++  if (value && typeof value === 'object') {
++    const record = value as Record<string, unknown>
++    return `{${Object.keys(record)
++      .sort()
++      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
++      .join(',')}}`
++  }
++  return JSON.stringify(value) ?? 'undefined'
++}
++function normalizeToolCall(raw: unknown): AgentToolCall | null {
++  if (!plainRecord(raw) || !validRequestId(raw.id) || !validToolName(raw.name)) return null
++  if (
++    raw.inputError !== undefined &&
++    (typeof raw.inputError !== 'string' || raw.inputError.length > 2_000)
++  )
++    return null
++  if (raw.truncated !== undefined && typeof raw.truncated !== 'boolean') return null
++  const input = jsonRecordWithin(raw.input, MAX_TOOL_CALL_BYTES)
++  if (!input) return null
++  return {
++    id: raw.id,
++    name: raw.name,
++    input,
++    ...(typeof raw.inputError === 'string' ? { inputError: raw.inputError } : {}),
++    ...(raw.truncated === true ? { truncated: true } : {}),
++  }
++}
++function parseToolResultAck(raw: unknown): DocsAiToolResultAck | null {
++  if (!plainRecord(raw)) return null
++  const keys = Object.keys(raw).sort().join(',')
++  if (
++    keys !== 'callId,name,output,requestId,status' ||
++    !validRequestId(raw.requestId) ||
++    !validRequestId(raw.callId) ||
++    !validToolName(raw.name) ||
++    typeof raw.status !== 'string' ||
++    !['success', 'error', 'cancelled'].includes(raw.status) ||
++    typeof raw.output !== 'string'
++  )
++    return null
++  return raw as unknown as DocsAiToolResultAck
++}
++
+ function limitedRequest(raw: unknown, context: DocsAiContext): DocsAiRequest | null {
+-  if (!raw || typeof raw !== 'object') return null
+-  const input = raw as Record<string, unknown>
+-  if (!validRequestId(input.requestId) ||
+-      (input.system !== undefined && (typeof input.system !== 'string' || input.system.length > 100_000)) ||
+-      !Array.isArray(input.messages) || input.messages.length > 100 ||
+-      (input.tools !== undefined && (!Array.isArray(input.tools) || input.tools.length > 100))) return null
++  if (!plainRecord(raw)) return null
++  const input = raw
++  const tools = parseToolDefinitions(input.tools === undefined ? [] : input.tools)
++  if (
++    !validRequestId(input.requestId) ||
++    (input.system !== undefined &&
++      (typeof input.system !== 'string' || input.system.length > 100_000)) ||
++    !Array.isArray(input.messages) ||
++    input.messages.length > 100 ||
++    !tools
++  )
++    return null
+   return {
+     requestId: input.requestId,
+     system: input.system as string | undefined,
+     messages: input.messages,
+-    tools: input.tools,
++    tools,
+     // Ignore request.sessionId, provider, settings and arbitrary cwd: those
+     // are not authority to select credentials/provider/workspace.
+     context,
+   }
+ }
+ 
++interface PendingToolCall {
++  name: string
++  resolve(result: DocsAiToolResult): void
++  timer: ReturnType<typeof setTimeout>
++}
++interface ActiveRequest {
++  sender: IpcMainInvokeEvent['sender']
++  context: DocsAiContext
++  request: DocsAiRequest
++  controller: AbortController
++  tools: Map<string, AgentToolDef>
++  pendingToolCalls: Map<string, PendingToolCall>
++  seenCallIds: Set<string>
++  closed: boolean
++}
++export interface DocsAiIpcOptions {
++  /** Test seam; production uses the bounded 60-second default. */
++  toolResultAckTimeoutMs?: number
++}
++
++function resolvePendingToolCall(
++  active: ActiveRequest,
++  callId: string,
++  result: DocsAiToolResult,
++): boolean {
++  const pending = active.pendingToolCalls.get(callId)
++  if (!pending) return false
++  active.pendingToolCalls.delete(callId)
++  clearTimeout(pending.timer)
++  pending.resolve(result)
++  return true
++}
++function resolveAllPendingToolCalls(
++  active: ActiveRequest,
++  status: DocsAiToolResultStatus,
++  output: string,
++): void {
++  for (const callId of [...active.pendingToolCalls.keys()]) {
++    resolvePendingToolCall(active, callId, { status, output })
++  }
++}
++
+ export function registerDocsAiIpc(
+   ipc: Pick<IpcMain, 'handle' | 'removeHandler'>,
+   scoped: Owner,
++  options: DocsAiIpcOptions = {},
+ ): () => void {
+-  const running = new Map<number, Map<string, AbortController>>()
++  const ackTimeoutMs =
++    Number.isSafeInteger(options.toolResultAckTimeoutMs) &&
++    (options.toolResultAckTimeoutMs ?? 0) >= 1 &&
++    (options.toolResultAckTimeoutMs ?? 0) <= 60_000
++      ? (options.toolResultAckTimeoutMs as number)
++      : DEFAULT_TOOL_RESULT_ACK_TIMEOUT_MS
++  const running = new Map<number, Map<string, ActiveRequest>>()
+   const listening = new WeakSet<object>()
+   const authorized = (event: IpcMainInvokeEvent): Scoped | null => {
+     try {
+@@ -81,19 +288,110 @@ export function registerDocsAiIpc(
+         listening.add(event.sender)
+         event.sender.once('destroyed', () => {
+           const mine = running.get(event.sender.id)
+-          for (const controller of mine?.values() ?? []) controller.abort()
++          for (const active of mine?.values() ?? []) active.controller.abort()
+           running.delete(event.sender.id)
+         })
+       }
+       return candidate
+-    } catch { return null }
++    } catch {
++      return null
++    }
+   }
+-  const channel = (name: typeof MCODE_DOCS_AI_HANDLERS[number], fn:
+-    (event: IpcMainInvokeEvent, authority: Scoped | null, ...args: unknown[]) => unknown): void => {
++  const channel = (
++    name: (typeof MCODE_DOCS_AI_HANDLERS)[number],
++    fn: (event: IpcMainInvokeEvent, authority: Scoped | null, ...args: unknown[]) => unknown,
++  ): void => {
+     ipc.handle(prefix + name, (event, ...args) => fn(event, authorized(event), ...args))
+   }
++  const requestRendererTool = (
++    active: ActiveRequest,
++    rawCall: AgentToolCall,
++    rawHostToolDefinition: AgentToolDef,
++    send: (chunk: DocsAiChunk) => void,
++  ): Promise<DocsAiToolResult> => {
++    const call = normalizeToolCall(rawCall)
++    const hostToolDefinition = parseToolDefinition(rawHostToolDefinition)
++    if (!call || !hostToolDefinition || hostToolDefinition.name !== call.name) {
++      return Promise.resolve({
++        status: 'error',
++        output: 'Host refused a malformed native tool call or tool definition',
++      })
++    }
++    if (active.closed || active.controller.signal.aborted || active.sender.isDestroyed?.()) {
++      return Promise.resolve({
++        status: 'cancelled',
++        output: 'Host request was cancelled before renderer execution',
++      })
++    }
++    const rendererToolDefinition = active.tools.get(call.name)
++    if (!rendererToolDefinition) {
++      return Promise.resolve({ status: 'error', output: `Host refused unknown tool: ${call.name}` })
++    }
++    try {
++      if (
++        canonicalJson(rendererToolDefinition.inputSchema) !==
++        canonicalJson(hostToolDefinition.inputSchema)
++      ) {
++        return Promise.resolve({
++          status: 'error',
++          output: `Host tool schema did not match the active renderer skill for ${call.name}; the tool was not executed`,
++        })
++      }
++    } catch {
++      return Promise.resolve({ status: 'error', output: 'Host refused an invalid tool schema' })
++    }
++    if (active.seenCallIds.has(call.id)) {
++      return Promise.resolve({
++        status: 'error',
++        output: 'Host refused duplicate or reused callId; the tool was not executed again',
++      })
++    }
++    if (active.seenCallIds.size >= MAX_TOOL_CALLS_PER_REQUEST) {
++      return Promise.resolve({
++        status: 'error',
++        output: 'Host tool-call limit exceeded for this request',
++      })
++    }
++    if (active.pendingToolCalls.size >= MAX_PENDING_TOOL_CALLS) {
++      return Promise.resolve({
++        status: 'error',
++        output: 'Host tool-result ACK concurrency limit exceeded',
++      })
++    }
++    active.seenCallIds.add(call.id)
++    return new Promise<DocsAiToolResult>((resolve) => {
++      const timer = setTimeout(() => {
++        resolvePendingToolCall(active, call.id, {
++          status: 'error',
++          output: TOOL_ACK_TIMEOUT_OUTPUT,
++        })
++      }, ackTimeoutMs)
++      active.pendingToolCalls.set(call.id, { name: call.name, resolve, timer })
++      try {
++        send({
++          requestId: active.request.requestId,
++          type: 'tool-call',
++          toolCall: call,
++          toolDefinition: hostToolDefinition,
++        })
++      } catch {
++        resolvePendingToolCall(active, call.id, {
++          status: 'cancelled',
++          output: 'Renderer closed before tool-result ACK',
++        })
++      }
++      if (active.controller.signal.aborted || active.sender.isDestroyed?.()) {
++        resolvePendingToolCall(active, call.id, {
++          status: 'cancelled',
++          output: 'Host request was cancelled before tool-result ACK',
++        })
++      }
++    })
++  }
+   const stream = async (
+-    event: IpcMainInvokeEvent, authority: Scoped | null, raw: unknown,
++    event: IpcMainInvokeEvent,
++    authority: Scoped | null,
++    raw: unknown,
+     sink?: (chunk: DocsAiChunk) => void,
+   ): Promise<void> => {
+     const send = (chunk: DocsAiChunk) => {
+@@ -102,8 +400,10 @@ export function registerDocsAiIpc(
+         else event.sender.send(MCODE_DOCS_AI_EVENT, chunk)
+       }
+     }
+-    const requestId = (raw && typeof raw === 'object' && 'requestId' in raw)
+-      ? (raw as { requestId?: unknown }).requestId : undefined
++    const requestId =
++      raw && typeof raw === 'object' && 'requestId' in raw
++        ? (raw as { requestId?: unknown }).requestId
++        : undefined
+     if (!validRequestId(requestId)) {
+       send({ requestId: 'invalid-request', type: 'error', error: '文档 AI 请求缺少有效 requestId' })
+       return
+@@ -112,23 +412,46 @@ export function registerDocsAiIpc(
+       send({ requestId, type: 'error', error: UNAVAILABLE })
+       return
+     }
+-    const request = limitedRequest(raw, authority.context)
++    // Snapshot Host-owned identity values. Never keep a mutable context object
++    // supplied by the owner callback as the authority for a later ACK.
++    const requestContext: DocsAiContext = {
++      sessionId: authority.context.sessionId,
++      filePath: authority.context.filePath,
++    }
++    const request = limitedRequest(raw, requestContext)
+     if (!request) {
+       send({ requestId, type: 'error', error: '无效或过大的 Docs AI 请求' })
+       return
+     }
+-    const mine = running.get(event.sender.id) ?? new Map<string, AbortController>()
++    const mine = running.get(event.sender.id) ?? new Map<string, ActiveRequest>()
+     if (mine.has(requestId)) {
+       send({ requestId, type: 'error', error: '重复 Docs AI 请求已拒绝' })
+       return
+     }
+     const controller = new AbortController()
+-    mine.set(requestId, controller)
++    const active: ActiveRequest = {
++      sender: event.sender,
++      context: requestContext,
++      request,
++      controller,
++      tools: new Map(request.tools.map((tool) => [tool.name, tool] as const)),
++      pendingToolCalls: new Map(),
++      seenCallIds: new Set(),
++      closed: false,
++    }
++    const onAbort = () =>
++      resolveAllPendingToolCalls(
++        active,
++        'cancelled',
++        'Host request was cancelled before tool-result ACK',
++      )
++    controller.signal.addEventListener('abort', onAbort, { once: true })
++    mine.set(requestId, active)
+     running.set(event.sender.id, mine)
+     try {
+       // Every prompt requires a fresh user confirmation, so potential whole
+       // document rewrites/batch edits cannot silently inherit prior approvals.
+-      if (!await authority.ports.confirm(authority.context, true)) {
++      if (!(await authority.ports.confirm(authority.context, true))) {
+         send({ requestId, type: 'error', error: '用户未批准本次 Mcode 文档 AI 操作' })
+         return
+       }
+@@ -137,11 +460,28 @@ export function registerDocsAiIpc(
+         send({ requestId, type: 'error', error: '文档 AI 已取消' })
+         return
+       }
+-      await authority.ports.run(request, send, controller.signal)
++      await authority.ports.run(request, send, controller.signal, (call, hostToolDefinition) =>
++        requestRendererTool(active, call, hostToolDefinition, send),
++      )
+     } catch (error) {
+-      send({ requestId, type: 'error', error: error instanceof Error ? error.message : 'Mcode AI 调用失败' })
++      send({
++        requestId,
++        type: 'error',
++        error: error instanceof Error ? error.message : 'Mcode AI 调用失败',
++      })
+     } finally {
+-      if (running.get(event.sender.id) === mine && mine.get(requestId) === controller) {
++      active.closed = true
++      if (active.pendingToolCalls.size) {
++        resolveAllPendingToolCalls(
++          active,
++          controller.signal.aborted ? 'cancelled' : 'error',
++          controller.signal.aborted
++            ? 'Host request was cancelled before tool-result ACK'
++            : 'Host SDK ended before a tool-result ACK was received',
++        )
++      }
++      controller.signal.removeEventListener('abort', onAbort)
++      if (running.get(event.sender.id) === mine && mine.get(requestId) === active) {
+         mine.delete(requestId)
+         if (!mine.size) running.delete(event.sender.id)
+       }
+@@ -161,23 +501,74 @@ export function registerDocsAiIpc(
+       ...(description?.ok ? {} : { error: UNAVAILABLE }),
+     }
+   })
+-  channel('set-settings', () => reject('请在 Mcode 的引擎与模型设置中修改配置；不保存 GenOffice 云密钥'))
++  channel('set-settings', () =>
++    reject('请在 Mcode 的引擎与模型设置中修改配置；不保存 GenOffice 云密钥'),
++  )
+   channel('codex-models', (_event, authority) => {
+     const d = authority?.ports.describe(authority.context)
+-    return d?.ok ? { models: d.model ? [d.model] : [], defaultModel: d.model } : { models: [], defaultModel: '', error: UNAVAILABLE }
++    return d?.ok
++      ? { models: d.model ? [d.model] : [], defaultModel: d.model }
++      : { models: [], defaultModel: '', error: UNAVAILABLE }
+   })
+-  channel('custom-models', () => reject('模型列表由 Mcode 会话统一管理；GenOffice 自定义云端点不可用'))
+-  channel('gsk-login', () => reject('GenSpark 云账户登录已禁用；请使用 Mcode 的 Claude / Pi / Codex'))
+-  channel('gsk-status', () => ({ loggedIn: false, error: 'GenOffice 云账户不可用，请使用 Mcode 三引擎' }))
+-  for (const name of ['web-search', 'image-search', 'media-test', 'search-test', 'fetch-image'] as const) {
++  channel('custom-models', () =>
++    reject('模型列表由 Mcode 会话统一管理；GenOffice 自定义云端点不可用'),
++  )
++  channel('gsk-login', () =>
++    reject('GenSpark 云账户登录已禁用；请使用 Mcode 的 Claude / Pi / Codex'),
++  )
++  channel('gsk-status', () => ({
++    loggedIn: false,
++    error: 'GenOffice 云账户不可用，请使用 Mcode 三引擎',
++  }))
++  for (const name of [
++    'web-search',
++    'image-search',
++    'media-test',
++    'search-test',
++    'fetch-image',
++  ] as const) {
+     channel(name, () => reject('GenOffice 云搜索/媒体服务不可用；请通过 Mcode 的受控工具调用'))
+   }
+   channel('stream', (event, authority, raw) => stream(event, authority, raw))
+   channel('stream-cancel', (event, _authority, raw) => {
+     if (!validRequestId(raw)) return reject('无效的请求编号')
+-    const controller = running.get(event.sender.id)?.get(raw)
+-    if (!controller) return reject('这条 Docs AI 请求不存在或已结束')
+-    controller.abort()
++    const active = running.get(event.sender.id)?.get(raw)
++    if (!active || active.sender !== event.sender) return reject('这条 Docs AI 请求不存在或已结束')
++    active.controller.abort()
++    return { ok: true }
++  })
++  channel('tool-result', (event, authority, raw) => {
++    const ack = parseToolResultAck(raw)
++    if (!ack) return reject('无效或过大的 renderer tool-result ACK')
++    const active = running.get(event.sender.id)?.get(ack.requestId)
++    if (!authority) {
++      if (active?.sender === event.sender) active.controller.abort()
++      return reject('当前 Docs renderer 无权确认工具结果')
++    }
++    if (!active || active.closed || active.sender !== event.sender) {
++      return reject('没有匹配的活动 Host 请求；迟到或跨 renderer 的 ACK 已拒绝')
++    }
++    if (
++      active.context.sessionId !== authority.context.sessionId ||
++      active.context.filePath !== authority.context.filePath
++    ) {
++      active.controller.abort()
++      return reject('文档或会话已变化；跨文档 tool-result ACK 已拒绝')
++    }
++    const pending = active.pendingToolCalls.get(ack.callId)
++    if (!pending) return reject('未知、重复或迟到的 tool-result ACK 已拒绝')
++    if (pending.name !== ack.name) return reject('tool-result ACK 的工具名与 Host 请求不匹配')
++    if (utf8Bytes(ack.output) > MAX_TOOL_RESULT_BYTES) {
++      resolvePendingToolCall(active, ack.callId, {
++        status: 'error',
++        output: 'Host rejected the renderer tool result because its payload exceeded 64 KiB',
++      })
++      return {
++        ok: true,
++        error: 'Oversized tool-result payload rejected; bounded error returned to the SDK',
++      }
++    }
++    resolvePendingToolCall(active, ack.callId, { status: ack.status, output: ack.output })
+     return { ok: true }
+   })
+   channel('chat', async (event, authority, raw) => {
+@@ -199,7 +590,8 @@ export function registerDocsAiIpc(
+     return failure ? reject(failure) : { ok: true, content: text }
+   })
+   return () => {
+-    for (const pending of running.values()) for (const controller of pending.values()) controller.abort()
++    for (const pending of running.values())
++      for (const active of pending.values()) active.controller.abort()
+     running.clear()
+     for (const name of MCODE_DOCS_AI_HANDLERS) ipc.removeHandler(prefix + name)
+   }
+diff --git a/apps/docs/src/preload/mcode-view.ts b/apps/docs/src/preload/mcode-view.ts
+index 564de16..704c354 100644
+--- a/apps/docs/src/preload/mcode-view.ts
++++ b/apps/docs/src/preload/mcode-view.ts
+@@ -13,7 +13,7 @@
+  */
+ import { contextBridge, ipcRenderer } from 'electron'
+ import type { IpcRendererEvent } from 'electron'
+-import type { DesktopApi, MenuCommand } from '../shared/ipc'
++import type { DesktopApi, DocsAiToolResultAck, MenuCommand } from '../shared/ipc'
+ 
+ type Route = Readonly<{ kind: 'invoke' | 'send' | 'sync' | 'on'; to: string }>
+ 
+@@ -31,7 +31,10 @@ export const MCODE_DOCS_CHANNEL_POLICY: Readonly<Record<string, Route>> = Object
+   'docs:recent': { kind: 'invoke', to: 'mcode:document-view:open-committed' },
+   'docs:pick-image': { kind: 'invoke', to: 'mcode:docs:privileged-pick-image' },
+   'docs:save-image-as': { kind: 'invoke', to: 'mcode:docs:privileged-save-image-as' },
+-  'docs:pick-export-images-target': { kind: 'invoke', to: 'mcode:docs:privileged-pick-export-images-target' },
++  'docs:pick-export-images-target': {
++    kind: 'invoke',
++    to: 'mcode:docs:privileged-pick-export-images-target',
++  },
+   'docs:take-export-pdf': { kind: 'invoke', to: 'mcode:docs:privileged-take-export-pdf' },
+   'docs:write-export-image': { kind: 'invoke', to: 'mcode:docs:privileged-write-export-image' },
+   'docs:export-pdf': { kind: 'invoke', to: 'mcode:docs:privileged-export-pdf' },
+@@ -47,6 +50,7 @@ export const MCODE_DOCS_CHANNEL_POLICY: Readonly<Record<string, Route>> = Object
+   'ai:set-settings': { kind: 'invoke', to: 'mcode:docs:ai-set-settings' },
+   'ai:stream': { kind: 'invoke', to: 'mcode:docs:ai-stream' },
+   'ai:stream-cancel': { kind: 'invoke', to: 'mcode:docs:ai-stream-cancel' },
++  'ai:tool-result': { kind: 'invoke', to: 'mcode:docs:ai-tool-result' },
+   'ai:chat': { kind: 'invoke', to: 'mcode:docs:ai-chat' },
+   'ai:codex-models': { kind: 'invoke', to: 'mcode:docs:ai-codex-models' },
+   'ai:custom-models': { kind: 'invoke', to: 'mcode:docs:ai-custom-models' },
+@@ -98,13 +102,9 @@ function syncDocs(channel: string, payload: unknown): unknown {
+   return ipcRenderer.sendSync(route(channel, 'sync'), payload)
+ }
+ 
+-function onDocs<T extends unknown[]>(
+-  channel: string,
+-  handler: (...args: T) => void,
+-): () => void {
++function onDocs<T extends unknown[]>(channel: string, handler: (...args: T) => void): () => void {
+   const target = route(channel, 'on')
+-  const listener = (_event: IpcRendererEvent, ...args: unknown[]): void =>
+-    handler(...(args as T))
++  const listener = (_event: IpcRendererEvent, ...args: unknown[]): void => handler(...(args as T))
+   ipcRenderer.on(target, listener)
+   return () => ipcRenderer.removeListener(target, listener)
+ }
+@@ -125,7 +125,9 @@ const noSubscription = (): (() => void) => noop
+ async function readHostPendingDocx(): Promise<Awaited<ReturnType<DesktopApi['openDocxPath']>>> {
+   const reply = await invokeDocs('docs:open-path', {})
+   if (reply && typeof reply === 'object' && (reply as { ok?: unknown }).ok === true) {
+-    return ((reply as { result?: unknown }).result ?? null) as Awaited<ReturnType<DesktopApi['openDocxPath']>>
++    return ((reply as { result?: unknown }).result ?? null) as Awaited<
++      ReturnType<DesktopApi['openDocxPath']>
++    >
+   }
+   return null
+ }
+@@ -159,33 +161,61 @@ export const mcodeDocsDesktopApi = Object.freeze({
+           binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+         }
+         src = 'data:' + mime + ';base64,' + btoa(binary)
+-      } catch { return { ok: false, error: 'lazy/blob image cannot be loaded by this view' } }
++      } catch {
++        return { ok: false, error: 'lazy/blob image cannot be loaded by this view' }
++      }
+     }
+     return invokeDocs('docs:save-image-as', src) as ReturnType<DesktopApi['saveImageAs']>
+   },
+-  pickExportImagesTarget: () => invokeDocs('docs:pick-export-images-target') as ReturnType<DesktopApi['pickExportImagesTarget']>,
+-  takeExportPdf: (path: string) => invokeDocs('docs:take-export-pdf', path) as ReturnType<DesktopApi['takeExportPdf']>,
++  pickExportImagesTarget: () =>
++    invokeDocs('docs:pick-export-images-target') as ReturnType<
++      DesktopApi['pickExportImagesTarget']
++    >,
++  takeExportPdf: (path: string) =>
++    invokeDocs('docs:take-export-pdf', path) as ReturnType<DesktopApi['takeExportPdf']>,
+   writeExportImage: (dir: string, name: string, base64: string) =>
+-    invokeDocs('docs:write-export-image', dir, name, base64) as ReturnType<DesktopApi['writeExportImage']>,
+-  exportPdf: (name: string, w: number, h: number, path?: string, scale?: number, links?: Parameters<DesktopApi['exportPdf']>[5]) =>
+-    invokeDocs('docs:export-pdf', name, w, h, path, scale, links) as ReturnType<DesktopApi['exportPdf']>,
++    invokeDocs('docs:write-export-image', dir, name, base64) as ReturnType<
++      DesktopApi['writeExportImage']
++    >,
++  exportPdf: (
++    name: string,
++    w: number,
++    h: number,
++    path?: string,
++    scale?: number,
++    links?: Parameters<DesktopApi['exportPdf']>[5],
++  ) =>
++    invokeDocs('docs:export-pdf', name, w, h, path, scale, links) as ReturnType<
++      DesktopApi['exportPdf']
++    >,
+   printPdfBuffer: (w: number, h: number, scale?: number) =>
+     invokeDocs('docs:print-pdf-buffer', w, h, scale) as ReturnType<DesktopApi['printPdfBuffer']>,
+-  saveMergedPdf: (name: string, parts: string[], path?: string, links?: Parameters<DesktopApi['saveMergedPdf']>[3]) =>
+-    invokeDocs('docs:save-merged-pdf', name, parts, path, links) as ReturnType<DesktopApi['saveMergedPdf']>,
++  saveMergedPdf: (
++    name: string,
++    parts: string[],
++    path?: string,
++    links?: Parameters<DesktopApi['saveMergedPdf']>[3],
++  ) =>
++    invokeDocs('docs:save-merged-pdf', name, parts, path, links) as ReturnType<
++      DesktopApi['saveMergedPdf']
++    >,
+   listPrinters: () => invokeDocs('docs:printers') as ReturnType<DesktopApi['listPrinters']>,
+   print: (scale?: number, job?: Parameters<DesktopApi['print']>[1]) =>
+     invokeDocs('docs:print', scale, job) as ReturnType<DesktopApi['print']>,
+   pickAttachments: () => invokeDocs('files:pick') as ReturnType<DesktopApi['pickAttachments']>,
+-  addAttachmentPaths: (paths: string[]) => invokeDocs('files:add', paths) as ReturnType<DesktopApi['addAttachmentPaths']>,
+-  readAttachmentImage: (path: string) => invokeDocs('files:read-image', path) as ReturnType<DesktopApi['readAttachmentImage']>,
++  addAttachmentPaths: (paths: string[]) =>
++    invokeDocs('files:add', paths) as ReturnType<DesktopApi['addAttachmentPaths']>,
++  readAttachmentImage: (path: string) =>
++    invokeDocs('files:read-image', path) as ReturnType<DesktopApi['readAttachmentImage']>,
+   readAttachment: (path: string, offset: number, maxChars: number) =>
+     invokeDocs('files:read', path, offset, maxChars) as ReturnType<DesktopApi['readAttachment']>,
+   openDocx: readHostPendingDocx,
+   openDocxPath: (_path: string) => readHostPendingDocx(),
+   confirmDocumentReplace: () => invokeDocs('docs:confirm-document-replace', {}) as Promise<boolean>,
+   saveDocx: (_path: string, data: ArrayBuffer | Uint8Array, auto?: boolean) =>
+-    invokeDocs('docs:save', { bytes: saveBytes(data), auto: auto === true }) as ReturnType<DesktopApi['saveDocx']>,
++    invokeDocs('docs:save', { bytes: saveBytes(data), auto: auto === true }) as ReturnType<
++      DesktopApi['saveDocx']
++    >,
+   saveDocxNew: (defaultName: string, data: ArrayBuffer | Uint8Array) =>
+     invokeDocs('docs:save-new', {
+       newDocument: true,
+@@ -197,13 +227,18 @@ export const mcodeDocsDesktopApi = Object.freeze({
+   onCloseCheck: (handler: () => void) => onDocs('docs:close-check', handler),
+   reportCloseCheck: (state: { dirty?: unknown }) =>
+     sendDocs('docs:close-check-result', { dirty: state?.dirty === true }),
+-  fontMetrics: (family: string) => invokeDocs('docs:font-metrics', family) as ReturnType<DesktopApi['fontMetrics']>,
+-  spellLanguages: () => invokeDocs('docs:spell-languages') as ReturnType<DesktopApi['spellLanguages']>,
+-  spellSetLanguages: (langs: string[]) => invokeDocs('docs:spell-set-languages', langs) as ReturnType<DesktopApi['spellSetLanguages']>,
++  fontMetrics: (family: string) =>
++    invokeDocs('docs:font-metrics', family) as ReturnType<DesktopApi['fontMetrics']>,
++  spellLanguages: () =>
++    invokeDocs('docs:spell-languages') as ReturnType<DesktopApi['spellLanguages']>,
++  spellSetLanguages: (langs: string[]) =>
++    invokeDocs('docs:spell-set-languages', langs) as ReturnType<DesktopApi['spellSetLanguages']>,
+   spellAddWord: (word: string) => invokeDocs('docs:spell-add-word', word) as Promise<boolean>,
+   spellIgnoreWord: (word: string) => invokeDocs('docs:spell-ignore-word', word) as Promise<boolean>,
+   spellReplace: (word: string) => invokeDocs('docs:spell-replace', word) as Promise<void>,
+-  spellDiag: (line: string) => { void invokeDocs('docs:spell-diag', line).catch(noop) },
++  spellDiag: (line: string) => {
++    void invokeDocs('docs:spell-diag', line).catch(noop)
++  },
+   respellKick: () => invokeDocs('docs:respell-kick') as Promise<void>,
+   getRecentFiles: () => {
+     // Native file-actions calls this after a successful open; Mcode uses it
+@@ -211,7 +246,8 @@ export const mcodeDocsDesktopApi = Object.freeze({
+     void invokeDocs('docs:recent', { accepted: true }).catch(noop)
+     return Promise.resolve([] as string[])
+   },
+-  getLanguage: async () => (await invokeDocs('app:get-language') === 'en' ? 'en' : 'zh') as 'zh' | 'en',
++  getLanguage: async () =>
++    ((await invokeDocs('app:get-language')) === 'en' ? 'en' : 'zh') as 'zh' | 'en',
+   getSystemLocale: async () => {
+     const value = await invokeDocs('docs:system-locale')
+     return typeof value === 'string' ? value : ''
+@@ -227,28 +263,39 @@ export const mcodeDocsDesktopApi = Object.freeze({
+     if (Number.isSafeInteger(seq) && seq >= 0) syncDocs('docs:context-menu-claim', seq)
+   },
+   onContextMenuRequest: (handler) => onDocs('docs:context-menu', handler),
+-  reportViewMenuState: (state) => sendDocs('docs:view-menu-state', {
+-    aiSidebar: state?.aiSidebar === true,
+-    darkCanvas: state?.darkCanvas === true,
+-  }),
++  reportViewMenuState: (state) =>
++    sendDocs('docs:view-menu-state', {
++      aiSidebar: state?.aiSidebar === true,
++      darkCanvas: state?.darkCanvas === true,
++    }),
+   // AI panel retains native UI and transport ABI, but every action reaches
+   // Mcode's authenticated three-SDK RuntimeManager or a readable denial.
+   getAiSettings: () => invokeDocs('ai:get-settings') as ReturnType<DesktopApi['getAiSettings']>,
+   setAiSettings: async (settings: Parameters<DesktopApi['setAiSettings']>[0]) => {
+-    const result = await invokeDocs('ai:set-settings', settings) as { ok?: boolean; error?: string }
++    const result = (await invokeDocs('ai:set-settings', settings)) as {
++      ok?: boolean
++      error?: string
++    }
+     if (result?.ok !== true) throw Error(result?.error ?? '请在 Mcode 中配置模型')
+   },
+   onAiSettingsChanged: noSubscription,
+-  aiStream: (request: Parameters<DesktopApi['aiStream']>[0]) => invokeDocs('ai:stream', request) as Promise<void>,
++  aiStream: (request: Parameters<DesktopApi['aiStream']>[0]) =>
++    invokeDocs('ai:stream', request) as Promise<void>,
+   aiStreamCancel: (requestId: string) => invokeDocs('ai:stream-cancel', requestId) as Promise<void>,
+-  aiChat: (request: Parameters<DesktopApi['aiChat']>[0]) => invokeDocs('ai:chat', request) as ReturnType<DesktopApi['aiChat']>,
+-  onAiStream: (handler: Parameters<DesktopApi['onAiStream']>[0]) => onDocs('ai:stream-chunk', handler),
++  aiToolResult: (ack: DocsAiToolResultAck) =>
++    invokeDocs('ai:tool-result', ack) as ReturnType<NonNullable<DesktopApi['aiToolResult']>>,
++  aiChat: (request: Parameters<DesktopApi['aiChat']>[0]) =>
++    invokeDocs('ai:chat', request) as ReturnType<DesktopApi['aiChat']>,
++  onAiStream: (handler: Parameters<DesktopApi['onAiStream']>[0]) =>
++    onDocs('ai:stream-chunk', handler),
+   aiGskStatus: () => invokeDocs('ai:gsk-status') as ReturnType<DesktopApi['aiGskStatus']>,
+   aiGskLogin: async () => {
+-    const reply = await invokeDocs('ai:gsk-login') as { ok?: boolean; error?: string }
++    const reply = (await invokeDocs('ai:gsk-login')) as { ok?: boolean; error?: string }
+     throw Error(reply?.error ?? 'GenOffice 云账户已禁用；请用 Mcode 三引擎')
+   },
+-  openAiModelSettings: async () => { throw Error('请在 Mcode 的设置页切换引擎/模型') },
++  openAiModelSettings: async () => {
++    throw Error('请在 Mcode 的设置页切换引擎/模型')
++  },
+   // Initial renderer effects and new-blank path use these native API hooks.
+   // No second chat, persisted settings, password store, export queue or AI.
+   consumePendingOpenDocx: readHostPendingDocx,
+diff --git a/apps/docs/src/renderer/ai/transport.ts b/apps/docs/src/renderer/ai/transport.ts
+index 3fe5d75..9577c91 100644
+--- a/apps/docs/src/renderer/ai/transport.ts
++++ b/apps/docs/src/renderer/ai/transport.ts
+@@ -1,11 +1,16 @@
+-import { createIpcTransport, type AgentTransport } from '@genoffice/agent-core'
+-import type { AiSettings } from '../../shared/ipc'
++import { createIpcTransport, type AgentTransport, type IpcStreamChunk } from '@genoffice/agent-core'
++import type { AiSettings, DocsAiToolResultAck } from '../../shared/ipc'
+ import { t } from '../i18n/locale'
+ 
+ /** The shared IPC transport wired to the docs preload bridge (window.desktop). */
+ export function createElectronTransport(getSettings: () => AiSettings): AgentTransport {
++  // The original standalone preload intentionally does not expose aiToolResult.
++  // Presence of this one Host-owned capability opts only Mcode-hosted Docs into
++  // in-turn execution; ordinary GenOffice providers keep their native loop.
++  const toolResultAck = window.desktop.aiToolResult
+   return createIpcTransport<AiSettings>({
+-    onStream: (listener) => window.desktop.onAiStream(listener),
++    onStream: (listener) =>
++      window.desktop.onAiStream((chunk) => listener(chunk as unknown as IpcStreamChunk)),
+     start: (request) => window.desktop.aiStream(request),
+     cancel: (requestId) => void window.desktop.aiStreamCancel(requestId),
+     getSettings,
+@@ -14,5 +19,15 @@ export function createElectronTransport(getSettings: () => AiSettings): AgentTra
+     creditsErrorText: () => t('aiCreditsExhausted'),
+     networkErrorText: () => t('aiNetworkError'),
+     overloadedErrorText: () => t('aiOverloadedError'),
++    ...(typeof toolResultAck === 'function'
++      ? {
++          toolResultAck: async (ack: DocsAiToolResultAck) => {
++            const reply = await toolResultAck(ack)
++            if (reply?.ok !== true)
++              throw new Error(reply?.error ?? 'Host rejected the tool-result ACK')
++            return reply
++          },
++        }
++      : {}),
+   })
+ }
+diff --git a/apps/docs/src/shared/ipc.ts b/apps/docs/src/shared/ipc.ts
+index 9315ff4..c4dd620 100644
+--- a/apps/docs/src/shared/ipc.ts
++++ b/apps/docs/src/shared/ipc.ts
+@@ -71,6 +71,20 @@ export type {
+   AgentToolResult,
+ } from '@genoffice/agent-core'
+ 
++/** A one-shot acknowledgement for a Host-issued native Docs tool call. */
++export type DocsAiToolResultStatus = 'success' | 'error' | 'cancelled'
++export interface DocsAiToolResultAck {
++  requestId: string
++  callId: string
++  name: string
++  status: DocsAiToolResultStatus
++  output: string
++}
++export interface DocsAiToolResultAckResponse {
++  ok: boolean
++  error?: string
++}
++
+ // ---- PDF export ----
+ 
+ /**
+@@ -559,6 +573,8 @@ export interface DesktopApi {
+   /** start a streaming AI call; deltas arrive via onAiStream with the same requestId */
+   aiStream(request: AiStreamRequest): Promise<void>
+   aiStreamCancel(requestId: string): Promise<void>
++  /** Optional Mcode-hosted Docs-only ACK for a Host-issued native tool call. */
++  aiToolResult?(ack: DocsAiToolResultAck): Promise<DocsAiToolResultAckResponse>
+   /** Genspark account status (gsk login state); withEmail also returns the email (needs a network request, slower) */
+   aiGskStatus(withEmail?: boolean): Promise<GenSparkAccountStatus>
+   /** Open the browser to log in to Genspark (fire-and-forget; aiGskStatus flips to logged-in when done) */
+diff --git a/packages/agent-core/src/electron-transport.ts b/packages/agent-core/src/electron-transport.ts
+index 4b0f073..9a6a571 100644
+--- a/packages/agent-core/src/electron-transport.ts
++++ b/packages/agent-core/src/electron-transport.ts
+@@ -19,6 +19,8 @@ export interface IpcStreamChunk {
+   type: 'delta' | 'reasoning' | 'tool-call' | 'usage' | 'done' | 'error' | 'ping'
+   text?: string
+   toolCall?: AgentToolCall
++  /** Host-validated schema for a native tool call; present only on the Mcode-hosted ACK path. */
++  toolDefinition?: AgentToolDef
+   error?: string
+   /** machine-readable error cause; maps to the localized timeout/credits/network/overloaded message */
+   errorCode?: 'timeout' | 'credits' | 'network' | 'overloaded'
+@@ -29,6 +31,39 @@ export interface IpcStreamChunk {
+ }
+ 
+ /** The request forwarded to the main process to start one streaming turn. */
++export type IpcToolResultStatus = 'success' | 'error' | 'cancelled'
++export interface IpcToolResultAck {
++  requestId: string
++  callId: string
++  name: string
++  status: IpcToolResultStatus
++  output: string
++}
++export interface IpcToolResultAckResponse {
++  ok: boolean
++  error?: string
++}
++
++const MAX_TOOL_RESULT_BYTES = 64 * 1024
++const MAX_TOOL_CALLS_PER_STREAM = 32
++
++function utf8ByteLength(value: string): number {
++  return new TextEncoder().encode(value).byteLength
++}
++
++function validHostToolCall(call: AgentToolCall): boolean {
++  if (!call || typeof call.id !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(call.id))
++    return false
++  if (typeof call.name !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(call.name)) return false
++  if (!call.input || typeof call.input !== 'object' || Array.isArray(call.input)) return false
++  try {
++    const json = JSON.stringify(call.input)
++    return typeof json === 'string' && utf8ByteLength(json) <= MAX_TOOL_RESULT_BYTES
++  } catch {
++    return false
++  }
++}
++
+ export interface IpcStreamStart<S> {
+   requestId: string
+   /** Stable for the lifetime of one renderer-side transport. Providers with
+@@ -66,6 +101,8 @@ export interface IpcTransportOptions<S> {
+   networkErrorText?(): string
+   /** localized message for capacity/rate-limit failures (errorCode 'overloaded') */
+   overloadedErrorText?(): string
++  /** Mcode-hosted Docs only: return a renderer's result to the Host while its SDK turn is waiting. */
++  toolResultAck?(ack: IpcToolResultAck): Promise<IpcToolResultAckResponse>
+ }
+ 
+ /**
+@@ -76,7 +113,8 @@ export interface IpcTransportOptions<S> {
+ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTransport {
+   const timeoutText = () => options.timeoutErrorText?.() ?? options.unknownErrorText()
+   const sessionId = crypto.randomUUID()
+-  return {
++  const transport: AgentTransport & { supportsInTurnToolResultAck: boolean } = {
++    supportsInTurnToolResultAck: typeof options.toolResultAck === 'function',
+     stream(request: AgentStreamRequest, cb) {
+       const requestId = crypto.randomUUID()
+       let settled = false
+@@ -86,6 +124,8 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
+         clearTimeout(silenceTimer)
+         unsubscribe()
+       }
++      const handledToolCallIds = new Set<string>()
++      const pendingToolHandlers = new Set<Promise<void>>()
+       const fail = (error: string) => {
+         if (settled) return
+         settle()
+@@ -98,6 +138,81 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
+           fail(timeoutText())
+         }, IPC_STREAM_SILENCE_TIMEOUT_MS)
+       }
++      const handleToolCall = async (chunk: IpcStreamChunk): Promise<void> => {
++        const call = chunk.toolCall
++        if (!call) {
++          if (options.toolResultAck) {
++            options.cancel(requestId)
++            fail('Malformed Host tool-call chunk; the run was stopped')
++          }
++          return
++        }
++        if (!options.toolResultAck) {
++          // Standalone GenOffice keeps its original native tool loop unchanged.
++          cb.onToolCall(call)
++          return
++        }
++        if (!validHostToolCall(call)) {
++          options.cancel(requestId)
++          fail('Invalid Host-issued tool-call envelope; the tool was not executed')
++          return
++        }
++        if (handledToolCallIds.has(call.id)) return // duplicate stream chunk: never execute twice
++        if (handledToolCallIds.size >= MAX_TOOL_CALLS_PER_STREAM) {
++          options.cancel(requestId)
++          fail('Host tool-call limit exceeded; the run was stopped')
++          return
++        }
++        handledToolCallIds.add(call.id)
++        let result: { status: IpcToolResultStatus; output: string } | undefined
++        try {
++          // AgentLoop's callback returns a promise only when this transport has
++          // the Mcode-hosted ACK capability. Its declared callback ABI stays void
++          // for standalone providers, which never enter this branch.
++          const execute = cb.onToolCall as unknown as (
++            toolCall: AgentToolCall,
++            hostToolDefinition?: AgentToolDef,
++          ) => Promise<{ status: IpcToolResultStatus; output: string } | undefined>
++          result = await execute(call, chunk.toolDefinition)
++        } catch (err) {
++          result = {
++            status: 'error',
++            output:
++              err instanceof Error ? err.message.slice(0, 2_000) : 'Renderer tool execution failed',
++          }
++        }
++        if (
++          !result ||
++          !['success', 'error', 'cancelled'].includes(result.status) ||
++          typeof result.output !== 'string'
++        ) {
++          result = {
++            status: 'error',
++            output: 'Renderer did not return a trusted tool execution result',
++          }
++        }
++        if (utf8ByteLength(result.output) > MAX_TOOL_RESULT_BYTES) {
++          result = {
++            status: 'error',
++            output: 'Tool result exceeded the 64 KiB limit; the result payload was rejected',
++          }
++        }
++        try {
++          const reply = await options.toolResultAck({
++            requestId,
++            callId: call.id,
++            name: call.name,
++            status: result.status,
++            output: result.output,
++          })
++          if (!reply || reply.ok !== true) {
++            throw new Error(reply?.error ?? 'Host rejected the tool-result ACK')
++          }
++        } catch (err) {
++          options.cancel(requestId)
++          fail(err instanceof Error ? err.message : 'Host rejected the tool-result ACK')
++        }
++      }
+       const unsubscribe = options.onStream((chunk) => {
+         if (chunk.requestId !== requestId || settled) return
+         if (chunk.type === 'ping') {
+@@ -110,14 +225,38 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
+           if (chunk.text) cb.onReasoning?.(chunk.text)
+         } else if (chunk.type === 'tool-call') {
+           armSilence()
+-          if (chunk.toolCall) cb.onToolCall(chunk.toolCall)
++          if (!options.toolResultAck) {
++            // Preserve the original standalone callback and done timing exactly.
++            if (chunk.toolCall) cb.onToolCall(chunk.toolCall)
++          } else {
++            const pending = handleToolCall(chunk).catch((err: unknown) => {
++              options.cancel(requestId)
++              fail(err instanceof Error ? err.message : 'Host tool-result ACK failed')
++            })
++            pendingToolHandlers.add(pending)
++            void pending.finally(() => pendingToolHandlers.delete(pending))
++          }
+         } else if (chunk.type === 'usage') {
+           armSilence()
+           if (chunk.usage) cb.onUsage?.(chunk.usage)
+         } else if (chunk.type === 'done') {
+-          settle()
+-          if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason)
+-          cb.onDone()
++          const complete = () => {
++            if (settled) return
++            settle()
++            if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason)
++            cb.onDone()
++          }
++          if (pendingToolHandlers.size === 0) {
++            complete()
++          } else {
++            // A Host must not complete the renderer turn while an in-turn tool
++            // result is still executing or its request-scoped ACK is unconfirmed.
++            void Promise.all([...pendingToolHandlers])
++              .then(complete)
++              .catch((err: unknown) => {
++                fail(err instanceof Error ? err.message : 'Host stream completion failed')
++              })
++          }
+         } else if (chunk.type === 'error') {
+           settle()
+           cb.onError(
+@@ -157,4 +296,5 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
+       return { cancel: () => options.cancel(requestId) }
+     },
+   }
++  return transport
+ }
+diff --git a/packages/agent-core/src/loop.ts b/packages/agent-core/src/loop.ts
+index 1370962..1d9a46b 100644
+--- a/packages/agent-core/src/loop.ts
++++ b/packages/agent-core/src/loop.ts
+@@ -424,6 +424,44 @@ function utf8Size(s: string): number {
+   return n
+ }
+ 
++const HOSTED_TOOL_RESULT_MAX_BYTES = 64 * 1024
++const HOSTED_TOOL_CALL_MAX_PER_TURN = 32
++
++type HostedToolAckStatus = 'success' | 'error' | 'cancelled'
++interface ToolCallOutcome {
++  result: AgentToolResult
++  execution?: ToolExecution
++  executed: boolean
++  unusable: boolean
++  mutated: boolean
++  status: HostedToolAckStatus
++  stale?: boolean
++}
++
++function canonicalJson(value: unknown): string {
++  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
++  if (value && typeof value === 'object') {
++    const record = value as Record<string, unknown>
++    return `{${Object.keys(record)
++      .sort()
++      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
++      .join(',')}}`
++  }
++  return JSON.stringify(value) ?? 'undefined'
++}
++
++function matchesHostToolSchema(
++  local: AgentToolDef | undefined,
++  host: AgentToolDef | undefined,
++): boolean {
++  if (!local || !host || local.name !== host.name) return false
++  try {
++    return canonicalJson(local.inputSchema) === canonicalJson(host.inputSchema)
++  } catch {
++    return false
++  }
++}
++
+ /** Approximate byte cost of one message (text + tool inputs/outputs + image base64) */
+ function messageSize(m: AgentMessage): number {
+   if (m.role === 'tool') {
+@@ -487,6 +525,9 @@ export class AgentLoop<TSnapshot = unknown> {
+   private turnReasoning = ''
+   private retryTimer: ReturnType<typeof setTimeout> | null = null
+   private toolCalls: AgentToolCall[] = []
++  /** Mcode-hosted Docs executes Host-issued tools before ACKing the still-open SDK turn. */
++  private hostedToolResults = new Map<string, ToolCallOutcome>()
++  private hostedToolQueue: Promise<void> = Promise.resolve()
+   /** tools actually executed during this run, fed to skill.verifyResponse */
+   private executedCalls: ExecutedToolCall[] = []
+   /** verifyResponse may force one extra corrective turn per run — never more */
+@@ -592,6 +633,8 @@ export class AgentLoop<TSnapshot = unknown> {
+     this.allErrorTurns = 0
+     this.executedCalls = []
+     this.verifyRetryUsed = false
++    this.hostedToolResults.clear()
++    this.hostedToolQueue = Promise.resolve()
+     this.abortController = new AbortController()
+     // buildContext and formatUserMessage are consumer-supplied and run before any
+     // turn exists, so a throw here would escape run() with `running` still true:
+@@ -844,6 +887,8 @@ export class AgentLoop<TSnapshot = unknown> {
+     this.cancelled = false
+     this.history = []
+     this.runUserMsg = null
++    this.hostedToolResults.clear()
++    this.hostedToolQueue = Promise.resolve()
+   }
+ 
+   private dropTurnLimitNote(): void {
+@@ -935,6 +980,8 @@ export class AgentLoop<TSnapshot = unknown> {
+     this.turnText = ''
+     this.turnReasoning = ''
+     this.toolCalls = []
++    this.hostedToolResults.clear()
++    this.hostedToolQueue = Promise.resolve()
+     this.turnStopReason = null
+     this.turnUsage = null
+     // Some transports emit an extra onDone after cancel — this turn may finalize only once
+@@ -976,9 +1023,34 @@ export class AgentLoop<TSnapshot = unknown> {
+               this.failRun(turnBudgetError('reasoning'))
+             }
+           },
+-          onToolCall: (call) => {
++          onToolCall: (call, ...hostArgs: [AgentToolDef?]) => {
++            const hostToolDefinition = hostArgs[0]
+             if (generation !== this.generation || settled) return
++            if (!this.nativeToolResultAckEnabled()) {
++              this.toolCalls.push(call)
++              return
++            }
++            if (this.toolCalls.some((existing) => existing.id === call.id)) {
++              return {
++                status: 'error',
++                output: 'Duplicate Host tool-call id; the tool was not executed',
++              }
++            }
+             this.toolCalls.push(call)
++            if (this.toolCalls.length > HOSTED_TOOL_CALL_MAX_PER_TURN) {
++              const output = 'Host tool-call limit exceeded; the tool was not executed'
++              const outcome: ToolCallOutcome = {
++                result: { id: call.id, name: call.name, output, isError: true },
++                execution: { output, isError: true, summary: call.name },
++                executed: false,
++                unusable: true,
++                mutated: false,
++                status: 'error',
++              }
++              this.hostedToolResults.set(call.id, outcome)
++              return { status: 'error', output }
++            }
++            return this.queueHostedToolCall(call, hostToolDefinition, generation)
+           },
+           onStopReason: (reason) => {
+             if (generation !== this.generation || settled) return
+@@ -1040,10 +1112,262 @@ export class AgentLoop<TSnapshot = unknown> {
+     }
+   }
+ 
++  private nativeToolResultAckEnabled(): boolean {
++    return (
++      (this.options.transport as AgentTransport & { supportsInTurnToolResultAck?: boolean })
++        .supportsInTurnToolResultAck === true
++    )
++  }
++
++  /** Serialize Host-issued calls just like the native loop did after `done`, but
++   * execute them before returning their ACK so the same provider SDK turn can resume. */
++  private queueHostedToolCall(
++    call: AgentToolCall,
++    hostToolDefinition: AgentToolDef | undefined,
++    generation: number,
++  ): Promise<{ status: HostedToolAckStatus; output: string }> {
++    const run = async (): Promise<{ status: HostedToolAckStatus; output: string }> => {
++      if (generation !== this.generation || this.cancelled) {
++        return { status: 'cancelled', output: TOOL_ABORTED_OUTPUT }
++      }
++      let outcome: ToolCallOutcome
++      try {
++        outcome = await this.executeToolCall(call, generation, true, hostToolDefinition)
++      } catch (err) {
++        const output =
++          err instanceof Error ? err.message.slice(0, 2_000) : 'Renderer tool execution failed'
++        outcome = {
++          result: { id: call.id, name: call.name, output, isError: true },
++          execution: { output, isError: true, summary: call.name },
++          executed: false,
++          unusable: false,
++          mutated: false,
++          status: 'error',
++        }
++      }
++      if (outcome.stale || generation !== this.generation) {
++        return { status: 'cancelled', output: TOOL_ABORTED_OUTPUT }
++      }
++      this.hostedToolResults.set(call.id, outcome)
++      return { status: outcome.status, output: outcome.result.output }
++    }
++    const pending = this.hostedToolQueue.then(run, run)
++    this.hostedToolQueue = pending.then(
++      () => undefined,
++      () => undefined,
++    )
++    return pending.catch((err: unknown) => ({
++      status: 'error' as const,
++      output: err instanceof Error ? err.message.slice(0, 2_000) : 'Renderer tool execution failed',
++    }))
++  }
++
++  /** Execute one tool using the same schema checks, abort race, mutation snapshot,
++   * and AgentSkill.executeTool path for both the native loop and Host ACK mode. */
++  private async executeToolCall(
++    rawCall: AgentToolCall,
++    generation: number,
++    hosted = false,
++    hostToolDefinition?: AgentToolDef,
++  ): Promise<ToolCallOutcome> {
++    const { skill, captureSnapshot, events } = this.options
++    const tool = skill.tools.find((item) => item.name === rawCall.name)
++    const call =
++      rawCall.truncated || rawCall.inputError
++        ? rawCall
++        : { ...rawCall, input: coerceArgumentFields(tool, rawCall.input) }
++
++    if (hosted && (this.finalizing || !matchesHostToolSchema(tool, hostToolDefinition))) {
++      const output = this.finalizing
++        ? 'Tools are disabled for the finalizing turn; the tool was not executed'
++        : `Host tool schema for ${call.name} was missing or did not match the native AgentSkill schema; the tool was not executed`
++      const execution: ToolExecution = { output, isError: true, summary: call.name }
++      events?.onToolExecuted?.({ call, execution })
++      return {
++        result: { id: call.id, name: call.name, output, isError: true },
++        execution,
++        executed: false,
++        unusable: true,
++        mutated: false,
++        status: 'error',
++      }
++    }
++    if (this.cancelled) {
++      const output = '(the user stopped the run; this tool was not executed)'
++      return {
++        result: { id: call.id, name: call.name, output, isError: true },
++        executed: false,
++        unusable: false,
++        mutated: false,
++        status: 'cancelled',
++      }
++    }
++
++    const unreadable = call.truncated || call.inputError
++    const missing = unreadable ? [] : missingRequiredFields(tool, call.input)
++    const invalid = unreadable || missing.length > 0 ? [] : invalidArgumentFields(tool, call.input)
++    if (unreadable || missing.length > 0 || invalid.length > 0) {
++      const output = call.truncated
++        ? 'Tool arguments were cut off by the output length limit; the tool was not executed. Split this operation into several smaller tool calls (less content per call) and try again.'
++        : call.inputError
++          ? `Tool input JSON failed to parse; the tool was not executed: ${call.inputError}\nFix the arguments (make sure quotes inside strings are escaped) and call again.`
++          : missing.length > 0
++            ? `Tool call ${call.name} is missing the required argument(s) ${missing.map((field) => `"${field}"`).join(', ')}; the tool was not executed. Put the arguments in the tool call itself (not in your reply text) and call again with every required field.`
++            : `Tool call ${call.name} got ${invalid.length === 1 ? 'an argument' : 'arguments'} that do not match the tool's input schema — ${invalid.join('; ')}; the tool was not executed. Call again with every value of the declared type and within the declared limits (a number must be a bare JSON number, not a quoted string).`
++      const execution: ToolExecution = { output, isError: true, summary: call.name }
++      events?.onToolExecuted?.({ call, execution })
++      return {
++        result: { id: call.id, name: call.name, output, isError: true },
++        execution,
++        executed: false,
++        unusable: true,
++        mutated: false,
++        status: 'error',
++      }
++    }
++
++    events?.onToolStart?.(call)
++    const snapshot = !this.mutationSeen ? captureSnapshot?.() : undefined
++    let raced: ToolExecution | typeof TOOL_ABORTED
++    try {
++      raced = await awaitToolOrAbort(
++        skill.executeTool(call, this.abortController?.signal),
++        this.abortController?.signal,
++      )
++    } catch (err) {
++      raced = {
++        output: err instanceof Error ? err.message : String(err),
++        isError: true,
++        summary: call.name,
++      }
++    }
++    if (generation !== this.generation) {
++      return {
++        result: { id: call.id, name: call.name, output: TOOL_ABORTED_OUTPUT, isError: true },
++        executed: false,
++        unusable: false,
++        mutated: false,
++        status: 'cancelled',
++        stale: true,
++      }
++    }
++    if (raced === TOOL_ABORTED) {
++      const execution: ToolExecution = {
++        output: TOOL_ABORTED_OUTPUT,
++        isError: true,
++        summary: call.name,
++      }
++      this.executedCalls.push({ name: call.name, ok: false })
++      events?.onToolExecuted?.({ call, execution })
++      return {
++        result: { id: call.id, name: call.name, output: execution.output, isError: true },
++        execution,
++        executed: true,
++        unusable: false,
++        mutated: false,
++        status: 'cancelled',
++      }
++    }
++
++    let execution = raced
++    if (hosted && utf8Size(execution.output) > HOSTED_TOOL_RESULT_MAX_BYTES) {
++      execution = {
++        ...execution,
++        output: 'Tool result exceeded the 64 KiB limit; the result payload was rejected',
++        isError: true,
++      }
++    }
++    this.executedCalls.push({ name: call.name, ok: !execution.isError })
++    const firstMutation = !!execution.mutated && !this.mutationSeen
++    if (execution.mutated) this.mutationSeen = true
++    events?.onToolExecuted?.({
++      call,
++      execution,
++      snapshotBefore: firstMutation ? snapshot : undefined,
++    })
++    return {
++      result: {
++        id: call.id,
++        name: call.name,
++        output: execution.output,
++        isError: execution.isError,
++      },
++      execution,
++      executed: true,
++      unusable: false,
++      mutated: !!execution.mutated,
++      status: execution.isError ? 'error' : 'success',
++    }
++  }
++
+   private async finishTurn(): Promise<void> {
+     const { events, skill, captureSnapshot } = this.options
+     const toolCalls = this.toolCalls
+ 
++    // In Mcode-hosted Docs the provider SDK is still inside its own tool loop:
++    // wait for renderer executions/ACKs, then accept this same turn's final text.
++    // Never hand these calls to the post-done native loop a second time.
++    if (this.nativeToolResultAckEnabled() && toolCalls.length > 0) {
++      const generation = this.generation
++      await this.hostedToolQueue
++      if (generation !== this.generation) return
++      if (this.cancelled || this.finalizing) {
++        // Host-issued calls have already been handled (or rejected) in-turn.
++        // Do not fall through to the native post-done executor: that would run them twice.
++        this.dropTurnLimitNote()
++        this.history.push({ role: 'assistant', text: this.turnText || COMPLETED_VIA_TOOLS_TEXT })
++        this.running = false
++        this.runUserMsg = null
++        this.mergeRunUsage()
++        events?.onDone?.({
++          text: this.turnText,
++          cancelled: this.cancelled,
++          turnLimit: this.finalizing,
++          ...(this.turnStopReason === 'max_tokens' && !this.cancelled ? { truncated: true } : {}),
++          ...(this.runUsage ? { usage: this.runUsage } : {}),
++        })
++        return
++      }
++      {
++        const missingResult = toolCalls.find((call) => !this.hostedToolResults.has(call.id))
++        if (missingResult) {
++          this.failRun(
++            `Host tool-result ACK was not completed for ${missingResult.name}; the tool was not re-executed`,
++          )
++          return
++        }
++        const correction =
++          !this.verifyRetryUsed && this.turnText && skill.verifyResponse
++            ? skill.verifyResponse(this.turnText, [...this.executedCalls])
++            : null
++        if (correction) {
++          this.verifyRetryUsed = true
++          this.history.push({ role: 'assistant', text: this.turnText || COMPLETED_VIA_TOOLS_TEXT })
++          this.history.push({ role: 'user', text: correction })
++          this.turns++
++          if (this.turns >= (this.options.maxTurns ?? DEFAULT_MAX_TURNS)) {
++            this.finalizing = true
++            this.history.push({ role: 'user', text: TURN_LIMIT_NOTE })
++          }
++          this.startTurn()
++          return
++        }
++        this.dropTurnLimitNote()
++        this.history.push({ role: 'assistant', text: this.turnText || COMPLETED_VIA_TOOLS_TEXT })
++        this.running = false
++        this.runUserMsg = null
++        this.mergeRunUsage()
++        events?.onDone?.({
++          text: this.turnText,
++          cancelled: false,
++          turnLimit: false,
++          ...(this.turnStopReason === 'max_tokens' ? { truncated: true } : {}),
++          ...(this.runUsage ? { usage: this.runUsage } : {}),
++        })
++        return
++      }
++    }
++
+     // Claimed-action guard: before accepting a final text turn, let the skill
+     // check the claims in it against the tools that actually ran this run.
+     // A returned correction forces one more model turn (tools stay available,
+-- 
+2.52.0.windows.1
+

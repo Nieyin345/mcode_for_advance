@@ -101,11 +101,11 @@ function validateFixture(fixture, requireComplete = false, expectedManifestSha25
 try {
   console.log("T87 GenOffice provenance/license smoke");
   const clean = createVerifyRoot("clean-lineage");
-  pass("pinned base + approved patch + exact 12-patch lineage + clean final tree passes", () => {
+  pass("pinned base + approved patch + exact 13-patch lineage + clean final tree passes", () => {
     const result = verifyFixture(clean);
     assert.equal(result.baseRevision, lock.baseRevision);
     assert.equal(result.approvedPatchRevision, lock.approvedPatch.revision);
-    assert.equal(result.patchCount, 12);
+    assert.equal(result.patchCount, 13);
     assert.equal(result.revision, lock.revision);
     assert.equal(result.tree, lock.expectedTree);
   });
@@ -132,9 +132,9 @@ try {
     const replayTree = git(replay, "rev-parse", "HEAD^{tree}");
     const expectedIntermediateTree = git(vendor, "rev-parse", entry.revision + "^{tree}");
     assert.equal(replayTree, expectedIntermediateTree, "tree mismatch after " + entry.file);
-    logPass("patch " + entry.index + "/12 replays to its exact expected tree");
+    logPass("patch " + entry.index + "/13 replays to its exact expected tree");
   }
-  pass("replayed 12-patch stack reproduces the current clean HEAD tree", () => {
+  pass("replayed 13-patch stack reproduces the current clean HEAD tree", () => {
     assert.equal(git(replay, "rev-parse", "HEAD^{tree}"), lock.expectedTree);
     assert.equal(git(vendor, "rev-parse", "HEAD^{tree}"), lock.expectedTree);
     assert.equal(git(replay, "status", "--porcelain", "--untracked-files=all"), "");
