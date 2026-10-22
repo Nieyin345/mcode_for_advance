@@ -41,6 +41,7 @@
 | T20 | AI 写扩展的闭环（生成 → 校验 → 装机 → 可回滚） | P1 | T18 + T19 | I |
 | T21 | 悬挂的适配器：NodeRedFlowStorage 与 workflowMigrationPreflight 接上生产路径 | P0 架构 | **T2 + T4 完成** | J |
 | T22 | smokes-for 覆盖映射漏掉 .tsx，导致「该跑哪几套」判断失真 | P0 工具链 | 无 | F |
+| T23 | **生产构建与发行 staging 缺四个编辑器的 preload** | **P0 发行阻断** | 无 | K |
 
 ### 推荐第一波
 
