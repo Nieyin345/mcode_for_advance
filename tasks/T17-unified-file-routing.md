@@ -232,5 +232,9 @@ mutate: 全部变异验出真红且逐字节还原
 
 ### 8. 提交
 
-（提交后由总控补 SHA；本次提交只含本卡 §0 列出的文件。）
+**`95625434`** —— `fix(T17): one document-routing judgment — collect scattered extension classifiers`（12 files, +922/−54）。
+
+只暂存了 §0 列出的文件；`apps/desktop/src/main/ipc/document.ts` 用**逐 hunk patch** 只提交本卡的 3 个 hunk（`officeAppFamilyOf` 的 import 与两处分派），T24 并行写的 124 行（`registerDocumentToolSurface` 等）**原样留在工作树未暂存**。
+
+**提交后**（不是提交前）重跑验证：`file-routing-contract-smoke` 250/250、`document-router-smoke` 133/133、`content-tag-smoke` 28/28、`library-preview-extension-smoke` 4/4、`custom-tab-race-smoke` 8/8；`packages/contracts` tsc exit 0；`apps/desktop` tsc 中**没有任何一条错误落在本卡文件上**。
 
