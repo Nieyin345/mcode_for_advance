@@ -60,4 +60,4 @@ T16「不能跑用户旅程」过强（已有 15 套真 Electron 聚焦旅程，
 
 ### 提交 SHA
 
-`__COMMIT_SHA__`
+`cc8c2f9277aff35c05e5eb945c8851ee816e81a1`（只含 `docs/planning/product-roadmap/T15-agent-host-baseline.md` 与本卡回写；其余并行 dirty 未暂存、未改动）。
