@@ -10,9 +10,9 @@ Mcode：本地优先的通用 Agent 桌面客户端（Electron + React 19 + Type
 
 三份更深的文档，改代码前值得翻：
 
-- **`AGENTS.md`**（520 行）—— 逐子系统的权威指南：进程架构、SDK 消息适配、rewind/文件快照、编辑器驻留、组件与图标规范、Codex 协议硬事实、浏览器工具、插件系统等。
+- **`AGENTS.md`**（导航版）—— 权威文档索引、仍然有效的关键提醒、产品方向摘要。系统细节（进程架构、SDK 消息适配、rewind/文件快照、编辑器驻留、组件与图标规范、Codex 协议硬事实、浏览器工具等）全文在 `docs/archive/AGENTS-2026-10-19-full.md`，需要时查；那份的「当前进度」表已过期，不是当前方向来源。
 - **`docs/planning/mcode-product-roadmap.md`** —— 用户确认的产品路线：产品定义、四条主线、任务/验收/执行环境规则。
-- **`docs/planning/Status-and-Plan.md`** —— 现状与任务书：已完成能力清单、后续工作（A/B/C/D 四档优先级）、本文档第四节的硬规矩。同目录下还有 `优化方向.md`（优化指导 + 进度台账）、`前端待办.md`。
+- **`docs/testing.md`** —— 测试入口、日志与 CI 策略。同目录下还有 `优化方向.md`（优化指导 + 进度台账）、`前端待办.md`。历史任务书 `Status-and-Plan.md` 已归档到 `docs/archive/Status-and-Plan-2026-09-18.md`，只作追溯。
 
 ## 常用命令
 
@@ -78,7 +78,7 @@ preload (contextBridge + zod 校验)
 4. **sql.js 持久化**（纯 WASM SQLite，**没有 FTS5**，全文检索走 ripgrep）。统一数据根。
 5. **i18n**：zh/en 双词典在 `lib/i18n/{zh,en}/`，**zh 是 `MessageId` 类型的源**——缺 key 直接 typecheck 失败。用户可见的字符串不许硬编码。
 
-## 硬规矩（来自 docs/planning/Status-and-Plan.md 与产品路线，实测救过场）
+## 硬规矩（来自产品路线与历史任务书，实测救过场）
 
 1. **先补测试，再动刀**。大重构前给要改的路径写断言。
 2. **共享实现只有一份**。「用户点的」和「AI 调的」必须走同一个函数。

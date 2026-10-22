@@ -2,7 +2,7 @@
 
 - Archive date: 2026-10-22
 - Pre-archive HEAD: b7db387abf241c8a0a47909748d13ddfc5be9c1f
-- 98 legacy T task cards are preserved unchanged.
+- 98 legacy T task cards are preserved unchanged, with one documented exception: `T09-aoci-index-catchup.md` was amended on 2026-10-23 after the user confirmed AOCI stays in use (the card had recorded "不再使用 AOCI"). Its original SHA-256 is kept alongside the current one; every other card is byte-identical to the pre-archive tree.
 - The legacy index, prompt template, GenOffice roadmap, and extension roadmap are also preserved.
 - New execution cards start at tasks/T0-*.md. Legacy T numbers remain historical source identifiers and are not reused.
 - MC/ARC/UXG IDs and statuses in `audit-ledgers/` are not reset.
@@ -46,7 +46,7 @@ Cards not listed above remain archived evidence and are not automatically re-dis
 | T06-mc035-os-egress-isolation.md | legacy task card | T06｜MC-035：OS 级网络出站隔离 | 940a5b356a46c0aea8450c0cb4bb568cdf7efd3c6cac2fe12d0f834bf431ef1d |
 | T07-doc-nodered-shell-integration.md | legacy task card | T07｜文档 / Node-RED 同壳整合 | 2f32ef8c21c2f0225bb18ae11f128efd57717f3352ed5258d22077358fb2c589 |
 | T08-three-engine-parity.md | legacy task card | T08｜三引擎能力对齐收尾（ARC-003） | 5bde3ef5d0cf99b8e510f60e2c830801e9071d0eb030fad8630783a9d0fa05d8 |
-| T09-aoci-index-catchup.md | legacy task card | T09｜AOCI 索引补录 —— **已取消（2026-10-20 用户决定不再使用 AOCI）** | b51825bec517f7b49984bc903a5b35baa4ebc20e6ddd3f8eb81ae88a03ddb846 |
+| T09-aoci-index-catchup.md | legacy task card | T09｜AOCI 索引补录 —— **已取消（2026-10-20 暂停；2026-10-23 用户确认 AOCI 继续使用）** | 原 b51825bec517f7b49984bc903a5b35baa4ebc20e6ddd3f8eb81ae88a03ddb846；2026-10-23 修订后 c345084fdf771bfb2274d8e1e2bb52d3ab441d0ba24f903804db9cee0fe052ee |
 | T100-agent-runtime-pty.md | legacy task card | T100｜Orca↔Mcode 多 Agent/PTY/会话生命周期与恢复源码对照 | 404d48048ff76ba1e951fccf7767467eb95c99150ba7ad851935a44f71772b50 |
 | T101-diff-review.md | legacy task card | T101｜Orca↔Mcode Git Diff/代码审查/交付闭环源码对照 | adf509507eecb732d4423b4433f1602d456d5042d9cd4ac0e292484a4454c1b9 |
 | T102-remote-cli.md | legacy task card | T102｜Orca↔Mcode CLI/SSH/远程工作区与移动端源码对照 | 517684dcb531e53e51e8a7d0ce617cf0bb83fd3d4357e39c0473a80f2fcf1eab |

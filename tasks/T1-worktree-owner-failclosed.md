@@ -31,4 +31,4 @@
 - 执行对话交付的实现与回归已由总控**独立复跑**：`node apps/desktop/scripts/maint-m10-smoke/run.cjs` → `28 passed, 0 failed`，与回写一致。
 - 执行对话漏做最后一步（提交），按用户 2026-10-23 决定由总控代为精准提交：只提交本卡的三个文件（`worktreeOps.ts`、`maint-m10-smoke/main.ts`、本卡），不带入工作区其他 dirty 文件。
 - 按「写回即完成」规则，T1 记为**已完成**；回写里列出的两项遗留（身份 generation 重设计、真实 Electron/U1）不属本卡判据，需另开卡。
-- 提交 SHA：`PENDING_PLACEHOLDER`
+- 提交 SHA：`2d31f675`（只含本卡三个文件）
