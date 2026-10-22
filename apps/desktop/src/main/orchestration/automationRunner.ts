@@ -63,6 +63,7 @@ import {
 } from "@contracts/nodeType";
 import type { RuntimeEvent } from "@contracts/runtime";
 import type { Session } from "@contracts/session";
+import type { WorkflowDoc, WorkflowEngine } from "@contracts/workflow";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { createEventSubjects, fileSubjects } from "@main/hooks/eventSubjects.js";
 import { log } from "@main/lib/logger.js";
@@ -119,6 +120,9 @@ import {
   sharedExecutorOwnership,
   type ExecutorOwnershipRegistry,
 } from "@main/workflowEngines/executorOwnership.js";
+// 【T3】与保存 / 启动 / 派发三个闸门**同一份**引擎判据（`doc.engine ?? "mcode"`，
+// 历史图无标记 → 旧 runner；新增引擎值未显式放行前一律不装监听 —— fail-closed）。
+import { effectiveWorkflowEngine } from "@main/workflowEngines/workflowEngineSelection.js";
 
 import {
   TICK_MS,
@@ -494,6 +498,46 @@ class AutomationRunner {
    * **静默跳过是这一处最坏的写法**:一条"存下来了却永远不响"的自动化,用户唯一能看到的
    * 现象就是"它没反应"。
    */
+  /**
+   * 【T3】这份工作流**该不该由旧 runner 装监听**？（cron / fs.watch / 事件订阅）
+   *
+   * 判据与保存、启动、派发三处是**同一份** `effectiveWorkflowEngine`（`doc.engine ??
+   * "mcode"`）—— 不是在这里手写一遍 `doc.engine === "node-red"`：
+   *
+   *  - `mcode`（含历史无标记图）→ 交旧 runner，行为一字不变；
+   *  - `node-red` → 它的触发由引擎自己的 inject / watch / `mcode-trigger` 拥有，
+   *    旧 runner **一个监听都不装**（从前照样装 cron/fs.watch，只在 `fire()` 的
+   *    owner claim 与 `runner.ts` 的 assert 才被挡住 —— 靠下游兜底，不是上游不装）；
+   *  - **任何其它值**（引擎字段被手改成未知、未来新增引擎还没在这里放行）→
+   *   同样不装，并且让事实表说清楚。**fail-closed**：宁可一条都不响，也不把
+   *    权威不明的图交给旧 runner 猜。
+   *
+   * 注意 `WorkflowRepo.parseWorkflowDoc` 读行时把缺省引擎归一成 `"mcode"`，所以
+   * 走到这里的 doc 一般已带显式值；这里仍按 `effectiveWorkflowEngine` 判，是为了
+   * 与其它三处保持同一判据，而不是读一份可能被别处改过的 `doc.engine`。
+   */
+  private legacyTriggerOwnerOf(doc: Pick<WorkflowDoc, "engine">): { legacy: true } | { legacy: false; owner: WorkflowEngine | "unknown" } {
+    const raw: unknown = doc.engine;
+    if (raw !== undefined && raw !== "mcode" && raw !== "node-red") return { legacy: false, owner: "unknown" };
+    const owner = effectiveWorkflowEngine(doc);
+    return owner === "mcode" ? { legacy: true } : { legacy: false, owner };
+  }
+
+  /** 事实表里那条「这条触发器由谁装」的句子（用户可见，界面读 `detail`）。 */
+  private static foreignTriggerDetail(owner: WorkflowEngine | "unknown"): string {
+    return owner === "node-red"
+      ? "由 Node-RED 引擎管理：旧自动化执行器不安装 cron / 文件监听 / 事件订阅（触发在引擎侧）"
+      : "工作流引擎标记无法识别（既不是 mcode 也不是 node-red）：旧自动化执行器拒绝安装任何监听（fail-closed）";
+  }
+
+  /** 手动入口的同一道闸：这幅图不归旧 runner 时给一句可读的拒绝，而不是"找不到触发器"。 */
+  private foreignOwnerOf(workflowId: string): string | null {
+    const doc = getWorkflow(workflowId);
+    if (doc === null) return null;
+    const owner = this.legacyTriggerOwnerOf(doc);
+    return owner.legacy ? null : AutomationRunner.foreignTriggerDetail(owner.owner);
+  }
+
   private buildTriggers(workflowId: string, types: Map<string, NodeTypeManifest>): LoadedTrigger[] {
     const doc = getWorkflow(workflowId);
     if (doc === null) {
@@ -504,6 +548,9 @@ class AutomationRunner {
     const revision = workflowRevision(doc);
     const out: LoadedTrigger[] = [];
     const pendingReview = workflowReviewError(doc);
+    // 【T3】装监听**之前**先看引擎归属。Node-RED 拥有的图 / 权威不明的图：一个监听都不装，
+    // 但每条触发器仍在事实表里留一行「由谁管」—— 不静默消失（AUTO-09 同一条立场）。
+    const owner = this.legacyTriggerOwnerOf(doc);
     /** 这次 reload 里**还在**的触发器(挂上的 + 挂不上的),reload 完拿它清事实表。 */
     const seen = new Set<string>();
     for (const node of doc.nodes) {
@@ -523,6 +570,13 @@ class AutomationRunner {
         enabled: triggerEnabledOf(node.params),
       };
       seen.add(triggerKey(seed));
+      if (!owner.legacy) {
+        // 不装任何监听；原因进事实（`armed: false` + 可读 detail）。这里**不**用
+        // `parseTriggerSpec` 再验参数 —— 参数好坏是引擎侧的事，旧 runner 没有立场
+        // 对一张自己不执行的图报"参数写坏了"。
+        this.facts.recordSetup(seed, false, AutomationRunner.foreignTriggerDetail(owner.owner));
+        continue;
+      }
       if (pendingReview !== null) {
         // Do not install a watcher or timer, but keep the reason in the facts.
         this.facts.recordSetup(seed, false, pendingReview);
@@ -1927,6 +1981,11 @@ class AutomationRunner {
       const reviewError = workflowReviewError(saved);
       if (reviewError !== null) return { ok: false, error: reviewError };
     }
+    // 【T3】Node-RED 拥有的图没有手动入口：它的触发与运行都在引擎里。以前这里会一路
+    // 建会话、claim、再到 `runner.ts` 的 assert 才失败，留下一次失败运行；现在在入口
+    // 就说清楚（与 buildTriggers / fire 同一份引擎判据）。
+    const foreign = this.foreignOwnerOf(workflowId);
+    if (foreign !== null) return { ok: false, error: foreign };
     const find = (): LoadedTrigger | undefined =>
       this.all().find((t) => t.workflowId === workflowId && t.nodeId === triggerNodeId);
     let trigger = find();
@@ -1965,6 +2024,9 @@ class AutomationRunner {
       | { collectionId: string },
     input?: Readonly<Record<string, string | readonly string[]>>,
   ): Promise<AutomationRunResult> {
+    // 【T3】同 `runNow`：不归旧 runner 的图在自定义 UI 这条入口也直接说明由谁管。
+    const foreign = this.foreignOwnerOf(workflowId);
+    if (foreign !== null) return { ok: false, error: foreign };
     const find = (): LoadedTrigger | undefined =>
       this.all().find((t) => t.workflowId === workflowId && t.nodeId === triggerNodeId);
     let trigger = find();
@@ -2315,6 +2377,19 @@ class AutomationRunner {
       if (current === null) { settleClaim(); return this.skip(trigger, "这份自动化已被删除"); }
       const reviewError = workflowReviewError(current);
       if (reviewError !== null) { settleClaim(); return this.skip(trigger, reviewError); }
+      // 【T3】派发这一刻**再核一次引擎归属**（同 `buildTriggers` 的同一份判据）。
+      // 这是"换引擎之后晚到的旧 watcher / crontick / 去抖计时器"那条缝的闸门：
+      // 保存把引擎切到 node-red 之后、`reload` 真正把 `entries` 换掉之前的这段时间里，
+      // 旧触发器仍可能被叫醒 —— 到这里一律不派发。若本进程此前已为这条 flow 登记过
+      // mcode（切换前它确实是旧图），**在这里释放**：这幅图今后不归旧 runner，占着
+      // owner 只会挡住 Node-RED 接管（与 `apply()` 里"触发器没了就释放"同一条路径）。
+      // 自身从未登记过时释放是 no-op —— 绝不会去动 Node-RED 的登记。
+      const engineOwner = this.legacyTriggerOwnerOf(current);
+      if (!engineOwner.legacy) {
+        this.releaseExecutorOwner(trigger.workflowId);
+        settleClaim();
+        return this.skip(trigger, AutomationRunner.foreignTriggerDetail(engineOwner.owner));
+      }
       // A save reloads node manifests asynchronously. A debounce timer or cron
       // tick can fire before `entries` is replaced; never execute that stale
       // trigger against the newly saved graph.
