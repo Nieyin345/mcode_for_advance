@@ -2,11 +2,19 @@
  * T10 / ARC-006 Gate D: durable executor claims next to native flows.json.
  * Synchronous store operations are required by ExecutorOwnershipStore's CAS
  * contract; persistence is completed BEFORE changing the in-memory map.
+ *
+ * 【T4】跨进程 CAS:每次写(insert/remove/启动对账)都在宿主级同步文件租约
+ * (`withOsFileLeaseSync`,与 osFileLease 同一份 `.mcode-lock` 协议)内**重新读盘**、
+ * 在新鲜状态上判定、原子写回,再刷新本实例内存。两个 Mcode 进程(或 Mcode +
+ * 测试/恢复进程)同时 insert 同一 flowId 时,后者看到前者刚落盘的记录 → 拒绝;
+ * 不同 flowId 的并发 insert 不再整表覆盖丢记录。读盘损坏 / 租约超时一律
+ * fail-closed(抛错,内存与磁盘都不改),绝不"后写赢"。
  */
 import { lstatSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { atomicReplaceFileSync } from "@main/lib/atomicFile.js";
+import { withOsFileLeaseSync } from "@main/lib/osFileLease.js";
 import { log } from "@main/lib/logger.js";
 import { nativeFlowIds } from "./nodeRedOwnership.js";
 import { isExecutorOwner, type ExecutorOwner, type ExecutorOwnershipRecord, type ExecutorOwnershipStore } from "./executorOwnership.js";
@@ -54,6 +62,14 @@ function parseArchive(raw: string): Archive {
   return { version: 1, records, ...(obj["legacyBlocked"] === true ? { legacyBlocked: true } : {}) };
 }
 
+/** The single serializer for the on-disk archive format. Boot reconciliation
+ * compares against it instead of re-serializing by hand, so the "did anything
+ * change?" test can never drift from what is actually written. */
+function serializeArchive(records: Iterable<ExecutorOwnershipRecord>, blocked: boolean): string {
+  const doc: Archive = { version: 1, records: [...records], ...(blocked ? { legacyBlocked: true } : {}) };
+  return JSON.stringify(doc);
+}
+
 export class FileExecutorOwnershipStore implements ExecutorOwnershipStore {
   private records = new Map<string, ExecutorOwnershipRecord>();
   private blocked = false;
@@ -64,23 +80,21 @@ export class FileExecutorOwnershipStore implements ExecutorOwnershipStore {
 
   constructor(readonly dataDir: string) {
     this.filePath = join(dataDir, OWNERSHIP_FILE);
-    let archive: Archive | undefined;
-    try {
-      assertOrdinaryFile(this.filePath);
-      archive = parseArchive(readFileSync(this.filePath, "utf8"));
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        // Protect the original bytes before a replacement is ever written.
-        const backup = this.filePath + ".corrupt-" + Date.now() + "-" + randomUUID();
-        renameSync(this.filePath, backup);
-        this.blocked = true;
-        this.report("corrupt", "owner 文件损坏，已保留原档 " + backup + "；拒绝旧 runner 自动接管");
-      }
-    }
-    if (archive !== undefined) {
-      this.blocked = archive.legacyBlocked === true;
-      this.records = new Map(archive.records.map((record) => [record.flowId, { ...record }]));
-    }
+    // Boot reconciliation is itself a read-modify-write of the SHARED file: it
+    // must run under the cross-process lease and on a fresh read, otherwise a
+    // process booting moments later rewrites the file from its stale snapshot
+    // and erases claims another process acquired in the meantime (T4).
+    withOsFileLeaseSync(this.filePath, () => this.bootstrapLocked());
+  }
+
+  /** Constructor body, executed with the ownership file leased. */
+  private bootstrapLocked(): void {
+    const archive = this.readBootArchive();
+    const baseline = archive ?? { version: 1, records: [] };
+    this.records = new Map(baseline.records.map((record) => [record.flowId, { ...record }]));
+    // Only an archive that actually parsed may clear the corrupt block set by
+    // readBootArchive(); ENOENT leaves `blocked` untouched.
+    if (archive !== undefined) this.blocked = archive.legacyBlocked === true;
     // One-time reconciliation: no disk I/O occurs in get()/list().
     try {
       const native = new Set(nativeFlowIds(this.dataDir));
@@ -108,8 +122,57 @@ export class FileExecutorOwnershipStore implements ExecutorOwnershipStore {
       this.report("flows-invalid", "flows.json 不可验证，拒绝旧 runner 自动接管：" +
         (err instanceof Error ? err.message : String(err)));
     }
-    // Persist reconstructed/blocked state; error must reach caller and fail closed.
-    this.persist(this.records);
+    // Persist reconstructed/blocked state ONLY when it differs from disk; an
+    // unconditional boot write would clobber concurrent claims (T4). Errors
+    // must reach the caller and fail closed.
+    const onDisk = serializeArchive(baseline.records, baseline.legacyBlocked === true);
+    if (serializeArchive(this.records.values(), this.blocked) !== onDisk) this.writeLocked(this.records);
+  }
+
+  /** Read the archive for boot; a damaged file is archived byte-for-byte and
+   * routed into the T10 fail-closed rebuild, never silently accepted.
+   * Returns `undefined` when no archive could be parsed (ENOENT or corrupt). */
+  private readBootArchive(): Archive | undefined {
+    let archive: Archive | undefined;
+    try {
+      assertOrdinaryFile(this.filePath);
+      archive = parseArchive(readFileSync(this.filePath, "utf8"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        // Protect the original bytes before a replacement is ever written.
+        const backup = this.filePath + ".corrupt-" + Date.now() + "-" + randomUUID();
+        renameSync(this.filePath, backup);
+        this.blocked = true;
+        this.report("corrupt", "owner 文件损坏，已保留原档 " + backup + "；拒绝旧 runner 自动接管");
+      }
+    }
+    return archive;
+  }
+
+  /** Re-read the on-disk archive while HOLDING the lease. A damaged file here
+   * (after boot) is not rebuilt: the write is refused so neither memory nor
+   * disk can be silently rewritten from a corrupt baseline. */
+  private readFreshLocked(): Archive {
+    try {
+      assertOrdinaryFile(this.filePath);
+      return parseArchive(readFileSync(this.filePath, "utf8"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, records: [] };
+      this.report("corrupt", "owner 文件在写入前不可解析，拒绝改写：" +
+        (err instanceof Error ? err.message : String(err)));
+      throw new Error("executor owner 文件损坏或不可验证，拒绝登记/释放（fail-closed）：" +
+        (err instanceof Error ? err.message : String(err)));
+    }
+  }
+
+  /** Replace the in-memory snapshot with the fresh on-disk one. Blocked state
+   * is sticky: once any process observed an unverifiable state, later writers
+   * keep `legacyBlocked` set instead of silently clearing it. */
+  private adoptLocked(fresh: Archive): Map<string, ExecutorOwnershipRecord> {
+    if (fresh.legacyBlocked === true) this.blocked = true;
+    const records = new Map(fresh.records.map((record) => [record.flowId, { ...record }]));
+    this.records = records;
+    return new Map(records);
   }
 
   private report(kind: OwnershipDiagnostic["kind"], message: string): void {
@@ -132,9 +195,8 @@ export class FileExecutorOwnershipStore implements ExecutorOwnershipStore {
     return true;
   }
 
-  private persist(records: Map<string, ExecutorOwnershipRecord>): void {
-    const doc: Archive = { version: 1, records: [...records.values()], ...(this.blocked ? { legacyBlocked: true } : {}) };
-    atomicReplaceFileSync(this.filePath, JSON.stringify(doc));
+  private writeLocked(records: Map<string, ExecutorOwnershipRecord>): void {
+    atomicReplaceFileSync(this.filePath, serializeArchive(records.values(), this.blocked));
   }
 
   get(flowId: string): ExecutorOwnershipRecord | null {
@@ -143,22 +205,33 @@ export class FileExecutorOwnershipStore implements ExecutorOwnershipStore {
   }
 
   insert(record: ExecutorOwnershipRecord): boolean {
-    if (this.records.has(record.flowId)) return false;
-    const next = new Map(this.records);
-    next.set(record.flowId, { ...record });
-    this.persist(next); // Disk first. EACCES/ENOSPC must never produce an in-memory claim.
-    this.records = next;
-    return true;
+    return withOsFileLeaseSync(this.filePath, () => {
+      const fresh = this.readFreshLocked();
+      if (fresh.legacyBlocked === true && record.owner === "mcode") {
+        // Another process learned the state is unverifiable after this instance
+        // booted. Granting a legacy claim here would be fail-open.
+        this.blocked = true;
+        throw new Error("executor owner 状态已被另一进程标记为不可验证，拒绝登记 mcode（fail-closed）");
+      }
+      const next = this.adoptLocked(fresh);
+      if (next.has(record.flowId)) return false;
+      next.set(record.flowId, { ...record });
+      this.writeLocked(next); // Disk first. EACCES/ENOSPC must never produce an in-memory claim.
+      this.records = next;
+      return true;
+    });
   }
 
   remove(flowId: string, owner: ExecutorOwner): boolean {
-    if (this.records.get(flowId)?.owner !== owner) return false;
-    const next = new Map(this.records);
-    next.delete(flowId);
-    this.persist(next);
-    this.records = next;
-    this.recoverableNative.delete(flowId);
-    return true;
+    return withOsFileLeaseSync(this.filePath, () => {
+      const next = this.adoptLocked(this.readFreshLocked());
+      if (next.get(flowId)?.owner !== owner) return false;
+      next.delete(flowId);
+      this.writeLocked(next);
+      this.records = next;
+      this.recoverableNative.delete(flowId);
+      return true;
+    });
   }
 
   list(): ExecutorOwnershipRecord[] {
