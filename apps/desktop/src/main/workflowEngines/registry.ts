@@ -72,6 +72,16 @@ import { NodePackHost, type NodePackHostServices } from "./nodePackHost.js";
 import { productionNodePackServices, emitNativeRunboardEvent } from "@main/workflowEngines/nodePackProductionPorts.js";
 import { assertNativeEngineSelection } from "./workflowEngineSelection.js";
 import { getWorkflow } from "@main/orchestration/library.js";
+import { workflowSaveVersion } from "@main/orchestration/workflowSaveVersion.js";
+import {
+  isNativeMirrorReport,
+  readNativeDeployReconciliation,
+  reconcileNativeLibraryMirror,
+  describeNativeMirrorFailure,
+  nativeMirrorEvents,
+  runNativeDeployMirror,
+  type NativeMirrorReport,
+} from "./nativeLibrarySync.js";
 import type { RuntimeEvent } from "@contracts/runtime";
 import type { WorkflowDoc } from "@contracts/workflow";
 import {
@@ -424,6 +434,13 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
   private nativeTabs = new Map<string, string>();
   private nativeNodes = new Map<string, { tabId: string; nodeId: string; type: string; title: string }>();
   private nativeSettled = new Set<string>();
+  /** Engine data directory of the current start (hosts flows.json and the
+   * deploy↔library reconciliation ledger). */
+  private engineDataDir: string | null = null;
+  /** T2: last deploy↔library reconciliation state, kept for status/diagnostics.
+   * It is a *middle state* (“native deploy committed, library mirror pending”),
+   * never claimed to be one cross-store transaction. */
+  private lastLibraryMirror: (NativeMirrorReport & { error: string | null }) | null = null;
   private indexNativeNodes(flows: unknown): void {
     const next = new Map<string, { tabId: string; nodeId: string; type: string; title: string }>();
     if (Array.isArray(flows)) for (const item of flows) {
@@ -502,14 +519,50 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
   }
   constructor(engineId: string, ports: EngineRuntimePorts, private readonly ownership: ExecutorOwnershipRegistry,
     private readonly nodeServices?: NodePackHostServices,
-    private readonly syncLibrary: (flows: unknown) => Promise<unknown> = async flows => {
-      const { syncDeployedNativeWorkflows } = await import("./nativeLibrarySync.js");
-      return syncDeployedNativeWorkflows(flows);
-    },
+    /** T58/T2: production default (`null`) resolves the engine data directory
+     * from the current start and runs the durable deploy↔library mirror. Tests
+     * inject their own port; either way a failed mirror is never a deploy
+     * rollback and never releases the executor owner. */
+    private readonly syncLibrary: ((flows: unknown, dataDir: string | null) => Promise<unknown>) | null = null,
     private readonly lookupDoc?: (id: string) => WorkflowDoc | null,
     private readonly nativeEventSink?: (event: RuntimeEvent) => void) {
     super(engineId, ports);
     this.onTerminated(() => this.releaseOwned());
+  }
+
+  /** Deploy↔library reconciliation state of the last deploy / retry, and how
+   * many documents are still waiting in the durable ledger. Read-only; `null`
+   * before any deploy in this process. */
+  libraryMirrorState(): { report: (NativeMirrorReport & { error: string | null }) | null; pending: number } {
+    const dataDir = this.engineDataDir;
+    const pending = dataDir === null ? 0 : readNativeDeployReconciliation(dataDir).pending.length;
+    return { report: this.lastLibraryMirror, pending };
+  }
+
+  /** Replay every pending mirror against the current native canvas. Automatic
+   * callers (start / next deploy) never overwrite a library document that
+   * changed after the deploy; `acceptNativeRevision` is the explicit
+   * user/agent decision to. */
+  async retryLibraryMirror(options: { acceptNativeRevision?: boolean } = {}): Promise<NativeMirrorReport | null> {
+    const dataDir = this.engineDataDir;
+    if (dataDir === null) return null;
+    const report = await reconcileNativeLibraryMirror(dataDir, options);
+    this.recordLibraryMirror({ ...report, error: report.ok ? null : "仍有工作流未镜像" });
+    return report;
+  }
+
+  /** Record the outcome and push it onto the existing host runboard channel
+   * (workflow-scoped, no chat session) so the user sees pending/failed mirrors
+   * without reading logs. The sink defaults to the production emitter. */
+  private recordLibraryMirror(report: NativeMirrorReport & { error: string | null }): void {
+    this.lastLibraryMirror = report;
+    if (report.ok && report.deployId === "" && report.docs.length === 0) return;
+    const emit = this.nativeEventSink ?? emitNativeRunboardEvent;
+    for (const event of nativeMirrorEvents(report)) {
+      try { emit(event); } catch (err) {
+        log.warn(`[workflow-engine] Node-RED 库镜像状态事件发送失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   private releaseOwned(): void {
@@ -553,9 +606,11 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
         this.indexNativeNodes(pending.flows);
         // A real editor deploy has committed. Only now mirror the same native
         // nodes back to the existing workflow library, via its guarded save.
-        // A failed mirror is logged, not misreported as an ownership rollback.
-        void this.syncLibrary(pending.flows)
-          .catch(err => log.error(`Native Node-RED deploy saved but library sync failed: ${String(err)}`));
+        // T2: the durable pending intent is written synchronously inside this
+        // call (before its first await), and a failure is a visible, retryable
+        // reconciliation state — never a deploy failure and never an ownership
+        // rollback. The old “only log it” path is gone.
+        this.startDeployMirror(pending.flows);
       } else if (msg["uncertain"] === true) {
         // The client may disconnect after native deployment has begun. It is
         // unsafe to give its flows to Mcode until this engine actually stops.
@@ -598,15 +653,73 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     send({ kind: "mcode-deploy-reply", id, ok: true });
   }
 
+  /** Run the deploy↔library mirror off the deploy path. Failures are recorded
+   * (status + runboard event) and logged as *pending reconciliation*, never as a
+   * deploy failure or owner rollback. */
+  private startDeployMirror(flows: unknown): void {
+    const at = Date.now();
+    let task: Promise<unknown>;
+    try {
+      task = this.syncLibrary !== null
+        ? this.syncLibrary(flows, this.engineDataDir)
+        : this.productionSyncLibrary(flows, this.engineDataDir);
+    } catch (err) {
+      // Invalid document identity in the receipt: the production ledger already
+      // carries a lastError; the native deploy itself stays committed.
+      this.recordLibraryMirror({ deployId: "", at, ok: false, docs: [], error: String(err) });
+      log.error(`Native Node-RED deploy saved but library mirror could not start: ${String(err)}`);
+      return;
+    }
+    void task.then(
+      value => {
+        // The production path records its own per-document report; an injected
+        // port that returns one is recorded here so status/events stay truthful.
+        if (isNativeMirrorReport(value)) {
+          this.recordLibraryMirror({ ...value, error: value.ok ? null : "仍有工作流未镜像" });
+        }
+      },
+      err => {
+        // Keep the per-document report when productionSyncLibrary already
+        // recorded one for this deploy.
+        if (this.lastLibraryMirror === null || this.lastLibraryMirror.at !== at) {
+          this.recordLibraryMirror({ deployId: "", at, ok: false, docs: [], error: String(err) });
+        }
+        log.error(`Native Node-RED deploy saved but library mirror pending reconciliation: ${String(err)}`);
+      });
+  }
+
+  /** Production mirror: one durable record-and-mirror run for this deploy.
+   * Records the per-document report before surfacing the failure sentence. */
+  private productionSyncLibrary(flows: unknown, dataDir: string | null): Promise<unknown> {
+    if (dataDir === null) return Promise.reject(new Error("Node-RED 引擎数据目录未知，无法登记库镜像对账"));
+    const lookup = this.lookupDoc;
+    const revisionOf = lookup === undefined ? undefined : (id: string): string | null => {
+      const doc = lookup(id);
+      return doc === null ? null : workflowSaveVersion(doc);
+    };
+    return runNativeDeployMirror(flows, { dataDir, ...(revisionOf !== undefined ? { revisionOf } : {}) })
+      .then(report => {
+        this.recordLibraryMirror({ ...report, error: report.ok ? null : "仍有工作流未镜像" });
+        if (!report.ok) throw new Error(describeNativeMirrorFailure(report, dataDir));
+        return report.docs.filter(doc => doc.status === "mirrored").map(doc => doc.docId);
+      });
+  }
+
   override async start(options: EngineStartOptions): Promise<EngineRuntimeStatus> {
     const state = this.status().state;
     if (state === "running" || state === "starting") return super.start(options);
     if (this.ownedFlowIds.length > 0) throw new Error("旧引擎租约未释放，拒绝再次启动");
+    this.engineDataDir = options.dataDir;
     this.ownedFlowIds = claimNativeFlows(this.ownership, nativeFlowIds(options.dataDir, (nodes) => {
       if (this.lookupDoc) assertNativeEngineSelection(nodes, this.lookupDoc);
       this.nativeTabs = this.tabMap(nodes);
       this.indexNativeNodes(nodes);
     }));
+    // T2: a previous process may have committed a native deploy whose library
+    // mirror never completed. Replay that durable intent before this start
+    // returns; failures stay pending and visible, never block the engine.
+    void this.retryLibraryMirror().catch(err =>
+      log.error(`Node-RED 库镜像对账重试失败（保持待对账）：${err instanceof Error ? err.message : String(err)}`));
     this.nodePackHost = new NodePackHost(this.nodeServices ?? productionNodePackServices(
       () => this.status(), options.probeIdentity?.adminToken,
       (tabId) => {
@@ -637,7 +750,7 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
   constructor(
     private readonly runtimePorts: EngineRuntimePorts = defaultEngineRuntimePorts,
     private readonly ownership: ExecutorOwnershipRegistry = sharedExecutorOwnership,
-    private readonly nativeLibrarySync?: (flows: unknown) => Promise<unknown>,
+    private readonly nativeLibrarySync?: (flows: unknown, dataDir: string | null) => Promise<unknown>,
   ) {}
   /** 每个引擎的数据目录（首次 launchSpec 时创建）。 */
   private readonly dataDirs = new Map<string, string>();
@@ -651,7 +764,8 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     let runtime = this.runtimes.get(engineId);
     if (runtime === undefined) {
       runtime = new OwnedNodeRedRuntime(engineId, this.runtimePorts, this.ownership, undefined,
-        this.nativeLibrarySync, this.runtimePorts === defaultEngineRuntimePorts ? (id) => getWorkflow(id) : undefined);
+        this.nativeLibrarySync ?? null,
+        this.runtimePorts === defaultEngineRuntimePorts ? (id) => getWorkflow(id) : undefined);
       this.runtimes.set(engineId, runtime);
     }
     return runtime;
