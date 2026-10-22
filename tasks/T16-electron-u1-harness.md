@@ -170,7 +170,7 @@ const journey = defineU1Journey({
 
 ### 提交
 
-实现提交：`6073fcbb`（feat(T16): real-Electron U1 journey harness with evidence and mutation gate）。
+实现提交：`6073fcbb`（feat(T16): real-Electron U1 journey harness with evidence and mutation gate）；本回写提交：`a71c1a22`。
 
 - 提交后复跑：`bash apps/desktop/scripts/electron-u1/run.sh` → `verify: 31/31 判据通过`，exit 0（正常跑 1 / 变异跑 0）。
 - `npx tsc --noEmit -p apps/desktop/tsconfig.json` 对本套件 0 错误；`packages/contracts` 0 错误。提交后复跑时桌面包出现的一条 `nativeLibrarySync.ts(583) NativeDeployReconciliation.applied` 错误来自**并行对话的未提交修改**（该文件在我开工前的 `git status` 里就是 M，我未触碰），不属于本卡改动面。
