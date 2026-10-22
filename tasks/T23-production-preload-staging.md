@@ -216,7 +216,7 @@ editorAssetsSha256   keys: docs,html,markdown,pdf,sheets,slides
 
 ### 六、提交
 
-见本卡提交（`fix(T23): ship every native preload and fail closed on a stale Docs renderer`），提交 SHA 记录在提交本身与 `git log -1 --format=%H`。
+提交：`239eb863e9e9d9903cf6569241c7743c1e84e255` — `fix(T23): ship every native preload and fail closed on a stale Docs renderer`（8 files changed, 492 insertions(+), 25 deletions(-)）。提交后已在该提交状态重跑：production-build-preload-smoke 18/18、genoffice-editors-release-smoke 29/29、t76 24/24、t73 5/5，双包 typecheck 均通过。
 
 ### 七、仍需 T7 覆盖的 U1 项（本卡不宣称）
 
