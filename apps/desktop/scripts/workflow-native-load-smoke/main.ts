@@ -37,6 +37,9 @@ try {
     get: id => docs.get(id) ?? null,
     types: async () => new Map([["known", { runner: { kind: "prompt" } } as NodeTypeManifest]]),
     dataDir: () => dir,
+    // 【T21】装载前会过迁移预检，它要宿主事实。这里是夹具的诚实声明：
+    // 没有任何审批记录（= 本地既有工作流），也没有在跑的执行（空集，不是"未知"）。
+    migrationFacts: () => ({ review: null, inFlightWorkflowIds: new Set<string>() }),
     runtime: {
       status: () => status,
       stop: async () => {

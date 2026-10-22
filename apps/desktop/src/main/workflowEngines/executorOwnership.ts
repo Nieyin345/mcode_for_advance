@@ -316,6 +316,16 @@ export class ExecutorOwnershipRegistry {
   list(): ExecutorOwnershipRecord[] {
     return this.store.list();
   }
+
+  /**
+   * 【T21】此刻**正在执行**的 flowId 集合（`acquireExecution` 尚未释放的那些）。
+   *
+   * 这是迁移预检 `inFlight` 事实的唯一可信来源：登记账本回答"归谁"，
+   * 这里的运行租约回答"是不是正在跑"。只读；不改变任何租约状态。
+   */
+  runningFlowIds(): ReadonlySet<string> {
+    return new Set(this.executions.keys());
+  }
 }
 
 /** 本片的默认实例（内存）。生产装配会换成落盘版 —— 调用方只依赖类接口。 */

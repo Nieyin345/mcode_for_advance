@@ -7,6 +7,8 @@ import { registerWorkflowEngineHandlers } from "./workflowEngine.js";
 import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
 import { loadWorkflowIntoNative } from "@main/workflowEngines/nativeLibraryLoad.js";
 import { getWorkflow } from "@main/orchestration/library.js";
+import { workflowReviewOf } from "@main/orchestration/workflowTrust.js";
+import { sharedExecutorOwnership } from "@main/workflowEngines/executorOwnership.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { documentViewHost } from "@main/document/documentViewHost.js";
 import { docsPrivilegedPorts } from "@main/document/docsPrivilegedPorts.js";
@@ -274,6 +276,12 @@ export function registerIpcHandlers(): void {
         get: getWorkflow,
         types: async () => new Map((await loadNodeTypes()).entries.map(entry => [entry.id, entry.manifest])),
         dataDir: () => workflowEngineRegistry.dataDirOf("node-red"),
+        // 【T21】迁移预检的宿主事实：审批记录（SQL）与在途运行（执行归属账本的
+        // 运行租约）。两样都在主进程里有唯一读口，不另造快照格式。
+        migrationFacts: (doc) => ({
+          review: workflowReviewOf(doc),
+          inFlightWorkflowIds: sharedExecutorOwnership.runningFlowIds(),
+        }),
         runtime,
         beforeStart: ensureEngineNodesReady,
         launchSpec: () => workflowEngineRegistry.launchSpec("node-red"),
