@@ -7,6 +7,12 @@ import { BrowserWindow, nativeTheme, ipcMain, app } from "electron";
 import { join } from "node:path";
 import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import {
+  ARC005_MEASURE_SELECTORS,
+  ARC005_PROBE_TARGETS,
+  buildSceneAssertionScript,
+  inspectVisualProbeTarget,
+} from "./probe-assertions.js";
 
 const SCREENS = [
   ["empty", "初始空会话"], ["messages", "已有消息"],
@@ -22,24 +28,7 @@ const CONDITIONS = [
   { id: "dark", width: 1280, height: 800, dark: true },
   { id: "narrow", width: 1024, height: 640, dark: false },
 ] as const;
-const SELECTORS: ReadonlyArray<[string, string]> = [
-  ["titlebar", "[data-testid='titlebar'], header"],
-  ["sidebar", "[data-testid='workspace-sidebar']"],
-  ["sidebar-row", "[data-testid='workspace-sidebar'] button"],
-  ["main", "[data-testid='workspace-main']"],
-  ["message", "[data-testid='workspace-main'] .prose, [data-testid='workspace-main'] [data-message-id]"],
-  ["tool-row", "[data-testid='workspace-main'] [data-tool-id], [data-testid='workspace-main'] [data-testid*='tool']"],
-  ["composer", "[data-testid='workspace-main'] textarea"],
-  ["approval", "[role='alertdialog']"],
-  ["card", "[data-testid='workspace-main'] [class*='rounded']"],
-  ["button", "button"],
-  ["panel", "[data-testid='workspace-sidebar'], [data-testid='right-panel']"],
-  ["settings", ".settings-root"],
-  ["terminal", ".xterm, [data-testid='bottom-terminal-bar']"],
-  ["editor", ".monaco-editor"],
-  ["preview", "[data-testid='arc005-real-markdown'], [data-testid*='preview'], [class*='pdf-preview']"],
-  ["fixture", "[data-testid='arc005-fixture-panel']"],
-];
+const SELECTORS = ARC005_MEASURE_SELECTORS;
 const TOKENS = [
  "--surface", "--surface-muted", "--surface-hover", "--content",
  "--content-muted", "--content-subtle", "--edge", "--panel-edge",
@@ -163,8 +152,6 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               mk('m1','user',[{kind:'text',text:'请解释视觉基线测试的用途'}]),
               mk('m2','assistant',[{kind:'text',text:'视觉基线记录真实界面字体、颜色、几何和组件状态。'}])
             ];
-            const result = (ok,reason,value) => ({ok,reason:ok?undefined:reason,value});
-            if (id === 'empty') return result(true,undefined,0);
             if (id === 'messages') st.setState({messagesBySession:{s1:msg,s2:[],s3:[]}});
             else if (id === 'tools') {
               const cases = [
@@ -209,29 +196,7 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               window.__arcShowFixture?.('editor');
             }
             await new Promise(r=>setTimeout(r,300));
-            const q = (sel) => !![...document.querySelectorAll(sel)].find(e=>e.getClientRects().length);
-            if (['diff','terminal','editor','preview','sidechat'].includes(id)) {
-              const panel = document.querySelector('[data-testid="arc005-fixture-panel"]');
-              const kind = panel?.getAttribute('data-arc-fixture');
-              const present = !!panel && panel.getBoundingClientRect().width > 0;
-              const healthy = id === 'diff' ? !!document.querySelector('.diff-add') && !!document.querySelector('.diff-del')
-                : id === 'preview' ? !!document.querySelector('[data-testid="arc005-real-markdown"] strong')
-                : id === 'terminal' ? !!document.querySelector('[data-testid="arc005-static-terminal"]')
-                : id === 'editor' ? !!document.querySelector('[data-testid="arc005-stub-editor"] code')
-                : !!document.querySelector('[data-testid="arc005-sidechat-partial"]');
-              return result(present && healthy, '指定面板没有渲染出验证节点', {fixture:kind});
-            }
-            if (id === 'projects') return result(document.body.textContent.includes('视觉探针项目 A') && document.body.textContent.includes('视觉探针项目 B'), '真实项目树没有两个项目', {fixture:'real-LeftBar'});
-            if (id === 'parallel') return result(document.body.textContent.includes('并行会话 B') && document.body.textContent.includes('切换目标项目'), '真实流式侧栏没有多会话行', {fixture:'real-StreamSidebar'});
-            if (id === 'narrow-window') return result(innerWidth <= 1024 && !!document.querySelector('[data-testid="arc005-stub-editor"]'), '组合窄窗未达到 1024px 或编辑器桩未出现', {fixture:'stub-editor+real-layout',width:innerWidth});
-            if (id === 'messages') return result(document.body.textContent.includes('视觉基线记录真实界面'), '消息正文未出现在真实 App');
-            if (id === 'tools') return result(q('[data-tool-id],[data-testid*="tool"],[class*="tool-card"]'), '工具卡 DOM 未出现在真实 App');
-            if (id === 'approval') return result(q('[role="alertdialog"]'), '审批卡没有出现');
-            if (id === 'sidechat') return result(q('[data-testid*="side-chat"],[class*="side-chat"]'), '右侧聊组件 DOM 未出现');
-            if (id === 'terminal') return result(q('.xterm,[data-testid="bottom-terminal-bar"]'), '终端真实组件 DOM 未出现');
-            if (id === 'parallel') return result(q('[data-testid="stream-sidebar"]'), '流式侧栏真实组件未出现');
-            if (id === 'settings') return result(q('.settings-root'), '设置层未出现');
-            return result(false,'未知场景');
+            return ${buildSceneAssertionScript(screen)};
           })()`);
           await sleep(350);
           const alive = await js<boolean>("!!document.querySelector('[data-testid=workspace-main]') && !!document.querySelector('button')");
@@ -246,12 +211,20 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
         const snapshot = await js<unknown>(`(() => {
           const selectors = ${JSON.stringify(SELECTORS)};
           const tokens = ${JSON.stringify(TOKENS)};
+          const targetSpecs = ${JSON.stringify(ARC005_PROBE_TARGETS)};
+          const inspectVisualProbeTarget = ${inspectVisualProbeTarget.toString()};
           const root = getComputedStyle(document.documentElement);
           const measured = selectors.map(([name,sel]) => {
             let el; try { el = [...document.querySelectorAll(sel)].find(e => e.getClientRects().length > 0); } catch {}
-            if (!el) return {name,selector:sel,present:false};
+            const targetSpec = targetSpecs[name];
+            const classification = targetSpec ? inspectVisualProbeTarget(document, targetSpec) : null;
+            const provenance = classification ? {
+              sourceType: classification.state,
+              ...(classification.reason ? {sourceReason: classification.reason} : {})
+            } : {};
+            if (!el) return {name,selector:sel,present:false,...provenance};
             const st = getComputedStyle(el), rect=el.getBoundingClientRect();
-            return {name,selector:sel,present:true,tag:el.tagName,
+            return {name,selector:sel,present:true,tag:el.tagName,...provenance,
               fontSize:st.fontSize,lineHeight:st.lineHeight,color:st.color,
               backgroundColor:st.backgroundColor,borderRadius:st.borderRadius,
               padding:st.padding,
@@ -262,9 +235,11 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
             dark:document.documentElement.classList.contains('dark'),
             textSample:document.body.innerText.slice(0,400)};
         })()`);
+        const probeValue = probe.value as {fixture?:string;sourceType?:string}|undefined;
         const metadata = {
           schema:1,screen,title,condition:condition.id,
-          fixture: (probe.value as {fixture?:string}|undefined)?.fixture ?? (probe.ok ? 'real-app' : null),
+          fixture: probeValue?.fixture ?? (probe.ok ? 'real-app' : null),
+          sourceType: probeValue?.sourceType ?? (probe.ok ? 'real-content' : 'missing'),
           requested:{width:screen==='narrow-window'?1024:condition.width,height:screen==='narrow-window'?640:condition.height,dark:condition.dark},
           electron:process.versions.electron,windows:process.getSystemVersion?.()??process.platform,
           // devicePixelRatio 只能从渲染进程读；BrowserWindow.getContentBounds 恒存在，
