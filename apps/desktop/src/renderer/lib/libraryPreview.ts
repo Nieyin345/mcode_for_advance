@@ -15,6 +15,7 @@
  * 2026-09-26 起 `LibrarySection.openItem` 改成调用这里，原先那边自己抄的一份删掉了。
  */
 import type { LibraryItem } from "@contracts/library";
+import { hasDocumentFormatSuffix } from "@contracts/documentKind";
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
@@ -24,7 +25,16 @@ export function previewLibraryItem(item: Pick<LibraryItem, "id" | "mdPath" | "fi
   lib.setActiveItem(item.id);
   // Files from Windows and third-party exports commonly use uppercase .MD.
   // Classification should match the actual extension, regardless of case.
-  const isMd = Boolean(item.mdPath && /\.md$/i.test(item.mdPath) || item.filePath && /\.md$/i.test(item.filePath));
+  //
+  // 【T17】后缀判据收进 `@contracts/documentKind`。注意这里锚的是**只 `.md`**
+  // （旧实现是 `/\.md$/i`），**不是** `isMarkdownDocumentPath`（那个还认 `.markdown`）。
+  // 换成后者会让 `*.markdown` 的条目从 metadata 页跳到 edit 页 —— 用户可见的行为变更，
+  // 本卡不许改。`.markdown` 的 mdPath 确实可能真实存在（`adoptMarkdown` 接受它并
+  // 原样保留文件名），所以这不是理论边角。是否该统一成"markdown 家族"见回写区 B1。
+  const isMd = Boolean(
+    (item.mdPath && hasDocumentFormatSuffix(item.mdPath, ".md")) ||
+    (item.filePath && hasDocumentFormatSuffix(item.filePath, ".md")),
+  );
   lib.setDetailTab(isMd ? "edit" : "meta");
   const session = useSessionStore.getState();
   session.setRightPanelTab("preview");

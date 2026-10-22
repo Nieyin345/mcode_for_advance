@@ -11,6 +11,7 @@
  * Zustand store because it's ephemeral per-turn UI state, not session data.
  */
 import type { PickedElement } from "@contracts/ipc";
+import { isImageDocumentPath } from "@contracts/documentKind";
 import { browserUuid } from "@renderer/lib/uuid.js";
 
 /** Display char count for a tag's preview text. Single line, whitespace
@@ -27,29 +28,16 @@ export const FILE_DRAG_MIME = "application/x-file-path";
  *  {@link TAG_THRESHOLD_LINES} lines becomes a tag. */
 export const TAG_THRESHOLD_CHARS = 200;
 
-/** Image file extensions we can preview as a data-URL `<img>` in the popover /
- *  chip. Mirrors the editor's `isImage()` set (FileEditor.tsx) so composer
- *  chips, message attachment cards, and the IDE editor all agree on what
- *  counts as an image. */
-const IMAGE_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".bmp",
-  ".ico",
-  ".webp",
-  ".svg",
-  ".tif",
-  ".tiff",
-  ".avif",
-]);
-
-/** True if `path` has a previewable image extension (case-insensitive). */
+/** True if `path` has a previewable image extension (case-insensitive).
+ *
+ *  【T17】集合收进 `@contracts/documentKind` 的 `IMAGE`（与编辑器 `isImage`、
+ *  `isImagePath` 同一份）—— 此前这里是**第四份**手抄的图片后缀表。本函数只做转发。
+ *
+ *  旧实现用 `lastIndexOf(".")` + `Set.has(带点后缀)`（`dot < 0` 为 false，点文件
+ *  如 `.png` 会命中）；`isImageDocumentPath` 是同一套语义（`documentFormatSuffix`
+ *  取最后一段的最后一点、含点、小写）。由 `document-router-smoke` 逐样例对账。 */
 export function isImageFilePath(path: string): boolean {
-  const dot = path.lastIndexOf(".");
-  if (dot < 0) return false;
-  return IMAGE_EXTENSIONS.has(path.slice(dot).toLowerCase());
+  return isImageDocumentPath(path);
 }
 
 /** A paste spanning more than this many lines is promoted to a tag even if

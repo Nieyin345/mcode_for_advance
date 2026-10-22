@@ -12,6 +12,11 @@
  * build time, so there is no runtime import cycle.
  */
 import { CUSTOM_UI_SETTING_KEY } from "@contracts/customUi";
+import {
+  isBinaryPreviewDocumentPath,
+  isImageDocumentPath,
+  isMarkdownDocumentPath,
+} from "@contracts/documentKind";
 import type { Project, Session, MessageRecord, SessionBookmark } from "@contracts/session";
 import type { SettingChangedEvent, ProjectsChangedEvent, UserMessageEvent, TodoUpdateEvent, GitChangedEvent, SessionChangedEvent, SessionDeletedEvent, RequestResolvedEvent, ModeChangeEvent, UpstreamIssueEvent, SubagentUpdateEvent, SubagentTranscriptEvent, WorkflowNodeTranscriptEvent, ContextUsageEvent, AskUserQuestionEvent, WorkflowNodeProgressEvent, WorkflowNodeUsageEvent, WorkflowNodeChoiceEvent, RuntimeEvent, PermissionMode, EffortLevel, ApprovalRequestEvent, PlanApprovalRequestEvent, PlanUpdateEvent, WorkflowNodeResultEvent, SubagentSnapshot, TurnUsageRecord, SessionListEntry } from "@contracts/runtime";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
@@ -65,22 +70,26 @@ import type { Block, ChatMessage, DeltaEntry, IngestCtx, PlanDraft, QueuedPrompt
 
 /** True for `.md` / `.markdown` files - used to default the editor into preview
  *  mode on first open. Kept here (not in lib/path) because it's a content-type
- *  decision, not a pure path operation. */
+ *  decision, not a pure path operation.
+ *
+ *  【T17】后缀集合收进 `@contracts/documentKind`（`isMarkdownDocumentPath`，
+ *  由 `MARKDOWN` 派生）。本函数只做转发，行为逐字未变 —— 包括文件名恰好叫
+ *  `.md` 的点文件（历史实现是 `lower.endsWith(".md")`，会命中；契约层的
+ *  `documentKindOf` 不会，两者是**有意的两条规则**，见那边 `documentFormatSuffix`
+ *  的分工表）。 */
 export function isMarkdownPath(filePath: string): boolean {
-  const lower = filePath.toLowerCase();
-  return lower.endsWith(".md") || lower.endsWith(".markdown");
+  return isMarkdownDocumentPath(filePath);
 }
 
 /** True for image files the editor previews via the `app-resource://` protocol.
  *  Mirrors `isImage()` in FileEditor.tsx - kept here so `openFileInIde` can
  *  default images into preview mode without importing the component. SVG is
- *  text but renders as an image, so it's included. */
+ *  text but renders as an image, so it's included.
+ *
+ *  【T17】集合收进 `@contracts/documentKind` 的 `IMAGE`（与 `fileEditorKinds`
+ *  同一份），本函数只做转发。 */
 export function isImagePath(filePath: string): boolean {
-  const lower = filePath.toLowerCase();
-  return [
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
-    ".svg", ".tif", ".tiff", ".avif",
-  ].some((ext) => lower.endsWith(ext));
+  return isImageDocumentPath(filePath);
 }
 
 /** True for file types that should **default to preview mode** on first open:
@@ -92,20 +101,13 @@ export function isImagePath(filePath: string): boolean {
  *  `.pdf`(归 `PdfPreviewPane`,见它那里的注释),也从来没有 Office 老格式(归 OnlyOffice)。
  *  两份判据服务的是**两件事**:这份决定"首次打开默认用哪个视图",那份决定"Monaco 能不能
  *  编辑"。服务不同目的的两份清单本来就不该是同一份 —— 别再照"镜像"去对齐(对齐会把 PDF
- *  从"默认预览"里踢出去,反而错)。 */
+ *  从"默认预览"里踢出去,反而错)。
+ *
+ *  【T17】后缀集合收进 `@contracts/documentKind` 的
+ *  `isBinaryPreviewDocumentPath`（= UNSUPPORTED ∪ doc/rtf/xls/ppt ∪ pdf），本函数只做
+ *  转发。`.pps` / `.ppsx` 仍不在其中 —— 历史行为，未变。 */
 export function isUnsupportedPath(filePath: string): boolean {
-  const lower = filePath.toLowerCase();
-  return [
-    // Office 老格式。OOXML / ODF（docx xlsx pptx odt ods odp…）**不在**这里 ——
-    // 它们走 OnlyOffice 可视化编辑，默认档由 FileEditor 的 `defaultMode` 定（wysiwyg）。
-    ".doc", ".rtf", ".xls", ".ppt",
-    ".zip", ".gz", ".tar", ".tgz", ".rar", ".7z", ".bz2", ".xz",
-    ".exe", ".dll", ".so", ".dylib", ".bin", ".class", ".jar", ".wasm",
-    ".mp3", ".mp4", ".webm", ".avi", ".mov", ".ogg", ".flac", ".wav", ".m4a",
-    ".db", ".sqlite", ".sqlite3",
-    ".woff", ".woff2", ".ttf", ".otf", ".eot",
-    ".pdf",
-  ].some((ext) => lower.endsWith(ext));
+  return isBinaryPreviewDocumentPath(filePath);
 }
 
 /**

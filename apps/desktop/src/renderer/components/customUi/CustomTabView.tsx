@@ -22,6 +22,7 @@ import {
   type CustomUiItem,
   type CustomUiTarget,
 } from "@contracts/customUi";
+import { isMarkdownDocumentPath } from "@contracts/documentKind";
 import { Markdown } from "@renderer/components/chat/Markdown.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -119,7 +120,7 @@ export function FileTab({ title, abs, projectPath }: { title: string; abs: strin
     };
   }, [abs, load]);
 
-  const isMarkdown = abs !== null && /\.(md|markdown)$/i.test(abs);
+  const isMarkdown = abs !== null && isMarkdownDocumentPath(abs);
   const baseDir = abs === null ? undefined : abs.replace(/[\\/][^\\/]*$/, "");
   const truncated = content !== null && content.length > MAX_CHARS;
   const text = content === null ? "" : truncated ? content.slice(0, MAX_CHARS) : content;

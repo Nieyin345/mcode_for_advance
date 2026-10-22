@@ -23,7 +23,7 @@ import {
   type DocumentCapabilities,
   type DocumentIpcResult,
 } from "@contracts/ipc";
-import { documentKindOf } from "@contracts/documentKind";
+import { documentKindOf, officeAppFamilyOf } from "@contracts/documentKind";
 import { resolveGenofficeCliPath, docsRead, docsApply, slidesRead, slidesApply, sheetRead, sheetApply, convertFile, guideOps, type GenofficeResult } from "@main/document/genofficeCli.js";
 import { slidesBridge } from "@main/document/slidesBridge.js";
 import { nativeHostStatus } from "@main/document/genofficeViewFactories.js";
@@ -119,9 +119,13 @@ export async function readByKind(
     };
   }
   if (kind === "office") {
-    const ext = filePath.slice(filePath.lastIndexOf(".") + 1).toLowerCase();
-    if (ext === "pptx" || ext === "pptm" || ext === "potx" || ext === "odp") return slidesRead(p, filePath);
-    if (ext === "xlsx" || ext === "xlsm" || ext === "xltx" || ext === "ods") return sheetRead(p, filePath);
+    // 【T17】家族判据收进 `@contracts/documentKind` 的 `officeAppFamilyOf` ——
+    // 原先这条 `ext === "pptx" || …` 字面量链在 readByKind / editByKind 各有一份，
+    // 漂了的表现是"读走 slides、写走 docs"。非可编辑档（doc/xls/ppt…）根本进不到
+    // 这里（`kind === "office"` 只含可编辑档），所以家族函数只认可编辑扩展名。
+    const family = officeAppFamilyOf(filePath);
+    if (family === "slides") return slidesRead(p, filePath);
+    if (family === "sheets") return sheetRead(p, filePath);
     return docsRead(p, filePath, options);
   }
   // 其余格式没有"结构化读"的 headless 路由 —— 如实拒绝(不猜)。
@@ -161,11 +165,12 @@ export async function editByKind(
     };
   }
   if (kind === "office") {
-    const ext = filePath.slice(filePath.lastIndexOf(".") + 1).toLowerCase();
-    if (ext === "pptx" || ext === "pptm" || ext === "potx" || ext === "odp") {
+    // 【T17】同 readByKind：家族判据只有一处（`officeAppFamilyOf`）。
+    const family = officeAppFamilyOf(filePath);
+    if (family === "slides") {
       return slidesApply(p, filePath, ops, { ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}) });
     }
-    if (ext === "xlsx" || ext === "xlsm" || ext === "xltx" || ext === "ods") {
+    if (family === "sheets") {
       return sheetApply(p, filePath, ops, { ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}) });
     }
     return docsApply(p, filePath, ops, {

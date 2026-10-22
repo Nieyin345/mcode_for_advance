@@ -130,3 +130,122 @@ export function isTextualDocumentKind(kind: DocumentKind): boolean {
 export function isOfficeDocumentKind(kind: DocumentKind): boolean {
   return kind === "office" || kind === "office-readonly";
 }
+
+/**
+ * 路径最后一段的**格式后缀**：含点、小写；没有点返回空串。
+ *
+ * ## 与 {@link documentExtension} 的分工（两者只差一个边角，别合并）
+ *
+ * | 问题 | 用哪个 | `.env` | `.md`（文件名就叫这个） |
+ * |---|---|---|---|
+ * | 这是一份**什么种类**的文档？ | `documentExtension` / `documentKindOf` | 无扩展名 → unknown | 无扩展名 → unknown |
+ * | 这个文件名**以某格式结尾吗**？ | `documentFormatSuffix` / `hasDocumentFormatSuffix` | `.env` | `.md` |
+ *
+ * 前者按"点文件没有扩展名"的 POSIX/Windows 惯例判（`dot > 0`）；后者回答的是
+ * 字面的"结尾是不是这个格式标记"，点文件**也**会命中。渲染端"首次打开默认进哪个视图"
+ * 这类判据（历史实现全是 `lower.endsWith(".md")`）属于后者 —— 用前者统一会改变
+ * 文件名恰好叫 `.md` / `.png` / `.pdf` 的点文件行为，见 `file-routing-contract-smoke`
+ * 的「两条规则各自成立」一节。
+ */
+export function documentFormatSuffix(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  return dot >= 0 ? base.slice(dot).toLowerCase() : "";
+}
+
+/**
+ * 路径是否以某个格式后缀结尾（大小写不敏感）。
+ *
+ * `suffix` 可写 `"md"` 或 `".md"`；与旧实现 `lower.endsWith(".md")` 逐字等价
+ * （含点文件名、混合分隔符、多点名），由 `file-routing-contract-smoke` 逐样例对账。
+ *
+ * 无扩展名的路径返回 `false`（旧 `endsWith` 对空扩展名的路径也恒 false）。
+ */
+export function hasDocumentFormatSuffix(path: string, suffix: string): boolean {
+  const wanted = suffix.startsWith(".") ? suffix : `.${suffix}`;
+  return documentFormatSuffix(path) === wanted.toLowerCase();
+}
+
+/** Markdown 格式后缀集合（含点）。由 {@link MARKDOWN} 派生 —— 单一来源。 */
+const MARKDOWN_SUFFIXES: ReadonlySet<string> = new Set([...MARKDOWN].map((e) => `.${e}`));
+
+/** 图片格式后缀集合（含点）。由 {@link IMAGE} 派生 —— 单一来源。 */
+const IMAGE_SUFFIXES: ReadonlySet<string> = new Set([...IMAGE].map((e) => `.${e}`));
+
+/**
+ * 「首次打开默认进预览」的二进制文档后缀（含点）。
+ *
+ * = {@link UNSUPPORTED} ∪ 老版 Office（doc/rtf/xls/ppt）∪ pdf。
+ *
+ * ⚠️ **与 `documentKindOf` 的种类刻意不同**，两条判据服务两件事（见
+ * `sessionStoreHelpers.isUnsupportedPath` 的长注释）：
+ * - 这里回答"打开时该不该直接给 Monaco"—— 老 Office 与 PDF 都不该；
+ * - `documentKindOf` 回答"这是什么"—— pdf 自成一种、老 Office 是 office-readonly。
+ *
+ * ⚠️ `.pps` / `.ppsx` 在这张表里**故意缺席**：它们属于 Office 只读档，但历史默认档
+ * 表从未列过它们。这是既有行为，本卡不修（见 `file-routing-contract-smoke` 的
+ * 已知差异段）。
+ */
+const BINARY_PREVIEW_SUFFIXES: ReadonlySet<string> = new Set([
+  ...[...UNSUPPORTED].map((e) => `.${e}`),
+  ".doc", ".rtf", ".xls", ".ppt",
+  ".pdf",
+]);
+
+function suffixIn(path: string, suffixes: ReadonlySet<string>): boolean {
+  const suffix = documentFormatSuffix(path);
+  return suffix !== "" && suffixes.has(suffix);
+}
+
+/**
+ * 路径是否是一份 **Markdown 文档**（`.md` / `.markdown`，大小写不敏感）。
+ *
+ * 与旧 `isMarkdownPath`（`lower.endsWith(".md") || lower.endsWith(".markdown")`）
+ * **逐条等价**，包含文件名恰好是 `.md` 的点文件这个边角（见
+ * {@link documentFormatSuffix} 的分工表）。
+ */
+export function isMarkdownDocumentPath(path: string): boolean {
+  return suffixIn(path, MARKDOWN_SUFFIXES);
+}
+
+/** 路径是否是一份**图片**（集合与 {@link IMAGE} 同源，大小写不敏感）。 */
+export function isImageDocumentPath(path: string): boolean {
+  return suffixIn(path, IMAGE_SUFFIXES);
+}
+
+/**
+ * 路径是否是"首次打开应默认进预览档"的二进制文档 —— 见
+ * {@link BINARY_PREVIEW_SUFFIXES} 的集合说明与两处 ⚠️。
+ *
+ * 旧实现在 `sessionStoreHelpers.isUnsupportedPath` 里有一份逐字相同的后缀数组；
+ * 收进契约后集合只有一处，调用方只做翻译。
+ */
+export function isBinaryPreviewDocumentPath(path: string): boolean {
+  return suffixIn(path, BINARY_PREVIEW_SUFFIXES);
+}
+
+/**
+ * Office 文档的**引擎家族**（docs / sheets / slides），或 `null`（不是 Office 文档）。
+ *
+ * `documentKindOf` 只回答"是不是 Office"；主进程的结构化读写（`ipc/document.ts` 的
+ * `readByKind` / `editByKind`）还要分一层：pptx 不能喂给 docx 解析器。这条分家族
+ * 判据原先在两处各抄了一份 `ext === "pptx" || …` 的字面量链 —— 两边漂了的表现是
+ * "读走 slides、写走 docs"。
+ *
+ * 调用方只在 `documentKindOf(path) === "office"`（可编辑档）时才用它分派 ——
+ * 只读档（doc/xls/ppt…）根本进不到分派点。因此这里**只列可编辑档**，键集合必须
+ * 等于 `OFFICE_EDITABLE`（由 `file-routing-contract-smoke` 逐项对账）。
+ */
+export type OfficeAppFamily = "docs" | "sheets" | "slides";
+
+/** 可编辑档 → 家族。键集合必须等于 `OFFICE_EDITABLE`（对账见套件）。 */
+const OFFICE_FAMILY: Readonly<Record<string, OfficeAppFamily>> = {
+  docx: "docs", docm: "docs", dotx: "docs", odt: "docs",
+  xlsx: "sheets", xlsm: "sheets", xltx: "sheets", ods: "sheets",
+  pptx: "slides", pptm: "slides", potx: "slides", odp: "slides",
+};
+
+/** 扩展名 → Office 引擎家族；不是可编辑 Office 文档返回 `null`。 */
+export function officeAppFamilyOf(path: string): OfficeAppFamily | null {
+  return OFFICE_FAMILY[documentExtension(path)] ?? null;
+}

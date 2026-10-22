@@ -423,6 +423,14 @@ export function ItemDetail({ item, onChanged }: Props) {
 
   // kind 退役后的行为判据(按字段/扩展名,不再按条目类型):
   //   · 纯 md 条目 = 没有原文 PDF、本体就是 Markdown —— 不需要挂转录/记笔记
+  //
+  // 【T17】此处**刻意未**收进 `@contracts/documentKind`:本行是大小写**敏感**的
+  // `.endsWith(".md")`，而契约层的后缀判据一律大小写不敏感（与同一页
+  // `libraryPreview.ts` 的 `/\.md$/i` 一致）。委派过去会让 `*.MD` 的纯 md 条目
+  // 从"显示挂转录/笔记两块"变成"不显示"—— 那是用户可见的行为变更，本卡不许改。
+  // 谁对？**契约层那条才对**（adoptMarkdown 接受 `.MD` 并原样保留文件名，所以大写
+  // mdPath 真实可达；同页另一处判据也早就按 `/i` 算）。这是一条**既有 bug**，
+  // 已作为候选 B1 记进 `tasks/T17-unified-file-routing.md` 的回写区，留给单独的卡。
   const isMdOnly = !item.pdfPath && Boolean(item.mdPath?.endsWith(".md"));
   const fileState = fileStateOf(item);
 
