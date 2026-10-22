@@ -86,3 +86,25 @@
 ## 结果回写区
 
 <!-- 仅追加：报告位置和 SHA、提交 SHA、证据定位摘要、逐条验收 PASS/FAIL、remaining。 -->
+
+
+### T99 执行结果（2026-10-22）
+
+- **报告**：`docs/research/orca-mcode/T99-worktree-lifecycle.md`
+- **报告文件 SHA-256**：`606051879ba269a9d4278268767049e64fefe19338f38f1a89eb14a9fee68117`
+- **报告提交 SHA**：`3d8f59b39390e78ab5c5545062b3a39d36939b78`（只包含该报告；未推送）
+- **基线**：Mcode 开工 HEAD `94524df83eb01669dd93191521f84a593bd0dd95`；Orca 固定 HEAD `ea60ec5d7cb9b542d2b5b3fd986acfc8861e4560`，版本 `1.4.214`，工作区 clean。
+- **验证命令与结果**：
+  - `git -C orca rev-parse HEAD`：PASS，等于任务指定 SHA。
+  - `git -C orca status --short`：PASS，输出为空。
+  - `git diff --check`：PASS，退出码 0；stderr 只有既有 `apps/desktop/src/main/ipc/settingsTransfer.ts` 的 CRLF 提醒。
+  - `git diff --cached --check`：PASS，退出码 0。
+  - `git diff --cached --name-only`（报告提交前）：PASS，仅 `docs/research/orca-mcode/T99-worktree-lifecycle.md`。
+  - **测试/构建**：未运行，符合只读研究任务边界；未将静态检查冒充动态验收。
+- **验收判据**：
+  1. **PASS** — 记录了创建、session 首次物化、删除/merge-back、catalog/restart recovery 等入口到副作用/状态落盘调用链，双仓基线可复核。
+  2. **PASS** — 9 项矩阵：部分已有 6、真缺失 1、与定位冲突 1、证据不足 1、等价已有 0。
+  3. **PASS** — 覆盖 folder/nested repo、分支复用、重名竞态、dirty/force、缺失路径/重启、资源回收；列出 3 条异常/权限/恢复边界、Top 2 借鉴点和 1 条不宜照搬设计。
+  4. **PASS** — 唯一报告已提交；没有改动 Orca、Mcode 产品代码、共享配置、用户数据、其他任务卡或其他研究报告。开工时既有 dirty 文件均未暂存或覆盖；并行任务新增的 T103 报告也未触碰。
+  5. **PASS** — 标明 E2/E3；E1/U1 未执行；没有声称动态测试或产品端到端验收通过。
+- **未完成事项 / 剩余风险**：无范围内文件写入阻塞。仍待后续隔离真实 Git 集成测试验证的风险包括 merge-back ownership probe fail-open、旧 session path 被新 checkout 重占、Git add 后 HEAD 读取失败遗留孤儿 checkout、以及 force 删除时 patch 导出失败；本任务只报告、不修复。
