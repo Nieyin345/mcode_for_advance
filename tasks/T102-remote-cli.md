@@ -87,3 +87,26 @@
 ## 结果回写区
 
 <!-- 仅追加：报告位置和 SHA、提交 SHA、证据定位摘要、逐条验收 PASS/FAIL、remaining。 -->
+
+
+### 2026-10-22 执行回写
+
+- **报告：** `docs/research/orca-mcode/T102-remote-cli.md`
+- **报告 SHA-256：** `5db615e3e64ae12466b81ec29dc05471e723c1fee10711e07af6a107c8ba27c5`
+- **报告提交 SHA：** `9100e65678c9c0b73dde5c98f3f007f4660dea09`（仅包含上述报告；任务卡回写将单独提交）。
+- **源码基线：** Orca `ea60ec5d7cb9b542d2b5b3fd986acfc8861e4560`，检查前后 HEAD 一致且 `git -C orca status --short` 为空；Mcode 在本次写入前的 HEAD 为 `35904aa56d8190b4b3ee101c8e050156aab21e32`。期间 T99/T103 的其他对话提交仅涉及各自报告/任务回写，未覆盖。
+- **实际修改范围：** 新增报告；本任务卡仅追加本段回写。未修改 Orca、Mcode 产品代码、共享配置、其他任务卡、其他报告或用户数据。
+- **验证命令/结果：**
+  - `git -C orca rev-parse HEAD` → `ea60ec5d7cb9b542d2b5b3fd986acfc8861e4560`，PASS。
+  - `git -C orca status --short` → 空，PASS。
+  - `certutil -hashfile docs\research\orca-mcode\T102-remote-cli.md SHA256` → 与上列报告 SHA-256 一致，PASS。
+  - `git diff --cached --check`（报告提交前，仅暂存报告）→ exit 0，PASS。
+  - 源码研究为只读任务，未运行 build/test/smoke/变异测试或真实 CLI/手机/SSH E2E；这是按任务边界有意不运行，不报告测试 PASS。
+- **结论计数：** 9 项能力矩阵；4 条入口→状态/副作用调用链（SSH Host、CLI launch、手机 workspace、terminal daemon）；3 个主要异常/权限/恢复边界；E2 为源码证据，E3 为未执行的故障推演；E1/U1 未验证。
+- **验收判据：**
+  1. **PASS** — 给出至少三条真实调用链，分别引用 Orca 与 Mcode 的入口、路由、状态/副作用代码，并记录固定 Orca SHA。
+  2. **PASS** — 9 项矩阵逐项分类并附双仓源码证据；没有用“Orca 有所以 Mcode 落后”的方式推断。
+  3. **PASS** — 覆盖 Host/worktree/project 身份、路径验证、权限/取消、SSH 凭据/Host Key、跨版本、断线恢复、手机路由；提供 3 个静态失败场景、Top 2 借鉴点及 1 条不宜照搬的设计。
+  4. **PASS** — 唯一报告已提交；暂存/提交只包含报告。已有 dirty 文件均保留，未使用 `git add -A`，未推送。
+  5. **PASS** — 明确区分 E2/E3 与未做的 E1/U1，没有声称端到端已通过。
+- **未完成/剩余风险：** 无范围内阻塞。未验证实际 SSH 主机密钥提示、managed `orcad` 部署/恢复、旧 runtime 兼容与手机跨 Host E2E；这些需要后续在隔离环境的专项测试中验证。本任务不实施代码，因此没有新增代码测试或变异验证。
