@@ -32,6 +32,8 @@ insert(record: ExecutorOwnershipRecord): boolean {
 
 ### 仓库已有现成的跨进程原语（先用它，不要另造）
 
+**T14 报告补充的强论据**：同一目录下的 `workflowEngines/nodeRedStorage.ts`（609 行，`NodeRedFlowStorage`）**已经在用 `withOsFileLease`**。也就是说这个仓库里已经存在「用租约保护 workflow 存储」的实现，只是 `FileExecutorOwnershipStore` 没用它。这不是「缺原语」，是「同一目录一半用了一半没用」。
+
 `apps/desktop/src/main/lib/osFileLease.ts`（MC-069 / MC-097 收口产物）：
 
 - `acquireOsFileLease(lockPath, waitMs?)` → `Promise<() => Promise<void>>`

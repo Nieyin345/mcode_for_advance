@@ -39,6 +39,7 @@
 | T18 | 扩展安装时的权限卡片（同意一次 / 始终同意） | P0 产品要求 | 无 | G |
 | T19 | 扩展 API 面：让扩展调到 Mcode 的全部能力 | P1 | T18 | H |
 | T20 | AI 写扩展的闭环（生成 → 校验 → 装机 → 可回滚） | P1 | T18 + T19 | I |
+| T21 | 悬挂的适配器：NodeRedFlowStorage 与 workflowMigrationPreflight 接上生产路径 | P0 架构 | **T2 + T4 完成** | J |
 
 ### 推荐第一波
 
@@ -62,6 +63,18 @@ T12、T13、T14、T15 均为**只读源码调查**，各自只写入独立报告
 - **T7 / T8** 需要真实 Electron U1 骨架 → 等 **T16** 交付。
 - **T10 / T11** 需要 T9 的取证与策略裁决。
 - **T3** 与 T2/T4 共享工作流热文件 → 等 T2/T4 收。
+- **T21** 要接的写路径与 T2/T4 重叠 → 等它们提交。
+
+### 结构性发现（T14 基线，2026-10-23）
+
+T14 报告查出六处「单一事实源」竞争，其中两处已开卡：
+
+- **flow 存储**：SQL `WorkflowDoc` 与引擎 `flows.json` 是两份持久化，Deploy 后的镜像 fire-and-forget（→ **T2**）。
+- **执行归属账本**：`executor-ownership.json` 无跨进程锁，而**同目录**的 `NodeRedFlowStorage` 已有 `withOsFileLease`（→ **T4**）。
+- **触发安装**：旧 `automationRunner.buildTriggers` 不看 `doc.engine`，`engine=node-red` 的图照样装 cron/fs.watch（→ **T3**）。
+- **审批**：SQL `workflow.review.v1.*` 与引擎 `engine-trust.json` 互不引用，后者生产代码**无 writer**（→ 待开卡）。
+- **悬挂适配器**：`NodeRedFlowStorage`（609 行）与 `workflowMigrationPreflight`（1631 行）**零生产调用方**，却各有测试护航（→ **T21**）。
+- **运行历史**：旧 runner 有 `runStore` 持久化；Node-RED 原生只有内存 runboard，**无持久运行史**（→ 待开卡）。
 
 ## 历史和真值来源
 
