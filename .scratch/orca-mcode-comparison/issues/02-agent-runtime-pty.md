@@ -6,10 +6,14 @@
 
 **Category:** enhancement
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 对应 T100 的报告与任务回写完成并有提交 SHA。
+- [x] 对应 T100 的报告与任务回写完成并有提交 SHA。
 - [ ] 对照证据遵守 `.scratch/orca-mcode-comparison/spec.md` 的 Orca 源码固定基线与只读边界。
+
+## Answer
+
+T100 已交付：报告 `docs/research/orca-mcode/T100-agent-runtime-pty.md`（提交 `e5da8d2f`），任务卡结果回写提交 `06bfe758`。本票作为规划索引关闭；实现验收仍以 `tasks/` 与 `audit-ledgers/` 为准。
 
 ## Comments
 

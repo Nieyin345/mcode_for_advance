@@ -2,7 +2,10 @@
 
 Type: task
 Status: ready-for-agent
+Category: enhancement
 Labels: wayfinder:task
+
+**Blocked by:** None (can start immediately).
 
 正式执行卡：tasks/T12-ui-workbench-baseline.md
 

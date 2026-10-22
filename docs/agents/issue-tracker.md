@@ -26,6 +26,35 @@ Each engineering effort has its own directory:
 - `Blocked by`: references the numbered tickets that must resolve before this ticket can start.
 - `## Comments`: append relevant follow-up discussion without overwriting prior history.
 
+### Ticket header format
+
+Use the same header in every `.scratch/<effort>/issues/` file so the two skills
+that read them (`triage`, `wayfinder`) and a human scanning the directory all
+see the same fields:
+
+```markdown
+# <NN>：<ticket title>
+
+Type: task            # research | prototype | grilling | task
+Status: ready-for-agent
+Category: enhancement # bug | enhancement
+Labels: wayfinder:task
+
+**Blocked by:** None (can start immediately).
+
+<goal / what to build>
+
+## Comments
+
+- <date>: <note>
+```
+
+`Type:` and `Status: claimed|resolved` are required for Wayfinder tickets.
+`Status: <triage role>` is used for ordinary implementation tickets; the two
+conventions share the field name but not the vocabulary, so read `Type:` first.
+`Labels:` is a local addition carrying a `wayfinder:*` marker; it is not a
+triage role and does not replace `Status:`.
+
 ## Triage conventions
 
 Use these five state values:
