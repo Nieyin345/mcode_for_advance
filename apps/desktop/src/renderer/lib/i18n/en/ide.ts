@@ -510,7 +510,10 @@ export const en = {
   "ide.modules.schemaRaw": "Show full JSON Schema",
   "ide.modules.schemaTruncated": "Too long; only the first {n} characters are shown.",
   "ide.modules.schemaRef": "ref {ref}",
-  /* ── 【T18】install permission card (allow once / always / deny) ── */
+  /* ── 【T18】install permission card (allow this session / always / deny) ──
+   * 【T26】"Allow once" read as "this one action", but the implementation is
+   * session-scoped (session + bootId, dropped on restart). Button, footnote and
+   * re-consent notice now all say "this session" (zh: 本次运行). */
   "ide.modules.consentCard.aria": "Extension install permission",
   "ide.modules.consentCard.title": "Install this extension?",
   "ide.modules.consentCard.originDesktop": "From: an install you started in the desktop UI",
@@ -521,9 +524,9 @@ export const en = {
   "ide.modules.consentCard.notGranted": "not granted now",
   "ide.modules.consentCard.highRiskAlert": "This includes high-risk permissions (not pre-checked by default); make sure you understand what they are for.",
   "ide.modules.consentCard.programAlert": "This extension contains executable code: after install it runs on this machine (isolated by OS permissions but may still reach the network).",
-  "ide.modules.consentCard.allowOnce": "Allow once",
+  "ide.modules.consentCard.allowOnce": "Allow this session",
   "ide.modules.consentCard.allowAlways": "Always allow",
   "ide.modules.consentCard.deny": "Deny",
-  "ide.modules.consentCard.reconsentRequired": "This extension's “allow once” grant expired after a restart; confirm again to use it.",
-  "ide.modules.consentCard.footnote": "“Allow once” lasts only for this run and you will be asked again after a restart; “Always allow” still re-asks when the extension is upgraded or its permissions change. Denying installs nothing.",
+  "ide.modules.consentCard.reconsentRequired": "This extension's “allow this session” grant expired when the last run ended; confirm again to use it.",
+  "ide.modules.consentCard.footnote": "“Allow this session” lasts only while this Mcode process is running: closing or restarting (including reopening after a crash) ends it, and you will be asked again next time; “Always allow” still re-asks when the extension is upgraded or its permissions change. Denying installs nothing.",
 } as const;

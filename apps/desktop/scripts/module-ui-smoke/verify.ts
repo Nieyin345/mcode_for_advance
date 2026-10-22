@@ -70,6 +70,14 @@ await withAuditPage(dir,async(page:Page)=>{
     assert.equal(await page.eval("document.querySelector('[data-testid=module-install-allow-once]').disabled"), true);
     assert.equal(await page.eval("document.querySelector('[data-testid=module-install-deny]').disabled"), false);
     pass("§T18 安装卡:焦点落在卡片上、授权按钮开卡后延迟可点、拒绝立即可用");
+    // 【T26】按钮文字就是用户读的那一行:实现是会话级(重启后重问),所以按钮必须
+    // 带「本次运行」这类时效词,不能是「允许一次」(那读起来像"这一次操作")。
+    const onceLabel = await page.eval("document.querySelector('[data-testid=module-install-allow-once]').textContent.trim()") as string;
+    assert.ok(onceLabel.includes("本次运行"), "allow-once button must name its lifetime, got: " + onceLabel);
+    assert.equal(onceLabel.includes("一次"), false, "allow-once button must not say 一次: " + onceLabel);
+    const consentFootnote = await page.eval("document.querySelector('[data-testid=module-install-consent]').textContent") as string;
+    assert.ok(consentFootnote.includes("本次运行"), "card footnote must use the same lifetime word");
+    pass("§T26 安装卡按钮文字:渲染出来的是「本次运行允许」,与 session 实现一致");
     await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
     await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
     await page.waitFor("!document.querySelector('[data-testid=module-install-consent]')");

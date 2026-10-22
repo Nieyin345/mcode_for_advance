@@ -528,7 +528,10 @@ export const zh = {
   "ide.modules.schemaRaw": "查看完整 JSON Schema",
   "ide.modules.schemaTruncated": "内容过长，仅显示前 {n} 个字符。",
   "ide.modules.schemaRef": "引用 {ref}",
-  /* ── 【T18】安装权限卡（允许一次 / 始终允许 / 拒绝） ── */
+  /* ── 【T18】安装权限卡（本次运行允许 / 始终允许 / 拒绝） ──
+   * 【T26】按钮原写「允许一次」，与实现（session + bootId，重启后失效）不符：
+   * 中文「一次」最自然的理解是「这一次操作」，而实现是「这一次开机到现在」。
+   * 按钮 / 脚注 / 重询问三处统一用「本次运行」，用户读按钮即可知道时效。 */
   "ide.modules.consentCard.aria": "扩展安装权限确认",
   "ide.modules.consentCard.title": "要安装这个扩展吗？",
   "ide.modules.consentCard.originDesktop": "来源：你在桌面界面上发起的安装",
@@ -539,9 +542,9 @@ export const zh = {
   "ide.modules.consentCard.notGranted": "本次不授予",
   "ide.modules.consentCard.highRiskAlert": "其中包含高风险权限（默认不勾选）；请确认你理解它的用途。",
   "ide.modules.consentCard.programAlert": "此扩展包含可执行程序：安装后它会在这台机器上运行（受系统权限隔离，但仍可能联网）。",
-  "ide.modules.consentCard.allowOnce": "允许一次",
+  "ide.modules.consentCard.allowOnce": "本次运行允许",
   "ide.modules.consentCard.allowAlways": "始终允许",
   "ide.modules.consentCard.deny": "拒绝",
-  "ide.modules.consentCard.reconsentRequired": "这个扩展的「允许一次」授权已在重启后失效；重新确认授权后才能使用。",
-  "ide.modules.consentCard.footnote": "「允许一次」只在本次运行有效，重启后会再次询问；「始终允许」在扩展升级或权限变化时仍会重新询问。拒绝不会安装任何内容。",
+  "ide.modules.consentCard.reconsentRequired": "这个扩展的「本次运行允许」授权已在上次运行结束后失效；重新确认授权后才能使用。",
+  "ide.modules.consentCard.footnote": "「本次运行允许」只在这个 Mcode 进程的运行期间有效：关闭或重启（包括崩溃后重开）都会失效，下次使用时会再次询问；「始终允许」在扩展升级或权限变化时仍会重新询问。拒绝不会安装任何内容。",
 } as const;
