@@ -79,4 +79,96 @@ const journey = defineU1Journey({
 
 ## 结果回写（2026-10-23）
 
-（执行者在此追加）
+### 交付物
+
+新建 `apps/desktop/scripts/electron-u1/`（独占目录，未改 `arc005-visual-baseline/`、产品源码）：
+
+| 文件 | 作用 |
+|---|---|
+| `driver/types.ts` | 旅程/步骤/证据/结果的数据契约；launch（page/preload/useRealDb/assertions 三档开关） |
+| `driver/steps.ts` | 声明式步骤工厂 `step.*` + `defineU1Journey`（校验 kebab-case、failBecause 必填） |
+| `driver/verdict.ts` | 判定唯一来源：literalStatus + classifyJourney（all-pass / expected-failure / unexpected-failure）+ 三档退出码 |
+| `driver/runner.ts` | 真 Electron 主进程里的执行器：真 `sendInputEvent` 点击、`insertText` 键入、`capturePage`、真 `initDb()`、真 `file:writeFile` handler、relaunch 协议（exit 77 → 新 OS 进程续跑 state.json） |
+| `driver/index.ts` | 后续卡唯一 import 入口 |
+| `journeys/01-ui-project-switch.ts` | 旅程 1（纯 UI，真 App bundle + api-stub） |
+| `journeys/02-file-side-effect.ts` | 旅程 2（临时 mcode.db + 临时文档 + 产品真 preload + 真 IPC + 真重开） |
+| `journeys/03-deliberate-failure.ts` | 旅程 3（故意失败 + failBecause 形态自检） |
+| `build.mjs` | 构建（App bundle / 产品 preload / runner / journeys / 页面模板）+ 逐旅程逐代 spawn Electron + 变异注入 + 汇总退出码 + 自检 |
+| `electron-host.cjs` | 每个 OS 进程的宿主：路径隔离（mktemp runDir/data）、`app.whenReady` → runner |
+| `api-stub.js` | 旅程 1 的虚构数据（独立一份，不改 arc005 的） |
+| `verify.mjs` | 两趟（正常/变异）的 31 条机器判据 |
+| `run.sh` | 正常跑 + 变异跑 + verify；证据留在 `<repo>/.tmp/electron-u1/<ts>/` 永不清理 |
+| `README.md` | API、边界、退出码、复用方式、Playwright 评估、未覆盖项 |
+
+### API 设计（与任务卡建议的差异）
+
+任务卡建议 `step.click("[data-testid='file-tree'] >> text=blank.docx")` 这种 Playwright 风格组合选择器。**未采用**，改为 `selector + { text }` 显式参数：Mcode 没有 Playwright 的 selector engine，自解析 `>>` 只会造一套半吊子选择器语法。`step.*` 全集：
+
+`navigate / click(selector, name, {text,button}) / type(selector, text, name, {clear}) / press / waitFor(selector, name, {text,timeoutMs}) / waitForGone / sleep / eval / assertDom(selector, opts, name) / assertEvaluated / screenshot(shot) / assertScreenshotChanged(shot, baseline) / recordSideEffect(file, key) / assertSideEffect(file, opts, name) / relaunch(name, reason)`。
+
+- **三档可独立开关**：`launch.assertions.{dom,visual,sideEffect}`。关掉的档仍执行并记录真实结果到 `observed.actualStatus`，证据标 `skipped:true`，永不判 FAIL（只取证不断言）。
+- **路径占位**：`@doc` / `@db` / `@projectDir` / `@home` 由 runner 从启动器 env 解析，旅程文件零硬编码临时路径。
+- **exit 77 relaunch 协议**：旅程中 `relaunch` 步骤把 state.json（已完成步、证据、sha256 记录、截图哈希、PID 列表）原子落盘后 `app.exit(77)`；启动器看到 77 就以**新 OS 进程**从下一步继续。证据里每步带 `pid` + `generation`，`generations ≥ 2` 且 PID 不重复由 verify.mjs 强制。
+
+### 三条旅程结果（2026-10-23 实测）
+
+`bash apps/desktop/scripts/electron-u1/run.sh` → `verify: 31/31 判据通过`，脚本退出 0。
+
+| 旅程 | 正常跑结果 | 关键证据 |
+|---|---|---|
+| 1 `ui-project-switch` | **PASS**（17 步全 PASS，1 个 OS 进程） | 真鼠标点击坐标 (112,281)/(139,312)；两帧截图 sha256 不同；活动标签 `aria-selected` 切换 |
+| 2 `file-save-relaunch-persistence` | **PASS**（16 步全 PASS，**2 个 OS 进程** PID 25364→25284） | 保存经真 preload→`file:writeFile`→disk；`disk-doc-rewritten`（sha256 变、含 beta、不含 alpha）；重开后 `db-reopen-project-row`（真 `ProjectRepo.get` 自检）+`doc-still-beta-after-reopen`+`ui-reads-beta-after-reopen` 均 PASS |
+| 3 `deliberate-failure` | **FAIL（预期）** → expectation=`expected-failure` | 失败步 `assert-missing-element`；失败截图 `shots/assert-3-fail.png`（161,720 B）+ 完整 DOM `dom/failure-assert-missing-element-g1.html`（377 节点）落盘 |
+
+套件退出码 = 1（正常跑：唯一失败是预期失败）；变异跑 = 0。**因此「全部旅程 PASS」在默认跑里不是期望结果** —— 第三条故意失败旅程必须在。这是设计，已写进 run.sh 文件头与 README。
+
+### 变异证据（验收判据 5）
+
+`node build.mjs --mutation=unconditional-pass` 把 `driver/runner.ts` 里 `assertionStatus()` 的函数体（唯一判定出口）内存替换为 `return "PASS"`（磁盘源码不动，hook 失配会显式报错）。实测：
+
+- 正常跑：`deliberate-failure` literalStatus=**FAIL**，expectation=expected-failure，套件 exit **1**；
+- 变异跑：同一条 literalStatus=**PASS**，expectation=all-pass，套件 exit **0**，日志打出 `U1 MUTATION ACTIVE`；
+- verify.mjs 第 5 组判据断言这个翻转 + 「变异后不再有任何预期失败旅程」+ 「两趟都没有意外失败旅程」+ 「变异跑里旅程 1/2 仍 all-pass」。
+
+### 验收判据逐条
+
+1. `run.sh` 起真 Electron 跑完三条旅程 —— **达成**（`app.whenReady` + 真 BrowserWindow + 真 capturePage；日志 `sqlite created/opened`、真实 click/relaunch 记录）。
+2. 第二条在真实重开进程后断言到持久化 —— **达成**（两代 PID 不同；重开代先读库自检项目行，再断言文件内容/sha256/DOM 读回）。
+3. 第三条失败且证据落盘、非零退出 —— **达成**（失败截图 + DOM；正常跑退出码 1）。
+4. 可被后续卡 import —— **达成**，示例（同时写在 README）：
+   ```ts
+   // apps/desktop/scripts/t7-genoffice-u1/journeys/index.ts
+   import { defineU1Journey, step } from "../../electron-u1/driver/index.js";
+   export const journeys = [defineU1Journey({ name: "genoffice-open-edit-save", launch: { page: "bundle", preload: "product", useRealDb: true }, steps: [...] })];
+   // 执行：node ../electron-u1/build.mjs --registry=scripts/t7-genoffice-u1/journeys/index.ts
+   ```
+5. 变异验证 —— **达成**（见上，红→绿翻转由 verify.mjs 机器核对）。
+
+### Playwright 评估（coordinator 补充要求）
+
+已读 `core/electron-testing.md`、`locators.md`、`assertions-and-waiting.md`、`fixtures-and-hooks.md`、`configuration.md`（前 120 行）。结论：**零新依赖成立，不引入 Playwright**。
+
+- `_electron.launch` + `firstWindow()`：现有 electron-host 模式（`app.whenReady` + `BrowserWindow` + `loadFile`）完全等价；
+- `app.evaluate()` 主进程执行：runner 本身就跑在主进程，无需此能力；
+- 点击/输入：`webContents.sendInputEvent`（真鼠标坐标）+ `insertText`（真输入栈，React 受控组件可收）已实测通过（旅程 1、2）；
+- 重开：`app.exit(77)` + 启动器换进程 + state.json 续跑，Playwright 的 `app.close()`+relaunch 反而更笨重；
+- 许可与体积：Playwright 为 Apache-2.0；即使不下载浏览器二进制，core+deps 仍在 ~10MB 量级并引入版本漂移面。其独有能力（trace viewer、自动重试、录屏）均非本卡判据。
+
+### 变更与验证
+
+- **只新增** `apps/desktop/scripts/electron-u1/**` 与本回写区；未改任何只读边界文件（`git status` 里他人的 M 项全部保持原样）。
+- `npx tsc --noEmit -p apps/desktop/tsconfig.json` → 0；`packages/contracts` → 0（scripts 在 desktop tsconfig 的 include 里，骨架受类型门禁）。
+- 本套件目录名 `electron-u1` 不匹配 `*-smoke` 正则：**有意**——U1 是独立证据等级，不应被 `run-all-smokes.sh` 当 smoke 顺带跑（README 已注明）。
+
+### 未覆盖项（如实）
+
+- T7 / T8 / ARC-005 V4 **未完成**；本卡只交付框架与三条示例。
+- `file:writeFile` 的 CAS 冲突分支与并发租约未覆盖（旅程 2 走 happy path + 重开持久化）。
+- visual 档只有「两帧必须不同」；没有像素级 baseline 比对（arc005 的 compare.mjs 仍是那件事的负责方）。
+- 页面模板抽取只认 journeys 文件里的 `const PAGE = \`…\`` → `<basename>.html`；多页面旅程需自行落盘。
+- 旅程 1 的 App bundle 只换 `lib/api`（api-stub）与 `monacoSetup`；其余为真组件。
+
+### 提交
+
+见下方「提交 SHA」。
+
