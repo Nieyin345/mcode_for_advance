@@ -6,10 +6,11 @@
 **省事不省时**:那种习惯的代价不是那几分钟,是人开始攒着改 —— 而攒着改是 bug 的
 温床。这个脚本把"该跑哪几套"变成一个不用猜的问题。
 
-判据不用人列:每套 smoke 的 TypeScript 入口 import 了哪些 `@main/...`,顺着相对
-import 再走下去,就是这套 smoke 真正覆盖到的源码。`.mjs` 入口可能通过
-`readFileSync` + 转译加载实际模块,用 `// @smoke-covers src/main/...ts` 显式声明
-**确实执行过**的目标文件(只记录该文件,不假装覆盖了它的整个依赖图)。
+判据不用人列:每套 smoke 的入口(`.ts` / `.tsx` / `.jsx`)import 了哪些 `@main/...`
+或 `@renderer/...`,顺着相对 import 再走下去,就是这套 smoke 编译进 bundle 的源码。
+`.mjs` 入口可能通过 `readFileSync` + 转译加载实际模块,用
+`// @smoke-covers src/main/...ts` 显式声明**确实执行过**的目标文件(只记录该文件,
+不假装覆盖了它的整个依赖图)。
 **一套都没覆盖到的套件**(比如
 只测契约层的)单独列出来 —— 那是"这块没有回归网"这个事实本身。
 
@@ -96,11 +97,25 @@ def coverage() -> dict[str, set[Path]]:
         if not d.is_dir() or not d.name.endswith("-smoke"):
             continue
         covered: set[Path] = set()
-        for ts in d.rglob("*.ts"):
-            # 换桩文件自己不是被测对象(它们是替身),但**要算**:桩替换掉的那个
-            # 真实模块的调用方仍然在图上。所以只跳过桩本身的入口,不跳过它的
-            # import。简化处理:桩也走一遍 closure,多收几个不影响判断。
-            closure(ts, covered)
+        # ⚠️ **三份扩展名都要扫(2026-10-23 修)。** 从前这里只有 `.ts`,于是
+        # `settings-panels-electron-smoke/renderer.tsx` 真的 import 了
+        # `@renderer/components/chat/ApprovalPrompt.js`、`ui-interaction-smoke/main.jsx`
+        # 也真的渲染它,工具却对这两个文件都答「无套件覆盖」——`resolve()` 本来就认
+        # `.tsx`(见上面的候选表),漏的只是扫描入口。`--uncovered` 的口径是
+        # `src/main` 下的 `.ts`,这个 bug 在那份清单上不可见,**只在单文件查询和
+        # `--all` 的 renderer 映射上现形**。
+        # `.jsx` 与 `.tsx` 同理:它们是 13 套浏览器套件的真实 entryPoints
+        # (`build.mjs` 里 `entryPoints:[...main.jsx]`),不是别的套件的夹具。
+        # `.cjs` **故意不扫**:它们要么是 esbuild 启动器(`run.cjs`、`electron-host.cjs`),
+        # 要么是桩(`iconsStub.cjs`)。按 `IMPORT_RE` 去扫只会把 `alias:{...}` 里的
+        # 字符串当成 import 收进来——实测会凭空"覆盖" 85 个脚本文件,清一色假阳性。
+        # 同理 `.mts`/`.cts` 本仓库 0 个,不需要。
+        for pattern in ("*.ts", "*.tsx", "*.jsx"):
+            for entry in d.rglob(pattern):
+                # 换桩文件自己不是被测对象(它们是替身),但**要算**:桩替换掉的那个
+                # 真实模块的调用方仍然在图上。所以只跳过桩本身的入口,不跳过它的
+                # import。简化处理:桩也走一遍 closure,多收几个不影响判断。
+                closure(entry, covered)
         for mjs in d.rglob("*.mjs"):
             text = mjs.read_text(encoding="utf-8", errors="replace")
             for rel_path in SMOKE_COVERS_RE.findall(text):
