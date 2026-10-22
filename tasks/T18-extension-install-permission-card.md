@@ -189,8 +189,9 @@ bootId?: string                                        （仅 session：本次�
 
 ### 7. 提交 SHA
 
-见提交信息 `feat(T18): extension install permission card (allow once / always / deny)`。
-（本回写随后与代码同提交；SHA 见 `git log --grep 'T18'`。）
+代码与主回写：`e6515e4506dcdc5c45abafa5485a8997ea511bd6`
+（`feat(T18): extension install permission card (allow once / always / deny)`）。
+本节 SHA 补记单独提交，见其后一条 `docs(tasks): record T18 result writeback`。
 
 ### 8. 未覆盖 / 后续
 
