@@ -23,6 +23,30 @@
 
 **还没装的缺口**（按价值排序）：VS Code 扩展 API 兼容、Node-RED 节点开发。前者可由 `docs/planning/extension-vscode-compat.md` 的 19KB 分级表部分顶替；后者目前靠读 `node-red/` 上游源码。
 
+## 2026-10-23 第二批（主动检索安装）
+
+用 `npx skills find` 检索、逐条验证内容与许可后**手动复制**安装（**不用 `skills add`** —— 那会建 `.agents/` + `skills-lock.json` + 符号链接，而 `.claude/` 被 gitignore，符号链接换机器就断）。
+
+| Skill | 来源仓库 | 许可 | 服务哪张卡 | 内容 |
+|---|---|---|---|---|
+| `desktop-testing-electron` | `agents-inc/skills` | MIT | **T16**、T7、T8 | 16,207 字节 / 421 行。Playwright `_electron.launch()` E2E、主进程单测 mock、IPC handler 测试、preload contextBridge mock、dialog/menu stub（`showOpenDialog` 会阻塞，必须 stub）、xvfb headless CI、Spectron 迁移。**明确写了 Spectron 自 Electron 24 起已死。** |
+| `react19-concurrent-patterns` | `github/awesome-copilot` | MIT | T12（UI 重构） | 2,890 字节。`useTransition` / `useDeferredValue` / `Suspense` / `use()` / `useOptimistic` / Actions |
+| `react19-test-patterns` | `github/awesome-copilot` | MIT | T12、T6 | 3,167 字节 |
+| `react19-source-patterns` | `github/awesome-copilot` | MIT | T12 | 1,977 字节。ref 处理、context 更新等破坏性变更 |
+
+### 检索过但**没装**的（附理由）
+
+| 候选 | 理由 |
+|---|---|
+| `github/awesome-copilot@vscode-ext-commands` | 只讲命令命名规范，不覆盖 T18/T19 需要的 API 面（contributes 点、activation、webview、进程隔离） |
+| `github/awesome-copilot@vscode-ext-localization` | 只讲本地化，同上 |
+| `jwiegley/claude-prompts@node-red` | 内容不错（6.9KB，含 flows.json 结构、Admin API、function 节点），但**仓库没有 LICENSE 也没有 README** —— 按 T9 的判据，无独立许可文件不放行 |
+| `dapperdivers/dapper-cluster@node-red-flows` | 是某个人的智能家居私有部署（写死 `Turtleassmanor-automations` 路径），与本项目无关 |
+| `jwynia/agent-skills@electron-best-practices` | 无 LICENSE |
+| `tonylofgren/aurora-smart-home@Node-RED` | 智能家居场景，无关 |
+
+**结论**：VS Code 扩展 API 与 Node-RED 节点开发这两个缺口，市面上**没有许可清晰且内容对口的现成 skill**。前者继续用 `docs/planning/extension-vscode-compat.md`，后者继续读 `node-red/` 上游源码。
+
 ## Matt Pocock 工程技能（第三方）
 
 来源：`setup-matt-pocock-skills` 安装的一整套。分两组，区别是能否由模型自行触发。
