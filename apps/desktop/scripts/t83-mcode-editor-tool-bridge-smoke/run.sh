@@ -6,6 +6,7 @@ OUT=$(mktemp -d /tmp/mcode-t83-tool-bridge.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 source "$SCRIPT_DIR/../lib/esbuild-path.sh"
 STUB=./scripts/t83-mcode-editor-tool-bridge-smoke/stubs/nativeAiMcode.ts
+LOG=./scripts/t83-mcode-editor-tool-bridge-smoke/stubs/logger.ts
 "$ESBUILD" scripts/t83-mcode-editor-tool-bridge-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
@@ -15,5 +16,6 @@ STUB=./scripts/t83-mcode-editor-tool-bridge-smoke/stubs/nativeAiMcode.ts
   --alias:@main/lib/pathGuard.js="$STUB" \
   --alias:@main/window.js="$STUB" \
   --alias:electron="$STUB" \
+  --alias:@main/lib/logger.js="$LOG" \
   --outfile="$OUT/smoke.mjs" --log-level=error
 node "$OUT/smoke.mjs"

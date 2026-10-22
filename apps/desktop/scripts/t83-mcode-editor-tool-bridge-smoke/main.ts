@@ -67,9 +67,9 @@ const unsupportedChunk = (sender: Sender, requestId: string) => chunksOf(sender)
 
 async function main() {
   try {
-    check("all three native SDK adapters are explicitly marked needs upstream",
+    check("all three native SDK adapters now have the T86 request-scoped tool protocol",
       Object.values(NATIVE_EDITOR_TOOL_CAPABILITIES).length === 3 &&
-      Object.values(NATIVE_EDITOR_TOOL_CAPABILITIES).every((item) => item.status === "needs upstream"),
+      Object.values(NATIVE_EDITOR_TOOL_CAPABILITIES).every((item) => item.status === "supported"),
       NATIVE_EDITOR_TOOL_CAPABILITIES);
 
     check("plain JSON-looking user text is not recognized as a structured tool call",
