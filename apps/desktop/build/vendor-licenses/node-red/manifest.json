@@ -374,24 +374,41 @@
           "sha256": "ca3d2af003b3a718fc9d43e5d232955d5e089c8b5d8b01fcbe9fa26f1e76f0b0"
         }
       ]
-    }
-  ],
-  "blockers": [
+    },
     {
       "packageName": "pause",
       "version": "0.0.1",
-      "status": "release-blocker",
-      "licenseExpression": null,
+      "licenseExpression": "MIT",
       "packageSource": {
         "registryMetadataUrl": "https://registry.npmjs.org/pause/0.0.1",
-        "unpkgFileListUrl": "https://unpkg.com/pause@0.0.1/?meta",
         "tarballUrl": "https://registry.npmjs.org/pause/-/pause-0.0.1.tgz",
         "tarballIntegrity": "sha512-KG8UEiEVkR3wGEb4m5yZkVCzigAD+cVEJck2CzYZO37ZGJfctvVptVO192MwrtPhzONn6go8ylnOdMhKqi4nfg==",
         "tarballSha1": "1d408b3fdb76923b9543d96fb4c9dfd535d9cb5d",
-        "repositoryUrl": null,
-        "revision": null
+        "repositoryUrl": "https://github.com/stream-utils/pause",
+        "revision": "11d0dcaca51ee8cdf09915be0ba14c41871009b5"
       },
-      "reason": "The exact npm registry metadata has no license, repository, homepage, or gitHead. The exact published package file list contains no LICENSE, LICENCE, or COPYING file. No authoritative license grant or full license text for pause@0.0.1 could be confirmed; no SPDX expression is inferred. Release must remain blocked until an authoritative grant/text is found or a separately reviewed dependency replacement removes this package."
+      "licenseSourceNote": "The exact npm version metadata has no license, repository, homepage, or gitHead, and the published package contains no LICENSE/LICENCE/COPYING file. The original annotated tag v0.0.1, signed by the package author TJ Holowaychuk at 2012-07-19T18:00:26Z (seconds before the npm publish time 2012-07-19T18:00:32Z), points to revision 11d0dcaca51ee8cdf09915be0ba14c41871009b5. That revision's package/Readme.md carries the complete MIT grant under its '## License' heading. The repository Readme.md, index.js and package.json at that revision are byte-for-byte identical to the files inside the verified npm tarball (equal SHA-256 for all three), so the text is the original published grant, not a later version's. The material is the complete upstream Readme.md (1146 bytes) rather than an extracted section, because an extracted section would no longer be a byte-identical upstream file; the extracted '## License' section through EOF, trimmed, hashes to 0227b62b5ea9cf05a0e0f828c5e29138f4c36a233e38574d8ccc956e0e5147dd (1116 bytes).",
+      "metadataOverride": {
+        "reviewed": true,
+        "licenseExpression": "MIT",
+        "fileName": "Readme.md",
+        "licenseTextFile": false,
+        "reason": "The package and lock metadata omit the license field, and the grant lives in Readme.md rather than a license-named file. The package-local Readme.md is byte-identical to the cited upstream file at the exact package revision; this override fills metadata only and does not change license terms.",
+        "sourceUrl": "https://github.com/stream-utils/pause/blob/11d0dcaca51ee8cdf09915be0ba14c41871009b5/Readme.md",
+        "sourceRevision": "11d0dcaca51ee8cdf09915be0ba14c41871009b5",
+        "sha256": "d568e8932b83f0ae0799a3ff43b2ddd8940b5afd0ad33e70d9226a63c3a8505d"
+      },
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/stream-utils/pause/blob/11d0dcaca51ee8cdf09915be0ba14c41871009b5/Readme.md",
+          "sourceRevision": "11d0dcaca51ee8cdf09915be0ba14c41871009b5",
+          "sourceFileName": "Readme.md",
+          "path": "materials/pause/0.0.1/Readme.md",
+          "sha256": "d568e8932b83f0ae0799a3ff43b2ddd8940b5afd0ad33e70d9226a63c3a8505d"
+        }
+      ]
     }
-  ]
+  ],
+  "blockers": []
 }

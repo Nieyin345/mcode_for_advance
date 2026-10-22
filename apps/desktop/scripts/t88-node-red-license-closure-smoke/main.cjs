@@ -81,10 +81,16 @@ function hashManifest(root) {
 function makeFixture(root, {
   manifest = positiveManifest,
   packageEntries = SOURCE_MANIFEST.entries,
-  includePause = false,
+  includePauseUnknown = false,
   finalize = true,
 } = {}) {
   fs.mkdirSync(root, { recursive: true });
+  const effectiveManifest = includePauseUnknown
+    ? {
+        ...manifest,
+        entries: manifest.entries.filter(entry => !(entry.packageName === "pause" && entry.version === "0.0.1")),
+      }
+    : manifest;
   put(path.join(root, "LICENSE"), "Node-RED Apache-2.0 license fixture.\n");
   const lockPackages = {
     "": { name: "node-red", version: VERSION },
@@ -96,7 +102,10 @@ function makeFixture(root, {
   };
   makePackage(root, "node_modules/express", "express", "4.0.0", "MIT", true);
 
-  for (const entry of packageEntries) {
+  const effectivePackageEntries = includePauseUnknown
+    ? packageEntries.filter(entry => !(entry.packageName === "pause" && entry.version === "0.0.1"))
+    : packageEntries;
+  for (const entry of effectivePackageEntries) {
     const relative = packageInstallPath(entry);
     const isOverride = Boolean(entry.metadataOverride);
     const dir = makePackage(
@@ -116,15 +125,14 @@ function makeFixture(root, {
       fs.copyFileSync(sourceLicense, path.join(dir, entry.metadataOverride.fileName));
     }
   }
-  if (includePause) {
-    const blocker = manifest.blockers.find(item => item.packageName === "pause" && item.version === "0.0.1")
-      || SOURCE_MANIFEST.blockers.find(item => item.packageName === "pause" && item.version === "0.0.1");
-    assert.ok(blocker, "pause fixture requires the reviewed release-blocker record");
+  if (includePauseUnknown) {
+    // A pause package with no license metadata and no reviewed mapping: the gate
+    // must keep failing closed exactly as it did before the pause integration.
     lockPackages["node_modules/pause"] = {
       name: "pause",
       version: "0.0.1",
-      resolved: blocker.packageSource.tarballUrl,
-      integrity: blocker.packageSource.tarballIntegrity,
+      resolved: "https://registry.npmjs.org/pause/-/pause-0.0.1.tgz",
+      integrity: "sha512-KG8UEiEVkR3wGEb4m5yZkVCzigAD+cVEJck2CzYZO37ZGJfctvVptVO192MwrtPhzONn6go8ylnOdMhKqi4nfg==",
     };
     makePackage(root, "node_modules/pause", "pause", "0.0.1", null, false);
   }
@@ -137,7 +145,7 @@ function makeFixture(root, {
   makePackage(root, "packages/node_modules/@node-red/runtime", "@node-red/runtime", VERSION, "Apache-2.0", true);
   makePackage(root, "packages/node_modules/@node-red/editor-api", "@node-red/editor-api", VERSION, "Apache-2.0", true);
   put(path.join(root, "packages/node_modules/@node-red/editor-client/public/red/red.min.js"), "fixture editor JS\n");
-  copyLicenseTree(root, manifest);
+  copyLicenseTree(root, effectiveManifest);
   return finalize ? hashManifest(root) : null;
 }
 
@@ -145,9 +153,9 @@ try {
   verify("source manifest binds exact package versions, SPDX expressions, upstream revisions and file SHA-256 values", () => {
     assert.equal(SOURCE_MANIFEST.nodeRedVersion, VERSION);
     assert.equal(SOURCE_MANIFEST.nodeRedSourceCommit, BASE_COMMIT);
-    assert.equal(SOURCE_MANIFEST.entries.length, 15);
-    assert.equal(SOURCE_MANIFEST.entries.reduce((sum, entry) => sum + entry.materials.length, 0), 16);
-    assert.equal(SOURCE_MANIFEST.blockers.length, 1);
+    assert.equal(SOURCE_MANIFEST.entries.length, 16);
+    assert.equal(SOURCE_MANIFEST.entries.reduce((sum, entry) => sum + entry.materials.length, 0), 17);
+    assert.equal(SOURCE_MANIFEST.blockers.length, 0);
     for (const entry of SOURCE_MANIFEST.entries) {
       assert.ok(entry.packageName && entry.version && entry.licenseExpression);
       assert.match(entry.packageSource.registryMetadataUrl, /^https:\/\/registry\.npmjs\.org\//);
@@ -166,23 +174,25 @@ try {
     assert.equal(cliTable.metadataOverride.reviewed, true);
     assert.equal(cliTable.metadataOverride.licenseExpression, "MIT");
     assert.equal(cliTable.metadataOverride.sha256, cliTable.materials[0].sha256);
-    const pause = SOURCE_MANIFEST.blockers[0];
-    assert.equal(pause.packageName, "pause");
-    assert.equal(pause.version, "0.0.1");
-    assert.equal(pause.licenseExpression, null);
-    assert.equal(pause.status, "release-blocker");
-    assert.match(pause.reason, /no SPDX expression is inferred/i);
+    const pause = SOURCE_MANIFEST.entries.find(entry => entry.packageName === "pause" && entry.version === "0.0.1");
+    assert.equal(pause.licenseExpression, "MIT");
+    assert.equal(pause.packageSource.revision, "11d0dcaca51ee8cdf09915be0ba14c41871009b5");
+    assert.equal(pause.metadataOverride.reviewed, true);
+    assert.equal(pause.metadataOverride.licenseTextFile, false);
+    assert.equal(pause.metadataOverride.fileName, "Readme.md");
+    assert.equal(pause.materials[0].sha256, "d568e8932b83f0ae0799a3ff43b2ddd8940b5afd0ad33e70d9226a63c3a8505d");
     const notice = fs.readFileSync(path.join(SOURCE_ROOT, "THIRD-PARTY-LICENSES.txt"), "utf8");
     assert.match(notice, /Apache License/);
     assert.match(notice, /Creative Commons Legal Code/);
-    assert.match(notice, /RELEASE BLOCKER: pause@0\.0\.1/);
+    assert.match(notice, /Package: pause@0\.0\.1/);
+    assert.doesNotMatch(notice, /RELEASE BLOCKER/);
   });
 
   const positiveRoot = path.join(base, "positive");
   const positiveInventory = makeFixture(positiveRoot);
   verify("complete exact-version mappings supply all license texts and afterPack accepts a blocker-free fixture", () => {
-    assert.equal(positiveInventory.summary.packageCount, 20);
-    assert.equal(positiveInventory.summary.reviewedExternalLicenseMappings, 15);
+    assert.equal(positiveInventory.summary.packageCount, 21);
+    assert.equal(positiveInventory.summary.reviewedExternalLicenseMappings, 16);
     assert.equal(positiveInventory.summary.unmatchedLicenseManifestEntries, 0);
     assert.equal(positiveInventory.summary.packageSourceLockMismatches, 0);
     assert.equal(positiveInventory.summary.unknownSpdxExpressions, 0);
@@ -196,19 +206,23 @@ try {
     const cliTable = positiveInventory.packages.find(item => item.name === "cli-table" && item.version === "0.3.11");
     assert.equal(cliTable.licenseExpression, "MIT");
     assert.equal(cliTable.licenseMetadataOverride.reviewed, true);
+    const pause = positiveInventory.packages.find(item => item.name === "pause" && item.version === "0.0.1");
+    assert.equal(pause.status, "collected");
+    assert.equal(pause.license, "MIT");
+    assert.equal(pause.licenseMetadataOverride.reviewed, true);
     assert.equal(verifyNodeRed.verifyNodeRedResource(positiveRoot).licenseCoverage.releaseEligible, true);
   });
 
-  const blockerRoot = path.join(base, "pause-blocker");
-  const blockerInventory = makeFixture(blockerRoot, { manifest: SOURCE_MANIFEST, includePause: true });
-  verify("pause@0.0.1 remains an explicit release blocker and afterPack rejects it", () => {
-    const pause = blockerInventory.packages.find(item => item.name === "pause" && item.version === "0.0.1");
-    assert.equal(pause.status, "release-blocker");
+  verify("unknown license metadata stays a release blocker even when a reviewed mapping covers every other package", () => {
+    const root = path.join(base, "pause-unknown-license");
+    const inventory = makeFixture(root, { includePauseUnknown: true });
+    const pause = inventory.packages.find(item => item.name === "pause" && item.version === "0.0.1");
+    assert.equal(pause.status, "unknown-license");
     assert.equal(pause.license, null);
-    assert.match(pause.releaseBlocker.reason, /no authoritative license grant/i);
-    assert.equal(blockerInventory.summary.releaseBlockers, 1);
-    assert.equal(blockerInventory.summary.releaseEligible, false);
-    assert.throws(() => verifyNodeRed.verifyNodeRedResource(blockerRoot), /pause@0\.0\.1 \[release-blocker/i);
+    assert.equal(pause.licenseTextPresent, false);
+    assert.equal(inventory.summary.unknownLicenseMetadata, 1);
+    assert.equal(inventory.summary.releaseEligible, false);
+    assert.throws(() => verifyNodeRed.verifyNodeRedResource(root), /pause@0\.0\.1 \[unknown-license/i);
   });
 
   verify("unknown SPDX identifier in the source manifest fails closed", () => {
@@ -346,20 +360,21 @@ try {
     marker.packageTreeSha256 = hashTree(path.join(stageCopy, "packages"), "mcode.node-red.packages.tree.v1");
     marker.dependenciesTreeSha256 = hashTree(path.join(stageCopy, "node_modules"), "mcode.node-red.dependencies.tree.v1");
     put(markerPath, JSON.stringify(marker, null, 2) + "\n");
-    verify("isolated copy of the 420-package stage maps every reviewed version and remains blocked only by pause@0.0.1", () => {
+    verify("isolated copy of the 420-package stage maps every reviewed version and is release-eligible after the pause integration", () => {
       assert.equal(inventory.summary.packageCount, 420);
-      assert.equal(inventory.summary.reviewedExternalLicenseMappings, 15);
+      assert.equal(inventory.summary.reviewedExternalLicenseMappings, 16);
       assert.equal(inventory.summary.unmatchedLicenseManifestEntries, 0);
       assert.equal(inventory.summary.unknownSpdxExpressions, 0);
-      assert.equal(inventory.summary.unknownLicenseMetadata, 1);
-      assert.equal(inventory.summary.missingLicenseText, 1);
-      assert.equal(inventory.summary.releaseBlockers, 1);
-      assert.equal(inventory.summary.releaseEligible, false);
+      assert.equal(inventory.summary.unknownLicenseMetadata, 0);
+      assert.equal(inventory.summary.missingLicenseText, 0);
+      assert.equal(inventory.summary.releaseBlockers, 0);
+      assert.equal(inventory.summary.releaseEligible, true);
       const pause = inventory.packages.find(item => item.name === "pause" && item.version === "0.0.1");
-      assert.equal(pause.status, "release-blocker");
-      assert.throws(() => verifyNodeRed.verifyNodeRedResource(stageCopy), /pause@0\.0\.1 \[release-blocker/i);
+      assert.equal(pause.status, "collected");
+      assert.equal(pause.license, "MIT");
+      assert.equal(verifyNodeRed.verifyNodeRedResource(stageCopy).licenseCoverage.releaseEligible, true);
     });
-    verify("afterPack rejects same-size license material tampering and accepts the restored bytes before applying the pause blocker", () => {
+    verify("afterPack rejects same-size license material tampering and accepts the restored bytes", () => {
       const file = path.join(stageCopy, "licenses/node-red/materials/agent-base/6.0.2/LICENSE");
       const original = fs.readFileSync(file);
       const originalHash = sha256(original);
@@ -370,7 +385,7 @@ try {
       fs.writeFileSync(file, original);
       const restoredHash = hashFile(file);
       assert.equal(restoredHash, originalHash);
-      assert.throws(() => verifyNodeRed.verifyNodeRedResource(stageCopy), /pause@0\.0\.1 \[release-blocker/i);
+      assert.equal(verifyNodeRed.verifyNodeRedResource(stageCopy).licenseCoverage.releaseEligible, true);
       console.log("    mutation SHA-256: " + mutatedHash + "; restored SHA-256: " + restoredHash);
     });
   } else {

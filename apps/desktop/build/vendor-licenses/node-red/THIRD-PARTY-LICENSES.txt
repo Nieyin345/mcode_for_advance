@@ -1248,8 +1248,47 @@ SOFTWARE.
 
 
 ================================================================================
-RELEASE BLOCKER: pause@0.0.1
-License expression: UNKNOWN (not inferred)
-Evidence: https://registry.npmjs.org/pause/0.0.1
-Published package file list: https://unpkg.com/pause@0.0.1/?meta
-Reason: The exact npm registry metadata has no license, repository, homepage, or gitHead. The exact published package file list contains no LICENSE, LICENCE, or COPYING file. No authoritative license grant or full license text for pause@0.0.1 could be confirmed; no SPDX expression is inferred. Release must remain blocked until an authoritative grant/text is found or a separately reviewed dependency replacement removes this package.
+Package: pause@0.0.1
+SPDX license expression: MIT
+Package metadata: https://registry.npmjs.org/pause/0.0.1
+Package source revision: 11d0dcaca51ee8cdf09915be0ba14c41871009b5
+Source note: The exact npm version metadata has no license, repository, homepage, or gitHead, and the published package contains no LICENSE/LICENCE/COPYING file. The original annotated tag v0.0.1, signed by the package author TJ Holowaychuk at 2012-07-19T18:00:26Z (seconds before the npm publish time 2012-07-19T18:00:32Z), points to revision 11d0dcaca51ee8cdf09915be0ba14c41871009b5. That revision's package/Readme.md carries the complete MIT grant under its '## License' heading. The repository Readme.md, index.js and package.json at that revision are byte-for-byte identical to the files inside the verified npm tarball (equal SHA-256 for all three), so the text is the original published grant, not a later version's. The material is the complete upstream Readme.md (1146 bytes) rather than an extracted section, because an extracted section would no longer be a byte-identical upstream file; the extracted '## License' section through EOF, trimmed, hashes to 0227b62b5ea9cf05a0e0f828c5e29138f4c36a233e38574d8ccc956e0e5147dd (1116 bytes).
+Reviewed metadata override: The package and lock metadata omit the license field, and the grant lives in Readme.md rather than a license-named file. The package-local Readme.md is byte-identical to the cited upstream file at the exact package revision; this override fills metadata only and does not change license terms.
+Override evidence: https://github.com/stream-utils/pause/blob/11d0dcaca51ee8cdf09915be0ba14c41871009b5/Readme.md @ 11d0dcaca51ee8cdf09915be0ba14c41871009b5
+
+--------------------------------------------------------------------------------
+License identifier: MIT
+Original file name: Readme.md
+Source URL: https://github.com/stream-utils/pause/blob/11d0dcaca51ee8cdf09915be0ba14c41871009b5/Readme.md
+Source revision: 11d0dcaca51ee8cdf09915be0ba14c41871009b5
+Local SHA-256: d568e8932b83f0ae0799a3ff43b2ddd8940b5afd0ad33e70d9226a63c3a8505d
+
+
+# pause
+
+  Pause streams...
+
+## License 
+
+(The MIT License)
+
+Copyright (c) 2012 TJ Holowaychuk &lt;tj@vision-media.ca&gt;
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

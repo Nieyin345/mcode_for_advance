@@ -195,6 +195,9 @@ function safeLicenseMaterialPath(root, relative, label) {
   let current = absoluteRoot;
   for (const part of rel.split(path.sep)) {
     current = path.join(current, part);
+    if (!fs.existsSync(current)) {
+      throw new Error("Node-RED license material is missing: " + (label || relative) + " (" + rel + ")");
+    }
     const stat = fs.lstatSync(current);
     if (stat.isSymbolicLink()) throw new Error("Node-RED license material symlink denied: " + current);
   }
@@ -327,7 +330,10 @@ function readNodeRedLicenseManifest(root) {
         && material.sha256 === override.sha256);
       if (override.reviewed !== true || override.licenseExpression !== entry.licenseExpression
           || typeof override.reason !== "string" || !override.reason
-          || typeof override.fileName !== "string" || !evidence) {
+          || typeof override.fileName !== "string"
+          || (override.licenseTextFile !== undefined && typeof override.licenseTextFile !== "boolean")
+          || (override.licenseTextFile === false && !entry.licenseSourceNote)
+          || !evidence) {
         throw new Error("Node-RED license metadata override is not explicitly reviewed/evidenced: " + key);
       }
     }
@@ -478,9 +484,13 @@ function collectPackageEntries(root, modulesRelative, lock, licenseManifestConte
           licenseMetadataOverride = externalEntry.metadataOverride;
         }
         const overrideFile = path.join(packageDir, externalEntry.metadataOverride.fileName);
+        const overrideIsLicenseTextFile = externalEntry.metadataOverride.licenseTextFile !== false;
         if (!fs.existsSync(overrideFile) || !fs.lstatSync(overrideFile).isFile()
-            || hashFile(overrideFile) !== externalEntry.metadataOverride.sha256
-            || !licenseFiles.some((file) => file.name === externalEntry.metadataOverride.fileName
+            || hashFile(overrideFile) !== externalEntry.metadataOverride.sha256) {
+          throw new Error("Node-RED reviewed license metadata override file mismatch: " + packageKey);
+        }
+        if (overrideIsLicenseTextFile
+            && !licenseFiles.some((file) => file.name === externalEntry.metadataOverride.fileName
               && file.sha256 === externalEntry.metadataOverride.sha256 && file.licenseText)) {
           throw new Error("Node-RED reviewed license metadata override file mismatch: " + packageKey);
         }
