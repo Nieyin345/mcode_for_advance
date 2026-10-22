@@ -49,5 +49,5 @@
 
 - 报告：`docs/research/genoffice-license/T9-unresolved-evidence.md`
 - 本卡回写：本节
-- 提交 SHA：见下方（提交后总控可 `git log -1` 核对）
+- 提交 SHA：`d28de3004fe6038aa90a05e2975e5cd37de6afdf`（报告 + 本卡回写）
 - 复核留痕（git-ignored，未入库）：`.tmp/t9-license-work/{scripts,reports,evidence-extracted}`
