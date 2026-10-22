@@ -44,6 +44,7 @@
 | T23 | **生产构建与发行 staging 缺四个编辑器的 preload** | **P0 发行阻断** | 无 | K |
 | T24 | 文档 AI 工具面重做：可发现 + Markdown 操作 + QA 门禁 | **P0 产品核心** | T0 | L |
 | T25 | 按 pinned HEAD 重建 GenOffice 六家 vendor 产物 | **P0 发行前置** | T23 | M |
+| T26 | 「允许一次」文案与实际语义不符 | P1 | T18 | N |
 
 ### 推荐第一波
 
