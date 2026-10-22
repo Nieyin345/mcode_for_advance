@@ -414,29 +414,40 @@ export async function mergeBackWorktree(
   opts: { message?: string } = {},
 ): Promise<GitWorktreeMergeBackResult> {
   try {
-    // Same ownership gate as removeWorktree, for the same reason: the IPC
-    // layer only guards `repoPath` (the worktree lives outside every
-    // project root by design), so `worktreePath` arrives uncontained — and
-    // the very next step runs `git add -A && git commit` INSIDE it. Aimed
-    // at an unrelated repository that silently commits the user's
-    // half-finished work there and then tries to merge its history into
-    // the project repo. Merging back is only ever meaningful for a
-    // worktree this repo actually registered, so demand exactly that. A
-    // failed probe does NOT block (same degrade-to-permissive choice as
-    // remove's `registered = true` fallback — merge-back is not itself
-    // destructive once the path is legitimate).
+    // This path comes from the caller and is used for git add/commit below.
+    // Any ownership-probe error or missing/stale identity must therefore deny
+    // merge-back; treating probe failure as ownership can commit unrelated data.
     const ownerGit = (await loadSimpleGit())(repoPath);
-    const ownsWorktree = await ownerGit
-      .raw(["worktree", "list", "--porcelain"])
-      .then((raw) =>
-        parsePorcelain(raw).some((w) => normPathKey(w.path) === normPathKey(worktreePath)),
-      )
-      .catch(() => true);
+    let ownsWorktree = false;
+    try {
+      const raw = await ownerGit.raw(["worktree", "list", "--porcelain"]);
+      ownsWorktree = parsePorcelain(raw).some(
+        (w) => normPathKey(w.path) === normPathKey(worktreePath),
+      );
+    } catch (err) {
+      log.warn(`worktree merge-back ownership probe failed for ${repoPath}: ${String(err)}`);
+    }
     if (!ownsWorktree) {
       log.warn(`worktree merge-back refused — not a worktree of ${repoPath}: ${worktreePath}`);
-      return { ok: false, error: "该路径不是本仓库的工作树，拒绝合并回主仓库" };
+      return { ok: false, error: "无法确认该路径属于本仓库的工作树，拒绝合并回主仓库" };
     }
     const wtGit = (await loadSimpleGit())(worktreePath);
+    // A path may have been deleted and recreated after registration. The
+    // porcelain path alone is not identity: confirm the live checkout points
+    // at this repository's common Git directory before touching its contents.
+    try {
+      const [ownerCommonDir, worktreeCommonDir] = await Promise.all([
+        ownerGit.raw(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+        wtGit.raw(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+      ]);
+      if (normPathKey(ownerCommonDir.trim()) !== normPathKey(worktreeCommonDir.trim())) {
+        log.warn(`worktree merge-back refused — stale worktree identity: ${worktreePath}`);
+        return { ok: false, error: "工作树身份已变化，拒绝合并回主仓库" };
+      }
+    } catch (err) {
+      log.warn(`worktree merge-back identity probe failed for ${worktreePath}: ${String(err)}`);
+      return { ok: false, error: "无法确认工作树身份，拒绝合并回主仓库" };
+    }
     // Unknown status REFUSES the merge (rather than silently skipping the
     // auto-commit): proceeding dirty-but-unreadable would merge only the
     // committed part while the dialog reports full success.

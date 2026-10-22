@@ -176,7 +176,48 @@ async function main(): Promise<void> {
       "对方的未提交改动已被 commit 掉");
   }
 
-  /* ── 9) 回归:合法的 merge-back 不能被新闸门误杀 ─────────────────── */
+  /* ── 9) ownership probe 出错必须 fail-closed，不能提交调用方目录 ── */
+  {
+    resetStubs();
+    const foreign = mkdtempSync(join(tmpdir(), "mcode-m10-probe-error-"));
+    cleanup.push(foreign);
+    git(foreign, "init", "-q", "-b", "main");
+    git(foreign, "config", "user.email", "smoke@example.invalid");
+    git(foreign, "config", "user.name", "M10 Smoke");
+    await writeFile(join(foreign, "draft.txt"), "initial\n", "utf8");
+    git(foreign, "add", "draft.txt");
+    git(foreign, "commit", "-q", "-m", "init");
+    await writeFile(join(foreign, "draft.txt"), "must stay dirty\n", "utf8");
+
+    const invalidOwner = join(foreign, "not-a-repository");
+    const res = await mergeBackWorktree(invalidOwner, foreign);
+    check("merge-back:owner 探测报错时拒绝操作", res.ok === false, JSON.stringify(res));
+    check("merge-back:owner 探测报错不会提交外部工作区",
+      git(foreign, "status", "--porcelain").trim() !== "");
+  }
+
+  /* ── 10) 同路径删除并重建为另一仓库，不得冒充旧工作树 ─────────── */
+  {
+    resetStubs();
+    const wt = join(WT_ROOT, "recreated-1");
+    await createDetachedWorktree(repo, wt);
+    await rm(wt, { recursive: true, force: true });
+    await mkdir(wt, { recursive: true });
+    git(wt, "init", "-q", "-b", "main");
+    git(wt, "config", "user.email", "smoke@example.invalid");
+    git(wt, "config", "user.name", "M10 Smoke");
+    await writeFile(join(wt, "foreign.txt"), "foreign data\n", "utf8");
+    git(wt, "add", "foreign.txt");
+    git(wt, "commit", "-q", "-m", "foreign init");
+    await writeFile(join(wt, "foreign.txt"), "must stay dirty\n", "utf8");
+
+    const res = await mergeBackWorktree(repo, wt);
+    check("merge-back:被删除后重建的同路径工作树被拒", res.ok === false, JSON.stringify(res));
+    check("merge-back:重建仓库的未提交内容保持原样",
+      git(wt, "status", "--porcelain").trim() !== "");
+  }
+
+  /* ── 11) 回归:合法的 merge-back 不能被新闸门误杀 ─────────────────── */
   {
     resetStubs();
     const wt = join(WT_ROOT, "mergeok-1");
