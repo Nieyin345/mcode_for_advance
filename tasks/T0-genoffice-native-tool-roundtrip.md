@@ -80,3 +80,10 @@ b74370bb6a2df71aed628eabfd63dd83bbc8e56d290e95a3ee2fbbe4ac2dec8c  scripts/t83-mc
 - **第三方未跟踪文件**：`apps/desktop/scripts/electron-u1/driver/steps.ts` 是他人未提交的 U1 工作，导致 `tsc -p apps/desktop` 出现两行报错；本卡未触碰，移开验证后我的文件类型干净。
 - **提交 SHA**：见下方 `### 提交`。
 
+### 提交
+
+- 实现提交：`6bd8289e`（`feat(docs): round-trip GenOffice native tool results into the same SDK turn`），10 文件 +1125/−41。
+- 提交后复跑（对提交后的工作树，非提交前）：`t0-genoffice-native-tool-roundtrip-smoke` **55/55**、`t83-mcode-editor-tool-bridge-smoke` **19/19**；`git archive HEAD` 与工作树逐字节一致。
+- 本次提交只含上列 10 个文件；`.aoci/baseline.json`、`.gitignore`、`apiCatalog.generated.ts`、`settingsTransfer.ts`、`smokes-for.py`、`tasks/T13-genoffice-baseline.md` 及未跟踪的 `apps/desktop/scripts/electron-u1/` 等他人/并行改动均原样保留，未 reset/clean。
+- 本回写区追记提交：`docs(tasks): record T0 commit SHA`（紧随 `6bd8289e` 的文档提交）。
+
