@@ -4,6 +4,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button } from "@renderer/components/ui/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useApprovalArming } from "@renderer/hooks/useApprovalArming.js";
+import { hasTopmostForeignDialog } from "@renderer/hooks/useFocusTrap.js";
 import { toolSummary } from "./activityShared.js";
 import { mcpApprovalVerdict } from "./mcpDecision.js";
 import { APP_DANGER_APPROVAL_PREFIX } from "@contracts/appControl";
@@ -47,6 +48,13 @@ import {
  * nothing. Enter still activates "允许" once the user deliberately Tabs to it
  * and the delay has elapsed; that is explicit consent. This is one-shot —
  * when the queue shifts, this card unmounts and the next one re-arms.
+ *
+ * Focus ownership while a modal is open: the card must NOT pull focus out of
+ * a modal above it (settings dialog, command palette, confirm dialog). Those
+ * are Base UI dialogs, which do NOT emit `aria-modal="true"` (verified in
+ * `useFocusTrap.ts`), so the guard reuses the shared
+ * `hasTopmostForeignDialog` detector instead of a `[aria-modal="true"]`
+ * attribute query that would never match.
  */
 export function ApprovalPrompt({
   providerName,
@@ -90,9 +98,12 @@ export function ApprovalPrompt({
   // Focus the CARD, never the "允许" button (ARC-005): with focus on the
   // alertdialog itself, a stray Enter has no action to activate. Also bring
   // the whole card into view in case the queue scrolled it out.
+  // Yield to any modal already open above this card: Base UI popups carry
+  // role=dialog but never aria-modal=true, so the shared detector — the same
+  // one useFocusTrap uses — is the one predicate that actually sees them.
   useEffect(() => {
     if (!promptActive || !cardRef.current?.getClientRects().length ||
-        document.querySelector('[aria-modal="true"]')) return;
+        hasTopmostForeignDialog(cardRef.current)) return;
     cardRef.current.focus({ preventScroll: true });
     cardRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [promptActive, toolName, queuePosition]);
