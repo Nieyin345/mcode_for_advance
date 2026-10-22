@@ -167,7 +167,7 @@ docs `7f895e93…5705`、sheets `f9833eff…eceb8`、slides `b1c5b642…0178`、
 
 - 只提交：`apps/desktop/scripts/genoffice-vendor-freshness-smoke/{main.cjs,run.sh}` 与 `tasks/T25-vendor-rebuild.md` 回写。`genoffice/` 产物被忽略，不入库（见 §五）。
 - **未碰**：`genoffice/` 源码（`git status` 为空）、`patches/genoffice/`、`electron.vite.config.ts`、`stage-genoffice-resources.cjs`。未用 worktree/junction，未跑 `rm -rf`（变异还原走整树拷贝 + `cmp` 等价的逐字节校验）。
-- 提交 SHA：见本回写提交本身（`fix(T25): rebuild six GenOffice vendor products at pinned HEAD and assert freshness`）。
+- 提交 SHA：`55c276e3` — `fix(T25): rebuild six GenOffice vendor products at pinned HEAD`（3 files changed, 281 insertions(+), 1 deletion(-)：新增 freshness smoke 两文件 + 本回写；提交信息末行含 Co-Authored-By 尾注）。提交后在该提交状态复跑：freshness 29/29、production-build-preload 18/18、genoffice-editors-release 29/29。
 - **不宣称 T7（六编辑器 U1）完成**——本卡只证明产物新鲜、0013 renderer 半边入产物、staging 门禁放行；安装包形态下的真实打开/编辑/保存/重开仍是 T7 与 T-E 的范围。
 
 ## 风险提示
