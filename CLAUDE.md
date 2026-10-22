@@ -97,3 +97,19 @@ preload (contextBridge + zod 校验)
 - preload 不热更：改 preload 后「新命名空间 = undefined」说明没真正重启 dev，不是写错了。
 - Windows 子进程输出是控制台代码页（中文机器 GBK）：解码先严格试 UTF-8、失败退回 GBK，用原始字节，别数替换字符。
 - **无头验证数据时，`dataRoot` 必须指向 `mcode.db` 的副本**——sql.js 重写整个文件，指向真库会毁数据。
+
+## Agent skills
+
+### Issue tracker
+
+Engineering Skill specs and planning tickets live as local Markdown files under `.scratch/<feature-slug>/`. Use one `spec.md` per feature and one file per ticket under `issues/`. See `docs/agents/issue-tracker.md`.
+
+The existing `tasks/` directory remains the authoritative execution and acceptance ledger for Mcode's T-numbered tasks. Do not migrate, renumber, or replace existing tasks when using `.scratch/`. Every newly created T-numbered task card must include a `## Required Skills` section listing only relevant skills and their purpose; do not bulk-add all installed skills or rewrite existing cards.
+
+### Triage labels
+
+Use the five canonical state labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the single-context domain documentation layout: root `GLOSSARY.md` and `docs/adr/`. Read relevant existing documentation before proposing changes. Create or update these documents only when domain terminology or architectural decisions are actually resolved. See `docs/agents/domain.md`.
