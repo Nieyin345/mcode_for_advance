@@ -88,3 +88,25 @@
 ## 结果回写区
 
 <!-- 仅追加：报告位置和 SHA、提交 SHA、证据定位摘要、逐条验收 PASS/FAIL、remaining。 -->
+
+
+### T103 执行结果（2026-10-22）
+
+- **报告**：docs/research/orca-mcode/T103-ui-ux.md
+- **报告 SHA-256**：ea424f135f7a0e08c857377d42115e14ca8e17f3df7a90be964b520cd61f2f3f
+- **报告提交 SHA**：2675463d9c206f4518987cd3443e565e04a4ff73（仅新增报告；提交前 git diff --cached --check 通过）。
+- **基线**：Mcode 起始 HEAD 94524df83eb01669dd93191521f84a593bd0dd95；Orca 固定 HEAD ea60ec5d7cb9b542d2b5b3fd986acfc8861e4560，符合任务卡要求，Orca 工作区干净。
+- **结论计数**：等价已有 3、部分已有 4、真缺失 0、证据不足 1、与定位冲突 1。报告包含 4 条真实源码调用链、9 项对照、3 个异常/恢复反例设计、Top 2 借鉴点与 1 条不宜照搬设计；事实使用 E2，产品定位判断使用 E3。
+- **验证**：
+  - git rev-parse HEAD：起始基线为 94524df83eb01669dd93191521f84a593bd0dd95。
+  - git -C orca rev-parse HEAD：ea60ec5d7cb9b542d2b5b3fd986acfc8861e4560；git -C orca status --short --untracked-files=all 为空。
+  - git diff --cached --name-status：开工时为空；报告提交仅包含 docs/research/orca-mcode/T103-ui-ux.md。
+  - git check-ignore -v docs/research/orca-mcode/T103-ui-ux.md：exit 1，报告路径未被忽略。
+  - 未运行测试、构建或 Electron：符合只读研究任务边界，不把测试源码存在或历史截图存档当作 PASS。
+- **验收判据**：
+  1. PASS：4 条 Orca→Mcode 入口到状态/副作用/持久化调用链，记录两仓固定 SHA。
+  2. PASS：9 项能力矩阵均有可定位的 Orca/Mcode 源码证据与分类。
+  3. PASS：覆盖终端 Portal 切换、PR 异步旧结果、终端/审批焦点竞争 3 个反例设计；给出 Top 2 借鉴点与 1 条不宜移植设计。
+  4. PASS：只新增指定报告并提交；未改 Orca、Mcode 产品代码、共享配置、其他任务卡或用户数据。
+  5. PASS：明确标记 E2/E3 与未做的 E1/U1；未声称真实 UI、键盘、读屏、PTY 或 Hosted Review 端到端通过。
+- **未完成事项与剩余风险**：没有 E1/U1 实际窗口验收；3 个反例只形成测试设计，未执行。Mcode 是否需要跨 worktree Agent inbox 仍属产品需求判断。开工时已有的其他工作区修改均保留，未暂存或清理；其中另有一个未跟踪条目在 status 输出中显示为 ?? ['dev，未对其解析或操作。
