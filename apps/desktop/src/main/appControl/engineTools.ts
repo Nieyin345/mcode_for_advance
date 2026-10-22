@@ -18,7 +18,11 @@ export function appToolDescriptors(): Array<{ name: string; description: string;
 }
 
 export function isAppToolName(name: string): boolean {
-  return (name.startsWith("app_") || name === "extension_validate") && appMcpTools().some((t) => t.name === name);
+  // 【T24】不止 `app_` 前缀：`document_*` 六个工具也住在同一张 `appMcpTools()` 表里，
+  // 走同一个 `invokeAppTool`（审批在 handler 里按工具分档）。判据是**表成员资格**，
+  // 不是前缀猜名 —— 加新工具不必再记得同步一条前缀。
+  return (name.startsWith("app_") || name.startsWith("document_") || name === "extension_validate")
+    && appMcpTools().some((t) => t.name === name);
 }
 
 export function invokeAppEngineTool(name: string, args: unknown, sessionId: string, ctx: ProviderContext): Promise<ToolResult> {

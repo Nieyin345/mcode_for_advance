@@ -66,6 +66,217 @@ export const DocumentConvertSchema = z.object({
 }).strict();
 export type DocumentConvertInput = z.infer<typeof DocumentConvertSchema>;
 
+/* ───────────────【T24】文档 AI 工具面：发现 + 调用 + Markdown 载体 + 出图 ───────────────
+ *
+ * 为什么是「发现」而不是「全量注入」：GenOffice 六编辑器的原生工具实测 139 个
+ * （docs 40 / sheets 18 / slides 18 / pdf 45 / markdown 10 / html 8，含伴随 skill），
+ * 整批 JSON-Schema 约 138 KB 上下文。这里按 `app_api_list → describe → call` 同构
+ * 收成四层：`document.apps` → `document.toolsList` → `document.toolDescribe` →
+ * `document.toolCall`；每个编辑器最多 2 个高频读工具常驻。
+ *
+ * 通道字符串钉在这里（与 documentView.ts 同一写法），IPC 表只引用。 */
+export const DOCUMENT_APPS_CHANNEL = "document:apps";
+export const DOCUMENT_TOOLS_LIST_CHANNEL = "document:toolsList";
+export const DOCUMENT_TOOL_DESCRIBE_CHANNEL = "document:toolDescribe";
+export const DOCUMENT_TOOL_CALL_CHANNEL = "document:toolCall";
+export const DOCUMENT_MARKDOWN_READ_CHANNEL = "document:markdownRead";
+export const DOCUMENT_MARKDOWN_EDIT_CHANNEL = "document:markdownEdit";
+export const DOCUMENT_RENDER_CHANNEL = "document:render";
+
+/** 六个编辑器 —— 与 `documentToolCatalog.generated.ts` 的 app 值一致。 */
+export const DocumentToolAppSchema = z.enum(["docs", "sheets", "slides", "pdf", "markdown", "html"]);
+export type DocumentToolApp = z.infer<typeof DocumentToolAppSchema>;
+
+export const DocumentAppsSchema = z.object({}).strict();
+export type DocumentAppsInput = z.infer<typeof DocumentAppsSchema>;
+
+export interface DocumentAppInfo {
+  app: DocumentToolApp;
+  /** 每个编辑器 ≤2 个常驻读工具名（无需查找即可调）。 */
+  residentTools: string[];
+  toolCount: number;
+  /** CLI 能承载的工具名（文件没开在编辑器里时走这条）。 */
+  cliTools: string[];
+  /** 该编辑器的 QA 门禁命令（docs/sheets=check，slides=audit）。 */
+  qaGates: string[];
+}
+
+export interface DocumentAppsResult {
+  apps: DocumentAppInfo[];
+  /** 目录生成来源（genoffice 快照内 AGENT_TOOLS 等）；快照更新后需重新生成。 */
+  catalogSource: string;
+  totalTools: number;
+}
+
+export const DocumentToolsListSchema = z.object({
+  app: DocumentToolAppSchema.optional(),
+  query: z.string().max(200).optional(),
+  /** 只看能走 CLI 的（文件没开在编辑器里时可用）。 */
+  cliOnly: z.boolean().optional(),
+}).strict();
+export type DocumentToolsListInput = z.infer<typeof DocumentToolsListSchema>;
+
+export interface DocumentToolsListEntry {
+  app: DocumentToolApp;
+  name: string;
+  doc: string;
+  resident: boolean;
+  route: "cli" | "editor";
+}
+
+export interface DocumentToolsListResult {
+  total: number;
+  shown: number;
+  tools: DocumentToolsListEntry[];
+  note: string;
+}
+
+export const DocumentToolDescribeSchema = z.object({
+  tool: z.string().min(1).max(120),
+  app: DocumentToolAppSchema.optional(),
+  /** full = 强制从 CLI 取 `guide <domain> <op>` 的完整 schema（CLI 承载的 op）。 */
+  detail: z.enum(["compact", "full"]).optional(),
+}).strict();
+export type DocumentToolDescribeInput = z.infer<typeof DocumentToolDescribeSchema>;
+
+export interface DocumentToolDescribeResult {
+  ok: true;
+  app: DocumentToolApp;
+  tool: string;
+  doc: string;
+  /** 参数/示例正文（CLI guide 的原文或目录里的说明）。 */
+  schemaText: string;
+  route: "cli" | "editor";
+  /** 该工具是否超出 T86 请求级契约（withheld），以及原因。 */
+  withheld?: string;
+}
+export type DocumentToolDescribeReply =
+  | DocumentToolDescribeResult
+  | { ok: false; reason: string; suggestions?: string[] };
+
+export const DocumentToolCallSchema = z.object({
+  tool: z.string().min(1).max(120),
+  app: DocumentToolAppSchema.optional(),
+  /** 绝对路径；必须落在已知工作区内。 */
+  filePath: PathSchema,
+  input: z.record(z.string(), z.unknown()).optional(),
+  /** 只演练（CLI apply --dry-run）；renderer 路线不支持 dryRun。 */
+  dryRun: z.boolean().optional(),
+  /** 把编辑记成 Word 修订（仅 docs apply 支持）。默认 true：AI 的每次修改都可逐条接受/拒绝。 */
+  track: z.boolean().optional(),
+}).strict();
+export type DocumentToolCallInput = z.infer<typeof DocumentToolCallSchema>;
+
+export interface DocumentQaReportWire {
+  gate: "check" | "audit";
+  ok: boolean;
+  issues: unknown[];
+  counts?: Record<string, number>;
+  summary?: string;
+}
+
+export interface DocumentToolCallResultOk {
+  ok: true;
+  route: "renderer" | "cli";
+  /** 给模型看的正文（含执行结果摘要）。 */
+  text: string;
+  /** 编辑是否落盘。 */
+  mutated: boolean;
+  /** 编辑后强制跑的 QA 门禁结果（没编辑或缺省时没有）。 */
+  qa?: DocumentQaReportWire;
+  /** render 产出的 PNG 绝对路径（出图成功时）。 */
+  images?: string[];
+  /** 落盘后的内容版本（sha256）。 */
+  revision?: string | null;
+}
+export type DocumentToolCallResult =
+  | DocumentToolCallResultOk
+  | {
+      ok: false;
+      kind: "refused" | "unavailable" | "failed" | "conflict";
+      reason: string;
+      qa?: DocumentQaReportWire;
+      suggestions?: string[];
+    };
+
+export const DocumentMarkdownReadSchema = z.object({
+  filePath: PathSchema,
+  /** 只读这些块区间（0-based，形如 "3-7"）；缺省整篇。 */
+  range: z.string().max(32).optional(),
+}).strict();
+export type DocumentMarkdownReadInput = z.infer<typeof DocumentMarkdownReadSchema>;
+
+export interface DocumentMarkdownReadResultOk {
+  ok: true;
+  filePath: string;
+  /** 带定位符注释（`<!-- b3 -->`）的 Markdown。 */
+  markdown: string;
+  blocks: number;
+  revision: string | null;
+}
+export type DocumentMarkdownReadResult =
+  | DocumentMarkdownReadResultOk
+  | { ok: false; kind: "refused" | "unavailable" | "failed"; reason: string };
+
+/** Markdown 编辑：定位符来自 `document.markdownRead` 的注释。 */
+export const DocumentMarkdownOperationSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("insert"), afterBlock: z.number().int().min(-1), markdown: z.string().min(1).max(200_000) }).strict(),
+  z.object({ op: z.literal("append"), markdown: z.string().min(1).max(200_000) }).strict(),
+  z.object({
+    op: z.literal("replace"),
+    startBlock: z.number().int().min(0),
+    endBlock: z.number().int().min(0),
+    markdown: z.string().min(1).max(200_000),
+  }).strict(),
+  z.object({
+    op: z.literal("delete"),
+    startBlock: z.number().int().min(0),
+    endBlock: z.number().int().min(0),
+  }).strict(),
+]);
+export type DocumentMarkdownOperation = z.infer<typeof DocumentMarkdownOperationSchema>;
+
+export const DocumentMarkdownEditSchema = z.object({
+  filePath: PathSchema,
+  operations: z.array(DocumentMarkdownOperationSchema).min(1).max(20),
+  /** 记成 Word 修订（默认 true）。 */
+  track: z.boolean().optional(),
+  /** 只演练，不写盘。 */
+  dryRun: z.boolean().optional(),
+}).strict();
+export type DocumentMarkdownEditInput = z.infer<typeof DocumentMarkdownEditSchema>;
+
+export interface DocumentMarkdownEditResultOk {
+  ok: true;
+  applied: number;
+  /** 写入后的块数（与下一次 markdownRead 的 blocks 一致）。 */
+  blocks: number;
+  qa?: DocumentQaReportWire;
+  revision: string | null;
+  text: string;
+}
+export type DocumentMarkdownEditResult =
+  | DocumentMarkdownEditResultOk
+  | { ok: false; kind: "refused" | "unavailable" | "failed" | "conflict"; reason: string; qa?: DocumentQaReportWire };
+
+export const DocumentRenderSchema = z.object({
+  filePath: PathSchema,
+  /** 1-based 页码；缺省整份。 */
+  page: z.number().int().min(1).max(2000).optional(),
+  scale: z.number().min(0.5).max(4).optional(),
+}).strict();
+export type DocumentRenderInput = z.infer<typeof DocumentRenderSchema>;
+
+export interface DocumentRenderResultOk {
+  ok: true;
+  files: string[];
+  note: string;
+}
+export type DocumentRenderResult =
+  | DocumentRenderResultOk
+  | { ok: false; kind: "refused" | "unavailable" | "failed"; reason: string };
+
+
 /** 一次文档操作的结果 —— `kind` 区分"拒绝(没执行)"/"能力不可用"/"执行失败"/"成功"。 */
 export type DocumentIpcResult =
   | { ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null }

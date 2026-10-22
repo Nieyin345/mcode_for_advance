@@ -1033,6 +1033,15 @@ const api = {
     edit: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_EDIT, input)) as RpcMap["document.edit"],
     convert: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_CONVERT, input)) as RpcMap["document.convert"],
     capabilities: (() => ipcRenderer.invoke(IPC.DOCUMENT_CAPABILITIES)) as RpcMap["document.capabilities"],
+    // 【T24】文档 AI 工具面：发现（apps/toolsList/toolDescribe）→ 执行（toolCall），
+    // 外加 Markdown 载体与出图。139 个原生工具不再全量注入上下文。
+    apps: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_APPS, input)) as RpcMap["document.apps"],
+    toolsList: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_TOOLS_LIST, input)) as RpcMap["document.toolsList"],
+    toolDescribe: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_TOOL_DESCRIBE, input)) as RpcMap["document.toolDescribe"],
+    toolCall: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_TOOL_CALL, input)) as RpcMap["document.toolCall"],
+    markdownRead: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_MARKDOWN_READ, input)) as RpcMap["document.markdownRead"],
+    markdownEdit: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_MARKDOWN_EDIT, input)) as RpcMap["document.markdownEdit"],
+    render: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_RENDER, input)) as RpcMap["document.render"],
   },
   // 【ARC-007】受控文档视图宿主(GenOffice 编辑器页的 WebContentsView)。
   // 渲染端只拿 docId 与像素 bounds；URL 白名单、安全开关、生命周期全在主进程。

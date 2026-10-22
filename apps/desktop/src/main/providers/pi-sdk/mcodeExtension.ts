@@ -409,6 +409,8 @@ function registerToolCallGuard(
     //    read-only gate.
     if (toolName.startsWith("memory_")) return; // execute uses the shared fail-closed approval policy.
     if (toolName.startsWith("app_")) return; // mcode-app: same — invokeAppEngineTool gates per method.
+    // 【T24】document_* 也住 mcode-app 那张表，审批同样在 invokeAppTool 里按工具分档。
+    if (toolName.startsWith("document_")) return;
     if (toolName === "EnterPlanMode" || toolName === "ExitPlanMode" || toolName === "AskUserQuestion") {
       return;
     }

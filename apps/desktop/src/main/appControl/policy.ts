@@ -539,6 +539,8 @@ export const DOMAIN_LABELS: Record<string, string> = {
   mcp: "外部 MCP 服务器:列出、新增、删除、启停、授权、导入",
   agentSsh: "Agent SSH 主机信任:列出待批准候选指纹与已信任主机;批准/撤销由用户在设置里操作",
   hooks: "钩子:列出、运行记录、保存、删除、试跑",
+  // 【T24】T64 引入的框架提示词段落管理（列/保存/恢复出厂）。
+  framework: "框架提示词:列段落、保存、恢复出厂",
   modules: "扩展模块",
   context: "全局指令(CLAUDE.md / AGENTS.md)",
   outputStyle: "输出风格",

@@ -30,6 +30,22 @@ import { nativeHostStatus } from "@main/document/genofficeViewFactories.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
 import { withOsFileLease } from "@main/lib/osFileLease.js";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { dataRoot } from "@main/lib/dataRoot.js";
+import {
+  DOCUMENT_APPS_CHANNEL, DOCUMENT_TOOLS_LIST_CHANNEL, DOCUMENT_TOOL_DESCRIBE_CHANNEL,
+  DOCUMENT_TOOL_CALL_CHANNEL, DOCUMENT_MARKDOWN_READ_CHANNEL, DOCUMENT_MARKDOWN_EDIT_CHANNEL,
+  DOCUMENT_RENDER_CHANNEL,
+  DocumentAppsSchema, DocumentToolsListSchema, DocumentToolDescribeSchema, DocumentToolCallSchema,
+  DocumentMarkdownReadSchema, DocumentMarkdownEditSchema, DocumentRenderSchema,
+} from "@contracts/ipc";
+import {
+  documentApps, documentToolsList, documentToolDescribe, documentToolCall,
+  documentMarkdownRead, documentMarkdownEdit, documentRender,
+  type DocumentSurfacePorts,
+} from "@main/document/documentToolRuntime.js";
+import { activeRendererBindingFor } from "@main/document/documentToolRendererBinding.js";
 
 /**
  * 仓库根的**可注入解析** —— 默认惰性 `require("electron").app.getAppPath()`
@@ -296,6 +312,8 @@ export function registerDocumentHandlers(ipc: IpcMain): void {
   });
 
   ipc.handle(IPC.DOCUMENT_CAPABILITIES, async (): Promise<DocumentCapabilities> => capabilities(p.ok ? p.ports : null));
+
+  registerDocumentToolSurface(ipc, p);
 }
 
 function unavailable(): DocumentIpcResult {
@@ -304,6 +322,112 @@ function unavailable(): DocumentIpcResult {
     kind: "unavailable",
     reason: "没有找到仓库内的 GenOffice CLI 快照（genoffice/packages/cli/dist/genoffice.cjs）。请先在 genoffice/ 下构建 CLI。",
   };
+}
+
+/* ─────────────────────────【T24】文档 AI 工具面 ─────────────────────────
+ *
+ * 七条通道与 `document.*` 共用同一段装配事实（CLI 解析 + 工作区围栏），区别只在
+ * 业务层：发现、执行、Markdown 载体、出图。三条硬约束：
+ *
+ *  1. **渲染端绑定只能来自 T0 的请求级登记簿**（`documentToolRendererBinding`）。
+ *     本层不自己发 IPC、不自己校验 sender —— invoker 与原始工具定义都从登记簿取，
+ *     它只按**宿主签发的 context.filePath** 查询；调用方给的 filePath 只用于围栏。
+ *  2. **编辑后 QA 门禁不可跳过**：`documentToolCall` / `documentMarkdownEdit` 内部
+ *     强制跑 check/audit（见 `documentToolRuntime.runQaGate`），`detail.issues` 原样回给模型。
+ *  3. **临时输出在数据根下**：`render` 的 PNG 落 `<dataRoot>/docs/export-tmp/t24-render`，
+ *     不落用户工作区、不覆盖任何用户文件。 */
+function registerDocumentToolSurface(ipc: IpcMain, p: ReturnType<typeof ports>): void {
+  /**
+   * 每次调用的端口装配。渲染端能力**只**来自 T0 的请求级登记簿：
+   * - `rendererOpen` 看该文件此刻有没有活跃绑定；
+   * - `invokeRendererTool` 把调用转给该绑定（登记簿已保证同一文件至多一个）；
+   * - `rendererToolDefinition` 回传该请求声明的**原始**定义（T98 canonical JSON 比对用）。
+   * 调用方给的 filePath 不参与绑定选择 —— 绑定按宿主签发的 context.filePath 归位，
+   * 这里再用 `physicalPath` 折叠大小写/短路径差异，找不到就是“没有绑定”。
+   */
+  const surfaceFor = (filePath: string): DocumentSurfacePorts => {
+    const binding = activeRendererBindingFor(filePath);
+    return {
+      cliPath: p.ok ? p.ports.cliPath : "",
+      withinWorkspace: p.ok ? p.ports.withinWorkspace : () => false,
+      rendererOpen: () => binding.ok,
+      ...(binding.ok ? {
+        invokeRendererTool: (call, definition) => binding.invoke(call, definition),
+        rendererToolDefinition: (tool) => binding.definitionOf(tool),
+      } : {}),
+      renderTempRoot: () => {
+        const dir = join(dataRoot(), "docs", "export-tmp", "t24-render");
+        mkdirSync(dir, { recursive: true });
+        return dir;
+      },
+    };
+  };
+  ipc.handle(IPC.DOCUMENT_APPS, async (_evt, raw) => {
+    DocumentAppsSchema.parse(raw);
+    if (!p.ok) return unavailableSurface();
+    return documentApps(surfaceFor(""));
+  });
+  ipc.handle(IPC.DOCUMENT_TOOLS_LIST, async (_evt, raw) => {
+    const input = DocumentToolsListSchema.parse(raw);
+    return documentToolsList({
+      ...(input.app !== undefined ? { app: input.app } : {}),
+      ...(input.query !== undefined ? { query: input.query } : {}),
+      ...(input.cliOnly !== undefined ? { cliOnly: input.cliOnly } : {}),
+    });
+  });
+  ipc.handle(IPC.DOCUMENT_TOOL_DESCRIBE, async (_evt, raw) => {
+    const input = DocumentToolDescribeSchema.parse(raw);
+    if (!p.ok) return { ok: false as const, reason: unavailableSurface().reason };
+    return documentToolDescribe(surfaceFor(""), {
+      tool: input.tool,
+      ...(input.app !== undefined ? { app: input.app } : {}),
+      ...(input.detail !== undefined ? { detail: input.detail } : {}),
+    });
+  });
+  ipc.handle(IPC.DOCUMENT_TOOL_CALL, async (_evt, raw) => {
+    const input = DocumentToolCallSchema.parse(raw);
+    if (!p.ok) return unavailableSurface();
+    return documentToolCall(surfaceFor(input.filePath), {
+      tool: input.tool,
+      ...(input.app !== undefined ? { app: input.app } : {}),
+      filePath: input.filePath,
+      ...(input.input !== undefined ? { input: input.input } : {}),
+      ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
+      ...(input.track !== undefined ? { track: input.track } : {}),
+    });
+  });
+  ipc.handle(IPC.DOCUMENT_MARKDOWN_READ, async (_evt, raw) => {
+    const input = DocumentMarkdownReadSchema.parse(raw);
+    if (!p.ok) return unavailableSurface();
+    return documentMarkdownRead(surfaceFor(input.filePath), {
+      filePath: input.filePath,
+      ...(input.range !== undefined ? { range: input.range } : {}),
+    });
+  });
+  ipc.handle(IPC.DOCUMENT_MARKDOWN_EDIT, async (_evt, raw) => {
+    const input = DocumentMarkdownEditSchema.parse(raw);
+    if (!p.ok) return unavailableSurface();
+    return documentMarkdownEdit(surfaceFor(input.filePath), {
+      filePath: input.filePath,
+      operations: input.operations,
+      ...(input.track !== undefined ? { track: input.track } : {}),
+      ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
+    });
+  });
+  ipc.handle(IPC.DOCUMENT_RENDER, async (_evt, raw) => {
+    const input = DocumentRenderSchema.parse(raw);
+    if (!p.ok) return unavailableSurface();
+    return documentRender(surfaceFor(input.filePath), {
+      filePath: input.filePath,
+      ...(input.page !== undefined ? { page: input.page } : {}),
+      ...(input.scale !== undefined ? { scale: input.scale } : {}),
+    });
+  });
+}
+
+function unavailableSurface(): { ok: false; kind: "unavailable"; reason: string } {
+  const result = unavailable();
+  return { ok: false, kind: "unavailable", reason: result.ok ? "CLI 不可用" : result.reason };
 }
 
 async function capabilities(portsArg: { cliPath: string; withinWorkspace(q: string): boolean } | null): Promise<DocumentCapabilities> {

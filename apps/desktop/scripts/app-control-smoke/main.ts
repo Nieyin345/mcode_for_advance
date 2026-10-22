@@ -3368,7 +3368,35 @@ console.log("\n⑲【MC-014】跨通道幂等");
   check("★ 手机 RPC dispatch 接了共享账本", mobileSrc.includes("beginChannelOperation(") && mobileSrc.includes("mobileMethodIsMutating("));
 }
 
+{
+  /* 【T24】文档工具面的审批分档**不能信模型自报的 app**。
+   *
+   * 回归场景：模型把一次编辑写成 `document_tool_call({tool:"setText", filePath})`
+   * —— 少了 `app`。若判据只看 `scope.app`，mutating 会算成 false，整次编辑以 read 档
+   * 自动放行；而 setText 在 slides 里是会改文件的。判据必须按**目录**解析该工具真实
+   * 属于哪些编辑器，任一 app 会写就按写档弹卡。 */
+  const { ctx: realCtx, asked: realAsked } = ctxWith({ mode: "default", allow: false });
+  const deniedCall = await invokeAppTool(
+    "document_tool_call",
+    { tool: "setText", filePath: "C:/workspace/deck.pptx", input: { slide: 0 } },
+    "me",
+    realCtx,
+  );
+  check("★ T24:省略 app 的写工具仍按写档弹卡(toolName 带 document.write)",
+    deniedCall.isError === true && realAsked.length === 1 && String(realAsked[0]?.req.toolName).includes("document.write."),
+    { asked: realAsked.map((a) => a.req.toolName), text: textOf(deniedCall).slice(0, 160) });
+  const { ctx: roCtx, asked: roAsked } = ctxWith({ allow: false });
+  const roCall = await invokeAppTool(
+    "document_tools_list",
+    { app: "docs", query: "table" },
+    "me",
+    roCtx,
+  );
+  check("T24:只读发现工具不问审批且能回目录", roCall.isError !== true && roAsked.length === 0 && textOf(roCall).includes("insert"), textOf(roCall).slice(0, 160));
+}
+
 console.log(`\n${passed}/${passed + failures.length} 通过`);
+
 if (failures.length) {
   console.log(`\n失败 ${failures.length} 条:`);
   for (const f of failures) console.log(`  ✗ ${f}`);

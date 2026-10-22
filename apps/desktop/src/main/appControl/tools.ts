@@ -33,6 +33,7 @@ import {
 } from "@contracts/customUi";
 import { PANEL_METHODS, PANEL_THEME_VARS, type PanelLayoutSummary, type PanelMethod } from "@contracts/customUiPanel";
 import { BROWSER_SCREENSHOT_DIR_SETTING_KEY } from "@contracts/ipc";
+import { readFileSync } from "node:fs";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { notifyAppSettingWrite } from "@main/customUi/settingSync.js";
 import { savePngArtifact } from "@main/lib/screenshotStore.js";
@@ -923,7 +924,12 @@ const UI_ACTIONS = [
 ] as const;
 
 /** 只读 / 界面类工具名(引擎侧若要按名字预放行可以用;真正的闸门在 handler 里)。 */
-export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set(["app_api_list", "app_api_describe", "app_api_tutorial", "app_guide", "app_ui_state", "app_panel_api_list", "extension_validate"]);
+export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set([
+  "app_api_list", "app_api_describe", "app_api_tutorial", "app_guide", "app_ui_state",
+  "app_panel_api_list", "extension_validate",
+  // 【T24】文档工具面的发现/只读半边（写操作在 invokeAppTool 里按工具分档弹卡）。
+  "document_apps", "document_tools_list", "document_tool_describe", "document_md_read", "document_render",
+]);
 
 /* ─────────────────── 自定义面板/扩展的对外接口(给 agent 查)─────────────────── */
 
@@ -1075,8 +1081,265 @@ function panelApiList(args: { method?: string; slot?: string }): ToolResult {
   );
 }
 
+/* ───────────────────【T24】文档工具面的端口装配 ───────────────────
+ *
+ * `document_*` 六个工具与 `document.*` IPC 调**同一个**业务模块
+ * （`documentToolRuntime`），区别只在端口从哪来：
+ *
+ *   - CLI 路径：与 `ipc/document.ts` 同一份 `resolveGenofficeCliPath(documentRepoRoot())`；
+ *   - 工作区围栏：与 file/document IPC 同一份 `findContainingWorkspaceRoot`；
+ *   - 渲染端绑定：只能来自 T0 的请求级登记簿（`documentToolRendererBinding`）——
+ *     agent 侧没有“当前文件是否开着”的会话事实，所以按 filePath 查登记簿，
+ *     没有活跃绑定就走 CLI；有就走受信 ACK（定义必须是请求声明的原件）。
+ *   - 临时输出：`<dataRoot>/docs/export-tmp/t24-render`（与文档导出的临时根同一处）。
+ */
+function documentRuntimePortsSync():
+  | { ok: true; ports: import("@main/document/documentToolRuntime.js").DocumentSurfacePorts }
+  | { ok: false; reason: string } {
+  // 动态 require：这些模块要么带 Electron/DB 依赖（pathGuard → repositories），要么只在
+  // 真调用时才需要；本文件顶层不能把它们拉进无头套件的 bundle。
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { documentRepoRoot } = require("@main/ipc/document.js") as typeof import("@main/ipc/document.js");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { resolveGenofficeCliPath } = require("@main/document/genofficeCli.js") as typeof import("@main/document/genofficeCli.js");
+  const cliPath = resolveGenofficeCliPath(documentRepoRoot());
+  if (cliPath === null) {
+    return { ok: false, reason: "没有找到仓库内的 GenOffice CLI 快照（genoffice/packages/cli/dist/genoffice.cjs）。请先在 genoffice/ 下构建 CLI。" };
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { findContainingWorkspaceRoot } = require("@main/lib/pathGuard.js") as typeof import("@main/lib/pathGuard.js");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { dataRoot } = require("@main/lib/dataRoot.js") as typeof import("@main/lib/dataRoot.js");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { mkdirSync } = require("node:fs") as typeof import("node:fs");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { join } = require("node:path") as typeof import("node:path");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const registry = require("@main/document/documentToolRendererBinding.js") as typeof import("@main/document/documentToolRendererBinding.js");
+  const sole = () => registry.soleActiveRendererBinding();
+  const ports = {
+    cliPath,
+    withinWorkspace: (path: string) => findContainingWorkspaceRoot(path) !== null,
+    renderTempRoot: () => {
+      const dir = join(dataRoot(), "docs", "export-tmp", "t24-render");
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    },
+    // 只有**恰好一个**活跃文档 AI 请求时才借渲染端通道；多开或无绑定都退回 CLI。
+    rendererOpen: (_filePath: string) => sole().ok,
+    invokeRendererTool: (call, definition) => {
+      const binding = sole();
+      if (!binding.ok) return Promise.resolve({ status: "error", output: binding.reason });
+      return binding.invoke(call, definition);
+    },
+    rendererToolDefinition: (tool) => {
+      const binding = sole();
+      return binding.ok ? binding.definitionOf(tool) : null;
+    },
+  } satisfies import("@main/document/documentToolRuntime.js").DocumentSurfacePorts;
+  return { ok: true, ports };
+}
+
+/** 目录里某个工具名可能出现在哪些编辑器（审批分档用；不触盘）。 */
+function documentCatalogAppsFor(tool: string): Array<"docs" | "sheets" | "slides" | "pdf" | "markdown" | "html"> {
+  // 静态目录在 `.generated.ts` 里；这里只按名字查 app，不 import runtime（避免把 IO 拉进来）。
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { DOCUMENT_TOOL_CATALOG } = require("@main/document/documentToolCatalog.generated.js") as typeof import("@main/document/documentToolCatalog.generated.js");
+  return DOCUMENT_TOOL_CATALOG.filter((entry) => entry.name === tool).map((entry) => entry.app);
+}
+
+/** `document_apps` 用的无文件端口：不触盘，只回目录事实。 */
+function documentCliPortsFor(): import("@main/document/documentToolRuntime.js").DocumentSurfacePorts {
+  const resolved = documentRuntimePortsSync();
+  if (resolved.ok) return resolved.ports;
+  return {
+    cliPath: "",
+    withinWorkspace: () => false,
+    rendererOpen: () => false,
+    renderTempRoot: () => "",
+  };
+}
+
 export function appMcpTools(): McpToolSpec[] {
   return [
+    {
+      // 【T24】文档 AI 工具面：**发现**而不是全量注入。139 个原生工具整批 JSON-Schema
+      // 约 138 KB 上下文；这里按 app_api_list→describe→call 同构收成四层，每个编辑器只
+      // 常驻 ≤2 个高频读工具。执行走 `document.toolCall`（受围栏的 CLI 或 T0 受信渲染端）。
+      name: "document_apps",
+      description:
+        "列出 Mcode 能编辑的文档编辑器（docs / sheets / slides / pdf / markdown / html）：各自的常驻读工具、" +
+        "工具总数、CLI 能承载的工具名、编辑后强制跑的 QA 门禁。改 Word/PPT/Excel/PDF 之前先调一次。" +
+        "下一步：document_tools_list({app, query}) 找工具 → document_tool_describe({tool}) 看参数 → document_tool_call 执行。",
+      inputSchema: {},
+      handler: async () => {
+        const { documentApps } = await import("@main/document/documentToolRuntime.js");
+        return text(JSON.stringify(documentApps(documentCliPortsFor()), null, 2));
+      },
+    },
+    {
+      name: "document_tools_list",
+      description:
+        "列出某个编辑器（或全部六个）的原生工具；query 按名称/说明检索。共 139 个，**不会**一次性进上下文。" +
+        "route=cli 的工具在文件没开在编辑器里时也能用；route=editor 的要求文件已在 Mcode 编辑器里打开。",
+      inputSchema: {
+        app: z.enum(["docs", "sheets", "slides", "pdf", "markdown", "html"]).optional().describe("编辑器；省略 = 全部"),
+        query: z.string().max(200).optional().describe("关键词（工具名或说明里的字），如 chart / comment / 表格 / 批注"),
+        cliOnly: z.boolean().optional().describe("只看文件没开在编辑器里时也能用的工具"),
+      },
+      handler: async (args: { app?: "docs" | "sheets" | "slides" | "pdf" | "markdown" | "html"; query?: string; cliOnly?: boolean }) => {
+        const { documentToolsList } = await import("@main/document/documentToolRuntime.js");
+        return text(JSON.stringify(documentToolsList(args), null, 2));
+      },
+    },
+    {
+      name: "document_tool_describe",
+      description:
+        "看某个文档工具的完整参数与示例（CLI 承载的 op 直接取 genoffice guide 的原文，永远是校验器那一份）。" +
+        "返回里的 withheld 说明该工具超出模型请求级 schema 子集、只能由编辑器自己执行。",
+      inputSchema: {
+        tool: z.string().min(1).max(120).describe("工具名（来自 document_tools_list），可带 app. 前缀"),
+        app: z.enum(["docs", "sheets", "slides", "pdf", "markdown", "html"]).optional(),
+      },
+      handler: async (args: { tool: string; app?: "docs" | "sheets" | "slides" | "pdf" | "markdown" | "html" }) => {
+        const { documentToolDescribe } = await import("@main/document/documentToolRuntime.js");
+        const ports = documentRuntimePortsSync();
+        if (!ports.ok) return fail(ports.reason);
+        return text(JSON.stringify(await documentToolDescribe(ports.ports, args), null, 2));
+      },
+    },
+    {
+      name: "document_tool_call",
+      description:
+        "执行一个文档原生工具（只读的直接执行）。编辑类工具**执行后强制跑 check/audit**，把 detail.issues 原样带回；" +
+        "文件开在 Mcode 编辑器里时走受信渲染端（能改实时视图、可撤销），否则走 CLI 等价命令（改盘上文件）。" +
+        "路径必须在已知工作区内。改 Word 的格式/批注用 apply_ops + 对应 op，别拿整篇重写去顶。",
+      inputSchema: {
+        tool: z.string().min(1).max(120).describe("工具名（先 document_tools_list / document_tool_describe）"),
+        app: z.enum(["docs", "sheets", "slides", "pdf", "markdown", "html"]).optional(),
+        filePath: z.string().min(1).max(4096).describe("绝对路径（必须在工作区内）"),
+        input: z.record(z.string(), z.unknown()).optional().describe("工具参数（形状见 document_tool_describe）"),
+        dryRun: z.boolean().optional().describe("只演练不写盘（CLI apply --dry-run）"),
+        track: z.boolean().optional().describe("把编辑记成 Word 修订，默认 true（可逐条接受/拒绝）"),
+      },
+      handler: async (args: {
+        tool: string; app?: "docs" | "sheets" | "slides" | "pdf" | "markdown" | "html";
+        filePath: string; input?: Record<string, unknown>; dryRun?: boolean; track?: boolean;
+      }) => {
+        const { documentToolCall } = await import("@main/document/documentToolRuntime.js");
+        const ports = documentRuntimePortsSync();
+        if (!ports.ok) return fail(ports.reason);
+        const result = await documentToolCall(ports.ports, args);
+        return result.ok ? text(result.text) : fail(result.reason);
+      },
+    },
+    {
+      name: "document_md_read",
+      description:
+        "把 Word 文档读成**带定位符的 Markdown**：每个块前有 `<!-- b3 -->` 锚点，改写时直接引用它，不必自己数块索引。" +
+        "这是编辑 Word 的首选读法（比 read_blocks 的 JSON 摘要更省上下文）。",
+      inputSchema: {
+        filePath: z.string().min(1).max(4096).describe("绝对路径（必须在工作区内）"),
+        range: z.string().max(32).optional().describe("只读这些块（0-based，形如 \"3-7\"）"),
+      },
+      handler: async (args: { filePath: string; range?: string }) => {
+        const { documentMarkdownRead } = await import("@main/document/documentToolRuntime.js");
+        const ports = documentRuntimePortsSync();
+        if (!ports.ok) return fail(ports.reason);
+        const result = await documentMarkdownRead(ports.ports, args);
+        if (!result.ok) return fail(result.reason);
+        return text(
+          `共 ${result.blocks} 块；定位符就是每行前的 <!-- bN -->。改写用 document_md_edit。\n\n${result.markdown}`,
+        );
+      },
+    },
+    {
+      name: "document_md_edit",
+      description:
+        "用 Markdown 编辑 Word：insert（在 afterBlock 之后插入，-1 = 文首）、append（文末续写）、replace（替换块区间）、" +
+        "delete（删除块区间）。Markdown 片段经 CLI 转 restricted HTML 后交给 docs apply；默认记成 Word 修订（可逐条接受/拒绝）。" +
+        "编辑后强制跑 docs check，问题在返回的 qa 里。",
+      inputSchema: {
+        filePath: z.string().min(1).max(4096).describe("绝对路径（必须在工作区内）"),
+        operations: z.array(z.object({
+          op: z.enum(["insert", "append", "replace", "delete"]),
+          afterBlock: z.number().int().min(-1).optional().describe("insert：插在第几块之后（-1 = 文首）"),
+          startBlock: z.number().int().min(0).optional().describe("replace/delete：起始块（0-based）"),
+          endBlock: z.number().int().min(0).optional().describe("replace/delete：结束块（含）"),
+          markdown: z.string().min(1).max(200_000).optional().describe("insert/append/replace 的 Markdown 片段"),
+        })).min(1).max(20),
+        track: z.boolean().optional().describe("记成 Word 修订，默认 true"),
+        dryRun: z.boolean().optional().describe("只演练不写盘"),
+      },
+      handler: async (args: {
+        filePath: string;
+        operations: Array<{ op: "insert" | "append" | "replace" | "delete"; afterBlock?: number; startBlock?: number; endBlock?: number; markdown?: string }>;
+        track?: boolean; dryRun?: boolean;
+      }) => {
+        const { documentMarkdownEdit } = await import("@main/document/documentToolRuntime.js");
+        const ports = documentRuntimePortsSync();
+        if (!ports.ok) return fail(ports.reason);
+        const normalized: Array<
+          | { op: "insert"; afterBlock: number; markdown: string }
+          | { op: "append"; markdown: string }
+          | { op: "replace"; startBlock: number; endBlock: number; markdown: string }
+          | { op: "delete"; startBlock: number; endBlock: number }
+        > = [];
+        for (const operation of args.operations) {
+          if (operation.op === "append") {
+            if (typeof operation.markdown === "string") normalized.push({ op: "append", markdown: operation.markdown });
+          } else if (operation.op === "insert") {
+            if (typeof operation.markdown === "string") normalized.push({ op: "insert", afterBlock: operation.afterBlock ?? -1, markdown: operation.markdown });
+          } else if (operation.op === "replace") {
+            if (typeof operation.markdown === "string") {
+              normalized.push({ op: "replace", startBlock: operation.startBlock ?? 0, endBlock: operation.endBlock ?? operation.startBlock ?? 0, markdown: operation.markdown });
+            }
+          } else {
+            normalized.push({ op: "delete", startBlock: operation.startBlock ?? 0, endBlock: operation.endBlock ?? operation.startBlock ?? 0 });
+          }
+        }
+        if (normalized.length !== args.operations.length) return fail("操作缺字段：insert/append/replace 需要 markdown，replace/delete 需要 startBlock。");
+        const result = await documentMarkdownEdit(ports.ports, {
+          filePath: args.filePath, operations: normalized,
+          ...(args.track !== undefined ? { track: args.track } : {}),
+          ...(args.dryRun !== undefined ? { dryRun: args.dryRun } : {}),
+        });
+        return result.ok ? text(result.text) : fail(result.reason);
+      },
+    },
+    {
+      name: "document_render",
+      description:
+        "把文档渲染成逐页 PNG 并返回图片路径 —— **改完必须亲眼看一遍**（这是解决「丑」的关键）。" +
+        "图落在受控临时目录；读不到图的模型可用 agent_read_image 转述。",
+      inputSchema: {
+        filePath: z.string().min(1).max(4096).describe("绝对路径（必须在工作区内）"),
+        page: z.number().int().min(1).max(2000).optional().describe("只出这一页（1-based）；省略 = 整份"),
+        scale: z.number().min(0.5).max(4).optional().describe("缩放，默认 1"),
+      },
+      handler: async (args: { filePath: string; page?: number; scale?: number }) => {
+        const { documentRender } = await import("@main/document/documentToolRuntime.js");
+        const ports = documentRuntimePortsSync();
+        if (!ports.ok) return fail(ports.reason);
+        const result = await documentRender(ports.ports, args);
+        if (!result.ok) return fail(result.reason);
+        // 【T24】**真正把图交到模型手里**：路径只对读得到图的模型有意义，而有视觉输入
+        // 的模型需要的是 image 块本身。与 `browser_screenshot` 同一待遇：image 块 +
+        // 路径说明；读不到图的模型用 agent_read_image 转述。
+        const head = text(`${result.note}\n${result.files.map((file) => `- ${file}`).join("\n")}`);
+        const images: ToolResult[] = [];
+        for (const file of result.files.slice(0, 8)) {
+          try {
+            images.push(image(readFileSync(file).toString("base64"), "image/png"));
+          } catch {
+            // 读失败不改变“已渲染”这个事实；路径仍在下面的正文里。
+          }
+        }
+        if (images.length === 0) return head;
+        return { content: [...head.content, ...images.flatMap((item) => item.content)] };
+      },
+    },
     {
       name: "extension_validate",
       description: "只检查扩展清单、权限、贡献点和隔离程序工厂。不会安装/落盘/调用扩展业务能力；可安装不等于已授予权限。受控核验进程不可用时明确返回不可安装。",
@@ -2813,6 +3076,62 @@ export async function invokeAppTool(
         settleGrant(op);
         settle(op.resultKind, op, body);
         return operationToolResult(op, body);
+      }
+      case "document_tool_call":
+      case "document_md_edit": {
+        // 【T24】文档编辑与 `document.edit` 同一条审批判据：**写档门禁在 handler 里**
+        // （与 app_api_call 同一手法）。只读工具自动放行；会把文件改掉的每次弹卡。
+        // 判据只看“这个工具会不会写”，不看模型自报的 dryRun —— dryRun 只是少写一次盘，
+        // 但调用方仍可能在同一轮里再发一次真实编辑。
+        const { documentToolCall, documentMarkdownEdit } = await import("@main/document/documentToolRuntime.js");
+        const { isMutatingDocumentTool } = await import("@main/document/documentToolSurface.js");
+        const scope = z.object({
+          tool: z.string().optional(),
+          app: z.enum(["docs", "sheets", "slides", "pdf", "markdown", "html"]).optional(),
+          filePath: z.string().optional(),
+          operations: z.array(z.unknown()).optional(),
+          dryRun: z.boolean().optional(),
+          track: z.boolean().optional(),
+          input: z.record(z.string(), z.unknown()).optional(),
+        }).passthrough().parse(args);
+        if (typeof scope.filePath !== "string" || scope.filePath.trim() === "") return fail("缺少参数 filePath");
+        // 审批判据不能信模型自报的 app：缺省 app 时按**目录**解析该工具的真实 app
+        // （同一工具名可能在多个编辑器里存在——任一 app 会写就按写档处理），
+        // 未知工具直接算写档。否则省略 app 就能把一次编辑降级成“只读、自动放行”。
+        const resolvedApp = scope.app ?? (typeof scope.tool === "string"
+          ? (documentCatalogAppsFor(scope.tool).find((app) => isMutatingDocumentTool(app, scope.tool!)) ?? documentCatalogAppsFor(scope.tool)[0])
+          : undefined);
+        const mutating = name === "document_md_edit"
+          || (typeof scope.tool === "string" && (resolvedApp === undefined || isMutatingDocumentTool(resolvedApp, scope.tool)));
+        const denied = await gateAppAction(
+          ctx, mutating ? "danger" : "read",
+          mutating ? `document.write.${scope.tool ?? "markdown"}` : "document.read",
+          args,
+          mutating
+            ? `修改文档 ${scope.filePath}${typeof scope.tool === "string" ? `（工具 ${scope.tool}）` : "（Markdown 编辑）"}`
+            : `读取文档 ${scope.filePath}`,
+        );
+        if (denied) return operationToolResult(makeOp("REJECTED", `document.${name}`, randomUUID(), { code: OP_CODE.approvalDenied, reason: denied }));
+        const portsResolved = documentRuntimePortsSync();
+        if (!portsResolved.ok) return fail(portsResolved.reason);
+        if (name === "document_md_edit") {
+          const result = await documentMarkdownEdit(portsResolved.ports, {
+            filePath: scope.filePath,
+            operations: (scope.operations ?? []) as never,
+            ...(scope.track !== undefined ? { track: scope.track } : {}),
+            ...(scope.dryRun !== undefined ? { dryRun: scope.dryRun } : {}),
+          });
+          return result.ok ? text(result.text) : fail(result.reason);
+        }
+        const result = await documentToolCall(portsResolved.ports, {
+          tool: String(scope.tool ?? ""),
+          ...(scope.app !== undefined ? { app: scope.app } : {}),
+          filePath: scope.filePath,
+          ...(scope.input !== undefined ? { input: scope.input } : {}),
+          ...(scope.dryRun !== undefined ? { dryRun: scope.dryRun } : {}),
+          ...(scope.track !== undefined ? { track: scope.track } : {}),
+        });
+        return result.ok ? text(result.text) : fail(result.reason);
       }
       case "app_ui":
         return await runUiAction(args as UiArgs, ctx, sessionId);

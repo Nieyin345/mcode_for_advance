@@ -259,7 +259,11 @@ export function requireWorkspacePath(ports: Pick<GenofficePorts, "withinWorkspac
 
 /** `docs read`：只读列出 docx 的块。 */
 export async function docsRead(
-  ports: GenofficePorts, file: string, options: { full?: boolean; range?: string; maxChars?: number; signal?: AbortSignal } = {},
+  ports: GenofficePorts, file: string, options: {
+    full?: boolean; range?: string; maxChars?: number; signal?: AbortSignal;
+    /** 【T24】`docs read` 的视图开关（CLI 没有独立命令，这些是它的选项）。 */
+    revisions?: boolean; comments?: boolean; notes?: boolean; styles?: boolean; headerFooter?: boolean; sections?: boolean; fields?: boolean; html?: boolean;
+  } = {},
 ): Promise<GenofficeResult> {
   const refusal = requireWorkspacePath(ports, file, "文档路径");
   if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
@@ -267,6 +271,14 @@ export async function docsRead(
   if (options.full) args.push("--full");
   if (options.range !== undefined) args.push("--range", options.range);
   if (options.maxChars !== undefined) args.push("--max-chars", String(options.maxChars));
+  if (options.revisions) args.push("--revisions");
+  if (options.comments) args.push("--comments");
+  if (options.notes) args.push("--notes");
+  if (options.styles) args.push("--styles");
+  if (options.headerFooter) args.push("--header-footer");
+  if (options.sections) args.push("--sections");
+  if (options.fields) args.push("--fields");
+  if (options.html) args.push("--html");
   return invoke(ports, args, options.signal ? { signal: options.signal } : {});
 }
 
@@ -421,6 +433,77 @@ export async function guideOps(
   const args = ["guide", domain, "--json"];
   if (op !== undefined) args.push(op);
   return invoke(ports, args, signal ? { signal } : {});
+}
+
+/* ───────────────【T24】QA 门禁与出图：编辑后**必须**跑的 check / audit / render ───────────────
+ *
+ * 上游 SKILL.md 的 `## Before you say "done"` 是这三条（check → render → report）。
+ * Mcode 侧的 `document_tool_call` 在每次编辑后强制调用它们，把 `detail.issues` 回给模型。
+ * 三个命令都**在 exit 0 时也可能带问题**（issues 在 detail 里），调用方必须读 detail。 */
+
+/** `docs check <docx>`：字段/引用/目录/图片/标题层级/占位文本/待处理修订/未解决批注。 */
+export async function docsCheck(
+  ports: GenofficePorts, file: string, options: { signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "文档路径");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  return invoke(ports, ["docs", "check", file, "--json"], options.signal ? { signal: options.signal } : {});
+}
+
+/** `sheet check <xlsx>`：公式错误/缺失表引用/坏定义名/图表区间/列宽溢出/占位文本。 */
+export async function sheetCheck(
+  ports: GenofficePorts, file: string, options: { signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "表格路径");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  return invoke(ports, ["sheet", "check", file, "--json"], options.signal ? { signal: options.signal } : {});
+}
+
+/** `slides audit <pptx>`：几何审计（越界/出画布/文字溢出/重叠/图片变形）。 */
+export async function slidesAudit(
+  ports: GenofficePorts, file: string, options: { page?: number; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "演示文稿路径");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  const args = ["slides", "audit", file, "--json"];
+  if (options.page !== undefined) args.push("--slide", String(options.page - 1));
+  return invoke(ports, args, options.signal ? { signal: options.signal } : {});
+}
+
+/**
+ * `render <file> --out <dir>`：把 docx/xlsx/pptx/md/html 出成逐页 PNG，模型据此"亲眼看"。
+ * `outDir` 由调用方给**受控临时目录**（必须已存在且为空，避免覆盖用户文件）；本函数
+ * 不建目录、不猜路径。
+ */
+export async function renderDocument(
+  ports: GenofficePorts,
+  file: string,
+  outDir: string,
+  options: { page?: number; scale?: number; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "渲染源文件");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  const page = options.page;
+  if (page !== undefined && (!Number.isInteger(page) || page < 1)) {
+    return { ok: false, kind: "refused", envelope: null, reason: "render page 必须是大于零的整数" };
+  }
+  const scale = options.scale ?? 1;
+  if (!Number.isFinite(scale) || scale <= 0 || scale > 4) {
+    return { ok: false, kind: "refused", envelope: null, reason: "render scale 超出 0..4" };
+  }
+  const args = ["render", file, "--out", outDir, "--scale", String(scale), "--json"];
+  if (page !== undefined) args.push("--page", String(page));
+  return invoke(ports, args, options.signal ? { signal: options.signal } : {});
+}
+
+/** `docs read --range a-b --html`：取一段块的 restricted HTML（Markdown 载体用它精确重建表格）。 */
+export async function docsReadRangeHtml(
+  ports: GenofficePorts, file: string, range: string, options: { signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "文档路径");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  return invoke(ports, ["docs", "read", file, "--range", range, "--html", "--json"],
+    options.signal ? { signal: options.signal } : {});
 }
 
 /** `convert`：格式转换。`out` 同样过路径围栏（CLI 会真的写它）。 */

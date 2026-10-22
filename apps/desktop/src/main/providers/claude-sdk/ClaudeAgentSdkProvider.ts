@@ -808,6 +808,8 @@ export class ClaudeAgentSdkProvider implements AgentProvider {
       if (toolName.startsWith(`mcp__${MEMORY_MCP_SERVER}__memory_`)) return { behavior: "allow" };
       // mcode-app 同理:放行在这里,审批在 handler 里按「调的是哪个功能」分档做(main/appControl/tools.ts)。
       if (toolName.startsWith(`mcp__${APP_MCP_SERVER}__app_`)) return { behavior: "allow" };
+      // 【T24】文档工具面的六个工具同表同路：审批在 invokeAppTool 里按“会不会写”分档。
+      if (toolName.startsWith(`mcp__${APP_MCP_SERVER}__document_`)) return { behavior: "allow" };
       if (toolName === "AskUserQuestion") {
         // AskUserQuestion only fires here when the native tool is available
         // (capabilities.supportsAskUserQuestion). Sentinel fallback path

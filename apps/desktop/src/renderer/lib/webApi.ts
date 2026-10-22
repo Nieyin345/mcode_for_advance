@@ -1193,6 +1193,14 @@ export function createWebApi(): Api {
       edit: async () => webUnsupported("document.edit"),
       convert: async () => webUnsupported("document.convert"),
       capabilities: async () => webUnsupported("document.capabilities"),
+      // 【T24】文档 AI 工具面同样只属于桌面(CLI + 受控临时目录);手机端显式不可用。
+      apps: async () => webUnsupported("document.apps"),
+      toolsList: async () => webUnsupported("document.toolsList"),
+      toolDescribe: async () => webUnsupported("document.toolDescribe"),
+      toolCall: async () => webUnsupported("document.toolCall"),
+      markdownRead: async () => webUnsupported("document.markdownRead"),
+      markdownEdit: async () => webUnsupported("document.markdownEdit"),
+      render: async () => webUnsupported("document.render"),
     } satisfies Api["document"],
     scene: {
       plan: async () => webUnsupported("scene.plan"),

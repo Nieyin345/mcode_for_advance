@@ -1,6 +1,17 @@
 import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
 import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflightIpcResult, SceneApprovalInput, SceneApprovalResult, SceneApplyInput, SceneApplyIpcResult, SceneResumeInput, SceneResumeIpcResult, SceneDeploymentListInput, SceneDeploymentListIpcResult } from "./scene.js";
-import type { DocumentReadInput, DocumentEditInput, DocumentConvertInput, DocumentIpcResult, DocumentCapabilities } from "./document.js";
+import type {
+  DocumentReadInput, DocumentEditInput, DocumentConvertInput, DocumentIpcResult, DocumentCapabilities,
+  DocumentAppsInput, DocumentAppsResult, DocumentToolsListInput, DocumentToolsListResult,
+  DocumentToolDescribeInput, DocumentToolDescribeReply, DocumentToolCallInput, DocumentToolCallResult,
+  DocumentMarkdownReadInput, DocumentMarkdownReadResult, DocumentMarkdownEditInput, DocumentMarkdownEditResult,
+  DocumentRenderInput, DocumentRenderResult,
+} from "./document.js";
+import {
+  DOCUMENT_APPS_CHANNEL, DOCUMENT_TOOLS_LIST_CHANNEL, DOCUMENT_TOOL_DESCRIBE_CHANNEL,
+  DOCUMENT_TOOL_CALL_CHANNEL, DOCUMENT_MARKDOWN_READ_CHANNEL, DOCUMENT_MARKDOWN_EDIT_CHANNEL,
+  DOCUMENT_RENDER_CHANNEL,
+} from "./document.js";
 import {
   DOCUMENT_VIEW_OPEN_CHANNEL,
   DOCUMENT_VIEW_OPEN_PATH_CHANNEL,
@@ -1163,6 +1174,20 @@ export interface RpcMap {
   "document.convert": (input: DocumentConvertInput) => Promise<DocumentIpcResult>;
   /** 【ARC-007】报告本机文档能力(CLI 在不在、哪些路由需要 headless 宿主/原生 sidecar)。 */
   "document.capabilities": () => Promise<DocumentCapabilities>;
+  /** 【T24】列出可用编辑器、各自常驻读工具、工具数量与 CLI 承载面。 */
+  "document.apps": (input: DocumentAppsInput) => Promise<DocumentAppsResult>;
+  /** 【T24】按 app / 关键词检索 139 个原生工具（只给名称+截断说明，不给 schema）。 */
+  "document.toolsList": (input: DocumentToolsListInput) => Promise<DocumentToolsListResult>;
+  /** 【T24】单个工具的完整参数；CLI 承载的 op 取 `genoffice guide` 的原文。 */
+  "document.toolDescribe": (input: DocumentToolDescribeInput) => Promise<DocumentToolDescribeReply>;
+  /** 【T24】执行一个原生工具；编辑后强制跑 check/audit 并把 issues 回给模型。 */
+  "document.toolCall": (input: DocumentToolCallInput) => Promise<DocumentToolCallResult>;
+  /** 【T24】带定位符注释的 Markdown 读取（`<!-- b3 -->` 按块定位）。 */
+  "document.markdownRead": (input: DocumentMarkdownReadInput) => Promise<DocumentMarkdownReadResult>;
+  /** 【T24】Markdown 续写/替换/删除；内部经 CLI 转 restricted HTML 后 apply。 */
+  "document.markdownEdit": (input: DocumentMarkdownEditInput) => Promise<DocumentMarkdownEditResult>;
+  /** 【T24】页面出图（PNG）；图落在受控临时目录，路径回给模型。 */
+  "document.render": (input: DocumentRenderInput) => Promise<DocumentRenderResult>;
   /** 【ARC-007】受控文档视图宿主的打开/复用:一个 docId 一个 WebContentsView。URL 只放行 `file://` 与本机回环(主进程复核,fail-closed);同 docId 重复 open 复用视图并更新 url/bounds。 */
   "documentView.open": (input: DocViewOpenInput) => Promise<DocViewResult>;
   /** 【ARC-007】把某个文档载入已打开的视图（路径围栏在主进程）。 */
@@ -2175,6 +2200,15 @@ export const IPC = {
   DOCUMENT_EDIT: "document:edit",
   DOCUMENT_CONVERT: "document:convert",
   DOCUMENT_CAPABILITIES: "document:capabilities",
+  // 【T24】文档 AI 工具面（发现/调用/Markdown 载体/出图）。字符串本体钉在
+  // `./document.js` 的 `DOCUMENT_*_CHANNEL` 常量上。
+  DOCUMENT_APPS: DOCUMENT_APPS_CHANNEL,
+  DOCUMENT_TOOLS_LIST: DOCUMENT_TOOLS_LIST_CHANNEL,
+  DOCUMENT_TOOL_DESCRIBE: DOCUMENT_TOOL_DESCRIBE_CHANNEL,
+  DOCUMENT_TOOL_CALL: DOCUMENT_TOOL_CALL_CHANNEL,
+  DOCUMENT_MARKDOWN_READ: DOCUMENT_MARKDOWN_READ_CHANNEL,
+  DOCUMENT_MARKDOWN_EDIT: DOCUMENT_MARKDOWN_EDIT_CHANNEL,
+  DOCUMENT_RENDER: DOCUMENT_RENDER_CHANNEL,
   // 【ARC-007】受控文档视图宿主(WebContentsView)。渠道字符串本体钉在
   // `./documentView.js` 的 `DOCUMENT_VIEW_*_CHANNEL` 常量上,这里只取值。
   DOCUMENT_VIEW_OPEN: DOCUMENT_VIEW_OPEN_CHANNEL,
