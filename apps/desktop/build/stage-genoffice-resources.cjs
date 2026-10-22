@@ -18,6 +18,21 @@ const fs = require("node:fs");
 const { createRequire } = require("node:module");
 const { isAbsolute, join, resolve, relative, sep, dirname } = require("node:path");
 const EDITOR_APPS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown", "html"]);
+/**
+ * Editor kinds whose vendor `out/preload/index.js` the shipped host actually
+ * mounts. This mirrors the runtime contract in
+ * `src/main/document/genofficeViewFactories.ts` (`NativeKind`): the five
+ * kinds below get a vendor `WebContentsView` whose `preloadPath` is
+ * `apps/<kind>/out/preload/index.js`. `docs` is deliberately absent — the
+ * Docs view is created by `documentViewHost.ts` with Mcode's own
+ * `out/main/documentViewPreload.js` bridge (which compiles the vendor
+ * `mcode-view.ts` source in), so shipping the vendor's standalone docs
+ * preload would only add an unused, over-privileged surface. The release
+ * smoke asserts this list equals the runtime kinds, so adding a native kind
+ * there without staging its preload fails the build instead of shipping a
+ * degraded editor.
+ */
+const NATIVE_PRELOAD_KINDS = Object.freeze(["pdf", "markdown", "html", "sheets", "slides"]);
 const GENOFFICE_UPSTREAM_REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const GENOFFICE_UPSTREAM_NOTICE = "genoffice/apps/shell/build/THIRD-PARTY-NOTICES.txt";
 const GENOFFICE_LICENSE_MANIFEST_SHA256 = "bbb9f634477e715bbf1f7a47eecc89e26560aa951c6f283f8b7d1bb6f018f165";
@@ -316,6 +331,40 @@ function assertRendererAssetsReady(renderer, name) {
 }
 
 /**
+ * Patch 0013 (ACK native tool results in a hosted turn) changes the Docs
+ * renderer transport — that half only exists in the *built* `out/` assets,
+ * not in Mcode's own main-process bundle. Vendor outputs built before the
+ * patch therefore pass every hash check (they are internally consistent)
+ * while the shipped Docs page silently lacks the in-turn ACK. Detect the
+ * stale build by the compiled marker, and fail closed instead of packaging
+ * a renderer that cannot answer `mcode:docs:ai-tool-result`.
+ *
+ * Marker = the two renderer-visible names the patch introduces
+ * (`window.desktop.aiToolResult` and the `toolResultAck` option). Minified
+ * bundles preserve property names, so both must appear in the entry assets.
+ */
+const DOCS_ACK_MARKERS = Object.freeze(["aiToolResult", "toolResultAck"]);
+function assertDocsRendererHasAckTransport(renderer) {
+  const html = fs.readFileSync(join(renderer, "index.html"), "utf8");
+  const entryScripts = [...html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["']/gi)].map(([, src]) => src);
+  const sources = entryScripts.map((src) => fs.readFileSync(join(renderer, src), "utf8"));
+  // Deferred chunks may carry the transport too; scan them as well so a
+  // marker that moved into a lazy asset is not a false failure.
+  const assets = join(renderer, "assets");
+  const chunks = fs.readdirSync(assets).filter(name => name.endsWith(".js"))
+    .map(name => fs.readFileSync(join(assets, name), "utf8"));
+  const corpus = [...sources, ...chunks].join("\n");
+  const missing = DOCS_ACK_MARKERS.filter(marker => !corpus.includes(marker));
+  if (missing.length) {
+    throw new Error(
+      "GenOffice docs renderer predates patch 0013 (missing " + missing.join(", ") +
+      "): the vendor out/ build is older than the reviewed source. Rebuild the six " +
+      "vendor renderers from the pinned HEAD before packaging; do not stage a stale build.",
+    );
+  }
+}
+
+/**
  * Hash the *entire* vendored renderer tree, not just index.html's script/link.
  * Vite lazy imports, fonts and images may be required at runtime even though
  * no HTML tag references them. Persist a digest of exactly what was staged;
@@ -431,7 +480,7 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
   const editors = EDITOR_APPS.map((name) => ({
     name, renderer: join(vendor, "apps", name, "out", "renderer"),
   }));
-  const nativePreloads = ["sheets", "slides"].map(name => ({
+  const nativePreloads = NATIVE_PRELOAD_KINDS.map(name => ({
     name, preload: join(vendor, "apps", name, "out", "preload"),
   }));
   const sidecarExe = process.platform === "win32" ? "xlsx-sidecar.exe" : "xlsx-sidecar";
@@ -446,6 +495,7 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
       assertWithin(vendor, fs.realpathSync.native(renderer));
       assertRendererAssetsReady(renderer, name);
     }
+    assertDocsRendererHasAckTransport(join(vendor, "apps", "docs", "out", "renderer"));
     for (const { name, preload } of nativePreloads) {
       assertNativeVendorPath(vendor, preload);
       dirReady(preload, `${name} original preload`);
@@ -588,8 +638,9 @@ if (require.main === module) {
 }
 module.exports = {
   prepareGenofficeResources, assertWithin, assertVendorTreeSafe, assertRendererAssetsReady,
-  hashResourceTree, hashRendererTree, hashFile, noticePackagesWithoutLicenseText,
-  assertThirdPartyNoticeComplete, assertThirdPartyNoticeTextComplete, assertThirdPartyNoticeMatchesManifest,
-  resolveChromiumLicense, validateGenofficeLicenseManifest, buildCompleteThirdPartyNotice,
-  REQUIRED_GENOFFICE_LICENSE_PACKAGES, EDITOR_APPS,
+  assertDocsRendererHasAckTransport, hashResourceTree, hashRendererTree, hashFile,
+  noticePackagesWithoutLicenseText, assertThirdPartyNoticeComplete, assertThirdPartyNoticeTextComplete,
+  assertThirdPartyNoticeMatchesManifest, resolveChromiumLicense, validateGenofficeLicenseManifest,
+  buildCompleteThirdPartyNotice, REQUIRED_GENOFFICE_LICENSE_PACKAGES, EDITOR_APPS, NATIVE_PRELOAD_KINDS,
+  DOCS_ACK_MARKERS,
 };

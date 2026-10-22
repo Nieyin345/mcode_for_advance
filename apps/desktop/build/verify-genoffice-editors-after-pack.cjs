@@ -7,7 +7,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  EDITOR_APPS, assertRendererAssetsReady, assertVendorTreeSafe, hashResourceTree, hashRendererTree, hashFile,
+  EDITOR_APPS, NATIVE_PRELOAD_KINDS, assertRendererAssetsReady, assertDocsRendererHasAckTransport,
+  assertVendorTreeSafe, hashResourceTree, hashRendererTree, hashFile,
   assertThirdPartyNoticeComplete, assertThirdPartyNoticeMatchesManifest,
   validateGenofficeLicenseManifest, REQUIRED_GENOFFICE_LICENSE_PACKAGES,
 } = require("./stage-genoffice-resources.cjs");
@@ -181,7 +182,10 @@ function verifyPackagedLicenseAssets(root, info) {
 }
 function verifyPackagedNativeEditors(root, info) {
   const preloadDigests = info.editorPreloadSha256;
-  const preloadNames = ["sheets", "slides"];
+  // The expected set comes from the runtime contract, not a hand-written
+  // pair: every native kind that gets a vendor WebContentsView must ship its
+  // preload. A manifest that omits (or adds) an entry is a broken package.
+  const preloadNames = [...NATIVE_PRELOAD_KINDS];
   if (!preloadDigests || typeof preloadDigests !== "object" || Array.isArray(preloadDigests)
     || JSON.stringify(Object.keys(preloadDigests).sort()) !== JSON.stringify([...preloadNames].sort())
     || preloadNames.some(name => typeof preloadDigests[name] !== "string"
@@ -282,6 +286,10 @@ function verifyPackagedGenofficeEditorAssets(resourceRoot) {
       throw new Error(`GenOffice ${name} renderer integrity digest mismatch (missing or changed vendor asset)`);
     }
   }
+  // Digest agreement only proves the package matches the stage; it cannot
+  // prove the stage was built after patch 0013. Re-check the compiled marker
+  // so a stale vendor build fails at pack time too.
+  assertDocsRendererHasAckTransport(path.join(root, "apps", "docs", "out", "renderer"));
   return { editorsBundled: true, editors: [...EDITOR_APPS] };
 }
 

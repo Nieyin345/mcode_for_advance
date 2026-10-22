@@ -4,7 +4,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { prepareGenofficeResources, EDITOR_APPS } = require("../../build/stage-genoffice-resources.cjs");
+const {
+  prepareGenofficeResources, EDITOR_APPS, NATIVE_PRELOAD_KINDS, hashRendererTree,
+} = require("../../build/stage-genoffice-resources.cjs");
 const verifyAfterPack = require("../../build/verify-genoffice-editors-after-pack.cjs");
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "mcode-original-office-test-"));
@@ -27,17 +29,24 @@ function createCli() {
   for (const name of ["LICENSE", "LICENSE.pdfium"]) {
     put(path.join(vendor, "node_modules/@embedpdf/pdfium", name));
   }
-  // Native Sheets/Slides now require their original preload entry points,
-  // and Sheets needs its Rust sidecar; stage smoke fixtures must model both.
-  for (const name of ["sheets", "slides"]) {
+  // Every native kind that the runtime mounts needs an original preload
+  // entry point plus the Sheets Rust sidecar; stage smoke fixtures must model
+  // the same set the runtime contract requires.
+  for (const name of NATIVE_PRELOAD_KINDS) {
     put(path.join(vendor, "apps", name, "out/preload/index.js"), "// original vendor preload fixture");
   }
   put(path.join(vendor, "apps/sheets/native/xlsx-engine/target/release", process.platform === "win32" ? "xlsx-sidecar.exe" : "xlsx-sidecar"));
 }
 function renderDir(name) { return path.join(vendor, "apps", name, "out", "renderer"); }
+function expectedAsset(name) {
+  // Patch 0013 marker: staging rejects a Docs renderer built before the ACK
+  // transport existed, so the fixture carries the same compiled names.
+  const marker = name === "docs" ? "const t=window.desktop.aiToolResult;return{...(typeof t==='function'?{toolResultAck:t}:{})};" : "";
+  return marker + "window.vendor = true;";
+}
 function makeRenderer(name) {
   put(path.join(renderDir(name), "index.html"), `<html><script type="module" src="./assets/${name}.js"></script><link rel="stylesheet" href="./assets/${name}.css"></html>`);
-  put(path.join(renderDir(name), "assets", name + ".js"), "window.vendor = true;");
+  put(path.join(renderDir(name), "assets", name + ".js"), expectedAsset(name));
   put(path.join(renderDir(name), "assets", name + ".css"), ".vendor{}");
 }
 try {
@@ -100,7 +109,41 @@ try {
       assert.equal(fs.readFileSync(path.join(stage, "apps", name, "out/renderer/index.html"), "utf8"),
         `<html><script type="module" src="./assets/${name}.js"></script><link rel="stylesheet" href="./assets/${name}.css"></html>`);
       assert.equal(fs.readFileSync(path.join(stage, "apps", name, "out/renderer/assets", name + ".js"), "utf8"),
-        "window.vendor = true;");
+        expectedAsset(name));
+    }
+  });
+  verify("staging ships every runtime native preload, not just sheets/slides (T23 gap B)", () => {
+    // Bind the expected set to the runtime contract itself: every NativeKind
+    // that genofficeViewFactories mounts gets `apps/<kind>/out/preload/index.js`.
+    // docs is not a NativeKind — it goes through Mcode's own
+    // documentViewPreload — so it must NOT drag the standalone vendor preload in.
+    const factories = fs.readFileSync(
+      path.join(__dirname, "../../src/main/document/genofficeViewFactories.ts"), "utf8");
+    const match = factories.match(/const kinds: readonly NativeKind\[\] = \[([^\]]+)\]/);
+    assert.ok(match, "runtime NativeKind list not found in genofficeViewFactories.ts");
+    const runtimeKinds = [...match[1].matchAll(/"([a-z]+)"/g)].map(m => m[1]);
+    assert.deepEqual([...NATIVE_PRELOAD_KINDS].sort(), [...runtimeKinds].sort());
+    const staged = fs.readdirSync(path.join(stage, "apps"))
+      .filter(name => fs.existsSync(path.join(stage, "apps", name, "out", "preload", "index.js")))
+      .sort();
+    assert.deepEqual(staged, [...runtimeKinds].sort());
+    assert.equal(fs.existsSync(path.join(stage, "apps", "docs", "out", "preload")), false);
+    const marker = JSON.parse(fs.readFileSync(path.join(stage, "availability.json"), "utf8"));
+    assert.deepEqual(Object.keys(marker.editorPreloadSha256 || {}).sort(), [...runtimeKinds].sort());
+  });
+  verify("staging rejects a pre-0013 docs renderer instead of packaging a silent degradation (T23 gap C)", () => {
+    // Rebuild the docs fixture *without* the ACK transport, as a stale
+    // vendor out/ would look. Staging must fail closed and leave the
+    // previous stage untouched.
+    const docsAsset = path.join(renderDir("docs"), "assets", "docs.js");
+    const previousStage = fs.readFileSync(path.join(stage, "availability.json"));
+    fs.writeFileSync(docsAsset, "window.vendor = true;");
+    try {
+      assert.throws(() => prepareGenofficeResources({ appDir, repoRoot, include: true, includeEditors: true }),
+        /0013|aiToolResult|toolResultAck/i);
+      assert.deepEqual(fs.readFileSync(path.join(stage, "availability.json")), previousStage);
+    } finally {
+      fs.writeFileSync(docsAsset, expectedAsset("docs"));
     }
   });
   verify("native renderer source cannot be swapped via an in-vendor ancestor junction", () => {
@@ -137,7 +180,7 @@ try {
       /missing.*asset|asset.*missing/i);
     assert.deepEqual(fs.readFileSync(path.join(stage, "apps/docs/out/renderer/index.html")), previously);
   });
-  put(path.join(renderDir("html"), "assets", "html.js"), "window.vendor = true;");
+  put(path.join(renderDir("html"), "assets", "html.js"), expectedAsset("html"));
   verify("Electron-builder hook actually configured", () => {
     const config = fs.readFileSync(path.join(__dirname, "../../electron-builder.yml"), "utf8");
     // T19 unified afterPack hook retains GenOffice verification and adds Node-RED.
@@ -149,10 +192,54 @@ try {
   const winResources = path.join(winOut, "resources", "genoffice");
   fs.mkdirSync(path.dirname(winResources), { recursive: true });
   fs.cpSync(stage, winResources, { recursive: true });
+
+  verify("afterPack rejects a packaged docs renderer that lost the 0013 ACK transport", () => {
+    // A package built by a staging step that predates T23 would have hashed
+    // the stale docs renderer consistently, so the digest gate alone cannot
+    // catch it. Simulate exactly that: strip the marker and refresh the
+    // recorded digest; the 0013 marker check must still fail the package.
+    const installedDir = path.join(winResources, "apps", "docs", "out", "renderer");
+    const installed = path.join(installedDir, "assets", "docs.js");
+    const original = fs.readFileSync(installed);
+    const manifestPath = path.join(winResources, "availability.json");
+    const manifest = fs.readFileSync(manifestPath);
+    fs.writeFileSync(installed, "window.vendor = true;");
+    const altered = JSON.parse(manifest.toString("utf8"));
+    altered.editorAssetsSha256.docs = hashRendererTree(installedDir);
+    fs.writeFileSync(manifestPath, JSON.stringify(altered));
+    try {
+      assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /0013|aiToolResult|toolResultAck/i);
+    } finally {
+      fs.writeFileSync(installed, original);
+      fs.writeFileSync(manifestPath, manifest);
+    }
+  });
   verify("post-pack Windows resources contain six complete original editors", () => {
     assert.deepEqual(verifyAfterPack({ appOutDir: winOut }), {
       editorsBundled: true, editors: [...EDITOR_APPS],
     });
+  });
+  verify("afterPack refuses a package missing any runtime native preload, e.g. pdf (T23 gap B)", () => {
+    // A stage produced by the old two-preload rule looks internally
+    // consistent; the post-pack gate must still reject it because pdf's
+    // vendor preload is absent from both the tree and the manifest.
+    const preloadDir = path.join(winResources, "apps", "pdf", "out", "preload");
+    const preloadEntry = path.join(preloadDir, "index.js");
+    const originalEntry = fs.readFileSync(preloadEntry);
+    const manifestPath = path.join(winResources, "availability.json");
+    const manifest = fs.readFileSync(manifestPath);
+    // Remove both the bytes and the manifest claim, exactly as an older
+    // staging run would have left the package.
+    fs.rmSync(preloadEntry);
+    const altered = JSON.parse(manifest.toString("utf8"));
+    delete altered.editorPreloadSha256.pdf;
+    fs.writeFileSync(manifestPath, JSON.stringify(altered));
+    try {
+      assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /preload integrity manifest|pdf/i);
+    } finally {
+      put(preloadEntry, originalEntry);
+      fs.writeFileSync(manifestPath, manifest);
+    }
   });
   verify("afterPack refuses six-editor manifest when original CLI entry is missing", () => {
     const file = path.join(winResources, "cli", "genoffice.cjs");
@@ -191,7 +278,7 @@ try {
     const script = path.join(winResources, "apps", "slides", "out", "renderer", "assets", "slides.js");
     fs.rmSync(script);
     assert.throws(() => verifyAfterPack({ appOutDir: winOut }), /slides|missing|asset/i);
-    put(script, "window.vendor = true;");
+    put(script, expectedAsset("slides"));
   });
   verify("post-pack rejects a missing deferred JS chunk not listed in index.html", () => {
     const file = path.join(winResources, "apps", "docs", "out", "renderer", "assets", "deferred-vendor-chunk.js");

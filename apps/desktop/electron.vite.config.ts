@@ -300,23 +300,65 @@ export default defineConfig({
         }
         this.emitFile({ type: "asset", fileName: "browserPicker.cjs", source: result.code });
       },
+    }, {
+      /**
+       * T23 gap A: emit the document view preload that `documentViewHost.ts`
+       * loads with `join(__dirname, "documentViewPreload.js")`.
+       *
+       * That module is bundled into the *main* entry, so `__dirname` is
+       * `out/main` — the file must live beside the main bundle, not in
+       * `out/preload/`, and it must be CJS because the view runs sandboxed
+       * (Electron loads sandboxed preloads as CommonJS only). Building it in
+       * the preload section keeps the same alias the four `document-view-*`
+       * suites use in their esbuild steps (`@main/document/docsVendorPreload.js`
+       * -> vendor `mcode-view.ts`, or the fail-closed stub). Before this entry
+       * existed `electron-vite build` produced no bridge at all, and every
+       * packaged Docs view lost `window.desktop` and unmounted.
+       */
+      name: "mcode:document-view-preload",
+      async generateBundle(options, bundle) {
+        const viewPreload = bundle["documentViewPreload.mjs"];
+        if (!viewPreload || viewPreload.type !== "chunk") {
+          throw new Error("[mcode:document-view] missing documentViewPreload.mjs preload chunk");
+        }
+        const viewCjs = await transformWithEsbuild(viewPreload.code, "documentViewPreload.js", {
+          loader: "js", format: "cjs", target: "node22",
+        });
+        if (!viewCjs.code.includes('require("electron")') && !viewCjs.code.includes("require('electron')")) {
+          throw new Error("[mcode:document-view] sandboxed preload missing require('electron')");
+        }
+        if (!options.dir) {
+          throw new Error("[mcode:document-view] preload build has no output directory");
+        }
+        // Drop the ESM twin: nothing loads it, and a future loader must never
+        // find a same-named ESM file where the sandboxed CJS one belongs.
+        delete bundle["documentViewPreload.mjs"];
+        const mainDir = resolve(options.dir, "..", "main");
+        mkdirSync(mainDir, { recursive: true });
+        writeFileSync(join(mainDir, "documentViewPreload.js"), viewCjs.code, "utf8");
+      },
     }],
     build: {
-      // Two preload bundles:
+      // Three preload bundles:
       //  - index: the main window's preload (contextBridge API).
       //  - browserPicker: a minimal preload for the embedded browser
       //    WebContentsView, exposing only `window.mcodeBridge.pickElement`
       //    so the picker script (injected into the page's main world) can
       //    forward clicked elements to main without leaking any Node API.
+      //  - documentViewPreload: the sandboxed bridge for document views
+      //    (`documentViewHost.ts` resolves it from `out/main/`; the plugin
+      //    below emits the CJS file there instead of `out/preload/`).
       lib: {
         entry: {
           index: "src/preload/index.ts",
           browserPicker: "src/preload/browserPicker.ts",
+          documentViewPreload: "src/main/document/documentViewPreload.ts",
         },
       },
-      // One ESM build; the preload plugin emits the companion CJS picker.
-      // Keep browserPicker.mjs for the existing release asset check, while
-      // the T73 gate verifies browserPicker.cjs in dev and packaged outputs.
+      // One ESM build; the preload plugin emits the companion CJS picker and
+      // the document view preload. Keep browserPicker.mjs for the existing
+      // release asset check, while the T73 gate verifies browserPicker.cjs in
+      // dev and packaged outputs.
       rollupOptions: { external: ["electron"] },
     },
     resolve: {

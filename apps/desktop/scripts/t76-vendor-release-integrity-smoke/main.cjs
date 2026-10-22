@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
-  prepareGenofficeResources, EDITOR_APPS,
+  prepareGenofficeResources, EDITOR_APPS, NATIVE_PRELOAD_KINDS,
 } = require("../../build/stage-genoffice-resources.cjs");
 const {
   hashFile, hashTree, createNodeRedLicenseInventory, writeNodeRedLicenseInventory, BASE_COMMIT, VERSION,
@@ -101,7 +101,7 @@ try {
   for (const file of ["LICENSE", "NOTICE"]) put(path.join(vendor, file), "GenOffice fixture " + file + "\n");
   put(path.join(vendor, "node_modules/@embedpdf/pdfium/LICENSE"), "PDFium fixture license\n");
   put(path.join(vendor, "node_modules/@embedpdf/pdfium/LICENSE.pdfium"), "PDFium upstream fixture license\n");
-  for (const name of ["sheets", "slides"]) {
+  for (const name of NATIVE_PRELOAD_KINDS) {
     put(path.join(vendor, "apps", name, "out/preload/index.js"), "// original preload fixture for " + name + "\n");
   }
   put(sourceSidecar, "native xlsx sidecar fixture\n");
@@ -110,7 +110,11 @@ try {
     put(path.join(renderer, "index.html"),
       "<html><script type=\"module\" src=\"./assets/" + name + ".js\"></script>" +
       "<link rel=\"stylesheet\" href=\"./assets/" + name + ".css\"></html>");
-    put(path.join(renderer, "assets", name + ".js"), "window.vendor = '" + name + "';\n");
+    // Docs must carry the patch-0013 compiled marker or staging fails closed.
+    put(path.join(renderer, "assets", name + ".js"),
+      (name === "docs"
+        ? "const t=window.desktop.aiToolResult;return{...(typeof t==='function'?{toolResultAck:t}:{})};"
+        : "") + "window.vendor = '" + name + "';\n");
     put(path.join(renderer, "assets", name + ".css"), "." + name + "{}\n");
   }
   fs.mkdirSync(appDir, { recursive: true });
@@ -120,7 +124,7 @@ try {
     assert.equal(result.editorsBundled, true);
     const marker = JSON.parse(fs.readFileSync(path.join(stage, "availability.json"), "utf8"));
     assert.deepEqual(Object.keys(marker.editorAssetsSha256).sort(), [...EDITOR_APPS].sort());
-    assert.deepEqual(Object.keys(marker.editorPreloadSha256).sort(), ["sheets", "slides"]);
+    assert.deepEqual(Object.keys(marker.editorPreloadSha256).sort(), [...NATIVE_PRELOAD_KINDS].sort());
     assert.equal(marker.nativeSidecar, sidecarName);
     assert.match(marker.nativeSidecarSha256, /^[0-9a-f]{64}$/);
   });
@@ -130,7 +134,7 @@ try {
   fs.mkdirSync(path.dirname(resources), { recursive: true });
   fs.cpSync(stage, resources, { recursive: true });
 
-  verify("afterPack accepts six renderers plus intact Sheets/Slides preloads and sidecar", () => {
+  verify("afterPack accepts six renderers plus every runtime native preload and sidecar", () => {
     const result = verifyGenoffice({ appOutDir: out });
     assert.deepEqual(result, { editorsBundled: true, editors: [...EDITOR_APPS] });
   });
