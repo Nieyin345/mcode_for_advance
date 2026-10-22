@@ -85,3 +85,37 @@ Agent 启动、会话与子进程持有权、PTY 生命周期、并发、停止/
 ## 结果回写区
 
 <!-- 仅追加：报告位置和 SHA、提交 SHA、证据定位摘要、逐条验收 PASS/FAIL、remaining。 -->
+
+### T100 结果回写（追加）
+
+- **任务 / 标题：** T100｜Orca↔Mcode 多 Agent/PTY/会话生命周期与恢复源码对照
+- **唯一报告：** docs/research/orca-mcode/T100-agent-runtime-pty.md
+- **报告 SHA-256：** ea0eea47fd9cc19a0e580ea29070290363a42d9cd80ef1886595b6ce6d2e5a8d
+- **报告提交 SHA：** e5da8d2ff7af2e3f248b346d50e2e4def8d70a65（该提交仅新增上述报告；本回写随后单独提交）
+- **源码基线：** Orca ea60ec5d7cb9b542d2b5b3fd986acfc8861e4560（1.4.214，核对时工作区干净）；Mcode 源码检查快照 9100e65678c9c0b73dde5c98f3f007f4660dea09。并行执行期间 T101 的两个 docs-only 提交 2bcad370da1867f6745aff49f66635a354c17910、6aa11098f2267e9c4b9924f7c20ba15bb75b9ba8 将 HEAD 推进；其 diff 仅涉及 T101 报告和 T101 任务卡，不涉及本报告检查的产品源码。T100 报告提交的父提交为 6aa11098。
+- **结论计数（矩阵 8 行）：** 等价已有 0；部分已有 6；真缺失 1；证据不足 1；与定位冲突 0。
+- **证据等级：** E2 静态源码证据为主；E3 标记未验证的竞态/压力/跨 worktree 风险。未取得 E1 或 U1，不声称真实产品端到端通过。
+
+#### 验证与提交
+
+- PASS：任务匹配检查只找到 tasks/T100-agent-runtime-pty.md 一个文件。
+- PASS：git -C orca rev-parse HEAD = ea60ec5d7cb9b542d2b5b3fd986acfc8861e4560；git -C orca status --short 为空。
+- PASS：Mcode 源码快照为 9100e65678c9c0b73dde5c98f3f007f4660dea09；检查过的 RuntimeManager、三家 provider、TerminalManager、workflow runner 和 contracts 文件在该快照没有 dirty 修改。
+- PASS：git diff --cached --check -- docs/research/orca-mcode/T100-agent-runtime-pty.md 退出码 0；报告提交 e5da8d2ff7af2e3f248b346d50e2e4def8d70a65 的 name-status 只有新增报告。
+- NOT RUN（按只读研究边界）：pnpm test:all、pnpm typecheck、真实 Electron/PTY、压力测试和跨平台集成测试。未把静态分析冒充动态验证。
+- PASS：T100 只新增唯一报告并回写本任务卡；未改 Orca、Mcode 产品代码、共享配置、用户数据或其他任务文件，未推送。
+
+#### 验收判据
+
+1. **PASS** — 至少三条入口到副作用/状态的真实调用链，分别追踪 structured session/lease、SDK 原生审批与退出、PTY spawn/attach/checkpoint/teardown；记录两仓 SHA。
+2. **PASS** — 8 项能力矩阵逐行给出分类、双仓源码路径与 E2/E3 证据边界；未从 Orca 名气推断 Mcode 落后。
+3. **PASS** — 给出 3 个静态异常/恢复测试设计、Top 2 借鉴点、1 条不应照搬设计，并注明复杂度、影响面和后续测试门。
+4. **PASS** — 只新增 docs/research/orca-mcode/T100-agent-runtime-pty.md，并修改本任务卡结果回写；产品源码与其他任务内容不在 T100 提交中。
+5. **PASS** — 明确区分 E2/E3，标明未做 E1/U1 与未运行测试；未声称实现已通过或产品成熟度已测。
+
+#### 未完成事项与剩余风险
+
+- 无任务范围内的阻塞项；报告交付完成。
+- Mcode 跨 session 的全 worktree 写入互斥未在 T100 范围内完整审计，保留为 E3。
+- Mcode node-pty 对平台级 descendant termination 的完整语义未做动态验证；TerminalManager 的迟到 onExit / 重复 TERMINAL_EXIT 幂等性、输出 flood 下 pendingData 的实际表现均未测试。
+- 若后续要求 PTY 在应用重启后 attach 或冷恢复，需另拆独立设计/实现任务；本任务未实施此能力。
