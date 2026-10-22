@@ -44,3 +44,17 @@
 ## 结果回写区
 
 <!-- 追加实现提交、原厂 patch SHA、测试计数/日志、旧红→新绿、变异与字节恢复和 remaining。 -->
+
+
+### 2026-10-22｜实现回写（E1）
+
+- **主仓实现提交**：`e0009be48b9743476ca4a8da3b8ca4d2aae72435`（`feat(docs): add scoped native tool result ACK protocol`）。
+- **GenOffice 嵌套仓提交**：`635dee2f6a38d7f0a3aec31a487afc3e2369a5cf`，父提交 `355e667353ad90da7d0b3c6823fad0f525b729c3`，最终 tree `532e6727eb1f4e94e686cee1ab55a99bddf8f6f0`。
+- **可重放补丁**：`patches/genoffice/0013-feat-docs-ack-native-tool-results-in-hosted-turn.patch`，SHA-256 `7572ccf2650806cd7707f43d8e011d21ad1545e01ecbdbccbe15df6eb672409c`，65,835 bytes。lock/verifier 已固定第 13 个补丁的提交、父提交、字节数、SHA-256 和最终 tree；旧 12 个补丁均保留。
+- **正向与回归**：`t98-docs-tool-result-ack-smoke` **55/55 PASS**；`t83-mcode-editor-tool-bridge-smoke`、`t86-runtime-native-tool-protocol-smoke`、`genoffice-editors-release-smoke` **4 套全 PASS**；T87 provenance/license smoke **71/71 PASS**，第 13 个补丁逐项重放后 tree 精确匹配。
+- **构建/类型检查**：GenOffice `format:check --base 355e667353ad90da7d0b3c6823fad0f525b729c3` 通过；agent-core **189/189 tests**、agent-core/docs typecheck 通过；desktop 与 contracts 两个 `tsc --noEmit` 通过。
+- **变异验证与字节恢复**：
+  1. 移除 ACK 的 sender 对象同一性校验后，T98 smoke **52/55**，跨 sender ACK 与 request A/B 绑定断言变红。
+  2. 绕过 session/document 一致性校验后，T98 smoke **53/55**，跨文档 ACK 拒绝与取消断言变红。
+  两次均恢复源文件原始字节并复跑变绿；恢复文件 SHA-256 均为 `f00e4d22963125922dcc5cfd946faae955a25db0df70491d6dca418a445603f3`（21,603 bytes）。GenOffice 工作树最终干净。
+- **remaining**：T98 交付的是 Mcode-hosted Docs 的原生工具 ACK 协议和 Host callback seam；T92 仍需把 `docsAiPorts/nativeEditorToolTransport` 接入 T86 `externalToolHandler`，并做真实 Docs 编辑往返。未改 T92 Host 文件，未运行真实 Electron/在线 SDK/U1。T87 仍明确 **8/18** 完整许可证文本已验证、**10 项**缺权威完整文本，release 保持 BLOCKED；未放宽许可证门禁。
