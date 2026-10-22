@@ -61,4 +61,5 @@
 
 ### 提交
 
-- 本报告 + 本回写的提交 SHA 见下方追加行（只暂存这两个文件）。
+- 提交 SHA：`03e30e73dece1940dce028fa3b6fe94ba6c226ba`（只含 `docs/planning/product-roadmap/T13-genoffice-baseline.md` 与本卡回写；其余并行 dirty 未暂存、未改动）。
+- 提交后外层 HEAD：`03e30e73`；GenOffice 嵌套仓仍为 `635dee2f`（干净）。
