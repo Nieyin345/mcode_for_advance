@@ -85,3 +85,22 @@ Orca 改动快照、分支基线 diff、按行审查批注、文件归属、PR/�
 ## 结果回写区
 
 <!-- 仅追加：报告位置和 SHA、提交 SHA、证据定位摘要、逐条验收 PASS/FAIL、remaining。 -->
+
+
+### 2026-10-22｜T101 执行结果（只读源码研究）
+
+- **报告路径**：`docs/research/orca-mcode/T101-diff-review.md`
+- **报告 SHA-256（本次提交中的版本）**：`76038f62a1589658ba4381fc3e16764c9b30c905bc5be0f7befeff38d58449b5`
+- **源码基线**：Orca `ea60ec5d7cb9b542d2b5b3fd986acfc8861e4560`（工作区干净）；Mcode 调查 HEAD `35904aa56d8190b4b3ee101c8e050156aab21e32`。未执行 fetch/reset/checkout，不修改两仓产品源码。
+- **报告提交 SHA**：`2bcad370da1867f6745aff49f66635a354c17910`（仅提交报告文件；提交前 `git diff --cached --check` PASS，暂存文件清单仅含报告）。
+- **结论计数**：等价已有 1；部分已有 5；真缺失 2；证据不足 2；与定位冲突 0。
+- **证据等级/验证**：E2 源码调用链与 E3 搜索范围/未证实项均有标记；只读 Git 状态/基线核对 PASS。按任务边界未运行测试、build、Electron 或 U1；没有将静态检查冒充动态验收。
+- **验收判据**：
+  1. PASS — 已给出 Orca 与 Mcode 五条代表性入口→状态/副作用调用链。
+  2. PASS — 已给出 10 项能力矩阵并逐项分类、定位源码。
+  3. PASS — 已覆盖 base-ref/HEAD 漂移、staged/unstaged/untracked/binary、SHA/过期评论、worktree 隔离、审批和回退；包含 3 条静态失败/恢复反例、Top 2 借鉴点与 1 个不应照搬点。
+  4. PASS（提交产物）/ 有并发风险 — 本次报告已在上述 SHA 提交；提交后再次检查时，发现同一路径出现另一份未提交修改（与本提交版本内容不同）。该变化不是本执行对话写入；为遵守保留他人工作的要求，未覆盖、暂存或提交该并发修改。当前工作副本不等同于 `2bcad370` 中的已提交报告，需由总控在并发任务结束后统一核对。
+  5. PASS — 明确区分 E2/E3 与未做的 E1/U1；未改 Orca、Mcode 产品代码、共享配置、用户数据或其他任务卡。
+- **未完成事项/剩余风险**：
+  - 并发修改：`docs/research/orca-mcode/T101-diff-review.md` 在报告提交后变为 dirty，保留未动；需在总控整合时决定是否保留该工作副本变更。另发现 `tasks/T102-remote-cli.md` 在并行执行期间为 dirty，同样未触碰。
+  - 静态风险：Mcode `worktreeOps.ts:mergeBackWorktree` 所属关系 probe 的 `catch(() => true)` fail-open；Orca branch diff 读取失败可被降级为空 diff；Orca 本地 note 的 `diffIdentity` 未找到消费者。均未动态复现，未在本任务中修复。
