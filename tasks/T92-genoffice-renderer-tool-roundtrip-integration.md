@@ -61,3 +61,12 @@
 - 复核 T89–T92 四卡后，确认 **T92 是唯一功能性未完成卡**：`docsAiPorts.ts` 仍 fail-closed，T83/T86 独立复跑 2/2 套件 PASS，但本卡 #1–#5 未满足；未有本卡功能实现提交。
 - 已建立 `tasks/T98-genoffice-scoped-tool-result-ack.md`，专属写入 GenOffice Docs renderer/preload/main/agent-core 的 Mcode-only、requestId/callId 工具结果 ACK，并要求升级已审查 patch lineage；**不准 T92 擅自改 GenOffice 原厂、T86 或上游通道**。
 - **执行顺序**：T98 提交并验收协议后，再让 T92 原执行对话继续其既定 `docsAiPorts.ts`/`nativeEditorToolTransport.ts` Host 接线与隔离正向工具往返；T98 自身不构成 T92 完成。若 T98 证明协议不可安全实现，则 T92 继续 blocked，不恢复不安全的纯文本结果冒充工具执行。
+
+
+### 2026-10-22｜T98 已通过，T92 恢复执行条件满足
+
+- T98 实现提交：主仓 `e0009be48b9743476ca4a8da3b8ca4d2aae72435`；GenOffice 嵌套仓 `635dee2f6a38d7f0a3aec31a487afc3e2369a5cf`；结果回写主仓 `7759c937`。第 13 个可重放补丁为 `patches/genoffice/0013-feat-docs-ack-native-tool-results-in-hosted-turn.patch`，SHA-256 `7572ccf2650806cd7707f43d8e011d21ad1545e01ecbdbccbe15df6eb672409c`。
+- 总控独立复跑 `node apps/desktop/scripts/run-smokes.mjs t98-docs-tool-result-ack-smoke t83-mcode-editor-tool-bridge-smoke t86-runtime-native-tool-protocol-smoke genoffice-editors-release-smoke`：**4/4 PASS**。T98 回写还记录了专项 55/55、agent-core 189/189、typecheck、变异红/字节恢复和 13-patch tree 重放一致证据。
+- **新的生产协议 seam（T92 必须消费）**：原厂 `DocsAiPorts.run(request, onChunk, signal, invokeRendererTool?)` 第四参可供 Host 调用，每次收到模型结构化 tool call 后传入原生 `AgentToolCall` 与 Host tool definition，返回 `{status: success|error|cancelled, output}`；GenOffice 的 `mcode-ai.ts` 会用原请求 active state 绑定 renderer、等待 ACK。renderer 使用新增精确 preload 方法 `aiToolResult(ack)` → `mcode:docs:ai-tool-result`；ACK shape 为 `requestId, callId, name, status, output`。拒绝跨 sender/session/document、未知/重复/迟到 callId、未知工具、schema 不匹配、过大 payload、取消和无活请求。
+- **T92 下一步**：仅修改本卡原有可写的 Mcode Host 文件，将第四参 callback 与 T86 `RuntimeManager.sendTurn` 的 `externalTools` + `externalToolHandler` 接起来；对每个 Host-issued call，调用 callback 并 await 真实 renderer `AgentSkill.executeTool` ACK，随后把 success/error/cancelled 结果交回**同一个 SDK turn**。保持现有 sender/view/session/path/approval 绑定；不执行第二份工具、不读写 renderer 自报身份、不改 GenOffice/patches、T86 provider adapter 或 T49 权限映射。
+- T98 只解除原厂协议缺口，不代表 T92 已通过；T83 fail-closed gate 在 T92 的正向/负控/变异证据通过前仍保持。先完成隔离 E1，真实 Electron/在线 SDK/U1 另排；许可证 gate 继续 BLOCKED。
