@@ -209,7 +209,11 @@ tsx-coverage-smoke: 10/10 通过
 
 ### 10. 提交
 
-`<见下方提交记录>`
+`39bbc5c850c1b1e54c4cc9bd1dfa45c22b5f1d72` — `fix(scripts): smokes-for 扫描入口补上 .tsx/.jsx，修正渲染端覆盖映射`
+
+只暂存了本卡负责的 4 个文件（`smokes-for.py`、`tsx-coverage-smoke/main.py`、`tsx-coverage-smoke/run.sh`、本卡）。其他会话的未提交修改（`.aoci/baseline.json`、`.gitignore`、`apiCatalog.generated.ts`、`settingsTransfer.ts`、`maint-m35-smoke/pickers-prelude.ts`、`orchestration-ipc-smoke/run.sh`、`release-readiness-smoke/check-reviewed.cjs`、`t83-mcode-editor-tool-bridge-smoke/*`、`docsAiPorts.ts`、`nativeEditorToolTransport.ts`、若干任务卡）以及未跟踪目录 `scripts/electron-u1/`、`scripts/t0-genoffice-native-tool-roundtrip-smoke/` 原样保留。
+
+**提交后重跑**（记忆规则：报绿前要在提交后重跑）：`tsx-coverage-smoke` 10/10、`--uncovered` 11 个、`ApprovalPrompt.tsx` 映射三套，全部与提交前一致。
 
 残余风险：
 - `.cjs` 不扫意味着 12 个 cjs-only 套件（`release-readiness-smoke`、`t73-…` 等）**用 `readFileSync` + `typescript.transpileModule` 读产品源码**，工具不会知道它们覆盖了什么。这是修复前就存在的盲区，本卡**没有扩大**（扫描只加不删），也未在本卡范围内解决；正确做法是让它们声明 `// @smoke-covers` 或提供 `.ts` 入口，需另开卡。
