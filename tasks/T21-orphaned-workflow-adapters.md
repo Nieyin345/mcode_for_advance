@@ -186,4 +186,5 @@ flow 真相：`flows.json` 仍是引擎权威（内容寻址备份/回滚原样�
 - 剩余风险如实记：装载记录是派生日志，引擎内部落盘仍不经过它（S5 另卡）；预检对
   "已批准"只能报 unknown（跨形状 revision 不可比），因此已批准的图装载仍需人工确认
   一次 —— 这是 fail-closed 的正确形态，不是缺陷。
-- 提交 SHA：`（见下方提交行，提交后回填）`。
+- 提交 SHA：**`6e690e482690edf44f72587a6fdfb17ada186dd9`**（提交后重跑：新套件 33/33、
+  native-load 17/17、flow-storage-integrity 54/54、t85 34/34、desktop tsc exit 0）。
