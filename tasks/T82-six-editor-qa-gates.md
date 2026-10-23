@@ -119,3 +119,116 @@ grep -n "DOCUMENT_QA_GATES\|runQaGate" apps/desktop/src/main/document/documentTo
 
 `tasks/T82-six-editor-qa-gates.md` 末尾追加 `## 结果回写（2026-10-23）`：
 能力表、每道门禁的正负控实际结果、抓不到的归类、render-probe 够不够的判断、提交 SHA。
+
+## 结果回写（2026-10-23）
+
+### 一、卡上的两条假设要**修正**（先核实前提的结果）
+
+#### 假设 1：「pdf / markdown / html 除了能不能渲染，没有任何内容检查」——**属实，但不是 Mcode 的问题**
+
+这是**上游 GenOffice 没有这三个域的 check 命令**：
+
+```
+genoffice <command> 只有 docs / sheet / slides 三家带 check/audit
+pdf   子命令只有 read
+```
+
+**Mcode 侧 T43 已经查清并做了正确选择**，代码注释原文：
+
+> 【T43】pdf/markdown/html 原本是空数组。查清上游后的事实：
+> - **没有** `pdf check` / `markdown check` / `html check` 命令
+> - 但 `render` 是**真的会失败**的：坏 HTML、超限字体、无法排版的文档都会 `conversion_failed` / `app_crashed`
+>
+> 所以这三个 app 的门禁是 `"render-probe"` —— 它跑真命令、真读返回值，检的是**可渲染性**，不是内容质量。`formatQaReport` 会把这一点写在给模型的正文里，**不冒充 `docs check`（那才是「假门禁」）**。
+
+**所以这不是缺陷，是如实的能力边界标注。** 卡上问「这是缺陷还是设计？」——**答案：设计，而且判断正确。**
+
+#### 假设 2：卡让我判断「门禁能不能抓到」——**能，而且比预期细**
+
+### 二、六道门禁的能力表（从源码读出来的真实清单）
+
+**`docs check` —— 10 项**（`packages/cli/src/formats/docx-check.ts:5`）：
+
+```
+field_not_evaluated  broken_ref  toc_stale  missing_image  chart_empty
+empty_heading  heading_skip  placeholder_left  pending_revisions  unresolved_comments
+```
+
+**`sheet check` —— 8 项**（`packages/cli/src/formats/xlsx-check.ts:12`）：
+
+```
+formula_error  formula_not_evaluated  missing_sheet_ref  defined_name_broken
+chart_ref  number_overflow  placeholder_left  rules_present
+```
+
+**`slides audit`** —— 几何：出界 / 文字溢出（宽/高）/ 重叠 / 变形，带 `setTransform` 修复建议
+
+**`render-probe`**（pdf / markdown / html）—— 只答「能不能被原厂渲染器排成 PNG」。代码里把范围写死进 `scope` 字段原样带给模型。
+
+**注意**：卡上猜的三个检查项**全都真实存在** —— `heading_skip`、`missing_sheet_ref`、出界/溢出都在清单里。
+
+### 三、正控 / 负控实际运行结果（不是「应该会报」）
+
+| app | 负控（造出来的真错） | 结果 | 正控（合规） | 结果 |
+|---|---|---|---|---|
+| **docs** | `h1 → h3` 跳级 | **`heading_skip`** `block[2]` `"heading level jumps from 1 to 3"` | 层级正常 | `no issues found (10 checks)` |
+| **sheets** | `=NoSuchSheet!A1` | **3 个 error**：`formula_error` + **`missing_sheet_ref`** `"formula references a sheet that does not exist: NoSuchSheet"` | 正常公式 | `no issues found (8 checks)` |
+| **slides** | 文字远超框高 | **`out_of_bounds`** `"14740px past the bottom edge"` + `text_overflow_width`，附 `setTransform` 建议 | 正常 deck | `no layout issues` |
+| **markdown** | 表格列数不一致 | **渲染成功，不报** | — | — |
+| **html** | 标签未闭合 | **渲染成功，不报** | — | — |
+| **pdf** | （未造：pdf 是输出格式，不是输入） | — | — | — |
+
+**markdown / html 那两条要如实说**：坏样本**真的坏**（表格列数确实不一致、标签确实没闭合），但 `render-probe` 不报。**这符合它的自我声明**——浏览器和 Markdown 渲染器本来就容忍这两种错。**不是判据失效，是判据的范围就那么大。**
+
+### 四、抓不到的，是「CLI 没能力」还是「接线丢了」
+
+| 现象 | 归类 | 依据 |
+|---|---|---|
+| markdown 表格列数不一致不报 | **CLI 没这能力** | 上游没有 `markdown check`；`render` 只验可渲染性 |
+| html 标签未闭合不报 | **CLI 没这能力** | 同上；且 HTML 渲染器天然容忍未闭合标签 |
+| pdf 无内容检查 | **CLI 没这能力** | 上游 `pdf` 只有 `read` |
+
+**没有一例是「接线丢了」。** 这一点很重要：三处「没有检查」全部来自上游能力缺失，不是 Mcode 漏接。
+
+### 五、对 `render-probe` 够不够的判断
+
+**够，但前提是范围必须传给模型。**
+
+- `render-probe` 在 pdf/md/html 上是**能做到的最好**（上游没有更好的）；
+- **Mcode 做对了最关键的一件事**：`extractRenderProbeReport` 把范围写进 `scope` 字段：
+
+```
+只验证了「<app> 能被原厂渲染器排版成 PNG」（页数 N）；
+**没有**检查内容正确性，也**没有**判断排版是否好看。
+```
+
+**所以模型不会把「出图成功」读成「内容正确」。** 这是 T43 的核心判断，是对的。
+
+**若要补内容检查**，只能走「render + 模型看图」这条路（文档里也是这么建议的），那不是门禁，是 review。
+
+### 六、一个意外发现：`create` 有更早的一道防线
+
+造越界 slides 时，`genoffice create --type pptx --spec` **直接拒绝了**：
+
+```
+no valid pages (element 0: outside the 1280x720 canvas, dropped)
+```
+
+**构建期就挡了**，比 `audit` 更早。所以 `audit` 面对的是「已经构建成功但几何有问题」的 deck（例如用 `slides apply` 事后改出来的）。
+
+### 七、一处需要你知道的细节：`docs check` 的严重度
+
+`heading_skip` 报的是 **`level: "info"`**，`counts` 是 `{error:0, warning:0, info:1}`。
+
+**但 Mcode 的 `extractQaReport` 不按 severity 过滤** —— 它把 `detail.issues` **原样全传**。所以 info 级的问题也会到模型那里。这一点是对的（门禁的价值在于让模型知道，不是在于分级）。
+
+### 八、未做 / 边界
+
+- **未跑全量**、**未起 Electron**、**未改任何产品文件或套件**；
+- **pdf 的负控没造**：pdf 是输出格式，`render-probe` 对它的语义是「这份 pdf 能不能再排一次」，造一个有问题的 pdf 意义不大；
+- 夹具都在 `.tmp/t82/`，未入库；
+- 一个操作失误要记：我第一次用 `node -e` 写夹具，路径里带了 `/d/` 前缀导致 ENOENT —— 违反 CLAUDE.md「临时脚本先写文件再执行」，改用 `Write` 工具后正常。
+
+### 九、提交
+
+见 `git log`（只含本卡回写）。
