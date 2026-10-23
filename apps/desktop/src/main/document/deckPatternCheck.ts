@@ -193,12 +193,47 @@ function checkRainbow(page: DeckPageSpec, i: number): PatternFinding[] {
  *   KPI 页      0.833
  *   收尾页      0.653  ← **设计意图**，收尾页本来就该留白
  *
- * 所以判据必须**按页型分档**：content/data 要求 ≥ 0.80；cover/closing 放宽到 0.55。
- * 这两个阈值来自上面这组实测数字，不是拍的。
+ * 所以判据必须**按页型分档**：content/data 用 `tight`、cover/closing 用 `loose`。
+ * 两个数值与它们的出处见 {@link WHITESPACE_REFERENCE_LINE}。
  *
- * **强度：强**（同一页型内的比较是客观的）。但阈值是经验值 —— 所以消息里写明
- * 「低于阈值」而不是「一定丑」，让模型自己判断是否真的该改。
+ * **强度：强**（同一页型内的比较是客观的）。但阈值是**参考线不是硬指标** —— 消息里
+ * 写的是「参考线约 X%」并要求模型「若版面是有意的留白设计可忽略」。原因见下面常量
+ * 注释里那段：把 80% 读成硬指标，模型会为了凑数把内容拉长，那本身就是一种丑。
  */
+
+/**
+ * 留白判据的**参考线**（不是硬指标 —— 措辞见 `checkWhitespace` 里那句消息）。
+ *
+ * ## 数值出处
+ *
+ * 来自 T69 对 T62 那份 deck 的逐页实测（2026-10-23）：
+ *
+ * ```
+ * 封面     cover    1.000  → 不报
+ * 内容页好  content  0.872  → 不报（余量 7.2pt）
+ * 内容页空  content  0.667  → 报   （余量 13.3pt）
+ * KPI 页   data     0.833  → 不报（**余量只有 3.3pt，最脆弱的一条**）
+ * 收尾页   closing  0.653  → 不报（收尾页留白是设计意图）
+ * ```
+ *
+ * `tight` 取 0.80：好的内容页不报、空柱子报得出来。
+ * `loose` 取 0.55：收尾页 0.653 不报；再紧就会把「收尾页本来该留白」判成缺陷。
+ *
+ * ## ⚠️ 不要在没有新样本的情况下调这两个数
+ *
+ * T69 试过把 `tight` 收紧到 0.85 —— **直接误伤 KPI 页**（0.833 < 0.85），那条路被
+ * 实测数据否掉。放宽到 0.75 则让空柱子只剩 8.3pt 余量。
+ *
+ * **样本只有 1 份 deck 的 5 个页面。在 5 个点上调参就是过拟合。**
+ * 真要校准，先补样本（T69 的建议：T63 扩夹具，或再手做 2–3 份不同风格的 deck）。
+ */
+export const WHITESPACE_REFERENCE_LINE: Readonly<Record<"loose" | "tight", number>> = Object.freeze({
+  /** cover / closing：收尾页本来就该留白（实测 0.653）。 */
+  loose: 0.55,
+  /** content / data：空柱子 0.667 必须报，好的内容页 0.872 不能报。 */
+  tight: 0.8,
+});
+
 function checkWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
   const els = page.elements ?? [];
   if (els.length === 0) return [];
@@ -207,13 +242,22 @@ function checkWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
   const bottom = Math.max(...content.map((e) => (e.y ?? 0) + (e.h ?? 0)));
   const ratio = bottom / CANVAS_H;
   const type = page.type ?? "content";
-  const threshold = type === "cover" || type === "closing" ? 0.55 : 0.8;
+  const threshold = type === "cover" || type === "closing"
+    ? WHITESPACE_REFERENCE_LINE.loose
+    : WHITESPACE_REFERENCE_LINE.tight;
   if (ratio >= threshold) return [];
   return [{
     rule: "layout.whitespace",
     level: "warning",
     page: i,
-    message: `第 ${i + 1} 页内容只铺到画布高度的 ${(ratio * 100).toFixed(0)}%（${type} 页期望 ≥ ${(threshold * 100).toFixed(0)}%）：下半部分大面积留白。规范第 3 节要求「Fill the page」。`,
+    // ⚠️ 这句是**给模型看的产品文案**，不是日志。措辞必须让它明白这是参考线：
+    // 把它当成硬指标，模型会为了凑数把内容拉长 —— 那是另一种「又烂又丑」。
+    // 三个要素：① 明确是参考线 ② 保留两个数字（现在 X% / 参考线 Y%）
+    // ③ 不用「期望」「必须」「要求」，并显式允许「有意的留白」。
+    message:
+      `第 ${i + 1} 页内容底边只到画布高度的 ${(ratio * 100).toFixed(0)}%` +
+      `（${type} 页参考线约 ${(threshold * 100).toFixed(0)}%）：下半部分留白较多。` +
+      `若版面是有意的留白设计可忽略；否则考虑把内容铺开一些（规范第 3 节「Fill the page」）。`,
   }];
 }
 
@@ -338,7 +382,9 @@ export function checkDeckPatterns(pages: DeckPageSpec[]): PatternReport {
     "accent-bar.vertical": "细竖条（w<24 且 h≥64）",
     "accent-bar.top": "压在卡片上沿的顶部色条（h<24 且贴卡片顶边）",
     "palette.rainbow": "同一页非中性填充色 > 2",
-    "layout.whitespace": "内容底边占画布高（content/data ≥ 80%，cover/closing ≥ 55%）",
+    // 这行**也是模型会读到的**（`applied` 会原样回给调用方）。`≥` 是硬约束语气，
+    // 改成「参考线」，与 `checkWhitespace` 的消息保持一致。
+    "layout.whitespace": "内容底边占画布高（content/data 参考线约 80%，cover/closing 约 55%）",
     "layout.repeated": "连续 ≥ 3 页 layout 与元素序列相同",
     "cover.flat": "封面无面积 ≥12% 的锚点、也无 ≥60pt 大字",
     "header.bar": "≥3 页同一位置同尺寸的扁条",

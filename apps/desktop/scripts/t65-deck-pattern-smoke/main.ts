@@ -138,5 +138,36 @@ console.log("\n[7] 不实现的那几条必须显式标注");
   eq("NOT_IMPLEMENTED 覆盖三条", Object.keys(NOT_IMPLEMENTED).length, 3);
 }
 
+/* ── 【T72】留白消息必须是「参考线」语气，不是硬指标 ──
+ *
+ * 这不是文案洁癖：**模型看到的就是这行字**。把它读成硬指标，它会为了凑数把内容
+ * 拉长 —— 那本身就是另一种「又烂又丑」。三个要素各自一条断言。
+ */
+console.log("\n[T72] 留白消息的措辞");
+{
+  const thin: DeckPageSpec = { type: "content", layout: "three_column_cards", elements: [
+    { type: "text", x: 80, y: 60, w: 1120, h: 60, paragraphs: [{ runs: [{ text: "标题", sizePt: 36 }] }] },
+    { type: "shape", shape: "roundRect", x: 80, y: 180, w: 352, h: 250, fill: "#FFFFFF" },
+  ]};
+  const msg = checkDeckPatterns([thin]).findings.find(f => f.rule === "layout.whitespace")!.message;
+
+  check("★ 消息里出现「参考线」", msg.includes("参考线"), { msg });
+  check("★ 消息里没有「期望」", !msg.includes("期望"), { msg });
+  check("★ 消息里没有「必须」", !msg.includes("必须"), { msg });
+  check("★ 消息里没有「要求」", !msg.includes("要求"), { msg });
+  // 可操作信息：两个数字都要在，模型才知道差多少
+  check("★ 消息保留了「现在 X%」", /\d+%/.test(msg), { msg });
+  check("★ 消息保留了「参考线 Y%」", /参考线约\s*\d+%/.test(msg), { msg });
+  // 显式允许有意的留白
+  check("★ 消息允许「有意的留白设计可忽略」", msg.includes("可忽略"), { msg });
+
+  // RULE_DESCRIPTIONS 那行也是模型读到的
+  const applied = checkDeckPatterns([goodContentPage()]).applied;
+  const desc = applied["layout.whitespace"] ?? "";
+  check("★ RULE_DESCRIPTIONS 也是参考线语气", desc.includes("参考线"), { desc });
+  check("★ RULE_DESCRIPTIONS 不含 ≥", !desc.includes("≥"), { desc });
+}
+
+
 console.log(`\nt65-deck-pattern-smoke: ${total - failures}/${total} 通过`);
 process.exit(failures === 0 ? 0 : 1);
