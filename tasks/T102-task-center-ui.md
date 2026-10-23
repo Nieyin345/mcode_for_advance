@@ -132,3 +132,95 @@ A 在 T97 核出 `ide/TaskListPanel.tsx` **不是任务中心**：它读 `termin
 ## 提交
 
 见下方 SHA。
+
+---
+
+## 补充：这张面板读的是哪张表、谁写它、跨不跨会话
+
+> **写这一节的原因**：我在这一轮里犯过一次「读别人卡上的现状当真实现状」——
+> T99 回写区第八节写着「谁调用 `task.create`」是缺口，我据此在 T102 回写区说
+> 「用户打开任务中心大概率是空的」。**那句话在写下的那一刻就已经过期**：
+> T100 的 `a00672c2` 在之后接上了生产路径。
+>
+> **所以这一节把「现状 + 时间点 + 怎么自己核一遍」写清楚**，下一个人不用再查一遍，
+> 也不用相信我的转述。
+
+### 一、读的是什么
+
+| | |
+|---|---|
+| 表 | `tasks`（`apps/desktop/src/main/store/taskSchema.ts`） |
+| IPC | `task.list` → `TaskRepo.list(input)`（`main/ipc/task.ts:66`） |
+| 面板调用 | `api.task.list(filter === "all" ? {} : { status: filter })` |
+| 跨会话 | **是** —— 不传 `sessionId` 就是全部（`TaskListInputSchema.sessionId` 可省略，省略 = 跨会话）。套件有一条断言钉住「读路径不传 sessionId」 |
+
+### 二、谁写它（**截至 `bca18b71`**）
+
+> ⚠️ 这是**写这一节那一刻**的现状。改之前先按第三节自查一遍。
+
+**唯一的生产写入路径**：`apps/desktop/src/main/tasks/autoCreate.ts` 的 `settleTurn()`。
+
+```
+main/index.ts:391   startTaskAutoCreate()        （awaits awaitDb 后挂载）
+  └─ 订阅 runtimeManager 的 turn.done
+       └─ settleTurn({ sessionId, files, reason })
+            └─ classifyTurn(...)                 判据
+            └─ TaskRepo.create(...)              建 pending
+            └─ transitionTaskAsExecutor × 2      running → done / failed
+```
+
+`classifyTurn` 的判据（`autoCreate.ts:116`）：
+
+| 条件 | 建不建 |
+|---|---|
+| 会话 `kind !== "chat"`（`side` / `node` / `automation`） | 不建 |
+| `reason === "interrupted"`（用户主动停） | 不建 |
+| `reason === "error"` | **建 `failed`**（「用户要能看见失败」） |
+| `turn.files` 无产出 | 不建（问答题不是任务） |
+| 有产出 | **建 `done`**，产物进 `artifacts` |
+
+**`task.create` 那条 IPC 至今零调用方** —— 它是**面向执行方**的通道（不在 `RpcMap` 上），
+不是用户建任务的入口。**「`task.create` 没调用方」和「没有生产路径建任务」是两件事**，
+我把它们混为一谈过一次。
+
+`accepted` / `rejected` 只有 `task.accept` / `task.reject` 能写，且**只有本面板**调它们
+（`submitDecision()` 是唯一调用点）。
+
+### 三、怎么自己核一遍（**别信这一节，核它**）
+
+```bash
+# 谁真的建任务
+grep -rn "TaskRepo.create" apps/desktop/src/main/
+# 谁把它挂上事件流
+grep -rn "startTaskAutoCreate" apps/desktop/src/
+# 判据读的是哪个字段
+sed -n '116,134p' apps/desktop/src/main/tasks/autoCreate.ts
+# 面板的读写点
+grep -n "api.task" apps/desktop/src/renderer/components/ide/TaskCenterPanel.tsx
+```
+
+**任何一条 grep 结果和上面不一致，就以上面的 grep 为准。**
+
+### 四、已知缺口（不是本面板的缺陷）
+
+1. **面板不显示任务的来源**。`origin = { kind: "session", ref: sessionId }` 有值，
+   但界面只画 `task.id`。跨会话列表里两条 `goal` 相同的任务分不出是哪个对话来的 ——
+   **这是个真实的可用性问题**，但改它是产品决策（显示什么、点进去跳哪），不在本卡；
+2. **`pending` / `running` 目前在自动路径上只是一瞬**（回合结束那一刻三步连走），
+   所以用户在面板里几乎看不到这两个状态。它们是为将来的执行路径（用户显式建任务、
+   Agent 认领）留的；
+3. **`TaskListPanel` 仍然叫「任务列表」**，与本面板都以「任务」开头。改名是用户要决定的。
+
+### 五、这套闭环现在是完整的
+
+```
+用户对话 → 产出文件 → autoCreate 建任务 → 任务中心看得见 → 用户接受/退回
+                                              ↑ T102 补的就是这一段
+```
+
+**在 T102 之前，`autoCreate` 建出来的任务写进表里没有任何界面能读到。**
+
+套件证据：`scripts/t100-task-center-smoke/`（42/42）验面板这一半；
+`scripts/task-first-class-smoke/`（27/27）验表与状态机那一半。
+**两套之间没有重叠断言**，所以「两套都绿」不等于「接缝处绿」——
+接缝（`task.list` 返回的形状）由本卡的第 1 组断言钉住。
