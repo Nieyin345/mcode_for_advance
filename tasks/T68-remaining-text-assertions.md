@@ -218,3 +218,89 @@ T64 已建好的 `findCalls`（`registerPluginsHandlers` 那条）**原样保留
 ### 提交
 
 见下方 git log（按路径提交：`main.ts` + `astAssertions.ts` + 本卡）。
+
+### AST 工具的重复度（2026-10-23，应总控要求只出清单、不改代码）
+
+#### 扫描口径
+
+```
+grep -rn "createSourceFile|transpileModule|findCalls" apps/desktop/scripts/ --include=*.ts --include=*.mjs --include=*.cjs
+grep -rln "readFileSync" scripts/*/main.*    → 244 套读文件
+```
+
+#### 结论一：AST 用法**不是**同一件事，是两件事
+
+| 用法 | 套件数 | 本质 | 是否本线（T61/T64/T68）关注 |
+|---|---|---|---|
+| `createSourceFile` + `transpileModule` + **执行产物** | **19** | **行为验证**：把函数从源码里抠出来、编译、真跑，断言返回值 | **不是**。这是最强的判据，没有假绿问题 |
+| `createSourceFile` **只做静态查询**（不 transpile） | **10** | 静态结构判断 | **是**。与 T64/T68 同型 |
+
+两者都有的 19 套说明：**大部分套件已经是"抠出来真跑"**，它们不是问题。
+
+#### 结论二：只做静态 AST 查询的 10 套
+
+| 套件 | 用途 | 是否可换成"抠出来真跑" |
+|---|---|---|
+| `provider-context-smoke` | T64/T68 的 7 条判据 | 已经是本线成果 |
+| `app-control-smoke` | 读 `rpcMap.ts` 的 `RpcMap` 接口声明，取方法清单 | **不能** —— 它验的是契约声明的**形状**（有哪些方法），不是某个函数的行为 |
+| `clickable-row-a11y-smoke` | 扫 TSX 找 a11y 属性 | **部分能**（如果能 import 组件），但 JSX 结构本身无头跑不了 |
+| `emit-path-smoke` | 找 `emit` 调用点 | 可考虑，但属另一条线 |
+| `mobile-api-surface-smoke` | 读 preload 契约 | 不能，同 `app-control` |
+| `module-phase2-e2e-smoke` | 找 `validateNodeParams` 里的守卫 | 已在用 `transpileModule` 跑产物（同文件另一处） |
+| `module-workflow-smoke` | 抠 `runEngine` 生成 `derive-trigger.generated.ts` | **不是判据**，是**代码生成** |
+| `startup-wiring-smoke` | 扫 `index.ts` 找装配调用 | **与本线同型** —— 但用的是 `forEachChild` 遍历，判据本身是对的（结构化，不是文本） |
+| `workflow-ui-smoke` | 抠 `deriveTrigger` 生成文件 | 代码生成，不是判据 |
+| `maint-m38-smoke` | 抠函数 | 见下 |
+
+#### 结论三：真正的重复是**小 helper**，不是核心逻辑
+
+| 重复项 | 出现次数 | 形态 |
+|---|---|---|
+| `const src = (p) => readFileSync(resolve(...), "utf8")` | **20+** | 每套自己写一遍，参数顺序/基路径各不相同 |
+| `file.endsWith(".tsx") ? ScriptKind.TSX : ScriptKind.TS` | **5** | 语义完全相同，各写一遍 |
+| `parseFile` **同名同实现** | **2** | `mobile-api-surface-smoke` 与我的 `astAssertions.ts` **逐字同构** |
+
+**`parseFile` 那两处是真重复**：
+
+```ts
+// mobile-api-surface-smoke/main.ts:91
+function parseFile(file: string): ts.SourceFile {
+  return ts.createSourceFile(file, readFileSync(file, "utf8"),
+    ts.ScriptTarget.ES2022, true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+}
+
+// astAssertions.ts:26（我写的）
+export function parseFile(absRelToCwd: string): TS.SourceFile {
+  return parseSource(absRelToCwd, readFileSync(resolve(process.cwd(), absRelToCwd), "utf8"));
+}
+```
+
+差别只有 `ScriptTarget.Latest` vs `ES2022`、以及是否 `resolve(process.cwd())`。**语义等价**。
+
+#### 建议
+
+**建议提到 `scripts/lib/`，但只提"小工具层"，不提"判据层"。**
+
+理由：
+
+1. **可以共享的**：`parseFile` / `scriptKindOf` / `walk` / `lineOf` / `fakeSourceWithTextOnly`。这些是**无争议的机械工具**，与"验什么"无关。重复它们没有价值，只有漂移风险。
+2. **不该共享的**：`findPropertyAssignments` / `findPropertyAccesses` / `findConstDeclarations` / `findSliceWithNegated`。这些**每个都编码了一个具体判据的语义**（例如"PropertyAssignment 不算 PropertySignature"）。共享它们会让"下一套想验别的"被逼着套用不合适的 finder。
+3. **`findCalls` 应该一起提** —— 总控说得对：现在 `provider-context-smoke/main.ts` 里 T64 那份和 `astAssertions.ts` 里的 6 个 finder 是**同一个能力的两处**，将来谁要 `findCalls` 会复制错的那份。
+
+**建议的模块划分**：
+
+```
+scripts/lib/ast.ts          ← parseFile / scriptKindOf / walk / lineOf / fakeSourceWithTextOnly
+scripts/lib/astFinders.ts   ← findCalls / findPropertyAssignments / findPropertyAccesses /
+                              findIdentifiers / findConstDeclarations / findSliceWithNegated
+```
+
+或者更保守：先只提 `scripts/lib/ast.ts`（机械层），finder 层留在 `provider-context-smoke/astAssertions.ts`，等**第三套**真需要时再提。
+
+**我的推荐：保守方案**。理由是按仓库的既有习惯（`scripts/lib/` 只有 5 个文件，都是真正跨套件复用的），`ast.ts` 的机械层确实够格；而 finder 层目前只有一套消费者，提前提上去等于**为想象中的第三个消费者设计**。
+
+#### 明确不建议做的事
+
+- **不要**把 10 套静态 AST 判据统一改写 —— 其中 `app-control` / `mobile-api-surface` 验的是契约形状，`module-workflow` / `workflow-ui` 是代码生成，它们的 AST 用法是对的，不属本线。
+- **不要**去动那 19 套 `transpileModule` 真跑的 —— 它们已经是最强判据。
