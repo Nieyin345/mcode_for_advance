@@ -101,3 +101,57 @@ T47 的套件（27/27）验的是：`document_guide` 返回的设计规范内容
 ## 遇到问题先检索
 
 `genoffice slides check` / `slides audit` / `slides read` 的参数先跑 `--help` 确认。
+
+---
+
+## 完整流程规划（执行者补，2026-10-23）
+
+> 卡是规划文档：下面把这项工作**从研究到交付**的每一步写清，每步都写明产出与判过方式。
+> 每一步的**前置条件**也写出来——T62 未回时只有第 0 步可做。
+
+| 步 | 做什么 | 产出 | 判过 | 前置 |
+|---|---|---|---|---|
+| **0. 研究** | 读 T43 套件、`genofficeCli.ts` 的 `slidesCheck`/`slidesAudit`、CLI 的 `slides check`/`audit` 契约；用真实 CLI 造四种形态确认返回形状 | `tasks/T63-*.md` 本节的「覆盖/未覆盖/怎么加」+ 可复跑探针 `scripts/t63-deck-quality-smoke/probe.mjs` | 探针 `9/9 形态符合预期` | **无（已完成）** |
+| **1. 定稿断言集** | 读 T62 回写区，决定 A–D 四组里哪些保留、要不要加第 5 条（layout 白名单） | 卡里的「最终断言清单」小节 | 每条都写明「正控 / 负控 / 取证方法」 | 等 T62 |
+| **2. 写套件** | 新建 `scripts/t63-deck-quality-smoke/{main.ts,run.sh}`，复用探针的夹具构造 | 可运行套件 | `bash scripts/t63-deck-quality-smoke/run.sh` 全绿 | 第 1 步 |
+| **3. 正反控配对** | 每组断言都要有「该为空」与「该报出来」两半 | 套件里的 `★ 反向控` 断言 | 反向控单独看能红（临时把夹具改回干净 deck 即应转绿 → 证明它在验负控） | 第 2 步 |
+| **4. 变异验证** | 逐条撤掉关键断言/夹具，确认对应断言变红，`cmp` 逐字节还原 | 卡里的变异表 | 每次「撤 → 红 → 还原 → 绿」 | 第 3 步 |
+| **5. 回归** | 跑 T43（57/57）与 T47（27/27） | 两组数字 | 都保持原数 | 第 4 步 |
+| **6. 收尾** | 双包 `tsc`、写回卡、提交（显式路径） | 提交 SHA | `tsc` exit 0 | 第 5 步 |
+
+**不跑全量**（用户规矩）；**不起 Electron**；**不改产品源码**——发现产品缺陷就另开临时卡。
+
+### 第 0 步已完成：研究结果
+
+**T43 已覆盖**：七格式读取（`via` 断言）、2 MiB 截断不切半个 UTF-8 字符、pdf/md/html 门禁真跑 render、docx/xlsx create、pptx 围栏（界外/链接/未知扩展/空目录 + 逐字节副本 + 源不被改）、`build_deck` 经 `documentToolCall` 真走 CLI、工具目录无「三不管」。
+
+**T43 未覆盖**（本轮核心缺口）：
+
+1. **`slides check` 从未被调用** —— 第 292 行只是断言**门禁名** `"audit"`；
+2. **`offPalette` 从未被断言**；
+3. **`slides audit` 的 findings 从未被断言**（同样只断言了门禁名）；
+4. **夹具缺 `outline.json` 与 `style.md`** —— 所以大纲一致性与调色板检查**根本不会被触发**。
+
+**怎么加**：新建 `scripts/t63-deck-quality-smoke/`，用 `slidesCheck` / `slidesAudit` 两个**现成生产包装**（`genofficeCli.ts:506` / `:463`）取证，四组正反控配对：
+
+| 组 | 正控（该为空） | 反向控（该报出来） |
+|---|---|---|
+| **A 几何审计** | 干净 deck → `audit.detail.counts.error === 0` | 文字溢出页 → `counts.error > 0` 且 `issues[].code === "out_of_bounds"` |
+| **B 调色板** | 合规页 → `detail.style.offPalette === []` | 越界颜色 → `offPalette` 含 `#FF00AA` |
+| **C 大纲一致** | 页与条目一致 → `detail.outline.findings === []` | 页数超出 outline → findings 里有 `level:"error"` |
+| **D 可读回** | 产物 `slides read` 能读回、页数与 outline 一致 | （同 A 的溢出 deck 也应能被读回——证明"读回"与"质量"是两条独立判据） |
+
+**全部夹具走 `create --spec`**（同一个 builder 路径），不手改 pptx——手改会绕过 builder，测不到真实链路。
+
+### 可复跑探针（第 0 步交付）
+
+`apps/desktop/scripts/t63-deck-quality-smoke/probe.mjs`
+
+```bash
+node apps/desktop/scripts/t63-deck-quality-smoke/probe.mjs          # 人读
+node apps/desktop/scripts/t63-deck-quality-smoke/probe.mjs --json   # 机读
+```
+
+实测 **9/9 形态符合预期**，覆盖：干净 deck、文字溢出（反向控）、完全出界（记录它会被 create 丢弃）、合规调色板、越界颜色、outline 一致、页数超出。
+
+退出码 0 = 判据形态未变；1 = 判据变了，第 1 步的断言要重写。
