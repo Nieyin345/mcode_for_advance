@@ -257,3 +257,74 @@ npx tsc --noEmit -p apps/desktop/tsconfig.json      # exit=0 才继续
 
 **打包期失败（`X [ERROR]` / `Unterminated string literal` / `No matching export`）不等于被测对象失败。** 这个仓库为这件事栽过两次，今天是第三次。
 
+
+## 焦点方案的两条边界（A 会话实测补正，2026-10-23）
+
+> 来源：T46 的真 Electron 套件暴露出「`wc.focus()` 够不够」这个问题在**多窗口**下
+> 有不同答案。为了不把未经隔离验证的结论传下去，这里用一个**判别性探针**直接测，
+> 而不是推理。探针：`.tmp/t42-focus-probe2.cjs` / `t42-focus-probe3.cjs`
+> （屏幕外 + 全透明，硬超时自杀；每次结论跑两次确认可复现）。
+
+### 实测矩阵
+
+| 场景 | 操作 | `document.hasFocus()`（渲染端） | `win.isFocused()`（OS 窗口） | 另一个窗口 |
+|---|---|---|---|---|
+| 两窗口都「显示但屏幕外」，B 持焦点 | 只调 `A.webContents.focus()` | **true** | **true**（焦点被拿回） | `bWin` 由 true → **false** |
+| A 用 `show:false` 真隐藏，B 持焦点 | 只调 `A.webContents.focus()` | **true** | **false**（OS 焦点**没有**回到 A） | `bWin` 仍 **true** |
+| 单窗口、可见但失焦 | 只调 `wc.focus()` | true | true | — |
+
+两次重复跑结果一致（`P1-START`/`P1-WC-ONLY`、`P2-HIDDEN-WC-ONLY`）。
+
+### 三条边界
+
+1. **单窗口 + 元素已在焦点链上** → `webContents.focus()` 够用（E 的原实测成立）。
+2. **多窗口 + 窗口「显示」（哪怕在屏幕外）** → `webContents.focus()` **也够**，
+   而且它会把 **OS 窗口焦点一起拿回**（`bWin` 变 false）。所以「多窗口必须
+   `win.focus()`」这个说法（我在 T46 回写里写过）**是错的**，此处更正。
+3. **窗口真正隐藏（`show:false`，从未显示）** → `webContents.focus()` 只拿得到
+   **渲染端**的 `document.hasFocus()`，**拿不到 OS 窗口焦点**，另一个窗口仍持前台。
+
+**所以真正的边界不是「单窗口 / 多窗口」，而是「窗口当前可见 / 真正隐藏」。**
+第 3 条是最需要小心的一档：多数依赖 `document.hasFocus()` 的编辑器（Univer、pdf.js）
+能正常工作，但任何依赖「本窗口是 OS 前台」的行为（系统对话框归属、剪贴板焦点、
+某些 IME 路径）都不成立。
+
+### T7 六条旅程属于哪一类
+
+**全部是第 2 类（单窗口、`window: "..."` 缺省 → 宿主窗口 `show: true` 屏幕外、
+无任何跨窗口切换动作）**。逐条核对：
+
+- `docs / sheets / slides / pdf / markdown / html` 六条旅程的 `launch` 都是
+  `window: false`（T7 的 `editorSetup` 需要活窗口给 `WebContentsView` 用），
+  runner 在 `window:false` 分支里建的是**一个**窗口，`show: true, opacity: 0,
+  x/y: -10000`，并调一次 `win.focus()`；
+- 六条旅程的步骤里没有任何「切换/抢焦点到另一个窗口」的动作
+  （`grep` 过：只有页面内的 `element.focus()` / `pm.focus()`，
+  以及 `relaunch` 换进程 —— 那是新进程、新窗口，不是多窗口并存）；
+- `slides` 的演示者窗口、docs 的「在新窗口打开」在 Mcode 宿主里被
+  `setWindowOpenHandler(() => deny)` 拒掉，旅程也从未触发。
+
+**结论：T7 属于第 2 类，E 的方案 (c)「只在旅程显式要求真键盘时才 `focus()`」
+对它们成立** —— 因为 `wc.focus()` 在 `show:true` 的屏幕外窗口上同时解决渲染端
+焦点与 OS 焦点，不需要 `win.focus()`，也不会亮窗。
+
+### 对 T42 方案 (c) 的具体约束
+
+- **可以对全部六条 T7 旅程用 `wc.focus()`**，不需要按旅程分类 —— 前提是宿主窗口
+  保持 `show: true`（屏幕外 + 透明）而不是 `show: false`。
+- **不能把窗口改成 `show:false` 再指望 `wc.focus()`**：那落到第 3 类，
+  `document.hasFocus()` 能拿到、OS 焦点拿不到。截图本来就要短暂 `showInactive()`，
+  所以「窗口始终 `show:true` 屏幕外」与截图方案不冲突，反而更简单。
+- **如果将来有旅程要验多窗口**（例如 T46 这种），仍然可以全程用 `wc.focus()`；
+  但若它需要「另一个窗口保持前台」来构造对照，就必须显式保留那一步的
+  `win.focus()`，并断言 `otherWin.isFocused()`。
+- **`ensureFocus()` 里的兜底分支**（`showInactive()` + `win.focus()`）应只在
+  `wc.focus()` 拿不到 `document.hasFocus()` 时才走；实测在 `show:true` 窗口上
+  这一档不会触发，所以它只是保险，不是常态路径。
+
+### 一个未解的技术细节（如实标注）
+
+判别探针的**第二对窗口**（先建一对、destroy、再建第二对）在 v1/v2 里都出现
+「后续 `loadURL` 挂起或 `ERR_FAILED`」。单独跑第二对（`t42-focus-probe3.cjs`）则正常。
+判断是**屏幕外 + `opacity:0` 窗口被 destroy 后紧接新建**时的 Electron 侧时序问题，
+与本卡的焦点结论无关；但将来写多窗口 U1 时要知道**一次进程里只建一对窗口最稳**。

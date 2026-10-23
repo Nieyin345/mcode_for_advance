@@ -48,9 +48,15 @@ E1 绿不代表真实窗口里绿：
 - **焦点怎么保证**：`runner` 把窗口建成 `show:true, opacity:0, x/y:-10000`
   （屏幕外 + 全透明）。**不能用 `show:false`** —— 隐藏窗口的
   `document.hasFocus()` 恒 false，而本卡验的正是焦点语义。第二个窗口同一技巧。
-  E 的实测（`webContents.focus()` 即可，不需 `win.focus()`）只在「单窗口、元素
-  已在焦点链上」时成立；本卡的多窗口组必须 `win.focus()` 让**窗口**回到前台，
-  否则 `document.hasFocus()` 不会变，对照组不成立。
+  **焦点边界（2026-10-23 判别探针更正）**：真正的分界不是「单窗口 / 多窗口」，
+  而是「窗口当前可见 / 真正隐藏」。`webContents.focus()` 在 `show:true`（哪怕
+  屏幕外）的窗口上会**同时**拿回 `document.hasFocus()` 与 OS 窗口焦点，
+  多窗口下也一样；只有 `show:false` 的真隐藏窗口才只拿得到渲染端焦点。
+  本卡的多窗口组当时用的是 `win.focus()` + `wc.focus()` 两步，**没有隔离**
+  出是哪一步起作用 —— 之前这里写的「多窗口必须 `win.focus()`」是未经验证的
+  推断，已由 `.tmp/t42-focus-probe2.cjs` 的实测推翻（详见
+  `tasks/T42-u1-silent-mode.md` 的「焦点方案的两条边界」一节）。
+  本卡的断言不依赖这个区别（两种写法都能让焦点回到卡片），所以测试结果不变。
 - **拒绝按钮走哪条代码路径**：`ApprovalPrompt` 的 `onKeyDown` 在 `Escape` 上
   `preventDefault + stopPropagation + decide(false)`；`decide` 先过
   `promptActive`（`active && !settingsOpen`）再调 `onDecide`。所以「不决策」
