@@ -154,7 +154,11 @@ function moveIfNeeded(from: string, to: string, label: string): void {
       //
       // 长度无关：132 字符的纯英文路径正常，48 字符的中文路径崩。
       // 已在 v22.14.0 / v20.18.0 上验证正常 → 是 22.21.1 的回归。
-      // 修复方向见 tasks/T90（非 ASCII 时降级到手写递归）。
+      //
+      // 修法见 `tasks/T90`：**任何 `filter` 都能强制走 JS 实现**（nodejs/node#63970），
+      // 即 `cpSync(from, to, { recursive: true, filter: () => true })`。
+      // 上游 issue 见 nodejs/node#54476、#59636。
+      // 这里只描述条件与出处，**不写死选哪个方案** —— 方案会变，注释不该跟着过时。
       log.warn(`dataRoot: rename ${label} failed (${(err as Error).message}); copying instead`);
       cpSync(from, to, { recursive: true });
       try {

@@ -189,23 +189,19 @@ console.log(r.status);   // 3221226505 = 同型
 
 **如果是同型，两套共用某个函数**（大概率也在 `build/stage-node-red-resources.cjs`）。
 
-### 第二步：修套件（**这一步已经确定怎么做了**）
+### 第二步：修套件（**用 `filter: () => true`，不手写递归**）
 
-两套的 `copyLicenseTree` 都用 `fs.cpSync`。**换成手写递归 `copyFileSync`** —— B 已验证可行（`EXIT=0，MANUAL OK`）。
+> **⚠️ 2026-10-24 更正**：本节原来写「换成手写递归」。T90 找到上游 issue 后改成了
+> **`filter: () => true`** —— 一行，且上游认可。**不要两套实现并存**（硬规矩 2）。
 
 ```ts
-function copyTree(src: string, dst: string): void {
-  const st = fs.statSync(src);
-  if (st.isDirectory()) {
-    fs.mkdirSync(dst, { recursive: true });
-    for (const name of fs.readdirSync(src)) copyTree(path.join(src, name), path.join(dst, name));
-  } else {
-    fs.copyFileSync(src, dst);
-  }
-}
+// Node 22 on Windows crashes in cpSync's native fast path when the path has
+// non-ASCII characters (nodejs/node#54476, #63970). Passing any filter forces
+// the JS implementation, which is unaffected.
+cpSync(from, to, { recursive: true, filter: () => true });
 ```
 
-**同时给两套加一条注释说明「为什么不用 `cpSync`」**（否则下一个人会「优化」回去）。
+**两套各改一处**：`t10-node-red-pause-license-smoke/main.cjs`、`t88-node-red-license-closure-smoke/main.cjs`。
 
 ### 第三步：验证
 
@@ -223,8 +219,10 @@ function copyTree(src: string, dst: string): void {
 
 1. **`t88` 同型确认** —— 已确认（同样 `cpSync`，同样源目录）。
 2. **根因** —— 已定位：**路径长度**。有对照实验（104 崩 / 50 OK）。
-3. **两套改成手写递归**，且 `spawnSync` 拿到 `status === 0`。
-4. **变异**：换回 `cpSync` → 红 → `cmp` 还原。
+3. **两套改成 `filter: () => true`**，且 `spawnSync` 拿到 `status === 0`。
+4. **变异**：**去掉 `filter`** → 子进程必须崩（`status !== 0`）→ `cmp` 还原。
+   **这个变异很特别**：它是今天唯一一个「撤掉修复 → 进程真的死掉」的验证，
+   大多数变异只让断言变红。
 5. **`dataRoot.ts` 的影响判断**（量路径长度，判断是否 P0）。
 6. **如果是产品代码问题，停下报告**。
 7. 不跑全量、不起 Electron。
