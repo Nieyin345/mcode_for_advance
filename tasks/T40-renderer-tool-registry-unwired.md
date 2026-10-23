@@ -114,3 +114,51 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ## 回写
 
 在 `tasks/T40-renderer-tool-registry-unwired.md` 末尾追加 `## 结果回写（2026-10-23）`：确认结果、修法、装配路径断言的做法、变异证据、同类问题清单、提交 SHA。
+
+---
+
+## B 会话的补充核查（2026-10-23，已逐行核实）
+
+### `active` 的 8 处引用，写入路径只有一条
+
+```
+L38   const active = new Map(...)          定义
+L73-75  active.get / active.set            【唯一写入】withRendererToolRegistry.run() 进入段
+L79-82  active.get / delete / set          同一函数 finally 的撤销
+L107    active.get                          activeRendererBindingFor（只读）
+L124    active.get                          hasActiveRendererBinding（只读）
+L144    active.values()                     soleActiveRendererBinding（只读）
+L160    active.clear()                      clearRendererToolRegistry（测试专用，注释写明「生产不调用」）
+```
+
+**结论：没有第二条写入路径，也没有任何间接入口。**
+
+### 这不是「接错地方」，是「从一开始就没接」
+
+```bash
+git log -S "withRendererToolRegistry(" --all
+# → 只有 ce2913f8（T24 引入）一个提交，从未有过调用方
+```
+
+全仓库 import 这个模块的只有三处，全部是**只读**：
+1. `ipc/document.ts:48` → `activeRendererBindingFor`
+2. `appControl/tools.ts:1119` → `soleActiveRendererBinding`
+3. `documentToolRendererBinding.ts:58` → 定义本身
+
+### 最小修复（B 给的）
+
+```ts
+// ipc/index.ts:227
+documentViewHost.setDocsAiPorts(withRendererToolRegistry(docsAiPorts));
+```
+
+`withRendererToolRegistry` 是纯包装，`run` 的 4 个参数原样转发。
+
+### 修复后的行为变化（重要）
+
+| 路径 | 用哪个查找 | 语义 |
+|---|---|---|
+| **生产（修复后）** | `activeRendererBindingFor(filePath)` | **按文件精确匹配**（更严） |
+| agent 侧 | `soleActiveRendererBinding()` | 「全仓库恰好一个」兜底 |
+
+**生产装配用的是前者，所以修复后行为是更严格的那个。** 实施者要在回写里确认这个差异不会让 agent 侧出问题。
