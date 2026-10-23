@@ -89,8 +89,20 @@ export const TASK_EXECUTOR_STATUSES: readonly TaskStatus[] = [
 
 /** 谁发起了这个任务。 */
 export const TaskOriginSchema = z.object({
-  /** 发起方种类。`agent` = AI 主动建的；`user` = 用户从 UI 建的。 */
-  kind: z.enum(["user", "agent", "workflow", "automation"]),
+  /**
+   * 发起方种类。
+   *
+   * - `session` —— 用户在一个对话里干的活，回合产出文件后由宿主自动记成任务
+   *   （见 `main/tasks/autoCreate.ts`）。`ref` 是那个会话的 id。
+   * - `user` —— 用户从任务中心**直接**建的，不在任何对话里。
+   * - `agent` —— AI 主动建的（未来：Agent 认领 / 拆分任务）。
+   * - `workflow` / `automation` —— 图运行 / 自动化触发。
+   *
+   * `session` 与 `user` 分开的理由：**发起时用户是不是坐在一个对话里**，
+   * 决定了 `ref` 能不能指到一个会话、以及任务该不该跟着那个会话的上下文走。
+   * 合成一个 `user` 会让「这条任务能不能跳回原对话」变成一个靠猜的问题。
+   */
+  kind: z.enum(["session", "user", "agent", "workflow", "automation"]),
   /** 具体身份：会话 id / 工作流 id / 自动化 id。 */
   ref: z.string().min(1).max(200),
   /** 发起时所在的项目（可选，跨项目任务没有）。 */

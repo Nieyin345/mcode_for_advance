@@ -10,6 +10,7 @@ import type { ModuleWorkflowExecutionInput } from "./moduleCapability.js";
 import type { NodeReturnMode, NodeTypeManifest } from "./nodeType.js";
 import type { WorkflowNode } from "./workflow.js";
 import type { NodeArtifact, NodeExecutionRecord, NodeOutcomeStatus } from "./nodeType.js";
+import type { Task } from "./ipc/task.js";
 export type { NodeArtifact, NodeExecutionRecord } from "./nodeType.js";
 
 /**
@@ -1369,6 +1370,23 @@ export interface LibraryItemImportedEvent {
 }
 
 /**
+ * 【T100】一个任务被建出来或被改了状态 —— 推给界面，让它不用自己轮询。
+ *
+ * 形状照 `SessionChangedEvent` / `LibraryItemImportedEvent`（同型：一次业务写库后
+ * 广播一份**瘦快照**）。带完整 `Task` 是因为任务本身就不大（JSON 列里没有文件内容，
+ * 产物只存路径），而界面拿到它之后不需要再回查一次。
+ *
+ * `sessionId` 是**发起它 / 推进它**的那个会话 id —— 事件信道以会话为轴（与
+ * `turn.done` 等同一条流）。任务不是「依附会话」，这个字段只是投递坐标；
+ * 查得到它在哪一个会话下出现，靠 `Task.origin` / `Task.links`。
+ */
+export interface TaskChangedEvent {
+  type: "task.changed";
+  sessionId: string;
+  task: Task;
+}
+
+/**
  * 统一资料库:**一条条目的 PDF 真下到本地了**。
  *
  * ## 为什么「导入」和「下载完」是两件事
@@ -1516,5 +1534,6 @@ export type RuntimeEvent =
   | GitChangedEvent
   | LibraryItemImportedEvent
   | LibraryItemDownloadedEvent
+  | TaskChangedEvent
   | CommandsAvailableEvent
   | LocalCommandOutputEvent;

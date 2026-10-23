@@ -528,6 +528,14 @@ const BLOCKED_MUTATING: ReadonlySet<string> = new Set([
   "scene.approve",
   "scene.apply",
   "scene.resume",
+  // 【T100】四条都会写 `tasks` 表（`accept` / `reject` 还写 `acceptance`，`reopen` /
+  // `transition` 改状态），每条都 `persist()` 一次整库导出。它们全是 blocked，本不会
+  // 被 agent 调到；收进来是为了「重试不付一次免费的整库 fsync」这条规则**按方法名一致**，
+  // 而不是靠「反正够不到」——够不到这件事由上面那张表保证，这里只标副作用。
+  "task.accept",
+  "task.reject",
+  "task.reopen",
+  "task.transition",
   "unattended.approve",
   "unattended.run",
   "unattendedPlans.resume",

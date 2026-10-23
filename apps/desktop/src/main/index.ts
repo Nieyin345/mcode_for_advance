@@ -40,6 +40,8 @@ import { hookRunner } from "@main/hooks/HookRunner.js";
 import { launchHookAction } from "@main/hooks/agentActions.js";
 import { enabledPluginHookDeclarations } from "@main/plugins/pluginManager.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
+// 【T100】回合收尾自动记任务(见 `main/tasks/autoCreate.ts`)。
+import { startTaskAutoCreate } from "@main/tasks/autoCreate.js";
 import { hasActiveRun } from "@main/orchestration/runner.js";
 import { setWorkflowEngineStatusPort } from "@main/orchestration/executionEngine.js";
 import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
@@ -376,6 +378,19 @@ app.whenReady().then(async () => {
       await automationRunner.start();
     } catch (err) {
       log.error(`AutomationRunner failed to start: ${(err as Error).message}`);
+    }
+  })();
+
+  // 【T100】任务自动记账:用户在一个对话里干完一件**产出了文件**的活,回合收尾时把它
+  // 记成一条任务(见 `main/tasks/autoCreate.ts` 的判断依据)。它同样挂在事件流上,
+  // 同样要等数据库就绪 —— 建任务要写 `tasks` 表,而且回合结束那一刻就要读会话行
+  // (种类 / 标题 / 项目)才判得出该不该建。
+  void (async () => {
+    try {
+      await awaitDb();
+      startTaskAutoCreate();
+    } catch (err) {
+      log.error(`TaskAutoCreate failed to start: ${(err as Error).message}`);
     }
   })();
 

@@ -12,11 +12,17 @@
  *
  *   - `task.transition`（执行方用的）只接受 `TASK_EXECUTOR_STATUSES`（pending / running /
  *     blocked / done / failed）—— **写 `accepted` 会在参数校验阶段就被拒**；
- *   - `task.accept` / `task.reject` 是用户动作。它们被 `appControl/policy.ts` 判为
- *     `blocked`（agent 够不到），见本卡回写里的说明。
+ *   - `task.accept` / `task.reject` 是用户动作。它们被 `appControl/policy.ts` 的
+ *     `BLOCKED` 表判为 `blocked`（agent 够不到），见本卡回写里的说明。
  *
- * 这条边界不是靠「调用方自觉」，是**两个不同的方法 + 一个可断言的集合** ——
- * 于是「AI 自己把任务标成已验收」在代码层走不通。
+ * 两层各守一半，缺一不可：
+ *  - **本文件**挡的是「把状态**写成** accepted」——`TASK_EXECUTOR_STATUSES` 是参数校验；
+ *  - **policy.ts** 挡的是「agent 够得到这个**方法**」——`accept` / `reject` 不匹配
+ *    `READ_VERB`（那条正则以 `list|get|read|…` 开头），不显式钉 `blocked` 的话会落到
+ *    兜底 `write`：弹一张审批卡，agent 点一下就等于给自己盖章。
+ *
+ * 这条边界不是靠「调用方自觉」，是**两个不同的方法 + 一个可断言的集合 + 一张可断言的
+ * 权限表** —— 于是「AI 自己把任务标成已验收」在代码层走不通。
  */
 import type { IpcMain } from "electron";
 import {

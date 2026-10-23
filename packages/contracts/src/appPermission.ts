@@ -973,6 +973,23 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
     "workflow.write"
   ],
   "scene.resume": null,
+  // 【T100】任务是一级对象，但**验收不是模块能给的能力**。
+  //
+  // `list` / `get` 是只读的，给 `session.read` —— 模块要展示"这个会话有哪些任务"
+  // 是合理的（只读、不带凭据、不改任何东西），与 `claude.listSideChats` 同一档。
+  //
+  // `accept` / `reject` 一律 `null`（= 不对任何模块开放）。它们写的是
+  // `acceptance` 与任务状态，语义是「用户看过并拍了板」——**没有哪个第三方模块
+  // 应该能以应用的名义替用户验收**。这和 `scene.approve` / `scene.apply` 同一条纪律：
+  // 授权/验收这类结论只能由用户本人在界面上给出，模块拿不到就是拿不到，不是"再弹一张卡"。
+  "task.get": [
+    "session.read"
+  ],
+  "task.list": [
+    "session.read"
+  ],
+  "task.accept": null,
+  "task.reject": null,
   "session.archive": [
     "session.control"
   ],

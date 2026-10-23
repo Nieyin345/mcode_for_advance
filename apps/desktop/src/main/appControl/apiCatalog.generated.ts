@@ -2789,6 +2789,38 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: false; kind: 'invalid'; problems: { path: string; message: string; }[] } | { ok: false; kind: 'refused'; code: string; reason: string } | { ok: true; kind: 'applied'; deployment: SceneDeploymentWire; readback: SceneReadbackWire }"
  },
  {
+  "method": "task.list",
+  "channel": "task:list",
+  "doc": "",
+  "input": "{ status?: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
+  "inputFull": "{ status?: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
+  "output": "{ tasks: { status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string; createdAt: number; origin: { kind: 'user' | 'agent' | 'w… }"
+ },
+ {
+  "method": "task.get",
+  "channel": "task:get",
+  "doc": "",
+  "input": "{ id: string }",
+  "inputFull": "{ id: string }",
+  "output": "null | { status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath?: st…"
+ },
+ {
+  "method": "task.accept",
+  "channel": "task:accept",
+  "doc": "验收通过。**只有用户能调**（执行方路径够不到这两个方法）。",
+  "input": "{ id: string; evidence: string // 验收证据 —— **必填**。没有理由的「通过」不算验收。 }",
+  "inputFull": "{ id: string; evidence: string // 验收证据 —— **必填**。没有理由的「通过」不算验收。 }",
+  "output": "{ status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath?: string | …"
+ },
+ {
+  "method": "task.reject",
+  "channel": "task:reject",
+  "doc": "退回返修。",
+  "input": "{ id: string; reason: string // 退回理由 —— **必填**。返修的人要知道改什么。 }",
+  "inputFull": "{ id: string; reason: string // 退回理由 —— **必填**。返修的人要知道改什么。 }",
+  "output": "{ status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath?: string | …"
+ },
+ {
   "method": "session.archive",
   "channel": "session:archive",
   "doc": "Set a session's archived flag (soft-delete; restorable).",
