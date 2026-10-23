@@ -128,15 +128,39 @@ check("共享 runtime 在（子进程侧的 IPC 客户端）", packFiles.include
 /* ══════════ 2. 起真引擎（生产 launchSpec + 生产 EngineRuntime） ══════════ */
 console.log("\n2. 真引擎启动");
 
-/** 记账式 Host 桩：`mcode-agent` 的 execute 走到这里就是**可观测的事实**。 */
+/**
+ * 记账式 Host 桩：任何 `mcode-*` 节点的 execute/subscribe 走到这里就是**可观测的事实**。
+ *
+ * - `execute` 记下 operation + payload，并回一个**只有 Host 能造出来**的 text
+ *   （`t96-host-saw:<operation>`），用来证明下游收到的确实是回灌、不是原输入；
+ * - `branch.decide` 走特殊分支：返回 `decidePort`，让「选哪条出口」也可断言；
+ * - `subscribe` 把 emit 句柄存起来，由测试主动推事件（trigger 是零输入节点）。
+ */
 interface HostCall { operation: string; payload: Record<string, unknown>; }
 const hostCalls: HostCall[] = [];
+const subscriptions: Array<{ payload: Record<string, unknown>; emit: (msg: Record<string, unknown>) => void }> = [];
+/** branch 选哪个出口（0-based）。测试里设成 1，证明「不是默认 0 出口」。 */
+let decidePort = 1;
+let decideLabel: string | undefined = "选第二条";
 const hostServices = {
   execute: async (operation: string, payload: Record<string, unknown>): Promise<unknown> => {
     hostCalls.push({ operation, payload });
+    if (operation === "branch.decide") {
+      return { port: decidePort, ...(decideLabel !== undefined ? { label: decideLabel } : {}) };
+    }
+    if (operation === "node-red.call") {
+      return { text: `t96-host-saw:${operation}`, artifacts: [], runId: "t96-run", status: 207 };
+    }
     return { text: `t96-host-saw:${operation}`, artifacts: [], runId: "t96-run" };
   },
-  subscribe: (): (() => void) => () => undefined,
+  subscribe: (payload: Record<string, unknown>, emit: (msg: Record<string, unknown>) => void): (() => void) => {
+    const entry = { payload, emit };
+    subscriptions.push(entry);
+    return () => {
+      const i = subscriptions.indexOf(entry);
+      if (i >= 0) subscriptions.splice(i, 1);
+    };
+  },
 };
 
 function recordingPorts(): EngineRuntimePorts & { specs: EngineSpawnSpec[]; children: EngineChildProcess[] } {
@@ -252,7 +276,7 @@ try {
   // L3 对照：纯原生 HTTP-in 必须应答
   const nativeProbe = await waitFor(async () => {
     const r = await fetchOn(port, "/api/t96-native", {}, 3_000);
-    return { status: r.status, text: r.text.slice(0, 200) };
+    return r.status === 200 ? { status: r.status, text: r.text.slice(0, 200) } : null;
   }, 12_000);
   evidence("L3 原生 HTTP-in 实际响应", nativeProbe);
   check("★ L3 对照：纯原生 HTTP-in 应答 200（引擎 runtime 真的在跑）", nativeProbe?.status === 200,
@@ -295,7 +319,7 @@ try {
   check("回灌流部署成功", deploy2.status === 200, deploy2);
   const agentResponse = await waitFor(async () => {
     const r = await fetchOn(port, "/api/t96-agent", {}, 5_000);
-    return { status: r.status, text: r.text.slice(0, 400) };
+    return r.status === 200 ? { status: r.status, text: r.text.slice(0, 400) } : null;
   }, 20_000);
   evidence("agent 回灌响应", agentResponse);
   check("★ L5 mcode-agent 下游收到了回灌（HTTP 200）", agentResponse?.status === 200,
@@ -309,6 +333,251 @@ try {
   check("★ L5 回灌的 payload 是 Host 返回的 text（不是原输入）",
     echoed?.got?.text === "t96-host-saw:agent.run", echoed);
   check("★ L5 下游看到 msg.mcode.nodeId", echoed?.nodeId === "probe-node-2", echoed);
+
+  /* ══════════ 6. 其余四个类型（conversation / module-capability / node-red-call / branch） ══════════ */
+  //
+  // 每一类都走同一条形状：`http in → mcode-X → function 打包 → http response`。
+  // 判据一律是**端口真的收到带对参数的调用** + **下游收到的是 Host 的返回**。
+  //
+  // 为什么不复用上面 agent 那条：每类节点的输出语义不同（branch 走多出口、
+  // node-red-call 带 status），塞进一条流会让"哪个断言验的是哪一类"变模糊。
+  console.log("\n6. 其余四类：逐类执行 + Host 调用 + 回灌");
+
+  /** 一类一条流：`url` 是 http-in 的相对路径（httpNodeRoot=/api 会自动加前缀）。 */
+  interface TypeCase {
+    type: string;            // Node-RED 类型名
+    nodeId: string;          // x-mcode.nodeId
+    /** http-in 的**节点内** url（不含 httpNodeRoot 前缀）。 */
+    nodeUrl: string;
+    /** 实际请求路径 = /api + nodeUrl。 */
+    requestUrl: string;
+    /** 节点上除 z/type/id/x/y/wires 外的原生字段（params 会同时进 x-mcode.params）。 */
+    config: Record<string, unknown>;
+    /** 期望的 Host operation。 */
+    operation: string;
+    /** 断言 Host payload 上这几个键。 */
+    expectPayload: Record<string, unknown>;
+  }
+  const cases: TypeCase[] = [
+    {
+      type: "mcode-conversation", nodeId: "probe-conv", nodeUrl: "/t96-conv", requestUrl: "/api/t96-conv", operation: "conversation.run",
+      config: { instruction: "T96 对话指令" },
+      expectPayload: { instruction: "T96 对话指令" },
+    },
+    {
+      type: "mcode-module-capability", nodeId: "probe-mod", nodeUrl: "/t96-mod", requestUrl: "/api/t96-mod", operation: "module.invoke",
+      config: { moduleId: "core.files", contributionId: "inspect", path: "report.md" },
+      expectPayload: { moduleId: "core.files", contributionId: "inspect", path: "report.md" },
+    },
+    {
+      type: "mcode-node-red-call", nodeId: "probe-call", nodeUrl: "/t96-call", requestUrl: "/api/t96-call", operation: "node-red.call",
+      config: { enginePath: "/flows", engineMethod: "PATCH", engineBody: "{\"deploy\":true}" },
+      expectPayload: { enginePath: "/flows", engineMethod: "PATCH", engineBody: "{\"deploy\":true}" },
+    },
+  ];
+
+  for (const c of cases) {
+    const tabId = "tab-" + c.nodeId;
+    const flow = [
+      { id: tabId, type: "tab", label: "t96-" + c.type, disabled: false, info: "", env: [] },
+      { id: "in-" + c.nodeId, type: "http in", z: tabId, url: c.nodeUrl, method: "get", upload: false, swaggerDoc: "", x: 100, y: 100, wires: [["n-" + c.nodeId]] },
+      {
+        id: "n-" + c.nodeId, type: c.type, z: tabId, name: c.type.replace("mcode-", ""),
+        ...c.config,
+        "x-mcode": { nodeId: c.nodeId, nativeId: "n-" + c.nodeId, nativeType: c.type, params: { ...c.config } },
+        x: 300, y: 100, wires: [["fn-" + c.nodeId]],
+      },
+      {
+        id: "fn-" + c.nodeId, type: "function", z: tabId, name: "pack", outputs: 1, x: 500, y: 100,
+        wires: [["out-" + c.nodeId]],
+        func: "msg.headers={'content-type':'application/json'};"
+          + " msg.payload={text:(msg.payload||{}).text, nodeId:(msg.mcode||{}).nodeId, engineStatus:(msg.mcode||{}).engineStatus};"
+          + " return msg;",
+      },
+      { id: "out-" + c.nodeId, type: "http response", z: tabId, x: 700, y: 100, wires: [] },
+    ];
+    const dep = await fetchOn(port, "/flows", {
+      method: "POST",
+      headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...auth },
+      body: JSON.stringify({ flows: flow }),
+    }, 20_000);
+    const label = c.type;
+    check(`[${label}] 部署 200`, dep.status === 200, dep);
+
+    const before = hostCalls.length;
+    const res = await waitFor(async () => {
+      const r = await fetchOn(port, c.requestUrl, { headers: auth }, 8_000);
+      return r.status === 200 ? { status: r.status, text: r.text.slice(0, 400) } : null;
+    }, 20_000);
+    const calls = hostCalls.slice(before);
+    evidence(`[${label}] Host 调用`, calls.map((x) => ({ op: x.operation, payload: x.payload })));
+    evidence(`[${label}] 下游响应`, res);
+
+    check(`★ [${label}] Host 收到 ${c.operation}`,
+      calls.some((x) => x.operation === c.operation), calls.map((x) => x.operation));
+    const hit = calls.find((x) => x.operation === c.operation);
+    check(`★ [${label}] nodeId 传对（${c.nodeId}）`, hit?.payload["nodeId"] === c.nodeId, hit?.payload["nodeId"]);
+    const badKeys = Object.entries(c.expectPayload)
+      .filter(([k, v]) => hit?.payload[k] !== v).map(([k, v]) => ({ key: k, want: v, got: hit?.payload[k] }));
+    check(`★ [${label}] 参数原样传到 Host`, badKeys.length === 0, badKeys);
+
+    type Downstream = { text?: string; nodeId?: string; engineStatus?: number };
+    let out: Downstream | null = null;
+    try {
+      const raw: unknown = res === null ? null : JSON.parse(res.text);
+      out = raw !== null && typeof raw === "object" && !Array.isArray(raw)
+        ? raw as Downstream : null;
+    } catch { /* 下面断言会红 */ }
+    check(`★ [${label}] 下游收到 Host 的返回（HTTP 200）`, res?.status === 200, res);
+    check(`★ [${label}] 回灌 text 是 Host 造的`, out?.text === `t96-host-saw:${c.operation}`, out);
+    check(`★ [${label}] msg.mcode.nodeId 保留`, out?.nodeId === c.nodeId, out);
+  }
+
+  /* —— node-red-call 专有：Host 返回的 status 要进 msg.mcode.engineStatus —— */
+  {
+    const callOut = await (async () => {
+      const r = await fetchOn(port, "/api/t96-call", { headers: auth }, 8_000);
+      try {
+        const raw: unknown = JSON.parse(r.text);
+        return raw !== null && typeof raw === "object" ? raw as { engineStatus?: unknown } : null;
+      } catch { return null; }
+    })();
+    check("★ [mcode-node-red-call] Host 的 status 进 msg.mcode.engineStatus", callOut?.engineStatus === 207, callOut);
+  }
+
+  /* —— branch：多出口，Host 决定走哪条 —— */
+  {
+    const tabId = "tab-branch";
+    const flow = [
+      { id: tabId, type: "tab", label: "t96-branch", disabled: false, info: "", env: [] },
+      { id: "in-branch", type: "http in", z: tabId, url: "/t96-branch", method: "get", upload: false, swaggerDoc: "", x: 100, y: 100, wires: [["n-branch"]] },
+      {
+        id: "n-branch", type: "mcode-branch", z: tabId, name: "branch",
+        decider: "user", note: "", outputVar: "route",
+        "x-mcode": { nodeId: "probe-branch", nativeId: "n-branch", nativeType: "mcode-branch",
+          params: { decider: "user", note: "", outputVar: "route" } },
+        // 两个出口：Host 会被要求选，返回 1 就说明**不是**默认第 0 口。
+        x: 300, y: 100, wires: [["fn-port0"], ["fn-port1"]],
+      },
+      { id: "fn-port0", type: "function", z: tabId, name: "port0", outputs: 1, x: 500, y: 60, wires: [["out-branch"]],
+        func: "msg.headers={'content-type':'application/json'}; msg.payload={port:0, mcode:msg.mcode}; return msg;" },
+      { id: "fn-port1", type: "function", z: tabId, name: "port1", outputs: 1, x: 500, y: 140, wires: [["out-branch"]],
+        func: "msg.headers={'content-type':'application/json'}; msg.payload={port:1, mcode:msg.mcode}; return msg;" },
+      { id: "out-branch", type: "http response", z: tabId, x: 700, y: 100, wires: [] },
+    ];
+    const dep = await fetchOn(port, "/flows", {
+      method: "POST",
+      headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...auth },
+      body: JSON.stringify({ flows: flow }),
+    }, 20_000);
+    check("[mcode-branch] 部署 200", dep.status === 200, dep);
+    // 部署「成功」不等于这份 flow 进了 runtime：missing-types / 部署竞态都会让
+    // 一个 200 的部署不启动。读回 + 等节点实例出现，才是请求前该有的前提。
+    const readBranch = await fetchOn(port, "/flows", { headers: { ...auth, "Node-RED-API-Version": "v2" } }, 10_000);
+    let branchTypes: string[] = [];
+    try {
+      const rf = JSON.parse(readBranch.text) as { flows?: Array<{ type?: string }> };
+      branchTypes = (rf.flows ?? []).map((n) => String(n.type));
+    } catch { /* 下面 evidence 会显示 */ }
+    evidence("[mcode-branch] 读回的类型", branchTypes);
+
+    const before = hostCalls.length;
+    const res = await waitFor(async () => {
+      const r = await fetchOn(port, "/api/t96-branch", { headers: auth }, 8_000);
+      return r.status === 200 ? { status: r.status, text: r.text.slice(0, 400) } : null;
+    }, 20_000);
+    const calls = hostCalls.slice(before);
+    evidence("[mcode-branch] Host 调用", calls.map((x) => ({ op: x.operation, portCount: x.payload["portCount"], decider: x.payload["decider"] })));
+    evidence("[mcode-branch] 下游响应", res);
+
+    const hit = calls.find((x) => x.operation === "branch.decide");
+    check("★ [mcode-branch] Host 收到 branch.decide", hit !== undefined, calls.map((x) => x.operation));
+    check("★ [mcode-branch] Host 知道有几个出口（portCount=2）", hit?.payload["portCount"] === 2, hit?.payload["portCount"]);
+    check("★ [mcode-branch] decider 参数传对", hit?.payload["decider"] === "user", hit?.payload["decider"]);
+
+    type BranchOut = { port?: number; mcode?: { nodeId?: string; branch?: { port?: number; label?: string }; branchPort?: unknown } };
+    let out: BranchOut | null = null;
+    try {
+      const raw: unknown = res === null ? null : JSON.parse(res.text);
+      out = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw as BranchOut : null;
+    } catch { /* 下面断言会红 */ }
+    check("★ [mcode-branch] Host 选的出口 1 真的走了（不是默认第 0 口）", out?.port === 1, out);
+    check("★ [mcode-branch] msg.mcode.branch 记了端口与标签",
+      out?.mcode?.branch?.port === 1 && out?.mcode?.branch?.label === "选第二条", out?.mcode?.branch);
+    check("★ [mcode-branch] 上游伪造的 mcode.branchPort 不被采信（已删除）",
+      out?.mcode !== undefined && !("branchPort" in out.mcode), out?.mcode);
+  }
+
+  /* ══════════ 7. mcode-trigger：零输入节点，靠 Host 订阅推送 ══════════ */
+  console.log("\n7. mcode-trigger：订阅路径（零输入，不是「喂一个 msg」）");
+  {
+    const tabId = "tab-trigger";
+    const flow = [
+      { id: tabId, type: "tab", label: "t96-trigger", disabled: false, info: "", env: [], config: { ctxStore: "memory" } },
+      {
+        id: "n-trigger", type: "mcode-trigger", z: tabId, name: "trigger",
+        triggerKind: "event", task: "T96 订阅任务", cron: "",
+        "x-mcode": { nodeId: "probe-trigger", nativeId: "n-trigger", nativeType: "mcode-trigger",
+          params: { triggerKind: "event", task: "T96 订阅任务", cron: "" } },
+        x: 300, y: 100, wires: [["fn-trigger"]],
+      },
+      { id: "fn-trigger", type: "function", z: tabId, name: "sink", outputs: 1, x: 500, y: 100, wires: [["out-trigger"]],
+        // 把事件存到 context，供 HTTP 读回（trigger 没有输入，不能靠 http-in 驱动）。
+        func: "global.set('t96LastTrigger', {payload: msg.payload, mcode: msg.mcode}); node.warn('t96-trigger sink got '+JSON.stringify(msg.mcode)); return null;" },
+      // 一个读取口：证明事件真的到了 sink，而不只是 Host 那边记了一笔。
+      { id: "in-read", type: "http in", z: tabId, url: "/t96-trigger-read", method: "get", upload: false, swaggerDoc: "", x: 100, y: 260, wires: [["fn-read"]] },
+      { id: "fn-read", type: "function", z: tabId, name: "read", outputs: 1, x: 300, y: 260, wires: [["out-read"]],
+        func: "msg.headers={'content-type':'application/json'}; msg.payload=global.get('t96LastTrigger')||null; return msg;" },
+      { id: "out-read", type: "http response", z: tabId, x: 500, y: 260, wires: [] },
+    ];
+    const dep = await fetchOn(port, "/flows", {
+      method: "POST",
+      headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...auth },
+      body: JSON.stringify({ flows: flow }),
+    }, 20_000);
+    check("[mcode-trigger] 部署 200", dep.status === 200, dep);
+
+    // L1：Host 收到订阅（这是零输入节点唯一能"自己发起"的动作）。
+    const sub = (await waitFor(() => subscriptions.find((s) =>
+      s.payload["nodeId"] === "probe-trigger"), 20_000)) ?? undefined;
+    evidence("[mcode-trigger] Host 收到的订阅", sub === undefined ? "(无)" :
+      { nodeId: sub.payload["nodeId"], triggerKind: sub.payload["triggerKind"], task: sub.payload["params"] });
+    check("★ [mcode-trigger] Host 收到 trigger.subscribe（节点真的注册了订阅）",
+      sub !== undefined, subscriptions.map((s) => s.payload["nodeId"]));
+    check("★ [mcode-trigger] 订阅带对了 triggerKind",
+      sub?.payload["triggerKind"] === "event", sub?.payload["triggerKind"]);
+
+    // L2：Host 推一个事件 → 节点 emit → 下游 function 收到。
+    sub?.emit({ payload: { fromHost: "t96-event-1" }, mcode: { forged: "should-be-sanitized" } });
+    const readBack = await waitFor(async () => {
+      const r = await fetchOn(port, "/api/t96-trigger-read", { headers: auth }, 5_000);
+      if (r.status !== 200) return null;
+      try {
+        const parsed: unknown = JSON.parse(r.text);
+        return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+      } catch { return null; }
+    }, 20_000);
+    evidence("[mcode-trigger] 下游读回", readBack);
+    check("★ [mcode-trigger] Host 推的事件真的到达下游节点", readBack !== null, readBack);
+    const readPayload = readBack?.["payload"] as { fromHost?: string } | undefined;
+    check("★ [mcode-trigger] 事件 payload 原样到达", readPayload?.fromHost === "t96-event-1", readPayload);
+    const readMcode = readBack?.["mcode"] as { nodeId?: string; triggerKind?: string; forged?: string } | undefined;
+    check("★ [mcode-trigger] msg.mcode 由节点重建（nodeId / triggerKind 可信）",
+      readMcode?.nodeId === "probe-trigger" && readMcode?.triggerKind === "event", readMcode);
+    check("★ [mcode-trigger] Host 事件里伪造的 mcode 字段被丢掉",
+      readMcode !== undefined && !("forged" in readMcode), readMcode);
+
+    // L3：节点卸载（部署别的流）→ 订阅必须被撤销，不留悬挂监听。
+    await fetchOn(port, "/flows", {
+      method: "POST",
+      headers: { "content-type": "application/json", "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2", ...auth },
+      body: JSON.stringify({ flows: [{ id: "tab-empty", type: "tab", label: "empty", disabled: false, info: "", env: [] }] }),
+    }, 20_000);
+    const cleaned = await waitFor(() => subscriptions.length === 0, 8_000);
+    check("★ [mcode-trigger] 重新部署后订阅被撤销（不留悬挂 Host 监听）",
+      subscriptions.length === 0, { remaining: subscriptions.map((s) => s.payload["nodeId"]) });
+    void cleaned;
+  }
 } finally {
   try { child?.kill("SIGKILL"); } catch { /* already dead */ }
   try { await runtime.stop(500); } catch { /* 已停 */ }
