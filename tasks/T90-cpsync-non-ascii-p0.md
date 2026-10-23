@@ -65,23 +65,73 @@
 
 **是 22.21.1 的回归。**
 
-## 三个修复方向（**需要决定，不是执行者能定的**）
+## ✅ 方案已定：`filter: () => true`（B 找到上游 issue，总控独立验证）
 
-| 方案 | 做法 | 评价 |
-|---|---|---|
-| **A. 非 ASCII 时降级** | `/[\x00-\x7F]/.test(from) \|\| /[\x00-\x7F]/.test(to)` → 走手写递归；否则仍用 `cpSync` | **改动最小，`cpSync` 在 ASCII 路径上是好的**；Node 修了能平滑回退 |
-| **B. 永久替换** | 手写递归替掉所有 `cpSync` | 最直接，但要处理符号链接 / 权限 / 长路径，**代码量不小**；且把「临时 bug」变成永久变通 |
-| **C. 升 Node** | 升到已修复的版本 | **要先确认上游真的修了**；`package.json` 已要求 `>=22.19.0`，而 22.21.1 满足要求却崩 |
+### 上游已确认（不是猜测）
 
-**总控倾向 A**，理由：把「绕过」限制在**确实会崩的条件**下，而不是永久替换一个可用的 API。
+| Issue | 内容 |
+|---|---|
+| **nodejs/node#54476**（2024-08 起） | `fs.cpSync` 在含中文的目录上崩溃，**"How often does it reproduce? — always"** |
+| **nodejs/node#59636** | Node 自己的 CI：`parallel/test-fs-cp-sync-unicode-folder-names`，**`exitcode: 3221226505`** —— 和我们测到的一模一样 |
+| **nodejs/node#63970** | `cpSync` 不带 `filter` 时走 **native copyDir fast path**；**传 `filter` 会回退到 JS 实现**，不受影响 |
 
-**但这个决定要产品负责人拍。**
+### 总控独立验证（三种形态，同一份夹具）
 
-## 必须回答的三个问题
+```
+plain    status=3221226505  崩溃
+filter   status=0           OK — 文件真的复制了（OK:hello）
+force    status=3221226505  崩溃（force 不绕过）
+```
 
-1. **上游修了吗？** 查 Node 的 changelog / issue：`fs.cpSync` + Windows + 非 ASCII + 22.21.x。
-2. **如果修了，是哪个版本？** 能不能直接升级？
-3. **如果没修**，选 A 还是 B？
+### 修法
+
+```ts
+cpSync(from, to, { recursive: true, filter: () => true });
+```
+
+**注释写法**（B 的判断，总控认可）：
+
+```ts
+// Node 22 on Windows crashes in cpSync's native fast path when the path has
+// non-ASCII characters (nodejs/node#54476, #63970). Passing any filter forces
+// the JS implementation, which is unaffected.
+```
+
+**⚠️ 写 issue 编号，不要写「这个仓库不能用 `cpSync`」**：
+- **前者**：随 Node 修复而"不再需要"，但**不会误导**（读到的人会去查 issue）；
+- **后者**：**永远误导**（让人以为这是仓库的永久约束）。
+
+### 影响面比「中文用户」大
+
+B 实测：中文 `中文`、Latin-1 `café` / `Müller`、西里尔 `Тест`、emoji `😀x`、全角 `Ａ` —— **全部崩**。
+
+**所以是「所有非 ASCII 用户名 / 路径的用户」**，不只是中文。
+
+Mcode 的产品定位是「技术型个人用户与小团队」——**这个范围里德国、俄罗斯、日本用户都可能出现。**
+
+## ⚠️ 还剩一件事：性能要量
+
+`filter: () => true` **强制走 JS 实现，会比 native fast path 慢**。
+
+- 对**许可证 materials**（17 个文件）**无所谓**；
+- 对 **`dataRoot` 的用户数据**（可能几百 MB）**要量**。
+
+**做法**：找一个 ~200 MB 的目录，对比 `cpSync` 有无 `filter` 的耗时。
+
+**如果慢得可接受（比如 < 2 倍）→ 直接用。**
+**如果慢很多 → 只在非 ASCII 时加 `filter`**：
+
+```ts
+const needsJs = /[^\x00-\x7F]/.test(from) || /[^\x00-\x7F]/.test(to);
+cpSync(from, to, { recursive: true, ...(needsJs ? { filter: () => true } : {}) });
+```
+
+## 必须回答的三个问题## 必须回答的三个问题
+
+1. ✅ **上游修了吗？** —— 没修。`#54476` 从 2024-08 开着，`#59636` 是 2025-08 的 CI 记录。
+2. ✅ **是哪个版本？** —— 22.6.0 起（`#53614` 引入 native 编码回归），22.14.0 / 20.18.0 正常。
+3. ✅ **选哪个方案？** —— `filter: () => true`（方案 4），已由上游 issue 和总控实验双重确认。
+4. ⏳ **性能代价多少？** —— **这一条还没答，动手前必须量。**
 
 ## 修之前必须先补的回归
 
