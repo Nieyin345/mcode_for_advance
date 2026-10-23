@@ -139,3 +139,82 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ## 最终回复
 
 只列：任务编号与标题；提交 SHA；6 条各自是否已换成 AST；正控/反控是否每条都有；有没有验不了的。
+
+## 结果回写（2026-10-23）
+
+### 数字
+
+```
+修复前：59/59（T64 之后）
+修复后：74/74
+```
+
+新增 15 条 = 6 条主判据 + 9 条正控/反控。**6 条全部换成 AST，没有一条验不了。**
+
+### 抽出的共用工具
+
+新建 `apps/desktop/scripts/provider-context-smoke/astAssertions.ts`（**不是第二份解析器**）：
+
+- `parseSource` / `parseFile` —— 按扩展名选 `ScriptKind`
+- `walk` / `lineOf` —— 遍历与行号映射
+- `findPropertyAssignments(sf, name)` —— **`PropertyAssignment`**（区分于 `PropertySignature` 类型注解）
+- `findPropertyAccesses(sf, obj, prop)` —— 含 `?.` 与「是否被调用」
+- `findIdentifiers(sf, name)` —— 任意位置的标识符
+- `findConstDeclarations(sf, name)` —— `const X = ...`
+- `findSliceWithNegated(sf, name)` —— `slice(-X)`
+- `fakeSourceWithTextOnly(kind, snippet)` —— **反控夹具**：把目标塞进字符串/注释
+
+T64 已建好的 `findCalls`（`registerPluginsHandlers` 那条）**原样保留、未改动**，那 4 条断言仍全绿。
+
+### 6 条各自的判据与证据
+
+| # | 原断言 | 新判据 | 正控 | 反控 |
+|---|---|---|---|---|
+| ① | `!runtime.includes("session.activePluginNames")` | `findPropertyAccesses` + `findIdentifiers` 命中数为 0 | 已知含该名字的源码上必须命中 ≥1 | 字符串字面量里的同名文本不命中 |
+| ② | `runtime.includes("pluginNames: input.pluginNames,")` | `findPropertyAssignments`，`valueText === "input.pluginNames"` | **类型注解 `pluginNames?: string[]` 不算赋值**（区分 PropertySignature） | 注释里的赋值形状不命中 |
+| ③ | `!source(session.ts).includes("activePluginNames")` | `findIdentifiers` 零命中 | 同上 | 注释里的同名文本不命中 |
+| ④ | `!source(sessionSchema.ts).includes("active_plugin_names")` | `findIdentifiers` 零命中 | 同上 | 字符串里的同名文本不命中 |
+| ⑤ | `source(CodexAppServerClient.ts).includes("timer.unref")` | `findPropertyAccesses("timer", "unref")` 且 `called === true` | 已知含 `timer.unref()` 的源码上命中 | **注释里的 `timer.unref()` 不命中**（原位证据） |
+| ⑥a | `runtime.includes("USAGE_HISTORY_LIMIT")`（前半） | `findConstDeclarations`，且值是可解析的正整数 | 已知 `const X = 200` 命中 | 注释里的声明不命中 |
+| ⑥b | 同一条正则（后半） | `findSliceWithNegated` —— `slice` 的唯一参数文本恰好 `-USAGE_HISTORY_LIMIT` | 已知切片命中 | 字符串里的切片形状不命中 |
+
+⑥ 按总控要求**拆成两条独立断言**（⑥a 声明 / ⑥b 使用）。
+
+### 变异证据（6 次，每次只红对应的那一条）
+
+| 变异 | 目标文件 | 结果 |
+|---|---|---|
+| ① 把 `session.activePluginNames` **真实加回** | `RuntimeManager.ts` | **1 条红**（`{"found":3}`） |
+| ② 注释掉 `pluginNames: input.pluginNames,` | `RuntimeManager.ts` | **1 条红**（报出剩下的 `req.pluginNames@1758`） |
+| ③ 把 `activePluginNames` 加回契约 | `packages/contracts/src/session.ts` | **1 条红**（`{"found":1}`） |
+| ④a 以**标识符**加回 `active_plugin_names` | `sessionSchema.ts` | **1 条红**（`{"found":1}`） |
+| ④b 以**字符串**加回 `active_plugin_names` | `sessionSchema.ts` | **0 条红 —— 这是正确行为**（AST 不认字符串，原 `!includes` 会在这里误报） |
+| ⑤ 注释掉 `timer.unref?.();` | `CodexAppServerClient.ts` | **1 条红**（`{"found":[]}`） |
+| ⑥a 注释掉 `const USAGE_HISTORY_LIMIT = 200;` | `RuntimeManager.ts` | **1 条红**（只有 ⑥a 红，⑥b 仍绿） |
+| ⑥b `.slice(-USAGE_HISTORY_LIMIT)` → `.slice(-200)` | `RuntimeManager.ts` | **1 条红**（只有 ⑥b 红，⑥a 仍绿） |
+
+**总控要求的「⑥a / ⑥b 各自单独红」已证明**：撤声明只红 ⑥a、改使用只红 ⑥b，互不牵连。若两条总是一起红，说明是同一判据 —— 实际不是。
+
+**八次变异全部 `cmp` 逐字节还原，`git status` 复核无残留。**
+
+### 位置证据：`timer.unref` 那条
+
+`CodexAppServerClient.ts:165` 的注释原文：
+
+```
+// 做法(那边显式 .unref())。清掉定时器的那几条路(pending 结算/进程退出)不受影响。
+```
+
+**这一行注释就能让 `includes("timer.unref")` 永远为真。** 变异 ⑤ 把真实调用 `timer.unref?.()` 注释掉后新判据变红 —— 而旧断言在这种情形下无从分辨。
+
+### 未做 / 说明
+
+1. **未跑全量**、**未起 Electron**。
+2. **未改产品源码**（三次变异均为临时改写，全部还原并用 `git status` 复核）。
+3. 新增文件 `astAssertions.ts`（在卡的「只改 main.ts」边界外一步）—— 理由：6 条共用，抽成独立模块比塞回 main.ts 更清晰，且避免与 T64 的 `findCalls` 混在一起。**如需严格限制在单文件，可以合并回 main.ts**，请指示。
+4. `run.sh` 未改动（`--external:typescript` 沿用 T64）。
+5. 全包 typecheck 里本套错误数为 **0**；`t63-deck-quality-smoke` 的红是别人在途文件。
+
+### 提交
+
+见下方 git log（按路径提交：`main.ts` + `astAssertions.ts` + 本卡）。

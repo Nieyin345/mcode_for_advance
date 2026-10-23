@@ -15,6 +15,11 @@ import { createRequire } from "node:module";
 import type * as TS from "typescript";
 const requireFromHere = createRequire(resolve(process.cwd(), "package.json"));
 const ts = requireFromHere("typescript") as typeof TS;
+// 【T68】6 条剩余文本断言共用这一套 AST 判据（抽出而非重写第二份解析器）。
+import {
+  parseSource, parseFile, findPropertyAssignments, findPropertyAccesses,
+  findIdentifiers, findConstDeclarations, findSliceWithNegated, fakeSourceWithTextOnly,
+} from "./astAssertions.js";
 type RuntimeManagerSingleton = typeof import("@main/claude/RuntimeManager.js").runtimeManager;
 import type { ClaudeAgentSdkProvider } from "@main/providers/claude-sdk/ClaudeAgentSdkProvider.js";
 import type { PiAgentSdkProvider } from "@main/providers/pi-sdk/PiAgentSdkProvider.js";
@@ -183,10 +188,61 @@ const runner = source("src/main/orchestration/runner.ts");
 check("图型主对话节点明确交接记忆所有权", runner.includes("memoryManagedByWorkflow: true"));
 
 console.log("\n插件边界：仅保留全局启用和工作流逐轮覆盖");
-check("RuntimeManager 不再读取会话插件名单", !runtime.includes("session.activePluginNames"));
-check("工作流逐轮插件名单原样交给 provider", runtime.includes("pluginNames: input.pluginNames,"));
-check("Session 契约不再包含会话插件名单", !source("../../packages/contracts/src/session.ts").includes("activePluginNames"));
-check("会话持久化不再迁移/读写插件名单", !source("src/main/store/sessionSchema.ts").includes("active_plugin_names"));
+/* 【T68】这 4 条原本是 `includes(源码)` 的文本匹配，正负方向都不可靠：
+ *   - 肯定断言在代码被**注释掉**时仍为真（注释里有那个字符串）；
+ *   - 否定断言在名字被写进**注释/字符串**时也为真。
+ * 全部换成 AST 判据，每条带正控（证明 finder 能工作）与反控（证明它不认文本）。 */
+{
+  // ── ① `!runtime.includes("session.activePluginNames")`（否定） ──
+  const rtSf = parseSource("src/main/claude/RuntimeManager.ts", runtime);
+  const hits = findPropertyAccesses(rtSf, "session", "activePluginNames")
+    .concat(findIdentifiers(rtSf, "activePluginNames").map((h) => ({ called: false, optional: false, line: h.line })));
+  check("★ RuntimeManager 不再读取会话插件名单（AST：找不到 activePluginNames 标识符）",
+    hits.length === 0, { found: hits.length, at: hits.slice(0, 3) });
+  // 正控：同一个 finder 去一个**确定含**它的输入上跑，必须命中。
+  const knownHit = findIdentifiers(parseSource("control.ts", `const x = { activePluginNames: [] };`), "activePluginNames");
+  check("★ 正控①：同一 finder 在已知含该名字的源码上能命中（证明它不是恒假）",
+    knownHit.length >= 1, { found: knownHit.length });
+  // 反控：把名字塞进字符串字面量，必须不命中（`includes` 会在这里假绿）。
+  const strOnly = findIdentifiers(fakeSourceWithTextOnly("string", "session.activePluginNames"), "activePluginNames");
+  check("★ 反控①：字符串字面量里的同名文本不算命中（`includes` 犯的错）",
+    strOnly.length === 0, { found: strOnly.length });
+
+  // ── ② `runtime.includes("pluginNames: input.pluginNames,")`（肯定） ──
+  // 注意同文件里还有 `pluginNames?: string[];`（PropertySignature，类型注解）—— 不能算命中。
+  const assignments = findPropertyAssignments(rtSf, "pluginNames");
+  const withInputValue = assignments.filter((a) => a.valueText === "input.pluginNames");
+  check("★ 工作流逐轮插件名单原样交给 provider（AST：PropertyAssignment，不是类型注解）",
+    withInputValue.length >= 1, { all: assignments });
+  // 正控：PropertySignature（类型注解）必须**不**被这条 finder 计入。
+  const sigOnly = findPropertyAssignments(parseSource("sig.ts", `interface X { pluginNames?: string[]; }`), "pluginNames");
+  check("★ 正控②：类型注解 pluginNames?: string[] 不被当成赋值（证明区分了 PropertySignature）",
+    sigOnly.length === 0, { found: sigOnly.length });
+  // 反控：赋值形状只出现在注释里时，必须不命中。
+  const cmtOnly = findPropertyAssignments(fakeSourceWithTextOnly("comment", "pluginNames: input.pluginNames,"), "pluginNames");
+  check("★ 反控②：注释里的赋值形状不算命中", cmtOnly.length === 0, { found: cmtOnly.length });
+
+  // ── ③ `!source(".../session.ts").includes("activePluginNames")`（否定） ──
+  const contractSf = parseFile("../../packages/contracts/src/session.ts");
+  const contractHits = findIdentifiers(contractSf, "activePluginNames");
+  check("★ Session 契约不再包含会话插件名单（AST：标识符零命中）",
+    contractHits.length === 0, { found: contractHits.length });
+  check("★ 正控③：同一 finder 在已知含该名字的源码上能命中",
+    findIdentifiers(parseSource("c.ts", `type T = { activePluginNames: string[] };`), "activePluginNames").length >= 1);
+  check("★ 反控③：注释里的同名文本不算命中",
+    findIdentifiers(fakeSourceWithTextOnly("comment", "activePluginNames"), "activePluginNames").length === 0);
+
+  // ── ④ `!source(".../sessionSchema.ts").includes("active_plugin_names")`（否定） ──
+  const schemaSf = parseFile("src/main/store/sessionSchema.ts");
+  const schemaHits = findIdentifiers(schemaSf, "active_plugin_names");
+  check("★ 会话持久化不再迁移/读写插件名单（AST：标识符零命中）",
+    schemaHits.length === 0, { found: schemaHits.length });
+  check("★ 正控④：同一 finder 在已知含该名字的源码上能命中",
+    findIdentifiers(parseSource("s.ts", `const active_plugin_names = 1;`), "active_plugin_names").length >= 1);
+  check("★ 反控④：字符串字面量里的同名文本不算命中",
+    findIdentifiers(fakeSourceWithTextOnly("string", "active_plugin_names"), "active_plugin_names").length === 0);
+}
+
 // 【T64】「全局插件 handler 继续注册」这条从 `includes(源码)` 改成 **AST 判据**。
 //
 // 原来的写法 `source("src/main/ipc/index.ts").includes("registerPluginsHandlers(ipc)")`
@@ -260,10 +316,55 @@ check("会话持久化不再迁移/读写插件名单", !source("src/main/store/
 
 
 console.log("\n三引擎一致消费");
-// Codex 请求超时定时器必须 unref,否则一个未回应的请求会把进程钉住最多 120s(退出被拖)。
-check("Codex app-server 请求超时定时器 unref(不拖住进程退出)", source("src/main/providers/codex-sdk/CodexAppServerClient.ts").includes("timer.unref"));
-// usageHistory 每轮追加一条、整份写回会话行 —— 必须有上限,否则长命对话只涨不落。
-check("★ usageHistory 每轮追加时有上限(不无界增长)", runtime.includes("USAGE_HISTORY_LIMIT") && /usageHistory = \[\.\.\.rt\.usageHistory, record\]\.slice\(-USAGE_HISTORY_LIMIT\)/.test(runtime));
+// 【T68】「Codex 请求超时定时器 unref」从 `includes("timer.unref")` 改成 AST 判据。
+//
+// ⚠️ 这条的原位证据：`CodexAppServerClient.ts:165` 的**注释**里就写着 `.unref()` ——
+// 一行注释就能让 `includes` 永远为真。AST 里注释根本不存在，骗不过去。
+{
+  const codexSf = parseFile("src/main/providers/codex-sdk/CodexAppServerClient.ts");
+  const unrefs = findPropertyAccesses(codexSf, "timer", "unref");
+  check("★ Codex app-server 请求超时定时器 unref（AST：真实的 timer.unref 调用）",
+    unrefs.length >= 1 && unrefs.some((u) => u.called),
+    { found: unrefs });
+  // 正控：同一 finder 在已知含该调用的源码上必须命中。
+  check("★ 正控⑤：同一 finder 在已知含 timer.unref() 的源码上能命中",
+    findPropertyAccesses(parseSource("u.ts", `timer.unref();`), "timer", "unref").some((u) => u.called));
+  // 反控：**只出现在注释里**时，必须不命中 —— 这正是原断言的假绿来源。
+  const commentOnly = findPropertyAccesses(fakeSourceWithTextOnly("comment", "timer.unref()"), "timer", "unref");
+  check("★ 反控⑤：注释里的 timer.unref() 不算命中（原 `includes` 在这里假绿）",
+    commentOnly.length === 0, { found: commentOnly.length });
+}
+
+// 【T68】「usageHistory 有上限」拆成**两条独立断言**（总控要求：各自能单独红）。
+//
+// 原来是一条复合断言：`includes("USAGE_HISTORY_LIMIT")` **且** 一段正则。
+// 它有两个问题：
+//   ① 前半段是文本匹配，常量只被声明/只被注释提到也会绿；
+//   ② 后半段的正则把「切片真的用了它」写死了形状，改个写法就红，是脆的。
+{
+  const rtSf = parseSource("src/main/claude/RuntimeManager.ts", runtime);
+
+  // ⑤-a 声明：常量真的被声明了，且值是个合理的正整数。
+  const decls = findConstDeclarations(rtSf, "USAGE_HISTORY_LIMIT");
+  const declaredValue = decls.length === 1 ? Number(decls[0]!.initializerText) : NaN;
+  check("★ usageHistory 上限常量已声明且值是正整数（AST：const 声明）",
+    decls.length === 1 && Number.isInteger(declaredValue) && declaredValue > 0,
+    { declarations: decls, parsed: declaredValue });
+  check("★ 正控⑥a：同一 finder 在已知含 const 声明的源码上能命中",
+    findConstDeclarations(parseSource("d.ts", `const USAGE_HISTORY_LIMIT = 200;`), "USAGE_HISTORY_LIMIT").length === 1);
+  check("★ 反控⑥a：注释里的同名声明不算命中",
+    findConstDeclarations(fakeSourceWithTextOnly("comment", "const USAGE_HISTORY_LIMIT = 200;"), "USAGE_HISTORY_LIMIT").length === 0);
+
+  // ⑤-b 使用：`slice(-USAGE_HISTORY_LIMIT)` 真的以该常量为界。
+  // **这条与上面独立**：常量声明了但没人用，这里会单独红。
+  const sliceUses = findSliceWithNegated(rtSf, "USAGE_HISTORY_LIMIT");
+  check("★ usageHistory 追加时真的以该常量为界（AST：slice(-USAGE_HISTORY_LIMIT)）",
+    sliceUses.length >= 1, { found: sliceUses });
+  check("★ 正控⑥b：同一 finder 在已知含该切片的源码上能命中",
+    findSliceWithNegated(parseSource("sl.ts", `x = y.slice(-USAGE_HISTORY_LIMIT);`), "USAGE_HISTORY_LIMIT").length === 1);
+  check("★ 反控⑥b：字符串里的切片形状不算命中",
+    findSliceWithNegated(fakeSourceWithTextOnly("string", "slice(-USAGE_HISTORY_LIMIT)"), "USAGE_HISTORY_LIMIT").length === 0);
+}
 // peekBackflow 是死 import(只有注释按名字提到它),不该挂在 import 里。
 check("RuntimeManager 不再 import 用不到的 peekBackflow", !/import \{[^}]*\bpeekBackflow\b[^}]*\} from "@main\/lib\/pendingBackflow/.test(runtime));
 for (const [name, text] of [["Claude", claude], ["Pi", pi], ["Codex", codex]] as const) {
