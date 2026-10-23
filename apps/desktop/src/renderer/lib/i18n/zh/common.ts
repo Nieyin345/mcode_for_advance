@@ -73,4 +73,16 @@ export const zh = {
   "common.moduleNetworkApprovalDetail": "批准后这次调用才会执行,并且它会联网。未声明的扩展默认不能出网。",
   "common.moduleNetworkApprovalAllow": "允许这次联网",
   "common.moduleNetworkApprovalDenied": "用户拒绝了这次联网,未执行。",
+  // 【T19】`scope === "danger"`:扩展经 `core.app.call` 调了一个**高风险 RPC**
+  // (`git.push` / `project.delete` / `modules.install` …)。它与 write 档有三处实质差别,
+  // 沿用写档文案会把用户骗过去(「请求执行写操作」「对文件执行」对 `git.push` 是错的):
+  //   1. **每次**都问 —— 安装时授予的权限、工作流授权都不能替代;
+  //   2. 没有「始终允许」—— 所以按钮不能说"允许这次操作",要说"仅允许这一次";
+  //   3. 可能是不可恢复的(删项目/推远程/装可执行代码),标题必须点明高风险。
+  // 正文里的 `{method}` 由 `ModuleHost` 给 —— **只有方法名,不带入参**(入参可能含密钥)。
+  "common.moduleDangerApprovalTitle": "扩展模块请求执行高风险操作",
+  "common.moduleDangerApprovalMessage": "模块「{module}」请求调用高风险方法 {method}。\n本次执行绑定的资源:{path}",
+  "common.moduleDangerApprovalDetail": "高风险操作每次都只批准这一次:安装时授予的权限不能替代本框,也没有「始终允许」。下次调用会再次询问。拒绝则该操作不会发生,可以安全重来。",
+  "common.moduleDangerApprovalAllow": "仅允许这一次",
+  "common.moduleDangerApprovalDenied": "用户拒绝了这次高风险操作,未执行。",
 } as const;

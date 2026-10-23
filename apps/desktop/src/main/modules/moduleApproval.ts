@@ -33,21 +33,27 @@ const nativeModuleApprovalPort: ModuleApprovalPort = async (request) => {
   const win = getMainWindow();
   // 【MC-035】联网与写文件是**两件事**,审批框必须说清楚在批哪一件。
   // 否则用户看到"请求执行写操作"就批了,实际批准的是"这个扩展可以出网"。
-  // 【T19】`scope === "danger"`(扩展经 core.app.call 调高风险 RPC)当前按写档文案
-  // 呈现:专属文案需要新的 i18n 键,而词典在 renderer/(T19 边界外)。判定本身仍在
-  // ModuleHost 里 —— 每次 danger 调用都必须经过这个框,文案只是表述。
-  const isNetwork = request.scope === "network";
+  // 【T19】`scope === "danger"`(扩展经 core.app.call 调高风险 RPC)是**第三件**事,
+  // 有自己的文案:它每次都要问、安装授权不能替代、没有「始终允许」,而且可能是
+  // 不可恢复的(git.push / project.delete / modules.install)。沿用写档文案时,正文
+  // 会对 `git.push` 说成"对文件执行一次写操作",还会给出"允许这次操作"这种暗示可以
+  // 记住的按钮 —— 用户是在被误导的状态下点头的。判定在 ModuleHost 里,这里只管表述。
+  // 三套键的**形状一致**(Title/Message/Detail/Allow + 共用的 Deny/Denied 各一套),
+  // 所以只切换前缀,不复制分支。
+  const scope = request.scope === "danger" ? "moduleDangerApproval" : request.scope === "network" ? "moduleNetworkApproval" : "moduleApproval";
   const options = {
     type: "question" as const,
-    title: dialogText(isNetwork ? "common.moduleNetworkApprovalTitle" : "common.moduleApprovalTitle"),
-    message: dialogText(isNetwork ? "common.moduleNetworkApprovalMessage" : "common.moduleApprovalMessage", {
+    title: dialogText(`common.${scope}Title`),
+    message: dialogText(`common.${scope}Message`, {
       module: request.moduleId,
       contribution: request.contributionId,
       path: request.resource.path,
+      // danger 独有的 `{method}` —— 只有方法名,入参不入框(可能含密钥)。
+      ...(request.method !== undefined ? { method: request.method } : {}),
     }),
-    detail: dialogText(isNetwork ? "common.moduleNetworkApprovalDetail" : "common.moduleApprovalDetail"),
+    detail: dialogText(`common.${scope}Detail`),
     buttons: [
-      dialogText(isNetwork ? "common.moduleNetworkApprovalAllow" : "common.moduleApprovalAllow"),
+      dialogText(`common.${scope}Allow`),
       dialogText("common.moduleApprovalDeny"),
     ],
     defaultId: 1,
@@ -59,7 +65,9 @@ const nativeModuleApprovalPort: ModuleApprovalPort = async (request) => {
   const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
   if (response !== 0) {
     // 命令**没执行** —— 宿主会把这个原因包成 approval_denied(REJECTED,可安全重来)。
-    throw Error(dialogText(isNetwork ? "common.moduleNetworkApprovalDenied" : "common.moduleApprovalDenied"));
+    throw Error(dialogText(request.scope === "danger"
+      ? "common.moduleDangerApprovalDenied"
+      : request.scope === "network" ? "common.moduleNetworkApprovalDenied" : "common.moduleApprovalDenied"));
   }
 };
 

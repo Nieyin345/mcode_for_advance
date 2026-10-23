@@ -67,4 +67,14 @@ export const en = {
   "common.moduleNetworkApprovalDetail": "Approving runs this call, and it will reach the network. Modules that do not declare it cannot reach the network at all.",
   "common.moduleNetworkApprovalAllow": "Allow this network call",
   "common.moduleNetworkApprovalDenied": "The user declined this network call; nothing was executed.",
+  // 【T19】`scope === "danger"`: the extension called a high-risk RPC via `core.app.call`
+  // (`git.push` / `project.delete` / `modules.install` …). The write-scope copy would mislead:
+  // it asks about "a write action on a file", which is simply wrong for `git.push`, and it
+  // never says that install-time grants cannot substitute, that there is no "always allow",
+  // and that this may be irreversible.
+  "common.moduleDangerApprovalTitle": "Extension module wants a high-risk action",
+  "common.moduleDangerApprovalMessage": "Module \"{module}\" asks to call the high-risk method {method}.\nResource bound to this run: {path}",
+  "common.moduleDangerApprovalDetail": "Each high-risk call is approved on its own: install-time grants cannot substitute for this dialog, and there is no \"always allow\". The next call asks again. If you deny it, nothing happens and you can safely retry.",
+  "common.moduleDangerApprovalAllow": "Allow just this once",
+  "common.moduleDangerApprovalDenied": "You denied this high-risk action; nothing was executed.",
 } as const;
