@@ -19,6 +19,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync,
 import { log } from "@main/lib/logger.js";
 import { migrateLegacyIntoDataRoot, dbPath as resolveDbPath } from "@main/lib/dataRoot.js";
 import { SESSION_COLUMNS, sessionsCreateSql } from "./sessionSchema.js";
+import { TASKS_CREATE_SQL } from "./taskSchema.js";
 import { withStatement } from "./repositories/withStatement.js";
 import { DEFAULT_LIBRARY_GROUPS, parseLibraryGroupsJson, LIBRARY_GROUPS_SETTING_KEY } from "@contracts/libraryTypes";
 import type { CommitResult } from "@contracts/commit";
@@ -281,6 +282,11 @@ function migrate(database: Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_scene_deployments_scene
       ON scene_deployments(scene_id, updated_at DESC);
+
+    /* 【T99】任务是一级对象（路线图 §3 第一条）。
+       新表，不涉及 sessionSchema 那套 inCreate 迁移机制 —— 见 taskSchema.ts 的说明。
+       （⚠️ 本段在 JS 模板字符串里，注释中不要用反引号。） */
+    ${TASKS_CREATE_SQL}
 
     /* ── 操作账本(MC-067 / ARC-009 步②)────────────────────────────────────
        本地 agent 经 app_api_call 调 Mcode 功能时的**可信幂等账本**。

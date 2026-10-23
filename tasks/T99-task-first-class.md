@@ -201,3 +201,192 @@ export const TASK_TABLE = {
 
 `tasks/T99-task-first-class.md` 末尾追加 `## 结果回写（2026-10-24）`：
 契约形状论证、表结构、IPC 三层、正负控、变异、`todos` 迁移的判断、提交 SHA。
+
+---
+
+## 结果回写（2026-10-24，C 会话）
+
+### 一、契约形状的三个判断（卡上要求论证）
+
+#### ① `done` 与 `accepted` 必须分开
+
+**路线图 §3 原文**：「**执行完成不等于验收通过**；失败应返修、重新验证……证据不够应标
+BLOCKED/FAIL，而不是报告成功。」这是硬规矩。
+
+**合成一个状态的后果，不只是少一个枚举值**：它会让「跑完了」和「跑对了」在数据上无法
+区分。而这个仓库反复记录过同一类缺陷——「测试绿着而问题还在」是它在测试层的同构。任务
+对象如果也合并，就会把同一类错误**抬进产品数据模型**：将来任何一个「任务完成率」的统计
+都会是假的，而且不会有任何东西提示它是假的。
+
+**实现上做了两层保证，不是一个枚举**：
+
+1. `TASK_EXECUTOR_STATUSES` 是不含 `accepted` / `rejected` 的**可断言集合**；
+2. `EXECUTOR_TRANSITIONS` 是**白名单**（不是黑名单）—— 新增状态默认无来源，必须显式想清楚。
+
+> **为什么白名单**：黑名单（「不能从 X 到 Y」）下新增一个状态默认处处可达。白名单让
+> 「新状态要先想清楚它能从哪来」变成一件必须做的事。
+
+#### ② `rejected` 必须能回到 `running`
+
+**路线图 §3**「失败应**返修**、重新验证」；**§5**「用户能完成、**返修并重新验收**」。
+
+如果 `rejected` 是终态，用户唯一的出路是「再建一个任务」—— 那么「这是同一个任务的第二次
+尝试」这个事实就丢了，而这恰恰是用户最需要看到的（「这个任务我退回过三次」）。
+
+**轮次的语义我在实现中改过一次，值得记下来**：
+
+第一版让 `reopen` 和 `accept` 都 `round + 1`，于是「退回 → 重开 → 通过」走 1→2→3，
+**而用户只给过两次结论**。修正后的判据是：
+
+> **`round` = 用户给出过几次验收结论。** `accept` 和 `reject` 各 +1，`reopen` 不动。
+
+| 事件 | round |
+|---|---|
+| 首次验收通过 | 1 |
+| 退回（第 1 次结论） | 1（状态 `rejected`） |
+| 返修（`reopen`） | 1 不变 |
+| 第二次通过 | 2 |
+
+套件里有一条断言专门钉这个（`返修本身不推进轮次（仍是 1）`）。
+
+#### ③ `origin` 要能指向多来源
+
+**路线图 §3**「可以由**聊天、工作流、自动化和多个 Agent** 关联或推进」。
+
+拆成两个字段，因为「发起」和「推进」是两件事：
+
+| 字段 | 语义 | 基数 |
+|---|---|---|
+| `origin` | **谁发起的** | 恰好一个 |
+| `links.sessionIds` / `links.workflowIds` | **还有谁在推进它** | 零到多 |
+
+**如果塞进一个字段会怎样**：`origin` 被后加入的推进者覆盖掉，「谁发起」这个事实就丢了。
+套件有一条断言专门验这个：`关联另一个会话` 之后 `发起者不变（关联 ≠ 改归属）`。
+
+---
+
+### 二、表结构
+
+`apps/desktop/src/main/store/taskSchema.ts`：
+
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+  id, goal, status,
+  depends_on TEXT DEFAULT '[]',   -- JSON
+  origin TEXT NOT NULL,           -- JSON
+  links TEXT DEFAULT '{"sessionIds":[],"workflowIds":[]}',
+  artifacts TEXT DEFAULT '[]',    -- JSON
+  acceptance TEXT,                -- JSON 或 NULL
+  failure_reason TEXT, rejection_reason TEXT,
+  created_at, updated_at INTEGER NOT NULL
+);
+CREATE INDEX idx_tasks_status / idx_tasks_created;
+```
+
+**列的选择遵循 `scene_deployments` 的惯例**：可查询的投影单独成列（`status` / `created_at`），
+形状复杂的放 JSON。`goal` 单独成列是因为它是**列表页要显示的那句话**，每次列表解一遍
+JSON 只为取一个字段不划算。
+
+**会不会触发迁移？——不会。** 这一点卡上要求查，结论是：
+
+`sessionSchema.ts` 的 `inCreate` 那套是**给已有表加列**设计的（`inCreate: false` = 老库走
+`ALTER` 补列）。**`tasks` 是新表，`CREATE TABLE IF NOT EXISTS` 本身幂等**，老库新库跑一遍都
+一样。所以 `taskSchema.ts` **故意**长得和 `sessionSchema.ts` 不一样——这个差异写进了那个文件
+的注释，免得下次有人以为是漏了。
+
+**踩到一次 `db.ts` 自己的注释警告过的坑**：我在建表 SQL 的注释里写了反引号（`` `inCreate` ``），
+而整段在一个 JS 模板字符串里 → `TS1005: ',' expected`。`db.ts` 原文就写着「SQL 注释里不要写
+反引号」。已改成不带反引号的写法并补了一句提醒。
+
+---
+
+### 三、IPC 三层
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| 契约 | `packages/contracts/src/ipc/task.ts`（新） | `Task` / `TaskStatus` / 四个输入 schema / 8 个通道常量 |
+| 契约索引 | `rpcMap.ts` | 4 个**面向渲染端**的方法（`task.list/get/accept/reject`）+ 8 个通道 |
+| preload | `preload/index.ts` | `task` 命名空间四项 |
+| 主进程 | `main/ipc/task.ts`（新） | 8 个 handler |
+| 注册 | `main/ipc/index.ts` | `registerTaskHandlers(ipc)` |
+
+**为什么多出 4 个不面向渲染端的通道**（`task.create` / `transition` / `reopen` / `link`）：
+它们是**执行方**的路径，不该进 `RpcMap`（那会让渲染端和扩展也能调）。但做成 IPC handler
+是为了让无头套件**驱动与生产同一段代码** —— 如果只写成一个导出函数，套件验的和生产走的就是
+两份实现（这正是 CLAUDE.md 第 15 条说的「提到它 ≠ 守着它」的另一种形态）。
+
+---
+
+### 四、正控 / 负控 / 核心证明
+
+新套件 `apps/desktop/scripts/task-first-class-smoke/`，**27/27 通过**，**真建库**
+（`MCODE_SMOKE_DATA_ROOT` 指向 `mktemp` 目录）。
+
+| 组 | 断言 |
+|---|---|
+| **① 跨会话（核心证明）** | 不带 `sessionId` 列出全部；两个任务的 origin 不同会话；按 `sessionId` 筛只拿到该会话的 |
+| **② done ≠ accepted** | 新建 pending → running → done；**done 时 `acceptance === null`**；产物落在任务上；accept 后才是 accepted |
+| **③ 返修闭环** | done → rejected（退回理由存下）；**rejected → running**；返修不推进轮次；返修后能再次验收，记在第 2 轮 |
+| **④ 执行方写不了 accepted** | `task.transition` 传 `accepted` 被拒，且状态未变 |
+| ⑤ 状态机 | `pending → done` 被拒（没跑过不能说做完） |
+| ⑥ 验收前置 | `pending` 不能验收 |
+| ⑦ 多来源 | 关联另一个会话后，该会话也能查到；**发起者不变** |
+| ⑧ 持久化 | `dependsOn` / `origin.kind=workflow` 存得住读得回 |
+
+**「跨会话查得到」是「一级对象」的核心证明**——如果 `task.list` 只能查当前会话的任务，
+那它就还是「会话的字段」，只是换了个表。套件第 ① 组用三条断言钉住这件事。
+
+---
+
+### 五、变异验证（两条，都精确变红）
+
+| # | 变异 | 结果 |
+|---|---|---|
+| **M1** | `accept` 的 SQL 从 `status='accepted'` 改成 `status='done'`（**把两个状态合并**） | **25/27**：`★ accept 之后才是 accepted — "done"`、`返修后能再次验收通过 — "done"` |
+| **M2** | `reopen` 的 SQL 从 `status='running'` 改成 `status='rejected'`（**让 rejected 变终态**） | **25/27**：`★ rejected → running（返修） — "rejected"` |
+
+**M1 正是卡上要求的变异**（把 `done` 和 `accepted` 合成一个值），两条断言同时红且 detail
+直接显示 `"done"` —— 精确指出「执行完成被当成了验收通过」。
+
+两次还原均 `cmp -s` 逐字节一致，SHA-256 回到 `a8a2aa23…`，还原后复跑 27/27。
+
+---
+
+### 六、`todos` 迁移——**这轮不做**，理由
+
+卡上倾向不做，我同意，理由比"先立起来"更具体：
+
+1. **`todos` 没有 ID**，迁移要生成 ID，而生成规则一旦定下就难改（是 `task_` 前缀 + 内容哈希？
+   还是纯随机？两种在「幂等迁移」上的后果不同）；
+2. **迁移必须可逆**，而 `todos` 是会话内的**有序数组**，`tasks` 是**无序集合** —— 顺序信息
+   在反向迁移时要额外存，这本身是个设计决定；
+3. **两者不冲突**：`tasks` 立起来之后，`todos` 可以继续工作。用户不会因为没迁移而用不上——
+   他今天看到的就是 `todos`，而 `tasks` 是新能力的载体（跨会话、验收、返修）。
+
+**建议**：等 `tasks` 有了第一个真实写入方（T100 任务中心或某个执行路径）之后再做迁移，
+那时才知道哪些字段真的被用到。
+
+---
+
+### 七、验证结果
+
+| 项 | 结果 |
+|---|---|
+| `task-first-class-smoke` | **27/27** |
+| 双包 typecheck | contracts **0**、desktop **0** |
+| 未跑全量 | 按用户规矩 |
+| 未起 Electron | 按卡边界 |
+
+**边界遵守**：未改 `sessionSchema.ts` 的 `todos` 列、未动 UI、未碰他人文件。
+
+---
+
+### 八、留给 T100 的接口
+
+任务对象已经可以承载路线图 §5 的核心闭环，但**还缺三件**（都不在本卡边界内）：
+
+1. **谁调用 `task.create`** —— 现在只有 handler，没有生产路径建任务；
+2. **审批落库** —— 路线图 §3 要求任务有「审批」，而当前审批仍是即时卡片、不落库；
+3. **任务中心 UI** —— 六项能力（列表/状态/失败/审批/产物/证据）的重合度见 T96 调查。
+
+`task.list` 的跨会话能力已经就绪，T100 可以直接用它做「全部任务」页。

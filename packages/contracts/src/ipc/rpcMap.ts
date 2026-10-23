@@ -1,5 +1,6 @@
 import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
 import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflightIpcResult, SceneApprovalInput, SceneApprovalResult, SceneApplyInput, SceneApplyIpcResult, SceneResumeInput, SceneResumeIpcResult, SceneDeploymentListInput, SceneDeploymentListIpcResult } from "./scene.js";
+import type { Task, TaskListInput, TaskGetInput, TaskAcceptInput, TaskRejectInput } from "./task.js";
 import type {
   DocumentReadInput, DocumentEditInput, DocumentConvertInput, DocumentIpcResult, DocumentCapabilities,
   DocumentAppsInput, DocumentAppsResult, DocumentToolsListInput, DocumentToolsListResult,
@@ -1166,6 +1167,16 @@ export interface RpcMap {
   "scene.resume": (input: SceneResumeInput) => Promise<SceneResumeIpcResult>;
   /** 【MC-002】**列出某个场景已落盘的部署记录**(重启后发现未完成部署的唯一读通道)。**只读**,不执行任何步骤。`deploymentId` 只活在渲染端内存里,重启后没有这条通道用户就永远看不到盘上那份 `partial/failed`。`resumable` 只是"状态上还能接着跑"的只读推导,**不是授权** —— 真正续跑仍要用户重新预览 + 批准(`scene.approve`),旧 grant 可能已过期。**只有桌面渲染端够得到它**(agent 侧 blocked,手机端 unsupported)。 */
   "scene.listDeployments": (input: SceneDeploymentListInput) => Promise<SceneDeploymentListIpcResult>;
+
+  /* 【T99】任务是一级对象（路线图 §3 第一条 / §5 核心闭环）。
+     `list` 默认**跨会话**，这是「一级对象」的核心证明 —— 只查当前会话的话，
+     它就还是「会话的字段」，只是换了个表。 */
+  "task.list": (input: TaskListInput) => Promise<{ tasks: Task[] }>;
+  "task.get": (input: TaskGetInput) => Promise<Task | null>;
+  /** 验收通过。**只有用户能调**（执行方路径够不到这两个方法）。 */
+  "task.accept": (input: TaskAcceptInput) => Promise<Task>;
+  /** 退回返修。 */
+  "task.reject": (input: TaskRejectInput) => Promise<Task>;
   /** 【ARC-007】读文档结构(docx 块 / pptx 页 / xlsx 表)。**只读**,路径必须落在已知工作区内。 */
   "document.read": (input: DocumentReadInput) => Promise<DocumentIpcResult>;
   /** 【ARC-007】按 GenOffice ops 编辑并保存。`dryRun` 只演练。路径同样过工作区围栏。 */
@@ -2196,6 +2207,14 @@ export const IPC = {
   SCENE_RESUME: "scene:resume",
   /** 【MC-002】重启后**发现**未完成部署(只读;桌面端够得到,agent 侧 blocked)。 */
   SCENE_LIST_DEPLOYMENTS: "scene:listDeployments",
+  TASK_LIST: "task:list",
+  TASK_GET: "task:get",
+  TASK_ACCEPT: "task:accept",
+  TASK_REJECT: "task:reject",
+  TASK_TRANSITION: "task:transition",
+  TASK_REOPEN: "task:reopen",
+  TASK_LINK: "task:link",
+  TASK_CREATE: "task:create",
   DOCUMENT_READ: "document:read",
   DOCUMENT_EDIT: "document:edit",
   DOCUMENT_CONVERT: "document:convert",

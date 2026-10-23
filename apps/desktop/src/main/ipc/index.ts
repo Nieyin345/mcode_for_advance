@@ -1,5 +1,6 @@
 import { registerProjectInitHandlers } from "./projectInit.js";
 import { registerSceneHandlers } from "./scene.js";
+import { registerTaskHandlers } from "./task.js";
 import { registerDocumentHandlers, documentRepoRoot } from "./document.js";
 import { registerDocumentViewHandlers, isApprovedDocumentViewOpen } from "./documentView.js";
 import { resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
@@ -153,6 +154,7 @@ export function registerIpcHandlers(): void {
   registerMemoryHandlers(ipc);
   registerProjectInitHandlers(ipc);
   registerSceneHandlers(ipc);
+  registerTaskHandlers(ipc);
   registerDocumentHandlers(ipc);
   // T28: choose the actual upstream factory only after resource validation.
   configureGenofficeNativeViews(resolveGenofficeCliPath(documentRepoRoot()));

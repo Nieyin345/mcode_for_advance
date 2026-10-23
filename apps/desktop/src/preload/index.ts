@@ -1026,6 +1026,15 @@ const api = {
     // 【MC-002】重启后**发现**未完成部署(只读,不执行)—— 渲染端据此恢复"有未完成部署"入口。
     listDeployments: ((input) => ipcRenderer.invoke(IPC.SCENE_LIST_DEPLOYMENTS, input)) as RpcMap["scene.listDeployments"],
   },
+  // 【T99】任务是一级对象。**list 默认跨会话** —— 只查当前会话的话，它就还是
+  // 「会话的字段」，只是换了个表（路线图 §3 第一条的核心要求）。
+  task: {
+    list: ((input) => ipcRenderer.invoke(IPC.TASK_LIST, input)) as RpcMap["task.list"],
+    get: ((input) => ipcRenderer.invoke(IPC.TASK_GET, input)) as RpcMap["task.get"],
+    // 验收 / 退回 = **用户动作**。执行方够不到这两条（见 main/ipc/task.ts 与 policy.ts）。
+    accept: ((input) => ipcRenderer.invoke(IPC.TASK_ACCEPT, input)) as RpcMap["task.accept"],
+    reject: ((input) => ipcRenderer.invoke(IPC.TASK_REJECT, input)) as RpcMap["task.reject"],
+  },
   // 【ARC-007】文档能力(GenOffice CLI 适配层)。用户点按钮与 Agent 的 app_api_call
   // 走同一段主进程代码;路径围栏在宿主侧复核。
   document: {
