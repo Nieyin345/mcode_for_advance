@@ -69,6 +69,7 @@
 | T48 | AI 看不见 Node-RED 节点 | P0 | T8+T21 | CC | ❌ 关闭（前提不成立：`node_types_list` 一直存在，在 `mcp/mcodeServer.ts`） |
 | T49 | **扩展线核实 → 撞出主界面首帧白屏** | P0 产品缺陷 | T41 | GG | ✅ done（7/7） |
 | T51 | **给模型「工作流怎么搭」的规范**（对齐 T47 的设计指南） | P0 | T47 | EE | ✅ done（33/33） |
+| T52 | **`setting.set` 可覆盖凭据**（读侧拦了，写侧没拦） | **P0 安全** | T33 | HH | ✅ done（27/27） |
 | T53 | **多方会议（代理互相讨论）** | P2 | agentMail 3.17 | FF | ✅ done（30/30，产品代码零改动） |
 | T54 | **两套工具面分开：`app_api_list` 看不见 `mcode-workflow` 的 14 个工具** | **P1 可发现性** | 无 | DD | ✅ done（17/17） |
 
