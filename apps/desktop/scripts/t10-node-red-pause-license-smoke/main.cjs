@@ -44,8 +44,12 @@ function makePackage(root, relative, name, version, license, { licenseText = fal
 function copyLicenseTree(root, manifest) {
   const target = path.join(root, "licenses", "node-red");
   fs.mkdirSync(target, { recursive: true });
+  // Node 22 on Windows crashes in cpSync's native fast path when the path has
+  // non-ASCII characters (nodejs/node#54476, #63970). Passing any filter forces
+  // the JS implementation, which is unaffected. Keep filter even though it
+  // accepts everything: it is what selects the JS path.
   fs.cpSync(path.join(SOURCE_ROOT, "materials"), path.join(target, "materials"), {
-    recursive: true, dereference: false,
+    recursive: true, dereference: false, filter: () => true,
   });
   put(path.join(target, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
   put(path.join(target, "THIRD-PARTY-LICENSES.txt"), renderNodeRedLicenseNotice(manifest, target));
@@ -349,7 +353,9 @@ try {
     // the license tree with the mutated manifest and dropping the stale marker.
     const tree = path.join(base, "schema-scratch-" + crypto.randomBytes(4).toString("hex"));
     original(tree, SOURCE_MANIFEST);
-    fs.cpSync(tree, root, { recursive: true, dereference: false });
+    // Node 22 在 Windows 上对非 ASCII 路径的 native fast path 会崩（nodejs/node#54476）。
+    // 任何 filter 都会强制走 JS 实现 —— 见本文件 :47 的完整说明。
+    fs.cpSync(tree, root, { recursive: true, dereference: false, filter: () => true });
     const licenseRoot = path.join(root, "licenses", "node-red");
     put(path.join(licenseRoot, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
     put(path.join(licenseRoot, "THIRD-PARTY-LICENSES.txt"), renderNodeRedLicenseNotice(manifest, licenseRoot));

@@ -1,6 +1,6 @@
 # T89｜Node 22.21.1 的 `fs.cpSync` 在中文路径上崩溃（上游回归，不是仓库缺陷）
 
-- Status: **blocked — 根因是 Node 22.21.1 的 `fs.cpSync` 在中文路径上崩溃，修法涉及环境决策**（见末尾回写）
+- Status: delivered（套件已修，见「结果回写（二）」；`dataRoot` 的 P0 留给 T90）
 - Category: **既有故障（不是今天引入的）**
 - Priority: **P1** —— 两套 node-red 许可套件一直"失败"着，但被误判成环境问题
 - Depends on: 无
@@ -346,3 +346,111 @@ fs.cpSync(path.join(base, '副桌面'), path.join(base, 'out'), { recursive: tru
 ### 七、提交
 
 `7a43c848` —— `docs(T89): the crash is Node 22.21.1's fs.cpSync on a non-ASCII path`（只有本卡回写，无代码改动）。
+
+## 结果回写（二）— 修复（2026-10-24）
+
+### 一、根因更正：**不是路径长度，是非 ASCII 字符**
+
+总控先判「路径长度 104 阈值」，我用 2×2 矩阵推翻：
+
+| 条件 | 路径长 | 结果 |
+|---|---|---|
+| 短 + 英文 | 53 | ✅ OK |
+| **短 + 中文** | **48** | ❌ `0xC0000005` |
+| **长 + 英文** | **132** | ✅ **OK** |
+| 长 + 中文 | 108 | ❌ |
+
+**132 字符纯英文正常，48 字符中文崩。** 长度不是变量。
+
+> 总控测到「长路径崩、短路径 OK」，是因为把目录拷到临时目录时**同时去掉了中文并缩短了路径**——两个变量一起变。这是「变异同时改两件事」，和我在 T87 踩的坑同型。
+
+**影响面**：中文、`café`、`Müller`、`Тест`、`😀`、全角 `Ａ` **全部崩**。不是「中文用户」，是「所有非 ASCII 路径」。
+
+### 二、上游已确认（不是猜测）
+
+| Issue | 内容 |
+|---|---|
+| **nodejs/node#54476**（2024-08 起） | `fs.cpSync` 在含中文的目录上崩溃，**"How often does it reproduce? — always"** |
+| **nodejs/node#59636** | Node 自己的 CI：`parallel/test-fs-cp-sync-unicode-folder-names`，**`exitcode: 3221226505`** —— 与我们测到的完全一致 |
+| **nodejs/node#63970** | 不带 `filter` 时走 **native copyDir fast path**；**传 `filter` 会回退到 JS 实现** |
+
+### 三、修法：`filter: () => true`
+
+实测三种形态：
+
+```
+无 filter          0xC0000005   崩
+filter:()=>true    0x0          OK，文件真的复制了
+force:true         0xC0000005   崩（force 不绕过）
+```
+
+**改动 4 处**（每套各 2 处）：
+
+| 文件 | 行 | 用途 |
+|---|---|---|
+| `t10-.../main.cjs` | `:51` | `copyLicenseTree` —— **原崩溃点** |
+| `t10-.../main.cjs` | `:358` | 另一处递归拷贝 |
+| `t88-.../main.cjs` | `:41` | `copyLicenseTree` —— **原崩溃点** |
+| `t88-.../main.cjs` | `:349` | 另一处递归拷贝 |
+
+**注释按「写 issue 编号、不写『这个仓库不能用 cpSync』」写**：
+
+```ts
+// Node 22 on Windows crashes in cpSync's native fast path when the path has
+// non-ASCII characters (nodejs/node#54476, #63970). Passing any filter forces
+// the JS implementation, which is unaffected. Keep filter even though it
+// accepts everything: it is what selects the JS path.
+```
+
+**为什么不写「这个仓库不能用 `cpSync`」**：前者随 Node 修复而「不再需要」但**不会误导**（读到的人会去查 issue）；后者**永远误导**。
+
+### 四、验证（`spawnSync(process.execPath, ...)`，不经 bash）
+
+| 套件 | status | ok 行 |
+|---|---|---|
+| `t10-node-red-pause-license-smoke` | **0** | 15 |
+| `t88-node-red-license-closure-smoke` | **0** | 13 |
+
+> ⚠️ **必须用 `spawnSync(process.execPath, ...)` 读 `status`**，不能用 `bash run.sh | tail; echo $?`（拿的是 `tail` 的），也不能只读 `bash` 的退出码（bash 把 `>=128` 折叠成 127，`0xC0000409` 和「command not found」长得一样）。
+
+### 五、变异：撤掉 `filter` → 进程真的死掉
+
+只撤掉**崩溃点**那一处（`copyLicenseTree`），保留第二处：
+
+| 套件 | status | ok 行 |
+|---|---|---|
+| `t10` | **3221226505** (`0xC0000409`) | **3** |
+| `t88` | **3221226505** (`0xC0000409`) | **1** |
+
+**与修复前的数字逐字相同**（修复前实测也是 t10=3 条 ok、t88=1 条 ok）。**变异精确复现了原始故障。**
+
+**这个变异和今天其他变异不同**：它不让断言变红，**它让测试进程本身崩掉**。`cmp` 逐字节还原，`grep MUTATION` = 0。
+
+### 六、回归
+
+| 套件 | 结果 |
+|---|---|
+| `t73-pattern-wiring-smoke` | 40/40 |
+| `t65-deck-pattern-smoke` | 46/46 |
+| `t43-document-ai-design-pipeline-smoke` | 65/65 |
+| `t47-design-guide-smoke` | 27/27 |
+
+未跑全量、未起 Electron。
+
+### 七、`dataRoot.ts` 的 P0 —— **没做，按总控决定留给 T90**
+
+`apps/desktop/src/main/lib/dataRoot.ts` `:150`（`moveIfNeeded` 迁移 fallback）与 `:198`（用户换数据目录）同样用 `cpSync`：
+
+- **中文用户名（`C:\Users\张伟\`）必崩**，`try/catch` 接不住，进程直接死；
+- 修法是同一个 `filter: () => true`；
+- **但 `dataRoot` 搬的是用户数据（可能几百 MB），走 JS 实现会比 native 慢，性能要实测** —— 这是 T90 的事。
+
+**我没有动 `dataRoot.ts`**：它不在 T89 的可写边界内，且总控明确说「不在这轮修」。
+
+### 八、`dataRoot.ts:154` 的注释与 T90 打架（已报告，未改）
+
+`0412b0a4` 写的「修复方向见 tasks/T90（**非 ASCII 时降级到手写递归**）」与 T90 卡定的 `filter: () => true` 不一致。**建议改成只指卡、不写做法**（方案写在注释里，方案一变注释就成了错误信息）。
+
+### 九、提交
+
+`<见提交>`。
