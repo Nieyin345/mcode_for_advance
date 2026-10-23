@@ -37,6 +37,12 @@ export interface DeckElement {
   w?: number;
   h?: number;
   fill?: string;
+  /**
+   * 【T100b】文字的纵向对齐。`genoffice guide slides spec`：
+   * `paragraphs` is optional label text, **vertically centered unless `valign` says otherwise**。
+   * 只对 `shape` 的标签文字有意义；`text` 元素也有，但本模块目前只用到它的卡片标签语义。
+   */
+  valign?: "top" | "middle" | "bottom";
   paragraphs?: Array<{ runs?: Array<{ text?: string; sizePt?: number }> }>;
 }
 
@@ -397,6 +403,56 @@ export const WHITESPACE_REFERENCE_LINE: Readonly<Record<"loose" | "tight", numbe
 export const CARD_WHITESPACE_REFERENCE_LINE = 0.45;
 
 /** 卡片内的文字底边到卡底的留白 / 卡片高。**每张卡各自算**，调用方逐张判线。 */
+/**
+ * 【T100b】**卡片自身的标签文字**算出的「文字底边」，**只对贴顶的标签返回**。
+ *
+ * ## 为什么要管它
+ *
+ * `cardBottomGapRatios` 原先只扫**独立的 `text` 元素**（`textsOf`）。但 spec 里
+ * `shape` 也能带 `paragraphs` —— `genoffice guide slides spec` 原文：
+ *
+ * > `paragraphs` is optional label text, **vertically centered unless `valign` says otherwise**.
+ *
+ * 实测（真 CLI 造包再 `slides read` 读回）：`valign: "top"` + 卡片 h=480 时，
+ * **卡片一个像素都没收缩**（`cy` 仍是 4572000 EMU = 480px），文字贴顶、下面 440px 空着。
+ * 上游 `slides audit` 对这个形态报 `issues: []` —— **上游也看不到**。
+ *
+ * ## ⚠️ 只有 `valign: "top"` 才返回，其余一律 `null`
+ *
+ * **第一版实现按 `valign` 折算出三种位置都返回，结果居中的标签被误报了。**
+ * 数学上很直观：居中时 `textBottom = top + h/2 + textH/2`，
+ *
+ * ```
+ * ratio = (cardBottom - textBottom) / cardH = 1/2 - textH/(2·cardH) ≈ 0.47（恒等，与卡高无关）
+ * ```
+ *
+ * **只要卡片比文字高不少，居中标签的 ratio 就恒在 0.47 附近，永远压线报出来** ——
+ * 而「居中的标签下面有一半空白」是**设计本来如此**，不是缺陷。
+ *
+ * 这条判据问的是「**内容没跟上卡片高度**」，那只有一个形态：**文字贴顶、下方空着**。
+ * 贴底的标签同理不空。所以只有 `top` 参与。
+ *
+ * 未设 `valign` 时默认是 **middle**（向导原文），同样不参与。
+ *
+ * 文字高度按字号估（`sizePt × 1.2 × 段数`，1.2 是常见行高倍数）—— 这是**保守下限**：
+ * 估小了只会让「空」更容易被判出来。返回 `null` 表示这张卡没有可用的标签文字。
+ */
+function embeddedTopAnchoredTextBottom(card: DeckElement): number | null {
+  const valign = card.valign;
+  // 只有显式贴顶才参与 —— 见上面那段「第一版误报」的推导。
+  if (valign !== "top") return null;
+  const paragraphs = card.paragraphs;
+  if (!Array.isArray(paragraphs) || paragraphs.length === 0) return null;
+  let maxPt = 0;
+  for (const p of paragraphs) {
+    for (const r of p.runs ?? []) {
+      if (typeof r.sizePt === "number" && r.sizePt > maxPt) maxPt = r.sizePt;
+    }
+  }
+  if (maxPt <= 0) return null; // 没有字号就没法估高度，按「看不到」处理
+  return (card.y ?? 0) + maxPt * 1.2 * paragraphs.length;
+}
+
 function cardBottomGapRatios(page: DeckPageSpec): Array<{ ratio: number; card: DeckElement }> {
   const out: Array<{ ratio: number; card: DeckElement }> = [];
   for (const c of cardsOf(page)) {
@@ -404,8 +460,12 @@ function cardBottomGapRatios(page: DeckPageSpec): Array<{ ratio: number; card: D
       (t) => (t.x ?? 0) >= (c.x ?? 0) && (t.y ?? 0) >= (c.y ?? 0) &&
         (t.y ?? 0) < (c.y ?? 0) + (c.h ?? 0) && (t.x ?? 0) < (c.x ?? 0) + (c.w ?? 0),
     );
-    if (inside.length === 0) continue;
-    const textBottom = Math.max(...inside.map((t) => (t.y ?? 0) + (t.h ?? 0)));
+    // 【T100b】独立 text 元素优先；没有的话看卡片**自身的**贴顶标签（见上）。
+    const embedded = inside.length === 0 ? embeddedTopAnchoredTextBottom(c) : null;
+    if (inside.length === 0 && embedded === null) continue;
+    const textBottom = inside.length > 0
+      ? Math.max(...inside.map((t) => (t.y ?? 0) + (t.h ?? 0)))
+      : embedded!;
     const cardBottom = (c.y ?? 0) + (c.h ?? 0);
     out.push({ ratio: (cardBottom - textBottom) / (c.h ?? 1), card: c });
   }

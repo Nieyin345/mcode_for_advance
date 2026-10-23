@@ -340,3 +340,49 @@ const threshold = type === "cover" || type === "closing" ? loose : tight;
 | 4 | 只在 build 后给 | 把 `slides check` 路由进工具面，让模型能逐页查（guide 要求的流程） |
 
 **未改任何产品代码。** 夹具在 `.tmp/t85/`，探针已删。
+
+## 追加：漏报抽查（2026-10-24）
+
+> 总控：**「你验过 `heading_skip` 和 `missing_sheet_ref` 能报，但没验另外 8 项 / 6 项会不会漏。」**
+
+### 抽了三项（都是模型真实会犯的错）
+
+| 判据 | 我造的坏样本 | 结果 |
+|---|---|---|
+| `empty_heading` | docx 里一个 `## `（二级标题但无文字） | **报**：`block[2]` `"heading level 2 has no text"` |
+| `placeholder_left` | docx 正文含 `{{company_name}}` | **报**：`block[1]`，还带上下文 `#1 "这里应该写 {{company_name}} 的年度报告。"` |
+| `number_overflow` | xlsx 一个 39 位数字在默认列宽 | **报**：`Sheet1!A:A` `A2 "1.00000E+11" needs about 74 px, the column is 59 px`，附 `suggest: set_col_width widthPx 81` |
+
+**正控**：干净 docx `no issues found (10 checks)`、干净 xlsx `no issues found (8 checks)`。
+
+### 一次真实的假阴性，和它为什么不是缺陷
+
+`number_overflow` 第一次**没报**。我差点记成漏报。
+
+查下来是**我的样本造错了**：
+
+```bash
+$ genoffice sheet read overflow.xlsx --where number --json
+{"summary": "Sheet1!A1:B2: 0 number cells"}
+```
+
+**那个 39 位数字被 `create --from` 存成了文本**，而 `number_overflow` 的判据是：
+
+```ts
+const number = Number(c.value)
+if (!Number.isFinite(number)) continue   // ← 文本直接跳过
+```
+
+改成 **JSON 数字字面量**后立刻报出来。
+
+**这和 T82 里 markdown / html 那两条是同一类**：**判据没报，是因为它从来就不负责那个输入形态**，不是它失效了。
+
+### 结论
+
+**抽查的 3 项全部正常，没有发现漏报。** 但要注意：
+
+- 这只覆盖了 **3/10 + 3/8** 项（`heading_skip`/`missing_sheet_ref` 之前验过，共 2+3=5 项）；
+- **`field_not_evaluated` / `broken_ref` / `toc_stale` / `missing_image` / `chart_empty` / `pending_revisions` / `unresolved_comments`（docs 剩 7 项）与 `formula_not_evaluated` / `defined_name_broken` / `chart_ref` / `placeholder_left` / `rules_present`（sheet 剩 5 项）未验**；
+- 剩余 12 项里有几项需要**真实带批注/修订/图表的文档**才能造，成本比今天这三项高一个量级。
+
+**不能把「抽了 3 项都好」说成「10 项都好」** —— 这正是 T77 那条「3/19 不能推成 19/19」的同型。

@@ -6,7 +6,7 @@
  *
  * 没有负控的判据等于没验（T24 的 59/59 就是这么绿着漏掉缺陷的）。
  */
-import { checkDeckPatterns, NOT_IMPLEMENTED, type DeckPageSpec } from "@main/document/deckPatternCheck.js";
+import { checkDeckPatterns, NOT_IMPLEMENTED, type DeckPageSpec, type DeckElement } from "@main/document/deckPatternCheck.js";
 
 let failures = 0;
 let total = 0;
@@ -375,6 +375,47 @@ console.log("\n[T83] 多卡各报 / x 坐标 / 跨页 page=null");
   ]};
   const oneF = checkDeckPatterns([one]).findings.filter(f => f.rule === "layout.whitespace");
   check("★ 单页判据的 page 仍是数字（0）", oneF.length > 0 && oneF.every(f => f.page === 0), { pages: oneF.map(f => f.page) });
+}
+
+
+/* ── 【T100b】卡片自带的标签文字（`shape.paragraphs`） ──
+ *
+ * 从前判据只扫**独立的 `text` 元素**。但 `genoffice guide slides spec` 说 shape 的
+ * `paragraphs` 是 optional label text —— 模型把文字写进卡片里是更自然的写法，而
+ * 那样的空卡片**永远不进入判据视野**（上游 `slides audit` 也看不到）。
+ *
+ * ⚠️ **只有 `valign: "top"` 才该参与**：居中标签的 ratio 恒 ≈ 0.47（与卡高无关），
+ * 而「居中标签下面有一半空白」是设计本来如此。 */
+console.log("\n[T100b] 卡片自带的标签文字");
+{
+  const cardWithLabel = (valign?: "top" | "middle" | "bottom"): DeckPageSpec => ({
+    elements: [
+      { type: "shape", shape: "roundRect", x: 80, y: 160, w: 320, h: 480, fill: "#1F3A5F",
+        ...(valign ? { valign } : {}),
+        paragraphs: [{ align: "center", runs: [{ text: "标签", sizePt: 24 }] }] } as DeckElement,
+    ],
+  });
+
+  eq("★ T100b 负控：卡片内贴顶标签 + 高卡 → 报（改前完全看不到）",
+    checkDeckPatterns([cardWithLabel("top")]).findings.filter(f => f.rule === "layout.card-whitespace").length, 1);
+
+  eq("★ T100b 正控：卡片内**居中**标签（默认 valign）→ 不报（居中不算空）",
+    checkDeckPatterns([cardWithLabel(undefined)]).findings.filter(f => f.rule === "layout.card-whitespace").length, 0);
+
+  eq("★ T100b 正控：显式 middle → 不报",
+    checkDeckPatterns([cardWithLabel("middle")]).findings.filter(f => f.rule === "layout.card-whitespace").length, 0);
+
+  eq("★ T100b 正控：贴底 → 不报（内容在底部，下沿不空）",
+    checkDeckPatterns([cardWithLabel("bottom")]).findings.filter(f => f.rule === "layout.card-whitespace").length, 0);
+
+  // 独立 text 元素仍然优先：卡片里有独立 text 时，即使也有 paragraphs，以独立 text 为准。
+  const both: DeckPageSpec = { elements: [
+    { type: "shape", shape: "roundRect", x: 80, y: 160, w: 320, h: 480, fill: "#1F3A5F",
+      valign: "top", paragraphs: [{ runs: [{ text: "标签", sizePt: 24 }] }] },
+    { type: "text", x: 100, y: 600, w: 280, h: 30, paragraphs: [{ runs: [{ text: "底部说明", sizePt: 18 }] }] },
+  ]};
+  eq("★ T100b：有独立 text 时以它为准（不算空）",
+    checkDeckPatterns([both]).findings.filter(f => f.rule === "layout.card-whitespace").length, 0);
 }
 
 
