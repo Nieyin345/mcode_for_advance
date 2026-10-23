@@ -21,7 +21,7 @@
 | T0 | GenOffice 原生工具同轮往返接线 | P0 | 无 | A | ⬜ 待开工 |
 | T1 | Worktree ownership fail-closed | P0 | 无 | A | ✅ done |
 | T2 | Node-RED Deploy/Library 对账恢复 | P0 | 无；须声明独占文件 | B | ⬜ 待开工 |
-| T3 | Node-RED 触发器单一归属 | P0 | 与 T2/T4 协调文件边界 | B | ⬜ 待开工 |
+| T3 | Node-RED 触发器单一归属 | P0 | 与 T2/T4 协调文件边界 | B | ✅ done（54/54） |
 | T4 | 工作流 owner 跨进程 CAS | P0 | 与 T2/T3 协调文件边界 | B | ✅ done |
 | T5 | UI 视觉探针假阳性收敛 | P1 | 无 | A | ✅ done |
 | T6 | 审批键盘/焦点/拒绝回归 | P1 | 无 | A | ✅ done |

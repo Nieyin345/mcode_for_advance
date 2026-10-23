@@ -1,6 +1,6 @@
 # T3｜Node-RED 工作流触发器单一归属门禁
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：54/54，提交 1edec5d8）
 - Category: bug
 - Priority: P0
 - Depends on: coordinate with T2 and T4; do not modify their exclusive files
