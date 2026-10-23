@@ -1,6 +1,6 @@
 # T11｜GenOffice 许可证材料集成与发行门禁复验
 
-- Status: ready-for-agent
+- Status: done（发行仍阻塞：4 个包缺权利方材料，见回写末节）
 - Category: bug
 - Priority: P0 release blocker
 - Depends on: T9 source/provenance policy decision

@@ -1,6 +1,6 @@
 # T17｜文件类型路由统一：四份判据收成一份
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: bug
 - Priority: P0 foundation
 - Depends on: none

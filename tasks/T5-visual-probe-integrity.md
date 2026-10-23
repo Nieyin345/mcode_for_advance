@@ -1,6 +1,6 @@
 # T5｜UI 视觉探针假阳性收敛
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: bug
 - Priority: P1
 - Depends on: none; does not authorize real Electron session ownership

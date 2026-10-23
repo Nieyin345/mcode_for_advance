@@ -1,6 +1,6 @@
 # T12｜UI 工作台现状与用户旅程基线矩阵
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: task
 - Priority: P1 strategic baseline
 - Depends on: none

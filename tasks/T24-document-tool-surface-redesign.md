@@ -1,6 +1,6 @@
 # T24｜文档 AI 工具面重做：借鉴 docx-cli 的 Markdown-操作模型
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: feature
 - Priority: **P0 产品核心**
 - Depends on: T0（同轮往返已通，`6bd8289e`）
@@ -28,12 +28,12 @@ Read before work: `CLAUDE.md`、`docs/planning/product-roadmap/T13-genoffice-bas
 | 编辑器 | 工具数 |
 |---|---|
 | PDF | **45** |
-| Docs | **38** |
+| Docs | **40** |
 | Sheets | 18 |
 | Slides | 18 |
-| Markdown | 11 |
+| Markdown | 10 |
 | HTML | 8 |
-| **合计** | **138** |
+| **合计** | **139**（核查更正：原卡面写 138，逐项实测为 139） |
 
 T13 说的「PDF/MD/HTML 没有 AI 面板」不等于没有工具定义。
 
@@ -45,7 +45,7 @@ T13 说的「PDF/MD/HTML 没有 AI 面板」不等于没有工具定义。
 - **`## Before you say "done"`** —— 每个产物三行检查：`audit`/`check` 看 `detail.issues`，`render` 出图**亲眼看**。
 - **`## Pitfalls`** —— 14 条实操坑，含「0-based vs 1-based 索引」「EMU 不要自己乘 914400」「结构性编辑会重新编号」「`status:"partial"` 但 exit 0，必须查 status」。
 
-**当前 Mcode 走的是「138 个工具直接注入渲染端」，绕过了这套带 QA 门禁的流水线。**
+**当前 Mcode 走的是「139 个工具直接注入渲染端」，绕过了这套带 QA 门禁的流水线。**
 
 ### 事实三：`docx-cli` 提供了更好的模型，可借鉴
 
@@ -77,7 +77,7 @@ T13 说的「PDF/MD/HTML 没有 AI 面板」不等于没有工具定义。
 
 ## 目标
 
-把文档 AI 的工具面从「138 个 JSON 工具直注」改成**可发现 + Markdown 操作 + 带 QA 门禁**的三层模型。
+把文档 AI 的工具面从「139 个 JSON 工具直注」改成**可发现 + Markdown 操作 + 带 QA 门禁**的三层模型。
 
 ### 必须实现
 
@@ -87,7 +87,7 @@ T13 说的「PDF/MD/HTML 没有 AI 面板」不等于没有工具定义。
      - `document_tools_list({app, query?})` —— 列出该编辑器的工具
      - `document_tool_describe({tool})` —— 查参数与示例
      - `document_tool_call({tool, input})` —— 执行
-   - **138 个工具不再一次性进上下文。**
+   - **139 个工具不再一次性进上下文。**
    - 但**保留少量高频读工具常驻**（每个编辑器 ≤2 个），避免「读一段文字都要查三轮」。建议常驻：Docs `read_blocks`/`get_document_context`、Sheets `read_range`/`get_workbook_context`、Slides `read_slide`、PDF `pdf read`。
 
 2. **操作载体改为 Markdown（借鉴 docx-cli）**
@@ -111,7 +111,7 @@ T13 说的「PDF/MD/HTML 没有 AI 面板」不等于没有工具定义。
 
 ## 验收判据
 
-1. `document_apps()` / `document_tools_list()` / `document_tool_describe()` / `document_tool_call()` 四个方法存在且可用，138 个工具可按 app 与关键词检索到。
+1. `document_apps()` / `document_tools_list()` / `document_tool_describe()` / `document_tool_call()` 四个方法存在且可用，139 个工具可按 app 与关键词检索到。
 2. **上下文体积对比**：改造前一次性注入的工具定义 token 数 vs 改造后（仅常驻工具 + 按需查找）的 token 数。必须显著下降。
 3. **Markdown 操作 vs JSON ops 的 A/B**：同一编辑任务两种方式各做一次，记录 token、轮次、是否成功。
 4. **QA 门禁**：编辑后 `check`/`audit` 的 `detail.issues` 真的回到模型上下文（有断言）。
@@ -123,9 +123,16 @@ T13 说的「PDF/MD/HTML 没有 AI 面板」不等于没有工具定义。
 
 ## 边界与风险
 
-- 138 个工具里有 40 个（Docs 的联合类型/深度超限）无法进入共享 JSON-Schema 子集，T0 已按 withheld 明示。改造时**不得把它们悄悄丢掉**——要么单独通道，要么明确列出。
+- 139 个工具里有 40 个（Docs 的联合类型/深度超限）无法进入共享 JSON-Schema 子集，T0 已按 withheld 明示。改造时**不得把它们悄悄丢掉**——要么单独通道，要么明确列出。
 - `document_tool_call` 是新开的一条执行通路，**必须复用 T0 的可信渲染端绑定**，不得绕过 sender/session/document/callId 校验。
 - 若发现某编辑器的工具质量太差无法改造，**如实列出并建议重写，不要硬凑**。
+
+## 卡面数字更正（2026-10-23 核查）
+
+本卡正文原写「138 个工具」，逐项实测为 **139**：卡面表格里 **Docs 少算 2**（38 → 实测 40）、
+**Markdown 多算 1**（11 → 实测 10），其余四类一致（PDF 45 / Sheets 18 / Slides 18 / HTML 8）。
+正文与表格已按实测改为 139。回写区 §一 的原始记录（写于发现差异的当时）原样保留，
+那里已经写明「卡里写 138；差值来自 Docs 组合了两个 KB 工具——按实测 139 落目录」。
 
 ## 结果回写（2026-10-23）
 

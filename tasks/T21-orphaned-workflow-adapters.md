@@ -1,6 +1,6 @@
 # T21｜悬挂的适配器：把 NodeRedFlowStorage 与 workflowMigrationPreflight 接上生产路径
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: bug
 - Priority: P0 架构
 - Depends on: **T2 与 T4 完成后才能开工**（它们会改动 `registry.ts`、`fileExecutorOwnershipStore.ts`；本卡要接的写路径与它们重叠）

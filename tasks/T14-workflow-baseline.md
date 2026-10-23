@@ -1,6 +1,6 @@
 # T14｜Node-RED 唯一工作流内核现状与迁移基线
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: task
 - Priority: P1 strategic baseline; data-loss/duplicate-execution findings escalate as P0
 - Depends on: none

@@ -1,6 +1,6 @@
 # T6｜审批卡键盘、焦点与拒绝路径回归
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: bug
 - Priority: P1 security
 - Depends on: none

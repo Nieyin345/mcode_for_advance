@@ -1,6 +1,6 @@
 # T13｜GenOffice 六原生编辑器功能与接线基线矩阵
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: task
 - Priority: P1 strategic baseline; release/license risks are P0 where applicable
 - Depends on: none
@@ -16,6 +16,21 @@
 - Acceptance: each of six formats has source path, actual integration path, proven behavior, missing/unknown features, tests and real U1 status; separate CLI/API success from GUI integration; list version-specific release blockers without changing any license policy; recommend next bounded tasks and non-overlapping file owners.
 - Do not: edit nested GenOffice or license files, run destructive tests on user documents, or claim six-editor acceptance without real Electron evidence.
 - Result writeback: report path, both Git SHAs/statuses, sources/commands inspected, U1 gaps, release blockers, commit SHA.
+
+## 注记：三个发行阻塞已被后续卡修掉（2026-10-23 核查）
+
+本文 §「三个跨格式发现」里的三条，**全部已被后续卡解决**，不要在开新卡时照它重复取证：
+
+- **发现 1（生产构建不产出 `documentViewPreload.js`）→ T23 已修**。`electron.vite.config.ts:320-335`
+  现在有 `documentViewPreload.mjs` 的处理段；`apps/desktop/out/main/documentViewPreload.js` 存在（27,797 B）。
+- **发现 2（发行 staging 只复制 sheets/slides preload）→ T23 已修**。
+  `stage-genoffice-resources.cjs:35` 的 `NATIVE_PRELOAD_KINDS` 现为
+  `["pdf","markdown","html","sheets","slides"]`（Docs 按 T23 设计走 `documentViewPreload.js`，不在此列）。
+- **发现 3（vendor 产物旧于补丁 0013）→ T25 已修**。六家产物已按 pinned HEAD 重建，
+  docs renderer 含 `aiToolResult` 标记。
+
+**本文保留作基线**（六编辑器 × 源码路径 / 调用链 / 许可 / U1 的对照仍然有效），但它末尾的
+「发行阻塞」清单是当时的事实，不代表现在。
 
 ## 结果回写（2026-10-23）
 

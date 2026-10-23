@@ -1,6 +1,6 @@
 # T25｜按 pinned HEAD 重建 GenOffice 六家 vendor 产物
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: build
 - Priority: **P0 发行前置**（不重建则 staging 必然 fail-closed，打不出包）
 - Depends on: T23（已交付 `239eb863`）
@@ -33,8 +33,13 @@ Read before work: `CLAUDE.md`、`tasks/T23-production-preload-staging.md`（**�
    - 参考 `genoffice/package.json` 的 `build:all` 脚本。
    - **构建必须可复现**：记录确切命令、Node 版本、构建耗时。
 3. **验证产物包含 0013**：
-   - `grep ai:tool-result` / `aiToolResult` 在 `apps/docs/out/renderer` 与 `out/preload` 里**必须命中**。
-   - 六家的 `out/preload/index.js` 都存在。
+   - `grep ai:tool-result` / `aiToolResult` 在 `apps/docs/out/renderer` 里**必须命中**。
+   - **`out/preload` 这一半按字面不成立**（2026-10-23 核查更正，依据见回写区 §四）：0013 的 preload
+     改动落在 `apps/docs/src/preload/mcode-view.ts`，而 vendor 自己的 `src/preload/index.ts` 从不
+     import 它 —— 该文件由 Mcode 的生产构建经 alias 编入 `out/main/documentViewPreload.js`。
+     所以正确的等价判据是：**Mcode 的 `documentViewPreload.js` 含 ACK 桥**（由 T23 的
+     `production-build-preload-smoke` 钉住）。
+   - 六家的 `out/preload/index.js` 都存在且非空。
 4. **刷新 digest**：如果 `genoffice-upstream.lock.json` 或 staging 的资源 digest 依赖产物哈希，同步更新。
 5. **建 freshness 断言**：新增一套 smoke，断言「产物的 mtime 或内容标记不早于 pinned HEAD 的补丁时间线」。**不能只靠人眼看时间戳。**
 6. **变异验证**：把某家的产物恢复成旧版本 → freshness 断言必须变红 → 逐字节还原（`cmp`）。
@@ -50,7 +55,8 @@ Read before work: `CLAUDE.md`、`tasks/T23-production-preload-staging.md`（**�
 ## 验收判据
 
 1. 六家 `out/renderer/index.html` 与 `out/preload/index.js` 都存在且非空。
-2. `ai:tool-result` 在 Docs 的 renderer 与 preload 产物里**命中**。
+2. `ai:tool-result` 在 Docs 的 **renderer** 产物里**命中**；preload 半边以 `out/main/documentViewPreload.js`
+   含 ACK 桥为准（判据 3 的更正说明，2026-10-23 核查）。
 3. `production-build-preload-smoke` 与 `genoffice-editors-release-smoke` 仍绿。
 4. 新增的 freshness smoke 能检出「产物早于补丁」的状态（变异证明）。
 5. 记录构建命令、耗时、Node 版本，可复现。

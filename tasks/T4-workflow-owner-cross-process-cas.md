@@ -1,6 +1,6 @@
 # T4｜工作流 owner 跨进程 CAS 互斥证明
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: bug
 - Priority: P0
 - Depends on: coordinate with T2/T3; independent files only
@@ -56,6 +56,9 @@ insert(record: ExecutorOwnershipRecord): boolean {
 套件目录名必须匹配 `/^[a-z0-9]+(?:-[a-z0-9]+)*-smoke$/`。
 
 ## 结果回写（2026-10-23）
+
+**完成于 `6a1dc9d5`** — `fix(T4): 工作流 owner 跨进程 CAS —— 写路径与启动对账进宿主级文件租约`。
+
 
 ### 1. 进程级竞态证据（先证明，后改代码）
 

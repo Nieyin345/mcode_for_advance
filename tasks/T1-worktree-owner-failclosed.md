@@ -1,6 +1,6 @@
 # T1｜Worktree merge-back ownership 探测失败时 fail-closed
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: bug
 - Priority: P0 security/data integrity
 - Depends on: none

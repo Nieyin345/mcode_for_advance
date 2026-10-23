@@ -1,6 +1,6 @@
 # T10｜Node-RED 已核验许可证材料接入与发行门禁
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: bug
 - Priority: P0 release blocker
 - Depends on: prior T91/T88 evidence; verify exact current ledger before modifying files

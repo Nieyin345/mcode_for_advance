@@ -1,6 +1,6 @@
 # T22｜smokes-for 覆盖映射漏掉 .tsx，导致「该跑哪几套」判断失真
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: bug
 - Priority: P0 开发工具链
 - Depends on: none
