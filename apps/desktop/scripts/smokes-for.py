@@ -23,6 +23,36 @@
     bash apps/desktop/scripts/smokes-for.sh src/main/library/operations.ts
     bash apps/desktop/scripts/smokes-for.sh --all      # 全部文件 → 套件
     bash apps/desktop/scripts/smokes-for.sh --uncovered  # 哪些源码一套都没覆盖
+
+## ⚠️ 输出格式是公共接口 —— 改它之前先查谁在读
+
+**这个脚本的 stdout 不只是给人看的，有套件在断言它。** 改输出形状
+（分组、前缀、缩进、字段顺序）会让它们红，而红的原因不是覆盖判断错了，
+是**它们匹配的那段文本不存在了**。
+
+T78 就是这么踩的：把平铺的 `跑这些: A B` 换成「必跑 / 可选」分组，
+`tsx-coverage-smoke` 三条断言当场红 —— 那么改的时候没人想到有人断它。
+
+**改格式前先跑这两条：**
+
+    grep -rln "smokes-for" apps/desktop/scripts/*/main.*   # 提到它的
+    grep -rln "跑这些\\|必跑" apps/desktop/scripts/*/main.*  # 真断言输出的
+
+### 目前的消费者（2026-10-24 实测）
+
+**断言 stdout 的两套**（改格式必须跑它们）：
+
+- `scripts/tsx-coverage-smoke/main.py` —— 验 `.tsx`/`.jsx` 入口的覆盖判断
+  （漏报/误报两个方向）。**T78 后它改成解析 `*-smoke` 名字集合，不再匹配前缀**，
+  所以它能容忍排版变化；但**如果哪天改的是「名字本身怎么出现」，它仍会红**。
+- `scripts/smokes-for-ranking-smoke/main.py` —— 验 T78 的分级本身。
+  它直接 `import` 本模块的 `rank()` / `NEED_JUMP`，不走文本解析，但**常量名与
+  函数签名是它的接口**。
+
+**只在注释里提到、不断言输出的**（不需要为格式改动跑它们，但列在这里免得
+下次有人重新 grep 一遍）：`browser-smoke`、`hook-exec-smoke`、`hooks-ipc-smoke`、
+`leftbar-render-smoke`、`memory-smoke`、`orchestration-ipc-smoke`、`plugins-ipc-smoke`、
+`startup-wiring-smoke`、`updater-smoke`。
 """
 import re
 import sys
