@@ -810,11 +810,25 @@ section("17. 送图上限与主进程契约同锚");
   const { readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const edSrc = readFileSync(join(process.cwd(), "src/renderer/components/ide/FileEditor.tsx"), "utf8");
-  // ① readMonacoSelection 的返回里带 lines(与 text 同一份快照)。
+  // 【T36】捕获逻辑已由 T65 (`b41d41e4`) 抽到 `ide/monacoCitationSelection.ts`:
+  // `readMonacoSelection` 现在只剩一行委托,`role` / `lines` 都在被抽出去的那个函数里。
+  // 断言跟着代码走 —— 但**判据不变**:仍然要求 `lines` 与 `text` 出自同一个返回对象
+  // (同一份快照),而不是放宽成"某处出现过 lines"。
+  const citationSrc = readFileSync(
+    join(process.cwd(), "src/renderer/components/ide/monacoCitationSelection.ts"), "utf8",
+  );
+  // ① 冻结快照的返回里带 lines(与 text 同一个对象字面量)。
   check(
-    "★ MC-098:选中时把行号范围与正文一起冻结(readMonacoSelection 返回 lines)",
-    /role:\s*"assistant"[\s\S]{0,200}lines:\s*\{/.test(edSrc),
-    edSrc.match(/lines:\s*\{[^}]*\}/g)?.slice(0, 2),
+    "★ MC-098:选中时把行号范围与正文一起冻结(冻结快照返回 lines)",
+    /role:\s*"assistant"[\s\S]{0,200}lines:\s*\{/.test(citationSrc),
+    citationSrc.match(/lines:\s*\{[^}]*\}/g)?.slice(0, 2),
+  );
+  // ①b FileEditor 那一层必须是**委托**给同一个捕获函数,不是自己另写一份
+  //     (否则两个实现漂移,冻结语义只在一个文件里成立)。
+  check(
+    "★ MC-098:FileEditor 的 readMonacoSelection 委托给共享捕获函数(没有第二份实现)",
+    /readMonacoSelection\s*=\s*useCallback\(\s*\(\)[^)]*=>\s*captureMonacoCitationSelection\(/.test(edSrc),
+    edSrc.match(/readMonacoSelection[\s\S]{0,160}/)?.[0]?.slice(0, 160),
   );
   // ② quoteFromEditor 用冻结的 mdQuote.lines,且**不再**现读 editorRef.getSelection() 取行号。
   check(

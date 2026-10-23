@@ -959,10 +959,15 @@ console.log("\n钩子面板的写盘失败出口");
   );
 
   // `toggleEnabled`：拿到的回包必须检查 ok，失败时走 toast（列表行上、编辑器可能没开）。
+  //
+  // 【T36】`hooks.save` 的入参从 `{ hook: next }` 变成了
+  // `{ hook: HookSpecSchema.parse(next) }`（`1bfc4adc` 引入的校验层）。**判据没变**：
+  // 仍然要求「拿到 res → 检查 !res.ok → 走 toast」这条链,只是允许入参里带一层
+  // schema 校验包装 —— 不是放宽成"出现过 push 就算"。
   check(
     "★ 钩子开关 toggleEnabled 检查 {ok:false} 并走 toast 报错(从前开关静默弹回)",
-    /const res = await api\.hooks\.save\(\{ hook: next \}\);\s*if \(!res\.ok\)\s*\{\s*useToastStore\.getState\(\)\.push\(/.test(code),
-    code.match(/api\.hooks\.save\(\{ hook: next \}\)/g),
+    /const res = await api\.hooks\.save\(\{\s*hook:\s*(?:HookSpecSchema\.parse\()?next\)?\s*\}\);\s*if \(!res\.ok\)\s*\{\s*useToastStore\.getState\(\)\.push\(/.test(code),
+    code.match(/api\.hooks\.save\(\{[^\n]*/g),
   );
   check(
     "★ 钩子开关使用了 toast 通道(错误在列表上始终可见)",

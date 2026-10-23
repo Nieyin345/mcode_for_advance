@@ -277,6 +277,19 @@
       run: function () { return invoke("automation.run", { ok: true }); },
     },
     webBridge: { status: function () { return invoke("webBridge.status", { paired: false }); } },
+    /** 【T36】`ModuleViewDock` 经 `useModuleContributions` → `api.modules.catalog()` 读目录(T50
+     *  `7eb548c9` 把它接进 `ThreePaneLayout` / `ClassicShell` 之后,真 `App` 一定会渲染它)。
+     *  没这个显式命名空间时,末尾那个惰性 Proxy 会回 `Promise.resolve({})` ——
+     *  `contributionsOf` 读 `catalog.modules.flatMap` 立刻 `Cannot read properties of undefined`。
+     *
+     *  这里回**真实形状**的最小目录(`modules` / `capabilities` / `workflowTargets` 齐全),
+     *  不是 `{}`:断言要验的是面板能渲染,不是"坏数据也能吞"。空模块表 = 没有任何扩展视图,
+     *  与全新安装的真实状态一致。 */
+    modules: {
+      catalog: function () {
+        return invoke("modules.catalog", { modules: [], capabilities: [], workflowTargets: [], modulePermissions: {}, moduleStaleConsents: {} });
+      },
+    },
     /** 常规页里的「输出风格」小节会读它(空表 = 只有内置 Default)。 */
     outputStyle: { list: function () { return invoke("outputStyle.list", { styles: [] }); } },
     /** 【MC-026】自定义模型表单的「高级」区里挂着公网 MCP 卡 —— 真组件会读它。
