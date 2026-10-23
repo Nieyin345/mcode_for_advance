@@ -70,6 +70,14 @@ try {
   const installedResource = join(packageRoot, "resources", "genoffice");
   mkdirSync(join(packageRoot, "resources"), { recursive: true });
   cpSync(ok.target, installedResource, { recursive: true });
+  const installedMarker = join(installedResource, "availability.json");
+  // The real staging pass now emits native CLI/dependency/WASM digests (T76)
+  // and the post-0013 Docs ACK markers (T23). Synthetic markers in this suite
+  // must extend that staged manifest instead of re-declaring a partial one:
+  // a bundled package whose marker drops those fields is exactly what the
+  // afterPack gate is supposed to reject, not a valid release fixture.
+  const stagedMarker = JSON.parse(readFileSync(installedMarker, "utf8"));
+  const markerWith = (patch) => JSON.stringify({ ...stagedMarker, ...patch });
   verify("post-pack gate verifies CLI, dependency tree, WASM and license resources", () => {
     assert.deepEqual(verifyPackagedGenofficeResources(packageRoot), { bundled: true, editorsBundled: false });
   });
@@ -87,8 +95,8 @@ try {
   });
   const editorNames = ["docs", "sheets", "slides", "pdf", "markdown", "html"];
   verify("declared editors cannot pass post-pack check when files are missing", () => {
-    put(join(installedResource, "availability.json"), JSON.stringify({
-      format: "mcode.genoffice.resources.v1", bundled: true, editorsBundled: true, editors: editorNames,
+    put(installedMarker, markerWith({
+      editorsBundled: true, editors: editorNames,
     }));
     assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /docs|editor|renderer|missing/i);
   });
@@ -96,12 +104,14 @@ try {
     const dir = join(installedResource, "apps", name, "out", "renderer");
     put(join(dir, "index.html"), '<html><head><link rel="stylesheet" href="./assets/app.css"></head><body><script type="module" src="./assets/app.js"></script></body></html>');
     put(join(dir, "assets", "app.css"), "html { color: black; }");
-    put(join(dir, "assets", "app.js"), "console.log('fixture');");
+    // Docs renderers must carry the patch-0013 ACK transport names the
+    // afterPack gate scans for (T23); the other five need no marker.
+    put(join(dir, "assets", "app.js"),
+      name === "docs" ? "window.desktop.aiToolResult(toolResultAck);" : "console.log('fixture');");
   }
   const lazyAsset = join(installedResource, "apps", "docs", "out", "renderer", "assets", "deferred.js");
   put(lazyAsset, "original vendor lazy chunk");
-  put(join(installedResource, "availability.json"), JSON.stringify({
-    format: "mcode.genoffice.resources.v1", bundled: true,
+  put(installedMarker, markerWith({
     editorsBundled: true, editors: editorNames,
     editorAssetsSha256: Object.fromEntries(editorNames.map(name => [
       name, hashRendererTree(join(installedResource, "apps", name, "out", "renderer")),
@@ -109,6 +119,30 @@ try {
   }));
   verify("all six copied vendor editors pass post-pack resource gate", () => {
     assert.deepEqual(verifyPackagedGenofficeResources(packageRoot), { bundled: true, editorsBundled: true });
+  });
+  verify("docs renderer without the patch-0013 ACK transport is rejected even with a matching digest", () => {
+    const docsJs = join(installedResource, "apps", "docs", "out", "renderer", "assets", "app.js");
+    const savedJs = readFileSync(docsJs);
+    put(docsJs, "console.log('pre-0013 docs build');");
+    try {
+      // Re-stamp the digest so only the ACK-marker gate can reject this:
+      // a stale-but-self-consistent docs build must still fail closed (T23).
+      put(installedMarker, markerWith({
+        editorsBundled: true, editors: editorNames,
+        editorAssetsSha256: Object.fromEntries(editorNames.map(name => [
+          name, hashRendererTree(join(installedResource, "apps", name, "out", "renderer")),
+        ])),
+      }));
+      assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /0013|aiToolResult|toolResultAck/i);
+    } finally {
+      put(docsJs, savedJs);
+      put(installedMarker, markerWith({
+        editorsBundled: true, editors: editorNames,
+        editorAssetsSha256: Object.fromEntries(editorNames.map(name => [
+          name, hashRendererTree(join(installedResource, "apps", name, "out", "renderer")),
+        ])),
+      }));
+    }
   });
   verify("unlisted deferred vendor JS cannot change while post-pack gate stays green", () => {
     const before = readFileSync(lazyAsset);
@@ -150,22 +184,16 @@ try {
     put(asset, "console.log('restored');");
   });
   verify("inconsistent editorsBundled false cannot hide stale vendor assets", () => {
-    put(join(installedResource, "availability.json"), JSON.stringify({
-      format: "mcode.genoffice.resources.v1", bundled: true, editorsBundled: false, editors: [],
-    }));
+    put(installedMarker, markerWith({ editorsBundled: false, editors: [] }));
     assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /stale|editor|apps/i);
   });
   verify("editor list cannot pretend a subset is the full six", () => {
-    put(join(installedResource, "availability.json"), JSON.stringify({
-      format: "mcode.genoffice.resources.v1", bundled: true, editorsBundled: true, editors: ["docs"],
-    }));
+    put(installedMarker, markerWith({ editorsBundled: true, editors: ["docs"] }));
     assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /six|editor|complete|list/i);
   });
   // Restore CLI-only fixture before subsequent checks.
   rmSync(join(installedResource, "apps"), { recursive: true, force: true });
-  put(join(installedResource, "availability.json"), JSON.stringify({
-    format: "mcode.genoffice.resources.v1", bundled: true, editorsBundled: false, editors: [],
-  }));
+  put(installedMarker, markerWith({ editorsBundled: false, editors: [] }));
   verify("post-pack gate fails closed if packaged WASM disappears", () => {
     rmSync(join(installedResource, "wasm", "pdfium.wasm"));
     assert.throws(() => verifyPackagedGenofficeResources(packageRoot), /WASM|pdfium|missing/i);
