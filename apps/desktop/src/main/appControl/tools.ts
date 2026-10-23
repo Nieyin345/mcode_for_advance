@@ -1264,11 +1264,49 @@ export function appMcpTools(): McpToolSpec[] {
       },
     },
     {
+      // 【T47】设计方法论就是 CLI 的 `guide <domain> <topic>` 原文。不接这个入口，
+      // `build_deck` 的「先读规范」就永远执行不到 —— 模型只能凭感觉摆 px。
+      name: "document_guide",
+      description:
+        "取 GenOffice 的**方法论文档**原文（不是工具参数表，那是 document_tool_describe）。" +
+        "做 PPT 之前**必须先调** document_guide({app:\"slides\", topic:\"design\"})：它给出 style.md / outline.json 的写法、" +
+        "18 种布局名、CJK 与拉丁的排版数值、以及一份明写「treat as defects」的反模式清单" +
+        "（每张卡片左侧的细竖条、彩虹卡片、封面只有标题加副标题、用 emoji 等）。" +
+        "页面规格字段调 topic:\"spec\"；省略 topic 取该域的顶层目录（先看有什么再取）。" +
+        "docs / sheets 也有各自的 guide。返回正文不截断，按 chars 判断要不要分段读。",
+      inputSchema: {
+        app: z.enum(["docs", "sheets", "slides", "pdf", "markdown", "html"]).optional()
+          .describe("编辑器；省略时用 domain"),
+        domain: z.string().min(1).max(32).optional()
+          .describe("CLI 的 guide 域：slides / docs / sheets（省略时由 app 推）"),
+        topic: z.string().min(1).max(64).optional()
+          .describe("子域：design / spec，或一个 group / op 名；省略 = 该域顶层目录"),
+      },
+      handler: async (args: { app?: "docs" | "sheets" | "slides" | "pdf" | "markdown" | "html"; domain?: string; topic?: string }) => {
+        const { documentGuide } = await import("@main/document/documentToolRuntime.js");
+        const ports = documentRuntimePortsSync();
+        if (!ports.ok) return fail(ports.reason);
+        const result = await documentGuide(ports.ports, args);
+        if (!result.ok) {
+          return fail(result.reason + (result.suggestions && result.suggestions.length > 0
+            ? `\n可选的 topic：${result.suggestions.join(" | ")}`
+            : ""));
+        }
+        return text(
+          `# ${result.domain} guide${result.topic ? ` · ${result.topic}` : ""}（${result.chars} 字符，原文未截断）\n\n` +
+          result.text,
+        );
+      },
+    },
+    {
       name: "document_tool_call",
       description:
         "执行一个文档原生工具（只读的直接执行）。编辑类工具**执行后强制跑 check/audit**，把 detail.issues 原样带回；" +
         "文件开在 Mcode 编辑器里时走受信渲染端（能改实时视图、可撤销），否则走 CLI 等价命令（改盘上文件）。" +
-        "路径必须在已知工作区内。改 Word 的格式/批注用 apply_ops + 对应 op，别拿整篇重写去顶。",
+        "路径必须在已知工作区内。改 Word 的格式/批注用 apply_ops + 对应 op，别拿整篇重写去顶。" +
+        "**新建 PPT 用 slides 的 build_deck**（设计流水线：先 document_guide({app:\"slides\",topic:\"design\"}) " +
+        "拿规范 → 写 style.md + outline.json + pages/NN.json → build_deck 带 render:true,audit:true → 看 PNG 与 audit → 最多两轮修）。" +
+        "新建 docx/xlsx/pdf 用 create_document（input.source 是源文件；docx 接受受限 HTML fragment）。",
       inputSchema: {
         tool: z.string().min(1).max(120).describe("工具名（先 document_tools_list / document_tool_describe）"),
         app: z.enum(["docs", "sheets", "slides", "pdf", "markdown", "html"]).optional(),

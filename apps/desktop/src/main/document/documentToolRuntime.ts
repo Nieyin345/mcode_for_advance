@@ -179,6 +179,135 @@ function cliGuideDomain(app: DocumentToolApp): "docs" | "slides" | "sheet" | "pd
   }
 }
 
+/* ───────────────【T47】`document_guide`：把 CLI 的 guide 原文交给模型 ───────────────
+ *
+ * ## 缺陷（T47）
+ *
+ * `build_deck` 的报错里写「设计流水线的规范在 `guide slides design`」，但模型
+ * **没有入口**能跑它：`document_tool_describe` 传的是工具名（`load_guide` /
+ * `apply_ops`），不是子域 `design`；`document_tools_list` 只列工具不列规范。
+ *
+ * 实测 `genoffice guide slides design --json` 是 **12,231 字符**的完整设计方法论：
+ * 18 种布局名（`cover_typography_hero` …）、CJK/拉丁排版数值、**反模式清单**
+ * （明写 "treat as defects"，第一条就是「每张卡片左侧的细竖条」—— AI 做 PPT
+ * 最常见的丑法）。拿不到这段，模型只能凭感觉摆 px，结果就是用户说的「毫无审美」。
+ *
+ * ## 为什么是「新工具」而不是「塞进 describe」
+ *
+ * - `describe` 的输出已经 ~2.8 KB（整个 slides guide 的前 4000 字截断），再塞
+ *   12 KB 会把**每个**工具的描述都撑大，而模型查别的工具时不需要设计规范；
+ * - guide 是**可发现**的：模型可以先问「有哪些 guide 主题」，再取需要的那个；
+ * - 它同时覆盖 `docs` / `sheets` 的 group guide，不只 slides。
+ *
+ * ## 安全
+ *
+ * 只读、不碰文件：`guideOps` 只拼 `["guide", domain, "--json", ...]`，走与其它
+ * 命令同一条 `invoke`（不继承宿主环境、限时、限输出）。`topic` 会先过白名单，
+ * 不接受任意字符串（否则等于把 CLI 的 argv 交给模型）。
+ */
+
+/** `document_guide` 允许的 domain → CLI 的 guide 域（`sheet` 是单数）。 */
+const GUIDE_DOMAINS: Readonly<Record<string, "docs" | "slides" | "sheet">> = Object.freeze({
+  docs: "docs",
+  slides: "slides",
+  sheets: "sheet",
+  sheet: "sheet",
+});
+
+/**
+ * `topic` 白名单。三个域共有的子域是 `design` / `spec`（slides 的两份最有价值），
+ * 其余按「group / op」走 —— 但**只允许这个正则**，不透传任意字符串。
+ */
+const GUIDE_TOPIC_PATTERN = /^(?:[a-z][a-z0-9_]{0,63})$/;
+
+export interface DocumentGuideArgs {
+  app?: DocumentToolApp;
+  /** CLI 的 guide 域；省略时用 `app` 推。 */
+  domain?: string;
+  /** 子域/分组/op 名（`design` / `spec` / `content` …）；省略 = 该域的顶层目录。 */
+  topic?: string;
+}
+
+export interface DocumentGuideResultOk {
+  ok: true;
+  domain: string;
+  topic: string | null;
+  /** guide 原文（Markdown）。 */
+  text: string;
+  /** 字数（模型据此决定要不要分段读）。 */
+  chars: number;
+  /** 该 guide 涉及的 op 名（CLI 在 `detail.ops` 里给时才有）。 */
+  ops?: string[];
+}
+export type DocumentGuideResult =
+  | DocumentGuideResultOk
+  | { ok: false; reason: string; suggestions?: readonly string[] };
+
+/** 每个域**可用**的 guide 子域（CLI 的顶层 guide 会列出；这里给一份常用的快捷建议）。 */
+const GUIDE_TOPIC_HINTS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  slides: ["design", "spec"],
+  docs: ["content", "structure"],
+  sheet: ["content", "format"],
+});
+
+/**
+ * 【T47】`document_guide({app, topic})` → `genoffice guide <domain> [topic] --json` 原文。
+ *
+ * 不截断：设计规范 12 KB 正是模型需要的全部；截断会重演「describe 只给前 4000 字、
+ * 恰好丢掉反模式清单」的老问题。要分段的调用方自己按 `chars` 决定。
+ */
+export async function documentGuide(
+  ports: DocumentSurfacePorts,
+  args: DocumentGuideArgs,
+): Promise<DocumentGuideResult> {
+  const appDomain = args.app !== undefined ? cliGuideDomain(args.app) : null;
+  const requested = args.domain?.trim().toLowerCase();
+  const domainKey = requested ?? appDomain ?? null;
+  const domain = domainKey !== null ? GUIDE_DOMAINS[domainKey] : undefined;
+  if (domain === undefined) {
+    const available = Object.keys(GUIDE_DOMAINS).join(" / ");
+    return {
+      ok: false,
+      reason: `没有这个 guide 域：${String(args.domain ?? args.app ?? "(未指定)")}。可用：${available}。`,
+      suggestions: Object.entries(GUIDE_TOPIC_HINTS).map(([key, hints]) => `${key}: ${hints.join(" / ")}`),
+    };
+  }
+  const rawTopic = args.topic?.trim();
+  const topic = rawTopic === undefined || rawTopic === "" ? null : rawTopic.toLowerCase();
+  if (topic !== null && !GUIDE_TOPIC_PATTERN.test(topic)) {
+    return {
+      ok: false,
+      reason: `topic 只能是小写字母/数字/下划线（≤64）：${topic}。不知道该用哪个时省略 topic，先取该域的顶层目录。`,
+      suggestions: GUIDE_TOPIC_HINTS[domain] ?? [],
+    };
+  }
+  const guide = await guideOps(ports, domain, topic ?? undefined, ports.signal);
+  if (!guide.ok) {
+    // 取不到时**不猜**：把 CLI 的原话带回去，并给出该域已知可用的子域。
+    return {
+      ok: false,
+      reason: `guide 取不到（${guide.reason}）`,
+      suggestions: GUIDE_TOPIC_HINTS[domain] ?? [],
+    };
+  }
+  const text = typeof guide.envelope.summary === "string" ? guide.envelope.summary : "";
+  if (text === "") {
+    return { ok: false, reason: "guide 返回了空正文；CLI 信封形状不符。", suggestions: GUIDE_TOPIC_HINTS[domain] ?? [] };
+  }
+  const detail = (guide.envelope.detail ?? null) as { ops?: unknown } | null;
+  const ops = detail !== null && Array.isArray(detail.ops)
+    ? detail.ops.filter((op): op is string => typeof op === "string")
+    : undefined;
+  return {
+    ok: true,
+    domain,
+    topic,
+    text,
+    chars: text.length,
+    ...(ops !== undefined && ops.length > 0 ? { ops } : {}),
+  };
+}
+
 export async function documentToolDescribe(
   ports: DocumentSurfacePorts,
   args: { tool: string; app?: DocumentToolApp; detail?: "compact" | "full" },
@@ -525,8 +654,9 @@ async function buildDeck(
     return {
       result: { ok: false, kind: "refused", envelope: null, reason:
         "build_deck 需要 input.specDir（设计流水线的 deck 目录，里面有 pages/NN.json，可选 outline.json / style.md / 图片）。" +
-        "先跑 document_tool_describe({tool:\"build_deck\", app:\"slides\"}) 看完整步骤；" +
-        "设计流水线的规范在 `guide slides design`（style.md → outline.json → 逐页 NN.json → 逐页 check）。" },
+        "**设计规范先调 document_guide({app:\"slides\", topic:\"design\"})**（12 KB 的方法论：18 种布局名、CJK/拉丁排版数值、反模式清单），" +
+        "页面规格的字段调 document_guide({app:\"slides\", topic:\"spec\"})。" +
+        "步骤：拿 guide → 写 style.md + outline.json + pages/NN.json → build_deck（可带 render:true, audit:true）→ 看 PNG 与 audit → 最多两轮修。" },
       mutated: false,
     };
   }

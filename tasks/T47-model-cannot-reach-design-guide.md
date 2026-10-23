@@ -1,4 +1,4 @@
-# T46｜模型拿不到 `guide slides design` —— 设计流水线的"教"这一半还是断的
+# T47｜模型拿不到 `guide slides design` —— 设计流水线的"教"这一半还是断的
 
 - Status: ready-for-agent
 - Category: **bug（P0 产品能力）**
@@ -131,7 +131,7 @@ T43 把 `build_deck` 接通了（能造出 deck），**但模型不知道该怎�
 - **不碰** `scripts/genoffice-*-smoke/`（C 的 T44、F 的 T32）。
 - **不碰** `electron-u1/`（A 的 T46 正在做）。
 
-⚠️ **A 正在做一张也叫 T46 的卡（审批卡 U1）。编号撞了。** 本卡提交时请把编号改成 **T47**，文件名 `tasks/T47-model-cannot-reach-design-guide.md`，并在 `tasks/README.md` 索引里加一行。
+**编号说明**：A 同时在做的审批卡 U1 也叫 T46，编号撞了。本卡已按约定改为 **T47**（文件名与标题均已改），并在 `tasks/README.md` 索引里加了行。
 
 ## 遇到问题先检索
 
