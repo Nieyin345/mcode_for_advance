@@ -217,4 +217,4 @@ runtime.documentToolCall(ports, { tool: "build_deck", app: "slides", filePath, i
 
 ### 六、提交
 
-见下一条提交。
+`5bb50a32` —— `test(T87): guard the three build_deck refusals that nothing was watching`（2 文件，+160/-1）。
