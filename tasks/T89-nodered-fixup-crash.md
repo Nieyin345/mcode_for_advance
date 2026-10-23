@@ -1,6 +1,6 @@
 # T89｜`fs.cpSync` 复制长路径时 native 崩溃 —— 可能影响用户数据迁移
 
-- Status: ready-for-agent
+- Status: **blocked — 根因是 Node 22.21.1 的 `fs.cpSync` 在中文路径上崩溃，修法涉及环境决策**（见末尾回写）
 - Category: **既有故障（不是今天引入的）**
 - Priority: **P1** —— 两套 node-red 许可套件一直"失败"着，但被误判成环境问题
 - Depends on: 无
@@ -182,3 +182,97 @@ Node 的 `STATUS_STACK_BUFFER_OVERRUN` 先在官方文档和 issue 里查，**�
 
 `tasks/T89-nodered-fixup-crash.md` 末尾追加 `## 结果回写（2026-10-24）`：
 `t88` 同型确认、二分定位过程、根因、修复、两套的 `status`、提交 SHA。
+
+## 结果回写（2026-10-24）
+
+### 一、`t88` 同型确认 ✅
+
+用 `spawnSync(process.execPath, [main.cjs])` **绕过 bash** 拿原始 status：
+
+| 套件 | status | hex | signal |
+|---|---|---|---|
+| `t10-node-red-pause-license-smoke` | **3221226505** | `0xC0000409` | null |
+| `t88-node-red-license-closure-smoke` | **3221226505** | `0xC0000409` | null |
+
+**同型确认。** 顺带解释了 `bash` 层为什么显示 127：**bash 把 `>=128` 的退出码折叠成 127**，所以 `0xC0000409` 和「command not found」长得一模一样。
+
+> ⚠️ **这个折叠是本次误判的根源**：`status` 的值取决于「谁在汇报」。经过 `bash` 就被折叠；直接 `spawnSync(node)` 才拿到原始值。
+
+### 二、二分定位（比卡上的 `makeReleaseTree` 细得多）
+
+每一步都用**不带管道**的方式取退出码（`> f 2>&1; echo $?`）：
+
+| 步骤 | 结果 |
+|---|---|
+| 插桩 `makeReleaseTree` 前后 | 崩在内部 |
+| 继续插桩到 `copyLicenseTree` | 崩在 **`copyLicenseTree`** |
+| 单独 `fs.cpSync(materials → tmp)` | **稳定崩**，连跑 3 次 3 次崩 |
+| 换成手写递归 `copyFileSync` | **EXIT=0，正常** |
+| 小目录 `cpSync`（纯英文路径） | EXIT=0 正常 |
+| `--max-old-space-size=4096` | 仍崩 → **不是 OOM** |
+| `--stack-size=4000` | 仍崩 → **不是递归深度** |
+
+### 三、根因：**Node 22.21.1 的 `fs.cpSync` 在中文路径上 native 崩溃**
+
+**最小复现（3 行）**：
+
+```js
+const fs = require('fs'), os = require('os'), path = require('path');
+const base = fs.mkdtempSync(path.join(os.tmpdir(), 'vc-'));
+fs.mkdirSync(path.join(base, '副桌面'), { recursive: true });
+fs.writeFileSync(path.join(base, '副桌面', 'a.txt'), 'hi');
+fs.cpSync(path.join(base, '副桌面'), path.join(base, 'out'), { recursive: true });
+// → 进程直接死，stderr 空，JS 层完全捕获不到
+```
+
+**跨版本对照（决定性证据）**：
+
+| Node 版本 | 结果 |
+|---|---|
+| **v22.21.1** | **Segmentation fault（`0xC0000409` / `0xC0000005`）** |
+| v22.14.0 | **OK** |
+| v20.18.0 | **OK** |
+
+**同样的代码、同样的中文路径，只有 22.21.1 崩。这是 Node 的 bug，不是本仓库的。**
+
+**对照实验排除的因素**：
+
+| 假设 | 实验 | 结论 |
+|---|---|---|
+| 数据太大 | `@node-rs` 只有一个 1074 字节的文件，照样崩 | ❌ |
+| `@` 符号 | 合成 `@scope/pkg` 目录 cpSync 正常 | ❌ |
+| 目录结构深 | 同样的树手工复制到临时目录后 cpSync 正常 | ❌ |
+| 是 `copyFileSync` 的问题 | `copyFileSync` 在中文路径上 **OK** | ❌ |
+| **中文路径** | **同样的树放进 `副桌面/文件夹/` 下就崩** | ✅ |
+
+**具体崩法**：`cpSync(recursive)` 和 `cpSync(recursive, dereference:false)` **两种都崩**，退出码在 `0xC0000409`（STACK_BUFFER_OVERRUN）和 `0xC0000005`（ACCESS_VIOLATION）之间变化——**典型的缓冲区/字符串编码越界**。
+
+### 四、这是环境问题，不是产品代码问题
+
+**按卡的要求：产品代码（`stage-node-red-resources.cjs`）没有问题，`makeReleaseTree` 的逻辑也没问题。**
+
+**崩的是 Node 内置的 `fs.cpSync`**，触发条件是仓库路径含中文——**而这个仓库的路径就是 `D:\副桌面\文件夹\...`**。
+
+**所以这两套在「仓库放在中文路径 + Node 22.21.1」的组合下永远跑不起来**，与代码无关。
+
+### 五、建议（不擅自改）
+
+**三个选项，按推荐度排序**：
+
+1. **把 Node 降到 22.14.0**（已验证 `cpSync` 正常）——但 `package.json` 要求 `>=22.19.0`，**需要产品负责人决定是否放宽**；
+2. **把仓库移出中文路径**（比如 `D:\mcode`）——最彻底，但要动所有人的环境；
+3. **在套件里把 `cpSync` 换成手写递归**——已验证可行，但**这是绕过 Node 的 bug**，且要改两套（t10 `:47`/`:352`、t88 `:37`/`:343`）。**代价是把一个「Node 升级后会自动好」的问题变成仓库里永久的变通代码。**
+
+**我倾向 1 或 2，倾向 3 最少**——因为第 3 种会让未来的人以为「这个仓库不能用 cpSync」，而真实原因是「这个 Node 版本 + 中文路径」。
+
+**我没有改任何代码。** 卡上说「如果是产品代码问题，停下报告」，这虽然不是产品代码问题，但**修法涉及环境决策，不该由我单方面定**。
+
+### 六、我没做的事
+
+- 没有为了「让套件绿」而改 `cpSync` 调用点；
+- 没有改 `package.json` 的 engines；
+- 所有临时插桩已还原（`/tmp/t10-orig.cjs` 备份 + `cmp` 验证）。
+
+### 七、提交
+
+`<见提交>` —— 只有本卡回写，无代码改动。
