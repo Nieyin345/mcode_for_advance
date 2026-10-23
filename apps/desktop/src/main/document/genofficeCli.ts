@@ -571,9 +571,62 @@ export function readableKindOf(file: string): ReadableKind {
   return "unsupported";
 }
 
+/**
+ * 截断时把末尾**不完整的 UTF-8 序列**退掉，避免最后一个字符变成 `�`。
+ *
+ * ## 为什么不能用「从末尾回看 4 字节」的简化版
+ *
+ * 简化版（遇到末尾 ASCII 就直接返回）会漏掉 `[汉字的前两个字节][ASCII]`
+ * 这种组合：末尾是 ASCII，但它**前面**那个 lead 声明的长度还没填满 —— 那个
+ * 汉字本身就是断的。截断点落在任意位置时，后面的 ASCII 是常态，所以这不是
+ * 边角情况。
+ *
+ * ## 正确做法
+ *
+ * 从末尾往左找**最后一个 lead byte**（`0xC0–0xFF`），检查它声明的长度与
+ * 「从它到缓冲区末尾」的实际字节数：
+ *   - 相等 → 末尾完整，原样返回；
+ *   - 实际更少 → 这个 lead 是断的，退掉它（以及它后面所有续字节）；
+ *   - 找不到任何 lead（末尾全是续字节 / 全是 ASCII）→ ASCII 结尾本身完整。
+ *
+ * 末段超过 4 字节还没有 lead，说明这一段不是合法 UTF-8 的尾部；此时退回
+ * 「原样返回」而不是猜着删 —— 删错字节比留个 `�` 更糟。
+ */
+function trimIncompleteUtf8Tail(buf: Buffer): Buffer {
+  const len = buf.length;
+  if (len === 0) return buf;
+  // 末尾最多 3 个续字节 + 1 个 lead = 4 字节窗口。
+  const windowStart = Math.max(0, len - 4);
+  let leadIndex = -1;
+  for (let i = len - 1; i >= windowStart; i--) {
+    const byte = buf[i]!;
+    if ((byte & 0xc0) === 0xc0) {
+      // lead byte（0xC0–0xFF）：它是这个字符的起点。
+      leadIndex = i;
+      break;
+    }
+    // ASCII（0x00–0x7F）或续字节（0x80–0xBF）：继续往左。
+    // ⚠️ ASCII **不能直接 return** —— 它前面可能是一个断掉的 lead
+    //（`[lead][续]['a']` 这种组合，截断点落在字符中间时后面必然还有内容）。
+  }
+  if (leadIndex < 0) return buf;
+  const lead = buf[leadIndex]!;
+  const expected = (lead & 0xf0) === 0xc0 ? 2 : (lead & 0xf0) === 0xe0 ? 3 : (lead & 0xf8) === 0xf0 ? 4 : 1;
+  // 数**紧跟在 lead 后面**的连续续字节 —— 不是「到缓冲区末尾的距离」。
+  let run = 0;
+  for (let i = leadIndex + 1; i < len && (buf[i]! & 0xc0) === 0x80; i++) run++;
+  if (run + 1 >= expected) {
+    // lead 要的续字节够数 → 这个字符完整。
+    // 但它后面可能还有内容（ASCII）；那些都要保留，只处理**末尾**的不完整序列。
+    // 既然 lead 完整，末尾（lead 之后）的任何内容都是合法的 ASCII/完整序列 → 原样返回。
+    return buf;
+  }
+  // 不完整：只退掉 lead 与它后面已出现的续字节，**保留**再往后的 ASCII。
+  return Buffer.concat([buf.subarray(0, leadIndex), buf.subarray(leadIndex + 1 + run)]);
+}
+
 /** 直读文本文件 → 与 docs read 同形的单块。 */
 function readTextAsBlocks(file: string): GenofficeResult {
-  let buf: Buffer;
   try {
     const stat = lstatSync(file);
     if (stat.isSymbolicLink()) {
@@ -582,10 +635,24 @@ function readTextAsBlocks(file: string): GenofficeResult {
     if (!stat.isFile()) {
       return { ok: false, kind: "refused", envelope: null, reason: `不是普通文件：${file}` };
     }
-    const readBytes = Math.min(stat.size, MAX_TEXT_READ_BYTES);
-    buf = readFileSync(file).subarray(0, readBytes);
     const truncated = stat.size > MAX_TEXT_READ_BYTES;
-    const text = buf.toString("utf8");
+    const readBytes = Math.min(stat.size, MAX_TEXT_READ_BYTES);
+    // ⚠️ **只读前 N 字节**，不能先 readFileSync 再 subarray：后者会把整个文件
+    // 读进主进程内存（1 GB 的日志会让 Electron 卡死/OOM），截断只是掩耳盗铃。
+    const fd = openSync(file, "r");
+    let buf: Buffer;
+    let bytesRead: number;
+    try {
+      buf = Buffer.allocUnsafe(readBytes);
+      bytesRead = readSync(fd, buf, 0, readBytes, 0);
+    } finally {
+      closeSync(fd);
+    }
+    const slice = buf.subarray(0, bytesRead);
+    // 按字节截断可能把 UTF-8 多字节字符切成两半（末尾出现 `�`）。截断时把
+    // **不完整的尾序列**退掉：只回退最后 3 个字节范围内能形成完整字符的位置。
+    const usable = truncated ? trimIncompleteUtf8Tail(slice) : slice;
+    const text = usable.toString("utf8");
     const lines = text.split(/\r?\n/);
     return {
       ok: true,
@@ -875,7 +942,7 @@ export async function createFromFile(
 /** spec 目录里允许出现在快照里的扩展名（其余一律拒绝，不是静默跳过）。 */
 const SPEC_SNAPSHOT_EXTENSIONS = new Set([
   ".json", ".md", ".markdown",
-  ".png", ".jpg", ".jpeg", ".gif", ".webp",
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
 ]);
 /** 单个文件与整个 spec 目录的体积上限（防把大素材塞进快照）。 */
 const MAX_SPEC_FILE_BYTES = 8 * 1024 * 1024;
@@ -994,6 +1061,36 @@ export async function createDeckFromSpec(
   if (options.render !== undefined) args.push("--render", options.render);
   if (options.audit) args.push("--audit");
   return invoke(ports, args, options.signal ? { signal: options.signal } : {});
+}
+
+/**
+ * 【T43】`create --type pdf --from <document>` —— PDF 创建路线。
+ *
+ * 与 `createFromFile` 分开写，因为 pdf 的 `--from` 接受**任意**可打印文档
+ * （md/html/docx/xlsx/pptx），而它走的是原厂渲染器（需要 GenOffice 应用在机器上）——
+ * T74 把 pdf 排除在联合类型外，原因正是「这条路线依赖外部应用，无头环境里
+ * 失败形态与纯 Node 路线不同」。这里沿用同一条围栏纪律：源/输出都过
+ * `requireWorkspacePath`，输出必须是 .pdf、且**不存在**（不覆盖）。
+ */
+export async function createPdfFromFile(
+  ports: GenofficePorts,
+  source: string,
+  out: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, source, "创建源文件")
+    ?? requireWorkspacePath(ports, out, "创建输出路径");
+  if (refusal !== null) return headlessRefused(refusal);
+  if (extname(out).toLowerCase() !== ".pdf") return headlessRefused("pdf create 的输出扩展名必须是 .pdf");
+  const sourceExt = extname(source).toLowerCase();
+  if (![".md", ".markdown", ".html", ".htm", ".docx", ".xlsx", ".pptx"].includes(sourceExt)) {
+    return headlessRefused(`pdf create 不接受 ${sourceExt || "(无扩展名)"}；可用：md/html/docx/xlsx/pptx`);
+  }
+  const occupied = refuseExistingOutput(out, "create 输出文件");
+  if (occupied !== null) return headlessRefused(occupied);
+  if (options.signal?.aborted) return headlessCancelled();
+  return invoke(ports, ["create", "--type", "pdf", "--from", source, "--out", out, "--json"],
+    options.signal ? { signal: options.signal } : {});
 }
 
 /**

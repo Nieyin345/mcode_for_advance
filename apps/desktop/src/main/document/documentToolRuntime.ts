@@ -31,8 +31,8 @@
  *   `convert md→html` 转 restricted HTML，再 `docs apply --track`。也就是说
  *   Markdown 与编辑器原生工具走**同一段文字**，不另写排版器。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import {
@@ -43,6 +43,8 @@ import {
   documentCatalog,
   documentToolsOf,
   extractQaReport,
+  extractRenderProbeReport,
+  editorOnlyReason,
   findDocumentTool,
   formatQaReport,
   isMutatingDocumentTool,
@@ -60,8 +62,14 @@ import {
   docsCheck,
   docsRead,
   docsReadRangeHtml,
+  createDeckFromSpec,
+  createFromFile,
+  createPdfFromFile,
+  readAnyDocument,
   guideOps,
   renderDocument,
+  renderProbeCheck,
+  snapshotDeckSpec,
   sheetApply,
   sheetCheck,
   sheetRead,
@@ -125,22 +133,37 @@ export function documentToolsList(args: { app?: DocumentToolApp; query?: string;
   const matched = searchDocumentTools(args.app, args.query)
     .filter((entry) => !args.cliOnly || cliRouteFor(entry.app, entry.name) !== undefined);
   const tools = matched.map((entry) => {
-    const route: "cli" | "editor" = cliRouteFor(entry.app, entry.name) !== undefined ? "cli" : "editor";
+    const cliRoute = cliRouteFor(entry.app, entry.name);
+    const onlyEditor = editorOnlyReason(entry.app, entry.name);
+    // 【T43】三态 route：
+    //   cli          —— 文件没开在编辑器里也能用
+    //   editor-only  —— **确认**只有编辑器能做（CLI 无等价物），原因在 note 里
+    //   editor       —— 需要编辑器会话（受信渲染端绑定）；有绑定时可执行
+    // 以前只有 cli|editor 两态，模型分不清「开编辑器就能用」与「开了也做不了」，
+    // 于是只能靠试 —— 这正是卡里说的「目录承诺了能力，调用时没有」。
+    const route: "cli" | "editor" | "editor-only" =
+      cliRoute !== undefined ? "cli" : onlyEditor !== null ? "editor-only" : "editor";
     return {
       app: entry.app,
       name: entry.name,
       doc: entry.doc,
       resident: DOCUMENT_RESIDENT_TOOLS[entry.app].includes(entry.name),
       route,
+      ...(onlyEditor !== null ? { note: onlyEditor } : {}),
     };
   });
+  const editorOnlyCount = tools.filter((tool) => tool.route === "editor-only").length;
   return {
     total: documentCatalog().length,
     shown: tools.length,
     tools,
     note: tools.length === 0
       ? "没有匹配的工具。不带 query 调一次看该编辑器的全部工具；app 省略则查全部六个编辑器。"
-      : "下一步：document_tool_describe({tool}) 看参数与示例 → document_tool_call({tool, filePath, input}) 执行。route=editor 的工具要求文件已在 Mcode 编辑器里打开。",
+      : `下一步：document_tool_describe({tool}) 看参数与示例 → document_tool_call({tool, filePath, input}) 执行。` +
+        `route=cli 的最省事；route=editor 要求文件已在 Mcode 编辑器里打开；` +
+        `route=editor-only 的工具**开了编辑器也没有 CLI 能力**，note 里写了替代做法` +
+        `${editorOnlyCount > 0 ? `（本列表有 ${editorOnlyCount} 个）` : ""}。` +
+        `新建 PPT 用 slides 的 build_deck（设计流水线）；新建 docx/xlsx/pdf 用 create_document。`,
   };
 }
 
@@ -264,7 +287,8 @@ function envelopeText(result: GenofficeResult): string {
   return result.reason;
 }
 
-/** 编辑后强制 QA 门禁。返回 null 表示该 app 没有门禁（pdf/markdown/html）。 */
+/** 编辑后强制 QA 门禁。返回 null 表示该 app 没有门禁（目前只有 markdown/html 的
+ *  纯文本改写会走到这里 —— 见 `DOCUMENT_QA_GATES` 的注释）。 */
 export async function runQaGate(
   ports: DocumentSurfacePorts,
   app: DocumentToolApp,
@@ -276,10 +300,40 @@ export async function runQaGate(
   if (gate === "audit") {
     return extractQaReport("audit", await slidesAudit(ports, filePath, ports.signal ? { signal: ports.signal } : {}));
   }
+  if (gate === "render-probe") {
+    // 【T43】pdf/markdown/html：上游没有 check/audit 命令，但有 render。
+    // 跑一次真渲染（1 页），把「能不能排版」当作门禁 —— 并在返回里写明范围，
+    // 绝不让调用方把「出图成功」读成「内容正确」。
+    const outDir = join(ports.renderTempRoot(), `qa-probe-${randomUUID().replace(/-/g, "").slice(0, 12)}`);
+    try {
+      mkdirSync(outDir, { recursive: true });
+    } catch (error) {
+      return extractRenderProbeReport(app, {
+        ok: false, kind: "failed", envelope: null,
+        reason: `无法创建渲染探针目录：${error instanceof Error ? error.message : String(error)}`,
+      }, []);
+    }
+    const result = await renderProbeCheck(ports, filePath, outDir, ports.signal ? { signal: ports.signal } : {});
+    const images = result.ok ? listPngs(outDir) : [];
+    return extractRenderProbeReport(app, result, images);
+  }
   const result = app === "sheets"
     ? await sheetCheck(ports, filePath, ports.signal ? { signal: ports.signal } : {})
     : await docsCheck(ports, filePath, ports.signal ? { signal: ports.signal } : {});
   return extractQaReport("check", result);
+}
+
+/** 列出渲染目录里的 PNG（`render` 的产出是 `<stem>-NN.png`）。只读、有界。 */
+function listPngs(dir: string): string[] {
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.toLowerCase().endsWith(".png"))
+      .sort()
+      .slice(0, 200)
+      .map((name) => join(dir, name));
+  } catch {
+    return [];
+  }
 }
 
 /** CLI 通路的单工具执行（tool → 命令参数）。返回 CLI 结果；不接受模型提供的任意命令。 */
@@ -292,6 +346,10 @@ async function executeCliTool(
   options: { dryRun?: boolean; track?: boolean },
 ): Promise<{ result: GenofficeResult; mutated: boolean }> {
   const route = cliRouteFor(app, tool);
+  // 【T43】创建路线的类型映射在**入口处**算好：后面的 `if (app === "slides")` 分支
+  // 会把 `app` 收窄，届时再比较会得到 TS2367（类型上已不重叠）。
+  const createType: "docx" | "xlsx" | "pdf" | null =
+    app === "docs" ? "docx" : app === "sheets" ? "xlsx" : app === "pdf" ? "pdf" : null;
   if (route === undefined) {
     return {
       result: { ok: false, kind: "refused", envelope: null, reason:
@@ -319,6 +377,10 @@ async function executeCliTool(
         const flag = { "read-revisions": "--revisions", "read-comments": "--comments", "read-notes": "--notes", "read-styles": "--styles" }[route];
         return { result: await docsReadWithFlag(ports, filePath, flag, ports.signal), mutated: false };
       }
+      case "create": {
+        // 【T43】create_document：docs → docx。类型在入口处算好（见 createType）。
+        return await createDocument(ports, "docx", filePath, input, options);
+      }
       case "apply": {
         const ops = Array.isArray(input.ops) ? input.ops : [input];
         // 模型只想调单个 op 时，input 本身就是那一条 op。
@@ -340,6 +402,10 @@ async function executeCliTool(
       const maxRows = typeof input.maxRows === "number" ? input.maxRows : undefined;
       return { result: await sheetRead(ports, filePath, ports.signal, { ...(sheet ? { sheet } : {}), ...(range ? { range } : {}), ...(maxRows ? { maxRows } : {}) }), mutated: false };
     }
+    if (route === "create") {
+      // 【T43】create_document：sheets → xlsx。
+      return await createDocument(ports, "xlsx", filePath, input, options);
+    }
     const ops = Array.isArray(input.ops) ? input.ops : [input];
     const result = await sheetApply(ports, filePath, ops, { ...(options.dryRun ? { dryRun: true } : {}), ...signal });
     return { result, mutated: result.ok && options.dryRun !== true };
@@ -352,6 +418,13 @@ async function executeCliTool(
     if (route === "guide") {
       return { result: await guideOps(ports, "slides", undefined, ports.signal), mutated: false };
     }
+    if (route === "create") {
+      // 【T43】build_deck：PPT 设计流水线（spec 快照 → create --spec --render --audit）。
+      // **必须放在这个分支里**：放到函数末尾的通用 create 块会因 `app` 已被
+      // 上面的 `if (app === "slides")` 收窄而变成死代码（tsc 会报 TS2367，
+      // 但更糟的是运行期它会静默落进 slidesApply）。
+      return await buildDeck(ports, filePath, input, options);
+    }
     const ops = Array.isArray(input.ops) ? input.ops : [input];
     const result = await slidesApply(ports, filePath, ops, { ...(options.dryRun ? { dryRun: true } : {}), ...signal });
     return { result, mutated: result.ok && options.dryRun !== true };
@@ -361,7 +434,145 @@ async function executeCliTool(
     const page = typeof input.page === "number" ? input.page : undefined;
     return { result: await readPdf(ports, filePath, { ...(page ? { page } : {}), ...(range ? { range } : {}), ...signal }), mutated: false };
   }
+
+  /* ─────────────【T43】创建路线（docx / xlsx / pdf / pptx）─────────────
+   *
+   * 缺口二/三/四的落点。三条子路线各有各的安全形状，**不共用一条**：
+   *
+   *  a. `slides.build_deck` → `create --type pptx --spec <dir>`：
+   *     spec 目录会被**快照**进受控临时目录再构建（方案 B），源目录只读。
+   *  b. `*.create_document` + pptx 的 `from` 字段 → `create --type X --from <file>`：
+   *     T74 已有的 `createFromFile`，只接受单文件 + 白名单扩展名。
+   *  c. 其余情况 → 显式拒绝并说明缺什么（不猜路径、不静默换命令）。
+   */
+  if (route === "create") {
+    // 走到这里的只剩 pdf（docs/sheets/slides 的 create 已在各自分支处理）。
+    if (tool !== "create_document" || createType === null) {
+      return {
+        result: { ok: false, kind: "refused", envelope: null, reason:
+          `${app}.${tool} 没有 CLI 创建路线。` +
+          `可用的创建工具：docs/sheets/pdf 的 create_document（源文件经 input.source），slides 的 build_deck（设计流水线）。` },
+        mutated: false,
+      };
+    }
+    return await createDocument(ports, createType, filePath, input, options);
+  }
+
   return { result: { ok: false, kind: "refused", envelope: null, reason: `${app}.${tool} 没有 CLI 路线` }, mutated: false };
+}
+
+/** `create_document` 的共同实现：`create --type X --from <source> --out <filePath>`。 */
+async function createDocument(
+  ports: DocumentSurfacePorts,
+  type: "docx" | "xlsx" | "pdf",
+  outPath: string,
+  input: Record<string, unknown>,
+  options: { dryRun?: boolean; track?: boolean },
+): Promise<{ result: GenofficeResult; mutated: boolean }> {
+  const source = typeof input.source === "string" ? input.source : typeof input.from === "string" ? input.from : null;
+  if (source === null) {
+    return {
+      result: { ok: false, kind: "refused", envelope: null, reason:
+        `create_document 需要 input.source（源文件绝对路径）。` +
+        `docx 接受受限 HTML fragment（.html/.htm）；xlsx 接受 .csv/.json；pdf 接受 .md/.html/.docx/.xlsx/.pptx。` +
+        (type === "docx" ? ` 想直接从 Markdown 建 docx 时，用 convert（md→docx），或先转成受限 HTML。` : "") },
+      mutated: false,
+    };
+  }
+  if (options.dryRun === true) {
+    return {
+      result: { ok: false, kind: "refused", envelope: null, reason: "create 没有 dry-run：它写的是一个新文件，不覆盖任何已有内容。" },
+      mutated: false,
+    };
+  }
+  // 【T43】PDF 走的是 `create --type pdf --from <document>`：CLI 用原厂渲染器打印，
+  // 需要 GenOffice 应用在机器上（`capabilities.app.available`）。这里不预判，
+  // 让 CLI 自己回 `app_unavailable`（那样原因更准）。
+  if (type === "pdf") {
+    const result = await createPdfFromFile(ports, source, outPath, ports.signal ? { signal: ports.signal } : {});
+    return { result, mutated: result.ok };
+  }
+  const result = await createFromFile(ports, type, source, outPath, ports.signal ? { signal: ports.signal } : {});
+  return { result, mutated: result.ok };
+}
+
+/**
+ * 【T43】`slides.build_deck` —— PPT 设计流水线的 CLI 入口，**带快照围栏**。
+ *
+ * 输入形状（与 `guide slides design` 一致）：
+ * ```
+ * { specDir: "<工作区里的 deck 目录>", outline?: "<outline.json>", render?: true, audit?: true }
+ * ```
+ * `filePath` 是**输出 .pptx**（工作区内、必须不存在）。
+ *
+ * 步骤：
+ *   1. 在 `renderTempRoot()` 下建一个一次性目录；
+ *   2. `snapshotDeckSpec` 把 specDir 逐文件审核后拷进去（符号链接/未知扩展名/界外路径一律拒绝）；
+ *   3. `createDeckFromSpec` 对**副本**调 `create --spec`，可选 `--render` / `--audit`；
+ *   4. 清理副本目录（无论成败）。
+ *
+ * 为什么这样是安全的：CLI 读到的每个文件都已经在受控目录里，且与源目录逐字节
+ * 相同 —— 图片相对路径照常工作，但它**读不到源目录以外的任何东西**。
+ */
+async function buildDeck(
+  ports: DocumentSurfacePorts,
+  outPath: string,
+  input: Record<string, unknown>,
+  options: { dryRun?: boolean; track?: boolean },
+): Promise<{ result: GenofficeResult; mutated: boolean }> {
+  const specDir = typeof input.specDir === "string" ? input.specDir : null;
+  if (specDir === null) {
+    return {
+      result: { ok: false, kind: "refused", envelope: null, reason:
+        "build_deck 需要 input.specDir（设计流水线的 deck 目录，里面有 pages/NN.json，可选 outline.json / style.md / 图片）。" +
+        "先跑 document_tool_describe({tool:\"build_deck\", app:\"slides\"}) 看完整步骤；" +
+        "设计流水线的规范在 `guide slides design`（style.md → outline.json → 逐页 NN.json → 逐页 check）。" },
+      mutated: false,
+    };
+  }
+  if (options.dryRun === true) {
+    return {
+      result: { ok: false, kind: "refused", envelope: null, reason:
+        "build_deck 没有 dry-run：它写的是一个新 .pptx。要预览页面请先写 spec 并用 slides check 逐页检查（那是设计流水线要求的步骤）。" },
+      mutated: false,
+    };
+  }
+  const root = ports.renderTempRoot();
+  if (!root || root.trim() === "") {
+    return { result: { ok: false, kind: "refused", envelope: null, reason: "当前端口没有受控临时目录，无法为 spec 建快照" }, mutated: false };
+  }
+  const snapshotRoot = join(root, `t43-deck-${randomUUID().replace(/-/g, "").slice(0, 12)}`);
+  try {
+    const snapshot = await snapshotDeckSpec(ports, specDir, snapshotRoot);
+    if (!snapshot.ok) {
+      return { result: { ok: false, kind: "refused", envelope: null, reason: snapshot.reason }, mutated: false };
+    }
+    // outline 必须也在快照里（源路径 → 相对路径），否则 CLI 会去读源目录。
+    const outlineInput = typeof input.outline === "string" ? input.outline : null;
+    let outlineInSnapshot: string | undefined;
+    if (outlineInput !== null) {
+      const rel = relative(specDir, outlineInput).replaceAll("\\", "/");
+      if (rel.startsWith("..") || isAbsolute(rel)) {
+        return { result: { ok: false, kind: "refused", envelope: null, reason: `outline 必须位于 spec 目录内：${outlineInput}` }, mutated: false };
+      }
+      outlineInSnapshot = join(snapshotRoot, ...rel.split("/"));
+    } else {
+      // 默认：快照里的 outline.json（若存在）。
+      const candidate = join(snapshotRoot, "outline.json");
+      if (existsSync(candidate)) outlineInSnapshot = candidate;
+    }
+    const renderDir = input.render === true ? join(root, `t43-deck-${randomUUID().replace(/-/g, "").slice(0, 12)}-render`) : undefined;
+    if (renderDir !== undefined) mkdirSync(renderDir, { recursive: true });
+    const result = await createDeckFromSpec(ports, join(snapshotRoot, "pages"), outPath, {
+      ...(outlineInSnapshot !== undefined ? { outline: outlineInSnapshot } : {}),
+      ...(renderDir !== undefined ? { render: renderDir } : {}),
+      ...(input.audit === true ? { audit: true } : {}),
+      ...(ports.signal ? { signal: ports.signal } : {}),
+    });
+    return { result, mutated: result.ok };
+  } finally {
+    try { rmSync(snapshotRoot, { recursive: true, force: true }); } catch { /* 清理失败不改变结果 */ }
+  }
 }
 
 /** `docs read` 的视图开关（revisions/comments/notes/styles）是 `docs read` 的选项，
@@ -452,7 +663,7 @@ export async function documentToolCall(
   };
 }
 
-function qaToWire(qa: DocumentQaReport): { gate: "check" | "audit"; ok: boolean; issues: unknown[]; counts?: Record<string, number>; summary?: string } {
+function qaToWire(qa: DocumentQaReport): { gate: "check" | "audit" | "render-probe"; ok: boolean; issues: unknown[]; counts?: Record<string, number>; summary?: string } {
   return {
     gate: qa.gate, ok: qa.ok, issues: [...qa.issues],
     ...(qa.counts ? { counts: qa.counts } : {}),
@@ -468,12 +679,35 @@ export async function documentMarkdownRead(
 ): Promise<DocumentMarkdownReadResult> {
   const refusalPath = requireWorkspacePath(ports, args.filePath, "文档路径");
   if (refusalPath !== null) return { ok: false, kind: "refused", reason: refusalPath };
-  const read = await docsRead(ports, args.filePath, { full: true, ...(args.range ? { range: args.range } : {}), ...(ports.signal ? { signal: ports.signal } : {}) });
+  // 【T43】缺口五：以前一律 `docs read`（Word 专属），于是 xlsx/pptx/pdf/md/html
+  // 全都读不了 —— 用户说的「读文件也不全面」。现在按扩展名分派到各自的原厂命令：
+  //   docx → docs read / xlsx → sheet read / pptx → slides read / pdf → pdf read /
+  //   md·txt·csv·源码·html → 直接读文件（convert 不支持 md→md、html→md，实测）。
+  const read = await readAnyDocument(ports, args.filePath, {
+    ...(args.range ? { range: args.range } : {}),
+    ...(ports.signal ? { signal: ports.signal } : {}),
+  });
   if (!read.ok) return { ok: false, kind: read.kind === "refused" ? "refused" : read.kind === "unavailable" ? "unavailable" : "failed", reason: read.reason };
   const converted = blocksToMarkdown(read.envelope.detail);
-  if (converted === null) return { ok: false, kind: "failed", reason: "docs read 的信封里没有 detail.items；无法生成带定位符的 Markdown。" };
+  if (converted === null) return { ok: false, kind: "failed", reason: "读取结果的信封里没有 detail.items；无法生成带定位符的 Markdown。" };
   const revision = await fileContentVersion(args.filePath).catch(() => null);
-  return { ok: true, filePath: args.filePath, markdown: converted.markdown, blocks: converted.blocks, revision };
+  const detail = read.envelope.detail as { via?: unknown; structured?: unknown; truncated?: unknown } | null;
+  const via = typeof detail?.via === "string" ? detail.via : "unknown";
+  const structured = detail?.structured === true;
+  // 【T43】「怎么读的 / 是不是结构读 / 有没有截断」必须让模型看见 —— 否则它会把
+  // xlsx 的线性摘要当成 Word 的块索引去用。以前这三项没地方放；现在压在正文的
+  // 第一行注释里（Markdown 注释不会污染渲染，也不改契约类型）。
+  const header = [
+    `<!-- read via ${via}${structured ? " (structured)" : " (linear)"}${detail?.truncated === true ? ", TRUNCATED" : ""} -->`,
+    ...(detail?.truncated === true ? ["<!-- 文件超过 2 MiB，只读了前面一部分 -->"] : []),
+  ].join("\n");
+  return {
+    ok: true,
+    filePath: args.filePath,
+    markdown: `${header}\n\n${converted.markdown}`,
+    blocks: converted.blocks,
+    revision,
+  };
 }
 
 /** 内部：把一段 Markdown 变成 restricted HTML 片段（CLI 的 md→html，再剥出 body）。

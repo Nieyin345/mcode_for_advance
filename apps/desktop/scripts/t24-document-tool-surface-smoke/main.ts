@@ -113,9 +113,17 @@ console.log("\n1. 目录：139 个工具按 app/关键词可检索，withheld �
     await import("../../src/main/document/documentToolSurface.js");
   const { documentToolsList, documentApps, withheldReason } = await import("../../src/main/document/documentToolRuntime.js");
   const catalog = documentCatalog();
-  check("目录条目数 = 139（docs40/sheets18/slides18/pdf45/md10/html8）", catalog.length === 139, catalog.length);
+  // 【T43】目录现在 = vendor 139 + Mcode 自有（slides.build_deck）。断言「vendor 部分
+  // 保持 139」用 byApp 的期望表，而不是拿总数硬编码 —— 否则每加一个自有工具就要改一次
+  // 这个数字，而那会把「vendor 快照漂了」这件事一起掩盖掉。
+  const VENDOR_TOTAL = 139;
+  const owned = catalog.filter((entry) => entry.app === "slides" && entry.name === "build_deck");
+  check("目录 = vendor 139 + Mcode 自有 1（build_deck）",
+    catalog.length === VENDOR_TOTAL + 1 && owned.length === 1, { total: catalog.length, owned: owned.length });
   const byApp = Object.fromEntries(["docs", "sheets", "slides", "pdf", "markdown", "html"].map((app) => [app, catalog.filter((e) => e.app === app).length]));
-  check("每编辑器数量与实测一致", JSON.stringify(byApp) === JSON.stringify({ docs: 40, sheets: 18, slides: 18, pdf: 45, markdown: 10, html: 8 }), byApp);
+  // 【T43】slides 是 18（vendor）+ 1（Mcode 自有 build_deck）= 19；其余保持 vendor 实测值。
+  check("每编辑器数量 = vendor 实测 + Mcode 自有",
+    JSON.stringify(byApp) === JSON.stringify({ docs: 40, sheets: 18, slides: 19, pdf: 45, markdown: 10, html: 8 }), byApp);
   check("每条都有非空说明", catalog.every((e) => e.doc.trim().length > 0));
 
   const chart = searchDocumentTools("docs", "chart").map((e) => e.name);
@@ -129,7 +137,8 @@ console.log("\n1. 目录：139 个工具按 app/关键词可检索，withheld �
   const apps = documentApps({
     cliPath: "unused", withinWorkspace: () => false, rendererOpen: () => false, renderTempRoot: () => "",
   });
-  check("document_apps 回六个编辑器且总数为 139", apps.apps.length === 6 && apps.totalTools === 139, { apps: apps.apps.length, total: apps.totalTools });
+  check("document_apps 回六个编辑器且总数为 140（vendor 139 + build_deck）",
+    apps.apps.length === 6 && apps.totalTools === 140, { apps: apps.apps.length, total: apps.totalTools });
   check("每个编辑器常驻读工具 ≤2", apps.apps.every((a) => a.residentTools.length <= 2 && a.residentTools.length > 0), apps.apps.map((a) => [a.app, a.residentTools]));
   check("docs 常驻含 get_document_context/read_blocks，sheets 含 read_range",
     DOCUMENT_RESIDENT_TOOLS.docs.includes("get_document_context") && DOCUMENT_RESIDENT_TOOLS.docs.includes("read_blocks")
@@ -227,7 +236,7 @@ const call = <T = unknown>(channel: string, raw: unknown): Promise<T> =>
 console.log("\n4. 发现通道（真 handler）");
 {
   const apps = await call<{ apps: Array<{ app: string }>; totalTools: number }>(IPC.DOCUMENT_APPS, {});
-  check("document.apps 回 139 个工具、六个编辑器", apps.totalTools === 139 && apps.apps.length === 6, { total: apps.totalTools, apps: apps.apps.length });
+  check("document.apps 回 140 个工具、六个编辑器", apps.totalTools === 140 && apps.apps.length === 6, { total: apps.totalTools, apps: apps.apps.length });
   const list = await call<{ shown: number; tools: Array<{ name: string; route: string }> }>(IPC.DOCUMENT_TOOLS_LIST, { app: "docs", query: "table" });
   check("document.toolsList 按关键词回 docs 表格工具", list.shown > 0 && list.tools.every((t) => t.name.includes("table") || t.name.includes("Table") || true), list.tools.slice(0, 4));
   const described = await call<{ ok: boolean; schemaText?: string; withheld?: string }>(IPC.DOCUMENT_TOOL_DESCRIBE, { tool: "insert_picture", app: "docs" });

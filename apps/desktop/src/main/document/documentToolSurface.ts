@@ -140,18 +140,48 @@ export function isMutatingDocumentTool(app: DocumentToolApp, tool: string): bool
   return MUTATING[app].has(tool);
 }
 
+/**
+ * 【T43】**Mcode 自有**的文档工具（不属于 vendor 目录）。
+ *
+ * `documentToolCatalog.generated.ts` 是从 vendor 快照**生成**的，手改会在下次
+ * 重新生成时被冲掉。而 `build_deck` 是 Mcode 这一侧提供的能力（把 PPT 设计
+ * 流水线包成一次调用），vendor 里没有同名工具 —— 所以它追加在这里，不写进
+ * 生成文件。
+ *
+ * 为什么必须有它：T24 的目录里 slides 只有 read/apply 一类工具，模型**没有任何
+ * 途径新建一个 deck**（T43 缺口二/三/四）。`create_document` 在 docs/sheets/pdf
+ * 上都有，唯独 slides 没有 —— 因为 pptx 要走 `--spec <dir>`，需要快照围栏。
+ */
+const MCCODE_OWNED_TOOLS: readonly DocumentToolCatalogEntry[] = Object.freeze([
+  {
+    app: "slides",
+    name: "build_deck",
+    doc:
+      "从设计规格目录新建一个 .pptx（上游的设计流水线：style.md + outline.json + pages/NN.json）。" +
+      "Mcode 会把 spec 目录快照进受控临时目录再构建（源目录只读），可选出图与几何审计。" +
+      "参数：{ specDir, outline?, render?, audit? }。新建 PPT 用这个，不要用 apply_ops 手摆元素。",
+    hasParams: true,
+  },
+]);
+
+/** 目录 = vendor 生成目录 + Mcode 自有工具。**所有读取都必须走这里**，
+ *  否则 `build_deck` 会「有路由、查不到」，模型永远调不到（T43 实测踩过）。 */
+function allTools(): readonly DocumentToolCatalogEntry[] {
+  return [...DOCUMENT_TOOL_CATALOG, ...MCCODE_OWNED_TOOLS];
+}
+
 export function documentCatalog(): readonly DocumentToolCatalogEntry[] {
-  return DOCUMENT_TOOL_CATALOG;
+  return allTools();
 }
 
 export function documentToolsOf(app: DocumentToolApp): readonly DocumentToolCatalogEntry[] {
-  return DOCUMENT_TOOL_CATALOG.filter((entry) => entry.app === app);
+  return allTools().filter((entry) => entry.app === app);
 }
 
 /** 按 app / 关键词检索（名称子串或说明子串；大小写不敏感）。 */
 export function searchDocumentTools(app: DocumentToolApp | undefined, query: string | undefined): readonly DocumentToolCatalogEntry[] {
   const q = query?.trim().toLowerCase();
-  return DOCUMENT_TOOL_CATALOG.filter((entry) =>
+  return allTools().filter((entry) =>
     (!app || entry.app === app) &&
     (!q || entry.name.toLowerCase().includes(q) || entry.doc.toLowerCase().includes(q)),
   );
@@ -159,7 +189,7 @@ export function searchDocumentTools(app: DocumentToolApp | undefined, query: str
 
 export function findDocumentTool(tool: string, app?: DocumentToolApp): DocumentToolCatalogEntry | undefined {
   const name = tool.trim();
-  const hits = DOCUMENT_TOOL_CATALOG.filter((entry) => entry.name === name || `${entry.app}.${entry.name}` === name);
+  const hits = allTools().filter((entry) => entry.name === name || `${entry.app}.${entry.name}` === name);
   if (app) return hits.find((entry) => entry.app === app);
   return hits.length === 1 ? hits[0] : hits[0];
 }
@@ -176,17 +206,21 @@ export interface DocumentQaIssue {
 }
 
 export interface DocumentQaReport {
-  gate: "check" | "audit";
+  gate: "check" | "audit" | "render-probe";
   /** 命令是否成功返回（exit 0 不等于没问题——问题在 issues 里）。 */
   ok: boolean;
   /** `detail.issues` 原样（形状随 app/命令不同，字段见 CLI）。 */
   issues: readonly DocumentQaIssue[];
   counts?: Record<string, number>;
   summary?: string;
+  /** 【T43】`render-probe` 专用：这次到底证明了什么、没证明什么。 */
+  scope?: string;
+  /** 【T43】`render-probe` 出的图（绝对路径）；模型可以接着 render 看。 */
+  images?: readonly string[];
 }
 
 /** 从 CLI 信封里取 `detail.issues`；`detail` 形状不合预期时显式报错而不是当作“无问题”。 */
-export function extractQaReport(gate: "check" | "audit", result: GenofficeResult): DocumentQaReport {
+export function extractQaReport(gate: "check" | "audit" | "render-probe", result: GenofficeResult): DocumentQaReport {
   if (!result.ok) {
     return { gate, ok: false, issues: [], summary: result.reason };
   }
@@ -210,8 +244,51 @@ export function extractQaReport(gate: "check" | "audit", result: GenofficeResult
   };
 }
 
+/**
+ * 【T43】把一次 `render` 的结果解析成门禁报告。
+ *
+ * `render` 不是 `check`：它没有 `detail.issues`。它能证明的是**能不能排版**，
+ * 以及出了几张图。所以这里单独一个解析函数，并且把「证明了什么」写进 `scope` ——
+ * `formatQaReport` 会原样带给模型，避免被读成「文档没问题」。
+ */
+export function extractRenderProbeReport(
+  app: DocumentToolApp,
+  result: GenofficeResult,
+  images: readonly string[],
+): DocumentQaReport {
+  const scope = `只验证了「${app} 能被原厂渲染器排版成 PNG」（页数 ${images.length}）；` +
+    `**没有**检查内容正确性，也**没有**判断排版是否好看。要检查内容请用 render + 人/模型看图，或该格式自己的 check（若存在）。`;
+  if (!result.ok) {
+    return { gate: "render-probe", ok: false, issues: [], summary: result.reason, scope };
+  }
+  if (images.length === 0) {
+    return {
+      gate: "render-probe", ok: false, issues: [], scope,
+      summary: "render 报告成功，但一个 PNG 都没有落在盘上；本次视为门禁失败（不把「没出图」当「没问题」）。",
+    };
+  }
+  return {
+    gate: "render-probe", ok: true, issues: [], scope,
+    ...(result.envelope.summary ? { summary: result.envelope.summary } : {}),
+    images: [...images],
+  };
+}
+
 /** 门禁报告 → 给模型看的一段文字（issues 不缩水，只去掉纯噪声字段）。 */
 export function formatQaReport(app: DocumentToolApp, report: DocumentQaReport): string {
+  // 【T43】`render-probe` 有自己的措辞：它不是 check/audit，绝不能读成「内容无问题」。
+  if (report.gate === "render-probe") {
+    const head = `render-probe（${app} 可渲染性）`;
+    const state = report.ok ? "通过" : "未通过";
+    const lines = [
+      `${report.ok ? "✅" : "⚠️"} QA 门禁 ${head}：${state}${report.summary ? `（${report.summary}）` : ""}。`,
+      report.scope ? `范围：${report.scope}` : "",
+      report.images && report.images.length > 0
+        ? `出图：${report.images.length} 张（${report.images.slice(0, 4).join(", ")}${report.images.length > 4 ? " …" : ""}）。要看效果用 document_render。`
+        : "",
+    ].filter(Boolean);
+    return lines.join("\n");
+  }
   const head = report.gate === "audit" ? "slides audit" : `${app} check`;
   if (!report.ok) return `⚠️ QA 门禁（${head}）没有跑成：${report.summary ?? "未知原因"}`;
   if (report.issues.length === 0) {
@@ -305,32 +382,131 @@ export interface DocumentCallOutcome {
   mutated?: boolean;
 }
 
-/** CLI 里承载该 app 的工具子集（其余工具只能走 renderer）。 */
+/** CLI 里承载该 app 的工具子集（其余工具只能走 renderer）。
+ *
+ * 【T43】补上「创建」与 PPT 设计流水线：
+ *   - `create_document`（docs/sheets/pdf）→ `create`，走 `createFromFile`；
+ *   - `build_deck`（slides）→ `create --type pptx --spec`，走 `createDeckFromSpec`
+ *     （**带快照围栏**，见 `genofficeCli.snapshotDeckSpec`）。
+ *
+ * 为什么 `plan_deck` / `generate_deck` 仍然没有 CLI 路由：它们是**编辑器内**工具
+ * （`plan_deck` 读活动文档的实时状态、`generate_deck` 依赖 vendor 会话），
+ * 上游 CLI 没有等价命令。T43 的处理是**如实标注 `editor-only`**（见
+ * `editorOnlyReason`），并给模型一条能真正走通的替代路径（`build_deck` 的
+ * 设计流水线）—— 而不是让模型去试一个永远失败的调用。
+ */
 const CLI_TOOL_MAP: Readonly<Record<DocumentToolApp, Readonly<Record<string, string>>>> = Object.freeze({
   docs: {
     get_document_context: "read", read_blocks: "read", read_revisions: "read-revisions",
     read_comments: "read-comments", read_notes: "read-notes", list_styles: "read-styles",
     insert_content: "apply", replace_blocks: "apply", apply_ops: "apply",
     accept_changes: "apply", reject_changes: "apply",
+    create_document: "create",
   },
   sheets: {
     get_workbook_context: "read", read_range: "read", read_cells: "read", read_formats: "read",
     read_sheet_features: "read", aggregate_range: "read", propose_operations: "apply",
+    create_document: "create",
   },
   slides: {
     read_slide: "read", apply_ops: "apply", edit_chart: "apply", load_guide: "guide",
+    /** 【T43】整份 deck 的设计流水线（spec 目录 → create）。 */
+    build_deck: "create",
   },
-  pdf: { read_pages: "read", get_outline: "read" },
+  pdf: { read_pages: "read", get_outline: "read", create_document: "create" },
   markdown: {},
   html: {},
+});
+
+/**
+ * 【T43】只在编辑器里存在、CLI 没有等价能力的工具 —— **逐条列明原因**，
+ * 让 `document_tools_list` 能标 `route:"editor-only"`，模型不必靠试。
+ *
+ * 判据：`CLI_TOOL_MAP` 里没有 **且** 它确实依赖编辑器实时状态/云能力。
+ * 这张表只覆盖「上游确认只有编辑器能做」的那部分；其余没路由的工具
+ * 仍按 CLI 拒绝处理（那条路径已经会显式报错，不是静默失败）。
+ */
+const EDITOR_ONLY_TOOLS: Readonly<Record<DocumentToolApp, Readonly<Record<string, string>>>> = Object.freeze({
+  docs: {
+    write_document: "长文分段流式写入，由编辑器侧的 writer 边写边给用户看（CLI 无等价物）；改用 markdownEdit/insert_content 分次写入",
+    replace_selection: "只替换用户在编辑器里的当前选区（CLI 拿不到实时选区）；改用 replace_blocks 按块替换",
+    reply_comment: "批注线程挂在编辑器的实时会话上；先 docs read --comments 拿 id，再用 apply_ops 的对应 op",
+    resolve_comment: "同上：批注状态属于编辑器实时会话",
+    add_comment: "新批注要锚定实时选区；文档没开时用 apply_ops 的 add_comment（按 blockIndex/text 锚定）",
+    delete_comment: "同上",
+    web_search: "联网检索由 Mcode 的受控搜索工具提供，不走文档 CLI",
+    image_search: "同上（图片检索属于 GenOffice 云能力，Mcode 不转发）",
+    generate_image: "图像生成属于 GenOffice 云能力，Mcode 不转发",
+    analyze_media: "多模态读图由 Mcode 的模型侧完成，不走文档 CLI",
+  },
+  sheets: {
+    load_guide: "sheets 的 guide 走 `guide sheets`，但该工具名是编辑器内的入口；用 document_tool_describe 取参数",
+    select_range: "依赖编辑器当前选区",
+    trace_precedents: "依赖实时公式依赖图（编辑器内计算）",
+    trace_dependents: "同上",
+    merge_attached_workbooks: "依赖编辑器里挂载的附件会话",
+    web_search: "联网检索由 Mcode 的受控搜索工具提供",
+    image_search: "同上",
+    generate_image: "图像生成属于 GenOffice 云能力",
+  },
+  slides: {
+    plan_deck: "读的是编辑器里活动 deck 的实时状态；CLI 等价物是 guide slides design + outline.json（见 build_deck）",
+    generate_deck: "依赖 vendor 编辑器的生成会话；CLI 等价物是 build_deck（create --spec）",
+    execute_slide_script: "只在编辑器沙箱里执行",
+    insert_web_image: "依赖编辑器会话里的图片通道",
+    replace_image: "依赖编辑器里选中的元素 id 与实时状态（CLI 有 slides apply 的等价 op）",
+    ask_clarification: "编辑器内的交互式澄清",
+    save_style_template: "样式模板存在编辑器 profile 里",
+    list_style_templates: "同上",
+    web_search: "联网检索由 Mcode 的受控搜索工具提供",
+    image_search: "同上",
+    generate_image: "图像生成属于 GenOffice 云能力",
+    analyze_media: "多模态读图由 Mcode 的模型侧完成",
+  },
+  pdf: {
+    web_search: "联网检索由 Mcode 的受控搜索工具提供",
+    image_search: "同上",
+    generate_image: "图像生成属于 GenOffice 云能力",
+  },
+  markdown: {
+    get_document_context: "markdown 没有 CLI 结构读；document_md_read 已直接读文件",
+    read_blocks: "同上（markdown 是纯文本，按行读即可）",
+    apply_ops: "markdown 没有结构化编辑命令；直接写文件或用编辑器",
+    write_document: "长文写入属于编辑器 writer",
+    insert_image: "markdown 图片需要编辑器处理相对路径",
+    web_search: "联网检索由 Mcode 的受控搜索工具提供",
+    image_search: "同上",
+    generate_image: "图像生成属于 GenOffice 云能力",
+    read_frontmatter: "没有 CLI 命令；document_md_read 直接读文件即可看到 frontmatter",
+    generate_mindmap: "深度超限的 vendor 工具，且 CLI 无等价物",
+  },
+  html: {
+    get_outline: "html 没有 CLI 结构读；document_md_read 直接读文件",
+    read_source: "同上",
+    apply_ops: "html 没有 CLI 编辑路线（需要原厂渲染器）",
+    ask_clarification: "编辑器内的交互式澄清",
+    plan_page: "依赖编辑器侧布局会话",
+    write_document: "长文写入属于编辑器 writer",
+    web_search: "联网检索由 Mcode 的受控搜索工具提供",
+  },
 });
 
 export function cliRouteFor(app: DocumentToolApp, tool: string): string | undefined {
   return CLI_TOOL_MAP[app][tool];
 }
 
+/** 该工具是否**确认**只有编辑器能做（CLI 无等价能力）。 */
+export function editorOnlyReason(app: DocumentToolApp, tool: string): string | null {
+  return EDITOR_ONLY_TOOLS[app][tool] ?? null;
+}
+
 /** 让模型知道“这个工具要开编辑器才能用”。 */
 export function cliUnsupportedReason(app: DocumentToolApp, tool: string): string {
+  const confirmed = editorOnlyReason(app, tool);
+  if (confirmed !== null) {
+    return `${app}.${tool} 只能在编辑器里执行：${confirmed}。` +
+      `完整清单见 document_tools_list（route:"editor-only" 的那些）。`;
+  }
   return `${app}.${tool} 只能在编辑器里执行（它要读/改活动文档的实时状态），而 ${app === "docs" ? "这个文件" : "该编辑器"}当前没有受信的渲染端绑定。` +
     `请先在 Mcode 里打开目标文件，或改用 CLI 能承载的工具（document_tools_list 里带 route:cli 的那些）。`;
 }

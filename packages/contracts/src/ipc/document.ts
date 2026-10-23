@@ -121,7 +121,12 @@ export interface DocumentToolsListEntry {
   name: string;
   doc: string;
   resident: boolean;
-  route: "cli" | "editor";
+  /** 【T43】三态：`cli` 直接可用；`editor` 需要编辑器里的受信渲染端绑定；
+   *  `editor-only` **确认**只有编辑器能做（CLI 无等价物），原因见 `note` ——
+   *  模型不必再去试一个注定失败的调用。 */
+  route: "cli" | "editor" | "editor-only";
+  /** `editor-only` 的替代做法（人话）。 */
+  note?: string;
 }
 
 export interface DocumentToolsListResult {
@@ -146,7 +151,7 @@ export interface DocumentToolDescribeResult {
   doc: string;
   /** 参数/示例正文（CLI guide 的原文或目录里的说明）。 */
   schemaText: string;
-  route: "cli" | "editor";
+  route: "cli" | "editor" | "editor-only";
   /** 该工具是否超出 T86 请求级契约（withheld），以及原因。 */
   withheld?: string;
 }
@@ -168,7 +173,9 @@ export const DocumentToolCallSchema = z.object({
 export type DocumentToolCallInput = z.infer<typeof DocumentToolCallSchema>;
 
 export interface DocumentQaReportWire {
-  gate: "check" | "audit";
+  /** 【T43】`render-probe` = pdf/markdown/html 的可渲染性检查（上游没有这三家的
+   *  check/audit 命令）。它证明能排版，**不**证明内容正确。 */
+  gate: "check" | "audit" | "render-probe";
   ok: boolean;
   issues: unknown[];
   counts?: Record<string, number>;
