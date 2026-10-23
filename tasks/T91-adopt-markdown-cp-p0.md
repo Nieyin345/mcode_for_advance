@@ -166,6 +166,24 @@ const abs = resolve(sourceDir, ...clean.split("/"));   // :227
 - **`:313`（`cpSync(sourcePath, stagedMd)` 复制单个 md）根本不触发这个 bug** —— 卡上那条判断是错的；
 - **只有 `:242` 会崩**，而且**只在 Markdown 引用的是一个目录时**（`![图](图表/)`，少数工具这么写）。
 
+**为什么单文件不崩、目录才崩（已查）**：
+
+上游 `#63970` 写明了机制 —— 不带 `filter` 时 `cpSync` 走 **native `CpSyncCopyDir`**，
+而那个实现里有几处 `std::filesystem` 的**抛异常重载**（目录迭代、路径规范化、文件类型检查）。
+`#59636` 的 CI 记录里，崩的栈也正是：
+
+```
+at copyDir (node:internal/fs/cp/cp-sync:145:22)
+at onDir   (node:internal/fs/cp/cp-sync:137:10)
+at getStats(node:internal/fs/cp/cp-sync:68:12)
+```
+
+**`copyDir` / `onDir` 只在源是**目录**时才被调用。**单文件走的是另一条分支（直接 copyfile），
+不经过 `std::filesystem` 的目录迭代 —— 所以那个编码越界根本不会被触发。
+
+这也解释了为什么 `#63970` 给的规避方式是「传 `filter` 强制回 JS 实现」：
+**JS 实现不碰那条 native 目录遍历**。
+
 **修正后的判断**：
 
 - **`:242` → 必须修**（引用目录 + 中文路径 = 崩）；
