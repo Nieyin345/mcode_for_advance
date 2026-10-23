@@ -239,7 +239,14 @@ function copyReferencedAssets(
       const dest = join(destDir, ...rel.split(/[/\\]/));
       mkdirSync(dirname(dest), { recursive: true });
       // 目录也搬(少数工具会把图放成 `figures/` 而引用写成 `figures/`)
-      cpSync(abs, dest, { recursive: true });
+      //
+      // ⚠️ **`filter` 不是多余的。** Node 22 在 Windows 上，`cpSync` 的 native
+      // copyDir fast path 在路径含非 ASCII 字符时会 native 崩（`0xC0000409` /
+      // `0xC0000005`），`catch` 接不住 —— 进程直接死。传任何 `filter` 都会强制走
+      // JS 实现，那条路不受影响。见 nodejs/node#54476、#63970 与 `tasks/T90`。
+      //
+      // 只有**目录**会触发：单文件复制（带不带 `recursive`）实测正常。
+      cpSync(abs, dest, { recursive: true, filter: () => true });
       if (statSync(dest).isDirectory()) {
         imageCount += countImageFiles(dest);
       } else {
