@@ -558,3 +558,26 @@ WebContentsView 子视图 capturePage() → TIMEOUT@1000ms（重试第二轮仍 
 
 > 屏幕外窗口的**宿主页**能截；**子视图**不能（`show:false` 时抛错，`show:true` 时超时）。
 > 两种都是「子视图拿不到 surface」，但失败形态不同，排查时不要混为一谈。
+
+---
+
+## 交付状态复核（2026-10-23，E 会话，收尾时做）
+
+T42/T30 挂起之后，把本会话交付的四张卡在**当前 HEAD**（不是各自提交时）重跑了一遍，
+确认没有「提交后又被别的东西弄坏」：
+
+| 卡 | 套件 | 结果 |
+|---|---|---|
+| T38 | `mcode-admin-smoke` | **289/289** |
+| T38 | `mcp-endpoint-smoke` | **784/784** |
+| T38 | `maint-m35-smoke` | **pickers: all passed** |
+| T40 | `t40-renderer-registry-smoke` | **13/13** |
+| T33 | `t33-document-policy-smoke` | **30/30** |
+| T37 | `mobile-pairing-smoke` | **285 条断言，0 条红** |
+| — | 双包 typecheck | **均 exit 0** |
+
+T37 的超时改动仍在位（`main.ts:213`：`isStream ? 3000 : 10_000`）。
+
+**为什么要在收尾时做这一步**：本会话期间有多个会话并行改同一棵树（i18n 文件、
+`RightPanel.tsx`、`documentToolRuntime.ts` 都出现过别人的中间态）。「提交时绿」不等于
+「现在绿」——这仓库记过这条（`verify-committed-state-not-working-tree`）。
