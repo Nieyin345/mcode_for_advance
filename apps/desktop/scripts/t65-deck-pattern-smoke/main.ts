@@ -169,5 +169,62 @@ console.log("\n[T72] 留白消息的措辞");
 }
 
 
+/* ── 【T75】两种丑法必须各有正控 + 负控 ──
+ *
+ * T65 交付时只测了第一种（内容只占上半页）。A 在 T70 复核发现第二种「卡片内下半截空着」
+ * 完全抓不到 —— 因为卡片本身撑住了整页底边。两页实测整页底边都是 0.872，一个数都分不开。
+ */
+console.log("\n[T75] 两种丑法各一对正控负控");
+{
+  // 卡片高 452。好版本：卡内文字填到 600；空柱版本：文字只到 366。
+  const mk = (textH: number): DeckPageSpec => ({
+    type: "content", layout: "three_column_cards",
+    elements: [
+      { type: "text", x: 80, y: 60, w: 1120, h: 60, paragraphs: [{ runs: [{ text: "标题", sizePt: 36 }] }] },
+      { type: "shape", shape: "roundRect", x: 80, y: 176, w: 352, h: 452, fill: "#FFFFFF" },
+      { type: "text", x: 112, y: 212, w: 288, h: 40, paragraphs: [{ runs: [{ text: "卡标题", sizePt: 22 }] }] },
+      { type: "text", x: 112, y: 268, w: 288, h: textH, paragraphs: [{ runs: [{ text: "正文", sizePt: 14 }] }] },
+      { type: "shape", shape: "roundRect", x: 464, y: 176, w: 352, h: 452, fill: "#FFFFFF" },
+      { type: "shape", shape: "roundRect", x: 848, y: 176, w: 352, h: 452, fill: "#FFFFFF" },
+    ],
+  });
+  const full = mk(332);   // 文字底 600，卡底 628 → 留白 28 / 452 = 0.062
+  const empty = mk(98);   // 文字底 366，卡底 628 → 留白 262 / 452 = 0.580
+
+  const cardOf = (p: DeckPageSpec) =>
+    checkDeckPatterns([p]).findings.filter(f => f.rule === "layout.card-whitespace");
+
+  // ── 第二种丑法：卡片内下半截空着 ──
+  eq("★ 正控：卡片填满 → 卡底留白判据不报", cardOf(full).length, 0);
+  check("★ 负控：卡片内下半截空着 → 报出来", cardOf(empty).length === 1, cardOf(empty));
+
+  // ── 第一种丑法：内容只占上半页（整页级）──
+  const topOnly: DeckPageSpec = {
+    type: "content", layout: "three_column_cards",
+    elements: [
+      { type: "text", x: 80, y: 60, w: 1120, h: 60, paragraphs: [{ runs: [{ text: "标题", sizePt: 36 }] }] },
+      { type: "shape", shape: "roundRect", x: 80, y: 180, w: 352, h: 250, fill: "#FFFFFF" },
+    ],
+  };
+  const pageOf = (p: DeckPageSpec) =>
+    checkDeckPatterns([p]).findings.filter(f => f.rule === "layout.whitespace");
+  eq("★ 正控：铺满的页 → 整页判据不报", pageOf(full).length, 0);
+  check("★ 负控：内容只占上半页 → 整页判据报", pageOf(topOnly).length === 1, pageOf(topOnly));
+
+  // ── 关键：两条判据互不替代 ──
+  // 空柱子页的整页底边 = 628/720 = 0.872，整页判据**不报**——它抓不到这种丑法。
+  eq("★ 空柱子页的整页判据不报（证明它抓不到这种丑法）", pageOf(empty).length, 0);
+  // 反过来：内容只占上半页的那页，没有卡片内文字，容器级判据也不该报
+  eq("★ 只占上半页的页没有卡片内文字 → 容器级判据不报", cardOf(topOnly).length, 0);
+
+  // ── 措辞：与新判据保持同一条纪律 ──
+  const msg = cardOf(empty)[0]!.message;
+  check("★ 卡底留白消息用「参考线」", msg.includes("参考线"), { msg });
+  check("★ 卡底留白消息不含「期望」「必须」「要求」",
+    !msg.includes("期望") && !msg.includes("必须") && !msg.includes("要求"), { msg });
+  check("★ 卡底留白消息允许有意留白", msg.includes("可忽略"), { msg });
+}
+
+
 console.log(`\nt65-deck-pattern-smoke: ${total - failures}/${total} 通过`);
 process.exit(failures === 0 ? 0 : 1);

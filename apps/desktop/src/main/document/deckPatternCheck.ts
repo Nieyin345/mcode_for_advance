@@ -124,7 +124,12 @@ function checkAccentBars(page: DeckPageSpec, i: number): PatternFinding[] {
     if (verticalBar) {
       out.push({
         rule: "accent-bar.vertical",
-        level: "error",
+        // ⚠️ warning 不是 error：判据本身（w<24 且 h≥64）能命中真实色条，但**阈值是拍的** ——
+        // 规范原文只说「thin vertical accent bar on the left of every card / a colored bar on
+        // top of cards / a small bar left of titles」，没给像素。7 条判据里只有
+        // `palette.rainbow` 有规范原文（"Never more than the two accents"），其余全是经验阈值。
+        // 拍的阈值不该以 error 身份打断模型。
+        level: "warning",
         page: i,
         message: `第 ${i + 1} 页有一根 ${w}×${h} 的细竖条（规范明列的反模式：用底色、字重、字号表达层级，不要左侧色条）。`,
       });
@@ -136,7 +141,7 @@ function checkAccentBars(page: DeckPageSpec, i: number): PatternFinding[] {
       if (sitsOnCard) {
         out.push({
           rule: "accent-bar.top",
-          level: "error",
+          level: "warning",   // 理由同 `accent-bar.vertical`：阈值是拍的。
           page: i,
           message: `第 ${i + 1} 页有 ${w}×${h} 的顶部色条压在卡片上沿（规范明列的反模式）。`,
         });
@@ -224,6 +229,10 @@ function checkRainbow(page: DeckPageSpec, i: number): PatternFinding[] {
  * T69 试过把 `tight` 收紧到 0.85 —— **直接误伤 KPI 页**（0.833 < 0.85），那条路被
  * 实测数据否掉。放宽到 0.75 则让空柱子只剩 8.3pt 余量。
  *
+ * ⚠️ **80% 这条线落在真实设计的高频区**（A 的 T70 实测）：T62 的 KPI 页是 0.8333，
+ * 卡片减 32px（约一个行高）就掉到 78.9% 被误报。**这是已知的、可接受的误报面** ——
+ * 改它是调参，不是修 bug（见上面「不要在没有新样本的情况下调」）。
+ *
  * **样本只有 1 份 deck 的 5 个页面。在 5 个点上调参就是过拟合。**
  * 真要校准，先补样本（T69 的建议：T63 扩夹具，或再手做 2–3 份不同风格的 deck）。
  */
@@ -233,6 +242,70 @@ export const WHITESPACE_REFERENCE_LINE: Readonly<Record<"loose" | "tight", numbe
   /** content / data：空柱子 0.667 必须报，好的内容页 0.872 不能报。 */
   tight: 0.8,
 });
+
+/**
+ * 【判据 3b】**容器级**留白：卡片内部，文字底边到卡底的空白占卡片高度的比例。
+ *
+ * ## 为什么整页级判据抓不到这种丑法（【T75】2026-10-23 A 复核发现）
+ *
+ * 整页级量的是「内容底边 / 画布高」。而**卡片本身就是元素**——卡片越高，底边越靠下，
+ * 比例越大。实测同一页的两种版本：
+ *
+ * ```
+ *                        整页底边    本判据（卡底留白）
+ * 空柱子(卡片 452 高，文字只占上部)  0.872        0.580   ← 整页判据判它「合格」
+ * 好(同样卡片 452 高，文字填满)      0.872        0.062
+ * ```
+ *
+ * **整页级在两页上给出完全相同的 0.872** —— 一个数都分不开。因为卡片高度一样，
+ * 底边自然一样。**两种丑法不是一回事**：整页级抓「内容只占上半页」，本判据抓
+ * 「卡片内下半截空着」。
+ *
+ * ## 方向：**越大越空**（与整页级相反）
+ *
+ * ## ⚠️ 样本量 = 2
+ *
+ * 一个空柱子（0.580）、一个填满（0.062）。`0.45` 是**这两个数的区间中点**，
+ * 不是校准值 —— 它离两边各有 0.13 / 0.39 的余量，足够区分这两个已知形态，
+ * 但**没有任何证据说明 0.45 对其它设计是对的**。
+ *
+ * T69 的教训在这里同样成立：不要在少量样本上精调。等真实 deck 攒到 10 页以上
+ * （或 T63 扩出更多夹具）再回来校准。
+ */
+export const CARD_WHITESPACE_REFERENCE_LINE = 0.45;
+
+/** 卡片内的文字底边到卡底的留白 / 卡片高。取**最空**的一张卡，没有卡内文字返回 null。 */
+function cardBottomGapRatio(page: DeckPageSpec): { ratio: number; card: DeckElement } | null {
+  let worst: { ratio: number; card: DeckElement } | null = null;
+  for (const c of cardsOf(page)) {
+    const inside = textsOf(page).filter(
+      (t) => (t.x ?? 0) >= (c.x ?? 0) && (t.y ?? 0) >= (c.y ?? 0) &&
+        (t.y ?? 0) < (c.y ?? 0) + (c.h ?? 0) && (t.x ?? 0) < (c.x ?? 0) + (c.w ?? 0),
+    );
+    if (inside.length === 0) continue;
+    const textBottom = Math.max(...inside.map((t) => (t.y ?? 0) + (t.h ?? 0)));
+    const cardBottom = (c.y ?? 0) + (c.h ?? 0);
+    const ratio = (cardBottom - textBottom) / (c.h ?? 1);
+    if (worst === null || ratio > worst.ratio) worst = { ratio, card: c };
+  }
+  return worst;
+}
+
+function checkCardWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
+  const worst = cardBottomGapRatio(page);
+  if (worst === null) return [];
+  if (worst.ratio < CARD_WHITESPACE_REFERENCE_LINE) return [];
+  return [{
+    rule: "layout.card-whitespace",
+    level: "warning",
+    page: i,
+    // 措辞与整页级同一条纪律：参考线、给两个数字、允许有意留白。
+    message:
+      `第 ${i + 1} 页有卡片内部下半截空着：文字底边离卡底还有 ${(worst.ratio * 100).toFixed(0)}% 的卡高` +
+      `（参考线约 ${(CARD_WHITESPACE_REFERENCE_LINE * 100).toFixed(0)}%）：通常是卡片被拉高但内容没跟上。` +
+      `若这是有意的留白可忽略；否则考虑缩短卡片或补足卡内内容。`,
+  }];
+}
 
 function checkWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
   const els = page.elements ?? [];
@@ -316,7 +389,9 @@ function checkFlatCover(page: DeckPageSpec, i: number): PatternFinding[] {
   if (bigShape || bigNumber || bigImage) return [];
   return [{
     rule: "cover.flat",
-    level: "error",
+    // ⚠️ warning：判据（面积 ≥12% 的锚点）是经验值，规范只说「give it a visual anchor」，
+    // 没定义多大算锚点。只有 `palette.rainbow` 有规范原文，保持 error。
+    level: "warning",
     page: i,
     message: "封面没有视觉锚点（大色块 / 大数字 / 大图都没有），规范要求封面不能只是平标题加副标题。",
   }];
@@ -385,6 +460,7 @@ export function checkDeckPatterns(pages: DeckPageSpec[]): PatternReport {
     // 这行**也是模型会读到的**（`applied` 会原样回给调用方）。`≥` 是硬约束语气，
     // 改成「参考线」，与 `checkWhitespace` 的消息保持一致。
     "layout.whitespace": "内容底边占画布高（content/data 参考线约 80%，cover/closing 约 55%）",
+    "layout.card-whitespace": "卡片内文字底边到卡底的留白占卡高（参考线约 45%，越大越空）",
     "layout.repeated": "连续 ≥ 3 页 layout 与元素序列相同",
     "cover.flat": "封面无面积 ≥12% 的锚点、也无 ≥60pt 大字",
     "header.bar": "≥3 页同一位置同尺寸的扁条",
@@ -394,6 +470,7 @@ export function checkDeckPatterns(pages: DeckPageSpec[]): PatternReport {
     findings.push(...checkAccentBars(p, i));
     findings.push(...checkRainbow(p, i));
     findings.push(...checkWhitespace(p, i));
+    findings.push(...checkCardWhitespace(p, i));
     findings.push(...checkFlatCover(p, i));
   });
   findings.push(...checkRepeatedComposition(pages));
