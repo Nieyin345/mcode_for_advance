@@ -238,15 +238,16 @@ try {
     // ⚠️ 判据是**整组 agent 工具文件**里只有一份 —— 不是「某个文件里有」。拆出
     //   `agentToolRuntime.ts` / `agentWalkGlob.ts` 之后 SKIP_DIRS 的用法搬去了后者，
     //   只扫 `agentTools.ts` 会让这条**静默空过**。
-    const agentToolSrcs = [
-      readFileSync("src/main/mcp/agentTools.ts", "utf8"),
-      readFileSync("src/main/mcp/agentWalkGlob.ts", "utf8"),
-      readFileSync("src/main/mcp/agentToolRuntime.ts", "utf8"),
-    ];
+    //
+    // 【T66】这里原先手写重读了同样三个文件 —— 与 `readAgentToolSources()` 逐行重复。
+    // 那个函数的注释写的就是「一次读全，谁搬去哪都拦得住」，但它**从没被调用过**
+    // （T61 查出来的）。现在改用它：三个文件只读一次，判据只有一处。
+    const { toolsSrc, walkSrc, runtimeSrc } = readAgentToolSources();
+    const agentToolSrcs = [toolsSrc, walkSrc, runtimeSrc];
     check(
       "★ agent 工具里只有一份 SKIP_DIRS(改用 agentSearchSessions 那份)",
       !agentToolSrcs.some((src) => /const SKIP_DIRS = new Set/.test(src)) &&
-        /import \{[^}]*SKIP_DIRS[^}]*\} from "\.\/agentSearchSessions\.js"/.test(agentToolSrcs[1]),
+        /import \{[^}]*SKIP_DIRS[^}]*\} from "\.\/agentSearchSessions\.js"/.test(agentToolSrcs[1]!),
     );
   }
   // ★ 搜索起点不存在时,交给模型的那句 `error` 要说人话(中文),不是原始英文 OS 错误。
@@ -287,11 +288,28 @@ try {
       readFileSync("src/main/mcp/agentWalkGlob.ts", "utf8"),
       readFileSync("src/main/mcp/agentToolRuntime.ts", "utf8"),
     ];
+    // 【T66】**注释说的是「两处」，断言从前只验了一处。**
+    //
+    // 上面那段注释原话：「文档工具(`agentDocumentOps`)与文档转换工具(`agentTools`)
+    // 从前各写一份朴素取法……**两处都必须** import 共享的 `resolvePythonExe`」。
+    // 但旧断言只看了 `agentToolSrcs2`（三个 agentTools 文件）—— `agentDocumentOps.ts`
+    // 被 `readFileSync` 读进来之后**从没进过条件**，等于「说了两处，只验了一处」。
+    // T61 把这种形态叫「读了不用」；实际上写它的人本来想纳入判据，写漏了。
+    //
+    // 现在四处一起验：谁都不许自带「遍历候选取第一个」，且**两处都必须** import 共享实现。
+    const allToolSrcs = [docOpsSrc, ...agentToolSrcs2];
     check(
       "★ agent 工具走共享的 resolvePythonExe(不自带「取 PATH 第一个」)",
-      agentToolSrcs2.every((src) => !/for \(const exe of (candidates|process\.platform)/.test(src)) &&
-        /import \{[^}]*resolvePythonExe[^}]*\} from "@main\/lib\/pythonResolve\.js"/.test(agentToolSrcs2[2]) &&
-        /await resolvePythonExe\(\)/.test(agentToolSrcs2[2]),
+      allToolSrcs.every((src) => !/for \(const exe of (candidates|process\.platform)/.test(src)) &&
+        /import \{[^}]*resolvePythonExe[^}]*\} from "@main\/lib\/pythonResolve\.js"/.test(agentToolSrcs2[2]!) &&
+        /await resolvePythonExe\(\)/.test(agentToolSrcs2[2]!),
+    );
+    // 【T66】**文档工具那一处单独钉**：它从前不在条件里，所以放宽成「四处一起扫」
+    // 之后必须再补一条正控 —— 光「没人自带朴素取法」不够，还要证明它确实用了共享实现。
+    check(
+      "★ 文档工具也走共享的 resolvePythonExe(注释说「两处都必须」)",
+      /import \{[^}]*resolvePythonExe[^}]*\} from "@main\/lib\/pythonResolve\.js"/.test(docOpsSrc) &&
+        /await resolvePythonExe\(\)/.test(docOpsSrc),
     );
   }
   // 【ARC-017】共享文本提取器:纯文本 / 纯图片 / 混合 / 未知块 都有确定返回,不靠宽泛断言。

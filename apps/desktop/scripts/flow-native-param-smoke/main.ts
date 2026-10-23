@@ -33,9 +33,9 @@ function check(name:string,cond:boolean|(()=>void),detail?:unknown):void {
  if(cond) console.log("  ok "+name);
  else { failures++; console.log("  FAIL "+name+(detail===undefined?"":" — "+JSON.stringify(detail))); }
 }
-function eq(name:string,actual:unknown,expected:unknown):void {
- check(name,Object.is(actual,expected),{actual,expected});
-}
+// 【T66】这里原有一个 `eq(name, actual, expected)` 辅助函数，**零调用** —— 本套件
+// 74 处断言全部用 `node:assert` 的 `assert.equal`。两个判据并存只会让后来者不知道该
+// 跟哪个，删掉它，保持一种写法。
 function has(name:string,value:unknown,key:string):void {
  check(name,value!==null&&typeof value==="object"&&Object.prototype.hasOwnProperty.call(value,key),
    {value,key});

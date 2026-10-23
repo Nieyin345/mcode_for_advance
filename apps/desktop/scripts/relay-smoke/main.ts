@@ -161,10 +161,10 @@ const realSleep = timers.realSleep;
 function pushes(): Array<{ channel: string; status: RelayStatusLike; at: number }> {
   return windowStub.__pushes();
 }
-function lastPush(): { channel: string; status: RelayStatusLike; at: number } | undefined {
-  const p = windowStub.__pushes();
-  return p[p.length - 1];
-}
+// 【T66】这里原有一个 `lastPush()`（取数组最后一条），**零调用** —— 所有调用方都是
+// `pushes().map()` / `.every()` 整批看，没有一处需要「只看最后一条」。删掉，别再按
+// 「可能有用」加回来：真要「最后一条」时，用 `pushes().at(-1)` 一行就够，不必占一个具名函数。
+
 
 /** 一条场景:起假 VPS、清账、跑、收尾。 */
 async function scenario(

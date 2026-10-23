@@ -79,18 +79,9 @@ function el(): unknown {
   });
 }
 
-/** 从节点树里摘出一段文本(用于认 chip 的 label)。 */
-function textOf(n: unknown): string {
-  const parts: string[] = [];
-  const walk = (x: unknown): void => {
-    if (x == null || typeof x === "boolean") return;
-    if (typeof x === "string" || typeof x === "number") return void parts.push(String(x));
-    if (Array.isArray(x)) return void x.forEach(walk);
-    if (typeof x === "object") walk((x as { props?: { children?: unknown } }).props?.children);
-  };
-  walk(n);
-  return parts.join(" ");
-}
+// 【T66】这里原有一个 10 行的 `textOf()`（递归摘节点树里的文本，用于认 chip 的 label），
+// **零调用** —— 本套件实际是按别的特征定位 chip 的，不需要这段树遍历。删掉；
+// 将来真要按 label 认，先看下面那个现成的查找函数能不能直接用，别再造一份。
 
 /** 按 label 找筛选 chip(FilterChip 是子组件,只以 `{type, props}` 留在树里 ——
  *  fakeReact 不调用子组件,故按它的 props 形状认:`{label, n, active, onClick}`)。 */
