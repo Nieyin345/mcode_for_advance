@@ -113,14 +113,14 @@ export const markdownJourney = defineU1Journey({
       const production = (await rt.harness.handlers.get("documentView:close")!({ sender: wc }, { docId: rt.docId })) as { ok?: boolean; reason?: string };
       if (production.ok === true) {
         // 缺陷已修（或这条路径变了）：按生产路径关闭也算通过。
-        return { ok: !rt.harness.host.list().some((v) => v.docId === rt.docId),
+        return { ok: !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId),
           observed: { production, defect: null },
           detail: "生产 close 直接成功（close-check 缺陷可能已被修复）" };
       }
       const defect = production.reason ?? "";
       const refusedAsKnown = defect.includes("未响应关闭检查");
       rt.harness.host.close(rt.docId);
-      const gone = !rt.harness.host.list().some((v) => v.docId === rt.docId);
+      const gone = !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId);
       return {
         ok: refusedAsKnown && gone,
         observed: { production, defect, closedByHost: gone },

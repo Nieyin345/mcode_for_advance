@@ -157,7 +157,7 @@ export const docsJourney = defineU1Journey({
       const wc = rt.harness.webContentsOf(rt.docId);
       if (wc === null) return { ok: false, detail: "关闭前视图已消失" };
       const reply = (await invokeAs(wc, rt.harness, "documentView:close", { docId: rt.docId })) as { ok?: boolean; reason?: string };
-      const gone = !rt.harness.host.list().some((v) => v.docId === rt.docId);
+      const gone = !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId);
       return reply.ok === true && gone
         ? { ok: true, observed: { reply, gone } }
         : { ok: false, observed: { reply, gone }, detail: reply.reason ?? "关闭后视图仍在宿主表里" };

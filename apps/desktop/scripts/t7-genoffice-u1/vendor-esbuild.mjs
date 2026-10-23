@@ -58,7 +58,9 @@ const vendorAliases = {
   "@genoffice/docs-mcode-ipc": resolve(vendor, "apps/docs/src/main/mcode-ipc.ts"),
   // 三个执行器/端口模块（与生产同一条静态 seam）。
   "@main/document/slidesVendorModules.js": resolve("../desktop/src/main/document/slidesVendorModules.ts"),
-  "@main/window.js": resolve("../desktop/scripts/document-view-electron-smoke/stubs/window.ts"),
+  // T7：生产 `documentViewHost` 单例构造时 `import { getMainWindow } from "@main/window.js"`；
+  // 探针把自己的窗口注入这个替身（见 `window-holder.ts` 文件头）。
+  "@main/window.js": resolve("../desktop/scripts/t7-genoffice-u1/window-holder.ts"),
 };
 
 /** `?raw` → 原样字符串（html2docx 的浏览器内核脚本以源码形式内联）。 */

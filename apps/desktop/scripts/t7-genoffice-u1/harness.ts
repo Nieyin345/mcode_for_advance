@@ -33,7 +33,8 @@ import { join } from "node:path";
 import type { BrowserWindow, IpcMain, WebContents } from "electron";
 import { app, ipcMain } from "electron";
 
-import { DocumentViewHost } from "@main/document/documentViewHost.js";
+import { documentViewHost } from "@main/document/documentViewHost.js";
+import { setMainWindowForU1 } from "./window-holder.js";
 import { registerDocumentViewHandlers } from "@main/ipc/documentView.js";
 import { VendorSlidesExecutor } from "@main/document/slidesExecutor.js";
 import { SlidesBridge } from "@main/document/slidesBridge.js";
@@ -47,7 +48,7 @@ import { registerGenofficeViewAiIpc } from "@main/document/genofficeViewAiVendor
 
 /** 本套件在真机上的宿主句柄（旅程的 `run` 步骤用它驱动生产 API）。 */
 export interface GenofficeHarness {
-  host: DocumentViewHost;
+  host: typeof import("@main/document/documentViewHost.js").documentViewHost;
   win: BrowserWindow;
   projectDir: string;
   /** 生产能力报告（`status[kind]` 驱动面板的打开入口）。 */
@@ -107,8 +108,15 @@ export async function assembleHarness(options: {
   mkdirSync(documentsDir, { recursive: true });
   app.setPath("documents", documentsDir);
 
-  // ── 4. 生产宿主 + 确定性端口 ──
-  const host = new DocumentViewHost({ getMainWindow: () => win as never });
+  // ── 4. **生产宿主单例** + 确定性端口 ──
+  // 不能用 `new DocumentViewHost(...)`：sheets/slides 的 Pane 围栏
+  // （`genofficeNativeVendor.ts` 的 `paneGuard`）闭包引用的是这个单例
+  // （`documentViewHost.docIdForSender`）。另建实例会让围栏把探针的视图判成
+  // 「未授权的文档视图」（实测：`sheets:has-queued-workbook` 被拒）。
+  // 单例的 `getMainWindow` 来自 `@main/window.js` —— 本套件把它别名到
+  // `window-holder.ts`，由下面一行注入探针窗口。
+  setMainWindowForU1(win);
+  const host = documentViewHost;
   host.setDocsPrivilegedPorts(docsPrivilegedPorts);
   // dirty 时的替换确认：本套件显式「放弃修改」（测试里我们总是先保存再关闭；
   // 这一口只兜住 vendor 页在关闭路径上的脏上报）。
