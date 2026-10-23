@@ -1,6 +1,6 @@
 # T45｜权限映射生成器会静默放宽：10 条漂移方法一次收进委托面
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 执行回写，见文末）
 - Category: **bug（安全 / 生成器）**
 - Priority: **P0 安全**
 - Depends on: T19（`2f899eee` 同轮，危险档逐次审批）、T33（`policy.ts` 档位）
@@ -236,3 +236,143 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ## 回写
 
 在 `tasks/T45-permission-map-drift.md` 末尾追加 `## 结果回写（2026-10-23）`：10 条的当前状态、生成器原行为、fail-closed 改法、逐条分类理由、变异证据、提交 SHA。
+
+## 结果回写（2026-10-23）
+
+### 0. 第一步：先确认问题还在（按卡面要求，不猜）
+
+```bash
+cp packages/contracts/src/appPermission.ts /tmp/appPermission.before.ts   # 备份
+node --experimental-strip-types apps/desktop/scripts/gen-module-permission-map.mjs
+# → 453 RPC methods 37 used permissions 41 total permissions 77 blocked   exit=0
+cmp packages/contracts/src/appPermission.ts /tmp/appPermission.before.ts
+# → BYTE-IDENTICAL
+```
+
+**卡面记的那 10 条漂移已经不在了**——生成器跑通、零 diff。逐条查了现状：
+
+| 方法 | 现在的映射 | 谁修的 |
+|---|---|---|
+| `document.apps` | `["document.read"]` | T33 `75f702d0` |
+| `document.markdownRead` | `["document.read"]` | T33 |
+| `document.render` | `["document.read"]` | T33 |
+| `document.toolDescribe` | `["document.read"]` | T33 |
+| `document.toolsList` | `["document.read"]` | T33 |
+| `document.toolCall` | `null`（不可委托） | T33 + T34 |
+| `document.markdownEdit` | `null`（不可委托） | T33 + T34 |
+| `framework.list` | `["setting.read"]` | T34 `f09f4912` |
+| `framework.save` | `["setting.write"]` | T34 |
+| `framework.reset` | `["setting.write"]` | T34 |
+
+所以**本卡不需要修漂移，只需要补守卫**。这与总控在派活时的判断一致。
+
+### 1. 我自己先走错了一次（如实记录）
+
+第一版守卫我写成「**所有**方法必须在 `policy.ts` 的四张显式表里」——跑出来 **204 条报错**。
+
+那不是漂移，是**我把 `policy.ts` 的设计当成了缺陷**。它的文件头写着：
+
+> 判定顺序:显式表(BLOCKED → 凭据本体 → DANGER → WRITE/READ/UI 例外)→ 按动词猜 → 兜底 `write`。
+> **兜底是 write 而不是 read —— 新加的 RPC 没人来归类时,宁可多问一次。**
+
+兜底是**有意的**。要求全部显式分档 = 要求重写 policy.ts，超出本卡边界（也不该由生成器决定）。
+
+### 2. 根因：兜底对 agent 是「多问一次」，对扩展是「直接发权限」
+
+同一条兜底，两条路后果不同：
+
+- **agent 侧**：兜底判 `write` → 弹一次审批卡。安全方向正确。
+- **扩展侧**：兜底判 `write` → 生成器按 `writePerm[domain]` **发一张域写权限**；
+  判 `read` → 发域读权限。**没有人对「该不该给扩展」做过决定**，而且生成器不报错。
+
+实测证明这个洞真实存在（探针，只读）：
+
+```
+document.brandNewRead   level=write   reason=undefined   ← 明明只读
+document.brandNewWrite  level=write   reason=undefined
+someNewDomain.list      level=read    reason=undefined   ← 明明要写
+```
+
+`policyFor` 的返回值**分不出**「显式写了」和「兜底猜的」——`git.checkout`（EXPLICIT，write）
+与 `document.brandNewWrite`（兜底，write）的 `level` 和 `reason` 完全相同。
+
+### 3. 守卫：判据是「新方法」，不是「所有兜底方法」
+
+`gen-module-permission-map.mjs` 新增一段，在生成 `mapped` **之前**执行：
+
+1. **快照**：`git show HEAD:packages/contracts/src/appPermission.ts` 取上一次生成的结果
+   （**不是工作区文件**——否则本地漂移看不见）。目录里有、快照里没有 = 新方法。
+2. **新方法三选一才放行**：
+   - 在 `policy.ts` 的四张显式表里（BLOCKED / CREDENTIAL_BEARING / DANGER / EXPLICIT）；
+   - 在生成器自己的 `overrides` / `nonDelegableOverrides` 里（已逐条写了理由）；
+   - 在新增的 `REVIEWED_FALLBACKS` 里**逐条签字**（写明为什么兜底档位对扩展安全）。
+3. **三条都不满足 → `process.exit(1)`**，并逐条打印方法名 + 兜底档位 + **它会拿到哪张权限**。
+
+读 `policy.ts` 的四张表用**解析源码文本**（它们没有导出，`policyFor` 又分不出来）。
+与生成器读 `apiCatalog.generated.ts` 是同一手法。
+
+**守卫自检**：读到的表条目 < 100 就报错说「表形状变了，先修 `keysOfTable`」——
+否则表一改名，全仓库 453 条会被报成「新方法」，那是误导性极强的假红。
+
+**为什么不改 `policy.ts`**：它是 T33 的独占文件（卡面边界），且兜底本身没错。
+
+### 4. 变异证据（两次，各自定点）
+
+**变异 A —— 让守卫短路**（`if (false && unreviewed.length > 0)`）：
+
+```
+FAIL ★ 新方法 → 生成器 exit 1 — {"status":0}
+FAIL ★ 错误里点名了那条新方法 — ""
+FAIL ★ 错误说明了它会拿到哪张权限 — ""
+FAIL ★ 错误给了两条出路(显式分档 / REVIEWED_FALLBACKS)
+FAIL ★ 失败时不写 appPermission.ts — {"changed":true}
+t45-permission-map-drift-smoke: 15/20 通过
+```
+`cmp` 逐字节还原。
+
+**变异 B —— 只破坏「失败时不写」**（在 `process.exit(1)` 前先 `writeFileSync` 一个坏文件）：
+
+```
+FAIL ★ 失败时不写 appPermission.ts — {"changed":true}
+t45-permission-map-drift-smoke: 19/20 通过
+```
+**只有那一条红**，证明它是定点断言不是连带绿。还原后 `git status` 对
+`appPermission.ts` 为空。
+
+> 顺带记一次自己的失误：变异 B 第一次写成了 Python 里的 `"...\n..."`（真换行），
+> 生成器变成语法错误，套件 14/20 红——那是**变异脚本坏了**，不是断言管用。
+> 改用反引号模板串后重做，才是上面这条干净的 19/20。
+
+**变异 C —— 往目录插一条新方法**（套件第 ③ 节内置，每次跑都执行）：
+在 `apiCatalog.generated.ts` 里插入 `document.brandNewRead` → 生成器 **exit 1**、
+错误点名该方法、说明「兜底 `write` → 会发给扩展 `document.edit`」；`finally` 逐字节还原，
+并用 `git status --porcelain` 断言目录文件干净。
+
+### 5. 测试
+
+```
+bash apps/desktop/scripts/t45-permission-map-drift-smoke/run.sh   # 20/20
+bash apps/desktop/scripts/t33-document-policy-smoke/run.sh        # 30/30
+bash apps/desktop/scripts/module-permissions-smoke/run.sh         # 全绿（含 4 条内置变异 RED）
+node --experimental-strip-types apps/desktop/scripts/gen-module-permission-map.mjs  # exit 0，零 diff
+npx tsc --noEmit -p packages/contracts/tsconfig.json   # exit 0
+npx tsc --noEmit -p apps/desktop/tsconfig.json         # 我的两个文件 0 条错误
+```
+
+> `module-permissions-smoke` 在 T19 回写里记的那条既有红（`Unmapped RPC method: document.apps`）
+> **已经消失**——T33/T34 落地后目录与映射对齐了。
+
+### 6. 未做的事
+
+- **没有给 `framework.*` 做额外的安全论证**：T34 已把它们映射到 `setting.read` / `setting.write`，
+  本卡只验证生成器不报新方法，不改它们的档位（那是 T34 的边界）。
+- **没有改 `policy.ts` 的兜底逻辑**（卡面明确禁止，且它本身是对的）。
+- **`REVIEWED_FALLBACKS` 现在是空表**——这是对的：当前仓库没有「该走兜底」的新方法。
+  它的价值在**下一次有人加 RPC 时**：要么显式分档，要么在这里签字，不能静默通过。
+- **没有验证「生成器被绕过」（有人手改 `appPermission.ts`）** —— 那属于另一类防御
+  （`module-permissions-smoke` 的 closed-world 断言覆盖了一部分），不在本卡。
+- 真实 Electron U1 与本卡无关（纯工具链/安全分类）。
+
+### 7. 提交
+
+见下方提交 SHA。

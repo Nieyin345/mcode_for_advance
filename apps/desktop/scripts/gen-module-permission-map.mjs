@@ -1,6 +1,7 @@
 // T48: deterministic catalogue-derived extension authorization mapping.
 // Run: node --experimental-strip-types apps/desktop/scripts/gen-module-permission-map.mjs
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve, dirname } from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -77,6 +78,110 @@ for (const method of nonDelegableOverrides) {
   // 非 `danger` 的方法进这个集合说明档位判错了 —— fail-closed,不让它悄悄变窄或变宽。
   if (policyFor(method).level !== "danger") throw Error("Non-delegable override must retain danger policy: " + method);
 }
+/** 【T45】**新方法必须被显式分档** —— 兜底只对已经分类过的老方法有效。
+ *
+ * ## 为什么是「新方法」而不是「所有兜底方法」
+ *
+ * `policy.ts` 的文件头写明判据:**兜底是 write 而不是 read —— 新加的 RPC 没人来归类时,
+ * 宁可多问一次**。所以「靠动词兜底」对**已经存在的** 200 多条方法**是设计,不是缺陷**
+ * (实测:严格按「必须在四张显式表里」的判据,204 条会全部报错 —— 那不是漂移,那是重写 policy)。
+ *
+ * 真正的洞在这里:**兜底"宁可多问一次"只对 agent 侧成立**。扩展侧不同 ——
+ * 一条方法兜底判成 `write`,`writePerm[domain]` 就发一张域写权限;判成 `read`,
+ * 就发一张域读权限。**扩展拿到的是委托面,不是"多问一次"**。所以新方法一旦靠兜底,
+ * 它的权限就是 `writePerm`/`readPerm` 那两张表**顺手给的**,没有人对"该不该给扩展"做过决定。
+ *
+ * ## 判据:什么叫「新」
+ *
+ * 拿**已提交的** `appPermission.ts` 当上一次快照:目录里有、快照里没有的方法 = 新方法。
+ * 这正好兜住卡面描述的那 10 条(`document.apps` … `framework.reset` 当时就是这样进来的),
+ * 又不会把 204 条老方法全部判红。
+ *
+ * ## 新方法要满足什么才放行
+ *
+ * 必须能把它的**档位来源**说清楚,三选一:
+ *   1. 在 `policy.ts` 的四张显式表里(BLOCKED / CREDENTIAL_BEARING / DANGER / EXPLICIT);
+ *   2. 在生成器自己的 `overrides` / `nonDelegableOverrides` 里(逐条写了理由);
+ *   3. 在下面的 `NEW_METHOD_REVIEWED` 里 —— **明确接受兜底档位**,并写明为什么可以接受。
+ *
+ * 三条都不满足 = 没人做过决定 → **生成器拒绝继续**,把方法名和兜底档位打出来。
+ * `NEW_METHOD_REVIEWED` 是给「确实该走兜底」的新方法留的出口,但它要求**逐条签字**,
+ * 而不是像从前那样静默通过。
+ */
+const REVIEWED_FALLBACKS = new Map([
+  // 【格式】"域.方法": "为什么这个方法的兜底档位对扩展委托面是安全的"
+]);
+
+const policySource = readFileSync(resolve(root, "apps/desktop/src/main/appControl/policy.ts"), "utf8");
+
+/** 从 `const NAME: Record<string, ...> = { ... }` 或 `new Map([...])` 里取字符串键。
+ *  只认顶格两空格的 `"a.b":` / `["a.b",` 形态 —— 注释里的示例不会被当成真键。 */
+function keysOfTable(name) {
+  const start = policySource.indexOf(`const ${name}`);
+  if (start < 0) throw Error(`policy.ts 里找不到 ${name} —— T45 守卫的表名过时了，先更新它`);
+  const nextConst = policySource.indexOf("\nconst ", start + 1);
+  const slice = nextConst < 0 ? policySource.slice(start) : policySource.slice(start, nextConst);
+  const keys = new Set();
+  for (const m of slice.matchAll(/^\s{2}"([A-Za-z0-9_.]+)":/gm)) keys.add(m[1]);
+  for (const m of slice.matchAll(/^\s{2}\["([A-Za-z0-9_.]+)",/gm)) keys.add(m[1]);
+  return keys;
+}
+
+const explicitlyClassified = new Set([
+  ...keysOfTable("BLOCKED"),
+  ...keysOfTable("CREDENTIAL_BEARING"),
+  ...keysOfTable("DANGER"),
+  ...keysOfTable("EXPLICIT"),
+]);
+
+// 守卫自检:表读空了说明形状变了 —— 那时会把"所有方法都是新的"报出来,误导性极强。
+if (explicitlyClassified.size < 100) {
+  throw Error(
+    `T45 守卫读到的显式分档条目只有 ${explicitlyClassified.size} 条(预期 >100)——` +
+    `policy.ts 的表形状变了,先修 gen-module-permission-map.mjs 的 keysOfTable`,
+  );
+}
+
+/** 上一次生成的结果 = **已提交的** `appPermission.ts`(不是工作区那个,否则变异/漂移看不见)。 */
+function committedPermissionKeys() {
+  const current = resolve(root, "packages/contracts/src/appPermission.ts");
+  if (!existsSync(current)) return new Set();
+  const rel = "packages/contracts/src/appPermission.ts";
+  const r = spawnSync("git", ["show", `HEAD:${rel}`], { cwd: root, encoding: "utf8" });
+  // 未跟踪/首次生成时没有 HEAD 版本 —— 退化成"没有任何已知老方法"。
+  // 那会让所有方法都被当成新的;此时只允许在没有 git 的环境里跑,并明确说清楚。
+  const body = r.status === 0 ? r.stdout : readFileSync(current, "utf8");
+  const keys = new Set();
+  for (const m of body.matchAll(/^  "([A-Za-z0-9_.]+)":/gm)) keys.add(m[1]);
+  return keys;
+}
+const knownMethods = committedPermissionKeys();
+
+const newMethods = methods.filter((m) => !knownMethods.has(m));
+const unreviewed = newMethods.filter((m) =>
+  !explicitlyClassified.has(m) &&
+  !(m in overrides) &&
+  !nonDelegableOverrides.has(m) &&
+  !REVIEWED_FALLBACKS.has(m),
+);
+if (unreviewed.length > 0) {
+  console.error(`\n✖ 以下 ${unreviewed.length} 条是**新方法**，没有人对"该不该给扩展"做过决定：\n`);
+  for (const method of unreviewed) {
+    const p = policyFor(method);
+    const [domain] = method.split(".", 2);
+    const wouldGrant = p.level === "read" || p.level === "ui" ? readPerm[domain] : writePerm[domain];
+    console.error(`  ${method}`);
+    console.error(`      兜底档位 "${p.level}" → 会发给扩展 "${wouldGrant ?? "(无)"}"`);
+  }
+  console.error(
+    `\n生成器拒绝继续。兜底对 agent 是"宁可多问一次",对扩展是**直接发权限**。\n` +
+    `请二选一：\n` +
+    `  · 在 policy.ts 的 BLOCKED / DANGER / EXPLICIT / CREDENTIAL_BEARING 里显式分档（推荐）；\n` +
+    `  · 在生成器的 REVIEWED_FALLBACKS 里逐条签字，写明为什么兜底档位对扩展是安全的。\n`,
+  );
+  process.exit(1);
+}
+
 const mapped = Object.fromEntries(methods.map(method=>{
   const policy = policyFor(method);
   if (policy.level === "blocked" || nonDelegableOverrides.has(method)) return [method,null];
