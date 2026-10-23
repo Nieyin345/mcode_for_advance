@@ -134,4 +134,8 @@ module-consent-copy-smoke        exit=0   13/13
 
 ### 9. 提交
 
-`<填于提交后>`
+- 实现提交：**`fde4195b`**（4 个文件：1 个源码 + 新套件 2 文件 + 本卡）。
+- 提交后在该 HEAD 上复跑 `bash apps/desktop/scripts/t49-contributions-undefined-smoke/run.sh`
+  → `7/7 通过`；`bash apps/desktop/scripts/module-contributions-smoke/run.sh` → `exit 0`。
+- 提交用显式路径（`git add <paths>` + `git commit -m … -- <paths>`），
+  未带入工作区里其它会话的在途改动。
