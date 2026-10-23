@@ -47,15 +47,25 @@ grep -rn "受控临时目录" apps/desktop/scripts/      → 只有 ipc-clipboar
 
 **① `dryRun` 被拒**
 
+> **⚠️ 2026-10-23 更正（B 执行时发现，总控核实）**：本节原来的示例把 `dryRun` 写进了
+> `input`，**那是错的**。
+>
+> `dryRun` 是 `documentToolCall` 的**顶层参数**（`documentToolRuntime.ts:952-960` 的
+> `args` 形状），不是 `input` 的字段。**写进 `input` 会被静默忽略**，`dryRun` 根本
+> 传不到 `buildDeck` —— **那条负控和它的变异都会失效，而且是「永不红」的失效。**
+
 ```ts
 const dry = await runtime.documentToolCall(ports, {
   tool: "build_deck", app: "slides", filePath: join(workspace, "dry.pptx"),
-  input: { specDir: deck, dryRun: true },
+  input: { specDir: deck },
+  dryRun: true,                                   // ← 顶层，不在 input 里
 });
 check("★ build_deck dry-run 被显式拒绝，且不写文件",
-  dry.ok === false && /dry-run/.test(dry.reason) && !existsSync(join(workspace, "dry.pptx")),
+  dry.ok === false && /没有 dry-run/.test(dry.reason) && !existsSync(join(workspace, "dry.pptx")),
   dry);
 ```
+
+**注意断言用的是完整短语 `没有 dry-run`，不是 `/dry-run/`** —— 理由见下面「红因要对」。
 
 **关键**：`!existsSync(...)` —— 不只验「拒绝」，要验「**没有真的写出文件**」。
 
@@ -105,6 +115,42 @@ check("★ outline 在 specDir 外时显式拒绝（围栏不因为是 outline �
 
 **这是变异失效形态 3 的变种**（改坏了程序 ≠ 改坏了被验的东西）。**跑之前先 `git diff` 确认删的是那个 `if` 块。**
 
+### ⚠️ 红因要对：两次变异第一次都红错了地方（B 的实测）
+
+**这是本轮最有价值的记录，比三条断言本身值钱。**
+
+| 变异 | 第一次红了 | 为什么不对 | 改成 |
+|---|---|---|---|
+| ② 无临时目录 | ✅ 红了 | 断言用 `/临时目录/`，下游 `spec 快照目录 必须是绝对路径` **也命中「目录」二字** | 只认完整短语 `没有受控临时目录` |
+| ③ outline 越界 | ✅ 红了 | fixture 放在 `WORK`（**工作区外**），`requireWorkspacePath` 的「不在任何已知工作区」**先拦住了** | 放 **workspace 内、specDir 外** |
+
+**修正后 ③ 的输出才是对的**：
+
+```
+{"ok":false,"kind":"failed","reason":"file not found: ...\\controlled-temp\\outside-outline.json"}
+```
+
+> **这才是对的**：outline 被映射进快照目录（越界检查失效的直接后果），文件自然不存在。
+
+**两次都是「红得不是同一个原因」——表面上「断言会红」，但红的机制和要证明的事无关。**
+
+**这比「不红」更难发现，因为你会以为验过了。**
+
+### ⚠️ `WORK` vs `workspace`：fixture 放错位置，验的就变成另一道防线
+
+T43 套件里有**两个根**：
+
+- `WORK` —— 临时根（**工作区围栏外**）；
+- `workspace` —— **工作区围栏内**，`ports.withinWorkspace` 认它。
+
+**写卡时如果要验「A 检查」，fixture 必须落在「能通过其它所有检查、只被 A 拦住」的位置。**
+
+**B 的话**：
+
+> **fixture 放错一个，验的就变成另一道防线了。**
+
+**这条要进卡模板**：凡是验「某个特定拒绝」，先在卡里写明「这个 fixture 在哪、它会不会先被别的检查拦住」。
+
 ## 验收判据
 
 1. **三条负控各一条**，都验「`ok === false` + 拒绝理由 + 没有副作用」。
@@ -112,7 +158,8 @@ check("★ outline 在 specDir 外时显式拒绝（围栏不因为是 outline �
    - 删掉 `dryRun` 判断 → 「dry-run 被拒」红（**且要验：变异后真的写出了文件**）→ `cmp` 还原；
    - 把 `renderTempRoot() === ""` 的判断去掉 → 第二条红 → 还原；
    - 把 outline 的 `isAbsolute(rel) || rel.startsWith("..")` 判断去掉 → 第三条红 → 还原。
-3. `t43` 数字上升（57 → 60），仍全绿。
+3. `t43` 数字上升（**实际 57 → 65**：三条负控 + 三条对照 + 副作用断言 + 完整短语）
+   ,仍全绿。**不要为了凑「三条」砍掉对照组** —— 砍了它们就排除不了「永远拒绝的实现」。
 4. T73 40/40、T65 46/46、T47 27/27 不回归。
 5. 双包 typecheck 通过。
 6. **不跑全量**、**不起 Electron**。
