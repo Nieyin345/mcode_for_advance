@@ -11,6 +11,9 @@ import { cn } from "@renderer/lib/cn.js";
 import { basename, dirname, extname } from "@renderer/lib/path.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
 import { isOnlyOfficeSupportedPath, isOnlyOfficeViewOnlyPath, type FileViewMode } from "@contracts/ipc";
+// 【T101】GenOffice 的**唯一**扩展名路由表 —— OnlyOffice 的可编辑面比它宽
+// （`.docm/.dotx/.xltx/.pptm/.potx` 只有 OnlyOffice 认），不能让用户点了没反应。
+import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
 import { GenofficeDocumentPane } from "./GenofficeDocumentPane.js";
 import { GenofficeViewHostPane } from "./GenofficeViewHostPane.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
@@ -62,6 +65,8 @@ import {
   isUnsupported,
   canPreviewHtml,
   languageForExt,
+  // 【T101】OnlyOffice 未配置时那个出口按钮的判据（纯函数，套件直接执行真身）。
+  isGenofficeViewAvailableFor,
 } from "./fileEditorKinds.js";
 // Monaco model cache (keepCurrentModel ownership): hot tab switches reuse the
 // cached TextModel — tokenization, undo history and unsaved edits survive.
@@ -145,6 +150,29 @@ export function FileEditor({
    * 的构建产物。两个偏好都只经工具栏显式进入，默认档一个字没动。
    */
   const useGenofficeView = nativeViewReady && viewModePref === "genoffice-view";
+  /**
+   * 【T101】OnlyOffice 未配置时的第二条路：这个文件能不能改用 GenOffice 原生编辑器。
+   *
+   * ⚠️ **比 `nativeViewReady` 严**，因为 `nativeViewReady` 对 office 文件只判了
+   * `office || …`（`office` 是 `isOnlyOfficeSupportedPath`），**没判 `hosts.*`**。
+   * 两个面因此对不上：
+   *
+   *   1. **扩展名**：OnlyOffice 认 `.docm/.dotx/.xltx/.pptm/.potx`，GenOffice 只认
+   *      `docx|odt|ott` 等（`contracts/genofficeFileRoute.ts` 是唯一路由表）。
+   *      不查 → 用户点了没反应（违反 T101 判据 3）；
+   *   2. **能力**：`hosts.sheets` / `hosts.slidesNative` 在 sidecar 或 vendor 产物
+   *      缺失时为 false。不查 → 切过去是一张 `unsupportedHost` 降级面板。
+   *
+   * 所以这里按**目标编辑器**逐类判：`genofficeAppForPath` 给出路由，再拿它查
+   * 对应的能力位。`docs` 没有 `hosts` 位（恒真，见 `ipc/document.ts:453`）。
+   */
+  const genofficeHostForFile = genofficeAppForPath(filePath);
+  const genofficeViewForOffice = isGenofficeViewAvailableFor({
+    office,
+    nativeViewReady,
+    host: genofficeHostForFile,
+    hosts: genoffice.data?.hosts,
+  });
   const documentDocked = useSessionStore((s) => s.paneLayout?.placements?.some(p =>
     p.content?.kind === "document" && p.content.documentId === filePath));
   const defaultMode: FileViewMode = markdown || office
@@ -266,6 +294,11 @@ export function FileEditor({
               key={filePath}
               filePath={filePath}
               readOnly={isOnlyOfficeViewOnlyPath(filePath)}
+              onUseGenofficeView={
+                genofficeViewForOffice
+                  ? () => setViewMode(filePath, "genoffice-view")
+                  : undefined
+              }
             />
           ) : (
             <MarkdownEditorPane key={filePath} filePath={filePath} projectPath={projectPath} />

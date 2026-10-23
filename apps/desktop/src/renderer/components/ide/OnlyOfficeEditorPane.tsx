@@ -157,10 +157,24 @@ export function OnlyOfficeEditorPane({
   filePath,
   readOnly = false,
   deviceType = "desktop",
+  onUseGenofficeView,
 }: {
   filePath: string;
   readOnly?: boolean;
   deviceType?: "desktop" | "mobile";
+  /**
+   * 【T101】「用 GenOffice 打开」的出路 —— **只在调用方确认这条路真的能走通时才传**。
+   *
+   * `undefined` = 这个文件没有 GenOffice 原生编辑器对端，`notConfigured` 分支
+   * 就只画「打开设置」。**不传而不是传了再禁用**：一个永远点不动的按钮比没有更糟
+   * （CLAUDE.md 规矩十二「假门禁」的同型 —— 看起来是条路，实际不是）。
+   *
+   * 判据在调用方（`FileEditor`）：要同时满足 ① GenOffice CLI 就绪 ② 这个扩展名
+   * 在 `genofficeAppForPath` 里有路由 ③ 对应的 `hosts.*` 能力为真。
+   * 光看 `isOnlyOfficeSupportedPath` 不够 —— OnlyOffice 认 `.docm/.dotx/.xltx/`
+   * `.pptm/.potx`，而 GenOffice 只认 `docx|odt|ott` 等（`contracts/genofficeFileRoute.ts`）。
+   */
+  onUseGenofficeView?: () => void;
 }) {
   const { t } = useI18n();
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
@@ -368,6 +382,14 @@ export function OnlyOfficeEditorPane({
                   <IconSettings size={14} />
                   {t("ide.office.openSettings")}
                 </Button>
+                {/* 【T101】第二条路：GenOffice 原生编辑器。只有调用方确认
+                    「这个文件真的能切过去」时才出现（见 prop 注释）——
+                    没装 Document Server 的用户不该只剩「去装一个服务器」。 */}
+                {onUseGenofficeView !== undefined && (
+                  <Button size="sm" variant="primary" onClick={onUseGenofficeView}>
+                    {t("ide.office.useGenofficeView")}
+                  </Button>
+                )}
               </div>
             }
           />

@@ -65,8 +65,10 @@ export const en = {
   "ide.office.loadingEditor": "Loading editor…",
   "ide.office.documentLoadTimeout": "OnlyOffice did not finish loading this document. Check the server connection and try again.",
   "ide.office.notConfigured": "OnlyOffice Document Server is not configured",
-  "ide.office.notConfiguredDesc": "Editing Office files requires an OnlyOffice Docs server. Configure its URL in Settings.",
+  "ide.office.notConfiguredDesc": "No OnlyOffice Document Server detected. You can install one for full Office editing, or open the file with the built-in GenOffice editor (nothing to install; fine for viewing and small edits).",
   "ide.office.openSettings": "Open settings",
+  /** 【T101】Second route out of the `notConfigured` dead end. */
+  "ide.office.useGenofficeView": "Open with GenOffice",
   "ide.office.openFailed": "Failed to open in OnlyOffice",
   "ide.office.externalChanged": "File changed on disk (e.g. by AI); this view is outdated",
   "ide.office.savedToConflictCopy": "File changed on disk; your save went to {name}",

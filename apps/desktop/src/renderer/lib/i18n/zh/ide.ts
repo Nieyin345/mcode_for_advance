@@ -71,8 +71,10 @@ export const zh = {
   "ide.office.loadingEditor": "正在加载编辑器…",
   "ide.office.documentLoadTimeout": "OnlyOffice 未能在规定时间内完成文档加载。请检查服务连接后重试。",
   "ide.office.notConfigured": "还没有配置 OnlyOffice Document Server",
-  "ide.office.notConfiguredDesc": "编辑 Office 文件需要 OnlyOffice Docs 服务，请先在设置中配置服务地址。",
+  "ide.office.notConfiguredDesc": "未检测到 OnlyOffice Document Server。你可以：装上它获得完整的 Office 编辑能力，或用 GenOffice 原生编辑器打开（无需额外安装，适合日常查看与小改动）。",
   "ide.office.openSettings": "打开设置",
+  /** 【T101】`notConfigured` 分支的第二条路（按钮文字要短，和「打开设置」并排）。 */
+  "ide.office.useGenofficeView": "用 GenOffice 打开",
   "ide.office.openFailed": "OnlyOffice 打开失败",
   "ide.office.externalChanged": "文件已被外部修改（例如 AI），这里还是旧内容",
   "ide.office.savedToConflictCopy": "文件已被外部修改，你的保存已另存为 {name}",

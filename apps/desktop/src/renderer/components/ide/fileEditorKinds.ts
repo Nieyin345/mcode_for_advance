@@ -12,8 +12,54 @@
  * **纯搬迁，函数体逐字节一致。**
  */
 import { documentKindOf } from "@contracts/documentKind";
-import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
+import { genofficeAppForPath, type GenofficeApp } from "@contracts/genofficeFileRoute";
 import { isPathWithin, resolveRelativePath } from "@renderer/lib/path.js";
+
+/**
+ * 【T101】OnlyOffice 未配置时，「这个文件能不能改用 GenOffice 原生编辑器」。
+ *
+ * 这是 `notConfigured` 分支那个出口按钮的**唯一判据** —— 判 true 才画按钮。
+ * 抽到这里是为了**可被套件直接执行**（`GenofficeViewHostPane` 那边动辄几百行，
+ * `FileEditor` 又是 2600 行的组件，套件 import 不动；一份纯判定就没有这个问题）。
+ *
+ * ## 为什么不能直接用 `nativeViewReady`
+ *
+ * `nativeViewReady` 对 office 文件只判 `office || …`（`office` =
+ * `isOnlyOfficeSupportedPath`），**不判 `hosts.*`**，两个面因此对不上：
+ *
+ *  1. **扩展名**：OnlyOffice 认 `.docm/.dotx/.xltx/.pptm/.potx`，GenOffice 只认
+ *     `docx|odt|ott` 等（`@contracts/genofficeFileRoute` 是唯一路由表）。不查 →
+ *     按钮出现、点了没反应；
+ *  2. **能力**：`hosts.sheets` / `hosts.slidesNative` 在 Rust sidecar 或 vendor
+ *     构建产物缺失时为 false。不查 → 切过去是一张降级说明面板。
+ *
+ * **两种都是「看起来是条路、实际不是」—— 比没有按钮更糟。**
+ *
+ * ## `docs` 为什么不查 hosts
+ *
+ * `ipc/document.ts:453` 里 `hosts.docs` 恒为 `true`（docs 走独立通道，不经过
+ * `NativeKind`），查它等于查一个常量。
+ */
+export function isGenofficeViewAvailableFor(input: {
+  /** `isOnlyOfficeSupportedPath(filePath)` —— 这个文件是不是 Office 文档。 */
+  office: boolean;
+  /** GenOffice CLI 就绪 **且** 该类文件有宿主对端（`FileEditor` 的 `nativeViewReady`）。 */
+  nativeViewReady: boolean;
+  /** `genofficeAppForPath(filePath)` —— 扩展名的 GenOffice 路由。 */
+  host: GenofficeApp | undefined;
+  /** `document.capabilities().hosts`（可能尚未加载）。 */
+  hosts: Partial<Record<"docs" | "pdf" | "markdown" | "html" | "sheets" | "slides" | "slidesNative", boolean>> | undefined;
+}): boolean {
+  const { office, nativeViewReady, host, hosts } = input;
+  if (!office || !nativeViewReady || host === undefined) return false;
+  // 这条出口只服务 Office 文档；pdf/markdown/html 走它们自己的默认档，不在这里。
+  if (host === "pdf" || host === "markdown" || host === "html") return false;
+  if (host === "docs") return true;
+  if (host === "sheets") return hosts?.sheets === true;
+  // slides：`slidesNative` 是 T28 的原生视图位，`slides` 是早先的 vendor 执行器位。
+  // 任一为真都能开（两条路都在，见 T94）。
+  return hosts?.slidesNative === true || hosts?.slides === true;
+}
 
 /* ── 【ARC-005】HTML 本地预览入口的接受判据 ──
  *
