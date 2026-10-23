@@ -135,6 +135,11 @@ export function editorSetup(kind: EditorKind): (ctx: U1SetupContext) => Promise<
       url: editorUrl(kind),
       bounds: { x: 0, y: 0, width: 1280, height: 900 },
       visible: true,
+      // `mcodeSessionId` 是 Pane 围栏 `documentPath(sender)` 的必需项
+      //（`vendorAiContextForSender` 无会话即返回 null）；生产面板总会带它
+      //（`GenofficeViewHostPane` 的 `mcodeSessionId`）。缺了它，slides/sheets
+      // 的保存会被 Mcode 围栏判成「路径不在已授权的工作区内」（实测）。
+      mcodeSessionId: "t7-u1-session",
       ...(kind === "docs" ? {} : { editor: kind, filePath: target }),
     });
     if (!res.ok) {
@@ -149,7 +154,9 @@ export function editorSetup(kind: EditorKind): (ctx: U1SetupContext) => Promise<
     // 把编辑器页的 console（含 React 未捕获异常）打进宿主 stdio —— 失败时
     // `run-g*.log` 里就能看到页面为什么没继续（与 document-view-* 套件同一纪律）。
     wc.on("console-message", (_e, level, message) => {
-      if (level >= 2) console.log(`VIEW[${kind}:${level}] ${String(message).slice(0, 1200)}`);
+      // T7 诊断：打印全部级别（含 console.log），失败时 run-g*.log 里能看清
+      // 页面为什么停在占位符上。
+      console.log(`VIEW[${kind}:${level}] ${String(message).slice(0, 1500)}`);
     });
     await waitForPageReady(wc);
     // 页面挂载 ≠ 能收 open-path：vendor App 的 `onMenuCommand` 订阅在挂载 effect 里，

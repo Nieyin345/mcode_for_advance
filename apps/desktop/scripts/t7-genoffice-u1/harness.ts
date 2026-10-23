@@ -127,7 +127,7 @@ export async function assembleHarness(options: {
     handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
       recorder.set(channel, listener);
       (ipcMain as unknown as IpcMain).handle(channel, (event, raw) => {
-        if (process.env.MCODE_U1_TRACE_IPC === "1" && /document-view|docs:recent/.test(channel)) {
+        if (process.env.MCODE_U1_TRACE_IPC === "1" && /document-view|docs:recent|pdf:|slides:|sheets:|workbook:|markdown:|html:/.test(channel)) {
           const id = (event as { sender?: { id?: unknown } }).sender?.id;
           console.log(`IPC ${channel} sender=${String(id)} payload=${JSON.stringify(raw).slice(0, 120)}`);
         }
