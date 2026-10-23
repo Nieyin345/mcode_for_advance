@@ -76,7 +76,16 @@ preload (contextBridge + zod 校验)
 3. **工作流编排**。图模型 + 调度器（就绪即派发、并发上限默认 4）+ **10 个**内置节点类型（`nodeTypes.ts:612` 的 `BUILTIN_NODE_TYPES`）。执行分派只有一个入口：`manifest.runner.kind` 查注册表，没有就落兜底（模型轮；`module-capability` 例外——缺执行器时 fail-closed）。插件可注册自己的节点类型。关键区分：**子 agent 节点跑在隐藏子会话；主代理（`mcode.main`）与对话节点跑在主对话里**，用户看得见。
    **方向注意**：产品路线已定 Node-RED 为唯一工作流/自动化内核（原生画布 + runtime + registry + nodes），上述自有图模型是迁移期现状，不是目标终态。迁移期内**禁止长期保留两套执行器或双触发**，见 `docs/planning/node-red-vendor-integration-map.md`。
 4. **sql.js 持久化**（纯 WASM SQLite，**没有 FTS5**，全文检索走 ripgrep）。统一数据根。
-5. **i18n**：zh/en 双词典在 `lib/i18n/{zh,en}/`，**zh 是 `MessageId` 类型的源**——缺 key 直接 typecheck 失败。用户可见的字符串不许硬编码。
+5. **i18n**：zh/en 双词典在 `lib/i18n/{zh,en}/`，**zh 是 `MessageId` 类型的源**。用户可见的字符串不许硬编码。
+
+   **两种「缺 key」由两种机制守，别混**（2026-10-24 C 更正）：
+
+   | 情形 | 谁抓住 |
+   |---|---|
+   | 代码里 `t("xxx.foo")` 引了 **zh 里没有的 key** | **typecheck**（`MessageId` 不含它） |
+   | **en 有、zh 没有**（或反过来） | **`maint-m37-smoke`** —— typecheck **不红**，因为没人引那个 zh 键 |
+
+   **所以「加了 en 忘了 zh」不会在 typecheck 里失败**，只在 `maint-m37` 里失败。只跑 typecheck 就以为 i18n 对齐了，是错的。
 
 ## 硬规矩（来自产品路线与历史任务书，实测救过场）
 
