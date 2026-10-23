@@ -198,7 +198,9 @@ function clickableByText(fragment: string) {
   return clickables().find((b) => String((b.props as { children?: unknown }).children ?? "").includes(fragment));
 }
 
-const CLI_PATH = "D:\\destop\\work_space\\work_for_reseach\\mcode\\genoffice\\packages\\cli\\dist\\genoffice.cjs";
+// 合成路径，刻意与真实仓库位置无关 —— 这条测的是 editorPageUrl() 能否从
+// CLI 路径推出仓库根，不是「本机仓库在哪」。
+const CLI_PATH = "D:\\repo\\mcode\\genoffice\\packages\\cli\\dist\\genoffice.cjs";
 const OFFICE_FILE = "/workspace/report.docx";
 
 function resetWorld(cli: { available: boolean; path: string | null }): void {
@@ -221,7 +223,7 @@ section("1. 编辑器页 URL 与 docId（纯函数）");
   eq(
     "★ Windows CLI 路径推出仓库根 + docs 编辑器页（file:// 三斜杠）",
     url,
-    "file:///D:/destop/work_space/work_for_reseach/mcode/genoffice/apps/docs/out/renderer/index.html?mode=tab",
+    "file:///D:/repo/mcode/genoffice/apps/docs/out/renderer/index.html?mode=tab",
   );
   eq(
     "POSIX CLI 路径推出同样的形状",
@@ -339,7 +341,7 @@ section("2. 组件生命周期：open / bounds / close");
   eq(
     "★ open 的 URL 是仓库内 docs 编辑器页",
     openInput.url,
-    "file:///D:/destop/work_space/work_for_reseach/mcode/genoffice/apps/docs/out/renderer/index.html?mode=tab",
+    "file:///D:/repo/mcode/genoffice/apps/docs/out/renderer/index.html?mode=tab",
   );
   eq("★ open 携带占位区的整数 bounds", openInput.bounds, { x: 120, y: 81, width: 700, height: 501 });
   eq("open 以可见态创建（visible:true）", openInput.visible, true);
@@ -535,14 +537,25 @@ section("4c. sheets 无对端 / slides 能力未装配：明说原因，不建�
     eq(`★ ${format}：不轮询 list（没有视图可诊断）`, ops("list").length, 0);
 
     const text = uiText();
-    check(`★ ${format}：标题明说「打开暂不可用」`, text.includes("打开暂不可用"), text);
+    // ⚠️ 2026-10-24 更新：文案跟着事实改了。
+    //
+    // 旧断言锁的是「打开暂不可用」「打开通道在 GenOffice 自己的主进程里」——
+    // 那是 T28 之前的判断（宿主没有原生视图通道）。T94 核清后事实是：
+    // **通道有，只是这台机器上能力位为 false**。文案改成说「原厂视图在这台机器上
+    // 不可用 + 缺什么」，断言的**意图不变**（降级要说清原因、不能只说"我们没做"），
+    // 只是锁的词换成新的准确表述。
+    check(`★ ${format}：标题明说这是本机不可用`, text.includes("这台机器上不可用"), text);
     if (format === "表格") {
       check("★ 表格：依赖原厂 Rust xlsx-sidecar（缺失时明确拒绝）", text.includes("xlsx-sidecar"), text);
-      check("表格：原因点名 vendor 主进程", text.includes("GenOffice 自己的主进程"), text);
+      check("★ 表格：点名缺的是资源/快照，不是「没接线」", text.includes("原厂视图不可用"), text);
     } else {
       check("★ 演示文稿：原因点名能力报告 hosts.slides（装配事实，不是通道名）", text.includes(vendorChannel), text);
-      check("演示文稿：原因点名 GenOffice 解析器（不是「我们没做」）", text.includes("GenOffice 的演示文稿解析器"), text);
+      check("★ 演示文稿：点名缺什么（解析器 + 构建产物），不是「我们没做」",
+        text.includes("演示文稿解析器") && text.includes("out/renderer"), text);
       check("★ 演示文稿：不再声称 slides:open-path 是唯一缺口（已接）", !text.includes("slides:open-path"), text);
+      // 反向：旧文案不该再出现（说「通道在 vendor 主进程」会把读者引回过期结论）。
+      check("★ 演示文稿：不再说「打开暂不可用 / 通道在主进程」（旧结论已废弃）",
+        !text.includes("打开暂不可用") && !text.includes("自己的主进程"), text);
     }
     check(`${format}：缺依赖时给出明确恢复方式`, format === "表格"
       ? text.includes("请构建对应 app 后重试")

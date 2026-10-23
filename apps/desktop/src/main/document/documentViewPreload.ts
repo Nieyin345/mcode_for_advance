@@ -47,12 +47,15 @@
  *
  * ## 它现在**还不做**什么（如实）
  *
- *   - 只转发 `openDocxPath`/`saveDocx`/`saveDocxNew`，而且只对 **docs** 页面有对端：
- *     表格/演示文稿的打开实现在 vendor 自己的主进程里（sheets=`workbook:select`、
- *     slides=`slides:open-path`），且它们的渲染端**不订阅** `menu:command`（只有
- *     docs 订阅），宿主不伪造 `WorkbookFile`/`OpenResult`；渲染端对这两类文件显式
- *     降级并点名原因（见 `GenofficeViewHostPane.tsx` 文件头与
- *     `viewHostUnsupported*` 文案）。
+ *   - 只转发 `openDocxPath`/`saveDocx`/`saveDocxNew`，而且**本 preload 只服务 docs
+ *     页面**。⚠️ **2026-10-24 更正**：这里原本接着说「表格/演示文稿的打开实现在
+ *     vendor 主进程里，宿主不伪造 `WorkbookFile`/`OpenResult`」，读起来像「它们打不开」。
+ *     **事实是四家（pdf/markdown/html/sheets）和 slides 走的是各自的原厂 preload**
+ *     （`genoffice/apps/<kind>/out/preload/index.js`），由 `documentViewHost` 的
+ *     `vendorCreateView(filePath, kind)` 直接调用 vendor 的 `createXxxView` 建立
+ *     （见 `main/document/genofficeNativeVendor.ts`）—— **不经过本文件**，
+ *     也不伪造任何 vendor 结构。本文件里那些「表格/演示文稿」的描述只适用于
+ *     **docs 视图走错页面**的情形（那时 `GenofficeViewHostPane` 会显式降级）。
  *   - 保存只写回本视图打开的那份文件；`saveDocxNew` 只在"已打开文档所在目录"里
  *     分配新文件，没有"另存为到任意目录"；
  *   - 没有主题/语言的动态同步：页面用写死的默认值，Mcode 切主题不会传导过去。

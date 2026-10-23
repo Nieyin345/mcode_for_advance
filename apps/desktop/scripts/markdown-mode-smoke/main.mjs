@@ -25,7 +25,13 @@ const kindsSource = readFileSync(kindsPath, "utf8");
 const kindsAst = ts.createSourceFile(kindsPath, kindsSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 // 【ARC-005】`FileEditor` 调用的分类器也要按 AST 边界执行 —— 漏一个就是
 // `canPreviewHtml is not defined` 整片红（HTML 预览入口片引入后真发生过）。
-const functions = ["FileEditor", "EditorToolbar", "isMarkdown", "isPdfFile", "isImage", "isUnsupported", "canPreviewHtml", "htmlPreviewDecision"];
+// 【T101】`isGenofficeViewAvailableFor` 同理：`FileEditor` 现在调它来判断
+// 「OnlyOffice 未配置时那个出口按钮该不该出现」。**漏在这里就是 6 条红**
+// （2026-10-24 实测：MD 的 6 条 default/opens/toggle 断言全部 `is not defined`）。
+// ⚠️ 加一个被 `FileEditor` 调用的新函数，**必须同步加到这个列表** ——
+// 下面的 `Missing production AST boundary` 断言只保证「列了的名字在源码里」，
+// 保证不了「源码里被调用的都在列表里」。
+const functions = ["FileEditor", "EditorToolbar", "isMarkdown", "isPdfFile", "isImage", "isUnsupported", "canPreviewHtml", "htmlPreviewDecision", "isGenofficeViewAvailableFor"];
 const selected = ast.statements.filter(node =>
   ts.isFunctionDeclaration(node) && functions.includes(node.name?.text) ||
   ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
@@ -66,9 +72,23 @@ const kindNodes = kindAst.statements.filter(node =>
 assert.equal(kindNodes.length, kindFnNames.length + kindSetNames.length,
   "Production documentKind boundaries (2 functions + 6 sets)");
 
+// 【T57】`fileEditorKinds.ts` 现在也调 `@contracts/genofficeFileRoute` 的
+// `genofficeAppForPath`。同样按 AST 边界读进来 —— 漏了就在沙箱里报
+// `genofficeAppForPath is not defined`（2026-10-23 实测：32 条断言里 31 条红）。
+const routePath = join(desktop, "../../packages/contracts/src/genofficeFileRoute.ts");
+const routeAst = ts.createSourceFile(routePath, readFileSync(routePath, "utf8"), ts.ScriptTarget.Latest, true);
+// `genofficeAppForPath` 依赖同文件的模块级正则常量（`DOCX_RE` 等），
+// 只取函数会在沙箱里报 `DOCX_RE is not defined`。
+const routeNodes = routeAst.statements.filter(node =>
+  (ts.isFunctionDeclaration(node) && node.name?.text === "genofficeAppForPath") ||
+  (ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
+    ts.isIdentifier(d.name) && /^(DOCX|[A-Z]+)_RE$/.test(d.name.text))));
+assert.ok(routeNodes.length >= 2, "Production genofficeFileRoute boundaries (function + regex constants)");
+
 const code = ts.transpileModule([
   ...officeNodes.map(n => n.getText(officeAst)),
   ...kindNodes.map(n => n.getText(kindAst)),
+  ...routeNodes.map(n => n.getText(routeAst)),
   ...selected.map(n => n.getText(ast)),
   ...selectedKinds.map(n => n.getText(kindsAst)),
 ].join("\n"), {

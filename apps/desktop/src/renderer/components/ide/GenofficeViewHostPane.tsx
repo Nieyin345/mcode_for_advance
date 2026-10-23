@@ -31,57 +31,44 @@
  * 报告的 CLI 缺失（或路径形状不认识）就是"页面不可用"的**可判定**信号，此时直接
  * 画出错误说明与重试入口，不创建视图。
  *
- * ## sheets / slides 的打开入口：宿主侧没有对端（显式降级，不装空白）
+ * ## sheets / slides 的打开入口：走 vendor 自己的 `createXxxView`（**不是** menu:command）
  *
- * 只有 docs 能真正打开指定文件。表格与演示文稿的**打开通道**长在 GenOffice
- * **自己的主进程**里，而 Mcode 宿主不跑那份主进程。这条结论是逐条核对 vendor
- * 渲染端所有可达入口之后得出的（不是"没找"）：
+ * ⚠️ **这一节 2026-10-24 重写过。** 旧版本论证「sheets/slides 打不开，因为
+ * `menu:command` 只有 docs 订阅」——**那些观察全是真的，但结论是错的**：T28 引入的
+ * 原生视图通道根本不走 `menu:command`，而是**由宿主直接调用 vendor 自己的创建函数**。
  *
- *  - **`menu:command` 只有 docs 订阅**。在 `genoffice/apps/sheets/src` 与
- *    `genoffice/apps/slides/src` 里都 grep 不到 `menu:command` 订阅者；docs 是
- *    唯一监听它的页面（`genoffice/apps/docs/src/preload/index.ts:250`）。宿主发
- *    `menu:command("open-path", path)` 对 sheets/slides 等于发进没有收件人的通道。
- *  - **sheets**：渲染端唯一的打开入口 `handleInspectWorkbook`
- *    （`apps/sheets/src/renderer/App.tsx:4604`）→ `desktopApi.selectWorkbook()`
- *    （`App.tsx:4617`）→ `ipcRenderer.invoke("workbook:select")`
- *    （`apps/sheets/src/preload/index.ts:107`）；handler 在 vendor 主进程里读
- *    `queuedWorkbookPaths`（按 vendor 的 webContents id 键，
- *    `apps/sheets/src/main/sheets-main.ts:2231`）再跑 `prepareWorkbookForOpen` +
- *    `openWorkbookSession`（`:2811`、`:2873`）。渲染端其余"打开"线索也都回到主进程：
- *    `hasQueuedWorkbook` 读同一张 Map（`sheets-main.ts:2785`；渲染端调用点
- *    `App.tsx:1901` / `renderer/main.tsx:91`），`menu:action` 只承载**不带路径**的
- *    菜单动作（`preload/index.ts:438`、`shared/ipc-channels.ts:95`）。也就是说，
- *    即便宿主把"有排队文档"喂成 true，渲染端下一步仍要向 vendor 主进程要一份
- *    `WorkbookFile` —— 那条路同样没有对端。
- *  - **slides**：renderer 订阅的是 `slides:menu`
- *    （`apps/slides/src/preload/index.ts:384`），`MenuCommand` 联合
- *    （`apps/slides/src/shared/ipc.ts:1269`）里只有 `'open'`（弹**文件对话框**，
- *    `App.tsx:2318`），没有任何带路径的命令。按路径打开只有 `slides:open-path` /
- *    `slides:consume-pending-open` 两条 `invoke`（`preload/index.ts:149`、`:150`），
- *    handler 在 vendor 主进程跑 `preparePresentationForOpen` + `openAndBuild`
- *    （`apps/slides/src/main/slides-main.ts:1458`）；`consume-pending-open` 读的
- *    `pendingByWc` 只由 vendor 主进程的 `createSlidesView` 填充（`:343`、`:5064`），
- *    宿主无从写入。
- *  - **其余入口也核过**：两家的 URL 参数只有 `?mode=`（页签/观众模式）与 sheets 的
- *    `?openingWorkbook=1`（只是首帧 spinner 标志，`App.tsx:726`），都不携带路径；
- *    渲染端没有 `postMessage` 打开通道，也没有"把待打开路径写进 localStorage /
- *    IndexedDB 再自读"的排队表 —— 排队事实只存在于 vendor 主进程的内存 Map。
+ * 四条事实（逐条仍可在源码里核实，保留下来是因为它们解释了「为什么不能用别的路」）：
  *
- * 宿主注册这些通道只能伪造一份 `WorkbookFile` / `OpenResult`（真实内容由 vendor 的
- * xlsx/pptx 引擎在那边组装），所以这里**不伪造**：对 sheets/slides 不创建视图、
- * 不发 open，直接画出「表格/演示文稿的打开暂不可用」+ 明确原因（vendor 的打开通道
- * 在其主进程）。否则用户看到的是一个已挂载但被 vendor 页面自身启动逻辑炸掉
- * （`window.desktopApi.getAiSettings()`
- * 无保护，`apps/sheets/src/renderer/App.tsx:1729`；`window.slidesApi.onMenuCommand`
- * 无保护，`apps/slides/src/renderer/App.tsx:2312`）的空面板 —— 分不清"没构建"和"没接线"。
+ *  - **`menu:command` 只有 docs 订阅**。`genoffice/apps/sheets/src` 与
+ *    `genoffice/apps/slides/src` 里都没有订阅者（docs 是唯一监听它的页面，
+ *    `genoffice/apps/docs/src/preload/index.ts:250`）。所以**给 sheets/slides 发
+ *    `menu:command("open-path", path)` 等于发进没有收件人的通道** —— 这条仍然成立，
+ *    只是它不再构成"打不开"的理由。
+ *  - **sheets 的排队表由 `queueWorkbookForView` 写入**（`sheets-main.ts:2243`，
+ *    `export`），渲染端用 `hasQueuedWorkbook()` 读它（`renderer/main.tsx:91`）。
+ *  - **slides 的排队表 `pendingByWc` 由 `createSlidesView(openPath)` 填充**
+ *    （`slides-main.ts:5066` 的 `pendingByWc.set(view.webContents.id, openPath)`）。
+ *  - 两家的渲染端都**不从 URL / localStorage 拿路径**（只有 `?mode=` 与
+ *    `openingWorkbook=1` 这类界面标志）。
  *
- * ## 已知边界（如实记录，不在本切片里假装解决）
+ * **所以真正可用的路是「让宿主拥有那个视图对象」**：`documentViewHost` 的
+ * `vendorCreateView(filePath, kind)` 直接调 vendor 的
+ * `createPdfView` / `createMarkdownView` / `createHtmlView` / `createSheetsView` /
+ * `createSlidesView`（见 `main/document/genofficeNativeVendor.ts`），路径从第一个
+ * 参数进去，`registerXxxIpc()` 也在那些函数里一并注册。**Mcode 不伪造任何
+ * `WorkbookFile` / `OpenResult`，也不需要 `menu:command`。**
  *
- * - docs 的打开/保存桥已接（`documentViewPreload.ts`）；sheets/slides 的打开入口
- *   未接，见上一节。
- * - CLI 存在但三个 module 的 `out/renderer` 没构建时，渲染端没有可用的 stat IPC
- *   去探测文件是否存在 —— 该情形由主进程的导航失败日志暴露，界面层只能保证
- *   **CLI 缺失**这一分支是显式的（见上）。
+ * 它们仍然可能**不可用** —— 但原因是**能力位为 false**（vendor 快照缺失、
+ * `out/preload` 或 `out/renderer` 没构建、sheets 还缺 Rust `xlsx-sidecar`），
+ * 由 `document.capabilities().hosts.*` 如实报告，`hasHostOpenChannel` 据此决定
+ * 是否建视图。**这不是"没接线"，是"这台机器上没装齐"。**
+ *
+ * ## 已知边界（如实记录）
+ *
+ * - docs 的打开/保存桥在 `documentViewPreload.ts`；pdf/markdown/html/sheets/slides
+ *   走各自的 vendor preload（`out/preload/index.js`）。
+ * - CLI 存在但某个 module 的 `out/renderer` 没构建时，能力位为 false，界面显式降级
+ *   （见上面的 `unsupportedHost` 分支）——不装空白面板。
  * - 原生视图永远盖在 DOM 之上：错误条只占占位区**上方**的一条，不试图浮在视图上。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -462,7 +449,9 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
                 ? "该格式没有对应的 GenOffice 原厂编辑器；已拒绝打开（未使用 docs 兜底）。"
                 : unsupportedHost === "pdf" || unsupportedHost === "markdown" || unsupportedHost === "html" || unsupportedHost === "sheets"
                 ? `${unsupportedHost} 原厂视图不可用：缺少 GenOffice 快照、预加载/渲染资源${unsupportedHost === "sheets" ? "或 Rust xlsx-sidecar" : ""}。请构建对应 app 后重试。`
-                : t(unsupportedHost === "slides" ? "ide.genoffice.viewHostUnsupportedSlides" : "ide.genoffice.viewHostUnsupportedSheets")}
+                : /* 到这里只剩 slides —— `docs` 恒有对端，其余五个都被上面两支截走了
+                     （`GenofficeApp` 只有六个值）。所以不再写三元兜底。 */
+                  t("ide.genoffice.viewHostUnsupportedSlides")}
             </div>
           </ErrorNote>
         </div>

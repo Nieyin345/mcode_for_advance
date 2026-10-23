@@ -248,3 +248,81 @@ setViewMode(filePath, useGenofficeView ? "wysiwyg" : "genoffice-view")
 ### 十、提交
 
 见下方 SHA。
+
+---
+
+## 追加回写（2026-10-24，全量暴露的两个问题）
+
+### 一、我让 `markdown-mode-smoke` 红了 6 条 —— 已修
+
+**根因**：那个套件不抄实现，而是用 **AST 边界从真源码里挑函数**执行：
+
+```js
+const functions = ["FileEditor", "EditorToolbar", "isMarkdown", ..., "htmlPreviewDecision"];
+```
+
+我给 `fileEditorKinds.ts` 加了 `isGenofficeViewAvailableFor`，`FileEditor` 调它，
+但这个列表没加 → 沙箱里不存在那个函数 → `isGenofficeViewAvailableFor is not defined`。
+
+**修法**：往列表里加一个名字（不是抄实现，这正是这个套件的设计意图）。
+
+**变异验证**：把名字从列表里去掉 → **31 处 `is not defined`**，原故障精确复现。
+还原 `cmp` 逐字节一致，复跑 **32/32**。
+
+**教训（写进那个文件的注释了）**：`Missing production AST boundary` 那条断言只保证
+「列了的名字在源码里」，**保证不了「源码里被调用的都在列表里」**。上一行 `canPreviewHtml`
+的注释就记着同一个坑，我还是踩了。
+
+### 二、三处过期注释：核完发现**只有一处是死代码**
+
+卡上（我自己 T94 提的）说三条 i18n「现在不可达」。**逐条核过之后，只有一条是真的。**
+
+`unsupportedHost` 只可能是 `GenofficeApp` 六个值之一，而渲染分支已经截走了
+`unrecognized` / `pdf` / `markdown` / `html` / `sheets`：
+
+| key | 可达？ | 依据 |
+|---|---|---|
+| `viewHostUnsupported`（标题） | **可达** | slides 分支在用 |
+| `viewHostUnsupportedSlides` | **可达** | slides 能力位为 false 时 |
+| `viewHostUnsupportedSheets` | **不可达** | `sheets` 被前一支截走；`docs` 恒有对端 |
+
+**所以只删 `viewHostUnsupportedSheets`（中英各一）**，并把三元的兜底去掉
+（到那里只剩 slides，不用再判）。**我没有按卡上说的「三条全删」——那样会把两条
+在用的文案删掉。**
+
+同时改进两处仍在用的文案（原因从「通道在 vendor 主进程」改成「这台机器缺什么」）：
+- 标题：`演示文稿的原厂编辑视图在这台机器上不可用`
+- 原因：点名「演示文稿解析器 + `out/preload`、`out/renderer` 构建产物 + 能力位」
+
+### 三、`document-view-renderer-smoke` 因此红了 3 条 —— 这是**有意义的红**
+
+那三条断言锁的是旧文案的词（「打开暂不可用」「GenOffice 自己的主进程」）。
+按 CLAUDE.md 第十四条：断言关心的范围 = 断言写的范围 → **改断言**，不是改文案回去。
+
+三条都保留了原意（「降级要说清原因，不能只说我们没做」），只换锁的词；
+另外**加了一条反向断言**：旧文案不该再出现（说「通道在 vendor 主进程」会把读者
+引回过期结论）。**173/173**（比原来多一条）。
+
+**变异验证**：把旧文案放回去 → 3 条精确变红（含新增的反向断言）。
+
+### 四、`GenofficeViewHostPane.tsx:34-70` 与 `GenofficeDocumentPane.tsx:8`
+
+两处都改了。`GenofficeViewHostPane` 那段论证里**每一条 vendor 引用都是真的**
+（`menu:command` 只有 docs 订阅、`slides:menu` 只有 `open`、排队表在 vendor 主进程），
+**但结论是错的** —— 它们论证的是「走 menu:command 行不通」，而实际路径根本不走
+menu:command，是宿主直接调 `createXxxView`。**保留仍有效的观察，换掉结论。**
+
+`GenofficeDocumentPane` 那句「可视化编辑要等方案 A」直接改成事实（方案 A 就是
+`GenofficeViewHostPane`，早已接线；本面板不编辑是产品分层，不是未完工）。
+
+### 五、本轮验证
+
+| 套件 | 结果 |
+|---|---|
+| `markdown-mode-smoke` | **32/32** |
+| `document-view-renderer-smoke` | **173/173** |
+| `md-preview-read-error-smoke` / `ide-quote-snapshot-smoke` / `html-preview-electron-smoke` | 全绿 |
+| `t101-office-genoffice-fallback-smoke` / `t100-task-center-smoke` | 全绿 |
+| desktop typecheck | 只剩 F 的 `t65-deck-pattern-smoke` 一条（不碰） |
+
+**没跑全量、没起 Electron。**
