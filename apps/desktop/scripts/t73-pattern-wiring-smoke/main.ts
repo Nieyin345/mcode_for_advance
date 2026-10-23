@@ -346,5 +346,92 @@ console.log("\n10. ★ header.bar / layout.repeated 是「全篇」问题，位�
     /第 1、2、3 页|第 1–3 页/.test(r.text), { sample: r.text.slice(0, 700) });
 }
 
+/* ── 【T106】severity 必须有语义：error 组在前、两组措辞不同、空组不显示 ──
+ *
+ * 从前 `level` 只是方括号里的一个词，error 和 warning 并列。模型读到
+ * 「3 个 error / 2 个 warning」没有理由相信前者更该改。 */
+
+/** 造一页只触发指定规则的 spec。 */
+function pageFor(rule: "error" | "warning"): unknown {
+  if (rule === "error") {
+    // palette.rainbow（error）：三个不同色相的卡片
+    return { type: "content", layout: "three_column_cards", elements: [
+      { type: "shape", shape: "roundRect", x: 80, y: 200, w: 300, h: 300, fill: "#FF3355" },
+      { type: "shape", shape: "roundRect", x: 420, y: 200, w: 300, h: 300, fill: "#33FF55" },
+      { type: "shape", shape: "roundRect", x: 760, y: 200, w: 300, h: 300, fill: "#3355FF" },
+      { type: "text", x: 80, y: 540, w: 1120, h: 120, paragraphs: [{ runs: [{ text: "x", sizePt: 20 }] }] },
+    ]};
+  }
+  // layout.whitespace（warning）：内容只铺到 60%
+  return { type: "content", layout: "x", elements: [
+    { type: "text", x: 80, y: 60, w: 1120, h: 90, paragraphs: [{ runs: [{ text: "只占上半页", sizePt: 32 }] }] },
+    { type: "text", x: 80, y: 200, w: 1120, h: 230, paragraphs: [{ runs: [{ text: "短正文", sizePt: 20 }] }] },
+  ]};
+}
+
+{
+  console.log("\n[T106] severity 的分组呈现");
+
+  // ① 只有 error
+  {
+    const d = join(workspace, "only-error");
+    mkdirSync(join(d, "pages"), { recursive: true });
+    writeFileSync(join(d, "pages", "01.json"), JSON.stringify(pageFor("error")), "utf8");
+    const r = await build("only-error", d);
+    check("★ T106 error 组出现", /\*\*必须改\*\*/.test(r.text), { sample: r.text.slice(0, 500) });
+    check("★ T106 只有 error 时**不显示**「可参考」组", !/\*\*可参考\*\*/.test(r.text), { sample: r.text.slice(0, 500) });
+    check("★ T106 开头说清数量", /1 项必须改/.test(r.text), { sample: r.text.slice(0, 300) });
+  }
+
+  // ② 只有 warning
+  {
+    const d = join(workspace, "only-warning");
+    mkdirSync(join(d, "pages"), { recursive: true });
+    writeFileSync(join(d, "pages", "01.json"), JSON.stringify(pageFor("warning")), "utf8");
+    const r = await build("only-warning", d);
+    check("★ T106 warning 组出现", /\*\*可参考\*\*/.test(r.text), { sample: r.text.slice(0, 500) });
+    check("★ T106 只有 warning 时**不显示**「必须改」组", !/\*\*必须改\*\*/.test(r.text), { sample: r.text.slice(0, 500) });
+    check("★ T106 开头说清数量（可参考）", /1 项可参考/.test(r.text), { sample: r.text.slice(0, 300) });
+  }
+
+  // ③ 混合：error 必须排在前
+  {
+    // ⚠️ 名字不能与既有用例撞 —— `build()` 会写 `<workspace>/<name>.pptx`，
+    // 而 `build_deck` 对已存在的输出文件**拒绝覆盖**（无 CAS 授权）。
+    const d = join(workspace, "t106-mixed");
+    mkdirSync(join(d, "pages"), { recursive: true });
+    // 第 1 页 warning（whitespace），第 2 页 error（rainbow）——
+    // **故意让 warning 在前面的页**：如果按原数组顺序输出，warning 会先出现。
+    writeFileSync(join(d, "pages", "01.json"), JSON.stringify(pageFor("warning")), "utf8");
+    writeFileSync(join(d, "pages", "02.json"), JSON.stringify(pageFor("error")), "utf8");
+    const r = await build("t106-mixed", d);
+    const errIdx = r.text.indexOf("**必须改**");
+    const warnIdx = r.text.indexOf("**可参考**");
+    check("★ T106 两组标题都出现（混合）", errIdx >= 0 && warnIdx >= 0,
+      { errIdx, warnIdx, ok: r.ok, reason: r.reason, sample: r.text.slice(0, 400) });
+    check("★ T106 **error 组排在 warning 组之前**", errIdx >= 0 && warnIdx >= 0 && errIdx < warnIdx,
+      { errIdx, warnIdx, sample: r.text.slice(0, 700) });
+    check("★ T106 两组引导语**不同**（不是同一句）",
+      r.text.includes("确定违反设计规范") && r.text.includes("参考线；版面是有意的"),
+      { sample: r.text.slice(0, 700) });
+  }
+
+  // ④ 零 findings 行为不变
+  {
+    const d = join(workspace, "clean-again");
+    mkdirSync(join(d, "pages"), { recursive: true });
+    const clean: unknown = { type: "cover", layout: "cover", elements: [
+      { type: "shape", shape: "rect", x: 0, y: 0, w: 1280, h: 720, fill: "#0E1A2B" },
+      { type: "text", x: 120, y: 240, w: 900, h: 140, paragraphs: [{ runs: [{ text: "大标题", sizePt: 54 }] }] },
+      { type: "text", x: 120, y: 420, w: 900, h: 60, paragraphs: [{ runs: [{ text: "副标题", sizePt: 24 }] }] },
+    ]};
+    writeFileSync(join(d, "pages", "01.json"), JSON.stringify(clean), "utf8");
+    const r = await build("clean-again", d);
+    check("★ T106 零 findings 仍是「未发现问题」（不变）", r.text.includes("反模式检查未发现问题"), { sample: r.text.slice(0, 400) });
+    check("★ T106 零 findings 时不出现任何分组标题",
+      !/\*\*必须改\*\*/.test(r.text) && !/\*\*可参考\*\*/.test(r.text), { sample: r.text.slice(0, 400) });
+  }
+}
+
 console.log(`\nt73-pattern-wiring-smoke:${total - failures}/${total} 通过`);
 process.exit(failures === 0 ? 0 : 1);

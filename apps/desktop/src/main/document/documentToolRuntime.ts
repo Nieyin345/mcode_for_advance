@@ -486,9 +486,26 @@ function envelopeText(result: GenofficeResult): string {
 }
 
 /**
- * 【T73】把 `detail.patternFindings` 渲染成模型能读的几行。
+ * 【T106】把 `detail.patternFindings` 渲染成模型能读的几行。
  *
- * 没有这几行，检查器就是「算了但没人看见」—— 这正是本卡要修的缺陷本身。
+ * ## 为什么按 severity 分组（T106）
+ *
+ * 从前这里**按 `findings` 数组的原顺序**逐条输出，`level` 只是方括号里的一个词
+ * （`- [error] …` / `- [warning] …`）。而 `error` 与 `warning` 的含义差得很远：
+ *
+ *   - `error`（如 `palette.rainbow`）：**确定违反规范**，应当改；
+ *   - `warning`（如 `layout.whitespace`）：**参考线**，有意留白时可以忽略。
+ *
+ * 两者并列时，模型读到「3 个 error / 2 个 warning」**没有理由相信前者更该改** ——
+ * 它们在同一行里被平等计数。**有分级没有语义，比不分级更糟：读的人以为分级在起作用。**
+ *
+ * 所以现在：**error 组在前（「必须改」），warning 组在后（「可参考」）**，每组有自己的
+ * 引导语；一组为空就不显示那组的标题。
+ *
+ * ⚠️ **只改呈现，不改行为。** 不让 `error` 阻断 build —— 那会把「判据有点毛病」
+ * 升级成「产品卡住」，而今天已经有 7 条判据里 3 条出过问题的记录。
+ *
+ * 没有这几行，检查器就是「算了但没人看见」—— 这正是 T73 要修的缺陷本身。
  * 形状由 `withPatternFindings` 决定（`patternChecked` / `patternFindings` /
  * `patternCounts` / `patternHint` / `patternNotes`）。
  */
@@ -510,22 +527,65 @@ function patternFindingsText(detail: unknown): string {
   const pageFiles = Array.isArray(d.patternPageFiles)
     ? d.patternPageFiles.filter((n): n is string => typeof n === "string")
     : [];
+
+  /** 把一条 finding 渲染成 `- [rule] · 位置：消息`（位置优先给文件名）。 */
+  const renderFinding = (raw: unknown): string | null => {
+    if (raw === null || typeof raw !== "object") return null;
+    const f = raw as { rule?: unknown; page?: unknown; message?: unknown };
+    // 位置：**优先给文件名**（模型要改的就是文件），`page: null` 是「全篇」。
+    // 给不出文件名时才退回页号 —— 两者都能定位，但文件名不用换算。
+    const where =
+      typeof f.page === "number"
+        ? (pageFiles[f.page] !== undefined ? `pages/${pageFiles[f.page]}` : `第 ${f.page + 1} 页`)
+        : "整份";
+    return `- ${String(f.rule ?? "?")} · ${where}：${String(f.message ?? "")}`;
+  };
+
   if (findings.length === 0) {
     if (hint) lines.push(`✅ ${hint}`);
   } else {
+    const levelOf = (raw: unknown): string | null => {
+      if (raw === null || typeof raw !== "object") return null;
+      const lv = (raw as { level?: unknown }).level;
+      return typeof lv === "string" ? lv : null;
+    };
+    // error 在前、warning 在后；其余（未知 level）垫在最后，不丢。
+    const errors = findings.filter((f) => levelOf(f) === "error");
+    const warnings = findings.filter((f) => levelOf(f) === "warning");
+    const others = findings.filter((f) => levelOf(f) !== "error" && levelOf(f) !== "warning");
+
+    // 开头一句总数 —— 模型先知道「有几项必须改」，再读细节。
+    const parts: string[] = [];
+    if (errors.length > 0) parts.push(`${errors.length} 项必须改`);
+    if (warnings.length > 0) parts.push(`${warnings.length} 项可参考`);
+    if (others.length > 0) parts.push(`${others.length} 项其他`);
+    // ⚠️ **`patternHint` 必须原样保留。**
+    // 它由 `withPatternFindings` 生成，里面带着**可操作的那句**
+    // （「改对应的 pages/NN.json 后用 build_deck 重建（或 slides replace 单页替换）」）。
+    // T106 第一版把它整个换成自己拼的句子，T73 当场红了两条 ——
+    // **呈现格式可以改，但已经存在的可操作信息不能丢。**
     lines.push(hint ? `⚠️ ${hint}` : "⚠️ 反模式检查发现问题：");
-    for (const raw of findings.slice(0, 40)) {
-      if (raw === null || typeof raw !== "object") continue;
-      const f = raw as { rule?: unknown; level?: unknown; page?: unknown; message?: unknown };
-      // 位置：**优先给文件名**（模型要改的就是文件），`page: null` 是「全篇」。
-      // 给不出文件名时才退回页号 —— 两者都能定位，但文件名不用换算。
-      const where =
-        typeof f.page === "number"
-          ? (pageFiles[f.page] !== undefined ? `pages/${pageFiles[f.page]}` : `第 ${f.page + 1} 页`)
-          : "整份";
-      lines.push(`- [${String(f.level ?? "?")}] ${String(f.rule ?? "?")} · ${where}：${String(f.message ?? "")}`);
-    }
-    if (findings.length > 40) lines.push(`…（还有 ${findings.length - 40} 条未列）`);
+    if (parts.length > 0) lines.push(`（${parts.join(" / ")}）`);
+
+    const MAX = 40;
+    let shown = 0;
+    const pushGroup = (title: string, group: unknown[]): void => {
+      if (group.length === 0) return; // 一组为空就不显示那组的标题
+      lines.push("", title);
+      for (const raw of group) {
+        if (shown >= MAX) break;
+        const line = renderFinding(raw);
+        if (line === null) continue;
+        lines.push(line);
+        shown++;
+      }
+    };
+    // ⚠️ 两组的标题措辞**必须不同** —— 这是本条修复的全部意义。
+    // 一样的标题等于没有分组，模型仍然不知道该先改哪一组。
+    pushGroup("**必须改**（确定违反设计规范）：", errors);
+    pushGroup("**可参考**（参考线；版面是有意的留白/构图时可忽略）：", warnings);
+    pushGroup("**其他**：", others);
+    if (findings.length > MAX) lines.push(`…（还有 ${findings.length - MAX} 条未列）`);
   }
   if (notes.length > 0) lines.push(`⚠️ 有页面文件没被检查：${notes.join("；")}`);
   return lines.join(String.fromCharCode(10));
