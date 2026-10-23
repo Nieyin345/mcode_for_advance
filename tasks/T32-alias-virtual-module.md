@@ -169,7 +169,7 @@ node node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json     
 ### 提交
 
 - 按路径提交，**只含本卡 12 个文件**（11 个套件入口 + 本卡）：`git commit -o <paths>`。
-- 实现提交 SHA：见下方（提交后追加）。
+- **实现提交 SHA：`4da81702`**（12 文件，120+/1-）。提交后 `git status` 复核：本卡 11 个入口文件与任务卡全部干净；他人未提交修改（`.aoci/baseline.json`、`.gitignore`、`document-view-host-smoke/` 三项、`maint-m35-smoke/pickers-prelude.ts`、`orchestration-ipc-smoke/run.sh`、`release-readiness-smoke/check-reviewed.cjs`、`src/main/ipc/settingsTransfer.ts`、`src/main/workflowEngines/nativeLibraryLoad.ts`、`src/main/modules/ModuleHost.ts`、`t27-load-entry-deadlock-smoke/`）原样保留、未入提交。
 
 ### 遗留 / 备注
 
