@@ -45,8 +45,11 @@
 | T24 | 文档 AI 工具面重做：可发现 + Markdown 操作 + QA 门禁 | **P0 产品核心** | T0 | L |
 | T25 | 按 pinned HEAD 重建 GenOffice 六家 vendor 产物 | **P0 发行前置** | T23 | M |
 | T26 | 「允许一次」文案与实际语义不符 | P1 | T18 | N |
-| T27 | ** 拒绝一切可保存的 Node-RED 图** | **P0** | T21+T8 | O |
-| T28 | **Import 进画布的图丢失  身份** | **P0** | T8 | O |
+| T27 | **`loadWorkflowIntoNative` 拒绝一切可保存的 Node-RED 图** | **P0** | T21+T8 | O |
+| T28 | **Import 进画布的图丢失 `x-mcode` 身份** | **P0** | T8 | O |
+| T29 | `documentView:close` 对四个编辑器永远拒绝 | P1 | T7 | P |
+| T30 | 文档工具面缺真实 Electron U1 | P1 | T24+T7 | Q |
+| T31 | **三处既有失败挡住 `run-smokes --all`** | **P0 工具链** | 无 | R |
 
 ### 推荐第一波
 
