@@ -21,7 +21,8 @@ export function isAppToolName(name: string): boolean {
   // 【T24】不止 `app_` 前缀：`document_*` 六个工具也住在同一张 `appMcpTools()` 表里，
   // 走同一个 `invokeAppTool`（审批在 handler 里按工具分档）。判据是**表成员资格**，
   // 不是前缀猜名 —— 加新工具不必再记得同步一条前缀。
-  return (name.startsWith("app_") || name.startsWith("document_") || name === "extension_validate")
+  // 【T20】`extension_*`（validate / build / workshop_status）同理。
+  return (name.startsWith("app_") || name.startsWith("document_") || name.startsWith("extension_"))
     && appMcpTools().some((t) => t.name === name);
 }
 

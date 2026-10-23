@@ -3,7 +3,7 @@
  *
  * ## 边界（为什么单独一个文件）
  *
- * 本文件的字段只是**草稿 / 状态 / 回执**的声明式形状，不含任何权限或授权语义：
+ * 本文件的字段只是**草稿 / 状态 / 回执 / 安装交接**的声明式形状，不含任何权限或授权语义：
  *
  *  - `ExtensionWorkshopDraft` 装在 `ModuleManifestSchema` 外面，`manifest` 字段直接复用
  *    冻结的清单 schema（权限闭集、贡献形状、程序形状都由它保证）。
@@ -11,14 +11,18 @@
  *    **不是授权** —— ModuleHost 的任何判定都不读它（见 `extensionWorkshop.ts` 顶注）。
  *  - `ExtensionWorkshopReport` 是 `buildExtension` 的返回值：`ok` 只表示「可以拿去给用户
  *    确认了」，**不表示已安装**。安装必须再过 T18 的安装卡（`modules.install`）。
+ *  - `ExtensionWorkshopInstallHandoff` 是给 AI 的**交接材料**：它只说明「下一步该调
+ *    `modules.install`、带哪些字段」，`requiresUserApproval` 恒为 `true` —— 本契约里
+ *    没有任何「已批准」字段，AI 拿不到也不可能构造出代签。
  *
  * ## 明确不做
  *
- *  - 不新增权限名：权限列表就是 `MODULE_PERMISSION_NAMES` 那 36 个（schema 层拒未知值）。
+ *  - 不新增权限名：权限列表就是 `MODULE_PERMISSION_NAMES`（schema 层拒未知值）。
  *  - 不做市场 / 签名 / VS Code 扩展生成：草稿只有一份 `program.source`，不打包、不签名。
- *  - 不新增 RpcMap：工坊经**既有** `appMcpTools()` 工具面（`app_extension_*`）与既有
- *    `modules.*` 通道工作；新增一条 RPC 会强制重生成 `apiCatalog.generated.ts` 与
- *    `appPermission.ts`，两者分别是其他卡/生成器的边界（理由见 `extensionWorkshop.ts`）。
+ *  - 不新增 RpcMap：工坊经**既有** `appMcpTools()` 工具面（`extension_build` /
+ *    `extension_workshop_status`）与既有 `modules.*` 通道工作；新增一条 RPC 会强制重生成
+ *    `apiCatalog.generated.ts` 与 `appPermission.ts`，后者会把 10 条目录已前进、权限映射
+ *    尚未归类的方法一次性收进委托面（放宽方向），两者分别是其他卡/生成器的边界。
  */
 import { z } from "zod";
 import { ModuleManifestSchema } from "./modules.js";
@@ -28,14 +32,19 @@ export const WORKSHOP_DRAFT_FILE = "draft.json";
 /** 状态文件在工坊目录里的名字（**不是授权**，见文件头）。 */
 export const WORKSHOP_STATE_FILE = "state.json";
 /** 入口文件的名字（清单本身；程序在 `manifest.program.source`）。 */
-export const WORKSHOP_ENTRY_GLOB = "extension.json";
+export const WORKSHOP_ENTRY_FILE = "extension.json";
+/** 沙箱冒烟的样例文件前缀（真实文件名 = 前缀 + 清单贡献声明的第一个扩展名）。 */
+export const WORKSHOP_SAMPLE_PREFIX = "sample";
 
 /**
- * 【T20】修复重试的**硬上限** —— 达到后 `revise` 一律被拒（`repair_exhausted`），
+ * 【T20】修复重试的**硬上限** —— 达到后 `buildExtension` 一律被拒（`repair_exhausted`），
  * 必须由**用户**重新发起生成。这个数不是"再多试几次"的调参：修复循环没有上限就是
  * 一个能被模型驱动的（准）无限重试，而每次重试都在花用户的钱与时间。
  */
 export const WORKSHOP_MAX_REPAIR_ATTEMPTS = 3;
+
+/** 工坊里最多允许存在的模块目录数（草稿也是可写盘的东西，不能让 AI 无限铺）。 */
+export const WORKSHOP_MAX_DRAFTS = 64;
 
 /**
  * 一份扩展草稿：**声明式清单 + 给用户看的说明**。
@@ -69,7 +78,7 @@ export const ExtensionWorkshopInstalledSchema = z.object({
 export const ExtensionWorkshopStateSchema = z.object({
   version: z.literal(1),
   moduleId: z.string().min(3).max(100),
-  /** 已经失败的修复次数（`buildExtension` 失败 +1）。 */
+  /** 已经失败的修复次数（`buildExtension` 失败 +1；一次成功生成归零）。 */
   attempts: z.number().int().min(0),
   status: ExtensionWorkshopStatusSchema,
   installed: ExtensionWorkshopInstalledSchema.nullable(),
@@ -95,7 +104,7 @@ export interface ExtensionWorkshopDiagnosis {
 }
 
 /** `buildExtension` 走到的最后一步（失败时告诉 AI 该修哪里）。 */
-export const WORKSHOP_STAGES = ["static", "write", "sandbox"] as const;
+export const WORKSHOP_STAGES = ["static", "write", "sandbox", "budget"] as const;
 export type ExtensionWorkshopStage = (typeof WORKSHOP_STAGES)[number];
 
 /**
@@ -118,4 +127,20 @@ export interface ExtensionWorkshopReport {
     entryFile: string;
     sandboxCapability: string;
   } | null;
+}
+
+/**
+ * 【T20】给 AI 的**安装交接材料** —— 只描述下一步，不构成授权。
+ *
+ * `requiresUserApproval` 是字面类型 `true`：任何构造出来的交接都必须经过用户卡片；
+ * `input` 里**永远不出现** `installConsent:"allow-always"`（工坊的断言钉住这一点；
+ * 即便 AI 自己改写，Agent 通道的 `resolveInstallDecision` 也会把无桌面发送方的
+ * `allow-always` 收窄成 `allow-once` —— 两道独立的闸）。
+ */
+export interface ExtensionWorkshopInstallHandoff {
+  method: "modules.install";
+  /** 原样交给 `app_api_call({method, input})` 的入参。 */
+  input: Record<string, unknown>;
+  requiresUserApproval: true;
+  instructions: string[];
 }
