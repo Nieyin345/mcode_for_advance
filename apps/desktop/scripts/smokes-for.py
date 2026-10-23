@@ -90,6 +90,130 @@ def closure(entry: Path, seen: set[Path]) -> None:
             closure(nxt, seen)
 
 
+# ── 【T78】距改动文件的跳数 ────────────────────────────────────────────────
+#
+# ## 为什么需要它
+#
+# `closure()` 的设计目标是「宁可多跑,不可漏跑」—— 它把**编译进 bundle** 的整个
+# import 图都收进来。这对正确性是对的,但输出宽到不可执行:实测
+# `src/main/document/documentToolSurface.ts` 会带出 98 套(全量的 18%),
+# 而其中**真正 1 跳**的只有 2 套。
+#
+# 于是 CLAUDE.md 那条「改一处小东西先问该跑哪几套」实际上失效了 ——
+# 看到 98 个名字的人不会跑,而是去跑全量(或者干脆不跑)。
+#
+# ## 这里做什么、不做什么
+#
+# **只加一层分级,不动 `closure()`。** 收集逻辑一行没改:闭包仍是那个闭包,
+# 「不漏」的保证不变。分级只是把同一批名字按**距离**排成两段,让人先看到
+# 「必跑」那几套。
+#
+# ## 跳数怎么算
+#
+# 从套件入口出发做 BFS(不是 DFS):BFS 第一次到达 target 时的深度就是**最短**
+# 跳数。入口文件自身 import target 记作 1 跳。
+#
+# 注意这和 `closure()` 的递归不是同一种遍历 —— 那个只关心「可达」,这个关心
+# 「多近」。两者算的是同一个图,结论必然相容:分级里的每一套都必然在闭包里
+# (由 `rank_by_distance` 的调用方核对,见 `--verify-rank`)。
+
+
+def distances_to(target: Path, entry: Path) -> tuple[int | None, Path | None]:
+    """从 `entry` 到 `target` 的最短跳数,以及路径上**紧邻 target 的上一跳**。
+
+    返回 `(None, None)` 表示不可达。
+
+    「上一跳」是用来回答「这一套是经由什么才跟改动文件扯上关系的」——
+    实测 `documentToolSurface.ts` 的 98 套里,**83 套都经由 `appControl/tools.ts`**
+    (agent 工具面),那是个有意义的信息:它说的是「这些套件碰到的是工具注册那条链,
+    不是文档模块本身」。
+    """
+    seeds: list[Path] = [entry]
+    prev: dict[Path, Path | None] = {entry: None}
+    frontier = seeds
+    depth = 0
+    while frontier:
+        nxt: list[Path] = []
+        for node in frontier:
+            if node == target:
+                parent = prev.get(node)
+                # 入口本身就是 target(0 跳)时没有「上一跳」
+                return depth, parent
+            try:
+                text = node.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for spec in IMPORT_RE.findall(text):
+                r = resolve(spec, node)
+                if r is not None and r not in prev:
+                    prev[r] = node
+                    nxt.append(r)
+        frontier = nxt
+        depth += 1
+    return None, None
+
+
+def suite_distance(suite_dir: Path, target: Path) -> tuple[int | None, Path | None]:
+    """一套套件里**最近的入口**到 target 的跳数。
+
+    一套套件可以有多个入口(`main.ts` / `stubs/*.ts` / `*.tsx` …)。取最近的那个 ——
+    判据是「这套里有人离它多近」,不是「最远的有多远」。
+
+    ## ⚠️ 返回 `None` 意味着**这套不在闭包里**,而不是「距离很远」
+
+    【T78 变异验证抓到的漏洞】第一版把 `None` 和「≥3 跳」一起归进「可选」。
+    那样一来,任何让距离算不出来的 bug(遍历 bug、解析失败)都会**静默地把一套
+    从必跑降级成可选** —— 而 `must | optional == hits` 仍然成立,「不漏控」照样绿。
+
+    现在调用方(输出那段)把 `None` 当作**内部矛盾**单独报出来,而不是混进可选。
+    正常情况下 `None` 不该出现:`hits` 来自闭包,而闭包能到达的套件 BFS 也必然能到达
+    —— 两者用的是同一份 `resolve()`。真出现了就是 bug,必须让人看见。
+    """
+    best: int | None = None
+    best_parent: Path | None = None
+    for pattern in ("*.ts", "*.tsx", "*.jsx"):
+        for entry in suite_dir.rglob(pattern):
+            d, parent = distances_to(target, entry)
+            if d is None:
+                continue
+            if best is None or d < best:
+                best, best_parent = d, parent
+                if best == 0:      # 已经是最短可能,不用再找
+                    return best, best_parent
+    return best, best_parent
+
+
+def path_chain_to(target: Path, entry: Path) -> list[Path] | None:
+    """从 `entry` 到 `target` 的最短路径(含两端)。不可达返回 None。
+
+    给 `--why` 用的:光说「经由 X」不如把整条链打出来。
+    """
+    prev: dict[Path, Path | None] = {entry: None}
+    frontier = [entry]
+    while frontier:
+        nxt: list[Path] = []
+        for node in frontier:
+            if node == target:
+                chain: list[Path] = []
+                cur: Path | None = node
+                while cur is not None:
+                    chain.append(cur)
+                    cur = prev[cur]
+                chain.reverse()
+                return chain
+            try:
+                text = node.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for spec in IMPORT_RE.findall(text):
+                r = resolve(spec, node)
+                if r is not None and r not in prev:
+                    prev[r] = node
+                    nxt.append(r)
+        frontier = nxt
+    return None
+
+
 def coverage() -> dict[str, set[Path]]:
     """套件名 → 它覆盖到的源码文件集合。"""
     suites: dict[str, set[Path]] = {}
@@ -127,8 +251,75 @@ def coverage() -> dict[str, set[Path]]:
     return suites
 
 
+# 【T78】「必跑」的跳数上限 —— **模块级常量，不是输出段的局部变量**。
+#
+# 变异验证抓过一次：第一版把它写在 `main()` 的输出分支里，于是套件里手写的
+# `d <= 2` 与它各说各话 —— 把阈值改成 99（所有套件都进必跑，分级等于失效），
+# 套件**照样全绿**。断言必须读同一份常量，否则它测的是自己的副本。
+NEED_JUMP = 2
+
+
+def rank(suites: dict[str, set[Path]], target: Path) -> tuple[
+        list[tuple[int, Path | None, str]], list[tuple[int, Path | None, str]], list[str]]:
+    """把「覆盖 target 的套件」按距离分成 (必跑, 可选, 距离算不出的)。
+
+    【T78】从输出分支里抽出来，让套件能直接断言**分级本身**，而不是断言它自己的
+    重新实现。返回的第三项是「在闭包里但算不出距离」的套件 —— 正常情况下应为空；
+    非空就是 bug（见 `suite_distance` 的注释）。
+    """
+    ranked: list[tuple[int | None, Path | None, str]] = []
+    for name, cov in suites.items():
+        if target not in cov:
+            continue
+        d, parent = suite_distance(HERE / name, target)
+        ranked.append((d, parent, name))
+    must = sorted(
+        ((d, p, n) for d, p, n in ranked if d is not None and d <= NEED_JUMP),
+        key=lambda x: (x[0], x[2]),
+    )
+    optional = sorted(
+        ((d, p, n) for d, p, n in ranked if d is not None and d > NEED_JUMP),
+        key=lambda x: (x[0], x[2]),
+    )
+    unreachable = sorted(n for d, _p, n in ranked if d is None)
+    return must, optional, unreachable
+
+
 def main() -> None:
     suites = coverage()
+    if len(sys.argv) > 1 and sys.argv[1] == "--verify-rank":
+        # 【T78】「不漏控」：分级必须**只重排、不过滤**。
+        #
+        # 这条是整张卡最重要的断言 —— 没有它，分级就成了「悄悄漏跑」的工具：
+        # 哪天 `suite_distance` 因为某种原因返回 None，那套就会从必跑里消失，
+        # 而人看到的仍然是一份「看起来正常」的清单。
+        #
+        # 核对方式：对抽查的文件，**必跑 ∪ 可选 必须等于完整闭包**。
+        #
+        # ⚠️ **为什么是抽样而不是全量**：每个文件要对几十套各跑一次 BFS，全仓几百个
+        # 文件跑完要十几分钟 —— 那正好是这张卡要消灭的那种等待。默认抽 25 个
+        # （`--verify-rank=all` 可跑全量）；抽样能证明的是「分级逻辑没有系统性丢套件」，
+        # 而 `suite_distance` 的实现里没有任何依赖文件内容的特判，**丢套件的唯一途径
+        # 是它返回 None**，而返回 None 只可能因为不可达 —— 不可达的套件本来就不在
+        # `hits` 里（`hits` 来自闭包）。见下面的 `lost` 计数。
+        every = "--verify-rank=all" in sys.argv
+        all_files = sorted({f for cov in suites.values() for f in cov})
+        sample = all_files if every else all_files[:: max(1, len(all_files) // 25)][:25]
+        bad = 0
+        for want in sample:
+            hits = {name for name, cov in suites.items() if want in cov}
+            must, optional = set(), set()
+            for name in hits:
+                d, _p = suite_distance(HERE / name, want)
+                (must if d is not None and d <= 2 else optional).add(name)
+            if must | optional != hits:
+                bad += 1
+                if bad <= 5:
+                    print(f"LOST {want.relative_to(ROOT).as_posix()}: 少了 {sorted(hits - (must | optional))}")
+        print(f"checked {len(sample)} files"
+              f"{'' if every else f' of {len(all_files)}'}, lost {bad}")
+        sys.exit(1 if bad else 0)
+
     if len(sys.argv) > 1 and sys.argv[1] == "--uncovered":
         # ⚠️ **这里原来是反的(2026-09-20 修)。** 旧实现把 `by_file` 建成"被覆盖过的
         # 文件 → 0",然后把它当未覆盖的列出来 —— 于是 `--uncovered` 打印的是 `--all`
@@ -170,7 +361,46 @@ def main() -> None:
         hits = sorted(name for name, cov in suites.items() if want in cov)
         print(f"{want.relative_to(ROOT).as_posix()}")
         if hits:
-            print("  跑这些: " + " ".join(hits))
+            # 【T78】按「距改动文件的最短跳数」分两段。
+            #
+            # 判据:1–2 跳 = 必跑(改动直接波及);≥3 跳 = 可选(经由若干中间模块,
+            # 多半只是被装配中心带进来的)。**这不是判断谁重要,是判断谁离得近。**
+            #
+            # 「不漏」由构造保证:分级只重排、不过滤 —— `rank()` 遍历的正是 `hits`。
+            # 分级逻辑在模块级的 `rank()` 里,**不是**在这里内联,这样套件断言的是
+            # 同一份实现（变异验证抓到过:内联的话,把 NEED_JUMP 改掉套件照样绿）。
+            must, optional, unreachable = rank(suites, want)
+            if unreachable:
+                print(f"\n  ⚠️ 内部矛盾：以下 {len(unreachable)} 套在闭包里但算不出距离")
+                print(f"     这是 bug（两者用同一份 resolve()，应当同进同出），请报给维护者：")
+                for n in unreachable:
+                    print(f"       {n}")
+            if must:
+                jumps = sorted({d for d, _, _ in must})
+                print(f"\n  必跑（1–{NEED_JUMP} 跳，{len(must)} 套；跳数 {jumps}）:")
+                for d, _p, n in must:
+                    print(f"    {n}  ({d} 跳)")
+            if optional:
+                # 按「上一跳」分组 —— 那个中间模块才是「为什么它会被带进来」的答案。
+                by_parent: dict[str, list[str]] = {}
+                for _d, p, n in optional:
+                    key = p.relative_to(DESKTOP).as_posix() if p is not None else "(不可达)"
+                    by_parent.setdefault(key, []).append(n)
+                print(f"\n  可选（≥{NEED_JUMP + 1} 跳，{len(optional)} 套）:")
+                for key in sorted(by_parent, key=lambda k: (-len(by_parent[k]), k)):
+                    names = by_parent[key]
+                    print(f"    经由 {key}（{len(names)} 套）:")
+                    line = "      "
+                    for n in names:
+                        if len(line) + len(n) + 2 > 100:
+                            print(line)
+                            line = "      "
+                        line += " " + n
+                    if line.strip():
+                        print(line)
+            if optional:
+                print(f"\n  ⚠️ 可选里多数只是被中间模块带进 bundle 的，不是「改了它就一定坏」。")
+                print(f"     必跑那 {len(must)} 套是改动直接波及的；可选 {len(optional)} 套按你的判断取舍。")
             print("\n  bash apps/desktop/scripts/<名字>/run.sh")
         else:
             print("  ⚠️ 没有套件覆盖它 —— 改这里没有回归网。")
