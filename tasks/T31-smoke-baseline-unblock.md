@@ -209,7 +209,7 @@ X [ERROR] Top-level return cannot be used inside an ECMAScript module
 ### 提交
 
 - 提交以 `git commit -o` 按路径提交，只含本卡四个文件（`genoffice-file-routing-smoke/run.sh`、`release-readiness-smoke/check-genoffice.cjs`、`genoffice-source-smoke/main.cjs`、本卡）。
-- 提交 SHA 见 `git log --grep T31`（本节随提交入库，SHA 由提交自身确定）。
+- **实现提交 SHA：`a10c705c`**（4 文件，416+/171-）。提交后 `git status` 复核：本卡四个路径全部干净，他人 dirty 未被带入。
 - 他人 10 项 dirty 原样保留、未入提交。
 
 ### 遗留（不在本卡范围，建议另开卡）
