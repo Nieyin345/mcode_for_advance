@@ -137,3 +137,21 @@ T46 MUTATION: all 3 variants detected; source restored byte-identical
 - 实现提交：**`2a61b8ba`**（7 个文件，全部是本卡独占目录 + 本卡）。
 - 提交后在该 HEAD 上复跑 `node apps/desktop/scripts/t46-approval-card-u1/run.mjs`
   → `literal=PASS expectation=all-pass`，退出码 0；工作区相对 HEAD 无改动。
+- 索引行提交：`c4dbe2dd`（`docs(tasks): index T46 …`）。
+
+### ⚠️ 并行索引竞态（如实记录，我的操作失误）
+
+`c4dbe2dd`（我加的 `tasks/README.md` 索引行）**同时带进了另一个会话当时尚未提交的
+「状态列」整份工作**（48 行新增，其中只有 1 行是我的 `| T46 |`）。原因：我改 README 时
+用文本读改写，把当时磁盘上已含对方在途改动的内容一并写回并提交；提交只带了
+`-- tasks/README.md` 一个路径，但**文件内容本身**已经混合。
+
+**没有回退/改写历史**（硬规矩禁止）：HEAD 的 README 是一个**完整、正确**的合并态 ——
+对方的行与我的 `| T46 |` 都在，我逐行核对过（parent + 恰好一行 T46，字节级相等）。
+所以**没有丢失任何内容**，只是提交归属不准确。已把工作区还原为 HEAD 字节，
+避免再产生一次「整表重写」。
+
+**下次的做法**：改共享索引文件前先 `git status --porcelain` 看它是否已被别人改过；
+若已改，**不要整份读改**，只追加我需要的行并用 `git diff --numstat` 确认
+`1 file changed, 1 insertion(+)`。
+
