@@ -17,3 +17,13 @@ export function dataRoot(): string {
 export function dbPath(): string {
   return join(dataRoot(), "mcode.db");
 }
+
+/**
+ * `initDb()` 在 `store/db.ts:97` 调它 —— 真那份把老 `userData` 下的 library/老库搬进
+ * 数据根(`app.getPath("userData")`,无头里没有)。
+ *
+ * 桩里**故意什么都不搬**:smoke 的 `MCODE_SMOKE_DATA_ROOT` 是刚建的临时目录,没有"老位置"
+ * 可言。写成一个真的搬运反而危险 —— 那意味着要碰用户真实的 userData。空实现与真实现在
+ * "没有老位置" 这一前提下的行为一致(两边都什么都不做)。
+ */
+export function migrateLegacyIntoDataRoot(): void {}

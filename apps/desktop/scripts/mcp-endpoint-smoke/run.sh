@@ -27,10 +27,18 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
 #   - dataRoot / repositories / pluginManager / broadcast —— 工作流那一半(真
 #     mcodeServer 要的)走 mcode-admin-smoke 用过的同一组桩。两个套件共用同一份,
 #     免得"桩的形状"各写一遍。
+#
+# `--external:sherpa-onnx-node --external:*.node`:这条依赖链会经 `RuntimeManager`
+# 拉到语音引擎,而 sherpa-onnx 发的是预编译 `.node` 二进制 —— esbuild 没有对应 loader。
+# 本套从不说话,所以把所有原生插件留在 bundle 外(与 `document-view-host-smoke/run.sh:67`
+# 同一个理由、同一个写法)。`.node` 那条**不能**省:包内的 `require('../sherpa-onnx-win-x64/
+# sherpa-onnx.node')` 是内层一次真实 require,不 external 就仍然要在打包期读它。
 "$ESBUILD" scripts/mcp-endpoint-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
   --external:ssh2 \
+  --external:sherpa-onnx-node \
+  --external:*.node \
   --alias:@main/lib/logger.js=./scripts/mcp-endpoint-smoke/stub-logger.ts \
   --alias:@main/mcp/libraryServer.js=./scripts/mcp-endpoint-smoke/stubs/libraryServer.ts \
   --alias:@main/lib/dataRoot.js=./scripts/mcode-admin-smoke/stubs/dataRoot.ts \

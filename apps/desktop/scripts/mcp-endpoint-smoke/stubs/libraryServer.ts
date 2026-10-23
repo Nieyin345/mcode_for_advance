@@ -21,7 +21,7 @@
  */
 import { z } from "zod";
 import type { McpToolSpec } from "@main/mcp/sdk.js";
-import { text } from "@main/mcp/sdk.js";
+import { loadCreateMcpServer, text, toSdkTools } from "@main/mcp/sdk.js";
 
 export const LIBRARY_MCP_SERVER = "mcode-library";
 export const LIBRARY_MCP_PREFIX = `mcp__${LIBRARY_MCP_SERVER}__`;
@@ -71,4 +71,29 @@ export function libraryMcpTools(): McpToolSpec[] {
       },
     },
   ];
+}
+
+/**
+ * 构建这个 MCP server。产品(见 `src/main/mcp/libraryServer.ts:629`)是:
+ * 惰性 import SDK 的 `createSdkMcpServer` → 用**同一张** `libraryMcpTools()` 表建 server。
+ *
+ * 这个名字是 `ClaudeAgentSdkProvider.ts:90` 从本模块 import 的;桩缺它就在**打包期**
+ * 报 `No matching export`(2026-10-23 T38)。
+ *
+ * 这里照抄产品的形状,只把工具表换成上面那份替身表 —— 原因与文件头相同:无头环境
+ * 给不出真的库 repos。**sdk 仍然走 `loadCreateMcpServer()` 惰性载入**,所以本套不会
+ * 因为建了这个桩而把大 SDK 拖进启动路径;真被调用时也拿到与产品同一份
+ * `createSdkMcpServer`。
+ */
+export async function buildLibraryMcpServer(opts: { sessionId: string }) {
+  const createSdkMcpServer = await loadCreateMcpServer();
+  return createSdkMcpServer({
+    name: LIBRARY_MCP_SERVER,
+    version: "1.0.0",
+    instructions:
+      "Mcode 资料库的操作工具(冒烟替身表):分类树与回收站;" +
+      "条目用 id 标识,要操作某一条先用 library_search / library_items 拿到它的 id。",
+    alwaysLoad: true,
+    tools: toSdkTools(libraryMcpTools(), { sessionId: opts.sessionId }),
+  });
 }
