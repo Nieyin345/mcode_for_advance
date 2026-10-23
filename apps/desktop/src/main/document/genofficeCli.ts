@@ -27,7 +27,7 @@
  *   接入保存链路时补，见计划 B.2）；
  * - 不 import Electron / DB —— 纯 Node，可被无头套件直接驱动。
  */
-import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { spawnRun } from "@main/lib/spawnRun.js";
 
@@ -471,6 +471,290 @@ export async function slidesAudit(
 }
 
 /**
+ * 【T43】Markdown / HTML / 纯文本 → PDF 与 DOCX 的**真检查**。
+ *
+ * 上游没有 `markdown check` / `html check` 命令（`genoffice <command>` 列表里
+ * 只有 docs/sheet/slides 三家的 check/audit）。但这三家之外**确实**有可用的
+ * 检查手段：`render` 会真的排版一遍，排版不了的文档会 `conversion_failed`；
+ * 对 `create` 出来的产物还能再跑一次目标格式自己的 check。
+ *
+ * 所以这里的门禁是**两道**，都跑真命令、都读返回：
+ *   1. `render --page 1`：能否被原厂渲染器排版（打不开/坏 HTML = 直接失败）；
+ *   2. 若调用方给了**刚创建的**同类产物（docx），再跑一次 `docs check`。
+ *
+ * 为什么不是「假门禁」：第一道是真的会失败（坏 HTML、缺字体、超出渲染限制），
+ * 只是它检的是**可渲染性**而不是内容质量 —— 这一点在 `formatQaReport` 的措辞里
+ * 写明，不假装它等于 `docs check`。
+ */
+export async function renderProbeCheck(
+  ports: GenofficePorts, file: string, outDir: string, options: { signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "渲染源文件")
+    ?? requireWorkspacePath(ports, outDir, "渲染输出目录");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  return invoke(ports, ["render", file, "--out", outDir, "--page", "1", "--json"],
+    options.signal ? { signal: options.signal } : {});
+}
+
+/**
+ * 【T43】`slides check <outline.json | page.json>` —— 设计流水线的**规格检查**。
+ *
+ * 上游 `slides check` 不只看 pptx：对 `outline.json` 与逐页 `NN.json` 它会
+ * 检查字段、布局库、占位文本、调色板一致性，并在页面与大纲不符时 **exit 1**。
+ * 这是「做出来会不会好看」的第一道闸门，模型必须在写下一页之前用它。
+ */
+export async function slidesCheck(
+  ports: GenofficePorts, file: string, options: { outline?: string; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "规格文件路径")
+    ?? (options.outline !== undefined ? requireWorkspacePath(ports, options.outline, "大纲文件路径") : null);
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  const args = ["slides", "check", file, "--json"];
+  if (options.outline !== undefined) args.push("--outline", options.outline);
+  return invoke(ports, args, options.signal ? { signal: options.signal } : {});
+}
+
+/** 【T43】`slides replace <pptx> --slide n --spec <page.json>`：只重建一页。 */
+export async function slidesReplace(
+  ports: GenofficePorts, file: string, slideIndex: number, spec: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "演示文稿路径")
+    ?? requireWorkspacePath(ports, spec, "页面规格路径");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  if (!Number.isInteger(slideIndex) || slideIndex < 0) {
+    return { ok: false, kind: "refused", envelope: null, reason: "slide 必须是 0 起的整数" };
+  }
+  return invoke(ports, ["slides", "replace", file, "--slide", String(slideIndex), "--spec", spec, "--json"],
+    options.signal ? { signal: options.signal } : {});
+}
+
+/* ───────────────【T43】把任意受支持格式读成 Markdown / 文本 ───────────────
+ *
+ * 用户原话：「读文件也不全面」。T24 的 `document_md_read` 只调 `docs read`
+ * （Word 专属），于是 .xlsx/.pptx/.pdf/.md/.html 一律读不了。
+ *
+ * 这里的判据是**扩展名 → 真实命令**，每条都先核过 CLI：
+ *   - .docx            → `docs read --full`（块结构 + 文本）
+ *   - .xlsx            → `sheet read`（单元格；`--stats` 先量大小）
+ *   - .pptx            → `slides read --full`（每页文本/表格/备注）
+ *   - .pdf             → `pdf read`（文本层，按页）
+ *   - .md/.markdown/.txt/.csv/源码 → **直接读文件**（它们本来就是文本，
+ *     `convert` 也不支持 md→md / html→md，硬走 convert 只会报 `unsupported`）
+ *   - .html/.htm       → 直接读文件（受限 HTML 片段与整页都能读；转换是给 docx/pdf 用的）
+ *
+ * 返回统一是「一个信封」，`detail.items` 是**与 docs read 同形**的块数组，
+ * 这样 `blocksToMarkdown` 不必为每种格式各写一份。非 Word 格式没有块索引，
+ * 就用 `index` 递增 —— 定位符仍是稳定的（对同一个文件重复读，序号一致）。
+ */
+
+/** 文本类扩展名（直接读文件，不过 CLI）。 */
+const TEXT_EXTENSIONS = new Set([
+  ".md", ".markdown", ".txt", ".csv", ".tsv", ".json", ".yaml", ".yml", ".toml", ".ini",
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rs", ".go", ".java", ".css", ".scss",
+  ".xml", ".svg", ".sql", ".sh", ".ps1", ".bat",
+]);
+
+/** 单次直读文本的上限：超过就截断并**如实标注**（不假装读全）。 */
+const MAX_TEXT_READ_BYTES = 2 * 1024 * 1024;
+
+export type ReadableKind = "docx" | "xlsx" | "pptx" | "pdf" | "html" | "text" | "unsupported";
+
+export function readableKindOf(file: string): ReadableKind {
+  const ext = extname(file).toLowerCase();
+  if (ext === ".docx") return "docx";
+  if (ext === ".xlsx") return "xlsx";
+  if (ext === ".pptx") return "pptx";
+  if (ext === ".pdf") return "pdf";
+  if (ext === ".html" || ext === ".htm") return "html";
+  if (TEXT_EXTENSIONS.has(ext)) return "text";
+  return "unsupported";
+}
+
+/** 直读文本文件 → 与 docs read 同形的单块。 */
+function readTextAsBlocks(file: string): GenofficeResult {
+  let buf: Buffer;
+  try {
+    const stat = lstatSync(file);
+    if (stat.isSymbolicLink()) {
+      return { ok: false, kind: "refused", envelope: null, reason: `文本读取不接受符号链接：${file}` };
+    }
+    if (!stat.isFile()) {
+      return { ok: false, kind: "refused", envelope: null, reason: `不是普通文件：${file}` };
+    }
+    const readBytes = Math.min(stat.size, MAX_TEXT_READ_BYTES);
+    buf = readFileSync(file).subarray(0, readBytes);
+    const truncated = stat.size > MAX_TEXT_READ_BYTES;
+    const text = buf.toString("utf8");
+    const lines = text.split(/\r?\n/);
+    return {
+      ok: true,
+      envelope: {
+        status: "ok",
+        command: "file",
+        summary: `${basename(file)}: ${lines.length} 行${truncated ? `（已截断到 ${MAX_TEXT_READ_BYTES} 字节）` : ""}`,
+        detail: {
+          blocks: lines.length,
+          items: [{ index: 0, type: "text", text }],
+          plain: true,
+          truncated,
+          bytes: stat.size,
+        },
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false, kind: "failed", envelope: null,
+      reason: `读取文本文件失败：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/** xlsx `sheet read` 的信封 → 块形状（每个非空行一块）。 */
+function sheetRowsToBlocks(envelope: GenofficeEnvelope): { blocks: number; items: unknown[] } {
+  const detail = envelope.detail as { rows?: unknown[][]; sheet?: string; range?: string } | null;
+  const rows = Array.isArray(detail?.rows) ? detail.rows : [];
+  const items: unknown[] = [];
+  let index = 0;
+  for (const row of rows) {
+    const cells = Array.isArray(row) ? row : [];
+    if (cells.every((cell) => cell === null || cell === undefined || cell === "")) continue;
+    items.push({
+      index, type: "tableRow",
+      text: cells.map((cell) => (cell === null || cell === undefined ? "" : String(cell))).join("\t"),
+    });
+    index += 1;
+  }
+  return { blocks: items.length, items };
+}
+
+/** pptx `slides read` 的信封 → 块形状（每页一块，含该页全部文本）。 */
+function slidesToBlocks(envelope: GenofficeEnvelope): { blocks: number; items: unknown[] } {
+  const detail = envelope.detail as { pages?: Array<{ index?: number; elements?: Array<{ type?: string; text?: string }> }> } | null;
+  const pages = Array.isArray(detail?.pages) ? detail.pages : [];
+  const items: unknown[] = [];
+  let index = 0;
+  for (const page of pages) {
+    const texts = (page.elements ?? [])
+      .map((element) => (typeof element.text === "string" ? element.text : ""))
+      .filter((text) => text.trim() !== "");
+    items.push({
+      index, type: "slide", level: 1,
+      text: `[slide ${(page.index ?? 0) + 1}] ${texts.join(" · ")}`,
+    });
+    index += 1;
+  }
+  return { blocks: items.length, items };
+}
+
+/** pdf `pdf read` 的信封 → 块形状（每页一块）。 */
+function pdfPagesToBlocks(envelope: GenofficeEnvelope): { blocks: number; items: unknown[] } {
+  const detail = envelope.detail as { pages?: Array<{ page?: number; text?: string }> } | null;
+  const pages = Array.isArray(detail?.pages) ? detail.pages : [];
+  const items: unknown[] = [];
+  let index = 0;
+  for (const page of pages) {
+    items.push({
+      index, type: "page",
+      text: `[page ${page.page ?? index + 1}] ${typeof page.text === "string" ? page.text : ""}`,
+    });
+    index += 1;
+  }
+  return { blocks: items.length, items };
+}
+
+/**
+ * 【T43】**任意受支持格式 → 与 docs read 同形的块数组**。
+ *
+ * 调用方（`documentMarkdownRead`）只关心两件事：拿到了什么、以及**这是不是
+ * 真正的结构读**。所以信封里带 `via`（`docs read` / `sheet read` / ...）和
+ * `structured`（Word 才有块索引；其余格式的 index 是递增序号）。
+ */
+export async function readAnyDocument(
+  ports: GenofficePorts,
+  file: string,
+  options: { range?: string; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, file, "读取路径");
+  if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
+  const kind = readableKindOf(file);
+  const signal = options.signal ? { signal: options.signal } : {};
+
+  if (kind === "text" || kind === "html") {
+    const text = readTextAsBlocks(file);
+    if (!text.ok) return text;
+    const detail = text.envelope.detail as { items: unknown[] };
+    return {
+      ok: true,
+      envelope: {
+        ...text.envelope,
+        detail: {
+          ...(text.envelope.detail as object),
+          via: kind === "html" ? "file (html)" : "file",
+          structured: false,
+          items: detail.items,
+        },
+      },
+    };
+  }
+
+  if (kind === "unsupported") {
+    return {
+      ok: false, kind: "refused", envelope: null,
+      reason: `这个格式没有读取路由：${extname(file) || "(无扩展名)"}。` +
+        `支持：docx / xlsx / pptx / pdf / html / md / txt / csv / 常见源码。`,
+    };
+  }
+
+  if (kind === "docx") {
+    const read = await docsRead(ports, file, { full: true, ...(options.range ? { range: options.range } : {}), ...signal });
+    if (!read.ok) return read;
+    return { ok: true, envelope: { ...read.envelope, detail: { ...(read.envelope.detail as object), via: "docs read", structured: true } } };
+  }
+
+  if (kind === "xlsx") {
+    const read = await sheetRead(ports, file, options.signal);
+    if (!read.ok) return read;
+    const converted = sheetRowsToBlocks(read.envelope);
+    return {
+      ok: true,
+      envelope: {
+        ...read.envelope,
+        summary: `${read.envelope.summary ?? basename(file)}（${converted.blocks} 个非空行）`,
+        detail: { ...converted, via: "sheet read", structured: false, sheetDetail: read.envelope.detail },
+      },
+    };
+  }
+
+  if (kind === "pptx") {
+    const read = await invoke(ports, ["slides", "read", file, "--full", "--json"], signal);
+    if (!read.ok) return read;
+    const converted = slidesToBlocks(read.envelope);
+    return {
+      ok: true,
+      envelope: {
+        ...read.envelope,
+        summary: `${read.envelope.summary ?? basename(file)}（${converted.blocks} 页）`,
+        detail: { ...converted, via: "slides read", structured: false },
+      },
+    };
+  }
+
+  // pdf
+  const read = await pdfRead(ports, file, { full: true, ...(options.range ? { range: options.range } : {}), ...signal });
+  if (!read.ok) return read;
+  const converted = pdfPagesToBlocks(read.envelope);
+  return {
+    ok: true,
+    envelope: {
+      ...read.envelope,
+      summary: `${read.envelope.summary ?? basename(file)}（${converted.blocks} 页）`,
+      detail: { ...converted, via: "pdf read", structured: false },
+    },
+  };
+}
+
+/**
  * `render <file> --out <dir>`：把 docx/xlsx/pptx/md/html 出成逐页 PNG，模型据此"亲眼看"。
  * `outDir` 由调用方给**受控临时目录**（必须已存在且为空，避免覆盖用户文件）；本函数
  * 不建目录、不猜路径。
@@ -557,6 +841,158 @@ export async function createFromFile(
   if (options.signal?.aborted) return headlessCancelled();
   const args = ["create", "--type", type, "--from", source, "--out", out, "--json"];
   if (options.header) args.push("--header");
+  return invoke(ports, args, options.signal ? { signal: options.signal } : {});
+}
+
+/* ─────────────【T43】pptx 设计流水线：create --spec <dir> 的**围栏** ─────────────
+ *
+ * ## 为什么不能直接把 "pptx" 加进 createFromFile 的联合类型
+ *
+ * T74 的注释写得很清楚：`--from` 只收**单个文件**，而 pptx 的 `--spec <dir>`
+ * 会按名称顺序读目录里**每个** JSON，并且**每个 JSON 里的 image `url` 还能
+ * 指向另一批文件**（实测：把 spec 里的 `./assets/pic.png` 挪走，`create` 会
+ * 在 `detail.imageFailures` 里报出来 —— 它真的去读了）。放开类型等于让一次
+ * 工具调用带着任意多个未过围栏的路径进 CLI，绕过整个工作区判据。
+ *
+ * ## 方案 B：把 spec 快照进受控临时目录，再对副本调 create
+ *
+ * 1. **先审**：递归列出源目录里的每个文件，逐个过 `requireWorkspacePath`
+ *    （含符号链接的真实路径解析），并用扩展名白名单收窄：
+ *    `.json`（页面/大纲/风格）、`.md`（style.md）、图片（`png/jpg/jpeg/gif/webp`）。
+ *    其他扩展名一律拒绝 —— spec 不需要它们。
+ * 2. **再拷**：把通过审核的文件按**相对路径**拷进调用方给的受控目录
+ *    （生产是 `<dataRoot>/docs/export-tmp/...`），源目录只读、不动一个字节。
+ * 3. **后建**：对**副本**调 `create --type pptx --spec <副本>/pages`，产物直接
+ *    落到调用方指定的工作区内输出路径（那个路径单独过围栏）。
+ *
+ * 这样 CLI 读到的每个文件都已经在受控目录里，且与源目录逐字节相同 ——
+ * 图片相对路径照常工作，但**读不到源目录以外的东西**（拷贝是逐文件白名单，
+ * 不是整目录 cp）。
+ *
+ * 快照目录由调用方清理（本函数只负责写）。
+ */
+
+/** spec 目录里允许出现在快照里的扩展名（其余一律拒绝，不是静默跳过）。 */
+const SPEC_SNAPSHOT_EXTENSIONS = new Set([
+  ".json", ".md", ".markdown",
+  ".png", ".jpg", ".jpeg", ".gif", ".webp",
+]);
+/** 单个文件与整个 spec 目录的体积上限（防把大素材塞进快照）。 */
+const MAX_SPEC_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_SPEC_TOTAL_BYTES = 64 * 1024 * 1024;
+const MAX_SPEC_FILES = 400;
+
+export interface SpecSnapshotRefusal { ok: false; reason: string }
+export interface SpecSnapshotOk { ok: true; files: number; bytes: number }
+
+/**
+ * 把 `sourceDir` 快照进 `targetDir`（调用方保证 targetDir 在受控临时根下、
+ * 且是一个**新建的空目录**）。返回实际拷贝的文件数与字节数。
+ *
+ * **不建 targetDir 以外的任何东西**；不跟随符号链接（链接直接拒绝）。
+ */
+export async function snapshotDeckSpec(
+  ports: GenofficePorts,
+  sourceDir: string,
+  targetDir: string,
+): Promise<SpecSnapshotOk | SpecSnapshotRefusal> {
+  const sourceRefusal = requireWorkspacePath(ports, sourceDir, "spec 源目录");
+  if (sourceRefusal !== null) return { ok: false, reason: sourceRefusal };
+  if (existsSync(targetDir)) return { ok: false, reason: `快照目标已存在，拒绝覆盖：${targetDir}` };
+
+  // 1. 递归列文件（不跟链接），逐个过围栏与扩展名白名单。
+  const collected: Array<{ abs: string; rel: string; bytes: number }> = [];
+  let total = 0;
+  const walk = (dir: string, relBase: string, depth: number): string | null => {
+    if (depth > 6) return `spec 目录层级过深（>6）：${dir}`;
+    let names: string[];
+    try {
+      names = readdirSync(dir).sort();
+    } catch (error) {
+      return `无法列目录 ${dir}：${error instanceof Error ? error.message : String(error)}`;
+    }
+    for (const name of names) {
+      const abs = join(dir, name);
+      const rel = relBase === "" ? name : `${relBase}/${name}`;
+      let stat;
+      try {
+        stat = lstatSync(abs);
+      } catch (error) {
+        return `无法读取 ${abs}：${error instanceof Error ? error.message : String(error)}`;
+      }
+      if (stat.isSymbolicLink()) return `spec 快照不接受符号链接：${abs}`;
+      if (stat.isDirectory()) {
+        const nested = walk(abs, rel, depth + 1);
+        if (nested !== null) return nested;
+        continue;
+      }
+      if (!stat.isFile()) return `spec 快照只接受普通文件：${abs}`;
+      const ext = extname(name).toLowerCase();
+      if (!SPEC_SNAPSHOT_EXTENSIONS.has(ext)) {
+        return `spec 目录里出现不允许的文件类型 ${ext || "(无扩展名)"}：${rel}（只允许 json/md/图片）`;
+      }
+      if (stat.size > MAX_SPEC_FILE_BYTES) return `spec 文件过大（>${MAX_SPEC_FILE_BYTES} 字节）：${rel}`;
+      const refusal = requireWorkspacePath(ports, abs, `spec 文件 ${rel}`);
+      if (refusal !== null) return refusal;
+      total += stat.size;
+      if (total > MAX_SPEC_TOTAL_BYTES) return `spec 目录总体积超过 ${MAX_SPEC_TOTAL_BYTES} 字节`;
+      collected.push({ abs, rel, bytes: stat.size });
+      if (collected.length > MAX_SPEC_FILES) return `spec 文件数超过 ${MAX_SPEC_FILES}`;
+    }
+    return null;
+  };
+  const walkError = walk(sourceDir, "", 0);
+  if (walkError !== null) return { ok: false, reason: walkError };
+  if (collected.length === 0) return { ok: false, reason: `spec 目录是空的：${sourceDir}` };
+  const hasPageFile = collected.some((file) => /(^|\/)pages\/[^/]+\.json$/i.test(file.rel) || /(^|\/)\d{1,3}\.json$/i.test(file.rel));
+  if (!hasPageFile) {
+    return {
+      ok: false,
+      reason: `spec 目录里没有页面文件（需要 pages/NN.json，或目录本身就是 pages 目录）：${sourceDir}`,
+    };
+  }
+
+  // 2. 逐文件拷贝（不做整目录 cp —— 那条会带走未审的东西）。
+  try {
+    mkdirSync(targetDir, { recursive: true });
+    for (const file of collected) {
+      const destination = join(targetDir, ...file.rel.split("/"));
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(file.abs, destination);
+    }
+  } catch (error) {
+    return { ok: false, reason: `spec 快照拷贝失败：${error instanceof Error ? error.message : String(error)}` };
+  }
+  return { ok: true, files: collected.length, bytes: total };
+}
+
+/**
+ * 【T43】`create --type pptx --spec <dir> --outline <file>`，**只接受快照副本**。
+ *
+ * `specDir` 与 `outline` 都必须是调用方已经建好的受控快照里的路径；本函数仍
+ * 再过一次 `requireWorkspacePath`（纵深防御：即便调用方传错，围栏也拦得住）。
+ * 输出路径必须是工作区内、且**已存在则拒绝**（与 `createFromFile` 同一条纪律）。
+ */
+export async function createDeckFromSpec(
+  ports: GenofficePorts,
+  specDir: string,
+  out: string,
+  options: { outline?: string; render?: string; audit?: boolean; signal?: AbortSignal } = {},
+): Promise<GenofficeResult> {
+  const refusal = requireWorkspacePath(ports, specDir, "spec 快照目录")
+    ?? requireWorkspacePath(ports, out, "演示文稿输出路径")
+    ?? (options.outline !== undefined ? requireWorkspacePath(ports, options.outline, "大纲路径") : null)
+    ?? (options.render !== undefined ? requireWorkspacePath(ports, options.render, "渲染输出目录") : null);
+  if (refusal !== null) return headlessRefused(refusal);
+  if (extname(out).toLowerCase() !== ".pptx") return headlessRefused("pptx create 的输出扩展名必须是 .pptx");
+  if (!existsSync(specDir)) return headlessRefused(`spec 快照目录不存在：${specDir}`);
+  const occupied = refuseExistingOutput(out, "演示文稿输出文件");
+  if (occupied !== null) return headlessRefused(occupied);
+  if (options.signal?.aborted) return headlessCancelled();
+  const args = ["create", "--type", "pptx", "--spec", specDir, "--out", out, "--json"];
+  if (options.outline !== undefined) args.push("--outline", options.outline);
+  if (options.render !== undefined) args.push("--render", options.render);
+  if (options.audit) args.push("--audit");
   return invoke(ports, args, options.signal ? { signal: options.signal } : {});
 }
 

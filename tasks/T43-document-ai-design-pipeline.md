@@ -48,6 +48,16 @@ export const DOCUMENT_QA_GATES: Readonly<Record<DocumentToolApp, readonly string
 
 **改完 pdf/markdown/html 之后什么都不检查。** 而这三个 app，用户明确说了要。
 
+**修法（B 的方案，总控复核成立）**：这三家**上游确实没有 `check` 命令**——`genoffice guide --help` 也只有 `slides|docs|sheets` 三个域，没有 markdown/html 的 guide。
+
+所以不能造假门禁。**但 `render` 可以当真门禁用**，因为上游自己的 help 原文就是这么说的：
+
+> `One PNG per page of a document, as the GenOffice renderer lays it out: the picture an agent looks at to check a Word document, a workbook or a page it just made.`
+
+**「the picture an agent looks at to check」——上游自己把 `render` 定义成检查手段。** 所以这三家的门禁应该是 `render-probe`：真跑 render、真读返回值（页数/尺寸/PNG 非空）。
+
+**但措辞必须诚实**：`render-probe` 检的是**可渲染性**，不是内容质量。回写区要逐条说明为什么这是真检查而不是假门禁。
+
 #### 缺口二：`CLI_TOOL_MAP` 把「创建」整条路堵死了
 
 ```ts
@@ -145,7 +155,30 @@ export async function documentMarkdownRead(ports, args) {
 
 并且 `document_apps` 的描述里写着「工具总数 139」「CLI 能承载的工具名」——模型会以为读文件是通的。
 
-**这是用户「读文件也不全面」的直接落点。** 修法：`documentMarkdownRead` 按扩展名分派到对应命令（`docs read` / `sheet read` / `slides read` / `pdf read` / `convert --to md`），而不是一律 `docs read`。
+**这是用户「读文件也不全面」的直接落点。** 修法：`documentMarkdownRead` 按扩展名分派，**但不是走 `convert`**（见下）。
+
+#### ⚠️ 缺口五的修法更正（B 实测，总控复核成立）
+
+我原来在卡里写「按扩展名分派到 `convert --to md`」，**这是错的**。真跑 `genoffice convert --help`：
+
+```
+--to <format>   target format: pdf→docx/pptx/xlsx/md/html, csv→xlsx/pdf, xls→xlsx/pdf,
+                xlsb→xlsx, ods→xlsx, ots→xlsx, odt→docx, ott→docx, odp→pptx, otp→pptx,
+                md→docx/html/pdf, markdown→docx/html/pdf, docx→md/pdf/html, xlsx→csv/pdf,
+                xlsm→csv/pdf, pptx→pdf, html→pdf/docx, htm→pdf/docx
+```
+
+**没有 `md→md`，也没有 `html→md`。** 所以：
+
+| 输入 | 正确的读法 |
+|---|---|
+| `.docx` | `docs read` |
+| `.xlsx` | `sheet read` |
+| `.pptx` | `slides read` |
+| `.pdf` | `pdf read` |
+| `.md` / `.html` / `.txt` / 源码 | **直接读文件**（不走 convert，它明确不支持） |
+
+**这就是 B 已经实现的 `readAnyDocument`。** 我那条「一律 convert」是错的，已作废。
 
 ## 用户的洞察要落进设计里
 

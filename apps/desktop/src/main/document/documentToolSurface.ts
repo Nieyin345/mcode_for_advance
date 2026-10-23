@@ -71,14 +71,34 @@ export const DOCUMENT_RESIDENT_TOOLS: Readonly<Record<DocumentToolApp, readonly 
   html: ["get_outline", "read_source"],
 });
 
-/** 每次 `document_tool_call` 之后**必须**跑的 QA 门禁（按 app）。 */
+/** 每次 `document_tool_call` 之后**必须**跑的 QA 门禁（按 app）。
+ *
+ * 【T43】pdf/markdown/html 原本是空数组。查清上游后的事实：
+ *   - **没有** `pdf check` / `markdown check` / `html check` 命令
+ *     （`genoffice <command>` 只有 docs / sheet / slides 三家带 check/audit）；
+ *   - 但 `render` 是**真的会失败**的：坏 HTML、超限字体、无法排版的文档都会
+ *     `conversion_failed` / `app_crashed`。
+ *
+ * 所以这三个 app 的门禁是 `"render-probe"` —— 它跑真命令、真读返回值，检的是
+ * **可渲染性**，不是内容质量。`formatQaReport` 会把这一点写在给模型的正文里，
+ * 不冒充 `docs check`（那才是「假门禁」）。
+ *
+ * `reflection` 表示该格式**没有任何自动化检查**（.md/.txt/源码就是文本，
+ * 没有渲染器也没有校验器）—— 如实标注，让调用方知道"改完没人替你检查"。 */
 export const DOCUMENT_QA_GATES: Readonly<Record<DocumentToolApp, readonly string[]>> = Object.freeze({
   docs: ["check"],
   sheets: ["check"],
   slides: ["audit"],
-  pdf: [],
-  markdown: [],
-  html: [],
+  pdf: ["render-probe"],
+  markdown: ["render-probe"],
+  html: ["render-probe"],
+});
+
+/** 门禁名 → 给模型的人话（`formatQaReport` 用它拼表头）。 */
+export const DOCUMENT_QA_GATE_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  check: "内容检查",
+  audit: "几何审计",
+  "render-probe": "可渲染性检查（原厂渲染器试排一次；检的是能否排版，不是内容质量）",
 });
 
 /** 会**改变文件**的工具名（决定要不要在调用后跑 QA 门禁）。 */

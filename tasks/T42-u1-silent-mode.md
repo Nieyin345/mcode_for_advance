@@ -109,6 +109,58 @@ win.hide();
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ```
 
-## 回写
+## 结果回写（2026-10-23）
 
-在 `tasks/T42-u1-silent-mode.md` 末尾追加 `## 结果回写（2026-10-23）`：四条查询结果与来源、方案选择、T7 六旅程验证、窗口可见性证据、变异证据、提交 SHA。
+### 0. E 的实测已经回答了四条查询（在写代码之前）
+
+**四条里两条是真实 Electron 实测，不是查文档。**
+
+| # | 问题 | 结论 | 依据 |
+|---|---|---|---|
+| 1 | `capturePage()` 在 `show:false` 上会抛吗 | **会抛，而且宿主窗口的 fallback 也一起失败** | 实测 `Current display surface not available for capture`；把 `runner.ts:802` 改 `show:false` 后 T7 docs 旅程直接 `literal=FAIL`、`failedStep=step-07-screenshot`。**T7 那句注释是对的。** |
+| 2 | `showInactive()` 可行吗 | **可行，且是方案 (A) 的正确形态** | 同一实验里改成「平时隐藏 + 截图前 `showInactive()` + 截后 `hide()`」，T7 docs 旅程回到 `literal=PASS`（2 OS processes） |
+| 3 | 官方文档怎么说 | 文档只管**页面可见性判定**，管不了 display surface | electronjs.org/docs/latest/api/web-contents：*"The page is considered visible when its browser window is hidden and the capturer count is non-zero."* + `stayHidden`；Electron 23 起 `capturePage` 自动处理 capturer count。**但实测优先于文档措辞。** |
+| 4 | `opacity: 0` 能截图吗 | **没有证据，按卡上要求不动第 632 行** | T7 失败的是 `WebContentsView`，不是这种「屏幕外 + opacity 0」的窗口，两者不是一回事 |
+
+**方案 (A) 的正确形态因此要修正**：不是卡上写的「先 `show()` 再截」，而是
+
+```
+窗口平时 show:false
+  → 截图前 showInactive()   ← 不抢焦点
+  → capturePage()
+  → hide()
+```
+
+### 1. 卡上没写到的真正阻塞点：`ensureFocus()`
+
+```ts
+// runner.ts:157
+async function ensureFocus(ctx: Ctx): Promise<boolean> {
+  const has = await js<boolean>(ctx.wc, "document.hasFocus()").catch(() => false);
+  if (has) return true;
+  ctx.win.focus();                                    // ← 这里
+  return until(() => js<boolean>(ctx.wc!, "document.hasFocus()"), 3000);
+}
+```
+
+`ensureFocus()` 在**每次 click / type / press 之前**都会调。隐藏窗口的 `document.hasFocus()` 恒 false，所以：
+
+**即使把 802 行改成 `show:false`，每次按键/点击都会把窗口重新弹出来。** 真正的静默必须同时处理 `ensureFocus()`，或者接受「输入动作时短暂显示」。
+
+**这条比截图那条更难，卡上原本没提。**
+
+### 2. 探针事故（值得记下来）
+
+第一次探针命令写反了顺序：heredoc 写了脚本，但 `mkdir -p` 排在后面，bash 报 `.tmp/t42/probe-hidden-input.mjs: No such file or directory`，**脚本根本没跑起来**。那个 `Error` 窗口是 Electron 收到不存在的入口文件后**自己弹的**，不是探针逻辑弹的。
+
+代价：用户看到了那个窗口，而 T42 要解决的正是「不要弹窗」。
+
+**教训：探针脚本要先 `mkdir` 再写文件，并且必须带超时自杀（`setTimeout(() => app.exit(2), 60000)`）。** 不要让探针有可能挂 8 分钟。
+
+### 3. 当前进度
+
+- 四条查询：**已完成**（见上表）
+- `ensureFocus()` 阻塞点：**已识别，方案待定**
+- 正在实测（不弹窗方式）：隐藏窗口下 `sendInputEvent` 是否仍送达渲染端
+- T37（30 次连跑采样）：已跑完，待汇报
+
