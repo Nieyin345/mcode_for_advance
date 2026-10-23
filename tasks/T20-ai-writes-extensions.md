@@ -212,19 +212,16 @@ Read before work: `CLAUDE.md`、`audit-ledgers/README.md`、`docs/planning/exten
   `mcp-text` / `mcp-endpoint` / `extension-store` / `library-preview-extension` /
   `vscode-l1` / `workflow-extension-seams` / `base-capability-matrix` / `runtime-node-modules`；
 - `npx tsc --noEmit -p packages/contracts/tsconfig.json` → 干净；
-- `npx tsc --noEmit -p apps/desktop/tsconfig.json` → 本卡涉及的 4 个文件干净。
+- `npx tsc --noEmit -p apps/desktop/tsconfig.json` → **干净（exit 0）**。
+  执行期间曾看到 3 个文件的错误，**全部来自其他会话当时未提交的 dirty 文件**
+  （`scripts/electron-u1/driver/runner.ts` 的 T42 半成品、`document/documentToolRuntime.ts`、
+  `renderer/components/modules/{ModuleContributions,moduleCatalogShape}.tsx`）—— 与本卡无关、
+  不在本卡可写边界内。它们随后由各自会话提交（如 T41 的 `db4415f7`）之后，整包 tsc 复位为 0。
 - `smokes-for.sh src/main/modules/extensionWorkshop.ts` 现在会带上 `extension-workshop-smoke`
   （此前是"没有套件覆盖它"）。
 
 ### 8. 未覆盖项 / 已知边界
 
-- **双包 typecheck 不是"整包全绿"**：`apps/desktop` 的 tsc 当前另有 3 个文件的错误，
-  **全部来自其他会话未提交的 dirty 文件**，与本卡无关、也不在本卡可写边界内：
-  - `apps/desktop/scripts/electron-u1/driver/runner.ts`（T42 进行中：`ensureFocus` 改名后调用点未跟、`State.windowVisibleMs` 未同步）；
-  - `apps/desktop/src/main/document/documentToolRuntime.ts`（未提交改动）；
-  - `apps/desktop/src/renderer/components/modules/{ModuleContributions.tsx,moduleCatalogShape.tsx}`（未提交 / 未跟踪）。
-  本卡改动前这些文件不在我的 diff 里；`git stash` 会对其他会话的并行工作造成破坏，
-  故如实记录而不是代为修。
 - **动态方法名静态拦不住**：这是 JS 的固有边界，已在回执里如实说明；运行期由 T19 的
   `callAppFromExtension` 逐次鉴权 + 逐次审批兜底。
 - **网络 / 写权限不在冒烟里验证**：冒烟只证明"能启动、能读、能返回"；write/network 是用户卡与
