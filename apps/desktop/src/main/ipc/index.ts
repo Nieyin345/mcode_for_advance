@@ -13,6 +13,10 @@ import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { documentViewHost } from "@main/document/documentViewHost.js";
 import { docsPrivilegedPorts } from "@main/document/docsPrivilegedPorts.js";
 import { docsAiPorts } from "@main/document/docsAiPorts.js";
+// 【T40】渲染端工具通道的宿主登记簿包装。**必须**用它包住 `docsAiPorts` 再交给宿主：
+// 未包装的 ports 不会在 `run` 前后登记/撤销绑定，`activeRendererBindingFor` 永远空,
+// `document.tool_call` 的渲染端路线因此永远走不到(退回 CLI 或直接失败)。
+import { withRendererToolRegistry } from "@main/document/documentToolRendererBinding.js";
 // 【ARC-007 P1/GA1】slides 执行器与桥：**静态** import（而非运行时
 // require("@main/...") —— 那是构建器 alias，打包后无法解析）。
 // vendor 快照缺失时的降级在 **seam** 里：slidesVendorModules 被别名到 stub，
@@ -163,11 +167,17 @@ export function registerIpcHandlers(): void {
   // Host 对这四个 editor 的关闭 fail-closed（不会静默丢改动）。
   documentViewHost.setVendorCloseGuard(({ editor, webContents }) =>
     requestNativeViewClose(editor, webContents));
+  // 【T40】两处注入**都要**包装过的 ports —— 它们喂的是同一个登记簿:
+  //   - 第 170 行:vendor 视图 AI 通道(`registerGenofficeViewAiIpc` 的 `ports`);
+  //   - 第 227 行:文档视图宿主的 `docsAiPorts`。
+  // 只包一处的话,另一条路上的 AI 请求不会登记绑定 —— `document.tool_call` 在那条
+  // 路上仍然永远拿不到活跃绑定。用同一个常量保证两条路是**同一份**包装。
+  const registryWrappedDocsAiPorts = withRendererToolRegistry(docsAiPorts);
   if (Object.values(nativeHostStatus()).some(Boolean)) {
     // AI never trusts a renderer-provided project, file path, engine, or session.
     registerGenofficeViewAiIpc(ipcMain, (sender) => {
       const context = documentViewHost.vendorAiContextForSender(sender);
-      return context ? { context, ports: docsAiPorts } : null;
+      return context ? { context, ports: registryWrappedDocsAiPorts } : null;
     });
   }
   // 【ARC-007】受控文档视图宿主(GenOffice 编辑器页的 WebContentsView)。
@@ -224,7 +234,7 @@ export function registerIpcHandlers(): void {
   // 与关闭守卫同一个取向：默认按钮是**取消**（不丢用户修改）。
   // T05b: use Mcode's existing pickers, pathGuard and modal approval UI.
   documentViewHost.setDocsPrivilegedPorts(docsPrivilegedPorts);
-  documentViewHost.setDocsAiPorts(docsAiPorts);
+  documentViewHost.setDocsAiPorts(registryWrappedDocsAiPorts);
   documentViewHost.setConfirmDirty(async ({ filePath }) => {
     const options = {
       type: "warning" as const,
