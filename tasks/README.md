@@ -62,7 +62,7 @@
 | T41 | `contributionsOf` 只有一层可选链，`modules` 缺失时**主界面**白屏 | P1 | T36 | Z |
 | T42 | **U1 骨架静默模式：默认不弹窗，仅截图时短暂显示** | **P1 开发体验** | T16+T7 | AA |
 | T43 | **文档 AI 的「丑」根因：设计流水线没接上，三个 app 的 QA 门禁是空的** | **P0 产品能力** | T24+T40 | BB |
-| T44 | **genoffice 三套在并发下互踩：`source-smoke` 原地篡改真实 vendor 工作树** | **P1 工具链** | 无 | CC |
+| T44 | genoffice 三套并发安全 —— **防回退回归**（T31 已修复，本卡只做回归网） | **P2** | T31 | CC |
 | T45 | **权限映射生成器会静默放宽：`document.*` 整个域落进 `write`** | **P0 安全** | T33 | DD |
 
 ### T43 为什么是 P0（用户最高痛点）
@@ -83,23 +83,26 @@
 4. **`createFromFile` 的类型被故意收窄到 `docx | xlsx`** —— PPT 根本造不出来。而这是 **T74 有意为之**：`create --type pptx --spec <dir>` 要读一个目录里的多个文件，T74 没为它建围栏。**所以不是「没接」，是「被安全策略挡住」——T43 要用围栏解决，不许把 `"pptx"` 直接加进联合类型。**
 5. **`document_md_read` 只走 `docs read`（Word 专属命令）** —— `.md` / `.html` / `.txt` / `.xlsx` / `.pptx` / `.pdf` **全都读不了**。这是用户「读文件也不全面」的直接原因，而 CLI 明明有 `pdf read` / `sheet read` / `slides read`（注意：`convert` **不支持** `md→md` / `html→md`，所以文本类只能直接读文件）。
 
-### T44 为什么开卡（并发互踩，我实测定位）
+### T44 为什么开卡（**更正：原判断已过期**）
 
 A 的 T29 全量报告是 **536 通过 / 7 失败**，其中 `genoffice-source-smoke` 与 `genoffice-vendor-freshness-smoke` **单跑全绿**（26/26、29/29）。
 
-根因不是「读取撞车」，是 **`genoffice-source-smoke/main.cjs` 的每条断言都在原地篡改真实的 `genoffice/` 工作树**，然后还原：
+**总控最初判断**是「`genoffice-source-smoke/main.cjs` 原地篡改真实 vendor 工作树」——**那个判断基于 T31 修复前的代码**：
 
-```js
-fs.writeFileSync(patch, tampered);                 // L158 篡改补丁字节
-finally { fs.writeFileSync(patch, saved); }
-fs.writeFileSync(file, saved + "\n// T31 fixture mutation\n");   // L165 往 vendor 文件注入
+```
+a10c705c  10-23 15:03  fix(T31): …          ← 已改成"克隆到副本上篡改"
+466a4dae  10-23 19:04  docs(tasks): open T44  ← 卡在这之后 4 小时写的
 ```
 
-**并发时另外两套读到的就是这些被篡改的中间态。**
+**T31 已经把篡改改成克隆到 OS 临时目录**，并且 `main.cjs:244-247` 已有断言 `"real GenOffice vendor checkout was not modified"`。C 会话实测：并发 3×3 = **9/9 全绿**，Ctrl-C 中断后 vendor **干净**，克隆耗时 **5.6 秒**（4764 文件）。
 
-更严重的后果：**如果在还原前被中断（Ctrl-C / 超时 / 机器卡顿），真实 vendor 工作树会留着篡改痕迹**，`verify-genoffice-upstream.cjs` 随之失败，而人会误以为补丁链坏了。
+**所以 T44 改为「防回退回归」**：T31 之所以要修，恰恰因为曾经有人写成原地篡改；**现在没有任何东西保证它将来仍然对**。
 
-**而且 C 的 T39 刚加了第 14 个补丁，这条链现在更复杂，竞争只会更多。**
+主力断言是**静态守卫**（毫秒级，不跑测试）：这几个套件里任何写调用都不许出现真实 vendor 路径，且必须存在 `git clone` 到临时目录。中断卫生与并发全绿作为运行时检查跟在后面。
+
+**Priority 降为 P2 —— 它保护的是一个已经正确的东西。**
+
+**总控的教训**：写卡前没核这条线的提交历史，开了一张描述过时代码的卡。
 
 上游 `genoffice/skills/genoffice/SKILL.md` 的 `## Designing a deck` 是唯一能做出好看 deck 的方法（style.md → outline.json → 逐页 NN.json → check → create → render --grid → audit → 最多两轮修），Mcode 一个环节都没接。
 
