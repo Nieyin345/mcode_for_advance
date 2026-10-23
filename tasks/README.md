@@ -67,6 +67,7 @@
 | T46 | 审批卡的真 Electron U1（T6 的 E1 覆盖不到：真窗口键盘 / 多窗口焦点 / settingsOpen 暂停 / 后台会话） | P1 安全回归 | T6 | A | ✅ done（U1 11 步） |
 | T47 | **模型拿不到 `guide slides design` —— 设计流水线的「教」这一半还是断的** | **P0 产品能力** | T43 | BB | ✅ done（27/27） |
 | T48 | AI 看不见 Node-RED 节点 | P0 | T8+T21 | CC | ❌ 关闭（前提不成立：`node_types_list` 一直存在，在 `mcp/mcodeServer.ts`） |
+| T49 | **扩展线核实 → 撞出主界面首帧白屏** | P0 产品缺陷 | T41 | GG | ✅ done（7/7） |
 | T51 | **给模型「工作流怎么搭」的规范**（对齐 T47 的设计指南） | P0 | T47 | EE | ✅ done（33/33） |
 | T53 | **多方会议（代理互相讨论）** | P2 | agentMail 3.17 | FF | ✅ done（30/30，产品代码零改动） |
 | T54 | **两套工具面分开：`app_api_list` 看不见 `mcode-workflow` 的 14 个工具** | **P1 可发现性** | 无 | DD | ✅ done（17/17） |
