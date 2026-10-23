@@ -275,4 +275,4 @@ fs.cpSync(path.join(base, '副桌面'), path.join(base, 'out'), { recursive: tru
 
 ### 七、提交
 
-`<见提交>` —— 只有本卡回写，无代码改动。
+`7a43c848` —— `docs(T89): the crash is Node 22.21.1's fs.cpSync on a non-ASCII path`（只有本卡回写，无代码改动）。
