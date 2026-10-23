@@ -32,12 +32,14 @@
  * 真 CLI 在隔离目录里跑。与 T24 套件同一纪律。
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, copyFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const MUTATE = process.argv.find((arg) => arg.startsWith("--mutate="))?.slice("--mutate=".length) ?? null;
+
+const NEWLINE = String.fromCharCode(10);
 
 let total = 0;
 let failures = 0;
@@ -112,8 +114,17 @@ function runCli(args: string[]): { ok: boolean; envelope: Record<string, unknown
     env: { ELECTRON_RUN_AS_NODE: "1", PATH: process.env.PATH ?? "" },
   });
   const raw = (r.stdout ?? "") + (r.stderr ?? "");
+  // 不能 JSON.parse(整段输出)：`create --type pdf` 会先打一行
+  // `starting GenOffice for pdf export`（原厂应用启动提示），整段就不是 JSON。
+  // 生产 `genofficeCli.invoke` 的做法是按行筛 `{` 开头的行，这里照抄同一判据；
+  // 多于一条 JSON 行时按生产一样拒绝（不猜哪份是真的）。
+  const jsonLines = raw.trim().split(NEWLINE).map((line) => line.trim()).filter((line) => line.startsWith("{"));
   let envelope: Record<string, unknown> | null = null;
-  try { envelope = JSON.parse(raw.trim()) as Record<string, unknown>; } catch { /* 非 JSON */ }
+  if (jsonLines.length === 1) {
+    try { envelope = JSON.parse(jsonLines[0]!) as Record<string, unknown>; } catch { envelope = null; }
+  } else if (jsonLines.length > 1) {
+    console.log(`  warn 多行 JSON 信封（${jsonLines.length}）—— 按失败处理`);
+  }
   return { ok: r.status === 0 && envelope?.status === "ok", envelope, raw };
 }
 
@@ -286,6 +297,23 @@ console.log("\n3. 门禁：pdf/markdown/html 是 render-probe，措辞不冒充 
   });
   check("render-probe 的正文明确写出「只验证可渲染性」", report.includes("只验证了可渲染性") || report.includes("范围"), report);
   check("render-probe 的正文不出现「没有发现问题」（那句是 check 的）", !report.includes("没有发现问题"), report);
+
+  // 门禁真跑一次：md -> render-probe -> 必须真的产出 PNG。
+  // 只断言 DOCUMENT_QA_GATES 的形状只能证明「配了」，证明不了「跑得通」。
+  {
+    const gateMd = join(workspace, "gate-probe.md");
+    writeFileSync(gateMd, ["# T43 gate", "", "render-probe must produce a PNG"].join(NEWLINE), "utf8");
+    const outDir = join(tempRoot, `qa-probe-direct-${Date.now()}`);
+    mkdirSync(outDir, { recursive: true });
+    const rendered = await cli.renderProbeCheck(ports, gateMd, outDir);
+    const pngs = readdirSync(outDir).filter((name) => name.toLowerCase().endsWith(".png"));
+    check("门禁真跑：render-probe 对 markdown 出图成功", rendered.ok === true, rendered.ok ? undefined : rendered);
+    check("门禁真跑：真的落了一个 PNG 在盘上", pngs.length > 0, { pngs, outDir });
+    if (pngs.length > 0) {
+      const size = statSync(join(outDir, pngs[0]!)).size;
+      check("门禁真跑：PNG 非空", size > 0, { name: pngs[0], size });
+    }
+  }
 }
 
 console.log("\n4. 创建：docx（HTML 入口）/ xlsx");
