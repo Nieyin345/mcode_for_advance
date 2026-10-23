@@ -74,3 +74,165 @@ grep -rn "document_tool_call" apps/desktop/src/main/appControl/tools.ts | head
 
 `tasks/T97-core-loop.md` 末尾追加 `## 结果回写（2026-10-24）`：
 四步结果、工具描述判断、产物质量、「又烂又丑」是否仍存在、提交 SHA。
+
+## 结果回写（2026-10-24）
+
+> 执行会话（F）。**只读产品代码 + `.tmp/loop/` 探针**，未改任何产品文件，未起 Electron。
+> 结论先行：**链路是通的 —— 工具调用 → 受控子进程 → 真 CLI → 文件落盘 → QA 门禁 → 读回，全走通。**
+> 但**发消息给 Agent 那一步没能用真模型跑**（下面 §1.1 说明为什么），
+> 而且**任务中心与对话之间没有接线**，所以路线图 §5 里「任务中心能追踪状态、失败、审批、产物与证据」
+> 这一条**今天还不成立**。
+
+### 0. 方法：用模型的唯一入口，不用内部函数
+
+探针走 `invokeAppTool`（正是 `engineTools.ts` 把 `document_*` 交给引擎的那一层），
+不是直接 import `documentToolRuntime`。这样量到的是**模型真正拿到的东西**。
+
+- 模型视角探针：`.tmp/loop/a-toolview.ts` → 输出 `.tmp/loop/describe.json`
+- 端到端探针：`.tmp/loop/b-generate.ts` → 输出 `.tmp/loop/b-out.txt`
+- 产物拆解：`.tmp/loop/read_docx.mjs`（每个 docx 单独解包目录）
+
+数据根指向 `.tmp/loop/data`（`MCODE_SMOKE_DATA_ROOT`），不碰真实 `mcode.db`。
+
+### 1. 四步端到端
+
+| # | 步骤 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 发消息给 Agent | **未用真模型跑**，见 §1.1 | — |
+| 2 | Agent 调用 `document_tool_call` | ✅ | `create_document` 经 `invokeAppTool` 真执行 |
+| 3 | 产物真的落盘 | ✅ | `report.docx` 3759 bytes，`existsSync` 为真 |
+| 4 | 事后能查到这个任务 | **部分**，见 §1.2 | 文件查得到；任务中心查不到 |
+
+#### 1.1 为什么没用真模型跑第一步
+
+模型凭据在宿主 sql.js 库里，探针去读它等于把用户密钥取出来用；卡上也允许 headless。
+所以我把**模型能看到的那一面原样取出来**，然后**按它的描述自己当模型走一遍**。
+这一步能验的是「描述够不够」（§2），**不能**验「真模型会不会照做」—— 那一点要等真实的
+U1 或至少一个注入过固定回复的 provider 夹具，**本卡没做**。
+
+#### 1.2 事后能查到什么
+
+**查得到的**：文件在盘上，`document_md_read` 能读回 8 个块，内容与输入一致。
+
+**查不到的**：这次任务在任何「任务中心」里都没有记录。原因有两层，都是结构性的：
+
+1. **`document_tool_call` 不写任何运行记录。** 全文件 `grep runStore|recordRun|appendRun` 零命中，
+   `artifacts` 字段也没人写。它只返回一个 `ToolResult` 文本。
+2. **任务表与对话没有接线。** `TaskRepo` / `ipc/task.ts` / `task.*` RPC 是**别人尚未提交的 T99**
+   （`git log -- apps/desktop/src/main/ipc/task.ts` 为空，`git status` 显示 `??`）。
+   即便它已存在，`grep -rn "task.transition|task.accept|task.reject" apps/...` 除 `ipc/task.ts`
+   与 preload 之外**零调用点** —— 没有「发一条消息就建一条任务」的路径。
+
+   顺带一个**名字陷阱**，值得记下来：右栏那个 `TaskListPanel` 不叫 `task.*`。
+   它读的是 `terminal.list` + `subagentsBySession` + 工作流 `activeNodes`，
+   文案自己写着「正在跑的 / 你开的终端、代理派出去的任务、工作流正在跑的那一步」。
+   **它是「正在跑什么」，不是任务中心。** 我用 `grep "task.list"` 时曾把它里面的
+   `ide.task.listMore` 文案误判成调用了 `task.list` —— 按名字搜是引用数（CLAUDE.md 第十五条），
+   这次亲自踩了一遍。
+
+### 2. 工具描述够不够：**不够，而且缺的正好是关键那一条**
+
+`document_tool_describe({tool:"create_document", app:"docs"})` 返回 4264 字符，逐项核对：
+
+| 模型需要知道的 | 返回里有没有 |
+|---|---|
+| 这个工具要什么参数（`input.source`） | ❌ 一次都没出现 |
+| 源文件必须是受限 HTML fragment（docx） | ❌ 没有 |
+| Markdown 会被围栏拒绝 | ❌ 没有 |
+| `create --type docx --from X --out Y` 的 CLI 用法 | ❌ 没有 |
+| Word 的 `apply` ops 语法（`setFont` / `setParagraphFormat` / …） | ✅ **有，占满 4000 字** |
+
+**根因**：`documentToolRuntime.ts:341-345` 只对 `cliOp === "apply"` 分支取 `guideOps` 的
+**op 参数表**；`create_document` 的 `cliOp` 是 `"create"`，落进 `else if` 分支，
+于是取的是**整个 docs 域的 guide 前 4000 字** —— 那是 apply 的语法，不是 create 的参数。
+
+**更糟的是 `doc` 字段本身被截断了。** 上游原文是：
+
+> Create a NEW standalone file … **type 'docx' (default) and 'pdf' take the same restricted HTML as insert_content in content**; type 'md' takes Markdown source; …
+
+而模型拿到的是：
+
+> Create a NEW standalone file in the default save folder and open it in a new tab; the current document is not modified. Use when the user asks to put content i…
+
+在 `documentToolCatalog.generated.ts:57` 就被切到 160 字，**恰好切在 `content` 之前**。
+所以模型既看不到 `content`（上游真实参数名），也看不到「docx 要 HTML」。
+
+**实测后果**：我按「正常理解」用 `input.source = report.md` 调，被拒：
+
+```
+docx create 仅开放原厂 HTML fragment；Markdown 图片路径尚未逐一围栏
+```
+
+这个围栏本身**是对的**（`genofficeCli.ts:898-901` 的注释：Markdown 里的图片路径会被上游解析，
+可能指到工作区外）。错的是**模型没有任何办法从工具面知道这件事**。
+模型唯一能走通的路是「自己把 md 转成 HTML fragment」，而描述里一个字都没提。
+
+改写成 HTML 后一次通过。**所以这条不是「链路坏了」，是「模型得猜，而且猜错一次才知道」。**
+
+### 3. 产物长什么样
+
+同一份内容，两条路径各生成一份（都真跑 CLI）：
+
+| 路径 | 命令 | 结果 |
+|---|---|---|
+| Markdown（本项目直接调 CLI） | `create --type docx --from report.md` | 3998 bytes，**表格保留** |
+| 受限 HTML（Mcode 围栏放行的那条） | `create --type docx --from table.html` | 3994 bytes，**表格保留，表头加粗 + `F2F2F2` 底纹** |
+| 受限 HTML（经 `document_tool_call`） | 同上，走 `ModuleHost` 受控子进程 | 3759 bytes，内容一致 |
+
+拆开 `word/document.xml` 逐项看：
+
+**做对的**：
+- 标题层级正确：`Heading1` / `Heading2` 用的都是真样式，不是手搓粗体大字；
+- 列表是 `ListParagraph` + 独立的 `numbering.xml`；
+- 表格是**真表格**：3 列 × 3 行，`tblLayout=fixed`，六条边框齐全，表头有 `w:b`（粗体）
+  与 `F2F2F2` 底纹 —— 和 Word 里手写一张表的默认样子基本一致；
+- 页面是 A4（11906×16838 twips）+ 四边 1440 twips（1 英寸）边距，标准 Word 版式；
+- `styles.xml` 定义了 30 个命名样式（Heading1-6 / Title / Quote / TOC1-9 …），是真的样式表；
+- `docs check` 报 **no issues found (10 checks)**。
+
+**做错的，两处，都是可量化的**：
+
+1. **没有中文字体。** `styles.xml` 只有
+   `<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>`，**`w:eastAsia` 一个都没有**。
+   上游 `docx-engine/src/blank.ts:511` 的 `eastAsiaFont` 选项默认不传，注释写着
+   「When omitted no `w:eastAsia` is written — like an en-US Word document」。
+   后果：中文靠 Word 按脚本回退，实际会落到系统默认中文字体（常见是宋体/等线），
+   **和英文 Calibri 混排时字形、字重、行高都不一致**。这就是「看起来不像在 Word 里排的」
+   最直接的一条原因。
+2. **表格比正文区宽 334 twips（16.7 pt / 0.23 英寸）。** 三列各 3120，合计 9360；
+   而 A4 减去左右各 1440 后可用宽是 9026。`generate.ts:2497` 写死了
+   `const totalWidth = 9360 // 6.5in content width on US Letter` ——
+   **按 US Letter 算的正文宽，却配了 A4 的页面**。表格右侧会顶到页边距里。
+
+**「又烂又丑」还在不在？** 在这两份产物上，**内容和结构不丑**（层级、列表、表格都是真样式），
+**丑的是排版细节**：中文没有字体设定、表格超出正文区。这两条都在**上游 CLI 的默认值**里，
+不是 Mcode 的接线问题 —— 但也说明**「接上了」不等于「好看」**，用户抱怨的那条仍然成立，
+只是现在能明确指出是哪两个数值。
+
+### 4. 顺带纠正我自己的两处错误
+
+- 探针第一版把所有 docx 解包到**同一个** `unzipped/` 目录，第二次读拿到的是上一次的 XML，
+  一度让我以为「HTML 路径丢了表格」。实际上丢表格的是我自己写的 HTML —— **我根本没往里面放表**。
+  修成每个 docx 独立目录后两份都正常。
+- 一度把 `db.ts` 的 esbuild 报错当成产品缺陷，实际是**另一个会话正在写这个文件**
+  （mtime 距今 16 秒，模板字符串里的反引号未闭合）。等它写完就正常了 ——
+  CLAUDE.md 第九条（跑之前先看 `mtime`）这次救了场。
+
+### 5. 结论
+
+| 问题 | 答案 |
+|---|---|
+| 工具调用 → 真产物这条链通不通 | **通**。一次审批 → 一次 CLI → 文件落盘 → QA 通过 → 可读回 |
+| 模型能不能从工具面知道怎么用 | **不能**。`create_document` 的描述里没有 `source`、没有 HTML 要求、没有 md 被拒的说明；160 字的 `doc` 恰好截断在关键句之前 |
+| 产物能不能用 | **内容能用，排版不够**。中文无 `w:eastAsia`；表格比正文宽 334 twips |
+| 任务中心能不能追踪 | **不能**。文档工具零运行记录；任务表与对话零接线（且 T99 尚未提交） |
+
+**需要总控裁决的三件事**（本卡不改产品代码）：
+
+1. `document_tool_describe` 对 `create` 路线应当返回什么？现在返回的是 apply 语法。
+   最小修法：`create` 分支改取 `guideOps(domain, "create_document")` 或直接把
+   `input.source` 的约束写进 `schemaText`。
+2. `documentToolCatalog.generated.ts` 的 160 字截断要不要放宽？
+   它把上游最关键的一句切掉了，而 `describe` 又没有补回来。
+3. 中文 `w:eastAsia` 与 US-Letter 表格宽度是**上游默认值**，要不要在 Mcode 侧覆盖？
+   如果要，属于「改上游行为」，得先确认不和原厂渲染器冲突。
