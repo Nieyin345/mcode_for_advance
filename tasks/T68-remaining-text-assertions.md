@@ -257,8 +257,15 @@ grep -rln "readFileSync" scripts/*/main.*    → 244 套读文件
 | 重复项 | 出现次数 | 形态 |
 |---|---|---|
 | `const src = (p) => readFileSync(resolve(...), "utf8")` | **20+** | 每套自己写一遍，参数顺序/基路径各不相同 |
-| `file.endsWith(".tsx") ? ScriptKind.TSX : ScriptKind.TS` | **5** | 语义完全相同，各写一遍 |
+| `file.endsWith(".tsx") ? ScriptKind.TSX : ScriptKind.TS` | ~~5~~ **2** | 语义完全相同，各写一遍 |
 | `parseFile` **同名同实现** | **2** | `mobile-api-surface-smoke` 与我的 `astAssertions.ts` **逐字同构** |
+
+> **⚠️ 2026-10-23 更正（F 在 T74 里复核自己的清单时发现）**：上表的 **5 是数错的**。
+> 严格匹配 `ScriptKind.*endsWith` 只有 **2 处**（`mobile-api-surface-smoke:97` 与
+> `astAssertions.ts:27`）—— 而这两处正是 T74 要统一的那两处。
+> 另外 3 处是**文件过滤**（`files.push` / `continue`），跟 `ScriptKind` 无关。
+>
+> **原值留着** —— 它记录了「扫目录时把文件名过滤也算进 ScriptKind 三元」这个错。
 
 **`parseFile` 那两处是真重复**：
 
