@@ -126,6 +126,7 @@
 | T111 | **任务详情视图**：把 `origin`/`artifacts`/`acceptance`/失败原因接上落点 | **P0 产品主线** | T102+T109 | ZZ | ⬜ 待开工（E） |
 | T112 | **`agent_read_url` 报 `fetch failed`**：一条无法用于判断的错误（也是全量偶发红之一） | **P1 产品缺陷** | 无 | ZZ | ⬜ 待开工 |
 | T113 | **`hook-runner-smoke` 一条时序假设**：「撤权一定发生在第 2 条 spawn 之前」（全量偶发红之二） | **P1 测试正确性** | 无 | ZZ | ⬜ 待开工 |
+| T114 | **`design-tokens-smoke` 那条判据只认一种写法**：`bg-accent/15 text-accent` 紧邻组合，其他四种写法全漏 | **P1 测试判别力** | T111 | ZZ | ⬜ 待开工 |
 
 ### T43 为什么是 P0（用户最高痛点）
 
