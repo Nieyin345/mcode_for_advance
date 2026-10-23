@@ -1,6 +1,6 @@
 # T8｜Node-RED 原生画布真实 Electron U1 验收
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 核查：四项验证全 PASS，真 Node-RED；提交 (见回写)）
 - Category: bug
 - Priority: P1
 - Depends on: T2, T3, T4 stable; must run serially and exclusively with T7

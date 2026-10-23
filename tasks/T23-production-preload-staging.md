@@ -1,6 +1,6 @@
 # T23｜生产构建与发行 staging 缺四个编辑器的 preload —— 安装包里四个编辑器是坏的
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 核查：三处缺口都有复现证据；提交 (见回写)）
 - Category: bug
 - Priority: **P0 发行阻断**
 - Depends on: none

@@ -1,6 +1,6 @@
 # T41｜`contributionsOf` 只有一层可选链，`modules` 缺失时设置页白屏
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：17/17，提交 db4415f7）
 - Category: **bug（P1 产品缺陷）**
 - Priority: P1
 - Depends on: T36（`09e343b5`，C 在修夹具时确认了这个风险）

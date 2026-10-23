@@ -1,6 +1,6 @@
 # T16｜真实 Electron U1 验收框架（可复用驱动骨架）
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 核查：electron-u1 骨架已交付，5 套在用；提交 6073fcbb）
 - Category: task
 - Priority: P0 infrastructure
 - Depends on: none

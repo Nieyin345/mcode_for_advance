@@ -1,6 +1,6 @@
 # T31｜三处既有失败挡住 `run-smokes --all`，全量基线跑不起来
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 核查：三处失败已修，变体验证；提交 (见回写)）
 - Category: **bug（测试基础设施）**
 - Priority: **P0 工具链**
 - Depends on: none
@@ -218,3 +218,82 @@ X [ERROR] Top-level return cannot be used inside an ECMAScript module
 2. 上述 B–L 各条（stub 漂移、原生模块 loader、fetch bad port、Electron 渲染端 contributions、2 条断言级、AOCI 索引、Codex tool call、capability 三处同源、markdown 路由未定义）。
 3. T27 未跟踪文件里的 `bootstrapDir` TS 错误（T27 会话自行收尾）。
 
+
+---
+
+## 结果回写（2026-10-23 17:56，C 会话：重跑全量确认真实基线）
+
+### 怎么跑的
+
+- 起点 HEAD **`60bafb4a`**（`docs(tasks): record T19 result writeback`），工作树带 9 项他人未提交修改（`.aoci/baseline.json`、`.gitignore`、`document-view-host-smoke/` 三项、`maint-m35-smoke/pickers-prelude.ts`、`orchestration-ipc-smoke/run.sh`、`release-readiness-smoke/check-reviewed.cjs`、`src/main/ipc/settingsTransfer.ts`）。未 reset / 未 stash / 未改任何文件。
+- 命令：`bash apps/desktop/scripts/run-all-smokes.sh`，耗时约 20 分钟，日志目录 `apps/desktop/.tmp/smoke-runs/1792747741905-27612-SS8FRw/`。
+- **跑的过程中 HEAD 前进了 3 个提交**（`961ccac4` 17:44、`0b5a4f57` 17:50、`dfbbf6e5` 17:50）。已核对日志时间戳：**12 条失败里 10 条在 17:44 之前就已跑完**，整轮 542 份日志中 364 份早于 17:44、178 份晚于它。晚于 17:44 的两条失败（`settings-panel-smoke` 17:46、`settings-panels-electron-smoke` 17:46）也逐个**用绝对路径单独复跑过，红稳定复现**，与那 3 个提交无关（两个 wip 提交只新增文件，`961ccac4` 只改任务卡）。
+
+### 真实基线
+
+```
+Running 542 suites (light ×2, browser ×1)
+Smoke summary: 530 pass, 12 fail (542 suites)
+```
+
+**542 套 / 530 通过 / 12 失败。**
+
+与 T31 原记录的「541 套 / 518 通过 / 23 失败」对照：套数 +1（T27 新增 `t27-load-entry-deadlock-smoke`，本次 PASS），失败从 23 降到 12，**净减 11 条正是 T32 修的 `genofficeNativeVendor` alias 那批**（`agent-guide`、`claude-ipc`、`custom-ui-refresh`、`extension-authoring`、`host-mcp-server`、`host-mcp-stdio`、`memory`、`panel-screenshot`、`scene-apply`、`scene-crash-resume`、`watch-templates-cas-electron` 全部转绿）。T31 本卡修的 3 套（`genoffice-file-routing`、`genoffice-source`、`release-readiness`）保持绿。
+
+### 12 条失败逐条原因
+
+#### A. esbuild 打包期失败 —— 3 套，同一类：老桩缺导出（产品接口变了，桩没跟）
+
+包根本没打成，**一条断言都没跑到**。
+
+| 套件 | 缺的导出 | 产品侧来源 |
+|---|---|---|
+| `mcode-admin-smoke` | `dataRoot.ts` 缺 `migrateLegacyIntoDataRoot`；`window.ts` 缺 `updateTitleBarOverlay`；`pluginManager.ts` 缺 `getEnabledPlugins` / `getPluginMcpServers` / `getEnabledPluginSkillRoots`；`libraryServer.ts` 缺 `buildLibraryMcpServer` | `store/db.ts:20`、`lib/theme.ts:21`、`providers/claude-sdk/ClaudeAgentSdkProvider.ts:52,89` |
+| `mcp-endpoint-smoke` | `No loader is configured for ".node" files: sherpa-onnx.node` | `sherpa-onnx-node/addon-static-import.js:12` 的静态 `require` |
+| `maint-m35-smoke` | `stubs/reactEffects/index.ts` 没有 `default` 导出，而 `zustand/esm/react.mjs:1` 要 `import React from 'react'` | zustand 5 的导入形态 |
+
+> `maint-m35-smoke` 有他人未提交修改（`pickers-prelude.ts`），但失败点在 `reactEffects/index.ts` 这个**没被改动**的桩上，与那份 dirty 无关。
+
+#### B. 断言级失败 —— 4 套（都**单独复跑稳定复现**，不是并发抖动）
+
+1. **`renderer-pure-smoke` 319/320 —— `★ MC-098: 选中时把行号范围与正文一起冻结(readMonacoSelection 返回 lines)`**
+   - 断言是**源码正则**：`/role:\s*"assistant"[\s\S]{0,200}lines:\s*\{/.test(FileEditor.tsx)`。
+   - 实际形态：`FileEditor.tsx:805` 的 `readMonacoSelection` 现在只剩一行委托 —— `captureMonacoCitationSelection(editorRef.current)`；`role: "assistant"` 和 `lines: {…}` 已经搬到 `ide/monacoCitationSelection.ts:84-88`。
+   - **结论：夹具过时**（`b41d41e4` T65 把捕获逻辑抽成独立模块，正则仍钉在 `FileEditor.tsx` 上）。产品行为没坏：同套另外两条 MC-098 断言仍绿，且真入口 E1 `ide-quote-snapshot-smoke` **本次 PASS**。
+
+2. **`settings-panel-smoke` 153/154 —— `★ 钩子开关 toggleEnabled 检查 {ok:false} 并走 toast 报错`**
+   - 断言正则：`/const res = await api\.hooks\.save\(\{ hook: next \}\);\s*if \(!res\.ok\)\s*\{\s*useToastStore\.getState\(\)\.push\(/`。
+   - 实际形态：`HooksPanel.tsx:318` 是 `api.hooks.save({ hook: HookSpecSchema.parse(next) })`，逻辑完全正确（失败走 toast），只是多了一层 schema 校验。
+   - **结论：夹具过时**（`1bfc4adc` 2026-10-21 加 scoped agent/workflow actions 时引入的包装）。同套另一条「用了 toast 通道」仍绿，可作佐证。
+
+3. **`capability-smoke` —— `★ MC-099 E1·变动:真实宿主目录 = 权威声明表 = fileCapabilities 三处同源`**
+   - 实测三方：`host=["core.file.info","core.file.inspect"]`、`declared=[+core.app.call]`、`file=[+core.app.call]`。
+   - 根因：`builtinCapabilityCatalogue.ts:52` 是 `{ id: "core.app.call", kind: "action" }`，`HOST_CAPABILITY_DECLARATIONS`（`capabilityResolver.ts:186`）把 `action` 映射成 `task`；但断言 `main.ts:906` 只筛 `kind === "task" || "query"` 的宿主注册，而 `ModuleHost` 把 `action` 注册成 `kind:"action"`，于是宿主侧只剩两条。
+   - **结论：产品侧三处同源确实破了**（`core.app.call` 在目录/声明表/fileCapabilities 里有，在宿主目录的 task/query 视图里没有）。这是 T49 引入 `core.app.call` 时的遗漏，不是夹具该放宽的东西 —— **需要另开卡决定**：要么断言把 `action` 纳入，要么 `ModuleHost.catalog()` 的 `action` 应在另一维度，需要设计裁决。
+
+4. **`settings-panels-electron-smoke` 31/32 —— `★ MC-045 前置:真 App 能挂起来`**
+   - 真 Electron 里渲染 `renderError: TypeError: Cannot read properties of undefined (reading 'flatMap') at contributionsOf`，随后 `reloadLspLanguages` 也报 `reading 'some'`。
+   - 根因：`contributionsOf`（`ModuleContributions.tsx:18`）读 `catalog.modules.flatMap`，而探针的 `api-stub.js:86-98` 的 `makeNamespace` 对未显式列出的命名空间一律返回 `Promise.resolve({})` —— `modules.catalog()` 回 `{}`，于是 `.modules` 是 `undefined`。
+   - **结论：夹具过时**（`7eb548c9` T50 把 `ModuleViewDock` 接进 `ThreePaneLayout`/`ClassicShell` 后，真 `App` 会渲染它，探针必须补 `modules.catalog` 桩）。
+   - ⚠️ 另有一条**产品健壮性**观察：`contributionsOf` 对 `catalog` 有 optional 保护（`catalog?.modules`），但对**已回包但缺 `modules` 字段**的响应没有保护。这属于「回包形状漂移就白屏」，可另开卡评估，但不构成本套红的主因。
+
+#### C. 索引/台账类 —— 1 套
+
+5. **`aoci-index-smoke`**：4 条违例 —— `WorkflowCanvas.tsx` 与 `docs/planning/Status-and-Plan.md` 两个孤儿条目 + 两条对应的悬空引用。是 AOCI 索引陈旧（文件已删/已归档），**非代码门禁**，补录走 `aoci_maintain`。
+
+#### D. 全量并发下的抖动 —— 1 套（**不是回归**）
+
+6. **`mobile-pairing-smoke` 285 条里 3 红**：`配对请求不校验发起方`（期望 200 实得 status 0）、`sentinel 回答 → 200`、`sentinel 回答这一轮跑在工作树里`。
+   - 服务端日志显示配对**实际成功**（`device paired`），`status: 0` 是 fetch 传输层失败（超时/连接重置），不是 401。
+   - **证据**：同一套件用绝对路径**单独复跑 = 285 条断言 0 红**；且上一次全量（`1792738913860`）和上上次全量（`1792737860760`）这套都是 0 红。`main/mobile/` 最后一次改动是 2026-10-19，期间无相关提交。
+   - **结论：并发/端口压力下的偶发，重跑即绿。** 但它暴露一个真实风险 —— 这套的 3 秒 `AbortSignal.timeout` 在 2 并发全量下偏紧，建议另开卡把它调宽或改成重试，而不是留成「每次全量都可能随机红一条」。
+
+### 与本卡（T31）的关系
+
+本卡三处验收点**全部保持通过**，本轮未回归：`genoffice-file-routing-smoke` PASS、`genoffice-source-smoke` PASS、`release-readiness-smoke` PASS。本卡无遗留动作。
+
+### 给总控的结论
+
+- **真实基线：542 套 / 530 通过 / 12 失败。**
+- 12 条里：**3 条 esbuild 桩漂移**、**3 条断言级夹具过时**（MC-098、toggleEnabled、contributionsOf 桩）、**1 条产品侧三处同源真的破了**（MC-099 `core.app.call`）、**1 条 AOCI 索引陈旧**、**1 条并发抖动**（重跑即绿）、**3 条打包期缺导出**（mcode-admin / mcp-endpoint / maint-m35）。
+- **本轮没动任何代码**，只写了本回写区。

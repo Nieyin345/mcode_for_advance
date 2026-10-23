@@ -1,6 +1,6 @@
 # T28｜经编辑器 Import 进画布的图丢失 `x-mcode` 身份，Mcode 节点包未声明 defaults
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：73/73，提交 7ba94777）
 - Category: **bug（P0 功能不可用）**
 - Priority: **P0**
 - Depends on: T8（`d58a0b1e`，发现这个缺陷）

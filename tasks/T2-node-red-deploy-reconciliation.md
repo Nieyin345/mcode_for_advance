@@ -1,6 +1,6 @@
 # T2｜Node-RED Deploy 与 Mcode Library 对账恢复
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 核查：回写含精确可写文件集与实现范围；提交 4fc72d22）
 - Category: bug
 - Priority: P0
 - Depends on: none; coordinate shared workflow files before starting T3/T4

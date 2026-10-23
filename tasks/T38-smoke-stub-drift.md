@@ -1,6 +1,6 @@
 # T38｜三套打包期失败：桩缺导出、`.node` loader、zustand 5 的 default 导入
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：已交付，提交 29e4b1c4）
 - Category: bug（测试基础设施）
 - Priority: P1
 - Depends on: none

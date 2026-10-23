@@ -1,6 +1,6 @@
 # T36｜三套 smoke 的夹具过时（T65/T50/正则漏算 schema 包装）
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：已交付，提交 09e343b5）
 - Category: **bug（测试夹具）**
 - Priority: P1
 - Depends on: none

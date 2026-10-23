@@ -1,6 +1,6 @@
 # T37｜`mobile-pairing-smoke` 的 3 秒超时太紧，全量并发下随机红
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：285/285，提交 64e741d8）
 - Category: bug（测试稳定性）
 - Priority: P2
 - Depends on: none

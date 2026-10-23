@@ -1,6 +1,6 @@
 # T44｜genoffice 三套并发安全 —— **防回退回归**（T31 已修复）
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：15/15，提交 d1a5a0f7）
 - Category: test（回归网）
 - Priority: **P2**
 - Depends on: **T31（`a10c705c`，已完成修复）**

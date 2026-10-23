@@ -1,6 +1,6 @@
 # T0｜GenOffice 原生工具同轮往返接线
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 核查：回写含可写文件集与实现记录；提交 6bd8289e）
 - Category: bug
 - Priority: P0
 - Depends on: none (T83/T86/T98 protocol prerequisites are historical; revalidate current HEAD)

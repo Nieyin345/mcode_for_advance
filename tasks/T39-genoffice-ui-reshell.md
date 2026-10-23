@@ -1,6 +1,6 @@
 # T39｜GenOffice UI 换壳：保留编辑内核，替换 ribbon / 菜单 / AI 面板
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：17/17，提交 613402eb）
 - Category: feature（UI 重构）
 - Priority: **P0 产品要求**
 - Depends on: T7（已完成，六编辑器 U1 全 PASS）、T24（已完成，工具面重做）

@@ -1,6 +1,6 @@
 # T40｜`withRendererToolRegistry` 零调用点 —— `document.tool_call` 的渲染端路线在生产里永远走不到
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：13/13，提交 9487eaa4）
 - Category: **bug（P0 功能不可用）**
 - Priority: **P0**
 - Depends on: T24（`ce2913f8`，交付了工具面）、T0（`6bd8289e`，同轮往返）

@@ -1,6 +1,6 @@
 # T7｜GenOffice 六类原生编辑器真实 Electron U1 验收
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 核查：六编辑器全 PASS，真 OS 重开；提交 77fdd012）
 - Category: bug
 - Priority: P1
 - Depends on: T0 stable; must run serially and exclusively with T8 because both need Electron UI

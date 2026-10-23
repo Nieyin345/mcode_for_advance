@@ -1,6 +1,6 @@
 # T29｜`documentView:close` 对四个编辑器永远拒绝 —— 用户关不掉标签
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：真 Electron U1 PASS，提交 d46a152a）
 - Category: **bug（P1，产品缺陷）**
 - Priority: P1
 - Depends on: T7（`77fdd012`，发现）、T23（`239eb863`，preload 构建）

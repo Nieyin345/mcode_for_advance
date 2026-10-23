@@ -1,6 +1,6 @@
 # T35｜`core.app.call` 的能力类型是 action，但宿主声明表按 task 登记
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：已交付，提交 2f899eee）
 - Category: **bug（产品缺陷，非夹具）**
 - Priority: P1
 - Depends on: none

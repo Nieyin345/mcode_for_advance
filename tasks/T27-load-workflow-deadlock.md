@@ -1,6 +1,6 @@
 # T27｜`loadWorkflowIntoNative` 拒绝一切可保存的 Node-RED 图 —— 装载入口是死路
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 核查：矛盾表实测完成；提交 (见回写)）
 - Category: **bug（P0 功能不可用）**
 - Priority: **P0**
 - Depends on: T21（已交付 `6e690e48`，接线上这个入口）、T8（`d58a0b1e`，发现这个缺陷）

@@ -1,6 +1,6 @@
 # T15｜通用 Agent、Provider 与 Host 能力基线矩阵
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 核查：报告已交付，E1 复跑 27 套；提交 (见回写)）
 - Category: task
 - Priority: P1 strategic baseline
 - Depends on: none
