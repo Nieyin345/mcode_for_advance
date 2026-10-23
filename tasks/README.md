@@ -50,6 +50,7 @@
 | T29 | `documentView:close` 对四个编辑器永远拒绝 | P1 | T7 | P |
 | T30 | 文档工具面缺真实 Electron U1 | P1 | T24+T7 | Q |
 | T31 | **三处既有失败挡住 `run-smokes --all`** | **P0 工具链** | 无 | R |
+| T32 | **`genofficeNativeVendor.ts` 的 alias 虚拟模块破坏 15 套 smoke** | **P0 工具链** | 无 | S |
 
 ### 推荐第一波
 
