@@ -155,13 +155,18 @@ function moveIfNeeded(from: string, to: string, label: string): void {
       // 长度无关：132 字符的纯英文路径正常，48 字符的中文路径崩。
       // 已在 v22.14.0 / v20.18.0 上验证正常 → 是 22.21.1 的回归。
       //
-      // 修法见 `tasks/T90`：**任何 `filter` 都能强制走 JS 实现**（nodejs/node#63970），
-      // 即 `cpSync(from, to, { recursive: true, filter: () => true })`。
-      // 上游 issue 见 nodejs/node#54476、#59636。
-      // 这里只描述条件与出处，**不写死选哪个方案** —— 方案会变，注释不该跟着过时。
+      // **`filter` 只在两种情形下有效**（nodejs/node#54476、#63970）：
+      //   1. 非 ASCII 源 + 目标**全新** → 不加 filter 进程崩，加了正常；
+      //   2. 非 ASCII 目标 → 不加 filter 静默不复制，加了正常。
+      // **第三种救不了**：非 ASCII 源 + 目标里**已有同名文件** → 加了 filter 仍然抛错
+      // （`errno=0`，信息甚至是 "The operation completed successfully"），且**实际没复制**。
+      // 详见 tasks/T107 与 `t107-cpsync-preexisting-smoke`。
+      //
+      // **本函数不受第三种影响**：上面 `if (!existsSync(from) || existsSync(to)) return;`
+      // 已经保证目标不存在，所以下面的 `cpSync` 永远打不到「目标已有同名文件」那一格。
+      // **动这个守卫之前先读 tasks/T107** —— 去掉它就会踩进第三格。
       log.warn(`dataRoot: rename ${label} failed (${(err as Error).message}); copying instead`);
-      // 任何 `filter` 都会让 cpSync 走 JS 实现，绕开 native fast path ——
-      // 见文件头注释与 tasks/T90（nodejs/node#54476、#63970）。
+      // `filter` 在这里的作用：选 JS 实现，绕开 native fast path（见上方完整说明）。
       cpSync(from, to, { recursive: true, filter: () => true });
       try {
         rmSync(from, { recursive: true, force: true });

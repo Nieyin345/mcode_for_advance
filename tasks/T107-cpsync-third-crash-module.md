@@ -1,6 +1,6 @@
 # T107｜🔴 `filter: () => true` 不是万能的：cpSync 的第三种崩溃形态
 
-- Status: ready-for-agent
+- Status: delivered（2026-10-24；t10/t88 已修；#7/#14 待验证，见回写第五节）
 - Category: **P0 基础设施（既有修复不完整，且注释把结论说过头了）**
 - Priority: **P0 —— 仓库里 15 处 `filter: () => true` 都以为「加了就安全」，其中至少两处在目标可能已存在时仍然崩**
 - Depends on: T90（`filter` 修法）、T92（B 修 src 侧崩溃）
@@ -183,3 +183,160 @@ grep -n "cpSync" apps/desktop/src/main/lib/dataRoot.ts
 
 `tasks/T107-cpsync-third-crash-module.md` 末尾追加 `## 结果回写（2026-10-24）`：
 2×2 实测、15 处清点表、修法论证、t88 正负控与对照、两次变异、`CLAUDE.md` 的建议改法、提交 SHA。
+
+## 结果回写（2026-10-24）
+
+### 一、第 3 种形态确认，但边界比卡上更精确
+
+**卡上写触发条件是「非 ASCII 源 + 目标已有同名文件」。实测下来要再拆一层。**
+
+`.tmp/t107-m2.mjs` / `t107-m3.mjs`，六格 × 两源类型，**全部带 `filter: () => true`**：
+
+| 场景 | ASCII 源 | **非 ASCII 源** |
+|---|---|---|
+| 目标不存在 | ✅ | ✅ |
+| 目标目录存在、**为空** | ✅ | ✅ |
+| 目标目录存在、**内部无同名文件** | ✅ | ✅ |
+| **目标里有同名文件（单文件覆盖）** | ✅ | ❌ **`THREW errno=0`** |
+| **目标目录已完整存在（拷第二遍）** | ✅ | ❌ **`THREW errno=0`** |
+| 源 = 目标（自拷贝） | ❌ `ERR_FS_CP_EINVAL` | ❌ `ERR_FS_CP_EINVAL` |
+
+**精确条件：非 ASCII 源 + 目标里已有同名文件。** 「目标目录存在」本身不触发（空的、或内部无冲突都正常）。
+
+> ⚠️ **自拷贝那格两边都错**，但那是 `ERR_FS_CP_EINVAL`（合理的拒绝），不是本卡的 bug。
+
+### 二、最坏的形态：**抛错 + 没做 + 错误信息说成功**
+
+修前实测：
+
+```
+THREW errno=0 msg=, The operation completed successfully. '\?\D:\副桌面\文件夹\work
+| top=OLD-TOP inner=OLD-INNER
+```
+
+**两个坏条件同时成立**：
+
+1. **抛了错** —— 调用方用 `try/catch` 当成可忽略，就以为拷过了；
+2. **一个字节都没拷** —— 目标保持旧内容。
+
+**而错误信息是「The operation completed successfully」** —— 这句话会让人以为它其实做了。
+
+### 三、修法：三种都可行，**我选了「先删后拷」**
+
+`.tmp/t107-fixes.mjs` 在同一触发条件下测三种：
+
+| 修法 | 结果 | 遗留 |
+|---|---|---|
+| **A. 先删后拷**（`rmSync` + `cpSync`） | ✅ top=NEW inner=NEW srcIntact=true | 无 |
+| B. 拷到临时名再 rename | ✅ 同上 | 无 |
+| C. 手写递归 `copyFileSync` | ✅ 同上 | 无 |
+
+**选 A 的理由**：
+
+- **B 在 Windows 上要额外处理「rename 目标已存在 → EPERM」**，多一层失败面；
+- **C 要自己实现递归**，多一份可能出错的代码（硬规矩 2：共享实现只有一份）；
+- **A 的语义最直接**：这几个调用点的目标内容**本来就该被完全替换**，删掉旧的没有任何信息损失。
+
+**A 的风险**：删了之后如果 `cpSync` 失败，目标就没了。**但两个调用点（t10/t88 的 `copyLicenseTree`）都在测试夹具里，目标是从源重新生成的，不是用户数据**——所以可以接受。
+
+**如果将来在用户数据上用，应该选 B**（B 在失败时旧内容还在）。
+
+### 四、`t88` 修好，`t10` 同形一并修
+
+| 套件 | 修前 | 修后 |
+|---|---|---|
+| `t10-node-red-pause-license-smoke` | status=0 / 15 ok（**看起来正常，实际是有产物时才会踩**） | status=0 / 15 ok |
+| `t88-node-red-license-closure-smoke` | **status=1 / 11 ok，`ESRCH`** | **status=0 / 13 ok** |
+
+**变异**：撤掉 `rmSync` → t88 回到 **status=1 / 11 ok + ESRCH**，`cmp` 逐字节还原。
+
+### 五、清点全部 `filter: () => true`（15 处 → 判定）
+
+| # | 位置 | 源可能非 ASCII？ | 目标可能已有同名文件？ | 判定 |
+|---|---|---|---|---|
+| 1 | `build/dereference-workspace-symlinks.cjs:75` | 是（仓库路径） | **否** —— `staging` 是 `${full}.deref-tmp-${randomUUID()}`，每次唯一 | ✅ 安全 |
+| 2 | `build/stage-genoffice-resources.cjs:684` | 是 | **否** —— `temp` 是 `mkdtempSync` | ✅ 安全 |
+| 3 | `build/stage-genoffice-resources.cjs:696` | 是 | **否** —— 同上 | ✅ 安全 |
+| 4 | `build/stage-genoffice-resources.cjs:700` | 是 | **否** —— 同上 | ✅ 安全 |
+| 5 | `build/stage-node-red-resources.cjs:697` | 是 | **否** —— `tmp` 是 `mkdtempSync` | ✅ 安全 |
+| 6 | `build/stage-node-red-resources.cjs:710` | 是 | **否** —— 同上 | ✅ 安全 |
+| 7 | `electron.vite.config.ts:191` | 是 | **可能** —— `publicDir` 是 `src/renderer/public/pdfjs`，**重复 build 时会已存在** | ⚠️ **需验证** |
+| 8 | `t10-.../main.cjs:52`（`copyLicenseTree`） | 是 | **是** —— 同一次运行里 `copyLicenseTree` 可能被调多次 | **已修（先删后拷）** |
+| 9 | `t10-.../main.cjs:358` | 是 | 否 —— `root` 是 `mkdtemp` 下新建 | ✅ 安全 |
+| 10 | `t88-.../main.cjs:42`（`copyLicenseTree`） | 是 | **是** —— `current-stage-copy` 已被前一步整树拷贝建好 | **已修（先删后拷）** |
+| 11 | `t88-.../main.cjs:349` | 是 | **是** —— 同上 | **已修（先删后拷）** |
+| 12 | `dataRoot.ts:165`（`moveIfNeeded`） | 是 | **否** —— `if (existsSync(to)) return;` 守卫 | ✅ 安全 |
+| 13 | `dataRoot.ts:215`（`copyDataRootTo`） | 是 | **否** —— 上面有「目标目录非空则拒绝」 | ✅ 安全 |
+| 14 | `adoptMarkdown.ts:249` | 是（用户配图路径） | **可能** —— 同一份 md 里两处引用同一目录时，第二次目标已存在 | ⚠️ **需验证** |
+
+> 注：行号以本卡回写时为准；`filter` 出现的位置还有几处是注释，不重复计。
+
+**结论**：14 处里 **2 处已修**、**2 处待验证（#7 / #14）**、**10 处安全**（目标恒为新建）。
+
+**#7 `electron.vite.config.ts:191` 的验证方法**：连续 build 两次，第二次 `src/renderer/public/pdfjs/cmaps` 已存在。**但那两处是 `buildStart` 钩子，且前面有 `assetTreeComplete` 的版本比较会提前 return** —— 所以实际只在**版本变化时**才复制，那时目标已存在。**这是真实的第 3 格。**
+
+**#14 `adoptMarkdown.ts:249`**：同一份 Markdown 里 `![a](图表/)` 和 `![b](图表/x.png)` 会让 `copyReferencedAssets` 对 `图表/` 复制两次。**第二次目标已存在 → 踩第 3 格。** 我已用 `.tmp/t107-adopt-dup.mjs` 复现（非 ASCII 源）。
+
+**这两处我按卡上的边界没有动**（#7 是 `electron.vite.config.ts`，卡上写「可以只出判定不动手」；#14 是 `adoptMarkdown.ts`，T91 刚改过）。
+
+### 六、`dataRoot.ts` 的注释（卡上第 4 条）
+
+改了，但**不是「filter 有局限」这种含糊话**，而是列出三种情形各自的成立条件：
+
+```ts
+// **`filter` 只在两种情形下有效**（nodejs/node#54476、#63970）：
+//   1. 非 ASCII 源 + 目标**全新** → 不加 filter 进程崩，加了正常；
+//   2. 非 ASCII 目标 → 不加 filter 静默不复制，加了正常。
+// **第三种救不了**：非 ASCII 源 + 目标里**已有同名文件** → 加了 filter 仍然抛错
+// （`errno=0`，信息甚至是 "The operation completed successfully"），且**实际没复制**。
+//
+// **本函数不受第三种影响**：上面 `if (!existsSync(from) || existsSync(to)) return;`
+// 已经保证目标不存在 …… **动这个守卫之前先读 tasks/T107**。
+```
+
+**最后那句是关键**：它把「守卫」和「为什么不能删」绑在一起。**没有它，未来的人看到 `existsSync(to)` 会以为是多余的防御而删掉。**
+
+### 七、新套件 `t107-cpsync-preexisting-smoke`（20/20）
+
+四个区块：
+
+1. **正控**：ASCII 源 + 目标已存在 → 覆盖成功（证明问题只在非 ASCII）；
+2. **对照**：非 ASCII 源 + 目标已存在 + 不加修法 → **必须失败**，且必须是「抛错 + 目标仍旧内容」；
+3. **三种修法**各自通过（证明它们等价）；
+4. **修法不留残渣**。
+
+**第 2 节是靶子**：如果它绿了，说明套件根本没复现那个 bug。
+
+**变异**：撤掉 `delete-first` 的 `rmSync` → **18/20**，红的是「目标真的被覆盖」两条，输出正是 `THREW code= errno=0 | top=OLD`。`cmp` 还原。
+
+### 八、`CLAUDE.md` 建议（卡上说不要碰，写在这里）
+
+**原文**（第二十一条附近，T90 之后加的）：
+
+> `filter: () => true` 能强制走 JS 实现，**修复** `cpSync` 在非 ASCII 路径上的崩溃。
+
+**建议改成**：
+
+> `filter: () => true` 能强制走 JS 实现，但**只在两种情形下有效**：
+> ① 非 ASCII 源 + 目标全新（否则进程崩）；② 非 ASCII 目标（否则静默不复制）。
+> **第三种救不了**：非 ASCII 源 + 目标已有同名文件 —— 加了 filter 仍抛错且**实际没复制**，
+> 错误信息还写着 "The operation completed successfully"。
+> 需要**先删后拷**（或拷到临时名再 rename）。见 `tasks/T107`。
+
+**为什么必须改**：原句是一个**绝对陈述**（「修复」），而它在第 3 格不成立。**下一个人会照着它以为 `filter` 万能。**
+
+### 九、回归
+
+| 套件 | 结果 |
+|---|---|
+| `t107-cpsync-preexisting-smoke` | **20/20** |
+| `t10-node-red-pause-license-smoke` | status=0，15 ok |
+| `t88-node-red-license-closure-smoke` | status=0，13 ok |
+| `t90-dataroot-cpsync-smoke` | 10/10 |
+| `t91-adopt-markdown-cp-smoke` | 19/19 |
+
+未跑全量、未起 Electron。
+
+### 十、提交
+
+`<见提交>`。

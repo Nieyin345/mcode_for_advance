@@ -48,7 +48,15 @@ function copyLicenseTree(root, manifest) {
   // non-ASCII characters (nodejs/node#54476, #63970). Passing any filter forces
   // the JS implementation, which is unaffected. Keep filter even though it
   // accepts everything: it is what selects the JS path.
-  fs.cpSync(path.join(SOURCE_ROOT, "materials"), path.join(target, "materials"), {
+  const materialsTarget = path.join(target, "materials");
+  // ⚠️ **先删后拷，不是多余的保险。**
+  // Node 22 + Windows 下，`cpSync` 在「非 ASCII 源 + 目标已有同名文件」时会抛错
+  // （errno=0，信息还骗人：「The operation completed successfully」），而 `filter`
+  // **救不了这一格** —— 它只在目标全新建时有效。实测矩阵见 tasks/T107。
+  // 这个函数的调用点里，目标可能已被上一步的整树拷贝建好（t88 的
+  // current-stage-copy 就是），所以必须先清掉目标再拷。
+  fs.rmSync(materialsTarget, { recursive: true, force: true });
+  fs.cpSync(path.join(SOURCE_ROOT, "materials"), materialsTarget, {
     recursive: true, dereference: false, filter: () => true,
   });
   put(path.join(target, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
