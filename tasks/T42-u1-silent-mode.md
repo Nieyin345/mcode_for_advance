@@ -262,7 +262,8 @@ npx tsc --noEmit -p apps/desktop/tsconfig.json      # exit=0 才继续
 
 > 来源：T46 的真 Electron 套件暴露出「`wc.focus()` 够不够」这个问题在**多窗口**下
 > 有不同答案。为了不把未经隔离验证的结论传下去，这里用一个**判别性探针**直接测，
-> 而不是推理。探针：`.tmp/t42-focus-probe2.cjs` / `t42-focus-probe3.cjs`
+> 而不是推理。探针已随 T46 套件入库，
+> 跑法见 `apps/desktop/scripts/t46-approval-card-u1/focus-boundary-probe.cjs` 文件头
 > （屏幕外 + 全透明，硬超时自杀；每次结论跑两次确认可复现）。
 
 ### 实测矩阵
