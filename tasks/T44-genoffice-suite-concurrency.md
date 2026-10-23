@@ -1,127 +1,122 @@
-# T44｜genoffice 套件在并发下互相踩：没有工作树锁
+# T44｜genoffice 三套并发安全 —— **防回退回归**（T31 已修复）
 
 - Status: ready-for-agent
-- Category: bug（测试基础设施）
-- Priority: P1
-- Depends on: none
-- Exclusive writable files: `apps/desktop/scripts/genoffice-source-smoke/`、`genoffice-vendor-freshness-smoke/`、`t87-genoffice-provenance-license-smoke/`、`apps/desktop/build/verify-genoffice-upstream.cjs`（若需）、新建共享锁模块。
+- Category: test（回归网）
+- Priority: **P2**
+- Depends on: **T31（`a10c705c`，已完成修复）**
+- Exclusive writable files: 新建 `apps/desktop/scripts/genoffice-suite-isolation-smoke/`（或类似名），必要时 `apps/desktop/scripts/genoffice-source-smoke/main.cjs`（仅加断言，不改行为）。
 
 ## Required Skills
-- `mcode-smoke`: 理解这个仓库的无头套件布局与 `run.sh` 形态。
-- `codebase-design`: 共享状态的锁该放在哪一层。
+- `mcode-smoke`: 理解这个仓库的无头套件布局、`run.sh` 的 cwd 约束、变异验证。
+- `codebase-design`: 判断静态守卫该盯哪个符号。
 
-Read before work: `CLAUDE.md`（尤其「多会话并行时的两条硬约束」）、`apps/desktop/scripts/genoffice-source-smoke/run.sh`、`genoffice-vendor-freshness-smoke/run.sh`、`t87-genoffice-provenance-license-smoke/run.sh`、`apps/desktop/build/verify-genoffice-upstream.cjs`。
+Read before work: `CLAUDE.md`、`apps/desktop/scripts/genoffice-source-smoke/main.cjs`（**重点看 L28、L124-141、L244-247**）、`apps/desktop/scripts/genoffice-vendor-freshness-smoke/`、`apps/desktop/scripts/t87-genoffice-provenance-license-smoke/`、`git show a10c705c`。
 
-## 现象（A 的 T29 全量报告，我独立复核）
+## ⚠️ 这张卡的第一版写错了（总控失误，已更正）
 
-A 跑全量 smoke 得到 **536 通过 / 7 失败**，其中两条是 genoffice 的：
+**原卡说「`genoffice-source-smoke/main.cjs` 原地篡改真实 vendor 工作树」——那是 T31 修复前的代码。**
 
-- `genoffice-source-smoke`
-- `genoffice-vendor-freshness-smoke`
-
-**但这两条单跑全绿**：
-
-```bash
-bash apps/desktop/scripts/genoffice-source-smoke/run.sh          # → 26/26 PASS
-bash apps/desktop/scripts/genoffice-vendor-freshness-smoke/run.sh # → 29/29 通过
+```
+a10c705c  2026-10-23 15:03  fix(T31): unblock run-smokes --all and repair two stale GenOffice fixtures
+466a4dae  2026-10-23 19:04  docs(tasks): open T44 - genoffice suites trample the real vendor tree
 ```
 
-**「单跑绿、并发红」= 共享状态竞争。** 不是断言错，不是产品坏。
+**T44 在修复之后 4 小时写的，描述的是修复前的状态。** 写卡时没核这条线，是总控的失误。
 
-## 根因（**我已经找到，总控实测**）
+## 现状（C 会话实测，总控核实）
 
-**不是「读取撞车」，是「一边读一边有人原地篡改真实 vendor 工作树」。**
-
-`genoffice-source-smoke/main.cjs` 的每一条断言都是**先改真文件、跑断言、再还原**：
+**T31 的修法已经是对的**：
 
 ```js
-// L158-160  篡改补丁字节
-fs.writeFileSync(patch, tampered);
-finally { fs.writeFileSync(patch, saved); }
-
-// L165-167  往 vendor 文件里注入 "// T31 fixture mutation"
-fs.writeFileSync(file, saved.toString("utf8") + "\n// T31 fixture mutation\n");
-finally { fs.writeFileSync(file, saved); }
-
-// L172-176  篡改 vendor package.json 的 name
-// L209-222  往 .git/info/exclude 里注入，然后还原
+// main.cjs:128-132 —— 克隆到 OS 临时目录，只改副本
+const fixtureRoot = path.join(base, "lineage-fixture");
+const clone = path.join(fixtureRoot, "genoffice");
+execFileSync("git", ["clone", "--local", "--no-hardlinks", vendorReal, clone], { ... });
 ```
 
-**这些全部作用在真实的 `genoffice/` 工作树上，不是副本。** 它的 `mktemp`（L30 `mcode-go-upstream-`）只用于**夹具克隆**，真工作树的篡改是原地做的。
+```js
+// main.cjs:244-247 —— **卡上完全没提到的**断言
+check("real GenOffice vendor checkout was not modified", () => {
+  assert.equal(git(vendorReal, "rev-parse", "HEAD"), realHead);
+  assert.equal(git(vendorReal, "status", "--porcelain", "--untracked-files=all"), realHeadStatus);
+});
+```
 
-### 所以并发时会发生什么
+`t87` 也用副本（`createVerifyRoot` → `os.tmpdir()`）；`genoffice-vendor-freshness-smoke` 纯读。
 
-| 套件 | 做什么 | 被谁破坏 |
-|---|---|---|
-| `genoffice-source-smoke` | **原地篡改** vendor 文件 → 断言 → 还原 | — |
-| `genoffice-vendor-freshness-smoke` | 读 `out/` 产物时间戳 + 读 renderer 里 `aiToolResult` 标记 | 读到被注入 `// T31 fixture mutation` 的中间态 |
-| `t87-genoffice-provenance-license-smoke` | `git stash`-free 的 patch replay，比对 tree hash | 读到被篡改的补丁字节 |
+**实测三件事（C 会话）**：
 
-**这就是「单跑绿、并发红」的确切机制。**
+| 实验 | 结果 |
+|---|---|
+| 并发 3 轮 × 3 套同时跑 | **9/9 全绿** |
+| Ctrl-C 中断 `genoffice-source-smoke` | 真实 vendor `git status` **干净** |
+| 克隆耗时（4764 文件） | **5.6 秒**（若真要改 (A)，成本可接受——但不需要改） |
 
-⚠️ **而且这有个更严重的后果**：`genoffice-source-smoke` 如果**在还原前被中断**（Ctrl-C、超时被杀、机器卡顿），**真实 vendor 工作树会留在一个被篡改的状态**。这时 `verify-genoffice-upstream.cjs` 会失败，而人会以为是「补丁链坏了」。
+## 那这张卡做什么
 
-## 修法方向（推荐，但要论证）
+**不做「修并发」——没有可修的缺陷。做「防止回退」。**
 
-**核心原则：套件不许碰真实工作树。**
+T31 之所以要修，恰恰因为**曾经有人写成了原地篡改**。那次是怎么发生的，下一次还会怎么发生。现在**没有任何东西保证它将来仍然对**。
 
-- **(A) 副本上篡改**：`genoffice-source-smoke` 先把 vendor 工作树克隆/复制到 `mktemp` 目录（它已经有 `mkdtempSync` 的基础设施），**所有篡改都在副本上做**。
-  - 优点：从根上消除竞争，不需要锁；顺带解决「中断留脏状态」；
-  - 缺点：克隆一个大树的成本。**先测一下实际耗时**，如果 > 30s 就要考虑 (B)。
-- **(B) 加锁**：用 `withOsFileLease`（`apps/desktop/src/main/lib/osFileLease.ts:133`）包住整个「篡改→断言→还原」窗口。
-  - 优点：成本低；
-  - 缺点：**只防并发，不防中断**——被杀时照样留脏状态。而且三套都要参与加锁才有效。
+### 三条断言
 
-**我倾向 (A)，因为它同时解决两个问题。** 但如果克隆成本太高，(A)+(B) 也可以：副本 + 副本内的锁。
+#### ① 静态守卫（**主力，毫秒级，最便宜**）
 
-**把实测的克隆耗时写进回写区，作为选 A 还是 B 的依据。**
+断言 `genoffice-source-smoke/main.cjs`（以及其余 genoffice 套件）**不存在对真实 vendor 的写操作**：
 
-## 目标
+- 任何 `writeFileSync` / `rmSync` / `appendFileSync` / `unlinkSync` 的参数里出现 `vendorReal` / `repoRootReal + "genoffice"` → 违规；
+- 任何 `execFileSync("git", [...])` 的**非只读子命令**（`checkout` / `reset` / `stash` / `apply` / `commit` / `clean`）作用在真实 vendor 上 → 违规；
+- 断言 `main.cjs` 里存在 `git clone` 到临时目录（正向证明而非只查反向）。
 
-### 必须做到
+**这条最关键**：它不跑测试就能抓到「有人改回原地写」。
 
-1. **先确认我的根因判断。** 我读的是 `main.cjs` 的 L158-238，你要用实测确认：并发跑时到底哪套先红、错误信息是什么、是不是读到了 `// T31 fixture mutation` 或被篡改的补丁字节。
+#### ② 中断后干净
 
-2. **修掉「原地篡改真实工作树」这件事本身。** 这是根因，锁只是缓解。
+启动 `genoffice-source-smoke`，跑到一半 `SIGINT`，然后断言：
 
-3. **顺带解决「中断留脏状态」**：现在如果 `genoffice-source-smoke` 在还原前被杀，真实 vendor 工作树会留着篡改痕迹，让人误以为补丁链坏了。修完之后**故意 Ctrl-C 一次**，确认工作树干净（`git status` 在 `genoffice/` 里无改动）。
+```bash
+git -C genoffice status --porcelain --untracked-files=all   # 必须为空
+```
 
-4. **验证**：并发跑 N 次（建议 5 次）全绿，且**证明修法真的起作用**（撤掉修法 → 并发必红）。
+**T31 的 clone 方案保证了它，但没人验过。**
 
-### 明确不做
+#### ③ 并发全绿
 
-- **不把断言改弱**。如果说「全量时跳过这三套」，那是掩盖问题。
-- **不改 `genoffice/` 上游源码**。
-- **不改 `run-all-smokes.sh` 的并发策略**（除非有证据表明它本身是根因）。
+三套同时跑，全部 exit 0。已实测 9/9，固化成常驻回归。
 
 ## 验收判据
 
-1. 回写区给出**复现的确切错误信息**与共享状态的证据。
-2. 修法（加锁 / 分目录 / 其他），附论证为什么这样不会把失败藏起来。
-3. **并发 5 次全绿**；**撤掉锁 → 并发必红**（变异验证）。
-4. 三套单跑仍然全绿。
-5. 双包 typecheck 通过。
+1. 新套件跑通，三条断言都真跑。
+2. **变异验证**：
+   - 把 `main.cjs` 的 `clone` 改成直接操作 `vendorReal` → **静态守卫必须红**；
+   - 中断测试：人为在中断后留一个脏文件 → **断言必须红**。
+3. 中断测试要有超时保护（不能挂）。
+4. 双包 typecheck 通过。
 
 ## 边界
 
-- 只改 `apps/desktop/scripts/genoffice-*-smoke/`、`t87-genoffice-provenance-license-smoke/`、`apps/desktop/build/verify-genoffice-upstream.cjs`（若需）+ 新建共享模块。
+- **不改** `genoffice-source-smoke` 的**行为**（T31 的修法是对的），只允许加断言。
 - **不碰** `genoffice/` 上游源码。
-- **不碰** `ipc/index.ts`（A 的 T40）、`documentToolSurface.ts` / `genofficeCli.ts`（B 的 T43）、`renderer/`（C 的 T41）、`electron-u1/`（E 的 T42）。
+- **不碰** `ipc/index.ts`（E 的 T40）、`documentToolSurface.ts` / `genofficeCli.ts`（B 的 T43）、`renderer/`。
+- **不批量改** 那 261 个 `$0` 脆弱的 `run.sh`（那是另一个决定，见下）。
 
-## 为什么这是 P1 不是 P2
+## 关于 261 个 `$0` 脆弱套件（与本卡无关，记录一个决定）
 
-**它会伪装成「产品坏了」。** A 在 T29 的报告里必须逐个核实才能确认「这 7 条与我无关」，而这一步是靠自己逐个单跑来做的——**下一个做同样判断的人未必有这份耐心**。测试基础设施的假红会让人怀疑真实的产品缺陷。
+442 个用 `esbuild-path.sh` 的套件里，261 个有同样的 `$0` 相对路径脆弱点：`cd "$(dirname "$0")/../.."` 之后再用 `$(dirname "$0")`。
 
-而且 C 的 T39 刚加了第 14 个补丁，`genoffice` 那条链现在更复杂了，并发竞争只会更多。
+**它们不是缺陷**（`run-all-smokes.sh` 会先 cd 到 `apps/desktop`），但**从仓库根手跑会失败，且错误信息看起来像套件坏了**。
+
+**总控决定：不改那 261 个文件**（收益是省一次困惑，成本是 261 文件的 diff，在当前多会话并行下会让所有人分不清谁改了什么）。
+
+**更有效的替代**：让 `esbuild-path.sh` 找不到时打印「请从 apps/desktop 运行」——一句话覆盖 261 个套件。**但这在 `scripts/lib/` 下，等本轮收口再处理，不在本卡范围内。**
 
 ## 遇到问题先检索
 
 **报错、API 用法、依赖问题先上网查，不要凭记忆猜。**
-`withOsFileLease` 的用法先读 `apps/desktop/src/main/workflowEngines/` 里的现有实现，不要自己发明锁协议。
 
 ## 提交
 
-`git add <明确路径>` 后**立刻** `git commit -- <明确路径>`。**绝不读 `.tmp/` 下的文件当提交信息。**
+`git add <明确路径>` 后**立刻** `git commit -m "<信息>" -- <明确路径>`。**`-m` 必须在 `--` 前面。**
 
 提交信息末尾加：
 ```
@@ -131,4 +126,4 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 
 ## 回写
 
-在 `tasks/T44-genoffice-suite-concurrency.md` 末尾追加 `## 结果回写（2026-10-23）`：复现证据、共享状态根因、修法论证、并发 5 次结果、变异证据、提交 SHA。
+在 `tasks/T44-genoffice-suite-concurrency.md` 末尾追加 `## 结果回写（2026-10-23）`：三条断言的实现、变异证据、中断测试的做法与超时保护、提交 SHA。
