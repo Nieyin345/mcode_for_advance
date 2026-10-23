@@ -34,5 +34,9 @@ export type {
   U1Journey,
   U1JourneyResult,
   U1LaunchOptions,
+  U1RunAssertion,
+  U1SetupContext,
+  U1SetupResult,
   U1Step,
+  U1StepRuntime,
 } from "./types.js";

@@ -31,6 +31,23 @@ for (const name of ["userData", "sessionData", "logs", "crashDumps", "home"]) {
 mkdirSync(dataDir, { recursive: true });
 writeFileSync(join(runDir, "userData/data-root.json"), JSON.stringify({ root: dataDir }));
 
+// T7：旅程注册表可在 `app.whenReady()` **之前**导出一个 `beforeReady()` ——
+// privileged scheme 注册是 Electron 硬性要求（必须在 ready 前），而 T16 的 runner
+// 在 ready 之后才跑。没有这一步，GenOffice 的 `genoffice-app://` /
+// `genoffice-docx-media://` 页面在真 Electron 里会因非特权 scheme 加载失败。
+// 注册表由 build.mjs 打成 CJS；顶层 require 不能碰 electron 之外的重模块 ——
+// 因此注册表的 vendor import 全部是**惰性**的（见 t7 journeys/registry.ts）。
+let journeysModule = null;
+try {
+  journeysModule = require(join(buildDir, "journeys.cjs"));
+} catch (error) {
+  console.error("U1 journeys module failed to load:", error);
+  throw error;
+}
+if (typeof journeysModule.beforeReady === "function") {
+  journeysModule.beforeReady();
+}
+
 app.on("window-all-closed", () => {});
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-background-networking");
@@ -44,10 +61,12 @@ const timeout = setTimeout(() => {
 
 app.whenReady().then(async () => {
   try {
+    // T7：ready 之后的装配（协议处理等）。缺省（T16 原注册表）没有这一项。
+    if (journeysModule && typeof journeysModule.afterReady === "function") {
+      journeysModule.afterReady();
+    }
     const { runGeneration } = require(join(buildDir, "runner.cjs"));
-    // journeys.cjs 由 build.mjs 用 esbuild 打成 CJS（旅程文件是 TS，直接 require 不了）。
-    const { journeys } = require(join(buildDir, "journeys.cjs"));
-    await runGeneration(journeys);
+    await runGeneration(journeysModule.journeys);
   } catch (error) {
     console.error(error);
     clearTimeout(timeout);

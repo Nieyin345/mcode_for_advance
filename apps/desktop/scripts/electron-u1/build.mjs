@@ -50,10 +50,28 @@ let mutation = null;
 let registry = join(suite, "journeys/index.ts");
 /** `--only=<journey-name>`：只跑一条（调试用；run.sh 永远跑全部）。 */
 let only = null;
+/**
+ * T7 追加：`--esbuild=<file.mjs>` —— 旅程注册表打包时的附加 esbuild 选项
+ * （alias / nodePaths / loader / plugins）。T7 的旅程要 import vendor 主进程
+ * （`genoffice/apps/<kind>/src/main/<kind>-main.ts`），它们是指向 TS 源码的包，
+ * 默认解析不了。值必须是指向导出 `{ options }` 的 mjs 文件路径（需要函数型
+ * plugin 时 JSON 表达不了）。
+ */
+let esbuildSpec = null;
+/**
+ * T7 追加：`--prebuild=<file.mjs>` —— 在 buildDir 建好、旅程跑起来之前执行的
+ * 一个模块（导出 `prepare({ buildDir, desktop, repo })`）。T7 用它把**生产的**
+ * `documentViewPreload.ts` 编到 `buildDir/documentViewPreload.js` —— 与发行布局
+ * 同形（`documentViewHost` 的 `resolveViewPreload()` 从 `__dirname` 取同名文件，
+ * 打包后 `__dirname` 就是 main bundle 所在的 `out/main/`）。
+ */
+let prebuildSpec = null;
 for (const a of args) {
   if (a === "--mutation=unconditional-pass") mutation = "unconditional-pass";
   else if (a.startsWith("--registry=")) registry = resolve(a.slice("--registry=".length));
   else if (a.startsWith("--only=")) only = a.slice("--only=".length);
+  else if (a.startsWith("--esbuild=")) esbuildSpec = resolve(a.slice("--esbuild=".length));
+  else if (a.startsWith("--prebuild=")) prebuildSpec = resolve(a.slice("--prebuild=".length));
   else throw Error("Unknown option: " + a);
 }
 
@@ -67,6 +85,13 @@ const esbuildMod = await import(pathToFileURL(pkgPath("esbuild@", "esbuild/lib/m
 const esbuild = esbuildMod.build ?? esbuildMod.default.build;
 if (typeof esbuild !== "function") throw Error("esbuild entry missing .build");
 
+// T7：`--prebuild=` 的模块拿到 esbuild 与目录，自己决定要多打哪些产物。
+let prebuild = null;
+if (prebuildSpec !== null) {
+  prebuild = (await import(pathToFileURL(prebuildSpec).href)).prepare;
+  if (typeof prebuild !== "function") throw Error("U1 build: --prebuild 模块必须导出 prepare({...})");
+}
+
 // 证据根：仓库 .tmp（已被 git 忽略）。**从不自动清理** —— 失败现场必须保留。
 mkdirSync(join(desktop, ".tmp"), { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -77,6 +102,11 @@ mkdirSync(evidenceRoot, { recursive: true });
 const buildDir = mkdtempSync(join(desktop, ".tmp/electron-u1-build-"));
 console.log("U1 evidence: " + evidenceRoot);
 console.log("U1 build:    " + buildDir);
+
+// T7：附加产物（在 buildDir 就绪后、旅程构建前跑；见 `--prebuild=` 说明）。
+if (prebuild !== null) {
+  await prebuild({ buildDir, desktop, repo, esbuild });
+}
 
 /* ────────────────────────────── 1. 真 App bundle ────────────────────────────── */
 
@@ -227,6 +257,14 @@ if (mutation === "unconditional-pass") {
     external: ["electron"],
   });
 }
+/** T7：`--esbuild=` 指向的模块（可选）导出的附加选项。 */
+const extraEsbuildOptions = esbuildSpec === null
+  ? {}
+  : (await import(pathToFileURL(esbuildSpec).href)).options ?? {};
+if (esbuildSpec !== null && (typeof extraEsbuildOptions !== "object" || extraEsbuildOptions === null)) {
+  throw Error("U1 build: --esbuild 模块必须导出 { options } 对象");
+}
+
 await esbuild({
   entryPoints: [registry],
   bundle: true,
@@ -237,6 +275,7 @@ await esbuild({
   outfile: join(buildDir, "journeys.cjs"),
   logLevel: "error",
   external: ["electron"],
+  ...extraEsbuildOptions,
 });
 
 /* ───────────────────────── 4. 旅程自带的最小页面模板 ───────────────────────── */
@@ -289,6 +328,7 @@ for (let k = 0; k < journeys.length; k++) {
     MCODE_U1_DOC: docPath,
     MCODE_U1_JOURNEY: String(journeyIndex),
     MCODE_U1_STATE: stateFile,
+    MCODE_U1_REPO: repo,
     HOME: homeDir,
     USERPROFILE: homeDir,
     APPDATA: join(runDir, "userData"),
@@ -401,9 +441,11 @@ if (mutation === "unconditional-pass") {
     process.exitCode = exitCode;
   }
 } else {
-  // 正常跑：故意失败旅程**必须**以 expected-failure 出现。它若变绿，说明断言没在判。
+  // 正常跑：若注册表声明了「故意失败」旅程，它**必须**以 expected-failure 出现；
+  // 变绿说明断言没在判。T7 这类纯产品旅程注册表没有该旅程 —— 它的「断言在判」
+  // 由 `--mutation=unconditional-pass` 对照跑证明（run.mjs 负责），这里不强制。
   const deliberate = results.find((r) => r.expect === "fail");
-  if (!deliberate || deliberate.expectation !== "expected-failure") {
+  if (deliberate && deliberate.expectation !== "expected-failure") {
     console.error("U1 SELF-CHECK FAILED: 「故意失败」旅程没有按预期失败 —— 骨架可能在假绿");
     process.exitCode = 3;
   } else {

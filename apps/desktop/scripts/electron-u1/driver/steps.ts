@@ -10,7 +10,7 @@
  * ]
  * ```
  */
-import type { U1Journey, U1LaunchOptions, U1Step } from "./types.js";
+import type { U1Journey, U1LaunchOptions, U1Step, U1StepRuntime } from "./types.js";
 
 /** `U1Step` 去掉公共字段后的形状，供各工厂的参数推断。 */
 type Body<T extends U1Step["op"], K extends string = never> = Omit<Extract<U1Step, { op: T }>, "op" | "name" | K>;
@@ -76,6 +76,19 @@ export const step = {
   /** 关闭当前 Electron 进程并**真正重开**一个新的（同一 runDir / 数据根）。 */
   relaunch: (name?: string, reason?: string): U1Step => ({
     op: "relaunch", ...(name === undefined ? {} : { name }), ...(reason === undefined ? {} : { reason }),
+  }),
+
+  /**
+   * 在**探针主进程**里跑一段任意装配/取证（T7 起）。`fn` 收到 `launch.setup`
+   * 返回的 `runtime` —— 用于「用真宿主读回磁盘」「关闭视图」「用独立解析器
+   * 核对文件」这类无法用 DOM 表达式表达的步骤。
+   *
+   * - `assert: false`（默认）：仅执行并记录返回值，永不判 FAIL；
+   * - `assert: true`：`fn` 必须返回 `{ ok, observed?, detail? }`，按 `sideEffect`
+   *   档判定（它验的是磁盘/宿主事实，不是页面 DOM）。
+   */
+  run: (fn: (runtime: U1StepRuntime) => unknown, name?: string, opts: { assert?: boolean } = {}): U1Step => ({
+    op: "run", fn, ...(name === undefined ? {} : { name }), ...(opts.assert === true ? { assert: true } : {}),
   }),
 };
 

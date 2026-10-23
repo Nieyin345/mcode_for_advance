@@ -27,7 +27,7 @@ import { join, isAbsolute } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { stepName } from "./steps.js";
 import { classifyJourney, literalStatus } from "./verdict.js";
-import type { SideEffectRecord, U1Evidence, U1Journey, U1JourneyResult, U1Step } from "./types.js";
+import type { SideEffectRecord, U1Evidence, U1Journey, U1JourneyResult, U1SetupResult, U1Step, U1StepRuntime } from "./types.js";
 
 /** 启动器看到这个退出码 = 「还要再来一代进程」。 */
 export const RELAUNCH_EXIT = 77;
@@ -66,6 +66,8 @@ interface Ctx {
   win: BrowserWindow | null;
   wc: WebContents | null;
   defaultTimeoutMs: number;
+  /** `launch.setup` 的返回值（没有钩子时为 null）。 */
+  setupResult: U1SetupResult | null;
 }
 
 function sha256(buf: Buffer | string): string {
@@ -163,22 +165,34 @@ async function ensureFocus(ctx: Ctx): Promise<boolean> {
 /** DOM 快照摘要 + 完整 HTML 落盘（失败现场尤其需要）。 */
 async function captureDomSnapshot(ctx: Ctx, step: string): Promise<unknown> {
   if (!ctx.wc) return null;
-  const summary = await js<Record<string, unknown>>(
-    ctx.wc,
-    `(() => {
-      const html = document.documentElement ? document.documentElement.outerHTML : "";
-      return {
-        title: document.title,
-        url: location.href,
-        nodes: document.querySelectorAll("*").length,
-        bodyText: (document.body ? document.body.innerText : "").slice(0, 400),
-        htmlSha256: null,
-        htmlLength: html.length,
-      };
-    })()`,
-  ).catch(() => null);
+  // T7：`WebContentsView` 可能已被**上一步**关闭（生产 `documentView:close`）。
+  // 对已销毁的 webContents 调 `executeJavaScript` 不 reject 而是永久挂起 ——
+  // relaunch 的证据抓取因此把整个进程拖到 150s 超时。`isDestroyed()` 对
+  // 「`webContents.close()` 之后」的 view 仍返回 false（实测），所以**再加一层
+  // 有界超时**：JS 表达式 5s 内不回来就当没有 DOM 快照。
+  if (ctx.wc.isDestroyed()) return { destroyed: true };
+  const summary = await Promise.race([
+    js<Record<string, unknown>>(
+      ctx.wc,
+      `(() => {
+        const html = document.documentElement ? document.documentElement.outerHTML : "";
+        return {
+          title: document.title,
+          url: location.href,
+          nodes: document.querySelectorAll("*").length,
+          bodyText: (document.body ? document.body.innerText : "").slice(0, 400),
+          htmlSha256: null,
+          htmlLength: html.length,
+        };
+      })()`,
+    ).catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+  ]);
   if (!summary) return null;
-  const html = await js<string>(ctx.wc, "document.documentElement ? document.documentElement.outerHTML : ''").catch(() => "");
+  const html = await Promise.race([
+    js<string>(ctx.wc, "document.documentElement ? document.documentElement.outerHTML : ''").catch(() => ""),
+    new Promise<string>((resolve) => setTimeout(() => resolve(""), 5000)),
+  ]);
   const htmlFile = join(ctx.dir, "dom", `${step}-g${ctx.state.generation}.html`);
   mkdirSync(join(ctx.dir, "dom"), { recursive: true });
   writeFileSync(htmlFile, html);
@@ -195,7 +209,23 @@ async function takeScreenshot(ctx: Ctx, name: string): Promise<{ file: string; s
     const file = join(ctx.dir, "shots", `${name}.png`);
     writeFileSync(file, png);
     return { file: file.slice(ctx.dir.length + 1), sha256: sha256(png) };
-  } catch {
+  } catch (e) {
+    // T7：`WebContentsView` 的 webContents 在窗口完全离屏时可能 capturePage 失败
+    //（实测 `Failed to capture screenshot`）。退一步抓宿主窗口 —— 编辑器的
+    // 子视图会一起入画（它是 contentView 的子视图），证据仍然成立。
+    console.log(`U1 screenshot fallback (${name}): ${e instanceof Error ? e.message : String(e)}`);
+    if (ctx.win && !ctx.win.isDestroyed()) {
+      try {
+        const image = await ctx.win.webContents.capturePage();
+        if (!image.isEmpty()) {
+          const png = image.toPNG();
+          mkdirSync(join(ctx.dir, "shots"), { recursive: true });
+          const file = join(ctx.dir, "shots", `${name}.png`);
+          writeFileSync(file, png);
+          return { file: file.slice(ctx.dir.length + 1), sha256: sha256(png) };
+        }
+      } catch { /* 两处都失败 = 没有截图证据 */ }
+    }
     return null;
   }
 }
@@ -233,7 +263,8 @@ async function evaluateStep(ctx: Ctx, s: U1Step, index: number): Promise<{
 }> {
   const wc = ctx.wc;
   const timeout = (ms?: number): number => ms ?? ctx.defaultTimeoutMs;
-  const needWc = (): AssertionOutcome | null => (wc ? null : { ok: false, detail: "窗口/WebContents 不存在" });
+  const needWc = (): AssertionOutcome | null =>
+    (wc && !wc.isDestroyed() ? null : { ok: false, detail: wc ? "窗口/WebContents 已销毁" : "窗口/WebContents 不存在" });
 
   const finish = (kind: U1Evidence["kind"], action: string, assertion: string | null, out: AssertionOutcome, extra: { screenshot?: string | null; dom?: unknown | null } = {}) => {
     // 分档开关：关掉的档只取证不断言（实际结果仍写进 observed.actualStatus，
@@ -489,12 +520,56 @@ async function evaluateStep(ctx: Ctx, s: U1Step, index: number): Promise<{
         else if (!rec || rec.sha256 === before.sha256) { ok = false; detail = `sha256 没有变化（${before.sha256}）`; }
         else observed.changedFrom = before.sha256;
       }
+      if (ok && s.sha256UnchangedFrom !== undefined) {
+        const before = ctx.state.sideEffects[s.sha256UnchangedFrom];
+        if (!before) { ok = false; detail = `找不到 recordSideEffect "${s.sha256UnchangedFrom}" 的记录`; }
+        else if (!rec || rec.sha256 !== before.sha256) {
+          ok = false;
+          detail = `sha256 变了（期望不变：记录 ${before.sha256}，实际 ${rec?.sha256 ?? "缺失"}）`;
+        } else observed.unchangedFrom = before.sha256;
+      }
       return finish("sideEffect", `assertSideEffect ${s.file}`, JSON.stringify(s), { ok, observed, ...(detail ? { detail } : {}) });
     }
 
     case "relaunch": {
       // 由 runGeneration 的主循环处理（它要退出进程），这里只占位保证 switch 穷尽。
       return finish("action", `relaunch ${s.reason ?? ""}`, null, { ok: false, detail: "relaunch 不应到达 evaluateStep" });
+    }
+
+    case "run": {
+      // T7：主进程内的任意装配/取证。`fn` 由旅程文件给出（会被 build.mjs 打进
+      // journeys.cjs，在真 Electron 主进程里执行）。
+      const runtime: U1StepRuntime = {
+        projectDir: ctx.projectDir,
+        dataDir: ctx.dataDir,
+        evidenceDir: ctx.dir,
+        generation: ctx.state.generation,
+        runtime: ctx.setupResult?.runtime,
+        win: ctx.win,
+      };
+      let value: unknown;
+      try {
+        value = await s.fn(runtime);
+      } catch (e) {
+        return finish(s.assert === true ? "sideEffect" : "action", "run", s.assert === true ? "run 断言" : null, {
+          ok: false, detail: `run 步骤抛错：${e instanceof Error ? (e.stack ?? e.message) : String(e)}`,
+        });
+      }
+      if (s.assert !== true) {
+        return finish("action", "run", null, { ok: true, observed: value });
+      }
+      const shaped = (value !== null && typeof value === "object" ? value : null) as { ok?: unknown; observed?: unknown; detail?: unknown } | null;
+      if (shaped === null || typeof shaped.ok !== "boolean") {
+        return finish("sideEffect", "run", "run 断言", {
+          ok: false, observed: value,
+          detail: "assert:true 的 run 步骤必须返回 { ok, observed?, detail? }",
+        });
+      }
+      return finish("sideEffect", "run", "run 断言", {
+        ok: shaped.ok === true,
+        observed: shaped.observed,
+        ...(shaped.ok === true ? {} : { detail: shaped.detail ?? "run 断言失败" }),
+      });
     }
   }
 }
@@ -650,6 +725,12 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
     writeJson(join(env.dir, "journey-result.json"), result);
     writeJson(env.stateFile, state);
     try { ctx.win?.destroy(); } catch { /* already gone */ }
+    if (ctx.setupResult && typeof ctx.setupResult.dispose === "function") {
+      try {
+        const maybe = ctx.setupResult.dispose() as unknown;
+        if (maybe && typeof (maybe as Promise<unknown>).then === "function") void maybe;
+      } catch (e) { console.error("U1 runner: setup dispose failed", e); }
+    }
     if (dbHandle) {
       try { dbHandle.closeDb(); } catch (e) { console.error("U1 runner: closeDb failed", e); }
     }
@@ -672,6 +753,7 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
     win: null,
     wc: null,
     defaultTimeoutMs: journey.launch?.defaultTimeoutMs ?? 10_000,
+    setupResult: null,
   };
 
   // ── 重开后的第一件事：证明数据库副本真的还在（fixture 完整性自检） ──
@@ -699,13 +781,63 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
   }
 
   // ── 页面：bundle（真 App）或旅程自带页面 ──
+  // `launch.window === false`（T7 的 GenOffice 视图旅程）不建宿主页：`step.*` 的
+  // 作用对象由 `launch.setup` 返回的 `pageFromView` 决定。
   let pageHtml = join(env.buildDir, "page.html");
   let preload: string | undefined;
   const pageSpec = journey.launch?.page ?? "bundle";
   if (typeof pageSpec === "object" && "file" in pageSpec) pageHtml = join(env.buildDir, pageSpec.file);
   if (journey.launch?.preload === "product") preload = join(env.buildDir, "product-preload.cjs");
 
-  await createWindow(ctx, pageHtml, preload);
+  const wantWindow = journey.launch?.window !== false;
+  let setupResult: U1SetupResult | null = null;
+  if (wantWindow) {
+    await createWindow(ctx, pageHtml, preload);
+  } else {
+    // 没有宿主窗口时也留一个不可见的最小窗口给 WebContentsView 使用 ——
+    // `win.contentView.addChildView(view)` 需要一个活窗口；GenOffice 的宿主
+    // （DocumentViewHost）恰恰从 `getMainWindow()` 取它。
+    const size = journey.launch?.size ?? { width: 1280, height: 900 };
+    mkdirSync(join(ctx.runDir, "home"), { recursive: true });
+    const win = new BrowserWindow({
+      width: size.width,
+      height: size.height,
+      // T7：`WebContentsView.capturePage()` 在「当前 display surface 不可用」
+      //（离屏 + opacity 0 的窗口）时会直接抛。GenOffice 旅程要**截图证据**，
+      // 所以这里让宿主窗口真实可见（放到屏幕右下角一个正常位置，不抢焦点：
+      // `show:false` 会同样丢 surface，所以只能 show）。判据只读 DOM/磁盘，
+      // 截图只是证据；窗口本身 3 秒内就会被关掉。
+      show: true,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+    });
+    win.webContents.on("console-message", (_e, level, message) => {
+      if (level >= 2) console.log(`RENDERER[${level}] ${String(message).slice(0, 1200)}`);
+    });
+    ctx.win = win;
+    ctx.wc = null;
+    win.focus();
+  }
+
+  // ── 主进程装配钩子（T7 起）──
+  // 必须在建窗口**之后**（GenOffice 宿主需要活窗口）与执行步骤**之前**调用。
+  // 重开后本函数会被新进程再次调用，钩子必须可重入。
+  if (typeof journey.launch?.setup === "function") {
+    setupResult = await journey.launch.setup({
+      evidenceDir: env.dir,
+      runDir: env.runDir,
+      projectDir: env.projectDir,
+      dataDir: env.dataDir,
+      generation: state.generation,
+      win: ctx.win,
+    });
+    ctx.setupResult = setupResult;
+    if (setupResult && setupResult.pageFromView) {
+      ctx.wc = setupResult.pageFromView;
+      await ensureFocus(ctx);
+    } else if (!ctx.wc && ctx.win) {
+      ctx.wc = ctx.win.webContents;
+    }
+  }
 
   // ── 逐步执行 ──
   for (let i = state.stepOffset; i < journey.steps.length; i++) {
@@ -728,6 +860,13 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
       state.evidence.push(entry);
       state.stepOffset = i + 1;
       writeJson(env.stateFile, state);
+      // T7：装配了 setup 钩子时，重开前先释放视图/会话（新进程会重新装配）。
+      if (ctx.setupResult && typeof ctx.setupResult.dispose === "function") {
+        try {
+          const maybe = ctx.setupResult.dispose() as unknown;
+          if (maybe && typeof (maybe as Promise<unknown>).then === "function") await maybe;
+        } catch (e) { console.error("U1 runner: setup dispose before relaunch failed", e); }
+      }
       try { ctx.win?.destroy(); } catch { /* gone */ }
       if (dbHandle) {
         try { dbHandle.flushDb(); dbHandle.closeDb(); } catch (e) { console.error("U1 runner: flush before relaunch failed", e); app.exit(1); }

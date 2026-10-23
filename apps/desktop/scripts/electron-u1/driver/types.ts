@@ -81,6 +81,24 @@ export interface U1LaunchOptions {
   /** 每一步默认等待上限，默认 10s。 */
   defaultTimeoutMs?: number;
   /**
+   * 旅程的**主进程装配钩子**（T7 起）。在 `app.whenReady()` 之后、建窗口之前调用，
+   * 拿到本代进程的运行时配置；返回值里的 `dispose` 在旅程结束/重开前调用。
+   *
+   * 为什么需要：GenOffice 六个编辑器都是 `WebContentsView`（不是 BrowserWindow 页），
+   * 打开/保存/关闭走的是 Mcode 的 `DocumentViewHost` + vendor 主进程，而不是页面
+   * 自带的 `window.api`。这类装配只能跑在主进程里；把它做成旅程文件里的一个函数，
+   * 旅程仍然是声明式步骤，装配细节留在各自的 `launch.setup` 实现。
+   *
+   * 若钩子返回 `pageFromView`（某个 WebContents），runner 会把**该视图**当作后续
+   * `step.*` 的作用对象（截图/点击/DOM 断言都落在编辑器页上，而不是宿主窗口）。
+   */
+  setup?: (ctx: U1SetupContext) => Promise<U1SetupResult> | U1SetupResult;
+  /**
+   * 不建宿主窗口（只跑 `setup` 装配出来的视图）。默认 true（普通页面旅程）。
+   * 设为 false 时没有 `page.html`，所有 DOM/截图步骤作用在 `setup` 返回的视图上。
+   */
+  window?: boolean;
+  /**
    * 三档断言的独立开关（缺省全开）。关掉的档**仍然执行并记录实际结果**
    *（`observed.actualStatus`），但永不判 FAIL、证据标 `skipped: true` ——
    * 即「只取证不断言」。这是任务卡要求的「每种都能单独开关」。
@@ -134,12 +152,23 @@ export type U1Step = StepBase &
         file: string;
         exists?: boolean;
         sha256ChangedFrom?: string;
+        /** T7：与早先 `recordSideEffect` 记录**相同**（重开后文件不该被改写）。 */
+        sha256UnchangedFrom?: string;
         sha256Equals?: string;
         contains?: string;
         notContains?: string;
       }
     /** 关闭当前 Electron 进程并真正重开一个新的（同一 runDir/数据根）。 */
     | { op: "relaunch"; reason?: string }
+    /**
+     * 主进程内的一段任意装配/取证（T7 起）。`fn` 只能在**探针主进程**里跑，
+     * 收到的 `runtime.setup` 就是 `launch.setup` 的返回值 —— 这样「关闭视图」
+     * 「用独立解析器读回磁盘」这类动作不必伪造 DOM 事件。
+     *
+     * `assert: true` 时 `fn` 必须返回 `{ ok, observed?, detail? }`，结果照常进入
+     * 三档判定（kind 归 `sideEffect`，因为它验的是磁盘/宿主事实）。
+     */
+    | { op: "run"; fn: (runtime: U1StepRuntime) => unknown; assert?: boolean }
   );
 
 /** `recordSideEffect` 的落盘快照（跨重开保存在 state.json 里）。 */
@@ -191,4 +220,67 @@ export interface U1GenerationConfig {
   generation: number;
   stepOffset: number;
   stateFile: string;
+}
+
+/* ───────────────────── T7 追加：主进程装配钩子与 run 步骤 ───────────────────── */
+
+/**
+ * `launch.setup` 拿到的上下文。全部路径由启动器 mktemp 出来，**绝不碰真实用户数据**；
+ * 同时给出宿主窗口（若 `launch.window !== false`）方便把 `WebContentsView` 挂进去。
+ */
+export interface U1SetupContext {
+  /** 本旅程证据目录（绝对路径；截图/DOM 之外的自定义证据也写这里）。 */
+  evidenceDir: string;
+  /** 本代进程的工作目录（不变，跨重开一致）：`<buildDir>/run/<journey>`。 */
+  runDir: string;
+  /** 本次启动器为该旅程准备的项目目录（已 mkdir）。 */
+  projectDir: string;
+  /** 数据根（已 mkdir）。 */
+  dataDir: string;
+  /** 第几代进程（1 起）。重开后 setup 会**再次**被调用 —— 装配必须可重入。 */
+  generation: number;
+  /** 宿主窗口；`launch.window === false` 时为 null。 */
+  win: import("electron").BrowserWindow | null;
+}
+
+/** `launch.setup` 的返回值。 */
+export interface U1SetupResult {
+  /**
+   * 后续 `step.*` 要作用的 WebContents。省略时用宿主窗口的 webContents。
+   * 典型用法：返回 vendor `WebContentsView.webContents` —— 截图/点击/DOM 断言
+   * 就落在真实编辑器页上。
+   */
+  pageFromView?: import("electron").WebContents;
+  /** 清理（关闭视图、释放会话）。旅程结束与 relaunch 前调用；抛错只记日志。 */
+  dispose?: () => void | Promise<void>;
+  /**
+   * 任意运行时对象（宿主、执行器、临时路径…）。`step.run` 的 `fn` 会收到它 ——
+   * 这是「用真宿主读回磁盘」这类断言不必伪造 DOM 的唯一通道。
+   */
+  runtime?: unknown;
+}
+
+/** `step.run` 的 `fn` 拿到的运行时。 */
+export interface U1StepRuntime {
+  /** 本次启动器为该旅程准备的项目目录。 */
+  projectDir: string;
+  /** 数据根。 */
+  dataDir: string;
+  /** 证据目录。 */
+  evidenceDir: string;
+  /** 第几代进程。 */
+  generation: number;
+  /** `launch.setup` 返回的 `runtime`（没有则 undefined）。 */
+  runtime: unknown;
+  /** 宿主窗口（`launch.window === false` 时为 null）。 */
+  win: import("electron").BrowserWindow | null;
+}
+
+/** `step.run` 的 `fn` 在 `assert: true` 时必须返回的形状。 */
+export interface U1RunAssertion {
+  ok: boolean;
+  /** 证据里记录的实际观察值（PASS 也记录）。 */
+  observed?: unknown;
+  /** 失败原因（人话）。 */
+  detail?: unknown;
 }

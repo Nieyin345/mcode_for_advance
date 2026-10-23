@@ -56,3 +56,17 @@ export function suiteExitCode(journeys: Array<{ journey: U1Journey; evidence: U1
   if (expected) return { code: 1, reasons };
   return { code: 0, reasons };
 }
+
+/**
+ * 套件是否声明了「故意失败」自检旅程。
+ *
+ * T16 的注册表里固定有一条 `expect:"fail"` 的 `deliberate-failure`，启动器在正常跑
+ * 里**强制**它按预期红（否则视为骨架假绿）。T7 这类「只跑真实产品旅程」的注册表
+ * 不该为了满足这条自检而塞一条假旅程 —— 但也不能因此丢掉「断言真的在判」的证据：
+ * T7 用 `--mutation=unconditional-pass` 的对照跑（同一批旅程、断言被旁路）证明
+ * 断言在判。所以 `build.mjs` 只在注册表**确有** `expect:"fail"` 旅程时才启用
+ * 「正常跑必须出现预期红」的自检。
+ */
+export function hasDeliberateFailureJourney(journeys: U1Journey[]): boolean {
+  return journeys.some((j) => j.expect === "fail");
+}
