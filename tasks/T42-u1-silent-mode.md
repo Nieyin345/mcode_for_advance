@@ -329,3 +329,94 @@ npx tsc --noEmit -p apps/desktop/tsconfig.json      # exit=0 才继续
 「后续 `loadURL` 挂起或 `ERR_FAILED`」。单独跑第二对（`t42-focus-probe3.cjs`）则正常。
 判断是**屏幕外 + `opacity:0` 窗口被 destroy 后紧接新建**时的 Electron 侧时序问题，
 与本卡的焦点结论无关；但将来写多窗口 U1 时要知道**一次进程里只建一对窗口最稳**。
+
+## 结果回写（2026-10-23，E 会话）
+
+### 结论：本轮**没有交付改动**，但把边界测清楚了
+
+`runner.ts` / `types.ts` 已 `git checkout HEAD --` 还原，工作区干净。**没有提交任何代码。**
+
+原因：用户中途直接反馈「能别让窗口弹出来吗，影响我的电脑的使用」——而我验证的每一轮都必须真开窗口。**在拿到真正静默的方案之前，不再跑它。**
+
+---
+
+### 一、四条 Electron 行为的实测结果（全部是真实 Electron 44.4.5，不是查文档）
+
+| 场景 | `capturePage()` | Univer/pdf.js 输入 |
+|---|---|---|
+| 宿主窗口 `show: true`（HEAD 现状） | ok | 正常 |
+| 宿主窗口 `show: false` | 宿主自身 **ok**；**`WebContentsView` 子视图抛** `Current display surface not available` | sheets 名称框**聚焦失败**（`A1A1`，输入重复）、pdf 文本层**不渲染** |
+| 屏幕外 `x:-10000, y:-10000, show:true` | 子视图 **拿不到 surface** | 未单独测（截图已先失败） |
+| `showInactive()` 短暂显示 | ok，但需 **~50ms** 等 surface | 正常 |
+| `webPreferences.offscreen: true` | ok（902x702） | **未验**（与 `WebContentsView` 组合没测） |
+
+**关键结论（与传统认知相反）：**
+
+1. **宿主窗口 `show:false` 时它自己的 `capturePage()` 是能用的** —— T7 原注释「`show:false` 会同样丢 surface」只对**子视图**成立。
+2. **但子视图不行，而且 `showInactive()` 之后仍需 ~50ms 让 compositor 产出 surface**，早了会抛 `UnknownVizError`（第一次调用约 12ms 抛，第二次 36ms 成功）。
+3. **`webContents.focus()` 能把 `document.hasFocus()` 变成 true 而窗口不可见** —— 但对 Univer 和 pdf.js **不够**：它们要的是「窗口真的存在」，不是那个标志位。
+4. **屏幕外（`x:-10000`）与隐藏等价**：子视图一样拿不到 surface。
+
+**第 3、4 条合起来是硬边界：截图与「窗口不在屏幕上」在 Electron 里直接冲突。**
+
+---
+
+### 二、试过但**失败**的方案（记录，避免下一个重踩）
+
+**方案 A：每次截图 `showInactive` → 轮询重试 → `hide`**
+
+轮询重试本身是对的（`UnknownVizError` 第 0 次抛、第 1 次成功），但：
+- 每次 show/hide 的往返本身就是可见时长的大头（2 代 × 6 张 ≈ 580ms）；
+- 想省时间改成「延时 hide、连续截图合并一次显示」→ **更糟**：下一次 `showInactive` 时窗口还亮着，子视图 surface 迟迟不重建，`assert-6-pass` 直接 2s 超时。
+
+**方案 B：`webContents.focus()` 替代 `win.focus()`（窗口全程隐藏）**
+
+`document.hasFocus()` 确实变成 true（1-5ms），但六条旅程里两条硬失败：
+- `sheets` 的 `xl-reopen-select-a1` → `A1A1`（Univer 输入重复）；
+- `pdf` 的 `pdf-text-layer-has-fixture` → 文本层不渲染。
+
+**方案 C：窗口建在屏幕外（`x:-10000, y:-10000, show:true`，与 T16 第 632 行同款）**
+
+子视图 `capturePage()` 拿不到 surface，全部截图失败。**T16 那处能成立是因为它不截子视图。**
+
+**方案 D：`show:false` + 只在输入时短暂显示**
+
+5/6 通过，但窗口可见 **9.8s（docs）/ 24.8s（sheets）** —— 比 HEAD 的「一直显示」还糟（HEAD 至少是固定位置不闪烁），而且 pdf 冒出新失败点 `pdf-rotation-changed-view`。**不可接受。**
+
+---
+
+### 三、下一步该怎么做（给接手的人）
+
+**不要再在 `show` / `x,y` / `focus()` 上打转。** 上面四条已经把这几种组合穷举完了，结论是**在这条路上无解**。
+
+真正可能成立的方向只有一条：**换掉截图方式。**
+
+- `webPreferences.offscreen: true` 单独测过能截（902x702）。**与 `WebContentsView` 的组合没验** —— 这是唯一还没被排除的路径。要点：离屏渲染时窗口可以 `show:false`，`paint` 事件直接给位图，完全不需要 display surface。
+- 若 `WebContentsView` 不支持离屏，则要改 T7 的证据链（例如用 `webContents.beginFrameSubscription()` 或 `debugger` 协议的 `Page.captureScreenshot`）。
+
+**但无论哪条，都必须先解决另一个问题**：sheets 与 pdf 在**没有真窗口焦点**时功能本身就不正常。即使截图能离屏拿到，输入那一段仍然需要窗口。所以最终形态可能是「输入时短暂显示 + 截图离屏」，而不是「全程隐藏」。
+
+**⚠️ 这条卡的下一个执行者注意**：任何需要验证的改动都会**真的弹出窗口**。要在用户不在用电脑的时候跑，或者先跟用户打招呼。
+
+---
+
+### 四、本轮留下的可复用物（`.tmp/t42/`，未提交）
+
+| 文件 | 用途 |
+|---|---|
+| `probe-mini2.mjs` | 各窗口形态 × `capturePage` 的矩阵 |
+| `shape.mjs` | 一种形态一个进程，避免互相污染 |
+| `cycle.mjs` | show/hide 循环下 surface 的就绪时序 |
+| `first.mjs` | 单次 `capturePage` 阻塞时长（`UnknownVizError` 在第 12ms 抛） |
+| `focusprobe.mjs` | `webContents.focus()` 在隐藏窗口上能否让 `document.hasFocus()` 为 true |
+| `hide-aftershot.mjs` | hide 后输入是否仍有效、能否再次 showInactive 截图 |
+
+全部带 `setTimeout(() => app.exit(2), 60000)` 自杀，且 `show:false` 或屏幕外。
+
+---
+
+### 五、未做的事
+
+- **没有提交任何代码**（改动全部还原）。
+- **没有验证 `offscreen: true` 与 `WebContentsView` 的组合** —— 那是 T42 唯一可能的出路，但需要真开 Electron 跑，本轮按用户要求停止了。
+- T7 六条旅程在本轮结束时**已还原到 HEAD 状态**（HEAD 是 6/6 PASS，但窗口可见）。
