@@ -223,12 +223,21 @@ try {
   });
   await eq("★ BLOCKED 档方法在权限映射里全部是 null（没有一条可被 grant 绕过）",
     blockedMethods.filter((m) => APP_METHOD_PERMISSIONS[m] !== null), []);
-  await check("★ 不可委托的 danger（workflowEngine.load）直接拒、不弹审批 —— blocked 是「谁都够不到」而不是「够得到但要问」", async () => {
-    assert.deepEqual(dangerNonDelegableMethods, ["workflowEngine.load"]);
-    const before = omniHost.approvals.length;
-    const error = await rejects("workflowEngine.load 直接拒", () => callFromExtension(omniHost.host, omniStored, "workflowEngine.load"), /不可委托/);
-    assert.equal(moduleRefusal(error)?.code, "scope_denied");
-    assert.equal(omniHost.approvals.length, before);
+  await check("★ 不可委托的 danger 直接拒、不弹审批 —— blocked 是「谁都够不到」而不是「够得到但要问」", async () => {
+    // 【T34】这份名单从 1 条变成 3 条：`document.toolCall` / `document.markdownEdit`
+    // 被 T33 提到 danger（理由：扩展拿到 document.edit 后改调它们就绕开逐次审批），
+    // 而本卡把它们同时设为**不可委托** —— 否则那条绕开会原样回来。
+    //
+    // 名单仍是**逐一钉死**而不是「大于等于」：新增不可委托项必须是有意识的决定，
+    // 让这条断言红一次、逼人来看。这正是它存在的意义。
+    assert.deepEqual(dangerNonDelegableMethods,
+      ["document.markdownEdit", "document.toolCall", "workflowEngine.load"]);
+    for (const method of dangerNonDelegableMethods) {
+      const before = omniHost.approvals.length;
+      const error = await rejects(`${method} 直接拒`, () => callFromExtension(omniHost.host, omniStored, method), /不可委托/);
+      assert.equal(moduleRefusal(error)?.code, "scope_denied");
+      assert.equal(omniHost.approvals.length, before, `${method} 拒绝时不该弹审批`);
+    }
   });
 
   /* ── ④ 卡面验收 3：read / write 档不触发本闸 ── */

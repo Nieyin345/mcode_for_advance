@@ -19,7 +19,9 @@ const readPerm = {
   scene:"workflow.read",unattended:"workflow.read",unattendedPlans:"workflow.read",projectInit:"project.read",
   voice:"ui.read",customUi:"ui.read",clipboard:"ui.read",notification:"ui.read",dialog:"ui.read",
   onlyoffice:"document.read",webBridge:"browser.read",publicMcp:"network",mobile:"network",relay:"network",
-  app:"setting.read",runs:"workflow.read",monitoring:"workflow.read",tools:"runtime.read",usage:"runtime.read"
+  app:"setting.read",runs:"workflow.read",monitoring:"workflow.read",tools:"runtime.read",usage:"runtime.read",
+  // 【T34】框架提示词段落(T64):list 只回段落清单与当前文本,与 `setting.read` 同档。
+  framework:"setting.read"
 };
 const writePerm = {
   file:"files.write",fileSystem:"files.write",workspace:"project.write",session:"session.control",claude:"session.send",
@@ -31,7 +33,12 @@ const writePerm = {
   scene:"workflow.write",unattended:"workflow.run",unattendedPlans:"workflow.run",projectInit:"project.write",
   voice:"ui.control",customUi:"ui.control",clipboard:"ui.control",notification:"ui.control",dialog:"ui.control",
   onlyoffice:"document.edit",webBridge:"browser.control",publicMcp:"network",mobile:"network",relay:"network",
-  app:"setting.write",runs:"workflow.write",monitoring:"workflow.write",tools:"runtime.manage",usage:"runtime.manage"
+  app:"setting.write",runs:"workflow.write",monitoring:"workflow.write",tools:"runtime.manage",usage:"runtime.manage",
+  // 【T34】`framework.save` / `reset` 改的是**注入进每个工作流节点提示词**的引导话术
+  // (`orchestration/frameworkPromptStore.ts` → `schedulerPrompt.ts` 的 `frameworkText`)。
+  // 它与 `context.save`(改 CLAUDE.md / AGENTS.md,已是 danger)是同一类东西:
+  // 改的不是数据,是**agent 的行为指令**。所以按 danger 处理 —— 见 nonDelegableOverrides。
+  framework:"setting.write"
 };
 const overrides = {
   "claude.sendTurn":["session.send"], "claude.interrupt":["session.control"],
@@ -43,9 +50,31 @@ const overrides = {
 // ordinary app_api_call, but never delegate it through the grant-only extension path.
 const nonDelegableOverrides = new Set([
   "workflowEngine.load", // Stops a running engine and overwrites the native canvas draft.
+  // 【T34】`framework.save` / `reset` **应当**也在这里:它们改的是注入进每个工作流节点
+  // 提示词的引导话术(`frameworkPromptStore` → `schedulerPrompt.frameworkText`),与
+  // `context.save`(改 CLAUDE.md,已是 danger)同一性质 —— 改的不是数据,是 agent 的行为
+  // 指令。然而 `policy.ts` 目前仍把它俩判成 `write`,而 `policy.ts` 是 **T33 的独占文件**
+  // (E 正在改)。上面那条 `must retain danger policy` 守卫会在档位改对之前**拦住**把它们
+  // 放进来,所以这里先留空、不硬塞 —— 等 T33 落地后由它一并加。
+  //
+  // 在那之前,扩展拿到 `setting.write` 仍可调 `framework.save/reset`。这是**已知的、
+  // 有意的缺口**,不是遗漏:见 `tasks/T34-permission-generator-fixes.md` 回写。
+
+  // 【T34】T33 把这两条提到了 `danger` —— 注释里写明理由是「扩展拿到 document.edit
+  // 权限后改调 document.toolCall,就绕开逐次审批」。**如果生成器仍把它们映射成
+  // `document.edit`,那条绕过路径会原样回来**:扩展装的时候只要 document.edit,
+  // 运行期就能调任意文档工具(含改文件的),而 T19 的逐次审批只在 `policyFor` 判
+  // danger **且**方法可委托时才生效 —— 不可委托时 `assertAppMethodPermission` 直接拒,
+  // 比"每次都问"更严。
+  //
+  // 这与 T33 的意图一致,不是推翻它:档位是"agent 侧要不要问",委托面是"扩展能不能
+  // 够到"。同一件事两条路,两处都要堵。
+  "document.toolCall",
+  "document.markdownEdit",
 ]);
 for (const method of nonDelegableOverrides) {
   if (!methods.includes(method)) throw Error("Non-delegable override references unknown RPC method " + method);
+  // 非 `danger` 的方法进这个集合说明档位判错了 —— fail-closed,不让它悄悄变窄或变宽。
   if (policyFor(method).level !== "danger") throw Error("Non-delegable override must retain danger policy: " + method);
 }
 const mapped = Object.fromEntries(methods.map(method=>{

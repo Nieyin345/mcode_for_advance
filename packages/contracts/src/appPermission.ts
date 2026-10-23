@@ -235,7 +235,12 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "customUi.stagePanel": null,
   "dialog.pickFiles": null,
   "dialog.pickFolder": null,
-  "document.capabilities": null,
+  "document.apps": [
+    "document.read"
+  ],
+  "document.capabilities": [
+    "document.read"
+  ],
   "document.convert": [
     "document.read",
     "document.edit"
@@ -243,7 +248,23 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "document.edit": [
     "document.edit"
   ],
-  "document.read": null,
+  "document.markdownEdit": null,
+  "document.markdownRead": [
+    "document.read"
+  ],
+  "document.read": [
+    "document.read"
+  ],
+  "document.render": [
+    "document.read"
+  ],
+  "document.toolCall": null,
+  "document.toolDescribe": [
+    "document.read"
+  ],
+  "document.toolsList": [
+    "document.read"
+  ],
   "documentView.bounds": null,
   "documentView.close": null,
   "documentView.focus": null,
@@ -310,6 +331,15 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   ],
   "file.writeFile": [
     "files.write"
+  ],
+  "framework.list": [
+    "setting.read"
+  ],
+  "framework.reset": [
+    "setting.write"
+  ],
+  "framework.save": [
+    "setting.write"
   ],
   "git.cancelGenerateCommitMessage": [
     "git.write"

@@ -17,9 +17,14 @@ await check("All current RPC methods have a closed-world permission mapping", ()
   assert.ok(methods.length >= 438);
   assert.equal(new Set(methods).size, methods.length);
   for (const method of methods) assert.ok(Object.hasOwn(APP_METHOD_PERMISSIONS,method), "Unmapped RPC method: "+method);
+  // 【T34】不可委托名单不再只有 workflowEngine.load：T33 把 `document.toolCall` /
+  // `document.markdownEdit` 提到 danger（扩展拿 document.edit 后改调它们会绕开逐次
+  // 审批），本卡同时把这两条设为不可委托，堵住那条绕开。这里**逐一钉死**，新增
+  // 不可委托项必须让这条红一次。
+  const NON_DELEGABLE = new Set(["workflowEngine.load", "document.toolCall", "document.markdownEdit"]);
   for (const method of methods) {
     const required = permissionsForAppMethod(method);
-    if (policyFor(method).level === "blocked" || method === "workflowEngine.load") assert.equal(required, null, method);
+    if (policyFor(method).level === "blocked" || NON_DELEGABLE.has(method)) assert.equal(required, null, method);
     else {
       assert.ok(Array.isArray(required) && required.length > 0, method);
       for (const permission of required ?? []) assert.ok((MODULE_PERMISSION_NAMES as readonly string[]).includes(permission),method);
