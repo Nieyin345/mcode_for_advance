@@ -51,3 +51,58 @@
 - 本卡回写：本节
 - 提交 SHA：`d28de3004fe6038aa90a05e2975e5cd37de6afdf`（报告 + 本卡回写）
 - 复核留痕（git-ignored，未入库）：`.tmp/t9-license-work/{scripts,reports,evidence-extracted}`
+
+## 独立复核（2026-10-23，F 会话）
+
+**目的**：不信回写数字，从 manifest 与磁盘文件独立重算一遍，确认 14/4 的结论成立。
+
+### 复核结论：**原结论全部成立**，未发现需要推翻项
+
+| 复核项 | 方法 | 结果 |
+|---|---|---|
+| 计数一致性 | 遍历 `manifest.items[]` 的 `status` 实算，与 `resolvedCount`/`blockedCount`/`expectedPackageCount` 对比 | **一致**：18 项 = 14 verified + 4 blocked |
+| 14 份许可证文件存在 | `fs.existsSync` 逐个检查 `licenses/` 下文件 | **14/14 存在** |
+| 14 份文件 SHA-256 | 重算 sha256 与 `licenseTextSha256` 对比 | **14/14 匹配** |
+| 四要件完整性 | 版权 / grant / 保留条款 / 免责声明逐项正则 + 人工核对全文 | **14/14 齐全** |
+| README 段载体（6 条） | 重算文件 sha256 | **6/6 匹配** |
+| SRI 字段 | 18 条 `npmTarballIntegrity` 是否 `sha512-` 前缀 | **18/18 齐全** |
+| 上游 URL 可追溯 | 13 条 `exact-upstream-source-file` 是否 pinned `raw.githubusercontent.com/<owner>/<repo>/<40位SHA>/` | **13/13 合格** |
+| Apache-2.0 特例 | `@univerjs/protocol` 的 URL 用 tag 而非 SHA | **合格：`v0.25.1` 是 annotated tag，`^{}` 解引用 = `c9c8607471…`，与 manifest `licenseSourceVersion` 记录一致** |
+
+### 两次「我的工具错了」的记录（避免误报缺陷）
+
+按总控「先确认不是我没找到或工具用错」的要求，下面两次都是**我的检查器有问题，不是证据有问题**：
+
+1. **路径拼错**：首次校验 14 条全部报「文件不存在」，实际文件在 `licenses/` 子目录，我按 `genoffice/<name>.txt` 找。改路径后 14/14 通过。
+2. **正则漏了标准变体**：首次四要件检查 8 条报「缺保留条款」。实际 MIT 标准句是 `The above copyright notice ... shall be included`、ISC 是 `notice ... appear in all copies`，我的正则只认 `must be included`。修正后 13/14 通过；剩下的 `@univerjs/protocol` 是 Apache-2.0，用 MIT/ISC 正则本就不适用，人工核对 §4 保留义务、§7 免责、§8 责任限制、`END OF TERMS AND CONDITIONS` 全部在。
+
+3. **`git ls-remote` 只看第一行会误判**：直接 `refs/tags/v0.25.1` 得到 `d70f3477`，与记录 `c9c86074` 不符，几乎要报缺陷；加上 `refs/tags/v0.25.1^{}` 才看到真 commit 是 `c9c86074` —— annotated tag 的正常行为。
+
+### 4 条 blocked 的阻塞理由，独立复验通过
+
+| 包 | 复验方法 | 结论 |
+|---|---|---|
+| `lazy-val@1.0.5` | GitHub tree API 查 `b69ad411` 全树 | **14 个文件、0 个 LICENSE/COPYING/NOTICE**，阻塞成立 |
+| `react-remove-scroll-bar@2.3.8` | tree API 查 `b3b1287` 全树；再查 master 根目录 | 该 commit **0 个许可证文件**；master **现在有 LICENSE** —— 正是「2.3.8 之后才补、不得回填」的情形，阻塞成立 |
+| `extract-zip@1.0.5` | 下载 1.0.5 tarball 查内容 | **0 个许可证文件**，README 许可段确为 `## License\n\nBSD-2-Clause`（14 字节），`package.json` 声明 `BSD-2-Clause`，阻塞成立 |
+| `ot-text-unicode@4.0.0` | 复核 manifest 记录的冲突描述 | ISC 标识 vs 缺保留条款的 MIT 正文，两者都不能单独构成完整授权，阻塞成立 |
+
+### 一条需要总控裁决的发现（T9 已记录，我独立确认）
+
+`@electron-internal/extract-zip@1.0.6` 发布于 **2026-10-22 05:22Z**（T9 取证是 2026-10-23 02:12），**带完整 MIT LICENSE**：
+
+- tarball `package/LICENSE` 全文为标准 MIT（`Copyright (c) Contributors to the Electron project`），四要件齐全，sha256 `edab8abb78d9c5b36944c3e00aebf6a90eb32378993f49ac8a3904007029c629`
+- 上游 `v1.0.6` tag 树含 `LICENSE`
+- 发布说明只有一项：`bump zip to 9.0.3 for RUSTSEC-2026-0367/0368/0369`
+
+**T9 报告第 98 行已写明这条路径**：「备选：替换依赖版本到 v1.0.6+（MIT，且有 LICENSE 文件）并重新过 T87/T76 门禁——但这属于产品变更，不在本卡」。**我独立复核确认这个判断正确**，不是遗漏。
+
+**这条是本卡 4 项阻塞中唯一存在仓库内解除路径的。** 但它不是取证问题，是**依赖升级决策**：`pnpm-lock.yaml` 里 `electron@44.4.5` 与 `electron-winstaller@5.4.0` 都精确锁 `@electron-internal/extract-zip@1.0.5`（不是范围），要改走 `pnpm.overrides` 或升级上游。**需另开卡，不在 T9 范围。**
+
+其余 3 条（`lazy-val`、`ot-text-unicode`、`react-remove-scroll-bar`）的最新版就是当前锁定版，**无版本升级路径**，只能由权利方出具版本特定全文。
+
+### 复核边界
+
+- 只读：未修改 manifest、任何许可证文件、NOTICE、`genoffice/` 源码、gate 脚本。
+- 未重跑 T87/T76 门禁（本次只做证据复核，未改任何受门禁约束的文件）。
+- `releaseEligible=false` 不变，未宣称发行门禁通过。
