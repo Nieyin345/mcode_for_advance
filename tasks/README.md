@@ -53,6 +53,10 @@
 | T32 | **`genofficeNativeVendor.ts` 的 alias 虚拟模块破坏 15 套 smoke** | **P0 工具链** | 无 | S |
 | T33 | **`document.read` 误进 BLOCKED；`toolCall`/`markdownEdit` 档位偏弱** | **P0 安全** | 无 | T |
 | T34 | **权限映射生成器缺 framework 域；danger 默认可委托** | **P0 安全** | T33 | U |
+| T35 | `core.app.call` 能力类型在 catalogue/声明表/注册三处不一致 | P1 | 无 | V |
+| T36 | 三套 smoke 夹具过时（T65/T50/正则漏算 schema 包装） | P1 | 无 | V |
+| T37 | `mobile-pairing-smoke` 3 秒超时太紧，全量并发下随机红 | P2 | 无 | W |
+| T38 | 三套打包期失败：桩缺导出、`.node` loader、zustand 5 default | P1 | 无 | W |
 
 ### 推荐第一波
 
