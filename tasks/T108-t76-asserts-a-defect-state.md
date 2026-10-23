@@ -1,6 +1,6 @@
 # T108｜`t76` 把「缺陷状态」写成了断言：`releaseEligible === false` 现在恒红
 
-- Status: ready-for-agent
+- Status: done（2026-10-24 执行回写，见文末）
 - Category: **P0 测试正确性（断言记录的是当时的缺陷，不是规范）**
 - Priority: **P0 —— 这条断言在 HEAD 上已经红了整整三天，因为条件分支从没被执行到**
 - Depends on: T10（`782b08fc`，pause 许可整合）
@@ -167,3 +167,93 @@ sed -n '1,60p' tasks/T10-node-red-license-integration.md
 
 `tasks/T108-t76-asserts-a-defect-state.md` 末尾追加 `## 结果回写（2026-10-24）`：
 三条断言各自的改法、坏 fixture 的验证、else 分支覆盖、两次变异、提交 SHA。
+
+## 结果回写（2026-10-24）
+
+### ⚠️ 先回答卡上最要紧那条：**`false` 没有被改成 `true`**
+
+**真实 stage 那条分支上现在没有任何 `releaseEligible` 的具体值断言。** 核对命令：
+
+```bash
+sed -n '/真实产物存在时走这里/,/realStageCovered = true/p' scripts/t76-vendor-release-integrity-smoke/main.cjs \
+  | grep "releaseEligible, \(true\|false\)"      # → 无输出
+```
+
+改成的是**自洽性**：`releaseEligible === 「十项 blocker 计数全为 0」`。stage 是好是坏都绿。
+
+### 三条断言的改法
+
+| 原文 | 现在 |
+|---|---|
+| `assert.equal(summary.releaseEligible, false)` | `assert.equal(releaseEligible, blockersAllZero)` —— **十项计数**的合取 |
+| `assert.ok(pause && pause.status === "unknown-license")` | `pause` 可以不在；若在，`status === "unknown-license"` ⇔ (`!license && !licenseTextPresent`) |
+| `assert.ok(missing.length > 0)` | 删掉。改成 `if (releaseEligible) 断言 missing === 0` |
+| `assert.throws(verifyNodeRedResource(existingStage))` | 两个工具的结论必须一致：审计说 eligible ⇔ 门禁放行 |
+
+**顺带纠正了卡上的示例写法**（卡第 75 行）：`releaseEligible === (releaseBlockers === 0)` 是**错的**。
+产品里 `releaseEligible` 是**十项**计数的合取（`stage-node-red-resources.cjs:594`），
+`releaseBlockers` 只是其中一项。我照卡写，在缺许可文本的坏 fixture 上写出过一个**假的不自洽**（`1010` 那次失败）。
+**已按产品真实语义改成十项合取。**
+
+### 验收判据逐条
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 1 | 真实 stage 好时绿 | ✅ 26/26（`releaseEligible: true`，420 包） |
+| 2 | **真实 stage 坏时也绿** | ✅ 把 `existingStage` 指向一份坏 fixture（`missingLicenseText: 1`）→ **26/26** |
+| 3 | `false` 没被改成 `true` | ✅ 见上，分支内零值断言 |
+| 4 | else 分支有等价覆盖 | ✅ 强制不存在 → `clean fixture stage` 那条跑通，**26/26** |
+| 5 | 两次变异各红一次 | ✅ 见下（但有**两次没红**，一并记录） |
+| 6 | t10 / t88 不回归 | ✅ t10 15/15、t88 13/13（**但见「未做」里的警告**） |
+| 7 | 不跑全量、不起 Electron | ✅ |
+
+### 变异记录（**两次红、三次没红**）
+
+| # | 变异 | 结果 |
+|---|---|---|
+| 1 | 自洽断言 `releaseEligible === releaseEligible`（恒真），只跑真实 stage | ❌ **不红** —— 恒真在通过路径上看不出 |
+| 2 | 删掉坏 stage 上的自洽调用，但保留 `assert.throws(门禁)` | ❌ **不红** —— 门禁的 throws 独立兜住了 |
+| 3 | `blockersAllZero = true \|\| ...`（恒真） | ✅ **红**：`坏 fixture: releaseEligible 必须等于「所有 blocker 类计数都为 0」` |
+| 4 | 掏空 else 里的自洽调用（未加 xor 断言前） | ❌ **不红** |
+| 5 | 同上，**加了 xor 断言之后** | ✅ **红**：`真实产物存在时应走 if，不存在时应走 else —— 不能两条都没走` |
+
+**变异 1、2、4 没红这件事本身是结论，不是操作失误**：`assertStageAuditSelfConsistent` 单独拿出来是**弱证人** ——
+它在「只有好数据」或「旁边还有别的断言兜底」时，改坏了也看不出来。**是外面的显式断言给了它判别力**：
+
+- 变异 3 之所以红，是因为**坏 fixture 也调了这个 helper**（新增）；
+- 变异 5 之所以红，是因为**加了 xor 覆盖断言**（新增）。
+
+**这两处新增都是变异逼出来的，不是原计划里的。**
+
+### else 分支覆盖
+
+```js
+let realStageCovered = false;
+if (fs.existsSync(existingStage)) { verify("current ... self-consistent ...", ...); realStageCovered = true; }
+let selfConsistencyCovered = false;
+if (!realStageCovered) { verify("... on a clean fixture stage (real stage absent)", ...) → selfConsistencyCovered = true }
+verify("the stage self-consistency checks ran on exactly one path (if xor else)", () =>
+  assert.equal(realStageCovered !== selfConsistencyCovered, true, ...));
+```
+
+else 里调的是**同一个** `assertStageAuditSelfConsistent`，不是另写一份简化版。
+那条 xor 断言是让「else 被误删」可被发现的东西 —— 没有它，变异 4 是静默的。
+
+### `makeNodeRedFixture` 复用情况
+
+**没有改 fixture。** 实测确认默认参数（`pause=false, missingExpressLicense=false`）造出来的
+就是一份**合格** stage（`releaseEligible: true`，门禁放行），正是卡上要的「好 fixture」。
+坏数据靠已有的 `missingExpressLicense: true`。
+
+### 提交
+
+`cad5cfbf`（`test(T108): t76 asserted a defect state instead of the gate's behaviour`），1 文件 +134/−14。
+
+### 未做 / 需要总控知道的
+
+1. **t88 的绿灯不能当证据。** 我跑 t88 时它 13/13，但 `mtime` 是 **02:05:36（就在跑之前两分钟）**，
+   且工作区有 **+9/−1 别人未提交的改动**（T107 正在改它）。**我看到的绿是别人在途的状态。**
+   t10 同样有 +9/−1 在途改动。两套的「不回归」都要在 T107 落地后重跑才能作数。
+2. **`t88` 里有没有同型「记录状态」断言 —— 我没查。** 卡上写「报告，不擅自改」，
+   而我连查都没做（怕与 T107 的在途改动撞车）。**建议在 T107 之后另起一条核对。**
+3. 没碰 `.tmp/node-red-release`，也没改 `verifyNodeRed` / `stage-node-red-resources.cjs` / `build/vendor-licenses/`。
