@@ -792,7 +792,7 @@ interface PatternCheckOutcome {
   pageFiles: string[];
 }
 
-function readDeckPatterns(ports: DocumentSurfacePorts, specDir: string): PatternCheckOutcome {
+export function readDeckPatterns(ports: DocumentSurfacePorts, specDir: string): PatternCheckOutcome {
   const empty = (notes: string[]): PatternCheckOutcome =>
     ({ checked: false, applied: {}, findings: [], notes, pageFiles: [] });
   // 围栏复用 `createDeckFromSpec` 的同一判据（硬规矩 2：共享实现只有一份）——

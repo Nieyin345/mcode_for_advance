@@ -281,7 +281,28 @@ console.log("\n9. ★ 负控：一个页文件写坏 → 整次检查不执行�
   check("★ 也没有谎称「检查通过」", !sawNoFindings(text), { sample: text.slice(0, 400) });
 }
 
-/* ───────────────────── 9b. 形状不符（能 build）→ 整体 fail-closed ───────────────────── */
+/* ───────────────────── 9c. 检查层自己的坏 JSON 分支 ───────────────────── */
+
+console.log("\n9c. ★ 直接驱动检查层：坏 JSON 必须走 `return empty(checked:false)` 那条分支");
+{
+  // ⚠️ **第 9 节没覆盖到这里。** 那条走的是「CLI 先拒绝 build」——我们的
+  // `JSON.parse` catch 分支**从未被执行过**（`withPatternFindings` 对 `!ok` 原样
+  // 返回，所以结果看起来一样）。两条路径行为相似但代码不同：一条是 CLI 抛
+  // `CliError`、一条是我们自己 `return empty(...)`。只测前者 = 套件绿着但没覆盖。
+  //
+  // 这里**直接调用生产的 `readDeckPatterns`**（已导出给套件用，不是复制品），
+  // 绕过 CLI 去看它自己的返回。
+  const broken = join(workspace, "broken-direct");
+  mkdirSync(join(broken, "pages"), { recursive: true });
+  writeFileSync(join(broken, "pages", "01.json"), JSON.stringify(compliantPage()), "utf8");
+  writeFileSync(join(broken, "pages", "02.json"), '{"elements": [', "utf8");
+  writeFileSync(join(broken, "pages", "03.json"), JSON.stringify(sparsePage()), "utf8");
+  const outcome = runtime.readDeckPatterns(ports as never, broken);
+  check("★ checked === false", outcome.checked === false, outcome);
+  check("★ findings 为空（一条都不给，避免错位页号）", outcome.findings.length === 0, outcome.findings);
+  check("★ note 点名了坏掉的文件", outcome.notes.some((n) => n.includes("02.json")), outcome.notes);
+  check("★ note 说明了「整体未执行」", outcome.notes.some((n) => n.includes("整体未执行")), outcome.notes);
+}
 
 console.log("\n9b. ★ 形状不符的页文件（CLI 会丢掉它继续建）→ 我们的检查必须整体停");
 {
