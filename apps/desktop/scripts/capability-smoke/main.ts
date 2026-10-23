@@ -21,6 +21,7 @@ import {
   checkNodeCapabilities,
   collectCapabilityInventory,
   executorCapabilityDescriptors,
+  hostCapabilityDeclarationsFromCatalog,
   pluginCapabilityDescriptors,
   rejectedPluginHostCapabilities,
   providerIdsForWorkflowPreflight,
@@ -701,9 +702,16 @@ ok(
       JSON.stringify(realIds) === JSON.stringify(declaredIds),
       `★ MC-099 E1:权威声明表与 ModuleHost 真实注册同源(detail: real=${JSON.stringify(realIds)} declared=${JSON.stringify(declaredIds)})`,
     );
+    // 【T35】这条从前写的是「声明表的模块种类只取 task/query」—— 它把折叠**当成契约**
+    // 钉死,于是产品侧把 action 折成 task 之后它照样绿。真正的契约是:声明表原样反映
+    // 注册处的三种 kind,一个都不许改写。
     ok(
-      HOST_CAPABILITY_DECLARATIONS.every((d) => d.moduleKind === "task" || d.moduleKind === "query"),
-      "MC-099 E1:声明表的模块种类只取契约映射得到的 task/query",
+      HOST_CAPABILITY_DECLARATIONS.every((d) => d.moduleKind === "query" || d.moduleKind === "action" || d.moduleKind === "task"),
+      "MC-099 E1:声明表的模块种类原样透传 query/action/task 三值(不得折叠)",
+    );
+    ok(
+      HOST_CAPABILITY_DECLARATIONS.some((d) => d.moduleKind === "action"),
+      "★ T35:声明表里确实存在 action 种类(内置目录里的 core.app.call,折叠会让它消失)",
     );
   }
 
@@ -901,10 +909,13 @@ ok(
       return host;
     };
     // 从**真实宿主目录**读出"这台机器真有哪些模块能力" —— 这是权威,不是手写声明。
+    // 【T35】三种 kind **原样透传**:从前这里只筛 task/query,把 `core.app.call`(真实注册
+    // 是 action)挡在声明之外 —— 与产品侧那条 `action → task` 折叠是同一个缺陷的两半,
+    // 两边都在替实现宣称它并不具备的资格(或反过来把它整个藏起来)。声明表与真实注册
+    // 必须逐个 kind 相同,而不是"声明表只有 task/query 所以真实注册也只看 task/query"。
     const hostSources = (host: ModuleHost): HostCapabilitySource[] =>
       host.catalog().capabilities
-        .filter((c) => c.kind === "task" || c.kind === "query")
-        .map((c) => ({ id: c.id, moduleKind: c.kind as "task" | "query" }));
+        .map((c) => ({ id: c.id, moduleKind: c.kind }));
 
     // (a) 变动前:宿主注册了 inspect → required 场景通过。
     const readyHost = makeHost(true);
@@ -917,14 +928,62 @@ ok(
       "★ MC-099 E1·变动:真实 ModuleHost 注册 fileCapabilities 后,required module 场景预检通过(变动前)",
     );
 
-    // 真实宿主目录 = 权威声明表 = fileCapabilities 三处同源(逐一相等)——声明漂了必红。
-    const realHostIds = hostSources(readyHost).map((s) => s.id).sort();
-    const declaredIds = HOST_CAPABILITY_DECLARATIONS.map((d) => d.id).sort();
-    const fileIds = fileCapabilities(() => true).map((c) => c.id).sort();
+    // 真实宿主目录 = 权威声明表 = fileCapabilities 三处同源 ——【T35】比的是
+    // **(id, kind) 配对**,不是只比 id。只比 id 时,`action` 被折叠成 `task` 也照样绿
+    // ——那正是这条缺陷能活下来的原因:三处 id 一样、kind 已经各说各话。
+    const idKind = (xs: ReadonlyArray<{ id: string; kind?: string; moduleKind?: string }>): string =>
+      JSON.stringify(xs.map((x) => `${x.id}:${x.kind ?? x.moduleKind}`).sort());
+    const realHost = idKind(hostSources(readyHost));
+    const declared = idKind(HOST_CAPABILITY_DECLARATIONS);
+    const fileCaps = idKind(fileCapabilities(() => true));
     ok(
-      JSON.stringify(realHostIds) === JSON.stringify(declaredIds) &&
-        JSON.stringify(realHostIds) === JSON.stringify(fileIds),
-      `★ MC-099 E1·变动:真实宿主目录 = 权威声明表 = fileCapabilities 三处同源(detail: host=${JSON.stringify(realHostIds)} declared=${JSON.stringify(declaredIds)} file=${JSON.stringify(fileIds)})`,
+      realHost === declared && realHost === fileCaps,
+      `★ MC-099 E1·变动:真实宿主目录 = 权威声明表 = fileCapabilities 三处 (id,kind) 同源(detail: host=${realHost} declared=${declared} file=${fileCaps})`,
+    );
+
+    // 【T35】承重反例:`core.app.call` 在真实注册里是 **action**(写能力),声明表必须
+    // 照样说 action。从前它被折成 task —— 预检会替它宣称"工作流可用的只读能力",
+    // 而 `ModuleHost.readonlyWorkflowTarget` 只接受 query/task 的真实注册,这个能力
+    // 永远不会成为工作流目标。断言逐字钉在这条语义上,而不是"三处字符串相等"。
+    const appCallHost = readyHost.catalog().capabilities.find((c) => c.id === "core.app.call");
+    const appCallDeclared = HOST_CAPABILITY_DECLARATIONS.find((d) => d.id === "core.app.call");
+    const appCallFile = fileCapabilities(() => true).find((c) => c.id === "core.app.call");
+    ok(
+      appCallHost?.kind === "action" && appCallDeclared?.moduleKind === "action" && appCallFile?.kind === "action",
+      `★ T35:core.app.call 三处都必须是 action,不得被折成 task(detail: host=${appCallHost?.kind} declared=${appCallDeclared?.moduleKind} file=${appCallFile?.kind})`,
+    );
+    // 反向:它**不是**工作流目标 —— 声明成 action 后,预检面向的"只读 target"里没有它。
+    ok(
+      !(readyHost.catalog().workflowTargets ?? []).some((t) => t.capabilityId === "core.app.call"),
+      "★ T35:core.app.call 不出现在工作流目标里(action 不是只读能力)",
+    );
+
+    // 【T35】第二条折叠点在**扩展能力**那条路上(`hostCapabilityDeclarationsFromCatalog`)。
+    // 上面只覆盖了内置目录;M2 变异证明:把这一处改回折叠,internal 那条断言全绿 ——
+    // 因为本套根本没喂过扩展目录。这里直接对着生产函数钉三种 kind 的透传。
+    const fakeCatalog = {
+      capabilities: [
+        { id: "module.demo.read", kind: "query" as const },
+        { id: "module.demo.write", kind: "action" as const },
+        { id: "module.demo.job", kind: "task" as const },
+        { id: "core.file.info", kind: "query" as const }, // 非扩展前缀 → 必须被挡在外面
+      ],
+    };
+    const fromCatalog = hostCapabilityDeclarationsFromCatalog(fakeCatalog);
+    const kindsOf = new Map(fromCatalog.map((d) => [d.id, d.moduleKind]));
+    ok(
+      kindsOf.get("module.demo.read") === "query" &&
+        kindsOf.get("module.demo.write") === "action" &&
+        kindsOf.get("module.demo.job") === "task",
+      `★ T35:扩展能力三种 kind 原样透传,action 不得被折成 task(detail: ${JSON.stringify([...kindsOf])})`,
+    );
+    ok(
+      !kindsOf.has("core.file.info"),
+      "T35:非 module. 前缀的能力不进扩展声明(前缀判据未放宽)",
+    );
+    ok(
+      hostCapabilityDeclarationsFromCatalog(undefined).length === 0,
+      "T35:目录缺失时扩展声明为空(不凭空造)",
     );
 
     // (b) 变动后:那台机器的真实宿主**没注册** inspect → 同一 required 必须被拒并点名。

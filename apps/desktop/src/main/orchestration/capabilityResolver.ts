@@ -144,16 +144,24 @@ export function executorCapabilityDescriptors(
  * 由装配方把「宿主注册了哪几个能力 id」当**数据**喂进来 —— 与 plugins 那条完全同形。
  *
  * **种类映射**:契约 `CapabilityKind` 只有 `builtin` / `executor` / `provider` / `skill` /
- * `mcp` / `plugin` —— 没有模块系统自己的 `task` / `query`。宿主实现的能力,契约里唯一对得上
- * 的是 **`builtin`**。模块那一层的 `task` / `query` 因此作为**细粒度能力**放进
- * `capabilities`(`module:task` / `module:query`),既不丢信息,也不在契约里另造一个 kind。
+ * `mcp` / `plugin` —— 没有模块系统自己的 `query` / `action` / `task`。宿主实现的能力,契约里
+ * 唯一对得上的是 **`builtin`**。模块那一层的 `query` / `action` / `task` 因此作为**细粒度
+ * 能力**放进 `capabilities`(`module:<kind>`),既不丢信息,也不在契约里另造一个 kind。
  * 执行代码仍旧只在 `ModuleHost` 里跑,这里**只做发现** —— 这正是 ARC-006「统一元数据,
  * 不合并执行引擎」的那条线。
+ *
+ * 【T35】**三种 kind 原样透传,不再把 `action` 折成 `task`。** 从前 `moduleKind` 的类型只有
+ * `task | query`,于是 `action` 只能被折叠;折叠后目录里 `core.app.call` 张冠李戴成
+ * 「工作流可用的 task」—— 而 `ModuleHost.readonlyWorkflowTarget` **只认 query/task**,
+ * 这个能力在真实注册里是 action,永远不会成为工作流目标。声明表替它宣称了它并不具备的
+ * 资格,正是「声明说在、执行器没有」那类漂移的镜像形态:这里方向相反(声明说能用、实际
+ * 不能用),后果一样 —— 预检会对着一个够不着的目标判绿。`ModuleCapabilityDescriptor` 的
+ * kind 域本来就是 `query | action | task` 三值,原样透传即可,不需要折叠。
  */
 export interface HostCapabilitySource {
   id: string;
-  /** 模块系统里这个能力的种类(`task` / `query`),映射成 `capabilities` 里的细粒度标签。 */
-  moduleKind: "task" | "query";
+  /** 模块系统里这个能力的种类,原样来自注册处(`ModuleCapabilityDescriptor["kind"]`)。 */
+  moduleKind: "query" | "action" | "task";
   /** 给用户看的来源标签(诊断文案里能看出这是宿主自带的)。 */
   source?: string;
   /** 额外的细粒度能力标签(会与 `module:<moduleKind>` 合并)。 */
@@ -183,7 +191,7 @@ export function hostCapabilityDescriptors(
  * 本文件只做「catalogue → 预检 descriptor 形状」的翻译。
  */
 export const HOST_CAPABILITY_DECLARATIONS: readonly HostCapabilitySource[] = BUILTIN_CAPABILITY_CATALOGUE.map(
-  (entry) => ({ id: entry.id, moduleKind: entry.kind === "action" ? "task" : entry.kind, source: entry.source }),
+  (entry) => ({ id: entry.id, moduleKind: entry.kind, source: entry.source }),
 );
 
 /**
@@ -193,7 +201,11 @@ export const HOST_CAPABILITY_DECLARATIONS: readonly HostCapabilitySource[] = BUI
  * app_api_*、capabilityResolver、工作流预检」—— 本函数就是**宿主注册表到预检**的那一段
  * 翻译,不另存一份清单。声明在调用时现算:卸载/重装后下一次预检立刻看到新集合。
  *
- * `action` 在契约里映射成 `task`(与内置声明同一条映射,见 `HOST_CAPABILITY_DECLARATIONS`)。
+ * 【T35】三种 kind **原样透传**(`query` / `action` / `task`),与
+ * `HOST_CAPABILITY_DECLARATIONS` 同一条规则。从前这里把 `action` 折成 `task`,于是
+ * 扩展的写能力在预检目录里被宣称成「工作流可用的 task」—— 而 `ModuleHost` 的
+ * `readonlyWorkflowTarget` 只认 query/task 的真实注册,那些 action 永远不会成为工作流
+ * 目标。声明替实现宣称了它没有的资格。
  *
  * 判据用**前缀**而不是清单引用那套"单段短名":分配后的 id 是
  * `module.<模块 slug>.<短名>`(slug 自身可含点),与清单里写的 `module.<短名>` 不是同一种
@@ -206,7 +218,7 @@ export function hostCapabilityDeclarationsFromCatalog(
   if (!catalog) return [];
   return catalog.capabilities
     .filter(c => c.id.startsWith(MODULE_CAPABILITY_PREFIX) && c.id.length > MODULE_CAPABILITY_PREFIX.length)
-    .map(c => ({ id: c.id, moduleKind: c.kind === "action" ? "task" as const : c.kind, source: "module-extension" }));
+    .map(c => ({ id: c.id, moduleKind: c.kind, source: "module-extension" }));
 }
 
 /** 装配一台机器上的能力清单。**所有来源都是参数**:providers 来自 provider 注册表、
