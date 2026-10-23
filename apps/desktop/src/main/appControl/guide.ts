@@ -160,7 +160,11 @@ export async function guideOverview(): Promise<{ topics: GuideTopic[]; moduleCat
   return {
     // Built-in authoring documentation is not a discovered RPC domain. Keep
     // buildGuideTopics() pure so its domain set still matches API_CATALOG.
-    topics: [...buildGuideTopics(sources), { id: "extensions", kind: "authoring-guide" as const, title: "extensions — 创建扩展", summary: "AI 编写扩展的 manifest、权限、API、可运行示例与常见错误" }],
+    topics: [...buildGuideTopics(sources), { id: "extensions", kind: "authoring-guide" as const, title: "extensions — 创建扩展", summary: "AI 编写扩展的 manifest、权限、API、可运行示例与常见错误" },
+      // 【T54】单独一道门：`mcode-workflow` 的工具**不在** catalog 里。
+      // 不列在这里，找「AI 能不能发现工作流节点」的人就会在 app_api_list 里零命中、
+      // 然后得出结论「没有这个能力」（实测发生过）。见 WORKFLOW_TOOL_SURFACE 的注释。
+      { id: "workflow-tools", kind: "authoring-guide" as const, title: "workflow-tools — 工作流工具面(mcode-workflow)", summary: `看/写工作流本身的那套 MCP 工具(${WORKFLOW_TOOL_SURFACE.length} 个:node_types_list / workflow_save …) — 不是 app_api_call 的方法` }],
     ...(sources.moduleCatalogError ? { moduleCatalogError: sources.moduleCatalogError } : {}),
   };
 }
@@ -217,11 +221,88 @@ export function buildGuideTopics(sources: GuideSources): GuideTopic[] {
   return topics;
 }
 
-/** 单个 topic 的详情。未知 topic 返回 null。 */
+/** 【T54】`mcode-workflow` 那套工具面的**清单** —— 让 `app_guide({topic:"workflow-tools"})` 能列出它们。
+ *
+ * ## 为什么要有这一条
+ *
+ * 这个软件有**两套工具面**，而它们各自有各自的入口：
+ *
+ *   - **appControl**（`apiCatalog.generated.ts` → `app_api_list` / `app_api_call`）：RPC 方法；
+ *   - **`mcode-workflow` MCP server**（`mcp/mcodeServer.ts` 的 `workflowMcpTools()`）：
+ *     `node_types_list` / `workflow_save` / `workflow_get` … —— **不在 `app_api_call` 的调用面里**，
+ *     按名字去 `app_api_list` 搜，一个都搜不到。
+ *
+ * 后果实测：有人找「AI 能不能发现工作流节点」，在 `app_api_list` 里零命中，于是得出
+ * 「没有这个能力」的结论 —— 而 `node_types_list` 早就挂在三家引擎上了。
+ * **这是可发现性缺陷，不是能力缺陷。**
+ *
+ * ## 为什么是「指路」而不是「并进目录」
+ *
+ * 把 14 个工具名塞进 `app_api_list` 的返回是**有害的**：那张表的语义是「能被
+ * `app_api_call` 调的方法」，混进 MCP 工具会让模型用 `app_api_call` 去调它们，
+ * 而那条路根本不通。所以这里只给**名字 + 怎么用它们**，并明确写「不是 app_api_call 的方法」。
+ *
+ * ⚠️ **这张表要跟着 `workflowMcpTools()` 走。** 套件 `t54-workflow-tools-discoverability-smoke`
+ * 会拿这里的名字与 `workflowMcpTools()` 的实际返回逐条比对 —— 少一个、多一个都红。
+ * 这是刻意的：两份清单分开维护必然漂，让套件把它们钉在一起。
+ */
+export const WORKFLOW_TOOL_SURFACE: readonly { name: string; readonly_: boolean; summary: string }[] = [
+  { name: "workflow_list", readonly_: true, summary: "列出工作流 / 自动化" },
+  { name: "workflow_get", readonly_: true, summary: "取一份工作流的完整定义(带版本号,改之前先取)" },
+  { name: "node_types_list", readonly_: true, summary: "列出可用的节点类型与各自参数 —— **写工作流之前必调**" },
+  { name: "agent_profiles_list", readonly_: true, summary: "列出用户存下来的代理档案(一组预填好的节点参数)" },
+  { name: "session_read_log", readonly_: true, summary: "读一段对话记录(按会话 id 取消息)" },
+  // ⚠️ `session_list` 默认**不**在工具面上（`workflowMcpTools({includeSessionLogs:false})`），
+  // 但 `workflowMcpTools()` 不传参时它是有的（本机三引擎都走这条）。清单照默认形状列。
+  // **它读得到本机有哪些对话 —— 所以不在 `WORKFLOW_READONLY_TOOLS` 里，要批准**
+  // （见 mcodeServer 的 `SESSION_LOG_TOOLS` 注释：公网那条路要整组摘掉）。
+  { name: "session_list", readonly_: false, summary: "列出本机的对话(标题、时间、项目) —— 涉及隐私,需批准" },
+  { name: "workflow_save", readonly_: false, summary: "新建或整份覆盖一份工作流(需批准;新建时不传 expectedRevision)" },
+  { name: "workflow_remove", readonly_: false, summary: "删掉一份工作流(需批准;删内置的 = 恢复默认)" },
+  { name: "node_type_write", readonly_: false, summary: "写一个自定义节点类型(需批准)" },
+  { name: "agent_profile_save", readonly_: false, summary: "存一份代理档案(需批准)" },
+  { name: "agent_profile_remove", readonly_: false, summary: "删一份代理档案(需批准)" },
+  { name: "agent_peers", readonly_: true, summary: "列出本机有哪些代理会话(只读名册)" },
+  { name: "agent_notify", readonly_: false, summary: "给另一个代理会话发一条消息(需批准)" },
+  { name: "agent_ask", readonly_: false, summary: "问另一个代理会话一个问题,答复到了再叫醒你(需批准)" },
+];
+
+/** 【T54】`app_guide({topic:"workflow-tools"})` 的正文。 */
+function workflowToolsDetail(): GuideEntry {
+  const lines = WORKFLOW_TOOL_SURFACE.map(
+    (t) => `- \`${t.name}\` [${t.readonly_ ? "只读·不问" : "需批准"}] — ${t.summary}`,
+  );
+  return {
+    title: "workflow-tools — 工作流工具面(mcode-workflow)",
+    body: [
+      "这是**另一道门**:下面这些工具由 `mcode-workflow` MCP server 提供,**不是** `app_api_call` 的方法。",
+      "它们是**工具**,直接按名字调用即可(与 `browser_*` / `agent_*` 同类)——**不要**用 `app_api_call({method:\"node_types_list\"})`,那条路不通。",
+      "",
+      "## 要写或改工作流,照这个顺序",
+      "1. `node_types_list` —— 看有哪些节点类型、各自的参数名与形状、哪些引用型参数可以留空;",
+      "2. `workflow_get` —— 改已有的图时先取,拿它的版本号;",
+      "3. `workflow_save` —— 存。**新图的头一步必须是 `mcode.main`**;新建时不传 `expectedRevision`,",
+      "   改已有的一定要带上（否则覆盖会被拒绝）。坐标不用写,不给 `position` 的节点会按依赖自动排。",
+      "4. 存完**还没启用** —— 要请用户在 设置 → 工作流/自动化 里检查并批准后才会跑。",
+      "",
+      "## 工具清单",
+      ...lines,
+      "",
+      "## 与 `app_workflow_*` 的分工(容易混)",
+      "- `app_workflow_run` / `app_workflow_publish` / `app_workflow_unpublish` —— **跑**和**发布**已有工作流;",
+      "- 上面这 14 个 —— **看**和**写**工作流本身。两套不是替代关系。",
+    ].join("\n"),
+    permissions: [],
+    examples: [],
+  };
+}
 export function buildGuideDetail(topic: string, sources: GuideSources): GuideEntry | null {
   const id = topic.trim();
   if (!id) return null;
   if (id === "extensions") return { title: "extensions — 创建扩展", body: extensionAuthoringGuide(MODULE_PERMISSION_NAMES), permissions: [...MODULE_PERMISSION_NAMES], examples: [] };
+  // 【T54】另一道门：`mcode-workflow` 那套工具。它不在 catalog 里（不是 RPC），
+  // 所以必须在**域查找之前**判掉 —— 否则 `workflow-tools` 会被当成一个不存在的域。
+  if (id === "workflow-tools") return workflowToolsDetail();
 
   const domainMethods = sources.catalog.filter((entry) => domainOfMethod(entry.method) === id);
   if (domainMethods.length > 0) return domainDetail(id, domainMethods, sources);

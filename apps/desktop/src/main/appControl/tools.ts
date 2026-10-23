@@ -1615,6 +1615,13 @@ export function appMcpTools(): McpToolSpec[] {
               "  ③ 浏览器与电脑操作:browser_* / agent_*(开网页、读 PDF/Office、跑命令、传文件)—— 自成一组,也不在这张表里;\n" +
               "  ④ 自定义面板/扩展的 window.mcode API、挂载位动作与变量:用 app_panel_api_list 查。\n" +
               "  ⑤ 某个域/已发布工作流工具/扩展能力**怎么用、什么权限、怎么调**:用 app_guide({topic}) 查(不带参数列全部 topic)。\n" +
+              // 【T54】第六道门：`mcode-workflow` 那套工具**不在**这张表里，也不是
+              // `app_api_call` 的方法。从前这句没写，于是有人找「AI 能不能看工作流节点」时
+              // 在这里零命中，得出「没有这个能力」的结论 —— 而 `node_types_list` 早就
+              // 挂在三家引擎上了。**这是可发现性缺陷，不是能力缺陷。**
+              "  ⑥ **看/写工作流本身**(有哪些节点类型、节点参数、新建或改一份工作流):" +
+              "那是 mcode-workflow 那套**工具**(node_types_list / workflow_get / workflow_save …)," +
+              "**不是** app_api_call 的方法 —— 直接按工具名调;要看清单用 app_guide({topic:\"workflow-tools\"})。\n" +
               "要找**有没有**某个能力,先 app_api_list({domain}) 或按关键词搜,别凭名字猜。",
           );
         }
