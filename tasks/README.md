@@ -121,6 +121,7 @@
 | T106 | **`level` 有分级但没有语义**：error/warning 并列计数 | **P0 判据体系** | F 的设计评估 | ZZ | ✅ done（`64a34162`，t73 51/51） |
 | T107 | 🔴 **`filter: () => true` 不是万能的**：cpSync 第三种崩溃形态（非 ASCII 源 + 目标已存在） | **P0 基础设施** | T92 | ZZ | ✅ done（`37c28251`，新套件 20/20；2 处待验证） |
 | T108 | 🔴 **`t76` 把缺陷状态写成断言**：`releaseEligible === false` 现在恒红 | **P0 测试正确性** | T10 | ZZ | ✅ done（`cad5cfbf` + `cdd5af6a`） |
+| T109 | **审批没有历史**：`pendingApprovals` 是内存 Map，进程退出即丢 | **P0 产品主线** | T99+T104 | ZZ | ⬜ 待开工 |
 
 ### T43 为什么是 P0（用户最高痛点）
 
