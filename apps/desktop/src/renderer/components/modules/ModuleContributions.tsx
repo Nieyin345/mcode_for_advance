@@ -7,18 +7,16 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { CUSTOM_ICONS } from "@renderer/components/customUi/registry.js";
 import { IconEye } from "@renderer/lib/icons.js";
+// 【T41】形状判据与它的提示出口拆在独立模块里 —— 纯件,且四个消费点共用一份。
+// 这里 import **并且** re-export:只写 `export … from` 不会在本文件作用域里绑定名字,
+// 而本文件的 `ModuleViewDock` 自己也要用它们。
+import { contributionsOf, moduleCatalogShapeError, ModuleCatalogNotice } from "./moduleCatalogShape.js";
+export { contributionsOf, moduleCatalogShapeError, ModuleCatalogNotice };
 
 /** Catalog refreshes after the settings overlay closes (the module manager lives there). */
 export function useModuleContributions(enabled = true) {
   const settingsOpen = useSessionStore(s => s.settingsOpen);
   return useRpc(() => api.modules.catalog(), [settingsOpen], { enabled, toastOnError:false });
-}
-export function contributionsOf<S extends ModuleContribution["slot"]>(
-  catalog: ModuleCatalog | undefined, slot: S,
-): Array<{module:ModuleManifest;contribution:Extract<ModuleContribution,{slot:S}>}> {
-  return catalog?.modules.flatMap(module => module.contributions.filter(
-    (c): c is Extract<ModuleContribution,{slot:S}> => c.slot === slot,
-  ).map(contribution => ({ module, contribution }))) ?? [];
 }
 
 /** ModuleHost's current resource contract is strictly a regular file within a known project.
@@ -65,7 +63,16 @@ export function ModuleViewDock({ location }: {location:"left"|"right"|"bottom"})
       .finally(()=>{if(alive)setBusy(false);});
     return ()=>{alive=false;};
   },[id,resource?.projectPath,resource?.path,revision]);
-  if (!entries.length) return null;
+  // 【T41】目录读不懂时**不能** return null —— 那会让已经打开的扩展视图无声消失。
+  // 渲染一条明确的提示,并保留坞的外壳,用户才看得出「不是没有扩展,是目录坏了」。
+  const shapeError = moduleCatalogShapeError(catalog.data);
+  if (!entries.length) {
+    if (!shapeError) return null;
+    const notice = <ModuleCatalogNotice catalog={catalog} className="m-2" />;
+    return location === "right" || location === "left" || location === "bottom"
+      ? <section data-testid={`module-view-${location}`} className="flex min-h-0 flex-col border-t border-edge bg-surface text-sm">{notice}</section>
+      : notice;
+  }
   const result = reply?.type === "result" ? reply.value : reply?.task.result;
   return <section data-testid={`module-view-${location}`} className="flex min-h-0 flex-col border-t border-edge bg-surface text-sm">
     <div className="flex shrink-0 items-center gap-1 border-b border-edge p-2">

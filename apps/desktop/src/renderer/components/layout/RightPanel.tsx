@@ -19,7 +19,8 @@ import { TaskListPanel } from "@renderer/components/ide/TaskListPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
 import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
-import { ModuleViewDock, useModuleContributions, contributionsOf, ModuleIcon } from "@renderer/components/modules/ModuleContributions.js";
+import { ModuleViewDock, ModuleCatalogNotice, useModuleContributions, contributionsOf, ModuleIcon } from "@renderer/components/modules/ModuleContributions.js";
+import { RenderErrorBoundary } from "@renderer/components/chat/RenderErrorBoundary.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { openCustomUiSettings, useCustomUiStore } from "@renderer/stores/customUiStore.js";
 import { resolveSlotEntries, type BuiltinRuntime } from "@renderer/components/customUi/CustomUiMenuItems.js";
@@ -391,7 +392,14 @@ export function RightPanel() {
         {!moduleVisible && activeCustom && activeCustom.action.type !== "panel" && (
           <CustomTabView key={activeCustom.id} item={activeCustom} target={target} />
         )}
-        {moduleVisible && !pinnedDoc && !pinnedFlow && <ModuleViewDock location="right" />}
+        {/* 【T41】错误边界**只包扩展区块**,不包整个右栏 —— 包大了会把文件树/Git/
+            回合流这些无关面板的异常也吞成一张卡,用户连切走的原因都看不到。
+            `moduleViews` 是渲染期直接算出来的(没有 useMemo 托管),而扩展坞是它唯一的
+            消费者;把边界收在这一块,坏目录最多让扩展坞显示错误卡,右栏其余部分照常。 */}
+        <RenderErrorBoundary>
+          <ModuleCatalogNotice catalog={moduleCatalog} className="mx-2 mt-2" />
+          {moduleVisible && !pinnedDoc && !pinnedFlow && <ModuleViewDock location="right" />}
+        </RenderErrorBoundary>
         {!moduleVisible && !activeCustom && tab === "turns" && <TurnFlowPanel />}
         {!moduleVisible && !activeCustom && tab === "flow" && <WorkflowBoardPanel />}
         {!moduleVisible && !activeCustom && tab === "tasks" && <TaskListPanel />}

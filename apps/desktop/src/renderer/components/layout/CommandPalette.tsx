@@ -58,7 +58,7 @@ import {
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useRgStatus } from "@renderer/lib/useRgStatus.js";
-import { useModuleContributions, contributionsOf } from "@renderer/components/modules/ModuleContributions.js";
+import { useModuleContributions, contributionsOf, ModuleCatalogNotice } from "@renderer/components/modules/ModuleContributions.js";
 import { createModuleClient } from "@contracts/moduleClient";
 import { CUSTOM_ICONS } from "@renderer/components/customUi/registry.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
@@ -570,6 +570,9 @@ export function CommandPalette() {
               /* no-op: items are one-shot actions, not selectable values */
             }}
           >
+            {/* 【T41】目录形状异常时,扩展命令不会出现在列表里 —— 说清楚为什么,
+                而不是让用户以为"扩展没装"。 */}
+            <ModuleCatalogNotice catalog={moduleCatalog} className="mx-3 mt-2" />
             {/* ripgrep missing banner: file/content searches fall back to the slow JS
                   scanners; a one-click install restores the fast path. */}
             {!rg.ready && (

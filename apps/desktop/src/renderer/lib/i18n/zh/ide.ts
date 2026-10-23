@@ -497,6 +497,8 @@ export const zh = {
   "ide.modules.catalogEmpty": "宿主尚未登记任何能力",
   "ide.modules.catalogEmptyDetail": "没有可查看的能力，文件菜单也不会出现扩展操作。",
   "ide.modules.catalogError": "能力目录加载失败",
+  "ide.modules.catalogInvalid": "模块目录格式异常",
+  "ide.modules.catalogInvalidDetail": "宿主返回的目录无法解析({detail})。扩展视图、扩展命令与右栏扩展页签暂时不会出现;这不是「你没有装扩展」。",
   "ide.modules.kindQuery": "查询",
   "ide.modules.kindTask": "任务",
   "ide.modules.kindAction": "写入操作",

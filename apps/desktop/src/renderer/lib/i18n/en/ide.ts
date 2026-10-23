@@ -479,6 +479,8 @@ export const en = {
   "ide.modules.catalogEmpty": "The host has not registered any capabilities",
   "ide.modules.catalogEmptyDetail": "Nothing to show, and file menus will not offer extension actions.",
   "ide.modules.catalogError": "Could not load the capability catalog",
+  "ide.modules.catalogInvalid": "Module catalog has an unexpected shape",
+  "ide.modules.catalogInvalidDetail": "The catalog the host returned could not be read ({detail}). Extension views, extension commands and the right-panel extension tabs will not appear; this does not mean you have no extensions installed.",
   "ide.modules.kindQuery": "Query",
   "ide.modules.kindTask": "Task",
   "ide.modules.kindAction": "Action",
