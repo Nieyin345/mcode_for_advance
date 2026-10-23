@@ -264,6 +264,59 @@ console.log("\n4. 发现通道（真 handler）");
   check("describe 未知工具显式失败并给候选", unknown.ok === false, unknown);
 }
 
+/* ── 4b.【T102】create 路线的 describe 必须告诉模型怎么传参 ──
+ *
+ * T97 实测：`describe({tool:"create_document"})` 原来落进「取整个 domain 的 guide
+ * 前 4000 字」的兜底分支，返回的是 **apply 的 ops 语法** —— 没有 input.source、
+ * 没有「docx 要受限 HTML」、没有「md 会被拒」。模型只能靠试错发现，实测传 .md 被拒。
+ *
+ * 这里的判据对着**围栏的真实实现**写（`genofficeCli.createFromFile` /
+ * `createPdfFromFile` 的扩展名白名单），不是对着文案自己写；文案改了而围栏没改时，
+ * 这条会红。
+ */
+console.log("\n4b. create 路线：describe 必须说清 input.source 与各 app 的源文件格式");
+{
+  const docCreate = await call<{ ok: boolean; schemaText?: string; route?: string }>(
+    IPC.DOCUMENT_TOOL_DESCRIBE, { tool: "create_document", app: "docs" });
+  const dtext = docCreate.schemaText ?? "";
+  check("★ describe(create_document/docs) 提到 input.source",
+    docCreate.ok === true && dtext.includes("input.source"), { head: dtext.slice(0, 200) });
+  check("★ describe(create_document/docs) 说明 docx 只收受限 HTML fragment",
+    dtext.includes("HTML") && /\.html/.test(dtext), dtext.slice(0, 400));
+  check("★ describe(create_document/docs) 明写 Markdown 会被拒",
+    dtext.includes(".md") && /拒绝/.test(dtext), dtext.slice(0, 400));
+  // 负控：**必须不再**返回 apply 的 ops 语法 —— 那正是 T97 量到的病灶。
+  check("★ 负控：create 的 describe 不再混进 apply 的 ops 语法",
+    !dtext.includes("setParagraphFormat") && !dtext.includes("genoffice docs apply --ops"),
+    dtext.slice(0, 300));
+
+  // 同一工具名在 pdf 下走另一条围栏：md 是**允许**的。两条描述不能互相抄。
+  // ⚠️ 判据要盯「pdf 这条有没有说它被拒」——不能笼统 `/会被拒绝/`：
+  // 文案里有一句「与 docs 的 create 不同」，泛指句会被误命中（第一版就是这么红的）。
+  const pdfCreate = await call<{ ok: boolean; schemaText?: string }>(
+    IPC.DOCUMENT_TOOL_DESCRIBE, { tool: "create_document", app: "pdf" });
+  const ptext = pdfCreate.schemaText ?? "";
+  const pdfCallsMdRejected = /(Markdown（\.md）会被拒绝|\.md[^。\n]{0,20}会被拒绝)/.test(ptext)
+    || !/\.md/.test(ptext);
+  check("★ describe(create_document/pdf) 说明 pdf 接受 .md（与 docs 相反）",
+    pdfCreate.ok === true && ptext.includes(".md") && !pdfCallsMdRejected,
+    ptext.slice(0, 400));
+
+  const sheetCreate = await call<{ ok: boolean; schemaText?: string }>(
+    IPC.DOCUMENT_TOOL_DESCRIBE, { tool: "create_document", app: "sheets" });
+  check("describe(create_document/sheets) 说明只收 .csv/.json",
+    sheetCreate.ok === true && /\.csv/.test(sheetCreate.schemaText ?? "") && /\.json/.test(sheetCreate.schemaText ?? ""),
+    (sheetCreate.schemaText ?? "").slice(0, 300));
+
+  // 正控：apply 路线**没有**被这次改动带偏 —— insert_content 仍返回 guide 原文。
+  const applyStill = await call<{ ok: boolean; schemaText?: string }>(
+    IPC.DOCUMENT_TOOL_DESCRIBE, { tool: "insert_content", app: "docs" });
+  check("★ 正控：insert_content 仍返回 apply 的 guide 原文（create 分支没吞掉 apply）",
+    applyStill.ok === true && (applyStill.schemaText ?? "").includes("insert_content")
+      && (applyStill.schemaText ?? "").includes("html"),
+    (applyStill.schemaText ?? "").slice(0, 200));
+}
+
 /* ── 5. Markdown 载体 ── */
 console.log("\n5. Markdown 载体：带定位符读取，四种编辑真落盘，表格不退化成文本");
 {

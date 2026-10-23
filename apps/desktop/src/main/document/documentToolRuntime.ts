@@ -168,6 +168,67 @@ export function documentToolsList(args: { app?: DocumentToolApp; query?: string;
   };
 }
 
+/* ───────────────【T102】`create` 路线的 describe 说明 ───────────────
+ *
+ * ## 缺口（T97 实测）
+ *
+ * `describe({tool:"create_document"})` 原来落进「取整个 domain 的 guide 前 4000 字」
+ * 那个兜底分支，返回的是 **apply 的 ops 语法** —— 里面没有 `input.source`、没有
+ * 「docx 要受限 HTML」、没有「Markdown 会被拒」。模型按正常理解传 `.md` 就被围栏拒，
+ * **只能靠试错发现**。
+ *
+ * 为什么不能像 apply 那样「取上游 guide 原文」：`genoffice guide docs <op>` 只认
+ * `block` / `content` 两个**组**，`create_document` 不是 apply op，上游没有它的条目
+ * （实测 `genoffice guide docs create_document` → `unknown group or op`）。
+ * 上游对 create 的说明只在 `create --help` 与工具表里，都不经 guide 出口。
+ *
+ * 所以这里**手写**，并且每条都对着围栏的真实实现写：
+ *   - docx：只收 `.html/.htm`（`genofficeCli.createFromFile`，理由见那里的注释：
+ *     Markdown 图片路径没逐一围栏）；
+ *   - xlsx：只收 `.csv/.json`；
+ *   - pdf：收 `.md/.markdown/.html/.htm/.docx/.xlsx/.pptx`（`createPdfFromFile`）。
+ * `case` 用的是 `DocumentToolApp` 的字面量，改一处围栏不回来改这里时，套件会红 ——
+ * 断言读的就是这段文字里的扩展名清单（见 t24 套件的 T102 组）。
+ */
+function createRouteHelp(app: DocumentToolApp, tool: string): string {
+  const head = [
+    "参数形状：input.source 是**源文件**的绝对路径（必须在工作区内），filePath 是要新建的目标文件。",
+    "目标已存在会被拒绝（不覆盖）；create 没有 dryRun。",
+  ];
+  if (tool === "build_deck") {
+    return [
+      ...head,
+      "build_deck 的源不是单文件：input.specDir 是工作区里的 deck 目录（style.md + outline.json + pages/NN.json），",
+      "或 input.outline 指定 outline.json。先 document_guide({app:\"slides\",topic:\"design\"}) 拿设计规范。",
+      "可选 input.render:true 出 PNG、input.audit:true 跑几何审计。",
+    ].join("\n");
+  }
+  switch (app) {
+    case "docs":
+      return [
+        ...head,
+        "源文件只接受**受限 HTML fragment**（.html / .htm）—— docx 与 pdf 共用上游那一份 HTML 解析器。",
+        "**Markdown（.md）会被拒绝**：上游会把 md 里的图片路径当文件去解析，而 Mcode 没有逐条围栏那些路径。",
+        "所以先从 md 转成受限 HTML 再传（标题用 h1-h6、列表用 ul/ol、表格用 table；不要写 script/style）。",
+        "源里的图片与图表不会进入新文件。",
+      ].join("\n");
+    case "sheets":
+      return [
+        ...head,
+        "源文件只接受 .csv 或 .json（二维数组，或 {sheets:[{name, rows}]}）；以 = 开头的字符串按公式处理。",
+        "input.header:true 把第一行当表头（冻结 + AutoFilter）。",
+      ].join("\n");
+    case "pdf":
+      return [
+        ...head,
+        "源文件接受 .md / .markdown / .html / .htm / .docx / .xlsx / .pptx —— **这里 md 是允许的**（与 docs 的 create 不同）。",
+        "pdf 走原厂渲染器打印，需要本机有 GenOffice 应用；没有时 CLI 会回 app_unavailable。",
+      ].join("\n");
+    default:
+      return head.join("\n");
+  }
+}
+
 /** CLI 承载的 op 直接取 `guide <domain> <op>` —— 永远是 CLI 校验器的那一份。 */
 function cliGuideDomain(app: DocumentToolApp): "docs" | "slides" | "sheet" | "pdf" | "markdown" | null {
   switch (app) {
@@ -339,6 +400,8 @@ export async function documentToolDescribe(
     } else {
       parts.push("", `参数表取不到（${guide.reason}）。op 名可能不在 CLI 的 apply 表里，请用 document_tools_list 换一个。`);
     }
+  } else if (cliOp === "create" && domain !== null) {
+    parts.push("", createRouteHelp(entry.app, entry.name));
   } else if (domain !== null && cliOp !== undefined) {
     const guide = await guideOps(ports, domain === "sheet" ? "sheet" : domain, undefined, ports.signal);
     if (guide.ok && typeof guide.envelope.summary === "string") {

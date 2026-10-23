@@ -1399,7 +1399,7 @@ export function appMcpTools(): McpToolSpec[] {
         "路径必须在已知工作区内。改 Word 的格式/批注用 apply_ops + 对应 op，别拿整篇重写去顶。" +
         "**新建 PPT 用 slides 的 build_deck**（设计流水线：先 document_guide({app:\"slides\",topic:\"design\"}) " +
         "拿规范 → 写 style.md + outline.json + pages/NN.json → build_deck 带 render:true,audit:true → 看 PNG 与 audit → 最多两轮修）。" +
-        "新建 docx/xlsx/pdf 用 create_document（input.source 是源文件；docx 接受受限 HTML fragment）。",
+        "新建 docx/xlsx/pdf 用 create_document（input.source 是源文件；**docx 只收受限 HTML fragment，.md 会被拒**，先转成 HTML；pdf 才接受 .md）.",
       inputSchema: {
         tool: z.string().min(1).max(120).describe("工具名（先 document_tools_list / document_tool_describe）"),
         app: z.enum(["docs", "sheets", "slides", "pdf", "markdown", "html"]).optional(),
