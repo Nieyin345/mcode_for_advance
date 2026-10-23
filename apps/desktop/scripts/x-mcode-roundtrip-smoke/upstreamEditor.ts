@@ -255,6 +255,68 @@ export function requireUpstreamAvailable(repoRoot: string): string | null {
   }
 }
 
+/**
+ * vendor 里核心节点（inject/watch/switch/function/exec）的 **真上游 HTML**。
+ * 只给编辑器侧「注册定义」用到的那一小段面补桩：表单控件、typedInput 校验器、
+ * 模块允许列表 —— 这些在无 DOM 的 vm 里只需要"存在且可调"。
+ */
+export const UPSTREAM_CORE_HTML: ReadonlyArray<{ type: string; path: string }> = [
+  { type: "inject", path: "common/20-inject.html" },
+  { type: "watch", path: "storage/23-watch.html" },
+  { type: "switch", path: "function/10-switch.html" },
+  { type: "function", path: "function/10-function.html" },
+  { type: "exec", path: "function/90-exec.html" },
+];
+
+/** 核心节点 HTML 里注册定义以外的编辑器 API 桩（无 DOM 环境的最小面）。 */
+const EDITOR_STUB_SCRIPT = `
+  RED.validators = {
+    number: function () { return function () { return true; }; },
+    typedInput: function () { return function () { return true; }; },
+  };
+  RED.utils.parseContextKey = function () { return {}; };
+  RED.utils.validateTypedProperty = function () { return ""; };
+  RED.utils.validatePropertyExpression = function () { return true; };
+  RED.utils.parseModuleList = function () { return []; };
+  RED.utils.checkModuleAllowed = function () { return true; };
+  RED.settings.functionTimeout = RED.settings.functionTimeout || 0;
+  RED.settings.functionExternalModules = false;
+  RED.actions = RED.actions || { invoke: function () {}, add: function () {} };
+  RED.actions.invoke = RED.actions.invoke || function () {};
+  RED.library = RED.library || { create: function () { return {}; } };
+  RED.popover.tooltip = function () {};
+  RED.tabs = RED.tabs || { create: function () { return {}; } };
+  RED.tray = RED.tray || { resize: function () {} };
+  RED.editor.editJavaScript = function () {};
+  RED.editor.createEditor = function () { return { refresh: function () {}, resize: function () {} }; };
+`;
+
+/**
+ * 在 vm 里执行**真上游核心节点 HTML**，返回实际注册到的类型名列表。
+ * 缺一件资产就显式抛（调用方据此把该类型记成"上游未提供"，不静默漏测）。
+ *
+ * `deferTypes` 里的类型不在这里注册 —— 调用方先跑节点包脚本、再调一次本函数，
+ * 用来验证 `registry:node-type-added` 这条晚注册路径在**真上游事件**上真的生效。
+ */
+export function loadUpstreamCoreNodes(
+  editor: UpstreamEditor,
+  repoRoot: string,
+  options: { types?: readonly string[] } = {},
+): string[] {
+  const wanted = new Set(options.types ?? UPSTREAM_CORE_HTML.map((entry) => entry.type));
+  if (wanted.size === 0) return [];
+  editor.runScript(EDITOR_STUB_SCRIPT, "t28-editor-stubs.js");
+  const coreRoot = join(repoRoot, "node-red", "packages", "node_modules", "@node-red", "nodes", "core");
+  const registered: string[] = [];
+  for (const entry of UPSTREAM_CORE_HTML) {
+    if (!wanted.has(entry.type)) continue;
+    const path = join(coreRoot, ...entry.path.split("/"));
+    editor.runNodeHtml(readFileSync(path, "utf8"), path);
+    registered.push(entry.type);
+  }
+  return registered;
+}
+
 /** `node-red` 在仓库里时取它的版本（证据里写清楚验的是哪一版）。 */
 export function upstreamVersion(repoRoot: string): string | null {
   try {

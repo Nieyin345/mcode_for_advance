@@ -17,7 +17,10 @@ import { MCODE_NODE_PACK_BUNDLE } from "./nodePackBundle.generated.js";
 export const MCODE_NODE_PACK_DIR = "mcode-node-pack";
 export const MCODE_NODE_PACK_MANIFEST = "node-pack.manifest.json";
 export const MCODE_NODE_PACK_SCHEMA = "mcode.workflow-engine.node-pack/v1";
-export const MCODE_NODE_PACK_INSTALL_VERSION = 2;
+/** T28: bump when the editor HTML/registration changes (the version is part of
+ * the manifest, so an existing data dir is re-verified and re-written). The
+ * `x-mcode` defaults declaration and the tab-definition patch landed here. */
+export const MCODE_NODE_PACK_INSTALL_VERSION = 3;
 
 const htmlByType: Record<string, () => string> = {
   "mcode-agent": agentNodeHtml,

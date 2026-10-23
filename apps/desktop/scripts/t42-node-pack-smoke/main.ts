@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ensureNodePack, expectedNodePackFiles, MCODE_NODE_PACK_MANIFEST,
-  MCODE_NODE_PACK_DIR, MCODE_NODE_PACK_SCHEMA,
+  MCODE_NODE_PACK_DIR, MCODE_NODE_PACK_SCHEMA, MCODE_NODE_PACK_INSTALL_VERSION,
 } from "@main/workflowEngines/nodePackManifest.js";
 import { NodePackHost } from "@main/workflowEngines/nodePackHost.js";
 
@@ -33,7 +33,7 @@ try {
   check("managed package initial install", initial.ok && initial.action === "written", initial);
   const manifest = JSON.parse(readFileSync(join(root, MCODE_NODE_PACK_MANIFEST), "utf8"));
   check("manifest schema/version and 26 SHA-256 records", manifest.schema === MCODE_NODE_PACK_SCHEMA
-    && manifest.pack.version === 2 && Object.keys(manifest.files).length === 26);
+    && manifest.pack.version === MCODE_NODE_PACK_INSTALL_VERSION && Object.keys(manifest.files).length === 26);
   const installed = join(root, MCODE_NODE_PACK_DIR);
   const asset = join(installed, "mcode-agent.html");
   check("installed HTML byte-hash matches manifest", hash(readFileSync(asset)) === manifest.files["mcode-agent.html"]);

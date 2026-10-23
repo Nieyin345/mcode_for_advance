@@ -143,10 +143,18 @@ export function tabMetaDefaultsScript(): string {
     console.error("[mcode-node-pack] built-in tab definition missing; x-mcode would be silently dropped on export/import");
     throw new Error("Mcode node pack: built-in tab definition unavailable");
   }
-  if (missing.length > 0 && RED.events && typeof RED.events.on === "function") {
-    RED.events.on("registry:node-type-added", function (type) {
-      if (missing.indexOf(type) !== -1) patch(type);
-    });
+  if (missing.length > 0) {
+    if (RED.events && typeof RED.events.on === "function") {
+      RED.events.on("registry:node-type-added", function (type) {
+        if (missing.indexOf(type) !== -1) patch(type);
+      });
+    } else {
+      // 延迟补丁的唯一通道没了：这些类型若稍后才注册，x-mcode 会静默丢。
+      // tab 的缺失已在上面抛错；这里对非 tab 类型记一条响亮的错误（不抛 ——
+      // 某些精简编辑器可能根本不装这些核心节点集，那不是身份丢失）。
+      console.error("[mcode-node-pack] " + missing.join(", ")
+        + " not registered yet and registry:node-type-added is unavailable; x-mcode would be dropped for these types on export/import");
+    }
   }
   var tabDef = RED.nodes.getType("tab");
   if (!Object.prototype.hasOwnProperty.call(tabDef.defaults, PROP)) {
