@@ -121,13 +121,34 @@ export async function createFromFile(
 
 ### ⚠️ 这条必须做成围栏，不是把 `"pptx"` 加进联合类型
 
-直接把 `type` 放宽会绕过 T74 的整个安全模型。正确做法（任选，要论证）：
+直接把 `type` 放宽会绕过 T74 的整个安全模型。
 
-- **(A) 目录级围栏**：`--spec <dir>` 时，先把整个目录递归过 `requireWorkspacePath`，逐文件确认都在工作区内，并且**只允许 `.md` / `.json`**（spec 不需要别的类型）。
-- **(B) 快照到受控临时目录**：把 spec 目录复制进 `renderTempRoot()` 下的新目录，再对副本调 `create`。源目录只读。
-- **(C) 如果 (A)/(B) 都证明不了安全**，就**如实不做**，并在工具描述里写清「Mcode 目前不支持新建 PPT，只能编辑已有 PPT」——**不许假装支持**。
+#### 但上游已经把整条流水线做成了一个命令（总控实测 `create --help`）
 
-**推荐 (B)**：它同时解决了「spec 里的图片相对路径」问题（`--from` 的注释提到的正是这个），因为副本可以带着图片一起进受控目录。
+```bash
+genoffice create --type pptx --spec <file|dir|-> [--outline <file>] --out <path> \
+                 [--render <dir>] [--audit] [--force]
+```
+
+原文：
+
+- `--spec <file>`: *"a deck spec (pages of px-positioned text, shapes and images on a 1280x720 canvas) built into one slide per page, **or a directory of one-page spec files taken in name order**"*
+- `--outline <file>`: *"pptx --spec <dir>: the deck outline the pages were written from (default: outline.json in or beside the directory); **every page file is checked against its entry and the build refuses to run until every outline page has its file**"*
+- `--render <dir>`: *"after writing, render one PNG per slide into <dir> ... starts a hidden GenOffice process for a few seconds"*
+- `--audit`: *"run the geometry audit on the written deck and report it under detail.audit"*
+
+**一条命令 = 设计校验 + 构建 + 出图 + 几何审计。** 这不是「我们拼出来的流水线」，是上游产品自带的。
+
+**所以方案 B 的价值比我原先估计的高得多**：把 spec 目录快照进受控临时目录，一次调用就能拿到完整成果（deck + PNG + audit），模型拿 PNG 一看就知道丑不丑、audit 一跑就知道有没有出界重叠。
+
+**这是用户「又烂又丑」这条抱怨最直接的解法。**
+
+#### 三个方案（任选，要论证）
+
+- **(A) 目录级围栏**：`--spec <dir>` 时，先把整个目录递归过 `requireWorkspacePath`，逐文件确认都在工作区内，并且**只允许 `.md` / `.json` / 图片**。
+- **(B) 快照到受控临时目录**（**推荐**）：把 spec 目录复制进 `renderTempRoot()` 下的新目录，再对副本调 `create`。源目录只读。
+  - **同时解决** `--from` 注释里提到的「Markdown 图片相对路径」问题——副本可以带着图片一起进受控目录。
+- **(C) 如果 (A)/(B) 都证明不了安全**，**如实不做**，并在工具描述里写清「Mcode 目前不支持新建 PPT，只能编辑已有 PPT」。**不许假装支持。**
 
 #### 缺口五：`document_md_read` 只能读 docx —— 这是「读文件也不全面」的直接原因
 
