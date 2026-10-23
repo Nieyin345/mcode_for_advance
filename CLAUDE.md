@@ -181,6 +181,70 @@ git commit -m "<信息>" -- <明确路径1> <明确路径2>
 
 ⚠️ **`-m` 必须放在 `--` 前面。** `git commit -- a.ts -m "x"` 会报 `pathspec '-m' did not match any file(s)`——`--` 之后的一切都被当成路径。正确顺序是 `git commit -m "x" -- a.ts`。
 
+### 🔴 但 `-- <path>` 并不能「只提交我的改动」（2026-10-24 A 实测，总控复现）
+
+**A 在临时仓库做了对照实验**：
+
+```bash
+echo "A" > f.txt && git add f.txt && git commit -m init
+echo "B-index"   > f.txt && git add f.txt      # 索引里是 B-index
+echo "B-worktree" > f.txt                       # 工作区里是 B-worktree
+git commit -m "test" -- f.txt
+git show HEAD:f.txt
+# → B-worktree        ← **提交的是工作区，不是索引**
+```
+
+**总控独立复现，结果相同。**
+
+**所以 `git commit -m "x" -- <路径>` 的语义是**：**用工作区里那个文件的当前内容提交**，`--` 只限制「哪些路径参与」，**不限制「用哪个版本的内容」**。
+
+**在多会话并行下，这意味着**：如果同事的改动**已经在你的工作区**（他改的也是同一个文件），`-- <path>` **会把它一起提交**——**即使你没 `git add` 它**。
+
+### 那为什么还要带路径
+
+**`-- <path>` 仍然必要**，因为：
+
+- **它防止提交你在别处 `git add` 过、但这次不想提交的文件**（暂存区是进程间共享的）；
+- **它让提交归属可读**（`git show --numstat` 能核对）。
+
+**但它不是「只提交我的改动」的保证。**
+
+### 真要分开，只有两条路
+
+**一、同事还没改那个文件**（最常见）：
+
+```bash
+git status --porcelain <path>     # 空 → 安全，直接提交
+```
+
+**二、同事正在改，而你只想提交自己那一行**（A 的实际做法，绕但每步可核验）：
+
+```bash
+# 1. 确认合并态并落快照
+sha256sum <file> > /tmp/merged.sha
+
+# 2. 临时把工作区置为「HEAD + 我的一行」
+#    （备份合并态 → 编辑 → 提交）
+
+# 3. 立刻把合并态写回
+cp /tmp/merged.bak <file>
+
+# 4. 核验 sha 与步骤 1 相同
+sha256sum -c /tmp/merged.sha
+```
+
+**A 提交后 `tools.ts` 的 numstat 是 `1/1`，同事的 17/4 仍留在工作区。**
+
+### 顺带：提交信息里的反引号会被 shell 执行
+
+**A 踩过**：`git commit -m "... \`genoffice guide docs create_document\` ..."` **真的跑了一次那个命令**。
+
+**多行或有特殊字符的提交信息用文件**：
+
+```bash
+git commit -F .git/COMMIT_MSG -- <path>
+```
+
 ⚠️ **改共享索引（`tasks/README.md`、`tasks/README.md` 类）前先 `git status`，只追加，提交后核对 `numstat`。**
 
 事故：A 加一行索引行时整份读改写，把另一个会话当时**未提交**的状态列工作一起提交了（48 行新增里只有 1 行是它的）。没造成丢失（逐行核对过是完整合并态），但**提交归属错了**，事后没人能从提交信息看出发生了什么。
