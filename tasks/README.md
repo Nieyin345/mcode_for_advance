@@ -16,54 +16,55 @@
 
 ## 当前新任务与并行关系
 
-| ID | 标题 | 优先级 | 依赖 | 并行组 |
-|---|---|---|---|---|
-| T0 | GenOffice 原生工具同轮往返接线 | P0 | 无 | A |
-| T1 | Worktree ownership fail-closed | P0 | 无 | A |
-| T2 | Node-RED Deploy/Library 对账恢复 | P0 | 无；须声明独占文件 | B |
-| T3 | Node-RED 触发器单一归属 | P0 | 与 T2/T4 协调文件边界 | B |
-| T4 | 工作流 owner 跨进程 CAS | P0 | 与 T2/T3 协调文件边界 | B |
-| T5 | UI 视觉探针假阳性收敛 | P1 | 无 | A |
-| T6 | 审批键盘/焦点/拒绝回归 | P1 | 无 | A |
-| T7 | GenOffice 六编辑器真实 Electron U1 | P1 | T0 完成；独占 Electron | C（串行） |
-| T8 | Node-RED 真实 Electron U1 | P1 | T2/T3/T4 完成；独占 Electron，与 T7 串行 | C（串行） |
-| T9 | GenOffice 许可证来源证据 | P0 release blocker | 无 | D |
-| T10 | Node-RED 许可证材料集成 | P0 release blocker | 核对既有来源证据 | D（与 T9/T11 文件分离） |
-| T11 | GenOffice 许可证材料集成 | P0 release blocker | T9 | D（T9 后） |
-| T12 | UI 工作台现状与用户旅程基线矩阵（只读） | P1 | 无 | E（可并行） |
-| T13 | GenOffice 六原生编辑器功能与接线基线矩阵（只读） | P1 | 无 | E（可并行） |
-| T14 | Node-RED 唯一工作流内核现状与迁移基线（只读） | P1 | 无 | E（可并行） |
-| T15 | 通用 Agent、Provider 与 Host 能力基线矩阵（只读） | P1 | 无 | E（可并行） |
-| T16 | 真实 Electron U1 验收框架（可复用驱动骨架） | P0 基础设施 | 无 | F |
-| T17 | 文件类型路由统一：四份判据收成一份 | P0 地基 | 无 | F |
-| T18 | 扩展安装时的权限卡片（同意一次 / 始终同意） | P0 产品要求 | 无 | G |
-| T19 | **扩展 API 面：92 条 danger RPC 对已装扩展敞开，收窄它** | **P0 安全** | T18 | H |
-| T20 | AI 写扩展的闭环（生成 → 校验 → 装机 → 可回滚） | P1 | T18 + T19 | I |
-| T21 | 悬挂的适配器：NodeRedFlowStorage 与 workflowMigrationPreflight 接上生产路径 | P0 架构 | **T2 + T4 完成** | J |
-| T22 | smokes-for 覆盖映射漏掉 .tsx，导致「该跑哪几套」判断失真 | P0 工具链 | 无 | F |
-| T23 | **生产构建与发行 staging 缺四个编辑器的 preload** | **P0 发行阻断** | 无 | K |
-| T24 | 文档 AI 工具面重做：可发现 + Markdown 操作 + QA 门禁 | **P0 产品核心** | T0 | L |
-| T25 | 按 pinned HEAD 重建 GenOffice 六家 vendor 产物 | **P0 发行前置** | T23 | M |
-| T26 | 「允许一次」文案与实际语义不符 | P1 | T18 | N |
-| T27 | **`loadWorkflowIntoNative` 拒绝一切可保存的 Node-RED 图** | **P0** | T21+T8 | O |
-| T28 | **Import 进画布的图丢失 `x-mcode` 身份** | **P0** | T8 | O |
-| T29 | `documentView:close` 对四个编辑器永远拒绝 | P1 | T7 | P |
-| T30 | 文档工具面缺真实 Electron U1 | P1 | T24+T7 | Q |
-| T31 | **三处既有失败挡住 `run-smokes --all`** | **P0 工具链** | 无 | R |
-| T32 | **`genofficeNativeVendor.ts` 的 alias 虚拟模块破坏 15 套 smoke** | **P0 工具链** | 无 | S |
-| T33 | **`document.read` 误进 BLOCKED；`toolCall`/`markdownEdit` 档位偏弱** | **P0 安全** | 无 | T |
-| T34 | **权限映射生成器缺 framework 域；danger 默认可委托** | **P0 安全** | T33 | U |
-| T35 | `core.app.call` 能力类型在 catalogue/声明表/注册三处不一致 | P1 | 无 | V |
-| T36 | 三套 smoke 夹具过时（T65/T50/正则漏算 schema 包装） | P1 | 无 | V |
-| T37 | `mobile-pairing-smoke` 3 秒超时太紧，全量并发下随机红 | P2 | 无 | W |
-| T38 | 三套打包期失败：桩缺导出、`.node` loader、zustand 5 default | P1 | 无 | W |
-| T39 | **GenOffice UI 换壳：保留编辑内核，替换 ribbon/菜单/AI 面板** | **P0 产品要求** | T7+T24 | X |
-| T40 | **`withRendererToolRegistry` 零调用点 —— `document.tool_call` 渲染端路线不可达** | **P0** | T24 | Y |
-| T41 | `contributionsOf` 只有一层可选链，`modules` 缺失时**主界面**白屏 | P1 | T36 | Z |
-| T42 | **U1 骨架静默模式：默认不弹窗，仅截图时短暂显示** | **P1 开发体验** | T16+T7 | AA |
-| T43 | **文档 AI 的「丑」根因：设计流水线没接上，三个 app 的 QA 门禁是空的** | **P0 产品能力** | T24+T40 | BB |
-| T44 | genoffice 三套并发安全 —— **防回退回归**（T31 已修复，本卡只做回归网） | **P2** | T31 | CC |
+| ID | 标题 | 优先级 | 依赖 | 并行组 | 状态 |
+|---|---|---|---|---|---|
+| T0 | GenOffice 原生工具同轮往返接线 | P0 | 无 | A | ⬜ 待开工 |
+| T1 | Worktree ownership fail-closed | P0 | 无 | A | ✅ done |
+| T2 | Node-RED Deploy/Library 对账恢复 | P0 | 无；须声明独占文件 | B | ⬜ 待开工 |
+| T3 | Node-RED 触发器单一归属 | P0 | 与 T2/T4 协调文件边界 | B | ⬜ 待开工 |
+| T4 | 工作流 owner 跨进程 CAS | P0 | 与 T2/T3 协调文件边界 | B | ✅ done |
+| T5 | UI 视觉探针假阳性收敛 | P1 | 无 | A | ⬜ 待开工 |
+| T6 | 审批键盘/焦点/拒绝回归 | P1 | 无 | A | ✅ done |
+| T7 | GenOffice 六编辑器真实 Electron U1 | P1 | T0 完成；独占 Electron | C（串行） | ⬜ 待开工 |
+| T8 | Node-RED 真实 Electron U1 | P1 | T2/T3/T4 完成；独占 Electron，与 T7 串行 | C（串行） | ⬜ 待开工 |
+| T9 | GenOffice 许可证来源证据 | P0 release blocker | 无 | D | ⬜ 待开工 |
+| T10 | Node-RED 许可证材料集成 | P0 release blocker | 核对既有来源证据 | D（与 T9/T11 文件分离） | ✅ done |
+| T11 | GenOffice 许可证材料集成 | P0 release blocker | T9 | D（T9 后） | ✅ done（发行仍阻塞） |
+| T12 | UI 工作台现状与用户旅程基线矩阵（只读） | P1 | 无 | E（可并行） | ✅ done |
+| T13 | GenOffice 六原生编辑器功能与接线基线矩阵（只读） | P1 | 无 | E（可并行） | ✅ done |
+| T14 | Node-RED 唯一工作流内核现状与迁移基线（只读） | P1 | 无 | E（可并行） | ✅ done |
+| T15 | 通用 Agent、Provider 与 Host 能力基线矩阵（只读） | P1 | 无 | E（可并行） | ⬜ 待开工 |
+| T16 | 真实 Electron U1 验收框架（可复用驱动骨架） | P0 基础设施 | 无 | F | ⬜ 待开工 |
+| T17 | 文件类型路由统一：四份判据收成一份 | P0 地基 | 无 | F | ✅ done |
+| T18 | 扩展安装时的权限卡片（同意一次 / 始终同意） | P0 产品要求 | 无 | G | ✅ done |
+| T19 | **扩展 API 面：92 条 danger RPC 对已装扩展敞开，收窄它** | **P0 安全** | T18 | H | ✅ done |
+| T20 | AI 写扩展的闭环（生成 → 校验 → 装机 → 可回滚） | P1 | T18 + T19 | I | ✅ done |
+| T21 | 悬挂的适配器：NodeRedFlowStorage 与 workflowMigrationPreflight 接上生产路径 | P0 架构 | **T2 + T4 完成** | J | ✅ done |
+| T22 | smokes-for 覆盖映射漏掉 .tsx，导致「该跑哪几套」判断失真 | P0 工具链 | 无 | F | ✅ done |
+| T23 | **生产构建与发行 staging 缺四个编辑器的 preload** | **P0 发行阻断** | 无 | K | ⬜ 待开工 |
+| T24 | 文档 AI 工具面重做：可发现 + Markdown 操作 + QA 门禁 | **P0 产品核心** | T0 | L | ✅ done |
+| T25 | 按 pinned HEAD 重建 GenOffice 六家 vendor 产物 | **P0 发行前置** | T23 | M | ✅ done |
+| T26 | 「允许一次」文案与实际语义不符 | P1 | T18 | N | ✅ done |
+| T27 | **`loadWorkflowIntoNative` 拒绝一切可保存的 Node-RED 图** | **P0** | T21+T8 | O | ⬜ 待开工 |
+| T28 | **Import 进画布的图丢失 `x-mcode` 身份** | **P0** | T8 | O | ⬜ 待开工 |
+| T29 | `documentView:close` 对四个编辑器永远拒绝 | P1 | T7 | P | ⬜ 待开工 |
+| T30 | 文档工具面缺真实 Electron U1 | P1 | T24+T7 | Q | ⛔ blocked |
+| T31 | **三处既有失败挡住 `run-smokes --all`** | **P0 工具链** | 无 | R | ⬜ 待开工 |
+| T32 | **`genofficeNativeVendor.ts` 的 alias 虚拟模块破坏 15 套 smoke** | **P0 工具链** | 无 | S | ⬜ 待开工 |
+| T33 | **`document.read` 误进 BLOCKED；`toolCall`/`markdownEdit` 档位偏弱** | **P0 安全** | 无 | T | ⬜ 待开工 |
+| T34 | **权限映射生成器缺 framework 域；danger 默认可委托** | **P0 安全** | T33 | U | ⬜ 待开工 |
+| T35 | `core.app.call` 能力类型在 catalogue/声明表/注册三处不一致 | P1 | 无 | V | ⬜ 待开工 |
+| T36 | 三套 smoke 夹具过时（T65/T50/正则漏算 schema 包装） | P1 | 无 | V | ⬜ 待开工 |
+| T37 | `mobile-pairing-smoke` 3 秒超时太紧，全量并发下随机红 | P2 | 无 | W | ⬜ 待开工 |
+| T38 | 三套打包期失败：桩缺导出、`.node` loader、zustand 5 default | P1 | 无 | W | ⬜ 待开工 |
+| T39 | **GenOffice UI 换壳：保留编辑内核，替换 ribbon/菜单/AI 面板** | **P0 产品要求** | T7+T24 | X | ⬜ 待开工 |
+| T40 | **`withRendererToolRegistry` 零调用点 —— `document.tool_call` 渲染端路线不可达** | **P0** | T24 | Y | ⬜ 待开工 |
+| T41 | `contributionsOf` 只有一层可选链，`modules` 缺失时**主界面**白屏 | P1 | T36 | Z | ⬜ 待开工 |
+| T42 | **U1 骨架静默模式：默认不弹窗，仅截图时短暂显示** | **P1 开发体验** | T16+T7 | AA | ⬜ 待开工 |
+| T43 | **文档 AI 的「丑」根因：设计流水线没接上，三个 app 的 QA 门禁是空的** | **P0 产品能力** | T24+T40 | BB | ⬜ 待开工 |
+| T44 | genoffice 三套并发安全 —— **防回退回归**（T31 已修复，本卡只做回归网） | **P2** | T31 | CC | ⬜ 待开工 |
 | T45 | **权限映射生成器会静默放宽：`document.*` 整个域落进 `write`** | **P0 安全** | T33 | DD |
+| T46 | 审批卡的真 Electron U1（T6 的 E1 覆盖不到：真窗口键盘 / 多窗口焦点 / settingsOpen 暂停 / 后台会话） | P1 安全回归 | T6 | A | ✅ done |
 
 ### T43 为什么是 P0（用户最高痛点）
 
