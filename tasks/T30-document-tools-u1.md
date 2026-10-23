@@ -227,3 +227,69 @@ T40 修复后预期变化：
 - `docs-tool-roundtrip-wired` 可以改成**不装**探针的那一行修复（直接用产品装配），
   届时它与 production 旅程合并为一条即可。
 
+
+---
+
+## T30 静态核实（2026-10-23，E 会话，未跑 Electron）
+
+总控要求核实三件事，结论如下。
+
+### 1. 静态部分到哪一步了 —— **已完成，且质量高**
+
+- 目录 `apps/desktop/scripts/t30-document-tools-u1/` 齐备（8 个文件 + `journeys/`）；
+- **`verify-contract.mjs` 本轮实跑 13/13 通过**（不启 Electron，纯判据自检）：
+  注册表形状、正常跑/变异跑的退出码、`failBecause` 三条反例全部判对；
+- 提交 `deacf188`，未改产品代码；
+- 写回区已经把 T24 遗留的 P0 缺陷（登记簿未接）开成 T40 并复现已修（`9487eaa4`）。
+
+**这条路已经做到头了 —— 再往前必须跑真 Electron。**
+
+### 2. 真 Electron 部分具体要验什么
+
+按卡的验收判据，共 5 组、最少 2 个编辑器：
+
+| 组 | 内容 | 为什么静态验不了 |
+|---|---|---|
+| A | `document_apps` / `tools_list` / `tool_describe` 在真窗口返回正确 | 要真渲染端加载后的工具目录 |
+| B | `document_tool_call` 让渲染端**真的执行**工具（DOM/文件可观测变化） | 要真 vendor 页面 |
+| C | 结果带回 requestId / callId | 要真 T98 ACK 通道 |
+| D | 三条负控（未打开文件 / 未知工具 / 错误 docId） | 要真宿主状态 |
+| E | Docs + Sheets 两条链路都通 | 同上 |
+
+**关键**：`docs-tool-roundtrip-wired` 的**唯一替身是模型**（fake `DocsAiPorts.run`），
+页面、preload、T98 注册器、`createNativeEditorToolBridge`、渲染端 `AgentSkill.executeTool`
+全是生产代码。所以它验的是真链路。
+
+### 3. 能不能用已有 `.tmp/electron-u1/` 证据回答 —— **不能**
+
+核过了：
+
+```
+.tmp/electron-u1/ 下 8 次运行的证据目录，journey 全部是
+  docs/sheets/slides/pdf/markdown/html-open-edit-save-reopen   ← T7 的六个编辑器旅程
+find .tmp/electron-u1 -name "*t30*" -o -name "docs-tool*"  → 零命中
+```
+
+**没有一条是 T30 的旅程。** 那些证据属于 T7（打开/编辑/保存/重开），
+与「工具面往返」是不同的断言对象 —— 它们证明不了 A–E 任一组。
+
+### 4. 结论：**T30 的真 Electron 部分也必须挂起**
+
+理由：
+
+1. **必须新跑**，没有可复用的既有证据；
+2. 每一次跑都**真的开窗口**（与 T42 同一个问题），用户已明确说过影响他使用电脑；
+3. T30 是 **P1（证据缺口）**，不是功能不可用 —— 产品面本身没坏，缺的是「这条链路
+   在真窗口里跑通过」的证据。
+
+**建议**：与 T42 一起标 `blocked-on-user-environment`，等用户给出可占用电脑的时间窗。
+
+### 5. 一件事现在就能做（不需要 Electron）
+
+`docs-tool-roundtrip-production` 里那一步
+`renderer-route-refused-without-registry` 的断言，在 T40（`9487eaa4`）修好之后**已经过期**：
+拒绝理由不再是「没有受信绑定」，而应该是「该工具不在当前请求声明的工具表里」。
+旅程注释里标了要改，但**代码没改**。
+
+这是纯粹的断言文本修改，不跑也能做——但它属于 T30 的独占目录，且改完仍要真 Electron
+才能验。**本轮没动**，留给出下一棒的人，避免改出一份"看起来对了但从没跑过"的断言。
