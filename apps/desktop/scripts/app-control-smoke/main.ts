@@ -222,10 +222,12 @@ const pin: Array<[string, string]> = [
   ["task.reject", "blocked"],
   ["task.reopen", "blocked"],
   ["task.transition", "blocked"],
-  // 正控:同域里**该给 agent 看的**两条仍然可读 —— 否则上面的 4 条 blocked 可能是
-  // 把整个 task 域一刀切了(那种修法会把任务从 agent 的视野里拿掉,不是本次意图)。
-  ["task.list", "read"],
-  ["task.get", "read"],
+  // 【T109】`list` / `get` 也从 read 改成 blocked —— 它们是**治理视图**
+  // (`goal` 是用户原话、`artifacts` 是绝对路径、`acceptance` 是谁凭什么验收的),
+  // 与 `unattendedPlans.list` 同档。T105 当时把这两条钉成 `read` 当正控,
+  // 那个正控的前提是"C 拒绝一整个域会过头" —— T109 的论证推翻了它,这里跟着改。
+  ["task.list", "blocked"],
+  ["task.get", "blocked"],
   // ★ **动词前缀的陷阱(C4/权限,2026-10-08)**:`READ_VERB` 是**前缀**匹配
   // (`^history`、`^check`、`^task` 都算"只读"),而 `browser.historyClear` 只是**以
   // `history` 开头**——它其实清空浏览历史。`git.checkout` 同理:以 `check` 开头,实际会
@@ -243,17 +245,16 @@ for (const [m, l] of pin) check(`权限 ${m} = ${l}`, policyFor(m).level === l, 
 // 逐条钉只能保住已经想到的那几条;按域拦能在**下一个 `task.*` 被加进来时**立刻红。
 // 合法档位只有两种:
 //   - `blocked` —— 验收/退回/返修/状态流转(执行方够不到)
-//   - `read`    —— 列表与单读(agent 需要知道有什么任务,但改不了)
-// 真需要 `write` 时(比如将来让 agent 建任务)必须先想清楚它不等于「自己验收」,
-// 那时再回来把这条闸门改成显式白名单 —— 让「放开」变成一件必须动手做的事。
+//   - `blocked` —— 整域。T109 之后 `list` / `get` 也进来了(治理视图);执行方连
+//                  「有哪些任务、谁验收的、产物在哪」都不该读到。
+// 真需要放开某一档时(比如将来给 agent 一个只看自己那条任务的投影)必须先想清楚
+// 它不等于「读治理视图」,那时回来把这条闸门改成**显式白名单** —— 让「放开」变成
+// 一件必须动手做的事,而不是掉进兜底的副作用。
 {
   const taskMethods = [...API_CATALOG.map((e) => e.method), ...pin.map(([m]) => m)]
     .filter((m) => m.startsWith("task."));
-  const unlawful = [...new Set(taskMethods)].filter((m) => {
-    const level = policyFor(m).level;
-    return level !== "blocked" && level !== "read";
-  });
-  check("★ T105:task.* 域里没有任何方法落在 write/danger/ui(只有 blocked 或 read)",
+  const unlawful = [...new Set(taskMethods)].filter((m) => policyFor(m).level !== "blocked");
+  check("★ T105/T109:task.* 域里没有任何方法落在 read/write/danger/ui(整域 blocked)",
     unlawful.length === 0, unlawful.map((m) => `${m}=${policyFor(m).level}`));
 
   // ★ 取证前提:`policyFor` 对**任何**未注册的名字都会给一个答案(兜底),所以

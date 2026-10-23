@@ -158,7 +158,7 @@ const BLOCKED: Record<string, string> = {
   // 【MC-059 残余 ④】无人值守计划的**跨重启**面(列出等待中 / 续跑 / 放弃)—— 与上面两条同一条
   // 纪律:**续跑**会在本机真的建会话 / 发首条,是「用户点头」的执行那半,agent 不该自己续自己
   // 批过的计划;`list` 虽是只读,但它读的是「哪些计划在等用户批准」这类**治理事实**,也不开给
-  // agent(与 `agentSsh.list` 同取向)。三条一律 blocked。
+  // agent。三条一律 blocked。
   "unattendedPlans.list": "无人值守计划的等待列表是用户的治理视图,agent 不必读",
   // 【ARC-006 Gate E】审批应答 = 「用户本人点头」这件事的落点：agent 任何理由都不该
   // 自己回答一张安装审批卡（答了就等于自己批准自己装可执行代码）。
@@ -183,7 +183,18 @@ const BLOCKED: Record<string, string> = {
   // `transition` 本来能让执行方写 `accepted`,T99 在 handler 里用
   // `TASK_EXECUTOR_STATUSES` 挡了一道(那是**执行方**白名单)。这里再挡一道是
   // 纵深防御:那一层的白名单如果被放宽,policy 这层仍然够不到验收状态。
-  "task.transition": "任务状态流转只由主进程执行路径驱动,agent 不直接改写任务状态"
+  "task.transition": "任务状态流转只由主进程执行路径驱动,agent 不直接改写任务状态",
+  // 【T109】任务列表与单条任务也是**治理视图** —— 与 `unattendedPlans.list` 同档。
+  // `TaskSchema` 的每个字段都是治理事实:`goal` 是用户原话的前 40 字、`artifacts` 是
+  // **文件绝对路径**、`acceptance` 是谁凭什么验收的、`failureReason` / `rejectionReason`
+  // 是被退回的原因。这和「哪些计划在等用户批准」是同一类东西。
+  //
+  // ⚠️ **不是「显式 read + 域权限」**:任务跨会话,而 `session.read` 的语义是「读某个
+  // 会话的内容」—— 拿它授权读跨会话治理视图,扩展拿到的比名字承诺的多。也不新开
+  // `task.read`:**先有消费者再开权限**,现在没有委托消费者(`api.task.list` 的唯一调用方
+  // 是桌面渲染端 `TaskCenterPanel`,走 `window.api`,不经模块权限)。
+  "task.list": "任务列表是治理视图(目标/产物路径/谁验收的),与 unattendedPlans.list 同档",
+  "task.get": "单个任务同上:带验收结论与退回理由,是治理事实"
 };
 
 const DANGER: Record<string, string> = {
