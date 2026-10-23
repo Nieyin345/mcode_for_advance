@@ -291,14 +291,38 @@ export function TaskCenterPanel() {
   );
 }
 
+/**
+ * 状态筛选条的一个 chip。
+ *
+ * ## ⚠️ 选中态**不能**用品牌淡底（`design-tokens-smoke` 守这条）
+ *
+ * 【ARC-005 V2】的规矩：**accent 只留给「运行中 / 需要注意」的信号**。
+ * 筛选条的「选中」两样都不是 —— 它是选中态，所以走**中性底 + 边框**表达，
+ * 与 `chat/ActivityConsole.tsx:118` 的 `FilterChip` 同一取向。
+ *
+ * ## 为什么保留现在的形状，不照抄那边
+ *
+ * 那边是 `rounded-full` + `px-2` + `font-semibold` + `text-[10.5px]`（药丸）。
+ * 这里在**右栏（可拖到 280px 宽）**里要横排 7 个 chip（全部 + 六个状态），
+ * 药丸形状比现在的紧凑方形多占约三成宽度，会挤成两行 —— 而两行筛选条会
+ * 把列表往下推，用户扫任务时少看见一条。**所以只换颜色，保留形状。**
+ *
+ * ## `aria-pressed` 不是装饰
+ *
+ * 它是这个 chip **唯一的、和视觉无关的「选中」信号**：将来若有人给筛选条写
+ * 键盘或状态断言，只有它能被程序读到（`bg-*` 类名不是语义）。
+ */
 function FilterChip({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={cn(
-        "rounded px-1.5 py-0.5 text-[11px] transition-colors",
-        active ? "bg-accent/15 text-accent" : "text-content-muted hover:bg-surface-hover hover:text-content",
+        "rounded border px-1.5 py-0.5 text-[11px] transition-colors",
+        active
+          ? "border-edge bg-surface-muted text-content"
+          : "border-transparent text-content-muted hover:bg-surface-hover hover:text-content",
       )}
     >
       {label}
