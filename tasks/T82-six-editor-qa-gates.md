@@ -232,3 +232,111 @@ no valid pages (element 0: outside the 1280x720 canvas, dropped)
 ### 九、提交
 
 见 `git log`（只含本卡回写）。
+
+## 追加：产品视角复核（2026-10-24，总控要求）
+
+> 问题：**今天修的东西，用户能感觉到吗？**
+
+### 一、反模式提示的时序：**build 之后才出现，且是整 deck 一次给**
+
+| 环节 | 时机 |
+|---|---|
+| `readDeckPatterns` | `build_deck` **执行前**跑（读整个 specDir 的全部页面） |
+| `withPatternFindings` | 挂到 CLI 返回的信封上 |
+| `patternFindingsText` | `envelopeText` 渲染时输出 → **build 完成后**返回给模型 |
+
+**所以模型拿到提示时，整个 .pptx 已经生成完毕。** 要改只能重新写 spec、重新 build 整个 deck。
+
+**而 `genoffice guide slides design` 明文要求的是一页一页检查**：
+
+```
+| 3 pages | deck/pages/01.json, 02.json, … | genoffice slides check deck/pages/NN.json after writing each |
+```
+
+**Mcode 的工具面没有把这条流程暴露出来** —— `slides check` 在 `document_tools_list` 里没有路由（T73 回写已记录过这一点）。**模型只能走 `build_deck` 一把梭，然后拿到一份「事后总结」。**
+
+### 二、实测：按提示改，deck 会变好吗？**不会，会更空**
+
+用 T62 那类「三根空柱子」造了 BAD，跑判据，再按它给的提示（「考虑缩短卡片或补足卡内内容」）改一遍：
+
+| | findings | 元素总面积占画布 |
+|---|---|---|
+| **改前**（三张 480 高的卡，文字贴顶） | `card-whitespace` × **3** | **63%** |
+| **按提示缩短卡片到 60 高** | `card-whitespace` 清零，**但立刻出现 `layout.whitespace`** | **11%** |
+
+**这是打地鼠**：照做 A 提示 → 触发 B 提示；照做 B → 又触发 A。**而且每修一次，页面更空。**
+
+**根因**：两条判据的参考方向相反——
+- `card-whitespace` 要求「卡片别高于内容」→ 卡片变矮；
+- `layout.whitespace` 要求「内容铺满页面」→ 需要更多内容/更高元素。
+
+**卡变矮之后页面当然更空。** 提示没说「同时补内容」，模型照做就成了「把卡片压扁」。
+
+### 三、机器判据和人的判断一致吗？**不一致，而且方向反了**
+
+三个 deck，同一套判据打分：
+
+| deck | 人的判断 | 机器 findings |
+|---|---|---|
+| **BAD**（空柱子 + 三色卡片 + 顶部色条） | **最丑** | **3 条**（都是 card-whitespace） |
+| **MID**（朴素但干净） | 中等 | 1 条 |
+| **GOOD**（深色封面 + 柱状图 + 同色系阶梯） | **最好** | **2 条** |
+
+**GOOD 被误报的两条，恰恰是「好设计」：**
+
+**① `palette.rainbow`（error 级）报在数据页**
+
+那三根柱子是 `#1F3A5F` / `#3E6E9E` / `#6FA3D2` —— **同一蓝色的深浅阶梯**，是数据可视化的标准做法。
+
+判据源码（`deckPatternCheck.ts:171-183`）：
+
+```ts
+const colors = new Set<string>();
+for (const e of page.elements ?? []) {
+  if (e.type !== "shape") continue;
+  const f = fillOf(e);
+  if (!f || isNeutral(f) || isFullBleed(e)) continue;
+  colors.add(f);          // ← 按色值字符串去重
+}
+if (colors.size <= 2) return [];
+```
+
+**`isNeutral` 只判「是否接近灰/极亮/极暗」，完全没有色相判断。** 同色相三个明度 = 三个"不同颜色" = 报 error。
+
+**后果：一份做得好的数据可视化 deck，会被报成最高严重度的 error。**
+
+**② `layout.whitespace` 报在封面页**
+
+封面是深底 + 居中标题，本来就该留白。判据里**有** cover 豁免：
+
+```ts
+const type = page.type ?? "content";
+const threshold = type === "cover" || type === "closing" ? loose : tight;
+```
+
+**但豁免只认 `page.type === "cover"`。** 模型写 spec 时如果没写 `type` 字段（`page()` 帮助函数默认不带），就按 `"content"` 走 tight 阈值 → 必报。
+
+**豁免形同虚设**：它在等一个模型通常不会填的字段。
+
+### 四、结论
+
+**今天这些判据，在「抓空柱子」这件事上是对的**（BAD 抓到了 3 条，位置精确到 x 坐标）。
+
+**但在「什么样的 deck 好看」这件事上，它们和人的判断方向不一致**：
+
+1. **误报好设计**（同色系阶梯、封面留白）；
+2. **照做会把 deck 改得更空**（打地鼠）；
+3. **只在事后给提示**，而规范要求的是逐页检查。
+
+**所以「用户能感觉到吗」的答案是：部分能（空柱子会被报出来），但用户如果按提示改，deck 不会变好看。**
+
+### 五、建议（不改，报告）
+
+| # | 问题 | 建议 |
+|---|---|---|
+| 1 | `palette.rainbow` 无色相判断 | 按**色相**聚类，同色相不同明度算一个色 |
+| 2 | cover 豁免靠 `page.type` | 用**几何特征**判封面（全幅背景 + 元素少）或从 outline 的 `type` 取 |
+| 3 | 打地鼠 | 两条判据的提示要**互斥或联动**：缩卡时提示「同时补内容」 |
+| 4 | 只在 build 后给 | 把 `slides check` 路由进工具面，让模型能逐页查（guide 要求的流程） |
+
+**未改任何产品代码。** 夹具在 `.tmp/t85/`，探针已删。
