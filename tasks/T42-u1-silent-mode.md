@@ -1,6 +1,48 @@
 # T42｜U1 骨架静默模式：默认不弹窗，仅截图时短暂显示
 
-- Status: ready-for-agent
+- Status: **blocked-on-user-environment**（2026-10-23 停止；不弹窗与截图在 Electron 里直接冲突）
+
+## 为什么停（E 的实测结论，总控核实）
+
+**静默与截图在 Electron 里直接冲突，这条路走不通。**
+
+| 窗口形态 | 子视图 `capturePage` | Univer / pdf.js 输入 |
+|---|---|---|
+| `show: true`（HEAD） | ok | 正常 |
+| `show: false` | **抛** `Current display surface not available` | **聚焦失败（`A1A1`）、文本层不渲染** |
+| 屏幕外 `x:-10000` | **同样拿不到 surface** | —— |
+| `showInactive` 短暂显示 | ok，但需 ~50ms | 正常 |
+
+**`webContents.focus()` 能让 `document.hasFocus()` 变 true 而窗口不可见，但对 Univer 和 pdf.js 不够——它们要的是「窗口真的存在」。**
+
+### 试过并失败的四个方案
+
+1. **每次 `showInactive` + 轮询重试 + `hide`** —— 重试逻辑本身对（`UnknownVizError` 第 0 次抛、第 1 次成功），但往返成本高；
+2. **延时 `hide` 合并连续截图** —— **更糟**：下次 `showInactive` 时窗口还亮着，surface 不重建，2s 超时；
+3. **`wc.focus()` 替代 `win.focus()`（全程隐藏）** —— sheets `A1A1`、pdf 文本层空；
+4. **只在输入时短暂显示** —— 5/6 通过，但窗口可见 **9.8s / 24.8s**，**比 HEAD 一直显示还糟**。
+
+**方案 4 的数字是最有说服力的否决理由：比原来更糟。**
+
+### 唯一没被排除的路
+
+`webPreferences.offscreen: true` 单独测过能截（902x702），但**与 `WebContentsView` 的组合没验**。即使截图能离屏拿到，**输入那一段仍需真窗口**——最终形态可能是「输入短暂显示 + 截图离屏」。
+
+## 为什么挂起而不是继续
+
+**每验证一次就必然弹一次窗**，而用户已明确说窗口影响他用电脑。**为了验证一个「不弹窗」的功能而继续弹窗，本身就矛盾。**
+
+T42 是 P1（开发体验），不是 P0 功能，不值得占用用户的工作环境。
+
+## 重启条件
+
+**用户确认何时方便跑真窗口验证。** 在那之前：
+- 不启动 T7 或任何会开窗口的验证；
+- 要做只能先做**不弹窗的探针**（但 `offscreen` 与 `WebContentsView` 的组合仍需实测）。
+
+## 接下来唯一值得试的方向
+
+**单开一张卡**：`offscreen: true` 与 `WebContentsView` 的兼容性。若能离屏截图，方案变成「输入短暂显示 + 截图离屏」，把窗口可见时间压到只剩输入那几次。
 - Category: feature（测试基础设施）
 - Priority: **P1 开发体验**
 - Depends on: T16（`6073fcbb`，U1 骨架）、T7（`77fdd012`，首次引入可见窗口）
