@@ -468,8 +468,9 @@ CLI **真的会按相对路径读 spec 目录里的图片**。所以 `--spec <di
 - `build_deck` 可达性 5 条（真造出 pptx、读回内容、缺 specDir 显式拒绝）；
 - 目录一致性 4 条。
 
-**跳过（如实，不当作通过）**：`pdf.create` —— 本机 `create --type pdf` 返回
-`app_unavailable`（需要原厂应用）。套件打 `skip` 并打印原因。
+**`pdf` 那条曾经是假 skip（已修正，见 §8）**：初版套件报告「本机 create --type pdf
+不可用」，但那是**套件自己的解析 bug**（`JSON.parse` 整段输出，而被 pdf 导出前的
+`starting GenOffice for pdf export` 一行打断），不是环境限制。修正后 pdf 真读通。
 
 **变异验证（两次，都逐字节还原）**：
 
@@ -502,6 +503,9 @@ CLI **真的会按相对路径读 spec 目录里的图片**。所以 `--spec <di
 2. **`pdf` 的 40 个编辑器工具仍未接 CLI** —— 上游 `pdf` 只有 `read` 一个命令。
 3. **`render-probe` 不是内容检查** —— 它只证明「能排版」。要检查内容正确性，
    仍要 `document_render` 出图让模型看，或该格式自己的 check（若存在）。
+   **它需要原厂渲染器**：`render` 走的是 `genoffice --headless-export`。没有原厂应用
+   的机器上，门禁会以 `app_unavailable` 失败（**不是**静默跳过），所以「形同虚设」
+   不会发生 —— 它会明确报错。
 4. **未跑真 Electron** —— 本卡是 CLI/无头能力，真窗口链路归 T7/T30。
 
 ### 7. 复现
@@ -513,3 +517,32 @@ bash scripts/t43-document-ai-design-pipeline-smoke/run.sh --mutate=no-fence    #
 bash scripts/t24-document-tool-surface-smoke/run.sh                            # 59/59 回归
 npx tsc --noEmit -p tsconfig.json                                              # 门禁
 ```
+
+### 8. 追补：pdf 断言曾经自己跳过自己
+
+初版套件第 1 节的 `runCli` 助手写成：
+
+```ts
+try { envelope = JSON.parse(raw.trim()) } catch { /* 非 JSON */ }
+```
+
+而 `create --type pdf` 的输出前面有一行 **`starting GenOffice for pdf export`**
+（原厂应用启动提示），整段因此不是 JSON → `envelope` 为 `null` → 断言走进
+`skip` 分支，报告「本机不可用」。
+
+**这不只是少了一条测试，是报告了一个错误的结论**：它把「我的解析器写错了」
+说成了「这台机器缺原厂应用」。生产代码 `genofficeCli.invoke` 从来是正确的
+（按行筛 `{` 开头的行，多于一条就拒绝猜），**只有套件抄错了**。
+
+修正后：
+- `runCli` 照抄生产判据（按行筛 JSON，多行则按失败处理）；
+- `pdf` 真读回内容（`via=pdf read`）；
+- 另加**门禁真跑**三条：对 markdown 跑 `render-probe`，断言真的落了一个
+  非空 PNG 在盘上。
+
+**结果：57/57**（原 53 + pdf 1 + 门禁真跑 3）。
+
+**变异**：把 `renderProbeCheck` 改成恒返回成功（不真渲染）→
+「真的落了一个 PNG 在盘上」变红（55/56），`cmp` 逐字节还原。
+
+提交：`a48066a9`。
