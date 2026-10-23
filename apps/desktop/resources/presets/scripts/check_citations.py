@@ -5,7 +5,7 @@
 用法:
     python check_citations.py refs.bib
     python check_citations.py refs.bib --manuscript 稿件.tex
-    python check_citations.py refs.bib --root "D:/destop/work_space/mcode"
+    python check_citations.py refs.bib --root "<你的工作区根>"
 
 输出四段:
     1. 库里有对应的来源链接 —— 仍需核实链接与原文的真实性
