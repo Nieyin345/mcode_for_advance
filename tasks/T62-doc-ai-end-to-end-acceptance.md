@@ -110,3 +110,90 @@ node genoffice/packages/cli/dist/genoffice.cjs create --type pptx \
 ## 遇到问题先检索
 
 **报错、API 用法先看 `genoffice guide slides design` / `guide slides spec` 的原文，不要凭猜。**
+
+## 结果回写（2026-10-23，E 会话）
+
+### 1. 整条流程能不能走通？—— **能，全通**
+
+| 步骤 | 结果 |
+|---|---|
+| `guide slides design --json` | ✅ 返回完整规范（style/outline/pages/build/QC 五阶段 + 反模式清单） |
+| `capabilities --json` | ✅ 正确报告：搜索/图搜/生图**全部未配置**，只有 `app` 可用 |
+| `slides check outline.json` | ✅ 4 页，零 findings |
+| 逐页 `slides check pages/NN.json` | ✅ 四页最终都 `page builds clean` |
+| `create --spec --render --audit` | ✅ 4 张 PPTX + 4 张 PNG |
+
+**没有一步卡住。** 工具链是通的 —— T43/T47 修的那条路确实接上了。
+
+### 2. 产出的真实质量（我逐张看的图）
+
+**封面**：深色底 + 右侧整条蓝色块，标题 44pt 白字左对齐，副标题 18pt 灰，底部 13pt 脚注。**干净，有视觉锚点**，不是「平标题 + 副标题」。✅
+
+**内容页（三条护城河）**：三张白色圆角卡，标题 22pt 加粗，正文 14pt。**但有明显问题**：卡片被我加高到 452px 后，**每张卡内部下半截是空的**（文字只占卡片上部约 1/3）。视觉上像「三根空柱子」。
+
+**数据页（KPI）**：四个数字 452/138/94/74，64pt，主数字用蓝色。同上问题：**数字偏上，卡片下半空**。
+
+**收尾页**：深色底 + 顶部蓝色细条 + 40pt 主句。**干净。** ✅
+
+**反模式检查**：
+- ❌ 「每张卡片左侧的细竖条」——**没有**，✓
+- ❌ 「彩虹卡片」——**没有**，只有一个蓝色强调，✓
+- ❌ 「装饰性角落方块」——**没有**，✓
+- ❌ 「每页都是形状+粗副标题+描述」——**部分中招**：内容页和数据页都是「标题 + 卡片阵列」，两页构图相似
+- ❌ 「封面是平的标题加副标题」——**没有**，有蓝色块做锚点，✓
+- ❌ 「emoji」——**没有**，✓
+
+### 3. 规范有没有被用上？—— **用上了，而且是逐条被 CLI 强制执行的**
+
+这不是「参考了规范」，是**规范被写进了检查器**：
+
+- **layout 名**：`cover_dark_minimal` / `three_column_cards` / `kpi_cards_row` / `closing_cta`，全部来自规范那 18 种；
+- **字号**：标题 36–44pt、正文 13–15pt、KPI 64pt —— 都在规范的 type scale 里；
+- **配色**：写 `#A8B0BC` / `#6C7684` 两个灰色时，`offPalette` **当场报出来**，逼我补进 style.md；
+- **标题一致性**：页面文字里没出现 outline 的标题，`outline.findings` **报出来**；
+- **几何**：标题框压到副标题，`audit` 报 `Overlap ... intersect by 700×21px`；正文超宽，报 `Text overflow ... exceeds by 18px`。
+
+**这是这次验收最有价值的发现**：规范不是文档，是**可执行的检查**。我写错的每一处都被抓住了。
+
+### 4. `detail.audit` 报了什么？
+
+**最终：`{"error": 0, "warning": 0}`，四张 slide 全空。**
+
+过程中报过、被我修掉的三条（都很准）：
+1. 页 1：标题框与副标题 `Overlap ... 700×21px`；
+2. 页 2：第三张卡正文 `Text overflow (width) ... exceeds by 18px`；
+3. `offPalette`：`#A8B0BC` / `#6C7684` 未在 style.md 登记（两次）。
+
+### 5. 最该改的地方（按严重程度）
+
+**① 检查器抓不到「留白过度」——这是最大的缺口。**
+
+`audit` 能抓出界、溢出、重叠，**但抓不到「卡片下半截空着」**。我那三根「空柱子」在所有检查里都是零问题。而规范第 3 节明写「Fill the page: 内容铺满整个画布；不要把内容挤在上半部分，下面留一块空白」——**这条规范没有被实现成检查**。
+
+后果：模型按规范写 deck，仍可能产出大量留白的页面，而所有检查都绿。**这正是用户抱怨的「又烂又丑」里最常见的一种。**
+
+**② 反模式清单里只有一半可检查。**
+
+规范第 4 节列了 7 条反模式，但 `slides check` 只实现了其中几条（palette、layout 重复、placeholder）。**「每张卡片左侧的细竖条」「装饰性角落方块」这类，检查器完全不知道**——它们只能靠模型自觉。
+
+**③ 内容页与数据页构图雷同。**
+
+我的两页都是「大标题 + 一排卡片」。规范要求「Vary the composition」，但没有任何检查能发现这件事。
+
+### 6. 未做的事 / 边界遵守
+
+- **没改任何产品文件**：全部在 `.tmp/t62-deck/` 下；
+- **没起 Electron**（纯 CLI）；
+- **没跑全量**；
+- 只做了**一轮**修正（规范允许两轮），改的都是客观缺陷（重叠、溢出、调色板外颜色、缺单位），没有重新设计页面。
+
+### 7. 复现方式
+
+```bash
+cd "D:/副桌面/文件夹/work_space/work_for_reseach/mcode"
+node genoffice/packages/cli/dist/genoffice.cjs create --type pptx \
+  --spec .tmp/t62-deck/pages --outline .tmp/t62-deck/outline.json \
+  --out .tmp/t62-deck/deck.pptx --render .tmp/t62-deck/shots --audit --json --force
+```
+
+产物：`.tmp/t62-deck/deck.pptx` + `shots/deck-01..04.png`。
