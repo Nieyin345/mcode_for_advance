@@ -146,10 +146,6 @@ const BLOCKED: Record<string, string> = {
   // 【MC-002】只读列表也不给 agent:它带整条部署记录(步骤/资源 uid/错误),是"用户看"
   // 的面,且与 approve/apply/resume 同一族(agent 拿到也做不了任何事,只会误以为能自行续跑)。
   "scene.listDeployments": "场景部署记录只在桌面预览页展示",
-  // 【ARC-007】文档能力:读走只读档;编辑/转换写盘 —— 走 write 档(弹审批),
-  // 与其它写功能同一条纪律。capabilities 是只读诊断。
-  "document.read": "read",
-  "document.capabilities": "read",
   // 【MC-059】无人值守任务计划的两条**写**通道 —— 与 `scene.approve` / `scene.apply` 完全
   // 同一条纪律:批准一份会**真的建会话 / 发首条消息**的计划,是「用户点头」这件事本身。
   // agent 任何理由都不该自己批自己的计划(批了就等于自己给自己授权去建会话),故直接
@@ -235,6 +231,21 @@ const DANGER: Record<string, string> = {
   // 【ARC-007】文档编辑/转换会**直接改写用户文档** —— 与删除同档(每次问、不可撤销)。
   "document.edit": "编辑并保存文档(会改写原文件)",
   "document.convert": "格式转换并写出新文件",
+  // 【T33】T24 新增的两条**写**能力必须与 `document.edit` 同档，否则同一件事有两条路：
+  //
+  //   - `document.toolCall` 执行**任意原生编辑器工具**，其中相当一部分会改文件
+  //     （`documentToolRuntime.ts:619` 的 `isMutatingDocumentTool` 就是判这个的）；
+  //   - `document.markdownEdit` 直接改 Markdown 并落盘。
+  //
+  // 它们从前靠动词兜底落 `write`。而 `write` 允许「始终允许」（`tools.ts` 的
+  // `isToolAlwaysAllowed`），`danger` 不允许 —— 于是用户点一次「始终允许」，
+  // **此后每一次文档写入都不再问**。这同时是 T19 的绕过路径：扩展拿到
+  // `document.edit` 权限后改调 `document.toolCall`，就绕开逐次审批。
+  //
+  // 与 agent 侧对齐：`appControl/tools.ts:3243` 早在用
+  // `mutating ? "danger" : "read"` 判这两条了。同一能力不该有两套判据。
+  "document.toolCall": "执行文档工具;会改文件的工具与直接编辑同档(每次问、不可撤销)",
+  "document.markdownEdit": "直接修改 Markdown 文件并写盘(会改写原文件)",
   "library.deleteItems": "从资料库删除条目(可选连文件一起删)",
   "library.deleteCollection": "删除资料库分类",
   "app.moveDataRoot": "迁移整个数据目录并重启应用",
@@ -314,6 +325,27 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   "toolchain.check": "read",
   "lsp.healthCheck": "read",
   "lsp.prewarm": "read",
+  // 【T33】`document.*` 的只读一半。**必须显式钉**：`READ_VERB` 是「动词在**开头**」
+  // 的正则（`^(list|get|read|…)`），而这几条的动词在**结尾**（`markdownRead` /
+  // `toolsList` / `toolDescribe` / `apps` / `render`），一个都命中不了 —— 兜底把它们
+  // 全判成 `write`，于是「看一眼有哪些文档工具」也要弹审批卡。
+  //
+  // 为什么不用改正则：`^` 换成「任意位置」会让 `browser.historyClear`（清历史）、
+  // `git.checkout`（切分支）这类**名字里带只读动词、实际会写**的方法也一起被放行 ——
+  // 那正是 EXPLICIT 表上面那段注释记的坑。逐条钉死比放宽一条全局正则安全得多。
+  //
+  // `document.read` / `document.capabilities` 从前**误放进 BLOCKED 表**（BLOCKED 的值是
+  // 拒绝理由，不是档位），于是 `policyFor()` 返回 `{level:"blocked", reason:"read"}`，
+  // UI 文案变成「这个功能不开放：read」。注释写的是「走只读档」，实现是「谁都不开放」。
+  "document.read": "read",
+  "document.capabilities": "read",
+  "document.apps": "read",
+  "document.toolsList": "read",
+  "document.toolDescribe": "read",
+  "document.markdownRead": "read",
+  // `render` 出的是**临时目录**下的 PNG（`renderTempRoot()` → `<dataRoot>/docs/export-tmp/`），
+  // 不写用户的工作区文件；与 `document.read` 同档。
+  "document.render": "read",
   "provider.healthCheck": "read",
   "provider.commands": "read",
   "library.itemManifest": "read",

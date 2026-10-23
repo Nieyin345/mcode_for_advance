@@ -282,8 +282,16 @@ if (cliPath === null) {
       }
       const preload = readFileSync(join(repoRoot, "apps/desktop/src/preload/index.ts"), "utf8");
       check("preload 暴露 document 命名空间", preload.includes("document: {") && preload.includes("DOCUMENT_READ"));
-      const policy = readFileSync(join(repoRoot, "apps/desktop/src/main/appControl/policy.ts"), "utf8");
-      check("policy:读只读、编辑/转换 danger", policy.includes('"document.read": "read"') && policy.includes('"document.edit": "编辑并保存文档'));
+      // 【T33】从前这里扫源码字面量：`policy.includes('"document.read": "read"')`。
+      // 那是**假绿** —— 当时 `document.read` 在 `BLOCKED` 表里，而 BLOCKED 的**值**是
+      // 拒绝理由，`"document.read": "read"` 这一行正好同时满足「在文件里出现过」和
+      // 「长得像只读档」。实际 `policyFor("document.read")` 返回的是
+      // `{level:"blocked", reason:"read"}`。
+      //
+      // 现在改成**问函数**：档位是行为，不是源码里的一句文本。
+      const { policyFor } = await import("@main/appControl/policy.js");
+      check("★ policy: document.read 真的是只读档(不是 blocked)", policyFor("document.read").level === "read", policyFor("document.read"));
+      check("★ policy: document.edit 是 danger 档", policyFor("document.edit").level === "danger", policyFor("document.edit"));
 
       // 【ARC-007】原值版本检查真的接在 handler 上(源码断言 + 契约字段)。
       const docHandler = readFileSync(join(repoRoot, "apps/desktop/src/main/ipc/document.ts"), "utf8");
