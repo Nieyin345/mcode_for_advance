@@ -1,9 +1,9 @@
 # T30｜文档工具面缺真实 Electron U1 —— 只有 fake 端口验证过
 
-- Status: ready-for-agent
+- Status: **blocked-on-T40**（静态部分已交付；真 Electron 部分等 T40 修复后执行）
 - Category: **test（证据缺口）**
 - Priority: P1
-- Depends on: T24（`ce2913f8`）、T7（`77fdd012`）
+- Depends on: T24（`ce2913f8`）、T7（`77fdd012`）、**T40（`tasks/T40-renderer-tool-registry-unwired.md`）**
 - Exclusive writable files: 新建 `apps/desktop/scripts/t30-document-tools-u1/`、复用 `apps/desktop/scripts/electron-u1/driver/`。**不改**产品代码。
 
 ## Required Skills
