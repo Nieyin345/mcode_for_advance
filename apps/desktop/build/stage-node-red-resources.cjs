@@ -684,7 +684,18 @@ function prepareNodeRedResources({ appDir, repoRoot, install = true } = {}) {
       recursive: true, filter: (source) => path.basename(source) !== ".bin", dereference: false,
     });
     fs.rmSync(path.join(tmp, "_npm"), { recursive: true, force: true });
-    fs.cpSync(packages, path.join(tmp, "packages", "node_modules"), { recursive: true, dereference: false });
+    // Node 22 在 Windows 上，不带 `filter` 的 cpSync 会走 native copyDir fast path，
+    // 而那条路在路径含非 ASCII 字符时 native 崩（0xC0000409 / 0xC0000005），
+    // catch 接不住 —— 进程直接死。传任何 `filter` 都会强制走 JS 实现，那条路不受影响。
+    // 见 nodejs/node#54476、#63970。
+    //
+    // ⚠️ **证据就在上一行**：同一个 tmp 目录，上面那次 `cpSync` 带 filter 活了下来，
+    // 这一次不带就崩。本仓库在 `D:\副桌面\` 下，路径必然含非 ASCII。
+    //
+    // `filter: () => true` 表示「全部接受」，与原行为一致 —— 它唯一的作用是选 JS 路径。
+    fs.cpSync(packages, path.join(tmp, "packages", "node_modules"), {
+      recursive: true, dereference: false, filter: () => true,
+    });
     fs.copyFileSync(rootLicense, path.join(tmp, "LICENSE"));
     fs.copyFileSync(rootLock, path.join(tmp, "package-lock.json"));
     for (const name of ["manifest.json", "THIRD-PARTY-LICENSES.txt"]) {
@@ -696,7 +707,7 @@ function prepareNodeRedResources({ appDir, repoRoot, install = true } = {}) {
     fs.copyFileSync(path.join(licenseSource, "manifest.json"), path.join(stagedLicenseRoot, "manifest.json"));
     fs.copyFileSync(path.join(licenseSource, "THIRD-PARTY-LICENSES.txt"), path.join(stagedLicenseRoot, "THIRD-PARTY-LICENSES.txt"));
     fs.cpSync(path.join(licenseSource, "materials"), path.join(stagedLicenseRoot, "materials"), {
-      recursive: true, dereference: false,
+      recursive: true, dereference: false, filter: () => true,   // 同上：强制走 JS 实现
     });
     assertSafeTree(path.join(tmp, "packages"));
     assertSafeTree(path.join(tmp, "node_modules"));

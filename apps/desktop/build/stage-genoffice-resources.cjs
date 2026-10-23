@@ -678,7 +678,11 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
       fs.mkdirSync(join(temp, "wasm"), { recursive: true });
       fs.mkdirSync(join(temp, "licenses"), { recursive: true });
       fs.copyFileSync(cli, join(temp, "cli", "genoffice.cjs"));
-      fs.cpSync(nodeModules, join(temp, "cli", "node_modules"), { recursive: true, dereference: true });
+      // Node 22 + Windows + 非 ASCII 路径：不带 filter 的 cpSync 会 native 崩
+      // （nodejs/node#54476、#63970）。filter 强制走 JS 实现。
+      fs.cpSync(nodeModules, join(temp, "cli", "node_modules"), {
+        recursive: true, dereference: true, filter: () => true,
+      });
       fs.copyFileSync(wasm, join(temp, "wasm", "pdfium.wasm"));
       for (const [file, name, content] of licenses) {
         const target = join(temp, "licenses", name);
@@ -689,10 +693,12 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
       if (includeEditors) {
         for (const { name, renderer } of editors) {
           const target = join(temp, "apps", name, "out", "renderer");
-          fs.cpSync(renderer, target, { recursive: true, dereference: false });
+          fs.cpSync(renderer, target, { recursive: true, dereference: false, filter: () => true });
         }
         for (const { name, preload } of nativePreloads) {
-          fs.cpSync(preload, join(temp, "apps", name, "out", "preload"), { recursive: true, dereference: false });
+          fs.cpSync(preload, join(temp, "apps", name, "out", "preload"), {
+            recursive: true, dereference: false, filter: () => true,
+          });
         }
         fs.mkdirSync(join(temp, "native"), { recursive: true });
         fs.copyFileSync(sidecarBin, join(temp, "native", sidecarExe));

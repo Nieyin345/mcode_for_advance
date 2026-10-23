@@ -185,7 +185,10 @@ function copyPdfjsAssets(): Plugin {
         // 标记不存在 = 还没复制过
       }
       for (const sub of subdirs) {
-        cpSync(join(pdfjsPkgDir, sub), join(publicDir, sub), { recursive: true });
+        // 目录复制：Node 22 + Windows + 非 ASCII 路径下不带 filter 会 native 崩
+        // （nodejs/node#54476、#63970）。filter 强制走 JS 实现，语义不变。
+        // 上面 `:165` 那个是**单文件**复制，实测不受影响，不需要改。
+        cpSync(join(pdfjsPkgDir, sub), join(publicDir, sub), { recursive: true, filter: () => true });
       }
       writeFileSync(versionFile, version, "utf8");
       // eslint-disable-next-line no-console

@@ -67,7 +67,12 @@ for (const name of entries) {
     let movedOriginal = false;
     let published = false;
     try {
-      cpSync(target, staging, { recursive: true, dereference: true });
+      // Node 22 在 Windows 上，不带 `filter` 的 cpSync 走 native copyDir fast path，
+      // 那条路在路径含非 ASCII 字符时 native 崩（0xC0000409），catch 接不住 ——
+      // 进程直接死。传任何 `filter` 都会强制走 JS 实现。见 nodejs/node#54476、#63970。
+      //
+      // 本仓库在 `D:\副桌面\` 下，`node_modules` 的绝对路径必然含非 ASCII。
+      cpSync(target, staging, { recursive: true, dereference: true, filter: () => true });
       // Keep the link recoverable until the staged copy has been published.
       renameSync(full, backup);
       movedOriginal = true;
