@@ -566,4 +566,10 @@ export const en = {
   "taskCenter.status.failed": "Failed",
   "taskCenter.status.accepted": "Accepted",
   "taskCenter.status.rejected": "Rejected",
+  /* 【T109-B】Origin kind (icon title; visible on hover, takes no list width). */
+  "taskCenter.origin.session": "From a conversation",
+  "taskCenter.origin.user": "You created it directly",
+  "taskCenter.origin.agent": "Started by an agent",
+  "taskCenter.origin.workflow": "Started by a workflow",
+  "taskCenter.origin.automation": "Started by an automation",
 } as const;

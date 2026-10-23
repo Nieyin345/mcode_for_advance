@@ -584,4 +584,10 @@ export const zh = {
   "taskCenter.status.failed": "失败",
   "taskCenter.status.accepted": "已验收",
   "taskCenter.status.rejected": "已退回",
+  /* 【T109-B】来源类型（图标 title，鼠标悬停时才看见 —— 不在列表里占宽度）。 */
+  "taskCenter.origin.session": "来自一个对话",
+  "taskCenter.origin.user": "你直接创建的",
+  "taskCenter.origin.agent": "由 Agent 发起",
+  "taskCenter.origin.workflow": "由工作流发起",
+  "taskCenter.origin.automation": "由自动化发起",
 } as const;

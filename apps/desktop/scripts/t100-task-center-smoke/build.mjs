@@ -57,8 +57,16 @@ await esbuild.build({
       b.onResolve({ filter: /^react\/jsx-runtime$/ }, () => ({ path: stub("jsxRuntime.ts") }));
       b.onResolve({ filter: /^react-dom$/ }, () => ({ path: "empty", namespace: "stub" }));
       b.onResolve({ filter: /^react-dom\/client$/ }, () => ({ path: "empty", namespace: "stub" }));
-      b.onResolve({ filter: /^@tabler\/icons-react$/ }, () => ({ path: stub("iconsStub.cjs") }));
-      b.onResolve({ filter: /^react-icons\// }, () => ({ path: stub("iconsStub.cjs") }));
+      // ⚠️ 别名的是 **`@renderer/lib/icons.js` 整个模块**，不是底层包。
+      //
+      // 为什么：`icons.tsx` 是 223 个具名 re-export 的 barrel（tabler + react-icons）。
+      // 只替底层包时，esbuild 仍要静态解析那 223 个名字 —— 而 CJS Proxy 提供不了具名导出，
+      // 结果全部绑成 `undefined`，**且不报错**（`<IconMessage />` 渲染成 `{props:{size:11}}`）。
+      // 换成 ESM stub 又会出现「No matching export ... VscMcp」这类缺名报错，
+      // 得把 223 个名字逐个列出。
+      //
+      // 别名 barrel 本身，本套件只声明它用到的那些图标，最省事也最诚实。
+      b.onResolve({ filter: /^@renderer\/lib\/icons\.js$/ }, () => ({ path: stub("iconsStub.mjs") }));
       b.onResolve({ filter: /^@base-ui\/react\/button$/ }, () => ({ path: "baseuiButton", namespace: "stub" }));
       b.onResolve({ filter: /^@base-ui\/react/ }, () => ({ path: "baseuiButton", namespace: "stub" }));
       b.onResolve({ filter: /^@renderer\/lib\/api\.js$/ }, () => ({ path: stub("api-stub.ts") }));

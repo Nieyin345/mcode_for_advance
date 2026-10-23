@@ -224,3 +224,64 @@ grep -n "api.task" apps/desktop/src/renderer/components/ide/TaskCenterPanel.tsx
 `scripts/task-first-class-smoke/`（27/27）验表与状态机那一半。
 **两套之间没有重叠断言**，所以「两套都绿」不等于「接缝处绿」——
 接缝（`task.list` 返回的形状）由本卡的第 1 组断言钉住。
+
+---
+
+## 追加（2026-10-24）：显示任务来源类型（T109-B）
+
+### 解决的问题
+
+跨会话列表里，两条 `goal` 相同的任务分不出是哪个对话来的。
+`origin.kind` 早就有值（`task.ts:105`），但面板从来没用它 —— **「字段建好了，消费者没接」**。
+
+### 形状：只显示类型图标，不显示具体名字
+
+| 方案 | 判断 |
+|---|---|
+| B 类型图标（**采用**） | 零额外查询（`origin.kind` 已在手里），不占行高 |
+| A 显示对话名 | 成本比我原以为低（`session.listAll` 一次能拿全部标题，不是 N 次），但会把行高撑开 |
+| C 可点击跳转 | 需要导航，另一个交互 |
+
+**选 B 的理由是密度，不是成本**：一行已经有状态徽标 + goal + 轮次 + 时间 + id，
+再加一段「来自对话『帮我整理那份 2024 年的销售数据并做成季度对比』」，
+用户扫列表时看的是「哪条要我处理」，不是「这条从哪来」。**具体名字是点开之后的需求。**
+
+五个 kind 全配：`session`→IconMessage、`user`→IconUser、`agent`→IconRobot、
+`workflow`→IconGitBranch、`automation`→IconBolt。
+
+**用 `Record<TaskOrigin["kind"], …>` 而不是 `Partial<…>`** —— 少写一个 key 会当场 typecheck 失败，
+而不是那种来源的任务不显示图标（「没图标」在界面上读起来像「没有来源」，不是「我不认识」）。
+
+### ⚠️ 踩到一个不报错的坑：CJS Proxy 让图标全部绑成 undefined
+
+第一版套件的图标桩是 CJS `new Proxy({}, { get: () => stub })`。**运行时它是对的**，
+但 **esbuild 打包 CJS 靠静态分析 `module.exports` 的形状决定具名导出** —— Proxy 让它扫不到任何名字，
+于是 `icons.tsx` 里 223 个 `export { … } from "@tabler/icons-react"` **全部绑成 `undefined`**。
+
+**症状极隐蔽：没有任何报错。** `<IconMessage />` 渲染成 `{props: {size: 11}}` 这种
+**没有 `type` 的对象**，`__nodes()` 里什么都找不到。套件红在「五种来源的图标互不相同」，
+而真正的原因是**图标一个都没绑上**。
+
+改成 ESM 显式导出后又撞上「`No matching export ... VscMcp`」—— 223 个名字列不完。
+最终解法：**别名 `@renderer/lib/icons.js` 整个 barrel**，只声明本套件用到的 10 个图标。
+
+### 断言（42 → 64）
+
+新增 22 条：
+
+- 五个 kind 各画了图标、`data-origin-kind` 正确、有 `title`；
+- **五种图标互不相同**；
+- **钩子里真的有一个图标元素**（不是只有 `data-` 属性）；
+- 正控：图标集合确实能区分。
+
+### 变异（三条，全部精确命中）
+
+| 变异 | 红在哪 |
+|---|---|
+| `automation` 复用 `IconMessage` | `★ 五种来源的图标互不相同`（`4 ≠ 5`） |
+| 去掉 `data-origin-kind` | 34 条（钩子是所有来源断言的定位点） |
+| **保留钩子、删掉图标本身** | `★ … 的钩子里真的有一个图标元素`，detail 是 `null` |
+
+**第二条变异暴露了一个设计问题**：所有来源断言都靠 `data-origin-kind` 定位，
+而那是**为测试加的属性**。所以第三条变异和对应断言是必需的 —— 它证明
+「只画钩子不画图标」会被抓出来。

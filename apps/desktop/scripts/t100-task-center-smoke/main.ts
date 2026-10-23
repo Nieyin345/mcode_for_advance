@@ -301,6 +301,43 @@ section("5. 写失败把主进程原话给用户");
   eq("toast 标题用调用方给的文案", toasts[0]?.title, "操作失败");
 }
 
+/* ================== 5b. 来源类型图标（T109-B） ================== */
+section("5b. 来源类型：五种 kind 各有图标，且互不相同");
+{
+  const kinds = ["session", "user", "agent", "workflow", "automation"] as const;
+  const seen: Array<{ kind: string; icon: unknown }> = [];
+  for (const kind of kinds) {
+    await mountRow({
+      task: task({
+        id: `t_${kind}`,
+        goal: `来源-${kind}`,
+        status: "running",
+        origin: { kind, ref: "ref_1" } as Task["origin"],
+      }),
+    });
+    // 图标节点带 data-origin-kind（见 TaskRow 的渲染）。
+    const holder = __nodes().find((n) => n.props["data-origin-kind"] !== undefined);
+    check(`★ ${kind} 行画了来源图标`, holder !== undefined, __nodes().length);
+    eq(`${kind} 的 data-origin-kind 正确`, holder?.props["data-origin-kind"], kind);
+    check(`${kind} 有 title（鼠标悬停能看见是什么来源）`,
+      typeof holder?.props.title === "string" && (holder.props.title as string).length > 0,
+      holder?.props.title);
+    const child = (holder?.props.children ?? null) as { type?: unknown } | null;
+    // ⚠️ 这条防的是「只画了 data-origin-kind 这个测试钩子、忘了画图标本身」——
+    // 上面那些断言全靠钩子定位，光有钩子没有图标时它们会全绿。
+    check(`★ ${kind} 的钩子里真的有一个图标元素（不是只有 data 属性）`,
+      child !== null && typeof child === "object" && "type" in child,
+      child === null ? null : Object.keys(child as object));
+    seen.push({ kind, icon: child?.type });
+    __unmount();
+  }
+  // 五个图标互不相同 —— 否则「分了五种」在界面上看不出区别。
+  const uniq = new Set(seen.map((x) => x.icon));
+  eq("★ 五种来源的图标互不相同", uniq.size, 5);
+  // 正控：证明这条比对不是恒真（把两个 kind 指向同一个图标会掉到 4）。
+  check("★ 正控：图标集合确实能区分（5 个独立值）", uniq.size === kinds.length && kinds.length === 5);
+}
+
 /* ================== 6. 加载失败 / 空列表 ================== */
 section("6. 加载失败与空列表");
 {

@@ -26,18 +26,41 @@ export const TaskLinksSchema = z.object({
 }).strict();
 ```
 
-**② 但「一个会话里有哪些任务」这个反查并不成立**，因为：
+**② 但「审批 → 任务」的反查是可行的，靠 `origin.ref` 不是 `links`。**
 
-- `links.sessionIds` 是**手工维护**的（`task.link` RPC），`autoCreate` 建任务时**只写 `origin`，不写 `links`**
-  （`autoCreate.ts:170` 的 `TaskRepo.create` 只传 `goal` / `origin` / `dependsOn`）；
-- 所以一条自动记账的任务，`links.sessionIds` 是 `[]`。**按它反查会漏掉绝大多数任务。**
+**⚠️ 这一节我第一版写错了，2026-10-24 更正。** 第一版写的是
+「`links.sessionIds` 是空的，所以反查不了」——**前半句对，后半句错**。
+自动记账建任务时确实不写 `links`，但**发起者记在 `origin.ref` 里**：
 
-**③ 就算能反查，语义也不对**：一次审批是「用户对某个工具调用点了允许/拒绝」，
-一个任务可能包含 5 次审批，也可能一次都没有（普通问答里的审批**根本不会产生任务**，
-因为 `classifyTurn` 要求「产出了文件」才建）。
+```ts
+// autoCreate.ts:174
+origin: { kind: "session", ref: args.sessionId, ... }
+```
 
-**把 `taskId` 放进审批表，等于说「这次审批属于那个任务」——而多数时候它是 `NULL`，
-少数时候那个关联还是猜的。**
+`origin.ref` 就是那个会话的 id（契约 `task.ts:106` 的注释：`ref` = 会话 id / 工作流 id / 自动化 id）。
+
+**所以反查是能做的**（sql.js 1.14.1 / SQLite 3.49.1 实测支持，还能给表达式建索引）：
+
+```sql
+SELECT * FROM tasks
+ WHERE json_extract(origin, '$.kind') = 'session'
+   AND json_extract(origin, '$.ref')      = :sessionId
+```
+
+**这个区别很重要**：按我第一版的说法，下一个人会以为「审批和任务永远关联不上」，
+于是不写这条 join。**实际上能关联，只是列名是 `origin.ref` 不是 `links.sessionIds`。**
+
+**③ 但结论不变：不建 `task_id`。理由是更硬的那一条 ——**
+
+> **审批发生时，任务可能还不存在。**
+
+`classifyTurn` 在 `turn.done` **才**建任务，而审批发生在 `turn.done` **之前**
+（工具调用要等用户点了才继续，那一轮才可能产出文件）。
+
+**所以即使某次审批最终对应了某个任务，在审批被处理的那一刻，那个 task id 还没被生成。**
+存一个当时不存在的 id，只能存 `null`。
+
+**这比「大多数审批没有任务」更根本**：后者说的是一种概率，前者说的是**时序上的不可能**。
 
 ### 表里放什么
 
@@ -50,19 +73,21 @@ export const TaskLinksSchema = z.object({
 
 ```bash
 sed -n '120,124p' packages/contracts/src/ipc/task.ts     # links 的形状
-sed -n '165,180p' apps/desktop/src/main/tasks/autoCreate.ts   # create 只传 goal/origin/dependsOn
-grep -n "links" apps/desktop/src/main/tasks/autoCreate.ts
+sed -n '170,182p' apps/desktop/src/main/tasks/autoCreate.ts   # create 只传 goal/origin/dependsOn，且 origin.ref = sessionId
+grep -n "links:" apps/desktop/src/main/tasks/autoCreate.ts
 ```
 
-**最后一条的预期是「1 个命中，但它在注释里」**（`autoCreate.ts:35` 的设计说明提到 `links`），
-**不是 0**。要看的是**有没有 `TaskRepo.create` 里传 `links:`** —— 把注释剥掉再查：
+**最后一条的预期是「无命中」** —— `TaskRepo.create` 里没有 `links:`。
+
+⚠️ 但**不要用 `grep -n "links"`**：它会命中 `autoCreate.ts:35` 那段**设计注释**
+（讲「`origin` + `links` 双轨」），看起来像「有」，实际没有代码。
+**这就是「按名字搜是引用数」**：注释里的名字和代码里的名字在 grep 眼里一样。
+
+**反查可行性单独验一遍**（sql.js 的 `json_extract` 不是所有构建都有）：
 
 ```bash
-grep -n "links:" apps/desktop/src/main/tasks/autoCreate.ts   # → 无命中 = 建任务时不写 links
+node .scratch/approval-history/json-extract-probe.mjs    # 输出 PASS 才说明那条 join 成立
 ```
-
-⚠️ **这就是「按名字搜是引用数」的又一次实例**：`grep links` 会命中一条讲 `links` 的注释，
-看起来像「有」，实际没有代码。**搜的时候要带冒号，或者剥注释。**
 
 ---
 

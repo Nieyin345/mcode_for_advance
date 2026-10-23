@@ -38,21 +38,27 @@
  *  - **不挂手机端**：`webApi.ts` 里 `task.*` 全是 `webUnsupported`，
  *    见那里 `task` 常量的注释。
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ComponentType } from "react";
 import { api } from "@renderer/lib/api.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
-import { useI18n } from "@renderer/lib/i18n/index.js";
+import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import { Badge, Button, EmptyState, ErrorNote, Skeleton } from "@renderer/components/ui/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import {
+  IconBolt,
   IconCheck,
   IconClock,
+  IconGitBranch,
   IconListCheck,
   IconLoader2,
+  IconMessage,
+  IconRobot,
+  IconUser,
   IconX,
 } from "@renderer/lib/icons.js";
-import type { Task, TaskStatus } from "@contracts/ipc/task";
+import type { TablerIconProps } from "@renderer/lib/icons.js";
+import type { Task, TaskOrigin, TaskStatus } from "@contracts/ipc/task";
 
 /**
  * 状态 → 界面。**七态一个不少**（契约里就是这么多个）。
@@ -80,6 +86,22 @@ const STATUS_META: Record<TaskStatus, { key: `taskCenter.status.${TaskStatus}`; 
 const ACCEPTABLE: readonly TaskStatus[] = ["done"] as const;
 /** 能退回的状态：做完了但不满意，或者根本没做成。 */
 const REJECTABLE: readonly TaskStatus[] = ["done", "failed"] as const;
+
+/**
+ * 来源类型 → 图标 + 无障碍文案。
+ *
+ * 契约里 `origin.kind` 有五个值（`task.ts:105`）。**这里必须是全集** ——
+ * 少一个会让那种来源的任务不显示图标，而「没图标」在界面上读起来像「没有来源」，
+ * 不是「这个来源我不认识」。用 `Record<TaskOrigin["kind"], …>` 而不是
+ * `Partial<…>`，少写一个 key 会当场 typecheck 失败。
+ */
+const ORIGIN_META: Record<TaskOrigin["kind"], { Icon: ComponentType<TablerIconProps>; key: MessageId }> = {
+  session: { Icon: IconMessage, key: "taskCenter.origin.session" },
+  user: { Icon: IconUser, key: "taskCenter.origin.user" },
+  agent: { Icon: IconRobot, key: "taskCenter.origin.agent" },
+  workflow: { Icon: IconGitBranch, key: "taskCenter.origin.workflow" },
+  automation: { Icon: IconBolt, key: "taskCenter.origin.automation" },
+};
 
 type Decision = { taskId: string; kind: "accept" | "reject" } | null;
 
@@ -317,6 +339,7 @@ export function TaskRow({
 }) {
   const { t } = useI18n();
   const meta = STATUS_META[task.status];
+  const originMeta = ORIGIN_META[task.origin.kind];
   const canAccept = ACCEPTABLE.includes(task.status);
   const canReject = REJECTABLE.includes(task.status);
   const evidenceRequired = draft.trim() === "";
@@ -328,6 +351,22 @@ export function TaskRow({
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <Badge variant={meta.variant}>{t(meta.key)}</Badge>
+              {/*
+                【T109-B】来源类型图标。
+                为什么只有类型、没有名字：跨会话列表里两条同名任务分不出是哪个对话来的，
+                而 `origin.kind` 已经在手里（零额外查询）。具体是哪一个对话，是点开之后的需求。
+                为什么不用文字：这一行已经有状态徽标 + goal + 轮次 + 时间 + id，
+                再塞一段「来自对话『……』」会把行高撑开，而用户扫列表时看的是「哪条要我处理」。
+              */}
+              {originMeta !== undefined && (
+                <span
+                  className="flex items-center text-content-subtle"
+                  title={t(originMeta.key)}
+                  data-origin-kind={task.origin.kind}
+                >
+                  <originMeta.Icon size={11} />
+                </span>
+              )}
               {/* 轮次只在退回过之后才显示 —— 首次验收的「第 1 轮」是噪音。 */}
               {task.acceptance !== null && task.acceptance.round > 1 && (
                 <span className="text-[11px] text-content-muted">
