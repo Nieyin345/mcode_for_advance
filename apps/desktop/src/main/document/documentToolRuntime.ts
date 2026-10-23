@@ -78,6 +78,7 @@ import {
   slidesRead,
   type GenofficeResult,
 } from "./genofficeCli.js";
+import { checkDeckPatterns, type DeckPageSpec, type PatternFinding } from "./deckPatternCheck.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
 import { requireWorkspacePath, type GenofficePorts } from "./genofficeCli.js";
 import type {
@@ -411,9 +412,52 @@ function envelopeText(result: GenofficeResult): string {
     return [
       env.summary ?? `${env.command ?? "命令"} 完成`,
       env.output_path ? `输出：${env.output_path}` : "",
-    ].filter(Boolean).join("\n");
+      // 【T73】**`detail` 里的反模式 findings 必须进正文。**
+      // 原先这里只取 `summary` + `output_path`，`detail` 整段被丢掉 —— 于是
+      // `withPatternFindings` 挂上去的东西模型根本看不到，等于没接。
+      // 只渲染 `pattern*` 这几项，不把整个 detail 倒出来（那会淹没正文）。
+      patternFindingsText(env.detail),
+    ].filter(Boolean).join(String.fromCharCode(10));
   }
   return result.reason;
+}
+
+/**
+ * 【T73】把 `detail.patternFindings` 渲染成模型能读的几行。
+ *
+ * 没有这几行，检查器就是「算了但没人看见」—— 这正是本卡要修的缺陷本身。
+ * 形状由 `withPatternFindings` 决定（`patternChecked` / `patternFindings` /
+ * `patternCounts` / `patternHint` / `patternNotes`）。
+ */
+function patternFindingsText(detail: unknown): string {
+  if (detail === null || typeof detail !== "object") return "";
+  const d = detail as Record<string, unknown>;
+  const lines: string[] = [];
+  // 有页面文件被跳过时要说出来 —— CLI 会静默丢掉不合法页继续建（`parseDeckSpec`
+  // 只在**一页都不剩**时才报错），所以「检查跑过了」不等于「每一页都被检查了」。
+  const notes = Array.isArray(d.patternNotes) ? d.patternNotes.filter((n): n is string => typeof n === "string") : [];
+  if (d.patternChecked === false) {
+    // **显式**说明没跑成，不许让模型以为「没报就是没问题」（硬规矩 3）。
+    lines.push(`⚠️ 反模式检查**没有执行**${notes.length > 0 ? `：${notes.join("；")}` : "（原因未提供）"}。`);
+    return lines.join(String.fromCharCode(10));
+  }
+  if (d.patternChecked !== true) return "";
+  const findings = Array.isArray(d.patternFindings) ? d.patternFindings : [];
+  const hint = typeof d.patternHint === "string" ? d.patternHint : "";
+  if (findings.length === 0) {
+    if (hint) lines.push(`✅ ${hint}`);
+  } else {
+    lines.push(hint ? `⚠️ ${hint}` : "⚠️ 反模式检查发现问题：");
+    for (const raw of findings.slice(0, 40)) {
+      if (raw === null || typeof raw !== "object") continue;
+      const f = raw as { rule?: unknown; level?: unknown; page?: unknown; message?: unknown };
+      const where = typeof f.page === "number" ? `第 ${f.page + 1} 页` : "整份";
+      lines.push(`- [${String(f.level ?? "?")}] ${String(f.rule ?? "?")} · ${where}：${String(f.message ?? "")}`);
+    }
+    if (findings.length > 40) lines.push(`…（还有 ${findings.length - 40} 条未列）`);
+  }
+  if (notes.length > 0) lines.push(`⚠️ 有页面文件没被检查：${notes.join("；")}`);
+  return lines.join(String.fromCharCode(10));
 }
 
 /** 编辑后强制 QA 门禁。返回 null 表示该 app 没有门禁（目前只有 markdown/html 的
@@ -671,6 +715,13 @@ async function buildDeck(
   if (!root || root.trim() === "") {
     return { result: { ok: false, kind: "refused", envelope: null, reason: "当前端口没有受控临时目录，无法为 spec 建快照" }, mutated: false };
   }
+  // 【T73】反模式检查：**在 build 之前**读 spec、跑判据，把 findings 带给模型。
+  //
+  // 为什么在这里（而不是新开一个工具）：`build_deck` 是模型在设计流水线里**唯一**
+  // 可靠会走到的入口（`slides check` 在工具面上根本没有路由 —— 见 T73 回写的论证）。
+  // 检查失败**不阻断 build**：findings 是附加信息，不是新的拒绝条件（卡里硬要求 3）。
+  const patternCheck = readDeckPatterns(ports, specDir);
+
   const snapshotRoot = join(root, `t43-deck-${randomUUID().replace(/-/g, "").slice(0, 12)}`);
   try {
     const snapshot = await snapshotDeckSpec(ports, specDir, snapshotRoot);
@@ -699,10 +750,131 @@ async function buildDeck(
       ...(input.audit === true ? { audit: true } : {}),
       ...(ports.signal ? { signal: ports.signal } : {}),
     });
-    return { result, mutated: result.ok };
+    return { result: withPatternFindings(result, patternCheck), mutated: result.ok };
   } finally {
     try { rmSync(snapshotRoot, { recursive: true, force: true }); } catch { /* 清理失败不改变结果 */ }
   }
+}
+
+/* ───────────【T73】反模式检查的读取与挂载 ───────────
+ *
+ * 两件事分开：
+ *   - `readDeckPatterns`：从**源** spec 目录读 `pages/*.json` 并跑 `checkDeckPatterns`；
+ *   - `withPatternFindings`：把结果挂到 CLI 信封的 `detail.patternFindings` 上。
+ *
+ * ## 为什么读源目录而不是快照
+ *
+ * 快照目录在 `finally` 里会被删掉，且它是逐文件拷贝的副本 —— 读源目录更直接，也不
+ * 依赖拷贝是否完整。两个目录内容相同（`snapshotDeckSpec` 逐字节拷贝），读哪个都对；
+ * 选源目录是因为**它一定存在**（`snapshotDeckSpec` 刚校验过）。
+ *
+ * ## 失败要显式（CLAUDE.md 硬规矩 3）
+ *
+ * 读不到 / 解析不了时**不静默跳过**：返回一个 `notes` 数组说明「反模式检查没跑成」，
+ * 与「跑了、没问题」区分开。模型看到 `patternChecked: false` 就知道不能当它通过了。
+ */
+interface PatternCheckOutcome {
+  checked: boolean;
+  /** 实际执行的判据（来自检查器的 `applied`）。 */
+  applied: Record<string, string>;
+  findings: PatternFinding[];
+  /** 没跑成的原因（checked=false 时非空）。没有问题时为空。 */
+  notes: string[];
+}
+
+function readDeckPatterns(ports: DocumentSurfacePorts, specDir: string): PatternCheckOutcome {
+  const pagesDir = join(specDir, "pages");
+  const dir = existsSync(pagesDir) ? pagesDir : specDir;
+  let names: string[];
+  try {
+    // 与 CLI 的 `listPageFiles` 同一套筛法：`.json`、不认点开头、`outline.json` 不是页、
+    // **数字序**排序（`2.json` 在 `10.json` 前）。页号要和 CLI 造出来的页对齐，否则
+    // 「第 N 页」会指错。
+    names = readdirSync(dir)
+      .filter((n) => n.toLowerCase().endsWith(".json") && !n.startsWith(".") && n.toLowerCase() !== "outline.json")
+      .sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+  } catch (error) {
+    return {
+      checked: false, applied: {}, findings: [],
+      notes: [`读不到 spec 目录（${dir}）：${error instanceof Error ? error.message : String(error)}；反模式检查没有执行。`],
+    };
+  }
+  if (names.length === 0) {
+    return { checked: false, applied: {}, findings: [], notes: [`spec 目录里没有 .json 页面文件（${dir}）；反模式检查没有执行。`] };
+  }
+  const pages: DeckPageSpec[] = [];
+  const notes: string[] = [];
+  for (const name of names) {
+    const file = join(dir, name);
+    try {
+      const page = asPageSpec(JSON.parse(readFileSync(file, "utf8")) as unknown);
+      if (page === null) {
+        notes.push(`${name} 不是页面 spec（形状不符），已跳过。`);
+        continue;
+      }
+      pages.push(page);
+    } catch (error) {
+      notes.push(`${name} 解析失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (pages.length === 0) {
+    return { checked: false, applied: {}, findings: [], notes: [...notes, "没有可检查的页面；反模式检查没有执行。"] };
+  }
+  const report = checkDeckPatterns(pages);
+  return { checked: true, applied: report.applied, findings: report.findings, notes };
+}
+
+/**
+ * 一个页面文件的形状归一。
+ *
+ * **一个文件就是一页** —— 与 CLI 的 `listPageFiles` / `buildDeckFromDir` 一致
+ * （`pages/NN.json` 各装一个页面对象）。裸数组或 `{pages:[…]}` 写在页文件里会被
+ * CLI 当成**一页**去校验并整份失败，所以这里也不展开它们：展开会让页号与真正
+ * 造出来的 deck 错位，报出一个根本不存在的「第 3 页」。
+ *
+ * 认不出来返回 null（由调用方记 note），**不猜**。
+ */
+function asPageSpec(raw: unknown): DeckPageSpec | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as { elements?: unknown };
+  return Array.isArray(obj.elements) ? obj as unknown as DeckPageSpec : null;
+}
+
+/** 把反模式结果挂到 CLI 信封上。**不改 CLI 原有的任何字段**，只加 `detail.patternFindings`。 */
+function withPatternFindings(result: GenofficeResult, outcome: PatternCheckOutcome): GenofficeResult {
+  if (!result.ok) return result;
+  const detail = result.envelope.detail !== null && typeof result.envelope.detail === "object"
+    ? result.envelope.detail as Record<string, unknown>
+    : {};
+  const errors = outcome.findings.filter((f) => f.level === "error");
+  const warnings = outcome.findings.filter((f) => f.level === "warning");
+  return {
+    ok: true,
+    envelope: {
+      ...result.envelope,
+      detail: {
+        ...detail,
+        // 检查是否真的跑了 —— 与「跑了、没问题」必须能区分（硬规矩 3）。
+        patternChecked: outcome.checked,
+        ...(outcome.checked
+          ? {
+              patternFindings: outcome.findings,
+              patternCounts: { error: errors.length, warning: warnings.length },
+              patternApplied: outcome.applied,
+              ...(outcome.findings.length > 0
+                ? {
+                    patternHint:
+                      `反模式检查发现 ${errors.length} 个 error / ${warnings.length} 个 warning。` +
+                      `这些**不影响本次 build**（文件已生成），但规范把其中 error 一类列为缺陷 —— ` +
+                      `改对应的 pages/NN.json 后用 build_deck 重建（或 slides replace 单页替换）。`,
+                  }
+                : { patternHint: "反模式检查未发现问题。" }),
+            }
+          : {}),
+        ...(outcome.notes.length > 0 ? { patternNotes: outcome.notes } : {}),
+      },
+    },
+  };
 }
 
 /** `docs read` 的视图开关（revisions/comments/notes/styles）是 `docs read` 的选项，
