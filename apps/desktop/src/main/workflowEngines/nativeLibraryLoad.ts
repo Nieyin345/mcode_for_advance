@@ -38,6 +38,38 @@
  *     Mcode's last load or has diverged (edited natively / an earlier load
  *     never completed).
  * It is deliberately not consulted for execution, deploy, or mirroring.
+ *
+ * ## T27: the deadlock this entry point had, and the one gate that was wrong
+ *
+ * Until T27 this function also ran a second, *stricter* verdict right after
+ * the preflight: it refused whenever `migrateWorkflowDoc` reported **any**
+ * `lossy` / `needsHumanDecision` item, with no way to confirm. That made the
+ * entry reject every graph a user can actually save:
+ *
+ *   - the save gate (`workflowValidation` + `deriveTrigger`) requires an
+ *     ordinary graph to have exactly one `mcode.main` and an automation to
+ *     have at least one trigger node — those are the *legacy runner's* entry
+ *     requirements, and they are correct for it;
+ *   - the migrator must therefore always report at least one item for such a
+ *     document: `mcode.main` is a `conversation` runner (needs-human-decision,
+ *     MERGE-0 #1), and every trigger maps to `inject`/`watch` (lossy:
+ *     debounce/project/task/excludePaths live in `x-mcode.params`) or to
+ *     `mcode-trigger` (needs-human-decision, event mapping).
+ *
+ * Both facts are honest *descriptions*, not impossibility proofs: the migrated
+ * artifact is complete and round-trip-clean (that is why the preflight does
+ * **not** REJECT these documents — it returns HUMAN), and the unexpressed
+ * parameters survive in `x-mcode.params` for the Host side. The wrong gate was
+ * this file's use of the report as a hard veto. T27 therefore:
+ *
+ *   - keeps the preflight as the single authority: REJECT / UNREADABLE still
+ *     refuse unconditionally, unknown node types included;
+ *   - turns the known-loss / human-decision items into the **confirmation
+ *     text** (one acknowledgment with the canvas replacement), so the user
+ *     sees exactly what will not be natively expressed;
+ *   - keeps a defense-in-depth refusal for `unmapped` items in the exact
+ *     artifact about to be written (the preflight already rejects these, so
+ *     this can only refuse more, never wave anything through).
  */
 import type { WorkflowDoc, WorkflowReviewInfo } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
@@ -86,6 +118,18 @@ function reasonLines(evaluation: WorkflowMigrationEvaluation): string {
   return evaluation.reasons.map((reason) => `- ${reason.summary}（${reason.code}）`).join("\n");
 }
 
+/** 迁移报告里的已知损失 / 需人工裁决项 → 确认文案。不是拒绝理由（T27）：这些条目
+ *  描述的是"原生画布不直接表达的东西留在 x-mcode.params，由 Host 侧承担"，迁移产物
+ *  本身仍完整、可回读；预检据此判 HUMAN（要人看一眼），而不是 REJECT。 */
+function knownLossLines(migrated: ReturnType<typeof migrateWorkflowDoc>): string[] {
+  return [
+    ...migrated.report.needsHumanDecision.map((item) =>
+      `- ${item.message}${item.nodeId === undefined ? "" : `（节点 ${item.nodeId}）`}`),
+    ...migrated.report.lossy.map((item) =>
+      `- ${item.message}${item.nodeId === undefined ? "" : `（节点 ${item.nodeId}）`}`),
+  ];
+}
+
 export function loadWorkflowIntoNative(
   workflowId: string,
   ports: NativeLoadPorts,
@@ -130,14 +174,19 @@ export function loadWorkflowIntoNative(
       }
 
       const migrated = migrateWorkflowDoc(doc, { types });
-      const issues = [
-        ...migrated.report.unmapped.map(item => item.reason),
-        ...migrated.report.needsHumanDecision.map(item => item.message),
-        ...migrated.report.lossy.map(item => item.message),
-      ];
-      if (issues.length > 0) {
-        return { ok: false, reason: `无法无损装载「${doc.name}」：${issues.length} 个节点/语义问题：\n${issues.join("\n")}` };
+      // T27: `lossy` / `needsHumanDecision` are descriptions, not refusals — they
+      // become the confirmation text below. `unmapped` is the one item class that
+      // means "this node cannot be represented at all"; the preflight already
+      // REJECTs it, so reaching here with one is an internal contradiction and
+      // must fail closed rather than write a mcode-unknown placeholder.
+      if (migrated.report.unmapped.length > 0) {
+        return {
+          ok: false,
+          reason: `「${doc.name}」含无法映射到 Node-RED 的节点，已拒绝装载：\n`
+            + migrated.report.unmapped.map(item => `- ${item.reason}`).join("\n"),
+        };
       }
+      const knownLoss = knownLossLines(migrated);
 
       const status = ports.runtime.status();
       if (status.state === "starting") return { ok: false, reason: "Node-RED 正在启动，不能切换画布" };
@@ -160,10 +209,19 @@ export function loadWorkflowIntoNative(
       const canvasDiffers = before !== null && JSON.stringify(JSON.parse(before)) !== next;
       const canvasDivergedFromLastLoad = previousLoad.ok
         && before !== null && JSON.stringify(previousLoad.flow.nodes) !== JSON.stringify(JSON.parse(before));
+      // Only the preflight decides whether an acknowledgment is needed: whenever
+      // the migrator reports lossy/human items it returns HUMAN, so duplicating
+      // that test here would be a second, drift-prone authority. The loss list
+      // below is still attached to whatever confirmation is asked for.
       const canvasNeedsConfirmation = canvasDiffers || status.state === "running" || status.state === "failed";
       if ((canvasNeedsConfirmation || evaluation.decision === "HUMAN") && !confirmReplace) {
         const migrationPart = evaluation.decision === "HUMAN"
           ? `\n\n迁移预检要求人工确认：\n${reasonLines(evaluation)}`
+          : "";
+        // T27: the concrete loss list, not just the preflight's summary code — the
+        // user must see which parameters stay Host-side instead of being refused.
+        const lossPart = knownLoss.length > 0
+          ? `\n\n以下内容不会由 Node-RED 原生表达（原值保留在节点的 x-mcode.params，由 Mcode 宿主侧承担）：\n${knownLoss.join("\n")}`
           : "";
         const divergencePart = canvasDivergedFromLastLoad
           ? "\n注意：当前画布与 Mcode 上次为这张图装载的内容不一致 —— 可能是在原生编辑器里改过，或上次装载没有完成。"
@@ -172,7 +230,7 @@ export function loadWorkflowIntoNative(
           ok: false,
           requiresConfirmation: true,
           reason: "切换会替换当前 Node-RED 画布并重启运行中的引擎。尚未 Deploy 的编辑无法从磁盘恢复；请先在原生编辑器部署或另存。旧的已部署 flows.json 将保留内容寻址备份。确定继续？"
-            + divergencePart + migrationPart,
+            + divergencePart + migrationPart + lossPart,
         };
       }
 

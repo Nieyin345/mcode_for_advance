@@ -90,14 +90,20 @@ try {
   check("mcode-owned 拒绝没有停止现有运行", stops === 1 && canvasDocId() === "B");
 
   docs.set("loss", { ...docOf("loss"), nodes: [{ ...docOf("loss").nodes[0], position: { x: 3.5, y: 1 } }] });
+  // 【T27】已知损失（坐标取整、trigger 的 debounce 留在 x-mcode.params…）不是拒绝理由：
+  // 一次确认（与画布替换合并）后照常装载。这里用坐标取整这条最窄的损失验确认文案。
+  result = await loadWorkflowIntoNative("loss", ports, false);
+  check("【T27】已知损失先要求确认，且点名具体损失（坐标舍入）",
+    !result.ok && result.requiresConfirmation === true && result.reason.includes("舍入"), result);
+  check("未确认时画布仍是 B", canvasDocId() === "B");
   result = await loadWorkflowIntoNative("loss", ports, true);
-  check("迁移舍入坐标也保守拒绝且报告具体损失", !result.ok && result.reason.includes("舍入"), result);
-  check("丢失语义拒绝不触碰 B", canvasDocId() === "B");
+  check("【T27】用户确认后已知损失照常装载（不再被当作拒绝理由）",
+    result.ok && canvasDocId() === "loss", { result, canvas: canvasDocId() });
 
   startShouldFail = true;
   result = await loadWorkflowIntoNative("A", ports, true);
   check("启动失败显式报错", !result.ok && result.reason.includes("synthetic startup failed"), result);
-  check("引擎启动失败原子回滚 B 的画布", canvasDocId() === "B");
+  check("引擎启动失败原子回滚原画布", canvasDocId() === "loss");
   startShouldFail = false;
   result = await loadWorkflowIntoNative("A", ports, true);
   check("B -> A 第三次打开恢复 A", result.ok && canvasDocId() === "A", { result, canvas: canvasDocId() });
