@@ -155,3 +155,65 @@ node apps/desktop/scripts/t63-deck-quality-smoke/probe.mjs --json   # 机读
 实测 **9/9 形态符合预期**，覆盖：干净 deck、文字溢出（反向控）、完全出界（记录它会被 create 丢弃）、合规调色板、越界颜色、outline 一致、页数超出。
 
 退出码 0 = 判据形态未变；1 = 判据变了，第 1 步的断言要重写。
+
+---
+
+## 结果回写（2026-10-23）
+
+### 1. 断言覆盖了 T62 的哪些发现
+
+| T62 发现 | 本套件 | 说明 |
+|---|---|---|
+| 规范「从不是文档，是检查器」：`offPalette` / `outline.findings` / audit 当场报 | **B / C / A 三组** | 各配正控（合规 → 空）+ 反向控（违规 → 报），把「检查器真的在跑」变成机器断言 |
+| 每处写错都被抓住（overlap / text overflow / 调色板外色 / 缺单位） | **A3 / B2 / C2 / C3** | 四条反向控分别对应几何、颜色、页数、标题一致性 |
+| `audit` 能抓出界、溢出、重叠 | **A1 / A3** | 正控 error=0；反向控 `code === "out_of_bounds"` |
+| 产物能读回 | **D1–D4** | 两页 deck 造得出、读得回、页数对得上；另加 D4 证明「有几何缺陷 ≠ 读不回」（两条判据独立） |
+
+### 2. **没**覆盖的（如实记录）
+
+| T62 发现 | 为什么没覆盖 |
+|---|---|
+| **① 留白过度（「三根空柱子」audit 报零问题）** | 按总控指令 **D' 延后**——E 的 T65 正在做反模式检查器，若它实现了留白检测，这条要从「记录缺口」改成「验证新检查」。**本卡未写 D'。** |
+| **② 反模式第 4/6 条（细竖条、装饰方块）** | `slides check` 不实现，无机器判据可断。 |
+| **③ 内容页/数据页构图雷同** | 同上，无检查器。 |
+| 渲染出的 PNG 视觉效果好不好看 | 需要人眼看图（T62 已手工验），机器只能验几何与调色板。 |
+
+### 3. 正反控对照（判过方式）
+
+| 组 | 正控 | 反向控 |
+|---|---|---|
+| **A 几何审计** | `干净 deck → audit.counts.error === 0` | `文字溢出 → issues[].code === "out_of_bounds" && level === "error"` |
+| **A4/A5 记录** | 完全出界 → **create 阶段即丢弃**；部分出界 → **被 clamp，audit 不报** | （这是记录，不是反向控） |
+| **B 调色板** | `合规页 → detail.style.offPalette === []` | `#FF00AA → offPalette 含它` |
+| **C 大纲一致** | `页与条目一致 → detail.outline.findings === []` | 页数超出 → `level:"error"`；标题不符 → `level:"error"` 且 message 含 title |
+| **D 可读回** | `两页 → detail.slides === 2 且 detail.pages.length === 2`；两页文本都读得回 | `有几何缺陷的 deck 也读得回`（证明两条判据独立） |
+
+全部夹具走 `create --spec`（同一条 builder 路径），未手改 pptx。
+
+### 4. 变异验证（撤证据源 → 真红 → `cmp` 还原）
+
+⚠️ **第一版变异写错了，如实记录**：我把 `overIssues.some(...)` 换成 `true`，套件仍绿 —— 因为同一条断言里 `overflowAudit.ok && (overCounts?.error ?? 0) > 0` 仍在验。**那是变异选点错，不是断言无效。** 改为撤**证据源**：
+
+| 变异 | 撤了什么 | 变红的断言 |
+|---|---|---|
+| `A3-overflow-fixture` | 溢出文本换成 `"short"` | **A3**（`counts:{error:0}`）+ **D4**（连带，D4 复用同一份溢出 deck） |
+| `B2-palette-fixture` | `#FF00AA` 换回 `#111111` | **B2**（`offPalette:[]`） |
+| `C2-extra-page-fixture` | 不写第 2 页 | **C2** + **C3**（连带，同一夹具） |
+
+三次都 `cp` 还原后用 `cmp` 确认**逐字节一致**，复跑 15/15。
+
+### 5. 回归与门禁
+
+- `t63-deck-quality-smoke`：**15/15**
+- `t43-document-ai-design-pipeline-smoke`：**57/57**（不回归）
+- `t47-design-guide-smoke`：**27/27**（不回归）
+- 双包 `tsc --noEmit`：**exit 0**
+- **未跑全量**（用户规矩）；**未起 Electron**；**未改产品源码**
+
+### 6. 交付
+
+- 新套件 `apps/desktop/scripts/t63-deck-quality-smoke/`（`main.ts` / `run.sh` / `probe.mjs`）
+- 本卡
+
+### 7. 提交
+
