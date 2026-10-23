@@ -35,13 +35,37 @@
 
 ### 第一步：先核实「文档说的和代码实际写的」是否一致
 
-文档把 `workspace.fs.readFile` 标 **L1-C（未接入）**、`writeFile` 标 **L2（待补）**、`showInformationMessage` 标 L2、`getConfiguration` 标 L2、`registerTextEditorCommand` 标 L2、`createDiagnosticCollection` 标 L2。
-
-**但我读 `vscodeL1Bridge.ts:150-215`，这些全都有实现。**
-
-**先判断：是文档过期了，还是这些实现是「假的」（比如只处理了自己造的夹具能命中的形状）？**
-
-这才是本卡的核心问题。**做一次性全量判断，写进回写区。**
+> **⚠️ 2026-10-23 更正（F 在读卡时指出，总控核实）**：本节原来的前提是错的。
+>
+> 我写卡时说「文档标 L2 未接入、但代码里有实现，所以要么文档过期要么实现是假的」。
+>
+> **F 读了 §6.2（第 122-128 行）那另一张表，发现我漏了它。** 那张表逐条列了每项实现的**限制**：
+>
+> | API | §6.2 写的限制 | 代码实证 |
+> |---|---|---|
+> | `workspace.fs.readFile/writeFile` | 单文件 `Uri.file`、最大 1 MiB；无目录遍历、无其他 schema、无 CAS | `:163` 超 1 MiB 抛；`:145-148` fsPath 不等就抛；`:167` 无 `resource.write` 抛 |
+> | `getConfiguration` | 只认 `publisher.name` 命名空间；无实时监听、无写回 | 收快照参数，非实时 |
+> | `showInformationMessage` | 只支持纯文本无交互；没端口明确报错 | `l2Notify` 限额 256 字符、最多 4 条 |
+> | `registerTextEditorCommand` | 只选当前文件；`editor.edit` **明确抛 unsupported** | `:201` 确实是 `throw Error(...)` |
+> | `createDiagnosticCollection` | 仅本次调用快照、不持久订阅 | 无订阅 API |
+>
+> **所以：§2 是产品级承诺（不是完整 L2），§6.2 是技术调查（有受限原型）。两张表各自成立，不矛盾。**
+>
+> **真实问题不是事实错误，是文档结构**：两节没有互相引用，读 §2 的人会以为「完全没有」，读 §6.2 的人才知道「有受限版」。
+>
+> **F 的结论**：「没有一条是『只处理夹具形状』。围栏比文档说的还严（要求 fsPath 完全等于唯一授权资源）。」
+>
+> 而且 `vscode-l1-smoke` 里有一组**逃逸测试**（`escape-read` / `escape-write` / `escape-config` / 诊断越界 / 编辑器越界读）——**它不只在验「能跑」，还在验「跑不出去」。**
+>
+> **所以本卡的核心问题收窄了**（F 的原话）：
+>
+> > **真实 VSIX 装进来之后，`vscode-l1-smoke` 造的那个「两文件 ZIP STORE」夹具没覆盖的东西，会不会让扩展挂掉？**
+>
+> 三类具体风险：
+>
+> 1. **包结构**：DEFLATE / `[Content_Types].xml` / 目录层级深；
+> 2. **清单**：多个 `contributes.commands`、未知字段；
+> 3. **扩展代码写法**：`context.subscriptions.push(...)` 一上来 push 十几项、`require("vscode")` 后立刻用 `workspace.getConfiguration()`。**F 判断第 3 类最可能炸**，因为桥的 API 面是白名单式的。
 
 ### 第二步：拿一个真实 VSIX 试
 
@@ -81,7 +105,7 @@ ls ~/AppData/Roaming/Code/User/globalStorage 2>/dev/null | head -3
 
 ## 验收判据
 
-1. **文档 vs 代码的一致性判断**（哪些 API 文档说没做、实际做了；哪些反过来）—— **逐条列表**。
+1. **文档结构问题记一笔就够了**（§2 与 §6.2 没互相引用，导致读者以为「完全没有」）—— **不用再逐条核对实现**，F 已经核过了，把结论引用即可。
 2. **真实/接近真实的 VSIX 的实际运行结果**（不是「我觉得应该能跑」）。
 3. **失败分类表**（包结构 / 清单 / API / 权限）。
 4. **明确结论**：能不能装真实扩展，缺什么。
