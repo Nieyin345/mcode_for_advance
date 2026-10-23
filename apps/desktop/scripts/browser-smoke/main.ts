@@ -455,7 +455,11 @@ resetBookmarks();
 
 console.log("\nIPC:合法入参 → 委托给 BrowserManager 的参数");
 
-const PROJECT = "D:\\destop\\work_space\\work_for_reseach\\mcode";
+// 本仓库根：**从运行时推**，不写死某台机器的路径。（2026-10-23 仓库搬家后，
+// 原来的字面量指向一个已不存在的目录；套件仍然绿，因为包含判定是纯字符串比较、
+// 不查盘 —— 也就是说只有那句「真实存在」的注释是错的，而它会把下一个读的人
+// 引到一条不存在的路上。）
+const PROJECT = process.cwd();
 ProjectRepo.create({
   id: "p1",
   name: "本仓库",
@@ -905,7 +909,9 @@ console.log("\nMC-044:browser_navigate 的 file:// 受项目根围栏约束");
 
 {
   const { fileUrlWorkspaceError } = await import("@main/browser/agentTargeting.js");
-  // PROJECT 已在上面 §2 注册进 ProjectRepo(它是本仓库根,真实存在)。
+  // PROJECT 已在上面 §2 注册进 ProjectRepo。它只作为**一条具体的根路径样本**参与
+  // 下面的判定（`fileUrlWorkspaceError` 用纯字符串包含比较，不查盘），所以它的值
+  // 取自运行时 cwd，而不是写死某台机器的路径。
   const fileUrl = (p: string): string => "file:///" + p.replace(/\\/g, "/").replace(/^\//, "");
   const insideUrl = fileUrl(join(PROJECT, "docs", "page.html"));
   const outsideUrl = process.platform === "win32" ? "file:///C:/Windows/system.ini" : "file:///etc/hostname";
@@ -1067,7 +1073,8 @@ console.log("\n路径身份:browser 工具的项目根比较按规范化键,不�
   const { resolveBrowserTarget } = await import("@main/browser/agentTargeting.js");
   const toolText = (r: ToolResult): string => toolTextOf(r);
   const SENT = "SENTINEL-本项目正文";
-  // 视图存的是 ProjectRepo 里那份原样拼写(PROJECT 是本仓库根,反斜杠形态、真实存在)。
+  // 视图存的是 ProjectRepo 里那份原样拼写。下面几条断言只比较**同一路径的等价
+  // 拼写**（分隔符/尾斜杠/大小写），与 PROJECT 具体指向哪里无关。
   const STORED = PROJECT;
   const sepVariant = STORED.replace(/\\/g, "/");
   const trailVariant = STORED + (STORED.includes("\\") ? "\\" : "/");
