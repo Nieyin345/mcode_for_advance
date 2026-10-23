@@ -76,6 +76,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { LibraryRepo } from "@main/store/repositories.js";
 import { log } from "@main/lib/logger.js";
 import { ensureLibraryDirs, libraryRoot, toLibraryRelative, countImageFiles, isNoteRelPath } from "./paths.js";
@@ -246,7 +247,28 @@ function copyReferencedAssets(
       // JS 实现，那条路不受影响。见 nodejs/node#54476、#63970 与 `tasks/T90`。
       //
       // 只有**目录**会触发：单文件复制（带不带 `recursive`）实测正常。
-      cpSync(abs, dest, { recursive: true, filter: () => true });
+      //
+      // ⚠️ **拷到临时名再 rename，不能直接 cpSync 到 dest。**
+      // `filter` 救不了这一格：**非 ASCII 源 + 目标里已有同名文件** 时，`cpSync`
+      // 会抛一个 `errno=0` 的错（信息写着 "The operation completed successfully"），
+      // **且实际一个字节都没拷**（tasks/T107）。而这里的目标**很容易已存在** ——
+      // 同一份 Markdown 里 `![](图表/)` 和 `![](图表/a.png)` 就是两次复制同一个
+      // 目标；第二遍会撞上，然后被下面的 `catch` 记成「缺文件」，而用户看到的是
+      // `ok: true` + 一张本来存在的图被列为 missing。
+      //
+      // 用 **临时名再 rename** 而不是「先删后拷」：**这是用户的资料库**，
+      // 复制失败时旧内容必须还在（删了再拷失败 = 图没了）。
+      // 临时名与 dest 同父目录 → 同一文件系统，rename 是原子的。
+      const staging = `${dest}.staging-${randomUUID()}`;
+      try {
+        cpSync(abs, staging, { recursive: true, filter: () => true });
+        rmSync(dest, { recursive: true, force: true });
+        renameSync(staging, dest);
+      } catch (error) {
+        // 半成品必须清掉，否则暂存目录会留在用户库里。
+        try { rmSync(staging, { recursive: true, force: true }); } catch { /* 清不掉也不改变结论 */ }
+        throw error;
+      }
       if (statSync(dest).isDirectory()) {
         imageCount += countImageFiles(dest);
       } else {

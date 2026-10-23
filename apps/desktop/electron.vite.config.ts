@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
@@ -188,7 +188,24 @@ function copyPdfjsAssets(): Plugin {
         // 目录复制：Node 22 + Windows + 非 ASCII 路径下不带 filter 会 native 崩
         // （nodejs/node#54476、#63970）。filter 强制走 JS 实现，语义不变。
         // 上面 `:165` 那个是**单文件**复制，实测不受影响，不需要改。
-        cpSync(join(pdfjsPkgDir, sub), join(publicDir, sub), { recursive: true, filter: () => true });
+        //
+        // ⚠️ **必须拷到临时名再 rename。** `filter` 救不了「非 ASCII 源 + 目标已有
+        // 同名文件」那一格：`cpSync` 会抛 `errno=0` 的错（信息写着 "The operation
+        // completed successfully"）且**实际没拷**（tasks/T107）。而这里的目标
+        // `src/renderer/public/pdfjs/<sub>` 在**版本号变化时会已存在** ——
+        // 那正是这段代码被触发的时候（上面的 `assetTreeComplete` 早退）。
+        // 直接拷会让 `buildStart` 抛错，整个 `pnpm build` 停在这里。
+        const src = join(pdfjsPkgDir, sub);
+        const dst = join(publicDir, sub);
+        const staging = `${dst}.staging-${process.pid}-${Date.now()}`;
+        try {
+          cpSync(src, staging, { recursive: true, filter: () => true });
+          rmSync(dst, { recursive: true, force: true });
+          renameSync(staging, dst);
+        } catch (error) {
+          try { rmSync(staging, { recursive: true, force: true }); } catch { /* 清不掉不改变结论 */ }
+          throw error;
+        }
       }
       writeFileSync(versionFile, version, "utf8");
       // eslint-disable-next-line no-console

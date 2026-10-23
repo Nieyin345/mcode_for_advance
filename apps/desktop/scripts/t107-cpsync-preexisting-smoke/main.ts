@@ -121,5 +121,19 @@ console.log("\n4. 修法不留临时目录残渣");
   }
 }
 
+/* ───────────────────── 5. 真实形状：同一目标被覆盖两次 ───────────────────── */
+
+console.log(String.fromCharCode(10) + "5. ★ 真实形状：同一目标被覆盖两次（adoptMarkdown 的重复目录引用）");
+{
+  // `![](图表/)` 和 `![](图表/a.png)` 会让同一个目标被复制两次。
+  // 第 2 节已证明「直接 cpSync」会失败；这里钉住三种修法都能处理这个形状。
+  const base = join(WORK, "非ASCII-dup-ref");
+  for (const fix of ["delete-first", "temp-rename", "manual"] as const) {
+    const r = runProbe(base, fix);
+    check(`${fix}：同一目标被覆盖两次仍成功`, r.status === 0 && field(r.out, "top") === "NEW", r);
+  }
+}
+
+
 console.log(`\nt107-cpsync-preexisting-smoke:${total - failures}/${total} 通过`);
 process.exit(failures === 0 ? 0 : 1);

@@ -264,5 +264,35 @@ console.log("\n6. ★ `:313` 的承诺：新的一份拷不进去时，老包必
 }
 
 
+/* ───────────────────── 3d. ★ 同一目录被引用两次 ───────────────────── */
+
+console.log("\n3d. ★ 同一份 md 两处引用**同一目录** —— 第二次复制时目标已存在");
+{
+  // 【T107】这是 `filter` 救不了的第 3 格：**非 ASCII 源 + 目标已有同名文件**。
+  // `cpSync` 会抛 `errno=0`（信息写着 "The operation completed successfully"），
+  // **且实际没拷**。这里的目标是 `stageDir` —— 同一次运行里第一次复制建的。
+  //
+  // 修前实测：`ok:true`、`imageCount:1`、`missing` 里一条「图表/a.png(, The operation
+  // completed successfully. …)」。**用户看到「成功，缺 1 个图」**，而那张图在源里
+  // 好好的 —— 它是被算了两次、第二次失败。
+  const item = newItem("dup-dir-ref");
+  const dir = join(WORK, "重复引用");
+  mkdirSync(join(dir, "图表"), { recursive: true });
+  writeFileSync(join(dir, "图表", "a.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 3]), "binary");
+  const md = join(dir, "doc.md");
+  // 先引用整个目录，再引用同一目录里的文件 —— 两次都会走到 `:242`
+  writeFileSync(md, "# t\n\n![整目录](图表/)\n\n![单文件](图表/a.png)\n", "utf8");
+  const r = runProbe(item, md);
+  let parsed: { ok?: boolean; imageCount?: number; missing?: unknown } = {};
+  try { parsed = JSON.parse(r.result.replace("PROBE_RESULT:", "")); } catch { /* 保持空 */ }
+  check("★ 子进程没有崩（status === 0）", r.status === 0, r);
+  check("★ adopt 返回 ok:true", parsed.ok === true, r);
+  check("★ 图还在（两次引用都算成功）", packageContents(item).some((p) => p.includes("a.png")), packageContents(item));
+  // **关键**：修前 `missing` 里会有那条骗人的错误，而图其实在。
+  // 断言它为空 —— 因为「图存在」和「报了缺图」同时为真是自相矛盾的。
+  check("★ missing 为空（不许把「复制成功」报成「缺文件」）",
+    Array.isArray(parsed.missing) && parsed.missing.length === 0, r);
+}
+
 console.log(`\nt91-adopt-markdown-cp-smoke:${total - failures}/${total} 通过`);
 process.exit(failures === 0 ? 0 : 1);
