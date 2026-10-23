@@ -59,7 +59,7 @@ Mcode 把整个数据库放在内存里,任何一次变更都会把整份文件�
     python library.py collections              列出大类与分类树
 
 默认从 Mcode 的记录里找数据根(APPDATA 下的 data-root.json);也可以显式给:
-    python library.py --root "D:/destop/work_space/mcode" list
+    python library.py --root "<你的工作区根>" list
 
 屏蔽规则
 ========
@@ -878,7 +878,7 @@ export const CHECK_CITATIONS_PY = `#!/usr/bin/env python3
 用法:
     python check_citations.py refs.bib
     python check_citations.py refs.bib --manuscript 稿件.tex
-    python check_citations.py refs.bib --root "D:/destop/work_space/mcode"
+    python check_citations.py refs.bib --root "<你的工作区根>"
 
 输出四段:
     1. 库里有对应的来源链接 —— 仍需核实链接与原文的真实性
