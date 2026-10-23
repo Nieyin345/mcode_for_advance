@@ -51,6 +51,8 @@
 | T30 | 文档工具面缺真实 Electron U1 | P1 | T24+T7 | Q |
 | T31 | **三处既有失败挡住 `run-smokes --all`** | **P0 工具链** | 无 | R |
 | T32 | **`genofficeNativeVendor.ts` 的 alias 虚拟模块破坏 15 套 smoke** | **P0 工具链** | 无 | S |
+| T33 | **`document.read` 误进 BLOCKED；`toolCall`/`markdownEdit` 档位偏弱** | **P0 安全** | 无 | T |
+| T34 | **权限映射生成器缺 framework 域；danger 默认可委托** | **P0 安全** | T33 | U |
 
 ### 推荐第一波
 
