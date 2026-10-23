@@ -237,6 +237,6 @@ documentToolRuntime.ts:823:  const report = checkDeckPatterns(pages);
 
 ### 九、提交
 
-`<SHA 见提交>` —— 只含 `apps/desktop/src/main/document/documentToolRuntime.ts` 与新建的 `apps/desktop/scripts/t73-pattern-wiring-smoke/`。
+`da9484b4`（`feat(T73): wire checkDeckPatterns into build_deck and render it into the model-visible text`）—— 只含 `apps/desktop/src/main/document/documentToolRuntime.ts` 与新建的 `apps/desktop/scripts/t73-pattern-wiring-smoke/`。
 
 ⚠️ 工作区里还有另一个会话在途的 `apps/desktop/src/main/appControl/tools.ts`（T55 的改动，未提交），**没有**被卷进本次提交。
