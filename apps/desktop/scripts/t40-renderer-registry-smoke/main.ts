@@ -230,8 +230,9 @@ if (wired) {
 {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync("src/main/ipc/index.ts", "utf8");
-  const wrapsCount = (src.match(/withRendererToolRegistry\(/g) ?? []).length;
-  check("装配代码里 withRendererToolRegistry 被调用了(不是零调用点)", wrapsCount >= 1, { wrapsCount });
+  // ⚠️ 这里**故意不**再断言「源码里出现了 withRendererToolRegistry(」——
+  // 那是本文件第 88 行行为断言的弱版本（`wired !== docsAiPorts` 验的是宿主**实际收到**
+  // 的对象）。同一个事实写两遍，弱的那条只会在重构改名时误报，不会多抓到任何缺陷。
   check(
     "两条注入都用同一个包装常量(不是一处包装一处原始)",
     /const\s+registryWrappedDocsAiPorts\s*=\s*withRendererToolRegistry\(/.test(src) &&
