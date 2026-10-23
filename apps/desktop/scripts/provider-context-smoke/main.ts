@@ -4,8 +4,17 @@ import { automaticMemoryForTurn } from "@main/memory/policy.js";
  * 这套专门钉三件很容易“只修 Claude”的事：工作流/角色/主对话记忆三层上下文，
  * 必须由 host 解析一次、三个 provider 各自只负责用同一组 sections 注入。
  */
+// 【T64】用 TypeScript 编译器 API 做 AST 判据，替代 `includes(源码)` 的文本匹配。
+//
+// 为什么要运行时 resolve 而不是顶层 `import ts from "typescript"`：
+// 这套 smoke 被 esbuild 打进临时目录跑，那里没有 node_modules —— 静态 import 会在
+// 运行时抛 ERR_MODULE_NOT_FOUND。用 createRequire 从**项目根**解析，路径稳定。
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createRequire } from "node:module";
+import type * as TS from "typescript";
+const requireFromHere = createRequire(resolve(process.cwd(), "package.json"));
+const ts = requireFromHere("typescript") as typeof TS;
 type RuntimeManagerSingleton = typeof import("@main/claude/RuntimeManager.js").runtimeManager;
 import type { ClaudeAgentSdkProvider } from "@main/providers/claude-sdk/ClaudeAgentSdkProvider.js";
 import type { PiAgentSdkProvider } from "@main/providers/pi-sdk/PiAgentSdkProvider.js";
@@ -178,7 +187,77 @@ check("RuntimeManager 不再读取会话插件名单", !runtime.includes("sessio
 check("工作流逐轮插件名单原样交给 provider", runtime.includes("pluginNames: input.pluginNames,"));
 check("Session 契约不再包含会话插件名单", !source("../../packages/contracts/src/session.ts").includes("activePluginNames"));
 check("会话持久化不再迁移/读写插件名单", !source("src/main/store/sessionSchema.ts").includes("active_plugin_names"));
-check("全局插件 handler 继续注册", source("src/main/ipc/index.ts").includes("registerPluginsHandlers(ipc)"));
+// 【T64】「全局插件 handler 继续注册」这条从 `includes(源码)` 改成 **AST 判据**。
+//
+// 原来的写法 `source("src/main/ipc/index.ts").includes("registerPluginsHandlers(ipc)")`
+// 是**空过**的（T61 变异实测：把这一行注释掉，套件仍 56/56 全绿）——因为
+// `// registerPluginsHandlers(ipc);` 里那个字符串照样能被 `includes` 命中。
+//
+// 现在用 TypeScript 编译器 API 解析出 AST，只认**真实的 CallExpression 节点**：
+//   - 注释 → 不在 AST 里，匹配不到 ✓
+//   - 字符串字面量 → 是 StringLiteral 节点，不是 CallExpression ✓
+//   - 被注释掉的代码 → 不在 AST 里 ✓
+// 这样「注释掉这行」会让断言真的变红。
+{
+  const rel = "src/main/ipc/index.ts";
+  const text = source(rel);
+  const sf = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+
+  /** 找出所有「叫 <name> 的调用表达式」，返回参数个数与首参文本（用于断言形状）。 */
+  const findCalls = (name: string): Array<{ argCount: number; firstArg: string }> => {
+    const out: Array<{ argCount: number; firstArg: string }> = [];
+    const visit = (node: TS.Node): void => {
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression;
+        const calleeName = ts.isIdentifier(callee)
+          ? callee.text
+          : ts.isPropertyAccessExpression(callee) ? callee.name.text : "";
+        if (calleeName === name) {
+          out.push({
+            argCount: node.arguments.length,
+            firstArg: node.arguments[0]?.getText(sf) ?? "",
+          });
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    return out;
+  };
+
+  const pluginCalls = findCalls("registerPluginsHandlers");
+  // ① 必须**恰好一次**真实调用（不是 0 次 = 被注释/删掉，也不是 2 次 = 重复注册）
+  check("★ 全局插件 handler 继续注册（AST：真实调用恰好 1 次，不是注释里的字符串）",
+    pluginCalls.length === 1,
+    { found: pluginCalls.length, hint: pluginCalls.length === 0 ? "被注释或删除了" : "重复调用" });
+  // ② 形状：拿 IpcMain 当唯一参数（`registerPluginsHandlers(ipc)`）
+  check("★ 插件 handler 的调用形状是 registerPluginsHandlers(ipc)",
+    pluginCalls.length === 1 && pluginCalls[0]!.argCount === 1 && pluginCalls[0]!.firstArg === "ipc",
+    pluginCalls);
+
+  // ③ 正控：同一个 AST 解析器在同一份文件里必须能找到确定存在的调用 ——
+  // 否则「找不到 registerPluginsHandlers」可能只是解析器坏了，而不是代码没了。
+  const controlCalls = findCalls("registerDocumentHandlers");
+  check("★ 正控：AST 解析器在同一文件里能找到另一处真实调用（证明判据不是恒假）",
+    controlCalls.length >= 1, { found: controlCalls.length });
+
+  // ④ 反控：把这段源码**当成字符串**传进来，结论必须是「找不到调用」——
+  // 证明判据确实区分「代码」与「文本里出现这个名字」。
+  const asStringSf = ts.createSourceFile("probe.ts", `const x = "registerPluginsHandlers(ipc)";`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let stringHits = 0;
+  const visitStr = (node: TS.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const c = node.expression;
+      const n = ts.isIdentifier(c) ? c.text : ts.isPropertyAccessExpression(c) ? c.name.text : "";
+      if (n === "registerPluginsHandlers") stringHits++;
+    }
+    ts.forEachChild(node, visitStr);
+  };
+  visitStr(asStringSf);
+  check("★ 反控：字符串字面量里的同名文本**不算**调用（这正是 includes 犯的错）",
+    stringHits === 0, { hits: stringHits });
+}
+
 
 console.log("\n三引擎一致消费");
 // Codex 请求超时定时器必须 unref,否则一个未回应的请求会把进程钉住最多 120s(退出被拖)。

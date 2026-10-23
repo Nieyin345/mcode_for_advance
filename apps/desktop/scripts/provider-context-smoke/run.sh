@@ -7,9 +7,12 @@ OUT=$(mktemp -d /tmp/mcode-provider-context-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 source "$(dirname "$0")/../lib/esbuild-path.sh"
 
+# 【T64】AST 判据需要 typescript 编译器 API。它内部用 CJS 的 `require("fs")`，
+# 打进 ESM bundle 会变成不支持的动态 require —— 用 --external 让它走运行时 import。
 "$ESBUILD" scripts/provider-context-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
+  --external:typescript \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 node "$OUT/smoke.mjs"
