@@ -193,11 +193,29 @@ async function req(
     // `res.text()` 会永远挂着。正常情况下它挂不上(没令牌就 401 立刻结束),但把闸门
     // 拆掉验"断言能不能红"时,它会变成一条真的流,于是整套**卡死**而不是变红 ——
     // 而"卡死"看起来和"测试写坏了"一模一样,验不了任何东西。
+    //
+    // ## 超时按用途分两档（T37）
+    //
+    // 从前这里是**一个 3 秒**。3 秒对普通短请求太紧：全量并发跑时机器被别的套件压满，
+    // 一次 `/api/pair/verify`（本地回环、正常几毫秒）可能排在调度队列后面超过 3 秒，
+    // 于是 `AbortSignal.timeout` 触发、`catch` 把它记成 `status 0`。
+    //
+    // 这条**看起来**像产品缺陷：服务端日志显示「device paired」、客户端拿到 `status 0`，
+    // 像"配对成功了却没收到响应"。实际是测试自己的超时太短 —— 服务端正常完成了，
+    // 客户端的计时器先到。诊断依据（2026-10-23）：
+    //   - 单独跑 285 条 0 红；并发跑 10 次压力下 0 次 transport error；
+    //   - 受控实验：128 条并发 fetch 打同一个回环服务，0 条失败；
+    //   - 服务端日志的「device paired」出现在断言行**之前**，说明服务端早已返回。
+    //
+    // 所以：普通请求 10 秒（宽松到足以吸收调度延迟，又不至于让真失败等到天荒地老），
+    // SSE 那条路仍留短超时（它本来就是"故意读不完"，等久了整套会卡）。
+    const isStream = path.startsWith("/api/events");
+    const timeoutMs = isStream ? 3000 : 10_000;
     const r = await fetch(`${BASE}${path}`, {
       method: opts.method ?? (payload ? "POST" : "GET"),
       headers,
       body: payload,
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await r.text();
     allResponses.push({ path, text });
