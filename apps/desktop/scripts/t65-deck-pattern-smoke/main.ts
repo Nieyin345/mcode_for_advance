@@ -32,7 +32,16 @@ function goodContentPage(): DeckPageSpec {
   };
 }
 
-console.log("\nT65 · deck 反模式检查器");
+// ⚠️ 这是**读者真正会看的第一屏** —— 它必须自己说清边界，因为名字说不清。
+// 见 T86：`t65-deck-pattern-smoke` 听起来像在验「整个反模式能力」，
+// 而它**只验纯函数这一层**。接线（模型能不能真的看到 findings）是另一套的事 ——
+// T73 之前那层完全断着，而信了名字的人不会去查。
+console.log(
+  "\nT65 · 反模式判据的纯函数层\n" +
+  "  验：checkDeckPatterns(spec) 是否按规范报出反模式；每条判据都有正控 + 负控。\n" +
+  "  不验：接线（模型是否真的看到 findings）→ 见 t73 接线套件。\n" +
+  "  不验：真实 deck 的观感（那要人看渲染图，见 T62 验收）。",
+);
 
 /* ── 判据 1：细竖条 ── */
 console.log("\n[1] 细竖条 / 顶部色条");
