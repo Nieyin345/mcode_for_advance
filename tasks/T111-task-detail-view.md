@@ -138,3 +138,106 @@ grep -n "FilterChip" apps/desktop/src/renderer/components/chat/ActivityConsole.t
 
 `tasks/T111-task-detail-view.md` 末尾追加 `## 结果回写（2026-10-24）`：
 展开形态、信息顺序对照表、来源显示的三种情况、正负控与变异、套件数字、提交 SHA。
+
+## 结果回写（2026-10-24，E 会话）
+
+### 一、形态：行内展开，同时只展开一条
+
+`expandedId: string | null` 一个槽 —— 点一行展开并收起前一条，再点同一行收起。
+
+**为什么是一个槽而不是 Set**：右栏能被拖到 280px，详情区一展开就很高（失败原因 + 产物
++ 验收证据）。两条同时展开会把列表推出屏幕，用户失去「我在哪条任务上」的位置感。
+**这是 280px 的直接后果，不是审美选择** —— 所以它有一条专门的变异（见第五节）。
+
+**整行可点**（`<button data-toggle-expand aria-expanded>` 包住状态/图标/goal 那段），
+动作按钮（接受/退回）在外层，不嵌套按钮。
+
+### 二、信息顺序（按「用户做决定的顺序」）
+
+| 序 | `data-detail` | 内容 | 为什么在这 |
+|---|---|---|---|
+| 1 | `failure` / `rejection` | 失败原因 / 退回理由 | 如果这条是 `failed`/`rejected`，**这就是用户点开它的原因** |
+| 2 | `artifacts` | 产物（描述 + 完整路径在 `title`） | 「它到底做出来什么」—— 接受/退回的主要判据 |
+| 3 | `acceptance` | 验收证据（仅 `accepted`） | 「当初凭什么说它通过了」 |
+| 4 | `origin` | 来源（文案 + ref） | 列表里是图标，这里说清是哪个会话 |
+| 5 | `meta` | 更新时间 + `task.id` | 诊断用 |
+
+**不重复 `goal`** —— 用户刚点开的那一行就是它（有断言）。
+
+### 三、来源的三种情况（`originTextOf()`，导出以便套件直接执行）
+
+| 情况 | 显示 | 判据 |
+|---|---|---|
+| 标题查得到 | `来自对话「<标题>」` + `会话 <ref>` | 用户能去找那个会话 |
+| **表已加载、查不到** | `来自一个已删除的对话` + `<ref>` | **不能静默降级成「来自一个对话」** —— 那会让用户以为他没删过 |
+| **表还没加载完** | `来自一个对话` + `<ref>` | 这是「还不知道」，不是「删了」。**不谎称已删除** |
+
+`kind !== "session"`：
+
+| kind | ref 显示 | 理由 |
+|---|---|---|
+| `workflow` / `automation` | **显示** | 用户能去找那个工作流/自动化 |
+| `user` | 不显示 | 没有可去的地方 |
+| `agent` | 不显示 | 见下 |
+
+**`agent` 的判断**：契约注释（`task.ts:106`）写 `ref` 是「会话 id / 工作流 id /
+自动化 id」，**`agent` 没有明写**。而**当前没有任何生产路径建 `origin.kind === "agent"`
+的任务**（`grep 'kind: "agent"'` 命中的都是 `requester` / hook action，不是 `TaskOrigin`）。
+
+所以这是**未来才会有**的分支，代码注释里写明了「等第一条 agent 任务真的出现时回来核」。
+
+### 四、会话标题：面板挂载时取一次
+
+`api.session.listAll({})` → `Map<sessionId, title>`。**一次额外读取**，与任务条数无关。
+
+`sessionMapReady = sessionPage !== undefined` 用来区分「加载中」和「查不到」——
+这是上面三种情况能分开的关键。
+
+### 五、审批段：完全不出现
+
+详情渲染区里**零**「审批」/「尚未记录」。文件头注释里解释了为什么不加，
+但**没有任何占位文本出现在 UI 上**（卡上判据 5 的准确版本）。
+
+### 六、验证
+
+| 套件 | 结果 |
+|---|---|
+| `t100-task-center-smoke` | **96/96**（64 → 96，新增 32 条） |
+| `design-tokens-smoke` | 339/339 |
+| `document-view-renderer-smoke` | 173/173 |
+| `markdown-mode-smoke` | 32/32 |
+| `maint-m37-smoke`（i18n 双词典一致性） | 5/5 |
+| desktop typecheck | **我的文件 0 error**（只剩 F 的 `t65-deck-pattern-smoke`） |
+
+### 七、变异（两条，第二条是卡上要的）
+
+| # | 变异 | 结果 |
+|---|---|---|
+| **1（无效，记录下来）** | 加一个 `alsoExpanded` 槽让两行同时 true | **仍然全绿 —— 变异没生效** |
+| **2** | `expandedId: string` → `expandedIds: string[]`（真允许多条） | **精确红**：`★ 展开乙后仍然只有一行为 true — {"actual":2,"expected":1}` |
+
+**变异 1 为什么无效，值得记**：我在 `toggleExpand` 里加了
+`if (expandedId !== taskId && expandedId !== null) setAlsoExpanded(expandedId)`，
+但那个 `useCallback` 的依赖数组是 `[]` —— **闭包里的 `expandedId` 永远是初始值
+`null`，那行 `if` 从不执行**。
+
+**如果我没验证「变异是否真的落地」，就会得出「套件抓不住这个缺陷」的错误结论**
+（CLAUDE.md 第八条第 1 类形态：脚本在生效前就退出了）。重做时改用真数组。
+
+### 八、套件里两处自我修正
+
+1. **`buttonByText` 从子串匹配改成直属文本匹配**。第一版用
+   `JSON.stringify(children).includes(label)`，T111 给整行加了展开按钮之后，
+   它的 children 含 goal 文本，`buttonByText("退回")` 命中了 goal 是「已退回」那行的
+   **展开按钮** —— 「rejected 行没有按钮」因此假红。**子串匹配太宽**。
+
+2. **5e 节从 DOM 改成验 `TaskRow` 的 props**。极小 React 运行时**不执行子组件**，
+   面板树里 `TaskRow` 只是 `{type, props}`，内部的 `<li data-task-id>` 不会渲染。
+   所以「哪几行展开」只能看传给每个 `TaskRow` 的 `expanded` —— 那正是 `expandedId`
+   单值状态的直接投影，也正是本条判据的全部内容。
+
+### 九、未做
+
+- **详情区没有「点产物打开文件」** —— 那是另一条交互（要不要跳转、跳到哪里）；
+- **没有键盘导航**（↑↓ 在行间移动）—— 现有列表也没有，不是本卡的范围；
+- **`agent` 那支没有生产路径**，如上。

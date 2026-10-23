@@ -590,4 +590,9 @@ export const zh = {
   "taskCenter.origin.agent": "由 Agent 发起",
   "taskCenter.origin.workflow": "由工作流发起",
   "taskCenter.origin.automation": "由自动化发起",
+  /* 【T111】详情区：来源的具体说法（三种情况不能混，见 originTextOf 的注释）。 */
+  "taskCenter.origin.fromSession": "来自对话「{title}」",
+  "taskCenter.origin.fromDeletedSession": "来自一个已删除的对话",
+  "taskCenter.origin.fromSessionNoTitle": "来自一个对话",
+  "taskCenter.detailArtifacts": "产物",
 } as const;

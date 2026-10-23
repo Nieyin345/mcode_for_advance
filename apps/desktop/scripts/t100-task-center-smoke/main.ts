@@ -98,8 +98,24 @@ function buttons(): Array<{ props: Record<string, unknown> }> {
 }
 
 /** 按可见文本找一个按钮（文本来自 props.children，可能嵌着图标元素）。 */
+/**
+ * 按**直属文本**找一个按钮（不含子元素里的文本）。
+ *
+ * ⚠️ 第一版用的是 `JSON.stringify(children).includes(label)` —— **子串匹配太宽**。
+ * T111 给整行加了一个可点的展开按钮，它的 children 里包含 goal 文本，
+ * 于是 `buttonByText("退回")` 命中了 goal 是「已退回」的那一行的**展开按钮**，
+ * 「rejected 行没有按钮」这条断言因此假红。
+ *
+ * 现在只比**字符串子节点**：`<Button><Icon/>{label}</Button>` 里 `label` 是
+ * 一个直接的字符串子节点，而整行展开按钮的 children 是元素 + 元素，不含裸字符串
+ * 等于动作按钮名。
+ */
 function buttonByText(label: string): { props: Record<string, unknown> } | undefined {
-  return buttons().find((b) => JSON.stringify(b.props.children ?? "").includes(label));
+  return buttons().find((b) => {
+    const kids = b.props.children;
+    const flat = Array.isArray(kids) ? kids : [kids];
+    return flat.some((k) => typeof k === "string" && k === label);
+  });
 }
 
 async function flush(n = 6): Promise<void> {
@@ -115,11 +131,15 @@ async function mountPanel(tasks: Task[]): Promise<void> {
   await flush();
 }
 
-/** 单独挂一行（测按钮与输入框）。 */
+/** 单独挂一行（测按钮、输入框、展开详情）。 */
 async function mountRow(props: {
   task: Task;
   decision?: "accept" | "reject" | null;
   draft?: string;
+  /** 【T111】展开详情区。与 `decision` 独立 —— 「展开看」和「在填理由」是两件事。 */
+  expanded?: boolean;
+  sessionTitle?: string | undefined;
+  sessionMapReady?: boolean;
 }): Promise<{ submitted: unknown[]; drafts: string[] }> {
   const submitted: unknown[] = [];
   const drafts: string[] = [];
@@ -127,10 +147,13 @@ async function mountRow(props: {
   __mount(() =>
     TaskRow({
       task: props.task,
-      expanded: state.decision !== null,
+      expanded: props.expanded ?? false,
       decision: state.decision,
       draft: state.draft,
       busy: false,
+      sessionTitle: props.sessionTitle,
+      sessionMapReady: props.sessionMapReady ?? true,
+      onToggle: () => submitted.push("toggle"),
       onDraft: (v: string) => { drafts.push(v); },
       onAccept: () => submitted.push("accept"),
       onReject: () => submitted.push("reject"),
@@ -336,6 +359,222 @@ section("5b. 来源类型：五种 kind 各有图标，且互不相同");
   eq("★ 五种来源的图标互不相同", uniq.size, 5);
   // 正控：证明这条比对不是恒真（把两个 kind 指向同一个图标会掉到 4）。
   check("★ 正控：图标集合确实能区分（5 个独立值）", uniq.size === kinds.length && kinds.length === 5);
+}
+
+/* ================== 5c. 任务详情视图（T111） ================== */
+section("5c. 详情：展开、顺序、来源三种情况");
+
+/** 详情区里各段的出现顺序（用 data-detail 标记取）。 */
+function detailOrder(): string[] {
+  const out: string[] = [];
+  const walk = (v: unknown): void => {
+    if (v === null || v === undefined || typeof v !== "object") return;
+    if (Array.isArray(v)) return void v.forEach(walk);
+    const o = v as { props?: Record<string, unknown> };
+    const mark = o.props?.["data-detail"];
+    if (typeof mark === "string") out.push(mark);
+    walk(o.props?.children);
+  };
+  walk(__nodes().map((n) => n.props.children));
+  return out;
+}
+/** 详情区是否渲染了（存在 data-task-detail 容器）。 */
+function detailRendered(): boolean {
+  return __nodes().some((n) => n.props["data-task-detail"] === "");
+}
+/** 面板渲染出的任务行（按 data-task-id 取）。 */
+function nodesWithId(): Array<{ props: Record<string, unknown> }> {
+  return __nodes().filter((n) => n.props["data-task-id"] !== undefined);
+}
+
+/** 展开开关按钮。 */
+function toggleButton(): { props: Record<string, unknown> } | undefined {
+  return __nodes().find((n) => n.props["data-toggle-expand"] === "") as
+    | { props: Record<string, unknown> }
+    | undefined;
+}
+
+{
+  // ---- 折叠态：详情不渲染 ----
+  await mountRow({ task: task({ id: "d1", goal: "收起状态", status: "done" }) });
+  check("★ 折叠时详情区不渲染", !detailRendered());
+  const tb = toggleButton();
+  check("★ 整行有展开开关（aria-expanded=false）",
+    tb !== undefined && tb.props["aria-expanded"] === false, tb?.props["aria-expanded"]);
+  __unmount();
+
+  // ---- 展开态：五段按 T111 顺序 ----
+  await mountRow({
+    task: task({
+      id: "d2", goal: "失败的任务", status: "failed",
+      failureReason: "脚本超时", artifacts: [{ path: "/w/a.md", description: "报告草稿", createdAt: 1 }],
+      // 来源必须是 session 才会去查标题（默认 fixture 是 agent，不看 sessionTitle）。
+      origin: { kind: "session", ref: "sess_d2" },
+    }),
+    expanded: true,
+    sessionTitle: "整理销售数据",
+  });
+  check("★ 展开时详情区渲染", detailRendered());
+  const order = detailOrder();
+  eq("★ 详情区顺序：失败原因在产物之前", order.slice(0, 2), ["failure", "artifacts"]);
+  check("★ 详情区最后是来源与 meta", order.at(-2) === "origin" && order.at(-1) === "meta", order);
+  const txt = deepText();
+  check("★ 展开后能看到失败原因原文", txt.includes("脚本超时"), txt.slice(0, 120));
+  check("★ 展开后能看到产物描述", txt.includes("报告草稿"));
+  check("★ 展开后能看到会话标题", txt.includes("整理销售数据"));
+  // goal 只该出现一次（详情区不重复它）。数的是**字符串子节点**，
+  // 不数 aria/title 等属性里可能出现的同名字串。
+  const goalTextNodes = __nodes().filter((n) => {
+    const kids = n.props.children;
+    const flat = Array.isArray(kids) ? kids : [kids];
+    return flat.some((k) => k === "失败的任务");
+  });
+  eq("★ 详情里不重复 goal（只出现一次）", goalTextNodes.length, 1);
+  __unmount();
+
+  // ---- acceptance === null 时不显示验收段 ----
+  await mountRow({
+    task: task({ id: "d3", goal: "没验收", status: "done" }),
+    expanded: true, sessionTitle: "x",
+  });
+  check("★ acceptance === null 时不渲染验收段", !detailOrder().includes("acceptance"), detailOrder());
+  __unmount();
+
+  // ---- accepted 时显示验收证据（且在来源之前） ----
+  await mountRow({
+    task: task({
+      id: "d4", goal: "已验收", status: "accepted",
+      acceptance: { round: 1, decidedAt: 2, evidence: "打开看过，8 页都在" },
+    }),
+    expanded: true, sessionTitle: "x",
+  });
+  const o4 = detailOrder();
+  check("★ accepted 显示验收证据", o4.includes("acceptance"), o4);
+  check("★ 验收证据在来源之前", o4.indexOf("acceptance") < o4.indexOf("origin"), o4);
+  check("★ 验收证据原文可见", deepText().includes("打开看过，8 页都在"));
+  __unmount();
+}
+
+section("5d. 来源的三种情况不能混");
+{
+  // (1) 标题查得到
+  await mountRow({
+    task: task({ id: "s1", goal: "g", status: "running", origin: { kind: "session", ref: "sess_abc" } }),
+    expanded: true, sessionTitle: "我的对话", sessionMapReady: true,
+  });
+  const t1 = deepText();
+  check("★ 有标题：显示会话标题", t1.includes("我的对话"), t1.slice(0, 150));
+  check("★ 有标题：也显示会话 id", t1.includes("sess_abc"));
+  __unmount();
+
+  // (2) 表已加载但查不到 -> 已删除
+  await mountRow({
+    task: task({ id: "s2", goal: "g", status: "running", origin: { kind: "session", ref: "sess_gone" } }),
+    expanded: true, sessionTitle: undefined, sessionMapReady: true,
+  });
+  const t2 = deepText();
+  check("★ 查不到：说「已删除的对话」，不谎称「来自一个对话」",
+    t2.includes("已删除"), t2.slice(0, 150));
+  check("★ 查不到：仍显示会话 id 作诊断", t2.includes("sess_gone"));
+  __unmount();
+
+  // (3) 表还没加载 -> 不谎称已删除
+  await mountRow({
+    task: task({ id: "s3", goal: "g", status: "running", origin: { kind: "session", ref: "sess_wait" } }),
+    expanded: true, sessionTitle: undefined, sessionMapReady: false,
+  });
+  const t3 = deepText();
+  check("★ 未加载：**不**说已删除（那是「还不知道」）", !t3.includes("已删除"), t3.slice(0, 150));
+  check("★ 未加载：仍显示会话 id", t3.includes("sess_wait"));
+  __unmount();
+
+  // user：不显示 ref
+  await mountRow({
+    task: task({ id: "s4", goal: "g", status: "running", origin: { kind: "user", ref: "u_ref_xyz" } }),
+    expanded: true, sessionMapReady: true,
+  });
+  const t4 = deepText();
+  check("★ user 不显示 ref（没有可去的地方）", !t4.includes("u_ref_xyz"), t4.slice(0, 150));
+  check("★ user 显示「你直接创建的」", t4.includes("你直接创建"));
+  __unmount();
+
+  // workflow：显示 ref
+  await mountRow({
+    task: task({ id: "s5", goal: "g", status: "running", origin: { kind: "workflow", ref: "wf_789" } }),
+    expanded: true, sessionMapReady: true,
+  });
+  check("★ workflow 显示 ref（能去找那个工作流）", deepText().includes("wf_789"));
+  __unmount();
+}
+
+section("5e. 同时只能展开一条（这是 280px 的后果，不是审美）");
+{
+  /**
+   * ⚠️ **这一节验的是 `TaskRow` 收到的 `expanded` prop**，不是 DOM。
+   *
+   * 极小 React 运行时（fakeReact）**不执行子组件** —— 面板树里 `TaskRow` 只是一个
+   * `{type, props}` 节点，它内部的 `<li data-task-id>` 不会被渲染出来。
+   * 所以「哪几行处于展开」只能看**传给每个 TaskRow 的 `expanded`**：
+   * 那正是面板 `expandedId` 单值状态的直接投影。
+   *
+   * 从这个投影能验的就是本条判据的全部内容：**任意时刻最多一行为 true**。
+   */
+  const rowProps = (): Array<{ id: string; expanded: boolean }> =>
+    __nodes()
+      .filter((n) => (n.props as { task?: unknown }).task !== undefined)
+      .map((n) => ({
+        id: ((n.props as { task: { id: string } }).task).id,
+        expanded: (n.props as { expanded?: boolean }).expanded === true,
+      }));
+
+  await mountPanel([
+    task({ id: "e3", goal: "甲", status: "running" }),
+    task({ id: "e4", goal: "乙", status: "running" }),
+  ]);
+  const rows = rowProps();
+  eq("★ 正控：面板把两行交给了 TaskRow", rows.map((r) => r.id), ["e3", "e4"]);
+  eq("初始：没有任何一行展开", rows.filter((r) => r.expanded).length, 0);
+
+  // 点第一行的展开开关 —— 直接调 TaskRow 的 onToggle（面板传下去的真 handler）。
+  const toggles = __nodes().filter((n) => (n.props as { task?: unknown }).task !== undefined);
+  (toggles[0]!.props.onToggle as () => void)();
+  await flush(3);
+  let now = rowProps();
+  eq("★ 展开甲：恰好一行为 true", now.filter((r) => r.expanded).length, 1);
+  eq("★ 展开的正是甲", now.find((r) => r.expanded)?.id, "e3");
+
+  // 点第二行：甲必须被收起（面板只有**一个** expandedId 槽）。
+  const toggles2 = __nodes().filter((n) => (n.props as { task?: unknown }).task !== undefined);
+  (toggles2[1]!.props.onToggle as () => void)();
+  await flush(3);
+  now = rowProps();
+  eq("★ 展开乙后**仍然只有一行为 true**（甲被收起）", now.filter((r) => r.expanded).length, 1);
+  eq("★ 现在展开的是乙", now.find((r) => r.expanded)?.id, "e4");
+  __unmount();
+
+  // 再点同一行 = 收起
+  await mountPanel([task({ id: "e5", goal: "丙", status: "running" })]);
+  const t1 = __nodes().find((n) => (n.props as { task?: unknown }).task !== undefined);
+  (t1!.props.onToggle as () => void)();
+  await flush(3);
+  eq("展开：一行为 true", rowProps().filter((r) => r.expanded).length, 1);
+  const t2 = __nodes().find((n) => (n.props as { task?: unknown }).task !== undefined);
+  (t2!.props.onToggle as () => void)();
+  await flush(3);
+  eq("★ 再点同一行 = 收起（零行为 true）", rowProps().filter((r) => r.expanded).length, 0);
+  __unmount();
+}
+
+section("5f. 详情里没有审批段");
+{
+  await mountRow({
+    task: task({ id: "ap1", goal: "g", status: "failed", failureReason: "x" }),
+    expanded: true, sessionTitle: "t",
+  });
+  const detailText = deepText();
+  check("★ 详情区不出现「审批」", !detailText.includes("审批"), detailText.slice(0, 200));
+  check("★ 详情区不出现「尚未记录」这类占位", !detailText.includes("尚未记录"));
+  __unmount();
 }
 
 /* ================== 6. 加载失败 / 空列表 ================== */

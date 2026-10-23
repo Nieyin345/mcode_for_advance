@@ -147,6 +147,17 @@ export function TaskCenterPanel() {
   const [decision, setDecision] = useState<Decision>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  /**
+   * 【T111】**同时只能展开一条** —— 这不是审美选择，是 280px 的后果。
+   *
+   * 右栏可以被拖窄到这个面板已经没有任何横向余量。详情区一展开就会很高
+   * （失败原因 + 产物列表 + 验收证据），**两条同时展开会把列表推出屏幕**，
+   * 用户就失去了「我在哪条任务上」的位置感。
+   *
+   * 存 id 而不是布尔：布尔只能表达「展开了没有」，表达不了「展开的是哪一条」，
+   * 那样点第二行时就没法知道该收起谁。
+   */
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   // 跨会话全量：不传 `sessionId`（T99 的核心能力）。
   const { data, loading, error, refetch } = useRpc(
@@ -156,6 +167,34 @@ export function TaskCenterPanel() {
   );
 
   const tasks = data?.tasks ?? [];
+
+  /**
+   * 【T111】会话标题表 —— **面板挂载时取一次**，不是每行一次。
+   *
+   * 详情区的第 4 项要显示「来自对话『帮我整理那份 2024 年的销售数据』」。
+   * 只写「来自一个对话」等于把列表里那个图标又重复了一遍，没有增加任何信息。
+   *
+   * `session.listAll` 一次返回全部会话（含 `title`，`max(80)`），所以这是
+   * **一次额外读取**，与任务条数无关。
+   *
+   * 失败/加载中一律空表 —— 详情区会退化成「来自一个已删除的对话」吗？**不会**，
+   * 见 `originTextOf()`：它区分「查不到这个会话」（删了）和「标题表还没到」
+   * （仍显示会话 id，不谎称已删除）。
+   */
+  const { data: sessionPage } = useRpc(
+    () => api.session.listAll({}),
+    [],
+    { toastOnError: false },
+  );
+
+  const sessionTitleById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of sessionPage?.sessions ?? []) {
+      const title = (s.title ?? "").trim();
+      if (title !== "") m.set(s.id, title);
+    }
+    return m;
+  }, [sessionPage]);
 
   /**
    * 按「等你动手的」排前面。
@@ -175,6 +214,17 @@ export function TaskCenterPanel() {
     };
     return [...tasks].sort((a, b) => rank(a.status) - rank(b.status) || b.updatedAt - a.updatedAt);
   }, [tasks]);
+
+  /**
+   * 【T111】点一行：展开它，**并收起之前那条**（同时只展开一条）。
+   * 再点同一行 = 收起。
+   *
+   * 展开时若这一行还处在「拒绝理由输入」状态，那个状态要保留 ——
+   * 用户可能先点开看看再回来写理由。
+   */
+  const toggleExpand = useCallback((taskId: string) => {
+    setExpandedId((prev) => (prev === taskId ? null : taskId));
+  }, []);
 
   const openDecision = useCallback((taskId: string, kind: "accept" | "reject") => {
     setDecision({ taskId, kind });
@@ -274,10 +324,13 @@ export function TaskCenterPanel() {
             <TaskRow
               key={task.id}
               task={task}
-              expanded={decision?.taskId === task.id}
+              expanded={expandedId === task.id}
               decision={decision?.taskId === task.id ? decision.kind : null}
               draft={draft}
               busy={busy}
+              sessionTitle={sessionTitleById.get(task.origin.ref)}
+              sessionMapReady={sessionPage !== undefined}
+              onToggle={() => toggleExpand(task.id)}
               onDraft={setDraft}
               onAccept={() => openDecision(task.id, "accept")}
               onReject={() => openDecision(task.id, "reject")}
@@ -331,6 +384,63 @@ function FilterChip({ active, onClick, label }: { active: boolean; onClick: () =
 }
 
 /**
+ * 【T111】来源那一行的文案。
+ *
+ * ## 判据：**`ref` 只在「用户可能要去某个地方找它」时才有用**
+ *
+ * | kind | 主文案 | ref |
+ * |---|---|---|
+ * | `session` | 来自对话「<标题>」 | 显示（能找那个会话） |
+ * | `workflow` | 由工作流发起 | 显示（能找那个工作流） |
+ * | `automation` | 由自动化发起 | 显示（能找那个自动化） |
+ * | `user` | 你直接创建的 | **不显示** —— 没有可去的地方 |
+ * | `agent` | 由 Agent 发起 | **不显示** —— 见下 |
+ *
+ * ## 为什么 `agent` 不显示 ref
+ *
+ * 契约注释（`task.ts:106`）写 `ref` 是「会话 id / 工作流 id / 自动化 id」，
+ * **`agent` 没有明写**。而**当前没有任何生产路径建 `origin.kind === "agent"` 的任务**
+ * （`grep 'kind: "agent"'` 命中的都是 `requester` / hook action，不是 `TaskOrigin`）。
+ *
+ * 所以这是一个**未来才会有**的分支。我按「最可能的语义」写：agent 的 ref 是它
+ * 跑的那个会话 id —— 如果是，那它和 `session` 那条表达的是同一件事，显示两遍是噪音。
+ * **等第一条 agent 任务真的出现时回来核这一点。**
+ *
+ * ## 三种情况不能混
+ *
+ * - 标表里有这个会话 → 显示标题；
+ * - **标题表已加载但查不到** → 会话被删了，说「已删除的对话」。**不能静默降级成
+ *   「来自一个对话」** —— 那会让用户以为他没删过；
+ * - **标题表还没加载完** → 这是「还不知道」，不是「删了」。仍然显示会话 id，
+ *   不谎称已删除。
+ */
+export function originTextOf(input: {
+  origin: TaskOrigin;
+  sessionTitle: string | undefined;
+  sessionMapReady: boolean;
+  t: (key: MessageId, params?: Record<string, string | number>) => string;
+}): { text: string; ref: string | null } {
+  const { origin, sessionTitle, sessionMapReady, t } = input;
+  switch (origin.kind) {
+    case "session":
+      if (sessionTitle !== undefined) {
+        return { text: t("taskCenter.origin.fromSession", { title: sessionTitle }), ref: origin.ref };
+      }
+      return sessionMapReady
+        ? { text: t("taskCenter.origin.fromDeletedSession"), ref: origin.ref }
+        : { text: t("taskCenter.origin.fromSessionNoTitle"), ref: origin.ref };
+    case "workflow":
+      return { text: t("taskCenter.origin.workflow"), ref: origin.ref };
+    case "automation":
+      return { text: t("taskCenter.origin.automation"), ref: origin.ref };
+    case "user":
+      return { text: t("taskCenter.origin.user"), ref: null };
+    case "agent":
+      return { text: t("taskCenter.origin.agent"), ref: null };
+  }
+}
+
+/**
  * 单行任务 —— **导出是为了让套件把它当根组件挂载**。
  *
  * 为什么：仓库的极小 React 运行时（各 smoke 目录下的 `fakeReact.ts`）不执行子组件，
@@ -344,6 +454,9 @@ export function TaskRow({
   decision,
   draft,
   busy,
+  sessionTitle,
+  sessionMapReady,
+  onToggle,
   onDraft,
   onAccept,
   onReject,
@@ -351,10 +464,17 @@ export function TaskRow({
   onSubmit,
 }: {
   task: Task;
+  /** 展开详情（与「在填写理由」是两件事，见文件里 `expandedId` 的注释）。 */
   expanded: boolean;
+  /** 非 null = 这一行正在填写接受/退回的理由。 */
   decision: "accept" | "reject" | null;
   draft: string;
   busy: boolean;
+  /** `origin.kind === "session"` 时的会话标题（查不到 = undefined）。 */
+  sessionTitle: string | undefined;
+  /** 会话标题表是否已加载 —— 区分「会话被删了」和「标题还没到」。 */
+  sessionMapReady: boolean;
+  onToggle: () => void;
   onDraft: (v: string) => void;
   onAccept: () => void;
   onReject: () => void;
@@ -368,19 +488,27 @@ export function TaskRow({
   const canReject = REJECTABLE.includes(task.status);
   const evidenceRequired = draft.trim() === "";
 
+  const originLine = originTextOf({ origin: task.origin, sessionTitle, sessionMapReady, t });
+
   return (
     <li className="border-b border-edge/60 last:border-b-0" data-task-id={task.id}>
       <div className="flex flex-col gap-1.5 px-3 py-2">
+        {/* ── 第一行：状态 + 来源图标 + 轮次 + goal + 动作 ──
+             整行可点（展开详情）—— 用 button 包住文本区，动作按钮在外面。 */}
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={expanded}
+            data-toggle-expand=""
+            className="min-w-0 flex-1 text-left"
+          >
             <div className="flex items-center gap-1.5">
               <Badge variant={meta.variant}>{t(meta.key)}</Badge>
               {/*
-                【T109-B】来源类型图标。
-                为什么只有类型、没有名字：跨会话列表里两条同名任务分不出是哪个对话来的，
-                而 `origin.kind` 已经在手里（零额外查询）。具体是哪一个对话，是点开之后的需求。
-                为什么不用文字：这一行已经有状态徽标 + goal + 轮次 + 时间 + id，
-                再塞一段「来自对话『……』」会把行高撑开，而用户扫列表时看的是「哪条要我处理」。
+                【T109-B】来源**类型**图标。详情里才显示具体是哪个会话 ——
+                列表这一行已经有状态徽标 + goal + 轮次，再塞对话标题会把行高撑开，
+                而用户扫列表时看的是「哪条要我处理」。
               */}
               {originMeta !== undefined && (
                 <span
@@ -399,15 +527,15 @@ export function TaskRow({
               )}
             </div>
             <div className="mt-1 break-words text-[12px] leading-snug text-content">{task.goal}</div>
-          </div>
+          </button>
           <div className="flex shrink-0 items-center gap-1">
-            {canAccept && !expanded && (
+            {canAccept && decision === null && (
               <Button size="sm" variant="primary" onClick={onAccept}>
                 <IconCheck size={13} />
                 {t("taskCenter.accept")}
               </Button>
             )}
-            {canReject && !expanded && (
+            {canReject && decision === null && (
               <Button size="sm" variant="ghost" onClick={onReject}>
                 <IconX size={13} />
                 {t("taskCenter.reject")}
@@ -416,37 +544,67 @@ export function TaskRow({
           </div>
         </div>
 
-        {/* 失败原因 / 退回理由：**执行方和用户各自的原话**，别混成一句。 */}
-        {task.failureReason !== null && (
-          <div className="rounded bg-danger/5 px-2 py-1 text-[11px] text-danger">
-            {t("taskCenter.failureReason")}{task.failureReason}
+        {/*
+          ── 展开区（T111）──
+          信息顺序按「用户在**这条任务上做决定**的顺序」，不是「用户最想知道什么」：
+          这个面板的核心动作是接受/退回，用户点开一条是在为那个动作收集理由。
+
+            1. 失败原因 / 退回理由 —— 如果这条是 failed/rejected，这就是他点开它的原因
+            2. 产物               —— 「它到底做出来什么」，接受/退回的主要判据
+            3. 验收证据           —— 「当初凭什么说它通过了」（只有 accepted 有）
+            4. 来源               —— 列表里是图标，这里说清是哪个会话
+            5. id / 时间          —— 诊断用
+
+          **不重复 goal** —— 用户刚点开的那一行就是它。
+          **没有「审批」段** —— 那条功能还不存在，占位「尚未记录」会让用户
+          以为记录了但丢了（见文件头 TaskCenterPanel 的说明）。
+        */}
+        {expanded && (
+          <div className="mt-1 flex flex-col gap-1.5 border-l-2 border-edge pl-2" data-task-detail="">
+            {task.failureReason !== null && (
+              <div className="rounded bg-danger/5 px-2 py-1 text-[11px] text-danger" data-detail="failure">
+                {t("taskCenter.failureReason")}{task.failureReason}
+              </div>
+            )}
+            {task.rejectionReason !== null && (
+              <div className="rounded bg-warning/5 px-2 py-1 text-[11px] text-warning" data-detail="rejection">
+                {t("taskCenter.rejectionReason")}{task.rejectionReason}
+              </div>
+            )}
+            {task.artifacts.length > 0 && (
+              <div data-detail="artifacts">
+                <div className="text-[10px] text-content-subtle">{t("taskCenter.detailArtifacts")}</div>
+                <ul className="flex flex-col gap-0.5">
+                  {task.artifacts.map((a) => (
+                    <li key={a.path} className="truncate text-[11px] text-content-muted" title={a.path}>
+                      {a.description}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {task.acceptance !== null && task.status === "accepted" && (
+              <div className="rounded bg-success/5 px-2 py-1 text-[11px] text-success" data-detail="acceptance">
+                {t("taskCenter.acceptanceEvidence")}{task.acceptance.evidence}
+              </div>
+            )}
+            <div className="text-[11px] text-content-muted" data-detail="origin">
+              {originLine.text}
+              {originLine.ref !== null && (
+                <span className="ml-1 text-[10px] text-content-subtle">{originLine.ref}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-[10px] text-content-subtle" data-detail="meta">
+              <IconClock size={10} />
+              <span>{new Date(task.updatedAt).toLocaleString()}</span>
+              <span className="text-content-subtle/60">{task.id}</span>
+            </div>
           </div>
         )}
-        {task.rejectionReason !== null && (
-          <div className="rounded bg-warning/5 px-2 py-1 text-[11px] text-warning">
-            {t("taskCenter.rejectionReason")}{task.rejectionReason}
-          </div>
-        )}
 
-        {/* 产物 —— 只列路径与人话说明，不在这里打开（打开是另一条路）。 */}
-        {task.artifacts.length > 0 && (
-          <ul className="flex flex-col gap-0.5">
-            {task.artifacts.map((a) => (
-              <li key={a.path} className="truncate text-[11px] text-content-muted" title={a.path}>
-                {a.description}
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <div className="flex items-center gap-2 text-[10px] text-content-subtle">
-          <IconClock size={10} />
-          <span>{new Date(task.updatedAt).toLocaleString()}</span>
-          <span className="text-content-subtle/60">{task.id}</span>
-        </div>
-
-        {/* ── 验收 / 退回的输入区（受控，理由必填） ── */}
-        {expanded && decision !== null && (
+        {/* ── 验收 / 退回的输入区（受控，理由必填） ──
+            与「展开详情」是两件事：点动作按钮进入这一态，不要求先展开。 */}
+        {decision !== null && (
           <div className="mt-1 flex flex-col gap-1.5 rounded border border-edge bg-surface/60 p-2">
             <div className="text-[11px] text-content">
               {decision === "accept" ? t("taskCenter.evidencePrompt") : t("taskCenter.reasonPrompt")}
@@ -480,13 +638,6 @@ export function TaskRow({
             {evidenceRequired && (
               <div className="text-[10px] text-content-subtle">{t("taskCenter.reasonRequired")}</div>
             )}
-          </div>
-        )}
-
-        {/* 已验收：把当初的理由显示出来（「凭什么说它通过了」）。 */}
-        {task.acceptance !== null && task.status === "accepted" && (
-          <div className="rounded bg-success/5 px-2 py-1 text-[11px] text-success">
-            {t("taskCenter.acceptanceEvidence")}{task.acceptance.evidence}
           </div>
         )}
       </div>

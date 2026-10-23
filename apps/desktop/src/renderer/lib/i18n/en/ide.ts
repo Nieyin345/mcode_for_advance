@@ -572,4 +572,9 @@ export const en = {
   "taskCenter.origin.agent": "Started by an agent",
   "taskCenter.origin.workflow": "Started by a workflow",
   "taskCenter.origin.automation": "Started by an automation",
+  /* 【T111】Detail: concrete origin wording (three cases must stay distinct). */
+  "taskCenter.origin.fromSession": "From the conversation “{title}”",
+  "taskCenter.origin.fromDeletedSession": "From a deleted conversation",
+  "taskCenter.origin.fromSessionNoTitle": "From a conversation",
+  "taskCenter.detailArtifacts": "Artifacts",
 } as const;
