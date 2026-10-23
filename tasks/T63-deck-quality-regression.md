@@ -48,7 +48,34 @@ T47 的套件（27/27）验的是：`document_guide` 返回的设计规范内容
 
 **至少两条**：
 - **正向**：合规的 spec → audit 空、offPalette 空；
-- **反向**：故意写一个超出画布的 element → **audit 必须报出来**。
+- **反向**：**文字溢出** → **audit 必须报 `out_of_bounds`**。
+
+#### ⚠️ 反向用例的构造：我卡上原来写错了（A 会话实测纠正，总控复现）
+
+**原来写「故意写一个超出画布的元素 → audit 必须报出来」——这条不成立：**
+
+- **完全出界的元素在 `create` 阶段就被丢弃**，根本到不了 `audit`：
+  ```
+  create → error: "...(element 0: outside the 1280x720 canvas, dropped)"
+  ```
+- **部分出界会被 clamp**，`audit` 也不报。
+
+**真正能让 `audit` 报的是文字溢出**（小盒子塞大字号长文本）——**总控已复现**：
+
+```json
+// 夹具：{"type":"text","x":80,"y":60,"w":200,"h":40,"paragraphs":[{"runs":[{"text":"<40 字长文本>","sizePt":40}]}]}
+"audit": {
+  "counts": {"error": 1, "warning": 0},
+  "issues": [{
+    "code": "out_of_bounds",
+    "level": "error",
+    "message": "...556px past the bottom edge",
+    "box": {"x":80,"y":60,"w":200,"h":1216}
+  }]
+}
+```
+
+**builder 会把盒子撑高到容纳文本，于是越下边界。** 干净 deck 的对照是 `"1 slide(s), no layout issues"`、`counts:{error:0,warning:0}`。
 
 **反向那条是判别力的证明。** 没有它，正向那条可能是空过的。
 
