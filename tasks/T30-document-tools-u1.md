@@ -1,6 +1,37 @@
 # T30｜文档工具面缺真实 Electron U1 —— 只有 fake 端口验证过
 
-- Status: **ready-for-agent（2026-10-23 解除阻塞）** —— T40 已交付（`9487eaa4`，13/13，含对照组证明装配路径），本卡的真 Electron 部分可以执行。**但 U1 套件需要独占 Electron，须等 E 的 T42 收工。**
+- Status: **blocked-on-user-environment**（2026-10-23；真 Electron 部分必须真开窗口）
+
+## 为什么挂起（E 的静态核实，`ea620f67`）
+
+**静态部分已做到头**：`verify-contract.mjs` 实跑 **13/13 通过**（注册表形状、正常跑/变异跑退出码、`failBecause` 三条反例），提交 `deacf188`，未改产品代码。
+
+**真 Electron 部分必须新跑，每次都会真开窗口。** 要验五组：
+1. 发现链路（`document_apps` / `tools_list` / `describe`）；
+2. 真执行（DOM/文件可观测变化）；
+3. `requestId` / `callId` 回传；
+4. 三条负控；
+5. 至少两个编辑器。
+
+**已有的 `.tmp/electron-u1/` 证据回答不了**：
+
+```
+find .tmp/electron-u1 -name "*t30*" -o -name "docs-tool*"  → 零命中
+```
+
+那些是 T7 的六个编辑器旅程（打开/编辑/保存/重开），与「工具面往返」是**不同的断言对象**。
+
+**T30 是 P1（证据缺口）**——产品面本身没坏，缺的是「这条链路在真窗口里跑通过」的证据。
+
+## ⚠️ 一条已知过期但**故意不改**的断言
+
+`docs-tool-roundtrip-production` 里 `renderer-route-refused-without-registry` 那一步，在 **T40（`9487eaa4`）修好后已经过期**：拒绝理由不再是「没有受信绑定」，而是「该工具不在当前请求声明的工具表里」。
+
+**E 没改，理由是对的**：
+
+> 改完仍然要真 Electron 才能验，那就成了又一份「看起来对了但从没跑过」的断言。**这个仓库栽过两次这个跟头。**
+
+**所以这条断言必须和重跑一起做**，不能单独改。
 - Category: **test（证据缺口）**
 - Priority: P1
 - Depends on: T24（`ce2913f8`）、T7（`77fdd012`）、**T40（`tasks/T40-renderer-tool-registry-unwired.md`）**

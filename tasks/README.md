@@ -48,7 +48,7 @@
 | T27 | **`loadWorkflowIntoNative` 拒绝一切可保存的 Node-RED 图** | **P0** | T21+T8 | O | ✅ done |
 | T28 | **Import 进画布的图丢失 `x-mcode` 身份** | **P0** | T8 | O | ✅ done（73/73） |
 | T29 | `documentView:close` 对四个编辑器永远拒绝 | P1 | T7 | P | ✅ done（U1 PASS） |
-| T30 | 文档工具面缺真实 Electron U1 | P1 | T24+T7 | Q | ⬜ 待开工（T40 已解除阻塞，等 Electron 空档） |
+| T30 | 文档工具面缺真实 Electron U1 | P1 | T24+T7 | Q | ⏸ 挂起（需用户环境） |
 | T31 | **三处既有失败挡住 `run-smokes --all`** | **P0 工具链** | 无 | R | ✅ done |
 | T32 | **`genofficeNativeVendor.ts` 的 alias 虚拟模块破坏 15 套 smoke** | **P0 工具链** | 无 | S | ✅ done（11/11） |
 | T33 | **`document.read` 误进 BLOCKED；`toolCall`/`markdownEdit` 档位偏弱** | **P0 安全** | 无 | T | ✅ done（30/30） |
