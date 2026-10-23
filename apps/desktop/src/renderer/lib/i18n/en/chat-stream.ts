@@ -25,6 +25,8 @@ export const en = {
   // ── MessageBlocks: thinking / tool cards ──
   "chatStream.thinking": "Thinking",
   "chatStream.tool.input": "Input",
+  "chatStream.tool.settingWrite": "Change setting {key}",
+  "chatStream.tool.settingRead": "Read setting {key}",
   "chatStream.mcp.running": "Running",
   "chatStream.mcp.success": "Completed",
   "chatStream.mcp.user_denied": "User denied",

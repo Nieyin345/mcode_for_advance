@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useTickerReducedMotion } from "./useTickerReducedMotion.js";
 import { safeStringify } from "./messageBlockToolParts.js";
 import {
@@ -51,6 +52,7 @@ const ROLL_EASING = "cubic-bezier(0.4, 0, 0.2, 1)";
  *  stream's single loading indicator lives at the bottom (isStreamingTail),
  *  so the ticker only marks errors (✗) and completions (✓) per row. */
 function TickerRow({ op, running }: { op: ToolUseBlock; running: boolean }) {
+  const { t } = useI18n();
   const status = running ? "running" : op.status;
   return (
     <span
@@ -63,7 +65,7 @@ function TickerRow({ op, running }: { op: ToolUseBlock; running: boolean }) {
       <span className={cn("font-medium", running ? "text-content" : "text-content-muted")}>
         {op.toolName}
       </span>
-      <span className="truncate font-mono text-content-subtle">{toolSummary(op.toolName, op.input)}</span>
+      <span className="truncate font-mono text-content-subtle">{toolSummary(op.toolName, op.input, t)}</span>
     </span>
   );
 }

@@ -1720,7 +1720,7 @@ function GenericToolCard({
             <FileLink token={summaryToolPath} projectPath={projectPath} />
           </span>
         ) : (
-          <span className="truncate text-content-subtle">{toolSummary(block.toolName, block.input)}</span>
+          <span className="truncate text-content-subtle">{toolSummary(block.toolName, block.input, t)}</span>
         )}
         <Chevron open={open} />
       </button>

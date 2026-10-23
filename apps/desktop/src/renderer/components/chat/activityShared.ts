@@ -295,7 +295,13 @@ export function useActivityTabs(): {
  * 显示的是问题正文、在审批卡里却显示 `[object Object]`。抽到这个叶子模块(它已经被
  * 多处当显示助手 import,不引入环)后两边共用。
  */
-export function toolSummary(name: string, input: unknown): string {
+export function toolSummary(
+  name: string,
+  input: unknown,
+  /** 可选的翻译函数。不传时 `app_api_call` 那条会退回显示方法名 ——
+   *  纯函数不能自己 `useI18n()`，而四个调用点都在组件里。 */
+  t?: (key: MessageId, params?: Record<string, string | number>) => string,
+): string {
   if (!input || typeof input !== "object") return "";
   const obj = input as Record<string, unknown>;
   switch (name) {
@@ -338,6 +344,32 @@ export function toolSummary(name: string, input: unknown): string {
       return String(obj.pattern ?? "");
     case "ls":
       return String(obj.path ?? "");
+    // 【T52】`app_api_call` 的摘要必须**带上写的是什么**，而不只是方法名。
+    //
+    // 审批卡的标题行原本靠 `default` 分支取第一个值 —— 对 `app_api_call` 来说那是
+    // `method`（如 `"setting.set"`），于是整张卡只写「setting.set」，用户看不到
+    // **它到底在写哪一条设置**。而 `setting.set` 能写设置表里的任何一条：
+    // 快捷键、手势、已配对设备、各引擎的 API 密钥、插件投递策略。
+    // 「授权范围 > 卡上写的东西」是审批呈现的缺口，不是能力问题。
+    //
+    // 这里只做**摘要**（键名 + 值形态），完整参数仍在卡片的展开区里。
+    // 敏感键的判定在主进程（`isSecretSettingKey`），渲染端拿不到那份名单，
+    // 所以这里**不判敏感**，只把键名摆到用户眼前 —— 认不认得出来由用户定。
+    case "app_api_call": {
+      const m = typeof obj.method === "string" ? obj.method : "";
+      const inner = obj.input;
+      if (t && (m === "setting.set" || m === "setting.get")) {
+        const key = inner && typeof inner === "object" && !Array.isArray(inner)
+          ? (inner as Record<string, unknown>).key
+          : undefined;
+        if (typeof key === "string" && key !== "") {
+          return m === "setting.set"
+            ? t("chatStream.tool.settingWrite", { key })
+            : t("chatStream.tool.settingRead", { key });
+        }
+      }
+      return m;
+    }
     default:
       return Object.values(obj).slice(0, 1).map(String).join("").slice(0, 60);
   }

@@ -90,7 +90,7 @@ export function ApprovalPrompt({
 
   // One-line hint via the shared toolSummary (activityShared) so the user sees what
   // the tool is about without expanding.
-  const summary = toolSummary(toolName, input);
+  const summary = toolSummary(toolName, input, t);
   // mcode-app 的高风险操作每次都要本人点:不给「始终允许」(主进程那头也不认)。
   const allowAlways = !toolName.startsWith(APP_DANGER_APPROVAL_PREFIX);
   const isMcp = toolName.startsWith("mcp__");

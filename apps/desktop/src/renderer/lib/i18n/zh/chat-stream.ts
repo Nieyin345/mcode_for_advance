@@ -30,6 +30,11 @@ export const zh = {
   // ── MessageBlocks: thinking / tool cards ──
   "chatStream.thinking": "思考",
   "chatStream.tool.input": "输入",
+  // 【T52】审批卡的摘要行：`app_api_call` 调 `setting.set` 时必须写出**哪一条设置**。
+  // 卡上只写「setting.set」的时候，用户看不到自己授权的是什么 —— 而同一个方法能写
+  // 设置表里的任何一条（快捷键、手势、已配对设备、各引擎密钥、插件投递策略）。
+  "chatStream.tool.settingWrite": "改设置项 {key}",
+  "chatStream.tool.settingRead": "读设置项 {key}",
   "chatStream.mcp.running": "执行中",
   "chatStream.mcp.success": "已完成",
   "chatStream.mcp.user_denied": "用户拒绝",

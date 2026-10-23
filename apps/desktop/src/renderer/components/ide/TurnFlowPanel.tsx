@@ -628,7 +628,7 @@ function BlockStep({
 
   if (block.kind === "tool_use") {
     const cat = toolCategory(block.toolName);
-    const summary = toolSummary(block.toolName, block.input);
+    const summary = toolSummary(block.toolName, block.input, t);
     return (
       <StepRow accent={accent} title={jumpTitle} onClick={jump} lane={lane}>
         <StepGlyph className={TOOL_BADGE_CLS[cat]}>
