@@ -69,6 +69,15 @@
 
 ### T43 为什么是 P0（用户最高痛点）
 
+> **⚠️ 2026-10-23 核查：本节的下半部分（「断掉的是三处」）已过期，代码已改。**
+> 逐条现状见文末 `## 叙述核查（2026-10-23）` 的 #15–#19。摘要：
+> `DOCUMENT_QA_GATES` 的 pdf/markdown/html 现在**不是空数组**（都是 `render-probe`）、
+> `CLI_TOOL_MAP.slides` 现在**有** `build_deck: "create"`、
+> `document_md_read` 现在按扩展名分派（`readAnyDocument`），不再只走 `docs read`。
+> **保留原文是为了记住「当时的判断依据」，不是现状。**
+> 另外：**代码改了不等于卡完成** —— T43 卡仍是 `ready-for-agent`，
+> 而「产物好不好看」至今没有 U1 验证。
+
 用户原话：「让 ai 改 word，改 ppt 这种有格式要求的很烂，而且很丑，简直不能看」。
 
 我查清后**修正了原来的判断**——不是「工具不够」，工具在的：
@@ -119,11 +128,23 @@ a10c705c  10-23 15:03  fix(T31): …          ← 已改成"克隆到副本上�
 > 完整状态见上方表格的「状态」列 —— **那一列由各卡自己的 `- Status:` 行生成**，
 > 不要再凭记忆判断谁做完了。改卡状态时同步这一列（或照它的规则重新生成）。
 
-### 产品路线基线波（新增，可同时派发）
+### 产品路线基线波（**2026-10-23 核查：四张里三张已交付**）
+
+> **T12 / T13 / T14 已交付**（`5609c955` / `03e30e73` / `c2de98c5`），报告都在
+> `docs/planning/product-roadmap/`。**只剩 T15**：报告文件已存在，但卡仍是 `ready-for-agent`，
+> 且回写区没有提交 SHA —— 需要有人确认它到底是完成了还是中途停了。
+> 另外 **T13 报告的三个发行阻塞已被 T23/T25 修掉**，读它时注意。
 
 T12、T13、T14、T15 均为**只读源码调查**，各自只写入独立报告文件，彼此可并行；它们不得修改产品代码、测试、正式审查台账或其他任务卡。四份矩阵齐备后，由总控根据证据拆下一批实现卡，不先猜文件边界。路线恢复稿和来源置信度记录位于 `.scratch/mcode-product-roadmap/spec.md`、`sources.md`、`map.md`。
 
 ### 结构性缺口波（T16–T20，2026-10-23 新增）
+
+> **2026-10-23 核查：T17 / T18 / T19 / T20 已交付，T16 存疑。**
+> - T17（`95625434`）、T18（`e6515e45`）、T19（`1dd4211f`）、T20 均已 done；
+> - **T16**：`apps/desktop/scripts/electron-u1/` 骨架文件已存在
+>   （`runner.ts` / `steps.ts` / `verdict.ts`），**但卡仍是 `ready-for-agent`，
+>   且 grep 不到任何套件引用它** —— 骨架写了没人用，正是本仓库吃过亏的那一类。
+>   下次派 T7/T8 前必须先确认这一点（见「叙述核查」#11）。
 
 这五张卡补的是**「谁都绕不过去、但一直没人开卡」**的地基：
 
@@ -144,6 +165,14 @@ T12、T13、T14、T15 均为**只读源码调查**，各自只写入独立报告
 
 ### 结构性发现（T14 基线，2026-10-23）
 
+> **⚠️ 2026-10-23 核查：六条里三条仍成立、三条已修。** 逐条见文末
+> `## 叙述核查（2026-10-23）` 的 #1–#6。
+> **仍成立**：flow 存储两份（#1）、`engine-trust.json` 无生产 writer（#4）、无持久运行史（#6）。
+> **已修**：执行归属账本已有跨进程租约（T4，`6a1dc9d5`，#2）、
+> `buildTriggers` 已按引擎归属装监听（T3 的代码已在树上，但**卡未回写**，#3）、
+> 两个悬挂适配器已接生产（T21，`6e690e48`，#5）。
+> 下面保留 T14 当时的原文。
+
 T14 报告查出六处「单一事实源」竞争，其中两处已开卡：
 
 - **flow 存储**：SQL `WorkflowDoc` 与引擎 `flows.json` 是两份持久化，Deploy 后的镜像 fire-and-forget（→ **T2**）。
@@ -152,6 +181,64 @@ T14 报告查出六处「单一事实源」竞争，其中两处已开卡：
 - **审批**：SQL `workflow.review.v1.*` 与引擎 `engine-trust.json` 互不引用，后者生产代码**无 writer**（→ 待开卡）。
 - **悬挂适配器**：`NodeRedFlowStorage`（609 行）与 `workflowMigrationPreflight`（1631 行）**零生产调用方**，却各有测试护航（→ **T21，已交付 `6e690e48`**；T21 回写里纠正了一处：整份 `nodeRedStorage.ts` 有调用方，零调用方的是 `NodeRedFlowStorage` 类）。
 - **运行历史**：旧 runner 有 `runStore` 持久化；Node-RED 原生只有内存 runboard，**无持久运行史**（→ 待开卡）。
+
+## 叙述核查（2026-10-23）
+
+> 逐段核对本文件里的事实性断言（「零命中」「没有 X」「N 个」「从来不做 Y」）。
+> 方法：只读 `grep` + 读源码 + 查卡 Status。**没有跑会写盘的套件，没有起 Electron。**
+> 判据：`✅ 仍成立` / `❌ 已过期（现状是…）` / `❓ 无法核实（说明为什么）`。
+
+| # | 段落 | 原断言 | 现状 | 判 |
+|---|---|---|---|---|
+| 1 | 结构性发现-01 | 「SQL `WorkflowDoc` 与引擎 `flows.json` 是两份持久化，Deploy 后的镜像 fire-and-forget」 | **仍成立**。`registry.ts` 仍同时持有 `WorkflowDoc` 与 `nativeLibrarySync`（`:753/:767`），镜像仍是 Deploy 之后的异步回调 | ✅ |
+| 2 | 结构性发现-02 | 「`executor-ownership.json` 无跨进程锁，而 `NodeRedFlowStorage` 已有 `withOsFileLease`」 | **❌ 已过期**。T4 已交付（`6a1dc9d5`）：`fileExecutorOwnershipStore.ts` 现在 `import { withOsFileLeaseSync }`（`:17`），写路径与启动对账都在租约内（`:87`、`:208`） | ❌ |
+| 3 | 结构性发现-03 | 「旧 `automationRunner.buildTriggers` 不看 `doc.engine`，`engine=node-red` 的图照样装 cron/fs.watch」 | **❌ 已过期**。代码里有 `【T3】装监听之前先看引擎归属`（`automationRunner.ts:550-552`，`legacyTriggerOwnerOf(doc)`）——**但 T3 卡仍是 `ready-for-agent`，未回写** | ❌ |
+| 4 | 结构性发现-04 | 「SQL `workflow.review.v1.*` 与引擎 `engine-trust.json` 互不引用，后者生产代码**无 writer**」 | **✅ 仍成立**。`engine-trust.json` 只在 `registry.ts:414-421` 被**读**（`{"trusted":true}` 才算数），全仓仍无生产 writer | ✅ |
+| 5 | 结构性发现-05 | 「`NodeRedFlowStorage`（609 行）与 `workflowMigrationPreflight`（1631 行）零生产调用方」 | **❌ 已过期**。T21 已交付（`6e690e48`）：`nativeLibraryLoad.ts:77` import 并 `:194` new，`workflowMigrationGate.ts` 调 `runWorkflowMigrationPreflight`。**行数 609/1631 仍准确** | ❌ |
+| 6 | 结构性发现-06 | 「Node-RED 原生只有内存 runboard，**无持久运行史**」 | **✅ 仍成立**。`workflowEngines/` 下无 `runStore` 持久化（只有注释提到将来接） | ✅ |
+| 7 | 当前受阻-T3 | 「T3 与 T2/T4 共享工作流热文件 → 等 T2/T4 收」 | **半过期**。T4 已完成（`6a1dc9d5`），只剩 T2；且 T3 的代码修复已在树上（见 #3） | ❌ |
+| 8 | 当前受阻-T10/T11 | 「需要 T9 的取证与策略裁决」 | **❌ 已过期**。T10（`782b08fc`）与 T11（`f9b8bfec`）都已交付；T11 仍 `releaseEligible=false` 是**设计结果**（4 包缺权利方材料），不是「等 T9」 | ❌ |
+| 9 | 当前受阻-T21 | 「T21 要接的写路径与 T2/T4 重叠 → 等它们提交」 | **❌ 已过期**。T21 已交付（`6e690e48`） | ❌ |
+| 10 | 产品路线基线波 | 「T12、T13、T14、T15 均为只读源码调查…可同时派发」 | **半过期**。T12/T13/T14 已交付（报告在 `docs/planning/product-roadmap/`），**T15 报告文件存在但卡仍 `ready-for-agent`** | ❌ |
+| 11 | 结构性缺口波-T16 | 「T16 是最大结构性缺口…T7/T8 全卡在这里」 | **半过期**。`apps/desktop/scripts/electron-u1/` 骨架已存在（`runner.ts`/`steps.ts`/`verdict.ts`），**但卡仍 `ready-for-agent`，且没有套件引用它** | ❓ |
+| 12 | 结构性缺口波-T17 | 「契约层已有…但上层仍有多处各自判定扩展名」 | **❌ 已过期**。T17 已交付（`95625434`），六个新导出都在 `documentKind.ts` | ❌ |
+| 13 | 结构性缺口波-T18/T19 | 「当前**没有任何安装确认 UI**（`grep installConfirm` 零命中）」 | **❌ 已过期**（本会话早些时候已改，此处留档）。`ModuleInstallConsentCard.tsx` 存在，契约有 `installConsent` | ❌ |
+| 14 | T43 段-工具在 | 「`document_render`（`tools.ts:1312`）真把 PNG 作为 image 块」「139 个工具的目录驱动发现在」 | **✅ 仍成立**（行号已漂移，函数仍在） | ✅ |
+| 15 | T43 段-断点 1 | 「`DOCUMENT_QA_GATES` 里 **pdf / markdown / html 是空数组**」 | **❌ 已过期**。现在是 `pdf:["render-probe"]`、`markdown:["render-probe"]`、`html:["render-probe"]`（`documentToolSurface.ts:88-95`） | ❌ |
+| 16 | T43 段-断点 2 | 「`CLI_TOOL_MAP.slides` **只有 read 和 apply，没有 create**」 | **❌ 已过期**。现在有 `build_deck: "create"`（`documentToolSurface.ts:414`），注释写明「【T43】整份 deck 的设计流水线」 | ❌ |
+| 17 | T43 段-断点 3 | 「PPT 设计流水线完全没接线 — `plan_deck`/`generate_deck` 在目录里有名字，`cliRouteFor` 没有」 | **❓ 部分过期**。`cliRouteFor` 对 `build_deck` 有 `create` 路由；但 `plan_deck`/`generate_deck` 在 `genofficeCli.ts` 里仍 grep 不到实现 | ❓ |
+| 18 | T43 段-断点 5 | 「`document_md_read` 只走 `docs read`，`.md/.html/.txt/.xlsx/.pptx/.pdf` 全都读不了」 | **❌ 已过期**。`documentToolRuntime.ts:812-816` 有 `【T43】缺口五` 注释，现走 `readAnyDocument` 按扩展名分派 | ❌ |
+| 19 | T43 段-结论 | 「上游 SKILL.md 是唯一能做出好看 deck 的方法，Mcode 一个环节都没接」 | **❌ 已过期**。同 #16/#18，管线已接；但**真正好不好看没有被验证过**（无 U1） | ❌ |
+| 20 | T44 段 | 「T31 已把篡改改成克隆到 OS 临时目录，`main.cjs:244-247` 有断言」 | **✅ 仍成立** | ✅ |
+| 21 | 表格 T40 行 | 「`withRendererToolRegistry` 零调用点 —— `document.tool_call` 渲染端路线不可达」 | **❌ 已过期**，但**这条在表格不在叙述**。`ipc/index.ts:19` import、`:175` 调用 `withRendererToolRegistry(docsAiPorts)` | ❌ |
+
+### 汇总
+
+- **仍成立 5 条**（#1 #4 #6 #14 #20）——都是「**没有**某能力」这类否定断言，它们比肯定断言更耐久。
+- **已过期 14 条**（#2 #3 #5 #7 #8 #9 #10 #12 #13 #15 #16 #18 #19 #21）。
+- **无法/部分无法核实 2 条**（#11 #17）。
+
+### 最严重的三条
+
+1. **#15 #16 #18 #19 —— T43 整段已过期，但 T43 卡仍是 `ready-for-agent`。**
+   这段是 README 里最长、最像「事实」的叙述，读者会据此认为文档 AI 仍然做不好 deck。
+   实际代码里 `DOCUMENT_QA_GATES` 已填、`build_deck` 已接线、`readAnyDocument` 已分派——
+   **T43 的活已经做在树上了**。照这段派活会重做一遍。**但「好不好看」确实仍未被 U1 验证**，
+   所以不能简单说「T43 完成了」，见下。
+
+2. **#3 —— T3 的代码修复已在树上（`【T3】` 注释 + `legacyTriggerOwnerOf`），但 T3 卡是 `ready-for-agent`。**
+   这和 T43 是同一个模式：**代码先行，卡未回写**。这类卡最危险——派出去会让执行会话
+   与已有实现打架。
+
+3. **#21 —— T40 的前提（`withRendererToolRegistry` 零调用点）已不成立**，
+   而 T30 的 `blocked-on-T40` 依赖它。如果 T40 的前提是错的，T30 的阻塞理由也要重核。
+
+### 这次核查**没有**做的事
+
+- 没有重跑任何套件（只读指令）。
+- 没有验证「代码已落地」的那些卡**是否真的验过**——`【T43】` 注释只证明代码改了，
+  不证明它的验收判据过了。**代码在 ≠ 卡完成**，这条界限对 #3 和 #15-#19 同样适用。
+- `❓` 的两条没深挖，因为都需要跑套件或起 Electron 才能定论。
 
 ## 历史和真值来源
 
