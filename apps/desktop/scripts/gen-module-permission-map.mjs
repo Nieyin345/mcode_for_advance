@@ -175,6 +175,19 @@ function committedPermissionKeys() {
 }
 const knownMethods = committedPermissionKeys();
 
+/* ⚠️ `knownMethods` **只服务准入闸门**（判断"这条方法有没有人做过决定"），
+ *   它**不参与映射** —— `mapped`（本文件下面那段）遍历的是**全部** `methods`。
+ *
+ *   这个区分是 2026-10-24 一次真实误判的产物：有人以为"方法一旦写进已提交的
+ *   `appPermission.ts`，生成器就把它当老方法、不再重新分类"，于是断定
+ *   `policy.ts` 里改档位必须配合手工改生成物才生效。
+ *
+ *   **恰好相反**：档位一改，`policyFor(method)` 立刻返回新档位，`mapped` 当场重算。
+ *   想让 `task.list` 从 `["session.read"]` 变成 `null`，**只需改 `policy.ts` + 重跑本脚本**，
+ *   不需要动 `appPermission.ts`（那个文件头写着 Do not edit directly，是有理由的）。
+ *
+ *   什么时候 `knownMethods` 才会影响输出？**从不。** 它只决定 `unreviewed` 非空时
+ *   脚本是「继续」还是「拒绝继续」。 */
 const newMethods = methods.filter((m) => !knownMethods.has(m));
 const unreviewed = newMethods.filter((m) =>
   !explicitlyClassified.has(m) &&
