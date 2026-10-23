@@ -226,5 +226,60 @@ console.log("\n[T75] 两种丑法各一对正控负控");
 }
 
 
+/* ── 【T83 复核】B 接手的三个行为变更必须各有断言 ──
+ *
+ * 这三条原来一条断言都没有：套件在 B 改前改后都是 40/40 全绿，
+ * 说明它根本没在看这三个行为。逐条补上。
+ */
+console.log("\n[T83] 多卡各报 / x 坐标 / 跨页 page=null");
+{
+  // 两张卡都超线（58% 与 51%）
+  const twoEmpty: DeckPageSpec = {
+    type: "content", layout: "three_column_cards",
+    elements: [
+      { type: "text", x: 80, y: 60, w: 1120, h: 60, paragraphs: [{ runs: [{ text: "标题", sizePt: 36 }] }] },
+      { type: "shape", shape: "roundRect", x: 80, y: 176, w: 352, h: 452, fill: "#FFFFFF" },
+      { type: "text", x: 112, y: 212, w: 288, h: 40, paragraphs: [{ runs: [{ text: "A", sizePt: 22 }] }] },
+      { type: "text", x: 112, y: 268, w: 288, h: 98, paragraphs: [{ runs: [{ text: "a", sizePt: 14 }] }] },
+      { type: "shape", shape: "roundRect", x: 464, y: 176, w: 352, h: 452, fill: "#FFFFFF" },
+      { type: "text", x: 496, y: 212, w: 288, h: 40, paragraphs: [{ runs: [{ text: "B", sizePt: 22 }] }] },
+      { type: "text", x: 496, y: 268, w: 288, h: 130, paragraphs: [{ runs: [{ text: "b", sizePt: 14 }] }] },
+    ],
+  };
+  const found = checkDeckPatterns([twoEmpty]).findings.filter(f => f.rule === "layout.card-whitespace");
+
+  // ① 两张卡各报一条 —— 这条防的是【硬规矩 3】：不许静默吞掉第二张。
+  eq("★ 两张卡都超线 → 各报一条（不吞第二张）", found.length, 2);
+
+  // ② 每条都带 x 坐标，模型才知道改哪张
+  const xs = found.map(f => /x=(\d+)/.exec(f.message)?.[1]).filter(Boolean);
+  check("★ 每条消息都带 x 坐标", xs.length === found.length, { messages: found.map(f => f.message.slice(0, 40)) });
+  check("★ 两条的 x 不同（分别指向两张卡）", new Set(xs).size === 2, { xs });
+
+  // ③ 跨页判据的 page 必须是 null，不许谎报「第 1 页」
+  const hdr = (): DeckPageSpec => ({
+    type: "content", layout: "three_column_cards",
+    elements: [
+      { type: "text", x: 80, y: 60, w: 1120, h: 60, paragraphs: [{ runs: [{ text: "标题", sizePt: 36 }] }] },
+      { type: "shape", shape: "roundRect", x: 80, y: 176, w: 352, h: 420, fill: "#FFFFFF" },
+      { type: "shape", shape: "rect", x: 0, y: 0, w: 1280, h: 48, fill: "#1A1D21" },
+    ],
+  });
+  const hb = checkDeckPatterns([hdr(), hdr(), hdr()]).findings.filter(f => f.rule === "header.bar");
+  check("★ 全篇页眉条的 page 是 null（不是谎报第 1 页）", hb.length > 0 && hb.every(f => f.page === null), { pages: hb.map(f => f.page) });
+
+  const rep = [hdr(), { ...hdr(), elements: [...hdr().elements!] }, { ...hdr(), elements: [...hdr().elements!] }];
+  const rp = checkDeckPatterns(rep).findings.filter(f => f.rule === "layout.repeated");
+  check("★ 构图雷同的 page 也是 null", rp.length === 0 || rp.every(f => f.page === null), { pages: rp.map(f => f.page) });
+
+  // ④ 单页判据的 page 仍是数字（别为了跨页把这些也改成 null）
+  const one: DeckPageSpec = { type: "content", layout: "x", elements: [
+    { type: "text", x: 80, y: 60, w: 1120, h: 60, paragraphs: [{ runs: [{ text: "标题", sizePt: 36 }] }] },
+  ]};
+  const oneF = checkDeckPatterns([one]).findings.filter(f => f.rule === "layout.whitespace");
+  check("★ 单页判据的 page 仍是数字（0）", oneF.length > 0 && oneF.every(f => f.page === 0), { pages: oneF.map(f => f.page) });
+}
+
+
 console.log(`\nt65-deck-pattern-smoke: ${total - failures}/${total} 通过`);
 process.exit(failures === 0 ? 0 : 1);
