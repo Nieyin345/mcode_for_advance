@@ -203,3 +203,121 @@ ipc.handle(IPC.TASK_CREATE, (_evt, raw) => { ... })
 **两条都不经过工具调用栈。** 所以第二节的结论成立：**桥确实不存在，而且不存在「现成的桥」。**
 
 唯一还能推翻我的情况是：**将来某条新路径（Agent 认领任务 / 工作流建任务）从工具上下文出发** —— 那时桥是天然的，这条路会变得便宜。但那不是现在的状态。
+
+---
+
+# 附录（2026-10-24）：`level` 的分级到底有没有人分过
+
+> 总控追问：**「`level: "error"` 全仓只出现一次」是真的只有一条判据够格，还是别的判据本该是 error 却被写成了 warning？**
+> 如果后者，「样本量是一」就不是「判据少」，是「分级没人用」。
+
+## 结论：**分过，而且标准一致。是我的「样本量是一」这个说法误导了。**
+
+## 一、全仓分布
+
+```
+accent-bar.vertical   warning
+accent-bar.top        warning
+palette.rainbow       error     ← 唯一一条
+layout.card-whitespace warning
+layout.whitespace     warning
+layout.repeated       warning
+cover.flat            warning
+header.bar            warning
+```
+
+7 条判据，1 条 error。
+
+## 二、分级标准是明确写下来的
+
+`accent-bar.vertical` 的注释（这段是整套判级的总纲）：
+
+```ts
+// ⚠️ warning 不是 error：判据本身（w<24 且 h≥64）能命中真实色条，但**阈值是拍的** ——
+// 规范原文只说「thin vertical accent bar on the left of every card / a colored bar on
+// top of cards / a small bar left of titles」，没给像素。7 条判据里只有
+// `palette.rainbow` 有规范原文（"Never more than the two accents"），其余全是经验阈值。
+// 拍的阈值不该以 error 身份打断模型。
+level: "warning",
+```
+
+`cover.flat` 的注释把它说得更直白：
+
+```ts
+// ⚠️ warning：判据（面积 ≥12% 的锚点）是经验值，规范只说「give it a visual anchor」，
+// 没定义多大算锚点。只有 `palette.rainbow` 有规范原文，保持 error。
+```
+
+**分级判准：规范原文有没有给出具体数值。**
+
+| 判据 | 规范原文给了数值吗 | level |
+|---|---|---|
+| `palette.rainbow` | **有**（"Never more than the two accents" → 2） | **error** |
+| `accent-bar.*` | 无（只说 "thin"） | warning |
+| `cover.flat` | 无（只说 "a visual anchor"） | warning |
+| `layout.*` | 无（参考线） | warning |
+| `header.bar` | 无 | warning |
+
+**7 条全部符合这个判准，没有一条是「本该 error 却写成 warning」。**
+
+## 三、但这里有一个真问题：**两套概念用了近似的中文词**
+
+注释里同时出现两种说法：
+
+| 说法 | 它实际描述的是 |
+|---|---|
+| 「**强判据** / **弱判据**」 | **判据本身可不可靠**（形状特征确定不确定） |
+| `level: "error"` / `"warning"` | **阈值有没有规范依据** |
+
+于是会出现读起来自相矛盾的段落：
+
+```ts
+/**
+ * 【判据 5】…
+ * **强判据。** 「视觉锚点」= 面积 ≥ 画布 12% 的元素…
+ */
+...
+// ⚠️ warning：判据（面积 ≥12% 的锚点）是经验值…
+level: "warning",
+```
+
+**「强判据」+ `warning` 并列** —— 两个词各自都对，但读者会以为矛盾。
+
+实测量化（注释文本 vs 实际 level）：
+
+| 判据 | 注释声明 | 实际 level |
+|---|---|---|
+| `accent-bar.vertical` | 强判据 | warning |
+| `palette.rainbow` | 强判据 | error |
+| `layout.repeated` | 弱判据 | warning |
+| `cover.flat` | 强判据 | warning |
+| `header.bar` | 强判据 | warning |
+
+**5 条声明了强度的判断里，3 条是「强判据 → warning」。** 每一个都有理由，但**术语撞车让它们看起来像错误**。
+
+## 四、这对「样本量是一」的修正
+
+我原先说「error 只有一条，样本量是一」。**准确的说法是**：
+
+- **只有一条判据的阈值来自规范原文**，所以只有一条配得上 `error`；
+- **不是没人分过级**，是**能被规范原文背书的判据只有一条**。
+
+**这个区别很重要**：前者暗示「分级机制空转」，后者说明「分级机制正常工作，只是证据充足的就一条」。
+
+**所以那条规划票的结论要按新表述修**：不是「样本量是一」让人不敢传信号，是**「有规范原文背书的判据只有一条」—— 而这一条的结论，确实不足以驱动整个任务的复核标记。**
+
+## 五、建议（不改代码）
+
+**把「强/弱判据」这个说法改掉，或者把 `level` 的判准写进文件头。**
+
+现在 `level` 的判准散落在 `accent-bar.vertical` 和 `cover.flat` 的注释里 —— **只读第 5 条判据的人看不到「只有有规范原文才是 error」这条总纲。**
+
+**最小改法**：在文件头的类型注释（`PatternFinding` 的 `level` 字段）上加三行，把「只有规范原文给出数值才够 error」写死在那里。**零行为改动，只改文档位置。**
+
+**不建议**把 `accent-bar` / `cover.flat` 提升成 `error` —— 它们的理由（阈值是拍的）成立，提升反而让「error」失去含义。
+
+## 六、我可能错在哪
+
+**我只看了 `deckPatternCheck.ts`。** 六编辑器门禁那边（`docs check` / `sheet check`）的 `level` 来自上游 CLI，分级标准不在我们手里 —— 那一边的 `error` / `warning` 分布是另一回事，**我没有查**。
+
+如果总控关心的是「整个判据体系的 error 比例」，那要把上游那 18 项也算进来。
