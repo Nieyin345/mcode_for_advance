@@ -90,6 +90,51 @@ console.log("\n① 跨会话查得到 —— 「一级对象」的核心证明")
     onlyA.map((t) => t.id));
 }
 
+console.log("\n①bis ★ 状态迁移只有一条路（`TaskRepo` 的硬契约，注释里写了就要有人守）");
+{
+  // `TaskRepo` 的文件头写着「所有改状态的路都经过这里，不存在第四条路」。
+  // **那句绝对陈述现在是可验的** —— 这里验它。
+  //
+  // 判据：`UPDATE tasks SET ... status` 只许出现在 `store/repositories/task.ts` 里。
+  // 出现在别处 = 有人绕过了迁移表与「验收证据必填」（T100 修过的那个缺口就是这个形状）。
+  const { readFileSync, readdirSync, statSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // ⚠️ **不能从 `import.meta.dirname` 推** —— 套件被 esbuild 打包到临时目录，
+  // 那个值指向 `%TEMP%`，不是源码树。`run.sh` 会 `cd apps/desktop`，所以用 cwd。
+  // 找不到就**显式失败**，不静默跳过（否则这条断言恒绿，等于没有）。
+  const root = join(process.cwd(), "src/main");
+  if (!existsSync(root)) {
+    check("★ 找不到 src/main（cwd 不对，本断言无法取证）", false, process.cwd());
+  } else {
+  const offenders: string[] = [];
+  const walk = (dir: string): void => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (name.endsWith(".ts")) {
+        const src = readFileSync(p, "utf8");
+        // 只认**真 SQL**：注释里举反例的那一行会被 `^\s*\*` 或 `//` 排除。
+        const hits = src
+          .split("\n")
+          .filter((line) => !/^\s*(\*|\/\/)/.test(line))
+          .filter((line) => /UPDATE\s+tasks\s+SET/i.test(line) && /status/i.test(line));
+        if (hits.length > 0 && !p.replace(/\\/g, "/").endsWith("store/repositories/task.ts")) {
+          offenders.push(p.replace(/\\/g, "/").split("/src/main/")[1]!);
+        }
+      }
+    }
+  };
+  walk(root);
+  check("★ 没有别处直接 UPDATE tasks SET status（只有 TaskRepo 能改状态）",
+    offenders.length === 0, offenders);
+
+  // 对照：证明这个扫描**真的能看见**那句 SQL —— 否则「0 个违规」也可能是因为啥都没扫到。
+  const repo = readFileSync(join(root, "store/repositories/task.ts"), "utf8");
+  const repoHits = repo.split("\n").filter((l) => /UPDATE\s+tasks\s+SET/i.test(l) && /status/i.test(l)).length;
+  check("★ 对照：扫描器在 TaskRepo 里确实扫到了那几条 UPDATE（不是空转）", repoHits >= 3, repoHits);
+  }
+}
+
 console.log("\n② done 与 accepted 是两个状态（§3「执行完成不等于验收通过」）");
 {
   const t = createTask("生成一份 PPT", "sess-A");
