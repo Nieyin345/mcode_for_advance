@@ -124,6 +124,7 @@
 | T109 | **审批没有历史**：`pendingApprovals` 是内存 Map，进程退出即丢 | **P0 产品主线** | T99+T104 | ZZ | ⬜ 待开工 |
 | T110 | **`DeckElement.paragraphs` 类型漏了上游规范的字段**（唯一一条 `tsc` 错误） | **P1 类型缺陷** | T100b | ZZ | ⬜ 待开工（F） |
 | T111 | **任务详情视图**：把 `origin`/`artifacts`/`acceptance`/失败原因接上落点 | **P0 产品主线** | T102+T109 | ZZ | ⬜ 待开工（E） |
+| T112 | **`agent_read_url` 报 `fetch failed`**：一条无法用于判断的错误（也是全量偶发红之一） | **P1 产品缺陷** | 无 | ZZ | ⬜ 待开工 |
 
 ### T43 为什么是 P0（用户最高痛点）
 
