@@ -154,6 +154,28 @@ documentViewHost.setDocsAiPorts(withRendererToolRegistry(docsAiPorts));
 
 `withRendererToolRegistry` 是纯包装，`run` 的 4 个参数原样转发。
 
+### ⚠️ 但注入点有两处，不是一处（E 在动手时发现，总控核实）
+
+```ts
+// ipc/index.ts —— 两处喂的是**同一个登记簿**
+const registryWrappedDocsAiPorts = withRendererToolRegistry(docsAiPorts);
+
+// ① vendor 视图 AI 通道（registerGenofficeViewAiIpc 的 ports）
+registerGenofficeViewAiIpc(ipcMain, (sender) => {
+  const context = documentViewHost.vendorAiContextForSender(sender);
+  return context ? { context, ports: registryWrappedDocsAiPorts } : null;
+});
+
+// ② 文档视图宿主
+documentViewHost.setDocsAiPorts(registryWrappedDocsAiPorts);
+```
+
+**只包一处的话，另一条路上的 AI 请求不会登记绑定，`document.tool_call` 在那条路上仍然永远拿不到活跃绑定。**
+
+用**同一个常量**保证两条路是同一份包装，比分别调两次 `withRendererToolRegistry(docsAiPorts)` 更安全（后者会创建两个独立的 Map，各自登记各自的）。
+
+**这一条是卡上原来没写的，E 发现得对。**
+
 ### 修复后的行为变化（重要）
 
 | 路径 | 用哪个查找 | 语义 |
