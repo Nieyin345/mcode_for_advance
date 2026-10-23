@@ -197,11 +197,10 @@ try {
     manifestPath: licenseManifestPath, licenseRoot, vendorRoot: vendor, repoRoot: root, requireComplete: false,
   });
   pass("exact 18-package/version/SPDX inventory and all available source hashes validate", () => {
-    assert.equal(licenseValidation.verifiedCount, 8);
-    assert.equal(licenseValidation.blockedCount, 10);
+    assert.equal(licenseValidation.verifiedCount, 14);
+    assert.equal(licenseValidation.blockedCount, 4);
     assert.deepEqual(licenseValidation.blockedPackages.map(item => item.name), [
-      "@electron-internal/extract-zip", "fastdom", "hash.js", "isarray", "lazy-val",
-      "ot-json1", "ot-text-unicode", "react-remove-scroll-bar", "strictdom", "unicount",
+      "@electron-internal/extract-zip", "lazy-val", "ot-text-unicode", "react-remove-scroll-bar",
     ]);
   });
   rejects("strict source license gate fails closed with exact unresolved packages", () => {
@@ -261,8 +260,8 @@ try {
   const licenseFixture = copyLicenseFixture("license-mutations");
   const fixtureValidation = validateFixture(licenseFixture, false);
   pass("test fixture contains only exact copied license bytes, no generated placeholders", () => {
-    assert.equal(fixtureValidation.verifiedCount, 8);
-    assert.equal(fixtureValidation.blockedCount, 10);
+    assert.equal(fixtureValidation.verifiedCount, 14);
+    assert.equal(fixtureValidation.blockedCount, 4);
     for (const item of fixtureValidation.items) {
       assert.deepEqual(fs.readFileSync(path.join(licenseFixture.licenses, item.licenseFile)),
         fs.readFileSync(path.join(licenseRoot, item.licenseFile)));
@@ -307,7 +306,7 @@ try {
   });
 
   console.log("T87 provenance/license smoke: " + total + "/" + total + " PASS");
-  console.log("Release status: BLOCKED — 8/18 full license texts verified; 10 exact package@version entries still lack authoritative full-text evidence.");
+  console.log("Release status: BLOCKED — 14/18 full license texts verified; 4 exact package@version entries still lack authoritative full-text evidence (T11).");
   console.log("Patch replay tree: " + git(replay, "rev-parse", "HEAD^{tree}") + " (expected " + lock.expectedTree + ")");
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });

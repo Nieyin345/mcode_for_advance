@@ -35,7 +35,123 @@ const EDITOR_APPS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown"
 const NATIVE_PRELOAD_KINDS = Object.freeze(["pdf", "markdown", "html", "sheets", "slides"]);
 const GENOFFICE_UPSTREAM_REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const GENOFFICE_UPSTREAM_NOTICE = "genoffice/apps/shell/build/THIRD-PARTY-NOTICES.txt";
-const GENOFFICE_LICENSE_MANIFEST_SHA256 = "bbb9f634477e715bbf1f7a47eecc89e26560aa951c6f283f8b7d1bb6f018f165";
+const GENOFFICE_LICENSE_MANIFEST_SHA256 = "ab2335254880cc590e1f73fff20f19b26b6da3bbbee9f3d3460ca5b6858a21ec";
+const GENOFFICE_LICENSE_MANIFEST_FORMAT = "mcode.genoffice.third-party-license-sources.v2";
+/**
+ * T11 carrier policy (roadmap: T9 evidence). A license text is admissible only
+ * through one of two exact carriers:
+ *   1. `exact-upstream-source-file`: a standalone license file fetched from a
+ *      pinned raw.githubusercontent.com revision (the original T87 rule).
+ *   2. `exact-npm-release-readme-section`: the complete license section embedded
+ *      in the README of the exact SRI-verified npm release tarball, recorded with
+ *      the README path/heading, whole-README SHA-256, the section's byte range and
+ *      the range's SHA-256. This is a different carrier, not a lower bar: the
+ *      bytes are bound to the published artifact and must contain every element
+ *      of the declared SPDX license.
+ * Both carriers feed the same per-SPDX completeness check below; a text missing
+ * the retention/notice clause (e.g. ot-text-unicode 4.0.0's README) is rejected
+ * even though it contains a grant and a disclaimer.
+ */
+const GENOFFICE_LICENSE_SOURCE_KINDS = Object.freeze([
+  "exact-upstream-source-file",
+  "exact-npm-release-readme-section",
+]);
+/** Required elements per SPDX id, matched against whitespace-normalized text.
+ * Copyright notice, grant, retention (the notice must be preserved), and
+ * warranty disclaimer are the four operative parts of these permissive
+ * licenses. Apache-2.0 additionally needs its terms header/end and liability
+ * section rather than a "retention" sentence. */
+const GENOFFICE_LICENSE_ELEMENTS = Object.freeze({
+  MIT: Object.freeze([
+    ["copyright notice", /copyright/i],
+    ["grant", /permission is hereby granted, free of charge/i],
+    ["retention notice", /the above copyright notice and this permission notice shall be included in all copies or substantial portions of the software/i],
+    ["warranty disclaimer", /the software is provided .{0,40}?as is.{0,200}?without warranty/i],
+  ]),
+  ISC: Object.freeze([
+    ["copyright notice", /copyright/i],
+    ["grant", /permission to use, copy, modify, and\/or distribute this software/i],
+    ["retention notice", /copyright notice and this permission notice appear in all copies/i],
+    ["warranty disclaimer", /the software is provided "as is" and the author disclaims all warranties/i],
+  ]),
+  "BSD-2-Clause": Object.freeze([
+    ["copyright notice", /copyright/i],
+    ["grant", /redistribution and use in source and binary forms/i],
+    ["retention notice", /this list of conditions and the following disclaimer/i],
+    ["warranty disclaimer", /this software is provided by the copyright holders and contributors/i],
+  ]),
+  "Apache-2.0": Object.freeze([
+    ["license title", /apache license/i],
+    ["version", /version 2\.0, january 2004/i],
+    ["terms of use", /terms and conditions for use, reproduction, and distribution/i],
+    ["copyright grant", /grant of copyright license/i],
+    ["liability", /limitation of liability/i],
+    ["terms end", /end of terms and conditions/i],
+  ]),
+});
+function missingLicenseElements(spdx, text) {
+  const checks = GENOFFICE_LICENSE_ELEMENTS[spdx];
+  if (!checks) return [];
+  const normalized = text.replace(/\s+/g, " ");
+  return checks.filter(([, pattern]) => !pattern.test(normalized)).map(([label]) => label);
+}
+function assertGenofficeLicenseCarrier(item, index) {
+  const fail = (why) => {
+    throw new Error("GenOffice verified license entry contains an inadmissible source carrier (" + why +
+      ") at package index " + (index + 1) + ": " + item.name);
+  };
+  if (!GENOFFICE_LICENSE_SOURCE_KINDS.includes(item.licenseSourceKind)) fail("unknown licenseSourceKind");
+  if (typeof item.licenseSourceVersion !== "string" || !item.licenseSourceVersion) fail("missing licenseSourceVersion");
+  if (typeof item.licenseSourceUrl !== "string" || !item.licenseSourceUrl.startsWith("https://")) fail("missing https licenseSourceUrl");
+  if (item.licenseSourceKind === "exact-upstream-source-file") {
+    if (!item.licenseSourceUrl.startsWith("https://raw.githubusercontent.com/")) fail("non-raw source URL");
+    return;
+  }
+  // exact-npm-release-readme-section: the bytes must be bound to the exact
+  // SRI-verified tarball, not to a web page or a similar release.
+  if (item.licenseSourceUrl !== item.npmTarballUrl) fail("README carrier source is not the exact npm tarball");
+  if (item.licenseSourceReadmePath !== "package/README.md" && item.licenseSourceReadmePath !== "package/readme.md") {
+    fail("README carrier must name package/README.md");
+  }
+  if (typeof item.licenseSourceReadmeHeading !== "string"
+      || !/^#{1,4}[ \t]*(?:licen[cs]e)[ \t]*$/i.test(item.licenseSourceReadmeHeading)) {
+    fail("README carrier heading is not a License heading");
+  }
+  if (typeof item.licenseSourceReadmeSha256 !== "string" || !/^[0-9a-f]{64}$/.test(item.licenseSourceReadmeSha256)) {
+    fail("README carrier lacks whole-README SHA-256");
+  }
+  const range = item.licenseSourceByteRange;
+  if (!range || typeof range !== "object" || Array.isArray(range)
+      || !Number.isInteger(range.start) || !Number.isInteger(range.end) || !Number.isInteger(range.length)
+      || range.start < 0 || range.length < 1 || range.end !== range.start + range.length
+      || !Number.isInteger(item.licenseSourceReadmeBytes) || item.licenseSourceReadmeBytes < range.end) {
+    fail("README carrier byte range is missing or inconsistent");
+  }
+  if (item.licenseSourceByteRangeSha256 !== item.licenseTextSha256) {
+    fail("README carrier range hash differs from the license text hash");
+  }
+  const proof = item.licenseSourceVerification;
+  if (!proof || typeof proof !== "object" || Array.isArray(proof) || proof.readmeSha256 !== item.licenseSourceReadmeSha256) {
+    fail("README carrier lacks a README byte-equality proof");
+  }
+  if (proof.kind === "exact-commit-readme-equal") {
+    if (typeof proof.revision !== "string" || !/^[0-9a-f]{40}$/.test(proof.revision) || proof.revisionKind !== "exact-tag-commit") {
+      fail("exact-commit proof is malformed");
+    }
+  } else if (proof.kind === "public-commit-readme-equal-weaker-chain") {
+    // Published npm gitHead is not retrievable for a few old packages. Accepting
+    // those requires a named public upstream commit whose README is byte-equal
+    // plus an explicit reviewer signoff; it may never be silent.
+    if (typeof proof.commit !== "string" || !/^[0-9a-f]{40}$/.test(proof.commit)
+        || proof.commitClass !== "public-upstream-master-ancestor"
+        || proof.publishedGitHeadRetrievable !== false
+        || typeof proof.reviewSignoff !== "string" || proof.reviewSignoff.trim().length < 40) {
+      fail("weaker README proof lacks commit/class/signoff");
+    }
+  } else {
+    fail("unknown README verification kind");
+  }
+}
 
 function assertWithin(root, candidate) {
   const rel = relative(resolve(root), resolve(candidate));
@@ -107,7 +223,7 @@ function assertThirdPartyNoticeTextComplete(text) {
   const missing = noticePackagesWithoutLicenseText(text);
   if (missing.length) {
     throw new Error("GenOffice third-party notice lacks full license text for " + missing.length + " package(s): " +
-      missing.join(", ") + ". Prerequisite: add verified upstream license texts and regenerate the notice from the pinned clean GenOffice source; do not synthesize license files from SPDX labels or README text.");
+      missing.join(", ") + ". Prerequisite: add verified exact-source license texts and regenerate the notice from the pinned clean GenOffice source; never synthesize a license file from an SPDX label or from a README fragment that lacks required license elements.");
   }
   return { packageSections: [...text.matchAll(/\n-{72}\n([^\n]+ v[^\n]+ — )/g)].length, missingLicenseText: [] };
 }
@@ -151,7 +267,7 @@ function validateGenofficeLicenseManifest({
   }
   const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
   const root = resolve(licenseRoot ?? join(dirname(manifestFile), "licenses"));
-  if (manifest.format !== "mcode.genoffice.third-party-license-sources.v1"
+  if (manifest.format !== GENOFFICE_LICENSE_MANIFEST_FORMAT
       || manifest.repository !== GENOFFICE_UPSTREAM_REPOSITORY
       || manifest.sourceNotice !== GENOFFICE_UPSTREAM_NOTICE
       || manifest.expectedPackageCount !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length
@@ -196,12 +312,10 @@ function validateGenofficeLicenseManifest({
     if (item.status !== "verified" || typeof item.licenseFile !== "string"
         || item.licenseFile !== item.licenseFile.split(/[\\/]/).pop()
         || item.licenseFile === "." || item.licenseFile === ".."
-        || typeof item.licenseTextSha256 !== "string" || !/^[0-9a-f]{64}$/.test(item.licenseTextSha256)
-        || typeof item.licenseSourceUrl !== "string" || !item.licenseSourceUrl.startsWith("https://raw.githubusercontent.com/")
-        || typeof item.licenseSourceVersion !== "string" || !item.licenseSourceVersion
-        || item.licenseSourceKind !== "exact-upstream-source-file") {
+        || typeof item.licenseTextSha256 !== "string" || !/^[0-9a-f]{64}$/.test(item.licenseTextSha256)) {
       throw new Error("GenOffice verified license entry lacks exact source/file/hash metadata: " + item.name);
     }
+    assertGenofficeLicenseCarrier(item, index);
     const licenseFile = resolve(root, item.licenseFile);
     assertWithin(root, licenseFile);
     if (repoRoot) assertNativeVendorPath(resolve(repoRoot), licenseFile);
@@ -210,6 +324,12 @@ function validateGenofficeLicenseManifest({
     if (text.trim().length < 150 || /^(?:Licensed under |SPDX-License-Identifier:)/i.test(text.trim())
         || !/(?:Permission is hereby granted|Permission to use, copy|Apache License|Redistribution and use)/i.test(text)) {
       throw new Error("GenOffice license source is not a full license text: " + item.name);
+    }
+    const missingElements = missingLicenseElements(item.spdx, text);
+    if (missingElements.length) {
+      throw new Error("GenOffice license source is missing " + item.spdx + " element(s) " +
+        missingElements.join(", ") + ": " + item.name +
+        ". A grant without the retention notice (or any other operative element) is not an executable full license.");
     }
     const actualHash = hashFile(licenseFile);
     if (actualHash !== item.licenseTextSha256) {
@@ -233,22 +353,40 @@ function validateGenofficeLicenseManifest({
   };
 }
 
+/**
+ * The vendor notice separates sections with a 72-dash rule:
+ *   \n----…----\n<name> v<version> — <SPDX>\n----…----\n<body>
+ * The earlier `split(/(?=^-{72}$)/m)` chunking put each title in the chunk that
+ * *starts* at its opening rule but ended the chunk at the closing rule, so title
+ * and body never shared a chunk and the full-section regex could never match a
+ * real notice (it only ever ran after the "unresolved" throw). Match whole
+ * sections with their body instead; the lookahead keeps the trailing separator
+ * out of the body so replacements compose from exact offsets.
+ */
+const NOTICE_SECTION_PATTERN = /\r?\n-{72}\r?\n([^\r\n]+)\r?\n-{72}\r?\n([\s\S]*?)(?=\r?\n-{72}\r?\n|$)/g;
+function* noticeSections(text) {
+  for (const match of text.matchAll(NOTICE_SECTION_PATTERN)) {
+    const bodyEnd = match.index + match[0].length;
+    yield { title: match[1], body: match[2], bodyStart: bodyEnd - match[2].length, bodyEnd };
+  }
+}
+function findNoticeSection(text, title) {
+  for (const section of noticeSections(text)) {
+    if (section.title === title) return section;
+  }
+  return null;
+}
 function assertThirdPartyNoticeMatchesManifest(text, validation) {
   if (!validation || validation.blockedCount !== 0
       || validation.verifiedCount !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length) {
     throw new Error("GenOffice third-party notice cannot be verified against an incomplete license source manifest");
   }
-  const separator = "-".repeat(72);
-  const sections = text.split(/(?=^-{72}\r?$)/m);
   for (const item of validation.items) {
     const title = item.name + " v" + item.version + " — " + item.spdx;
-    const section = sections.find(chunk => {
-      const match = new RegExp("^" + separator + "\\r?\\n([^\\r\\n]+)").exec(chunk);
-      return match && match[1] === title;
-    });
-    if (!section || !section.includes(item.licenseText.trimEnd())
-        || !section.includes("Source: " + item.licenseSourceUrl)
-        || !section.includes("License SHA-256: " + item.licenseTextSha256)) {
+    const section = findNoticeSection(text, title);
+    if (!section || !section.body.includes(item.licenseText.trimEnd())
+        || !section.body.includes("Source: " + item.licenseSourceUrl)
+        || !section.body.includes("License SHA-256: " + item.licenseTextSha256)) {
       throw new Error("GenOffice packaged notice does not contain exact full license/source material: " + item.name);
     }
   }
@@ -260,38 +398,34 @@ function buildCompleteThirdPartyNotice(sourceText, validation) {
       || validation.verifiedCount !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length) {
     throw new Error("Cannot generate a complete GenOffice third-party notice while any upstream license text is unresolved");
   }
-  const separator = "-".repeat(72);
   const byTitle = new Map(validation.items.map(item => [
     item.name + " v" + item.version + " — " + item.spdx, item,
   ]));
   let found = 0;
-  const chunks = sourceText.split(/(?=^-{72}\r?$)/m);
-  const replaced = chunks.map(chunk => {
-    const match = new RegExp("^" + separator + "\\r?\\n([^\\r\\n]+)\\r?\\n" + separator + "\\r?\\n([\\s\\S]*)$").exec(chunk);
-    if (!match) return chunk;
-    const item = byTitle.get(match[1]);
-    if (!item) return chunk;
+  let cursor = 0;
+  let replaced = "";
+  for (const section of noticeSections(sourceText)) {
+    const item = byTitle.get(section.title);
+    if (!item) continue;
     found++;
-    return separator + "\n" + match[1] + "\n" + separator + "\n" +
-      item.licenseText.trimEnd() + "\n\nSource: " + item.licenseSourceUrl +
+    replaced += sourceText.slice(cursor, section.bodyStart);
+    replaced += item.licenseText.trimEnd() + "\n\nSource: " + item.licenseSourceUrl +
       "\nSource version: " + item.licenseSourceVersion +
       "\nLicense SHA-256: " + item.licenseTextSha256 + "\n";
-  });
+    cursor = section.bodyEnd;
+  }
   if (found !== byTitle.size) {
     throw new Error("GenOffice third-party notice package sections do not match the verified source manifest");
   }
-  const text = replaced.join("");
+  const text = replaced + sourceText.slice(cursor);
   const missing = noticePackagesWithoutLicenseText(text);
   if (missing.length) throw new Error("GenOffice generated notice still has incomplete package license sections: " + missing.join(", "));
   for (const item of validation.items) {
     const title = item.name + " v" + item.version + " — " + item.spdx;
-    const section = text.split(/(?=^-{72}\r?$)/m).find(chunk => {
-      const match = new RegExp("^" + separator + "\\r?\\n([^\\r\\n]+)").exec(chunk);
-      return match && match[1] === title;
-    });
-    if (!section || !section.includes(item.licenseText.trimEnd())
-        || !section.includes("Source: " + item.licenseSourceUrl)
-        || !section.includes("License SHA-256: " + item.licenseTextSha256)) {
+    const section = findNoticeSection(text, title);
+    if (!section || !section.body.includes(item.licenseText.trimEnd())
+        || !section.body.includes("Source: " + item.licenseSourceUrl)
+        || !section.body.includes("License SHA-256: " + item.licenseTextSha256)) {
       throw new Error("GenOffice generated notice failed exact license-text/source verification: " + item.name);
     }
   }
@@ -642,5 +776,6 @@ module.exports = {
   noticePackagesWithoutLicenseText, assertThirdPartyNoticeComplete, assertThirdPartyNoticeTextComplete,
   assertThirdPartyNoticeMatchesManifest, resolveChromiumLicense, validateGenofficeLicenseManifest,
   buildCompleteThirdPartyNotice, REQUIRED_GENOFFICE_LICENSE_PACKAGES, EDITOR_APPS, NATIVE_PRELOAD_KINDS,
-  DOCS_ACK_MARKERS,
+  DOCS_ACK_MARKERS, GENOFFICE_LICENSE_MANIFEST_SHA256, GENOFFICE_LICENSE_MANIFEST_FORMAT,
+  GENOFFICE_LICENSE_SOURCE_KINDS, missingLicenseElements, noticeSections, findNoticeSection,
 };
