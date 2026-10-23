@@ -108,6 +108,36 @@ preload (contextBridge + zod 校验)
 - Windows 子进程输出是控制台代码页（中文机器 GBK）：解码先严格试 UTF-8、失败退回 GBK，用原始字节，别数替换字符。
 - **无头验证数据时，`dataRoot` 必须指向 `mcode.db` 的副本**——sql.js 重写整个文件，指向真库会毁数据。
 
+### 多会话并行时的两条硬约束（2026-10-23，都是真实事故后加的）
+
+**一、提交必须带路径。**
+
+```bash
+git add <明确路径1> <明确路径2>
+git commit -- <明确路径1> <明确路径2>
+```
+
+`git commit` **后面必须跟 `-- <paths>`**。**禁止 `git commit -a` / `git add -A` / `git add .` / 不带路径的 `git commit`。**
+
+事故：总控 `git add` 两张卡后执行不带路径的 `git commit`，把另一个会话在途的 438 行代码卷进了 doc 提交。暂存区是进程间共享的，你 `add` 完之后别人也可能 `add`，不带路径的 `commit` 会把他的一起交掉。
+
+**二、改文件时保持可编译。**
+
+加 JSX 标签就同时加闭合，拆 JSX 就一次拆完。**不要让文件在磁盘上处于语法错误状态超过几分钟。**
+
+事故两次：一个会话写 `i18n/ide.ts` 字符串未闭合，另一个会话的 30 次采样全部 `Unterminated string literal` 白跑；另一个会话写 `RightPanel.tsx` JSX 未闭合，两个会话的 `tsc` 门禁红着在等。
+
+**预计要 10 分钟以上才能改到可编译**时，先 `git stash`，或把新组件单独写成文件最后一次性接入。
+
+**跑测试前的标准前置：**
+
+```bash
+git status --porcelain
+npx tsc --noEmit -p apps/desktop/tsconfig.json      # exit=0 才继续
+```
+
+**打包期失败（`X [ERROR]` / `Unterminated string literal` / `No matching export`）不等于被测对象失败。** 这个仓库为这件事栽过两次，2026-10-23 是第三次。
+
 ## 产品主线与复用来源
 
 **最终效果 = Claude 桌面端的 UI；其余能力一律优先复用上游源码做二开，不从零写。** 遇到「要不要自己实现」时，先按 L1→L4 找证据：

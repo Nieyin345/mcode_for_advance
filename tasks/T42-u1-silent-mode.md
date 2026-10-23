@@ -111,25 +111,57 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 
 ## 结果回写（2026-10-23）
 
-### 0. E 的实测已经回答了四条查询（在写代码之前）
+### 0. E 的实测矩阵（决定性证据，推翻了卡上的原始判断）
 
-**四条里两条是真实 Electron 实测，不是查文档。**
+**方法**：每种窗口形态单独一个 Electron 进程，`show:false`、`x:-10000,y:-10000`、45s 自杀、先写文件后执行。**用户全程看不到窗口。**
 
-| # | 问题 | 结论 | 依据 |
-|---|---|---|---|
-| 1 | `capturePage()` 在 `show:false` 上会抛吗 | **会抛，而且宿主窗口的 fallback 也一起失败** | 实测 `Current display surface not available for capture`；把 `runner.ts:802` 改 `show:false` 后 T7 docs 旅程直接 `literal=FAIL`、`failedStep=step-07-screenshot`。**T7 那句注释是对的。** |
-| 2 | `showInactive()` 可行吗 | **可行，且是方案 (A) 的正确形态** | 同一实验里改成「平时隐藏 + 截图前 `showInactive()` + 截后 `hide()`」，T7 docs 旅程回到 `literal=PASS`（2 OS processes） |
-| 3 | 官方文档怎么说 | 文档只管**页面可见性判定**，管不了 display surface | electronjs.org/docs/latest/api/web-contents：*"The page is considered visible when its browser window is hidden and the capturer count is non-zero."* + `stayHidden`；Electron 23 起 `capturePage` 自动处理 capturer count。**但实测优先于文档措辞。** |
-| 4 | `opacity: 0` 能截图吗 | **没有证据，按卡上要求不动第 632 行** | T7 失败的是 `WebContentsView`，不是这种「屏幕外 + opacity 0」的窗口，两者不是一回事 |
+| 形态 | `capturePage()` |
+|---|---|
+| 宿主窗口 `show:false` | **ok 1556x1120** |
+| 宿主窗口 `show:false` → `showInactive()` | ok 1556x1120 |
+| 宿主窗口 `show:false` + 屏幕外 + `opacity:0` | **ok 1582x1187** |
+| **`WebContentsView` 子视图，宿主 `show:false`** | **THROW `Current display surface not available for capture`** |
+| 同上，但宿主 `showInactive()` 之后 | **ok 1400x1050** |
+| `webPreferences.offscreen: true` | ok 902x702 |
 
-**方案 (A) 的正确形态因此要修正**：不是卡上写的「先 `show()` 再截」，而是
+### 这推翻了 T7 那句注释
+
+`runner.ts:802` 附近写着「`show:false` 会同样丢 surface」——**这句话把两种情况混成了一句**：
+
+- **宿主窗口 `show:false` 能截**；
+- **只有 `WebContentsView` 子视图会抛**。
+
+所以本卡「这一处会弹窗」的判断要改成：**只有 `WebContentsView` 子视图需要 `showInactive()`，宿主窗口本身 `show:false` 就能截。**
+
+### `sendInputEvent` 在隐藏窗口上完全送达
 
 ```
-窗口平时 show:false
-  → 截图前 showInactive()   ← 不抢焦点
-  → capturePage()
-  → hide()
+click    → 送达（clientX=150, clientY=130）
+input    → "hello" 送达
+keydown  → Enter 送达
+document.hasFocus() 恒 false
 ```
+
+**这直接证明 `ensureFocus()` 里的 `win.focus()` 对 `sendInputEvent` 是多余的。** 它唯一的作用是让 `document.hasFocus()` 返回 true，而 T7 六条旅程走的是 `sendInputEvent`，不是 `hasFocus`。
+
+**所以方案定为 (c)**：把 `ensureFocus()` 改成本地判定（`document.activeElement` 在渲染端已能验，见 `type` 分支里那句 `focused` 检查），不再调 `win.focus()`；真需要 OS 级焦点的旅程由旅程显式声明。
+
+**(a)「输入时短暂显示」被否决**：它只是把弹窗变短，没有消除它。
+
+### 原始的四条查询（已由上面矩阵回答）
+
+| # | 问题 | 结论 |
+|---|---|---|
+| 1 | `capturePage()` 在 `show:false` 上会抛吗 | **宿主窗口不会，`WebContentsView` 子视图会** |
+| 2 | `opacity: 0` 呢 | **能截**。第 632 行那处「屏幕外 + opacity 0」**本来就不影响截图** |
+| 3 | `showInactive()` 能满足「不抢焦点」吗 | **能**，且子视图截图从 THROW 恢复正常 |
+| 4 | `offscreen: true` | 能截（902x702），但它改的是渲染路径，与 `WebContentsView` 的组合没验；**(A) 已成立就不走这条** |
+
+### 官方文档的地位
+
+electronjs.org/docs/latest/api/web-contents：*"The page is considered visible when its browser window is hidden and the capturer count is non-zero."* + `stayHidden`；Electron 23 起 `capturePage` 自动处理 capturer count。
+
+**但这条只管页面可见性判定，管不了 `show:false` 时 display surface 不存在。实测优先于文档措辞。**
 
 ### 1. 卡上没写到的真正阻塞点：`ensureFocus()`
 
@@ -159,8 +191,37 @@ async function ensureFocus(ctx: Ctx): Promise<boolean> {
 
 ### 3. 当前进度
 
-- 四条查询：**已完成**（见上表）
-- `ensureFocus()` 阻塞点：**已识别，方案待定**
-- 正在实测（不弹窗方式）：隐藏窗口下 `sendInputEvent` 是否仍送达渲染端
-- T37（30 次连跑采样）：已跑完，待汇报
+- 四条查询：**已完成**（见上表，实测矩阵）
+- `ensureFocus()` 阻塞点：**已识别，方案定为 (c)**
+- `sendInputEvent` 在隐藏窗口上的送达：**已实测成立**
+- 正在改 `runner.ts`
+- T37（30 次连跑采样）：第一次全部撞上 i18n 中间态（`Unterminated string literal`），需重跑
+
+### 4. 边界租约（总控裁定，2026-10-23）
+
+卡上原本把 `t7-genoffice-u1/` 列进可写边界，**这是卡的表述不准**：
+
+- **A 的 T29 正在改 `t7-genoffice-u1/harness.ts` 与四个 journey 文件**（加 `requestNativeViewClose` 关闭守卫）；
+- E 只能改 `apps/desktop/scripts/electron-u1/driver/runner.ts`；
+- **如果最终发现必须改旅程文件，先报告，由总控跟 A 协调文件交接**，不要让两个会话碰同一个文件。
+
+### 5. 并发协作硬约束（2026-10-23 新增，全项目生效）
+
+**改文件时保持可编译。** 加 JSX 标签就同时加闭合；拆 JSX 就一次拆完。**不要让文件在磁盘上处于语法错误状态超过几分钟。**
+
+这不是洁癖：本次已经发生两次「一个会话写一半，另一个会话的测试在打包期凭空失败」——
+
+1. C 写 `i18n/ide.ts` 字符串未闭合 → E 的 30 次采样全部 `Unterminated string literal`，白跑一轮；
+2. C 写 `RightPanel.tsx` JSX 未闭合 → E 和 B 的 `tsc` 门禁红着，两个会话在等。
+
+**如果预计某个改动要 10 分钟以上才能改到可编译**，先 `git stash`，或者把新组件单独写成文件最后一次性接入。
+
+**跑测试前的标准前置：**
+
+```bash
+git status --porcelain                              # 看到别人在改什么
+npx tsc --noEmit -p apps/desktop/tsconfig.json      # exit=0 才继续
+```
+
+**打包期失败（`X [ERROR]` / `Unterminated string literal` / `No matching export`）不等于被测对象失败。** 这个仓库为这件事栽过两次，今天是第三次。
 
