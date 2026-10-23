@@ -112,5 +112,5 @@ T87 原本的分段切分 `split(/(?=^-{72}\r?$)/m)` 把标题与正文分到不
 
 ### 提交后 SHA 落定
 
-- 实现提交 SHA：**`e0793181`**（13 文件，994+/86-）。上节「提交」处的占位以本行为准。
+- 实现提交 SHA：**`f9b8bfec`**（13 文件，994+/86-，含本节写回）。首次提交为 `e0793181`，随后仅把本行 SHA 追写并 amend，代码/材料字节未变；`git log --grep T11` 可复核。
 - 提交后复跑（提交状态而非工作区）：`t11-genoffice-license-carrier-smoke`、`t87-genoffice-provenance-license-smoke`、`t76-vendor-release-integrity-smoke`、`genoffice-editors-release-smoke`、`genoffice-vendor-freshness-smoke` 五套经 `run-smokes.mjs` **5/5 PASS**；双包 `tsc --noEmit` exit 0。
