@@ -51,6 +51,20 @@ total = 0
 failed = 0
 
 
+def suites_in(stdout: str) -> set[str]:
+    """从 `smokes-for` 的输出里解析出**被列为覆盖的套件名**。
+
+    【T78】为什么要有它：本套验的是**覆盖判断**（哪几套覆盖了这个文件），
+    而输出怎么排版是另一回事。T78 把输出从平铺改成「必跑 / 可选」分组之后，
+    原来那三条 `"跑这些: X" in stdout` 全假红 —— 红的不是判断，是格式壳。
+
+    解析方式故意**宽松**：凡是 `*-smoke` 形状的 token 都算，不管它在哪一段、
+    有没有缩进、后面跟没跟跳数。这样排版怎么变都不影响，而「哪几套」仍然钉死。
+    """
+    import re as _re
+    return set(_re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]*-smoke\b", stdout))
+
+
 def check(name: str, good: bool, detail: object = None) -> None:
     global total, failed
     total += 1
@@ -134,9 +148,21 @@ def main() -> None:
         # ── :1 .tsx 入口 → 覆盖 .tsx 源码，且顺着 `@renderer/...js` 找到它 ──
         # ApprovalPrompt.tsx 在 fixture 里同时被 .tsx 和 .jsx 两个入口 import，
         # 所以断言的是**两个都在列表里**，而不是「只有第一个」。
+        #
+        # 【T78】断言从「匹配 `跑这些: …` 这段文本」改成「解析出**套件名集合**再比较」。
+        #
+        # 为什么：本套的目的是验**覆盖判断**对不对（见文件头「漏报/误报」两条），
+        # 而 `跑这些:` 是 T78 之前那个平铺输出的**格式**。T78 把输出改成
+        # 「必跑 / 可选」分组后，这三条因为找不到那个前缀而假红 —— **红的不是
+        # 覆盖判断，是格式壳**。
+        #
+        # 现在用 `suites_in(stdout)`：从输出里把 `*-smoke` 名字抠出来成集合。
+        # 这样输出怎么排版都不影响，而「哪几套被列为覆盖」仍然被钉死 ——
+        # 判别力没有降低，耦合面消除了。
         r = run_script(fixture, "src/renderer/components/chat/ApprovalPrompt.tsx")
         check(".tsx 与 .jsx 入口都被扫到：ApprovalPrompt.tsx 映射到两个套件",
-              "跑这些: jsx-entry-smoke tsx-entry-smoke" in r.stdout, r.stdout + r.stderr)
+              suites_in(r.stdout) == {"jsx-entry-smoke", "tsx-entry-smoke"},
+              {"suites": sorted(suites_in(r.stdout)), "raw": r.stdout + r.stderr})
 
         # ── :2 .jsx 入口同理（13 套浏览器套件的真实形状）──
         # 同一个组件被两个套件覆盖，所以上面那条只该出现第一个；这里单独验 jsx 那套。
@@ -150,14 +176,16 @@ def main() -> None:
         # ── :3 .tsx 与 .ts 在同一个套件里都收 ──
         r = run_script(fixture, "src/main/lib/ok.ts")
         check("同一套件的 .tsx 入口也能带出 .ts 依赖",
-              "跑这些: tsx-entry-smoke" in r.stdout, r.stdout + r.stderr)
+              suites_in(r.stdout) == {"tsx-entry-smoke"},
+              {"suites": sorted(suites_in(r.stdout)), "raw": r.stdout + r.stderr})
 
         # ── :4 .cjs 别名指向的模块不能被说成覆盖 ──
         r = run_script(fixture, "src/main/providers/claude-sdk/sdkBinaryPath.ts")
         # 它**确实**被 cjs-runner-smoke/main.ts import 了，所以预期是「有覆盖」——
         # 这条验的是正向：别把 .ts 入口漏掉。真正防误报的是下面 --all 那条。
         check(".ts 入口（同一套件里 cjs 是启动器）仍被认出覆盖",
-              "跑这些: cjs-runner-smoke" in r.stdout, r.stdout + r.stderr)
+              suites_in(r.stdout) == {"cjs-runner-smoke"},
+              {"suites": sorted(suites_in(r.stdout)), "raw": r.stdout + r.stderr})
 
         # ── :5 --uncovered 口径：.tsx/.jsx 的加入不该改变主进程 .ts 的判断 ──
         r = run_script(fixture, "--uncovered")
