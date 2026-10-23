@@ -217,3 +217,6 @@ node apps/desktop/scripts/t63-deck-quality-smoke/probe.mjs --json   # 机读
 
 ### 7. 提交
 
+- 实现提交：**`e8b245c7`**（3 文件：`main.ts` / `run.sh` / 本卡回写）。
+- 探针提交：**`8e0ad5d2`**（`probe.mjs` + 卡上的完整流程规划）。
+- 提交后在该 HEAD 上复跑 `bash apps/desktop/scripts/t63-deck-quality-smoke/run.sh` → **15/15**。
