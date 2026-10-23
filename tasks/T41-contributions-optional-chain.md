@@ -21,7 +21,22 @@ return catalog?.modules.flatMap(module => module.contributions.filter(...)) ?? [
 
 **只有一层可选链。** `catalog?.` 挡住了「目录还没读到」（`undefined`），**没挡住「回包存在但 `modules` 缺失」**。
 
-**后果**：`catalog?.modules` 是 `undefined` → 对它调 `.flatMap` → **同步抛错** → React 19 整棵子树卸载 → **设置页白屏，用户看不到任何解释**。
+**后果**：`catalog?.modules` 是 `undefined` → 对它调 `.flatMap` → **同步抛错** → React 19 整棵子树卸载 → **白屏，用户看不到任何解释**。
+
+### 影响面比「设置页」大得多（总控复核，4 个调用点）
+
+```bash
+grep -rn "contributionsOf" apps/desktop/src/renderer
+```
+
+| 调用点 | 时机 | 炸掉的范围 |
+|---|---|---|
+| `RightPanel.tsx:122` | **渲染期直接调用**，无 `useMemo`、无 error boundary | **常驻面板** → 整棵应用树卸载 → **整个主界面白屏** |
+| `CommandPalette.tsx:208` | `useMemo` 内，命令面板每次打开时 | 命令面板（Ctrl+K）打不开 |
+| `ModuleContributions.tsx:37` | `useMemo` 内，`ModuleViewDock` | 模块视图坞 |
+| `ModuleContributions.tsx:19` | 定义 | — |
+
+**`RightPanel` 是常驻的**，所以这条不是「设置页白屏」，是「主界面白屏」。优先级不变（P1，需要主进程真的少返回 `modules` 才触发），但断言必须覆盖 `RightPanel` 这条，只测设置页会漏掉最严重的那条。
 
 **真实触发路径不止测试桩**：主进程 `modules.catalog()` 的返回值若因版本漂移、降级安装、或 IPC 序列化裁剪而少了 `modules` 字段。
 

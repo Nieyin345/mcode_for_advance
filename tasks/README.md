@@ -59,8 +59,29 @@
 | T38 | 三套打包期失败：桩缺导出、`.node` loader、zustand 5 default | P1 | 无 | W |
 | T39 | **GenOffice UI 换壳：保留编辑内核，替换 ribbon/菜单/AI 面板** | **P0 产品要求** | T7+T24 | X |
 | T40 | **`withRendererToolRegistry` 零调用点 —— `document.tool_call` 渲染端路线不可达** | **P0** | T24 | Y |
-| T41 | `contributionsOf` 只有一层可选链，`modules` 缺失时设置页白屏 | P1 | T36 | Z |
+| T41 | `contributionsOf` 只有一层可选链，`modules` 缺失时**主界面**白屏 | P1 | T36 | Z |
 | T42 | **U1 骨架静默模式：默认不弹窗，仅截图时短暂显示** | **P1 开发体验** | T16+T7 | AA |
+| T43 | **文档 AI 的「丑」根因：设计流水线没接上，三个 app 的 QA 门禁是空的** | **P0 产品能力** | T24+T40 | BB |
+
+### T43 为什么是 P0（用户最高痛点）
+
+用户原话：「让 ai 改 word，改 ppt 这种有格式要求的很烂，而且很丑，简直不能看」。
+
+我查清后**修正了原来的判断**——不是「工具不够」，工具在的：
+
+- `document_render`（`tools.ts:1312`）真把 PNG 作为 image 块塞回模型，预览这条通；
+- 编辑后强制跑 `docs check` / `sheet check` / `slides audit`，机制在；
+- 139 个工具的目录驱动发现，在。
+
+**断掉的是三处**：
+
+1. `DOCUMENT_QA_GATES` 里 **pdf / markdown / html 是空数组** —— 改完什么都不检查；
+2. `CLI_TOOL_MAP.slides` **只有 read 和 apply，没有 create** —— 模型没有任何途径新建 PPT；
+3. **PPT 设计流水线完全没接线** —— `plan_deck` / `generate_deck` 在目录里有名字，`cliRouteFor` 没有、`genofficeCli.ts` 没有实现。**目录承诺了能力，调用时没有**，这是最坏的一类；
+4. **`createFromFile` 的类型被故意收窄到 `docx | xlsx`** —— PPT 根本造不出来。而这是 **T74 有意为之**：`create --type pptx --spec <dir>` 要读一个目录里的多个文件，T74 没为它建围栏。**所以不是「没接」，是「被安全策略挡住」——T43 要用围栏解决，不许把 `"pptx"` 直接加进联合类型。**
+
+上游 `genoffice/skills/genoffice/SKILL.md` 的 `## Designing a deck` 是唯一能做出好看 deck 的方法（style.md → outline.json → 逐页 NN.json → check → create → render --grid → audit → 最多两轮修），Mcode 一个环节都没接。
+
 
 ### 推荐第一波
 
