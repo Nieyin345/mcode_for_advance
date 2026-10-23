@@ -221,6 +221,30 @@ console.log("\n④ 守卫自检");
       Object.values(counts).every((n) => n > 5),
       counts,
     );
+
+    // 【T45 补强 ③,总控 2026-10-23】**条数不得减少**。
+    //
+    // 为什么不是「钉成具体数字」:加档位是**正常开发**(新 RPC 显式分类),钉死会让
+    // 每一次正常开发都触发红 —— 那种红会教人「顺手改一下断言」,套件就逐渐失去意义。
+    //
+    // 为什么是「不得减少」:删档位是**危险信号** —— 意味着有人把一个方法从审批表里
+    // 拿掉了。那正是这个守卫要抓的东西,而且语义明确:不是「数字变了」,是「有东西被删了」。
+    //
+    // 基线需要**下调**时(合法的删除),必须改这一行 —— 那是一个显式的决定,
+    // 而不是让断言自然通过。
+    const EXPECTED_MIN: Record<string, number> = {
+      BLOCKED: 57,
+      CREDENTIAL_BEARING: 17,
+      DANGER: 94,
+      EXPLICIT: 81,
+    };
+    for (const [name, min] of Object.entries(EXPECTED_MIN)) {
+      check(
+        `★ policy.ts 的 ${name} 条数不得减少（${min} → ${counts[name]}）`,
+        counts[name]! >= min,
+        { table: name, baseline: min, actual: counts[name] },
+      );
+    }
   }
 }
 
