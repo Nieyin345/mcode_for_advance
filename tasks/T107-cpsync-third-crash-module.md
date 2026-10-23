@@ -340,3 +340,137 @@ THREW errno=0 msg=, The operation completed successfully. '\?\D:\副桌面\文�
 ### 十、提交
 
 `37c28251` —— `fix(T107): filter does not save the case where the destination already has the file`（7 文件，+410/-9）。
+
+## 结果回写（二）— 两处待验证的修完（2026-10-24）
+
+### 一、#14 `adoptMarkdown.ts:249` —— 确认会踩，用**真实 `adoptMarkdownFile`** 复现
+
+**先确认「目标已存在」的来源**（卡上要求）：
+
+```ts
+stageDir = stagedDirFor(itemId, "adopt");     // stagedDirFor = mkdtempSync
+copyReferencedAssets(sourcePath, mdText, stageDir);
+```
+
+`stageDir` 是 `mkdtempSync` 新建的，**所以「目标已存在」只可能来自同一次运行里第一次复制建的** —— 不是上一轮残留。**这决定了 `rmSync` 的作用范围在本次运行内，安全。**
+
+**复现用的不是合成夹具，是真的 `adoptMarkdownFile`**：中文目录下的 md，两处引用同一目录（`![整目录](图表/)` + `![单文件](图表/a.png)`）。
+
+**修前**：
+
+```json
+{"ok": true, "imageCount": 1,
+ "missing": ["图表/a.png(, The operation completed successfully. '\\?\C:\...\图表\a.png')"]}
+包里文件: ["doc.md", "图表/a.png"]
+```
+
+**修后**：
+
+```json
+{"ok": true, "imageCount": 2, "missing": []}
+包里文件: ["doc.md", "图表/a.png"]
+```
+
+### 这是一个**新的形态**，比 T107 前面记的三种都隐蔽
+
+| 形态 | 用户看到 |
+|---|---|
+| 崩溃 | 知道出事了 |
+| 静默失败（第 2 种） | 以为成功了 |
+| 抛错 + 说成功（第 3 种） | 一句话，无法判断 |
+| **`ok:true` + 把真错误降级成 `missing` 数组里的一条字符串** | **「成功，缺 1 个图」—— 而那个图好好的** |
+
+**四个坏处叠在一条输出里**：
+
+1. `ok: true` —— 调用方当成功；
+2. `imageCount: 1` —— 少算一个；
+3. `missing` 里的信息**说自己「成功完成」**；
+4. **同一张图被算两次**，第二次的失败被报成「缺文件」。
+
+### 修法：B（临时名 rename），不是 A
+
+**这是用户的资料库，不是夹具。** A（先删后拷）在失败时会把老内容删掉；**B 在失败时旧内容还在**。
+
+```ts
+const staging = `${dest}.staging-${randomUUID()}`;
+try {
+  cpSync(abs, staging, { recursive: true, filter: () => true });
+  rmSync(dest, { recursive: true, force: true });
+  renameSync(staging, dest);
+} catch (error) {
+  try { rmSync(staging, { recursive: true, force: true }); } catch { /* 清不掉不改变结论 */ }
+  throw error;
+}
+```
+
+**临时名与 `dest` 同父目录 → 同一文件系统 → `rename` 原子。**
+
+### 二、#7 `electron.vite.config.ts:191` —— 确认会踩，但**历史上没咬过人**
+
+**先查历史**（卡上要求的）：
+
+```bash
+$ git log --oneline -- apps/desktop/src/renderer/public/pdfjs/.pdfjs-version
+943c9b89 feat: research workbench — …
+$ git log --diff-filter=D --oneline -- apps/desktop/src/renderer/public/pdfjs/.pdfjs-version
+（空）
+```
+
+**版本标记文件从没被删过**，所以这条一直没触发。**它只会在下一次 pdfjs 升级时咬**。
+
+**但触发条件确认了**：现状是 `cmaps/`（169 个文件）+ `standard_fonts/`（16）**都已存在**，版本 `4.10.38` 与 `pdfjs-dist` 一致。删掉 `.pdfjs-version` 强制重走复制路径后：
+
+```
+cmaps            exit=0x0   THREW ? errno=0
+standard_fonts   exit=0x0   THREW ? errno=0
+```
+
+**两处都抛。**
+
+### 后果比 #14 更直接：**挡住 `pnpm build`**
+
+它是 `buildStart` 钩子 —— 抛错 = Vite 构建失败 = 整个 `pnpm build` 停在那一步。**不是「丢一张图」，是「打包做不了」。**
+
+### 我额外确认的一件事（决定了紧急度）
+
+**目标目录内容完好**：169 / 16 个文件，与源一致。**说明 `cpSync` 是「先抛错后放弃」，不是「拷了一半」。**
+
+**如果它是「拷一半」，那 `public/pdfjs` 现在就是坏的，`pnpm build` 的产物会带半套 cmaps。** 确认了不是，所以它是「坏得不彻底」—— 但**一个抛错的 build 仍然比一个悄悄产出坏产物的 build 好**。
+
+### 修法：B（和 #14 统一）
+
+**统一用 B 而不是「#7 用 A 也行」**，理由不是更安全，是**判据只剩一条**：目标是用户数据吗 → 不是 → 仍用 B（因为 B 在任何情况下都不更差，只是多一次 rename）。
+
+**如果两处用不同修法，下一个人要判断「这里为什么用 A」**，而判断依据是「目标是源副本所以删了无损」—— **那是一个需要论证的前提**。
+
+### 三、回归
+
+| 套件 | 修前 | 修后 |
+|---|---|---|
+| `t91-adopt-markdown-cp-smoke` | 19/19 | **23/23**（+3d 节：同一目录引用两次） |
+| `t107-cpsync-preexisting-smoke` | 20/20 | **23/23**（+第 5 节：同一目标覆盖两次） |
+| `library-adopt-smoke` | 63/63 | 63/63 |
+| `t90-dataroot-cpsync-smoke` | 10/10 | 10/10 |
+
+### 四、变异
+
+**撤掉 `adoptMarkdown` 的 B 修法（退回直接 `cpSync`）** → 真实探针回到：
+
+```
+ok: true, imageCount: 1, missing: [ … ]
+```
+
+**与修前逐字相同。** `cmp` 逐字节还原。
+
+### 五、提交
+
+`13094073` —— `fix(T107): the last two call sites where the destination may already exist`（4 文件，+86/-3）。
+
+### 六、`filter` 清单的最终状态
+
+| 判定 | 数量 |
+|---|---|
+| 已修（A：先删后拷） | 2（t10 / t88 的 `copyLicenseTree`） |
+| **已修（B：临时名 rename）** | **2（adoptMarkdown / electron.vite.config）** |
+| 安全（目标恒为新建） | 10 |
+| **待验证** | **0** |
