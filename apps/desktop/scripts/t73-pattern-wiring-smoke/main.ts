@@ -185,9 +185,7 @@ console.log("\n4. 页文件形状不符 —— CLI 会丢掉它继续建；检�
   writeFileSync(join(mixed, "pages", "02.json"), JSON.stringify({ not: "a page" }), "utf8");
   const r = await build("mixed", mixed);
   check("形状不符的页不影响 build 成功（与 CLI 一致）", r.ok === true, r);
-  check("★ 检查仍然跑了（第 1 页有 whitespace）",
-    r.text.includes("layout.whitespace"), { sample: r.text.slice(0, 600) });
-  check("★ 正文点名「有页面文件没被检查」", r.text.includes("没被检查"), { sample: r.text.slice(0, 800) });
+  check("★ 检查整体没执行（页序不可信，不许给错位页号的 finding）", sawNotRun(r.text), { sample: r.text.slice(0, 700) });
   check("★ 点名了是哪个文件", r.text.includes("02.json"), { sample: r.text.slice(0, 800) });
 }
 
@@ -228,6 +226,103 @@ console.log("\n6. 不补零的页名（1 / 2 / 10）—— 字典序会把 10 �
   check("★ 坏页仍报「第 2 页」（数字序生效，字典序会是第 3 页）",
     r.text.includes("第 2 页"), { sample: r.text.slice(0, 600) });
   check("★ 并且没有报成「第 3 页」", !r.text.includes("第 3 页"), { sample: r.text.slice(0, 600) });
+}
+
+/* ───────────────────── 7. `type` 透传：closing 页走 55% 而不是 80% ───────────────────── */
+
+console.log("\n7. ★ `type` 透传正控：同一份内容，标成 closing 就不该按 content 的 80% 判");
+{
+  // 底边 490/720 = 68%：
+  //   content → 参考线 80% → **报**
+  //   closing → 参考线 55% → **不报**
+  // 如果转换层丢了 `type`（比如只挑 elements 重建对象），两页会报一样的结论 ——
+  // 而 build 照样成功、页号照样对，套件全绿也发现不了。这就是「接上了但不工作」。
+  const contentSpec = makeSpec("type-content", { ...(sparsePage() as object), type: "content" });
+  const closingSpec = makeSpec("type-closing", { ...(sparsePage() as object), type: "closing" });
+  const asContent = await build("type-content", contentSpec);
+  const asClosing = await build("type-closing", closingSpec);
+  check("content 页（68% < 80%）→ 报 layout.whitespace",
+    asContent.ok && asContent.text.includes("layout.whitespace"), { sample: asContent.text.slice(0, 500) });
+  check("★ closing 页（68% > 55%）→ 不报（证明 `type` 真的透传到了判据）",
+    asClosing.ok && !asClosing.text.includes("layout.whitespace"), { sample: asClosing.text.slice(0, 500) });
+}
+
+/* ───────────────────── 8. 页文件名代替页号 ───────────────────── */
+
+console.log("\n8. ★ finding 的位置给的是文件名，不是要换算的页号");
+{
+  const specDir = makeSpec("named", sparsePage());
+  const r = await build("named", specDir);
+  check("★ 正文里出现 pages/01.json", r.text.includes("pages/01.json"), { sample: r.text.slice(0, 600) });
+  check("★ 不再只给「第 1 页」让模型自己换算", !/· 第 1 页：/.test(r.text), { sample: r.text.slice(0, 600) });
+}
+
+/* ───────────────────── 9. 坏 JSON → 整体 fail-closed ───────────────────── */
+
+console.log("\n9. ★ 负控：一个页文件写坏 → 整次检查不执行（页序不可信）");
+{
+  const broken = join(workspace, "broken");
+  mkdirSync(join(broken, "pages"), { recursive: true });
+  // 01 合规、02 写了一半、03 有真缺陷。若跳过 02，03 的索引会变成 1，
+  // 报成「第 2 页」→ 模型去改 02.json（正是那个坏文件），改完还是解析不了。
+  writeFileSync(join(broken, "pages", "01.json"), JSON.stringify(compliantPage()), "utf8");
+  writeFileSync(join(broken, "pages", "02.json"), '{"elements": [', "utf8");
+  writeFileSync(join(broken, "pages", "03.json"), JSON.stringify(sparsePage()), "utf8");
+  const r = await build("broken", broken);
+  // ⚠️ **实测纠正了一条原假设**：坏 JSON 会让 CLI **自己就拒绝 build**
+  // （`02.json: invalid JSON (Unexpected end of JSON input)`），根本走不到我们这层。
+  // 所以这条负控真正能验的是：**即使 build 失败，也绝不出现一条页号可能错位的
+  // finding** —— 而 `withPatternFindings` 对失败结果原样返回，正好保证这一点。
+  const text = r.ok ? r.text : (r.reason ?? "");
+  check("build 被 CLI 拒绝（坏 JSON 轮不到我们判）", r.ok === false, { reason: r.reason });
+  check("★ 失败原因里点名了坏掉的文件", text.includes("02.json"), { sample: text.slice(0, 400) });
+  check("★ 一条 finding 都没有（第 3 页的缺陷不该以错位的页号出现）",
+    !text.includes("layout.whitespace"), { sample: text.slice(0, 400) });
+  check("★ 也没有谎称「检查通过」", !sawNoFindings(text), { sample: text.slice(0, 400) });
+}
+
+/* ───────────────────── 9b. 形状不符（能 build）→ 整体 fail-closed ───────────────────── */
+
+console.log("\n9b. ★ 形状不符的页文件（CLI 会丢掉它继续建）→ 我们的检查必须整体停");
+{
+  // 与第 4 节同一份夹具，但验的是**这里的**语义：形状不符会让页号错位，
+  // 所以不许给 finding，只许说「整体未执行」。
+  const mixed = join(workspace, "mixed2");
+  mkdirSync(join(mixed, "pages"), { recursive: true });
+  writeFileSync(join(mixed, "pages", "01.json"), JSON.stringify(compliantPage()), "utf8");
+  writeFileSync(join(mixed, "pages", "02.json"), JSON.stringify({ not: "a page" }), "utf8");
+  writeFileSync(join(mixed, "pages", "03.json"), JSON.stringify(sparsePage()), "utf8");
+  const r = await build("mixed2", mixed);
+  check("build 成功（CLI 丢掉坏页继续建）", r.ok === true, r);
+  check("★ 检查整体未执行", sawNotRun(r.text), { sample: r.text.slice(0, 700) });
+  check("★ 第 3 页的缺陷没有以「第 2 页」的身份出现",
+    !/layout\.whitespace · 第 2 页|layout\.whitespace · pages\/02\.json/.test(r.text), { sample: r.text.slice(0, 700) });
+}
+
+/* ───────────────────── 10. 跨页判据说「整份」不说「第 1 页」 ───────────────────── */
+
+console.log("\n10. ★ header.bar / layout.repeated 是「全篇」问题，位置必须渲染成「整份」");
+{
+  // 三页同构 + 每页同位置一条扁条 → 两条跨页判据都命中。
+  const bar = (i: number): unknown => ({
+    title: `P${i}`, type: "content", layout: "three_column_cards", background: "#FFFFFF",
+    elements: [
+      // 全篇同一位置的扁 rect（h<80，非满版）→ header.bar
+      { type: "shape", shape: "rect", x: 0, y: 0, w: 1280, h: 56, fill: "#123456" },
+      { type: "text", x: 80, y: 600, w: 1120, h: 100,
+        paragraphs: [{ runs: [{ text: `page ${i}`, sizePt: 20, color: "#0E1A2B" }] }] },
+    ],
+  });
+  const same = join(workspace, "same");
+  mkdirSync(join(same, "pages"), { recursive: true });
+  for (let i = 1; i <= 3; i++) writeFileSync(join(same, "pages", `0${i}.json`), JSON.stringify(bar(i)), "utf8");
+  const r = await build("same", same);
+  check("三页同构 build 成功", r.ok === true, r);
+  check("报出了 header.bar", r.text.includes("header.bar"), { sample: r.text.slice(0, 700) });
+  check("★ header.bar 的位置是「整份」，不是「第 1 页」",
+    /header\.bar · 整份/.test(r.text), { sample: r.text.slice(0, 700) });
+  check("★ message 里列出了具体页号（1、2、3）",
+    /第 1、2、3 页|第 1–3 页/.test(r.text), { sample: r.text.slice(0, 700) });
 }
 
 console.log(`\nt73-pattern-wiring-smoke:${total - failures}/${total} 通过`);

@@ -240,3 +240,99 @@ documentToolRuntime.ts:823:  const report = checkDeckPatterns(pages);
 `da9484b4`（`feat(T73): wire checkDeckPatterns into build_deck and render it into the model-visible text`）—— 只含 `apps/desktop/src/main/document/documentToolRuntime.ts` 与新建的 `apps/desktop/scripts/t73-pattern-wiring-smoke/`。
 
 ⚠️ 工作区里还有另一个会话在途的 `apps/desktop/src/main/appControl/tools.ts`（T55 的改动，未提交），**没有**被卷进本次提交。
+
+## 结果回写（二）— 复核轮（2026-10-23，总控 + A + E 提的六条）
+
+第一轮交付后，总控转来 A 的可行性分析和 E（`deckPatternCheck.ts` 作者）的三条内部意见。逐条核对，**其中一条的前提已经不成立**，其余五条都改了。
+
+### 一、先说那条不成立的：排序（总控第四封信）
+
+> 你的实现：`names = readdirSync(dir).filter((n) => n.toLowerCase().endsWith(".json")).sort();`
+
+**这是 `da9484b4` 之前的版本。** 我在提交前就改成上游那套了：
+
+```bash
+$ git show da9484b4:apps/desktop/src/main/document/documentToolRuntime.ts | sed -n '792,796p'
+    names = readdirSync(dir)
+      .filter((n) => n.toLowerCase().endsWith(".json") && !n.startsWith(".") && n.toLowerCase() !== "outline.json")
+      .sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+```
+
+**但那条批评指出的方法论是对的**，而且它替我要来了一条真正的断言：第 6 节（页名不补零 `1/2/…/10`）就是它的负控——**第一版我用补零命名，字典序与数字序同结果，10 页全绿什么都没验**。这条我已经在第一次回写里自我纠正过，这次是它的第二次确认。
+
+### 二、真正改了的五条
+
+| # | 问题 | 改法 | 位置 |
+|---|---|---|---|
+| 1 | **坏 JSON 只记 note、跳过该页** → 后面的页号全部前移，finding 指向错文件 | **整体 fail-closed**：任何一页解析失败或形状不符，返回 `checked: false` + 说明，一条 finding 都不给 | `readDeckPatterns` |
+| 2 | **`specDir` 进 CLI 前有围栏，但我读盘在它之前** | 复用 `requireWorkspacePath`（与 `createDeckFromSpec` 同一个判据，硬规矩 2），在读目录之前 | `readDeckPatterns` 开头 |
+| 3 | **`page: number` 对跨页判据是撒谎** | `PatternFinding.page` 改 `number \| null`；`header.bar` / `layout.repeated` 返回 `null`，渲染成「整份」；具体页号写进 message | `deckPatternCheck.ts` |
+| 4 | **finding 给的是页号，模型要改的是文件** | `patternPageFiles` 带上文件名，渲染优先给 `pages/NN.json`，拿不到才退回页号 | `withPatternFindings` + `patternFindingsText` |
+| 5 | **`applied` 在干净页面上是纯噪音**（310/336 字符） | 无 findings 只给规则名数组；有 findings 只给命中的那几条 | `withPatternFindings` |
+| 6 | **`card-whitespace` 只报最空的一张卡**（E 提） | 每张超线的卡各报一条，message 带 **x 坐标** | `checkCardWhitespace` |
+| 7 | **`level` 被误读成「有后果」**（E 提） | `PatternLevel` 旁加注释说明它只是文本前缀 | `deckPatternCheck.ts` |
+
+### 三、`type` 透传正控（总控坑 1 的第 3 点）
+
+这是「接上了但静默不工作」的典型形态：丢了 `type`，`closing` 页会被按 content 的 80% 判，**build 照样成功、页号照样对、套件全绿**。
+
+套件第 7 节用**同一份内容、只改 `type`** 做对照：
+
+| fixture | 底边 / 画布 | 参考线 | 期望 |
+|---|---|---|---|
+| `type:"content"` | 68% | 80% | **报** `layout.whitespace` |
+| `type:"closing"` | 68% | 55% | **不报** |
+
+**变异 A 验证过它真的能分辨**：把 `asPageSpec` 改成只带 `elements`（丢掉 `type`/`layout`/`title`）→ 第 7 节的 closing 断言红，输出里出现 `第 1 页内容底边只到画布高度的 68%（content 页参考线约 80%）` —— closing 页被当 content 判了。
+
+### 四、变异验证（三次，全部 `cmp` 逐字节还原）
+
+| 变异 | 做法 | 结果 | 红在哪 |
+|---|---|---|---|
+| A. 丢 `type` | `asPageSpec` 只返回 `{elements}` | **35/36** | 第 7 节 closing 断言 |
+| B. 退回跳过 | 形状不符时 `notes.push` + `continue` | **34/36** | 第 4 节 + 9b |
+| C. `page: 0` | `header.bar` 的 `page: null` → `0` | **35/36** | 第 10 节 |
+
+**变异 B 的输出值得单独记**，因为它复现了 A 预言的「越改越糟」：
+
+```
+- [warning] layout.whitespace · pages/03.json：第 2 页内容底边只到画布高度的 68%…
+```
+
+**同一个位置，文件名说 `03.json`、页号说「第 2 页」。** 模型若信页号就去改 `02.json`（正是那个坏文件），改完还是解析不了。这条矛盾句现在是断言的靶子。
+
+**变异 C 的输出同样是矛盾句**（`header.bar · pages/01.json：第 1、2、3 页的…`）—— 字段说一页、文字说三页。
+
+### 五、一条被实测推翻的原假设（本轮最有价值的一条）
+
+第 9 节我原本写「坏 JSON 不影响 build 成功」。**跑出来是红的**：
+
+```
+C:\...\t43-deck-...\pages\02.json: invalid JSON (Unexpected end of JSON input)
+```
+
+**CLI 自己就拒绝 build 了**（`buildDeckFromDir` 遇到坏 JSON 抛 `CliError`）。所以坏 JSON 这条路径**根本走不到我们的检查层** —— 原假设是写断言那一刻的想象，不是事实。
+
+改成验它真正能验的东西：**失败时绝不出现页号可能错位的 finding**（`withPatternFindings` 对 `!ok` 原样返回，正好保证这点）。另外补了 9b —— **形状不符但 JSON 合法**的页文件（CLI 会丢掉它继续建）才是我们这层 fail-closed 真正要拦的形态。
+
+### 六、套件与门禁
+
+| 项 | 结果 |
+|---|---|
+| `t73-pattern-wiring-smoke` | **36/36**（从 22 涨到 36） |
+| `t65-deck-pattern-smoke` | **40/40**（E 的套件，改判据后未回归） |
+| `t43-document-ai-design-pipeline-smoke` | **57/57** |
+| `t47-design-guide-smoke` | **27/27** |
+| `tsc` desktop / contracts | **exit 0 / exit 0** |
+
+未跑全量、未起 Electron。
+
+### 七、边界与协作
+
+- `deckPatternCheck.ts` 本轮由我改（E 明确让出，他等我交付后跑自己的套件）。**他 40/40 已验证仍绿**。
+- E 提的「文字溢出卡片 → ratio 变负 → 七条判据全不报」**没有改代码**：按他的判断，那属于「容器溢出」，上游 `audit` 报 `out_of_bounds` / `Text overflow`，Mcode 再加一条就是两份判据（硬规矩 2）。已按他的建议把这件事记成 `checkCardWhitespace` 上方的注释，规则名留 `layout.card-overflow` 给将来。
+- `applied` 分档（第 5 条）**没有进正文**——它是 IPC 结构里的字段，`envelopeText` 只渲染 `pattern*` 的 hint/findings。分档减少的是结构体积，不是模型读到的字数；真要减字数得另做，本轮没做。
+
+### 八、本轮提交
+
+见下一条提交（`fix(T73): …`）。

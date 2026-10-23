@@ -444,6 +444,9 @@ function patternFindingsText(detail: unknown): string {
   if (d.patternChecked !== true) return "";
   const findings = Array.isArray(d.patternFindings) ? d.patternFindings : [];
   const hint = typeof d.patternHint === "string" ? d.patternHint : "";
+  const pageFiles = Array.isArray(d.patternPageFiles)
+    ? d.patternPageFiles.filter((n): n is string => typeof n === "string")
+    : [];
   if (findings.length === 0) {
     if (hint) lines.push(`✅ ${hint}`);
   } else {
@@ -451,7 +454,12 @@ function patternFindingsText(detail: unknown): string {
     for (const raw of findings.slice(0, 40)) {
       if (raw === null || typeof raw !== "object") continue;
       const f = raw as { rule?: unknown; level?: unknown; page?: unknown; message?: unknown };
-      const where = typeof f.page === "number" ? `第 ${f.page + 1} 页` : "整份";
+      // 位置：**优先给文件名**（模型要改的就是文件），`page: null` 是「全篇」。
+      // 给不出文件名时才退回页号 —— 两者都能定位，但文件名不用换算。
+      const where =
+        typeof f.page === "number"
+          ? (pageFiles[f.page] !== undefined ? `pages/${pageFiles[f.page]}` : `第 ${f.page + 1} 页`)
+          : "整份";
       lines.push(`- [${String(f.level ?? "?")}] ${String(f.rule ?? "?")} · ${where}：${String(f.message ?? "")}`);
     }
     if (findings.length > 40) lines.push(`…（还有 ${findings.length - 40} 条未列）`);
@@ -780,9 +788,19 @@ interface PatternCheckOutcome {
   findings: PatternFinding[];
   /** 没跑成的原因（checked=false 时非空）。没有问题时为空。 */
   notes: string[];
+  /** 页文件名（与 `findings[].page` 的下标一一对应）。渲染时用它代替页号。 */
+  pageFiles: string[];
 }
 
 function readDeckPatterns(ports: DocumentSurfacePorts, specDir: string): PatternCheckOutcome {
+  const empty = (notes: string[]): PatternCheckOutcome =>
+    ({ checked: false, applied: {}, findings: [], notes, pageFiles: [] });
+  // 围栏复用 `createDeckFromSpec` 的同一判据（硬规矩 2：共享实现只有一份）——
+  // 不新写一套路径检查。`snapshotDeckSpec` 也会过这一道，这里再过一次是因为
+  // 本函数**先于**它读盘，且读的是源目录。
+  const fence = requireWorkspacePath(ports, specDir, "spec 目录");
+  if (fence !== null) return empty([`${fence}；反模式检查没有执行。`]);
+
   const pagesDir = join(specDir, "pages");
   const dir = existsSync(pagesDir) ? pagesDir : specDir;
   let names: string[];
@@ -794,34 +812,42 @@ function readDeckPatterns(ports: DocumentSurfacePorts, specDir: string): Pattern
       .filter((n) => n.toLowerCase().endsWith(".json") && !n.startsWith(".") && n.toLowerCase() !== "outline.json")
       .sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
   } catch (error) {
-    return {
-      checked: false, applied: {}, findings: [],
-      notes: [`读不到 spec 目录（${dir}）：${error instanceof Error ? error.message : String(error)}；反模式检查没有执行。`],
-    };
+    return empty([`读不到 spec 目录（${dir}）：${error instanceof Error ? error.message : String(error)}；反模式检查没有执行。`]);
   }
   if (names.length === 0) {
-    return { checked: false, applied: {}, findings: [], notes: [`spec 目录里没有 .json 页面文件（${dir}）；反模式检查没有执行。`] };
+    return empty([`spec 目录里没有 .json 页面文件（${dir}）；反模式检查没有执行。`]);
   }
   const pages: DeckPageSpec[] = [];
+  const pageFiles: string[] = [];
   const notes: string[] = [];
   for (const name of names) {
     const file = join(dir, name);
+    let raw: unknown;
     try {
-      const page = asPageSpec(JSON.parse(readFileSync(file, "utf8")) as unknown);
-      if (page === null) {
-        notes.push(`${name} 不是页面 spec（形状不符），已跳过。`);
-        continue;
-      }
-      pages.push(page);
+      raw = JSON.parse(readFileSync(file, "utf8")) as unknown;
     } catch (error) {
-      notes.push(`${name} 解析失败：${error instanceof Error ? error.message : String(error)}`);
+      // ⚠️ **整体 fail-closed，不是跳过这一页。**
+      //
+      // 检查器的全部判据都建立在「页序」上（留白按页型、雷同在相邻页之间、页眉条
+      // 要求每页都有）。少一页不只是「少查一页」，是**把后面所有页的位置都挪了** ——
+      // 于是 findings 里的 `page` 指向错的页，模型照着去改 `pages/NN.json`，改的
+      // 正是那个坏文件，越改越糟。宁可整次不报。
+      return empty([
+        `${name} 解析失败（${error instanceof Error ? error.message : String(error)}）。` +
+        `本次反模式检查整体未执行：页序不可信，报出来的页号会指错文件。先把 JSON 修好再谈反模式。`,
+      ]);
     }
-  }
-  if (pages.length === 0) {
-    return { checked: false, applied: {}, findings: [], notes: [...notes, "没有可检查的页面；反模式检查没有执行。"] };
+    const page = asPageSpec(raw);
+    if (page === null) {
+      // 形状不符**同样**要整体拒绝：它不是「不是页面」（那由 filter 排除了），
+      // 而是一个 named `pages/NN.json` 却不是页面的文件 —— 同样会让页号错位。
+      return empty([`${name} 不是页面 spec（缺 elements 数组）。本次反模式检查整体未执行：页序不可信。`]);
+    }
+    pages.push(page);
+    pageFiles.push(name);
   }
   const report = checkDeckPatterns(pages);
-  return { checked: true, applied: report.applied, findings: report.findings, notes };
+  return { checked: true, applied: report.applied, findings: report.findings, notes, pageFiles };
 }
 
 /**
@@ -832,7 +858,12 @@ function readDeckPatterns(ports: DocumentSurfacePorts, specDir: string): Pattern
  * CLI 当成**一页**去校验并整份失败，所以这里也不展开它们：展开会让页号与真正
  * 造出来的 deck 错位，报出一个根本不存在的「第 3 页」。
  *
- * 认不出来返回 null（由调用方记 note），**不猜**。
+ * ⚠️ **`title` / `type` / `layout` 必须原样带过来。** `type` 决定留白阈值分档
+ * （content 80% vs closing 55%），`layout` 参与构图雷同指纹。丢了它们，
+ * 两条判据会**静默失效**（不报错，只是永远不命中）——这是「接上了但不工作」的
+ * 典型形态，T73 套件有专门的 `type:"closing"` 正控盯着它。
+ *
+ * 认不出来返回 null（由调用方整体拒绝），**不猜**。
  */
 function asPageSpec(raw: unknown): DeckPageSpec | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -840,7 +871,16 @@ function asPageSpec(raw: unknown): DeckPageSpec | null {
   return Array.isArray(obj.elements) ? obj as unknown as DeckPageSpec : null;
 }
 
-/** 把反模式结果挂到 CLI 信封上。**不改 CLI 原有的任何字段**，只加 `detail.patternFindings`。 */
+/** 把反模式结果挂到 CLI 信封上。**不改 CLI 原有的任何字段**，只加 `detail.pattern*`。
+ *
+ * ## `patternApplied` 按有无 findings 分档（E 实测的噪音）
+ *
+ * 干净页面的返回里 **92% 是 `applied`**（310 / 336 字符）—— 模型什么都没做错，却要
+ * 读一遍「我查了这 7 条规则」。`applied` 不渲染进正文（只有 `pattern*` 里的 hint /
+ * findings 会），但它会随 IPC 结构一起返回，长 deck 上仍是纯噪音。所以：
+ *   - 无 findings：只给规则名（`patternApplied: string[]`）；
+ *   - 有 findings：只给**命中的那几条**规则的说明。
+ */
 function withPatternFindings(result: GenofficeResult, outcome: PatternCheckOutcome): GenofficeResult {
   if (!result.ok) return result;
   const detail = result.envelope.detail !== null && typeof result.envelope.detail === "object"
@@ -848,6 +888,10 @@ function withPatternFindings(result: GenofficeResult, outcome: PatternCheckOutco
     : {};
   const errors = outcome.findings.filter((f) => f.level === "error");
   const warnings = outcome.findings.filter((f) => f.level === "warning");
+  const hitRules = [...new Set(outcome.findings.map((f) => f.rule))];
+  const trimmedApplied: Record<string, string> | string[] = outcome.findings.length === 0
+    ? Object.keys(outcome.applied)
+    : Object.fromEntries(hitRules.filter((r) => r in outcome.applied).map((r) => [r, outcome.applied[r]!]));
   return {
     ok: true,
     envelope: {
@@ -860,7 +904,10 @@ function withPatternFindings(result: GenofficeResult, outcome: PatternCheckOutco
           ? {
               patternFindings: outcome.findings,
               patternCounts: { error: errors.length, warning: warnings.length },
-              patternApplied: outcome.applied,
+              patternApplied: trimmedApplied,
+              // 页号 → 文件名。finding 的 `page` 是数组下标，模型要改的是**文件**；
+              // 两者靠「排序后位置一致」这个隐含假设绑在一起，不如直接给文件名。
+              patternPageFiles: outcome.pageFiles,
               ...(outcome.findings.length > 0
                 ? {
                     patternHint:

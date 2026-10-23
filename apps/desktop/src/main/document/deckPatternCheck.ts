@@ -49,13 +49,24 @@ export interface DeckPageSpec {
 }
 
 export type PatternLevel = "error" | "warning";
+// ⚠️ 目前 `level` 只是一个文本前缀（见 documentToolRuntime 的 patternFindingsText），
+// 不驱动任何行为：不阻断、不排序、不过滤。等哪天有第二条判据也拿到规范原文
+// （现在只有 palette.rainbow 有），或真实 deck 把某条阈值校准到可信，
+// 再让它驱动行为。在那之前别把 [error] 读成「有后果」。
 
 export interface PatternFinding {
   /** 判据标识（稳定，供断言与后续按条关闭）。 */
   rule: string;
   level: PatternLevel;
-  /** 哪一页（0 基）。跨页判据把首个违规页放在这里。 */
-  page: number;
+  /**
+   * 哪一页（0 基）；**`null` = 这条讲的是「全篇」，不指向某一页**。
+   *
+   * 跨页判据（`header.bar` / `layout.repeated`）返回 `null` 而不是「首个违规页」：
+   * 它们的问题本身就是「每一页都有」「连续三页都一样」，塞一个单页索引会让渲染层
+   * 写成「第 1 页：每一页都…」——**字段说一页、文字说全部**，模型会去改那一页，
+   * 重建后问题还在。具体页号写在 `message` 里（那边可以列全）。
+   */
+  page: number | null;
   message: string;
 }
 
@@ -274,9 +285,9 @@ export const WHITESPACE_REFERENCE_LINE: Readonly<Record<"loose" | "tight", numbe
  */
 export const CARD_WHITESPACE_REFERENCE_LINE = 0.45;
 
-/** 卡片内的文字底边到卡底的留白 / 卡片高。取**最空**的一张卡，没有卡内文字返回 null。 */
-function cardBottomGapRatio(page: DeckPageSpec): { ratio: number; card: DeckElement } | null {
-  let worst: { ratio: number; card: DeckElement } | null = null;
+/** 卡片内的文字底边到卡底的留白 / 卡片高。**每张卡各自算**，调用方逐张判线。 */
+function cardBottomGapRatios(page: DeckPageSpec): Array<{ ratio: number; card: DeckElement }> {
+  const out: Array<{ ratio: number; card: DeckElement }> = [];
   for (const c of cardsOf(page)) {
     const inside = textsOf(page).filter(
       (t) => (t.x ?? 0) >= (c.x ?? 0) && (t.y ?? 0) >= (c.y ?? 0) &&
@@ -285,26 +296,45 @@ function cardBottomGapRatio(page: DeckPageSpec): { ratio: number; card: DeckElem
     if (inside.length === 0) continue;
     const textBottom = Math.max(...inside.map((t) => (t.y ?? 0) + (t.h ?? 0)));
     const cardBottom = (c.y ?? 0) + (c.h ?? 0);
-    const ratio = (cardBottom - textBottom) / (c.h ?? 1);
-    if (worst === null || ratio > worst.ratio) worst = { ratio, card: c };
+    out.push({ ratio: (cardBottom - textBottom) / (c.h ?? 1), card: c });
   }
-  return worst;
+  return out;
 }
 
+/**
+ * 【判据 4b】卡片内下半截空着。**每张超线的卡各报一条。**
+ *
+ * ⚠️ 早先这里取 `max`（只报最空的那一张），于是同一页里第二张、第三张空卡被
+ * **静默吞掉** —— 模型改完第一张、重新 build 才看到第二张，白跑一轮渲染。
+ * 违反 CLAUDE.md 硬规矩 3「坏东西显式报出来，不静默跳过」。
+ *
+ * **用 x 坐标定位，不用序号**：x 在 spec 里本来就有，模型不用自己数「什么算一张
+ * 卡」，也不会随判据规则改变而错位。
+ *
+ * ⚠️ **【T75 记录，未处理】** 卡内文字溢出到卡底以下时 `ratio` 变负 → 本判据不报
+ * （实测 2026-10-23：卡 y=176 h=300、文字 y=268 h=400 → ratio=-0.64，七条判据
+ * 全部空过）。那属于「文字溢出容器」，与「容器内留白」是两种形态，且上游
+ * `audit` 会报 `out_of_bounds` / `Text overflow` —— **不要在 Mcode 侧再加一条重复
+ * 判据**（判据只有一份，硬规矩 2）。若将来上游不报了再补，那时用独立规则名
+ * （如 `layout.card-overflow`），不要塞进本判据。
+ */
 function checkCardWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
-  const worst = cardBottomGapRatio(page);
-  if (worst === null) return [];
-  if (worst.ratio < CARD_WHITESPACE_REFERENCE_LINE) return [];
-  return [{
-    rule: "layout.card-whitespace",
-    level: "warning",
-    page: i,
-    // 措辞与整页级同一条纪律：参考线、给两个数字、允许有意留白。
-    message:
-      `第 ${i + 1} 页有卡片内部下半截空着：文字底边离卡底还有 ${(worst.ratio * 100).toFixed(0)}% 的卡高` +
-      `（参考线约 ${(CARD_WHITESPACE_REFERENCE_LINE * 100).toFixed(0)}%）：通常是卡片被拉高但内容没跟上。` +
-      `若这是有意的留白可忽略；否则考虑缩短卡片或补足卡内内容。`,
-  }];
+  const findings: PatternFinding[] = [];
+  for (const { ratio, card } of cardBottomGapRatios(page)) {
+    if (ratio < CARD_WHITESPACE_REFERENCE_LINE) continue;
+    findings.push({
+      rule: "layout.card-whitespace",
+      level: "warning",
+      page: i,
+      // 措辞与整页级同一条纪律：参考线、给两个数字、允许有意留白。
+      message:
+        `第 ${i + 1} 页 x=${Math.round(card.x ?? 0)} 处的卡片内部下半截空着：` +
+        `文字底边离卡底还有 ${(ratio * 100).toFixed(0)}% 的卡高` +
+        `（参考线约 ${(CARD_WHITESPACE_REFERENCE_LINE * 100).toFixed(0)}%）：通常是卡片被拉高但内容没跟上。` +
+        `若这是有意的留白可忽略；否则考虑缩短卡片或补足卡内内容。`,
+    });
+  }
+  return findings;
 }
 
 function checkWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
@@ -357,8 +387,11 @@ function checkRepeatedComposition(pages: DeckPageSpec[]): PatternFinding[] {
       out.push({
         rule: "layout.repeated",
         level: "warning",
-        page: runStart,
-        message: `第 ${runStart + 1}–${i} 页构图相同（layout 与元素序列都一致），规范要求「Vary the composition」。`,
+        // `null`：这条讲的是「第 N–M 页这一串」，不是某一页。具体页号在 message 里。
+        page: null,
+        message:
+          `第 ${runStart + 1}–${i} 页构图相同（layout 与元素序列都一致，共 ${runLen} 页），` +
+          `规范要求「Vary the composition」——请把这几页改成不同构图。`,
       });
     }
     runStart = i;
@@ -411,23 +444,39 @@ function checkHeaderBar(pages: DeckPageSpec[]): PatternFinding[] {
     return `${g(e.x)},${g(e.y)},${g(e.w)},${g(e.h)}`;
   };
   const counts = new Map<string, number>();
-  for (const p of pages) {
+  /** 每个 key 命中了**哪些页**（0 基）—— message 要列全，不能只说「每一页」。 */
+  const pagesOf = new Map<string, number[]>();
+  for (const [i, p] of pages.entries()) {
     const seen = new Set<string>();
     for (const e of p.elements ?? []) {
       if (e.type !== "shape" || isFullBleed(e)) continue;
       if ((e.h ?? 0) >= 80) continue; // 只可能是「条」，不是大块
       seen.add(keyOf(e));
     }
-    for (const k of seen) counts.set(k, (counts.get(k) ?? 0) + 1);
+    for (const k of seen) {
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+      const list = pagesOf.get(k) ?? [];
+      list.push(i);
+      pagesOf.set(k, list);
+    }
   }
   const out: PatternFinding[] = [];
   for (const [k, n] of counts) {
     if (n === pages.length) {
+      // 页号 1 基、用「、」分隔；3 页以上时压缩成「第 1–N 页」更短但不丢信息。
+      const list = pagesOf.get(k) ?? [];
+      const contiguous = list.every((v, idx) => idx === 0 || v === list[idx - 1]! + 1);
+      const where = contiguous && list.length > 3
+        ? `第 ${list[0]! + 1}–${list[list.length - 1]! + 1} 页`
+        : `第 ${list.map((v) => v + 1).join("、")} 页`;
       out.push({
         rule: "header.bar",
         level: "warning",
-        page: 0,
-        message: `每一页的同一位置都有同样一块（${k}）—— 规范禁止全篇统一页眉条，要求每页变化构图。`,
+        // `null`：问题在「全篇统一」，不是某一页。只改一页不可能修好它。
+        page: null,
+        message:
+          `${where}的 (${k}) 位置都有同样一块扁条 —— 规范禁止全篇统一页眉条，要求每页变化构图。` +
+          `**这条要全篇一起改**，只改其中一页不会消失。`,
       });
     }
   }
