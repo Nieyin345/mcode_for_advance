@@ -283,4 +283,4 @@ E 还纠正了自己一个变异选点错误（用 `reduce` 取最高卡来模�
 
 ### 五、提交
 
-`<见提交>` —— `export(T73/T79): let the suite drive readDeckPatterns directly`。
+`2aeb9949` —— `test(T79): drive readDeckPatterns directly, closing the branch the suite never ran`（3 文件，+110/-3）。
