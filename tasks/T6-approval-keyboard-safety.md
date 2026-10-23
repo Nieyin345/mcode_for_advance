@@ -104,3 +104,18 @@
 - `McpToolDecisionCard` 对「`done` + 空结果」也判 error（比原 `mcpDecisionView`
   更严）；若上游真有正常空结果的成功工具，需要单独证据再放宽——当前按 fail-closed
   处理。
+
+### 独立复核（2026-10-23，另一执行会话 A，未改任何源码）
+
+对已提交状态 `290d3d16` 做了一次**独立复跑 + 变异**，结论与上表一致：
+
+- `bash apps/desktop/scripts/approval-keyboard-safety-smoke/run.sh` → **51/51**（工作区干净，
+  相对 HEAD 无改动）。
+- 变异：`ApprovalPrompt.tsx` 的 `hasTopmostForeignDialog(cardRef.current)` 改回
+  `document.querySelector('[aria-modal="true"]') !== null`（修复前写法，Python 精确替换）→
+  **50/51**，唯一红的是
+  `★ 模态已打开时，后到的审批卡不得把焦点从弹窗里抢走(焦点从未落到卡片)`，
+  observed `{"inModal":false,"log":["card:DIV[role=alertdialog]"]}` —— 焦点确实落到了卡上。
+  还原后 `cmp` 逐字节一致，复跑 **51/51**。
+- 存档记录：该卡的 `290d3d16` 提交里混入了并行会话的 `tasks/T24-*` 文档（共享索引
+  竞态）。按今天的提交纪律（`git commit -m … -- <paths>`），后续提交不会再出现。
