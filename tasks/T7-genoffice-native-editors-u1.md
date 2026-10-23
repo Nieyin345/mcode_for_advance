@@ -154,6 +154,7 @@ bash scripts/electron-u1/run.sh                     # T16 骨架回归（31/31�
 - 最终证据：`.tmp/electron-u1/2026-10-23T02-43-23-636Z/`（`suite-summary.json` +
   每条 `journey-result.json`、`run-g1.log`、`run-g2.log`、`shots/`、`dom/`）
 - 复现跑：`.tmp/electron-u1/2026-10-23T02-37-35-884Z/`
+- **提交后复跑**（在 `31179279` + `19fdfc3b` 的干净工作树上）：`.../2026-10-23T02-47-39-785Z/`，六条全 PASS、各 2 代 PID
 - 负控（故意红）：`.tmp/electron-u1/2026-10-23T02-40-41-609Z/`
 - T16 回归：`.tmp/electron-u1/2026-10-23T02-42-32-509Z/`（正常跑 exit 1 预期红）
   与 `…02-42-52-527Z/`（变异跑 exit 0）
