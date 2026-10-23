@@ -209,7 +209,13 @@ T2/T3/T4/T27/T28 的文件。**未宣称 ARC-007 完成。**
 
 ### 7. 提交
 
-`<填于提交后>`
+- 实现 + 测试 + 本回写：`d46a152a`（`fix(T29): route pdf/markdown/html/sheets close to the vendor close guard`，17 个文件）。
+- 提交后核对：`git archive HEAD` 取出的 `documentViewHost.ts` / `ipc/index.ts` / `t7-genoffice-u1/harness.ts`
+  与跑绿时的工作区**逐字节一致**（忽略 git 的 LF 归一化），所以上面的验证结论适用于提交内容本身。
+- 提交用显式路径（`git add <paths>` + `git commit -m … -- <paths>`），
+  工作区里其它会话的在途改动（`documentToolSurface.ts` / `appControl/tools.ts` /
+  `renderer/lib/i18n/*` / `electron-u1/driver/runner.ts` / `document-view-host-smoke/{run.sh,nativeDocs.ts,stubs}` 等）
+  一个都没有进入本提交。
 
 ### 8. 附带发现（不属于本卡，交给总控排）
 
