@@ -315,3 +315,92 @@ else 里调的是**同一个** `assertStageAuditSelfConsistent`，不是另写�
 
 `assert.ok(x)` / `assert.equal(x, 常量)` 这类**一次性**断言看起来是强的，但若它**同时**是
 「恒真」的载体（例如 `x || true`），变异会**静默通过**。**唯一区分办法还是跑变异，不是读代码。**
+
+---
+
+## 跟进：t88 有没有同型断言（2026-10-24，T107 `37c28251` 之后）
+
+### 不回归
+
+| 套件 | 结果 |
+|---|---|
+| `t10-node-red-pause-license-smoke` | **15/15**，EXIT=0 |
+| `t88-node-red-license-closure-smoke` | **13/13**，EXIT=0（原 11 ok + ESRCH） |
+
+### 结论：**没有同型问题**，原因是**结构差异**，不是程度差异
+
+t88 的真实 stage 段和 t76 长得像（都在 `.tmp/node-red-release` 存在时才跑），但输入完全不同：
+
+```js
+fs.cpSync(CURRENT_STAGE, stageCopy, {...});     // ① 拷真实 stage
+copyLicenseTree(stageCopy, SOURCE_MANIFEST);     // ② 用**已提交的常量**覆盖许可树
+const inventory = writeNodeRedLicenseInventory(stageCopy).inventory;
+```
+
+**第 ② 步把许可树换成了 `build/vendor-licenses/node-red/manifest.json`。**
+
+| | 输入 | 断言的性质 |
+|---|---|---|
+| **t76** | 真实产物原样 | **环境快照**（错） |
+| **t88** | 当前依赖树 × 我们的常量 | **覆盖结论**（对） |
+
+佐证：t88 这段和 t76 有同样的条件分支，**但产物出现时它没红**（13/13）——如果断言是状态快照，它会在产物生成那天变红。
+
+### 逐条判定
+
+| 断言 | 判定 |
+|---|---|
+| `reviewedExternalLicenseMappings === 16` | ✅ **纯常量门禁**（`SOURCE_MANIFEST.entries` 的长度），manifest 变了就该红 |
+| `unknownLicenseMetadata` / `missingLicenseText` / `releaseBlockers` = 0 | ✅ 覆盖结论 |
+| `releaseEligible === true` | ✅ 覆盖结论（同上，输入由我们决定一半） |
+| `pause.status === "collected"` | ✅ 覆盖结论（T10 把许可整合进去，这里是「铺上之后它就该是 collected」） |
+| **`packageCount === 420`** | ⚠️ **唯一的真·环境快照** —— 但**决定保留**，见下 |
+| `:166-189` 对 `SOURCE_MANIFEST` 的断言 | ✅ 常量门禁 |
+| `:206-330` 对 `makeFixture` 的断言 | ✅ 自造数据 |
+
+### 为什么 `packageCount === 420` 保留
+
+**风险不对称**：
+
+| 改法 | 丢掉什么 |
+|---|---|
+| 改成 `> 0` | **「读到的是完整产物」** —— 目录被清空也静默通过 |
+| 保留 `420` | 只是「换发布版本要改一个数」 |
+
+它还**兼当存在性证明**：证明这段确实读到了那份产物，而不是一个空的或被清掉的目录。
+**这正是 t76 那个坑的反面** —— t76 是有断言但指向状态，这条是恰好当了一个「我没读空」的保险。
+
+### 给这条断言加的注释（防止它退化成状态快照）
+
+**保留的前提是「红了之后下一个人知道该不该改」。** 否则会发生和 t76 完全一样的事：
+看到红 → 改成新数字 → 门禁变成「记录今天的包数」。
+
+注释里写清（`CLAUDE.md` 第二十条：只写条件 + 出处，不写方案）：
+
+- **420 的出处不是 manifest**（实测两个 `manifest.json` 里 `packageCount` 出现 **0 次**），
+  是构建产物里 `third-party-license-inventory.json` 的 `summary.packageCount`；
+- **红了先查为什么，不要直接换数字**：① 有意升级 → 该改；② 依赖漂移/产物不全 → **改数字等于藏 bug**；
+- **区分方法**：看依赖树本身有没有变（`node_modules` 顶层 **254** 条、`package-lock.json` 里
+  `node_modules/` 开头 **1063** 条），而不是拿 `inventory.summary.packageCount` 和这条比 ——
+  **那是同一个值，永远相等**。
+
+**注释里每条事实都实测过**，没有照抄。总控给的示例注释引用了
+「`manifest.json` 里的 `packageCount`」，**那个字段不存在**，已换成真实出处。
+
+### 一个假警报：CRLF
+
+我本地 t88 的 `sha256` 与 `git show master:` 对不上，一度以为是别人在途的残留。
+实际是 **CRLF/LF 差异**：`git diff` 为空，归一化后逐字节相等。
+
+**和今晚另一个发现正好是一对**：
+
+| 判据 | 看起来在说什么 | 实际在测什么 |
+|---|---|---|
+| `git diff` 为空 | 文件没变 | 换行符归一化后一致 |
+| `sha256` 不等 | 文件变了 | 可能只是 CRLF |
+
+**共同点：哈希/字节比较只在你控制了所有编码变量时才是证据。**
+
+### 提交
+
+`<见下方 git log>`（`docs/test(T108)`: t88 注释 + 回写）

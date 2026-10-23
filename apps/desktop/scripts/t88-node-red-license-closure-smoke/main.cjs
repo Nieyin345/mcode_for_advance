@@ -375,6 +375,26 @@ try {
     marker.dependenciesTreeSha256 = hashTree(path.join(stageCopy, "node_modules"), "mcode.node-red.dependencies.tree.v1");
     put(markerPath, JSON.stringify(marker, null, 2) + "\n");
     verify("isolated copy of the 420-package stage maps every reviewed version and is release-eligible after the pause integration", () => {
+      // 420 = Node-RED 5.0.8 vendor 快照里被许可审计覆盖的包数。
+      //
+      // 出处不是那两个 manifest.json（它们没有这个字段）：
+      //   构建产物里的 `.tmp/node-red-release/third-party-license-inventory.json`
+      //   的 `summary.packageCount`（`createNodeRedLicenseInventory` 算出来的）。
+      //
+      // ⚠️ **它红了先查为什么，不要直接把 420 换成新数字。** 包数变化可能是：
+      //   ① 有意升级 vendor 版本 → 该改这里的数，并复核 manifest / 许可树；
+      //   ② 依赖解析漂移或产物不全 → **那是 bug，改数字等于把 bug 藏起来**。
+      // 区分方法（注意：不能拿 `inventory.summary.packageCount` 去和这条比，
+      // 那是同一个值，永远相等）。要看**依赖树本身**有没有变：
+      //   - `ls <stage>/node_modules | wc -l` → 当前 254（顶层条目，含 @scope 目录）；
+      //   - `package-lock.json` 里 `node_modules/` 开头的条目 → 当前 1063
+      //     （含嵌套依赖，所以远大于 254）。
+      // 记下这两个数做对照，而不是记 420 本身：
+      //   - 这两个数都没变而 420 红了 → 审计口径变了，是 bug（②）；
+      //   - 这两个数也变了 → 依赖树真变了；结合是否升级 vendor 判断 ① / ②。
+      //
+      // 为什么保留这个绝对值而不是改成 > 0：它还兼当「确实读到了那份完整产物」的
+      // 存在性证明。换成下界后，「目录在但被清空」会静默通过。
       assert.equal(inventory.summary.packageCount, 420);
       assert.equal(inventory.summary.reviewedExternalLicenseMappings, 16);
       assert.equal(inventory.summary.unmatchedLicenseManifestEntries, 0);
