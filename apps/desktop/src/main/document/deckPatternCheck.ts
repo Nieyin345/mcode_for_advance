@@ -98,8 +98,106 @@ function isNeutral(hex: string | undefined): boolean {
   const g = parseInt(m[1]!.slice(2, 4), 16);
   const b = parseInt(m[1]!.slice(4, 6), 16);
   const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  return max - min < 24 || max > 238 || max < 30; // 接近灰 / 极亮 / 极暗
+  // 【T100】修正：原先「近白」用的是 `max > 238`，**把任何有一个通道接近满值的鲜艳色
+  // 也排除了** —— `#FF3355` / `#33FF55` / `#3355FF`（纯彩虹）的 max 都是 255，于是
+  // **真正的彩虹卡片从来不会被报**，而柔和的同色系阶梯反而会报。判据是反的。
+  //
+  // 「近白」应当看**整体亮度**（三通道都高），不是「最大通道高」：
+  //   - `#F0F0F0`：三通道都 ≈ 240 → 近白 ✓
+  //   - `#FF3355`：只有 R 高，G/B 很低 → **不是**近白 ✓
+  //
+  // 阈值 238 保留（同一份亮度口径），但改成「**最小通道** > 238」：
+  // 只有三通道全部接近满值才是白。
+  return max - min < 24 || min > 238 || max < 30; // 接近灰 / 三通道都极亮(白) / 极暗
 }
+
+/**
+ * 【T100】`#RRGGBB` → HSL 的色相角（0–360）。
+ *
+ * 只取色相：饱和度与明度由调用方单独判（中性色必须先排除，否则灰的色相无意义）。
+ * 返回 `null` 表示不是六位 hex。
+ */
+function hueOf(hex: string | undefined): number | null {
+  if (!hex) return null;
+  const m = /^#([0-9A-F]{6})/.exec(hex);
+  if (!m) return null;
+  const r = parseInt(m[1]!.slice(0, 2), 16) / 255;
+  const g = parseInt(m[1]!.slice(2, 4), 16) / 255;
+  const b = parseInt(m[1]!.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const d = max - min;
+  if (d === 0) return null; // 纯灰没有色相
+  let h: number;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return h * 360;
+}
+
+/** 色相环上两角的最短距离（0–180）。`350°` 与 `10°` 相距 20°，不是 340°。 */
+function hueDistance(a: number, b: number): number {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
+/**
+ * 【T100】**同色相**的判定阈值（度）。
+ *
+ * ## 为什么是 30°，不是拍脑袋
+ *
+ * 在一组实测样本上量了「同色相阶梯」与「真彩虹」的**最大两两色相跨度**：
+ *
+ * | 样本 | 最大跨度 | 该不该报 |
+ * |---|---|---|
+ * | 同一蓝色的三档明度 `#1F3A5F` / `#3E6E9E` / `#6FA3D2` | **6.2°** | 不报 |
+ * | 同色相、跨很大明度 `#0B1A2B` / `#2E5C8A` / `#A8D0F0` | **5.2°** | 不报 |
+ * | 三色相卡片 `#FF3355` / `#33FF55` / `#3355FF` | **140°** | 报 |
+ * | 纯彩虹 `#FF0000` / `#00FF00` / `#0000FF` | **120°** | 报 |
+ *
+ * **6.2° 与 120° 之间是约 20 倍的空档**，阈值落在空档的任何位置都能分开。
+ * 取 30° 的理由：
+ *   - 是实测「同色相」上界（6.2°）的 **约 5 倍余量** —— 同色系渐变（设计系统里
+ *     常见的 50–900 阶梯）在 HSL 里色相漂移通常远小于 15°，30° 仍能收进来；
+ *   - 是真彩虹下界（120°）的 **1/4** —— 不会把相邻色相误并；
+ *   - 30° 也是常见的「相邻色相」步长（HSL 色轮表常按 30° 一档分），
+ *     与设计工具里的直觉一致。
+ *
+ * ⚠️ **HSL 的色相不是感知均匀的**：同样 30° 在黄绿区看起来差很多、在蓝紫区几乎
+ * 看不出来。用感知均匀的 OKLCH 会更准，但那要引一整套色彩空间转换。**这里的判据
+ * 只需要「同一套色阶 vs 真彩虹」这一档区分，30° 足够**；若将来要判「相邻色相是否
+ * 太接近」，再换 OKLCH。
+ */
+const SAME_HUE_THRESHOLD_DEG = 30;
+
+/**
+ * 【T100】把一组颜色按**色相**聚成若干组。
+ *
+ * 同一色相的不同明度（`#1F3A5F` → `#3E6E9E` → `#6FA3D2`）算**组内**，不是三个色。
+ * 这正是「数据可视化用同色系深浅阶梯」与「彩虹卡片」的区别 —— 前者是规范鼓励的做法，
+ * 后者才是反模式。
+ *
+ * 聚类方式：**单链（single-linkage）** —— 依次并入第一个「与组内任一成员色相距离
+ * ≤ 阈值」的组。对一条连续色阶来说，相邻两档的差通常远小于整体跨度，单链能把整条
+ * 阶梯收进一组；而彩虹的三种颜色彼此都超过阈值，会分成三组。
+ *
+ * 无相位的颜色（灰/无效 hex）**不参与聚类**，调用方应在调用前就用 `isNeutral` 排除。
+ */
+function clusterByHue(hexes: readonly string[]): string[][] {
+  const groups: Array<{ hues: number[]; members: string[] }> = [];
+  for (const hex of hexes) {
+    const h = hueOf(hex);
+    if (h === null) continue;
+    const hit = groups.find((g) => g.hues.some((gh) => hueDistance(gh, h) <= SAME_HUE_THRESHOLD_DEG));
+    if (hit) {
+      hit.hues.push(h);
+      hit.members.push(hex);
+    } else {
+      groups.push({ hues: [h], members: [hex] });
+    }
+  }
+  return groups.map((g) => g.members);
+}
+
 
 /** 卡片 = 有一定面积的形状（不是细条、不是背景）。 */
 function cardsOf(page: DeckPageSpec): DeckElement[] {
@@ -164,10 +262,16 @@ function checkAccentBars(page: DeckPageSpec, i: number): PatternFinding[] {
 }
 
 /**
- * 【判据 2】彩虹卡片：同一页出现 > 2 个不同**非中性**填充色。
+ * 【判据 2】彩虹卡片：同一页出现 > 2 个**不同色相**的非中性填充色。
  *
  * **强判据。** 规范：「One accent system for the whole deck」。黑白与浅中性底不算。
  * 阈值 2 直接来自规范（「Never more than the two accents」）。
+ *
+ * 【T100】**按色相聚类，不按色值去重。** 从前这里是 `new Set<string>()` 按 hex 字符串
+ * 计数 —— 于是同一蓝色的三档明度（`#1F3A5F` / `#3E6E9E` / `#6FA3D2`，实测色相跨度
+ * 仅 6.2°）被当成「三个不同颜色」，**报最高严重度的 error**。那恰好是数据可视化里
+ * 最标准、最被鼓励的做法（同色系深浅阶梯），而真正要抓的「三色相卡片」反而和它同样
+ * 计 3 个值 —— **判据分不出好坏**。见 `SAME_HUE_THRESHOLD_DEG` 的实测表。
  */
 function checkRainbow(page: DeckPageSpec, i: number): PatternFinding[] {
   const colors = new Set<string>();
@@ -177,12 +281,19 @@ function checkRainbow(page: DeckPageSpec, i: number): PatternFinding[] {
     if (!f || isNeutral(f) || isFullBleed(e)) continue;
     colors.add(f);
   }
-  if (colors.size <= 2) return [];
+  // 先去重掉完全相同的色值（同一个红用两次不算两个色），再按色相并组。
+  const unique = [...colors];
+  if (unique.length <= 2) return [];
+  const hueGroups = clusterByHue(unique);
+  if (hueGroups.length <= 2) return [];
   return [{
     rule: "palette.rainbow",
     level: "error",
     page: i,
-    message: `第 ${i + 1} 页用了 ${colors.size} 个非中性填充色（${[...colors].join(", ")}）；规范要求全 deck 至多两个强调色。`,
+    message:
+      `第 ${i + 1} 页用了 ${hueGroups.length} 组不同色相的填充色` +
+      `（${hueGroups.map((g) => (g.length > 1 ? `${g[0]} 等同色相 ${g.length} 档` : g[0])).join("、")}）；` +
+      `规范要求全 deck 至多两个强调色。同色相的深浅变化算一组，不算彩虹。`,
   }];
 }
 
@@ -320,6 +431,17 @@ function cardBottomGapRatios(page: DeckPageSpec): Array<{ ratio: number; card: D
  */
 function checkCardWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
   const findings: PatternFinding[] = [];
+  // 【T100】打地鼠联动。
+  //
+  // ⚠️ **第一版判据是错的，记在这里**：我原先用「当前页是否也空」（`pageBottomRatio`
+  // 低于 tight 阈值）决定要不要提示。实测 BAD 页的内容底边是 **89%**（三张高卡的底边
+  // 撑住了），`layout.whitespace` 根本不报 —— 但模型照「缩短卡片」改完，底边掉到 31%，
+  // 那一刻 `layout.whitespace` 才出现。
+  //
+  // **所以打地鼠不是「两条同时报」，是「按 A 改 → 产生 B」。** 判据要问的是
+  // 「**把这张卡缩到内容高度之后，整页会不会变空**」，不是「现在空不空」。
+  const afterShrink = predictedBottomRatioAfterShrinkingCards(page);
+  const willBecomeEmpty = afterShrink < WHITESPACE_REFERENCE_LINE.tight;
   for (const { ratio, card } of cardBottomGapRatios(page)) {
     if (ratio < CARD_WHITESPACE_REFERENCE_LINE) continue;
     findings.push({
@@ -331,10 +453,94 @@ function checkCardWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
         `第 ${i + 1} 页 x=${Math.round(card.x ?? 0)} 处的卡片内部下半截空着：` +
         `文字底边离卡底还有 ${(ratio * 100).toFixed(0)}% 的卡高` +
         `（参考线约 ${(CARD_WHITESPACE_REFERENCE_LINE * 100).toFixed(0)}%）：通常是卡片被拉高但内容没跟上。` +
-        `若这是有意的留白可忽略；否则考虑缩短卡片或补足卡内内容。`,
+        (willBecomeEmpty
+          // ⚠️ 这一段是**联动提示**，不是润色：没有它，模型会按「缩短卡片」去做，
+          // 缩完这一页的底边会掉到约 X%，然后立刻触发留白判据 —— 来回打地鼠。
+          ? `⚠️ **先补内容再缩卡**：把这张卡缩到内容高度后，整页内容底边会掉到约 ${(afterShrink * 100).toFixed(0)}%（留白参考线 ${(WHITESPACE_REFERENCE_LINE.tight * 100).toFixed(0)}%），届时会触发「留白过多」。请**在卡内补足内容**（要点分栏、放图表/数据），而不是只把卡片压扁。`
+          : `若这是有意的留白可忽略；否则考虑缩短卡片或补足卡内内容。`),
     });
   }
   return findings;
+}
+
+/**
+ * 【T100】**假设把所有超线卡片缩到内容高度，整页内容底边会到哪**（0–1）。
+ *
+ * 用来预判「照 shortest-card 的建议改完之后会不会变空」。实现上按判据自己的口径
+ * 模拟：把每张超线卡的底边改成它内部文字的底边，再取全页最大底边。
+ *
+ * 不改真实 spec —— 这是纯计算，只回答「会掉到多少」。
+ */
+function predictedBottomRatioAfterShrinkingCards(page: DeckPageSpec): number {
+  const elements = page.elements ?? [];
+  const shrink = new Map<DeckElement, number>();
+  for (const { ratio, card } of cardBottomGapRatios(page)) {
+    if (ratio < CARD_WHITESPACE_REFERENCE_LINE) continue;
+    const inside = (page.elements ?? []).filter(
+      (t) => t.type === "text" &&
+        (t.x ?? 0) >= (card.x ?? 0) && (t.y ?? 0) >= (card.y ?? 0) &&
+        (t.y ?? 0) < (card.y ?? 0) + (card.h ?? 0) && (t.x ?? 0) < (card.x ?? 0) + (card.w ?? 0),
+    );
+    if (inside.length === 0) continue;
+    const textBottom = Math.max(...inside.map((t) => (t.y ?? 0) + (t.h ?? 0)));
+    shrink.set(card, textBottom);
+  }
+  if (shrink.size === 0) return pageBottomRatio(page);
+  const content = elements.filter((e) => !isFullBleed(e));
+  const bottom = Math.max(...content.map((e) => (shrink.has(e) ? shrink.get(e)! : (e.y ?? 0) + (e.h ?? 0))));
+  return bottom / CANVAS_H;
+}
+
+/**
+ * 【T100】**这一页看起来像不像封面/收尾页** —— 纯**几何**判断，不依赖 `page.type`。
+ *
+ * ## 为什么不看 `page.type`
+ *
+ * 原来这里写的是 `const type = page.type ?? "content"`。问题是**模型写 spec 时通常
+ * 不填 `type`**（`guide slides spec` 里它是可选的、和 outline 对齐用的元数据），
+ * 于是封面页一律走 `"content"` 的紧阈值 → **封面必报留白**。豁免在等一个不会来的
+ * 字段，等于没有。
+ *
+ * ## 为什么选几何，不选「从 outline 取 type」
+ *
+ * `readDeckPatterns` 读的是 spec 目录，outline 不一定在（也可以完全不写）。而封面
+ * 在版面上有很确定的形状特征，**判据应当从它真正能看到的东西推**，而不是从另一个
+ * 可能缺席的文件推。
+ *
+ * ## 判据：**必须有满版底板**
+ *
+ * ⚠️ **第一版判据是错的，记在这里**：我原先写的是「内容元素 ≤ 3 个就算封面」。
+ * `t65` 立刻抓到反例 —— 一个 `type: "content"` 的页面只有「标题 + 一张卡」两个元素、
+ * 底边 60%，右下大片空白，**那是该报的**，却被我的判据当成封面放过了（loose 阈值
+ * 55% < 60%）。
+ *
+ * **「元素少」不等于「是封面」**：一个做得差的内容页也很稀疏。封面真正的特征是
+ * **有一块铺满画布的底板**（深色或图片），文字压在它上面。
+ *
+ * 所以现在的判据是：**有满版底（`isFullBleed`）且底色上的内容元素 ≤ 4 个**。
+ * 没有满版底的稀疏页面按内容页走紧阈值 —— 那正是 `t65` 那个用例要的。
+ *
+ * ⚠️ **这仍是弱判据，只用来选参考线（loose vs tight）**，不直接决定报不报。
+ */
+function looksLikeCoverOrClosing(page: DeckPageSpec): boolean {
+  const els = page.elements ?? [];
+  const hasFullBleed = els.some((e) => isFullBleed(e));
+  if (!hasFullBleed) return false; // 没有铺满的底 —— 按内容页算
+  const onTop = els.filter((e) => !isFullBleed(e));
+  return onTop.length <= 4;
+}
+
+/**
+ * 【T100】**内容底边占画布高的比例**（0–1）。满版底不算内容。
+ *
+ * 抽出来是因为两个判据都要用：`layout.whitespace` 报它，`layout.card-whitespace`
+ * 用它判断「这一页是不是本来就空」（打地鼠联动）。**同一件事只算一次**（硬规矩 2）。
+ */
+function pageBottomRatio(page: DeckPageSpec): number {
+  const content = (page.elements ?? []).filter((e) => !isFullBleed(e));
+  if (content.length === 0) return 0;
+  const bottom = Math.max(...content.map((e) => (e.y ?? 0) + (e.h ?? 0)));
+  return bottom / CANVAS_H;
 }
 
 function checkWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
@@ -342,10 +548,13 @@ function checkWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
   if (els.length === 0) return [];
   const content = els.filter((e) => !isFullBleed(e));
   if (content.length === 0) return []; // 整页只有一个背景块 —— 交给别的判据
-  const bottom = Math.max(...content.map((e) => (e.y ?? 0) + (e.h ?? 0)));
-  const ratio = bottom / CANVAS_H;
-  const type = page.type ?? "content";
-  const threshold = type === "cover" || type === "closing"
+  const ratio = pageBottomRatio(page);
+  // 【T100】页型优先看 `page.type`（写了就用），没写则用几何特征推断 —— 见
+  // `looksLikeCoverOrClosing` 的论证。**两者取「更宽松」的那一个**：模型显式写了
+  // `type: "cover"` 时当然用 loose；没写但版面像封面时也用 loose。
+  const declared = page.type;
+  const isCoverLike = declared === "cover" || declared === "closing" || looksLikeCoverOrClosing(page);
+  const threshold = isCoverLike
     ? WHITESPACE_REFERENCE_LINE.loose
     : WHITESPACE_REFERENCE_LINE.tight;
   if (ratio >= threshold) return [];
@@ -359,7 +568,7 @@ function checkWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
     // ③ 不用「期望」「必须」「要求」，并显式允许「有意的留白」。
     message:
       `第 ${i + 1} 页内容底边只到画布高度的 ${(ratio * 100).toFixed(0)}%` +
-      `（${type} 页参考线约 ${(threshold * 100).toFixed(0)}%）：下半部分留白较多。` +
+      `（${isCoverLike ? (declared ?? "封面/收尾") : (declared ?? "内容")} 页参考线约 ${(threshold * 100).toFixed(0)}%）：下半部分留白较多。` +
       `若版面是有意的留白设计可忽略；否则考虑把内容铺开一些（规范第 3 节「Fill the page」）。`,
   }];
 }

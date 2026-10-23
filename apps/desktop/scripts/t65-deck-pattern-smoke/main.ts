@@ -74,6 +74,35 @@ console.log("\n[2] 彩虹卡片");
     { type: "shape", shape: "roundRect", x: 760, y: 200, w: 300, h: 300, fill: "#9B59B6" },
   ]};
   check("★ 负控：三个非中性色被报", checkDeckPatterns([bad]).findings.some(f => f.rule === "palette.rainbow"));
+
+  /* ── T100：色相聚类 + isNeutral 的「近白」口径 ──
+   *
+   * 上面那条负控用的是 #E23B3B / #2ECC71 / #9B59B6 —— 它们 max 都 ≤ 238，
+   * 所以**旧代码的 `max > 238` 从未被这条断言碰到**。下面补两组。 */
+  const sameHue: DeckPageSpec = { ...goodContentPage(), elements: [
+    // 同一蓝色的三档明度（数据可视化的标准做法）—— 实测色相跨度 6.2°
+    { type: "shape", shape: "roundRect", x: 80, y: 340, w: 90, h: 260, fill: "#1F3A5F" },
+    { type: "shape", shape: "roundRect", x: 220, y: 260, w: 90, h: 340, fill: "#3E6E9E" },
+    { type: "shape", shape: "roundRect", x: 360, y: 420, w: 90, h: 180, fill: "#6FA3D2" },
+    { type: "text", x: 80, y: 80, w: 900, h: 120, paragraphs: [{ runs: [{ text: "图表", sizePt: 40 }] }] },
+  ]};
+  eq("★ T100 正控：同色相三档明度不算彩虹", checkDeckPatterns([sameHue]).findings.filter(f => f.rule === "palette.rainbow").length, 0);
+
+  const pureRainbow: DeckPageSpec = { ...goodContentPage(), elements: [
+    // 纯饱和三色 —— 每个都有一个通道是 255。旧 `max > 238` 会把它们全判成"近白"而放行。
+    { type: "shape", shape: "roundRect", x: 80, y: 200, w: 300, h: 300, fill: "#FF3355" },
+    { type: "shape", shape: "roundRect", x: 420, y: 200, w: 300, h: 300, fill: "#33FF55" },
+    { type: "shape", shape: "roundRect", x: 760, y: 200, w: 300, h: 300, fill: "#3355FF" },
+  ]};
+  check("★ T100 负控：纯饱和三色仍被报（「近白」不能把鲜艳色排除）",
+    checkDeckPatterns([pureRainbow]).findings.some(f => f.rule === "palette.rainbow"));
+
+  const nearlyWhite: DeckPageSpec = { ...goodContentPage(), elements: [
+    { type: "shape", shape: "roundRect", x: 80, y: 200, w: 300, h: 300, fill: "#F5F5F5" },
+    { type: "shape", shape: "roundRect", x: 420, y: 200, w: 300, h: 300, fill: "#FAFAFA" },
+    { type: "shape", shape: "roundRect", x: 760, y: 200, w: 300, h: 300, fill: "#EEEEEE" },
+  ]};
+  eq("★ T100 正控：三档近白仍是中性，不报", checkDeckPatterns([nearlyWhite]).findings.filter(f => f.rule === "palette.rainbow").length, 0);
 }
 
 /* ── 判据 3：留白过度（T62 发现的缺口） ── */
@@ -175,6 +204,55 @@ console.log("\n[T72] 留白消息的措辞");
   const desc = applied["layout.whitespace"] ?? "";
   check("★ RULE_DESCRIPTIONS 也是参考线语气", desc.includes("参考线"), { desc });
   check("★ RULE_DESCRIPTIONS 不含 ≥", !desc.includes("≥"), { desc });
+
+  /* ── T100：cover 豁免改成几何判断 ──
+   *
+   * 从前 `const type = page.type ?? "content"` —— 模型写 spec 时通常不填 `type`，
+   * 于是封面必报留白。现在改成「有满版底 + 内容 ≤ 4 个元素」的几何判断。 */
+  const coverNoType: DeckPageSpec = { elements: [
+    { type: "shape", shape: "rect", x: 0, y: 0, w: 1280, h: 720, fill: "#0E1A2B" }, // 满版底
+    { type: "text", x: 120, y: 260, w: 900, h: 120, paragraphs: [{ runs: [{ text: "封面标题", sizePt: 54 }] }] },
+    { type: "text", x: 120, y: 400, w: 900, h: 60, paragraphs: [{ runs: [{ text: "副标题", sizePt: 24 }] }] },
+  ]};
+  eq("★ T100 正控：满版底的封面（无 type 字段）不报留白",
+    checkDeckPatterns([coverNoType]).findings.filter(f => f.rule === "layout.whitespace").length, 0);
+
+  // 反控：同样是两个元素、但**没有满版底** —— 那是一个做得差的内容页，必须报。
+  // （这条正是 t65 原先那个 `thin` 用例的形态；它证明几何判据没有把稀疏内容页也放过。）
+  eq("★ T100 反控：稀疏内容页（无满版底）仍报留白",
+    checkDeckPatterns([thin]).findings.filter(f => f.rule === "layout.whitespace").length, 1);
+}
+
+
+/* ── 【T100】打地鼠联动：缩卡前先说补内容 ── */
+console.log("\n[T100] card-whitespace 的联动提示");
+{
+  // 三张高卡 + 贴顶文字：整页底边 89%（留白判据**不报**），但缩卡后会掉到 31%。
+  const emptyColumns: DeckPageSpec = { elements: [
+    ...[0, 1, 2].flatMap((i) => {
+      const cx = 80 + i * 380;
+      return [
+        { type: "shape" as const, shape: "roundRect", x: cx, y: 160, w: 320, h: 480, fill: "#1F3A5F" },
+        { type: "text" as const, x: cx + 20, y: 180, w: 280, h: 40, paragraphs: [{ runs: [{ text: "标题", sizePt: 24 }] }] },
+      ];
+    }),
+  ]};
+  const findings = checkDeckPatterns([emptyColumns]).findings.filter(f => f.rule === "layout.card-whitespace");
+  check("★ T100：三张空卡各报一条", findings.length === 3, { n: findings.length });
+  check("★ T100：缩卡前先提示「补内容」（不是只让缩卡）",
+    findings.every(f => f.message.includes("先补内容再缩卡")), { msgs: findings.map(f => f.message.slice(0, 40)) });
+  check("★ T100：提示给出了「缩完会掉到多少」的预测数字",
+    findings.every(f => /掉到约\s*\d+%/.test(f.message)), { msgs: findings.map(f => f.message.match(/掉到约\s*\d+%/)?.[0]) });
+
+  // 反控：整页本来就不空时，不该出现「先补内容」这句 —— 否则每个提示都在喊狼来了。
+  const wellFilled: DeckPageSpec = { elements: [
+    { type: "shape", shape: "roundRect", x: 80, y: 100, w: 500, h: 400, fill: "#1F3A5F" },
+    { type: "text", x: 100, y: 120, w: 460, h: 40, paragraphs: [{ runs: [{ text: "标题", sizePt: 24 }] }] },
+    { type: "shape", shape: "roundRect", x: 80, y: 540, w: 500, h: 150, fill: "#3E6E9E" }, // 撑住底边
+  ]};
+  const noLink = checkDeckPatterns([wellFilled]).findings.filter(f => f.rule === "layout.card-whitespace");
+  check("★ T100 反控：页面本来就不空时不给「先补内容」提示",
+    noLink.every(f => !f.message.includes("先补内容再缩卡")), { n: noLink.length });
 }
 
 
