@@ -33,6 +33,9 @@ const nativeModuleApprovalPort: ModuleApprovalPort = async (request) => {
   const win = getMainWindow();
   // 【MC-035】联网与写文件是**两件事**,审批框必须说清楚在批哪一件。
   // 否则用户看到"请求执行写操作"就批了,实际批准的是"这个扩展可以出网"。
+  // 【T19】`scope === "danger"`(扩展经 core.app.call 调高风险 RPC)当前按写档文案
+  // 呈现:专属文案需要新的 i18n 键,而词典在 renderer/(T19 边界外)。判定本身仍在
+  // ModuleHost 里 —— 每次 danger 调用都必须经过这个框,文案只是表述。
   const isNetwork = request.scope === "network";
   const options = {
     type: "question" as const,

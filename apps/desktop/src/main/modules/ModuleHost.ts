@@ -17,6 +17,16 @@ import { createIsolatedActionRun } from "./isolatedActionRunner.js";
 import { ModulePermissionArchiveSchema, assertModuleGrants, type ModulePermissionArchive, type ModulePermissionRecord } from "@contracts/modulePermissions";
 import { assertAppMethodPermission, type ModulePermission } from "@contracts/appPermission";
 import { runPermissionedProcess, verifyPermissionedProgram, requireNetworkExtensionSupport } from "./permissionedProcessRunner.js";
+// 【T19】扩展 RPC 的**副作用档位**只在 `appControl/policy.ts` 有一份（DANGER / BLOCKED /
+// CREDENTIAL_BEARING 与动词兜底都在那里）。它是零 import 的叶子模块（不碰 electron/DB/UI），
+// 主进程的模块宿主可以直接 import 它 —— 于是这里**不复制**任何 danger 名单：
+//   - 契约层（`packages/contracts`）不能 import 主进程，把档位下沉只能再维护一张
+//     「哪些方法危险」的表；而 `appPermission.ts` 是**生成物**，手写进去会被下一次
+//     `gen-module-permission-map.mjs` 抹掉（真按生成器重生成，还会顺带把 10 条
+//     目录已漂移的方法一次性放进来 —— 那是放宽方向，正好与本卡相反）。
+//   - 宿主侧判定直接调 `policyFor`，档位永远只有**一份、活的**：policy.ts 改了，
+//     扩展闸门下一次调用就跟着改，不存在第二份表漂移。
+import { policyFor } from "@main/appControl/policy.js";
 
 /** 【T18】安装卡片的三种结论（见 {@link ModuleHost.install}）。 */
 export type ModuleInstallDecision = "allow-once" | "allow-always" | "deny";
@@ -55,8 +65,14 @@ export interface ActionApprovalRequest {
   resource: ModuleResource;
   /** 【MC-035】这次审批要放行的是什么。缺省 `"write"`(向后兼容既有审批端口)。
    *  `"network"` = 这个模块声明了网络权限,本次执行会出网 —— 用户看到的是
-   *  "要不要让这个扩展联网",而不是"要不要让它改文件"。 */
-  scope?: "write" | "network";
+   *  "要不要让这个扩展联网",而不是"要不要让它改文件"。
+   *  【T19】`"danger"` = 扩展经 `core.app.call` 调用了一个**高风险 RPC**;
+   *  与 write/network 不同,它**每次**都要问,且任何安装授权、工作流授权都不能替代。 */
+  scope?: "write" | "network" | "danger";
+  /** 【T19】`scope === "danger"` 时要放行的 RPC 方法名(policy.ts 的 danger 档)。
+   *  **只给方法名,不带入参** —— 入参可能含密钥(customModel.save 的 API Key 等),
+   *  确认框上不该出现。 */
+  method?: string;
 }
 
 /** 【ARC-006 Gate E】**一次模块变更（安装/升级/卸载）的副作用诊断**。
@@ -322,7 +338,7 @@ export class ModuleHost {
             allowNetwork: declaresNetwork(manifest.permissions),
             timeoutMs,
             signal: context.signal,
-            onAppCall: (method, input) => this.callAppFromExtension(manifest, method, input, context.signal),
+            onAppCall: (method, input) => this.callAppFromExtension(manifest, method, input, resource, context.signal),
           });
         },
       }));
@@ -418,9 +434,66 @@ export class ModuleHost {
     if (!this.options.persistModulePermissions) throw Error("扩展权限必须持久化，当前宿主没有授权写入通道");
     await this.options.persistModulePermissions(JSON.stringify(ModulePermissionArchiveSchema.parse(archive), null, 2));
   }
+  /** 【T19】**扩展 RPC 的逐次审批** —— `policy.ts` 判定为 `danger` 的**可委托**方法
+   *  （91 条，如 `git.push` / `modules.install` / `project.delete`）在这里**每次调用**
+   *  都要用户点头。`blocked` 与不可委托的 danger（`workflowEngine.load`，权限映射为
+   *  `null`）**不弹卡** —— `assertAppMethodPermission` 在上一行就拒了；"谁都够不到"
+   *  不是"够得到但要问"。
+   *
+   *  ## 为什么在宿主侧、为什么调 `policyFor`
+   *
+   *  - 契约层不能 import 主进程；把档位下沉到 `packages/contracts` 只能再维护**第二份**
+   *    danger 名单（`appPermission.ts` 还是生成物，手写进去会被 `gen-module-permission-map.mjs`
+   *    覆盖；按生成器重生成又会把 10 条目录已漂移、未归类的方法一次性放进委托面 —— 放宽方向），
+   *    仓库硬规矩禁止两份并存。
+   *  - 宿主是主进程，`appControl/policy.ts` 是零依赖叶子（不碰 electron/DB/UI），直接 import
+   *    那一份**唯一**判据：policy.ts 改了，扩展闸门下一次调用就跟着改，不会漂移。
+   *  - `assertAppMethodPermission` 只回答「权限授权够不够」；档位是另一个维度，由这一层补。
+   *
+   *  ## 安全属性（每条都有回归断言）
+   *
+   *  - **没有审批端口 = 拒绝**（fail-closed）：缺省时 danger 调用一律拒，绝不静默放行；
+   *  - **不提供「始终允许」**：不记任何状态、不写任何存档；每次 danger 调用都重新问；
+   *  - **安装授权不能替代**：`granted` 只决定权限够不够，不决定要不要问；
+   *  - **工作流授权不能替代**：`invokeForWorkflow` 只放行只读能力，够不到 RPC 桥；
+   *  - **审批挂起期间模块被换/撤** → 批准不再生效（与 `invoke` 的 action 审批同款复查）。
+   *
+   *  抛出的拒绝带 `approval_denied` / `approval_unavailable` 标记 —— 上层按 REJECTED
+   *  归类（命令没执行，可安全重来），不会误报成 UNCERTAIN。`method` 只进审批请求、
+   *  **不带入参**（入参可能含密钥，如 customModel.save 的 API Key）。
+   */
+  private async approveDangerAppCall(manifest: ModuleManifest, method: string, resource: ModuleResource): Promise<void> {
+    if (policyFor(method).level !== "danger") return;
+    if (!this.options.requestApproval) {
+      throw moduleRefusalError("approval_unavailable",
+        `扩展调用了高风险方法 ${method}，但当前没有审批通道 —— 高风险操作必须在用户本人点头后才执行，已拒绝(fail-closed)。`);
+    }
+    try {
+      await this.options.requestApproval({
+        moduleId: manifest.id,
+        contributionId: "core.app.call",
+        capabilityId: "core.app.call",
+        resource: structuredClone(resource),
+        scope: "danger",
+        method,
+      });
+    } catch (error) {
+      // 审批端口拒绝(resolve=批准,reject=拒绝)。已经带拒绝标记的原样抛;否则包成
+      // `approval_denied` —— 用户拒绝 = 命令没执行,上层应按 REJECTED 归类。
+      const already = moduleRefusal(error);
+      throw already ? error : moduleRefusalError("approval_denied", error instanceof Error ? error.message : String(error));
+    }
+    // 审批可能挂起等待用户;期间模块若被换/撤,批准不得落到旧执行体上。
+    if (this.modules.get(manifest.id) !== manifest) throw Error("模块已变化,请按其当前定义重试");
+  }
   /** Pure host-side RPC authorization for trusted extension dispatchers only.
    *  The caller identity must be bound by the host (never from iframe/agent parameters).
-   *  A blocked method is NEVER delegable, regardless of claimed grants. */
+   *  A blocked method is NEVER delegable, regardless of claimed grants.
+   *
+   *  【T19】这里**只判权限**（同步、无副作用）。档位判定在 {@link callAppFromExtension}：
+   *  danger 每次调用要问用户**一次**，而本方法在一次扩展 RPC 里被调用四次
+   *  （`callAppFromExtension` 前后复查 + `invokeExtensionAppCall` 前后复查）——
+   *  把审批放进这里会问四遍。 */
   authorizeAppMethod(moduleId: string, method: string): void {
     const manifest = this.modules.get(moduleId);
     if (!manifest || !moduleId.startsWith("user.")) throw moduleRefusalError("scope_denied", "找不到已安装的用户扩展");
@@ -430,12 +503,19 @@ export class ModuleHost {
     catch (error) { throw moduleRefusalError("scope_denied",error instanceof Error ? error.message : String(error)); }
   }
   /** The child may ask for RPCs, but only this trusted host knows the installed identity.
-   * Revalidate per call, including after revocation or replacement during a long RPC. */
-  private async callAppFromExtension(manifest: ModuleManifest, method: string, input: unknown, signal: AbortSignal): Promise<unknown> {
+   * Revalidate per call, including after revocation or replacement during a long RPC.
+   *
+   * 【T19】`resource` 是本次扩展执行绑定的资源（`invoke` 里已过 `authorize`）。`policy.ts`
+   * 判为 `danger` 的方法**每次调用**都先经 {@link approveDangerAppCall} 拿到用户本人的
+   * 新鲜批准才派发 —— 安装授权/工作流授权都不能替代；四次权限复查（前后各两次）仍只判
+   * 权限，不重复弹卡。 */
+  private async callAppFromExtension(manifest: ModuleManifest, method: string, input: unknown, resource: ModuleResource, signal: AbortSignal): Promise<unknown> {
     if (signal.aborted || this.modules.get(manifest.id) !== manifest) throw Error("扩展执行已取消或替换");
     if (!this.capabilities.has("core.app.call")) throw Error("core.app.call 宿主能力未注册");
     if (!this.options.invokeAppCall) throw Error("core.app.call 宿主 RPC 通道不可用");
     this.authorizeAppMethod(manifest.id, method);
+    // 【T19】权限够了之后才轮到档位：danger 每次都要用户本人点头（一次性，不持久化）。
+    await this.approveDangerAppCall(manifest, method, resource);
     if (signal.aborted) throw Error("扩展执行已取消");
     const value = await this.options.invokeAppCall(manifest.id, method, input, signal);
     if (signal.aborted || this.modules.get(manifest.id) !== manifest) throw Error("扩展执行已取消或替换");
@@ -540,7 +620,7 @@ export class ModuleHost {
       // 授权静默续期。判据复用 `effectiveGrants`（同一条链路），不另写一遍。
       if (!executionChanged && grantedPermissions === undefined && previous !== undefined
         && priorConsent !== undefined && this.effectiveGrants(previous) === null) {
-        throw Error("上一次「允许一次」的授权已在重启后失效，请重新确认授权");
+        throw Error("上一次「本次运行允许」的授权已在上次运行结束后失效，请重新确认授权");
       }
       const purged = executionChanged ? await this.purgeWorkflowGrantsFor(manifest.id) : null;
       // Consent is bound to a version and an execution fingerprint, not a module ID alone.
