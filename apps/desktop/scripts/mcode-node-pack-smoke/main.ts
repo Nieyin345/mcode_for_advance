@@ -606,6 +606,41 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
     "mcode-agent", "mcode-branch", "mcode-conversation",
     "mcode-module-capability", "mcode-node-red-call", "mcode-trigger",
   ]);
+
+  // ★【T96】子进程加载的是预编译的 nodePackBundle.generated.ts，**不是**上面这些
+  // TS 源。改了源却没重新生成 bundle 时，节点包跑的是旧快照，而所有行为断言都
+  // 还在验旧代码 —— 它们会全绿。实测踩过：变异 mcodeNodeTypes.ts 的 trigger
+  // mcode 重建后整套仍 54/54 绿，直到跑了 build/build-node-pack.cjs 才红。
+  //
+  // 判据：bundle 里注册的类型清单必须和源导出的清单一致。抓的是「加了/删了
+  // 类型却忘了重建」；抓不到纯行为漂移（那类由真引擎段的下游证据覆盖）。
+  {
+    const { MCODE_NODE_PACK_BUNDLE } = await import("@main/workflowEngines/nodePackBundle.generated.js");
+    // bundle 是 CJS 字符串，常量被 esbuild 内联；把 **bundle 里每个 `X_NODE_TYPE = "..."`
+    // 的实际字面量** 抽出来，和当前源里的同名常量比。只比名字不够 —— 改名、改值
+    // 都只体现在等号右边。
+    const literalInBundle = new Map<string, string>();
+    for (const m of MCODE_NODE_PACK_BUNDLE.matchAll(/(MCODE_[A-Z_]+_NODE_TYPE) = "([^"]+)"/g)) {
+      literalInBundle.set(m[1]!, m[2]!);
+    }
+    const sourceConsts = new Map<string, string>();
+    for (const m of readFileSync(join(process.cwd(), "src/main/workflowEngines/mcodeNodeTypes.ts"), "utf8")
+      .matchAll(/(MCODE_[A-Z_]+_NODE_TYPE) = "([^"]+)"/g)) {
+      sourceConsts.set(m[1]!, m[2]!);
+    }
+    const mismatched = [...sourceConsts].filter(([name, literal]) => literalInBundle.get(name) !== literal)
+      .map(([name, literal]) => ({ name, source: literal, bundle: literalInBundle.get(name) ?? "(缺失)" }));
+    eq("★【T96】bundle 里每个节点类型的值与源一致（改了源要跑 build-node-pack.cjs）",
+      mismatched, []);
+    // 清单本身：bundle 注册的类型集合 = 源导出的类型集合。
+    const bundledList = MCODE_NODE_PACK_BUNDLE.match(/var MCODE_NODE_PACK_TYPES = \[([\s\S]*?)\];/);
+    const bundledSymbols = (bundledList?.[1] ?? "").split(",").map((s) => s.trim()).filter((s) => s !== "");
+    eq("★【T96】bundle 注册的类型清单条目数与源一致",
+      bundledSymbols.length, MCODE_NODE_PACK_TYPES.length);
+    // 反向：bundle 里必须真的带着 IPC 传输层，否则节点在真引擎里根本调不到 Host。
+    check("★【T96】bundle 里带着 mcode-node-request 传输层",
+      MCODE_NODE_PACK_BUNDLE.includes('"mcode-node-request"'));
+  }
   eq("★ HTML 覆盖全部 6 个类型", ["mcode-agent", "mcode-conversation", "mcode-branch", "mcode-trigger", "mcode-module-capability", "mcode-node-red-call"]
     .filter((t) => !allNodeHtml().includes(`data-template-name="${t}"`)), []);
   check("★ 节点统一：mcode-code 已删除（JS→内置 function，其它语言→exec）",
