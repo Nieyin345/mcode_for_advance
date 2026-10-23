@@ -141,3 +141,107 @@ typescript 的 `ScriptTarget` / `ScriptKind` 语义先查官方文档，不要�
 
 `tasks/T74-ast-lib-extraction.md` 末尾追加 `## 结果回写（2026-10-23）`：
 独立复核的数字、`ScriptTarget` 论证、`findCalls` 统一前后的签名差异、变异证据、两套数字、提交 SHA。
+
+## 结果回写（2026-10-23）
+
+### 第一步：独立复核 F 的清单 —— 两处对得上，一处**我数错了**
+
+| 项 | 卡上的数字 | 我数到的 | 结论 |
+|---|---|---|---|
+| `grep -rn "createSourceFile" ... \| wc -l` | — | **36 行** | — |
+| `grep -rn "function parseFile"` | 2 处 | **2 处**（`mobile-api-surface-smoke:91`、`astAssertions.ts:32`） | ✓ 一致 |
+| `grep -rn 'endsWith(".tsx")'` | **5 处** | **6 处** | ⚠️ **数字不符，但我的 5 是错的** |
+| `createSourceFile` 套件数 | 29 | **29** | ✓ |
+| `transpileModule` 套件数 | 19 | **19** | ✓ |
+
+**关于「5 处」的更正**（这条是 T68 清单里的错误，T68 那份要作废）：
+
+`endsWith(".tsx")` 实际出现 **6 次**，但**只有 2 次是 ScriptKind 判断**：
+
+| 文件:行 | 用途 |
+|---|---|
+| `mobile-api-surface-smoke/main.ts:97` | **ScriptKind 判断** |
+| `provider-context-smoke/astAssertions.ts:27` | **ScriptKind 判断** |
+| `clickable-row-a11y-smoke/main.ts:330` | 文件过滤（`files.push`），不是 ScriptKind |
+| `workflow-view-smoke/main.ts:2161` | 文件过滤（`continue`） |
+| `workflow-view-smoke/main.ts:2639` | 目录项过滤（`continue`） |
+
+严格匹配 `ScriptKind.*endsWith|endsWith.*ScriptKind` 只有 **2 处**。所以「5 份 ScriptKind 三元」这个说法是错的，实际是 **2 份**（且正好就是要统一的那两份）。
+
+### 第二步 & 第三步：`lib/ast.ts` 内容与 `findCalls` 统一
+
+**`lib/ast.ts` 收了这些**：`ts`（运行时解析）、`scriptKindOf`、`parseSource`、`parseFile`、`walk`、`lineOf`、`findCalls`。
+
+**`parseSource` 保留了** —— 卡上提醒得对：T68 的正控/反控靠它构造合成源码，只搬 `parseFile` 不够。
+
+**`findCalls` 两处签名差异与统一**：
+
+| | T64（main.ts） | T68（astAssertions.ts） |
+|---|---|---|
+| 签名 | `findCalls(name)` —— **闭包持有 sf** | 无（直接遍历，没有独立 findCalls） |
+| 返回 | `{ argCount, firstArg }` | — |
+| `ScriptTarget` | `Latest` | `ES2022` |
+
+统一后：**`findCalls(sf, name): CallSite[]`**，把 `sf` 变成显式参数（闭包形式只对单文件有效，提到 lib 必须是纯函数）。`CallSite` 比原来多了 `line` 字段（诊断用），是**并集**不是覆盖。
+
+两处调用点：
+- `main.ts:284` → `findCalls(sf, "registerPluginsHandlers")`
+- `main.ts:296` → `findCalls(sf, "registerDocumentHandlers")`
+- `main.ts:302` 的反控原本手写了一遍遍历，现在直接用 `findCalls(asStringSf, ...)` —— **顺带消掉了三处重复**
+
+### 第四步：`ScriptTarget` 论证 —— 选 `ES2022`
+
+**不仅讲道理，还做了实证**：拿 6 个真实文件（含 `.tsx`、`.ts`、契约文件）分别用 `ES2022` 和 `Latest` 解析，比较**完整节点种类序列**：
+
+```
+同一棵树: 6/6
+ScriptTarget.Latest 的数值 = 99   ← 跟着 TS 版本走
+ScriptTarget.ES2022 的数值 = 9    ← 固定值
+```
+
+**结论：在当前 TS 5.7.2 下两者解析结果完全相同，所以钉 `ES2022` 零风险；而 `Latest=99` 会随 TS 升级改变解析行为，届时判据可能静默改变而套件仍绿。**
+
+选 `ES2022` 而不是更早版本的理由：仓库 `apps/desktop/tsconfig.json` 的编译目标就是 ES2022 —— 判据解析源码时用的目标应与实际编译目标一致。
+
+**注意我对 `mobile-api-surface-smoke` 的 `parseFile` 做了一处兼容**：它沿 import 图递归时传的是**绝对路径**，而 lib 版原本只收相对 cwd。改成 `resolve(process.cwd(), path)`（对绝对路径幂等），两种都成立 —— 已在 `lib/ast.ts` 的注释里写明。
+
+### `fakeSourceWithTextOnly` 的判断：**留在 `astAssertions.ts`，不进 lib**
+
+**理由**（与我自己给 finder 层的理由同一条）：它是**判据夹具**，不是机械层。它存在的唯一目的是给「反控」这类断言造输入，编码了「反控该怎么造」这个语义。目前只有 `provider-context-smoke` 一套消费者；提到 lib 就是**为想象中的第二个消费者设计**。
+
+判断界线：**与「验什么」无关的才进 lib**。`parseSource` 进了 lib 是因为「从文本解析出 AST」是无语义的机械操作；`fakeSourceWithTextOnly` 没进是因为「造一个只有文本、没有代码的输入」是反控判据的一部分。
+
+### 第五步：验证
+
+**两套数字（未退化）**：
+
+```
+provider-context-smoke      74/74 passed     （T68 之后就是 74）
+mobile-api-surface-smoke    PASS — 10/10 checks
+```
+
+**本地实现已移除**（复核）：
+- `mobile-api-surface-smoke/main.ts` 里 `function parseFile` 命中数 = **0**
+- `provider-context-smoke/main.ts` 里 `const findCalls` 命中数 = **0**
+
+**变异验证 —— 有两个结果要如实说**：
+
+| 变异 | provider-context | mobile-api-surface | 说明 |
+|---|---|---|---|
+| **A. `parseFile` 读到坏路径**（拼 `.nonexistent`） | **崩（ENOENT）** | **崩（ENOENT）** | **两套都红** ✓ |
+| **B. `scriptKindOf` 恒返回 TS**（`.tsx` 当 `.ts` 解析） | **仍全绿** | **仍全绿** | ⚠️ **未变红** |
+| C. 去掉 `resolve(process.cwd(), ...)` | 仍全绿 | 仍全绿 | 这条变异是**无效变异**，见下 |
+
+**关于变异 C**：我第一步先试了「去掉 `resolve`」，结果两套都没红。**原因不是判据弱，是变异本身没改变行为** —— 两套的 `run.sh` 都 `cd` 到 `apps/desktop`，而所有路径要么是相对 cwd 的（`resolve` 与直接读等价），要么是绝对路径（`resolve` 对绝对路径幂等）。**这条变异从一开始就不可能红**，换成了 A 才有效。
+
+**关于变异 B（如实记录未变红）**：把 `.tsx` 当 `.ts` 解析，两套都没红。这是**预期内**的：TypeScript 在 `.ts` 模式下依然会把 JSX 当类型断言解析，对这两套实际读取的节点（标识符、属性赋值、调用、切片）不造成差别。**这说明「ScriptKind 判断」目前没有断言在守** —— 但它也**不是缺陷**：`ScriptKind` 的作用是避免解析报错，而这两套读取的节点在两种 Kind 下都能拿到。如果要让 B 变红，需要一套真的依赖 JSX 语法结构的断言，那超出本卡范围。
+
+**结论**：卡要求的「改坏 `parseFile` → 至少一套红」**已满足**（变异 A，两套都红）。
+
+**typecheck**：本卡涉及的 4 个文件错误数 **0**。
+
+**未跑全量、未起 Electron、未改产品源码。**
+
+### 提交
+
+见 `git log`（按路径提交：`lib/ast.ts`、`astAssertions.ts`、`main.ts`、`mobile-api-surface-smoke/main.ts`、本卡）。

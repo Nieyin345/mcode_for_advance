@@ -1,50 +1,24 @@
 /**
- * 【T68】provider-context-smoke 的 AST 判据工具。
+ * 【T68/T74】`provider-context-smoke` 的 **判据层** finder 与反控夹具。
  *
- * 由来：T61 证明 `readFileSync(源码).includes("某段代码")` 是**空过**的 —— 注释里的
- * 文本、字符串字面量都能让它为真。T64 用 TypeScript 编译器 API 修掉了第一条，本文件
- * 把那套判据抽出来供剩余 6 条共用（**不重写第二份解析器**）。
+ * ## 为什么这些不放进 `scripts/lib/ast.ts`
  *
- * 每条判据的固定结构：
- *   - **判据**：只看 AST 节点，不看文本；
- *   - **正控**：在**已知含目标**的输入上跑同一个 finder，必须命中 —— 证明 finder 没坏；
- *   - **反控**：把目标塞进**字符串字面量/注释**再跑，必须不命中 —— 证明它区分代码与文本。
+ * 每个 finder 都编码了**一条具体判据的语义**：
+ *   - `findPropertyAssignments` 只认 `PropertyAssignment`，**故意**不算 `PropertySignature`
+ *     （类型注解 `pluginNames?: string[]` 不是赋值）；
+ *   - `findSliceWithNegated` 要求 `slice` 的**唯一**参数文本恰好是 `-X`；
+ *   - `findPropertyAccesses` 区分「属性访问」与「属性访问并调用」。
  *
- * 没有正控的「没找到」= 无法区分「真的没有」和「finder 坏了」。
- * 没有反控的「找到了」= 可能只是撞上了注释里的同名文本。
+ * 这些取舍只对 `provider-context-smoke` 成立。提前共享到 lib 等于**为想象中的
+ * 第三个消费者设计**，会让下一套想验别的东西时被迫套用不合适的 finder。
+ *
+ * 机械层（解析、遍历、行号、`findCalls`）在 `../lib/ast.js`。
  */
-import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type * as TS from "typescript";
+import { ts, parseSource, parseFile, walk, lineOf } from "../lib/ast.js";
 
-// bundle 在临时目录跑，那里没有 node_modules —— 必须从项目根运行时解析。
-const requireFromHere = createRequire(resolve(process.cwd(), "package.json"));
-export const ts = requireFromHere("typescript") as typeof TS;
-
-/** 解析一段源码（TS/TSX 按扩展名选 Kind）。 */
-export function parseSource(rel: string, text: string): TS.SourceFile {
-  const kind = rel.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-  return ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true, kind);
-}
-
-/** 从磁盘读并解析。 */
-export function parseFile(absRelToCwd: string): TS.SourceFile {
-  return parseSource(absRelToCwd, readFileSync(resolve(process.cwd(), absRelToCwd), "utf8"));
-}
-
-/** 遍历所有节点（含根）。 */
-export function walk(sf: TS.SourceFile, visit: (node: TS.Node) => void): void {
-  const go = (node: TS.Node): void => { visit(node); ts.forEachChild(node, go); };
-  go(sf);
-}
-
-/** 节点所在行的文本（1-based 行号），用于把 AST 命中映射回源码位置。 */
-export function lineOf(sf: TS.SourceFile, node: TS.Node): number {
-  return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
-}
-
-/* ───────────────────── 几条具名查找器（6 条断言共用） ───────────────────── */
+// 机械层的常用入口在这里一并 re-export，消费方（main.ts）只需 import 一处。
+export { walk, lineOf, parseSource, parseFile, ts };
 
 /** `name: <initializer>` 的**对象字面量属性赋值**（不是类型注解的 PropertySignature）。 */
 export function findPropertyAssignments(sf: TS.SourceFile, name: string): Array<{ valueText: string; line: number }> {
@@ -113,7 +87,15 @@ export function findSliceWithNegated(sf: TS.SourceFile, name: string): Array<{ l
 /**
  * **反控夹具**：把一段代码包成同形源码，但让目标**只出现在字符串字面量/注释里**。
  *
- * 用它跑同一个 finder，断言**命中数为 0** —— 证明判据不是靠"文本里出现这个名字"。
+ * 用它跑同一个 finder，断言**命中数为 0** —— 证明判据不是靠「文本里出现这个名字」。
+ *
+ * ## 为什么它留在这里，不进 `lib/ast.ts`
+ *
+ * 它是**判据夹具**不是机械层：它存在的唯一目的是给「反控」这类断言造输入。按
+ * finder 层同一条理由（编码了具体判据的语义），留在消费方。
+ *
+ * 只有当**第二套**套件真的需要它时，才值得判断该不该提到 lib —— 现在提就是
+ * 为想象中的消费者设计。
  */
 export function fakeSourceWithTextOnly(kind: "string" | "comment", snippet: string): TS.SourceFile {
   const body = kind === "string"

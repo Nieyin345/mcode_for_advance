@@ -35,6 +35,8 @@ import "./prelude.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import ts from "typescript";
+// 【T74】机械层共享（原先本文件自带一份逐字等价的 parseFile，已收进 lib）。
+import { parseFile } from "../lib/ast.js";
 
 import { createWebApi, isWebUnsupportedError } from "@renderer/lib/webApi.js";
 
@@ -88,15 +90,8 @@ const PROXY_ONLY: ReadonlySet<string> = new Set([
 
 /* ────────────────────────── AST helpers ────────────────────────── */
 
-function parseFile(file: string): ts.SourceFile {
-  return ts.createSourceFile(
-    file,
-    readFileSync(file, "utf8"),
-    ts.ScriptTarget.ES2022,
-    true,
-    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-}
+// `parseFile` 已移到 `scripts/lib/ast.js`（T74）—— 与 provider-context-smoke 共用一份。
+// 它同时接受相对 cwd 与绝对路径（本套沿 import 图递归时拿到的是绝对路径）。
 
 function propName(node: ts.Node | undefined): string | null {
   if (node && (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node))) return node.text;
