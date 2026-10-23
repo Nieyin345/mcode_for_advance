@@ -25,6 +25,10 @@ import { docsAiPorts } from "@main/document/docsAiPorts.js";
 import { VendorSlidesExecutor } from "@main/document/slidesExecutor.js";
 import { slidesBridge } from "@main/document/slidesBridge.js";
 import { configureGenofficeNativeViews, makeGenofficeNativeView, nativeHostStatus } from "@main/document/genofficeViewFactories.js";
+// 【T29】原厂四编辑器的关闭守卫（vendor `request*Close` 的转发）。静态 import：
+// 快速失败于编译期；vendor 快照缺失时本模块被 build alias 到 stub，
+// `requestNativeViewClose` 恒 false（Host 侧 fail-closed）。
+import { requestNativeViewClose } from "@main/document/genofficeNativeVendor.js";
 import { registerGenofficeViewAiIpc } from "@main/document/genofficeViewAiVendor.js";
 import { DocumentViewCredentialBroker, readEngineAdminToken } from "@main/document/documentViewCredentialBroker.js";
 import { EngineNodeRegistry } from "@main/workflowEngines/engineNodeRegistry.js";
@@ -152,6 +156,13 @@ export function registerIpcHandlers(): void {
     Object.values(nativeHostStatus()).some(Boolean) ? makeGenofficeNativeView : null,
     (p) => findContainingWorkspaceRoot(p) !== null,
   );
+  // 【T29】原厂四编辑器（pdf/markdown/html/sheets）的关闭守卫：这四家的 dirty
+  // 状态与保存/放弃弹窗长在 vendor 主进程（`request*Close`），页面 preload 不
+  // 订阅 `mcode:document-view:close-check`。宿主把关闭请求转给 vendor 同一份
+  // 实现 —— 不另造脏检查、不另写保存流程。vendor 快照缺失时 stub 恒 false，
+  // Host 对这四个 editor 的关闭 fail-closed（不会静默丢改动）。
+  documentViewHost.setVendorCloseGuard(({ editor, webContents }) =>
+    requestNativeViewClose(editor, webContents));
   if (Object.values(nativeHostStatus()).some(Boolean)) {
     // AI never trusts a renderer-provided project, file path, engine, or session.
     registerGenofficeViewAiIpc(ipcMain, (sender) => {

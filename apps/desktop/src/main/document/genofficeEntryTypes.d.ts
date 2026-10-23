@@ -16,6 +16,8 @@ declare module "@main/document/genofficeSheetsEntry.js" {
   }): void;
   export function createSheetsView(options?: { includeAiHandlers?: boolean; openingWorkbook?: boolean }): WebContentsView;
   export function queueWorkbookForView(contents: WebContents, path: string): void;
+  /** T29: vendor 的关闭守卫（脏时弹 保存/放弃/取消，选保存走渲染端自己的保存链）。 */
+  export function requestSheetsClose(contents: WebContents, parent?: unknown): Promise<boolean>;
 }
 declare module "@main/document/genofficeSlidesEntry.js" {
   import type { WebContentsView } from "electron";

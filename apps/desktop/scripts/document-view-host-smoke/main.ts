@@ -2465,5 +2465,166 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
   rmSync(root24,{recursive:true,force:true});
 }
 
+/* ═════════ T29 原厂四编辑器关闭：转给 vendor 的关闭守卫 ═════════
+ * T7 实测的 P1 缺陷：`closeWithDirtyProtection` 只对 docs 发
+ * `mcode:document-view:close-check`，pdf/markdown/html/sheets 的 vendor
+ * preload 不订阅它 → 2 秒超时 → **永远拒绝关闭**（用户关不掉标签）。
+ * 修复：这四类视图的关闭改为**转给 vendor 的 `request*Close`**（脏时它是
+ * 保存/放弃/取消弹窗，选保存走 vendor 页面自己的保存链）。本段钉住：
+ *  - 转的 kind 与 webContents 就是那个视图的（身份不错位）；
+ *  - 守住「脏 → 不关」「取消 → 不关」「干净/已保存 → 关」三态；
+ *  - 同 docId 并发两次关闭只问 vendor 一次（与 Docs 探针同一个共享承诺）；
+ *  - 没装守卫时 fail-closed（不静默丢改动）；
+ *  - slides 仍是「直接关」的既有语义（不经过守卫）。
+ */
+{
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join: join29 } = await import("node:path");
+  const root29 = mkdtempSync(join29(tmpdir(), "mcode-t29-close-"));
+  const within29 = (p: string) => p.startsWith(root29);
+  const openVendor = (host: DocumentViewHost, docId: string, editor: "pdf" | "markdown" | "html" | "sheets" | "slides") => {
+    const ext = { pdf: "pdf", markdown: "md", html: "html", sheets: "xlsx", slides: "pptx" }[editor];
+    const filePath = join29(root29, `${docId}.${ext}`);
+    writeFileSync(filePath, "T29 fixture");
+    return {
+      filePath,
+      result: host.open({
+        docId,
+        url: `genoffice-app://${editor}/index.html`,
+        editor,
+        filePath,
+        bounds: BOUNDS,
+        visible: true,
+      }),
+    };
+  };
+  // 假 vendor 工厂：与 T28 的 native 套件同形（视图自己带 webContents），
+  // 宿主对原厂视图不重复 loadURL。
+  const makeVendor = () => {
+    const calls: Array<{ kind: string; path: string | null }> = [];
+    const views: DocumentViewLike[] = [];
+    const factory = (path: string | null, kind: string): DocumentViewLike => {
+      calls.push({ kind, path });
+      const wc = {
+        id: 5000 + views.length,
+        loadURL: () => undefined,
+        focus: () => undefined,
+        close: () => undefined,
+        isDestroyed: () => false,
+        setWindowOpenHandler: () => undefined,
+        on: () => undefined,
+      };
+      const view = { webContents: wc, setBounds: () => undefined } as unknown as DocumentViewLike;
+      views.push(view);
+      return view;
+    };
+    return { factory, calls, views };
+  };
+
+  const guardCalls: Array<{ docId: string; editor: string; sameWc: boolean }> = [];
+  const host = new DocumentViewHost({
+    getMainWindow: () => makeFakeWindow(),
+    createView: { vendor: (p, k) => { const v = makeVendor(); return v.factory(p, k); } },
+    withinWorkspace: within29,
+    vendorCloseGuard: async ({ docId, editor, webContents }) => {
+      const live = host.webContentsOf(docId);
+      guardCalls.push({ docId, editor, sameWc: live === webContents });
+      // 本行以下按测试场景注入：默认「用户确认放弃 / 已保存」→ 允许关闭。
+      return true;
+    },
+  });
+
+  // ── (a) 干净视图：守卫被问一次（身份正确），true → 视图真的关掉 ──
+  const pdfOpen = openVendor(host, "t29-pdf", "pdf");
+  eq("T29 pdf 原厂视图打开", pdfOpen.result, { ok: true });
+  guardCalls.length = 0;
+  const pdfClose = await host.closeWithDirtyProtection("t29-pdf");
+  eq("★ T29 pdf：守卫允许后 close 成功（修复前这里永远超时拒绝）", pdfClose, { ok: true });
+  eq("★ T29 pdf：守卫收到的身份就是这个视图（docId/editor/webContents）",
+    guardCalls, [{ docId: "t29-pdf", editor: "pdf", sameWc: true }]);
+  check("T29 pdf：关闭后视图真的销毁并摘表", host.list().length === 0 && host.sessionFor("t29-pdf") === null);
+
+  // ── (b) 四个编辑器逐个：守卫拒绝 → 视图保留、不丢会话（未保存内容不被静默丢） ──
+  for (const editor of ["markdown", "html", "sheets"] as const) {
+    const docId = `t29-${editor}`;
+    const opened = openVendor(host, docId, editor);
+    eq(`T29 ${editor} 原厂视图打开`, opened.result, { ok: true });
+    guardCalls.length = 0;
+    host.setVendorCloseGuard(async ({ docId: id, editor: k, webContents }) => {
+      guardCalls.push({ docId: id, editor: k, sameWc: host.webContentsOf(id) === webContents });
+      return false; // 用户点了「取消」
+    });
+    const refused = await host.closeWithDirtyProtection(docId);
+    check(`★ T29 ${editor}：守卫拒绝（脏/取消/保存失败）→ close 被拒且带人话原因`,
+      refused.ok === false && typeof refused.reason === "string" && refused.reason.includes("未保存"), refused);
+    eq(`★ T29 ${editor}：拒绝后视图仍在（未保存内容没被静默丢弃）`,
+      host.list().map((v) => v.docId), [docId]);
+    check(`T29 ${editor}：拒绝后会话也仍在（同一文件仍被它持有）`, host.sessionFor(docId) !== null);
+    check(`T29 ${editor}：守卫生效一次且身份正确`, guardCalls.length === 1 && guardCalls[0]!.sameWc === true, guardCalls);
+    // 恢复默认守卫，关掉这个视图，避免影响后续断言。
+    host.setVendorCloseGuard(async () => true);
+    eq(`T29 ${editor} 清理关闭`, await host.closeWithDirtyProtection(docId), { ok: true });
+  }
+
+  // ── (c) 同 docId 并发两次关闭：守卫只问一次（与 Docs 探针同一个共享承诺） ──
+  {
+    const opened = openVendor(host, "t29-concurrent", "pdf");
+    eq("T29 并发场景视图打开", opened.result, { ok: true });
+    let resolveGuard!: (allowed: boolean) => void;
+    let guardCallsCount = 0;
+    host.setVendorCloseGuard(async () => {
+      guardCallsCount += 1;
+      return await new Promise<boolean>((resolve) => { resolveGuard = resolve; });
+    });
+    const first = host.closeWithDirtyProtection("t29-concurrent");
+    const second = host.closeWithDirtyProtection("t29-concurrent");
+    resolveGuard(true);
+    const [r1, r2] = await Promise.all([first, second]);
+    eq("★ T29 并发关闭只问 vendor 一次", guardCallsCount, 1);
+    eq("★ T29 并发关闭两次都拿到同一个成功结果", [r1, r2], [{ ok: true }, { ok: true }]);
+    check("T29 并发关闭后视图销毁", host.list().length === 0);
+  }
+
+  // ── (d) 没装守卫：fail-closed（不静默丢改动，也不假装成功） ──
+  {
+    const opened = openVendor(host, "t29-noguard", "markdown");
+    eq("T29 无守卫场景视图打开", opened.result, { ok: true });
+    host.setVendorCloseGuard(null);
+    const refused = await host.closeWithDirtyProtection("t29-noguard");
+    check("★ T29 未装配 vendor 守卫：close fail-closed（拒绝且点名原因）",
+      refused.ok === false && String(refused.reason).includes("守卫未装配"), refused);
+    eq("★ T29 未装配守卫：视图保留", host.list().map((v) => v.docId), ["t29-noguard"]);
+    host.setVendorCloseGuard(async () => true);
+    eq("T29 无守卫场景清理关闭", await host.closeWithDirtyProtection("t29-noguard"), { ok: true });
+  }
+
+  // ── (e) 守卫抛错：close 不炸、如实拒绝（错误信息带出来） ──
+  {
+    const opened = openVendor(host, "t29-throw", "html");
+    eq("T29 抛错场景视图打开", opened.result, { ok: true });
+    host.setVendorCloseGuard(async () => { throw new Error("vendor 爆炸"); });
+    const refused = await host.closeWithDirtyProtection("t29-throw");
+    check("★ T29 守卫抛错：close 如实返回失败（不抛给 IPC，不静默关）",
+      refused.ok === false && String(refused.reason).includes("vendor 爆炸"), refused);
+    host.setVendorCloseGuard(async () => true);
+    eq("T29 抛错场景清理关闭", await host.closeWithDirtyProtection("t29-throw"), { ok: true });
+  }
+
+  // ── (f) slides 语义不变：仍直接关（不经过 vendor 守卫），docs 仍走 close-check 探针 ──
+  {
+    const opened = openVendor(host, "t29-slides", "slides");
+    eq("T29 slides 视图打开", opened.result, { ok: true });
+    let slidesGuardCalls = 0;
+    host.setVendorCloseGuard(async () => { slidesGuardCalls += 1; return false; });
+    eq("★ T29 slides 仍是直接关闭（既有语义，不经 vendor 守卫）",
+      await host.closeWithDirtyProtection("t29-slides"), { ok: true });
+    eq("T29 slides 关闭时守卫零调用", slidesGuardCalls, 0);
+  }
+
+  host.dispose();
+  rmSync(root29, { recursive: true, force: true });
+}
+
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;

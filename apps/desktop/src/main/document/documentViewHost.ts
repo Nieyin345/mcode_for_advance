@@ -178,6 +178,24 @@ export interface DocumentViewHostPorts {
    *  （`ipc/index.ts` 装配）；无头套件注入自动应答。省略 = fail-closed（脏时拒绝
    *  替换），绝不替用户点"放弃"。 */
   confirmDirty?: (input: { docId: string; filePath: string | null }) => Promise<boolean>;
+  /** 【T29】**原厂编辑器（pdf/markdown/html/sheets）的关闭守卫端口** —— 这四家
+   *  的 dirty 状态与"保存后才允许关闭"的流程长在 **vendor 主进程**里
+   *  （`dirtyByWc`/`pendingEditCounts` + `request*Close`），页面 preload **不订阅**
+   *  `mcode:document-view:close-check`。旧的探针路径对它们永远超时，用户关不掉
+   *  标签（T7 实测的 P1 缺陷）。
+   *
+   *  生产装配（`ipc/index.ts`）注入 vendor `request*Close` 的转发
+   *  （`genofficeNativeVendor.ts` 的 `requestNativeViewClose`）；返回值 true =
+   *  可以关闭（干净，或用户选择了保存/放弃），false = 用户取消或保存失败。
+   *  省略 = 退回 Mcode 的 close-check 探针（与修复前一致；无头套件/T7 探针的
+   *  旧装配形态）。 */
+  vendorCloseGuard?: (input: {
+    docId: string;
+    editor: "pdf" | "markdown" | "html" | "sheets";
+    /** 视图的 webContents（vendor 的 `request*Close(contents, parent)` 接收的
+     *  就是它）；宿主只透传，不解释。 */
+    webContents: unknown;
+  }) => Promise<boolean>;
 }
 
 /** 隐藏视图的落点：只挪坐标、保留宽高（与 BrowserManager.hide 同一取舍）。 */
@@ -443,6 +461,8 @@ export class DocumentViewHost {
   private readonly beforeAtomicReplace: (realPath: string) => void | Promise<void>;
   /** 【ARC-007 P0】脏替换确认端口（见 `DocumentViewHostPorts.confirmDirty`）。 */
   private confirmDirty: ((input: { docId: string; filePath: string | null }) => Promise<boolean>) | null;
+  /** 【T29】原厂四编辑器的关闭守卫（见 `DocumentViewHostPorts.vendorCloseGuard`）。 */
+  private vendorCloseGuard: DocumentViewHostPorts["vendorCloseGuard"] | null;
   /** 【ARC-006 Gate A 缺口】引擎编辑器页的凭据注入（可缺省；缺省时带
    *  `workflowEngineId` 的 open 显式拒绝 —— 见 `DocumentViewHostPorts.editorCredentials`）。
    *  生产单例在模块加载时就构造好了，而注入器依赖注册表/Electron session（装配在
@@ -472,6 +492,7 @@ export class DocumentViewHost {
     this.withinWorkspace = ports.withinWorkspace ?? (() => false);
     this.beforeAtomicReplace = ports.beforeAtomicReplace ?? (() => undefined);
     this.confirmDirty = ports.confirmDirty ?? null;
+    this.vendorCloseGuard = ports.vendorCloseGuard ?? null;
     this.editorCredentials = ports.editorCredentials ?? null;
     // ARC-007: native Docs main capabilities are registered only in the
     // production host. Never register GenOffice's standalone global handlers:
@@ -1115,6 +1136,14 @@ export class DocumentViewHost {
     this.viewDisposer = fn;
   }
 
+  /** 【T29】装配期注入原厂四编辑器（pdf/markdown/html/sheets）的关闭守卫 ——
+   *  vendor 的 `request*Close` 转发（见 `genofficeNativeVendor.ts` 的
+   *  `requestNativeViewClose`）。只在装配期调用一次；
+   *  null = 退回 Mcode 的 close-check 探针（修复前的旧行为）。 */
+  setVendorCloseGuard(fn: DocumentViewHostPorts["vendorCloseGuard"] | null): void {
+    this.vendorCloseGuard = fn;
+  }
+
   /** 【ARC-007 P1/GA1】把执行器解析好的 `OpenResult` 推给页面（vendor 通道
    *  `slides:opened`）。页面没在听时静默 —— 它仍可在挂载时 `consumePendingOpen`。 */
   notifySlidesOpened(docId: string, openResult: unknown): void {
@@ -1246,6 +1275,49 @@ export class DocumentViewHost {
     const live = this.views.get(docId);
     if (!live) return this.close(docId);
     if (live.editor === 'slides' || live.workflowEngineId !== null) return this.close(docId);
+    // 【T29】原厂四编辑器（pdf/markdown/html/sheets）的关闭语义长在 **vendor
+    // 主进程**：dirty 状态记在 vendor 的 `dirtyByWc` / `pendingEditCounts` 里，
+    // 「保存 / 放弃 / 取消」由 vendor 的 `request*Close` 弹窗并执行（保存走
+    // vendor 自己的写盘链，与 vendor 独立运行时同一个实现）。它们的页面 preload
+    // **不订阅** `mcode:document-view:close-check` —— 旧的探针路径对这四家必然
+    // 2 秒超时并拒绝关闭（T7 实测：用户关不掉标签，P1）。所以这里接同一份
+    // vendor 守卫（见 `DocumentViewHostPorts.vendorCloseGuard`），不再自造平行
+    // 的脏检查。
+    const vendorEditor = live.editor === 'pdf' || live.editor === 'markdown' ||
+      live.editor === 'html' || live.editor === 'sheets' ? live.editor : null;
+    if (vendorEditor !== null) {
+      // 没有注入守卫 = 无法问清未保存状态：宁可不关也不静默丢改动（fail-closed）。
+      if (this.vendorCloseGuard === null) {
+        return { ok: false, reason: '无法查询编辑器未保存状态（原厂关闭守卫未装配），拒绝关闭' };
+      }
+      if (live.view.webContents.isDestroyed?.() === true) {
+        // 渲染进程已经没了：没有可保护的内存状态，直接销毁视图（与 Docs 探针
+        // 的 fail-closed 不同 —— 那里页面还在、只是不响应，这里页面已不存在）。
+        return this.close(docId);
+      }
+      const task = (async (): Promise<DocViewResult> => {
+        let proceed: boolean;
+        try {
+          proceed = await this.vendorCloseGuard!({
+            docId, editor: vendorEditor, webContents: live.view.webContents,
+          });
+        } catch (err) {
+          return {
+            ok: false,
+            reason: `编辑器关闭检查失败：${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+        if (proceed !== true) {
+          return { ok: false, reason: '编辑器仍有未保存的修改（或保存未完成），已取消关闭' };
+        }
+        // 守卫在等用户选择期间，视图可能已被窗口级清理/另一个 close 销毁。
+        if (this.views.get(docId) !== live) return { ok: true };
+        return this.close(docId);
+      })();
+      this.protectedCloses.set(docId, task);
+      try { return await task; }
+      finally { if (this.protectedCloses.get(docId) === task) this.protectedCloses.delete(docId); }
+    }
     const task = (async (): Promise<DocViewResult> => {
       const contents = live.view.webContents;
       if (typeof contents.send !== 'function' || contents.isDestroyed?.() === true) {

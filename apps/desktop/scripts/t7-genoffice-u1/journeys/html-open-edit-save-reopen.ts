@@ -17,7 +17,7 @@
  *    `insertText` 真输入栈）。
  *  - 保存：**真键盘 Ctrl+S**（html 页面的 keydown → `doSave('save')`）→
  *    `window.htmlApi.save` → vendor `atomicWriteFile`；
- *  - 关闭：生产 `documentView:close`（html 属于 close-check 缺陷那一组）；
+ *  - 关闭：生产 `documentView:close`（T29 起转给 vendor `requestHtmlClose`）；
  *  - 重开：真 OS 重开 → 新视图重开同一文件 → CodeMirror 里文本与磁盘一致。
  */
 import { defineU1Journey, step } from "../../electron-u1/driver/index.js";
@@ -143,23 +143,24 @@ export const htmlJourney = defineU1Journey({
     step.recordSideEffect("@projectDir/t7-html.html", "html-saved"),
     step.assertSideEffect("@projectDir/t7-html.html", { contains: EDITED }, "html-disk-has-edited-text"),
 
-    // ── 关闭（html 属于 close-check 缺陷那一组）──
+    // ── 关闭：生产路径（T29 修复后，html 的关闭转给 vendor `requestHtmlClose`）──
+    // 文件已保存 = 干净，生产 close 必须**直接成功**；被拒时唯一可接受的原因是
+    // 「仍有未保存修改」（那时用 host.close 收尾并如实记录）。
     step.run(async ({ runtime }) => {
       const rt = runtime as HtmlRun;
       const wc = rt.harness.webContentsOf(rt.docId);
       if (wc === null) return { ok: false, detail: "关闭前视图已消失" };
       const production = (await rt.harness.handlers.get("documentView:close")!({ sender: wc }, { docId: rt.docId })) as { ok?: boolean; reason?: string };
-      if (production.ok === true) {
-        return { ok: !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId), observed: { production, defect: null } };
-      }
-      const defect = production.reason ?? "";
-      const refusedAsKnown = defect.includes("未响应关闭检查");
-      rt.harness.host.close(rt.docId);
       const gone = !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId);
+      if (production.ok === true && gone) {
+        return { ok: true, observed: { production, gone } };
+      }
+      const refusedForDirty = String(production.reason ?? "").includes("未保存");
+      rt.harness.host.close(rt.docId);
       return {
-        ok: refusedAsKnown && gone,
-        observed: { production, defect, closedByHost: gone },
-        ...(refusedAsKnown ? {} : { detail: `生产 close 拒绝的原因不是已知缺陷：${defect}` }),
+        ok: refusedForDirty,
+        observed: { production, gone, closedByHost: !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId) },
+        ...(refusedForDirty ? {} : { detail: `生产 close 拒绝的原因不是「有未保存修改」：${production.reason ?? ""}` }),
       };
     }, "close-production-path", { assert: true }),
 

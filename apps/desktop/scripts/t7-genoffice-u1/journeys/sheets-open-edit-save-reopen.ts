@@ -14,16 +14,16 @@
  *  - 保存：页面的 `Ctrl+S`（`ExcelShell` 的 Quick Access Save → `handleSave`）
  *    → `window.desktopApi.saveWorkbookEdits` → vendor `workbook:save`
  *    → `writeWorkbookTo`（真 sidecar / JS 回退）；
- *  - 关闭：生产 `documentView:close`（原厂分支——见下「已知缺陷」）；
+ *  - 关闭：生产 `documentView:close`（T29 起转给 vendor `requestSheetsClose`）；
  *  - 重开：真 OS 重开 → 新视图重开工作簿 → 断言单元格与磁盘。
  *
- * ## 已知生产缺陷（本旅程同时取证）
+ * ## 关闭（T29 修复后）
  *
- * `DocumentViewHost.closeWithDirtyProtection` 只对 `editor === "slides"` 跳过
- * `close-check` 探针；sheets/pdf/markdown/html 的 vendor preload 没有
- * `mcode:document-view:close-check` 监听，生产面板关闭这四类视图会永远得到
- * 「编辑器未响应关闭检查」。与 markdown 旅程同一条：先断言缺陷表现，再用
- * `host.close` 完成关闭（文件已保存，没有未保存内容可丢）。
+ * T29 之前 `DocumentViewHost.closeWithDirtyProtection` 只对 `editor === "slides"`
+ * 跳过 `close-check` 探针；sheets/pdf/markdown/html 的 vendor preload 没有
+ * `mcode:document-view:close-check` 监听，生产面板关闭这四类视图恒被拒。
+ * T29 起宿主把这四家的关闭**转给 vendor 自己的 `request*Close`**（harness 按生产
+ * 装配注入同一份守卫），于是保存后的干净关闭走通生产路径。
  */
 import { defineU1Journey, step } from "../../electron-u1/driver/index.js";
 import { UNIQUE } from "../fixtures.js";
@@ -146,24 +146,24 @@ export const sheetsJourney = defineU1Journey({
       return await readA1(rt, EDITED);
     }, "xl-disk-a1-edited-independent", { assert: true }),
 
-    // ── 关闭（生产缺陷取证 + host.close 完成，理由见文件头）──
+    // ── 关闭：生产路径（T29 修复后，sheets 的关闭转给 vendor `requestSheetsClose`）──
+    // 文件已保存 = 干净，生产 close 必须**直接成功**；被拒时唯一可接受的原因是
+    // 「仍有未保存修改」（那时用 host.close 收尾并如实记录）。
     step.run(async ({ runtime }) => {
       const rt = runtime as SheetsRun;
       const wc = rt.harness.webContentsOf(rt.docId);
       if (wc === null) return { ok: false, detail: "关闭前视图已消失" };
       const production = (await rt.harness.handlers.get("documentView:close")!({ sender: wc }, { docId: rt.docId })) as { ok?: boolean; reason?: string };
-      if (production.ok === true) {
-        return { ok: !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId),
-          observed: { production, defect: null } };
-      }
-      const defect = production.reason ?? "";
-      const refusedAsKnown = defect.includes("未响应关闭检查");
-      rt.harness.host.close(rt.docId);
       const gone = !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId);
+      if (production.ok === true && gone) {
+        return { ok: true, observed: { production, gone } };
+      }
+      const refusedForDirty = String(production.reason ?? "").includes("未保存");
+      rt.harness.host.close(rt.docId);
       return {
-        ok: refusedAsKnown && gone,
-        observed: { production, defect, closedByHost: gone },
-        ...(refusedAsKnown ? {} : { detail: `生产 close 拒绝的原因不是已知缺陷：${defect}` }),
+        ok: refusedForDirty,
+        observed: { production, gone, closedByHost: !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId) },
+        ...(refusedForDirty ? {} : { detail: `生产 close 拒绝的原因不是「有未保存修改」：${production.reason ?? ""}` }),
       };
     }, "close-production-path", { assert: true }),
 

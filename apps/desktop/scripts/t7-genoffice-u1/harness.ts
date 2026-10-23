@@ -44,6 +44,8 @@ import { ProjectRepo } from "@main/store/repositories.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { initDocumentHandoffProtocol } from "@main/document/documentViewHandoff.js";
 import { configureGenofficeNativeViews, makeGenofficeNativeView, nativeHostStatus } from "@main/document/genofficeViewFactories.js";
+// 【T29】生产装配同一条关闭守卫（vendor `request*Close` 转发）。
+import { requestNativeViewClose } from "@main/document/genofficeNativeVendor.js";
 import { registerGenofficeViewAiIpc } from "@main/document/genofficeViewAiVendor.js";
 
 /** 本套件在真机上的宿主句柄（旅程的 `run` 步骤用它驱动生产 API）。 */
@@ -161,6 +163,13 @@ export async function assembleHarness(options: {
     () => true, // 探针只打开本套件自己的夹具；围栏由 Host 的 filePath 检查覆盖
   );
   host.setVendorViewFactory(makeGenofficeNativeView, (p) => findContainingWorkspaceRoot(p) !== null);
+  // 【T29】生产装配（`ipc/index.ts`）给宿主注入原厂四编辑器的关闭守卫 ——
+  // vendor `request*Close` 的转发。T7 的 harness 不跑 `ipc/index.ts`，这里补
+  // **同一份**转发；不补的话，修复后的宿主对这四家关闭 fail-closed（旧形态），
+  // 旅程看到的就是「守卫未装配」而不是生产行为。
+  // vendor 不脏时直接返回 true（不弹窗）；脏时才弹「保存/放弃/取消」——
+  // 旅程里的 Ctrl+S 已保存，所以关闭路径不会挂起等系统弹窗。
+  host.setVendorCloseGuard(({ editor, webContents }) => requestNativeViewClose(editor, webContents));
 
   // ── 4b. 共享视图 AI 桥（生产 `ipc/index.ts:155-162` 同一条）──
   // 页面挂载时会调 `ai:get-settings` 等通道；没有对端就是 unhandled rejection

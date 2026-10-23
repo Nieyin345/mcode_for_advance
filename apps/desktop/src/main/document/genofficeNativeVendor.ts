@@ -4,18 +4,19 @@
  * Import only vendor main entry points: they own their original preload and IPC.
  */
 // @ts-ignore — upstream is an optional, gitignored checkout outside our TS project.
-import { configurePdfRuntime, createPdfView } from "../../../../../genoffice/apps/pdf/src/main/pdf-main.js";
+import { configurePdfRuntime, createPdfView, requestPdfClose } from "../../../../../genoffice/apps/pdf/src/main/pdf-main.js";
 // @ts-ignore — resolved by electron-vite only when the checkout is present.
-import { configureMarkdownRuntime, createMarkdownView } from "../../../../../genoffice/apps/markdown/src/main/markdown-main.js";
+import { configureMarkdownRuntime, createMarkdownView, requestMarkdownClose } from "../../../../../genoffice/apps/markdown/src/main/markdown-main.js";
 // @ts-ignore — resolved by electron-vite only when the checkout is present.
-import { configureHtmlRuntime, createHtmlView } from "../../../../../genoffice/apps/html/src/main/html-main.js";
+import { configureHtmlRuntime, createHtmlView, requestHtmlClose } from "../../../../../genoffice/apps/html/src/main/html-main.js";
 // @ts-ignore — optional upstream checkout; keep the original view entry points.
-import { configureSheetsRuntime, createSheetsView, queueWorkbookForView } from "@main/document/genofficeSheetsEntry.js";
+import { configureSheetsRuntime, createSheetsView, queueWorkbookForView, requestSheetsClose } from "@main/document/genofficeSheetsEntry.js";
 // @ts-ignore — optional upstream checkout; the original slides main registers its own IPC.
 import { configureSlidesRuntime, createSlidesView } from "@main/document/genofficeSlidesEntry.js";
 import { documentViewHost, type DocumentViewLike } from "./documentViewHost.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { log } from "@main/lib/logger.js";
+import { BrowserWindow } from "electron";
 
 /** Authoritative owner/path checks, injected into the vendor IPC facade. */
 const paneGuard = (kind: "sheets" | "slides") => ({
@@ -66,5 +67,40 @@ export function createNativeView(path: string | null, kind: "pdf" | "markdown" |
       return view as unknown as DocumentViewLike;
     }
     case "slides": return createSlidesView(path) as unknown as DocumentViewLike;
+  }
+}
+
+/**
+ * 【T29】原厂四编辑器（pdf/markdown/html/sheets）的**关闭守卫** —— 直接转发
+ * vendor 自己的 `request*Close`，不复制它的脏判断或保存流程。
+ *
+ * 为什么必须由 vendor 回答：dirty 状态记在 vendor 主进程的 `dirtyByWc` /
+ * `pendingEditCounts` 里（页面经 `setDirty` / `notifyPendingEdits` 上报），
+ * 「保存 > 放弃 > 取消」的弹窗和「选保存时让渲染端走它自己的保存链」也在
+ * vendor 的 `request*Close` 里。Mcode 侧只有这两条现成的 `isDirty` 访问器，
+ * 没有等价能力；把判断搬到宿主等于造第二套保存语义（仓库硬规矩 2）。
+ *
+ * vendor 的 `request*Close(contents, parent?)` 不传 parent 时用无父窗口的
+ * `dialog.showMessageBox(options)` —— 在 Mcode 里由 `confirmDirty` 之外的一条
+ * 独立系统弹窗呈现；这是 vendor 的原始行为，不加壳。
+ *
+ * 返回 true = 可以关闭（干净，或用户选了保存且保存成功 / 明确放弃）；
+ * false = 用户取消或保存失败。未装配的 kind 一律 false（fail-closed）。
+ */
+export async function requestNativeViewClose(
+  kind: "pdf" | "markdown" | "html" | "sheets",
+  webContents: unknown,
+): Promise<boolean> {
+  // vendor 的签名是 `(contents: WebContents, parent?: BrowserWindow|null)`；
+  // 宿主只保证透传它自己的 webContents，类型面由本 seam 收窄。
+  const contents = webContents as Parameters<typeof requestPdfClose>[0];
+  // 弹窗挂在主窗口上（与生产 `confirmDirty` 的 `dialog.showMessageBox(win, …)`
+  // 同一取舍：模态归属给用户正在看的窗口）。窗口没了就退回 vendor 的无父形态。
+  const parent = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null;
+  switch (kind) {
+    case "pdf": return await requestPdfClose(contents, parent);
+    case "markdown": return await requestMarkdownClose(contents, parent);
+    case "html": return await requestHtmlClose(contents, parent);
+    case "sheets": return await requestSheetsClose(contents, parent);
   }
 }

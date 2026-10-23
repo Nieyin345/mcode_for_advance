@@ -8,3 +8,10 @@ export function configureNativeRuntimes(_roots: Record<"pdf" | "markdown" | "htm
 export function createNativeView(_path: string | null, _kind: "pdf" | "markdown" | "html" | "sheets" | "slides"): DocumentViewLike {
   throw new Error("GenOffice vendor snapshot is not installed");
 }
+/** T29: no vendor snapshot = no close guard; the Host fails closed on close. */
+export async function requestNativeViewClose(
+  _kind: "pdf" | "markdown" | "html" | "sheets",
+  _webContents: unknown,
+): Promise<boolean> {
+  return false;
+}

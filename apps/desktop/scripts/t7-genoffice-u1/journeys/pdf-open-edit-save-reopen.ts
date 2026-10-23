@@ -14,7 +14,7 @@
  *  - 保存：**真键盘 Ctrl+S**（pdf 页面自己的 keydown → `save()`）→
  *    `window.pdfApi.save({path, rotations…})` → vendor `pdf:save` →
  *    `savePdfToPath`（pdf-lib 原子写；实测不需要 pdfium wasm）；
- *  - 关闭：生产 `documentView:close`（pdf 属于 close-check 缺陷那一组，见下）；
+ *  - 关闭：生产 `documentView:close`（T29 起转给 vendor `requestPdfClose`）；
  *  - 重开：真 OS 重开 → 新视图重开同一 PDF → 断言页面旋转仍在 + 磁盘一致。
  */
 import { defineU1Journey, step } from "../../electron-u1/driver/index.js";
@@ -164,23 +164,26 @@ export const pdfJourney = defineU1Journey({
         : { ok: false, observed: { size: bytes.length }, detail: "保存后的 PDF 字节里没有 /Rotate 90" };
     }, "pdf-disk-has-rotation", { assert: true }),
 
-    // ── 关闭（pdf 属于 close-check 缺陷那一组，见 markdown 旅程的说明）──
+    // ── 关闭：生产路径（T29 修复后，vendor 关闭守卫由 harness 按生产装配）──
+    // 文件已保存（干净）：生产 `documentView:close` 必须**直接成功**。
+    // T29 之前这里恒被 close-check 探针拒绝；修复后旧断言会掩盖生产真实行为，
+    // 所以改成「必须走通生产路径」。若被拒，唯一可接受的原因是 vendor 守卫
+    // 认为仍有未保存修改（那时用 host.close 完成收尾并如实记录）。
     step.run(async ({ runtime }) => {
       const rt = runtime as PdfRun;
       const wc = rt.harness.webContentsOf(rt.docId);
       if (wc === null) return { ok: false, detail: "关闭前视图已消失" };
       const production = (await rt.harness.handlers.get("documentView:close")!({ sender: wc }, { docId: rt.docId })) as { ok?: boolean; reason?: string };
-      if (production.ok === true) {
-        return { ok: !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId), observed: { production, defect: null } };
-      }
-      const defect = production.reason ?? "";
-      const refusedAsKnown = defect.includes("未响应关闭检查");
-      rt.harness.host.close(rt.docId);
       const gone = !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId);
+      if (production.ok === true && gone) {
+        return { ok: true, observed: { production, gone } };
+      }
+      const refusedForDirty = String(production.reason ?? "").includes("未保存");
+      rt.harness.host.close(rt.docId);
       return {
-        ok: refusedAsKnown && gone,
-        observed: { production, defect, closedByHost: gone },
-        ...(refusedAsKnown ? {} : { detail: `生产 close 拒绝的原因不是已知缺陷：${defect}` }),
+        ok: refusedForDirty,
+        observed: { production, gone, closedByHost: !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId) },
+        ...(refusedForDirty ? {} : { detail: `生产 close 拒绝的原因不是「有未保存修改」：${production.reason ?? ""}` }),
       };
     }, "close-production-path", { assert: true }),
 

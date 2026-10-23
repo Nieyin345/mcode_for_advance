@@ -13,7 +13,7 @@
  *    同一条 transaction）；
  *  - 保存：**真键盘 Ctrl+S** → 页面 `doSave('save')` → `window.markdownApi.save`
  *    → vendor 主进程 `atomicWriteFile`（原子写）；
- *  - 关闭：生产 `documentView:close`（原厂分支直接 `close()`）；
+ *  - 关闭：生产 `documentView:close`（T29 起转给 vendor `requestMarkdownClose`）；
  *  - 重开：真 OS 重开 → 新视图重新 consumePending → 断言 DOM 与磁盘。
  */
 import { defineU1Journey, step } from "../../electron-u1/driver/index.js";
@@ -98,33 +98,27 @@ export const markdownJourney = defineU1Journey({
     step.recordSideEffect("@projectDir/t7-markdown.md", "md-saved"),
     step.assertSideEffect("@projectDir/t7-markdown.md", { contains: EDITED }, "md-disk-has-edited-text"),
 
-    // ── 关闭 —— **如实记录生产缺陷**：`closeWithDirtyProtection` 只对 slides
-    //    绕过 `close-check` 探针；markdown/html/pdf/sheets 的 vendor preload
-    //    从不监听 `mcode:document-view:close-check`（只有 Docs 的
-    //    `documentViewPreload.ts` 监听），于是生产面板关闭这四类编辑器**永远**
-    //    返回「编辑器未响应关闭检查；为保护未保存内容，拒绝关闭」。
-    //    本步同时验证两件事：(a) 生产 `documentView:close` 确实拒绝（缺陷仍
-    //    在，是证据不是断言失败）；(b) 直接 `host.close` 能关闭（文件已保存，
-    //    没有未保存内容可丢）。
+    // ── 关闭：生产路径（T29 修复后）──
+    // T29 之前 `closeWithDirtyProtection` 只对 slides 绕过 close-check 探针，
+    // markdown/html/pdf/sheets 的 vendor preload 不订阅它 → 生产 close 恒被拒。
+    // 现在宿主把这四个 editor 的关闭转给 vendor 的 `request*Close`（harness 按
+    // 生产装配注入同一份守卫）。文件已保存 = 干净，生产 close 必须**直接成功**；
+    // 若被拒，唯一可接受的原因是「仍有未保存修改」（那时用 host.close 收尾并如实记录）。
     step.run(async ({ runtime }) => {
       const rt = runtime as MdRun;
       const wc = rt.harness.webContentsOf(rt.docId);
       if (wc === null) return { ok: false, detail: "关闭前视图已消失" };
       const production = (await rt.harness.handlers.get("documentView:close")!({ sender: wc }, { docId: rt.docId })) as { ok?: boolean; reason?: string };
-      if (production.ok === true) {
-        // 缺陷已修（或这条路径变了）：按生产路径关闭也算通过。
-        return { ok: !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId),
-          observed: { production, defect: null },
-          detail: "生产 close 直接成功（close-check 缺陷可能已被修复）" };
-      }
-      const defect = production.reason ?? "";
-      const refusedAsKnown = defect.includes("未响应关闭检查");
-      rt.harness.host.close(rt.docId);
       const gone = !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId);
+      if (production.ok === true && gone) {
+        return { ok: true, observed: { production, gone } };
+      }
+      const refusedForDirty = String(production.reason ?? "").includes("未保存");
+      rt.harness.host.close(rt.docId);
       return {
-        ok: refusedAsKnown && gone,
-        observed: { production, defect, closedByHost: gone },
-        ...(refusedAsKnown ? {} : { detail: `生产 close 拒绝的原因不是已知的 close-check 缺陷：${defect}` }),
+        ok: refusedForDirty,
+        observed: { production, gone, closedByHost: !rt.harness.host.list().some((v: { docId: string }) => v.docId === rt.docId) },
+        ...(refusedForDirty ? {} : { detail: `生产 close 拒绝的原因不是「有未保存修改」：${production.reason ?? ""}` }),
       };
     }, "close-production-path", { assert: true }),
 
