@@ -145,7 +145,16 @@ function moveIfNeeded(from: string, to: string, label: string): void {
       renameSync(from, to);
       log.info(`dataRoot: moved ${label} ${from} -> ${to}`);
     } catch (err) {
-      // 见文件头:目录被资源管理器窗口锁住时 rename 会 EPERM,复制不受影响
+      // 见文件头:目录被资源管理器窗口锁住时 rename 会 EPERM,改用复制。
+      //
+      // ⚠️ **`cpSync` 不是"一定成功"的兜底**：Node 22.21.1 在 Windows 上，
+      // 路径含**非 ASCII 字符**（如 `C:\Users\张伟\`）时 `fs.cpSync` 会 native
+      // 崩溃（`0xC0000005` / `0xC0000409`），**`catch` 接不住——进程直接死**。
+      // 用户看到的是应用无声消失，没有任何错误提示。
+      //
+      // 长度无关：132 字符的纯英文路径正常，48 字符的中文路径崩。
+      // 已在 v22.14.0 / v20.18.0 上验证正常 → 是 22.21.1 的回归。
+      // 修复方向见 tasks/T90（非 ASCII 时降级到手写递归）。
       log.warn(`dataRoot: rename ${label} failed (${(err as Error).message}); copying instead`);
       cpSync(from, to, { recursive: true });
       try {
@@ -195,6 +204,7 @@ export function copyDataRootTo(target: string): string | null {
     }
   }
   try {
+    // ⚠️ 同 `:150` 上方注释：路径含非 ASCII 时 `cpSync` 会 native 崩溃，`catch` 接不住。
     cpSync(from, to, { recursive: true });
     log.info(`dataRoot: copied ${from} -> ${to}`);
     return null;
