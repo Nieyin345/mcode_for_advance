@@ -298,4 +298,4 @@ PROBE_RESULT:ok
 
 ### 九、提交
 
-`<见提交>`。
+`5f954755` —— `fix(T90): dataRoot's cpSync crashes the app on non-ASCII paths`（6 文件，+419/-3）。
