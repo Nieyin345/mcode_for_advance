@@ -214,13 +214,23 @@ console.log("\n[T72] 留白消息的措辞");
     { type: "text", x: 120, y: 260, w: 900, h: 120, paragraphs: [{ runs: [{ text: "封面标题", sizePt: 54 }] }] },
     { type: "text", x: 120, y: 400, w: 900, h: 60, paragraphs: [{ runs: [{ text: "副标题", sizePt: 24 }] }] },
   ]};
-  eq("★ T100 正控：满版底的封面（无 type 字段）不报留白",
+  eq("★ T100 正控：满版底的封面（无 type 字段、有 54pt 大字）不报留白",
     checkDeckPatterns([coverNoType]).findings.filter(f => f.rule === "layout.whitespace").length, 0);
 
-  // 反控：同样是两个元素、但**没有满版底** —— 那是一个做得差的内容页，必须报。
+  // 反控 1：同样是两个元素、但**没有满版底** —— 那是一个做得差的内容页，必须报。
   // （这条正是 t65 原先那个 `thin` 用例的形态；它证明几何判据没有把稀疏内容页也放过。）
   eq("★ T100 反控：稀疏内容页（无满版底）仍报留白",
     checkDeckPatterns([thin]).findings.filter(f => f.rule === "layout.whitespace").length, 1);
+
+  // 反控 2（T73 那 8 条的形态）：**有满版底**但字号是正文级的稀疏内容页 ——
+  // 只靠「满版底 + 元素少」会把它误判成封面（T73 因此掉 8 条）。必须有 ≥40pt 大字才算封面。
+  const sparseWithBackdrop: DeckPageSpec = { elements: [
+    { type: "shape", shape: "rect", x: 0, y: 0, w: 1280, h: 720, fill: "#FFFFFF" }, // 满版底
+    { type: "text", x: 80, y: 60, w: 1120, h: 90, paragraphs: [{ runs: [{ text: "稀疏内容页", sizePt: 32 }] }] },
+    { type: "text", x: 80, y: 200, w: 1120, h: 290, paragraphs: [{ runs: [{ text: "短正文", sizePt: 20 }] }] },
+  ]};
+  eq("★ T100 反控：有满版底但只有正文级字号 → 仍是内容页，必须报留白",
+    checkDeckPatterns([sparseWithBackdrop]).findings.filter(f => f.rule === "layout.whitespace").length, 1);
 }
 
 

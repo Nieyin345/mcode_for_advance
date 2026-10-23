@@ -496,38 +496,68 @@ function predictedBottomRatioAfterShrinkingCards(page: DeckPageSpec): number {
  *
  * ## 为什么不看 `page.type`
  *
- * 原来这里写的是 `const type = page.type ?? "content"`。问题是**模型写 spec 时通常
- * 不填 `type`**（`guide slides spec` 里它是可选的、和 outline 对齐用的元数据），
- * 于是封面页一律走 `"content"` 的紧阈值 → **封面必报留白**。豁免在等一个不会来的
- * 字段，等于没有。
+ * 原来这里是 `const type = page.type ?? "content"`。模型写 spec 时通常**不填** `type`
+ * （`guide slides spec` 里它是可选的对齐元数据），于是封面一律走 `content` 的紧阈值
+ * → **封面必报留白**。豁免在等一个不会来的字段，等于没有。
  *
  * ## 为什么选几何，不选「从 outline 取 type」
  *
- * `readDeckPatterns` 读的是 spec 目录，outline 不一定在（也可以完全不写）。而封面
- * 在版面上有很确定的形状特征，**判据应当从它真正能看到的东西推**，而不是从另一个
- * 可能缺席的文件推。
+ * `readDeckPatterns` 读的是 spec 目录，outline 不一定在。判据应当从它**真正能看到**
+ * 的东西推。
  *
- * ## 判据：**必须有满版底板**
+ * ## 三版判据的演进（每一版都是被实测推翻的）
  *
- * ⚠️ **第一版判据是错的，记在这里**：我原先写的是「内容元素 ≤ 3 个就算封面」。
- * `t65` 立刻抓到反例 —— 一个 `type: "content"` 的页面只有「标题 + 一张卡」两个元素、
- * 底边 60%，右下大片空白，**那是该报的**，却被我的判据当成封面放过了（loose 阈值
- * 55% < 60%）。
+ * | 版本 | 判据 | 结果 |
+ * |---|---|---|
+ * | v1 | `page.type === "cover"` | 模型不填 → **封面必报** |
+ * | v2 | 内容元素 ≤ 3 个 | **T73 掉 8 条**：稀疏内容页被当成封面，`layout.whitespace` 漏报 |
+ * | v3（现在） | 满版底 + 内容 ≤ 4 + **有 ≥ 40pt 的大字** | 见下 |
  *
- * **「元素少」不等于「是封面」**：一个做得差的内容页也很稀疏。封面真正的特征是
- * **有一块铺满画布的底板**（深色或图片），文字压在它上面。
+ * ⚠️ **v2 的教训要留着**：`t65` 那个 `thin` 用例（`type: "content"`、标题 + 一张卡、
+ * 底边 60%）**本该报留白**，却被「元素少」放过了。**「元素少」不是封面的特征** ——
+ * 一个做得差的内容页同样稀疏。
  *
- * 所以现在的判据是：**有满版底（`isFullBleed`）且底色上的内容元素 ≤ 4 个**。
- * 没有满版底的稀疏页面按内容页走紧阈值 —— 那正是 `t65` 那个用例要的。
+ * ## v3 的判据
  *
- * ⚠️ **这仍是弱判据，只用来选参考线（loose vs tight）**，不直接决定报不报。
+ * 封面 = **满版底**（深色/图片铺满画布）+ 底色上的元素 ≤ 4 个 + **至少一个 ≥ 40pt**。
+ *
+ * 最后那条是 v2 缺的关键：**封面标题通常很大**（`guide slides design` 的样例是 54pt），
+ * 而稀疏内容页的字号是正文级的（T73 的 sparse fixture 是 40pt 标题 + 20pt 正文，
+ * **没有满版底**，所以它走不到这条；但如果有满版底，40pt 会把它误判 —— 见下）。
+ *
+ * ⚠️ **这条判据仍是「宁可漏判封面，也不要把内容页当封面」**：误判成封面会让真问题
+ * 漏报（T73 那 8 条），而误判成内容页最多是多报一次留白 —— 后者用户看得见，前者看不见。
+ *
+ * 阈值 40pt 取自 `guide slides design` 的封面样例（54pt 主标题 + 24pt 副标题）与
+ * 内容页正文（通常 18–24pt）之间的空档。
  */
 function looksLikeCoverOrClosing(page: DeckPageSpec): boolean {
   const els = page.elements ?? [];
   const hasFullBleed = els.some((e) => isFullBleed(e));
   if (!hasFullBleed) return false; // 没有铺满的底 —— 按内容页算
   const onTop = els.filter((e) => !isFullBleed(e));
-  return onTop.length <= 4;
+  if (onTop.length > 4) return false;
+  // 必须有「大标题」级文字。`sizePt` 藏在 paragraphs → runs 里，取最大值。
+  return onTop.some((e) => maxFontSizeOf(e) >= COVER_HEADLINE_MIN_PT);
+}
+
+/** 封面的「大标题」下限（pt）。见 `looksLikeCoverOrClosing` 的论证。 */
+const COVER_HEADLINE_MIN_PT = 40;
+
+/** 一个元素里出现的最大字号（pt）。没有文字 / 没有字号时返回 0。 */
+function maxFontSizeOf(e: DeckElement): number {
+  const paragraphs = (e as { paragraphs?: unknown }).paragraphs;
+  if (!Array.isArray(paragraphs)) return 0;
+  let max = 0;
+  for (const p of paragraphs) {
+    const runs = (p as { runs?: unknown })?.runs;
+    if (!Array.isArray(runs)) continue;
+    for (const r of runs) {
+      const size = (r as { sizePt?: unknown })?.sizePt;
+      if (typeof size === "number" && size > max) max = size;
+    }
+  }
+  return max;
 }
 
 /**
