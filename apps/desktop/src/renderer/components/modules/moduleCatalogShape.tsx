@@ -48,8 +48,15 @@ export function contributionsOf<S extends ModuleContribution["slot"]>(
   // 形状不对时**返回空而不是抛**。抛会让调用方(尤其 RightPanel 那条渲染期直接调用)
   // 整棵子树卸载;返回空至少不炸页面。「不炸」本身不构成本卡的验收 —— 调用方必须
   // 用 {@link ModuleCatalogNotice} 把原因显式渲染出来,那才是"不静默"。
-  if (moduleCatalogShapeError(catalog) !== null) return [];
-  return catalog!.modules.flatMap(module => module.contributions.filter(
+  //
+  // ⚠️【T49】`undefined` 单独判:它**不是**形状错误(那是"还没读到"的加载态,
+  // `moduleCatalogShapeError` 对它返回 null),但下面要解引用 `catalog.modules`。
+  // 四个生产调用点(RightPanel/CommandPalette/两个 Module 面板)都把 `useRpc` 的
+  // `data` 直接传进来,而 `data` 在**第一次请求成功之前恒为 `undefined`** ——
+  // 少了这一句,主界面首帧就 TypeError 白屏(实测复现见
+  // `scripts/t49-contributions-undefined-smoke/`)。
+  if (catalog === undefined || moduleCatalogShapeError(catalog) !== null) return [];
+  return catalog.modules.flatMap(module => module.contributions.filter(
     (c): c is Extract<ModuleContribution, { slot: S }> => c.slot === slot,
   ).map(contribution => ({ module, contribution })));
 }
