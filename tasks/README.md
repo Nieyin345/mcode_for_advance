@@ -57,6 +57,7 @@
 | T36 | 三套 smoke 夹具过时（T65/T50/正则漏算 schema 包装） | P1 | 无 | V |
 | T37 | `mobile-pairing-smoke` 3 秒超时太紧，全量并发下随机红 | P2 | 无 | W |
 | T38 | 三套打包期失败：桩缺导出、`.node` loader、zustand 5 default | P1 | 无 | W |
+| T39 | **GenOffice UI 换壳：保留编辑内核，替换 ribbon/菜单/AI 面板** | **P0 产品要求** | T7+T24 | X |
 
 ### 推荐第一波
 
