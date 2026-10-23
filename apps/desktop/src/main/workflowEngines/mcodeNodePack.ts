@@ -49,6 +49,113 @@ export const MCODE_AGENT_NODE_TYPE = "mcode-agent";
 /** 本片节点包版本（`package.json` / 报告可复核）。 */
 export const MCODE_NODE_PACK_VERSION = 1;
 
+/**
+ * 【T28】**让 `x-mcode` 活过原生编辑器的导出/导入往返**。
+ *
+ * ## 上游规则（node-red 5.0.8，实码取证）
+ *
+ * `@node-red/editor-client/src/js/nodes.js` 的两条序列化路径**都只抄
+ * `_def.defaults` 里声明过的键**：
+ *
+ *   - `convertWorkspace(n)`（tab）：`for (var d in n._def.defaults) node[d] = n[d];`
+ *   - `convertNode(n)`（普通节点）：同一个循环。
+ *
+ * 也就是说：Mcode 挂在节点/tab 上的 `x-mcode` 只要**没在 defaults 里声明**，用户点
+ * 「导出」拿到的 JSON 里就没有它；再「导入」回来，图还在、身份没了 —— T8 缺陷 2。
+ * 声明之后，两条路径都会把该键原样带出/带回（`importNodes` 按 defaults 逐个
+ * `node[d] = n[d]` 还原，见同文件）。
+ *
+ * ## tab 为什么是「就地补」，而不是 `registerType("tab", …)`
+ *
+ * tab 类型由 editor-client **内置**（`nodeDefinitions['tab'] = { defaults: {...} }`），
+ * 且 `registerNodeType` 对任何一个不在当前 node set 里的类型直接报
+ * `palette.event.unknownNodeRegistered` 并**丢弃整个定义**（实测：defaults 不变）。
+ * 唯一不被拒绝的官方机制是**就地给这个内置定义对象的 defaults 加键** —— 节点 HTML 里的
+ * `<script type="text/javascript">` 与页面脚本走同一条 `appendConfig` 执行路径，加载
+ * 时序上节点包脚本先于 flows 导入，所以导入时 `_def.defaults` 已经带上了它。
+ *
+ * ## 升级鲁棒性（fail-closed，不静默丢身份）
+ *
+ * 补丁自带**运行时自检**：`getType("tab")` 不存在、或 `defaults` 不是对象、或补丁后
+ * `defaults` 里仍读不到 `x-mcode` → 记 `console.error` 并抛错（页面上是一次显式的
+ * 失败，而不是"导出的 JSON 看起来正常、身份悄悄没了"）。真实往返由
+ * `x-mcode-roundtrip-smoke` 用**真上游源码**逐字节验证；上游升级改了 tab 形状时，
+ * 那条回归会先红。
+ */
+export const MCODE_TAB_META_PROPERTY = "x-mcode";
+
+/**
+ * 每个 Mcode 节点类型 `defaults` 里都要有的一格。`value: undefined` 是刻意的：
+ * 全新从 palette 拖出来的节点不该凭空带一个 `x-mcode`；但**导入时**上游会把 JSON 里
+ * 的同名键原样抄进来（`applyNodeDefaults` 只在 `n[d] === undefined` 时填默认值）。
+ */
+export const MCODE_X_MCODE_DEFAULT_ENTRY = '"x-mcode": { value: undefined }';
+
+/**
+ * 给内置类型定义补 `x-mcode` 的浏览器脚本（`<script type="text/javascript">` 的
+ * 内容）。与节点注册脚本同一条执行路径；失败是**响的**（console.error + throw）。
+ *
+ * ## 为什么不止 tab
+ *
+ * Mcode 的迁移器会把若干节点落到 **Node-RED 内置类型**（`flowMigration.ts` 的
+ * `effectiveNodeRedTypeOf`）：`manual`/`schedule` trigger → `inject`、`file` trigger →
+ * `watch`、condition → `switch`、command 与非 JS 的 code → `exec`、JS 的 code →
+ * `function`。这些节点上的 `x-mcode`（nodeId、Mcode 私有参数、边注释）同样只在
+ * `_def.defaults` 里声明过才活得过往返；不补的话，经编辑器 Import 回来的图节点身份
+ * 会漂移成原生 id，库镜像会把同一份文档改写成另一套节点 id。
+ *
+ * 补的时机与顺序无关：定义已存在就当场补；还没注册就挂
+ * `registry:node-type-added`（上游公开事件），注册时补 —— 编辑器在**全部节点集
+ * 加载完之后**才导入 flows，两种顺序都赶在导入之前。
+ *
+ * `tab` 是唯一必须**已存在**的类型（editor-client 在加载任何节点包之前就注册了它）；
+ * 缺了它说明编辑器版本与我们的假设不符 → 当场抛错，绝不静默导出没有身份的图。
+ */
+export const MCODE_PATCHED_NATIVE_TYPES = ["tab", "inject", "watch", "switch", "exec", "function"] as const;
+
+export function tabMetaDefaultsScript(): string {
+  const types = JSON.stringify(MCODE_PATCHED_NATIVE_TYPES);
+  const property = JSON.stringify(MCODE_TAB_META_PROPERTY);
+  const required = JSON.stringify("tab");
+  return `(function () {
+  // T28: the upstream editor serialises only _def.defaults keys. Built-in types
+  // (tab, inject, watch, switch, exec, function) have editor-owned definitions,
+  // so the only accepted way to make x-mcode survive export/import is to add
+  // the key to those definitions' defaults. Patch now when present and on the
+  // public registry:node-type-added event otherwise; both happen before any
+  // flow import (the editor loads every node set first, then flows).
+  var TYPES = ${types};
+  var REQUIRED = ${required};
+  var PROP = ${property};
+  function patch(type) {
+    var def = (RED.nodes && RED.nodes.getType) ? RED.nodes.getType(type) : null;
+    if (!def || typeof def !== "object" || !def.defaults || typeof def.defaults !== "object") return false;
+    if (!Object.prototype.hasOwnProperty.call(def.defaults, PROP)) {
+      def.defaults[PROP] = { value: undefined };
+    }
+    return Object.prototype.hasOwnProperty.call(def.defaults, PROP);
+  }
+  var missing = [];
+  for (var i = 0; i < TYPES.length; i++) {
+    if (!patch(TYPES[i])) missing.push(TYPES[i]);
+  }
+  if (missing.indexOf(REQUIRED) !== -1) {
+    console.error("[mcode-node-pack] built-in tab definition missing; x-mcode would be silently dropped on export/import");
+    throw new Error("Mcode node pack: built-in tab definition unavailable");
+  }
+  if (missing.length > 0 && RED.events && typeof RED.events.on === "function") {
+    RED.events.on("registry:node-type-added", function (type) {
+      if (missing.indexOf(type) !== -1) patch(type);
+    });
+  }
+  var tabDef = RED.nodes.getType("tab");
+  if (!Object.prototype.hasOwnProperty.call(tabDef.defaults, PROP)) {
+    console.error("[mcode-node-pack] tab defaults patch did not take effect");
+    throw new Error("Mcode node pack: tab defaults patch failed");
+  }
+})();`;
+}
+
 /** 一次 agent 运行的输入 —— 与 Host RPC 将来的请求形状同形（多一层包装即可）。 */
 export interface McodeAgentRunPayload {
   /** 这一步要做什么。 */
@@ -370,6 +477,7 @@ export function agentNodeHtml(): string {
       capability: { value: "read" },
       outputVar: { value: "" },
       sessionId: { value: "" },
+      ${MCODE_X_MCODE_DEFAULT_ENTRY},
     },
     inputs: 1,
     outputs: 1,
@@ -377,6 +485,9 @@ export function agentNodeHtml(): string {
     label: function () { return this.name || "mcode-agent"; },
     paletteLabel: "mcode-agent",
   });
+</script>
+<script type="text/javascript">
+${tabMetaDefaultsScript()}
 </script>
 <script type="text/html" data-template-name="${MCODE_AGENT_NODE_TYPE}">
   <div class="form-row">

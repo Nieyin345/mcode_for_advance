@@ -37,12 +37,14 @@
 import {
   MCODE_AGENT_NODE_TYPE,
   MCODE_NODE_PACK_VERSION,
+  MCODE_X_MCODE_DEFAULT_ENTRY,
   agentNodeHtml,
   assertMcodeNodePortResult,
   createNodeInputLifecycle,
   normalizeAgentConfig,
   snapshotMcodeNodeInvocation,
   registerMcodeAgentNodes,
+  tabMetaDefaultsScript,
   type McodeAgentNodeConfig,
   type McodeAgentPort,
   type NodeRedNodeLike,
@@ -533,13 +535,16 @@ function htmlFor(type: string, params: Array<{ id: string; label: string; kind: 
   RED.nodes.registerType("${type}", {
     category: "mcode",
     color: "#8ea6b8",
-    defaults: { name: { value: "" }, ${params.map((p) => `${p.id}: { value: ${JSON.stringify(p.defaultValue ?? "")} }`).join(", ")} },
+    defaults: { name: { value: "" }, ${params.map((p) => `${p.id}: { value: ${JSON.stringify(p.defaultValue ?? "")} }`).join(", ")}, ${MCODE_X_MCODE_DEFAULT_ENTRY} },
     inputs: ${type === MCODE_TRIGGER_NODE_TYPE ? 0 : 1},
     outputs: ${extraDefs === "multi" ? "function () { return Math.max(1, (this.wires && this.wires.length) || 1); }" : 1},
     icon: "font-awesome/${ui.icon}",
     label: function () { return this.name || "${type}"; },
     paletteLabel: "${type}",
   });
+</script>
+<script type="text/javascript">
+${tabMetaDefaultsScript()}
 </script>
 <script type="text/html" data-template-name="${type}">
   <div class="form-row"><label for="node-input-name" data-i18n="[title]mcode.tooltip.name"><i class="fa fa-tag"></i> <span data-i18n="common.label.name">Name</span></label><input type="text" id="node-input-name" placeholder="Name" data-i18n="[placeholder]common.label.name"></div>
