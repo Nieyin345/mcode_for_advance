@@ -90,6 +90,9 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
     { id: "turns", labelKey: "layout.tabTurns", icon: IconListDetails },
     { id: "flow", labelKey: "layout.tabFlow", icon: IconListTree },
     { id: "tasks", labelKey: "layout.tabTasks", icon: IconTerminal2 },
+    // 【T100】任务中心：`tasks` 那个是「正在跑什么」（终端/子代理/节点），
+    // 这个是「有哪些任务、哪个等我验收」。两个页签挨着放，名字要能分开。
+    { id: "taskcenter", labelKey: "layout.tabTaskCenter", icon: IconListCheck },
     { id: "preview", labelKey: "layout.tabPreview", icon: IconFileSearch },
   ],
   // 工具栏没有内置按钮:整条都是用户自己摆的。
@@ -103,7 +106,7 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
 };
 
 /** 右栏内置页签的 id(与 `RightPanelTab` 的值一一对应)。 */
-export const BUILTIN_TAB_IDS = ["files", "git", "browser", "turns", "flow", "tasks", "preview"] as const;
+export const BUILTIN_TAB_IDS = ["files", "git", "browser", "turns", "flow", "tasks", "taskcenter", "preview"] as const;
 export type BuiltinTabId = (typeof BUILTIN_TAB_IDS)[number];
 export function isBuiltinTabId(id: string): id is BuiltinTabId {
   return (BUILTIN_TAB_IDS as readonly string[]).includes(id);

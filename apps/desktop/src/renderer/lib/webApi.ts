@@ -879,6 +879,25 @@ const documentView: Api["documentView"] = {
   list: () => webUnsupported("documentView.list"),
 };
 
+/**
+ * 【T100】任务（`task.*`）—— 手机端没有那条桥。
+ *
+ * 任务是**桌面端 sql.js 里的记录**，手机端 `AppMobile` 走的是无 preload 的 HTTP
+ * 桥，没有这条数据源。显式列出整个命名空间（与 `documentView` 同一条规矩）：
+ * 少列一个方法 = `api.task.accept` 在手机上变成 undefined 调用，共用组件在
+ * effect/handler 里调用会让 React 19 整棵卸载（`AppMobile.tsx` + `webApi.ts` 是
+ * **独立组件树**，这条坑仓库里记着）。
+ *
+ * ⚠️ 任务中心面板**不要挂进手机端**：它的读路径在这里就是一条 `webUnsupported`，
+ * 挂上去只会给手机用户一张错误卡。真要做手机端任务列表，得先有一条能读任务的服务端。
+ */
+const task: Api["task"] = {
+  list: () => webUnsupported("task.list"),
+  get: () => webUnsupported("task.get"),
+  accept: () => webUnsupported("task.accept"),
+  reject: () => webUnsupported("task.reject"),
+};
+
 /** 【ARC-006 NR2】第三方工作流引擎也是**那台桌面机器上的独立进程**:手机端
  *  既没有本机进程可起停,也没有 WebContentsView 可嵌。显式列出整个命名空间 ——
  *  与 `documentView` 同一条规矩(漏列的方法在共用组件里会变成 undefined 调用,
@@ -1248,6 +1267,8 @@ export function createWebApi(): Api {
     project,
     session,
     documentView,
+    // 【T100】任务中心不在手机端（见上面 `task` 常量的注释）。
+    task,
     workflowEngine,
     provider,
     customModel,

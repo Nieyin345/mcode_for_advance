@@ -16,6 +16,7 @@ import { FilesPanel } from "@renderer/components/ide/FilesPanel.js";
 import { GitPanel } from "@renderer/components/ide/GitPanel.js";
 import { TurnFlowPanel } from "@renderer/components/ide/TurnFlowPanel.js";
 import { TaskListPanel } from "@renderer/components/ide/TaskListPanel.js";
+import { TaskCenterPanel } from "@renderer/components/ide/TaskCenterPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
 import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
@@ -403,6 +404,8 @@ export function RightPanel() {
         {!moduleVisible && !activeCustom && tab === "turns" && <TurnFlowPanel />}
         {!moduleVisible && !activeCustom && tab === "flow" && <WorkflowBoardPanel />}
         {!moduleVisible && !activeCustom && tab === "tasks" && <TaskListPanel />}
+        {/* 【T100】任务中心 —— 与上面那个「正在跑什么」是两件事（见 TaskCenterPanel 文件头）。 */}
+        {!moduleVisible && !activeCustom && tab === "taskcenter" && <TaskCenterPanel />}
         {!moduleVisible && !activeCustom && tab === "preview" && <PreviewPanel />}
         </div>
       </div>

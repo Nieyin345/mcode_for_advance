@@ -152,6 +152,10 @@ export const en = {
   "layout.tabFlow": "Workflow Run",
   /** The right panel's terminal/task list tab (see TaskListPanel.tsx). */
   "layout.tabTasks": "Tasks",
+  /** 【T100】Task center tab — NOT the same thing as `tasks`: that one is "what is
+   *  running right now" (terminals/subagents/nodes); this one is "which tasks exist
+   *  and which one is waiting for my acceptance" (persisted records). */
+  "layout.tabTaskCenter": "Task Center",
   "layout.openBrowser": "Open browser",
   "layout.movePane": "Drag to move workspace pane",
   "layout.paneDocument": "Dock current DOCX in pane",

@@ -631,7 +631,7 @@ export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
  *
  * 留 `library` / `templates` 这两个旧值会让人以为那两个面板还在，所以直接替掉。
  */
-export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "preview", "flow", "tasks"]);
+export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "preview", "flow", "tasks", "taskcenter"]);
 export type RightPanelTab = z.infer<typeof RightPanelTabSchema>;
 
 /**
