@@ -1,6 +1,6 @@
 # T90｜🔴 P0：中文用户名下「换数据目录 / 数据迁移」会让应用无声崩溃
 
-- Status: **ready-for-human**（涉及用户数据，修法需要决定）
+- Status: delivered（2026-10-24，`filter: () => true`；性能 1.16–1.37×，回归 10/10）
 - Category: **P0 产品缺陷**
 - Priority: **P0 —— 用户丢数据 / 应用无声消失，触发条件是国内主流配置**
 - Depends on: T89（`c25bf54a`，根因定位）
@@ -168,3 +168,134 @@ check("★ 非 ASCII 路径下复制不崩（或已降级）",
 
 `tasks/T90-cpsync-non-ascii-p0.md` 末尾追加 `## 结果回写`：
 三个问题的答案、选定方案、回归实现与变异、`dataRoot` 改动 diff。
+
+## 结果回写（2026-10-24）
+
+### 一、四个问题都有答案
+
+| # | 问题 | 答案 |
+|---|---|---|
+| 1 | **上游修了吗？** | **没修。** `nodejs/node#54476` 从 2024-08 开着；`#59636` 是 Node 自己 CI 在 2025-08 的记录（`parallel/test-fs-cp-sync-unicode-folder-names`，`exitcode: 3221226505`，与我们测到的完全一致）。 |
+| 2 | **哪个版本？** | **22.6.0 起**（`#53614` 引入 native 编码回归）。实测 **22.21.1 崩，22.14.0 / 20.18.0 正常**。 |
+| 3 | **选哪个方案？** | **`filter: () => true`**（方案 4）。上游 `#63970` 原话：不带 `filter` 走 native copyDir fast path，传 `filter` 回退到 JS 实现。 |
+| 4 | **性能代价？** | **1.16–1.37 倍**，见第四节。**远低于卡上「< 2 倍直接用」的阈值。** |
+
+**根因更正（推翻卡上的假设）**：不是路径长度，是**非 ASCII 字符**。
+
+| 条件 | 路径长 | 结果 |
+|---|---|---|
+| 短 + 英文 | 53 | ✅ OK |
+| **短 + 中文** | **48** | ❌ `0xC0000005` |
+| **长 + 英文** | **132** | ✅ **OK** |
+| 长 + 中文 | 108 | ❌ |
+
+### 二、回归（`apps/desktop/scripts/t90-dataroot-cpsync-smoke/`）
+
+**这是本卡最重要的一步：修之前先有断言。**
+
+**为什么必须用子进程**：`cpSync` 崩是 native fast-fail，`try/catch` 接不住，`process.on('exit')` 也不触发——**同进程断言会和被测对象一起消失**，套件连「我失败了」都报不出来。
+
+**结构**：
+- `main.ts` —— 父进程，**自己从不碰非 ASCII 路径的 `cpSync`**，只 `spawnSync` 起子进程读 `status`；
+- `probe.ts` —— 子进程，调**真实的 `copyDataRootTo`**（不是复制一份 `cpSync`），通过 `--alias:electron` 的桩控制 `userData`/`home`。
+
+**五个场景，10 条断言**：
+
+| # | 场景 | 验什么 |
+|---|---|---|
+| 1 | 纯 ASCII 的 from/to | **正控**：不崩，且两个文件（含嵌套的 `b.txt`）真的复制了 |
+| 2 | **from 含中文** | **负控**：不崩 + 文件真的复制了 |
+| 3 | **to 含中文** | **负控**：同上（用户完全可以选一个中文目录名） |
+| 4 | `café` / `Тест` / `😀` | **影响面**：不是中文特例，是所有非 ASCII |
+| 5 | 源不存在 | **对照**：证明探针真的在调 `cpSync`，不是空转 |
+
+**第 5 条尤其重要**：没有它，即使探针什么都不做，前 4 条也可能全绿。
+
+**修复前后对比**：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| `t90-dataroot-cpsync-smoke` | **3/11**（负控全红，`status` 3221225477 / 3221226505） | **10/10** |
+
+### 三、`dataRoot.ts` 改动
+
+```diff
+-      cpSync(from, to, { recursive: true });
++      // 任何 `filter` 都会让 cpSync 走 JS 实现，绕开 native fast path ——
++      // 见文件头注释与 tasks/T90（nodejs/node#54476、#63970）。
++      cpSync(from, to, { recursive: true, filter: () => true });
+```
+
+```diff
+-    cpSync(from, to, { recursive: true });
++    // 同一个 `filter` 修法 —— 见文件头与 tasks/T90。
++    cpSync(from, to, { recursive: true, filter: () => true });
+```
+
+**两处注释都写「条件 + 出处 + 指向卡」，不写死方案名**（总控第 20 条）。
+
+### 四、性能实测
+
+**方法**：造 2000 / 10000 个 20 KiB 文件（39 MiB / 195 MiB），各跑两次取最快。
+
+| 规模 | 无 filter | `filter: () => true` | 倍数 |
+|---|---|---|---|
+| 2000 文件 / 39 MiB | 736 ms | 1006 ms | **1.37×** |
+| 10000 文件 / 195 MiB | 5527 ms | 6419 ms | **1.16×** |
+
+**结论：慢 16%–37%，卡上的阈值是「< 2 倍直接用」，通过。**
+
+**一个意外观察**：1 万文件那组，native 的**第二次**跑了 19275 ms（第一次 5527 ms），而 `filter` 版本第二次是 6752 ms。**native fast path 在高 IO 压力下反而更不稳定**——这可能只是磁盘缓存/杀毒扫描的波动，但至少说明「native 一定更快」在这个规模下不成立。
+
+### 五、变异：撤掉 `filter` → 套件从 10/10 掉到 4/10
+
+只撤 `copyDataRootTo` 那一处（探针走的就是它）：
+
+| 断言 | 变异后 |
+|---|---|
+| `from` 含中文 → 不崩 | **FAIL**，`status: 3221225477` |
+| `café` / `Тест` / `😀` → 不崩 | **FAIL**，`status: 3221225477` / `3221226505` |
+| `to` 含中文 → 文件真的复制了 | **FAIL**，`status: 0` 但 `copied: []` —— **说成功但一个文件都没复制** |
+
+**最后一条是意外收获**：撤掉 `filter` 后，中文**目标**路径不会崩，而是**静默不复制**（日志写 `copied … -> …`，实际目录是空的）。这正是上游 `#61878` 描述的第二形态，**比崩溃更危险**——用户以为数据搬过去了。
+
+`cmp` 逐字节还原，`grep MUTATION` = 0。
+
+### 六、回归
+
+| 套件 | 结果 |
+|---|---|
+| `t90-dataroot-cpsync-smoke` | **10/10** |
+| `t73-pattern-wiring-smoke` | 40/40 |
+| `t65-deck-pattern-smoke` | 46/46 |
+| `t43-document-ai-design-pipeline-smoke` | 65/65 |
+| `t47-design-guide-smoke` | 27/27 |
+| `t10-node-red-pause-license-smoke` | status=0，15 条 ok |
+| `t88-node-red-license-closure-smoke` | status=0，13 条 ok |
+
+未跑全量、未起 Electron。
+
+### 七、未做 / 边界
+
+- **没碰 `build/stage-*.cjs`**（打包脚本，按卡上的边界）；
+- **没碰 T89 的两个套件**（T89 已单独交付 `741e4b1d`）；
+- **`dataRoot.ts` 只改了两行 `cpSync`**，没动别的逻辑。
+
+### 八、一个值得单独记的发现
+
+**`to` 含非 ASCII 时，修复前的行为不是崩溃，是「静默不复制」**：
+
+```
+[info] dataRoot: copied C:\...\ascii-src-2 -> C:\...\用户选的目标目录
+PROBE_RESULT:ok
+```
+
+**日志说复制成功，`copyDataRootTo` 返回 `null`（表示成功），而目标目录是空的。**
+
+**这比崩溃更坏**：崩溃至少用户知道出事了；静默不复制是用户以为数据搬好了，重启后在新位置看到空数据根。
+
+**上游 `#61878` 报告的就是这个形态**（"operation completing without any errors, but no files or directories are copied"），而且它给出的临时解法正是 `filter: () => true` —— **与崩因的修法相同**。
+
+### 九、提交
+
+`<见提交>`。

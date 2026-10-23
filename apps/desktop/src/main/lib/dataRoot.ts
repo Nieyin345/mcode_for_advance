@@ -160,7 +160,9 @@ function moveIfNeeded(from: string, to: string, label: string): void {
       // 上游 issue 见 nodejs/node#54476、#59636。
       // 这里只描述条件与出处，**不写死选哪个方案** —— 方案会变，注释不该跟着过时。
       log.warn(`dataRoot: rename ${label} failed (${(err as Error).message}); copying instead`);
-      cpSync(from, to, { recursive: true });
+      // 任何 `filter` 都会让 cpSync 走 JS 实现，绕开 native fast path ——
+      // 见文件头注释与 tasks/T90（nodejs/node#54476、#63970）。
+      cpSync(from, to, { recursive: true, filter: () => true });
       try {
         rmSync(from, { recursive: true, force: true });
       } catch {
@@ -209,7 +211,8 @@ export function copyDataRootTo(target: string): string | null {
   }
   try {
     // ⚠️ 同 `:150` 上方注释：路径含非 ASCII 时 `cpSync` 会 native 崩溃，`catch` 接不住。
-    cpSync(from, to, { recursive: true });
+    // 同一个 `filter` 修法 —— 见文件头与 tasks/T90。
+    cpSync(from, to, { recursive: true, filter: () => true });
     log.info(`dataRoot: copied ${from} -> ${to}`);
     return null;
   } catch (err) {
