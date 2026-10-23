@@ -78,5 +78,27 @@ for (const key of ["customModelKeys", "relay.vpsConfig", "mobile.pairedDevices",
   eq("Read 摘要仍是路径", toolSummary("Read", { file_path: "/tmp/a.txt" }, t), "/tmp/a.txt");
 }
 
+/* ── 7. 【写侧拦截】密钥本体不能经 `setting.set` 覆盖 ──
+ *
+ * 实测（2026-10-23）：改之前 `setting.set` 拿着 `{key:"engine.claude.apiKey"}`
+ * 一路放行 —— 读不到但**能覆盖**。对凭据来说覆盖比读取更危险：读到要带走才致命，
+ * 覆盖一次就能把用户正在用的引擎换成任意地址。
+ */
+{
+  const { settingKeyRefusal: secretSettingRefusal } = await import("@main/appControl/settingWriteGuard.js");
+  const SECRET_KEYS = ["engine.claude.apiKey", "customModelKeys", "codexProviderKeys", "piProviderKeys", "mobile.pairedDevices", "relay.vpsConfig", "onlyoffice.config"];
+  for (const key of SECRET_KEYS) {
+    const r = secretSettingRefusal("setting.set", { key, value: "attacker" });
+    check(`★ setting.set 不能覆盖密钥键 ${key}`, r !== null && String(r).includes(key), { refusal: r });
+  }
+  for (const key of ["ui.titleGenEnabled", "app.dataRoot", "theme"]) {
+    eq(`普通键 ${key} 仍可写`, secretSettingRefusal("setting.set", { key, value: "x" }), null);
+  }
+  check("★ 读侧拦截仍在（setting.get）", secretSettingRefusal("setting.get", { key: "engine.claude.apiKey" }) !== null);
+  check("★ 读侧拦截仍在（setting.getMany）", secretSettingRefusal("setting.getMany", { keys: ["customModelKeys"] }) !== null);
+  eq("其它方法不受影响", secretSettingRefusal("project.create", { key: "engine.claude.apiKey" }), null);
+}
+
+
 console.log(`\nt52-approval-context-smoke: ${total - failures}/${total} 通过`);
 process.exit(failures === 0 ? 0 : 1);

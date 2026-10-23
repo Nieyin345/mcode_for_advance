@@ -109,6 +109,7 @@ import type { ActionIntent, ActorRef, CoreIntent, PolicyCompatibilityLevel } fro
 import { physicalPath } from "@main/lib/realPathWithin.js";
 // 【MC-004】密钥设置键判据 —— 全仓唯一一份(见 @main/lib/secretKeys 文件头)。
 import { isSecretSettingKey as isSharedSecretSettingKey } from "@main/lib/secretKeys.js";
+import { settingKeyRefusal } from "@main/appControl/settingWriteGuard.js";
 import {
   runWithAgentMemoryScopeForSession,
   runWithUnboundAgentExtensionScope,
@@ -167,15 +168,32 @@ export function isSecretSettingKey(key: unknown): boolean {
   return READ_SIDE_EXTRA_SECRET_KEYS.has(key) || isSharedSecretSettingKey(key);
 }
 
-/** `setting.get` / `setting.getMany` 的入参里,有没有踩到密钥键。 */
+/**
+ * `setting.get` / `setting.getMany` / `setting.set` 的入参里,有没有踩到密钥键。
+ *
+ * ## 为什么写也要拦（【T52】2026-10-23 实测补上）
+ *
+ * 从前这里**只拦读**。实测：`setting.set` 拿着 `{key:"engine.claude.apiKey", value:"…"}`
+ * 一路放行 —— 模型读不到密钥本体，但**可以覆盖它**。同一类还能改
+ * `mobile.pairedDevices`（清空已配对手机）、`plugins.engines`（改投递策略）……
+ *
+ * 「读不到」不等于「改不了」。对凭据来说，**覆盖比读取更危险**：读到密钥要把它带去
+ * 别处才造成损失，而覆盖一次就能把用户正在用的引擎换成任意地址、把配对设备清空。
+ *
+ * ## 为什么可以放心拦
+ *
+ * 正常写口**不走这条通道**：设置面板改密钥走 `customModel.save` / `codexModels.save` /
+ * `piModels.save` 等**专用方法**，它们自己管加密与校验。`setting.set` 不是那条路
+ * （`MobileHttpServer.ts` 的 `touchesBlockedSetting` 早就是这个取向：那条 HTTP 桥
+ * 对密钥键**读写都不给**）。这里只是把桌面侧的 agent 通道对齐到同一个取向。
+ *
+ * 与 `isWorkflowExecutionTrustSettingKey`（`ipc/claude.ts` 里那道闸）互补：
+ * 那道闸拦的是**执行授权**（工作流审批记录 / 恢复默认快照），本题拦的是**凭据本体**。
+ */
 export function secretSettingRefusal(method: string, input: unknown): string | null {
-  if (method !== "setting.get" && method !== "setting.getMany") return null;
-  const o = (input ?? {}) as { key?: unknown; keys?: unknown };
-  const keys: unknown[] = Array.isArray(o.keys) ? [...o.keys] : [o.key];
-  const hit = keys.find((k) => isSecretSettingKey(k));
-  return hit === undefined
-    ? null
-    : `设置键「${String(hit)}」是密钥本体,不读给模型(与 customModel.getToken / piModels.getApiKey 同一条规矩)。要改密钥请让用户在 设置 里操作。`;
+  // 判定与文案在 `settingWriteGuard.ts`（纯模块，不拖主进程依赖树）——
+  // 这样只想验判定逻辑的套件不必打包整个 appControl。
+  return settingKeyRefusal(method, input);
 }
 
 /**
