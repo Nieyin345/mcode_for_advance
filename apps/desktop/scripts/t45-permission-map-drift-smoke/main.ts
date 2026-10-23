@@ -181,6 +181,47 @@ console.log("\n④ 守卫自检");
     "★ 快照取不到时明确退化(并说明会怎样),不静默",
     genSrc.includes("status === 0"),
   );
+  // 【T45 补强,总控 2026-10-23 建议】只查总量不够:一张表改了写法、合并、换成函数,
+  // 合并后的总数可能仍 >100,自检放过,而那张表里的方法全部被误判成"新方法" ——
+  // 假红混进真信号。所以四张表必须**逐张**断言非空。
+  check(
+    "★ 四张表逐张断言(不是只查合并后的总数)",
+    /for \(const name of EXPLICIT_TABLES\)/.test(genSrc) &&
+      /tableKeys\[name\]\.size === 0/.test(genSrc),
+  );
+  check(
+    "★ 缺表时的报错点名是哪张表（不是笼统的「表形状变了」）",
+    /T45 守卫从 policy\.ts 的 \$\{name\} 里一条键都没读到/.test(genSrc),
+  );
+  check(
+    "★ 总量自检的报错里带每张表的条数(方便定位是哪张退化)",
+    /EXPLICIT_TABLES\.map\(\(n\) => `\$\{n\}=\$\{tableKeys\[n\]\.size\}`\)/.test(genSrc),
+  );
+  // 四张表在当前 policy.ts 上都必须真的读到东西。
+  {
+    const policySrc = readFileSync(join(root, "apps/desktop/src/main/appControl/policy.ts"), "utf8");
+    const counts: Record<string, number> = {};
+    for (const name of ["BLOCKED", "CREDENTIAL_BEARING", "DANGER", "EXPLICIT"]) {
+      const start = policySrc.indexOf(`const ${name}`);
+      assert.ok(start >= 0, `policy.ts 里找不到 ${name}`);
+      const nextConst = policySrc.indexOf("\nconst ", start + 1);
+      const slice = nextConst < 0 ? policySrc.slice(start) : policySrc.slice(start, nextConst);
+      let n = 0;
+      for (const _ of slice.matchAll(/^\s{2}"([A-Za-z0-9_.]+)":/gm)) n++;
+      for (const _ of slice.matchAll(/^\s{2}\["([A-Za-z0-9_.]+)",/gm)) n++;
+      counts[name] = n;
+    }
+    check(
+      "★ 现在四张表都解析到了(不是 0)",
+      Object.values(counts).every((n) => n > 0),
+      counts,
+    );
+    check(
+      "四张表的条数与该表在 policy.ts 里的规模相称(各 >5)",
+      Object.values(counts).every((n) => n > 5),
+      counts,
+    );
+  }
 }
 
 /* ── 5. 守卫不会绕过已签字的例外 ─────────────────────────── */

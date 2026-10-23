@@ -127,17 +127,35 @@ function keysOfTable(name) {
   return keys;
 }
 
-const explicitlyClassified = new Set([
-  ...keysOfTable("BLOCKED"),
-  ...keysOfTable("CREDENTIAL_BEARING"),
-  ...keysOfTable("DANGER"),
-  ...keysOfTable("EXPLICIT"),
-]);
+/** 四张显式表 —— 每张**单独**取键集合,不先拍平。
+ *
+ * 【T45】拍平成一个 Set 会丢掉"哪张表解析失败"这个信息:一张表改了写法(比如
+ * `BLOCKED` 被拆成两个对象),合并后总数可能仍 >100,自检放过,而那张表里的方法
+ * 全部被误判成"新方法" —— 假红混进真信号里。所以下面逐张断言非空。 */
+const EXPLICIT_TABLES = ["BLOCKED", "CREDENTIAL_BEARING", "DANGER", "EXPLICIT"];
+const tableKeys = Object.fromEntries(EXPLICIT_TABLES.map((name) => [name, keysOfTable(name)]));
 
-// 守卫自检:表读空了说明形状变了 —— 那时会把"所有方法都是新的"报出来,误导性极强。
+// 守卫自检 ①:每张表都必须解析到东西。
+// 「某张表读到 0 条」= 形状变了(改名/合并/换成函数),此时守卫应该**报错**,
+// 而不是安静地把那张表里的方法当成"没人分类的新方法"——那会一次报出几百条假红。
+for (const name of EXPLICIT_TABLES) {
+  if (tableKeys[name].size === 0) {
+    throw Error(
+      `T45 守卫从 policy.ts 的 ${name} 里一条键都没读到 —— 表形状变了,先修 ` +
+      `gen-module-permission-map.mjs 的 keysOfTable。` +
+      `(不报错的话,这张表里的方法会全部被误判成"未分类的新方法"。)`,
+    );
+  }
+}
+
+const explicitlyClassified = new Set(EXPLICIT_TABLES.flatMap((name) => [...tableKeys[name]]));
+
+// 守卫自检 ②:总量兜底。单表非空还不够 —— 四张表各读到 1 条也能过 ①,
+// 但那说明解析退化了(比如只匹配到一行)。
 if (explicitlyClassified.size < 100) {
   throw Error(
-    `T45 守卫读到的显式分档条目只有 ${explicitlyClassified.size} 条(预期 >100)——` +
+    `T45 守卫读到的显式分档条目只有 ${explicitlyClassified.size} 条(预期 >100;` +
+    EXPLICIT_TABLES.map((n) => `${n}=${tableKeys[n].size}`).join(" ") + `)——` +
     `policy.ts 的表形状变了,先修 gen-module-permission-map.mjs 的 keysOfTable`,
   );
 }
