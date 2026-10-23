@@ -59,6 +59,8 @@
 | T38 | 三套打包期失败：桩缺导出、`.node` loader、zustand 5 default | P1 | 无 | W |
 | T39 | **GenOffice UI 换壳：保留编辑内核，替换 ribbon/菜单/AI 面板** | **P0 产品要求** | T7+T24 | X |
 | T40 | **`withRendererToolRegistry` 零调用点 —— `document.tool_call` 渲染端路线不可达** | **P0** | T24 | Y |
+| T41 | `contributionsOf` 只有一层可选链，`modules` 缺失时设置页白屏 | P1 | T36 | Z |
+| T42 | **U1 骨架静默模式：默认不弹窗，仅截图时短暂显示** | **P1 开发体验** | T16+T7 | AA |
 
 ### 推荐第一波
 
