@@ -71,6 +71,7 @@ import { randomUUID } from "node:crypto";
 import type { RuntimeEvent, TurnFileEntry } from "@contracts/runtime";
 import type { TaskArtifact } from "@contracts/ipc";
 import { SessionRepo } from "@main/store/repositories.js";
+import { transitionTaskAsExecutor } from "./executor.js";
 import { TaskRepo } from "@main/store/repositories/task.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { broadcastRuntimeEvent } from "@main/lib/sessionSync.js";
@@ -166,7 +167,7 @@ export function settleTurn(args: {
   if (goal === null) return { created: false, why: "会话还没有可用的标题" };
 
   const id = `task_${randomUUID()}`;
-  const created = TaskRepo.create({
+  TaskRepo.create({
     id,
     task: {
       goal,
@@ -178,13 +179,29 @@ export function settleTurn(args: {
       dependsOn: [],
     },
   });
-  const next = verdict.failed
-    ? TaskRepo.setStatus({
-        id: created.id,
-        status: "failed",
-        failureReason: `这一轮执行失败（${args.reason}）`,
-      })
-    : TaskRepo.setStatus({ id: created.id, status: "done", artifacts });
+  // 状态走完整条链：`pending → running → done / failed`。
+  //
+  // ## 为什么不在建完时直接置 done
+  //
+  // 第一版是直接 `pending → done`，**被迁移表当场拒掉**（`done` 只能从 `running` 来）。
+  // 那条拒绝是对的：`pending` 的含义是「建出来了，还没开始」，直接跳到 `done` 意味着
+  // 这条任务的 `running` 从来没有过 —— 而迁移表存在的意义就是「每个状态都真的发生过」。
+  //
+  // 这里的三步不是摆设：它们对应**同一瞬间**发生的三件事（回合结束 → 判定该建
+  // → 执行方接手 → 收尾），只是宿主没有中间的观察者。**状态记录的是事实，不是动画**：
+  // `running` 确实发生过（接收这一轮的产物那一刻），所以它该被写下来。
+  //
+  // 走 `transitionTaskAsExecutor` 而不是 `TaskRepo.setStatus`：多一道
+  // `TASK_EXECUTOR_STATUSES` 白名单 —— 那是「执行方不能写 accepted」这条授权规则所在。
+  // 绕过它，这条自动记账路径就成了唯一一处没有那道防线的地方。
+  transitionTaskAsExecutor({ id, status: "running" });
+  const next = transitionTaskAsExecutor({
+    id,
+    status: verdict.failed ? "failed" : "done",
+    ...(verdict.failed
+      ? { failureReason: `这一轮执行失败（${args.reason}）` }
+      : { artifacts }),
+  });
   broadcastRuntimeEvent({ type: "task.changed", sessionId: args.sessionId, task: next });
   return { created: true, taskId: next.id, status: next.status as "done" | "failed", why: verdict.why };
 }

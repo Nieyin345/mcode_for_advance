@@ -18,6 +18,33 @@ import type { Task, TaskStatus } from "@contracts/ipc";
 const SELECT_COLUMNS =
   "id, goal, status, depends_on, origin, links, artifacts, acceptance, failure_reason, rejection_reason, created_at, updated_at";
 
+/**
+ * 执行方的状态迁移表 —— 合法迁移是**白名单**，不是「除了这几个都行」。
+ *
+ * 为什么白名单：状态机写成黑名单（「不能从 X 到 Y」）时，新增一个状态默认就是
+ * 处处可达。白名单让「新状态要先想清楚它能从哪来」变成一件必须做的事。
+ *
+ * 关键几条：
+ *  - `done` 只能从 `running` 来 —— 没跑过就说「做完了」是假的；
+ *  - `failed` 可以从 `running` / `blocked` 来 —— 等依赖时发现做不了也算失败；
+ *  - `running` 可以从 `pending` / `blocked` / `rejected` 来 —— **`rejected → running`
+ *    就是返修**。
+ *
+ * `accepted` / `rejected` 的来源是空数组：它们**只能**由用户的 `accept` / `reject`
+ * 写（各自有独立的前置校验）。执行方经 `setStatus` 走这条路时一个来源都不合法 ——
+ * 那是刻意的，纵深防御：即使上游漏了 `TASK_EXECUTOR_STATUSES` 那道白名单，
+ * 这里也写不进去。
+ */
+const EXECUTOR_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
+  pending: [],
+  running: ["pending", "blocked", "rejected"],
+  blocked: ["pending", "running"],
+  done: ["running"],
+  failed: ["running", "blocked"],
+  accepted: [],
+  rejected: [],
+};
+
 /** 读一个任务的最新快照（`null` = 不存在）。 */
 function readOne(id: string): Task | null {
   const stmt = getDb().prepare(`SELECT ${SELECT_COLUMNS} FROM tasks WHERE id = ?`);
@@ -110,7 +137,23 @@ export const TaskRepo = {
     );
   },
 
-  /** 执行方写状态（`TASK_EXECUTOR_STATUSES` 那五个）。合法性由 IPC 层先判。 */
+  /**
+   * 执行方写状态。
+   *
+   * ## 迁移表为什么在**这里**，不在 IPC 层
+   *
+   * 本文件的 `accept` / `reject` / `reopen` **各自都在这一步校验前置状态**
+   * （`只有 done 才能验收` / `只有 done / failed 能退回` / `只有 rejected 能返修`）。
+   * `setStatus` 原先没有 —— 于是它是唯一一个**谁都能把任务写成任何状态**的入口。
+   *
+   * 那不只是「不好看」：`main/tasks/autoCreate.ts` 走的正是 `setStatus`（回合结束后
+   * 自动记任务），它**绕过了整张迁移表** —— 「执行方不能把任务写成 `accepted`」这条
+   * 边界在自动记账那条路上根本不成立。把校验留在 IPC handler 里修不好这件事，
+   * 因为那条路根本不经过 IPC。
+   *
+   * 所以迁移表下沉到这一层：**凡是改任务状态的人都走同一张表**，无论是用户的验收、
+   * 回合收尾的自动记账，还是将来某个执行路径。
+   */
   setStatus(args: {
     id: string;
     status: TaskStatus;
@@ -119,6 +162,12 @@ export const TaskRepo = {
   }): Task {
     const current = readOne(args.id);
     if (!current) throw new Error(`task ${args.id} 不存在`);
+    const allowed = EXECUTOR_TRANSITIONS[args.status];
+    if (!allowed.includes(current.status)) {
+      throw new Error(
+        `任务状态不能从 ${current.status} 迁到 ${args.status}（合法来源：${allowed.join(" / ") || "无"}）`,
+      );
+    }
     const now = Date.now();
     getDb().run(
       `UPDATE tasks SET status = ?, artifacts = ?, failure_reason = ?, updated_at = ? WHERE id = ?`,
