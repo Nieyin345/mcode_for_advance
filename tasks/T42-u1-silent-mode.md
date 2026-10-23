@@ -142,11 +142,43 @@ keydown  → Enter 送达
 document.hasFocus() 恒 false
 ```
 
-**这直接证明 `ensureFocus()` 里的 `win.focus()` 对 `sendInputEvent` 是多余的。** 它唯一的作用是让 `document.hasFocus()` 返回 true，而 T7 六条旅程走的是 `sendInputEvent`，不是 `hasFocus`。
+### 但焦点仍然是必需的（E 的第二轮实测，推翻上面的简单结论）
 
-**所以方案定为 (c)**：把 `ensureFocus()` 改成本地判定（`document.activeElement` 在渲染端已能验，见 `type` 分支里那句 `focused` 检查），不再调 `win.focus()`；真需要 OS 级焦点的旅程由旅程显式声明。
+| 场景 | 结果 |
+|---|---|
+| **`webContents.focus()`** | **让 `document.hasFocus()` 变 true 而窗口始终不可见** |
+| 去掉 `win.focus()` 的后果 | **sheets 得到 `A1A1`（输入重复）、pdf 文本层不渲染** |
 
-**(a)「输入时短暂显示」被否决**：它只是把弹窗变短，没有消除它。
+**所以「`sendInputEvent` 送达 = 不需要焦点」是错的。** 焦点对 Univer / pdf.js 的渲染和输入去重是必需的。
+
+**正确的解法**：
+
+- **截图**：`showInactive()` → **等 ~50ms 让 surface 就绪** → `capturePage()` → `hide()`
+- **输入**：用 **`webContents.focus()`** 而不是 `win.focus()` —— 它能满足 `document.hasFocus()` 而窗口始终不可见
+
+### 一个必须写进卡的陷阱：`showInactive()` 后立刻截会偶发 `UnknownVizError`
+
+**「偶发」是最难查的形态。** 下一个做 T42 的人如果不知道要等，会看到随机失败的测试，然后怀疑自己的改动。
+
+**建议的健壮做法（不要依赖固定 sleep）**：
+
+```ts
+win.showInactive();
+// 轮询到能截为止，最多等 200ms
+for (let i = 0; i < 20; i++) {
+  try { return await wc.capturePage(); }
+  catch (e) { if (!/display surface/i.test(String(e))) throw e; await sleep(10); }
+}
+throw new Error("截图失败：surface 200ms 内未就绪");
+```
+
+**这把「偶发」变成「重试到成功或明确失败」。**
+
+### 当前状态：改动已还原，本卡未完成
+
+E 的第一版改动跑出 **1/6 通过**（`docs` 之外五条在 `step-XX-screenshot` 失败），判定「留一个 1/6 通过的版本比留着原来的 6/6 通过更糟」，已还原 `runner.ts` 与 `types.ts`。
+
+**卡上的实测结论是净收益，代码改动归零。** 下一个接手的人从这份矩阵开始，不必重做实验。
 
 ### 原始的四条查询（已由上面矩阵回答）
 
