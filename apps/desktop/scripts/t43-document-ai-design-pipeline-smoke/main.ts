@@ -412,12 +412,27 @@ console.log("\n6. build_deck 可达性：documentToolCall 真的走到 buildDeck
     renderTempRoot: () => tempRoot,
     withinWorkspace: ports.withinWorkspace,
   };
+  // 【T67】快照目录判据必须对准 **build_deck 自己建的** 那个目录。
+  //
+  // 原来这条断言查的是 `tempRoot/snap-ok` —— 那是**本套件第 5 块自己建的夹具**
+  // （见上面 `snapshotDeckSpec(ports, deck, target)`），套件从没清理它，所以它必然存在；
+  // 再配上 `|| true`，整条断言恒真。它从来没验过 build_deck。
+  //
+  // 现在的判据：夹住**这一次调用**，比较调用前后 `tempRoot` 下快照目录的增减。
+  //
+  // ⚠️ 只匹配快照本体，**不匹配 `-render`**：`build_deck` 在 `input.render === true` 时
+  // 还会建 `t43-deck-<12hex>-render`，那是**给用户的 PNG 输出、本来就该留下**
+  // （它不在 `finally` 的 `rmSync` 范围内）。把它算进来会得到一个恒假的断言。
+  const SNAPSHOT_RE = /^t43-deck-[0-9a-f]{12}$/;
+  const snapshotsBefore = new Set(readdirSync(tempRoot).filter((n) => SNAPSHOT_RE.test(n)));
   const result = await runtime.documentToolCall(callPorts as never, {
     tool: "build_deck",
     app: "slides",
     filePath: outPptx,
     input: { specDir: deck },
   });
+  const leftoverSnapshots = readdirSync(tempRoot)
+    .filter((n) => SNAPSHOT_RE.test(n) && !snapshotsBefore.has(n));
   check("build_deck：经 documentToolCall 成功（route=cli）", result.ok === true && result.route === "cli", result);
   check("build_deck：真的写出了 .pptx", existsSync(outPptx), { outPptx });
   if (existsSync(outPptx)) {
@@ -426,8 +441,8 @@ console.log("\n6. build_deck 可达性：documentToolCall 真的走到 buildDeck
       deckRead.ok && JSON.stringify(detailOf(deckRead).items).includes("T43 BUILT DECK"),
       deckRead.ok ? detailOf(deckRead) : deckRead);
   }
-  check("build_deck：临时快照目录已清理（不留垃圾）",
-    !existsSync(join(tempRoot, "snap-ok")) || true);
+  check("build_deck：本次调用建的快照目录已清理（不留垃圾）",
+    leftoverSnapshots.length === 0, { leftoverSnapshots, tempRoot });
 
   // 负控：没有 specDir
   const noSpec = await runtime.documentToolCall(callPorts as never, {

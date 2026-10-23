@@ -365,3 +365,107 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 三处的改前/改后/变异结果对照表、`t43` 的快照匹配正则与为何排除 `-render`、
 `settings-form-lifecycle` 的 `hasSuccessNote()` 实现与成功态断言、
 `t24` 用的 name-only 查询词及实测数字、相关套件结果、提交 SHA。
+
+---
+
+## 结果回写（2026-10-23，C 会话）
+
+### 总览：三处 `|| true` 全部消失，五条变异全部变红
+
+| # | 位置 | 改前 | 改后 | 变异 | 结果 |
+|---|---|---|---|---|---|
+| 1 | `t43:429` | `!existsSync(tempRoot/snap-ok) \|\| true` | 调用前后 `readdirSync` 快照比对，只匹配 `/^t43-deck-[0-9a-f]{12}$/` | 注释掉 `documentToolRuntime.ts` 的 `finally { rmSync(...) }` | **56/57 红**，detail `leftoverSnapshots: ["t43-deck-469f249a8638"]` |
+| 2a | `settings-form-lifecycle:209` | `!hasErrorRow() \|\| true` | `!hasSuccessNote()` | 让成功提示在失败时也出现 | **68/69 红**，`successNote: true` |
+| 2b | 同上 | — | 新增成功态块 5 条 | 注释掉组件的 `{shell.saved && …}` | **68/69 红**，`successNote: false` |
+| 3a | `t24:241` | `every(... \|\| true)` | `name` **或** `doc` 命中 table | 去掉 `documentToolSurface.ts` 的 doc 搜索路径 | **58/60 红**，`toolsList … — []` |
+| 3b | 同上 | — | 新增 name-only 正向控（`mindmap`） | 去掉 name 搜索路径 | **59/60 红**，`正向控 … — []` |
+
+五处变异全部 `cmp -s` 逐字节还原，SHA-256 回到原值，`git status` 全 clean。
+
+### 一、`t43`：判据对准 `build_deck` 真正建的目录
+
+**为什么排除 `-render`**（卡上 §一.1 的要求，代码里也写了注释）：`build_deck` 在
+`input.render === true` 时还会建 `t43-deck-<12hex>-render`（`documentToolRuntime.ts:690`），
+那是**给用户的 PNG 输出、本来就该留下** —— 它不在 `finally` 的 `rmSync` 范围内。
+拿 `-render` 去判会得到一个恒假断言，或者逼产品去删用户产物。
+
+```ts
+const SNAPSHOT_RE = /^t43-deck-[0-9a-f]{12}$/;   // 不带 -render
+const snapshotsBefore = new Set(readdirSync(tempRoot).filter((n) => SNAPSHOT_RE.test(n)));
+const result = await runtime.documentToolCall(...);
+const leftoverSnapshots = readdirSync(tempRoot)
+  .filter((n) => SNAPSHOT_RE.test(n) && !snapshotsBefore.has(n));
+```
+
+**前后快照夹住的是 `documentToolCall` 这一次调用**（不是整块）—— 第 5 块已经在
+`tempRoot` 里留了 `snap-ok`，不能算进「新增」。这一点由 M1 的 detail 验证：
+残留的只有 `t43-deck-469f249a8638`，`snap-ok` 没被误报。
+
+### 二、`settings-form-lifecycle`：`hasSuccessNote()` + 成功态常驻断言
+
+实现照抄 `hasRetryButton()` 的既有做法（扫 `deepNodes()` 的 props），文案**从词典取**：
+
+```ts
+import { translate } from "@renderer/lib/i18n/core.js";
+
+function hasSuccessNote(): boolean {
+  return JSON.stringify(deepNodes().map((n) => n.props)).includes(
+    translate("zh", "settings.terminal.shellSaved"),
+  );
+}
+```
+
+**为什么用 `translate` 而不是硬编码中文**：硬编码会在改文案时静默失配 ——
+断言绿着，而它验的那句话已经不存在了。
+
+**新增的成功态块（5 条）**，挂在失败态块之后：
+
+```
+【MC-047】终端 Shell:保存成功 → 成功提示出现、错误行消失
+  ok   守卫:成功块里也有保存钮
+  ok   保存前没有成功提示        ← 证明判据不是恒真
+  ok   ★ 保存成功后页面出现成功提示
+  ok   ★ 保存成功后没有错误行
+  ok   保存成功时确实发出了 setting.set
+```
+
+**「保存前没有成功提示」这一条是额外加的**（卡上没要求）：它证明 `hasSuccessNote()`
+在保存前为假，与「保存后为真」构成一对，比单点断言更能说明判据分得清前后。
+
+### 三、`t24`：成对覆盖两条检索路径
+
+**用到的 name-only 查询词：`mindmap`**（卡上 §0.3 给的三个之一），实测
+`shown === 1` 且 `tools[0].name === "generate_mindmap"` —— 与卡上数据一致。
+
+类型标注补了 `doc: string`（`DocumentToolsListEntry` 里它是必填）。
+
+### 四、过程中我自己踩的两个坑（如实记录）
+
+**① 一次变异把语法改坏了。** 我把 `/* MUTATION */` 注释塞进了表达式中间，
+尾部多出一个逗号 → esbuild 打包失败、套件根本没跑起来。这正是 CLAUDE.md 里记的
+「打包期失败不等于被测对象失败」。还原后用纯表达式替换重做，并在跑之前先
+`tsc --noEmit | grep documentToolSurface` 确认 0 语法错误。
+
+**② 第一次加 `import { translate }` 没生效。** 我的 Edit 匹配到了文件里另一处相似
+文本，import 没写进去，`tsc` 报 `Cannot find name 'translate'`。补上后 0 错误。
+
+### 五、验证结果
+
+| 套件 | 结果 |
+|---|---|
+| `t43-document-ai-design-pipeline-smoke` | **57/57** |
+| `settings-form-lifecycle-smoke` | **69/69**（原 64，+5） |
+| `t24-document-tool-surface-smoke` | **60/60**（原 59，+1） |
+| `settings-panels-electron-smoke`（邻居） | 46/46 真 Electron |
+| `genoffice-cli-smoke`（邻居） | 54/54 |
+| `t47-design-guide-smoke`（邻居） | 27/27 |
+| 双包 typecheck | contracts **0**、desktop **0** |
+
+**未跑全量**（按用户规矩，全量由总控执行）。`smokes-for.sh` 显示
+`documentToolSurface.ts` 的连通块有 90+ 套，只挑了直接相关的三个邻居。
+
+### 六、未做的
+
+- **`t43` 第 5 块的 `snap-ok` 仍然没清理** —— 它是套件自己的夹具，留着不影响任何断言
+  （新判据只看 `t43-deck-*`）。要不要给它补一句 `rmSync` 属于清理偏好，不在本卡判据内；
+- 卡上 §一 提到「(B) 改名 + 套件自己清理 `snap-ok`」被排除 —— 我按卡走了 (A)。

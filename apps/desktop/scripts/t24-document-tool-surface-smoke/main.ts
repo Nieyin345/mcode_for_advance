@@ -237,8 +237,25 @@ console.log("\n4. 发现通道（真 handler）");
 {
   const apps = await call<{ apps: Array<{ app: string }>; totalTools: number }>(IPC.DOCUMENT_APPS, {});
   check("document.apps 回 140 个工具、六个编辑器", apps.totalTools === 140 && apps.apps.length === 6, { total: apps.totalTools, apps: apps.apps.length });
-  const list = await call<{ shown: number; tools: Array<{ name: string; route: string }> }>(IPC.DOCUMENT_TOOLS_LIST, { app: "docs", query: "table" });
-  check("document.toolsList 按关键词回 docs 表格工具", list.shown > 0 && list.tools.every((t) => t.name.includes("table") || t.name.includes("Table") || true), list.tools.slice(0, 4));
+  const list = await call<{ shown: number; tools: Array<{ name: string; doc: string; route: string }> }>(IPC.DOCUMENT_TOOLS_LIST, { app: "docs", query: "table" });
+  // 【T67】原来这条是 `list.tools.every((t) => t.name.includes("table") || ... || true)`
+  // —— 末端的 `|| true` 让它恒真，整条实际只验了 `list.shown > 0`。
+  //
+  // 为什么原作者加了 `|| true`：检索语义（`documentToolSurface.ts:182-187`）里
+  // `q` **同时匹配 name 和 doc**（说明文本），而 `query="table"` 的两条命中
+  // **全部来自 doc**。所以「每个结果的 name 都含 table」这个判据根本不成立。
+  //
+  // 现在的判据与检索语义一致：每个结果，name **或** doc 至少一个命中。
+  check("document.toolsList 按关键词回 docs 表格工具",
+    list.shown > 0 && list.tools.every((t) =>
+      t.name.toLowerCase().includes("table") || t.doc.toLowerCase().includes("table")),
+    list.tools.slice(0, 4));
+  // 【T67】防空过：上面那条在「全部经 doc 命中」时也成立。要证明检索的 **name 路径**
+  // 真的在工作，必须另起一个 **name-only** 的查询词。
+  // `mindmap` 实测：docs 下只命中 `generate_mindmap`，且是 name 命中、doc 零命中。
+  const byName = await call<{ shown: number; tools: Array<{ name: string; doc: string }> }>(IPC.DOCUMENT_TOOLS_LIST, { app: "docs", query: "mindmap" });
+  check("★ 正向控：query=mindmap 按名字命中 generate_mindmap（name 路径可达）",
+    byName.shown === 1 && byName.tools[0]?.name === "generate_mindmap", byName.tools);
   const described = await call<{ ok: boolean; schemaText?: string; withheld?: string }>(IPC.DOCUMENT_TOOL_DESCRIBE, { tool: "insert_picture", app: "docs" });
   check("document.toolDescribe 对 withheld 工具给出原因", described.ok === true && typeof described.withheld === "string" && described.withheld.includes("联合类型"), described);
   const describedOk = await call<{ ok: boolean; schemaText?: string }>(IPC.DOCUMENT_TOOL_DESCRIBE, { tool: "insert_content", app: "docs" });

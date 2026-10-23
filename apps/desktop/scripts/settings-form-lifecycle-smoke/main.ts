@@ -29,6 +29,7 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { ShellSection } from "@renderer/components/settings/SettingsTerminalPanel.js";
 import { ScreenshotDirRow, DataDirRow, PersistLoginRow } from "@renderer/components/settings/SettingsBrowserPanel.js";
 import { TERMINAL_SHELL_SETTING_KEY, BROWSER_SCREENSHOT_DIR_SETTING_KEY, BROWSER_DATA_DIR_SETTING_KEY, BROWSER_PERSIST_LOGIN_SETTING_KEY } from "@contracts/ipc";
+import { translate } from "@renderer/lib/i18n/core.js";
 
 let failures = 0;
 let checks = 0;
@@ -82,6 +83,21 @@ function hasRetryButton(): boolean {
   return JSON.stringify(
     deepNodes().map((n) => n.props),
   ).includes("重试");
+}
+
+/** 【T67】页面上有没有**保存成功**的提示段落。
+ *
+ *  对应 `SettingsTerminalPanel.tsx` 的 `{shell.saved && <p>{t("settings.terminal.shellSaved")}</p>}`。
+ *  与 `hasRetryButton()` 同路：扫 `deepNodes()` 的 props，不依赖节点身份。
+ *
+ *  ⚠️ 文案**从词典取**，不硬编码中文：套件里 `useI18n()` 读
+ *  `useSessionStore(s => s.locale)`，locale 未设置时 `translate` 回落 `zh`。
+ *  硬编码会在改文案时**静默失配** —— 断言绿着，而它验的那句话已经不存在了。
+ */
+function hasSuccessNote(): boolean {
+  return JSON.stringify(deepNodes().map((n) => n.props)).includes(
+    translate("zh", "settings.terminal.shellSaved"),
+  );
 }
 
 /** 共享 `Input`/`Button`/`Switch` 都以**匿名组件节点**保留(函数名被打包抹掉)
@@ -191,7 +207,32 @@ console.log("\n【MC-047】终端 Shell:保存失败 → 错误行(保存失败)
   await __flush();
   check("★ 保存失败时页面出现错误行", hasErrorRow(), hasErrorRow());
   check("★ 保存失败后输入框值仍是原值(没被清空)", !!inputById("setting-terminal-shell") && inputById("setting-terminal-shell")!.props.value === "/bin/bash", inputById("setting-terminal-shell")?.props.value);
-  check("保存失败时没有写成功提示", !hasErrorRow() || true, "");
+  // 【T67】这条之前是 `!hasErrorRow() || true` —— 三重错：恒真；判据查的是**错误行**
+  // 而断言名说的是**成功提示**；且同一块上一条刚要求错误行必须存在（自相矛盾）。
+  check("保存失败时没有写成功提示", !hasSuccessNote(), { successNote: hasSuccessNote() });
+}
+
+/* ── 【T67】终端 Shell:保存**成功** → 成功提示出现、错误行消失 ──────────────
+ *
+ * 为什么必须有这一块（而不只在上面那条里验「失败时没有成功提示」）：
+ * 只有失败态断言的话，一个**恒假**的 `hasSuccessNote()` 也能让它绿 ——
+ * 那正是「断言绿着但没验任何东西」的形态。成功态有一条常驻断言，
+ * 两条合起来才证明这个判据**分得清**成功与失败。
+ */
+console.log("\n【MC-047】终端 Shell:保存成功 → 成功提示出现、错误行消失");
+{
+  stub.resetApiStub();
+  stub.seedSetting(TERMINAL_SHELL_SETTING_KEY, "/bin/bash");
+  __mount(() => ShellSection());
+  await __flush();
+  check("守卫:成功块里也有保存钮", !!buttonByText("保存"), "");
+  check("保存前没有成功提示", !hasSuccessNote(), { successNote: hasSuccessNote() });
+  const saveBtnOk = buttonByText("保存");
+  (saveBtnOk?.props.onClick as (() => void) | undefined)?.();
+  await __flush();
+  check("★ 保存成功后页面出现成功提示", hasSuccessNote(), { successNote: hasSuccessNote() });
+  check("★ 保存成功后没有错误行", !hasErrorRow(), hasErrorRow());
+  check("保存成功时确实发出了 setting.set", stub.setCalls().length === 1, stub.setCalls());
 }
 
 /* ───────────── ⑥ 浏览器截图目录:读失败同样显式 ───────────── */
