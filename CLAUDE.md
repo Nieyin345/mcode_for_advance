@@ -114,10 +114,12 @@ preload (contextBridge + zod 校验)
 
 ```bash
 git add <明确路径1> <明确路径2>
-git commit -- <明确路径1> <明确路径2>
+git commit -m "<信息>" -- <明确路径1> <明确路径2>
 ```
 
 `git commit` **后面必须跟 `-- <paths>`**。**禁止 `git commit -a` / `git add -A` / `git add .` / 不带路径的 `git commit`。**
+
+⚠️ **`-m` 必须放在 `--` 前面。** `git commit -- a.ts -m "x"` 会报 `pathspec '-m' did not match any file(s)`——`--` 之后的一切都被当成路径。正确顺序是 `git commit -m "x" -- a.ts`。
 
 事故：总控 `git add` 两张卡后执行不带路径的 `git commit`，把另一个会话在途的 438 行代码卷进了 doc 提交。暂存区是进程间共享的，你 `add` 完之后别人也可能 `add`，不带路径的 `commit` 会把他的一起交掉。
 
