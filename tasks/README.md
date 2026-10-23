@@ -79,6 +79,7 @@
 2. `CLI_TOOL_MAP.slides` **只有 read 和 apply，没有 create** —— 模型没有任何途径新建 PPT；
 3. **PPT 设计流水线完全没接线** —— `plan_deck` / `generate_deck` 在目录里有名字，`cliRouteFor` 没有、`genofficeCli.ts` 没有实现。**目录承诺了能力，调用时没有**，这是最坏的一类；
 4. **`createFromFile` 的类型被故意收窄到 `docx | xlsx`** —— PPT 根本造不出来。而这是 **T74 有意为之**：`create --type pptx --spec <dir>` 要读一个目录里的多个文件，T74 没为它建围栏。**所以不是「没接」，是「被安全策略挡住」——T43 要用围栏解决，不许把 `"pptx"` 直接加进联合类型。**
+5. **`document_md_read` 只走 `docs read`（Word 专属命令）** —— `.md` / `.html` / `.txt` / `.xlsx` / `.pptx` / `.pdf` **全都读不了**。这是用户「读文件也不全面」的直接原因，而 CLI 明明有 `convert --to md` / `pdf read` / `sheet read` / `slides read`。
 
 上游 `genoffice/skills/genoffice/SKILL.md` 的 `## Designing a deck` 是唯一能做出好看 deck 的方法（style.md → outline.json → 逐页 NN.json → check → create → render --grid → audit → 最多两轮修），Mcode 一个环节都没接。
 

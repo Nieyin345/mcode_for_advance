@@ -119,6 +119,34 @@ export async function createFromFile(
 
 **推荐 (B)**：它同时解决了「spec 里的图片相对路径」问题（`--from` 的注释提到的正是这个），因为副本可以带着图片一起进受控目录。
 
+#### 缺口五：`document_md_read` 只能读 docx —— 这是「读文件也不全面」的直接原因
+
+```ts
+// documentToolRuntime.ts:465
+export async function documentMarkdownRead(ports, args) {
+  const read = await docsRead(ports, args.filePath, { full: true, ... });   // ← 只走 docs read
+```
+
+`docsRead` 在 `genofficeCli.ts:261`，它构造的是 `["docs", "read", file, "--json"]`。**`docs read` 是 Word 专属命令。**
+
+也就是说：
+
+| 文件类型 | `document_md_read` 能读吗 |
+|---|---|
+| `.docx` | ✅ |
+| `.md` | ❌ |
+| `.html` | ❌ |
+| `.txt` / `.csv` / 源码 | ❌ |
+| `.xlsx` | ❌ |
+| `.pptx` | ❌ |
+| `.pdf` | ❌ |
+
+**而 CLI 明明有对应命令**：`convert --to md`（任意格式 → Markdown）、`pdf read`、`sheet read`、`slides read`、`docs read`。
+
+并且 `document_apps` 的描述里写着「工具总数 139」「CLI 能承载的工具名」——模型会以为读文件是通的。
+
+**这是用户「读文件也不全面」的直接落点。** 修法：`documentMarkdownRead` 按扩展名分派到对应命令（`docs read` / `sheet read` / `slides read` / `pdf read` / `convert --to md`），而不是一律 `docs read`。
+
 ## 用户的洞察要落进设计里
 
 > 「ai 做 html 很出色因为这就是 ai 的训练数据」
@@ -163,9 +191,10 @@ export async function createFromFile(
 4. **PPT 设计流水线**：给出模型能走通的具体命令序列（写进工具描述或 guide），并有断言确认这条路可达。
 5. **docx / xlsx 的创建**：`createFromFile` 已经支持但 `CLI_TOOL_MAP` 没接 —— 把它们接上，让 `document_tool_call({tool:"create_document"})` 真能造出新文件。
 6. **HTML 入口**：`create --type docx --from fragment.html` 可达（用户洞察「AI 写 HTML 很强」的落点）。
-7. 目录里**不存在**「有名字、无路由、无实现」的工具——或者它们被显式标成 `route: "editor-only"` 且描述里说清。
-8. 变异验证：撤掉关键接线 → 断言变红 → `cmp` 还原。
-9. T24 的套件不回归；双包 typecheck 通过。
+7. **`document_md_read` 支持全部六种格式**：`.docx` / `.xlsx` / `.pptx` / `.pdf` / `.md` / `.html`（外加纯文本与源码原样返回）。按扩展名分派到 `docs read` / `sheet read` / `slides read` / `pdf read` / `convert --to md`。**这是用户「读文件也不全面」的直接验收点。**
+8. 目录里**不存在**「有名字、无路由、无实现」的工具——或者它们被显式标成 `route: "editor-only"` 且描述里说清。
+9. 变异验证：撤掉关键接线 → 断言变红 → `cmp` 还原。
+10. T24 的套件不回归；双包 typecheck 通过。
 
 ## 边界
 
