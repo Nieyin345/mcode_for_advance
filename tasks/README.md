@@ -66,6 +66,8 @@
 | T45 | **权限映射生成器会静默放宽：`document.*` 整个域落进 `write`** | **P0 安全** | T33 | DD | ⬜ 待开工 |
 | T46 | 审批卡的真 Electron U1（T6 的 E1 覆盖不到：真窗口键盘 / 多窗口焦点 / settingsOpen 暂停 / 后台会话） | P1 安全回归 | T6 | A | ✅ done（U1 11 步） |
 | T47 | **模型拿不到 `guide slides design` —— 设计流水线的「教」这一半还是断的** | **P0 产品能力** | T43 | BB | ✅ done（27/27） |
+| T48 | AI 看不见 Node-RED 节点 | P0 | T8+T21 | CC | ❌ 关闭（前提不成立：`node_types_list` 一直存在，在 `mcp/mcodeServer.ts`） |
+| T54 | **两套工具面分开：`app_api_list` 看不见 `mcode-workflow` 的 14 个工具** | **P1 可发现性** | 无 | DD | ⬜ 待开工 |
 
 ### T43 为什么是 P0（用户最高痛点）
 
