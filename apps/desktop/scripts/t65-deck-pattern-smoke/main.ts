@@ -39,7 +39,7 @@ function goodContentPage(): DeckPageSpec {
 console.log(
   "\nT65 · 反模式判据的纯函数层\n" +
   "  验：checkDeckPatterns(spec) 是否按规范报出反模式；每条判据都有正控 + 负控。\n" +
-  "  不验：接线（模型是否真的看到 findings）→ 见 t73 接线套件。\n" +
+  "  不验：接线（模型是否真的看到 findings）→ t73-pattern-wiring-smoke。\n" +
   "  不验：真实 deck 的观感（那要人看渲染图，见 T62 验收）。",
 );
 
