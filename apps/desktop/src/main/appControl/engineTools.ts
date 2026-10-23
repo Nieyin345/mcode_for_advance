@@ -18,12 +18,15 @@ export function appToolDescriptors(): Array<{ name: string; description: string;
 }
 
 export function isAppToolName(name: string): boolean {
-  // 【T24】不止 `app_` 前缀：`document_*` 六个工具也住在同一张 `appMcpTools()` 表里，
-  // 走同一个 `invokeAppTool`（审批在 handler 里按工具分档）。判据是**表成员资格**，
-  // 不是前缀猜名 —— 加新工具不必再记得同步一条前缀。
-  // 【T20】`extension_*`（validate / build / workshop_status）同理。
-  return (name.startsWith("app_") || name.startsWith("document_") || name.startsWith("extension_"))
-    && appMcpTools().some((t) => t.name === name);
+  // 【T24】**判据是表成员资格，不是前缀猜名。** `document_*` 六个工具就住在同一张
+  // `appMcpTools()` 表里，走同一个 `invokeAppTool`（审批在 handler 里按工具分档）。
+  // 【T20】`extension_*` 同理。
+  // 【T51】这里**去掉了前缀门**：原来写的是「前缀在 {app_, document_, extension_} 里
+  // **且** 在表里」，等于每加一个新前缀（这次是 `workflow_guide`）都要回来同步一次，
+  // 忘了就表现为 app-control 的「描述符与工具表一致」变红 —— 而那条断言的**本意**
+  // 就是表成员资格。前缀门只是叠在它上面的一层冗余，并且是唯一会漏的那一层。
+  // 表本身就是白名单：不在 `appMcpTools()` 里的名字一律 false。
+  return appMcpTools().some((t) => t.name === name);
 }
 
 export function invokeAppEngineTool(name: string, args: unknown, sessionId: string, ctx: ProviderContext): Promise<ToolResult> {

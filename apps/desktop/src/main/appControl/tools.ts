@@ -1104,6 +1104,38 @@ function panelApiList(args: { method?: string; slot?: string }): ToolResult {
  *     没有活跃绑定就走 CLI；有就走受信 ACK（定义必须是请求声明的原件）。
  *   - 临时输出：`<dataRoot>/docs/export-tmp/t24-render`（与文档导出的临时根同一处）。
  */
+/**
+ * 【T51】Node-RED 源码快照的根目录（仓库内 `node-red/`，与 `genoffice/` 同形）。
+ *
+ * 与 `documentRepoRoot()` 同一取法：开发时是 `apps/desktop` 上两级的仓库根，
+ * 打包后 `app.getAppPath()` 指向 `resources/app.asar`。解析不到就返回 null ——
+ * **不猜路径、不回落到别的 checkout**。
+ */
+let nodeRedRootOverride: string | null = null;
+
+/** 测试/装配用：固定 Node-RED 根（传 null 复位）。 */
+export function configureNodeRedRoot(root: string | null): void {
+  nodeRedRootOverride = root;
+}
+
+function workflowNodeRedRoot(): string | null {
+  if (nodeRedRootOverride !== null) return nodeRedRootOverride;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { existsSync } = require("node:fs") as typeof import("node:fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { dirname, join } = require("node:path") as typeof import("node:path");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const electron = require("electron") as { app?: { getAppPath?: () => string } };
+    const appPath = electron.app?.getAppPath?.();
+    const repoRoot = typeof appPath === "string" && appPath.length > 0 ? dirname(dirname(appPath)) : process.cwd();
+    const candidate = join(repoRoot, "node-red");
+    return existsSync(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 function documentRuntimePortsSync():
   | { ok: true; ports: import("@main/document/documentToolRuntime.js").DocumentSurfacePorts }
   | { ok: false; reason: string } {
@@ -1296,6 +1328,49 @@ export function appMcpTools(): McpToolSpec[] {
           `# ${result.domain} guide${result.topic ? ` · ${result.topic}` : ""}（${result.chars} 字符，原文未截断）\n\n` +
           result.text,
         );
+      },
+    },
+    {
+      // 【T51】工作流的「怎么搭」那一半。参数那一半已经由 workflow.nodeTypes 提供
+      // （每个参数带 help、每个节点带 usage），本工具**不重复**它，只补：
+      //   1. 什么时候该建工作流、节点怎么选、数据怎么流动、失败怎么处理；
+      //   2. Node-RED **原生**节点的帮助（那些不在 workflow.nodeTypes 里）——
+      //      直接取 Node-RED 自己的 locales/en-US 帮助原文，不另写一份。
+      name: "workflow_guide",
+      description:
+        "工作流的搭建方法论与 Node-RED 原生节点说明。**搭之前先调一次** workflow_guide({topic:\"design\"})：" +
+        "它讲清楚什么时候该建工作流、四类内置节点怎么选、步骤之间怎么引用产出、失败怎么处理、验收怎么做。" +
+        "跑不通时调 topic:\"debugging\"（按顺序查，带常见症状对照表）。" +
+        "要看 Node-RED 原生节点（inject/debug/switch/http request …）的说明：topic:\"nodes\" 列目录，" +
+        "再加 node:\"inject\" 取那一个的完整帮助（上游原文）。" +
+        "⚠️ Mcode 自己的节点类型（mcode.agent / mcode.conversation / mcode.branch …）的参数与用法" +
+        "用 app_api_call(\"workflow.nodeTypes\") 查，不在这个工具里。",
+      inputSchema: {
+        topic: z.enum(["design", "debugging", "nodes"]).optional()
+          .describe("design=怎么搭（默认）；debugging=怎么查；nodes=Node-RED 原生节点说明"),
+        node: z.string().min(1).max(64).optional()
+          .describe("取某一个 Node-RED 原生节点的帮助（配合 topic:\"nodes\"），例如 inject"),
+      },
+      handler: async (args: { topic?: "design" | "debugging" | "nodes"; node?: string }) => {
+        const { workflowGuide, readNodeRedHelp, nodeRedHelpRoot } = await import("@main/orchestration/workflowGuide.js");
+        const nodeRedRoot = workflowNodeRedRoot();
+        if (nodeRedRoot === null) {
+          return fail(
+            "找不到 Node-RED 源码快照（仓库内 node-red/）。" +
+            "工作流方法论本身仍可用，但 Node-RED 原生节点说明取不到 —— " +
+            "请确认 node-red/ 快照存在（与 genoffice/ 同一类 vendor 目录）。",
+          );
+        }
+        const index = readNodeRedHelp(nodeRedRoot);
+        const result = workflowGuide(index, args);
+        if (!result.ok) {
+          const roots = result.nodes && result.nodes.length > 0
+            ? `\n可用节点：${result.nodes.join(" · ")}`
+            : "";
+          return fail(result.reason + roots);
+        }
+        const header = `# workflow guide · ${result.topic}（${result.chars} 字符）`;
+        return text(`${header}\n\n${result.text}`);
       },
     },
     {
