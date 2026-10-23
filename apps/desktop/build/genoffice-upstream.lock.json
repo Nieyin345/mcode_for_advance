@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "635dee2f6a38d7f0a3aec31a487afc3e2369a5cf",
-  "expectedTree": "532e6727eb1f4e94e686cee1ab55a99bddf8f6f0",
+  "revision": "05da63cdf6fcbec44176b07d10cb5b5f75f5f1cf",
+  "expectedTree": "9e9982b11d5123e4e33e7906bc4368483eb7dc7c",
   "patchSeries": [
     {
       "index": 1,
@@ -130,9 +130,25 @@
       "sha256": "7572ccf2650806cd7707f43d8e011d21ad1545e01ecbdbccbe15df6eb672409c",
       "bytes": 65835,
       "subject": "feat(docs): ack native tool results in hosted turn"
+    },
+    {
+      "index": 14,
+      "file": "patches/genoffice/0014-feat-docs-reshell-the-chrome-in-mcode-design-tokens.patch",
+      "revision": "05da63cdf6fcbec44176b07d10cb5b5f75f5f1cf",
+      "parentRevision": "635dee2f6a38d7f0a3aec31a487afc3e2369a5cf",
+      "sha256": "f2bc783ef20173e861f67e136bee00ee588e86cebc75a07701778d0d6a1a39af",
+      "bytes": 11355,
+      "subject": "feat(docs): reshell the chrome in Mcode's design tokens"
     }
   ],
   "license": "Apache-2.0",
-  "editors": ["docs", "sheets", "slides", "pdf", "markdown", "html"],
+  "editors": [
+    "docs",
+    "sheets",
+    "slides",
+    "pdf",
+    "markdown",
+    "html"
+  ],
   "licenseSourceManifest": "apps/desktop/build/vendor-licenses/genoffice/manifest.json"
 }

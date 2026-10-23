@@ -1,0 +1,292 @@
+From 05da63cdf6fcbec44176b07d10cb5b5f75f5f1cf Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Fri, 23 Oct 2026 18:38:51 +0800
+Subject: [PATCH] feat(docs): reshell the chrome in Mcode's design tokens
+
+The Docs renderer carries a full Word-style ribbon whose colours come from
+GenOffice's semantic token layer. Mcode's shell is Claude-styled, and the two
+read as two different products bolted together.
+
+GenOffice already forbids raw colours in renderer CSS (check-theme-colors.mjs)
+and routes every piece of chrome through packages/ui/src/tokens.css, so the
+shell can be replaced by re-pointing those tokens rather than touching any
+component. This adds apps/docs/src/renderer/mcode-theme.css, which overrides
+the chrome tokens with Mcode's CDS ramp, and loads it from main.tsx only when
+window.desktop exists - standalone GenOffice keeps its own Word visual.
+
+Scope is deliberately narrow:
+
+- Component tree, editor kernel, ProseMirror schema, document model, save and
+  export paths are untouched.
+- Per-app brand accents (--accent, --word-blue) are not overridden: they stay
+  the app's own.
+- Word-semantic colours (revision bar, search hits) are not overridden: they
+  tell the user which Word construct they are looking at.
+- Document content colours never live in the token layer and are not touched.
+---
+ apps/docs/src/renderer/main.tsx        |   6 +
+ apps/docs/src/renderer/mcode-theme.css | 235 +++++++++++++++++++++++++
+ 2 files changed, 241 insertions(+)
+ create mode 100644 apps/docs/src/renderer/mcode-theme.css
+
+diff --git a/apps/docs/src/renderer/main.tsx b/apps/docs/src/renderer/main.tsx
+index 69914cf..0538a98 100644
+--- a/apps/docs/src/renderer/main.tsx
++++ b/apps/docs/src/renderer/main.tsx
+@@ -18,6 +18,12 @@ import '@genoffice/ui/ai-scope-quote.css'
+ import '@genoffice/ui/image-viewer.css'
+ import './styles.css'
+ import './fonts/fonts.css'
++// 【T39】Mcode 宿主主题层：把 GenOffice 的语义 token 重指到 Mcode 的 CDS 色阶。
++// **只在 Mcode 里加载** —— GenOffice 独立运行时没有 `window.desktop`,应当保持自己的
++// Word 视觉语言。运行时判断而不是构建期切分,是因为同一个构建产物两边共用(宿主按
++// pinned HEAD 重建 vendor,不另出一份「Mcode 版」)。
++// 放在 `styles.css` 之后:token 是自定义属性,后者先定义、这里覆盖,顺序决定胜负。
++if (window.desktop) import('./mcode-theme.css')
+ import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+ import { setAltChunkHtmlConverter } from '@genoffice/docx-engine'
+ 
+diff --git a/apps/docs/src/renderer/mcode-theme.css b/apps/docs/src/renderer/mcode-theme.css
+new file mode 100644
+index 0000000..05f73b7
+--- /dev/null
++++ b/apps/docs/src/renderer/mcode-theme.css
+@@ -0,0 +1,235 @@
++/* Mcode 宿主主题层 —— 把 GenOffice 的**语义 token** 重指到 Mcode 的 CDS 色阶。
++ *
++ * ## 这是什么，不是什么
++ *
++ * GenOffice 的 chrome 颜色全部走 `packages/ui/src/tokens.css` 里的语义 token
++ * （`--surface` / `--text` / `--border` / `--hover` …），而且它自己有一条 CI
++ * (`tools/check-theme-colors.mjs`) 强制这件事：renderer CSS 里**不许出现裸色值**，
++ * 只有自定义属性定义行例外。这份文件正是走那条例外 —— 每个被覆盖的 token 都是一行
++ * `--x: <value>;`，没有任何一条规则内联写颜色。
++ *
++ * 所以换壳在这里不是「改组件」也不是「套宿主 DOM」，而是**替换 token 的取值**：
++ * 组件树、编辑内核、ProseMirror schema、文档模型、导出/打印路径一行不动。
++ *
++ * ## 色值从哪来
++ *
++ * 全部来自 Mcode 的 `apps/desktop/src/renderer/tokens.cds.css`（由
++ * `gen-cds-tokens.mjs` 从 `open-claude-ui/code-examples/cds-theme.css` 生成，
++ * MIT，基于对 Claude 桌面端的逆向）。那一层是 `R G B` 三元组；这里要 CSS 色值，
++ * 所以按同样的阶位取 hex —— **阶位名与注释里的 hex 一一对应**，不是另调一套。
++ *
++ * 为什么是「重指 token」而不是「写一批 .mcode-ribbon 覆盖规则」：
++ *   1. GenOffice 的 CI 会拒绝规则里的裸色值，覆盖规则只能写 token 名，写 token 名
++ *      就等价于改 token 值 —— 绕一圈不如直接改；
++ *   2. ribbon / 对话框 / 上下文菜单 / 侧栏共用同一批 token，改一处六类 chrome 一起变；
++ *   3. 上游升级时这份文件**不需要跟着改**（token 名是公开契约），只有色阶变了才动。
++ *
++ * ## 边界（硬规矩）
++ *
++ * - **只覆盖 chrome token。** 文档内容色（纸张、单元格、导出、打印、图表调色板、
++ *   高亮色表）一律不在这里 —— 它们必须保持与 Word 一致的渲染结果，见 GenOffice
++ *   CLAUDE.md 主题规则第 4 条。
++ * - **不碰 `--docs-revision-bar` / `--search-hit-*`**：那是 Word 语义色（修订条、
++ *   查找命中），换掉会让用户认不出这是 Word 的哪一类标记。
++ * - 暗色只覆盖与亮色**成对**的 token；`color-scheme` 由 GenOffice 自己管。
++ */
++
++/* ── 亮色 ─────────────────────────────────────────────────────────────── */
++:root {
++  /* 表面阶梯 → CDS gray 阶（Mcode 的 --surface = var(--m-gray-10) = #fcfcfb） */
++  --surface: #fcfcfb;
++  --surface-subtle: #f9f9f7;
++  --chrome-bg: #fcfcfb;
++  --canvas: #f0efec;
++  --bg-content: #f9f9f7;
++
++  /* 边框 → CDS 发丝边 */
++  --border: #e1e0d9;
++  --border-subtle: #edece8;
++  --border-strong: #d2d1c7;
++  --border-hover: #c3c2b7;
++
++  /* 文字 → CDS 对比阶梯（Mcode 的 --content = var(--m-gray-850) = #151515） */
++  --text: #151515;
++  --text-primary: #151515;
++  --text-secondary: #52514e;
++  --text-tertiary: #6d6b67;
++  --text-muted: #6d6b67;
++  --text-dim: #52514e;
++
++  /* 交互态 */
++  --hover: #f0efec;
++  --pressed: #eae9e4;
++  --active-bg: #e1e0d9;
++  --bg-hover: #f0efec;
++  --bg-hover-subtle: #f6f6f4;
++  --bg-hover-strong: #eae9e4;
++  --bg-hover-accent: #e1e0d9;
++  --icon-muted: #a5a49a;
++
++  /* 状态色：保留语义，只换到 CDS 色系的饱和度 */
++  --danger: #b4352f;
++  --danger-bg: #fdf3f2;
++  --danger-border: #f0c8c4;
++  --success: #2f6b4a;
++  --success-bg: #eef6f1;
++  --success-border: #c8e0d2;
++
++  /* 阴影：CDS 的头发丝阴影，比 Word 的 15% 轻 */
++  --shadow-btn-hover: 0 1px 3px rgb(21 21 21 / 8%);
++  --shadow-modal-strong: 0 12px 32px rgb(21 21 21 / 12%);
++  --shadow-menu: 0 6px 20px rgb(21 21 21 / 14%);
++
++  /* 主按钮 / AI 动作：Claude 的陶土橙不是 GenOffice 的 #e8663f */
++  --color-btn-primary: #151515;
++  --color-btn-primary-hover: #2c2c2a;
++  --color-btn-primary-text: #fcfcfb;
++  --color-ai-action: #c96442;
++  --color-ai-action-hover: #b55538;
++  --color-ai-action-text: #fcfcfb;
++  --color-brand-secondary: #c96442;
++  --color-border-brand: #c96442;
++
++  /* 与 chrome 同名的重复语义（GenOffice 的 AI 面板沿用这一组） */
++  --color-text-primary: #151515;
++  --color-text-secondary: #52514e;
++  --color-text-tertiary: #6d6b67;
++  --color-bg-page: #fcfcfb;
++  --color-bg-subtle: #f9f9f7;
++  --color-border-default: #e1e0d9;
++  --color-border-strong: #d2d1c7;
++  --color-error: #b4352f;
++  --color-error-hover: #9c2c27;
++
++  /* 字体族：Mcode 用系统 sans 栈，不用 Arial 打头 */
++  --gs-font-sans:
++    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, 'Helvetica Neue', sans-serif;
++
++  /* 圆角：CDS 比 Word 更圆一档 */
++  --radius-6: 6px;
++  --radius-8: 8px;
++  --radius-12: 12px;
++  --radius-16: 16px;
++}
++
++/* ── 暗色 ─────────────────────────────────────────────────────────────── */
++[data-theme='dark'] {
++  --surface: #151515;
++  --surface-subtle: #20201f;
++  --chrome-bg: #1b1b1a;
++  --canvas: #0f0f0e;
++  --bg-content: #1b1b1a;
++
++  --border: #383835;
++  --border-subtle: #2c2c2a;
++  --border-strong: #454442;
++  --border-hover: #52514e;
++
++  --text: #f9f9f7;
++  --text-primary: #f9f9f7;
++  --text-secondary: #b4b3a8;
++  --text-tertiary: #97958d;
++  --text-muted: #97958d;
++  --text-dim: #b4b3a8;
++
++  --hover: #2c2c2a;
++  --pressed: #383835;
++  --active-bg: #454442;
++  --bg-hover: #2c2c2a;
++  --bg-hover-subtle: #242423;
++  --bg-hover-strong: #383835;
++  --bg-hover-accent: #454442;
++  --icon-muted: #6d6b67;
++
++  --danger: #e58980;
++  --danger-bg: #3a201f;
++  --danger-border: #5a3030;
++  --success: #7fc3a0;
++  --success-bg: #1c2f26;
++  --success-border: #33543f;
++
++  --shadow-btn-hover: 0 1px 3px rgb(0 0 0 / 45%);
++  --shadow-modal-strong: 0 12px 32px rgb(0 0 0 / 40%);
++  --shadow-menu: 0 6px 20px rgb(0 0 0 / 50%);
++
++  --color-btn-primary: #f9f9f7;
++  --color-btn-primary-hover: #e1e0d9;
++  --color-btn-primary-text: #151515;
++  --color-ai-action: #d97757;
++  --color-ai-action-hover: #e58966;
++  --color-ai-action-text: #151515;
++  --color-brand-secondary: #d97757;
++  --color-border-brand: #d97757;
++
++  --color-text-primary: #f9f9f7;
++  --color-text-secondary: #b4b3a8;
++  --color-text-tertiary: #97958d;
++  --color-bg-page: #151515;
++  --color-bg-subtle: #20201f;
++  --color-border-default: #383835;
++  --color-border-strong: #454442;
++  --color-error: #e58980;
++  --color-error-hover: #f0a09a;
++}
++
++/* ── 系统暗色（无 data-theme 属性时跟随 OS） ───────────────────────────── */
++@media (prefers-color-scheme: dark) {
++  :root:not([data-theme='light']):not([data-theme='dark']) {
++    --surface: #151515;
++    --surface-subtle: #20201f;
++    --chrome-bg: #1b1b1a;
++    --canvas: #0f0f0e;
++    --bg-content: #1b1b1a;
++
++    --border: #383835;
++    --border-subtle: #2c2c2a;
++    --border-strong: #454442;
++    --border-hover: #52514e;
++
++    --text: #f9f9f7;
++    --text-primary: #f9f9f7;
++    --text-secondary: #b4b3a8;
++    --text-tertiary: #97958d;
++    --text-muted: #97958d;
++    --text-dim: #b4b3a8;
++
++    --hover: #2c2c2a;
++    --pressed: #383835;
++    --active-bg: #454442;
++    --bg-hover: #2c2c2a;
++    --bg-hover-subtle: #242423;
++    --bg-hover-strong: #383835;
++    --bg-hover-accent: #454442;
++    --icon-muted: #6d6b67;
++
++    --danger: #e58980;
++    --danger-bg: #3a201f;
++    --danger-border: #5a3030;
++    --success: #7fc3a0;
++    --success-bg: #1c2f26;
++    --success-border: #33543f;
++
++    --shadow-btn-hover: 0 1px 3px rgb(0 0 0 / 45%);
++    --shadow-modal-strong: 0 12px 32px rgb(0 0 0 / 40%);
++    --shadow-menu: 0 6px 20px rgb(0 0 0 / 50%);
++
++    --color-btn-primary: #f9f9f7;
++    --color-btn-primary-hover: #e1e0d9;
++    --color-btn-primary-text: #151515;
++    --color-ai-action: #d97757;
++    --color-ai-action-hover: #e58966;
++    --color-ai-action-text: #151515;
++    --color-brand-secondary: #d97757;
++    --color-border-brand: #d97757;
++
++    --color-text-primary: #f9f9f7;
++    --color-text-secondary: #b4b3a8;
++    --color-text-tertiary: #97958d;
++    --color-bg-page: #151515;
++    --color-bg-subtle: #20201f;
++    --color-border-default: #383835;
++    --color-border-strong: #454442;
++    --color-error: #e58980;
++    --color-error-hover: #f0a09a;
++  }
++}
+-- 
+2.52.0.windows.1
+

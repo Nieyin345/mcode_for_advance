@@ -116,3 +116,185 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ## 回写
 
 在 `tasks/T39-genoffice-ui-reshell.md` 末尾追加 `## 结果回写（2026-10-23）`：方案选择与论证、换了什么、保留了什么、编辑功能零回归的证据、视觉证据、变异证据、提交 SHA、其余五个 app 的估算。
+
+---
+
+## 结果回写（2026-10-23，C 会话）
+
+### 1. 方案选择：走 **(A) 的 token 变体**，不是 A 也不是 B
+
+卡上给的两条都不是最优解。实测后发现第三条路，成本比两者都低，而且**不违反任何硬约束**。
+
+**先说为什么不是 B（宿主套 chrome + 接管命令）——技术上不成立。**
+
+T7 已证明编辑器渲染在独立 `WebContentsView` 里，宿主只能 `setBounds`，改不了 DOM。B 的
+第二个前提是「能接管 ribbon 的命令入口」，而实测：
+
+```ts
+// control.ts:5-6 —— 整个宿主→页面的控制面只有两个命令
+export type ControlRequest =
+  | { cmd: 'goto'; target: { kind: string; block?: number } }
+  | { cmd: 'selection' }
+```
+
+**没有 ribbon 命令通道。** 要让 B 成立，得先在 vendor 里加一个命令分发面（`setBold` /
+`insertTable` / 样式应用 / 页眉页脚 / 修订…… —— 那是 55 个组件背后几百个命令），
+再在宿主重建一整套 ribbon UI。这不是「换壳」，这是**重写整个前端**，而且每加一个命令都要
+同时改两处。T39 的边界明说「若发现必须改编辑内核才能达成目标，停下报告」—— B 要走的路
+比改内核还远。
+
+**再说为什么不是 A 的常规形态（改 55 个组件）——没必要。**
+
+GenOffice 有一条**自己的 CI 在强制**主题纪律（`genoffice/tools/check-theme-colors.mjs`）：
+
+```
+RAW_COLOR = /#[0-9a-fA-F]{3,8}\b|\b(?:rgb|rgba|hsl|hsla)\(/
+TOKEN_DEF = /^\s*--[\w-]+:/          // ← 定义行是唯一例外
+```
+
+renderer CSS 里**不许出现裸色值**，chrome 颜色全部来自 `packages/ui/src/tokens.css` 的语义
+token（`--surface` / `--text` / `--border` / `--hover` …）。也就是说：**换壳 = 换 token 取值**，
+组件树一行不用动。
+
+这不是我图省事 —— 是上游自己把「外壳」抽象成了 token 层，用它设计好的那个接缝，比绕过它去
+改 55 个组件更符合「复用上游」的原则（L2 薄适配，不是 L3 fork）。
+
+### 2. 做法
+
+新增 `genoffice/apps/docs/src/renderer/mcode-theme.css`（241 行），把 chrome token 重指到
+Mcode 的 CDS 色阶（`apps/desktop/src/renderer/tokens.cds.css`，MIT，从 open-claude-ui 逆向
+生成的那份）。接线在 `main.tsx`：
+
+```ts
+if (window.desktop) import('./mcode-theme.css')
+```
+
+运行时判断，因为**同一个构建产物两边共用**：Mcode 里显示 Mcode 的样子，GenOffice 独立运行
+（没有 `window.desktop`）保持自己的 Word 视觉。
+
+**换了什么**（有断言）：表面阶梯 `--surface/-subtle/--chrome-bg/--canvas`、边框四档、
+文字五档、交互态七档、状态色、三档阴影、主按钮与 AI 动作色（Word 橙 `#e8663f` → Mcode
+陶土橙 `#c96442`）、字体栈（Arial 打头 → 系统 sans 栈）、圆角。
+
+**刻意没换**（有断言）：
+- `--accent` / `--accent-dark` / `--accent-soft` / `--word-blue` —— GenOffice CLAUDE.md
+  明说各 app 的品牌色归各 app，我不该越过这条；
+- `--docs-revision-bar` / `--search-hit-*` —— 那是 Word 的**语义标记**（修订条、查找命中），
+  换掉用户就认不出这是哪类标记了；
+- 文档内容色（纸张、单元格、导出、打印、图表调色板）—— GenOffice 主题规则第 4 条禁止，
+  而且导出一致性比好看重要。
+
+### 3. 编辑内核零回归 —— 证据
+
+**T7 旅程 `docs-open-edit-save-reopen`：PASS。** 真 Electron、**两个 OS 进程**（保存后
+真 `relaunch` 重开）、真 ProseMirror transaction、真键盘 Ctrl+S、真 e2e：
+
+```
+docs-open-edit-save-reopen: literal=PASS expectation=all-pass
+T7: 正常跑退出码 0
+```
+
+过程中日志确认了完整链路：`open-path: prepared → committed → document view saved (3425 bytes)
+→ closed → [relaunch] generation 1 exited → 新进程 → 重开 → 再 committed`。
+
+**编辑内核零改动**：`Ribbon.tsx` / `editor/` / ProseMirror schema / 文档模型 **一个字节没动**
+（`genoffice` 工作树除主题层与 `main.tsx` 接线外无改动，有断言 + 变异 M4 证明）。
+
+### 4. `mcode-view.ts` IPC 白名单未变 —— 证据
+
+**该文件一行未改。** `MCODE_DOCS_CHANNEL_POLICY` 在 `mcode-view.ts:26`，我没有理由碰它，
+也没碰。`document-view-host-smoke`（直接 import 这份 policy）**18/18 PASS**、
+`production-build-preload-smoke` **18/18 PASS**。
+
+### 5. 新增回归套件 `mcode-docs-reshell-smoke`（17 条）
+
+**不启 Electron，只读产物与源码** —— 判据立在「产物长什么样」上，不是「源码里有没有那句话」
+（T65 那次就是栽在源码正则上）。
+
+| 组 | 断言 |
+|---|---|
+| 主题层进产物 | 独立 CSS chunk 存在；含 `#fcfcfb` / `#151515` / `#c96442`；字体栈以 `-apple-system` 打头；`--chrome-bg` / `--hover` / `--bg-hover` 都被覆盖 |
+| 条件加载 | `index.html` **没有**直接 link 主题层；bundle 里有 `if (window.desktop) __vitePreload(` 守卫；bundle 引用了 chunk |
+| 边界 | 无规则内联裸色值（GenOffice CI 规则）；不覆盖 `--accent` 家族 / `--word-blue`；不覆盖 `--docs-revision-bar` / `--search-hit-*` |
+| 内核零改动 | `genoffice` 工作树只有那两个允许的文件；`main.tsx` 的加载被 `window.desktop` 守卫 |
+
+### 6. 变异验证（四次，全部变红后逐字节还原）
+
+| 变异 | 改动 | 结果 |
+|---|---|---|
+| **M1** 无条件加载 | `if (window.desktop) import(...)` → `import '...'` | **7/17**：条件加载那组全红 + bundle 守卫 + chunk 引用 |
+| **M2** 退回 Word 橙 | `--color-ai-action: #c96442` → `#e8663f` | **16/17**：`主题层含 Mcode 陶土橙` 红 |
+| **M3** 越界改品牌色 | 注入 `--accent: #c96442` | **16/17**：`不覆盖 --accent 家族` 红 |
+| **M4** 越界改内核 | 往 `Ribbon.tsx` 追加一行注释 | **16/17**：detail 精确点名 `["M apps/docs/src/renderer/components/Ribbon.tsx"]` |
+
+每次变异都**重新构建**（`npm run build -w @genoffice/docs`）再跑断言 —— 因为判据在产物上，
+不重建就测不到。还原后 `cmp -s` 逐字节一致，重建出的 bundle hash 回到 `index-CXQSjRKg.js`
+（确定性构建，同一源码同一产物）。
+
+### 7. 这条改动**必须**跟着补丁链走 —— 它不在 Mcode 主仓里
+
+`genoffice/` 被 Mcode 的 `.gitignore:70` **整体忽略**，它是独立 git 仓（remote 指向
+genspark-ai/genoffice）。所以换壳的源码改动**不能**用 Mcode 的 commit 交付，只能作为**第 14 个
+补丁**进入 vendor 链。已完成：
+
+1. vendor 仓提交 `05da63c`（分支 `mcode/integration`），tree `9e9982b`；
+2. 导出 `patches/genoffice/0014-feat-docs-reshell-the-chrome-in-mcode-design-tokens.patch`
+   （11,355 B，SHA-256 `f2bc783e…1a39af`）；
+3. 更新 `genoffice-upstream.lock.json`：`revision` → `05da63c`、`expectedTree` → `9e9982b`、
+   `patchSeries` 追加第 14 条；
+4. 更新 `verify-genoffice-upstream.cjs` 的 `FINAL_REVISION` / `FINAL_TREE` / `PATCHES` /
+   提交数（13 → 14）。
+
+**注意一处语义陷阱**：`0013` 那一条原本写的是 `revision: FINAL_REVISION`（因为它曾是最后一条）。
+`FINAL_REVISION` 改成新值之后，0013 会**跟着漂**到 0014 的提交上。已把它固定成字面量
+`635dee2f…`。这类「最后一条用常量、结果常量一动全动」的写法，加补丁时一定会踩。
+
+**t87 也顺手修了同一类问题**：它把 `patchCount` 写死成 `13`，已改成从 `lock.patchSeries.length`
+派生 —— 加补丁不该要改第二处。
+
+`MCODE_INCLUDE_GENOFFICE_BUNDLE=1 node apps/desktop/build/verify-genoffice-upstream.cjs`
+→ **exit 0**，`05da63c (base cbec600…, 13 patches, tree 9e9982b…)`。
+
+### 8. 全部验证结果
+
+| 套件 | 结果 |
+|---|---|
+| `mcode-docs-reshell-smoke`（新） | **17/17** |
+| T7 `docs-open-edit-save-reopen` | **PASS**（2 个 OS 进程） |
+| `genoffice-source-smoke` | **26/26** |
+| `t87-genoffice-provenance-license-smoke` | **96/96**，patch replay tree = `9e9982b` 逐字匹配 |
+| `genoffice-vendor-freshness-smoke` | **29/29**（六家全部重建到 pinned HEAD 之后） |
+| `production-build-preload-smoke` | **18/18** |
+| `genoffice-editors-release-smoke` | **29/29** |
+| `release-readiness-smoke` | **23/23** |
+| `document-view-host-smoke` | **18/18** |
+| 双包 typecheck | contracts **exit 0**、desktop **exit 0** |
+
+**六家 vendor 全部重建**（不只是 docs）：freshness 断言要求所有产物晚于 pinned HEAD，
+只重建 docs 会让另外五家变红（实测 23/29 → 重建后 29/29）。
+
+### 9. 其余五个 app 的估算
+
+换壳机制是**每个 app 一份 token 覆盖**，不是每个 app 一套组件改造：
+
+| app | 工作量 | 依据 |
+|---|---|---|
+| sheets | 中 —— Univer 有独立的 `darkMode` 与 canvas 绘制色表（`canvas-colors.ts`），token 覆盖不到画布 |
+| slides | 中 —— 同上，且缩略图/画布有自己的色表 |
+| pdf | 小 —— 页面是 PDFium 位图，chrome 面比 docs 窄得多 |
+| markdown | 小 —— 已极简 |
+| html | 小 —— 同 markdown |
+
+**共性成本在 CI 与断言，不在 CSS**：每个 app 都要一份 `mcode-theme.css` + 一条条件 import +
+一条 freshness/边界断言。按 docs 的实测，单个 app 的 CSS 约 240 行、断言约 17 条、构建
+约 10-30 秒。**建议下一卡一次做 pdf / markdown / html（三个小的），sheets / slides 单独一卡**
+（要处理 canvas 色表，与 token 层不是一个机制）。
+
+### 10. 边界遵守
+
+- **只做 Docs**；其余五家只重建产物（freshness 要求），没改它们的源码；
+- **没动** `patches/genoffice/` 已有的 13 个补丁（只**新增**了 0014）；
+- **没碰** T2/T3/T4/T19/T27/T28/T33/T34 的文件；
+- **没改** `mcode-view.ts` / `mcode-ai.ts` / `mcode-privileged.ts`；
+- **没改** 编辑内核（变异 M4 证明断言能抓到）；
+- 没发现「必须改编辑内核才能达成视觉目标」的情况 —— 方案成立。
