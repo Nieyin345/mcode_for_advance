@@ -164,7 +164,26 @@ const BLOCKED: Record<string, string> = {
   // 自己回答一张安装审批卡（答了就等于自己批准自己装可执行代码）。
   "workflowEngine.respondNodeInstallApproval": "安装审批的应答只能由用户在审批卡上本人点击",
   "unattendedPlans.resume": "续跑无人值守计划会在本机建会话,只能由用户本人发起",
-  "unattendedPlans.abandon": "放弃计划是用户的治理动作,只能由用户本人发起"
+  "unattendedPlans.abandon": "放弃计划是用户的治理动作,只能由用户本人发起",
+  // 【T105】任务验收 = 路线图 §5「执行完成 ≠ 验收通过」的落点。四条的动词
+  // (`accept` / `reject` / `reopen` / `transition`)都不在 `READ_VERB` 里,若不入
+  // BLOCKED 表,`policyFor` 的兜底会把它们一律猜成 `write`(弹卡)—— 而 `write` 在
+  // `bypassPermissions` / `full-access` 下**直接放行**(`tools.ts` 的 `BYPASS_MODES`),
+  // 那就是「AI 自己把任务标成已验收」。
+  //
+  // ⚠️ **`reopen` 与上面三条同档,但理由不同**,别照抄措辞：它**不是**一次验收结论
+  // (实现里明确不动 `acceptance.round`,见 `TaskRepo.reopen` 注释「轮次只在用户给出
+  // 结论时推进」)。它把 `rejected` 打回 `running`,是**执行侧的下一次尝试**。
+  // 之所以仍然 blocked:它只在「用户刚退回」之后才有意义,agent 自行 reopen 等于
+  // **无视用户的退回结论**——用户说「不行,重做」之后,该不该重做由用户再决定,
+  // 不该由被退回的一方自己决定。
+  "task.accept": "任务验收结论只能由用户在任务中心本人给出(执行完成不等于验收通过)",
+  "task.reject": "任务退回只能由用户在任务中心本人给出",
+  "task.reopen": "返修的决定权在用户 —— 被退回的一方不能自己把任务重开",
+  // `transition` 本来能让执行方写 `accepted`,T99 在 handler 里用
+  // `TASK_EXECUTOR_STATUSES` 挡了一道(那是**执行方**白名单)。这里再挡一道是
+  // 纵深防御:那一层的白名单如果被放宽,policy 这层仍然够不到验收状态。
+  "task.transition": "任务状态流转只由主进程执行路径驱动,agent 不直接改写任务状态"
 };
 
 const DANGER: Record<string, string> = {
@@ -558,6 +577,9 @@ export const DOMAIN_LABELS: Record<string, string> = {
   scene: "场景:校验候选声明、编译变更计划、部署前能力预检(只读,不执行)",
   // 【ARC-007】文档能力(GenOffice CLI 适配层):结构化读、按 ops 编辑、格式转换、能力诊断。
   document: "文档:读取结构(Word/PPT/Excel)、按操作编辑保存、格式转换、本机能力诊断",
+  // 【T105】任务是一级对象(路线图 §3/§5)。agent 能**看**(list/get 只读)但**不能验收**
+  // —— accept / reject / reopen / transition 四条在 BLOCKED 档,见上。
+  task: "任务:列出与查看任务(可用 task.list 看清有哪些任务、状态与产物路径);验收与退回只能由用户在任务中心给出",
   // 【ARC-007】受控文档视图宿主(界面层,与 browser 面板同档):视图的开关/几何/焦点。
   documentView: "文档视图宿主(界面层):打开/定位/显示/隐藏/聚焦/关闭编辑器视图、状态诊断",
   workflowEngine: "第三方工作流引擎:启动/停止/状态(独立子进程,只绑回环)",
@@ -640,6 +662,10 @@ export const DOMAIN_TASK_ALIASES: Record<string, readonly string[]> = {
   documentView: ["文档视图", "编辑器视图", "文档窗口", "document view", "editor view"],
   unattended: ["无人值守", "计划授权", "自动执行计划"],
   unattendedPlans: ["未完成的计划", "续跑", "计划恢复"],
+  // 【T105】任务域的检索词。⚠️ 不要放「验收 / 退回 / 接受 / 拒绝」—— 那四条对 agent
+  // 是 blocked,把用户口语里的「帮我验收这个任务」导向 blocked 方法只会得到一条拒绝;
+  // 没有这个词条时,guide 会把用户指向能用的那部分(list / get)。
+  task: ["任务", "待办", "任务列表", "task", "todo"],
   skills: ["技能", "skill", "技能库"],
   plugins: ["插件", "扩展", "plugin", "extension"],
   mcp: ["外部工具", "mcp 服务器", "mcp server"],

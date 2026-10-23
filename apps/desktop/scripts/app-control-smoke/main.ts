@@ -12,8 +12,8 @@
  *
  * Run: scripts/app-control-smoke/run.sh
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import ts from "typescript";
 import type { ProviderContext, ApprovalRequest, ProviderApprovalDecision } from "@contracts/provider";
 import { APP_DANGER_APPROVAL_PREFIX, APP_CONTROL_RENDERER_GLOBAL } from "@contracts/appControl";
@@ -213,6 +213,19 @@ const pin: Array<[string, string]> = [
   ["setting.get", "read"],
   ["notification.focusSession", "ui"],
   ["totally.newThing", "write"],
+  // 【T105】任务验收 = 路线图 §5「执行完成 ≠ 验收通过」的落点。
+  // 动词 `accept` / `reject` / `reopen` / `transition` 都不匹配 `READ_VERB`,不入 BLOCKED
+  // 就会落到兜底 `write` —— 而 `write` 在 bypassPermissions / full-access 下**直接放行**
+  // (`tools.ts` 的 `BYPASS_MODES`),那就是「AI 自己把任务标成已验收」。
+  // T104 的探针量到过修复前的状态:`task.accept → write`。
+  ["task.accept", "blocked"],
+  ["task.reject", "blocked"],
+  ["task.reopen", "blocked"],
+  ["task.transition", "blocked"],
+  // 正控:同域里**该给 agent 看的**两条仍然可读 —— 否则上面的 4 条 blocked 可能是
+  // 把整个 task 域一刀切了(那种修法会把任务从 agent 的视野里拿掉,不是本次意图)。
+  ["task.list", "read"],
+  ["task.get", "read"],
   // ★ **动词前缀的陷阱(C4/权限,2026-10-08)**:`READ_VERB` 是**前缀**匹配
   // (`^history`、`^check`、`^task` 都算"只读"),而 `browser.historyClear` 只是**以
   // `history` 开头**——它其实清空浏览历史。`git.checkout` 同理:以 `check` 开头,实际会
@@ -223,6 +236,46 @@ const pin: Array<[string, string]> = [
   ["git.checkout", "write"],
 ];
 for (const [m, l] of pin) check(`权限 ${m} = ${l}`, policyFor(m).level === l, policyFor(m));
+
+// 【T105】闸门式判据:task 域里**任何**方法都不许落 `write`。
+//
+// 为什么按域拦而不是继续逐条钉:本次的病灶正是「新方法没人来归类 → 落到兜底」。
+// 逐条钉只能保住已经想到的那几条;按域拦能在**下一个 `task.*` 被加进来时**立刻红。
+// 合法档位只有两种:
+//   - `blocked` —— 验收/退回/返修/状态流转(执行方够不到)
+//   - `read`    —— 列表与单读(agent 需要知道有什么任务,但改不了)
+// 真需要 `write` 时(比如将来让 agent 建任务)必须先想清楚它不等于「自己验收」,
+// 那时再回来把这条闸门改成显式白名单 —— 让「放开」变成一件必须动手做的事。
+{
+  const taskMethods = [...API_CATALOG.map((e) => e.method), ...pin.map(([m]) => m)]
+    .filter((m) => m.startsWith("task."));
+  const unlawful = [...new Set(taskMethods)].filter((m) => {
+    const level = policyFor(m).level;
+    return level !== "blocked" && level !== "read";
+  });
+  check("★ T105:task.* 域里没有任何方法落在 write/danger/ui(只有 blocked 或 read)",
+    unlawful.length === 0, unlawful.map((m) => `${m}=${policyFor(m).level}`));
+
+  // ★ 取证前提:`policyFor` 对**任何**未注册的名字都会给一个答案(兜底),所以
+  // 「它说 blocked」本身不能证明「这个通道存在且可达」。必须另外确认这几个名字
+  // 真的在 RpcMap 里 —— 否则这条断言测的是一串不存在的字符串。
+  //
+  // 反例就在同一天:T104 的探针里 `task.transition` / `task.reopen` 都答了 `write`,
+  // 而它们**没有 RpcMap 条目**(只由主进程内部调用)。名字能查 ≠ 通道存在。
+  // 找仓库根：从 cwd 逐层向上，直到看见 packages/contracts/src/ipc/rpcMap.ts。
+  // ⚠️ 不写死相对层数 —— 本套件的 run.sh 是 `cd "$(dirname "$0")/../.."`，落在
+  // `apps/`(不是仓库根)，而别的套件落在 `apps/desktop`。写死 `.` 或 `..` 都只对其中一边成立。
+  let repoRoot = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    if (existsSync(join(repoRoot, "packages/contracts/src/ipc/rpcMap.ts"))) break;
+    repoRoot = dirname(repoRoot);
+  }
+  const rpcSource = readFileSync(join(repoRoot, "packages/contracts/src/ipc/rpcMap.ts"), "utf8");
+  const declaredTaskRpc = ["task.list", "task.get", "task.accept", "task.reject"]
+    .filter((m) => !rpcSource.includes(`"${m}"`));
+  check("★ T105 取证前提:四条被断言的任务 RPC 真的在 RpcMap 里声明",
+    declaredTaskRpc.length === 0, declaredTaskRpc);
+}
 // 凡是名字里带 getToken / getApiKey 的都不能是可读档
 for (const e of API_CATALOG) {
   if (/getToken|getApiKey/i.test(e.method)) check(`${e.method} 不开放`, policyFor(e.method).level === "blocked");
