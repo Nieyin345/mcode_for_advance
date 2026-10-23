@@ -1,4 +1,4 @@
-# T32｜`genofficeNativeVendor.ts` 的 alias 虚拟模块破坏了 15 套 smoke 打包
+# T32｜`genofficeNativeVendor.ts` 的 alias 虚拟模块破坏了 11 套 smoke 打包（卡面原写 15，已按实测校正）
 
 - Status: ready-for-agent
 - Category: **bug（测试基础设施）**
@@ -14,7 +14,7 @@ Read before work: `CLAUDE.md`、`apps/desktop/src/main/document/genofficeNativeV
 
 ## 缺陷（T31 全量跑实测）
 
-15 套 smoke 在**打包阶段**就失败，同一个根因：
+11 套 smoke 在**打包阶段**就失败，同一个根因：
 
 ```
 X [ERROR] Could not resolve "@main/document/genofficeSheetsEntry.js"
@@ -26,7 +26,7 @@ X [ERROR] Top-level return cannot be used inside an ECMAScript module
 
 **问题**：它们是 **electron-vite 配置里的 alias 虚拟模块**（`electron.vite.config.ts:257/261`），**仓库里没有对应源文件**。裸 esbuild 的 smoke runner 没有这个 alias，于是在打包阶段直接失败。
 
-**受影响的 15 套**（T31 列的）：`agent-guide`、`claude-ipc`、`custom-ui-refresh`、`extension-authoring`、`host-mcp-server`、`host-mcp-stdio`、`memory`、`panel-screenshot`、`scene-apply`、`scene-crash-resume`、`watch-templates-cas-electron` 等。
+**受影响的 11 套**（实测；T31 列 15 套里 4 套当时已按 T52 补过）：`agent-guide`、`claude-ipc`、`custom-ui-refresh`、`extension-authoring`、`host-mcp-server`、`host-mcp-stdio`、`memory`、`panel-screenshot`、`scene-apply`、`scene-crash-resume`、`watch-templates-cas-electron` 等。
 
 ## 两条修法
 
@@ -51,7 +51,7 @@ X [ERROR] Top-level return cannot be used inside an ECMAScript module
 
 1. 回写区给出：`genofficeNativeVendorStub.ts` 是什么、现在谁在用。
 2. 明确修法（A 或 B）与论证。
-3. **15 套 smoke 全部能打包并运行**（不必全绿，但必须不再卡在打包阶段）。
+3. **11 套 smoke 全部能打包并运行**（不必全绿，但必须不再卡在打包阶段）。
 4. `electron-vite build` 仍正常（**真跑一次构建**）。
 5. T23 的 `production-build-preload-smoke` 18/18、`genoffice-editors-release-smoke` 29/29 不回归。
 6. 变异验证：撤掉修复 → 至少一套回到打包失败 → `cmp` 还原。
@@ -103,7 +103,7 @@ X [ERROR] Top-level return cannot be used inside an ECMAScript module
   3. 31 套已有同款做法，新增 11 套是**收敛到既定惯例**，不是发明新机制。
 - **影响面**：只碰这 11 个套件自己的入口文件；其他 500+ 套的参数、发现规则、调度全部未变（全量对照见下）。
 
-### 3. 15 套（含根因）的实际结果
+### 3. 11 套（含根因）的实际结果
 
 T31 的清单里 `host-mcp-server`/`memory`/`panel-screenshot`/`scene-apply` 等有些对不上，我按**日志实测**确定名单：扫 `run-smokes --all` 最近一次全量日志（`541 logs`），带 `Could not resolve "@main/document/genoffice{Sheets,Slides}Entry.js"` **和** `Top-level return` 两条签名的**恰好 11 套**（与卡上"15 套"的差异来自 T31 回写把早期 180 套部分跑里 4 套老账并进来了；那 4 套 `mcp-text`/`mobile-pairing`/`orchestration-ipc`/`scene-deploy-electron` 已在 T52 修过，HEAD 日志显示它们本来就绿）：
 
