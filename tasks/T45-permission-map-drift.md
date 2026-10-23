@@ -25,9 +25,9 @@ Read before work: `CLAUDE.md`、`tasks/T19-*.md` 回写 §1、`tasks/T20-ai-writ
 | `document.toolCall` | **write** | `document.edit` |
 | `document.toolDescribe` | **write** | `document.edit` |
 | `document.toolsList` | **write** | `document.edit` |
-| `framework.list` | read | **抛错**（无 framework read 映射） |
-| `framework.save` | write | **抛错** |
-| `framework.reset` | write | **抛错** |
+| ~~`framework.list`~~ | ~~read~~ | **此条作废：测的时候 `framework.*` 还不存在** |
+| ~~`framework.save`~~ | ~~write~~ | 同上 |
+| ~~`framework.reset`~~ | ~~write~~ | 同上 |
 
 ### 两个都比 T20 的描述更严重的发现
 
@@ -39,15 +39,36 @@ Read before work: `CLAUDE.md`、`tasks/T19-*.md` 回写 §1、`tasks/T20-ai-writ
 
 后果：生成器会把这 5 条只读方法标成 `document.edit`，**扩展拿到 `document.edit` 权限就能调 `document_render`**（本来应该只要 `document.read`）。
 
-**二、`framework.*` 会让生成器直接崩溃，不是静默放宽。**
+**二、`framework.*` 那条是我测错了（E 会话纠正，总控复核成立）。**
 
-生成器的 `if (!perm) throw Error("No domain grant for " + method)` 会拦住 `framework.list`，因为 `readPerm`/`writePerm` 里根本没有 `framework` 这个域。
+**E 说：`framework.*` 在它动手时仓库里根本不存在。** 我复核了：
 
-**所以 T20 说的「重生成会把 10 条一次收进委托面」不准确**——实际是：
-- 7 条 `document.*` 会被收进（标成 `document.edit`）；
-- 3 条 `framework.*` 会让生成器**报错退出**。
+```bash
+grep -rn '"framework\.' apps/desktop/src/main/appControl/policy.ts    # 零命中
+```
 
-**这不是「静默」，是「一半静默放宽、一半硬崩」。** 而且**更糟**：因为一次重生成会先崩在 `framework.list` 上，**那 7 条的放宽永远不会被看到**——除非有人恰好先把 `framework` 域补进映射表。
+**而我的探针之所以报「`framework.list` 是 read」，是因为 `policyFor` 对任何未注册的名字都会兜底：**
+
+```
+nonexistent.list       {"level":"read"}   ← 不存在的名字也是 read
+totally.made.up.get    {"level":"read"}   ← 同上
+foo.read               {"level":"read"}   ← 同上
+```
+
+**「末段匹配 `READ_VERB` → read」是兜底逻辑，不是「这个方法存在且是只读」。** 我把兜底结果当成了「它存在」的证据。
+
+**`framework.*` 是 C 的 T34（`f09f4912`）刚建的**，属于 T34 的范围，不是本卡。
+
+### 这条错误的教训
+
+**探针要验「这个符号存在吗」，不能只看 `policyFor` 的返回值。** 正确做法：
+
+```bash
+grep -rn '"framework\.' packages/contracts/src/ipc/rpcMap.ts   # 先确认 RPC 在不在
+grep -rn '"framework\.' apps/desktop/src/main/appControl/policy.ts  # 再确认档位配没配
+```
+
+**两次 grep 都命中，才算「存在但档位不对」。** 只命中一处，说明是「存在但没配」或「压根不存在」。
 
 ### 根因（我读到了 `policyFor` 的实现）
 
