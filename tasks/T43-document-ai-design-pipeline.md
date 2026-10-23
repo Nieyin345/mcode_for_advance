@@ -275,3 +275,241 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ## 回写
 
 在 `tasks/T43-document-ai-design-pipeline.md` 末尾追加 `## 结果回写（2026-10-23）`：现状复核表（全量）、每处修法、`create` 与设计流水线的可达性证据、目录一致性检查结果、变异证据、提交 SHA。
+
+## 结果回写（2026-10-23）
+
+### 0. 一句话结论
+
+**五条缺口全部处理，全部有真 CLI 证据。** PPT 设计流水线接上了（带快照围栏），
+六格式读取接通，三个空门禁换成了有上游依据的 `render-probe`，`create_document`
+与 `build_deck` 经 `document_tool_call` 真能造出文件，目录里再没有「有名字、
+无路由、无实现」的工具。
+
+**提交**：`0a2aa805`。
+
+**归属如实说明**：本卡第一步（`genofficeCli.ts` 的 `readAnyDocument` /
+`renderProbeCheck` / `slidesCheck` / `slidesReplace` / `snapshotDeckSpec` /
+`createDeckFromSpec` 与 `documentToolSurface.ts` 的 `render-probe` 门禁）**没有
+自己的提交** —— 它被总控一次未带路径的 `git commit` 卷进了 `51e14637`
+（`docs(T42,T43): ...`）。代码经核实完好（`git show 51e14637:<file>` 里六个
+函数都在，工作区与该提交一致）。本卡自己的提交从第二步起（`0a2aa805`）。
+**台账如实记录，不遮掩。**
+
+### 1. 现状复核表（用产品 API 实测，不是正则猜的）
+
+`node .tmp/t43-routes.mjs` 把 `documentCatalog()` / `cliRouteFor()` /
+`editorOnlyReason()` 打出来，得到**最终三态 route 分布**（140 个工具）：
+
+| app | 总数 | cli | editor-only | editor（需渲染端绑定） |
+|---|---|---|---|---|
+| docs | 40 | 12 | 10 | 18 |
+| sheets | 18 | 8 | 8 | 2 |
+| slides | **19** | 5 | 12 | 2 |
+| pdf | 45 | 3 | 2 | 40 |
+| markdown | 10 | 0 | 10 | 0 |
+| html | 8 | 0 | 7 | 1 |
+| **合计** | **140** | 28 | 49 | 63 |
+
+> 140 = vendor 139 + Mcode 自有 1（`slides.build_deck`）。
+
+**三不管 = 0**：每个工具都落进 `cli` / `editor-only` / `editor` 三栏之一。
+`editor` 那 63 个是「有受信渲染端绑定就能执行」的真能力（T0/T98 通道），
+不是缺口 —— 缺的是 T40 那条线没接上（另一张卡）。
+
+**改动前**（同一入口在 HEAD~1 上的结果）：
+
+| app | cli | editor-only | 空门禁 |
+|---|---|---|---|
+| docs | 11 | 0（这一态不存在） | — |
+| sheets | 7 | 0 | — |
+| slides | 4 | 0 | — |
+| pdf | 2 | 0 | **空** |
+| markdown | 0 | 0 | **空** |
+| html | 0 | 0 | **空** |
+
+**关键差异**：
+- `slides.build_deck` 是**新增**的（原目录里没有；只有 `plan_deck` / `generate_deck`
+  这两个编辑器内工具）；
+- `docs`/`sheets` 的 `create_document` 从「无路由」变成 `cli`；
+- 旧审计脚本把 `slides` 的 `apply_ops` / `edit_chart` / `load_guide` 漏算了
+  （它的正则被单行 `pdf: { ... }` 形态打乱）。**以上表是产品 API 实测，以它为准。**
+
+### 2. 五条缺口逐条
+
+#### 缺口一：三个空门禁 → `render-probe`（有上游依据，不是我们发明的）
+
+**先查清上游有没有对应命令**（卡要求）：
+- `genoffice <command>` 列表：`info / convert / create / slides / sheet / docs /
+  merge / pdf / render / guide / search / image / media / open / selection /
+  capabilities / install-cli / mcp / skill` —— **没有 markdown / html 命令**；
+- `guide --json` 只认 `slides / docs / sheets` 三个域；
+- `pdf --help` 只有 `read`，**没有 pdf check**。
+
+所以**没有** `pdf check` / `markdown check` / `html check`。但**不是**写个假门禁：
+`render --help` 原文是
+
+> `One PNG per page of a document, as the GenOffice renderer lays it out: the
+> picture an agent looks at to check a Word document, a workbook or a page it
+> just made.`
+
+—— **上游自己把 `render` 定义成检查手段**。所以门禁叫 `render-probe`：真跑
+`render --page 1`，真读返回值，**排版不了就失败**（坏 HTML、超限字体、
+`conversion_failed` 都会红）。
+
+**措辞三处都守住了边界**：
+1. `DOCUMENT_QA_GATE_LABELS["render-probe"]` = 「可渲染性检查（原厂渲染器试排一次；
+   检的是能否排版，不是内容质量）」；
+2. `extractRenderProbeReport` 的 `scope` 原文进给模型的正文：
+   「只验证了「X 能被原厂渲染器排版成 PNG」（页数 N）；**没有**检查内容正确性，
+   也**没有**判断排版是否好看」；
+3. 套件断言 `formatQaReport` 的正文**不出现**「没有发现问题」（那句是 check 的）。
+
+#### 缺口二 / 五 / 六：`create` 接进工具面
+
+| 工具 | 路线 | 实现 |
+|---|---|---|
+| `docs.create_document` | `create --type docx --from <fragment.html>` | `createFromFile`（T74 已有，**未改**） |
+| `sheets.create_document` | `create --type xlsx --from <csv/json>` | 同上 |
+| `pdf.create_document` | `create --type pdf --from <md/html/docx/xlsx/pptx>` | 新增 `createPdfFromFile`（单独壳：需要原厂渲染器） |
+| `slides.build_deck` | `create --type pptx --spec <snapshot>` | 新增 `createDeckFromSpec` + `snapshotDeckSpec` |
+
+**HTML 入口**（用户洞察「AI 写 HTML 很强」）：`docs.create_document` 的
+`input.source` 接受 `.html/.htm`，走的就是 `create --type docx --from fragment.html`。
+套件第 4 节真造了一个 docx 并读回内容。
+
+#### 缺口三 / 四：PPT 设计流水线 + 围栏
+
+**为什么不能直接放开类型**：T74 的注释写得对，而且**实测验证了**：
+
+```
+把 spec 里的 ./assets/pic.png 挪走  → create 信封里出现
+  "imageFailures":[{"page":1,"url":"./assets/pic.png","file":"02.json"}]
+把图补回去                          → "imageFailures":[]
+```
+
+CLI **真的会按相对路径读 spec 目录里的图片**。所以 `--spec <dir>` 是多文件读取，
+`--from` 的单文件围栏覆盖不了它。放开 `"pptx"` 等于让一次工具调用带任意多个
+未过围栏的路径进 CLI。
+
+**方案 B（快照）落地** —— `snapshotDeckSpec(ports, sourceDir, targetDir)`：
+1. 递归列源目录（**不跟符号链接** —— 链接直接拒绝）；
+2. 每个文件过 `requireWorkspacePath`（含 realpath；界外/链接一律拒）；
+3. 扩展名白名单：`.json` / `.md` / `.markdown` / `.png/.jpg/.jpeg/.gif/.webp/.svg`；
+   其余**一律拒绝并点名**（不是静默跳过）；
+4. 单文件 ≤8 MiB、总 ≤64 MiB、≤400 个文件、层级 ≤6；
+5. 必须有页面文件（`pages/NN.json`，或目录本身就是 pages）；
+6. **逐文件拷贝**（不是整目录 cp —— 那会带走未审的东西）进调用方受控目录；
+7. `createDeckFromSpec` 对**副本**调 `create --spec`，可带 `--render` / `--audit`；
+8. `finally` 里删快照目录。
+
+源目录**一个字节都没动**（套件断言副本与源逐字节相同、源内容不变）。
+
+**`build_deck` 的可达性**：`documentToolCall({tool:"build_deck", app:"slides"})`
+经真 CLI 造出 `.pptx`，再读回页面文本 —— 断言能读到 `T43 BUILT DECK`。
+**这条修过一次真缺陷**：第一版把它接在函数末尾的通用 `create` 块，而那时 `app`
+已被上面的 `if (app === "slides")` 收窄，**那段是死代码**（`tsc` TS2367 暴露；
+运行期它会静默落进 `slidesApply`）。现在它在 `app === "slides"` 分支内。
+
+#### 缺口五：`documentMarkdownRead` 六格式
+
+改成走 `readAnyDocument`，按扩展名分派：
+
+| 扩展名 | 命令 | structured |
+|---|---|---|
+| `.docx` | `docs read --full` | **true**（有块索引） |
+| `.xlsx` | `sheet read` | false（每个非空行一块） |
+| `.pptx` | `slides read --full` | false（每页一块） |
+| `.pdf` | `pdf read --full` | false（每页一块） |
+| `.md/.txt/.csv/源码` | **直接读文件** | false |
+| `.html/.htm` | **直接读文件** | false |
+
+**为什么 md/html 不走 `convert`**：实测 `convert` 不支持 `md→md` / `html→md`
+（`{"error":"unsupported","message":"cannot convert .md to .md"}`）。卡里原来的
+「`convert --to md`」因此作废，已由总控更正。
+
+**两个真缺陷（总控发现，已修）**：
+1. **先全读再截断**：原代码 `readFileSync(file).subarray(0, 2MB)` —— 1 GB 的日志
+   会先吃掉 1 GB 内存。改成 `openSync` + `readSync` **只读前 2 MiB**。
+2. **UTF-8 切半**：截断点落在多字节字符中间会产生 `�`。`trimIncompleteUtf8Tail`
+   处理三种形态：
+   - `[lead]` 直接到末尾 → 退掉；
+   - `[lead][续]` 到末尾 → 退掉；
+   - **`[lead][续][ASCII]`**（最容易被漏的一种：ASCII 在末尾，但前面有断 lead）
+     → 只退 lead + 续字节，**保留** ASCII。
+
+**套件第 2 节**（8 条断言）把截断点强行放进字符中间：
+- 汉字前 2 字节 + ASCII；
+- emoji 前 2 字节 + ASCII；
+- **完整汉字 + ASCII**（必须**不误删**那个汉字，防过度修剪）。
+
+⚠️ **写这几条时踩过一个假绿的坑**：第一版夹具让文件总长**正好等于** 2 MiB，
+于是 `truncated === false`、trim 根本没跑 —— 测的是「没截断」而不是「截断」。
+改成「文件总长 > LIMIT，且断字符占满前 LIMIT 字节」后才真的覆盖到。
+
+### 3. 目录一致性（判据 7）
+
+**三不管 = 0**。每个工具落进三态之一：
+- `cli`（28）：文件没开也能用；
+- `editor-only`（49）：**确认**编辑器是唯一途径，`note` 写明原因与替代做法；
+- `editor`（63）：需要受信渲染端绑定（T0/T98 通道；接线在 T40）。
+
+`build_deck` 的目录条目**追加在** `documentToolSurface.ts` 的
+`MCCODE_OWNED_TOOLS`，**没有手改** `documentToolCatalog.generated.ts`
+（生成文件，手改会在下次重新生成时被冲掉）。
+
+### 4. 证据
+
+**新套件 `t43-document-ai-design-pipeline-smoke`：53/53**（真 CLI、真子进程、真文件）
+- 七种输入读取（docx/xlsx/pptx/pdf/md/txt/html）；
+- 大文件 8 条（三种截断位置 + 不误删完整字符）；
+- 门禁 5 条（三家非空 / 都是 render-probe / 措辞不冒充 check）；
+- 创建 4 条（HTML→docx、读回、不覆盖、CSV→xlsx）；
+- 围栏 9 条（正常通过、逐字节相同、源不变、未知扩展名、不留半成品、界外、空目录、无页面）；
+- `build_deck` 可达性 5 条（真造出 pptx、读回内容、缺 specDir 显式拒绝）；
+- 目录一致性 4 条。
+
+**跳过（如实，不当作通过）**：`pdf.create` —— 本机 `create --type pdf` 返回
+`app_unavailable`（需要原厂应用）。套件打 `skip` 并打印原因。
+
+**变异验证（两次，都逐字节还原）**：
+
+| 变异 | 结果 | 还原 |
+|---|---|---|
+| `snapshotDeckSpec` 跳过扩展名白名单 | **51/53**（"未知扩展名被拒" + "不留半成品" 两条红） | `cmp` 一致 |
+| 移除 `build_deck` 分支（模拟死代码） | **49/52**（三条红；失败原因是 `file not found` —— 正是落进 slidesApply 的表现） | `cmp` 一致 |
+
+**回归（提交后复跑）**：
+- `t24-document-tool-surface-smoke` **59/59**（把硬编码的 139 改成 vendor 139 + 1）；
+- `t0-genoffice-native-tool-roundtrip-smoke`、`genoffice-cli-smoke`、
+  `document-read-smoke`、`app-control-smoke` 全 PASS；
+- 双包 typecheck 通过（`apps/desktop` 里他人正在改的 `RightPanel.tsx` / `i18n` /
+  `moduleCatalogShape` 的报错与本卡无关，已逐条确认）。
+
+### 5. 契约变更（必需，追加式）
+
+`packages/contracts/src/ipc/document.ts` 追加取值，**没有删改任何现有成员**：
+- `DocumentToolsListEntry.route`: `"cli" | "editor"` → `+ "editor-only"`，新增可选 `note?`；
+- `DocumentToolDescribeResult.route`: 同样加 `"editor-only"`；
+- `DocumentQaReportWire.gate`: `"check" | "audit"` → `+ "render-probe"`。
+
+不追加这三处，三态标注与 `render-probe` 报告无法过线。
+
+### 6. 明确没做的（如实）
+
+1. **`plan_deck` / `generate_deck` 仍未接 CLI** —— 它们读编辑器里的实时 deck 状态，
+   上游 CLI 没有等价命令。按卡的要求标成 `route:"editor-only"`，`note` 指向替代路径
+   （`build_deck` 的设计流水线）。**这是「如实标注」，不是「假装支持」。**
+2. **`pdf` 的 40 个编辑器工具仍未接 CLI** —— 上游 `pdf` 只有 `read` 一个命令。
+3. **`render-probe` 不是内容检查** —— 它只证明「能排版」。要检查内容正确性，
+   仍要 `document_render` 出图让模型看，或该格式自己的 check（若存在）。
+4. **未跑真 Electron** —— 本卡是 CLI/无头能力，真窗口链路归 T7/T30。
+
+### 7. 复现
+
+```bash
+cd apps/desktop
+bash scripts/t43-document-ai-design-pipeline-smoke/run.sh                      # 53/53
+bash scripts/t43-document-ai-design-pipeline-smoke/run.sh --mutate=no-fence    # 变异，期望非零
+bash scripts/t24-document-tool-surface-smoke/run.sh                            # 59/59 回归
+npx tsc --noEmit -p tsconfig.json                                              # 门禁
+```
