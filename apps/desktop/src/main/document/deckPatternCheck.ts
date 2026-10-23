@@ -20,12 +20,24 @@
  * 是**页面描述本身**的结构 —— 不需要真文件、不需要渲染器、不需要 Electron。
  * 好处：改 spec 的那一刻就能查，不用等 build 出来。
  *
- * ## 判据的强度分级（**不许把弱判据当确定的报**）
+ * ## `level` 的判准（**不是「判据准不准」，是「阈值有没有规范依据」**）
  *
- * - `error`：确定违反规范，模型必须改。
- * - `warning`：疑似，需要人看的弱信号。
+ * - `error`：**规范原文给出了具体数值**，照着它判是确定的。
+ * - `warning`：**阈值是经验值** —— 规范原文只是定性描述（"thin"、"a visual anchor"），
+ *   像素/比例是我们定的。判据可能很准，但那个「准」没有原文背书。
  *
- * 每一条都标注了它是**强**还是**弱**，以及为什么。
+ * ⚠️ **这两个维度是分开的**：一条判据可以形状特征极明确、几乎不误报，**仍然是
+ * `warning`**，因为规范没给数值。反之，只要规范给了明确数值，即使判据形状是经验
+ * 归纳的，也够 `error`。
+ *
+ * **全仓当前只有 `palette.rainbow` 够 `error`**（"Never more than the two accents"
+ * 给出数值 2）。其余 6 条全是经验阈值。
+ *
+ * **所以不要在注释里用「强判据 / 弱判据」形容一条判据** —— 那说的是另一个维度，
+ * 和 `level` 并排写会让读者以为「强判据就该是 error」。要描述可靠性，写具体的
+ * 「形状特征明确 / 有已知误报面」，不要用「强弱」。
+ *
+ * 详细判准见 {@link PatternFinding.level} 的字段注释。
  */
 
 /** spec 里的元素（只取本模块用得到的字段，其余原样忽略）。 */
@@ -63,6 +75,35 @@ export type PatternLevel = "error" | "warning";
 export interface PatternFinding {
   /** 判据标识（稳定，供断言与后续按条关闭）。 */
   rule: string;
+  /**
+   * 严重度。
+   *
+   * ⚠️ **判准是「规范原文有没有给出具体数值」，不是「判据可不可靠」。**
+   *
+   * 一条判据可以形状很确定、几乎不会误报（例如「宽度 < 24 且高度 ≥ 64 的竖条」），
+   * 但规范原文只说 `thin vertical accent bar`、**没给像素** —— 那个阈值是我们拍的，
+   * 所以它是 `warning`。反过来同理：只要规范原文给了明确数值，即使判据的形状是经验
+   * 归纳出来的，也够 `error`。
+   *
+   * **当前全仓只有 `palette.rainbow` 够 `error`**（规范原文 "Never more than the two
+   * accents" 给出了明确数值 2）。其余 6 条判据的阈值全部是经验值，一律 `warning`。
+   *
+   * ## 加新判据时
+   *
+   * **先问「规范原文有没有给出数值」，再决定 `level`** —— 不要凭「这个判据准不准」来定。
+   *
+   * ## 不要在判据注释里用「强判据 / 弱判据」形容它
+   *
+   * 那是**另一个维度**（判据本身的可靠性），和 `level`（阈值有没有规范依据）不是一回事。
+   * 混用会让下一个人以为「强判据就该是 error」—— 本文件里曾经有 4 条判据写着
+   * 「**强判据**」却 `level: "warning"`，每一个都有正当理由，但并排读起来像错误。
+   * 要描述可靠性，用「形状特征明确 / 会命中误报面」这类具体说法，不要用「强弱」。
+   *
+   * ## 范围
+   *
+   * **这里的 `error` 比例不含六编辑器门禁**（`docs check` 10 项 / `sheet check` 8 项）——
+   * 那 18 项的 `level` 来自上游 GenOffice CLI，分级标准不在本仓。
+   */
   level: PatternLevel;
   /**
    * 哪一页（0 基）；**`null` = 这条讲的是「全篇」，不指向某一页**。
@@ -219,13 +260,15 @@ function textsOf(page: DeckPageSpec): DeckElement[] {
 /**
  * 【判据 1】卡片左侧细竖条 / 顶部色条（规范原文第一条反模式）。
  *
- * **强判据。** 规范明确禁止，形状特征也很确定：
+ * **形状特征明确**（不是可靠性的强弱）：规范明确禁止，形状特征也很确定：
  *   - 细竖条：宽度 < 24px、高度 ≥ 64px；
  *   - 顶部色条：高度 < 24px、宽度 ≥ 64px。
  *
  * ⚠️ 有一个已知误报面：**刻意的分隔线**（水平 rule）。规范自己也说「a horizontal
  * rule is a box with `h: 1`」是合法用法。所以这里只报**竖条**和**贴着卡片边缘的
  * 顶部条**，纯水平线放过 —— 见下面的实现。
+ *
+ * `level` 见 {@link PatternFinding.level}：这些阈值是拍的，所以是 warning。
  */
 function checkAccentBars(page: DeckPageSpec, i: number): PatternFinding[] {
   const out: PatternFinding[] = [];
@@ -270,7 +313,7 @@ function checkAccentBars(page: DeckPageSpec, i: number): PatternFinding[] {
 /**
  * 【判据 2】彩虹卡片：同一页出现 > 2 个**不同色相**的非中性填充色。
  *
- * **强判据。** 规范：「One accent system for the whole deck」。黑白与浅中性底不算。
+ * **规范原文有明确数值**（"Never more than the two accents" → 2），所以 `level: error`。
  * 阈值 2 直接来自规范（「Never more than the two accents」）。
  *
  * 【T100】**按色相聚类，不按色值去重。** 从前这里是 `new Set<string>()` 按 hex 字符串
@@ -666,7 +709,7 @@ function checkWhitespace(page: DeckPageSpec, i: number): PatternFinding[] {
 /**
  * 【判据 4】连续多页构图雷同（规范：「Vary the composition」）。
  *
- * **弱判据（warning）。** 用「layout 名 + 元素类型序列」做指纹：
+ * **指纹是经验归纳**（layout 名 + 元素类型序列），规范只说 "Vary the composition" 没给判据 —— 所以 `level: warning`。
  * 两页 layout 相同**且**元素类型序列相同 → 视为雷同。连续 ≥ 2 对（即三页一条线）
  * 才报，避免两页恰好同构就误报。
  */
@@ -702,7 +745,7 @@ function checkRepeatedComposition(pages: DeckPageSpec[]): PatternFinding[] {
  * 【判据 5】封面是平标题 + 副标题（规范：「The cover must not be a flat title plus
  * subtitle: give it a visual anchor」）。
  *
- * **强判据。** 「视觉锚点」= 一个面积 ≥ 画布 12% 的元素（大色块 / 大数字 / 大图），
+ * **锚点阈值（12%）是经验值** —— 规范只说 "give it a visual anchor"，没说多大算 —— 所以 `level: warning`。
  * 或者一个 ≥ 60pt 的文字。两者都没有 → 报。
  */
 function checkFlatCover(page: DeckPageSpec, i: number): PatternFinding[] {
@@ -732,7 +775,7 @@ function checkFlatCover(page: DeckPageSpec, i: number): PatternFinding[] {
 /**
  * 【判据 6】全篇统一页眉条：每页同一位置、同一尺寸的 rect。
  *
- * **强判据。** 规范：「A deck-wide header bar with the page title on every page」。
+ * **形状特征明确**：规范描述了这个形态，但没给尺寸阈值 —— 所以 `level: warning`。
  * 判法：位置与尺寸（±4px）在**所有页**都出现的扁 rect（h < 80）→ 报。
  * 至少 3 页才算「全篇」，否则两页的巧合会误报。
  */
