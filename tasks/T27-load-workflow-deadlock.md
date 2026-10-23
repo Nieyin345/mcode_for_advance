@@ -217,6 +217,7 @@ M2 改为"连预检 HUMAN 一起删"才成为有效变异。**没有把冗余判
 
 ### 7. 提交
 
-提交 SHA：`见本次提交`（提交后复跑：`t27-load-entry-deadlock-smoke` 40/40、
-`t21-orphaned-adapters-wired-smoke` 33/33、`workflow-native-load-smoke` 18/18、双包 tsc exit 0）。
+提交 SHA：**`5348bcbb828b1c1cf6899fc48ba0a83977c11502`**（提交后在同一提交状态复跑：
+`t27-load-entry-deadlock-smoke` 40/40、`t21-orphaned-adapters-wired-smoke` 33/33、
+`workflow-native-load-smoke` 18/18、双包 tsc exit 0）。
 
