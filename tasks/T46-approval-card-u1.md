@@ -134,4 +134,6 @@ T46 MUTATION: all 3 variants detected; source restored byte-identical
 
 ### 提交
 
-`<填于提交后>`
+- 实现提交：**`2a61b8ba`**（7 个文件，全部是本卡独占目录 + 本卡）。
+- 提交后在该 HEAD 上复跑 `node apps/desktop/scripts/t46-approval-card-u1/run.mjs`
+  → `literal=PASS expectation=all-pass`，退出码 0；工作区相对 HEAD 无改动。
