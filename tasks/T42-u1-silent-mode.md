@@ -462,3 +462,51 @@ npx tsc --noEmit -p apps/desktop/tsconfig.json      # exit=0 才继续
 - **没有提交任何代码**（改动全部还原）。
 - **没有验证 `offscreen: true` 与 `WebContentsView` 的组合** —— 那是 T42 唯一可能的出路，但需要真开 Electron 跑，本轮按用户要求停止了。
 - T7 六条旅程在本轮结束时**已还原到 HEAD 状态**（HEAD 是 6/6 PASS，但窗口可见）。
+
+---
+
+## 补测（2026-10-23 稍晚）：A/总控 的「屏幕外 + 透明」方案**对子视图不成立**
+
+A 提出的判别矩阵是「`wc.focus()` 能不能拿到 **OS 焦点**」，据此认为
+`show:true + opacity:0 + x:-10000` 既能截、又不打扰用户。**这个推论对宿主窗口成立，
+对 `WebContentsView` 子视图不成立。**
+
+同一个 Electron 进程、同一时刻、同一份代码：
+
+```
+窗口配置： show: true, opacity: 0, x: -10000, y: -10000
+宿主窗口 webContents.capturePage()  → ok@39ms
+WebContentsView 子视图 capturePage() → TIMEOUT@1000ms（重试第二轮仍 TIMEOUT@1000ms）
+```
+
+探针：`/tmp/t42_offscreen_child.mjs`（窗口建在屏幕外且完全透明，用户看不见；
+60s 自杀）。
+
+### 为什么这条推翻那个方案
+
+「窗口可见」在 Chromium 里不是二值的：
+
+- 对**宿主页**：只要窗口 `show:true`（哪怕在屏幕外、`opacity:0`），它有自己的
+  compositor surface，能截；
+- 对 **`WebContentsView` 子视图**：子视图的 surface 依附于**窗口的可见区域**。
+  窗口几何在 `(-10000, -10000)` → 它不在任何 display 的可见范围里 → 子视图永远
+  等不到那一帧（不是抛错，是**超时**，与 `hide()` 之后的表现一致）。
+
+这与本卡早先那组矩阵是同一个结论的不同侧面：
+
+| 窗口形态 | 宿主 `capturePage` | 子视图 `capturePage` |
+|---|---|---|
+| `show:true`（屏幕内） | ok | ok |
+| `show:true` + 屏幕外 + 透明 | **ok** | **TIMEOUT** |
+| `show:false` | ok | THROW `Current display surface not available` |
+| 屏幕外 + `show:false` | ok | THROW |
+
+**所以「把 L965 改成 T16 第 632 行那样的屏幕外 + 透明」解决不了 T42** ——
+那会让六条旅程全部卡在截图（实测过，见上文方案 C）。
+
+### 更正本卡上面那处说法
+
+本回写前半段写的「屏幕外 `x:-10000` 与隐藏等价」**不够准确**。准确的说法是：
+
+> 屏幕外窗口的**宿主页**能截；**子视图**不能（`show:false` 时抛错，`show:true` 时超时）。
+> 两种都是「子视图拿不到 surface」，但失败形态不同，排查时不要混为一谈。
