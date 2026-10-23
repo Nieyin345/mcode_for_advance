@@ -91,6 +91,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/providers/registry.js=./scripts/claude-ipc-smoke/stubs/providerRegistry.ts \
   --alias:@main/ipc/titleGen.js=./scripts/claude-ipc-smoke/stubs/titleGen.ts \
   --alias:@main/orchestration/runner.js=./scripts/claude-ipc-smoke/stubs/runner.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 export MCODE_SMOKE_DATA_ROOT="$DATA"

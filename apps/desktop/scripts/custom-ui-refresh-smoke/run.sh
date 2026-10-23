@@ -14,5 +14,6 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
  --alias:@renderer/stores/toastStore.js=./scripts/custom-ui-refresh-smoke/stubs/toast.ts \
  --alias:@renderer/lib/i18n/core.js=./scripts/custom-ui-refresh-smoke/stubs/i18n.ts \
  --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
+ --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
  --outfile="$OUT/test.mjs" --log-level=error
 node "$OUT/test.mjs"

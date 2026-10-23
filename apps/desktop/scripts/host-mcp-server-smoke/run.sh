@@ -34,6 +34,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile=./.tmp/host-mcp-server-smoke/smoke.mjs --log-level=error
 
 # 本套不碰持久化(SettingRepo 是内存替身、不写库);数据根仍给临时目录,免得任何

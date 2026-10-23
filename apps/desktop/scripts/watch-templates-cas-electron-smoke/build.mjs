@@ -53,6 +53,13 @@ await build({
   logLevel: "error",
   external: ["electron", "ssh2"],
   loader: { ".md": "text", ".py": "text", ".txt": "text", "": "text" },
+  alias: {
+    // 【T32】vendor 接缝的打包替身：`genofficeNativeVendor.ts` 静态 import 了
+    // electron-vite 的 alias 虚拟入口（`@main/document/genoffice{Sheets,Slides}Entry.js`），
+    // 裸 esbuild 解析不了；真实现还经 html-main 拖进 html2docx 的 `?raw` 浏览器脚本。
+    // 本套不验原生文档视图，沿用仓库现成的 fail-closed 桩（调用即抛错）。
+    "@main/document/genofficeNativeVendor.js": join(desktop, "src/main/document/genofficeNativeVendorStub.ts"),
+  },
   plugins: [
     {
       name: "main-ports",

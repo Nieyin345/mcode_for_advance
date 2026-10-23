@@ -33,6 +33,7 @@ source "$(dirname "$0")/../lib/esbuild-path.sh"
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 MCODE_SMOKE_DATA_ROOT="$DATA" node "$OUT/smoke.mjs"

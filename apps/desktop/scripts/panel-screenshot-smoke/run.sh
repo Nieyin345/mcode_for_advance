@@ -24,6 +24,7 @@ export MCODE_SMOKE_SHOT_DIR="$SHOT"
   --alias:@renderer/stores/sessionStore.js=./scripts/panel-screenshot-smoke/stubs/session.ts \
   --alias:@renderer/stores/toastStore.js=./scripts/panel-screenshot-smoke/stubs/toast.ts \
   --alias:electron=./scripts/library-delete-smoke/stubs/electron.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 node "$OUT/smoke.mjs"
