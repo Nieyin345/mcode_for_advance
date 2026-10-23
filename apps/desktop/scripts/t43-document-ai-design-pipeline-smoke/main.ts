@@ -450,6 +450,84 @@ console.log("\n6. build_deck 可达性：documentToolCall 真的走到 buildDeck
   });
   check("build_deck：缺 specDir 时显式拒绝并说明要什么",
     noSpec.ok === false && /specDir/.test(noSpec.reason), noSpec);
+
+  /* ───── 【T87】三条 fail-closed 拒绝分支 ─────
+   *
+   * 这三条以前**零断言**：删掉任何一个判断，T43 和 T73 都不会红，而模型会在
+   * dry-run 时真的写出 .pptx。为什么一直没人发现 —— `build_deck` 有 5 个套件
+   * 提到它（t24/t43/t47/t63/t73），但**「提到它」不是「守着它」**：
+   * 覆盖要按**出口**数，不是按引用数。
+   *
+   * 每条都配一个**只差一个变量**的对照组。没有对照组的负控等于没验：
+   * 一个永远拒绝的实现也能让三条负控全绿。
+   */
+
+  // ① dry-run 被拒。
+  // ⚠️ `dryRun` 是 `documentToolCall` 的**顶层参数**，不是 `input.dryRun`
+  //    （见 DocumentToolCall 的签名）。写进 input 会被静默忽略 —— 那样本断言
+  //    的负控（删掉判断）永远不会红，因为 dryRun 从没传到 buildDeck。
+  const dryOut = join(workspace, "dry.pptx");
+  const dry = await runtime.documentToolCall(callPorts as never, {
+    tool: "build_deck", app: "slides", filePath: dryOut, input: { specDir: deck }, dryRun: true,
+  });
+  check("★【T87】build_deck dry-run 被显式拒绝", dry.ok === false && /dry-run/.test(dry.reason ?? ""), dry);
+  // **不只验「拒绝」，要验「没有真的写出文件」**——拒绝理由写对了但文件已落盘，
+  // 是比不拒绝更坏的结果（用户以为没写，其实覆盖了目标）。
+  check("★【T87】dry-run 没有写出任何文件", !existsSync(dryOut), { dryOut });
+  // 对照组：同一份 spec、**不带 dryRun** → 必须成功且真的写出文件。
+  // 证明上面两条不是「反正都失败」。
+  const notDryOut = join(workspace, "not-dry.pptx");
+  const notDry = await runtime.documentToolCall(callPorts as never, {
+    tool: "build_deck", app: "slides", filePath: notDryOut, input: { specDir: deck },
+  });
+  check("★【T87】对照组：同一份 spec 不带 dryRun 就成功并写文件",
+    notDry.ok === true && existsSync(notDryOut), { ok: notDry.ok, exists: existsSync(notDryOut) });
+
+  // ② 没有受控临时目录。
+  const noTempPorts = { ...callPorts, renderTempRoot: () => "" };
+  const noTemp = await runtime.documentToolCall(noTempPorts as never, {
+    tool: "build_deck", app: "slides", filePath: join(workspace, "notemp.pptx"), input: { specDir: deck },
+  });
+  check("★【T87】无受控临时目录时显式拒绝，而不是静默跳过",
+    // ⚠️ 必须匹配**这条分支特有的原话**。「/临时目录/」太宽：变异时下游的
+    // `spec 快照目录 必须是绝对路径` 也含「目录」二字，会让断言红得不是同一个原因。
+    noTemp.ok === false && /没有受控临时目录/.test(noTemp.reason ?? ""), noTemp);
+  // 对照组：同一个 ports 只把 renderTempRoot 换回真目录 → 成功。
+  const withTemp = { ...noTempPorts, renderTempRoot: () => tempRoot };
+  const withTempResult = await runtime.documentToolCall(withTemp as never, {
+    tool: "build_deck", app: "slides", filePath: join(workspace, "withtemp.pptx"), input: { specDir: deck },
+  });
+  check("★【T87】对照组：同一个 ports 只换回真临时目录就成功",
+    withTempResult.ok === true, withTempResult);
+
+  // ③ outline 在 specDir 外。
+  // 围栏不能因为是 outline 就放宽 —— 否则源目录外的文件会被读进快照。
+  //
+  // ⚠️ fixture 必须放在 **workspace 内、specDir 外**。第一版放在 `WORK` 下，
+  // 变异时被 `requireWorkspacePath` 的「不在任何已知工作区」先拦住了 ——
+  // 于是断言红的原因不是「越界检查失效」，而是「撞上了另一道围栏」。
+  // 两条防线重叠时，fixture 选错会让断言分不清是哪一条在起作用。
+  const outsideOutline = join(workspace, "outside-outline.json");
+  writeFileSync(outsideOutline, JSON.stringify({ pages: [{ title: "x" }] }), "utf8");
+  const outOutline = await runtime.documentToolCall(callPorts as never, {
+    tool: "build_deck", app: "slides", filePath: join(workspace, "outline-out.pptx"),
+    input: { specDir: deck, outline: outsideOutline },
+  });
+  check("★【T87】outline 在 specDir 外时显式拒绝（围栏不为 outline 放宽）",
+    // 同样只认这条分支的原话：`requireWorkspacePath` 的「不在任何已知工作区」
+    // 是另一道防线，不该让本断言变绿或变红。
+    outOutline.ok === false && /outline 必须位于 spec 目录内/.test(outOutline.reason ?? ""), outOutline);
+  check("★【T87】outline 越界时没有写出文件", !existsSync(join(workspace, "outline-out.pptx")));
+  // 对照组：outline 在 specDir 内 → 通过围栏（可能因页面不匹配而失败，
+  // 但**不能**是因为「必须在 spec 目录内」这条）。
+  const insideOutline = join(deck, "outline.json");
+  writeFileSync(insideOutline, JSON.stringify({ pages: [{ title: "T43 build" }] }), "utf8");
+  const inOutline = await runtime.documentToolCall(callPorts as never, {
+    tool: "build_deck", app: "slides", filePath: join(workspace, "outline-in.pptx"),
+    input: { specDir: deck, outline: insideOutline },
+  });
+  check("★【T87】对照组：outline 在 specDir 内就不因「越界」被拒",
+    !/spec 目录内/.test(inOutline.ok ? "" : (inOutline.reason ?? "")), inOutline);
 }
 
 console.log("\n7. 目录一致性：不存在「三不管」工具");
