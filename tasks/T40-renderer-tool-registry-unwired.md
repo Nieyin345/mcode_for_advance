@@ -184,3 +184,105 @@ documentViewHost.setDocsAiPorts(registryWrappedDocsAiPorts);
 | agent 侧 | `soleActiveRendererBinding()` | 「全仓库恰好一个」兜底 |
 
 **生产装配用的是前者，所以修复后行为是更严格的那个。** 实施者要在回写里确认这个差异不会让 agent 侧出问题。
+
+## 结果回写（2026-10-23）
+
+**提交**：`9487eaa4` — fix(T40): 把 withRendererToolRegistry 接回生产装配（两处注入）
+
+### 第一步确认（全部成立，另发现一处卡上没写）
+
+1. **零调用点成立。** `grep -rn "withRendererToolRegistry" apps/desktop/src/ packages/`
+   只命中定义那一行（`documentToolRendererBinding.ts:58`）。
+2. **`active` 的写入路径只有一条**：`withRendererToolRegistry` 的 `run`
+   进入段 `active.set`、`finally` 里撤销。其余 6 处都是只读（`activeRendererBindingFor` /
+   `hasActiveRendererBinding` / `soleActiveRendererBinding`），`clearRendererToolRegistry`
+   写明「测试专用」。
+3. **不包装时的实际行为**：`run` 照常执行，但登记簿全程为空 →
+   `activeRendererBindingFor(filePath)` 恒回 `{ ok: false, reason: "该文件当前没有正在
+   运行的受信文档 AI 请求…" }` → `ipc/document.ts:349` 的 `surfaceFor()` 得到
+   `rendererOpen: () => false`，且**不装** `invokeRendererTool` / `rendererToolDefinition`
+   → `document.tool_call` 只能走 CLI 分支或失败。
+
+**★ 卡上没写的一处**：`ipc/index.ts` 有**两条**注入，不是一条。
+
+```
+:170  registerGenofficeViewAiIpc(..., () => ({ context, ports: docsAiPorts }))
+:227  documentViewHost.setDocsAiPorts(docsAiPorts)
+```
+
+两处喂的是**同一张**登记簿。**只改 227 那一行，:170 那条路上的请求仍然不登记** ——
+原卡给的最小修复是不完整的。已改为同一个常量 `registryWrappedDocsAiPorts` 供两处使用。
+
+### 修法
+
+```ts
+// ipc/index.ts，装配段开头
+const registryWrappedDocsAiPorts = withRendererToolRegistry(docsAiPorts);
+```
+
+`withRendererToolRegistry` 是纯包装：`describe`/`confirm` 原样转发，`run` 只在
+`invokeRendererTool` 是函数时登记（`typeof invokeRendererTool !== "function"` 时直接转给
+原实现，不登记也不报错）。所以**没有改变任何既有行为**，只是补上了原本缺失的登记。
+
+### 回归：断言打在装配路径上
+
+新套件 `apps/desktop/scripts/t40-renderer-registry-smoke/`（13 条，全绿）。
+
+**做法**：真调 `registerIpcHandlers()`（electron 整包换桩，`ipcMain` 是记名替身、重复注册
+当场抛），然后从 `documentViewHost` 里取出它**实际收到**的那个 ports 对象断言。没有用
+T24 套件那种「测试自己调 `withRendererToolRegistry`」的写法。
+
+关键四条：
+
+| 断言 | 证明什么 |
+|---|---|
+| 宿主收到的 ports `!== docsAiPorts` | 生产装的不是原始对象 |
+| `run` 执行**中途**登记簿查得到该文件 | 包装层真的会登记（不是空壳） |
+| 结束后 `activeRendererBindingFor()` 回 `ok: false` | 引用计数撤销干净，不泄漏 |
+| **对照组**：同一底层 ports 不包装直接跑，中途查不到 | 病灶直接复现 |
+
+外加两条源码级断言（无头下 vendor 通道够不到，只能用源码钉住）：两条注入引用同一常量、
+不得残留 `setDocsAiPorts(docsAiPorts)`。
+
+### 变异证据
+
+把 `const registryWrappedDocsAiPorts = withRendererToolRegistry(docsAiPorts)` 改成
+`= docsAiPorts`：
+
+```
+FAIL 宿主收到的是**包装过**的 ports,不是原始的 docsAiPorts — {"wiredIsOriginal":true}
+FAIL 装配代码里 withRendererToolRegistry 被调用了(不是零调用点) — {"wrapsCount":0}
+FAIL 两条注入都用同一个包装常量 — {"hasConst":false,...}
+```
+
+`cmp` 逐字节还原（`RESTORED-BYTE-IDENTICAL`）。
+
+### 验证
+
+- `t40-renderer-registry-smoke` 13/13（提交后重跑仍 13/13）
+- `t24-document-tool-surface-smoke` 59/59（不回归）
+- `memory-codex-smoke` 234/234（`ipc/index.ts` 的另一处覆盖）
+- `smokes-for.sh src/main/ipc/index.ts` 已自动发现新套件
+- 双包 typecheck 绿
+
+### 同类问题清单（卡要求「列出来，逐个说明」）
+
+1. **`ipc/index.ts:170` 的 vendor 视图 AI 通道** —— 与本卡同一个 bug 的第二处，**已一并修**（见上）。
+2. **T24 套件自身的测法** —— 不算产品缺陷，但它是本卡能漏到今天的原因：
+   `t24-document-tool-surface-smoke` 的 import 里**完全没有**
+   `documentToolRendererBinding`，它对渲染端路线的覆盖是零。新套件补的正是这一块。
+3. **`slidesApi` / `sheetsApi`** —— 检查过：`withRendererToolRegistry` 只针对
+   `DocsAiPorts`，没有对应的 slides/sheets 包装器存在，不存在「有包装器没接」的同类项。
+
+### 关于「修复后行为更严格」
+
+卡末提到生产用 `activeRendererBindingFor(filePath)`（按文件精确匹配）、agent 侧用
+`soleActiveRendererBinding()`（全仓库唯一）。**修复后没有任何变化** —— 这两条查找函数本来
+就是这样，本卡的修复只是让它们终于有数据可查。不存在"收紧"。
+
+### 未做 / 需要知道
+
+- **不得宣称 T30 完成**（按卡上第 7 条）：真 Electron 下的端到端仍需要 U1，且用户要求
+  暂时不要弹窗。
+- 本卡只动 `ipc/index.ts` 与新建套件；`documentToolRuntime.ts` / `documentToolSurface.ts`
+  未动。
