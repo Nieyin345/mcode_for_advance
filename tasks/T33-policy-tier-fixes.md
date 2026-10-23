@@ -1,6 +1,6 @@
 # T33｜`document.read` 被误放进 BLOCKED；`document.toolCall`/`markdownEdit` 档位偏弱
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：30/30，提交 75f702d0 + b6b39b30）
 - Category: **bug（P0 安全 + 功能）**
 - Priority: **P0**
 - Depends on: none

@@ -1,6 +1,6 @@
 # T43｜文档 AI 的「丑」根因：设计流水线没接上，QA 门禁有三个 app 是空的
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：57/57，提交 0a2aa805 + a48066a9）
 - Category: **bug（P0 产品能力）**
 - Priority: **P0 —— 这是用户抱怨「AI 改 Word/PPT 又烂又丑」的根因**
 - Depends on: T24（`ce2913f8`，工具面）、T40（渲染端绑定未接，P0 并行修）

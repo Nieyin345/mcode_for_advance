@@ -1,6 +1,6 @@
 # T32｜`genofficeNativeVendor.ts` 的 alias 虚拟模块破坏了 11 套 smoke 打包（卡面原写 15，已按实测校正）
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：11/11，提交 4da81702）
 - Category: **bug（测试基础设施）**
 - Priority: **P0 工具链**
 - Depends on: none

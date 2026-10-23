@@ -1,6 +1,6 @@
 # T47｜模型拿不到 `guide slides design` —— 设计流水线的"教"这一半还是断的
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：27/27，提交 0bf8a957 + 3e7a9903）
 - Category: **bug（P0 产品能力）**
 - Priority: **P0 —— 这条决定 T43 修完之后 AI 能不能真的做出好看的 deck**
 - Depends on: T43（`0a2aa805`，工具面接通）、T40（`9487eaa4`，渲染端通道）

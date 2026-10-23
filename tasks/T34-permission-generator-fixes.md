@@ -1,6 +1,6 @@
 # T34｜权限映射生成器缺 framework 域；danger 默认可委托
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：已交付，提交 f09f4912）
 - Category: **bug（P0 安全 + 工具链）**
 - Priority: **P0**
 - Depends on: **T33 完成**（它决定 `document.toolCall` / `markdownEdit` 的档位，本卡重生成时要吸收这个结论）

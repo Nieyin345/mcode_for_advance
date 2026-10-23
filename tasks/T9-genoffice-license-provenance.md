@@ -1,6 +1,6 @@
 # T9｜GenOffice 未决第三方许可证来源证据
 
-- Status: ready-for-agent
+- Status: done（2026-10-23 验收通过：14 验证 / 4 阻塞，提交 d28de300 + c0b092e0）
 - Category: bug
 - Priority: P0 release blocker
 - Depends on: none; T11 integration depends on this evidence/policy result
