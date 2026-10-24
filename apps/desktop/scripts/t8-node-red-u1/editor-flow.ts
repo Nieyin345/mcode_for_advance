@@ -609,3 +609,261 @@ export async function canvasNodesOfType(wc: WebContents, nativeType: string): Pr
       .map((el) => ({ id: String(el.__data__.id), x: el.__data__.x, y: el.__data__.y }));
   })()`);
 }
+
+/* ─────────────────── W2 追加：运行一次 inject / 读 debug 侧栏 ─────────────────── */
+
+/**
+ * 给 inject 节点设一个**固定的字符串 payload**（`payloadType:"str"`）。
+ *
+ * 走的是编辑器「编辑节点」对话框里同一批字段：`node-input-payload`（typedInput）
+ * + `node-input-payloadType`（隐藏的 typedInput 类型）。W1 拖出来的 inject 默认是
+ * `payloadType:"date"`（每次注入是时间戳），断言「具体文本」要求固定值。
+ *
+ * **不点对话框**：与 `renameNodeViaEditor` 的取舍相反 —— 本函数只改模型字段并
+ * `redraw()`。理由是 W1 已经证明「点托盘输入框拿不到焦点」是**编辑器视图焦点投递**
+ * 的已知缺陷（`rename-node-via-tray` 的红，另一张卡负责），让 W2 依赖同一条坏路径
+ * 会把「跑一次 inject」的验收押在一个已知红上。**这不是降级：** 本卡判的是「点击
+ * inject 按钮 → debug 侧栏出现 payload」，inject 的 payload 只是**被测数据的输入**，
+ * 不是被测动作。被测动作（点按钮）仍走真鼠标。
+ *
+ * 返回值把「模型里最终是什么」和「对话框文案对应的 label」都交出去，旅程原样落证据。
+ */
+export async function setInjectPayload(wc: WebContents, injectId: string, payload: string): Promise<{
+  ok: boolean;
+  payloadType: string | null;
+  payloadValue: string | null;
+  detail?: string;
+}> {
+  const read = async (): Promise<{ payloadType: string | null; payloadValue: string | null }> =>
+    await js<{ payloadType: string | null; payloadValue: string | null }>(wc, `(() => {
+      const n = RED.nodes.node(${JSON.stringify(injectId)});
+      if (!n) return { payloadType: null, payloadValue: null };
+      const prop = Array.isArray(n.props) ? n.props.find((p) => p.p === 'payload') : null;
+      return {
+        payloadType: prop ? String(prop.vt ?? '') : (typeof n.payloadType === 'string' ? n.payloadType : null),
+        payloadValue: prop ? String(prop.v ?? '') : (typeof n.payload === 'string' ? n.payload : null),
+      };
+    })()`);
+  const wrote = await js<boolean>(wc, `(() => {
+    const n = RED.nodes.node(${JSON.stringify(injectId)});
+    if (!n) return false;
+    // 上游 inject 运行时读的是 props[]（见 20-inject.js 的 legacy 迁移），编辑器
+    // 默认值同时维护 payload/payloadType 两个镜像字段。两边都写，保持与上游一致。
+    if (!Array.isArray(n.props)) n.props = [];
+    let prop = n.props.find((p) => p.p === 'payload');
+    if (!prop) { prop = { p: 'payload' }; n.props.push(prop); }
+    prop.v = ${JSON.stringify(payload)};
+    prop.vt = 'str';
+    n.payload = ${JSON.stringify(payload)};
+    n.payloadType = 'str';
+    n.changed = true;
+    n.dirty = true;
+    RED.nodes.dirty(true);
+    RED.view.redraw(true);
+    return true;
+  })()`);
+  if (!wrote) return { ok: false, payloadType: null, payloadValue: null, detail: `画布上找不到 inject 节点 ${injectId}` };
+  const after = await read();
+  const ok = after.payloadType === "str" && after.payloadValue === payload;
+  return { ok, ...after, ...(ok ? {} : { detail: `写入后模型里是 type=${String(after.payloadType)} value=${String(after.payloadValue)}` }) };
+}
+
+/**
+ * 打开 debug 侧栏（需要时真点页签按钮）并**清空已有消息**。
+ *
+ * 侧栏页签按钮的选择器是 `button[data-tab-id="debug"]`（`sidebar.js` 给每个
+ * `RED.sidebar.addTab` 的按钮加的属性；zh-CN 下 aria-label 是「名称」，不能按文案匹配）。
+ *
+ * ## 为什么不「固定点一次/两次」来证明开关（2026-10-24 实测四次，每次都是真 Electron）
+ *
+ * `sidebar.js:255` 的页签点击是**条件性开关**：
+ * `active === id && RED.menu.isSelected(menuToggle)` 才 `hideTab`，否则
+ * `RED.sidebar.show(id)`。debug 是 right sidebar **bottom 段唯一**的页签、默认 active，
+ * 全新编辑器里**直接可见**。实测：
+ *  - 点 top 段的 info/help/context/config **不隐藏** debug（不同 section）；
+ *  - 点已选中的 debug **没有隐藏**（菜单选中态与视觉可见性不同步，走了 show 分支）；
+ *  - 点右侧栏的展开/收起按钮（`sidebar.js:507`）也**没有**让 debug 容器消失
+ *    （`toggleSidebar` 收起的是 section 与整栏宽度，debug 容器本身的几何仍在；
+ *    实测 `containerVisible` 保持 true）。
+ *
+ * 所以本函数**按真实初始状态决定动作**，并如实记账：
+ *  - 一开始可见（全新编辑器的默认态）→ **不伪造点击**，记 `clickedToOpen:false`；
+ *  - 不可见（用户之前收起过）→ 真点一次页签，断言它变为可见。
+ *
+ * **这不让后续判据变弱**：主判据（debug 侧栏出现 payload）要求消息元素
+ * `visible:true`（同一套几何判定：rect>0 且 `offsetParent !== null`）。侧栏若被收起，
+ * 那条断言必然红 —— 「打开」这一步若失真，主判据会把它抓出来。
+ *
+ * 另外断言 debug 面板**自己的工具条**（`#red-ui-sidebar-debug-clear`，debug 独有）
+ * 在同一容器里可见 —— 「这块区域确实是 debug，而不是别的 tab」的面板级证据。
+ */
+export async function openDebugSidebarAndClear(wc: WebContents): Promise<{
+  opened: boolean;
+  clickedToOpen: boolean;
+  visibleInitially: boolean;
+  cleared: boolean;
+  chromeVisible: boolean;
+  messagesBefore: number;
+  detail?: string;
+}> {
+  const probe = async (): Promise<{ exists: boolean; containerVisible: boolean; chromeVisible: boolean }> =>
+    await js<{ exists: boolean; containerVisible: boolean; chromeVisible: boolean }>(wc, `(() => {
+      const b = document.querySelector('button[data-tab-id="debug"]');
+      const c = document.querySelector('#red-ui-sidebar-container .red-ui-debug-container');
+      let containerVisible = false, chromeVisible = false;
+      if (c) {
+        const r = c.getBoundingClientRect();
+        containerVisible = r.width > 40 && r.height > 40 && c.offsetParent !== null;
+      }
+      // debug 面板独有的工具条（清空按钮）；别的 tab 没有这个 id。
+      const chrome = document.querySelector('#red-ui-sidebar-container #red-ui-sidebar-debug-clear');
+      if (chrome) {
+        const r = chrome.getBoundingClientRect();
+        chromeVisible = r.width > 1 && r.height > 1 && chrome.offsetParent !== null;
+      }
+      return { exists: !!b || !!c, containerVisible, chromeVisible };
+    })()`);
+  const before = await js<number>(wc, `document.querySelectorAll('#red-ui-sidebar-container .red-ui-debug-msg').length`);
+  const initial = await probe();
+  const fail = (detail: string, clickedToOpen = false) => ({
+    opened: false, clickedToOpen, visibleInitially: initial.containerVisible, cleared: false,
+    chromeVisible: initial.chromeVisible, messagesBefore: before, detail,
+  });
+  if (!initial.exists) return fail("找不到 debug 侧栏按钮或容器");
+
+  let clickedToOpen = false;
+  if (!initial.containerVisible) {
+    const btn = await centerOf(wc, 'button[data-tab-id="debug"]');
+    if (btn === null) return fail("debug 页签按钮不可见，无法点击打开");
+    await clickAt(wc, btn.x, btn.y);
+    clickedToOpen = true;
+    const shown = await waitFor(async () => (await probe()).containerVisible, 8_000);
+    if (!shown) return fail("点击 debug 页签后内容区仍不可见", true);
+  }
+  const now = await probe();
+  if (!now.chromeVisible) return fail("debug 容器可见，但它自己的工具条（#red-ui-sidebar-debug-clear）不在——这块区域可能不是 debug 面板", clickedToOpen);
+
+  // 清空（编辑器自己的 action；与清空按钮同一个处理器 `21-debug.html:437`）。
+  await js(wc, `(() => { RED.actions.invoke('core:clear-debug-messages'); return true; })()`);
+  const cleared = await waitFor(async () => (await js<number>(wc, `document.querySelectorAll('#red-ui-sidebar-container .red-ui-debug-msg').length`)) === 0, 5_000);
+  return {
+    opened: true, clickedToOpen, visibleInitially: initial.containerVisible, cleared,
+    chromeVisible: now.chromeVisible, messagesBefore: before,
+    ...(cleared ? {} : { detail: "清空后 debug 列表里仍有旧消息" }),
+  };
+}
+
+/**
+ * 点 inject 节点左侧的**小方块按钮**（真鼠标）。
+ *
+ * 上游（`view.js:5653-5697`）：按钮是 `<g class="red-ui-flow-node-button">` 里的
+ * `<rect class="red-ui-flow-node-button-button" width=16 height=18>`，`click` 绑在
+ * 这个 rect 上 → `nodeButtonClicked` → inject 的 `button.onclick` → `doInject()`
+ * （`POST inject/<id>` → 运行时 `node.receive()`）。**必须命中那个 rect**：
+ * 点 `g.red-ui-flow-node-group` 的中心会落到节点主体（`nodeMouseUp`，只是选中）。
+ *
+ * 返回 `clicked`（真发出鼠标事件）与 `geometry`（按钮 rect 的实际矩形与是否在画布内），
+ * **不断言触发成功** —— 触发成功由「debug 侧栏出现 payload」那一步判。
+ */
+export async function clickInjectNodeButton(wc: WebContents, injectId: string): Promise<{
+  clicked: boolean;
+  buttonRect: { x: number; y: number; w: number; h: number; inChart: boolean } | null;
+  shape: string;
+  detail?: string;
+}> {
+  const found = await js<{ x: number; y: number; w: number; h: number; inChart: boolean; shape: string } | null>(wc, `(() => {
+    const g = [...document.querySelectorAll('#red-ui-workspace-chart .red-ui-flow-node-group')]
+      .find((el) => el.__data__ && el.__data__.id === ${JSON.stringify(injectId)});
+    if (!g) return null;
+    // 上游两种画法：常规节点是 rect，link 型节点是 circle。inject 是 rect，但按
+    // class 取而不是按标签取 —— 上游改形状时这里不会静默取空。
+    const shape = (g.querySelector('circle.red-ui-flow-node-button-button') ? 'circle'
+      : (g.querySelector('rect.red-ui-flow-node-button-button') ? 'rect' : 'none'));
+    const b = g.querySelector('.red-ui-flow-node-button-button');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return null;
+    const chart = document.getElementById('red-ui-workspace-chart');
+    const cr = chart ? chart.getBoundingClientRect() : null;
+    const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+    const inChart = !!cr && x >= cr.left && x <= cr.right && y >= cr.top && y <= cr.bottom;
+    return { x, y, w: Math.round(r.width), h: Math.round(r.height), inChart, shape };
+  })()`);
+  if (found === null) return { clicked: false, buttonRect: null, shape: "none", detail: `inject 节点 ${injectId} 没有可见的按钮 rect` };
+  if (!found.inChart) return { clicked: false, buttonRect: found, shape: found.shape, detail: `按钮中心 (${found.x},${found.y}) 不在画布可见区域内` };
+  const page = wc as unknown as EditorPage;
+  // 真用户手势：移过去 → 按下 → 松开（`nodeButtonClicked` 绑在 click 上，d3 的
+  // click 由 mousedown+mouseup 同点产生；这里 mouseDown/Up 用同一坐标）。
+  page.sendInputEvent({ type: "mouseMove", x: found.x, y: found.y });
+  await sleep(100);
+  page.sendInputEvent({ type: "mouseDown", x: found.x, y: found.y, button: "left", clickCount: 1 });
+  await sleep(80);
+  page.sendInputEvent({ type: "mouseUp", x: found.x, y: found.y, button: "left", clickCount: 1 });
+  return { clicked: true, buttonRect: found, shape: found.shape };
+}
+
+/**
+ * 读 debug 侧栏里的消息（只读 DOM 事实）。
+ *
+ * `#red-ui-sidebar-container` 在 5.0.8 里是**两个**侧栏（左右各一个）的共同前缀；
+ * 这里限定到 `#red-ui-sidebar-container` 之下的 `.red-ui-debug-msg`，而不是全页
+ * `.red-ui-debug-msg` —— 后者会把「调试窗口」弹窗（`#red-ui-sidebar-debug-open`
+ * 开的新窗口 / 表格视图）也算进来。
+ *
+ * 每条消息交出：`.red-ui-debug-msg-payload` 的**文本**（字符串 payload 会被渲染成
+ * 带引号的 `"w2-probe"`，见 `utils.js:541` 的 `'"'+formatString(...)+'"'`）、
+ * 来源节点名（`.red-ui-debug-msg-name`）、以及整条消息的 class（含
+ * `red-ui-debug-msg-flow-<tabId>`，用来判「它出现在当前流程而不是别的流程」）。
+ */
+export async function readDebugMessages(wc: WebContents): Promise<{
+  total: number;
+  visible: number;
+  messages: Array<{ payloadText: string | null; sourceName: string | null; flowClass: string | null; visible: boolean }>;
+}> {
+  return await js<{
+    total: number;
+    visible: number;
+    messages: Array<{ payloadText: string | null; sourceName: string | null; flowClass: string | null; visible: boolean }>;
+  }>(wc, `(() => {
+    const nodes = [...document.querySelectorAll('#red-ui-sidebar-container .red-ui-debug-msg')];
+    const messages = nodes.map((el) => {
+      const payloadEl = el.querySelector('.red-ui-debug-msg-payload');
+      const nameEl = el.querySelector('.red-ui-debug-msg-name');
+      const cls = el.className || '';
+      const m = /(^|\\s)red-ui-debug-msg-flow-(\\S+)/.exec(cls);
+      const r = el.getBoundingClientRect();
+      return {
+        payloadText: payloadEl ? (payloadEl.textContent || '').trim() : null,
+        sourceName: nameEl ? (nameEl.textContent || '').trim() : null,
+        flowClass: m ? m[2] : null,
+        visible: r.width > 0 && r.height > 0 && el.offsetParent !== null,
+      };
+    });
+    return { total: messages.length, visible: messages.filter((m) => m.visible).length, messages };
+  })()`);
+}
+
+/**
+ * 读「通知条」（`#red-ui-notifications .red-ui-notification`）的文本。
+ *
+ * inject 的按钮回调 `doInject()` 成功后弹 `成功注入: <label>`（zh-CN
+ * `messages.json:84`），失败弹 `节点未部署` 等。**这是旁证**：证明 POST
+ * `inject/<id>` 真的被运行时接受（200），而不是「点了但 HTTP 失败」。
+ * 它**不**替代「debug 侧栏有 payload」那条主判据 —— 通知只说明运行时收到了注入请求，
+ * 不说明这条消息走到了 debug 节点。
+ */
+export async function readNotifications(wc: WebContents): Promise<{
+  texts: string[];
+  successCount: number;
+  errorCount: number;
+}> {
+  return await js<{ texts: string[]; successCount: number; errorCount: number }>(wc, `(() => {
+    const els = [...document.querySelectorAll('#red-ui-notifications .red-ui-notification')];
+    const texts = els.map((el) => (el.textContent || '').trim());
+    return {
+      texts,
+      successCount: els.filter((el) => el.classList.contains('red-ui-notification-success')).length,
+      errorCount: els.filter((el) => el.classList.contains('red-ui-notification-error')).length,
+    };
+  })()`);
+}
