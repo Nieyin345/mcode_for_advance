@@ -15,3 +15,8 @@ export async function requestNativeViewClose(
 ): Promise<boolean> {
   return false;
 }
+
+/** O10: no vendor snapshot = no save seam to install; nothing to guard. */
+export function installDocumentSaveGuard(): void {
+  /* 没有 vendor 源码 = 没有接缝可装；独立运行行为不受影响。 */
+}

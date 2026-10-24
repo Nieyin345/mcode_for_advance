@@ -185,20 +185,19 @@ export async function clickInPage(wc: WebContents, selector: string): Promise<{
 export async function triggerSlidesSave(rt: O2Runtime): Promise<{ ok: boolean; observed: unknown; detail?: string }> {
   const wc = wcOf(rt);
   if (wc === null) return { ok: false, observed: null, detail: "slides 视图 webContents 不存在" };
-  const result = await js<{ path: string; clicked: boolean; ok?: boolean; error?: string; reason?: string }>(wc, `(async () => {
-    const all = [...document.querySelectorAll('button.qa-btn')];
-    const save = all.find((b) => /保存|Save/.test(b.getAttribute('aria-label') || ''));
-    if (save && !save.hasAttribute('disabled')) {
-      save.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      return { path: 'qat-button', clicked: true };
-    }
-    const r = await Promise.race([
-      window.slidesApi.save(),
-      new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: 'bridge-timeout' }), 30000)),
-    ]);
-    return { path: 'bridge-save', clicked: false, ok: !!(r && r.ok), error: r && r.error };
-  })()`);
-  return { ok: true, observed: result };
+  // **走页面自己的菜单通道**（生产里 `buildSlidesMenu` 的 `CmdOrCtrl+S` 加速器就是
+  // `wc.send('slides:menu','save')`）。页面收到后调 `save()` → `file-actions.save()`，
+  // 失败分支会 `setStatus` + `showToast` —— 4c 验的正是这两处。
+  //
+  // 为什么不用 QAT 按钮：它的 `disabled={!dirty}` 依赖 React 状态，而本套件的编辑
+  // 走 `slidesApi.editText`（vendor 事务，不经 React），页面 `dirty` 仍是 false。
+  // 也不直接调 `slidesApi.save()`：那会绕过页面，主进程拒绝了而界面什么都不显示
+  // （实测 4a 绿、4c 假红）。
+  //
+  // 菜单通道**不看 dirty**（`App.tsx:2312` 的 `if (cmd === 'save') void save()`），
+  // 与用户按 Ctrl+S 完全同一条路。
+  wc.send("slides:menu", "save");
+  return { ok: true, observed: { via: "slides:menu (Ctrl+S accelerator path)" } };
 }
 
 /** 统一入口：按格式触发保存。返回时**保存可能还在飞**（回包由 observeSave 等）。 */
@@ -507,8 +506,16 @@ export function judgeConflictReply(rt: O2Runtime, observation: SaveObservation):
       };
     }
     case "slides": {
+      // O10 之后 slides:save 由 Mcode 的保存守卫拒绝：守卫抛
+      // `DocumentSaveConflictError`，vendor 的 catch 折成
+      // `{ ok:false, error:"DocumentSaveConflictError: <冲突那句话>" }`（`String(err)`）。
+      // 判据仍要求「否定回包 + 理由确实是冲突」：认守卫的类名/文案，也认早先
+      // SlidesBridge 路线的 `FILE_VERSION_CONFLICT`；不接受别的原因失败。
       const conflict =
-        reply.ok === false && (reply.reason === "conflict" || /FILE_VERSION_CONFLICT/.test(text) || /版本冲突/.test(text));
+        reply.ok === false &&
+        (reply.reason === "conflict" ||
+          /FILE_VERSION_CONFLICT|DocumentSaveConflictError/.test(text) ||
+          /版本冲突|已被别处改动/.test(text));
       return {
         ok: conflict,
         observed: { ...base, channel: record.channel, reply, thrown: record.thrown },
@@ -520,7 +527,16 @@ export function judgeConflictReply(rt: O2Runtime, observation: SaveObservation):
     case "pdf":
     case "markdown":
     case "html": {
-      const conflict = reply.ok === false && /conflict|版本冲突/.test(text);
+      // O10 之后这三家由 Mcode 的保存守卫拒绝。它的拒绝形态是
+      // `{ ok:false, error:<冲突那句话> }` —— vendor 的 catch 把守卫抛的
+      // `DocumentSaveConflictError` 折成了 `error` 字段（四个 handler 都是这个形状）。
+      // 判据要求**回包是否定、且理由确实是冲突**：既认 docs 式的 `reason:"conflict"`，
+      // 也认守卫那句固定文案；**不接受**「因别的原因失败」（坏档、权限），
+      // 那种失败下 4b 会绿、但用户丢的不是版本而是这次的编辑 —— 两回事。
+      const conflict =
+        reply.ok === false &&
+        (reply.reason === "conflict" ||
+          /conflict|版本冲突|已被别处改动/.test(text));
       return {
         ok: conflict,
         observed: { ...base, channel: record.channel, reply, thrown: record.thrown },

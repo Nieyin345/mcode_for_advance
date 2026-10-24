@@ -1,6 +1,6 @@
 # O10｜四个格式的写盘接缝：把「谁的版本」和「写」放进同一份租约
 
-- Status: **ready-for-agent**
+- Status: **done**（2026-10-25，见 §九 执行回写；sheets 一格被环境阻塞，见 §九「未做」）
 - Category: **Office / 数据丢失修复**（O9 诊断的落地）
 - Priority: **P0**
 - Depends on: **O9**（分类已完成，见下）、O5 批三（已落地，`typecheck` 0 条）
@@ -619,3 +619,92 @@ $ pnpm dev
 
 **这条要写进派活模板**：**任何新增跨仓 import 的卡，必须写明「它在哪一层被解析」
 （tsc / esbuild / Rollup / 运行时），并指出验收判据覆盖了哪几层。**
+
+### 2026-10-25｜O10 执行回写
+
+#### §4.4 的检查结论：`savePptxToFile` **连原子写都没有**
+
+`genoffice/packages/pptx-engine/src/index.ts:729`：
+
+```ts
+await pipeline(source, createWriteStream(filePath))   // 直接写目标，无临时文件、无 rename
+```
+
+`catch` 只 `saveSnapshot.delete(opened)`，**不清理半截文件**。所以 slides 是三个问题叠加：
+无版本比较（O9 已证）+ 无租约 + **无原子性**（断电/磁盘满留下截断的 .pptx）。
+→ 在 `slides:save` 调用点挂接缝，且 `write` 自己补原子写（`stagedAtomicWrite`）。
+**不要指望 `atomicWriteFile` 那层覆盖它 —— 它不经过那一层。**
+
+#### §七 的三个问题
+
+1. **`openedRevisionFor` 从哪来？** `DocumentViewHost` 的打开会话表。
+   `open()` 的 **kind 分支**（`documentViewHost.ts:686-690`）对 slides/pdf/markdown/html 同样调
+   `claimOpenedPath`，它把 `fileContentVersion(filePath)` 记进 `session.revision`。
+   **实测**（slides 日志）：`document save committed (slides) … revision=3d8fa150…` 与
+   `save conflict (slides) expected=9fe4086c… current=c202dc8a…` —— 拿得到、且是对的。
+   为此给宿主加了两个只读/推进访问器（`revisionForPath` / `advanceRevisionForPath`），
+   **与 docs 的 `saveOpenedFile` 同一份数据源**，不另记一份。
+2. **冲突怎么让渲染端看得见？** 守卫抛 `DocumentSaveConflictError`；四个 vendor handler 的
+   `catch` 都折成 `{ ok:false, error: <message> }`（pdf/markdown/html 逐字相同，slides 是
+   `String(err)`）；四个渲染端都读 `error` 并显示。**不需要改任何渲染端**（实测四格 4c 全绿）。
+3. **`slides:save` 冲突时返回 `{ok:false}` 会不会停在旧画面？** 不会 ——
+   `file-actions.save` 的失败分支 `setStatus` + `showToast`，`adoptSavedSlides` 只在 `r.ok` 时跑。
+   实测 slides 4c 绿（页面上出现了「保存失败：文档已被别处改动…」）。
+
+#### 每个格式的翻转前后（`expectations.ts` 的 `expectConflict`）
+
+| 格式 | 翻转前 | 翻转后 | 4a/4b/4c/#5 实测 |
+|---|---|---|---|
+| html | false | **true** | 全绿（日志有 committed + conflict 两条） |
+| markdown | false | **true** | 全绿 |
+| pdf | false | **true** | 全绿 |
+| slides | false | **true** | 全绿 |
+
+`provenance` 四格全部同步改成「修好后的出口」（守卫生效的那条路径）。
+
+#### 变异与负控
+
+- **`stagedAtomicWrite` 的失败路径**（`staged-write.test.ts`，纯 Node，5 条）：
+  替换失败 + 原地写也失败 → 抛错且**暂存没被删**；写暂存失败 → 暂存**应当**被删（对照组）；
+  错误信息点名暂存路径。**变异验证过**：把 `rm` 放回 `finally` 式 → 测试红在
+  「暂存被删了 —— 用户的新内容丢了」；还原后 5/5 复绿。这条已接进 `run.sh`。
+- **守卫调用点静态断言**（`save-paths.ts`）：四个 `format: '<kind>'` 锚点各出现 1 次 +
+  文件里有 `guardedDocumentSave(`。**变异验证过**：把 pdf 的 `format: 'pdf'` 改名 →
+  归类红（「锚点出现 0 次」），还原后复绿。
+- **`expectations.ts` 自洽断言**：`expectConflict=true` 而 `provenance` 还说「没有版本比较」→ 红。
+  **变异验证过**（改回旧 provenance → 红）。
+
+#### 我犯的一个错（已修，记下来给下一个改 paths 的人）
+
+第一版 slides 的 `write` 把 `rm(staging)` 写在 **`finally`** 里。正常路径看不出问题；
+**`rename` 因 Windows EBUSY/EPERM 失败时，`finally` 会删掉唯一一份完整的新内容** ——
+用户看到「保存失败」而编辑全没了，**比改动前更坏**（那时至少盘上还有被截断的文件可捞）。
+**失败路径没有任何正常路径的断言能覆盖它**（O2 只跑「能成」的世界、默认透传只验「没装守卫」、
+真并发只验「两个保存同时跑」）。修法：照抄 `atomic-write.ts` 的三段结构，并抽成
+`stagedAtomicWrite` 让它能被假 `replace`/`remove` 单独喂。
+
+#### 提交
+
+- vendor：`genoffice` 分支 `mcode/integration`，`a290398`；
+  patch `patches/genoffice/0022-feat-save-a-host-installed-guard-at-the-four-save-c.patch`
+  （sha256 `14da8b1cd2d26bb17ebd02ca14c68f76f8502d096018b36a0f10a14b49f2605d`）；
+  账本 `genoffice-upstream.lock.json` 与 `verify-genoffice-upstream.cjs` 已同步
+  （22 patches，`FINAL_REVISION`/`FINAL_TREE` 已改；`MCODE_INCLUDE_GENOFFICE_CLI=1
+  MCODE_INCLUDE_GENOFFICE_BUNDLE=1 node apps/desktop/build/verify-genoffice-upstream.cjs` 通过）。
+- Mcode：见本卡所属提交。
+
+#### 未做 / 未验证（如实）
+
+1. **sheets 那一格在本次环境跑不过**：`negative-edit` 卡在 `.workbook-opening-screen`
+   90–120s 不消失。**已做对照**：不装守卫（`O2_NO_GUARD=1`）时**同样卡** → 与 O10 无关。
+   根因指向**显示器配置变化**（现在只有一块 1463×823；早先跑绿时是 1463 + 副屏 1920×1080）：
+   `pickHostWindowPlacement` 在无副屏时把窗口放到主屏**右下之外**，`capturePage` 报
+   "Current display surface not available"。**T7 自己的 docs/sheets 旅程现在同样红**
+   （`step-07-screenshot` / `step-06-screenshot`），是同一原因。**这是环境问题，不是代码**；
+   副屏接回来或改 `runner.ts` 的摆放后需重跑。
+2. **`slides:save-as` 没挂守卫/原子写**：它写到对话框新选的目标（不是被并发编辑的打开文件），
+   且会改 `session.path`。**不在本卡范围**，如实记在这里。
+3. **`--variant=expect-green` 在本次环境跑不到全绿**（sheets 环境阻塞），但**其余五格全绿**。
+   环境恢复后重跑即可。
+4. O2 的 `save-paths.ts` 仍是 `bypass` 分类（总控决定：保留 + 报告 blind spots），
+   本卡只加了「调用点接线还在」的静态断言。

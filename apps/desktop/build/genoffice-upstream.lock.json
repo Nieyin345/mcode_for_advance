@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "f3c1043aedc3754ac315e79481857d59a3b7463e",
-  "expectedTree": "05c511afbdcba58d7e0ca65b34f39e53ed166140",
+  "revision": "a29039825f3ec49dcc09d9342b36fd4dcb4f4359",
+  "expectedTree": "8894ca67497d62dac1f7dc1e277e9fd7c4a18ef9",
   "patchSeries": [
     {
       "index": 1,
@@ -202,6 +202,15 @@
       "sha256": "e46bae153a0fff9796a591c74aec028aadeca521f34093784b35aa9bbd37b8e7",
       "bytes": 4201,
       "subject": "fix(docs): the reshell gate asked \"who am I\", not \"who is running me\""
+    },
+    {
+      "index": 22,
+      "file": "patches/genoffice/0022-feat-save-a-host-installed-guard-at-the-four-save-c.patch",
+      "revision": "a29039825f3ec49dcc09d9342b36fd4dcb4f4359",
+      "parentRevision": "f3c1043aedc3754ac315e79481857d59a3b7463e",
+      "sha256": "14da8b1cd2d26bb17ebd02ca14c68f76f8502d096018b36a0f10a14b49f2605d",
+      "bytes": 17479,
+      "subject": "feat(save): a host-installed save guard at the four document save call sites"
     }
   ],
   "license": "Apache-2.0",

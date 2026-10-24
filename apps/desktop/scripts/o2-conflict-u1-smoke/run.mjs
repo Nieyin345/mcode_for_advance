@@ -108,10 +108,25 @@ export function runSuite({ extraArgs = [], env = {} } = {}) {
  * 不算错（否则 `--only` 永远红，调试就没法用）。`--only` 连一条都没匹配上时
  * build.mjs 自己会抛错，不会走到这里。
  */
-const CONFLICT_EXPECTED = ["docs", "sheets"];
-const CONFLICT_MISSING = ["slides", "pdf", "markdown", "html"];
+/**
+ * ⚠️ 判定**只从 `expectations.ts` 读**，不在这里另写一份格式清单。
+ *
+ * 第一版这里硬编码了 `CONFLICT_EXPECTED = ["docs","sheets"]` /
+ * `CONFLICT_MISSING = [...]`。于是有人（O10）翻 `expectations.ts` 里
+ * 一格 `expectConflict` 时，run.mjs 的期望没跟着变 —— 那一格明明修好了、
+ * 变成 all-pass，却被判「应 expected-failure」。**两份事实，一处改一处没改。**
+ *
+ * 现在：`expectConflict: true` → all-pass，`false` → （accept-red 下）
+ * expected-failure /（expect-green 下）all-pass。分类的**唯一来源**是那张表。
+ */
+async function expectationsByKind() {
+  const { buildTs } = await import("./esbuild-load.mjs");
+  const built = await buildTs(join(suite, "expectations.ts"), join(suite, ".expectations.cjs"));
+  const mod = await import(pathToFileURL(built).href + `?t=${Date.now()}`);
+  return mod.EXPECTATIONS;
+}
 
-export function judge(run, mode) {
+export function judge(run, mode, expectations) {
   const reasons = [];
   if (run.summary === null) {
     return { ok: false, reasons: [`构建/运行失败：${run.evidenceRoot === null ? "没有打印证据根" : `没有 suite-summary.json（${run.evidenceRoot}）`}—— 子进程退出码 ${run.exit}。这不是「预期红」，构建期崩溃同样退出 1。`] };
@@ -121,22 +136,22 @@ export function judge(run, mode) {
   }
   const byName = new Map(run.summary.journeys.map((j) => [j.name, j]));
   const onlySelected = passthrough.some((arg) => arg.startsWith("--only="));
-  for (const kind of CONFLICT_EXPECTED) {
-    const journey = byName.get(`o2-conflict-${kind}`);
-    if (!journey) { if (!onlySelected) reasons.push(`缺少旅程 o2-conflict-${kind}（summary 里没有）`); continue; }
-    if (journey.expectation !== "all-pass") {
-      reasons.push(`o2-conflict-${kind} 应 all-pass（生产链有版本判据），实际 ${journey.expectation}${journey.failedStep ? `（失败于 ${journey.failedStep}）` : ""}`);
-    }
+  if (!expectations) {
+    return { ok: false, reasons: ["内部错误：judge 没有拿到 expectations.ts（判定必须只来源于它）"] };
   }
-  for (const kind of CONFLICT_MISSING) {
+  for (const [kind, exp] of Object.entries(expectations)) {
     const journey = byName.get(`o2-conflict-${kind}`);
     if (!journey) { if (!onlySelected) reasons.push(`缺少旅程 o2-conflict-${kind}（summary 里没有）`); continue; }
-    if (mode === "accept-red") {
-      if (journey.expectation !== "expected-failure") {
-        reasons.push(`o2-conflict-${kind} 应 expected-failure（${kind} 生产链没有版本判据），实际 ${journey.expectation}${journey.failedStep ? `（失败于 ${journey.failedStep}）` : ""}—— 缺口被修好了就更新 expectations.ts，或者 4a 红的理由变了`);
-      }
-    } else if (journey.expectation !== "all-pass") {
-      reasons.push(`[expect-green] o2-conflict-${kind} 不是 all-pass（实际 ${journey.expectation}${journey.failedStep ? `，失败于 ${journey.failedStep}` : ""}）`);
+    const want = exp.expectConflict || mode === "expect-green" ? "all-pass" : "expected-failure";
+    if (journey.expectation !== want) {
+      const why = exp.expectConflict
+        ? "生产链有版本校验（expectConflict: true）"
+        : "生产链没有版本判据（expectConflict: false）";
+      reasons.push(
+        `o2-conflict-${kind} 应 ${want}（${why}），实际 ${journey.expectation}` +
+        `${journey.failedStep ? `（失败于 ${journey.failedStep}）` : ""}—— ` +
+        `修好了就翻 expectations.ts 的 expectConflict 并同步 provenance；红了就查 4a 的理由是不是变了`,
+      );
     }
   }
   return { ok: reasons.length === 0, reasons };
@@ -159,9 +174,42 @@ if (isMain) {
   }
   console.log("保存路径归类（静态，决定修复卡规模）：");
   for (const row of classification.perFormat) console.log(`  ${row.format.padEnd(9)} ${row.klass}`);
+  // ── expectations.ts 自身的自洽：expectConflict 与 provenance 不能互相矛盾 ──
+  // 这个字段今晚抓到过一次「期望值写反」；它自己也会成为矛盾源（翻 true 却没改理由）。
+  // 放在静态档：不启动 Electron，4 秒内给答案。
+  {
+    const exps = await expectationsByKind();
+    const contradictions = Object.entries(exps)
+      .filter(([, e]) => e.expectConflict && /没有版本比较|没有版本判据/.test(e.provenance))
+      .map(([kind]) => kind);
+    if (contradictions.length > 0) {
+      console.error(`
+O2: FAIL —— expectConflict=true 但 provenance 仍说「没有版本比较」：${contradictions.join(", ")}（两处必须同时改）`);
+      process.exit(1);
+    }
+  }
   if (!classification.ok) {
     console.error(`O2: FAIL —— 保存路径归类与套件前提不一致：${classification.detail ?? ""}`);
     process.exit(1);
+  }
+  // ── 失败路径断言（纯 Node，不启动 Electron）──
+  // `stagedAtomicWrite` 的「替换失败不删暂存」是唯一一条覆盖**失败路径**的判据；
+  // 正常路径的套件永远看不到它。用 node:test 跑编译后的产物（同一条 esbuild 通路）。
+  {
+    const { buildTs } = await import("./esbuild-load.mjs");
+    const testSrc = join(suite, "staged-write.test.ts");
+    const testBuilt = await buildTs(testSrc, join(suite, ".staged-write.test.cjs"));
+    const r = spawnSync(process.execPath, ["--test", testBuilt], { encoding: "utf8", cwd: desktop });
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    const passLine = /# pass (\d+)/.exec(out);
+    const failLine = /# fail (\d+)/.exec(out);
+    console.log(`失败路径断言（stagedAtomicWrite）：pass=${passLine?.[1] ?? "?"} fail=${failLine?.[1] ?? "?"}`);
+    if ((r.status ?? 1) !== 0) {
+      const lines = out.split(String.fromCharCode(10)).filter((l) => /^not ok|暂存|Expected|actual|expected/.test(l));
+      console.error(lines.slice(0, 20).join(String.fromCharCode(10)));
+      console.error("O2: FAIL —— stagedAtomicWrite 的失败路径断言没有通过");
+      process.exit(1);
+    }
   }
   if (classifyOnly) {
     console.log("O2: 归类通过（--classify-only：未跑 Electron）");
@@ -169,7 +217,7 @@ if (isMain) {
   }
 
   const run = runSuite();
-  const verdict = judge(run, variant);
+  const verdict = judge(run, variant, classification && (await expectationsByKind()));
   if (run.summary !== null) {
     for (const j of run.summary.journeys) {
       console.log(`  ${j.name}: literal=${j.literalStatus} expectation=${j.expectation}${j.failedStep ? ` (failed at ${j.failedStep})` : ""}`);

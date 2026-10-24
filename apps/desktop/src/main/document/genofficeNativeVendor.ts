@@ -14,9 +14,29 @@ import { configureSheetsRuntime, createSheetsView, queueWorkbookForView, request
 // @ts-ignore — optional upstream checkout; the original slides main registers its own IPC.
 import { configureSlidesRuntime, createSlidesView } from "@main/document/genofficeSlidesEntry.js";
 import { documentViewHost, type DocumentViewLike } from "./documentViewHost.js";
+import { makeDocumentSaveGuard } from "./documentSaveGuard.js";
+import { setDocumentSaveGuard } from "@genoffice/electron-utils/document-save-guard";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { log } from "@main/lib/logger.js";
 import { BrowserWindow } from "electron";
+
+/**
+ * 【O10】装上保存守卫 —— 四个 vendor 保存调用点（html/markdown 的
+ * `writeTextAtomic`、pdf 的 `savePdfToPath`、slides 的 `slides:save`）会经过它。
+ *
+ * 「打开时版本」直接读 `DocumentViewHost` 的打开会话表（与 docs 的
+ * `saveOpenedFile` 同一份数据源，不另记一份）；没有该路径的会话时不拦
+ * （独立运行 / 未知视图的行为与改动前一致）。
+ *
+ * 装配期调一次：换守卫会留下不一致的打开版本绑定。
+ */
+export function installDocumentSaveGuard(): void {
+  setDocumentSaveGuard(makeDocumentSaveGuard({
+    openedRevisionFor: (real) => documentViewHost.revisionForPath(real),
+    recordSavedRevision: (real, revision) => documentViewHost.advanceRevisionForPath(real, revision),
+  }));
+  log.info("genoffice document save guard installed (html/markdown/pdf/slides)");
+}
 
 /** Authoritative owner/path checks, injected into the vendor IPC facade. */
 const paneGuard = (kind: "sheets" | "slides") => ({

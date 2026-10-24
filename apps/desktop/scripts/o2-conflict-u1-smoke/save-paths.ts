@@ -123,6 +123,35 @@ export function classifySavePaths(): ClassificationReport {
     }
   }
 
+  // ── 4) 四个保存调用点的守卫接线还在吗（O10 的核心接线）──
+  //
+  // 这不是「守卫有效」的判据（那要跑 Electron，由 O2 的 4a/4b 覆盖），
+  // 是「接线还在」的判据：有人删了一处 `guardedDocumentSave`，O9 的静默覆盖
+  // 就会在那个格式上回来，而运行时判据只会在**恰好跑到那个格式**时才红。
+  //
+  // 锚点用 `format: '<kind>'` —— 本机实测在各自文件里**恰好出现 1 次**
+  // （`grep -c "format: 'html'"` 等），是只有那个守卫调用点才有的原文。
+  // 锚点不唯一时断言会「因为别处还在」而绿，与没写一样，所以先数数量。
+  const guardSites: Array<{ format: string; file: string }> = [
+    { format: "html", file: "genoffice/apps/html/src/main/html-main.ts" },
+    { format: "markdown", file: "genoffice/apps/markdown/src/main/markdown-main.ts" },
+    { format: "pdf", file: "genoffice/apps/pdf/src/main/save-pdf.ts" },
+    { format: "slides", file: "genoffice/apps/slides/src/main/slides-main.ts" },
+  ];
+  for (const site of guardSites) {
+    const source = read(site.file);
+    const anchor = `format: '${site.format}'`;
+    const count = source.split(anchor).length - 1;
+    if (count !== 1) {
+      failures.push(
+        `${site.format}: 守卫调用点锚点 \`${anchor}\` 在 ${site.file} 里出现 ${count} 次（应为 1）—— 接线被删/改名，或锚点不再唯一`,
+      );
+    }
+    if (!source.includes("guardedDocumentSave(")) {
+      failures.push(`${site.format}: ${site.file} 里找不到 guardedDocumentSave( —— 保存没走守卫`);
+    }
+  }
+
   perFormat.push({
     format: "docs",
     klass: "host-cas",

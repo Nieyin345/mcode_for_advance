@@ -24,7 +24,9 @@
  *    `o2-outcome` 步骤分别断言（回包不是「别的失败」、盘上**逐字节**等于页面写的
  *    内容）—— 光「红」不够，红的原因必须是要证明的那个（CLAUDE.md 十六条）。
  *
- * 修好之后（另开卡）把这四个 `expectConflict` 翻成 `true`，本套件就是回归网。
+ * 修好一个就把那一格的 `expectConflict` 翻成 `true`，**并同步改它的 `provenance`**
+ * （改成「修好后的出口是什么」）。两处不同步时 `--classify-only` 会红 ——
+ * 这个字段曾经自己揭穿过一次期望值写反，别让它变成新的矛盾源。
  */
 import type { EditorKind } from "./lib.js";
 
@@ -49,23 +51,23 @@ export const EXPECTATIONS: Record<EditorKind, KindExpectation> = {
     provenance: "sheets-main.ts 的 saveWorkbook 内联保存分支：currentSha !== session.sha256 → throw errDiskChanged（磁盘已改，请另存为）。",
   },
   slides: {
-    expectConflict: false,
+    expectConflict: true,
     expectedChannel: "slides:save",
-    provenance: "原生视图的保存走 vendor slides-main.ts 的 slides:save → savePptxToFile 直写；slidesExecutor.ts 的 CAS 只在 Mcode SlidesBridge 路线上生效，原生视图不经它（T13 台账已记录）。",
+    provenance: "slides-main.ts 的 slides:save 现在走 guardedDocumentSave（@genoffice/electron-utils/document-save-guard）：守卫在 withOsFileLease 内比 fileContentVersion，不一致抛 DocumentSaveConflictError；没装守卫时直接写。write 内部自己补「同目录暂存 → rename」，失败路径照抄上游 atomic-write 的三段结构。注：slidesExecutor.ts 的 CAS 只在 Mcode SlidesBridge 路线上生效，原生视图不经它。",
   },
   pdf: {
-    expectConflict: false,
+    expectConflict: true,
     expectedChannel: "pdf:save",
-    provenance: "pdf-main.ts 的 PDF_CHANNELS.save：校验路径授权后直接 savePdfToPath（读源→应用编辑→writePdfAtomically），没有打开时版本与盘上版本的比较。",
+    provenance: "save-pdf.ts 的 savePdfToPath 现在走 guardedDocumentSave：守卫在 withOsFileLease 内比 fileContentVersion，不一致抛 DocumentSaveConflictError；没装守卫时直接写。接缝放在 savePdfToPath 而不是 writePdfAtomically —— 后者还服务合并/插页/签名等 7 个非保存路径。",
   },
   markdown: {
-    expectConflict: false,
+    expectConflict: true,
     expectedChannel: "markdown:save",
-    provenance: "markdown-main.ts 的 MARKDOWN_CHANNELS.save：resolveSaveTarget 直接返回 savePathByWc 的路径，随后 writeTextAtomic；没有版本比较。",
+    provenance: "markdown-main.ts 的 writeTextAtomic 现在走 guardedDocumentSave：守卫在 withOsFileLease 内比 fileContentVersion，不一致抛 DocumentSaveConflictError；没装守卫时直接写（独立运行）。",
   },
   html: {
-    expectConflict: false,
+    expectConflict: true,
     expectedChannel: "html:save",
-    provenance: "html-main.ts 的 HTML_CHANNELS.save：resolveSaveTarget 直接返回 savePathByWc 的路径，随后 writeTextAtomic；没有版本比较。",
+    provenance: "html-main.ts 的 writeTextAtomic 现在走 guardedDocumentSave：守卫在 withOsFileLease 内比 fileContentVersion，不一致抛 DocumentSaveConflictError；没装守卫时直接写（独立运行）。",
   },
 };

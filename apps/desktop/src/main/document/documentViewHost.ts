@@ -1467,6 +1467,37 @@ export class DocumentViewHost {
   }
 
   /**
+   * 【O10】按**归一化物理路径**取打开会话的权威版本（没有该路径的会话 → null）。
+   *
+   * 四个 vendor 编辑器（html/markdown/pdf/slides）的保存不经过本类的
+   * `saveOpenedFile`，但它们的视图**同样**由 `open()` 的 kind 分支走
+   * `claimOpenedPath` —— 会话表里已经有这四家的打开版本。保存守卫
+   * （`documentSaveGuard.ts`）用它做乐观锁的 `expected`，与 docs 同一份数据源，
+   * 不另记一份。
+   */
+  revisionForPath(physicalPathKey: string): Promise<string | null> | null {
+    const session = this.sessions.get(physicalPathKey);
+    return session === undefined ? null : session.revision;
+  }
+
+  /**
+   * 【O10】保存成功后推进该路径的权威版本（与 docs 保存成功路径写的是
+   * **同两个字段**：会话表的 `revision` 与视图的 `openedFileRevision`）。
+   * 没有该路径的会话时什么都不做（独立运行/未知视图）。
+   */
+  advanceRevisionForPath(physicalPathKey: string, revision: string | null): void {
+    const session = this.sessions.get(physicalPathKey);
+    if (session === undefined) return;
+    const advanced = Promise.resolve(revision);
+    session.revision = advanced;
+    const live = this.views.get(session.docId);
+    if (live !== undefined && live.openedFilePath !== null &&
+        physicalPath(live.openedFilePath) === physicalPathKey) {
+      live.openedFileRevision = advanced;
+    }
+  }
+
+  /**
    * 【ARC-007】**保存通道** —— 页面把编辑后的字节写回它自己打开的那份文件。
    *
    * ## 为什么必须由宿主写，而不是让页面自己写

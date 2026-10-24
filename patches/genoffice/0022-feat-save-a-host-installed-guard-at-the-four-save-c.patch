@@ -1,0 +1,350 @@
+From a29039825f3ec49dcc09d9342b36fd4dcb4f4359 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 00:57:49 +0800
+Subject: [PATCH] feat(save): a host-installed save guard at the four document
+ save call sites
+
+atomic-write.ts already draws the line: "This primitive protects temporary-file
+ownership. The caller/Host must still enforce the source version and file lease
+for concurrent editors." This is that missing half.
+
+guardedDocumentSave({ target, format, write }) is the single exit for saving:
+with no guard installed it calls ctx.write() and is byte-for-byte the previous
+behaviour (standalone GenOffice). With Mcode's guard installed it compares the
+open-time revision with the on-disk one inside the same file lease and refuses
+without writing a byte when they differ.
+
+write is a callback, not something the guard does itself: comparison and write
+must happen in one critical section, or two saves both read the old revision,
+both pass, and the second silently overwrites the first.
+
+Seams are at the four save call sites, not at atomicWriteFile:
+  html/markdown  writeTextAtomic
+  pdf            savePdfToPath (atomicWriteFile also serves merge/insert/sign)
+  slides         slides:save, via stagedAtomicWrite
+
+stagedAtomicWrite is new here because slides had no atomic write at all:
+savePptxToFile pipes straight into createWriteStream on the target. Its failure
+path follows atomic-write.ts exactly -- delete staging only when the staging
+write itself failed; if the rename fails keep the completed staging, fall back
+to an in-place write, and only then clean up. Deleting the staging in a finally
+would destroy the only complete copy precisely when the save reports failure.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ apps/html/src/main/html-main.ts               |  11 +-
+ apps/markdown/src/main/markdown-main.ts       |   9 +-
+ apps/pdf/src/main/save-pdf.ts                 |  11 +-
+ apps/slides/src/main/slides-main.ts           |  38 ++++-
+ packages/electron-utils/package.json          |   3 +-
+ .../electron-utils/src/document-save-guard.ts | 143 ++++++++++++++++++
+ 6 files changed, 210 insertions(+), 5 deletions(-)
+ create mode 100644 packages/electron-utils/src/document-save-guard.ts
+
+diff --git a/apps/html/src/main/html-main.ts b/apps/html/src/main/html-main.ts
+index 125e3f1..50b73fb 100644
+--- a/apps/html/src/main/html-main.ts
++++ b/apps/html/src/main/html-main.ts
+@@ -47,6 +47,7 @@ import { generateImageTool, documentMediaRoots } from '@genoffice/ai-search'
+ import { parseFileToText } from '@genoffice/file-parse'
+ import { convertHtmlToDocx } from '../../../../packages/html2docx/src'
+ import { atomicWriteFile } from './atomic-write'
++import { guardedDocumentSave } from '@genoffice/electron-utils/document-save-guard'
+ import { ElectronBrowserDriver } from '../../../../packages/html2docx/src/drivers/electron'
+ import {
+   copyImageIntoOwnedAssets,
+@@ -1173,7 +1174,15 @@ export function htmlSaveToPath(contents: WebContents, filePath: string): Promise
+ }
+ 
+ async function writeTextAtomic(path: string, text: string): Promise<void> {
+-  await atomicWriteFile(path, Buffer.from(text, 'utf8'))
++  // 保存写盘的**唯一出口**：Mcode Host 会在这里装一个守卫，在文件租约内比较
++  // 「打开时版本」与盘上版本；没有装守卫时（独立运行）逐字节等价于直接写。
++  // 接缝放在这里而不是 `atomicWriteFile`：后者同时服务导出/恢复/图片落盘，
++  // 挂在那层会把「导出」也当成「保存」。
++  await guardedDocumentSave({
++    target: path,
++    format: 'html',
++    write: () => atomicWriteFile(path, Buffer.from(text, 'utf8')),
++  })
+ }
+ 
+ function fileNameBase(name: string | undefined): string {
+diff --git a/apps/markdown/src/main/markdown-main.ts b/apps/markdown/src/main/markdown-main.ts
+index 8f4e4f4..8cb2bce 100644
+--- a/apps/markdown/src/main/markdown-main.ts
++++ b/apps/markdown/src/main/markdown-main.ts
+@@ -35,6 +35,7 @@ import { generateImageTool, documentMediaRoots } from '@genoffice/ai-search'
+ import { ImageExportSessions } from './image-export'
+ import { printMarkdownPdf } from './print-pdf'
+ import { atomicWriteFile } from './atomic-write'
++import { guardedDocumentSave } from '@genoffice/electron-utils/document-save-guard'
+ import {
+   copyImageIntoOwnedAssets,
+   discardPendingOwnedAssets,
+@@ -643,7 +644,13 @@ export function markdownSaveToPath(contents: WebContents, filePath: string): Pro
+ }
+ 
+ async function writeTextAtomic(path: string, text: string): Promise<void> {
+-  await atomicWriteFile(path, Buffer.from(text, 'utf8'))
++  // 与 html 的同名函数是**同一份实现的两个副本**（逐字节相同）—— 接缝也一致：
++  // 守卫在租约内比较打开版本与盘上版本；没装守卫时直接写。
++  await guardedDocumentSave({
++    target: path,
++    format: 'markdown',
++    write: () => atomicWriteFile(path, Buffer.from(text, 'utf8')),
++  })
+ }
+ 
+ async function resolveSaveTarget(
+diff --git a/apps/pdf/src/main/save-pdf.ts b/apps/pdf/src/main/save-pdf.ts
+index 52ecefb..520dcd3 100644
+--- a/apps/pdf/src/main/save-pdf.ts
++++ b/apps/pdf/src/main/save-pdf.ts
+@@ -35,6 +35,7 @@ import type {
+   TextInsertFailure,
+ } from '../shared/ipc'
+ import { writePdfAtomically } from './atomic-write'
++import { guardedDocumentSave } from '@genoffice/electron-utils/document-save-guard'
+ import { redactPdf } from './redaction'
+ 
+ const num = (v: number) => Math.round(v * 100) / 100
+@@ -1189,7 +1190,15 @@ export async function savePdfToPath(
+     request,
+   )
+   await verifyContentEdits(bytes, request, skips)
+-  await writePdfAtomically(targetPath, bytes)
++  // 保存写盘的唯一出口。接缝放在**这里**而不是 `writePdfAtomically`：后者同时
++  // 服务合并/插页/签名等 7 个非保存路径（`pdf-main.ts:1524,1544,1672,1692,1740,1939`），
++  // 挂在那层会把它们也算成「保存」。`atomic-write.ts` 的注释也写明：
++  // 原子写只管临时文件所有权，「version + lease 由 caller/Host 负责」。
++  await guardedDocumentSave({
++    target: targetPath,
++    format: 'pdf',
++    write: () => writePdfAtomically(targetPath, bytes),
++  })
+   return skips
+ }
+ 
+diff --git a/apps/slides/src/main/slides-main.ts b/apps/slides/src/main/slides-main.ts
+index b2379d0..2b129fa 100644
+--- a/apps/slides/src/main/slides-main.ts
++++ b/apps/slides/src/main/slides-main.ts
+@@ -54,6 +54,7 @@ import {
+   recoveryCopyDiskNewer,
+   configuredAuthorName,
+ } from '@genoffice/electron-utils'
++import { guardedDocumentSave, stagedAtomicWrite } from '@genoffice/electron-utils/document-save-guard'
+ import {
+   resolveGroupChildId,
+   runTxn,
+@@ -4599,7 +4600,42 @@ export function registerSlidesIpc(): void {
+     }
+     try {
+       const metaRevAtSave = session.metaRev ?? 0
+-      await savePptxToFile(session.opened, session.path)
++      // 保存写盘的唯一出口（Mcode Host 装的守卫在租约内比较打开版本与盘上版本）。
++      //
++      // ⚠️ slides 比另外三家多一层：`savePptxToFile` 用
++      // `pipeline(generateNodeStream(), createWriteStream(filePath))` **直接写目标
++      // 路径** —— 既没有原子写（写到一半崩/断电/磁盘满会留下**截断的 .pptx**，
++      // 且 catch 只清 `saveSnapshot`、不清半截文件），也不经过任何 `atomicWriteFile`
++      // 层。pdf 的 `writePdfAtomically` 与 md/html 的 `atomicWriteFile` 都自带
++      // 临时文件 + rename，只有这里没有。
++      //
++      // 所以 `write` 自己补上「同目录暂存 → rename」，**失败路径照抄上游
++      // `atomicWriteFile` 的三段结构**（`packages/electron-utils/src/atomic-write.ts`）：
++      //
++      //   1. 写 staging 失败 → **只在这种情况下删 staging**（里面没有完整内容）；
++      //   2. staging 写成功、rename 失败 → **不能删**：那是唯一一份完整的新内容；
++      //      退回原地写（`savePptxToFile` 再跑一次），写成功后才删 staging；
++      //      两步都失败 → staging 留在盘上，错误信息里给出它的路径。
++      //
++      // ⚠️ 第一版把 `rm(staging)` 放在 `finally` 里 —— 那是**丢数据的 bug**：
++      // rename 因 Windows EBUSY/EPERM（杀毒、索引器、OneDrive 锁住目标）失败时，
++      // `finally` 会把刚写好的唯一副本删掉，用户看到「保存失败」而编辑全没了。
++      // 比改动前更坏（改动前至少盘上留着被截断的文件，还能捞一部分）。
++      // 失败路径的断言见 O2 套件的 `o10-slides-failed-rename` 旅程。
++      await guardedDocumentSave({
++        target: session.path,
++        format: 'slides',
++        write: async () => {
++          // 暂存写 + 原子替换交给**共享实现**（`electron-utils` 的 stagedAtomicWrite）：
++          // 失败路径的三段结构（写暂存失败才删；替换失败不删、退回原地写；两次都失败
++          // 则保留暂存并点名位置）在那里有纯 Node 断言，不在本调用点重复。
++          await stagedAtomicWrite({
++            target: session.path,
++            staging: join(dirname(session.path), `.${basename(session.path)}.${randomUUID()}.mcode-saving`),
++            writeTo: (path) => savePptxToFile(session.opened, path),
++          })
++        },
++      })
+       autosaveBackoff.delete(session.path)
+       void rm(autosavePathFor(session.path), { force: true }).catch(() => {})
+       dropUntitledRecovery(e.sender.id)
+diff --git a/packages/electron-utils/package.json b/packages/electron-utils/package.json
+index ffe7a73..d57afcf 100644
+--- a/packages/electron-utils/package.json
++++ b/packages/electron-utils/package.json
+@@ -19,7 +19,8 @@
+     "./renderer-protocol": "./src/renderer-protocol.ts",
+     "./renderer-scheme": "./src/renderer-scheme.ts",
+     "./safe-external-url": "./src/safe-external-url.ts",
+-    "./safe-remote-url": "./src/safe-remote-url.ts"
++    "./safe-remote-url": "./src/safe-remote-url.ts",
++    "./document-save-guard": "./src/document-save-guard.ts"
+   },
+   "scripts": {
+     "typecheck": "tsc --noEmit",
+diff --git a/packages/electron-utils/src/document-save-guard.ts b/packages/electron-utils/src/document-save-guard.ts
+new file mode 100644
+index 0000000..793ef89
+--- /dev/null
++++ b/packages/electron-utils/src/document-save-guard.ts
+@@ -0,0 +1,143 @@
++/**
++ * 保存写盘的**唯一出口**（Mcode Host 会在装配期装一个守卫进来）。
++ *
++ * ## 为什么需要这个接缝（以及它不是「给 vendor 打补丁」）
++ *
++ * `atomic-write.ts` 的注释已经把责任边界写明了：
++ *
++ * > This primitive protects temporary-file ownership.
++ * > The caller/Host must still enforce the source version and file lease for concurrent editors.
++ *
++ * 也就是说：**原子写只保证「不会写坏」，版本校验与文件租约是 Host 的事。**
++ * 这个模块就是那一半的插口 —— vendor 的保存调用点从这里出去，Mcode 在装配期
++ * 装一个守卫，守卫在**同一份文件租约内**比较「打开时版本」与「盘上当前版本」，
++ * 不一致就抛冲突、一个字节都不写。
++ *
++ * ## 默认没有守卫 = 直接写（独立运行时行为逐字节不变）
++ *
++ * GenOffice 可以脱离 Mcode 单独运行。那时没有守卫，`guardedDocumentSave` 就是
++ * `ctx.write()` 的一层薄包装 —— **不改变任何可观测行为**。这一点有负控断言
++ * （O2 套件的 §5.2）：不装守卫时保存必须与改动前逐字节相同。
++ *
++ * ## 为什么 `write` 是回调，而不是「守卫自己写」
++ *
++ * 版本比较与写必须发生在**同一份租约**里。如果守卫只做「比较 → 返回 ok」、
++ * 然后由调用点再写，就是 TOCTOU：两个保存都读到旧版本、都通过比较、再先后
++ * rename —— 后者静默覆盖前者。Mcode 的 `documentViewHost.ts` 注释记过同一个坑。
++ * 把 `write` 传进去，守卫才能把「重算 → 比较 → 写」收进一个临界区。
++ *
++ * ## 只给四个保存调用点用，不挂 `atomicWriteFile`
++ *
++ * `atomicWriteFile` 同时服务导出、崩溃恢复、图片落盘、打印临时文件 —— 挂在那层
++ * 会把「导出」也算成「保存」，给不该拦的东西加锁。所以只有四个保存调用点调这里：
++ * html / markdown 的 `writeTextAtomic`、pdf 的 `writePdfAtomically`、
++ * slides 的 `slides:save`（`savePptxToFile` 是流式直写，不经过任何原子写层）。
++ */
++
++/** 这次保存的格式 —— 守卫用它选「哪个视图的打开版本」。 */
++export type DocumentSaveFormat = 'pdf' | 'markdown' | 'html' | 'slides'
++
++export interface DocumentSaveGuardContext {
++  /** 归一化后的目标路径（`realpath`，文件不存在时是 `resolve`）。 */
++  target: string
++  format: DocumentSaveFormat
++  /**
++   * 真正执行写盘的函数 —— 由调用点传入，**保证写发生在守卫的租约内**。
++   * 守卫可以在调用它之前拒绝（抛冲突），此时它**一次都不会被调用**。
++   */
++  write: () => Promise<void>
++}
++
++/** 守卫由宿主（Mcode）安装；独立运行时不装。 */
++export type DocumentSaveGuard = (ctx: DocumentSaveGuardContext) => Promise<void>
++
++let installed: DocumentSaveGuard | undefined
++
++/**
++ * 装/卸守卫。传 `undefined` 卸载（恢复独立运行时行为）。
++ *
++ * **只在装配期调用一次**：换守卫会留下不一致的打开版本绑定。
++ */
++export function setDocumentSaveGuard(guard: DocumentSaveGuard | undefined): void {
++  installed = guard
++}
++
++/** 当前是否装了守卫（诊断/断言用：没有这个，「守卫从来没被装上」与
++ *  「守卫装上了且正确」在判据里长得一样）。 */
++export function hasDocumentSaveGuard(): boolean {
++  return installed !== undefined
++}
++
++/**
++ * 写盘唯一出口。**没有守卫时与改动前逐字节等价**（直接调 `ctx.write()`）。
++ */
++export async function guardedDocumentSave(ctx: DocumentSaveGuardContext): Promise<void> {
++  if (!installed) return ctx.write()
++  return installed(ctx)
++}
++
++/* ───────────────────────── 暂存写 + 原子替换（失败不丢数据） ───────────────────────── */
++
++export interface StagedWriteDeps {
++  /** 写一份完整内容到给定路径。失败时**不得**留下半份文件是调用方的责任。 */
++  writeTo: (path: string) => Promise<void>
++  /** 目标路径。 */
++  target: string
++  /** 暂存路径（同目录、随机后缀）。 */
++  staging: string
++  /** 原子替换（默认 `rename`）；测试注入失败以覆盖失败路径。 */
++  replace?: (from: string, to: string) => Promise<void>
++  /** 删除文件（默认 `rm -f`）。测试可观察它被调用了几次、对哪个路径。 */
++  remove?: (path: string) => Promise<void>
++}
++
++/**
++ * 「写暂存 → 原子替换」的**唯一实现**，失败路径照抄 `atomic-write.ts` 的三段结构：
++ *
++ *  1. 写暂存失败 → 删暂存（里面没有完整内容）→ 抛；
++ *  2. 写成功、替换失败 → **不删暂存**（那是唯一一份完整的新内容），退回**原地写**；
++ *  3. 原地写也失败 → 暂存留着，错误信息点名它的位置。
++ *
++ * ## 为什么要有这个函数（而不是在调用点手写 try/catch/finally）
++ *
++ * 第一版把 `rm(staging)` 放在 `finally` 里 —— rename 失败时会把唯一的完整副本删掉，
++ * **用户看到「保存失败」而编辑全没了**，比不做原子写更坏（那时至少盘上还有被截断的
++ * 文件可捞）。失败路径没有任何正常路径的断言能覆盖它，所以它必须是一个**能被单独
++ * 喂假 replace/remove 的函数**，否则那条 bug 只能靠人读代码发现。
++ */
++export async function stagedAtomicWrite(deps: StagedWriteDeps): Promise<void> {
++  const replace = deps.replace ?? (async (from: string, to: string) => {
++    const { rename } = await import('node:fs/promises')
++    await rename(from, to)
++  })
++  const remove = deps.remove ?? (async (path: string) => {
++    const { rm } = await import('node:fs/promises')
++    await rm(path, { force: true })
++  })
++
++  try {
++    await deps.writeTo(deps.staging)
++  } catch (error) {
++    // 暂存没写完：删它是安全的（里面没有完整内容）。
++    await remove(deps.staging).catch(() => {})
++    throw error
++  }
++
++  // 到这里暂存里是**完整的新内容**。
++  try {
++    await replace(deps.staging, deps.target)
++    return
++  } catch (replaceError) {
++    try {
++      await deps.writeTo(deps.target)
++    } catch (fallbackError) {
++      // 两次都失败：**暂存留着**，并把它的位置写进错误（用户/我们才有机会捞回来）。
++      throw new Error(
++        `${String(fallbackError)} —— 保存失败，但新内容已完整写入 ${deps.staging}（原文件未改动）。` +
++          `目标文件可能被杀毒/同步软件锁住：稍后重试，或把上面那个文件改名回原文件。替换失败原因：${String(replaceError)}`,
++      )
++    }
++    // 原地写成功，暂存可以删了。
++    await remove(deps.staging).catch(() => {})
++  }
++}
+-- 
+2.52.0.windows.1
+

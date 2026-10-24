@@ -34,7 +34,7 @@ import { configureGenofficeNativeViews, makeGenofficeNativeView, nativeHostStatu
 // 【T29】原厂四编辑器的关闭守卫（vendor `request*Close` 的转发）。静态 import：
 // 快速失败于编译期；vendor 快照缺失时本模块被 build alias 到 stub，
 // `requestNativeViewClose` 恒 false（Host 侧 fail-closed）。
-import { requestNativeViewClose } from "@main/document/genofficeNativeVendor.js";
+import { installDocumentSaveGuard, requestNativeViewClose } from "@main/document/genofficeNativeVendor.js";
 import { registerGenofficeViewAiIpc } from "@main/document/genofficeViewAiVendor.js";
 import { DocumentViewCredentialBroker, readEngineAdminToken } from "@main/document/documentViewCredentialBroker.js";
 import { EngineNodeRegistry } from "@main/workflowEngines/engineNodeRegistry.js";
@@ -169,6 +169,12 @@ export function registerIpcHandlers(): void {
   // Host 对这四个 editor 的关闭 fail-closed（不会静默丢改动）。
   documentViewHost.setVendorCloseGuard(({ editor, webContents }) =>
     requestNativeViewClose(editor, webContents));
+  // 【O10】四个 vendor 保存调用点（html/markdown/pdf/slides）的版本校验 + 文件租约。
+  // vendor 自己的 `atomic-write.ts` 注释写明「原子写只管临时文件所有权，version +
+  // lease 由 caller/Host 负责」—— 这就是那一半。没装时四个格式的保存与改动前逐字节
+  // 相同（vendor 独立运行的行为），装了就在租约内比「打开时版本」再写。
+  // vendor 快照缺失时 stub 里是个 no-op（没有接缝可装）。
+  installDocumentSaveGuard();
   // 【T40】两处注入**都要**包装过的 ports —— 它们喂的是同一个登记簿:
   //   - 第 170 行:vendor 视图 AI 通道(`registerGenofficeViewAiIpc` 的 `ports`);
   //   - 第 227 行:文档视图宿主的 `docsAiPorts`。

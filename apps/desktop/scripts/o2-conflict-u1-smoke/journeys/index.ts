@@ -119,6 +119,18 @@ export function beforeReady(): void {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const factories = require("../../../src/main/document/genofficeViewFactories.js") as typeof import("../../../src/main/document/genofficeViewFactories.js");
   factories.registerGenofficeNativeScheme();
+  // 【O10】保存守卫。生产装配在 `ipc/index.ts` 里调 `installDocumentSaveGuard()`，
+  // 而本套件（与 T7/T29 一样）不跑那个文件 —— harness 只装配 DocumentViewHost 与
+  // 视图工厂。守卫必须在**本套件自己的装配里**装上，否则四个格式的保存永远走
+  // 「没装守卫 = 直接写」那条路，O2 的 4a 会一直红而看不出原因。
+  //
+  // 装的是**与生产同一份**（`genofficeNativeVendor.installDocumentSaveGuard`），
+  // 不另写一套：它读 DocumentViewHost 的打开会话表做 expected，与 docs 的
+  // `saveOpenedFile` 同一份数据源。
+  //
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const vendor = require("../../../src/main/document/genofficeNativeVendor.js") as typeof import("../../../src/main/document/genofficeNativeVendor.js");
+  vendor.installDocumentSaveGuard();
 }
 
 /** ready 之后：`genoffice-app://` 的请求处理器（与生产同一条）。 */

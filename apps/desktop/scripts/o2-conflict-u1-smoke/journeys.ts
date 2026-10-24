@@ -100,15 +100,42 @@ async function openAndWaitReady(rt: O2Runtime): Promise<{ ok: boolean; observed?
   const selector = rt.kind === "docs" ? ".ProseMirror" : READY_SELECTORS[rt.kind];
   const ready = await waitFor(async () => await js<boolean>(wc, `!!document.querySelector(${JSON.stringify(selector)})`), 40_000, 200);
   if (ready !== true) return { ok: false, observed: { selector }, detail: `40s 内页面没有就绪标记 ${selector}` };
+  // 「编辑器壳挂上了」不等于「文档到了」。markdown / docs 的 ProseMirror 先挂一个
+  // **空文档**，字节经 `read-opened`/`consumePending` 异步灌进来 —— 实测
+  // `.doc-editor` 在而 `editor.state.doc.textContent` 为空，于是编辑步骤在
+  // 「一个字的模型」里找锚点，报「找不到」。
+  // 就绪 = **文档真的在模型里**（编辑步骤的前提），不是壳在。
+  if (rt.kind === "docs" || rt.kind === "markdown") {
+    const pmSelector = rt.kind === "docs" ? ".ProseMirror" : ".doc-editor.ProseMirror";
+    const hasDoc = await pollUntil(async () => await js<boolean>(wc, `(() => {
+      const pm = document.querySelector(${JSON.stringify(pmSelector)});
+      const ed = pm && pm.editor;
+      if (!ed || !ed.state || !ed.state.doc) return false;
+      return ed.state.doc.textContent.trim().length > 0;
+    })()`), 40_000, 200);
+    if (hasDoc !== true) {
+      const probe = await js<Record<string, unknown>>(wc, `(() => {
+        const pm = document.querySelector(${JSON.stringify(pmSelector)});
+        const ed = pm && pm.editor;
+        return {
+          hasEditor: !!ed,
+          docLen: ed && ed.state && ed.state.doc ? ed.state.doc.textContent.length : -1,
+          bodySlice: (document.body?.innerText ?? '').slice(0, 200),
+        };
+      })()`);
+      return { ok: false, observed: probe, detail: "40s 内编辑器模型里仍然没有文档内容（页面停在了空文档）" };
+    }
+  }
   // pdf 的「就绪」比 `.app` 挂载深一层：pdf.js worker 首启（本机实测偶发 >40s，
   // T7 的 pdf 旅程为此留了 reload 兜底）之前，ribbon 还在「正在打开…」。
   // 编辑动作是点 ribbon 的「页面」tab —— 没就绪时它不存在，会在 negative-edit
   // 里报「找不到页面 tab」，看起来像 UI 变了（实际是没等到）。
   if (rt.kind === "pdf") {
-    const renderProbe = `(() => {
-      const spans = [...document.querySelectorAll('.textLayer span')];
-      return spans.length > 0 && document.querySelectorAll('.pdf-page, .page').length > 0;
-    })()`;
+    // 就绪 = **页面渲染出来了**（`.pdf-page` / `.page` 存在）。
+    // 不要求文本层有 span：文本层是 pdf.js 的异步附加物，本机实测出现过
+    // `pages:1, spans:0`（页面在、文本层还没生成）。本卡判的是保存冲突，
+    // 不需要文本层；把它当成硬前提会让等待无限延长且与判据无关。
+    const renderProbe = `(() => document.querySelectorAll('.pdf-page, .page').length > 0)()`;
     // pdf.js 的首启 worker 预热在繁忙机器上偶发 >40s（T7 的 pdf 旅程记录了同一个
     // 现象并给了 reload 兜底）。
     //
@@ -117,14 +144,22 @@ async function openAndWaitReady(rt: O2Runtime): Promise<{ ok: boolean; observed?
     // 收场，连失败在哪一步都留不下。所以预算必须留在 150s 内：40s + 一轮 45s
     // reload，最坏 ~90s，剩下 ~60s 给编辑/保存/重读。宁可**明确报「没渲染出来」**，
     // 也不要撞在宿主的全局超时上丢掉证据。
-    let rendered = await pollUntil(async () => await js<boolean>(wc, renderProbe), 40_000, 300);
+    // 首帧从「页面打开」算起，不是从这一步算起 —— 前面等 `.app` 已经花掉一段时间。
+    // 本机实测 pdf.js 的 worker 冷启动在繁忙时要 >60s（T7 的 pdf 旅程同样看到过）。
+    // 预算：55s → reload → 70s，最坏 ~125s，仍在宿主 150s 进程超时内。
+    let rendered = await pollUntil(async () => await js<boolean>(wc, renderProbe), 55_000, 300);
     if (rendered !== true) {
       wc.reload();
       await new Promise((r) => setTimeout(r, 800));
-      rendered = await pollUntil(async () => await js<boolean>(wc, renderProbe), 45_000, 300);
+      rendered = await pollUntil(async () => await js<boolean>(wc, renderProbe), 70_000, 300);
     }
     if (rendered !== true) {
-      return { ok: false, observed: { reloads: 1 }, detail: "pdf 页 40s + 一次 reload（45s）后仍未渲染出页面" };
+      const probe = await js<Record<string, unknown>>(wc, `(() => ({
+        placeholder: (document.querySelector('.pdf-placeholder')?.textContent || '').slice(0, 80),
+        pages: document.querySelectorAll('.pdf-page, .page').length,
+        spans: document.querySelectorAll('.textLayer span').length,
+      }))()`);
+      return { ok: false, observed: { reloads: 1, probe }, detail: "pdf 页 55s + 一次 reload（70s）后仍未渲染出页面" };
     }
   }
   return { ok: true, observed: { filePath: session.filePath, revision: await session.revision } };
@@ -139,17 +174,60 @@ async function editProseMirror(wc: WebContents, selector: string, find: string, 
     const editor = pm && pm.editor;
     if (!editor) return { ok: false, reason: 'ProseMirror editor handle 不可用' };
     const doc = editor.state.doc;
+    const needle = ${JSON.stringify(find)};
+    // ⚠️ 锚点可能在**跨多个 text 节点**的位置（vendor 的 markdown 序列化会把
+    // 一行切成多个 run：实测 DOM 里有那条唯一文本而单个 node.text 里没有）。
+    // 所以先按「文档文本 + 位置映射」找，而不是逐节点 includes。
     let from = -1, to = -1;
-    doc.descendants((node, pos) => {
-      if (from >= 0) return false;
-      if (node.isText && node.text && node.text.includes(${JSON.stringify(find)})) {
-        const idx = node.text.indexOf(${JSON.stringify(find)});
-        from = pos + idx; to = from + ${JSON.stringify(find)}.length;
-        return false;
+    try {
+      if (typeof doc.textBetween === 'function') {
+        const full = doc.textBetween(0, doc.content.size, String.fromCharCode(10), String.fromCharCode(10));
+        const at = full.indexOf(needle);
+        if (at >= 0) {
+          // 位置映射：走到第 at 个字符所在的 node，换算成文档坐标。
+          let seen = 0;
+          doc.descendants((node, pos) => {
+            if (from >= 0) return false;
+            if (!node.isText || !node.text) return true;
+            const end = seen + node.text.length;
+            if (at >= seen && at < end) from = pos + (at - seen);
+            seen = end;
+            return true;
+          });
+          // 跨节点时选区要覆盖整个 needle（ProseMirror 允许跨 inline 边界）。
+          if (from >= 0) to = Math.min(from + needle.length, doc.content.size);
+        }
       }
-      return true;
-    });
-    if (from < 0) return { ok: false, reason: '文档模型里找不到锚点文本 ' + ${JSON.stringify(find)} };
+    } catch (e) {
+      // 页面里抛错会让整个脚本失败、证据只剩一句 "Script failed to execute"。
+      // 包住它，让下面的逐节点回退与「找不到锚点」的明确原因能被看到。
+      from = -1;
+    }
+    if (from < 0) {
+      // 回退：单节点匹配（多数情况文档没被切碎）。
+      doc.descendants((node, pos) => {
+        if (from >= 0) return false;
+        if (node.isText && node.text && node.text.includes(needle)) {
+          const idx = node.text.indexOf(needle);
+          from = pos + idx; to = from + needle.length;
+          return false;
+        }
+        return true;
+      });
+    }
+    if (from < 0) {
+      // 诊断：把模型里前 400 个字符与全部 text 节点切片带回去（红的时候看这个）。
+      let modelText = '';
+      try { modelText = doc.textBetween(0, Math.min(doc.content.size, 400), '|', '|'); } catch {}
+      const nodes = [];
+      try {
+        doc.descendants((node) => {
+          if (node.isText && node.text && nodes.length < 20) nodes.push(node.text.slice(0, 60));
+          return true;
+        });
+      } catch {}
+      return { ok: false, reason: '文档模型里找不到锚点文本 ' + needle, modelText, nodes };
+    }
     pm.focus();
     editor.commands.setTextSelection({ from, to });
     editor.commands.insertContent(${JSON.stringify(replace)});
@@ -196,18 +274,23 @@ async function editSheetCell(rt: O2Runtime, range: string, text: string): Promis
   // （实测 attempt=5 stage=type boxValue=A1，而 status=正在打开工作簿…）。
   // 所以稳定态用**正向标记**：工作簿已开（工作表标签存在、名称框显示真实
   // 单元格引用）**且**没有待保存改动。
+  // ⚠️ 显式等**打开屏消失**：`openingWorkbook` 为真时页面挂一层
+  // `.workbook-opening-screen` 覆盖层（`App.tsx:5202`），此时点画布/键入都进不了
+  // 网格 —— 实测状态栏一直是「正在打开工作簿…」，五次尝试全卡在 `stage:"type"`。
+  // 只看「保存按钮 disabled + 有标签 + 名称框有值」不够：打开中这三条同样成立。
   const settled = await pollUntil(async () => {
-    const state = await js<{ disabled: boolean | null; box: string; tab: boolean }>(wc, `(() => {
+    const state = await js<{ disabled: boolean | null; box: string; tab: boolean; opening: boolean }>(wc, `(() => {
       const btn = [...document.querySelectorAll('.qa-btn')].find((b) => /保存|Save/.test(b.getAttribute('aria-label') || ''));
       const box = (document.querySelector('[data-u-comp="defined-name"] input')?.value) || '';
       return {
         disabled: btn ? btn.hasAttribute('disabled') : null,
         box,
         tab: !!document.querySelector('[data-u-comp="slide-tab-item"]'),
+        opening: !!document.querySelector('.workbook-opening-screen'),
       };
     })()`);
-    return state.disabled === true && state.tab && /^[A-Z]+\d+$/i.test(state.box.trim()) ? state : null;
-  }, 90_000, 300);
+    return !state.opening && state.disabled === true && state.tab && /^[A-Z]+\d+$/i.test(state.box.trim()) ? state : null;
+  }, 120_000, 300);
   if (settled === null) {
     const state = await js<Record<string, unknown>>(wc, `(() => ({
       saveDisabled: ${saveButton},
@@ -344,9 +427,22 @@ async function editSlideText(rt: O2Runtime, find: string, replace: string): Prom
       return { ok: true, target };
     } catch (e) { return { ok: false, reason: String((e && e.message) || e) }; }
   })()`);
-  return result.ok === true
-    ? { ok: true, observed: result }
-    : { ok: false, detail: result.reason ?? "slides 编辑失败", observed: result };
+  if (result.ok !== true) return { ok: false, detail: result.reason ?? "slides 编辑失败", observed: result };
+  // ⚠️ 编辑走的是**页面自己的桥**（`slidesApi.editText`，与 App.tsx 的 commitEdit
+  // 同一个 vendor 事务），但它不经 React 的状态更新 —— 页面的 `dirty` 仍然是 false，
+  // QAT 保存按钮保持 `disabled={!dirty}`，于是**用户路径上按不动保存**。
+  //
+  // 编辑是否真的进了 vendor 会话：用页面自己的 `isDirty()` 确认（那是 `App.tsx`
+  // 在推送里调的同一条）。**不要求 QAT 按钮可用** —— 本套件经菜单通道触发保存，
+  // 那条路不看 `dirty`（见 `triggerSlidesSave` 的注释）。
+  const dirty = await pollUntil(async () => await js<{ isDirty: boolean } | null>(wc, `(async () => {
+    const d = await window.slidesApi.isDirty();
+    return d ? { isDirty: true } : null;
+  })()`), 10_000, 200);
+  if (dirty === null) {
+    return { ok: false, detail: "编辑之后 vendor 仍说 isDirty=false —— 编辑没有进 vendor 会话", observed: result };
+  }
+  return { ok: true, observed: { ...result, dirty: dirty.isDirty } };
 }
 
 /** html：源码模式全选替换（T7 已验证的编排；CodeMirror 在源码模式才可键入）。 */
