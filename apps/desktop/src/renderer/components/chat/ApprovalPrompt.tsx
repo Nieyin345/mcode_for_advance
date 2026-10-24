@@ -134,7 +134,7 @@ export function ApprovalPrompt({
       role="alertdialog"
       aria-label={t("chat.approval.aria", { provider: providerName })}
       className={cn(
-        "mb-2 rounded-[var(--radius-dialog)] border border-edge-input bg-surface px-4 py-3 text-xs text-content shadow-2xl",
+        "mb-2 min-w-0 max-h-[min(65vh,540px)] overflow-y-auto rounded-[var(--radius-dialog)] border border-edge-input bg-surface px-3.5 py-3 text-xs text-content shadow-[var(--shadow-popover)]",
         "animate-[qa-sheet-in_140ms_ease-out]",
       )}
     >
@@ -157,8 +157,9 @@ export function ApprovalPrompt({
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
           className={cn(
-            "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+            "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2 py-0.5 text-[10px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             "cds-hover-ghost text-content-muted hover:text-content",
           )}
           title={open ? t("chat.approval.collapseTitle") : t("chat.approval.expandTitle")}
@@ -172,7 +173,7 @@ export function ApprovalPrompt({
       </div>
 
       {/* Tool name + summary */}
-      <div className="mb-2.5 rounded-lg border border-edge bg-surface-muted/40 px-3 py-2">
+      <div className="mb-2.5 min-w-0 rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/40 px-3 py-2">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <code className="rounded bg-warning/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-warning">
             {toolName}
@@ -188,7 +189,7 @@ export function ApprovalPrompt({
       {open && (
         <div className="mb-2.5">
           <div className="mb-0.5 text-[10px] uppercase tracking-wide text-content-subtle">{t("chatStream.tool.input")}</div>
-          <pre className="max-h-40 overflow-auto rounded-lg bg-surface-muted/60 p-2 text-[11px] text-content-muted">
+          <pre className="max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-btn-xs)] bg-surface-muted/60 p-2 text-[11px] text-content-muted">
             {safeStringify(input)}
           </pre>
         </div>
@@ -196,7 +197,7 @@ export function ApprovalPrompt({
 
       {/* Footer: always-allow checkbox + buttons. Stays on a single row at
           the bottom of the card. */}
-      <div className="flex items-center justify-between gap-2 border-t border-edge pt-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-edge pt-2.5">
         {allowAlways && !isMcp ? (
           <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-content-muted">
             <input
@@ -232,7 +233,7 @@ export function ApprovalPrompt({
                 const verdict = mcpApprovalVerdict("always_allow");
                 onDecide(verdict.granted, verdict.always);
               }}
-              className="cds-hover-ghost rounded px-2 py-1 text-[11px] font-medium text-content-muted transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              className="cds-hover-ghost inline-flex min-h-8 items-center rounded-[var(--radius-btn-xs)] px-2 py-1 text-[11px] font-medium text-content-muted transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
               title={t("chat.approval.alwaysAllow", { tool: toolName })}
             >
               {t("chat.approval.alwaysAllow", { tool: toolName })}
@@ -255,7 +256,7 @@ export function ApprovalPrompt({
             aria-disabled={!allowArmed}
             title={t("chat.approval.allowTitle")}
             className={cn(
-              "inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium transition-colors",
+              "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2.5 text-[11px] font-medium transition-colors",
               "bg-warning text-surface hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning/50",
               "disabled:cursor-not-allowed disabled:opacity-50",
             )}

@@ -173,8 +173,8 @@ export function QuestionPrompt({
       aria-modal="false"
       aria-label={t("chat.question.aria", { provider: providerName })}
       className={cn(
-        "mb-2 flex max-h-[60vh] flex-col overflow-hidden rounded-[var(--radius-dialog)]",
-        "border border-edge-input bg-surface text-xs text-content shadow-2xl",
+        "mb-2 flex min-w-0 max-h-[min(65vh,540px)] flex-col overflow-hidden rounded-[var(--radius-dialog)]",
+        "border border-edge-input bg-surface text-xs text-content shadow-[var(--shadow-popover)]",
         "animate-[qa-sheet-in_140ms_ease-out]",
       )}
     >
@@ -212,7 +212,7 @@ export function QuestionPrompt({
             onClick={() => { if (promptActive) onDismiss(); }}
             title={t("chat.question.dismiss")}
             aria-label={t("chat.question.dismiss")}
-            className="cds-hover-ghost shrink-0 rounded p-0.5 text-content-muted transition-colors hover:text-content"
+            className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <IconX size={14} />
           </button>
@@ -242,8 +242,9 @@ export function QuestionPrompt({
                     key={oi}
                     type="button"
                     onClick={() => toggle(step, opt.label)}
+                    aria-pressed={selected}
                     className={cn(
-                      "flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-1.5 text-left transition-colors",
+                      "flex min-h-10 w-full items-start gap-2.5 rounded-[var(--radius-btn-xs)] border px-2.5 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                       selected
                         ? "border-accent bg-accent/10"
                         : "cds-hover-ghost border-edge bg-surface",
@@ -282,13 +283,13 @@ export function QuestionPrompt({
               value={a.text}
               onChange={(e) => setFreeText(step, e.target.value)}
               placeholder={t("chat.question.customAnswer")}
-              className="mt-2 font-sans"
+              className="mt-2 min-w-0 font-sans"
             />
           </div>
         </div>
 
         {/* Footer — fixed at bottom: progress + stepper nav / submit */}
-        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-edge bg-surface-muted/40 px-4 py-2.5">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-edge bg-surface-muted/40 px-3.5 py-2.5">
           <span className="text-[10px] tabular-nums text-content-subtle">
             {t("chat.question.answered", { answered: answeredCount, total: questions.length })}
           </span>

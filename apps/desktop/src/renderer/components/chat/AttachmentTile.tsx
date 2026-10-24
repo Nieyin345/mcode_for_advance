@@ -53,7 +53,7 @@ export const AttachmentTile = forwardRef<HTMLSpanElement, Props>(function Attach
       data-cds="MessageAttachmentsFile"
       data-layout="tile"
       className={cn(
-        "composer-tag-in group/tile relative isolate inline-flex size-[calc(7.5rem*var(--cds-rem-scale,1))] shrink-0 flex-col justify-between rounded-[var(--radius-card)] border border-edge bg-surface p-3 text-content",
+        "composer-tag-in group/tile relative isolate inline-flex size-[calc(7.5rem*var(--cds-rem-scale,1))] shrink-0 flex-col justify-between rounded-[var(--radius-card)] border border-edge bg-surface p-3 text-content transition-[border-color,box-shadow] focus-within:border-accent",
         open ? "border-accent" : "hover:border-content-subtle/40",
         className,
       )}
@@ -64,7 +64,7 @@ export const AttachmentTile = forwardRef<HTMLSpanElement, Props>(function Attach
         type="button"
         onClick={onToggle}
         disabled={!onToggle}
-        className="flex h-full min-w-0 flex-col justify-between text-left outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        className="flex h-full min-w-0 flex-col justify-between rounded-[var(--radius-btn-xs)] text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
         aria-label={name}
         aria-expanded={onToggle ? open : undefined}
       >
@@ -95,7 +95,7 @@ export const AttachmentTile = forwardRef<HTMLSpanElement, Props>(function Attach
         onClick={onRemove}
         aria-label={removeLabel}
         title={removeLabel}
-        className="absolute -end-2 -top-2 z-10 flex size-5 items-center justify-center rounded-full border border-edge bg-surface-muted text-content-subtle shadow-[0_1px_4px_rgb(0_0_0_/_0.12)] transition-transform hover:text-danger active:scale-90"
+        className="absolute -end-2 -top-2 z-10 flex size-7 items-center justify-center rounded-full border border-edge bg-surface-muted text-content-subtle shadow-[var(--shadow-popover)] transition-colors hover:border-danger/50 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <IconX size={12} />
       </button>

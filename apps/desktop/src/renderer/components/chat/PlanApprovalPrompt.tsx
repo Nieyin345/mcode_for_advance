@@ -272,14 +272,14 @@ export function PlanApprovalPrompt({
       }}
       onOpenChange={(o) => setMenuOpen(o)}
     >
-      <Select.Trigger className="h-6 max-w-[220px] gap-1 px-2 py-0 text-[11px]">
+      <Select.Trigger className="min-h-8 min-w-0 max-w-[min(220px,calc(100vw-40px))] gap-1 px-2 py-0 text-[11px]">
         <Select.Value placeholder={t("chat.planApproval.pickModel")}>
           {(val: string) => options.find((o) => o.key === val)?.label ?? t("chat.planApproval.pickModel")}
         </Select.Value>
       </Select.Trigger>
       <Select.Portal>
         <Select.Positioner align="start">
-          <Select.Popup ref={modelPopupRef} className="max-h-60 overflow-y-auto">
+          <Select.Popup ref={modelPopupRef} className="max-h-[min(15rem,calc(100vh-24px))] max-w-[calc(100vw-24px)] overflow-y-auto">
             <Select.List>
               {options.map((o) => (
                 <Select.Item key={o.key} value={o.key}>
@@ -295,8 +295,10 @@ export function PlanApprovalPrompt({
 
   return (
     <div
+      role="region"
+      aria-label={t("chat.planApproval.title")}
       className={cn(
-        "mb-2 rounded-[var(--radius-dialog)] border border-edge-input bg-surface px-4 py-2.5 text-xs text-content shadow-2xl",
+        "mb-2 min-w-0 max-h-[min(65vh,540px)] overflow-y-auto rounded-[var(--radius-dialog)] border border-edge-input bg-surface px-3.5 py-3 text-xs text-content shadow-[var(--shadow-popover)]",
         "animate-[qa-sheet-in_140ms_ease-out]",
       )}
     >
@@ -339,14 +341,14 @@ export function PlanApprovalPrompt({
                 }}
                 onOpenChange={(o) => setMenuOpen(o)}
               >
-                <Select.Trigger className="h-6 gap-1 px-2 py-0 text-[11px]">
+                <Select.Trigger className="min-h-8 min-w-0 max-w-[min(220px,calc(100vw-40px))] gap-1 px-2 py-0 text-[11px]">
                   <Select.Value placeholder={t("chat.planApproval.pickProvider")}>
                     {(val: string) => providers.find((p) => p.id === val)?.displayName ?? val}
                   </Select.Value>
                 </Select.Trigger>
                 <Select.Portal>
                   <Select.Positioner align="start">
-                    <Select.Popup ref={providerPopupRef}>
+                    <Select.Popup ref={providerPopupRef} className="max-h-[min(15rem,calc(100vh-24px))] max-w-[calc(100vw-24px)] overflow-y-auto">
                       <Select.List>
                         {providers.map((p) => (
                           <Select.Item key={p.id} value={p.id}>
@@ -381,11 +383,12 @@ export function PlanApprovalPrompt({
           }
         }}
         placeholder={t("chat.planApproval.feedbackPlaceholder")}
-        className="mb-2.5 font-sans"
+        aria-label={t("chat.planApproval.feedbackPlaceholder")}
+        className="mb-2.5 min-w-0 font-sans"
       />
 
       {/* Action footer */}
-      <div className="flex items-center justify-between gap-2 border-t border-edge pt-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-edge pt-2">
         <Button
           variant="ghost"
           size="sm"
