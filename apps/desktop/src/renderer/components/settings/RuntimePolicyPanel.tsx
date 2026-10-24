@@ -133,7 +133,7 @@ export function TurnBudgetPanel() {
         <div className="flex items-center gap-2">
           <Button data-testid="budget-save" variant="primary" disabled={!state.dirty || state.saving || !valid || !!read.error} onClick={() => void save()}>{t("common.save")}</Button>
           <Button disabled={!state.dirty || state.saving} onClick={() => budgetDraft.discard()}>{t("common.discardChanges")}</Button>
-          <span role="status" className="text-xs text-content-muted">{t(state.saving ? "common.saving" : state.dirty ? "common.unsavedRetained" : "common.saved")}</span>
+          <span role="status" className="text-code text-content-muted">{t(state.saving ? "common.saving" : state.dirty ? "common.unsavedRetained" : "common.saved")}</span>
         </div>
       </div>
     </SettingsSection>
@@ -178,7 +178,7 @@ export function FallbackModelsPanel() {
         <div className="flex items-center gap-2">
           <Button data-testid="fallback-save" variant="primary" disabled={!state.dirty || state.saving || !!read.error} onClick={() => void save()}>{t("common.save")}</Button>
           <Button disabled={!state.dirty || state.saving} onClick={() => fallbackDraft.discard()}>{t("common.discardChanges")}</Button>
-          <span role="status" className="text-xs text-content-muted">{t(state.saving ? "common.saving" : state.dirty ? "common.unsavedRetained" : "common.saved")}</span>
+          <span role="status" className="text-code text-content-muted">{t(state.saving ? "common.saving" : state.dirty ? "common.unsavedRetained" : "common.saved")}</span>
         </div>
       </div>
     </SettingsSection>

@@ -98,7 +98,7 @@ export function AuthPromptDialog({
               {t("browser.authTitle", { host: request.host })}
             </Dialog.Title>
           </div>
-          <Dialog.Description className="mb-3 text-xs text-content-muted">
+          <Dialog.Description className="mb-3 text-code text-content-muted">
             {t("browser.authDesc", { origin: request.origin })}
           </Dialog.Description>
           <div className="space-y-2">

@@ -88,7 +88,7 @@ export function ModuleViewDock({ location }: {location:"left"|"right"|"bottom"})
       {busy && <p role="status">{locale==="zh"?"加载中…":"Loading…"}</p>}
       {error && <p role="alert" className="text-danger">{error}</p>}
       {result && chosen && <dl className="space-y-2">{chosen.contribution.view.fields.map(field=><div key={field.key} className="rounded border border-edge p-2">
-        <dt className="text-xs text-content-muted">{field.title[locale]}</dt>
+        <dt className="text-code text-content-muted">{field.title[locale]}</dt>
         <dd data-testid={`module-view-field-${field.key}`} className="break-all font-mono">{Object.hasOwn(result,field.key)?String(result[field.key]):"—"}</dd>
       </div>)}</dl>}
       {reply?.type==="task" && !result && <p role="status">{reply.task.status}</p>}
@@ -125,18 +125,18 @@ export function ModuleSettingControl({moduleId, property}:{moduleId:string;prope
   };
   return <div className="space-y-1 rounded border border-edge p-3" data-testid={`module-setting-${moduleId}-${property.key}`}>
     <label className="block text-body font-medium" htmlFor={`module-${moduleId}-${property.key}`}>{property.title[locale]}</label>
-    {property.description && <p className="text-xs text-content-muted">{property.description[locale]}</p>}
+    {property.description && <p className="text-code text-content-muted">{property.description[locale]}</p>}
     {property.type==="string" && <input id={`module-${moduleId}-${property.key}`} className="w-full rounded border border-edge p-2" value={String(value)} maxLength={4096} onChange={e=>{setValue(e.target.value);setSaved(false);}}/>}
     {property.type==="number" && <input id={`module-${moduleId}-${property.key}`} type="number" className="w-full rounded border border-edge p-2" value={String(value)} onChange={e=>{const next=e.target.valueAsNumber;if(Number.isFinite(next))setValue(next);setSaved(false);}}/>}
     {property.type==="boolean" && <input id={`module-${moduleId}-${property.key}`} type="checkbox" checked={Boolean(value)} onChange={e=>{setValue(e.target.checked);setSaved(false);}}/>}
     {property.type==="enum" && <select id={`module-${moduleId}-${property.key}`} value={String(value)} onChange={e=>{setValue(e.target.value);setSaved(false);}} className="w-full rounded border border-edge p-2">
       {property.enum.map(item=><option key={item} value={item}>{item}</option>)}
     </select>}
-    <button type="button" className="rounded border border-edge px-3 py-1 text-xs" disabled={busy||stored.loading||!!stored.error} onClick={()=>void save()}>
+    <button type="button" className="rounded border border-edge px-3 py-1 text-code" disabled={busy||stored.loading||!!stored.error} onClick={()=>void save()}>
       {busy ? "…" : locale==="zh"?"保存":"Save"}
     </button>
-    {saved && <span role="status" className="ml-2 text-xs">{locale==="zh"?"已保存到扩展存储":"Saved to extension storage"}</span>}
-    {(error||stored.error) && <p role="alert" className="text-xs text-danger">{error??stored.error?.message}</p>}
+    {saved && <span role="status" className="ml-2 text-code">{locale==="zh"?"已保存到扩展存储":"Saved to extension storage"}</span>}
+    {(error||stored.error) && <p role="alert" className="text-code text-danger">{error??stored.error?.message}</p>}
   </div>;
 }
 export function ModuleSettingsPanel() {

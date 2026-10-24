@@ -49,10 +49,10 @@ export function MemoryTransferPanel() {
               {list.data?.sources?.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
             </select>
             {(list.data?.truncatedSources ?? 0) > 0 && (
-              <p className="mt-1 text-xs text-warning">{t("memory.sourcesTruncated", { n: list.data?.truncatedSources ?? 0 })}</p>
+              <p className="mt-1 text-code text-warning">{t("memory.sourcesTruncated", { n: list.data?.truncatedSources ?? 0 })}</p>
             )}
             {(list.data?.unreadableSources ?? 0) > 0 && (
-              <p className="mt-1 text-xs text-warning">{t("memory.sourcesUnreadable", { n: list.data?.unreadableSources ?? 0 })}</p>
+              <p className="mt-1 text-code text-warning">{t("memory.sourcesUnreadable", { n: list.data?.unreadableSources ?? 0 })}</p>
             )}
           </label>
           <label className="text-body text-content-muted">{t("memory.destination")}
@@ -69,9 +69,9 @@ export function MemoryTransferPanel() {
           </label>
         </div>
         {source && <>
-          <p className="text-xs text-content-muted">{t("memory.previewLabel")}</p>
+          <p className="text-code text-content-muted">{t("memory.previewLabel")}</p>
           {previewResult?.error && <ErrorNote>{previewResult.error}</ErrorNote>}
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded border border-edge bg-surface-subtle p-3 text-xs">{preview.loading ? t("common.loading") : previewResult?.content}</pre>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded border border-edge bg-surface-subtle p-3 text-code">{preview.loading ? t("common.loading") : previewResult?.content}</pre>
         </>}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" disabled={busy || list.loading} onClick={() => void list.refetch()}>{t("memory.refreshSources")}</Button>
@@ -91,14 +91,14 @@ export function MemoryTransferPanel() {
           {list.data?.history?.map(h => <option key={h.id} value={h.id}>{new Date(h.at).toLocaleString()} — {h.path}</option>)}
         </select>
         {(list.data?.historyTruncated ?? 0) > 0 && (
-          <p className="text-xs text-warning">{t("memory.historyTruncated", { n: list.data?.historyTruncated ?? 0 })}</p>
+          <p className="text-code text-warning">{t("memory.historyTruncated", { n: list.data?.historyTruncated ?? 0 })}</p>
         )}
         {(list.data?.historyUnreadable ?? 0) > 0 && (
-          <p className="text-xs text-warning">{t("memory.historyUnreadable", { n: list.data?.historyUnreadable ?? 0 })}</p>
+          <p className="text-code text-warning">{t("memory.historyUnreadable", { n: list.data?.historyUnreadable ?? 0 })}</p>
         )}
         {history && <>
           {historyResult?.error && <ErrorNote>{historyResult.error}</ErrorNote>}
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded border border-edge bg-surface-subtle p-3 text-xs">{archived.loading ? t("common.loading") : historyResult?.content}</pre>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded border border-edge bg-surface-subtle p-3 text-code">{archived.loading ? t("common.loading") : historyResult?.content}</pre>
           <div className="flex justify-end"><Button disabled={busy || archived.loading || !historyResult?.ok || !historyResult.digest}
             onClick={() => historyResult?.digest && setPending({ action: "restore", id: history, digest: historyResult.digest, confirmed: true })}>{t("memory.restore")}</Button></div>
         </>}

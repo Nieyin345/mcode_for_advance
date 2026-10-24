@@ -45,7 +45,7 @@ const buttonVariants = cva(
       },
       size: {
         sm: "h-6 rounded-[var(--radius-btn-xs)] px-2 text-[11px]",
-        md: "h-8 rounded-[var(--radius-btn-md)] px-3 text-xs",
+        md: "h-8 rounded-[var(--radius-btn-md)] px-3 text-code",
         icon: "h-6 w-6 rounded-[var(--radius-btn-xs)] p-0",
       },
     },

@@ -235,7 +235,7 @@ export function FilePreview({
     if (error) {
       return (
         <div className="flex h-full items-start justify-center p-6">
-          <span className="break-all text-center text-xs text-danger">{error}</span>
+          <span className="break-all text-center text-code text-danger">{error}</span>
         </div>
       );
     }
@@ -272,7 +272,7 @@ export function FilePreview({
                 <button
                   key={f.name}
                   onClick={() => open(f.name, f.isDir)}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs text-content-muted hover:bg-surface-hover hover:text-content"
+                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-code text-content-muted hover:bg-surface-hover hover:text-content"
                 >
                   {f.isDir ? (
                     <IconFolder size={13} className="shrink-0 text-content-subtle" />
@@ -292,7 +292,7 @@ export function FilePreview({
     if (content.type === "unsupported") {
       return (
         <div className="flex h-full items-start justify-center p-6">
-          <span className="break-all text-center text-xs text-danger">{content.error}</span>
+          <span className="break-all text-center text-code text-danger">{content.error}</span>
         </div>
       );
     }
@@ -316,7 +316,7 @@ export function FilePreview({
         );
       }
       return (
-        <pre className="h-full overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs text-content">
+        <pre className="h-full overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-code text-content">
           {content.text}
         </pre>
       );
@@ -343,7 +343,7 @@ export function FilePreview({
       if (!filePath) {
         return (
           <div className="flex h-full items-start justify-center p-6">
-            <span className="text-center text-xs text-danger">{t("ide.office.openFailed")}</span>
+            <span className="text-center text-code text-danger">{t("ide.office.openFailed")}</span>
           </div>
         );
       }
@@ -358,7 +358,7 @@ export function FilePreview({
     // 未知类型只报 mime：不解码 base64（从前这里白解一遍、结果没人用）。
     return (
       <div className="flex h-full items-start justify-center p-6">
-        <span className="text-center text-xs text-content-muted">
+        <span className="text-center text-code text-content-muted">
           {t("library.file.unknownMime", { mime: content.mime })}
         </span>
       </div>

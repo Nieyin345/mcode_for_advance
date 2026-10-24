@@ -38,7 +38,7 @@ export function MobileViewerOverlay() {
         <button
           type="button"
           onClick={close}
-          className="flex min-h-11 items-center gap-1 rounded-[var(--radius-btn-md)] px-2 text-xs text-content-muted hover:bg-surface-muted"
+          className="flex min-h-11 items-center gap-1 rounded-[var(--radius-btn-md)] px-2 text-code text-content-muted hover:bg-surface-muted"
         >
           <IconArrowUp size={14} className="rotate-[-90deg]" />
           {t("mobile.file.back")}
@@ -46,8 +46,8 @@ export function MobileViewerOverlay() {
         <div
           className={
             target.kind === "plan"
-              ? "min-w-0 flex-1 truncate text-center text-xs text-content"
-              : "min-w-0 flex-1 truncate text-center font-mono text-xs text-content"
+              ? "min-w-0 flex-1 truncate text-center text-code text-content"
+              : "min-w-0 flex-1 truncate text-center font-mono text-code text-content"
           }
         >
           {title}
@@ -108,7 +108,7 @@ function DiffContent({ path, before }: { path: string; before: string | undefine
   }
   if (failed) {
     return (
-      <div className="flex flex-1 items-center justify-center text-xs text-content-subtle">
+      <div className="flex flex-1 items-center justify-center text-code text-content-subtle">
         {t("mobile.viewer.readFailed")}
       </div>
     );

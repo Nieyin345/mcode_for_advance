@@ -138,7 +138,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
 
   const deviceNameField = (
     <label className="flex flex-col gap-1.5">
-      <span className="text-xs font-medium text-content-muted">
+      <span className="text-code font-medium text-content-muted">
         {t("mobile.pair.deviceName")}
       </span>
       <Input
@@ -152,7 +152,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
   );
 
   const errorLine = error && (
-    <div className="flex items-start gap-1.5 text-xs leading-relaxed text-danger">
+    <div className="flex items-start gap-1.5 text-code leading-relaxed text-danger">
       <IconAlertCircle size={14} className="mt-0.5 shrink-0" />
       <span>{error}</span>
     </div>
@@ -197,7 +197,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
         {showCodeForm && (
           <div className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-edge bg-surface-muted/50 p-4">
             <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-content-muted">
+              <span className="text-code font-medium text-content-muted">
                 {t("layout.verifyCode")}
               </span>
               <Input
@@ -231,7 +231,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
             }}
           >
             <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-content-muted">{t("mobile.pair.username")}</span>
+              <span className="text-code font-medium text-content-muted">{t("mobile.pair.username")}</span>
               <Input
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -245,7 +245,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
               />
             </label>
             <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-content-muted">{t("mobile.pair.password")}</span>
+              <span className="text-code font-medium text-content-muted">{t("mobile.pair.password")}</span>
               <div className="relative">
                 <Input
                   value={password}
@@ -275,7 +275,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
         )}
 
         {showCodeForm && (
-          <p className="text-center text-xs text-content-subtle">
+          <p className="text-center text-code text-content-subtle">
             {t("mobile.pair.expiry", {
               origin: window.location.origin || t("mobile.pair.unknown"),
             })}

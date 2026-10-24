@@ -261,7 +261,7 @@ export function SettingsGitPanel() {
               </Select.Portal>
             </Select.Root>
           ) : (
-            <p className="text-xs text-content-subtle">
+            <p className="text-code text-content-subtle">
               {t("settings.git.noModelsFallback")}
             </p>
           )}

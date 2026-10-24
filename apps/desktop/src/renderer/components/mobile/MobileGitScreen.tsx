@@ -343,7 +343,7 @@ export function MobileGitScreen() {
       </div>
 
       {!project ? (
-        <div className="p-6 text-center text-xs text-content-subtle">
+        <div className="p-6 text-center text-code text-content-subtle">
           {t("browser.selectProjectFirst")}
         </div>
       ) : (
@@ -353,7 +353,7 @@ export function MobileGitScreen() {
             <select
               value={repoPath ?? ""}
               onChange={(e) => setRepoPath(e.target.value)}
-              className="mb-2 min-h-11 w-full rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-2 py-1.5 text-xs text-content outline-none"
+              className="mb-2 min-h-11 w-full rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-2 py-1.5 text-code text-content outline-none"
             >
               {repos.map((r) => (
                 <option key={r.path} value={r.path}>
@@ -372,7 +372,7 @@ export function MobileGitScreen() {
               pull ↔ ↓behind). */}
           {status && (
             <div className="mb-2 flex shrink-0 items-center gap-2">
-              <div className="flex min-w-0 flex-1 items-center gap-1 text-xs text-content-muted">
+              <div className="flex min-w-0 flex-1 items-center gap-1 text-code text-content-muted">
                 <button
                   type="button"
                   onClick={() => setBranchSheetOpen(true)}
@@ -408,7 +408,7 @@ export function MobileGitScreen() {
                 onClick={() => void pull()}
                 disabled={!!busy || !repoPath}
                 title={t("mobile.git.pullHint")}
-                className="flex h-11 shrink-0 items-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
+                className="flex h-11 shrink-0 items-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2.5 text-code text-content-muted active:bg-surface-hover disabled:opacity-50"
               >
                 {busy === "pull" ? (
                   <IconLoader2 size={12} className="animate-spin" />
@@ -422,7 +422,7 @@ export function MobileGitScreen() {
                 onClick={() => void push()}
                 disabled={!!busy || !repoPath}
                 title={t("mobile.git.pushHint")}
-                className="flex h-11 shrink-0 items-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
+                className="flex h-11 shrink-0 items-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2.5 text-code text-content-muted active:bg-surface-hover disabled:opacity-50"
               >
                 {busy === "push" ? (
                   <IconLoader2 size={12} className="animate-spin" />
@@ -436,7 +436,7 @@ export function MobileGitScreen() {
                 onClick={() => void sync()}
                 disabled={!!busy || !repoPath}
                 title={t("mobile.git.syncHint")}
-                className="flex h-11 shrink-0 items-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
+                className="flex h-11 shrink-0 items-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2.5 text-code text-content-muted active:bg-surface-hover disabled:opacity-50"
               >
                 {busy === "sync" ? (
                   <IconLoader2 size={12} className="animate-spin" />
@@ -452,11 +452,11 @@ export function MobileGitScreen() {
               the tabs, file list, and commit box are meaningless without a
               repo. */}
           {reposLoading ? (
-            <div className="flex min-h-0 flex-1 items-center justify-center text-xs text-content-subtle">
+            <div className="flex min-h-0 flex-1 items-center justify-center text-code text-content-subtle">
               {t("mobile.git.discovering")}
             </div>
           ) : repos.length === 0 ? (
-            <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs text-content-subtle">
+            <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-code text-content-subtle">
               {t("mobile.git.noRepos")}
             </div>
           ) : (
@@ -486,7 +486,7 @@ export function MobileGitScreen() {
           {/* file list */}
           <div className="min-h-0 flex-1 overflow-y-auto">
             {list.length === 0 ? (
-              <div className="p-6 text-center text-xs text-content-subtle">
+              <div className="p-6 text-center text-code text-content-subtle">
                 {tab === "changes" ? t("mobile.git.noUnstaged") : t("mobile.git.noStaged")}
               </div>
             ) : (
@@ -505,7 +505,7 @@ export function MobileGitScreen() {
                     <button
                       type="button"
                       onClick={() => setDiffPath({ path: f.path, staged: tab === "staged" })}
-                      className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 truncate text-left text-xs text-content"
+                      className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 truncate text-left text-code text-content"
                       title={f.path}
                     >
                       <IconFile size={12} className="shrink-0 text-content-subtle" />
@@ -538,7 +538,7 @@ export function MobileGitScreen() {
               onChange={(e) => setMessage(e.target.value)}
               placeholder={t("mobile.git.commitPlaceholder")}
               rows={1}
-              className="mb-2 min-h-11 w-full resize-none overflow-hidden rounded-[var(--radius-btn-md)] border border-input-edge bg-surface-muted px-2 py-1.5 text-xs leading-relaxed text-content outline-none focus:border-accent"
+              className="mb-2 min-h-11 w-full resize-none overflow-hidden rounded-[var(--radius-btn-md)] border border-input-edge bg-surface-muted px-2 py-1.5 text-code leading-relaxed text-content outline-none focus:border-accent"
             />
             {commitGenModel && (
               <button
@@ -547,7 +547,7 @@ export function MobileGitScreen() {
                 disabled={!repoPath || staged.length === 0}
                 title={genLoading ? t("ide.git.stopGenerate") : t("ide.git.generateHint")}
                 aria-label={genLoading ? t("ide.git.stopGenerate") : t("ide.git.generateHint")}
-                className="mb-2 flex min-h-11 w-full items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] border border-edge px-2 py-1.5 text-xs text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40"
+                className="mb-2 flex min-h-11 w-full items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] border border-edge px-2 py-1.5 text-code text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40"
               >
                 {genLoading ? (
                   <>
@@ -568,7 +568,7 @@ export function MobileGitScreen() {
                 type="button"
                 onClick={() => void commit(false)}
                 disabled={!!busy || staged.length === 0 || !message.trim()}
-                className="flex min-h-11 flex-1 items-center justify-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2 py-2.5 text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
+                className="flex min-h-11 flex-1 items-center justify-center gap-1 rounded-[var(--radius-btn-md)] border border-edge px-2 py-2.5 text-code text-content-muted active:bg-surface-hover disabled:opacity-50"
               >
                 {busy === "commit" ? <IconLoader2 size={12} className="animate-spin" /> : <IconCheck size={12} />}
                 {t("ide.git.commit")}
@@ -577,7 +577,7 @@ export function MobileGitScreen() {
                 type="button"
                 onClick={() => void commit(true)}
                 disabled={!!busy || staged.length === 0 || !message.trim()}
-                className="flex min-h-11 flex-[1.4] items-center justify-center gap-1 rounded-[var(--radius-btn-md)] bg-accent px-2 py-2.5 text-xs font-semibold text-surface disabled:opacity-40"
+                className="flex min-h-11 flex-[1.4] items-center justify-center gap-1 rounded-[var(--radius-btn-md)] bg-accent px-2 py-2.5 text-code font-semibold text-surface disabled:opacity-40"
               >
                 {busy === "commit+push" ? <IconLoader2 size={12} className="animate-spin" /> : <IconCheck size={12} />}
                 {t("ide.git.commitAndPush")}

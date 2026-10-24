@@ -229,7 +229,7 @@ export function TerminalCommandsMenu({
                   rows={3}
                   onChange={(e) => editing && setEditing({ ...editing, command: e.target.value })}
                   className={cn(
-                    "w-full resize-y rounded border border-edge bg-surface px-2.5 py-1.5 font-mono text-xs leading-relaxed text-content placeholder:text-content-subtle outline-none transition-colors",
+                    "w-full resize-y rounded border border-edge bg-surface px-2.5 py-1.5 font-mono text-code leading-relaxed text-content placeholder:text-content-subtle outline-none transition-colors",
                     "focus:border-accent",
                   )}
                 />

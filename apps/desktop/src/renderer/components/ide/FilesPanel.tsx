@@ -148,7 +148,7 @@ function EmptyState() {
       <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-muted text-content-subtle">
         <IconFolderPlus size={20} />
       </div>
-      <p className="text-xs font-medium text-content-muted">{t("ide.files.noProjectTitle")}</p>
+      <p className="text-code font-medium text-content-muted">{t("ide.files.noProjectTitle")}</p>
       <p className="text-[11px] leading-relaxed text-content-subtle">
         {t("ide.files.noProjectDesc")}
       </p>

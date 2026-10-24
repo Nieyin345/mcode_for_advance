@@ -64,7 +64,7 @@ export function FrameworkPromptPanel() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div className="text-body font-medium">{section.title}</div>
-                  <div className="text-xs text-content-subtle">
+                  <div className="text-code text-content-subtle">
                     {section.editable
                       ? (section.customized
                           ? t("settings.framework.customized")
@@ -94,12 +94,12 @@ export function FrameworkPromptPanel() {
                     </Button>
                   </div>
                 ) : (
-                  <span className="text-xs text-content-subtle" aria-label={t("settings.framework.locked")}>
+                  <span className="text-code text-content-subtle" aria-label={t("settings.framework.locked")}>
                     {t("settings.framework.locked")}
                   </span>
                 )}
               </div>
-              <p className="mt-2 text-xs text-content-subtle">{section.description}</p>
+              <p className="mt-2 text-code text-content-subtle">{section.description}</p>
               {isEditing && section.editable ? (
                 <div className="mt-3 space-y-2">
                   <textarea
@@ -109,7 +109,7 @@ export function FrameworkPromptPanel() {
                     maxLength={200000}
                     onChange={(event) => setDraft(event.currentTarget.value)}
                   />
-                  <p className="text-xs text-content-subtle">{t("settings.framework.emptyHint")}</p>
+                  <p className="text-code text-content-subtle">{t("settings.framework.emptyHint")}</p>
                   <Button type="button" disabled={busy} onClick={() => void persist(section.id as "flow" | "output", false)}>
                     {t("settings.framework.save")}
                   </Button>
@@ -118,7 +118,7 @@ export function FrameworkPromptPanel() {
             </div>
           );
         })}
-        {notice ? <p role="status" className="text-xs text-content-subtle">{notice}</p> : null}
+        {notice ? <p role="status" className="text-code text-content-subtle">{notice}</p> : null}
         {error ? <ErrorNote>{error}</ErrorNote> : null}
       </div>
     </SettingsSection>

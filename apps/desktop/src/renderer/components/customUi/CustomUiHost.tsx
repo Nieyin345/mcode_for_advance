@@ -176,7 +176,7 @@ function InputFormDialog({ form, onClose }: { form: CustomUiForm; onClose: () =>
               </span>
               {i.kind === "text" ? (
                 <input
-                  className="w-full rounded-md border border-edge bg-surface px-2.5 py-1.5 text-xs text-content outline-none focus:border-accent"
+                  className="w-full rounded-md border border-edge bg-surface px-2.5 py-1.5 text-code text-content outline-none focus:border-accent"
                   value={typeof values[i.key] === "string" ? (values[i.key] as string) : ""}
                   onChange={(e) => setValues((prev) => ({ ...prev, [i.key]: e.target.value }))}
                 />

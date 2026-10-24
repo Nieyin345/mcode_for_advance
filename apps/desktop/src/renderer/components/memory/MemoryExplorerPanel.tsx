@@ -343,7 +343,7 @@ export function MemoryExplorerPanel() {
         </Button>
       } />
       {navigation}
-      <div className="mb-3 rounded border border-edge bg-surface-subtle/50 p-2.5 text-xs leading-relaxed text-content-muted">
+      <div className="mb-3 rounded border border-edge bg-surface-subtle/50 p-2.5 text-code leading-relaxed text-content-muted">
         {t("memory.scopeBanner")}
       </div>
       <label className="mb-3 flex items-center gap-2 text-body text-content-muted">{t("memory.scope")}

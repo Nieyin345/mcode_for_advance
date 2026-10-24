@@ -144,7 +144,7 @@ export function MiniInput({
           // 改成一个**跟着内容走的行内宽度**：放进 tab 排时它就在最后那个 tab 旁边，
           // 单用（新建大类那种）时也只是一个不长的框。
           // `6rem`：用户说「窄一点，现在太宽了」。分类名通常就几个字。
-          "w-[6rem] rounded border bg-surface px-2 py-1 text-xs text-content focus:outline-none",
+          "w-[6rem] rounded border bg-surface px-2 py-1 text-code text-content focus:outline-none",
           error ? "border-danger" : "border-accent",
         )}
       />

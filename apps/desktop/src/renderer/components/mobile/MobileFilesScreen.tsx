@@ -82,7 +82,7 @@ export function MobileFilesScreen() {
   return (
     <ScreenShell title={t("layout.nav.files")}>
       {/* Breadcrumb */}
-      <div className="flex min-h-0 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-edge px-2 py-1.5 text-xs [scrollbar-width:none]">
+      <div className="flex min-h-0 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-edge px-2 py-1.5 text-code [scrollbar-width:none]">
         {stack.length > 1 && (
           <button
             type="button"
@@ -140,7 +140,7 @@ export function MobileFilesScreen() {
               ) : (
                 <IconFile size={16} className="shrink-0 text-content-subtle" />
               )}
-              <span className="min-w-0 truncate text-xs text-content">{e.name}</span>
+              <span className="min-w-0 truncate text-code text-content">{e.name}</span>
             </button>
           ))
         )}

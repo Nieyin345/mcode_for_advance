@@ -228,7 +228,7 @@ export function BranchSheet({
                 type="button"
                 onClick={createNew}
                 disabled={!newName.trim() || !!checkingOut}
-                className="h-11 shrink-0 rounded-[var(--radius-btn-md)] border border-edge px-3 text-xs text-content active:bg-surface-hover disabled:opacity-50"
+                className="h-11 shrink-0 rounded-[var(--radius-btn-md)] border border-edge px-3 text-code text-content active:bg-surface-hover disabled:opacity-50"
               >
                 {t("ide.git.createBranchAction")}
               </button>
@@ -249,7 +249,7 @@ export function BranchSheet({
               type="button"
               onClick={() => setCreating(true)}
               disabled={!!checkingOut}
-              className="flex min-h-11 w-full items-center gap-1.5 rounded-[var(--radius-btn-md)] px-1 text-left text-xs text-content-muted active:bg-surface-hover disabled:opacity-50"
+              className="flex min-h-11 w-full items-center gap-1.5 rounded-[var(--radius-btn-md)] px-1 text-left text-code text-content-muted active:bg-surface-hover disabled:opacity-50"
             >
               <IconPlus size={14} className="shrink-0" />
               {t("ide.git.newBranch")}
@@ -272,11 +272,11 @@ export function BranchSheet({
               <IconLoader2 size={16} className="animate-spin text-content-subtle" />
             </div>
           ) : !filtered ? (
-            <div className="py-8 text-center text-xs text-content-subtle">
+            <div className="py-8 text-center text-code text-content-subtle">
               {t("ide.git.cannotReadBranches")}
             </div>
           ) : totalRefs === 0 ? (
-            <div className="py-8 text-center text-xs text-content-subtle">{t("ide.git.noMatch")}</div>
+            <div className="py-8 text-center text-code text-content-subtle">{t("ide.git.noMatch")}</div>
           ) : (
             groups?.map(({ label, items }) =>
               items.length === 0 ? null : (
@@ -307,7 +307,7 @@ export function BranchSheet({
                         <span className="min-w-0 flex-1">
                           <span
                             className={cn(
-                              "block truncate font-mono text-xs",
+                              "block truncate font-mono text-code",
                               "text-content",
                             )}
                           >
@@ -351,7 +351,7 @@ export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss
   };
 
   return (
-    <div className="mb-2 flex items-start gap-1 rounded-[var(--radius-card)] border border-danger/30 bg-danger/10 px-2 py-1.5 text-xs text-danger">
+    <div className="mb-2 flex items-start gap-1 rounded-[var(--radius-card)] border border-danger/30 bg-danger/10 px-2 py-1.5 text-code text-danger">
       <span className="min-w-0 flex-1 whitespace-pre-wrap break-all">{message}</span>
       <button
         type="button"
@@ -425,21 +425,21 @@ export function DiffOverlay({
         >
           <IconX size={16} />
         </button>
-        <div className="min-w-0 flex-1 truncate text-center font-mono text-xs text-content">
+        <div className="min-w-0 flex-1 truncate text-center font-mono text-code text-content">
           {file.path}
         </div>
         <span className="w-8" />
       </div>
       {loading ? (
-        <div className="flex flex-1 items-center justify-center text-xs text-content-subtle">
+        <div className="flex flex-1 items-center justify-center text-code text-content-subtle">
           {t("common.loading")}
         </div>
       ) : loadFailed ? (
-        <div className="flex flex-1 items-center justify-center text-xs text-content-subtle">
+        <div className="flex flex-1 items-center justify-center text-code text-content-subtle">
           {t("mobile.git.diffLoadFailed")}
         </div>
       ) : rows.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-xs text-content-subtle">
+        <div className="flex flex-1 items-center justify-center text-code text-content-subtle">
           {t("mobile.git.noDiff")}
         </div>
       ) : (

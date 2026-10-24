@@ -35,7 +35,7 @@ export const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
         {...props}
         ref={ref}
         className={cn(
-          "min-w-0 rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-2.5 py-1.5 text-xs text-content outline-none transition-colors focus:border-accent",
+          "min-w-0 rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-2.5 py-1.5 text-code text-content outline-none transition-colors focus:border-accent",
           className,
         )}
         aria-labelledby={props["aria-labelledby"] ?? (props["aria-label"] ? undefined : fieldLabel)}

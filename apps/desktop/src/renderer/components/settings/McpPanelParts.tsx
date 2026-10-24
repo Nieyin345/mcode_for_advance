@@ -271,7 +271,7 @@ export function AddServerDialog({
                   />
                 </Field>
                 <Field className="mb-2 w-full" label={t("settings.mcp.fEnv")} htmlFor="mcp-add-env" hint={t("settings.mcp.fEnvHint")}>
-                  {editServer && <p className="mb-1 text-xs text-content-muted">{t("settings.mcp.secretEditHint")}</p>}
+                  {editServer && <p className="mb-1 text-code text-content-muted">{t("settings.mcp.secretEditHint")}</p>}
                   <Textarea
                     id="mcp-add-env"
                     value={envJson}
@@ -296,7 +296,7 @@ export function AddServerDialog({
                   />
                 </Field>
                 <Field className="mb-2 w-full" label={t("settings.mcp.fHeaders")} htmlFor="mcp-add-headers" hint={t("settings.mcp.fHeadersHint")}>
-                  {editServer && <p className="mb-1 text-xs text-content-muted">{t("settings.mcp.secretEditHint")}</p>}
+                  {editServer && <p className="mb-1 text-code text-content-muted">{t("settings.mcp.secretEditHint")}</p>}
                   <Textarea
                     id="mcp-add-headers"
                     value={headersJson}

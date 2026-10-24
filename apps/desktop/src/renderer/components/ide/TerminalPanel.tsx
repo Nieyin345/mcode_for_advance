@@ -295,7 +295,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
         <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface text-content-subtle">
           <IconTerminal2 size={20} />
         </div>
-        <p className="text-xs font-medium text-content-muted">{t("ide.files.noProjectTitle")}</p>
+        <p className="text-code font-medium text-content-muted">{t("ide.files.noProjectTitle")}</p>
         <p className="text-[11px] leading-relaxed text-content-subtle">
           {t("ide.term.noProjectDesc")}
         </p>

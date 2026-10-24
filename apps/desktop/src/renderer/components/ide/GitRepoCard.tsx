@@ -989,7 +989,7 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
               }}
               autoFocus
               placeholder={t("ide.git.branchNamePlaceholder")}
-              className="mt-3 w-full rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-xs text-content outline-none placeholder:text-content-subtle focus:border-accent"
+              className="mt-3 w-full rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-code text-content outline-none placeholder:text-content-subtle focus:border-accent"
             />
             <div className="mt-3 flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={() => setNewBranchOpen(false)}>

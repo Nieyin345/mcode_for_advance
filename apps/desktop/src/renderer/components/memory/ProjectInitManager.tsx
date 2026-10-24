@@ -23,7 +23,7 @@ const snapshot = () => epoch;
 const setPending = (value: boolean) => { mutationPending = value; publish(); };
 const setError = (value: string | null) => { lastError = value; publish(); };
 const setSaved = (value: boolean) => { lastSaved = value; publish(); };
-const area = "min-h-24 w-full rounded border border-edge bg-surface p-2 font-mono text-xs";
+const area = "min-h-24 w-full rounded border border-edge bg-surface p-2 font-mono text-code";
 export function ProjectInitManager() {
  const {t}=useI18n();const desktop=!!window.api;
  useSyncExternalStore(subscribe,snapshot);
@@ -90,7 +90,7 @@ export function ProjectInitManager() {
   {(error||list.error||read.error)&&<ErrorNote>{error??list.error?.message??read.error?.message}</ErrorNote>}
   {!loaded?<Button size="sm" onClick={()=>void read.refetch()}>{read.loading?t("common.loading"):t("memory.assistant.retry")}</Button>:<fieldset disabled={pending} className="space-y-4">
    <label className="block space-y-1 text-body">{t("init.name")}<Input aria-label={t("init.name")} value={d.name} maxLength={48} onChange={e=>update({...d,name:e.target.value})}/></label>
-   <p className="break-all font-mono text-xs text-content-subtle">/init-{d.name} · {t("init.nameHint")}</p>
+   <p className="break-all font-mono text-code text-content-subtle">/init-{d.name} · {t("init.nameHint")}</p>
    <label className="block space-y-1 text-body">{t("init.note")}<Input aria-label={t("init.note")} value={d.description} maxLength={500} onChange={e=>update({...d,description:e.target.value})}/></label>
    <label className="block space-y-1 text-body">{t("init.directories")}<textarea aria-label={t("init.directories")} className={area} value={d.directories.join("\n")} onChange={e=>update({...d,directories:e.target.value.split("\n")})}/></label>
    <section className="space-y-2"><h3 className="text-body font-semibold">{t("init.files")}</h3>
@@ -101,7 +101,7 @@ export function ProjectInitManager() {
     </div>)}
     <Button size="sm" disabled={d.files.length>=100} onClick={()=>update({...d,files:[...d.files,{path:"",content:""}]})}>{t("init.addFile")}</Button>
    </section>
-   <section className="space-y-2"><h3 className="text-body font-semibold">{t("init.memories")}</h3><p className="text-xs text-content-subtle">{t("init.memoryHint")}</p>
+   <section className="space-y-2"><h3 className="text-body font-semibold">{t("init.memories")}</h3><p className="text-code text-content-subtle">{t("init.memoryHint")}</p>
     {d.memories.map((m,i)=>{const change=(patch:Partial<typeof m>)=>update({...d,memories:d.memories.map((v,j)=>j===i?{...v,...patch}:v)});return <div key={i} className="space-y-2 rounded border border-edge p-3">
      <select className="rounded border border-edge bg-surface p-2 text-body" aria-label={t("init.category")} value={m.category} onChange={e=>change({category:e.target.value as typeof m.category})}>{MEMORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select>
      <Input aria-label={t("init.memoryFile")} placeholder={t("init.memoryFile")} value={m.filename} onChange={e=>change({filename:e.target.value})}/>
@@ -112,15 +112,15 @@ export function ProjectInitManager() {
     </div>;})}
     <Button size="sm" disabled={d.memories.length>=30} onClick={()=>update({...d,memories:[...d.memories,{category:"project",filename:"",title:"",content:"",pinned:true}]})}>{t("init.addMemory")}</Button>
    </section>
-   <section className="space-y-2" data-testid="init-agent-config"><h3 className="text-body font-semibold">{t("init.agentFile")}</h3><p className="text-xs text-content-subtle">{t("init.agentFileHint")}</p>
+   <section className="space-y-2" data-testid="init-agent-config"><h3 className="text-body font-semibold">{t("init.agentFile")}</h3><p className="text-code text-content-subtle">{t("init.agentFileHint")}</p>
     <label className="flex gap-2 text-body"><input type="checkbox" checked={!!agent?.enabled} onChange={e=>setAgent({enabled:e.target.checked})}/>{t("init.agentEnable")}</label>
     {agent?.enabled&&<div className="space-y-2 rounded border border-edge p-3">
      <label className="block space-y-1 text-body">{t("init.agentFilename")}
       <select className="block rounded border border-edge bg-surface p-2 text-body" aria-label={t("init.agentFilename")} value={agent.filename} onChange={e=>setAgent({filename:e.target.value as AgentFileConfig["filename"]})}>{AGENT_FILE_NAMES.map(name=><option key={name} value={name}>{name}</option>)}</select>
      </label>
-     <p className="text-xs text-content-subtle">{agent.filename==="AGENTS.md"?t("init.agentFilenameAgents"):t("init.agentFilenameClaude")}</p>
+     <p className="text-code text-content-subtle">{agent.filename==="AGENTS.md"?t("init.agentFilenameAgents"):t("init.agentFilenameClaude")}</p>
      <label className="block space-y-1 text-body">{t("init.agentFocus")}<textarea aria-label={t("init.agentFocus")} maxLength={8000} className={area} placeholder={t("init.agentFocusPlaceholder")} value={agent.focus} onChange={e=>setAgent({focus:e.target.value})}/></label>
-     <details className="text-xs"><summary className="cursor-pointer">{t("init.agentPromptPreview")}</summary>
+     <details className="text-code"><summary className="cursor-pointer">{t("init.agentPromptPreview")}</summary>
       <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words">{buildAgentFilePrompt({filename:agent.filename,exists:false,scenario:d.name||"…",focus:agent.focus,scaffold:[...d.directories.filter(p=>p!==""),...d.files.map(f=>f.path)]})}</pre>
      </details>
     </div>}
@@ -131,7 +131,7 @@ export function ProjectInitManager() {
     {entry.id&&<Button size="sm" variant="ghost" title={defaultId===entry.id?t("init.isDefault"):undefined} onClick={()=>void toggleDefault()}>{defaultId===entry.id?t("init.clearDefault"):t("init.setDefault")}</Button>}
     {entry.id&&<Button size="sm" variant="ghost" onClick={duplicate}>{t("init.duplicate")}</Button>}
     {entry.id&&<Button size="sm" variant="ghost" onClick={()=>setConfirmDelete(true)}>{t("common.delete")}</Button>}
-    <span className="text-xs text-content-subtle" role="status">{saved?t("init.saved"):dirty?t("init.unsaved"):""}</span>
+    <span className="text-code text-content-subtle" role="status">{saved?t("init.saved"):dirty?t("init.unsaved"):""}</span>
    </div>
   </fieldset>}
   <ConfirmDialog open={confirmReload} danger title={t("init.discard")} description={t("init.discardHint")} confirmText={t("init.discard")} onOpenChange={setConfirmReload} onConfirm={()=>{
@@ -184,7 +184,7 @@ function InitPresetDialog({open,onOpenChange,busyId,error,onError,onImported,onB
    <Dialog.Backdrop/>
    <Dialog.Popup className="w-[460px] max-w-[92vw] p-4">
     <Dialog.Title className="text-body font-semibold text-content">{t("init.presetsTitle")}</Dialog.Title>
-    <Dialog.Description className="mb-3 text-xs leading-relaxed text-content-muted">{t("init.presetsDesc")}</Dialog.Description>
+    <Dialog.Description className="mb-3 text-code leading-relaxed text-content-muted">{t("init.presetsDesc")}</Dialog.Description>
     <div className="max-h-[50vh] min-h-[80px] overflow-y-auto rounded-md border border-edge">
      {list.loading&&<div className="flex items-center justify-center gap-2 py-6 text-[0.7857em] text-content-subtle"><Spinner size="xs"/>{t("common.loading")}</div>}
      {!list.loading&&list.error!==null&&<div className="p-3"><ErrorNote>{t("init.presetsLoadFailed",{error:list.error.message})}</ErrorNote><Button variant="secondary" size="sm" className="mt-2" onClick={()=>void list.refetch()}>{t("common.retry")}</Button></div>}

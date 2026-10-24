@@ -38,8 +38,8 @@ export function WorkflowNativeEditorEntry({
     <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3 rounded-md border border-edge bg-surface-muted/50 px-6 text-center" aria-label={t("settings.workflows.openNativeEditor")}>
       <h3 className="text-[0.9286em] font-medium text-content">{t("settings.workflows.nativeEditorTitle")}</h3>
       <p className="max-w-lg text-[0.7857em] leading-relaxed text-content-muted">{t("settings.workflows.nativeEditorNote")}</p>
-      {dirty && <p role="alert" className="text-xs text-content-muted">请先保存工作流库中的未保存草稿，再装载到 Node-RED。</p>}
-      {reason && <p role="alert" className="max-w-xl whitespace-pre-wrap break-words text-xs text-content">{reason}</p>}
+      {dirty && <p role="alert" className="text-code text-content-muted">请先保存工作流库中的未保存草稿，再装载到 Node-RED。</p>}
+      {reason && <p role="alert" className="max-w-xl whitespace-pre-wrap break-words text-code text-content">{reason}</p>}
       {needsConfirm
         ? <div className="flex gap-2">
             <Button variant="secondary" size="sm" disabled={busy} onClick={() => { setNeedsConfirm(false); setReason(null); }}>取消</Button>

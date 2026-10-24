@@ -229,7 +229,7 @@ export function CustomCssSection() {
             }
           }}
           className={cn(
-            "w-full resize-y rounded border border-edge bg-surface px-2.5 py-1.5 font-mono text-xs text-content",
+            "w-full resize-y rounded border border-edge bg-surface px-2.5 py-1.5 font-mono text-code text-content",
             "outline-none placeholder:text-content-subtle focus:border-accent",
           )}
         />

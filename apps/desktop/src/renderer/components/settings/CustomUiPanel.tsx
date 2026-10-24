@@ -74,7 +74,7 @@ import { ItemEditor, AdvancedSection } from "./CustomUiPanelParts.js";
  *  (Monaco 不许进设置页的静态图,见 `settings-lazy-smoke`)。 */
 
 export const FIELD =
-  "w-full rounded-md border border-edge bg-surface px-2.5 py-1.5 text-xs text-content outline-none focus:border-accent";
+  "w-full rounded-md border border-edge bg-surface px-2.5 py-1.5 text-code text-content outline-none focus:border-accent";
 export const LABEL = "block space-y-1 text-[0.8571em] text-content-muted";
 
 /* ────────────────────────── 列表 ────────────────────────── */
@@ -648,7 +648,7 @@ export function CustomUiPanel() {
                 type="button"
                 onClick={() => setSlot(s)}
                 className={cn(
-                  "flex w-full items-center justify-between gap-2 rounded px-3 py-2 text-left text-xs transition-colors",
+                  "flex w-full items-center justify-between gap-2 rounded px-3 py-2 text-left text-code transition-colors",
                   s === slot
                     ? "bg-surface-hover font-medium text-content"
                     : "text-content-muted hover:bg-surface-hover hover:text-content",
@@ -674,7 +674,7 @@ export function CustomUiPanel() {
                 return (
                   <div key={r.key} className="flex items-center gap-2 px-3 py-2" data-testid="custom-ui-row">
                     <Icon size={14} className={cn("shrink-0", r.hidden ? "text-content-subtle" : "text-content-muted")} />
-                    <span className={cn("min-w-0 flex-1 truncate text-xs", r.hidden ? "text-content-subtle line-through" : "text-content")}>
+                    <span className={cn("min-w-0 flex-1 truncate text-code", r.hidden ? "text-content-subtle line-through" : "text-content")}>
                       {r.label}
                     </span>
                     <Badge variant="neutral" className="shrink-0">{t(`customUi.source.${r.source}` as MessageId)}</Badge>
@@ -733,7 +733,7 @@ export function CustomUiPanel() {
                     <Button variant="ghost" size={null}
                       key={tpl.id}
                       type="button"
-                      className="block w-full px-3 py-1.5 text-left text-xs text-content-muted hover:bg-surface-muted hover:text-content"
+                      className="block w-full px-3 py-1.5 text-left text-code text-content-muted hover:bg-surface-muted hover:text-content"
                       onClick={() => {
                         setTemplateOpen(false);
                         setDraft(templateDraft(tpl.id, slot, config.items, locale));

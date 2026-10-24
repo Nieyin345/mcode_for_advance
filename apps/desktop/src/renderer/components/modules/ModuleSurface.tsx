@@ -127,9 +127,9 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
         {egress.error && <ErrorNote>{egress.error.message}</ErrorNote>}
         {!egress.loading && egress.data?.osIsolation===false && <section className="space-y-2 rounded border border-warning/60 p-3" data-testid="module-egress-downgrade">
           <p className="text-body font-semibold">{t("ide.modules.egressTitle")}</p>
-          <p className="text-xs text-content-muted">{t("ide.modules.egressWarning")}</p>
-          <p role="status" className="text-xs">{t(egress.data.enabled?"ide.modules.egressEnabled":"ide.modules.egressDisabled")}</p>
-          {!egress.data.enabled && <label className="flex gap-2 text-xs" data-testid="module-egress-acknowledgment">
+          <p className="text-code text-content-muted">{t("ide.modules.egressWarning")}</p>
+          <p role="status" className="text-code">{t(egress.data.enabled?"ide.modules.egressEnabled":"ide.modules.egressDisabled")}</p>
+          {!egress.data.enabled && <label className="flex gap-2 text-code" data-testid="module-egress-acknowledgment">
             <input type="checkbox" checked={riskAcknowledged} onChange={e=>setRiskAcknowledged(e.target.checked)}/>
             {t("ide.modules.egressAck")}
           </label>}
@@ -140,13 +140,13 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
           })}>{t(egress.data.enabled?"ide.modules.egressDisable":"ide.modules.egressEnable")}</Button>
         </section>}
         <div className="space-y-2">{catalog.data?.modules.map(m=><div key={m.id} className="flex items-center gap-2 rounded border border-edge p-2 text-body">
-          <span className="flex-1">{text(m.title)} <code className="text-xs text-content-muted">{m.id} · {m.version}</code></span>
+          <span className="flex-1">{text(m.title)} <code className="text-code text-content-muted">{m.id} · {m.version}</code></span>
           {!m.id.startsWith("core.") && <Button disabled={busy} onClick={()=>void mutate(async()=>{const result=await api.modules.remove({moduleId:m.id});reportChange(result);await catalog.refetch();await history.refetch();})}>{t("ide.modules.remove")}</Button>}
           {!m.id.startsWith("core.") && <section className="w-full space-y-1" data-testid={`module-grants-${m.id}`}>
-            <p className="text-xs font-semibold">{t("ide.modules.granted")}</p>
-            {!catalog.data?.modulePermissions?.[m.id] && <p className="text-xs text-content-muted">{t("ide.modules.noGrant")}</p>}
+            <p className="text-code font-semibold">{t("ide.modules.granted")}</p>
+            {!catalog.data?.modulePermissions?.[m.id] && <p className="text-code text-content-muted">{t("ide.modules.noGrant")}</p>}
             <div className="flex flex-wrap gap-x-3 gap-y-1">
-              {m.permissions.map(permission=><label key={permission} className="flex items-center gap-1 text-xs">
+              {m.permissions.map(permission=><label key={permission} className="flex items-center gap-1 text-code">
                 <input type="checkbox" disabled={busy} checked={catalog.data?.modulePermissions?.[m.id]?.granted.includes(permission)??false}
                   onChange={event=>void mutate(async()=>{
                     const before=catalog.data?.modulePermissions?.[m.id]?.granted ?? [];
@@ -161,43 +161,43 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
         </div>)}</div>
         <CapabilityCatalogPanel catalog={catalog.data} loading={catalog.loading} error={catalog.error} onRetry={()=>void catalog.refetch()}/>
         <label className="block space-y-2 text-body"><span>{t("ide.modules.manifest")}</span>
-          <textarea data-testid="module-manifest" className="h-52 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-xs" value={draft} onChange={e=>{setDraft(e.target.value);setConsent(false);setCodeConsent(false);
+          <textarea data-testid="module-manifest" className="h-52 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-code" value={draft} onChange={e=>{setDraft(e.target.value);setConsent(false);setCodeConsent(false);
             try{setGranted(defaultModuleGrants(ModuleManifestSchema.parse(JSON.parse(e.target.value))));}catch{setGranted([]);}
           }} spellCheck={false}/>
         </label>
         <section className="space-y-2 rounded border border-edge p-3" data-testid="module-permission-picker">
           <p className="text-body font-semibold">{t("ide.modules.permissionsRequest")}</p>
-          <p className="text-xs text-content-muted">{t("ide.modules.upgradeConsent")}</p>
+          <p className="text-code text-content-muted">{t("ide.modules.upgradeConsent")}</p>
           {groups.map(group=><div key={group} className="space-y-1">
-            <p className="text-xs font-medium">{group}</p>
-            <div className="flex flex-wrap gap-x-4 gap-y-2">{requested.filter(permission=>permission.startsWith(group+".")).map(permission=><label key={permission} className="flex items-center gap-2 text-xs">
+            <p className="text-code font-medium">{group}</p>
+            <div className="flex flex-wrap gap-x-4 gap-y-2">{requested.filter(permission=>permission.startsWith(group+".")).map(permission=><label key={permission} className="flex items-center gap-2 text-code">
               <input type="checkbox" checked={granted.includes(permission)}
                 onChange={event=>setGranted(before=>event.target.checked ? [...before,permission] : before.filter(p=>p!==permission))}/>
               <code>{permission}</code>{MODULE_HIGH_RISK_PERMISSIONS.has(permission) && <span className="text-warning">{t("ide.modules.highRisk")}</span>}
             </label>)}</div>
           </div>)}
           <fieldset className="space-y-1 border-t border-edge pt-2" disabled data-testid="module-permissions-nondelegable">
-            <legend className="text-xs text-content-muted">{t("ide.modules.nondelegable")}</legend>
-            {["claude.approve","workflow.approve","customModel.getToken"].map(method=><label key={method} className="flex items-center gap-2 text-xs text-content-muted">
+            <legend className="text-code text-content-muted">{t("ide.modules.nondelegable")}</legend>
+            {["claude.approve","workflow.approve","customModel.getToken"].map(method=><label key={method} className="flex items-center gap-2 text-code text-content-muted">
               <input type="checkbox" disabled checked={false}/><code>{method}</code>
             </label>)}
           </fieldset>
-          {draftManifest===null && <p className="text-xs text-warning">{t("ide.modules.manifest")}</p>}
+          {draftManifest===null && <p className="text-code text-warning">{t("ide.modules.manifest")}</p>}
         </section>
-        <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/>{t("ide.modules.consent")}</label>
+        <label className="flex items-center gap-2 text-code"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/>{t("ide.modules.consent")}</label>
         {/* 【MC-035】执行代码是**另一件事**:与只读声明的同意分开勾。清单里没有 program 时
             不出现 —— 不给纯声明式模块制造"你到底同意了啥"的歧义。 */}
-        {draftHasProgram && egress.data?.osIsolation===false && <p role="alert" className="text-xs text-warning">{t("ide.modules.egressInstallNotice")}</p>}
-        {draftHasProgram && <label className="flex items-center gap-2 text-xs" data-testid="module-code-consent">
+        {draftHasProgram && egress.data?.osIsolation===false && <p role="alert" className="text-code text-warning">{t("ide.modules.egressInstallNotice")}</p>}
+        {draftHasProgram && <label className="flex items-center gap-2 text-code" data-testid="module-code-consent">
           <input type="checkbox" checked={codeConsent} onChange={e=>setCodeConsent(e.target.checked)}/>{t("ide.modules.codeConsent")}
         </label>}
         <Button variant="primary" disabled={busy||!consent||(draftHasProgram&&!codeConsent)} onClick={()=>void install()}>{t("ide.modules.install")}</Button>
         <h3 className="text-body font-semibold">{t("ide.modules.history")}</h3>
-        <p className="text-xs text-content-muted">{t("ide.modules.retention")}</p>
+        <p className="text-code text-content-muted">{t("ide.modules.retention")}</p>
         <Button onClick={()=>void history.refetch()}>{t("ide.modules.refresh")}</Button>
         {history.error && <ErrorNote>{history.error.message}</ErrorNote>}
         {history.loading && !history.data && <LoadingNote label={t("common.loading")}/>}
-        {history.data?.length===0 && <p className="text-xs text-content-muted">{t("ide.modules.empty")}</p>}
+        {history.data?.length===0 && <p className="text-code text-content-muted">{t("ide.modules.empty")}</p>}
         {history.data?.map(task=><Button key={task.id} className="block w-full truncate text-left" onClick={()=>{setManager(false);setReply({type:"task",task});}}>{text(task.view.title)} · {task.resource.path}</Button>)}
       </Dialog.Popup></Dialog.Portal>
     </Dialog.Root>
@@ -226,7 +226,7 @@ export function ModuleMenuItems({path}:{path:string}) {
   if(!context)return null;
   const entries=context.catalog?.modules.flatMap(module=>module.contributions.filter(c=>c.slot === "files.context" && (!c.extensions||c.extensions.some(ext=>path.toLowerCase().endsWith(ext)))).map(contribution=>({module,contribution})))??[];
   if(!entries.length)return null;
-  return <><ContextMenu.Separator className="my-1 h-px bg-edge"/>{entries.map(({module,contribution})=><ContextMenu.Item key={module.id+":"+contribution.id} disabled={context.busy} onClick={()=>void context.invoke(module,contribution,path)} className="flex w-full items-center px-3 py-1.5 text-xs text-content outline-none data-[highlighted]:bg-surface-muted data-[disabled]:opacity-50">{contribution.title[locale]}</ContextMenu.Item>)}</>;
+  return <><ContextMenu.Separator className="my-1 h-px bg-edge"/>{entries.map(({module,contribution})=><ContextMenu.Item key={module.id+":"+contribution.id} disabled={context.busy} onClick={()=>void context.invoke(module,contribution,path)} className="flex w-full items-center px-3 py-1.5 text-code text-content outline-none data-[highlighted]:bg-surface-muted data-[disabled]:opacity-50">{contribution.title[locale]}</ContextMenu.Item>)}</>;
 }
 
 export function ModuleResultDialog({reply,onClose}:{reply:ModuleReply;onClose:()=>void}) {
@@ -256,7 +256,7 @@ export function ModuleResultDialog({reply,onClose}:{reply:ModuleReply;onClose:()
       </div>}
       {read.error && <ErrorNote action={<Button onClick={()=>void read.refetch()}>{t("common.retry")}</Button>}>{read.error.message}</ErrorNote>}
       {(error||task?.error) && <ErrorNote>{error??task?.error}</ErrorNote>}
-      {result && <dl className="space-y-3">{(view.fields.length ? view.fields : Object.keys(result).map(key=>({key,title:{zh:key,en:key}}))).map(field=><div key={field.key} className="rounded border border-edge p-3"><dt className="text-xs text-content-muted">{field.title[locale]}</dt><dd className="mt-1 break-all font-mono text-body">{Object.hasOwn(result,field.key)?String(result[field.key]):"—"}</dd></div>)}</dl>}
+      {result && <dl className="space-y-3">{(view.fields.length ? view.fields : Object.keys(result).map(key=>({key,title:{zh:key,en:key}}))).map(field=><div key={field.key} className="rounded border border-edge p-3"><dt className="text-code text-content-muted">{field.title[locale]}</dt><dd className="mt-1 break-all font-mono text-body">{Object.hasOwn(result,field.key)?String(result[field.key]):"—"}</dd></div>)}</dl>}
     </Dialog.Popup></Dialog.Portal>
   </Dialog.Root>;
 }

@@ -118,7 +118,7 @@ export interface DialogDescriptionProps
 function DialogDescription({ className, ...props }: DialogDescriptionProps) {
   return (
     <BaseDialog.Description
-      className={cn("text-xs text-content-muted", className)}
+      className={cn("text-code text-content-muted", className)}
       {...props}
     />
   );

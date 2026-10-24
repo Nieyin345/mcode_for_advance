@@ -520,7 +520,7 @@ export function ImageWithPreview({
                     >
                       <IconChevronLeft size={18} />
                     </LightboxButton>
-                    <span className="px-1.5 text-xs font-medium tabular-nums text-white/75">
+                    <span className="px-1.5 text-code font-medium tabular-nums text-white/75">
                       {curIdx + 1} / {count}
                     </span>
                     <LightboxButton

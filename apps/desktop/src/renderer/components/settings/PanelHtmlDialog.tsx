@@ -117,7 +117,7 @@ export function PanelHtmlDialog({
             <span className="mr-auto text-[0.7143em] text-content-subtle">
               {t("customUi.editor.panelHtmlLiveHint")}
             </span>
-            <Dialog.Close className="static rounded border border-edge px-3 py-1 text-xs text-content hover:bg-surface-muted">
+            <Dialog.Close className="static rounded border border-edge px-3 py-1 text-code text-content hover:bg-surface-muted">
               {t("common.close")}
             </Dialog.Close>
           </div>

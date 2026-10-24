@@ -86,7 +86,7 @@ export function CapabilityCatalogPanel({
   return (
     <section data-testid="capability-catalog" aria-labelledby="capability-catalog-title" className="space-y-2">
       <h3 id="capability-catalog-title" className="text-body font-semibold">{t("ide.modules.catalogTitle")}</h3>
-      <p className="text-xs text-content-muted">{t("ide.modules.catalogHint")}</p>
+      <p className="text-code text-content-muted">{t("ide.modules.catalogHint")}</p>
       {loading && !catalog && (
         <div data-testid="capability-catalog-loading"><LoadingNote label={t("common.loading")} /></div>
       )}
@@ -108,7 +108,7 @@ export function CapabilityCatalogPanel({
       {catalog && catalog.capabilities.length > 0 && (
         <>
           {targets.length === 0 && (
-            <p data-testid="capability-workflow-none" className="text-xs text-content-muted">
+            <p data-testid="capability-workflow-none" className="text-code text-content-muted">
               {t("ide.modules.workflowNone")}
             </p>
           )}
@@ -122,7 +122,7 @@ export function CapabilityCatalogPanel({
                   key={capability.id}
                   data-testid="capability-entry"
                   data-capability-id={capability.id}
-                  className="space-y-1.5 rounded border border-edge p-2 text-xs"
+                  className="space-y-1.5 rounded border border-edge p-2 text-code"
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     {meta && <span data-testid="capability-title" className="font-medium text-content">{meta.title[locale]}</span>}

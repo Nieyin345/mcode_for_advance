@@ -190,7 +190,7 @@ export function NotificationsPanel() {
                   className="w-[6.5rem]"
                   aria-label={t("settings.notifications.quietStart")}
                 />
-                <span className="text-xs text-content-subtle">→</span>
+                <span className="text-code text-content-subtle">→</span>
                 <Input
                   type="time"
                   value={prefs.quietHours.end}

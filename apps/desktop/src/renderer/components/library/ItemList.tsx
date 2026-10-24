@@ -95,12 +95,12 @@ export function ItemList({
         <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
           <IconCircleCheck size={28} className="text-content-subtle" />
           <div className="text-body text-content-muted">{t("library.collection.empty")}</div>
-          <div className="max-w-xs text-xs text-content-subtle">
+          <div className="max-w-xs text-code text-content-subtle">
             {t("library.list.emptyInCollection")}
           </div>
           <button
             onClick={onShowAll}
-            className="mt-1 flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-content-muted hover:bg-surface-hover hover:text-content"
+            className="mt-1 flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-code text-content-muted hover:bg-surface-hover hover:text-content"
           >
             <IconSearch size={13} />
             {t("library.list.showAll")}
@@ -114,20 +114,20 @@ export function ItemList({
         <div className="text-body text-content-muted">
           {t("library.list.empty")}
         </div>
-        <div className="max-w-xs text-xs text-content-subtle">
+        <div className="max-w-xs text-code text-content-subtle">
           {t("library.list.emptyHint")}
         </div>
         <div className="flex items-center gap-2 pt-1">
           <button
             onClick={onImport}
-            className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-xs text-white hover:opacity-90"
+            className="flex items-center gap-1.5 rounded bg-accent px-3 py-1.5 text-code text-white hover:opacity-90"
           >
             <IconUpload size={13} />
             {t("library.import.pickFile")}
           </button>
           <button
             onClick={onSearch}
-            className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-xs text-content-muted hover:bg-surface-hover hover:text-content"
+            className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-code text-content-muted hover:bg-surface-hover hover:text-content"
           >
             <IconSearch size={13} />
             {t("library.action.search")}
@@ -182,7 +182,7 @@ export function ItemList({
               className="flex min-w-0 flex-1 cursor-pointer items-start gap-2 text-left focus-visible:rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
             >
               <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-medium text-content" title={item.title}>
+                <div className="truncate text-code font-medium text-content" title={item.title}>
                   {item.title}
                 </div>
                 {(item.abstract || item.url) && (

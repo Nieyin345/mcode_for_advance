@@ -75,7 +75,7 @@ export function Segmented({ items, value, onChange, size = "md", className, labe
       onKeyDown={onKeyDown}
       className={cn(
         "relative flex select-none items-stretch rounded-full p-px transition-colors",
-        isSmall ? "h-7 text-xs" : "h-8 text-xs",
+        isSmall ? "h-7 text-code" : "h-8 text-code",
         className,
       )}
       style={{

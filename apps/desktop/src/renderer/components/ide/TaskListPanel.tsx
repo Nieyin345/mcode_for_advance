@@ -297,7 +297,7 @@ export function TaskListPanel() {
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface text-content-subtle">
             <IconListTree size={20} />
           </div>
-          <p className="text-xs font-medium text-content-muted">{t("ide.task.empty")}</p>
+          <p className="text-code font-medium text-content-muted">{t("ide.task.empty")}</p>
           <p className="text-[11px] leading-relaxed text-content-subtle">{t("ide.task.emptyHint")}</p>
         </div>
       ) : (

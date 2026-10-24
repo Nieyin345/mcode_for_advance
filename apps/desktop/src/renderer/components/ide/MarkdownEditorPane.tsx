@@ -456,7 +456,7 @@ export function MarkdownEditorPane({
   if (err && initial === null) {
     return (
       <div className="flex h-full items-center justify-center px-6 text-center">
-        <span className="text-xs text-red-500">{err}</span>
+        <span className="text-code text-red-500">{err}</span>
       </div>
     );
   }

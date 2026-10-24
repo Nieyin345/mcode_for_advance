@@ -162,7 +162,7 @@ export function MobileDomainPanel() {
 
   if (stalePreload) {
     return (
-      <p className="flex items-start gap-1.5 rounded border border-warning/40 bg-warning/10 px-2.5 py-2 text-xs leading-relaxed text-warning">
+      <p className="flex items-start gap-1.5 rounded border border-warning/40 bg-warning/10 px-2.5 py-2 text-code leading-relaxed text-warning">
         <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
         <span>{t("layout.domainStalePreload")}</span>
       </p>
@@ -171,7 +171,7 @@ export function MobileDomainPanel() {
 
   return (
     <div className="space-y-3">
-      <p className="flex items-start gap-1.5 rounded border border-warning/40 bg-warning/10 px-2.5 py-2 text-xs leading-relaxed text-warning">
+      <p className="flex items-start gap-1.5 rounded border border-warning/40 bg-warning/10 px-2.5 py-2 text-code leading-relaxed text-warning">
         <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
         <span>{t("layout.domainWarning")}</span>
       </p>
@@ -179,9 +179,9 @@ export function MobileDomainPanel() {
       <p className="text-[0.6875rem] leading-relaxed text-content-subtle">{t("layout.domainIndependent")}</p>
 
       <div className="space-y-1.5">
-        <span className="block text-xs font-medium text-content-muted">{t("layout.domainLocalLabel")}</span>
+        <span className="block text-code font-medium text-content-muted">{t("layout.domainLocalLabel")}</span>
         <div className="flex items-center gap-1.5">
-          <code className="min-w-0 flex-1 truncate rounded bg-surface-muted px-1.5 py-1 font-mono text-xs">{ingress}</code>
+          <code className="min-w-0 flex-1 truncate rounded bg-surface-muted px-1.5 py-1 font-mono text-code">{ingress}</code>
           <Button
             variant="ghost"
             size="sm"
@@ -201,7 +201,7 @@ export function MobileDomainPanel() {
       </div>
 
       <div className="space-y-1.5">
-        <span className="block text-xs font-medium text-content-muted">{t("layout.domainLabel")}</span>
+        <span className="block text-code font-medium text-content-muted">{t("layout.domainLabel")}</span>
         <div className="flex items-center gap-1.5">
           <Input
             value={draft}
@@ -233,7 +233,7 @@ export function MobileDomainPanel() {
 
       {url && (
         <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
-          <span className="block text-xs font-medium text-content-muted">
+          <span className="block text-code font-medium text-content-muted">
             {t("layout.domainUrlLabel")}
           </span>
           <div className="flex items-center gap-1.5">
@@ -259,7 +259,7 @@ export function MobileDomainPanel() {
             <div className="flex items-start gap-3 pt-1">
               <img src={qrDataUrl} alt={t("layout.pairingQr")} className="h-[140px] w-[140px] rounded bg-white p-1" />
               <div className="space-y-1.5">
-                <span className="block text-xs font-medium text-content-muted">{t("layout.verifyCode")}</span>
+                <span className="block text-code font-medium text-content-muted">{t("layout.verifyCode")}</span>
                 <code className="block font-mono text-lg tracking-[0.3em]">{pairingCode ?? "------"}</code>
                 <span className="block text-[0.6875rem] text-content-subtle">
                   {expiresAt === null || expired

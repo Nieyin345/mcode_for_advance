@@ -40,7 +40,7 @@ export function NewGroupFallback({ onCreate }: { onCreate: (name: string) => voi
         }}
         onBlur={submit}
         placeholder={t("library.group.namePlaceholder")}
-        className="w-full rounded border border-accent bg-surface px-2 py-1 text-xs text-content placeholder:text-content-subtle focus:outline-none"
+        className="w-full rounded border border-accent bg-surface px-2 py-1 text-code text-content placeholder:text-content-subtle focus:outline-none"
       />
       <div className="pt-1 text-[0.7857em] text-content-subtle">{t("library.group.emptyHint")}</div>
     </div>

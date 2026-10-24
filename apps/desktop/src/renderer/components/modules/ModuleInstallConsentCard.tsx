@@ -215,26 +215,26 @@ export function ModuleInstallConsentCard() {
           {/* 扩展名 + 版本 + 来源 */}
           <section className="space-y-1 rounded border border-edge p-3">
             <p className="text-body font-semibold">{title}</p>
-            <p className="text-xs text-content-muted">
+            <p className="text-code text-content-muted">
               <code>{manifest.id}</code> · {manifest.version}
             </p>
-            <p className="text-xs text-content-muted">
+            <p className="text-code text-content-muted">
               {origin === "agent" ? t("ide.modules.consentCard.originAgent") : t("ide.modules.consentCard.originDesktop")}
             </p>
-            {upgrading && <p className="text-xs text-warning">{t("ide.modules.consentCard.upgrading")}</p>}
+            {upgrading && <p className="text-code text-warning">{t("ide.modules.consentCard.upgrading")}</p>}
           </section>
           {/* 逐条权限 */}
           <section className="space-y-2" data-testid="module-install-consent-permissions">
             <p className="text-body font-semibold">{t("ide.modules.consentCard.permissionsTitle")}</p>
             {requested.length === 0 ? (
-              <p className="text-xs text-content-muted">{t("ide.modules.consentCard.noPermissions")}</p>
+              <p className="text-code text-content-muted">{t("ide.modules.consentCard.noPermissions")}</p>
             ) : (
               <ul className="space-y-1">
                 {requested.map((permission) => {
                   const isHigh = MODULE_HIGH_RISK_PERMISSIONS.has(permission);
                   const isGranted = grantSet.has(permission);
                   return (
-                    <li key={permission} className="flex items-start gap-2 text-xs" data-permission={permission}>
+                    <li key={permission} className="flex items-start gap-2 text-code" data-permission={permission}>
                       <code className="shrink-0 rounded bg-surface-muted px-1 py-0.5">{permission}</code>
                       <span className="flex-1 text-content-muted">{permissionLabel(permission, locale)}</span>
                       {!isGranted && <span className="shrink-0 text-content-subtle">{t("ide.modules.consentCard.notGranted")}</span>}
@@ -245,14 +245,14 @@ export function ModuleInstallConsentCard() {
               </ul>
             )}
             {highRisk.length > 0 && (
-              <p role="alert" className="text-xs text-warning">
+              <p role="alert" className="text-code text-warning">
                 {t("ide.modules.consentCard.highRiskAlert")}
               </p>
             )}
           </section>
           {/* 可执行程序警示 */}
           {manifest.program !== undefined && (
-            <p role="alert" data-testid="module-install-consent-program" className="rounded border border-warning/60 bg-warning/10 p-2 text-xs text-warning">
+            <p role="alert" data-testid="module-install-consent-program" className="rounded border border-warning/60 bg-warning/10 p-2 text-code text-warning">
               {t("ide.modules.consentCard.programAlert")}
             </p>
           )}

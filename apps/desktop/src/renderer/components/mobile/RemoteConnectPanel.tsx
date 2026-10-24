@@ -265,7 +265,7 @@ export function RemoteConnectPanel() {
   return (
     <div className="flex flex-col gap-4">
       {/* Info banner */}
-      <div className="flex items-start gap-2 rounded border border-edge bg-surface-muted/50 px-3 py-2 text-xs leading-relaxed text-content-muted">
+      <div className="flex items-start gap-2 rounded border border-edge bg-surface-muted/50 px-3 py-2 text-code leading-relaxed text-content-muted">
         <IconServer size={14} className="mt-0.5 shrink-0 text-accent" />
         <span>
           {/* The explicit {" "} is load-bearing: JSX drops the whitespace
@@ -286,7 +286,7 @@ export function RemoteConnectPanel() {
       {/* Start on launch toggle */}
       <label className="flex cursor-pointer items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface-muted/30 px-3 py-2.5">
         <Switch checked={autoStart} onCheckedChange={handleAutoStartChange} label={t("layout.relayAutoStart")} />
-        <span className="min-w-0 flex-1 text-xs text-content">{t("layout.relayAutoStart")}</span>
+        <span className="min-w-0 flex-1 text-code text-content">{t("layout.relayAutoStart")}</span>
         <span className="shrink-0 text-[11px] text-content-subtle">
           {autoStart ? t("layout.relayAutoStartOn") : t("layout.relayAutoStartOff")}
         </span>
@@ -297,7 +297,7 @@ export function RemoteConnectPanel() {
         <div className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-edge bg-surface-muted/30 p-4">
           <div className="grid grid-cols-2 gap-3">
             <label className="col-span-2 flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">{t("mobile.relay.host")}</span>
+              <span className="text-code font-medium text-content-muted">{t("mobile.relay.host")}</span>
               <input
                 value={form.host}
                 onChange={(e) => setForm({ ...form, host: e.target.value })}
@@ -307,7 +307,7 @@ export function RemoteConnectPanel() {
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">{t("mobile.relay.port")}</span>
+              <span className="text-code font-medium text-content-muted">{t("mobile.relay.port")}</span>
               <input
                 value={form.sshPort}
                 onChange={(e) => setForm({ ...form, sshPort: e.target.value.replace(/\D/g, "") })}
@@ -316,7 +316,7 @@ export function RemoteConnectPanel() {
               />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">{t("browser.username")}</span>
+              <span className="text-code font-medium text-content-muted">{t("browser.username")}</span>
               <input
                 value={form.username}
                 onChange={(e) => setForm({ ...form, username: e.target.value })}
@@ -325,7 +325,7 @@ export function RemoteConnectPanel() {
               />
             </label>
             <label className="col-span-2 flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">{t("mobile.relay.hostKeyFingerprint")}</span>
+              <span className="text-code font-medium text-content-muted">{t("mobile.relay.hostKeyFingerprint")}</span>
               <input
                 value={form.hostKeyFingerprint}
                 onChange={(e) => setForm({ ...form, hostKeyFingerprint: e.target.value })}
@@ -334,10 +334,10 @@ export function RemoteConnectPanel() {
                 disabled={isBusy}
                 spellCheck={false}
               />
-              <span className="text-xs text-content-muted">{t("mobile.relay.hostKeyHint")}</span>
+              <span className="text-code text-content-muted">{t("mobile.relay.hostKeyHint")}</span>
             </label>
             <label className="col-span-2 flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">{t("browser.password")}</span>
+              <span className="text-code font-medium text-content-muted">{t("browser.password")}</span>
               <input
                 type="password"
                 value={form.password}
@@ -348,7 +348,7 @@ export function RemoteConnectPanel() {
               />
             </label>
             <label className="col-span-2 flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">{t("mobile.relay.publicPort")}</span>
+              <span className="text-code font-medium text-content-muted">{t("mobile.relay.publicPort")}</span>
               <input
                 value={form.publicPort}
                 onChange={(e) => setForm({ ...form, publicPort: e.target.value.replace(/\D/g, "") })}
@@ -357,7 +357,7 @@ export function RemoteConnectPanel() {
               />
             </label>
             <div className="col-span-2 flex flex-col gap-1">
-              <span className="text-xs font-medium text-content-muted">{t("layout.relayForwarder")}</span>
+              <span className="text-code font-medium text-content-muted">{t("layout.relayForwarder")}</span>
               <Select.Root
                 value={form.forwarder}
                 onValueChange={(v) => setForm({ ...form, forwarder: v as RelayForwarderChoice })}
@@ -399,7 +399,7 @@ export function RemoteConnectPanel() {
           )}
         />
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-content">
+          <div className="text-code font-medium text-content">
             {status ? t(STATE_LABELS[status.state]) : t("common.loading")}
           </div>
           {status?.endpoint && (
@@ -445,7 +445,7 @@ export function RemoteConnectPanel() {
               {qrDataUrl ? (
                 <img src={qrDataUrl} alt={t("mobile.relay.qrAlt")} className="h-[150px] w-[150px]" />
               ) : (
-                <div className="flex h-[150px] w-[150px] items-center justify-center text-xs text-content-subtle">
+                <div className="flex h-[150px] w-[150px] items-center justify-center text-code text-content-subtle">
                   {t("layout.generating")}
                 </div>
               )}
@@ -454,14 +454,14 @@ export function RemoteConnectPanel() {
               <button
                 type="button"
                 onClick={() => void handleRefreshPairing()}
-                className="flex items-center gap-1 text-xs text-content-muted hover:text-content"
+                className="flex items-center gap-1 text-code text-content-muted hover:text-content"
               >
                 <IconRefresh size={12} /> {t("common.refresh")}
               </button>
               <button
                 type="button"
                 onClick={() => void copyLink()}
-                className="flex items-center gap-1 text-xs text-content-muted hover:text-content"
+                className="flex items-center gap-1 text-code text-content-muted hover:text-content"
               >
                 {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
                 {copied ? t("common.copied") : t("mobile.relay.copyLink")}
@@ -469,7 +469,7 @@ export function RemoteConnectPanel() {
             </div>
           </div>
           <div className="flex min-w-0 flex-1 flex-col">
-            <div className="text-xs text-content-muted">{t("layout.verifyCode")}</div>
+            <div className="text-code text-content-muted">{t("layout.verifyCode")}</div>
             <div className="mt-1 font-mono text-3xl font-bold tracking-[0.3em] text-content">
               {pairingCode ?? "------"}
             </div>

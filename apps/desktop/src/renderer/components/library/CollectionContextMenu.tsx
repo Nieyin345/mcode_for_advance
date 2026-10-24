@@ -131,7 +131,7 @@ export function CollectionContextMenu({
   }, [target]);
 
   const itemClass = cn(
-    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs outline-none select-none",
+    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-code outline-none select-none",
     "text-content-muted data-[highlighted]:bg-surface-muted",
   );
 

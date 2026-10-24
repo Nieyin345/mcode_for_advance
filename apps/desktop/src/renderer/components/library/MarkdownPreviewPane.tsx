@@ -74,8 +74,8 @@ export default function MarkdownPreviewPane({ markdown, filePath }: { markdown: 
     // local-file URL. Normal web links retain the app's existing navigation guard.
     if (link && !/^(https?:\/\/|mailto:|#)/i.test(link.getAttribute("href") ?? "")) event.preventDefault();
   }}>
-    {error && <div role="alert" className="p-3 text-xs text-red-500">{t("library.preview.crepeFailed", { error })}</div>}
-    {failed.length > 0 && <div role="status" className="p-3 text-xs text-content-muted">{t("library.preview.imagesFailed", { count: failed.length })}</div>}
+    {error && <div role="alert" className="p-3 text-code text-red-500">{t("library.preview.crepeFailed", { error })}</div>}
+    {failed.length > 0 && <div role="status" className="p-3 text-code text-content-muted">{t("library.preview.imagesFailed", { count: failed.length })}</div>}
     <div ref={mount} />
   </div>;
 }

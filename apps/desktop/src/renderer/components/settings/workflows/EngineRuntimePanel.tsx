@@ -590,7 +590,7 @@ export function EngineNodePackagesSection() {
         <span>{t("settings.workflows.engine.nodesSourceDir")}</span>
         <textarea
           data-testid="engine-nodes-request"
-          className="h-40 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-xs"
+          className="h-40 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-code"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           spellCheck={false}

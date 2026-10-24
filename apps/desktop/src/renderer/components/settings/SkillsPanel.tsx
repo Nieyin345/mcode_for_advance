@@ -1395,7 +1395,7 @@ export function SkillsPanel() {
           <Dialog.Backdrop />
           <Dialog.Popup className="flex max-h-[90vh] w-[760px] max-w-[95vw] flex-col overflow-auto p-4">
             <Dialog.Title>{t("settings.skills.projectEditorTitle")}</Dialog.Title>
-            <Dialog.Description className="mb-3 break-all font-mono text-xs">
+            <Dialog.Description className="mb-3 break-all font-mono text-code">
               {selected?.kind === "skill" ? selected.projectPath : ""}
             </Dialog.Description>
             {selected?.kind === "skill" && selected.source === "project" && editor}

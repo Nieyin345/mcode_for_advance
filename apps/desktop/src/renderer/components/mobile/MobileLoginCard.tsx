@@ -100,7 +100,7 @@ export function MobileLoginCard() {
       <div className="flex items-center gap-2">
         <IconLock size={14} className={cn("shrink-0", enabled ? "text-success" : "text-content-muted")} />
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-content">{t("layout.loginTitle")}</div>
+          <div className="text-code font-medium text-content">{t("layout.loginTitle")}</div>
           <div className="truncate text-[11px] text-content-subtle">
             {status === null
               ? "…"

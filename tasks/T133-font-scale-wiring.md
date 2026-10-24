@@ -205,3 +205,50 @@ text-body → { fontSize: "14px", lineHeight: "20px" }   ← 完全一致
 - **`text-xs` → `text-code`（12/16 → 12/16）也是零变化**，可以并入下一批。本批只做了 `text-sm`，按卡的「先验证流程」。
 - **`text-lg`（18/28）在 CDS 七档里没有对应项** —— 它比 `heading`(16) 大、比 `title`(20) 小。这批没碰，也没找到该映射到哪一档。
 - **`chat/` 的 20 处 `text-sm`**：`text-body` 在聊天区可能应该换成 `[font-size:var(--chat-font-size)]`（跟用户设置走），而不是固定的 14px。**那是 T132 的后续，不是这一批。**
+
+---
+
+## 结果回写（2026-10-24，K）· 第 2 批
+
+### 零、改了什么
+
+**`text-xs` → `text-code`，251 处 / 73 个文件。** 禁区（`chat/` 89 处 + `layout/` 2 处 = 91 处）未动。
+
+**零变体**：`text-xs/5` 这类带行高的写法在扫描时是 **0 处**。
+
+### 一、★ 零变化是实测的
+
+浏览器实测（`.tmp/t133b/probe.html`，Chromium）：
+
+```
+text-xs   → { fontSize: "12px", lineHeight: "16px" }
+text-code → { fontSize: "12px", lineHeight: "16px" }   ← 完全一致
+```
+
+**同样只能证明「配置数值相同」，不是「渲染相同」。** 套件读的是 `tailwind.config.js` 的源码判据。
+
+### 二、套件与变异
+
+`t133-text-scale-smoke`（第 2 批，**4/4**）。四节：逐文件下限（73 个）/ 禁区未被误改 / 配置数值相同 / 负控。
+
+| 变异 | 预期 | 实际 |
+|---|---|---|
+| `code` 的 `lineHeight` 改 14px | 1 | **1** ✓ |
+| 某文件一处 `text-code` 改回 `text-xs` | 3 | **3** ✓ |
+| **负控：`body` 的 `fontSize` 改 15px** | **0（不该红）** | **0** ✓ |
+
+**第三行是这次的负控**：它改的是**另一个档位**，本批不该管它。**全绿说明这套只守 `text-xs → text-code`，没有越界。**
+
+### 三、★ 我犯了一次 CLAUDE.md 第十条的错误
+
+**用模板字符串生成源码时，`\n` / `\s` / `\w` 的转义层数算错了**，生成的 TS 里有三处 `console.log("` 后面跟着**真换行**，esbuild 报 `Unterminated string literal`；还有两处正则的 `\s`、`\w` 被吃成了 `s`、`w`。
+
+**修法**：用 `Edit` 逐处精确替换，**不用脚本**。正则那两处如果没发现，`(?<![w/-])` 会让 `text-codex` 也算命中 —— **判据会误报**。
+
+**这正是 CLAUDE.md 第十条说的**：靠数转义层数就会再犯。**教训要落到做法上**：生成带反斜杠的源码时，要么用 `Edit`，要么写文件再单独验证。
+
+### 四、没做的 / 觉得不对但没改的
+
+- **`text-lg`（18/28）仍无对应档** —— 比 `heading`(16) 大、比 `title`(20) 小。
+- **`chat/` 的 89 处 `text-xs`**：那里应该换成 `[font-size:var(--chat-fs-xs)]`（跟用户设置走），不是固定的 12px。**T132 的后续。**
+- **`tsc` 有 4 个错误，全部在 `src/main/modules/vscodeL1Bridge.ts`** —— 那是另一个会话 17:08 改的（`MANIFEST_LIMIT` / `SOURCE_LIMIT` 未定义），**与本批无关**。我的文件类型检查干净。

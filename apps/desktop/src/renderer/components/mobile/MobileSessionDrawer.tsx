@@ -351,7 +351,7 @@ export function MobileSessionDrawer({
             >
               <IconPlus size={16} className="shrink-0" />
               <span className="shrink-0">{t("layout.newSession")}</span>
-              <span className="min-w-0 max-w-[150px] truncate text-xs font-normal text-surface/75">
+              <span className="min-w-0 max-w-[150px] truncate text-code font-normal text-surface/75">
                 · {projectNameById.get(newSessionProjectId)}
               </span>
             </button>
@@ -385,7 +385,7 @@ export function MobileSessionDrawer({
                   <button
                     type="button"
                     onClick={() => setPinnedOpen(!pinnedOpen)}
-                    className="flex min-h-11 w-full items-center gap-1.5 rounded-[var(--radius-btn-md)] px-3 text-xs font-medium uppercase tracking-wide text-content-subtle active:bg-surface-hover"
+                    className="flex min-h-11 w-full items-center gap-1.5 rounded-[var(--radius-btn-md)] px-3 text-code font-medium uppercase tracking-wide text-content-subtle active:bg-surface-hover"
                   >
                     <IconChevronRight
                       size={14}
@@ -473,7 +473,7 @@ export function MobileSessionDrawer({
                     />
                     <IconArchive size={15} className="shrink-0 text-content-muted" />
                     <span className="text-body font-medium text-content">{t("layout.archived")}</span>
-                    <span className="text-xs text-content-subtle">{archivedCount}</span>
+                    <span className="text-code text-content-subtle">{archivedCount}</span>
                   </button>
                   {archiveOpen && (
                     <div className="ml-5 border-l border-edge/60 pl-1">
@@ -487,7 +487,7 @@ export function MobileSessionDrawer({
                       ))}
                       {archivedGroups.map(({ project, sessions }) => (
                         <div key={project.id}>
-                          <div className="flex min-h-[36px] items-center gap-2 px-3 text-xs text-content-subtle">
+                          <div className="flex min-h-[36px] items-center gap-2 px-3 text-code text-content-subtle">
                             <IconFolder size={13} className="shrink-0 opacity-60" />
                             <span className="truncate">{project.name}</span>
                           </div>
@@ -869,7 +869,7 @@ function SessionRow({
             )}
             <span className="truncate text-body text-content">{session.title}</span>
           </span>
-          <span className="text-xs leading-none text-content-subtle">
+          <span className="text-code leading-none text-content-subtle">
             {projectLabel && <span className="text-content-subtle/80">{projectLabel} · </span>}
             {formatRelativeTime(session.updatedAt)}
           </span>
@@ -929,7 +929,7 @@ function ProjectHeader({
         />
         <IconFolder size={16} className="shrink-0 text-content-muted" />
         <span className="truncate text-body font-medium text-content">{project.name}</span>
-        {count > 0 && <span className="shrink-0 text-xs text-content-subtle">{count}</span>}
+        {count > 0 && <span className="shrink-0 text-code text-content-subtle">{count}</span>}
       </button>
       {/* Always visible (no hover on touch) — mirrors the desktop project
           header's hover "+". It replaced the "…" sheet, whose only item was

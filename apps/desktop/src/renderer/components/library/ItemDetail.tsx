@@ -35,7 +35,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return (
     <div className="flex gap-3 py-1.5">
       <div className="w-20 shrink-0 text-[0.7857em] text-content-subtle">{label}</div>
-      <div className="min-w-0 flex-1 break-words text-xs text-content">{children}</div>
+      <div className="min-w-0 flex-1 break-words text-code text-content">{children}</div>
     </div>
   );
 }
@@ -322,7 +322,7 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
               </span>
               <span
                 className={cn(
-                  "min-w-0 flex-1 truncate text-xs",
+                  "min-w-0 flex-1 truncate text-code",
                   l.suppressedReason ? "text-content-subtle line-through" : "text-content",
                 )}
                 title={l.otherPath ?? l.title}
@@ -416,7 +416,7 @@ export function ItemDetail({ item, onChanged }: Props) {
   if (!item) {
     return (
       <div className="flex h-full items-center justify-center px-6 text-center">
-        <span className="text-xs text-content-subtle">{t("library.detail.noSelection")}</span>
+        <span className="text-code text-content-subtle">{t("library.detail.noSelection")}</span>
       </div>
     );
   }
@@ -529,7 +529,7 @@ export function ItemDetail({ item, onChanged }: Props) {
           <div className="mb-1 mt-4 text-[0.7143em] font-medium uppercase tracking-wider text-content-subtle">
             {t("library.detail.abstract")}
           </div>
-          <div className="text-xs leading-relaxed text-content-muted">{item.abstract}</div>
+          <div className="text-code leading-relaxed text-content-muted">{item.abstract}</div>
         </>
       )}
 
@@ -686,7 +686,7 @@ export function CollectionInfoDialog({
             )}
 
             {total === 0 && (
-              <div className="mt-2 text-xs text-content-muted">
+              <div className="mt-2 text-code text-content-muted">
                 {t("library.collection.empty")}
               </div>
             )}
@@ -746,7 +746,7 @@ export function ItemInfoDialog({
                     <div className="mb-1 mt-4 text-[0.7143em] font-medium uppercase tracking-wider text-content-subtle">
                       {t("library.detail.abstract")}
                     </div>
-                    <div className="text-xs leading-relaxed text-content-muted">{item.abstract}</div>
+                    <div className="text-code leading-relaxed text-content-muted">{item.abstract}</div>
                   </>
                 )}
               </div>

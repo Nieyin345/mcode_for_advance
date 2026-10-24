@@ -27,7 +27,7 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
         className={cn(
           // 【ARC-005 V2】圆角走 CDS 控件档（--radius-btn-xs 6px），不再用 Tailwind
           // 裸 `rounded`(4px) —— 与按钮/Select/Tooltip 同一档。
-          "min-w-0 w-full rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-2.5 py-1.5 font-mono text-xs text-content placeholder:text-content-subtle outline-none transition-colors",
+          "min-w-0 w-full rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-2.5 py-1.5 font-mono text-code text-content placeholder:text-content-subtle outline-none transition-colors",
           "focus:border-accent",
           error && "border-danger focus:border-danger",
           className,

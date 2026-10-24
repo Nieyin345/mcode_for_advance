@@ -478,7 +478,7 @@ export function PdfPreview({
   if (error) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-        <span className="text-xs text-red-500">{error}</span>
+        <span className="text-code text-red-500">{error}</span>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setNonce((n) => n + 1)}
@@ -597,7 +597,7 @@ export function PdfPreview({
 
       {loading && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <span className="flex items-center gap-1.5 rounded bg-surface/90 px-3 py-1.5 text-xs text-content-muted shadow">
+          <span className="flex items-center gap-1.5 rounded bg-surface/90 px-3 py-1.5 text-code text-content-muted shadow">
             <IconLoader2 size={13} className="animate-spin" />
             {t("common.loading")}
           </span>

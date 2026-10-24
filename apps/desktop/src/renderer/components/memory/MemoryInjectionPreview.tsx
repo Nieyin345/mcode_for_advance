@@ -27,7 +27,7 @@ export function MemoryInjectionPreview({ receipts }: { receipts?: MemoryInjectio
               <details
                 key={r.id}
                 data-memory-receipt={r.id}
-                className="rounded border border-edge bg-surface-subtle/30 p-2 text-xs"
+                className="rounded border border-edge bg-surface-subtle/30 p-2 text-code"
               >
                 <summary className="cursor-pointer font-medium text-content hover:text-content-muted">
                   <span>{displayName}</span>

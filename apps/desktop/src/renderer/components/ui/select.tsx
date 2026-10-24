@@ -54,7 +54,7 @@ function SelectTrigger({ className, children, ...props }: SelectTriggerProps) {
   return (
     <BaseSelect.Trigger
       className={cn(
-        "flex items-center gap-1 rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-2.5 py-1.5 text-xs text-content outline-none transition-colors",
+        "flex items-center gap-1 rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-2.5 py-1.5 text-code text-content outline-none transition-colors",
         "hover:bg-surface-muted focus:border-accent",
         "data-[popup-open]:border-accent",
         className,
@@ -177,7 +177,7 @@ function SelectItem({ className, children, ...props }: SelectItemProps) {
   return (
     <BaseSelect.Item
       className={cn(
-        "group flex items-center gap-2 px-3 py-1.5 text-xs text-content-muted outline-none select-none",
+        "group flex items-center gap-2 px-3 py-1.5 text-code text-content-muted outline-none select-none",
         "hover:bg-surface-muted hover:text-content data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
         "data-[disabled]:opacity-30 data-[disabled]:cursor-not-allowed",
         className,

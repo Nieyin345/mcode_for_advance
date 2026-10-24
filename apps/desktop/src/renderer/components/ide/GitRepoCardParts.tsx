@@ -305,7 +305,7 @@ export function CommitBox({
               onKeyDown={handleKeyDown}
               rows={10}
               autoFocus
-              className="mt-3 w-full resize-y rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-xs leading-relaxed text-content outline-none focus:border-accent"
+              className="mt-3 w-full resize-y rounded-md border border-edge-input bg-surface px-2.5 py-1.5 text-code leading-relaxed text-content outline-none focus:border-accent"
             />
             <div className="mt-3 flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={() => setPreviewOpen(false)}>

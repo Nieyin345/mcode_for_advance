@@ -274,7 +274,7 @@ export function ItemEditor({
                 </span>
                 <div className="flex flex-wrap gap-3">
                   {groups.data?.groups.map((g) => (
-                    <label key={g.id} className="flex items-center gap-1.5 text-xs text-content">
+                    <label key={g.id} className="flex items-center gap-1.5 text-code text-content">
                       <Checkbox
 
                         checked={draft.groupIds.includes(g.id)}
@@ -302,7 +302,7 @@ export function ItemEditor({
                   type="button"
                   onClick={() => set("actionType", type)}
                   className={cn(
-                    "rounded-md border px-2.5 py-1 text-xs",
+                    "rounded-md border px-2.5 py-1 text-code",
                     draft.actionType === type ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "border-edge text-content-muted hover:bg-surface-muted",
                   )}
                 >
@@ -344,7 +344,7 @@ export function ItemEditor({
                   />
                 </div>
                 {isLibrary && (
-                  <label className="flex items-center gap-2 text-xs text-content">
+                  <label className="flex items-center gap-2 text-code text-content">
                     <Checkbox  checked={draft.promptAttach} onChange={(e) => set("promptAttach", e.target.checked)} />
                     {t("customUi.editor.promptAttach")}
                   </label>
@@ -369,7 +369,7 @@ export function ItemEditor({
             {draft.actionType === "automation" && (
               <>
                 {workflows.data && automations.length === 0 ? (
-                  <p className="text-xs text-content-subtle">{t("customUi.editor.automationNone")}</p>
+                  <p className="text-code text-content-subtle">{t("customUi.editor.automationNone")}</p>
                 ) : (
                   <div className="grid grid-cols-2 gap-3">
                     <div className={LABEL}>
@@ -470,7 +470,7 @@ export function ItemEditor({
                           value={row.labelZh}
                           onChange={(e) => set("inputs", draft.inputs.map((r, j) => (j === idx ? { ...r, labelZh: e.target.value } : r)))}
                         />
-                        <label className="flex shrink-0 items-center gap-1 text-xs text-content">
+                        <label className="flex shrink-0 items-center gap-1 text-code text-content">
                           <Checkbox
 
                             checked={row.required}
@@ -561,7 +561,7 @@ export function ItemEditor({
                     spellCheck={false}
                   />
                 </div>
-                <label className="flex items-center gap-2 text-xs text-content">
+                <label className="flex items-center gap-2 text-code text-content">
                   <Checkbox  checked={draft.shellConfirm} onChange={(e) => set("shellConfirm", e.target.checked)} />
                   {t("customUi.editor.shellConfirm")}
                 </label>
@@ -603,7 +603,7 @@ export function ItemEditor({
                     </Button>
                   </div>
                   <Textarea
-                    className={cn(FIELD, "h-[340px] resize-y whitespace-pre font-mono text-xs leading-relaxed")}
+                    className={cn(FIELD, "h-[340px] resize-y whitespace-pre font-mono text-code leading-relaxed")}
                     value={draft.panelHtml}
                     onChange={(e) => set("panelHtml", e.target.value)}
                     onKeyDown={(e) => {
@@ -623,11 +623,11 @@ export function ItemEditor({
                   />
                 </div>
                 <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-                  <label className="flex items-center gap-2 text-xs text-content">
+                  <label className="flex items-center gap-2 text-code text-content">
                     <Checkbox  checked={draft.panelConfirm} onChange={(e) => set("panelConfirm", e.target.checked)} />
                     {t("customUi.editor.panelConfirm")}
                   </label>
-                  <label className="flex items-center gap-2 text-xs text-content">
+                  <label className="flex items-center gap-2 text-code text-content">
                     <Checkbox  checked={draft.panelNetwork} onChange={(e) => set("panelNetwork", e.target.checked)} />
                     {t("customUi.editor.panelNetwork")}
                   </label>
@@ -775,7 +775,7 @@ export function AdvancedSection() {
               <ModuleToolsButton />
             </ModuleSurface>
           ) : (
-            <p className="text-xs text-content-subtle">{t("customUi.advanced.modulesNoProject")}</p>
+            <p className="text-code text-content-subtle">{t("customUi.advanced.modulesNoProject")}</p>
           )}
         </div>
       </SettingsSection>

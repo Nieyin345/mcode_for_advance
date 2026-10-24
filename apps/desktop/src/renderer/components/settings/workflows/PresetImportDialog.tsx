@@ -98,7 +98,7 @@ export function PresetImportDialog({
           <Dialog.Title className="text-body font-semibold text-content">
             {t("settings.workflows.presetsTitle")}
           </Dialog.Title>
-          <Dialog.Description className="mb-3 text-xs leading-relaxed text-content-muted">
+          <Dialog.Description className="mb-3 text-code leading-relaxed text-content-muted">
             {t("settings.workflows.presetsDesc")}
           </Dialog.Description>
 

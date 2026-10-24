@@ -427,7 +427,7 @@ export function InlineInputRow({
           {...(onBlur ? { onBlur } : {})}
           placeholder={placeholder}
           className={cn(
-            "w-full rounded border bg-surface px-2 py-1 text-xs text-content focus:outline-none",
+            "w-full rounded border bg-surface px-2 py-1 text-code text-content focus:outline-none",
             error ? "border-red-500" : "border-accent",
           )}
         />
@@ -454,7 +454,7 @@ export function HintRow({ children }: { children: ReactNode }) {
 
 /** 菜单项的统一样式。四处(文献行 / 分类行 / 模版行 / 模版文件行)共用。 */
 export const MENU_ITEM_CLASS = cn(
-  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs outline-none select-none",
+  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-code outline-none select-none",
   "text-content-muted data-[highlighted]:bg-surface-muted",
 );
 

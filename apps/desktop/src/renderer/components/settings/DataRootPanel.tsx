@@ -139,7 +139,7 @@ export function DataRootPanel() {
               <LoadingNote label={t("common.loading")} className="justify-start px-0 py-1.5" />
             ) : (
               <div
-                className="flex min-w-0 items-center gap-1.5 rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted px-2.5 py-1.5 font-mono text-xs text-content"
+                className="flex min-w-0 items-center gap-1.5 rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted px-2.5 py-1.5 font-mono text-code text-content"
                 title={info.root}
               >
                 <IconFolder size={12} className="shrink-0 text-content-subtle" />

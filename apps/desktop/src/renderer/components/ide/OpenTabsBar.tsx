@@ -62,7 +62,7 @@ const MENU_ITEM_CLASS =
   // disabled 项**不加** `pointer-events-none`:那样连原生 title(说明为什么关不了)都
   // 看不到了。base-ui 对 disabled 项本就不发 click,也不会给它 data-highlighted,
   // 所以悬停不会假装可点。 */
-  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted data-[disabled]:opacity-40";
+  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-code text-content-muted outline-none select-none data-[highlighted]:bg-surface-muted data-[disabled]:opacity-40";
 
 /**
  * Open-tabs bar — the horizontal strip of open files above the Monaco editor,

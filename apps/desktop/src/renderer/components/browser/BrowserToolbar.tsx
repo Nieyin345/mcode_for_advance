@@ -240,7 +240,7 @@ function TreeEntryRow({
     >
       {favicon}
       <div className="min-w-0 flex-1">
-        <div className="truncate text-xs text-content">{title}</div>
+        <div className="truncate text-code text-content">{title}</div>
         {subtitle && <div className="truncate text-[11px] text-content-subtle">{subtitle}</div>}
         {extra}
       </div>
@@ -282,7 +282,7 @@ function MenuTreeNode({
           )}
         />
         <span className="shrink-0 text-content-muted">{icon}</span>
-        <span className="min-w-0 flex-1 truncate text-xs font-medium text-content">{label}</span>
+        <span className="min-w-0 flex-1 truncate text-code font-medium text-content">{label}</span>
         {trailing}
       </button>
       {open && <div className="pb-1">{children}</div>}
@@ -307,7 +307,7 @@ function MenuActionRow({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-surface-hover",
+        "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-code transition-colors hover:bg-surface-hover",
         accent ? "text-accent" : "text-content",
       )}
     >
@@ -600,7 +600,7 @@ export function BrowserToolbar({
               >
                 <div className="min-w-0 flex-1">
                   {entry.title && (
-                    <div className="truncate text-xs text-content">{entry.title}</div>
+                    <div className="truncate text-code text-content">{entry.title}</div>
                   )}
                   <div className="truncate text-[11px] text-content-muted">{entry.url}</div>
                 </div>

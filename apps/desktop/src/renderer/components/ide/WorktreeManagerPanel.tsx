@@ -124,7 +124,7 @@ export function WorktreeManagerPanel({ repos }: { repos: GitRepo[] }) {
               <div key={repo.path} className="rounded-md border border-edge px-2 py-1.5">
                 <div className="flex items-center gap-1.5">
                   <IconAlertTriangle size={12} className="shrink-0 text-content-subtle" />
-                  <span className="truncate text-xs font-medium text-content" title={repo.path}>
+                  <span className="truncate text-code font-medium text-content" title={repo.path}>
                     {repo.name}
                   </span>
                 </div>
@@ -138,7 +138,7 @@ export function WorktreeManagerPanel({ repos }: { repos: GitRepo[] }) {
             <div key={repo.path} className="rounded-md border border-edge">
               <div className="flex items-center gap-1.5 border-b border-edge px-2 py-1.5">
                 <IconGitBranch size={12} className="shrink-0 text-content-subtle" />
-                <span className="truncate text-xs font-medium text-content" title={repo.path}>
+                <span className="truncate text-code font-medium text-content" title={repo.path}>
                   {repo.name}
                 </span>
                 {main?.branch && (
@@ -229,7 +229,7 @@ function WorktreeManagerRow({
       <IconGitFork size={11} className="shrink-0 text-content-subtle" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <span className="truncate text-xs text-content" title={info.path}>
+          <span className="truncate text-code text-content" title={info.path}>
             {basename(info.path)}
           </span>
           {info.branch ? (
@@ -317,7 +317,7 @@ function WorktreeManagerRow({
                 {!retained && (info.dirty || !info.merged) && (
                   <div className="mt-2.5 space-y-1.5">
                     {(info.dirty || !info.merged) && (
-                      <label className="flex items-center gap-1.5 text-xs text-content-muted">
+                      <label className="flex items-center gap-1.5 text-code text-content-muted">
                         <input
                           type="checkbox"
                           checked={exportPatch}
@@ -328,7 +328,7 @@ function WorktreeManagerRow({
                       </label>
                     )}
                     {info.dirty && (
-                      <label className="flex items-center gap-1.5 text-xs text-content-muted">
+                      <label className="flex items-center gap-1.5 text-code text-content-muted">
                         <input
                           type="checkbox"
                           checked={force}

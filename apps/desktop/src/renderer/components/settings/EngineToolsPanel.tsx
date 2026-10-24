@@ -117,7 +117,7 @@ function EngineCard({
                     onClick={() => toggle(name)}
                     aria-pressed={on}
                     className={cn(
-                      "rounded-md border px-2.5 py-1 font-mono text-xs transition-colors",
+                      "rounded-md border px-2.5 py-1 font-mono text-code transition-colors",
                       on
                         ? "border-danger/60 bg-danger/10 text-danger"
                         : "border-edge bg-surface text-content hover:bg-surface-hover",
@@ -162,7 +162,7 @@ function EngineCard({
               className="w-full resize-y rounded-md border border-edge bg-surface px-3 py-2 text-body text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
             />
           </Field>
-          <p className="text-xs text-content-muted">{t("settings.engineTools.guidanceHint")}</p>
+          <p className="text-code text-content-muted">{t("settings.engineTools.guidanceHint")}</p>
           {/* 【MC-043 验收】「编辑 / 还原默认」:清空说明 = 回到引擎内置的通用说明
               (与"从未写过"同一语义),所以还原不是第二套存储,只是把这段清空。 */}
           <div className="flex justify-end">
@@ -178,13 +178,13 @@ function EngineCard({
           </div>
           {guidance.trim() && (
             <details className="rounded border border-edge bg-surface-muted/40 px-3 py-2">
-              <summary className="cursor-pointer text-xs text-content-muted">{t("settings.engineTools.guidancePreview")}</summary>
+              <summary className="cursor-pointer text-code text-content-muted">{t("settings.engineTools.guidancePreview")}</summary>
               <pre className="mt-2 whitespace-pre-wrap font-mono text-[0.7857em] text-content">{`## 用户的工具使用偏好(${engine})
 
 ${guidance.trim()}`}</pre>
             </details>
           )}
-          <p className="text-xs text-content-muted">{t("settings.engineTools.appliesNextTurn")}</p>
+          <p className="text-code text-content-muted">{t("settings.engineTools.appliesNextTurn")}</p>
           {error && <ErrorNote>{error}</ErrorNote>}
           <div className="flex justify-end">
             <Button type="button" onClick={save} disabled={busy}>

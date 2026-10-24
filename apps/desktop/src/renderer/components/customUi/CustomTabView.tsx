@@ -158,7 +158,7 @@ export function FileTab({ title, abs, projectPath }: { title: string; abs: strin
             {text}
           </Markdown>
         ) : (
-          <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-content">{text}</pre>
+          <pre className="whitespace-pre-wrap break-words font-mono text-code leading-relaxed text-content">{text}</pre>
         )}
         {truncated && <Hint text={t("customUi.tab.truncated")} />}
       </div>
@@ -205,7 +205,7 @@ function TabHeader({ title, subtitle, actions }: { title: string; subtitle?: str
   const { t } = useI18n();
   return (
     <div className="flex h-8 shrink-0 items-center gap-1 border-b border-edge px-3">
-      <span className="shrink-0 text-xs font-medium text-content">{title}</span>
+      <span className="shrink-0 text-code font-medium text-content">{title}</span>
       {subtitle && (
         <span className="min-w-0 truncate text-[11px] text-content-subtle" title={subtitle}>
           {subtitle}
@@ -236,5 +236,5 @@ function HeaderButton({ title, onClick, children }: { title: string; onClick: ()
 }
 
 function Hint({ text }: { text: string }) {
-  return <p className="py-6 text-center text-xs text-content-subtle">{text}</p>;
+  return <p className="py-6 text-center text-code text-content-subtle">{text}</p>;
 }

@@ -110,7 +110,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
 
         {/* Theme */}
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium text-content-muted">
+          <span className="text-code font-medium text-content-muted">
             {t("settings.appearance.title")}
           </span>
           <div className="grid grid-cols-3 gap-2">
@@ -123,7 +123,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
                   type="button"
                   onClick={() => pickTheme(opt.value)}
                   className={cn(
-                    "flex h-16 flex-col items-center justify-center gap-1 rounded-[var(--radius-card)] border text-xs",
+                    "flex h-16 flex-col items-center justify-center gap-1 rounded-[var(--radius-card)] border text-code",
                     active
                       ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
                       : "border-edge bg-surface/50 text-content-muted hover:bg-surface-hover",
@@ -141,7 +141,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
             it gates the SessionTabs strip above the chat (tabs) vs.
             drawer-only session switching (single). */}
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium text-content-muted">
+          <span className="text-code font-medium text-content-muted">
             {t("settings.general.displayMode")}
           </span>
           <div className="grid grid-cols-2 gap-2">
@@ -154,7 +154,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
                   type="button"
                   onClick={() => void setDisplayMode(opt.value)}
                   className={cn(
-                    "flex h-16 flex-col items-center justify-center gap-1 rounded-[var(--radius-card)] border text-xs",
+                    "flex h-16 flex-col items-center justify-center gap-1 rounded-[var(--radius-card)] border text-code",
                     active
                       ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
                       : "border-edge bg-surface/50 text-content-muted hover:bg-surface-hover",
@@ -173,10 +173,10 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
 
         {/* Server */}
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium text-content-muted">
+          <span className="text-code font-medium text-content-muted">
             {t("mobile.settings.connection")}
           </span>
-          <div className="flex items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface/50 px-3 py-2.5 text-xs text-content-muted">
+          <div className="flex items-center gap-2 rounded-[var(--radius-card)] border border-edge bg-surface/50 px-3 py-2.5 text-code text-content-muted">
             <IconLink size={14} className="shrink-0" />
             <span className="truncate">
               {t("mobile.settings.connectedTo", {
@@ -189,14 +189,14 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
               <button
                 type="button"
                 onClick={unpair}
-                className="flex h-11 flex-1 items-center justify-center rounded-[var(--radius-btn-md)] bg-danger px-3 text-xs font-medium text-surface"
+                className="flex h-11 flex-1 items-center justify-center rounded-[var(--radius-btn-md)] bg-danger px-3 text-code font-medium text-surface"
               >
                 {t("mobile.settings.confirmUnpair")}
               </button>
               <button
                 type="button"
                 onClick={() => setUnpairConfirm(false)}
-                className="flex h-11 flex-1 items-center justify-center rounded-[var(--radius-btn-md)] border border-edge px-3 text-xs text-content-muted"
+                className="flex h-11 flex-1 items-center justify-center rounded-[var(--radius-btn-md)] border border-edge px-3 text-code text-content-muted"
               >
                 {t("common.cancel")}
               </button>
@@ -205,7 +205,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
             <button
               type="button"
               onClick={() => setUnpairConfirm(true)}
-              className="flex h-11 items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] border border-edge px-3 text-xs text-danger hover:bg-surface-hover"
+              className="flex h-11 items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] border border-edge px-3 text-code text-danger hover:bg-surface-hover"
             >
               <IconUnlink size={14} />
               {t("mobile.settings.unpair")}

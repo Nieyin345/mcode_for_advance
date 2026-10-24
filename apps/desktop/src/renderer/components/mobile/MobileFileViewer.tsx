@@ -56,12 +56,12 @@ export function FileViewerOverlay({
         <button
           type="button"
           onClick={onClose}
-          className="flex min-h-11 items-center gap-1 rounded-[var(--radius-btn-md)] px-2 text-xs text-content-muted hover:bg-surface-muted"
+          className="flex min-h-11 items-center gap-1 rounded-[var(--radius-btn-md)] px-2 text-code text-content-muted hover:bg-surface-muted"
         >
           <IconArrowUp size={14} className="rotate-[-90deg]" />
           {t("mobile.file.back")}
         </button>
-        <div className="min-w-0 flex-1 truncate text-center font-mono text-xs text-content">
+        <div className="min-w-0 flex-1 truncate text-center font-mono text-code text-content">
           {name}
         </div>
         <span className="w-12" />
@@ -158,7 +158,7 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
   }
   if (failed) {
     return (
-      <div className="flex flex-1 items-center justify-center gap-1.5 text-xs text-content-subtle">
+      <div className="flex flex-1 items-center justify-center gap-1.5 text-code text-content-subtle">
         <IconPhoto size={14} /> {t("mobile.file.cannotPreview")}
       </div>
     );
@@ -176,7 +176,7 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
   // `templates.preview.emptyFile` 把它说出来，只有这里没守。复用同一条文案。
   if (content.trim().length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center p-4 text-xs text-content-subtle">
+      <div className="flex flex-1 items-center justify-center p-4 text-code text-content-subtle">
         {t("templates.preview.emptyFile")}
       </div>
     );
@@ -191,7 +191,7 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
           type="button"
           onClick={() => setSourceView((v) => !v)}
           title={sourceView ? t("ide.viewer.mdPreview") : t("ide.viewer.mdSource")}
-          className="absolute bottom-4 right-4 z-10 flex h-11 items-center gap-1.5 rounded-full border border-edge bg-surface-muted/90 px-3 text-xs text-content-muted shadow-lg backdrop-blur hover:bg-surface-hover active:bg-surface-hover"
+          className="absolute bottom-4 right-4 z-10 flex h-11 items-center gap-1.5 rounded-full border border-edge bg-surface-muted/90 px-3 text-code text-content-muted shadow-lg backdrop-blur hover:bg-surface-hover active:bg-surface-hover"
         >
           {sourceView ? <IconEye size={14} /> : <IconCode size={14} />}
           {sourceView ? t("ide.viewer.mdPreview") : t("ide.viewer.mdSource")}

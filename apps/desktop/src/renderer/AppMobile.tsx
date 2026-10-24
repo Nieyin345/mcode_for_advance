@@ -185,7 +185,7 @@ function MobileShell() {
               drawer (fresh sessions show as a bare "New session" title).
               Chat-scoped, so it hides in the files/git views. */}
           {view === "chat" && activeSessionId && activeProject && (
-            <span className="flex min-w-0 shrink items-center gap-1 px-1 text-xs text-content-subtle">
+            <span className="flex min-w-0 shrink items-center gap-1 px-1 text-code text-content-subtle">
               <IconFolder size={13} className="shrink-0" />
               <span className="truncate">{activeProject.name}</span>
             </span>

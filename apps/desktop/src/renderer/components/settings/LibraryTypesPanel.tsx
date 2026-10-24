@@ -62,7 +62,7 @@ function PromptRow({
   return (
     <div className="space-y-1 px-4 py-2.5">
       <div className="flex items-center gap-2">
-        <span className="min-w-0 truncate text-xs font-medium text-content">{label}</span>
+        <span className="min-w-0 truncate text-code font-medium text-content">{label}</span>
         {sub && <span className="ml-auto min-w-0 truncate text-[0.7857em] text-content-subtle">{sub}</span>}
       </div>
       <Textarea
@@ -70,7 +70,7 @@ function PromptRow({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         rows={2}
-        className="w-full resize-y rounded border border-edge bg-surface px-2 py-1 text-xs leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+        className="w-full resize-y rounded border border-edge bg-surface px-2 py-1 text-code leading-relaxed text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
       />
     </div>
   );
@@ -93,7 +93,7 @@ function SuppressCheck({
 }) {
   return (
     <label
-      className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-surface-hover"
+      className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-code hover:bg-surface-hover"
       style={{ paddingLeft: `${8 + depth * 16}px` }}
     >
       <Checkbox
@@ -357,7 +357,7 @@ export function LibraryTypesPanel() {
       {/* ── 大类提示词:注入在该大类清单的最前面 ── */}
       <SettingsSection title={t("settings.libraryTypes.section.group")}>
         {!groups ? (
-          <div className="flex items-center gap-2 px-4 py-3 text-xs text-content-muted">
+          <div className="flex items-center gap-2 px-4 py-3 text-code text-content-muted">
             <Spinner size="xs" />
           </div>
         ) : (
@@ -379,11 +379,11 @@ export function LibraryTypesPanel() {
       {/* ── 分类提示词:可能很多 —— 按左栏顺序(大类 → 树序)排好,放进可滚动列表 ── */}
       <SettingsSection title={t("settings.libraryTypes.section.collection")}>
         {!collections ? (
-          <div className="flex items-center gap-2 px-4 py-3 text-xs text-content-muted">
+          <div className="flex items-center gap-2 px-4 py-3 text-code text-content-muted">
             <Spinner size="xs" />
           </div>
         ) : promptRows.length === 0 ? (
-          <div className="px-4 py-3 text-xs text-content-muted">{t("settings.libraryTypes.noCollections")}</div>
+          <div className="px-4 py-3 text-code text-content-muted">{t("settings.libraryTypes.noCollections")}</div>
         ) : (
           <div className="max-h-96 overflow-y-auto">
             {promptRows.map(({ c, sub }) => (
@@ -407,7 +407,7 @@ export function LibraryTypesPanel() {
           与提示词是同一类东西(「资料库对 AI 的行为」),所以住同一页、共用保存按钮。 */}
       <SettingsSection title={t("settings.libraryTypes.section.suppress")} desc={t("settings.libraryTypes.suppressHint")}>
         {!suppress ? (
-          <div className="flex items-center gap-2 px-4 py-3 text-xs text-content-muted">
+          <div className="flex items-center gap-2 px-4 py-3 text-code text-content-muted">
             <Spinner size="xs" />
           </div>
         ) : (

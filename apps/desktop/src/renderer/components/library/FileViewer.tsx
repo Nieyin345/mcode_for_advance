@@ -322,7 +322,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         </button>
       )}
       <IconFile size={13} className="shrink-0 text-content-subtle" />
-      <span className="min-w-0 flex-1 truncate text-xs text-content" title={visibleName}>
+      <span className="min-w-0 flex-1 truncate text-code text-content" title={visibleName}>
         {visibleName}
       </span>
       {/* 「用系统程序打开」**只给项目文件那一支**（2026-09-21）—— 它走
@@ -352,7 +352,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     if (error !== null) {
       return (
         <div className="flex flex-1 items-start justify-center p-6">
-          <span className="break-all text-center text-xs text-danger">{error}</span>
+          <span className="break-all text-center text-code text-danger">{error}</span>
         </div>
       );
     }
@@ -361,7 +361,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     if (data.type === "unsupported") {
       return (
         <div className="flex flex-1 items-start justify-center p-6">
-          <span className="break-all text-center text-xs text-danger">{data.error}</span>
+          <span className="break-all text-center text-code text-danger">{data.error}</span>
         </div>
       );
     }
@@ -385,7 +385,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
                 <button
                   key={f.name}
                   onClick={() => navigateLibraryPath(relPath === null ? f.name : `${relPath}/${f.name}`)}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs text-content-muted hover:bg-surface-hover hover:text-content"
+                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-code text-content-muted hover:bg-surface-hover hover:text-content"
                 >
                   {f.isDir ? (
                     <IconFolder size={13} className="shrink-0 text-content-subtle" />
@@ -467,7 +467,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       if (!data.filePath) {
         return (
           <div className="flex flex-1 items-start justify-center p-6">
-            <span className="text-center text-xs text-danger">{t("ide.office.openFailed")}</span>
+            <span className="text-center text-code text-danger">{t("ide.office.openFailed")}</span>
           </div>
         );
       }
@@ -481,7 +481,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
     }
     return (
       <div className="flex flex-1 items-start justify-center p-6">
-        <span className="text-center text-xs text-content-muted">
+        <span className="text-center text-code text-content-muted">
           {t("library.file.unknownMime", { mime })}
         </span>
       </div>
@@ -540,7 +540,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
             <Dialog.Title className="text-body font-semibold text-content">
               {t("library.pdfViewer.leaveUnsavedTitle")}
             </Dialog.Title>
-            <Dialog.Description className="mt-2 text-xs text-content-muted">
+            <Dialog.Description className="mt-2 text-code text-content-muted">
               {t("library.pdfViewer.leaveUnsavedBody")}
             </Dialog.Description>
             <div className="mt-4 flex justify-end gap-2">

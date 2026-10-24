@@ -45,7 +45,7 @@ export function GenofficeDocumentPane({ filePath }: { filePath: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-edge px-3 py-1.5 text-xs text-content-muted">
+      <div className="flex shrink-0 items-center gap-2 border-b border-edge px-3 py-1.5 text-code text-content-muted">
         <span className="font-medium text-content">GenOffice</span>
         <span className="truncate font-mono" title={filePath}>{filePath}</span>
         <span className="ml-auto flex items-center gap-2">
@@ -111,13 +111,13 @@ export function GenofficeDocumentPane({ filePath }: { filePath: string }) {
               {rows.length > 0 ? (
                 <ol className="space-y-1">
                   {rows.map((r) => (
-                    <li key={r.key} className="rounded border border-edge bg-surface-muted px-2 py-1 font-mono text-xs text-content">
+                    <li key={r.key} className="rounded border border-edge bg-surface-muted px-2 py-1 font-mono text-code text-content">
                       {r.text}
                     </li>
                   ))}
                 </ol>
               ) : (
-                <div className="text-xs text-content-subtle">{doc.data.summary ?? ""}</div>
+                <div className="text-code text-content-subtle">{doc.data.summary ?? ""}</div>
               )}
             </div>
           );
