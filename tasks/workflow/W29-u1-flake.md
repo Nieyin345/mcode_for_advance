@@ -129,3 +129,41 @@ grep -n "assertEvaluated" apps/desktop/scripts/t8-node-red-u1/journeys/*.ts
 而**重跑到绿，等于把断言变成了「随机抽样」**。
 
 **这条缺陷的最坏后果不是它红，是它教人重跑。**
+
+
+## 结果回写（2026-10-25，本轮：部分通过 / 尚未完成稳定性验收）
+
+### 文件边界与修改
+
+开工 HEAD `09ac246b`；开工前 `git status --porcelain apps/desktop/scripts/t8-node-red-u1/` 为空。仅修改：
+
+- `apps/desktop/scripts/t8-node-red-u1/journeys/node-red-canvas-load-edit-deploy-reopen.ts`
+- 本任务卡追加回写；未触及 `apps/desktop/src/**`、共享 U1 driver、W26 或其他人的未提交文件。
+
+原文件全部 `assertEvaluated` 逐项分类（在本目录的三个正常旅程及一条预期失败旅程中搜索，实际只有下表两项）：
+
+| 断言 | 类型 | 原因 / 修法 |
+| --- | --- | --- |
+| `canvas-label-shows-rename` | **异步** | 节点编辑托盘提交后，Node-RED 画布标签下一帧/后续帧重绘。原来单次求值可能早于真实 DOM。改为按原选择器轮询 DOM 的 `textContent.includes(RENAME)`，最长 10s；失败带最后标签集合、尝试次数。 |
+| `reopen-dom-label` | **异步** | relaunch 后原生编辑器异步加载并重画标签。相同条件轮询 10s；失败保留实际值。 |
+
+此外，在 `canvas-loaded` 与 `canvas-reopened-final` 的截图步骤之前加入 `capturePage()` 就绪探针：每 250ms 检查一次，最长 10s；空图或异常都继续等待，超时将最后 `lastError` 输出到步骤证据。**未修改**共享驱动的截图行为，不以宿主窗口截图替代 Node-RED 原生视图。没有增加无条件 sleep。
+
+### 实际回归证据
+
+1. `git diff --check -- apps/desktop/scripts/t8-node-red-u1/journeys/node-red-canvas-load-edit-deploy-reopen.ts`：PASS。
+2. `cd apps/desktop && node_modules/.bin/tsc.cmd --noEmit --pretty false`：EXIT=0。
+3. 定向真实 Electron：`node scripts/t8-node-red-u1/run.mjs --only=node-red-canvas-load-edit-deploy-reopen`：**被测旅程本身 PASS**，跨两个真实 OS 进程，证据 `.tmp/electron-u1/2026-10-24T19-26-47-977Z/`。注意外层 `run.mjs` 退出 1：其正式逻辑要求故意失败旅程同时参加；`--only` 过滤掉故意失败后，底层 U1 退出 0，被外层按“缺负控”判失败。故不能把这条单独计成“包装器 PASS”。
+4. **完整 T8**：`cd apps/desktop && node scripts/t8-node-red-u1/run.mjs` → **EXIT=0 / T8: PASS**；三个正常旅程分别 PASS（装载/编辑/部署/重开，从零拖拽连线部署，点击执行并看结果），故意失败旅程 `sentinel-label-must-not-exist` 按预期 FAIL；`unexpected-failure=0`。证据 `.tmp/electron-u1/2026-10-24T19-28-47-961Z/`。
+5. 第二次完整 T8 重跑**未能启动测试**，受到其他对话的重型测试互斥锁保护：`Mcode heavy test busy (PID 19236, run-smokes (1 heavy suites))`，包装器 EXIT=5 BUILD CRASHED。这不是产品/断言失败，也**不是**本轮第二次 PASS；没有抢占/终止持锁者。
+
+### 验收状态 / 未完成项
+
+- ✅ `assertEvaluated` 分类、两个异步断言轮询及真实值超时诊断，保持原判据语义。
+- ✅ 截图前检查原生视图是否可捕获；原生 driver 未改。
+- ✅ 类型检查、单个完整 T8 套件及其故意失败负控通过。
+- ❌ **“连续至少 3 轮全绿”尚未满足**（完整正式套件成功 1 轮；其后重测被别的进程的互斥锁挡住）。
+- ❌ **将轮询恢复为单次求值后的变异复现未执行**，不能据一次绿宣称消除了全部抖动。
+- ⚠️ 在本轮已完成的真实测试中没有再观察到 `Current display surface not available`；这仅证明该次路径通过，不证明截图竞态彻底消失。
+
+卡上的现象（5 趟 1 趟绿）是 W28 当时的统计，并非本轮复现率；要等重型锁释放后继续 3–5 次连续回归 + 变异，才能把本卡从“部分通过”改为“验收通过”。
