@@ -54,6 +54,10 @@ if (b.name === "document_md_edit") { ... }
 3. **`restoreFiles` 跳过它，且它出现在 `unrestorable` 桶**（不是 `conflicts`）。
 4. **`apply_ops` / `create_document` 行为零变化** —— `t125-restorable-smoke` 27/27、`t123-office-artifact-smoke` 14/14。
 
+> ⚠️ **不要用 `kind` 做判据**（2026-10-24 H）。docx 永远属于「读不出 `before`」那一类，而 `kind` 只反映「turn 之前存不存在」—— 同一个工具改新文件和改旧文件会给出 `created` 和 `modified` 两种都正确的结果。
+>
+> **唯一承载判断的信号是 `restorable === false`。** 写 `kind === "modified"` 做断言会用错样本，而且它「看起来也能过」（改已存在文件时确实过）。
+
 ## 四、变异（正控/负控分开）
 
 | 变异 | 正控（该红） | 负控（该绿） |
