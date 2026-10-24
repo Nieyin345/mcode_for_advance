@@ -1,6 +1,6 @@
 # F019｜真实扩展的 API 需求普查：26,961 行里我们到底需要多少
 
-- Status: ready-for-agent
+- Status: **done**
 - Category: **P0 扩展主线（B 方案的需求侧）**
 - Depends on: F017（Theia PoC 结论）；用户裁决「自己做，要做完整的」
 - Exclusive writable files:
@@ -161,3 +161,145 @@ window.showQuickPick(["a"]);
 7. **划词翻译用例专项结论**（一句 + 成员清单）；
 8. **你对「B 方案要多久」的判断**——基于这条曲线，不是感觉；
 9. 提交 SHA。
+
+---
+
+## 结果回写
+
+**完整报告：`docs/planning/vscode-api-census.md`。** 下面只记结论与证据摘要。
+
+### 1. 三类扩展的数量
+
+| 类别 | 数量 | 明细 |
+|---|---:|---|
+| **有代码**（有 `main`） | **30** → 去重后 **29** | 1 组重复：latex-workshop 10.20.0（保留，`extensions.json` 登记）vs 10.15.0（哈希目录残留） |
+| **无代码**（无 `main`） | **2** | 中文语言包；`vscode-node-azure-pack`（Extension Pack，只声明依赖，零自有代码） |
+| **不是扩展** | **1** | `.02de5c43-…`：无 `package.json`，`.vsixmanifest` 是 **Pylance 2025.8.3 的残留目录**（28 MB，被新版替换后只留 `dist/`） |
+
+**另有两条要报**：
+- `MarsCode.marscode-extension` 与 `Anthropic.claude-code` **在磁盘上有、不在 `extensions.json` 里**（`.obsolete` 记的是它们更旧的版本）。是真扩展、有代码，计入；
+- `*-win32-x64` 目录（debugpy / python / python-envs）**是正常扩展**，已计入。
+
+### 2. 扫了多少文件、多少行
+
+| | |
+|---|---:|
+| 扩展 | **29** |
+| **文件** | **198** |
+| **行** | **266,260** |
+| 体积 | 60.8 MB |
+| **解析失败** | **0** |
+| 不同成员 | **429** |
+| 不同命名空间/类 | **157** |
+
+**「只扫 `main`」 vs 「递归 require」** —— 卡里判据 1 的量化证据：
+
+| 口径 | 成员数合计 |
+|---|---:|
+| 只扫入口 | **1,276** |
+| 递归 require | **2,202**（+73%） |
+
+**9 个 azure 扩展的 `main.js` 只扫入口时是 0**（30 行加载器，正文零 `vscode.` 引用，真代码在 `require("./dist/extension.bundle")`）。只扫 `main` 会得出「它们不用 API」而实际它们是本机最密集的一批。
+
+### 3. Top 30 成员表
+
+完整表（含「本仓底层」逐条理由）见 `docs/planning/vscode-api-census.md` 第三节。摘要：
+
+| # | 成员 | 扩展数 | 本仓底层 |
+|---:|---|---:|---|
+| 1 | `Uri.file` | 27 | ✅ L2 已有 |
+| 2 | `commands.executeCommand` | 26 | ⚠️ 只支持一条已声明命令 |
+| 3 | `workspace.getConfiguration` | 25 | ⚠️ L2 只认单 section + 预置 JSON |
+| 4 | `EventEmitter.constructor` | 24 | ✅ Node EventEmitter + 包装 |
+| 5 | `Uri.parse` | 24 | ⚠️ 需真 URI 解析器 |
+| 6 | `window.showErrorMessage` | 24 | ✅ NotificationManager |
+| 7 | `window.showInformationMessage` | 24 | ✅ L2 `l2Notify` |
+| 8 | `commands.registerCommand` | 23 | ✅ L1 已有 |
+| 9 | `window.showWarningMessage` | 23 | ✅ L2 已有 |
+| 10 | `workspace.workspaceFolders` | 23 | ⚠️ 无多根工作区模型 |
+| 11–30 | `env.openExternal` / `extensions.getExtension` / `window.withProgress` / `ProgressLocation.Notification` / `window.createOutputChannel` / `workspace.fs` / `l10n.t` / `ConfigurationTarget.Global` / `ThemeIcon.constructor` / `window.showTextDocument` / `workspace.openTextDocument` / `env.appName` / `env.machineId` / `FileType.Directory` / `Range.constructor` / `env.clipboard` / `env.language` / `FileType.File` / `Uri.joinPath` / `window.createQuickPick` | 17–22 | ✅ 11 / ⚠️ 8 / ❌ 1（Top 30 总账 ✅ 17 / ⚠️ 12 / ❌ 1） |
+
+**Top 30 里 ✅ 17 个、⚠️ 12 个、❌ 1 个。** ✅ 集中在 `env.*` 常量、`Uri.file`、`commands.registerCommand`、`show*Message` —— 正好是 A+ 做过的那批。**⚠️ 才是真工作量**（语义从函数调用变成对象模型，≈ ✅ 的 2–3 倍）。
+
+### 4. 覆盖曲线
+
+| Top K | 完全覆盖 | ≥90% 调用次数 | ≥80% 调用次数 | 平均成员覆盖率 | 平均调用覆盖率 |
+|---|---:|---:|---:|---:|---:|
+| **10** | 0% | 0% | 0% | 17.5% | 29.9% |
+| **20** | 0% | 0% | 13.8% | 29.9% | 64.1% |
+| **30** | 0% | 0% | 34.5% | 38.7% | 69.9% |
+| **50** | 0% | 17.2% | **62.1%** | **53.2%** | **78.5%** |
+| **100** | 6.9% | 62.1% | 86.2% | 72.4% | 89% |
+| **200** | 10.3% | 86.2% | **100%** | 85.8% | 94.4% |
+| 429（全部） | **100%** | 100% | 100% | 100% | 100% |
+
+三个口径回答三个问题，**不能混**：strict = 一个成员都不缺；≥N% 调用 = 常用路径能跑；平均 = 全体平均。
+
+**`l10n.t` 一个成员占 31.5% 的调用次数（4,325 / 13,737），且高度集中在 Azure 系列** —— 「平均调用覆盖率」这条线主要在度量「Azure 扩展跑得动吗」。
+
+### 5. 一个成员都没扫到的扩展
+
+**0 个。** 29 个全部至少扫出 1 个成员。最少的是 `remote-ssh-edit`（5）与 `tomoki1207.pdf`（5，读完源码确认）。
+
+`zeroMember` 列表仍然会产出（`result.json` + `--verbose` 的 `[ 0]` 行）—— **反控已实测**：故意写一个「有 `.window.showQuickPick` 文本但 `window` 来自本地对象」的扩展，正确报 0 并列入 `zeroMember`。
+
+**`MarsCode` 的 15 是下界**（控制流平坦化 + 字符串表混淆，成员名运行时解码），报告里已标注。
+
+### 6. 手工对照：`seepine.md-editor`（脚本 vs 人肉）
+
+人肉 grep 全部 4 个可达文件，逐条比对：**一致，三处「差异」全部是脚本对、肉眼/正则错**：
+
+| 人肉看到 | 脚本 | 判定 |
+|---|---|---|
+| `commands.registerCommand` | 没有 | ✅ 在**注释**里（`out/extension.js:8`）—— 正则会把注释当代码 |
+| `window.showInformationMessage` | 没有 | ✅ 同上（`:11`） |
+| `Uri.Range` / `WorkspaceEdit` | 不在 members | ✅ 构造式 `new vscode.X()`，记在 namespaces |
+| `vscode.open` / `vscode.openWith` | 没有 | ✅ 是 `executeCommand("vscode.open", …)` 的**字符串参数** |
+
+**第二个对照 `tomoki1207.pdf`**：人肉 6 条，剔除「字符串参数 1 条 + 从 main 不可达的文件里的 1 条」后剩 5 条，与脚本完全一致 —— 同时证明递归扫描跟的是真实 require 图，**不是「同目录所有 .js」**。
+
+### 7. 划词翻译专项结论
+
+**siesta 的 `main` 可达 4 个文件、18 个成员**（`pdfViewer.js` 是死文件，无人 require）。**它「翻译」的真实机制是 `child_process.spawn` 跑 `pdf2zh`，不是 API** —— 与原 A+ 报告的结论一致。
+
+**最小划词翻译需要 13 个成员 + `Selection` / `TextEditor.edit` 两个对象模型**：
+
+```
+commands.executeCommand(2)  workspace.getConfiguration(3)  showErrorMessage(6)
+showInformationMessage(7)   commands.registerCommand(8)    window.withProgress(13)
+createOutputChannel(15)     env.clipboard(26)              window.createQuickPick(30)
+window.showQuickPick(40)    window.activeTextEditor(43)    createStatusBarItem(69)
+window.showInputBox(72)     + Selection(91) + TextEditor.edit
+```
+
+**一句话结论：要让划词翻译跑起来，必须实现这 13 个成员 —— 它们全部在 Top 75 以内（最深的 `showInputBox` 排第 72），没有一个是长尾。** 不需要等全量兼容层。真正的难点是两处语义：
+1. `window.activeTextEditor` 要指向 Monaco 的真实选区（`FileEditor.tsx:810-813` 已写明 Monaco 自绘、`window.getSelection()` 拿不到）；
+2. `TextEditor.edit()` 是事务式编辑，`vscodeL1Bridge` 的 L2 已明确写「editor edit transactions unsupported」—— **要新建，不是接一下**。
+
+### 8. 「B 方案要多久」——基于曲线
+
+**先拆成两个问题，答案差一个数量级：**
+
+| 目标 | 需要 | 依据 |
+|---|---|---|
+| **划词翻译能跑** | Top 75 里的 13 个 + 2 个对象模型 | 最深排第 72 |
+| **86% 扩展「常用路径能跑」** | **Top 100 成员** | ≥80% 调用覆盖 86% 扩展 |
+| **全部扩展「常用路径能跑」** | **Top 200 成员** | ≥80% 调用覆盖 100% |
+| **装进来保证不崩（完全覆盖）** | **429 个 + 持续补** | Top 400 仍有 45% 缺至少一个 |
+
+**诚实结论**：
+- **「常用路径兼容层」是月级、可分期**（Top 100 → 86%）；
+- **「装进来就保证不崩」是年级、且没有终点** —— 本机 429 只是上界不是上界，真实生态只会更多；任何漏掉的成员（哪怕全机只有 1 个扩展用）都会让那个扩展抛 `undefined is not a function`；
+- **中间没有「做完」这个状态。**
+- **曲线形状是健康的长尾，但「按调用次数」和「按能不能装」差 10 倍** —— 这两个数字必须让用户知道问的是哪一个。
+
+### 9. 未做 / 已知边界
+
+- `MarsCode` 的 15 是下界（混淆），`Anthropic.claude-code` 的 90 也是下界（`vscode[method]` 动态访问抓不到）；
+- `browser` 入口未扫（与 Electron 桌面宿主目标一致）；
+- 运行时拼接的 `require` 不可见（本机未发现，方法上存在）；
+- `l10n.t` 的调用次数高度集中于 Azure 系列（报告 §10 已写明）。
+
+### 10. 提交 SHA
+
+见本卡最后一行（`docs(F019)` 提交）。
