@@ -466,7 +466,7 @@ function StreamSidebarBase() {
       onClick={(e) => openProjectManage(p, e)}
       className={cn(
         "-mr-1 flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle opacity-50 transition-opacity",
-        "hover:bg-surface-hover hover:text-content group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:ring-2 focus-visible:ring-accent-strong",
+        "cds-hover-ghost hover:text-content group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:ring-2 focus-visible:ring-accent-strong",
       )}
       title={t("layout.projectManageIcon")}
       aria-label={t("layout.projectManageIcon")}
@@ -627,7 +627,7 @@ function StreamSidebarBase() {
             onClick={() => setLeftOpen(false)}
             className={cn(
               "flex h-7 w-7 items-center justify-center rounded text-content-muted transition-colors",
-              "hover:bg-surface-hover hover:text-content",
+              "cds-hover-ghost hover:text-content",
             )}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             title={t("layout.hideLeftPanel")}
@@ -900,7 +900,7 @@ function StreamSidebarBase() {
           onClick={() => setSettingsOpen(true)}
           className={cn(
             "flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-content-muted transition-colors [font-size:var(--right-panel-font-size)]",
-            "hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost hover:text-content",
           )}
           title={t("layout.settings")}
         >
@@ -922,7 +922,7 @@ function StreamSidebarBase() {
           onClick={toggleTheme}
           className={cn(
             "flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors [font-size:var(--right-panel-font-size)]",
-            "hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost hover:text-content",
           )}
           title={effectiveTheme === "dark" ? t("layout.themeToLight") : t("layout.themeToDark")}
         >
@@ -933,7 +933,7 @@ function StreamSidebarBase() {
             onClick={() => setLeftOpen(false)}
             className={cn(
               "flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors [font-size:var(--right-panel-font-size)]",
-              "hover:bg-surface-hover hover:text-content",
+              "cds-hover-ghost hover:text-content",
             )}
             title={t("layout.hideLeftPanel")}
           >
@@ -1248,7 +1248,7 @@ function StreamCard({
             <span className="flex items-center gap-0.5">
               <button
                 onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); onArchive(); }}
-                className="flex items-center rounded px-1 text-accent hover:bg-surface-hover"
+                className="cds-hover-ghost flex items-center rounded px-1 text-accent"
                 aria-label={t("layout.confirmArchive")}
                 title={t("layout.confirmArchive")}
               >
@@ -1256,7 +1256,7 @@ function StreamCard({
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); }}
-                className="flex items-center rounded px-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+                className="cds-hover-ghost flex items-center rounded px-1 text-content-subtle hover:text-content"
                 aria-label={t("common.cancel")}
                 title={t("common.cancel")}
               >
@@ -1268,7 +1268,7 @@ function StreamCard({
             <span className="flex items-center gap-0.5">
               <button
                 onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); onDelete(); }}
-                className="flex items-center rounded px-1 text-danger hover:bg-surface-hover"
+                className="cds-hover-ghost flex items-center rounded px-1 text-danger"
                 aria-label={t("layout.confirmDelete")}
                 title={t("layout.confirmDelete")}
               >
@@ -1276,7 +1276,7 @@ function StreamCard({
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); }}
-                className="flex items-center rounded px-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+                className="cds-hover-ghost flex items-center rounded px-1 text-content-subtle hover:text-content"
                 aria-label={t("common.cancel")}
                 title={t("common.cancel")}
               >

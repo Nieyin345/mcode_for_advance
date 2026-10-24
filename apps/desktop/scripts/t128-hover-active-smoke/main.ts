@@ -19,7 +19,7 @@
  * 「`--surface-active` 等于 `#e1e0d9`」这条断言只会证明有人改了那个数，
  * 不证明改对了。变异测试里把 active 改成和 hover 同值，值断言全绿而关系断言红。
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 let total = 0;
@@ -224,6 +224,34 @@ console.log("\n[5] tailwind 暴露了 surface.active（否则 bg-surface-active 
     /active:\s*"rgb\(var\(--surface-active\)/.test(tw));
   check("  surface.hover 映射仍在（别误删）",
     /hover:\s*"rgb\(var\(--surface-hover\)/.test(tw));
+}
+
+console.log("\n[6] 迁移进度：裸 hover:bg-surface-hover 的总数只能降（T129 起分批收）");
+{
+  const walk = (dir: string): string[] => {
+    const out: string[] = [];
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = resolve(dir, e.name);
+      if (e.isDirectory()) out.push(...walk(p));
+      else if (e.name.endsWith(".tsx")) out.push(p);
+    }
+    return out;
+  };
+  const files = walk(root("src/renderer"));
+  let raw = 0;
+  let migrated = 0;
+  for (const f of files) {
+    const t = readFileSync(f, "utf8");
+    raw += (t.match(/hover:bg-surface-hover\b(?!\/)/g) ?? []).length;
+    migrated += (t.match(/cds-hover-ghost/g) ?? []).length;
+  }
+  console.log(`      裸 hover:bg-surface-hover = ${raw} 处；cds-hover-ghost = ${migrated} 处`);
+  // 上界随迁移推进而下调。写死一个当前值是为了让「有人把类撤了」立刻红，
+  // 而不是悄悄回退。**每次迁移一批就把它改小**，别让它永远宽松。
+  // 基线口径：**不含 `/60` 这类 alpha 变体**（它们是另一类，迁移会改变观感）。
+  // 2026-10-24 第一批迁移后实测 216。
+  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 216", raw <= 216, { raw });
+  check("★ 至少有一处用上了 cds-hover-ghost", migrated > 0, { migrated });
 }
 
 console.log("");

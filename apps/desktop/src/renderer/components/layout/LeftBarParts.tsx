@@ -467,7 +467,7 @@ export function SessionRow({
         <>
           <button
             onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); onArchive(); }}
-            className="flex shrink-0 items-center rounded px-1 text-accent hover:bg-surface-hover"
+            className="cds-hover-ghost flex shrink-0 items-center rounded px-1 text-accent"
             aria-label={t("layout.confirmArchive")}
             title={t("layout.confirmArchive")}
           >
@@ -475,7 +475,7 @@ export function SessionRow({
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); }}
-            className="flex shrink-0 items-center rounded px-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost flex shrink-0 items-center rounded px-1 text-content-subtle hover:text-content"
             aria-label={t("common.cancel")}
             title={t("common.cancel")}
           >
@@ -487,7 +487,7 @@ export function SessionRow({
         <>
           <button
             onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); onDelete(); }}
-            className="flex shrink-0 items-center rounded px-1 text-danger hover:bg-surface-hover"
+            className="cds-hover-ghost flex shrink-0 items-center rounded px-1 text-danger"
             aria-label={t("layout.confirmDelete")}
             title={t("layout.confirmDelete")}
           >
@@ -495,7 +495,7 @@ export function SessionRow({
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); setPendingConfirm(null); }}
-            className="flex shrink-0 items-center rounded px-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost flex shrink-0 items-center rounded px-1 text-content-subtle hover:text-content"
             aria-label={t("common.cancel")}
             title={t("common.cancel")}
           >
@@ -873,7 +873,7 @@ export function GroupNode({
           <Menu.Trigger
             title={t("layout.setColor")}
             aria-label={t("layout.setColor")}
-            className="flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors hover:bg-surface-hover group-hover:opacity-100 group-focus-within:opacity-100"
+            className="cds-hover-ghost flex shrink-0 items-center rounded px-1 text-content-subtle opacity-0 transition-colors group-hover:opacity-100 group-focus-within:opacity-100"
           >
             <IconPalette size={12} style={colorHex ? { color: colorHex } : undefined} />
           </Menu.Trigger>

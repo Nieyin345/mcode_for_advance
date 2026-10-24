@@ -171,7 +171,7 @@ export function Titlebar({
               onClick={onBack}
               className={cn(
                 "flex items-center gap-1.5 rounded px-1.5 py-1 text-xs font-medium",
-                "text-content-muted transition-colors hover:bg-surface-hover hover:text-content",
+                "cds-hover-ghost text-content-muted hover:text-content",
               )}
               style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
               title={t("layout.backToWorkspace")}
@@ -196,7 +196,7 @@ export function Titlebar({
                 }
                 className={cn(
                   "flex items-center gap-1.5 rounded px-1.5 py-1 text-xs font-medium",
-                  "text-content-muted transition-colors hover:bg-surface-hover hover:text-content",
+                  "cds-hover-ghost text-content-muted hover:text-content",
                 )}
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                 title={
@@ -218,7 +218,7 @@ export function Titlebar({
                   onClick={onToggleLeft}
                   className={cn(
                     "flex items-center justify-center rounded p-1.5 transition-colors",
-                    "text-content-muted hover:bg-surface-hover hover:text-content",
+                    "cds-hover-ghost text-content-muted hover:text-content",
                   )}
                   title={t("layout.showLeftPanel") + hintFor("layout.toggle-left")}
                   style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -324,7 +324,7 @@ function PanePresetMenu() {
     <Menu.Root>
       <Menu.Trigger
         data-testid="pane-layout-presets"
-        className="rounded px-2 py-1 text-xs text-content-muted hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost rounded px-2 py-1 text-xs text-content-muted hover:text-content"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         aria-label={t("layout.panePresets")}
         title={t("layout.panePresets")}

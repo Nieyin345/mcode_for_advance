@@ -636,7 +636,7 @@ function LeftBarBase({
             onClick={() => setLeftOpen(false)}
             className={cn(
               "flex h-7 w-7 items-center justify-center rounded text-content-muted transition-colors",
-              "hover:bg-surface-hover hover:text-content",
+              "cds-hover-ghost hover:text-content",
             )}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             title={t("layout.hideLeftPanel")}
@@ -1019,7 +1019,7 @@ function LeftBarBase({
           onClick={() => setSettingsOpen(true)}
           className={cn(
             "flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-content-muted transition-colors [font-size:var(--right-panel-font-size)]",
-            "hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost hover:text-content",
           )}
           title={t("layout.settings")}
         >
@@ -1041,7 +1041,7 @@ function LeftBarBase({
           onClick={toggleTheme}
           className={cn(
             "flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors [font-size:var(--right-panel-font-size)]",
-            "hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost hover:text-content",
           )}
           title={effectiveTheme === "dark" ? t("layout.themeToLight") : t("layout.themeToDark")}
         >
@@ -1056,7 +1056,7 @@ function LeftBarBase({
             onClick={() => setLeftOpen(false)}
             className={cn(
               "flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors [font-size:var(--right-panel-font-size)]",
-              "hover:bg-surface-hover hover:text-content",
+              "cds-hover-ghost hover:text-content",
             )}
             title={t("layout.hideLeftPanel")}
           >
