@@ -6,6 +6,28 @@ export default {
   content: ["./src/renderer/**/*.{ts,tsx,html}"],
   theme: {
     extend: {
+      fontSize: {
+        // 【T121】CDS 七档字阶（storybook `:659`）。**在此之前这个配置项完全不存在**
+        // —— 于是全仓是三套并存：Tailwind 默认阶梯 471 处、硬写 px 657 处（12 个档位：
+        // 7/8/9/9.5/10/10.5/11/11.5/12/12.5/13/15）、em 相对值 728 处。
+        // 同一语义位置在不同文件里可能是 10px / 10.5px / 11px / text-xs(12px) 四种之一，
+        // 这是「看起来不对劲但说不出哪不对」的主要来源。
+        //
+        // ⚠️ **这一档只建立体系，不迁移既有用法。** 657+728 处一次性迁移会让界面处于
+        // 半改状态（一半对齐、一半没有），比现在更乱。迁移按区域分批做，见 T121 §1.7
+        // 的「内容-字号矩阵」。
+        //
+        // 行高随档位一起给：规范里每个档位的行高是**固定值**（不是倍数），因为
+        // 11px 用 16px 行高（1.55）和 20px 用 24px（1.25）是不同的视觉密度。
+        // 写成 `lineHeight` 让 `text-body` 一处同时定死两者。
+        caption: ["11px", { lineHeight: "16px" }], // 微型标签、Kbd、时间戳
+        footnote: ["12px", { lineHeight: "14px" }], // 辅助说明、文件大小
+        code: ["12px", { lineHeight: "16px" }], // 代码块、行内代码
+        body: ["14px", { lineHeight: "20px" }], // 对话正文、输入框、表单
+        prose: ["15px", { lineHeight: "22px" }], // 长文段落、Artifacts 正文
+        heading: ["16px", { lineHeight: "20px" }], // 卡片小节标题、弹窗标题
+        title: ["20px", { lineHeight: "24px" }], // 主页面大标题
+      },
       fontFamily: {
         // Bundled JetBrains Mono Variable woff2 (imported in main.tsx) heads
         // the monospace stack so every `font-mono` surface - code blocks,
@@ -34,6 +56,11 @@ export default {
           DEFAULT: "rgb(var(--surface) / <alpha-value>)",
           muted: "rgb(var(--surface-muted) / <alpha-value>)",
           hover: "rgb(var(--surface-hover) / <alpha-value>)",
+          // 【T121】Surface 0–3 阶梯的上两层。此前四层（主画布/卡片/浮层/弹窗）
+          // 共用 --surface，层次只能靠边框和阴影撑 —— 这是「Claude 那边有纵深、
+          // 我们这边平」的直接原因。值定义在 styles.css 的 :root / .dark。
+          raised: "rgb(var(--surface-raised) / <alpha-value>)",
+          overlay: "rgb(var(--surface-overlay) / <alpha-value>)",
         },
         content: {
           DEFAULT: "rgb(var(--content) / <alpha-value>)",
