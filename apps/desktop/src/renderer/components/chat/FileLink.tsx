@@ -13,7 +13,7 @@
  * Resolution is click-triggered and IPC-bound, never at render time, so this
  * component is cheap to embed in streaming markdown text nodes.
  */
-import { useMemo, useRef, useState, type MouseEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -26,16 +26,17 @@ import {
   type ResolvedCandidate,
 } from "@renderer/lib/fileLink.js";
 import { IconLoader2, IconAlertTriangle } from "@renderer/lib/icons.js";
+import { fileLinkRequestKey, fileLinkRequestCurrent } from "./fileLinkRequestIdentity.js";
 
 /** Shared menu styling - mirrors OpenTabsBar/FileTree for consistency. */
 const MENU_POPUP_CLASS = cn(
-  "z-50 min-w-[220px] max-w-[400px] rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
+  "z-50 max-h-[calc(100vh-16px)] min-w-[min(220px,calc(100vw-16px))] max-w-[calc(100vw-16px)] overflow-y-auto rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
   "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
   "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
   "transition-[transform,opacity] duration-100",
 );
 const MENU_ITEM_CLASS = cn(
-  "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-content-muted outline-none select-none",
+  "flex min-h-9 w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-content-muted outline-none select-none",
   "data-[highlighted]:bg-surface-muted",
 );
 
@@ -60,6 +61,19 @@ export function FileLink({
   const [loading, setLoading] = useState(false);
   const [candidates, setCandidates] = useState<ResolvedCandidate[] | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [resolvedKey, setResolvedKey] = useState<string | null>(null);
+  const requestSeq = useRef(0);
+  const pendingRef = useRef(false);
+  const currentKey = fileLinkRequestKey(token, projectPath);
+  const latestKeyRef = useRef(currentKey);
+  latestKeyRef.current = currentKey;
+  // A virtualized message can disappear or switch its project while file
+  // resolution is in flight. Invalidate that response without opening an
+  // outdated file path in the newly active editor.
+  useEffect(() => () => {
+    requestSeq.current++;
+    pendingRef.current = false;
+  }, [currentKey]);
   const { t } = useI18n();
 
   /** Virtual anchor built from the element's current rect, so the candidate
@@ -91,25 +105,32 @@ export function FileLink({
   };
 
   const resolve = async () => {
-    if (loading) return;
+    if (pendingRef.current) return; // synchronous double-click/Enter guard
+    pendingRef.current = true;
+    const seq = ++requestSeq.current;
+    const key = currentKey;
+    const stillCurrent = () => fileLinkRequestCurrent(seq, requestSeq.current, key, latestKeyRef.current);
     setLoading(true);
     setCandidates(null);
+    setResolvedKey(null);
     try {
       const result = await resolveFilePathToken(token, projectPath);
+      if (!stillCurrent()) return;
       setCandidates(result);
+      setResolvedKey(key);
       if (result.length === 1) {
-        // Unique match - open immediately, no menu.
         openCandidatePath(result[0]);
         setMenuOpen(false);
       } else {
-        // 0 or >1 - show the picker (empty state renders a disabled row).
         setMenuOpen(true);
       }
     } catch {
+      if (!stillCurrent()) return;
       setCandidates([]);
+      setResolvedKey(key);
       setMenuOpen(true);
     } finally {
-      setLoading(false);
+      if (stillCurrent()) { pendingRef.current = false; setLoading(false); }
     }
   };
 
@@ -135,7 +156,7 @@ export function FileLink({
   const content = (
     <>
       {display ?? token}
-      {loading && <IconLoader2 size={10} className="ml-0.5 inline animate-spin align-baseline opacity-70" />}
+      {loading && <IconLoader2 size={10} aria-hidden="true" className="ml-0.5 inline animate-spin align-baseline opacity-70" />}
     </>
   );
 
@@ -149,6 +170,7 @@ export function FileLink({
           href={token}
           title={t("chatStream.fileLink.clickToOpen")}
           onClick={handleClick}
+          aria-busy={loading}
           onAuxClick={(e) => e.preventDefault()}
           className={cn("cursor-pointer rounded-[2px] underline hover:opacity-80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent", loading && "opacity-60")}
         >
@@ -164,6 +186,7 @@ export function FileLink({
           title={t("chatStream.fileLink.clickToOpen")}
           onClick={handleClick}
           onKeyDown={handleKeyDown}
+          aria-busy={loading}
           className={cn(
             "cursor-pointer rounded-[2px] underline decoration-dotted decoration-accent/60 underline-offset-2",
             "text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
@@ -174,7 +197,7 @@ export function FileLink({
         </span>
       )}
 
-      <Menu.Root open={menuOpen} onOpenChange={(open) => setMenuOpen(open)}>
+      <Menu.Root open={menuOpen && resolvedKey === currentKey} onOpenChange={(open) => setMenuOpen(open)}>
         <Menu.Portal>
           <Menu.Positioner anchor={anchor} side="bottom" align="start" sideOffset={4}>
             <Menu.Popup className={MENU_POPUP_CLASS}>

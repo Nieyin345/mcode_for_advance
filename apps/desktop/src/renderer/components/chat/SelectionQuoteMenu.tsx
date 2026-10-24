@@ -46,6 +46,8 @@ import {
   IconSearch,
 } from "@renderer/lib/icons.js";
 import type { SelectionToolbarState } from "./SelectionToolbar.js";
+import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
+import { quotePickerBounds } from "./quotePickerGeometry.js";
 
 /** 一条可选的落点。`kind` 决定行首那个图标和那枚小标签怎么画。 */
 export interface QuoteTarget {
@@ -81,6 +83,7 @@ export function SelectionQuoteMenu({
   const inputRef = useRef<HTMLInputElement>(null);
   /** `null` = 还在取;拿不到是空数组(`failed` 为真时列表头会说一句)。 */
   const [nodes, setNodes] = useState<Session[] | null>(null);
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -93,16 +96,22 @@ export function SelectionQuoteMenu({
     // 而且拿不到任何东西。直接给空列表。
     if (!sessionId) {
       setNodes([]);
+      setLoadedFor(sessionId);
+      setFailed(false);
       return;
     }
     let cancelled = false;
+    setNodes(null);
+    setLoadedFor(null);
+    setFailed(false);
     void (async () => {
       try {
         const res = await api.session.listNodes({ sessionId });
-        if (!cancelled) setNodes(res.sessions);
+        if (!cancelled) { setNodes(res.sessions); setLoadedFor(sessionId); }
       } catch {
         if (!cancelled) {
           setNodes([]);
+          setLoadedFor(sessionId);
           setFailed(true);
         }
       }
@@ -113,18 +122,23 @@ export function SelectionQuoteMenu({
   }, [sessionId]);
 
   useEffect(() => {
+    const closeLayer = openEscapeLayer("chat.selection-quote-menu");
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape" || e.isComposing || e.keyCode === 229) return;
+      if (!claimEscape("chat.selection-quote-menu")) return;
+      e.preventDefault(); e.stopPropagation();
+      onClose();
     };
     const onDown = (e: MouseEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) onClose();
     };
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     document.addEventListener("mousedown", onDown);
     // 与工具条同一条:消息流滚在 LegendList 里,scroll 不冒到 document。
     document.addEventListener("scroll", onClose, true);
     return () => {
-      document.removeEventListener("keydown", onKey);
+      closeLayer();
+      document.removeEventListener("keydown", onKey, true);
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("scroll", onClose, true);
     };
@@ -140,6 +154,7 @@ export function SelectionQuoteMenu({
    * 它排**最前面**：那是用户此刻正在看的那条，"引用给谁"的第一顺位就是它。
    */
   const openChatId = useSessionStore((s) => s.activeSideChatId);
+  const currentNodes = loadedFor === sessionId ? nodes : null;
   /**
    * 右栏那条的标题。**三种都得认** —— 它可能指
    *
@@ -176,7 +191,7 @@ export function SelectionQuoteMenu({
               // 但至少**能选**）。
               title:
                 openChatTitle ??
-                nodes?.find((x) => x.id === openChatId)?.title ??
+                currentNodes?.find((x) => x.id === openChatId)?.title ??
                 "",
               kind: "chat" as const,
             },
@@ -184,11 +199,11 @@ export function SelectionQuoteMenu({
         : []),
       // 空串 = 从文件预览进来的，没有"当前会话"这一条（见上面 effect 那段）。
       ...(sessionId ? [{ id: sessionId, title: currentTitle, kind: "chat" as const }] : []),
-      ...(nodes ?? []).map(
+      ...(currentNodes ?? []).filter((s) => s.id !== sessionId && s.id !== openChatId).map(
         (s): QuoteTarget => ({ id: s.id, title: s.title, kind: "node" }),
       ),
     ],
-    [sessionId, currentTitle, nodes, openChatId, openChatTitle],
+    [sessionId, currentTitle, currentNodes, openChatId, openChatTitle],
   );
 
   const q = query.trim().toLowerCase();
@@ -198,24 +213,13 @@ export function SelectionQuoteMenu({
   );
 
   // 过滤之后下标可能越界(用户改了搜索词),夹回来而不是让回车落空。
-  const active = shown.length === 0 ? -1 : Math.min(index, shown.length - 1);
+  const active = shown.length === 0 ? -1 : Math.max(0, Math.min(index, shown.length - 1));
 
   const pick = (target: QuoteTarget) => onPick(target, state.text);
 
-  const centerX = (state.rect.left + state.rect.right) / 2;
-  const left = Math.min(
-    Math.max(centerX - PANEL_WIDTH / 2, 8),
-    Math.max(window.innerWidth - PANEL_WIDTH - 8, 8),
-  );
-  const belowTop = state.rect.bottom + 8;
-  // 下方放不下就翻到上方 —— 与工具条的 `above` 同一个意思,只是这里量的是面板高度。
-  const flipUp =
-    belowTop + PANEL_MAX_H > window.innerHeight - 8 && state.rect.top > PANEL_MAX_H + 8;
   const style: React.CSSProperties = {
     position: "fixed",
-    left,
-    width: PANEL_WIDTH,
-    ...(flipUp ? { bottom: window.innerHeight - state.rect.top + 8 } : { top: belowTop }),
+    ...quotePickerBounds(state.rect, window.innerWidth, window.innerHeight, PANEL_WIDTH, PANEL_MAX_H + 48),
   };
 
   return createPortal(
@@ -224,8 +228,10 @@ export function SelectionQuoteMenu({
       style={style}
       // ⚠️ 行内元素上的宽高是零宽的:这个容器是 `position: fixed` 的块级盒子,
       // 量出来才是真尺寸(与 SelectionToolbar 同款)。
+      role="dialog"
+      aria-label={t("chatStream.quote.title")}
       className={cn(
-        "z-50 flex flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl",
+        "z-50 flex flex-col overflow-hidden rounded-[var(--radius-panel)] border border-edge bg-surface shadow-[var(--shadow-popover)]",
         "animate-[bookmark-bar-in_120ms_ease-out]",
       )}
     >
@@ -249,9 +255,11 @@ export function SelectionQuoteMenu({
               // 中文用户搜引用时会误选错的条目。与 FileMentionPicker 同款。
               if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === "ArrowDown") {
+                if (shown.length === 0) return;
                 e.preventDefault();
-                setIndex((i) => Math.min(i + 1, shown.length - 1));
+                setIndex((i) => Math.max(0, Math.min(i + 1, shown.length - 1)));
               } else if (e.key === "ArrowUp") {
+                if (shown.length === 0) return;
                 e.preventDefault();
                 setIndex((i) => Math.max(i - 1, 0));
               } else if (e.key === "Enter" && active >= 0) {
@@ -260,13 +268,14 @@ export function SelectionQuoteMenu({
               }
             }}
             placeholder={t("chatStream.quote.searchPlaceholder")}
-            className="min-w-0 flex-1 bg-transparent text-[11px] text-content outline-none placeholder:text-content-subtle"
+            aria-label={t("chatStream.quote.searchPlaceholder")}
+            className="min-h-8 min-w-0 flex-1 rounded-[var(--radius-btn-xs)] bg-transparent text-[11px] text-content outline-none placeholder:text-content-subtle focus-visible:ring-2 focus-visible:ring-accent"
           />
         </div>
       </div>
 
       <div className="min-h-0 overflow-y-auto py-1" style={{ maxHeight: PANEL_MAX_H }}>
-        {nodes === null ? (
+        {currentNodes === null ? (
           <div className="flex items-center gap-1.5 px-2.5 py-2 text-[11px] text-content-subtle">
             <IconLoader2 size={12} className="animate-spin" />
             {t("common.loading")}
@@ -283,8 +292,9 @@ export function SelectionQuoteMenu({
               data-quote-target={target.id}
               onMouseEnter={() => setIndex(i)}
               onClick={() => pick(target)}
+              aria-current={i === active ? "true" : undefined}
               className={cn(
-                "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] transition-colors",
+                "flex min-h-9 w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                 i === active ? "bg-surface-hover text-content" : "text-content-muted",
               )}
             >
@@ -307,7 +317,7 @@ export function SelectionQuoteMenu({
         {/* 取不到节点时说一句。**不静默**:列表看起来"本来就只有一个目标",
             用户会以为这个会话没有节点,而不是"没读到"。 */}
         {failed && (
-          <div className="px-2.5 py-1 text-[10px] text-content-subtle">
+          <div role="status" className="px-2.5 py-1 text-[10px] text-content-subtle">
             {t("chatStream.quote.loadFailed")}
           </div>
         )}
