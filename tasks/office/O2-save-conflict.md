@@ -5,13 +5,29 @@
 - Priority: **P0 —— 旧结果覆盖新内容是数据丢失，比任何 UI 问题严重**
 - Depends on: `document-view-host-smoke` §11（host 层冲突检测已实现且有覆盖）、`t7-genoffice-u1`（六格式 U1 骨架）
 - 独占写入边界：
-  - `apps/desktop/scripts/o2-conflict-u1/**`（新建）
+  - `apps/desktop/scripts/o2-conflict-u1-smoke/**`（新建；**实际目录名以 `ls` 为准，见我这次踩的坑**）
   - **不得改** `apps/desktop/src/main/document/documentViewHost.ts`（冲突逻辑已实现，本卡是取证）
 
 ## Required Skills
 
 - `mcode-smoke`：真 Electron + CDP
 - `systematic-debugging`：六格式的保存链路各不相同，失败形态会不一样
+
+
+## 零点五、目录名（我写错过，这里留证）
+
+**卡初稿写的是 `o2-conflict-u1/`，执行会话建的是 `o2-conflict-u1-smoke/`。**
+仓库里其他套件都叫 `*-smoke`，**执行会话按惯例命名是对的，卡写错了。**
+
+```
+$ ls -d apps/desktop/scripts/o2-conflict-u1-smoke
+apps/desktop/scripts/o2-conflict-u1-smoke/
+```
+
+**代价**：我去查进度时看的是卡里那个名字，目录是空的，于是误判「4 小时无产出」——
+而它当时正写着 726 行的 `journeys.ts`。
+
+**这段留着，是因为写卡的人该记住：卡上写的路径，要附一条 `ls` 输出。**
 
 ## 一、已经有的（不要重做）
 
