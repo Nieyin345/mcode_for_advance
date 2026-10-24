@@ -167,3 +167,151 @@ grep -rn "eastAsia" genoffice/packages/cli/src/ | head
 
 `tasks/T115-docx-eastasia-font.md` 末尾追加 `## 结果回写（2026-10-24）`：
 改哪一侧 + 论证、A 路径的实测结果（`setFont` 后 `insert_content` 是否丢）、字体选择依据、字节级断言、变异、提交 SHA。
+
+## 结果回写（2026-10-24）
+
+### 一、走 B，不是 A —— 而且在走 B 之前先证明 A 不可行
+
+#### A 的实测（卡上要求的那个实验）
+
+| 步骤 | 结果 |
+|---|---|
+| `create --type docx --from cn.html` | `styles.xml` **无** `w:eastAsia` |
+| `apply_ops` 一次 `setFont`（`fontFamily: "Microsoft YaHei"`） | **`document.xml` 里出现 2 处** `w:eastAsia`，**`styles.xml` 仍是空** —— `setFont` 写的是 run 级 |
+| 再 `insert_content` 插一段中文 | **新插入的 `<w:t>这是插入的中文段落。</w:t>` 没有 `w:eastAsia`** |
+
+**结论：A 只在「最后一次操作是 setFont」时有效。** 任何后续插入/改文字都会产生没有 `w:eastAsia` 的新 run，而那正是编辑流程里最常见的事。
+
+**这不只是「多一次 CLI 调用」的问题 —— 是它治不了根本。**
+
+#### B 的实测（同样的三步）
+
+```
+create → styles.xml 有 w:eastAsia="Microsoft YaHei"
+insert_content 插入新段落后 → styles.xml 的 w:eastAsia 仍在
+```
+
+**docDefaults 级一次写对，后续所有操作自动继承。** 这是 B 相对 A 的决定性优势。
+
+### 二、⚠️ 一个必须报告的硬事实：`genoffice/` 不在版本库里
+
+```bash
+$ git check-ignore -v genoffice/packages/cli/src/formats/east-asia-font.ts
+.gitignore:70:/genoffice/    genoffice/packages/cli/src/formats/east-asia-font.ts
+
+$ git ls-files genoffice/
+（空）
+```
+
+**`/genoffice/` 是 vendor 快照**（`.gitignore` 注释：「固定 commit 1f306a2」），**整个目录不入版本控制**。
+
+**后果**：
+
+1. **我改的三处不会进 git** —— 这条修复在**当前这棵 checkout** 上生效，但换机器、重新 clone、或 `genoffice` 被重新拉取时会**静默消失**；
+2. **别人 checkout 不会得到这个修复**；
+3. **套件 `t115-docx-eastasia-font-smoke` 会提交**（在 `apps/desktop/scripts/` 下），于是**它会因为 dist 是旧的而红** —— 除非那人也改了 `genoffice/` 源码并重新构建。
+
+**这意味着「走 B」不是一次普通提交能交付的。** 三种可能的收口方式（我只是列出，不替总控决定）：
+
+| 方式 | 代价 | 问题 |
+|---|---|---|
+| **① 把 B 的补丁记进 repo**（如 `docs/planning/genoffice-patches/`），由拉取脚本应用 | 要维护补丁与上游 commit 的对应 | 上游升级时要 rebase |
+| **② 回到 A**（Mcode 侧 `setFont`） | 放弃 docDefaults 级 | **已实测不可行**（见上） |
+| **③ 接受「厂商快照可改但不入库」的现状**，把修复写进 `genoffice` 的重新拉取流程 | 要改拉取文档 | 依赖人记得 |
+
+**我倾向 ①，但这超出本卡边界（卡上说只改那两处调用），需要总控裁决。**
+
+### 三、改了三处（都在 `genoffice/` 内，故不入库）
+
+| 文件 | 改动 |
+|---|---|
+| `packages/cli/src/formats/east-asia-font.ts` | **新建**：`defaultEastAsiaFont()`，按 `process.platform` 选字体，理由写在文件头 |
+| `packages/cli/src/formats/docx.ts:207` | `blankDocument()` 把字体传给 `buildBlankDocx` |
+| `packages/cli/src/formats/markdown.ts:58` | `markdownToDocx()` 把字体传给 `exportDocxBytes` |
+| `apps/markdown/src/renderer/export/docxExport.ts:344` | `exportDocxBytes()` 加可选第 4 参 `eastAsiaFont`，**由调用方决定** |
+
+**为什么 markdown 那条要加参数而不是自己调 `defaultEastAsiaFont()`**：
+
+`apps/markdown` **不能 import `@genoffice/cli`**（分层反了，`package.json` 里只依赖 `@genoffice/agent-core`）。而 `docx-engine` 里没有平台相关代码（查过），把字体选择塞进去会给它引入一个新的依赖维度，且卡上明确说**不要改 `docx-engine` 本身**。
+
+**所以让渲染端的纯函数接收参数、由 CLI（唯一知道「这台机器」的那层）决定。** 共享实现只有一份 —— 就是 `east-asia-font.ts`。
+
+### 四、两条路都要改，因为 Mcode 两条都走
+
+`createFromFile`（`genofficeCli.ts:883`）走 `create --from <source>`，**源文件后缀决定分支**：
+
+- `.html` → `blankDocument()`
+- `.md`   → `markdownToDocx()`
+
+**只改一处会漏掉另一处。** 这也是为什么套件要分两组验。
+
+### 五、字体选择（写进 `east-asia-font.ts` 文件头）
+
+| 平台 | 字体 | 理由 |
+|---|---|---|
+| `win32` | `Microsoft YaHei` | 系统自带，现代无衬线默认；**不是宋体**（SimSun 是旧式衬线，正是用户抱怨的观感） |
+| `darwin` | `PingFang SC` | 系统自带 |
+| `linux` | `Noto Sans CJK SC` | 常见发行版默认 |
+| 其他 | `undefined` | **宁可什么都不写**（让 Word 按脚本回退），也不写一个大概率不存在的名字 |
+
+**跨平台字节差异**：同一个 Mcode 在 Windows 和 macOS 上产出的 docx 字节不同（`w:eastAsia` 的值不一样）。
+
+**查过会不会撞既有断言**：
+
+```bash
+$ grep -rn "字节一致\|byte-identical" apps/desktop/scripts/*/main.ts genoffice/packages/*/tests/*.ts | grep -i docx
+（命中的都是「同一文件改前改后」的哈希对比，不是跨平台对比）
+```
+
+**没有「跨平台产物字节一致」的断言，也不应该有** —— 这个取舍是有意的：可复现性让位于「在这台机器上打开是好看的」。
+
+### 六、新套件 `t115-docx-eastasia-font-smoke`（7 条，全绿）
+
+**断言读的是产物字节，不是「函数被调了」**：
+
+```ts
+execFileSync('unzip', ['-p', docx, 'word/styles.xml'])
+  → /w:eastAsia="([^"]*)"/.exec(xml)?.[1]
+```
+
+| # | 用例 | 结果 |
+|---|---|---|
+| 1 | 中文 HTML → `styles.xml` 有 `w:eastAsia` | ✓ |
+| 2 | 中文 Markdown → `styles.xml` 有 `w:eastAsia` | ✓ |
+| 3 | **正控**：纯英文仍能生成 + 正文在 | ✓✓ |
+| 4 | 插入新段落后 docDefaults 仍在 + 新段落真的进了文档 | ✓✓ |
+| 5 | **win32 上写的是 `Microsoft YaHei`** | ✓ |
+
+**为什么第 5 条单独写**：第 1–2 条只说「有一个非空 `eastAsia`」，跨平台通用；第 5 条验「选的是这个平台该有的那个」——**写死 `Microsoft YaHei` 会让这套在 CI 的 Linux 上假红**。
+
+**第 3 组不断言 `eastAsia` 的有无**：英文文档的 `styles.xml` 里**也会有** `eastAsia`（那是 docDefaults，与内容语言无关）。所以正控只验「仍然能生成、结构完整、正文在」。
+
+### 七、变异（先写预期，再看实际）
+
+| 变异 | 预期 | 实际 |
+|---|---|---|
+| ① 只有 `blankDocument` 不传 | 第 1 组红 | **1 条红** ✓ |
+| ② 只有 `markdownToDocx` 不传 | 第 2 组红 | **1 条红** ✓ |
+| ③ 两处都不传 | 1/2/4/5 红、**3 绿** | **4 条红，第 3 组仍绿** ✓ |
+
+**第 3 组在全部三组变异里都绿** —— 它不断言 `eastAsia`，只验英文文档仍能生成。**这正是正控该有的样子：别人的东西坏掉时它不跟着红。**
+
+每轮从 pristine 重写、`cmp` 逐字节核验还原（脚本末尾输出 `还原逐字节一致: true`）。
+
+### 八、回归与 typecheck
+
+```
+t115-docx-eastasia-font-smoke: 7/7 通过
+genoffice-cli-smoke:          54/54 通过
+genoffice-format-gates-smoke: 110/110 通过
+packages/cli typecheck:       干净
+apps/markdown typecheck:      干净
+apps/desktop 我这套错误数:      0
+```
+
+### 九、未做 / 需要总控裁决
+
+1. **`genoffice/` 的三处改动不入库**（整个目录被 gitignore）—— 见第二节，**这是本卡最大的未决问题**；
+2. **CLI 的 `dist/genoffice.cjs` 需要重新构建**才生效（我构建过，但 `dist` 同样在 gitignore 内）；
+3. **没有验 macOS / Linux**：只在当前 win32 上实测。字体名是按平台分支写的，但**另外两个分支一次都没跑过**；
+4. **没有改 `docx-engine`**（卡上禁止），也没给它加平台逻辑。
