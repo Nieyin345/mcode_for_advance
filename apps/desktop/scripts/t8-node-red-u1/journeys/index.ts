@@ -23,6 +23,8 @@ interface LazyJourney {
 
 const loaders: Record<string, () => { default: unknown }> = {
   "node-red-canvas-load-edit-deploy-reopen": () => require("./node-red-canvas-load-edit-deploy-reopen.js") as { default: unknown },
+  // W1：从零搭一张工作流（空白画布 → 拖 inject/debug → 鼠标连线 → 部署 → 重开）。
+  "node-red-canvas-build-from-scratch": () => require("./node-red-canvas-build-from-scratch.js") as { default: unknown },
   "node-red-deliberate-failure": () => require("./node-red-deliberate-failure.js") as { default: unknown },
 };
 

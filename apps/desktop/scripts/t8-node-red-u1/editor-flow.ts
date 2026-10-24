@@ -358,3 +358,254 @@ export async function confirmDeployWarningIfPresent(wc: WebContents): Promise<bo
 export async function waitInPage(wc: WebContents, expression: string, timeoutMs: number): Promise<boolean> {
   return await waitFor(async () => await js<boolean>(wc, expression), timeoutMs, 250);
 }
+
+/* ─────────────────── W1 追加：从 palette 拖节点 / 端口拖线 ─────────────────── */
+
+/**
+ * 画布上一个原生节点（类型 + 当前激活页签）的坐标与端口坐标。
+ *
+ * 端口坐标直接取**真正的 DOM 元素**（`.red-ui-flow-port-input rect` /
+ * `.red-ui-flow-port-output rect`）的 `getBoundingClientRect()` 中心，而不是用
+ * `node.x ± w/2` 推算：`portMouseDown/Up` 是绑在**端口元素本身**上的，
+ * 点偏 5px 就落到画布背景上（那会变成「画布拖框/快速添加」而不是连线）。
+ *
+ * `inChart` 判的是端口中心是否落在 `#red-ui-workspace-chart` 的可见矩形内 ——
+ * 落在外面时鼠标事件会被别的面板接走（palette / header），旅程必须据此 FAIL 而不是硬点。
+ */
+export async function canvasNodePorts(wc: WebContents, nativeType: string): Promise<{
+  id: string;
+  center: { x: number; y: number };
+  output: { x: number; y: number; inChart: boolean } | null;
+  input: { x: number; y: number; inChart: boolean } | null;
+} | null> {
+  return await js<{
+    id: string;
+    center: { x: number; y: number };
+    output: { x: number; y: number; inChart: boolean } | null;
+    input: { x: number; y: number; inChart: boolean } | null;
+  } | null>(wc, `(() => {
+    const chart = document.getElementById('red-ui-workspace-chart');
+    if (!chart) return null;
+    const cr = chart.getBoundingClientRect();
+    const inChart = (r) => {
+      const x = r.left + r.width / 2, y = r.top + r.height / 2;
+      return { x: Math.round(x), y: Math.round(y),
+        inChart: x >= cr.left && x <= cr.right && y >= cr.top && y <= cr.bottom };
+    };
+    const groups = [...document.querySelectorAll('#red-ui-workspace-chart .red-ui-flow-node-group')];
+    const g = groups.find((el) => el.__data__ && el.__data__.type === ${JSON.stringify(nativeType)} && el.getBoundingClientRect().width > 0);
+    if (!g) return null;
+    const gr = g.getBoundingClientRect();
+    const outEl = g.querySelector('.red-ui-flow-port-output rect');
+    const inEl = g.querySelector('.red-ui-flow-port-input rect');
+    return {
+      id: String(g.__data__.id),
+      center: { x: Math.round(gr.left + gr.width / 2), y: Math.round(gr.top + gr.height / 2) },
+      output: outEl ? inChart(outEl.getBoundingClientRect()) : null,
+      input: inEl ? inChart(inEl.getBoundingClientRect()) : null,
+    };
+  })()`);
+}
+
+/**
+ * 从 palette 把一个节点类型拖到画布坐标（真鼠标：move → down → 多次 move → up）。
+ *
+ * 上游约束（`palette.js` 的 `$(d).draggable({...})`，5.0.8）：
+ *   1. `revert: 'invalid'` —— 落点不在 `#red-ui-workspace-chart` 上，jQuery UI 会把
+ *      helper 弹回、drop 不触发；
+ *   2. `dropEnabled = !(workspace locked)` —— 页签被锁时全局拖拽直接失效（本函数
+ *      在按下前先查一次，锁着就如实返回 `dropped:false` + 原因）；
+ *   3. jQuery UI 的 `_mouseDistanceMet` 要求至少 `distance=1` 的位移，且 drop 判定
+ *      用的是**鼠标当前位置**与 droppable（`chart.droppable`，`tolerance:"intersect"`）
+ *      的求交 —— 所以要发**至少两次** `mouseMove`（先中间点、再终点），最后一次
+ *      必须真的落在画布可见区域内。
+ *
+ * 判据不用「drop 回调跑没跑」（无从观测），而是**画布模型**：
+ * `RED.nodes.createCompleteNodeSet()` 里该类型节点数 +1。返回值里的
+ * `before/after` 是两次计数的实际数字，旅程把它们原样落进证据。
+ */
+export async function dragPaletteNodeToCanvas(
+  wc: WebContents,
+  nodeType: string,
+  target: { x: number; y: number },
+): Promise<{
+  dropped: boolean;
+  detail?: string;
+  before: number;
+  after: number;
+  paletteSelector: string | null;
+  targetInChart: boolean;
+  workspaceLocked: boolean;
+}> {
+  const countOf = async (): Promise<number> =>
+    await js<number>(wc, `RED.nodes.createCompleteNodeSet().filter((n) => n.type === ${JSON.stringify(nodeType)}).length`);
+  const before = await countOf();
+
+  // 起点：palette 里这个类型的条目。条目在「通用」分类下，分类折叠时不可见 ——
+  // 真用户会先展开分类再拖，这里用同一动作（点分类标题）把它展开。
+  const selector = `.red-ui-palette-node[data-palette-type="${nodeType}"]`;
+  const entryVisible = await js<boolean>(wc, `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 1 && r.height > 1 && el.offsetParent !== null;
+  })()`);
+  if (!entryVisible) {
+    const cat = await js<{ x: number; y: number } | null>(wc, `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const category = el.closest('.red-ui-palette-category');
+      const header = category ? category.querySelector('.red-ui-palette-header') : null;
+      if (!header) return null;
+      const r = header.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return null;
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    if (cat !== null) {
+      await clickAt(wc, cat.x, cat.y);
+      await sleep(500);
+    }
+  }
+
+  const locked = await js<boolean>(wc, `(() => {
+    const ws = RED.nodes.workspace(RED.workspaces.active());
+    return !!(ws && ws.locked);
+  })()`);
+  const palette = await centerOf(wc, selector);
+  if (palette === null) {
+    return { dropped: false, before, after: before, paletteSelector: selector, targetInChart: false, workspaceLocked: locked, detail: `palette 里找不到可见的 ${nodeType} 条目` };
+  }
+
+  const geometry = await js<{ x: number; y: number; inChart: boolean } | null>(wc, `(() => {
+    const chart = document.getElementById('red-ui-workspace-chart');
+    if (!chart) return null;
+    const r = chart.getBoundingClientRect();
+    const x = ${target.x}, y = ${target.y};
+    return { x, y, inChart: x >= r.left && x <= r.right && y >= r.top && y <= r.bottom };
+  })()`);
+  if (geometry === null || !geometry.inChart) {
+    return { dropped: false, before, after: before, paletteSelector: selector, targetInChart: false, workspaceLocked: locked, detail: `落点 (${target.x},${target.y}) 不在画布可见区域内` };
+  }
+  if (locked) {
+    return { dropped: false, before, after: before, paletteSelector: selector, targetInChart: true, workspaceLocked: true, detail: "当前页签被锁定，上游 dropEnabled=false，拖拽不会落成" };
+  }
+
+  // 真按下前先移过去（palette 条目有 hover 弹出框；jQuery UI 也需要 mousedown 在条目上）。
+  // 中间点取「起点与终点的中点」：只需一次真实位移就满足 distance>=1，再发终点让
+  // droppable 在最终位置上求交（tolerance:"intersect"）。
+  const midX = Math.round((palette.x + target.x) / 2);
+  const midY = Math.round((palette.y + target.y) / 2);
+  const page = wc as unknown as EditorPage;
+  page.sendInputEvent({ type: "mouseMove", x: palette.x, y: palette.y });
+  await sleep(80);
+  page.sendInputEvent({ type: "mouseDown", x: palette.x, y: palette.y, button: "left", clickCount: 1 });
+  await sleep(120);
+  page.sendInputEvent({ type: "mouseMove", x: midX, y: midY, button: "left" });
+  await sleep(120);
+  page.sendInputEvent({ type: "mouseMove", x: target.x, y: target.y, button: "left" });
+  await sleep(150);
+  // 落点再补一次 move（jQuery UI 的 ddmanager 在 mouseup 前按最后一次移动位置求交）。
+  page.sendInputEvent({ type: "mouseMove", x: target.x + 1, y: target.y, button: "left" });
+  await sleep(80);
+  page.sendInputEvent({ type: "mouseUp", x: target.x + 1, y: target.y, button: "left", clickCount: 1 });
+
+  // `revertDuration: 200` 之后 stop 才跑完；多等一拍再数。
+  const landed = await waitFor(async () => (await countOf()) > before, 5_000, 150);
+  const after = await countOf();
+  return {
+    dropped: landed && after > before,
+    before, after, paletteSelector: selector, targetInChart: true, workspaceLocked: false,
+    ...(landed ? {} : { detail: `拖拽后 ${nodeType} 节点数仍是 ${after}（before=${before}）—— 落点无效被弹回，或拖拽没有触发` }),
+  };
+}
+
+/**
+ * 用鼠标从一个节点的输出端口拖到另一个节点的输入端口，建立连线。
+ *
+ * 上游 `view.js`：端口上的 `mousedown` → `portMouseDown`（进入 `RED.state.JOINING`），
+ * 随后 `canvasMouseMove` 更新拖拽线；落点的 `mouseup` → `portMouseUp` 才真正
+ * `RED.nodes.addLink(link)`。**关键在于**：mouseup 必须命中**目标端口元素**
+ * （`portMouseUpProxy` 绑在端口 rect 上），或者命中目标节点的 `nodeMouseUp`
+ * （它内部再 `portMouseUp(d, direction, 0)`）。落在节点中间的空白处不算连线，
+ * 会退化成「画布点了一下」。
+ *
+ * 本函数用**目标节点的输入端口 rect** 作为落点 —— 它同时是 `portMouseUp` 的直接
+ * 绑定元素，语义上就是「连到这个输入」。
+ *
+ * 判据：`RED.nodes.filterLinks({ source: <src>, target: <dst> })` 里出现这条线；
+ * 返回里的 `wires` 是 `createCompleteNodeSet()` 里 src 的 `wires[0]`，旅程据此断言。
+ */
+export async function dragNodeOutputToInput(
+  wc: WebContents,
+  sourceType: string,
+  targetType: string,
+): Promise<{
+  linked: boolean;
+  detail?: string;
+  sourceId: string | null;
+  targetId: string | null;
+  sourcePort: { x: number; y: number; inChart: boolean } | null;
+  targetPort: { x: number; y: number; inChart: boolean } | null;
+  wires: string[] | null;
+  linkCount: number;
+}> {
+  const src = await canvasNodePorts(wc, sourceType);
+  const dst = await canvasNodePorts(wc, targetType);
+  const empty = { linked: false, sourceId: src?.id ?? null, targetId: dst?.id ?? null, sourcePort: src?.output ?? null, targetPort: dst?.input ?? null, wires: null, linkCount: 0 };
+  if (src === null) return { ...empty, detail: `画布上找不到 ${sourceType} 节点` };
+  if (dst === null) return { ...empty, detail: `画布上找不到 ${targetType} 节点` };
+  if (src.output === null) return { ...empty, detail: `${sourceType} 没有输出端口（outputs=0？）` };
+  if (dst.input === null) return { ...empty, detail: `${targetType} 没有输入端口（inputs=0？）` };
+  if (!src.output.inChart) return { ...empty, detail: `${sourceType} 的输出端口不在画布可见区域内（${src.output.x},${src.output.y}）` };
+  if (!dst.input.inChart) return { ...empty, detail: `${targetType} 的输入端口不在画布可见区域内（${dst.input.x},${dst.input.y}）` };
+
+  const page = wc as unknown as EditorPage;
+  const start = src.output;
+  const end = dst.input;
+  const midX = Math.round((start.x + end.x) / 2);
+  const midY = Math.round((start.y + end.y) / 2);
+  page.sendInputEvent({ type: "mouseMove", x: start.x, y: start.y });
+  await sleep(100);
+  page.sendInputEvent({ type: "mouseDown", x: start.x, y: start.y, button: "left", clickCount: 1 });
+  await sleep(150);
+  // 两段位移：JOINING 模式靠 canvasMouseMove 维护拖拽线，静止不动时 d3 也不会
+  // 在目标上触发 mouseup 的命中断言。移动本身也让 jQuery/d3 有机会更新 mouse_position。
+  page.sendInputEvent({ type: "mouseMove", x: midX, y: midY, button: "left" });
+  await sleep(120);
+  page.sendInputEvent({ type: "mouseMove", x: end.x, y: end.y, button: "left" });
+  await sleep(150);
+  page.sendInputEvent({ type: "mouseUp", x: end.x, y: end.y, button: "left", clickCount: 1 });
+
+  const linked = await waitFor(async () => await js<boolean>(wc, `(() => {
+    const src = RED.nodes.node(${JSON.stringify(src.id)});
+    const dst = RED.nodes.node(${JSON.stringify(dst.id)});
+    if (!src || !dst) return false;
+    return RED.nodes.filterLinks({ source: src, target: dst }).length > 0;
+  })()`), 5_000, 150);
+
+  const observed = await js<{ wires: string[] | null; linkCount: number }>(wc, `(() => {
+    const src = RED.nodes.node(${JSON.stringify(src.id)});
+    const dst = RED.nodes.node(${JSON.stringify(dst.id)});
+    const set = RED.nodes.createCompleteNodeSet();
+    const inSet = set.find((n) => n.id === ${JSON.stringify(src.id)});
+    const wires = inSet && Array.isArray(inSet.wires) && Array.isArray(inSet.wires[0]) ? inSet.wires[0].slice() : null;
+    const linkCount = (src && dst) ? RED.nodes.filterLinks({ source: src, target: dst }).length : 0;
+    return { wires, linkCount };
+  })()`);
+
+  return {
+    linked,
+    sourceId: src.id, targetId: dst.id, sourcePort: start, targetPort: end,
+    wires: observed.wires, linkCount: observed.linkCount,
+    ...(linked ? {} : { detail: `从 ${sourceType} 输出拖到 ${targetType} 输入后没有出现连线（filterLinks=${observed.linkCount}, wires=${JSON.stringify(observed.wires)}）` }),
+  };
+}
+
+/** 画布上某类型的**全部**节点（激活页签内），按出现顺序。 */
+export async function canvasNodesOfType(wc: WebContents, nativeType: string): Promise<Array<{ id: string; x: number; y: number }>> {
+  return await js<Array<{ id: string; x: number; y: number }>>(wc, `(() => {
+    return [...document.querySelectorAll('#red-ui-workspace-chart .red-ui-flow-node-group')]
+      .filter((el) => el.__data__ && el.__data__.type === ${JSON.stringify(nativeType)} && el.getBoundingClientRect().width > 0)
+      .map((el) => ({ id: String(el.__data__.id), x: el.__data__.x, y: el.__data__.y }));
+  })()`);
+}
