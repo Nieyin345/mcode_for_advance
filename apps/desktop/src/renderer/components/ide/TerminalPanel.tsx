@@ -14,6 +14,7 @@ import {
 import type { TerminalSessionStatus, TerminalViewHandle } from "./TerminalView.js";
 import { subscribeTerminalRunRequests } from "@renderer/lib/terminalRunBus.js";
 import { TerminalCommandsMenu } from "./TerminalCommandsMenu.js";
+import { terminalTabTarget } from "./terminalTabNavigation.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
 // xterm (+ its CSS) is only needed once a terminal tab actually exists; the
@@ -323,8 +324,23 @@ export function TerminalPanel({ active }: { active: boolean }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Session tab strip + actions */}
-      <div className="flex shrink-0 items-center gap-0.5 border-b border-edge px-1">
-        <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-0.5">
+      <div className="flex min-h-9 shrink-0 items-center gap-0.5 border-b border-edge px-1">
+        <div role="tablist" aria-label={t("ide.term.newTerminal")}
+          onKeyDown={(e) => {
+            if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+            if (!(e.target instanceof Element)) return;
+            const currentTab = e.target.closest<HTMLButtonElement>("button[data-terminal-tab]");
+            if (!currentTab) return;
+            const tabs = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button[data-terminal-tab]"));
+            const next = terminalTabTarget(e.key, tabs.indexOf(currentTab), tabs.length);
+            if (next === null) return;
+            e.preventDefault();
+            e.stopPropagation();
+            tabs[next]?.focus({ preventScroll: true });
+            tabs[next]?.click();
+            tabs[next]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+          }}
+          className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-0.5">
           {sessions.map((s) => {
             const isActive = s.key === activeKey;
             // Derive the tab title at render so it re-localizes on locale switch.
@@ -333,7 +349,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
               <div
                 key={s.key}
                 className={cn(
-                  "group flex max-w-[9rem] shrink-0 items-center gap-0.5 rounded-[var(--radius-btn-xs)] px-2 py-1 text-[11px] transition-colors",
+                  "group flex max-w-[11rem] shrink-0 items-center gap-0.5 rounded-[var(--radius-btn-xs)] px-1.5 py-0.5 text-[11px] transition-colors",
                   isActive
                     ? "bg-surface-hover font-medium text-content"
                     : "text-content-subtle hover:bg-surface-muted/50 hover:text-content-muted",
@@ -341,7 +357,13 @@ export function TerminalPanel({ active }: { active: boolean }) {
               >
                 <button
                   type="button"
-                  className="min-w-0 truncate"
+                  id={`terminal-tab-${s.key}`}
+                  data-terminal-tab=""
+                  role="tab"
+                  aria-selected={isActive}
+                  aria-controls={`terminal-panel-${s.key}`}
+                  tabIndex={isActive ? 0 : -1}
+                  className="min-h-7 min-w-0 truncate rounded-[var(--radius-btn-xs)] px-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                   onClick={() => {
                     if (!projectPath) return;
                     const st = termsRef.current.get(projectPath);
@@ -367,10 +389,11 @@ export function TerminalPanel({ active }: { active: boolean }) {
                 <button
                   type="button"
                   className={cn(
-                    "cds-hover-ghost rounded p-0.5 transition-colors text-content-subtle hover:text-content",
-                    !isActive && "opacity-0 group-hover:opacity-100",
+                    "cds-hover-ghost flex size-6 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                    !isActive && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100",
                   )}
                   title={t("ide.term.closeTerminal")}
+                  aria-label={`${t("ide.term.closeTerminal")}: ${sessionTitle}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     closeSession(s.key);
@@ -383,8 +406,9 @@ export function TerminalPanel({ active }: { active: boolean }) {
           })}
           <button
             type="button"
-            className="cds-hover-ghost shrink-0 rounded p-1 text-content-subtle hover:text-content"
+            className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             title={t("ide.term.newTerminal")}
+            aria-label={t("ide.term.newTerminal")}
             onClick={addSession}
           >
             <IconPlus size={13} />
@@ -431,7 +455,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
             </span>
             <button
               type="button"
-              className="cds-hover-ghost shrink-0 rounded px-1.5 py-0.5 text-accent"
+              className="cds-hover-ghost flex min-h-8 shrink-0 items-center rounded-[var(--radius-btn-xs)] px-2 text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               onClick={() => activeHandle?.restart()}
             >
               {t("ide.term.restart")}
@@ -451,11 +475,15 @@ export function TerminalPanel({ active }: { active: boolean }) {
           return (
             <div
               key={s.key}
+              id={`terminal-panel-${s.key}`}
+              role="tabpanel"
+              aria-labelledby={`terminal-tab-${s.key}`}
               className={cn(
                 "absolute inset-0",
                 isActive ? "z-10" : "pointer-events-none invisible z-0",
               )}
               aria-hidden={!isActive}
+              inert={!isActive}
             >
               <Suspense fallback={null}>
                 <TerminalView
@@ -509,10 +537,11 @@ function IconBtn({
     <button
       type="button"
       title={title}
+      aria-label={title}
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "cds-hover-ghost rounded-[var(--radius-btn-xs)] p-1 text-content-subtle hover:text-content",
+        "cds-hover-ghost flex size-8 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         "disabled:pointer-events-none disabled:opacity-40",
       )}
     >

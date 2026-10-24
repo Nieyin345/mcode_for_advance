@@ -1,0 +1,120 @@
+/*
+ * ARC-005 workspace surface rhythm.
+ *
+ * One opt-in visual layer shared by the existing sidebar, conversation,
+ * editor, Git, file and terminal surfaces. Tokens and geometry come from
+ * styles.css / tokens.cds.css: no shadow copy of the CDS palette, no new
+ * font downloads, no separate workspace state or mounted shell tree.
+ *
+ * This stylesheet is loaded AFTER styles.css but scoped to the workspace
+ * variant. Settings, classic shell, mobile shell and sketch theme keep
+ * their own presentation.
+ */
+html:not(.sketch) [data-ui-shell-variant="workspace"] {
+  --workspace-control-size: 2rem;
+  --workspace-strip-height: 2.25rem;
+  --workspace-focus-outline: 2px solid rgb(var(--accent) / .82);
+  --workspace-divider-color: rgb(var(--panel-edge));
+}
+
+/* The background is continuous around the stable center/editor pane. Avoid
+   accumulating borders/shadows where a nested right rail shares an edge. */
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-testid="workspace-main"] {
+  min-width: 0;
+  isolation: isolate;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-testid="workspace-sidebar"] {
+  min-width: 0;
+  border-right: 1px solid var(--workspace-divider-color);
+}
+
+/* Workspace-only controls receive a consistent focus ring, including
+   dynamically contributed module UI that omits utility focus classes.
+   No custom ring on disabled, drag handles, canvas or editor text inputs. */
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+:is([data-testid="workspace-sidebar"], [data-testid="workspace-main"])
+:where(button:not(:disabled), [role="tab"], [role="menuitem"], [role="checkbox"])
+:focus-visible {
+  outline: var(--workspace-focus-outline);
+  outline-offset: -2px;
+}
+
+/* Consistent density across split-pane tab strips, including the multi-row
+   file/editor tabs. Don't force heights on variable-height chat cards. */
+html:not(.sketch) [data-ui-shell-variant="workspace"] [role="tablist"] {
+  min-width: 0;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [role="tablist"] [role="tab"] {
+  min-width: 0;
+  text-underline-offset: 3px;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [role="tab"][aria-selected="true"] {
+  color: rgb(var(--content));
+}
+
+/* Tool ledger transitions mark disclosure state without generating
+   decorative extra cards or replacing running/failed status colors. */
+html:not(.sketch) [data-ui-shell-variant="workspace"] .chat-ledger-head {
+  min-height: 2rem;
+  border-radius: var(--radius-btn-xs);
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] .chat-ledger-head:focus-visible {
+  outline: var(--workspace-focus-outline);
+  outline-offset: -2px;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] .chat-turn {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] {
+  min-width: 0;
+}
+
+/* A resilient composer with long attachment names: scrolling attachments
+   should never horizontally expand the center pane, and the editor grows
+   only within its existing --composer-editor-cap from the main stylesheet. */
+html:not(.sketch) [data-ui-shell-variant="workspace"] .composer-card {
+  min-width: 0;
+  max-width: 100%;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] .composer-host {
+  min-width: 0;
+  max-width: 100%;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] .composer-host .ProseMirror {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+/* Native high-contrast and reduced-motion support uses the same shell
+   boundaries instead of a second preference store. */
+@media (forced-colors: active) {
+  [data-ui-shell-variant="workspace"] [role="tab"][aria-selected="true"] {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+  [data-ui-shell-variant="workspace"] .chat-ledger-head:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-ui-shell-variant="workspace"] .composer-card,
+  [data-ui-shell-variant="workspace"] .composer-host,
+  [data-ui-shell-variant="workspace"] [role="tab"] {
+    scroll-behavior: auto;
+    transition-duration: 0ms;
+  }
+}
+/* Very narrow Electron windows should scroll overflowing tab tracks rather
+   than forcing center, sidebar or terminal siblings to be wider than the
+   viewport. */
+@media (max-width: 900px) {
+  [data-ui-shell-variant="workspace"] [role="tablist"] {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  [data-ui-shell-variant="workspace"] .chat-ledger-head {
+    min-width: 0;
+  }
+}

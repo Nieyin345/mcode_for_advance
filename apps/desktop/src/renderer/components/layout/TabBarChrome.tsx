@@ -57,7 +57,7 @@ export function TabBarChevronButton({ dir, onClick, title }: ChevronButtonProps)
       onClick={onClick}
       title={title}
       aria-label={title}
-      className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
+      className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
     >
       <Icon size={14} />
     </button>
@@ -107,7 +107,7 @@ export function TabBarOverflowMenu({
   return (
     <Menu.Root>
       <Menu.Trigger
-        className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
+        className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
         title={heading}
         aria-label={heading}
       >
@@ -117,7 +117,7 @@ export function TabBarOverflowMenu({
         <Menu.Positioner side="top" align="end">
           <Menu.Popup
             className={cn(
-              "z-50 min-w-[200px] origin-bottom-right rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
+              "z-50 max-h-[calc(100vh-16px)] min-w-[min(200px,calc(100vw-16px))] max-w-[calc(100vw-16px)] overflow-y-auto origin-bottom-right rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
               "transition-[transform,opacity] duration-100",
@@ -135,7 +135,7 @@ export function TabBarOverflowMenu({
                   onCheckedChange={onToggleMultiRow}
                   closeOnClick={false}
                   className={cn(
-                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] outline-none select-none",
+                    "flex min-h-8 w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
                     "data-[highlighted]:bg-surface-muted",
                     multiRow ? "text-content dark:text-accent" : "text-content-muted",
                   )}
@@ -148,13 +148,13 @@ export function TabBarOverflowMenu({
                 <Menu.Separator className="my-1 h-px bg-edge" />
               </>
             )}
-            <div className="max-h-[min(60vh,320px)] overflow-y-auto">
+            <div className="max-h-[min(60vh,320px)] min-w-0 overflow-y-auto">
               {items.map((item) => (
                 <Menu.Item
                   key={item.key}
                   onClick={() => onSelect(item.key)}
                   className={cn(
-                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] outline-none select-none",
+                    "flex min-h-8 w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
                     "data-[highlighted]:bg-surface-muted",
                     item.active ? "text-content dark:text-accent" : "text-content-muted",
                   )}

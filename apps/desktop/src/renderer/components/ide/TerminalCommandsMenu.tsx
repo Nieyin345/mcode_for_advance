@@ -95,9 +95,10 @@ export function TerminalCommandsMenu({
             <button
               type="button"
               title={disabled ? t("ide.term.selectProjectFirst") : t("ide.term.customCommands")}
+              aria-label={disabled ? t("ide.term.selectProjectFirst") : t("ide.term.customCommands")}
               disabled={disabled}
               className={cn(
-                "cds-hover-ghost rounded p-1 text-content-subtle hover:text-content",
+                "cds-hover-ghost flex size-8 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                 disabled && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-content-subtle",
               )}
             />
@@ -109,7 +110,7 @@ export function TerminalCommandsMenu({
           <Menu.Positioner side="top" align="end" sideOffset={4}>
             <Menu.Popup
               className={cn(
-                "z-50 min-w-[260px] origin-bottom-right rounded-[var(--radius-btn-md)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
+                "z-50 max-h-[calc(100vh-16px)] min-w-[min(260px,calc(100vw-16px))] max-w-[calc(100vw-16px)] overflow-y-auto origin-bottom-right rounded-[var(--radius-btn-md)] border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]",
                 "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                 "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                 "transition-[transform,opacity] duration-100",
@@ -127,13 +128,13 @@ export function TerminalCommandsMenu({
                 commands.map((cmd) => (
                   <div
                     key={cmd.id}
-                    className="group flex items-center gap-1 px-1 py-0.5 data-[highlighted]:bg-surface-muted"
+                    className="group flex min-h-9 min-w-0 items-center gap-1 px-1 py-0.5 hover:bg-surface-muted/60 focus-within:bg-surface-muted/60"
                   >
                     {/* Clickable body: name (primary) + command (secondary, mono).
                         Primary click opens a NEW terminal tab and runs there. */}
                     <button
                       type="button"
-                      className="flex min-w-0 flex-1 items-baseline gap-2 px-2 py-1 text-left"
+                      className="flex min-h-8 min-w-0 flex-1 items-baseline gap-2 rounded-[var(--radius-btn-xs)] px-2 py-1 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                       onClick={() => {
                         onRunInNewTerminal(cmd.command);
                       }}
@@ -149,19 +150,21 @@ export function TerminalCommandsMenu({
                     {/* Hover-revealed: run in the CURRENT terminal (play), edit
                         (pencil, closes the menu + opens the dialog), delete
                         (trash, immediate, menu stays open). */}
-                    <div className="flex shrink-0 items-center opacity-0 group-hover:opacity-100 data-[highlighted]:opacity-100">
+                    <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                       <button
                         type="button"
-                        className="cds-hover-ghost rounded p-0.5 text-content-subtle hover:text-content"
+                        className="cds-hover-ghost flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle hover:text-content focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                         title={t("ide.term.runInCurrent")}
+                        aria-label={`${t("ide.term.runInCurrent")}: ${cmd.name}`}
                         onClick={() => onRun(cmd.command)}
                       >
                         <IconPlayerPlay size={11} />
                       </button>
                       <button
                         type="button"
-                        className="cds-hover-ghost rounded p-0.5 text-content-subtle hover:text-content"
+                        className="cds-hover-ghost flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle hover:text-content focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                         title={t("common.edit")}
+                        aria-label={`${t("common.edit")}: ${cmd.name}`}
                         onClick={() => {
                           setMenuOpen(false);
                           openEdit(cmd);
@@ -171,8 +174,9 @@ export function TerminalCommandsMenu({
                       </button>
                       <button
                         type="button"
-                        className="cds-hover-ghost rounded p-0.5 text-content-subtle hover:text-danger"
+                        className="cds-hover-ghost flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle hover:text-danger focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                         title={t("common.delete")}
+                        aria-label={`${t("common.delete")}: ${cmd.name}`}
                         onClick={() => remove(cmd.id)}
                       >
                         <IconTrash size={11} />
@@ -185,7 +189,7 @@ export function TerminalCommandsMenu({
               <div className="my-1 border-t border-edge" />
               <Menu.Item
                 className={cn(
-                  "flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] outline-none select-none",
+                  "flex min-h-8 w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
                   "text-accent data-[highlighted]:bg-surface-muted",
                 )}
                 onClick={openAdd}
@@ -203,7 +207,7 @@ export function TerminalCommandsMenu({
       <Dialog.Root open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
         <Dialog.Portal>
           <Dialog.Backdrop />
-          <Dialog.Popup className="w-[420px] max-w-[90vw] p-4">
+          <Dialog.Popup className="w-[min(420px,calc(100vw-24px))] max-h-[calc(100vh-24px)] overflow-y-auto p-4">
             <Dialog.Title>{editing?.id ? t("ide.term.editCommand") : t("ide.term.addCommand")}</Dialog.Title>
             <Dialog.Description className="mt-1">
               {editing?.id ? t("ide.term.editCommandDesc") : t("ide.term.addCommandDesc")}
@@ -230,7 +234,7 @@ export function TerminalCommandsMenu({
                   onChange={(e) => editing && setEditing({ ...editing, command: e.target.value })}
                   className={cn(
                     "w-full resize-y rounded border border-edge bg-surface px-2.5 py-1.5 font-mono text-code leading-relaxed text-content placeholder:text-content-subtle outline-none transition-colors",
-                    "focus:border-accent",
+                    "focus:border-accent focus-visible:ring-2 focus-visible:ring-accent",
                   )}
                 />
               </label>

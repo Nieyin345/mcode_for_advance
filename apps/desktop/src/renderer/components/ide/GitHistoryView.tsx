@@ -251,7 +251,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
           <select
             value={repoPath}
             onChange={(e) => setRepoPath(e.target.value)}
-            className="min-w-0 flex-1 truncate rounded border border-edge bg-surface px-1.5 py-0.5 [font-size:var(--right-panel-font-size)] text-content outline-none focus:border-accent"
+            className="min-h-8 min-w-0 flex-1 truncate rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-2 py-0.5 [font-size:var(--right-panel-font-size)] text-content outline-none focus:border-accent focus-visible:ring-2 focus-visible:ring-accent"
             title={t("ide.git.selectRepo")}
           >
             {repos.map((r) => (
@@ -268,7 +268,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
         <button
           type="button"
           onClick={() => void loadCommits()}
-          className="cds-hover-ghost flex shrink-0 items-center rounded px-1.5 py-0.5 text-content-muted transition-colors hover:text-content"
+          className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           title={t("ide.git.refreshHistory")}
         >
           <IconRefresh size={12} />
@@ -326,7 +326,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
                   type="button"
                   disabled={loadingMore}
                   onClick={() => void loadCommits({ append: true, skip: commits.length })}
-                  className="cds-hover-ghost flex w-full items-center justify-center gap-1 rounded px-2 py-1.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:text-content disabled:opacity-50"
+                  className="cds-hover-ghost flex min-h-9 w-full items-center justify-center gap-1 rounded-[var(--radius-btn-xs)] px-2 py-1.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
                 >
                   {loadingMore ? (
                     <>
@@ -368,7 +368,7 @@ function CommitRow({
     <button
       type="button"
       onClick={onClick}
-      className="relative flex w-full flex-col gap-0.5 py-1.5 pr-2.5 text-left transition-colors hover:bg-surface-hover/50"
+      className="relative flex min-h-10 w-full flex-col gap-0.5 rounded-[var(--radius-btn-xs)] py-1.5 pr-2.5 text-left transition-colors hover:bg-surface-hover/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
       <GraphRails graph={graph} gutterW={gutterW} />
       <div className="flex min-w-0 items-center gap-1.5">
@@ -504,7 +504,7 @@ function CommitDetail({
         <button
           type="button"
           onClick={onBack}
-          className="cds-hover-ghost mb-1.5 flex items-center gap-1 rounded px-1 py-0.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:text-content"
+          className="cds-hover-ghost mb-1.5 flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2 py-0.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           <IconArrowLeft size={12} />
           {t("ide.git.backToList")}
@@ -584,7 +584,7 @@ function CommitFileRow({
     <button
       type="button"
       onClick={onClick}
-      className="group flex w-full items-center gap-1.5 px-2.5 py-1 text-left transition-colors hover:bg-surface-hover/50"
+      className="group flex min-h-8 w-full items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-left transition-colors hover:bg-surface-hover/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       title={fullPath}
     >
       <CommitFileStatusIcon status={file.status} />

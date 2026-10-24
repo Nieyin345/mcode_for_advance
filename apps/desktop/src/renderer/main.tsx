@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import { initFoucGuard } from "./lib/theme.js";
 import { isElectron, isMobileDevice } from "./lib/platform.js";
 import "./styles.css";
+// ARC-005: scoped workspace-only presentation layer. Preserve the existing
+// CDS token source and all stable PTY/Monaco/chat component instances.
+import "./arc005-workspace-surface.css";
 // KaTeX typography (fonts + layout) for math rendered by rehype-katex in
 // Markdown.tsx. Without this, KaTeX emits correct HTML but no styling, so
 // fractions/roots/superscripts collapse to unstyled text. Vite resolves the
