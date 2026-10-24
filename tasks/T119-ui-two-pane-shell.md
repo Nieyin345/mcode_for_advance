@@ -226,9 +226,25 @@ layout.includes("order: order.aside,")
 唯一的例外是 `arc005-pane-docking-smoke` 里的 `PANE_DOCK_MIME.includes("pane-dock")`，
 那是常量不是源码，**不受影响**。
 
-> ⚠️ **这个数字我改了三次**（36 → 89 → 94）。前两次口径都不对：第一次只数了部分变量名，
-> 第二次漏了 `src` 和 `terminal`。**「94」是按「变量是不是源码字符串」逐个判定后的口径。**
-> **谁再改这节，请按同一口径数，别按字符串匹配数。**
+> ⚠️ **这个数字 C 改了三次**（36 → 89 → 94），**A 独立数也改了三次**（276 → 75 → 86 → 94）。
+> **两个人、六次错，错的不是同一处。**
+
+### ★ 「同一口径」具体指三件事（缺一件数出来就不是 94）
+
+1. **哪五套** —— 是 `arc005-{pane-docking, pane-free-grid, pane-layout-edges,
+   editor-keepalive, right-pane-keepalive}`，**不是全部 `arc005-*`**
+   （A 第一轮扫了 20 多套，数出 **276**）。
+2. **哪些变量算「源码字符串」** —— **包括 `readFileSync` 的别名**。实测三种：
+   - `arc005-editor-keepalive`：`const source = (p) => readFileSync(...)`
+   - `arc005-right-pane-keepalive`：`const read = (p) => readFileSync(...)`
+   - 其余三套：`const src = ...`
+
+   **光看 `readFileSync` 四个字会漏掉两套**（A 第 2、3 轮就是因为这个，75 → 86）。
+3. **`X.includes(` 的 `X` 必须是那个变量** —— 不能是字符串常量。
+   唯一例外：`PANE_DOCK_MIME.includes("pane-dock")`（常量，不受影响）。
+
+**A 的判据**：**「数一遍」不等于「数对一遍」** —— 两个人都以为在数同一个东西，
+实际口径差了三处。**所以这一节把口径显式列出来，别让下一个人再数三遍。**
 
 ### 三、修法（已就绪，未执行）
 
