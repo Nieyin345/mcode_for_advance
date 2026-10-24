@@ -144,6 +144,14 @@ try {
   check("旧事件筛选未实现时不得静默扩大触发范围",
     error instanceof Error && error.message.includes("eventFilter is not implemented"), String(error));
 }
+try {
+  services.subscribe({ ...subscribePayload, params: { ...subscribePayload.params,
+    eventFilter: { match: "other-workspace" } } }, () => {});
+  check("畸形非字符串 eventFilter 不能绕开 Host 筛选守卫", false);
+} catch (error) {
+  check("畸形非字符串 eventFilter 不能绕开 Host 筛选守卫",
+    error instanceof Error && error.message.includes("eventFilter is not implemented"), String(error));
+}
 check("迁移报告明确要求核对事件名与不兼容的筛选条件",
   result.report.needsHumanDecision.some(issue => issue.nodeId === original.id
     && issue.message.includes("eventFilter") && issue.message.includes("events")),

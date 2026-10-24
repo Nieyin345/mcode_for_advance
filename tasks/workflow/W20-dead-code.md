@@ -137,3 +137,17 @@ grep -n "^  const handle\|^  function handle" WorkflowLibraryView.tsx
 
 所以每条删除都要回答：**「我是怎么确认它没被用的？」** —— 不能是「grep 了名字没看到调用」，
 因为**名字搜是引用数，不是出口数**（本仓库栽过多次）。
+
+
+## 2026-10-25 再盘点（只读；未实施删除）
+
+开工时确认 WorkflowNodeCard / workflowLayout / WorkflowLibraryView / workflow-view-smoke 均无未提交改动。但 **W20 任务卡漏列至少三个直接测试消费者**，不能只按原卡的 5 个“可改”文件删除：
+
+| 对象 | 实际消费者 | 处理判断 |
+| --- | --- | --- |
+| `WorkflowNodeCard.tsx` | 生产代码无 import；`workflow-view-smoke/main.ts` SSR 绘制并验证多条视觉断言；`module-catalog-ui-smoke/main.jsx` 浏览器挂载卡片；`execution-engine-smoke/main.ts` 读取文件字节做权限标签/runner 判据；`design-tokens-smoke/main.ts` 将该文件列在有效视觉 Token 白名单 | **B：仅测试守护，不是 A**。必须先把那三个额外套件改为验证当前真正可用的 `NodeInspector` / `NodeTypesView` / 新 Node-RED 编辑器，按行为替换旧断言，并经各自真跑后才能删。否则删除会制造三套假红。 |
+| `workflowLayout.ts` | 生产 `workflowEdit.ts` 调用 `firstFreeSlot/autoLayout`，`workflowEdgeLabels.ts` 通过 `Box` 类型引用；`workflow-view-smoke` 有大量几何断言 | **C：有生产调用，不得整体删除**。可另做小范围精简，但必须保留 `firstFreeSlot` 等生产接口和其覆盖。 |
+| `WorkflowLibraryView.handleSetDependency` | 同文件 JSX 将其传入 `NodeInspector.onSetDependency`，可由现有库 UI 触发 | **C：生产依赖存在，不得删**。 |
+| `WorkflowLibraryView.tsx` 文件头提到 `WorkflowNodeCard` | 仅一条过时的解释性注释，非运行依赖 | 后续删除卡片时一起修文档，不能拿注释当存在生产视图的依据。 |
+
+**结论**：当前任务卡的独占可写范围未包括三个额外测试套件。为保留并行对话边界，本轮**没有**删除组件、布局或改写其他模块的测试。W20 不能凭“生产零调用”宣布 Done；需总控允许附加 `module-catalog-ui-smoke`、`execution-engine-smoke`、`design-tokens-smoke` 的测试 owner 并对旧卡片断言进行替代。它是测试迁移工作，不是本轮事件触发器运行故障。

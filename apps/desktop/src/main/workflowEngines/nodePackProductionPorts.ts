@@ -294,7 +294,9 @@ export function productionNodePackServices(
       // retain the previous single `task` event-name fallback. A nonempty
       // native `events` field is authoritative; never silently fall back
       // to an unrelated human instruction if its entries are invalid.
-      if (typeof params.eventFilter === "string" && params.eventFilter.trim() !== "") {
+      const eventFilter = params.eventFilter;
+      if (eventFilter !== undefined && eventFilter !== null
+        && (typeof eventFilter !== "string" || eventFilter.trim() !== "")) {
         throw Error("Legacy eventFilter is not implemented for Node-RED: migrate the filter explicitly or clear it before deploying");
       }
       const hasEvents = params.events !== undefined;

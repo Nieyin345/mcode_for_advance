@@ -1,6 +1,6 @@
 # W25｜`{{trigger.*}}` 迁到 Node-RED 没有数据源 —— 现在会显式失败
 
-- Status: ready-for-agent
+- Status: partial-delivered（2026-10-25：HookEvent 订阅修复；trigger.input 自定义 UI 数据仍不等价，已在装载确认前明确警示）
 - Category: **能力缺口（迁移后已知不可用，但有明确报错）**
 - Priority: **P2 —— 它不静默错，但 `wf_auto_download` 迁过去会失败**
 - Depends on: W17（已交付）
@@ -184,3 +184,10 @@ W17 把一个「安静走错分支」换成了「显式失败」，那是对的 
 
 - **不宣称 `wf_auto_download` 已整图可用**：它的 `trigger.input.doi` 原生侧仍没有真实来源；这需要 UI 触发入口向 Node-RED 注入可信的运行前输入，并维护所属 workflow、来源会话、项目身份及审批，不能仅从普通 HookEvent 构造。当前在迁移前向用户明确展示此限制，执行时继续拒绝错误求值。
 - 本轮未跑真实 Electron 自定义 UI → 原生 Host 的整图行为；测试是原生生产 Host + 隔离 stub runtime、隔离 native load。未跑全量 smoke；未修改正在被其他对话使用的 t8 / W26 UI。
+
+
+### 追加硬化验收（2026-10-25）
+
+- 除非 `eventFilter` 缺省/null/空字符串，其他**所有格式**均拒绝；包括直接由 Node-RED IPC 构造的非字符串对象，不允许通过类型错误绕过原筛选保护。
+- 新 suite 再加 “对象 eventFilter 不能绕开 Host 筛选守卫”：最终 **21/21 PASS**；七套相关 smoke **7/7 PASS**，证据 `apps/desktop/.tmp/smoke-runs/1792873791308-18444-A5SMh6/`；Desktop + Contracts 两套 TypeScript 检查 EXIT=0。
+- W20 只读再盘点发现旧卡片尚有 3 个额外测试引用，不能在本任务扩围删除；细节回写 `tasks/workflow/W20-dead-code.md`。
