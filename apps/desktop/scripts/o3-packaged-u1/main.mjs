@@ -41,8 +41,12 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 import { launchPackagedApp, waitForTarget, readAvailability, unpackedDir } from "./driver/packaged-app.mjs";
+import { printOfficeCoverage } from "../lib/office-coverage.mjs";
 import { createFixtures, TOKENS } from "./fixtures.mjs";
 import { docsPageUrl, targetMatchesKind, READY, probeExpression, SIGNATURE, KIND_ORDER, CLI_SUFFIXES } from "./kinds.mjs";
+
+printOfficeCoverage("o3");
+if (process.argv.includes("--coverage-only")) process.exit(0);
 
 const suite = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(suite, "../..");

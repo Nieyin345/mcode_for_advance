@@ -35,6 +35,10 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runElectronU1, classifyU1Run, reportIncompleteAndExit } from "../lib/electron-u1-verdict.mjs";
+import { printOfficeCoverage } from "../lib/office-coverage.mjs";
+
+printOfficeCoverage("o0");
+if (process.argv.includes("--coverage-only")) process.exit(0);
 
 const suite = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(suite, "../..");

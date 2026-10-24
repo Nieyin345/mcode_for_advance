@@ -1,6 +1,6 @@
 # O7｜让「覆盖范围」出现在每次运行的输出里，不只是卡上
 
-- Status: **ready-for-agent**
+- Status: **delivered：O0/O1/O3 三行机器可读覆盖边界，11/11 有界验证及三类变异通过（2026-10-25）**
 - Category: **Office / 取证纪律**
 - Priority: **P1 —— 它不是 bug，但它决定下一个读日志的人会不会误判**
 - Depends on: O0（`0591acbc`）、O3（`f383922b`）
@@ -83,3 +83,15 @@ NOT-COVERED: <没覆盖什么>
 ## 六、结果回写区
 
 （执行会话追加：三个套件各自加的哪两行、变异结果、提交 SHA）
+
+---
+
+## 2026-10-25 交付与证据
+
+- 新建 `apps/desktop/scripts/lib/office-coverage.mjs`，三套的 `TIER:`、`COVERAGE:`、`NOT-COVERED:` 为**人工固定事实**，不是从 PASS 数量猜测；输出约束为恰好三行、不可改写前缀。
+- `o0-format-fidelity-smoke/run.mjs` 在启动 Electron 前打印 U1 覆盖边界，指出「6 份复杂样本 + 49 断言」不等于任意文档/任意编辑，且明确 PDF 旋转视觉和 PPT 模板占位符仍未覆盖。
+- `o1-three-provider-ai-smoke/run.sh` 在运行协议替身前打印 `TIER: smoke`；特别写清**无真实在线 API、无实际凭据、未完成真实模型编辑 E2E**。原始 `46/46` 测试仍通过。
+- `o3-packaged-u1/main.mjs` 在打开程序前打印 `TIER: u1`；准确表示 Windows 解压态仅验证打开与渲染、资源缺失负控，**没有**验证 NSIS 安装器、其他 OS 或编辑保存重开。
+- 新增 `apps/desktop/scripts/o7-coverage-smoke/`：11/11，包括三份字面覆盖声明、三个实际接线、O0/O3 主程序的 `--coverage-only` 输出检查，及三种变异（删除未覆盖行、改成散文、删除 TIER）均按预期**被拒绝**。该参数是诊断输出模式，不创建/启动重型 Electron 进程。
+- 真实调用 `node apps/desktop/scripts/run-smokes.mjs o1-three-provider-ai-smoke` PASS，日志第一三行确实分别以 `TIER: smoke`、`COVERAGE:` 和 `NOT-COVERED:` 开头。合并回归 `genoffice-ai-ask-smoke`、`t0-genoffice-native-tool-roundtrip-smoke`、`o1-three-provider-ai-smoke`、`o7-coverage-smoke` 四套全部 PASS。
+- **边界**：O0/O3 的完整 Electron 重跑未在本小任务中触发（避免与其他对话争抢重型测试窗口）；对其新输出行用实际 `--coverage-only` 入口验证。修改纯在测试运行器和新测试，不改变原厂渲染、排版或磁盘数据。

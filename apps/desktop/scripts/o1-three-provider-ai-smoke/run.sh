@@ -9,6 +9,8 @@
 # 免得指错就拿空库盖掉用户数据（见 run-store-smoke/stubs/dataRoot.ts 文件头）。
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+node scripts/lib/office-coverage.mjs o1
+if [ "${1:-}" = "--coverage-only" ]; then exit 0; fi
 
 OUT=$(mktemp -d ./.tmp/mcode-o1-three-provider.XXXXXX)
 DATA=$(mktemp -d ./.tmp/mcode-o1-three-provider-data.XXXXXX)
