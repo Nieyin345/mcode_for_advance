@@ -81,7 +81,21 @@ console.log("[5] VscodeL1Bridge 的调用范围（两个范围分开断言）");
     }
   };
   walk(srcRoot);
-  check("★ src/ 内零调用方（含未跟踪文件；定义文件自身除外）", hits.length === 0, { hits });
+  // ⚠️ **【F006 后更新】这条断言的形状变了，但它是被有意推翻的，不是被弄绿的。**
+  //
+  // 原来断言「src/ 内零调用方」—— 那在 F001 写的诚实性卡里成立，因为当时
+  // `VscodeL1Bridge` 只在套件里被调。**F006 把它接进了产品**：`main/ipc/modules.ts`
+  // 的 `modules.installVsix` handler 现在真的调 `VscodeL1Bridge.install`。
+  //
+  // 所以「零调用方」不再是事实，而且**不应该再是**——用户能装 vsix 正是靠这个引用。
+  //
+  // 保留下来的原意是：**这条路径的入口必须唯一且受控**。现在重新表述为
+  // 「src/ 内只允许 IPC handler 这一处引用它」。多出第二处（比如某个业务模块
+  // 直接 new 一个 bridge）就说明它开始被当成普通工具用了，那才需要重看。
+  const ALLOWED_SRC_CALLERS = [resolve(process.cwd(), "src/main/ipc/modules.ts")];
+  const straySrcCallers = hits.filter((h) => !ALLOWED_SRC_CALLERS.includes(h));
+  check("★ src/ 内的引用只在 IPC handler 一处（F006 把它接进产品后为 1 处；不该再有第二处）",
+    straySrcCallers.length === 0 && hits.length >= 1, { hits, straySrcCallers });
 
   // 5b: scripts/ 内唯一命中 vscode-l1-smoke
   const scriptsRoot = resolve(process.cwd(), "scripts");
@@ -112,9 +126,14 @@ console.log("[5] VscodeL1Bridge 的调用范围（两个范围分开断言）");
   // （`src/` 内零调用方）—— 那一条才是「没接进产品」的证明。
   //
   // 这里保留的是更弱但仍有意义的一条：**scripts/ 下的引用只允许出现在
-  // 「名字里带 vscode-l1 / vsix-」的套件里**。任何其他套件提到它就说明
-  // 它正在被当成产品能力使用，那才是需要重新审视的信号。
-  const allowed = /scripts[\\/](vscode-l1-smoke|vsix-deflate-smoke|vsix-size-limits-smoke)[\\/]/;
+  // 「名字里带 vscode-l1 / vsix」的套件里**。
+  //
+  // ⚠️ **【F004 后修正】第一版我写的是枚举名单**（`vscode-l1-smoke|vsix-deflate-smoke|
+  // vsix-size-limits-smoke`）—— **那违反了我自己反复强调的原则：每加一个套件就要改一次判据。**
+  // F004 新建 `vsix-manifest-schema-smoke` 时当场撞红，证明它是错的写法。
+  // 现在改成**按名字模式**判断：套件目录名里带 `vsix` 或 `vscode-l1` 就视为「它自己的测试」。
+  // 这比枚举更耐久，也仍然能抓住「一个无关套件突然开始引用它」这个信号。
+  const allowed = /scripts[\\/]([^\\/]*(vsix|vscode-l1)[^\\/]*)[\\/]/i;
   const scriptHits = walkScriptsHits.filter((p) => p !== self);
   const unexpected = scriptHits.filter((p) => !allowed.test(p));
   check(
