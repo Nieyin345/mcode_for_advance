@@ -135,11 +135,28 @@ function classifyContribution(section: string): IgnoredContribution["kind"] | "s
 /** 【F004】`contributes.commands` 的上限。
  *
  * **原实现是 `z.tuple([...])`，即恰好 1 条，和 4096 / 24576 出自同一个提交 `68a7121c`，
- * 同样没有依据。** 实测最大真实值是 `rainbow-csv` 的 **24 条**；64 给它约 2.7 倍余量。
+ * 同样没有依据。**
  *
- * 必须有上限：一个声称 100 万条命令的清单会在解析时撑爆内存，
- * 而 `z.array` 不设上限就是无界攻击面。 */
-const MAX_COMMANDS = 64;
+ * 【F015】64 那个数字也没有依据，而且**会拒掉真实扩展**。实测本机：
+ *
+ * | 命令数 | 扩展 |
+ * |---|---|
+ * | 74 | `ms-azuretools.vscode-azurefunctions` |
+ * | **101** | `ms-azuretools.vscode-containers` |
+ * | 71 | `ms-vscode-remote.remote-containers` |
+ *
+ * 三个超过 64 → 装不进来。这和 F014 撤掉 `activationEvents` 校验是同一类错误：
+ * 阈值按想象定，真实输入全撞上。
+ *
+ * ## 256 的依据 —— **看清楚了再用**
+ *
+ * **256 = 本机实测最大值 101 的约 2.5 倍余量。它不是生态上限。**
+ * 没有扫过市场（那要联网），所以**不能说"没有扩展超过 256"**。
+ * 将来撞上第 4 个更大的扩展，**那是放宽这个数字的理由，不是怀疑这条注释的理由**。
+ *
+ * 上限本身必须保留：一个声称 100 万条命令的清单会在解析时撑爆内存，
+ * 而 `z.array` 不设上限就是无界攻击面。**这条的理由是"防内存"，不是"够用就行"。 */
+const MAX_COMMANDS = 256;
 
 /** 【F004】`activationEvents` 的上限。真实扩展（rainbow-csv）是 11 条；给 64 留余量。
  *
@@ -529,7 +546,7 @@ function mainEntryName(mainField: string): string {
  * the real Node permissioned child is still ModuleHost's sole executor.
  * Editor edit transactions and long-lived diagnostics are NOT emulated.
  */
-function childL2Snippet(command: string, section: string, configuration: Record<string, string | number | boolean>, fileWrite: boolean): string {
+function childL2Snippet(commands: readonly string[], section: string, configuration: Record<string, string | number | boolean>, fileWrite: boolean): string {
   return `
       const l2Notifications = [], l2Diagnostics = [];
       const l2Fs = require("node:fs");
@@ -588,7 +605,8 @@ function childL2Snippet(command: string, section: string, configuration: Record<
         }),
         commands: Object.freeze({
           registerTextEditorCommand: (id, callback) => {
-            if (id !== ${JSON.stringify(command)} || typeof callback !== "function" || handlers.has(id))
+            // 【F015】白名单，不是单数 —— 理由同上面 registerCommand。
+            if (!DECLARED.includes(id) || typeof callback !== "function" || handlers.has(id))
               throw Error("L2 editor command undeclared or duplicate");
             handlers.set(id, async (selected) => callback(Object.freeze({
               document: Object.freeze({
@@ -624,20 +642,50 @@ function childL2Snippet(command: string, section: string, configuration: Record<
   `;
 }
 
-function childProgram(entry: string, command: string, l2?: { section: string; configuration: Record<string, string | number | boolean>; fileWrite: boolean }): string {
+/**
+ * 【F015】生成子进程里的扩展宿主。
+ *
+ * ## `commands` 从「一个 id」变成「一张白名单」
+ *
+ * 从前这里收单数 `command`，于是 `registerCommand("别的已声明命令")` 直接抛
+ * `Undeclared or duplicate VS Code command` —— **扩展声明的 24 条命令里 23 条连注册都不行**。
+ *
+ * 现在收全部已声明命令 id：
+ *  - `registerCommand` / `registerTextEditorCommand` 接受**其中任意一条**（白名单，不是放开）；
+ *  - **不在清单里的仍然拒**，且错误点名（把「你没声明」和「本宿主不实现」分开）。
+ *
+ * ⚠️ **这是 L1（注册）。** 注册成功不等于能被调到 —— 见文件底部 `executeCommand` 的注释：
+ * 「调用哪条」这个信息**传不进子进程**（只能借 `resource`，而那是授权判定要检查的路径）。
+ * 所以子进程最后仍然只跑 `primary` 那一条。**这条边界必须让它可见，不能被注册成功掩盖。**
+ */
+function childProgram(
+  entry: string,
+  commands: readonly string[],
+  primary: string,
+  l2?: { section: string; configuration: Record<string, string | number | boolean>; fileWrite: boolean },
+): string {
+  // 生成代码里要用到的两句常量先在 TS 侧拼好 —— 直接嵌进模板里会引号打架。
+  const primaryJson = JSON.stringify(primary);
+  const declaredErrorSrc = [
+    "(id) => (DECLARED.includes(id)",
+    "  ? \"VS Code command '\" + id + \"' is declared, but this host only runs the first one ('\" + " + primaryJson + " + \"') — other commands can register but cannot be invoked\"",
+    "  : \"VS Code command '\" + id + \"' is not declared in this extension's contributes.commands\")",
+  ].join("\n");
   return `({
     run: async (resource) => {
       const handlers = new Map();
       const statusBars = [];
       const disposables = [];
-      ${l2 ? childL2Snippet(command, l2.section, l2.configuration, l2.fileWrite) : "const l2 = null;"}
+      const DECLARED = ${JSON.stringify(commands)};
+      const declaredError = ${declaredErrorSrc};
+      ${l2 ? childL2Snippet(commands, l2.section, l2.configuration, l2.fileWrite) : "const l2 = null;"}
       const vscode = Object.freeze({
         ...(l2 ? { Uri: l2.Uri, workspace: l2.workspace, languages: l2.languages } : {}),
         commands: Object.freeze({
           ...(l2 ? l2.commands : {}),
           registerCommand: (id, handler) => {
-            if (id !== ${JSON.stringify(command)} || typeof handler !== "function" || handlers.has(id)) {
-              throw Error("Undeclared or duplicate VS Code command");
+            if (typeof id !== "string" || typeof handler !== "function" || handlers.has(id) || !DECLARED.includes(id)) {
+              throw Error(declaredError(id));
             }
             handlers.set(id, handler);
             return { dispose() { handlers.delete(id); } };
@@ -716,7 +764,10 @@ function childProgram(entry: string, command: string, l2?: { section: string; co
       (new Function("module", "exports", "require", source))(loaded, loaded.exports, requireCompat);
       if (typeof loaded.exports.activate !== "function") throw Error("VS Code extension activate() missing");
       await loaded.exports.activate({ subscriptions: disposables });
-      const handler = handlers.get(${JSON.stringify(command)});
+      // 【F015】登记了哪几条 —— 用来让"能注册不能调用"这条边界**可见**，
+      // 而不是让注册成功把失败盖住。下面那句「registered」会随结果返回给宿主。
+      const registered = Array.from(handlers.keys());
+      const handler = handlers.get(${primaryJson});
       if (!handler) throw Error("Declared VS Code command not registered");
       // Only an already-authorized resource is passed; no untrusted command args.
       const value = await handler(resource);
@@ -725,7 +776,9 @@ function childProgram(entry: string, command: string, l2?: { section: string; co
         message: typeof value === "string" ? value.slice(0, 4096) : JSON.stringify(value ?? null).slice(0, 4096),
         statusBarText: bar ? String(bar.text).slice(0, 4096) : "",
         statusBarTooltip: bar ? String(bar.tooltip).slice(0, 4096) : "",
-        statusBarCommand: bar && bar.command === ${JSON.stringify(command)} ? bar.command : "",
+        statusBarCommand: bar && bar.command === ${primaryJson} ? bar.command : "",
+        registeredCount: registered.length,
+        registeredCommands: registered.slice(0, 900).join(","),
         ...(l2 ? {
           l2Notifications: JSON.stringify(l2Notifications),
           l2Diagnostics: JSON.stringify(l2Diagnostics)
@@ -741,6 +794,12 @@ export class VscodeL1Bridge {
     private readonly host: ModuleHost,
     readonly moduleId: string,
     readonly commandId: string,
+    /** 【F015】这份清单**声明过**的全部命令 id（不只是能跑的第一条）。
+     *
+     * 只用于**把拒绝的理由说准**：`executeCommand("demo.second")` 时，
+     * 「它声明过但跑不了」和「它压根没声明」是两件不同的事，用户要做的事也不同
+     * （前者是宿主的限制，后者是扩展的 bug）。 */
+    readonly declaredCommands: readonly string[],
     private readonly installedManifest: string,
     /**
      * 【F011】本宿主**接受了、但不会真正生效**的贡献点。
@@ -790,7 +849,12 @@ export class VscodeL1Bridge {
     // 【F004】只**激活第一条**命令。这是本宿主的真实能力边界 ——
     // schema 现在能收下 24 条（为了过真实扩展的清单），但运行时只跑第一条。
     // 不在这里假装支持多命令：那会让第 2..24 条在菜单里出现、点了没反应。
+    //
+    // 【F015】上面那条仍然成立，但**边界往外挪了一层**：
+    // 现在**所有已声明的命令都能注册**（L1），而**调用时只有第一条真能跑**。
+    // 这个"能注册、不能调用"必须对用户可见 —— 见下面 manifest 里那条第 2 条贡献的注释。
     const commandId = pkg.contributes.commands[0]!.command;
+    const declaredCommands: readonly string[] = pkg.contributes.commands.map((c) => c.command);
     // 【F008】命令 id 的前缀规则改成**真实生态的形态**。
     //
     // 原规则强制 `<publisher>.<name>.`，而实测本机 24 个有 commands 的真实扩展
@@ -861,6 +925,51 @@ export class VscodeL1Bridge {
     const moduleId = normalizeModuleId(pkg.publisher, pkg.name);
     const title = pkg.displayName ?? pkg.name;
     const configuration = l2ConfigSchema.parse(l2?.configuration ?? {});
+    // 【F015】每条命令的 title 都要进清单 —— 但**只有能过 `slot: "command"` 正则的**。
+    //
+    // ## 那个正则不是我们定的，是契约里本来就有的
+    //
+    // `ModuleContributionSchema` 的 `slot: "command"` 变体要求：
+    //   /^[a-z][a-zA-Z0-9]*\.[a-zA-Z][a-zA-Z0-9.-]{1,80}$/
+    //
+    // 它**允许大写和点**（`rainbow-csv.CSVLint`、`vscode-containers.compose.down` 都过），
+    // 但**首段不许有连字符**。实测本机 884 条真实命令：
+    //   - **439 条（49.7%）能过** —— 包括 rainbow-csv 全部 24 条；
+    //   - 418 条卡在首段连字符（`latex-workshop.hostPort` 这类）；
+    //   - 27 条卡在别处。
+    //
+    // ## 为什么用这个 slot 而不是 `files.context`
+    //
+    // `files.context` 的 `id` 是 `LocalId`（`^[a-z][a-z0-9-]*$`）—— **不许大写、不许点**，
+    // **884 条命令一条都过不了**（连第一条都过不了；现在它能显示 title 是因为 id 被
+    // 硬编码成 `"run"`，命令 id 根本没进那个字段）。
+    //
+    // 所以每条命令的 title 只能走 `slot: "command"`。**过不了正则的那些，如实不列**
+    // —— 不截断、不哈希、不塞假 id。用户看不到它们，但它们**也没有被伪装成能用**。
+    //
+    // ⚠️ **`contributions` 上限是 12**（`ModuleManifestSchema`），所以最多列 11 条
+    // （第 1 条留给 `run`）。这不是我们选的数字，是契约的；超出的命令**不列**，
+    // 但它们仍然在 `DECLARED` 白名单里（能注册）。回写区会记这笔账。
+    const COMMAND_SLOT_ID = /^[a-z][a-zA-Z0-9]*\.[a-zA-Z][a-zA-Z0-9.-]{1,80}$/;
+    /** `contributions` 上限 12，第 1 条是 `run`，所以命令最多 11 条 —— 契约决定的，不是我们选的。 */
+    const MAX_COMMAND_CONTRIBUTIONS = 11;
+    // ⚠️ 从**第 2 条**开始 —— 第 1 条已经由上面那个 `run` 贡献承载了 title。
+    // 否则第一条会被列两次（实测过一次：titles 变成 ["Alpha","Alpha","Beta","Gamma"]）。
+    const extraContributions = pkg.contributes.commands
+      .slice(1)
+      .filter((c) => COMMAND_SLOT_ID.test(c.command))
+      .slice(0, MAX_COMMAND_CONTRIBUTIONS)
+      .map((c) => ({
+        id: ("cmd-" + c.command.toLowerCase().replace(/[^a-z0-9]+/g, "-")).slice(0, 59).replace(/-+$/, ""),
+        slot: "command" as const,
+        command: c.command,
+        capability: "module.run",
+        title: {
+          zh: c.category ? c.category + ": " + c.title : c.title,
+          en: c.category ? c.category + ": " + c.title : c.title,
+        },
+      }));
+
     const manifest = {
       apiVersion: 1, id: moduleId, version: pkg.version,
       title: { zh: title, en: title },
@@ -872,8 +981,8 @@ export class VscodeL1Bridge {
           { key: "message", title: { zh: "结果", en: "Result" } },
           { key: "statusBarText", title: { zh: "状态", en: "Status" } },
         ] },
-      }],
-      program: { source: childProgram(source, commandId, l2 ? {
+      }, ...extraContributions],
+      program: { source: childProgram(source, declaredCommands, commandId, l2 ? {
         // 【F009】section 与 moduleId 同一份归一化 —— 否则设置项的 key 与模块 id 会分叉。
         section: moduleId.slice("user.".length), configuration, fileWrite: l2.fileWrite === true,
       } : undefined), timeoutMs: 10_000 },
@@ -954,7 +1063,7 @@ export class VscodeL1Bridge {
 
     const ignoredContributions: IgnoredContribution[] = [...fromContributes, ...fromTopLevel];
 
-    return new VscodeL1Bridge(host, moduleId, commandId, JSON.stringify(checked.manifest), ignoredContributions, l2);
+    return new VscodeL1Bridge(host, moduleId, commandId, declaredCommands, JSON.stringify(checked.manifest), ignoredContributions, l2);
   }
 
   /** Prevent a stale adapter from targeting a replaced same-ID extension. */
@@ -972,11 +1081,21 @@ export class VscodeL1Bridge {
     // 「扩展声明错了命令」，实际是「本宿主只激活第一条」。
     // `activationEvents` 的校验撤掉之后（见上面那段注释），**这条信息是用户唯一
     // 能知道「为什么点了没反应」的地方**，所以它必须点名那条能跑的命令。
+    // 【F015】三种情形必须能分开 —— 这是本卡验收判据 4。
+    //
+    //   ① 已声明、且是第一条     → 走下去（能跑）
+    //   ② 已声明、但不是第一条   → 拒，说清「声明过，但本宿主只跑第一条」
+    //   ③ 根本没声明             → 拒，说清「不在 contributes.commands 里」
+    //
+    // 从前这三条里 ② 和 ③ 都被合并成一句 "Undeclared VS Code command" ——
+    // 那对 ② 是**事实错误**的（它明明声明过），会让人去查一件没发生的事。
     if (commandId !== this.commandId) {
-      throw Error(
-        "VS Code command '" + commandId + "' is not activated in this host — " +
-        "only the first declared command ('" + this.commandId + "') is invokable",
-      );
+      const declaredHere = this.declaredCommands.includes(commandId);
+      throw Error(declaredHere
+        ? "VS Code command '" + commandId + "' is declared, but this host only runs the first one ('" +
+          this.commandId + "') — it can register but cannot be invoked"
+        : "VS Code command '" + commandId + "' is not activated in this host — " +
+          "only the first declared command ('" + this.commandId + "') is invokable");
     }
     if (!this.isCurrent()) throw Error("VSIX module removed or replaced; adapter must be reloaded");
     const reply = await this.host.invoke({ moduleId: this.moduleId, contributionId: "run", resource, requestId });

@@ -117,17 +117,20 @@ console.log("[3] 负控：commands 为空 / 超上限");
     { error: (empty.error ?? "").slice(0, 200) },
   );
 
-  // 65 条：超 MAX_COMMANDS(64)
-  const tooMany = Array.from({ length: 65 }, (_, i) => cmd(`x${i}`));
+  // 【F015】上限从 64 提到 256 —— 实测 3 个真实扩展超过 64
+  // （azurefunctions 74、containers 101、remote-containers 71），全被拒。
+  // 256 的依据是「本机实测最大 101 + 余量」，**不是生态上限**（没有扫过市场）。
+  // 所以这里验的是 257（新上限 +1），不是 65。
+  const tooMany = Array.from({ length: 257 }, (_, i) => cmd(`x${i}`));
   const over = await tryInstall({
     ...BASE,
     activationEvents: [onCmd("x0")],
     contributes: { commands: tooMany },
   });
-  check("★ 65 条命令被拒（上限 64）", !over.ok, { error: over.error });
+  check("★ 257 条命令被拒（上限 256）", !over.ok, { error: over.error });
   check(
-    "★ 拒绝信息点名上限 64（不是笼统 invalid）",
-    !over.ok && /64/.test(over.error ?? ""),
+    "★ 拒绝信息点名上限 256（不是笼统 invalid）",
+    !over.ok && /256/.test(over.error ?? ""),
     { error: over.error },
   );
 }
