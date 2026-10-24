@@ -236,8 +236,10 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   };
   const lightBubble = bubble(/--user-bubble:\s*(\d+)\s+(\d+)\s+(\d+);[^\n]*#f0f4f8/);
   const darkBubble = bubble(/--user-bubble:\s*(\d+)\s+(\d+)\s+(\d+);[^\n]*#232323/);
-  check("亮色用户气泡是 CDS 的 #f0f4f8（240 244 248）", lightBubble !== null, { lightBubble });
-  check("暗色用户气泡是 #232323（35 35 35）", darkBubble !== null, { darkBubble });
+  // ⚠️ 下面两条是**当前值**。它们红了多半意味着你正在换气泡色 —— 那是预期行为，
+  // 改这两行的期望值即可，不要去找"哪里改坏了"。真正的性质在下面四条里。
+  check("【当前值】亮色用户气泡 = CDS 的 #f0f4f8（240 244 248）", lightBubble !== null, { lightBubble });
+  check("【当前值】暗色用户气泡 = #232323（35 35 35）", darkBubble !== null, { darkBubble });
 
   // 相对亮度（WCAG），只用来算「可辨」这个性质，不参与色相判断。
   const relLum = (c: number[]) => {
@@ -253,13 +255,16 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   };
   const CANVAS_LIGHT = [252, 252, 251]; // --surface #fcfcfb
   const CANVAS_DARK = [21, 21, 21]; // --surface #151515
+  // 1.05:1 是「两个相邻表面能被区分」的**视觉下限** —— WCAG 的 1.5:1 是对
+  // **交互组件**的要求，而气泡底色是非交互的装饰面，1.05 才是它可见的底线。
+  // 不写「参考 t121」：那个套件的阈值将来若变，这句转述就会过期，而理由本身不会。
   check(
     "★ 亮色气泡对画布可辨（≥1.05:1，任何配色都该满足）",
     lightBubble !== null && contrast(lightBubble, CANVAS_LIGHT) >= 1.05,
     { lightBubble, ratio: lightBubble ? Number(contrast(lightBubble, CANVAS_LIGHT).toFixed(3)) : null },
   );
   check(
-    "★ 暗色气泡与画布不同值（否则是看不见的气泡）",
+    "★ 暗色气泡对画布可辨（≥1.05:1，不能与画布同值）",
     darkBubble !== null && contrast(darkBubble, CANVAS_DARK) >= 1.05,
     { darkBubble, ratio: darkBubble ? Number(contrast(darkBubble, CANVAS_DARK).toFixed(3)) : null },
   );
