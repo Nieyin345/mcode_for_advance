@@ -1,6 +1,6 @@
 # T115｜中文 docx 没有 `w:eastAsia`：上游有能力，CLI 没传
 
-- Status: ready-for-agent
+- Status: done（2026-10-24；`6336b9a0` 套件 + 回写，`d6822b86` 补丁入库）
 - Category: **P0 产品缺陷 —— T102 第 2 件的「接受上游默认」这个决定被推翻**
 - Priority: **P0 —— 这是用户说「AI 改 Word 又烂又丑」的第一条原因**
 - Depends on: T102（A 的诊断 + F 的实测）、`483eb29e`（同一条链上的另一处）
@@ -311,7 +311,53 @@ apps/desktop 我这套错误数:      0
 
 ### 九、未做 / 需要总控裁决
 
-1. **`genoffice/` 的三处改动不入库**（整个目录被 gitignore）—— 见第二节，**这是本卡最大的未决问题**；
+1. ~~**`genoffice/` 的三处改动不入库**（整个目录被 gitignore）—— 见第二节，**这是本卡最大的未决问题**~~ → **已解决，见第十节**；
 2. **CLI 的 `dist/genoffice.cjs` 需要重新构建**才生效（我构建过，但 `dist` 同样在 gitignore 内）；
 3. **没有验 macOS / Linux**：只在当前 win32 上实测。字体名是按平台分支写的，但**另外两个分支一次都没跑过**；
 4. **没有改 `docx-engine`**（卡上禁止），也没给它加平台逻辑。
+
+---
+
+### 十、第四轮（2026-10-24，总控追问「补丁怎么才能提交」）：并入既有 0015
+
+#### 我先走错了一步，记录下来
+
+我一开始另建了 `genoffice-patches/`（自带 `apply.mjs` + before/after 片段），理由是「`genoffice/` 被 gitignore，改动会丢」。
+
+**那个理由是对的，做法是错的。** 仓库里**已经有**这套机制：`patches/genoffice/0001…0014.patch`，加 `apps/desktop/build/verify-genoffice-upstream.cjs`（校验上游 commit、每条补丁的 revision/parent/sha256、最终 tree）。而 `genoffice/` 并不是「没有版本控制的目录」—— 它**自己是提交过的 git checkout**（`git -C genoffice log` 有完整血缘，HEAD 当时是 `05da63c`）。
+
+所以正确做法是**往既有系列里加一条**，不是另起一套。`genoffice-patches/` 已删除。**这对应硬规矩 2（共享实现只有一份）**：第二套补丁机制一旦存在，两边迟早会给出不同的「当前状态」。
+
+#### 做了什么
+
+| 动作 | 结果 |
+|---|---|
+| 在 `genoffice/` 里提交四文件改动 | `3cb99ab` `feat(docs): write w:eastAsia so new docx files keep CJK typography` |
+| 生成 patch | `patches/genoffice/0015-…-keeps-CJK-typo.patch`（8762 字节，sha256 `7a529e41…`） |
+| `genoffice-upstream.lock.json` | `revision` / `expectedTree` 前移；`patchSeries` 追加 index 15 |
+| `verify-genoffice-upstream.cjs` | `FINAL_REVISION`→`3cb99ab`、`FINAL_TREE`→`5ba6f37b`、`PATCHES` 追加 0015 |
+| Mcode 提交 | `d6822b86` `chore(T115): carry the w:eastAsia fix as genoffice patch 0015` |
+
+顺手修掉一处**会再次漂移**的东西：校验脚本里三处写死的补丁数量（`13 patches` / `exactly 14` / 输出文案）改成从 `PATCHES.length` 派生。原来 `FINAL_REVISION` 同时被 0014 和「最终 HEAD」两处引用，加 0015 时必须拆开，否则 0014 的 revision 会被一起改错。
+
+#### 判据怎么验的（不是「看过」，是「让它红」）
+
+**门禁脚本的四个变异，各自在自己的那一环失败：**
+
+| 变异 | 报错 | 退出码 |
+|---|---|---|
+| lock 里 0015 的 `sha256` 改全 0 | `patch series identity/order/hash/parent mismatch at index 15` | 1 ✓ |
+| `bytes` 改小 1 | `GenOffice patch byte count mismatch: …0015…` | 1 ✓ |
+| 脚本里 `FINAL_REVISION` 改一个字符 | `source lock differs from the pinned … contract` | 1 ✓ |
+| lock 里删掉 index 15 | `patch series missing or has an unexpected patch count` | 1 ✓ |
+| 全部还原 | `upstream approved: 3cb99ab (…, 15 patches, tree 5ba6f37b)` | 0 ✓ |
+
+**补丁本身可复现：** 在一一次性 worktree 里从 `05da63c`（0014）出发 `git am` 打 0015，产出的 tree **逐字节等于** `5ba6f37b`，且 `diff-tree` 只列出补齐的那四个文件。
+
+**端到端：** `t115-docx-eastasia-font-smoke` **7/7 通过**（改前改后同一结果，说明补丁与工作区一致）；`MCODE_INCLUDE_GENOFFICE_BUNDLE=1` 下门禁 exit 0。
+
+#### 仍未做
+
+- **`dist/genoffice.cjs` 未提交**（构建产物，在 gitignore 内）。换机器后先 `cd genoffice/packages/cli && node build.mjs`，否则源码是新的、跑的是旧 dist。这一条**没有自动防线**，是当前已知缺口；
+- macOS / Linux 分支仍未实测（与第九节第 3 条相同）。
+
