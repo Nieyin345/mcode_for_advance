@@ -843,3 +843,102 @@ node scripts/t7-genoffice-u1/run.mjs --only=docs-open-edit-save-reopen
 
 **如果 sheets 仍红而 T7 已绿**，那就不是环境 —— 届时应查 `negative-edit` 的 `observed`
 （`stage` 是 `select` 还是 `type`、`status` 是不是「正在打开工作簿…」），而不是先怀疑守卫。
+
+---
+
+## 十五、sheets 那一格的独立复核（2026-10-25，用户决定不接副屏，直接跑）
+
+### 15.1 结果
+
+```
+o2-conflict-docs:     literal=PASS  expectation=all-pass
+o2-conflict-slides:   literal=PASS  expectation=all-pass
+o2-conflict-pdf:      literal=PASS  expectation=all-pass
+o2-conflict-markdown: literal=PASS  expectation=all-pass
+o2-conflict-html:     literal=PASS  expectation=all-pass
+o2-conflict-sheets:   literal=FAIL  expectation=unexpected-failure (failed at negative-edit)
+```
+
+**5/6 全绿。四个被修的格式（slides/pdf/markdown/html）全部通过。只有 sheets 红。**
+
+**而 sheets 不是被修的四个之一** —— 它是 `vendor-own-guard` 类，本来就有 `session.sha256` 版本判据。
+
+### 15.2 sheets 的失败形态，与「环境阻塞」那个说法**不一致**
+
+执行会话先前记为「显示器配置变化 → 窗口在屏外 → `capturePage` 无 surface」。
+**而实测的 `negative-edit` 失败是另一回事：**
+
+```json
+{
+  "step": "negative-edit",
+  "status": "FAIL",
+  "detail": "90s 内工作簿没有落到就绪态（工作簿已开且无待保存改动）",
+  "observed": { "saveDisabled": true, "status": "正在打开工作簿…", "box": "A1" },
+  "domSnapshot": { "nodes": 614, "url": ".../index.html?mode=tab&openingWorkbook=1" }
+}
+```
+
+**`nodes: 614` + `observed.box === "A1"` —— 页面**完全渲染出来了**（ribbon、AI 面板、Sheet1 标签都在）。**
+**卡住的是「正在打开工作簿…」这个数据态，不是截图。**
+
+**⚠️ 所以「环境阻塞」这个定性，对 `capturePage` 的同伴证据（T7 的 `step-06-screenshot`）成立，对 O2 的 `negative-edit` 不成立。**
+
+### 15.3 哪些是环境、哪些不是（分开记账）
+
+| 现象 | 是不是环境 | 证据 |
+|---|---|---|
+| **T7 `step-06-screenshot` 失败** | ✅ **是** | `detail: "capturePage 返回空图"` —— 窗口在屏外，无 display surface |
+| **O2 `negative-edit` 失败** | ❌ **不是截图问题** | `nodes: 614` 页面已渲染；`detail` 是「工作簿没有落到就绪态」 |
+
+**两条都被记为「显示器」造成的，而只有第一条是。**
+
+### 15.4 已经排除的（各自独立验证过）
+
+| 假设 | 怎么排除的 |
+|---|---|
+| sidecar 二进制缺失/损坏 | `xlsx-sidecar.exe --help` → **EXIT=0**，8.9 MB |
+| sidecar 不能打开 fixture | **我直接起 sidecar，发一条 `open` 请求** → **12ms 返回 `ok:true`**，`sheets` 数组有内容 |
+| fixture 缺失 | `genoffice/apps/shell/build/shell-new/blank.xlsx` 存在（4009 B），且 sidecar 能开它 |
+| 守卫引起的 | 执行会话的对照：`O2_NO_GUARD=1` 同样卡 |
+| O10 改动引起的 | 五格同一次运行全绿；sheets 不在 O10 的四个格式里 |
+
+**所以剩下的可能性在 `workbook:select` → `prepareWorkbookForOpen` → `openWorkbookSession` 这条链上，
+且只在这个 harness 里成立。**
+
+### 15.5 一个具体的可疑点（未验证，留作下一张卡的起点）
+
+`prepareWorkbookForOpen` 里有这段：
+
+```ts
+const recovery = options?.skipRecoveryPrompt ? undefined : pendingRecoveryFor(path)
+if (recovery) {
+  const choice = await promptRecoveryRestore(contents, path, recovery)   // ← 弹窗，等用户点
+```
+
+**如果 `userData/sheets-autosave/` 里有该路径的崩溃恢复副本，会弹一个模态框并**无限等待**。**
+**而测试窗口在屏外，没人能点。**
+
+**⚠️ 这只是「可疑」，我没有验证过。** 验证方法：在那次 run 的 userData 里找
+`sheets-autosave/*.xlsx`（目录已被 prune 清掉，需要在一次不清理的运行里抓）。
+
+**下一张卡的第一个动作就应该是这个检查**，而不是继续猜。
+
+### 15.6 给「环境 vs 代码」的判据（通用）
+
+**这次暴露的形态**：**同一个 root cause（显示器没了）产生了两种失败，而它们长得很像。**
+
+| 失败 | 依赖 display surface 吗 |
+|---|---|
+| `capturePage` | ✅ 是 |
+| 页面数据没到位 | ❌ 否 |
+
+**所以判据是**：**「无副屏」只能解释依赖 display surface 的那一类**。
+**任何「DOM 已经渲染、但某个状态没到」的失败，都不该被归到显示器上。**
+
+**⚠️ 而执行会话当时给的三条依据里，第二条是这个推理的产物**：
+> 根因是显示器配置变化 → 窗口落在主屏外 → `capturePage` 无 display surface
+
+**它对 T7 成立，对 O2 不成立 —— 而当时它把两条并成了一条。**
+
+**这不是它的疏忽导致的**：两条现象**确实同时出现**，而且都是「以前绿、现在红」。
+**区分它们需要看 `detail` 说的是什么，而不是看「什么时候开始红的」。**
