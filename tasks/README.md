@@ -129,6 +129,9 @@
 | T114 | **`design-tokens-smoke` 那条判据只认一种写法**：`bg-accent/15 text-accent` 紧邻组合，其他四种写法全漏 | **P1 测试判别力** | T111 | ZZ | ⬜ 待开工 |
 | T115 | 🔴 **中文 docx 没有 `w:eastAsia`**：上游有能力（`BlankDocxOptions`），CLI 的 `blankDocument()` 没传 | **P0 产品缺陷** | T102 | ZZ | 🔄 进行中（F） |
 | T116 | **六处选中态改用中性色**（T114 判据改造后暴露） | **P0 产品缺陷** | T114 | ZZ | ✅ done（`de6cd867`，345/345；深色 ring 待裁决） |
+| T117 | **许可证载体缺第三种**：GitHub API 端点（C 的证据链，只差门禁认它） | P1 发行 | T115 | ZZ | ⬜ ready-for-human |
+| T118 | 🔴 **这个仓库从来没产出过安装包**：`extraResources` 硬编码跳过根 `node_modules` | **P0 发行** | 无 | ZZ | ✅ done（`b7df3269`，`Mcode-0.1.62-x64.exe` 183M） |
+| T119 | 🔴 **UI 重构第一步**：三栏壳 → Claude 桌面端的两栏 | **P0 产品主线** | 无 | ZZ | ⬜ 待开工 |
 
 ### T43 为什么是 P0（用户最高痛点）
 
