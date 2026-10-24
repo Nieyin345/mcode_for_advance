@@ -94,6 +94,25 @@ const fixtureRequires = {
 export const options = {
   alias: { ...vendorAliases, ...fixtureRequires },
   nodePaths: [join(vendor, "node_modules")],
+  /**
+   * 原生依赖保持 external。
+   *
+   * 【W24 2026-10-25】这五项与 `t8-node-red-u1/main-esbuild.mjs` 同源。缺这一份时
+   * esbuild 会去解析 `cpu-features` 的预编译 `.node`（`ssh2` 的原生依赖），
+   * 仓库里没有，于是**构建期失败** —— 而 `t30` 的旧包装器把退出码 1 读成
+   * 「预期红」，打印 `T30: PASS`。所以这个缺项一直表现为「t30 是绿的」。
+   *
+   * `cpu-features` 是本次实测撞上的那条；另外四项是 t8 已经踩过的同族
+   * （`sherpa-onnx-node` / `node-pty` / `better-sqlite3` 同样带 `.node`），
+   * 一起列出，避免下一套走到时再撞一次。
+   */
+  external: [
+    "electron",
+    "sherpa-onnx-node",
+    "node-pty",
+    "better-sqlite3",
+    "cpu-features",
+  ],
   loader: {
     ".wasm": "dataurl",
     ".ttf": "dataurl",
