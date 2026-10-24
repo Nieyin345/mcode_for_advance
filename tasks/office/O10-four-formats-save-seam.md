@@ -770,8 +770,21 @@ await pipeline(source, createWriteStream(filePath))   // 直接写目标，无�
 **T7 自己的 docs / sheets 旅程也红在同一类位置。**
 
 **根因**：显示器从「1463 + 副屏 1920」变成只有一块 1463×823 →
-`pickHostWindowPlacement` 无副屏时把窗口放到主屏右下之外（`-20000, -20000`）→
+`pickHostWindowPlacement` 无副屏时把窗口放到**主屏工作区右下之外** →
 `capturePage` 报 `Current display surface not available`。
+
+**⚠️ 写卡人第一版把坐标写成了 `-20000, -20000` —— 那是错的。** 实测日志是：
+
+```
+offscreen right-below primary work area 1463x775 (x=1543, y=855)
+```
+
+**`-20000` 是另一处**：`o6-reshell-*/probe.cjs` 与 `o8-docs-theme-gate-smoke/probe.cjs`
+里的「没副屏就挪远」分支。**两个机制，我把它们混成了一个。**
+
+**为什么这个错值得记**：`-20000` 和 `1543,855` 的行为后果相同（都无 surface），
+**所以结论对，坐标错** —— 而**按 `-20000` 去读代码的人会找错地方**
+（`runner.ts:661` 是 `wa.x + wa.width + 80`，`probe.cjs:191` 才是 `-20000`）。
 
 **而那条「无副屏就放到屏幕外」是 Office 线为了「测试窗口不弹到用户主屏」加的约束。**
 **它的代价今晚第一次显形**：**没有副屏时，需要截图的套件会失败。**
