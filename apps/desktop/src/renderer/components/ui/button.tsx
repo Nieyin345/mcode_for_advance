@@ -21,20 +21,27 @@ const buttonVariants = cva(
   // 圆角也按 size 走角色档（--radius-btn-xs 6px / --radius-btn-md 8px，值来自
   // 上游 open-claude-ui，见 styles.css）；不再写 Tailwind 裸 `rounded`(4px) —
   // 那是与上游按钮档不一致的旧值。className 透传仍可覆盖（twMerge 后写赢）。
-  "inline-flex items-center justify-center gap-1 font-medium transition-colors select-none outline-none",
+  // 【T128】基类不再写 `transition-colors`：`.cds-hover-ghost` 自带一条更完整的
+  // 过渡（颜色 + 时长走 token + 按下时含 transform）。两处并存时后者会盖掉前者，
+  // 而谁赢取决于类名在 class 串里的位置 —— 这种"隐式覆盖"正是要消掉的那类东西。
+  "inline-flex items-center justify-center gap-1 font-medium select-none outline-none",
   {
     variants: {
       variant: {
         primary:
-          "bg-accent-strong text-surface hover:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed",
+          "bg-accent-strong text-surface transition-colors hover:brightness-95 active:brightness-90 disabled:opacity-50 disabled:cursor-not-allowed",
+        // 【T128】secondary / ghost / outline 三个变体走可复用的
+        // `.cds-hover-ghost`（hover 与 active 分档），不再各写
+        // `hover:bg-surface-hover`。那个类只做表现，尺寸与圆角仍由下面的
+        // size 变体决定 —— 所以这里的类名合并顺序不影响形状。
         secondary:
-          "bg-surface-muted text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50 disabled:cursor-not-allowed",
+          "cds-hover-ghost bg-surface-muted text-content-muted hover:text-content disabled:opacity-50 disabled:cursor-not-allowed",
         ghost:
-          "text-content-muted hover:bg-surface-muted hover:text-content disabled:opacity-50 disabled:cursor-not-allowed",
+          "cds-hover-ghost text-content-muted hover:text-content disabled:opacity-50 disabled:cursor-not-allowed",
         danger:
-          "text-danger hover:bg-danger/10 disabled:opacity-50 disabled:cursor-not-allowed",
+          "text-danger transition-colors hover:bg-danger/10 active:bg-danger/20 disabled:opacity-50 disabled:cursor-not-allowed",
         outline:
-          "border border-edge bg-surface text-content-muted hover:bg-surface-muted hover:text-content disabled:opacity-50 disabled:cursor-not-allowed",
+          "cds-hover-ghost border border-edge bg-surface text-content-muted hover:text-content disabled:opacity-50 disabled:cursor-not-allowed",
       },
       size: {
         sm: "h-6 rounded-[var(--radius-btn-xs)] px-2 text-[11px]",

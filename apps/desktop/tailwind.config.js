@@ -56,6 +56,10 @@ export default {
           DEFAULT: "rgb(var(--surface) / <alpha-value>)",
           muted: "rgb(var(--surface-muted) / <alpha-value>)",
           hover: "rgb(var(--surface-hover) / <alpha-value>)",
+          // 【T128】按下态。与 hover 分开是因为两者的语义不同：hover 是「指针
+          // 在上面」，active 是「按住了」。共用一档时按下没有任何额外反馈（旧注释
+          // 原文就写着「hover/active fills」）。取值范围与判据见 styles.css。
+          active: "rgb(var(--surface-active) / <alpha-value>)",
           // 【T121】Surface 0–3 阶梯的上两层。此前四层（主画布/卡片/浮层/弹窗）
           // 共用 --surface，层次只能靠边框和阴影撑 —— 这是「Claude 那边有纵深、
           // 我们这边平」的直接原因。值定义在 styles.css 的 :root / .dark。

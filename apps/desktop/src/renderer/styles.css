@@ -110,7 +110,20 @@ div:has(> [role="menu"]) {
    * 10 → 卡片 0），与旧 zinc 的冷偏色不同，改用中性偏暖的灰阶。 */
   --surface: var(--m-gray-10); /* #fcfcfb — center pane, right panel, popups */
   --surface-muted: var(--m-gray-20); /* #f9f9f7 — sidebar track, inset wells */
-  --surface-hover: var(--m-gray-50); /* #f0efec — hover/active fills */
+  --surface-hover: var(--m-gray-50); /* #f0efec — hover fills */
+  /* 【T128】按下态单独一档。原本 hover 与 active 共用 `--surface-hover`
+   * （旧注释原文就写着「hover/active fills」），于是**按下按钮和悬停一模一样** ——
+   * 全仓 308 处 `hover:bg-surface-hover` 对 6 处 `active:scale-*`，按下几乎没有反馈。
+   *
+   * 取值要**同时**满足两条（与 --edge 那次同型）：
+   *   - 对 --surface（#fcfcfb）：**1.289:1** —— 按下要看得出来；
+   *   - 对 --surface-hover（#f0efec）：**1.151:1** —— 必须和悬停**区分得开**。
+   *
+   * 参照系：hover 自己对 surface 是 1.120:1，所以这里往上再走**同样大小的一步**，
+   * 形成 surface → hover → active 三级等距阶梯。取的是现成的 m-gray-100，
+   * 不合成新色 —— 合成色会脱离色阶，下一次调整色阶时它不会跟着走。
+   * 暗色同理取 m-gray-700（1.552 / 1.190）。 */
+  --surface-active: var(--m-gray-100); /* #e1e0d9 — pressed fills */
   /* 【T121】Surface 0–3 阶梯的上两层 —— CDS storybook `:629` 给的是**四层明度阶梯**，
    * 而这里原本只有两层（muted 与 surface），卡片/浮层/弹窗**共用同一个 --surface**，
    * 层次全靠边框与阴影撑。这是「Claude 那边有纵深、我们这边平」的直接原因。
@@ -331,7 +344,14 @@ div:has(> [role="menu"]) {
    * white/gray — it doesn't follow the tint, keeping contrast clean. */
   --surface: var(--m-gray-850); /* #151515 — Claude dark canvas */
   --surface-muted: var(--m-gray-800); /* #20201f — recess / sidebar track */
-  --surface-hover: var(--m-gray-750); /* #2c2c2a — hover/active */
+  --surface-hover: var(--m-gray-750); /* #2c2c2a — hover fills */
+  /* 【T128】暗色按下态。对 --surface（#151515）**1.552:1**、对 --surface-hover
+   * （#2c2c2a）**1.190:1**。同样取现成色阶档（m-gray-700），不合成新色。
+   *
+   * ⚠️ 暗色这两步的跨度比亮色大（hover 对 surface 已是 1.305，而亮色只有 1.120）
+   * —— 因为深底的明度阶梯天生需要更大的绝对值才能被看到。所以这里**不追求和亮色
+   * 同比例**，只保证「三级单调且每一级可辨」。 */
+  --surface-active: var(--m-gray-700); /* #383835 — pressed fills */
   --surface-raised: #1a1a19;  /* Surface 2 — cards, panels, popovers */
   --surface-overlay: #20201e; /* Surface 3 — inputs, modal tops */
   /* 【T121】暗色才是这条阶梯真正起作用的地方（亮色 2 和 3 都是纯白）。
@@ -3426,4 +3446,55 @@ html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
 [data-stream-session-row][data-session-drop="after"]::after { bottom: -2px; }
 @media (prefers-reduced-motion: reduce) {
   [data-stream-session-row][data-session-drop]::after { transition: none; }
+}
+
+/* ───────────── Reusable hover / press behaviour (T128) ─────────────
+ * 上游 CDS 把「悬停与按下」做成了**可复用类**而不是每处各写一遍
+ * （storybook `:242-266` 的 `.cds-hover-ghost` / `.cds-card-interactive`）。
+ * Mcode 这边此前零命中：308 处 `hover:bg-surface-hover` 各写各的，而
+ * `active:` 只有 6 处 —— 按下几乎没有反馈。
+ *
+ * 值走我们自己的 token（`--surface-hover` / `--surface-active`），不是上游的
+ * `--cds-fill-ghost-*`：那两个是 alpha 值，而我们的 token 是已合成实色，
+ * 混用会在深浅主题上给出不一致的步进。
+ *
+ * ⚠️ 这两个类**只负责表现**，不接管布局：调用方仍然自己写 padding / 圆角 /
+ * 尺寸。这样它可以挂到任何既有控件上而不改变其形状。 */
+
+.cds-hover-ghost {
+  transition: background-color var(--dur-snap) var(--ease-snap),
+              color var(--dur-snap) var(--ease-snap),
+              transform var(--dur-fast) var(--ease-snap);
+}
+.cds-hover-ghost:not(:disabled):hover {
+  background-color: rgb(var(--surface-hover));
+}
+/* 按下比悬停再深一档 —— 这一行就是 T128 修的那个缺陷本身。 */
+.cds-hover-ghost:not(:disabled):active {
+  background-color: rgb(var(--surface-active));
+  transform: scale(0.98);
+}
+
+/* 可点击卡片：悬停时抬 1.5px + 阴影，按下回位。
+ * 阴影走 `--shadow-card`（此前定义了却零消费）。 */
+.cds-card-interactive {
+  transition: box-shadow var(--dur-base) var(--ease-snap),
+              transform var(--dur-base) var(--ease-snap),
+              border-color var(--dur-base) var(--ease-snap);
+}
+.cds-card-interactive:hover {
+  box-shadow: var(--shadow-card);
+  transform: translateY(-1.5px);
+  border-color: rgb(var(--selected-edge));
+}
+.cds-card-interactive:active {
+  transform: translateY(0);
+}
+
+/* 尊重系统的「减少动态效果」：位移与缩放取消，颜色过渡保留（颜色不引起眩晕）。 */
+@media (prefers-reduced-motion: reduce) {
+  .cds-hover-ghost { transition: background-color var(--dur-snap) var(--ease-snap); }
+  .cds-hover-ghost:not(:disabled):active { transform: none; }
+  .cds-card-interactive { transition: box-shadow var(--dur-base) var(--ease-snap); }
+  .cds-card-interactive:hover { transform: none; }
 }
