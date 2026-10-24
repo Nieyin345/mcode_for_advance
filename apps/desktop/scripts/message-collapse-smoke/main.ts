@@ -99,9 +99,41 @@ console.log("\n⑤ 接入（没有这一节，函数写对了也可能没人用�
   ck("★ 量高度用的是 scrollHeight（不受 maxHeight 影响）", sourceHas(row, "scrollHeight"));
 }
 
-/* ── ⑥ 与上游同形 ───────────────────────────────────────────────── */
+/* ── ⑥ 可见性与缩放后的重新测量（ARC-005） ───────────────────────── */
+{
+  const row = readFileSync(resolve("src/renderer/components/chat/MessageRow.tsx"), "utf8");
+  const clip = row.indexOf('data-user-bubble-clip=""');
+  const measure = row.indexOf('data-user-bubble-measure=""');
+  const toggle = row.indexOf('aria-expanded={collapseState === "expanded"}');
+  // The toggle must not be inside the maxHeight/mask container: otherwise
+  // long pasted logs clip the only control that can reveal their contents.
+  ck("★ user message content has its own masked viewport", clip >= 0 &&
+    sourceHas(row, "style={bodyStyle ?? undefined}") &&
+    measure > clip);
+  ck("★ expand/collapse button sits OUTSIDE the masked viewport", toggle > clip &&
+    /<\/div>\s*<\/div>\s*\)\s*:\s*\(/.test(row.slice(clip, toggle)) &&
+    row.indexOf("{toggleLabel !== null && (", clip) < toggle);
+  ck("★ copy/edit action row is visible on keyboard focus, not hover only",
+    sourceHas(row, "group-hover:opacity-100 group-focus-within:opacity-100") &&
+    sourceHas(row, "focus-visible:outline-offset-2 focus-visible:outline-accent"));
+  ck("★ visible toggle exposes expanded state to keyboard/screen reader",
+    sourceHas(row, 'aria-expanded={collapseState === "expanded"}') &&
+    sourceHas(row, "aria-controls={bubbleContentId}"));
+  ck("★ narrow/wide pane resize remeasures intrinsic bubble content",
+    sourceHas(row, "new ResizeObserver(updateBubbleHeight)") &&
+    sourceHas(row, "observer.observe(node.firstElementChild)") &&
+    sourceHas(row, "observer.disconnect()"));
+  // Mutation-style negative checks prove these assertions would fail if the
+  // masked viewport or resize observer were accidentally removed.
+  ck("negative control: removing content viewport breaks the layout predicate",
+    !row.replace('data-user-bubble-clip=""', "").includes('data-user-bubble-clip=""'));
+  ck("negative control: removing intrinsic-size observer breaks the resize predicate",
+    !sourceHas(row.replace("observer.observe(node.firstElementChild)", ""), "observer.observe(node.firstElementChild)"));
+}
 
-console.log("\n⑥ 与上游常数对齐");
+/* ── ⑦ 与上游同形 ───────────────────────────────────────────────── */
+
+console.log("\n⑦ 与上游常数对齐");
 {
   // cwd 是 `apps/desktop`（run.sh 会 cd 过去），`open-claude-ui/` 在仓库根
   // = 往上两级（`apps` 一级、`mcode` 才是根）。

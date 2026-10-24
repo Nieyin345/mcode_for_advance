@@ -5,7 +5,7 @@
  * Split out of ChatPane.tsx to keep that file manageable. Behaviour is
  * unchanged — this is a verbatim move; ChatPane re-exports `MessageRow`.
  */
-import { useState, useRef, useEffect, useMemo, memo } from "react";
+import { useState, useRef, useEffect, useMemo, useId, memo } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { bubbleBodyStyle, collapsibleBubbleState, collapseToggleLabel } from "./messageCollapse.js";
 import { pasteBlock } from "@renderer/lib/contentTag.js";
@@ -255,6 +255,7 @@ export const MessageRow = memo(function MessageRow({
   //
   // 判据全部在 `messageCollapse.ts`（纯函数、可无头测），这里只负责测量与渲染。
   const userBubbleRef = useRef<HTMLDivElement | null>(null);
+  const bubbleContentId = useId();
   const [bubbleExpanded, setBubbleExpanded] = useState(false);
   const [bubbleContentHeight, setBubbleContentHeight] = useState(0);
   // 内容高度只在用户消息上有意义；助手侧本来就该全文铺开（流式输出不断变高，
@@ -263,10 +264,20 @@ export const MessageRow = memo(function MessageRow({
     if (!isUser || isEditing) return;
     const node = userBubbleRef.current;
     if (!node) return;
-    // `scrollHeight` 量的是**不受 maxHeight 限制**的内容高度，所以展开/收起
-    // 都不会改变这个测量 —— 不需要把 bubbleExpanded 放进依赖。
-    const measured = node.scrollHeight;
-    setBubbleContentHeight((prev) => (prev === measured ? prev : measured));
+    // Observe both the clipping viewport (width changes when a pane resizes)
+    // and its naturally-sized child (fonts/images/content can reflow even
+    // while the viewport is capped at 300px). A one-off effect at mount
+    // leaves the wrong show-more state after toggling a side panel.
+    const updateBubbleHeight = () => {
+      const measured = node.scrollHeight;
+      setBubbleContentHeight((prev) => (prev === measured ? prev : measured));
+    };
+    updateBubbleHeight();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(updateBubbleHeight);
+    observer.observe(node);
+    if (node.firstElementChild) observer.observe(node.firstElementChild);
+    return () => observer.disconnect();
   }, [isUser, isEditing, renderBlocks]);
   const collapseState = isUser
     ? collapsibleBubbleState({ contentHeightPx: bubbleContentHeight, userExpanded: bubbleExpanded })
@@ -372,8 +383,7 @@ export const MessageRow = memo(function MessageRow({
           // 方案A: directional corner radii (tight bottom-right corner points
           // at the sender) + the freshness-gated slide-in above.
           title={isUser ? fmtFullDateTime(msg.createdAt) : undefined}
-          ref={isUser ? userBubbleRef : undefined}
-          style={isUser ? { boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.04)", ...bodyStyle } : { paddingLeft: "var(--cds-assistant-message-text-inset, 4px)", ...bodyStyle }}
+          style={isUser ? { boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.04)" } : { paddingLeft: "var(--cds-assistant-message-text-inset, 4px)" }}
           className={
             isUser
               ? "user-bubble-fill overflow-hidden rounded-[var(--radius-bubble)] rounded-br-[5px] px-4 py-3 text-content [font-size:var(--chat-font-size)]" +
@@ -381,7 +391,16 @@ export const MessageRow = memo(function MessageRow({
               : "text-content [font-size:var(--chat-font-size)]"
           }
         >
-          <MessageBlocks blocks={renderBlocks} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} projectPath={projectPath} />
+          {isUser ? (
+            <div id={bubbleContentId} ref={userBubbleRef} data-user-bubble-clip="" className="overflow-hidden"
+              style={bodyStyle ?? undefined}>
+              <div data-user-bubble-measure="">
+                <MessageBlocks blocks={renderBlocks} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} projectPath={projectPath} />
+              </div>
+            </div>
+          ) : (
+            <MessageBlocks blocks={renderBlocks} beforeMap={beforeMap} isStreamingTail={isStreamingTail} onOpenPlan={onOpenPlan} projectPath={projectPath} />
+          )}
           {/* Streaming caret at the bottom of the content while this message
               is still receiving deltas — 方案A replaces the spinner glyph
               with a blinking caret (the reply is being typed). */}
@@ -390,13 +409,16 @@ export const MessageRow = memo(function MessageRow({
               <span className="chat-caret" aria-hidden />
             </div>
           )}
-          {/* 【T120】折叠按钮：只在内容超过阈值时出现，与上游一致。
-              放在气泡**内部**（上游也是）—— 放外面会跑到气泡圆角之外。 */}
+          {/* The toggle stays inside the bubble outer shell but OUTSIDE the
+              masked/height-clipped text viewport. Otherwise long pasted
+              content clips the very control needed to expand it. */}
           {toggleLabel !== null && (
             <button
               type="button"
               onClick={() => setBubbleExpanded((v) => !v)}
-              className="mt-1 inline-flex items-center gap-0.5 text-[11px] font-medium text-content-muted transition-colors hover:text-content"
+              aria-expanded={collapseState === "expanded"}
+              aria-controls={bubbleContentId}
+              className="mt-1 inline-flex items-center gap-0.5 rounded text-[11px] font-medium text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               {toggleLabel === "expand" ? t("chatStream.showMore") : t("chatStream.showLess")}
             </button>
@@ -410,7 +432,7 @@ export const MessageRow = memo(function MessageRow({
         {(showCopy || showEdit) && (
           <div
             className={cn(
-              "mt-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100",
+              "mt-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
               isUser ? "justify-end" : "justify-start",
             )}
           >
@@ -423,7 +445,7 @@ export const MessageRow = memo(function MessageRow({
                 onClick={() => onStartEdit?.(msg)}
                 title={t("common.edit")}
                 aria-label={t("common.edit")}
-                className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted"
+                className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <IconPencil size={12} />
               </button>
@@ -434,7 +456,7 @@ export const MessageRow = memo(function MessageRow({
                 onClick={() => onRegenerate(msg)}
                 title={t("chatStream.regenerate")}
                 aria-label={t("chatStream.regenerate")}
-                className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted"
+                className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <IconRefresh size={12} />
               </button>
@@ -511,7 +533,7 @@ function CopyButton({ text }: { text: string }) {
       onClick={onCopy}
       title={t("common.copy")}
       aria-label={t("common.copy")}
-      className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted"
+      className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
       {copied ? <IconCheck size={12} className="text-accent" /> : <IconCopy size={12} />}
     </button>
