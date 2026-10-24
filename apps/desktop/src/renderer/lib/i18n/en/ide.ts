@@ -599,5 +599,7 @@ export const en = {
   "ide.modules.vsixPick": "Choose a .vsix file…",
   "ide.modules.vsixInstalling": "Installing…",
   "ide.modules.vsixInstalled": "Installed: {id}",
+  "ide.modules.vsixIgnoredDeclarative": "This host does not read these declarations: {sections}",
+  "ide.modules.vsixIgnoredRuntime": "This host does not implement these features: {sections}",
   "ide.modules.vsixFilter": "VS Code extension package",
 } as const;

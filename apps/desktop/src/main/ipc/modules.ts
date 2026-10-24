@@ -85,7 +85,19 @@ export function registerModuleHandlers(ipcMain:IpcMain):void {
     // `cancelledTasks` / `cancelFailures` 在这条通道上是 0 / 空：VSIX 安装**只新增或替换
     // 同 ID 的模块**，而 bridge 内部走的 `host.install` 已经做了它那份取消诊断 ——
     // 只是没回传。这里如实给 0，而不是编一个数。
-    return { catalog:(await getModuleHost()).catalog(), cancelledTasks:0, cancelFailures:[], moduleId:bridge.moduleId };
+    //
+    // 【F012】**不止转述，还要把「哪些部分不会工作」交出去。**
+    // 装上真实扩展之后它的菜单项不出现、设置项不生效 —— 用户会以为自己装坏了。
+    // 这个列表是唯一能让他停止自我怀疑的东西，所以**不能只留在 bridge 实例上**。
+    // `kind` 原样带出去，不在这一层合并类别（`declarative` 与 `runtime` 对用户
+    // 意味着不同的事，压平会丢掉那个区分）。
+    return {
+      catalog:(await getModuleHost()).catalog(),
+      cancelledTasks:0,
+      cancelFailures:[],
+      moduleId:bridge.moduleId,
+      ignoredContributions:[...bridge.ignoredContributions],
+    };
   });
   // User-only edit path. appControl.policy blocks this method for agents/panels.
   ipcMain.handle(IPC.MODULE_SET_PERMISSIONS,async(_event,raw:unknown)=>

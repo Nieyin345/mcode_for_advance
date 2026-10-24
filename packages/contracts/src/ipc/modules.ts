@@ -65,12 +65,33 @@ export const ModuleInstallVsixSchema = z.object({
 }).strict();
 export type ModuleInstallVsixInput = z.infer<typeof ModuleInstallVsixSchema>;
 
+/** 一个被 VSIX 宿主**接受、但不会真正生效**的贡献点。
+ *
+ * 【F012】为什么要带 `kind` 而不只是一个字符串：
+ * `declarative`（我们不**读**）与 `runtime`（我们不**做**）对用户意味着不同的事 ——
+ * 一个是「设置项改了没用」，一个是「菜单项不会出现」。压成一个字符串会丢掉这个区分，
+ * 而那个区分正是让用户判断「还要不要用这个扩展」的依据。 */
+export interface IgnoredVsixContribution {
+  /** 贡献点名，如 `configuration` / `menus`。 */
+  section: string;
+  /** `declarative` = 本宿主不读取；`runtime` = 本宿主不实现。 */
+  kind: "declarative" | "runtime";
+}
+
 /** 【F006】从 vsix 安装的回包。在 `ModuleChangeResult` 之上多一个 `moduleId` ——
  *  渲染端要拿它做提示（「已安装：user.publisher.name」），而这个 ID 是主进程从
- *  vsix 里解析出来的，渲染端自己拼不出来（publisher/name 在包里）。 */
+ *  vsix 里解析出来的，渲染端自己拼不出来（publisher/name 在包里）。
+ *
+ *  【F012】再加 `ignoredContributions`：装上真实扩展之后，它的菜单项不出现、
+ *  设置项不生效 —— **用户会以为自己装坏了**。这个列表是唯一能让他停止自我怀疑的东西。
+ *
+ *  ⚠️ **它放在这里，不是放进 `ModuleChangeResult`** —— 后者是 `modules.install` 与
+ *  `modules.remove` 共用的返回类型，往那里加字段会让 `remove` 也承诺返回一个
+ *  它永远不会有的列表（变异表第 3 条就是验这个）。VSIX 独有的信息进 VSIX 独有的类型。 */
 export interface ModuleInstallVsixResult {
   catalog: import("../modules.js").ModuleCatalog;
   cancelledTasks: number;
   cancelFailures: Array<{ taskId: string; reason: string }>;
   moduleId: string;
+  ignoredContributions: IgnoredVsixContribution[];
 }

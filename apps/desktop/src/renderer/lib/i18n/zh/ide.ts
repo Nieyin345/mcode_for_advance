@@ -617,5 +617,10 @@ export const zh = {
   "ide.modules.vsixPick": "选择 .vsix 文件…",
   "ide.modules.vsixInstalling": "正在安装…",
   "ide.modules.vsixInstalled": "已安装：{id}",
+  // 【F012】装上真实扩展之后，它的一部分**不会生效**。这两句必须分开说 ——
+  // 「不读取」和「不实现」对用户意味着不同的事：前者是「设置改了没用」，
+  // 后者是「菜单项不会出现」。合并成一句会让用户无法判断还要不要用它。
+  "ide.modules.vsixIgnoredDeclarative": "本宿主不读取以下声明：{sections}",
+  "ide.modules.vsixIgnoredRuntime": "本宿主不实现以下功能：{sections}",
   "ide.modules.vsixFilter": "VS Code 扩展包",
 } as const;

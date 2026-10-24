@@ -51,6 +51,29 @@ export function VsixInstallSection({ onInstalled }: { onInstalled: () => void })
         kind: "info",
         title: t("ide.modules.vsixInstalled", { id: result.moduleId ?? "" }),
       });
+      // 【F012】**装上 ≠ 全都能用。** 真实扩展的 `menus` / `configuration` 等
+      // 本宿主接受了但不会实现 —— 用户如果不知道，会以为自己装坏了，
+      // 然后去查权限、查版本、重装。
+      //
+      // 两类**分开说**，因为对用户意味着不同的事：
+      //   declarative → 「设置项改了没用」
+      //   runtime     → 「菜单项不会出现」
+      // 合并成一句会丢掉这个区分，而那个区分正是他判断「还要不要用」的依据。
+      const ignored = result.ignoredContributions ?? [];
+      const declarative = ignored.filter((c) => c.kind === "declarative").map((c) => c.section);
+      const runtime = ignored.filter((c) => c.kind === "runtime").map((c) => c.section);
+      if (declarative.length > 0) {
+        useToastStore.getState().push({
+          kind: "warning",
+          title: t("ide.modules.vsixIgnoredDeclarative", { sections: declarative.join("、") }),
+        });
+      }
+      if (runtime.length > 0) {
+        useToastStore.getState().push({
+          kind: "warning",
+          title: t("ide.modules.vsixIgnoredRuntime", { sections: runtime.join("、") }),
+        });
+      }
       onInstalled();
     } catch (cause) {
       // 失败原因**原样显示**，尤其是「源码超 24 KiB」那条 —— 它是当前最可能的失败，
