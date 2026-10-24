@@ -46,11 +46,17 @@ ck("Center curvature follows visible dock instead of stale persisted left dockin
   sourceHas(src, 'visibleDock === "left" ? "rounded-tr-[10px]') &&
   sourceHas(src, 'visibleDock === "left" ? "rounded-tr-3xl'));
 ck("Drawer never captures a pane divider double-click/pointer resize",
-  sourceHas(src, 'if (isDrawer || !(e.target as HTMLElement).closest') &&
-  sourceHas(src, 'if (isDrawer || !rightOpen || rightAtBottom'));
+  sourceHas(src, 'if (isDrawer || !rightOpen || rightAtBottom || !onResizeRight) return;') &&
+  sourceHas(src, 'if (isDrawer || !rightOpen || rightAtBottom || !onResizeRight || !e.isPrimary'));
 ck("Compact drawer cannot inherit bottom placement sizing from persisted panel",
   sourceHas(src, 'atBottom: rightAtBottom') &&
   sourceHas(src, 'rightAtBottom ? "h-[calc(100%-var(--pane-bottom-share))]" : "h-full"'));
+ck("Double-click 50/50 snap belongs only to the live right-panel divider",
+  sourceHas(src, "if (isDrawer || !rightOpen || rightAtBottom || !onResizeRight) return;") &&
+  sourceHas(src, 'const dividers = Array.from(e.currentTarget.children).filter(el => el.matches(\'[data-divider="vertical"]\'));') &&
+  sourceHas(src, "if (!divider || divider !== dividers[dividers.length - 1]) return;"));
+ck("Pointer resize also resolves only direct-child dividers, not nested editor handles",
+  sourceHas(src, 'const dividers = Array.from(e.currentTarget.children).filter(el => el.matches(\'[data-divider="vertical"]\'));'));
 // Runtime cases: the pure geometry resolver must never mutate stored
 // placement; leaving the compact surface restores the original pane layout.
 const savedLeft = visibleRightPaneGeometry("pane", true, "left", false);

@@ -297,7 +297,12 @@ export function ThreePaneLayout({
         className="relative flex h-full min-h-0 min-w-0 flex-1 flex-wrap"
         style={{ "--pane-bottom-share": `${bottomShare}%` } as CSSProperties}
         onDoubleClickCapture={(e) => {
-          if (isDrawer || !(e.target as HTMLElement).closest('[data-divider="vertical"]') || !onResizeRight) return;
+          if (isDrawer || !rightOpen || rightAtBottom || !onResizeRight) return;
+          // Only a direct child divider can resize the workspace. An editor
+          // or nested panel divider must keep its own double-click behavior.
+          const dividers = Array.from(e.currentTarget.children).filter(el => el.matches('[data-divider="vertical"]'));
+          const divider = (e.target as HTMLElement).closest('[data-divider="vertical"]');
+          if (!divider || divider !== dividers[dividers.length - 1]) return;
           const width = e.currentTarget.getBoundingClientRect().width;
           if (width <= 0) return;
           const target = width * (1 - SPLIT_SNAP_RATIO);
@@ -311,7 +316,7 @@ export function ThreePaneLayout({
         }}
         onPointerDownCapture={(e) => {
           if (isDrawer || !rightOpen || rightAtBottom || !onResizeRight || !e.isPrimary || e.button !== 0 || e.detail > 1) return;
-          const dividers = Array.from(e.currentTarget.querySelectorAll('[data-divider="vertical"]'));
+          const dividers = Array.from(e.currentTarget.children).filter(el => el.matches('[data-divider="vertical"]'));
           const target = (e.target as HTMLElement).closest('[data-divider="vertical"]');
           if (!target || target !== dividers[dividers.length - 1]) return;
           const b = e.currentTarget.getBoundingClientRect();
