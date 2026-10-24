@@ -77,7 +77,15 @@ const packageSchema = z.object({
       // 其余字段（`icon` / `enablement` / `shortTitle`）**仍然拒绝** —— 那些不是纯显示，
       // 接受但不实现会给用户「图标会显示 / 条件会生效」的错觉。
       category: z.string().min(1).max(60).optional(),
-    }).strict()).min(1).max(MAX_COMMANDS),
+    }).strict()).min(1).max(MAX_COMMANDS)
+      // 【F008】同一份清单里命令 id 不能重复。
+      // 前缀放宽之后（接受 `<name>.<cmd>`）这个风险变高了：两份清单可以用同一个
+      // name 段，重复 id 会让「哪条命令被调用」变得不确定。
+      // VS Code 自己也要求命令 id 全局唯一，这里先在清单内守住。
+      .refine(
+        (list) => new Set(list.map((c) => c.command)).size === list.length,
+        { message: "VSIX declares duplicate command ids" },
+      ),
   })
     // 【F004】`contributes` 的处理不是 `.strict()`，是 **`.passthrough()` + 自己点名**。
     //
@@ -484,8 +492,30 @@ export class VscodeL1Bridge {
     // schema 现在能收下 24 条（为了过真实扩展的清单），但运行时只跑第一条。
     // 不在这里假装支持多命令：那会让第 2..24 条在菜单里出现、点了没反应。
     const commandId = pkg.contributes.commands[0]!.command;
-    const prefix = pkg.publisher + "." + pkg.name + ".";
-    if (!commandId.startsWith(prefix)) throw Error("VSIX command must use its publisher/name prefix");
+    // 【F008】命令 id 的前缀规则改成**真实生态的形态**。
+    //
+    // 原规则强制 `<publisher>.<name>.`，而实测本机 24 个有 commands 的真实扩展
+    // **没有一个**用那个前缀 —— 全部是 `<name>.<command>`：
+    //   mechatroner.rainbow-csv → `rainbow-csv.CSVLint`
+    //   James-Yu.latex-workshop → `latex-workshop.hostPort`
+    //   ms-azuretools.vscode-containers → `vscode-containers.compose.down`
+    // 所以那条规则让 **100% 的真实扩展装不上**，且它和 4096 / 128 KiB / z.tuple
+    // 出自同一个提交 `68a7121c`，同样没有依据（VS Code 本身也不强制 publisher 前缀，
+    // 只要求全局唯一）。
+    //
+    // **但不完全去掉**：去掉之后扩展可以声明别的扩展的命令 id。
+    // 接受两种形态，且**先试更严格的那个** —— 这样下面的错误信息能说清用了哪种。
+    const strictPrefix = pkg.publisher + "." + pkg.name + ".";
+    const namePrefix = pkg.name + ".";
+    const usedPrefix = commandId.startsWith(strictPrefix)
+      ? strictPrefix
+      : commandId.startsWith(namePrefix) ? namePrefix : null;
+    if (usedPrefix === null) {
+      throw Error(
+        "VSIX command id must start with '" + strictPrefix + "' or '" + namePrefix +
+        "' (got '" + commandId + "')",
+      );
+    }
     // 【F004】activationEvents 从「必须恰好 1 条且等于 onCommand:第一条」放宽成
     // 「**必须包含** onCommand:第一条」。其余事件（onLanguage:csv / workspaceContains:…）
     // **允许声明但不会激活** —— schema 放开的只是「装得进来」，不是「这些事件支持了」。
