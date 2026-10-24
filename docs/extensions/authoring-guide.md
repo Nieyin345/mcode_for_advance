@@ -1,28 +1,33 @@
 # 写一个 Mcode 扩展
 
-> **这份文档回答一件事：我能装什么、怎么写一个装得进去的。**
+> **这份文档回答两件事：我能装什么、怎么写一个装得进去的。**
 >
-> 如果你以为「Mcode 能跑 VS Code 扩展」——**不能**。见下面第一节。
+> Mcode 有**两条**扩展路径，它们不是一回事：
+>
+> | 路径 | 装什么 | 成熟度 |
+> |---|---|---|
+> | **Mcode 原生扩展** | 你手写的 JSON 清单 | ✅ **完整**，本文档 §1–§5 讲这个 |
+> | **VS Code 扩展（`.vsix`）** | 从市场下载的扩展包 | ⚠️ **只支持一小类**，见 §6 |
 
 ---
 
 ## 0. 先说清楚边界（读这一节能省你半小时）
 
-| 你想做的 | Mcode 支持吗 |
-|---|---|
-| 写一个声明式扩展，调用宿主已有的只读能力 | ✅ **支持** |
-| 写一个带 `program` 的扩展，在受控子进程里跑自己的 JS | ✅ **支持** |
-| 装一个 `.vsix`（从 VS Code 市场下载的扩展包） | ❌ **不支持，也没有入口** |
-| 让扩展 `require` npm 包 / 联网 / 渲染任意网页 | ❌ **不支持** |
+| 你想做的 | 支持吗 | 走哪条 |
+|---|---|---|
+| 写一个声明式扩展，调用宿主已有的只读能力 | ✅ **完整支持** | 原生（§1 形状 A） |
+| 写一个带 `program` 的扩展，在受控子进程里跑自己的 JS | ✅ **完整支持** | 原生（§1 形状 B） |
+| 装一个结构简单的 `.vsix`（单文件、≤24 KiB、只依赖 `vscode`/`path`） | ⚠️ **能装，但多数会失败** | VSIX（§6） |
+| 装 `rainbow-csv` / `python` / `powershell` 这类真实市场扩展 | ❌ **不行** | 见 §6 的「为什么」 |
+| 让扩展 `require` npm 包 / 联网 / 渲染任意网页 | ❌ **不支持** | — |
 
-**这是有意的产品决定，不是「还没做」。** 理由见 `tasks/T85-extension-productization-decision.md`。
-
-⚠️ **别被文件图标骗了**：`fileIconTables.ts` 把 `.vsix` 认成 vscode 文件、给它一个图标 ——
-那只是**文件类型着色**，全仓**没有任何 `.vsix` 安装路径**。
+⚠️ **别用「能不能装 `.vsix`」来判断能力。** 能装 ≠ 能跑：
+一个装进来的 VSIX 很可能在激活时崩掉（缺 `os`、缺相对路径模块）。
+**判定标准是「它能不能跑起来」，不是「它出现在列表里」。**
 
 ---
 
-## 1. 两个能跑的形状
+## 1. 两个能跑的形状（原生扩展）
 
 ### 形状 A：纯声明式（不需要写代码）
 
@@ -171,26 +176,96 @@ catalog.modules ids: [ 'user.line-counter' ]
 
 ---
 
-## 6. 明确不支持的东西
+## 6. VS Code 扩展（`.vsix`）：能装一小类，多数跑不起来
+
+### 入口在哪
+
+设置 → **UI 扩展** → 「从 .vsix 安装」。
+IPC 是 `modules.installVsix`（契约 `ModuleInstallVsixSchema`），走和原生扩展**同一套审批**
+（三态卡片：允许一次 / 始终允许 / 拒绝；**拒绝时不读文件、不写盘**）。
+
+### 现在的限制（实测数字，不是估计）
+
+| 限制 | 现值 | 真实扩展的典型值 |
+|---|---|---|
+| 包内文件数 | **恰好 2 个**（`package.json` + 声明的 `main`） | 6–20 个 |
+| 整包大小 | **128 KiB**（压缩后） | 秒到几 MB |
+| `main` 源码 | **24 KiB** | `rainbow-csv` 是 136 KB |
+| 命令数 | 256（清单能收，但**运行时只跑第 1 条**注册的） | 24–101 |
+| `require` 白名单 | `vscode` / `path` / 受限 `fs` | 常含 `os`、相对路径、`child_process` |
+
+### 哪些能装、哪些不能（本机 24 个真实扩展实测）
+
+| 能装（12 个） | 不能装（12 个） |
+|---|---|
+| `latex-workshop`（22 KB，只依赖 `vscode`+`path`） | `rainbow-csv`（136 KB） |
+| `pdf-translate`（7 KB） | `python` / `powershell`（2 MB+） |
+| 9 个 `ms-azuretools.*`（1 KB） | `remote-ssh` / `remote-wsl`（1 MB+） |
+
+⚠️ **「能装」不等于「能跑」**：那 9 个 Azure 扩展的 `main` 只有 1 KB 是因为**真正干活的代码在别的文件**，
+它们会因相对路径 `require` 被拒而崩掉。**真正能跑的只有 `latex-workshop` / `pdf-translate` 这一类。**
+
+### 为什么不能简单放宽
+
+**`rainbow-csv` 在模块顶层 require `child_process`**（`extension.js:6`）。
+放行它 = 扩展能在你机器上跑任意命令，**和「扩展只能读写你本次选中的那个文件」直接冲突**。
+
+所以问题不是「限额差一点」，是**执行模型不匹配**：
+
+> Mcode 的执行模型是「**一段自包含的源码 + 一个能力名**」，
+> 而 `rainbow-csv` 是**一个 6 文件的 Node 程序**。
+
+要真跑这类扩展，需要：多文件解包 + CommonJS 模块加载器 + 依赖解析 + 完整 `vscode.*` API 面，
+**并且必须先决定 `child_process` 放不放**。那是一件独立的大事，不是调阈值。
+
+### 装失败时怎么读错误
+
+拒绝分两类，`code` 不同、**用户下一步动作也不同**：
+
+| `code` | 含义 | 你能做什么 |
+|---|---|---|
+| `VSIX_REJECT_TOO_LARGE` | 尺寸超了 | 找更小的版本 |
+| `VSIX_REJECT_STRUCTURE` | 结构不支持（文件数、依赖形态） | **什么都做不了，别试了** |
+| `VSIX_REJECT_INVALID` | 包坏了（CRC 不符、清单非法） | 重新下载 |
+
+**如果错误里写着「The archive contents were not inspected」** —— 那是整包就超限、
+连解压都没做，所以**它 require 了什么我们根本不知道**。别把这句话读成「只有尺寸问题」。
+
+---
+
+## 7. 明确不支持的东西（两条路径都适用）
 
 | 不支持 | 为什么 |
 |---|---|
-| `.vsix` / 真实 VS Code 扩展 | 产品决定，见 T85；无安装入口 |
 | 装 npm 依赖 | 清单里没有依赖字段，宿主也不 `npm install`；`program.source` 是**一段自包含的表达式** |
 | 联网 | `permissionedProcessRunner` 在**运行时**把 `http/https/http2/net/tls/dgram/dns` 的出站 API 全替换成拒绝（含 `Agent.prototype.createConnection` / `new net.Socket().connect` 这些绕过路径）。这是运行时守卫，不是 require 白名单 —— **代码能 require，但调不通** |
 | 渲染任意 HTML / 网页 | `customUi` 是另一套受控机制，不是模块清单 |
 | 引用别的模块的 `module.*` 能力 | 宿主按模块分配，跨模块不可见 |
 | `module.a.b` 这种多段短名 | 会在重装/重启时被二次分配，schema 层就拒 |
+| VSIX 里的 `child_process` / `os` / 相对路径 require | 见 §6「为什么不能简单放宽」 |
 
 ---
 
-## 7. 想改这份文档？
+## 8. 想改这份文档？
 
 改之前先跑：
 
 ```bash
-node apps/desktop/scripts/extension-honesty-smoke/run.sh
+cd apps/desktop && bash scripts/extension-honesty-smoke/run.sh
 ```
 
 那套会验「文档说的和代码做的是不是一回事」——包括本文档里的清单 JSON 能不能被
 `ModuleManifestSchema` 解析通过。**改了示例却忘了更新，那套会红。**
+
+⚠️ **必须先进 `apps/desktop`**：`run.sh` 里的路径是相对**当前目录**的。
+从仓库根直接 `bash apps/desktop/scripts/.../run.sh` 会报
+`lib/esbuild-path.sh: No such file or directory` —— 而 `rc` 是 127，
+**输出只有一行，看起来像「套件没红」而不是「套件没跑」**。
+
+⚠️ **本文档曾经整节说「`.vsix` 没有安装入口」，而在它写完之后那个入口已经做出来了**
+（F006，`901e58ee`）。**改了行为就回头改这一节** —— 一份说「没有 X」的文档，
+比一份什么都不说的文档更坏，因为读者会据此放弃。
+
+⚠️ **本文档第 7 节原来写的是 `node apps/desktop/scripts/.../run.sh`** ——
+`run.sh` 是 bash 脚本，`node` 跑它只会 `ERR_UNKNOWN_FILE_EXTENSION`。
+**这条命令从写下来那天起就没能跑过。**
