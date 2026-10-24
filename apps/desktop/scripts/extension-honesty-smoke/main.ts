@@ -104,11 +104,23 @@ console.log("[5] VscodeL1Bridge 的调用范围（两个范围分开断言）");
   // 不排除的话它会把自己算成一个调用方。这是「按名字搜是引用数」的典型形态：
   // 名字出现在一个地方，不代表那里在用这个东西。
   const self = resolve(process.cwd(), "scripts/extension-honesty-smoke/main.ts");
+  // ⚠️ **【F003 后更新】这条断言的原意不是「只能有一处引用」** ——
+  // 那个数字在 F002/F003 之后就不成立了：新增的 `vsix-deflate-smoke` /
+  // `vsix-size-limits-smoke` 是**专门测 VscodeL1Bridge 的套件**，引用它是正当的。
+  //
+  // **原意是：它是实验路径，不属于产品代码。** 所以真正的判据在上面那组
+  // （`src/` 内零调用方）—— 那一条才是「没接进产品」的证明。
+  //
+  // 这里保留的是更弱但仍有意义的一条：**scripts/ 下的引用只允许出现在
+  // 「名字里带 vscode-l1 / vsix-」的套件里**。任何其他套件提到它就说明
+  // 它正在被当成产品能力使用，那才是需要重新审视的信号。
+  const allowed = /scripts[\\/](vscode-l1-smoke|vsix-deflate-smoke|vsix-size-limits-smoke)[\\/]/;
   const scriptHits = walkScriptsHits.filter((p) => p !== self);
+  const unexpected = scriptHits.filter((p) => !allowed.test(p));
   check(
-    "★ scripts/ 内唯一引用是 vscode-l1-smoke/main.ts（排除本套件自身）",
-    scriptHits.length === 1 && scriptHits[0] === expected,
-    { scriptHits },
+    "★ scripts/ 内的引用只出现在 VscodeL1Bridge 自己的测试套件里（原「唯一」已随 F002/F003 失效）",
+    scriptHits.length >= 1 && scriptHits.some((p) => p === expected) && unexpected.length === 0,
+    { scriptHits, unexpected },
   );
 }
 

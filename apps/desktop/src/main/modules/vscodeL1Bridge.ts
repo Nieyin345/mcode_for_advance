@@ -103,9 +103,14 @@ function entryLabel(name: string): string {
  * （没有 0x78 0x9c 这两字节头）。用错会抛 `incorrect header check`，
  * 而那个报错看起来像「包是坏的」，会把人引到数据上去查。
  *
- * ⚠️ **尺寸与 entry 数限制一点没动**（128 KiB / 2 entry / 4096 B manifest / 24 KiB main）。
- * 放宽尺寸会让失败点从「包读不进来」变成「读进来了但 vscode API 全缺」——
- * 后者难诊断得多。尺寸单独一张卡。
+ * ⚠️ **总尺寸 128 KiB 与「恰好 2 个 entry」仍然没动**（F003 确认它们同样没有依据 ——
+ * 和 4096 是同一批随手定的，下一张卡要碰时别以为有设计意图）。
+ * 但**单文件限额已经拆成两道**：`MANIFEST_LIMIT` = 64 KiB（F003 放宽）、
+ * `SOURCE_LIMIT` = 24 KiB（保持），依据见上面的 `MANIFEST_LIMIT` 注释块。
+ *
+ * 放宽**可执行入口**会让失败点从「包读不进来」变成「读进来了但 vscode API 全缺」——
+ * 后者难诊断得多。**这个理由只对 `extension.js` 成立，对 `package.json` 不成立**
+ * （它是声明，不是代码）。
  */
 export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; source: string } {
   if (archive.length < 100 || archive.length > 128 * 1024) throw Error("VSIX size out of L1 bounds");
