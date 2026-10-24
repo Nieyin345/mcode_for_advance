@@ -360,6 +360,41 @@ source "$HERE/../lib/esbuild-path.sh"
 
 理由：我能接受「慢」，不能接受「慢且不知道为什么」。
 
+## 五之三、★ `smokes-for.sh` 回答不了 Office 这条线的覆盖问题
+
+**实测（2026-10-24）**，三条独立限制叠在一起：
+
+| # | 限制 | 后果 |
+|---|---|---|
+| 1 | 依赖图只建 `apps/desktop/src/**` → `apps/desktop/scripts/*` | **`genoffice/` 不在图上** |
+| 2 | `smokes-for.py:331-332` 只认名字以 `-smoke` 结尾的目录 | 非 `-smoke` 目录**连发现器都不认** |
+| 3 | 依赖图按 **import** 建 | 走 `esbuild entryPoints` 的套件**没有任何边** |
+
+**所以它对我们这条线的回答，几乎全是「没有套件覆盖」—— 而不论真假。**
+
+### 按「它到底覆不覆盖源码」分类（我逐个 grep 过）
+
+| 目录 | 引用 `src/main` 路径数 | 它实际覆盖什么 |
+|---|---|---|
+| `o3-packaged-u1` | **0** | **打包产物**（`resources/genoffice/**`），与 `src/main` 无关 |
+| `o6-reshell-*`（待建） | **0** | **vendor 的 CSS 生效**（`genoffice/apps/*/src/renderer/`） |
+| `md-preview` / `flow-preview` / `vscode-api-census` | 0 | 预览台/普查，不覆盖源码 |
+| `arc005-visual-baseline` / `electron-u1` | entryPoints | 通过 esbuild 入口覆盖 |
+| `t96-probe` / `preset-scripts-sync` / `mc035-egress-probe` | 8 / 1 / 1 | 真的覆盖源码 |
+
+**结论：`o3` 和 `o6` 都属于「覆盖的不是 `apps/desktop/src`」，加进依赖图也不会产生任何边。**
+
+**它们的正式跑法是直接 `bash apps/desktop/scripts/<dir>/run.sh`，
+不是 `pnpm test:smoke`。**
+
+### 最准的措辞（比「没有套件覆盖」对）
+
+> **本工具只回答「有没有套件覆盖 `apps/desktop/src/**`」。
+> 这个路径不在那个问题能回答的范围内。**
+
+**「没有套件覆盖」是结论（查过了，没有）；「不在本工具能回答的范围」是边界。
+把前者写出来，就是让下一个人去相信一个从未被检查过的否定。**
+
 ## 六、已知的设计约束（不自造，从源码读出来的）
 
 ### 6.1 `WebContentsView` 会盖住一切 React 浮层
