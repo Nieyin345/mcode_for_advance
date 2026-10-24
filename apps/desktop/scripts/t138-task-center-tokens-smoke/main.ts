@@ -21,6 +21,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { stripComments } from "../lib/sourceText.js";
+import { cn } from "../../src/renderer/lib/cn.js";
 
 let total = 0;
 let failures = 0;
@@ -149,28 +150,38 @@ console.log("\n── 六、FilterChip 的字号必须真的生效（T140 的局
  * 全仓同类失效 29 处，根因修复在 `tasks/T140`。这里只管**这一处**
  * 已经被视觉基线抓到、并且是 T138 引入的回归。
  *
- * ## 判据为什么是「内联 fontSize」而不是「className 里有 text-caption」
+ * ## 判据在 T140 之后翻了个方向
  *
- * 因为后者**恰恰是坏的那个**。写 `text-caption` 会被 twMerge 丢掉，
- * 而断言源码里「有 text-caption」照样绿 —— 那是「判据测中间量而非目标」
- * 的典型形态（`memory/evidence-tools-can-lie`）。
+ * T138 当时写的是「FilterChip 用**内联 `fontSize`**，而不是会被 twMerge 丢掉的
+ * `text-caption`」—— 那在 `cn()` 还是裸 `twMerge` 时是对的：内联 `style` 是唯一
+ * 能让 11px 真正落到 DOM 上的写法。
  *
- * 断言必须落在**真正决定渲染的那一层**。
+ * **T140（`aa7d8f16`）把七个档位登记进了 `font-size` 组，前提没了。** 于是同一件
+ * 事的正确判据反过来：**必须用 `text-caption`，不许再用内联 `fontSize`**。
+ *
+ * 保留这两条而不是删掉，是因为**反向的错误现在才可能出现**：如果有人为了「保险」
+ * 又加回内联 `style`，字号会绕过七档体系 —— 将来调档时它不跟着变，而且
+ * `text-caption` 与内联 `fontSize` 同时存在时，谁赢取决于 CSS 优先级而不是设计意图。
+ *
+ * 断言仍然落在**真正决定渲染的那一层**（`cn()` 的输出），不是「源码里有这个字符串」。
  */
 const centerSrc = code.get(FILES[0])!;
 check(
-  "★ FilterChip 用内联 fontSize 定 11px（而不是会被 twMerge 丢掉的 text-caption）",
-  /style=\{\{\s*fontSize:\s*"11px"/.test(centerSrc),
-  { found: /style=\{\{\s*fontSize:\s*"([^"]+)"/.exec(centerSrc)?.[1] ?? null },
+  "★ FilterChip 走 text-caption 档（T140 之后不再需要内联 fontSize 规避）",
+  /className=\{cn\(\s*\n?\s*"text-caption\b/.test(centerSrc),
+  { hasInline: /style=\{\{\s*fontSize:/.test(centerSrc) },
 );
 check(
-  "★ 负控：FilterChip 的 className 里不再同时出现 text-caption 与 text-content系",
-  // 抠出 FilterChip 函数体的 className 部分，确认没有档位类
-  !/className=\{cn\(\s*"[^"]*\btext-caption\b/.test(centerSrc),
+  "★ 负控：FilterChip 里没有内联 fontSize（那会绕过七档体系，调档时不跟着变）",
+  !/style=\{\{\s*fontSize:\s*"11px"/.test(centerSrc),
 );
 check(
-  "★ 内联 fontSize 与 caption 档一致（11px / 16px 行高）—— 改档时要两边一起改",
-  /style=\{\{\s*fontSize:\s*"11px",\s*lineHeight:\s*"16px"\s*\}\}/.test(centerSrc),
+  "★ 真身验证：cn('text-caption text-content') 两个都保留 —— 这条前提不成立时上面两条无意义",
+  (() => {
+    const out = cn("text-caption", "text-content");
+    return out.includes("text-caption") && out.includes("text-content");
+  })(),
+  { actual: cn("text-caption", "text-content") },
 );
 
 console.log(`\nt138-task-center-tokens-smoke: ${total - failures}/${total} 通过`);

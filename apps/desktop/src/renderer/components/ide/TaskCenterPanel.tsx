@@ -443,20 +443,13 @@ function FilterChip({ active, onClick, label }: { active: boolean; onClick: () =
       onClick={onClick}
       aria-pressed={active}
       /*
-       * ⚠️ 字号走内联 `fontSize`，**不走 className 里的 `text-caption`**。
-       *
-       * `cn()` 是裸 `twMerge`，而 twMerge 不认识我们自定义的档位名
-       * （`caption`/`footnote`/`code`/… 只在 tailwind.config.js 里扩展过）。
-       * 它把 `text-caption` 归进「文字颜色」那一组 —— 与后面的 `text-content`
-       * 同组冲突，**先出现的被丢掉**。于是字号静默回落到继承值：chip 从 11px
-       * 变成继承的 14px，筛选条从两行挤成三行，把下面的任务列表往下推。
-       *
-       * 根因与全仓 29 处同类失效在 `tasks/T140`；`cn.ts` 修好之后这里可以
-       * 改回 `text-caption`，本行注释随之删除。
+       * 字号走 `text-caption`（11/16）。T140 之前 `cn()` 是裸 `twMerge`，它不认识
+       * 自定义档位名，把 `text-caption` 归进「文字颜色」组，与下面的 `text-content`
+       * 撞组后先出现的被丢掉 —— 字号回落到继承值，筛选条从两行挤成三行。
+       * T140 已把七个档位登记进 `font-size` 组，这里不再需要内联规避。
        */
-      style={{ fontSize: "11px", lineHeight: "16px" }}
       className={cn(
-        "rounded-[var(--radius-btn-xs)] border px-1.5 py-0.5 transition-colors",
+        "text-caption rounded-[var(--radius-btn-xs)] border px-1.5 py-0.5 transition-colors",
         active
           ? "border-edge bg-surface-muted text-content"
           : "cds-hover-ghost border-transparent text-content-muted hover:text-content",
