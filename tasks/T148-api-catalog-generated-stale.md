@@ -1,9 +1,9 @@
 # T148 — `apiCatalog.generated.ts` 过期：三个提交改了契约，没人重跑生成脚本
 
-**Status**：`ready-for-human`（**需要扩展线判断 installVsix 的档位**）
+**Status**：`ready-for-agent`（**档位问题已由扩展线实测澄清，见 §四**）
 **Category**：生成物 / 安全门禁
 **发现者**：T145 的执行会话（它在跑 283 套实跑时撞到 `app-control-smoke` 红）
-**写卡时间**：2026-10-24 21:35。**下面前提都是这一刻实测的。**
+**写卡时间**：2026-10-24 21:35。**§四 已于 21:40 由扩展线实测更正。**
 
 ## 一、症状
 
@@ -68,41 +68,93 @@ export function methodForChannel(channel: string): string | null {
 
 **这不是文档问题，是运行时缺口。**
 
-## 四、⚠️ 另一件要扩展线判断的事：`installVsix` 的 policy 档位
+## 四、⚠️ 我判错了：`installVsix` **已经是 `danger` 档**（扩展线实测更正）
 
-`policyFor("modules.installVsix")` 的判定链（`policy.ts:564`）：
+### 我原来写的（错）
 
 ```
 1. BLOCKED 表？     → 否
 2. CREDENTIAL_BEARING？→ 否
-3. DANGER 表？      → 否
-4. EXPLICIT 表？    → 否
-5. 动词匹配 READ_VERB？→ 否（"installVsix" 不是 read/list/get）
+3. DANGER 表？      → 否     ← ★ 这一步错了
+...
 6. → 兜底 "write"
 ```
 
-**结果：`write` 档。**
+**我据此在卡上和给用户的消息里写了「`installVsix` 是 `write` 档」。**
 
-`write` 档的含义（`policyEngine.ts:138`）：
+### 扩展线实测的结果
 
-> ⑤ write：必须在**有效的**授权范围内，否则重新批准。
+它把 `policy.ts` 用 tsc 转译后**直接调 `policyFor`**：
 
-**所以 agent 能调 `modules.installVsix`，只是要用户批准。不是无审批放行。**
-
-**但对比同域的兄弟方法：**
-
-```ts
-"modules.setPermissions": "扩展安装权限只能由用户在扩展设置页本人授权或撤销",  // blocked
-"modules.issueWorkflowGrant": "...",  // blocked
-"modules.revokeWorkflowGrant": "...", // blocked
-"modules.egressConsentSet": "...",    // blocked
+```
+modules.installVsix      {"level":"danger","reason":"从 .vsix 安装 VS Code 扩展(可执行代码)"}
+modules.install          {"level":"danger","reason":"安装扩展模块(可执行代码)"}
+modules.setPermissions   {"level":"blocked",...}
 ```
 
-**`modules.*` 里除了 `installVsix`，其余敏感方法全是 `blocked`。**
+### 根因：我读到了 `installVsix`，但没看它在哪张表里
 
-**「安装一个 VSIX」和「改扩展权限」哪个更敏感？** 这是产品决策，不是我能定的。
+```bash
+$ grep -n "installVsix" apps/desktop/src/main/appControl/policy.ts
+257:  "modules.install": "安装扩展模块(可执行代码)",
+258:  // 【F006】从 .vsix 装真实 VS Code 扩展 —— 与 `modules.install` **同档**：
+261:  "modules.installVsix": "从 .vsix 安装 VS Code 扩展(可执行代码)",
+```
 
-**⚠️ 我没有改 `policy.ts`。** 那会把扩展线的行为变掉。
+**而 `DANGER` 表从 `:204` 到 `:342`。`257` 和 `261` 都在里面。**
+
+**我 grep 到 `installVsix` 有定义，就跳过了「它在哪个表的范围内」这一步。**
+
+**这正是 CLAUDE.md 第二十九条「表存在 ≠ 表是这个用途」** —— 而我当天已经在写那条规矩了。
+**同一个形态，第三次。**
+
+### 所以：**不需要改 `policy.ts`**
+
+档位维持 `danger`（每次都要用户本人批，受限授权不能替代）。**这一条从本卡划掉。**
+
+### 但那条「没有幂等守卫」是真的，而且比我说的更深
+
+**扩展线补的一点（我没查到）：**
+
+```ts
+// VsixInstallSection.tsx:41
+await api.modules.installVsix({ path, confirmReadAccess: true,
+  confirmExecutableCode: true, installConsent: "allow-once" })
+```
+
+**没有 `operationId`。** 而 `dbGuardedIpc.ts:144` 是 `if (operationId !== null)` 才进幂等分支。
+
+**所以真正的位置是：渲染端根本没传幂等键，`methodForChannel` 修不修都不影响这条路径。**
+
+**现状**：UI 的 `disabled={busy}` 挡住了连点，**但「一次网络/超时失败后用户重试」没兜住 —— 那是真的再装一次。**
+
+### 根因在 `smokes-for.sh`，不在生成物
+
+**扩展线查的，我没想到：**
+
+```bash
+$ bash apps/desktop/scripts/smokes-for.sh packages/contracts/src/ipc/rpcMap.ts
+⚠️ 没有套件覆盖它 —— 改这里没有回归网。
+
+$ bash apps/desktop/scripts/smokes-for.sh src/main/appControl/apiCatalog.generated.ts
+必跑（1–2 跳，14 套）
+```
+
+**改「症状文件」有 14 套守着，改「根因文件」得到一句放行。**
+**而加 RPC 的人动的一定是 `rpcMap.ts`。**
+
+机制：`app-control-smoke/main.ts:774` 用 `readFileSync` 读 `rpcMap.ts` 的**文本**，不是 `import` 它。
+`smokes-for.py` 的依赖图只走 import，**所以这条依赖它看不见**。
+
+### 附带：`smokes-for.sh` 对 `packages/contracts` 的路径会崩
+
+```bash
+$ bash apps/desktop/scripts/smokes-for.sh packages/contracts/src/modules.ts
+# → Python traceback（smokes-for.py:417 的 p.relative_to(DESKTOP)）
+```
+
+**现在这个工具对 `packages/contracts` 的答复是「要么没有覆盖，要么直接崩」—— 都不能用。**
+→ 已开 `tasks/T150`。
 
 ## 五、我做了什么
 
