@@ -649,10 +649,9 @@ export function ClassicShell({ variant = "classic", leftOpen, leftBarMode, leftW
           */}
           <ThreePaneLayout
             variant={variant}
-            /* 【T119】右栏改成对话区右侧的窄抽屉（封顶 30%），对话区按抽屉宽度
-               收窄 —— 两栏的观感，但「打开文件 → 右边栏显示」这个能力保留。
-               右栏仍然 keep-alive，切开关不会重扫文件树/Git。 */
-            rightSurface="drawer"
+            /* ARC-005：普通聊天保持窄抽屉；宽屏模式恢复真正的可调整 pane。
+               只修改同一 ThreePaneLayout 的呈现参数，不更换 RightPanel/PTY/Monaco 实例。 */
+            rightSurface={widePanelOpen ? "pane" : "drawer"}
             left={null}
             center={<CenterPane wide={widePanelOpen} />}
             right={<RightPanel />}

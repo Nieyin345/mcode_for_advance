@@ -9,6 +9,8 @@ const root = path.resolve(__dirname, "../..");
 const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
 const titlebar = read("src/renderer/components/layout/Titlebar.tsx");
 const welcome = read("src/renderer/components/chat/EmptyThreadWelcome.tsx");
+const shell = read("src/renderer/components/shell/ClassicShell.tsx");
+const pane = read("src/renderer/components/layout/ThreePaneLayout.tsx");
 let total = 0, fails = 0;
 function check(name, ok) {
   total++;
@@ -56,5 +58,12 @@ check("negative control: removing toggle accessibility is detected",
   !hasAccessibleToggles(titlebar.replace("aria-pressed={rightOpen}", "")));
 check("negative control: dropping library navigation is detected",
   !hasWelcomeActions(welcome.replace("previewLibraryItem(it)", "void 0")));
+const widePane = /rightSurface=\{widePanelOpen\s*\?\s*"pane"\s*:\s*"drawer"\}/;
+check("wide mode uses a true resizable pane; ordinary chat keeps compact side drawer", widePane.test(shell));
+check("pane and drawer render one persistent right aside, not two different trees",
+  /rightEverMounted\s*&&/.test(pane) &&
+  /data-right-surface=\{rightSurface\}/.test(pane) &&
+  /rightWidthPct=\{widePanelOpen\s*\?\s*widePanelPct/.test(shell));
+check("negative control: pinning all states to drawer fails", !widePane.test(shell.replace('rightSurface={widePanelOpen ? "pane" : "drawer"}', 'rightSurface="drawer"')));
 console.log("titlebar-cds-smoke:" + (total - fails) + "/" + total + " 通过");
 process.exitCode = fails ? 1 : 0;
