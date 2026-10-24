@@ -46,7 +46,32 @@
 if (window.desktop) import('./mcode-theme.css')
 ```
 
-**只有宿主存在时才换壳；单独跑 GenOffice 保持它自己的 Word 视觉。**
+**⚠️ 但这个开关只对 docs 成立 —— 不能照抄到其他五个。**
+
+**执行会话实测（2026-10-24）**：
+
+```
+html/src/preload/index.ts:132       exposeInMainWorld('htmlApi', api)         ← 没有 desktop
+markdown/src/preload/index.ts:164   exposeInMainWorld('markdownApi', api)     ← 没有 desktop
+docs/src/preload/index.ts:284       exposeInMainWorld('desktop', api)         ← 只有 docs 有
+```
+
+**`window.desktop` 在 html/markdown 上是 `undefined`** —— 照抄的话 `import()` 永远不触发，
+**换壳代码写了但从不执行，而套件断言源码里有那行所以全绿。**
+
+## 用 UA 里的产品名做开关（实测可行）
+
+Electron 默认 UA 带 `app.getName()`：同一份 html 产物，
+app 名 `GenOffice HTML` 时 UA 是 `GenOfficeHTML/44.4.5`，app 名 `Mcode` 时是 `Mcode/44.4.5`。
+（`apps/desktop/src/main/index.ts:89` 附近有 `app.setName("Mcode")`。）
+
+```ts
+// 各 app 的 main.tsx
+if (/Mcode\//.test(navigator.userAgent)) import('./mcode-theme.css')
+```
+
+**为什么 UA 更好**：`window.desktop` 问的是「我是谁」，而各 app 自己的命名空间在独立运行时也存在；
+UA 问的是「谁在跑我」。
 
 ### 2.1 六个 app 共享同一个 token 层（我核实过）
 
@@ -76,7 +101,11 @@ docs / sheets / slides / pdf / markdown / html   →  genoffice/packages/ui/src/
 | # | 断言 |
 |---|---|
 | 1 | **宿主里**打开该格式，`mcode-theme.css` 被加载（`document.styleSheets` 里能找到，或某个被覆盖的 token 生效） |
-| 2 | **单独跑 GenOffice**（无 `window.desktop`）时，**不加载**它（不换壳） |
+| 2 | **单独跑 GenOffice**（app 名非 Mcode）时，**不加载**它（不换壳） |
+| **2b** | **上面两条必须都在真 Electron 里跑**，不是读源码断言「有这个形状」 |
+
+**⚠️ 判据 2b 的由来**：`0014`（docs）的套件只断言源码里有 `if (window.desktop)`，
+**没断言它真的区分** —— 而实测表明它在独立 docs 里也换壳了。**源码形状 ≠ 行为。**
 | 3 | 被覆盖的 token **实际生效**：取一个已覆盖的 token，`getComputedStyle` 的值 = Mcode 的值 |
 | 4 | **组件树没变**：该格式的核心 DOM 结构（`.ProseMirror` / `#univer-container` / 画布等）仍在 |
 
