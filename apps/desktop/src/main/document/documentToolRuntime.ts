@@ -55,6 +55,9 @@ import {
   type DocumentToolApp,
   type DocumentToolCallPorts,
 } from "./documentToolSurface.js";
+// 【T109】页面适配检查（表格有没有超出可打印区）。上游 `docs check` 不管这一条，
+// 见 `pageFitCheck.ts` 的文件头。
+import { checkDocxPageFit } from "./pageFitCheck.js";
 export { blocksToMarkdown };
 import {
   convertFile,
@@ -624,7 +627,34 @@ export async function runQaGate(
   const result = app === "sheets"
     ? await sheetCheck(ports, filePath, ports.signal ? { signal: ports.signal } : {})
     : await docsCheck(ports, filePath, ports.signal ? { signal: ports.signal } : {});
-  return extractQaReport("check", result);
+  const qa = extractQaReport("check", result);
+  // 【T109】`docs check` 的 10 条检查里**没有一条查页面适配** —— 它会对一份表格
+  // 超出可打印区的 docx 报 `no issues found (10 checks)`。那是**假门禁**：
+  // 用户会以为文档没问题，而最右一列在渲染图上已经贴到边框。
+  //
+  // 所以这里补一条 Mcode 自己的检查（上游 vendor 不改，见 `pageFitCheck.ts` 文件头）。
+  //
+  // ⚠️ **只对 docs 生效**：`document.xml` 是 docx 的内部结构，sheets / slides 的
+  // 页面适配各有各的几何模型，不能拿这一条去判它们。
+  //
+  // ⚠️ **不阻断**：这条 issue 只是并进 `issues` 一起回给模型，`ok` 不变 ——
+  // 与 T106 给 severity 语义时的取舍一致（判据本身可能有意外误报，让它阻断会把
+  // 「判据有点毛病」升级成「产品卡住」）。
+  if (app === "docs" && qa.ok) {
+    const fit = checkDocxPageFit(filePath).map((issue) => ({
+      code: issue.rule,
+      level: issue.level,
+      message: `${issue.where}：${issue.message}`,
+    }));
+    if (fit.length > 0) {
+      return {
+        ...qa,
+        issues: [...qa.issues, ...fit],
+        counts: { ...(qa.counts ?? {}), error: (qa.counts?.error ?? 0) + fit.length },
+      };
+    }
+  }
+  return qa;
 }
 
 /** 列出渲染目录里的 PNG（`render` 的产出是 `<stem>-NN.png`）。只读、有界。 */
