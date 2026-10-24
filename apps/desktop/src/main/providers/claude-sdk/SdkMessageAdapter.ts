@@ -93,8 +93,16 @@ export { parseQuestions } from "@main/lib/askQuestion.js";
  *  turn.files（详见 recordPre 调用处的注释）。
  *
  *  来源：`document/documentToolSurface.ts:398` 的 `CLI_TOOL_MAP`，其中值为
- *  `"create"` 的条目。新增 create 类工具时这里要跟着加 —— 漏了不会静默错，
- *  只是那个工具的产物退回旧行为（不进任务中心），套件会红。
+ *  `"create"` 的条目。
+ *
+ *  ⚠️ **这是一笔已知的账：这份清单与 `CLI_TOOL_MAP` 是两处真相，手工同步。**
+ *  上游新增一个 create 类工具时，这里**不会**自动知道 —— `t123-office-artifact-smoke`
+ *  只能抓「清单里的工具不工作」，**抓不住「清单漏了一个工具」**，因为套件不知道
+ *  还有哪些 create 工具存在。漏掉的后果不是报错，是那个工具的产物静默地不进任务中心
+ *  （退回 T97 记的旧行为）。所以新增 create 工具 = 同时改 `CLI_TOOL_MAP` 与这里。
+ *
+ *  （之所以容忍两处：provider 层不依赖 document 层。若这张表开始频繁变动，
+ *  把它挪到 `@contracts` 或一个中立模块，让两边 import 同一份。）
  *
  *  刻意**不** import `cliRouteFor`：provider 层不依赖 document 层。 */
 const CREATE_DOCUMENT_TOOLS: ReadonlySet<string> = new Set([

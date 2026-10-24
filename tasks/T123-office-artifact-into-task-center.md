@@ -298,3 +298,35 @@ created out.docx
 ### 九、提交
 
 见 `git log`（本卡所有改动：`SdkMessageAdapter.ts` + `scripts/t123-office-artifact-smoke/`）。
+
+### 十、总控裁决后的补正（2026-10-24，第二个提交）
+
+**总控核实了三件事，其中两件改变了卡的记录：**
+
+1. **`pageFitCheck` 那条前提作废。** `documentToolRuntime.ts:1156` 的
+   `const qa = mutated ? await runQaGate(...) : null;` 而 create 就是 `mutated` ——
+   **它一直会跑。** T97 读的是 `docs check` 的 `summary` 字段，而 pageFit 的 findings
+   是并进 `issues` 的，两者在同一个返回值里说不同的话。**「让 create 之后也跑一次
+   pageFitCheck」这个任务不存在**，本卡 §五 的记录就是这条的实证。
+2. **`CREATE_DOCUMENT_TOOLS` 的注释被更正。** 原文写「漏了不会静默错……套件会红」——
+   **这句是错的**：套件只能抓「清单里的工具不工作」，**抓不住「清单漏了一个工具」**，
+   因为套件不知道还有哪些 create 工具存在。已改成「这是一笔已知的账，两处真相手工同步」，
+   并写明漏掉的后果是**静默**的（退回 T97 记的旧行为）。
+3. **「零改动」的取证要带 sha256。** 本卡之前只说「核对过」，没有输出。补上：
+
+```
+工作区                                     HEAD
+0cca8f31…848c65  fileSnapshot.ts    ==  0cca8f31…848c65  (git show HEAD:…)
+acaa65bd…4a27fcc  autoCreate.ts     ==  acaa65bd…4a27fcc  (git show HEAD:…)
+```
+
+两对完全相同 —— 这两个文件在本卡的两次提交里都逐字节未变。
+
+**总控另记的两条（不在本卡范围）**：
+- 变异失效有**第 8 种形态**：被测代码的分支条件恒假，分支一次没进，而断言**出现了、
+  也绿了**（前面几条是「断言不出现」）。唯一直接信号是 `inflight: 0`，
+  比 `freeze()` 返回空更早、更明确。本卡 §二 是它的实例。
+- 变异的预期要**分正控/负控两列**写，不能并成一个数 —— 负控在任何变异下都该绿，
+  把它算进「该红的条数」必然对不上（本卡 §七 变异 1 就是这么错的）。
+
+**`document_md_edit` 的同病另开 T124，不在本卡。**
