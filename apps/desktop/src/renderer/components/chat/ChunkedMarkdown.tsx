@@ -211,7 +211,7 @@ export function ChunkedMarkdown({
         </Markdown>
       ))}
       {chunks.length > shown && (
-        <div ref={sentinelRef} className="py-3 text-center text-[0.7857em] text-content-subtle">
+        <div ref={sentinelRef} className="py-3 text-center [font-size:var(--chat-fs-xxs)] text-content-subtle">
           {t("library.preview.more", { shown, total: chunks.length })}
         </div>
       )}

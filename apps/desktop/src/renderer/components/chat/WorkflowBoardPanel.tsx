@@ -403,7 +403,7 @@ export function WorkflowBoardPanel() {
       {/* 【MC-047 同类补漏】高度偏好读失败:显式说出来 + 重试;在重试成功前拖动也
           不落盘(persistReady=false),不拿默认值覆盖盘上的真实偏好。 */}
       {loadError !== null && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-edge bg-surface px-2.5 py-1 text-[0.7857em]">
+        <div className="flex shrink-0 items-center gap-2 border-b border-edge bg-surface px-2.5 py-1 [font-size:var(--chat-fs-xxs)]">
           <span className="min-w-0 flex-1 truncate text-danger" title={loadError}>
             {t("settings.loadFailed")}
           </span>

@@ -268,7 +268,7 @@ function Section({
 }) {
   return (
     <section data-home-section={id} data-arc005-starter-card="" className="min-w-0 rounded-xl border border-edge bg-surface/60 p-1.5">
-      <h3 className="flex items-center gap-1.5 px-2 pb-1 pt-0.5 text-[0.7857em] font-medium text-content-subtle">
+      <h3 className="flex items-center gap-1.5 px-2 pb-1 pt-0.5 [font-size:var(--chat-fs-xxs)] font-medium text-content-subtle">
         <Icon size={13} className="shrink-0" />
         {title}
       </h3>
@@ -306,7 +306,7 @@ function Row({
       )}
     >
       {lead && <span className="flex w-4 shrink-0 items-center justify-center">{lead}</span>}
-      <span className="min-w-0 flex-1 truncate text-[0.8571em] text-content">{label}</span>
+      <span className="min-w-0 flex-1 truncate [font-size:var(--chat-fs-xs)] text-content">{label}</span>
       {meta && (
         <span className="max-w-[45%] shrink-0 truncate text-[0.7143em] text-content-subtle">{meta}</span>
       )}

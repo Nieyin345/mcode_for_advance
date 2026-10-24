@@ -185,7 +185,7 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
      *    而不是把右边的条件推到看不见的地方。
      */
     <div className="flex flex-nowrap items-center gap-x-3 border-t border-edge px-2.5 pt-1.5 pb-0.5">
-      <span className="flex shrink-0 items-center gap-1 text-[0.7857em] text-content-subtle">
+      <span className="flex shrink-0 items-center gap-1 [font-size:var(--chat-fs-xxs)] text-content-subtle">
         <IconAdjustmentsHorizontal size={12} />
         {t("chat.nodeCriteria.title")}
         {/* 这一排是**用户自己配的**,但配完就切回聊天了 —— 于是"这是什么、什么时候
@@ -271,7 +271,7 @@ function CriteriaDropdown({
           ⚠️ `min-w-0` 是给 `truncate` 用的（flex 项默认 `min-width:auto`，
           不加的话截不断，长名字会把整格撑破）。 */}
       <span
-        className="min-w-0 shrink truncate text-[0.7857em] text-content-subtle"
+        className="min-w-0 shrink truncate [font-size:var(--chat-fs-xxs)] text-content-subtle"
         title={cond.note !== "" ? `${cond.name} — ${cond.note}` : cond.name}
       >
         {cond.name}
@@ -287,7 +287,7 @@ function CriteriaDropdown({
         disabled={live && choices.length === 0}
         // 原生的 select:它在这个位置比自绘弹层稳(输入框区域已经有一层
         // base-ui 的 portal),而这里要的就是"点开、选一个"这么简单的事。
-        className="min-w-0 flex-1 rounded border border-edge bg-surface/40 px-1.5 py-0.5 text-[0.7857em] text-content-muted outline-none hover:text-content focus:border-accent disabled:opacity-50"
+        className="min-w-0 flex-1 rounded border border-edge bg-surface/40 px-1.5 py-0.5 [font-size:var(--chat-fs-xxs)] text-content-muted outline-none hover:text-content focus:border-accent disabled:opacity-50"
       >
         {/* 未设的显示「—」:诚实的空态 —— 它在提示词里也不存在,两头一致。 */}
         {current === "" && <option value="">—</option>}
