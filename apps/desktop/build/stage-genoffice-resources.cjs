@@ -693,6 +693,26 @@ function hashResourceTree(root, namespace = "mcode.genoffice.resource.tree.v1") 
   function visit(dir, subpath = "") {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })
       .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      // 跳过 `electron-builder` 无条件丢弃的两个文件名。
+      //
+      // `builder-util@26.15.3` 的 `out/fs.js:68`：
+      //     if (name === ".DS_Store" || name === ".gitkeep") return null;
+      // **在 filter 之前**，所以 `**/*` 也救不回来 —— 与 `node_modules`
+      // 那条（`app-builder-lib/out/util/filter.js`）是同一族「filter 改不了
+      // 的硬编码跳过」。
+      //
+      // 而本函数算出的摘要，**唯一用途**是「暂存时算出、打包后重算比对」
+      // （`cliDependenciesSha256` / preload digests / renderer digests）。
+      // 把打包器永远拿不走的东西算进去，摘要描述的就是暂存目录，而不是
+      // 它本该描述的东西 —— 产物里。2026-10-24 实测：`cli/node_modules` 里
+      // 两个 `.gitkeep` 因此让 afterPack 报 `digest mismatch`，
+      // 而 1949/1951 个文件其余全部一致。
+      //
+      // 代价：暂存目录里如果有人往 `.gitkeep` 里塞内容，摘要看不见它。
+      // 这两个文件在本仓库零引用（`grep -rn gitkeep apps/desktop/build
+      // apps/desktop/src/main` 无命中），且 `fileReady` 已经拒绝零字节的
+      // **必需**资源，所以这里的信息损失是可接受的。
+      if (entry.name === ".DS_Store" || entry.name === ".gitkeep") continue;
       const rel = subpath ? `${subpath}/${entry.name}` : entry.name;
       const full = join(dir, entry.name);
       if (entry.isSymbolicLink()) throw new Error(`GenOffice renderer has unsafe symlink: ${rel}`);
@@ -903,7 +923,15 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
         ])),
         ...(licenseValidation ? {
           licenseSourceManifestSha256: hashFile(join(temp, "licenses", "GenOffice-THIRD-PARTY-LICENSES.json")),
-          licenseSourcePackageCount: licenseValidation.verifiedCount,
+          // 这写的是**清单覆盖的包数**，与 `licenseSourceManifestSha256`
+          // 配对 —— 不是「这次验证到几份原文」。
+          //
+          // 原来写的是 `verifiedCount`，在 T117 之前两者恰好相等（18 = 18）所以没暴露。
+          // 四个包改成签字例外之后 verified 恒为 14，`afterPack` 的
+          // `verify-genoffice-editors-after-pack.cjs:128` 要它等于
+          // `REQUIRED_GENOFFICE_LICENSE_PACKAGES.length`（18），于是打包必红。
+          // 14 和 18 都不是随便写的：14 是原文数，18 是包数，这个字段要的是后者。
+          licenseSourcePackageCount: REQUIRED_GENOFFICE_LICENSE_PACKAGES.length,
         } : {}),
         ...(completeLicenseBundle && !licenseValidation && isTestFixtureRoot ? { licenseBundleTestFixture: true } : {}),
         ...(chromiumLicenseInfo ? { chromiumLicenseElectronVersion: chromiumLicenseInfo.electronVersion } : {}),
