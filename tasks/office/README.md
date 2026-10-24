@@ -93,3 +93,39 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 - O5 ── 取决于 O3：安装版若卡在资源路径，那是 P0 修复卡
 
 **下一批不要提前开。** 这一批是取证，结论会决定修什么。先取证再修，避免修错东西。
+
+---
+
+## 六、已知的设计约束（不自造，从源码读出来的）
+
+### 6.1 `WebContentsView` 会盖住一切 React 浮层
+
+`GenofficeViewHostPane.tsx` 文件头原文：
+
+> `WebContentsView` 是叠在 BrowserWindow 上的 **OS 级子视图**，它不属于 React 的 DOM 树。
+
+**后果**：编辑器区域内**不能**用 React 渲染下拉菜单、tooltip、右键菜单、弹窗 —— 全部会被盖住。
+任何「在 Office 编辑器上叠加 UI」的需求，**要么走 GenOffice 自己的渲染，要么改视图 bounds**。
+
+现在不是 bug（没人在编辑器列上加浮层），但是**约束**。
+
+### 6.2 编辑器没有边框，是结构性的，不是漏了
+
+`GenofficeViewHostPane.tsx:545` 的 stage 是空 div，`measureBounds()` 用
+**`getBoundingClientRect()` 原样矩形**（`:179-195`，无内缩），所以视图**精确盖满 stage**。
+
+**加 CSS border 是无效的** —— 边框会被视图盖住。
+要加边界，只能**让 stage 内缩 1px**，把 border 画在它的父容器上。
+
+**代价**：内缩会让编辑器内容少 2px 宽高。对 slides 画布缩放、表格列宽可能是可见的。
+**所以这条必须配「内缩前后编辑器内容渲染一致」的断言，不能只改样式。**
+
+### 6.3 抽屉挤压编辑器列，但不会遮挡
+
+`ThreePaneLayout.tsx:442-449`：drawer 是 `position: "relative"` + flex 流 + `maxWidth: 30%`，
+**不是浮层**。它挤压布局，不遮挡。
+
+`editorWidthPct` 默认 50、范围 20–80（`sessionStore.ts:796` / `EDITOR_WIDTH_PCT_MIN/MAX`），
+是**相对父容器的百分比**，不是像素。正文 `max-w: 672` 不改变它。
+
+**抽屉开 30% 时编辑器会很窄**，但那是「窄」不是「被盖」，且 `ResizeObserver` 会重算 bounds，不会错位。
