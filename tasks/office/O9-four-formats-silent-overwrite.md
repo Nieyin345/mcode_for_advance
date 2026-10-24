@@ -1,6 +1,6 @@
 # O9｜四个格式静默覆盖数据：slides / pdf / markdown / html 没有版本比较
 
-- Status: **ready-for-agent**
+- Status: **诊断已完成（§八），修复卡 = `O10-four-formats-save-seam.md`**
 - Category: **Office / 数据丢失 —— 今晚发现的最严重问题**
 - Priority: **P0**
 - 发现于: O2（`8c27ab9d`，22:21，**在 O5 批一之前，结论有效**）
@@ -96,6 +96,56 @@ pnpm test:smoke o2-conflict-u1-smoke --variant=expect-green
 - **不要一次翻四个 `expectConflict`**（§四）。
 - **不要假设「其他格式怎么做，这个格式也怎么做」** —— O2 已经证明 slides 走的路和 docs 不同。
 
-## 八、结果回写区
+## 八、结果回写：诊断完成（O2 交付 `0564f0ef`，2026-10-24）
 
-（执行会话追加：四格式 × A/B/C 分类、各格式保存入口的实际代码位置、修复方案与代价估计）
+### 8.1 分类：四个全是 **C（bypass）**，而且比 C 更彻底
+
+| 格式 | 类 | 证据 |
+|---|---|---|
+| docs | `host-cas` | `mcode:document-view:save` → `host.saveOpenedFile`，`withOsFileLease` 内比 `fileContentVersion` |
+| sheets | `vendor-own-guard` | vendor handler 自己 `sha256File(session.path)` 与 `session.sha256` 比，不一致抛 `errDiskChanged` |
+| **slides** | **bypass** | `slides-main.ts:4583` 的 `ipcMain.handle('slides:save', async (e) => ...)` → 直接 `savePptxToFile(session.opened, session.path)`，**连参数都没有** |
+| **pdf** | **bypass** | `pdf-main.ts:1199` → `savePdfToPath` → `writePdfAtomically` |
+| **markdown** | **bypass** | `markdown-main.ts:820` → `writeTextAtomic` → `atomicWriteFile` |
+| **html** | **bypass** | `html-main.ts:1377` → `writeTextAtomic` → `atomicWriteFile` |
+
+**关键发现（比"没校验"更彻底）**：`SavePdfRequest` / `SaveMarkdownRequest` / `SaveHtmlRequest`
+里**根本没有版本字段**，`slides:save` 的 handler **不接受任何参数**。
+
+**所以不是"传了没校验"，是这条路从未有过版本概念。**
+
+### 8.2 ★ 归类被做成了断言，不是一句话
+
+`apps/desktop/scripts/o2-conflict-u1-smoke/save-paths.ts` —— 静态断言，`run.mjs` 在起 Electron 之前跑它，
+不成立就红。三个判据：
+1. `host.saveOpenedFile` 在 Mcode IPC 层的调用点**恰好 1 个**；
+2. 四条 handler 由 **vendor 自己的** `register*Ipc()` 注册（且 Mcode 侧没有引用它们）；
+3. 三条请求类型里**没有**版本字段（有就红："归类可能已从 bypass 改变"）。
+
+**变异验证过它会红**（把 `wrappedByMcode` 改成恒真 → 四条全部报"归类可能已从 bypass 改变"）。
+
+**这是本卡留下的最有价值的东西**：将来有人改了 vendor 或 Mcode 接管了，
+它会红，而不是让卡上的一句话变成过期信息。
+
+### 8.3 ★★ vendor 自己在注释里写了「这半是 Host 的责任」
+
+`genoffice/apps/pdf/src/main/atomic-write.ts` 的原文：
+
+> **This primitive protects temporary-file ownership.**
+> **The caller/Host must still enforce the source version and file lease for concurrent editors.**
+
+**所以修法不是"给 vendor 打补丁"，是"补上 vendor 明说该由 Host 做的那一半"。**
+
+### 8.4 修法方向（已进 O10）
+
+**不通过给请求加版本字段** —— 渲染端拿不到版本（它只知道"打开时看到的内容"），
+而"盘上内容和这个视图打开时是否一致"**只有主进程有**。docs 的 `saveOpenedFile`
+已经证明主进程侧快照就够了（`expectedRevision === undefined` 时用会话表里的版本）。
+
+**所以：在 vendor 的写盘调用点加一个默认透传的接缝，Mcode 装守卫进去。**
+细节、契约形状、§4.4 的 slides 检查、三个必答问题都在 `O10-four-formats-save-seam.md`。
+
+### 8.5 遗留：分类器里有一处会随本卡变红（设计好的）
+
+`save-paths.ts` 的判据 2 断言"Mcode 侧没有对这四条通道的引用"——
+**O10 落地时它会红，那是它该做的**（"归类可能已变，请重核"）。O10 §5.5 写了改法。

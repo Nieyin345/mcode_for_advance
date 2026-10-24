@@ -88,11 +88,12 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O2** 六格式保存冲突 | ✅ 交付 | `153d6686` | `8c27ab9d` | **四格式静默覆盖**（见 O9） |
 | **O3** 安装版 Office | ✅ 交付 | `53413379` | `f383922b` | 16/16；23/23 变异 |
 | **O4** docs 关闭缺陷修复 | ✅ 交付 | `2120284e` | `fa6eb917` | 19/19；3 变异（M2 证两条断言独立） |
-| **O5** 删 OnlyOffice | 🔄 批二执行中 | `b380ced8` | `bd7c8cd5`（批一） | 契约层✅ / 主进程+preload←现在 |
-| **O6** 五个编辑器换壳（B） | 🔄 批一✅ / 批二待开 | `a655762c` | `f61e4168`（批一） | html 25/25、markdown 29/29；待补暗色断言 |
+| **O5** 删 OnlyOffice | 🔄 **批三待提交**（38→0 已达成） | `b380ced8` | `bd7c8cd5`（批一）/ `00af5199`（批二） | 批三改动在工作区，`typecheck` 全 0 |
+| **O6** 五个编辑器换壳（B） | 🔄 批一✅ / 批二执行中（pdf） | `a655762c` | `f61e4168`（批一） | html 25/25、markdown 29/29（+暗色补强：36/36、45/45） |
 | **O7** 覆盖边界进输出 | 📝 已写卡未派 | `b2c1bc60` | — | 等 O0/O3/O1 收尾 |
 | **O8** docs 换壳开关撒谎 | 📝 已写卡未派 | `5f00299b` | — | `genoffice/apps/docs/src/renderer/main.tsx` |
-| **O9** 四格式静默覆盖数据 | 🔄 诊断中 | `6e58df25` | — | **只读诊断**（A/B/C 分类） |
+| **O9** 四格式静默覆盖数据 | ✅ **诊断完成** | `6e58df25` | `0564f0ef` | 四个全是 **C（bypass）**；归类已机器化 |
+| **O10** 四格式写盘接缝 | 🔄 **执行中** | 本文件 | — | vendor 自己在注释里写明「版本+租约是 Host 的责任」 |
 
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）
@@ -445,10 +446,10 @@ source "$HERE/../lib/esbuild-path.sh"
 
 ## 五之四、一台机器上跑不了「大家都说好用」的命令
 
-**UI 线给了一条控制字符检查**，用来抓「`` 被双重转义成退格符」这类事故：
+**UI 线给了一条控制字符检查**，用来抓「`\x08` 被双重转义成退格符」这类事故：
 
 ```bash
-grep -Pn "[ --]" <文件>
+grep -Pn "[\x00-\x08\x0e-\x1f]" <文件>
 ```
 
 **在这台机器上它跑不起来**：
@@ -463,7 +464,7 @@ grep: -P supports only unibyte and UTF-8 locales
 
 ```python
 import io, glob, re
-bad = re.compile(rb"[ --]")
+bad = re.compile(rb"[\x00-\x08\x0e-\x1f]")
 for f in glob.glob("tasks/office/*.md"):
     raw = io.open(f, "rb").read()
     m = bad.search(raw)
@@ -572,3 +573,86 @@ Tailwind **没自定义 `borderRadius`**（`tailwind.config.js` 只有 colors）
 
 **这一条的意义不在于 4px**，在于：**「token 存在」不等于「token 在用」**。
 UI 给的是「设计意图」，代码里是「实际取值」，两者不一致时以代码为准，并**把这个不一致报出来**。
+
+---
+
+## 七、⚠️ 跑 `tsc` 时不要用退出码当判据（2026-10-24 实测，踩了两次）
+
+### 7.1 退出码在这个仓库里不稳定
+
+TypeScript 5.7.2 的枚举（从安装包里读的，不是记的）：
+
+```
+0 = Success
+1 = DiagnosticsPresent_OutputsSkipped
+2 = DiagnosticsPresent_OutputsGenerated     ← 有诊断，但**产出了**
+3 = InvalidProject_OutputsSkipped
+4 = ProjectReferenceCycle_OutputsSkipped
+```
+
+`--noEmit` 从不产出，`2` 按定义本该恒假 —— **但它在 `incremental` 下会被触发。**
+
+**对照实验**（往 `genofficeNativeVendor.ts` 末尾加一行 `const __probe: number = "not a number";`，
+连跑三次；还原后 `sha256` 逐字节核对一致，再跑三次）：
+
+| 阶段 | 第 1 次 | 第 2 次 | 第 3 次 | 诊断行数 |
+|---|---|---|---|---|
+| 有错 | **2** | **2** | **1** | 每次 1 |
+| 还原后 | **0** | 0 | 0 | 0 |
+
+**同一个错误连跑三次，退出码自己会从 `2` 变成 `1`。**
+
+所以「`2` = 上一次跑的时候有错」这个模型**不成立**（工作流线在 `a15bf274` 的提交信息里
+按那个模型写过一条结论，方向对、机制不对）。**`2` 是 `.tsbuildinfo` 首次写出那一跑的形态。**
+
+### 7.2 更坏的一层：`EXIT=1` 有两种含义
+
+在**仓库根**跑 `npx tsc --noEmit -p tsconfig.json`：
+
+```
+error TS5058: The specified path does not exist: 'tsconfig.json'
+EXIT=1
+```
+
+**和「真有一条类型错误」的退出码一模一样。** 我自己踩过一次：连跑三次都是 `1`，
+并据此得出「有错」的结论 —— 实际上配置文件在 `apps/desktop/`，我测的是**一个不存在的文件**。
+
+**这条和仓库那条「按出口数不按引用数」是同族**：退出码是代理指标，
+而它失效的那类输入（配置不存在、`.tsbuildinfo` 时序）产出的值**恰好和真判据相同**。
+
+### 7.3 可靠判据：用 TypeScript 的 API 数诊断
+
+脚本在 `apps/desktop/.tmp/probe-tsc.cjs`（被 `.gitignore` 覆盖，不进库；内容见下）。
+关键两处：**`incremental: false`**（绕开 `.tsbuildinfo`，没有滞后这个变量）
+和**按文件分组输出**（总和为 0 时，文件级清单才是「真的每一处都清了」的证据）。
+
+```js
+const ts = require("typescript"), path = require("path");
+const cwd = process.cwd();
+const cfg = ts.readConfigFile(path.join(cwd, "tsconfig.json"), ts.sys.readFile);
+const parsed = ts.parseJsonConfigFileContent(cfg.config, ts.sys, cwd);
+const program = ts.createProgram(parsed.fileNames, { ...parsed.options, noEmit: true, incremental: false });
+const diags = ts.getPreEmitDiagnostics(program);
+console.log("total diagnostics:", diags.length);
+const by = new Map();
+for (const d of diags) { const f = d.file ? d.file.fileName : "<none>"; by.set(f, (by.get(f) || 0) + 1); }
+let rn = 0, mn = 0;
+for (const [f, n] of by) {
+  if (/src[\/]renderer[\/]/.test(f)) rn += n;
+  if (/src[\/](main|preload)[\/]/.test(f)) mn += n;
+}
+console.log("renderer:", rn, " main+preload:", mn);
+for (const [f, n] of [...by].sort((a, b) => b[1] - a[1])) console.log("  " + n + "  " + path.relative(cwd, f));
+```
+
+**范围**：必须在 `apps/desktop` 里跑（否则 `require("typescript")` 解析不到）。
+**2026-10-24 O5 批三落地后的基线**：`files in program: 2416`、`total diagnostics: 0`。
+
+### 7.4 这条为什么值得单列一节
+
+**因为这两天里，「看起来验过了」出现过三次**：
+一次是这个退出码（我自己），一次是「在仓库根跑了个不存在的配置」（也是我），
+一次是工作流线按「上一次有错」的模型写了一条提交信息。
+
+**三个都不是「没跑」，而是「跑了，数字也对，但数字表示的不是那件事」。**
+和 `memory/evidence-tools-can-lie.md` 是同一个形态。
