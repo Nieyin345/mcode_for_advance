@@ -366,7 +366,7 @@ npx tsc --noEmit -p apps/desktop/tsconfig.json      # exit=0 才继续
 | UI 工作台 | `open-claude-ui/` Claude 桌面端逆向成果（CDS token 由 `gen-cds-tokens.mjs` 提取） | MIT |
 | 文档 | `genoffice/` 六原生编辑器（docs/sheets/slides/pdf/markdown/html） | Apache-2.0（`ee/` 企业条款不得拷入） |
 | 工作流 | `node-red/` 5.0.8 源码（原生画布 + runtime + registry + nodes） | Apache-2.0 |
-| 扩展 | `ModuleHost`：**手写 JSON 清单**的扩展（声明式，或带 `program` 在受控子进程里跑）。**不是 VS Code 扩展宿主** —— `.vsix` 无安装入口，这是决定不是未完成（`tasks/T85-extension-productization-decision.md`）。怎么写见 `docs/extensions/authoring-guide.md`；VSIX 那条实验路径（`VscodeL1Bridge`）是 L1 原型，未产品化（`docs/planning/extension-vscode-compat.md`） | 各自审查 |
+| 扩展 | **目标：尽可能让已有 VS Code 插件（含 VSIX）少改或无需修改即可运行**（`docs/planning/mcode-product-roadmap.md` §2）。**现状远未达到**：`ModuleHost` 能装手写 JSON 清单的扩展；`.vsix` 安装路径仍是 `VscodeL1Bridge` 的 L1 原型，四层里三层拒绝（包结构 2 entry/STORE/128 KiB、清单单命令、`require` 白名单只 1 个）——见 `docs/planning/extension-vscode-compat.md` §3 / §6.2 | 各自审查 |
 
 L1 直接复用 → L2 薄宿主适配 → L3 可审计 fork → L4 最小自有逻辑（L4 必须附「已检索上游仍无对应能力」的源码证据）。三条线共享的硬边界：**不另造 Agent loop**、**不造第二套 Office/工作流/插件运行时**、**不引入默认 YOLO/跳过审批**。
 
@@ -1637,6 +1637,62 @@ styles.css:2545   html.sketch   --user-bubble: 130 120 100   ← 它没看
 - **代理指标失效**（见上面第二十八条主体）—— 行数增长被当成「内容变了」，直到来了二进制。
 
 **三条的共同点**：**两个看起来可比的东西，实际上不在同一个坐标上。**
+
+### ⚠️ `var(--x, #fallback)` 里的 `#fallback` 不是真值
+
+**2026-10-24 我在 T128 上又踩一次：**
+
+```tsx
+bg-[var(--cds-bg-selected,#f3ece7)]
+```
+
+**我把 `#f3ece7` 当成「Claude 的选中底色」告诉了执行者。**
+
+**真值链是：**
+
+```
+--cds-bg-selected          = --cds-fill-ghost-selected   (cds-theme.css:221)
+--cds-fill-ghost-selected  = --cds-alpha-2               (:135)
+--cds-alpha-2              = hsla(0, 0%, 8%, 0.10)       (:99)
+```
+
+**`#f3ece7` 只是变量缺失时的兜底。真值是 10% 中性灰。**
+
+**为什么这么写**：上游用 `var(--x, #hex)` 是常见的防御式写法，**`#hex` 通常在演示时好看、在生产时根本不生效**。
+
+**判断方法**：看到 `var(--name, #hex)` 或 `var(--name, Npx)` 时：
+
+```bash
+grep -rn -- "--name:" path/to/theme.css
+```
+
+**找到定义再说话。** 找不到定义才说明「它确实只有兜底值」—— 而那是另一种情况（比如 `--cds-bg-neutral` 从未被定义）。
+
+**同一天还有第二例**：`--cds-text-accent` 的兜底恰好等于真值（都是 `#d97757`），**所以这一处碰巧没错**。**「兜底有时对有时不对」比「总是错」更危险** —— 因为它会训练你相信它。
+
+### ⚠️ 别人写了「记录而不改写」，就不要去改写
+
+**同一天的事故**：一个会话发现某个提交里混进了 34 个不属于它的文件，判定为「污染」然后 `git revert` 了。
+
+**但前一个会话已经在 `80b6ab75` 里写明：**
+
+> Recording it here rather than amending: rewriting a commit another session made, **risks losing work that is not mine to lose.**
+
+**它刻意选择了「记录」，而 revert 正是它明确避开的动作。**
+
+**「提交归属错了」和「内容错了」是两件事。** 前者只需要**记录**（写一行说明），后者才需要撤销。**而 revert 会把别人的正确工作一起撤掉** —— 这次撤掉了 90 处字号迁移和 31 个文件。
+
+**做法**：
+
+| 情况 | 做法 |
+|---|---|
+| 提交信息描述不符，但内容都对 | **记录**（补一个说明提交），不改写 |
+| 提交里混进了别人的文件，**内容本身没问题** | **记录**，让那个会话自己重新提交 |
+| 提交里混进了**错误的内容** | 才考虑 revert，**并且先问负责那个内容的人** |
+
+**根因不是个人疏忽，是结构**：暂存区是**进程间共享**的，A `add` 完之后 B 也可能 `add`，不带路径的 `commit` 会把两者一起提交。**多会话共用一棵树时，这个事故会反复发生。**
+
+**唯一的解法是流程**：提交前 `git diff --cached --name-only` 逐条核对，用不带路径的 `git commit -F <file>`。
 
 
 ## Agent skills
