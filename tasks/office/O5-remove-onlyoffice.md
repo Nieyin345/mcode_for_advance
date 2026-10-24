@@ -219,6 +219,42 @@ return hosts?.slidesNative === true || hosts?.slides === true;   // slides 两�
    `office` 恒 false → `genofficeViewForOffice` 恒 false → **默认模式永远到不了 GenOffice**。
    **这是删 OnlyOffice 最容易漏的一处：删了判定函数，入参就悬空了。**
 
+## 五之六、⚠️ 三批分层的代价：中间态会让**别的线**的套件变红
+
+**2026-10-24 23:xx，工作流总控报**：`workflow-ui-smoke` 构建失败
+（`FileEditor.tsx:13` import 已删的 `isOnlyOfficeSupportedPath`）。
+
+**他们花时间做了单文件回滚对照才确认「不是我的」。**
+
+**这是三批分层的必然副作用，不是事故**：
+
+| 批 | 完成前，哪些套件会红 |
+|---|---|
+| 批一后（契约已删、渲染端未改） | 所有 import 已删契约的套件 —— `workflow-ui-smoke`、`document-view-*`、`installers-ipc`、`updater-tools`、`markdown-mode`、`t101` |
+| 批二后（主进程已改、渲染端未改） | 同上，少掉 preload 那部分 |
+| 批三后 | 应该全绿 |
+
+**⚠️ 这意味着：「在批三完成之前，任何动 `apps/desktop/src/renderer/**` 的其他会话，
+都会看到一个红的必跑套件，而那不是他们的。」**
+
+### 派活时该做的
+
+**开工前通知相关线**：「O5 三批进行中，`FileEditor.tsx` / `preload/index.ts` 会在 2–4 小时内报
+`isOnlyOffice*` 未导出，那不是你的。」
+
+**给他们一条区分命令**：
+
+```bash
+pnpm test:smoke <你的套件> 2>&1 | grep -c "isOnlyOffice\|onlyoffice"
+# > 0 → 是 O5 在途；= 0 → 是你自己的
+```
+
+### 完成时该做的
+
+**主动通知**：「O5 三批全部落地，不再有 `isOnlyOffice*` 未导出，你的套件应该绿了。」
+
+**不要让他们盯着。** 报红的那个线欠「什么时候会好」这个答案。
+
 ## 六、★ 格式覆盖：**不要照抄 upstream，这一步上游没有**
 
 **（这条纠正一个流传中的错误依据）**
