@@ -1035,7 +1035,14 @@ export class VscodeL1Bridge {
     // 这条错误与 `readMinimalVsix` 里那条**不同消息**：那个说「压缩包里的声明的多大」，
     // 这个说「解出来交给运行时的源码多长」，排查时指向不同的层。
     if (source.length > SOURCE_LIMIT) {
-      throw Error("VSIX entry exceeds the L1 source limit (" + SOURCE_LIMIT + " B)");
+      // 【F016 补】这道**正常路径走不到**（`readMinimalVsix` 已在 `:607` 先拦），
+      // 所以它一直是裸 `Error`。但「走不到」不是「不会走到」—— 谁改了读取顺序，
+      // 它就成了一道没有 code 的漏网，而机器侧又分不出类型。
+      // 带 code 是零成本的：同一个 code，只是多一层保险。
+      throw new VsixRejectError(
+        "VSIX_REJECT_TOO_LARGE",
+        "VSIX entry exceeds the L1 source limit (" + SOURCE_LIMIT + " B)",
+      );
     }
     // 【F009】moduleId 归一化到小写。publisher 现在允许大写（`James-Yu`），
     // 而 `ModuleHost` 的 id 是**大小写敏感**的键 —— 不归一化会得到
