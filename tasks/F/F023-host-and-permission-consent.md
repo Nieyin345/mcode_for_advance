@@ -478,7 +478,8 @@ path, perf_hooks, tmp, vscode, vsls/vscode, workerpool, ws, zlib`。
 
 ### 7. 提交 SHA
 
-见下方提交记录。改动文件：
+**`46117686`** — `feat(F023): boot the real Theia host, and say what an extension can touch before it installs`
+（12 个文件，`git show --numstat` 逐条核对过，没有卷入其它会话的在途改动）。改动文件：
 
 ```
 packages/contracts/src/extensionPermissionReport.ts          （新建，契约）
