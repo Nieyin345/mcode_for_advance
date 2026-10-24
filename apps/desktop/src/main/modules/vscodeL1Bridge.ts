@@ -1,9 +1,10 @@
 /**
  * ARC-006 VS Code L1 experiment (NOT a general VS Code extension host).
- * Only a local, stored, two-file VSIX is accepted. All untrusted JS is
+ * Accepts a local, two-file VSIX (ZIP STORE or DEFLATE). All untrusted JS is
  * delegated to ModuleHost's existing permissioned child process.
  * No renderer, filesystem installer, module loader or marketplace is added.
  */
+import { inflateRawSync } from "node:zlib";
 import { z } from "zod";
 import { ModuleInstallSchema } from "@contracts/ipc/modules";
 import { type ModuleResource, type ModuleReply } from "@contracts/modules";
@@ -54,7 +55,22 @@ const l2DiagnosticsSchema = z.array(z.object({
   messages: z.array(z.string().min(1).max(256)).max(8),
 }).strict()).max(4);
 
-/** Only ZIP STORE with exact offsets and CRC32; no traversal, symlinks, decompression or other entries. */
+/**
+ * 只认 ZIP STORE 或 DEFLATE，精确偏移 + CRC32；不处理目录穿越、符号链接、zip64 与其他条目。
+ *
+ * 【F002】市场扩展**一律是 DEFLATE**（method 8），只认 STORE 等于一个真实扩展都进不来。
+ * 解压用 `node:zlib` 的 `inflateRawSync` —— 仓库里已有两处先例
+ * （`document/pageFitCheck.ts:43` 解 xlsx、`mcp/agentToolRuntime.ts:20` 算 crc32），
+ * 不为读一个 ZIP 引第三方包。
+ *
+ * ⚠️ **不能用 `inflateSync`**：那个带 zlib 头，而 ZIP 里的 DEFLATE 是 **raw**
+ * （没有 0x78 0x9c 这两字节头）。用错会抛 `incorrect header check`，
+ * 而那个报错看起来像「包是坏的」，会把人引到数据上去查。
+ *
+ * ⚠️ **尺寸与 entry 数限制一点没动**（128 KiB / 2 entry / 4096 B manifest / 24 KiB main）。
+ * 放宽尺寸会让失败点从「包读不进来」变成「读进来了但 vscode API 全缺」——
+ * 后者难诊断得多。尺寸单独一张卡。
+ */
 export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; source: string } {
   if (archive.length < 100 || archive.length > 128 * 1024) throw Error("VSIX size out of L1 bounds");
   const bytes = new Uint8Array(archive);
@@ -80,8 +96,11 @@ export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; so
     const size = u32(pos + 20), unpacked = u32(pos + 24);
     const nameLength = u16(pos + 28), extra = u16(pos + 30), comment = u16(pos + 32);
     const local = u32(pos + 42);
-    if (flags !== 0 || method !== 0 || size !== unpacked || u16(pos + 34) !== 0 ||
-        u32(pos + 38) !== 0 || !within(pos + 46, nameLength + extra + comment)) {
+    // 【F002】method 8 = DEFLATE。STORE 时 size 必须等于 unpacked；DEFLATE 时
+    // size 是压缩后长度、unpacked 是解压后长度，两者通常不同，所以分开判。
+    if (flags !== 0 || (method !== 0 && method !== 8) ||
+        (method === 0 && size !== unpacked) ||
+        u16(pos + 34) !== 0 || u32(pos + 38) !== 0 || !within(pos + 46, nameLength + extra + comment)) {
       throw Error("Unsupported VSIX ZIP entry");
     }
     const name = decoder.decode(bytes.subarray(pos + 46, pos + 46 + nameLength));
@@ -89,9 +108,10 @@ export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; so
       throw Error("L1 VSIX entry not allowlisted: " + name);
     }
     if (entries.has(name)) throw Error("Duplicate VSIX entry");
+    // 局部头里的 method/crc/size 必须与中央目录一致（两处都写，不一致就是包被拼过）。
     if (!within(local, 30) || u32(local) !== 0x04034b50 ||
         u16(local + 6) !== flags || u16(local + 8) !== method ||
-        u32(local + 14) !== crc || u32(local + 18) !== size || u32(local + 22) !== size) {
+        u32(local + 14) !== crc || u32(local + 18) !== size || u32(local + 22) !== unpacked) {
       throw Error("VSIX local header mismatch");
     }
     const localNameSize = u16(local + 26), localExtra = u16(local + 28);
@@ -101,12 +121,41 @@ export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; so
         !within(dataStart, size) || dataStart + size > centralStart) {
       throw Error("Invalid VSIX local data extent");
     }
-    const data = bytes.subarray(dataStart, dataStart + size);
+    const raw = bytes.subarray(dataStart, dataStart + size);
+    // 【F002】解压路径。**先解压、再按声明尺寸核对、最后过同一套 CRC32** ——
+    // 顺序很重要：解压失败 / 尺寸不符 / CRC 不符是三种不同的病因，各自要能分辨。
+    let data: Uint8Array;
+    if (method === 0) {
+      data = raw;
+    } else {
+      // 声明尺寸先卡一遍上限，避免一个声称 4 GiB 的包把解压撑爆内存。
+      // 这里的上限用**现有最严格的条目上限**（24 KiB），不放宽。
+      if (unpacked > 24 * 1024 && name === "extension/extension.js") {
+        throw Error("VSIX DEFLATE entry declared size exceeds L1 bound: " + name);
+      }
+      if (unpacked > 4096 && name === "extension/package.json") {
+        throw Error("VSIX DEFLATE entry declared size exceeds L1 bound: " + name);
+      }
+      try {
+        data = new Uint8Array(inflateRawSync(raw, { maxOutputLength: Math.max(unpacked, 1) }));
+      } catch (cause) {
+        // 损坏的 deflate 流、或解压结果超过声明尺寸，都会在这里。
+        // 不静默返回空：说清是解压失败，并把底层原因带出来。
+        throw Error("VSIX DEFLATE inflate failed for " + name + ": " + String(cause));
+      }
+      if (data.byteLength !== unpacked) {
+        throw Error(
+          "VSIX DEFLATE size mismatch for " + name +
+          ": header declares " + unpacked + " bytes, inflated " + data.byteLength,
+        );
+      }
+    }
     let computed = 0xffffffff;
     for (const value of data) {
       computed ^= value;
       for (let bit = 0; bit < 8; bit++) computed = (computed >>> 1) ^ ((computed & 1) ? 0xedb88320 : 0);
     }
+    // 【F002】DEFLATE 时 CRC 必须对**解压后**的数据算（ZIP 规范如此）。STORE 时两者同一份。
     if (((computed ^ 0xffffffff) >>> 0) !== crc) throw Error("VSIX CRC mismatch");
     entries.set(name, data);
     pos += 46 + nameLength + extra + comment;
