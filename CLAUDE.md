@@ -366,7 +366,7 @@ npx tsc --noEmit -p apps/desktop/tsconfig.json      # exit=0 才继续
 | UI 工作台 | `open-claude-ui/` Claude 桌面端逆向成果（CDS token 由 `gen-cds-tokens.mjs` 提取） | MIT |
 | 文档 | `genoffice/` 六原生编辑器（docs/sheets/slides/pdf/markdown/html） | Apache-2.0（`ee/` 企业条款不得拷入） |
 | 工作流 | `node-red/` 5.0.8 源码（原生画布 + runtime + registry + nodes） | Apache-2.0 |
-| 扩展 | `ModuleHost` + VS Code API 薄映射（`docs/planning/extension-vscode-compat.md`） | 各自审查 |
+| 扩展 | `ModuleHost`：**手写 JSON 清单**的扩展（声明式，或带 `program` 在受控子进程里跑）。**不是 VS Code 扩展宿主** —— `.vsix` 无安装入口，这是决定不是未完成（`tasks/T85-extension-productization-decision.md`）。怎么写见 `docs/extensions/authoring-guide.md`；VSIX 那条实验路径（`VscodeL1Bridge`）是 L1 原型，未产品化（`docs/planning/extension-vscode-compat.md`） | 各自审查 |
 
 L1 直接复用 → L2 薄宿主适配 → L3 可审计 fork → L4 最小自有逻辑（L4 必须附「已检索上游仍无对应能力」的源码证据）。三条线共享的硬边界：**不另造 Agent loop**、**不造第二套 Office/工作流/插件运行时**、**不引入默认 YOLO/跳过审批**。
 

@@ -3,6 +3,22 @@
 > 2026-10-20 · **设计 D + 源码核对 E2 + 本地隔离 E1**，不是 ARC-006 完成声明。
 > 首要规则：**ModuleHost 是唯一的权限、模块/能力注册、执行和撤权事实源**。Open VSX 仅为未来元数据与 VSIX 来源；本切片无网络下载、无自造完整插件运行时。
 
+## ⚠️ 本文件是 L1 原型记录，不是已交付的扩展宿主
+
+**读这一节再往下读。** 后来者最容易误判的一件事是「这个仓库有 VS Code 扩展兼容层，所以能装 VS Code 扩展」。
+
+**事实是：**
+
+1. **`VscodeL1Bridge` 与 `readMinimalVsix`**（定义在 `apps/desktop/src/main/modules/vscodeL1Bridge.ts:291` / `:58`）
+   **在 `apps/desktop/src/` 内零调用方**；唯一引用是 `apps/desktop/scripts/vscode-l1-smoke/main.ts`（一套实验套件）。
+   —— 取证时**两个范围要分开看**：搜 `src/` 得 0 不等于「全仓没有调用方」。
+2. **产品上真正可用的是 `ModuleHost`**（手写 JSON 清单的扩展），不是本文件的 VSIX 路径。
+   **怎么写一个装得进去的扩展：`docs/extensions/authoring-guide.md`。**
+3. **`.vsix` 没有安装入口，这是产品决定不是未完成** —— 见 `tasks/T85-extension-productization-decision.md`。
+   真要做需要重算「自建宿主 vs 接 Theia」，那不在近期范围。
+
+**所以本文件应该被读成**：一份「L1 能走多远」的实验记录 + 未来若重开这个决策时的可行性底稿。
+
 ## 1. 代码与权限基线
 
 | 已存在的宿主资产 | 当前实际能力 / 严格边界 |
@@ -25,6 +41,10 @@
 - **Open VSX**：将来是 VSIX 的一种**分发来源**，不是插件执行 API 或沙箱；本轮不下载任何市场包。
 
 ## 3. VS Code API 兼容分级
+
+> **⚠️ 本节的「L1-P 已实现」指的是原型路径，不等于产品可用。**
+> 产品上真正能装的是 `ModuleHost` 的手写 JSON 清单扩展（`docs/extensions/authoring-guide.md`）。
+> 本节各条实现所依附的 `VscodeL1Bridge` 在 `src/` 内零调用方 —— **已实现的限制清单见 §6.2**。
 
 这里 **L1/L2/L3 是 API 适配难度与当前支持声明**，不同于 FULL 路线中的源码复用 L1～L4。**L1 有子类：L1-P 已有本地原型、L1-C 仅可通过现有宿主做有限直映射，还未把 VS Code 语法接上**；L2 待补薄转接 / UI；L3 本方案明确不承诺。
 
