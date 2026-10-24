@@ -113,7 +113,7 @@ export function SidebarQuickActions({
           className={cn(
             "flex w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-1.5 py-1.5 transition-colors",
             "[font-size:var(--right-panel-font-size)]",
-            "text-content-muted hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost text-content-muted hover:text-content",
           )}
         >
           <IconSearch size={16} className="shrink-0" />

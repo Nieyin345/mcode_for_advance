@@ -654,7 +654,7 @@ function LeftBarBase({
               onClick={() => setLeftOpen(false)}
               className={cn(
                 "group flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors",
-                "hover:bg-surface-hover",
+                "cds-hover-ghost ",
               )}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             title={t("layout.hideLeftPanel")}
@@ -722,7 +722,7 @@ function LeftBarBase({
                 "flex items-center rounded-l px-1 py-0.5 transition-colors",
                 projectView === "flat"
                   ? "bg-surface-hover text-content"
-                  : "text-content-subtle hover:bg-surface-hover hover:text-content",
+                  : "cds-hover-ghost text-content-subtle hover:text-content",
               )}
               title={t("layout.viewFlat")}
               aria-label={t("layout.viewFlat")}
@@ -736,7 +736,7 @@ function LeftBarBase({
                 "flex items-center rounded-r border-l border-edge px-1 py-0.5 transition-colors",
                 projectView === "grouped"
                   ? "bg-surface-hover text-content"
-                  : "text-content-subtle hover:bg-surface-hover hover:text-content",
+                  : "cds-hover-ghost text-content-subtle hover:text-content",
               )}
               title={t("layout.viewGrouped")}
               aria-label={t("layout.viewGrouped")}
@@ -792,7 +792,7 @@ function LeftBarBase({
               onClick={() => setPinnedProjectsOpen(!pinnedProjectsOpen)}
               className={cn(
                 "flex w-full items-center gap-1 rounded px-1 py-0.5 font-medium uppercase tracking-wide [font-size:var(--rp-fs-md)]",
-                "text-content-subtle transition-colors hover:bg-surface-hover",
+                "cds-hover-ghost text-content-subtle transition-colors",
               )}
             >
               <IconChevronRight
@@ -825,7 +825,7 @@ function LeftBarBase({
               onClick={() => setPinnedOpen(!pinnedOpen)}
               className={cn(
                 "flex w-full items-center gap-1 rounded px-1 py-0.5 font-medium uppercase tracking-wide [font-size:var(--rp-fs-md)]",
-                "text-content-subtle transition-colors hover:bg-surface-hover",
+                "cds-hover-ghost text-content-subtle transition-colors",
               )}
             >
               <IconChevronRight
@@ -953,7 +953,7 @@ function LeftBarBase({
             onClick={() => setArchivedViewOpen(!archivedViewOpen)}
             className={cn(
               "flex w-full items-center gap-1 rounded px-1 py-0.5 font-medium uppercase tracking-wide [font-size:var(--rp-fs-md)]",
-              "text-content-subtle transition-colors hover:bg-surface-hover",
+              "cds-hover-ghost text-content-subtle transition-colors",
             )}
           >
             <IconChevronRight
@@ -1031,7 +1031,7 @@ function LeftBarBase({
           disabled={!activeSessionId}
           className={cn(
             "flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors [font-size:var(--right-panel-font-size)]",
-            "hover:bg-surface-hover hover:text-content disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent",
+            "cds-hover-ghost  hover:text-content disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent",
           )}
           title={t("layout.locateSession")}
         >

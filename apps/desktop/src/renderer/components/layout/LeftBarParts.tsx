@@ -288,7 +288,7 @@ export function ProjectNode(props: ProjectNodeProps) {
                 onClick={onLoadMore}
                 className={cn(
                   "w-full rounded px-2 py-1 text-left text-content-subtle transition-colors [font-size:var(--rp-fs-md)]",
-                  "hover:bg-surface-hover hover:text-content",
+                  "cds-hover-ghost  hover:text-content",
                 )}
               >
                 {t("layout.loadMore")}

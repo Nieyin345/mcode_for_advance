@@ -269,7 +269,7 @@ export function Titlebar({
                   "flex items-center justify-center rounded p-1.5 transition-colors",
                   bottomTerminalOpen
                     ? "bg-surface-hover text-accent"
-                    : "text-content-muted hover:bg-surface-hover hover:text-content",
+                    : "cds-hover-ghost text-content-muted hover:text-content",
                 )}
                 title={(bottomTerminalOpen ? t("layout.hideTerminal") : t("layout.showTerminal")) + hintFor("layout.toggle-bottom-terminal")}
                 aria-label={bottomTerminalOpen ? t("layout.hideTerminal") : t("layout.showTerminal")}
@@ -289,7 +289,7 @@ export function Titlebar({
                   "flex items-center justify-center rounded p-1.5 transition-colors",
                   rightOpen
                     ? "bg-surface-hover text-accent"
-                    : "text-content-muted hover:bg-surface-hover hover:text-content",
+                    : "cds-hover-ghost text-content-muted hover:text-content",
                 )}
                 title={(rightOpen ? t("layout.hideRightPanel") : t("layout.showRightPanel")) + hintFor("layout.toggle-right")}
                 aria-label={rightOpen ? t("layout.hideRightPanel") : t("layout.showRightPanel")}
@@ -538,7 +538,7 @@ function EditorColumnToggle() {
         "flex items-center justify-center rounded p-1.5 transition-colors",
         editorVisible
           ? "bg-surface-hover text-accent"
-          : "text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-40 disabled:hover:bg-transparent",
+          : "cds-hover-ghost text-content-muted hover:text-content disabled:opacity-40 disabled:hover:bg-transparent",
       )}
       title={
         editorVisible

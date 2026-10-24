@@ -90,7 +90,7 @@ export function MobileConnectButton() {
         className={cn(
           "flex w-full items-center gap-2 rounded-lg px-1 py-2 transition-colors",
           "[font-size:var(--right-panel-font-size)]",
-          "text-content-muted hover:bg-surface-hover hover:text-content",
+          "cds-hover-ghost text-content-muted hover:text-content",
           open && "bg-surface-hover text-content",
         )}
         title={t("layout.connectPhone")}
@@ -418,7 +418,7 @@ function MobileConnectPanel({ open }: { open: boolean }) {
                     key={ip}
                     type="button"
                     onClick={() => void rebindEndpoint(ip)}
-                    className="rounded border border-edge px-1.5 py-0.5 font-mono text-[10px] text-content-subtle hover:bg-surface-hover hover:text-content"
+                    className="cds-hover-ghost rounded border border-edge px-1.5 py-0.5 font-mono text-[10px] text-content-subtle hover:text-content"
                     title={t("layout.regenerateWithIp", { ip })}
                   >
                     {ip}
@@ -462,7 +462,7 @@ function MobileConnectPanel({ open }: { open: boolean }) {
                 <button
                   type="button"
                   onClick={() => void handleRevoke(d.deviceId)}
-                  className="rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-danger"
+                  className="cds-hover-ghost rounded p-1 text-content-subtle hover:text-danger"
                   title={t("layout.revokeDevice")}
                 >
                   <IconTrash size={14} />

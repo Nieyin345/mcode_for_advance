@@ -644,7 +644,7 @@ function StreamSidebarBase() {
               onClick={() => setLeftOpen(false)}
               className={cn(
                 "group flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors",
-                "hover:bg-surface-hover",
+                "cds-hover-ghost ",
               )}
               style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
               title={t("layout.hideLeftPanel")}
@@ -819,7 +819,7 @@ function StreamSidebarBase() {
                   onClick={() => void loadMoreStreamSessions()}
                   className={cn(
                     "w-full rounded px-2.5 py-1.5 text-left text-content-subtle transition-colors [font-size:var(--rp-fs-sm)]",
-                    "hover:bg-surface-hover hover:text-content",
+                    "cds-hover-ghost  hover:text-content",
                   )}
                 >
                   {t("layout.stream.showMore", {
@@ -912,7 +912,7 @@ function StreamSidebarBase() {
           disabled={!activeSessionId}
           className={cn(
             "flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-muted transition-colors [font-size:var(--right-panel-font-size)]",
-            "hover:bg-surface-hover hover:text-content disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent",
+            "cds-hover-ghost  hover:text-content disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent",
           )}
           title={t("layout.locateSession")}
         >

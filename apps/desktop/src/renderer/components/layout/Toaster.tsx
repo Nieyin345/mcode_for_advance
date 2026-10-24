@@ -105,7 +105,7 @@ function ToastCard({ toast }: { toast: ToastItem }) {
         type="button"
         onClick={() => dismiss(toast.id)}
         className={cn(
-          "shrink-0 rounded p-0.5 text-content-subtle opacity-0 transition-opacity hover:bg-surface-hover hover:text-content",
+          "cds-hover-ghost shrink-0 rounded p-0.5 text-content-subtle opacity-0 transition-opacity hover:text-content",
           // Always reachable: visible on hover, and whenever any descendant of
           // this card (the close button itself) holds focus.
           "group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent-strong",

@@ -182,7 +182,7 @@ export function UpdateNotification() {
         </div>
         <button
           onClick={dismiss}
-          className="shrink-0 rounded p-0.5 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+          className="cds-hover-ghost shrink-0 rounded p-0.5 text-content-subtle transition-colors hover:text-content"
           aria-label={t("common.close")}
         >
           <IconX size={14} />

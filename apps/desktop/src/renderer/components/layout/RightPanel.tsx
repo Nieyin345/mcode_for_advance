@@ -438,7 +438,7 @@ function RailButton({
         "flex h-7 w-7 items-center justify-center rounded-[var(--radius-btn-xs)] transition-colors",
         active
           ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
-          : "text-content-muted hover:bg-surface-hover hover:text-content",
+          : "cds-hover-ghost text-content-muted hover:text-content",
       )}
     >
       {children}

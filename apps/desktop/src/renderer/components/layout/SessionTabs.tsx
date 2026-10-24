@@ -473,7 +473,7 @@ export function SortableSessionTab({
         onClick={handleClose}
         onPointerDown={(e) => e.stopPropagation()}
         className={cn(
-          "ml-0.5 h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle hover:bg-surface-hover hover:text-content",
+          "cds-hover-ghost ml-0.5 h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle hover:text-content",
           isActive ? "inline-flex" : "hidden group-hover:inline-flex group-focus-within:inline-flex",
         )}
       >
