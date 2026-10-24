@@ -143,24 +143,48 @@ console.log(`\n会话 ${SESSION} / 项目目录 ${WORK}\n`);
 
 /** 每个事件名一个文件 —— 数数就是"触发了几次",比看执行记录更硬(环只有 50 条,会被顶掉)。 */
 let cmdSeq = 0;
-function makeCmd(opts: { tag: string; sleepMs?: number }): { command: string; hits: () => number } {
+function makeCmd(opts: { tag: string; sleepMs?: number; releaseFile?: string }): { command: string; hits: () => number } {
   cmdSeq += 1;
   const marker = join(WORK, `hits-${opts.tag}.txt`);
   const sleep = opts.sleepMs ? ` --sleep ${opts.sleepMs}` : "";
   // 脚本文件而不是内联 `node -e`:仓库规矩第 5 条(内联命令多层转义必炸)。
   const script = join(WORK, `hook-${opts.tag}.js`);
+  // 【T113】`releaseFile` —— **一个测试能控制的屏障**。
+  //
+  // 从前这条慢命令靠 `sleepMs` 撞出一个时间窗，测试用 `until(hits() === 1)` 等它
+  // 出现再撤权。问题：`hits` 是 marker，**写在 sleep 之前**，所以 `until` 返回时
+  // 第 1 条可能已经跑完 —— 而 `until` 自己 20ms 轮询一次，在并行负载下被拉长到
+  // 超过 1 秒时，第 2 条会在撤权之前就被放行。
+  //
+  // 现在：给了 `releaseFile` 时，第 1 条**写完 marker 就一直等这个文件出现**，
+  // 测试在撤权之后才创建它。屏障由测试控制，不依赖任何 sleep 的精度。
+  const releaseLoop = opts.releaseFile
+    ? [
+        // ⚠️ 不要再声明 `release` —— 上面那行解构已经给了它。
+        // 第一版在这里写了 `const release = process.argv[3]`，于是生成的脚本是
+        // 「重复声明 release」→ SyntaxError → 第 1 条根本没跑起来，
+        // 套件报的是「等不到:第 1 条(慢)先跑起来」。**看起来像时序问题，实际是脚本语法错。**
+        `const deadline = Date.now() + 20000;`,
+        `while (!fs.existsSync(release) && Date.now() < deadline) {`,
+        `  const spin = Date.now() + 10;`,
+        `  while (Date.now() < spin) { /* 忙等 10ms —— 同步脚本里没有 sleep */ }`,
+        `}`,
+      ]
+    : [`setTimeout(() => {}, Number(sleepMs || 0));`];
   writeFileSync(
     script,
     [
       `const fs = require("node:fs");`,
-      `const [file, sleepMs] = process.argv.slice(2);`,
+      `const [file, sleepMs, release] = process.argv.slice(2);`,
       `fs.appendFileSync(file, "x");`,
-      `setTimeout(() => {}, Number(sleepMs || 0));`,
+      ...releaseLoop,
     ].join("\n"),
     "utf8",
   );
   return {
-    command: `node "${script}" "${marker}"${sleep}`,
+    command: opts.releaseFile
+      ? `node "${script}" "${marker}" 0 "${opts.releaseFile}"`
+      : `node "${script}" "${marker}"${sleep}`,
     hits: () => {
       if (!existsSync(marker)) return 0;
       return readFileSync(marker, "utf8").length;
@@ -1128,8 +1152,15 @@ eq("撤权后:denied 计数 2", hookRunner.deliveryCountsOf(pluginHookId)?.denie
   const { pluginHookSpecsFrom } = await import("@main/hooks/pluginHooks.js");
   resetHostHookGrants();
 
-  // 第 1 条:慢命令(`sleepMs` 让 `runOne` 的 await 持续一会儿,给撤权留出真实时间窗)。
-  const slowCmd = makeCmd({ tag: "race-slow", sleepMs: 1000 });
+  // 【T113】第 1 条：**一个由测试控制的屏障**，不是 sleep 撞出来的窗口。
+  //
+  // 它写完 marker 后会一直等 `release` 文件出现 —— **在它等待期间，`runOne` 的
+  // `await` 还没返回，所以第 2 条一定还没轮到**（`onEvent` 里是
+  // `for (const spec of toRun) { await this.runOne(...) }`，串行）。
+  //
+  // 时序从此是确定的：marker 出现 → 撤权 → 放行 → 第 2 条开始它自己的复验。
+  const releaseFile = join(WORK, "race-release");
+  const slowCmd = makeCmd({ tag: "race-slow", releaseFile });
   // 第 2 条:快命令。它排在 slow 之后,轮到时授权已被撤。
   const fastCmd = makeCmd({ tag: "race-fast" });
   const decls2 = [
@@ -1151,8 +1182,28 @@ eq("撤权后:denied 计数 2", hookRunner.deliveryCountsOf(pluginHookId)?.denie
     requiresApproval: false,
   } satisfies RuntimeEvent);
   await until("第 1 条(慢)先跑起来", () => slowCmd.hits() === 1, 4000);
+  // 【T113】此刻第 1 条**还卡在屏障上**（它的 `runOne` 没返回），所以第 2 条
+  // **不可能**已经开始 —— 这是确定性的，不是「20ms 轮询撞得准」。
   revokeHostHookGrants("race-plugin"); // 撤权发生在第 2 条真正 spawn **之前**
-  await new Promise((r) => setTimeout(r, 1500)); // 等第 1 条 sleep 完、第 2 条轮到
+  // 放行第 1 条。此后第 2 条才会被调度 —— 而它 spawn 前的复验会看到「已撤权」。
+  writeFileSync(releaseFile, "go", "utf8");
+  // 等第 2 条**被处理过**：拦下时 `deliver` 会 `pushRun(...skipped)` + `bumpCount(denied)`，
+  // 所以 `listRuns()` 里出现它的记录就是确定的信号 —— 比再睡 1.5 秒强。
+  // ⚠️ **等它的 run 记录进入终态，不是「出现」。**
+  //
+  // 第一版等的是「`listRuns()` 里出现第 2 条的记录」—— 但那条记录在 spawn **之前**
+  // 就写好了（`accepted`），所以紧接着断言 `hits() === 0` 时，**进程可能刚起、marker
+  // 还没落盘**。变异把它抓出来了：把撤权挪到第 2 条之后，`accepted: 1` 说明它真的跑了，
+  // 而 `hits() === 0` 仍然是绿的 —— 那条断言当时验的是「marker 还没写」，不是
+  // 「进程没起」。
+  //
+  // 现在等 `listRuns()` 里第 2 条**既不是 accepted 也不是 running**（即已终态），
+  // 或者等到超时 —— 然后 `hits()` 的结果才是可信的。
+  await until(
+    "第 2 条进入终态（denied / ok / failed / skipped 都算）",
+    () => hookRunner.listRuns().some((r) => r.hookId === fastId && r.status !== "accepted" && r.status !== "running"),
+    8000,
+  ).catch(() => { /* 超时也继续：下面的断言会给出真正的结论 */ });
   eq("★ 复审修复:第 1 条跑完后撤权 → 第 2 条进程一个都不起", fastCmd.hits(), 0);
   check("★ 复审修复:第 2 条记一条 denied(起进程前复验未通过)", (hookRunner.deliveryCountsOf(fastId)?.denied ?? 0) >= 1, hookRunner.deliveryCountsOf(fastId));
   check("正控:第 1 条(撤权前已在跑)确实跑了", slowCmd.hits() === 1, slowCmd.hits());
