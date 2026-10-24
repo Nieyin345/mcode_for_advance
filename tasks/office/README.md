@@ -94,7 +94,9 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O8** docs 换壳开关撒谎 | 已完成 | `5f00299b` | `719f3ae7` / vendor `f3c1043` | **23/23**；修复前 11/17；四变异全命中（M4 加固前全绿、加固后红 2 条） |
 | **O9** 四格式静默覆盖数据 | ✅ 诊断完成 | `6e58df25` | `0564f0ef` | 四个全是 **C（bypass）**；归类已机器化 |
 | **O10** 四格式写盘接缝 | ✅ 已交付 | 本文件 | `0919d5b0` / vendor `a290398` | 四格 4a/4b/4c/#5 全绿；失败路径 5/5；verify 22 条 |
-| **O11** `slides:save-as` 第二个入口 | ✅ **实现并有界验证** | 本文件 | vendor `483ce544` / Mcode 待提交 | 失败安全 6/6、既有 5/5；Slides 真 Electron 普通保存冲突 U1 通过；另存为完整 GUI U1 尚未验证 |
+| **O11** `slides:save-as` 第二个入口 | ✅ **实现并有界验证** | `O11-slides-save-as-second-entrance.md` | Mcode `7fcc9f52` / vendor `483ce544` | 失败安全 6/6、既有 5/5；Slides 真 Electron 普通保存冲突 U1 通过；另存为完整 GUI U1 尚未验证 |
+| **O12** Electron 44 Slides 剪贴板兼容 | ✅ **实现并有界验证** | `O12-slides-electron44-clipboard.md` | Mcode `56d1282a` / vendor `ec21271a` | 同步/异步 mock 13/13；真实 Electron `slides-edit-smoke` 无 handler 替身 PASS；跨应用粘贴 U1 未验 |
+| **O13** Sheets 工作簿加载卡住 | ❌ **真实 Electron 红例，待定位** | `O13-sheets-workbook-opening-hang.md` | — | `o2-conflict-sheets` 120s 卡在 opening；UI 614 节点并非空图，需区分 main select 与 renderer 初始范围加载 |
 
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）
