@@ -374,13 +374,31 @@ source "$HERE/../lib/esbuild-path.sh"
 
 ### 按「它到底覆不覆盖源码」分类（我逐个 grep 过）
 
-| 目录 | 引用 `src/main` 路径数 | 它实际覆盖什么 |
+| 目录 | 引用 `src/main` 路径数 | 其中**真覆盖** | 它实际覆盖什么 |
+|---|---|---|---|
+| `o3-packaged-u1` | 0 | 0 | **打包产物**（`resources/genoffice/**`），与 `src/main` 无关 |
+| `o6-reshell-*`（待建） | 0 | 0 | **vendor 的 CSS 生效**（`genoffice/apps/*/src/renderer/`） |
+| `md-preview` / `flow-preview` / `vscode-api-census` | 0 | 0 | 预览台/普查 |
+| `arc005-visual-baseline` | 2 | **0** | **两个都是 `alias` 到 `windowStub.ts`** —— 是「让代码不碰它」 |
+| `electron-u1` | 4 | **3** | `runner.ts:736-742` 是 `await import()` 真加载；另一个是注释 |
+| `t96-probe` | 8 | 待核 | |
+| `preset-scripts-sync` / `mc035-egress-probe` | 1 / 2 | 待核 | |
+
+**⚠️ 「引用路径数」不等于「覆盖边数」。** 同一个 grep 结果里混着三种东西：
+
+| 形态 | 例子 | 算不算覆盖 |
 |---|---|---|
-| `o3-packaged-u1` | **0** | **打包产物**（`resources/genoffice/**`），与 `src/main` 无关 |
-| `o6-reshell-*`（待建） | **0** | **vendor 的 CSS 生效**（`genoffice/apps/*/src/renderer/`） |
-| `md-preview` / `flow-preview` / `vscode-api-census` | 0 | 预览台/普查，不覆盖源码 |
-| `arc005-visual-baseline` / `electron-u1` | entryPoints | 通过 esbuild 入口覆盖 |
-| `t96-probe` / `preset-scripts-sync` / `mc035-egress-probe` | 8 / 1 / 1 | 真的覆盖源码 |
+| `await import("@main/x")` | `electron-u1/driver/runner.ts:736` | ✅ 算 |
+| `alias: {...}` 到桩 | `arc005-visual-baseline/build.mjs:160` | ❌ 不算（替身） |
+| 注释里提到路径 | `electron-u1/electron-host.cjs:30` | ❌ 不算 |
+
+**我第一次发给 UI 线的那张「引用路径数」表就是这个错** ——
+把「引用了」当成「覆盖了」，而 `arc005` 那 2 个是桩、`electron-u1` 的 4 个里有 3 个是真的。
+**要分清必须看上下文，不能数数。**
+
+**还有一个待查的第四个问题**：`alias` 到桩的路径，`smokes-for.py` 会不会算成覆盖边？
+如果会，那 `arc005` 现在可能被算成「覆盖了 `@main/window.js`」，而它其实把它换掉了 ——
+**那是这个工具结论在另一个方向上的错。**
 
 **结论：`o3` 和 `o6` 都属于「覆盖的不是 `apps/desktop/src`」，加进依赖图也不会产生任何边。**
 
