@@ -43,15 +43,17 @@ const DEFAULT_FONT_SIZE = 14;
  *  used in styles.css since 2026-10-20). Used as the picker fallback. */
 const DEFAULT_ACCENT_HEX = "#c25124";
 
-/** Hex of the default user-message bg color (zinc-500, neutral gray). Used as
- *  the picker fallback. Matches the --user-bubble default in styles.css. */
-const DEFAULT_USER_BUBBLE_HEX = "#52525b";
+/** Hex of the default user-message bg color. Used as the picker fallback.
+ *  【T121】必须与 styles.css 的 `--user-bubble` 保持一致 —— 它们是同一个默认值的
+ *  两处表示，而此前这里写 #52525b（zinc-500）、styles.css 写 #f7d8cb（orange-100），
+ *  设置面板把「灰色」标成默认，用户实际看到的却是暖橙。 */
+const DEFAULT_USER_BUBBLE_HEX = "#f0f4f8";
 
 /** Curated user-bubble presets. `triplet` is what we persist; `hex` drives the
- *  swatch. Mirrors ACCENT_PRESETS structure; the first entry is the default
- *  (neutral gray) so user prompts read as a calm, non-distracting bubble. */
+ *  swatch. 【T121】第一项必须等于默认值（DEFAULT_USER_BUBBLE_HEX / styles.css 的
+ *  --user-bubble）—— 此前第一项标着 `(= default)` 却是 zinc-500，与实际默认不符。 */
 const USER_BUBBLE_PRESETS: { nameKey: MessageId; triplet: string; hex: string }[] = [
-  { nameKey: "settings.appearance.colorGray", triplet: "82 82 91", hex: "#52525b" }, // zinc-500 (= default)
+  { nameKey: "settings.appearance.colorGray", triplet: "240 244 248", hex: "#f0f4f8" }, // = default（CDS 2.0 气泡色）
   { nameKey: "settings.appearance.colorEmerald", triplet: "5 150 105", hex: "#059669" }, // emerald-600
   { nameKey: "settings.appearance.colorSky", triplet: "2 132 199", hex: "#0284c7" }, // sky-600
   { nameKey: "settings.appearance.colorIndigo", triplet: "67 56 202", hex: "#4338ca" }, // indigo-700

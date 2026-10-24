@@ -187,6 +187,63 @@ console.log("[4] 暗色：族内顺序");
   check("★ panel < edge < input 在暗色下也成立", ascending, order);
 }
 
+console.log("[5] 用户气泡：底色必须可见，且与设置面板的默认一致");
+{
+  // 气泡的 CSS 是 rgb(var(--user-bubble) / var(--user-bubble-alpha))。
+  // 断言立在对 --surface 的对比度上 —— 「值等于 #f0f4f8」只证明改了个数。
+  const surfL = readTriplet(":root {", "surface");
+  const surfD = readTriplet(".dark {", "surface");
+  const mix = (fg: readonly [number, number, number], a: number, bg: readonly [number, number, number]) =>
+    [0, 1, 2].map((i) => Math.round(fg[i]! * a + bg[i]! * (1 - a))) as [number, number, number];
+
+  const lightBubble = mix(readTriplet(":root {", "user-bubble"), readNumber(":root {", "user-bubble-alpha"), surfL);
+  const darkBubble = mix(readTriplet(".dark {", "user-bubble"), readNumber(".dark {", "user-bubble-alpha"), surfD);
+  const lightRatio = contrast(lightBubble, surfL);
+  const darkRatio = contrast(darkBubble, surfD);
+  console.log(`      light ${hexOf(lightBubble)} on ${hexOf(surfL)} = ${lightRatio.toFixed(3)}:1`);
+  console.log(`      dark  ${hexOf(darkBubble)} on ${hexOf(surfD)} = ${darkRatio.toFixed(3)}:1`);
+
+  // 「气泡没有消失」的下界。CDS 的气泡本来就极淡（亮 ~1.08 / 暗 ~1.17），
+  // 所以门槛只能set得很低 —— 但必须有，否则有人把 alpha 调成 0.2 时套件仍绿。
+  check("★ 亮色气泡在画布上 ≥1.05:1（气泡不是不可见）", lightRatio >= 1.05, { lightRatio });
+  // 暗色门槛比亮色高：实测 1.17 —— 暗底上同样的反差更难察觉。
+  check("★ 暗色气泡在画布上 ≥1.10:1", darkRatio >= 1.10, { darkRatio });
+
+  // ⚠️ 只测对比度是不够的：把颜色改回暖橙 #f7d8cb 也能过 1.05（它其实是 1.28）。
+  // 这一条守「真的去暖了」，与「淡了多少」是两件事。
+  const lightRaw = readTriplet(":root {", "user-bubble");
+  check("★ 亮色气泡色相偏冷（B 通道 ≥ R 通道，不是暖橙）",
+    lightRaw[2] >= lightRaw[0], { r: lightRaw[0], b: lightRaw[2] });
+  // 亮色下 B 还要明显高于 R，否则灰蓝会退化成中性灰（B ≈ R < 8 会放过 #f0f0f0）
+  check("★ 亮色气泡的冷色倾向有实质幅度（B - R ≥ 4）",
+    lightRaw[2] - lightRaw[0] >= 4, { diff: lightRaw[2] - lightRaw[0] });
+
+  // 回归：暗色旧值 #240e07 @0.55 只有 1.01:1 —— 这条断言就是为它立的。
+  check("★ 暗色气泡与画布不同（不是 1.00:1 的贴片）", hexOf(darkBubble) !== hexOf(surfD),
+    { bubble: hexOf(darkBubble), surface: hexOf(surfD) });
+
+  // 设置面板的 fallback 必须等于 CSS 默认 —— 否则用户看到「灰色是默认」而实际是别的。
+  const panel = readFileSync(resolve(process.cwd(), "src/renderer/components/settings/AppearancePanel.tsx"), "utf8");
+  const declared = /const DEFAULT_USER_BUBBLE_HEX = "(#[0-9a-fA-F]{6})"/.exec(panel)?.[1];
+  const firstPreset = /triplet:\s*"(\d+ \d+ \d+)",\s*hex:\s*"(#[0-9a-fA-F]{6})"/.exec(panel);
+  const cssDefault = hexOf(readTriplet(":root {", "user-bubble"));
+  console.log(`      styles.css=${cssDefault}  panel fallback=${declared}  preset[0]=${firstPreset?.[2]}`);
+  check("★ 设置面板的默认值 == styles.css 的 --user-bubble", declared?.toLowerCase() === cssDefault);
+  check("★ 设置面板预设第一项 == 默认值（不能标着 default 却不是 default）",
+    firstPreset?.[2]?.toLowerCase() === cssDefault);
+}
+
+function readNumber(selector: string, name: string): number {
+  const start = css.indexOf(selector);
+  const open = css.indexOf("{", start);
+  const block = css.slice(open, blockEnd(css, open) + 1);
+  const raw = findInBlock(block, name);
+  if (raw === null) throw new Error(`块 ${selector} 内没有 --${name}`);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`--${name} 不是数字: ${raw}`);
+  return n;
+}
+
 function hexOf(rgb: readonly [number, number, number]): string {
   return "#" + rgb.map((c) => c.toString(16).padStart(2, "0")).join("");
 }

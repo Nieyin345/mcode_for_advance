@@ -262,16 +262,27 @@ div:has(> [role="menu"]) {
    * chat-density section below). Consumed by the Markdown container in
    * Markdown.tsx. */
   --chat-font-weight: 450;
-  /* 【ARC-005 V0】用户气泡改用 Claude 的**陶土浅底**（open-claude-ui 的
-   * --cds-bg-user-message = orange 极浅档）。仍是可配置的 R G B 三元组，
-   * 设置里的自定义颜色照常覆盖。 */
-  --user-bubble: var(--m-orange-100); /* #f7d8cb — Claude user bubble */
-  /* Bubble tint strength is theme-scoped (consumed via .user-bubble-fill):
-   * one alpha can't serve both themes. 15% of the default over white lands
-   * ~1.26:1 — a visible soft bubble; over the near-black dark surface the
-   * SAME 15% resolved to ~1.1:1 (the "bubble you can't see" report).
-   * .dark raises it — see there. */
-  --user-bubble-alpha: 0.9; /* 【ARC-005】Claude 气泡是近实色浅陶土,不是淡叠色 */
+  /* 【T121】用户气泡底色。仍是可配置的 R G B 三元组 —— 设置里选过自定义色的
+   * 用户走 lib/appearance.ts 的 applyUserBubbleColor，覆盖这里；没选过的回落到本值。
+   *
+   * 取值依据（2026-10-24 核对 open-claude-ui，三处来源）：
+   *   - cds-theme.css:161  `--cds-bg-user-message: var(--cds-bg-neutral)` —— 但它
+   *     在整个文档库里**从未被赋值**（grep `--cds-bg-neutral:` 零命中），所以
+   *     「默认是中性灰」这句话没有具体色值可跟。
+   *   - cds-theme.css:162  `--cds-bg-user-message-personal: var(--cds-bg-tint-blue)`
+   *     = `#f0f4f8`，这是上游唯一给出过真值的亮色气泡。
+   *   - ChatMessageBubbles.tsx:144 亮色渲染实际走 personal 分支（`#f0f4f8`）。
+   *
+   * 所以取 #f0f4f8 不是「选了非默认模式」，是取上游唯一有真值的那一个。
+   * 1.0 的旧值是 #dde8f7（CHANGELOG.md:94），与 2.0 不同 —— 同类「抄了旧版」形态。
+   *
+   * ⚠️ 这个值对画布只有 1.08:1 的区分度（旧 #f7d8cb 是 1.31:1），气泡边界
+   * 靠边框界定而不是底色。改底色时必须同时看 MessageRow 的边框。 */
+  --user-bubble: 240 244 248; /* #f0f4f8 — = --cds-bg-tint-blue（CDS 2.0） */
+  /* 【T121】alpha 固定 1：`--user-bubble` 现在存的是**已合成的实色**，
+   * 再乘一次会把它压得更淡（0.9 时对画布 1.07:1，1.0 时 1.08:1）。
+   * 用户自定义色也是实色三元组，同样不需要这层淡出。 */
+  --user-bubble-alpha: 1;
 
   /* Global side-panel + settings base font size - user-configurable via
    * Settings -> 外观 -> 全局字体大小. Despite the var's legacy name it drives
@@ -388,14 +399,18 @@ div:has(> [role="menu"]) {
    * background. Line height is density-driven (--chat-md-leading) and shared
    * across themes. */
   --chat-font-weight: 500;
-  --user-bubble: var(--m-orange-850); /* #240e07 — dark counterpart */
-  /* Low-alpha gray over #1a1d24 barely moves: 15% ≈ 1.1:1, indistinguishable
-   * from the chat surface. 25% lands the bubble at ~1.30:1 — the same
-   * layering step as --surface-muted vs --surface (sidebar track vs main),
-   * which reads as a clear-but-calm layer in the dark ramp. Applies to ANY
-   * user-picked bubble color, not just the default (the tint strength is the
-   * problem, not the default hue). */
-  --user-bubble-alpha: 0.55; /* 【ARC-005】深色下陶土深档减淡,避免过黑 */
+  /* 【T121】暗色气泡。上游示例的实际暗色分支是 `rgba(255,255,255,0.06)`
+   * （ChatMessageBubbles.tsx:144 里 `--cds-bg-user-message` 未定义时的兜底），
+   * 叠在 #151515 上得 #232323，对画布 1.16:1 —— 极淡，靠右对齐 + 色块区分。
+   *
+   * 旧值 #240e07 @ alpha 0.55 叠在黑底上只有 **1.01:1**（比 1.16 更看不见），
+   * 也就是说「暗色下用户气泡几乎不存在」。这里改为白 6% 的等价三元组，
+   * alpha 固定 1.0（合成已经算进三元组里）。
+   *
+   * alpha 必须留 1.0：下面那条注释描述的「低 alpha 灰叠不上去」问题，
+   * 在改成预合成三元组之后就不存在了 —— 再乘一次 alpha 会把气泡压回不可见。 */
+  --user-bubble: 35 35 35; /* #232323 — rgba(255,255,255,0.06) 叠在 #151515 上 */
+  --user-bubble-alpha: 1;
 
   /* Global side-panel + settings base font size - user-configurable via
    * Settings -> 外观 -> 全局字体大小. Despite the var's legacy name it drives
