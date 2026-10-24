@@ -221,6 +221,107 @@ export const nodeRedCanvasJourney = defineU1Journey({
 
     step.screenshot("canvas-loaded"),
 
+    // ── W23：装载后像生产渲染端一样**重新打开视图** ──
+    //
+    // `production-load-entry`（`loadWorkflowIntoNative`）会**停掉旧引擎、换端口重启**
+    // （`nativeLibraryLoad.ts` 的 stop → start）。生产渲染端由 `EngineRuntimePanel`
+    // 的 `status.editorUrl` effect 负责：URL 变了就 `api.documentView.open`（同一
+    // docId，宿主按 URL 变化 `navigate`，见 `documentViewHost.ts:611`）。旅程原先只在
+    // 装载**之前**开过一次视图，于是点部署时页面停在已关闭的旧端口上 —— W5 实测
+    // `POST flows status 0`、「部署失败: 服务器没有响应」。
+    //
+    // 这里补上同一行为，**不硬编码端口**：新 URL 由宿主从引擎**此刻的 status.port**
+    // 重新算（`harness.openEngineEditor()` 与生产 `toStatusView` 同一来源）。
+    // 覆盖顺序与生产 effect 一致：URL 变了就重开；open 失败是**显式红**，不静默继续。
+    //
+    // 重开后页面从新引擎的 `flows.json` 重新载入（这份文件是装载写下的迁移产物，
+    // 与刚导入的图是同一份夹具），所以导入手势的断言仍然成立；重新载入的页面是
+    // **干净**的（`deploy.js` 的 `workspace:dirty` 把部署按钮置灰），基线部署要的是
+    // 一次真实部署，因此像任何一次编辑那样置 `dirty(true)` —— 全量部署提交的本来
+    // 就是整张画布（`save()` 的 `createCompleteNodeSet()`），内容不由此改变。
+    step.run(async ({ runtime }) => {
+      const rt = runtime as T8Runtime;
+      const wc = rt.harness.editorWebContents();
+      if (wc === null) return { ok: false, detail: "编辑器视图不存在" };
+      const portOf = (url: string): number | null => {
+        try { return Number(new URL(url).port) || null; } catch { return null; }
+      };
+      const beforeUrl = await js<string>(wc, `window.location.href`);
+      const beforePort = portOf(beforeUrl);
+      const enginePort = rt.harness.enginePort();
+      const portChanged = enginePort !== null && beforePort !== null && beforePort !== enginePort;
+
+      let open: { ok: boolean; reason?: string } = { ok: true };
+      let navigated = true;
+      if (portChanged) {
+        // `deploy.js:118` 的 beforeunload 在 dirty 时 `event.preventDefault()`，
+        // 会让 `loadURL` 被取消（W5 证据 12-41-15-384Z 的 `document view navigation
+        // failed`）。导入手势让画布是 dirty 的，导航前先清掉。
+        await js(wc, `(RED.nodes.dirty(false), true)`);
+        open = await rt.harness.openEngineEditor();
+        if (!open.ok) {
+          return {
+            ok: false,
+            observed: { beforeUrl, beforePort, enginePort, portChanged, open },
+            detail: `装载后重新打开编辑器视图失败：${open.reason ?? "未知原因"}（视图仍停在旧端口，后续部署必然连不上）`,
+          };
+        }
+        // 宿主的导航是异步的（`navigate` 不等待 loadURL）：必须等到页面**真的离开
+        // 旧 URL**，否则后面所有手势仍作用在旧页面上。
+        navigated = await waitFor(async () => (await js<string>(wc, `window.location.href`)) !== beforeUrl, 45_000);
+        if (!navigated) {
+          return {
+            ok: false,
+            observed: { beforeUrl, beforePort, enginePort, portChanged, open },
+            detail: `open 返回 ok，但页面 45s 内没有离开旧 URL（${beforeUrl}）—— 视图没有真的重开`,
+          };
+        }
+      }
+
+      const ready = await waitEditorReady(wc, 60_000);
+      const overlays = await dismissFirstRunOverlays(wc);
+      // 新页面的 flows 是异步载入的：等夹具 tab 出现再切（直接 switchToTab 会早于载入）。
+      const switched = await waitFor(async () => await switchToTab(wc, TAB_LABEL), 30_000);
+      const rendered = await waitFor(async () => (await js<number>(wc, `document.querySelectorAll('#red-ui-workspace-chart .red-ui-flow-node-group').length`)) >= 3, 20_000);
+      const afterUrl = await js<string>(wc, `window.location.href`);
+      const afterPort = portOf(afterUrl);
+      const urlChanged = beforeUrl !== afterUrl;
+      // 重载后的页面是干净的：不置 dirty，`deploy.js` 的 save() 第一行就 return
+      // （按钮 `disabled`），基线部署会「点了但什么都没发生」—— 那会以
+      // 「没有观察到 POST /flows 请求」的红出现，离真因远。这里显式置 dirty 并把
+      // 按钮已启用的状态记进证据（`deployDisabledBefore` 在下一步还有一份）。
+      let deployButtonEnabled: boolean | null = null;
+      if (portChanged) {
+        await js(wc, `(RED.nodes.dirty(true), true)`);
+        const buttonState = await js<{ disabled: boolean }>(wc, `(() => {
+          const el = document.getElementById('red-ui-header-button-deploy');
+          return { disabled: !el || el.classList.contains('disabled') };
+        })()`);
+        deployButtonEnabled = !buttonState.disabled;
+      }
+
+      const live = afterPort !== null && enginePort !== null && afterPort === enginePort;
+      const ok = ready && overlays.closed && switched && rendered && live
+        && (portChanged ? urlChanged && deployButtonEnabled === true : true);
+      const failures: string[] = [];
+      if (!ready) failures.push("编辑器未就绪");
+      if (!overlays.closed) failures.push("首次启动模态没有关掉");
+      if (!switched) failures.push(`画布里找不到「${TAB_LABEL}」页签`);
+      if (!rendered) failures.push("重开后画布没有渲染出 3 个节点");
+      if (!live) failures.push(`页面端口 ${String(afterPort)} ≠ 引擎监听端口 ${String(enginePort)}`);
+      if (portChanged && !urlChanged) failures.push("端口变了但页面 URL 没变 —— 视图没有重新导航");
+      if (portChanged && deployButtonEnabled !== true) failures.push("重开并置 dirty 后部署按钮仍是禁用态（下一次点部署不会发请求）");
+      return {
+        ok,
+        observed: {
+          beforeUrl, beforePort, enginePort, portChanged,
+          open, navigated, afterUrl, afterPort, urlChanged,
+          ready, overlays, switched, rendered, deployButtonEnabled,
+        },
+        ...(ok ? {} : { detail: `装载后重新打开视图没有被证明成功：${failures.join("；")}` }),
+      };
+    }, "reopen-view-after-load", { assert: true }),
+
     // 先做一次**基线部署**：让磁盘上的 flows.json 成为「改名之前」的真实版本。
     // 之后改名再部署，字节对比才是同一台引擎、同一份图的 before/after
     // （否则第一次部署面对的是「文件根本还没写」—— `beforeSha=null`，那不是对比）。
@@ -444,16 +545,40 @@ export const nodeRedCanvasJourney = defineU1Journey({
       const owners = rt.harness.ownershipRecords();
       const payloadHasMcodeTabs = (rt.harness.nativeFlows() ?? []).some(
         (n) => (n as Record<string, unknown>)["type"] === "tab" && (n as Record<string, unknown>)["x-mcode"] !== undefined);
+      // 【W23 2026-10-25】这条断言在 T28（7ba94777，10-23 19:19）之后**方向反了**。
+      //
+      // T28 的提交信息原文：「Node-RED's editor serialises only keys declared in a
+      // type's `_def.defaults`, so Mcode's `x-mcode` sidecar vanished on export ...
+      // declare `x-mcode` in the generated editor defaults」。也就是说，
+      // **T28 的目的就是让 `x-mcode` 出现在导出/部署的载荷里**，好让导入时能把这张
+      // 流关联回它的库文档（上游 `nodes.js:1263` `for (var d in n._def.defaults)`）。
+      //
+      // 而本条断言要求 `payloadHasMcodeTabs === false` —— **那是 T28 之前的形状**。
+      // 两者直接冲突，T28 赢了，于是这条断言从 10-23 起对任何一次**成功部署**都恒假。
+      //
+      // 它不是「还没修的问题」，是**一条永远红的断言** —— 和永远绿一样，不再告诉你任何东西。
+      // 现在改成验 T28 想要的**正**结果：载荷里的 tab 带着 `x-mcode`，且它指向的是
+      // 本夹具那份库文档（`x-mcode.docId`）。这样它同时守住：
+      //   ① 导出没有被上游剥掉（T28 的回归网）；
+      //   ② 关联回去的是**正确的那一份**（不是另一张流的 id）。
+      const tabWithSidecar = (rt.harness.nativeFlows() ?? []).find(
+        (n) => (n as Record<string, unknown>)["type"] === "tab" && (n as Record<string, unknown>)["x-mcode"] !== undefined,
+      ) as Record<string, unknown> | undefined;
+      const sidecar = tabWithSidecar?.["x-mcode"] as Record<string, unknown> | undefined;
+      const sidecarDocId = typeof sidecar?.["docId"] === "string" ? sidecar["docId"] : null;
       return {
         ok: ledger.pending.length === 0 && ledger.lastError === undefined && (mirrorState?.pending ?? 0) === 0
-          && owners.every((r) => r.owner === "node-red") && payloadHasMcodeTabs === false,
+          && owners.every((r) => r.owner === "node-red")
+          && payloadHasMcodeTabs === true && sidecarDocId === FIXTURE_WORKFLOW_ID,
         observed: {
           ledger,
           mirrorState,
           owners,
           payloadHasMcodeTabs,
+          sidecarDocId,
+          expectedDocId: FIXTURE_WORKFLOW_ID,
           sqlTitles: sqlDoc?.nodes.map((n) => n.title) ?? null,
-          note: "导入手势剥掉 x-mcode（上游编辑器只导出 _def.defaults 里的键），载荷因此没有 Mcode 自有 tab —— 账本必须如实为空，库文档不被改写",
+          note: "T28 起 `x-mcode` 由 `_def.defaults` 声明、随导出保留（上游 nodes.js 只抄 defaults）。本步验它**在**、且 docId 指回本夹具那份库文档 —— 账本仍须为空、库文档不被改写。",
         },
       };
     }, "library-mirror-reconciliation", { assert: true }),
