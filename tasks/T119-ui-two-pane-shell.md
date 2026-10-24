@@ -243,8 +243,45 @@ layout.includes("order: order.aside,")
 3. **`X.includes(` 的 `X` 必须是那个变量** —— 不能是字符串常量。
    唯一例外：`PANE_DOCK_MIME.includes("pane-dock")`（常量，不受影响）。
 
-**A 的判据**：**「数一遍」不等于「数对一遍」** —— 两个人都以为在数同一个东西，
-实际口径差了三处。**所以这一节把口径显式列出来，别让下一个人再数三遍。**
+### 4. 数目录时**别用** `ls -d ... | grep '\-smoke$'`
+
+**实测**：`ls -d` 输出的目录名**带尾斜杠**（`cat -A` 可见 `...-smoke/$`），
+所以 `$` 锚点永远匹配不上 —— `grep -c '\-smoke$'` 的结果是 **0**，不是 28、也不是 29。
+
+**A 第一次核这个数时用那条命令，看到「29 个不带 -smoke」的输出，差点据此判定「C 数错了」。**
+
+**能直接抄的做法**（已验证，`python -I` 隔离模式，不读用户环境）：
+
+```bash
+python -I -c "
+import os
+d = 'apps/desktop/scripts'
+names = sorted(n for n in os.listdir(d) if n.startswith('arc005-') and os.path.isdir(os.path.join(d, n)))
+print('全部 arc005-* 目录:', len(names))
+print('带 -smoke 的      :', len([n for n in names if n.endswith('-smoke')]))
+print('不带的            :', [n for n in names if not n.endswith('-smoke')])
+"
+```
+
+**实测输出**：
+
+```
+全部 arc005-* 目录: 29
+带 -smoke 的      : 28
+不带的            : ['arc005-visual-baseline']
+```
+
+**所以 29 与 28 都对，是口径不同**：29 是「全部 `arc005-*`」，28 是「带 `-smoke` 后缀的」。
+A 第一轮数出 276 时用的是后一个范围。
+
+### 五条之外还要说的一句
+
+**A 的判据**：**「数一遍」不等于「数对一遍」** —— 两个会话合计**七次**尝试，
+**没有一次错在同一个地方**：C 漏了变量名（`src` / `terminal`），A 漏了别名（`source` / `read`）、
+范围（29 vs 5）、以及**工具用法**（`ls` 尾斜杠）。
+
+**所以这一节把口径显式列出来，并且第 4 条写成可直接执行的命令而不是「注意尾斜杠」** ——
+**提醒是给记得住的人看的，命令是给下一个数的人用的。**
 
 ### 三、修法（已就绪，未执行）
 
