@@ -2891,6 +2891,58 @@ $ for d in <9 个>; do echo "$d: $(grep -rhoE 'src/main/[...]|@main/[...]' apps/
 **这一类**（「引用」不等于「覆盖」）**和第十五条（按名字搜是引用数，按来源区分才是出口数）同源**，
 只是对象从「函数调用」换成了「路径引用」。
 
+### 附二：声明写了很久，但没人扫它
+
+**T150 修 `smokes-for.py` 时发现：`@smoke-covers` 只扫 `.mjs`，`.ts` 里的声明一直被忽略。**
+
+**全仓已有 8 处 `.ts` 声明（`document-view-host-smoke` / `turn-incomplete-smoke` /
+`genoffice-native-view-smoke` 的 4 个文件），写了很久但从未生效。**
+
+**修好之后：**
+
+```
+turnIncomplete.ts:  没有套件覆盖它  →  turn-incomplete-smoke (0 跳)
+documentViewHost.ts 的必跑套件从 [1,2] → [0,1,2]
+```
+
+**这是一个比「没人写声明」更坏的形态：**
+
+| 情况 | 后果 |
+|---|---|
+| 没人写 `@smoke-covers` | 人会去补 |
+| **有人写了、但扫描器认不出** | **人以为已经声明了，实际没有** |
+
+**而「人以为已经声明了」比「没声明」更难发现** ——
+**因为写声明的那个人当时是照着文档/例子做的，他会记得自己做过。**
+
+### 判据
+
+**一、任何「声明式配置」（`@smoke-covers` / `// @ts-expect-error` / manifest 字段 /
+eslint-disable 注释），要验证它真的被读。**
+
+```bash
+# 声明存在吗
+grep -rn "@smoke-covers" apps/desktop/scripts/ | wc -l    # 8
+
+# 扫描器扫的扩展名对吗
+grep -n 'rglob(pattern)\|for pattern in' <tool>
+```
+
+**二、验证方式：故意写一条坏的声明，看工具会不会报错。**
+
+T150 的套件里有这条：
+
+```python
+check("C1 坏声明让脚本失败（不是静默加覆盖）",
+      ...)
+```
+
+**如果坏声明被静默忽略，说明扫描器根本没读它。**
+
+**三、`rglob("*")` vs `rglob("*.mjs")` 的区别是一个字符，后果是「一整类文件永远不被读」。**
+
+**这类 bug 的特点是：它不会报错，不会输出警告，只是安静地少读了一批文件。**
+
 
 ## Agent skills
 
