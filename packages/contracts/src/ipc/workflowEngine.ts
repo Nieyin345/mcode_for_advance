@@ -83,6 +83,8 @@ export interface WorkflowEngineStatusView {
   reason: string | null;
   /** 能不能打开编辑器（running 才有地址）。 */
   editorUrl: string | null;
+  /** Current engine process only; not evidence of persistent restart authorization. */
+  deploymentState?: "not-deployed" | "deployed" | "unknown";
 }
 
 export type WorkflowEngineResult =

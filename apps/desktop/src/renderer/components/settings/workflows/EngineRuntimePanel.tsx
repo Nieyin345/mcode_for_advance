@@ -82,6 +82,13 @@ export function canOpenEditor(status: WorkflowEngineStatusView): boolean {
   return status.editorUrl !== null;
 }
 
+/** W6: a confirmed *current-process* deploy on an untrusted Node-RED engine.
+ * Persisted flows.json or a running process alone never satisfies this gate. */
+export function shouldShowRestartDeployNotice(status: WorkflowEngineStatusView): boolean {
+  return status.engineId === "node-red" && status.state === "running"
+    && status.deploymentState === "deployed";
+}
+
 /* ── 同一个 docId 的多个宿主：谁开的、还有谁在用 ── */
 
 /**
@@ -534,6 +541,16 @@ export function EngineRow({
         </div>
       </div>
 
+      {shouldShowRestartDeployNotice(status) && (
+        <div
+          data-engine-deploy-notice=""
+          role="status"
+          className="rounded border border-edge px-3 py-2 text-[0.7857em] leading-relaxed text-content-muted"
+        >
+          {t("settings.workflows.engine.restartRequiresDeploy")}
+        </div>
+      )}
+
       {/* 失败 / 停止且有原因：把主进程给的那句人话原样摆出来。 */}
       {status.reason !== null && (
         <ErrorNote tone="warning" icon={IconAlertTriangle} title={t("settings.workflows.engine.notRunning")}>
@@ -830,7 +847,19 @@ export function EngineNodePackagesSection() {
 
 export function EngineRuntimePanel({ active: activeTab = true, engineId, editorOnly = false }: { active?: boolean; engineId?: string; editorOnly?: boolean }) {
   const { t } = useI18n();
-  const listRead = useRpc(() => api.workflowEngine.list(), []);
+  const listRead = useRpc(() => api.workflowEngine.list(), [], { toastOnError: false });
+  // Node-RED Deploy happens in the native WebContentsView, outside React.
+  // Read the Host's acknowledged deploy receipt through the existing list IPC
+  // only while this pane is active. A status poll never causes a deploy.
+  const refreshDeployState = listRead.refetch;
+  const shouldPollDeploy = activeTab && (listRead.data?.engines.some(
+    e => e.engineId === "node-red" && e.state === "running",
+  ) ?? false);
+  useEffect(() => {
+    if (!shouldPollDeploy) return;
+    const timer = window.setInterval(() => { void refreshDeployState(); }, 2500);
+    return () => window.clearInterval(timer);
+  }, [shouldPollDeploy, refreshDeployState]);
   // T59: a library-load can restart the engine while this panel is docked.
   // Refresh the authoritative runtime status, including the new editor URL.
   const refreshOnNativeLoad = listRead.refetch;

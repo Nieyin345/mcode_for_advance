@@ -83,6 +83,8 @@ export interface EngineRuntimeStatus {
    * 仅在主进程内部流动，IPC toStatusView 会主动剥离此内部标识。
    * 旧注入测试/适配器可不提供，但真实 EngineRuntime 一律提供。 */
   instanceEpoch?: string;
+  /** Only the Host-verified Node-RED deploy receipt can mark this runtime as deployed. */
+  deploymentState?: "not-deployed" | "deployed" | "unknown";
 }
 
 export interface EngineSpawnSpec {

@@ -431,6 +431,9 @@ export function isFlowTrusted(dataDir: string): boolean {
 export class OwnedNodeRedRuntime extends EngineRuntime {
   private ownedFlowIds: string[] = [];
   private pendingDeploy: { id: string; flowIds: string[]; added: string[]; flows: unknown } | null = null;
+  /** Acknowledged native POST /flows in THIS OS child, not persisted trust. */
+  private deploymentState: "not-deployed" | "deployed" | "unknown" = "unknown";
+  private untrustedAtStart = true;
   private nodePackHost: NodePackHost | null = null;
   private nativeTabs = new Map<string, string>();
   private nativeNodes = new Map<string, { tabId: string; nodeId: string; type: string; title: string }>();
@@ -531,6 +534,13 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     this.onTerminated(() => this.releaseOwned());
   }
 
+  override status(): EngineRuntimeStatus {
+    const state = super.status();
+    return state.state === "running"
+      ? { ...state, deploymentState: this.deploymentState }
+      : state;
+  }
+
   /** Deploy↔library reconciliation state of the last deploy / retry, and how
    * many documents are still waiting in the durable ledger. Read-only; `null`
    * before any deploy in this process. */
@@ -575,6 +585,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     const ids = [...this.ownedFlowIds, ...(this.pendingDeploy?.added ?? [])];
     this.ownedFlowIds = [];
     this.pendingDeploy = null;
+    this.deploymentState = "unknown";
     for (const flowId of new Set(ids)) {
       const released = this.ownership.release(flowId, "node-red");
       if (!released.ok) log.warn(`[workflow-engine] Node-RED owner release failed: ${released.reason}`);
@@ -596,6 +607,13 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
       if (pending === null || pending.id !== id) return;
       this.pendingDeploy = null;
       if (msg["success"] === true) {
+        // A committed full deploy with at least one actual runtime node is
+        // different from an empty-tab deploy. Never infer this from flows.json.
+        this.deploymentState = Array.isArray(pending.flows) && pending.flows.some(value =>
+          value !== null && typeof value === "object" && !Array.isArray(value)
+          && typeof (value as Record<string, unknown>)["z"] === "string"
+          && (value as Record<string, unknown>)["type"] !== "tab")
+          ? (this.untrustedAtStart ? "deployed" : "unknown") : "not-deployed";
         for (const oldId of this.ownedFlowIds) {
           if (!pending.flowIds.includes(oldId)) {
             const result = this.ownership.release(oldId, "node-red");
@@ -613,6 +631,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
         // rollback. The old “only log it” path is gone.
         this.startDeployMirror(pending.flows);
       } else if (msg["uncertain"] === true) {
+        this.deploymentState = "unknown";
         // The client may disconnect after native deployment has begun. It is
         // unsafe to give its flows to Mcode until this engine actually stops.
         this.ownedFlowIds = [...new Set([...this.ownedFlowIds, ...pending.flowIds])];
@@ -711,6 +730,9 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     if (state === "running" || state === "starting") return super.start(options);
     if (this.ownedFlowIds.length > 0) throw new Error("旧引擎租约未释放，拒绝再次启动");
     this.engineDataDir = options.dataDir;
+    // A trusted startup may auto-run; do not claim a manual deploy occurred.
+    this.untrustedAtStart = options.env?.MCODE_ENGINE_TRUSTED !== "1";
+    this.deploymentState = this.untrustedAtStart ? "not-deployed" : "unknown";
     this.ownedFlowIds = claimNativeFlows(this.ownership, nativeFlowIds(options.dataDir, (nodes) => {
       if (this.lookupDoc) assertNativeEngineSelection(nodes, this.lookupDoc);
       this.nativeTabs = this.tabMap(nodes);

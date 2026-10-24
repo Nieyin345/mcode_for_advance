@@ -289,6 +289,12 @@ console.log(`\nworkflow-engine-runtime-smoke:${total - failures}/${total} 通过
   const view = toStatusView(runtime.status());
   eq("★ 未运行时 editorUrl 为 null", view.editorUrl, null);
   eq("★ 状态视图不含命令/凭据字段", Object.keys(view).sort(), ["editorUrl", "engineId", "port", "reason", "state"]);
+  const fromDeploy = toStatusView({
+    ...runtime.status(), state: "running", port: 3527, deploymentState: "deployed",
+  });
+  eq("W6 真实部署状态经主进程 IPC 视图传递", fromDeploy.deploymentState, "deployed");
+  eq("W6 IPC 部署状态不泄露实例身份或控制面密钥",
+    Object.keys(fromDeploy).sort(), ["deploymentState", "editorUrl", "engineId", "port", "reason", "state"]);
 }
 
 console.log(`\nworkflow-engine-runtime-smoke(含IPC):${total - failures}/${total} 通过`);

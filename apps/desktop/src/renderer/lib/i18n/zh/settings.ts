@@ -1399,6 +1399,7 @@ export const zh = {
   "settings.workflows.engine.start": "启动",
   "settings.workflows.engine.stop": "停止",
   "settings.workflows.engine.refreshStatus": "刷新状态",
+  "settings.workflows.engine.restartRequiresDeploy": "当前 Node-RED 流已成功部署并可在本次运行中执行。但重启 Mcode 后不会自动恢复运行：需要手动启动 Node-RED 引擎并再次点击「部署」。未经工作流审查授权的持久化流程不会自动执行。",
   "settings.workflows.engine.stateStopped": "未启动",
   "settings.workflows.engine.stateStarting": "启动中",
   "settings.workflows.engine.stateRunning": "运行中",

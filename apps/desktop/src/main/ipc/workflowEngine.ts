@@ -93,6 +93,7 @@ export function toStatusView(status: EngineRuntimeStatus): WorkflowEngineStatusV
     state: status.state,
     port: status.port,
     reason: status.reason,
+    ...(status.deploymentState === undefined ? {} : { deploymentState: status.deploymentState }),
     editorUrl: status.state === "running" && status.port !== null
       ? `http://127.0.0.1:${status.port}/`
       : null,

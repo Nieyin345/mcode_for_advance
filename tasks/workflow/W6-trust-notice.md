@@ -1,6 +1,6 @@
 # W6｜发布了的工作流，重启后不会自己跑——而且没人告诉用户
 
-- Status: BLOCKED（2026-10-25：渲染端没有可验证的「部署成功」事实源；需先补契约/事件后才能满足本卡双向显隐验收）
+- Status: implemented（2026-10-25：权威部署回执已接入状态与 UI；定向验收通过，实际 Electron 视觉检查待补）
 - Category: **产品缺陷（Node-RED 自动化）**
 - Priority: **P0 —— 用户以为「发布了 = 会自动跑」，实际不会**
 - Depends on: W0（G5）
@@ -170,3 +170,42 @@ registry.ts:873:  MCODE_ENGINE_TRUSTED: isFlowTrusted(dir) ? "1" : "0",   ← �
 - 本卡写入边界明确禁止触碰 `apps/desktop/src/main/**` 和契约；所以本轮**没有假造部署状态，也没有加常驻免责声明冒充按需提示**。未修改任何应用源码。必须由总控明确新的依赖/文件 owner 后再解除 BLOCKED。
 
 **未达判据**：UI 条件显隐、i18n、双向变异、maint-m37-smoke 对齐和本卡产品改动 `tsc` 均尚未执行；只有真实 Node-RED 三态行为已验证。此任务应保持 BLOCKED，而不是 Done。
+
+
+## 2026-10-25 W6 解锁与产品实现回写
+
+**状态：实现完成，定向验收通过；尚未做实际 Electron 截图人工验收。** 之前 BLOCKED 的条件已通过最小、受控的主进程/契约补口解决；原任务卡限制“只改渲染端”的原因是它当时没有权威部署状态。本轮为解除该依赖，新增的主进程改动**只读既有经身份配对的成功部署回执**，没有增加任何授权或自动启动逻辑。
+
+### 事实来源与行为（不从 flows.json 是否存在推断）
+
+- 真实 Node-RED E2E：`node-red-e2e-smoke` 再次 PASS（原套 106/106），成功 `POST /flows` 后 HTTP-in 从 404 → 200；未经信任的部署图在下一次启动时仍是 404，尽管 `GET /flows` 能读出图；测试显式写入 `engine-trust.json {"trusted":true}` 后重启得到 200。这证实需要区分“已保存”与“已在这次 OS 引擎实例部署执行”。
+- **唯一权威成功来源**：`OwnedNodeRedRuntime.onDeployMessage` 已有的 `mcode-deploy-prepare` / `mcode-deploy-final` ID 配对 + `success:true`；仅当这次部署确实含原生画布的运行节点（带 tab 归属 `z`）时输出 `deployed`。孤儿 success、prepare 被拒、failed 不造成新的成功。
+- 本次引擎的 `deploymentState` 三态为 `not-deployed/deployed/unknown`：未知/断连部署结果不可乐观显示；stop、child exit、进程重启会抹掉旧状态。**可信启动**（`MCODE_ENGINE_TRUSTED=1`）保持 unknown，即使后续手动 Deploy 也不套用“未经审批的重启不会自动恢复”这一断言。
+- 通过原有 `workflowEngine.list/status` 中 `WorkflowEngineStatusView.deploymentState?` 只读返回：兼容没有此字段的普通/旧引擎状态，`toStatusView` 不转发 `instanceEpoch`、凭据或子进程内部数据。无需新建 IPC handler 或第二套部署真相源。
+
+### UI / i18n
+
+- `EngineRuntimePanel.tsx` 内纯判据 `shouldShowRestartDeployNotice`：必须 `engineId === "node-red"`、`state === "running"` 且 `deploymentState === "deployed"`，条件满足才在原生编辑器上方渲染不可关闭的常规信息行 `data-engine-deploy-notice`。
+- 原生 Node-RED 的 Deploy 在 WebContentsView 内操作，React 不直接收到按钮事件；仅当页签活跃且 Node-RED running 时用已有 `workflowEngine.list` 每 2.5s 刷新 Host 权威状态。不新建网络请求授权路径，不在隐藏页签轮询。
+- 中文准确文案：**“当前 Node-RED 流已成功部署并可在本次运行中执行。但重启 Mcode 后不会自动恢复运行：需要手动启动 Node-RED 引擎并再次点击「部署」。未经工作流审查授权的持久化流程不会自动执行。”** 英文同义文本落在 `en/settings.ts` 对应词条 `settings.workflows.engine.restartRequiresDeploy`，没有“即将支持”等承诺。
+
+### 验收证据与变异
+
+- `node apps/desktop/scripts/run-smokes.mjs engine-deploy-notice-smoke executor-gate-d-smoke workflow-engine-runtime-smoke node-red-e2e-smoke workflow-engine-view-owner-smoke maint-m37-smoke` → **6 PASS / 0 FAIL**，证据 `apps/desktop/.tmp/smoke-runs/1792872181318-41868-fuKtJL/`（后续又补强孤儿消息、停止重启与可信运行测试，并在 `executor-gate-d-smoke` 单跑通过，见 `1792872251563-30088-zLqVHs/`）。
+- `engine-deploy-notice-smoke` **8/8**：真实 React `EngineRow` 的中英文 SSR 中，成功显示、未部署不显示、unknown 不显示、旧端口/缺字段不显示、停止不显示、其他引擎不显示；不是只测复制的 helper。
+- `executor-gate-d-smoke` 测的是**生产** `OwnedNodeRedRuntime` 的 prepare / final 消息链：有节点的成功显示、被拒绝的 prepare/孤儿 final 忽略、后续失败不清除已有正常部署、不确定结果清除可信显示、stop 不继承、未可信重启重置、可信启动/手动部署不误报。
+- `workflow-engine-runtime-smoke` 验证状态转换仍保留正确回环 URL，不泄露身份，部署状态通过现有 IPC。
+- 双向变异（测试后都逐字恢复）：把 UI 谓词改 `return false` → 新 UI 套件 **5/8**（成功/中英文文案三条红）；改 `return true` → **3/8**（未部署、unknown、旧字段、stopped、其他引擎五条红）。对应 smoke 证据 `1792872150328-14616-r3AOxl/` 和 `1792872156472-35772-w42iUT/`。
+- `cd apps/desktop && node_modules/.bin/tsc.cmd --noEmit --pretty false`：EXIT=0，`cd packages/contracts && node_modules/.bin/tsc.cmd --noEmit --pretty false`：EXIT=0；`git diff --check`：PASS。未跑全量。
+
+### 边界、未完成事项
+
+- **没有实现重启自动运行**，没有写 `engine-trust.json`，没有将部署视为用户安全审批。真正的工作流审查/批准/撤销→可信自动运行闭环仍应另立明确安全方案。
+- 真实 Node-RED HTTP 运行路径、Host Deploy IPC、React SSR 文案三个层面已各自验证，但**尚未在实际 Electron 画面里拍下部署后提示的可见性**；保持这一端到端视觉验收项，不把 SSR 冒充 Electron 完整 U1。
+- 不因为保存 SQL 工作流或磁盘 `flows.json` 就显示“已部署”；只要没有实时成功回执，就保持不显示。这一保守处理符合任务卡“不展示常驻横幅”要求。
+
+### 最终独立复核（包含补强后的测试）
+
+- 最终六套定向 smoke **6/6 PASS**：`apps/desktop/.tmp/smoke-runs/1792872516432-15216-nz5tpW/`。
+- 最终 `apps/desktop` 与 `packages/contracts` 两套 `tsc --noEmit --pretty false` 均 EXIT=0。补强后的 Gate D 还断言：无 prepare 的伪造成功回执被忽略、未经可信授权的重启重置状态、已可信启动并手动部署不显示错误警告。
+- 只完成部署提示与权威状态回传；不会让重启后的未经审批图自动运行。真实 Electron UI 画面人工核验仍属未覆盖项。

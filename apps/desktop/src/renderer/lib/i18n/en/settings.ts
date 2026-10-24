@@ -1399,6 +1399,7 @@ export const en = {
   "settings.workflows.engine.start": "Start",
   "settings.workflows.engine.stop": "Stop",
   "settings.workflows.engine.refreshStatus": "Refresh status",
+  "settings.workflows.engine.restartRequiresDeploy": "This Node-RED flow was deployed and can run in the current engine session. After restarting Mcode, it will not resume automatically: start the Node-RED engine and click Deploy again. Persisted flows without workflow review approval do not run automatically.",
   "settings.workflows.engine.stateStopped": "Stopped",
   "settings.workflows.engine.stateStarting": "Starting",
   "settings.workflows.engine.stateRunning": "Running",

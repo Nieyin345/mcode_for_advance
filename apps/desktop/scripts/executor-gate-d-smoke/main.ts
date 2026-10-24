@@ -259,10 +259,14 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
   writeFileSync(flowsPath, JSON.stringify(nativeFlow(flowId)), "utf8");
   const server = bridge.get("node-red")!;
   eq("★ deploy bridge: production runtime running", (await server.start(options)).state, "running");
+  eq("W6 启动成功但未部署 → 不得伪称 deployed", server.status().deploymentState, "not-deployed");
+  deliver?.({ kind: "mcode-deploy-final", id: "forged-unpaired", success: true });
+  eq("W6 无匹配 prepare 的伪成功回执必须忽略", server.status().deploymentState, "not-deployed");
   check("★ deploy bridge: legacy owner reserves competing flow", live.claim("gate-d-other", "mcode").ok);
   deliver?.({ kind: "mcode-deploy-prepare", id: "denied", flows: [
     { id: "other-tab", type: "tab", "x-mcode": { docId: "gate-d-other" } },
   ] });
+  eq("W6 竞争 owner 阻止部署 → 仍未部署", server.status().deploymentState, "not-deployed");
   check("★ native hot deploy explicitly rejected when mcode owns candidate flow",
     replies.at(-1)?.id === "denied" && replies.at(-1)?.ok === false && (replies.at(-1)?.reason ?? "").includes("mcode"),
     replies.at(-1));
@@ -276,6 +280,7 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
   eq("★ new owner is reserved BEFORE engine can deploy", live.executorOwnerOf("gate-d-next"), "node-red");
   eq("★ previous owner remains reserved until deploy commits", live.executorOwnerOf(flowId), "node-red");
   deliver?.({ kind: "mcode-deploy-final", id: "accepted", success: true });
+  eq("W6 成功回执 + 可执行节点 → 当前进程确实已部署", server.status().deploymentState, "deployed");
   await Promise.resolve();
   eq("T58 actual native editor title saves back into Mcode workflow library",
     libraryDocs.get("gate-d-next")?.nodes[0].title, "After editor Deploy");
@@ -289,6 +294,7 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
   ] });
   eq("★ candidate flow reserved while deployment pending", live.executorOwnerOf("gate-d-abort"), "node-red");
   deliver?.({ kind: "mcode-deploy-final", id: "abort", success: false });
+  eq("W6 明确失败的后续部署不能抹掉之前仍活跃的部署", server.status().deploymentState, "deployed");
   eq("T58 failed native deploy never writes workflow library", libraryCalls, 1);
   eq("★ failed deploy rolls back new claim", live.executorOwnerOf("gate-d-abort"), null);
   eq("★ failed deploy keeps current flow", live.executorOwnerOf("gate-d-next"), "node-red");
@@ -304,12 +310,25 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
   ] });
   eq("★ network abort candidate initially reserved", live.executorOwnerOf("gate-d-uncertain"), "node-red");
   deliver?.({ kind: "mcode-deploy-final", id: "uncertain", success: false, uncertain: true });
+  eq("W6 结果不确定必须撤销已部署的断言", server.status().deploymentState, "unknown");
   eq("★ ambiguous native commit must KEEP owner claim (fail-closed)",
     live.executorOwnerOf("gate-d-uncertain"), "node-red");
   eq("★ native engine stop releases uncertain claim",
     (await server.stop(), live.executorOwnerOf("gate-d-uncertain")), null);
+  check("W6 stop 后不得保留上次 OS 进程的部署回执", server.status().deploymentState === undefined);
   eq("★ native deploy bridge can stop", (await server.stop()).state, "stopped");
   eq("★ native deploy bridge stop releases final claim", live.executorOwnerOf("gate-d-next"), null);
+  eq("W6 未可信的下次启动不得继承上一次部署", (await server.start(options)).deploymentState,
+    "not-deployed");
+  await server.stop();
+  const trustedOptions = { ...options, env: { MCODE_ENGINE_TRUSTED: "1" } };
+  eq("W6 已可信的引擎启动不误报需要手动部署", (await server.start(trustedOptions)).deploymentState,
+    "unknown");
+  deliver?.({ kind: "mcode-deploy-prepare", id: "trusted-manual", flows: nativeEdited });
+  deliver?.({ kind: "mcode-deploy-final", id: "trusted-manual", success: true });
+  eq("W6 具备持久信任的引擎即便手动部署也不弹错误重启提示",
+    server.status().deploymentState, "unknown");
+  await server.stop();
 }
 
 // 10. An unkillable OS child is NOT a stopped flow: preserve the owner until
