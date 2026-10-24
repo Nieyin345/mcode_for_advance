@@ -259,6 +259,34 @@ $ grep -cE "^apps/desktop/src/renderer/" /tmp/tsc.txt          # 批三落地前
 **报范围时说「所有打渲染端的套件」，不要说「几个套件」** ——
 **前者让别人能自己判断，后者只能靠猜。**
 
+### ⚠️ 判别命令：不要用 `grep onlyoffice`，用 `renderer` 的错误数
+
+**工作流总控实测**：38 条渲染端错误里，**只有 36 条含 `onlyoffice` 字样**。
+剩下 2 条是：
+
+```
+renderer/lib/webApi.ts(852,10): error TS7006: Parameter 'input' implicitly has an 'any' type.
+renderer/lib/webApi.ts(855,11): error TS7006: Parameter 'input' implicitly has an 'any' type.
+```
+
+**机理**：`Api["onlyoffice"]` 这个类型不存在了 → 整个对象字面量的类型上下文变成 `any`
+→ `input` 参数推断不出来 → 报 `implicitly has an 'any' type`。
+**它是「上一条错误的二次效应」，报错文本里不含关键词。**
+
+**所以判别用这个（不依赖措辞）**：
+
+```bash
+cd apps/desktop
+npx tsc --noEmit -p tsconfig.json > /tmp/tsc.txt 2>&1; echo "EXIT=$?"
+echo "main/preload: $(grep -cE '^apps/desktop/src/(main|preload)/' /tmp/tsc.txt)"
+echo "renderer:     $(grep -cE '^apps/desktop/src/renderer/' /tmp/tsc.txt)"
+```
+
+**批三完成后 `renderer` 应为 0。**
+
+**「`renderer` 有错误」证明「有人在改渲染端」，那不需要看错误文本。**
+**这是「判据 vs 清单」的第三层：连「代码形状」都不依赖，只依赖「哪里出错」。**
+
 ### 派活时该做的
 
 **开工前通知相关线**：「O5 三批进行中，`FileEditor.tsx` / `preload/index.ts` 会在 2–4 小时内报
