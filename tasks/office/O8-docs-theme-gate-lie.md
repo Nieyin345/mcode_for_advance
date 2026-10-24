@@ -37,19 +37,49 @@ genoffice/apps/markdown/src/preload/index.ts:164  exposeInMainWorld('markdownApi
 **源码形状 ≠ 行为。** 这正是今天反复出现的形态：
 **断言验的是「代码长什么样」，不是「它做到了什么」。**
 
-## 四、▲ 2026-10-24 补充：这行**不能整体替换**
+## 四、▲ 2026-10-24 补充：这行**不能整体替换**（附实测数字）
 
-`genoffice/apps/docs/src/renderer/main.tsx` 里 `window.desktop` 还出现在 **10 处**
-（`convertAltChunkHtml` / `getLanguage` / `getTheme` / `getDocumentTheme` /
+`genoffice/apps/docs/src/renderer/main.tsx` 里 `window.desktop` 有 **13 处**
+（**其中 1 处是第 22 行的注释，代码里 12 处**）：
+`convertAltChunkHtml` / `getLanguage` / `getTheme` / `getDocumentTheme` /
 `onThemeChanged` / `onDocumentThemeChanged` / `onAiPanelPrefsChanged` /
-`onAuthorNameChanged` …）。
+`onAuthorNameChanged` …
 
-**那些是对的** —— 它们问的确实是「这个命名空间有没有某个能力」，答案在独立 docs 里也是「有」。
+**而整个 `docs/src/renderer/` 有 127 处、17 个文件**（实测，命令见 §四.1）：
 
-**只有第 26 行那个 `import('./mcode-theme.css')` 问错了问题。**
+```
+38  App.tsx                          8  ai/tools.ts
+23  ai/AiPanel.tsx                   6  components/ContextMenu.tsx
+18  file-actions.ts                  5  ai/transport.ts
+13  main.tsx                         4  components/ribbon-tabs.tsx
+ 3  ui-theme.ts                     …其余 8 个文件各 1-2 处
+```
+
+**那些都是对的** —— 它们问的是「这个命名空间有没有某个能力」，答案在独立 docs 里也是「有」。
+`AiPanel.tsx:411` 还专门写了 `if (typeof window.desktop?.kbList !== 'function')` ——
+**那是在探测能力存不存在，正是 `window.desktop` 该干的事。**
+
+**只有 `main.tsx:26` 那个 `import('./mcode-theme.css')` 问错了问题。**
 
 **所以修法是「把那一个 if 的条件换掉」，不是「把 window.desktop 全换掉」。**
-如果有人把十处一起改了，那是另一个 bug（docs 的 AI 面板、主题、作者名会全部失效）。
+如果有人把 127 处一起改了，那是另一个 bug（docs 的 AI 面板、主题、作者名、右键菜单、
+打印、审阅操作会全部失效）。
+
+### 4.1 ★ 这个数字是怎么数的（写卡人自己跑过）
+
+```bash
+grep -rn "window\.desktop" genoffice/apps/docs/src/renderer/ --include=*.tsx --include=*.ts | wc -l
+# → 127
+grep -rln "window\.desktop" genoffice/apps/docs/src/renderer/ --include=*.tsx --include=*.ts \
+  | while read f; do echo "$(grep -c 'window\.desktop' "$f")  $f"; done | sort -rn
+```
+
+**为什么要写这两个命令**：我第一版卡里写的是「10 处」，**实测是 13 处（main.tsx）、127 处（整个 renderer）**。
+**一个数量级都没对。** 如果执行者按「10 处」去估工作量，会以为这是个局部改动；
+按 127 处去估，会知道**只能改一行**。
+
+**这正是 CLAUDE.md 那条**：「卡里凡是出现①代码示例②数字③『文件里有 X / 没有 Y』，
+写卡人必须自己跑一遍。」**我这次没跑，写错了，事后补的。**
 
 ## 五、判据
 
@@ -59,7 +89,7 @@ genoffice/apps/markdown/src/preload/index.ts:164  exposeInMainWorld('markdownApi
 |---|---|---|
 | 1 | **宿主里**打开 docs → `document.styleSheets` 里**有** `mcode-theme` | **「恒 false」** —— 一个从不换壳的实现也能过判据 2 |
 | 2 | **独立 GenOffice 里**打开 docs（app 名非 Mcode）→ **没有** `mcode-theme` | **本卡要修的缺陷** |
-| **1b** | **宿主里那 10 处 `window.desktop` 仍然工作**（至少验 `getTheme` 与 `onAiPanelPrefsChanged` 各一次） | **「把十处一起改了」** —— 见 §四 |
+| **1b** | **宿主里 `window.desktop` 的那些能力仍然工作**（至少验 `getTheme` 与 `onAiPanelPrefsChanged` 各一次） | **「把 127 处一起改了」** —— 见 §四 |
 | 3 | 三条都在**真 Electron** 里跑，**不是读源码** | **「形状 ≠ 行为」** —— 0014 就栽在这 |
 
 **⚠️ 判据 1 和 2 缺一不可。**
@@ -71,7 +101,7 @@ genoffice/apps/markdown/src/preload/index.ts:164  exposeInMainWorld('markdownApi
 
 **判据 2 是这张卡存在的理由。** 没有它，就只是把开关换了个说法。
 
-**1b 是 2026-10-24 新加的** —— 它防的是「改对了一处、改坏了十处」。
+**1b 是 2026-10-24 新加的** —— 它防的是「改对了一处、改坏了另外 126 处」。
 
 ### 5.2 换什么开关
 
@@ -120,7 +150,7 @@ if (/\bMcode\//.test(navigator.userAgent)) import('./mcode-theme.css')
 
 - 改 `genoffice/apps/docs/src/renderer/main.tsx`（**只有第 26 行**）+ 新建套件
 - **不改** `mcode-theme.css` 的内容（它没问题）
-- **不改** 那 10 处其它 `window.desktop`
+- **不改** 其余 **126 处** `window.desktop`（12 处在 `main.tsx`、115 处在另外 16 个文件）
 - **不动** `apps/desktop/**`（除 vendor 账本：新补丁要进 `build/genoffice-upstream.lock.json`
   与 `verify-genoffice-upstream.cjs`，T39/T115/O6 先例）
 
