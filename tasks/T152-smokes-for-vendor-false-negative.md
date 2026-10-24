@@ -115,6 +115,64 @@ else:
 
 **⚠️ M-2 是关键负控** —— 它防止「为了修 vendor 的问题，把真结论也一起改了」。
 
+### M-2 的样本（Office 总控问「有没有」，我找到了 11 个）
+
+```bash
+$ bash apps/desktop/scripts/smokes-for.sh --uncovered
+  apps/desktop/src/main/document/genofficeEntryTypes.d.ts
+  apps/desktop/src/main/document/genofficeExternalTypes.d.ts
+  apps/desktop/src/main/document/genofficeNativeVendorStub.ts
+  apps/desktop/src/main/document/genofficeViewAiVendorStub.ts
+  apps/desktop/src/main/document/slidesVendorModulesStub.ts
+  apps/desktop/src/main/document/slidesVendorShims.d.ts
+  apps/desktop/src/main/mcp/hostMcpMain.ts
+  apps/desktop/src/main/modules/moduleApproval.ts        ← 推荐样本
+  apps/desktop/src/main/providers/claude-sdk/index.ts
+  apps/desktop/src/main/raw-imports.d.ts
+  apps/desktop/src/main/workflowEngines/nodePackChildRuntime.ts
+  共 11 个;主进程下覆盖到的 498 个。
+```
+
+**推荐样本：`src/main/modules/moduleApproval.ts`**
+
+```bash
+$ bash apps/desktop/scripts/smokes-for.sh src/main/modules/moduleApproval.ts
+apps/desktop/src/main/modules/moduleApproval.ts
+  ⚠️ 没有套件覆盖它 —— 改这里没有回归网。      ← M-2 用的就是这条
+```
+
+**⚠️ 用 `.ts`，不要用 `.d.ts`** —— 类型声明改成「不在索引范围」也说得通，
+**那就验不出 M-2 想验的东西了。**
+
+## 六之二、⚠️ 顺带发现的第三个 bug：`--uncovered` 的输出不能直接传回去
+
+```bash
+$ smokes-for.sh apps/desktop/src/main/modules/moduleApproval.ts
+找不到 apps/desktop/src/main/modules/moduleApproval.ts        ← 错
+
+$ smokes-for.sh src/main/modules/moduleApproval.ts
+apps/desktop/src/main/modules/moduleApproval.ts               ← 对
+```
+
+**根因**（`smokes-for.py:485-487`）：
+
+```python
+if arg.startswith("apps/"):
+    want = (DESKTOP / arg).resolve()      # → apps/desktop/ + apps/desktop/src/... 拼重复
+```
+
+**`apps/` 那条分支是死代码** —— 传 `apps/desktop/...` 永远找不到。
+
+**这三种选择：**
+
+| 选项 | 说明 |
+|---|---|
+| **A（推荐）** | 让 `apps/desktop/...` 也能用：`if arg.startswith("apps/desktop/"): want = (ROOT / arg)` |
+| B | 改 `--uncovered` 的输出格式（**先查有没有消费者**，见 §七） |
+| C | 只记在卡里 |
+
+**选 A 要加断言：`apps/desktop/src/...` 和 `src/...` 两种写法结果相同。**
+
 ## 七、边界
 
 **可以改**：
