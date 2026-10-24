@@ -132,42 +132,41 @@ console.log("[3] 负控：commands 为空 / 超上限");
   );
 }
 
-console.log("[4] 负控：不支持的贡献点必须**显式点名**，不能静默丢弃");
+console.log("[4] 贡献点分类：A/B 接受，C 拒绝（【F011】改了语义）");
 {
-  // rainbow-csv 真实用的那 9 个里，取一个我们不支持的
+  // 【F011】这三条断言原来验「menus/keybindings 被拒」—— **那个行为已经变了**。
+  // 现在 menus/keybindings 是 **B 类**（接受但标记「不做」），
+  // 因为 rainbow-csv 有 menus，拒它等于让真实扩展装不进。
+  // 新的判据在 `vsix-contributes-classes-smoke`，这里只留「C 类仍拒」的负控。
   const r = await tryInstall({
     ...BASE,
     activationEvents: [onCmd("hello")],
     contributes: {
       commands: [cmd("hello")],
-      menus: { "editor/context": [{ command: "acme.demo.hello" }] },
+      // C 类：本宿主完全不认识的贡献点
+      madeUpSection: { whatever: true },
     },
   });
-  check("★ 含 menus 的清单被拒", !r.ok, { error: r.error });
+  check("★ 本宿主不认识的贡献点被拒（C 类负控）", !r.ok, { error: r.error });
   check(
-    "★ 拒绝信息点名是 menus（不是笼统 Unrecognized）",
-    !r.ok && /menus/.test(r.error ?? ""),
-    { error: r.error },
-  );
-  check(
-    "★ 拒绝信息说清本宿主只支持什么",
-    !r.ok && /support/i.test(r.error ?? "") && /commands/.test(r.error ?? ""),
-    { error: r.error },
+    "★ 拒绝信息点名是 madeUpSection",
+    !r.ok && /madeUpSection/.test(r.error ?? ""),
+    { error: (r.error ?? "").slice(0, 240) },
   );
 
-  // 多个不支持的贡献点 → 一次全点名
-  const multi = await tryInstall({
+  // A/B 类不再被拒 —— 这是本卡的语义变更，单独断言
+  const accepted = await tryInstall({
     ...BASE,
     activationEvents: [onCmd("hello")],
     contributes: {
       commands: [cmd("hello")],
-      menus: {}, languages: [], grammars: [], keybindings: [],
+      menus: { "editor/context": [{ command: "demo.hello" }] },   // B 类
+      configuration: { title: "x", properties: {} },              // A 类
     },
   });
-  check("★ 多个不支持的贡献点在一次错误里全点名", !multi.ok &&
-    /menus/.test(multi.error ?? "") && /languages/.test(multi.error ?? "") &&
-    /grammars/.test(multi.error ?? "") && /keybindings/.test(multi.error ?? ""),
-    { error: multi.error });
+  check("★ A/B 类贡献点不再导致安装失败（F011 的语义变更）", accepted.ok, {
+    error: accepted.error,
+  });
 }
 
 console.log("[5] activationEvents：能声明多条，但运行时只认 onCommand:第一条");
@@ -241,19 +240,21 @@ console.log("[7] 真实扩展的清单：schema 层能过，install 层卡在 ma
       commandIssues, error: (r.error ?? "").slice(0, 120),
     });
 
-    // 【F009】这里原来断言「有一条 issue 指向 main」—— 那时 main 是字面量，
-    // rainbow-csv 的 `./extension` 确实死在那。**F009 放开了 main，障碍前移了一格**：
-    // 现在它死在**不支持的贡献点**（colors/configuration/submenus/menus/languages/…）。
+    // 【F009】这里原来断言「有一条 issue 指向 main」—— 那时 main 是字面量。
+    // 【F011】又前移了一格：贡献点现在接受了，**卡在顶层的 `.strict()`** ——
+    // 真实 `package.json` 带 `description` / `license` / `scripts` / `repository` 等
+    // 11 个 VS Code 允许、而我们没声明的字段。
     //
     // 这条断言验的是「**当前挡在它前面的是哪一道墙**」，墙会随着每次放宽前移。
-    // 所以断言必须跟着**说清现在卡在哪**，否则它会随着修复而假红（这次就是）。
-    const mentionsContributions = /unsupported section/i.test(r.error ?? "");
+    // 所以断言必须跟着说清现在卡在哪，否则它会随着修复而假红（已经发生过两次）。
+    const mentionsTopLevelKeys = /unrecognized_keys/.test(r.error ?? "") ||
+      /description|license|scripts|repository/.test(r.error ?? "");
     check(
-      "★ 它现在卡在「不支持的贡献点」（main 已通）—— 障碍前移了一格",
-      !r.ok && mentionsContributions,
-      { error: (r.error ?? "").replace(/\s+/g, " ").slice(0, 200) },
+      "★ 它现在卡在顶层未声明字段（main 与贡献点都已通）—— 障碍又前移了一格",
+      !r.ok && mentionsTopLevelKeys,
+      { error: (r.error ?? "").replace(/\s+/g, " ").slice(0, 240) },
     );
-    console.log(`      实际拒绝理由（前 200 字符）：${(r.error ?? "").replace(/\s+/g, " ").slice(0, 200)}`);
+    console.log(`      实际拒绝理由（前 240 字符）：${(r.error ?? "").replace(/\s+/g, " ").slice(0, 240)}`);
   }
 }
 

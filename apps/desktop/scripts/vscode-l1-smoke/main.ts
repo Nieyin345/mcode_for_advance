@@ -172,12 +172,16 @@ try {
     assert.equal(authorizations, before);
   });
 
-  await test("invalid contributes.commands and unsupported contribution points reject before persistence", async () => {
+  await test("invalid contributes.commands and unrecognised contribution points reject before persistence", async () => {
     const before = persistCalls;
+    // 【F011】`keybindings` 原来是「不支持 → 拒绝」，现在归 **B 类**（接受但标记不做），
+    // 因为真实扩展（rainbow-csv 的 menus/submenus）是这一类，拒它等于装不进。
+    // C 类（完全不认识）仍然拒绝 —— 用一个新的假贡献点验这条。
     const bad = { ...manifest, contributes: { ...manifest.contributes,
-      keybindings: [{ command: "acme.demo.hello", key: "ctrl+q" }] } };
+      madeUpContributionSection: [{ whatever: true }] } };
     await assert.rejects(VscodeL1Bridge.install(host, vsix(bad, entry),
-      { confirmReadAccess: true, confirmExecutableCode: true }), /Unrecognized|unrecognized|strict|keybindings/);
+      { confirmReadAccess: true, confirmExecutableCode: true }),
+      /does not recognise|madeUpContributionSection/);
     assert.equal(persistCalls, before);
   });
 

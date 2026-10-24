@@ -12,27 +12,67 @@ import { ModuleHost, type ModuleInstallDecision } from "./ModuleHost.js";
 
 const COMMAND_ID = /^[a-zA-Z][a-zA-Z0-9.-]{2,99}$/;
 /**
- * 【F004】清单里 `contributes` 允许出现哪些贡献点。
+ * 【F011】`contributes` 里的贡献点分三类处理。
  *
- * **只支持 `commands`。** 其余的一律**拒绝并点名**，不静默丢弃、也不"接受但记未实现"。
+ * ## 为什么不能一刀切放开（F009 提的前提）
  *
- * ## 为什么是拒绝，不是接受后记录
+ * 放开却不实现，用户会**以为它能用**然后发现不行 —— 那比装不上更坏。
+ * 但一刀切拒绝也不行：`rainbow-csv` 有 9 个贡献点、只有 `commands` 被支持，
+ * 于是它一个都装不进。
  *
- * 「接受但标未实现」的体验更坏：用户装上了扩展，它的右键菜单 / 补全 / 语法高亮
- * 全都不工作，而他不知道为什么 —— 因为安装成功了。
- * **拒绝时用户会看到「这个扩展贡献了 menus，本宿主不支持」**，那是可行动的信息。
+ * ## 三类的分法依据是「用户会不会当场发现」
  *
- * 硬规矩 3：坏东西显式报出来，不静默跳过。
+ * | 类 | 例 | 处理 | 用户会发现吗 |
+ * |---|---|---|---|
+ * | **A 声明式** | `configuration` `languages` `grammars` `colors` `jsonValidation` `semanticTokenScopes` `configurationDefaults` | **接受 + 标记「已记录，本宿主不读」** | **不会** ← 最危险 |
+ * | **B 需运行时** | `menus` `submenus` `views` `keybindings` | **接受 + 标记「已记录，本宿主不做」** | 会（菜单项不出现） |
+ * | **C 未知** | 其余 | **拒绝并点名** | 会（装不上） |
  *
- * ## 真实扩展会撞，这是有意的
+ * ## ⚠️ A 类算不算欺骗 —— 结论是「算，而且更危险」
  *
- * `mechatroner.rainbow-csv-3.24.1` 有 9 个贡献点：
- * `colors` / `configuration` / `submenus` / `menus` / `languages` / `commands` /
- * `semanticTokenScopes` / `configurationDefaults` / `grammars`。
- * **它会被拒**，而且拒绝信息会说清是哪一个 —— 因为在只有 `commands` 的宿主上，
- * 那些东西本来就不会工作。要让它们工作，是把运行时做出来，不是放宽 schema。
+ * `configuration` 接受了，但用户改了设置项**不会生效**，而**没有任何东西提示他**。
+ * `menus` 至少会「菜单项不出现」—— 那是**当场可见**的失败。
+ *
+ * **所以 A 类不能因为「它不报错」就被当成无害**：它**恰恰因为不报错而更难发现**。
+ * 处理方式因此是「接受 + **必须标记**」，标记与 B 类同样强制 ——
+ * 差别只在措辞（「不读」vs「不做」），不在是否有标记。
+ *
+ * `languages` / `grammars` 更微妙：它们不需要我们的**运行时**，但需要**编辑器**去消费。
+ * 当前编辑器不读它们 —— 所以归 A 类（接受 + 标记），**不能**归「支持」。
+ *
+ * ## C 类仍拒绝
+ *
+ * 不认识的东西静默接受，等于给一个我们完全不了解的行为开门。
+ * 拒绝时**点名是哪个**，让用户知道是扩展声明了本宿主不认识的东西。
  */
-const SUPPORTED_CONTRIBUTIONS = ["commands"] as const;
+const CONTRIBUTION_CLASSES = {
+  /** 已支持（运行时真的会消费）。 */
+  supported: ["commands"],
+  /** A 类：声明式，接受但不消费。**用户不会察觉** —— 所以标记是强制的。 */
+  declarative: [
+    "configuration", "configurationDefaults", "languages", "grammars",
+    "colors", "jsonValidation", "semanticTokenScopes",
+  ],
+  /** B 类：需运行时，接受但不实现。用户会发现（菜单项不出现）。 */
+  runtime: ["menus", "submenus", "views", "keybindings"],
+} as const;
+
+/** 一个被本宿主接受、但**不会真正生效**的贡献点。 */
+export interface IgnoredContribution {
+  /** 贡献点名，如 `configuration`。 */
+  section: string;
+  /** `declarative` = 已记录但不读；`runtime` = 已记录但不做。 */
+  kind: "declarative" | "runtime";
+}
+
+/** 判断某个贡献点属于哪一类。`null` = 不认识（C 类，拒绝）。 */
+function classifyContribution(section: string): IgnoredContribution["kind"] | "supported" | null {
+  const s = section as string;
+  if ((CONTRIBUTION_CLASSES.supported as readonly string[]).includes(s)) return "supported";
+  if ((CONTRIBUTION_CLASSES.declarative as readonly string[]).includes(s)) return "declarative";
+  if ((CONTRIBUTION_CLASSES.runtime as readonly string[]).includes(s)) return "runtime";
+  return null;
+}
 
 /** 【F004】`contributes.commands` 的上限。
  *
@@ -120,15 +160,20 @@ const packageSchema = z.object({
     // zod 原生的 `Unrecognized key(s) in object: 'keybindings'` 只说前者。
     .passthrough()
     .superRefine((value, ctx) => {
-      const unknown = Object.keys(value).filter(
-        (k) => !(SUPPORTED_CONTRIBUTIONS as readonly string[]).includes(k),
-      );
+      // 【F011】只有 **C 类（不认识）** 才拒。A/B 类接受，但在 `install()` 里被记进
+      // `ignoredContributions` 并随安装结果返回 —— 那是「用户能知道哪些不工作」的载体。
+      const unknown = Object.keys(value).filter((k) => classifyContribution(k) === null);
       if (unknown.length > 0) {
+        const known = [
+          ...CONTRIBUTION_CLASSES.supported,
+          ...CONTRIBUTION_CLASSES.declarative,
+          ...CONTRIBUTION_CLASSES.runtime,
+        ];
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message:
-            "VSIX contributes unsupported section(s): " + unknown.join(", ") +
-            ". This host supports only: " + SUPPORTED_CONTRIBUTIONS.join(", ") + ".",
+            "VSIX contributes section(s) this host does not recognise: " + unknown.join(", ") +
+            ". Known sections: " + known.join(", ") + ".",
         });
       }
     }),
@@ -561,6 +606,18 @@ export class VscodeL1Bridge {
     readonly moduleId: string,
     readonly commandId: string,
     private readonly installedManifest: string,
+    /**
+     * 【F011】本宿主**接受了、但不会真正生效**的贡献点。
+     *
+     * 存在的理由：装上一个真实扩展之后，它的菜单项不出现、设置项不生效 ——
+     * **用户会以为自己装坏了**。这个列表是「哪些部分不会工作」的机器可读载体。
+     *
+     * ⚠️ **它只挂在实例上，没有进 `ModuleChangeResult`** —— 那个契约在
+     * `packages/contracts/**`，不在本卡的范围。所以调用方（IPC handler / UI）
+     * **需要自己把这个字段带出去**，否则用户仍然看不到。
+     * 这一步没做，见 `tasks/F/F011` 回写区。
+     */
+    readonly ignoredContributions: readonly IgnoredContribution[],
     private readonly l2?: VscodeL2Ports,
   ) {}
 
@@ -696,7 +753,19 @@ export class VscodeL1Bridge {
       // 也让将来的读者不必翻到 ModuleHost 去确认默认是什么。
       consent.installConsent ?? "allow-once",
     );
-    return new VscodeL1Bridge(host, moduleId, commandId, JSON.stringify(checked.manifest), l2);
+    // 【F011】算出「接受了但不会生效」的清单，随实例返回。
+    // A 类（声明式）与 B 类（需运行时）都进这里 —— **标记对两类都强制**，
+    // 因为 A 类用户永远不会自己发现（见文件顶部那段论证）。
+    const ignoredContributions: IgnoredContribution[] = Object.keys(
+      (pkg.contributes ?? {}) as Record<string, unknown>,
+    )
+      .map((section): IgnoredContribution | null => {
+        const kind = classifyContribution(section);
+        return kind === "declarative" || kind === "runtime" ? { section, kind } : null;
+      })
+      .filter((x): x is IgnoredContribution => x !== null);
+
+    return new VscodeL1Bridge(host, moduleId, commandId, JSON.stringify(checked.manifest), ignoredContributions, l2);
   }
 
   /** Prevent a stale adapter from targeting a replaced same-ID extension. */
