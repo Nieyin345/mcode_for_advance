@@ -2495,6 +2495,10 @@ html.sketch:not(.dark) {
   --info: 112 78 196;
   --success: 22 132 100;
   --user-bubble: 130 120 100; /* 暖灰气泡,纸面上的墨水感 */
+  /* 【T121】sketch 主题的 alpha 是**纸张质感的组成部分**，不参与 CDS 对齐。
+   * sketch 走的是「墨与纸」的隐喻（半透明颜料叠在纸纹上），而 CDS 主题的气泡
+   * 是预合成实色 + alpha 1。两套机制并存是有意的 —— 别把这里的 0.14/0.18
+   * 当成 CDS 那边 alpha=1 的遗漏来「修正」。 */
   --user-bubble-alpha: 0.14;
   color-scheme: light;
 }
@@ -2522,6 +2526,7 @@ html.sketch.dark {
   --info: 168 142 245;
   --success: 90 200 150;
   --user-bubble: 205 194 172; /* 粉笔灰气泡 */
+  /* 【T121】同浅色 sketch 段：alpha 是纸张质感的组成部分，不参与 CDS 对齐。 */
   --user-bubble-alpha: 0.18; /* 深底上略加重,否则气泡不可见(同 .dark 的教训) */
 }
 
