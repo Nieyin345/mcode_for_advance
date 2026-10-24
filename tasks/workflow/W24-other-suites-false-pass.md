@@ -1,6 +1,6 @@
 # W24｜其余 6 套共用 `electron-u1/build.mjs`，同样的假门禁还在
 
-- Status: ready-for-agent
+- Status: **delivered（回写已追加；改动未提交，见 `## 结果回写`）**
 - Category: **假门禁（W22 的同源问题）**
 - Priority: **P1 —— W22 只修了 `t8-node-red-u1` 一个入口**
 - Depends on: W22（已交付）
@@ -508,3 +508,303 @@ echo "时刻:     $(date +%H:%M:%S)"
 ### 这条属于「仓库事实」，不属于「今晚的意外」
 
 **它会一直成立**，所以写在这里，不是写进某张卡的临时说明。
+
+---
+
+## 结果回写（W24，2026-10-25 00:30）
+
+> **先读这句**：改动**未提交**（总控统一提交）。逐套状态见 §3 的措辞三档表 ——
+> 有 4 套是「真跑绿」，2 套是「真跑撞了既有红，已用 stash 对照证明不是本次改动」，1 套（t8）selfcheck 绿但本体撞环境红。
+
+### 1. 消费者清单（按来源区分，不是按名字 grep）
+
+判据口径：**谁在 `spawnSync` 里把 `../electron-u1/build.mjs` 当子进程跑**。
+按这个口径，全仓 **7 个旧包装器**（含本次修的 6 个 + 已修的 t8）+ 1 个已修参考实现 o2：
+
+| 来源（文件:行，开工时） | 调用形态 | 备注 |
+|---|---|---|
+| `scripts/t8-node-red-u1/run.mjs:79` | W22 完成探针 | 已修（不动） |
+| `scripts/o2-conflict-u1-smoke/run.mjs:64` | 读 summary | 已修（参考实现，不动） |
+| `scripts/o0-format-fidelity-smoke/run.mjs:41` | 旧包装器 | **本次修** |
+| `scripts/o4-docs-close-smoke/run.mjs:45` | 旧包装器 | **本次修** |
+| `scripts/t29-document-view-close-u1/run.mjs:28` | 旧包装器 | **本次修** |
+| `scripts/t30-document-tools-u1/run.mjs:44` | 旧包装器 | **本次修**（**实测假绿**） |
+| `scripts/t46-approval-card-u1/run.mjs:26` | 旧包装器 | **本次修** |
+| `scripts/t7-genoffice-u1/run.mjs:33` | 旧包装器 | **本次修** |
+
+**按名字 grep 会多出来的、不是消费者的**（按来源核过）：
+- `electron-u1/run.sh:22,32` 与它调用的 `verify.mjs` —— 跑的是**本套自己的**三条示例旅程，不经包装器；
+- `t8-node-red-u1/README.md`、各 `journeys/index.ts` 头注释、`vendor-esbuild.mjs` 头注释里的**提及**；
+- `o2-conflict-u1-smoke/mutation.mjs:39` `import { runSuite } from "./run.mjs"` —— 是 o2 **自己的** run.mjs（已修的），不是新消费者。
+
+**`onlyoffice-sdk-origin-smoke` 不是这一类，且已不存在。**
+卡面表里把它列进来，但它从来**不用** `electron-u1/build.mjs` —— 它自己 `esbuild.build()` 打 `main.ts`，
+再 `spawnSync` 一个普通 node 子进程（原 `run.mjs:25-47`）。另外 **O5 批二（`00af5199`）已把整个目录删掉**，
+工作区里也没有。既不在「修」的范围，也不在「验证」的范围。
+
+### 2. 是否同病的判断表（「拿到 1 之后它说什么」全部填满）
+
+| 套件 | `?? 1` | 拿到 1（构建期崩溃）之后 | 判定 |
+|---|---|---|---|
+| `o2` | 有 | summary 缺失 → FAIL | ✅ 已修（判据成立，参考实现） |
+| **`t30`** | 有 | **打印 `T30: PASS（未跑变异对照）`，exit 0** | ❌ **假绿 —— 本卡实测复现** |
+| `o0` | 有 | exit≠0 → `O0: FAIL`，透传 1 | ⚠️ 不假绿，但**码撞车**（构建崩溃与「预期红」共用 1） |
+| `t7` | 有 | exit≠0 → `T7: FAIL`，透传 1 | ⚠️ 同上 |
+| `o4` | ×2 | exit≠0 → `O4: FAIL`，透传 1 | ⚠️ 同上 |
+| `t29` | 有 | exit≠0 → `T29: FAIL`，透传 1 | ⚠️ 同上 |
+| `t46` | 有 | exit≠0 → `T46: FAIL`，透传 1 | ⚠️ 同上 |
+| `t8` | — | W22 探针 → 4/5/6 | ✅ 已修（W22，不回归） |
+
+**结论：真假绿只有 `t30` 一套。** 其余 5 套看起来「没骗人」，但它们把「构建崩溃」和「旅程预期红」
+压进了**同一个数字 1** —— 消费方无法区分。本卡验收判据 3 要求的正是「没跑完」与「旅程结论」
+**用不同的码**，所以 5 套都要修。
+
+**`t30` 的假绿是怎么实测到的（不是读出来的）**：
+```
+$ node scripts/t30-document-tools-u1/run.mjs --no-mutation     # 旧包装器
+X [ERROR] Could not resolve "../build/Release/cpufeatures.node"   ← 构建期崩溃
+T30: 正常跑退出码 1
+T30: PASS（未跑变异对照）                                          ← 假绿
+$ echo $?  → 0
+```
+这个构建失败**不是 O5，也不是我造的**：`cpu-features` 是 ssh2 的原生依赖，仓库里没有它的预编译
+`.node`；`t7` 的 `vendor-esbuild.mjs` 没有像 `t8/main-esbuild.mjs` 那样把 `cpu-features` 列进
+`external`。**它在我的任何改动之前就存在**（23:33 旧包装器与 23:56 新包装器命中同一条错误）。
+
+### 3. 修了什么 / 没修什么 / 为什么
+
+**修了。**
+
+一、**新增共享判据** `apps/desktop/scripts/lib/electron-u1-verdict.mjs`（照 `o2` 的 summary 法抽成真身，
+**不是** W22 的完成探针）：
+- `runElectronU1()`：同步跑 `build.mjs`，原始字节回放 + 解析证据根 + 读 `suite-summary.json`；
+- `classifyU1Run()`：`completed`（有可解析、结构完整的 summary → 原样透传 0/1/2/3）/
+  `build-failed`（无 summary 且日志有 esbuild 标记 → **4**）/ `build-crashed`（无 summary 的其余一切 → **5**）/
+  `spawn-failed`（`status === null` → **6**）；
+- 4/5/6 与 **W22 的 `WRAPPER_EXIT` 同值**，跨套件一致；
+- 自带自检：`node scripts/lib/electron-u1-verdict.mjs` → **10 条分类 + 9 条文件/解析/映射判据，含一次真实 ENOENT 测量**。
+
+**为什么用 summary 而不是 W22 探针**：`build.mjs` 只在**全部旅程走完**之后才落 `suite-summary.json`
+（§6，所有提前 throw 的路径都在它之前），所以「读不到 summary」是构建走完的**必要条件，不是推测** ——
+和 `o2` 已经跑过的判据同源。**没有混用**：t8 继续用它自己的完成探针，**不 import 本模块**。
+
+二、**6 个旧包装器全部改用它**（`t7` / `t30` / `o0` / `o4` / `t29` / `t46`；`t8`、`o2` 不动）。
+每套新增 `XXX: BUILD FAILED / BUILD CRASHED / SPAWN FAILED` 三种**永不打印 PASS** 的说法。
+
+三、**`--keep`（§四）**：结论是**修它**，不是报错也不是删透传。
+根因比卡里想的小：`build.mjs` **自己的头注释**（`:27`）就写着「`--keep` 无实际作用，保留它是为了
+显式声明不清理」—— 但解析器（`:69-76`）从来不认它，直接 `throw Unknown option`。**是文档与实现矛盾，
+不是「有人真在用 / 没人用」的问题。** 修一行 `else if (a === "--keep") continue;`，5 个仍在透传
+`--keep` 的包装器（t7/t30/o0/t8/o2）一起恢复成文档说的行为。
+**实测**：`--bogus` 仍被拒（正控）；`--keep` 不再报 `Unknown option`；`t30 --keep` 跑到底 → 4（BUILD FAILED，
+cpu-features），不再假绿。
+
+**没修（有意）。**
+- **`t30` 的 `cpu-features` 构建失败本身** —— 那是 `t7-genoffice-u1/vendor-esbuild.mjs` 的 externals 缺项
+  （`t8/main-esbuild.mjs` 有）。不属于本卡（本卡是假门禁，不是打包配置），且动它会改变 6 套的打包图。
+  **建议另开卡**：把 `sherpa-onnx-node / node-pty / better-sqlite3 / cpu-features` 的 external 对齐到 t7 一份。
+- **`o2` 的 `run.mjs`** —— 参考实现，不动（开工时它就有别人在途改动：`expectations.ts`、`journeys.ts`、
+  `journeys/index.ts`、`lib.ts`、`save-paths.ts`、`.expectations.cjs`；不是我改的）。
+
+**逐套措辞三档（按总控第三次补充的硬约束）：**
+
+| 套件 | 做到了什么 | 状态措辞 |
+|---|---|---|
+| `t7-genoffice-u1` | 真跑 **6/6 绿**，exit 0；`--mutation` 也跑过 | **已修复，6/6 绿** |
+| `o0-format-fidelity-smoke` | 真跑 **6/6 绿**，exit 0；`mutate.mjs` **32/32 变异体按预期变红** | **已修复，6/6 绿** |
+| `o4-docs-close-smoke` | 经 `run-smokes.mjs` 真跑绿（含 `run.sh` 两段）；`--mutate` **3/3** | **已修复，绿** |
+| `t46-approval-card-u1` | 真跑 **1/1 绿**；`mutate-t46.mjs` **3/3** | **已修复，1/1 绿** |
+| `t29-document-view-close-u1` | 真跑 **3/4**，`t29-close-pdf-after-unsaved-guard` 红在 `make-unsaved-edit`；**stash 对照：旧包装器同一条同一步骤同样红**；`mutate-t29.mjs` detected=true | **判据已修；真跑撞既有红（不是本次改动），见 §6** |
+| `t30-document-tools-u1` | 判据自检通过；**真跑撞既有 `cpu-features` 构建失败** → 正确报 `T30: BUILD FAILED`（4），不再 PASS | **判据已修；真跑撞既有构建失败（不是本次改动），见 §6** |
+| `t8-node-red-u1` | W22 selfcheck **11/11**；t8 本体真跑红（4 条），**stash 对照：全部改动的原始树同样红** | **不回归（selfcheck 绿）；t8 本体撞既有环境红，见 §6** |
+
+### 4. 每套的「构建失败」实测
+
+**造法**：在 `journeys/index.ts`（`--registry` 打包入口，真正被 esbuild 打包）末尾追加一行语法错误
+`const __w24SyntaxError = ;`；先 `git diff --stat` 确认改动在文件里，再跑包装器；然后从**保留目录结构的
+备份**还原并 `sha256sum -c` 逐字节核对。脚本：`.tmp/w24-buildfail.sh`。
+（第一次 `cd` 少退一级，五套全部 `NO REGISTRY`、**什么都没改** —— 这是「变异在写文件前就退出」那条的
+老形态；加 `*/mcode` 根校验后重跑。）
+
+**预期红 15 条**（5 套 × 3 项：`exit==4`、`PASS` 行数 0、日志有 `X [ERROR]`），**实际 15/15**：
+
+| 套件 | 退出码 | `PASS` 行 | `X [ERROR]` | 还原 |
+|---|---|---|---|---|
+| `t7` | **4** | 0 | 1 | `sha256sum -c` OK |
+| `o0` | **4** | 0 | 1 | OK |
+| `o4` | **4** | 0 | 1 | OK |
+| `t29` | **4** | 0 | 1 | OK |
+| `t46` | **4** | 0 | 1 | OK |
+
+**`t30` 用真实构建失败测的**（不额外造）：`T30: BUILD FAILED`、exit **4**、`PASS` 行 **0**、
+出错的是 `Could not resolve "../build/Release/cpufeatures.node"`。
+**`t8` 不测这一项** —— 不在本次修复范围（W22 已修），只做了 W22 selfcheck 11/11。
+
+**负控（关键，否则证明不了「修前是坏的」）**：把 `t7` 包装器 stash 回旧版，对**同一份注入**跑：
+旧版 exit **1**、打印 `T7: FAIL`。**t7 修前不是假绿，是码撞车** —— 与 §2 判断表一致。
+（`t30` 修前的假绿上面 §2 已实测；其余几套修前形态相同：`exit≠0 → FAIL 透传 1`，读代码确认。）
+
+**判据模块自身的变异验证**（6 个变异，预期红条数分开列，**实际逐一命中**）：
+
+| 变异 | 撤掉什么 | 预期红 | 实际 |
+|---|---|---|---|
+| M1 | summary 缺失也当 completed | 4 | **6**（多 2 条「映射钉住」——那是我加的正控） |
+| M2 | esbuild 标记清空 | 2 | **3**（多 1 条映射钉住） |
+| M3 | `loadSummary` 恒返回假 summary | 3 | **3** |
+| M4 | `evidenceRootFromLog` 恒 null | 1 | **1** |
+| M5 | `BUILD_FAILED: 1`（撞旅程码） | 1 | **2**（常量检查 + 映射检查各 1） |
+| M6 | build-failed 映射到 crashed 的码 5 | 1 | **1** |
+
+每次跑完 `sha256sum -c` 均 **OK**（备份在 `.tmp/w24-mutation-bak/`，保留目录结构）。
+M1/M2 比预期多出来的 2/1 条是**我预期没写全**，不是判据弱 —— 记在这里，不假装预测准了。
+
+### 5. `--keep` 的结论
+
+**修它**（理由见 §3 三）。卡里倾向的「第三个：只加一句明确报错」**前提不成立** ——
+`build.mjs` 的头注释把 `--keep` 写成了**受支持**的 no-op，报错会与文档矛盾。
+一行改动覆盖全部 5 个仍在透传它的包装器。**`--bogus` 仍被拒（正控），`--keep` 实测跑到底。**
+
+### 6. 我没能验证的东西 / 验证了但红着的东西
+
+**（a）`t29` 红一条 —— 既有，不是我。**
+`t29-close-pdf-after-unsaved-guard` 失败于 `make-unsaved-edit`。
+**stash 对照**：`git stash push -u -- scripts/t29-document-view-close-u1/run.mjs` → 旧包装器 `--only=` 同一旅程
+→ 同样 exit 2、同一步骤红；`pop` 归还。**不是本次改动。**
+
+**（b）`t30` 构建失败 —— 既有，不是我。**
+`cpu-features` 原生 `.node` 缺失，`t7/vendor-esbuild.mjs` 没把它 external。
+**时间证据**：23:33（旧包装器）与 23:56（新包装器）同一条错误。建议另开卡（§3「没修」）。
+
+**（c）`t8` 本体红（4 条旅程全红）—— 既有环境问题，不是我。**
+形态：`U1 screenshot fallback (...): Current display surface not available for capture`，
+`overlaysClosed=false`，`positive-control-editor-live` 失败。
+`851a7d73`（23:51）提交说明写「全量 run.mjs 退出码 0，T8: PASS」；我 00:04 起跑就红。
+**把本次全部 8 个文件 stash 掉、原始树重跑 → 完全相同**；`negative-control.sh` 也红在同一步。
+`Get-Process electron` 计数 0。**未验证**：它是否只是「当前会话」的问题 —— 同一时段其它 Electron 套件
+（t7/o0/o4/t46）在 23:58–00:19 是绿的，00:22 之后 t7 `--mutation` 与 o0（经 CI）也撞上同一句
+`display surface`。**同一台机器、时绿时红，指向环境而不是代码。**
+
+**（d）`o0` 在 00:19 经 `run-smokes.mjs` 红 3 条**（`xlsx` / `pdf` / `html`）。
+同一句 `display surface not available`。**stash 对照**：旧包装器 `--only=xlsx-fidelity` → 同样红在同一步。
+更早 00:01 它 6/6 绿、`mutate.mjs` 32/32。**归到 (c) 同一个环境问题。**
+**00:30 再重试一次**：仍 3 红（同样 6 条 `display surface`）—— 环境未恢复，不是偶发单次。
+
+**（e）`t7 --mutation` 00:22 起红 6 条**（`display surface`）。
+**stash 对照**：旧包装器 `--mutation` → 同样 6 红、同样 14 条 `display surface`。
+更早 23:58 正常跑 6/6 绿。**归到 (c)。**
+
+**（f）`tsc` —— 我交付时是红的，但不是我的文件。**
+`npx tsc --noEmit -p apps/desktop/tsconfig.json` → **2 条错**，都在
+`scripts/o2-conflict-u1-smoke/journeys.ts`（`TS1005` / `TS1351`，第 144 行一个模板字符串里写进了真的多行
+字符串）。**该文件 `mtime` 00:12:20，我的 tsc 跑在 00:13 —— 别的会话正在写它。**
+我的 7 个文件 + 新模块在错误列表里 **0 条**；`packages/contracts` tsc **EXIT=0**。
+按 CLAUDE.md 第九/二十四条：这是**在途中间态**，不是我的缺陷。
+**已复核（00:28）**：该文件 00:27:35 写完，重跑 tsc → **EXIT=0、0 条错**。交付时的 `tsc` 门禁是**绿的**（`apps/desktop` 与 `packages/contracts` 双包都 0 错）。
+
+**（g）没跑的**：全量 smoke（本卡明令不跑）；`electron-u1/run.sh` 自身（不在范围）；
+`t29` 的 `mutate-t29.mjs` 跑过且 detected=true，但它只覆盖 1 条旅程。
+
+### 7. W22 / 这张卡上写错的地方
+
+1. **卡题写「6 套」**，实际旧包装器是 **7 个消费点**（`t7`/`t30`/`o0`/`o4`/`t29`/`t46` 六套本次修 +
+   `t8` 已修）。卡面表里 `onlyoffice-sdk-origin-smoke` **从来不是** `build.mjs` 消费者，**且已被 O5 删除**。
+2. **卡面表把 `onlyoffice-sdk-origin-smoke` 写成「有 `?? 1` 的套件之一」—— 它的 `?? 1` 在 `run.mjs:47`
+   只是把它自己的普通 node 子进程退出码透传成 `process.exitCode`。**不是 `build.mjs` 包装器。**
+3. **W22 回写说「`--keep` 既有 bug：包装器透传给 build.mjs，后者拒收」是对的，但漏了根因** ——
+   `build.mjs` **头注释**把 `--keep` 写成受支持（`:27`），**是文档与实现矛盾**。所以「加一句明确报错」
+   会让文档更错。**修解析器才是最小改动。**
+4. **卡面「优先照 o2 做」判断正确，`o2` 的判据确实成立**；但 `o2` 的 `run.mjs` **不是**「读 summary 后
+   缺了就 FAIL」这么简单 —— 它还有 `judge()` 按 `expectations.ts` 逐条核对旅程名。**本卡只抽了
+   「summary 缺失 = 构建失败」这一半**，没抽 `judge()`（各套期望不同，抽不出来），这点卡里没写。
+5. **卡面说 `?? 1` 那 8 处「不是缺陷，关键看拿到 1 之后说什么」—— 对的。** 但**六套里只有 `t30` 真会
+   打印 PASS**；另五套的「码撞车」也是缺陷（验收判据 3 要求不同码），只是**不叫假绿**。卡面把两者
+   混在「是否同病」一栏，容易让人以为五套都不用改。
+6. **总控的判别命令**：开工时 `tsc` 是 45 错（38 renderer、7 scripts），00:00 前后 O5 批三落地后变 **0**。
+   **O5 批三落地时间比我预期早**；我按总控要求，构建失败/红都用 stash 对照而不是「猜是 O5」。
+   **总控第四次补充的 `grep -cE '(^|/)src/renderer/'` 在本机实测成立**：`apps/desktop` 下 38，仓库根也 38。
+
+---
+
+## 总控验收（2026-10-25 00:40）
+
+**结论：通过。它的核心发现比我的卡准，而且我采纳了它的一个「建议另开卡」。**
+
+### 一、它纠正我的第一处：真假绿只有 `t30` 一套
+
+我卡上说「7 套都有同样的假门禁」。**它分出了两种病，我核实了：**
+
+| 套件 | 旧逻辑 | 构建失败退 1 时 |
+|---|---|---|
+| **`t30`** | `if (normal !== 0 && normal !== 1) FAIL` | **落在「允许」区间 → 打印 `T30: PASS`** ← **真·假绿** |
+| `t7`（及其它） | `if (normal !== 0) FAIL` | 正确判成 `T7: FAIL` ← **不是假绿，是码撞车** |
+
+**我读了 `git show HEAD:` 的两个文件确认：`t30` 的注释就写着「正常跑允许 0（全绿）或 1（预期红）」——
+而构建失败也退 1，于是被吞掉。`t7` 没有这个区间。**
+
+**所以「只有 `t30` 会打印 PASS」是对的。** 但另外 5 套的码撞车仍然要修（不同事实要不同码），
+**它按验收判据 3 全修了，这个判断对。**
+
+### 二、它纠正我的第二处：`onlyoffice-sdk-origin-smoke` 从来不是消费者
+
+我卡面表列了它。**它查证：那不是 `build.mjs` 消费者，且已被 O5（`00af5199`）删掉。**
+
+**我核实了**：`apps/desktop/scripts/onlyoffice-sdk-origin-smoke/` 现在不存在。
+
+### 三、它纠正我的第三处：`--keep` 的根因
+
+我卡上说「`--keep` 是既有 bug，透传给 build.mjs，后者拒收」。
+
+**它查到的更准**：`build.mjs` **自己的头注释（`:27`）把 `--keep` 写成受支持的 no-op**，
+而解析器却 throw —— **是文档与实现矛盾**，不是「有没有人用」的问题。
+**它修了解析器（一行），覆盖全部 5 个仍在透传的包装器，并留了 `--bogus` 正控。这个判断对。**
+
+### 四、我采纳了它说「另开卡」的那一条，自己修了
+
+它说：
+
+> **`t30` 的 `cpu-features` 构建失败本身** —— 那是 `t7-genoffice-u1/vendor-esbuild.mjs` 的
+> externals 缺项（`t8/main-esbuild.mjs` 有）。不属于本卡（本卡是假门禁，不是打包配置），
+> **建议另开卡**。
+
+**我认为这一行不值得另开卡 —— 它正是让 6 套跑得起来的那个缺项。我修了：**
+
+`apps/desktop/scripts/t7-genoffice-u1/vendor-esbuild.mjs` 加了 `external: ["electron", "sherpa-onnx-node", "node-pty", "better-sqlite3", "cpu-features"]`
+（与 `t8/main-esbuild.mjs` 同源，注释写清了为什么）。
+
+**修完实测：`t30` 不再构建失败** —— 现在报的是运行时错误 `主窗口尚未就绪，无法创建文档视图`。
+**这证明构建期已经通了。**
+
+### 五、它报的「`t8` 全红」，我复现了，**是环境不是代码**
+
+它说：
+
+> **`t8` 本体：4 条旅程全红（`Current display surface not available for capture`，
+> `overlaysClosed=false`）**。把本次全部 8 个文件 stash 掉、原始树重跑 → 完全相同。
+
+**我自己复现了：**
+
+| 时刻 | 结果 |
+|---|---|
+| **23:49** | **全绿**（`literalStatus: PASS`，21 步） |
+| **00:35** | **四条全红**，红在 `canvas-editor-ready` / `blank-workflow-open` 等前置步骤 |
+
+日志：`U1 screenshot fallback: Current display surface not available for capture` +
+`不是空白工作流（ready=true, **overlaysClosed=false**, ...）`
+
+**同一个仓库、同一份代码，46 分钟前绿、现在红。** `git status` 确认 `t8` 目录这期间没被改。
+
+**诊断：`tasklist` 显示有 4 个 `electron.exe` 在跑**（211MB / 175MB / 102MB / 61MB），
+而它报告「`Get-Process electron` 为 0」。**我们跑的时刻不同。**
+
+`t30` 的日志更直接：`U1 host window: offscreen right-below primary work area 1463x775
+(no secondary display)` → 窗口被摆到屏幕外 → `主窗口尚未就绪`。
+
+**所以：这不是任何人的代码问题，是这台机器的桌面/显示会话状态变了。**
+
+**我没有杀那 4 个 electron 进程** —— 它们可能属于别的会话，误杀会打断别人的工作。
+
+### 六、它做的两件事我特别认
+
+1. **它把「构建失败注入」做成 5 套 × 3 项 = 预期 15、实际 15/15**，全部 `sha256sum -c` 逐字节还原；
+2. **它把判据抽成 `apps/desktop/scripts/lib/electron-u1-verdict.mjs`（358 行），6 个包装器共用，
+   且明确「未混用」**：t8 继续用自己的探针，o2 不动。**这正是「共享实现只有一份」那条的正面样本。**

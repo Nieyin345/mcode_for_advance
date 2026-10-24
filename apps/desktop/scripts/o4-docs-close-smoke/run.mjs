@@ -10,16 +10,34 @@
  *    是**缺陷本态** —— 套件在修复前红过，才说明它指在缺陷上。
  *  - `--mutate`：跑 `mutators.mjs`（三个变异，见那张文件头）。
  *
+ * ## 退出码（W24）
+ *
+ * 子进程的 1 既可能是「旅程预期红」也可能是「构建期崩溃」。判定改为读
+ * `build.mjs` 落盘的 `suite-summary.json`（见 `../lib/electron-u1-verdict.mjs`）：
+ *
+ * | 情况 | 本脚本退出码 |
+ * |---|---|
+ * | completed 0（期望） | 0 |
+ * | completed 1/2/3（本套件无预期红旅程 → 都是坏消息） | 原样透传 |
+ * | **构建失败** | **4**（`O4: BUILD FAILED`） |
+ * | **构建脚本崩溃** | **5**（`O4: BUILD CRASHED`） |
+ * | **spawn 失败** | **6**（`O4: SPAWN FAILED`） |
+ *
+ * `mutators.mjs` 的 `buildBroke()` 认 `X [ERROR]` / `Build failed with` 两个标记；
+ * 本文件与它同源（同一个判据模块），4/5/6 对 `runSegment("electron")` 的读数
+ * 只是更精确，不冲突。
+ *
  * ## vendor 缺失
  *
  * 主判据必须真 Electron + 真 docs 页（卡 §2.1）。vendor 快照没构建时本段
  * **如实失败（exit 2）**，不假装跳过 —— 主判据没跑，绿就是假的。
  */
-import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 import { missingVendorArtifacts } from "./vendor-esbuild.mjs";
+import { runElectronU1, classifyU1Run, reportIncompleteAndExit } from "../lib/electron-u1-verdict.mjs";
 
 const suite = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(suite, "../..");
@@ -41,14 +59,16 @@ if (missing.length > 0) {
   process.exit(2);
 }
 
-const r = spawnSync(process.execPath, [
-  join(suite, "../electron-u1/build.mjs"),
-  `--registry=${join(suite, "journeys/index.ts")}`,
-  `--esbuild=${join(suite, "vendor-esbuild.mjs")}`,
-  `--prebuild=${join(suite, "../t7-genoffice-u1/prebuild.mjs")}`,
-], { cwd: desktop, stdio: "inherit", env: process.env });
+const run = runElectronU1({
+  suite,
+  desktop,
+  esbuild: join(suite, "vendor-esbuild.mjs"),
+  prebuild: join(suite, "../t7-genoffice-u1/prebuild.mjs"),
+});
 
-const status = r.status ?? 1;
+const runClass = classifyU1Run(run);
+if (runClass.kind !== "completed") reportIncompleteAndExit("O4", "真 Electron 段", runClass);
+const status = runClass.status;
 console.log(`\nO4: 真 Electron 段退出码 ${status}（期望 0 —— 本套件没有故意失败旅程）`);
 if (status !== 0) {
   console.error("O4: FAIL（证据保留在 .tmp/electron-u1/<时间戳>/）");

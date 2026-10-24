@@ -68,6 +68,12 @@ let esbuildSpec = null;
 let prebuildSpec = null;
 for (const a of args) {
   if (a === "--mutation=unconditional-pass") mutation = "unconditional-pass";
+  // W24：`--keep` 是**文档化过的 no-op**（见头注释「证据保留」——本脚本从不自动
+  // 清理证据）。此前解析器不认它、直接 throw「Unknown option」，而旧包装器把
+  // 「构建崩溃（exit 1）」读成「旅程预期红」并打印 PASS（t30 实测）。这里让它
+  // 与文档一致地接受；即便将来再拒收，W24 的包装器也会归到 build-crashed（5），
+  // 不会再变成 PASS。
+  else if (a === "--keep") continue;
   else if (a.startsWith("--registry=")) registry = resolve(a.slice("--registry=".length));
   else if (a.startsWith("--only=")) only = a.slice("--only=".length);
   else if (a.startsWith("--esbuild=")) esbuildSpec = resolve(a.slice("--esbuild=".length));
