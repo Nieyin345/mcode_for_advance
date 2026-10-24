@@ -136,7 +136,6 @@ import type { HostHookGrant } from "../hostHookGrant.js";
 import type { AutomationTriggerHealth, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
 import { MEMORY_CATEGORIES_CHANNEL, MEMORY_DELETE_CHANNEL, MEMORY_LIST_CHANNEL, MEMORY_READ_CHANNEL, MEMORY_REVIEW_CHANNEL, MEMORY_REVIEW_DELETE_CHANNEL, MEMORY_SAVE_CHANNEL, type MemoryDeleteInput, type MemoryFileMeta, type MemoryListInput, type MemoryReadInput, type MemoryReviewDeleteInput, type MemoryReviewResult, type MemorySaveInput } from "../memory.js";
 import type { LibraryGroupsGetInput, LibraryGroupsSaveInput, LibraryImportGenericInput, LibraryReadFileInput, LibraryFileContent, LibraryListInput, LibraryItemIdInput, LibraryAddItemsInput, LibraryDeleteItemsInput, LibraryDeleteItemsResult, LibraryRestoreItemsInput, LibraryDeletePreviewInput, LibraryDeletePreviewResult, LibraryImportFilesInput, LibraryImportNotesInput, LibraryConvertInput, LibraryRevealFileInput, LibraryOpenFileInput, LibraryEntryPathInput, LibraryEntryPathResult, LibraryReadAssetInput, LibraryReadAssetResult, PdfHighlightsReadInput, PdfHighlightsSaveInput, PdfHighlightsWriteBackInput, PdfHighlightsWriteResult, LibraryReadMarkdownInput, LibraryNotesListInput, LibraryNoteSaveInput, LibraryNoteDeleteInput, LibraryRenameItemInput, LibraryCreateNoteInput, LibraryWriteNoteInput, LibraryAdoptMarkdownInput, LibraryReadPdfInput, LibraryFullTextSearchInput, LibraryManifestInput, LibraryItemManifestInput, LibraryAttachToChatInput, LibrarySuppressGetInput, LibrarySuppressSaveInput, LibraryLinksOfInput, LibraryLinkCountsInput, LibraryLinkAddInput, LibraryLinkRemoveInput, CollectionCreateInput, CollectionRenameInput, CollectionDeleteInput, CollectionMoveInput, CollectionAssignInput } from "./library.js";
-import type { OnlyOfficeOpenInput, OnlyOfficeOpenResult, OnlyOfficeSessionInput, OnlyOfficeSessionState, OnlyOfficeStatusResult, OnlyOfficeConfig, OnlyOfficeSetConfigInput, OnlyOfficeLocalDetectResult } from "./onlyoffice.js";
 import type { SubagentDefinition } from "../claudeSubagent.js";
 import type { ClaudeSubagentsSaveInput } from "../claudeSubagent.js";
 import type { CustomUiRunAutomationInput, CustomUiRunAutomationResult } from "../customUi.js";
@@ -1642,30 +1641,6 @@ export interface RpcMap {
     pending: number;
   }>;
 
-  // ── OnlyOffice Document Server(Office 文档可视化编辑,见 contracts/src/ipc/onlyoffice.ts)──
-  /** 为一个文件开一次编辑会话:返回 DS 的 api.js 地址与直接交给 `DocsAPI.DocEditor` 的配置。 */
-  "onlyoffice.open": (input: OnlyOfficeOpenInput) => Promise<OnlyOfficeOpenResult>;
-  /** 让 DS 立刻回调保存(用户点「保存」/ 关标签前)。 */
-  "onlyoffice.forceSave": (input: OnlyOfficeSessionInput) => Promise<{ ok: boolean; error?: string }>;
-  /** 某次会话的保存状态(最近保存时间 / 最近错误 / DS 状态码)。 */
-  "onlyoffice.sessionState": (input: OnlyOfficeSessionInput) => Promise<OnlyOfficeSessionState>;
-  /** 关掉会话(清掉主进程里那份记录)。 */
-  "onlyoffice.close": (input: OnlyOfficeSessionInput) => Promise<{ ok: boolean }>;
-  /** 是否配置了 DS、以及它现在能不能连上(`/healthcheck`)。 */
-  "onlyoffice.status": () => Promise<OnlyOfficeStatusResult>;
-  /** 读当前的 OnlyOffice 配置(serverUrl / jwtSecret / callbackHost;带内存缓存)。 */
-  "onlyoffice.getConfig": () => Promise<OnlyOfficeConfig>;
-  /** 存 OnlyOffice 配置到 settings 表并刷新内存缓存。`serverUrl` 会归一(去尾斜杠、补协议)。 */
-  "onlyoffice.setConfig": (input: OnlyOfficeSetConfigInput) => Promise<OnlyOfficeConfig>;
-  /**
-   * 本机装没装 Document Server、跑没跑、密钥是什么。
-   *
-   * 设置页用它做**自动填写**:检测到本机那一份就把地址与密钥直接写进配置,用户
-   * 不用手抄 `local.json`。主进程里 `detectLocal()` 早就有了(安装流程与工具链
-   * 检测都在用),这里只是把它开给渲染端 —— 不然「自动帮我配好」这件事在 UI 侧
-   * 无从谈起。只读,不需要管理员权限。
-   */
-  "onlyoffice.detectLocal": () => Promise<OnlyOfficeLocalDetectResult>;
   // ── 统一数据根 ──
   /** 当前数据根,以及它下面两样东西的**实际路径**(设置页展示用)。 */
   "app.getDataRoot": () => Promise<{
@@ -1833,15 +1808,6 @@ export const IPC = {
   // 统一数据根
   APP_GET_DATA_ROOT: "app:getDataRoot",
   APP_MOVE_DATA_ROOT: "app:moveDataRoot",
-  // OnlyOffice Document Server
-  ONLYOFFICE_OPEN: "onlyoffice:open",
-  ONLYOFFICE_FORCE_SAVE: "onlyoffice:forceSave",
-  ONLYOFFICE_SESSION_STATE: "onlyoffice:sessionState",
-  ONLYOFFICE_CLOSE: "onlyoffice:close",
-  ONLYOFFICE_STATUS: "onlyoffice:status",
-  ONLYOFFICE_GET_CONFIG: "onlyoffice:getConfig",
-  ONLYOFFICE_SET_CONFIG: "onlyoffice:setConfig",
-  ONLYOFFICE_DETECT_LOCAL: "onlyoffice:detectLocal",
   LIBRARY_ITEM_MANIFEST: "library:itemManifest",
   /** 整个库的清单(「全部<库>」那一行)。 */
   /** 类型注册表:读(返回当前生效的全表,含内置)/ 写(整表替换,校验在主进程)。 */

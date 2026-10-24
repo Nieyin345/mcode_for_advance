@@ -1,6 +1,6 @@
 /**
  * GenOffice native-editor FILE ROUTING only; never use this as a path
- * authorization, resource-availability or OnlyOffice capability check.
+ * authorization, resource-availability or editor-capability check.
  *
  * L2 pure adaptation of upstream GenOffice:
  *   genoffice/apps/shell/src/main/app-routing.ts (appForPath)

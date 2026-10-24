@@ -156,8 +156,6 @@ export * from "./ipc/events.js";
 export * from "./ipc/terminal.js";
 export * from "./ipc/browser.js";
 export * from "./ipc/library.js";
-// OnlyOffice Document Server 集成（Office 文档可视化编辑）。
-export * from "./ipc/onlyoffice.js";
 // 记忆契约(存储/检索/维护共用的那一份,渠道字符串钉在里面)。
 export * from "./memory.js";
 // 编排域:运行史、触发器事实、监控。

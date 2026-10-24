@@ -748,6 +748,9 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "modules.install": [
     "modules.install"
   ],
+  "modules.installVsix": [
+    "modules.install"
+  ],
   "modules.invoke": [
     "modules.install"
   ],
@@ -777,24 +780,6 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   ],
   "notification.setPrefs": [
     "ui.control"
-  ],
-  "onlyoffice.close": [
-    "document.edit"
-  ],
-  "onlyoffice.detectLocal": null,
-  "onlyoffice.forceSave": [
-    "document.edit"
-  ],
-  "onlyoffice.getConfig": null,
-  "onlyoffice.open": [
-    "document.edit"
-  ],
-  "onlyoffice.sessionState": [
-    "document.read"
-  ],
-  "onlyoffice.setConfig": null,
-  "onlyoffice.status": [
-    "document.read"
   ],
   "outputStyle.list": [
     "setting.read"
@@ -974,10 +959,6 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
     "workflow.write"
   ],
   "scene.resume": null,
-  "task.list": null,
-  "task.get": null,
-  "task.accept": null,
-  "task.reject": null,
   "session.archive": [
     "session.control"
   ],
@@ -1109,6 +1090,10 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "skills.scanSources": [
     "skills.read"
   ],
+  "task.accept": null,
+  "task.get": null,
+  "task.list": null,
+  "task.reject": null,
   "terminal.create": [
     "terminal.run"
   ],

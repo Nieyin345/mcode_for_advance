@@ -21,11 +21,23 @@
  * 契约包同时被渲染端（浏览器环境）与主进程消费，不能 import `node:path`。扩展名解析
  * 在这里是纯字符串操作（两种分隔符都认，与 Windows 原生路径兼容）。
  *
- * ## 与 OnlyOffice 的关系（过渡期）
+ * ## 与 Office 引擎的关系（2026-10-24 起）
  *
- * `office` 种类目前由 OnlyOffice 承载；ARC-007 的 GenOffice 迁移会逐格式换上新的
- * provider，但**种类判据不变** —— 调用方问的是"这是什么种类的文档"，而不是"用哪个引擎"。
- * 引擎选择属于 `documentKindOf` 之上的 provider 路由（后续切片），不混进这个纯函数。
+ * **OnlyOffice 已从产品中移除**（用户裁决：「OnlyOffice删掉，不要了」「现在的 office
+ * 还有 md 全部走 genoffice 这一条线」）。Office 文档的唯一 provider 是 **GenOffice**；
+ * 本文件的 `"office"` 种类**没有改名**，理由是：
+ *
+ *  - 这个轴回答的是「这是什么**种类**的文档」，不是「用哪个引擎打开」。引擎/应用
+ *    的选择在 `genofficeFileRoute.ts` 的 `genofficeAppForPath`（`GenofficeApp` 轴）
+ *    与 `isGenofficeViewAvailableFor`（能力轴）——把引擎名烧进种类值会混淆三条轴。
+ *  - `"office"` 一词从未指 OnlyOffice，它指 OOXML/ODF Office 文档；`"office-readonly"`
+ *    同理（老版 doc/xls/ppt/rtf 等）。ONLYOFFICE_EDITABLE 只是**当时**那张扩展名表的
+ *    来源，不是这个名字的含义。
+ *
+ * **语义变更（必须记住的差异）**：`"office"` 集合**不再**承诺「装个引擎就能编辑」——
+ * 它只回答「这是 Office 格式」。能不能真的打开由上层路由 + 能力位决定，能力不齐时
+ * 上层必须**明确报不支持**（不许静默降级）。删除 OnlyOffice 后集合**保持不变**：
+ * 收窄会让 `.docm/.dotx/.xltx/.pptm/.potx` 掉进 `text`，用文本编辑器打开二进制。
  */
 
 /** 文档种类 —— 渲染端各入口据此选面板；与具体引擎解耦。 */
@@ -34,9 +46,9 @@ export type DocumentKind =
   | "markdown"
   /** `.pdf` —— 预览/阅读器。 */
   | "pdf"
-  /** Office 文档（DS 可编辑的 OOXML/ODF，见 `ONLYOFFICE_EDITABLE`）。 */
+  /** Office 文档（可结构化读写的 OOXML/ODF，见本文件 `OFFICE_EDITABLE`）。 */
   | "office"
-  /** 老版 Office（DS 只能转换后查看，见 `ONLYOFFICE_VIEW_ONLY`）。 */
+  /** 老版 Office（只能转换后查看，见本文件 `OFFICE_VIEW_ONLY`）。 */
   | "office-readonly"
   /** 图片（编辑器可经 `app-resource://` 预览）。 */
   | "image"
@@ -62,17 +74,22 @@ export function documentExtension(path: string): string {
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
 }
 
-/** Office 可编辑扩展名 → 文档类型。与 `ipc/onlyoffice.ts` 的 `ONLYOFFICE_EDITABLE`
- *  **同源**：那张表是 DS 的引擎契约，这里只把它翻译成"种类"。为避免循环 import
- *  把表在契约包里再写一遍 —— 两份表**必须**一起改，故由 `document-router-smoke`
- *  逐项对账（两边不一致即红）。 */
+/** Office 可编辑扩展名 → 文档类型。**这张表是 (2026-10-24 OnlyOffice 移除后) 契约层
+ *  唯一的 Office 扩展名集合**，此前与 `ipc/onlyoffice.ts` 的 `ONLYOFFICE_EDITABLE`
+ *  同源对账（那个文件已删）。
+ *
+ *  ⚠️ **集合刻意保持原样，没有收窄到 `genofficeFileRoute.ts` 的路由集合**：
+ *  `genoffice` 的路由更窄（`.docm/.dotx/.xltx/.pptm/.potx` 不在其中），但收窄会让这
+ *  五种掉进 `text` → 打开时用文本编辑器读二进制。**「是 Office 格式」与「GenOffice
+ *  能不能打开」是两件事**，后者由 `genofficeAppForPath` + 能力位回答，不能打开时
+ *  上层明确报不支持（见 `tasks/office/O5-remove-onlyoffice.md` §六）。 */
 const OFFICE_EDITABLE: ReadonlySet<string> = new Set([
   "docx", "docm", "dotx", "odt",
   "xlsx", "xlsm", "xltx", "ods",
   "pptx", "pptm", "potx", "odp",
 ]);
 
-/** Office 只读（DS 转换后查看）扩展名，同源上面的说明。 */
+/** Office 只读（需转换后才能查看）扩展名。理由同 `OFFICE_EDITABLE` 的说明。 */
 const OFFICE_VIEW_ONLY: ReadonlySet<string> = new Set(["doc", "rtf", "xls", "ppt", "pps", "ppsx"]);
 
 /** 图片扩展名 —— 与 `fileEditorKinds.isImage` 的集合逐项一致（含 svg/tif/tiff/avif）。 */
@@ -126,7 +143,7 @@ export function isTextualDocumentKind(kind: DocumentKind): boolean {
   return kind === "markdown" || kind === "text" || kind === "unknown";
 }
 
-/** 这个种类是否由 Office 引擎承载（含只读档）。 */
+/** 这个种类是否属于 Office 文档（含只读档）。 */
 export function isOfficeDocumentKind(kind: DocumentKind): boolean {
   return kind === "office" || kind === "office-readonly";
 }

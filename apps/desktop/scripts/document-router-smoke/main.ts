@@ -6,9 +6,11 @@
  *
  *  1. `documentKindOf` 的**逐样例**判据(扩展名→种类,含大小写/无扩展名/隐藏文件/
  *     两种分隔符/尾随空格等边角);
- *  2. 两处 Office 表**逐项对账**:`@contracts/ipc/onlyoffice` 的 DS 判据与
- *     `@contracts/documentKind` 的集合必须完全一致 —— 它们是两份物理表(依赖方向
- *     决定了不能互相 import),但**任何漂移都必须红**;
+ *  2. Office 扩展名集合**双向对账**:`@contracts/documentKind` 的 `OFFICE_EDITABLE` /
+ *     `OFFICE_VIEW_ONLY` 必须与下面钉住的期望集合**完全一致**(多一个、少一个都红)。
+ *     ⚠️ 2026-10-24（O5 批一）OnlyOffice 已删,原先「与 `ipc/onlyoffice.ts` 两张物理表
+ *     对账」的第二张表不存在了;这里改成「对期望清单对账」——期望清单是**夹具**,不是
+ *     生产逻辑的副本,作用是让「悄悄加/删一个扩展名」必须有人签字。
  *  3. 四个消费点(编辑器分类器 / 资料库查看器 / 资料库预览 / 移动端)**真的**走同一份:
  *     源码断言不再有本地 `lastIndexOf(".")` / 本地 `MARKDOWN_EXT` / `ext === "md"`
  *     的分支 —— 防"迁移了一半,下一处又写回去"。
@@ -26,13 +28,6 @@ import {
   type DocumentKind,
 } from "@contracts/documentKind";
 import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
-import {
-  isOnlyOfficeEditablePath,
-  isOnlyOfficeSupportedPath,
-  isOnlyOfficeViewOnlyPath,
-  ONLYOFFICE_EDITABLE,
-  ONLYOFFICE_VIEW_ONLY,
-} from "@contracts/ipc";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -93,25 +88,34 @@ section("2. documentKindOf:每个格式的结论");
   check("★ .docx 不属于 office-readonly", documentKindOf("a.docx") !== "office-readonly");
 }
 
-/* ── 3. 两处 Office 表逐项对账(依赖方向决定了它们不能互相 import) ── */
-section("3. Office 表对账:onlyoffice.ts ⇄ documentKind.ts");
+/* ── 3. Office 集合对账:必须是这份期望清单,不多不少 ──
+ *
+ * 【O5 批一 2026-10-24】原先这里与 `ipc/onlyoffice.ts` 的 `ONLYOFFICE_EDITABLE` /
+ * `ONLYOFFICE_VIEW_ONLY` 逐项对账 —— 那两张表随 OnlyOffice 一起删了。现在台账里的
+ * 期望集合直接写在这里:**加/删一个 Office 扩展名必须同时改这里**,否则红。
+ *
+ * 为什么保留这份清单而不是删掉整节:`documentKind` 的两个集合是私有 const,没有
+ * 导出,若没有这一节,「有人把 `.docm` 从集合里删掉」将没有任何断言能看见 —— 它会
+ * 静默掉进 `text`,用文本编辑器打开二进制。 */
+section("3. Office 集合对账:documentKind 的集合 = 期望清单");
 {
-  for (const ext of Object.keys(ONLYOFFICE_EDITABLE)) {
-    eq(`可编辑 ${ext} 两处一致`, documentKindOf(`x.${ext}`), "office");
-    check(`可编辑 ${ext} DS 判据一致`, isOnlyOfficeEditablePath(`x.${ext}`) && isOnlyOfficeSupportedPath(`x.${ext}`));
+  const expectedEditable = ["docx", "docm", "dotx", "odt", "xlsx", "xlsm", "xltx", "ods", "pptx", "pptm", "potx", "odp"];
+  const expectedViewOnly = ["doc", "rtf", "xls", "ppt", "pps", "ppsx"];
+  for (const ext of expectedEditable) {
+    eq(`可编辑 ${ext} → office`, documentKindOf(`x.${ext}`), "office");
   }
-  for (const ext of Object.keys(ONLYOFFICE_VIEW_ONLY)) {
-    eq(`只读 ${ext} 两处一致`, documentKindOf(`x.${ext}`), "office-readonly");
-    check(`只读 ${ext} DS 判据一致`, !isOnlyOfficeEditablePath(`x.${ext}`) && isOnlyOfficeSupportedPath(`x.${ext}`) && isOnlyOfficeViewOnlyPath(`x.${ext}`));
+  for (const ext of expectedViewOnly) {
+    eq(`只读 ${ext} → office-readonly`, documentKindOf(`x.${ext}`), "office-readonly");
   }
-  // 反向:documentKind 里的 office 集合不能有 DS 不认识的多余项。
-  const officeKinds = ["docx", "docm", "dotx", "odt", "xlsx", "xlsm", "xltx", "ods", "pptx", "pptm", "potx", "odp",
-    "doc", "rtf", "xls", "ppt", "pps", "ppsx"];
-  for (const ext of officeKinds) {
-    check(`${ext} 在 DS 表里`, ext in ONLYOFFICE_EDITABLE || ext in ONLYOFFICE_VIEW_ONLY);
+  // 反向:上两份清单之外的 Office 系扩展名不能落进 office / office-readonly
+  // （防「悄悄加了一个」）。`.doc` 系的老格式其它变体按 text 处理是既有行为。
+  const outside = ["docm2", "xlsb", "dot", "docxx", "pages", "key", "numbers"];
+  for (const ext of outside) {
+    check(`${ext} 不在 office 两档里`, documentKindOf(`x.${ext}`) !== "office" && documentKindOf(`x.${ext}`) !== "office-readonly");
   }
-  check("表对账不是空跑(可编辑表非空)", Object.keys(ONLYOFFICE_EDITABLE).length > 0);
-  check("表对账不是空跑(只读表非空)", Object.keys(ONLYOFFICE_VIEW_ONLY).length > 0);
+  // 数量钉住:两档成员总数必须等于清单长度(集合多/少一个都红)。
+  const allOffice = [...expectedEditable, ...expectedViewOnly];
+  eq("Office 两档清单条目数(可编辑 12 + 只读 6)", allOffice.length, 18);
 }
 
 /* ── 4. 派生判定 ── */

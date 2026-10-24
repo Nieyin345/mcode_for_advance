@@ -2181,70 +2181,6 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ prefs: NotificationPrefs }"
  },
  {
-  "method": "onlyoffice.close",
-  "channel": "onlyoffice:close",
-  "doc": "关掉会话(清掉主进程里那份记录)。",
-  "input": "{ sessionKey: string }",
-  "inputFull": "{ sessionKey: string }",
-  "output": "{ ok: boolean }"
- },
- {
-  "method": "onlyoffice.detectLocal",
-  "channel": "onlyoffice:detectLocal",
-  "doc": "本机装没装 Document Server、跑没跑、密钥是什么。 设置页用它做**自动填写**:检测到本机那一份就把地址与密钥直接写进配置,用户 不用手抄 `local.json`。主进程里 `detectLocal()` 早就有了(安装流程与工具链 检测都在用),这里只是把它开给渲染端 —— 不然「自动帮我配好」这件事在 UI 侧 无从谈起。只读,不需要管理员权限。",
-  "input": "(无参数)",
-  "inputFull": "(无参数)",
-  "output": "{ supported: boolean // 只有 Windows 有官方安装包；其他平台一律 false（面板隐藏\"一键安装\"）。; installed: boolean; installDir: string | null; version: string | null; serviceState: 'unknown' | 'running' | 'stopped'; port: number | null // healthcheck 探通的端口；服务没跑 / 探不到 = null。; jwtSecret…"
- },
- {
-  "method": "onlyoffice.forceSave",
-  "channel": "onlyoffice:forceSave",
-  "doc": "让 DS 立刻回调保存(用户点「保存」/ 关标签前)。",
-  "input": "{ sessionKey: string }",
-  "inputFull": "{ sessionKey: string }",
-  "output": "{ ok: boolean; error?: string | undefined }"
- },
- {
-  "method": "onlyoffice.getConfig",
-  "channel": "onlyoffice:getConfig",
-  "doc": "读当前的 OnlyOffice 配置(serverUrl / jwtSecret / callbackHost;带内存缓存)。",
-  "input": "(无参数)",
-  "inputFull": "(无参数)",
-  "output": "{ serverUrl: string // Document Server 地址，如 `http://127.0.0.1:8080`。空 = 未配置（Office 文件只能只读预览）。; jwtSecret: string // JWT 密钥。DS 7.2+ 默认开启 JWT，必须与它 `services.CoAuthoring.secret` 一致；留空表示 DS 关了 JWT。; callbackHost: string // DS 回连 Mcode 时用的主机名/IP。空 = 自动：serverUrl 是…"
- },
- {
-  "method": "onlyoffice.open",
-  "channel": "onlyoffice:open",
-  "doc": "为一个文件开一次编辑会话:返回 DS 的 api.js 地址与直接交给 `DocsAPI.DocEditor` 的配置。",
-  "input": "{ filePath: string // 绝对路径。必须落在某个已知工作区根内（与 `file:readFile` 同一道闸）。; mode?: 'view' | 'edit' | undefined // `view` 用于资料库/通用文件查看器；默认 `edit`。; deviceType?: 'desktop' | 'mobile' | undefined // 移动端查看器使用 OnlyOffice 的 mobile 布局。 }",
-  "inputFull": "{ filePath: string // 绝对路径。必须落在某个已知工作区根内（与 `file:readFile` 同一道闸）。; mode?: 'view' | 'edit' | undefined // `view` 用于资料库/通用文件查看器；默认 `edit`。; deviceType?: 'desktop' | 'mobile' | undefined // 移动端查看器使用 OnlyOffice 的 mobile 布局。 }",
-  "output": "{ ok: boolean; error?: string | undefined // 失败原因（未配置 / 路径越界 / 不支持的类型 / 桥起不来）。; notConfigured?: boolean | undefined // 未配置 DS 时为 true —— 渲染端据此画\"去设置\"而不是\"出错了\"。; apiScriptUrl?: string | undefined // `<serverUrl>/web-apps/apps/api/documents/api.js`; sessionKey?: …"
- },
- {
-  "method": "onlyoffice.sessionState",
-  "channel": "onlyoffice:sessionState",
-  "doc": "某次会话的保存状态(最近保存时间 / 最近错误 / DS 状态码)。",
-  "input": "{ sessionKey: string }",
-  "inputFull": "{ sessionKey: string }",
-  "output": "{ alive: boolean // 会话还在（关掉后主进程会把它清掉）。; lastSavedAt: number | null // 最近一次成功写回磁盘的时间（ms）。null = 这次会话还没存过。; lastError: string | null // 最近一次回调 / 写回失败的原因。成功一次就清掉。; lastStatus: number | null // DS 最近一次回调的 status 码（1 编辑中 / 2 待保存 / 4 无改动关闭 / 6 强制保存…）。; freeMemMB: n…"
- },
- {
-  "method": "onlyoffice.setConfig",
-  "channel": "onlyoffice:setConfig",
-  "doc": "存 OnlyOffice 配置到 settings 表并刷新内存缓存。`serverUrl` 会归一(去尾斜杠、补协议)。",
-  "input": "{ serverUrl: string // Document Server 地址，如 `http://127.0.0.1:8080`。空 = 未配置（Office 文件只能只读预览）。; jwtSecret: string // JWT 密钥。DS 7.2+ 默认开启 JWT，必须与它 `services.CoAuthoring.secret` 一致；留空表示 DS 关了 JWT。; callbackHost: string // DS 回连 Mcode 时用的主机名/IP。空 = 自动：serverUrl 是本机地址就用 `127.0.0.1`， 否则取第一块非内部 IPv4 网卡地址。Docker De… }",
-  "inputFull": "{ serverUrl: string // Document Server 地址，如 `http://127.0.0.1:8080`。空 = 未配置（Office 文件只能只读预览）。; jwtSecret: string // JWT 密钥。DS 7.2+ 默认开启 JWT，必须与它 `services.CoAuthoring.secret` 一致；留空表示 DS 关了 JWT。; callbackHost: string // DS 回连 Mcode 时用的主机名/IP。空 = 自动：serverUrl 是本机地址就用 `127.0.0.1`， 否则取第一块非内部 IPv4 网卡地址。Docker De… }",
-  "output": "{ serverUrl: string // Document Server 地址，如 `http://127.0.0.1:8080`。空 = 未配置（Office 文件只能只读预览）。; jwtSecret: string // JWT 密钥。DS 7.2+ 默认开启 JWT，必须与它 `services.CoAuthoring.secret` 一致；留空表示 DS 关了 JWT。; callbackHost: string // DS 回连 Mcode 时用的主机名/IP。空 = 自动：serverUrl 是…"
- },
- {
-  "method": "onlyoffice.status",
-  "channel": "onlyoffice:status",
-  "doc": "是否配置了 DS、以及它现在能不能连上(`/healthcheck`)。",
-  "input": "(无参数)",
-  "inputFull": "(无参数)",
-  "output": "{ configured: boolean; reachable: boolean // 能否 GET 到 `<serverUrl>/healthcheck`（DS 返回字面量 `true`）。; error?: string | undefined; serverUrl: string }"
- },
- {
   "method": "outputStyle.list",
   "channel": "outputStyle:list",
   "doc": "Output styles (settings panel): list built-in + user styles. The selection itself is persisted via the generic setting.get/set channels under AGENT_OUTPUT_STYLE_SETTING_KEY.",
@@ -3280,16 +3216,16 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "toolchain.install",
   "channel": "toolchain:install",
   "doc": "安装一个应用能管的工具(pandoc 由应用下载;python-deps 走用户解释器的 pip)。进度走 `toolchain:event`。",
-  "input": "{ tool: 'pandoc' | 'latex' | 'python-deps' | 'zip-tools' | 'soffice' | 'pdftoppm' | 'onlyoffice' }",
-  "inputFull": "{ tool: 'pandoc' | 'latex' | 'python-deps' | 'zip-tools' | 'soffice' | 'pdftoppm' | 'onlyoffice' }",
+  "input": "{ tool: 'pandoc' | 'latex' | 'python-deps' | 'zip-tools' | 'soffice' | 'pdftoppm' }",
+  "inputFull": "{ tool: 'pandoc' | 'latex' | 'python-deps' | 'zip-tools' | 'soffice' | 'pdftoppm' }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
   "method": "toolchain.remove",
   "channel": "toolchain:remove",
   "doc": "删掉应用管理的那份(只对 managed 有效;用户自己装的 system 那份不动)。",
-  "input": "{ tool: 'pandoc' | 'latex' | 'python-deps' | 'zip-tools' | 'soffice' | 'pdftoppm' | 'onlyoffice' }",
-  "inputFull": "{ tool: 'pandoc' | 'latex' | 'python-deps' | 'zip-tools' | 'soffice' | 'pdftoppm' | 'onlyoffice' }",
+  "input": "{ tool: 'pandoc' | 'latex' | 'python-deps' | 'zip-tools' | 'soffice' | 'pdftoppm' }",
+  "inputFull": "{ tool: 'pandoc' | 'latex' | 'python-deps' | 'zip-tools' | 'soffice' | 'pdftoppm' }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {

@@ -347,12 +347,14 @@ console.log("\n【MC-026 复核】真实敏感键清单:从生产定义处取,�
   const { SECRET_SETTING_KEYS } = await import("@main/lib/secretKeys.js");
 
   // ── ① 从定义处取的敏感键(contracts / 共享密钥清单) ──
+  // ⚠️ `onlyoffice.config` 不再从这里取:`ONLYOFFICE_CONFIG_SETTING_KEY` 随 O5 批一
+  // （2026-10-24 删 OnlyOffice 契约面）一起删除。该键仍在 `SECRET_SETTING_KEYS` 里
+  // （见下方 spread），覆盖没有降低 —— 若批二决定清理这个已存键，届时两边一起改。
   const REAL_SENSITIVE = [
     contracts.BROWSER_COOKIE_VAULT_SETTING_KEY,
     contracts.BROWSER_COOKIE_VAULT_ENC_SETTING_KEY,
     contracts.MCP_MANAGEMENT_SETTING_KEY,
     contracts.MCP_PROJECT_TRUST_SETTING_KEY,
-    contracts.ONLYOFFICE_CONFIG_SETTING_KEY,
     relay.RELAY_CONFIG_SETTING_KEY,
     contracts.PUBLIC_MCP_SECRET_SETTING_KEY,
     contracts.PUBLIC_MCP_PROJECT_LINKS_SETTING_KEY,
