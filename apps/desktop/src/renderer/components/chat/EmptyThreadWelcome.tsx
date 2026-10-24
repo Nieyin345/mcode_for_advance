@@ -44,6 +44,7 @@ import { workflowDisplayDescription, workflowDisplayName, workflowIcon } from "@
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { latestFailureOf, missedNoticeOf } from "@contracts/ipc";
+import { recentProjectSessions } from "./homeRecentSessions.js";
 import {
   IconArrowsSplit,
   IconBook,
@@ -98,6 +99,7 @@ function StartPoints() {
   const { t, locale } = useI18n();
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const activeProjectId = useSessionStore((s) => s.activeProjectId);
   const selectSession = useSessionStore((s) => s.selectSession);
   const workflowId = useSessionStore((s) => s.workflowId);
   const setWorkflowId = useSessionStore((s) => s.setWorkflowId);
@@ -109,12 +111,8 @@ function StartPoints() {
 
   // 当前这个空会话本身不算"接着聊"；节点 / 自动化 / 侧问那些隐藏会话也不算。
   const recent = useMemo(
-    () =>
-      sessions
-        .filter((s) => s.kind === "chat" && !s.archived && s.id !== activeSessionId)
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, PER_SECTION),
-    [sessions, activeSessionId],
+    () => recentProjectSessions(sessions, activeProjectId, activeSessionId, PER_SECTION),
+    [sessions, activeProjectId, activeSessionId],
   );
   // 「默认」就是不选工作流；带触发器的是自动化（它们不由输入框发起，输入框的下拉也滤掉了）。
   // 用户自己建的 / 改过的排前面，其次按最近修改。
@@ -301,7 +299,7 @@ function Row({
       onClick={onClick}
       title={label}
       className={cn(
-        "flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
+        "flex min-h-8 w-full min-w-0 items-center gap-2 rounded-[var(--radius-btn-xs)] px-2 py-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         pressed ? "bg-surface-hover text-content" : "hover:bg-surface-hover/70",
       )}
     >

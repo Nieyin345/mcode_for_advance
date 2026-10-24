@@ -673,7 +673,7 @@ function UserMessageEditor({
                 type="button"
                 onClick={() => setImages((prev) => prev.filter((p) => p.id !== img.id))}
                 aria-label={t("chat.removeImageN", { n: i + 1 })}
-                className="absolute right-0.5 top-0.5 hidden h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white transition-colors hover:bg-black/80 group-hover:flex"
+                className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition-[opacity,background-color] hover:bg-black/80 hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <IconX size={12} />
               </button>
@@ -687,14 +687,15 @@ function UserMessageEditor({
         onChange={handleChange}
         onKeyDown={handleKeyDown}
         rows={1}
-        className="w-full resize-none border-0 bg-transparent text-content outline-none placeholder:text-content-subtle"
-        style={{ minHeight: "1.5em" }}
+        aria-label={t("common.edit")}
+        className="w-full resize-none border-0 bg-transparent text-content outline-none focus-visible:ring-1 focus-visible:ring-accent placeholder:text-content-subtle"
+        style={{ minHeight: "1.5em", maxHeight: "min(40vh, 320px)", overflowY: "auto" }}
       />
       <div className="mt-2 flex items-center justify-end gap-2">
         <button
           type="button"
           onClick={onCancel}
-          className="cds-hover-ghost rounded px-2 py-1 text-[11px] text-content-muted transition-colors hover:text-content"
+          className="cds-hover-ghost rounded px-2 py-1 text-[11px] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {t("common.cancel")}
         </button>

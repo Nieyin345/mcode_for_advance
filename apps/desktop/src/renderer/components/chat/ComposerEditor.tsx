@@ -300,6 +300,9 @@ export const ComposerEditor = forwardRef<
           "composer-prose outline-none",
           "min-h-[3rem] leading-relaxed",
         ),
+        role: "textbox",
+        "aria-multiline": "true",
+        "aria-readonly": String(!editable),
         "aria-label": placeholder,
         "data-placeholder": placeholder,
       },
@@ -412,7 +415,9 @@ export const ComposerEditor = forwardRef<
 
   // Keep editable in sync with the prop without recreating the editor.
   useEffect(() => {
-    if (editor) editor.setEditable(editable);
+    if (!editor) return;
+    editor.setEditable(editable);
+    editor.view.dom.setAttribute("aria-readonly", String(!editable));
   }, [editor, editable]);
 
   // data-placeholder / aria-label are captured once at editor creation
@@ -655,7 +660,7 @@ export const ComposerEditor = forwardRef<
   return (
     <div
       ref={hostRef}
-      className={cn("composer-host", className)}
+      className={cn("composer-host rounded-[var(--radius-control)] focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-accent", className)}
     >
       <EditorContent editor={editor} />
     </div>

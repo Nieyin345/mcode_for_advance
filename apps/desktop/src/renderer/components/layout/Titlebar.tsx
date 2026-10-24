@@ -168,9 +168,10 @@ export function Titlebar({
         {isSettings ? (
           <>
             <button
+              type="button"
               onClick={onBack}
               className={cn(
-                "flex items-center gap-1.5 rounded px-1.5 py-1 text-xs font-medium",
+                "flex items-center gap-1.5 rounded px-1.5 py-1 text-xs font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                 "cds-hover-ghost text-content-muted hover:text-content",
               )}
               style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -191,11 +192,12 @@ export function Titlebar({
               // appends the effective toggle shortcut (the same command this
               // button triggers).
               <button
+                type="button"
                 onClick={() =>
                   widePanelOpen ? setWidePanelOpen(false) : setBrowserPanelOpen(false)
                 }
                 className={cn(
-                  "flex items-center gap-1.5 rounded px-1.5 py-1 text-xs font-medium",
+                  "flex items-center gap-1.5 rounded px-1.5 py-1 text-xs font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   "cds-hover-ghost text-content-muted hover:text-content",
                 )}
                 style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
@@ -215,12 +217,14 @@ export function Titlebar({
               // only mouse path back (beyond the toggle-left shortcut).
               !leftOpen && (
                 <button
+                  type="button"
                   onClick={onToggleLeft}
                   className={cn(
-                    "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors",
+                    "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                     "cds-hover-ghost text-content-muted hover:text-content",
                   )}
                   title={t("layout.showLeftPanel") + hintFor("layout.toggle-left")}
+                  aria-label={t("layout.showLeftPanel")}
                   style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                 >
                   <IconLayoutSidebarLeftExpand
@@ -268,7 +272,7 @@ export function Titlebar({
                 onClick={onToggleBottomTerminal}
                 aria-pressed={bottomTerminalOpen}
                 className={cn(
-                  "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors",
+                  "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   bottomTerminalOpen
                     ? "bg-surface-hover text-content"
                     : "cds-hover-ghost text-content-muted hover:text-content",
@@ -290,7 +294,7 @@ export function Titlebar({
                 onClick={onToggleRight}
                 aria-pressed={rightOpen}
                 className={cn(
-                  "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors",
+                  "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   rightOpen
                     ? "bg-surface-hover text-content"
                     : "cds-hover-ghost text-content-muted hover:text-content",
@@ -328,7 +332,7 @@ function PanePresetMenu() {
     <Menu.Root>
       <Menu.Trigger
         data-testid="pane-layout-presets"
-        className="cds-hover-ghost rounded px-2 py-1 text-xs text-content-muted hover:text-content"
+        className="cds-hover-ghost rounded px-2 py-1 text-xs text-content-muted hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         aria-label={t("layout.panePresets")}
         title={t("layout.panePresets")}
@@ -542,7 +546,7 @@ function EditorColumnToggle() {
       aria-label={editorVisible ? t("layout.hideEditor") : canRestore ? t("layout.showEditor") : t("layout.noOpenFiles")}
       disabled={!editorVisible && !canRestore}
       className={cn(
-        "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors",
+        "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         editorVisible
           ? "bg-surface-hover text-content"
           : "cds-hover-ghost text-content-muted hover:text-content disabled:opacity-40 disabled:hover:bg-transparent",

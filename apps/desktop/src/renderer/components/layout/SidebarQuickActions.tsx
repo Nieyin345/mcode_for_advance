@@ -78,6 +78,7 @@ export function SidebarQuickActions({
           else if (canNewSession) void startSession();
         }}
         disabled={!canNewSession}
+        aria-label={t("layout.newSession")}
         title={
           newSessionOverride
             ? newSessionOverrideTitle ?? t("layout.newSessionInWorktree")
@@ -86,7 +87,7 @@ export function SidebarQuickActions({
               : t("layout.needProject")
         }
         className={cn(
-          "flex w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-1.5 py-1.5 transition-colors",
+          "flex min-h-9 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-1.5 py-1.5 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           "[font-size:var(--right-panel-font-size)]",
           canNewSession
             ? "text-content-muted hover:bg-surface-hover hover:text-content"
@@ -109,9 +110,10 @@ export function SidebarQuickActions({
           type="button"
           data-sidebar-quick-action="search"
           onClick={() => setCommandPaletteOpen(true)}
+          aria-label={t("common.search")}
           title={t("layout.palette.placeholder.all")}
           className={cn(
-            "flex w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-1.5 py-1.5 transition-colors",
+            "flex min-h-9 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-1.5 py-1.5 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             "[font-size:var(--right-panel-font-size)]",
             "cds-hover-ghost text-content-muted hover:text-content",
           )}
