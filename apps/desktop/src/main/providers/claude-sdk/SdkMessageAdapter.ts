@@ -81,6 +81,27 @@ export { parseQuestions } from "@main/lib/askQuestion.js";
 
 /* ─── adapter state ────────────────────────────────────────────────── */
 
+/** 【T123】`document_tool_call` 的 `input.tool` 里**产出新文件**的那几个。
+ *
+ *  ⚠️ **判的是 `b.input.tool`，不是 `b.name`。** 外层工具名永远是
+ *  `document_tool_call`（一个入口承载全部文档工具），create 与否由它 `input.tool`
+ *  的取值决定。第一次写这段时判成了 `b.name`，条件恒假、什么都没发生 ——
+ *  而套件正控（`Write`）是绿的，所以很容易看漏。
+ *
+ *  只有这些工具的 `filePath` 是输出路径：CLI 侧是 `create --out <filePath>`。
+ *  `apply` / `read` 类工具的 `filePath` 是用户当前打开的文档，不能记进
+ *  turn.files（详见 recordPre 调用处的注释）。
+ *
+ *  来源：`document/documentToolSurface.ts:398` 的 `CLI_TOOL_MAP`，其中值为
+ *  `"create"` 的条目。新增 create 类工具时这里要跟着加 —— 漏了不会静默错，
+ *  只是那个工具的产物退回旧行为（不进任务中心），套件会红。
+ *
+ *  刻意**不** import `cliRouteFor`：provider 层不依赖 document 层。 */
+const CREATE_DOCUMENT_TOOLS: ReadonlySet<string> = new Set([
+  "create_document", // docs / sheets / pdf
+  "build_deck", // slides
+]);
+
 interface AdapterState {
   blockMessageIds: Map<number, string>;
   emittedToolUse: Set<string>;
@@ -1285,6 +1306,36 @@ export class SdkMessageAdapter {
         if (FILE_MUTATING_TOOLS.has(b.name)) {
           const fp = getToolFilePath(b.name, b.input);
           if (fp) {
+            const norm = normalizeToolFilePath(this.cwd, fp);
+            void this.snapshots.recordPre(this.cwd, norm?.absPath ?? fp);
+          }
+        }
+
+        // 【T123】Office/PDF 的产物必须进 turn.files，否则任务中心看不见它们。
+        //
+        // `document_tool_call` 写盘不走 Write/Edit，所以它不在 FILE_MUTATING_TOOLS
+        // 里 —— 而那个集合同时驱动两件别的事，把它加进去会一起改坏：
+        //   1. `ClaudeAgentSdkProvider.ts:903` 用它做工作区越界检查，而
+        //      `getToolFilePath()` 只读 `file_path`，Office 传的是 `filePath`，
+        //      取到空串 → 围栏静默失效；
+        //   2. rewind 假设"turn 前文件已存在、要还原"，而 Office 产物多是新建；
+        //   3. `build_deck` 一轮写多个文件（style.md / outline.json / pages/NN.json
+        //      / 最终 .pptx），那个集合只快照 `filePath` 一个，其余全漏。
+        //
+        // 所以单独记一条，且**只在 create 类工具上**：`create_document` /
+        // `build_deck` 的 `filePath` 是**输出**路径（CLI 的 `--out`），新建文件；
+        // 而 apply / read 类工具的 `filePath` 是**用户当前打开的文档**，把那个也
+        // 记进 turn.files 会把一次没发生的写当成产物，还会让 rewind 去还原一份
+        // 用户根本没让 Agent 碰的文件。
+        //
+        // 工具名是硬编码的，不走 `cliRouteFor` —— provider 层不该 import document
+        // 层，而这张表只有五个条目、上游不常变；漏了也不会静默：该文件就退回到
+        // T97 记录的旧行为（不进任务中心），套件会红。新增 create 类工具时这里要跟着加。
+        if (b.name === "document_tool_call") {
+          const raw = b.input as Record<string, unknown> | undefined;
+          const innerTool = typeof raw?.tool === "string" ? raw.tool : "";
+          const fp = raw?.filePath;
+          if (CREATE_DOCUMENT_TOOLS.has(innerTool) && typeof fp === "string" && fp) {
             const norm = normalizeToolFilePath(this.cwd, fp);
             void this.snapshots.recordPre(this.cwd, norm?.absPath ?? fp);
           }
