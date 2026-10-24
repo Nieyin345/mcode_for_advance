@@ -815,3 +815,31 @@ offscreen right-below primary work area 1463x775 (x=1543, y=855)
 **不改的原因**：改 `String(err)` → `err.message` 会动 vendor 的 catch，
 而它同时兜住 vendor 自己的全部保存错误（不止守卫抛的）；本卡的范围是接缝，不是文案。
 **记在这里，另开卡处理**（与 `slides:save-as` 同一张卡即可，两者都在 `slides-main.ts` 的保存路径上）。
+
+#### 收尾（2026-10-25 01:15）：sheets 那一格仍无法复核
+
+**显示器检查（`[System.Windows.Forms.Screen]::AllScreens`）：**
+
+```
+\.\DISPLAY1 {X=0,Y=0,Width=1463,Height=823}      ← 只有一块，副屏没回来
+```
+
+**所以 `o2-conflict-sheets` 的 `negative-edit` 仍会在 `.workbook-opening-screen` 卡住**，
+**本次不重跑**（重跑只会得到同一个环境结论，且会占用共享工作树）。
+
+**已确认这是环境的依据**（三条，本节前文已记）：
+1. `O2_NO_GUARD=1`（不装守卫）**同样卡** —— 不是 O10 引入；
+2. 根因是显示器配置变化 → 窗口落在主屏外 → `capturePage` 无 display surface；
+3. T7 自己的 `docs-open-edit-save-reopen` / `sheets-open-edit-save-reopen` **同位置红**
+   （`step-07-screenshot` / `step-06-screenshot`），而我未改 T7。
+
+**副屏接回后要跑的行（一次即可覆盖两件事）：**
+
+```bash
+cd apps/desktop
+bash scripts/o2-conflict-u1-smoke/run.sh            # 期望：六格全绿 + 失败路径 5/5
+node scripts/t7-genoffice-u1/run.mjs --only=docs-open-edit-save-reopen
+```
+
+**如果 sheets 仍红而 T7 已绿**，那就不是环境 —— 届时应查 `negative-edit` 的 `observed`
+（`stage` 是 `select` 还是 `type`、`status` 是不是「正在打开工作簿…」），而不是先怀疑守卫。
