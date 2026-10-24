@@ -37,12 +37,13 @@
  * ## 预期红数（跑之前写下的，见任务卡回写区）
  *
  * 正常状态：组 1 绿 5、组 2 绿 1、组 3 绿 19（2 夹具 + 1 闸门 + 16 命名空间点名）、
- * 组 4 绿 2、附加绿 18（16 命名空间 satisfies + 2 条写法禁令）—— **共 45 条全绿**。
+ * 组 4 绿 4、附加绿 18（16 命名空间 satisfies + 2 条写法禁令）—— **共 47 条全绿**。
  * 变异「`_commands` 那行 satisfies → as」：预期 **红 3**（组 3 点名 1、附加 satisfies 1、附加 no-as 1）。
  * 变异「删掉 tsconfig 的 exclude」：预期 **红 1**（组 1 的包 tsc exit 0）——实测红 2，见回写区。
  * 变异「删掉 `_gate.ts` 的 workspace 一行」：预期 **红 2**（点名 1 + satisfies 1）。
  * 变异「组 3/4 的缺方法夹具补全」：预期 **红 2**（exit≠0 与点名各 1）。
  * 变异「组 2 的正控夹具删一个成员」：预期 **红 1**。
+ * 变异「组 4 的窄签名夹具补全」：预期 **红 2**（exit≠0 + TS2352 各 1）。
  *
  * ## 环境前提
  *
@@ -320,32 +321,60 @@ for (const [ns, missingName] of GATE_NAMES) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 组 4 —— 假闸门对照：as / satisfies Partial<> 都会放过缺方法 （预期：绿 2，红 0）
+// 组 4 —— 假闸门对照：as / satisfies Partial<> 都会放过缺方法 （预期：绿 4，红 0）
 // ═══════════════════════════════════════════════════════════════════════════
 section("组 4 —— 假闸门对照：as 和 satisfies Partial 都放过缺成员");
 
-// ⚠️ **`as` 的「假绿」有前提，卡上没写全 —— 实测记录在这里。**
+// ⚠️ **`as` 放不放行，是「两个类型像不像」的函数，不是「你写全了没有」的函数。**
 //
-// 本套件第一版用「缺 1 个方法、其余 3 个签名正确」的对象测 `as`，结果 `tsc` **exit 2**
-// 报 `TS2352: Conversion of type ... may be a mistake because neither type sufficiently
-// overlaps with the other`。**拦住它的是 `as` 的「足够重叠」规则，不是完整性检查。**
+// 四种形状实测（`@types/vscode@1.140.0` + TS 5.7.2，`--strict`）：
 //
-// 换成「只实现 1 个方法」的**同一个对象**（卡里 `.tmp/types-probe/g1.ts` 的形态），
-// `as` 放行 —— 因为源类型（只有一个成员）是目标类型的子集，重叠成立。
+// | 形状（都缺 registerTextEditorCommand 等）      | `as`                  | `satisfies` |
+// |-----------------------------------------------|-----------------------|-------------|
+// | `{}`                                          | **绿（exit 0）**      | 红 TS1360   |
+// | 1 成员、签名写全                               | **绿（exit 0）**      | 红 TS1360   |
+// | 1 成员、签名 `(id: string)`                    | 红 **TS2352**         | 红 TS1360   |
+// | 3 成员、签名写全                               | 红 **TS2352**         | 红 TS1360   |
 //
-// **所以「as 会假绿」不是无条件的：** 它取决于对象与目标类型的形状关系。
-// 但**对 `_gate.ts` 这种「从零开始只写几个成员」的用法，它就是会假绿** ——
-// 而那正是本包采用的形态。这条断言忠于这个前提，不宣称更强的结论。
+// **两种红的原因不同：** `satisfies` 红是因为「你少了三个方法」（TS1360）；
+// `as` 红是因为「两个类型不够像」（TS2352，编译器认为这个转换「多半是笔误」）。
+//
+// **危险在于：`as` 红的时候，用户会以为闸门起作用了。** 但它红的理由是相似度 ——
+// 只要样例往「像」的方向挪一点（补一个可选参数、去掉一个成员），它就会变绿，
+// 而缺口一直都在。**`satisfies` 不看像不像，只看完整性，所以它不会这样翻转。**
+//
+// 下面第一条断言用「绿」的形状，第二条用「红」的形状 —— 两条一起钉死「`as` 的红是 TS2352」。
 const AS_VERSION = writeFixture("as.ts", `
 import type * as vscode from "vscode";
 ${MISSING_FIXTURE_BODY}
 export const _commands = impl as typeof vscode.commands;
 `);
 const asResult = runTsc(TMP, [AS_VERSION], TYPE_ROOTS);
-check("★ 同一份缺方法对象用 as 写：exit 0（as 绕过了检查 —— 仅在类型重叠成立时）", asResult.status === 0, {
-  status: asResult.status,
-  output: asResult.output.slice(0, 800),
-});
+check(
+  "★ 同一份缺方法对象用 as 写：exit 0 —— as 不是完整性检查，它只看两个类型像不像",
+  asResult.status === 0,
+  { status: asResult.status, output: asResult.output.slice(0, 800) },
+);
+
+// 第二种形状：单成员 + 窄签名 `(id: string)`。`as` 在这里**红** —— 但红的是相似度规则。
+const AS_NARROW = writeFixture("as-narrow.ts", `
+import type * as vscode from "vscode";
+export const _commands = { registerCommand: (id: string) => ({ dispose() {} }) } as typeof vscode.commands;
+`);
+const asNarrowResult = runTsc(TMP, [AS_NARROW], TYPE_ROOTS);
+check(
+  "★ 窄签名形状用 as 写：exit ≠ 0 —— 但拦住它的是相似度，不是完整性",
+  asNarrowResult.status !== 0,
+  { status: asNarrowResult.status, output: asNarrowResult.output.slice(0, 800) },
+);
+// ⚠️ **必须断言错误代码，不能只断言「报错里出现缺的方法名」。**
+// TS2352 的正文里**也列出了缺哪些方法**（`Property 'registerTextEditorCommand' is missing
+// in type ... but required in type ...`），所以「提到方法名」区分不出是哪条规则拦的。
+check(
+  "★ 而且错误代码是 TS2352（相似度规则），不是 TS1360（satisfies 的完整性规则）",
+  /\berror TS2352\b/.test(asNarrowResult.output) && !/\berror TS1360\b/.test(asNarrowResult.output),
+  { output: asNarrowResult.output.slice(0, 800) },
+);
 
 const PARTIAL_VERSION = writeFixture("partial.ts", `
 import type * as vscode from "vscode";
