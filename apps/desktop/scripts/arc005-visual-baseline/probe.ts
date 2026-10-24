@@ -142,6 +142,9 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
       await sleep(300);
       for (const [screen, title] of SCREENS) {
         const file = `${screen}-${condition.id}-${condition.width}`;
+        // 【T136】本场景的起始时刻 —— 冻结时钟用它，这样「用时」那类文字仍是
+        // 有意义的数（不是 0），而秒位不再随真实时间漂移。
+        const sceneStartedAt = Date.now();
         if (screen === 'narrow-window') win.setSize(1024, 640);
         else win.setSize(condition.width, condition.height);
         let probe: { ok: boolean; reason?: string; value?: unknown } = { ok: false, reason: "unprobed" };
@@ -228,6 +231,17 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
         // Reassert theme immediately before measurement: the real sidebar's
         // async theme hydration can race with a condition transition.
         await js(`document.documentElement.classList.toggle('dark', ${condition.dark})`);
+        // 【T136】冻结时钟再截图。
+        //
+        // `useNow` 每 1 秒跳一次，跳的瞬间秒位重排，于是「没改过界面的场景」也
+        // 会在 `compare.mjs` 里报差异（实测四处暗色各 8px、灰度只差 1）。每次
+        // 都报会训练人忽略比对输出，那比不报更糟。
+        //
+        // 用固定的时间戳而不是「等一秒」——等待只是把相位推到另一个不确定的位置。
+        // 值取场景开始时间，这样「时长」类文字仍是有意义的数，而不是 0。
+        await js(`globalThis.__MCODE_FREEZE_CLOCK__ = ${sceneStartedAt};`);
+        // 让 React 用冻结值重渲染一帧，再量几何与截图。
+        await sleep(80);
         const snapshot = await js<unknown>(`(() => {
           const selectors = ${JSON.stringify(SELECTORS)};
           const tokens = ${JSON.stringify(TOKENS)};
