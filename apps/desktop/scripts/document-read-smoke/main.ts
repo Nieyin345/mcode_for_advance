@@ -1024,8 +1024,50 @@ try {
    const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
    const out=await urlSpec.handler(z.object(urlSpec.inputSchema).parse({url:`http://127.0.0.1:${port}/`,max_chars:1000,timeout_ms:8000}),{sessionId:"url-fixture"}) as ToolResult;
    const t=toolTextOf(out);
+   // 【T112】先断言「这是二进制拒绝，不是网络失败」。
+   //
+   // 这两件事都会让 `isError: true`，但原因完全不同 —— 而从前只有下面那一条
+   // `assert.match(t, /二进制|…/)`，所以当**连接失败**时（比如这个 `createServer`
+   // 没起来、端口被占、防火墙拦了），报出来的是那条正则不匹配，
+   // **看起来像「二进制策略坏了」，实际是根本没连上**。
+   //
+   // 加这一条前置断言，让「红在哪」变清楚：如果连不上，先红的会是它。
+   assert.ok(!/fetch failed|网络请求失败|拒绝连接|无法解析/.test(t), `这条测的是二进制拒绝，但实际是网络失败：${t}`);
    assert.equal(out.isError,true,t);
    assert.match(t,/二进制|agent_read_document|agent_read_image/,t);
+  }finally{await new Promise<void>((r)=>server.close(()=>r()));}
+ });
+ // 【T112】网络失败要翻译成模型能照着动作的话，不是原样抛 "fetch failed"。
+ //
+ // 这条钉的是 `readUrlText` 的 catch：从前它只翻译 `AbortError`，其余原样出去 ——
+ // 模型看到一句 `TypeError: fetch failed`，无法判断「该重试、换 URL、还是放弃」。
+ await test("★ 网络失败被翻译成可照做的中文说明（不是原样的 fetch failed）",async()=>{
+  const urlSpec=agentMcpTools({cwdFor:()=>root}).find(x=>x.name==="agent_read_url")!;
+  const call=async(url:string)=>urlSpec.handler(z.object(urlSpec.inputSchema).parse({url,max_chars:1000,timeout_ms:6000}),{sessionId:"url-fixture"}) as Promise<ToolResult>;
+
+  // ① 连接被拒（本机一个没人听的端口）—— 实测 `cause.code` 是 **undefined**，
+  //    所以这条同时钉住「不能只按 cause.code 分类」。
+  const refused=await call("http://127.0.0.1:1/");
+  const rt=toolTextOf(refused);
+  assert.equal(refused.isError,true,rt);
+  assert.ok(!/fetch failed/.test(rt),`不许把 undici 的原话抛给模型：${rt}`);
+  assert.match(rt,/拒绝连接|端口|不可达|网络/,rt);
+
+  // ② DNS 解析失败（`.invalid` 是保留域名，保证解析不了）
+  const dns=await call("http://this-host-does-not-exist-xyz.invalid/");
+  const dt=toolTextOf(dns);
+  assert.equal(dns.isError,true,dt);
+  assert.ok(!/fetch failed/.test(dt),`不许把 undici 的原话抛给模型：${dt}`);
+  assert.match(dt,/解析|主机名|域名|网络/,dt);
+
+  // ③ 对照：本套件自己起的服务器仍然读得到 —— 证明上面两条不是「整个网络都断了」
+  const server=createServer((_req,res)=>{res.writeHead(200,{"Content-Type":"text/plain; charset=utf-8"});res.end("still works");});
+  await new Promise<void>((r)=>server.listen(0,"127.0.0.1",()=>r()));
+  const port=(server.address() as {port:number}).port;
+  try{
+   const ok=await call(`http://127.0.0.1:${port}/`);
+   assert.ok(!ok.isError,toolTextOf(ok));
+   assert.ok(toolTextOf(ok).includes("still works"),toolTextOf(ok));
   }finally{await new Promise<void>((r)=>server.close(()=>r()));}
  });
  // 【MC-065】重定向次数设硬上限,不交给 undici 无界跟随。

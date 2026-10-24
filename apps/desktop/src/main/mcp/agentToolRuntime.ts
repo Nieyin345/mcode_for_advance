@@ -1593,6 +1593,58 @@ export function urlOutcomeToText(header: string, outcome: ReadOutcome, budget: R
   }
 }
 
+/**
+ * 【T112】把 `fetch` 的网络失败翻译成模型能照着动作的一句话。
+ *
+ * 返回 `null` 表示「不是我认识的网络失败」—— **调用方应当原样重抛**，
+ * 不要把不认识的错误也包一层（那会盖掉真正的堆栈和 code）。
+ *
+ * ## 为什么不能只按 `cause.code` 分类
+ *
+ * 实测（2026-10-24，Windows 11 / Node 22.21.1）：
+ *
+ * | 场景 | `cause.code` | `cause.message` |
+ * |---|---|---|
+ * | **连接被拒** | **`undefined`** | `"bad port"` |
+ * | DNS 解析失败 | `ENOTFOUND` | `getaddrinfo ENOTFOUND …` |
+ * | TLS 证书 | `DEPTH_ZERO_SELF_SIGNED_CERT` | `self-signed certificate` |
+ *
+ * **最常见的那一种（连接被拒）恰恰没有 `code`。** 所以先看 `code`，
+ * 认不出时退回 `cause.message` 再退回 `err.message` 的文本匹配。
+ */
+function describeFetchFailure(err: unknown): string | null {
+  const e = err as { name?: string; message?: string; cause?: { code?: string; message?: string } };
+  // 只处理 undici 的网络失败。其他错误（本函数自己抛的「Content-Type 是…」等）
+  // 必须原样出去 —— 那些已经是给模型看的、可照做的措辞。
+  if (e?.name !== "TypeError" || e.message !== "fetch failed") return null;
+
+  const code = e.cause?.code;
+  const causeText = `${e.cause?.message ?? ""}`.toLowerCase();
+
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+    return `无法解析该 URL 的主机名（${code}）：检查域名是否拼错、或本机 DNS 是否可用。`;
+  }
+  if (code === "ECONNREFUSED" || causeText.includes("bad port") || causeText.includes("econnrefused")) {
+    return `目标拒绝连接：该主机/端口上没有服务在监听（连接被拒）。检查端口号，或确认服务是否已启动。`;
+  }
+  if (code === "ECONNRESET" || causeText.includes("econnreset")) {
+    return `连接被对端重置（ECONNRESET）：可以稍后重试一次；反复出现说明目标不稳定。`;
+  }
+  if (code === "ETIMEDOUT" || causeText.includes("etimedout")) {
+    return `连接阶段超时（ETIMEDOUT）：目标不可达或网络受限。`;
+  }
+  if (typeof code === "string" && /^(DEPTH_ZERO_|SELF_SIGNED_|UNABLE_TO_VERIFY_|CERT_|ERR_TLS_)/.test(code)) {
+    return `TLS 证书校验失败（${code}）：该站点的证书不受信任。不要绕过校验；换用可信来源。`;
+  }
+  if (code === "EHOSTUNREACH" || code === "ENETUNREACH") {
+    return `网络不可达（${code}）：本机到该主机没有可用路由。`;
+  }
+  // 认不出的网络失败：**仍要说清这是网络层**，并带上原始 cause ——
+  // 否则模型只会看到 "fetch failed"，无法与「URL 格式错」「本工具拒绝」区分开。
+  const detail = e.cause?.message ?? code ?? "无更多信息";
+  return `网络请求失败（未能归类的网络层错误：${detail}）。这不代表 URL 内容有问题 —— 先确认主机可达。`;
+}
+
 export async function readUrlText(url: string, maxChars: number, timeoutMs: number): Promise<string> {
   let current: URL;
   try { current = new URL(url); } catch { throw new Error(`URL 不合法:${url}`); }
@@ -1649,6 +1701,21 @@ export async function readUrlText(url: string, maxChars: number, timeoutMs: numb
     return urlOutcomeToText(header, outcome, budget);
   } catch (err) {
     if ((err as Error).name === "AbortError") throw new Error(`读取 URL 超过 ${budget.maxTimeMs}ms`);
+    // 【T112】网络失败要翻译成**模型能照着动作**的话，不能把 undici 的
+    // `TypeError: fetch failed` 原样抛出去 —— 那句话既没说清是哪一类失败，
+    // 又和本工具的其他错误混在一起，模型无法判断该重试、换 URL、还是放弃。
+    //
+    // 实测（2026-10-24，Windows 11 / Node 22.21.1）的 `cause` 形状：
+    //
+    //   连接被拒     cause.code=**undefined**  cause.message="bad port"
+    //   DNS 失败     cause.code="ENOTFOUND"    cause.message="getaddrinfo ENOTFOUND …"
+    //   TLS 证书     cause.code="DEPTH_ZERO_SELF_SIGNED_CERT"
+    //   超时         name="AbortError"（已在上面处理）
+    //
+    // ⚠️ **连接被拒时 `cause.code` 是 undefined** —— 只按 `code` 分类会漏掉最常见的一种。
+    // 所以先看 `code`，再退回 `cause.message` / `err.message` 的文本。
+    const network = describeFetchFailure(err);
+    if (network !== null) throw new Error(network);
     throw err;
   } finally {
     clearTimeout(timer);
