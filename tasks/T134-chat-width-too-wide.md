@@ -1,6 +1,6 @@
 # T134｜正文宽度的问题不在 `--chat-max-w`，在 gutter 的 56px 上限
 
-- Status: ready-for-agent
+- Status: ✅ done（`dda3458f`，16/16；回写见文末「结果回写」）
 - Category: **P0 产品主线（UI）—— 用户说「要像 claude 一样」的直接差距**
 - Priority: **P0**
 - Depends on: T122（`478f63eb`，gutter 已连续化）
