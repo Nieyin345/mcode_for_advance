@@ -1,0 +1,318 @@
+From 87d9b4bbb7f77c8d5d2e6b7d705c41538942b989 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sat, 24 Oct 2026 22:59:47 +0800
+Subject: [PATCH] feat(html): reshell the chrome in Mcode's design tokens
+
+The HTML editor's ribbon, status bar, AI rail, dropdowns and find panel all
+take their colours from GenOffice's semantic token layer, so the shell can be
+replaced by re-pointing those tokens instead of touching any component. This
+adds apps/html/src/renderer/mcode-theme.css (the same 54 chrome tokens and the
+same CDS ramp as the Docs reshell in 05da63c) and loads it from main.tsx.
+
+The gate is NOT window.desktop. That is the Docs preload's namespace; HTML's
+preload exposes window.htmlApi and never `desktop`, so copying the Docs gate
+would make the import never fire. Electron puts app.getName() in the UA comment
+segment, and Mcode's main process sets it to "Mcode" before whenReady while the
+document views do not override the UA, so the hosted page sees Mcode/44.x and a
+standalone GenOffice HTML sees GenOfficeHTML/44.x. Verified in real Electron by
+apps/desktop/scripts/o6-reshell-html-smoke (25 assertions, three mutations).
+
+Scope is deliberately narrow:
+
+- Component tree, CodeMirror setup, preview iframe, export and print paths are
+  untouched.
+- Document content colours never move: --preview-page-bg (the preview's own
+  backdrop) is not overridden, and the preview document is user HTML anyway.
+- HTML-semantic colours are not overridden: --hx-* (AI-changed marks, errors,
+  focus rings), --cm-* (CodeMirror syntax colours), --search-hit-*.
+- Per-app brand accents (--accent, --word-blue) are not overridden.
+- --surface-2 is not overridden: it is only ever read as
+  var(--surface-2, var(--surface)) and upstream never defines it, so defining it
+  would change the fallback.
+---
+ apps/html/src/renderer/main.tsx        |  13 ++
+ apps/html/src/renderer/mcode-theme.css | 248 +++++++++++++++++++++++++
+ 2 files changed, 261 insertions(+)
+ create mode 100644 apps/html/src/renderer/mcode-theme.css
+
+diff --git a/apps/html/src/renderer/main.tsx b/apps/html/src/renderer/main.tsx
+index 062bea5..573c553 100644
+--- a/apps/html/src/renderer/main.tsx
++++ b/apps/html/src/renderer/main.tsx
+@@ -18,6 +18,19 @@ import '@genoffice/ui/ai-panel-prefs.css'
+ import '@genoffice/ui/ai-scope-quote.css'
+ import '@genoffice/ui/image-dialogs.css'
+ import './styles.css'
++// 【O6】Mcode 宿主主题层：把 GenOffice 的语义 token 重指到 Mcode 的 CDS 色阶。
++// **只在 Mcode 里加载** —— 单独跑 GenOffice 时保持自己的 Word 视觉语言。
++//
++// 开关不能用 `window.desktop`：那是 **docs** preload 的命名空间，html 的 preload
++// 只暴露 `window.htmlApi`（见 src/preload/index.ts 末尾），照抄会让这里永不触发。
++//
++// 用 UA 里的产品号：Electron 默认把 `app.getName()` 写进 UA 注释段。Mcode 主进程
++// 在 whenReady 之前 `app.setName("Mcode")`（apps/desktop/src/main/index.ts），
++// 且文档视图不覆盖 UA —— 所以宿主里是 `Mcode/44.x`，单独跑是 `GenOfficeHTML/44.x`。
++// 真 Electron 双模式实测见 apps/desktop/scripts/o6-reshell-html-smoke/。
++//
++// 放在 `styles.css` 之后：token 是自定义属性，后者先定义、这里覆盖，顺序决定胜负。
++if (/\bMcode\//.test(navigator.userAgent)) import('./mcode-theme.css')
+ 
+ installScreenTips()
+ 
+diff --git a/apps/html/src/renderer/mcode-theme.css b/apps/html/src/renderer/mcode-theme.css
+new file mode 100644
+index 0000000..a173887
+--- /dev/null
++++ b/apps/html/src/renderer/mcode-theme.css
+@@ -0,0 +1,248 @@
++/* Mcode 宿主主题层（HTML）—— 把 GenOffice 的**语义 token** 重指到 Mcode 的 CDS 色阶。
++ *
++ * ## 这是什么，不是什么
++ *
++ * 与 `apps/docs/src/renderer/mcode-theme.css`（T39 / 补丁 0014）同一套机制、同一批取值：
++ * GenOffice 的 chrome 颜色全部走 `packages/ui/src/tokens.css` 里的语义 token，而且它自己
++ * 有一条 CI（`tools/check-theme-colors.mjs`）强制这件事：renderer CSS 里**不许出现裸色值**，
++ * 只有自定义属性定义行例外。所以换壳 = 替换 token 的取值：组件树、CodeMirror、
++ * 预览/导出/打印路径一行不动。
++ *
++ * 覆盖集与 docs 那份**逐字相同**（54 个 chrome token）：六个 app 共用同一个 token 层，
++ * 保持同一套值，chrome 才会看起来是同一个产品。html 自己的 CSS 实际消费其中 38 个，
++ * 其余 16 个由共享的 `@genoffice/ui/*.css`（AI 面板、下拉、查找、颜色选择器…）消费，
++ * 或为与兄弟 app 保持一致而保留。
++ *
++ * ## 开关：为什么不是 `window.desktop`
++ *
++ * docs 的 0014 用 `if (window.desktop)` 作开关 —— 那是 docs 自己的 preload 命名空间。
++ * **html 的 preload 暴露的是 `window.htmlApi`，没有 `desktop`**（`apps/html/src/preload/
++ * index.ts:132`），照抄会让 `import()` 永远不触发。
++ *
++ * 这里用 **UA 产品号**：Electron 默认把 `app.getName()` 放进 UA 的注释段。
++ * Mcode 主进程 `apps/desktop/src/main/index.ts` 在 `whenReady` 之前 `app.setName("Mcode")`，
++ * 且文档视图不覆盖 UA（`grep -rn "userAgent|setUserAgent" apps/desktop/src/main/document`
++ * 无命中），所以宿主里 UA 含 `Mcode/44.x`；单独跑 GenOffice 时是 `GenOfficeHTML/44.x`。
++ * 真 Electron 实测过两种形态（见 `apps/desktop/scripts/o6-reshell-html-smoke/`）。
++ *
++ * ## 色值从哪来
++ *
++ * 全部来自 Mcode 的 `apps/desktop/src/renderer/tokens.cds.css`（由 `gen-cds-tokens.mjs`
++ * 从 `open-claude-ui/code-examples/cds-theme.css` 生成，MIT）。阶位名与注释里的 hex
++ * 一一对应，与 docs 那份同值同源。
++ *
++ * ## 边界（硬规矩）
++ *
++ * - **不碰文档内容**：`--preview-page-bg`（预览 iframe 的底，浏览器里没有自己背景的页面
++ *   永远是白色，上游注释写死了这条）不在覆盖范围；html 的预览内容由用户自己的 HTML
++ *   决定，父层 token 改不到它。
++ * - **不碰 `--hx-*`**：那一族是 html 自己的 app 语义（AI 改动高亮、错误态、焦点环、
++ *   shimmer）。换掉会让用户认不出「哪些是 AI 改的」。
++ * - **不碰 `--cm-*`**：CodeMirror 的语法高亮色是代码文本的语义色（tag/attr/string…）。
++ * - **不碰 `--accent*` / `--word-blue`**：各 app 的品牌色归各 app（GenOffice CLAUDE.md
++ *   主题规则第 3 条）。
++ * - **不碰 `--search-hit-*` / `--docs-revision-bar`**：查找命中与修订条是文档语义标记。
++ * - **不碰 `--surface-2`**：html 只在 `var(--surface-2, var(--surface))` 里用到它，
++ *   上游从未定义 —— 定义它会改掉回退行为。
++ * - 暗色只覆盖与亮色**成对**的 token；`color-scheme` 由 GenOffice 自己管。
++ */
++
++/* ── 亮色 ─────────────────────────────────────────────────────────────── */
++:root {
++  /* 表面阶梯 → CDS gray 阶（Mcode 的 --surface = var(--m-gray-10) = #fcfcfb） */
++  --surface: #fcfcfb;
++  --surface-subtle: #f9f9f7;
++  --chrome-bg: #fcfcfb;
++  --canvas: #f0efec;
++  --bg-content: #f9f9f7;
++
++  /* 边框 → CDS 发丝边 */
++  --border: #e1e0d9;
++  --border-subtle: #edece8;
++  --border-strong: #d2d1c7;
++  --border-hover: #c3c2b7;
++
++  /* 文字 → CDS 对比阶梯（Mcode 的 --content = var(--m-gray-850) = #151515） */
++  --text: #151515;
++  --text-primary: #151515;
++  --text-secondary: #52514e;
++  --text-tertiary: #6d6b67;
++  --text-muted: #6d6b67;
++  --text-dim: #52514e;
++
++  /* 交互态 */
++  --hover: #f0efec;
++  --pressed: #eae9e4;
++  --active-bg: #e1e0d9;
++  --bg-hover: #f0efec;
++  --bg-hover-subtle: #f6f6f4;
++  --bg-hover-strong: #eae9e4;
++  --bg-hover-accent: #e1e0d9;
++  --icon-muted: #a5a49a;
++
++  /* 状态色：保留语义，只换到 CDS 色系的饱和度 */
++  --danger: #b4352f;
++  --danger-bg: #fdf3f2;
++  --danger-border: #f0c8c4;
++  --success: #2f6b4a;
++  --success-bg: #eef6f1;
++  --success-border: #c8e0d2;
++
++  /* 阴影：CDS 的头发丝阴影 */
++  --shadow-btn-hover: 0 1px 3px rgb(21 21 21 / 8%);
++  --shadow-modal-strong: 0 12px 32px rgb(21 21 21 / 12%);
++  --shadow-menu: 0 6px 20px rgb(21 21 21 / 14%);
++
++  /* 主按钮 / AI 动作：Claude 的陶土橙不是 GenOffice 的 #e8663f */
++  --color-btn-primary: #151515;
++  --color-btn-primary-hover: #2c2c2a;
++  --color-btn-primary-text: #fcfcfb;
++  --color-ai-action: #c96442;
++  --color-ai-action-hover: #b55538;
++  --color-ai-action-text: #fcfcfb;
++  --color-brand-secondary: #c96442;
++  --color-border-brand: #c96442;
++
++  /* 与 chrome 同名的重复语义（AI 面板沿用这一组） */
++  --color-text-primary: #151515;
++  --color-text-secondary: #52514e;
++  --color-text-tertiary: #6d6b67;
++  --color-bg-page: #fcfcfb;
++  --color-bg-subtle: #f9f9f7;
++  --color-border-default: #e1e0d9;
++  --color-border-strong: #d2d1c7;
++  --color-error: #b4352f;
++  --color-error-hover: #9c2c27;
++
++  /* 字体族：Mcode 用系统 sans 栈，不用 Arial 打头 */
++  --gs-font-sans:
++    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, 'Helvetica Neue', sans-serif;
++
++  /* 圆角：CDS 比 Word 更圆一档 */
++  --radius-6: 6px;
++  --radius-8: 8px;
++  --radius-12: 12px;
++  --radius-16: 16px;
++}
++
++/* ── 暗色 ─────────────────────────────────────────────────────────────── */
++[data-theme='dark'] {
++  --surface: #151515;
++  --surface-subtle: #20201f;
++  --chrome-bg: #1b1b1a;
++  --canvas: #0f0f0e;
++  --bg-content: #1b1b1a;
++
++  --border: #383835;
++  --border-subtle: #2c2c2a;
++  --border-strong: #454442;
++  --border-hover: #52514e;
++
++  --text: #f9f9f7;
++  --text-primary: #f9f9f7;
++  --text-secondary: #b4b3a8;
++  --text-tertiary: #97958d;
++  --text-muted: #97958d;
++  --text-dim: #b4b3a8;
++
++  --hover: #2c2c2a;
++  --pressed: #383835;
++  --active-bg: #454442;
++  --bg-hover: #2c2c2a;
++  --bg-hover-subtle: #242423;
++  --bg-hover-strong: #383835;
++  --bg-hover-accent: #454442;
++  --icon-muted: #6d6b67;
++
++  --danger: #e58980;
++  --danger-bg: #3a201f;
++  --danger-border: #5a3030;
++  --success: #7fc3a0;
++  --success-bg: #1c2f26;
++  --success-border: #33543f;
++
++  --shadow-btn-hover: 0 1px 3px rgb(0 0 0 / 45%);
++  --shadow-modal-strong: 0 12px 32px rgb(0 0 0 / 40%);
++  --shadow-menu: 0 6px 20px rgb(0 0 0 / 50%);
++
++  --color-btn-primary: #f9f9f7;
++  --color-btn-primary-hover: #e1e0d9;
++  --color-btn-primary-text: #151515;
++  --color-ai-action: #d97757;
++  --color-ai-action-hover: #e58966;
++  --color-ai-action-text: #151515;
++  --color-brand-secondary: #d97757;
++  --color-border-brand: #d97757;
++
++  --color-text-primary: #f9f9f7;
++  --color-text-secondary: #b4b3a8;
++  --color-text-tertiary: #97958d;
++  --color-bg-page: #151515;
++  --color-bg-subtle: #20201f;
++  --color-border-default: #383835;
++  --color-border-strong: #454442;
++  --color-error: #e58980;
++  --color-error-hover: #f0a09a;
++}
++
++/* ── 系统暗色（无 data-theme 属性时跟随 OS） ───────────────────────────── */
++@media (prefers-color-scheme: dark) {
++  :root:not([data-theme='light']):not([data-theme='dark']) {
++    --surface: #151515;
++    --surface-subtle: #20201f;
++    --chrome-bg: #1b1b1a;
++    --canvas: #0f0f0e;
++    --bg-content: #1b1b1a;
++
++    --border: #383835;
++    --border-subtle: #2c2c2a;
++    --border-strong: #454442;
++    --border-hover: #52514e;
++
++    --text: #f9f9f7;
++    --text-primary: #f9f9f7;
++    --text-secondary: #b4b3a8;
++    --text-tertiary: #97958d;
++    --text-muted: #97958d;
++    --text-dim: #b4b3a8;
++
++    --hover: #2c2c2a;
++    --pressed: #383835;
++    --active-bg: #454442;
++    --bg-hover: #2c2c2a;
++    --bg-hover-subtle: #242423;
++    --bg-hover-strong: #383835;
++    --bg-hover-accent: #454442;
++    --icon-muted: #6d6b67;
++
++    --danger: #e58980;
++    --danger-bg: #3a201f;
++    --danger-border: #5a3030;
++    --success: #7fc3a0;
++    --success-bg: #1c2f26;
++    --success-border: #33543f;
++
++    --shadow-btn-hover: 0 1px 3px rgb(0 0 0 / 45%);
++    --shadow-modal-strong: 0 12px 32px rgb(0 0 0 / 40%);
++    --shadow-menu: 0 6px 20px rgb(0 0 0 / 50%);
++
++    --color-btn-primary: #f9f9f7;
++    --color-btn-primary-hover: #e1e0d9;
++    --color-btn-primary-text: #151515;
++    --color-ai-action: #d97757;
++    --color-ai-action-hover: #e58966;
++    --color-ai-action-text: #151515;
++    --color-brand-secondary: #d97757;
++    --color-border-brand: #d97757;
++
++    --color-text-primary: #f9f9f7;
++    --color-text-secondary: #b4b3a8;
++    --color-text-tertiary: #97958d;
++    --color-bg-page: #151515;
++    --color-bg-subtle: #20201f;
++    --color-border-default: #383835;
++    --color-border-strong: #454442;
++    --color-error: #e58980;
++    --color-error-hover: #f0a09a;
++  }
++}
+-- 
+2.52.0.windows.1
+

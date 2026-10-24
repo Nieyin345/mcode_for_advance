@@ -261,3 +261,158 @@ bash apps/desktop/scripts/o6-reshell-<format>-smoke/run.sh
 ## 八、结果回写区
 
 （执行会话按格式追加：token 清单、覆盖了哪些、哪些故意没覆盖及理由、变异记录、补丁文件名）
+
+---
+
+## 结果回写：html + markdown（第一批，2026-10-24）
+
+### 0. ★ 卡里的开关前提是错的 —— 已改正，并先验证再写代码
+
+| | 卡里写的 | 实际 |
+|---|---|---|
+| 开关 | `if (window.desktop)` | **html/markdown 没有 `window.desktop`**（preload 暴露 `htmlApi` / `markdownApi`）。照抄 = 换壳永不触发 |
+| 0014 的守卫 | 「单独跑不换壳」 | **对 docs 也失效**：原厂 docs preload 自己就 `exposeInMainWorld('desktop')`，真 Electron 实测独立 docs 会加载 `mcode-theme.css` |
+| 0014 的套件 | 「条件加载」17/17 | 只断言**源码里有那个形状**，没断言它真的区分 —— 与「判据会骗人」同型 |
+
+**采用的新开关（实测过三种形态）**：`if (/\bMcode\//.test(navigator.userAgent))`。
+
+Electron 默认把 `app.getName()` 写进 UA 注释段：
+
+```
+app.setName("GenOffice HTML") → ... GenOfficeHTML/44.4.5 ...
+app.setName("Mcode")          → ... Mcode/44.4.5 ...
+无 preload + ProbeApp         → ... ProbeApp/44.4.5 ...   ← 排除「preload 塞的」
+```
+
+Mcode 主进程 `apps/desktop/src/main/index.ts:101` 在 `whenReady` 之前 `app.setName("Mcode")`；
+`grep -rn "userAgent|setUserAgent" apps/desktop/src/main/document/*.ts` 为空；
+vendor `createHtmlView` / `createMarkdownView` 的 `webPreferences` 只有
+preload/contextIsolation/nodeIntegration/sandbox。**所以 UA 产品号能真正区分宿主与独立运行，且不动 `apps/desktop`。**
+
+### 1. 覆盖了多少 token
+
+| 格式 | 覆盖的 chrome token | 实际被消费 | 未被本 app 消费但保留 |
+|---|---|---|---|
+| html | **54** | 39 | 15（`--bg-hover*` 族、`--chrome-bg`、`--border-hover`、`--success*`、`--danger-bg/-border`、`--pressed`、`--shadow-btn-hover`、`--color-error-hover`、`--color-border-brand`） |
+| markdown | **54** | 40 | 14（同上，另含 `--color-btn-primary-hover`、`--color-error`） |
+
+**覆盖集与 docs 的 0014 逐字相同**：六个 app 共用同一个 token 层，同一套值才是同一个产品。
+「未被本 app 消费」的那些由共享 `@genoffice/ui/*.css`（AI 面板、下拉、查找、颜色选择器…）消费，
+或为与兄弟 app 保持一致而保留 —— 它们不写也不会错，但写了才能保证 chrome 跨 app 一致。
+
+**markdown 额外钉住 18 亮 + 18 暗个文档内容 token**（见 §3）。
+
+### 2. 故意没覆盖的，及理由
+
+| 不覆盖 | 理由 |
+|---|---|
+| `--preview-page-bg`（html） | 预览 iframe 的底。浏览器里没有自己背景的页面永远是白色（上游注释写死），换掉就是改文档内容 |
+| `--hx-*` 族（html） | HTML app 自己的**语义色**：AI 改动高亮、错误态、焦点环、shimmer。换掉用户认不出「哪些是 AI 改的」 |
+| `--cm-*` 族（html） | CodeMirror 语法高亮色（tag/attr/string/keyword…）—— 代码文本的语义 |
+| `--surface-2`（html） | 只在 `var(--surface-2, var(--surface))` 里被读，上游**从未定义**；定义它会改掉回退行为 |
+| `--md-*` 族（markdown） | 正文排版语义：链接、代码块、引用、表格头、图表底、纸张阴影 |
+| `--mdt-*`（markdown） | 纸张主题调色板（notion-light 等） |
+| `--redact-*`（markdown） | 脱敏标记语义色 |
+| `--accent` / `--accent-dark` / `--accent-soft` / `--word-blue` | 各 app 的品牌色归各 app（GenOffice CLAUDE.md 主题规则第 3 条） |
+| `--search-hit-*` / `--docs-revision-bar` | 查找命中 / 修订条 —— 文档语义标记 |
+| `--color-bg-overlay` | 模态遮罩，深色下上游是 60% vs 亮色 50%，属「视觉重量」不是 chrome 色阶；且两版都在暗底上，换不换看不出 |
+| `--text-body-lg` / `--text-small` / `--text-caption` / `--transition-fast` / `--radius-30` / `--ui-scale` | 字号阶梯、动效时长、胶囊圆角、界面缩放 —— 不是颜色，Mcode 与 GenOffice 在这几项上本来一致（或由用户设置驱动） |
+
+### 3. ★ markdown 的硬边界：纸张与 chrome 撞名
+
+`apps/markdown/src/renderer/styles.css:200` 的 `.doc-page`（App.tsx:1262，**正文直接渲染在里面**）
+用的是 `background: var(--surface)` —— 和 chrome 是同一个 token。只改 `:root` 会把正文纸张一起染成
+Mcode 的暖白。
+
+**处置**：在 `.doc-page` 作用域内把纸张与正文会读到的 18 个 token 钉回 `tokens.css` 的值
+（亮/暗/系统暗三块）。钉住的作用域只到 `.doc-page` 自己：
+
+- `.editor-scroll`（画布底，**属 chrome**）不受影响 —— 套件里有对照断言证明它**确实**换了；
+- `html[data-markdown-theme='…'] .doc-page`（特异度 0,2,1）高于 `.doc-page`（0,1,0），
+  所以用户选的纸张主题仍然获胜 —— 那是显式选择，不该被覆盖。
+
+**防漂移断言**：套件逐条比对「钉住值 == tokens.css 当前值」，不等时消息点名是哪个 token
+（`XXX: 钉住 #fff，上游现在是 #eee —— 上游改了纸张/墨色，要决定跟不跟`），不是一句 expected/got。
+
+### 4. 四条判据的红绿（真 Electron，同一份构建产物跑两遍）
+
+| # | 判据 | html | markdown |
+|---|---|---|---|
+| 1 | 宿主里 `mcode-theme.css` 被加载 | ✅ 1 个 sheet | ✅ |
+| 2 | 独立运行（app 名非 Mcode）**不加载** | ✅ 0 个 sheet | ✅ |
+| 3 | 被覆盖 token 实际生效（`getComputedStyle`） | ✅ `--surface` #fcfcfb、`--text` #151515、`--border` #e1e0d9、`.ribbon` 背景 rgb(252,252,251) | ✅ 同左 |
+| 4 | 组件树没变 | ✅ `.ribbon`/`.app-main`/`.pane-preview`/`.status-bar` | ✅ `.ribbon`/`.app-main`/`.doc-page`/`.status-bar` |
+
+**套件**：`o6-reshell-html-smoke` **25/25**、`o6-reshell-markdown-smoke` **29/29**
+（markdown 多 4 条：纸张色彩两次相同、`.doc-page` 内 `--surface`/`--text` 钉住、`.editor-scroll` 对照、防漂移）。
+
+两条套件都跑**真实构建产物 + 原厂 preload + vendor 自己的独立入口**
+（`apps/<k>/out/main/index.js`），只改 `app.setName()` —— 两次运行的差异只可能来自开关。
+
+### 5. 三个变异（每次都重新构建，还原后 sha256 逐字节核对）
+
+**html**（基线 25/25）：
+
+| 变异 | 结果 | 红了什么 |
+|---|---|---|
+| M1 删掉 UA 条件 → 无条件 import | **19/25**（6 红） | 独立模式那组 5 条 + 开关契约 1 条 |
+| M2 `--surface` 改回上游 `#ffffff` | **23/25**（2 红） | `--surface` token 值 + `.ribbon` 计算背景（证明「sheet 加载了但值没生效」也抓得住） |
+| M3 删掉 main.tsx 的 import | **18/25**（7 红） | 宿主模式那组 6 条 + 开关契约 |
+
+**markdown**（基线 29/29）：
+
+| 变异 | 结果 | 红了什么 |
+|---|---|---|
+| M1 无条件 import | **22/29**（7 红） | 独立模式 5 条 + 开关契约 + `.editor-scroll` 对照（独立也被换壳，两边相同） |
+| M2 `--surface` 改回 `#ffffff` | **27/29**（2 红） | 同 html |
+| M3 删 import | **21/29**（8 红） | 宿主模式 6 条 + 开关契约 + `.editor-scroll` 对照 |
+
+**均先写预期红几条再跑**；还原后 `sha256sum` 逐字节一致（html main `772a13e3…`、theme `8e54e70b…`；
+markdown main `ce9aec91…`、theme `ec0afe0b…`），重建后两套都回到全绿。
+
+### 6. 交付物
+
+**vendor 仓（`mcode/integration`）**：
+
+| SHA | 内容 |
+|---|---|
+| `87d9b4b` | `feat(html): reshell the chrome in Mcode's design tokens`（2 文件，+261） |
+| `f69db1d` | `feat(markdown): reshell the chrome in Mcode's design tokens`（2 文件，+357） |
+
+**补丁**（一个格式一个，可单独回退）：
+
+```
+patches/genoffice/0016-feat-html-reshell-the-chrome-in-Mcode-s-design-token.patch   13077 B  4cad1b5b…f2c98f
+patches/genoffice/0017-feat-markdown-reshell-the-chrome-in-Mcode-s-design-t.patch  17152 B  15558ac9…a7fb8
+```
+
+**vendor 账本**（T39/T115 先例；只改这两个文件，不动任何 product source）：
+
+- `apps/desktop/build/genoffice-upstream.lock.json`：`revision` → `f69db1d2`、`expectedTree` → `1340bd51`、
+  `patchSeries` 追加 0016/0017（15 → 17 条）；
+- `apps/desktop/build/verify-genoffice-upstream.cjs`：`FINAL_REVISION` / `FINAL_TREE` 更新，
+  `PATCHES` 追加两条。**同时把 0015 的 `revision: FINAL_REVISION` 钉成字面量
+  `3cb99ab1…`** —— T39 记过这个陷阱：最后一条用常量，常量一动它跟着漂。
+- 验证：`MCODE_INCLUDE_GENOFFICE_BUNDLE=1 node apps/desktop/build/verify-genoffice-upstream.cjs`
+  → **exit 0**，`f69db1d (base cbec600, 17 patches, tree 1340bd51)`。
+
+**套件**（`apps/desktop/scripts/`）：
+
+- `o6-reshell-html-smoke/{build.mjs, probe.cjs, run.sh}` —— 25 条
+- `o6-reshell-markdown-smoke/{build.mjs, probe.cjs, run.sh}` —— 29 条
+
+两条 `run.sh` 都用 `HERE=$(cd "$(dirname "$0")" && pwd)` 再 `cd "$HERE/../.."`。
+两个探针都在 **require vendor 入口之前**用 Proxy 替换 `BrowserWindow`，强制 `show:false` +
+`skipTaskbar:true` —— 套件窗口不会弹到用户屏幕上（原来 vendor 入口默认可见）。
+
+### 7. 已知未做 / 觉得不对但没改
+
+1. **docs 的 0014 守卫失效**（独立运行也被换壳）：不在本批写入边界内，总控已同意另开卡。
+   建议那张卡的判据就是本套件这条：「独立运行，`styleSheets` 里不能有 `mcode-theme`」。
+2. **没有覆盖 `sheets` / `slides` / `pdf`** —— 本批只做 html + markdown。
+3. **暗色只做了 token 层，没做真 Electron 暗色断言**：套件的两模式都是亮色（`data-theme` 未设）。
+   暗色那两块是逐字镜像 docs 的 0014，但**没有实测**——如实记在这里。
+4. **`--color-bg-overlay` / 字号阶梯 / 动效 / `--radius-30` / `--ui-scale` 没覆盖**（理由见 §2）。
+5. **markdown 的 `markdown-themes.css` 纸张主题没有回归**：本套件只验默认主题。选 notion-light 等
+   纸张主题时，`html[data-markdown-theme] .doc-page` 因特异度获胜（纸色由主题给），这一条是
+   从 CSS 特异度推出来的，**没有真跑过**。

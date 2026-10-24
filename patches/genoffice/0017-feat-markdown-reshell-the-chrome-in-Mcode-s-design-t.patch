@@ -1,0 +1,419 @@
+From f69db1d28dad4028d260961e1d65099c0fc945e8 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sat, 24 Oct 2026 22:59:55 +0800
+Subject: [PATCH] feat(markdown): reshell the chrome in Mcode's design tokens
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Same mechanism and the same 54 chrome token values as the Docs reshell
+(05da63c) and the HTML reshell that precedes this commit, so the three shells
+read as one product. The gate is the UA product token (/\bMcode\//), not
+window.desktop: Markdown's preload exposes window.markdownApi and never
+`desktop`.
+
+Markdown has one hazard Docs and HTML do not: its preview paper, .doc-page
+(App.tsx:1262, where the body itself renders), paints with var(--surface) —
+the very token that has to change for the chrome. Re-pointing :root alone
+would tint the document. The file therefore pins the paper and ink tokens back
+to their tokens.css values inside .doc-page (light, dark and system-dark), and
+the suite asserts both that the paper is identical in hosted and standalone
+runs and that every pinned value still equals tokens.css — so an upstream paper
+colour change turns the suite red with a message naming the token, rather than
+silently moving the document.
+
+The paper themes in markdown-themes.css are unaffected: their selectors carry
+an html[data-markdown-theme='…'] prefix (specificity 0,2,1) and beat the
+.doc-page pin (0,1,0) regardless of order, so a theme the user picked still
+wins for the paper.
+
+Scope is otherwise narrow:
+
+- Editor kernel, ProseMirror schema, source view, export and print are
+  untouched.
+- --md-* (link, code, quote, table header, diagram, page shadow), --mdt-*
+  (paper themes) and --redact-* stay the app's own.
+- Per-app brand accents (--accent, --word-blue) are not overridden.
+---
+ apps/markdown/src/renderer/main.tsx        |  14 +
+ apps/markdown/src/renderer/mcode-theme.css | 343 +++++++++++++++++++++
+ 2 files changed, 357 insertions(+)
+ create mode 100644 apps/markdown/src/renderer/mcode-theme.css
+
+diff --git a/apps/markdown/src/renderer/main.tsx b/apps/markdown/src/renderer/main.tsx
+index efae59f..a6035ea 100644
+--- a/apps/markdown/src/renderer/main.tsx
++++ b/apps/markdown/src/renderer/main.tsx
+@@ -18,6 +18,20 @@ import '@genoffice/ui/image-viewer.css'
+ import 'katex/dist/katex.min.css'
+ import './styles.css'
+ import './markdown-themes.css'
++// 【O6】Mcode 宿主主题层：把 GenOffice 的语义 token 重指到 Mcode 的 CDS 色阶。
++// **只在 Mcode 里加载** —— 单独跑 GenOffice 时保持自己的 Word 视觉语言。
++//
++// 开关不能用 `window.desktop`：那是 **docs** preload 的命名空间，markdown 的 preload
++// 只暴露 `window.markdownApi`（见 src/preload/index.ts 末尾），照抄会让这里永不触发。
++//
++// 用 UA 里的产品号：Electron 默认把 `app.getName()` 写进 UA 注释段。Mcode 主进程
++// 在 whenReady 之前 `app.setName("Mcode")`（apps/desktop/src/main/index.ts），
++// 且文档视图不覆盖 UA —— 所以宿主里是 `Mcode/44.x`，单独跑是 `GenOfficeMarkdown/44.x`。
++// 真 Electron 双模式实测见 apps/desktop/scripts/o6-reshell-markdown-smoke/。
++//
++// 放在 `styles.css` / `markdown-themes.css` 之后：token 是自定义属性，后者先定义、
++// 这里覆盖，顺序决定胜负。`.doc-page`（预览纸张）的钉回规则见该文件末尾。
++if (/\bMcode\//.test(navigator.userAgent)) import('./mcode-theme.css')
+ import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+ import type { MarkdownTheme } from '../shared/markdown-theme'
+ 
+diff --git a/apps/markdown/src/renderer/mcode-theme.css b/apps/markdown/src/renderer/mcode-theme.css
+new file mode 100644
+index 0000000..949f590
+--- /dev/null
++++ b/apps/markdown/src/renderer/mcode-theme.css
+@@ -0,0 +1,343 @@
++/* Mcode 宿主主题层（Markdown）—— 把 GenOffice 的**语义 token** 重指到 Mcode 的 CDS 色阶。
++ *
++ * ## 这是什么，不是什么
++ *
++ * 与 `apps/docs/src/renderer/mcode-theme.css`（T39 / 补丁 0014）同一套机制、同一批取值：
++ * GenOffice 的 chrome 颜色全部走 `packages/ui/src/tokens.css` 里的语义 token，而且它自己
++ * 有一条 CI（`tools/check-theme-colors.mjs`）强制这件事：renderer CSS 里**不许出现裸色值**，
++ * 只有自定义属性定义行例外。所以换壳 = 替换 token 的取值：组件树、编辑器内核、
++ * 预览/导出/打印路径一行不动。
++ *
++ * chrome 覆盖集与 docs 那份**逐字相同**（54 个）：六个 app 共用同一个 token 层，同一套值
++ * chrome 才是同一个产品。markdown 自己的 CSS 消费其中 42 个，其余由共享的
++ * `@genoffice/ui/*.css` 消费，或为与兄弟 app 保持一致而保留。
++ *
++ * ## ★ 与 docs 的关键差别：markdown 的**纸张**用 `var(--surface)`
++ *
++ * `styles.css` 的 `.doc-page`（预览纸张，App.tsx:1262，正文直接渲染在里面）用的是
++ * `background: var(--surface)`，**和 chrome 是同一个 token**。所以只覆盖 `:root` 的
++ * `--surface` 会把正文纸张一起染成 Mcode 的暖白 —— 那是文档内容，不是 chrome。
++ *
++ * 处置：在 `.doc-page` 作用域内**钉回上游纸色与墨色**。它们是文档内容，
++ * 必须保持与单独跑 GenOffice / 浏览器里看到的一致。钉住的每个值都来自
++ * `packages/ui/src/tokens.css` 的对应块（`apps/desktop/scripts/o6-reshell-markdown-smoke`
++ * 有一条「钉住值 == tokens.css 当前值」的断言：上游改了纸色它会红，提醒做决定跟不跟）。
++ *
++ * 作用域只到 `.doc-page` 自己，不碰它的父级 `.editor-scroll`（那是画布底，属 chrome）
++ * 和 `data-markdown-theme` 那套纸张主题 —— 后者在 `.doc-page` 内给同一批变量赋值，
++ * 本文件的规则写在 `styles.css` 之前的那一层之外，主题选中时**由主题块获胜**
++ * （主题块在 `markdown-themes.css` 里、加载在本文件之前……见下方顺序说明）。
++ *
++ * ## 加载顺序与胜负
++ *
++ * `main.tsx` 把本文件放在 `./styles.css` 与 `./markdown-themes.css` **之后** import。
++ * 三者都写 `.doc-page` 作用域的自定义属性时，**后者胜** —— 也就是本文件会盖掉
++ * `html[data-markdown-theme='notion-light'] .doc-page` 那套？不会：那些选择器带
++ * `html[...]` 前缀，特异度更高（0,2,1 vs 本文件的 0,1,1），与顺序无关。
++ * 所以「用户选了纸张主题」时纸张主题赢，默认 `default` 时由本文件钉住上游纸色。
++ *
++ * ## 开关：为什么不是 `window.desktop`
++ *
++ * docs 的 0014 用 `if (window.desktop)` —— 那是 docs 自己的 preload 命名空间。
++ * **markdown 的 preload 暴露的是 `window.markdownApi`，没有 `desktop`**
++ * （`apps/markdown/src/preload/index.ts:164`），照抄会让 `import()` 永不触发。
++ *
++ * 这里用 **UA 产品号**：Electron 默认把 `app.getName()` 写进 UA 注释段。Mcode 主进程
++ * 在 `whenReady` 之前 `app.setName("Mcode")`，且文档视图不覆盖 UA —— 宿主里 UA 含
++ * `Mcode/44.x`，单独跑是 `GenOfficeMarkdown/44.x`。真 Electron 双模式实测见
++ * `apps/desktop/scripts/o6-reshell-markdown-smoke/`。
++ *
++ * ## 边界（硬规矩）
++ *
++ * - **不碰文档内容**：`.doc-page` 内的纸张/墨色已由下方作用域块钉回上游；`--md-*`
++ *   （链接、代码块、引用、表格头、图表底、纸张阴影）也一律不动 —— 那是正文的排版语义。
++ * - **不碰 `--mdt-*`**：markdown 的纸张主题调色板。
++ * - **不碰 `--accent*` / `--word-blue`**：各 app 的品牌色归各 app。
++ * - **不碰 `--redact-*`**：脱敏标记的语义色。
++ * - **不碰 `--search-hit-*` / `--docs-revision-bar`**：查找命中与修订条是文档语义标记。
++ * - 暗色只覆盖与亮色**成对**的 token；`color-scheme` 由 GenOffice 自己管。
++ */
++
++/* ── 亮色 ─────────────────────────────────────────────────────────────── */
++:root {
++  /* 表面阶梯 → CDS gray 阶（Mcode 的 --surface = var(--m-gray-10) = #fcfcfb） */
++  --surface: #fcfcfb;
++  --surface-subtle: #f9f9f7;
++  --chrome-bg: #fcfcfb;
++  --canvas: #f0efec;
++  --bg-content: #f9f9f7;
++
++  /* 边框 → CDS 发丝边 */
++  --border: #e1e0d9;
++  --border-subtle: #edece8;
++  --border-strong: #d2d1c7;
++  --border-hover: #c3c2b7;
++
++  /* 文字 → CDS 对比阶梯（Mcode 的 --content = var(--m-gray-850) = #151515） */
++  --text: #151515;
++  --text-primary: #151515;
++  --text-secondary: #52514e;
++  --text-tertiary: #6d6b67;
++  --text-muted: #6d6b67;
++  --text-dim: #52514e;
++
++  /* 交互态 */
++  --hover: #f0efec;
++  --pressed: #eae9e4;
++  --active-bg: #e1e0d9;
++  --bg-hover: #f0efec;
++  --bg-hover-subtle: #f6f6f4;
++  --bg-hover-strong: #eae9e4;
++  --bg-hover-accent: #e1e0d9;
++  --icon-muted: #a5a49a;
++
++  /* 状态色：保留语义，只换到 CDS 色系的饱和度 */
++  --danger: #b4352f;
++  --danger-bg: #fdf3f2;
++  --danger-border: #f0c8c4;
++  --success: #2f6b4a;
++  --success-bg: #eef6f1;
++  --success-border: #c8e0d2;
++
++  /* 阴影：CDS 的头发丝阴影 */
++  --shadow-btn-hover: 0 1px 3px rgb(21 21 21 / 8%);
++  --shadow-modal-strong: 0 12px 32px rgb(21 21 21 / 12%);
++  --shadow-menu: 0 6px 20px rgb(21 21 21 / 14%);
++
++  /* 主按钮 / AI 动作：Claude 的陶土橙不是 GenOffice 的 #e8663f */
++  --color-btn-primary: #151515;
++  --color-btn-primary-hover: #2c2c2a;
++  --color-btn-primary-text: #fcfcfb;
++  --color-ai-action: #c96442;
++  --color-ai-action-hover: #b55538;
++  --color-ai-action-text: #fcfcfb;
++  --color-brand-secondary: #c96442;
++  --color-border-brand: #c96442;
++
++  /* 与 chrome 同名的重复语义（AI 面板沿用这一组） */
++  --color-text-primary: #151515;
++  --color-text-secondary: #52514e;
++  --color-text-tertiary: #6d6b67;
++  --color-bg-page: #fcfcfb;
++  --color-bg-subtle: #f9f9f7;
++  --color-border-default: #e1e0d9;
++  --color-border-strong: #d2d1c7;
++  --color-error: #b4352f;
++  --color-error-hover: #9c2c27;
++
++  /* 字体族：Mcode 用系统 sans 栈，不用 Arial 打头。
++     注意：markdown 的正文排版用自己的字体栈（.doc-page 内的 ProseMirror 样式），
++     不从这里继承 —— 这一项只影响 chrome（ribbon、AI 面板、状态栏）。 */
++  --gs-font-sans:
++    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, 'Helvetica Neue', sans-serif;
++
++  /* 圆角：CDS 比 Word 更圆一档 */
++  --radius-6: 6px;
++  --radius-8: 8px;
++  --radius-12: 12px;
++  --radius-16: 16px;
++}
++
++/* ── 暗色 ─────────────────────────────────────────────────────────────── */
++[data-theme='dark'] {
++  --surface: #151515;
++  --surface-subtle: #20201f;
++  --chrome-bg: #1b1b1a;
++  --canvas: #0f0f0e;
++  --bg-content: #1b1b1a;
++
++  --border: #383835;
++  --border-subtle: #2c2c2a;
++  --border-strong: #454442;
++  --border-hover: #52514e;
++
++  --text: #f9f9f7;
++  --text-primary: #f9f9f7;
++  --text-secondary: #b4b3a8;
++  --text-tertiary: #97958d;
++  --text-muted: #97958d;
++  --text-dim: #b4b3a8;
++
++  --hover: #2c2c2a;
++  --pressed: #383835;
++  --active-bg: #454442;
++  --bg-hover: #2c2c2a;
++  --bg-hover-subtle: #242423;
++  --bg-hover-strong: #383835;
++  --bg-hover-accent: #454442;
++  --icon-muted: #6d6b67;
++
++  --danger: #e58980;
++  --danger-bg: #3a201f;
++  --danger-border: #5a3030;
++  --success: #7fc3a0;
++  --success-bg: #1c2f26;
++  --success-border: #33543f;
++
++  --shadow-btn-hover: 0 1px 3px rgb(0 0 0 / 45%);
++  --shadow-modal-strong: 0 12px 32px rgb(0 0 0 / 40%);
++  --shadow-menu: 0 6px 20px rgb(0 0 0 / 50%);
++
++  --color-btn-primary: #f9f9f7;
++  --color-btn-primary-hover: #e1e0d9;
++  --color-btn-primary-text: #151515;
++  --color-ai-action: #d97757;
++  --color-ai-action-hover: #e58966;
++  --color-ai-action-text: #151515;
++  --color-brand-secondary: #d97757;
++  --color-border-brand: #d97757;
++
++  --color-text-primary: #f9f9f7;
++  --color-text-secondary: #b4b3a8;
++  --color-text-tertiary: #97958d;
++  --color-bg-page: #151515;
++  --color-bg-subtle: #20201f;
++  --color-border-default: #383835;
++  --color-border-strong: #454442;
++  --color-error: #e58980;
++  --color-error-hover: #f0a09a;
++}
++
++/* ── 系统暗色（无 data-theme 属性时跟随 OS） ───────────────────────────── */
++@media (prefers-color-scheme: dark) {
++  :root:not([data-theme='light']):not([data-theme='dark']) {
++    --surface: #151515;
++    --surface-subtle: #20201f;
++    --chrome-bg: #1b1b1a;
++    --canvas: #0f0f0e;
++    --bg-content: #1b1b1a;
++
++    --border: #383835;
++    --border-subtle: #2c2c2a;
++    --border-strong: #454442;
++    --border-hover: #52514e;
++
++    --text: #f9f9f7;
++    --text-primary: #f9f9f7;
++    --text-secondary: #b4b3a8;
++    --text-tertiary: #97958d;
++    --text-muted: #97958d;
++    --text-dim: #b4b3a8;
++
++    --hover: #2c2c2a;
++    --pressed: #383835;
++    --active-bg: #454442;
++    --bg-hover: #2c2c2a;
++    --bg-hover-subtle: #242423;
++    --bg-hover-strong: #383835;
++    --bg-hover-accent: #454442;
++    --icon-muted: #6d6b67;
++
++    --danger: #e58980;
++    --danger-bg: #3a201f;
++    --danger-border: #5a3030;
++    --success: #7fc3a0;
++    --success-bg: #1c2f26;
++    --success-border: #33543f;
++
++    --shadow-btn-hover: 0 1px 3px rgb(0 0 0 / 45%);
++    --shadow-modal-strong: 0 12px 32px rgb(0 0 0 / 40%);
++    --shadow-menu: 0 6px 20px rgb(0 0 0 / 50%);
++
++    --color-btn-primary: #f9f9f7;
++    --color-btn-primary-hover: #e1e0d9;
++    --color-btn-primary-text: #151515;
++    --color-ai-action: #d97757;
++    --color-ai-action-hover: #e58966;
++    --color-ai-action-text: #151515;
++    --color-brand-secondary: #d97757;
++    --color-border-brand: #d97757;
++
++    --color-text-primary: #f9f9f7;
++    --color-text-secondary: #b4b3a8;
++    --color-text-tertiary: #97958d;
++    --color-bg-page: #151515;
++    --color-bg-subtle: #20201f;
++    --color-border-default: #383835;
++    --color-border-strong: #454442;
++    --color-error: #e58980;
++    --color-error-hover: #f0a09a;
++  }
++}
++
++/* ── ★ 文档内容（纸张 + 墨色）钉回上游值 ───────────────────────────────
++ *
++ * `.doc-page` 是 Markdown 的**预览纸张**（App.tsx:1262；正文直接渲染在里面），
++ * 而它的 `background: var(--surface)` 与被换掉的 chrome 是同一个 token。
++ * 这里把纸张与正文会读到的 token 全部钉回 `packages/ui/src/tokens.css` 的值，
++ * 保证「宿主里看到的正文」与「单独跑 GenOffice / 浏览器里看到的正文」一致
++ * （GenOffice CLAUDE.md 主题规则第 4 条）。
++ *
++ * 只钉**纸张自己与正文排版读到的**那些；`--accent*` / `--md-*` / `--mdt-*`
++ * 本来就不在覆盖范围，不必钉。
++ *
++ * 特异度说明：`.doc-page`（0,1,0）低于 `html[data-markdown-theme='…'] .doc-page`
++ * （0,2,1），所以用户选了纸张主题时主题获胜 —— 这是正确的：主题是用户的显式选择。
++ */
++.doc-page {
++  /* 亮色上游值（tokens.css :root） */
++  --surface: #ffffff;
++  --surface-subtle: #f6f7f9;
++  --bg-content: #fafafa;
++  --border: #e3e6ea;
++  --border-strong: #d9d9d9;
++  --border-subtle: #efefef;
++  --text: #242424;
++  --text-primary: #232425;
++  --text-secondary: #606366;
++  --text-muted: #616870;
++  --text-tertiary: #909499;
++  --text-dim: #605e5c;
++  --hover: #f5f5f5;
++  --pressed: #edebe9;
++  --active-bg: #eaeaea;
++  --icon-muted: #b9bfc7;
++  --danger: #d13438;
++  --danger-bg: #fdf3f3;
++}
++
++[data-theme='dark'] .doc-page {
++  /* 暗色上游值（tokens.css [data-theme='dark']） */
++  --surface: #1e1e1e;
++  --surface-subtle: #2a2a2a;
++  --bg-content: #1a1a1a;
++  --border: #3a3a3a;
++  --border-strong: #555;
++  --border-subtle: #3a3a3a;
++  --text: #e4e4e4;
++  --text-primary: #e4e4e4;
++  --text-secondary: #a0a0a0;
++  --text-muted: #949494;
++  --text-tertiary: #a0a0a0;
++  --text-dim: #a0a0a0;
++  --hover: #333;
++  --pressed: #3c3c3c;
++  --active-bg: #454545;
++  --icon-muted: #666;
++  --danger: #d13438;
++  --danger-bg: #3a2020;
++}
++
++@media (prefers-color-scheme: dark) {
++  :root:not([data-theme='light']):not([data-theme='dark']) .doc-page {
++    /* 系统暗色：与上面暗色块同值（tokens.css 的第三个块） */
++    --surface: #1e1e1e;
++    --surface-subtle: #2a2a2a;
++    --bg-content: #1a1a1a;
++    --border: #3a3a3a;
++    --border-strong: #555;
++    --border-subtle: #3a3a3a;
++    --text: #e4e4e4;
++    --text-primary: #e4e4e4;
++    --text-secondary: #a0a0a0;
++    --text-muted: #949494;
++    --text-tertiary: #a0a0a0;
++    --text-dim: #a0a0a0;
++    --hover: #333;
++    --pressed: #3c3c3c;
++    --active-bg: #454545;
++    --icon-muted: #666;
++    --danger: #d13438;
++    --danger-bg: #3a2020;
++  }
++}
+-- 
+2.52.0.windows.1
+

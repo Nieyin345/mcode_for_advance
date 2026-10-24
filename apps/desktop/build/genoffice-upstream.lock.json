@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "3cb99ab13e1e42989889e15cc338bd6f6c6fff5c",
-  "expectedTree": "5ba6f37bed435a389f8b7af51c70291f6c5bebba",
+  "revision": "f69db1d28dad4028d260961e1d65099c0fc945e8",
+  "expectedTree": "1340bd513ad82da63d1b0c285bece038cff2e86f",
   "patchSeries": [
     {
       "index": 1,
@@ -148,6 +148,24 @@
       "sha256": "7a529e41be46b1b26c9d98d34a0bc9e536971131406be7a8619f34b6e859a595",
       "bytes": 8762,
       "subject": "feat(docs): write w:eastAsia so new docx files keep CJK typography"
+    },
+    {
+      "index": 16,
+      "file": "patches/genoffice/0016-feat-html-reshell-the-chrome-in-Mcode-s-design-token.patch",
+      "revision": "87d9b4bbb7f77c8d5d2e6b7d705c41538942b989",
+      "parentRevision": "3cb99ab13e1e42989889e15cc338bd6f6c6fff5c",
+      "sha256": "4cad1b5b3a15e426e55d91235c7fb39046b948a39c4d9e69ebb0f2aaabf2c98f",
+      "bytes": 13077,
+      "subject": "feat(html): reshell the chrome in Mcode's design tokens"
+    },
+    {
+      "index": 17,
+      "file": "patches/genoffice/0017-feat-markdown-reshell-the-chrome-in-Mcode-s-design-t.patch",
+      "revision": "f69db1d28dad4028d260961e1d65099c0fc945e8",
+      "parentRevision": "87d9b4bbb7f77c8d5d2e6b7d705c41538942b989",
+      "sha256": "15558ac9f876a9080b3cbc025924836d949f1433938a18f1e0d47f3ab22a7fb8",
+      "bytes": 17152,
+      "subject": "feat(markdown): reshell the chrome in Mcode's design tokens"
     }
   ],
   "license": "Apache-2.0",
