@@ -105,6 +105,35 @@ const defaultMode: FileViewMode = markdown || office ? "wysiwyg" : ...
 **判据**：六格式文件打开时，**第一次就落在 GenOffice 原生视图**，不需要用户切模式。
 **不许**「先显示一个『选择编辑器』再切」。
 
+## 五之零、★ 一条可验的收尾判据：生成物里不该再有 onlyoffice
+
+**现状（2026-10-24 22:30 实测）**：
+
+```
+$ grep -c "onlyoffice" apps/desktop/src/main/appControl/apiCatalog.generated.ts
+20
+```
+
+**这 20 处在批一应该消失** —— 但不是靠手删，是靠重生成：
+
+1. 从 `rpcMap.ts` 删掉 onlyoffice 的 8 条方法定义；
+2. `node scripts/gen-app-api-catalog.mjs`（重生成 catalog）；
+3. `node scripts/gen-module-permission-map.mjs`（重生成 `appPermission.ts`，它读 catalog）。
+
+**收尾判据**：
+
+```bash
+grep -c "onlyoffice" apps/desktop/src/main/appControl/apiCatalog.generated.ts   # 期望 0
+grep -c "onlyoffice" packages/contracts/src/appPermission.ts                     # 期望 0
+```
+
+**⚠️ 这两条不是「顺便检查」**：它们是**唯一能证明你没漏掉生成链某一环**的判据。
+**手删 catalog 那 20 行也能让 grep 变 0，但下次重生成会加回来** ——
+所以**必须由「改了源头 + 重生成」得到 0，不是「手改产物」得到 0。**
+
+**怎么区分这两者**：提交前把生成物 `git checkout` 到 HEAD 再重跑一次生成脚本，
+`git diff` 应该**只显示你预期的变化**，不显示「20 行又回来了」。
+
 ## 五之一、⚠️ 两个桩文件已被 O4 改过，不要改回旧形态
 
 `fa6eb917`（O4）把这两个文件里的 `ipcMain.on` 从 `notHere(...)` 抛错桩改成了记录式：
