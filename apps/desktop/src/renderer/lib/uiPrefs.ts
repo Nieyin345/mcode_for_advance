@@ -31,11 +31,29 @@ export const UI_COMPOSER_SEND_KEY_SETTING_KEY = "ui.composer.sendKey";
 
 export const CHAT_MAX_WIDTHS = ["narrow", "standard", "wide", "full"] as const;
 export type ChatMaxWidth = (typeof CHAT_MAX_WIDTHS)[number];
-/** standard = 历来的 max-w-5xl(64rem)。 */
+/** 消息正文宽度。**对齐上游助手消息的 `max-w-2xl`（672px）** —— 见 T134。
+ *
+ * ⚠️ 这两个表与 `ChatPane.tsx` 里那 7 处 `var(--chat-max-w, 42rem)` 的
+ * fallback **必须是同一个数**：`buildUiPrefsCss` 只在「非 standard」时才写
+ * CSS 变量，所以 standard 档的宽度**只能**由 fallback 提供。
+ * 改了这里不改那里，standard 档会静默用旧值。 */
 const CHAT_MAX_WIDTH_CSS: Record<ChatMaxWidth, string> = {
-  narrow: "48rem",
-  standard: "64rem",
-  wide: "80rem",
+  narrow: "40rem", // 640
+  standard: "42rem", // 672 ← 上游 max-w-2xl
+  wide: "48rem", // 768
+  full: "none",
+};
+/** 输入框宽度。**对齐上游 composer 的 `max-w-3xl`（768px）**。
+ *
+ * 与消息正文分开的理由：上游本身就是两个值（正文 672、输入框 768），
+ * 输入框比正文宽一档，让「打字的地方」比「读的地方」宽一点。
+ * 此前两者共用一个 `--chat-max-w`，所以这个差别表达不出来。
+ *
+ * ⚠️ `full` 两档都必须是 `none` —— 否则会出现「消息不限宽、输入框还卡着」。 */
+const COMPOSER_MAX_WIDTH_CSS: Record<ChatMaxWidth, string> = {
+  narrow: "44rem", // 704
+  standard: "48rem", // 768 ← 上游 max-w-3xl
+  wide: "56rem", // 896
   full: "none",
 };
 
@@ -170,7 +188,11 @@ export const useUiPrefsStore = create<UiPrefsState>((set, get) => ({
 export function buildUiPrefsCss(p: Pick<UiPrefsState, "fontSans" | "fontMono" | "chatMaxWidth">): string {
   const rules: string[] = [];
   if (p.chatMaxWidth !== "standard") {
-    rules.push(`:root { --chat-max-w: ${CHAT_MAX_WIDTH_CSS[p.chatMaxWidth]}; }`);
+    // 【T134】两个宽度一起写。**不能只写一个** —— 消息正文与输入框是两个
+    // 独立的 token（上游 672 / 768），只写一个会让另一个停在 standard 的 fallback。
+    rules.push(
+      `:root { --chat-max-w: ${CHAT_MAX_WIDTH_CSS[p.chatMaxWidth]}; --composer-max-w: ${COMPOSER_MAX_WIDTH_CSS[p.chatMaxWidth]}; }`,
+    );
   }
   if (p.fontSans) {
     // 手绘风格(html.sketch)保留它自己的手写字体 —— 那是该风格的一部分。

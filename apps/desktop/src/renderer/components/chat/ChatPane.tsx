@@ -2632,7 +2632,7 @@ function ChatPaneForSession({
       <div key={`${keyPrefix}:live-spine`} className="px-[var(--chat-gutter)]">
         {/* 运行中的过程面与完成态共用同一张台账卡：台头在数步子、底部扫描光带
             表示仍在写入；回合结束后由 TurnPanel 接手同一形态，只把台头翻成回执。 */}
-        <div className="chat-turn mx-auto mt-[var(--chat-row-gap-assistant)] max-w-[var(--chat-max-w,64rem)]">
+        <div className="chat-turn mx-auto mt-[var(--chat-row-gap-assistant)] max-w-[var(--chat-max-w,42rem)]">
           <div className="chat-ledger" data-phase="running" data-open="true">
             <LiveLedgerHead turnMeta={turnMeta} blocks={liveLedgerBlocks} />
             <div className="chat-ledger-body">{inner}</div>
@@ -2654,7 +2654,7 @@ function ChatPaneForSession({
         const isUser = m.role === "user";
         return (
           <div className="px-[var(--chat-gutter)]">
-            <div className={cn("mx-auto max-w-[var(--chat-max-w,64rem)]", item.live && "chat-enter")}>
+            <div className={cn("mx-auto max-w-[var(--chat-max-w,42rem)]", item.live && "chat-enter")}>
               {/* Row-level boundary: MessageBlocks already guards per segment,
                   but MessageRow's own chrome (stat row, hover actions, edit
                   form) renders outside them — one broken row must not unmount
@@ -2689,7 +2689,7 @@ function ChatPaneForSession({
           <div className="px-[var(--chat-gutter)]">
             <div
               className={cn(
-                "mx-auto max-w-[var(--chat-max-w,64rem)]",
+                "mx-auto max-w-[var(--chat-max-w,42rem)]",
                 item.tightTop
                   ? "mt-[var(--chat-block-gap)]"
                   : "mt-[var(--chat-row-gap-assistant)]",
@@ -2735,7 +2735,7 @@ function ChatPaneForSession({
         // exists (groupMessagesForRender stops emitting it).
         return (
           <div className="px-[var(--chat-gutter)]">
-            <div className="mx-auto mt-1 max-w-[var(--chat-max-w,64rem)]">
+            <div className="mx-auto mt-1 max-w-[var(--chat-max-w,42rem)]">
               <TurnStatRow meta={item.turnMeta} />
               <div className="mt-0.5 flex items-center gap-1.5">
                 <span className="chat-caret" aria-hidden />
@@ -2876,7 +2876,7 @@ function ChatPaneForSession({
           key={item.textMsgs[0]?.id ?? `turn-${item.turnMeta?.startedAt ?? ""}`}
           className="px-[var(--chat-gutter)]"
         >
-          <div className="mx-auto mt-[var(--chat-row-gap-assistant)] max-w-[var(--chat-max-w,64rem)]">
+          <div className="mx-auto mt-[var(--chat-row-gap-assistant)] max-w-[var(--chat-max-w,42rem)]">
             {/* 生命线竖脊：过程面板与最终回复挂同一根线上（方案A 的识别骨架）。
                 aria-hidden —— 纯装饰，状态语义由摘要行文本承载。 */}
             <div
@@ -2905,7 +2905,7 @@ function ChatPaneForSession({
     if (isRunning || !hasRunningSubagents) return null;
     return (
       <div className="px-[var(--chat-gutter)]">
-        <div className="mx-auto max-w-[var(--chat-max-w,64rem)]">
+        <div className="mx-auto max-w-[var(--chat-max-w,42rem)]">
           <div className="mt-1.5 flex items-center gap-1.5">
             <IconLoader2 size={12} className="animate-spin text-accent" />
           </div>
@@ -3057,7 +3057,7 @@ function ChatPaneForSession({
           Pointer-events none: purely decorative, disappears the moment the
           real messages land in the bucket. */}
       {historyLoading && (
-        <div className="pointer-events-none absolute inset-0 z-20 mx-auto w-full max-w-[var(--chat-max-w,64rem)] space-y-8 overflow-hidden px-[var(--chat-gutter)] pt-12">
+        <div className="pointer-events-none absolute inset-0 z-20 mx-auto w-full max-w-[var(--chat-max-w,42rem)] space-y-8 overflow-hidden px-[var(--chat-gutter)] pt-12">
           <HistorySkeleton />
         </div>
       )}
@@ -3161,7 +3161,7 @@ function ChatPaneForSession({
           ? "flex flex-1 flex-col justify-end overflow-hidden pb-3"
           : "shrink-0 pb-3",
       )}>
-        <div className={cn("relative w-full", empty ? "max-w-4xl" : "mx-auto max-w-[var(--chat-max-w,64rem)] pt-5")}>
+        <div className={cn("relative w-full", empty ? "max-w-4xl" : "mx-auto max-w-[var(--composer-max-w,48rem)] pt-5")}>
           {empty && (
             <EmptyThreadWelcome projectName={projectName} />
           )}

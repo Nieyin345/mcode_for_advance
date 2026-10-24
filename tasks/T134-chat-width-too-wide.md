@@ -349,3 +349,57 @@ const COMPOSER_MAX_WIDTH_CSS: Record<ChatMaxWidth, string> = {
 3. **四档单调递增**（两个表各自）。
 4. **`:3164` 用 `--composer-max-w`，其余 7 处用 `--chat-max-w`**（有断言钉住这个分工）。
 5. **不回归**：`t122-chat-rhythm-smoke`。
+
+---
+
+## 结果回写（2026-10-24，K）
+
+### 零、改了什么
+
+**消息正文 1024px → 672px，输入框独立为 768px**（上游 `max-w-2xl` / `max-w-3xl`）。
+
+| 文件 | 改动 |
+|---|---|
+| `lib/uiPrefs.ts` | `CHAT_MAX_WIDTH_CSS` 四档重定（640/672/768/none）；**新增** `COMPOSER_MAX_WIDTH_CSS`（704/768/896/none）；`buildUiPrefsCss` 同时写两个变量 |
+| `chat/ChatPane.tsx` | 7 处 `var(--chat-max-w, 64rem)` → `42rem`；`:3164` 换成 `var(--composer-max-w, 48rem)` |
+| `scripts/t134-chat-width-smoke/` | 新建，16 条断言 |
+
+### 一、★ 卡上漏了一处：standard 档靠 fallback，不靠表
+
+**`buildUiPrefsCss` 只在「非 standard」时才写 CSS 变量：**
+
+```ts
+if (p.chatMaxWidth !== "standard") { rules.push(`:root { --chat-max-w: ... }`) }
+```
+
+所以 **standard 档的宽度只能由 `ChatPane.tsx` 的 fallback 提供**（`--chat-max-w` 在 CSS 里没有定义，我 grep 过整个 `styles.css`）。
+
+**改了 `uiPrefs.ts` 的表却不改 fallback，standard 档会静默停在 1024px** —— 而所有现有用户都是 standard 档，等于**这次改动对他们完全无效**。
+
+**卡上说「核心改动是一行 + 一个派生表」，实际是 11 处**（7 个 fallback + 1 个 composer fallback + 2 个表 + 1 处 CSS 生成）。**§六 专门守这条**，并且交叉核对「fallback === 表里的 standard」。
+
+### 二、套件与变异
+
+`t134-chat-width-smoke` **16/16**。七节：两张表 / standard 值 / **两者不同** / full 都是 none / 单调递增 / 分工计数 / **fallback 同步**。
+
+| 变异 | 正控（该红） | 实际 |
+|---|---|---|
+| `full` 档消息 `none`、输入框留 896 | 1 | **1** ✓ |
+| `:3164` 改回 `--chat-max-w` | 1 | **5** ✓ |
+| 消息表改成和输入框表相同 | 1 | **3** ✓ |
+| **负控：改 `text-body` 的 fontSize** | **0** | **0** ✓ |
+
+**第二行暴露出我一条坏断言**：第一版写的是「fallback 的值全是 42rem」，**没断言数量是 7** —— 8 处全是 42rem 时它照样绿。**已补 `length === 7`**，复跑后 §六 也红。
+
+**第四行是负控**：改 T133 的字号配置时本套全绿，说明它只守宽度。
+
+### 三、⚠️ 这是全量默认值变更
+
+**所有现有用户的正文会从 1024px 变成 672px。** 依据是用户明确要求「claude 什么样子，你就什么样子」+ 上游 `ChatMessageBubbles.tsx:275` 的 `max-w-2xl`。**提交信息里写明了这是刻意的。**
+
+**观感影响**：正文变窄 34%，两侧留白显著增加。**这是这次想要的，但也意味着这是本批唯一一个「用户能立刻看出来」的改动。**
+
+### 四、没做的 / 觉得不对但没改的
+
+- **空态的 `max-w-4xl`（896px）没动**（`ChatPane.tsx:3164` 的 `empty ? "max-w-4xl"` 分支）。那是**空态欢迎页**的宽度，不是正文。它现在比正文（672）**还宽**。是否要一起改，卡上没提，我没有擅自决定。
+- **观感未做真机验证** —— 与 UI 那批同样的问题：只有数值断言。
