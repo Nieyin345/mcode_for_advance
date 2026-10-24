@@ -230,21 +230,30 @@ console.log("[7] 真实扩展的清单：schema 层能过，install 层卡在 ma
     // 它会被拒 —— 但**不是因为 commands**（24 条现在收得下了）。
     //
     // ⚠️ 不能用 `/commands/.test(error)` 判断 —— zod 的报错里会回显**整个 schema 的**
-    // 字段路径，`"path": ["main"]` 旁边也可能出现 commands 字样。第一版就这么写的，
-    // 假红。改成解析 issue 的 `path`，看有没有一条指向 `contributes.commands`。
+    // 字段路径。改成解析 issue 的 `path`。
     let commandIssues = 0;
-    let mainIssues = 0;
     try {
       const issues = JSON.parse((r.error ?? "").replace(/^Error:\s*/, "")) as { path?: unknown[] }[];
       commandIssues = issues.filter((i) => Array.isArray(i.path) && i.path.join(".").includes("commands")).length;
-      mainIssues = issues.filter((i) => Array.isArray(i.path) && i.path.join(".") === "main").length;
-    } catch { /* 不是 JSON（可能是别的错），保持 0 */ }
+    } catch { /* 不是 JSON，保持 0 */ }
 
     check("★ rainbow-csv 的清单**没有一条 issue 指向 commands**（24 条收下了）", commandIssues === 0, {
       commandIssues, error: (r.error ?? "").slice(0, 120),
     });
-    check("★ 它有一条 issue 指向 main 路径 —— 那是另一个已知边界", mainIssues > 0, { mainIssues });
-    console.log(`      实际拒绝理由（前 140 字符）：${(r.error ?? "").replace(/\s+/g, " ").slice(0, 140)}`);
+
+    // 【F009】这里原来断言「有一条 issue 指向 main」—— 那时 main 是字面量，
+    // rainbow-csv 的 `./extension` 确实死在那。**F009 放开了 main，障碍前移了一格**：
+    // 现在它死在**不支持的贡献点**（colors/configuration/submenus/menus/languages/…）。
+    //
+    // 这条断言验的是「**当前挡在它前面的是哪一道墙**」，墙会随着每次放宽前移。
+    // 所以断言必须跟着**说清现在卡在哪**，否则它会随着修复而假红（这次就是）。
+    const mentionsContributions = /unsupported section/i.test(r.error ?? "");
+    check(
+      "★ 它现在卡在「不支持的贡献点」（main 已通）—— 障碍前移了一格",
+      !r.ok && mentionsContributions,
+      { error: (r.error ?? "").replace(/\s+/g, " ").slice(0, 200) },
+    );
+    console.log(`      实际拒绝理由（前 200 字符）：${(r.error ?? "").replace(/\s+/g, " ").slice(0, 200)}`);
   }
 }
 

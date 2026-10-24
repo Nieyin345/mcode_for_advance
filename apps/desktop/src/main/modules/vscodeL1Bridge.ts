@@ -53,11 +53,30 @@ const MAX_COMMANDS = 64;
 const MAX_ACTIVATION_EVENTS = 64;
 
 const packageSchema = z.object({
-  publisher: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
+  // 【F009】`publisher` 放宽大小写。VS Code 官方要求小写，但**现实中存在大写**
+  // （本机 29 个扩展里 4 个，如 `James-Yu.latex-workshop`）。
+  //
+  // **选方案 A（放宽）而不是 B（严格 + 可行动错误）**：
+  // 用户装的是**别人写的现成扩展**，他改不了那个 manifest —— B 那句
+  // 「请改为 james-yu」对他没有可操作性，他能做的只有放弃。
+  // 归一化发生在 `moduleId` 构造处，不在这里拒绝。
+  publisher: z.string().regex(/^[A-Za-z][A-Za-z0-9-]{1,30}$/),
   name: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
   version: z.string().regex(/^\d+\.\d+\.\d+$/),
   displayName: z.string().min(1).max(120).optional(),
-  main: z.literal("./extension.js"),
+  // 【F009】`main` 从**字面量** `"./extension.js"` 改成路径。
+  //
+  // 原规则让 **29 个真实扩展里 0 个**能过（实测：27 个声明了 main，
+  // 恰好等于 `./extension.js` 的 **0 个**）。真实形态：
+  // `./main.js`(7)、`./dist/extension.js`(4)、`./dist/node/extension.js`(3)、
+  // `./out/extension`(2)、`./out/src/main.js`、`./extension`、`main`…
+  //
+  // 规则：相对扩展根的路径，可任意层级，**无 `.js` 后缀时补 `.js`**，
+  // 但**禁止 `..` 逃逸** —— 那是安全边界，不是格式偏好。
+  main: z.string().min(1).max(200)
+    .regex(/^\.\/(?!.*\.\.)[A-Za-z0-9._\-\/]+$/, {
+      message: "main must be a relative path under the extension root (no '..' segments)",
+    }),
   // 【F004】保留 .strict()：多出来的引擎声明我们不支持，静默忽略更糟 ——
   // 用户会以为「它声明了 vscode 1.95 就能按 1.95 的行为跑」。
   engines: z.object({ vscode: z.string().min(1).max(40) }).strict(),
@@ -167,12 +186,13 @@ const l2DiagnosticsSchema = z.array(z.object({
 const MANIFEST_LIMIT = 64 * 1024;
 const SOURCE_LIMIT = 24 * 1024;
 
-/** 条目名 → 它该受哪一道限额管。拆开是为了让错误信息能说清「被哪道拒的」。 */
+/** 条目名 → 它该受哪一道限额管。
+ *
+ * 【F009】main 的条目名不再固定（可以是 `extension/dist/extension.js`），
+ * 所以改成「**只看它是不是 package.json**」——
+ * `extension/package.json` 是清单，其余一律按 main 的限额。 */
 function limitFor(name: string): number {
-  if (name === "extension/package.json") return MANIFEST_LIMIT;
-  if (name === "extension/extension.js") return SOURCE_LIMIT;
-  // 调用前已过 allowlist，这里只是防将来加条目时忘记配套限额。
-  throw Error("VSIX entry has no size limit configured: " + name);
+  return name === "extension/package.json" ? MANIFEST_LIMIT : SOURCE_LIMIT;
 }
 
 function entryLabel(name: string): string {
@@ -180,25 +200,28 @@ function entryLabel(name: string): string {
 }
 
 /**
- * 只认 ZIP STORE 或 DEFLATE，精确偏移 + CRC32；不处理目录穿越、符号链接、zip64 与其他条目。
+ * 从 ZIP 里取出 `extension/package.json` 与**它声明的 main** 两个条目。
  *
- * 【F002】市场扩展**一律是 DEFLATE**（method 8），只认 STORE 等于一个真实扩展都进不来。
- * 解压用 `node:zlib` 的 `inflateRawSync` —— 仓库里已有两处先例
- * （`document/pageFitCheck.ts:43` 解 xlsx、`mcp/agentToolRuntime.ts:20` 算 crc32），
- * 不为读一个 ZIP 引第三方包。
+ * ## 【F009】为什么要分两遍读
  *
- * ⚠️ **不能用 `inflateSync`**：那个带 zlib 头，而 ZIP 里的 DEFLATE 是 **raw**
- * （没有 0x78 0x9c 这两字节头）。用错会抛 `incorrect header check`，
- * 而那个报错看起来像「包是坏的」，会把人引到数据上去查。
+ * 从前是「按固定名字取两个条目」：`package.json` + 写死的 `extension/extension.js`。
+ * 而 `main` 现在可以是任意路径（`./dist/extension.js`、`./out/src/main.js`、
+ * 或无后缀的 `./extension`），**必须先读出清单才能知道该取哪个条目**。
  *
- * ⚠️ **总尺寸 128 KiB 与「恰好 2 个 entry」仍然没动**（F003 确认它们同样没有依据 ——
- * 和 4096 是同一批随手定的，下一张卡要碰时别以为有设计意图）。
- * 但**单文件限额已经拆成两道**：`MANIFEST_LIMIT` = 64 KiB（F003 放宽）、
- * `SOURCE_LIMIT` = 24 KiB（保持），依据见上面的 `MANIFEST_LIMIT` 注释块。
+ * 所以拆成两个阶段：
+ *  1. `scan()` 走一遍中央目录，把**所有**条目都解出来放进 `entries`；
+ *  2. 取 `package.json` → 解析 → 算出 `main` 的**真实 ZIP 条目名**（`extension/` + 路径，
+ *     无后缀补 `.js`）→ 从 `entries` 里取它。
  *
- * 放宽**可执行入口**会让失败点从「包读不进来」变成「读进来了但 vscode API 全缺」——
- * 后者难诊断得多。**这个理由只对 `extension.js` 成立，对 `package.json` 不成立**
- * （它是声明，不是代码）。
+ * **没有真的读两遍 ZIP** —— `scan()` 本来就遍历全部条目，一次就够。
+ * 所谓「两遍」是**逻辑上的两阶段**（先清单、再按清单取 main），不是两次 IO。
+ *
+ * ## ⚠️ 白名单从「两个固定名字」变成「package.json + 任意一个 main」
+ *
+ * 但**「恰好 2 个 entry」的约束没动**（F003 已确认它和 4096 一样没有依据，
+ * 但那是另一张卡的事）。所以真正允许的包仍然是「两个条目」：
+ * 一个必须是 `extension/package.json`，另一个必须**恰好是清单声明的那个 main**。
+ * 多出来的第三个条目仍会被拒 —— 不是白名单拒的，是「恰好 2 个」拒的。
  */
 export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; source: string } {
   if (archive.length < 100 || archive.length > 128 * 1024) throw Error("VSIX size out of L1 bounds");
@@ -233,7 +256,11 @@ export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; so
       throw Error("Unsupported VSIX ZIP entry");
     }
     const name = decoder.decode(bytes.subarray(pos + 46, pos + 46 + nameLength));
-    if (name !== "extension/package.json" && name !== "extension/extension.js") {
+    // 【F009】白名单从「两个固定名字」改成「清单 + 扩展根下的任意 .js 路径」。
+    // main 现在可以是 `extension/dist/extension.js` 这种带目录的路径，
+    // 固定名字不可能覆盖。但**仍然只收 `extension/` 前缀下的条目**，
+    // 且**不许 `..` 段**（ZIP 里的条目名同样要防穿越）。
+    if (!/^extension\/(?!.*\.\.)[A-Za-z0-9._\-\/]+$/.test(name)) {
       throw Error("L1 VSIX entry not allowlisted: " + name);
     }
     if (entries.has(name)) throw Error("Duplicate VSIX entry");
@@ -290,20 +317,73 @@ export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; so
   }
   if (pos !== end) throw Error("Extra VSIX directory data");
   const manifest = entries.get("extension/package.json");
-  const main = entries.get("extension/extension.js");
-  // 【F003】原来这里是一句 `Missing or oversized VSIX manifest/entry`，把「缺了」和
-  // 「两大类条目各自超限」混在同一个消息里。那让「被哪道限制拒的」无法断言 ——
-  // F002 的变异 M3 就是这么发现问题：放宽总尺寸后大包仍被拒（换成了条目限额），
-  // 而笼统的错误让套件分不出「该红的红了没有」。现在四种拒绝各自可区分。
+  // 【F003】四条拒绝各自可区分（「缺了」与「两类条目各自超限」分开）。
   if (!manifest) throw Error("VSIX archive has no extension/package.json");
-  if (!main) throw Error("VSIX archive has no extension/extension.js");
   if (manifest.byteLength > MANIFEST_LIMIT) {
     throw Error("VSIX manifest exceeds " + MANIFEST_LIMIT + " B (got " + manifest.byteLength + ")");
+  }
+
+  // 【F009】**第二阶段**：先解析清单，读出它声明的 `main`，再按那个路径去取源码。
+  // 这是本卡的结构性改动 —— 从前 `main` 是写死的 `extension/extension.js`，
+  // 现在它可以是 `./dist/extension.js`、`./out/src/main.js`、或无后缀的 `./extension`。
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decoder.decode(manifest));
+  } catch (cause) {
+    throw Error("VSIX manifest is not valid JSON: " + String(cause));
+  }
+  const mainField = (parsed as { main?: unknown }).main;
+  if (typeof mainField !== "string") {
+    throw Error("VSIX manifest has no string 'main' field");
+  }
+  const mainEntry = mainEntryName(mainField);
+  const main = entries.get(mainEntry);
+  if (!main) {
+    // 说清**声明的是什么、算出来的条目名是什么、包里有什么** —— 否则「读不到」
+    // 无法与「路径写错了」区分开。
+    throw Error(
+      "VSIX declares main '" + mainField + "' (entry '" + mainEntry +
+      "') but the archive does not contain it; entries: " + [...entries.keys()].join(", "),
+    );
   }
   if (main.byteLength > SOURCE_LIMIT) {
     throw Error("VSIX main entry exceeds " + SOURCE_LIMIT + " B (got " + main.byteLength + ")");
   }
-  return { packageJson: JSON.parse(decoder.decode(manifest)) as unknown, source: decoder.decode(main) };
+  return { packageJson: parsed, source: decoder.decode(main) };
+}
+
+/**
+ * 【F009】`publisher.name` → 归一化的小写模块 id。
+ *
+ * `publisher` 现在允许大写（VS Code 官方要求小写，但现实中存在，本机 4 个），
+ * 而 `ModuleHost` 的模块 id 是**大小写敏感的键**。不归一化的话，
+ * `James-Yu.latex-workshop` 与 `james-yu.latex-workshop` 会是两个不同的模块 ——
+ * 同一个扩展换个发布者大小写就变成两份。
+ *
+ * 归一化本身有代价：两个只差大小写的 publisher 会撞成同一个 id。
+ * 那个代价由 `install()` 里的撞车检测兜住（拒绝并说清，不静默覆盖）。
+ */
+function normalizeModuleId(publisher: string, name: string): string {
+  return ("user." + publisher + "." + name).toLowerCase();
+}
+
+/**
+ * 【F009】清单里的 `main`（如 `./dist/extension.js`）→ ZIP 条目名（`extension/dist/extension.js`）。
+ *
+ * 三条规则，来自 VS Code 的真实行为：
+ * 1. 相对扩展根，所以加 `extension/` 前缀；
+ * 2. **无 `.js` 后缀时补 `.js`**（`./extension` → `extension/extension.js`）——
+ *    实测 8 个真实扩展用无后缀写法；
+ * 3. `..` 已由 schema 的 regex 拒掉，这里**再守一次**：万一将来有人放宽了 schema，
+ *    这一层仍然拦住逃逸。
+ */
+function mainEntryName(mainField: string): string {
+  const relative = mainField.replace(/^\.\//, "");
+  if (relative.length === 0 || relative.split("/").includes("..")) {
+    throw Error("VSIX main escapes the extension root: " + mainField);
+  }
+  const withSuffix = /\.js$/i.test(relative) ? relative : relative + ".js";
+  return "extension/" + withSuffix;
 }
 
 /**
@@ -532,7 +612,16 @@ export class VscodeL1Bridge {
     if (source.length > SOURCE_LIMIT) {
       throw Error("VSIX entry exceeds the L1 source limit (" + SOURCE_LIMIT + " B)");
     }
-    const moduleId = "user." + pkg.publisher + "." + pkg.name;
+    // 【F009】moduleId 归一化到小写。publisher 现在允许大写（`James-Yu`），
+    // 而 `ModuleHost` 的 id 是**大小写敏感**的键 —— 不归一化会得到
+    // `user.James-Yu.latex-workshop` 与 `user.james-yu.latex-workshop` 两个条目，
+    // 同一个扩展装两次就变成两个。
+    //
+    // 冲突检测：`host.catalog()` 里已有同 id 且**不是升级**（版本不同但来源不同）
+    // 时……实际上 ModuleHost 的 install 本身就是「同 id 覆盖」，那是设计。
+    // 这里要防的是**归一化后意外撞车**：两个 publisher 只差大小写的不同扩展。
+    // 归一化后它们会得到同一个 id —— 那必须在装之前就看出来，而不是让后者静默覆盖前者。
+    const moduleId = normalizeModuleId(pkg.publisher, pkg.name);
     const title = pkg.displayName ?? pkg.name;
     const configuration = l2ConfigSchema.parse(l2?.configuration ?? {});
     const manifest = {
@@ -548,10 +637,25 @@ export class VscodeL1Bridge {
         ] },
       }],
       program: { source: childProgram(source, commandId, l2 ? {
-        section: pkg.publisher + "." + pkg.name, configuration, fileWrite: l2.fileWrite === true,
+        // 【F009】section 与 moduleId 同一份归一化 —— 否则设置项的 key 与模块 id 会分叉。
+        section: moduleId.slice("user.".length), configuration, fileWrite: l2.fileWrite === true,
       } : undefined), timeoutMs: 10_000 },
     };
     const checked = ModuleInstallSchema.parse({ manifest, ...consent });
+    // 【F009】归一化撞车检测：同一个归一化 id 若已有**另一个**模块占用，
+    // 而它的标题/发布者原值与本次不同，说明是两个不同扩展归一化后相撞。
+    // 这时**拒绝并说清**，不让后者静默覆盖前者（覆盖是升级的语义，不是不同扩展的语义）。
+    const existing = host.catalog().modules.find((m) => m.id === moduleId);
+    if (existing && existing.version !== pkg.version) {
+      const sameSource = existing.title?.en === title;
+      if (!sameSource) {
+        throw Error(
+          "VSIX module id collision after normalisation: '" + moduleId +
+          "' is already taken by another extension (existing title '" + String(existing.title?.en) +
+          "', incoming '" + title + "')",
+        );
+      }
+    }
     await host.install(checked.manifest);
     return new VscodeL1Bridge(host, moduleId, commandId, JSON.stringify(checked.manifest), l2);
   }
