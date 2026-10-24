@@ -10,7 +10,7 @@ const divider=src("layout/Divider.tsx");
 check("Git scan generation invalidates on project clear",git.includes("scanGeneration.current.invalidate()") && git.includes("if (!projectPath)"));
 check("Git scan generation cancels outstanding work on unmount",git.includes("return () => scanGeneration.current.invalidate()"));
 check("Git scan writes only for latest generation",git.includes("scanGeneration.current.isCurrent(seq)"));
-check("Git sub-tabs expose semantic selected state",git.includes("aria-pressed={active}"));
+check("Git sub-tabs expose semantic selected state",git.includes('role="tablist"') && git.includes('role="tab"') && git.includes("aria-selected={active}"));
 check("Git icon-only rescan has accessible name",git.includes('aria-label={t("ide.git.rescanRepos")}'));
 check("Divider finish on pointer up checks pointer identity",divider.includes("finishPointer(e.pointerId)") && divider.includes("onPointerCancel={(e) => finishPointer(e.pointerId)}"));
 check("Divider ignores foreign pointer capture loss",divider.includes("onLostPointerCapture={(e) => finishPointer(e.pointerId)}"));

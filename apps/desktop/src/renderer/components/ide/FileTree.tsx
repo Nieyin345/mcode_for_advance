@@ -5,7 +5,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { ContextMenu } from "@base-ui/react/context-menu";
 import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
-import { basename, dirname, joinPath, relativePath } from "@renderer/lib/path.js";
+import { basename, dirname, isPathWithin, joinPath, relativePath } from "@renderer/lib/path.js";
 import type { FileTreeEntry } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
@@ -592,7 +592,7 @@ export function FileTree({ projectPath }: { projectPath: string }) {
       // shallow-first so each level's lazy load can kick off in mount order.
       const ancestors: string[] = [];
       let dir = dirname(filePath);
-      while (dir && dir !== projectPath) {
+      while (dir && isPathWithin(projectPath, dir) && !isPathWithin(dir, projectPath)) {
         // Guard: if dirname stops making progress (filesystem root), stop.
         ancestors.unshift(dir); // prepend -> shallowest first
         const parent = dirname(dir);
@@ -634,7 +634,7 @@ export function FileTree({ projectPath }: { projectPath: string }) {
 
   // Reveal the currently-active editor file (classic "follow the editor").
   useEffect(() => {
-    if (!activeFile || !activeFile.startsWith(projectPath)) return;
+    if (!activeFile || !isPathWithin(projectPath, activeFile)) return;
     if (activeFileIsDiff) return;
     return revealPath(activeFile);
   }, [activeFile, activeFileIsDiff, projectPath, revealPath]);
@@ -646,7 +646,7 @@ export function FileTree({ projectPath }: { projectPath: string }) {
   // reveal, this never opens anything in the editor.
   const treeReveal = useSessionStore((s) => s.ideTreeReveal);
   useEffect(() => {
-    if (!treeReveal || !treeReveal.filePath.startsWith(projectPath)) return;
+    if (!treeReveal || !isPathWithin(projectPath, treeReveal.filePath)) return;
     return revealPath(treeReveal.filePath);
   }, [treeReveal, projectPath, revealPath]);
 
@@ -961,7 +961,7 @@ function DirNode({
   });
   useEffect(() => {
     if (!activeFile) return;
-    if (endPath !== entry.path && activeFile.startsWith(endPath + "/")) {
+    if (endPath !== entry.path && isPathWithin(endPath, activeFile)) {
       setDirExpanded(endPath, true);
     }
   }, [activeFile, endPath, entry.path, setDirExpanded]);
@@ -1089,8 +1089,10 @@ function DirNode({
               <button
                 type="button"
                 onClick={onToggle}
+                aria-expanded={isOpen}
+                aria-label={label}
                 className={cn(
-                  "flex w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors hover:bg-surface-hover/50",
+                  "flex min-h-7 w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors hover:bg-surface-hover/50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent",
                 )}
                 style={{ paddingLeft: depth * 12 + 4 }}
               />
@@ -1331,8 +1333,9 @@ function FileNodeRow({
               }}
               onClick={onClick}
               onDoubleClick={onDoubleClick}
+              aria-current={active ? "true" : undefined}
               className={cn(
-                "flex w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors",
+                "flex min-h-7 w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent",
                 active ? "bg-surface-hover text-content font-medium ring-1 ring-inset ring-edge-selected" : "text-content-muted hover:bg-surface-hover/50",
                 // Copied-file marker (VS Code parity): the row sitting in the
                 // tree clipboard stays dimmed until pasted or another file is

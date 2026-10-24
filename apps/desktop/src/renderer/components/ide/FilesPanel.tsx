@@ -4,6 +4,7 @@ import { EMPTY_TURN_FILES, useSessionStore, selectActiveEnvPath } from "@rendere
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { FileTree } from "./FileTree.js";
 import { cn } from "@renderer/lib/cn.js";
+import { basename } from "@renderer/lib/path.js";
 import {
   IconFolder,
   IconFolderPlus,
@@ -82,14 +83,16 @@ export function FilesPanel() {
   // remounts on this value changing — switching environments swaps the tree.
   const envPath = useSessionStore(selectActiveEnvPath);
   const projectPath = envPath ?? activeProject?.path ?? null;
-  const projectName = activeProject?.name ?? null;
+  const projectName = envPath && envPath !== activeProject?.path
+    ? basename(envPath)
+    : activeProject?.name ?? (projectPath ? basename(projectPath) : null);
 
   if (!projectPath) {
     return <EmptyState />;
   }
 
   return (
-    <ModuleSurface key={projectPath} projectPath={projectPath}><div className="flex h-full min-h-0 flex-col">
+    <ModuleSurface key={projectPath} projectPath={projectPath}><div role="region" aria-label={projectName ?? projectPath} className="flex h-full min-h-0 flex-col">
       {/* Compact header: the active project's folder name on the left (mirrors
           the explorer header in VS Code), refresh + search buttons on the
           right. The tree gets the full panel height below. */}
@@ -108,7 +111,7 @@ export function FilesPanel() {
           title={t("ide.files.refreshDir")}
           aria-label={t("ide.files.refreshDir")}
           className={cn(
-            "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
+            "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             "cds-hover-ghost text-content-subtle hover:text-content",
           )}
         >
@@ -120,7 +123,7 @@ export function FilesPanel() {
           title={t("ide.files.searchFilesHint")}
           aria-label={t("ide.files.searchFiles")}
           className={cn(
-            "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
+            "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             "cds-hover-ghost text-content-subtle hover:text-content",
           )}
         >
