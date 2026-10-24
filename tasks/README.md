@@ -135,7 +135,8 @@
 | T120 | **`open-claude-ui` 的 36 个组件真正用起来**（统计已移植 17 / 借规范 7 / 缺口 3） | **P0 产品主线** | T119 | ZZ | 🔄 缺口 ①② 已接（`e3109b97` 折叠 / `abf131d3` 平移缩放）；③ 限流倒计时未开卡 |
 | T121 | **把 Claude 设计规范变成实现者清单**（十项对照 + 若只改三件事改哪三件） | **P0 产品主线** | 无 | ZZ | 🔄 边框一项已落地（`b736c814`，关系判据非取值判据）；Surface 分层与气泡色在办 |
 | T122 | 🔴 **AI 聊天区的排版节律与滚动手感**（间距 20/12 vs 上游 15/10；助手 `text-inset` 零命中；滚动语义待对照） | **P0 产品主线** | T119+T120 | ZZ | 🔄 进行中（G） |
-| T123 | 🔴 **Office 产物不进任务中心**：`document_tool_call` 不在 `FILE_MUTATING_TOOLS` → `turn.files` 空 → `classifyTurn` 判成「问答不是任务」 | **P0 核心闭环** | T97 | ZZ | 🔄 进行中（H） |
+| T123 | 🔴 **Office 产物不进任务中心**：`document_tool_call` 不在 `FILE_MUTATING_TOOLS` → `turn.files` 空 → `classifyTurn` 判成「问答不是任务」 | **P0 核心闭环** | T97 | ZZ | ✅ done（`e3fc94bc`，13/13；`fileSnapshot`/`autoCreate` 零改动） |
+| T124 | **`document_md_edit` 的同病**：Markdown 编辑的产物同样不进任务中心 | P1 核心闭环 | T123 | ZZ | ⬜ 待开工 |
 
 ### T43 为什么是 P0（用户最高痛点）
 
