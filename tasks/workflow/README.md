@@ -234,3 +234,41 @@ T10（许可集成）、T13/T19（vendor 集成地图）、T45（删手写画布
 T81（四步链路）、T84（journey 陈旧断言）、T89（fixup 崩溃）、T95（产品可用性核查）。
 
 **本目录只放从今天起的增量工作**，不复述历史。
+
+---
+
+## ⚠️ 用户当面指出的验收缺口（2026-10-25）
+
+> **「工作流都在验证什么呀，集成到设置页面了吗，现在的测试我看还是独立的页面」**
+
+### 我核实后的答案：代码集成了，但**没有一条真 Electron 旅程证明用户点得到**
+
+`WorkflowsPanel` 确实挂在 `SettingsPage.tsx:437-438`。**但验证它的证据分三层，只有最外层是真的：**
+
+| 层 | 套件 | 跑的是什么 | 能证明「用户点得到」吗 |
+|---|---|---|---|
+| **SSR** | `workflow-engine-view-owner-smoke`（W15）、`workflow-view-smoke` | `react-dom/server` 渲成 HTML 字符串 | ❌ **effect 完全不跑** |
+| **真浏览器 + 真组件** | `workflow-ui-smoke` | 起 Chromium，`render(<SettingsPage />)` —— **真组件、假外壳** | ⚠️ 半个 |
+| **真 Electron + 真 App** | `t8-node-red-u1` | 打包真 `App.tsx` | ⚠️ **但它不走设置页** |
+
+**`t8` 的三条旅程用的是 `harness.openEngineEditor()`（`harness.ts:240`）——
+直接在宿主层 `host.open()` 开一个 `WebContentsView`，从来没经过设置页。**
+
+**所以「引擎能起、画布能拖能连能部署」证明了，而「用户从设置页进得去」没证明。**
+
+### 尤其是这一条
+
+`EngineRuntimePanel` 的核心是 `api.documentView.open(...)` ——
+**SSR 里连 `api` 都不存在**（`prelude.ts` 装的是桩），**effect 一行都不跑**。
+
+**所以 W15 那条「默认落在画布」的断言，证明的是「组件初始状态对」，
+不是「用户点进去看到画布」。**
+
+### 对应卡：**W26**
+
+要求走真 Electron + 真点击：开设置 → 点工作流 → 确认默认在画布页签 →
+**确认 `documentView` 里那个视图真的存在且可见**（不是 DOM 里有个 div，
+那个 div 是占位，原生视图不在 DOM 里）→ 确认编辑器 URL 端口 == 引擎端口。
+
+**核心变异**：注释掉 `EngineRuntimePanel` 的 `open` 那一步 → 第 5 步必须红。
+**它证明的是「视图真的开了」，不是「组件渲染了」。**
