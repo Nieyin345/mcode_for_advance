@@ -712,6 +712,17 @@ function hashResourceTree(root, namespace = "mcode.genoffice.resource.tree.v1") 
       // 这两个文件在本仓库零引用（`grep -rn gitkeep apps/desktop/build
       // apps/desktop/src/main` 无命中），且 `fileReady` 已经拒绝零字节的
       // **必需**资源，所以这里的信息损失是可接受的。
+      //
+      // ⚠️ **本函数只哈希文件，空目录不参与摘要 —— 这是改这里之前就有的性质。**
+      // 实测（`.tmp` 探针，四组）：
+      //   「目录不存在」/「目录存在但空」/「目录里只有 .gitkeep」 → 三者摘要相同
+      //   「目录里有真文件」                                        → 摘要不同
+      // 所以「用 `.gitkeep` 承载一个必须存在的空目录骨架」这种常见做法，
+      // 在本函数里**是不可见的**：目录整个消失也算通过。
+      // GenOffice 当前不受影响（那两个含 `.gitkeep` 的目录在产物里都另有真文件，
+      // 见 cssstyle/lib/generated 与 undici/lib/llhttp）；但如果将来 vendors
+      // 依赖这么一个空目录，afterPack 不会发现它没了 —— 那时要改成
+      // 「目录本身也进摘要」，而不是在这里加回 `.gitkeep`。
       if (entry.name === ".DS_Store" || entry.name === ".gitkeep") continue;
       const rel = subpath ? `${subpath}/${entry.name}` : entry.name;
       const full = join(dir, entry.name);
