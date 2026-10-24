@@ -14,8 +14,8 @@ const FORMAT = "mcode.genoffice.upstream-lock.v2";
 const REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const BASE_REVISION = "cbec600ace9c930b2646b6739cf6df3741bb9d6a";
 const APPROVED_PATCH_REVISION = "73ba918083b5e2bedff7633925c3d7f625e04449";
-const FINAL_REVISION = "f69db1d28dad4028d260961e1d65099c0fc945e8";
-const FINAL_TREE = "1340bd513ad82da63d1b0c285bece038cff2e86f";
+const FINAL_REVISION = "4c893cf46f2022428d9ab4066ccb5eb7073643dc";
+const FINAL_TREE = "17d9ff28fca5461f9dee063bc4b925e93ef9fb42";
 const LICENSE_SOURCE_MANIFEST = "apps/desktop/build/vendor-licenses/genoffice/manifest.json";
 const APPROVED_PATHS = Object.freeze([
   "apps/pdf/src/main/atomic-write.ts",
@@ -39,6 +39,7 @@ const PATCHES = Object.freeze([
   { file: "patches/genoffice/0015-feat-docs-write-eastAsia-so-new-docx-keeps-CJK-typo.patch", revision: "3cb99ab13e1e42989889e15cc338bd6f6c6fff5c", parentRevision: "05da63cdf6fcbec44176b07d10cb5b5f75f5f1cf", sha256: "7a529e41be46b1b26c9d98d34a0bc9e536971131406be7a8619f34b6e859a595" },
   { file: "patches/genoffice/0016-feat-html-reshell-the-chrome-in-Mcode-s-design-token.patch", revision: "87d9b4bbb7f77c8d5d2e6b7d705c41538942b989", parentRevision: "3cb99ab13e1e42989889e15cc338bd6f6c6fff5c", sha256: "4cad1b5b3a15e426e55d91235c7fb39046b948a39c4d9e69ebb0f2aaabf2c98f" },
   { file: "patches/genoffice/0017-feat-markdown-reshell-the-chrome-in-Mcode-s-design-t.patch", revision: "f69db1d28dad4028d260961e1d65099c0fc945e8", parentRevision: "87d9b4bbb7f77c8d5d2e6b7d705c41538942b989", sha256: "15558ac9f876a9080b3cbc025924836d949f1433938a18f1e0d47f3ab22a7fb8" },
+  { file: "patches/genoffice/0018-feat-pdf-reshell-the-chrome-in-Mcode-s-design-tokens.patch", revision: "4c893cf46f2022428d9ab4066ccb5eb7073643dc", parentRevision: "f69db1d28dad4028d260961e1d65099c0fc945e8", sha256: "6ad0e845e28a2d719e04e777683c73cbcc0717f60fee176ac3157113f2c26156" },
 ]);
 
 function runGit(directory, ...args) {

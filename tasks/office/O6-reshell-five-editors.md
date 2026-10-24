@@ -265,9 +265,10 @@ $ grep -n -- "--docs-statusbar-bg" genoffice/apps/docs/src/renderer/styles.css
 
 ```bash
 # 覆盖的每个 token 必须在 tokens.css 里
-grep -oE '^\s*--[a-z0-9-]+' apps/<app>/src/renderer/mcode-theme.css   | sed 's/^\s*//' | while read t; do
-    grep -q -- "$t:" genoffice/packages/ui/src/tokens.css || echo "私有 token 被覆盖了: $t"
-  done
+THEME=apps/<app>/src/renderer/mcode-theme.css
+grep -oE '^\s*--[a-z0-9-]+' "$THEME" | sed 's/^\s*//' | while read -r t; do
+  grep -q -- "$t:" genoffice/packages/ui/src/tokens.css || echo "私有 token 被覆盖了: $t"
+done
 ```
 
 **它防的是「有人觉得某个私有 chrome 也该换」而悄悄加进去** ——
@@ -532,3 +533,90 @@ newsprint 宿主纸张变成 #fff、防漂移也红（值里多了 `!important`�
 （`[data-theme]` 与 `prefers-color-scheme`），删一条另一条兜住了。
 **所以「删掉一处仍全绿」有两种含义：判据失效，或这次本来就不该红** —— 要换选点再试，
 而不是立刻改判据。
+
+---
+
+## 结果回写：pdf（第二批，2026-10-24）
+
+### 1. 覆盖了多少
+
+**54 个共享 chrome token**，与 docs/html/markdown 逐字相同。pdf 自己的 CSS 实际消费其中 41 个。
+
+### 2. ★ 两条通用规则（比「覆盖 54 个」更准确）
+
+**规则 A —— 换壳 = 换共享 token，app 私有 token 一律不动。**
+
+这条解释了**为什么是这 54 个**：不是因为它们看起来像 chrome，是因为它们**在共享层里**。
+证据（总控核过）：docs 换壳后 `--docs-statusbar-bg` 仍是原值 `#f3f4f6`，pdf 的
+`--pdf-statusbar-bg` 也是 `#f3f4f6` —— **已经发生的事情与这条规则一致**。
+
+**可验形式**（已写进套件）：主题层覆盖的每个 `--x` 必须出现在 `tokens.css` 里。
+```
+ok  覆盖的每个 token 都来自 tokens.css（共享层共 65 个，本文件覆盖 54 个）
+```
+
+**规则 B —— PDF 比 markdown 简单，因为它的纸色不在共享层。**
+
+markdown 的 `.doc-page` 用共享的 `var(--surface)`，必须在作用域内钉回上游；
+**pdf 的纸张是 app 私有的 `--pdf-paper`（`styles.css:27`），不在覆盖集，自然保持上游白**。
+所以 pdf 不需要任何「钉住」块，也不存在 markdown 那种撞名风险。
+
+### 3. 故意没覆盖的
+
+| 不覆盖 | 类别 |
+|---|---|
+| `--pdf-paper` | 纸张（文档内容） |
+| `--pdf-search-hit-*` / `--pdf-search-hit-cur-*` | 查找命中（文档语义） |
+| `--pdf-ink-*`（underline/strike/highlight） | 墨迹批注（文档语义） |
+| `--pdf-redaction-stripe-*` / `--pdf-redaction-border` | 遮盖条纹（文档语义） |
+| `--pdf-form-*` / `--pdf-formdesign-*` / `--pdf-textedit-*` | 表单域 / 文本编辑（文档语义） |
+| `--pdf-statusbar-bg` / `--pdf-focus-ring` / `--pdf-shadow-menu` | **app 私有 chrome** —— 见规则 A |
+| `--accent*` / `--search-hit-*` / `--docs-revision-bar` | 品牌色 / 文档语义标记 |
+
+### 4. 判据（真 Electron，四种模式：宿主/独立 × 亮/暗）
+
+| # | 判据 | 结果 |
+|---|---|---|
+| 1 | 宿主里 `mcode-theme.css` 被加载 | ✅ |
+| 2 | 独立运行不加载 | ✅ |
+| 3 | token 实际生效 | ✅ `--surface` #fcfcfb、`--text` #151515、`--border` #e1e0d9、`.ribbon` rgb(252,252,251)、字体栈 `-apple-system` |
+| 4 | 组件树没变 | ✅ `.ribbon` / `.app` / `.status-bar` |
+| + | 暗色（宿主/独立各一组 + 两条前提） | ✅ 宿主 `--surface` #151515 / `.ribbon` rgb(27,27,26)；独立 `--text` #e4e4e4 / `.ribbon` rgb(37,37,37) |
+| + | 纸张 | ✅ `--pdf-paper` 两种模式都是 `#fff` |
+
+**`o6-reshell-pdf-smoke`：38/38。**
+
+### 5. 变异（先写预期，再跑，还原后 sha256 核对）
+
+| 变异 | 预期 | 实际 |
+|---|---|---|
+| M1 去掉 UA 门（无条件加载） | 独立模式 6 条 + 暗色独立 4 条 | **10 红**，全在独立/暗色独立组 ✅ |
+| M2 `--surface` 改回 `#ffffff` | 1 条 | **1 红**（`--surface` token 值） |
+| **M2b `--chrome-bg` 改回 `#ffffff`** | 1 条 | **1 红**（`.ribbon` 计算背景） |
+| M3 删 import | 宿主 6 条 + 暗色宿主 6 条 | **12 红**，全在宿主组 ✅ |
+
+**M2 与 M2b 的关系值得记**：pdf 的 `.ribbon` 读的是 `--chrome-bg`（`styles.css:204`），
+不是 `--surface`。所以改 `--surface` 只红 token 那一条、`.ribbon` 不动；改 `--chrome-bg`
+只红 `.ribbon` 那一条。**两条断言各管一个 token，互不兜底** —— 这正是「断言互相独立」
+该有的样子，也说明我最初写的 `.ribbon` 断言标签（「Mcode 表面」）在说谎，已改成
+`--chrome-bg`。
+
+### 6. 交付物
+
+- vendor 提交 `4c893cf`（2 文件，+254）
+- `patches/genoffice/0018-feat-pdf-reshell-the-chrome-in-Mcode-s-design-tokens.patch`（12492 B，sha256 `6ad0e845…26156`）
+- 账本：lock `revision` → `4c893cf4`、`expectedTree` → `17d9ff28`、patchSeries 18 条；
+  verify `FINAL_*` 更新 + `PATCHES` 追加 0018
+- `apps/desktop/scripts/o6-reshell-pdf-smoke/{build.mjs, probe.cjs, run.sh}`
+
+### 7. 未做 / 需知
+
+1. **`verify-genoffice-upstream.cjs` 暂时跑不了** —— vendor 树里有别人未提交的改动
+   （`apps/pdf/src/main/save-pdf.ts`、`slides-main.ts`、`electron-utils/document-save-guard.ts`，
+   看起来是 O9「覆盖保存」那条线）。verify 正确拒绝（dirty tree）。等它们提交后再验。
+   **这不是我的改动造成的，我也没有碰那些文件。**
+2. **pdf 的 ribbon 只在打开文档后才渲染**（起始页只有 8 个字符的「加载中」）。套件为此在
+   自己临时目录里生成一份最小 PDF 作为 argv 传给 `startPdfStandalone()` —— 那是真实入口，
+   不联网、不依赖用户文件、不污染仓库。
+3. 暗色的两个期望值（rgb(27,27,26) / rgb(37,37,37)）是 `--chrome-bg` 的暗色值，
+   不是 `--surface` 的 —— 第一次写错成 `--surface` 的值，红了两条；那是断言错，不是代码错。

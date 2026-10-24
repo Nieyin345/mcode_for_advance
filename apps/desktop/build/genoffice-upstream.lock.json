@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "f69db1d28dad4028d260961e1d65099c0fc945e8",
-  "expectedTree": "1340bd513ad82da63d1b0c285bece038cff2e86f",
+  "revision": "4c893cf46f2022428d9ab4066ccb5eb7073643dc",
+  "expectedTree": "17d9ff28fca5461f9dee063bc4b925e93ef9fb42",
   "patchSeries": [
     {
       "index": 1,
@@ -166,6 +166,15 @@
       "sha256": "15558ac9f876a9080b3cbc025924836d949f1433938a18f1e0d47f3ab22a7fb8",
       "bytes": 17152,
       "subject": "feat(markdown): reshell the chrome in Mcode's design tokens"
+    },
+    {
+      "index": 18,
+      "file": "patches/genoffice/0018-feat-pdf-reshell-the-chrome-in-Mcode-s-design-tokens.patch",
+      "revision": "4c893cf46f2022428d9ab4066ccb5eb7073643dc",
+      "parentRevision": "f69db1d28dad4028d260961e1d65099c0fc945e8",
+      "sha256": "6ad0e845e28a2d719e04e777683c73cbcc0717f60fee176ac3157113f2c26156",
+      "bytes": 12492,
+      "subject": "feat(pdf): reshell the chrome in Mcode's design tokens"
     }
   ],
   "license": "Apache-2.0",
