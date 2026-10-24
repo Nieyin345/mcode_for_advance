@@ -275,3 +275,42 @@ t96-probe                      rc=1  同上
 | 后果 | 读者信了错的话 | **照文档做就是红** |
 
 **共同点**：**修复提高了某个东西的可信度，而它相邻的另一半还没修。**
+
+---
+
+## 九、主控复核（2026-10-25 00:25）
+
+**我亲自跑的（不是照抄回写）：**
+
+```bash
+$ bash apps/desktop/scripts/flow-preview/run.sh                    → rc=0, 20/20, path_err=0
+$ bash apps/desktop/scripts/md-preview/run.sh                      → rc=0, 10/10, path_err=0
+$ bash apps/desktop/scripts/mcode-condition-bridge-smoke/run.sh    → rc=0, 47/47, path_err=0
+
+$ bash apps/desktop/scripts/t145-runsh-path-smoke/run.sh
+t145-runsh-path-smoke —— 626 个 smoke 目录，共 634 个带 run.sh 的目录
+8/8 passed; 0 failed
+```
+
+**全仓现在 0 个 `cd` 之后仍用 `$0` 的 `run.sh`。** 守卫从 625 扩到 634（覆盖所有带 `run.sh` 的目录）。
+
+### 补一条回写没提的：`preset-scripts-sync` 的用法错在 `main.ts`，不在 `run.sh`
+
+**回写说「不带参数 rc=2 是它的用法设计」—— 对，但值得说清它在哪：**
+
+```bash
+# run.sh 的最后一行把参数透传给它自己的 main.ts
+node "$OUT/sync.mjs" "$@"
+```
+
+**所以用法检查在 `apps/desktop/scripts/preset-scripts-sync/main.ts` 里，不在 `run.sh` 里。**
+**这意味着「改 `run.sh` 让它自动带 `--check`」是一个可行但需要判断的选择** ——
+**因为 `--write` 是它的另一个正当用法，自动带 `--check` 会让 `--write` 失效。**
+
+**所以这一条不该「修」，该「在推荐输出里注明」。** 归到 T151/T153 那条线（输出要说清用什么用法）。
+
+### 另一条：`t96-probe` 的 53/54
+
+**回写已经归因清楚了**（stash 验证过，与路径无关）。
+**但它现在会出现在 T153 的推荐里** —— 读者会看到一条真 FAIL。
+**这不是本卡能修的**（那是 `t96-probe` 自己的业务断言），建议另开卡。
