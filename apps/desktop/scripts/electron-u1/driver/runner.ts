@@ -857,7 +857,17 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
     const win = new BrowserWindow({
       width: size.width,
       height: size.height,
+      // 窗口必须真实存在且有 display surface（否则 `WebContentsView.capturePage()` 抛错）。
+      // 位置由 `pickHostWindowPlacement` 决定（有副屏走副屏）。
+      //
+      // `skipTaskbar`：副屏窗口不该在任务栏占一格 —— 那会让用户在**主屏**的任务栏上
+      // 看到测试窗口的图标，看起来像「又弹了一个」。
+      //
+      // ⚠️ 这里**不加 `opacity: 0`**：旧注释说「离屏 + opacity 0 会让 capturePage 抛」，
+      // 而「副屏 + opacity 0 行不行」**没有实测过**。
+      // 未验证的改动不进这个文件 —— 要加它，先在 t7 里验一次 capturePage 仍然成功。
       show: true,
+      skipTaskbar: true,
       x: placement.x,
       y: placement.y,
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
@@ -868,7 +878,10 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
     });
     ctx.win = win;
     ctx.wc = null;
-    win.focus();
+    // 不要 `focus()`：副屏上的窗口被 focus 时，Windows 会把它的任务切到前台，
+    // 用户在**主屏**上看就是「又弹了一个窗口」。
+    // `showInactive()` 让窗口存在且可合成（`capturePage` 需要 surface），但不抢焦点。
+    win.showInactive();
   }
 
   // ── 主进程装配钩子（T7 起）──
