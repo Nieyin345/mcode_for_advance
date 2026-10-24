@@ -392,7 +392,7 @@ console.log("\n[T100b] 卡片自带的标签文字");
     elements: [
       { type: "shape", shape: "roundRect", x: 80, y: 160, w: 320, h: 480, fill: "#1F3A5F",
         ...(valign ? { valign } : {}),
-        paragraphs: [{ align: "center", runs: [{ text: "标签", sizePt: 24 }] }] } as DeckElement,
+        paragraphs: [{ align: "center", runs: [{ text: "标签", sizePt: 24 }] }] },
     ],
   });
 

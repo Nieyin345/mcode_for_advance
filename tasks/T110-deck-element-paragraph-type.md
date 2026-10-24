@@ -139,3 +139,126 @@ grep -c "as DeckElement" apps/desktop/scripts/t65-deck-pattern-smoke/main.ts
 
 `tasks/T110-deck-element-paragraph-type.md` 末尾追加 `## 结果回写（2026-10-24）`：
 补了哪些字段 + 各自的规范依据、`as` 删除前后的 `tsc` 结果、三套数字对照、提交 SHA。
+
+## 结果回写（2026-10-24）
+
+> 执行会话（F）。**纯类型改动，零行为变化。**
+> `tsc` EXIT=0、`as DeckElement` 归零、三套数字与改前逐项一致。
+
+### 1. 补了哪些字段（逐条 spec 依据）
+
+规范原文取自 `node genoffice/packages/cli/dist/genoffice.cjs guide slides spec`（113 行）。
+
+**`DeckParagraph`**（对应原文 **Paragraph fields** 一节）：
+
+> Paragraph fields: `runs` (required), `align` (`left` `center` `right` `justify`),
+> `lineSpacingPct` (60 to 300), `spaceBeforePt` and `spaceAfterPt` (0 to 96),
+> `bullet` (true = a • bullet with a hanging indent).
+
+| 字段 | 类型 | 依据 |
+|---|---|---|
+| `runs` | `DeckRun[]` | 同上（required） |
+| `align` | `"left" \| "center" \| "right" \| "justify"` | 同上，四值枚举 |
+| `lineSpacingPct` | `number` | 同上，60–300 |
+| `spaceBeforePt` | `number` | 同上，0–96 |
+| `spaceAfterPt` | `number` | 同上，0–96 |
+| `bullet` | `boolean` | 同上 |
+
+**`DeckRun`**（对应原文 **Run fields** 一节）：
+
+> Run fields: `text` (required), `sizePt` (6 to 160), `bold`, `italic`, `color`, `font`.
+
+| 字段 | 类型 | 依据 |
+|---|---|---|
+| `text` | `string` | 同上（required） |
+| `sizePt` | `number` | 同上，6–160 |
+| `bold` | `boolean` | 同上 |
+| `italic` | `boolean` | 同上 |
+| `color` | `string` | 同上（`#RRGGBB` / `#RRGGBBAA`） |
+| `font` | `string` | 同上 |
+
+**卡上标「未验」的两条（`bold` / `italic`）已核实**：都在 **Run fields** 原文里列着。
+
+### 2. 卡上问的「shape 和 text 是不是两套类型」—— 实测是**一套**，所以不拆
+
+**先说两次失败的判据**（都记下来，因为它们看起来都该成功）：
+
+**第一次：传合法值看 `detail.issues`。** shape 带 `align` / `lineSpacingPct` / `bullet` / `spaceAfterPt` → **全部 `issues: []`**。
+**但这区分不了「接受」和「静默忽略」。**
+
+**第二次（判别性对照）：传非法值。** `align: "sideways"`、`lineSpacingPct: 9999`、`sizePt: 999` ——
+**在 text 上也全部 `issues: []`**。**builder 对这批字段根本不做范围/枚举校验**，
+所以「不报错」这条路对 shape 和 text 一样无效，判据本身没判别力。
+
+**第三次（决定性）：看产物 XML。** 把 spec 建成 `.pptx`，解 `ppt/slides/slide1.xml`：
+
+| 字段 | `text` 元素 | `shape` 元素 |
+|---|---|---|
+| `align:"right"` | ✅ `algn="r"` | ✅ **`algn="r"`** |
+| `bold:true` | ✅ `b="1"` | ✅ **`b="1"`** |
+| `color:"#FF0000"` | ✅ `<a:srgbClr val="FF0000"` | ✅ **同** |
+| `lineSpacingPct:200` | ✅ `spcPct val="200000"` | ✅ **`spcPct val="200000"`** |
+| `bullet:true` | ✅ `<a:buChar>` | ✅ **`<a:buChar>`** |
+
+**shape 的段落走的是同一条渲染路径。** 所以不拆成两个类型——
+拆分会造出一个上游并不存在的区别，而且下一个写 spec 的人会以为 shape 上不能用 `lineSpacingPct`。
+
+（这个结论写进了 `DeckParagraph` 的注释，连同「为什么判据取产物 XML 而不是 `issues`」。）
+
+### 3. `as DeckElement` 已删除
+
+`t65-deck-pattern-smoke/main.ts:395`：
+
+```diff
+-        paragraphs: [{ align: "center", runs: [{ text: "标签", sizePt: 24 }] }] } as DeckElement,
++        paragraphs: [{ align: "center", runs: [{ text: "标签", sizePt: 24 }] }] },
+```
+
+`grep -c "as DeckElement"` → **0**。
+
+**它当初为什么存在**：`483eb29e` 的提交信息写「`DeckElement` gains `valign` so the code no longer casts around the type」——
+`valign` 补了，但 `paragraphs.align` 没补，`as` 就留了下来。
+
+### 4. `tsc` 前后
+
+| | 结果 |
+|---|---|
+| 改前 | **EXIT=2**，唯一错误 `t65-deck-pattern-smoke/main.ts(395,24): TS2352 ... 'align' does not exist` |
+| 改后 | **EXIT=0，全仓 0 条错误** |
+
+**⚠️ 过程中撞到一次别人的中间态**：改完第一次跑 `tsc` 时出现
+`packages/contracts/src/index.ts(4,1): TS2308 Module "./session.js" has already exported a member named 'ApprovalDecision'`。
+查 `git status`：`packages/contracts/src/ipc.ts` 有未提交改动（另一个会话刚加了 `export * from "./ipc/approval.js"`）。
+我试过临时摘掉那一行做对照，结果引出 4 条新错误（`ApprovalBridge.ts` / `ipc/approval.ts` / `approvalSchema.ts` 已依赖它）——
+**说明那是半成品，不能当对照**。已原样还原（`git diff` 仍是 1 增 0 删）。
+再跑一次 `tsc` 时它自己消失了（那个会话写完了）。**最终 EXIT=0。**
+
+### 5. 三套数字（纯类型改动，零行为变化）
+
+| 套件 | 改前 | 改后 |
+|---|---|---|
+| `t65-deck-pattern-smoke` | **61/61** | **61/61** |
+| `t73-pattern-wiring-smoke` | **51/51** | **51/51** |
+| `t63-deck-quality-smoke` | **15/15** | **15/15** |
+
+（两个 t73 目录：我用的是 `t73-pattern-wiring-smoke`，判据接线那套；`t73-browser-sandbox-smoke` 未跑。）
+
+### 6. 变异：证明类型真的在约束，而不是「没报错」
+
+把 `align` 改成 `alignx`（类型里不存在的字段）→
+
+```
+t65-deck-pattern-smoke/main.ts(395,24): error TS2561:
+Object literal may only specify known properties, but 'alignx' does not exist in type
+'DeckParagraph'. Did you mean to write 'align'?
+```
+
+**这证明补的类型是真在生效的** —— 没有这条，`tsc` 绿只能说明「没写到不支持的字段」，不能说明「写了会报错」。
+还原后逐字节一致。
+
+### 7. 未做
+
+- 没跑全量（按卡要求）。
+- 没碰 `checkDeckPatterns` 一行。
+- `DeckElement` 里其余字段（`stroke` / `flipV` / `flipH` / `url` 等）**没补**：本模块不读它们，
+  卡的范围也只到 `paragraphs`。若将来判据要用，届时按 spec 补。

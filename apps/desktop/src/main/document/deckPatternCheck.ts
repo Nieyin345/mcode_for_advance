@@ -55,7 +55,55 @@ export interface DeckElement {
    * 只对 `shape` 的标签文字有意义；`text` 元素也有，但本模块目前只用到它的卡片标签语义。
    */
   valign?: "top" | "middle" | "bottom";
-  paragraphs?: Array<{ runs?: Array<{ text?: string; sizePt?: number }> }>;
+  paragraphs?: DeckParagraph[];
+}
+
+/** 段落里的一个 run（同段混排大数字 + 小单位靠的就是它）。
+ *
+ * 【T110】字段表逐条来自 `genoffice guide slides spec` 的 **Run fields** 原文：
+ * > Run fields: `text` (required), `sizePt` (6 to 160), `bold`, `italic`, `color`, `font`.
+ */
+export interface DeckRun {
+  text?: string;
+  /** 6–160（规范原文标注的范围）。 */
+  sizePt?: number;
+  bold?: boolean;
+  italic?: boolean;
+  /** `#RRGGBB` 或 `#RRGGBBAA`。 */
+  color?: string;
+  font?: string;
+}
+
+/** 一段文字。
+ *
+ * 【T110】字段表逐条来自 `genoffice guide slides spec` 的 **Paragraph fields** 原文：
+ * > Paragraph fields: `runs` (required), `align` (`left` `center` `right` `justify`),
+ * > `lineSpacingPct` (60 to 300), `spaceBeforePt` and `spaceAfterPt` (0 to 96),
+ * > `bullet` (true = a • bullet with a hanging indent).
+ *
+ * ## 为什么**不**拆成「shape 用」和「text 用」两套
+ *
+ * 规范只在 **Text** 段下列了一次 paragraph fields，Shape 段只写 "optional label
+ * text" —— 光读文档像是两套。实测**不是**：把 `align` / `lineSpacingPct` / `bullet`
+ * 放进 `shape.paragraphs`，产出的 `ppt/slides/slide1.xml` 里同样出现
+ * `algn="r"` / `spcPct val="200000"` / `<a:buChar>`，与 text 逐项一致。
+ *
+ * （判据取的是**产物 XML**，不是 `detail.issues` —— builder 对这批字段不做
+ * 范围/枚举校验，非法 `align` 和越界 `sizePt` 在 text 上也照样 `issues: []`，
+ * 「不报错」区分不了「接受」和「静默忽略」。）
+ *
+ * 所以这里保持**一个**类型：拆成两套会造出一个上游并不存在的区别。
+ */
+export interface DeckParagraph {
+  runs?: DeckRun[];
+  align?: "left" | "center" | "right" | "justify";
+  /** 60–300（百分数）。 */
+  lineSpacingPct?: number;
+  /** 0–96。 */
+  spaceBeforePt?: number;
+  /** 0–96。 */
+  spaceAfterPt?: number;
+  bullet?: boolean;
 }
 
 export interface DeckPageSpec {
