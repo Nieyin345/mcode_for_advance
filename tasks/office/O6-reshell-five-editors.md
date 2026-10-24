@@ -107,6 +107,10 @@ docs / sheets / slides / pdf / markdown / html   →  genoffice/packages/ui/src/
 **⚠️ 判据 2b 的由来**：`0014`（docs）的套件只断言源码里有 `if (window.desktop)`，
 **没断言它真的区分** —— 而实测表明它在独立 docs 里也换壳了。**源码形状 ≠ 行为。**
 | 3 | 被覆盖的 token **实际生效**：取一个已覆盖的 token，`getComputedStyle` 的值 = Mcode 的值 |
+| **3b** | **`--surface` 的计算值**：宿主里 `#fcfcfb`，独立里 `#ffffff` |
+
+**为什么 3b 是单独一条**：**它防的是「sheet 加载了但没生效」**（选择器写错、被更晚的规则覆盖）。
+判据 1 只证明「文件被加载」，不证明「值变了」。
 | 4 | **组件树没变**：该格式的核心 DOM 结构（`.ProseMirror` / `#univer-container` / 画布等）仍在 |
 
 ### 3.2 不许破坏的东西（这是硬边界）
@@ -243,7 +247,16 @@ bash apps/desktop/scripts/o6-reshell-<format>-smoke/run.sh
 - **不要改组件树**。`0014` 证明不需要改。
 - **不要改 `tokens.css` 本体**。
 - **不要五个格式一个提交**。一个格式一个补丁，出问题能单独回退。
-- **不要碰 `apps/desktop/**`** —— Mcode 侧一行都不用改，这正是 B 方案的好处。
+- **`apps/desktop/**` 只允许改两个 vendor 账本**：
+  `build/genoffice-upstream.lock.json` 与 `build/verify-genoffice-upstream.cjs`。
+  **先例**（都动过）：
+  ```
+  613402eb feat(T39): reshell the Docs chrome in Mcode's design tokens
+  d6822b86 chore(T115): carry the w:eastAsia fix as genoffice patch 0015
+  ```
+  **lock 里记 `revision` / `expectedTree` / `patchSeries`（每条补丁的 file + revision）** ——
+  加了新补丁不更新它，**provenance / freshness 套件会红**。
+  **除此之外 `apps/desktop/**` 一行不改**（不动任何 product source）。
 
 ## 八、结果回写区
 
