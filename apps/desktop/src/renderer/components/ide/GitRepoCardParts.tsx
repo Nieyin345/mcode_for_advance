@@ -207,7 +207,7 @@ export function CommitBox({
               title={generating ? t("ide.git.stopGenerate") : t("ide.git.generateHint")}
               className={cn(
                 "group/generate flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors",
-                "hover:bg-surface-hover hover:text-content disabled:opacity-40",
+                "cds-hover-ghost hover:text-content disabled:opacity-40",
               )}
             >
               {generating ? (
@@ -225,7 +225,7 @@ export function CommitBox({
               type="button"
               onClick={() => setPreviewOpen(true)}
               title={t("ide.git.expandEdit")}
-              className="flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+              className="cds-hover-ghost flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors hover:text-content"
             >
               <IconMaximize size={12} />
             </button>
@@ -410,7 +410,7 @@ export function BranchGroup({
               title={t("ide.git.mergeIntoBranch")}
               className={cn(
                 "flex h-5 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-opacity",
-                "opacity-0 hover:bg-surface-hover hover:text-content group-hover:opacity-100",
+                "cds-hover-ghost opacity-0 hover:text-content group-hover:opacity-100",
               )}
             >
               <IconGitMerge size={11} />
@@ -428,7 +428,7 @@ export function BranchGroup({
               title={t("ide.git.deleteBranch")}
               className={cn(
                 "flex h-5 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-opacity",
-                "opacity-0 hover:bg-surface-hover hover:text-danger group-hover:opacity-100",
+                "cds-hover-ghost opacity-0 hover:text-danger group-hover:opacity-100",
               )}
             >
               <IconTrash size={11} />
@@ -464,7 +464,7 @@ export function ActionButton({
       title={title}
       className={cn(
         "flex h-6 w-6 items-center justify-center rounded text-content-muted transition-colors",
-        "hover:bg-surface-hover hover:text-content disabled:opacity-40",
+        "cds-hover-ghost hover:text-content disabled:opacity-40",
       )}
     >
       {busy ? <IconLoader2 size={12} className="animate-spin" /> : children}
@@ -509,7 +509,7 @@ export function OperationLog({
           type="button"
           onClick={onClear}
           title={t("ide.git.clearLog")}
-          className="ml-auto flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
+          className="cds-hover-ghost ml-auto flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors hover:text-content-muted"
         >
           <IconX size={12} />
         </button>
@@ -628,7 +628,7 @@ export function FileGroup({
             type="button"
             onClick={onBulkAction}
             disabled={busy}
-            className="rounded px-1.5 py-0.5 [font-size:var(--rp-fs-xxs)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40"
+            className="cds-hover-ghost rounded px-1.5 py-0.5 [font-size:var(--rp-fs-xxs)] text-content-muted transition-colors hover:text-content disabled:opacity-40"
           >
             {bulkActionLabel}
           </button>
@@ -883,7 +883,7 @@ function RowActionIcon({
       title={title}
       className={cn(
         "flex h-5 w-5 items-center justify-center rounded text-content-subtle transition-colors",
-        "hover:bg-surface-hover",
+        "cds-hover-ghost ",
         danger ? "hover:text-danger" : "hover:text-content",
       )}
     >

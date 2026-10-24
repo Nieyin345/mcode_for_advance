@@ -380,7 +380,7 @@ export function HtmlPreviewButton({ filePath, projectPath }: { filePath: string;
       onClick={() => useBrowserStore.getState().openUrlInBrowser(localPathToFileUrl(filePath))}
       className={cn(
         "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
-        "text-content-muted hover:bg-surface-hover hover:text-content",
+        "cds-hover-ghost text-content-muted hover:text-content",
       )}
       title={t("ide.editor.previewHtmlHint")}
       data-html-preview-entry=""
@@ -529,7 +529,7 @@ function EditorToolbar({
           disabled={!canBack}
           className={cn(
             "flex items-center justify-center rounded p-0.5 transition-colors",
-            "text-content-subtle hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost text-content-subtle hover:text-content",
             "disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-subtle",
           )}
           title={navBackTitle}
@@ -542,7 +542,7 @@ function EditorToolbar({
           disabled={!canForward}
           className={cn(
             "flex items-center justify-center rounded p-0.5 transition-colors",
-            "text-content-subtle hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost text-content-subtle hover:text-content",
             "disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-subtle",
           )}
           title={navForwardTitle}
@@ -585,7 +585,7 @@ function EditorToolbar({
             disabled={restartingLsp}
             className={cn(
               "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
-              "text-danger hover:bg-surface-hover",
+              "cds-hover-ghost text-danger",
               restartingLsp && "opacity-60",
             )}
             title={`${lspStatus.error}\n${t("ide.editor.lspRestartHint")}`}
@@ -604,7 +604,7 @@ function EditorToolbar({
             onClick={onToggleMode}
             className={cn(
               "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
-              "text-content-muted hover:bg-surface-hover hover:text-content",
+              "cds-hover-ghost text-content-muted hover:text-content",
             )}
             title={mode === "edit" ? t("ide.editor.switchToDiff") : t("ide.editor.switchToEditView")}
           >
@@ -620,7 +620,7 @@ function EditorToolbar({
             onClick={onToggleGenoffice}
             className={cn(
               "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
-              "text-content-muted hover:bg-surface-hover hover:text-content",
+              "cds-hover-ghost text-content-muted hover:text-content",
               genofficeActive && "text-accent",
             )}
             title={t("ide.genoffice.toggleHint")}
@@ -637,7 +637,7 @@ function EditorToolbar({
             onClick={onToggleGenofficeView}
             className={cn(
               "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
-              "text-content-muted hover:bg-surface-hover hover:text-content",
+              "cds-hover-ghost text-content-muted hover:text-content",
               genofficeViewActive && "text-accent",
             )}
             title={t("ide.genoffice.viewHostHint")}
@@ -661,7 +661,7 @@ function EditorToolbar({
             onClick={onTogglePreview}
             className={cn(
               "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
-              "text-content-muted hover:bg-surface-hover hover:text-content",
+              "cds-hover-ghost text-content-muted hover:text-content",
             )}
             title={t(titleKey[mode])}
           >
@@ -677,7 +677,7 @@ function EditorToolbar({
           onClick={onToggleEditorMode}
           className={cn(
             "flex items-center justify-center rounded px-1 py-0.5 transition-colors",
-            "text-content-subtle hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost text-content-subtle hover:text-content",
           )}
           title={
             editorMode === "tabs"
@@ -1646,7 +1646,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
             <button
               type="button"
               onClick={() => setReadRetryNonce((n) => n + 1)}
-              className="rounded-md border border-edge px-2 py-1 text-[11px] text-accent transition-colors hover:bg-surface-hover"
+              className="cds-hover-ghost rounded-md border border-edge px-2 py-1 text-[11px] text-accent transition-colors"
             >
               {t("common.retry")}
             </button>
@@ -1668,7 +1668,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
             type="button"
             onClick={reloadFromDisk}
             title={t("ide.editor.reloadFromDiskHint")}
-            className="rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover"
+            className="cds-hover-ghost rounded px-1.5 py-0.5 text-accent transition-colors"
           >
             {t("ide.editor.reloadFromDisk")}
           </button>
@@ -1679,7 +1679,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
               void handleSave(true);
             }}
             title={t("ide.editor.overwriteDiskHint")}
-            className="rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover"
+            className="cds-hover-ghost rounded px-1.5 py-0.5 text-content-muted transition-colors"
           >
             {t("ide.editor.overwriteDisk")}
           </button>
@@ -1886,7 +1886,7 @@ export function MarkdownPreviewPane({ filePath, projectPath }: { filePath: strin
           <button
             type="button"
             onClick={() => setRetryNonce((n) => n + 1)}
-            className="rounded-md border border-edge px-2 py-1 text-[11px] text-accent transition-colors hover:bg-surface-hover"
+            className="cds-hover-ghost rounded-md border border-edge px-2 py-1 text-[11px] text-accent transition-colors"
           >
             {t("common.retry")}
           </button>
@@ -2108,7 +2108,7 @@ function UnsupportedPane({ filePath }: { filePath: string }) {
       <button
         type="button"
         onClick={() => void api.shell.openFile({ path: filePath })}
-        className="flex items-center gap-1.5 rounded-md border border-edge bg-surface px-3 py-1.5 text-[12px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost flex items-center gap-1.5 rounded-md border border-edge bg-surface px-3 py-1.5 text-[12px] text-content-muted transition-colors hover:text-content"
         title={t("ide.editor.openInSystemHint")}
       >
         {t("ide.editor.openInSystem")}
@@ -2543,28 +2543,28 @@ export function DiffPane({
                 </span>
               )}
               <button type="button" onClick={() => setReloadNonce((n) => n + 1)} title={t("ide.editor.reloadFromDiskHint")}
-                className="rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover">
+                className="cds-hover-ghost rounded px-1.5 py-0.5 text-accent transition-colors">
                 {t("ide.editor.reloadFromDisk")}
               </button>
               <button type="button" onClick={() => void saveReview(true)} title={t("ide.editor.overwriteDiskHint")}
-                className="rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover">
+                className="cds-hover-ghost rounded px-1.5 py-0.5 text-content-muted transition-colors">
                 {t("ide.editor.overwriteDisk")}
               </button>
             </>
           ) : reviewDirty ? (
             <>
               <button type="button" onClick={() => void saveReview()} disabled={reviewSaving}
-                className="rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover disabled:opacity-50">
+                className="cds-hover-ghost rounded px-1.5 py-0.5 text-accent transition-colors disabled:opacity-50">
                 {reviewSaving ? t("ide.editor.saving") : t("ide.diff.saveReview")}
               </button>
               <button type="button" onClick={discardReview} disabled={reviewSaving}
-                className="rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover disabled:opacity-50">
+                className="cds-hover-ghost rounded px-1.5 py-0.5 text-content-muted transition-colors disabled:opacity-50">
                 {t("ide.diff.discardReview")}
               </button>
             </>
           ) : (
             <button type="button" onClick={revertAll} title={t("ide.diff.revertAllHint")}
-              className="rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover hover:text-content">
+              className="cds-hover-ghost rounded px-1.5 py-0.5 text-content-muted transition-colors hover:text-content">
               {t("ide.diff.revertAll")}
             </button>
           )}

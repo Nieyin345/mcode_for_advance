@@ -272,7 +272,7 @@ console.log("\n[6] 迁移进度：裸 hover:bg-surface-hover 的总数只能降�
   }
   check("★ 这四个文件里不再有 hover:bg-surface-hover/NN alpha 变体（本批收干净了）",
     alphaVariants === 0, { alphaVariants });
-  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 231", raw <= 231, { raw });
+  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 192", raw <= 192, { raw });
   check("★ 至少有一处用上了 cds-hover-ghost", migrated > 0, { migrated });
 }
 
@@ -327,6 +327,48 @@ console.log("\n[7] 选中态是换色系，不是更深的灰（上游 Draggable
     selBranch !== null && /font-medium/.test(selBranch[1]!));
   check("★ 选中分支用 bg-selected", selBranch !== null && /bg-selected\b/.test(selBranch[1]!));
   check("★ 选中分支用 text-selectedContent", selBranch !== null && /text-selectedContent/.test(selBranch[1]!));
+}
+
+console.log("\n[8] .cds-hover-ghost 只能挂在「按钮本体」上，不能挂在行容器上");
+{
+  // 那个类自带 `:active { transform: scale(0.98) }` —— 那是「按下某个按钮」的
+  // 手感。挂到列表行/整行可点容器上会让**整行缩放**，是错误用法。
+  //
+  // ⚠️ 这个判据是变异逼出来的：把类加到 `BrowserToolbar` 的 `ClickableRow` 上，
+  // 整套 36 条断言**全绿** —— 因为没有任何一条看「谁承载了这个类」。
+  // 宽松的正则只能抓「类名出现在行容器标签上」这个形状，抓不到语义，但
+  // 它把最常见的错误用法（整行可点 + 类）挡住了。
+  const rowContainers = [
+    { file: "browser/BrowserToolbar.tsx", tag: /<ClickableRow[^>]*cds-hover-ghost/s, label: "ClickableRow" },
+    { file: "ide/GitRepoCardParts.tsx", tag: /<ContextMenu\.Trigger[^>]*cds-hover-ghost/s, label: "ContextMenu.Trigger" },
+  ];
+  for (const { file, tag, label } of rowContainers) {
+    let src: string;
+    try { src = readFileSync(root(`src/renderer/components/${file}`), "utf8"); }
+    catch { continue; }
+    const stripped = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    check(`★ ${label} 上没有挂 .cds-hover-ghost（整行缩放是错误用法）`,
+      !tag.test(stripped), { file });
+  }
+
+  // 正向：类确实挂在了若干 <button> 上 —— 否则上面的「没有」可以靠「谁都没用」通过。
+  const walk = (dir: string): string[] => {
+    const out: string[] = [];
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = resolve(dir, e.name);
+      if (e.isDirectory()) out.push(...walk(p));
+      else if (e.name.endsWith(".tsx")) out.push(p);
+    }
+    return out;
+  };
+  let onButton = 0;
+  for (const f of walk(root("src/renderer/components"))) {
+    const t = readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    // 元素开始标签里同时出现 <button 与 cds-hover-ghost
+    onButton += (t.match(/<button\b[^>]*cds-hover-ghost/sg) ?? []).length;
+  }
+  check("★ 至少有一处 .cds-hover-ghost 挂在 <button> 本体上（正控：否则上一条可被「谁都没用」通过）",
+    onButton > 0, { onButton });
 }
 
 console.log("");

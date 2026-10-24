@@ -211,7 +211,7 @@ export function GitDiffDialog() {
                 aria-label={isTabsMode ? t("ide.diff.switchToSingle") : t("ide.diff.switchToTabs")}
                 className={cn(
                   "flex items-center justify-center rounded p-1 transition-colors",
-                  "text-content-subtle hover:bg-surface-hover hover:text-content",
+                  "cds-hover-ghost text-content-subtle hover:text-content",
                 )}
               >
                 {isTabsMode ? <IconSquare size={15} /> : <IconColumns3 size={15} />}
@@ -222,7 +222,7 @@ export function GitDiffDialog() {
                 title={inlineDiffOpen ? t("ide.diff.toMonaco") : t("ide.diff.toInline")}
                 aria-label={inlineDiffOpen ? t("ide.diff.toMonaco") : t("ide.diff.toInline")}
                 aria-pressed={inlineDiffOpen}
-                className={cn("rounded px-2 py-1 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content", inlineDiffOpen && "text-accent")}
+                className={cn("cds-hover-ghost rounded px-2 py-1 text-[11px] text-content-muted transition-colors hover:text-content", inlineDiffOpen && "text-accent")}
               >
                 {inlineDiffOpen ? t("ide.diff.toMonaco") : t("ide.diff.toInline")}
               </button>
@@ -234,15 +234,16 @@ export function GitDiffDialog() {
                 aria-label={fullscreen ? t("ide.diff.exitFullscreen") : t("ide.diff.fullscreen")}
                 className={cn(
                   "flex items-center justify-center rounded p-1 transition-colors",
-                  "text-content-subtle hover:bg-surface-hover hover:text-content",
+                  "cds-hover-ghost text-content-subtle hover:text-content",
                 )}
               >
                 {fullscreen ? <IconMinimize size={15} /> : <IconMaximize size={15} />}
               </button>
             </div>
-            {/* hover:bg-surface-hover overrides Dialog.Close's default
-                bg-surface-muted hover, which is invisible on the muted chrome. */}
-            <Dialog.Close className="hover:bg-surface-hover" />
+            {/* 【T128】关闭按钮走共享的 .cds-hover-ghost —— 它原先自带
+                bg-surface-muted 的悬停色，在 muted 底色的标题栏上看不出来；
+                类给的是 --surface-hover（比 muted 深一档），两处都成立。 */}
+            <Dialog.Close className="cds-hover-ghost" />
           </div>
 
           {/* Body: left file-list sidebar + right diff column */}
@@ -329,7 +330,7 @@ export function GitDiffDialog() {
                           }}
                           onPointerDown={(e) => e.stopPropagation()}
                           className={cn(
-                            "ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle transition-opacity hover:bg-surface-hover hover:text-content",
+                            "cds-hover-ghost ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle transition-opacity hover:text-content",
                             isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100",
                           )}
                         >

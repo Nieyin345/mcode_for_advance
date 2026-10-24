@@ -129,7 +129,7 @@ function ToolButton({
         "flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors",
         active
           ? "bg-accent/20 text-accent"
-          : "text-content-muted hover:bg-surface-hover hover:text-content",
+          : "cds-hover-ghost text-content-muted hover:text-content",
         "disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-muted",
       )}
     >
@@ -272,7 +272,7 @@ function MenuTreeNode({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-surface-hover"
+        className="cds-hover-ghost flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors"
       >
         <IconChevronRight
           size={12}
@@ -307,7 +307,7 @@ function MenuActionRow({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-code transition-colors hover:bg-surface-hover",
+        "cds-hover-ghost flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-code transition-colors",
         accent ? "text-accent" : "text-content",
       )}
     >
@@ -612,7 +612,7 @@ export function BrowserToolbar({
                     onRemoveHistoryEntry(entry.url);
                   }}
                   title={t("browser.removeHistoryEntry")}
-                  className="rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-danger"
+                  className="cds-hover-ghost rounded p-1 text-content-subtle hover:text-danger"
                 >
                   <IconTrash size={12} />
                 </button>
@@ -626,7 +626,7 @@ export function BrowserToolbar({
                   onClearHistory();
                   setDropdownOpen(false);
                 }}
-                className="w-full border-t border-edge px-2.5 py-1.5 text-left text-[11px] text-content-muted hover:bg-surface-hover hover:text-content"
+                className="cds-hover-ghost w-full border-t border-edge px-2.5 py-1.5 text-left text-[11px] text-content-muted hover:text-content"
               >
                 {t("browser.clearHistory")}
               </button>
@@ -787,7 +787,7 @@ export function BrowserToolbar({
                       <button
                         type="button"
                         onClick={onClearHistory}
-                        className="rounded px-1.5 py-0.5 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-danger"
+                        className="cds-hover-ghost rounded px-1.5 py-0.5 text-[11px] text-content-muted transition-colors hover:text-danger"
                       >
                         {t("browser.clearHistory")}
                       </button>
