@@ -133,7 +133,8 @@ grep -n "glob\|rglob\|-smoke" apps/desktop/scripts/t145-runsh-path-smoke/main.* 
 - 新建套件
 
 **不许碰**：
-- **`mcode-condition-bridge-smoke/`** —— 它是 O5 的在途文件，**先问 Office 线**
+- ~~`mcode-condition-bridge-smoke/` —— 它是 O5 的在途文件，先问 Office 线~~
+  **✅ 已确认可以改**：它已提交在 `032a6882`（`git status` 干净），不是在途文件。
 - `arc005-visual-baseline/` / `electron-u1/`（T153 刚建声明）
 - `smokes-for.py` 的 `suite_kind()` / `resolve()`（T150/T152/T153 刚改）
 
