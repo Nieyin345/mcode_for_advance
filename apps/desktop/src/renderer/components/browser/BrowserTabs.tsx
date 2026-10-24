@@ -123,7 +123,7 @@ export function BrowserTabs({ tabs, activeTabId, onSelect, onClose, onNew }: Bro
                 className={cn(
                   // 【UI-013】`group-focus-within:opacity-100` —— 焦点进入标签(或关闭键)时
                   // 关闭按钮即显现,不再只靠 hover,键盘用户不会聚焦到一个看不见的按钮。
-                  "ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle transition-opacity hover:bg-surface-hover hover:text-content focus-visible:ring-1 focus-visible:ring-accent",
+                  "cds-hover-ghost ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle transition-opacity hover:text-content focus-visible:ring-1 focus-visible:ring-accent",
                   isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
                 )}
               >

@@ -272,7 +272,7 @@ console.log("\n[6] 迁移进度：裸 hover:bg-surface-hover 的总数只能降�
   }
   check("★ 这四个文件里不再有 hover:bg-surface-hover/NN alpha 变体（本批收干净了）",
     alphaVariants === 0, { alphaVariants });
-  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 138", raw <= 138, { raw });
+  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 130", raw <= 130, { raw });
   check("★ 至少有一处用上了 cds-hover-ghost", migrated > 0, { migrated });
 }
 
@@ -377,7 +377,9 @@ console.log("\n[8] .cds-hover-ghost 只能挂在「按钮本体」上，不能�
   let onSelectedBranch = 0;
   for (const f of walk(root("src/renderer/components"))) {
     const t = readFileSync(f, "utf8");
-    onSelectedBranch += (t.match(/\?\s*"cds-hover-ghost[^"]*bg-surface-hover/sg) ?? []).length;
+    // 选中态分支的底色不一定叫 bg-surface-hover —— 也有 bg-accent/20、
+    // bg-surface-muted 这类。所以匹配「`? "cds-hover-ghost` 后面跟着任何 bg-」。
+    onSelectedBranch += (t.match(/\?\s*"cds-hover-ghost[^"]*\bbg-[a-z]/sg) ?? []).length;
   }
   check("★ .cds-hover-ghost 不在选中态分支上（`? \"…\"` 那一支带 bg-surface-hover）",
     onSelectedBranch === 0, { onSelectedBranch });

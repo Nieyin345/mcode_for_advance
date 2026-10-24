@@ -110,7 +110,7 @@ export function DownloadBar({ items, onOpen, onReveal, onDismiss }: DownloadBarP
                   e.stopPropagation();
                   onReveal(d.downloadId);
                 }}
-                className="inline-flex h-4 w-4 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+                className="cds-hover-ghost inline-flex h-4 w-4 items-center justify-center rounded text-content-subtle transition-colors hover:text-content"
               >
                 <IconFolderOpen size={11} />
               </button>
@@ -123,7 +123,7 @@ export function DownloadBar({ items, onOpen, onReveal, onDismiss }: DownloadBarP
                 e.stopPropagation();
                 onDismiss(d.downloadId);
               }}
-              className="ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+              className="cds-hover-ghost ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded text-content-muted transition-colors hover:text-content"
             >
               <IconX size={10} />
             </button>

@@ -51,7 +51,7 @@ export function PickedElementsBar({ items, onRemove, onClear, onAdd }: PickedEle
               type="button"
               aria-label={t("common.remove")}
               onClick={() => onRemove(i)}
-              className="ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+              className="cds-hover-ghost ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded text-content-subtle transition-colors hover:text-content"
             >
               <IconX size={10} />
             </button>
@@ -62,7 +62,7 @@ export function PickedElementsBar({ items, onRemove, onClear, onAdd }: PickedEle
         type="button"
         onClick={onClear}
         title={t("browser.clearPickedHint")}
-        className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-content-muted transition-colors hover:text-content"
       >
         <IconTrash size={12} />
         {t("browser.clear")}

@@ -218,7 +218,7 @@ export function DeviceToolbar({
             "flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors",
             landscape
               ? "bg-accent/20 text-accent"
-              : "text-content-muted hover:bg-surface-hover hover:text-content",
+              : "cds-hover-ghost text-content-muted hover:text-content",
           )}
         >
           <PiArrowsClockwise size={14} />
@@ -233,7 +233,7 @@ export function DeviceToolbar({
         onClick={onClose}
         title={t("browser.collapseDeviceToolbar")}
         aria-label={t("browser.collapseDeviceToolbar")}
-        className="flex h-7 shrink-0 items-center gap-1 rounded px-1.5 text-[10px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost flex h-7 shrink-0 items-center gap-1 rounded px-1.5 text-[10px] text-content-muted transition-colors hover:text-content"
       >
         <IconChevronDown size={13} className="rotate-180" />
         {t("browser.collapse")}

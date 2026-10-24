@@ -374,7 +374,7 @@ export function SettingsPage() {
                         "relative flex h-9 w-full items-center justify-start gap-2 rounded-[var(--radius-btn-md)] px-3 text-left text-[length:var(--chat-fs-xs)] transition-colors",
                         isActive
                           ? "bg-surface-muted font-semibold text-content"
-                          : "text-content-muted hover:bg-surface-hover hover:text-content",
+                          : "text-content-muted hover:text-content",
                       )}
                     >
                       {isActive && (
