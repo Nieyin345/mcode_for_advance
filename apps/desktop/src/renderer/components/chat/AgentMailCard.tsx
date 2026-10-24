@@ -53,18 +53,18 @@ function Shell({
   return (
     <div
       className={cn(
-        "my-1 rounded-lg border px-3 py-2 [font-size:var(--chat-fs-sm)]",
+        "my-1 min-w-0 max-w-full overflow-hidden rounded-[var(--radius-card)] border px-3 py-2 [font-size:var(--chat-fs-sm)]",
         tone === "error" ? "border-danger/50 bg-danger/5" : "border-edge bg-surface-muted/40",
       )}
     >
-      <div className="mb-1 flex flex-wrap items-center gap-1.5 text-content-muted">
+      <div className="mb-1 flex min-w-0 flex-wrap items-center gap-1.5 text-content-muted">
         <span aria-hidden>{glyph}</span>
-        <span className="font-medium">{head}</span>
+        <span className="min-w-0 break-words font-medium">{head}</span>
         {badge && (
           <span className="rounded bg-warning/15 px-1.5 py-px text-warning [font-size:var(--chat-fs-xxs)]">{badge}</span>
         )}
       </div>
-      <div className="text-content [font-size:var(--chat-font-size)]">{children}</div>
+      <div className="min-w-0 max-w-full break-words text-content [font-size:var(--chat-font-size)]">{children}</div>
       {footer && (
         <div
           className={cn(

@@ -22,7 +22,7 @@
  * `ok: false` 表示没有那样的等待了(那次运行已经跑完 / 被取消)。用户点一张旧卡是
  * 正常会发生的事,**不弹错误框** —— 弹了只会让他以为自己做错了什么。说一句就够。
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconArrowsSplit, IconCircleCheck } from "@renderer/lib/icons.js";
@@ -43,6 +43,7 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
   const [picked, setPicked] = useState("");
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
+  const sendingRef = useRef(false);
   const [stale, setStale] = useState<string | null>(null);
 
   const chosen = block.chosen;
@@ -62,7 +63,10 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
    * 判死**,这次运行自然收场。所以界面上不需要为"停"准备第二条收尾路径。
    */
   const send = async (edgeId: string): Promise<void> => {
-    if (sessionId === null || busy) return;
+    if (sessionId === null || busy || sendingRef.current) return;
+    // Guard synchronously: a double-click can happen before React paints
+    // busy=true, but must never resume the same workflow choice twice.
+    sendingRef.current = true;
     setBusy(true);
     setStale(null);
     try {
@@ -80,14 +84,18 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
     } catch {
       setStale(t("chatStream.workflowChoice.stale"));
     } finally {
+      sendingRef.current = false;
       setBusy(false);
     }
   };
 
   return (
     <div
+      role="group"
+      aria-label={block.title}
+      aria-busy={busy}
       className={cn(
-        "rounded-md border px-3 py-2 [font-size:var(--chat-fs-sm)]",
+        "min-w-0 rounded-[var(--radius-card)] border px-3 py-2 [font-size:var(--chat-fs-sm)]",
         // 还在等的时候边框是强调色 —— 它是这一屏上**唯一需要用户动手**的东西,不该和
         // 旁边那些"已经发生完了"的卡片长成一个样子。
         chosenLabel === undefined ? "border-accent/50 bg-accent/5" : "border-edge bg-surface/40",
@@ -121,8 +129,9 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
                 type="button"
                 disabled={busy}
                 onClick={() => setPicked(o.id)}
+                aria-pressed={picked === o.id}
                 className={cn(
-                  "cursor-pointer rounded border px-2 py-1 transition-colors disabled:cursor-default",
+                  "inline-flex min-h-9 min-w-0 items-center rounded-[var(--radius-btn-xs)] border px-2 py-1 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default",
                   picked === o.id
                     ? "border-edge-selected bg-surface-hover text-content"
                     : "border-edge text-content-muted hover:border-edge hover:text-content",
@@ -150,16 +159,17 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
             disabled={busy}
             rows={2}
             placeholder={t("chatStream.workflowChoice.comment")}
-            className="mt-1.5 w-full resize-y rounded border border-edge bg-surface/60 px-2 py-1 text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+            aria-label={t("chatStream.workflowChoice.comment")}
+            className="mt-1.5 min-w-0 w-full resize-y rounded-[var(--radius-btn-xs)] border border-edge bg-surface/60 px-2 py-1.5 text-content placeholder:text-content-subtle focus:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           />
 
-          <div className="mt-1.5 flex items-center gap-2">
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
             <button
               type="button"
               disabled={picked.length === 0 || busy}
               onClick={() => void send(picked)}
               className={cn(
-                "rounded border px-2.5 py-1 transition-colors",
+                "inline-flex min-h-9 items-center rounded-[var(--radius-btn-xs)] border px-3 py-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                 picked.length === 0 || busy
                   ? "cursor-default border-edge text-content-subtle"
                   : "cursor-pointer border-accent bg-accent/15 text-content hover:bg-accent/25",
@@ -175,14 +185,14 @@ export function BranchChoiceCard({ block }: { block: BranchChoiceBlock }) {
               disabled={busy}
               onClick={() => void send(BRANCH_STOP_CHOICE)}
               className={cn(
-                "rounded px-2 py-1 text-content-subtle transition-colors",
+                "inline-flex min-h-9 items-center rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-content-subtle transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                 busy ? "cursor-default" : "cursor-pointer hover:text-content-muted",
               )}
             >
               {t("chatStream.workflowChoice.stop")}
             </button>
             {stale && (
-              <span className="text-content-subtle">{stale}</span>
+              <span role="status" aria-live="polite" className="min-w-0 break-words text-content-subtle">{stale}</span>
             )}
           </div>
         </>

@@ -16,7 +16,7 @@
  * code-block HTML, which is produced from known content (the code text) and
  * is thus safe by construction.
  */
-import { memo, useState, useEffect, useMemo, useRef, useLayoutEffect, createContext, useContext } from "react";
+import { memo, useState, useEffect, useMemo, useRef, useId, useLayoutEffect, createContext, useContext } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Options as MarkdownOptions } from "react-markdown";
@@ -174,20 +174,35 @@ const CODE_COLLAPSE_MAX_PX = 360;
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
   const { t } = useI18n();
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; if (timer.current) clearTimeout(timer.current); };
+  }, []);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      if (!mounted.current) return;
+      setCopied(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => { setCopied(false); timer.current = null; }, 1200);
+    } catch {
+      // Clipboard may be unavailable in a restricted preview; do not leave
+      // an unhandled promise rejection or claim a successful copy.
+    }
+  };
   return (
     <button
-      onClick={() => {
-        void navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
-        });
-      }}
+      type="button"
+      onClick={() => void handleCopy()}
       className={cn(
-        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors",
+        "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2 py-0.5 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         "text-content-subtle hover:bg-surface-hover/60 hover:text-content-muted",
       )}
-      title={t("chatStream.copyCode")}
+      title={copied ? t("common.copied") : t("chatStream.copyCode")}
+      aria-label={copied ? t("common.copied") : t("chatStream.copyCode")}
     >
       {copied ? (<><IconCheck size={10} /> {t("common.copied")}</>) : (<><IconCopy size={10} /> {t("common.copy")}</>)}
     </button>
@@ -589,15 +604,16 @@ function buildComponents(): Components {
 
     // Lazy-init highlighter on first encounter of a fenced block.
     const [ready, setReady] = useState(!!highlighterInstance);
-    useMemo(() => {
-      if (!highlighterInstance) {
-        // 加载失败(取不到语法包、离线)也要收尾:`html` 那一段本来就有"高亮器不在 →
-        // 退化成纯文本"的兜底,这里只是别把错误丢进 unhandledrejection。
-        ensureHighlighter().then(
-          () => setReady(true),
-          () => setReady(true),
-        );
-      }
+    useEffect(() => {
+      if (highlighterInstance) return;
+      // Side effects during render (useMemo) can be replayed under concurrent
+      // React and update a virtualized code block after it has unmounted.
+      let active = true;
+      void ensureHighlighter().then(
+        () => { if (active) setReady(true); },
+        () => { if (active) setReady(true); }, // safe plain-text fallback
+      );
+      return () => { active = false; };
     }, []);
 
     const html = useMemo(() => {
@@ -652,12 +668,18 @@ function buildComponents(): Components {
     // scrollHeight never accidentally un-clips it.
     const { t } = useI18n();
     const [expanded, setExpanded] = useState(false);
+    const bodyId = useId();
     const [clippable, setClippable] = useState(false);
     const bodyRef = useRef<HTMLDivElement>(null);
     useLayoutEffect(() => {
       const el = bodyRef.current;
       if (!el || expanded) return;
-      setClippable(el.scrollHeight > el.clientHeight + 1);
+      const remeasure = () => setClippable(el.scrollHeight > CODE_COLLAPSE_MAX_PX + 1);
+      remeasure();
+      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(remeasure);
+      if (el.firstElementChild) observer?.observe(el.firstElementChild);
+      window.addEventListener("resize", remeasure);
+      return () => { observer?.disconnect(); window.removeEventListener("resize", remeasure); };
     }, [rawCode, lang, ready, html, expanded]);
 
     return (
@@ -667,8 +689,11 @@ function buildComponents(): Components {
           <span className="flex shrink-0 items-center gap-1">
             {clippable && expanded && (
               <button
+                type="button"
                 onClick={() => setExpanded(false)}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-hover/60 hover:text-content-muted"
+                aria-expanded={expanded}
+                aria-controls={bodyId}
+                className="inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2 py-0.5 transition-colors hover:bg-surface-hover/60 hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 title={t("chatStream.code.collapse")}
               >
                 <IconChevronUp size={10} /> {t("chatStream.code.collapse")}
@@ -679,6 +704,7 @@ function buildComponents(): Components {
         </div>
         <div className="relative">
           <div
+            id={bodyId}
             ref={bodyRef}
             className="overflow-auto"
             style={{ maxHeight: expanded ? undefined : CODE_COLLAPSE_MAX_PX }}
@@ -695,8 +721,11 @@ function buildComponents(): Components {
             <>
               <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-surface-muted/90 to-transparent" />
               <button
+                type="button"
                 onClick={() => setExpanded(true)}
-                className="cds-hover-ghost absolute bottom-1.5 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-edge bg-surface px-2.5 py-0.5 text-content-muted shadow-sm transition-colors hover:text-content"
+                aria-expanded={expanded}
+                aria-controls={bodyId}
+                className="cds-hover-ghost absolute bottom-1.5 left-1/2 inline-flex min-h-8 -translate-x-1/2 items-center gap-1 rounded-full border border-edge bg-surface px-3 py-0.5 text-content-muted shadow-sm transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 title={t("chatStream.code.expand")}
               >
                 <IconChevronDown size={12} /> {t("chatStream.code.expand")}

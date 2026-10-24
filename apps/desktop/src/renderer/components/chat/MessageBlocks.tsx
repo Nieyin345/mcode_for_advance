@@ -1,4 +1,4 @@
-import { memo, useState, useMemo, useEffect, useRef, useDeferredValue, type ReactNode, type ComponentType } from "react";
+import { memo, useState, useMemo, useEffect, useRef, useId, useDeferredValue, type ReactNode, type ComponentType } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n, translate, type MessageId } from "@renderer/lib/i18n/index.js";
@@ -53,6 +53,7 @@ import { BUILT_IN_COMMANDS } from "@renderer/lib/slashCommands.js";
 import { isAgentMailTool } from "@renderer/lib/agentMail.js";
 import { AgentMailOutCard } from "./AgentMailCard.js";
 import { McpToolDecisionCard } from "./McpToolDecisionCard.js";
+import { writePreviewBefore } from "./writePreviewSource.js";
 
 /** Map of absolute file path → its pre-turn content. Built from the
  *  `turn.files` event payload so the Write tool card can diff the new
@@ -106,6 +107,7 @@ function toggleHoldPosition(
   const beforeTop = btn.getBoundingClientRect().top;
   setOpen((v) => !v);
   requestAnimationFrame(() => {
+    if (!btn.isConnected) return; // LegendList may recycle this row before paint
     const afterTop = btn.getBoundingClientRect().top;
     const delta = afterTop - beforeTop;
     if (delta === 0) return;
@@ -389,6 +391,7 @@ export function BatchToolGroup({
   projectPath?: string | null;
 }) {
   const [open, setOpen] = useState(false);
+  const panelId = useId();
   const { t } = useI18n();
 
   const toolBlocks = blocks.filter(isToolBlock);
@@ -431,6 +434,7 @@ export function BatchToolGroup({
         type="button"
         onClick={(e) => toggleHoldPosition(e, setOpen)}
         aria-expanded={open}
+        aria-controls={panelId}
         className={TOOL_ROW_CLS}
       >
         {/* 操作集合: a stack of layers reads as "a set of folded operations",
@@ -459,7 +463,7 @@ export function BatchToolGroup({
         // Cap height so a large batch (20 reads) doesn't stretch the stream;
         // the list scrolls internally instead. The left border marks this as
         // an expanded group body, visually nested under its header.
-        <div className={cn("max-h-80 space-y-1.5 overflow-y-auto py-1 pl-2", TOOL_BODY_RULE_CLS)}>
+        <div id={panelId} className={cn("max-h-80 space-y-1.5 overflow-y-auto py-1 pl-2", TOOL_BODY_RULE_CLS)}>
           {/* Tool calls key by their unique toolCallId (thinking has no id —
               the run only appends, so the index is stable for it). Each child
               gets its own boundary: one broken block must not take down the
@@ -532,7 +536,7 @@ function ImageGallery({ blocks }: { blocks: Extract<Block, { kind: "image" }>[] 
               disabled={idx <= 0}
               title={t("chatStream.gallery.prev")}
               aria-label={t("chatStream.gallery.prev")}
-              className="absolute left-1 top-1/2 -translate-y-1/2 rounded-full bg-black/55 p-1.5 text-white/90 backdrop-blur-sm transition-colors enabled:hover:bg-black/80 enabled:hover:text-white disabled:opacity-30"
+              className="absolute left-1 top-1/2 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-sm transition-colors enabled:hover:bg-black/85 disabled:opacity-30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <IconChevronLeft size={18} />
             </button>
@@ -542,7 +546,7 @@ function ImageGallery({ blocks }: { blocks: Extract<Block, { kind: "image" }>[] 
               disabled={idx >= count - 1}
               title={t("chatStream.gallery.next")}
               aria-label={t("chatStream.gallery.next")}
-              className="absolute right-1 top-1/2 -translate-y-1/2 rounded-full bg-black/55 p-1.5 text-white/90 backdrop-blur-sm transition-colors enabled:hover:bg-black/80 enabled:hover:text-white disabled:opacity-30"
+              className="absolute right-1 top-1/2 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-sm transition-colors enabled:hover:bg-black/85 disabled:opacity-30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <IconChevronRight size={18} />
             </button>
@@ -776,6 +780,7 @@ export function TurnPanel({
   // lands collapsed instead of re-expanding the already-finished process
   // surface.
   const [open, setOpen] = useState(justCompleted || (!completed && turnActive));
+  const bodyId = useId();
 
   // One-shot fold-away for the just-completed turn.
   //
@@ -885,6 +890,7 @@ export function TurnPanel({
           toggleHoldPosition(e, setOpen);
         }}
         aria-expanded={open}
+        aria-controls={blocks.length > 0 ? bodyId : undefined}
         className="chat-ledger-head"
       >
         {/* Model that produced this turn — avatar + name on the LEFT, ahead of
@@ -964,7 +970,7 @@ export function TurnPanel({
       {/* 无过程明细的回合（纯文本回复）没有展开体可渲染：跳过整个 fold,
           避免展开时出现一条悬空分隔线 + 一段空 padding。 */}
       {blocks.length > 0 && (
-      <div className="chat-fold" data-open={open ? "true" : "false"}>
+      <div id={bodyId} className="chat-fold" data-open={open ? "true" : "false"} inert={!open} aria-hidden={!open}>
         <div className="chat-fold-inner">
           <div className="chat-ledger-body space-y-1.5">
             {(() => {
@@ -1543,6 +1549,7 @@ function EditToolCard({
   // first render (user can collapse an individual card even inside an
   // open group).
   const [open, setOpen] = useState(defaultOpen);
+  const bodyId = useId();
   const { t } = useI18n();
   const diff = useMemo(() => lineDiff(oldString, newString), [oldString, newString]);
   const { adds, dels } = useMemo(() => diffSummary(diff), [diff]);
@@ -1553,6 +1560,7 @@ function EditToolCard({
         type="button"
         onClick={(e) => toggleHoldPosition(e, setOpen)}
         aria-expanded={open}
+        aria-controls={bodyId}
         className={TOOL_ROW_CLS}
       >
         <StatusIcon status={status} live={live} />
@@ -1568,7 +1576,7 @@ function EditToolCard({
         </span>
       </button>
       {open && (
-        <div className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
+        <div id={bodyId} className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
           <DiffView diff={diff} />
           {result !== undefined && (
             <div>
@@ -1609,6 +1617,7 @@ function WriteToolCard({
   projectPath?: string | null;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const bodyId = useId();
   const { t } = useI18n();
   const lineCount = countContentLines(content);
 
@@ -1618,14 +1627,7 @@ function WriteToolCard({
   // with the given path segments). Undefined → no before available (turn
   // still running, or file is brand-new), and we fall back to a plain
   // new-content preview instead of a diff.
-  const before = useMemo(() => {
-    if (!beforeMap || beforeMap.size === 0) return undefined;
-    if (beforeMap.has(filePath)) return beforeMap.get(filePath);
-    for (const [abs, b] of beforeMap) {
-      if (abs === filePath || abs.endsWith(filePath)) return b;
-    }
-    return undefined;
-  }, [beforeMap, filePath]);
+  const before = useMemo(() => writePreviewBefore(beforeMap, filePath), [beforeMap, filePath]);
 
   // Diff old (pre-turn on-disk) vs new (Write input). Recomputed only when
   // the inputs actually change. When `before` is undefined we render the
@@ -1639,6 +1641,7 @@ function WriteToolCard({
         type="button"
         onClick={(e) => toggleHoldPosition(e, setOpen)}
         aria-expanded={open}
+        aria-controls={bodyId}
         className={TOOL_ROW_CLS}
       >
         <StatusIcon status={status} live={live} />
@@ -1655,7 +1658,7 @@ function WriteToolCard({
         </span>
       </button>
       {open && (
-        <div className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
+        <div id={bodyId} className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
           {diff ? (
             <div>
               <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">
@@ -1714,6 +1717,7 @@ function GenericToolCard({
   projectPath?: string | null;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const bodyId = useId();
   const { t } = useI18n();
   // The Read tool (and any file-bearing tool routed here) shows a file_path in
   // its summary line - linkify it. Bash/Grep/Glob summaries are commands or
@@ -1732,6 +1736,7 @@ function GenericToolCard({
             type="button"
             onClick={(e) => toggleHoldPosition(e, setOpen)}
             aria-expanded={open}
+            aria-controls={bodyId}
             className="inline-flex min-w-0 shrink-0 items-center gap-2 rounded-[var(--radius-control)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <StatusIcon status={block.status} live={live} />
@@ -1745,6 +1750,7 @@ function GenericToolCard({
             type="button"
             onClick={(e) => toggleHoldPosition(e, setOpen)}
             aria-expanded={open}
+            aria-controls={bodyId}
             aria-label={`${block.toolName}: ${open ? t("chatStream.showLess") : t("chatStream.showMore")}`}
             className="ml-auto inline-flex size-7 shrink-0 items-center justify-center rounded-[var(--radius-control)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
@@ -1756,6 +1762,7 @@ function GenericToolCard({
           type="button"
           onClick={(e) => toggleHoldPosition(e, setOpen)}
           aria-expanded={open}
+          aria-controls={bodyId}
           className={TOOL_ROW_CLS}
         >
           <StatusIcon status={block.status} live={live} />
@@ -1788,7 +1795,7 @@ function GenericToolCard({
         </div>
       )}
       {open && (
-        <div className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
+        <div id={bodyId} className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
           <div>
             <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">{t("chatStream.tool.input")}</div>
             <pre className="max-h-60 overflow-auto rounded bg-surface-muted/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
@@ -1841,6 +1848,7 @@ function ThinkingAccordion({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const bodyId = useId();
   const isOpen = live || open;
   const ambient = reasoningAmbientState(live);
   return (
@@ -1853,6 +1861,7 @@ function ThinkingAccordion({
           toggleHoldPosition(e, setOpen);
         }}
         aria-expanded={isOpen}
+        aria-controls={bodyId}
         aria-disabled={live}
         className={
           "flex min-h-8 w-full items-center gap-2 rounded-md py-1.5 text-left text-content-muted hover:bg-surface-muted/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent " +
@@ -1871,6 +1880,8 @@ function ThinkingAccordion({
         {!live && <Chevron open={isOpen} className="ml-auto" />}
       </button>
       <div
+        id={bodyId}
+        aria-hidden={!isOpen}
         className="grid transition-[grid-template-rows] duration-200 [transition-timing-function:var(--ease-expand)]"
         style={{ gridTemplateRows: isOpen ? "1fr" : "0fr" }}
       >
@@ -1898,12 +1909,14 @@ function Collapsible({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const bodyId = useId();
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
         type="button"
         onClick={(e) => toggleHoldPosition(e, setOpen)}
         aria-expanded={open}
+        aria-controls={bodyId}
         className="flex min-h-8 w-full items-center gap-2 rounded-md py-1.5 text-left text-content-muted hover:bg-surface-muted/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <IconBulb size={13} className="shrink-0 text-content-subtle" />
@@ -1919,7 +1932,7 @@ function Collapsible({
         // Cap height so a long thinking block doesn't stretch the stream;
         // it scrolls internally instead. The left border marks this as an
         // expanded body, visually nested under its header.
-        <div className="max-h-80 overflow-y-auto border-l border-edge py-2 pl-2 text-content-muted">
+        <div id={bodyId} className="max-h-80 overflow-y-auto border-l border-edge py-2 pl-2 text-content-muted">
           <p className="whitespace-pre-wrap break-words">{children as unknown as string}</p>
         </div>
       )}

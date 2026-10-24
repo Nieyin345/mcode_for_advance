@@ -34,12 +34,12 @@ export function McpToolDecisionCard({ toolName, status, result, children }: {
       role="region"
       aria-label={toolName}
       aria-busy={outcome === "running"}
-      className={cn("relative my-1 overflow-hidden rounded-[var(--radius-card)] border bg-surface px-2 py-1.5",
+      className={cn("relative my-1 min-w-0 max-w-full overflow-hidden rounded-[var(--radius-card)] border bg-surface px-2 py-1.5",
         outcome === "running" ? "border-accent/40" : outcome === "success" ? "border-edge" : "border-danger/50")}
     >
-      <div className="flex items-center justify-between gap-2 border-b border-edge/60 pb-1 text-[10px]">
-        <span className="min-w-0 truncate font-mono text-content-subtle" title={toolName}>{provider || toolName}</span>
-        <span role="status" aria-live="polite" aria-atomic="true" className={cn("shrink-0 rounded-full px-1.5 py-0.5 font-medium",
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-edge/60 pb-1 text-[10px]">
+        <span className="min-w-0 flex-1 truncate font-mono text-content-subtle" title={toolName}>{provider || toolName}</span>
+        <span role="status" aria-live="polite" aria-atomic="true" className={cn("inline-flex min-h-6 shrink-0 items-center rounded-full px-2 py-0.5 font-medium",
           outcome === "running" ? "bg-accent/10 text-accent" : outcome === "success" ? "bg-surface-muted text-content-muted" : "bg-danger/10 text-danger")}
         >{t(`chatStream.mcp.${outcome}`)}</span>
       </div>

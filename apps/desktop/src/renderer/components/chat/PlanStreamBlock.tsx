@@ -62,7 +62,7 @@ export function PlanStreamBlock({
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-xl border bg-surface-muted/40 backdrop-blur transition-colors",
+        "min-w-0 overflow-hidden rounded-[var(--radius-card)] border bg-surface-muted/40 backdrop-blur transition-colors",
         // Accent-tinted border so the plan card is visually distinct from
         // ordinary tool/text cards in the stream.
         hasApproval
@@ -71,9 +71,9 @@ export function PlanStreamBlock({
       )}
     >
       {/* Header - icon + title + status badge. Accent icon signals "plan". */}
-      <div className="flex items-center gap-2 px-3 pt-2.5 pb-1.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 pt-2.5 pb-1.5">
         <IconRocket size={15} className="shrink-0 text-accent" />
-        <span className="truncate text-xs font-semibold text-content">{title}</span>
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-content" title={title}>{title}</span>
         {label && (
           <span
             className={cn(
@@ -92,7 +92,7 @@ export function PlanStreamBlock({
           user can tell what the plan is about without opening the drawer. */}
       {preview && (
         <div className="px-3 pb-2">
-          <div className="prose-plan max-h-32 overflow-hidden text-[11px] leading-relaxed text-content-muted">
+          <div className="prose-plan max-h-32 min-w-0 overflow-hidden break-words text-[11px] leading-relaxed text-content-muted">
             <Markdown projectPath={projectPath}>{preview}</Markdown>
           </div>
         </div>
@@ -103,9 +103,11 @@ export function PlanStreamBlock({
       <button
         type="button"
         onClick={() => onOpenPlan?.(plan)}
+        disabled={!onOpenPlan}
+        aria-label={`${t("chat.plan.viewFullTitle")}: ${title}`}
         title={t("chat.plan.viewFullTitle")}
         className={cn(
-          "flex w-full items-center justify-center gap-1.5 border-t px-3 py-2 text-body font-medium transition-colors",
+          "flex min-h-10 w-full items-center justify-center gap-1.5 border-t px-3 py-2 text-body font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent disabled:cursor-default disabled:opacity-50",
           hasApproval
             ? "border-accent/20 bg-accent/5 text-accent hover:bg-accent/10"
             : "border-edge bg-surface-hover/50 text-content hover:bg-surface-hover",
