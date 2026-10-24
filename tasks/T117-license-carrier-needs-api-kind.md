@@ -1,6 +1,6 @@
 # T117｜🔴 许可证门禁缺第三种载体：GitHub API 取到的原文无法登记
 
-- Status: **ready-for-human**（需要裁决，不是执行卡：改门禁必须先决定「认不认 API 载体」）
+- Status: **delivered**（`e0d260c8`，2026-10-24；裁决走方向 A —— 逐条签字的例外，不是 API 载体。见 §十）
 - Category: **发布工程**（阻塞「Office 编辑器进打包版」）
 - Priority: **P1 —— 它是 Office 进打包版剩下的四道门里的第一道**
 - Depends on: T11（许可证载体门禁）、T87（provenance 证据链）、T9（路线图证据）
@@ -293,3 +293,75 @@ blob sha 是这个文件的不变身份。
 
 详见 `stage-genoffice-resources.cjs` 里 `REQUIRED_GENOFFICE_LICENSE_PACKAGES` 上方的注释
 （提交 `dc298ec5`）。
+
+---
+
+## 十、结果回写（2026-10-24，执行会话 B）
+
+**状态：已交付，`e0d260c8`。** 走的是**方向 A（逐条签字的例外）**，
+不是本卡原本提出的第三种载体（GitHub API）。原因见 §三 —— 那份 API 原文
+属于 2025-05-21 之后的 master，不属于 2.3.8。
+
+### 做了什么
+
+| 改动 | 文件 |
+|---|---|
+| `missingEvidenceDisposition` 例外机制（形状校验 + 计入 `excused`） | `stage-genoffice-resources.cjs` |
+| 四个包逐条签字，`releaseEligible: true`、`excusedCount: 4` | `manifest.json` |
+| `resolveChromiumLicense` 白名单：`app` **或** `<repoRoot>/node_modules` | `stage-genoffice-resources.cjs` |
+| `assertThirdPartyNoticeMatchesManifest` 完整性判据改 `verified + excused` | `stage-genoffice-resources.cjs` |
+| 断言随语义更新 + 新增直接打函数的对照 | `t11`、`t87` |
+
+### 四个包的核实结论（逐条查了 registry 时间与 commit 历史）
+
+| 包 | 为什么不能回填 |
+|---|---|
+| `react-remove-scroll-bar` 2.3.8 | 发布于 **2024-12-15**；LICENSE 加于 **2025-05-21**（`chore: add LICENSE file`）；2.3.8 对应 commit **404** |
+| `@electron-internal/extract-zip` 1.0.5 | LICENSE 加于 **2026-09-10**，且声明 **MIT**，而 1.0.5 声明 **BSD-2-Clause** |
+| `ot-text-unicode` 4.0.0 | README 是**缺 retention 条款**的 MIT 片段（不是可执行全文）；ISC 标识符不是文本 |
+| `lazy-val` 1.0.5 | 上游从未提供 LICENSE；仓库 **404** |
+
+**没有伪造任何文本，也没有从后来的版本回填。** 通知里四条都写明
+`NO LICENSE TEXT WAS SHIPPED WITH THIS VERSION` + 依据 + 复核日期。
+
+### 顺带发现的两个真问题（都不是本卡描述的）
+
+**① `resolveChromiumLicense` 在 pnpm 布局下必然失败。**
+`require.resolve` 返回的**已经是解引用路径**（总控要求先核实这一点，实测确认），
+pnpm 下它在 `node_modules/.pnpm/...` 里，永远不在 `app` 内。这不是「多加一道检查」，
+是那条检查**根本不可能通过**。已改成 `app` 或 `<repoRoot>/node_modules`，
+**刻意不用 `repoRoot`**（会连带放行 `genoffice/`、`node-red/`、`open-claude-ui/`）。
+
+**② 产品里有个自相矛盾的判据（测试抓出来的）。**
+`assertThirdPartyNoticeMatchesManifest` 要求 `verifiedCount === 18`，
+而带签字例外的清单 verified 恒为 14 —— 也就是说**方向 A 批准之后仍然发不了版**。
+改成 `verified + excused === 18` 且零未签字阻塞。
+
+### 变异验证（8 个变异体，每个都先 `git diff` 确认改动落地）
+
+全红：白名单去掉 node_modules / 放宽成 repoRoot / 返回根写死 app /
+无签字也放行 / 不校验 excusedCount / 不校验 releaseEligible /
+例外形状不校验 / 完整性改回 `== 18`（t11 与 t87 **两套**都红）。
+
+**一个绿的，如实记录**：下游 `assertNativeVendorPath(app, …)` 改回写死 `app` 时
+t11 不红 —— 那一行只在**完整暂存**（vendor 树齐全）时执行，t11 走不到。
+已在代码里注释为**已知覆盖盲区**，没有假装它被守住。
+
+### 套件
+
+`t11` 63/63、`t87` 99/99、`genoffice-editors-release` 29/29、
+`genoffice-source` 26/26、`genoffice-vendor-freshness` 29/29、
+`t76` 26/26、`release-readiness` 23/23。双包 `tsc` EXIT=0。
+
+`MCODE_INCLUDE_GENOFFICE_BUNDLE=1` 暂存 **EXIT=0**，产物里 4 条例外齐全，
+Chromium 许可证（20 MB）已落地。
+
+### 没做的 / 需要裁决的
+
+1. **`MCODE_INCLUDE_GENOFFICE_EDITORS=1`（六个原生编辑器）没验** —— 它要 vendor 树里的
+   Rust sidecar 与六个 renderer 产物，本机当前不齐。本卡范围是许可证门禁，这属于下一道门。
+2. **`s8`（`t88-node-red-license-closure-smoke`）没跑** —— 不在本次改动范围内，没有理由预期它变。
+3. **完整 `pnpm package` 端到端没跑** —— 只验到 staging EXIT=0。
+4. 本卡 §七 写的「本卡状态 `ready-for-human`」已过期：**这项裁决已完成**（方向 A），
+   但 §八 那张表里其余三个包的**处置方式**也随之确定了（都是签字例外），
+   不再需要逐个裁决。
