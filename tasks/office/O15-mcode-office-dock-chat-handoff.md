@@ -27,3 +27,10 @@
 - **未做真正完整 Mcode React 整屏 + Office WebContentsView 的可视化 U1**，不能用现有纯逻辑 smoke 冒充最终 UX。
 - **没有验证真实在线 Claude/Pi/Codex 的完整工具编辑与格式保真回流**。点击按钮只是草稿交接，是否能按用户指令改变文档仍要单独测试 AI → tool → editor → save → reopen。
 - 后续 UI 检查：右栏狭窄窗口下工具栏是否遮挡，Ctrl+Tab/Focus 的键盘焦点，重新布局时 WebContentsView 是否出现孤儿/遮盖，模型修改后打开页面的刷新、冲突与 dirty 提示。
+
+## 追加：PDF 路由 smoke 误报收尾（本轮）
+
+- 在交接后的补充回归中，原 `document-router-smoke` 为 **99/103，4 FAIL**。现场检查 `FileViewer.tsx` 与 `FilePreview.tsx`，真实 PDF 路由仍先于 Office 分支并返回 `PdfPreview`，并无产品回退。
+- 根因：`document-router-smoke/main.ts` 使用已经在 O5 删除的 `if (isOnlyOfficeSupportedPath(...))` 作为两个 PDF 分支 slice 的终点；因此 `officeBranchStart=-1` 导致 `pdfBranch=""`，四条断言误红。
+- 仅把测试边界更新为 `if (isOfficeDocumentKind(documentKindOf(...)))`，不引入新路由表、不恢复 OnlyOffice、不改生产 PDF 渲染。
+- 同样的 `document-router-smoke` 修复后全绿（**103/103**）；联合 `genoffice-file-routing-smoke` 和 `office-mcode-handoff-smoke` **3/3 suites PASS**；日志 `apps/desktop/.tmp/smoke-runs/1792873899098-13608-DPUXob`。保留修前红例日志 `1792873845770-15204-JZaO9b`，证明旧断言真实会红而不是空过。

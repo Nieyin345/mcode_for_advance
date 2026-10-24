@@ -153,7 +153,10 @@ section("5. 四个消费点不再各写一份扩展名分支");
   eq("T30: 未知后缀不默认归入 docs", genofficeAppForPath("papers/unknown.bin"), undefined);
   eq("T30: .pdf.exe 不冒充 PDF", genofficeAppForPath("papers/report.pdf.exe"), undefined);
   const pdfBranchStart = viewer.indexOf('if (mime === "application/pdf" || nativeApp === "pdf")');
-  const officeBranchStart = viewer.indexOf('if (isOnlyOfficeSupportedPath(visibleName))', pdfBranchStart);
+  // O5 removed OnlyOffice entirely. The PDF branch now precedes the shared
+  // documentKind-based Office fallback; using the deleted OnlyOffice marker
+  // made this test's slice empty and produced four false regressions.
+  const officeBranchStart = viewer.indexOf('if (isOfficeDocumentKind(documentKindOf(visibleName)))', pdfBranchStart);
   const pdfBranch = pdfBranchStart >= 0 && officeBranchStart > pdfBranchStart
     ? viewer.slice(pdfBranchStart, officeBranchStart)
     : "";
@@ -164,7 +167,7 @@ section("5. 四个消费点不再各写一份扩展名分支");
     /mime === "application\/pdf"/.test(pdfBranch) &&
     genofficeAppForPath("papers/unknown.bin") === undefined &&
     !viewer.includes("GenofficeViewHostPane"));
-  check("PDF 分支先于 OnlyOffice 回退分支",
+  check("PDF 分支先于 GenOffice 文档回退分支",
     pdfBranchStart >= 0 && officeBranchStart > pdfBranchStart);
 
   const projectFileIpc = read("src/main/ipc/files.ts");
@@ -177,7 +180,7 @@ section("5. 四个消费点不再各写一份扩展名分支");
     libraryFileImport.includes('".pdf": "application/pdf"'));
 
   const previewPdfStart = preview.indexOf('if (content.mime === "application/pdf" || nativeApp === "pdf")');
-  const previewPdfEnd = preview.indexOf('if (isOnlyOfficeSupportedPath(viewing))', previewPdfStart);
+  const previewPdfEnd = preview.indexOf('if (isOfficeDocumentKind(documentKindOf(viewing)))', previewPdfStart);
   const previewPdfBranch = previewPdfStart >= 0 && previewPdfEnd > previewPdfStart
     ? preview.slice(previewPdfStart, previewPdfEnd)
     : "";
