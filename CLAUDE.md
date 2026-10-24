@@ -2900,6 +2900,55 @@ $ bash apps/desktop/scripts/smokes-for.sh genoffice/apps/docs/src/renderer/App.t
 **这是「修复放大既有缺陷」的一个具体形态** ——
 **修一个工具的可信度，会让它还没修好的那一块变得更有权威。**
 
+### 同一天晚上的第二个实例，方向相反
+
+**T153 把发现逻辑从「名字以 `-smoke` 结尾」改成「有入口文件」——
+这让工具推荐的套件从 600 出头扩到 600+5。**
+
+**而那 5 个新收进来的目录，全部带着 T145 那个路径 bug**（`cd` 之后还用 `dirname "$0"`）：
+
+```
+flow-preview / md-preview / preset-scripts-sync / t96-probe /
+mcode-condition-bridge-smoke（新的）
+```
+
+**实测：**
+
+```bash
+$ bash apps/desktop/scripts/flow-preview/run.sh
+line 12: apps/desktop/scripts/flow-preview/../lib/esbuild-path.sh: No such file or directory
+EXIT=1
+```
+
+**所以现在的状态是：**
+
+```bash
+$ smokes-for.sh src/renderer/components/chat/Markdown.tsx
+  必跑（1–2 跳，6 套…）:
+    md-preview  (1 跳)  ⚠️ 重型          ← 工具推荐它
+  bash D:/.../apps/desktop/scripts/<名字>/run.sh    ← 打印的这条用法会挂
+```
+
+**工具推荐了它跑不了的东西。**
+
+**两个实例对照：**
+
+| | T150 那次 | T153 这次 |
+|---|---|---|
+| 修复让什么变强 | 「没有覆盖」的可信度 | **推荐列表的完整性** |
+| 放大了什么 | vendor 路径的假否定 | **被推荐的套件跑不了** |
+| 读者会怎样 | 信了一句错话 | **照文档做就是红** |
+
+**共同点：修复提高了某个东西的可信度，而它相邻的另一半还没修。**
+
+### 判据
+
+**修一个工具的某个能力时，问：这次修复会让读者更相信它的哪些输出？
+那些输出里，有哪些还没修？**
+
+**⚠️ 而且这个问题的答案通常不在你要修的那张卡里。**
+**T150 修的是「声明被看见」，T154 才修「推荐的可跑」—— 两张卡，同一个工具。**
+
 ### 同族五连（全部是同一个形态，五种外衣）
 
 | 条目 | 把什么说成了什么 |
