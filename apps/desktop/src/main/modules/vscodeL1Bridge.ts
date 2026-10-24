@@ -11,20 +11,100 @@ import { type ModuleResource, type ModuleReply } from "@contracts/modules";
 import { ModuleHost } from "./ModuleHost.js";
 
 const COMMAND_ID = /^[a-zA-Z][a-zA-Z0-9.-]{2,99}$/;
+/**
+ * 【F004】清单里 `contributes` 允许出现哪些贡献点。
+ *
+ * **只支持 `commands`。** 其余的一律**拒绝并点名**，不静默丢弃、也不"接受但记未实现"。
+ *
+ * ## 为什么是拒绝，不是接受后记录
+ *
+ * 「接受但标未实现」的体验更坏：用户装上了扩展，它的右键菜单 / 补全 / 语法高亮
+ * 全都不工作，而他不知道为什么 —— 因为安装成功了。
+ * **拒绝时用户会看到「这个扩展贡献了 menus，本宿主不支持」**，那是可行动的信息。
+ *
+ * 硬规矩 3：坏东西显式报出来，不静默跳过。
+ *
+ * ## 真实扩展会撞，这是有意的
+ *
+ * `mechatroner.rainbow-csv-3.24.1` 有 9 个贡献点：
+ * `colors` / `configuration` / `submenus` / `menus` / `languages` / `commands` /
+ * `semanticTokenScopes` / `configurationDefaults` / `grammars`。
+ * **它会被拒**，而且拒绝信息会说清是哪一个 —— 因为在只有 `commands` 的宿主上，
+ * 那些东西本来就不会工作。要让它们工作，是把运行时做出来，不是放宽 schema。
+ */
+const SUPPORTED_CONTRIBUTIONS = ["commands"] as const;
+
+/** 【F004】`contributes.commands` 的上限。
+ *
+ * **原实现是 `z.tuple([...])`，即恰好 1 条，和 4096 / 24576 出自同一个提交 `68a7121c`，
+ * 同样没有依据。** 实测最大真实值是 `rainbow-csv` 的 **24 条**；64 给它约 2.7 倍余量。
+ *
+ * 必须有上限：一个声称 100 万条命令的清单会在解析时撑爆内存，
+ * 而 `z.array` 不设上限就是无界攻击面。 */
+const MAX_COMMANDS = 64;
+
+/** 【F004】`activationEvents` 的上限。真实扩展（rainbow-csv）是 11 条；给 64 留余量。
+ *
+ * ⚠️ **放开这个数组 ≠ 支持这些事件。** 运行时目前只认 `onCommand:<第一条命令>`，
+ * 其余的（`onLanguage:csv`、`workspaceContains:**\/*.csv`…）声明了也不会被激活。
+ * 见 `activate()` 里那段校验。
+ *
+ * **清单能过只是第一步**，运行时的激活要单独做。别把「schema 接受」读成「功能支持」。 */
+const MAX_ACTIVATION_EVENTS = 64;
+
 const packageSchema = z.object({
   publisher: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
   name: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),
   version: z.string().regex(/^\d+\.\d+\.\d+$/),
   displayName: z.string().min(1).max(120).optional(),
   main: z.literal("./extension.js"),
+  // 【F004】保留 .strict()：多出来的引擎声明我们不支持，静默忽略更糟 ——
+  // 用户会以为「它声明了 vscode 1.95 就能按 1.95 的行为跑」。
   engines: z.object({ vscode: z.string().min(1).max(40) }).strict(),
-  activationEvents: z.array(z.string()).max(1).optional(),
+  activationEvents: z.array(z.string()).min(1).max(MAX_ACTIVATION_EVENTS).optional(),
   contributes: z.object({
-    commands: z.tuple([z.object({
+    // 【F004】`z.tuple` → `z.array`，并设上限。另加非空：0 条命令的扩展没有意义，
+    // 而且下游 `contributes.commands[0]` 会在空数组上取到 undefined。
+    commands: z.array(z.object({
       command: z.string().regex(COMMAND_ID),
       title: z.string().min(1).max(120),
-    }).strict()]),
-  }).strict(),
+      // 【F004】`category` 是真实扩展**普遍带的**字段（rainbow-csv 的 24 条里 22 条有，
+      // 2 条没有）。它只是**显示前缀** —— VS Code 把它渲染成「Rainbow CSV: CSV Lint」。
+      //
+      // 接受它的理由：它不新增任何能力，只是 title 的前缀；而拒绝它等于 24 条命令里
+      // 22 条装不进，这个扩展的清单根本过不了。这正是本卡要解决的。
+      //
+      // 其余字段（`icon` / `enablement` / `shortTitle`）**仍然拒绝** —— 那些不是纯显示，
+      // 接受但不实现会给用户「图标会显示 / 条件会生效」的错觉。
+      category: z.string().min(1).max(60).optional(),
+    }).strict()).min(1).max(MAX_COMMANDS),
+  })
+    // 【F004】`contributes` 的处理不是 `.strict()`，是 **`.passthrough()` + 自己点名**。
+    //
+    // ⚠️ 这里踩过一个坑，记下来免得下一个人再踩：
+    // 我第一版写成 `.superRefine(...)` 替换掉 `.strict()`。**`.superRefine` 返回
+    // `ZodEffects`，加不上 `.strict()`** —— 于是未知键检查**整个消失**了，
+    // `keybindings` 被静默接受。`vscode-l1-smoke` 里那条「不支持的贡献点必须被拒」
+    // 当场变红，才发现的。
+    //
+    // `.passthrough()` 让未知键**保留在解析结果里**（`.strict()` 会先剥掉它们，
+    // 那时 `superRefine` 看不到），再由这里逐一点名。
+    // 这样错误信息能同时说清「是哪个」和「本宿主支持什么」——
+    // zod 原生的 `Unrecognized key(s) in object: 'keybindings'` 只说前者。
+    .passthrough()
+    .superRefine((value, ctx) => {
+      const unknown = Object.keys(value).filter(
+        (k) => !(SUPPORTED_CONTRIBUTIONS as readonly string[]).includes(k),
+      );
+      if (unknown.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "VSIX contributes unsupported section(s): " + unknown.join(", ") +
+            ". This host supports only: " + SUPPORTED_CONTRIBUTIONS.join(", ") + ".",
+        });
+      }
+    }),
 }).strict();
 
 export type VscodeStatusBarSnapshot = { text: string; tooltip: string; command: string | null };
@@ -400,12 +480,21 @@ export class VscodeL1Bridge {
   static async install(host: ModuleHost, archive: Uint8Array, consent: { confirmReadAccess: boolean; confirmExecutableCode: boolean }, l2?: VscodeL2Ports): Promise<VscodeL1Bridge> {
     const { packageJson, source } = readMinimalVsix(archive);
     const pkg = packageSchema.parse(packageJson);
-    const commandId = pkg.contributes.commands[0].command;
+    // 【F004】只**激活第一条**命令。这是本宿主的真实能力边界 ——
+    // schema 现在能收下 24 条（为了过真实扩展的清单），但运行时只跑第一条。
+    // 不在这里假装支持多命令：那会让第 2..24 条在菜单里出现、点了没反应。
+    const commandId = pkg.contributes.commands[0]!.command;
     const prefix = pkg.publisher + "." + pkg.name + ".";
     if (!commandId.startsWith(prefix)) throw Error("VSIX command must use its publisher/name prefix");
-    if (pkg.activationEvents && (pkg.activationEvents.length !== 1 ||
-        pkg.activationEvents[0] !== "onCommand:" + commandId)) {
-      throw Error("Only the declared onCommand activation is supported");
+    // 【F004】activationEvents 从「必须恰好 1 条且等于 onCommand:第一条」放宽成
+    // 「**必须包含** onCommand:第一条」。其余事件（onLanguage:csv / workspaceContains:…）
+    // **允许声明但不会激活** —— schema 放开的只是「装得进来」，不是「这些事件支持了」。
+    // ⚠️ 这一段的语义边界别读错：清单里写了 11 个事件，本宿主仍然只在命令被调用时激活。
+    if (pkg.activationEvents && !pkg.activationEvents.includes("onCommand:" + commandId)) {
+      throw Error(
+        "VSIX activationEvents must include onCommand:" + commandId +
+        " (this host only activates on that command; other declared events are not honoured)",
+      );
     }
     // 【F003】用统一常量而非字面量 —— 否则改一处忘一处，两道限额会分叉。
     // 这条错误与 `readMinimalVsix` 里那条**不同消息**：那个说「压缩包里的声明的多大」，
