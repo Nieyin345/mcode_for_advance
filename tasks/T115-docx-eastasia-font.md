@@ -361,3 +361,46 @@ apps/desktop 我这套错误数:      0
 - **`dist/genoffice.cjs` 未提交**（构建产物，在 gitignore 内）。换机器后先 `cd genoffice/packages/cli && node build.mjs`，否则源码是新的、跑的是旧 dist。这一条**没有自动防线**，是当前已知缺口；
 - macOS / Linux 分支仍未实测（与第九节第 3 条相同）。
 
+#### ➡️ 下一个要改 `genoffice/` 的人：照这个走，不要另建机制
+
+**先记住一句话**：`genoffice/` 被 Mcode 的 `.gitignore` 忽略，**但它内部有自己的 git，而且是完整血缘的 checkout**。所以「改了会丢」是假的，「改动停在 vendor 工作区、没进补丁系列」才会丢。
+
+**动手前先看清现状**（两条命令，10 秒）：
+
+```bash
+git -C genoffice log --oneline -3           # 当前 vendor HEAD 是什么
+MCODE_INCLUDE_GENOFFICE_BUNDLE=1 node apps/desktop/build/verify-genoffice-upstream.cjs
+```
+
+第二条**必须 exit 0** 才说明起点是干净的。它不为 0 就别往下走。
+
+**加一条补丁的完整顺序**：
+
+1. **在 `genoffice/` 里正常提交**（它自己的 git，不是 Mcode 的）：
+   ```bash
+   cd genoffice && git add <明确路径...> && git commit
+   ```
+2. **导出成下一条补丁**，编号接着来（当前最新是 0015）：
+   ```bash
+   git format-patch -1 HEAD --stdout > ../patches/genoffice/0016-<slug>.patch
+   ```
+3. **读回真实元数据**，别手算：`revision`（`git rev-parse HEAD`）、`parentRevision`（`git rev-parse HEAD^`）、`bytes`、`sha256`。
+4. **改两处**，两处都要改，漏一处门禁会红（这是好事）：
+   - `apps/desktop/build/genoffice-upstream.lock.json`：`revision`、`expectedTree`（`git rev-parse HEAD^{tree}`）前移，`patchSeries` 追加一项；
+   - `apps/desktop/build/verify-genoffice-upstream.cjs`：`FINAL_REVISION`、`FINAL_TREE` 前移，`PATCHES` 追加一项。
+5. **跑门禁**，必须 exit 0。
+
+**两个我踩过的坑，写在这里省你一次**：
+
+- ⚠️ **`FINAL_REVISION` 同时被「最后一条补丁」和「最终 HEAD」两处引用。** 加新补丁时**必须把上一条的 revision 写成字面量拆开**，否则会把上一条的 revision 一起改错。我在 T115 里确实踩了一次。
+- ⚠️ **`before` 是 `after` 前缀**这类字符串判断（如果你又想写个应用脚本）——**别写**。见下面。
+
+**不要做的事**：
+
+- ❌ **不要再写一个 `apply.mjs` / 第二套补丁机制**。补丁系列 + 校验脚本已经是那条桥，第二套迟早给出不同的「当前状态」（硬规矩 2）。
+- ❌ **不要只改 vendor 工作区就以为完成了**。`git -C genoffice status --porcelain` 必须是空的，否则改动没有载体，换机器就消失。
+- ❌ **不要在补丁正文里用 before/after 字符串匹配来判断状态**。`genoffice/` 的补丁是**真 git commit**，血缘由 SHA 保证 —— 那是比字符串匹配强一个数量级的东西，别退化。
+
+**改完还要重建 CLI**：`cd genoffice/packages/cli && node build.mjs`。`dist/` 也是 gitignore 内的构建产物，**没有自动防线**（见上「仍未做」）。
+
+

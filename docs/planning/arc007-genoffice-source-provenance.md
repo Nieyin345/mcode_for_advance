@@ -5,7 +5,8 @@
 ## 上游来源（L1 直接复用）
 
 - 官方仓库：<https://github.com/genspark-ai/genoffice>（本机 Git remote 经 `ghfast.top` 镜像访问），独立嵌套 Git 仓：`genoffice/`，被 Mcode 顶层 Git 忽略，**不得用主仓 HEAD 替代它的版本**。
-- 当前锁定独立 GenOffice HEAD：`73ba918083b5e2bedff7633925c3d7f625e04449`，固定文件 `apps/desktop/build/genoffice-upstream.lock.json`。已审批基线：`cbec600ace9c930b2646b6739cf6df3741bb9d6a`，在此基础上批准的 **原厂 L3 补丁**：`73ba918`（仅 `apps/pdf/src/main/atomic-write.ts` 和 `apps/pdf/tests/page-operation-atomic-write.test.ts`）；门禁额外逐项核实补丁 commit 的 parent SHA 与实际 Git changed paths 是否和锁文件相等，避免把其它私有改动伪装成这个 PDF 修复。
+- 当前锁定独立 GenOffice HEAD：`3cb99ab13e1e42989889e15cc338bd6f6c6fff5c`（Mcode 集成补丁系列的第 15 条，tree `5ba6f37b`），固定文件 `apps/desktop/build/genoffice-upstream.lock.json`。已审批基线：`cbec600ace9c930b2646b6739cf6df3741bb9d6a`；在此之上依次叠加 Mcode 的 **15 条 L3 补丁**（`patches/genoffice/0001…0015.patch`），起于一条原厂 PDF 修复 `73ba918`，其余 14 条为 Mcode 集成。门禁额外逐项核实每条补丁 commit 的 parent SHA、changed paths 与 sha256 是否和锁文件相等，并核对 HEAD 与 `HEAD^{tree}`，避免把其它私有改动伪装成这个修复。
+  - **加新补丁的步骤、两个已知会踩的坑、以及「不要另建第二套补丁机制」的理由，写在 `tasks/T115-docx-eastasia-font.md` 第十节末尾**（那一节是为下一个要动 `genoffice/` 的人写的）。
 - 上游许可证：根目录 `genoffice/LICENSE`（Apache-2.0）与 `genoffice/NOTICE`；根 `package.json` / `package-lock.json` 也是原厂构建和依赖版本输入，门禁按源码同等查 Git dirty（已有隔离旧红）；发布的 CLI/PDFium 另由已有 `stage-genoffice-resources.cjs` 搬运第三方许可，不能因原厂页面能运行就跳过下游各依赖许可审查。
 - 原生入口按相同顺序：`genoffice/apps/{docs,sheets,slides,pdf,markdown,html}/src/{main,preload,renderer}`，涉及原版 DOCX 引擎、Univer+Rust XLSX、PPTX 包、PDFium、Markdown/HTML 编辑器，不在 Mcode 中复刻其业务内核。
 
