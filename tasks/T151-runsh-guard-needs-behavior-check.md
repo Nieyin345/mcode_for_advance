@@ -148,15 +148,44 @@ grep -c 'dirname "\$0"' file.sh     # → 1（那行在 cd 之前，合法）
 
 **实测现状（2026-10-24 21:58）：全仓 0 套自己输出这句话。但这是「今天没有」，不是「永远不会」。**
 
-**Office 总控给的做法**：
+**⚠️ 我实测了一次（22:00），结论比预想的好：**
+
+```bash
+# 套件自己输出这句话（走 stdout）
+$ ./fake.sh 2>/tmp/err.txt
+  ok   测试文件不存在时给什么错
+  FAIL expected No such file or directory in message
+rc=1
+$ cat /tmp/err.txt
+(空)
+
+# 真正的路径错（bash 自己打的，走 stderr）
+$ bash -c 'source /nonexistent/path.sh' 2>/tmp/err2.txt
+rc=1
+$ head -3 /tmp/err2.txt
+bash: line 1: /nonexistent/path.sh: No such file or directory
+```
+
+**关键区别：套件自己的消息走 stdout，bash 的路径错走 stderr。**
+
+**所以「只 grep stderr」就足够，误报源不存在。**
+
+**⚠️ 但要先确认两个前提：**
+
+1. **套件的输出必须是 stdout，不能混进 stderr**（如果有套件用 `>&2` 打业务消息，就会进误报区）；
+2. **`run.sh` 里的 `source` 失败必须走 stderr，不能被 `2>&1` 吞掉。**
+
+**执行时先验证这两条，再决定要不要加「前 5 行」的兜底。**
+
+**Office 总控给的保守做法（它当时不知道上面这个区别）：**
 
 | 做法 | 说明 |
 |---|---|
-| **只看前 5 行**（推荐） | 脚本自身挂掉时，错误在开头；套件的业务输出在后面 |
+| 只看前 5 行 | 脚本自身挂掉时，错误在开头；套件的业务输出在后面 |
 | 匹配行首无缩进 | bash 自己打的错误通常不在缩进块里 |
 | 排除含 `PASS`/`FAIL`/`ok `/`⚠️` 前缀的行 | 套件输出通常带这些前缀 |
 
-**⚠️ 如果 `--deep` 出现误报，先查这里。**
+**如果 stderr/stdout 分得干净，「只 grep stderr」就对，这三条都不必要。**
 
 **rc 的完整含义表**（写进卡里，免得下一个人只看 127）：
 
