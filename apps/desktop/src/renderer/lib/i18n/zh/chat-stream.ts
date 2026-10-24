@@ -3,6 +3,9 @@
  * zh is the source of truth for `MessageId`.
  */
 export const zh = {
+  // 【T120】用户气泡超长折叠的展开/收起（上游 ChatMessageBubbles 的「阅读更多」）。
+  "chatStream.showMore": "展开全文",
+  "chatStream.showLess": "收起",
   // ── MessageTimeline ──
   "chatStream.timeline.current": "当前",
   "chatStream.timeline.noText": "(无文本内容)",

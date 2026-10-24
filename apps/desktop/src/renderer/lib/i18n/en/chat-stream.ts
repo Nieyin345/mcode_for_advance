@@ -1,5 +1,8 @@
 /** English mirror of `zh/chat-stream.ts`. */
 export const en = {
+  // 【T120】Long user messages: expand / collapse (upstream ChatMessageBubbles).
+  "chatStream.showMore": "Show full message",
+  "chatStream.showLess": "Collapse",
   // ── MessageTimeline ──
   "chatStream.timeline.current": "Current",
   "chatStream.timeline.noText": "(no text)",

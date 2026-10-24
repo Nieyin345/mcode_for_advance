@@ -7,6 +7,7 @@
  */
 import { useState, useRef, useEffect, useMemo, memo } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { bubbleBodyStyle, collapsibleBubbleState, collapseToggleLabel } from "./messageCollapse.js";
 import { pasteBlock } from "@renderer/lib/contentTag.js";
 import { MessageCustomMenu } from "@renderer/components/customUi/CustomSlotHosts.js";
 import { IconSend2, IconCopy, IconCheck, IconPaperclip, IconX, IconPencil, IconRefresh } from "@renderer/lib/icons.js";
@@ -240,7 +241,35 @@ export const MessageRow = memo(function MessageRow({
     : hasTextContent && !!copyText && isTurnTail;
   // The edit button is only for user messages, only when idle, and only on
   // rows NOT currently being edited (the editor replaces the row).
+  // 只有 showEdit 之后才有展开按钮的位置 —— 与复制/编辑同一行。
   const showEdit = isUser && canEdit && !isEditing;
+
+  // ── 【T120】用户气泡的超长折叠 ──
+  //
+  // 上游 `ChatMessageBubbles.tsx` 对用户消息量 `scrollHeight`，超过 300px 就截断
+  // 并加底部渐变 + 展开按钮。Mcode 的用户气泡原先只有 `overflow-hidden`，
+  // 没有高度上限 —— 贴一大段日志就把视口铺满，而且看不出底下还有多少。
+  //
+  // 判据全部在 `messageCollapse.ts`（纯函数、可无头测），这里只负责测量与渲染。
+  const userBubbleRef = useRef<HTMLDivElement | null>(null);
+  const [bubbleExpanded, setBubbleExpanded] = useState(false);
+  const [bubbleContentHeight, setBubbleContentHeight] = useState(0);
+  // 内容高度只在用户消息上有意义；助手侧本来就该全文铺开（流式输出不断变高，
+  // 折叠会让视口反复跳动 —— 上游也只对用户消息做这件事）。
+  useEffect(() => {
+    if (!isUser || isEditing) return;
+    const node = userBubbleRef.current;
+    if (!node) return;
+    // `scrollHeight` 量的是**不受 maxHeight 限制**的内容高度，所以展开/收起
+    // 都不会改变这个测量 —— 不需要把 bubbleExpanded 放进依赖。
+    const measured = node.scrollHeight;
+    setBubbleContentHeight((prev) => (prev === measured ? prev : measured));
+  }, [isUser, isEditing, renderBlocks]);
+  const collapseState = isUser
+    ? collapsibleBubbleState({ contentHeightPx: bubbleContentHeight, userExpanded: bubbleExpanded })
+    : "fits";
+  const bodyStyle = bubbleBodyStyle(collapseState);
+  const toggleLabel = collapseToggleLabel(collapseState);
 
   // ── Inline edit mode ──
   // When editing, the normal bubble is replaced by an editor with a textarea
@@ -311,6 +340,8 @@ export const MessageRow = memo(function MessageRow({
           // 方案A: directional corner radii (tight bottom-right corner points
           // at the sender) + the freshness-gated slide-in above.
           title={isUser ? fmtFullDateTime(msg.createdAt) : undefined}
+          ref={isUser ? userBubbleRef : undefined}
+          style={bodyStyle ?? undefined}
           className={
             isUser
               ? "user-bubble-fill overflow-hidden rounded-[var(--radius-bubble)] rounded-br-[5px] px-3 py-2 text-content [font-size:var(--chat-font-size)]" +
@@ -326,6 +357,17 @@ export const MessageRow = memo(function MessageRow({
             <div className="mt-1 flex items-center gap-1.5">
               <span className="chat-caret" aria-hidden />
             </div>
+          )}
+          {/* 【T120】折叠按钮：只在内容超过阈值时出现，与上游一致。
+              放在气泡**内部**（上游也是）—— 放外面会跑到气泡圆角之外。 */}
+          {toggleLabel !== null && (
+            <button
+              type="button"
+              onClick={() => setBubbleExpanded((v) => !v)}
+              className="mt-1 inline-flex items-center gap-0.5 text-[11px] font-medium text-content-muted transition-colors hover:text-content"
+            >
+              {toggleLabel === "expand" ? t("chatStream.showMore") : t("chatStream.showLess")}
+            </button>
           )}
         </div>
         {/* Action row BELOW the content bubble - outside its border.
