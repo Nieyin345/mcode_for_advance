@@ -12,6 +12,13 @@
  *
  * Run: scripts/app-control-smoke/run.sh
  */
+
+// 【T150】**这一套用 `readFileSync` + `ts.createSourceFile` 读 RpcMap，不是 import 它。**
+// 依赖图只走 import，所以「改哪个文件该跑哪几套」对 `rpcMap.ts` 的答案是
+// 「没有套件覆盖」—— 而加一个 RPC 的人动的正是那个文件。下面这条是显式声明，
+// 让工具知道这一套**确实读过它**（`§6 接线源码` 与 `★ 功能清单与 RpcMap 逐条对齐`
+// 两处都读它）。
+// @smoke-covers packages/contracts/src/ipc/rpcMap.ts
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import ts from "typescript";

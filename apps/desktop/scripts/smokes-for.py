@@ -242,11 +242,34 @@ def suite_distance(suite_dir: Path, target: Path) -> tuple[int | None, Path | No
     现在调用方(输出那段)把 `None` 当作**内部矛盾**单独报出来,而不是混进可选。
     正常情况下 `None` 不该出现:`hits` 来自闭包,而闭包能到达的套件 BFS 也必然能到达
     —— 两者用的是同一份 `resolve()`。真出现了就是 bug,必须让人看见。
+
+    ## 【T150】`@smoke-covers` 声明的文件算 **0 跳**
+
+    `readFileSync` + 文本解析这种读法不在 import 图上（见 `coverage()` 那段注释），
+    所以 `closure()` 能凭声明把它收进覆盖集，而 BFS 找不到任何一条边 —— 于是
+    「在闭包里但算不出距离」那条内部矛盾告警会为每一套声明型覆盖亮起来。
+
+    声明本身就是「这一套直接读了这个文件」的最强形式，所以它在距离上也该是
+    最短的：**入口声明了 target，就是 0 跳**，和「入口文件自身就是 target」同义。
+    这里按**入口文件**逐个检查它的声明行，而不是全目录扫一遍后再取并集 ——
+    否则一套里任何一个文件声明了 target，整组入口都会被当成 0 跳。
     """
     best: int | None = None
     best_parent: Path | None = None
-    for pattern in ("*.ts", "*.tsx", "*.jsx"):
+    for pattern in ("*.ts", "*.tsx", "*.jsx", "*.mjs"):
         for entry in suite_dir.rglob(pattern):
+            # 【T150】入口自己声明了 target → 0 跳（声明读它 = 直接依赖）。
+            if entry.suffix in (".ts", ".tsx", ".jsx", ".mjs"):
+                try:
+                    entry_text = entry.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    entry_text = ""
+                declared = {
+                    _resolve_declared(rel) for rel in SMOKE_COVERS_RE.findall(entry_text)
+                }
+                declared.discard(None)
+                if target in declared:
+                    return 0, None
             d, parent = distances_to(target, entry)
             if d is None:
                 continue
@@ -255,6 +278,20 @@ def suite_distance(suite_dir: Path, target: Path) -> tuple[int | None, Path | No
                 if best == 0:      # 已经是最短可能,不用再找
                     return best, best_parent
     return best, best_parent
+
+
+def _resolve_declared(rel_path: str) -> Path | None:
+    """把一条 `@smoke-covers` 声明解析成绝对路径（两个基准都试）。
+
+    抽成函数是因为 `coverage()` 与 `suite_distance()` 必须**用同一份解析规则** ——
+    两处各写一遍的话，声明在覆盖侧被记录、在距离侧被判成不可达，就会出现
+    「在闭包里但算不出距离」的内部矛盾告警（T150 第一版正是这样）。
+    """
+    for base in (DESKTOP, ROOT):
+        cand = (base / rel_path).resolve()
+        if cand.is_file():
+            return cand
+    return None
 
 
 def path_chain_to(target: Path, entry: Path) -> list[Path] | None:
@@ -314,13 +351,33 @@ def coverage() -> dict[str, set[Path]]:
                 # 真实模块的调用方仍然在图上。所以只跳过桩本身的入口,不跳过它的
                 # import。简化处理:桩也走一遍 closure,多收几个不影响判断。
                 closure(entry, covered)
-        for mjs in d.rglob("*.mjs"):
-            text = mjs.read_text(encoding="utf-8", errors="replace")
-            for rel_path in SMOKE_COVERS_RE.findall(text):
-                target = (DESKTOP / rel_path).resolve()
-                if not target.is_relative_to(MAIN) or not target.is_file():
-                    raise ValueError(f"invalid @smoke-covers {rel_path} in {mjs.relative_to(ROOT)}")
-                covered.add(target)
+        # 【T150】`.ts` 入口也要认 `@smoke-covers`，不只是 `.mjs`。
+        # 原来只扫 `.mjs`，因为当初这条机制是为「`.mjs` 动态转译源文件」做的。
+        # 但 `readFileSync` + 解析文本这种读法同样不在 import 图上，而它很常见：
+        # 实测 54 套 `.ts` 入口用 `readFileSync(join(process.cwd(), ...))` 读源码
+        # （源码文本断言那一类）。只认 `.mjs` 等于那 54 套里凡是没被别的边覆盖到的
+        # 文件，问下来都是「没有套件覆盖」。
+        # `.ts` 本身走 `closure()`，所以这里只额外读一遍声明行 —— 幂等，不影响覆盖集合。
+        for pattern in ("*.mjs", "*.ts", "*.tsx", "*.jsx"):
+            for mjs in d.rglob(pattern):
+                text = mjs.read_text(encoding="utf-8", errors="replace")
+                for rel_path in SMOKE_COVERS_RE.findall(text):
+                    # 【T150】两个基准都要试，因为声明的两种形状基准不同：
+                    #   `src/main/...` / `src/renderer/...`  → 相对 apps/desktop（历史形状）
+                    #   `packages/...`                        → 相对仓库根
+                    # 只换成 ROOT 会把**所有既有的** `src/main/...` 声明拼成
+                    # `mcode/src/main/...`（不存在）→ 全部 raise。反过来只留 DESKTOP
+                    # 则 `packages/...` 拼成 `apps/desktop/packages/...`（也不存在）。
+                    # 【T150】解析规则抽到 `_resolve_declared()` —— `suite_distance()`
+                    # 也用它，两处必须同源（否则会出现「在闭包里但算不出距离」）。
+                    target = _resolve_declared(rel_path)
+                    # 守「声明不能谎报」:文件必须真的存在,且必须落在已知源码根之一。
+                    # 不然一个笔误的声明会**凭空给套件加覆盖** —— 那正是「改了不用跑」的来源。
+                    if target is None or not (
+                        target.is_relative_to(MAIN) or target.is_relative_to(ROOT / "packages")
+                    ):
+                        raise ValueError(f"invalid @smoke-covers {rel_path} in {mjs.relative_to(ROOT)}")
+                    covered.add(target)
         suites[d.name] = covered
     return suites
 
