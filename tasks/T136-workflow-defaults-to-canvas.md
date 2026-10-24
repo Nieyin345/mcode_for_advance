@@ -126,3 +126,50 @@ grep -n "setViewError" apps/desktop/src/renderer/components/settings/workflows/E
 3. **那个报错是否消失**，为什么
 4. 套件数字、截图路径、提交 SHA
 5. 你觉得不对但没改的地方
+
+---
+
+## 六、补充：画布到底在哪（我核实的）
+
+`EngineRuntimePanel.tsx:409-411`：
+
+```tsx
+{editorOpen ? (
+  <div ref={stageRef} className="min-h-0 flex-1" data-engine-view-stage="" />
+) : (
+  <div className="...border-dashed...">   {/* 空状态：为什么没有编辑器 */}
+)}
+```
+
+**那个空的 `div` 就是 Node-RED 画布的占位。** `WebContentsView` 由主进程摆到这个 div 的窗口矩形上。
+
+**所以「默认打开画布」有两层含义：**
+
+1. **页签默认是「第三方引擎」**（`WorkflowsPanel` 的 `view` 初值）；
+2. **`editorOpen` 必须为 true** —— 而它要求引擎在 running 状态。
+
+**⚠️ 如果引擎没启动，第 2 条做不到。** 那时用户看到的是「引擎未启动」的空状态，不是画布。
+
+**所以这张卡要回答**：打开设置 → 工作流时，**引擎是不是自动启动**？
+
+- **是** → 直接画布，符合用户预期；
+- **否** → 必须先点「启动」才能看到画布，**那「默认就是编辑页面」做不到**。
+
+**这条决定卡的做法，执行前必须先查清楚**：
+
+```bash
+grep -n "autoStart\|auto_start\|startEngine" apps/desktop/src/renderer/components/settings/workflows/EngineRuntimePanel.tsx | head
+grep -rn "autostart\|autoStart" apps/desktop/src/main/workflowEngines/ | head
+```
+
+## 七、那个报错的另一种可能
+
+`editorOpen` 依赖 `canOpenEditor(status)`（`:320`）。如果引擎报「running」但视图创建失败，就会出现截图里的「引擎运行中 + 编辑器视图没能打开」。
+
+**这是「状态说 running，但视图没建起来」的不一致。** 验收时要能区分：
+
+| 现象 | 含义 |
+|---|---|
+| 引擎 running + 画布出现 | 正常 |
+| **引擎 running + 报错「视图不存在」** | **视图创建/登记失败** ← 截图是这个 |
+| 引擎未启动 + 空状态提示 | 正常（需要点启动） |
