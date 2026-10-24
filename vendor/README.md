@@ -44,8 +44,11 @@ npm ci --ignore-scripts --no-audit --no-fund   # 2081 包 / 1.1 GB / 约 32 s
 # ② 生成 packages/core/shared 下的路径垫片（@theia/application-package/lib/*）
 (cd packages/core && ../../node_modules/.bin/theia-re-exports generate)
 
-# 只构建扩展宿主一个包（会连带构建它引用的 30 个 @theia 包）
+# 宿主与 VS Code 初始化桥都必须构建（缺任意一个，F024 起 smoke 硬失败）
 ./node_modules/.bin/tsc --build packages/plugin-ext   # 冷构建约 44–47 s
+./node_modules/.bin/tsc --build packages/plugin-ext-vscode
+# 返回 Mcode 仓库根，统一执行：
+# node apps/desktop/scripts/run-smokes.mjs theia-host-boot-smoke
 ```
 
 > ① ② 的顺序是实测出来的：跳过 ① 直接跑 `theia-re-exports generate` 会报

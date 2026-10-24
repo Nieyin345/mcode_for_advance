@@ -24,6 +24,19 @@ function activate(context) {
     // declared in package.json but NOT registered here on purpose:
     // the boot suite uses it to prove "declared" != "registered".
     vscode.commands.registerCommand("mcodeSmoke.undeclared", () => "undeclared-fn"),
+    vscode.commands.registerCommand("mcodeSmoke.editActive", async (replacement) => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return false;
+      return editor.edit(builder => builder.replace(new vscode.Range(0, 0, 0, 6), replacement));
+    }),
+    vscode.commands.registerCommand("mcodeSmoke.overlapEdit", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return false;
+      return editor.edit(builder => {
+        builder.replace(new vscode.Range(0, 0, 0, 5), "first");
+        builder.replace(new vscode.Range(0, 2, 0, 6), "second");
+      });
+    }),
   );
 }
 

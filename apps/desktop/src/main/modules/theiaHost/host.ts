@@ -40,6 +40,7 @@ import { existsSync } from "node:fs";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { prepareTheiaEdits, type EditorEditTransaction, type TheiaTextEdit, type TheiaEditOptions } from "./editorTransactions.js";
 
 /* ───────────────────────── 依赖定位 ───────────────────────── */
 
@@ -241,12 +242,7 @@ export interface TheiaExtensionHandle {
   executeCommand<T = unknown>(command: string, ...args: unknown[]): Promise<T>;
 }
 
-/**
- * 只读的编辑器桥。**只做「读」这一半**（`window.activeTextEditor` 及其
- * `document.getText()` / `selection` / `selections`、`window.visibleTextEditors`）。
- *
- * `TextEditor.edit()` 写回**不在本卡**（F024）：那涉及事务式编辑与撤销栈。
- */
+/** Editor snapshots and editor-owner-mediated edit transactions (F024). */
 export interface TheiaEditorBridge {
   /** 没有打开编辑器时 `null`（不是 `{}`、不是抛错）。 */
   activeTextEditor(): Promise<ActiveEditorSnapshot | null>;
@@ -275,6 +271,16 @@ export interface EditorInput {
     start: { line: number; character: number };
     end: { line: number; character: number };
   };
+  /** Only the real Mcode editor owner can apply edits and own undo/redo. No callback = reject. */
+  applyEdits?: (transaction: EditorEditTransaction) => Promise<boolean>;
+}
+
+interface EditorSession {
+  id: string;
+  input: EditorInput;
+  uri: Record<string, unknown>;
+  version: number;
+  busy: boolean;
 }
 
 function snapshotOf(_id: string, input: EditorInput): ActiveEditorSnapshot {
@@ -317,6 +323,7 @@ export class TheiaHost {
   private extensionId = "";
   private declaredCommands: string[] = [];
   private exitReason: string | undefined;
+  private activeEditorSession: EditorSession | null = null;
 
   constructor(private readonly options: TheiaHostOptions) {
     this.log = options.onLog ?? (() => undefined);
@@ -595,7 +602,8 @@ export class TheiaHost {
     };
 
     let nextEditorId = 1;
-    let current: { id: string; input: EditorInput; uri: Record<string, unknown> } | null = null;
+    let current: EditorSession | null = null;
+    const owner = this;
 
     const toUri = (filePath: string) => ({
       $mid: 1,
@@ -613,13 +621,15 @@ export class TheiaHost {
           }
           const old = current;
           current = null;
+          owner.activeEditorSession = null;
           await pushDelta({ removedEditors: [old.id], removedDocuments: [old.uri], newActiveEditor: null });
           return;
         }
         const editorId = String(nextEditorId++);
         const uri = toUri(input.filePath);
         const previous = current;
-        current = { id: editorId, input, uri };
+        current = { id: editorId, input, uri, version: 1, busy: false };
+        owner.activeEditorSession = current;
         const lines = input.text.split(/\r?\n/);
         await pushDelta({
           ...(previous ? { removedEditors: [previous.id], removedDocuments: [previous.uri] } : {}),
@@ -678,6 +688,7 @@ export class TheiaHost {
   /** 释放：先礼貌地让宿主自己退（`ProcessTerminateMessage`），超时就杀。 */
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.activeEditorSession = null;
     const child = this.child;
     this.child = undefined;
     this.started = false;
@@ -873,6 +884,49 @@ export class TheiaHost {
       $dispose: async () => undefined,
       $reveal: async () => undefined,
       $close: async () => undefined,
+    } as never);
+    // F024: the extension's own TextEditor.edit() calls this Theia Main RPC.
+    // No owner callback, stale version, overlap, or concurrent transaction can succeed.
+    setProxyHandler(P.TEXT_EDITORS_MAIN, {
+      $tryApplyEdits: async (id: string, version: number, edits: TheiaTextEdit[], opts: TheiaEditOptions): Promise<boolean> => {
+        const session = this.activeEditorSession;
+        if (!session || session.id !== id || session.version !== version || session.busy || !session.input.applyEdits) return false;
+        const prepared = prepareTheiaEdits(session.input.text, edits, opts);
+        if (!prepared) return false;
+        session.busy = true;
+        const previousText = session.input.text;
+        const nextVersion = session.version + 1;
+        try {
+          const accepted = await session.input.applyEdits({
+            filePath: session.input.filePath,
+            version,
+            beforeText: previousText,
+            afterText: prepared.text,
+            edits: prepared.changes,
+            undoStopBefore: opts.undoStopBefore,
+            undoStopAfter: opts.undoStopAfter,
+          });
+          if (!accepted || this.activeEditorSession !== session || this.disposed) return false;
+          session.input = { ...session.input, text: prepared.text };
+          session.version = nextVersion;
+          // Tell the actual Theia DocumentDataExt, not merely the parent's snapshot.
+          const document = rpc.getProxy<{ $acceptModelChanged(uri: unknown, event: unknown, dirty: boolean): Promise<void> }>(
+            modules.MAIN_RPC_CONTEXT.DOCUMENTS_EXT,
+          );
+          await document.$acceptModelChanged(session.uri, {
+            changes: prepared.changes,
+            eol: prepared.text.includes("\r\n") ? "\r\n" : "\n",
+            versionId: nextVersion,
+            reason: undefined,
+          }, true);
+          return true;
+        } catch (error) {
+          log({ level: "error", source: "theia-editor", message: `编辑事务失败：${String(error)}` });
+          return false;
+        } finally {
+          session.busy = false;
+        }
+      },
     } as never);
     setProxyHandler(P.STORAGE_MAIN, {
       $set: async () => true,

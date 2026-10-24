@@ -34,6 +34,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { TheiaHost, TheiaHostError } from "@main/modules/theiaHost/host.js";
+import { prepareTheiaEdits } from "@main/modules/theiaHost/editorTransactions.js";
 import { buildExtensionPermissionReport } from "@main/modules/theiaPermissionReport.js";
 import { buildInstallConsentPrompt, decideInstall } from "@main/modules/theiaHost/installConsent.js";
 
@@ -50,7 +51,7 @@ if (!REPO_ROOT || !HERE) {
   );
   process.exit(2);
 }
-const THEIA_ROOT = path.join(REPO_ROOT, "vendor", "theia");
+const THEIA_ROOT = process.env.MCODE_SMOKE_THEIA_ROOT || path.join(REPO_ROOT, "vendor", "theia");
 const FIXTURES = path.join(HERE, "fixtures");
 
 let total = 0;
@@ -69,7 +70,7 @@ function skip(name: string, why: string): void {
 }
 
 const NOT_COVERED = [
-  "NOT-COVERED: TextEditor.edit / 撤销栈（F024）",
+  "NOT-COVERED: 真实 Monaco undo/redo UI（F025，F024 仅验证 owner 事务回调）",
   "NOT-COVERED: workspace 与 window 的大部分 API（F025+）",
   "NOT-COVERED: 运行时沙箱 —— 用户选择了安装时告知，不是隔离",
 ];
@@ -87,10 +88,10 @@ async function main(): Promise<void> {
   const hostJs = path.join(THEIA_ROOT, "packages/plugin-ext/lib/hosted/node/plugin-host.js");
   const vscodeInit = path.join(THEIA_ROOT, "packages/plugin-ext-vscode/lib/node/plugin-vscode-init.js");
   if (!existsSync(hostJs) || !existsSync(vscodeInit)) {
-    // 明确 skip，不假装跑过。vendor/theia 是嵌套 checkout，CI 里可能没取。
-    skip("宿主构建产物存在", `缺 ${!existsSync(hostJs) ? hostJs : vscodeInit}`);
-    for (const line of NOT_COVERED) console.log(line);
-    console.log(`theia-host-boot-smoke: 0/0 通过（跳过：vendor/theia 未构建）`);
+    // F024: missing build prerequisites are a HARD ERROR, not a green 0/0 skip.
+    console.error(`theia-host-boot-smoke: BUILD_REQUIRED — 缺 ${!existsSync(hostJs) ? hostJs : vscodeInit}`);
+    console.error("先构建 vendor/theia 的 plugin-ext 和 plugin-ext-vscode；本次没有运行任何测试。");
+    process.exitCode = 2;
     return;
   }
 
@@ -190,7 +191,7 @@ async function main(): Promise<void> {
   }
 
   /* ── 第 3 组：activeTextEditor（只读） ─────────────────────────── */
-  console.log("\n[3] activeTextEditor：只有读，没有写");
+  console.log("\n[3] activeTextEditor：读与受控编辑事务");
   if (handle) {
     const bridge = host.editors();
     const before = await bridge.activeTextEditor();
@@ -221,9 +222,67 @@ async function main(): Promise<void> {
       check("宿主侧 vscode.window.activeTextEditor 读到同一份内容", extView === text, extView);
     }
 
+    // F024: no real editor owner => extension edits MUST fail rather than pretend success.
+    const noOwner = await handle.executeCommand<boolean>("mcodeSmoke.editActive", "X").catch(() => "ERR");
+    check("没有真实编辑器写入回调时 edit 返回 false（不能假成功）", noOwner === false, noOwner);
+    check("拒绝写入后文本不变", (await bridge.activeTextEditor())?.text === text);
+
+    const history: string[] = [];
+    const commits: string[] = [];
+    let ownerText = text;
+    await bridge.setActive({
+      filePath: file,
+      languageId: "latex",
+      text,
+      applyEdits: async transaction => {
+        if (transaction.beforeText !== ownerText || transaction.filePath !== file) return false;
+        history.push(ownerText); // this synthetic owner models a single undo group
+        ownerText = transaction.afterText;
+        commits.push(`${transaction.version}:${transaction.undoStopBefore}:${transaction.undoStopAfter}`);
+        return true;
+      },
+    });
+    const applied = await handle.executeCommand<boolean>("mcodeSmoke.editActive", "NEW");
+    check("Theia TextEditor.edit 获得真实 editor-owner 的确认", applied === true, applied);
+    check("写入确实到达编辑器 owner 且不是仅修改宿主缓存", ownerText === "NEW\nline-2\nline-3", ownerText);
+    check("宿主侧文档事件更新后读取的是新文本", (await handle.executeCommand<{active: string}>("mcodeSmoke.spawnEcho")).active === ownerText);
+    check("事务携带版本与 undoStop 边界", commits.length === 1 && commits[0] === "1:true:true", commits);
+    check("模拟 owner 记录了可撤销的原始文本", history[0] === text);
+
+    const overlap = await handle.executeCommand<boolean>("mcodeSmoke.overlapEdit").then(
+      v => ({ ok: true, value: v }), e => ({ ok: false, error: String(e) })
+    );
+    check("重叠范围被拒绝且不触碰 editor owner", !overlap.ok || ("value" in overlap && overlap.value === false), overlap);
+    check("重叠编辑拒绝后文本与历史不变", ownerText === "NEW\nline-2\nline-3" && commits.length === 1);
+    // Fail-closed on a refused editor transaction.
+    await bridge.setActive({ filePath: file, languageId: "latex", text, applyEdits: async () => false });
+    const declined = await handle.executeCommand<boolean>("mcodeSmoke.editActive", "NOT-APPLIED");
+    check("编辑器拒绝事务时扩展得到 false", declined === false, declined);
+    check("编辑器拒绝事务时文档不更新", (await bridge.activeTextEditor())?.text === text);
     await bridge.setActive(null);
     check("关闭后 activeTextEditor 回到 null", (await bridge.activeTextEditor()) === null);
   }
+
+  /* ── F024: 编辑事务纯函数边界 / 不依赖真实宿主状态 ───────────────── */
+  console.log("\n[3b] 编辑事务：多范围、UTF-16、非法输入");
+  const opts = { undoStopBefore: true, undoStopAfter: true };
+  const multi = prepareTheiaEdits("a😀b\nsecond", [
+    { range: { startLineNumber: 1, startColumn: 2, endLineNumber: 1, endColumn: 4 }, text: "X" },
+    { range: { startLineNumber: 2, startColumn: 1, endLineNumber: 2, endColumn: 7 }, text: "last" },
+  ], opts);
+  check("多范围原子应用，emoji 按 UTF-16 列处理", multi?.text === "aXb\nlast", multi);
+  check("变更从末尾倒序，原文本偏移有效", multi?.changes[0]?.rangeOffset === 5 && multi?.changes[1]?.rangeOffset === 1, multi?.changes);
+  const overlapEdits = prepareTheiaEdits("abcdef", [
+    { range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 4 }, text: "X" },
+    { range: { startLineNumber: 1, startColumn: 3, endLineNumber: 1, endColumn: 5 }, text: "Y" },
+  ], opts);
+  check("纯事务：重叠范围全拒，不部分应用", overlapEdits === null);
+  check("纯事务：越界坐标拒绝", prepareTheiaEdits("a", [
+    { range: { startLineNumber: 9, startColumn: 1, endLineNumber: 9, endColumn: 2 }, text: "Z" },
+  ], opts) === null);
+  check("纯事务：明确改变 EOL 尚未适配则拒绝", prepareTheiaEdits("a", [
+    { range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 2 }, text: "Z" },
+  ], { ...opts, setEndOfLine: 2 }) === null);
 
   /* ── 第 4 组：权限报告（正控 + 负控） ─────────────────────────── */
   console.log("\n[4] 安装时的权限报告（静态下限）");
