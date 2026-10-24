@@ -1,0 +1,188 @@
+From 3cb99ab13e1e42989889e15cc338bd6f6c6fff5c Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sat, 24 Oct 2026 12:02:58 +0800
+Subject: [PATCH] feat(docs): write w:eastAsia so new docx files keep CJK
+ typography
+
+A docx built by Mcode left `w:rFonts/@w:eastAsia` unset. Word and our own
+renderer then fall back to a script-based default for CJK, which is not
+"missing glyphs" but a three-way mismatch inside a single paragraph:
+
+  - CJK glyphs come from the system default (usually SimSun on Windows)
+    while Latin glyphs come from Calibri;
+  - line height is computed from the Latin metrics, so CJK characters
+    overflow the leading;
+  - the apparent weight differs between the two scripts.
+
+This is the most direct cause of the "AI-edited Word files look ugly"
+complaint, and one attribute removes it.
+
+The font is chosen per platform, because each of these is only guaranteed to
+exist on its own platform. Hard-coding one name means every file produced on
+another platform references a font that is not installed there -- Word falls
+back to the system default, which is exactly the previous behaviour plus a
+misleading declaration.
+
+The trade-off is deliberate: the same Mcode now produces byte-different docx
+on Windows and macOS. Reproducibility gives way to "opens correctly on the
+machine that produced it". No assertion compares bytes across platforms, and
+none should.
+
+Selection lives in the CLI (`packages/cli/src/formats/east-asia-font.ts`),
+not in the renderer exporter: `exportDocxBytes` is a pure function and has no
+business deciding which CJK fonts the calling machine has. It takes the font
+as an optional parameter and omits `w:eastAsia` when absent, which keeps the
+previous behaviour for every caller that does not pass one.
+---
+ .../src/renderer/export/docxExport.ts         | 13 ++++-
+ packages/cli/src/formats/docx.ts              |  7 ++-
+ packages/cli/src/formats/east-asia-font.ts    | 57 +++++++++++++++++++
+ packages/cli/src/formats/markdown.ts          | 11 +++-
+ 4 files changed, 85 insertions(+), 3 deletions(-)
+ create mode 100644 packages/cli/src/formats/east-asia-font.ts
+
+diff --git a/apps/markdown/src/renderer/export/docxExport.ts b/apps/markdown/src/renderer/export/docxExport.ts
+index 0faad24..7ff139a 100644
+--- a/apps/markdown/src/renderer/export/docxExport.ts
++++ b/apps/markdown/src/renderer/export/docxExport.ts
+@@ -345,8 +345,19 @@ export async function exportDocxBytes(
+   doc: JSONContent,
+   loadImage: ImageLoader,
+   renderDiagram?: DiagramRenderer,
++  /**
++   * 【T115】写进 `docDefaults` 的 East Asian 字体（`w:eastAsia`）。
++   *
++   * **由调用方决定，不从 `process.platform` 推** —— 这个模块是纯函数，既不假设自己
++   * 跑在 node 里，也不该替调用方决定「这台机器上有哪个中文字体」。
++   * CLI 侧的 `markdownToDocx` 传 `defaultEastAsiaFont()`（见
++   * `packages/cli/src/formats/east-asia-font.ts`），那是**唯一**的字体选择点。
++   *
++   * 省略 = 不写 `w:eastAsia`，让 Word 按脚本回退（与 T115 之前的行为一致）。
++   */
++  eastAsiaFont?: string,
+ ): Promise<Uint8Array> {
+   const mapping = await mapDocToSaveBlocks(doc, loadImage, renderDiagram)
+-  const parsed = await parseDocx(await buildBlankDocx())
++  const parsed = await parseDocx(await buildBlankDocx(eastAsiaFont === undefined ? undefined : { eastAsiaFont }))
+   return saveDocx(parsed, mapping.blocks, mapping.options)
+ }
+diff --git a/packages/cli/src/formats/docx.ts b/packages/cli/src/formats/docx.ts
+index 907f5ef..aac0f83 100644
+--- a/packages/cli/src/formats/docx.ts
++++ b/packages/cli/src/formats/docx.ts
+@@ -1,5 +1,6 @@
+ import { clipText } from '../preview'
+ import type { Editor } from '@tiptap/core'
++import { defaultEastAsiaFont } from './east-asia-font'
+ import {
+   BLANK_BULLET_NUM_ID,
+   BLANK_ORDERED_NUM_ID,
+@@ -205,7 +206,11 @@ export async function openDocument(bytes: Uint8Array): Promise<OpenDocument> {
+ }
+ 
+ export async function blankDocument(): Promise<OpenDocument> {
+-  return openDocument(await buildBlankDocx())
++  // 【T115】把平台默认的 CJK 字体写进 docDefaults —— 不写的话中文字形来自系统默认、
++  // 西文来自 Calibri，一段里混两种字体（「又烂又丑」的第一条）。理由与平台选择
++  // 见 `./east-asia-font.ts`。
++  const eastAsiaFont = defaultEastAsiaFont()
++  return openDocument(await buildBlankDocx(eastAsiaFont === undefined ? undefined : { eastAsiaFont }))
+ }
+ 
+ export async function saveDocument(doc: OpenDocument): Promise<Uint8Array> {
+diff --git a/packages/cli/src/formats/east-asia-font.ts b/packages/cli/src/formats/east-asia-font.ts
+new file mode 100644
+index 0000000..0201cc0
+--- /dev/null
++++ b/packages/cli/src/formats/east-asia-font.ts
+@@ -0,0 +1,57 @@
++/**
++ * 【T115】新建 docx 时写进 `docDefaults` 的 East Asian 字体。
++ *
++ * ## 为什么必须有这个值
++ *
++ * Word 的 `w:rFonts` 分三个槽：`w:ascii`（西文）、`w:hAnsi`（西文回退）、
++ * `w:eastAsia`（CJK）。**不写 `w:eastAsia` 时**，Word 与我们的渲染器会按脚本
++ * **回退到系统默认的中文字体** —— 后果不是「缺字」，是：
++ *
++ *   - 中文字形来自系统默认（Windows 上通常是宋体），**西文来自 Calibri**；
++ *   - **行高按西文字体的度量算**，中文字符撑破行距；
++ *   - **字重不一致** —— 用户看到的是一段里混了两种字体。
++ *
++ * 这就是「AI 改 Word 又烂又丑」最直接的一条。写一个 `w:eastAsia` 就把它消掉。
++ *
++ * ## 为什么按平台选，而不是钉死一个
++ *
++ * 这三个字体各自只在自己平台上保证存在：
++ *
++ * | 字体 | Windows | macOS | Linux |
++ * |---|---|---|---|
++ * | `Microsoft YaHei` | ✅（系统自带，现代无衬线默认） | ❌ | ❌ |
++ * | `PingFang SC` | ❌ | ✅（系统自带） | ❌ |
++ * | `Noto Sans CJK SC` | 部分 | 部分 | ✅ |
++ *
++ * **写死的后果**：在别的平台打开时字体不存在，Word 回退到系统默认 ——
++ * **那和完全不写 `w:eastAsia` 的结果一样**，还多了一行误导人的声明。
++ *
++ * 所以按**生成这份文件的机器**挑。代价是：**同一个 Mcode 在 Windows 和 macOS 上
++ * 产出的 docx 字节不同**（`w:eastAsia` 的值不一样）。这是有意的取舍 ——
++ * 可复现性让位于「在这台机器上打开是好看的」。跨平台比对产物字节的断言不存在，
++ * 也不应该有（T115 查过：全仓只有「同一文件改前改后」的哈希对比）。
++ *
++ * ⚠️ **`Microsoft YaHei` 不是宋体。** 雅黑是 Windows 上的现代无衬线默认；宋体
++ * （SimSun）是旧式衬线，在屏幕上的观感正是用户抱怨的那种。
++ */
++import { platform } from 'node:os'
++
++/**
++ * 当前平台应当写进 `docDefaults` 的 East Asian 字体。
++ *
++ * 返回 `undefined` 表示这个平台没有我们能担保存在的 CJK 字体 —— **宁可什么都不写**
++ * （让 Word 按脚本回退），也不要写一个大概率不存在的名字。
++ */
++export function defaultEastAsiaFont(): string | undefined {
++  switch (platform()) {
++    case 'win32':
++      return 'Microsoft YaHei'
++    case 'darwin':
++      return 'PingFang SC'
++    case 'linux':
++      return 'Noto Sans CJK SC'
++    default:
++      // FreeBSD / Android 等：没有可担保的字体，交给渲染器回退。
++      return undefined
++  }
++}
+diff --git a/packages/cli/src/formats/markdown.ts b/packages/cli/src/formats/markdown.ts
+index f86b073..fb11eb8 100644
+--- a/packages/cli/src/formats/markdown.ts
++++ b/packages/cli/src/formats/markdown.ts
+@@ -3,6 +3,7 @@ import { dirname, isAbsolute, resolve } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ import { ensureDom } from '../dom'
+ import { assertAllowed, type PathContext } from '../fs'
++import { defaultEastAsiaFont } from './east-asia-font'
+ import { imageSize } from './image-size'
+ 
+ /**
+@@ -59,8 +60,16 @@ export async function markdownToDocx(
+   markdown: string,
+   images?: MarkdownImageSource,
+ ): Promise<Uint8Array> {
++  // 【T115】字体由**这里**决定 —— 渲染端的 `exportDocxBytes` 是纯函数，不该替调用方
++  // 猜「这台机器上有什么中文字体」。理由与平台选择见 `./east-asia-font.ts`。
++  const eastAsiaFont = defaultEastAsiaFont()
+   return withMarkdownEditor(markdown, (editor, mods) =>
+-    mods.docxExport.exportDocxBytes(editor.getJSON(), async (src) => loadLocalImage(src, images)),
++    mods.docxExport.exportDocxBytes(
++      editor.getJSON(),
++      async (src) => loadLocalImage(src, images),
++      undefined,
++      eastAsiaFont,
++    ),
+   )
+ }
+ 
+-- 
+2.52.0.windows.1
+

@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "05da63cdf6fcbec44176b07d10cb5b5f75f5f1cf",
-  "expectedTree": "9e9982b11d5123e4e33e7906bc4368483eb7dc7c",
+  "revision": "3cb99ab13e1e42989889e15cc338bd6f6c6fff5c",
+  "expectedTree": "5ba6f37bed435a389f8b7af51c70291f6c5bebba",
   "patchSeries": [
     {
       "index": 1,
@@ -139,6 +139,15 @@
       "sha256": "f2bc783ef20173e861f67e136bee00ee588e86cebc75a07701778d0d6a1a39af",
       "bytes": 11355,
       "subject": "feat(docs): reshell the chrome in Mcode's design tokens"
+    },
+    {
+      "index": 15,
+      "file": "patches/genoffice/0015-feat-docs-write-eastAsia-so-new-docx-keeps-CJK-typo.patch",
+      "revision": "3cb99ab13e1e42989889e15cc338bd6f6c6fff5c",
+      "parentRevision": "05da63cdf6fcbec44176b07d10cb5b5f75f5f1cf",
+      "sha256": "7a529e41be46b1b26c9d98d34a0bc9e536971131406be7a8619f34b6e859a595",
+      "bytes": 8762,
+      "subject": "feat(docs): write w:eastAsia so new docx files keep CJK typography"
     }
   ],
   "license": "Apache-2.0",
