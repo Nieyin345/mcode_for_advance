@@ -311,3 +311,65 @@ node scripts/run-smokes.mjs <套件> > /tmp/o 2>&1; echo "EXIT=$?"; grep -c "isO
 ```
 
 **> 0 → O5 在途，别查别做回滚对照。**
+
+---
+
+## ⚠️ 总控第三次补充（2026-10-25 00:05）：一条硬约束 + 更稳的判别命令
+
+### 一、硬约束：**判据自检通过 ≠ 套件已修复**
+
+Office 总控明确提了这一条，我原样采纳：
+
+> **它改完之后没真跑，就不能宣称「套件绿了」。**
+> **只能是「判据本身自检通过，真跑待批三」。**
+
+**所以你的回写措辞必须区分这三档：**
+
+| 你做到了什么 | 允许写的 | **不许写** |
+|---|---|---|
+| 判据写好了 + 用构造输入自检通过 + 没真跑 | 「判据自检通过，真跑待 O5 批三」 | ❌「已修复」 |
+| 真跑了且绿 | 「已修复，N/N 绿」 | — |
+| 真跑红了且红因是 O5 | 「真跑撞 O5，见判别命令」 | ❌「已修复」 |
+
+**这条和仓库那条「执行完成 ≠ 验收通过」是同一件事**，但更具体：
+**判据可以自检，但「套件在真跑时会不会绿」必须真跑才知道。**
+
+### 二、更稳的判别命令（我实测过，比 `grep onlyoffice` 可靠）
+
+**我核了 Office 总控那份 38 条归因，逐文件完全对上。**
+**但 `grep -c "onlyoffice"` 只能命中 36 条 —— 有 2 条漏判。**
+
+那 2 条是：
+
+```
+src/renderer/lib/webApi.ts(852,10): error TS7006: Parameter 'input' implicitly has an 'any' type.
+src/renderer/lib/webApi.ts(855,11): error TS7006: Parameter 'input' implicitly has an 'any' type.
+```
+
+**报错文本里没有 `onlyoffice`，但它们是 OnlyOffice 造成的**：
+`const onlyoffice: Api["onlyoffice"] = { open: (input) => ... }` ——
+`Api["onlyoffice"]` 类型已不存在，整个对象字面量退化成 `any` 上下文，
+`input` 参数推断不出来。**这是「上一条错误的二次效应」。**
+
+**所以用这个版本：**
+
+```bash
+cd apps/desktop
+npx tsc --noEmit -p tsconfig.json > /tmp/tsc.txt 2>&1; echo "EXIT=$?"
+echo "main/preload: $(grep -cE '^src/(main|preload)/' /tmp/tsc.txt)"
+echo "renderer:     $(grep -cE '^src/renderer/' /tmp/tsc.txt)"
+echo "含 onlyoffice: $(grep -icE 'onlyoffice' /tmp/tsc.txt)"
+```
+
+**判读：**
+
+| 时点 | `main/preload` | `renderer` | 含义 |
+|---|---|---|---|
+| 现在（批三未完） | 0 | **38** | O5 在途 |
+| 批三完成后 | 0 | **0** | 全清了 |
+| 批三后 `renderer` 仍 > 0 | — | > 0 | **要看它是什么**，不管含不含 `onlyoffice` |
+
+**`renderer` 的错误数比 `grep onlyoffice` 可靠，因为它不依赖报错文本措辞。**
+
+> **这是「判据 vs 清单」的又一个实例**：「`grep onlyoffice`」依赖措辞（清单式），
+> 「`renderer` 的错误数」不依赖措辞（判据式）。
