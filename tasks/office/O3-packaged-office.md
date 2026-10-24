@@ -88,7 +88,13 @@
 ## 六、变异要求
 
 1. **删掉某个 `resources/genoffice/apps/<k>/out/renderer/index.html`** → 该格式打开必须失败；
-2. **把 `availability.json` 的 `editorsBundled` 改成 false** → 第 2/3 条必须红；
+2. **把 `availability.json` 的 `bundled` 改成 false** → 第 2/3 条必须红；
+
+   ~~原写的是 `editorsBundled` —— **那个前提是错的**（我写卡时没核实消费方）。
+   O3 实测：`grep -rn editorsBundled apps/desktop/src packages/contracts/src` **零命中**，
+   它只被构建期脚本（`stage-genoffice-resources.cjs` / `verify-genoffice-editors-after-pack.cjs`
+   / `release-readiness-smoke`）读，**运行时没有任何消费方**。所以改它不会让任何断言红。
+   真正被 `genofficeCli.ts:113` 读的是 `bundled`。~~
 3. 恢复后 `cmp` 逐字节核对。
 
 ## 七、结果回写区
