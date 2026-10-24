@@ -302,4 +302,6 @@ window.showInputBox(72)     + Selection(91) + TextEditor.edit
 
 ### 10. 提交 SHA
 
-见本卡最后一行（`docs(F019)` 提交）。
+`512964ce` —— `feat(F019): census of the vscode.* API surface real extensions actually use`
+
+5 个文件：`apps/desktop/scripts/vscode-api-census/{main.mjs,run.sh,result.json}`、`docs/planning/vscode-api-census.md`、本卡。
