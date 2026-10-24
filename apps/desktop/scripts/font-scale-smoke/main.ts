@@ -102,31 +102,69 @@ console.log("font-scale-smoke: 同一语义位置的计算后字号必须同档\
 // 一、★ 主区域：聊天气泡里的「元信息」（时间戳 / 回合统计）
 //     这两处都在「一条消息下面那行灰字」这个语义位置上。
 // ═══════════════════════════════════════════════════════════════
-console.log("── 一、聊天元信息（时间戳 / 回合统计）──");
+console.log("── 一、聊天元信息：文字同档，徽标低一档 ──");
 {
-  // TurnStatRow：MessageRow.tsx 里的回合统计行，用 [font-size:var(--chat-fs-xs)]
+  // 【T136】**这条断言原来把两种东西混在一个语义类里。**
+  //
+  // 它比较的是「回合统计行」和「本轮文件卡片的时间戳」，并要求两者同字号。
+  // 但 `TurnFilesCard` 里那三处不是同一类：
+  //   :195  汇总 +N/−N —— 带 `bg-surface-muted` + `rounded-md` + padding，是**徽标**
+  //   :386  文件路径     —— 裸 `<span>`，纯文字
+  //   :390  单文件增删   —— 裸 `<span>`，纯文字
+  //
+  // 所以「四种字号」这个说法是错的；真实情况是「两种东西被当成一种」。
+  // 现在分开断言：
+  //   ①③④ 文字 → `text-footnote`（12px），必须同档
+  //   ②   徽标 → `text-caption`（11px），**必须比文字低一档**（靠底色 + 字号双层区分）
   const rowSrc = read("chat/MessageRow.tsx");
-  const rowToken = rowSrc.match(/\[font-size:var\(--([\w-]+)\)\]/)?.[1];
-  const rowPx = rowToken ? tokenPx(rowToken) : null;
+  const filesSrc = read("chat/TurnFilesCard.tsx");
 
-  // TurnFilesCard：时间戳硬写 text-[10px]
-  const cardSrc = read("chat/TurnFilesCard.tsx");
-  const cardTokens = [...cardSrc.matchAll(/font-mono (text-\[\d+px\])/g)].map((m) => m[1]);
-  const cardPx = [...new Set(cardTokens.map((t) => sizeToPx(t)))].filter((v): v is number => v !== null);
+  /** 从一个 span 的 className 里取 `text-<tier>` 或 `text-[Npx]`。 */
+  const tierOf = (src: string, anchor: RegExp): string | null => {
+    const line = src.split("\n").find((l) => anchor.test(l));
+    if (!line) return null;
+    return line.match(/text-(footnote|caption|code|body|prose|heading|title)\b/)?.[1]
+      ?? line.match(/text-\[([\d.]+px)\]/)?.[1]
+      ?? null;
+  };
+  const TIER_PX: Record<string, number> = {
+    caption: 11, footnote: 12, code: 12, body: 14, prose: 15, heading: 16, title: 20,
+  };
+  const pxOf = (t: string | null): number | null =>
+    t === null ? null : (TIER_PX[t] ?? (t.endsWith("px") ? Number(t.replace("px", "")) : null));
 
-  info(`回合统计行: --${rowToken} = ${rowPx}px`);
-  info(`本轮文件卡片时间戳: ${cardTokens.join(", ")} = ${cardPx.join(", ")}px`);
+  const rowTier = tierOf(rowSrc, /rounded-lg px-\[7px\] py-1 text-content-subtle/);
+  const badgeTier = tierOf(filesSrc, /rounded-md bg-surface-muted px-1\.5 py-0\.5/);
+  const pathTier = tierOf(filesSrc, /truncate font-mono text-(?:footnote|caption|\[)[^"]*text-content/);
+  const tallyTier = tierOf(filesSrc, /flex shrink-0 items-center gap-1 font-mono text-/);
+
+  const rowPx = pxOf(rowTier);
+  const badgePx = pxOf(badgeTier);
+  const pathPx = pxOf(pathTier);
+  const tallyPx = pxOf(tallyTier);
+
+  info(`回合统计行(文字): ${rowTier} = ${rowPx}px`);
+  info(`文件路径(文字):   ${pathTier} = ${pathPx}px`);
+  info(`单文件增删(文字): ${tallyTier} = ${tallyPx}px`);
+  info(`汇总徽标(badge):  ${badgeTier} = ${badgePx}px`);
 
   check(
-    "★ 两处的字号解析出来了（不是 null —— 否则下面的比较是假的）",
-    rowPx !== null && cardPx.length > 0,
-    { rowPx, cardPx },
+    "★ 四个位置的字号都解析出来了（否则下面的比较是假的）",
+    rowPx !== null && badgePx !== null && pathPx !== null && tallyPx !== null,
+    { rowPx, badgePx, pathPx, tallyPx },
   );
 
   check(
-    "★ 聊天元信息在同一语义位置用同一字号",
-    rowPx !== null && cardPx.length === 1 && Math.abs(rowPx - cardPx[0]) < 0.01,
-    { 回合统计行: rowPx, 本轮文件卡片: cardPx },
+    "★ 聊天元信息**文字**用同一档（回合统计 / 文件路径 / 单文件增删）",
+    rowPx !== null && pathPx !== null && tallyPx !== null
+      && rowPx === pathPx && pathPx === tallyPx,
+    { 回合统计行: rowPx, 文件路径: pathPx, 单文件增删: tallyPx },
+  );
+
+  check(
+    "★ 汇总徽标比元信息文字**低一档**（靠底色 + 字号双层区分，不是同档）",
+    badgePx !== null && rowPx !== null && badgePx < rowPx,
+    { 徽标: badgePx, 文字: rowPx },
   );
 }
 

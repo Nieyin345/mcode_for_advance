@@ -98,7 +98,7 @@ export function TurnStatRow({
   const live = meta.endedAt === undefined;
 
   return (
-    <div className="-ml-[7px] flex min-w-0 items-center gap-1.5 rounded-lg px-[7px] py-1 text-content-subtle [font-size:var(--chat-fs-xs)]">
+    <div className="-ml-[7px] flex min-w-0 items-center gap-1.5 rounded-lg px-[7px] py-1 text-content-subtle text-footnote">
       {/* Which model is running THIS turn — avatar + name on the left, matching
           TurnPanel's header. Absent for turns with no recorded model. */}
       <ModelBadge model={meta.model} />
