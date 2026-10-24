@@ -272,3 +272,97 @@ const PPTX_RE = /\.(pptx|odp|otp)$/i      // 无 pptm/potx
 ## 九、结果回写区
 
 （执行会话按批次追加：每批的红绿、选 A 还是 B 及理由、五种格式的实测结果、变异记录、提交 SHA）
+
+### 批一（契约层）回写 —— 2026-10-24，提交 `bd7c8cd5`
+
+**范围**：只动 `packages/contracts/src/**` + 两个其主体就是契约的套件；batch 二/三 的
+`apps/desktop/src/main/**`、`preload/**`、`renderer/**` 一行未改。
+
+**§三 的选择：A（保留 `"office"`，改语义并写注释）**。理由（写在 `documentKind.ts` 顶部）：
+
+- `DocumentKind` 回答「这是什么**种类**的文档」，不回答「用哪个引擎打开」。引擎选择在
+  `genofficeFileRoute.ts` 的 `genofficeAppForPath`（`GenofficeApp` 轴）与
+  `isGenofficeViewAvailableFor`（能力轴）。改名为 `"genoffice"` 会把引擎名烧进种类轴。
+- `"office"` 一词从未指 OnlyOffice；`ONLYOFFICE_EDITABLE` 只是**当时**那张表的来源。
+- 集合**保持原样，没有收窄到 GenOffice 路由集合**：收窄会让 `docm/dotx/xltx/pptm/potx`
+  掉进 `text`（用文本编辑器打开二进制）。「是 Office 格式」与「GenOffice 能否打开」是
+  两件事 —— 前者归本文件，后者归路由 + 能力位；打不开时上层必须明确报不支持。
+  **负控**：`document-router-smoke §3` 现在钉住 12+6 个扩展名与
+  「清单外不落 office 两档」，收窄或私加一个都会红。
+
+**删掉的契约面（逐项）**：
+
+1. `packages/contracts/src/ipc/onlyoffice.ts` 整文件（244 行）：`OnlyOfficeConfigSchema` /
+   `DEFAULT_ONLYOFFICE_CONFIG` / `parseOnlyOfficeConfig` / `ONLYOFFICE_CONFIG_SETTING_KEY` /
+   `ONLYOFFICE_EDITABLE` / `ONLYOFFICE_VIEW_ONLY` / 三个 `isOnlyOffice*Path` /
+   `OnlyOfficeOpenSchema|Result` / `OnlyOfficeSession(State)` / `OnlyOfficeStatusResult` /
+   `OnlyOfficeSetConfigSchema` / `OnlyOfficeLocalDetectResult` / `OnlyOfficeInstallPhase|Progress`。
+2. `ipc.ts` 的 `export * from "./ipc/onlyoffice.js"`。
+3. `rpcMap.ts`：`onlyoffice.open|forceSave|sessionState|close|status|getConfig|setConfig|detectLocal`
+   八条 RpcMap 方法（含 JSDoc）+ 八条 `ONLYOFFICE_*` 通道常量。
+4. `runtimes.ts`：`TOOLCHAIN_TOOL_IDS` 去掉 `"onlyoffice"`（工具链里的编辑器后端）。
+5. `genofficeFileRoute.ts`：文件头把「OnlyOffice capability check」改成「editor-capability check」。
+
+**生成链（三步都跑了，产物非手改）**：
+
+```
+rpcMap.ts 删 8 条后：
+  node scripts/gen-app-api-catalog.mjs        → wrote 451 entries（459 − 8）
+  node --experimental-strip-types scripts/gen-module-permission-map.mjs
+                                              → 451 RPC methods, 79 blocked
+```
+
+**收尾判据（§五之零 的两条 grep，实测 0/0）**，并按卡要求做了「重置生成物→重生成」对照：
+
+```
+git checkout HEAD -- <两个生成物> && 重跑两步生成
+  → 输出与提交内容逐字节一致（cmp 通过）
+  → 证明不是手改产物
+grep -c onlyoffice apiCatalog.generated.ts → 0
+grep -c onlyoffice appPermission.ts        → 0
+```
+
+`appPermission.ts` 的 diff 里另有 `modules.installVsix` / `task.*` 的重排 —— 那是**开工前
+就在工作区的生成输出**（对应已提交的 rpcMap 变化），重生成确认一致后一并提交。**不是手写。**
+
+**因契约删除必须跟着改的套件（两个，都是「主体就是契约」）**：
+
+- `document-router-smoke`：§3「两表对账」的第二张表已不存在 → 改为「documentKind 集合 =
+  期望清单」（12 可编辑 + 6 只读 + 清单外不落两档）。
+- `settings-export-secrets-smoke`：`onlyoffice.config` 不再从
+  `ONLYOFFICE_CONFIG_SETTING_KEY` 取（常量已删），改由 `SECRET_SETTING_KEYS` 覆盖该键；
+  覆盖没有降低（见该文件注释）。
+
+**验证**：
+
+```
+npx tsc --noEmit -p packages/contracts/tsconfig.json   exit=0
+pnpm test:smoke document-router-smoke                  PASS（103/103）
+pnpm test:smoke file-routing-contract-smoke            PASS
+pnpm test:smoke genoffice-file-routing-smoke           PASS
+pnpm test:smoke app-control-smoke                      PASS（rpcMap 漂移检测用集合比较，删8条不影响）
+pnpm test:smoke capability-smoke                       PASS
+pnpm test:smoke settings-export-secrets-smoke          PASS
+pnpm test:smoke t150-smokes-for-contracts-smoke        PASS
+```
+
+**`apps/desktop` tsc 现在是红的 —— 这是分层切割的预期形态，不是破损**：全部错误落在
+批二/批三 文件里（`main/onlyoffice/**`、`main/ipc/onlyoffice.ts`、`main/env/**`、
+`preload/index.ts`、`renderer` 的 OnlyOffice 面板、以及驱动它们的套件如
+`installers-ipc-smoke` / `updater-tools-smoke` / `markdown-mode-smoke` / `t101-*`）。
+
+**未做 / 留给后续批次判断的**：
+
+- `documentKind.ts` 里 `OFFICE_EDITABLE` 集合**未收窄**（理由见上）。是否收窄到 GenOffice
+  路由集合属于批二的能力路由问题，且 §六 要求先做五格式实测 —— 批一不做。
+- `t101-office-genoffice-fallback-smoke` 的前提（「OnlyOffice 未配置时的第二条路」）随
+  OnlyOffice 删除整体作废；它 import 了已删的 `isOnlyOfficeSupportedPath` —— 批三重写
+  `fileEditorKinds.ts` / `FileEditor.tsx` 时一并处置（要么改造为 GenOffice-only 判据，
+  要么删除并说明）。
+- `markdown-mode-smoke` 读 `packages/contracts/src/ipc/onlyoffice.ts` 的 AST 段（为在 vm 沙箱
+  执行真判据）现在 ENOENT。它断言的是「office 文件落在 OnlyOfficeEditorPane」—— 批三改
+  `FileEditor.tsx` 时一并重写（届时这条判据本身要被 GenOffice 取代）。
+- `app-control-smoke` 里「onlyoffice 域」的几条（凭据族 / MC-066）仍引用 `policy.ts` 的
+  onlyoffice 档位，批二删 `policy.ts` 条目时一并处理。
+- 工作区里 `packages/contracts/src/conditionBridge.ts`（未跟踪）是**工作流线**的新文件，
+  与本卡无关，**未动**。
