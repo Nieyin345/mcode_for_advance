@@ -342,7 +342,7 @@ export function RightPanel() {
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {Array.from(visitedDocs).map(path => {
           const selected = pinnedDoc === path && !settingsOpen;
-          return <div key={path} className="h-full min-h-0 overflow-hidden rounded-md border border-edge-panel bg-surface"
+          return <div key={path} className="h-full min-h-0 overflow-hidden rounded-[var(--radius-panel)] border border-edge-panel bg-surface"
             data-pane-document={path} style={{ display: selected ? "block" : "none" }}
             inert={!selected} aria-hidden={!selected}>
             <div className="h-full min-h-0" onMouseDown={() => {
@@ -354,7 +354,7 @@ export function RightPanel() {
         })}
         {Array.from(visitedFlows).map(engineId => {
           const selected = pinnedFlow === engineId && !settingsOpen;
-          return <div key={engineId} className="h-full min-h-0 overflow-hidden rounded-md border border-edge-panel bg-surface"
+          return <div key={engineId} className="h-full min-h-0 overflow-hidden rounded-[var(--radius-panel)] border border-edge-panel bg-surface"
             data-pane-flow={engineId} style={{ display: selected ? "block" : "none" }}
             inert={!selected} aria-hidden={!selected}>
             <EngineRuntimePanel engineId={engineId} editorOnly active={selected} />
