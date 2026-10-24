@@ -779,3 +779,26 @@ await pipeline(source, createWriteStream(filePath))   // 直接写目标，无�
 **记进仓库**：需要 `capturePage` 的套件应当
 （a）先检查副屏是否存在并如实 skip，或（b）用 offscreen 渲染而不是 `capturePage`。
 **不要用「把窗口挪回主屏」解决** —— 那违反用户明确的要求。
+
+#### 补记（总控核账后）：`slides:save` 的用户可见文案带类名前缀
+
+`slides-main.ts` 的保存 catch 是 vendor 原有写法 `return { ok: false, error: String(err) }`
+（`HEAD^` 里就在，不是本次引入），而页面的 `appStatusSaveFailed: '保存失败：{error}'`
+把它原样拼进状态栏与错误 toast。
+
+所以用户实际看到的是：
+
+```
+保存失败：DocumentSaveConflictError: 文档已被别处改动（另一个窗口、Agent 或外部编辑器）…请重新打开后再改。
+```
+
+**我的守卫是第一个会从这条 catch 抛出的对象**，于是「`name` 会进用户文案」这件事
+在本次之前没有机会显形。三个属性里 `String(err)` 取 `name: message`，
+而我在 `documentSaveGuard.ts` 里把 `this.name` 设成了类名。
+
+- **不影响 4c**（提示确实可见，判据绿）；
+- **但用户文案多一个内部类名**，与 pdf/markdown/html 三家（`err.message`）不一致。
+
+**不改的原因**：改 `String(err)` → `err.message` 会动 vendor 的 catch，
+而它同时兜住 vendor 自己的全部保存错误（不止守卫抛的）；本卡的范围是接缝，不是文案。
+**记在这里，另开卡处理**（与 `slides:save-as` 同一张卡即可，两者都在 `slides-main.ts` 的保存路径上）。
