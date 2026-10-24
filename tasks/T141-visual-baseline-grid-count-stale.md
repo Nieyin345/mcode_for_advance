@@ -129,3 +129,26 @@ if (manifest.length !== 39) throw ...
 
 **⚠️ 第 4 条是硬要求**：正确做法是 `grep -rn "\b39\b" ...` 后**逐处列表**，
 **不是**「我改了两处，应该没了」。写卡人自己第一次也只数到 2 处，漏了 `build.mjs:217` 和 `probe.ts:309`。
+
+
+---
+
+## 十、T138 执行时的补充实测（2026-10-24 20:49）
+
+**实测 `result.json`：**
+
+```json
+{ "exitCode": 0, "signal": null, "checks": 51, "failed": [], "complete": false }
+```
+
+**`failed: []` —— 51 个场景全部抓取成功，一个都没失败。** `complete: false` 完全来自 `build.mjs:210` 的 `checks.length === 39`。
+
+**对本卡修法的意义（这条很重要）：**
+
+`build.mjs:210` 的 `complete` 判失败发生在 **`compare.mjs` 被调用之前**（`run.sh` 第 4 行 `set -e` + 第 8 行 `if node compare.mjs`，而 build 先跑）。所以：
+
+- **现状是 `compare.mjs` 从来没被 `run.sh` 调用过** —— 不只是「它抛错」，是**它根本没执行到**。
+- 因此本卡修完 `build.mjs` 之后，`compare.mjs:91` 的 `39` 才会第一次真正成为阻碍。
+- **两处必须一起改，只改 `compare.mjs` 不会有任何可见变化** —— `run.sh` 仍然会停在 `build.mjs` 的 exit 1。
+
+**验证方式（执行时照做）**：改完 `build.mjs` 后先只改它，重跑 `run.sh`，应当看到错误从「`ARC005 VISUAL E2E FAILED: checks=51 failed=0`」变成「`39 grid cells required; got 51`」——**错误信息变了，就证明前一扇门开了**。
