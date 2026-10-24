@@ -55,7 +55,7 @@
  * | 引用不在上游 / 图上没有 / 标题歧义 → 失败 | 同（Host 拼的 `upstream` 就是旧的那套 id+标题词表） |
  * | 值缺失 / `null` → `exists=false`，其余谓词 false | 同（`conditionValue` 原样） |
  * | 上游结局 `unselected` → 非 status 字段取不到 | 同（Host 用执行记录；**没有记录的上游按 `unselected`**，不猜） |
- * | `{{trigger.*}}` | **未接**：native 触发节点的载荷 Host 看不到；引用它 → 显式失败 |
+ * | `{{trigger.*}}` | Host 事件触发凭据支持 kind/event/条目事实；自定义 UI 的 input.* 与原生 inject/watch 仍无数据源 → 显式失败 |
  * | 产出变量（`{{A.某变量}}` / `outputs.*`） | **未接**：native 执行记录不保留结构化产出变量；引用它 → 显式失败 |
  * | 原生节点（`function` / `exec` / `inject` …）的产出 | **Host 看不见**（只有标识符离开子进程）；引用它 → 显式失败 |
  * | 「恰好 true/false 两条出边」 | 旧校验仍在保存/迁移预检；native 侧由 switch 的两个端口表达 |
@@ -115,6 +115,10 @@ export const CONDITION_SWITCH_CHECKALL = "false" as const;
  * 不可迁移（预检 REJECT）。
  */
 export const CONDITION_EVAL_BRIDGE_KEY = "bridgesNodeId" as const;
+
+/** Small, non-authorizing subset of trigger fields recovered from a Host event
+ * ticket. Native inject/watch and custom UI input.* remain unsupported. */
+export const CONDITION_HOST_TRIGGER_FIELDS = ["kind", "event", "itemId", "itemTitle", "pdfPath", "filePath"] as const;
 
 /**
  * 这条 native 节点是不是「条件求值适配节点」，是的话它替哪个 Mcode 节点求值。

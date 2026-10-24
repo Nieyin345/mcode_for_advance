@@ -465,3 +465,17 @@ eval node.x-mcode.bridgesNodeId = "c1"  ← 记录它替代的是哪个旧节点
 它说把全部改动 stash 后单跑同一旅程、**同一 detail 复现**。我自己跑全量包装器时看到的
 是 locale 崩溃（W17 引入，已修）；修完后红在 `baseline-deploy`（页面端口 ≠ 引擎端口）——
 **那正是 W23 要修的**。两件事分开，都对。
+
+## 2026-10-25 后续发现与修复：条件桥接实际上没有传给真 Switch
+
+- **根因**：旧 runConditionEvalNode 把结果写在 msg.mcode["mcode.condition"]，而真实 Node-RED switch 按 msg.mcode.condition 的嵌套路径读取。这两种形状不同，导致 true 也会走 else。老套件分别测适配节点和真 Switch，但 Switch 测的是人工构造的消息，未把两者直接串起来。
+- **修复**：生产代码写入 msg.mcode.condition；原 mcode-condition-bridge-smoke 用真实 runConditionEvalNode 的消息驱动真上游 10-switch.js，true→口0，false→口1，且拒绝带点号的错误字面量键。
+- **反向变异**：恢复旧的点号键，原 W17 smoke 降至 44/47，真 Switch 观察 true 错走 else；事件上下文 smoke 降至 8/10。已恢复正确代码。
+- **进一步拓展**：在 conditionHostPorts 既有 Host 包装层对已核对归属的 Node-RED tab 签发五分钟有效的临时事件凭据，最多保存 256 条，关闭订阅立即撤销。只允许已归属同一 workflow 的条件节点凭 ticket 获得 Host 提供的 kind/event/条目事实，不允许从普通可修改的 msg.payload 自报触发事实。
+- **安全回归**：跨工作流 ticket、伪造 ticket/消息、已撤销 ticket、过期 ticket、trigger.input.doi（根本没有 UI 输入来源）都不能被当作 Host 可信事实。移除 docId 核对变异使新增套件降到 9/10；已恢复。
+- **注意**：此修复支持来自真实 Host HookEvent 的条件事实，不等于自定义 UI 的运行前 input.* 已打通。未经真正批准的持久工作流不会因此自启。实际 Electron U1 未验。
+
+### 最终定向证据（补强版本）
+- 八套回归 8 PASS / 0 FAIL：apps/desktop/.tmp/smoke-runs/1792875951115-32524-hlgiRO/。
+- Desktop 与 Contracts 的 TypeScript --noEmit 均 EXIT=0。新 Host 事件套件另验证工具事件即使带伪 itemId，也不会提升为文献条目事实；ticket 超时与撤销继续拒绝。
+- 明确未验：Electron 实机 UI 完整部署、旧自定义 UI 运行前 input 向 Node-RED 注入、未经审批工作流的持久自动恢复。

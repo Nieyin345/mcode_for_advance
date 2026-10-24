@@ -61,6 +61,8 @@
  */
 import {
   edgeOptionNameOf,
+  buildForwardAdjacency,
+  upstreamClosure,
   unknownWorkflowFieldPaths,
   workflowNodeRefName,
   type WorkflowDoc,
@@ -76,6 +78,7 @@ import { MODULE_CAPABILITY_RUNNER_KIND } from "@contracts/moduleCapability";
 import {
   CONDITION_EVAL_BRIDGE_KEY,
   MCODE_CONDITION_EVAL_NODE_TYPE,
+  CONDITION_HOST_TRIGGER_FIELDS,
   conditionEvalTargetOf,
   conditionSwitchShape,
 } from "@contracts/conditionBridge";
@@ -918,13 +921,24 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
       // Report this as an execution blocker in the confirmation dialog, not
       // as a generic "some metadata stays in x-mcode" representation caveat.
       const expression = parseConditionExpression(node.params["expression"]);
-      if (expression.ok && expression.expression.rules.some(rule =>
-        typeof rule.ref === "string" && rule.ref.startsWith("{{trigger."))) {
+      const upstream = upstreamClosure(buildForwardAdjacency(doc.nodes, doc.edges).deps, node.id);
+      const hasHostEvent = doc.nodes.some(candidate =>
+        upstream.has(candidate.id) && candidate.type === "mcode.trigger"
+        && candidate.params["triggerKind"] === "event");
+      const supported = new Set<string>(CONDITION_HOST_TRIGGER_FIELDS);
+      const unsupportedTrigger = expression.ok ? expression.expression.rules.find(rule => {
+        if (typeof rule.ref !== "string" || !rule.ref.startsWith("{{trigger.")) return false;
+        const key = rule.ref.endsWith("}}") ? rule.ref.slice("{{trigger.".length, -2) : "";
+        return !(hasHostEvent && supported.has(key));
+      }) : undefined;
+      if (unsupportedTrigger !== undefined) {
         lossy.push({
           code: "lossy",
           nodeId: node.id,
-          message: "【迁移后不能执行】此条件引用 {{trigger.*}}（如 {{trigger.input.doi}}）：旧值来自自定义 UI 的运行前输入，Node-RED 的 mcode-trigger 事件只带事件名、会话 ID 与时间，没有 input 数据。"
-            + "即使确认装载并成功 Deploy，这个条件仍会显式失败且不会走下游。必须先改写条件及真实输入数据来源，不可直接启用。",
+          message: "【迁移后不能执行】此条件引用 " + unsupportedTrigger.ref
+            + "：只有经 Mcode Host 事件订阅产生的触发凭据，才能提供 kind/event/itemId/itemTitle/pdfPath/filePath。"
+            + "自定义 UI 的运行前 input.*、原生 inject/watch 不会自动获得这些数据；不能靠普通 msg.payload 冒充。"
+            + "即使确认装载并 Deploy，该引用仍会显式失败。必须先改写条件及输入来源，不可直接启用。",
         });
       }
       lossy.push({
@@ -933,8 +947,9 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
         message:
           "condition 迁为原生 switch + mcode-condition-eval 求值节点：switch 读 "
           + "`msg.mcode.condition` 分真/假两路，求值由 Host 用旧的表达式求值器完成。"
-          + "边界：{{trigger.*}}、结构化产出变量与原生节点结局在 Node-RED 侧没有数据源，"
-          + "引用它们会让条件节点**显式失败**（而不是安静地走 false）。",
+          + "边界：只有经 Host 事件订阅产生的触发凭据能恢复 trigger.kind/event/条目字段；"
+          + "自定义 UI input.*、原生 inject/watch、结构化产出变量及原生节点结局仍无数据源，"
+          + "引用它们会显式失败（而不是安静地走 false）。",
       });
     }
     if ((kind === "code" || kind === "command")

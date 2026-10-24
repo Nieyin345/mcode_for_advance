@@ -299,15 +299,20 @@ async function runEvalNode(
   }
 }
 
+let evaluatedTrueMessage: Record<string, unknown> | null = null;
+let evaluatedFalseMessage: Record<string, unknown> | null = null;
 {
   const upstream = { payload: "上游文本", mcode: { runId: "r1", results: [{ nodeId: "a", summary: "ok: done", status: "success" }] } };
   const hit = await runEvalNode(true, structuredClone(upstream));
-  check("★ 适配节点把 true 写进 msg.mcode.condition", "msg" in hit
-    && (hit.msg["mcode"] as Record<string, unknown>)[CONDITION_SWITCH_PROPERTY] === true, hit);
+  if ("msg" in hit) evaluatedTrueMessage = hit.msg;
+  check("★ 适配节点把 true 写进真实嵌套路径 msg.mcode.condition", "msg" in hit
+    && (hit.msg["mcode"] as Record<string, unknown>)["condition"] === true
+    && !Object.hasOwn(hit.msg["mcode"] as object, CONDITION_SWITCH_PROPERTY), hit);
   check("★ 适配节点保留上游 payload（不改消息内容，只加字段）", "msg" in hit && hit.msg["payload"] === "上游文本");
   const miss = await runEvalNode(false, structuredClone(upstream));
-  check("★ 适配节点把 false 写进 msg.mcode.condition", "msg" in miss
-    && (miss.msg["mcode"] as Record<string, unknown>)[CONDITION_SWITCH_PROPERTY] === false, miss);
+  if ("msg" in miss) evaluatedFalseMessage = miss.msg;
+  check("★ 适配节点把 false 写进真实嵌套路径 msg.mcode.condition", "msg" in miss
+    && (miss.msg["mcode"] as Record<string, unknown>)["condition"] === false, miss);
 
   // results 以**原条件节点的 Mcode id**（bridgesNodeId）记，不是适配节点自己的 id。
   if ("msg" in hit) {
@@ -427,10 +432,13 @@ const switchConfig = (rules: unknown[], checkall: string): Record<string, unknow
 
 {
   const rules = conditionSwitchShape().rules;
-  const hitRun = await realSwitch.make(switchConfig(rules, "false")).run({ payload: "x", mcode: { condition: true } });
+  // Feed the REAL result of runConditionEvalNode into the REAL Node-RED switch.
+  // Before this regression test existed, each half independently passed while
+  // the producer wrote msg.mcode["mcode.condition"] and switch read nested .condition.
+  const hitRun = await realSwitch.make(switchConfig(rules, "false")).run(evaluatedTrueMessage ?? {});
   check("★ 真 switch + 求值结果 true → 只走 true 口（口 0）",
     JSON.stringify(portsOf(hitRun)) === JSON.stringify(["MSG", "."]), hitRun);
-  const missRun = await realSwitch.make(switchConfig(rules, "false")).run({ payload: "x", mcode: { condition: false } });
+  const missRun = await realSwitch.make(switchConfig(rules, "false")).run(evaluatedFalseMessage ?? {});
   check("★ 真 switch + 求值结果 false → 只走 else 口（口 1）",
     JSON.stringify(portsOf(missRun)) === JSON.stringify([".", "MSG"]), missRun);
   const absent = await realSwitch.make(switchConfig(rules, "false")).run({ payload: "x" });

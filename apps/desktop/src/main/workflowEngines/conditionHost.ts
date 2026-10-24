@@ -26,14 +26,14 @@
  *   - `nodes[].title/params`：来自同一张文档；
  *   - `nodes[].outcome`：来自消息流上的 `msg.mcode.results`（每个 `mcode-*` 节点
  *     执行完都会追加自己那一条，见 `mcodeNodePack.ts` 的 `outputMsg`）；
- *   - `user` / `trigger`：**没有**。原生触发节点的载荷不离开引擎进程，Host 看不到。
+ *   - `user`：仍无来源；`trigger`：仅 Host 在本进程事件订阅时签发的、按工作流归属核对的短期凭据可恢复 event 与条目事实。原生 inject/watch 和自定义 UI 的 input.* 仍不可用。
  *
  * ## 三类「拿不到」必须**报错**，不许落成 false
  *
  *  `readConditionRef` 对「值缺失」「字段缺失」返回 `found:false`（旧语义就是这样：
  *  `exists` 为假，其余谓词为假）。但**拿不到**是另一回事：
  *
- *   - `{{trigger.*}}`：Host 没有触发载荷；
+ *   - `{{trigger.*}}`：没有有效的 Host 事件凭据或引用自定义 UI 的 input.* 等不支持字段；
  *   - `{{A.某产出变量}}`：native 执行记录不保留结构化产出变量；
  *   - 引用一个**原生节点**（`function` / `exec` / `inject` …）的 `status` / `error`：
  *     原生节点的结局只有引擎自己知道。
@@ -46,6 +46,7 @@ import { parseConditionExpression, evaluateConditionExpression } from "@contract
 import {
   classifyConditionRef,
   CONDITION_SWITCH_PROPERTY,
+  CONDITION_HOST_TRIGGER_FIELDS,
 } from "@contracts/conditionBridge";
 import {
   buildForwardAdjacency,
@@ -73,6 +74,8 @@ export interface ConditionHostInput {
   nodeId: string;
   /** 消息流上已经发生的 `mcode-*` 执行事实。 */
   results: readonly ConditionResultEntry[];
+  /** Obtained from a parent-owned, tab-scoped event ticket, never msg.payload. */
+  trigger?: Readonly<Record<string, unknown>>;
 }
 
 export type ConditionHostOutcome =
@@ -153,9 +156,16 @@ export function evaluateConditionForHost(input: ConditionHostInput): ConditionHo
   const resultOf = new Map(results.map((entry) => [entry.nodeId, entry]));
   const typeOf = new Map(input.doc.nodes.map((candidate) => [candidate.id, candidate.type]));
 
+  // Only real Host-attested HookEvent facts are readable. Native inject/watch
+  // and custom-UI pre-run input remain unsupported; ordinary msg is mutable.
+  const eventFields: ReadonlySet<string> = new Set(CONDITION_HOST_TRIGGER_FIELDS);
   for (const rule of parsed.expression.rules) {
     const classified = classifyConditionRef(rule.ref);
-    if (!classified.supported) {
+    const key = rule.ref.startsWith("{{trigger.") && rule.ref.endsWith("}}")
+      ? rule.ref.slice("{{trigger.".length, -2) : null;
+    const carriedEventRef = input.trigger !== undefined && key !== null
+      && eventFields.has(key) && input.trigger["kind"] === "event";
+    if (!classified.supported && !carriedEventRef) {
       return { ok: false, error: `条件引用「${rule.ref}」在 Node-RED 侧算不了：${classified.reason}` };
     }
     // 「是不是上游」「标题有没有重名」不在这里判 —— `readConditionRef` 已经用
@@ -200,6 +210,7 @@ export function evaluateConditionForHost(input: ConditionHostInput): ConditionHo
     user: "",
     upstream: upstreamNames,
     nodes,
+    ...(input.trigger === undefined ? {} : { trigger: input.trigger }),
   };
   return evaluateConditionExpression(parsed.expression, scope);
 }

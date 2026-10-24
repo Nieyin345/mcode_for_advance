@@ -52,7 +52,6 @@ import {
 } from "./mcodeNodePack.js";
 import {
   CONDITION_EVAL_BRIDGE_KEY,
-  CONDITION_SWITCH_PROPERTY,
   MCODE_CONDITION_EVAL_NODE_TYPE,
 } from "@contracts/conditionBridge";
 
@@ -307,7 +306,7 @@ export interface McodeNodeRedCallPort {
  * 下游不跑」一致，而不是安静地走 else。
  */
 export interface McodeConditionEvalPort {
-  evaluate(payload: McodeNodeBasePayload & { expression: unknown; results: unknown[] }): Promise<{ matched: boolean }>;
+  evaluate(payload: McodeNodeBasePayload & { expression: unknown; results: unknown[]; triggerTicket?: string }): Promise<{ matched: boolean }>;
 }
 
 /** 消息流上已发生的 mcode-* 执行事实（见 `mcodeNodePack.ts` 的 `outputMsg`）。 */
@@ -344,7 +343,10 @@ export async function runConditionEvalNode(
   if (typeof bridgeTarget !== "string" || bridgeTarget.trim() === "") {
     throw new Error("condition 求值节点缺少 bridgesNodeId —— 不在迁移产物里的节点，拒绝执行");
   }
-  const outcome = await port.evaluate({ ...base, nodeId: bridgeTarget, expression, results });
+  const ticket = invocation.incomingMcode["triggerTicket"];
+  const outcome = await port.evaluate({ ...base, nodeId: bridgeTarget, expression, results,
+    ...(typeof ticket === "string" && ticket.length <= 128 ? { triggerTicket: ticket } : {}),
+  });
   if (outcome === null || typeof outcome !== "object" || typeof outcome.matched !== "boolean") {
     throw new Error("Host condition.evaluate result invalid: expected { matched: boolean }");
   }
@@ -354,7 +356,10 @@ export async function runConditionEvalNode(
     runId: invocation.runId,
     // 上游 `switch` 的 `{t:"true", vt:"bool"}` 规则读的就是它（实测：规则比较
     // property 与 true 全等，不读规则自带的值）。
-    [CONDITION_SWITCH_PROPERTY]: outcome.matched,
+    // The switch property path is "mcode.condition" on msg, but this object
+    // is ALREADY msg.mcode. A literal "mcode.condition" key here is invisible
+    // to Node-RED property traversal and silently sends true to else.
+    condition: outcome.matched,
     results: [...results, {
       nodeId: bridgeTarget,
       summary: carriedTextOf(invocation.inputSnapshot),
@@ -537,6 +542,9 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
             runId: null,
             triggerKind: trustedTriggerKind,
             ...(typeof meta["condition"] === "boolean" ? { condition: meta["condition"] } : {}),
+            // A token is only a lookup key; the Host owns the actual facts.
+            ...(typeof meta["triggerTicket"] === "string" && meta["triggerTicket"].length <= 128
+              ? { triggerTicket: meta["triggerTicket"] } : {}),
           };
           // A Host port may synchronously emit and then reject subscribe().
           // Publish only after it returns a callable cancellation handle.

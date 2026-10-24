@@ -11,6 +11,8 @@ import type { NodePackHostServices, NodePackAction } from "./nodePackHost.js";
 import type { EngineRuntimeStatus } from "./runtimeSupervisor.js";
 
 import type { PermissionMode, RuntimeEvent } from "@contracts/runtime";
+import { HOOK_EVENT_OF, HOOK_EVENTS, eventItemFactsOf, hookSubjectOf, matchesAnyGlob, type HookEvent } from "@contracts/hook";
+import { createEventSubjects } from "@main/hooks/eventSubjects.js";
 
 /** T60: one Host emitter for Node-RED native stages and Mcode Host-backed
  * stages. Do not create a parallel event bus or a fake Agent session. */
@@ -295,10 +297,10 @@ export function productionNodePackServices(
       // native `events` field is authoritative; never silently fall back
       // to an unrelated human instruction if its entries are invalid.
       const eventFilter = params.eventFilter;
-      if (eventFilter !== undefined && eventFilter !== null
-        && (typeof eventFilter !== "string" || eventFilter.trim() !== "")) {
-        throw Error("Legacy eventFilter is not implemented for Node-RED: migrate the filter explicitly or clear it before deploying");
+      if (eventFilter !== undefined && eventFilter !== null && typeof eventFilter !== "string") {
+        throw Error("Legacy eventFilter must be a string; never run with an unknown filter");
       }
+      const matcher = typeof eventFilter === "string" ? eventFilter.trim() : "";
       const hasEvents = params.events !== undefined;
       const source = hasEvents ? params.events : params.task;
       const rawEvents = Array.isArray(source) ? source : typeof source === "string" ? source.split(/[\r\n,]+/) : [];
@@ -307,14 +309,37 @@ export function productionNodePackServices(
         || names.some(name => name.length > 100 || !/^[a-z0-9][a-z0-9._-]*$/.test(name))) {
         throw Error("Trigger event type must be specified (use the Events field, not Task)");
       }
-      // Same Mcode event stream as automationRunner, but this Node-RED node
-      // only emits into its *existing* flow — no second executor is started.
+      // A name must be an actual HookEvent. Accepting an arbitrary dotted
+      // string here makes "successfully subscribed" mean "never fires".
+      const validEvents = new Set<string>(HOOK_EVENTS);
+      if (names.some(name => !validEvents.has(name))) {
+        throw Error("Unknown HookEvent in Events field; select an event supported by Mcode");
+      }
+      // eventFilter is the legacy Hook matcher: tool name or file path, not an
+      // arbitrary expression on event JSON. Tool events can be matched with the
+      // identical shared helper. File-path globs require a verified workflow
+      // cwd, not a string written by a Node-RED node; keep those fail-closed.
+      if (matcher && names.some(name => hookSubjectOf(name as HookEvent) !== "tool")) {
+        throw Error("Legacy eventFilter is not implemented for this Node-RED event type: only tool-name filters are supported; clear the filter or migrate it explicitly");
+      }
       const eventNames = new Set(names);
+      const subjects = createEventSubjects();
       return runtimeManager.subscribe((event) => {
-        if (!eventNames.has(event.type)) return;
-        // This is NOT TriggerPayload.input from the old custom-UI form.
-        // Never infer trigger.input.doi from event.itemId or task prose.
-        emit({ payload: { event: event.type, sessionId: event.sessionId, at: Date.now() } });
+        // factsOf has state (tool.use → tool.result ID lookup). It must run
+        // once per event even if the event itself is not subscribed.
+        const facts = subjects.factsOf(event);
+        const eventName = HOOK_EVENT_OF[event.type];
+        if (eventName === null || !eventNames.has(eventName)) return;
+        if (matcher && !matchesAnyGlob(matcher,
+          subjects.subjectsOf(event, "", facts.toolName) ?? [])) return;
+        // Same Mcode event stream as automationRunner. Item facts come from
+        // the original RuntimeEvent through the shared contract mapping,
+        // never from msg.mcode or a guessed "latest" library item.
+        const items = eventItemFactsOf(event);
+        emit({ payload: {
+          event: eventName, sessionId: event.sessionId, at: Date.now(),
+          ...(items ?? {}),
+        } });
       });
     },
   };

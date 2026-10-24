@@ -191,3 +191,18 @@ W17 把一个「安静走错分支」换成了「显式失败」，那是对的 
 - 除非 `eventFilter` 缺省/null/空字符串，其他**所有格式**均拒绝；包括直接由 Node-RED IPC 构造的非字符串对象，不允许通过类型错误绕过原筛选保护。
 - 新 suite 再加 “对象 eventFilter 不能绕开 Host 筛选守卫”：最终 **21/21 PASS**；七套相关 smoke **7/7 PASS**，证据 `apps/desktop/.tmp/smoke-runs/1792873791308-18444-A5SMh6/`；Desktop + Contracts 两套 TypeScript 检查 EXIT=0。
 - W20 只读再盘点发现旧卡片尚有 3 个额外测试引用，不能在本任务扩围删除；细节回写 `tasks/workflow/W20-dead-code.md`。
+
+## 2026-10-25 二次执行修复：真实 HookEvent 条件链（仍 PARTIAL）
+
+- 复用 @contracts/hook 的 HOOK_EVENTS/HOOK_EVENT_OF 校验事件名，不合法事件不会再被误报“订阅成功”。原始 library.item.imported 等事件的 itemId/itemTitle/pdfPath/filePath 按 eventItemFactsOf 抽取后交给 Node-RED；没有 input.doi 时绝不猜测或伪造。
+- 旧 eventFilter 的工具事件场景已通过 createEventSubjects.factsOf/subjectsOf + matchesAnyGlob 复用旧语义，能正确关联 tool.use 与随后的 tool.result，也不会重复使用已经消费的 toolCallId。文件事件匹配与不具备可筛属性的事件继续 fail closed，不扩大事件接收范围。
+- Host condition.evaluate 可由当前生命周期的 ticket 读取经归属校验的 kind/event/itemId/itemTitle/pdfPath/filePath。ticket 由 Host 对真实订阅事件生成，限制数量256、有效期五分钟，解绑立即失效；普通 Node-RED msg 不能提供可信事实。相关契约字段集单一来源：CONDITION_HOST_TRIGGER_FIELDS。
+- 隐藏生产故障：真 Node-RED switch 看的是 msg.mcode.condition，而旧适配节点写入了 msg.mcode["mcode.condition"]，导致 true 走 else。已修复并将真实适配节点输出交给真实 10-switch.js；回写见 W17。
+- 迁移预检只对实际不支持的 trigger 引用给【迁移后不能执行】提示；有上游 Mcode Host event 且引用已支持字段时不再错误归类。
+- 新建 mcode-trigger-condition-context-smoke 覆盖 Host 订阅→Node-RED trigger→真实条件适配→Host 求值，以及伪造、跨 workflow、失效、TTL。变异恢复错误点号键/移除 docId 比对/移除可信引用支持后均精确失败、之后恢复。
+- **仍未完成**：customUi.runAutomation 的运行前 input.doi 走旧 automationRunner.runWithTarget，并非 HookEvent；本轮没有安全的 Node-RED 自定义 UI 注入入口与用户授权证据，因此仍不能宣称 wf_auto_download 整图已可用，也没有部署到用户工作区。
+
+### 最终定向证据（补强版本）
+- 八套回归 8 PASS / 0 FAIL：apps/desktop/.tmp/smoke-runs/1792875951115-32524-hlgiRO/。
+- Desktop 与 Contracts 的 TypeScript --noEmit 均 EXIT=0。新 Host 事件套件另验证工具事件即使带伪 itemId，也不会提升为文献条目事实；ticket 超时与撤销继续拒绝。
+- 明确未验：Electron 实机 UI 完整部署、旧自定义 UI 运行前 input 向 Node-RED 注入、未经审批工作流的持久自动恢复。

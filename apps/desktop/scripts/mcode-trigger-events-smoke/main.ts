@@ -54,6 +54,17 @@ const subscribePayload = triggerSubscribePayload(converted);
 check("实际注册函数发给 Host 的是 events，而不是 task", subscribePayload.params["events"] === "library.item.imported"
   && subscribePayload.params["task"] === original.params["task"], subscribePayload.params);
 const losses = result.report.lossy.filter(issue => issue.message.includes("trigger.input.doi"));
+const eventConditionDoc: WorkflowDoc = { ...source, nodes: source.nodes.map(n =>
+  n.type === "mcode.condition" ? {
+    ...n, params: { ...n.params, expression: { logic: "and", rules: [
+      { ref: "{{trigger.itemId}}", op: "exists" },
+    ] } },
+  } : n,
+)};
+const supportedMigration = migrateWorkflowDoc(eventConditionDoc, { types });
+check("已支持的 Host 事件 itemId 引用不再被误报为迁移后不能执行",
+  !supportedMigration.report.lossy.some(issue => issue.message.includes("【迁移后不能执行】")
+    && issue.message.includes("trigger.itemId")), supportedMigration.report.lossy);
 check("迁移预检明确告知运行前输入根本不存在，条件不能执行",
   losses.some(issue => issue.message.includes("【迁移后不能执行】") && issue.message.includes("必须先改写条件")), result.report.lossy);
 
@@ -97,6 +108,8 @@ check("真实文献导入事件经生产端口触发", received.length === 1
 check("运行前输入不在 Hook 事件中，不伪造 trigger.input.doi",
   !Object.hasOwn(received[0]?.["payload"] as object, "input")
   && !Object.hasOwn(received[0]?.["payload"] as object, "doi"), received);
+check("文献导入会准确传递本次条目 ID，而非猜最新一条",
+  (received[0]?.["payload"] as { itemId?: string }).itemId === "i-test", received);
 release();
 emitEvent({ type: "library.item.imported", sessionId: "s-test", itemId: "i-test2", title: "Test", pdfPath: "file" } as never);
 check("卸载订阅后不再触发", received.length === 1);
@@ -150,8 +163,35 @@ try {
   check("畸形非字符串 eventFilter 不能绕开 Host 筛选守卫", false);
 } catch (error) {
   check("畸形非字符串 eventFilter 不能绕开 Host 筛选守卫",
-    error instanceof Error && error.message.includes("eventFilter is not implemented"), String(error));
+    error instanceof Error && error.message.includes("eventFilter must be a string"), String(error));
 }
+try {
+  services.subscribe({ ...subscribePayload, params: { ...subscribePayload.params, events: "plugin.never.registered" } }, () => {});
+  check("无效事件类型不能假装订阅成功", false);
+} catch (error) {
+  check("无效事件类型不能假装订阅成功",
+    error instanceof Error && error.message.includes("Unknown HookEvent"), String(error));
+}
+// Legacy eventFilter really is a glob on the TOOL NAME. Use the same Host
+// eventSubjects helper as automationRunner for tool.use → tool.result, rather
+// than silently running every tool or losing the tool/result pairing.
+const toolHits: Array<Record<string, unknown>> = [];
+const toolSubscription = services.subscribe({
+  ...subscribePayload, params: {
+    ...subscribePayload.params,
+    events: "tool.result", eventFilter: "Write*",
+  },
+}, message => toolHits.push(message));
+emitEvent({ type: "tool.use", sessionId: "s-test", toolCallId: "call-1", toolName: "Write" } as never);
+emitEvent({ type: "tool.result", sessionId: "s-test", toolCallId: "call-1" } as never);
+check("工具运行结果能复用旧事件筛选的工具名回查", toolHits.length === 1, toolHits);
+emitEvent({ type: "tool.use", sessionId: "s-test", toolCallId: "call-2", toolName: "Read" } as never);
+emitEvent({ type: "tool.result", sessionId: "s-test", toolCallId: "call-2" } as never);
+check("不匹配的工具名不触发", toolHits.length === 1, toolHits);
+emitEvent({ type: "tool.result", sessionId: "s-test", toolCallId: "call-1" } as never);
+check("过期工具结果不可重复消费匹配", toolHits.length === 1, toolHits);
+toolSubscription();
+
 check("迁移报告明确要求核对事件名与不兼容的筛选条件",
   result.report.needsHumanDecision.some(issue => issue.nodeId === original.id
     && issue.message.includes("eventFilter") && issue.message.includes("events")),
