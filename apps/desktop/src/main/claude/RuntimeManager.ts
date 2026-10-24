@@ -2092,7 +2092,7 @@ class RuntimeManager {
    *  in place — for BOTH latest-turn and historical rewinds. The card is
    *  never removed: it stays in the stream as a visible trace that the
    *  user rolled this turn back. */
-  async rewindTurn(sessionId: string, files: TurnFileEntry[], targetFiles: string[]): Promise<{ restored: string[]; failed: string[]; conflicts: string[] }> {
+  async rewindTurn(sessionId: string, files: TurnFileEntry[], targetFiles: string[]): Promise<{ restored: string[]; failed: string[]; conflicts: string[]; unrestorable: string[] }> {
     const rt = this.sessions.get(sessionId);
     // Resolve the cwd: prefer the live runtime's lastCwd (set on the first
     // sendTurn). When that's missing - the common case for the "会话重开后
@@ -2127,9 +2127,9 @@ class RuntimeManager {
           targetFiles,
         } satisfies RuntimeEvent,
       });
-      return { restored: [], failed: all, conflicts: [] };
+      return { restored: [], failed: all, conflicts: [], unrestorable: [] };
     }
-    const { restored, failed, conflicts } = await restoreFiles(cwd, files);
+    const { restored, failed, conflicts, unrestorable } = await restoreFiles(cwd, files);
     // After a successful restore, drop the in-memory snapshot ONLY when
     // the rewind targeted exactly its contents (i.e. the latest live
     // turn). `hasPaths` is the authoritative check: the live snapshot
@@ -2158,10 +2158,11 @@ class RuntimeManager {
         files: restored,
         failedFiles: failed,
         conflicts,
+        ...(unrestorable.length > 0 ? { unrestorableFiles: unrestorable } : {}),
         targetFiles,
       } satisfies RuntimeEvent,
     });
-    return { restored, failed, conflicts };
+    return { restored, failed, conflicts, unrestorable };
   }
 
   /** Resolve an approval request from the renderer. On success, broadcast the

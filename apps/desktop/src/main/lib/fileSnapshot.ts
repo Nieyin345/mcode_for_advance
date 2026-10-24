@@ -78,6 +78,26 @@ export class FileSnapshot {
   protected originals = new Map<string, FileRecord>();
   /** Paths whose pre-turn content was not valid UTF-8 (see recordPre). */
   private readonly unrestorable = new Set<string>();
+  /** 【T125】这一轮被工具碰过、`before` 读不到、**但能确认 turn 前它是个普通文件**
+   *  的路径 → 收尾时的字节（用于判断「本轮之后有没有被再改过」）。
+   *
+   *  **和 `unrestorable` 的区别是这条区分的全部价值：**
+   *
+   *  | 情况 | 归属 | 进 `turn.files` 吗 |
+   *  |---|---|---|
+   *  | 读到了，但不是合法 UTF-8（docx / GBK 文本 / 图片） | `unreadableFiles` | ✅ `restorable: false` |
+   *  | 读失败，且**不是** ENOENT（EISDIR / EACCES / EPERM） | `unrestorable` | ❌ **不进** |
+   *
+   *  第二类不进的理由是 `file-snapshot-smoke` 的 FULL-1 钉着的：一个路径 turn 前是
+   *  **目录**、turn 中被换成文件时，我们**根本不知道 turn 前它是什么** —— 记成
+   *  `modified` 就是编造一段没发生过的历史（旧实现正是这么伪造出 `before` 的）。
+   *
+   *  所以「读不出内容」和「读失败」必须分开：前者的字节我们**看见了**（只是解不成文本），
+   *  后者的字节我们**从来没读到过**。
+   *
+   *  值是 `null` 表示「抓到过、但收尾时确认不到了」—— 那种也照样进卡片
+   *  （`restorable: false` 的条目本来就不参与冲突检测，见 `freeze` 里的注释）。 */
+  private readonly unreadableFiles = new Map<string, { afterBytes: Uint8Array | null }>();
   /** 【MC-008】正在读取中的路径 → 该次读取的 promise。
    *
    *  只靠 `originals.has(abs)` 挡不住并发:那个检查发生在 `await readFile` **之前**,
@@ -148,7 +168,15 @@ export class FileSnapshot {
         // text over the user's file — the undo itself would corrupt it. Leave
         // the file out of the rewind set instead, and remember that: a later
         // tool call must not snapshot the post-edit state as "before".
-        if (generation === this.generation) this.unrestorable.add(abs);
+        //
+        // 【T125】两条记录都写，但它们的含义不同（见字段声明处的表）：
+        //   - `unrestorable` 挡住后续 recordPre（现有语义，不改）；
+        //   - `unreadableFiles` 让 freeze() 能产出一条 `restorable: false` 的卡片
+        //     —— 这一轮真的改过它，用户有权在「本轮文件」里看见。
+        if (generation === this.generation) {
+          this.unrestorable.add(abs);
+          this.unreadableFiles.set(abs, { afterBytes: null });
+        }
         console.warn(`FileSnapshot: skip ${abs} (not valid UTF-8, cannot restore losslessly)`);
         return;
       }
@@ -266,6 +294,45 @@ export class FileSnapshot {
       });
     }
     if (generation !== this.generation) return [];
+    // 【T125】被 `capturePre` 跳过的文件（读不出 `before`）也要出现在卡片里 ——
+    // 但标成 `restorable: false`，**不进 rewind 的还原集**。
+    //
+    // 为什么必须在这里补：`originals` 只收「before 读到了」的文件，而这些文件
+    // 被主动排除在外（理由见 `capturePre` 里那段注释 —— 有损解码会让撤销毁文件）。
+    // 于是它们在 `turn.files` 里**完全不存在**：任务中心看不见这一轮改过的 docx，
+    // 用户也不知道「本轮文件」里少了什么。
+    //
+    // 两条边界：
+    //   - **`before` 一律是空串**，`adds`/`dels` 一律 0 —— 我们根本没读到原内容，
+    //     编一个数字出来就是撒谎。卡片的文案要按 `restorable === false` 分别渲染。
+    //   - **不带 `afterHash`**（`afterHash` 的语义是「回滚时拿它比对，防覆盖新改动」，
+    //     而这一条根本不参与回滚）。带上它会让 `restoreFiles` 的遗留快照分支
+    //     误以为这是个正常的可还原条目。
+    for (const [path, rec] of [...this.unreadableFiles]) {
+      if (generation !== this.generation) return [];
+      // 收尾时再读一次：文件已经被删掉就没有卡片可给（与 created 的「写了又删」同理）；
+      // 读得到就记下字节供 `afterHash` 用 —— 那让「本轮之后又被改过」的判定在这一类上
+      // 也成立（虽然它们不参与还原，但 UI 的「已过期」提示要用）。
+      let afterBytes: Uint8Array | null = null;
+      try {
+        afterBytes = await this.readCurrent(path);
+      } catch {
+        // 收尾时读不到 —— 可能被删、也可能被替换成目录。记 null，仍然出卡片：
+        // `restorable: false` 的条目本来就告诉用户「这条没法撤销」，藏起来更糟。
+      }
+      if (generation !== this.generation) return [];
+      rec.afterBytes = afterBytes;
+      out.push({
+        filePath: path,
+        kind: "modified",
+        adds: 0,
+        dels: 0,
+        before: "",
+        restorable: false,
+        ...(afterBytes === null ? {} : { afterHash: hashBytes(afterBytes) }),
+      });
+    }
+    if (generation !== this.generation) return [];
     // Hand the contents to the GC: the entries above carry `before` to the
     // renderer + DB, and post-freeze readers of this map need keys only.
     for (const rec of this.originals.values()) {
@@ -286,6 +353,7 @@ export class FileSnapshot {
     this.inflight.clear(); // new turn must not wait for an old turn\u0027s slow read
     this.originals.clear();
     this.unrestorable.clear();
+    this.unreadableFiles.clear();
     this.frozen = false;
   }
 
@@ -331,6 +399,17 @@ export interface RestoreReport {
    *
    *  没有 `afterHash` 的旧快照(本次改动前落盘的历史条目)无从比对,按老行为处理。 */
   conflicts: string[];
+  /** 【T125】**从来就没法撤销**的路径（`restorable === false`）。
+   *
+   *  **不能并进 `conflicts`**：那个通道的用户文案是「{n} 个文件之后又改过,为避免
+   *  覆盖新改动没有动它们」—— 而这些文件**从来没有被之后改过**，它们只是
+   *  `capturePre` 读不出 `before`（非 UTF-8 / 二进制）。并进去就是让 toast 说假话。
+   *
+   *  也不能并进 `failed`：那不是「还原失败」，是「本就不该还原」—— 混在一起会让
+   *  用户以为是自己运气不好、重试就能成。
+   *
+   *  所以单列一类，由 UI 说「这 N 个含有无法无损读取的内容，撤销不会动它们」。 */
+  unrestorable: string[];
 }
 
 export async function restoreFiles(
@@ -340,6 +419,7 @@ export async function restoreFiles(
   const restored: string[] = [];
   const failed: string[] = [];
   const conflicts: string[] = [];
+  const unrestorable: string[] = [];
   // Historical cards are serialized inputs and may contain relative paths or
   // conflicting duplicate rows. Resolve using the *project* cwd once and
   // apply ALL IO to this absolute identity, never Electron's process.cwd().
@@ -358,6 +438,22 @@ export async function restoreFiles(
     .sort((a, b) => Number(a.entry?.kind !== "created") - Number(b.entry?.kind !== "created"));
   const seenConflicts = new Set<string>();
   for (const { entry, normalized: preflight } of order) {
+    // 【T125】`restorable: false` 的条目**不参与还原**，一个字节都不碰。
+    //
+    // 它出现在这里只有一个来路：`freeze()` 发现这一轮的某个文件读不出 `before`
+    // （非 UTF-8 / 二进制），于是产出一条 `before: ""` 的卡片让用户**看见**它，
+    // 同时标成不可还原。**它的 `before` 是空串，而 `atomicReplaceFile(path, "")`
+    // 会把用户的 docx 清成 0 字节。**
+    //
+    // 所以这条守卫必须在任何写盘之前，而且判据必须是 `!== false`（缺省可还原）——
+    // 旧会话落盘的条目没有这个字段，用 `=== true` 会让历史回合一律撤销不了。
+    //
+    // 与 `conflicts` / `failed` 分开报（见 RestoreReport.unrestorable 的注释）：
+    // 这三者的用户文案完全不同，混用对用户说假话。
+    if (entry?.restorable === false) {
+      unrestorable.push(preflight ?? entry.filePath);
+      continue;
+    }
     // IPC/SQLite rows are not protected by their TypeScript annotation at
     // runtime. A corrupt kind previously fell through to unlink(!), and
     // a non-string 'before' could throw while hashing and abort the batch.
@@ -499,7 +595,7 @@ export async function restoreFiles(
       failed.push(path);
     }
   }
-  return { restored, failed, conflicts };
+  return { restored, failed, conflicts, unrestorable };
 }
 
 /* ──────────────────────────── path safety ──────────────────────────── */

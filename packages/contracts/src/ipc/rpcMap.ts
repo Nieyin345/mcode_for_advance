@@ -234,7 +234,7 @@ export interface RpcMap {
    *  not (so the card can say「N 个没还原」instead of showing a partial
    *  rewind as if it were whole). `conflicts` lists files that were changed
    *  again after the turn and were therefore left untouched (MC-002). */
-  "claude.rewindTurn": (input: RewindTurnInput) => Promise<{ restored: string[]; failed: string[]; conflicts: string[] }>;
+  "claude.rewindTurn": (input: RewindTurnInput) => Promise<{ restored: string[]; failed: string[]; conflicts: string[]; unrestorable: string[] }>;
   /** Save the whole custom-subagent list (Settings → 子代理). Main validates
    *  each definition and persists to `claude.subagents`; returns the saved
    *  list so the editor can snap to what actually landed. */

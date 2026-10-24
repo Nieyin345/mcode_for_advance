@@ -6187,10 +6187,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const sessionId = get().activeSessionId;
     // 【MC-002】没有会话 = 没法撤销,**不是**"撤销了 0 个文件"。空结果会让卡片画
     // 「已撤销 ✓」。把目标文件全列进 failed,让"什么都没做"如实可见。
-    if (!sessionId) return { restored: [], failed: files.map((f) => f.filePath), conflicts: [] };
+    if (!sessionId) return { restored: [], failed: files.map((f) => f.filePath), conflicts: [], unrestorable: [] };
     if (files.length === 0) {
       // Nothing to rewind — defensive (UI shouldn't allow the click).
-      return { restored: [], failed: [], conflicts: [] };
+      return { restored: [], failed: [], conflicts: [], unrestorable: [] };
     }
     try {
       const res = await api.claude.rewindTurn({ sessionId, files, targetFiles });

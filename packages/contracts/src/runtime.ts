@@ -548,6 +548,22 @@ export interface TurnFileEntry {
    * 判定冲突、让老会话一律回滚不了要好。
    */
   afterHash?: string;
+  /**
+   * 【T125】这一条能不能被「撤销本轮」还原。**缺省（`undefined`）= 能。**
+   *
+   * 为什么需要它：`FileSnapshot.capturePre` 对**读不出 `before`** 的文件主动跳过
+   * （非 UTF-8、EACCES、EISDIR —— `fileSnapshot.ts:145` 的严格解码 + `unrestorable`）。
+   * 那条跳过是对的（有损解码会把 U+FFFD 写回用户文件，**撤销本身就会毁掉它**），
+   * 但它的副作用是：这一类文件**既进不了任务中心，也不该进 rewind**。
+   *
+   * 所以 `false` 的语义是「看得见，但撤销不了」—— 不是「失败」，也不是
+   * `conflicts`（那是「本轮之后又被改过，怕覆盖新改动」）。**两者的用户文案不同，
+   * 混用会让 toast 说假话**（见 `tasks/T125-artifact-restorable.md` §二）。
+   *
+   * 判定一律用 `restorable !== false`，**不用 `=== true`** —— 旧会话没有这个字段，
+   * 按「可还原」处理。和 {@link afterHash} 的兼容规则是同一条。
+   */
+  restorable?: boolean;
 }
 
 /** Whether a turn-touched file existed before the turn. */
@@ -592,6 +608,16 @@ export interface TurnRewoundEvent {
    *  也不是"失败" —— 是"再写回去会把后来的改动毁掉,所以原样留着"。UI 要把它们
    *  单独说清楚(「这几个文件之后改过,没动它们」),不能让用户以为整轮都回滚了。 */
   conflicts: string[];
+  /** 【T125】**从来就没法撤销**的路径（`TurnFileEntry.restorable === false`）。
+   *
+   *  和 `conflicts` 不是一回事：那个是「本轮之后又被改过，怕覆盖新改动所以没动」，
+   *  这个是「原内容读不出来（非 UTF-8 / 二进制），撤销从一开始就不该碰它」。
+   *  **混进 `conflicts` 会让 toast 说「之后又改过」——而它们从来没有被改过。**
+   *
+   *  可选：这次改动之前落盘的历史 `turn.rewound` 事件没有这个字段。
+   *  读不到就按空数组处理（那时也不存在 `restorable` 这个概念）。
+   */
+  unrestorableFiles?: string[];
   /** The ORIGINAL set of paths the rewind targeted (before any were
    *  dropped due to failure). Always present — the renderer matches the
    *  `turn-files` block by this path set to mark it `rewound`. */

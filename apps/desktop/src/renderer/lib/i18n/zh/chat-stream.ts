@@ -239,6 +239,9 @@ export const zh = {
   "chatStream.turnFiles.rewindPartialBadge": "{n}/{total} 未还原",
   "chatStream.turnFiles.partialFailed": "{n} 个文件没还原(写不进去或被拒),可重试",
   "chatStream.turnFiles.partialConflicts": "{n} 个文件之后又改过,没动它们(避免覆盖新改动)",
+  "chatStream.turnFiles.partialUnrestorable": "{n} 个文件的内容无法无损读取,撤销不会动它们",
+  "chatStream.turnFiles.unrestorableBadge": "不可撤销",
+  "chatStream.turnFiles.unrestorableHint": "这个文件的内容不是纯文本(docx/pdf/图片/非 UTF-8 编码),读不出原文,所以撤销不会改它。需要自己手动还原。",
   "chatStream.turnFiles.rewindLatestTitle": "把本轮所有文件恢复为轮开始前的状态",
   "chatStream.turnFiles.rewindHistoryTitle":
     "把该历史轮次的文件改动恢复为当时修改前的状态(可能影响后续轮次)",

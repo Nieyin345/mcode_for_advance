@@ -249,6 +249,9 @@ export const en = {
   "chatStream.turnFiles.rewindPartialBadge": "{n}/{total} not restored",
   "chatStream.turnFiles.partialFailed": "{n} file(s) weren't restored (write failed or refused) — you can retry",
   "chatStream.turnFiles.partialConflicts": "{n} file(s) changed again afterwards — left untouched to avoid overwriting the newer edits",
+  "chatStream.turnFiles.partialUnrestorable": "{n} file(s) could not be read losslessly — rewind leaves them alone",
+  "chatStream.turnFiles.unrestorableBadge": "Not restorable",
+  "chatStream.turnFiles.unrestorableHint": "This file is not plain text (docx/pdf/image/non-UTF-8 encoding), so its original content cannot be read back and rewind will not touch it. Restore it by hand.",
   "chatStream.turnFiles.rewindLatestTitle": "Restore all files from this turn to their pre-turn state",
   "chatStream.turnFiles.rewindHistoryTitle":
     "Restore this past turn's file changes to their pre-edit state (may affect later turns)",

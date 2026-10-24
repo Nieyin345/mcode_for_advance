@@ -89,6 +89,17 @@ const MAX_ARTIFACTS = 512;
  * **只算真的产出了东西的**：`created` 一定是产物；`modified` 只有在 deltas 为正
  * （净增了内容）时才算 —— 一个只删了几行、或者只改了末尾换行的文件不是「产物」，
  * 它是「修改」。这条判断的价值在于**用户看到的任务产物列表不会变成一份 diff 清单**。
+ *
+ * 【T125】**`restorable: false` 的条目单独处理。** 它们读不出 `before`，所以
+ * `adds`/`dels` 是 **0 而不是「没改」** —— 拿 0 当「没有变化」会把这些文件静默
+ * 排除在任务之外，而它们恰恰是 `apply_ops` 真改过的 docx（用户最常问的那类）。
+ *
+ * 判据改成正向的**「这一轮工具确实碰过它」**：`freeze()` 只产出 `restorable: false`
+ * 的条目当且仅当 `capturePre` 被调用过（=某个写盘工具指向了它），所以「存在」本身
+ * 就是「碰过」的证据。**不能**退回去用 `adds - dels > 0` —— 那个数字在这一类上
+ * 不可预测（二进制解码出来的乱码有时 0/0、有时非 0），拿它当过滤依据等于掷骰子。
+ *
+ * 描述里也不写行数：没读到原文就没资格报「+N 行」。写明它是哪种文件、撤销不了。
  */
 function artifactsOf(files: TurnFileEntry[]): TaskArtifact[] {
   const now = Date.now();
@@ -96,11 +107,17 @@ function artifactsOf(files: TurnFileEntry[]): TaskArtifact[] {
   for (const f of files) {
     if (out.length >= MAX_ARTIFACTS) break;
     const isNew = f.kind === "created";
+    // 【T125】读不出原文的条目：工具碰过就算产物，见函数头。
+    const touchedUnreadable = f.restorable === false;
     const grew = f.kind === "modified" && f.adds - f.dels > 0;
-    if (!isNew && !grew) continue;
+    if (!isNew && !grew && !touchedUnreadable) continue;
     out.push({
       path: f.filePath,
-      description: isNew ? `新建文件（+${f.adds} 行）` : `扩充内容（+${f.adds} / −${f.dels} 行）`,
+      description: touchedUnreadable
+        ? "已修改（内容非纯文本，无法统计行数、也不可撤销）"
+        : isNew
+          ? `新建文件（+${f.adds} 行）`
+          : `扩充内容（+${f.adds} / −${f.dels} 行）`,
       createdAt: now,
     });
   }

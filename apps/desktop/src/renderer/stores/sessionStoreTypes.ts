@@ -1889,7 +1889,7 @@ export interface SessionState {
    *  `turn.rewound` event carries it; the handler then marks the matching
    *  card `rewound: true` in place — for both latest-turn and historical
    *  rewinds. The card is never removed, so the stream keeps a trace. */
-  rewindTurn: (files: TurnFileEntry[], targetFiles: string[]) => Promise<{ restored: string[]; failed: string[]; conflicts: string[] }>;
+  rewindTurn: (files: TurnFileEntry[], targetFiles: string[]) => Promise<{ restored: string[]; failed: string[]; conflicts: string[]; unrestorable: string[] }>;
 
   /** Reveal a file in the IDE right panel's file tree: switches the panel to
    *  the files tab, bumps ideFocusNonce (App's effect opens the panel if

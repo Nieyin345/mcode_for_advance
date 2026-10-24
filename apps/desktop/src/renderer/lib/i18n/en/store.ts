@@ -20,6 +20,7 @@ export const en = {
   "store.toast.rewindFailed": "Couldn't undo this turn's changes (files may not be restored)",
   "store.toast.rewindPartial": "Undone, but {n} of {total} file(s) weren't restored",
   "store.toast.rewindConflicts": "{n} file(s) changed again afterwards — left untouched to avoid overwriting the newer edits",
+  "store.toast.rewindUnrestorable": "{n} file(s) could not be read losslessly — rewind leaves them alone (restore them by hand)",
   "store.toast.settingSaveFailed": "Couldn't save the setting",
   "store.toast.paneLayoutRepaired": "Damaged pane layout: default layout restored",
   "store.toast.sessionOpFailed": "Action failed",

@@ -200,19 +200,31 @@ check(
 );
 check("build_deck 也不在", !FILE_MUTATING_TOOLS.has("build_deck"), [...FILE_MUTATING_TOOLS]);
 
-console.log("\n⑤ 负控：apply 类工具的 filePath 不该被当成产物");
+console.log("\n⑤ apply 类工具：记上，但产物是否出现由 recordPre 决定（T125 改）");
+console.log("   （T123 时这里断言「turn.files 为空」；T125 把那层判断交给 recordPre 了，见下）");
 
-// `apply_ops` 的 filePath 是**用户当前打开的文档**，不是这一轮的产物。
-// 它不在 create 名单里 → 不应产生 turn.files。
-const applyFiles = await turnWith("document_tool_call", {
-  tool: "apply_ops",
-  app: "docs",
-  filePath: textPath,
-  input: { ops: [] },
-});
-check("apply_ops 之后 turn.files 为空", applyFiles.length === 0, applyFiles.map((f) => f.filePath));
+// 【T125】`apply_ops` 的 filePath 是**用户当前打开的文档**。T123 时它被整个排除，
+// 理由是「会把没发生的写报成产物」。但那个理由已经不成立：现在记录它只是让文件
+// **经过 `recordPre` 的判断** —— 文本文件走正常可还原路径，读不出的（docx/GBK）
+// 变成 `restorable: false` 的卡片。两种都不会凭空造出一条「没发生过的写」。
+//
+// 所以这条断言改成：**文本文件改了 → 出现在 turn.files 里且可还原**；
+// 而「读不出的文件怎么表现」在 t125-restorable-smoke 里钉着。
+const applyFiles = await turnWith(
+  "document_tool_call",
+  { tool: "apply_ops", app: "docs", filePath: textPath, input: { ops: [] } },
+  // ⚠️ 必须改成与 ③ 的 `editText` **不同**的内容：`freeze()` 会把「与 turn 前
+  // 逐字节相同」的文件当成空转重写剔掉，而 ③ 已经把文件写成了 editText 的结果。
+  () => writeFileSync(textPath, `${textBody}apply_ops 追加的一段\n`, "utf8"),
+);
+check("★ apply_ops 改文本文件 → turn.files 里有它", applyFiles.some((f) => f.filePath === textPath), applyFiles.map((f) => f.filePath));
+check(
+  "★ 文本文件的 restorable 缺省（能还原）",
+  applyFiles.find((f) => f.filePath === textPath)?.restorable === undefined,
+  applyFiles.find((f) => f.filePath === textPath),
+);
 
-console.log("\n⑥ 负控：非 create 的 document_tool_call 工具（read 类）同样不进");
+console.log("\n⑥ 负控：read 类 document_tool_call 工具仍然不进");
 
 const readFiles = await turnWith("document_tool_call", {
   tool: "read_blocks",

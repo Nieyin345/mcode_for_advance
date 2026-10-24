@@ -88,12 +88,9 @@ export { parseQuestions } from "@main/lib/askQuestion.js";
  *  的取值决定。第一次写这段时判成了 `b.name`，条件恒假、什么都没发生 ——
  *  而套件正控（`Write`）是绿的，所以很容易看漏。
  *
- *  只有这些工具的 `filePath` 是输出路径：CLI 侧是 `create --out <filePath>`。
- *  `apply` / `read` 类工具的 `filePath` 是用户当前打开的文档，不能记进
- *  turn.files（详见 recordPre 调用处的注释）。
+ *  这些工具的 `filePath` 是**输出**路径（CLI 侧 `create --out <filePath>`）。
  *
- *  来源：`document/documentToolSurface.ts:398` 的 `CLI_TOOL_MAP`，其中值为
- *  `"create"` 的条目。
+ *  来源：`document/documentToolSurface.ts` 的 `CLI_TOOL_MAP` 里值为 `"create"` 的条目。
  *
  *  ⚠️ **这是一笔已知的账：这份清单与 `CLI_TOOL_MAP` 是两处真相，手工同步。**
  *  上游新增一个 create 类工具时，这里**不会**自动知道 —— `t123-office-artifact-smoke`
@@ -108,6 +105,34 @@ export { parseQuestions } from "@main/lib/askQuestion.js";
 const CREATE_DOCUMENT_TOOLS: ReadonlySet<string> = new Set([
   "create_document", // docs / sheets / pdf
   "build_deck", // slides
+]);
+
+/** 【T125】`document_tool_call` 的 `input.tool` 里**原地改已存在文件**的那几个。
+ *
+ *  和上面那组分开，因为两件事不同：
+ *   - create 组产出的文件 `recordPre` **读不到**（新文件先 ENOENT，再落盘），
+ *     所以走 `originals` 的 `created` 分支；
+ *   - apply 组改的是**用户已经打开的那份文档**，`recordPre` 会去读它的 pre-turn
+ *     内容。**如果那个文件是可解码的文本，它就能正常还原**（这是 `Write` 同款行为）；
+ *     **如果读不出（.docx 是二进制 / GBK），它会变成 `restorable: false` 的卡片**
+ *     —— 看得见、撤销不动。T125 之前，这一类**连卡片都没有**。
+ *
+ *  所以「apply 类的 filePath 是用户打开的文档」**不是不记的理由**：
+ *  记了它才会经过 `recordPre` 的判断，而那正是区分「能还原」和「不能还原」的地方。
+ *  真正不该记的是 `read` 类 —— 它们根本不写盘。
+ *
+ *  来源同上：`CLI_TOOL_MAP` 里值为 `"apply"` 的条目。**同一笔已知的账。**
+ *
+ *  ⚠️ `propose_operations`（sheets）名字里带 "propose"，但上游文档明写
+ *  「applied to the workbook immediately」—— 它是写盘工具，**不是**只提议。 */
+const APPLY_DOCUMENT_TOOLS: ReadonlySet<string> = new Set([
+  "insert_content", // docs
+  "replace_blocks", // docs
+  "apply_ops", // docs / slides
+  "accept_changes", // docs
+  "reject_changes", // docs
+  "propose_operations", // sheets
+  "edit_chart", // slides
 ]);
 
 interface AdapterState {
@@ -1343,7 +1368,11 @@ export class SdkMessageAdapter {
           const raw = b.input as Record<string, unknown> | undefined;
           const innerTool = typeof raw?.tool === "string" ? raw.tool : "";
           const fp = raw?.filePath;
-          if (CREATE_DOCUMENT_TOOLS.has(innerTool) && typeof fp === "string" && fp) {
+          // 【T125】apply 组也记 —— 见 APPLY_DOCUMENT_TOOLS 的注释：
+          // 「filePath 是用户打开的文档」不是不记的理由，记了它才会经过 recordPre，
+          // 而 recordPre 正是区分「能还原」与「读不出、只能标 restorable:false」的地方。
+          if ((CREATE_DOCUMENT_TOOLS.has(innerTool) || APPLY_DOCUMENT_TOOLS.has(innerTool)) &&
+              typeof fp === "string" && fp) {
             const norm = normalizeToolFilePath(this.cwd, fp);
             void this.snapshots.recordPre(this.cwd, norm?.absPath ?? fp);
           }

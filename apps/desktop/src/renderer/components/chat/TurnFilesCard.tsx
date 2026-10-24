@@ -61,8 +61,12 @@ export function TurnFilesCard({
   rewound?: boolean;
   /** 【MC-002】撤销**部分**完成:有文件没还原(failed)或有冲突没动(conflicts)。
    *  与 `rewound` 互斥 —— 有它就不是"整轮已撤销",卡片要保留撤销入口(可重试)并
-   *  如实说清哪些文件没回去。 */
-  rewindPartial?: { failed: string[]; conflicts: string[] };
+   *  如实说清哪些文件没回去。
+   *
+   *  【T125】`unrestorable` 是第三类：**从来就没法撤销**（原内容不是合法 UTF-8，
+   *  读不出 `before`）。它既不是"还原失败"也不是"之后又改过"—— 混进前两者都会
+   *  让用户得到错误的原因。与 `failed`/`conflicts` 并列而不是合并。 */
+  rewindPartial?: { failed: string[]; conflicts: string[]; unrestorable?: string[] };
 }) {
   // Default expand state by lifecycle: the latest turn expands so the user
   // sees the fresh changes + rewind affordance; historical cards collapse to
@@ -96,8 +100,9 @@ export function TurnFilesCard({
       // in the stream as a trace that this turn was rolled back), whether
       // this is the latest turn or a historical one. Confirmation is now
       // handled by the ConfirmDialog before this runs.
-      const { failed, conflicts } = await rewindTurn(files, files.map((f) => f.filePath));
-      const partial = failed.length > 0 || conflicts.length > 0;
+      const { failed, conflicts, unrestorable } = await rewindTurn(files, files.map((f) => f.filePath));
+      const skipped = unrestorable ?? [];
+      const partial = failed.length > 0 || conflicts.length > 0 || skipped.length > 0;
       // 【MC-002】**只有整轮都还原成功**才画「已撤销 ✓」并收起来。部分撤销时保留入口
       // —— 用户还得知道哪些没回去、能不能重试。从前无条件 `setDone(true)`,于是画着
       // 「已撤销 ✓」而磁盘上还有没还原的文件(破坏性动作,他不会再去看)。
@@ -119,6 +124,15 @@ export function TurnFilesCard({
           kind: "warning",
           title: t("store.toast.rewindConflicts", { n: conflicts.length }),
           body: conflicts.join("\n"),
+        });
+      }
+      // 【T125】第三类：**本来就没法撤销**。既不能说"之后又改过"（假的），
+      // 也不能说"还原失败"（也不对 —— 我们本来就不该动它）。
+      if (skipped.length > 0) {
+        useToastStore.getState().push({
+          kind: "warning",
+          title: t("store.toast.rewindUnrestorable", { n: skipped.length }),
+          body: skipped.join("\n"),
         });
       }
       // 只有整轮成功才收起卡片(那之后文件列表就是过期的了);部分撤销要**留着展开**,
@@ -220,13 +234,19 @@ export function TurnFilesCard({
           )}
         </div>
       </div>
-      {rewindPartial !== undefined && (rewindPartial.failed.length > 0 || rewindPartial.conflicts.length > 0) && (
+      {rewindPartial !== undefined && (
+          (rewindPartial.failed.length > 0 || rewindPartial.conflicts.length > 0 ||
+            (rewindPartial.unrestorable?.length ?? 0) > 0)
+        ) && (
         <div className="border-t border-edge px-3 py-1.5 text-[11px] text-warning">
           {rewindPartial.failed.length > 0 && (
             <div>{t("chatStream.turnFiles.partialFailed", { n: rewindPartial.failed.length })}</div>
           )}
           {rewindPartial.conflicts.length > 0 && (
             <div>{t("chatStream.turnFiles.partialConflicts", { n: rewindPartial.conflicts.length })}</div>
+          )}
+          {(rewindPartial.unrestorable?.length ?? 0) > 0 && (
+            <div>{t("chatStream.turnFiles.partialUnrestorable", { n: rewindPartial.unrestorable!.length })}</div>
           )}
         </div>
       )}
@@ -374,6 +394,17 @@ function FileRow({ entry }: { entry: TurnFileEntry }) {
             <span className="text-content-subtle">{t("chatStream.turnFiles.noChanges")}</span>
           )}
         </span>
+        {/* 【T125】不可还原：原内容不是合法 UTF-8（docx / 二进制 / GBK），
+            读不出 before，撤销**不会动它**。必须写在行上 —— 否则用户看着
+            「本轮文件」里有它、点撤销、以为一起还原了，而磁盘上它还是改后的样子。 */}
+        {entry.restorable === false && (
+          <span
+            className="shrink-0 rounded bg-warning/15 px-1 py-0.5 text-[10px] text-warning"
+            title={t("chatStream.turnFiles.unrestorableHint")}
+          >
+            {t("chatStream.turnFiles.unrestorableBadge")}
+          </span>
+        )}
         <IconExternalLink
           size={11}
           className={cn("ml-auto shrink-0 text-content-subtle")}

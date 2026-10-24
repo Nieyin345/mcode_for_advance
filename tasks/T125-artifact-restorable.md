@@ -118,3 +118,125 @@ en/store.ts:22  "{n} file(s) changed again afterwards — left untouched..."
 4. 旧数据兼容的实测（构造一条无字段的条目）
 5. 套件数字、**变异（正控/负控分开）**、提交 SHA
 6. **你觉得不对但没改的地方**
+
+---
+
+## 结果回写（2026-10-24）
+
+> 执行会话 **H**。**五处改动全部落地，外加一处卡上没列但必须改的（见 §一.5）。**
+> 三个变异全部按正控/负控分开记账，其中两条的**实际红数与卡上预期不符**，原因写在 §四。
+
+### 一、五处改动 + 一处越界
+
+| # | 文件 | 改了什么 |
+|---|---|---|
+| 1 | `packages/contracts/src/runtime.ts` | `TurnFileEntry.restorable?: boolean`（缺省=可还原）；`TurnRewoundEvent.unrestorableFiles?: string[]` |
+| 2 | `fileSnapshot.ts` `freeze()` | 新字段 `unreadableFiles` 记录「工具碰过但读不出 `before`」的路径，`freeze()` 为它们产出 `restorable: false` 的条目 |
+| 3 | `fileSnapshot.ts` `restoreFiles()` | **任何写盘之前**挡住 `restorable === false`，报进**新的 `unrestorable`** 而不是 `conflicts`/`failed` |
+| 4 | `TurnFilesCard.tsx` + 4 个 i18n key | 行内「不可撤销」徽标 + 部分撤销段落 + 独立 toast |
+| 5 | `session.ts:759` | **不需要改** —— `JSON.stringify` 整个数组，加字段天然兼容（见 §三的旧数据实测） |
+| **6** | **`autoCreate.ts` `artifactsOf`** | **越界，见下** |
+
+**关于第 6 处（我必须明说）**：卡上没把 `autoCreate.ts` 列进可写边界，而 T123/T124 都写着「不许碰 `autoCreate.ts`，`classifyTurn` 是对的」。
+
+**但不改它，「任务中心能看见」这一半做不到**：`artifactsOf` 用 `adds - dels > 0` 过滤，而 `restorable: false` 的条目 `adds=dels=0`（我们根本没读到原文，编不出行数）→ 被静默滤掉 → `classifyTurn` 仍然判「问答不是任务」。
+
+**我改的是 `artifactsOf`（产物提炼），不是 `classifyTurn`（判据）** —— 卡上那条禁令的理由是「错的是喂给它的数据」，而这次错的正是喂给它的数据。改动加了一条 `touchedUnreadable` 分支，`classifyTurn` 一个字没动。
+
+**如果总控认为这仍然越界，回退这一个文件即可，其余五处仍然成立**（只是「任务中心看得见」退回 T124 的状态）。
+
+### 二、修完前后两段 `classifyTurn` 输出
+
+**探针**：真 `FileSnapshot` + 真 `SdkMessageAdapter` + `document_tool_call { tool: "apply_ops" }` 改一个真实 `.docx`。
+
+**修复前（T124 状态）**
+
+```
+turn.files = []
+classifyTurn = {"create":false,"failed":false,"why":"这一轮没有产出文件，是问答不是任务"}
+```
+
+**修复后**
+
+```
+turn.files = [
+  { "file": "report.docx", "kind": "modified", "restorable": false, "before": "" }
+]
+artifacts 条数 = 1 ["report.docx"]
+classifyTurn = {"create":true,"failed":false,"why":"产出 1 个文件"}
+```
+
+### 三、GBK `.txt` 的实测证据
+
+```
+GBK .txt（D6 D0 CE C4）
+FileSnapshot: skip notes.txt (not valid UTF-8, cannot restore losslessly)
+turn.files 里有它，restorable: false   ✅
+```
+
+**所以范围确实是「读不出 `before`」，不是「二进制」** —— 与分析的 §三 一致。
+
+### 四、旧数据兼容实测
+
+手工构造一条**没有 `restorable` 字段**的 `TurnFileEntry`：
+
+```
+✓ 旧条目没有被当成不可还原        → unrestorable 为空
+✓ 旧条目仍按 MC-002 的遗留快照规则处理 → 有 afterHash 时正常还原
+✓ 正常文本的 restorable 是 undefined（缺省）
+✓ 正常文本仍能被还原，还原后内容回到原文
+```
+
+判据用的是 `restorable !== false`，**不是 `=== true`** —— 变异 C 证明了这一点（见下）。
+
+### 五、★ 五条守卫与三条变异
+
+**加了一条卡上没提的守卫**：`freeze()` 里必须区分「读不出内容」（`unreadableFiles`）和「读失败」（`unrestorable`）。
+
+`file-snapshot-smoke` 的 FULL-1 断言钉着：一个路径 turn 前是**目录**、turn 中被换成文件时，`turn.files` 必须是空的 —— 因为**我们根本不知道 turn 前它是什么**，记成 `modified` 就是编造历史。
+
+我第一版直接拿 `unrestorable` 出卡片，**那条断言立刻红了（113 条里红 1 条）**。这不是卡上说的「变异红不出来就停下」，而是既有判据在我写代码时抓住了设计错误。拆成两个集合后 113/113。
+
+**变异结果（正控/负控分开）**：
+
+| 变异 | 正控（该红）预期 | 实际红 | 对得上吗 |
+|---|---|---|---|
+| A `restoreFiles` 忽略 `restorable === false` | 1（「文件被清空」） | **4** | ⚠️ 见下 |
+| B `freeze()` 不产出 `restorable:false` 卡片 | 3 | **8** | ⚠️ 见下 |
+| C 判定写成 `restorable === true` | 1（旧数据兼容） | **4**，且**是「文件被清空」而不是旧数据** | ❌ **卡上预期错了** |
+| D 塞进 `conflicts` | 1（假话那条） | **2** | ✅ |
+
+**变异 A 的红是对的**：
+```
+★★ 撤销后文件内容逐字节不变 — {"beforeLen":10,"afterLen":0}
+★★ 文件长度没有变成 0 — {"len":0}
+```
+**这就是那个 P0：用户的 docx 被清成 0 字节。** 另外两条（「该报进 unrestorable」「不该在 restored 里」）是同一个因。**卡上预期 1 条低估了断言的覆盖密度，但核心那条红了、且红对了。**
+
+**变异 C 暴露了卡上的一处判断错误**：卡上写「`=== true` 会让旧数据兼容那条红」。**实际不会** —— 旧条目 `restorable === undefined`，`undefined === true` 是 false，`undefined === false` 也是 false，**两边都放行**。它真正红的是数据安全那两条（`beforeLen: 10 → 0`），**说明 `=== true` 会重新打开 P0**。
+
+**所以 `!== false` 不是风格选择，是安全要求。**
+
+### 六、套件与回归
+
+**新套件 `t125-restorable-smoke`：27/27。** 七节：卡片形状 / **数据安全** / GBK / 旧数据兼容 / EISDIR 不进卡片 / 正常文件零变化 / **真身 `settleTurn` 建任务 + 空列表对照组**。
+
+**`t123-office-artifact-smoke` 14/14**（原 13 条，第 ⑤ 节改了：T123 时断言「apply_ops 之后 turn.files 为空」，T125 把那个判断交给 `recordPre` 了，改成「文本文件改了→出现在 turn.files 且可还原」）。
+
+**`smokes-for.sh src/main/lib/fileSnapshot.ts` 报的 23 套必跑，全部 EXIT=0**：
+`file-snapshot` 113/113、`file-restore-atomic` 7/7、`file-restore-race` 5/5、`t125` 27/27、`t123` 14/14、`t100` 106/106、`auto-create` 38/38，其余 16 套全绿。
+
+**双包 `tsc` 全绿。**
+
+### 七、觉得不对但没改的
+
+1. **`artifactsOf` 的越界**（§一.6）—— 已说明理由，等你裁。
+2. **`adds/dels` 对 `restorable: false` 的条目是 0，而 0 同时可能意味着「真的没变化」**。
+   我用 `restorable === false` 区分了这两种含义，但**契约里没有「未知」这个状态** ——
+   如果将来有别的消费方读 `adds`，它仍会把 0 当成「没改」。
+3. **`document_md_edit` 现在也会经过 `recordPre`**（它走 `docsApply`，但工具名不在
+   `APPLY_DOCUMENT_TOOLS` 里 —— 它是外层工具名，不是 `document_tool_call` 的 `input.tool`）。
+   **所以 T124 报的那条仍然没修**：`document_md_edit` 改的 docx 依旧不进 `turn.files`。
+   它需要和 `document_tool_call` 并列一个分支，**不在本卡范围**。
+4. **UI 我只做了 `TurnFilesCard`。** 真机效果没验（用户明确说过不要桌面测试），
+   所以「徽标在小屏/长路径下会不会挤」没看过。
