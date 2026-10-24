@@ -166,3 +166,59 @@ bottomTerminalOpen ? "border-t" : "h-0"
 3. keep-alive 接在哪（`CACHED_BUILTIN_RIGHT_TABS` 还是别处）
 4. 套件数字、变异（正控/负控分开）、提交 SHA
 5. **你觉得不对但没改的地方**
+
+---
+
+## 结果回写（2026-10-24，K）
+
+### 零、结论先行：**产品代码零改动 —— 要的功能已经在树上**
+
+**`bottomTerminalOpen` 的初值本来就是 `false`**（`sessionStore.ts:770`），而且它**不在持久化字段列表里**（`PanePersistedField` 只含 `bottomTerminalHeight`），所以每次启动都是关闭态。
+
+**`ThreePaneLayout` 的关闭态本来就是 `h-0` 塌陷 + `{bottomTerminal}` 始终渲染**（`:393-403`），`BottomTerminalBar` 自己用 `invisible` 隐藏而不是卸载。
+
+**所以这张卡从「改结构」变成了「把已有行为钉住」。** 一条产品代码都没改，只加了回归套件。
+
+### 一、卡片前提的三处核实
+
+| 卡的疑问 | 实测 |
+|---|---|
+| ① `bottomTerminalOpen` 从哪来 | `sessionStore.ts:770`，初值 `false`；**不持久化** |
+| ② 关闭时视觉干不干净 | 外层 `h-0` + `overflow-hidden`，内层 `BorderTerminalBar` 的 `border-t` 被裁掉；外层 h-0 分支**不带** `border-t` |
+| ③ 终端按钮找得到吗 | `Titlebar.tsx:270` 有开关按钮，`aria-label` 随状态变化 |
+
+**第 ① 条有个重要含义**：既然它不持久化，那「老用户的选择不被覆盖」这条验收判据**不适用** —— 从来就没有被记住过。**这不是缺陷**（终端开关是低成本的重复动作），但下一个人不该以为它会记住。
+
+### 二、★ PTY 保活怎么验的（这是这张卡的全部价值）
+
+**验的是「必要条件」，不是「充分条件」。**
+
+PTY 保活依赖「组件始终挂载」，挂载由三条结构条件保证：
+
+1. `ThreePaneLayout` 的 `{bottomTerminal}` 作为**子节点**无条件渲染（条件在外层 div）；
+2. 关闭态是 `h-0` 塌陷，**不是 `return null`**；
+3. `inert` + `aria-hidden` 让它不可交互但留在 DOM。
+
+**这三条在，xterm 实例与 node-pty 连接就活着** —— 清理只发生在卸载时。
+
+**验不了的部分我明说**：「关掉再打开，scrollback 真的还在」需要真 Electron + 真 ConPTY，本套不起 Electron。**所以这一条是「结构上不会死」，不是「实测活着」。**
+
+### 三、套件与变异
+
+`t129-terminal-smoke`（新建，**13/13**）。五节：默认关闭 / 关闭态不占布局 / PTY 保活结构条件 / 按钮找得到 / 负控。
+
+| 变异 | 正控（该红） | 实际 | 负控（该绿） |
+|---|---|---|---|
+| 初值改 `true` | 1 | **1** ✓ | — |
+| `ThreePaneLayout` 删 `h-0` 分支 | 1 | **1** ✓ | — |
+| **`BottomTerminalBar` 改成 `if (!active) return null`** | **1** | **1** ✓ | — |
+
+**第三行是核心**：它模拟「为了不占地方而卸载」，而那会杀死所有 PTY。**它红了，说明判据守住了这条。**
+
+回归：`terminal-smoke` / `terminal-panel-worktree-smoke` / `terminal-bus-recovery-smoke` 全绿。
+
+### 四、没做的 / 觉得不对但没改的
+
+- **没有把终端搬回右栏** —— 卡里已论证过（`BottomTerminalBar.tsx` 文件头：360px 太窄才搬到下边）。
+- **`bottomTerminalHeight` 是持久化的**，而 `bottomTerminalOpen` 不是。**两者不对称** —— 用户调整过的高度被记住，但「它开着还是关着」不被记住。这是有意还是遗漏，我没改，也没找到说明。
+- **真机 scrollback 验证未做**（见第二节）。
