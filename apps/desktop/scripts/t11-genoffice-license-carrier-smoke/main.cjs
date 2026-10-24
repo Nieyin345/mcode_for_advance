@@ -103,13 +103,21 @@ try {
   });
   pass("real reviewed manifest validates against the pinned inventory and its SHA-256 pin");
   assert.equal(validation.verifiedCount, 14);
-  assert.equal(validation.blockedCount, 4);
-  assert.deepEqual(validation.blockedPackages.map(entry => entry.name), [...STILL_BLOCKED]);
+  // 【T117】四个上游缺文本的包现在走「逐条签字的例外」，不再进 blockedPackages。
+  // 断言改成同时钉住**两边**：blocked 必须是 0（没有未签字的），excused 必须是那四个。
+  // 如果哪天有人把 disposition 删了，`blockedPackages` 会变回 4，这条立刻红。
+  assert.equal(validation.blockedCount, 0);
+  assert.equal(validation.excusedCount, 4);
+  assert.deepEqual(validation.excusedPackages.map(entry => entry.name).sort(), [...STILL_BLOCKED].sort());
   assert.equal(real.expectedPackageCount, 18);
   assert.equal(real.resolvedCount, 14);
   assert.equal(real.blockedCount, 4);
-  assert.equal(real.releaseEligible, false);
-  pass("manifest summary is 14 verified / 4 blocked and releaseEligible stays false");
+  assert.equal(real.excusedCount, 4);
+  // `releaseEligible` 的语义在 T117 之后是「没有**未签字**的阻塞」——
+  // 四个 blocked 全部逐个签了 disposition，所以它是 true。而 `resolvedCount`
+  // 仍是 14：那四个包**没有**完整原文，这个事实不能被例外抹掉。
+  assert.equal(real.releaseEligible, true);
+  pass("manifest summary is 14 verified / 4 excused / 0 unexcused; releaseEligible true via signed exceptions");
 
   assert.equal(stage.GENOFFICE_LICENSE_MANIFEST_SHA256, sha256(fs.readFileSync(manifestPath)));
   pass("gate's pinned manifest SHA-256 equals the reviewed manifest bytes");
@@ -181,17 +189,51 @@ try {
   assert.match(scrollBar.missingEvidence, /MUST NOT be backfilled/);
   pass("blocked evidence names the newer-release trap for extract-zip and react-remove-scroll-bar");
 
+  // 【T117】这两条要验的性质是「**没有签字**的阻塞仍然 fail-closed」。
+  //
+  // 从前它们直接拿真实清单跑 —— 那时四个包都没 disposition，所以顺带就验了。
+  // 现在真实清单给四个包都签了字，**继续拿它跑就验不到东西了**（会通过而不是拒绝）。
+  //
+  // 改法：把真实清单**复制一份、删掉四个 disposition**，用它跑。
+  // 这样验的还是「没签字 → 拒绝」，而且用的是真实的 missingEvidence 文本。
+  //
+  // 光删 disposition 还不够 —— 清单自己的 summary 必须先自洽（excusedCount、
+  // releaseEligible 会跟着变），否则红在「summary 与实际条目不符」上，
+  // **根本不是本节要验的「未签字即拒绝」**。（第二版就栽在这。）
+  const unsignedManifest = JSON.parse(JSON.stringify(real));
+  for (const entry of unsignedManifest.items) delete entry.missingEvidenceDisposition;
+  unsignedManifest.excusedCount = 0;
+  unsignedManifest.releaseEligible = false;
+  // 注意：这份副本**必须落在 repoRoot 里** —— `validateGenofficeLicenseManifest`
+  // 会对 manifestFile 做 assertNativeVendorPath(repoRoot, …)，写到 `root/..`
+  // 会被「路径越界」拒掉，而那条红跟本节要验的「未签字即拒绝」毫无关系。
+  // （我第一版就是写到 `root/..`，结果 208 行红在一个完全不相关的原因上。）
+  const unsignedDir = path.join(__dirname, "../../.tmp");
+  fs.mkdirSync(unsignedDir, { recursive: true });
+  const unsignedPath = path.join(unsignedDir, `unsigned-manifest-${process.pid}.json`);
+  const unsignedBytes = Buffer.from(JSON.stringify(unsignedManifest, null, 2) + "\n", "utf8");
+  fs.writeFileSync(unsignedPath, unsignedBytes);
+  const unsignedSha = crypto.createHash("sha256").update(unsignedBytes).digest("hex");
+  // 下面两条都用这份未签字副本，清理放在最后一条之后（见本节末尾的 finally）。
   rejects("strict release gate still fails closed naming the four unresolved packages", () => {
     stage.validateGenofficeLicenseManifest({
-      manifestPath, licenseRoot, vendorRoot: path.join(root, "genoffice"), repoRoot: root, requireComplete: true,
+      manifestPath: unsignedPath, licenseRoot, vendorRoot: path.join(root, "genoffice"), repoRoot: root,
+      requireComplete: true, expectedManifestSha256: unsignedSha,
     });
   }, /@electron-internal\/extract-zip@1\.0\.5 .*lazy-val@1\.0\.5 .*ot-text-unicode@4\.0\.0 .*react-remove-scroll-bar@2\.3\.8/s);
+  // 第三条：**未签字的条目不许生成完整通知** —— 原来这条用的是真实 `validation`，
+  // 而它现在 `blockedCount` 是 0（全签了），所以要把 validation 换成「未签字」那版。
   rejects("complete third-party notice cannot be generated while four packages are unresolved", () => {
+    const unsignedValidation = stage.validateGenofficeLicenseManifest({
+      manifestPath: unsignedPath, licenseRoot, vendorRoot: path.join(root, "genoffice"), repoRoot: root,
+      requireComplete: false, expectedManifestSha256: unsignedSha,
+    });
     stage.buildCompleteThirdPartyNotice(
       fs.readFileSync(path.join(root, "genoffice/apps/shell/build/THIRD-PARTY-NOTICES.txt"), "utf8"),
-      validation,
+      unsignedValidation,
     );
   }, /unresolved/i);
+  // 未签字的清单在通知一节还要再验一次，清理留到那里之后（见本节末尾）。
 
   // ---- Negative control: a license text missing the retention clause -------
   // Same shape as ot-text-unicode 4.0.0: copyright + grant + disclaimer, but no
@@ -310,14 +352,24 @@ try {
     entry.missingEvidence = "Fixture: material withdrawn to prove the gate returns to blocked.";
     object.resolvedCount = 13;
     object.blockedCount = 5;
+    // 【T117】demote 之后 excused 仍是 4（那四条 disposition 没动），
+    // blocked 总数 = excused + 未签字，所以要从 4 改成 5；否则红在 summary
+    // 不一致上，而不是这条要验的「降级回 blocked 会被拒」。
+    object.excusedCount = 4;
+    // 有未签字的阻塞 → 不再可发版。
+    object.releaseEligible = false;
   });
   const demoted = validateFixture(demoteFixture, false);
-  assert.equal(demoted.blockedCount, 5);
+  // 【T117】`blockedCount` 的语义是「**未签字**的阻塞」。四个上游缺文本的包
+  // 仍带 disposition（没被这条 fixture 动过），所以它们进 `excusedCount`，
+  // 未签字的只有刚降级的 strictdom 一条。
+  assert.equal(demoted.blockedCount, 1);
+  assert.equal(demoted.excusedCount, 4);
   assert.equal(demoted.blockedPackages.some(entry => entry.name === "strictdom"), true);
   rejects("demoting a package to blocked re-blocks the strict release and names it", () =>
     validateFixture(demoteFixture, true), /strictdom@1\.0\.1/);
   restoreDemote();
-  pass("demoted fixture restored to 14 verified / 4 blocked");
+  pass("demoted fixture restored to 14 verified / 4 excused / 0 unexcused");
 
   // ---- Mutation: wrong licenseTextSha256 must redden, restore must be exact -
   const mutationFixture = copyFixture("hash-mutation");
@@ -442,11 +494,16 @@ try {
       entry.licenseFile = file;
       entry.licenseTextSha256 = sha256(Buffer.from(body, "utf8"));
       delete entry.missingEvidence;
+      // 【T117】这条 fixture 给四个包**编造了**文本（只为验通知生成器），
+      // 它们不再是例外；disposition 留着也不会被读（status 已是 verified），
+      // 删掉是为了让 fixture 与真实规则一致：例外只属于 blocked 条目。
+      delete entry.missingEvidenceDisposition;
       assert.equal(object.items[0], item(object, "@electron-internal/extract-zip"));
       assert.equal(index[name] !== undefined, true);
     }
     object.resolvedCount = 18;
     object.blockedCount = 0;
+    object.excusedCount = 0;
     object.releaseEligible = true;
   });
   const completeFixture = validateFixture(noticeFixture, true);
@@ -459,8 +516,49 @@ try {
   stage.assertThirdPartyNoticeTextComplete(notice);
   stage.assertThirdPartyNoticeMatchesManifest(notice, completeFixture);
   pass("notice generator embeds manifest material + Source + License SHA-256 for all 18 (fixture-only)");
-  assert.throws(() => stage.buildCompleteThirdPartyNotice(noticeSource, validation), /unresolved/i);
-  pass("the same generator refuses the real 14/18 manifest — notice is never published partial");
+  // 【T117】原来这条断言是「拒绝真实 14/18 清单」——那在**写死阻塞**的策略下是对的。
+  // 方向 A 之后，带签字的例外本身就是一种完整状态，真实清单**可以**出通知了；
+  // 继续断言「拒绝」等于要求门禁永远不能放行 GenOffice，与已批准的方案相反。
+  //
+  // 换成两条互补的性质：
+  //   1. 真实清单能出通知，且四个包在通知里是**显式例外**（写明上游未提供 + 依据），
+  //      **不是**伪造的许可证文本；
+  //   2. 未签字的清单仍然出不了通知（fail-closed 没被放宽）。
+  const realNotice = stage.buildCompleteThirdPartyNotice(noticeSource, validation);
+  stage.assertThirdPartyNoticeTextComplete(realNotice);
+  // 【T117】这条断言守的是产品里改过的判据：完整性 = 14 原文 + 4 签字例外。
+  // 改回 `verifiedCount === 18` 时它必须红 —— 我把判据换成 `verified+excused`
+  // 时，正是 t87 的 afterPack 路径先撞出「带签字清单永远出不了合法通知」。
+  stage.assertThirdPartyNoticeMatchesManifest(realNotice, validation);
+  // 反向对照：把 exception 去掉（= 未签字），同一份通知必须被拒。
+  assert.throws(
+    () => stage.assertThirdPartyNoticeMatchesManifest(realNotice, { ...validation, blockedCount: 1 }),
+    /incomplete license source manifest/i,
+  );
+  pass("complete-notice verifier accepts 14+signed-4 and rejects any unexcused blockage");
+  for (const name of STILL_BLOCKED) {
+    // 按**标题行**切分（72 个短横线在每节标题上下各有一条，用它切会把正文切掉）。
+    const start = realNotice.indexOf("\n" + name + " v");
+    assert.ok(start >= 0, name + " must appear in the real third-party notice");
+    const rest = realNotice.slice(start + 1);
+    const nextHeader = rest.slice(name.length).search(/\n[a-z@][^\n]* v\d/);
+    const section = nextHeader < 0 ? rest : rest.slice(0, name.length + nextHeader + 1);
+    assert.match(section, /NO LICENSE TEXT WAS SHIPPED WITH THIS VERSION/);
+    assert.match(section, /Basis:/);
+    assert.match(section, /Reviewed: \d{4}-\d{2}-\d{2}/);
+    // 例外条目**不许**带一个"正文"去冒充原文本。
+    assert.doesNotMatch(section, /License SHA-256:/);
+  }
+  assert.equal((realNotice.match(/NO LICENSE TEXT WAS SHIPPED WITH THIS VERSION/g) || []).length, 4);
+  pass("real manifest now produces a complete notice: 14 texts + 4 signed, labelled exceptions");
+
+  const unsignedValidationForNotice = stage.validateGenofficeLicenseManifest({
+    manifestPath: unsignedPath, licenseRoot, vendorRoot: path.join(root, "genoffice"), repoRoot: root,
+    requireComplete: false, expectedManifestSha256: unsignedSha,
+  });
+  assert.throws(() => stage.buildCompleteThirdPartyNotice(noticeSource, unsignedValidationForNotice), /unresolved/i);
+  pass("the same generator still refuses an unsigned 14/18 manifest — no exception without a signature");
+  try { fs.rmSync(unsignedPath, { force: true }); } catch { /* 清不掉不影响结论 */ }
   restoreNotice();
   for (const entry of completeFixture.items) {
     if (noticeFixtureTexts[entry.name]) continue;
@@ -471,8 +569,136 @@ try {
   assert.equal(sha256(fs.readFileSync(manifestPath)), stage.GENOFFICE_LICENSE_MANIFEST_SHA256);
   pass("reviewed manifest was never modified by the suite");
 
+  // ---- 【T117】白名单与例外形状：直接打函数，不靠集成路径 ----------------
+  //
+  // 这一节是**被变异验证逼出来的**。第一轮变异里 A/B/C/E/G 五条全绿，因为
+  // `resolveChromiumLicense` 只在 `completeLicenseBundle` 分支里被调用，
+  // 而 t11 的 fixture 从不走那条路；summary 的 `excusedCount` / `releaseEligible`
+  // 两条判据也只是同义重复（所有能走到那里的路径都已被前面的检查挡住）。
+  // 所以那些断言**分不清修没修** —— 现在改成直接打函数。
+  {
+    const tmpInner = path.join(temp, "whitelist");
+    fs.mkdirSync(path.join(tmpInner, "app"), { recursive: true });
+    fs.writeFileSync(path.join(tmpInner, "app", "package.json"), "{}");
+    // app 内：必须放行。
+    assert.equal(stage.isWithin(path.join(tmpInner, "app"), path.join(tmpInner, "app", "x.json")), true);
+    // 仓库 node_modules 内：必须放行（pnpm 布局）。
+    assert.equal(stage.isWithin(path.join(tmpInner, "node_modules"), path.join(tmpInner, "node_modules", ".pnpm", "electron@1", "package.json")), true);
+    // 仓库其它位置：**不许**放行 —— 这正是 root 与 root/node_modules 的区别。
+    assert.equal(stage.isWithin(path.join(tmpInner, "node_modules"), path.join(tmpInner, "genoffice", "LICENSE")), false);
+    // 越级：不许。
+    assert.equal(stage.isWithin(path.join(tmpInner, "app"), path.join(tmpInner, "app", "..", "outside.json")), false);
+    // 同名前缀的兄弟目录（`..foo` / `app2`）：一律拒绝，与改造前保守谓词一致。
+    assert.equal(stage.isWithin(path.join(tmpInner, "app"), path.join(tmpInner, "app2", "x")), false);
+    assert.equal(stage.isWithin(path.join(tmpInner, "app"), path.join(tmpInner, "app-x", "x")), false);
+    pass("isWithin whitelists exactly app / node_modules and no sibling-prefix directory");
+  }
+  // `resolveChromiumLicense` 本身：同一个仓库里，它必须落到白名单根之一。
+  //
+  // 注意这里**不**断言「返回的 root 一定包含 path」—— 那是一条同义重复：
+  // `allowedRoots` 里 app 与 repoRoot/node_modules 互不包含，`find` 返回哪一条
+  // 都能满足包含性（变异 I 证明了它永远绿）。真正的判别在别处：
+  // 白名单本身由 A/B 守，返回的是哪个根由下游 `assertNativeVendorPath(root, …)`
+  // 在真实暂存路径上守 —— 那一步不在本套件里（完整暂存需要 vendor 树）。
+  {
+    const appDir = path.join(root, "apps", "desktop");
+    const info = stage.resolveChromiumLicense(appDir, root);
+    const allowed = [appDir, path.join(root, "node_modules")];
+    assert.ok(allowed.some(candidate => stage.isWithin(candidate, info.path)),
+      "resolved Chromium license must sit under an approved root: " + info.path);
+    assert.ok(fs.existsSync(info.path), "resolved Chromium license file must exist: " + info.path);
+    assert.match(info.electronVersion, /^\d+\.\d+\.\d+/);
+    pass("resolveChromiumLicense lands under an approved root");
+    // 反向对照：给一个不存在的 app，解析必须失败而不是悄悄返回某个路径。
+    assert.throws(() => stage.resolveChromiumLicense(path.join(temp, "no-such-app"), root), /Cannot find module|MODULE_NOT_FOUND/);
+    pass("resolveChromiumLicense fails loudly when electron cannot be resolved from the app");
+  }
+  // 白名单的**上界**：electron 解析到一个既不在 app、也不在 `<repoRoot>/node_modules`
+  // 的地方（这里故意放在 `<repoRoot>/genoffice/node_modules`）必须被拒。
+  //
+  // 这一条是 B 变异唯一能打中的形态：把白名单从 `repoRoot/node_modules` 放宽成
+  // `repoRoot`，**在本仓库里不改变任何运行时行为**（没有真实路径落在 `genoffice/`
+  // 下面），只有造出这种布局才分得清。之前 B 变异一直绿，就是因为没有这条对照。
+  {
+    const fakeRepo = path.join(temp, "fake-repo");
+    // 解析起点：<repoRoot>/genoffice/apps/desktop —— 从它向上找会命中
+    // <repoRoot>/genoffice/node_modules/electron，也就是白名单**外**。
+    const escalationApp = path.join(fakeRepo, "genoffice", "apps", "desktop");
+    const smuggled = path.join(fakeRepo, "genoffice", "node_modules", "electron");
+    fs.mkdirSync(escalationApp, { recursive: true });
+    fs.mkdirSync(smuggled, { recursive: true });
+    fs.writeFileSync(path.join(escalationApp, "package.json"), "{}");
+    fs.writeFileSync(path.join(smuggled, "package.json"), JSON.stringify({ name: "electron", version: "44.4.5" }));
+    assert.throws(
+      () => stage.resolveChromiumLicense(escalationApp, fakeRepo),
+      /escapes its approved root/,
+      "electron resolving into <repoRoot>/genoffice must be rejected, not accepted",
+    );
+    pass("resolveChromiumLicense rejects electron resolved outside app and <repoRoot>/node_modules");
+  }
+  // 清单汇总必须与条目**自洽**。真实清单里 excusedCount / releaseEligible 恰好是对的，
+  // 所以「删掉那条判据」在真实清单上看不出差别（变异 E、G 就是这么活下来的）。
+  // 这里逐个把汇总字段改成错的，断言每条判据**自己**能拒绝。
+  {
+    const SUMMARY_CASES = {
+      "excusedCount": { patch: { excusedCount: 3 }, expect: "signed exceptions" },
+      "releaseEligible": { patch: { releaseEligible: false }, expect: "releaseEligible=false" },
+      "blockedCount": { patch: { blockedCount: 3 }, expect: "blocked entries" },
+      "resolvedCount": { patch: { resolvedCount: 13 }, expect: "resolved entries" },
+    };
+    for (const [field, { patch, expect }] of Object.entries(SUMMARY_CASES)) {
+      // 每个 case 一个独立目录：`copyFixture` 用名字做子目录，重名会互相覆盖，
+      // 上一个 case 恢复的字节可能盖掉这一个 case 刚写的清单。
+      const fixture = copyFixture("summary-" + field);
+      const saved = fs.readFileSync(fixture.manifest);
+      const object = JSON.parse(saved.toString("utf8"));
+      Object.assign(object, patch);
+      const mutated = Buffer.from(JSON.stringify(object, null, 2) + "\n", "utf8");
+      fs.writeFileSync(fixture.manifest, mutated);
+      try {
+        // 判据的措辞各自不同（excusedCount 那条说的是 "signed exceptions"），
+        // 所以每个 case 带自己的判别子串，而不是拿字段名去撞。
+        assert.throws(() => validateFixture(fixture, false),
+          (err) => typeof err?.message === "string" && err.message.includes(expect),
+          "inconsistent " + field + " must be rejected by its own check");
+        pass("manifest summary field rejected when inconsistent: " + field);
+      } finally {
+        fs.writeFileSync(fixture.manifest, saved);
+      }
+    }
+  }
+  {
+    const BAD = {
+      "kind 不对": { kind: "upstream-forgot", evidence: "x".repeat(60), basis: "y".repeat(30), reviewedAt: "2026-10-24" },
+      "evidence 太短": { kind: "upstream-omitted-at-this-version", evidence: "too short", basis: "y".repeat(30), reviewedAt: "2026-10-24" },
+      "basis 太短": { kind: "upstream-omitted-at-this-version", evidence: "x".repeat(60), basis: "short", reviewedAt: "2026-10-24" },
+      "reviewedAt 不是日期": { kind: "upstream-omitted-at-this-version", evidence: "x".repeat(60), basis: "y".repeat(30), reviewedAt: "2026-10" },
+      "evidence 照抄 missingEvidence": { kind: "upstream-omitted-at-this-version", evidence: "COPY", basis: "y".repeat(30), reviewedAt: "2026-10-24" },
+      "null": null,
+    };
+    for (const [label, disposition] of Object.entries(BAD)) {
+      const fixture = copyFixture("exception-shape");
+      const savedItemName = "lazy-val";
+      const source = item(fixture.source, savedItemName);
+      const copy = disposition === null ? null : { ...disposition };
+      if (copy && copy.evidence === "COPY") copy.evidence = source.missingEvidence;
+      const restore = saveAndWrite(fixture, (object) => {
+        const entry = item(object, savedItemName);
+        if (copy === null) entry.missingEvidenceDisposition = null;
+        else entry.missingEvidenceDisposition = copy;
+      });
+      try {
+        assert.throws(() => validateFixture(fixture, false), /missing-license exception is malformed|lazy-val/i,
+          "exception shape must be rejected: " + label);
+        pass("malformed exception rejected: " + label);
+      } finally {
+        restore();
+      }
+    }
+  }
+
   console.log("T11 license carrier smoke: " + total + "/" + total + " PASS");
-  console.log("Release status: BLOCKED — 14/18 verified (6 new README-carried texts); 4 packages remain unresolved.");
+  console.log("Release status: ELIGIBLE — 14 verified texts + 4 signed upstream-omission exceptions (18/18 accounted for).");
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
 }

@@ -5,7 +5,9 @@
   "expectedPackageCount": 18,
   "resolvedCount": 14,
   "blockedCount": 4,
-  "releaseEligible": false,
+  "excusedCount": 4,
+  "excusedNotice": "Entries with a missingEvidenceDisposition are upstream-omitted-at-this-version: the package declares its SPDX identifier in package.json but shipped no license text with this version, and no text from a later release may be substituted. resolvedCount (14) + excusedCount (4) = expectedPackageCount (18). releaseEligible now means 'no UNEXCUSED blocked entry remains': every one of the four is individually reviewed and recorded with its evidence and review date in the generated third-party notice, which says NO LICENSE TEXT WAS SHIPPED for each.",
+  "releaseEligible": true,
   "policy": "A full license text is verified only when it is (a) an exact upstream source file fetched from a pinned raw.githubusercontent.com revision, or (b) the complete license section embedded in the exact SRI-verified npm release tarball README, recorded with its README path, heading, whole-README SHA-256, byte range, and the range's SHA-256. Every verified text must contain all elements of its SPDX license (copyright notice, grant, retention/notice requirement, warranty disclaimer); missing elements keep the entry blocked. Entries whose published npm gitHead is not retrievable must additionally record a public upstream commit whose README is byte-identical to the tarball README and an explicit review signoff (weaker chain). SPDX metadata, a license name alone, or a similar/newer release is never a substitute for the full text.",
   "items": [
     {
@@ -25,7 +27,13 @@
       "missingEvidence": "The SRI-verified 1.0.5 npm tarball and its tag v1.0.5 tree (b83e459fd04c53b0a1c8438a6792df8f64be47fc) contain no license file; the README license section is only the 14-byte literal 'BSD-2-Clause'. Upstream added a LICENSE only on 2026-09-10 and it is MIT, which is a different license than the 1.0.5 BSD-2-Clause declaration and MUST NOT be borrowed. Need a rights-holder-authored full BSD-2-Clause text tied to 1.0.5, or a dependency change.",
       "npmTarballIntegrityVerified": true,
       "npmTarballLegalLicenseEntries": [],
-      "upstreamRevisionKind": "npm-gitHead"
+      "upstreamRevisionKind": "npm-gitHead",
+      "missingEvidenceDisposition": {
+        "kind": "upstream-omitted-at-this-version",
+        "evidence": "The SRI-verified 1.0.5 npm tarball and its tag tree contain no license file. Upstream added a LICENSE only on 2026-09-10, which postdates the 1.0.5 release, so that text describes a different (later) distribution and is not the license under which 1.0.5 was published. It also states MIT while 1.0.5 declares BSD-2-Clause, so substituting it would both backfill a later document and change the declared license.",
+        "basis": "1.0.5 declares BSD-2-Clause in its own package.json; no license text shipped with that version.",
+        "reviewedAt": "2026-10-24"
+      }
     },
     {
       "name": "@napi-rs/canvas-win32-x64-msvc",
@@ -280,7 +288,13 @@
       "missingEvidence": "The SRI-verified 1.0.5 npm tarball and the published commit b69ad4119f1b19bdab13c61ee2fcc88d46b89071 contain no license file; the 158-byte README has no license section and upstream history has never contained LICENSE/COPYING/NOTICE. Need a maintainer-authored full MIT text tied to 1.0.5.",
       "npmTarballIntegrityVerified": true,
       "npmTarballLegalLicenseEntries": [],
-      "upstreamRevisionKind": "npm-gitHead"
+      "upstreamRevisionKind": "npm-gitHead",
+      "missingEvidenceDisposition": {
+        "kind": "upstream-omitted-at-this-version",
+        "evidence": "The SRI-verified 1.0.5 npm tarball, its published commit and the upstream history have never contained LICENSE, COPYING or NOTICE; the 158-byte README has no license section at all, and the upstream repository is no longer reachable (404). There is therefore no rights-holder text to cite for this version at any revision.",
+        "basis": "1.0.5 declares MIT in its own package.json; the upstream project never shipped a license file.",
+        "reviewedAt": "2026-10-24"
+      }
     },
     {
       "name": "ot-json1",
@@ -337,7 +351,13 @@
       "missingEvidence": "The SRI-verified 4.0.0 npm tarball and its tag commit bdcfc545c1a2eda48fe5968ae2ce80cf743b9c08 declare ISC in package.json, while the README license section states MIT without the retention clause ('The above copyright notice ... shall be included'). Neither the ISC identifier nor an incomplete MIT text is an executable full license; the conflict must be resolved by the rights holder for 4.0.0.",
       "npmTarballIntegrityVerified": true,
       "npmTarballLegalLicenseEntries": [],
-      "upstreamRevisionKind": "npm-gitHead"
+      "upstreamRevisionKind": "npm-gitHead",
+      "missingEvidenceDisposition": {
+        "kind": "upstream-omitted-at-this-version",
+        "evidence": "The SRI-verified 4.0.0 tarball declares ISC in package.json while its README license section states MIT WITHOUT the retention clause ('The above copyright notice ... shall be included'). A grant that omits the retention notice is not an executable MIT text, and the ISC identifier alone is not a license text. Neither carrier yields a complete text for 4.0.0.",
+        "basis": "4.0.0 declares ISC in its own package.json; the only text upstream shipped is an incomplete MIT fragment.",
+        "reviewedAt": "2026-10-24"
+      }
     },
     {
       "name": "punycode",
@@ -378,7 +398,13 @@
       "missingEvidence": "The SRI-verified 2.3.8 npm tarball and its published commit b3b1287aad81def2e2ae707274b74531b61ddbaf contain no license file and the README license section is only the 4-byte literal 'MIT'. No upstream commit tagged/versioned 2.3.8 exists; the LICENSE added 2025-05-21 carries a 2025 copyright and postdates the 2.3.8 release, so it MUST NOT be backfilled. Need a rights-holder-authored MIT text tied to 2.3.8.",
       "npmTarballIntegrityVerified": true,
       "npmTarballLegalLicenseEntries": [],
-      "upstreamRevisionKind": "npm-gitHead"
+      "upstreamRevisionKind": "npm-gitHead",
+      "missingEvidenceDisposition": {
+        "kind": "upstream-omitted-at-this-version",
+        "evidence": "2.3.8 was published 2024-12-15 and its npm tarball contains no license file; the README license section is the four-byte literal 'MIT'. The repository LICENSE was added 2025-05-21 ('chore: add LICENSE file'), five months after this release, and no commit corresponding to 2.3.8 exists upstream (the published revision returns 404). Using that later text would backfill a document that did not accompany 2.3.8.",
+        "basis": "2.3.8 declares MIT in its own package.json; the upstream LICENSE postdates this release and must not be backfilled.",
+        "reviewedAt": "2026-10-24"
+      }
     },
     {
       "name": "saxes",

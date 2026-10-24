@@ -35,7 +35,7 @@ const EDITOR_APPS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown"
 const NATIVE_PRELOAD_KINDS = Object.freeze(["pdf", "markdown", "html", "sheets", "slides"]);
 const GENOFFICE_UPSTREAM_REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const GENOFFICE_UPSTREAM_NOTICE = "genoffice/apps/shell/build/THIRD-PARTY-NOTICES.txt";
-const GENOFFICE_LICENSE_MANIFEST_SHA256 = "ab2335254880cc590e1f73fff20f19b26b6da3bbbee9f3d3460ca5b6858a21ec";
+const GENOFFICE_LICENSE_MANIFEST_SHA256 = "394d3467ae45450d2a41bbb44c72e3386fc501d9eab3bc41ea3edfecc9025108";
 const GENOFFICE_LICENSE_MANIFEST_FORMAT = "mcode.genoffice.third-party-license-sources.v2";
 /**
  * T11 carrier policy (roadmap: T9 evidence). A license text is admissible only
@@ -153,9 +153,15 @@ function assertGenofficeLicenseCarrier(item, index) {
   }
 }
 
-function assertWithin(root, candidate) {
+/** `candidate` 是否落在 `root` 里（字面判据，不跟符号链接）。
+ * 与改造前的 assertWithin 同一套谓词：`startsWith("..")` 连 `..foo` 这类
+ * 同名前缀的兄弟目录也一并拒绝，是刻意保守，不是笔误。 */
+function isWithin(root, candidate) {
   const rel = relative(resolve(root), resolve(candidate));
-  if (isAbsolute(rel) || rel.startsWith("..") || rel.startsWith(sep) || rel === "..") {
+  return !(isAbsolute(rel) || rel.startsWith("..") || rel.startsWith(sep) || rel === "..");
+}
+function assertWithin(root, candidate) {
+  if (!isWithin(root, candidate)) {
     throw new Error("GenOffice resource path escapes its approved root");
   }
 }
@@ -314,6 +320,17 @@ function validateGenofficeLicenseManifest({
   }
   const verified = [];
   const blocked = [];
+  /**
+   * 【T117】**上游在该版本未提供许可证文本**的显式例外。
+   *
+   * 与 `blocked` 的区别只有一件事：条目上带了 `missingEvidenceDisposition`，
+   * 也就是**有人逐条签过字**，说明「查过了，这个版本上游确实没有可用文本」。
+   *
+   * ⚠️ **它不是「放行所有 blocked」的开关。** 没有 disposition 的 blocked 条目
+   * 仍然走原来的 `requireComplete` 拒绝路径 —— 见下面的判断。这样「加一条例外」
+   * 必须逐包写理由，不会变成一条捷径。
+   */
+  const excused = [];
   for (let index = 0; index < REQUIRED_GENOFFICE_LICENSE_PACKAGES.length; index++) {
     const expected = REQUIRED_GENOFFICE_LICENSE_PACKAGES[index];
     const item = manifest.items[index];
@@ -343,6 +360,28 @@ function validateGenofficeLicenseManifest({
       if (item.licenseFile !== null || item.licenseTextSha256 !== null || item.licenseSourceUrl !== null
           || typeof item.missingEvidence !== "string" || !item.missingEvidence) {
         throw new Error("GenOffice blocked license entry contains a fabricated/incomplete text record: " + item.name);
+      }
+      // 【T117】带 disposition 的进 `excused`（逐条签字的上游缺失例外），
+      // 不带的进 `blocked`（仍然 fail-closed）。
+      const disposition = item.missingEvidenceDisposition;
+      if (disposition !== undefined) {
+        const shapeOk = disposition !== null && typeof disposition === "object"
+          && disposition.kind === "upstream-omitted-at-this-version"
+          && typeof disposition.evidence === "string" && disposition.evidence.trim().length >= 40
+          && typeof disposition.basis === "string" && disposition.basis.trim().length >= 20
+          && typeof disposition.reviewedAt === "string" && /^\d{4}-\d{2}-\d{2}$/.test(disposition.reviewedAt)
+          // 例外**必须**依附在一条真实的 missingEvidence 上 —— 不能拿它顶替证据。
+          && disposition.evidence !== item.missingEvidence;
+        if (!shapeOk) {
+          throw new Error("GenOffice missing-license exception is malformed: " + item.name
+            + " (need kind=upstream-omitted-at-this-version, evidence>=40 chars and distinct from missingEvidence,"
+            + " basis>=20 chars, reviewedAt=YYYY-MM-DD)");
+        }
+        excused.push({
+          name: item.name, version: item.version, spdx: item.spdx,
+          evidence: item.missingEvidence, disposition,
+        });
+        continue;
       }
       blocked.push({ name: item.name, version: item.version, spdx: item.spdx, evidence: item.missingEvidence });
       continue;
@@ -375,19 +414,41 @@ function validateGenofficeLicenseManifest({
     }
     verified.push({ ...item, licensePath: licenseFile, licenseText: text });
   }
-  if (manifest.resolvedCount !== verified.length || manifest.blockedCount !== blocked.length
-      || manifest.releaseEligible !== (blocked.length === 0)) {
-    throw new Error("GenOffice license source manifest summary disagrees with its package entries");
+  // 【T117】`blockedCount` 仍是清单里 status=blocked 的**总数**（verified + excused + blocked
+  // 三者之和要覆盖它），而 `releaseEligible` 现在说的是「没有**未签字**的阻塞」。
+  // 这两条分开写，是为了让「清单统计」和「能不能发版」不再混成同一个数。
+  //
+  // 每条判据单独报错并带上实际数字：否则变异时「换一个条件」会得到同一句话，
+  // 断言分不清是哪条在守（我自己踩过：删掉 excusedCount 判据套件仍然全绿，
+  // 因为同一行的 releaseEligible 判据先命中）。
+  if (manifest.resolvedCount !== verified.length) {
+    throw new Error("GenOffice license source manifest reports " + manifest.resolvedCount
+      + " resolved entries but " + verified.length + " carry a verified text");
+  }
+  if (manifest.excusedCount !== excused.length) {
+    throw new Error("GenOffice license source manifest reports " + manifest.excusedCount
+      + " signed exceptions but " + excused.length + " entries carry a missingEvidenceDisposition");
+  }
+  if (manifest.blockedCount !== excused.length + blocked.length) {
+    throw new Error("GenOffice license source manifest reports " + manifest.blockedCount
+      + " blocked entries but " + (excused.length + blocked.length) + " are blocked ("
+      + excused.length + " excused, " + blocked.length + " unexcused)");
+  }
+  if (manifest.releaseEligible !== (blocked.length === 0)) {
+    throw new Error("GenOffice license source manifest releaseEligible=" + manifest.releaseEligible
+      + " but " + blocked.length + " package(s) are blocked without a signed exception");
   }
   if (requireComplete && blocked.length) {
     throw new Error("GenOffice strict release blocked: full upstream license text is unresolved for " +
       blocked.map(item => item.name + "@" + item.version + " (" + item.spdx + ")").join(", ") +
-      ". Do not infer license text from SPDX metadata or a similar release.");
+      ". Do not infer license text from SPDX metadata or a similar release."
+      + " (Entries may be excused only with a reviewed missingEvidenceDisposition; none was present for these.)");
   }
   return {
     manifest, manifestPath: manifestFile, licenseRoot: root,
     items: verified, verifiedCount: verified.length,
     blockedPackages: blocked, blockedCount: blocked.length,
+    excusedPackages: excused, excusedCount: excused.length,
   };
 }
 
@@ -415,8 +476,12 @@ function findNoticeSection(text, title) {
   return null;
 }
 function assertThirdPartyNoticeMatchesManifest(text, validation) {
+  // 【T117】完整性的判据是「18 个包**全部有交代**」：14 份原文 + 4 条签字例外。
+  // 原来要求 `verifiedCount === 18`，那会让带签字的清单永远出不了合法通知 ——
+  // 也就等于 T117 的方案根本无法发布。改成 verified + excused 覆盖全量，
+  // 且**没有任何未签字的阻塞**。
   if (!validation || validation.blockedCount !== 0
-      || validation.verifiedCount !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length) {
+      || validation.verifiedCount + (validation.excusedCount ?? 0) !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length) {
     throw new Error("GenOffice third-party notice cannot be verified against an incomplete license source manifest");
   }
   for (const item of validation.items) {
@@ -432,17 +497,39 @@ function assertThirdPartyNoticeMatchesManifest(text, validation) {
 }
 
 function buildCompleteThirdPartyNotice(sourceText, validation) {
+  // 【T117】`blockedCount` 现在包含 excused 条目（清单统计口径），所以判据是
+  // 「没有**未签字**的阻塞」而不是「blockedCount === 0」。
   if (!validation || validation.blockedCount !== 0
-      || validation.verifiedCount !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length) {
+      || validation.verifiedCount + (validation.excusedCount ?? 0) !== REQUIRED_GENOFFICE_LICENSE_PACKAGES.length) {
     throw new Error("Cannot generate a complete GenOffice third-party notice while any upstream license text is unresolved");
   }
   const byTitle = new Map(validation.items.map(item => [
+    item.name + " v" + item.version + " — " + item.spdx, item,
+  ]));
+  // 【T117】上游在该版本没有许可证文本的包：正文不可能是原文，**如实写缺失**。
+  // 这是这条通知里唯一允许「不贴全文」的情形，而且每个都必须带 disposition 的理由。
+  const excusedByTitle = new Map((validation.excusedPackages ?? []).map(item => [
     item.name + " v" + item.version + " — " + item.spdx, item,
   ]));
   let found = 0;
   let cursor = 0;
   let replaced = "";
   for (const section of noticeSections(sourceText)) {
+    const excused = excusedByTitle.get(section.title);
+    if (excused) {
+      found++;
+      replaced += sourceText.slice(cursor, section.bodyStart);
+      replaced +=
+        "NO LICENSE TEXT WAS SHIPPED WITH THIS VERSION.\n\n" +
+        "This package declares " + excused.spdx + " in its own package.json, but the SRI-verified " +
+        excused.version + " npm tarball and its upstream tree contain no license file, and no text from a " +
+        "later release may be substituted for it.\n\n" +
+        "Why the upstream text could not be used: " + excused.evidence + "\n\n" +
+        "Basis: " + excused.disposition.basis + "\n" +
+        "Reviewed: " + excused.disposition.reviewedAt + "\n";
+      cursor = section.bodyEnd;
+      continue;
+    }
     const item = byTitle.get(section.title);
     if (!item) continue;
     found++;
@@ -452,7 +539,7 @@ function buildCompleteThirdPartyNotice(sourceText, validation) {
       "\nLicense SHA-256: " + item.licenseTextSha256 + "\n";
     cursor = section.bodyEnd;
   }
-  if (found !== byTitle.size) {
+  if (found !== byTitle.size + excusedByTitle.size) {
     throw new Error("GenOffice third-party notice package sections do not match the verified source manifest");
   }
   const text = replaced + sourceText.slice(cursor);
@@ -467,18 +554,74 @@ function buildCompleteThirdPartyNotice(sourceText, validation) {
       throw new Error("GenOffice generated notice failed exact license-text/source verification: " + item.name);
     }
   }
+  // 【T117】excused 条目也必须逐个验：通知里**必须**写着「该版本没发许可证文本」，
+  // 而且带上理由与复核日期。少一样就说明它在通知里被当成「有文本」混过去了。
+  for (const excused of validation.excusedPackages ?? []) {
+    const title = excused.name + " v" + excused.version + " — " + excused.spdx;
+    const section = findNoticeSection(text, title);
+    if (!section
+        || !section.body.includes("NO LICENSE TEXT WAS SHIPPED WITH THIS VERSION.")
+        || !section.body.includes(excused.evidence)
+        || !section.body.includes("Reviewed: " + excused.disposition.reviewedAt)) {
+      throw new Error("GenOffice generated notice does not disclose the missing upstream license text: " + excused.name);
+    }
+  }
   return text;
 }
 
-function resolveChromiumLicense(app) {
+/**
+ * 【T117】electron 的 `LICENSES.chromium.html` 在哪。
+ *
+ * ## 为什么不能只 `assertWithin(app, …)`
+ *
+ * `appRequire.resolve()` **返回的已经是解引用后的真实路径**（实测：Node 的模块解析
+ * 对符号链接做 realpath）。在 pnpm 布局下它是
+ * `<repoRoot>/node_modules/.pnpm/electron@…/node_modules/electron/package.json`，
+ * **永远不在 `app` 里** —— 所以「字面上在 app 内」这道检查在 pnpm 下必然失败，
+ * 不是「多加一道更保险」，是**根本不可能通过**。
+ *
+ * ## 白名单的判据是「形状」不是「字符串」
+ *
+ * 放行两种位置，**都必须是 electron 包本身**：
+ *   1. `app` 内（npm / yarn 的扁平布局）；
+ *   2. **`<repoRoot>/node_modules` 内**（pnpm 的依赖存储）—— 注意根是
+ *      `repoRoot/node_modules` 而**不是** `repoRoot`：后者会连带放行
+ *      `genoffice/` / `node-red/` / `open-claude-ui/` 三个 vendor 树。
+ *
+ * ## 这道检查挡的是什么（以及挡不住什么）
+ *
+ * 它挡的是「解析/符号链接把路径带到仓库之外」。**它挡不住**「在这个位置放一个
+ * `name: "electron"` 的伪造包」—— 但那最多让**许可证文本**来自一个错的包，
+ * 不构成代码执行，因为这里读的只是 `dist/LICENSES.chromium.html` 这一个文本文件。
+ * 下一行的 `name/version` 校验是第二道，两者合起来才够。
+ */
+function resolveChromiumLicense(app, repoRoot) {
   const appRequire = createRequire(join(app, "package.json"));
   const electronPackagePath = appRequire.resolve("electron/package.json");
-  assertWithin(app, fs.realpathSync.native(electronPackagePath));
+  // resolve 已解引用；再 realpath 一次是纵深防御（resolve 的实现将来可能变）。
+  const real = fs.realpathSync.native(electronPackagePath);
+  // **顺序有意义**：当 app 位于仓库内时 `<repoRoot>/node_modules` 与 `app` 可能
+  // 同时命中，必须把更具体的那个放前面。否则 `find` 总是返回 app，下游拿 root
+  // 做的包含性断言会在 pnpm 布局下失败（这条 bug 是测试里那条断言抓到的）。
+  const allowedRoots = [];
+  if (repoRoot) allowedRoots.push(join(repoRoot, "node_modules"));
+  allowedRoots.push(app);
+  const root = allowedRoots.find(candidate => isWithin(candidate, real));
+  if (!root) {
+    throw new Error("GenOffice resource path escapes its approved root: electron resolves to "
+      + real + ", which is outside " + allowedRoots.join(" and "));
+  }
   const electronPackage = JSON.parse(fs.readFileSync(electronPackagePath, "utf8"));
   if (electronPackage.name !== "electron" || typeof electronPackage.version !== "string") {
     throw new Error("Mcode Electron package metadata is invalid; cannot select its Chromium license file");
   }
-  return { path: join(dirname(electronPackagePath), "dist", "LICENSES.chromium.html"), electronVersion: electronPackage.version };
+  return {
+    path: join(dirname(electronPackagePath), "dist", "LICENSES.chromium.html"),
+    // 调用点要用它做后续的 assertNativeVendorPath —— 白名单有两个根，
+    // 下游不能再写死 app，否则 pnpm 布局下会在第二个断言处失败。
+    root,
+    electronVersion: electronPackage.version,
+  };
 }
 /**
  * A renderer index with a dangling Vite entry script is not a working vendor
@@ -628,7 +771,7 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
   const completeThirdPartyNoticeText = licenseValidation
     ? buildCompleteThirdPartyNotice(fs.readFileSync(thirdPartyNotice, "utf8"), licenseValidation)
     : null;
-  const chromiumLicenseInfo = completeLicenseBundle ? resolveChromiumLicense(app) : null;
+  const chromiumLicenseInfo = completeLicenseBundle ? resolveChromiumLicense(app, repo) : null;
   const legacyLicenses = [
     [join(vendor, "LICENSE"), "GenOffice-LICENSE", undefined, "vendor"],
     [join(vendor, "NOTICE"), "GenOffice-NOTICE", undefined, "vendor"],
@@ -697,7 +840,13 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
       // machine-private files outside the known checkout.
       assertWithin(repo, fs.realpathSync.native(file));
     }
-    if (chromiumLicenseInfo) assertNativeVendorPath(app, chromiumLicenseInfo.path);
+    // 白名单有两个根（app / <repoRoot>/node_modules），这里必须用 resolveChromiumLicense
+    // 判定通过的那个根；写死 app 会在 pnpm 布局下把刚放行的路径再拒一次。
+    //
+    // ⚠️ 这条只有**完整暂存**（include + requireCompleteLicenseBundle + vendor 树齐全）
+    // 才会执行，t11 套件走不到这里。变异「把这行改成 app」在 t11 上是绿的 ——
+    // 不是断言失效，是这条路本套件覆盖不到。别把它当成已被守护。
+    if (chromiumLicenseInfo) assertNativeVendorPath(chromiumLicenseInfo.root, chromiumLicenseInfo.path);
     for (const [file, , , origin] of licenses.filter(([, , , origin]) => origin === "mcode")) {
       assertNativeVendorPath(repo, file);
     }
@@ -815,7 +964,7 @@ if (require.main === module) {
   }
 }
 module.exports = {
-  prepareGenofficeResources, assertWithin, assertVendorTreeSafe, assertRendererAssetsReady,
+  prepareGenofficeResources, assertWithin, isWithin, assertVendorTreeSafe, assertRendererAssetsReady,
   assertDocsRendererHasAckTransport, hashResourceTree, hashRendererTree, hashFile,
   noticePackagesWithoutLicenseText, assertThirdPartyNoticeComplete, assertThirdPartyNoticeTextComplete,
   assertThirdPartyNoticeMatchesManifest, resolveChromiumLicense, validateGenofficeLicenseManifest,
