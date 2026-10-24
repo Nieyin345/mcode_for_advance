@@ -54,6 +54,7 @@ import {
 } from "@contracts/ipc";
 import { recordRpcHandler } from "@main/appControl/registry.js";
 import { errText } from "@main/lib/ipcError.js";
+import { log } from "@main/lib/logger.js";
 import type { DocumentViewHost } from "@main/document/documentViewHost.js";
 import type { SlidesBridge } from "@main/document/slidesBridge.js";
 import { slidesBridge as productionSlidesBridge } from "@main/document/slidesBridge.js";
@@ -209,7 +210,26 @@ export function registerDocumentViewHandlers(
   // Keep the invoke endpoint for deterministic fake-Ipc callers; both use
   // the exact same sender-bound state handler, never parallel dirty logic.
   ipc.handle("mcode:document-view:close-check-result", onCloseCheckResult);
-  if (typeof ipc.on === 'function') ipc.on('mcode:document-view:close-check-result', onCloseCheckResult);
+  // 【O4】**缺 on 不许静默降级。** `on` 是页面回报「脏不脏」的唯一入口：
+  // 生产装配传的是 `createDbGuardedIpc(ipcMain)`，它曾经只实现 `handle`（类型却写
+  // `IpcMain`），于是这一行在真实装配里**恒假**——页面的回答落在无人监听的通道上，
+  // `closeWithDirtyProtection` 等 2 秒超时后按 fail-closed 拒绝关闭，用户看到的是
+  // 「编辑器未响应关闭检查」，而原因离这句提示很远（O3 实证：页面确实回了）。
+  //
+  // 所以这里不再 `if (typeof ipc.on === 'function')` 悄悄跳过，而是**喊出来**：
+  // 保留 `handle` 那条（invoke 式调用方仍可用），但监听注册缺失必须带**后果**写进
+  // 日志 —— 下一个人看到的主进程日志要能直接指回这里。包装层的 `on` 已在
+  // `dbGuardedIpc.ts` 补齐（同一张卡），这条日志是给**下一个残缺包装**留的。
+  if (typeof ipc.on === "function") {
+    ipc.on("mcode:document-view:close-check-result", onCloseCheckResult);
+  } else {
+    log.error(
+      "文档视图注册器收到的 ipc 缺少 on()：mcode:document-view:close-check-result 没有监听者。" +
+        "后果：关闭 docs 文档会等 2 秒超时后被拒（「编辑器未响应关闭检查；为保护未保存内容，拒绝关闭」），" +
+        "即使编辑器页面已经回了关闭检查。装配方必须传入实现了 on 的 IpcMain" +
+        "（生产用 createDbGuardedIpc(ipcMain)，它自 O4 起实现了完整注册面）。",
+    );
+  }
 
   // IpcMain.handle 的监听器形参带类型化的 event；本模块的 handler 全都不读它，
   // 按 `(event: unknown, raw: unknown)` 声明即可结构兼容 recordRpcHandler。

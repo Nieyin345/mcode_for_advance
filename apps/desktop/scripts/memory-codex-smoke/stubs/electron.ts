@@ -106,6 +106,15 @@ export const nativeTheme = {
  */
 export const registeredChannels = new Map<string, (event: unknown, raw: unknown) => unknown>();
 
+/**
+ * `ipc.on` 的记名表（【O4】之前这里是 `notHere`，按当时的导入图校准：总注册表
+ * 里没有任何一条 `ipc.on`）。O4 修好 `createDbGuardedIpc` 的 `on` 之后，
+ * `registerDocumentViewHandlers` 会在装配期真的注册 `close-check-result` 的
+ * 监听器 —— 那是**生产行为**，不是"走到不该走的路"。桩的导出面跟着重新校准：
+ * 记下监听器（供断言），不再抛。
+ */
+export const registeredListeners = new Map<string, Array<(event: unknown, ...args: unknown[]) => void>>();
+
 export const ipcMain = {
   handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
     if (registeredChannels.has(channel)) {
@@ -113,7 +122,12 @@ export const ipcMain = {
     }
     registeredChannels.set(channel, listener);
   },
-  on: notHere("ipcMain.on"),
+  on(channel: string, listener: (event: unknown, ...args: unknown[]) => void): unknown {
+    const list = registeredListeners.get(channel) ?? [];
+    list.push(listener);
+    registeredListeners.set(channel, list);
+    return this;
+  },
   removeHandler: notHere("ipcMain.removeHandler"),
 };
 
