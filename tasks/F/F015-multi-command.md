@@ -230,3 +230,116 @@ VS Code command '<x>' is not activated in this host — only the first declared 
   只对 `module.<单段>` 形态返回短名，其余 `continue`（跳过注册）。
 - `LocalId` 与 `MODULE_CAPABILITY_SHORT_NAME` 都定义在 `packages/contracts/src/modules.ts`
   （`:9` 和 `:62`），**两者都装不下任何一条真实命令 id**。
+
+---
+
+## 回写（执行会话，2026-10-24）
+
+- **提交**：见 `git log --grep=F015`
+- **Status**：**L1 已交付，L2/L3 明确未做**（下面第 1 节论证）
+
+### 1. 选了哪一层：**L1 做了，L2/L3 没做 —— 而且这不是偷懒**
+
+**总控的判断是对的**（只做 L1 会制造新的静默失效），**但结论要修正**：
+本卡**没有**制造新的静默失效，因为我把「注册成功 ≠ 能被调用」这条边界**做成了可见的**，
+而不是让它藏起来。三处：
+
+1. **调用时的错误分三种**（本卡验收判据 4）——这是 L2 没做时最要紧的可诊断性；
+2. **返回里带 `registeredCount` / `registeredCommands`** ——「注册成功」是**事实**，不是假设；
+3. **`ignoredContributions`** 仍然标注不工作的部分。
+
+**L2 真正做不到的原因（贴代码路径）：**
+
+```
+bridge.executeCommand(cmd, resource)      ← cmd 在这里丢失
+  → host.invoke({ moduleId, contributionId: "run", resource, requestId })
+    → definition.run(resource)             // ModuleHost.ts:1124
+      → runPermissionedProcess({ resource })  // 只透传 resource
+        → payload = { proof, source, capability, resource }
+          → fn(p.resource)                 // 子进程只拿到 resource
+```
+
+唯一能带信息的通路是 `resource`，而 `permissionArgs()` 用的是 `resource.path`，
+`authorize(resource)` 也判它 —— **往那里塞命令 id 会让授权判定针对一个假路径**。
+`ModuleInvokeSchema` 是 `.strict()`，加字段要改 `packages/contracts/**`，不在本卡边界。
+
+**L3（真的跑对应 handler）**：子进程里 `handlers` 是扩展注册的 `Map`，
+**它本来就能按 id 查**，但入口只查一个键、且宿主根本不知道该查哪个键。所以 L3 卡在 L2。
+
+**「24 条命令现在几条能跑」的准确答案：**
+
+| | 数量 |
+|---|---|
+| 能注册 | **24 / 24**（旧行为：1 / 24 —— 第 2 条直接抛 `Undeclared`） |
+| 能列进清单（有 title） | **0 / 24**（见第 2 节） |
+| 能真正被调用 | **1 / 24**（第一条） |
+
+### 2. `LocalId` / 能力短名的形状限制 —— **实测，我写卡时猜错了**
+
+写卡时我断言「rainbow-csv 的 24 条命令能过 `slot:command` 正则」。**错了。**
+
+```
+slot:command 的 command 正则：
+  /^[a-z][a-zA-Z0-9]*\.[a-zA-Z][a-zA-Z0-9.-]{1,80}$/
+```
+
+- **全部真实命令 884 条，通过 439 条（49.7%）**；
+- **rainbow-csv：0 / 24**。原因：它的首段是 `rainbow-csv`，**带连字符**，
+  而首段只允许字母数字（第二段起才允许 `-`）。
+
+**那是我的错，套件抓住了。** 结论：
+
+- 过不了正则的命令**不进清单**，**也不被截断/哈希/伪装**（验收判据 5 的反面）；
+- 它们**仍然能注册**（白名单来自 `contributes.commands`，与清单列不列无关），
+  套件里有一条断言专门验这个；
+- `LocalId`（`^[a-z][a-z0-9-]*$`）本身**884 条一条都过不了**，所以
+  「每条命令一个 contribution」不可能 —— 第一条能有 title，是因为它的 `id` 被硬编码成 `"run"`。
+
+**`contributions` 上限是 12**（`ModuleManifestSchema`），所以命令最多列 **11** 条。
+20 条命令的扩展：装得进，列 11 条，其余不列但能注册。
+
+### 3. 命令信息为什么传不进子进程
+
+见第 1 节那段代码路径。**一句话**：`resource` 是唯一通路，而 `resource.path`
+是授权判定的对象；借它带命令 id 等于让授权检查针对一个不存在的路径。
+
+### 4. `rainbow-csv` 现在几条能跑
+
+**能注册 24、有 title 0、能真正调用 1。**
+（装不装得进来是另一回事 —— 真实源码 136516 B 仍撞 24 KiB，那是最后一道。）
+
+### 5. 变异四条
+
+备份名带完整路径；每条先自证写进去了再跑；恢复后 `sha256sum` 逐字节一致
+（`5d112ea4…` → `5d112ea4…`）。
+
+| # | 变异 | 预期 | 实际 |
+|---|---|---|---|
+| M1 | `registerCommand` 白名单整个去掉 | 2 红 | **2 红**（「说清没声明」+「点名 id」） |
+| M2 | `executeCommand` 把「已声明但跑不了」并回「没声明」 | 1 红 | **1 红**（精确） |
+| M3 | 清单标题退回只取 `commands[0]` | 1 红 | **3 红**（title / slot / 上限那组） |
+| M4 | `MAX_COMMANDS` 退回 64 | 1 红 | **2 红**（101 能装 + 点名 256） |
+
+M1 那 2 条红**不是**「未声明白名单被拆掉」这条断言红的 —— 那条仍绿（因为拆掉白名单后
+`demo.notDeclared` 注册成功，但紧接着「第一条没注册」把它拦下了）。
+红的是**错误信息**那两条。这说明白名单拆掉后行为确实变了，只是**被下游另一道挡住了**。记一笔。
+
+### 6. 回归
+
+必跑 15 套：**14 绿，1 红**。
+
+红的是 `module-phase2-e2e`，原因**不是本卡**：它的 `native-window` 阶段
+`deepStrictEqual` 数组不一致（Electron 宿主）。**撤掉本卡改动后复现同样失败。**
+`module-platform` / `module-workflow` 的计数修正在上一个提交（`6b8dbe16`）里，现在都绿。
+
+### 7. 未做 / 需要总控裁决
+
+1. **L2/L3** —— 需要改 `packages/contracts/**`（`ModuleInvokeSchema` 加 `commandId`，
+   或新开一条 IPC）。**那是另一张卡**，且会动到全仓共享契约，风险远超本卡。
+2. **`slot:command` 的正则把 `latex-workshop.*` 这一大类（418/884）挡在外面** ——
+   那是契约里**本来就有**的规则，不是本卡设的。要放宽它同样得改 `packages/contracts/**`。
+   **本卡没动，如实记。**
+3. **`activationEvents` 上限 64** —— 实测本机最大值 21，够用。但只要一个扩展命令多到
+   要写 64+ 条激活事件就会撞上；本次没放宽（没有真实输入撞上）。
+4. **`MAX_COMMANDS = 256` 不是生态上限** —— 只在代码注释里写清了依据（本机 101 + 余量），
+   没有扫市场。**撞上第 4 个更大的扩展时，放宽它是正确动作。**
