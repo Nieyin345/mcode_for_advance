@@ -222,3 +222,83 @@ Mcode 是静默重试 —— 用户只看到「卡住了」。
 | `image-preview.tsx` 无 pan/zoom | ✅ **已实测**（411 行，grep 只命中 6 处静态样式） |
 | 超长消息无折叠 mask | ✅ **已实测**（`mask-image` / `collapseThreshold` 在 Mcode **0 命中**） |
 | `useClaudeScrollPinning` 的对应物 | ⚠️ 只知道 `chat/` 里有滚动逻辑，**没读** |
+
+---
+
+## 第二阶段回写（2026-10-24）：接了缺口 ① 超长消息折叠
+
+提交 `feat(T120)`：6 文件，+271/−0。
+
+### 一、改了什么
+
+`apps/desktop/src/renderer/components/chat/messageCollapse.ts`（新建，96 行）——
+判据是**纯函数**，与同目录 `composerPhysicalRules.ts` 同一惯例，可无头测：
+
+| 导出 | 作用 |
+|---|---|
+| `COLLAPSE_THRESHOLD_PX = 300` | 上游 `collapseThreshold` 默认值 |
+| `COLLAPSED_MAX_HEIGHT_PX = 300` | 收起时上限（上游 `max-h-[300px]`，与阈值同值） |
+| `FADE_HEIGHT_PX = 48` | 渐变高度（上游 `calc(100% - 3rem)`） |
+| `collapsibleBubbleState()` | `fits` / `collapsed` / `expanded` |
+| `bubbleBodyStyle()` | 返回**内联样式**（见下） |
+| `collapseToggleLabel()` | `expand` / `collapse` / `null` |
+
+`MessageRow.tsx` +42 行：量 `scrollHeight`、套样式、渲染展开按钮。
+zh/en 各 +3 行 i18n key。
+
+### 二、★ 为什么样式走内联而不是 class
+
+渐变那一句是**算出来的**（`calc(100% - ${fade}px)`），而 Tailwind 的任意值写法
+如果拼成模板字符串，**JIT 扫不到会被 purge**。所以走 `style`，不走 `className`。
+
+### 三、★ 用户能看出区别吗 —— 数值对照（总控要求的）
+
+参数出处：`--chat-font-size: 14px`（`styles.css:248`）、`leading` 取 1.625、
+气泡内边距 `px-3 py-2`（12/8px，`MessageRow.tsx:328`）、宽度 `max-w-[85%]`。
+
+| 窗口宽 | 聊天区（≈62%） | 气泡内宽 | 每行字数 | **3000 字 → 行数** | **改前高度** | **改后高度** | 省掉 |
+|---|---|---|---|---|---|---|---|
+| 1440px | 893px | 735px | 52 | 58 行 | **1336px** | **300px** | **1036px** |
+| 1100px | 682px | 556px | 39 | 77 行 | **1768px** | **300px** | **1468px** |
+
+**折叠阈值 300px；渐变高度 48px（底部 3rem）。**
+
+**换句话说**：在 1440px 窗口里贴 3000 字，改前那条消息**比一屏还高**（1336px vs 约 900px 的
+可用高度），改后只占 300px —— **省回来的 1036px 正好是「底下还有多少看不见」的长度**。
+
+### 四、变异（五个，全部精确变红）
+
+| 变异 | 红的断言数 |
+|---|---|
+| 阈值 300 → 1000 | 3 |
+| `fits` 也返回样式 | 2 |
+| 边界 `<=` → `<` | 1 |
+| 渐变改成 `none` | 3 |
+| **`MessageRow` 不调 `bubbleBodyStyle`** | **1（接入断言）** |
+
+**第五条最关键**：它证明第 ⑤ 节「接入」那组断言真的在验「生产代码调用了判据」，
+而不是只验函数本身写对 —— **没有它，函数写对了但没人用，31 条照样全绿**。
+
+### 五、套件
+
+`message-collapse-smoke`（新建，**31/31**）。分六节：判据 / 未测量态 / 样式 / 按钮标签 /
+**接入检查** / **与上游常数对齐**（直接读 `open-claude-ui` 的上游文件，断言
+`collapseThreshold = 300`、`max-h-[300px]`、`calc(100%_-_3rem)` 都在）。
+
+另跑 `chat-copy-payload-smoke` 12/12、`maint-m22-smoke` 通过。
+**双包 typecheck：contracts 0、desktop 0。**
+
+### 六、过程中踩的坑（记下来）
+
+**变异还原时 `cp` 用了相对路径，而前面 `( cd apps/desktop && ... )` 已经切过目录** →
+备份没拷回来、**变异留在磁盘上**。`cmp` 报了不一致才发现。
+
+**这是今晚第二次同一个坑**（前一次是 `taskrepo.pristine.ts`）。
+**规矩**：变异脚本里的 `cp` 一律用**仓库根绝对路径**，不要依赖当时的 cwd；
+并且**每次还原后必须 `cmp`** —— 它是唯一能发现「没还原」的东西。
+
+### 七、没做的
+
+- 缺口 ②（图片 pan/zoom）与 ③（限流倒计时）**未开始**；
+- **三个缺口都不依赖 framer-motion**（实测 grep 均为 0），所以本阶段**不需要引入动画库**；
+- `DraggableSessionList` / `ArtifactsSplitPaneResizer` 仍等 A 的布局改造。
