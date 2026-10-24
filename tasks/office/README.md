@@ -477,6 +477,44 @@ for f in glob.glob("tasks/office/*.md"):
 （同族：`bash apps/.../run.sh` 从仓库根跑会挂、`smokes-for.sh` 不索引 vendor ——
 **都是「命令在某个前提成立时才工作」，而那个前提没人写出来。**）
 
+## 五之五、★ 不要自己写一次性 Electron 探针 —— 我今晚挂了三次
+
+**2026-10-24 晚，我写了三个一次性 Electron 探针，三个都挂住：**
+
+| 探针 | 结果 |
+|---|---|
+| `.tmp/capture-probe.cjs`（测 capturePage） | 超时 180s，转后台 |
+| `.tmp/displays.mjs`（测显示器） | 报 `require is not defined`（ESM 里用 CJS） |
+| `.tmp/ua-probe/probe.cjs`（测 UA） | **挂住不退出，主进程残留，窗口弹到用户主屏** |
+
+**第三个最糟** —— 我 `taskkill` 过一次，但后台的 `for` 循环又启动了第二个，
+**主进程一直活着，而 Windows 上 `show: false` 的 Electron 窗口在加载异常时会短暂可见。**
+
+**用户看到的就是「测试窗口又在主桌面上了」。**
+
+### 正确做法
+
+**用现成的套件环境验，不要另起一个。**
+
+| 要验什么 | 用什么 |
+|---|---|
+| Electron 行为（UA / capturePage / 窗口） | `apps/desktop/scripts/electron-u1/` 的 driver |
+| 文档视图 | `document-view-electron-smoke` / `t7-genoffice-u1` |
+| 打包产物 | `o3-packaged-u1` |
+
+**理由**：那些套件已经有正确的生命周期管理（`app.exit`、超时、清理），
+**而我写的探针每次都缺一样东西 —— 而缺的那一样，正好是「别让它挂住」。**
+
+### 如果非要写探针
+
+**必须有三样**：
+
+1. **`setTimeout` 强制 `app.exit(1)`**（不是靠流程走完）；
+2. **窗口 `x/y` 放副屏或屏幕外**（`show:false` 不够 —— 见上）；
+3. **写结果到文件，再用文件判断**（不要靠 stdout，挂住时 stdout 也丢）。
+
+**而这时你已经在重写那些套件已有的东西了 —— 所以回到「用现成的」。**
+
 ## 六、已知的设计约束（不自造，从源码读出来的）
 
 ### 6.1 `WebContentsView` 会盖住一切 React 浮层
