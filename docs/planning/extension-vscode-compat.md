@@ -133,10 +133,30 @@ npm view @theia/plugin-ext-vscode@1.76.0 version license dependencies --json
 npm view @types/vscode@1.95.0 version license dependencies --json
 ```
 
-Theia 1.76.0 的 `dependencies` 字段有 **19 个直接依赖**（其中
+Theia 1.76.0 的 `@theia/plugin-ext-vscode`（**包装层**）`dependencies` 字段有 **19 个直接依赖**（其中
 `@theia/plugin-ext`、`@theia/core`、`@theia/editor`、
 `@theia/monaco`、`@theia/monaco-editor-core`、`@theia/plugin`）。
 **19 ≠ 传递依赖总数**；未安装完整 Theia，不报告虚构的传递树数字。
+
+> **⚠️ 2026-10-24 补充：19 是包装层的数，真正的宿主 `@theia/plugin-ext@1.76.0` 有 48 个直接依赖。**
+>
+> ```
+> @theia/ai-core  @theia/ai-mcp  @theia/bulk-edit  @theia/callhierarchy
+> @theia/console  @theia/core  @theia/debug  @theia/editor
+> @theia/editor-preview  @theia/file-search  @theia/filesystem  @theia/markers
+> @theia/messages  @theia/monaco  @theia/monaco-editor-core  @theia/navigator
+> @theia/notebook  @theia/output  @theia/plugin  @theia/plugin-utils
+> @theia/preferences  @theia/scm  @theia/search-in-workspace  @theia/task
+> @theia/telemetry  @theia/terminal  @theia/test  @theia/timeline
+> @theia/typehierarchy  @theia/variable-resolver  @theia/workspace
+> + node-pty / decompress / vscode-textmate / @vscode/debugprotocol 等 17 个非 theia 包
+> ```
+>
+> **`@theia/core` / `@theia/monaco` / `@theia/editor` 都在里面 —— 所以「只取 plugin-ext、
+> 不引入 Theia 编辑器」这个想法从依赖表看就不成立。**
+>
+> 这条数字是 `npm view @theia/plugin-ext@1.76.0 dependencies --json` 实测的，
+> 不是估的。见 `tasks/F/F017-theia-poc.md`（正在验证「接进来到底会怎样」）。
 Theia 官方 [Plugin API 说明](https://eclipse-theia.github.io/theia/docs/next/documents/Plugin-API.html)
 明确：`plugin-vscode-init.ts` 是将已经由 `plugin-ext` 提供的 Theia API
 转给 `vscode` 模块，再覆盖少数差异；真实 API/进程/RPC 并不在 init 文件里。
