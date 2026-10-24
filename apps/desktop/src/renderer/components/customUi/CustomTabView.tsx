@@ -60,7 +60,7 @@ export function CustomTabView({ item, target }: { item: CustomUiItem; target: Wo
   return (
     <div className="flex h-full flex-col" data-testid="custom-tab-view">
       <TabHeader title={title} />
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-sm">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-body">
         {body.trim() ? (
           <Markdown projectPath={target.project?.path ?? null}>{body}</Markdown>
         ) : (
@@ -146,7 +146,7 @@ export function FileTab({ title, abs, projectPath }: { title: string; abs: strin
           )
         }
       />
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-sm">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-body">
         {abs === null ? (
           <Hint text={t("customUi.tab.noProject")} />
         ) : content === null ? null : unreadable ? (

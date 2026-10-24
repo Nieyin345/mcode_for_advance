@@ -302,7 +302,7 @@ export function RemoteConnectPanel() {
                 value={form.host}
                 onChange={(e) => setForm({ ...form, host: e.target.value })}
                 placeholder={t("mobile.relay.hostPlaceholder")}
-                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-body text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
@@ -311,7 +311,7 @@ export function RemoteConnectPanel() {
               <input
                 value={form.sshPort}
                 onChange={(e) => setForm({ ...form, sshPort: e.target.value.replace(/\D/g, "") })}
-                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-body text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
@@ -320,7 +320,7 @@ export function RemoteConnectPanel() {
               <input
                 value={form.username}
                 onChange={(e) => setForm({ ...form, username: e.target.value })}
-                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-body text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
@@ -330,7 +330,7 @@ export function RemoteConnectPanel() {
                 value={form.hostKeyFingerprint}
                 onChange={(e) => setForm({ ...form, hostKeyFingerprint: e.target.value })}
                 placeholder="SHA256:..."
-                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-body text-content outline-none focus:border-accent"
                 disabled={isBusy}
                 spellCheck={false}
               />
@@ -343,7 +343,7 @@ export function RemoteConnectPanel() {
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
                 placeholder={t("mobile.relay.passwordPlaceholder")}
-                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-body text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
@@ -352,7 +352,7 @@ export function RemoteConnectPanel() {
               <input
                 value={form.publicPort}
                 onChange={(e) => setForm({ ...form, publicPort: e.target.value.replace(/\D/g, "") })}
-                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-sm text-content outline-none focus:border-accent"
+                className="rounded-[var(--radius-btn-md)] border border-input-edge bg-surface px-3 py-2 text-body text-content outline-none focus:border-accent"
                 disabled={isBusy}
               />
             </label>
@@ -363,7 +363,7 @@ export function RemoteConnectPanel() {
                 onValueChange={(v) => setForm({ ...form, forwarder: v as RelayForwarderChoice })}
                 disabled={isBusy}
               >
-                <Select.Trigger className="w-full justify-between px-3 py-2 text-sm">
+                <Select.Trigger className="w-full justify-between px-3 py-2 text-body">
                   <Select.Value>
                     {(val: string) =>
                       t(FORWARDER_OPTIONS.find((o) => o.value === val)?.labelKey ?? "layout.relayForwarderAuto")

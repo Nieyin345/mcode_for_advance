@@ -94,7 +94,7 @@ export function AuthPromptDialog({
         <Dialog.Popup className="w-[360px] max-w-[90vw] p-4">
           <div className="mb-3 flex items-center gap-2">
             <IconLock size={16} className="text-accent" />
-            <Dialog.Title className="text-sm font-semibold text-content">
+            <Dialog.Title className="text-body font-semibold text-content">
               {t("browser.authTitle", { host: request.host })}
             </Dialog.Title>
           </div>

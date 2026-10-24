@@ -296,7 +296,7 @@ export function MemoryExplorerPanel() {
     <section className={`mx-auto h-full w-full overflow-y-auto ${PANEL_MAX_W.form}`}>
       <PanelHeader title={t("settings.nav.memory")} icon={IconNotebook} />
       {navigation}
-      <p className="px-4 pt-1 text-sm leading-relaxed text-content-muted">{t("init.panelIntro")}</p>
+      <p className="px-4 pt-1 text-body leading-relaxed text-content-muted">{t("init.panelIntro")}</p>
       <ProjectInitManager />
     </section>
   );
@@ -308,13 +308,13 @@ export function MemoryExplorerPanel() {
       <SettingsSection title={t("settings.context.instructionsSection")} desc={t("settings.context.instructionsDesc")}>
         <div className="px-4 py-3">
           {instrError !== null && <ErrorNote className="mb-2">{instrError}</ErrorNote>}
-          {instrLoading ? <p className="py-6 text-sm text-content-subtle">{t("common.loading")}</p> : <>
+          {instrLoading ? <p className="py-6 text-body text-content-subtle">{t("common.loading")}</p> : <>
             <textarea value={instructions} onChange={(e) => { setInstructions(e.target.value); setInstrSaved(false); }}
               placeholder={t("settings.context.instructionsPlaceholder")} className={textareaCls} spellCheck={false} />
-            {instrWarnings.length > 0 && <div className="mt-2 rounded border border-warning/40 bg-warning/5 px-3 py-2 text-sm text-warning">{instrWarnings.join("\n")}</div>}
+            {instrWarnings.length > 0 && <div className="mt-2 rounded border border-warning/40 bg-warning/5 px-3 py-2 text-body text-warning">{instrWarnings.join("\n")}</div>}
             <div className="mt-3 flex items-center gap-2">
               <Button variant="primary" size="sm" onClick={() => void saveInstructions()} disabled={instrSaving}>{t("settings.context.save")}</Button>
-              {instrSaved && <span className="text-sm text-success">{t("settings.context.saved")}</span>}
+              {instrSaved && <span className="text-body text-success">{t("settings.context.saved")}</span>}
             </div>
           </>}
         </div>
@@ -346,7 +346,7 @@ export function MemoryExplorerPanel() {
       <div className="mb-3 rounded border border-edge bg-surface-subtle/50 p-2.5 text-xs leading-relaxed text-content-muted">
         {t("memory.scopeBanner")}
       </div>
-      <label className="mb-3 flex items-center gap-2 text-sm text-content-muted">{t("memory.scope")}
+      <label className="mb-3 flex items-center gap-2 text-body text-content-muted">{t("memory.scope")}
         <select value={scope} onChange={e => setScope(e.target.value)} className="rounded border border-edge bg-surface px-2 py-1.5 text-content">
           <option value="">{t("memory.allScopes")}</option>
           <option value="global">{t("memory.globalScope")}</option>

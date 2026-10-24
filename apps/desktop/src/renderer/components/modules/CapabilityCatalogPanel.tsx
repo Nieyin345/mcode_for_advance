@@ -85,7 +85,7 @@ export function CapabilityCatalogPanel({
     ) ?? [];
   return (
     <section data-testid="capability-catalog" aria-labelledby="capability-catalog-title" className="space-y-2">
-      <h3 id="capability-catalog-title" className="text-sm font-semibold">{t("ide.modules.catalogTitle")}</h3>
+      <h3 id="capability-catalog-title" className="text-body font-semibold">{t("ide.modules.catalogTitle")}</h3>
       <p className="text-xs text-content-muted">{t("ide.modules.catalogHint")}</p>
       {loading && !catalog && (
         <div data-testid="capability-catalog-loading"><LoadingNote label={t("common.loading")} /></div>

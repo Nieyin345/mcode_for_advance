@@ -159,7 +159,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
   );
 
   const submitBtnCls = cn(
-    "flex h-11 items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] bg-accent text-sm font-medium text-surface",
+    "flex h-11 items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] bg-accent text-body font-medium text-surface",
     "hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50",
   );
 
@@ -172,7 +172,7 @@ export function PairingScreen({ onPaired }: { onPaired: () => void }) {
           </div>
           <h1 className="text-lg font-semibold">{t("mobile.pair.title")}</h1>
           {hint ? (
-            <p className="text-sm leading-relaxed text-content-muted">{hint}</p>
+            <p className="text-body leading-relaxed text-content-muted">{hint}</p>
           ) : (
             <IconLoader2 size={18} className="animate-spin text-content-muted" />
           )}

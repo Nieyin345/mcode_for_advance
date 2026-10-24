@@ -70,11 +70,11 @@ export function ModuleViewDock({ location }: {location:"left"|"right"|"bottom"})
     if (!shapeError) return null;
     const notice = <ModuleCatalogNotice catalog={catalog} className="m-2" />;
     return location === "right" || location === "left" || location === "bottom"
-      ? <section data-testid={`module-view-${location}`} className="flex min-h-0 flex-col border-t border-edge bg-surface text-sm">{notice}</section>
+      ? <section data-testid={`module-view-${location}`} className="flex min-h-0 flex-col border-t border-edge bg-surface text-body">{notice}</section>
       : notice;
   }
   const result = reply?.type === "result" ? reply.value : reply?.task.result;
-  return <section data-testid={`module-view-${location}`} className="flex min-h-0 flex-col border-t border-edge bg-surface text-sm">
+  return <section data-testid={`module-view-${location}`} className="flex min-h-0 flex-col border-t border-edge bg-surface text-body">
     <div className="flex shrink-0 items-center gap-1 border-b border-edge p-2">
       <select aria-label={locale==="zh"?"扩展视图":"Extension views"} value={id??""} onChange={e=>setSelected(e.target.value)}
         className="min-w-0 flex-1 rounded bg-surface-muted p-1">
@@ -124,7 +124,7 @@ export function ModuleSettingControl({moduleId, property}:{moduleId:string;prope
     finally{setBusy(false);}
   };
   return <div className="space-y-1 rounded border border-edge p-3" data-testid={`module-setting-${moduleId}-${property.key}`}>
-    <label className="block text-sm font-medium" htmlFor={`module-${moduleId}-${property.key}`}>{property.title[locale]}</label>
+    <label className="block text-body font-medium" htmlFor={`module-${moduleId}-${property.key}`}>{property.title[locale]}</label>
     {property.description && <p className="text-xs text-content-muted">{property.description[locale]}</p>}
     {property.type==="string" && <input id={`module-${moduleId}-${property.key}`} className="w-full rounded border border-edge p-2" value={String(value)} maxLength={4096} onChange={e=>{setValue(e.target.value);setSaved(false);}}/>}
     {property.type==="number" && <input id={`module-${moduleId}-${property.key}`} type="number" className="w-full rounded border border-edge p-2" value={String(value)} onChange={e=>{const next=e.target.valueAsNumber;if(Number.isFinite(next))setValue(next);setSaved(false);}}/>}
@@ -145,7 +145,7 @@ export function ModuleSettingsPanel() {
   const groups = contributionsOf(data,"settings");
   return <section className="space-y-4 py-5" data-testid="module-settings-group">
     <header><h2 className="text-lg font-semibold">{locale==="zh"?"扩展设置":"Extension settings"}</h2>
-      <p className="text-sm text-content-muted">{locale==="zh"?"按扩展分组，值仅保存在各扩展的私有存储中。":"Grouped by extension; values stay in each extension's private store."}</p></header>
+      <p className="text-body text-content-muted">{locale==="zh"?"按扩展分组，值仅保存在各扩展的私有存储中。":"Grouped by extension; values stay in each extension's private store."}</p></header>
     {loading && <p>{locale==="zh"?"加载中…":"Loading…"}</p>}
     {error && <p role="alert">{error.message}<button onClick={()=>void refetch()}> ↻ </button></p>}
     {!loading && !error && groups.length===0 && <p className="text-content-muted">{locale==="zh"?"尚无扩展设置贡献":"No extension settings contributions yet"}</p>}

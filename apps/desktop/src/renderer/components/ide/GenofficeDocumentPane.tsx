@@ -107,7 +107,7 @@ export function GenofficeDocumentPane({ filePath }: { filePath: string }) {
                   : doc.data.summary ?? "";
           return (
             <div className="space-y-2">
-              <div className="text-sm text-content-muted">{summary}</div>
+              <div className="text-body text-content-muted">{summary}</div>
               {rows.length > 0 ? (
                 <ol className="space-y-1">
                   {rows.map((r) => (
