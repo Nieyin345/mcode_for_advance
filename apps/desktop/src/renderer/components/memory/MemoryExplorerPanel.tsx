@@ -396,7 +396,7 @@ export function MemoryExplorerPanel() {
                         setSelected(null);
                         setNotice(null);
                       }}
-                      className="rounded p-0.5 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+                      className="cds-hover-ghost rounded p-0.5 text-content-subtle transition-colors hover:text-content"
                     >
                       <IconPlus size={11} />
                     </button>

@@ -191,7 +191,7 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
           type="button"
           onClick={() => setSourceView((v) => !v)}
           title={sourceView ? t("ide.viewer.mdPreview") : t("ide.viewer.mdSource")}
-          className="absolute bottom-4 right-4 z-10 flex h-11 items-center gap-1.5 rounded-full border border-edge bg-surface-muted/90 px-3 text-code text-content-muted shadow-lg backdrop-blur hover:bg-surface-hover active:bg-surface-hover"
+          className="cds-hover-ghost absolute bottom-4 right-4 z-10 flex h-11 items-center gap-1.5 rounded-full border border-edge bg-surface-muted/90 px-3 text-code text-content-muted shadow-lg backdrop-blur"
         >
           {sourceView ? <IconEye size={14} /> : <IconCode size={14} />}
           {sourceView ? t("ide.viewer.mdPreview") : t("ide.viewer.mdSource")}

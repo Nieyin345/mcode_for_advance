@@ -229,7 +229,7 @@ function SelectionCustomButtonsInner({ text, onDone }: { text: string; onDone?: 
               }}
               title={label}
               aria-label={label}
-              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+              className="cds-hover-ghost flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content"
             >
               <Icon size={12} />
             </button>
@@ -265,7 +265,7 @@ function ComposerCustomButtonsInner() {
             title={label}
             aria-label={label}
             data-testid="composer-custom-button"
-            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-muted transition-colors hover:text-content"
           >
             <Icon size={14} />
           </button>

@@ -272,7 +272,7 @@ console.log("\n[6] 迁移进度：裸 hover:bg-surface-hover 的总数只能降�
   }
   check("★ 这四个文件里不再有 hover:bg-surface-hover/NN alpha 变体（本批收干净了）",
     alphaVariants === 0, { alphaVariants });
-  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 153", raw <= 153, { raw });
+  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 138", raw <= 138, { raw });
   check("★ 至少有一处用上了 cds-hover-ghost", migrated > 0, { migrated });
 }
 
@@ -369,6 +369,18 @@ console.log("\n[8] .cds-hover-ghost 只能挂在「按钮本体」上，不能�
   }
   check("★ 至少有一处 .cds-hover-ghost 挂在 <button> 本体上（正控：否则上一条可被「谁都没用」通过）",
     onButton > 0, { onButton });
+
+  // ⚠️ 类不能落在**选中态分支**上 —— 那是 T128 第三批里我自己差点做错的：
+  // 三元写成 `active ? "cds-hover-ghost bg-surface-hover …" : "…"`，把类加到了
+  // 「已选中」那一支。选中行套上 `:active { scale(0.98) }` 会在按下时缩放整行，
+  // 而它常驻选中、不是按钮。类只该在**未选中**那一支（描述悬停）。
+  let onSelectedBranch = 0;
+  for (const f of walk(root("src/renderer/components"))) {
+    const t = readFileSync(f, "utf8");
+    onSelectedBranch += (t.match(/\?\s*"cds-hover-ghost[^"]*bg-surface-hover/sg) ?? []).length;
+  }
+  check("★ .cds-hover-ghost 不在选中态分支上（`? \"…\"` 那一支带 bg-surface-hover）",
+    onSelectedBranch === 0, { onSelectedBranch });
 }
 
 console.log("");

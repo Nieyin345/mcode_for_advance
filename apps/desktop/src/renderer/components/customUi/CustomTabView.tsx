@@ -228,7 +228,7 @@ function HeaderButton({ title, onClick, children }: { title: string; onClick: ()
       onClick={onClick}
       title={title}
       aria-label={title}
-      className="flex h-6 w-6 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+      className="cds-hover-ghost flex h-6 w-6 items-center justify-center rounded text-content-subtle transition-colors hover:text-content"
     >
       {children}
     </button>

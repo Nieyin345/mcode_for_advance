@@ -102,7 +102,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
           <button
             type="button"
             onClick={onClose}
-            className="flex h-11 w-11 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted hover:bg-surface-hover"
+            className="cds-hover-ghost flex h-11 w-11 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted"
           >
             <IconX size={16} />
           </button>
@@ -126,7 +126,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
                     "flex h-16 flex-col items-center justify-center gap-1 rounded-[var(--radius-card)] border text-code",
                     active
                       ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
-                      : "border-edge bg-surface/50 text-content-muted hover:bg-surface-hover",
+                      : "cds-hover-ghost border-edge bg-surface/50 text-content-muted",
                   )}
                 >
                   <Icon size={18} />
@@ -157,7 +157,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
                     "flex h-16 flex-col items-center justify-center gap-1 rounded-[var(--radius-card)] border text-code",
                     active
                       ? "border-edge/80 bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
-                      : "border-edge bg-surface/50 text-content-muted hover:bg-surface-hover",
+                      : "cds-hover-ghost border-edge bg-surface/50 text-content-muted",
                   )}
                 >
                   <Icon size={18} />
@@ -205,7 +205,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
             <button
               type="button"
               onClick={() => setUnpairConfirm(true)}
-              className="flex h-11 items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] border border-edge px-3 text-code text-danger hover:bg-surface-hover"
+              className="cds-hover-ghost flex h-11 items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] border border-edge px-3 text-code text-danger"
             >
               <IconUnlink size={14} />
               {t("mobile.settings.unpair")}

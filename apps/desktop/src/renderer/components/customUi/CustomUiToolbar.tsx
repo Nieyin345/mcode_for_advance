@@ -50,7 +50,7 @@ export function CustomUiToolbar() {
         onClick={() => setCollapsed(false)}
         title={t("customUi.toolbar.expand")}
         aria-label={t("customUi.toolbar.expand")}
-        className="group flex h-full w-3 shrink-0 flex-col items-center border-t border-edge-panel/60 bg-surface-muted pt-2 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost group flex h-full w-3 shrink-0 flex-col items-center border-t border-edge-panel/60 bg-surface-muted pt-2 text-content-subtle transition-colors hover:text-content"
       >
         <IconChevronLeft size={10} className="shrink-0 opacity-60 group-hover:opacity-100" />
       </button>
@@ -75,7 +75,7 @@ export function CustomUiToolbar() {
         onClick={() => setCollapsed(true)}
         title={t("customUi.toolbar.collapse")}
         aria-label={t("customUi.toolbar.collapse")}
-        className="flex h-5 w-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost flex h-5 w-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:text-content"
       >
         <IconChevronRight size={12} />
       </button>
@@ -97,7 +97,7 @@ export function CustomUiToolbar() {
               aria-label={label}
               className={cn(
                 "flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors",
-                active ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "text-content-muted hover:bg-surface-hover hover:text-content",
+                active ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70" : "cds-hover-ghost text-content-muted hover:text-content",
               )}
             >
               <Icon size={16} className="shrink-0" />
@@ -111,7 +111,7 @@ export function CustomUiToolbar() {
         onClick={() => openCustomUiSettings("toolbar")}
         title={entries.length === 0 ? t("customUi.toolbar.add") : t("customUi.toolbar.customize")}
         aria-label={entries.length === 0 ? t("customUi.toolbar.add") : t("customUi.toolbar.customize")}
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:text-content"
       >
         {entries.length === 0 ? <IconPlus size={15} /> : <IconAdjustmentsHorizontal size={15} />}
       </button>

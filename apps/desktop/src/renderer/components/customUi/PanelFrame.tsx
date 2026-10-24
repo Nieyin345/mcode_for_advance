@@ -273,7 +273,7 @@ export function PanelFrame({ item, target, reloadKey = 0, probeMode = "float" }:
         <button
           type="button"
           onClick={() => setRetryKey((k) => k + 1)}
-          className="rounded border border-edge px-2 py-0.5 text-content-muted transition-colors hover:bg-surface-hover"
+          className="cds-hover-ghost rounded border border-edge px-2 py-0.5 text-content-muted transition-colors"
         >
           {t("customUi.panel.retry")}
         </button>
