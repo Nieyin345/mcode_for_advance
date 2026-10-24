@@ -37,15 +37,30 @@ genoffice/apps/markdown/src/preload/index.ts:164  exposeInMainWorld('markdownApi
 **源码形状 ≠ 行为。** 这正是今天反复出现的形态：
 **断言验的是「代码长什么样」，不是「它做到了什么」。**
 
-## 四、判据
+## 四、▲ 2026-10-24 补充：这行**不能整体替换**
 
-### 4.1 硬判据（必须真 Electron）
+`genoffice/apps/docs/src/renderer/main.tsx` 里 `window.desktop` 还出现在 **10 处**
+（`convertAltChunkHtml` / `getLanguage` / `getTheme` / `getDocumentTheme` /
+`onThemeChanged` / `onDocumentThemeChanged` / `onAiPanelPrefsChanged` /
+`onAuthorNameChanged` …）。
+
+**那些是对的** —— 它们问的确实是「这个命名空间有没有某个能力」，答案在独立 docs 里也是「有」。
+
+**只有第 26 行那个 `import('./mcode-theme.css')` 问错了问题。**
+
+**所以修法是「把那一个 if 的条件换掉」，不是「把 window.desktop 全换掉」。**
+如果有人把十处一起改了，那是另一个 bug（docs 的 AI 面板、主题、作者名会全部失效）。
+
+## 五、判据
+
+### 5.1 硬判据（必须真 Electron）
 
 | # | 断言 | 防的是什么 |
 |---|---|---|
 | 1 | **宿主里**打开 docs → `document.styleSheets` 里**有** `mcode-theme` | **「恒 false」** —— 一个从不换壳的实现也能过判据 2 |
 | 2 | **独立 GenOffice 里**打开 docs（app 名非 Mcode）→ **没有** `mcode-theme` | **本卡要修的缺陷** |
-| 3 | 两条都在**真 Electron** 里跑，**不是读源码** | **「形状 ≠ 行为」** —— 0014 就栽在这 |
+| **1b** | **宿主里那 10 处 `window.desktop` 仍然工作**（至少验 `getTheme` 与 `onAiPanelPrefsChanged` 各一次） | **「把十处一起改了」** —— 见 §四 |
+| 3 | 三条都在**真 Electron** 里跑，**不是读源码** | **「形状 ≠ 行为」** —— 0014 就栽在这 |
 
 **⚠️ 判据 1 和 2 缺一不可。**
 
@@ -56,7 +71,9 @@ genoffice/apps/markdown/src/preload/index.ts:164  exposeInMainWorld('markdownApi
 
 **判据 2 是这张卡存在的理由。** 没有它，就只是把开关换了个说法。
 
-### 4.2 换什么开关
+**1b 是 2026-10-24 新加的** —— 它防的是「改对了一处、改坏了十处」。
+
+### 5.2 换什么开关
 
 **O6 的执行会话实测的 UA 判据**（同一份产物）：
 
@@ -68,25 +85,27 @@ genoffice/apps/markdown/src/preload/index.ts:164  exposeInMainWorld('markdownApi
 **`apps/desktop/src/main/index.ts:101` 有 `app.setName("Mcode")`**（我核过）。
 
 ```ts
-// docs/src/renderer/main.tsx
+// docs/src/renderer/main.tsx:26
 if (/\bMcode\//.test(navigator.userAgent)) import('./mcode-theme.css')
 ```
 
 **理由**：UA 问的是「谁在跑我」。`window.desktop` 问的是「我是谁」，而那个答案在独立运行时也是「是」。
 
-**⚠️ 换开关不等于修好了** —— 必须用 4.1 的判据 2 验。**否则就是从「一个坏开关」换成「一个没人验过的好开关」。**
+**⚠️ 换开关不等于修好了** —— 必须用 5.1 的判据 2 验。**否则就是从「一个坏开关」换成「一个没人验过的好开关」。**
 
-## 五、变异
+## 六、变异
 
 1. **把开关改回 `if (window.desktop)`** → 判据 2 必须红（证明判据真的在验区分）；
 2. **把开关改成恒 `true`** → 判据 2 必须红；
-3. **把开关改成恒 `false`** → 判据 1 必须红（证明它没变成「永远不换壳」）。
+3. **把开关改成恒 `false`** → 判据 1 必须红（证明它没变成「永远不换壳」）；
+4. **把 `getTheme` 那处也改成 UA 判断**（模拟「改多了」）→ **判据 1b 必须红**。
 
-**三个都要，因为**：
+**四个都要，因为**：
 - 只有 1 → 证明不了「UA 比 desktop 强」；
-- 没有 3 → 「恒 false」会让判据 2 绿着，而功能全没了。
+- 没有 3 → 「恒 false」会让判据 2 绿着，而功能全没了；
+- **没有 4 → 判据 1b 是一条从没红过的断言**（而它保护的正是本次改动最可能伤到的东西）。
 
-## 六、写给执行者的一条
+## 七、写给执行者的一条
 
 **这条改动的风险不是「做错」，是「做得看起来对」**：
 
@@ -97,12 +116,30 @@ if (/\bMcode\//.test(navigator.userAgent)) import('./mcode-theme.css')
 **所以如果你只做了「改一行 + 断言源码形状」，请如实说「我只改了开关，没验区分」。**
 **那比做一个假验好。**
 
-## 七、边界
+## 八、边界
 
-- 改 `genoffice/apps/docs/src/renderer/main.tsx`（一行）+ 新建套件
+- 改 `genoffice/apps/docs/src/renderer/main.tsx`（**只有第 26 行**）+ 新建套件
 - **不改** `mcode-theme.css` 的内容（它没问题）
-- **不动** `apps/desktop/**`
+- **不改** 那 10 处其它 `window.desktop`
+- **不动** `apps/desktop/**`（除 vendor 账本：新补丁要进 `build/genoffice-upstream.lock.json`
+  与 `verify-genoffice-upstream.cjs`，T39/T115/O6 先例）
 
-## 八、结果回写区
+**⚠️ 与 O6 批二的边界**：O6 正在改 `genoffice/apps/{pdf,slides,sheets}/src/**`。
+**本卡只碰 `genoffice/apps/docs/src/renderer/main.tsx`，不重叠** —— 但两边都要
+改 vendor 账本，**提交时只 `git add` 自己的补丁文件，不要 `git add -A`**。
 
-（执行会话追加：改的那一行、真 Electron 两个 app 的 styleSheets 结果、三个变异、提交 SHA）
+## 九、套件怎么建（照 O6 批一，它已经证明可行）
+
+`apps/desktop/scripts/o6-reshell-html-smoke/` 的三个文件可以直接复制改：
+- `build.mjs` —— 构建产物；
+- `probe.cjs` —— **在 require vendor 入口之前用 Proxy 替换 `BrowserWindow`**，强制
+  `show:false` + `skipTaskbar:true`（**套件窗口不会弹到用户屏幕上**）；
+- `run.sh` —— `HERE=$(cd "$(dirname "$0")" && pwd)` 再 `cd "$HERE/../.."`。
+
+**两次运行只改 `app.setName()`** —— 差异只可能来自开关。
+
+**目录名必须以 `-smoke` 结尾**，否则 `smokes-for.py:331-332` 的发现器不认它。
+
+## 十、结果回写区
+
+（执行会话追加：改的那一行、真 Electron 两个 app 的 styleSheets 结果、1b 的验证方式、四个变异、提交 SHA、补丁文件名）
