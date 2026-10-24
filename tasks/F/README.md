@@ -42,7 +42,7 @@
 | F017 | Theia `plugin-ext` PoC：**有条件能**（宿主零 UI 依赖，但要 12 个 Ext 接口 / 100+ 方法） | ✅ done | `9dc2bf78` |
 | F018 | VS Code 兼容层第一步：契约骨架 + `@types/vscode` 编译期闸门（不写实现） | 🔄 执行中 | — |
 | F019 | 真实扩展 API 需求普查：26,961 行里我们到底需要多少 | 🔄 执行中 | — |
-| F020 | `smokes-for.sh` 看不见 `rpcMap.ts`（加一条 RPC 拿不到回归网），且对 contracts 路径会崩 | ⏸ 等 T145 提交 | — |
+| F020 | `smokes-for.sh` 看不见 `rpcMap.ts`，且对 contracts 路径会崩 | ⛔ superseded by `T150`（UI 总控）。机制发现留在卡里 | — |
 
 ## 扩展闭环的进度（截至 F015）
 

@@ -1,6 +1,38 @@
 # F020｜加一条 RPC 却拿不到回归网：`smokes-for.sh` 看不见 `rpcMap.ts`
 
-- Status: ready-for-agent
+> ## ⛔ 本卡不执行 —— 已并给 `tasks/T150`
+>
+> 这张卡写完之后，UI 总控开了 **T150** 做同一件事（`0884087d`）。**两个人同时改
+> `smokes-for.py` 必然打架**，所以这里只留档，不派。
+>
+> **保留它的理由是它记了 T150 卡里没有的机制**，那段已经单独发给 UI 总控：
+>
+> **contracts 文件是通过「套件里的相对路径 import」进图的，不是 `@contracts/`。**
+>
+> ```python
+> # smokes-for.py resolve()
+> elif spec.startswith("@contracts/"): return None      # 丢掉
+> elif spec.startswith("."):                             # 相对路径照常解析
+>     base = (from_file.parent / spec).resolve()
+> ```
+>
+> 而真实套件里有：
+> ```ts
+> // capability-smoke/main.ts:1
+> import { resolveCapabilities } from "../../../../packages/contracts/src/capability.js";
+> ```
+>
+> **这条边解析成功 → contracts 进了图 → `:417` 的 `p.relative_to(DESKTOP)` 抛 `ValueError`。**
+> 崩在 `moduleCapability.ts` 而不是 `modules.ts`，是因为 `modules.ts:4` 有一跳
+> `import type ... from "./moduleCapability.js"`，`closure()` 顺着又走深了一层。
+>
+> **两个症状、两个修法，别混**：
+>
+> | 症状 | 机制 | 修法 |
+> |---|---|---|
+> | `rpcMap.ts` 答「没有覆盖」 | `readFileSync` + `ts.createSourceFile` 读文本，**图上完全没有这条边**（连相对 import 都没有） | 一条**显式声明**（`@smoke-covers` 或等价物） |
+> | `modules.ts` 崩 | 相对路径 import **进了图**，但「上一跳」在 `apps/desktop` 外，距离算不出来 | 修 `:417`，用 `ROOT` 兜底，**别 try/except 吞掉**（吞了「上一跳是谁」就没了） |
+
 - Category: **P0 扩展主线（闭环的必要条件）**
 - 发现于：T148（`cc3e4da4`）—— F006 加了 `modules.installVsix`，`apiCatalog.generated.ts` 没跟，
   **而加 RPC 的人按仓库规矩跑 `smokes-for.sh` 得到的是一句「没有套件覆盖它」**
