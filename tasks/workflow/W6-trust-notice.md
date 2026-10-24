@@ -1,6 +1,6 @@
 # W6｜发布了的工作流，重启后不会自己跑——而且没人告诉用户
 
-- Status: ready-for-agent
+- Status: BLOCKED（2026-10-25：渲染端没有可验证的「部署成功」事实源；需先补契约/事件后才能满足本卡双向显隐验收）
 - Category: **产品缺陷（Node-RED 自动化）**
 - Priority: **P0 —— 用户以为「发布了 = 会自动跑」，实际不会**
 - Depends on: W0（G5）
@@ -147,3 +147,26 @@ registry.ts:873:  MCODE_ENGINE_TRUSTED: isFlowTrusted(dir) ? "1" : "0",   ← �
 
 `tasks/workflow/W6-trust-notice.md` 末尾追加 `## 结果回写`：
 三步事实核准的实测、提示放在哪、最终文案、双向断言与变异结果、i18n 词条位置。
+
+
+## 2026-10-25 只读实测与阻塞回写
+
+**状态：BLOCKED（产品代码未修改，不能伪称 UI 提示已落地）。**
+
+### 真实 Node-RED 行为
+
+- 本轮 `node apps/desktop/scripts/run-smokes.mjs node-red-e2e-smoke` **PASS（106/106）**，证据 `apps/desktop/.tmp/smoke-runs/1792871444125-43700-FKnpyi/node-red-e2e-smoke.log`。
+- 未写信任标记：`MCODE_ENGINE_TRUSTED=0`，初始 `HTTP-in` **404**；经有凭据的真实 `POST /flows` 部署后 **200**（同一引擎会话内）。
+- 部署后停止并重新启动：`flows.json` 中图仍在，`GET /flows` **200**，但未经审批的 `HTTP-in` **持续 404**。这是「图已保存、但重启没有自动执行」的直接证据。
+- 测试手工写入 `engine-trust.json = {"trusted":true}` 后再重启，启动环境为 trusted 且 HTTP-in **200**；写坏 JSON 又回到 untrusted。**这些受控测试写入不等于生产应用具备批准入口**。
+- 上游 `safeMode` 在未可信启动时阻止自动启动节点；显式 full deploy 在本次运行中可解除 safe mode。故将来的准确文案应包含「重新启动引擎，并再次点击部署之前，不会自动运行」，不能绝对说「重启后不能运行」。
+
+### 无法在本卡范围内实现「已部署才显示、未部署不显示」
+
+- 当前渲染端 `EngineRuntimePanel.tsx` 只通过 `api.workflowEngine.list/status` 获取 `WorkflowEngineStatusView`；`packages/contracts/src/ipc/workflowEngine.ts` 的公开状态只有 `engineId / state / port / reason / editorUrl`。
+- `apps/desktop/src/main/ipc/workflowEngine.ts:90` 的 `toStatusView` 不输出部署 revision、是否已部署或 Node-RED safe-mode 的实时变化；`start/stop/list/status` handler 也不提供 `deploy succeeded` 事件。
+- 因此「引擎 running + 已部署」与「引擎 running + 还未部署」在当前前端输入上可完全相同；使用 `state === "running"` 控制横幅必然破坏本卡正控「未部署时不显示」，使用库列表/已保存文档同样无法区分是否部署。
+- 需要先在**另一个具备主进程/契约独占权限的切片**中提供**由 Node-RED 成功部署确认产生的权威状态**（至少 deployed / unknown，注意原生编辑器直接部署、重启、另一个窗口、失败/取消、版本变化的时序）。再由本卡接入渲染端并增加“恒假/恒真”双向变异。
+- 本卡写入边界明确禁止触碰 `apps/desktop/src/main/**` 和契约；所以本轮**没有假造部署状态，也没有加常驻免责声明冒充按需提示**。未修改任何应用源码。必须由总控明确新的依赖/文件 owner 后再解除 BLOCKED。
+
+**未达判据**：UI 条件显隐、i18n、双向变异、maint-m37-smoke 对齐和本卡产品改动 `tsc` 均尚未执行；只有真实 Node-RED 三态行为已验证。此任务应保持 BLOCKED，而不是 Done。
