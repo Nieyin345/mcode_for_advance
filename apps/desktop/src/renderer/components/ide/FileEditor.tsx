@@ -10,9 +10,11 @@ import { useDiskPoll } from "@renderer/lib/useDiskPoll.js";
 import { cn } from "@renderer/lib/cn.js";
 import { basename, dirname, extname } from "@renderer/lib/path.js";
 import { useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
-import { isOnlyOfficeSupportedPath, isOnlyOfficeViewOnlyPath, type FileViewMode } from "@contracts/ipc";
-// 【T101】GenOffice 的**唯一**扩展名路由表 —— OnlyOffice 的可编辑面比它宽
-// （`.docm/.dotx/.xltx/.pptm/.potx` 只有 OnlyOffice 认），不能让用户点了没反应。
+import type { FileViewMode } from "@contracts/ipc";
+// 【O5 批三】`documentKind` 是文档**种类**的唯一判据；`genofficeAppForPath` 是
+// GenOffice 的**唯一**扩展名路由。两者不是一回事：种类表比路由表宽
+// （`.docm/.dotx/.xltx/.pptm/.potx` 是 Office 文档，但 GenOffice 不路由它们）。
+import { documentKindOf, isOfficeDocumentKind } from "@contracts/documentKind";
 import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
 import { GenofficeDocumentPane } from "./GenofficeDocumentPane.js";
 import { GenofficeViewHostPane } from "./GenofficeViewHostPane.js";
@@ -24,7 +26,6 @@ import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { ChunkedMarkdown } from "../chat/ChunkedMarkdown.js";
 import { PdfPreview } from "../library/PdfPreview.js";
 import { MarkdownEditorPane } from "./MarkdownEditorPane.js";
-import { OnlyOfficeEditorPane } from "./OnlyOfficeEditorPane.js";
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { makeQuoteTag } from "@renderer/lib/contentTag.js";
@@ -65,7 +66,7 @@ import {
   isUnsupported,
   canPreviewHtml,
   languageForExt,
-  // 【T101】OnlyOffice 未配置时那个出口按钮的判据（纯函数，套件直接执行真身）。
+  // 【O5 批三】office 能不能落原生视图的判据（纯函数，套件直接执行真身）。
   isGenofficeViewAvailableFor,
 } from "./fileEditorKinds.js";
 // Monaco model cache (keepCurrentModel ownership): hot tab switches reuse the
@@ -120,14 +121,14 @@ export function FileEditor({
   // 用户自己的选择仍然优先：`ideFileViewModeByProject` 里记着他在这个项目里为这个
   // 文件选过哪一档，改完照旧留着（`??` 只在**没有记录**时生效）。
   //
-  // Office（docx / xlsx / pptx…）统一只走 **OnlyOffice 可视化编辑**（`wysiwyg`）。
-  // 本地 docx/pptx/xlsx 渲染组件留给 AI/其他专用流程，不作为 IDE 的用户预览档。
+  // 【O5 批三 2026-10-24】**OnlyOffice 已删**，Office 文档唯一的 provider 是 GenOffice。
+  // `office` 仍由契约的**种类**判据给出（`documentKind` 的可编辑档 ∪ 只读档）——
+  // 它比 GenOffice 的路由表宽，两者分工见下面 `genofficeViewForOffice`。
   const markdown = isMarkdown(filePath);
-  const office = isOnlyOfficeSupportedPath(filePath);
+  const office = isOfficeDocumentKind(documentKindOf(filePath));
   /**
-   * 【ARC-007】GenOffice 文档视图是**可选优先档**：能力就绪（CLI 构建好）且用户在这个
-   * 项目里为这个文件选了 genoffice 时才用；默认仍是 OnlyOffice（旧引擎在替换验收前
-   * 保持可靠回退，台账"未完成不得默认启用"）。能力不可用时按钮不出现。
+   * 【O5 批三】`genoffice-view`（原生视图）现在是 office 文件的**默认档** —— 见下面
+   * `defaultMode`。这一段只保留取能力位；旧的「默认仍是 OnlyOffice」注释已作废。
    */
   // ⚠️ `pid` 必须先于任何引用它的 hook 求值 —— 下面 useRpc 的 selector 与
   // viewModePref 都读它。放在后面会在首次渲染抛 TDZ（"Cannot access 'pid'
@@ -149,15 +150,13 @@ export function FileEditor({
    * 取代：结构化视图无宿主也能用（诊断/回退面），可视化视图依赖 GenOffice 编辑器页
    * 的构建产物。两个偏好都只经工具栏显式进入，默认档一个字没动。
    */
-  const useGenofficeView = nativeViewReady && viewModePref === "genoffice-view";
   /**
-   * 【T101】OnlyOffice 未配置时的第二条路：这个文件能不能改用 GenOffice 原生编辑器。
+   * 【T101 → O5 批三】这个文件能不能落 GenOffice 原生视图（office 的**默认档**判据）。
    *
    * ⚠️ **比 `nativeViewReady` 严**，因为 `nativeViewReady` 对 office 文件只判了
-   * `office || …`（`office` 是 `isOnlyOfficeSupportedPath`），**没判 `hosts.*`**。
-   * 两个面因此对不上：
+   * `office || …`（种类判据），**没判 `hosts.*`**。两个面因此对不上：
    *
-   *   1. **扩展名**：OnlyOffice 认 `.docm/.dotx/.xltx/.pptm/.potx`，GenOffice 只认
+   *   1. **扩展名**：种类表含 `.docm/.dotx/.xltx/.pptm/.potx`，GenOffice 只认
    *      `docx|odt|ott` 等（`contracts/genofficeFileRoute.ts` 是唯一路由表）。
    *      不查 → 用户点了没反应（违反 T101 判据 3）；
    *   2. **能力**：`hosts.sheets` / `hosts.slidesNative` 在 sidecar 或 vendor 产物
@@ -173,13 +172,44 @@ export function FileEditor({
     host: genofficeHostForFile,
     hosts: genoffice.data?.hosts,
   });
+  /**
+   * 【O5 批三】**office 必须用更严的 `genofficeViewForOffice`**（它还查 `hosts.*`，
+   * 见下一段的说明）。旧的 `nativeViewReady` 对 office 只判「CLI 在」—— 用它会让
+   * 「能力位缺 sheets/slides」的文件进到一张 `unsupportedHost` 降级面板，而那正是
+   * T101 当年点名要避免的「看起来是条路、实际不是」。非 office 的 pdf/md/html
+   * 仍按各自的 hosts 位判（`nativeViewReady` 已含）。
+   */
+  const useGenofficeView = (office ? genofficeViewForOffice : nativeViewReady)
+    && viewModePref === "genoffice-view";
   const documentDocked = useSessionStore((s) => s.paneLayout?.placements?.some(p =>
     p.content?.kind === "document" && p.content.documentId === filePath));
-  const defaultMode: FileViewMode = markdown || office
+  /**
+   * 【O5 批三】**默认档**。用户裁决是「现在的 office 还有 md 全部走 genoffice 这一条线」，
+   * 且「默认啊」—— 所以 office 文件**第一次打开就落在 GenOffice**，不需要用户切模式。
+   *
+   * 三档，按能力退化（**不是**无条件写死，卡 §五之二）：
+   *
+   *  1. `genoffice-view` —— 原生视图就绪（`genofficeViewForOffice`：CLI + 该格式的
+   *     `hosts.*` 都有）。这是能真编辑的那一档。
+   *  2. `genoffice` —— 原生视图不可用但 CLI 在跑。结构化只读视图，读不了会显式
+   *     报原因（`GenofficeDocumentPane` 的 unavailable/refused 分支）。
+   *  3. `preview` —— 连 CLI 都没有。落到 `MarkdownPreviewPane` 的容器里？不 ——
+   *     见下面的 `office` 分支：它画 `GenofficeDocumentPane`，那一支自己会报
+   *     「CLI 缺失」。**刻意不退回本地 Office renderer，也不退回 OnlyOffice**。
+   *
+   * Markdown 仍是 `wysiwyg`（Milkdown，与 office 无关）。
+   */
+  const defaultMode: FileViewMode = markdown
     ? "wysiwyg"
-    : isPdfFile(filePath)
-      ? "preview"
-      : "edit";
+    : office
+      ? genofficeViewForOffice
+        ? "genoffice-view"
+        : genofficeReady
+          ? "genoffice"
+          : "preview"
+      : isPdfFile(filePath)
+        ? "preview"
+        : "edit";
   const viewMode = useSessionStore((s) =>
     pid ? s.ideFileViewModeByProject[pid]?.[filePath] ?? defaultMode : defaultMode,
   );
@@ -209,18 +239,24 @@ export function FileEditor({
   // Effective mode:
   //  - diff: history pairs (forced) OR explicitly requested with a snapshot.
   //  - preview: non-Markdown previews (PDF / images / legacy text).
-  //  - wysiwyg: Markdown 的所见即所得（Milkdown），或 OnlyOffice 文档编辑器。
+  //  - wysiwyg: Markdown 的所见即所得（Milkdown）。**office 不再进这一档**（O5 批三）。
   // Markdown 的旧 preview 偏好只在此适配，不改其他文件/项目的已保存偏好。
   //  - edit: the normal editable Monaco instance (default for non-md files).
   //  - 【ARC-007】genoffice / genoffice-view: 用户显式选择的 GenOffice 结构化视图 /
   //    可视化编辑视图（见上面 useGenofficeView 的说明）。两者互斥（同一时刻只有
   //    一个偏好值），且都只在 office 文件上生效。
+  // 【O5 批三】office 的 `defaultMode` **只是默认**：用户显式选过的档必须照旧生效。
+  // 唯一被忽略的是 `"wysiwyg"` —— 它曾专指 OnlyOffice 编辑器，现在对 office 没有
+  // 对应物；留着它会把文件送回 `MarkdownEditorPane`（Milkdown 打开二进制）。
+  const officePrefUsable = viewModePref !== undefined && viewModePref !== "wysiwyg";
   const effectiveMode: FileViewMode = useGenofficeView
     ? "genoffice-view"
     : useGenoffice
     ? "genoffice"
+    : office && officePrefUsable
+    ? viewMode
     : office
-    ? "wysiwyg"
+    ? defaultMode
     : historyOnly || (viewMode === "diff" && diffBefore != null)
       ? "diff"
       : viewMode === "preview"
@@ -289,22 +325,13 @@ export function FileEditor({
             </div>
           ) : <GenofficeViewHostPane key={filePath} filePath={filePath} />
         ) : effectiveMode === "wysiwyg" ? (
-          office ? (
-            <OnlyOfficeEditorPane
-              key={filePath}
-              filePath={filePath}
-              readOnly={isOnlyOfficeViewOnlyPath(filePath)}
-              onUseGenofficeView={
-                genofficeViewForOffice
-                  ? () => setViewMode(filePath, "genoffice-view")
-                  : undefined
-              }
-            />
-          ) : (
-            <MarkdownEditorPane key={filePath} filePath={filePath} projectPath={projectPath} />
-          )
+          <MarkdownEditorPane key={filePath} filePath={filePath} projectPath={projectPath} />
         ) : effectiveMode === "preview" ? (
-          pdf ? (
+          // 【O5 批三】office **永远不进** Markdown 预览 —— 那是拿 md 渲染器去读二进制。
+          // CLI 缺失时 defaultMode 给的就是 "preview"，这里必须接住它。
+          office ? (
+            <GenofficeDocumentPane key={filePath} filePath={filePath} />
+          ) : pdf ? (
             <PdfPreviewPane filePath={filePath} />
           ) : image ? (
             <ImagePreviewPane filePath={filePath} />
@@ -629,8 +656,8 @@ function EditorToolbar({
             {t("ide.genoffice.toggle")}
           </button>
         )}
-        {/* 【ARC-007】可视化编辑视图 —— 与结构化视图并列的第二档；默认不进入
-            （默认档仍是 OnlyOffice），只有用户显式点它才切过去。 */}
+        {/* 【O5 批三】可视化编辑视图 —— office 文件的**默认档**，这个按钮把它切回
+            `genoffice`（结构化只读）。默认档由 `defaultMode` 决定，不在这里。 */}
         {canUseGenofficeView && (
           <button
             type="button"
@@ -653,8 +680,9 @@ function EditorToolbar({
         {canPreviewHtml && (
           <HtmlPreviewButton filePath={filePath} projectPath={projectPath} />
         )}
-        {/* Office files stay in OnlyOffice. Other previewable binary types
-            keep their existing raw-source escape hatch. */}
+        {/* Office files no longer have a source/preview toggle (they open in
+            GenOffice). Other previewable binary types keep their raw-source
+            escape hatch. */}
         {hasPreviewToggle && (
           <button
             type="button"

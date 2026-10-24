@@ -557,9 +557,11 @@ section("4c. sheets 无对端 / slides 能力未装配：明说原因，不建�
       check("★ 演示文稿：不再说「打开暂不可用 / 通道在主进程」（旧结论已废弃）",
         !text.includes("打开暂不可用") && !text.includes("自己的主进程"), text);
     }
+    // 【O5 批三】文案改过：slides 那句不再提 OnlyOffice（它已删），改说
+    // 「GenOffice 结构化视图 + 等构建产物齐备后用原生编辑视图」。
     check(`${format}：缺依赖时给出明确恢复方式`, format === "表格"
       ? text.includes("请构建对应 app 后重试")
-      : text.includes("OnlyOffice") && text.includes("GenOffice 结构化视图"), text);
+      : text.includes("GenOffice 结构化视图") && text.includes("原生编辑视图"), text);
     check(`★ ${format}：不是「编辑器页未构建」的误报`, !text.includes("GenOffice 编辑器页未构建"), text);
     check(`${format}：不残留「加载中」`, !text.includes("加载中…"), text);
     // 显式降级是警告（tone=warning，role=status），不是"出错了"的红色警报。
@@ -689,9 +691,10 @@ section("5. FileEditor：默认档不变、切换项可进入可视化视图");
   resetWorld({ available: true, path: CLI_PATH });
   __setCapabilities({ kind: "ok", cli: { available: true, path: CLI_PATH } });
 
-  // 默认（无偏好）→ OnlyOffice，**不**进任何 GenOffice 档。
+  // 【O5 批三】默认（无偏好）→ **GenOffice 原生视图**。这里原来钉的是「默认仍是
+  // OnlyOffice（默认档不变）」—— 那正是用户裁决推翻的那条。
   const first = await renderEditor(OFFICE_FILE);
-  eq("★ office 文件默认仍是 OnlyOffice（默认档不变）", first.pane?.type?.name, "OnlyOfficeEditorPane");
+  eq("★ office 文件默认落 GenOffice 原生视图（O5 用户裁决）", first.pane?.type?.name, "GenofficeViewHostPane");
   eq(
     "★ 默认不下发任何 genoffice 偏好（store 未被写）",
     storeState.ideFileViewModeByProject["project-a"],
@@ -711,7 +714,7 @@ section("5. FileEditor：默认档不变、切换项可进入可视化视图");
   eq("★ 偏好 genoffice-view 时渲染 GenofficeViewHostPane", second.pane?.type?.name, "GenofficeViewHostPane");
   eq("该面板拿到 filePath prop", second.pane?.props.filePath, OFFICE_FILE);
 
-  // 再点一次 → 回到 OnlyOffice 的 wysiwyg。
+  // 再点一次 → 回到结构化视图（默认档），不再是已删的 OnlyOffice。
   eq("偏好生效后 genofficeViewActive=true", second.toolbar?.genofficeViewActive, true);
   (second.toolbar?.onToggleGenofficeView as (() => void) | undefined)?.();
   eq(
@@ -792,9 +795,14 @@ section("7. 源码断言：接线与错误分支没有旁路");
 
     check("FileEditor import 了 GenofficeViewHostPane", editorSrc.includes('from "./GenofficeViewHostPane.js"'));
     check("FileEditor 有 genoffice-view 渲染分支", editorSrc.includes('effectiveMode === "genoffice-view"'));
+    // 【O5 批三】默认档改过（office 现在默认落 GenOffice）。这条断言原来写的是
+    // 「逐字未变」——**那个"未变"正是被用户裁决推翻的东西**。改成钉住新形状：
+    // markdown → wysiwyg；office → 按能力退化的三档；其余 → preview / edit。
+    // 真正的行为判据在 `markdown-mode-smoke` 的「default opens the GenOffice NATIVE view」。
     check(
-      "FileEditor 默认档表达式逐字未变（wysiwyg / preview / edit）",
-      /const defaultMode: FileViewMode = markdown \|\| office\s*\? "wysiwyg"\s*: isPdfFile\(filePath\)\s*\? "preview"\s*: "edit";/.test(editorSrc),
+      "FileEditor 默认档：md 仍是 wysiwyg，office 走 GenOffice 三档，其余 preview/edit",
+      /const defaultMode: FileViewMode = markdown\s*\? "wysiwyg"\s*: office\s*\? genofficeViewForOffice\s*\? "genoffice-view"/.test(editorSrc)
+        && /: isPdfFile\(filePath\)\s*\? "preview"\s*: "edit";/.test(editorSrc),
     );
     check("工具栏按钮接的是 onToggleGenofficeView", editorSrc.includes("onClick={onToggleGenofficeView}"));
 

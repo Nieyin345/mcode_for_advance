@@ -50,7 +50,7 @@ NODE
   --alias:@renderer/components/chat/ChunkedMarkdown.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@renderer/components/chat/SelectionToolbar.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --alias:@renderer/components/chat/SelectionQuoteMenu.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
-  --alias:@renderer/components/ide/OnlyOfficeEditorPane.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
+  --alias:@renderer/components/ide/GenofficeDocumentPane.js=./scripts/maint-m35-smoke/stubs/previewDeps.ts \
   --outfile="$OUT/preview.mjs" --log-level=error
 node "$OUT/preview.mjs" || status=1
 

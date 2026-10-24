@@ -98,7 +98,7 @@ export function isImagePath(filePath: string): boolean {
  *
  *  ⚠️ **不是 `FileEditor.isUnsupported()` 的镜像。** 从前这句注释写着 "Mirrors
  *  `isUnsupported()` in FileEditor.tsx",而两份早就不同了:FileEditor 那份**刻意**拿掉了
- *  `.pdf`(归 `PdfPreviewPane`,见它那里的注释),也从来没有 Office 老格式(归 OnlyOffice)。
+ *  `.pdf`(归 `PdfPreviewPane`,见它那里的注释),也从来没有 Office 老格式(归 GenOffice)。
  *  两份判据服务的是**两件事**:这份决定"首次打开默认用哪个视图",那份决定"Monaco 能不能
  *  编辑"。服务不同目的的两份清单本来就不该是同一份 —— 别再照"镜像"去对齐(对齐会把 PDF
  *  从"默认预览"里踢出去,反而错)。

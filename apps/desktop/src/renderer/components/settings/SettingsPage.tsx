@@ -283,10 +283,10 @@ export function SettingsPage() {
   const settingsSection = useSessionStore((s) => s.settingsSection);
   // Existing callers or an already-open settings state may still request the
   // retired data-root id; keep that deep link landing on the merged tab.
-  // ⚠️ **`"office"` 也是同一种遗留 id** —— `OnlyOfficeEditorPane` 的三处「打开设置」
-  // 用的是它,而导航里没有这一项(OnlyOffice 的配置卡在「运行时」页里)。不映射的话
-  // 那三处深链会回落到 `NAV_ITEMS[0]`(常规),用户点了「打开设置」却看不到任何
-  // OnlyOffice 的东西。映射到真正承载它的 `runtimes`。
+  // ⚠️ **`"office"` 也是同一种遗留 id** —— 它曾是 `OnlyOfficeEditorPane` 三处
+  // 「打开设置」的深链目标（OnlyOffice 已于 O5 批三删除，不再有发起方）。保留映射
+  // 只为**已持久化的旧设置状态**：不映射的话那些旧值会回落到 `NAV_ITEMS[0]`（常规），
+  // 与用户上一步看到的栏目对不上。
   const requestedSection =
     settingsSection === "data-root"
       ? "library-types"

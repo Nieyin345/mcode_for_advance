@@ -71,7 +71,7 @@ const { FileViewer, loadViewData } = await import("@renderer/components/library/
 const { useFileViewStore, setFileOpenGuard } = await import("@renderer/stores/fileViewStore.js");
 const { __mount, __render, __flush, __nodes } = await import("./fakeReact.js");
 const { PdfPreview } = await import("@renderer/components/library/PdfPreview.js");
-const { OnlyOfficeEditorPane } = await import("@renderer/components/ide/OnlyOfficeEditorPane.js");
+const { GenofficeDocumentPane } = await import("@renderer/components/ide/GenofficeDocumentPane.js");
 
 const ROOT = "D:\\lib\\my-tree"; // 条目根(linked 目录)
 const currentChild = (): string | null => {
@@ -138,7 +138,7 @@ console.log("\n【ARC-007】目录选文件和子PDF返回必须走文件预览�
   check("actual FileViewer passes PDF bytes and the child file path to PdfPreview",
     actualPdfNode?.props.bytes instanceof Uint8Array &&
     actualPdfNode.props.filePath === joinPath(ROOT, "chapter.pdf") &&
-    !hasComponent(OnlyOfficeEditorPane),
+    !hasComponent(GenofficeDocumentPane),
     { hasPdfPreview: !!actualPdfNode, filePath: actualPdfNode?.props.filePath });
 
   // The PDF suffix is the shared GenOffice route. A generic MIME must not
@@ -151,7 +151,7 @@ console.log("\n【ARC-007】目录选文件和子PDF返回必须走文件预览�
   __render();
   await __flush();
   check("known .pdf still renders PdfPreview when MIME is application/octet-stream",
-    hasComponent(PdfPreview) && !hasComponent(OnlyOfficeEditorPane));
+    hasComponent(PdfPreview) && !hasComponent(GenofficeDocumentPane));
 
   // Unknown extensions are not silently assigned a native editor. A PDF MIME
   // can still describe the actual bytes and intentionally selects PdfPreview.
@@ -163,7 +163,7 @@ console.log("\n【ARC-007】目录选文件和子PDF返回必须走文件预览�
   __render();
   await __flush();
   check("unknown suffix with generic MIME does not route to PdfPreview or Office",
-    !hasComponent(PdfPreview) && !hasComponent(OnlyOfficeEditorPane));
+    !hasComponent(PdfPreview) && !hasComponent(GenofficeDocumentPane));
 
   state.binaryMime = "application/pdf";
   useFileViewStore.setState({
@@ -173,7 +173,7 @@ console.log("\n【ARC-007】目录选文件和子PDF返回必须走文件预览�
   __render();
   await __flush();
   check("unknown suffix with application/pdf MIME uses PDF content fallback, not Office",
-    hasComponent(PdfPreview) && !hasComponent(OnlyOfficeEditorPane));
+    hasComponent(PdfPreview) && !hasComponent(GenofficeDocumentPane));
 
   // Restore the known PDF fixture and dirty state for the existing navigation
   // guard assertions below.

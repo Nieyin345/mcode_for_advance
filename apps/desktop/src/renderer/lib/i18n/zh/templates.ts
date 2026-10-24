@@ -14,7 +14,7 @@
  *     那几条一起删。
  *   - `templates.preview.*Failed` / `rendering` —— 只被 `templates/DocxPreview` /
  *     `PptxPreview` / `XlsxPreview` 三个组件引用,而**那三个组件自 2026-09-28
- *     (`78625786`) 起已成孤儿**:office 预览整体改走 `OnlyOfficeEditorPane`,资料库里
+ *     (`78625786`) 起已成孤儿**:office 预览整体改走 GenOffice(Originally OnlyOfficeEditorPane,其后随 O5 删除),资料库里
  *     那三个本地渲染器不再被任何地方挂载。这几条**随组件一起**才该删(组件留着,它们
  *     就还用着,不算孤儿)。
  */

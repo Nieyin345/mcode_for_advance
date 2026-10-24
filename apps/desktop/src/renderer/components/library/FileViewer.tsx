@@ -5,7 +5,7 @@
  *
  * 两条来源:文献库条目(`library.readFile`,目录会给一份文件名列表)与项目文件
  * (`file.readFile` / `file.readBinary`)。**渲染分支才是重复的大头**
- * (文本/图片/pdf/OnlyOffice/目录/不支持),所以取数分两支、渲染只有一套。
+ * (文本/图片/pdf/GenOffice 结构化视图/目录/不支持),所以取数分两支、渲染只有一套。
  *
  * ⚠️ 从前还有第三条来源「模版库文件」(`templates.readFile`,office 由主进程直接给
  * `Uint8Array`)—— 它随模版库并进统一资料库一起撤掉了(左栏只剩一个「资料库」入口)。
@@ -39,10 +39,9 @@ import {
   IconLoader2,
 } from "@renderer/lib/icons.js";
 import { type FileViewTarget, useFileViewStore, setFileOpenGuard, saveCurrentPreview } from "@renderer/stores/fileViewStore.js";
-import { isOnlyOfficeSupportedPath } from "@contracts/ipc";
-import { documentKindOf } from "@contracts/documentKind";
+import { documentKindOf, isOfficeDocumentKind } from "@contracts/documentKind";
 import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
-import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
+import { GenofficeDocumentPane } from "@renderer/components/ide/GenofficeDocumentPane.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { Button } from "@renderer/components/ui/button.js";
 
@@ -51,7 +50,7 @@ import { Button } from "@renderer/components/ui/button.js";
  *
  * 与 `LibraryFileContent` 的差别只有一处,但很要紧:二进制分支给的是**字节**
  * (`bytes`),不是 base64。文献库那条路回来的是 base64,在这里就地解掉；PDF/图片
- * 用这些字节，Office 则通过绝对路径交给 OnlyOffice。
+ * 用这些字节，Office 则通过绝对路径交给 GenOffice（结构化只读视图）。
  */
 type ViewData =
   | { type: "dir"; files: Array<{ name: string; isDir: boolean }> }
@@ -64,7 +63,7 @@ type ViewData =
       bytes: Uint8Array;
       base64: string;
       /**
-       * 这个二进制文件在磁盘上的**绝对路径** —— PDF 保存批注与 OnlyOffice 打开都用它。
+       * 这个二进制文件在磁盘上的**绝对路径** —— PDF 保存批注与 GenOffice 打开都用它。
        * 文献库条目要走 `library.entryPath` 换一次；换不出来就不给，PDF 退化成只读，
        * Office 显示明确错误而不退回本地 renderer。
        */
@@ -463,7 +462,10 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         />
       );
     }
-    if (isOnlyOfficeSupportedPath(visibleName)) {
+    if (isOfficeDocumentKind(documentKindOf(visibleName))) {
+      // O5 批三：OnlyOffice 已删。Office 文档在这里给 **GenOffice 结构化视图**
+      // （只读、无依赖；能读就画出块/页/表，读不了显式说原因，不装作空文档）。
+      // 需要真编辑请在工作区编辑器里打开 —— 那边默认落 GenOffice 原生视图。
       if (!data.filePath) {
         return (
           <div className="flex flex-1 items-start justify-center p-6">
@@ -471,13 +473,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
           </div>
         );
       }
-      return (
-        <OnlyOfficeEditorPane
-          key={data.filePath}
-          filePath={data.filePath}
-          readOnly
-        />
-      );
+      return <GenofficeDocumentPane key={data.filePath} filePath={data.filePath} />;
     }
     return (
       <div className="flex flex-1 items-start justify-center p-6">
@@ -493,7 +489,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       {header}
       {/* `ref` 挂在**根那一层**上（2026-09-21）—— 见下面 `root.contains` 那句：
           选中的文字必须落在这一整块里才算数。**不多包任何一层 div**：多包一层会让
-          `PdfPreview` / `OnlyOfficeEditorPane` 那几支"自己管滚动"的布局多经一道（它们靠父容器
+          `PdfPreview` / `GenofficeDocumentPane` 那几支"自己管滚动"的布局多经一道（它们靠父容器
           直接给高度），而这层 ref 只需要"是个容器"就够了 —— 根 div 本来就是。 */}
       {body}
 

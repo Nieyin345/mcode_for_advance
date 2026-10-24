@@ -8,7 +8,7 @@
  *   文本   ── md/markdown 走 Milkdown / Crepe 只读预览，其余进 <pre>;
  *   图片   ── data URL 直接摆;
  *   pdf    ── 复用 PdfPreview(给它喂字节);
- *   office ── 用 OnlyOffice 只读 viewer；插件选区仍可引用到 AI;
+ *   office ── 用 GenOffice 只读结构化视图；插件选区仍可引用到 AI;
  *   目录   ── 文件名列表,点一个子文件用 relPath 再读一次。
  *
  * ## 字节从哪来
@@ -16,12 +16,12 @@
  * 渲染进程读不了本地文件,所以只有一条路:`library.readFile` 把内容分类交上来 ——
  * 文本给 text,二进制给 mime + base64(预览的体积上限在主进程挡住),目录给
  * files 列表。base64 在这里就地转回字节，供 PDF 等仍使用字节的 viewer。Office 则走
- * `entryPath` + OnlyOffice，不再送进本地 Office renderer。
+ * `entryPath` + GenOffice，不再送进本地 Office renderer。
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LibraryItem } from "@contracts/library";
-import { isOnlyOfficeSupportedPath, type LibraryFileContent } from "@contracts/ipc";
-import { documentExtension, documentKindOf } from "@contracts/documentKind";
+import type { LibraryFileContent } from "@contracts/ipc";
+import { documentExtension, documentKindOf, isOfficeDocumentKind } from "@contracts/documentKind";
 import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { joinPath } from "@renderer/lib/path.js";
@@ -33,7 +33,7 @@ const MarkdownPreviewPane = lazy(() => import("./MarkdownPreviewPane.js"));
 import { SelectionToolbar, type SelectionToolbarState } from "@renderer/components/chat/SelectionToolbar.js";
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { IconArrowLeft, IconFile, IconFolder, IconLoader2 } from "@renderer/lib/icons.js";
-import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
+import { GenofficeDocumentPane } from "@renderer/components/ide/GenofficeDocumentPane.js";
 // PdfPreview is itself a lazy shell: the PDF engine (EmbedPDF + pdfium glue,
 // >1MB) loads only when a PDF is actually shown (see PdfPreview.tsx).
 import { PdfPreview } from "./PdfPreview.js";
@@ -338,7 +338,8 @@ export function FilePreview({
       const filePath = pdfPath ? (relPath ? joinPath(pdfPath, relPath) : pdfPath) : undefined;
       return <PdfPreview item={item} bytes={bytes} {...(filePath ? { filePath } : {})} />;
     }
-    if (isOnlyOfficeSupportedPath(viewing)) {
+    if (isOfficeDocumentKind(documentKindOf(viewing))) {
+      // O5 批三：OnlyOffice 已删 —— 同 `FileViewer`，这里给只读的 GenOffice 结构化视图。
       const filePath = pdfPath ? (relPath ? joinPath(pdfPath, relPath) : pdfPath) : undefined;
       if (!filePath) {
         return (
@@ -347,13 +348,7 @@ export function FilePreview({
           </div>
         );
       }
-      return (
-        <OnlyOfficeEditorPane
-          key={filePath}
-          filePath={filePath}
-          readOnly
-        />
-      );
+      return <GenofficeDocumentPane key={filePath} filePath={filePath} />;
     }
     // 未知类型只报 mime：不解码 base64（从前这里白解一遍、结果没人用）。
     return (
@@ -367,7 +362,7 @@ export function FilePreview({
 
   return (
     // `ref` 挂在根那一层 —— 选中的文字必须落在这一整块里才算数（同 `FileViewer`）。
-    // **不多包 div**：多包一层会让 PdfPreview / OnlyOfficeEditorPane 那几支"自己管滚动"的
+    // **不多包 div**：多包一层会让 PdfPreview / GenofficeDocumentPane 那几支"自己管滚动"的
     // 布局多经一道（它们靠父容器直接给高度）。
     <div ref={bodyRef} className="h-full min-h-0">
       {body}

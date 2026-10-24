@@ -59,25 +59,16 @@ export const zh = {
   "ide.editor.switchToSource": "切换到源码编辑",
   "ide.editor.switchToPreview": "切换到预览",
   "ide.editor.switchToSourceView": "切换到源码视图",
-  "ide.editor.switchToOfficeEdit": "切换到可视化编辑（OnlyOffice）",
   "ide.editor.switchToMarkdownEdit": "切换到可视化编辑（Milkdown）",
   /** Milkdown 空文档占位 */
   "ide.editor.mdPlaceholder": "开始输入，或按 / 插入内容…",
   "ide.editor.quoteToCurrent": "引用到当前对话",
   "ide.editor.quoteNoOpenChat": "请先打开一个对话，再引用所选内容。",
   "ide.editor.quoteAdded": "已引用到当前对话的输入框",
-  // ── Office 文档（OnlyOffice）──
-  "ide.office.opening": "正在连接 OnlyOffice…",
-  "ide.office.loadingEditor": "正在加载编辑器…",
-  "ide.office.documentLoadTimeout": "OnlyOffice 未能在规定时间内完成文档加载。请检查服务连接后重试。",
-  "ide.office.notConfigured": "还没有配置 OnlyOffice Document Server",
-  "ide.office.notConfiguredDesc": "未检测到 OnlyOffice Document Server。你可以：装上它获得完整的 Office 编辑能力，或用 GenOffice 原生编辑器打开（无需额外安装，适合日常查看与小改动）。",
-  "ide.office.openSettings": "打开设置",
-  /** 【T101】`notConfigured` 分支的第二条路（按钮文字要短，和「打开设置」并排）。 */
-  "ide.office.useGenofficeView": "用 GenOffice 打开",
-  "ide.office.openFailed": "OnlyOffice 打开失败",
-  "ide.office.externalChanged": "文件已被外部修改（例如 AI），这里还是旧内容",
-  "ide.office.savedToConflictCopy": "文件已被外部修改，你的保存已另存为 {name}",
+  // ── Office 文档（GenOffice；OnlyOffice 已于 O5 批三删除）──
+  /** 资料库/预览这一侧拿不到文件路径时的 Office 打开失败提示（`FileViewer` /
+   *  `FilePreview` 共用）。工作区编辑器那一侧走 GenOffice 自己的不可用分支。 */
+  "ide.office.openFailed": "无法打开这份 Office 文档：拿不到它的磁盘路径。",
   /** 编辑器里选中文字后，引用目标列表里"这一份文件"那一项的标题（同 FileViewer 的用法）。 */
   "ide.editor.thisFile": "这个文件",
   /** 模式按钮显示目标档；md 只在 Milkdown 编辑与源码之间切换。 */
@@ -438,7 +429,7 @@ export const zh = {
   "ide.turns.cacheHit": "缓存命中 {n}%",
   "ide.turns.noUsage": "无用量记录",
   "ide.genoffice.toggle": "GenOffice 视图",
-  "ide.genoffice.toggleHint": "在 GenOffice 结构化视图与 OnlyOffice 编辑器之间切换",
+  "ide.genoffice.toggleHint": "在 GenOffice 结构化视图与原生编辑视图之间切换",
   "ide.genoffice.cliReady": "GenOffice 已就绪",
   "ide.genoffice.cliMissing": "GenOffice 未构建",
   "ide.genoffice.unavailable": "这个文档暂时无法用 GenOffice 打开",
@@ -455,7 +446,7 @@ export const zh = {
   "ide.genoffice.viewHostOpenFailed": "GenOffice 编辑视图打开失败",
   "ide.genoffice.viewHostStageTooSmall": "面板没有可用的显示区域（宽或高为 0），视图未打开",
   "ide.genoffice.viewHostUnsupported": "演示文稿的原厂编辑视图在这台机器上不可用",
-  "ide.genoffice.viewHostUnsupportedSlides": "原因：这台机器上的演示文稿原厂视图不可用 —— 需要 GenOffice 的演示文稿解析器所依赖的源码快照，以及 apps/slides 的 out/preload、out/renderer 构建产物（document.capabilities.hosts.slidesNative 为 false）。因此这里不创建编辑视图，避免显示一张空白的演示文稿页。演示文稿仍可通过 OnlyOffice 编辑器或 GenOffice 结构化视图打开。",
+  "ide.genoffice.viewHostUnsupportedSlides": "原因：这台机器上的演示文稿原厂视图不可用 —— 需要 GenOffice 的演示文稿解析器所依赖的源码快照，以及 apps/slides 的 out/preload、out/renderer 构建产物（document.capabilities.hosts.slidesNative 为 false）。因此这里不创建编辑视图，避免显示一张空白的演示文稿页。演示文稿仍可通过 GenOffice 结构化视图打开；等 slides 构建产物齐备后也可用原生编辑视图。",
   "ide.genoffice.editorNotBuilt": "GenOffice 编辑器页未构建",
   "ide.genoffice.editorNotBuiltDesc": "没有找到仓库内的 GenOffice CLI 快照（genoffice/packages/cli/dist/genoffice.cjs），无法定位编辑器页。请先在 genoffice/ 下构建 CLI 与对应编辑器（docs/sheets/slides）。",
   "ide.modules.title": "UI 扩展",

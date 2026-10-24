@@ -11,10 +11,9 @@
  */
 import { useEffect, useState } from "react";
 import { api } from "@renderer/lib/api.js";
-import { isOnlyOfficeSupportedPath } from "@contracts/ipc";
-import { documentExtension, documentKindOf } from "@contracts/documentKind";
+import { documentExtension, documentKindOf, isOfficeDocumentKind } from "@contracts/documentKind";
 import { Markdown } from "@renderer/components/chat/Markdown.js";
-import { OnlyOfficeEditorPane } from "@renderer/components/ide/OnlyOfficeEditorPane.js";
+import { GenofficeDocumentPane } from "@renderer/components/ide/GenofficeDocumentPane.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { dirname } from "@renderer/lib/path.js";
 import { useScrollMemory } from "@renderer/lib/scrollMemory.js";
@@ -82,7 +81,7 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
   const [sourceView, setSourceView] = useState(false);
   const ext = extOf(name);
   const isMd = isMarkdownName(name);
-  const isOffice = isOnlyOfficeSupportedPath(path);
+  const isOffice = isOfficeDocumentKind(documentKindOf(path));
   // The overlay unmounts when the user taps 返回, so without a remembered
   // offset tapping the same file again landed back at the top. Rendered
   // preview and highlighted source are different renderings of the same file
@@ -137,14 +136,11 @@ export function FileViewerContent({ name, path }: { name: string; path: string }
   const markdown = content === null ? "" : `\`\`\`${lang}\n${content}\n\`\`\``;
 
   if (isOffice) {
+    // O5 批三：手机端没有 Document Server 传输了 —— 给只读的 GenOffice 结构化视图。
+    // 它只走 `document.*` 的 IPC/HTTP 桥，不需要外部服务。
     return (
       <div className="relative min-h-0 flex-1">
-        <OnlyOfficeEditorPane
-          key={path}
-          filePath={path}
-          readOnly
-          deviceType="mobile"
-        />
+        <GenofficeDocumentPane key={path} filePath={path} />
       </div>
     );
   }

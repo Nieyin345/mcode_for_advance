@@ -16,7 +16,7 @@ import { genofficeAppForPath, type GenofficeApp } from "@contracts/genofficeFile
 import { isPathWithin, resolveRelativePath } from "@renderer/lib/path.js";
 
 /**
- * 【T101】OnlyOffice 未配置时，「这个文件能不能改用 GenOffice 原生编辑器」。
+ * 【T101 → O5 批三】「这个文件能不能落 GenOffice 原生视图」—— office 的**默认档**判据。
  *
  * 这是 `notConfigured` 分支那个出口按钮的**唯一判据** —— 判 true 才画按钮。
  * 抽到这里是为了**可被套件直接执行**（`GenofficeViewHostPane` 那边动辄几百行，
@@ -25,9 +25,9 @@ import { isPathWithin, resolveRelativePath } from "@renderer/lib/path.js";
  * ## 为什么不能直接用 `nativeViewReady`
  *
  * `nativeViewReady` 对 office 文件只判 `office || …`（`office` =
- * `isOnlyOfficeSupportedPath`），**不判 `hosts.*`**，两个面因此对不上：
+ * 契约的 Office 种类判据），**不判 `hosts.*`**，两个面因此对不上：
  *
- *  1. **扩展名**：OnlyOffice 认 `.docm/.dotx/.xltx/.pptm/.potx`，GenOffice 只认
+ *  1. **扩展名**：Office 种类表含 `.docm/.dotx/.xltx/.pptm/.potx`，GenOffice 只认
  *     `docx|odt|ott` 等（`@contracts/genofficeFileRoute` 是唯一路由表）。不查 →
  *     按钮出现、点了没反应；
  *  2. **能力**：`hosts.sheets` / `hosts.slidesNative` 在 Rust sidecar 或 vendor
@@ -41,7 +41,7 @@ import { isPathWithin, resolveRelativePath } from "@renderer/lib/path.js";
  * `NativeKind`），查它等于查一个常量。
  */
 export function isGenofficeViewAvailableFor(input: {
-  /** `isOnlyOfficeSupportedPath(filePath)` —— 这个文件是不是 Office 文档。 */
+  /** `isOfficeDocumentKind(documentKindOf(filePath))` —— 这个文件是不是 Office 文档。 */
   office: boolean;
   /** GenOffice CLI 就绪 **且** 该类文件有宿主对端（`FileEditor` 的 `nativeViewReady`）。 */
   nativeViewReady: boolean;

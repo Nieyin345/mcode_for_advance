@@ -15,7 +15,7 @@
  *
  * ## 为什么按需挂载
  *
- * 与 `OnlyOfficeEditorPane` 同一取舍：面板只在文件被打开时挂载，`document.read`
+ * 与「按需挂载」的通用取舍一致：面板只在文件被打开时挂载，`document.read`
  * 走 `useRpc`（硬规矩 7）。读失败/CLI 缺失/格式无路由都**显式画出来**，不装作空文档。
  */
 import { useRpc } from "@renderer/hooks/useRpc.js";

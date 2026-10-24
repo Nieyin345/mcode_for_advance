@@ -44,18 +44,6 @@ for (const name of functions) {
     `Missing production AST boundary: ${name}`,
   );
 }
-// Import the production contract classifiers at AST boundaries too. A copied
-// extension regex goes stale when Office support changes independently.
-const officePath = join(desktop, "../../packages/contracts/src/ipc/onlyoffice.ts");
-const officeSource = readFileSync(officePath, "utf8");
-const officeAst = ts.createSourceFile(officePath, officeSource, ts.ScriptTarget.Latest, true);
-const officeNames = ["ONLYOFFICE_EDITABLE", "ONLYOFFICE_VIEW_ONLY",
-  "isOnlyOfficeSupportedPath", "isOnlyOfficeViewOnlyPath"];
-const officeNodes = officeAst.statements.filter(node =>
-  ts.isFunctionDeclaration(node) && officeNames.includes(node.name?.text) ||
-  ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
-    ts.isIdentifier(d.name) && officeNames.includes(d.name.text)));
-assert.equal(officeNodes.length, officeNames.length, "Production Office classifier boundaries");
 // 【ARC-007】文档种类判据已收口到 `@contracts/documentKind`（`fileEditorKinds.ts`
 // 现在只调 `documentKindOf`）。这一套要执行**真分类器**，所以把那两个纯函数也按
 // AST 边界读进来一起转译 —— 不读就会在沙箱里报 `documentKindOf is not defined`
@@ -63,14 +51,14 @@ assert.equal(officeNodes.length, officeNames.length, "Production Office classifi
 const kindPath = join(desktop, "../../packages/contracts/src/documentKind.ts");
 const kindSource = readFileSync(kindPath, "utf8");
 const kindAst = ts.createSourceFile(kindPath, kindSource, ts.ScriptTarget.Latest, true);
-const kindFnNames = ["documentExtension", "documentKindOf"];
+const kindFnNames = ["documentExtension", "documentKindOf", "isOfficeDocumentKind"];
 const kindSetNames = ["OFFICE_EDITABLE", "OFFICE_VIEW_ONLY", "IMAGE", "UNSUPPORTED", "HTML", "MARKDOWN"];
 const kindNodes = kindAst.statements.filter(node =>
   (ts.isFunctionDeclaration(node) && kindFnNames.includes(node.name?.text)) ||
   (ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
     ts.isIdentifier(d.name) && kindSetNames.includes(d.name.text))));
 assert.equal(kindNodes.length, kindFnNames.length + kindSetNames.length,
-  "Production documentKind boundaries (2 functions + 6 sets)");
+  "Production documentKind boundaries (3 functions + 6 sets)");
 
 // 【T57】`fileEditorKinds.ts` 现在也调 `@contracts/genofficeFileRoute` 的
 // `genofficeAppForPath`。同样按 AST 边界读进来 —— 漏了就在沙箱里报
@@ -86,7 +74,6 @@ const routeNodes = routeAst.statements.filter(node =>
 assert.ok(routeNodes.length >= 2, "Production genofficeFileRoute boundaries (function + regex constants)");
 
 const code = ts.transpileModule([
-  ...officeNodes.map(n => n.getText(officeAst)),
   ...kindNodes.map(n => n.getText(kindAst)),
   ...routeNodes.map(n => n.getText(routeAst)),
   ...selected.map(n => n.getText(ast)),
@@ -100,6 +87,9 @@ let state;
 let before;
 let gitPair;
 let changes;
+/** `document.capabilities()` 的返回值 —— 默认 null（CLI 未就绪，与真实首帧一致）。
+ *  O5 批三起 office 的默认档要读它，所以夹具必须能摆出「能力就绪」的现场。 */
+let capabilities = null;
 const noOp = () => {};
 const env = {
   exports: {},
@@ -117,15 +107,14 @@ const env = {
   resolveShortcut: () => null,
   acceleratorToDisplayString: value => value,
   cn: (...args) => args.filter(x => typeof x === "string").join(" "),
-  // 【ARC-007】FileEditor 现在用 `useRpc` 读 document.capabilities（决定是否给出
-  // GenOffice 视图）。这一套只验路由/工具栏，不验数据读取，所以给一个"永远没有数据"
-  // 的桩 —— 与"CLI 未就绪"的真实首帧一致，路由判定不受影响。
-  useRpc: () => ({ data: undefined, loading: false, error: null, refetch: async () => {} }),
+  // 【ARC-007 → O5 批三】FileEditor 用 `useRpc` 读 document.capabilities 决定 office
+  // 落哪一档。夹具经 `capabilities` 变量摆现场（默认 null = CLI 未就绪）。
+  useRpc: () => ({ data: capabilities ?? undefined, loading: false, error: null, refetch: async () => {} }),
   api: new Proxy({}, { get: () => () => Promise.resolve(undefined) }),
   EMPTY_NAV: [],
 };
 env.useSessionStore.getState = () => state;
-for (const name of ["DiffPane", "OnlyOfficeEditorPane", "MarkdownEditorPane", "PdfPreviewPane",
+for (const name of ["DiffPane", "GenofficeDocumentPane", "GenofficeViewHostPane", "MarkdownEditorPane", "PdfPreviewPane",
   "OfficePreviewPane", "ImagePreviewPane", "UnsupportedPane", "MarkdownPreviewPane", "EditPane", "FileTypeIcon",
   ...new Set(source.match(/\bIcon\w+/g))]) env[name] = name;
 const context = vm.createContext(env);
@@ -135,7 +124,7 @@ function all(node) {
   return [node, ...(node.props?.children ?? []).flatMap(all)];
 }
 function reset(file, mode, project = "project-a") {
-  before = undefined; gitPair = undefined; changes = [];
+  before = undefined; gitPair = undefined; changes = []; capabilities = null;
   state = {
     activeProjectId: project, ideFileViewModeByProject: { "project-a": {}, "project-b": {} },
     ideDiffBeforeByProject: {}, ideEditorMode: "tabs", projects: [], shortcutOverrides: {},
@@ -215,18 +204,73 @@ test("history diff cannot be replaced by the live editor", () => {
   render(file).toggle.props.onClick();
   assert.equal(render(file).pane.type, "DiffPane");
 });
-// Office now has one OnlyOffice surface; old preferences cannot reopen the
-// removed local preview/source route. This follows production, not a new UI change.
-for (const extension of ["docx", "xlsx", "pptx", "odt", "doc", "xls", "ppt", "rtf"]) {
-  test(`${extension}: Office remains on its supported surface`, () => {
+/* ══════════════════════════════════════════════════════════════════════════
+ * 【O5 批三】**office 的默认档**（用户原话：「默认啊」）
+ *
+ * 判据：打开一个 office 文件，**第一次就落在 GenOffice**，不需要用户切模式。
+ * 三档按能力退化 —— 不能无条件写死（卡 §五之二：能力不齐时写死会开出一个降级面板）。
+ *
+ * ⚠️ **这一节是整张卡最关键的一条判据**。它验的是 `FileEditor.tsx` 的 `defaultMode`；
+ * 变异：把那里改回恒 `"wysiwyg"` 或把 `office` 判定改成恒 false → 这里的断言必须红。
+ * ══════════════════════════════════════════════════════════════════════════ */
+const ALL_HOSTS = { pdf: true, markdown: true, html: true, sheets: true, slides: true, slidesNative: true };
+function capsReady() {
+  return { cli: { available: true, path: "/genoffice/cli.js" }, hosts: { ...ALL_HOSTS } };
+}
+const OFFICE_EXTS = ["docx", "xlsx", "pptx"];
+for (const extension of OFFICE_EXTS) {
+  test(`${extension}: ★ default (no stored preference) opens the GenOffice NATIVE view`, () => {
     const file = "/workspace/doc." + extension;
-    for (const mode of [undefined, "edit", "preview", "wysiwyg"]) {
-      reset(file, mode); const r = render(file);
-      assert.equal(r.pane.type, "OnlyOfficeEditorPane");
-      assert.equal(r.toggle, undefined, "No obsolete Office preview/source toggle");
-      assert.equal(r.pane.props.readOnly, ["doc", "xls", "ppt", "rtf"].includes(extension));
-      assert.equal(changes.length, 0, "Opening must not rewrite stored preferences");
-    }
+    reset(file, undefined); capabilities = capsReady();
+    const r = render(file);
+    assert.equal(r.pane.type, "GenofficeViewHostPane",
+      `office 默认档必须直接落 GenOffice 原生视图（实际 ${r.pane.type}）；用户不该需要手动切模式`);
+    assert.equal(r.toolbar.mode, "genoffice-view", "toolbar must report the native-view mode");
+    assert.equal(changes.length, 0, "Opening must not write a preference — the default is a default, not a mutation");
+  });
+}
+test("★ docx: stored legacy wysiwyg preference no longer traps the file outside GenOffice", () => {
+  const file = "/workspace/doc.docx";
+  reset(file, "wysiwyg"); capabilities = capsReady();
+  assert.equal(render(file).pane.type, "GenofficeViewHostPane",
+    "an old OnlyOffice-era preference must not keep office on a view that no longer exists");
+});
+// ⚠️ 挑 **xlsx** 而不是 docx：docs 家族按契约**恒可用**（hosts.docs 恒 true，
+// 见 ipc/document.ts:453 与 isGenofficeViewAvailableFor 的 docs 分支），所以 docx
+// 不会因能力位退化。sheets / slides 才查 hosts 位。
+test("xlsx: GenOffice host capability missing falls back to the structured view", () => {
+  const file = "/workspace/doc.xlsx";
+  reset(file, undefined);
+  capabilities = { cli: { available: true, path: "/genoffice/cli.js" }, hosts: { docs: true, pdf: true, markdown: true, html: true, sheets: false, slides: false, slidesNative: false } };
+  assert.equal(render(file).pane.type, "GenofficeDocumentPane");
+});
+test("★ pptx: slides capability missing (both bits) also falls back, not a dead native pane", () => {
+  const file = "/workspace/doc.pptx";
+  reset(file, undefined);
+  capabilities = { cli: { available: true, path: "/genoffice/cli.js" }, hosts: { docs: true, pdf: true, markdown: true, html: true, sheets: true, slides: false, slidesNative: false } };
+  assert.equal(render(file).pane.type, "GenofficeDocumentPane");
+});
+test("docx: CLI missing still lands in GenOffice, which reports the reason", () => {
+  const file = "/workspace/doc.docx";
+  reset(file, undefined); capabilities = null;
+  assert.equal(render(file).pane.type, "GenofficeDocumentPane",
+    "no local Office renderer and no OnlyOffice to fall back to — the pane must say why");
+});
+test("office: a real user preference still wins over the default", () => {
+  const file = "/workspace/doc.docx";
+  reset(file, "edit"); capabilities = capsReady();
+  assert.equal(render(file).pane.type, "EditPane", "explicit preferences are not overridden by the default");
+});
+// 只读老格式：**按 GenOffice 自己的路由表**决定落哪一档 —— 不按我们「觉得它该
+// 不该支持」猜。`xls` 在 `XLSX_RE` 里（vendor 自己声称能开），所以走原生视图，
+// 开不了时由 `unsupportedHost` 分支**显式报原因**；`doc` / `ppt` / `rtf` 不在任何
+// 路由里 → 结构化视图。两者都**不是**死编辑器。
+for (const [extension, expected] of [["xls", "GenofficeViewHostPane"], ["doc", "GenofficeDocumentPane"],
+  ["ppt", "GenofficeDocumentPane"], ["rtf", "GenofficeDocumentPane"]]) {
+  test(`${extension}: Office read-only format lands on ${expected} — never a dead editor`, () => {
+    const file = "/workspace/doc." + extension;
+    reset(file, undefined); capabilities = capsReady();
+    assert.equal(render(file).pane.type, expected);
   });
 }
 test("PDF remains preview-only", () => {
