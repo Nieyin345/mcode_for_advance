@@ -379,10 +379,11 @@ source "$HERE/../lib/esbuild-path.sh"
 | `o3-packaged-u1` | 0 | 0 | **打包产物**（`resources/genoffice/**`），与 `src/main` 无关 |
 | `o6-reshell-*`（待建） | 0 | 0 | **vendor 的 CSS 生效**（`genoffice/apps/*/src/renderer/`） |
 | `md-preview` / `flow-preview` / `vscode-api-census` | 0 | 0 | 预览台/普查 |
-| `arc005-visual-baseline` | 2 | **0** | **两个都是 `alias` 到 `windowStub.ts`** —— 是「让代码不碰它」 |
+| `arc005-visual-baseline` | 2（grep 串） | **4** | `fixture-panels.tsx` 真 import 了 `DiffView` / `lineDiff` / `Markdown` / `WorkflowBoardPanel`；`build.mjs:160` 那条 `alias` 是另一件事 |
 | `electron-u1` | 4 | **3** | `runner.ts:736-742` 是 `await import()` 真加载；另一个是注释 |
-| `t96-probe` | 8 | 待核 | |
-| `preset-scripts-sync` / `mc035-egress-probe` | 1 / 2 | 待核 | |
+| `t96-probe` | 8 | **3–5** | 两个独立统计不一致（我的正则更窄） |
+| `flow-preview` / `md-preview` | 0（grep 串） | **2 / 1** | import 组件渲染给人看 —— **算不算覆盖是判断题** |
+| `mc035-egress-probe` / `preset-scripts-sync` | 1 / 2 | **1 / 0** | |
 
 **⚠️ 「引用路径数」不等于「覆盖边数」。** 同一个 grep 结果里混着三种东西：
 
@@ -396,9 +397,36 @@ source "$HERE/../lib/esbuild-path.sh"
 把「引用了」当成「覆盖了」，而 `arc005` 那 2 个是桩、`electron-u1` 的 4 个里有 3 个是真的。
 **要分清必须看上下文，不能数数。**
 
-**还有一个待查的第四个问题**：`alias` 到桩的路径，`smokes-for.py` 会不会算成覆盖边？
-如果会，那 `arc005` 现在可能被算成「覆盖了 `@main/window.js`」，而它其实把它换掉了 ——
-**那是这个工具结论在另一个方向上的错。**
+**第四个问题的答案：工具是对的，错的是读它的人。**
+
+`smokes-for.py` 的 `IMPORT_RE` 要求字符串前面是 `from` 或 `import`；
+`arc005/build.mjs:160` 的 `"@main/window.js"` 前面是 `{`（对象键），**不匹配**。
+所以 `alias` 到桩的路径**不会**被算成覆盖边。
+
+**这条本身有价值**：它证明「工具比我以为的准 —— 我担心它错，其实是我读错了它」。
+
+### 「预览台」算不算覆盖：判据不是「import 了什么」
+
+**`flow-preview` / `md-preview` import 组件是为了渲染给人看，不是断言行为。**
+
+**判据应该是「改坏了会不会红」，不是「导入了什么」**——
+覆盖的定义是「改坏了有人知道」，而不是「代码被加载过」。
+
+**所以对这两个目录，要么做一次变异（把被 import 的组件改坏一格）看它红不红，
+要么承认它们不是覆盖。**
+
+### 这张表我改了三次，每次都是「只看了一个角度」
+
+| 谁 | 版本 | 错法 |
+|---|---|---|
+| UI | v1 | 「9 个都该进索引」—— 事实对，含义错 |
+| UI | v2 | 「全是桩」—— 只看路径串 |
+| **我** | **v2.5** | **「`arc005` 全是桩」—— 只看 `alias` 那一行，没看 `fixture-panels.tsx`** |
+| UI | v3 | ✅ 剥注释 + 只认 import |
+| **我** | **v3.5** | **少算了 `t96`/`flow`（正则太窄）** |
+
+**这不是「谁更仔细」，是「这个问题需要几个角度分别看一遍」。**
+**解法是两个独立统计交叉验证 —— 差的那些就是需要看的地方。**
 
 **结论：`o3` 和 `o6` 都属于「覆盖的不是 `apps/desktop/src`」，加进依赖图也不会产生任何边。**
 
