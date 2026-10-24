@@ -6,7 +6,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ConfirmDialog, ErrorNote } from "@renderer/components/ui/index.js";
 import { SettingsSection } from "@renderer/components/settings/SettingsSection.js";
 
-const selectClass = "w-full rounded border border-edge bg-surface px-2 py-2 text-body";
+const selectClass = "w-full rounded border border-edge bg-surface px-2 py-2 text-sm";
 
 export function MemoryTransferPanel() {
   const { t } = useI18n();
@@ -43,7 +43,7 @@ export function MemoryTransferPanel() {
       <div className="space-y-3 px-4 py-3">
         {(list.error || list.data?.error) && <ErrorNote>{list.error?.message ?? list.data?.error}</ErrorNote>}
         <div className="grid gap-3 sm:grid-cols-3">
-          <label className="text-body text-content-muted">{t("memory.source")}
+          <label className="text-sm text-content-muted">{t("memory.source")}
             <select value={source} onChange={e => setSource(e.target.value)} className={`mt-1 ${selectClass}`}>
               <option value="">{t("memory.chooseSource")}</option>
               {list.data?.sources?.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
@@ -55,14 +55,14 @@ export function MemoryTransferPanel() {
               <p className="mt-1 text-xs text-warning">{t("memory.sourcesUnreadable", { n: list.data?.unreadableSources ?? 0 })}</p>
             )}
           </label>
-          <label className="text-body text-content-muted">{t("memory.destination")}
+          <label className="text-sm text-content-muted">{t("memory.destination")}
             <select value={destination} onChange={e => setDestination(e.target.value)} className={`mt-1 ${selectClass}`}>
               <option value="">{t("memory.chooseDestination")}</option>
               <option value="global">{t("memory.globalScope")}</option>
               {list.data?.projects?.map(p => <option key={p.id} value={`projects/${p.id}`}>{p.name}</option>)}
             </select>
           </label>
-          <label className="text-body text-content-muted">{t("memory.category")}
+          <label className="text-sm text-content-muted">{t("memory.category")}
             <select value={category} onChange={e => setCategory(e.target.value as MemoryCategory)} className={`mt-1 ${selectClass}`}>
               {MEMORY_CATEGORIES.map(value => <option key={value} value={value}>{value}</option>)}
             </select>
@@ -104,7 +104,7 @@ export function MemoryTransferPanel() {
         </>}
       </div>
     </SettingsSection>
-    {notice && <p role="status" className="text-body text-content-muted">{notice}</p>}
+    {notice && <p role="status" className="text-sm text-content-muted">{notice}</p>}
     <ConfirmDialog open={pending !== null} title={t("memory.confirmTransfer")} description={t("memory.transferSafety")}
       confirmText={t("common.confirm")} onOpenChange={open => { if (!open) setPending(null); }} onConfirm={() => void commit()} />
   </div>;

@@ -6,11 +6,11 @@ export function MemoryInjectionPreview({ receipts }: { receipts?: MemoryInjectio
   const list = receipts ?? [];
   return (
     <details className="mt-5 border-t border-edge pt-3">
-      <summary className="cursor-pointer text-body font-medium text-content-muted">
+      <summary className="cursor-pointer text-sm font-medium text-content-muted">
         {t("memory.assistant.injections")} ({list.length})
       </summary>
       {list.length === 0 ? (
-        <p className="mt-2 text-body text-content-subtle">
+        <p className="mt-2 text-sm text-content-subtle">
           {t("memory.assistant.injectionsEmpty")}
         </p>
       ) : (

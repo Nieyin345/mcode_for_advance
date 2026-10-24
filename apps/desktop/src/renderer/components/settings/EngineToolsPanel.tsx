@@ -101,7 +101,7 @@ function EngineCard({
       desc={state.supported ? t("settings.engineTools.engineHint") : t("settings.engineTools.codexUnsupported")}
     >
       {!state.supported ? (
-        <p className="text-body text-content-muted">{t("settings.engineTools.codexUnsupported")}</p>
+        <p className="text-sm text-content-muted">{t("settings.engineTools.codexUnsupported")}</p>
       ) : (
         <div className="space-y-3">
           {rows.length === 0 ? (
@@ -159,7 +159,7 @@ function EngineCard({
               placeholder={t("settings.engineTools.guidancePlaceholder")}
               rows={4}
               maxLength={4000}
-              className="w-full resize-y rounded-md border border-edge bg-surface px-3 py-2 text-body text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
+              className="w-full resize-y rounded-md border border-edge bg-surface px-3 py-2 text-sm text-content placeholder:text-content-subtle focus:border-accent focus:outline-none"
             />
           </Field>
           <p className="text-xs text-content-muted">{t("settings.engineTools.guidanceHint")}</p>

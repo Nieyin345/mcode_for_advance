@@ -159,7 +159,7 @@ function ScreenShell({ title, children }: { title: string; children: React.React
   return (
     <div className="flex h-full min-w-0 min-h-0 flex-1 flex-col">
       <div className="flex min-h-11 shrink-0 items-center gap-2 border-b border-edge px-3">
-        <span className="text-body font-medium text-content">{title}</span>
+        <span className="text-sm font-medium text-content">{title}</span>
         <span className="flex-1" />
         <span className="flex items-center gap-1 text-[10px] text-content-subtle">
           <IconFolderOpen size={12} />

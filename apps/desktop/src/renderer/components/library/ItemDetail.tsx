@@ -437,7 +437,7 @@ export function ItemDetail({ item, onChanged }: Props) {
   return (
     <div className="h-full overflow-y-auto px-4 py-3">
       {/* 标题 */}
-      <div className="mb-3 text-body font-medium leading-snug text-content">{item.title}</div>
+      <div className="mb-3 text-sm font-medium leading-snug text-content">{item.title}</div>
 
       {/* 文件状态 —— 放最上面,因为这是用户最关心的。下载不在这里:那是外部
           MCP / 自动化的事,核心只知道"文件在不在"。 */}

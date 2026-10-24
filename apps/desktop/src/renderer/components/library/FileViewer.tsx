@@ -537,7 +537,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
         <Dialog.Portal>
           <Dialog.Backdrop />
           <Dialog.Popup className="w-[380px] max-w-[90vw] p-4">
-            <Dialog.Title className="text-body font-semibold text-content">
+            <Dialog.Title className="text-sm font-semibold text-content">
               {t("library.pdfViewer.leaveUnsavedTitle")}
             </Dialog.Title>
             <Dialog.Description className="mt-2 text-xs text-content-muted">

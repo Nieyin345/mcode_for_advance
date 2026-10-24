@@ -383,7 +383,7 @@ export function SearchDialog() {
               onKeyDown={onKeyDown}
               placeholder={mode === "name" ? t("ide.search.namePlaceholder") : t("ide.search.contentPlaceholder")}
               spellCheck={false}
-              className="h-6 min-w-0 flex-1 bg-transparent text-body text-content outline-none placeholder:text-content-subtle"
+              className="h-6 min-w-0 flex-1 bg-transparent text-sm text-content outline-none placeholder:text-content-subtle"
             />
             {/* File-type filter: free-form input (auto-completes from previously typed
                 values via the datalist). Accepts "*.java"/".java"/"java" and

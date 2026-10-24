@@ -1542,7 +1542,7 @@ export function BrowserPanel({ mode, selected = false }: BrowserPanelProps) {
         )}
         {error && (
           <div className="absolute inset-0 flex items-center justify-center">
-            <p className="text-body text-content-muted">{error}</p>
+            <p className="text-sm text-content-muted">{error}</p>
           </div>
         )}
         {activeTab?.pickMode && (

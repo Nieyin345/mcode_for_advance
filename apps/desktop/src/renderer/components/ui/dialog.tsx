@@ -104,7 +104,7 @@ export interface DialogTitleProps
 function DialogTitle({ className, ...props }: DialogTitleProps) {
   return (
     <BaseDialog.Title
-      className={cn("text-body font-semibold text-content", className)}
+      className={cn("text-sm font-semibold text-content", className)}
       {...props}
     />
   );

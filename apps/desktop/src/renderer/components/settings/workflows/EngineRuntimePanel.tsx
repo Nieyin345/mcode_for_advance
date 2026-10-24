@@ -563,7 +563,7 @@ export function EngineNodePackagesSection() {
 
   return (
     <section className="space-y-2" data-engine-nodes="">
-      <h4 className="text-body font-semibold">{t("settings.workflows.engine.nodesTitle")}</h4>
+      <h4 className="text-sm font-semibold">{t("settings.workflows.engine.nodesTitle")}</h4>
       <p className="text-[0.7857em] text-content-muted">{t("settings.workflows.engine.nodesMetaHint")}</p>
       {list.loading && list.data === undefined && <LoadingNote label={t("common.loading")} />}
       {list.error !== null && list.data === undefined && <ErrorNote>{list.error.message}</ErrorNote>}
@@ -586,7 +586,7 @@ export function EngineNodePackagesSection() {
           ))}
         </ul>
       )}
-      <label className="block space-y-1 text-body">
+      <label className="block space-y-1 text-sm">
         <span>{t("settings.workflows.engine.nodesSourceDir")}</span>
         <textarea
           data-testid="engine-nodes-request"

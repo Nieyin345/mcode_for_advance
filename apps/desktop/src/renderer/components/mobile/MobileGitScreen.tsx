@@ -329,7 +329,7 @@ export function MobileGitScreen() {
   return (
     <div className="flex h-full min-w-0 min-h-0 flex-1 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-edge px-3">
-        <span className="text-body font-medium text-content">Git</span>
+        <span className="text-sm font-medium text-content">Git</span>
         <span className="flex-1" />
         <button
           type="button"
