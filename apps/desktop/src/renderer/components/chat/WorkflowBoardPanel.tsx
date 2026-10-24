@@ -409,7 +409,7 @@ export function WorkflowBoardPanel() {
           </span>
           <button
             type="button"
-            className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted hover:bg-surface-hover"
+            className="cds-hover-ghost shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted"
             onClick={() => setLoadRetry((n) => n + 1)}
           >
             {t("common.retry")}

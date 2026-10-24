@@ -272,7 +272,7 @@ console.log("\n[6] 迁移进度：裸 hover:bg-surface-hover 的总数只能降�
   }
   check("★ 这四个文件里不再有 hover:bg-surface-hover/NN alpha 变体（本批收干净了）",
     alphaVariants === 0, { alphaVariants });
-  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 74", raw <= 74, { raw });
+  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 34", raw <= 34, { raw });
   check("★ 至少有一处用上了 cds-hover-ghost", migrated > 0, { migrated });
 }
 

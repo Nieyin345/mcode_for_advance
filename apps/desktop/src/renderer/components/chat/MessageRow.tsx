@@ -391,7 +391,7 @@ export const MessageRow = memo(function MessageRow({
                 onClick={() => onStartEdit?.(msg)}
                 title={t("common.edit")}
                 aria-label={t("common.edit")}
-                className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
+                className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted"
               >
                 <IconPencil size={12} />
               </button>
@@ -402,7 +402,7 @@ export const MessageRow = memo(function MessageRow({
                 onClick={() => onRegenerate(msg)}
                 title={t("chatStream.regenerate")}
                 aria-label={t("chatStream.regenerate")}
-                className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
+                className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted"
               >
                 <IconRefresh size={12} />
               </button>
@@ -479,7 +479,7 @@ function CopyButton({ text }: { text: string }) {
       onClick={onCopy}
       title={t("common.copy")}
       aria-label={t("common.copy")}
-      className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
+      className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted"
     >
       {copied ? <IconCheck size={12} className="text-accent" /> : <IconCopy size={12} />}
     </button>
@@ -640,7 +640,7 @@ function UserMessageEditor({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded px-2 py-1 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+          className="cds-hover-ghost rounded px-2 py-1 text-[11px] text-content-muted transition-colors hover:text-content"
         >
           {t("common.cancel")}
         </button>

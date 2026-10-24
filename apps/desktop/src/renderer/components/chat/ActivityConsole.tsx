@@ -561,7 +561,7 @@ function BookmarkRow({
                 setEditing(true);
               }}
               title={t("chatStream.bookmark.rename")}
-              className="absolute right-7 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content group-hover/row:block"
+              className="cds-hover-ghost absolute right-7 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-content-subtle transition-colors hover:text-content group-hover/row:block"
             >
               <IconPencil size={11} />
             </button>
@@ -571,7 +571,7 @@ function BookmarkRow({
               type="button"
               onClick={() => onRemove(bookmark)}
               title={t("chatStream.bookmark.remove")}
-              className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-content-subtle transition-colors hover:bg-surface-hover hover:text-danger group-hover/row:block"
+              className="cds-hover-ghost absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-content-subtle transition-colors hover:text-danger group-hover/row:block"
             >
               <IconX size={11} />
             </button>
@@ -951,7 +951,7 @@ export function ActivityConsole({
               type="button"
               onClick={rightAction.run}
               title={rightAction.label}
-              className="grid h-6 w-6 place-items-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+              className="cds-hover-ghost grid h-6 w-6 place-items-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:text-content"
             >
               <IconLayoutSidebarRightExpand size={13} />
             </button>
@@ -960,7 +960,7 @@ export function ActivityConsole({
             type="button"
             onClick={onClose}
             title={t("chatStream.activity.close")}
-            className="grid h-6 w-6 place-items-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost grid h-6 w-6 place-items-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:text-content"
           >
             <IconX size={13} />
           </button>

@@ -196,7 +196,7 @@ export function SessionDirectoryChip({ sessionId }: { sessionId: string | null }
                         onClick={(e) => openManage(p, e)}
                         className={cn(
                           "-mr-1 flex h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle opacity-50 transition-opacity",
-                          "hover:bg-surface-hover hover:text-content group-hover:opacity-100",
+                          "cds-hover-ghost  hover:text-content group-hover:opacity-100",
                         )}
                         title={t("chat.directory.manageIconTitle")}
                       >

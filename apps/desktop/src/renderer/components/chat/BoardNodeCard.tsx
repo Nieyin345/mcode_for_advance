@@ -355,7 +355,7 @@ export function BoardNodeCard({
               type="button"
               onClick={() => setRetryOpen(true)}
               title={t("chatStream.workflowStep.retry")}
-              className="flex h-6 w-6 items-center justify-center rounded-md text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+              className="cds-hover-ghost flex h-6 w-6 items-center justify-center rounded-md text-content-muted transition-colors hover:text-content"
             >
               <IconRefresh size={13} />
             </button>
@@ -365,7 +365,7 @@ export function BoardNodeCard({
               type="button"
               onClick={onStopGraph}
               title={t("chatStream.workflowBoard.takeoverStop")}
-              className="flex h-6 w-6 items-center justify-center rounded-md text-content-muted transition-colors hover:bg-surface-hover hover:text-danger"
+              className="cds-hover-ghost flex h-6 w-6 items-center justify-center rounded-md text-content-muted transition-colors hover:text-danger"
             >
               <IconPlayerStop size={13} />
             </button>

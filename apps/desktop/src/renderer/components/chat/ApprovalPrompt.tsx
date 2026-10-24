@@ -159,7 +159,7 @@ export function ApprovalPrompt({
           onClick={() => setOpen((v) => !v)}
           className={cn(
             "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors",
-            "text-content-muted hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost text-content-muted hover:text-content",
           )}
           title={open ? t("chat.approval.collapseTitle") : t("chat.approval.expandTitle")}
         >
@@ -232,7 +232,7 @@ export function ApprovalPrompt({
                 const verdict = mcpApprovalVerdict("always_allow");
                 onDecide(verdict.granted, verdict.always);
               }}
-              className="rounded px-2 py-1 text-[11px] font-medium text-content-muted transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+              className="cds-hover-ghost rounded px-2 py-1 text-[11px] font-medium text-content-muted transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               title={t("chat.approval.alwaysAllow", { tool: toolName })}
             >
               {t("chat.approval.alwaysAllow", { tool: toolName })}

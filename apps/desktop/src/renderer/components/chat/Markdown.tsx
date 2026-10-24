@@ -696,7 +696,7 @@ function buildComponents(): Components {
               <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-surface-muted/90 to-transparent" />
               <button
                 onClick={() => setExpanded(true)}
-                className="absolute bottom-1.5 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-edge bg-surface px-2.5 py-0.5 text-content-muted shadow-sm transition-colors hover:bg-surface-hover hover:text-content"
+                className="cds-hover-ghost absolute bottom-1.5 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-edge bg-surface px-2.5 py-0.5 text-content-muted shadow-sm transition-colors hover:text-content"
                 title={t("chatStream.code.expand")}
               >
                 <IconChevronDown size={12} /> {t("chatStream.code.expand")}

@@ -87,7 +87,7 @@ export const ContentTagChip = forwardRef<
         onClick={onRemove}
         title={t("chat.tag.removeTitle")}
         aria-label={t("chat.tag.removeTitle")}
-        className="ml-0.5 flex h-4 w-4 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost ml-0.5 flex h-4 w-4 items-center justify-center rounded text-content-subtle transition-colors hover:text-content"
       >
         <IconX size={11} />
       </button>

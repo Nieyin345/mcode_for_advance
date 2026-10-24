@@ -116,7 +116,7 @@ export function WorktreeMergeToolbarButton() {
         onClick={() => setOpen(true)}
         className={cn(
           "flex shrink-0 items-center justify-center rounded p-1.5 transition-colors",
-          "text-accent hover:bg-surface-hover",
+          "cds-hover-ghost text-accent",
         )}
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         title={t("chat.worktree.mergeBackTitle")}

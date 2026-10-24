@@ -417,7 +417,7 @@ function FileRow({ entry }: { entry: TurnFileEntry }) {
         <button
           type="button"
           onClick={() => useSessionStore.getState().revealInFileTree(entry.filePath)}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          className="cds-hover-ghost inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:text-content focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           title={t("chatStream.turnFiles.locateTitle")}
           aria-label={t("chatStream.turnFiles.locateTitle")}
         >

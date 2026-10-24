@@ -3431,7 +3431,7 @@ function ChatPaneForSession({
                                 onClick={() => void sendQueuedPromptNow(sessionId, item.id)}
                                 title={t("chat.queue.sendNowTitle")}
                                 aria-label={t("chat.queue.sendNow")}
-                                className="flex h-3.5 w-3.5 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+                                className="cds-hover-ghost flex h-3.5 w-3.5 items-center justify-center rounded text-content-subtle transition-colors hover:text-content"
                               >
                                 <IconBolt size={10} />
                               </button>

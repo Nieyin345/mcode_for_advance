@@ -379,7 +379,7 @@ function MainSessionRow({
         type="button"
         onClick={(e) => onChooseProfile(e.currentTarget.getBoundingClientRect())}
         title={t("sideChat.newChat")}
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:text-content"
       >
         <IconPlus size={13} />
       </button>
@@ -430,7 +430,7 @@ function SideChatRow({
         title={running ? undefined : t("sideChat.deleteChat")}
         className={cn(
           "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-subtle transition-all",
-          "hover:bg-surface-hover hover:text-danger focus-visible:opacity-100",
+          "cds-hover-ghost  hover:text-danger focus-visible:opacity-100",
           "opacity-0 group-hover:opacity-100",
           running && "pointer-events-none opacity-0",
         )}
@@ -469,7 +469,7 @@ function SideChatView({ session, parentRow }: { session: Session; parentRow?: Se
           type="button"
           onClick={closeSideChatView}
           title={t("sideChat.backToList")}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+          className="cds-hover-ghost flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-muted transition-colors hover:text-content"
         >
           <IconArrowLeft size={15} />
         </button>
@@ -513,7 +513,7 @@ function SideChatView({ session, parentRow }: { session: Session; parentRow?: Se
           title={running ? undefined : t("sideChat.deleteChat")}
           className={cn(
             "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-muted transition-colors",
-            "hover:bg-surface-hover hover:text-danger",
+            "cds-hover-ghost  hover:text-danger",
             running && "pointer-events-none opacity-40",
           )}
         >

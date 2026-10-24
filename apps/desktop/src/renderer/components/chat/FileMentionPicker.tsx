@@ -385,7 +385,7 @@ export function FileMentionPicker({
           disabled={pickPending}
           className={cn(
             "mx-1.5 mt-1.5 flex items-center gap-1.5 rounded-md border border-dashed border-edge px-2 py-1.5 text-left text-[12px] text-content-muted",
-            "transition-colors hover:border-edge hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost transition-colors hover:border-edge hover:text-content",
           )}
           title={t("chat.mention.externalTitle")}
         >

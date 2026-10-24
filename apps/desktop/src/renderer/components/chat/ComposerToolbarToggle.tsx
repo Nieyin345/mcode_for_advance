@@ -48,7 +48,7 @@ export function ComposerToolbarToggle({ sessionId }: { sessionId: string }) {
           }
           className={cn(
             "composer-chip inline-flex h-8 w-8 items-center justify-center rounded-xl text-content-muted transition-all duration-150 ease-out",
-            "hover:scale-110 hover:bg-surface-hover hover:text-content active:scale-95",
+            "cds-hover-ghost hover:scale-110 hover:text-content active:scale-95",
           )}
         >
           <IconAdjustmentsHorizontal size={18} />

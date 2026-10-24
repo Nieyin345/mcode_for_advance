@@ -212,7 +212,7 @@ export function QuestionPrompt({
             onClick={() => { if (promptActive) onDismiss(); }}
             title={t("chat.question.dismiss")}
             aria-label={t("chat.question.dismiss")}
-            className="shrink-0 rounded p-0.5 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost shrink-0 rounded p-0.5 text-content-muted transition-colors hover:text-content"
           >
             <IconX size={14} />
           </button>
@@ -246,7 +246,7 @@ export function QuestionPrompt({
                       "flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-1.5 text-left transition-colors",
                       selected
                         ? "border-accent bg-accent/10"
-                        : "border-edge bg-surface hover:bg-surface-hover",
+                        : "cds-hover-ghost border-edge bg-surface",
                     )}
                     title={opt.description}
                   >

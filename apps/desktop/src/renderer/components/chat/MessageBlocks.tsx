@@ -1410,7 +1410,7 @@ function AttachmentCard({
           "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition-colors",
           open
             ? "border-edge bg-surface-hover text-content"
-            : "border-edge bg-surface-muted/60 text-content-muted hover:border-edge/80 hover:bg-surface-hover hover:text-content",
+            : "cds-hover-ghost border-edge bg-surface-muted/60 text-content-muted hover:border-edge/80 hover:text-content",
         )}
       >
         {isFile ? (
@@ -1728,7 +1728,7 @@ function GenericToolCard({
       {(block.toolName.endsWith("__memory_write") || block.toolName === "memory_write") &&
         block.status === "done" && resultPreview(block.result).includes("已记下「") && (
           <button type="button"
-            className="ml-2 mb-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-content-muted hover:bg-surface-hover hover:text-content [font-size:var(--chat-fs-xs)]"
+            className="cds-hover-ghost ml-2 mb-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-content-muted hover:text-content [font-size:var(--chat-fs-xs)]"
             onClick={() => useSessionStore.getState().setSettingsOpen(true, "memory")}
           >
             <IconNotebook size={12} />{t("settings.nav.memory")} ↗

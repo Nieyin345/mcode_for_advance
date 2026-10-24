@@ -312,7 +312,7 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
                   {openable && (
                     <button
                       type="button"
-                      className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-subtle hover:bg-surface-hover hover:text-content"
+                      className="cds-hover-ghost shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-subtle hover:text-content"
                       onClick={() =>
                         void (artifact.kind === "directory"
                           ? api.shell.openPath({ path: localPath })

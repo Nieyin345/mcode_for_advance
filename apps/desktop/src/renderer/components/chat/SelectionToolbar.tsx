@@ -142,7 +142,7 @@ export function SelectionToolbar({
         title={copied ? t("chatStream.bookmark.copied") : undefined}
         className={cn(
           "flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] transition-colors",
-          "text-content-subtle hover:bg-surface-hover hover:text-content-muted",
+          "cds-hover-ghost text-content-subtle hover:text-content-muted",
           copied && "text-accent",
         )}
       >
@@ -155,7 +155,7 @@ export function SelectionToolbar({
             type="button"
             onClick={() => onAddBookmark(state)}
             title={t("chatStream.bookmark.add")}
-            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-warning"
+            className="cds-hover-ghost flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-warning"
           >
             <IconBookmark size={12} />
           </button>
@@ -168,7 +168,7 @@ export function SelectionToolbar({
         type="button"
         onClick={() => onAskSideChat(state)}
         title={t("chatStream.bookmark.askSideChat")}
-        className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content"
       >
         <IconMessages size={12} />
       </button>
@@ -179,7 +179,7 @@ export function SelectionToolbar({
         type="button"
         onClick={() => onQuote(state)}
         title={t("chatStream.quote.action")}
-        className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content"
       >
         <IconQuote size={12} />
       </button>

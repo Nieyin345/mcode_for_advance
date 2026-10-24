@@ -215,7 +215,7 @@ export function TagPopover({
           <button
             type="button"
             onClick={handleCopy}
-            className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:text-content"
             title={t("chat.tagPopover.copyFull")}
           >
             {copyState === "copied" ? (
@@ -237,7 +237,7 @@ export function TagPopover({
                 onExpand();
                 onClose();
               }}
-              className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+              className="cds-hover-ghost flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:text-content"
               title={t("chat.tagPopover.expandTitle")}
             >
               <IconArrowsMaximize size={11} /> {t("chat.tagPopover.expand")}
@@ -246,7 +246,7 @@ export function TagPopover({
           <button
             type="button"
             onClick={onClose}
-            className="flex h-4 w-4 items-center justify-center rounded text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost flex h-4 w-4 items-center justify-center rounded text-content-muted transition-colors hover:text-content"
             title={t("common.close")}
             aria-label={t("chat.tagPopover.closePreview")}
           >
