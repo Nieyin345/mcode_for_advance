@@ -55,6 +55,12 @@ function slidesVendorAliases(): Array<{ find: string; replacement: string }> {
     { find: "@genoffice/pptx-ops/font-size", replacement: pkg("pptx-ops", "font-size.ts") },
     { find: "@genoffice/pptx-ops/op-docs", replacement: pkg("pptx-ops", "op-docs.ts") },
     { find: "@genoffice/pptx-render/auto-num", replacement: pkg("pptx-render", "auto-num.ts") },
+    // 【O10 2026-10-24】保存接缝。`genofficeNativeVendor.ts` 与
+    // `documentSaveGuard.ts` 都 import 这个子路径；漏了它 → `pnpm dev` 与打包
+    // 都在 Rollup 解析处失败（实测），**而 O10 的套件全绿**（它们走 esbuild 另一条路径）。
+    // 这条注释存在的理由就是那句老话：构建期报错不等于被测对象失败，而它的反面
+    // 也成立 —— **套件全绿不等于能起 dev**。
+    { find: "@genoffice/electron-utils/document-save-guard", replacement: pkg("electron-utils", "document-save-guard.ts") },
     { find: "@genoffice/pptx-engine", replacement: pkg("pptx-engine", "index.ts") },
     { find: "@genoffice/pptx-render", replacement: pkg("pptx-render", "index.ts") },
     { find: "@genoffice/pptx-ops", replacement: pkg("pptx-ops", "index.ts") },

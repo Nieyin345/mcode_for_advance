@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "e9b4c41615f1ca615dd06ee10d05cbaac9382462",
-  "expectedTree": "0013dff4316cb37674cc3f59f8c688ce547a59be",
+  "revision": "f3c1043aedc3754ac315e79481857d59a3b7463e",
+  "expectedTree": "05c511afbdcba58d7e0ca65b34f39e53ed166140",
   "patchSeries": [
     {
       "index": 1,
@@ -193,6 +193,15 @@
       "sha256": "ff90a3e7d69f6c7b67ad390f37c9b5377cdaefa58bb4dbd00104abc2896097b8",
       "bytes": 13523,
       "subject": "feat(sheets): reshell the chrome in Mcode's design tokens"
+    },
+    {
+      "index": 21,
+      "file": "patches/genoffice/0021-fix-docs-the-reshell-gate-asked-who-am-I-not-who-is-.patch",
+      "revision": "f3c1043aedc3754ac315e79481857d59a3b7463e",
+      "parentRevision": "e9b4c41615f1ca615dd06ee10d05cbaac9382462",
+      "sha256": "e46bae153a0fff9796a591c74aec028aadeca521f34093784b35aa9bbd37b8e7",
+      "bytes": 4201,
+      "subject": "fix(docs): the reshell gate asked \"who am I\", not \"who is running me\""
     }
   ],
   "license": "Apache-2.0",

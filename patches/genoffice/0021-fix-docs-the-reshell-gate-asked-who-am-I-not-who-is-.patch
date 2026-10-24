@@ -1,0 +1,73 @@
+From f3c1043aedc3754ac315e79481857d59a3b7463e Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 00:52:50 +0800
+Subject: [PATCH] fix(docs): the reshell gate asked "who am I", not "who is
+ running me"
+
+The guard was `if (window.desktop)`. `desktop` is docs' own preload namespace
+(preload/index.ts:284 exposes it unconditionally), so the condition is true in
+standalone GenOffice too, and the 0014 promise -- "standalone GenOffice keeps
+its own Word visual" -- never held. Measured in real Electron: standalone docs
+loads mcode-theme-*.css into document.styleSheets.
+
+The UA product token asks the right question. Mcode's main process calls
+app.setName("Mcode") before whenReady (apps/desktop/src/main/index.ts:101), so
+navigator.userAgent carries Mcode/. The vendor's own entry keeps its own name.
+Same build artifact, two app names, only the gate differs.
+
+Verified by apps/desktop/scripts/o8-docs-theme-gate-smoke (23 assertions, real
+Electron, two runs differing only in app.setName):
+
+  before the fix   11/17  -- standalone loaded mcode-theme, --surface was #fcfcfb
+  after the fix    23/23
+
+Four mutations, each checked against a predicted red count:
+  M1 back to window.desktop     14/19 -- 5 red on the standalone side
+  M3 gate hard-coded false      14/19 -- 5 red on the hosted side (1a/1b/1c/1d)
+  M4 remove the getTheme call   21/23 -- 11b/11c name getTheme as missing
+
+M4 matters most: before I strengthened the suite it was green. The first
+version counted calls the probe itself made, so "the probe can reach getTheme"
+was being reported as "the page called it". The fix is 11b (method names in
+source) plus 11c (form-independent call set), with a control that feeds a
+replaced sample to the same predicate to prove it reports a gap.
+
+Also: 126 other window.desktop uses stay put. Those ask "does this namespace
+have this capability", which is true standalone too. Section 4 of the card
+records why replacing them would kill docs' AI panel, theme and author name.
+---
+ apps/docs/src/renderer/main.tsx | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/apps/docs/src/renderer/main.tsx b/apps/docs/src/renderer/main.tsx
+index 0538a98..690f7c9 100644
+--- a/apps/docs/src/renderer/main.tsx
++++ b/apps/docs/src/renderer/main.tsx
+@@ -19,11 +19,20 @@ import '@genoffice/ui/image-viewer.css'
+ import './styles.css'
+ import './fonts/fonts.css'
+ // 【T39】Mcode 宿主主题层：把 GenOffice 的语义 token 重指到 Mcode 的 CDS 色阶。
+-// **只在 Mcode 里加载** —— GenOffice 独立运行时没有 `window.desktop`,应当保持自己的
+-// Word 视觉语言。运行时判断而不是构建期切分,是因为同一个构建产物两边共用(宿主按
+-// pinned HEAD 重建 vendor,不另出一份「Mcode 版」)。
++// **只在 Mcode 里加载** —— GenOffice 独立运行时应当保持自己的 Word 视觉语言。
++// 运行时判断而不是构建期切分,是因为同一个构建产物两边共用(宿主按 pinned HEAD 重建
++// vendor,不另出一份「Mcode 版」)。
+ // 放在 `styles.css` 之后:token 是自定义属性,后者先定义、这里覆盖,顺序决定胜负。
+-if (window.desktop) import('./mcode-theme.css')
++//
++// 【O8 2026-10-24】**原来的守卫是 `if (window.desktop)`,它从来没起作用** ——
++// `desktop` 是 docs 自己的 preload 命名空间(`preload/index.ts:284` 无条件
++// `exposeInMainWorld('desktop', api)`),独立运行时也存在,所以这个 if 恒真。
++// 真 Electron 实测:独立 docs 的 `styleSheets` 里确实有 `mcode-theme-*.css`。
++// `window.desktop` 问的是「我是谁」,而这里要问的是「**谁在跑我**」—— UA 里的
++// `app.getName()` 产品号是那个答案(Mcode 主进程 `apps/desktop/src/main/index.ts`
++// 在 whenReady 之前 `app.setName("Mcode")`;vendor 独立入口用自己的名字)。
++// 判据见 `apps/desktop/scripts/o8-docs-theme-gate-smoke/`。
++if (/\bMcode\//.test(navigator.userAgent)) import('./mcode-theme.css')
+ import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+ import { setAltChunkHtmlConverter } from '@genoffice/docx-engine'
+ 
+-- 
+2.52.0.windows.1
+

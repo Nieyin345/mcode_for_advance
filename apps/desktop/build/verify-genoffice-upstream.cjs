@@ -14,8 +14,8 @@ const FORMAT = "mcode.genoffice.upstream-lock.v2";
 const REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const BASE_REVISION = "cbec600ace9c930b2646b6739cf6df3741bb9d6a";
 const APPROVED_PATCH_REVISION = "73ba918083b5e2bedff7633925c3d7f625e04449";
-const FINAL_REVISION = "e9b4c41615f1ca615dd06ee10d05cbaac9382462";
-const FINAL_TREE = "0013dff4316cb37674cc3f59f8c688ce547a59be";
+const FINAL_REVISION = "f3c1043aedc3754ac315e79481857d59a3b7463e";
+const FINAL_TREE = "05c511afbdcba58d7e0ca65b34f39e53ed166140";
 const LICENSE_SOURCE_MANIFEST = "apps/desktop/build/vendor-licenses/genoffice/manifest.json";
 const APPROVED_PATHS = Object.freeze([
   "apps/pdf/src/main/atomic-write.ts",
@@ -42,6 +42,7 @@ const PATCHES = Object.freeze([
   { file: "patches/genoffice/0018-feat-pdf-reshell-the-chrome-in-Mcode-s-design-tokens.patch", revision: "4c893cf46f2022428d9ab4066ccb5eb7073643dc", parentRevision: "f69db1d28dad4028d260961e1d65099c0fc945e8", sha256: "6ad0e845e28a2d719e04e777683c73cbcc0717f60fee176ac3157113f2c26156" },
   { file: "patches/genoffice/0019-feat-slides-reshell-the-chrome-in-Mcode-s-design-tok.patch", revision: "58cd1a13fb2482eae14962f758aac9e2d349936e", parentRevision: "4c893cf46f2022428d9ab4066ccb5eb7073643dc", sha256: "fea2602da98d94f4370505bebcd09fdfc5a0618732fbaa3363c2df1cf70aa853" },
   { file: "patches/genoffice/0020-feat-sheets-reshell-the-chrome-in-Mcode-s-design-tok.patch", revision: "e9b4c41615f1ca615dd06ee10d05cbaac9382462", parentRevision: "58cd1a13fb2482eae14962f758aac9e2d349936e", sha256: "ff90a3e7d69f6c7b67ad390f37c9b5377cdaefa58bb4dbd00104abc2896097b8" },
+  { file: "patches/genoffice/0021-fix-docs-the-reshell-gate-asked-who-am-I-not-who-is-.patch", revision: "f3c1043aedc3754ac315e79481857d59a3b7463e", parentRevision: "e9b4c41615f1ca615dd06ee10d05cbaac9382462", sha256: "e46bae153a0fff9796a591c74aec028aadeca521f34093784b35aa9bbd37b8e7" },
 ]);
 
 function runGit(directory, ...args) {

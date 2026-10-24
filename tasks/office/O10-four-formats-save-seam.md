@@ -544,3 +544,78 @@ documentViewHost.ts:1424    revision: fileContentVersion(filePath),       ← �
 **如果查出来生产路径也一样（不只是 harness），那用户在真实应用里点开 .pptx 保存会得到
 `no file open`** —— 那是一个比 O9 更严重的可用性缺陷，需要判断是不是 O10 引入的
 （`slide-lifecycle` 的既有套件应当能回答：它有没有覆盖「打开→保存」）。
+
+---
+
+## 十三、★ 第四个缺口：新 `@genoffice/*` 子路径 import 必须同时加 Rollup 别名（2026-10-24 深夜，UI 线发现）
+
+### 13.1 现象
+
+```
+$ pnpm dev
+@mcode/desktop:dev: ✗ Build failed in 1.13s
+[vite]: Rollup failed to resolve import
+  "@genoffice/electron-utils/document-save-guard"
+  from "apps/desktop/src/main/document/genofficeNativeVendor.ts"
+```
+
+**根因**：`apps/desktop/electron.vite.config.ts` 的 `slidesVendorAliases()` 是一张
+**手写的逐子路径别名表**，`electron-utils/document-save-guard` 不在表里。
+
+**源文件存在**（`genoffice/packages/electron-utils/src/document-save-guard.ts`），
+**TypeScript 也解析得到**（走 `node_modules` 符号链接），**esbuild 套件也跑得过**
+（它们不走 Rollup 那条路）。**只有 Rollup 解析失败。**
+
+### 13.2 为什么本卡的四条判据都抓不到它
+
+| 判据 | 走哪条路径 | 会撞上别名吗 |
+|---|---|---|
+| `tsc --noEmit` | TS 模块解析（`node_modules` 符号链接） | ❌ |
+| `o2-conflict-u1-smoke` | esbuild 打包 | ❌ |
+| `o8-docs-theme-gate-smoke` | 直接跑 vendor 产物 | ❌ |
+| **`pnpm dev` / 打包** | **Rollup + 别名表** | ✅ |
+
+**四层里只有第四层会撞上，而本卡没有任何一条判据跑第四层。**
+
+### 13.3 那条注释说对了一半
+
+`electron.vite.config.ts` 的注释原文：
+
+> 「新增时要跟着闭包 grep 一遍（**vendor 更新后漏一个，构建会在解析处当场报错，不会静默**）」
+
+**「不会静默」是对的 —— 它确实报错。**
+**但它报在 `pnpm dev` / 打包，不在本卡的套件里。**
+
+**所以对「本卡的验收」来说，它**是**静默的**：套件全绿、typecheck 0、然后 dev 起不来。
+
+**这和仓库里那条「打包期失败 ≠ 被测对象失败」是同一族的反面**：
+**那条说「别把构建失败读成产品失败」；这条说「别把套件全绿读成能构建」。**
+
+### 13.4 判据（本卡要补的一条）
+
+**凡是新加 `@genoffice/*` 的 import，必须：**
+
+1. **同时在 `electron.vite.config.ts` 的 `slidesVendorAliases()` 里加一条**（子路径别名，
+   排在包根别名**之前** —— 注释里写明「顺序即判据」）；
+2. **提交前跑一次 `pnpm dev`**（或任何走 Rollup 的入口），确认解析通过。
+
+**本卡这次加的：**
+
+```ts
+{ find: "@genoffice/electron-utils/document-save-guard", replacement: pkg("electron-utils", "document-save-guard.ts") },
+```
+
+### 13.5 四个缺口的共同形态
+
+| # | 缺口 | 谁发现 | 形态 |
+|---|---|---|---|
+| 1 | slides 的 `finally` 删掉唯一完整副本 | 写卡人实测 | 失败路径没人测 |
+| 2 | `.d.ts` 里「`save-paths.ts` 会盯着」是假承诺 | 写卡人 grep | 注释承诺了不存在的保护 |
+| 3 | `expectations.ts` 的 `html.expectConflict` 写反 | 写卡人读 provenance | 两份事实源不一致 |
+| **4** | **缺 Rollup 别名 → dev 起不来** | **UI 线** | **验收路径不覆盖构建路径** |
+
+**四个都是「卡里没写、而它会阻塞」的步骤。**
+**而 4 是唯一一个**别人发现的** —— 因为它是唯一一个**在别人的工作流上**才会暴露的。
+
+**这条要写进派活模板**：**任何新增跨仓 import 的卡，必须写明「它在哪一层被解析」
+（tsc / esbuild / Rollup / 运行时），并指出验收判据覆盖了哪几层。**
