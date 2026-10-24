@@ -21,4 +21,19 @@ ck("Drag preview clears after valid drop",sourceHas(src, "setDockPreview(null);"
 ck("Dock drag ghost has window dragend and drop cleanup",sourceHas(src, 'window.addEventListener("dragend", clearPreview)')&&sourceHas(src, 'window.addEventListener("drop", clearPreview)'));
 ck("Dock handle is accessible by native keyboard, not drag-only",sourceHas(rail, 'type="button" draggable')&&sourceHas(rail, "aria-label={dockTitle}")&&sourceHas(rail, "onClick={() => setRightDock("));
 ck("Aside remains a stable React element under visual reordering",sourceHas(src, "{rightEverMounted && (")&&sourceHas(src, "order: order.aside"));
+/* ---- drawer mode (T119/T137) --------------------------------------------
+ * The drawer branch is a separate style object. It used to omit `order`,
+ * on the assumption that DOM order already put the center first. It does
+ * not: center carries order 2 and the aside default is 0, so the drawer
+ * rendered to the LEFT of the conversation. These two assertions exist so
+ * that omission cannot come back silently -- no suite covered the drawer
+ * branch at all, which is why the bug survived. */
+const drawerBlock = src.slice(src.indexOf('isDrawer ? {'));
+ck("Drawer branch sets an explicit flex order (omitting it puts the drawer left of the center)",
+  drawerBlock.length > 0 && /order:\s*\d/.test(drawerBlock.slice(0, 2000)));
+ck("Drawer order places it after the center pane, matching the docked-right pane",
+  (() => {
+    const m = drawerBlock.slice(0, 2000).match(/order:\s*(\d)/);
+    return m !== null && Number(m[1]) > dockFlexOrder("right").center;
+  })());
 console.log("arc005-pane-layout-edges "+pass+"/"+(pass+fail));if(fail)process.exitCode=1;

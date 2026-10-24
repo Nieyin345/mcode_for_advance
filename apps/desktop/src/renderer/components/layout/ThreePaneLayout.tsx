@@ -439,12 +439,23 @@ export function ThreePaneLayout({
           aria-hidden={!rightOpen}
           inert={!rightOpen}
           style={isDrawer ? {
-            /* 【T119】drawer：**仍留在 flex 流里**（不是 absolute 浮层）——
-               两栏并排，谁也不遮谁。与 pane 的三点差别：
-                 ① 无 `order`（固定贴右，不参与 DOM 顺序重排）；
+            /* 【T119/T137】drawer：**仍留在 flex 流里**（不是 absolute 浮层）——
+               两栏并排，谁也不遮谁。与 pane 的差别：
+                 ① `order` **必须给**，而且必须是固定值（见下）；
                  ② 宽度封顶 30%（辅助视图不挤压主对话）；
-                 ③ 不受停靠/宽屏的百分比（那些是 pane 的专注模式）。 */
+                 ③ 不受停靠/宽屏的百分比（那些是 pane 的专注模式）。
+                 ④ 不参与右侧停靠切换（贴右是它唯一的位置）。
+
+               ⚠️ **`order` 不能省。** 早先这里没有 `order`，注释写的是「固定贴右，
+               不参与 DOM 顺序重排」——那个假设是「DOM 顺序本来就是 center 在前」。
+               但 center 带 `order: order.center`（= 2），而本 aside 的 order 是默认 0，
+               左栏的 order 也是默认 0。于是同为 0 的左栏与右栏按 DOM 顺序排在
+               center **之前**，实际渲染成 [左栏][右栏][对话区] —— 抽屉跑到了左边。
+
+               固定为 5：与 pane 模式 `dock === "right"` 时 `order.aside` 的取值一致，
+               所以两种模式下右栏都在同一侧；而不随 `rightDock` 变，满足「不参与停靠」。 */
             position: "relative",
+            order: 5,
             maxWidth: "30%",
             width: drawerOpenWidth,
             display: rightOpen ? "flex" : "none",
