@@ -442,6 +442,41 @@ source "$HERE/../lib/esbuild-path.sh"
 **「没有套件覆盖」是结论（查过了，没有）；「不在本工具能回答的范围」是边界。
 把前者写出来，就是让下一个人去相信一个从未被检查过的否定。**
 
+## 五之四、一台机器上跑不了「大家都说好用」的命令
+
+**UI 线给了一条控制字符检查**，用来抓「`` 被双重转义成退格符」这类事故：
+
+```bash
+grep -Pn "[ --]" <文件>
+```
+
+**在这台机器上它跑不起来**：
+
+```
+grep: -P supports only unibyte and UTF-8 locales
+```
+
+**中文 Windows 的默认 locale 下 `grep -P` 不可用。** 换 `LC_ALL=C` 也一样报这个。
+
+**可用的替代（Python，只读字节）**：
+
+```python
+import io, glob, re
+bad = re.compile(rb"[ --]")
+for f in glob.glob("tasks/office/*.md"):
+    raw = io.open(f, "rb").read()
+    m = bad.search(raw)
+    if m:
+        print(f, "byte=0x%02x" % m.group()[0])
+```
+
+**这条本身的教训**：**别人环境里能跑的命令，不等于在这里能跑。**
+「我给你一条命令」和「这条命令在你那能跑」是两件事 ——
+**而这两件事的差别，只有真的跑一次才会暴露。**
+
+（同族：`bash apps/.../run.sh` 从仓库根跑会挂、`smokes-for.sh` 不索引 vendor ——
+**都是「命令在某个前提成立时才工作」，而那个前提没人写出来。**）
+
 ## 六、已知的设计约束（不自造，从源码读出来的）
 
 ### 6.1 `WebContentsView` 会盖住一切 React 浮层
