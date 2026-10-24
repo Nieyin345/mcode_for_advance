@@ -1,6 +1,6 @@
 # F009｜`main` 字面量 + `publisher` 正则：另外两道拦住所有人的墙
 
-- Status: ready-for-agent
+- Status: **done**（`eb6ba1cc` + `343f8803`）
 - Category: **P0 扩展主线**
 - Depends on: F008（`26907b71`，交付时报出这两条）
 - Exclusive writable files:

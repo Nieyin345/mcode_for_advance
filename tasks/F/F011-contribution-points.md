@@ -1,6 +1,6 @@
 # F011｜贡献点：把「只支持 commands」拆成三类
 
-- Status: ready-for-agent
+- Status: **done**（`6465f83c` + `92e7c953`）
 - Category: **P0 扩展主线**（`rainbow-csv` 现在卡在这道）
 - Depends on: F009（`eb6ba1cc`，`main` 已通，障碍前移到贡献点）
 - Exclusive writable files:

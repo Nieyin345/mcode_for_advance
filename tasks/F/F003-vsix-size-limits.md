@@ -1,6 +1,6 @@
 # F003｜那道真正的墙：单文件限额，不是 DEFLATE
 
-- Status: ready-for-agent
+- Status: **done**（`b1045bb9` + `35a9a544`）
 - Category: **P0 扩展主线**（VSIX 兼容第二步）
 - Depends on: F002（`5e91296f` DEFLATE 已通）、T80（`ecb5035a`）、用户裁决「路线图为准，做 VSIX」
 - Exclusive writable files:

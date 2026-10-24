@@ -1,6 +1,6 @@
 # F002｜VSIX 兼容第一步：让 DEFLATE 的包能读进来
 
-- Status: ready-for-agent
+- Status: **done**（`5e91296f` + `02714c63`）
 - Category: **P0 扩展主线**（路线图 §2「尽可能让已有 VS Code 插件（含 VSIX）少改或无需修改即可运行」）
 - Depends on: F001（`ec33c700`）、T80（`ecb5035a` 四层实测）、`docs/planning/extension-vscode-compat.md`
 - 前置裁决：**用户 2026-10-24 明确「路线图为准，做 VSIX」** —— T85 的「不做」已被推翻

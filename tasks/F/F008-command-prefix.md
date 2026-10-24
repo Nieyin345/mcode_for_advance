@@ -1,6 +1,6 @@
 # F008｜命令前缀规则让 100% 的真实扩展装不上
 
-- Status: blocked-by-F004（**等 F004 释放 `vscodeL1Bridge.ts`**，它正占着 `:480-500`，与本卡冲突）
+- Status: **done**（`26907b71` + `71c9e280`）
 - Category: **P0 扩展主线（最高优先级的墙）**
 - Depends on: F005（`9d49aa39`，实测出三道串联的墙）
 - Exclusive writable files:

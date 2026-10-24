@@ -1,6 +1,6 @@
 # F010｜`deny` 在 bridge 层被默认成 `allow-once`
 
-- Status: blocked-by-F009（**等 F009 释放 `vscodeL1Bridge.ts`**）
+- Status: **done**（`e3fe99f0` + `0a2ecfe9`）
 - Category: **P0 安全**（不是功能，是审批被绕过）
 - Depends on: F006（`901e58ee`，发现这个问题并做了临时挡法）
 - Exclusive writable files:

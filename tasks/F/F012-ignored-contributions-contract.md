@@ -1,6 +1,6 @@
 # F012｜让「哪些部分不会工作」到达用户：契约层
 
-- Status: ready-for-agent
+- Status: **done**（`beba5936` + `598cd2cb`）
 - Category: **P0 扩展主线**（F011 唯一没落地的一项）
 - Depends on: F011（`6465f83c`，`ignoredContributions` 已产生但没带出去）
 - Exclusive writable files:

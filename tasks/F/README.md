@@ -23,7 +23,34 @@
 
 | 编号 | 标题 | 状态 | 提交 |
 |---|---|---|---|
-| F001 | **扩展线的真实状态说准**：`CLAUDE.md` 仍写「VS Code API 薄映射」会误导开发者；补作者手册 + 诚实性套件 | ✅ done | `ec33c700` |
+| F001 | 扩展线真实状态说准（`CLAUDE.md` 不再说「VS Code API 薄映射」）+ 作者手册 + 诚实性套件 | ✅ done | `ec33c700` |
+| F002 | 认 DEFLATE（市场扩展一律 DEFLATE，只认 STORE 等于一个都进不来） | ✅ done | `5e91296f` |
+| F003 | 单文件限额：查实 4096/24576 无依据，manifest 放宽到 64 KiB；`extension.js` 保持 24 KiB | ✅ done | `b1045bb9` |
+| F004 | `contributes.commands` 从 `z.tuple`（恰好 1 条）改成数组；未知贡献点点名拒绝 | ✅ done | `a0ac9217` |
+| F005 | 端到端五环验收 + 实测出三道串联的墙 | ✅ done | `9d49aa39` |
+| F006 | 产品层第 1 环：`modules.installVsix` 三层齐全 + UI 入口 + 24 KiB 限制前置告知 | ✅ done | `901e58ee` |
+| F007 | ~~require 白名单~~ | ⛔ superseded | 被 F013 取代，从未提交 |
+| F008 | 命令前缀：实测 29 个扩展带 `publisher.name.` 前缀的 **0 个** | ✅ done | `26907b71` |
+| F009 | `main` 从字面量改成路径（27 个声明 main 的扩展恰好等于 `./extension.js` 的 **0 个**）+ publisher 大写 | ✅ done | `eb6ba1cc` |
+| F010 | `deny` 在 bridge 层被默认成 `allow-once` 的安全修复 | ✅ done | `e3fe99f0` |
+| F011 | 贡献点分三类，判据是「用户会不会当场发现」 | ✅ done | `6465f83c` |
+| F012 | `ignoredContributions` 到达用户（VSIX 专用结果类型，不进共用 `ModuleChangeResult`） | ✅ done | `beba5936` |
+| F013 | `require` 白名单：`path` 真模块、`fs` 受限替身（三个只读操作） | ✅ done | `aa393597` |
+| F014 | 撤掉 `activationEvents` 校验（它唯一的消费者就是校验自己，运行时从不读） | ✅ done | `86e74e65` |
+| F015 | 多命令：`commands[1..N]` 真的能跑（至少做到 L2 分派） | 🔄 in-progress | — |
+
+## 扩展闭环的进度（截至 F014）
+
+```
+装            ✅ F002 DEFLATE / F003 限额 / F008 前缀 / F009 main / F014 顶层字段
+出现在列表    ✅ F006 走 ModuleHost.catalog()
+命令能调用    ⚠️ F015 在办 —— 现在只有第一条命令能跑
+结果正确      ✅ F005 已验（同构缩小版，换文件行数从 5 变 3）
+能卸载        ✅ F005 已验（卸载后旧 bridge 拒绝执行）
+```
+
+**`rainbow-csv` 的当前障碍**：清单层全通、能装进来，但源码 136 516 B 撞 24 KiB 限额。
+**那是最后一道**，排在 F015 之后。
 
 ## 发卡前的自查（写在这里，免得又忘）
 

@@ -1,6 +1,6 @@
 # F004｜清单层：从「只收 1 条命令」到能收下真实扩展
 
-- Status: ready-for-agent
+- Status: **done**（`a0ac9217` + `25072e3b`）
 - Category: **P0 扩展主线**（VSIX 兼容第三步）
 - Depends on: F002（DEFLATE）、F003（`package.json` 限额 64 KiB，真实清单已能读进来）
 - Exclusive writable files:

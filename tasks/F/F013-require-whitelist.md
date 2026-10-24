@@ -1,6 +1,6 @@
 # F013｜`require` 白名单：从只放 `"vscode"` 到能让真实扩展跑起来
 
-- Status: ready-for-agent
+- Status: **done**（`aa393597` + `5f11a36b`）
 - Category: **P0 扩展主线**（决定性的一道墙）
 - Depends on: F005（实测出这道墙）、F011（贡献点已通）
 - Exclusive writable files:

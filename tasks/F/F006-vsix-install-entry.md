@@ -1,6 +1,6 @@
 # F006｜产品层的第 1 环：给用户一个装 `.vsix` 的入口
 
-- Status: ready-for-agent
+- Status: **done**（`901e58ee` + `fd0c39f8`）
 - Category: **P0 扩展主线（闭环断点）**
 - Depends on: F001–F003（`VscodeL1Bridge` 已能读 DEFLATE、清单限额已放宽）
 - Exclusive writable files:

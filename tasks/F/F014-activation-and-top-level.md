@@ -1,6 +1,6 @@
 # F014｜`activationEvents` 与顶层 `.strict()`：清单层最后两道
 
-- Status: **delivered**（`86e74e65`）
+- Status: **done**（`86e74e65` + `ba7b7f13` + `6b8dbe16`）
 - Category: **P0 扩展主线**
 - Depends on: F013（`aa393597`，`require` 白名单已通）
 - Exclusive writable files:

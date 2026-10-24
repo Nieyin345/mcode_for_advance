@@ -1,6 +1,6 @@
 # F005｜闭环验收：真实扩展从装进去到跑出结果，端到端一条链
 
-- Status: ready-for-agent
+- Status: **done**（`9d49aa39`）
 - Category: **P0 扩展主线**（闭环验收，不是新功能）
 - Depends on: F001–F004
 - Exclusive writable files:

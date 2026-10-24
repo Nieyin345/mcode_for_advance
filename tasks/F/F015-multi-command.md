@@ -1,6 +1,6 @@
 # F015｜多命令：让 `commands[1..N]` 真的能跑（而不是只有第一条）
 
-- Status: ready-for-agent
+- Status: **in-progress**（派给执行会话）
 - Category: **P0 扩展主线**
 - Depends on: F014（`86e74e65`，清单层全通过；`6b8dbe16`，module 路由计数修正）
 - Exclusive writable files:
