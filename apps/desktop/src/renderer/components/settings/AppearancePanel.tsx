@@ -37,7 +37,15 @@ import { CustomCssSection, TypographySection } from "./AppearanceExtras.js";
  */
 
 /** Default font size shown when no override is set (matches styles.css). */
-const DEFAULT_FONT_SIZE = 14;
+/**
+ * 【T139】默认对话正文 15px —— 上游 `ChatMessageBubbles.tsx` 的正文是
+ * `text-[15px]`，而本仓原来是 14px。
+ *
+ * 这里改的是**默认值**，不是把字号写死：`--chat-font-size` 与设置里的
+ * 步进器（12–20px）都还在，用户显式设过的值会覆盖它。所以「对齐 Claude」
+ * 和「用户可以调字号」不冲突。
+ */
+const DEFAULT_FONT_SIZE = 15;
 
 /** Hex of the default accent color (orange-450, the AA-passing Claude clay
  *  used in styles.css since 2026-10-20). Used as the picker fallback. */

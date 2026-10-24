@@ -304,7 +304,10 @@ div:has(> [role="menu"]) {
    *   --chat-font-size mirrors the old `text-sm` (14px);
    *   --user-bubble is a neutral gray (zinc-500) so user prompts read as a
    *     calm, non-distracting bubble; presets in Settings offer color picks. */
-  --chat-font-size: 14px; /* default = text-sm */
+  /* 【T139】默认 15px —— 上游 `ChatMessageBubbles.tsx` 的正文是 `text-[15px]`
+   * （本仓原为 14px）。这是**默认值**，不是写死：用户在设置里 12–20px 的
+   * 选择经 lib/appearance.ts 内联写到 <html> 上，优先级高于这里。 */
+  --chat-font-size: 15px; /* default = upstream message body size */
   /* Chat prose base weight. A weight lifted toward the global base (450 vs
    * the 400 of the original design) gives comfortable, airy reading on both
    * themes — 400 read as visibly thinner than the app chrome (base 500 light
@@ -476,7 +479,8 @@ div:has(> [role="menu"]) {
    * brighter than the light default for readable contrast on zinc-900).
    * Overridden at runtime by lib/appearance.ts when the user sets a custom
    * value. */
-  --chat-font-size: 14px;
+  /* 【T139】与亮色同一默认值（15px），理由见 :root 处的注释。 */
+  --chat-font-size: 15px;
   /* Chat prose base weight — dark mode raises the prose weight to 500 (one
    * step above light's 450) because white strokes thin optically on the deep
    * background. Line height is density-driven (--chat-md-leading) and shared

@@ -10,7 +10,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { bubbleBodyStyle, collapsibleBubbleState, collapseToggleLabel } from "./messageCollapse.js";
 import { pasteBlock } from "@renderer/lib/contentTag.js";
 import { MessageCustomMenu } from "@renderer/components/customUi/CustomSlotHosts.js";
-import { IconSend2, IconCopy, IconCheck, IconPaperclip, IconX, IconPencil, IconRefresh } from "@renderer/lib/icons.js";
+import { IconSend2, IconCopy, IconCheck, IconPaperclip, IconX, IconPencil, IconRefresh, IconSparkles } from "@renderer/lib/icons.js";
 import type { Block, ChatMessage, TurnMeta, PromptImage } from "@renderer/stores/sessionStore.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useNow } from "@renderer/hooks/useNow.js";
@@ -326,6 +326,30 @@ export const MessageRow = memo(function MessageRow({
       )}
     >
       <div className={isUser ? "max-w-[85%] min-w-0" : "w-full min-w-0"}>
+        {/* 【T139】助手身份头 —— 对齐上游 `ChatMessageBubbles.tsx` 的头部。
+         *
+         * 上游每条助手消息顶部都有「✦ + 名字 + 模型角标 + • + 时间」。
+         *
+         * ⚠️ **不依赖 `turnMeta`**：那个字段只有回合的首条消息才有，而身份头
+         * 应该每条都有。所以它独立渲染，模型/时间仍由下面的 TurnStatRow 提供
+         * （那一行本来就有，不重复造）。
+         *
+         * 名字用 "Mcode" 而不是 "Claude"：用户要的是「像 Claude 的样子」，
+         * 不是让产品自称 Claude。
+         *
+         * `tightTop` 的消息（同回合内的后续块）不显示 —— 它们不是一轮的开头，
+         * 每条都顶一个 "Mcode" 会让一屏出现十几次同样的标记。 */}
+        {!isUser && !tightTop && (
+          <div className="mb-1 flex items-center gap-1.5 text-footnote text-content-subtle select-none">
+            <span
+              className="flex size-4 shrink-0 items-center justify-center rounded bg-accent text-surface"
+              aria-hidden
+            >
+              <IconSparkles size={10} />
+            </span>
+            <span className="font-semibold text-content">Mcode</span>
+          </div>
+        )}
         {/* Per-turn stat row - only on the first assistant message of a
             turn (the one carrying turnMeta), and not suppressed by a parent
             TurnPanel (hideTurnStat). Sits above the content. */}
@@ -341,10 +365,10 @@ export const MessageRow = memo(function MessageRow({
           // at the sender) + the freshness-gated slide-in above.
           title={isUser ? fmtFullDateTime(msg.createdAt) : undefined}
           ref={isUser ? userBubbleRef : undefined}
-          style={bodyStyle ?? undefined}
+          style={isUser ? { boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.04)", ...bodyStyle } : { paddingLeft: "var(--cds-assistant-message-text-inset, 4px)", ...bodyStyle }}
           className={
             isUser
-              ? "user-bubble-fill overflow-hidden rounded-[var(--radius-bubble)] rounded-br-[5px] px-3 py-2 text-content [font-size:var(--chat-font-size)]" +
+              ? "user-bubble-fill overflow-hidden rounded-[var(--radius-bubble)] rounded-br-[5px] px-4 py-3 text-content [font-size:var(--chat-font-size)]" +
                 (freshBubble ? " chat-bubble-in" : "")
               : "text-content [font-size:var(--chat-font-size)]"
           }

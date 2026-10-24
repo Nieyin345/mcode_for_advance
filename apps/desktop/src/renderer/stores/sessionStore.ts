@@ -690,7 +690,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // Persisted in `settings` table; init() overwrites from the DB. Defaults
   // mirror the CSS var defaults in styles.css (14px = text-sm).
   // ─────────────── K 设置镜像（落库偏好） ───────────────
-  chatFontSize: 14,
+  chatFontSize: 15,
   // Persisted in `settings` table; init() overwrites from the DB. Default
   // 14px mirrors the --right-panel-font-size CSS var in styles.css.
   rightPanelFontSize: 14,
