@@ -1,6 +1,8 @@
 # O6｜五个编辑器的换壳：把 GenOffice 的 chrome 重指到 Mcode 的 token
 
-- Status: **ready-for-agent**（**五个格式互相独立，可以并行；但每个都要按批做**）
+- Status: **批一已交付（html + markdown）**；批二待开（slides / pdf / sheets）
+  - 批一：vendor `87d9b4b`(html) / `f69db1d`(markdown)，主仓 `f61e4168`；html 25/25、markdown 29/29
+  - **desktop typecheck 尚未通过**：101 条错误全在 O5 在途的 onlyoffice 文件，O6 相关 0 条。O5 清掉后需重跑。
 - Category: **Office / 用户可见的 UI 契合**
 - Priority: **P0 —— 用户看到的是「GenOffice 应用被塞进一个面板」，不是「Mcode 的编辑器」**
 - Depends on: **`0014-feat-docs-reshell-the-chrome-in-mcode-design-tokens.patch`（docs 已完成，是模板）**
