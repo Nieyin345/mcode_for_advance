@@ -27,9 +27,22 @@
 
 | 卡 | 标题 | 状态 |
 |---|---|---|
-| [W0](W0-workflow-baseline-and-gaps.md) | 工作流主线基线核实与缺口清单 | ready-for-agent（已派，进行中） |
-| [W1](W1-palette-drag-from-scratch.md) | 从 palette 拖节点：把「从零搭」变成可验收旅程 | ready-for-agent（已派，进行中） |
+| [W0](W0-workflow-baseline-and-gaps.md) | 工作流主线基线核实与缺口清单 | ✅ **已交付**（`5c139948`，523 行回写，纠正了我三处错误） |
+| [W1](W1-palette-drag-from-scratch.md) | 从 palette 拖节点：把「从零搭」变成可验收旅程 | 已派，进行中 |
 | [W2](W2-run-and-see-result.md) | 在 UI 里点一下，看到执行结果 | **blocked-by W1** |
+| [W3](W3-node-select-wiring.md) | 画布删了，但「点节点看参数」没接上 | 已派，进行中 |
+| [W4](W4-executor-registry-order.md) | 自动化预检说「缺执行器」，而流其实能跑 | 已派，进行中 |
+
+### W0 交付的缺口清单（后续卡的来源）
+
+| 序号 | 缺口 | 严重度 | 对应卡 |
+|---|---|---|---|
+| **G1** | 从 palette 拖节点一次没验过（`grep palette\|drag` = 0） | 高 | W1 |
+| **G2** | **点不到节点、看不到参数**（`setSelectedNodeId` 无点击驱动） | **高（用户每天撞）** | W3 |
+| **G3** | **模块单例永不注册 node-red 执行器** → 预检假失败 | **中高（假失败，指向错方向）** | W4 |
+| G4 | T8 U1 现在红在 `rename-node-via-tray`（通知遮挡），且 `baseline-deploy` 只断言文件里有节点名 —— **测别人职责**。另：截图里「部署失败：服务器没有响应」是真的，但没人查根因 | **中高** | **W5**（部署断言）+ W6（待写：`rename-node-via-tray` 的通知遮挡） |
+| G5 | `engine-trust.json` **无生产 writer** → 发布的 flow 重启后不自动执行，inject 定时/http-in 全 404 | **高（功能实际不可用）** | 待写 |
+| G6 | `projectDataDirOf`（按项目隔离）**已实现、没人调用** | 中 | 待写 |
 
 ### 队列里还没写的（按依赖排序）
 
