@@ -219,10 +219,46 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   check("★ 暗色 --accent 是 orange-300", /--accent:\s*236 131 90;/.test(css));
   check("★ 未把 3.04:1 的上游 clay 直接当 accent", !/--accent:\s*217 119 87;/.test(css));
   check("上游原始陶土色仍作为装饰品牌色暴露", css.includes("--brand-clay:") && css.includes("--brand-clay-strong:"));
-  // 用户气泡接到 Claude 的陶土浅底(亮/暗各一档),alpha 已按实色调高。
-  check("★ 亮色用户气泡指到 --m-orange-100", /--user-bubble:\s*var\(--m-orange-100\)/.test(css));
-  check("★ 暗色用户气泡指到 --m-orange-850", /--user-bubble:\s*var\(--m-orange-850\)/.test(css));
-  check("用户气泡 alpha 已按近实色调高", /--user-bubble-alpha:\s*0\.9;/.test(css) && /--user-bubble-alpha:\s*0\.55;/.test(css));
+  // 【T136】用户气泡：**性质变了**，断言跟着改。
+  //
+  // 原来验的是「气泡用了品牌色系」（--m-orange-100 / --m-orange-850），因为
+  // ARC-005 当时把它做成了陶土浅底。10dbb0ce 按上游改成了冷灰蓝 —— 依据是
+  // `ChatMessageBubbles.tsx:144` 的亮色分支实际解析到 `--cds-bg-tint-blue`
+  // = `#f0f4f8`；`--cds-bg-neutral` 在上游从未被赋值，所以「中性灰默认」那条
+  // 路根本不存在。
+  //
+  // 所以这三条不能只把常量换掉 —— 换了之后它们守的东西也变了。现在分两层：
+  //   ① 值：亮 240 244 248 / 暗 35 35 35，alpha 都是 1；
+  //   ② 性质：亮色**不再是暖色**（R 应低于 B），暗色**与画布不同值**。
+  // 色相那条在 `t121-border-contrast-smoke` 有更完整的版本；这里只留「不是暖的」
+  // 这一个方向，避免两套重复维护同一批数字。
+  const bubble = (re: RegExp) => {
+    const m = css.match(re);
+    return m ? m.slice(1, 4).map(Number) : null;
+  };
+  const lightBubble = bubble(/--user-bubble:\s*(\d+)\s+(\d+)\s+(\d+);[^\n]*#f0f4f8/);
+  const darkBubble = bubble(/--user-bubble:\s*(\d+)\s+(\d+)\s+(\d+);[^\n]*#232323/);
+  check("★ 亮色用户气泡是 CDS 的 #f0f4f8（240 244 248）", lightBubble !== null, { lightBubble });
+  check("★ 暗色用户气泡是 #232323（35 35 35）", darkBubble !== null, { darkBubble });
+  check(
+    "★ 亮色气泡不再是暖色（B 通道不低于 R）",
+    lightBubble !== null && lightBubble[2] >= lightBubble[0],
+    { lightBubble },
+  );
+  check(
+    "★ 暗色气泡与画布不同值（否则是看不见的气泡）",
+    darkBubble !== null && darkBubble.join(" ") !== "21 21 21",
+    { darkBubble, canvas: "21 21 21" },
+  );
+  check(
+    "用户气泡不再指到品牌橙色系",
+    !/--user-bubble:\s*var\(--m-orange-/.test(css),
+  );
+  check(
+    "用户气泡 alpha 两处都是 1（triplet 本身已是合成色）",
+    (css.match(/--user-bubble-alpha:\s*1;/g) ?? []).length === 2,
+    { count: (css.match(/--user-bubble-alpha:\s*1;/g) ?? []).length },
+  );
   check("sketch 主题仍覆盖 --surface", /html\.sketch:not\(\.dark\)[\s\S]{0,400}--surface:/.test(css));
 }
 

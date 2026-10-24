@@ -318,12 +318,16 @@ div:has(> [role="menu"]) {
    * 用户走 lib/appearance.ts 的 applyUserBubbleColor，覆盖这里；没选过的回落到本值。
    *
    * 取值依据（2026-10-24 核对 open-claude-ui，三处来源）：
-   *   - cds-theme.css:161  `--cds-bg-user-message: var(--cds-bg-neutral)` —— 但它
+   *   - cds-theme.css:161  `--cds-bg-user-message` 指向 `--cds-bg-neutral` —— 但它
    *     在整个文档库里**从未被赋值**（grep `--cds-bg-neutral:` 零命中），所以
    *     「默认是中性灰」这句话没有具体色值可跟。
-   *   - cds-theme.css:162  `--cds-bg-user-message-personal: var(--cds-bg-tint-blue)`
+   *   - cds-theme.css:162  `--cds-bg-user-message-personal` 指向 `--cds-bg-tint-blue`
    *     = `#f0f4f8`，这是上游唯一给出过真值的亮色气泡。
    *   - ChatMessageBubbles.tsx:144 亮色渲染实际走 personal 分支（`#f0f4f8`）。
+   *
+   * ⚠️ 上面两处上游变量名**故意不写成 var() 调用**：`design-tokens-smoke` 会扫描
+   * 本文件里所有 var(--x) 并要求 x 有定义，而这两个是**上游的** token，不属于本仓
+   * 自有命名空间 —— 在本文件里定义它们等于凭空造一套上游变量。
    *
    * 所以取 #f0f4f8 不是「选了非默认模式」，是取上游唯一有真值的那一个。
    * 1.0 的旧值是 #dde8f7（CHANGELOG.md:94），与 2.0 不同 —— 同类「抄了旧版」形态。
