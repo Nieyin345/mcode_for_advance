@@ -1,6 +1,6 @@
 # T152 — `smokes-for.sh` 对 vendor 路径给**错误的否定结论**
 
-**Status**：`ready-for-agent`
+**Status**：✅ done（`57b0e0f0`，13/13 + 13/25/10 回归；回写见文末）
 **Category**：P0 测试基础设施
 **发现者**：总控（office）—— 它在 O6（六编辑器换壳）要改 `genoffice/apps/*/src/renderer/` 时撞到
 **写卡时间**：2026-10-24 22:05。**下面前提我都实测过。**
@@ -212,3 +212,129 @@ if arg.startswith("apps/"):
 | **把「不在图上」说成「没有覆盖」** | **本条** |
 
 **共同点：工具的输出里有一句话，读者会把它当成关于世界的陈述，而它实际是关于工具自身范围的陈述。**
+
+---
+
+# 结果回写（2026-10-24，T152 执行会话）
+
+## 1. 三种情况分别输出了什么
+
+| 情况 | 路径 | 输出 | 判定 |
+|---|---|---|---|
+| **文件不存在** | `src/main/nope.ts` | `找不到 src/main/nope.ts`（`rc=1`） | ✅ 保持原样 |
+| **索引内、无套件** | `src/main/modules/moduleApproval.ts` | `⚠️ 没有套件覆盖它 —— 改这里没有回归网。` + 建议行 | ✅ 保持原样（**结论**） |
+| **索引外（vendor）** | `genoffice/apps/docs/src/renderer/App.tsx` | `⚠️ 本工具只回答「有没有套件覆盖 apps/desktop/src/**」。` / `这个路径不在那个问题能回答的范围内（…）。` / `「不在图上」不等于「没有套件覆盖」—— 覆盖情况见对应任务卡。` | ✅ **改口**（**边界**） |
+
+**采用了 Office 总控的第三句而不是卡上的「不在本索引范围内」** —— 它描述工具的**定义域**，
+读者拿到的是「这个问题本身问错了」，而不是「这里被特殊对待了」。
+
+**建议行也一起换了**：vendor 上不再出现「要么补一套」（那里的覆盖在 Office 套件里，
+不会有人去补一套）。
+
+## 2. `apps/desktop/src/renderer/**` 现在在不在索引范围
+
+**在。** 实测：
+
+```bash
+$ bash apps/desktop/scripts/smokes-for.sh src/renderer/components/chat/Markdown.tsx
+apps/desktop/src/renderer/components/chat/Markdown.tsx
+  必跑（1–2 跳，4 套；跳数 [1, 2]）:
+    markdown-preview-smoke  (1 跳)
+    chat-linecount-smoke  (2 跳)
+    custom-tab-race-smoke  (2 跳)
+```
+
+**所以 `INDEXED_ROOTS = (MAIN, RENDERER)` 两者都在判据里**，S3 那条断言也钉住了这一点
+（改口不能波及 renderer 的正常路径）。
+
+## 3. 变异结果
+
+| # | 变异 | 预期红 | 实际红 | 红的对不对 |
+|---|---|---|---|---|
+| **M-1** | `print_no_coverage` 的 vendor 分支改回「没有套件覆盖」 | 1 | **3** | ✅ 全在 S1 组（不说「没有套件覆盖」/ 说「本工具只回答」/ 不给「要么补一套」）。**我预期只写了 1 条 —— 漏算了同组的两条伴生断言。** |
+| **M-2** | `is_indexed` 恒为 `False`（所有路径都当「不在范围」） | 1 | **2** | ✅ 正好是 S2 那一对（仍报「没有套件覆盖」/ 且不说「本工具只回答」）。**这是防过度修正的负控，红的正是目标** |
+| **M-3** | `apps/` 分支改回 `(DESKTOP / arg)` | 1 | **3** | ✅ 全在 S4 组（不再「找不到」/ 两种写法逐字相同 / 有覆盖的也相同） |
+
+**三组各自红在不同的组上，互不串扰** —— 这本身就是判据分得开的证据：
+修 vendor 措辞不会让路径等价那条红，反之亦然。
+
+**M-1 和 M-2 是一对**：M-1 证明改口生效，M-2 证明改口没有过头。
+只有 M-1 会得到一个「对什么都说不认识」的工具 —— 那比说错更坏。
+
+**还原三次都用 `cp 备份 目标` + `sha256sum -c` 逐字节核对（`e2e2d410…`），没有一次 `git checkout`。**
+
+## 4. T150 的两个症状有没有回归
+
+**没有。** 实测：
+
+```bash
+$ bash apps/desktop/scripts/smokes-for.sh packages/contracts/src/ipc/rpcMap.ts
+  必跑（1–2 跳，1 套；跳数 [0]）:
+    app-control-smoke  (0 跳)          ← 仍是 0 跳，没退化
+
+$ bash apps/desktop/scripts/smokes-for.sh packages/contracts/src/modules.ts
+  ⚠️ 可选（≥3 跳，1 套）:
+    经由 packages/contracts/src/moduleCapability.ts（1 套）:
+      capability-smoke                  ← 仍然不崩，且「经由 X」还在
+```
+
+**没有碰 T150 改的部分**：`@smoke-covers` 扫描、`display_path`、`suite_distance` 的声明逻辑
+全部原样。
+
+## 5. `--uncovered` 那个死分支修了（分开记录）
+
+**已修**，按卡的选项 A（让 `apps/desktop/...` 也能用），**单独一组 S4 断言钉住**：
+
+```python
+if arg.startswith("apps/"):
+    want = (ROOT / arg).resolve()        # ← 仓库根基准（--uncovered 的输出形状）
+elif arg.startswith("src/"):
+    want = (DESKTOP / arg).resolve()     # ← 历史用法
+else:
+    want = (ROOT / arg).resolve()
+```
+
+**S4 断言「两种写法输出逐字相同」**，对有覆盖的文件（`policy.ts`）和无覆盖的文件各验一次。
+
+**没有改 `--uncovered` 的输出格式** —— 那样会动到消费者（`tsx-coverage-smoke` 等断言 stdout）。
+
+## 6. 回归套件
+
+| 套件 | 结果 |
+|---|---|
+| `t152-smokes-for-index-scope-smoke`（新建，13 条） | **13/13** |
+| `t150-smokes-for-contracts-smoke` | 13/13 |
+| `smokes-for-ranking-smoke` | 25/25 |
+| `tsx-coverage-smoke` | 10/10 |
+
+## 7. 提交
+
+见下方「提交」一节（两个提交：主任务 + `apps/` 死分支）。
+
+## 8. 觉得不对但没改的
+
+### ① `--uncovered` 说「改这里没有回归网」，但对 vendor 文件它是错的话
+
+`--uncovered` 的标题行是 `# 没有任何套件覆盖到的源码文件(改这里没有回归网):`。
+**它只扫 `MAIN` 下的 `.ts`**，所以名单里不会有 vendor 文件 —— 这一点目前是对的。
+
+**但它的措辞（「没有回归网」）和本次修的是同一族**：它也是一句**结论**。
+现在的口径正确**仅仅因为**它的扫描范围恰好就在索引范围内。**如果将来有人把它扩到
+`genoffice/`，同一句话会立刻变成错误结论。** 没改，记在这里。
+
+### ② 文件不存在时 `sys.exit(1)`，而「不在索引范围」是 `exit 0`
+
+这是有意的（一个是错误，一个是正常回答），但**脚本调用方如果只看退出码，
+无法区分「查到了边界」和「查到了结论」**。现在靠 stdout 的两句话区分。
+**如果将来有脚本要消费这个工具的输出，应该给一个 `--json` 之类的出口**，而不是解析人类可读文本。
+没做 —— 目前唯一的程序化消费者（`tsx-coverage-smoke` / `smokes-for-ranking-smoke`）
+断言的都在索引范围内，不受影响。
+
+### ③ `INDEXED_ROOTS` 是**新增的常量**，而工具的其它范围判断散在各处
+
+`--uncovered` 用 `MAIN.rglob("*.ts")`，`resolve()` 用 `@main/` / `@renderer/` 前缀判断，
+`coverage()` 从 `scripts/*-smoke` 出发。**这三处都在隐式地定义「范围」，而只有新加的
+`INDEXED_ROOTS` 是显式的。**
+
+**统一它们是一次真正的重构**（会动 `resolve()` —— T150 刚改过，卡上明确说不要碰），
+不在本卡范围。**但下次有人要改「工具管哪些文件」时，先看这四处是否一致。**

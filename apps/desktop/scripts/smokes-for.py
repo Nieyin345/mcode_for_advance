@@ -70,6 +70,14 @@ ROOT = DESKTOP.parent.parent                # 仓库根
 MAIN = DESKTOP / "src" / "main"
 RENDERER = DESKTOP / "src" / "renderer"
 
+# 【T152】依赖图只从这两个根出发 —— `closure()` 的入口全在 `scripts/*` 里，
+# 而它们 import 的是 `@main/` / `@renderer/` / 相对路径，所以覆盖集合里只可能
+# 出现这两个目录下的文件。
+#
+# **这个元组是「本工具能回答什么问题」的定义域，不是「它排除了什么」。**
+# 用它区分「查过没有」和「根本不在我的问题范围内」—— 见 `explain_no_coverage()`。
+INDEXED_ROOTS: tuple[Path, ...] = (MAIN, RENDERER)
+
 # `from "x"` / `import("x")` / `import "x"` 都收。`import type` 也一样 —— 类型
 # 依赖也算依赖:契约改了这边也会跟着变。
 IMPORT_RE = re.compile(r"""(?:from|import)\s*\(?\s*["']([^"']+)["']""")
@@ -119,6 +127,44 @@ def display_path(p: Path | None) -> str:
         except ValueError:
             continue
     return p.as_posix()
+
+
+def is_indexed(p: Path) -> bool:
+    """这个路径在不在依赖图能回答的范围内（见 `INDEXED_ROOTS`）。"""
+    return any(p.is_relative_to(root) for root in INDEXED_ROOTS)
+
+
+def print_no_coverage(want: Path) -> None:
+    """在「没有任何套件覆盖它」的那一刻，说清这是结论还是边界。
+
+    ## 【T152】为什么这不是一句话的事
+
+    `hits` 为空有两种完全不同的原因：
+
+    | 原因 | 这是 |
+    |---|---|
+    | 在索引范围内，但没有套件 import 它 | **结论** —— 查过了，确实没有 |
+    | 根本不在索引范围内（`genoffice/` 等） | **边界** —— 没查，因为这里不在图上 |
+
+    从前两种情况都打印「没有套件覆盖它 —— 改这里没有回归网」。对 vendor 路径
+    来说那是**错误的否定结论**：Office 套件（`o0-format-fidelity-smoke` 等）真的
+    覆盖 `genoffice/apps/*/src/renderer/`，只是依赖图不跟到那个子仓库。
+
+    **而且它会被「修得更好」放大**：T150 把跳数与崩溃修好之后，这句警告在别处
+    变得更可信，于是它在 vendor 上错得更有说服力。
+
+    ## 为什么第三句不是「不在索引范围内」而是这句
+
+    「不在索引范围内」描述的是工具的**排除项**；下面这句话描述的是工具的
+    **定义域** —— 读者拿到的是「这个问题本身问错了」，而不是「这里被特殊对待了」。
+    """
+    if is_indexed(want):
+        print("  ⚠️ 没有套件覆盖它 —— 改这里没有回归网。")
+        print("     要么补一套,要么改完自己写一次性探针验一遍然后删掉。")
+        return
+    print("  ⚠️ 本工具只回答「有没有套件覆盖 apps/desktop/src/**」。")
+    print(f"     这个路径不在那个问题能回答的范围内（{display_path(want)}）。")
+    print("     「不在图上」不等于「没有套件覆盖」—— 覆盖情况见对应任务卡。")
 
 
 def resolve(spec: str, from_file: Path) -> Path | None:
@@ -482,7 +528,16 @@ def main() -> None:
 
     if len(sys.argv) > 1 and sys.argv[1] != "--all":
         arg = sys.argv[1]
-        if arg.startswith("apps/") or arg.startswith("src/"):
+        # 【T152】`--uncovered` 印的是 `apps/desktop/src/...`，而原来的分支把
+        # `apps/` 前缀拼到 DESKTOP 上 → `apps/desktop/apps/desktop/src/...`，永远
+        # 找不到。于是「照它给的清单再查一个」这条最自然的用法是死的。
+        #
+        # 两种写法现在都收，结果必须相同：
+        #   `src/main/x.ts`            （相对 apps/desktop，历史用法）
+        #   `apps/desktop/src/main/x.ts`（相对仓库根，`--uncovered` 的输出形状）
+        if arg.startswith("apps/"):
+            want = (ROOT / arg).resolve()
+        elif arg.startswith("src/"):
             want = (DESKTOP / arg).resolve()
         else:
             want = (ROOT / arg).resolve()
@@ -538,8 +593,7 @@ def main() -> None:
             # 用绝对路径调就不受调用者 cwd 影响，无论你在哪个目录都能贴。
             print("\n  bash " + (DESKTOP / "scripts" / "<名字>" / "run.sh").as_posix())
         else:
-            print("  ⚠️ 没有套件覆盖它 —— 改这里没有回归网。")
-            print("     要么补一套,要么改完自己写一次性探针验一遍然后删掉。")
+            print_no_coverage(want)
         return
 
     by_file: dict[Path, list[str]] = {}
