@@ -342,7 +342,7 @@ export function ProfileRow({
                           e.stopPropagation();
                           void onRemove(profile.id);
                         }}
-                        className="mr-1 shrink-0 rounded p-1 text-content-subtle transition-colors hover:bg-surface-hover hover:text-danger"
+                        className="cds-hover-ghost mr-1 shrink-0 rounded p-1 text-content-subtle transition-colors hover:text-danger"
                       >
                         <IconTrash size={11} />
                       </button>

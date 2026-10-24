@@ -100,7 +100,7 @@ function RunRow({ run }: { run: MonitoringRunSummary }) {
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            className="shrink-0 rounded p-0.5 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost shrink-0 rounded p-0.5 text-content-subtle transition-colors hover:text-content"
           >
             {open ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
           </button>

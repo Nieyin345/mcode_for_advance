@@ -441,7 +441,7 @@ export function FileMentionPicker({
                   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors",
                   isActive
                     ? "bg-surface-hover text-content ring-1 ring-inset ring-edge-selected"
-                    : "text-content hover:bg-surface-hover",
+                    : "cds-hover-ghost text-content",
                   already && "opacity-50",
                 )}
               >

@@ -162,7 +162,7 @@ export function AgentProfilesView({
           type="button"
           title={t("settings.workflows.removeProfile")}
           onClick={() => void onRemove(profile.id)}
-          className="rounded p-1 text-content-subtle transition-colors hover:bg-surface-hover hover:text-danger"
+          className="cds-hover-ghost rounded p-1 text-content-subtle transition-colors hover:text-danger"
         >
           <IconTrash size={12} />
         </button>
