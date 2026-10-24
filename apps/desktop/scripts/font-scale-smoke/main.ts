@@ -15,7 +15,8 @@
  */
 
 import { readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
+import { stripComments } from "../lib/sourceText.js";
 
 // run.sh 会先 `cd` 到 apps/desktop —— 用 cwd 而不是 import.meta.dirname，
 // 因为 esbuild 把 main.ts 打进一个临时目录，dirname 会指向 /tmp。
@@ -198,25 +199,82 @@ console.log("\n── 四、CDS 七档字阶（T121 · storybook :659）──")
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 五、★ 现在没有任何组件使用新档位 —— 所以加 fontSize **渲染零变化**
-//     这一条验证的是「本卡不改变任何现有外观」这个承诺。
+// 五、新档位的使用必须**按批次**，不能随手改
+//
+// ⚠️ 这一节原本的断言是「没有任何组件使用新档位」—— 它验证的是 T121 加
+// fontSize 时的承诺：**加配置不改变任何现有渲染**。
+//
+// 那个承诺在 T133 兑现完了：第一批迁移把 90 处 `text-sm` 换成了 `text-body`。
+// 所以「0 处使用」不再是事实，而这**不是回归**。
+//
+// 断言改成守真正长期有效的那条：**新档位的使用只允许在已迁移的批次里出现，
+// 且只允许数值等价的那两档**。
+//
+//   等价（允许）：text-sm → text-body（14/20 → 14/20）、text-xs → text-code（12/16 → 12/16）
+//   收紧（不允许）：text-base → text-heading（16/24 → 16/20，行高变了）
+//                   text-xl  → text-title  （20/28 → 20/24，行高变了）
+//
+// 收紧那两档会**改变渲染**，必须单独一批、单独验。这条断言就是拦住
+// 「顺手把 text-base 也换成 text-heading」的那道门。
 // ═══════════════════════════════════════════════════════════════
-console.log("\n── 五、本卡不改变任何现有渲染 ──");
+console.log("\n── 五、新档位只用等价的两档（收紧档位要单独一批）──");
 {
-  const tierNames = ["caption", "footnote", "code", "body", "prose", "heading", "title"];
-  const hits: string[] = [];
+  const EQUIVALENT = ["body", "code"];             // 数值与对应 Tailwind 默认档相同
+  const TIGHTENING = ["heading", "title"];         // 行高会变，本批禁止
+  // ── 收紧档位的**显式例外** ──
+  //
+  // 这道门拦的是「顺手把 text-base 批量换成 text-heading」，不是「永远不许用
+  // heading」。所以允许按**文件 + 理由**登记例外：每一条都要能回答「为什么这一处
+  // 该改行高」，而不是「我改到这儿了」。
+  //
+  // 登记过的文件仍然要求：用的是收紧档位、不是等价档位（避免借例外之名做等价迁移）。
+  const TIGHTENING_EXCEPTIONS: ReadonlyArray<{ file: string; tier: string; why: string }> = [
+    {
+      file: "settings/PanelHeader.tsx",
+      tier: "heading",
+      why: "设置页每个子页面的标题。原来是 --chat-fs-sm（13px）且跟随对话字号，"
+        + "两处都不对：heading=16/20 是规范里「页面标题」的档。行高 16→20 是有意的（T136）。",
+    },
+  ];
+  const exceptionFor = (rel: string, tier: string) =>
+    TIGHTENING_EXCEPTIONS.find((e) => rel === e.file && e.tier === tier);
+  const tighteningHits: string[] = [];
+  const equivalentHits: string[] = [];
+  let exceptionsUsed = 0;
+
   for (const f of files) {
-    const t = readFileSync(f, "utf8");
-    for (const n of tierNames) {
-      // 只匹配**独立**的 text-<tier>，排除 text-body-md 这类更长标识符
-      if (new RegExp(`\\btext-${n}(?![\\w-])`).test(t)) hits.push(`${f.replace(ROOT + "/", "")}: text-${n}`);
+    // ⚠️ 必须剥注释再匹配 —— 例外登记后，被登记的文件里通常还留着
+    // 「原来用的是 --chat-fs-sm」这类解释性注释；不剥的话「例外确实还在用」
+    // 这条会因为注释里的字样而恒真（实测：把 PanelHeader 改成 text-body 之后
+    // 计数器仍是 1 —— 它数的是注释里那个 `text-heading`）。
+    const t = stripComments(readFileSync(f, "utf8"));
+    const rel = f.replace(join(ROOT, "src/renderer/components") + sep, "").split(sep).join("/");
+    for (const n of EQUIVALENT) {
+      if (new RegExp(`\\btext-${n}(?![\\w-])`).test(t)) equivalentHits.push(rel);
+    }
+    for (const n of TIGHTENING) {
+      if (!new RegExp(`\\btext-${n}(?![\\w-])`).test(t)) continue;
+      if (exceptionFor(rel, n)) { exceptionsUsed++; continue; }
+      tighteningHits.push(`${rel}: text-${n}`);
     }
   }
-  info(hits.length ? hits.join("\n       ") : "（0 处使用新档位）");
+
+  info(`等价档位（body/code）已用于 ${equivalentHits.length} 个文件（T133 第一批）`);
+  info(`收紧档位的已登记例外：${exceptionsUsed} 处（共登记 ${TIGHTENING_EXCEPTIONS.length} 处）`);
   check(
-    "★ 加 fontSize 后渲染零变化（没有组件引用新档位）",
-    hits.length === 0,
-    hits,
+    "★ 没有**未登记**的组件使用会改变行高的档位（heading / title）",
+    tighteningHits.length === 0,
+    tighteningHits,
+  );
+  check(
+    "★ 每条登记过的例外都真的还在用那个档位（防止例外变成空头支票）",
+    exceptionsUsed === TIGHTENING_EXCEPTIONS.length,
+    { exceptionsUsed, registered: TIGHTENING_EXCEPTIONS.length },
+  );
+  check(
+    "★ 等价档位确实被用起来了（迁移发生过，不是空谈）",
+    equivalentHits.length > 0,
+    { equivalentHits: equivalentHits.length },
   );
 }
 
