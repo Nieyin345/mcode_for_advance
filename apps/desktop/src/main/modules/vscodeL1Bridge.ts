@@ -572,8 +572,58 @@ function childProgram(entry: string, command: string, l2?: { section: string; co
         })
       });
       const loaded = { exports: {} };
+      // 【F013】扩展代码能 require 什么。
+      //
+      // ## 白名单是**枚举表**，不是 「startsWith("node:")「
+      //
+      // 前缀匹配会把 「node:child_process「 / 「node:net「 / 「node:vm「 一起放行 ——
+      // 那等于把沙箱的钥匙递给它。这里只列**确实安全**的：
+      //
+      //  - 「vscode「：兼容层，本来就是给扩展的；
+      //  - 「path「：纯字符串运算，没有 IO、没有进程、没有网络。给它是安全的，
+      //    而**不给它**会让大量真实扩展在加载时就崩（它们普遍用 「path.join「）；
+      //  - 「fs「：**受限替身，不是真 node:fs**。见下面 「fsCompat「。
+      //
+      // ## ⚠️ 关于 L2 的 「require("node:fs")「
+      //
+      // 「childL2Snippet「 里有 「const l2Fs = require("node:fs")「，而那段代码生成在
+      // **这个 「new Function「 之外**（它在构造 「vscode「 对象时执行）。所以它用的是
+      // **子进程的真实 require**，不受这里的白名单约束。
+      //
+      // **那是设计使然，不是漏洞**：L2 是宿主自己的适配层（「l2Path「 会校验
+      // URI 必须等于已授权的 「resource.path「），不是扩展提交的代码。
+      // 但**这条事实必须写在这里** —— 否则下一个人会以为白名单挡住了所有 「fs「，
+      // 从而对「扩展拿不到真 fs」做出错误的推断。
+      const pathCompat = require("node:path");
+      const nodeFs = require("node:fs");
+      // 扩展给的路径必须**就是**已授权的那个资源。用 「path.resolve「 归一化后比较，
+      // 挡住 「./x/../resource「 这类写法 —— 但它**不**做符号链接解析（那要 IO），
+      // 所以真实路径的放行仍由子进程的 「--allow-fs-read「 兜底（见
+      // 「permissionedProcessRunner「 里那段关于 resolveResource 的注释）。
+      const authorizedPath = (p) => {
+        if (typeof p !== "string" || p.length === 0 || p.length > 4096) {
+          throw Error("fs denied: invalid path");
+        }
+        if (pathCompat.resolve(p) !== pathCompat.resolve(resource.path)) {
+          throw Error("fs denied: path is not the authorized resource");
+        }
+        return resource.path;
+      };
+      const fsCompat = Object.freeze({
+        // 只开放**只读**操作，且每个都先过 authorizedPath()。
+        // **不提供的**：写、删除、重命名、chmod、创建目录、任何 stream/watch ——
+        // 写路径走 L2 的 「workspace.fs.writeFile「（它要 「resource.write「 权限 +
+        // 逐次批准），不该从 fs 这里绕过去。
+        readFileSync: (p, options) => nodeFs.readFileSync(authorizedPath(p), options),
+        existsSync: (p) => { try { return nodeFs.existsSync(authorizedPath(p)); } catch { return false; } },
+        statSync: (p) => nodeFs.statSync(authorizedPath(p)),
+      });
       const requireCompat = (id) => {
         if (id === "vscode") return vscode;
+        if (id === "path" || id === "node:path") return pathCompat;
+        if (id === "fs" || id === "node:fs") return fsCompat;
+        // ⚠️ **枚举表，不是「startsWith(node:)」** —— 后者会把
+        // node:child_process / node:net / node:vm 一起放行。
         throw Error("Unsupported VS Code extension import: " + String(id));
       };
       const source = ${JSON.stringify(entry)};
