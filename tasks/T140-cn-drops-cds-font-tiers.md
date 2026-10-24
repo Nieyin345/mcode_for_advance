@@ -1,6 +1,6 @@
 # T140｜`cn()` 丢掉全部 CDS 字号档 —— T121 七档在运行时从未生效
 
-- Status: `ready-for-agent`
+- Status: `done`（2026-10-24，执行会话 U；`cn.ts` + 套件 `aa7d8f16`，`FilterChip` 收尾 `121d7d85`）
 - Category: **P0 基础设施（UI）** —— 它让 T121/T130/T133 的字号体系大面积失效
 - Priority: **P0**
 - 发现于：T138 执行时（我引入了 3 行筛选条回归，查根因时发现）
@@ -245,3 +245,137 @@ T138 已经把 `FilterChip` 那一处改成内联 `fontSize` 作为**局部规�
 3. 四个场景的视觉前后对比
 4. 那 28 处里实际有几处是真问题（剔除误报）
 5. 你觉得不对但没改的
+
+---
+
+# 回写（2026-10-24，执行会话 U）
+
+## 1. `cn.ts` 最终写法
+
+```ts
+const CDS_TIERS = ["caption","footnote","code","body","prose","heading","title"] as const;
+
+const twMerge = extendTailwindMerge({
+  extend: { classGroups: { "font-size": CDS_TIERS.map((tier) => `text-${tier}`) } },
+});
+
+export function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }
+```
+
+**提交 `aa7d8f16`。** 文件头的注释写清了四件事：不登记会发生什么（含 `twMerge("text-caption text-content") → "text-content"` 这个具体输出）、为什么登记七个名字就够、颜色/背景/间距不受影响、以及「这个列表必须与 `tailwind.config.js` 一致」并由套件守着。
+
+## 2. 套件数字与变异
+
+### 套件：`t140-cn-tier-smoke`，17/17
+
+**五节，直接 `import` 产品代码（`src/renderer/lib/cn.ts`）断言真实输出**，不是源码文本 —— T121/T133 的 `src.includes("text-caption")` 在运行时一直是绿的假象，正是这张卡要修的。
+
+| 节 | 条数 | 验什么 |
+|---|---|---|
+| [1] 主判据 | 7 | 每个档位与 `text-content` 共存（修复前这 7 条全红，输出只剩 `text-content`） |
+| [2] 档位覆盖 | 3 | `caption+xs`、`xs+caption`、`body+code` 仍能互相覆盖 —— **负控：修复不是「全都保留」** |
+| [3] 其它冲突解决 | 4 | 颜色、背景、`p-2 p-4` —— **负控：修复没有过度扩张** |
+| [4] 真实输入形状 | 2 | 三参数夹 `false`、`undefined` |
+| [5] 两处名单一致 | 1 | 读 `tailwind.config.js` 比对集合 |
+
+### 变异：三个，全部先写预期
+
+| # | 变异 | 预期红 | 实际红 | 红得对不对 |
+|---|---|---|---|---|
+| M-1 | 退回**裸** `twMerge`（`const twMerge = _bareTwMerge`） | 7 主判据 + 2 档位覆盖 + 3 真实形状 | **11** | ✅ 主判据与负控精确分离；4 条负控（`[3]`）正确保持绿 |
+| M-2 | 把七个名字登记进 **`text-color`** 组而不是 `font-size` | 同 M-1 | **11** | ✅ **精确复现原始缺陷** —— 这一条是最重要的，它证明「登记进哪一组」才是根因 |
+| M-3 | `cn.ts` 的 `font-size` 组清空 | t138 红 1（真身验证）；t140 红 12 | **1 / 12** | ✅ 见下 |
+
+**⚠️ M-1 和 M-2 的第一版都测错了地方，必须记下来：**
+
+- **M-1 第一次写成 `(x) => x`（直通）**，结果 6 红全在负控、主判据全绿 —— 因为直通把所有类都保留，测的是「完全不合并」，**不是原始 bug**。这是 CLAUDE.md 第八条第 9 种的同型：用「修法本来就会抓的形状」验修法。改成 `_bareTwMerge` 才红 11 条。
+- **M-2 第一次改成往 `font-size` 里**加一个颜色类（`"text-color": ["text-content-muted"]`），**0 红** —— 那个类本来就在颜色组里，last-wins 不受影响。**负控方向写反了。** 改成「把档位登记进 `text-color`」才精确复现缺陷。
+
+### 断言 [5] 的边界（实测过，没有假装守住）
+
+[5] 用正则从 `tailwind.config.js` 抽键名。**我原本担心它分不清「删掉」和「注释掉」**，实测了：把 `"code",` 注释掉 → **2 红**（`text-code` 主判据 + [5] 集合比较），符合预期，注释行以 `//` 开头不被正则命中，该名字从集合里消失，所以集合比较会红。
+
+**它能守住「配置里有这个名字、`cn.ts` 里没有」。** 但它守不住「名字对、值改了」—— 比如把 `caption` 从 11px 改成 10px，它不会红。那属于「档位值」的账，归 `design-tokens-smoke`（353 条）守。
+
+## 3. 视觉前后对比 —— **没做，原因见下**
+
+**这一步我没有完成，如实报告。**
+
+`arc005-visual-baseline/` 的四个文件（`build.mjs` / `compare.mjs` / `probe.ts` / `run.sh`）在我工作期间**正被另一个会话修改**（`git status` 是 `M`，即 T141 的在途改动），而 `.tmp/arc005-visual/` 在 21:01 被我跑过一次、随后被那个会话清空重跑（`taskcenter-light-1280.png` 已不存在）。
+
+**按卡的边界「不许碰 `arc005-visual-baseline/`」，我不在这条路径上并行抢。** 视觉对比交由 T141 那边完成后进行。
+
+**但我做了等价的直接取证**（不靠推理）：把 `ui/` 里 8 处**真实类串**原文喂给修复前（裸 `twMerge`）和修复后（`cn()`），对照输出：
+
+| 站点 | 修复前 | 修复后 |
+|---|---|---|
+| `input.tsx:30` | **丢掉** `text-code` | 保留 |
+| `textarea.tsx:23` | **丢掉** `text-code` | 保留 |
+| `select.tsx:57` | **丢掉** `text-code` | 保留 |
+| `select.tsx:180` | **丢掉** `text-code` | 保留 |
+| `dialog.tsx:107` | **丢掉** `text-body` | 保留 |
+| `dialog.tsx:121` | **丢掉** `text-code` | 保留 |
+| `native-controls.tsx:38` | **丢掉** `text-code` | 保留 |
+| `button.tsx:64`（无颜色类） | 保留 | 保留 |
+
+**修复前丢 7/8，修复后丢 0/8。** 而且**只有含 `text-content` 系的那 7 条被丢** —— 机制完全吻合，`button.tsx:64` 没有颜色类可撞所以本来就保留。这是「共享控件全部从 16px 回到 12px」的直接证据。
+
+## 4. 实际有几处真问题
+
+**卡里写 27 真 / 1 假，我复核后确认。** 分布 `{"code":24,"body":3,"caption":1}` 与现状一致。
+
+**唯一假阳性 `ide/GitDiffDialog.tsx:191`** —— 那是写卡人自己的取证工具 bug 造出来的（括号配对漏跳 `/* */`，`slice` 一路切到文件末尾，把后面组件的 `text-body` 算了进来）。卡的第六节已经记了这件事，可靠版本在 `.tmp/t140-evidence/`。
+
+## 5. 觉得不对但没改的
+
+### ① 顺手收掉了 `FilterChip` 的内联规避（提交 `121d7d85`）
+
+卡第八节说「这张卡做完后，那一处应该改回 `text-caption`」。我做了，并**把 `t138` 第六节的三条断言翻了个方向**。
+
+原来那三条断言的是「**必须用内联 `fontSize`，不许用 `text-caption`**」—— 那在 `cn()` 坏着的时候是对的（内联 `style` 是唯一能让 11px 落到 DOM 的写法），**修复后它变成了错的判据**：再有人内联 `fontSize` 反而会通过。
+
+现在断言「必须走 `text-caption`、不许内联」，并**加了一条真身验证**：`cn("text-caption","text-content")` 两个都保留。**组件源码断言在「源码写对了、运行时被丢掉」时是绿的** —— 只有真身验证能抓住那种情况。变异 M-3 证明了这一点：清空 `font-size` 组后，组件源码那两条**正确地保持绿**（源码里确实写着 `text-caption`），只有真身验证红。
+
+**`11px/16px` 与 `caption` 档完全一致，净视觉效果为零。**
+
+### ② `measured` 是空的（T141 范围，未擅自扩）
+
+`.tmp/arc005-visual/taskcenter-light-1280.json` 的 `Object.keys(j.measured).length === 0`。**基线拍了 PNG，但一个元素都没测量。** 所以字号/圆角是否对齐只能靠人眼看图 —— T138 那个 3 行回归就是这么被肉眼发现的。建议并入 T141。
+
+### ③ 那 51 处未登记的视觉差异，全部是 `--edge`，不是本卡造成的
+
+`grep "未登记差异" .tmp/arc005-visual/diff.md | sed 's/.*↳ //' | sort | uniq -c` 的结果：
+
+```
+  51 --edge
+```
+
+**只有一种，没有第二种。** 参考矩阵里 `--edge` 还写着旧值 `#c3c2b7`，而 T121 的边框渐变重建（`b736c814`）已经把它改成 `#d9d9d8`（`217 217 216`）。**这是矩阵落后了，不是回归**，与本卡无关。
+
+### ④ 我踩了一次暂存区污染，已修复（提交 `4db74e54`）
+
+`git commit -F <file>` **不带路径**时把另一个会话在途的 `tasks/T143-office-default-and-embed.md` 删除一起提交了（276 行）。**这正是仓库规矩里写的「暂存区是进程间共享」**，而我上一轮在同一个文件树里刚被提醒过。
+
+- 没有用 `reset`/`amend`（那可能撤掉别人刚落的提交），**用一个新提交原样恢复**；
+- T143 仍 `ready-for-agent`、也没并进 `tasks/README.md`，所以是误删不是有意重组；
+- 恢复后 `git diff 50150a60 HEAD -- tasks/T143...` 为空，**逐字节一致**；
+- 净变化核对：`50150a60 → HEAD` 只有我那两个文件。
+
+**教训**：`git add <路径>` + `git commit -F <file>` 里的 `-F` 只管提交信息，**不管路径**。要在多会话树里安全提交，`commit` 前必须 `git diff --cached --name-status` 逐条看 —— 这次我看了，但看的是「我以为的暂存区」，而它在我看之后又被别人 `add` 了。
+
+### ⑤ `task-roster-smoke/run.sh` 从仓库根调用必挂（与本卡无关）
+
+```
+line 8: apps/desktop/scripts/task-roster-smoke/../lib/esbuild-path.sh: No such file or directory
+```
+
+根因：第 4 行 `cd "$(dirname "$0")/../.."` 之后，第 8 行**还在用相对路径引 `$0`** —— `cd` 已经把相对路径的基准改了。这不会在「谁在调它」上暴露，因为在 `apps/desktop` 下直接跑时 `$(dirname $0)` 恰好还能解析。**`smokes-for.sh` 正是从仓库根调的**，所以它会挂。你说过别乱开会话，我就没开，只记在这里。
+
+**未跑全量 smoke**（按规矩「不做全局测试，要发申请」）。
+
+## 提交
+
+- **`aa7d8f16`** — `cn.ts` + `t140-cn-tier-smoke`（3 文件，+196/−1）
+- **`121d7d85`** — `FilterChip` 去内联 + `t138` 三条断言翻向（2 文件，+29/−25）
+- **`4db74e54`** — 恢复误删的 T143（1 文件，+276）
+
