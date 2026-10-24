@@ -236,3 +236,99 @@ docx create 仅开放原厂 HTML fragment；Markdown 图片路径尚未逐一围
    它把上游最关键的一句切掉了，而 `describe` 又没有补回来。
 3. 中文 `w:eastAsia` 与 US-Letter 表格宽度是**上游默认值**，要不要在 Mcode 侧覆盖？
    如果要，属于「改上游行为」，得先确认不和原厂渲染器冲突。
+
+---
+
+## 结果回写二（2026-10-24，H）：复核 F 的结论，三条裁决已关闭，剩一个真断点
+
+> 执行会话 **H**。只读 + `.tmp/t97-verify/` 探针。未改产品代码，未起 Electron，未跑全量。
+> **F 的回写是 10-24 早些时候的快照，其中三条结论已经被后续的卡改掉了。**
+> 本节按当前 HEAD 复核，并给出闭环**剩下唯一**的断点。
+
+### 一、F 的三条裁决：已经全部关闭
+
+| F 说 | 现在 | 证据 |
+|---|---|---|
+| ① `describe` 对 `create` 返回 apply 语法 | ✅ **已修** | `documentToolRuntime.ts:406` 有 `cliOp === "create"` 分支 → `createRouteHelp()`；提交 `a0363bd1`（T102） |
+| ② 160 字截断切掉了关键句 | ✅ **已由 ① 补回** | `createRouteHelp()` 逐 app 写明扩展名与围栏理由（docs 只收 `.html/.htm`、md 被拒的原因） |
+| ③ 中文无 `w:eastAsia` | ✅ **上游已自带** | CLI 里 `src/formats/east-asia-font.ts` 的 `defaultEastAsiaFont()`：win32 → `Microsoft YaHei`、darwin → `PingFang SC`、linux → `Noto Sans CJK SC`。**实测产物 `styles.xml` 里有 `w:eastAsia="Microsoft YaHei"`** |
+| ③ 表格超宽 334 twips | ⚠️ **生成侧仍是 9360，但已被判定层抓住** | `pageFitCheck.ts`（T109，`9f91f6b1`）；实测报「表格宽 9360，可打印区 9026，超出 334」 |
+
+**所以「又烂又丑」的两个根因现在只剩一个半**：
+- 中文无字体 —— **不再成立**（上游按平台注入）；
+- 表格超宽 —— **仍然生成**（上游 `generate.ts:2497` 写死 9360），但 Mcode 侧现在**能报出来**（T109）。
+
+### 二、★ 闭环真正的断点：`document_tool_call` 的产物进不了任务
+
+**这是这一节的全部价值。** F 写「任务表与对话零接线」，**那一条已经不成立** ——
+`autoCreate.ts` 订阅了 `runtimeManager`，回合结束自动建任务。但那套接线**只认 Edit/Write**。
+
+**链路实测**：
+
+```
+main/providers/claude-sdk/SdkMessageAdapter.ts:1288
+  if (FILE_MUTATING_TOOLS.has(b.name)) { ... snapshots.recordPre ... }
+        ↓
+main/lib/fileSnapshot.ts:513
+  FILE_MUTATING_TOOLS = { "Write", "Edit", "MultiEdit", "NotebookEdit" }
+        ↓  （document_tool_call 不在里面）
+turn.files 为空
+        ↓
+main/tasks/autoCreate.ts  classifyTurn({ artifacts: [] })
+  → {"create":false,"why":"这一轮没有产出文件，是问答不是任务"}
+```
+
+**实测**（`.tmp/t97-verify/classify.ts`，真身 `classifyTurn`，非副本）：
+
+```
+空产物的成功回合 → {"create":false,"failed":false,"why":"这一轮没有产出文件，是问答不是任务"}
+有产物的成功回合 → {"create":true,"failed":false,"why":"产出 1 个文件"}
+```
+
+**后果**：用户说「帮我生成一份季度报告」，Agent 用 `document_tool_call` **成功造出
+`report.docx`**，`document_md_read` 能读回，`docs check` 报 no issues ——
+**但这一轮不会被建成任务，docx 不出现在任务中心，也不在 `artifacts` 里。**
+
+路线图 §5 的核心闭环是「用户从 UI 提任务 → Agent 调用 Office 生成真实产物 →
+**任务中心能追踪**产物与证据」。**Office 恰好是唯一一条不经过 Edit/Write 的产物路径**，
+于是它是唯一一条**任务中心看不见**的路径。
+
+**这不是「文档工具坏了」**，它自己工作得很好。是**产物统计的口径只覆盖了文件编辑类工具**。
+
+### 三、顺带核实的（都不需要改）
+
+- **任务中心面板存在且可用**：`ide/TaskCenterPanel.tsx`，`task.list` / `task.accept` /
+  `task.reject` 都在。`t100-task-center-smoke` **106/106 通过**。
+- **自动建任务端到端通**：`task-message-auto-create-smoke` **38/38 通过**，含
+  「turn.files 到了但还没建（要等 turn.done 收口）」「turn.done 之后任务真的建出来了」。
+- **验收/返修状态机在**：`executor.ts:64` 的 `reopenTask`（`rejected → running` 返修），
+  且 `accepted`/`rejected` 执行方写不进去（`TASK_EXECUTOR_STATUSES` 挡）。
+- **`docs check` 是假门禁**（F 未提，我实测）：对一份表格超 334 twips 的 docx 报
+  `no issues found (10 checks)` —— 那 10 条里没有页面适配。**T109 的 `pageFitCheck`
+  补的就是这个洞，但它只在 `docs check` 通路触发，`create` 之后不触发。**
+
+### 四、四步端到端（当前 HEAD 重测）
+
+| # | 步骤 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 用户发消息 → Agent 收到 | **未用真模型跑**（同 F，无凭据前提） | — |
+| 2 | Agent 调 `document_tool_call` | ✅ | 真 CLI `create --type docx` EXIT=0，`blocks: 7` |
+| 3 | 产物落盘且可用 | ✅ | `out.docx`，`docs check` → **no issues found (10 checks)** |
+| 4 | 任务中心能追踪 | ❌ **断在这里** | 见 §二：`classifyTurn` 判 `create:false` |
+
+**「通」通到什么程度**：**headless 通到第 3 步。第 4 步在 Office 这条路上不通。**
+真 UI（Electron U1）没有验，按路线图「E1/headless 只能证明覆盖路径，不等于真实 Electron U1」。
+
+### 五、给下一张卡的两条建议（本卡不改代码）
+
+1. **让 `document_tool_call` 的产物进 `turn.files`**（或让 `autoCreate` 认另一条来源）。
+   最小形状：工具执行成功后把 `filePath` 记进本轮产物，走与 `Edit/Write` 同一条路。
+   **不要**给 `FILE_MUTATING_TOOLS` 加 `document_tool_call` —— 那个集合还驱动
+   **路径围栏**与 **rewind 快照**，`document_tool_call` 的 `filePath` 字段名不同、
+   且它的产物是新建文件（没有 pre-turn 内容可快照），加进去会同时改坏两件事。
+2. **让 `create` 之后也跑一次 `pageFitCheck`**。现在只有 `docs check` 通路会报超宽，
+   而用户最常见的路径是 `create` 完之后就直接开文件 —— 那时表格已经顶到边距里了。
+
+### 六、提交
+
+**无。** 本卡只读，探针全在 `.tmp/t97-verify/`（`table.html` / `out.docx` / `fit.ts` / `classify.ts`）。
