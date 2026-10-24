@@ -54,31 +54,46 @@ export const commands: typeof import("vscode").commands = { /* 缺一个方法�
 
 **这比任何测试都可靠**——测试要人写、会漏、会过时；类型不会。
 
-### 闸门写法已验（写卡人实测，你直接照用）
+### 闸门写法已验（**2026-10-24 二次更正 —— 我第一版错了一半**）
 
-我在 `.tmp/types-probe/` 里用 `@types/vscode@1.140.0` + `tsc` 实测了三种写法：
+> ## ⚠️ 第一版写的是「`as` 和 `satisfies Partial` 都会假绿」
+>
+> **`as` 那半是错的**，而且是两次相反方向的错：
+>
+> 1. 我写卡时拿 `{}`（空对象）测 `as`，`exit 0` → 我写「`as` 假绿」；
+> 2. 执行会话拿「缺 1 个方法、其余签名接近」的对象测 `as`，`exit 1` → 它说「有前提」；
+> 3. 我重测又踩到反向：一个**签名写得很全**的单成员对象（`(_command, _callback, _thisArg?)`）
+>    测 `as`，**`exit 0`** —— 和它的样本结论相反。
+>
+> **三个结果都真实，差别不在「缺几个方法」，在「像不像」。**
+
+| 写法 | 结果 | 失败原因 |
+|---|---|---|
+| `satisfies Partial<typeof vscode.commands>` | **永远绿** | 部分满足就算满足 |
+| `as unknown as typeof vscode.commands` | **永远绿** | 双重断言，TS 放弃了 |
+| `as typeof vscode.commands` | **有时红有时绿** | **TS2352「两个类型够不够相似」——是相似度，不是完整性** |
+| 裸 `satisfies typeof vscode.commands` | **必红** | **TS2739「缺这些成员」——这才是完整性检查** |
+
+**实测两例（同一台机器、同一个 `@types/vscode@1.140.0`、都开 `--strict`）：**
 
 ```ts
-import type * as vscode from "vscode";
+// 绿 —— 签名写得够全，TS 认为「这俩像是同一类东西」
+const impl = { registerCommand: (_c: string, _cb: (...a: any[]) => any, _t?: any) => ({ dispose() {} }) };
+export const a = impl as typeof vscode.commands;              // exit 0
 
-// ❌ as —— 缺成员也编译通过，等于没闸门
-const a = { registerCommand: f } as typeof vscode.commands;
-
-// ❌ satisfies Partial<...> —— 同上，部分满足就算满足
-const b = { registerCommand: f } satisfies Partial<typeof vscode.commands>;
-
-// ✅ 裸 satisfies —— 对象字面量必须满足全部成员
-const c = { registerCommand: f } satisfies typeof vscode.commands;
-// → g1.ts(5,3): error TS2739: Type '{ registerCommand: ... }' is missing
-//   the following properties from type 'typeof commands':
-//   registerTextEditorCommand, executeCommand, getCommands
+// 红 —— 签名只有 (id: string)，和真实签名差得远
+export const b = { registerCommand: (id: string) => ({ dispose() {} }) } as typeof vscode.commands;
+                                                              // TS2352
 ```
 
-**结论：`import type * as vscode from "vscode"` + `typeof vscode.commands` 可用，
-裸 `satisfies` 是唯一会拦的写法。**
+**所以：`as` 根本不能当闸门 —— 不是因为它总是放过，而是因为
+「它什么时候放过」取决于签名长得像不像，而那和「实现完整了没有」是两个问题。**
 
-**这一步不用你重验**，但**要在套件里把「`as` 和 `satisfies Partial` 都会假绿」也测一条** ——
-否则下一个人会以为随便哪种写法都行，把闸门改成 `as` 之后套件仍然全绿。
+**裸 `satisfies` 是唯一「失败原因等于完整性」的写法。这就是它该用的全部理由。**
+
+**⚠️ 后续所有卡：判据不能写「`as` 假绿」或「`as` 会拦」。**
+要写「`as` 的失败原因不是完整性」，并且**样本要两例都测**（一个签名像、一个不像），
+因为只测一例会得出与样本形状绑定的结论 —— 我今天就是这么错的。
 
 ---
 
@@ -342,7 +357,30 @@ src/_gate.ts(89,31): error TS1360: Type '{}' does not satisfy the expected type 
 
 ### ⚠️ 卡上的事实断言修正（两条 + 一条过期）
 
-#### 1. 「`as` 缺成员也编译通过」—— **有前提，卡上没写全**
+#### 1. 「`as` 缺成员也编译通过」—— **写卡人三次实测，两个方向都错过，最终结论见卡上方「闸门写法已验」**
+
+> **2026-10-24 总控补记（在回写之后）**：你写的「有前提」是对的，但**你自己那个样本
+> 也只是三种形状里的一种**。我随后又测出一个与你相反的样本：
+>
+> ```ts
+> // 签名写得够全的单成员对象 → as 绿（exit 0）
+> const impl = { registerCommand: (_command: string, _callback: (...args: any[]) => any, _thisArg?: any) => ({ dispose() {} }) };
+> export const a = impl as typeof vscode.commands;   // exit 0
+> ```
+>
+> 而你套件里的 `MISSING_FIXTURE_BODY` 恰好就是**这个形状** —— 所以组 4 那条
+> 「`as` exit 0」现在是绿的，**是对的**，但它绿的原因是这个样例长得像。
+>
+> **完整结论：`as` 的绿/红是「相似度」的函数，不是「完整性」的函数。** 三种形状实测：
+>
+> | 形状 | `as` | `satisfies` |
+> |---|---|---|
+> | `{}` 空对象 | 绿 | 红 |
+> | 单成员、签名写全 | **绿** | 红 |
+> | 单成员、签名只有 `(id: string)` | **红**（TS2352） | 红 |
+>
+> **所以问题不是「as 会不会拦」——是「as 拦的时候，红的理由不是缺口」。**
+> 一个判据依赖 `as` 在某个特定形状下的表现，就等于依赖样本。
 
 写卡人在 `.tmp/types-probe/g1.ts` 用的样本是「只实现 1 个方法」，那种形状下 `as` 确实放行。
 但本套件第一版用「缺 1 个方法、其余 3 个签名正确」的对象测 `as`，**`tsc` exit 2**：
