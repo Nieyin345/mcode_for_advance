@@ -147,8 +147,20 @@ genoffice/apps/html/src/renderer/main.tsx
 **真正的覆盖是**：
 
 ```bash
-pnpm test:smoke o6-reshell-<format>      # 你那套
+pnpm test:smoke o6-reshell-<format>-smoke   # ⚠️ 名字必须以 -smoke 结尾
+# 或者直接跑
+bash apps/desktop/scripts/o6-reshell-<format>-smoke/run.sh
 ```
+
+**⚠️ 套件目录必须以 `-smoke` 结尾，否则连发现器都不认它。**
+`smokes-for.py:331-332` 的判据是 `if not d.name.endswith("-smoke"): continue` ——
+**只认 `-smoke`**。全仓有 9 个目录因此完全不在索引里（含 `electron-u1`、`arc005-visual-baseline`）。
+
+**两条限制叠在一起**（都在这张卡里）：
+1. **`genoffice/` 不在依赖图上** → 说「没有套件覆盖」（假阴性，见上）；
+2. **目录名不以 `-smoke` 结尾** → 连发现器都不认。
+
+**所以：目录名必须 `*-smoke`，跑法用 `pnpm test:smoke <那个名字>`。**
 
 **不要因为 `smokes-for.sh` 说「没有回归网」而怀疑自己没做对。**
 也**不要**为了「让它闭嘴」而去改 `apps/desktop/` 里无关的东西。
