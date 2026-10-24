@@ -65,6 +65,9 @@ import { QuestionPrompt } from "./QuestionPrompt.js";
 import { ApprovalPrompt } from "./ApprovalPrompt.js";
 import { PlanApprovalPrompt } from "./PlanApprovalPrompt.js";
 import { ComposerEditor, type ComposerEditorHandle } from "./ComposerEditor.js";
+import {
+  COMPOSER_ATTACHMENT_ROW, COMPOSER_PADDING_X, COMPOSER_SEND_BUTTON, COMPOSER_TEXT,
+} from "./ClaudeComposer.js";
 import { composerSendAction } from "./composerPhysicalRules.js";
 import { CdsSkeleton } from "@renderer/components/ui/cds/CdsSkeleton.js";
 import { ContentTagChip } from "./ContentTagChip.js";
@@ -3490,7 +3493,7 @@ function ChatPaneForSession({
               </div>
             )}
             {tags.length > 0 && (
-              <div className="flex flex-wrap gap-1 px-2 pt-2">
+              <div className={COMPOSER_ATTACHMENT_ROW}>
                 {tags.map((tag) => {
                   const props = {
                     ref: (el: HTMLSpanElement | null) => {
@@ -3529,7 +3532,7 @@ function ChatPaneForSession({
               </div>
             )}
             {pendingImages.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 px-2 pt-2">
+              <div className={COMPOSER_ATTACHMENT_ROW}>
                 {pendingImages.map((img) => (
                   <AttachmentTile
                     key={img.id}
@@ -3575,7 +3578,9 @@ function ChatPaneForSession({
                 shouldPromotePaste={(text) => shouldPromoteToTag(text, pasteTagThresholdChars)}
                 onPasteFiles={handlePasteFiles}
                 className={cn(
-                  "px-3 pt-2.5 text-sm leading-relaxed text-content",
+                  "pt-2.5 text-content",
+                  COMPOSER_TEXT,
+                  COMPOSER_PADDING_X,
                   (tags.length > 0 || pendingImages.length > 0) && "pt-1.5",
                 )}
               />
@@ -3664,7 +3669,10 @@ function ChatPaneForSession({
                     data-ready={sendAction === "disabled" ? "0" : "1"}
                     onAnimationEnd={() => setSendLaunching(false)}
                     className={cn(
-                      "composer-send inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-surface shadow-sm transition-all duration-150 ease-out",
+                      "composer-send inline-flex shrink-0 items-center justify-center bg-accent text-surface shadow-sm",
+                      // 【T119】圆角/尺寸/过渡对齐上游 `ChatComposer.tsx:258`。
+                      // 原先这里是 `h-8 w-8 rounded-xl`，比上游圆一档（上游是 `rounded-lg`）。
+                      COMPOSER_SEND_BUTTON,
                       "hover:scale-110 hover:brightness-110 hover:shadow-md hover:shadow-accent/20",
                       "active:scale-95 active:brightness-95",
                       "disabled:scale-100 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle disabled:shadow-none disabled:hover:scale-100",
