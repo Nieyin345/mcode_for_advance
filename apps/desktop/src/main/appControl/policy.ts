@@ -194,7 +194,11 @@ const BLOCKED: Record<string, string> = {
   // `task.read`:**先有消费者再开权限**,现在没有委托消费者(`api.task.list` 的唯一调用方
   // 是桌面渲染端 `TaskCenterPanel`,走 `window.api`,不经模块权限)。
   "task.list": "任务列表是治理视图(目标/产物路径/谁验收的),与 unattendedPlans.list 同档",
-  "task.get": "单个任务同上:带验收结论与退回理由,是治理事实"
+  "task.get": "单个任务同上:带验收结论与退回理由,是治理事实",
+  // 【T109】审批历史同理：`subject` 是用户在审批卡上看到的那句话（可能是文件路径、
+  // 命令原文、模型提的问题），`detail` 是脱敏后的补充。**这是用户的治理视图** ——
+  // 「我批过什么、拒绝过什么」属于用户，不属于扩展。与 `task.list` 同档。
+  "approval.list": "审批历史是用户的治理视图(批过什么、拒绝过什么),扩展不必读"
 };
 
 const DANGER: Record<string, string> = {

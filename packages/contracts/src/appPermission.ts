@@ -72,6 +72,7 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "app.quitAndInstall": [
     "setting.write"
   ],
+  "approval.list": null,
   "automation.preflight": [
     "workflow.read"
   ],
