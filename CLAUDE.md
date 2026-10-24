@@ -366,7 +366,7 @@ npx tsc --noEmit -p apps/desktop/tsconfig.json      # exit=0 才继续
 | UI 工作台 | `open-claude-ui/` Claude 桌面端逆向成果（CDS token 由 `gen-cds-tokens.mjs` 提取） | MIT |
 | 文档 | `genoffice/` 六原生编辑器（docs/sheets/slides/pdf/markdown/html） | Apache-2.0（`ee/` 企业条款不得拷入） |
 | 工作流 | `node-red/` 5.0.8 源码（原生画布 + runtime + registry + nodes） | Apache-2.0 |
-| 扩展 | **目标：尽可能让已有 VS Code 插件（含 VSIX）少改或无需修改即可运行**（`docs/planning/mcode-product-roadmap.md` §2）。**现状远未达到**：`ModuleHost` 能装手写 JSON 清单的扩展（写法见 `docs/extensions/authoring-guide.md`）；`.vsix` 安装路径已能读 DEFLATE（F002）、`package.json` 限额放到 64 KiB（F003），但 `extension.js` 仍卡 24 KiB，且 `require` 白名单只有 `"vscode"`、53 个 `vscode.*` 成员无一是完整实现 —— 详见 `docs/planning/extension-vscode-compat.md` §3 / §4 / §6.2 | 各自审查 |
+| 扩展 | **有两条路，别混**：① `ModuleHost` 手写 JSON 清单 —— **完整可用**；② `.vsix` —— **有安装入口但只支持一小类**（恰好 2 个 ZIP 条目 / 整包 ≤128 KiB / `main` ≤24 KiB / `require` 只放 `vscode`·`path`·受限 `fs`）。本机 24 个真实扩展里 12 个能过这些限制，**其中 9 个仍会因相对路径 `require` 崩掉** —— **「装进来」≠「能跑」**。`rainbow-csv`/`python`/`powershell` 在模块顶层 require `child_process`，那是**执行模型不匹配**，放宽任何限额都通向 `child_process`，我们不走那条路。**路线图目标是「尽可能让已有 VS Code 插件少改即可运行」，现状远未达到**。写法见 `docs/extensions/authoring-guide.md`；每道墙的理由见 `docs/planning/extension-vscode-compat.md` | 各自审查 |
 
 L1 直接复用 → L2 薄宿主适配 → L3 可审计 fork → L4 最小自有逻辑（L4 必须附「已检索上游仍无对应能力」的源码证据）。三条线共享的硬边界：**不另造 Agent loop**、**不造第二套 Office/工作流/插件运行时**、**不引入默认 YOLO/跳过审批**。
 

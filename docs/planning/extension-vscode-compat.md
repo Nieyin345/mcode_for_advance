@@ -10,14 +10,20 @@
 **事实是：**
 
 1. **`VscodeL1Bridge` 与 `readMinimalVsix`**（定义在 `apps/desktop/src/main/modules/vscodeL1Bridge.ts:291` / `:58`）
-   **在 `apps/desktop/src/` 内零调用方**；唯一引用是 `apps/desktop/scripts/vscode-l1-smoke/main.ts`（一套实验套件）。
-   —— 取证时**两个范围要分开看**：搜 `src/` 得 0 不等于「全仓没有调用方」。
-2. **产品上真正可用的是 `ModuleHost`**（手写 JSON 清单的扩展），不是本文件的 VSIX 路径。
+   **已经有产品调用方了** —— `apps/desktop/src/main/ipc/modules.ts` 的 `MODULE_INSTALL_VSIX` handler
+   （F006，`901e58ee`）。**所以「它是实验路径」这句已经过期**，见第 3 条。
+2. **产品上真正可用的是 `ModuleHost`**（手写 JSON 清单的扩展），VSIX 路径是它的**一条受限入口**。
    **怎么写一个装得进去的扩展：`docs/extensions/authoring-guide.md`。**
-3. **`.vsix` 没有安装入口，这是产品决定不是未完成** —— 见 `tasks/T85-extension-productization-decision.md`。
-   真要做需要重算「自建宿主 vs 接 Theia」，那不在近期范围。
+3. **`.vsix` 现在有安装入口，但只支持一小类** —— 恰好 2 个 ZIP 条目、整包 ≤128 KiB、
+   `main` ≤24 KiB、`require` 白名单只有 `vscode` / `path` / 受限 `fs`。
+   **本机 24 个真实扩展里 12 个能过这些限制，其中 9 个仍会因相对路径 `require` 崩掉。**
+   **「装进来」和「能跑」是两件事。**
+4. **`rainbow-csv` / `python` / `powershell` 这类永远装不进来** —— 它们在模块顶层 require
+   `child_process` 或依赖多文件模块，那是**执行模型不匹配**，不是阈值差一点。
+   放宽任何限额都通向 `child_process`，那是我们不会走的终点。
 
-**所以本文件应该被读成**：一份「L1 能走多远」的实验记录 + 未来若重开这个决策时的可行性底稿。
+**所以本文件应该被读成**：一份「L1 能走多远」的实验记录 + 每道墙为什么在那里的理由。
+**能装什么、怎么装，以 `docs/extensions/authoring-guide.md` 为准。**
 
 ## 1. 代码与权限基线
 
