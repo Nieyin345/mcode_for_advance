@@ -308,7 +308,7 @@ function EmptyCenterPane() {
               <IconAlertTriangle size={18} />
               <span>{t("chat.cliNotFound")}</span>
             </div>
-            <p className="text-sm text-content-muted">
+            <p className="text-body text-content-muted">
               {t("chat.cliInstallPrefix")}
               <code className="rounded bg-surface-muted px-1 text-content">npm i -g @anthropic-ai/claude-code</code>
               {t("chat.cliInstallSuffix")}
@@ -316,7 +316,7 @@ function EmptyCenterPane() {
             <button
               onClick={() => setSettingsOpen(true)}
               className={cn(
-                "inline-flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-sm font-medium text-surface",
+                "inline-flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-body font-medium text-surface",
                 "hover:brightness-110",
               )}
             >

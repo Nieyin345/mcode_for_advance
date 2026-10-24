@@ -179,7 +179,7 @@ export function Titlebar({
               <IconArrowLeft size={16} className="shrink-0" />
               {t("layout.backToWorkspace")}
             </button>
-            <h2 className="px-1.5 text-sm font-semibold text-content">{t("layout.settings")}</h2>
+            <h2 className="px-1.5 text-body font-semibold text-content">{t("layout.settings")}</h2>
           </>
         ) : (
           <>

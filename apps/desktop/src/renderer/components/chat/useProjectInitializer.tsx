@@ -106,23 +106,23 @@ export function useProjectInitializer(input:{sessionId:string;busy:boolean;menuO
    <Dialog.Title>{t("init.title")} · /{command??"init"}</Dialog.Title>
    <Dialog.Description>{t("init.confirmHint")}</Dialog.Description>
    {request?.chooser&&!result&&<div className="space-y-1">
-    {list.length>0?<label className="block space-y-1 text-sm">{t("init.scenario")}
-     <select aria-label={t("init.scenario")} disabled={applying} value={choice} onChange={e=>{setError(null);setChoice(e.target.value);}} className="w-full rounded border border-edge bg-surface p-2 text-sm">
+    {list.length>0?<label className="block space-y-1 text-body">{t("init.scenario")}
+     <select aria-label={t("init.scenario")} disabled={applying} value={choice} onChange={e=>{setError(null);setChoice(e.target.value);}} className="w-full rounded border border-edge bg-surface p-2 text-body">
       {list.map(item=><option key={item.id} value={item.id}>{item.name}{item.id===templates.data?.defaultId?` · ${t("init.default")}`:""}</option>)}
-     </select></label>:templates.loading?null:<p className="text-sm text-content-muted">{t("init.noTemplates")}</p>}
+     </select></label>:templates.loading?null:<p className="text-body text-content-muted">{t("init.noTemplates")}</p>}
     {chosen?.description&&<p className="text-xs text-content-subtle">{chosen.description}</p>}
    </div>}
    {plan.loading&&<p role="status">{t("common.loading")}</p>}
    {(error||plan.error||changed)&&<ErrorNote>{changed?t("init.contextChanged"):error??plan.error?.message}</ErrorNote>}
-   {preview&&<div className="rounded border border-edge p-2 text-sm"><strong>{preview.projectName}</strong><p className="break-all font-mono text-xs">{preview.root}</p><p className="text-xs text-content-subtle">{t("init.memoryScope",{id:preview.projectId})}</p></div>}
-   {result&&<p role="status" className="text-sm font-semibold">{result.actions.some(a=>a.status==="failed")?t("init.partial"):t("init.complete")}</p>}
-   {result&&sent&&<p role="status" className="text-sm">{sent==="sent"?t("init.agentSent",{file:result.agentFilename??"AGENTS.md"}):sent==="notSent"?t("init.agentNotSent"):t("init.agentSkipped")}</p>}
+   {preview&&<div className="rounded border border-edge p-2 text-body"><strong>{preview.projectName}</strong><p className="break-all font-mono text-xs">{preview.root}</p><p className="text-xs text-content-subtle">{t("init.memoryScope",{id:preview.projectId})}</p></div>}
+   {result&&<p role="status" className="text-body font-semibold">{result.actions.some(a=>a.status==="failed")?t("init.partial"):t("init.complete")}</p>}
+   {result&&sent&&<p role="status" className="text-body">{sent==="sent"?t("init.agentSent",{file:result.agentFilename??"AGENTS.md"}):sent==="notSent"?t("init.agentNotSent"):t("init.agentSkipped")}</p>}
    <div className="space-y-2">{rows.map((a,i)=><details key={`${a.kind}:${a.path}:${i}`} className="rounded border border-edge p-2 text-xs">
     <summary className="cursor-pointer break-all">{t(`init.status.${a.status}`)} · {t(`init.kind.${a.kind}`)} · {a.path}</summary>
     {a.reason&&<p className="pt-2">{t(`init.reason.${a.reason}`)}</p>}{a.error&&<ErrorNote>{a.error}</ErrorNote>}
     {a.content!==undefined&&<pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words">{a.content}</pre>}
    </details>)}</div>
-   {agent&&!result&&<section className="space-y-2 rounded border border-edge p-3 text-sm" data-testid="init-agent">
+   {agent&&!result&&<section className="space-y-2 rounded border border-edge p-3 text-body" data-testid="init-agent">
     <p><strong>{t("init.agentStep",{file:agent.filename})}</strong> · {agent.exists?t("init.agentImprove"):t("init.agentCreate")}</p>
     <p className="text-xs text-content-subtle">{t("init.agentStepHint")}</p>
     {agent.shadowed&&<p className="text-xs text-content-muted">⚠ {t("init.agentShadowed")}</p>}

@@ -618,7 +618,7 @@ export function CommandPalette() {
                 onKeyDown={onInputKeyDown}
                 placeholder={placeholderFor(t, scope)}
                 className={cn(
-                  "h-11 flex-1 bg-transparent text-sm text-content",
+                  "h-11 flex-1 bg-transparent text-body text-content",
                   "placeholder:text-content-subtle focus:outline-none",
                 )}
               />
