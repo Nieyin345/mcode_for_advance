@@ -708,3 +708,74 @@ await pipeline(source, createWriteStream(filePath))   // 直接写目标，无�
    环境恢复后重跑即可。
 4. O2 的 `save-paths.ts` 仍是 `bypass` 分类（总控决定：保留 + 报告 blind spots），
    本卡只加了「调用点接线还在」的静态断言。
+
+---
+
+## 十四、交付回写（2026-10-25）
+
+**`0919d5b0`（Mcode）+ vendor `a290398` + patch `0022`。**
+
+### 14.1 四格实测
+
+| 格式 | 4a 拒 | 4b 盘上保住 | 4c 用户看得见 | #5 不误报 |
+|---|---|---|---|---|
+| html / markdown / pdf / slides | ✅ | ✅ | ✅ | ✅ |
+
+**slides 的硬证据**：`document save committed (slides) revision=3d8fa150…`
+与 `save conflict (slides) expected=9fe4086c… current=c202dc8a…` —— 打开时版本拿到了、且不同。
+
+### 14.2 ★ 写卡人对 slides 的判断是错的（本节留作反面样本）
+
+**我（写卡人）曾断言**：
+
+> slides 的会话在 vendor 自己的 `sessions` map 里，不在 `documentViewHost` 里 →
+> `revisionForPath` 返回 `null` → 守卫判断「没有会话」→ 不拦。
+
+**执行会话的日志推翻了它**：`expected` 和 `current` 是两个不同的值 —— 说明版本拿到了。
+
+**真实原因**：`slides-main.ts` 的 `catch` 用 `String(err)`，而
+`DocumentSaveConflictError` 的 `name` 被设成类名 → 错误文本是
+`"DocumentSaveConflictError: 文档已被别处改动…"`。**判据不认那个前缀。**
+
+**这是我今晚第二次「按名字搜、看到某个缺失就下因果」**（第一次是 `claimOpenedPath`）。
+**两次都是「我在某个时间点读了一段代码，把它报成了机制」。**
+
+### 14.3 我自己跑过的验证（不只是读报告）
+
+| 项 | 结果 |
+|---|---|
+| `tsc --noEmit` | exit 0，0 条错误 |
+| `--classify-only` | 通过；失败路径断言 `pass=5 fail=0` |
+| **变异：把 staging 的「两次都失败时保留」改成「删掉」** | **`pass=4 fail=1`，EXIT=1** |
+| 还原 | `sha256 99f9fb24…` 逐字节一致，5/0 复绿 |
+| `verify-genoffice-upstream.cjs` | exit 0，22 patches，tree `8894ca67` |
+| **变异：给 `0022` 补丁追加一个字节** | **EXIT=1，`byte count mismatch`** |
+| 还原后 verify | exit 0，与之前一致 |
+
+**最后一条最有价值**：`verify` 的 sha256/字节数判据是**真的会红的**，
+不只是打印了一句话。**「22 条补丁都核过」这句话现在有变异背书的证据。**
+
+### 14.4 未做（执行会话如实报告，写卡人认可）
+
+1. **`slides:save-as` 没挂守卫/原子写** —— 它写对话框新目标、会改 `session.path`，语义不同。
+   **⚠️ 这是同一个静默覆盖漏洞的第二个入口：用户「另存为」到已有文件时完全不经过守卫。另开卡。**
+2. `--variant=expect-green` 本次跑不到六格（**sheets 环境阻塞，不是代码**）。
+3. `save-paths.ts` 的 `blindSpots` 字段未做 —— **写卡人决定现在不做**：
+   它不阻塞任何东西（分类器说 `bypass` 是过期但不出错的结论），
+   而**它该由「下一次有人要读这个分类器」的时候做**。
+
+### 14.5 ★ sheets 那一格是环境，而根因是我们自己的约束
+
+**执行会话的对照实验**：`O2_NO_GUARD=1`（不装守卫）**同样卡** —— 证明不是守卫引起的。
+**T7 自己的 docs / sheets 旅程也红在同一类位置。**
+
+**根因**：显示器从「1463 + 副屏 1920」变成只有一块 1463×823 →
+`pickHostWindowPlacement` 无副屏时把窗口放到主屏右下之外（`-20000, -20000`）→
+`capturePage` 报 `Current display surface not available`。
+
+**而那条「无副屏就放到屏幕外」是 Office 线为了「测试窗口不弹到用户主屏」加的约束。**
+**它的代价今晚第一次显形**：**没有副屏时，需要截图的套件会失败。**
+
+**记进仓库**：需要 `capturePage` 的套件应当
+（a）先检查副屏是否存在并如实 skip，或（b）用 offscreen 渲染而不是 `capturePage`。
+**不要用「把窗口挪回主屏」解决** —— 那违反用户明确的要求。
