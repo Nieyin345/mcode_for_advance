@@ -194,6 +194,28 @@ export function RightPanel() {
           右栏页签」;宽屏按钮是布局开关,不参与排,固定在最右。 */}
       <div
         className="flex h-9 shrink-0 flex-row items-center gap-1 border-b border-edge/60 bg-surface px-1.5"
+        role="toolbar"
+        aria-label={t("customUi.slot.rightPanel.tab")}
+        onKeyDown={(e) => {
+          // The whole toolbar is one navigation surface: built-in, custom,
+          // module and docked content icons plus wide-mode. The draggable
+          // docking handle retains its own ArrowLeft/ArrowRight semantics.
+          if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+          if (!(e.target instanceof Element)) return;
+          const currentButton = e.target.closest<HTMLButtonElement>("button[data-pane-rail-button]");
+          if (!currentButton) return;
+          const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button[data-pane-rail-button]:not(:disabled)"));
+          const index = buttons.indexOf(currentButton);
+          if (index < 0) return;
+          const nextIndex = nextRailFocusIndex(e.key, index, buttons.length);
+          if (nextIndex === null) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const nextButton = buttons[nextIndex];
+          if (!nextButton) return;
+          nextButton.focus();
+          nextButton.scrollIntoView({ block: "nearest", inline: "nearest" });
+        }}
         onContextMenu={(e) => {
           e.preventDefault();
           openCustomUiSettings("rightPanel.tab");
@@ -201,24 +223,6 @@ export function RightPanel() {
       >
         <div
           className="flex min-w-0 flex-row items-center gap-1 overflow-x-auto [scrollbar-width:none]"
-          aria-label={t("customUi.slot.rightPanel.tab")}
-          onKeyDown={(e) => {
-            // Do not steal SDK shortcuts, Alt menus or IME composition.
-            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
-            if (!(e.target instanceof Element)) return;
-            const currentButton = e.target.closest<HTMLButtonElement>("button[data-pane-rail-button]");
-            if (!currentButton) return;
-            const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button[data-pane-rail-button]"));
-            const index = buttons.indexOf(currentButton);
-            const nextIndex = nextRailFocusIndex(e.key, index, buttons.length);
-            if (nextIndex === null) return;
-            e.preventDefault();
-            e.stopPropagation();
-            const nextButton = buttons[nextIndex];
-            if (!nextButton) return;
-            nextButton.focus();
-            nextButton.scrollIntoView({ block: "nearest", inline: "nearest" });
-          }}
         >
           {entries.map((e) => {
             if (e.kind === "builtin") {
@@ -226,13 +230,14 @@ export function RightPanel() {
               const id = e.meta.id;
               const Icon = e.meta.icon;
               const badge = badgeOf(id);
+              const label = titleOf(id, t(e.meta.labelKey)) + (badge > 0 ? ` (${badge})` : "");
               return (
                 <div key={e.key} className="relative shrink-0">
-                  <RailButton active={!activeCustom && tab === id} onClick={e.runtime.run} title={titleOf(id, t(e.meta.labelKey))}>
+                  <RailButton active={!activeCustom && !moduleVisible && !pinnedDoc && !pinnedFlow && tab === id} onClick={e.runtime.run} title={label}>
                     <Icon size={16} className="shrink-0" />
                   </RailButton>
                   {badge > 0 && (
-                    <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-bold leading-none text-white">
+                    <span aria-hidden="true" className="pointer-events-none absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-bold leading-none text-white">
                       {badge}
                     </span>
                   )}
@@ -244,8 +249,8 @@ export function RightPanel() {
             return (
               <div key={e.key} className="shrink-0">
                 <RailButton
-                  active={activeCustom?.id === e.item.id}
-                  onClick={() => {setActiveModuleView(false);setActiveCustom(e.item.id);}}
+                  active={!pinnedDoc && !pinnedFlow && activeCustom?.id === e.item.id}
+                  onClick={() => {setActiveModuleView(false);setContent("right",undefined);setActiveCustom(e.item.id);}}
                   title={customUiLabel(e.item.label, locale)}
                 >
                   <Icon size={16} className="shrink-0" />
@@ -254,20 +259,23 @@ export function RightPanel() {
             );
           })}
         </div>
-        {moduleViews.length>0 && <RailButton active={moduleVisible} onClick={()=>{setActiveModuleView(true);setContent("right",undefined);setActiveCustom(null);}} title={`${locale==="zh"?"扩展视图":"Extension views"} · ${moduleViews.length}`}><ModuleIcon name={moduleViews[0].contribution.icon}/></RailButton>}
+        {moduleViews.length>0 && <RailButton active={moduleVisible && !pinnedDoc && !pinnedFlow} onClick={()=>{setActiveModuleView(true);setContent("right",undefined);setActiveCustom(null);}} title={`${locale==="zh"?"扩展视图":"Extension views"} · ${moduleViews.length}`}><ModuleIcon name={moduleViews[0].contribution.icon}/></RailButton>}
         {/* Native document and Node-RED share the same movable shell. Their
             component trees are cached instead of keyed by docking position:
             flex reorder must never navigate an unsaved editor. */}
         <div className="flex shrink-0 items-center gap-0.5 border-l border-edge/60 pl-1">
-          <RailButton active={pinnedDoc !== null} onClick={() => {
-            if (!dockableDoc) return;
-            setContent("right", { kind: "document", documentId: dockableDoc });
+          <RailButton active={pinnedDoc !== null} disabled={!dockableDoc && !pinnedDoc} onClick={() => {
+            const docTarget = dockableDoc ?? pinnedDoc;
+            if (!docTarget) return;
+            setActiveModuleView(false);
+            setContent("right", { kind: "document", documentId: docTarget });
             setActiveCustom(null);
             setRightOpen(true);
           }} title={t("layout.paneDocument")}>
             <span aria-hidden="true" className="font-mono text-[10px]">DOC</span>
           </RailButton>
           <RailButton active={pinnedFlow !== null} onClick={() => {
+            setActiveModuleView(false);
             setContent("right", { kind: "flow", flowId: "node-red" });
             setActiveCustom(null);
             setRightOpen(true);
@@ -306,7 +314,7 @@ export function RightPanel() {
             e.dataTransfer.setData(PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID);
             e.dataTransfer.effectAllowed = "move";
           }}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-accent"
+          className="flex size-7 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           <span aria-hidden="true" className="text-[15px] tracking-tighter">⋮⋮</span>
         </button>
@@ -420,22 +428,25 @@ function RailButton({
   onClick,
   title,
   children,
+  disabled = false,
 }: {
   active: boolean;
   onClick: () => void;
   title: string;
   children: React.ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       data-pane-rail-button=""
+      disabled={disabled}
       onClick={onClick}
       title={title}
       aria-label={title}
       aria-pressed={active}
       className={cn(
-        "flex h-7 w-7 items-center justify-center rounded-[var(--radius-btn-xs)] transition-colors",
+        "flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40",
         active
           ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
           : "cds-hover-ghost text-content-muted hover:text-content",

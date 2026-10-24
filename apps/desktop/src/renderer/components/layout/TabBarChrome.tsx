@@ -108,8 +108,8 @@ export function TabBarOverflowMenu({
     <Menu.Root>
       <Menu.Trigger
         className="mb-0.5 flex h-6 w-5 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
-        title={t("ide.editor.openTabs")}
-        aria-label={t("ide.editor.openTabs")}
+        title={heading}
+        aria-label={heading}
       >
         <IconDotsVertical size={14} />
       </Menu.Trigger>

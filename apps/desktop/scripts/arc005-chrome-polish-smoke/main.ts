@@ -24,8 +24,9 @@ const actionStart = titlebar.indexOf("data-arc005-titlebar-actions");
 const context = titleStart < 0 || actionStart < 0 ? "" : titlebar.slice(titleStart, actionStart);
 check("★ 工作区信息有弹性、可剪裁的单个上下文条且主窗口不重建", titleStart > 0 &&
   /min-w-0/.test(context) && /flex-1/.test(context) && /overflow-hidden/.test(context) &&
-  // Native titlebar height is platform-dependent: macOS traffic lights need 45px.
-  titlebar.includes('className={cn("flex shrink-0 items-stretch", isMac ? "h-[45px]" : "h-10")}'));
+  // ARC-005 unified the titlebar at 45px on both macOS/Windows; a previous
+  // assertion still demanded the former macOS/Windows conditional height.
+  /className=\{cn\("flex h-\[45px\] shrink-0 items-stretch/.test(titlebar));
 check("★ 4 个共享上下文源都保留，未变为静态假标签",
   ["<ActiveThreadTitle />","<ActiveProjectChip />","<ToolbarBranchIndicator />","<ActiveWorktreeChip />"]
     .every((name) => context.includes(name)));
@@ -35,7 +36,9 @@ check("★ 编辑器/终端/右面板开关放在独立不压缩的动作区",
   titlebar.indexOf("<IconTerminal2 ",actionStart) > actionStart &&
   titlebar.indexOf("<IconLayoutSidebarRightExpand",actionStart) > actionStart);
 check("★ 线程、项目与工作树标签都可收缩/省略，防止窄屏挤出动作区",
-  titlebar.includes("max-w-[280px] flex-[2_1_60px]") &&
+  // The active title was widened from 280px to 320px but remains bounded,
+  // flex-shrinkable and ellipsized for small windows.
+  titlebar.includes("max-w-[320px] flex-[2_1_60px]") &&
   titlebar.includes("max-w-[180px] flex-[1_1_45px]") &&
   titlebar.includes("max-w-[160px] flex-[1_1_50px]"));
 check("★ 顶栏原生 drag 和交互 no-drag 未丢",

@@ -375,7 +375,7 @@ export function OpenTabsBar() {
               className={cn(
                 // Matches the file-tab chip look (rounded-md + resting bg) —
                 // the plan view is an editor-kind tab.
-                "group flex max-w-[160px] cursor-pointer select-none items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-[11px] transition-colors",
+                "group flex max-w-[160px] cursor-pointer select-none items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                 // Same flexible/natural split as the file tabs above.
                 multiRow ? "min-w-[170px] flex-1" : "min-w-0 shrink-0",
                 planTabActive
@@ -396,8 +396,8 @@ export function OpenTabsBar() {
                 }}
                 onPointerDown={(e) => e.stopPropagation()}
                 className={cn(
-                  "cds-hover-ghost ml-0.5 h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle hover:text-content",
-                  planTabActive ? "inline-flex" : "hidden group-hover:inline-flex",
+                  "cds-hover-ghost ml-0.5 size-5 shrink-0 items-center justify-center rounded text-content-subtle hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                  planTabActive ? "inline-flex" : "hidden group-hover:inline-flex group-focus-within:inline-flex",
                 )}
                 title={t("common.close")}
               >
@@ -591,7 +591,7 @@ export function SortableFileTab({
         // Editor file tabs share the same chip style as session tabs
         // (rounded-md + resting bg); in the unified strip a vertical divider
         // separates the two groups.
-        "group flex max-w-[160px] cursor-pointer select-none items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-[11px] transition-colors",
+        "group flex max-w-[160px] cursor-pointer select-none items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         // Multi-row: flex-1 (basis 0 + grow) lets tabs stretch between the
         // shared 170px min floor and the max cap above — line-breaking uses
         // the floor, so tabs share one line whenever they can fit shrunk,
@@ -626,8 +626,8 @@ export function SortableFileTab({
           onClick={handleClose}
           onPointerDown={(e) => e.stopPropagation()}
           className={cn(
-            "cds-hover-ghost ml-0.5 h-4 w-4 shrink-0 items-center justify-center rounded text-content-subtle hover:text-content",
-            isActive ? "inline-flex" : "hidden group-hover:inline-flex",
+            "cds-hover-ghost ml-0.5 size-5 shrink-0 items-center justify-center rounded text-content-subtle hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+            isActive ? "inline-flex" : "hidden group-hover:inline-flex group-focus-within:inline-flex",
           )}
           title={t("common.close")}
         >
