@@ -1197,11 +1197,16 @@ eq("撤权后:denied 计数 2", hookRunner.deliveryCountsOf(pluginHookId)?.denie
   // 而 `hits() === 0` 仍然是绿的 —— 那条断言当时验的是「marker 还没写」，不是
   // 「进程没起」。
   //
-  // 现在等 `listRuns()` 里第 2 条**既不是 accepted 也不是 running**（即已终态），
-  // 或者等到超时 —— 然后 `hits()` 的结果才是可信的。
+  // 现在等 `listRuns()` 里第 2 条**离开 running**（终态：ok / failed / timeout / skipped）
+  // —— 然后 `hits()` 的结果才是可信的。
+  //
+  // ⚠️ **`accepted` 不是 run 的状态**。`HOOK_RUN_STATUSES` 只有
+  // `["ok","failed","timeout","running","skipped"]`。失败输出里那个
+  // `{"accepted":1,...}` 是 `DeliveryCounts` 的**计数**（「被接受了一次」），
+  // 不是「这次 run 是 accepted 态」—— 混用这两个字段会写出一句永真的比较。
   await until(
-    "第 2 条进入终态（denied / ok / failed / skipped 都算）",
-    () => hookRunner.listRuns().some((r) => r.hookId === fastId && r.status !== "accepted" && r.status !== "running"),
+    "第 2 条进入终态（ok / failed / timeout / skipped）",
+    () => hookRunner.listRuns().some((r) => r.hookId === fastId && r.status !== "running"),
     8000,
   ).catch(() => { /* 超时也继续：下面的断言会给出真正的结论 */ });
   eq("★ 复审修复:第 1 条跑完后撤权 → 第 2 条进程一个都不起", fastCmd.hits(), 0);
