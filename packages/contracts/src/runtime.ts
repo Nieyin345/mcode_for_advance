@@ -525,6 +525,16 @@ export interface TurnIncompleteEvent {
  * - `adds` / `dels`: line-level change tallies computed by `FileSnapshot.freeze`
  *   (LCS over `before` vs the on-disk post-turn content). The folded card shows
  *   these directly without computing a full diff; `0` for unreadable/binary.
+ *
+ *   ⚠️ **【T125】当 `restorable === false` 时，`0` 不代表「没有变化」，它代表
+ *   「不知道」** —— 我们没读到原文（非 UTF-8 / 二进制），根本没有东西可比。
+ *   这一类条目上 `adds`/`dels` **无意义**，不要拿它做任何判断（统计、过滤、
+ *   是否算产物的判据都不行）。当前唯一的消费方 `autoCreate.artifactsOf` 已改为
+ *   按 `restorable === false` 判断「工具碰过它」，不再看行数。
+ *
+ *   契约里**刻意没有** `addsUnknown` 之类的第三个字段：那会让字段数从 2 变 3，
+ *   而唯一的消费方已经受保护。**若哪天出现第二个读 `adds` 的地方，那时再加。**
+ *   在此之前，这一行注释就是「0 有两种含义」的唯一提醒。
  * - `before`: the file's pre-turn content (the empty string for created files).
  *   Crosses IPC so the renderer can compute a full line diff on demand by
  *   reading the current on-disk content and diffing against this.
