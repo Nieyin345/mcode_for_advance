@@ -170,7 +170,7 @@ export function BranchSheet({
           <span className="h-1 w-8 rounded-full bg-edge" />
         </div>
         <div className="flex min-h-11 shrink-0 items-center justify-between px-4">
-          <span className="text-sm font-semibold text-content">{t("ide.git.switchBranch")}</span>
+          <span className="text-body font-semibold text-content">{t("ide.git.switchBranch")}</span>
           <button
             type="button"
             onClick={onClose}

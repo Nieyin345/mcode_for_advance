@@ -75,13 +75,26 @@ function findInBlock(block: string, name: string): string | null {
   return m ? m[1]!.trim() : null;
 }
 
-function resolveVar(value: string): string {
+/**
+ * 把 `var(--x)` 解到字面量。
+ *
+ * ⚠️ 必须能解**跨文件**的别名：`--selected-bg: var(--m-gray-80)` 在 tokens 里，
+ * 但 `--selected-bg: var(--surface-hover)`（某些主题/变异下）指向 styles.css 自己的
+ * token。只在 tokens 里查会让解析器抛错 —— **而抛错不是「断言红」，是套件崩了**，
+ * 那属于「改坏了程序，不是改坏了被验的东西」（变异失效第 3 种形态）。
+ *
+ * 所以：先在 tokens.cds.css 找，找不到再到 styles.css 本体的 `:root` 块里找。
+ * 深度上限防环。
+ */
+function resolveVar(value: string, depth = 0): string {
+  if (depth > 8) throw new Error(`变量解析层数过深（可能循环）: ${value}`);
   const m = /^var\(--([a-z0-9-]+)\)$/.exec(value);
   if (!m) return value;
-  const re = new RegExp(`--${m[1]}:\\s*([^;]+);`);
-  const hit = re.exec(tokensCss);
-  if (!hit) throw new Error(`tokens.cds.css 里找不到 --${m[1]}`);
-  return resolveVar(hit[1]!.trim());
+  const name = m[1]!;
+  const re = new RegExp(`--${name}:\\s*([^;]+);`);
+  const hit = re.exec(tokensCss) ?? re.exec(css);
+  if (!hit) throw new Error(`两个文件里都找不到 --${name}`);
+  return resolveVar(hit[1]!.trim(), depth + 1);
 }
 
 function parseTriplet(raw: string): [number, number, number] {
@@ -248,10 +261,72 @@ console.log("\n[6] 迁移进度：裸 hover:bg-surface-hover 的总数只能降�
   console.log(`      裸 hover:bg-surface-hover = ${raw} 处；cds-hover-ghost = ${migrated} 处`);
   // 上界随迁移推进而下调。写死一个当前值是为了让「有人把类撤了」立刻红，
   // 而不是悄悄回退。**每次迁移一批就把它改小**，别让它永远宽松。
-  // 基线口径：**不含 `/60` 这类 alpha 变体**（它们是另一类，迁移会改变观感）。
-  // 2026-10-24 第一批迁移后实测 216。
-  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 216", raw <= 216, { raw });
+  //
+  // ⚠️ **口径变化（2026-10-24 第二批）**：`/60` 转实色会把裸计数**推高**
+  // （14 处 /60 → 实色），而净效果是又少了 14 处 alpha 变体。所以这里同时钉
+  // 两条：裸实色有上限，**alpha 变体必须为 0**（那才是真正要收干净的东西）。
+  let alphaVariants = 0;
+  for (const name of ["StreamSidebar", "LeftBar", "LeftBarParts", "Titlebar"]) {
+    const t = readFileSync(root(`src/renderer/components/layout/${name}.tsx`), "utf8");
+    alphaVariants += (t.match(/hover:bg-surface-hover\/\d+/g) ?? []).length;
+  }
+  check("★ 这四个文件里不再有 hover:bg-surface-hover/NN alpha 变体（本批收干净了）",
+    alphaVariants === 0, { alphaVariants });
+  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 231", raw <= 231, { raw });
   check("★ 至少有一处用上了 cds-hover-ghost", migrated > 0, { migrated });
+}
+
+console.log("\n[7] 选中态是换色系，不是更深的灰（上游 DraggableSessionList 的四态）");
+{
+  const surface = readTriplet(":root {", "surface");
+  const hover = readTriplet(":root {", "surface-hover");
+  const selectedBg = readTriplet(":root {", "selected-bg");
+  const accentStrong = readTriplet(":root {", "accent-strong");
+
+  const selectedContent = readTriplet(":root {", "selected-content");
+
+  console.log(
+    `      selected-bg=${hexOf(selectedBg)} on surface=${contrast(selectedBg, surface).toFixed(3)}:1\n` +
+    `      selected-content=${hexOf(selectedContent)} on selected-bg=${contrast(selectedContent, selectedBg).toFixed(2)}:1`,
+  );
+
+  check("★ 选中底色与悬停底色不同（同色 = 选中和悬停分不开）",
+    hexOf(selectedBg) !== hexOf(hover), { selectedBg: hexOf(selectedBg), hover: hexOf(hover) });
+  check("★ 选中底色比悬停更深（选中是「更确定」的状态，不该更浅）",
+    luminance(selectedBg) < luminance(hover), { L: { hover: +luminance(hover).toFixed(4), sel: +luminance(selectedBg).toFixed(4) } });
+  check("★ 选中文字对选中底 ≥4.5:1（AA 小字；会话标题就是小字）",
+    contrast(selectedContent, selectedBg) >= 4.5,
+    { ratio: +contrast(selectedContent, selectedBg).toFixed(2) });
+  check("★ 选中文字是**彩色**不是中性灰（R-B 差值必须拉开 —— 防止「用对了 token 名但值换回灰」）",
+    Math.abs(selectedContent[0] - selectedContent[2]) >= 40,
+    { r: selectedContent[0], b: selectedContent[2], diff: selectedContent[0] - selectedContent[2] });
+
+  // 暗色
+  const dSurface = readTriplet(".dark {", "surface");
+  const dHover = readTriplet(".dark {", "surface-hover");
+  const dSelectedBg = readTriplet(".dark {", "selected-bg");
+  const dAccent = readTriplet(".dark {", "selected-content");
+  console.log(
+    `      dark selected-bg=${hexOf(dSelectedBg)} on surface=${contrast(dSelectedBg, dSurface).toFixed(3)}:1\n` +
+    `      dark selected-content=${hexOf(dAccent)} on selected-bg=${contrast(dAccent, dSelectedBg).toFixed(2)}:1`,
+  );
+  check("★ 暗色选中底色与悬停不同", hexOf(dSelectedBg) !== hexOf(dHover));
+  check("★ 暗色选中文字对选中底 ≥4.5:1", contrast(dAccent, dSelectedBg) >= 4.5,
+    { ratio: +contrast(dAccent, dSelectedBg).toFixed(2) });
+  check("★ 暗色选中文字是彩色", Math.abs(dAccent[0] - dAccent[2]) >= 40,
+    { r: dAccent[0], b: dAccent[2] });
+
+  // 选中 + 悬停 **不变色** —— 上游明确如此。检查的方式：选中分支里
+  // 不得出现 hover: 修饰的底色类。
+  const stream = readFileSync(root("src/renderer/components/layout/StreamSidebar.tsx"), "utf8");
+  const selBranch = /active\s*\n?\s*\?\s*"([^"]*)"\s*\n?\s*:\s*"([^"]*)"/.exec(stream);
+  check("★ 选中分支里没有 hover: 底色修饰（选中+悬停不该再变）",
+    selBranch !== null && !/hover:bg-/.test(selBranch[1]!),
+    { selectedBranch: selBranch?.[1] });
+  check("★ 选中分支带 font-medium（三件套之一，缺它只剩底色）",
+    selBranch !== null && /font-medium/.test(selBranch[1]!));
+  check("★ 选中分支用 bg-selected", selBranch !== null && /bg-selected\b/.test(selBranch[1]!));
+  check("★ 选中分支用 text-selectedContent", selBranch !== null && /text-selectedContent/.test(selBranch[1]!));
 }
 
 console.log("");

@@ -126,7 +126,7 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
         {error && <ErrorNote>{error}</ErrorNote>}
         {egress.error && <ErrorNote>{egress.error.message}</ErrorNote>}
         {!egress.loading && egress.data?.osIsolation===false && <section className="space-y-2 rounded border border-warning/60 p-3" data-testid="module-egress-downgrade">
-          <p className="text-sm font-semibold">{t("ide.modules.egressTitle")}</p>
+          <p className="text-body font-semibold">{t("ide.modules.egressTitle")}</p>
           <p className="text-xs text-content-muted">{t("ide.modules.egressWarning")}</p>
           <p role="status" className="text-xs">{t(egress.data.enabled?"ide.modules.egressEnabled":"ide.modules.egressDisabled")}</p>
           {!egress.data.enabled && <label className="flex gap-2 text-xs" data-testid="module-egress-acknowledgment">
@@ -139,7 +139,7 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
             await egress.refetch();
           })}>{t(egress.data.enabled?"ide.modules.egressDisable":"ide.modules.egressEnable")}</Button>
         </section>}
-        <div className="space-y-2">{catalog.data?.modules.map(m=><div key={m.id} className="flex items-center gap-2 rounded border border-edge p-2 text-sm">
+        <div className="space-y-2">{catalog.data?.modules.map(m=><div key={m.id} className="flex items-center gap-2 rounded border border-edge p-2 text-body">
           <span className="flex-1">{text(m.title)} <code className="text-xs text-content-muted">{m.id} · {m.version}</code></span>
           {!m.id.startsWith("core.") && <Button disabled={busy} onClick={()=>void mutate(async()=>{const result=await api.modules.remove({moduleId:m.id});reportChange(result);await catalog.refetch();await history.refetch();})}>{t("ide.modules.remove")}</Button>}
           {!m.id.startsWith("core.") && <section className="w-full space-y-1" data-testid={`module-grants-${m.id}`}>
@@ -160,13 +160,13 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
           </section>}
         </div>)}</div>
         <CapabilityCatalogPanel catalog={catalog.data} loading={catalog.loading} error={catalog.error} onRetry={()=>void catalog.refetch()}/>
-        <label className="block space-y-2 text-sm"><span>{t("ide.modules.manifest")}</span>
+        <label className="block space-y-2 text-body"><span>{t("ide.modules.manifest")}</span>
           <textarea data-testid="module-manifest" className="h-52 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-xs" value={draft} onChange={e=>{setDraft(e.target.value);setConsent(false);setCodeConsent(false);
             try{setGranted(defaultModuleGrants(ModuleManifestSchema.parse(JSON.parse(e.target.value))));}catch{setGranted([]);}
           }} spellCheck={false}/>
         </label>
         <section className="space-y-2 rounded border border-edge p-3" data-testid="module-permission-picker">
-          <p className="text-sm font-semibold">{t("ide.modules.permissionsRequest")}</p>
+          <p className="text-body font-semibold">{t("ide.modules.permissionsRequest")}</p>
           <p className="text-xs text-content-muted">{t("ide.modules.upgradeConsent")}</p>
           {groups.map(group=><div key={group} className="space-y-1">
             <p className="text-xs font-medium">{group}</p>
@@ -192,7 +192,7 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
           <input type="checkbox" checked={codeConsent} onChange={e=>setCodeConsent(e.target.checked)}/>{t("ide.modules.codeConsent")}
         </label>}
         <Button variant="primary" disabled={busy||!consent||(draftHasProgram&&!codeConsent)} onClick={()=>void install()}>{t("ide.modules.install")}</Button>
-        <h3 className="text-sm font-semibold">{t("ide.modules.history")}</h3>
+        <h3 className="text-body font-semibold">{t("ide.modules.history")}</h3>
         <p className="text-xs text-content-muted">{t("ide.modules.retention")}</p>
         <Button onClick={()=>void history.refetch()}>{t("ide.modules.refresh")}</Button>
         {history.error && <ErrorNote>{history.error.message}</ErrorNote>}
@@ -251,12 +251,12 @@ export function ModuleResultDialog({reply,onClose}:{reply:ModuleReply;onClose:()
     <Dialog.Portal><Dialog.Backdrop/><Dialog.Popup className="max-h-[85vh] w-[min(92vw,640px)] space-y-4 overflow-auto p-5">
       <Dialog.Title>{view.title[locale]}</Dialog.Title><Dialog.Close/>
       <Dialog.Description>{initial?.resource.path??t("ide.modules.result")}</Dialog.Description>
-      {task && <div role="status" className="space-y-2 text-sm"><span>{t(statusKeys[task.status])}</span><progress className="w-full" max={1} value={task.progress} aria-label={t("ide.modules.progress")}/>
+      {task && <div role="status" className="space-y-2 text-body"><span>{t(statusKeys[task.status])}</span><progress className="w-full" max={1} value={task.progress} aria-label={t("ide.modules.progress")}/>
         {task.status==="running" && <Button disabled={cancelling} onClick={()=>void cancel()}>{t("ide.modules.cancel")}</Button>}
       </div>}
       {read.error && <ErrorNote action={<Button onClick={()=>void read.refetch()}>{t("common.retry")}</Button>}>{read.error.message}</ErrorNote>}
       {(error||task?.error) && <ErrorNote>{error??task?.error}</ErrorNote>}
-      {result && <dl className="space-y-3">{(view.fields.length ? view.fields : Object.keys(result).map(key=>({key,title:{zh:key,en:key}}))).map(field=><div key={field.key} className="rounded border border-edge p-3"><dt className="text-xs text-content-muted">{field.title[locale]}</dt><dd className="mt-1 break-all font-mono text-sm">{Object.hasOwn(result,field.key)?String(result[field.key]):"—"}</dd></div>)}</dl>}
+      {result && <dl className="space-y-3">{(view.fields.length ? view.fields : Object.keys(result).map(key=>({key,title:{zh:key,en:key}}))).map(field=><div key={field.key} className="rounded border border-edge p-3"><dt className="text-xs text-content-muted">{field.title[locale]}</dt><dd className="mt-1 break-all font-mono text-body">{Object.hasOwn(result,field.key)?String(result[field.key]):"—"}</dd></div>)}</dl>}
     </Dialog.Popup></Dialog.Portal>
   </Dialog.Root>;
 }

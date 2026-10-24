@@ -184,8 +184,8 @@ export function ProjectNode(props: ProjectNodeProps) {
         className={cn(
           "group flex items-center gap-1 rounded px-1 py-1 [font-size:var(--right-panel-font-size)]",
           isActiveProject
-            ? "bg-surface-hover text-content"
-            : "text-content-muted hover:bg-surface-hover/60",
+            ? "bg-selected text-selectedContent font-medium"
+            : "text-content-muted hover:bg-surface-hover",
           isDragging && "opacity-50",
         )}
       >
@@ -288,7 +288,7 @@ export function ProjectNode(props: ProjectNodeProps) {
                 onClick={onLoadMore}
                 className={cn(
                   "w-full rounded px-2 py-1 text-left text-content-subtle transition-colors [font-size:var(--rp-fs-md)]",
-                  "hover:bg-surface-hover/60 hover:text-content",
+                  "hover:bg-surface-hover hover:text-content",
                 )}
               >
                 {t("layout.loadMore")}
@@ -400,8 +400,8 @@ export function SessionRow({
       className={cn(
         "group flex cursor-pointer items-center gap-1 rounded-md px-1 py-1 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong [font-size:var(--right-panel-font-size)]",
         active
-          ? "bg-surface-hover text-content shadow-sm ring-1 ring-inset ring-accent/35"
-          : "text-content-muted hover:bg-surface-hover/60",
+          ? "bg-selected text-selectedContent font-medium shadow-sm ring-1 ring-inset ring-accent/35"
+          : "text-content-muted hover:bg-surface-hover",
       )}
       title={`${session.title}\n${formatFullTime(session.updatedAt)}`}
     >
@@ -616,7 +616,7 @@ function WorktreeGroupNode({
           e.preventDefault();
           onContext(e.clientX, e.clientY);
         }}
-        className="group flex items-center gap-1 rounded px-1 py-1 [font-size:var(--right-panel-font-size)] text-content-muted hover:bg-surface-hover/60"
+        className="group flex items-center gap-1 rounded px-1 py-1 [font-size:var(--right-panel-font-size)] text-content-muted hover:bg-surface-hover"
       >
         {/* Expand / collapse toggle */}
         <button
@@ -839,7 +839,7 @@ export function GroupNode({
         {...listeners}
         className={cn(
           "group flex items-center gap-1 rounded px-1 py-0.5 [font-size:var(--rp-fs-md)]",
-          "text-content-subtle hover:bg-surface-hover/60",
+          "text-content-subtle hover:bg-surface-hover",
           isOver && "bg-surface-hover ring-1 ring-accent/40",
           isDragging && "opacity-50",
         )}

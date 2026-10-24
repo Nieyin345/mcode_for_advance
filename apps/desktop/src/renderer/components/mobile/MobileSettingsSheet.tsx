@@ -98,7 +98,7 @@ export function MobileSettingsSheet({ open, onClose }: { open: boolean; onClose:
       />
       <div className="absolute inset-x-0 bottom-0 flex max-h-[85vh] flex-col gap-4 overflow-y-auto rounded-t-[var(--radius-dialog)] border-t border-edge bg-surface-muted p-4 pb-[calc(1.5rem+var(--safe-bottom,0px))] text-content">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">{t("layout.settings")}</h2>
+          <h2 className="text-body font-semibold">{t("layout.settings")}</h2>
           <button
             type="button"
             onClick={onClose}

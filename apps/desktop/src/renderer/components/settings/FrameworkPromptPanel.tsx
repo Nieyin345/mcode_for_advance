@@ -63,7 +63,7 @@ export function FrameworkPromptPanel() {
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <div className="text-sm font-medium">{section.title}</div>
+                  <div className="text-body font-medium">{section.title}</div>
                   <div className="text-xs text-content-subtle">
                     {section.editable
                       ? (section.customized
@@ -104,7 +104,7 @@ export function FrameworkPromptPanel() {
                 <div className="mt-3 space-y-2">
                   <textarea
                     aria-label={section.title}
-                    className="min-h-32 w-full rounded-md border border-border bg-surface p-2 text-sm text-content"
+                    className="min-h-32 w-full rounded-md border border-border bg-surface p-2 text-body text-content"
                     value={draft}
                     maxLength={200000}
                     onChange={(event) => setDraft(event.currentTarget.value)}

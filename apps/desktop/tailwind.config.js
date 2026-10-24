@@ -60,6 +60,9 @@ export default {
           // 在上面」，active 是「按住了」。共用一档时按下没有任何额外反馈（旧注释
           // 原文就写着「hover/active fills」）。取值范围与判据见 styles.css。
           active: "rgb(var(--surface-active) / <alpha-value>)",
+          // 【T128】选中态底色。选中**不靠更深的灰**，而是靠「底色 + 品牌色文字
+          // + font-medium」三件一起表达（上游 DraggableSessionList 的四态）。
+          selected: "rgb(var(--selected-bg) / <alpha-value>)",
           // 【T121】Surface 0–3 阶梯的上两层。此前四层（主画布/卡片/浮层/弹窗）
           // 共用 --surface，层次只能靠边框和阴影撑 —— 这是「Claude 那边有纵深、
           // 我们这边平」的直接原因。值定义在 styles.css 的 :root / .dark。
@@ -99,6 +102,9 @@ export default {
         // is overridden at runtime via setProperty on <html> when the user
         // picks a custom color in Settings (see lib/appearance.ts).
         userBubble: "rgb(var(--user-bubble) / <alpha-value>)",
+        // 【T128】选中态文字色（品牌色）。与 accent/accent-strong 分开是因为
+        // 语义不同：那些是「品牌」，这个是「这一行被选中了」。
+        selectedContent: "rgb(var(--selected-content) / <alpha-value>)",
 
         // Legacy pane tokens — kept as aliases to the new semantic variables
         // so partially-migrated files still follow the theme. New code should

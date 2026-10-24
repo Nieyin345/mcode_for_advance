@@ -173,7 +173,7 @@ function MobileShell() {
               / header carries the project context) instead of the thread
               title. The spinner stays: the active session running is useful
               context from any view. */}
-          <span className="min-w-0 shrink truncate text-sm font-medium">
+          <span className="min-w-0 shrink truncate text-body font-medium">
             {view === "files"
               ? t("layout.nav.files")
               : view === "git"

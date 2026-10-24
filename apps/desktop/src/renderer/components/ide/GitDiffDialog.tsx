@@ -202,7 +202,7 @@ export function GitDiffDialog() {
           {/* Header: title + view-mode toggle (left) ... close (right) */}
           <div className="flex shrink-0 items-center justify-between border-b border-edge px-4 py-2.5">
             <div className="flex items-center gap-2">
-              <Dialog.Title className="text-sm font-semibold text-content">{t("ide.diff.title")}</Dialog.Title>
+              <Dialog.Title className="text-body font-semibold text-content">{t("ide.diff.title")}</Dialog.Title>
               {/* View-mode toggle: tabs (tab strip + sidebar) vs single (sidebar only). */}
               <button
                 type="button"

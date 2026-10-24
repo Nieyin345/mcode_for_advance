@@ -644,7 +644,7 @@ function StreamSidebarBase() {
               onClick={() => setLeftOpen(false)}
               className={cn(
                 "group flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors",
-                "hover:bg-surface-hover/60",
+                "hover:bg-surface-hover",
               )}
               style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
               title={t("layout.hideLeftPanel")}
@@ -690,7 +690,7 @@ function StreamSidebarBase() {
             className={cn(
               "flex w-full min-w-0 items-center gap-2 rounded-lg px-1 py-2 text-left transition-colors",
               "[font-size:var(--right-panel-font-size)]",
-              "text-content-muted hover:bg-surface-hover/60",
+              "text-content-muted hover:bg-surface-hover",
             )}
           >
             {/* Fixed all-projects glyph — the label carries the current scope. */}
@@ -819,7 +819,7 @@ function StreamSidebarBase() {
                   onClick={() => void loadMoreStreamSessions()}
                   className={cn(
                     "w-full rounded px-2.5 py-1.5 text-left text-content-subtle transition-colors [font-size:var(--rp-fs-sm)]",
-                    "hover:bg-surface-hover/60 hover:text-content",
+                    "hover:bg-surface-hover hover:text-content",
                   )}
                 >
                   {t("layout.stream.showMore", {
@@ -1196,8 +1196,8 @@ function StreamCard({
       className={cn(
         "group relative flex cursor-pointer flex-col gap-[3px] rounded-lg px-2.5 py-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong",
         active
-          ? "bg-surface-hover text-content"
-          : "text-content-muted hover:bg-surface-hover/60",
+          ? "bg-selected text-selectedContent font-medium"
+          : "text-content-muted hover:bg-surface-hover",
         recede && "opacity-75 transition-opacity hover:opacity-100",
         isDragging && "relative z-20 bg-surface opacity-90 backdrop-blur-sm",
       )}

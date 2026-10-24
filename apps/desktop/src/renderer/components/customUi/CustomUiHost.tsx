@@ -48,7 +48,7 @@ export function CustomUiHost() {
               后代 `fixed` 的包含块)。 */}
           <Dialog.Popup className="bottom-0 left-0 right-0 top-0 m-auto h-fit w-[560px] max-w-[92vw] transform-none p-4">
             <Dialog.Title className="truncate">{view?.title ?? ""}</Dialog.Title>
-            <div className="mt-3 max-h-[65vh] overflow-y-auto text-sm" data-testid="custom-ui-view">
+            <div className="mt-3 max-h-[65vh] overflow-y-auto text-body" data-testid="custom-ui-view">
               {view && <Markdown>{view.body}</Markdown>}
             </div>
             <Dialog.Close />

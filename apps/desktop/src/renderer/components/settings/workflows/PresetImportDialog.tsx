@@ -95,7 +95,7 @@ export function PresetImportDialog({
       <Dialog.Portal>
         <Dialog.Backdrop />
         <Dialog.Popup className="w-[460px] max-w-[92vw] p-4">
-          <Dialog.Title className="text-sm font-semibold text-content">
+          <Dialog.Title className="text-body font-semibold text-content">
             {t("settings.workflows.presetsTitle")}
           </Dialog.Title>
           <Dialog.Description className="mb-3 text-xs leading-relaxed text-content-muted">

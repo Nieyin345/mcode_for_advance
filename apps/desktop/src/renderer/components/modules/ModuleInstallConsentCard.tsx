@@ -214,7 +214,7 @@ export function ModuleInstallConsentCard() {
           <Dialog.Close aria-label={t("common.close")} />
           {/* 扩展名 + 版本 + 来源 */}
           <section className="space-y-1 rounded border border-edge p-3">
-            <p className="text-sm font-semibold">{title}</p>
+            <p className="text-body font-semibold">{title}</p>
             <p className="text-xs text-content-muted">
               <code>{manifest.id}</code> · {manifest.version}
             </p>
@@ -225,7 +225,7 @@ export function ModuleInstallConsentCard() {
           </section>
           {/* 逐条权限 */}
           <section className="space-y-2" data-testid="module-install-consent-permissions">
-            <p className="text-sm font-semibold">{t("ide.modules.consentCard.permissionsTitle")}</p>
+            <p className="text-body font-semibold">{t("ide.modules.consentCard.permissionsTitle")}</p>
             {requested.length === 0 ? (
               <p className="text-xs text-content-muted">{t("ide.modules.consentCard.noPermissions")}</p>
             ) : (

@@ -293,7 +293,7 @@ export function MobileSessionDrawer({
           <Segmented
             label={t("layout.stream.viewSwitch")}
             size="md"
-            className="h-11 min-w-0 flex-1 [&_button]:min-h-11 [&_button]:text-sm"
+            className="h-11 min-w-0 flex-1 [&_button]:min-h-11 [&_button]:text-body"
             value={view}
             onChange={(v) => onPickView(v as MobileView)}
             items={NAV_ITEMS.map(({ id, labelKey, icon: NavIcon }) => ({
@@ -347,7 +347,7 @@ export function MobileSessionDrawer({
             <button
               type="button"
               onClick={() => startNewSession(newSessionProjectId)}
-              className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] bg-accent text-sm font-medium text-surface active:opacity-80"
+              className="flex h-11 w-full items-center justify-center gap-1.5 rounded-[var(--radius-btn-md)] bg-accent text-body font-medium text-surface active:opacity-80"
             >
               <IconPlus size={16} className="shrink-0" />
               <span className="shrink-0">{t("layout.newSession")}</span>
@@ -364,7 +364,7 @@ export function MobileSessionDrawer({
           {results ? (
             <ul className="px-1">
               {results.length === 0 ? (
-                <li className="px-3 py-8 text-center text-sm text-content-subtle">
+                <li className="px-3 py-8 text-center text-body text-content-subtle">
                   {t("mobile.drawer.noMatch")}
                 </li>
               ) : (
@@ -372,7 +372,7 @@ export function MobileSessionDrawer({
               )}
             </ul>
           ) : activeProjects.length === 0 ? (
-            <div className="px-6 py-10 text-center text-sm leading-relaxed text-content-subtle">
+            <div className="px-6 py-10 text-center text-body leading-relaxed text-content-subtle">
               {t("mobile.drawer.noProjects")}
             </div>
           ) : (
@@ -428,7 +428,7 @@ export function MobileSessionDrawer({
                     {expanded && (
                       <div className="ml-5 border-l border-edge/60 pl-1">
                         {sessions.length === 0 ? (
-                          <div className="px-3 py-2.5 text-sm text-content-subtle">
+                          <div className="px-3 py-2.5 text-body text-content-subtle">
                             {t("layout.noThreads")}
                           </div>
                         ) : (
@@ -439,7 +439,7 @@ export function MobileSessionDrawer({
                                 <button
                                   type="button"
                                   onClick={() => void loadMoreSessions(p.id).catch(reportActionFailure)}
-                                  className="flex min-h-[44px] w-full items-center rounded-[var(--radius-btn-md)] px-3 text-left text-sm text-content-subtle active:bg-surface-hover"
+                                  className="flex min-h-[44px] w-full items-center rounded-[var(--radius-btn-md)] px-3 text-left text-body text-content-subtle active:bg-surface-hover"
                                 >
                                   {t("layout.loadMore")}
                                   {total > sessions.length
@@ -472,7 +472,7 @@ export function MobileSessionDrawer({
                       )}
                     />
                     <IconArchive size={15} className="shrink-0 text-content-muted" />
-                    <span className="text-sm font-medium text-content">{t("layout.archived")}</span>
+                    <span className="text-body font-medium text-content">{t("layout.archived")}</span>
                     <span className="text-xs text-content-subtle">{archivedCount}</span>
                   </button>
                   {archiveOpen && (
@@ -646,7 +646,7 @@ function SheetItem({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex min-h-12 w-full items-center gap-3 px-4 text-left text-sm active:bg-surface-hover",
+        "flex min-h-12 w-full items-center gap-3 px-4 text-left text-body active:bg-surface-hover",
         danger ? "text-danger" : "text-content",
       )}
     >
@@ -791,7 +791,7 @@ function RenameSheet({
   return (
     <SheetShell entered={entered} onClose={onClose} closeLabel={t("mobile.drawer.cancelRename")}>
       <div className="px-4 pb-3 pt-1">
-        <div className="mb-2 text-sm font-semibold text-content">{t("layout.renameThread")}</div>
+        <div className="mb-2 text-body font-semibold text-content">{t("layout.renameThread")}</div>
         <Input
           value={value}
           autoFocus
@@ -811,7 +811,7 @@ function RenameSheet({
           <button
             type="button"
             onClick={onClose}
-            className="h-11 flex-1 rounded-[var(--radius-btn-md)] border border-edge text-sm text-content-muted active:bg-surface-hover"
+            className="h-11 flex-1 rounded-[var(--radius-btn-md)] border border-edge text-body text-content-muted active:bg-surface-hover"
           >
             {t("common.cancel")}
           </button>
@@ -819,7 +819,7 @@ function RenameSheet({
             type="button"
             onClick={submit}
             disabled={!trimmed}
-            className="h-11 flex-1 rounded-[var(--radius-btn-md)] bg-accent text-sm font-medium text-surface active:opacity-80 disabled:opacity-40"
+            className="h-11 flex-1 rounded-[var(--radius-btn-md)] bg-accent text-body font-medium text-surface active:opacity-80 disabled:opacity-40"
           >
             {t("common.save")}
           </button>
@@ -867,7 +867,7 @@ function SessionRow({
             {session.pinnedAt != null && (
               <IconPinnedFilled size={11} className="shrink-0 text-accent/80" aria-label={t("layout.pinned")} />
             )}
-            <span className="truncate text-sm text-content">{session.title}</span>
+            <span className="truncate text-body text-content">{session.title}</span>
           </span>
           <span className="text-xs leading-none text-content-subtle">
             {projectLabel && <span className="text-content-subtle/80">{projectLabel} · </span>}
@@ -928,7 +928,7 @@ function ProjectHeader({
           className={cn("shrink-0 text-content-subtle transition-transform", expanded && "rotate-90")}
         />
         <IconFolder size={16} className="shrink-0 text-content-muted" />
-        <span className="truncate text-sm font-medium text-content">{project.name}</span>
+        <span className="truncate text-body font-medium text-content">{project.name}</span>
         {count > 0 && <span className="shrink-0 text-xs text-content-subtle">{count}</span>}
       </button>
       {/* Always visible (no hover on touch) — mirrors the desktop project
@@ -962,7 +962,7 @@ function ArchivedRow({
     <li className="flex items-stretch">
       <div className="flex min-h-[44px] min-w-0 flex-1 items-center gap-2.5 py-1.5 pl-3 pr-1">
         {icon}
-        <span className="truncate text-sm text-content-muted">{title}</span>
+        <span className="truncate text-body text-content-muted">{title}</span>
       </div>
       <button
         type="button"
