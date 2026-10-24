@@ -151,3 +151,69 @@ const result = host.open({
 **「组件初始状态对」和「用户点进去看得到」是两件事。**
 
 SSR 断言能证明前者，而且它便宜、快、稳定。**但它证明不了后者，而后才是用户问的。**
+
+---
+
+## ⚠️ 总控补充（2026-10-25 01:10）：**不要从零搭 U1 基础设施**
+
+**上一个执行者跑了 72 分钟、只在读代码、一个字没写。** 我查了原因 —— **是我卡写错了**：
+
+> 「新建套件目录，照 `apps/desktop/scripts/electron-u1/` 的 build/host 机制来」
+
+**听起来像要从零搭整套 U1。实际不用。**
+
+### `electron-u1/build.mjs` 是**可复用**的，靠 `--registry=` 换注册表
+
+```js
+const suite = dirname(fileURLToPath(import.meta.url));   // ← 永远是 electron-u1 自己的目录
+let registry = join(suite, "journeys/index.ts");         // ← 默认值
+...
+else if (a.startsWith("--registry=")) registry = resolve(a.slice("--registry=".length));
+```
+
+**所以你要做的只有三件：**
+
+1. 写一个**旅程注册表** `apps/desktop/scripts/workflow-settings-entry-u1/journeys/index.ts`
+   （照 `t8-node-red-u1/journeys/index.ts` 的形状 —— **注意：必须透出 `failBecause`**，
+   那是 W24 刚在 `t30` 上修过的同一处坑）；
+2. 写旅程文件；
+3. **`node scripts/electron-u1/build.mjs --registry=<你的注册表> --suite=<你的目录>`**
+   （具体参数名读 `build.mjs:41-90` 的解析段）。
+
+**`build.mjs` 其余部分（`app-entry.tsx` 打包真 `App.tsx`、preload、runner）全部复用，一行不用改。**
+
+### 你要用的坐标（我已经查好，不用再找）
+
+| 找什么 | 在哪 |
+|---|---|
+| **用户怎么打开设置** | `LeftBar.tsx:1019` 的 `onClick={() => setSettingsOpen(true)}` |
+| 设置覆盖层 | `App.tsx` 的 `SettingsOverlay`（`if (!open) return null`） |
+| 工作流页签 | `#workflows-tab-engines` / `#workflows-tab-library` |
+| 面板容器 | `#workflows-panel-engines` / `#workflows-panel-library` |
+| 引擎启动按钮 | `EngineRuntimePanel.tsx` 里 `settings.workflows.engine.start` 那个 `Button` |
+| 视图占位区 | `EngineRuntimePanel.tsx` 的 `data-engine-view-stage=""` |
+| 浏览器里判断"挂载了" | `window.__mounted`（`app-entry.tsx` 已设） |
+
+### 引擎怎么起（用户路径，不是 harness 路径）
+
+**`t8` 用 `registry.startEngine()`，那是宿主层。你要点按钮。**
+
+**如果点按钮太脆**（它要等引擎真的起进程），**允许退一步**：用 `window.api.workflowEngine.start({ engineId: "node-red" })`
+（渲染端 RPC，等价于按钮背后的调用），**但要在回写里写明「这是 RPC 不是点击」**，
+并说明你为什么退。**不要伪造一个点击。**
+
+### 如果环境不允许（O5 改渲染端 / 显示器掉了）
+
+**照实写「判据写好，真跑待环境」**，**不许写「已修复」**。
+
+判别：
+
+```bash
+cd apps/desktop
+npx tsc --noEmit -p tsconfig.json > /tmp/tsc.txt 2>&1
+echo "renderer: $(grep -cE '(^|/)src/renderer/' /tmp/tsc.txt)"
+```
+
+**> 0 → O5 批三在途。** 另外如果 `.tmp/electron-u1/<最新>/.../run-g1.log` 里有
+`Current display surface not available` 或 `no secondary display`，**那是这台机器的显示环境变了**
+（第二显示器在 00:01–00:20 之间掉了，W24 已定位），**不是代码问题**。
