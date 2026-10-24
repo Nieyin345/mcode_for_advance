@@ -253,3 +253,96 @@ export function makeDocumentSaveGuard(deps): DocumentSaveGuard {
 ## 九、结果回写区
 
 （执行会话追加：§4.4 的检查结论、三个问题（§七）的答案、每个格式的翻转前后数字、变异记录、提交 SHA、补丁文件名）
+
+---
+
+## 十、⚠️ 追加：slides 的失败路径（2026-10-24 深夜，实测发现）
+
+### 10.1 第一版的问题
+
+执行会话第一版把 `savePptxToFile` 包成：
+
+```ts
+try {
+  await savePptxToFile(session.opened, staging)   // 写成功，数据完整
+  await rename(staging, session.path)              // 可能失败
+} finally {
+  await rm(staging, { force: true }).catch(() => {})   // ← 把唯一副本删了
+}
+```
+
+**实测**（`.tmp/probe-rename-finally.mjs`，用同样的结构和同样的 `finally`）：
+
+```
+成功路径后 target = NEW CONTENT
+rename 失败后 threw = true , target = ORIGINAL-2
+→ staging 里的新内容还在吗？ (finally 已把它删了)
+```
+
+**场景**：`savePptxToFile` 花几秒把整个 deck 写进 staging（**数据完整**），
+`rename` 因 Windows 的 `EBUSY`/`EPERM`（杀毒、索引器、OneDrive 同步锁住目标）失败，
+**`finally` 把那份完整的 deck 删了**。用户看到「保存失败」，编辑全丢。
+
+**比原 bug 更坏**：
+
+| 形态 | 中途失败后 |
+|---|---|
+| 原来（直写目标） | 目标被截断，**至少文件还在**，部分内容能用恢复工具捞 |
+| 第一版（staging + finally 删） | **新内容一个字节都不剩** |
+
+### 10.2 上游已经写对了
+
+`packages/electron-utils/src/atomic-write.ts` 的 `atomicWriteFile`：
+
+```ts
+try {
+  await writeFile(tmp, data); await syncFileBestEffort(tmp)
+} catch (error) {
+  await unlink(tmp).catch(() => {})    // ← 只在「tmp 没写成功」时删
+  throw error
+}
+try { await renameWithRetry(tmp, filePath); return } catch { /* fall through */ }
+// Keep the completed temp until the fallback lands: if that write fails
+// or the process dies, the new bytes still exist somewhere on disk.
+await writeFile(filePath, data)        // ← rename 失败 → 退回原地写
+await unlink(tmp).catch(() => {})      // ← 写完才删
+```
+
+**注释原文就是这条规矩**：
+> **Keep the completed temp until the fallback lands: if that write fails
+> or the process dies, the new bytes still exist somewhere on disk.**
+
+### 10.3 判据（这条必须能红）
+
+**让 `rename` 失败，然后断言「新内容还在某处」。**
+
+失败做法：把 `session.path` 指向一个**目录**（`rename` 到目录会失败），
+或 mock `node:fs/promises` 的 `rename` 抛 `EBUSY`。
+
+**断言两件事**：
+1. 保存返回 `{ ok: false }`（用户知道失败了）；
+2. **盘上能找到一个包含新内容的文件**（staging 或目标）。
+
+**第 2 条是这条 bug 的核心 —— 没有它，「失败」和「失败且数据全丢」在断言里长得一样。**
+
+### 10.4 为什么三条现有判据都没抓到
+
+| 判据 | 覆盖的世界 |
+|---|---|
+| O2 套件 | **正常保存**（能写就成功） |
+| §5.2 默认透传负控 | **没装守卫时行为不变** |
+| §5.3 真并发 | **两个保存同时跑** |
+
+**三条都在「事情能成」的世界里。而 `finally` 的 bug 只在「事情不成」的时候发生。**
+
+**这是本卡自己 §5.3 的反面**：那里我要求「真并发」是因为串行调用验不到 TOCTOU；
+**这里要求「真失败」是因为正常路径验不到失败路径。**
+两者是同一个道理的两种形态 —— **判据必须经过它要证明的那条分支。**
+
+### 10.5 另三家已核
+
+- `pdf` → `writePdfAtomically`：`catch` 里 `if (owned)` 才删 tmp，且注释写明
+  「Cleanup must not replace the actual write/rename error」。**对。**
+- `html` / `markdown` → `atomicWriteFile`：见 §10.2。**对。**
+
+**所以四家里只有 slides 需要自己写这段，而且只有它原来连原子写都没有。**
