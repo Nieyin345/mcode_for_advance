@@ -1,6 +1,6 @@
 # T114｜`design-tokens-smoke` 那条判据只认一种写法
 
-- Status: **part-done**（判据已改并验证；6 个文件的真违规未改 —— 需另开卡）
+- Status: **part-done（判据完成，产品代码待 T116）** —— 判据部分已完成并验证（`2f2bebc9`）
 - Category: **P1 测试判别力（判据的范围小于它声称的范围）**
 - Priority: **P1 —— 「选中态不许用品牌淡底」这条设计规范，实际只抓到了 1/4 的写法**
 - Depends on: E 的 T111（`2f783ef7`，详情视图）；E 的 `design-tokens` 修（`f9854a8c`）
