@@ -115,6 +115,7 @@ export function SearchDialog() {
   const [searchError, setSearchError] = useState<string | null>(null);
   /** 【UI-020】失败后重试用:自增即重新触发搜索 effect。 */
   const [searchRetryNonce, setSearchRetryNonce] = useState(0);
+  const [completedSearchKey, setCompletedSearchKey] = useState<string | null>(null);
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -131,9 +132,18 @@ export function SearchDialog() {
   const includeExts = useMemo(() => parseFileTypeInput(fileType), [fileType]);
 
   const isSearching = query.trim().length > 0;
-  // The "flat" result count activeIdx navigates over: one per file in name
-  // mode, one per matched line in content mode.
-  const flatCount = mode === "name" ? nameResults.length : grepResults.length;
+  // Rendering must be keyed, not just effect-cleared: effects run after a
+  // React commit, so old results could still be clicked in the first frame
+  // after changing a project, query, mode or extension filter. Only results
+  // for the *exact* completed request may be displayed or keyboard-opened.
+  const searchKey = JSON.stringify([projectPath, query.trim(), mode, caseSensitive, fileType, searchRetryNonce]);
+  const currentSearch = completedSearchKey === searchKey;
+  const shownNameResults = currentSearch ? nameResults : [];
+  const shownGrepResults = currentSearch ? grepResults : [];
+  const displayedLoading = !!projectPath && isSearching && (loading || !currentSearch);
+  const displayedError = currentSearch ? searchError : null;
+  // One per file in name mode, one per matched line in content mode.
+  const flatCount = mode === "name" ? shownNameResults.length : shownGrepResults.length;
 
   // Promote the current filter into the remembered history (dedup + cap).
   // Called on Enter in the file-type field and on dialog close.
@@ -155,6 +165,7 @@ export function SearchDialog() {
   useEffect(() => {
     if (open) return;
     setActiveIdx(0);
+    setCompletedSearchKey(null);
     setLoading(false);
     setTruncated(false);
     setIncompleteScan(false);
@@ -211,6 +222,7 @@ export function SearchDialog() {
       // 期间已发出的旧回包仍能通过序号校验,把上一轮关键词的结果写进 state —— 随即输入新词、
       // 在 debounce/网络等待期(loading=true 且 results 非空)就会显示/可点上一轮的结果。
       reqIdRef.current++;
+      setCompletedSearchKey(null);
       setNameResults([]);
       setGrepResults([]);
       setLoading(false);
@@ -223,6 +235,7 @@ export function SearchDialog() {
     // A changed query/mode/filter must never keep an old clickable match on
     // screen during debounce or IPC. Clear synchronously with invalidation;
     // otherwise Enter can open a file belonging to the previous search.
+    setCompletedSearchKey(null);
     setNameResults([]);
     setGrepResults([]);
     setActiveIdx(0);
@@ -267,6 +280,7 @@ export function SearchDialog() {
       void promise
         .then(() => {
           if (reqIdRef.current !== myId) return;
+          setCompletedSearchKey(searchKey);
           setActiveIdx(0);
           setLoading(false);
         })
@@ -278,6 +292,7 @@ export function SearchDialog() {
           setTruncated(false);
           setIncompleteScan(false);
           // 【UI-020】显式错误态 —— 与"成功返回空数组"区分开,并给重试。
+          setCompletedSearchKey(searchKey);
           setSearchError(err instanceof Error ? err.message : String(err));
         });
     }, SEARCH_DEBOUNCE_MS);
@@ -304,10 +319,10 @@ export function SearchDialog() {
   // matched line in content mode.
   const openActive = () => {
     if (mode === "name") {
-      const f = nameResults[activeIdx];
+      const f = shownNameResults[activeIdx];
       if (f) openResult(f.path);
     } else {
-      const m = grepResults[activeIdx];
+      const m = shownGrepResults[activeIdx];
       if (m) openResult(m.path, m.lineNumber);
     }
   };
@@ -319,19 +334,19 @@ export function SearchDialog() {
     // IME arrow/Enter/Escape keys belong to the candidate picker, not search.
     if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
     if (e.key === "ArrowDown") {
-      if (!searchResultsNavigable(loading, searchError, flatCount)) return;
+      if (!searchResultsNavigable(displayedLoading, displayedError, flatCount)) return;
       e.preventDefault();
       setActiveIdx((i) => stepSearchResultIndex(i, flatCount, 1));
       return;
     }
     if (e.key === "ArrowUp") {
-      if (!searchResultsNavigable(loading, searchError, flatCount)) return;
+      if (!searchResultsNavigable(displayedLoading, displayedError, flatCount)) return;
       e.preventDefault();
       setActiveIdx((i) => stepSearchResultIndex(i, flatCount, -1));
       return;
     }
     if (e.key === "Enter") {
-      if (!searchResultsNavigable(loading, searchError, flatCount)) return;
+      if (!searchResultsNavigable(displayedLoading, displayedError, flatCount)) return;
       e.preventDefault();
       openActive();
       return;
@@ -445,7 +460,7 @@ export function SearchDialog() {
                 <IconLetterCase size={16} />
               </button>
             )}
-            {loading ? (
+            {displayedLoading ? (
               <IconLoader2 size={14} className="shrink-0 animate-spin text-content-subtle" />
             ) : query ? (
               <button
@@ -497,14 +512,14 @@ export function SearchDialog() {
           <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
             {projectPath ? (
               isSearching ? (
-                searchError ? (
+                displayedError ? (
                   // 【UI-020】搜索失败 → 显式错误 + 重试,不再伪装成"没有匹配"。
                   <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
                     <div className="flex items-center gap-1.5 text-[12px] text-content">
                       <IconAlertTriangle size={13} className="shrink-0 text-warning" />
                       {t("ide.search.failed")}
                     </div>
-                    <div className="max-w-sm break-all text-[11px] text-content-subtle">{searchError}</div>
+                    <div className="max-w-sm break-all text-[11px] text-content-subtle">{displayedError}</div>
                     <button
                       type="button"
                       onClick={() => setSearchRetryNonce((n) => n + 1)}
@@ -515,20 +530,20 @@ export function SearchDialog() {
                   </div>
                 ) : mode === "name" ? (
                   <NameSearchResults
-                    loading={loading}
+                    loading={displayedLoading}
                     truncated={truncated}
                     incompleteScan={incompleteScan}
-                    results={nameResults}
+                    results={shownNameResults}
                     activeIdx={activeIdx}
                     onHover={setActiveIdx}
                     onOpen={openResult}
                   />
                 ) : (
                   <ContentSearchResults
-                    loading={loading}
+                    loading={displayedLoading}
                     truncated={truncated}
                     incompleteScan={incompleteScan}
-                    results={grepResults}
+                    results={shownGrepResults}
                     activeIdx={activeIdx}
                     onHover={setActiveIdx}
                     onOpen={openResult}
@@ -565,7 +580,7 @@ export function SearchDialog() {
             </span>
             <span role="status" aria-live="polite" aria-atomic="true">
               {isSearching
-                ? t("ide.search.resultCount", { n: loading ? 0 : flatCount })
+                ? t("ide.search.resultCount", { n: displayedLoading ? 0 : flatCount })
                 : mode === "name"
                   ? t("ide.search.modeName")
                   : t("ide.search.modeContent")}

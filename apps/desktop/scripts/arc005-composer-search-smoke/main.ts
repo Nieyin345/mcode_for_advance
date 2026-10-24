@@ -39,7 +39,21 @@ check("Search: old IPC generations invalidated before starting the timer",
   sourceHas(search, "const myId = ++reqIdRef.current;") &&
   sourceHas(search, "if (reqIdRef.current !== myId) return;"));
 check("Search: both arrow keys and Enter use one readiness guard",
-  (search.match(/searchResultsNavigable\(loading, searchError, flatCount\)/g) || []).length === 3);
+  (search.match(/searchResultsNavigable\(displayedLoading, displayedError, flatCount\)/g) || []).length === 3);
+check("Search: render-time request identity prevents stale one-frame clickability",
+  sourceHas(search, "const searchKey = JSON.stringify([projectPath, query.trim(), mode, caseSensitive, fileType, searchRetryNonce]);") &&
+  sourceHas(search, "const currentSearch = completedSearchKey === searchKey;") &&
+  sourceHas(search, "const shownNameResults = currentSearch ? nameResults : [];") &&
+  sourceHas(search, "const shownGrepResults = currentSearch ? grepResults : [];"));
+check("Search: only responses for the current key can populate results",
+  sourceHas(search, "setCompletedSearchKey(searchKey);") &&
+  sourceHas(search, "setCompletedSearchKey(null);") &&
+  sourceHas(search, "const displayedError = currentSearch ? searchError : null;"));
+check("Search: selection and displayed panels never use raw unkeyed results",
+  sourceHas(search, "const f = shownNameResults[activeIdx];") &&
+  sourceHas(search, "const m = shownGrepResults[activeIdx];") &&
+  sourceHas(search, "results={shownNameResults}") &&
+  sourceHas(search, "results={shownGrepResults}"));
 check("Search: nonblocking IME guard applies to the entire keyboard handler",
   sourceHas(search, 'if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;'));
 check("Search: all active results expose aria-current instead of visual-only selection",
@@ -51,7 +65,7 @@ check("Search: filter and clear controls use visible keyboard focus",
   sourceHas(search, 'aria-label={t("ide.search.clear")}'));
 check("Search: live count never reads stale number while fetching",
   sourceHas(search, 'role="status" aria-live="polite" aria-atomic="true"') &&
-  sourceHas(search, 't("ide.search.resultCount", { n: loading ? 0 : flatCount })'));
+  sourceHas(search, 't("ide.search.resultCount", { n: displayedLoading ? 0 : flatCount })'));
 check("Search: result rows accept keyboard focus and still open the expected file",
   (search.match(/focus-visible:outline-offset-2 focus-visible:outline-accent/g) || []).length >= 3 &&
   sourceHas(search, "onClick={() => onOpen(m.path, m.lineNumber)}") &&
