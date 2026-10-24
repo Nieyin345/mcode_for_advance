@@ -8,7 +8,7 @@ import { inflateRawSync } from "node:zlib";
 import { z } from "zod";
 import { ModuleInstallSchema } from "@contracts/ipc/modules";
 import { type ModuleResource, type ModuleReply } from "@contracts/modules";
-import { ModuleHost } from "./ModuleHost.js";
+import { ModuleHost, type ModuleInstallDecision } from "./ModuleHost.js";
 
 const COMMAND_ID = /^[a-zA-Z][a-zA-Z0-9.-]{2,99}$/;
 /**
@@ -565,7 +565,33 @@ export class VscodeL1Bridge {
   ) {}
 
   /** Trusted host entry only. Explicit install consent is required; never expose directly to an agent/renderer. */
-  static async install(host: ModuleHost, archive: Uint8Array, consent: { confirmReadAccess: boolean; confirmExecutableCode: boolean }, l2?: VscodeL2Ports): Promise<VscodeL1Bridge> {
+  static async install(
+    host: ModuleHost,
+    archive: Uint8Array,
+    consent: {
+      confirmReadAccess: boolean;
+      confirmExecutableCode: boolean;
+      /** 【F010】安装卡片的三态选择。**由调用方给，不由这里默认**。
+       *
+       * 从前这里没有这个字段，`host.install(manifest)` 走的是它自己的默认
+       * `decision = "allow-once"` —— 于是**用户选「拒绝」，走到 bridge 就被默认成
+       * 「允许一次」**。handler 那边确实挡了一道（`deny` 在读文件之前返回），
+       * 但那道离 `host.install` 隔着四步，**任何新调用方（工作流、直接调 bridge 的测试）
+       * 都会绕过它**。
+       *
+       * ## 两道门不是重复
+       *
+       * - **handler 那道挡「读文件」**：`deny` 时不 `readFileSync`，磁盘零读取。
+       *   那是 bridge **做不到**的 —— 它拿到 `archive` 时字节早就读进来了。
+       * - **这里这道挡「写盘」**：`deny` 时不调 `host.install`，磁盘零写入。
+       *
+       * **两道门守的是两件事**（一个不读、一个不写），所以都要有。
+       * 只加其中一道就以为万事大吉，是这张卡要防的那类误读。
+       */
+      installConsent?: ModuleInstallDecision;
+    },
+    l2?: VscodeL2Ports,
+  ): Promise<VscodeL1Bridge> {
     const { packageJson, source } = readMinimalVsix(archive);
     const pkg = packageSchema.parse(packageJson);
     // 【F004】只**激活第一条**命令。这是本宿主的真实能力边界 ——
@@ -656,7 +682,20 @@ export class VscodeL1Bridge {
         );
       }
     }
-    await host.install(checked.manifest);
+    await host.install(
+      checked.manifest,
+      // 【F010】**第二个参数是 `grantedPermissions`，不是 decision。**
+      // 传 `undefined` 是刻意的：VSIX 这条路径不做「逐项选择权限」，
+      // 它请求的是 `resource.read`（+ 可选 `resource.write`），
+      // 两者都在 `host.install` 的「新模型可默认」白名单里，不需要逐项确认。
+      // 把 decision 塞进这个位置会让它被当成权限数组，`assertModuleGrants` 会抛一个
+      // 与「用户拒绝」毫无关系的错 —— 于是 deny 看起来「生效了」，实际是撞了别的错。
+      undefined,
+      // 【F010】第三个参数才是 decision。缺省时**显式给 `"allow-once"`**，
+      // 而不是靠 `host.install` 的默认值 —— 那让「本函数传了什么」在调用点可见，
+      // 也让将来的读者不必翻到 ModuleHost 去确认默认是什么。
+      consent.installConsent ?? "allow-once",
+    );
     return new VscodeL1Bridge(host, moduleId, commandId, JSON.stringify(checked.manifest), l2);
   }
 

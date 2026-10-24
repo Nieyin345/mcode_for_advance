@@ -53,10 +53,20 @@ export function registerModuleHandlers(ipcMain:IpcMain):void {
   //   3. 读字节
   //   4. `VscodeL1Bridge.install` —— 解析 vsix、转成 manifest、交给 `host.install`
   //
-  // ⚠️ `VscodeL1Bridge.install` **当前不透传 decision**（它内部调 `host.install(manifest)`
-  // 用的是默认 `allow-once`）。所以「deny = 磁盘零写入」这条保证**由上面第 2 步实现**：
-  // 拒绝时根本走不到读文件。若将来 bridge 加了 decision 参数，把第 2 步的结果一并传下去，
-  // 那时才是两处都挡 —— **在此之前不要以为 bridge 里已经挡过了**。
+  // ⚠️ 【F010】**两处都挡，不是重复，是两道不同的门**：
+  //
+  //   - **handler 挡「读文件」**：`deny` 时不 `readFileSync`，磁盘零读取。
+  //     这是 bridge **做不到**的 —— 它拿到 `archive` 时字节早就读进来了。
+  //   - **bridge 挡「写盘」**：`installConsent` 透传给 `host.install`，
+  //     `deny` 时宿主在任何持久化之前抛错，磁盘零写入。
+  //
+  // 从前 bridge 不透传 decision（内部 `host.install(manifest)` 走默认 `allow-once`），
+  // 所以只有 handler 那道有效 —— **任何新调用方（工作流、直接调 bridge 的测试）
+  // 都会绕过它**。F010 把 decision 传下去了。
+  //
+  // **判断「哪道门拦的」**：两道的错误信息不同。handler 那句是
+  // 「用户拒绝了这次安装，未读取任何文件」；宿主那句是「用户拒绝了这次安装，未写入任何内容」。
+  // 混成一个就分不出是「真的透传了」还是「被前面那道挡了」。
   ipcMain.handle(IPC.MODULE_INSTALL_VSIX,async(event,raw:unknown)=>{
     const input=ModuleInstallVsixSchema.parse(raw);
     const decision=resolveInstallDecision(input,event);
@@ -67,6 +77,9 @@ export function registerModuleHandlers(ipcMain:IpcMain):void {
       confirmReadAccess:input.confirmReadAccess,
       // vsix 里的 `extension.js` 是要在本机跑的程序 —— 与 `modules.install` 同一条规矩。
       confirmExecutableCode:input.confirmExecutableCode === true,
+      // 【F010】把决策原样传下去。上面那道已经拦了 deny，这里传是为了
+      // 让 bridge 自己也有这道门 —— 它可能被别的调用方直接调。
+      installConsent:decision,
     });
     // 返回形状与 `modules.install` 对齐（`ModuleChangeResult`），调用方拿 catalog 重画。
     // `cancelledTasks` / `cancelFailures` 在这条通道上是 0 / 空：VSIX 安装**只新增或替换
