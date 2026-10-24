@@ -116,6 +116,15 @@ preload (contextBridge + zod 校验)
 - preload 不热更：改 preload 后「新命名空间 = undefined」说明没真正重启 dev，不是写错了。
 - Windows 子进程输出是控制台代码页（中文机器 GBK）：解码先严格试 UTF-8、失败退回 GBK，用原始字节，别数替换字符。
 - **无头验证数据时，`dataRoot` 必须指向 `mcode.db` 的副本**——sql.js 重写整个文件，指向真库会毁数据。
+- **electron-builder 有两处「在 filter 之前硬编码跳过」**，任何 filter 模式都救不回来（2026-10-24 各踩一次）：
+  - `app-builder-lib/out/util/filter.js:42-45` —— 根的 `node_modules`；
+  - `builder-util/out/fs.js:68` —— `.DS_Store` 与 `.gitkeep`。
+
+  两者都是「**配置写了但打包器不认**」，不是「配置写错了」——所以报错会指向**摘要不匹配**这种下游症状，而不是这两行。解法见 `build/node-red-nodemodules-shim.cjs`（打包前改名、打包后改回）与 `stage-genoffice-resources.cjs` 的 `hashResourceTree`（跳过同名文件）。
+
+  **判断方法**：`node_modules` / `.gitkeep` 这类东西在 `extraResources` 里「配了却不出现」时，**先去读打包器的源码，不要调 filter 模式** —— 调多久都不会好，还会让人以为「这个目录本来就不该有」。
+
+  补充：`hashResourceTree` **只哈希文件，空目录不参与摘要** —— 实测「目录不存在」「目录存在但为空」「目录里只有 `.gitkeep`」三者摘要完全相同。所以「用 `.gitkeep` 承载必须存在的空目录骨架」对它**不可见**。将来要守空目录，是**让目录进摘要**，不是加回 `.gitkeep`。
 
 ### 多会话并行时的两条硬约束（2026-10-23，都是真实事故后加的）
 
@@ -251,6 +260,42 @@ cp <file> /tmp/merged.bak
 cp /tmp/merged.bak <file>                    # 3. 立刻写回合并态
 sha256sum -c /tmp/merged.sha                 # 4. 核验没变
 ```
+
+#### ⚠️ 精确分离索引之后，**不能**再写 `git commit -- <path>`
+
+**2026-10-24 F 实测第二次踩同一条**，这次的形态是新的：
+
+```bash
+git apply --cached .tmp/mine.patch      # 索引里只有我的 2 个 hunk ✓
+git diff --cached --stat                 # 确认只有 5 行 ✓
+git commit -F - -- apps/desktop/src/renderer/styles.css
+#                ^^^ 这一句把上面两步全部作废
+```
+
+**提交了 77 行，另一个会话的 3 个 hunk 全卷进来。**
+
+**原因不是「忘了规矩」，是这两件事在语义上对冲：**
+
+> **`-- <path>` 不是「只提交这个文件」，是「先把这个文件的工作区内容加进索引，再提交索引」。**
+>
+> 而 `git apply --cached` 的全部意义就是「索引 ≠ 工作区」。**前者一句话抹掉后者。**
+
+**所以：同一个文件上有别人的未提交改动时，只有两条路，不能混：**
+
+| 做法 | 什么时候用 |
+|---|---|
+| **等对方提交**，再正常提 | 首选 |
+| `git apply --cached` 精确构造索引 + **不带路径**的 `git commit -F -` | 对方提交不了、又必须现在提 |
+
+**`git commit -- <path>` 在这两种情形里都是错的** —— 它属于「文件上没有别人的改动」那个前提。
+
+**发现方法**：提交后立刻 `git diff HEAD^ -- <file> \| grep -c '^@@'`，数目和你改的位置对不上就是卷了别人。
+
+#### 别用 `git reset --soft HEAD^` 来救
+
+**它是能救的**（F 这次救回来了），**但它有一个侥幸成分**：如果那几秒里别人在你上面落了一个提交，`reset --soft HEAD^` 会**把那个提交一起撤掉**，而它可能已经不在你手里了。
+
+**更稳的**：**别 amend、别 reset —— 用一个新提交把多余的部分撤回**。多一个提交不可怕，丢别人的东西才可怕。
 
 #### 今天差点崩的地方
 
