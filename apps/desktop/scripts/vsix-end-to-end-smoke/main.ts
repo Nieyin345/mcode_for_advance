@@ -138,18 +138,37 @@ try {
     assert.equal(host.catalog().modules.length, 0, "被拒时不许有任何安装副作用");
   });
 
-  await test("★ 0-B 即使源码够小，真实清单仍被贡献点检查拒（9 个贡献点）", async () => {
+  // 【F014】这条原来是「即使源码够小，真实清单仍被贡献点检查拒」。
+  // 现在**清单层不再拒了** —— 那正是 F011/F014 一连串改动要达到的结果：
+  // 真实扩展装得进来，不工作的部分靠 `ignoredContributions` 说出来。
+  //
+  // 所以断言翻转：**能装**，且那 9 个贡献点**全部被标记**（不许静默接受）。
+  // 这是「比装不上更坏」那条规矩的正面形态 —— 装进来了，但用户知道他拿到了什么。
+  await test("★ 0-B 源码够小时，真实清单**装得进来**，且不支持的贡献点全被标记", async () => {
     const host = makeHost(temp);
-    // 用真实 package.json + 缩小源码：源码墙过了，下一道墙才露出来。
     const zip = buildZip([
       { name: "extension/package.json", data: await readFile(join(REAL_EXT, "package.json")) },
       { name: "extension/extension.js", data: Buffer.from("exports.activate=()=>{};") },
     ], 8);
-    await assert.rejects(
-      VscodeL1Bridge.install(host, zip, { confirmReadAccess: true, confirmExecutableCode: true }),
-      /contribution|colors|menus|Unrecognized|unrecognized/i,
-    );
-    assert.equal(host.catalog().modules.length, 0);
+    const bridge = await VscodeL1Bridge.install(host, zip, {
+      confirmReadAccess: true, confirmExecutableCode: true,
+    });
+    const sections = bridge.ignoredContributions.map((i) => i.section).sort();
+    const fromContributes = sections.filter((s) => !s.startsWith("top-level:"));
+    const fromTopLevel = sections.filter((s) => s.startsWith("top-level:"));
+    // commands 是唯一被支持的贡献点，它不能出现在"不工作"列表里。
+    assert.equal(fromContributes.includes("commands"), false, "commands 被支持，不该进标记：" + sections.join(","));
+    // contributes 层：实测这 8 个（colors / configuration / configurationDefaults /
+    // grammars / languages / menus / submenus / semanticTokenScopes）
+    assert.equal(fromContributes.length, 8, "不支持的贡献点必须全部标记：" + sections.join(","));
+    assert.ok(fromContributes.includes("menus") && fromContributes.includes("submenus"),
+      "menus/submenus 是最容易被用户发现的两个，必须在标记里：" + sections.join(","));
+    // 顶层层：【F014】browser（web 版入口）、capabilities（信任声明）、activationEvents
+    // 三个都要在 —— 它们不是 contributes 里的贡献点，是 package.json 的顶层字段。
+    assert.deepEqual(fromTopLevel.sort(), [
+      "top-level:activationEvents", "top-level:browser", "top-level:capabilities",
+    ], "顶层行为类字段必须被标记：" + sections.join(","));
+    assert.equal(host.catalog().modules.length, 1, "装上之后 catalog 里要有它");
   });
 
   await test("★ 0-C 真实扩展的第一条命令没有 publisher.name 前缀（第三道墙）", async () => {

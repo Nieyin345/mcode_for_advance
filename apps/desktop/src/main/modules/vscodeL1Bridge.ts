@@ -12,7 +12,65 @@ import { ModuleHost, type ModuleInstallDecision } from "./ModuleHost.js";
 
 const COMMAND_ID = /^[a-zA-Z][a-zA-Z0-9.-]{2,99}$/;
 /**
- * 【F011】`contributes` 里的贡献点分三类处理。
+ * 【F014】顶层字段分两类。**不是逐个枚举那 11 个 —— 每个扩展的字段集都不一样。**
+ *
+ * 实测本机 29 个扩展，schema 之外共有 **25 个不同的顶层字段**，而 rainbow-csv
+ * 只占其中 11 个。只放行那 11 个，下一个扩展照样装不进。
+ *
+ * ## 分类依据：这个字段会不会改变**行为**
+ *
+ * - **元数据**（接受，无副作用）：只影响展示 / 发布 / 打包，宿主不读也不该读。
+ *   `description`、`license`、`icon`、`keywords`、`categories`、`repository`、
+ *   `homepage`、`bugs`、`author`、`scripts`、`devDependencies`、`dependencies`、
+ *   `__metadata`、`galleryBanner`、`preview`、`private`、`overrides`、`l10n`、`aiKey`。
+ * - **影响行为**（接受**但必须标记**）：宿主若不处理，用户会看到与预期不符的结果。
+ *   - `browser`：**web 版入口**，与 `main` 并列。我们不跑 web 版 ——
+ *     静默接受会让用户以为「浏览器里也能用」。
+ *   - `capabilities`：**不是元数据，是信任声明**（`untrustedWorkspaces` /
+ *     `virtualWorkspaces`）。扩展用它在不受信任的工作区里**主动关掉自己**。
+ *     **我们不假装尊重它** —— 本宿主的沙箱模型是「一次授权一个资源」，
+ *     不是 VS Code 的工作区信任。但那意味着扩展的这些自我保护**不会生效**，
+ *     用户需要知道。
+ *   - `extensionKind` / `extensionPack` / `extensionDependencies` /
+ *     `enabledApiProposals`：影响加载方式或依赖别的扩展，宿主不处理就等于
+ *     那些声明落空。
+ *
+ * **未知字段仍然拒绝** —— 不认识的东西静默接受，等于给一个我们完全不了解的行为开门。
+ */
+const TOP_LEVEL_METADATA = [
+  "description", "license", "icon", "keywords", "categories", "repository",
+  "homepage", "bugs", "author", "contributors", "scripts", "devDependencies",
+  "dependencies", "peerDependencies", "__metadata", "galleryBanner",
+  "preview", "private", "overrides", "l10n", "aiKey", "pricing", "sponsor",
+  "markdown",
+] as const;
+
+/** 接受但**必须标记**的顶层字段（它们影响行为而我们不处理）。
+ *
+ * ⚠️ **`extensionPack` / `extensionDependencies` 必须在这一组，不能在元数据那组。**
+ * 第一版把它们当元数据放行了 —— 那是错的：VS Code 里 `extensionDependencies`
+ * 会让**这个扩展依赖的别人先装**，`extensionPack` 会让**一批扩展被一起装**。
+ * 本宿主两个都不做，所以装上之后那些依赖**不存在**，而扩展代码可能直接崩。
+ * 用户必须被告知，否则他只会看到「装好了、一用就报错」。
+ *
+ * 本机 32 个扩展里 **11 个有 `extensionDependencies`、4 个有 `extensionPack`** ——
+ * 不是罕见字段。而 `ide.modules.boundary` 的用户文案本来就写着「不安装依赖」。
+ *
+ * **本卡不实现依赖安装**（那是另一条能力），只保证「接受 + 必须标记」。 */
+const TOP_LEVEL_BEHAVIOURAL = [
+  "browser", "capabilities", "extensionKind", "enabledApiProposals",
+  "extensionPack", "extensionDependencies",
+  // 【F014】`activationEvents` 也在这一组：它是**行为类**而不是元数据 ——
+  // 我们接受它、但运行时从不读它（本宿主只在命令被调用时激活）。
+  // 它不在这里被 schema 当未知字段拒（上面它是已声明的键），
+  // 但 `install()` 收集标记时要能说出「这个字段存在但没生效」。
+  // 注意：`activationEvents` 是**已声明**的键，所以它**不经过** superRefine 的未知检查 ——
+  // 标记由 `install()` 里单独那一行补，见 `fromTopLevel`。
+  "activationEvents",
+] as const;
+
+/**
+ * 【F014】`contributes` 里的贡献点分三类处理。
  *
  * ## 为什么不能一刀切放开（F009 提的前提）
  *
@@ -120,7 +178,12 @@ const packageSchema = z.object({
   // 【F004】保留 .strict()：多出来的引擎声明我们不支持，静默忽略更糟 ——
   // 用户会以为「它声明了 vscode 1.95 就能按 1.95 的行为跑」。
   engines: z.object({ vscode: z.string().min(1).max(40) }).strict(),
-  activationEvents: z.array(z.string()).min(1).max(MAX_ACTIVATION_EVENTS).optional(),
+  // 【F014】`.min(1)` 去掉 —— 空数组是**真实存在的形态**：本机 27 个有 commands
+  // 的扩展里 `ms-azuretools.vscode-azurecontainerapps`（53 条命令）和
+  // `ms-azuretools.vscode-azurevirtualmachines`（10 条）都写着 `[]`。
+  // 而那 2 个扩展在 VS Code 里是能用的 —— 因为 **VS Code 4.0 以后 `contributes`
+  // 本身就隐式产生激活事件**，`activationEvents` 为空不等于「没有激活路径」。
+  activationEvents: z.array(z.string()).max(MAX_ACTIVATION_EVENTS).optional(),
   contributes: z.object({
     // 【F004】`z.tuple` → `z.array`，并设上限。另加非空：0 条命令的扩展没有意义，
     // 而且下游 `contributes.commands[0]` 会在空数组上取到 undefined。
@@ -177,7 +240,30 @@ const packageSchema = z.object({
         });
       }
     }),
-}).strict();
+})
+  // 【F014】顶层从 `.strict()` 改成 `.passthrough()` + 分类。
+  // `.strict()` 拒掉了**所有**真实扩展（实测 25 个不同的额外字段）；
+  // 全盘 passthrough 又等于什么都不管。所以按「会不会改变行为」分类：
+  // 元数据接受，影响行为的接受但标记，**不认识的仍然拒绝**。
+  .passthrough()
+  .superRefine((value, ctx) => {
+    const known = new Set<string>([
+      "publisher", "name", "version", "displayName", "main", "engines",
+      "activationEvents", "contributes",
+      ...TOP_LEVEL_METADATA,
+      ...TOP_LEVEL_BEHAVIOURAL,
+    ]);
+    const unknown = Object.keys(value as Record<string, unknown>).filter((k) => !known.has(k));
+    if (unknown.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "VSIX declares top-level field(s) this host does not recognise: " + unknown.join(", ") +
+          ". Metadata fields are accepted; behavioural ones (" + TOP_LEVEL_BEHAVIOURAL.join(", ") +
+          ") are accepted but reported as not implemented.",
+      });
+    }
+  });
 
 export type VscodeStatusBarSnapshot = { text: string; tooltip: string; command: string | null };
 
@@ -729,16 +815,34 @@ export class VscodeL1Bridge {
         "' (got '" + commandId + "')",
       );
     }
-    // 【F004】activationEvents 从「必须恰好 1 条且等于 onCommand:第一条」放宽成
-    // 「**必须包含** onCommand:第一条」。其余事件（onLanguage:csv / workspaceContains:…）
-    // **允许声明但不会激活** —— schema 放开的只是「装得进来」，不是「这些事件支持了」。
-    // ⚠️ 这一段的语义边界别读错：清单里写了 11 个事件，本宿主仍然只在命令被调用时激活。
-    if (pkg.activationEvents && !pkg.activationEvents.includes("onCommand:" + commandId)) {
-      throw Error(
-        "VSIX activationEvents must include onCommand:" + commandId +
-        " (this host only activates on that command; other declared events are not honoured)",
-      );
-    }
+    // 【F014】`activationEvents` 的校验**整个撤掉，改成标记**。
+    //
+    // ## 为什么撤 —— 三层证据
+    //
+    // **一、运行时根本不读它。** 全仓 `activationEvents` 的消费者只有**这条校验
+    // 自己**（`grep -rn activationEvents apps/ packages/` 除 scripts 外只命中本文件）。
+    // 本宿主的激活路径是「有人调 `executeCommand` → 跑 `activate()`」，
+    // 一律发生在调用时。所以这个字段**不参与任何运行决策** ——
+    // 它不是能力边界，是一段没人读的声明。
+    //
+    // **二、任何「对齐」规则都在拒真实扩展，而不是在挡坏扩展。**
+    // 实测本机 27 个有 commands 的扩展：
+    //   - 15 个没有 `onCommand:`（它们的 onLanguage:/workspaceContains: 我们不实现）；
+    //   - 10 个有 `onCommand:`，**10 个都不含第一条命令**。
+    // 如果我按「至少一条 onCommand 指向已声明命令」放宽（卡上的方案 A），
+    // 仍会拒掉 9/10；按「必须含第一条」（方案 B）拒掉 10/10。
+    // **一条让 100% 真实输入失败的规则，挡不住坏扩展，只挡住用户。**
+    //
+    // **三、它想防的「静默失效」已经由别的机制说了。** 见下面 `ignoredContributions`
+    // 里的 `top-level:activationEvents` —— 用户会收到「本宿主不实现这些激活条件」。
+    // 那比安装失败更准确：安装失败只能告诉他「装不上」，说不清「哪部分不工作」。
+    //
+    // ⚠️ **这条和 F011 的判据一致，不冲突。** F011 说「静默失效比装不上更坏」——
+    // 而这里的失效**不是静默的**：它进了安装结果的 `ignoredContributions`，
+    // 用户当场就能看到。真正的问题是「不让装」，那是另一件事。
+    //
+    // ⚠️ 上面 `activationEvents` 的 schema 注解里「运行时目前只认 onCommand:第一条」
+    // 这句**仍然是事实**，只是现在它是「不支持，已标记」，不是「不支持，所以拒绝」。
     // 【F003】用统一常量而非字面量 —— 否则改一处忘一处，两道限额会分叉。
     // 这条错误与 `readMinimalVsix` 里那条**不同消息**：那个说「压缩包里的声明的多大」，
     // 这个说「解出来交给运行时的源码多长」，排查时指向不同的层。
@@ -806,7 +910,12 @@ export class VscodeL1Bridge {
     // 【F011】算出「接受了但不会生效」的清单，随实例返回。
     // A 类（声明式）与 B 类（需运行时）都进这里 —— **标记对两类都强制**，
     // 因为 A 类用户永远不会自己发现（见文件顶部那段论证）。
-    const ignoredContributions: IgnoredContribution[] = Object.keys(
+    //
+    // 【F014】顶层的行为类字段也进这里 —— 它们同样「接受了但不生效」：
+    // `browser`（web 版入口）、`capabilities`（信任声明）等。
+    // 单独第一组，因为它们的**位置不同**（顶层而不是 contributes 里），
+    // 用 `top-level:` 前缀标出来，让 UI/日志能说清是哪一层。
+    const fromContributes: IgnoredContribution[] = Object.keys(
       (pkg.contributes ?? {}) as Record<string, unknown>,
     )
       .map((section): IgnoredContribution | null => {
@@ -814,6 +923,36 @@ export class VscodeL1Bridge {
         return kind === "declarative" || kind === "runtime" ? { section, kind } : null;
       })
       .filter((x): x is IgnoredContribution => x !== null);
+
+    /**
+     * 【F014】`activationEvents` 是否**真的有东西不生效**。
+     *
+     * 不能见到这个字段就标记 —— 那会把「本宿主恰好满足它」的清单误报成有问题。
+     * 只有下面两种情形，声明才**部分落空**：
+     *
+     *   - 声明了 `onCommand:<不是第一条>`：那条命令本宿主不激活；
+     *   - 声明了任何**非 `onCommand:`** 的事件（`onLanguage:` / `workspaceContains:`
+     *     / `onStartupFinished`…）：本宿主没有这些触发源，一条都不实现。
+     *
+     * 而 `["onCommand:<第一条命令>"]`（最常见的最小形态）**恰好就是本宿主的激活路径**，
+     * 标记它属于误报 —— 用户会收到一条「有不工作的部分」警告，而实际上没有。
+     * `activationEvents: []` 同理：没有声明任何条件，就没有东西落空。
+     *
+     * **误报比漏报更容易被发现，但这条最坏**：假警告会让用户学会忽略所有警告，
+     * 连带把真警告（`menus` / `configuration`）一起忽略掉。
+     */
+    const activationEventsUnmet = (() => {
+      const declared = (pkg as Record<string, unknown>).activationEvents;
+      if (!Array.isArray(declared)) return false;
+      return declared.some((e) => e !== "onCommand:" + commandId);
+    })();
+
+    const fromTopLevel: IgnoredContribution[] = Object.keys(pkg as Record<string, unknown>)
+      .filter((k) => (TOP_LEVEL_BEHAVIOURAL as readonly string[]).includes(k))
+      .filter((k) => k !== "activationEvents" || activationEventsUnmet)
+      .map((section): IgnoredContribution => ({ section: "top-level:" + section, kind: "runtime" }));
+
+    const ignoredContributions: IgnoredContribution[] = [...fromContributes, ...fromTopLevel];
 
     return new VscodeL1Bridge(host, moduleId, commandId, JSON.stringify(checked.manifest), ignoredContributions, l2);
   }
@@ -826,7 +965,19 @@ export class VscodeL1Bridge {
 
   /** One real ModuleHost invoke (authorization, cancellation and child process); no side-channel execution. */
   async executeCommand(commandId: string, resource: ModuleResource, requestId: string): Promise<ModuleReply> {
-    if (commandId !== this.commandId) throw Error("Undeclared VS Code command");
+    // 【F014】错误信息要说清「哪条命令能跑」—— 卡上的验收判据 5。
+    //
+    // 从前的 `"Undeclared VS Code command"` 对真实扩展是**误导的**：
+    // rainbow-csv 的 24 条命令里有 23 条会走到这里，而那个措辞会让人以为
+    // 「扩展声明错了命令」，实际是「本宿主只激活第一条」。
+    // `activationEvents` 的校验撤掉之后（见上面那段注释），**这条信息是用户唯一
+    // 能知道「为什么点了没反应」的地方**，所以它必须点名那条能跑的命令。
+    if (commandId !== this.commandId) {
+      throw Error(
+        "VS Code command '" + commandId + "' is not activated in this host — " +
+        "only the first declared command ('" + this.commandId + "') is invokable",
+      );
+    }
     if (!this.isCurrent()) throw Error("VSIX module removed or replaced; adapter must be reloaded");
     const reply = await this.host.invoke({ moduleId: this.moduleId, contributionId: "run", resource, requestId });
     if (reply.type === "result") {

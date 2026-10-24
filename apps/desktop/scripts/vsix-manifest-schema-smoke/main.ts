@@ -182,18 +182,33 @@ console.log("[5] activationEvents：能声明多条，但运行时只认 onComma
   });
   check("★ 混合事件（含 onLanguage）的清单能过 —— 只代表「装得进来」", real.ok, { error: real.error });
 
-  // 5b: 但**必须包含**第一条命令的 onCommand —— 否则拒绝并说清原因
-  const missing = await tryInstall({
+  // 5b: 一条 onCommand 都没有 → 合法（15 个真实扩展如此，它们靠 onLanguage: 激活）。
+  const noOnCommand = await tryInstall({
     ...BASE,
     activationEvents: ["onLanguage:csv", "workspaceContains:**/*.csv"],
     contributes: { commands: [cmd("c0")] },
   });
-  check("★ 缺少 onCommand:第一条 时被拒", !missing.ok, { error: missing.error });
-  check(
-    "★ 拒绝信息说清「只在这个命令上激活」",
-    !missing.ok && /onCommand:acme\.demo\.c0/.test(missing.error ?? "") && /only activates/.test(missing.error ?? ""),
-    { error: missing.error },
-  );
+  check("★ 没有 onCommand 的清单能过（15 个真实扩展如此）", noOnCommand.ok, {
+    error: noOnCommand.error,
+  });
+
+  // 5c: 【F014 结论】**有 onCommand 却都不是第一条 → 也装得进来**。
+  //
+  // 上一版这里断言「仍然拒」。改成接受的理由是三层证据：
+  //   1. 运行时**从不读** `activationEvents`（全仓唯一消费者是那条校验本身）；
+  //   2. 本机 10 个有 onCommand 的真实扩展，**10 个都不含第一条命令** ——
+  //      拒绝它们等于拒绝所有真实输入；
+  //   3. 拒绝的时机挪到**调用时**更有用：`executeCommand` 会点名「这条不激活」+「哪条能跑」。
+  //
+  // 这是本卡「障碍前移」叙事的终点：从「装不进」变成「装进来 + 用到时才说」。
+  const mismatched = await tryInstall({
+    ...BASE,
+    activationEvents: [onCmd("c1"), onCmd("c2")],
+    contributes: { commands: [cmd("c0"), cmd("c1"), cmd("c2")] },
+  });
+  check("★ onCommand 都不是第一条时**也能装**（F014 撤掉校验）", mismatched.ok, {
+    error: mismatched.error,
+  });
 }
 
 console.log("[6] 负控：顶层与 engines 的 strict 保留（分类处理，不一刀切）");
@@ -240,21 +255,23 @@ console.log("[7] 真实扩展的清单：schema 层能过，install 层卡在 ma
       commandIssues, error: (r.error ?? "").slice(0, 120),
     });
 
-    // 【F009】这里原来断言「有一条 issue 指向 main」—— 那时 main 是字面量。
-    // 【F011】又前移了一格：贡献点现在接受了，**卡在顶层的 `.strict()`** ——
-    // 真实 `package.json` 带 `description` / `license` / `scripts` / `repository` 等
-    // 11 个 VS Code 允许、而我们没声明的字段。
+    // 【F009】原断言「有一条 issue 指向 main」；【F011】改成「卡在贡献点」；
+    // 【F014】又前移两次 —— 先到 activationEvents（当时还拒），现在**清单层全通**。
     //
-    // 这条断言验的是「**当前挡在它前面的是哪一道墙**」，墙会随着每次放宽前移。
-    // 所以断言必须跟着说清现在卡在哪，否则它会随着修复而假红（已经发生过两次）。
-    const mentionsTopLevelKeys = /unrecognized_keys/.test(r.error ?? "") ||
-      /description|license|scripts|repository/.test(r.error ?? "");
+    // ⚠️ 这里测的是 `tryInstall(realPkg, realPkg.main)` —— `realPkg.main` 是
+    // `./dist/extension.js`，**本机那个文件不存在**（rainbow-csv 的 vsix 里才有）。
+    // 所以它现在卡在**读不到 main 入口**，不是清单的问题。
+    //
+    // **这条断言已经改过四次**（main → 贡献点 → 顶层字段 → activationEvents → 入口读取）。
+    // 它记的是「当前挡在最前面的是哪一道」，**不是**「清单层有什么缺陷」。
+    const errNow = (r.error ?? "").replace(/\s+/g, " ");
+    const manifestLayerClean = !/top-level field|activationEvents|contributes section|Unrecognized|unrecognised/i.test(errNow);
     check(
-      "★ 它现在卡在顶层未声明字段（main 与贡献点都已通）—— 障碍又前移了一格",
-      !r.ok && mentionsTopLevelKeys,
-      { error: (r.error ?? "").replace(/\s+/g, " ").slice(0, 240) },
+      "★ 清单层已全部通过（main/贡献点/顶层字段/activationEvents 都不再拒）—— 障碍第 5 次前移",
+      manifestLayerClean,
+      { error: errNow.slice(0, 240) },
     );
-    console.log(`      实际拒绝理由（前 240 字符）：${(r.error ?? "").replace(/\s+/g, " ").slice(0, 240)}`);
+    console.log(`      实际拒绝理由（前 240 字符）：${errNow.slice(0, 240)}`);
   }
 }
 

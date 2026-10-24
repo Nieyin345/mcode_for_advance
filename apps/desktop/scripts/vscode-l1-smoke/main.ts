@@ -168,7 +168,14 @@ try {
 
   await test("undeclared command cannot run or mutate ModuleHost", async () => {
     const before = authorizations;
-    await assert.rejects(bridge.executeCommand("acme.demo.hidden", resource, randomUUID()), /Undeclared/);
+    // 【F014】原来断言 `/Undeclared/`。那个措辞对真实扩展是**事实错误**的：
+    // rainbow-csv 的 24 条命令里 23 条都**声明过**，只是本宿主只激活第一条。
+    // 说它们 "Undeclared" 会让诊断走偏（去找 manifest 的错，而 manifest 没错）。
+    // 新措辞点名「这条不激活」+「哪条能跑」，断言跟着改成这两点都必须在。
+    await assert.rejects(
+      bridge.executeCommand("acme.demo.hidden", resource, randomUUID()),
+      /'acme\.demo\.hidden' is not activated.*only the first declared command \('acme\.demo\.hello'\)/,
+    );
     assert.equal(authorizations, before);
   });
 
