@@ -940,13 +940,37 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   check("★ Segmented 支持 title 透传", /title\?: string/.test(segmented) && /title=\{tab\.title\}/.test(segmented));
 
   // 「选中/开关已开」不得再染品牌色（accent 只留给运行中/需要注意）。
-  // 逐文件找 `bg-accent/15 text-accent` —— 允许的只有：保存成功提示、
-  // ActivityConsole 的运行中行、TurnFlowPanel 的步骤标记、手机 Git 的
-  // added 语义色、CustomModelsPanel 的桥接状态。
+  //
+  // ── 【T114】这条判据的上一个版本只认「bg-accent/15 紧跟 text-accent」──
+  // 它声称的范围是「选中/开关态」，实际只抓「两个类紧邻且顺序固定」这一种写法。
+  // 全仓另有四种同一违规的写法一个都抓不到：
+  //     border-accent bg-accent/15 text-content        (AskChoiceDialog / BranchChoiceCard)
+  //     bg-accent/15 text-content ring-1 …            (FileMentionPicker / SlashCommandPicker)
+  //     active ? "bg-accent/15 text-content"          (FileTree / SearchDialog)
+  //     bg-accent/15 text-accent-strong               (ActivityConsole，这个是合理的)
+  // 判据收窄到字面量组合，和它名字声称的范围不一致 —— 属于「判据范围小于名字」
+  // （CLAUDE.md 第二十条 / T113 同族）。
+  //
+  // ── 为什么不是「把正则放宽到 bg-accent/\d+」──
+  // 那样会把「当前」徽标、"1M" 标记、保存成功 toast 一起报出来，而那些是
+  // accent 允许的「运行中/需要注意」信号。放宽只会让判据换个方式变窄。
+  //
+  // ── 现在的形状：按 className 表达式分段，只认「选中语义」──
+  // 取 `className={...}` 的整个表达式（不是一行），在同一个表达式里同时要求：
+  //   (a) 出现 `bg-accent/15`；
+  //   (b) 驱动它的条件里出现**相等比较或"是否是当前项"的标识符**。
+  // 「是当前项」用相等比较表达（`picked === o.id`、`idx === activeIdx`），
+  // 而「能不能点」用别的形状（`picked.length === 0 || busy`）—— 两者可静态区分，
+  // 实测 BranchChoiceCard:127（===）违规、:165（.length===0）合理。
+  //
+  // ── 它**不覆盖**什么（由下面的负控断言钉住）──
+  //   · 选中态用 `bg-accent/10` 或其它透明度（由后面那条 tint 判据管，范围也有限）；
+  //   · 运行时拼接的类名（`cn()` 之外用变量拼的）；
+  //   · 由非"相等比较"驱动的选中态（例如 `state === "selected"` 之外的语义）。
   const ACTIVE_ACCENT_ALLOWED = [
     // 运行中 / 成功提示
     "chat/ActivityConsole.tsx",
-    "chat/PlanViewer.tsx",   // saved toast
+    "chat/PlanViewer.tsx",   // saved toast + 保存按钮可用态
     "chat/PlanStreamBlock.tsx",
     "chat/MessageBlocks.tsx",
     "ide/FileEditor.tsx",    // saved toast
@@ -958,7 +982,82 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
     "ide/turnFlowModel.ts",
     "ide/TurnFlowPanel.tsx",
   ];
+
+  /**
+   * 取 `className={...}` 的完整表达式（跳过字符串，按花括号配对）。
+   * 只做**静态可靠的**切分；它不是解析器，遇到无法配对的表达式返回 null。
+   */
+  const classNameBlocks = (src: string): string[] => {
+    const blocks: string[] = [];
+    const re = /className=\{/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src)) !== null) {
+      const start = m.index + "className=".length;
+      let depth = 0;
+      let i = start;
+      let quote: string | null = null;
+      let closed = false;
+      for (; i < src.length; i++) {
+        const c = src[i];
+        if (quote !== null) {
+          if (c === "\\") { i++; continue; }
+          if (c === quote) quote = null;
+          continue;
+        }
+        if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+        if (c === "{") depth++;
+        else if (c === "}") { depth--; if (depth === 0) { blocks.push(src.slice(start, i + 1)); closed = true; break; } }
+      }
+      if (!closed) return blocks;   // 切分失败：不做猜测
+    }
+    return blocks;
+  };
+
+  /**
+   * 选中态判定：`bg-accent/15` 所在表达式的驱动条件里出现**相等比较**。
+   *
+   * 【T114 实测】只认相等比较，不认裸标识符。原因是 `picked` 这类名字在两种
+   * 语义里都会出现：
+   *   `picked === o.id ? "…bg-accent/15…"`        ← 选中态（违规）
+   *   `picked.length === 0 || busy ? … : "…bg-accent/15…"` ← 按钮可用态（合理）
+   * 用裸标识符 `picked` 判定会把后者一起报出来 —— 实测确实报出来了。
+   * 相等比较能把两者分开：一个是 `x === y`，一个是 `x.length === 0`。
+   */
+  const isSelectionDriven = (block: string): boolean => {
+    // 只把 `bg-accent/15` 这个**类名 token 本身**抹掉，不要贪心吃到下一个引号 ——
+    // 曾经写成 `bg-accent\/15[^"'`]*`，它会把同一段字符串字面量里
+    // bg-accent/15 之后的所有内容（包括别的分支里的 `===`）一起删掉，
+    // 导致样本 `picked === "a" ? "…bg-accent/15 text-content" : …` 判不出来。
+    const expr = block.replace(/bg-accent\/15/g, "");
+    // 相等比较：`x === y` / `x == y`，但**排除**与"空/未定义/布尔/数量"字面量的比较：
+    //   `picked.length === 0`、`x === undefined`、`s === ""`、`on === true` 等
+    //   都不是"选中了哪一项"。
+    // 右侧可以是**标识符**（`picked === o.id`）也可以是**非空字符串字面量**
+    // （`mode === "select"`）—— 后者是实测补上的：样本 `picked === "a"` 曾判不出来。
+    const eq = /([\w$.]+)\s*===?\s*("[^"]*"|'[^']*'|`[^`]*`|[\w$.]+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = eq.exec(expr)) !== null) {
+      const right = m[2]!.trim();
+      // 右边是空字符串 / 布尔 / undefined / null / 小整数 → "是否可用/是否为空"，跳过。
+      if (/^(""|''|``|undefined|null|false|true|0|1|2)$/.test(right)) continue;
+      // 右边是 `.length` / `.size` / `.count` → 数量判断，不是选中项。
+      if (/\.(length|size|count)$/.test(right)) continue;
+      // 左边是 `.length` 之类同理（`arr.length === 3`）。
+      if (/\.(length|size|count)$/.test(m[1]!.trim())) continue;
+      return true;
+    }
+    // 没有相等比较时的第二类形状：**直接由布尔量驱动**。
+    //   `isActive ? "…bg-accent/15…" : "…"`   ← 选中态（违规）
+    //   `hasApproval ? "…" : "…"`             ← 注意信号（合理，且不在下方标识符名单里）
+    //
+    // `active` 是裸的名字，加上它之前实测过：全仓「含 bg-accent/15 且表达式里有 active」
+    // 只有 2 处（FileTree 的当前文件、TaskCenterPanel 的筛选条），都是真选中态，
+    // 没有误报。**加它之前必须先数，不加就直接加是猜。**
+    return /(?:^|[^A-Za-z0-9_$])(active|isActive|isSelected|isPicked|activeIdx|currentIdx)(?:[^A-Za-z0-9_$]|$)/.test(expr);
+  };
+
   const offenders: string[] = [];
+  const selectionViolations: string[] = [];
   const scan = (dir: string): void => {
     const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
     for (const name of readdirSync(join(root, dir))) {
@@ -972,14 +1071,82 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
       }
       if (/\.[jt]sx?$/.test(name)) {
         const src = read(rel);
-        if (/bg-accent\/15 text-accent/.test(src) && !ACTIVE_ACCENT_ALLOWED.some((a) => rel.endsWith(a))) {
+        const allowed = ACTIVE_ACCENT_ALLOWED.some((a) => rel.endsWith(a));
+        // ① 【T114】选中语义驱动的品牌淡底 —— 不管后面跟什么类。
+        if (!allowed) {
+          for (const block of classNameBlocks(src)) {
+            if (block.includes("bg-accent/15") && isSelectionDriven(block)) {
+              selectionViolations.push(rel);
+              break;
+            }
+          }
+        }
+        // ② 旧形状保留：紧邻的 `text-accent`（它是①的子集，但保留是为了
+        //    在①的切分失败时仍有一条能红，且覆盖非 className 的字面量场景）。
+        if (/bg-accent\/15 text-accent/.test(src) && !allowed) {
           offenders.push(rel);
         }
       }
     }
   };
   scan("src/renderer/components");
-  check("★ 选中/开关态不再使用 bg-accent/15 品牌淡底", offenders.length === 0, offenders);
+  check("★ 选中态不再使用 bg-accent/15 品牌淡底（按 className 表达式分段，只认相等比较/当前项标识符）",
+    selectionViolations.length === 0, [...new Set(selectionViolations)]);
+  check("★ 选中/开关态不再使用 bg-accent/15 品牌淡底（旧形状：紧邻 text-accent）",
+    offenders.length === 0, offenders);
+
+  // 【T114】**负控**：把这条判据「不覆盖什么」变成会红的事实。
+  //
+  // 一条只在注释里写局限的判据，仍然会让人以为局限之外验过了。下面这些
+  // 反例断言证明：它们**确实**会被放过 —— 一旦哪条开始报，说明判据变了，
+  // 该回来更新这里的说明，而不是当它是好事。
+  {
+    // ① 结论：它是"选中"还是"可用"，静态上分不出，所以判据选了相等比较。
+    //    这张卡片证明「按钮可用态」不会被误报（BranchChoiceCard:165 是真实样本）。
+    const buttonEnabled = `{cn("rounded border px-2.5 py-1", picked.length === 0 || busy
+      ? "cursor-default border-edge text-content-subtle"
+      : "cursor-pointer border-accent bg-accent/15 text-content hover:bg-accent/25")}`;
+    // ② 「运行中/注意」信号：由 `latest` 驱动，是 accent 允许的语义。
+    const runningSignal = `{cn("rounded", latest ? "bg-accent/15 text-accent-strong" : "bg-surface-muted")}`;
+    // ③ 无条件徽标：整段是静态类，没有驱动条件。
+    //    注意用 `className={...}` 形式 —— 判据只看花括号表达式，纯字符串
+    //    `className="…"` 根本不在它的扫描范围里（这一条本身也是"不覆盖什么"的一部分）。
+    const staticBadge = `<span className={"rounded bg-accent/15 px-1 text-[9px] text-accent"}>{"1M"}</span>`;
+
+    const blockOf = (s: string): string | null => {
+      const at = s.indexOf("className={");
+      if (at >= 0) return classNameBlocks(s)[0] ?? null;
+      const cnAt = s.indexOf("{cn(");
+      return cnAt >= 0 ? s.slice(cnAt) : null;
+    };
+    const notFlagged = (s: string): boolean => {
+      const block = blockOf(s);
+      if (block === null) return false;
+      if (!block.includes("bg-accent/15")) return false;
+      return !isSelectionDriven(block);
+    };
+    check("★【T114 负控】按钮可用态（picked.length === 0）不被当作选中态",
+      notFlagged(buttonEnabled), buttonEnabled);
+    check("★【T114 负控】运行中信号（latest ? …bg-accent/15…）不被当作选中态",
+      notFlagged(runningSignal), runningSignal);
+    check("★【T114 负控】无驱动的静态类（className={...} 里没有条件）不被当作选中态",
+      notFlagged(staticBadge), staticBadge);
+    // ④ 明说不覆盖：纯字符串 `className="…bg-accent/15…"` 不在扫描范围。
+    //    这类写法目前全仓存在（MessageTimeline / ModelDropdown 的徽标），
+    //    它们都是静态徽标，但**判据本身看不到它们** —— 所以如果将来有人
+    //    在这一形状里写了选中态，这条判据不会红。把它写成断言，别让它变成盲区。
+    const plainStringClass = `<span className="bg-accent/15 text-accent">x</span>`;
+    check("★【T114 不覆盖】纯字符串 className（不带花括号）不在判据扫描范围内",
+      classNameBlocks(plainStringClass).length === 0, plainStringClass);
+
+    // ④ 正控：真的选中态必须被抓 —— 否则上面三条「不报」可能只是因为判据恒不报。
+    const realSelection = `{cn("rounded border", picked === o.id
+      ? "border-accent bg-accent/15 text-content"
+      : "border-edge text-content-muted")}`;
+    const block = blockOf(realSelection);
+    check("★【T114 正控】相等比较驱动的选中态（picked === o.id）必须被抓",
+      block !== null && block.includes("bg-accent/15") && isSelectionDriven(block), realSelection);
+  }
 
   // 同一判据的淡底变体：`bg-accent/10`。允许项 = 需要"注意/运行中"的信号
   // （下载条、已选元素条、计划/侧聊的待处理提示、选择引用、恢复/合并向导
