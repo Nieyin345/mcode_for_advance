@@ -122,7 +122,43 @@ export async function runNativeProbe(dir: string, phase: string): Promise<void> 
       assert.ok(catalog.workflowTargets?.some(t => t.moduleId === "core.file-report" && t.contributionId === "info"));
       assert.equal(await js("typeof window.api.modules.invokeForWorkflow"), "undefined");
       // 【MC-036】公开面新增两条**真人授权**入口;注意 `invokeForWorkflow` 仍不得出现在 preload 上。
-      assert.deepEqual(await js("Object.keys(window.api.modules).sort()"), ["cancel", "catalog", "egressConsentGet", "egressConsentSet", "install", "invoke", "issueWorkflowGrant", "remove", "revokeWorkflowGrant", "setPermissions", "task", "tasks"]);
+      //
+      // ⚠️ **2026-10-24 改成禁令式（原来是 `deepEqual` 一个 12 项写死数组）。**
+      // 那个写法的问题是：**每加一条 IPC 就恒红一次**，而它红的原因和它的名字无关。
+      // F006 加 `installVsix` 之后（`901e58ee`），这条就一直是红的，掩盖了同一组里
+      // 「`invokeForWorkflow` 不在 preload 上」这个真正的断言，也让每个跑到这里的会话
+      // 都要花十几分钟做单文件回滚对照才能确认「不是我的」。
+      //
+      // 表达「不许暴露不该暴露的」，用**禁令**比用「正好等于 N 个」耐久：
+      //   ① `invokeForWorkflow` 等 workflow-only 入口不得出现；
+      //   ② 其余每个 key 都必须在下面这份**允许集合**里（新增 IPC 时加一行即可）。
+      const exposedModules = await js("Object.keys(window.api.modules).sort()") as string[];
+      // ⚠️ **上面 `:123` 那条 `typeof invokeForWorkflow === "undefined"` 会先红。**
+      // 所以如果你只变异 `invokeForWorkflow`，看到的是那条，**不是下面这条**。
+      // 实测过（2026-10-24）：植入 `invokeForWorkflow` → 红的是 `+ 'function' / - 'undefined'`。
+      //
+      // 两条的关系是**窄与宽**，不是重复：`:123` 只查一个名字，下面这组查的是「这一类别」。
+      // **验下面这组的正确方式是用一个 `:123` 不管的名字**（如 `invokeAsAgent`）——
+      // 用 `invokeForWorkflow` 验等于在验上面那条。
+      const forbidden = ["invokeForWorkflow", "invokeAsAgent", "issueHostHookGrantAsAgent"];
+      assert.deepEqual(
+        exposedModules.filter((k) => forbidden.includes(k)),
+        [],
+        "workflow-only / agent-only 入口不得出现在 preload 的 modules 上",
+      );
+      // 允许集合：preload 上有意暴露给渲染端的 modules 方法。
+      // **新增一条 IPC 时要同步加一行** —— 但漏加只会让这条红一次，
+      // 而不是像 `deepEqual` 那样让整组恒红。
+      const allowedModules = [
+        "cancel", "catalog", "egressConsentGet", "egressConsentSet",
+        "install", "installVsix", "invoke", "issueWorkflowGrant", "remove",
+        "revokeWorkflowGrant", "setPermissions", "task", "tasks",
+      ];
+      assert.deepEqual(
+        exposedModules.filter((k) => !allowedModules.includes(k)),
+        [],
+        "preload 的 modules 上出现了不在允许集合里的方法",
+      );
       assert.equal(await js("typeof window.require"), "undefined");
     });
     if (process.platform === "win32") {
