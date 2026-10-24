@@ -1,0 +1,158 @@
+From f6d8e8a3c0e99e9328dc6fa7dd76ca559518545e Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 03:29:07 +0800
+Subject: [PATCH] fix(sheets): hydrate opened workbooks when first animation
+ frame is suspended
+
+---
+ apps/sheets/src/renderer/App.tsx              |  7 ++-
+ .../src/renderer/initial-hydration-frame.ts   | 43 +++++++++++++
+ .../tests/initial-hydration-frame.test.ts     | 61 +++++++++++++++++++
+ 3 files changed, 110 insertions(+), 1 deletion(-)
+ create mode 100644 apps/sheets/src/renderer/initial-hydration-frame.ts
+ create mode 100644 apps/sheets/tests/initial-hydration-frame.test.ts
+
+diff --git a/apps/sheets/src/renderer/App.tsx b/apps/sheets/src/renderer/App.tsx
+index 20b8c1a..3917481 100644
+--- a/apps/sheets/src/renderer/App.tsx
++++ b/apps/sheets/src/renderer/App.tsx
+@@ -68,6 +68,7 @@ import {
+ import { isNumericIdentifierText } from './cell-warning'
+ import { consumePendingUndoCarry, undoStackDepth } from './undo-carry'
+ import { createSaveGate, shouldRunSaveTick } from './save-scheduler'
++import { onFrameOrTimeout } from './initial-hydration-frame'
+ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+ import {
+   useAutoSavePref,
+@@ -4435,7 +4436,11 @@ export function App({
+     applyDefinedNames(univerRef.current, selected, state)
+     const runtime = univerRef.current
+     if (runtime) {
+-      requestAnimationFrame(() => {
++      // An occluded/hidden Electron tab can suspend the first animation frame.
++      // Run the identical hydration callback from a bounded timer if needed,
++      // rather than leaving openingWorkbook=true with no editable workbook.
++      onFrameOrTimeout(() => {
++        if (lazyWorkbookRef.current !== state) return
+         const workbook = runtime.univerAPI.getActiveWorkbook()
+         if (!workbook) {
+           opts?.onInitialRangeLoaded?.()
+diff --git a/apps/sheets/src/renderer/initial-hydration-frame.ts b/apps/sheets/src/renderer/initial-hydration-frame.ts
+new file mode 100644
+index 0000000..e88caa1
+--- /dev/null
++++ b/apps/sheets/src/renderer/initial-hydration-frame.ts
+@@ -0,0 +1,43 @@
++/**
++ * Initial workbook hydration must not depend exclusively on rAF. Electron
++ * BrowserViews / spare tabs can be hidden before their first rendered frame:
++ * Chromium may defer that frame while the workbook stays "opening" forever.
++ *
++ * The timer runs the *same* hydration operation, once, rather than bypassing
++ * loading or marking an unfinished workbook as ready.
++ */
++export function onFrameOrTimeout(
++  run: () => void,
++  delayMs = 250,
++  clock: {
++    requestFrame(callback: FrameRequestCallback): number
++    cancelFrame(id: number): void
++    setTimer(callback: () => void, delay: number): ReturnType<typeof setTimeout>
++    clearTimer(id: ReturnType<typeof setTimeout>): void
++  } = {
++    requestFrame: (cb) => requestAnimationFrame(cb),
++    cancelFrame: (id) => cancelAnimationFrame(id),
++    setTimer: (cb, delay) => setTimeout(cb, delay),
++    clearTimer: (id) => clearTimeout(id),
++  },
++): () => void {
++  let finished = false
++  let frameId: number | undefined
++  let timeoutId: ReturnType<typeof setTimeout> | undefined
++  const finish = () => {
++    if (finished) return
++    finished = true
++    if (timeoutId !== undefined) clock.clearTimer(timeoutId)
++    if (frameId !== undefined) clock.cancelFrame(frameId)
++    run()
++  }
++  frameId = clock.requestFrame(() => finish())
++  // Even when rAF is suspended by a hidden tab, the timer still hydrates.
++  if (!finished) timeoutId = clock.setTimer(finish, delayMs)
++  return () => {
++    if (finished) return
++    finished = true
++    if (timeoutId !== undefined) clock.clearTimer(timeoutId)
++    if (frameId !== undefined) clock.cancelFrame(frameId)
++  }
++}
+diff --git a/apps/sheets/tests/initial-hydration-frame.test.ts b/apps/sheets/tests/initial-hydration-frame.test.ts
+new file mode 100644
+index 0000000..0cbd5df
+--- /dev/null
++++ b/apps/sheets/tests/initial-hydration-frame.test.ts
+@@ -0,0 +1,61 @@
++import { describe, expect, it, vi } from 'vitest'
++import { onFrameOrTimeout } from '../src/renderer/initial-hydration-frame'
++
++function clocks() {
++  const frames = new Map<number, FrameRequestCallback>()
++  const timers = new Map<number, () => void>()
++  let nextId = 0
++  return {
++    frames, timers,
++    api: {
++      requestFrame(cb: FrameRequestCallback) {
++        const id = ++nextId
++        frames.set(id, cb)
++        return id
++      },
++      cancelFrame(id: number) { frames.delete(id) },
++      setTimer(cb: () => void) {
++        const id = ++nextId
++        timers.set(id, cb)
++        return id as unknown as ReturnType<typeof setTimeout>
++      },
++      clearTimer(id: ReturnType<typeof setTimeout>) { timers.delete(id as unknown as number) },
++    },
++  }
++}
++
++describe('O13 initial workbook hydration in a hidden Electron view', () => {
++  it('hydrates through the same callback even if the renderer never receives a frame', () => {
++    const c = clocks()
++    const hydrate = vi.fn()
++    onFrameOrTimeout(hydrate, 250, c.api)
++    expect(hydrate).not.toHaveBeenCalled()
++    for (const trigger of [...c.timers.values()]) trigger()
++    expect(hydrate).toHaveBeenCalledOnce()
++    expect(c.frames.size).toBe(0)
++  })
++
++  it('never hydrates twice when the frame and the fallback both fire', () => {
++    const c = clocks()
++    const hydrate = vi.fn()
++    onFrameOrTimeout(hydrate, 250, c.api)
++    const frame = [...c.frames.values()][0]
++    const timer = [...c.timers.values()][0]
++    frame?.(0)
++    timer?.()
++    expect(hydrate).toHaveBeenCalledOnce()
++    expect(c.timers.size).toBe(0)
++  })
++
++  it('cancellation prevents stale hydration after closing/switching the workbook', () => {
++    const c = clocks()
++    const hydrate = vi.fn()
++    const cancel = onFrameOrTimeout(hydrate, 250, c.api)
++    const timer = [...c.timers.values()][0]
++    cancel()
++    timer?.()
++    expect(hydrate).not.toHaveBeenCalled()
++    expect(c.frames.size).toBe(0)
++    expect(c.timers.size).toBe(0)
++  })
++})
+-- 
+2.52.0.windows.1
+

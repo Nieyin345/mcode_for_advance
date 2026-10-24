@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "ec21271a1b502154c6be6568c43ba8c4b0ae30e2",
-  "expectedTree": "a1e47d3ac02f6e2e70755b9536ed3492c2365c95",
+  "revision": "f6d8e8a3c0e99e9328dc6fa7dd76ca559518545e",
+  "expectedTree": "34b48057f108cc762da580911a5d912aeacc6cce",
   "patchSeries": [
     {
       "index": 1,
@@ -229,6 +229,15 @@
       "sha256": "5488f55c3ea68a0ba39dcf4bab5f0cd450e49860a4f3d56107e92c6035f5188f",
       "bytes": 25065,
       "subject": "fix(slides): support Electron 44 asynchronous clipboard API"
+    },
+    {
+      "index": 25,
+      "file": "patches/genoffice/0025-fix-sheets-hidden-frame-hydration.patch",
+      "revision": "f6d8e8a3c0e99e9328dc6fa7dd76ca559518545e",
+      "parentRevision": "ec21271a1b502154c6be6568c43ba8c4b0ae30e2",
+      "sha256": "c13afa894bc417f038b1dd75d3b858ad9f1a019d0c01ad20403236c456bb584f",
+      "bytes": 6096,
+      "subject": "fix(sheets): hydrate opened workbooks when first animation frame is suspended"
     }
   ],
   "license": "Apache-2.0",

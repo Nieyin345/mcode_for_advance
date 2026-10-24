@@ -14,8 +14,8 @@ const FORMAT = "mcode.genoffice.upstream-lock.v2";
 const REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const BASE_REVISION = "cbec600ace9c930b2646b6739cf6df3741bb9d6a";
 const APPROVED_PATCH_REVISION = "73ba918083b5e2bedff7633925c3d7f625e04449";
-const FINAL_REVISION = "ec21271a1b502154c6be6568c43ba8c4b0ae30e2";
-const FINAL_TREE = "a1e47d3ac02f6e2e70755b9536ed3492c2365c95";
+const FINAL_REVISION = "f6d8e8a3c0e99e9328dc6fa7dd76ca559518545e";
+const FINAL_TREE = "34b48057f108cc762da580911a5d912aeacc6cce";
 const LICENSE_SOURCE_MANIFEST = "apps/desktop/build/vendor-licenses/genoffice/manifest.json";
 const APPROVED_PATHS = Object.freeze([
   "apps/pdf/src/main/atomic-write.ts",
@@ -46,6 +46,7 @@ const PATCHES = Object.freeze([
   { file: "patches/genoffice/0022-feat-save-a-host-installed-guard-at-the-four-save-c.patch", revision: "a29039825f3ec49dcc09d9342b36fd4dcb4f4359", parentRevision: "f3c1043aedc3754ac315e79481857d59a3b7463e", sha256: "14da8b1cd2d26bb17ebd02ca14c68f76f8502d096018b36a0f10a14b49f2605d" },
   { file: "patches/genoffice/0023-fix-slides-make-save-as-atomic.patch", revision: "483ce5442c2c4ce3988427775fa4f79d005a02b1", parentRevision: "a29039825f3ec49dcc09d9342b36fd4dcb4f4359", sha256: "9635ce04fc1b71458b79283aee9ac7ebdca36624a92ed48994bc4f39bd83e1cc" },
   { file: "patches/genoffice/0024-fix-slides-electron44-clipboard.patch", revision: "ec21271a1b502154c6be6568c43ba8c4b0ae30e2", parentRevision: "483ce5442c2c4ce3988427775fa4f79d005a02b1", sha256: "5488f55c3ea68a0ba39dcf4bab5f0cd450e49860a4f3d56107e92c6035f5188f" },
+  { file: "patches/genoffice/0025-fix-sheets-hidden-frame-hydration.patch", revision: "f6d8e8a3c0e99e9328dc6fa7dd76ca559518545e", parentRevision: "ec21271a1b502154c6be6568c43ba8c4b0ae30e2", sha256: "c13afa894bc417f038b1dd75d3b858ad9f1a019d0c01ad20403236c456bb584f" },
 ]);
 
 function runGit(directory, ...args) {
