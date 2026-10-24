@@ -20,7 +20,7 @@
  * 看到 77 就换一个**新 OS 进程**，带着同一份 state 从下一步继续。证据里的
  * `pid`/`generation` 因此能证明「真的换了进程」，而不是页内刷新。
  */
-import { app, BrowserWindow, nativeTheme, type WebContents } from "electron";
+import { app, BrowserWindow, nativeTheme, screen, type WebContents } from "electron";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
@@ -626,6 +626,52 @@ function loadState(env: GenerationEnv): State {
   };
 }
 
+/**
+ * 宿主窗口放哪。
+ *
+ * `WebContentsView.capturePage()` 需要「当前 display surface 可用」，所以窗口
+ * 不能 `show:false`、也不能 `opacity:0`。但用户明确要求**别在主屏弹窗**，
+ * 于是按优先级选：
+ *
+ *   1. **有副屏 → 放副屏**（用户偏好）。取副屏工作区左上角内缩 60px。
+ *   2. **没副屏 → 主屏工作区右下之外**：窗口原点是 `workArea` 的右下角再往外，
+ *      合成器仍认为它在某个显示器的坐标空间里，但用户看不见。
+ *   3. 上面都不成立 → 主屏左上角。
+ *
+ * 返回值的 `note` 会打日志 —— 下次有人查「窗口为什么在那」时不用猜。
+ * 调用方用 `{ x, y }`，不要把 `note` 摊进 BrowserWindow 的构造参数。
+ */
+function pickHostWindowPlacement(size: { width: number; height: number }): { x: number; y: number; note: string } {
+  try {
+    const primary = screen.getPrimaryDisplay();
+    const others = screen.getAllDisplays().filter((d) => d.id !== primary.id);
+    if (others.length > 0) {
+      const target = others[0];
+      return {
+        x: target.workArea.x + 60,
+        y: target.workArea.y + 60,
+        note: `secondary display (id=${target.id}, ${target.bounds.width}x${target.bounds.height})`,
+      };
+    }
+    const wa = primary.workArea;
+    return {
+      x: wa.x + wa.width + 80,
+      y: wa.y + wa.height + 80,
+      note: `offscreen right-below primary work area ${wa.width}x${wa.height} (no secondary display)`,
+    };
+  } catch (error) {
+    // `screen` 在 ready 之前不可用；这里只是位置，不该让整趟旅程失败。
+    console.log(`U1 placement probe failed, falling back to 0,0: ${String(error)}`);
+    return { x: 0, y: 0, note: "fallback (screen unavailable)" };
+  }
+}
+
+/** `{ x, y }` 部分 —— 直接摊进 BrowserWindow 构造参数时用这个，别摊 `note`。 */
+function hostWindowXY(size: { width: number; height: number }): { x: number; y: number } {
+  const { x, y } = pickHostWindowPlacement(size);
+  return { x, y };
+}
+
 async function createWindow(ctx: Ctx, pageHtml: string, preload?: string): Promise<void> {
   const size = ctx.journey.launch?.size ?? { width: 1280, height: 800 };
   mkdirSync(join(ctx.runDir, "home"), { recursive: true });
@@ -637,8 +683,7 @@ async function createWindow(ctx: Ctx, pageHtml: string, preload?: string): Promi
     // 且透明 —— 用户看不见，判据只读 DOM/磁盘。
     show: true,
     opacity: 0,
-    x: -10000,
-    y: -10000,
+    ...hostWindowXY(size),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -799,17 +844,25 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
     // （DocumentViewHost）恰恰从 `getMainWindow()` 取它。
     const size = journey.launch?.size ?? { width: 1280, height: 900 };
     mkdirSync(join(ctx.runDir, "home"), { recursive: true });
+    // `WebContentsView.capturePage()` 在「当前 display surface 不可用」
+    //（离屏 + opacity 0 的窗口）时会直接抛，所以宿主窗口必须真实可见。
+    //
+    // 但「可见」不等于「必须占用户的屏幕」。按优先级选位置：
+    //   1. 有副屏 → 放副屏（用户的偏好：别在主屏弹）
+    //   2. 没副屏 → 放到主屏工作区**右下角之外**（越界显示区），
+    //      窗口仍被合成器认为有 surface，但用户看不到
+    //   3. 兜底 → 主屏正常位置
+    // 判据只读 DOM/磁盘，截图只是证据；窗口本身几秒内就会被关掉。
+    const placement = pickHostWindowPlacement(size);
     const win = new BrowserWindow({
       width: size.width,
       height: size.height,
-      // T7：`WebContentsView.capturePage()` 在「当前 display surface 不可用」
-      //（离屏 + opacity 0 的窗口）时会直接抛。GenOffice 旅程要**截图证据**，
-      // 所以这里让宿主窗口真实可见（放到屏幕右下角一个正常位置，不抢焦点：
-      // `show:false` 会同样丢 surface，所以只能 show）。判据只读 DOM/磁盘，
-      // 截图只是证据；窗口本身 3 秒内就会被关掉。
       show: true,
+      x: placement.x,
+      y: placement.y,
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
     });
+    console.log(`U1 host window: ${placement.note} (x=${placement.x}, y=${placement.y})`);
     win.webContents.on("console-message", (_e, level, message) => {
       if (level >= 2) console.log(`RENDERER[${level}] ${String(message).slice(0, 1200)}`);
     });
