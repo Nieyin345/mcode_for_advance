@@ -31,40 +31,66 @@ t96-probe
 vscode-api-census
 ```
 
-## 一之二、⚠️ 但这 9 个不是同一类东西（我实测分的）
+## 一之二、⚠️ 这 9 个目录各引用多少真实源码（**我前两版都数错了，这是第三版**）
 
-**「9 个被漏掉」听起来严重，实际只有 3 个真的覆盖 `apps/desktop/src`。**
+**判据：剥掉注释行 + 只认 `IMPORT_RE`（`from "x"` 或 `import("x")`）匹配的路径。**
 
-```bash
-$ for d in <9 个>; do
-    echo "$d: $(grep -rhoE 'src/main/[...]|@main/[...]' apps/desktop/scripts/$d/ | sort -u | wc -l)"
-  done
+```python
+IMPORT_RE = re.compile(r"""(?:from|import)\s*\(?\s*["']([^"']+)["']""")
 ```
 
-| 目录 | 引用 src/main 的路径数 | **它实际是什么** | 该不该进依赖图 |
-|---|---|---|---|
-| **`t96-probe`** | **8** | **真探针，读写源码** | ✅ **要** |
-| **`mc035-egress-probe`** | **2** | **真探针** | ✅ **要** |
-| **`preset-scripts-sync`** | **1** | **可能真（需核实）** | ⚠️ 核实后定 |
-| **`arc005-visual-baseline`** | **2** | 但那 2 个是 `@main/window` / `@main/window.js` —— **桩映射，不是覆盖** | ❌ |
-| **`electron-u1`** | **4** | 3 个是 `@main/*` **桩映射**，1 个是 `src/main/lib/dataRoot.ts`（**也是桩**，`stubs/dataRoot.ts` 的别名目标）**，另有一条 `entryPoints` 真覆盖 `src/preload/index.ts`** | ❌（除那一条） |
-| **`o3-packaged-u1`** | **0** | **跑打包产物，覆的是 `resources/genoffice/**`** | ❌ |
-| `md-preview` / `flow-preview` / `vscode-api-census` | 0 | 预览台 / 普查工具 | ❌ |
+**结果（2026-10-24 22:25 实测）：**
 
-**⚠️ 关键：`@main/*` 出现在 `alias` / stub 配置里，表示「把这个真实模块替换成桩」——
-那是「让代码不碰它」，不是「覆盖它」。**
+| 目录 | 真实 import 的源码路径数 | 是什么 |
+|---|---|---|
+| **`t96-probe`** | **5** | 真探针 |
+| **`arc005-visual-baseline`** | **4** | 视觉基线（`DiffView` / `Markdown` / `WorkflowBoardPanel` / `lineDiff`） |
+| **`electron-u1`** | **3** | U1 harness（`db` / `repositories` / `files`，**`await import()` 动态加载**） |
+| **`flow-preview`** | **3** | 预览台（`WorkflowFlowMini` / `workflowLive` / `@contracts/workflow`） |
+| **`mc035-egress-probe`** | **1** | 真探针 |
+| **`md-preview`** | **1** | 预览台（`Markdown.js`） |
+| `preset-scripts-sync` | **0** | 无源码依赖 |
+| `o3-packaged-u1` | **0** | 跑打包产物 |
+| `vscode-api-census` | **0** | 普查工具 |
 
-```bash
-$ grep -rhoE "src/main/[...]|@main/[...]" apps/desktop/scripts/electron-u1/ | sort -u
-@main/ipc/files.js            ← 桩映射
-@main/store/db.js             ← 桩映射
-@main/store/repositories.js   ← 桩映射
-src/main/lib/dataRoot.ts      ← 桩的别名目标
-```
+### ⚠️ 我前两版错在哪（两次不同的错）
 
-**所以真正被漏掉的覆盖关系是 3 个目录（`t96-probe` / `mc035-egress-probe` / `preset-scripts-sync` 待核）。**
+| 版本 | 数字 | 错法 |
+|---|---|---|
+| 第一版 | 9 个「完全不在索引里」 | **事实对，但暗示「丢了 9 个覆盖」** |
+| 第二版 | `arc005=2`、`electron-u1=4` 判成「全是桩」 | **看了 `grep -o` 的路径串，没看上下文** |
+| **第三版** | **见上表** | **剥注释 + 只认 import 语句** |
 
-**⚠️ 本卡的范围应该收窄到这 3 个，不是 9 个。**
+**第二版的错法特别值得记**：`grep -rhoE "src/main/...|@main/..."` 的输出里混着三种东西，
+**而我只看了字符串，没看它前面是什么**：
+
+| 形态 | 例子 | 算覆盖吗 |
+|---|---|---|
+| `await import("@main/store/db.js")` | `electron-u1/driver/runner.ts:736` | ✅ **算** |
+| `alias: { "@main/window.js": join(...) }` | `arc005/build.mjs:160` | ❌ 替身 |
+| 注释里提到路径 | `electron-host.cjs:30` | ❌ |
+
+**而 `arc005` 其实两条都有**：`build.mjs:160` 有 alias 替身，
+**但同时 `probe.ts` 真的 import 了 4 个渲染端组件。** 我只看 alias 就判了「全是桩」。
+
+### 所以本卡的范围（第三版）
+
+**真正被漏掉的、有真实 import 的目录：**
+
+| 目录 | 路径数 | 该不该进 |
+|---|---|---|
+| `t96-probe` | 5 | ✅ **要** |
+| `arc005-visual-baseline` | 4 | ✅ **要** |
+| `electron-u1` | 3 | ✅ **要** |
+| `flow-preview` | 3 | **看用途**（预览台还是套件？） |
+| `mc035-egress-probe` | 1 | ✅ **要** |
+| `md-preview` | 1 | **看用途** |
+
+**⚠️ `flow-preview` / `md-preview` 是「预览台」** —— 它们 import 组件是为了渲染给人看，
+**不是断言它们的行为。** 算不算「覆盖」是个判断，**卡里要求执行者论证，不要默认。**
+
+**至少 4 个目录（`t96-probe` / `arc005` / `electron-u1` / `mc035-egress-probe`）
+有真实的源码依赖，却完全不在索引里。**
 
 ## 二、后果
 
