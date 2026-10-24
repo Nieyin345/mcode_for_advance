@@ -330,3 +330,222 @@ done
 **两者合起来说明同一件事：`smokes-for.sh` 的「覆盖」概念有两个隐含边界（路径范围、命名规则），而它只对其中的一个说了一句话。**
 
 **T152 修的是「路径范围」那一半，本条修「命名规则」那一半。**
+
+---
+
+# 九、回写（2026-10-25，执行会话）
+
+## 1. 我自己重数的 9 个目录（**和卡里的第三版完全一致**）
+
+**判据：剥注释（`//`、`/* */`、字符串感知的扫描器）+ 只认 `IMPORT_RE`（`from "x"` / `import("x")`）的路径。**
+
+| 目录 | 真实 import | 入口文件 | 判定 |
+|---|---|---|---|
+| `t96-probe` | **5** | `run.sh` / `main.ts` | 重型 |
+| `arc005-visual-baseline` | **4** | `run.sh` | 重型 |
+| `electron-u1` | **3** | `run.sh` | 重型 |
+| `flow-preview` | **3** | `run.sh` | **真套件**（见 §2） |
+| `mc035-egress-probe` | **1** | `main.ts` | 重型 |
+| `md-preview` | **1** | `run.sh` | **真套件**（见 §2） |
+| `preset-scripts-sync` | **0** | `run.sh` / `main.ts` | 排除 |
+| `o3-packaged-u1` | **0** | `run.sh` / `main.mjs` | 排除 |
+| `vscode-api-census` | **0** | `run.sh` / `main.mjs` | 排除 |
+
+**卡片第三版数字全部复现。** 我这边的脚本在 `.tmp/t153-count.py`（临时，未提交）。
+
+## 2. ★ `flow-preview` / `md-preview` 的「改坏会不会红」实验 —— **两者都是真套件**
+
+**Office 总控的判据（卡 §一之二的 ★ 段）：预览台和套件的区别不是「有没有 import」，
+是「改坏了会不会红」。**
+
+### 变异 A：`WorkflowFlowMini`（`flow-preview` 的 import 目标）
+
+```tsx
+// 插在组件函数体第一行
+throw new Error("T153 MUTATION: deliberately broken to test flow-preview assertions");
+```
+
+```bash
+$ cd apps/desktop && bash scripts/flow-preview/run.sh
+EXIT=1
+  FAIL SVG 画出来了 — {"found":false}
+  FAIL 控制台没有异常 — ["EXC Uncaught Error: T153 MUTATION: ..."]
+0/2 通过
+```
+
+### 变异 B：`Markdown`（`md-preview` 的 import 目标）
+
+```bash
+$ cd apps/desktop && bash scripts/md-preview/run.sh
+EXIT=1
+  FAIL ★ 有 baseDir：至少渲染出 2 张图 — []
+  FAIL ★ 本地图渲染成真 <img> — []
+  FAIL ★ 本地图的 src 是 data: URL — undefined
+  FAIL ★ 本地图有真实尺寸 — undefined
+  FAIL 网络图保持 https 原样 — undefined
+  FAIL 无 baseDir 时那个位置退化成 alt 文字 — ""
+  FAIL 无 baseDir 时网络图照样是 <img> — []
+  FAIL 控制台没有异常 — ["EXC ..."]
+2/10 通过 · 截图 2 张
+```
+
+**两个都把代码改完之后 `EXIT=1` 并给出具体 FAIL 行。它们有 13 条 / 10 条真断言
+（`ui-probe/drive-*.mjs` 里的 `probe.check`）。**
+
+**所以「预览台」这个标签是错的 —— 它们是真套件，必须进覆盖集。**
+
+**还原：两次都 `cp 备份 → cmp` 逐字节核对**：
+- `WorkflowFlowMini.tsx` sha256 `2ef6aa45…`
+- `Markdown.tsx` sha256 `8e33dadd…`
+
+**⚠️ 顺带发现（不在本卡边界，未改）**：`flow-preview/run.sh` 和 `md-preview/run.sh`
+**也有 T145 修的那个路径 bug**（`cd` 之后还用 `$(dirname "$0")` 去 `source` esbuild-path.sh）。
+从仓库根调会挂：
+
+```
+apps/desktop/scripts/flow-preview/run.sh: line 12:
+  apps/desktop/scripts/flow-preview/../lib/esbuild-path.sh: No such file or directory
+```
+
+**它们不叫 `-smoke`，所以 T145 的 284 套名单里没有它们。** 我是从 `apps/desktop` 调的才跑通。
+**建议另开一张卡补这两套（可能还有其它非 `-smoke` 目录）。**
+
+## 3. 发现逻辑改成了什么（方案 C）
+
+### `suite_kind()` —— 判据是「入口文件」，不是名字
+
+```python
+SUITE_ENTRY_NAMES = ("run.sh", "run.mjs", "main.ts", "main.mjs", "main.mts")
+
+def suite_kind(name: str, d: Path) -> str | None:
+    if name.endswith("-smoke"):           # 历史约定，611 套
+        return "smoke"
+    if name in SUITE_EXCLUDED:            # 排除表
+        return None
+    if any((d / cand).is_file() for cand in SUITE_ENTRY_NAMES):
+        return "heavy"
+    return None
+```
+
+### 排除表只留三个，每个都有理由
+
+```python
+SUITE_EXCLUDED: dict[str, str] = {
+    "preset-scripts-sync": "普通脚本（同步 preset 文件），不 import src/，不产生覆盖边",
+    "o3-packaged-u1": "跑打包后的产物；覆盖 resources/genoffice/**，不碰 apps/desktop/src/**",
+    "vscode-api-census": "普查工具（统计 VS Code API 使用面），不 import src/",
+}
+```
+
+**⚠️ `flow-preview` / `md-preview` 没有进排除表** —— 变异实验推翻了「它们是预览台」的判断。
+
+### `electron-u1` 的 `entryPoints` 边（卡 §二 那个单独例外）
+
+**放宽了 `SMOKE_COVERS_RE` 和校验侧，加 `src/preload/`：**
+
+```python
+SMOKE_COVERS_RE = re.compile(
+    r"^\s*//\s*@smoke-covers\s+((?:src/main/|src/renderer/|src/preload/|packages/)[\w./-]+\.ts)\s*$",
+    re.MULTILINE)
+```
+
+**校验侧同时放行 `RENDERER` 和 `DESKTOP/src/preload`**（原来只放行 `MAIN`，`src/renderer/` 的声明会被拒——这是个既有缺口，T150 放宽了正则但校验侧没跟上）。
+
+**然后在 `electron-u1/driver/runner.ts` 顶部加了声明：**
+
+```ts
+// @smoke-covers src/preload/index.ts
+// ↑ 【T153】本套件通过 build.mjs:215 的 esbuild entryPoints 直接打包产品 preload，
+//   那条覆盖边不是 import，依赖图看不见。声明是它唯一能被记录的途径。
+```
+
+## 4. ★ 第四步验证：具体文件的答案真的变了
+
+| 文件 | 改前 | 改后 |
+|---|---|---|
+| `src/renderer/components/chat/Markdown.tsx` | 必跑 **4 套**（`markdown-preview-smoke` / `chat-linecount-smoke` / `custom-tab-race-smoke` / `module-phase2-e2e-smoke`） | 必跑 **6 套**，新增 **`arc005-visual-baseline`** 和 **`md-preview`** |
+| `src/renderer/components/chat/WorkflowFlowMini.tsx` | 必跑 0 套 | **`flow-preview` (1 跳)** |
+| `src/preload/index.ts` | 必跑 **7 套**（无 `electron-u1`） | 必跑 **8 套**，新增 **`electron-u1 (0 跳)`** |
+
+**⚠️ 这一步是卡 §二 强调的关键** —— 只加目录不加边的话，`Markdown.tsx` 会变成
+「6 套但覆盖集合里没有 md-preview」。实测证明边也进去了。
+
+## 5. 输出怎么区分 smoke / 重型
+
+```
+  必跑（1–2 跳，6 套，其中 2 套重型；跳数 [1, 2]）:
+    arc005-visual-baseline  (1 跳)  ⚠️ 重型（起真 Electron/Chrome，几十秒起）
+    markdown-preview-smoke  (1 跳)
+    md-preview  (1 跳)  ⚠️ 重型（起真 Electron/Chrome，几十秒起）
+```
+
+**汇总行说「其中 N 套重型」，逐行标 `⚠️ 重型`。**
+
+## 6. 变异（三个，每个先写预期）
+
+**M-1：把 `suite_kind` 的入口判定改成恒假（退回只认 `-smoke`）**
+- 预期：S1×3 + S2×2 + S4×2 = 7
+- 实际：**7** ✅ 精确落在这七条上。S3 / S5 保持绿（负控正确）。
+
+**⚠️ M-1 第一版只红了 1 条 —— 我第一版断言对整段 stdout 做子串匹配，
+而 `md-preview` / `flow-preview` 同时出现在「可选」段里（经由别的路径），蒙混过关。
+改成 `must_section()` 只截「必跑」段之后才红够 7 条。**
+这是套件自身的 bug，已在 `main.py` 的 `must_section` 注释里记下。
+
+**M-2：把排除表判定改成恒假（三个被排除的会被收进来）**
+- 预期：1（S3 的 `preset-scripts-sync`）
+- 实际：**1** ✅ 精确命中，`listed=['preset-scripts-sync', 'preset-scripts-sync-smoke']`
+
+**⚠️ S3 第一版也是子串匹配，`preset-scripts-sync` 会命中 `preset-scripts-sync-smoke`
+（另一套真套件）→ 负控恒红。改成「按逗号拆开逐名比对」才对。**
+
+**M-3：去掉「重型」标注（`mark` 和 `tail` 都清空）**
+- 预期：2（S4 两条）
+- 实际：**2** ✅
+
+**三次还原全部 `cp` + `cmp` 逐字节核对**（`smokes-for.py` sha256 `fd94e014…`）。
+
+## 7. 回归
+
+| 套件 | 结果 |
+|---|---|
+| `t153-heavy-suite-coverage-smoke`（新建，12 条） | **12/12** |
+| `tsx-coverage-smoke` | **10/10** |
+| `smokes-for-ranking-smoke` | **25/25** |
+| `t150-smokes-for-contracts-smoke` | **13/13** |
+| `t152-smokes-for-index-scope-smoke` | **13/13** |
+
+**T150 / T152 的修复全部未退化。**
+
+## 8. 未做（如实登记）
+
+### ① `flow-preview` / `md-preview` 的 `run.sh` 有 T145 那个路径 bug
+
+见 §2 末尾。**它们不叫 `-smoke`，T145 的 284 套名单里没有它们。**
+从仓库根调会挂，从 `apps/desktop` 调正常。
+
+**不在本卡边界**（本卡只改发现逻辑），**但这是同一类问题**，建议另开卡。
+
+### ② `--uncovered` 的标题行仍是「没有回归网」这个结论式措辞
+
+T152 修的是单文件查询的分岔；`--uncovered` 那份清单的口径本来就只在 `src/main` 下，
+所以目前没问题。**但如果将来它扩到 renderer / preload，这句措辞又会变成假结论。**
+
+### ③ `INDEXED_ROOTS`（T152 加的）和 `suite_kind()`（本卡加的）是两个独立的「范围」概念
+
+- `INDEXED_ROOTS` = 「哪些路径在这个工具的问题范围内」
+- `SUITE_ENTRY_NAMES` / `SUITE_EXCLUDED` = 「哪些目录算套件」
+
+**它们没有统一**，而且 `resolve()` / `coverage()` / `--uncovered` 三处仍各自隐式定义范围。
+统一它们要动 `resolve()`（T150 刚改，卡上明令不碰）。
+
+### ④ `t96-probe` 的 5 个文件都已由 `-smoke` 套件覆盖
+
+所以「收录 `t96-probe`」对答案**没有可见变化** —— 我验证了，它进套件集合之后
+`executorOwnership.ts` 等的必跑列表没变（那些 `-smoke` 套件距离更近，本来就排前面）。
+
+**这不是没生效，是它的覆盖是「冗余的」。** 如实记下。
+
+## 9. 提交
+
+见提交 SHA（下一节补）。

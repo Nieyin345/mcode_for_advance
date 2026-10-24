@@ -93,8 +93,13 @@ IMPORT_RE = re.compile(r"""(?:from|import)\s*\(?\s*["']([^"']+)["']""")
 # 路径形状收得仍然紧:必须是仓库内 `apps/desktop/src/` 或 `packages/` 下的
 # `.ts`。放开成任意路径会让声明变成「什么都能写」，那时它守不住任何东西
 # —— 而它是 `covered` 集合的唯一来源之一，误写等于谎报回归网。
+#
+# 【T153】`src/preload/` 也放进来：`electron-u1` 通过 esbuild `entryPoints`
+# 直接打包 `src/preload/index.ts`（build.mjs:215），那条边不是 import，图看不见。
+# 声明是它唯一能被记录的途径。校验侧（见 `coverage()` 的 `is_relative_to(MAIN)`）
+# 也要跟着认 PRELOAD。
 SMOKE_COVERS_RE = re.compile(
-    r"^\s*//\s*@smoke-covers\s+((?:src/main/|src/renderer/|packages/)[\w./-]+\.ts)\s*$",
+    r"^\s*//\s*@smoke-covers\s+((?:src/main/|src/renderer/|src/preload/|packages/)[\w./-]+\.ts)\s*$",
     re.MULTILINE)
 
 
@@ -372,10 +377,15 @@ def path_chain_to(target: Path, entry: Path) -> list[Path] | None:
 
 
 def coverage() -> dict[str, set[Path]]:
-    """套件名 → 它覆盖到的源码文件集合。"""
+    """套件名 → 它覆盖到的源码文件集合。
+
+    【T153】不只 `-smoke`：`suite_kind()` 决定收谁（见它的注释）。
+    """
     suites: dict[str, set[Path]] = {}
     for d in sorted(HERE.iterdir()):
-        if not d.is_dir() or not d.name.endswith("-smoke"):
+        if not d.is_dir():
+            continue
+        if suite_kind(d.name, d) is None:
             continue
         covered: set[Path] = set()
         # ⚠️ **三份扩展名都要扫(2026-10-23 修)。** 从前这里只有 `.ts`,于是
@@ -419,8 +429,12 @@ def coverage() -> dict[str, set[Path]]:
                     target = _resolve_declared(rel_path)
                     # 守「声明不能谎报」:文件必须真的存在,且必须落在已知源码根之一。
                     # 不然一个笔误的声明会**凭空给套件加覆盖** —— 那正是「改了不用跑」的来源。
+                    # 【T153】`src/preload/` 也算已知源码根（见 SMOKE_COVERS_RE 的注释）。
                     if target is None or not (
-                        target.is_relative_to(MAIN) or target.is_relative_to(ROOT / "packages")
+                        target.is_relative_to(MAIN)
+                        or target.is_relative_to(RENDERER)
+                        or target.is_relative_to(DESKTOP / "src" / "preload")
+                        or target.is_relative_to(ROOT / "packages")
                     ):
                         raise ValueError(f"invalid @smoke-covers {rel_path} in {mjs.relative_to(ROOT)}")
                     covered.add(target)
@@ -434,6 +448,59 @@ def coverage() -> dict[str, set[Path]]:
 # `d <= 2` 与它各说各话 —— 把阈值改成 99（所有套件都进必跑，分级等于失效），
 # 套件**照样全绿**。断言必须读同一份常量，否则它测的是自己的副本。
 NEED_JUMP = 2
+
+
+# 【T153】除了 `*-smoke`，还有一类「重型套件」也覆盖 `apps/desktop/src/**` ——
+# 它们起真 Electron / 真 Chrome，跑一次几十秒到几分钟，所以按本仓的命名约定
+# 不带 `-smoke` 后缀（那个后缀承诺「无头、秒级」）。
+#
+# 从前 `coverage()` 只认 `-smoke`，于是这些套件的覆盖完全不计入 ——
+# 对它们覆盖的文件，工具答「没有套件覆盖它」，而那是**结论式的假否定**。
+#
+# ## 判据：有「跑一次给结论」的入口文件 → 是套件
+#
+# 不按名字判（名字是约定，不是能力）。实测这九个非 `-smoke` 目录：
+#
+#   t96-probe              5 条真实 import      重型
+#   arc005-visual-baseline 4 条                 重型（真 Electron 截图）
+#   electron-u1            3 条                 重型（真 Electron U1）
+#   flow-preview           3 条                 重型（真 Chrome，有 13 条 probe.check 断言）
+#   mc035-egress-probe     1 条                 重型
+#   md-preview             1 条                 重型（真 Chrome，有 10 条 probe.check 断言）
+#   preset-scripts-sync    0 条                 普通脚本
+#   o3-packaged-u1         0 条                 跑打包产物，不碰 src/
+#   vscode-api-census      0 条                 普查工具
+#
+# **`flow-preview` / `md-preview` 是真套件，不是纯预览台** —— 这一条是变异实测出来的，
+# 不是推的：把 `WorkflowFlowMini` / `Markdown` 各插一行 `throw`，两者都 `EXIT=1`
+# （分别 0/2 和 2/10 通过）。按「改坏了会不会红」判，它们合格。
+#
+# 所以排除表只留三个**没有覆盖边、且加进来只会产生空覆盖集**的：
+SUITE_EXCLUDED: dict[str, str] = {
+    "preset-scripts-sync": "普通脚本（同步 preset 文件），不 import src/，不产生覆盖边",
+    "o3-packaged-u1": "跑打包后的产物；覆盖 resources/genoffice/**，不碰 apps/desktop/src/**",
+    "vscode-api-census": "普查工具（统计 VS Code API 使用面），不 import src/",
+}
+
+# 入口文件的判据。有其中之一就认为「这套能跑并给结论」。
+SUITE_ENTRY_NAMES = ("run.sh", "run.mjs", "main.ts", "main.mjs", "main.mts")
+
+
+def suite_kind(name: str, d: Path) -> str | None:
+    """返回 "smoke" / "heavy" / None（不是套件）。
+
+    - `*-smoke` 结尾 → "smoke"（历史约定，611 套）
+    - 在 SUITE_EXCLUDED 里 → None
+    - 有入口文件 → "heavy"
+    - 否则 → None
+    """
+    if name.endswith("-smoke"):
+        return "smoke"
+    if name in SUITE_EXCLUDED:
+        return None
+    if any((d / cand).is_file() for cand in SUITE_ENTRY_NAMES):
+        return "heavy"
+    return None
 
 
 def rank(suites: dict[str, set[Path]], target: Path) -> tuple[
@@ -563,9 +630,12 @@ def main() -> None:
                     print(f"       {n}")
             if must:
                 jumps = sorted({d for d, _, _ in must})
-                print(f"\n  必跑（1–{NEED_JUMP} 跳，{len(must)} 套；跳数 {jumps}）:")
+                heavy = [n for _, _, n in must if suite_kind(n, HERE / n) == "heavy"]
+                tail = f"，其中 {len(heavy)} 套重型" if heavy else ""
+                print(f"\n  必跑（1–{NEED_JUMP} 跳，{len(must)} 套{tail}；跳数 {jumps}）:")
                 for d, _p, n in must:
-                    print(f"    {n}  ({d} 跳)")
+                    mark = "  ⚠️ 重型（起真 Electron/Chrome，几十秒起）" if suite_kind(n, HERE / n) == "heavy" else ""
+                    print(f"    {n}  ({d} 跳){mark}")
             if optional:
                 # 按「上一跳」分组 —— 那个中间模块才是「为什么它会被带进来」的答案。
                 by_parent: dict[str, list[str]] = {}

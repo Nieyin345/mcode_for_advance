@@ -20,6 +20,9 @@
  * 看到 77 就换一个**新 OS 进程**，带着同一份 state 从下一步继续。证据里的
  * `pid`/`generation` 因此能证明「真的换了进程」，而不是页内刷新。
  */
+// @smoke-covers src/preload/index.ts
+// ↑ 【T153】本套件通过 build.mjs:215 的 esbuild `entryPoints` 直接打包产品 preload，
+//   那条覆盖边不是 import，依赖图看不见。声明是它唯一能被记录的途径。
 import { app, BrowserWindow, nativeTheme, screen, type WebContents } from "electron";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
