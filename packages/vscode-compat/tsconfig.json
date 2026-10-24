@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    // 增量缓存(同 contracts / apps/desktop):`tsc --noEmit` 每次全量检查,开增量后命中缓存。
+    "incremental": true,
+    "tsBuildInfoFile": "./.tsbuildinfo/typecheck.tsbuildinfo",
+    // `@types/vscode` 只被 `src/_gate.ts` 引用，而 `_gate.ts` 被 exclude 掉。
+    // 不开这个开关时 TS 会把 `node_modules/@types/*` 全量拉进全局作用域 ——
+    // 那会让本包在任何没有装 `@types/vscode` 的机器上也"看起来能编译"，
+    // 与「一行实现都不写」的定位不符。显式列出反而让「没装就红」可见。
+    "types": []
+  },
+  "include": ["src/**/*"],
+  // ⚠️ 少了这一行，整包**永远**编译不过 —— `_gate.ts` 的对象字面量就是
+  // 故意不完整的（缺一个成员就红），它只能由套件单独编译，不进正常构建。
+  // 见 tasks/F/F018-vscode-compat-skeleton.md 第三节。
+  "exclude": ["src/_gate.ts"]
+}
