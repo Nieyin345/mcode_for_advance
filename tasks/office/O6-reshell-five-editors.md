@@ -418,3 +418,62 @@ patches/genoffice/0017-feat-markdown-reshell-the-chrome-in-Mcode-s-design-t.patc
 5. **markdown 的 `markdown-themes.css` 纸张主题没有回归**：本套件只验默认主题。选 notion-light 等
    纸张主题时，`html[data-markdown-theme] .doc-page` 因特异度获胜（纸色由主题给），这一条是
    从 CSS 特异度推出来的，**没有真跑过**。
+
+### 8. 补强：暗色断言 + 非默认纸张主题回归（2026-10-24，同日第二轮）
+
+总控指出两条真缺口，已补并各自做了变异。
+
+#### 8.1 暗色（两套各一组，html 36/36、markdown 45/45）
+
+**暗色怎么触发**（先查清，不猜）：GenOffice 的 `UiTheme` 只有 `light | dark | system`；
+`system` 时渲染端**不设** `data-theme`，暗色走 `tokens.css` 的
+`@media (prefers-color-scheme: dark)` 块。独立运行的 html/markdown 没有 shell 注册
+`app:get-theme`（`apps/shell/src/main/index.ts:4940` 才注册），渲染端 `catch` 到 `'system'`
+——**所以暗色的真实触发路径就是 system + OS 深色**。探针用
+`nativeTheme.themeSource = 'dark'` 精确控制它，只影响本进程。
+
+**断言**（每种模式各 11 条，含两条「前提」）：
+- ★ 前提：独立暗色 `--surface` = `#1e1e1e`（nativeTheme 真的传导了）
+- ★ 前提：**亮 ≠ 暗**（否则暗色断言是空的 —— 这条防的是「跑了个寂寞」）
+- 宿主暗色：theme 加载、`--surface` #151515、`--text` #f9f9f7、`.ribbon` rgb(21,21,21)
+- 独立暗色：不加载、`--text` #e4e4e4、`.ribbon` rgb(30,30,30)
+- ★ 对照：宿主暗色的 `.ribbon` **不等于**独立暗色
+- 文档内容：html 的 `--preview-page-bg` 暗色下仍 #ffffff；
+  markdown 的 `.doc-page` 纸张暗色下两次相同、且 `--surface` = #1e1e1e（钉住生效），
+  同时 `.editor-scroll`（chrome）**确实**换成 Mcode 暗色 canvas rgb(15,14,14)
+
+**变异**：删掉 `[data-theme='dark']` 块 → **仍然 36/36**（因为 `prefers-color-scheme`
+那块还在，暗色照旧生效）。**这说明我第一次的变异选点不够狠**，于是把两块都删：
+
+| 变异 | 结果 |
+|---|---|
+| 只删 `[data-theme='dark']` | **36/36** —— 断言没错，是变异没打到病灶 |
+| `[data-theme='dark']` + `@media (prefers-color-scheme)` **都删** | **32/36**，4 红全在暗色组 |
+
+#### 8.2 非默认纸张主题（markdown，**实测不是从特异度推的**）
+
+**路径**：vendor 自己的 `getMarkdownTheme` 读 `userData/markdown-settings.json` 的
+`markdownTheme`（`markdown-main.ts:959/994`）。探针预置这个文件，**走真实读取链**，
+不在渲染端硬 `setAttribute` —— 后者验的是「属性有效」，不是「用户选主题时有效」。
+
+选了 `newsprint`（纸张 `#f3f2ee`）：
+
+| 断言 | 结果 |
+|---|---|
+| ★ 前提：独立运行纸张真的变成 rgb(243,242,238) | ok |
+| ★ 宿主里纸张**也是** rgb(243,242,238)（主题赢过被换掉的 chrome） | ok |
+| ★ 对照：同一轮 `.ribbon` 仍是 Mcode 表面 rgb(252,252,251)（主题只管纸张） | ok |
+| ★ 对照：独立同一主题 `.ribbon` 是上游表面 rgb(255,255,255)（防恒真） | ok |
+
+**变异**：给 `.doc-page` 的钉住 `--surface` 加 `!important`（模拟「钉住压过主题」）→
+**41/45，4 红**：暗色纸张两次不同（宿主 #fff vs 独立 #1e1e1e）、暗色钉住失效、
+newsprint 宿主纸张变成 #fff、防漂移也红（值里多了 `!important`）。
+**全部精确落在纸张/主题这条线上** —— 证明「主题赢过钉住」是跑出来的，不是推的。
+
+#### 8.3 一条方法论记录
+
+「从特异度推出来」在这次被证明**不足以当证据**：我先写的变异（只删一个块）
+让全套全绿，看起来像「暗色断言是空的」。真因是 CSS 有**两条**独立的暗色来源
+（`[data-theme]` 与 `prefers-color-scheme`），删一条另一条兜住了。
+**所以「删掉一处仍全绿」有两种含义：判据失效，或这次本来就不该红** —— 要换选点再试，
+而不是立刻改判据。

@@ -62,7 +62,14 @@ if (!existsSync(rendererIndex) || !existsSync(preloadPath)) {
   process.exit(0);
 }
 
-const MODES = ["Mcode", "GenOffice HTML"];
+// 四种模式：宿主/独立 × 亮/暗。暗色不是「顺手多跑一组」——GenOffice 的工具栏
+// 在暗色下才是最容易露馅的地方，而亮色全绿、暗色没生效是这一族改动最常见的失败。
+const MODES = [
+  { appName: "Mcode", theme: "light" },
+  { appName: "GenOffice HTML", theme: "light" },
+  { appName: "Mcode", theme: "dark" },
+  { appName: "GenOffice HTML", theme: "dark" },
+];
 
 let total = 0;
 let failures = 0;
@@ -111,15 +118,17 @@ mkdirSync(temp, { recursive: true });
 const appMain = join(app, "out/main/index.js");
 
 const evidence = {};
-for (const appName of MODES) {
+for (const { appName, theme } of MODES) {
+  const key = `${appName}-${theme}`;
   const env = {
     ...process.env,
     O6_DIR: dir,
     O6_APP_MAIN: appMain,
     O6_APP_NAME: appName,
+    O6_THEME: theme,
     HOME: home,
     USERPROFILE: home,
-    APPDATA: join(dir, `userData-${appName.replace(/\s+/g, "-")}`),
+    APPDATA: join(dir, `userData-${key.replace(/\s+/g, "-")}`),
     LOCALAPPDATA: join(dir, "localAppData"),
     TEMP: temp,
     TMP: temp,
@@ -133,34 +142,58 @@ for (const appName of MODES) {
     maxBuffer: 32 * 1024 * 1024,
   });
   const output = (run.stdout ?? "") + (run.stderr ?? "");
-  writeFileSync(join(dir, `run-${appName.replace(/\s+/g, "-")}.log`), output);
+  writeFileSync(join(dir, `run-${key.replace(/\s+/g, "-")}.log`), output);
   if (run.status !== 0) {
-    console.log(`  FAIL 探针在「${appName}」模式下没跑完（exit=${run.status}）`);
+    console.log(`  FAIL 探针在「${key}」模式下没跑完（exit=${run.status}）`);
     failures++;
     total++;
     console.log(output.split("\n").slice(-12).join("\n"));
     continue;
   }
-  const file = join(dir, `evidence-${appName.replace(/\s+/g, "-")}.json`);
+  const file = join(dir, `evidence-${key.replace(/\s+/g, "-")}.json`);
   if (!existsSync(file)) {
-    console.log(`  FAIL 探针在「${appName}」模式下没有写出证据文件`);
+    console.log(`  FAIL 探针在「${key}」模式下没有写出证据文件`);
     failures++;
     total++;
     continue;
   }
-  evidence[appName] = JSON.parse(readFileSync(file, "utf8"));
+  evidence[key] = JSON.parse(readFileSync(file, "utf8"));
 }
 
-const hosted = evidence["Mcode"];
-const standalone = evidence["GenOffice HTML"];
+const hosted = evidence["Mcode-light"];
+const standalone = evidence["GenOffice HTML-light"];
+const hostedDark = evidence["Mcode-dark"];
+const standaloneDark = evidence["GenOffice HTML-dark"];
 
-if (!hosted || !standalone) {
-  console.log(`\no6-reshell-html-smoke: ${total - failures}/${total}（两模式证据不齐，后续断言全部无法执行）`);
+if (!hosted || !standalone || !hostedDark || !standaloneDark) {
+  console.log(
+    `\no6-reshell-html-smoke: ${total - failures}/${total}（四种模式证据不齐，后续断言全部无法执行）`,
+  );
   process.exit(1);
 }
 
 const H = hosted.evidence;
 const S = standalone.evidence;
+const HD = hostedDark.evidence;
+const SD = standaloneDark.evidence;
+
+/* ── 宿主要求的四种模式都真的走到了预期的明暗 ──────────────────────── */
+console.log("\n暗色是否真的生效（先验前提，再验换壳）");
+check(
+  "★ 前提：独立模式暗色下 --surface = 上游暗色 #1e1e1e（nativeTheme 真的传导了）",
+  SD.tokens.surface === "#1e1e1e",
+  { dark: SD.tokens.surface, light: S.tokens.surface },
+);
+check(
+  "★ 前提：四种模式下两两不同（亮≠暗，否则暗色断言是空的）",
+  H.tokens.surface !== HD.tokens.surface && S.tokens.surface !== SD.tokens.surface,
+  {
+    hostedLight: H.tokens.surface,
+    hostedDark: HD.tokens.surface,
+    standaloneLight: S.tokens.surface,
+    standaloneDark: SD.tokens.surface,
+  },
+);
 
 /* ── 宿主模式 ─────────────────────────────────────────────────────────── */
 console.log("\n宿主模式（app 名 = Mcode）");
@@ -196,6 +229,34 @@ check(
   "组件树同样在（换壳不改结构）",
   S.present[".ribbon"] && S.present[".app-main"] && S.present[".pane-preview"] && S.present[".status-bar"],
   S.present,
+);
+
+/* ── 暗色：宿主换壳 / 独立不换壳 ──────────────────────────────────────── */
+console.log("\n暗色（宿主换壳 / 独立不换壳）");
+check("宿主暗色：mcode-theme.css 被加载", HD.mcodeSheets.length === 1, HD.mcodeSheets);
+check("宿主暗色：--surface = Mcode 暗色值 #151515", HD.tokens.surface === "#151515", HD.tokens.surface);
+check("宿主暗色：--text = Mcode 暗色值 #f9f9f7", HD.tokens.text === "#f9f9f7", HD.tokens.text);
+check(
+  "宿主暗色：.ribbon 计算背景 = Mcode 暗色表面 rgb(21, 21, 21)",
+  HD.computedBg.ribbon === "rgb(21, 21, 21)",
+  HD.computedBg.ribbon,
+);
+check("独立暗色：mcode-theme.css **没有**被加载", SD.mcodeSheets.length === 0, SD.mcodeSheets);
+check("独立暗色：--text = 上游暗色 #e4e4e4", SD.tokens.text === "#e4e4e4", SD.tokens.text);
+check(
+  "独立暗色：.ribbon 计算背景 = 上游暗色表面 rgb(30, 30, 30)",
+  SD.computedBg.ribbon === "rgb(30, 30, 30)",
+  SD.computedBg.ribbon,
+);
+check(
+  "★ 对照：宿主暗色的 .ribbon **不等于**独立暗色（暗色下也真的换了壳）",
+  HD.computedBg.ribbon !== SD.computedBg.ribbon,
+  { hosted: HD.computedBg.ribbon, standalone: SD.computedBg.ribbon },
+);
+check(
+  "文档内容底 --preview-page-bg 在暗色下仍是 #ffffff（预览内容不随主题变）",
+  HD.tokens.previewPageBg === "#ffffff" && SD.tokens.previewPageBg === "#ffffff",
+  { hosted: HD.tokens.previewPageBg, standalone: SD.tokens.previewPageBg },
 );
 
 /* ── 跨模式 / 契约 ────────────────────────────────────────────────────── */

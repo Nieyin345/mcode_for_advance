@@ -11,7 +11,15 @@
 // UA 开关 —— 这正是宿主与独立运行的真实差别。
 //
 // 本文件只取证，判断全部在 build.mjs。
-const { app } = require('electron')
+const { app, nativeTheme } = require('electron')
+
+// O6 暗色判据：GenOffice 的 UiTheme 只有 light/dark/system 三档，`system` 时
+// 渲染端不设 data-theme，靠 `prefers-color-scheme` 走 tokens.css 的媒体查询块。
+// 独立运行的 html/markdown 没有 shell 注册 `app:get-theme`，渲染端 catch 到
+// 'system' —— 所以暗色的**真实触发路径**就是 system + OS 深色，
+// 这里用 nativeTheme.themeSource 精确控制它（不影响其他进程）。
+if (process.env.O6_THEME === 'dark') nativeTheme.themeSource = 'dark'
+else if (process.env.O6_THEME === 'light') nativeTheme.themeSource = 'light'
 const { mkdirSync, mkdtempSync, writeFileSync, readFileSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 const { join } = require('node:path')
@@ -90,7 +98,9 @@ const EVIDENCE_SCRIPT = `(() => {
 })()`
 
 const settle = (payload) => {
-  const safe = APP_NAME.replace(/\s+/g, '-')
+  // 文件名必须带主题：同一 app 名在亮/暗两轮里各写一次，只按 app 名命名会互相覆盖，
+  // 最后只剩一份证据（而且看起来「跑过了」）。
+  const safe = `${APP_NAME}-${process.env.O6_THEME || 'light'}`.replace(/\s+/g, '-')
   writeFileSync(join(DIR, `evidence-${safe}.json`), JSON.stringify(payload, null, 2), 'utf8')
   app.exit(0)
 }

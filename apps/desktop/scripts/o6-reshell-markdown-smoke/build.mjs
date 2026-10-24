@@ -44,7 +44,16 @@ if (!existsSync(rendererIndex) || !existsSync(preloadPath)) {
   process.exit(0);
 }
 
-const MODES = ["Mcode", "GenOffice Markdown"];
+const MODES = [
+  { appName: "Mcode", theme: "light" },
+  { appName: "GenOffice Markdown", theme: "light" },
+  { appName: "Mcode", theme: "dark" },
+  { appName: "GenOffice Markdown", theme: "dark" },
+  // 纸张主题回归：用户选了非默认主题时，纸张必须由**主题**决定（不是被换掉的 chrome）。
+  // 走 vendor 自己的 `getMarkdownTheme` → markdown-settings.json 读取链，不在渲染端硬设属性。
+  { appName: "Mcode", theme: "light", paper: "newsprint" },
+  { appName: "GenOffice Markdown", theme: "light", paper: "newsprint" },
+];
 
 let total = 0;
 let failures = 0;
@@ -85,15 +94,18 @@ mkdirSync(temp, { recursive: true });
 
 const appMain = join(app, "out/main/index.js");
 const evidence = {};
-for (const appName of MODES) {
+for (const { appName, theme, paper } of MODES) {
+  const key = `${appName}-${theme}${paper ? `-${paper}` : ""}`;
   const env = {
     ...process.env,
     O6_DIR: dir,
     O6_APP_MAIN: appMain,
     O6_APP_NAME: appName,
+    O6_THEME: theme,
+    ...(paper ? { O6_PAPER_THEME: paper } : {}),
     HOME: home,
     USERPROFILE: home,
-    APPDATA: join(dir, `userData-${appName.replace(/\s+/g, "-")}`),
+    APPDATA: join(dir, `userData-${key.replace(/\s+/g, "-")}`),
     LOCALAPPDATA: join(dir, "localAppData"),
     TEMP: temp,
     TMP: temp,
@@ -107,32 +119,40 @@ for (const appName of MODES) {
     maxBuffer: 32 * 1024 * 1024,
   });
   const output = (run.stdout ?? "") + (run.stderr ?? "");
-  writeFileSync(join(dir, `run-${appName.replace(/\s+/g, "-")}.log`), output);
+  writeFileSync(join(dir, `run-${key.replace(/\s+/g, "-")}.log`), output);
   if (run.status !== 0) {
-    console.log(`  FAIL 探针在「${appName}」模式下没跑完（exit=${run.status}）`);
+    console.log(`  FAIL 探针在「${key}」模式下没跑完（exit=${run.status}）`);
     failures++;
     total++;
     console.log(output.split("\n").slice(-12).join("\n"));
     continue;
   }
-  const file = join(dir, `evidence-${appName.replace(/\s+/g, "-")}.json`);
+  const file = join(dir, `evidence-${key.replace(/\s+/g, "-")}.json`);
   if (!existsSync(file)) {
-    console.log(`  FAIL 探针在「${appName}」模式下没有写出证据文件`);
+    console.log(`  FAIL 探针在「${key}」模式下没有写出证据文件`);
     failures++;
     total++;
     continue;
   }
-  evidence[appName] = JSON.parse(readFileSync(file, "utf8"));
+  evidence[key] = JSON.parse(readFileSync(file, "utf8"));
 }
 
-const hosted = evidence["Mcode"];
-const standalone = evidence["GenOffice Markdown"];
-if (!hosted || !standalone) {
-  console.log(`\no6-reshell-markdown-smoke: ${total - failures}/${total}（两模式证据不齐）`);
+const hosted = evidence["Mcode-light"];
+const standalone = evidence["GenOffice Markdown-light"];
+const hostedDark = evidence["Mcode-dark"];
+const standaloneDark = evidence["GenOffice Markdown-dark"];
+const hostedPaper = evidence["Mcode-light-newsprint"];
+const standalonePaper = evidence["GenOffice Markdown-light-newsprint"];
+if (!hosted || !standalone || !hostedDark || !standaloneDark || !hostedPaper || !standalonePaper) {
+  console.log(`\no6-reshell-markdown-smoke: ${total - failures}/${total}（六种模式证据不齐）`);
   process.exit(1);
 }
 const H = hosted.evidence;
 const S = standalone.evidence;
+const HD = hostedDark.evidence;
+const SD = standaloneDark.evidence;
+const HP = hostedPaper.evidence;
+const SP = standalonePaper.evidence;
 
 /* ── 宿主模式 ─────────────────────────────────────────────────────────── */
 console.log("\n宿主模式（app 名 = Mcode）");
@@ -168,6 +188,78 @@ check(
   "组件树同样在（换壳不改结构）",
   S.present[".ribbon"] && S.present[".app-main"] && S.present[".doc-page"] && S.present[".status-bar"],
   S.present,
+);
+
+/* ── 暗色：宿主换壳 / 独立不换壳；纸张仍然不换 ────────────────────────── */
+console.log("\n暗色（宿主换壳 / 独立不换壳）");
+check(
+  "★ 前提：独立模式暗色下 --surface = 上游暗色 #1e1e1e（nativeTheme 真的传导了）",
+  SD.tokens.surface === "#1e1e1e",
+  { dark: SD.tokens.surface, light: S.tokens.surface },
+);
+check(
+  "★ 前提：亮≠暗（否则暗色断言是空的）",
+  H.tokens.surface !== HD.tokens.surface && S.tokens.surface !== SD.tokens.surface,
+  { H: H.tokens.surface, HD: HD.tokens.surface, S: S.tokens.surface, SD: SD.tokens.surface },
+);
+check("宿主暗色：mcode-theme.css 被加载", HD.mcodeSheets.length === 1, HD.mcodeSheets);
+check("宿主暗色：--surface = Mcode 暗色 #151515", HD.tokens.surface === "#151515", HD.tokens.surface);
+check("宿主暗色：--text = Mcode 暗色 #f9f9f7", HD.tokens.text === "#f9f9f7", HD.tokens.text);
+check(
+  "宿主暗色：.ribbon 计算背景 = Mcode 暗色表面 rgb(21, 21, 21)",
+  HD.computedBg.ribbon === "rgb(21, 21, 21)",
+  HD.computedBg.ribbon,
+);
+check("独立暗色：mcode-theme.css **没有**被加载", SD.mcodeSheets.length === 0, SD.mcodeSheets);
+check(
+  "独立暗色：.ribbon 计算背景 = 上游暗色表面 rgb(30, 30, 30)",
+  SD.computedBg.ribbon === "rgb(30, 30, 30)",
+  SD.computedBg.ribbon,
+);
+check(
+  "★ 对照：宿主暗色的 .ribbon **不等于**独立暗色",
+  HD.computedBg.ribbon !== SD.computedBg.ribbon,
+  { hosted: HD.computedBg.ribbon, standalone: SD.computedBg.ribbon },
+);
+check(
+  "★ 暗色下 .doc-page 纸张两次相同（纸张是文档内容，不随主题被换壳）",
+  HD.computedBg.docPage !== null && HD.computedBg.docPage === SD.computedBg.docPage,
+  { hosted: HD.computedBg.docPage, standalone: SD.computedBg.docPage },
+);
+check(
+  "★ 暗色下 .doc-page 内 --surface = 上游暗色纸色 #1e1e1e（钉住生效）",
+  HD.tokens.docPage.surface === "#1e1e1e" && SD.tokens.docPage.surface === "#1e1e1e",
+  { hosted: HD.tokens.docPage.surface, standalone: SD.tokens.docPage.surface },
+);
+check(
+  "★ 暗色下 .editor-scroll（画布底，属 chrome）**确实**换成了 Mcode 暗色 canvas",
+  HD.computedBg.editorScroll !== null &&
+    HD.computedBg.editorScroll !== SD.computedBg.editorScroll &&
+    HD.computedBg.editorScroll === "rgb(15, 15, 14)",
+  { hosted: HD.computedBg.editorScroll, standalone: SD.computedBg.editorScroll },
+);
+
+/* ── ★ 纸张主题回归（非默认主题，实测不是从特异度推的） ────────────────── */
+console.log("\n纸张主题回归（newsprint，走 vendor 自己的 getMarkdownTheme 读取链）");
+check(
+  "★ 前提：纸张主题真的生效了（.doc-page 背景 = newsprint 的 #f3f2ee）",
+  SP.computedBg.docPage === "rgb(243, 242, 238)",
+  { standalone: SP.computedBg.docPage, defaultTheme: S.computedBg.docPage },
+);
+check(
+  "★ 用户选了纸张主题时，宿主里纸张**也是** #f3f2ee（主题赢过被换掉的 chrome）",
+  HP.computedBg.docPage === "rgb(243, 242, 238)",
+  { hosted: HP.computedBg.docPage, standalone: SP.computedBg.docPage },
+);
+check(
+  "★ 对照：同一轮里 .ribbon 仍是 Mcode 的 chrome（主题只管纸张，没把外壳一起改）",
+  HP.computedBg.ribbon === "rgb(252, 252, 251)",
+  { hosted: HP.computedBg.ribbon },
+);
+check(
+  "★ 对照：独立运行同一主题下 .ribbon 是上游表面（证明上一格不是恒真）",
+  SP.computedBg.ribbon === "rgb(255, 255, 255)",
+  { standalone: SP.computedBg.ribbon },
 );
 
 /* ── 跨模式 / 契约 ────────────────────────────────────────────────────── */
