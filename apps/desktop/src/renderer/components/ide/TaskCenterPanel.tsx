@@ -59,6 +59,7 @@ import {
 } from "@renderer/lib/icons.js";
 import type { TablerIconProps } from "@renderer/lib/icons.js";
 import type { Task, TaskOrigin, TaskStatus } from "@contracts/ipc/task";
+import type { Approval, ApprovalOutcome } from "@contracts/ipc/approval";
 
 /**
  * 状态 → 界面。**七态一个不少**（契约里就是这么多个）。
@@ -101,6 +102,26 @@ const ORIGIN_META: Record<TaskOrigin["kind"], { Icon: ComponentType<TablerIconPr
   agent: { Icon: IconRobot, key: "taskCenter.origin.agent" },
   workflow: { Icon: IconGitBranch, key: "taskCenter.origin.workflow" },
   automation: { Icon: IconBolt, key: "taskCenter.origin.automation" },
+};
+
+/**
+ * 【T109-C】七种审批结论 → 界面文案。
+ *
+ * **七种不是两种**：`answered`/`dismissed` 是「问答」的两种结果，
+ * `approved`/`rejected` 是「计划」的，`cancelled` 是「会话取消」（**不是用户拒绝**）。
+ * 把它们都写成「允许/拒绝」会让用户看不懂「我明明没拒绝过，为什么这里写拒绝」。
+ *
+ * 和 `STATUS_META` / `ORIGIN_META` 一样用完整 `Record<>`（不是 Partial）：
+ * 新增一种结论会当场 typecheck 失败，而不是静默显示成空白。
+ */
+const APPROVAL_OUTCOME_META: Record<ApprovalOutcome, { key: MessageId }> = {
+  allow: { key: "taskCenter.approval.allow" },
+  deny: { key: "taskCenter.approval.deny" },
+  answered: { key: "taskCenter.approval.answered" },
+  dismissed: { key: "taskCenter.approval.dismissed" },
+  approved: { key: "taskCenter.approval.approved" },
+  rejected: { key: "taskCenter.approval.rejected" },
+  cancelled: { key: "taskCenter.approval.cancelled" },
 };
 
 type Decision = { taskId: string; kind: "accept" | "reject" } | null;
@@ -214,6 +235,51 @@ export function TaskCenterPanel() {
     };
     return [...tasks].sort((a, b) => rank(a.status) - rank(b.status) || b.updatedAt - a.updatedAt);
   }, [tasks]);
+
+  /**
+   * 【T109-C】当前展开那条任务所属会话的审批记录。
+   *
+   * ## ⚠️ 这是「这个会话的审批」，**不是「这条任务的审批」** —— 界面文案必须说清
+   *
+   * `approvals` 表只有 `session_id`，**没有 `task_id`**（T109 的决定：
+   * 审批发生在 `turn.done` 之前，而任务在 `turn.done` 才建 —— 存一个当时还不存在的
+   * id 只能存 null）。而 `autoCreate.ts:216-221` 是**每个 turn.done 建一个任务**：
+   *
+   * ```
+   * 一个会话里做了三件事 → 三个任务，而三条审批记录都只带同一个 session_id
+   * ```
+   *
+   * **所以按会话拉，每条任务都会显示整个会话的全部审批。** 这是当前数据模型的
+   * 必然结果，不是 bug。
+   *
+   * 两种处理：① 假装精确（写成「本任务的审批」）—— **那是界面在说谎**；
+   * ② 拉会话的、**在文案里说清是会话范围**（本实现）。
+   *
+   * 精确归属需要给 `approvals` 加 `turn_id`，等有真实多任务会话样本再决定
+   * （现在审批表刚建，一次真实使用都还没跑过 —— 零样本时加字段是在猜）。
+   *
+   * ## 只在展开时拉
+   *
+   * `enabled` 挂 `expandedId`：没展开就不请求。任务列表可能有几十条，
+   * 每条都预先拉一遍审批没有意义。
+   */
+  const expandedTask = useMemo(
+    () => ordered.find((x) => x.id === expandedId),
+    [ordered, expandedId],
+  );
+  const expandedSessionId =
+    expandedTask !== undefined && expandedTask.origin.kind === "session"
+      ? expandedTask.origin.ref
+      : null;
+  const { data: approvalPage, loading: approvalsLoading } = useRpc(
+    () => expandedSessionId === null
+      ? Promise.resolve({ approvals: [] })
+      : api.approval.list({ sessionId: expandedSessionId, limit: 50 }),
+    [expandedSessionId],
+    { enabled: expandedSessionId !== null, toastOnError: false },
+  );
+  const approvals = approvalPage?.approvals ?? [];
+
 
   /**
    * 【T111】点一行：展开它，**并收起之前那条**（同时只展开一条）。
@@ -330,6 +396,11 @@ export function TaskCenterPanel() {
               busy={busy}
               sessionTitle={sessionTitleById.get(task.origin.ref)}
               sessionMapReady={sessionPage !== undefined}
+              // 【T109-C】审批记录**只给展开的那一行**（`approvals` 本来就是按
+              // 展开的会话拉的）；收起时给空数组，避免别的行误显示。
+              approvals={expandedId === task.id ? approvals : []}
+              approvalsLoading={expandedId === task.id && approvalsLoading}
+              approvalsScope={expandedId === task.id && expandedSessionId !== null ? "session" : "none"}
               onToggle={() => toggleExpand(task.id)}
               onDraft={setDraft}
               onAccept={() => openDecision(task.id, "accept")}
@@ -456,6 +527,9 @@ export function TaskRow({
   busy,
   sessionTitle,
   sessionMapReady,
+  approvals,
+  approvalsLoading,
+  approvalsScope,
   onToggle,
   onDraft,
   onAccept,
@@ -474,6 +548,14 @@ export function TaskRow({
   sessionTitle: string | undefined;
   /** 会话标题表是否已加载 —— 区分「会话被删了」和「标题还没到」。 */
   sessionMapReady: boolean;
+  /**
+   * 【T109-C】审批记录。**范围是本条任务所属会话，不是本条任务** ——
+   * 数据模型里没有 task_id（见面板里那个 memo 的说明）。
+   */
+  approvals: Approval[];
+  approvalsLoading: boolean;
+  /** `"session"` = 显示的是整个会话的审批；`"none"` = 这条任务没有会话来源。 */
+  approvalsScope: "session" | "none";
   onToggle: () => void;
   onDraft: (v: string) => void;
   onAccept: () => void;
@@ -594,6 +676,44 @@ export function TaskRow({
                 <span className="ml-1 text-[10px] text-content-subtle">{originLine.ref}</span>
               )}
             </div>
+            {/*
+              【T109-C】审批记录。位置在「来源」之后、「meta」之前 —— 按 T111 定的
+              「用户做决定的顺序」：这条任务要不要验收，信息已经在前四项里了；
+              审批是**补充证据**（他当时批了哪些操作），不是决定本身。
+              ⚠️ 标题写的是「这个对话里的审批」而不是「本任务的审批」—— 见 memo 说明。
+            */}
+            {approvalsScope === "session" && (
+              <div data-detail="approvals">
+                <div className="text-[10px] text-content-subtle">
+                  {t("taskCenter.detailApprovals")}
+                  <span className="ml-1 text-content-subtle/70">{t("taskCenter.detailApprovalsScope")}</span>
+                </div>
+                {approvalsLoading && approvals.length === 0 ? (
+                  <div className="text-[11px] text-content-subtle">{t("taskCenter.approvalsLoading")}</div>
+                ) : approvals.length === 0 ? (
+                  // 空态要说清是「这一轮没有需要你批的操作」，不是「记录丢了」。
+                  <div className="text-[11px] text-content-subtle">{t("taskCenter.approvalsEmpty")}</div>
+                ) : (
+                  <ul className="flex flex-col gap-0.5">
+                    {approvals.map((a) => (
+                      <li key={a.id} className="flex items-start gap-1.5 text-[11px]" data-approval-id={a.id}>
+                        <span className="shrink-0 text-content-subtle">
+                          {t(APPROVAL_OUTCOME_META[a.decision].key)}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-content-muted" title={a.subject}>
+                          {a.subject}
+                        </span>
+                        {a.always && (
+                          <span className="shrink-0 text-[10px] text-content-subtle">
+                            {t("taskCenter.approvalAlways")}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             <div className="flex items-center gap-2 text-[10px] text-content-subtle" data-detail="meta">
               <IconClock size={10} />
               <span>{new Date(task.updatedAt).toLocaleString()}</span>

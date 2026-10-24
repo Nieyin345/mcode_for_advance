@@ -577,4 +577,17 @@ export const en = {
   "taskCenter.origin.fromDeletedSession": "From a deleted conversation",
   "taskCenter.origin.fromSessionNoTitle": "From a conversation",
   "taskCenter.detailArtifacts": "Artifacts",
+  /* 【T109-C】Approvals section. Note the scope is the CONVERSATION, not the task. */
+  "taskCenter.detailApprovals": "Approvals",
+  "taskCenter.detailApprovalsScope": "(all in this conversation)",
+  "taskCenter.approvalsLoading": "Loading…",
+  "taskCenter.approvalsEmpty": "No approvals in this conversation yet",
+  "taskCenter.approvalAlways": "always",
+  "taskCenter.approval.allow": "Allowed",
+  "taskCenter.approval.deny": "Denied",
+  "taskCenter.approval.answered": "Answered",
+  "taskCenter.approval.dismissed": "Skipped",
+  "taskCenter.approval.approved": "Plan approved",
+  "taskCenter.approval.rejected": "Plan rejected",
+  "taskCenter.approval.cancelled": "Session cancelled",
 } as const;

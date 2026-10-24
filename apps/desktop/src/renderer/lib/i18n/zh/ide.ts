@@ -595,4 +595,17 @@ export const zh = {
   "taskCenter.origin.fromDeletedSession": "来自一个已删除的对话",
   "taskCenter.origin.fromSessionNoTitle": "来自一个对话",
   "taskCenter.detailArtifacts": "产物",
+  /* 【T109-C】审批记录那一段。⚠️ 范围是**会话**不是任务（数据模型没有 task_id）。 */
+  "taskCenter.detailApprovals": "审批记录",
+  "taskCenter.detailApprovalsScope": "（这个对话里的全部）",
+  "taskCenter.approvalsLoading": "正在读取…",
+  "taskCenter.approvalsEmpty": "这个对话里还没有审批记录",
+  "taskCenter.approvalAlways": "始终允许",
+  "taskCenter.approval.allow": "允许",
+  "taskCenter.approval.deny": "拒绝",
+  "taskCenter.approval.answered": "已回答",
+  "taskCenter.approval.dismissed": "跳过了",
+  "taskCenter.approval.approved": "批准了计划",
+  "taskCenter.approval.rejected": "否掉了计划",
+  "taskCenter.approval.cancelled": "会话取消",
 } as const;

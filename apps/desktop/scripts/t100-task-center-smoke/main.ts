@@ -32,6 +32,7 @@ import { TaskCenterPanel, TaskRow, submitDecision } from "@renderer/components/i
 import { __setTasks, __reset, __failNextWrite, __failList, __writes, calls } from "./api-stub.js";
 import { __toasts, __resetToasts } from "./toastStore-stub.js";
 import type { Task } from "@contracts/ipc/task";
+import type { Approval } from "@contracts/ipc/approval";
 
 let passed = 0;
 const failures: string[] = [];
@@ -140,6 +141,10 @@ async function mountRow(props: {
   expanded?: boolean;
   sessionTitle?: string | undefined;
   sessionMapReady?: boolean;
+  /** 【T109-C】审批记录（默认空 + scope "none"）。 */
+  approvals?: Approval[];
+  approvalsLoading?: boolean;
+  approvalsScope?: "session" | "none";
 }): Promise<{ submitted: unknown[]; drafts: string[] }> {
   const submitted: unknown[] = [];
   const drafts: string[] = [];
@@ -153,6 +158,11 @@ async function mountRow(props: {
       busy: false,
       sessionTitle: props.sessionTitle,
       sessionMapReady: props.sessionMapReady ?? true,
+      // 【T109-C】审批段。默认空 + 未加载 —— 只验「没有它时不渲染」；
+      // 有数据的渲染在 5g 节单独挂。
+      approvals: props.approvals ?? [],
+      approvalsLoading: props.approvalsLoading ?? false,
+      approvalsScope: props.approvalsScope ?? "none",
       onToggle: () => submitted.push("toggle"),
       onDraft: (v: string) => { drafts.push(v); },
       onAccept: () => submitted.push("accept"),
@@ -565,15 +575,88 @@ section("5e. 同时只能展开一条（这是 280px 的后果，不是审美）
   __unmount();
 }
 
-section("5f. 详情里没有审批段");
+/**
+ * 5f. 审批段：**文案必须体现「会话范围」**（T109-C 的核心产品判断）。
+ *
+ * ## 为什么这条断言比它看起来重要
+ *
+ * `approvals` 表只有 `session_id`，没有 `task_id` —— 而 `autoCreate.ts` 是
+ * **每个 `turn.done` 建一个任务**。所以「按会话拉审批」意味着**每条任务都会显示
+ * 整个会话的全部审批**。
+ *
+ * 两种处理：
+ *   ① 假装精确（标题写「本任务的审批」）—— **界面在说谎**；
+ *   ② 诚实标注（写「这个对话里的全部」）—— 本实现。
+ *
+ * **这条断言守的是「不说谎」**：如果哪天有人把标题改成「本任务的审批」，
+ * 它必须红。**光有注释不够** —— 注释不会失败。
+ */
+section("5f. 审批段：显示会话范围，不假装是「本任务的」");
 {
+  // (a) 没有会话来源时（origin 不是 session）—— 不渲染审批段。
+  await mountRow({
+    task: task({ id: "ap0", goal: "g", status: "running", origin: { kind: "user", ref: "u1" } }),
+    expanded: true, approvalsScope: "none",
+  });
+  check("★ origin 不是会话时不渲染审批段", !detailOrder().includes("approvals"), detailOrder());
+  __unmount();
+
+  // (b) 会话有审批 —— 显示记录 + 范围说明。
   await mountRow({
     task: task({ id: "ap1", goal: "g", status: "failed", failureReason: "x" }),
-    expanded: true, sessionTitle: "t",
+    expanded: true, sessionTitle: "t", approvalsScope: "session",
+    approvals: [
+      { id: "a1", sessionId: "s1", kind: "tool", subject: "读取 config.json",
+        decision: "allow", always: false, decidedAt: 2, detail: null },
+      { id: "a2", sessionId: "s1", kind: "plan", subject: "第一步：收集数据",
+        decision: "approved", always: false, decidedAt: 1, detail: null },
+    ] as Approval[],
   });
-  const detailText = deepText();
-  check("★ 详情区不出现「审批」", !detailText.includes("审批"), detailText.slice(0, 200));
-  check("★ 详情区不出现「尚未记录」这类占位", !detailText.includes("尚未记录"));
+  check("★ 有审批时渲染审批段", detailOrder().includes("approvals"), detailOrder());
+  const text = deepText();
+
+  // ⚠️ 核心断言：范围必须说清。
+  check("★ 标题说明这是「这个对话里的全部」", text.includes("这个对话里的全部"), text.slice(0, 260));
+  // 反向：不许声称是本任务的。
+  check("★ 不声称是「本任务的审批」（那会是谎话）",
+    !text.includes("本任务的审批") && !text.includes("这条任务的审批"), text.slice(0, 260));
+
+  check("★ 审批条目渲染出来了", text.includes("读取 config.json") && text.includes("第一步：收集数据"));
+  check("★ 七种结论各有自己的文案（allow 显示「允许」）", text.includes("允许"), text.slice(0, 260));
+  check("★ 计划批准显示「批准了计划」（不是笼统的「允许」）", text.includes("批准了计划"));
+  __unmount();
+
+  // (c) 加载中 / 空态
+  await mountRow({
+    task: task({ id: "ap2", goal: "g", status: "running" }),
+    expanded: true, approvalsScope: "session", approvals: [], approvalsLoading: true,
+  });
+  check("★ 加载中显示「正在读取…」", deepText().includes("正在读取"), deepText().slice(0, 200));
+  __unmount();
+
+  await mountRow({
+    task: task({ id: "ap3", goal: "g", status: "running" }),
+    expanded: true, approvalsScope: "session", approvals: [], approvalsLoading: false,
+  });
+  const emptyText = deepText();
+  check("★ 空态说清「这个对话里还没有审批记录」", emptyText.includes("还没有审批记录"), emptyText.slice(0, 200));
+  // 空态不能写成「记录丢了」那类表述 —— 那会让人以为系统出错。
+  check("★ 空态不说「丢失 / 失败」", !emptyText.includes("丢失") && !emptyText.includes("记录失败"));
+  __unmount();
+
+  // (d) cancelled 不能显示成「拒绝」（T109 的核心区分）
+  await mountRow({
+    task: task({ id: "ap4", goal: "g", status: "running" }),
+    expanded: true, approvalsScope: "session",
+    approvals: [
+      { id: "c1", sessionId: "s1", kind: "tool", subject: "Write",
+        decision: "cancelled", always: false, decidedAt: 1, detail: null },
+    ] as Approval[],
+  });
+  const cancelText = deepText();
+  check("★ cancelled 显示「会话取消」", cancelText.includes("会话取消"), cancelText.slice(0, 200));
+  check("★ cancelled **不**显示成「拒绝」（用户没拒绝过任何东西）",
+    !cancelText.includes("拒绝"), cancelText.slice(0, 200));
   __unmount();
 }
 

@@ -61,6 +61,10 @@ function makeBridge(): {
   const askApproval = (sessionId: string, requestId: string, toolName: string, description?: string) =>
     bridge.makeApprovalHandler(sessionId, emit)({
       requestId, toolName,
+      // `ApprovalRequest.input` 是必填（`provider.ts:292`）。给一个**不会被
+      // redactValue 打码的平凡值** —— 这里要验的是「记录里没有 input 原文」，
+      // 用一个会触发打码的形状会把那条断言搞混。
+      input: {},
       ...(description === undefined ? {} : { description }),
     });
   const askQuestion = (sessionId: string, requestId: string, question: string) =>
