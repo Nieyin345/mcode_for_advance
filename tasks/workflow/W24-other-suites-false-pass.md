@@ -195,3 +195,119 @@ node scripts/run-smokes.mjs workflow-ui-smoke > /tmp/o 2>&1; grep -c "isOnlyOffi
 
 **如果 `workflow-ui-smoke` 在你的必跑清单里：**照常跑，红了先用上面的命令判别，
 在回写里注明「红在 O5 批一，已按判别命令确认」，**不要花时间做单文件回滚对照。**
+
+---
+
+## 总控补充（2026-10-24 23:35）：与 Office 的 O5 会不会撞车
+
+**Office 主线在做 O5（OnlyOffice 全部删掉），分三批：**
+
+| 批 | 范围 |
+|---|---|
+| 批一 | `packages/contracts/**`（已提交 `bd7c8cd5`） |
+| 批二 | `apps/desktop/src/main/**` + `preload/**`（**进行中**） |
+| 批三 | `apps/desktop/src/renderer/**` |
+
+**我核过你要改的东西会不会撞上它：**
+
+```bash
+$ for d in o0-format-fidelity-smoke o4-docs-close-smoke t29-document-view-close-u1 \
+           t30-document-tools-u1 t46-approval-card-u1 t7-genoffice-u1; do
+    grep -l "onlyoffice\|OnlyOffice" apps/desktop/scripts/$d/*.mjs apps/desktop/scripts/$d/*.ts | wc -l
+  done
+0  （全部 0）
+```
+
+**结论：这 6 套里没有一个提到 OnlyOffice，而且它们都在 `apps/desktop/scripts/` 下，
+不在 O5 三批的任何一批里。直接撞车：没有。**
+
+### 但有一层**间接**风险，必须知道
+
+这些套件的 `run.mjs` 会**打包 `src/main/**` 与 `renderer/**`** 来跑。
+而批二/批三正在改那两个目录 —— **所以你跑套件时可能撞上构建期失败**（就像 `workflow-ui-smoke` 现在那样）。
+
+**判别方法（Office 总控给的，我实测成立）：**
+
+```bash
+cd apps/desktop
+node scripts/run-smokes.mjs <套件名> > /tmp/o 2>&1; echo "EXIT=$?"; grep -c "isOnlyOffice\|onlyoffice" /tmp/o
+```
+
+- **> 0** → 是 O5 在途，**别查了，也别去做回滚对照**；
+- **= 0** → 是你的，正常排查。
+
+**时间预期：2–4 小时**（Office 总控会主动通知批三完成）。
+
+### 对你的实际影响
+
+**你要改的是 `run.mjs` 的退出码判定逻辑，那部分不依赖 `src/` 编译过。**
+所以：
+
+- **优先做「结构 + 自检」的部分**（`wrapper-verdict` 那样的纯判据 + 自检），那部分不受 O5 影响；
+- **「跑一次真实构建失败」的实测**如果撞上 O5 的构建失败，**那正好也是构建失败** ——
+  用它测「构建失败会不会被读成 PASS」仍然有效，**但要在回写里注明「这次失败来自 O5，不是我自己造的」**；
+- 如果完全跑不起来，**照实说，别硬凑证据**。
+
+---
+
+## ⚠️ 总控第二次补充（2026-10-24 23:50）：我说小了，实际范围更大
+
+**我先前说「O5 只会让 `workflow-ui-smoke` 红」—— 错了。**
+
+**准确的是：任何打包 `apps/desktop/src/renderer/**` 的套件，在 O5 批三完成前都会构建失败。**
+
+我实测确认（`cd apps/desktop && npx tsc --noEmit -p tsconfig.json`）：
+
+```
+EXIT=2
+main/preload 错误: 0        ← 批二已落地，主进程干净
+renderer 错误:    38        ← 批三还没做
+总数:             45
+```
+
+### 对你要改的 6 套
+
+**`t29` / `t30` / `t46` / `t7` 都是真 Electron U1 —— 它们会打包渲染端，现在跑一定构建失败。**
+
+| 套件 | 现在能真跑吗 |
+|---|---|
+| `t29-document-view-close-u1` | ❌ 会红（U1） |
+| `t30-document-tools-u1` | ❌ 会红（U1） |
+| `t46-approval-card-u1` | ❌ 会红（U1） |
+| `t7-genoffice-u1` | ❌ 会红（U1） |
+| `o0` / `o4` / `onlyoffice-sdk-origin-smoke` | 你自己判断打不打包渲染端 |
+
+### 开工前先跑这三条
+
+```bash
+cd apps/desktop
+npx tsc --noEmit -p tsconfig.json > /tmp/tsc.txt 2>&1; echo "EXIT=$?"
+grep -cE "^src/(main|preload)/" /tmp/tsc.txt      # 期望 0
+grep -cE "^src/renderer/" /tmp/tsc.txt            # 现在 38，批三落地后降到 0
+```
+
+- **`main`/`preload` > 0** → O5 把主进程弄坏了，告诉总控；
+- **`renderer` > 0** → **是 O5 批三没做完，正常，等它**（预估 1–2 小时）。
+
+### 所以做法要调整
+
+**优先做「不依赖 `src/` 编译」的部分：**
+
+1. **纯判据**：把「拿到退出码之后怎么判」抽成可 import 的模块（照 `t8-node-red-u1/wrapper-verdict.mjs` 的形状）
+   —— **那部分可以完全不受 O5 影响地写完并自检**；
+2. **自检**：像 `wrapper-verdict.mjs` 那样用构造输入跑断言 + 一次真实 ENOENT 测量 —— **不需要打包 `src/`**；
+3. **改各套件 `run.mjs`**：改的是判定那几行，**不需要真跑一遍才算改对**（但要在回写里说清「没实跑是因为 O5」）；
+4. **真跑确认**：等 O5 批三落地，或只跑不打包渲染端的那几套。
+
+**如果某套必须真跑才能确认 —— 照实说「等 O5」，不要硬凑证据。**
+
+### 判别底线
+
+**如果跑出来是构建期失败（`X [ERROR]` / `No matching export` / `Unterminated string literal`），
+那不是「测试红了」，是「根本没跑起来」。**
+
+```bash
+node scripts/run-smokes.mjs <套件> > /tmp/o 2>&1; echo "EXIT=$?"; grep -c "isOnlyOffice\|onlyoffice\|No matching export" /tmp/o
+```
+
+**> 0 → O5 在途，别查别做回滚对照。**
