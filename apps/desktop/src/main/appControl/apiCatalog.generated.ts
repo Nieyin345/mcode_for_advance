@@ -88,9 +88,9 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "approval.list",
   "channel": "approval:list",
   "doc": "【T109】审批历史（按会话）。签名里没有 taskId —— 见 approval.ts 的说明。",
-  "input": "{ sessionId: string // 哪个会话的审批历史。**必填** —— 全局列表没有意义（会混所有会话）。; limit?: number | undefined // 上限（1–500，默认 200）。; before?: number | undefined // 游标分页：只取早于这个时间戳的。 }",
-  "inputFull": "{ sessionId: string // 哪个会话的审批历史。**必填** —— 全局列表没有意义（会混所有会话）。; limit?: number | undefined // 上限（1–500，默认 200）。; before?: number | undefined // 游标分页：只取早于这个时间戳的。 }",
-  "output": "{ approvals: Approval[] }"
+  "input": "{ sessionId: string // 哪个会话的审批历史。**必填** —— 全局列表没有意义（会混所有会话）。; before?: number | undefined // 游标分页：只取早于这个时间戳的。; limit?: number | undefined // 上限（1–500，默认 200）。 }",
+  "inputFull": "{ sessionId: string // 哪个会话的审批历史。**必填** —— 全局列表没有意义（会混所有会话）。; before?: number | undefined // 游标分页：只取早于这个时间戳的。; limit?: number | undefined // 上限（1–500，默认 200）。 }",
+  "output": "{ approvals: { id: string; kind: 'tool' | 'question' | 'plan'; sessionId: string; always: boolean; decidedAt: number; subject: string; decision: 'deny' | 'cancelled' | 'app… }"
  },
  {
   "method": "automation.preflight",
@@ -402,7 +402,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "Rewind a turn: restore the given files to their pre-turn state. Works for the latest turn, any historical turn, or a session reopened after restart (the renderer passes the explicit entries). Returns the paths that were actually restored AND the ones that wer…",
   "input": "{ sessionId: string; files: { kind: 'modified' | 'created'; filePath: string; adds: number; dels: number; before: string; }[]; targetFiles: string[] }",
   "inputFull": "{ sessionId: string; files: { kind: 'modified' | 'created'; filePath: string; adds: number; dels: number; before: string; }[]; targetFiles: string[] }",
-  "output": "{ restored: string[]; failed: string[]; conflicts: string[] }"
+  "output": "{ restored: string[]; failed: string[]; conflicts: string[]; unrestorable: string[] }"
  },
  {
   "method": "claude.saveSubagents",
@@ -688,9 +688,9 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "document.toolDescribe",
   "channel": "document:toolDescribe",
   "doc": "【T24】单个工具的完整参数；CLI 承载的 op 取 `genoffice guide` 的原文。",
-  "input": "{ tool: string; app?: 'pdf' | 'markdown' | 'html' | 'docs' | 'sheets' | 'slides' | undefined; detail?: 'full' | 'compact' | undefined // full = 强制从 CLI 取 `guide <domain> <op>` 的完整 schema（CLI 承载的 op）。 }",
-  "inputFull": "{ tool: string; app?: 'pdf' | 'markdown' | 'html' | 'docs' | 'sheets' | 'slides' | undefined; detail?: 'full' | 'compact' | undefined // full = 强制从 CLI 取 `guide <domain> <op>` 的完整 schema（CLI 承载的 op）。 }",
-  "output": "{ ok: true; app: 'pdf' | 'markdown' | 'html' | 'docs' | 'sheets' | 'slides'; tool: string; doc: string; schemaText: string // 参数/示例正文（CLI guide 的原文或目录里的说明）。; route: 'cli' | 'editor'; withheld?: string | undefined // 该工具是否超出 T86 请求级契约（withheld），以及原因。 } | { ok:…"
+  "input": "{ tool: string; detail?: 'full' | 'compact' | undefined // full = 强制从 CLI 取 `guide <domain> <op>` 的完整 schema（CLI 承载的 op）。; app?: 'pdf' | 'markdown' | 'html' | 'docs' | 'sheets' | 'slides' | undefined }",
+  "inputFull": "{ tool: string; detail?: 'full' | 'compact' | undefined // full = 强制从 CLI 取 `guide <domain> <op>` 的完整 schema（CLI 承载的 op）。; app?: 'pdf' | 'markdown' | 'html' | 'docs' | 'sheets' | 'slides' | undefined }",
+  "output": "{ ok: true; app: 'pdf' | 'markdown' | 'html' | 'docs' | 'sheets' | 'slides'; tool: string; doc: string; schemaText: string // 参数/示例正文（CLI guide 的原文或目录里的说明）。; route: 'cli' | 'editor' | 'editor-only'; withheld?: string | undefined // 该工具是否超出 T86 请求级契约（withheld）…"
  },
  {
   "method": "document.toolsList",
@@ -744,8 +744,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "documentView.open",
   "channel": "documentView:open",
   "doc": "【ARC-007】受控文档视图宿主的打开/复用:一个 docId 一个 WebContentsView。URL 只放行 `file://` 与本机回环(主进程复核,fail-closed);同 docId 重复 open 复用视图并更新 url/bounds。",
-  "input": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean; filePath?: string | undefined // Vendor factory 的初始路径，只给 pdf/markdown/html；主进程先过物理工作区围栏。; workflowEngineId?: string | undefined // 工作流引擎 id（`[a-z][a-z0-9-]*`，与 `workflowEngine.*` 同一套形状）。; editor?: 'pdf' | 'markdown' | 'html' | 'slides' | 'sheets' | undefined // 【ARC-007 P1/GA1】编辑器域。`\"slides\"` = 这个视图是演示文稿页：宿主对它的 `openPath` 走 **vendor 解析器**（`slides:op…; mcodeSessionId?: string | undefined // T05c: the Mcode shell's selected conversation at view creation; never accepted as an appr… }",
-  "inputFull": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean; filePath?: string | undefined // Vendor factory 的初始路径，只给 pdf/markdown/html；主进程先过物理工作区围栏。; workflowEngineId?: string | undefined // 工作流引擎 id（`[a-z][a-z0-9-]*`，与 `workflowEngine.*` 同一套形状）。; editor?: 'pdf' | 'markdown' | 'html' | 'slides' | 'sheets' | undefined // 【ARC-007 P1/GA1】编辑器域。`\"slides\"` = 这个视图是演示文稿页：宿主对它的 `openPath` 走 **vendor 解析器**（`slides:op…; mcodeSessionId?: string | undefined // T05c: the Mcode shell's selected conversation at view creation; never accepted as an appr… }",
+  "input": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean; filePath?: string | undefined // Vendor factory 的初始路径，只给 pdf/markdown/html；主进程先过物理工作区围栏。; editor?: 'pdf' | 'markdown' | 'html' | 'sheets' | 'slides' | undefined // 【ARC-007 P1/GA1】编辑器域。`\"slides\"` = 这个视图是演示文稿页：宿主对它的 `openPath` 走 **vendor 解析器**（`slides:op…; workflowEngineId?: string | undefined // 工作流引擎 id（`[a-z][a-z0-9-]*`，与 `workflowEngine.*` 同一套形状）。; mcodeSessionId?: string | undefined // T05c: the Mcode shell's selected conversation at view creation; never accepted as an appr… }",
+  "inputFull": "{ url: string // `file://`（GenOffice 快照的编辑器页）或本机回环 http(s)；主进程复核，见文件头。; docId: string; bounds: { x: number; y: number; width: number; height: number; }; visible: boolean; filePath?: string | undefined // Vendor factory 的初始路径，只给 pdf/markdown/html；主进程先过物理工作区围栏。; editor?: 'pdf' | 'markdown' | 'html' | 'sheets' | 'slides' | undefined // 【ARC-007 P1/GA1】编辑器域。`\"slides\"` = 这个视图是演示文稿页：宿主对它的 `openPath` 走 **vendor 解析器**（`slides:op…; workflowEngineId?: string | undefined // 工作流引擎 id（`[a-z][a-z0-9-]*`，与 `workflowEngine.*` 同一套形状）。; mcodeSessionId?: string | undefined // T05c: the Mcode shell's selected conversation at view creation; never accepted as an appr… }",
   "output": "{ ok: true } | { ok: false; reason: string }"
  },
  {
@@ -1144,8 +1144,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "hooks.issueHostHookGrant",
   "channel": "hooks:issueHostHookGrant",
   "doc": "【MC-061】**用户真实操作**后签发一份主机 hook 授权(落盘)。`grantId` / 时间 / `revoked` 由主进程签发(schema `.strict()`;agent 经 `app_api_call` 够不到这条 —— blocked)。",
-  "input": "{ pluginId: string // 贡献这条 hook 的插件名(manifest name)。; version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; command?: string | undefined // 命令**原文** —— 设置页那颗\"授权这条\"按钮把界面上印的那行命令递上来, 宿主用**唯一一份**摘要函数算 `commandDigest`(渲染端算不了 sha256,也不…; matcher?: string | undefined // matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
-  "inputFull": "{ pluginId: string // 贡献这条 hook 的插件名(manifest name)。; version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; command?: string | undefined // 命令**原文** —— 设置页那颗\"授权这条\"按钮把界面上印的那行命令递上来, 宿主用**唯一一份**摘要函数算 `commandDigest`(渲染端算不了 sha256,也不…; matcher?: string | undefined // matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
+  "input": "{ version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; command?: string | undefined // 命令**原文** —— 设置页那颗\"授权这条\"按钮把界面上印的那行命令递上来, 宿主用**唯一一份**摘要函数算 `commandDigest`(渲染端算不了 sha256,也不…; matcher?: string | undefined // matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。; pluginId?: string | undefined // 贡献这条 hook 的插件名(manifest name)。; hookId?: string | undefined // T63: a saved user hook; host derives event, kind, and digest, never trusts renderer-suppl…; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
+  "inputFull": "{ version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; command?: string | undefined // 命令**原文** —— 设置页那颗\"授权这条\"按钮把界面上印的那行命令递上来, 宿主用**唯一一份**摘要函数算 `commandDigest`(渲染端算不了 sha256,也不…; matcher?: string | undefined // matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。; pluginId?: string | undefined // 贡献这条 hook 的插件名(manifest name)。; hookId?: string | undefined // T63: a saved user hook; host derives event, kind, and digest, never trusts renderer-suppl…; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
   "output": "{ ok: boolean; error?: string | undefined; grant?: HostHookGrant | undefined }"
  },
  {
@@ -1154,7 +1154,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "全部钩子 + 读得见但用不了的条目。**坏条目不静默丢弃** —— 用户写的钩子不生效时, 这一页是唯一能解释为什么的地方。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ hooks: { id: string; command: string; name: string; enabled: boolean; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res…; problems: { where: string; error: string; }[]; fileHealth: 'valid' | 'corrupt' | 'read_e…"
+  "output": "{ hooks: HookSpec[]; problems: { where: string; error: string; }[]; fileHealth: 'valid' | 'corrupt' | 'read_error' | 'missing' }"
  },
  {
   "method": "hooks.listHostHookGrants",
@@ -1168,8 +1168,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "hooks.rebuildCorrupt",
   "channel": "hooks:rebuildCorrupt",
   "doc": "【MC-051】显式「备份损坏原件 → 校验 sha256 → 重建」—— 唯一能吃下整份损坏 hooks.json 的操作。普通 save/remove 在损坏时**拒绝**(不覆盖原字节);这里 备份成功且校验通过才重建,返回备份路径。",
-  "input": "{ hooks?: { id: string; command: string; name: string; enabled: boolean; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res… }",
-  "inputFull": "{ hooks?: { id: string; command: string; name: string; enabled: boolean; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res… }",
+  "input": "{ hooks?: HookSpec[] | undefined }",
+  "inputFull": "{ hooks?: HookSpec[] | undefined }",
   "output": "{ ok: boolean; error?: string | undefined; backupPath?: string | undefined }"
  },
  {
@@ -1200,16 +1200,16 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "hooks.save",
   "channel": "hooks:save",
   "doc": "存一条钩子(**整份给过来**,不是\"改哪个字段\")—— 用户从头写的东西局部更新没意义,整份过来让校验只在一处发生。返回 `{ ok, error? }`。",
-  "input": "{ hook: { id: string; command: string; name: string; enabled: boolean; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res… }",
-  "inputFull": "{ hook: { id: string; command: string; name: string; enabled: boolean; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res… }",
+  "input": "{ hook: { action: { command: string; kind: 'command'; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
+  "inputFull": "{ hook: { action: { command: string; kind: 'command'; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
   "method": "hooks.test",
   "channel": "hooks:test",
   "doc": "拿一条**还没存下来**的配置试跑一次,把那一次的结果返回。",
-  "input": "{ hook: { id: string; command: string; name: string; enabled: boolean; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res… }",
-  "inputFull": "{ hook: { id: string; command: string; name: string; enabled: boolean; event: 'error' | 'user.message' | 'tool.use' | 'tool.result' | 'approval.request' | 'request.res… }",
+  "input": "{ hook: { action: { command: string; kind: 'command'; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
+  "inputFull": "{ hook: { action: { command: string; kind: 'command'; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
   "output": "{ run: HookRun }"
  },
  {
@@ -2072,9 +2072,17 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "modules.install",
   "channel": "modules:install",
   "doc": "安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单,以及这次变更取消掉的运行中任务数/失败原因(升级换执行体时为非零)。",
-  "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('browser.control' | 'code.execute' | 'document.edit' | 'documen…; confirmReadAccess: true; grantedPermissions?: ('browser.control' | 'code.execute' | 'document.edit' | 'document.read' | 'files.read' | 'files.watch' | 'files.write' | 'git.read' | 'git.write' | 'hooks.mana… // Explicit user-chosen subset of the manifest, including an empty grant.; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。 }",
-  "inputFull": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('browser.control' | 'code.execute' | 'document.edit' | 'documen…; confirmReadAccess: true; grantedPermissions?: ('browser.control' | 'code.execute' | 'document.edit' | 'document.read' | 'files.read' | 'files.watch' | 'files.write' | 'git.read' | 'git.write' | 'hooks.mana… // Explicit user-chosen subset of the manifest, including an empty grant.; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。 }",
+  "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('browser.control' | 'code.execute' | 'document.edit' | 'documen…; confirmReadAccess: true; grantedPermissions?: ('browser.control' | 'code.execute' | 'document.edit' | 'document.read' | 'files.read' | 'files.watch' | 'files.write' | 'git.read' | 'git.write' | 'hooks.mana… // Explicit user-chosen subset of the manifest, including an empty grant.; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。; installConsent?: 'allow-once' | 'allow-always' | 'deny' | undefined // 【T18】安装卡片的选择（见 {@link MODULE_INSTALL_CONSENT_DECISIONS}）。 }",
+  "inputFull": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('browser.control' | 'code.execute' | 'document.edit' | 'documen…; confirmReadAccess: true; grantedPermissions?: ('browser.control' | 'code.execute' | 'document.edit' | 'document.read' | 'files.read' | 'files.watch' | 'files.write' | 'git.read' | 'git.write' | 'hooks.mana… // Explicit user-chosen subset of the manifest, including an empty grant.; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。; installConsent?: 'allow-once' | 'allow-always' | 'deny' | undefined // 【T18】安装卡片的选择（见 {@link MODULE_INSTALL_CONSENT_DECISIONS}）。 }",
   "output": "{ catalog: ModuleCatalog; cancelledTasks: number; cancelFailures: { taskId: string; reason: string; }[] }"
+ },
+ {
+  "method": "modules.installVsix",
+  "channel": "modules:installVsix",
+  "doc": "【F006】从一个 `.vsix` 文件安装真实 VS Code 扩展（走 `VscodeL1Bridge`）。 **现状的能力边界（读之前先看这里）**：只有**可执行入口 ≤ 24 KiB**的扩展装得进来。 真实市场扩展普遍 100 KB 以上（`rainbow-csv` 的 `extension.js` 是 136 KB）， 会被这条限额拒绝，错误信息会点名「exceeds the L1 source limit」。 与 `modules.install` 的关系：**同一个宿主能力的另一条入口**。两者…",
+  "input": "{ path: string // 用户从文件选择器里选中的 `.vsix` 路径（绝对路径）。; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】vsix 里带的 `extension.js` 是要在本机跑的程序 —— 与 `modules.install` 同一条规矩：同意\"读我选中的文件\"不等于同意\"在…; installConsent?: 'allow-once' | 'allow-always' | 'deny' | undefined }",
+  "inputFull": "{ path: string // 用户从文件选择器里选中的 `.vsix` 路径（绝对路径）。; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】vsix 里带的 `extension.js` 是要在本机跑的程序 —— 与 `modules.install` 同一条规矩：同意\"读我选中的文件\"不等于同意\"在…; installConsent?: 'allow-once' | 'allow-always' | 'deny' | undefined }",
+  "output": "{ catalog: ModuleCatalog; cancelledTasks: number; cancelFailures: { taskId: string; reason: string; }[]; moduleId: string; ignoredContributions: IgnoredVsixContribution[] }"
  },
  {
   "method": "modules.invoke",
@@ -2797,38 +2805,6 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: false; kind: 'invalid'; problems: { path: string; message: string; }[] } | { ok: false; kind: 'refused'; code: string; reason: string } | { ok: true; kind: 'applied'; deployment: SceneDeploymentWire; readback: SceneReadbackWire }"
  },
  {
-  "method": "task.list",
-  "channel": "task:list",
-  "doc": "",
-  "input": "{ status?: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
-  "inputFull": "{ status?: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
-  "output": "{ tasks: { status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string; createdAt: number; origin: { kind: 'user' | 'agent' | 'w… }"
- },
- {
-  "method": "task.get",
-  "channel": "task:get",
-  "doc": "",
-  "input": "{ id: string }",
-  "inputFull": "{ id: string }",
-  "output": "null | { status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath?: st…"
- },
- {
-  "method": "task.accept",
-  "channel": "task:accept",
-  "doc": "验收通过。**只有用户能调**（执行方路径够不到这两个方法）。",
-  "input": "{ id: string; evidence: string // 验收证据 —— **必填**。没有理由的「通过」不算验收。 }",
-  "inputFull": "{ id: string; evidence: string // 验收证据 —— **必填**。没有理由的「通过」不算验收。 }",
-  "output": "{ status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath?: string | …"
- },
- {
-  "method": "task.reject",
-  "channel": "task:reject",
-  "doc": "退回返修。",
-  "input": "{ id: string; reason: string // 退回理由 —— **必填**。返修的人要知道改什么。 }",
-  "inputFull": "{ id: string; reason: string // 退回理由 —— **必填**。返修的人要知道改什么。 }",
-  "output": "{ status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath?: string | …"
- },
- {
   "method": "session.archive",
   "channel": "session:archive",
   "doc": "Set a session's archived flag (soft-delete; restorable).",
@@ -3205,6 +3181,38 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ sources: ExternalSkillInfo[] }"
  },
  {
+  "method": "task.accept",
+  "channel": "task:accept",
+  "doc": "验收通过。**只有用户能调**（执行方路径够不到这两个方法）。",
+  "input": "{ id: string; evidence: string // 验收证据 —— **必填**。没有理由的「通过」不算验收。 }",
+  "inputFull": "{ id: string; evidence: string // 验收证据 —— **必填**。没有理由的「通过」不算验收。 }",
+  "output": "{ status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath…"
+ },
+ {
+  "method": "task.get",
+  "channel": "task:get",
+  "doc": "",
+  "input": "{ id: string }",
+  "inputFull": "{ id: string }",
+  "output": "null | { status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; proj…"
+ },
+ {
+  "method": "task.list",
+  "channel": "task:list",
+  "doc": "",
+  "input": "{ status?: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
+  "inputFull": "{ status?: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
+  "output": "{ tasks: { status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string; createdAt: number; origin: { kind: 'session' | 'user' | … }"
+ },
+ {
+  "method": "task.reject",
+  "channel": "task:reject",
+  "doc": "退回返修。",
+  "input": "{ id: string; reason: string // 退回理由 —— **必填**。返修的人要知道改什么。 }",
+  "inputFull": "{ id: string; reason: string // 退回理由 —— **必填**。返修的人要知道改什么。 }",
+  "output": "{ status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath…"
+ },
+ {
   "method": "terminal.create",
   "channel": "terminal:create",
   "doc": "Spawn a PTY in the project cwd (or a subdir).",
@@ -3296,16 +3304,16 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "unattended.approve",
   "channel": "unattended:approve",
   "doc": "【MC-059】**用户签发无人值守任务计划的计划级授权** —— 用户在无人值守计划预览页点「批准」的落点。宿主把一份有界操作序列(`session.create`)铸成一枚绑定目标项目权威路径、签发主体(**写死为 user**)、有效期、次数上限的计划级授权。**只有桌面渲染端够得到它** —— agent 侧 `policyFor` 判 blocked(批准主体必须是用户本人);手机端 `webApi.ts` 显式 unsupported。",
-  "input": "{ projectId: string // 这些操作跑在**哪个项目**里(权威路径由签发口从项目行解析,不采信调用方给的路径)。; ttlMs: number // 授权有效期的毫秒数(签发口只拒非正数;具体上限由签发口策略定)。; planId: string // 一次批准 / 执行的稳定 id(重试是同一 id 的覆盖,不是新计划)。; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[] // 有界的操作序列(至少一条)。; maxCount: number // 次数量上限(签发口要求 ≥ 操作条数)。 }",
-  "inputFull": "{ projectId: string // 这些操作跑在**哪个项目**里(权威路径由签发口从项目行解析,不采信调用方给的路径)。; ttlMs: number // 授权有效期的毫秒数(签发口只拒非正数;具体上限由签发口策略定)。; planId: string // 一次批准 / 执行的稳定 id(重试是同一 id 的覆盖,不是新计划)。; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[] // 有界的操作序列(至少一条)。; maxCount: number // 次数量上限(签发口要求 ≥ 操作条数)。 }",
+  "input": "{ projectId: string // 这些操作跑在**哪个项目**里(权威路径由签发口从项目行解析,不采信调用方给的路径)。; ttlMs: number // 授权有效期的毫秒数(签发口只拒非正数;具体上限由签发口策略定)。; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[] // 有界的操作序列(至少一条)。; planId: string // 一次批准 / 执行的稳定 id(重试是同一 id 的覆盖,不是新计划)。; maxCount: number // 次数量上限(签发口要求 ≥ 操作条数)。 }",
+  "inputFull": "{ projectId: string // 这些操作跑在**哪个项目**里(权威路径由签发口从项目行解析,不采信调用方给的路径)。; ttlMs: number // 授权有效期的毫秒数(签发口只拒非正数;具体上限由签发口策略定)。; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[] // 有界的操作序列(至少一条)。; planId: string // 一次批准 / 执行的稳定 id(重试是同一 id 的覆盖,不是新计划)。; maxCount: number // 次数量上限(签发口要求 ≥ 操作条数)。 }",
   "output": "{ ok: true; kind: 'granted'; planId: string; grantId: string; projectId: string; scopedProjectPath: string // 授权钉住的权威资源路径(= 目标项目规范化后的 `projectPath`)。; maxCount: number; operationCount: number; expiresAt: number } | { ok: false; kind: 'refused'; code: string; …"
  },
  {
   "method": "unattended.run",
   "channel": "unattended:run",
   "doc": "【MC-059】**执行一份已批准的无人值守计划** —— 授权**不给内容、只给 `grantId`**,由宿主从 `GrantStore` 取回(含失效态);取不到(不存在 / 已撤销 / 已过期)→ 拒绝执行、一步不建。逐条操作交给**唯一业务命令** `createSessionAndSend`(跑在计划授权之下),任一条被拒即**就地停住**(绝不静默重试或假装跑完)。",
-  "input": "{ projectId: string; grantId: string // 上一次 `unattended.approve` 签出的授权 id。; planId: string; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[]; maxCount: number; initiatorSessionId?: string | undefined // **发起者坐标**(MC-059 残余 ②)—— 渲染端坐在哪条会话里点的「执行」。它**不是**发起者 身份本身,只是一枚宿主**能核实**的坐标:宿主拿它去 `Session… }",
-  "inputFull": "{ projectId: string; grantId: string // 上一次 `unattended.approve` 签出的授权 id。; planId: string; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[]; maxCount: number; initiatorSessionId?: string | undefined // **发起者坐标**(MC-059 残余 ②)—— 渲染端坐在哪条会话里点的「执行」。它**不是**发起者 身份本身,只是一枚宿主**能核实**的坐标:宿主拿它去 `Session… }",
+  "input": "{ projectId: string; grantId: string // 上一次 `unattended.approve` 签出的授权 id。; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[]; planId: string; maxCount: number; initiatorSessionId?: string | undefined // **发起者坐标**(MC-059 残余 ②)—— 渲染端坐在哪条会话里点的「执行」。它**不是**发起者 身份本身,只是一枚宿主**能核实**的坐标:宿主拿它去 `Session… }",
+  "inputFull": "{ projectId: string; grantId: string // 上一次 `unattended.approve` 签出的授权 id。; operations: { operationId: string; title?: string | undefined; expectedRevision?: string | undefined; prompt?: string | undefined; }[]; planId: string; maxCount: number; initiatorSessionId?: string | undefined // **发起者坐标**(MC-059 残余 ②)—— 渲染端坐在哪条会话里点的「执行」。它**不是**发起者 身份本身,只是一枚宿主**能核实**的坐标:宿主拿它去 `Session… }",
   "output": "{ ok: false; kind: 'refused'; code: string; reason: string } | { ok: true; kind: 'ran'; report: UnattendedExecutionReportWire }"
  },
  {
