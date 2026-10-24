@@ -373,3 +373,58 @@ echo "含 onlyoffice: $(grep -icE 'onlyoffice' /tmp/tsc.txt)"
 
 > **这是「判据 vs 清单」的又一个实例**：「`grep onlyoffice`」依赖措辞（清单式），
 > 「`renderer` 的错误数」不依赖措辞（判据式）。
+
+---
+
+## ⚠️ 总控第四次补充（2026-10-25 00:15）：**我上面那条命令有个致命坑**
+
+### 我先前写的是
+
+```bash
+cd apps/desktop
+npx tsc --noEmit -p tsconfig.json > /tmp/tsc.txt 2>&1; echo "EXIT=$?"
+grep -cE "^src/(main|preload)/" /tmp/tsc.txt      # 期望 0
+grep -cE "^src/renderer/" /tmp/tsc.txt            # 现在 38
+```
+
+**这条在 `cd apps/desktop` 之后是对的。但如果你从仓库根跑，`^src/` 会数出 0。**
+
+我实测：
+
+| 在哪跑 | `^src/renderer/` | `^apps/desktop/src/renderer/` |
+|---|---|---|
+| 仓库根 | **0** ❌ | **38** ✅ |
+| `apps/desktop` | **38** ✅ | **0** ❌ |
+
+**`grep -c` 数不到时返回 0，不报错 —— 而 0 正好等于「全清了」的答案。**
+
+**这是最坏的一种判据失效：它答的不是「错」，是「一切正常」。**
+
+### 改用这个（`(^|/)` 让前缀可有可无，从哪跑都对）
+
+```bash
+cd apps/desktop
+npx tsc --noEmit -p tsconfig.json > /tmp/tsc.txt 2>&1; echo "EXIT=$?"
+echo "renderer: $(grep -cE '(^|/)src/renderer/' /tmp/tsc.txt)"
+echo "scripts:  $(grep -cE '(^|/)scripts/' /tmp/tsc.txt)"
+echo "总数:     $(grep -cE 'error TS' /tmp/tsc.txt)"
+```
+
+**我实测（2026-10-25 00:15）：**
+
+```
+renderer: 38
+scripts:  7
+总数:     45
+```
+
+**判读：**
+
+| 项 | 现在 | O5 批三完成后 | 含义 |
+|---|---|---|---|
+| `renderer` | **38** | **应为 0** | 0 = O5 全清 |
+| `scripts` | **7** | 还是 7 | **不是 O5**，是 `document-router-smoke` 等套件的错误 |
+| `总数` | 45 | 应为 7 | 38 + 7 |
+
+**注意：`总数` 不等于 `renderer + main + preload`** —— 还有第四类（`scripts/`）。
+不要用总数去反推，直接看 `renderer` 那个数。
