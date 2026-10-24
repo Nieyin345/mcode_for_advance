@@ -465,3 +465,82 @@ html     literal=FAIL  expectation=unexpected-failure
 
 **⚠️ 这一条是执行会话在中间态跑出来的，写卡人没有复跑。** 它的价值在于
 **它说明了「4 红」这个数字本身不携带修复状态** —— 而如果只看计数，会读成「一个都没修好」。
+
+---
+
+## 十二、★ 排查记录：为什么「3 格 all-pass」差点被误读（2026-10-24 深夜）
+
+### 12.1 一个真绿，一个假绿的区分线
+
+执行会话跑出：
+
+```
+docs      all-pass   (host-cas，本来就对)
+sheets    all-pass   (vendor-own-guard，本来就对)
+pdf       all-pass   ← 守卫生效
+markdown  all-pass   ← 守卫生效
+html      all-pass   ← 守卫生效
+slides    unexpected-failure
+```
+
+**关键问题：pdf/markdown/html 的 `all-pass`，是「守卫在拦」，还是「守卫没装、但别的什么东西让它绿了」？**
+
+**区分方法（必须有）：** 守卫在「没有打开会话」时**不拦、直接写**：
+
+```ts
+const opened = deps.openedRevisionFor(real);
+if (opened === null) { await ctx.write(); return; }   // ← 不拦
+```
+
+**所以「不拦」也会让 4b（盘上保住外部内容）成立吗？**
+**不成立 —— 不拦的话外部内容会被覆盖，4b 必然红。**
+**4b 在四格全绿，所以它们真的被拦了。**
+
+**这句话是本节的全部价值：`4b` 才是「守卫生效」的判据，`all-pass` 不是。**
+`all-pass` 也可以由「守卫根本没装 + 判据认不出」组合出来（那会让 4a 红而不是绿，所以不是这次的情形，
+但**判据组合会骗人这件事，必须在卡上写清哪一条才是真凭据**）。
+
+### 12.2 写卡人自己犯的错（写在这里当反面样本）
+
+**我（写卡人）据以下了结论：**
+
+> `openPath` 只被 `ipc/documentView.ts` 的两条 IPC 通道调用，vendor 原生视图（slides/pdf/md/html）根本不走这条路。
+> 所以 `documentViewHost.sessions` 里只有 docs 的会话，`revisionForPath` 对它们是 `null`，守卫走的是「不拦」分支。
+
+**错了。** 三行代码推翻它：
+
+```
+documentViewHost.ts:539   kind = ... (input.editor === "slides" && url === "genoffice-app://slides/index.html") ? input.editor : null
+documentViewHost.ts:686   if (kind !== null) {
+documentViewHost.ts:688     const claim = this.claimOpenedPath(input.docId, input.filePath!, view.webContents);
+documentViewHost.ts:1424    revision: fileContentVersion(filePath),       ← 真的记了
+```
+
+**`claimOpenedPath` 在 `open()` 的 kind 分支里被调用，kind 包含 slides/pdf/markdown/html/sheets。
+供应商视图的会话在表里，`revisionForPath` 对它们有效。**
+
+**错因**：我只 `grep` 了 `openPath` 的**调用者**，看到 `claimOpenedPath` 这个字不在
+`openPath` 的实现里，就以为它们无关。**而 `claimOpenedPath` 是 `open()` 自己调的。**
+
+**这是 CLAUDE.md 第十五条（「提到它」不是「守着它」）的反面**：
+**我按名字搜了调用者，而正确的做法是读 `open()` 的实现。**
+**R 名字没出现，不等于没有关系 —— 它可能被同一条函数链里的另一个函数调了。**
+
+**代价**：我上一条指令要求执行会话「在 `documentViewHost` 里登记 slides 的打开会话」。
+**那会重复登记，还可能覆盖已有 session。** 幸好它在读我的消息前没有动手。
+
+### 12.3 slides 的 `unexpected-failure` 仍未定位（本节不做结论）
+
+**已知**：
+- `slides:save` 的 handler 第一件事是 `const session = sessions.get(e.sender.id); if (!session) return { ok:false, error:'no file open' }`；
+- 那条错误不匹配 `lib.ts` 的冲突签名 → `4a=false` → `unexpected-failure`；
+- **守卫在 `session` 存在之前根本不会被调到。**
+
+**所以排查方向是 `sessions.get(sender.id)` 为什么没命中**，
+不是「守卫装没装」，也不是「`revisionForPath` 有没有值」。
+
+**⚠️ 这条结论我没有验证过 —— 它来自读代码，不是跑出来的。** 执行会话正在加日志确认。
+
+**如果查出来生产路径也一样（不只是 harness），那用户在真实应用里点开 .pptx 保存会得到
+`no file open`** —— 那是一个比 O9 更严重的可用性缺陷，需要判断是不是 O10 引入的
+（`slide-lifecycle` 的既有套件应当能回答：它有没有覆盖「打开→保存」）。
