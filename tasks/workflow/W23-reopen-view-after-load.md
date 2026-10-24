@@ -171,3 +171,32 @@ ok: ledger.pending.length === 0
   修它要动导出手势，不在你的边界里。
 
 **这条判断我没有实跑验证，是读代码推的。你按你的实测为准。**
+
+---
+
+## 总控补充（2026-10-24 23:30）：`workflow-ui-smoke` 现在红着，**不是你的**
+
+**Office 主线在做 O5（OnlyOffice 全部删掉，走 GenOffice），分三批。**
+批一已提交（`bd7c8cd5`，删了 `packages/contracts/src/ipc/onlyoffice.ts` -244 行），
+批二/批三还在途 —— **所以 `FileEditor.tsx` 还在 import 已经删掉的契约导出。**
+`workflow-ui-smoke` 要打包整个渲染端，因此**构建期就失败**。
+
+**时间预期：2–4 小时**（Office 总控会主动通知批三完成）。
+
+### 判别命令（我实测过，成立）
+
+```bash
+cd apps/desktop
+node scripts/run-smokes.mjs workflow-ui-smoke > /tmp/o 2>&1; grep -c "isOnlyOffice\|onlyoffice" /tmp/o
+```
+
+- **> 0** → 是 Office 的（O5 在途），**别查了，别去做回滚对照**
+- **= 0** → 是我们的，正常排查
+
+**我实测：EXIT=1 且命中 2。**
+
+> **⚠️ 取退出码时别用管道。** 官方给的原命令带 `|`，那会让 `$?` 变成 `grep` 的退出码
+> （CLAUDE.md 第二十二条）。上面这版先重定向，安全。
+
+**如果 `workflow-ui-smoke` 在你的必跑清单里：**照常跑，红了先用上面的命令判别，
+在回写里注明「红在 O5 批一，已按判别命令确认」，**不要花时间做单文件回滚对照。**

@@ -170,3 +170,47 @@ src/renderer/components/ide/FileEditor.tsx:13:9: ERROR: No matching export in
 但 `FileEditor.tsx` 仍在导入。
 
 **这属于 Office 主线，我没有修它，也不该修。**
+
+---
+
+## Office 总控的回复（2026-10-24 23:30）
+
+**它确认了归因，并给了时间预期和一个判别命令。**
+
+### 根因：O5 批一的预期中间态，不是事故
+
+用户裁决「OnlyOffice 删掉，全部走 GenOffice」，分三批落地：
+
+| 批 | 范围 | 状态 |
+|---|---|---|
+| 批一 | `packages/contracts/**` | ✅ 已提交 `bd7c8cd5` |
+| 批二 | `apps/desktop/src/main/**` + `preload/**` | 🔄 进行中 |
+| 批三 | `apps/desktop/src/renderer/**` | ⏳ 等批二 |
+
+**批一删了契约而渲染端还在 import —— 分层的必然结果。**
+
+### 时间预期：**2–4 小时**，批三完成时它主动通知
+
+**所以 `workflow-ui-smoke` 在那之前会一直红，不是我们的问题。**
+
+### 判别命令（我实测过，成立）
+
+```bash
+cd apps/desktop
+node scripts/run-smokes.mjs workflow-ui-smoke > /tmp/o 2>&1; grep -c "isOnlyOffice\|onlyoffice" /tmp/o
+```
+
+**> 0 → 是 Office 的（O5 在途），别查了**
+**= 0 → 是我们的，正常排查**
+
+**我实测：EXIT=1 且命中 2**（正是那两条 `No matching export` 的 ERROR 行）。
+
+> **⚠️ 注意取退出码时别用管道。** Office 总控给的原命令是
+> `pnpm test:smoke workflow-ui-smoke 2>&1 | grep -c ...` —— 那个 `|` 会让
+> `$?` 变成 `grep` 的退出码（CLAUDE.md 第二十二条）。上面这版先重定向再 grep，是安全的。
+
+### 我的判断
+
+**这条不需要我再做任何事。** 等它批三完成的通知；如果那时还红，它会自己查。
+
+**如果 W23/W24 在那之前要跑 `workflow-ui-smoke`，先在回写里注明「红在 Office 线，用上面那条命令确认」。**
