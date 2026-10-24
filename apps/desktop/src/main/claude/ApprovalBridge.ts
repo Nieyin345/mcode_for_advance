@@ -8,6 +8,8 @@
  */
 import type { RuntimeEvent, AskUserQuestionItem, PermissionMode } from "@contracts/runtime";
 import { APP_DANGER_APPROVAL_PREFIX } from "@contracts/appControl";
+import { insertApproval, type ApprovalOutcome, type ApprovalKind } from "@main/store/approvalSchema.js";
+import { log } from "@main/lib/logger.js";
 import type {
   ApprovalRequest,
   ProviderApprovalDecision,
@@ -27,6 +29,17 @@ interface PendingApproval {
   /** Tool name being approved — recorded into alwaysAllowedTools when the
    *  user grants with `always: true`. */
   toolName: string;
+  /**
+   * 【T109】审批卡上给用户看的第二行说明。
+   *
+   * **原来这里只有 toolName** —— `req.description` 只用于 emit 事件，结算时拿不到。
+   * 而审批历史要回答「上次那个操作我批了没」，光有工具名（`document_view`）不够，
+   * 用户记不住那一次是「打开报告.pdf」还是「导出成 docx」。
+   *
+   * 所以结算时要能拿到它 → **`makeApprovalHandler` 里多存一个字段**。
+   * 这是 T109 卡没写的第二个改动点（第一个是写入调用）。
+   */
+  subject: string;
 }
 
 interface PendingUserInput {
@@ -35,6 +48,8 @@ interface PendingUserInput {
   /** Session the request belongs to — returned by resolve/dismiss so the
    *  caller can broadcast the cross-client `request.resolved` sync event. */
   sessionId: string;
+  /** 【T109】第一个问题的文字（截断）—— 历史里「他回答了什么问题」。 */
+  subject: string;
 }
 
 interface PendingPlanApproval {
@@ -42,6 +57,29 @@ interface PendingPlanApproval {
   reject: (e: Error) => void;
   /** Session the request belongs to — see PendingUserInput. */
   sessionId: string;
+  /** 【T109】计划的第一行（截断）—— 历史里「他批准了哪个计划」。 */
+  subject: string;
+}
+
+/**
+ * 【T109】`subject` 的长度上限。
+ *
+ * 240 字足够认出一条工具调用/问题/计划是什么，又不会让一条记录把列表撑爆。
+ * 截断而不是拒绝：历史是附属品，**一条过长的说明不该让这次审批失败**。
+ */
+const SUBJECT_MAX = 240;
+function clipSubject(s: string): string {
+  const t = s.trim();
+  return t.length <= SUBJECT_MAX ? t : `${t.slice(0, SUBJECT_MAX - 1)}…`;
+}
+
+/** 计划可能很长，历史里只要第一行非空文本。 */
+function firstLineOf(s: string): string {
+  for (const line of s.split("\n")) {
+    const t = line.trim();
+    if (t !== "") return t;
+  }
+  return "";
 }
 
 export class ApprovalBridge {
@@ -60,6 +98,49 @@ export class ApprovalBridge {
    *  query() start and can't be hot-swapped, but our host-side gate can. */
   private permissionModes = new Map<string, PermissionMode>();
 
+  /**
+   * 【T109】写一条审批历史。**失败只记日志，绝不向上抛。**
+   *
+   * 审批是**用户的动作**，历史是**附属品**：一个写不进去的历史不该让用户点不动
+   * 按钮、也不该让模型卡在等一个永远不会来的答复上。
+   *
+   * ## 为什么吞在这里而不是每个调用点各写一个 try
+   *
+   * 五个出口各写一个 try/catch 迟早会漏一个（这个仓库栽过很多次「共享实现只有一份」
+   * 的反面）。**一个私有方法 = 一处纪律。**
+   *
+   * ⚠️ 但「吞掉」不等于「静默」：失败会 `log.warn` 带上 requestId 与原因，
+   * 而且套件里有一条断言专门验「写库抛错时 resolveApproval 仍返回 sessionId」。
+   */
+  private recordApproval(args: {
+    id: string;
+    sessionId: string;
+    kind: ApprovalKind;
+    subject: string;
+    decision: ApprovalOutcome;
+    always?: boolean;
+    detail?: string | null;
+  }): void {
+    try {
+      insertApproval({
+        id: args.id,
+        sessionId: args.sessionId,
+        kind: args.kind,
+        subject: args.subject,
+        decision: args.decision,
+        always: args.always === true,
+        decidedAt: Date.now(),
+        detail: args.detail ?? null,
+      });
+    } catch (err) {
+      // 附上 requestId 才可能事后把「哪一次没记上」和用户看到的操作对上。
+      log.warn(
+        `approval history write failed (requestId=${args.id}, kind=${args.kind}, ` +
+        `decision=${args.decision}): ${(err as Error).message}`,
+      );
+    }
+  }
+
   /* ── approval ── */
 
   /** Create an approval-request handler bound to a specific session's emit. */
@@ -69,7 +150,12 @@ export class ApprovalBridge {
   ): (req: ApprovalRequest) => Promise<ProviderApprovalDecision> {
     return (req) =>
       new Promise<ProviderApprovalDecision>((resolve, reject) => {
-        this.pendingApprovals.set(req.requestId, { resolve, reject, sessionId, toolName: req.toolName });
+        this.pendingApprovals.set(req.requestId, {
+          resolve, reject, sessionId, toolName: req.toolName,
+          // 【T109】存下审批卡上的说明，结算时才有「这次批的是什么」可记。
+          // `description` 是可选的 —— 没有时就空串，结算处会回落到 toolName。
+          subject: clipSubject(req.description ?? ""),
+        });
         emit({
           type: "approval.request",
           sessionId,
@@ -97,6 +183,15 @@ export class ApprovalBridge {
     // their grant accordingly (one-shot "accept" vs session-wide).
     p.resolve(decision.allow && remember ? { ...decision, persist: true } : decision);
     this.pendingApprovals.delete(requestId);
+    // 【T109】出口 1/5：工具审批。
+    this.recordApproval({
+      id: requestId, sessionId: p.sessionId, kind: "tool",
+      subject: p.subject || p.toolName,
+      decision: decision.allow ? "allow" : "deny",
+      always: remember,
+      // 只记「工具名」这一个结构化字段（不是 input 原文 —— 那个会被 redactValue 打码）。
+      detail: JSON.stringify({ toolName: p.toolName }),
+    });
     // Record "always allow" so canUseTool auto-approves this tool next time.
     if (decision.allow && remember) {
       let set = this.alwaysAllowedTools.get(p.sessionId);
@@ -138,7 +233,11 @@ export class ApprovalBridge {
   ): (req: UserInputRequest) => Promise<UserInputDecision> {
     return (req) =>
       new Promise<UserInputDecision>((resolve, reject) => {
-        this.pendingUserInputs.set(req.requestId, { resolve, reject, sessionId });
+        this.pendingUserInputs.set(req.requestId, {
+          resolve, reject, sessionId,
+          // 【T109】历史里要说清「他回答了什么问题」。
+          subject: clipSubject(req.questions[0]?.question ?? ""),
+        });
         emit({
           type: "question.ask",
           sessionId,
@@ -155,6 +254,13 @@ export class ApprovalBridge {
     if (!p) return null;
     p.resolve({ answers });
     this.pendingUserInputs.delete(requestId);
+    // 【T109】出口 2/5：用户回答了模型的问题。
+    this.recordApproval({
+      id: requestId, sessionId: p.sessionId, kind: "question",
+      subject: p.subject, decision: "answered",
+      // 只记「回答了几个问题」，不记答案内容（答案可能含用户隐私/自由文本）。
+      detail: JSON.stringify({ answerCount: Object.keys(answers ?? {}).length }),
+    });
     return p.sessionId;
   }
 
@@ -169,6 +275,12 @@ export class ApprovalBridge {
     if (!p) return null;
     p.resolve({ answers: {}, dismissed: true });
     this.pendingUserInputs.delete(requestId);
+    // 【T109】出口 3/5：用户**关掉了问题卡片没回答**。
+    // 「跳过」也是一种决定 —— 记 dismissed 而不是 answered（两者对用户的意思相反）。
+    this.recordApproval({
+      id: requestId, sessionId: p.sessionId, kind: "question",
+      subject: p.subject, decision: "dismissed",
+    });
     return p.sessionId;
   }
 
@@ -184,7 +296,11 @@ export class ApprovalBridge {
   ): (req: PlanApprovalRequest) => Promise<PlanApprovalDecision> {
     return (req) =>
       new Promise<PlanApprovalDecision>((resolve, reject) => {
-        this.pendingPlanApprovals.set(req.requestId, { resolve, reject, sessionId });
+        this.pendingPlanApprovals.set(req.requestId, {
+          resolve, reject, sessionId,
+          // 【T109】计划可能很长 —— 取第一行非空文本，历史里够认出来是哪个计划。
+          subject: clipSubject(firstLineOf(req.plan)),
+        });
         emit({
           type: "plan.approval_request",
           sessionId,
@@ -203,6 +319,11 @@ export class ApprovalBridge {
     if (!p) return null;
     p.resolve(decision);
     this.pendingPlanApprovals.delete(requestId);
+    // 【T109】出口 4/5：批准 / 否掉计划。
+    this.recordApproval({
+      id: requestId, sessionId: p.sessionId, kind: "plan",
+      subject: p.subject, decision: decision.approved ? "approved" : "rejected",
+    });
     return p.sessionId;
   }
 
@@ -217,18 +338,33 @@ export class ApprovalBridge {
       p.reject(new Error("Session cancelled"));
       this.pendingApprovals.delete(id);
       rejected.push({ requestId: id, kind: "approval" });
+      // 【T109】出口 5/5：会话取消导致审批失效。
+      // ⚠️ 记 `cancelled` **不是** `deny` —— 用户没有拒绝过任何东西。
+      // 混成 deny 会让「我拒绝过几次」这个统计是假的。
+      this.recordApproval({
+        id, sessionId: p.sessionId, kind: "tool",
+        subject: p.subject || p.toolName, decision: "cancelled",
+      });
     }
     for (const [id, p] of this.pendingUserInputs) {
       if (p.sessionId !== sessionId) continue;
       p.reject(new Error("Session cancelled"));
       this.pendingUserInputs.delete(id);
       rejected.push({ requestId: id, kind: "question" });
+      this.recordApproval({
+        id, sessionId: p.sessionId, kind: "question",
+        subject: p.subject, decision: "cancelled",
+      });
     }
     for (const [id, p] of this.pendingPlanApprovals) {
       if (p.sessionId !== sessionId) continue;
       p.reject(new Error("Session cancelled"));
       this.pendingPlanApprovals.delete(id);
       rejected.push({ requestId: id, kind: "plan" });
+      this.recordApproval({
+        id, sessionId: p.sessionId, kind: "plan",
+        subject: p.subject, decision: "cancelled",
+      });
     }
     return rejected;
   }

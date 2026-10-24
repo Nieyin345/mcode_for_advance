@@ -20,6 +20,7 @@ import { log } from "@main/lib/logger.js";
 import { migrateLegacyIntoDataRoot, dbPath as resolveDbPath } from "@main/lib/dataRoot.js";
 import { SESSION_COLUMNS, sessionsCreateSql } from "./sessionSchema.js";
 import { TASKS_CREATE_SQL } from "./taskSchema.js";
+import { APPROVALS_CREATE_SQL } from "./approvalSchema.js";
 import { withStatement } from "./repositories/withStatement.js";
 import { DEFAULT_LIBRARY_GROUPS, parseLibraryGroupsJson, LIBRARY_GROUPS_SETTING_KEY } from "@contracts/libraryTypes";
 import type { CommitResult } from "@contracts/commit";
@@ -287,6 +288,12 @@ function migrate(database: Database): void {
        新表，不涉及 sessionSchema 那套 inCreate 迁移机制 —— 见 taskSchema.ts 的说明。
        （⚠️ 本段在 JS 模板字符串里，注释中不要用反引号。） */
     ${TASKS_CREATE_SQL}
+
+    /* 【T109】审批历史 —— ApprovalBridge 的 pendingApprovals 是内存 Map，
+       处理完就消失、进程退出即丢，用户看不到「上次那个操作我批了没」。
+       新表，不需要 sessionSchema 那套 inCreate 迁移。见 approvalSchema.ts。
+       （⚠️ 本段在 JS 模板字符串里，注释中不要用反引号。） */
+    ${APPROVALS_CREATE_SQL}
 
     /* ── 操作账本(MC-067 / ARC-009 步②)────────────────────────────────────
        本地 agent 经 app_api_call 调 Mcode 功能时的**可信幂等账本**。

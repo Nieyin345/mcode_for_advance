@@ -1035,6 +1035,10 @@ const api = {
     accept: ((input) => ipcRenderer.invoke(IPC.TASK_ACCEPT, input)) as RpcMap["task.accept"],
     reject: ((input) => ipcRenderer.invoke(IPC.TASK_REJECT, input)) as RpcMap["task.reject"],
   },
+  approval: {
+    // 【T109】审批历史。只读 —— 写入由主进程的 ApprovalBridge 在各结算出口直接写。
+    list: ((input) => ipcRenderer.invoke(IPC.APPROVAL_LIST, input)) as RpcMap["approval.list"],
+  },
   // 【ARC-007】文档能力(GenOffice CLI 适配层)。用户点按钮与 Agent 的 app_api_call
   // 走同一段主进程代码;路径围栏在宿主侧复核。
   document: {

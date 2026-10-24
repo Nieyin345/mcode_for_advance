@@ -1,6 +1,7 @@
 import type { ProjectInitTemplate, ProjectInitList, ProjectInitSaveInput, ProjectInitPreviewInput, ProjectInitApplyInput, ProjectInitPreview, ProjectInitResult } from "./projectInit.js";
 import type { ScenePlanInput, ScenePlanResult, ScenePreflightInput, ScenePreflightIpcResult, SceneApprovalInput, SceneApprovalResult, SceneApplyInput, SceneApplyIpcResult, SceneResumeInput, SceneResumeIpcResult, SceneDeploymentListInput, SceneDeploymentListIpcResult } from "./scene.js";
 import type { Task, TaskListInput, TaskGetInput, TaskAcceptInput, TaskRejectInput } from "./task.js";
+import type { Approval, ApprovalListInput } from "./approval.js";
 import type {
   DocumentReadInput, DocumentEditInput, DocumentConvertInput, DocumentIpcResult, DocumentCapabilities,
   DocumentAppsInput, DocumentAppsResult, DocumentToolsListInput, DocumentToolsListResult,
@@ -1177,6 +1178,8 @@ export interface RpcMap {
   "task.accept": (input: TaskAcceptInput) => Promise<Task>;
   /** 退回返修。 */
   "task.reject": (input: TaskRejectInput) => Promise<Task>;
+  /** 【T109】审批历史（按会话）。签名里没有 taskId —— 见 approval.ts 的说明。 */
+  "approval.list": (input: ApprovalListInput) => Promise<{ approvals: Approval[] }>;
   /** 【ARC-007】读文档结构(docx 块 / pptx 页 / xlsx 表)。**只读**,路径必须落在已知工作区内。 */
   "document.read": (input: DocumentReadInput) => Promise<DocumentIpcResult>;
   /** 【ARC-007】按 GenOffice ops 编辑并保存。`dryRun` 只演练。路径同样过工作区围栏。 */
@@ -2211,6 +2214,7 @@ export const IPC = {
   TASK_GET: "task:get",
   TASK_ACCEPT: "task:accept",
   TASK_REJECT: "task:reject",
+  APPROVAL_LIST: "approval:list",
   DOCUMENT_READ: "document:read",
   DOCUMENT_EDIT: "document:edit",
   DOCUMENT_CONVERT: "document:convert",

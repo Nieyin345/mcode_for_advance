@@ -180,3 +180,4 @@ export * from "./ipc/unattended.js";
 // 主机 hook 授权签发/撤销的用户入口契约(MC-061;issue/revoke 钉 blocked,只给桌面渲染端)。
 export * from "./ipc/hostHookGrants.js";
 export * from "./ipc/task.js";
+export * from "./ipc/approval.js";

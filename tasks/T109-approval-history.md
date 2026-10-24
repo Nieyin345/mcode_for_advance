@@ -153,3 +153,115 @@ grep -n "links\|sessionIds" apps/desktop/src/main/store/taskSchema.ts
 
 `tasks/T109-approval-history.md` 末尾追加 `## 结果回写（2026-10-24）`：
 三个问题的答案、数据量级、表形状、写入/读取路径、正负控与变异、提交 SHA。
+
+## 结果回写（2026-10-24，E 会话）
+
+### 〇、先说我推翻了卡上哪几条
+
+| 卡上写的 | 实际做的 | 依据 |
+|---|---|---|
+| 「外键主要指向 `sessionId`，`taskId` 只能作可空外键」 | **不建 `task_id` 列** | 审批发生在 `turn.done` **之前**，而任务在 `turn.done` **才**建 —— 存一个当时还不存在的 id 只能存 `null`。见 spec 问题 1 |
+| 「写入点只有一个：`resolveApproval`」 | **五个出口全接** | `ApprovalBridge` 里有 `resolveApproval` / `resolveUserInput` / `dismissUserInput` / `resolvePlanApproval` / `rejectPending` |
+| 「`input_digest` —— 你判断」 | **不存** | 找不到诚实的消费者；一个没人读的校验字段会让后来的人以为这里有完整性保证 |
+| （卡上没提） | **`PendingApproval` 多存一个 `description`** | 结算时拿不到「这次批的是什么」。这是第二个改动点，我 spec 里发现的 |
+
+### 一、表
+
+`apps/desktop/src/main/store/approvalSchema.ts`（新建）：
+
+```sql
+CREATE TABLE IF NOT EXISTS approvals (
+  id          TEXT PRIMARY KEY,   -- = requestId
+  session_id  TEXT NOT NULL,
+  kind        TEXT NOT NULL,      -- 'tool' | 'question' | 'plan'
+  subject     TEXT NOT NULL,      -- 工具名 / 问题第一句 / 计划第一行（≤240 字，超长截断）
+  decision    TEXT NOT NULL,      -- 七种，见下
+  always      INTEGER NOT NULL DEFAULT 0,
+  decided_at  INTEGER NOT NULL,
+  detail      TEXT                -- 少量结构化补充，可空
+);
+CREATE INDEX idx_approvals_session ON approvals(session_id, decided_at DESC);
+CREATE INDEX idx_approvals_decided ON approvals(decided_at DESC);
+```
+
+**没有 `input` 列、没有 `digest` 列、没有 `task_id` 列** —— 三条都有断言守（查 `PRAGMA table_info`）。
+
+`db.ts` 只加了一行 import + 一行建表。
+
+### 二、五个出口
+
+| # | 出口 | `kind` | `decision` | 断言 |
+|---|---|---|---|---|
+| 1 | `resolveApproval` | `tool` | `allow` / `deny` | ✅ |
+| 2 | `resolveUserInput` | `question` | `answered` | ✅ |
+| 3 | `dismissUserInput` | `question` | **`dismissed`** | ✅ 专门一条「不是 answered」 |
+| 4 | `resolvePlanApproval` | `plan` | `approved` / `rejected` | ✅ |
+| 5 | `rejectPending`（三个循环） | 三种都有 | **`cancelled`** | ✅ 专门一条「不是 deny」 |
+
+**`cancelled ≠ deny` 的理由**：用户没有拒绝过任何东西，是会话被取消了。
+混成 `deny` 会让「我拒绝过几次」这个统计是假的。
+
+**写入统一走一个私有方法 `recordApproval`**（五个调用点各写一个 try/catch 迟早漏一个）。
+
+### 三、三条硬要求
+
+**① 写库失败不影响审批** —— `recordApproval` 整个包在 try/catch 里，失败 `log.warn` 带 requestId。
+断言：把 `approvals` 表临时改名（INSERT 必然失败），`resolveApproval` **仍返回 `sessionId`**。
+
+**② 不存 `input` 原文** —— 表里根本没有那一列。断言查 `PRAGMA table_info`。
+
+**③ 不存 `input_digest`** —— 同上。断言查列名里没有 `digest`。
+
+### 四、读取
+
+`approval.list`（`sessionId` **必填**）→ `listApprovals()`。
+有 `limit`（1–500，默认 200）和 `before` 游标。
+`webApi.ts` 补了 `approval.list = webUnsupported`（手机端没有那条桥）。
+
+**UI：不做**（卡上定的）。任务详情视图（T111）是它将来的落点。
+
+### 五、验证
+
+| 套件 | 结果 |
+|---|---|
+| `approval-history-smoke`（新） | **32/32** |
+| `task-first-class-smoke` | 32/32 不回归 |
+| `t100-task-center-smoke` | 96/96 不回归 |
+| `ipc-parity-smoke` | 13/13（新通道没破坏守卫） |
+| `ipc-wiring-smoke` | 45/45 |
+| 双包 typecheck | **0 error** |
+
+### 六、变异（两条，都是卡上要的）
+
+| # | 变异 | 结果 |
+|---|---|---|
+| **1** | 删掉出口 3（`dismissUserInput`）的写入调用 | **精确红**：`★ 出口 3 写了一条 — 0` + `★ 记成 dismissed 不是 answered` |
+| **2** | `recordApproval` 的 `catch` 改成 `throw` | **精确红两条**：`★ 不抛异常 — "no such table: approvals"` + `★ 仍返回 sessionId — null` |
+
+**变异 2 第一次做的时候整个进程崩了** —— `resolveApproval` 抛出后套件在断言执行前退出，
+**没有那条断言的报告**。这是 CLAUDE.md 第八条第 3 类（运行失败 ≠ 断言红）。
+所以我把 `resolveApproval` 的调用包进 try，让崩溃变成一条**显式断言**，然后再做变异 ——
+这样它红的形态就对了。
+
+### 七、一个套件自身的 bug（已修）
+
+第 ③ 节第一版用 `DROP TABLE approvals` 制造「写库失败」，**连带毁掉了 ② 节写的数据**，
+导致 ⑤ 节「按 sessionId 查到 s1 那条」变成 0（假红）。
+
+改成 **`ALTER TABLE ... RENAME`**（表不见了所以 INSERT 必然失败，但**行数据一条不少**），
+验完改回来，并加了一条对照断言「② 节写的数据仍在」。
+
+### 八、命名冲突（记录）
+
+我第一版把落库的枚举叫 `ApprovalDecision`，与 `packages/contracts/src/session.ts:246`
+已有的同名接口冲突（那个是「用户对审批卡怎么答的（IPC 层）」）。
+改成 **`ApprovalOutcome`**，并在契约文件里写明了这个区分。
+
+### 九、未做
+
+- **UI 没做**（卡上定的）。审批历史目前有一个 IPC 读取入口但**没有任何界面消费者** ——
+  这是刻意的：任务详情视图（T111）是将来加那一段的地方。
+- **`repositories/approval.ts` 没拆** —— 卡边界只到 `approvalSchema.ts`，所以读写函数
+  和建表 SQL 放在同一个文件。文件头写明了「如果将来长出更多查询，应该拆出去」。
+- **没有过期清理** —— 量级实测不出来（`ApprovalBridge` 零日志、172 个日志文件零条记录），
+  所以不写清理策略。表形状定成不依赖量级也安全（两个索引 + LIMIT 200 + before 游标）。

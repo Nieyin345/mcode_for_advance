@@ -898,6 +898,17 @@ const task: Api["task"] = {
   reject: () => webUnsupported("task.reject"),
 };
 
+/**
+ * 【T109】审批历史 —— 同 `task`：手机端没有那条桥。
+ *
+ * ⚠️ 任务中心不挂手机端，所以审批历史目前**没有任何 UI 消费者**。
+ * 这一项存在是为了让「共用组件里调用 `api.approval.list`」不会整棵卸载
+ * （`webApi.ts` 的规矩：少列一个方法 = undefined 调用 = React 19 整棵卸载）。
+ */
+const approval: Api["approval"] = {
+  list: () => webUnsupported("approval.list"),
+};
+
 /** 【ARC-006 NR2】第三方工作流引擎也是**那台桌面机器上的独立进程**:手机端
  *  既没有本机进程可起停,也没有 WebContentsView 可嵌。显式列出整个命名空间 ——
  *  与 `documentView` 同一条规矩(漏列的方法在共用组件里会变成 undefined 调用,
@@ -1269,6 +1280,7 @@ export function createWebApi(): Api {
     documentView,
     // 【T100】任务中心不在手机端（见上面 `task` 常量的注释）。
     task,
+    approval,
     workflowEngine,
     provider,
     customModel,
