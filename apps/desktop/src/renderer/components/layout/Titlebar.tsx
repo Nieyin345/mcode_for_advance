@@ -149,12 +149,12 @@ export function Titlebar({
   return (
     <div
       data-cds-titlebar=""
-      className={cn("flex shrink-0 items-stretch", isMac ? "h-[45px]" : "h-10")}
+      className={cn("flex h-[45px] shrink-0 items-stretch border-b border-edge/50 bg-surface select-none", isSettings && "bg-surface-muted")}
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       <div
         className={cn(
-          "flex flex-1 items-center bg-surface-muted px-1.5",
+          "flex min-w-0 flex-1 items-center bg-inherit px-3",
           !isMac && "pr-[138px]",
           // macOS traffic lights sit at the window's top-left. They overlay
           // the full-height sidebar while it's visible (LeftBar's header
@@ -217,7 +217,7 @@ export function Titlebar({
                 <button
                   onClick={onToggleLeft}
                   className={cn(
-                    "flex items-center justify-center rounded p-1.5 transition-colors",
+                    "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors",
                     "cds-hover-ghost text-content-muted hover:text-content",
                   )}
                   title={t("layout.showLeftPanel") + hintFor("layout.toggle-left")}
@@ -233,7 +233,7 @@ export function Titlebar({
             {/* ARC-005: session context yields space to reachable right-side
                 controls when the desktop window is narrow. Keep the exact
                 store-connected chip instances and the branch no-drag region. */}
-            <div data-arc005-titlebar-context="" className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+            <div data-arc005-titlebar-context="" className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
             <ActiveThreadTitle />
             {/* Owning-project chip — folder icon + project name for the active
                 session's project (full path in the tooltip). Rendered for
@@ -249,7 +249,7 @@ export function Titlebar({
                 gap (the component returns null). */}
             <ActiveWorktreeChip />
             </div>
-            <div data-arc005-titlebar-actions="" className="flex shrink-0 items-center gap-1">
+            <div data-arc005-titlebar-actions="" className="flex shrink-0 items-center gap-0.5">
             {/* Editor column toggle - shows/hides the center-pane editor column
                 without closing the open file. Sits right of the branch pill. */}
             {!isBrowserOverlay && <PanePresetMenu />}
@@ -264,11 +264,13 @@ export function Titlebar({
                 open, same as the side-panel toggles (kept during wide mode). */}
             {!isBrowserOverlay && (
               <button
+                type="button"
                 onClick={onToggleBottomTerminal}
+                aria-pressed={bottomTerminalOpen}
                 className={cn(
-                  "flex items-center justify-center rounded p-1.5 transition-colors",
+                  "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors",
                   bottomTerminalOpen
-                    ? "bg-surface-hover text-accent"
+                    ? "bg-surface-hover text-content"
                     : "cds-hover-ghost text-content-muted hover:text-content",
                 )}
                 title={(bottomTerminalOpen ? t("layout.hideTerminal") : t("layout.showTerminal")) + hintFor("layout.toggle-bottom-terminal")}
@@ -284,11 +286,13 @@ export function Titlebar({
                 wide mode's right column (chat goes full width when hidden). */}
             {!isBrowserOverlay && (
               <button
+                type="button"
                 onClick={onToggleRight}
+                aria-pressed={rightOpen}
                 className={cn(
-                  "flex items-center justify-center rounded p-1.5 transition-colors",
+                  "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors",
                   rightOpen
-                    ? "bg-surface-hover text-accent"
+                    ? "bg-surface-hover text-content"
                     : "cds-hover-ghost text-content-muted hover:text-content",
                 )}
                 title={(rightOpen ? t("layout.hideRightPanel") : t("layout.showRightPanel")) + hintFor("layout.toggle-right")}
@@ -375,7 +379,7 @@ function ActiveThreadTitle() {
   if (!title) return null;
   const { Icon, color } = getProviderIcon(providerId);
   return (
-    <div className="flex min-w-0 max-w-[280px] flex-[2_1_60px] items-center gap-1 px-1.5 text-xs font-medium text-content-muted">
+    <div className="flex min-w-0 max-w-[320px] flex-[2_1_60px] items-center gap-2 px-1 text-[13px] font-medium text-content">
       <Icon size={13} className={cn("shrink-0", color)} />
       <span className="truncate" title={title}>
         {title}
@@ -532,12 +536,15 @@ function EditorColumnToggle() {
 
   return (
     <button
+      type="button"
       onClick={handleClick}
+      aria-pressed={editorVisible}
+      aria-label={editorVisible ? t("layout.hideEditor") : canRestore ? t("layout.showEditor") : t("layout.noOpenFiles")}
       disabled={!editorVisible && !canRestore}
       className={cn(
-        "flex items-center justify-center rounded p-1.5 transition-colors",
+        "flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] transition-colors",
         editorVisible
-          ? "bg-surface-hover text-accent"
+          ? "bg-surface-hover text-content"
           : "cds-hover-ghost text-content-muted hover:text-content disabled:opacity-40 disabled:hover:bg-transparent",
       )}
       title={

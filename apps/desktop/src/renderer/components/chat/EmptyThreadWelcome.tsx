@@ -73,8 +73,8 @@ export function EmptyThreadWelcome({ projectName }: EmptyThreadWelcomeProps) {
   const today = usage?.summary;
 
   return (
-    <div className="mb-4 flex animate-[home-fade-up_var(--dur-base)_var(--ease-out)] flex-col items-center gap-1.5">
-      <h2 className="text-2xl font-semibold tracking-tight text-content">
+    <div data-arc005-welcome="" className="mx-auto mb-5 flex w-full max-w-[760px] animate-[home-fade-up_var(--dur-base)_var(--ease-out)] flex-col items-center gap-2">
+      <h2 className="max-w-full text-balance text-center text-[26px] font-semibold leading-tight tracking-tight text-content">
         {projectName
           ? t("chatStream.welcome.withProject", { name: projectName })
           : t("chatStream.welcome.title")}
@@ -134,9 +134,9 @@ function StartPoints() {
   return (
     <div
       className={cn(
-        "mt-5 grid max-h-[min(440px,50vh)] w-full gap-3 overflow-y-auto text-left",
+        "mt-6 grid max-h-[min(390px,48vh)] w-full gap-2 overflow-y-auto text-left",
         // 两列装得下就两列（max-w-4xl 下正好两列），窄栏自动一列。
-        "grid-cols-[repeat(auto-fit,minmax(min(320px,100%),1fr))]",
+        "grid-cols-[repeat(auto-fit,minmax(min(290px,100%),1fr))]",
         "[@media(max-height:640px)]:hidden",
       )}
     >
@@ -267,7 +267,7 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section data-home-section={id} data-arc005-starter-card="" className="min-w-0 rounded-xl border border-edge bg-surface/60 p-1.5">
+    <section data-home-section={id} data-arc005-starter-card="" className="min-w-0 rounded-[var(--radius-panel)] border border-edge/50 bg-surface/60 p-1.5">
       <h3 className="flex items-center gap-1.5 px-2 pb-1 pt-0.5 [font-size:var(--chat-fs-xxs)] font-medium text-content-subtle">
         <Icon size={13} className="shrink-0" />
         {title}
