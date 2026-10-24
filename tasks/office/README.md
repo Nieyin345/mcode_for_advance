@@ -87,7 +87,9 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | O1 三家引擎驱动 AI 编辑 | **✅ 交付** | `f74f6b52`（卡）/ `e77fe9f1`（代码） | 已完成 | 46/46，6 变异 |
 | O2 六格式保存冲突 | **执行中** | `153d6686`（卡） | 已派 | `scripts/o2-conflict-u1/**` |
 | O3 安装版 Office | **✅ 交付** | `53413379`（卡）/ `f383922b`（代码） | 已完成 | 16/16 PASS，23/23 变异 |
-| O4 docs 关闭缺陷修复 | **执行中** | `2120284e`（卡） | 已派 | `scripts/o4-docs-close-smoke/**` |
+| O4 docs 关闭缺陷修复 | **✅ 交付** | `fa6eb917`（代码） | 已完成 | 19/19 + 3 变异 |
+| O5 删 OnlyOffice | **批一执行中** | `b380ced8`（卡）/ `331bd1e1`（桩提醒） | 已派 | `packages/contracts/**` |
+| O7 覆盖边界进输出 | 已写卡未派 | `b2c1bc60` | 等 O0/O3/O1 收尾 | — |
 | O5 删 OnlyOffice，六格式走 GenOffice | **已写卡，未派** | `b380ced8`（卡） | **等 O2/O4 收工** | 跨四层，见卡 |
 | O6 五个编辑器换壳（**B 方案**） | **执行中** | `a655762c`（卡） | 已派（html+markdown） | `genoffice/apps/*/src/renderer/` |
 
@@ -204,6 +206,41 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 
 **iframe 方向已排除**：vendor preload 依赖 `contextBridge` + `ipcRenderer` + `webUtils`，
 iframe 里没有这些；且 `WebContentsView` 的 sender 校验是安全边界，**为性能拆边界不值得**。
+
+## O4 交付摘要（`fa6eb917`，我独立验过）
+
+**docs 关闭恒被拒已修复。** 根因：`createDbGuardedIpc` 只有 `handle` 没有 `on`，
+而 `documentView.ts:212` 的 `typeof ipc.on === 'function'` 静默跳过注册。
+
+**两处都改了**：
+- **A**：`dbGuardedIpc` 补齐完整 `IpcMain` 注册面（`on`/`once`/`addListener`/`prepend*`/
+  `off`/`removeListener`/`removeAllListeners`/`handleOnce`/`removeHandler` + EventEmitter 只读面），
+  删掉 `as unknown as IpcMain` 的类型撒谎；`on` 与 `handle` 同一道 `awaitDb()` 闸。
+- **B**：缺 `on` 不再静默 —— `log.error` 点名 `on()`、通道与后果。
+
+**我独立跑了三个变异**（不是看它报告）：
+- M1 删 `wrapped.on` → 主判据红在 `close-succeeds-within-2s`，**exit=2 不是 1**
+- M2 去 `awaitDb()` → A3 红、**主判据仍绿**（两条断言互相独立，已证）
+- M3 B 警告改静默 → B6/B6b/B8 红
+
+**M1 日志里那句报错是这次最好的东西**：
+
+> 文档视图注册器收到的 ipc 缺少 on()：`mcode:document-view:close-check-result` 没有监听者。
+> 后果：关闭 docs 文档会等 2 秒超时后被拒……**即使编辑器页面已经回了关闭检查。**
+
+**症状到原因的距离被压到一句话。**
+
+**它改了卡外文件（已批准）**：`memory-codex-smoke` / `t40-renderer-registry-smoke` 的
+`stubs/electron.ts` 里 `ipcMain.on` 原本是 `notHere(...)` 抛错桩，O4 之后生产装配真的会注册 `on`，
+桩的前提被合法推翻。**这是修复的必要后果，不是越界。**
+
+**它的变异脚本纪律比我的好，已抄**：
+1. `replace` 先数出现次数，恰好 1 次才动手；
+2. **改完立刻核对字节真的变了**（防「脚本在写文件前退出、被读成跑过了」）；
+3. 跑之前先看日志有没有 `X [ERROR]`（构建崩 ≠ 断言红）；
+4. `finally` 写回并 `cmp`。
+
+**我今天上午就是因为缺第 2 条**，把源码写成变异态然后基于它继续改。
 
 ## O6：用户选 B —— 五个编辑器换壳
 
