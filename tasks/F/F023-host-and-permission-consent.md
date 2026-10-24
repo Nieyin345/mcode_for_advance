@@ -286,6 +286,55 @@ NOT-COVERED: 运行时沙箱 —— 用户选择了安装时告知，不是隔�
 那是一个**必须让用户知道的**结论 —— 因为整个 Theia 路线的前提就是「宿主能起」。
 F017 的 PoC 是在 Windows 上验证过的（`probe-fork-host-v2.js`，6 秒无 stderr、进程存活），
 **但那是裸 fork 一个 host，不是完整握手。** 差别可能很大。
+
+---
+
+## 总控复核（2026-10-25，回写之后补）
+
+**我自己跑了两遍，不是只看报告：**
+
+```bash
+bash apps/desktop/scripts/theia-host-boot-smoke/run.sh
+# → 35/35，但 `skip 真实扩展（THEIA_SMOKE_REAL_EXT 未设置）`
+
+THEIA_SMOKE_REAL_EXT="$USERPROFILE/.vscode/extensions/james-yu.latex-workshop-10.20.0" \
+  bash apps/desktop/scripts/theia-host-boot-smoke/run.sh
+# → 34/34；`info 真实扩展 james-yu.latex-workshop：注册 71 条命令，激活错误 0 条`
+```
+
+**「71 条命令」这一行我亲自跑出来了。**
+
+### 一个我认可的设计判断
+
+**真实扩展那段标 `info`（不算失败）是对的** —— 我一度担心「宿主坏了套件还是绿」，
+核了之后不成立：**合成夹具（含 `child_process` 的 `spawn-ext`）走的是硬断言路径**，
+宿主坏掉会在那里红。真实扩展是**额外的**验证，不是唯一的。
+
+### 一个我没改的洞，下一张卡要修
+
+**缺构建产物时，套件 `return` 了，exit code 是 0，输出是 `0/0 通过`。**
+
+```ts
+if (!existsSync(hostJs) || !existsSync(vscodeInit)) {
+  skip("宿主构建产物存在", ...);
+  console.log(`theia-host-boot-smoke: 0/0 通过（跳过：vendor/theia 未构建）`);
+  return;                                    // ← exit 0
+}
+```
+
+**这是仓库记过的那个形态**：「取不到通过数要当硬错误」。
+它现在**明确说了跳过**（比静默好），但**退出码仍然是 0** ——
+一个只看 CI 绿灯的人，会以为「这套验过了」。
+
+**换机器 / CI 上尤其危险**，因为 `vendor/theia` 是 gitignore 的嵌套 checkout，
+新环境里默认没有构建产物。**它应该是 exit 2 或专门的跳过码，由 run-smokes 识别。**
+
+**还有一条执行会话报告的、需要跟进的事实**：
+`F022` 的构建步骤只写了 `tsc --build packages/plugin-ext`，
+**但宿主还要求 `packages/plugin-ext-vscode/lib/node/plugin-vscode-init.js`**。
+新环境必须两个都建，否则上面那个跳过分支会被走到。
+
+**这两条记在 `tasks/F/F024-*` 一起修，不单独开卡**（同一个套件的同一个前置）。
 ## 结果回写（2026-10-25）
 
 ### 结论先说
