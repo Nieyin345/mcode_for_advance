@@ -346,3 +346,122 @@ await unlink(tmp).catch(() => {})      // ← 写完才删
 - `html` / `markdown` → `atomicWriteFile`：见 §10.2。**对。**
 
 **所以四家里只有 slides 需要自己写这段，而且只有它原来连原子写都没有。**
+
+---
+
+## 十一、追加要求（2026-10-24 深夜，来自基线诊断）
+
+### 11.1 `provenance` 必须与 `expectConflict` 同时改
+
+执行会话把 `html.expectConflict` 从 `false` 翻成 `true`，**而 `provenance` 还写着「没有版本比较」**。
+
+**`expectConflict: true` 恰恰意味着「现在有版本比较了」。** 那条 `provenance` 从此在说自己的期望值是错的。
+
+**这个字段今天救过一次**：写卡人从「html 的 provenance 说没有版本比较，却写 `true`」
+这个矛盾里，发现了原来的 `false → true` 是数据错误。
+**而现在它自己成了矛盾源。**
+
+**要求**：六个格式逐条核。`expectConflict: true` 的 `provenance` 写清**守卫的出处**，不写「已修」：
+
+```
+html-main.ts 的 writeTextAtomic 走 guardedDocumentSave
+（@genoffice/electron-utils/document-save-guard）；Mcode 装配期 setDocumentSaveGuard
+装上守卫后，守卫在 withOsFileLease 内比 fileContentVersion，不一致抛
+DocumentSaveConflictError。没装守卫时直接写（独立运行）。
+```
+
+**并加一条断言**（这个矛盾的最小可验形式），放在 `run.mjs` 的 `--classify-only` 档（静态、不跑 Electron）：
+
+```js
+for (const [kind, e] of Object.entries(EXPECTATIONS)) {
+  if (e.expectConflict && /没有版本比较|没有版本判据/.test(e.provenance)) {
+    fail(`${kind}: expectConflict=true 但 provenance 说没有版本比较 —— 两处必须同时改`);
+  }
+}
+```
+
+### 11.2 ★ `save-paths.ts` **不要**翻成 `host-guarded`（本卡 §5.5 作废）
+
+**§5.5 写的是「把 `klass` 从 `bypass` 改成 `host-guarded`」。那个方向是错的。**
+
+**实测（O5 会话）**：分类器只读三个文件、只找**通道名字面量**。
+它对「守卫是否装配」是盲的 —— `installDocumentSaveGuard()` 的调用点在
+`ipc/index.ts:177`，而分类器找的是 `slides:save` 这类通道名。
+
+**所以它现在报 `bypass`，而实际行为已经是「拦住」。**
+
+**翻成 `host-guarded` 会让它以另一种方式说谎**：它仍然不读守卫装配，只是现在假定有人装过了。
+**一个靠人手动翻的常量，比一个读源码的分类器更不可靠。**
+
+**正确做法：保留 `klass: "bypass"`，但让它报告自己看不见的那一面。**
+
+```ts
+export interface ClassificationReport {
+  ok: boolean;
+  perFormat: PathClassification[];
+  /** ★ 分类器**看不见**的东西。不参与 ok，但必须被打出来。 */
+  blindSpots: string[];
+  detail?: string;
+}
+```
+
+`blindSpots` 至少两条：
+
+1. **「守卫是否已装配」不在本分类的输入里** —— 它只读通道注册点与请求类型，
+   不读 `setDocumentSaveGuard` 的调用点；
+2. **「请求类型里没有版本字段」不等于「这条通道没有版本校验」** ——
+   O10 之后版本由主进程侧记，不经渲染端（`SavePdfRequest` 仍然没有版本字段，**那是设计，不是缺陷**）。
+
+**并且 `evidence` 改成描述「源码形状」而不是「运行时行为」**：
+
+```
+slides 的 ipcMain.handle('slides:save') 由 vendor 自己的 registerSlidesIpc 注册；
+请求不带版本参数。**运行时是否被 Mcode 的守卫拦住，不在本分类的判据内。**
+```
+
+**理由**：`klass: "bypass"` 在 O9 卡里指「Mcode 零拦截」。O10 之后那条陈述已经过期 ——
+**但改成 `host-guarded` 也是一个未经分类器验证的断言。**
+**保留 `bypass` + 显式 `blindSpots`，让它诚实地报告「我只看源码形状」。**
+
+**⚠️ 这是本卡唯一还没定的设计决定。** 如果执行者有更好的理由，先回报再改。
+
+### 11.3 `--variant` 只能直调 `run.mjs`
+
+```bash
+# ❌ 实测失败：Unknown smoke suite: --variant=expect-green
+pnpm test:smoke o2-conflict-u1-smoke --variant=expect-green
+
+# ✅
+node apps/desktop/scripts/o2-conflict-u1-smoke/run.mjs --variant=expect-green
+```
+
+`run-smokes.mjs` 的 `selectSuites` 把所有 positional 参数当套件名，且 `runOne` 的 spawn
+不转发额外参数。`--classify-only` / `--only=` / `--keep` 同理。
+
+### 11.4 基线诊断的一个关键数字（执行会话报，写卡人未复跑）
+
+**O10 落地过程中跑出的 `accept-red` 中间态：**
+
+```
+docs     literal=PASS  expectation=all-pass
+sheets   literal=PASS  expectation=all-pass
+slides   literal=FAIL  expectation=unexpected-failure
+pdf      literal=FAIL  expectation=unexpected-failure
+markdown literal=FAIL  expectation=unexpected-failure
+html     literal=FAIL  expectation=unexpected-failure
+```
+
+**逐格 4a/4b/4c**：`4b = True × 4`（盘上保住了外部内容），`4c = True × 3`，
+**`4a = False × 4`，而 4a 的 detail 引用的回包正是冲突拒绝** ——
+
+```
+{"ok":false,"error":"文档已被别处改动（另一个窗口、Agent 或外部编辑器）—— …"}
+```
+
+**根因**：`lib.ts` 的冲突判据认三种签名（`reason==="conflict"` / `FILE_VERSION_CONFLICT` / `版本冲突`），
+**而守卫抛的是「文档已被别处改动」，一个字都不在里面。**
+
+**所以那 4 条红的语义是「拦住了但判据认不出」，不是「没拦住」。**
+
+**⚠️ 这一条是执行会话在中间态跑出来的，写卡人没有复跑。** 它的价值在于
+**它说明了「4 红」这个数字本身不携带修复状态** —— 而如果只看计数，会读成「一个都没修好」。

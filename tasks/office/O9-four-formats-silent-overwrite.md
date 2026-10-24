@@ -57,13 +57,53 @@ grep -rn "expectedRevision\|expectedSha\|baseRevision\|revision" \
 
 ## 四、判据（修完后）
 
-**O2 的套件已经写好了判据，只需把 `expectations.ts` 的 `expectConflict` 翻成 `true`**：
+**O2 的套件已经写好了判据。修完后跑：**
 
-```
-pnpm test:smoke o2-conflict-u1-smoke --variant=expect-green
+```bash
+node apps/desktop/scripts/o2-conflict-u1-smoke/run.mjs --variant=expect-green
 ```
 
 **六格全绿。**
+
+**⚠️ 不能写成 `pnpm test:smoke o2-conflict-u1-smoke --variant=expect-green`** —— 实测：
+
+```
+$ node scripts/run-smokes.mjs --list o2-conflict-u1-smoke --variant=expect-green
+Unknown smoke suite: --variant=expect-green          EXIT=1
+```
+
+`run-smokes.mjs` 的 `selectSuites` 把所有 positional 参数当套件名，而 `runOne` 的 spawn
+不转发额外参数。**所以 `--variant` 只能直调 `run.mjs`。**
+（`--classify-only` / `--only=` / `--keep` 同样只能直调。）
+
+### ⚠️ 4.1 更正（2026-10-24 深夜）：上面那句话**指错了地方**
+
+**我写那句时假设了「判定逻辑读 `expectations.ts`」。实测不成立 —— O2 有**两个**事实源：**
+
+```js
+// run.mjs:115-116 —— 硬编码
+const CONFLICT_EXPECTED = ["docs", "sheets"];
+const CONFLICT_MISSING  = ["slides", "pdf", "markdown", "html"];
+
+// expectations.ts —— 数据文件，journeys 读它
+html: { expectConflict: true, ... }    // ← 和上面相反，是个数据错误
+```
+
+| 消费者 | 读什么 | 对 html 的期望 |
+|---|---|---|
+| `journeys.ts:697` | `EXPECTATIONS.html.expectConflict` | **all-pass** |
+| `run.mjs:judge()` | `CONFLICT_MISSING` 名单 | **expected-failure** |
+
+**两边不可能同时满足。所以 `accept-red` 模式下 html 那格必然红，与被测对象无关。**
+
+**正确的修法是让 `run.mjs` 从 `EXPECTATIONS` 推导名单**（一份事实源），
+而不是只翻 `expectations.ts` —— **后者不会让 `expect-green` 变绿，因为 `judge()` 根本不读那份文件。**
+
+**`html.expectConflict: true` 本身也是错的**：`grep -cE "sha256|fileContentVersion|expectedRevision"`
+对 `html-main.ts` 命中 **0**，而它自己的 `provenance` 写着「没有版本比较」。
+
+**这条更正的教训**：「判据的方法本身得是对的」——我给了一个看起来可执行、实际指向错文件的方法。
+**执行者如果照做，会在 `expect-green` 红着的时候去查一个已经被修好的实现。**
 
 **⚠️ 但这不是「修完就能翻」** —— 必须逐个格式修完、逐个翻，**不要一次全翻**。
 **一次全翻的话，红的那几个会和本来就红的混在一起，分不清你修好了几个。**
