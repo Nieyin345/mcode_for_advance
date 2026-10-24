@@ -88,6 +88,7 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | O2 六格式保存冲突 | **执行中** | `153d6686`（卡） | 已派 | `scripts/o2-conflict-u1/**` |
 | O3 安装版 Office | **✅ 交付** | `53413379`（卡）/ `f383922b`（代码） | 已完成 | 16/16 PASS，23/23 变异 |
 | O4 docs 关闭缺陷修复 | **执行中** | `2120284e`（卡） | 已派 | `scripts/o4-docs-close-smoke/**` |
+| O5 删 OnlyOffice，六格式走 GenOffice | **已写卡，未派** | `b380ced8`（卡） | **等 O2/O4 收工** | 跨四层，见卡 |
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）
 
@@ -171,6 +172,37 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 断言改成「文档未改 **且** save 从未被请求」，并配正常流「save 恰好一次」正控。
 
 **结论**：没有发现哪家形状被错误处理。未做：真调 API（无凭据）、全量（需批准）。
+
+## O5：用户裁决落地（卡已写，未派）
+
+**用户原话**：「OnlyOffice删掉，不要了」「之前的全部都不要了，现在的office还有md全部走genoffice这一条线」
+「默认啊，而且要把 office 的 ui 契合现在的 ui」「嵌入到现在的 mcode 里面」「就像是打开 md 文件一样丝滑」
+
+**规模：134 处，21 个文件，跨四层**（契约 → preload → 主进程 → 渲染端）。分三批串行。
+
+### 两处删除时最容易漏的地方（已写进卡）
+
+1. **`documentKind` 的 `"office"` 语义绑定在 OnlyOffice 上**（`:26` 注释原文 + `:65` 对齐 `ONLYOFFICE_EDITABLE`）。
+   要么换名、要么改语义并改注释。**不许悄悄改语义。**
+
+2. **`isGenofficeViewAvailableFor` 的入参 `office` 现在传的是 `isOnlyOfficeSupportedPath(filePath)`。**
+   删掉那个判定函数而不管入参 → `office` 恒 false → `genofficeViewForOffice` 恒 false →
+   **默认模式永远到不了 GenOffice**。这是「构建通过但功能没接上」的典型形态。
+
+### 一处流传的错误依据（已纠正）
+
+有人说「GenOffice 上游认得 `docm/dotx/xltx/pptm/potx`」，依据是 `limits.ts` 的 `FAMILY` 表。
+**那个表是解压体积限额分族，不是路由。** 真路由在 `app-routing.ts`，正则与我们**逐字一致**，都不认这五种。
+补它们是**我们自己的扩展**，且 `genoffice-file-routing-smoke` 会因比对而红。
+
+### 「丝滑」的拆解
+
+用户说「像 md 一样丝滑」。**md 的丝滑来自它是 React/DOM 组件，GenOffice 是 `WebContentsView` 独立进程。**
+但我判断「丝滑」指的是**交互无感**（点一下就开、不用切两次模式），不是**零延迟渲染** —— 按前者做，
+如实记录「首次打开 1–2 秒」。
+
+**iframe 方向已排除**：vendor preload 依赖 `contextBridge` + `ipcRenderer` + `webUtils`，
+iframe 里没有这些；且 `WebContentsView` 的 sender 校验是安全边界，**为性能拆边界不值得**。
 
 ## 下一批
 
