@@ -313,5 +313,25 @@ chat-item-gap = 14 × 1.42857 × .50 = 10px
 ### 七、没做的 / 觉得不对但没改的
 
 1. **`--chat-max-w` 默认档 1024px 偏宽**（上游示例用 672px）—— 这是产品决策，需总控定。
-2. **`apps/desktop/scripts/t121-border-contrast-smoke/run.sh` 是坏的**（不是我的边界）：`cd $(dirname "$0")/../..` 之后 `source "$(dirname "$0")/../lib/esbuild-path.sh"` 用的是相对路径，此时 cwd 已变 → `No such file or directory`。**同一个 bug 在 t122 里我踩过并修了**（先算绝对路径 `HERE=$(cd "$(dirname "$0")" && pwd)`）。**F 的 t121 现在跑不起来**，建议派给 F 修。
+2. ~~**`t121` 的 run.sh 是坏的**~~ —— **这条是错的，已由总控纠正。**
+
+   我原来从**仓库根**用 `bash apps/desktop/scripts/t121-.../run.sh` 调用，得到 `No such file`。
+   换成全量入口就正常：
+
+   | 调用方式 | 结果 |
+   |---|---|
+   | `cd apps/desktop && bash scripts/t121-.../run.sh` | EXIT=0，16/16 |
+   | **`node scripts/run-smokes.mjs t121-border-contrast-smoke`**（全量用的就是它） | **PASS，EXIT=0** |
+   | 从仓库根 `bash apps/desktop/scripts/t121-.../run.sh` | EXIT=1 |
+
+   **原因**：`run-smokes.mjs` 是 `spawn(bash, ["scripts/<name>/run.sh"], { cwd: appDir })` ——
+   `$0` 传的是**相对路径**且 cwd 已经是 `apps/desktop`，所以 `cd "$(dirname "$0")/../.."`
+   与后面的 `source "$(dirname "$0")/../lib/..."` 能对齐。
+
+   **是调用方式的问题，不是脚本的问题。** 我差点让 F 去修一个没坏的东西 ——
+   这正是「报告前先确认取证坐标」那一条：我用了一种**不是项目实际使用**的调用方式，
+   却把它当成「脚本坏了」的证据。
+
+   （`t122` 里我用 `HERE=$(cd "$(dirname "$0")" && pwd)` 能同时支持两种入口，
+   那是**改进**，不是修 bug。）
 3. **差距 C 的 150ms 冷却 / 35vh 缓冲未实现** —— 需要单独验证流式手感。
