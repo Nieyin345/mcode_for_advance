@@ -371,8 +371,103 @@ function entryLabel(name: string): string {
  * 一个必须是 `extension/package.json`，另一个必须**恰好是清单声明的那个 main**。
  * 多出来的第三个条目仍会被拒 —— 不是白名单拒的，是「恰好 2 个」拒的。
  */
+/**
+ * 【F016】拒绝原因的类型标识。
+ *
+ * 为什么要一个 `code` 而不是只靠文案：**「尺寸不够」和「结构不支持」对用户意味着
+ * 完全不同的下一步动作**，而文案是给英文读者看的句子，机器侧不该靠 `test(/.../)` 去猜。
+ *
+ * | code | 用户能做什么 |
+ * |---|---|
+ * | `VSIX_REJECT_TOO_LARGE` | 找更小的版本 / 请作者精简 —— **有下一步** |
+ * | `VSIX_REJECT_STRUCTURE` | **什么都做不了，别试了** —— 本宿主不是为这类包设计的 |
+ *
+ * ⚠️ **不要为了区分而扩大它** —— 只有「用户下一步动作确实不同」的两类才配各占一个 code。
+ * 其余失败（CRC 不符、清单非法…）都是「包坏了」，归 `VSIX_REJECT_INVALID`。
+ *
+ * 定义在本文件内、不导出到契约层：它是 `Error` 的 message/code，不需要新的契约形状。
+ */
+export type VsixRejectCode = "VSIX_REJECT_TOO_LARGE" | "VSIX_REJECT_STRUCTURE" | "VSIX_REJECT_INVALID";
+
+export class VsixRejectError extends Error {
+  constructor(readonly code: VsixRejectCode, message: string) {
+    super(message);
+    this.name = "VsixRejectError";
+  }
+}
+
+/** 本宿主支持的结构。拒绝时原样念给用户听 —— 只说「不行」而不说「什么样才行」，
+ *  用户无法判断「换个版本能不能装」。 */
+const HOST_SHAPE = "this host accepts exactly 2 ZIP entries (extension/package.json + the declared main), up to 128 KiB packed";
+
+/**
+ * 【F016】读中央目录，只统计**结构事实**：条目总数与解压后总量。
+ *
+ * ⚠️ **纯读取**：不碰 local header、不解压、不校验 CRC —— 它只回答
+ * 「这个包有几个文件、解压后多大」，用来在**拒绝时**说清事实。
+ * **它不是校验**，任何校验都不该用它的结果。
+ *
+ * 返回 `null` 表示连 EOCD 都读不出来（那是「包坏了」，不是结构问题）。
+ */
+function describeArchiveShape(bytes: Uint8Array, view: DataView, u16: (n: number) => number, u32: (n: number) => number): { count: number; unpackedTotal: number } | null {
+  const end = bytes.length - 22;
+  if (end < 0 || u32(end) !== 0x06054b50) return null;
+  const count = u16(end + 10);
+  const centralSize = u32(end + 12), centralStart = u32(end + 16);
+  if (!Number.isSafeInteger(centralStart) || !Number.isSafeInteger(centralSize) ||
+      centralStart < 0 || centralStart + centralSize > bytes.length) return null;
+  let pos = centralStart;
+  let unpackedTotal = 0;
+  for (let i = 0; i < count; i++) {
+    if (pos + 46 > bytes.length || u32(pos) !== 0x02014b50) return { count, unpackedTotal };
+    const nameLength = u16(pos + 28), extra = u16(pos + 30), comment = u16(pos + 32);
+    unpackedTotal += u32(pos + 24);
+    pos += 46 + nameLength + extra + comment;
+  }
+  return { count, unpackedTotal };
+}
+
+/**
+ * 【F016】扫源码里**本宿主不会放行**的 require/import —— 只用于「说清为什么不行」。
+ *
+ * ⚠️ **这是启发式，不是判据，更不是安全边界。**
+ * - 正则扫不到 `require(variable)` / 动态 import / 运行时拼出来的模块名；
+ * - **扫到就是证据，扫不到不是保证。**
+ *
+ * 所以：**扫到 → 报出来；扫不到 → 一个字都不说**（绝不写「没有问题」）。
+ * 谁把「扫不到」读成「这个包安全」，谁就把它变成了一道假门禁。
+ */
+function scanUnsupportedImports(source: string): string[] {
+  const found = new Set<string>();
+  // 只认字面量参数：require("x") / require('x') / import ... from "x" / import("x")
+  const patterns = [
+    /\brequire\(\s*["']([^"']+)["']\s*\)/g,
+    /\bfrom\s*["']([^"']+)["']/g,
+    /\bimport\(\s*["']([^"']+)["']\s*\)/g,
+  ];
+  for (const re of patterns) {
+    for (const match of source.matchAll(re)) {
+      const id = match[1]!;
+      // 相对/绝对路径需要 CommonJS 模块加载器；node 内置除 path/fs 外一律不放行。
+      const isRelative = id.startsWith("./") || id.startsWith("../") || id.startsWith("/");
+      const allowed = id === "vscode" || id === "path" || id === "node:path" || id === "fs" || id === "node:fs";
+      if (isRelative || !allowed) found.add(id);
+    }
+  }
+  return [...found].sort();
+}
+
 export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; source: string } {
-  if (archive.length < 100 || archive.length > 128 * 1024) throw Error("VSIX size out of L1 bounds");
+  if (archive.length < 100 || archive.length > 128 * 1024) {
+    throw new VsixRejectError(
+      "VSIX_REJECT_TOO_LARGE",
+      // 【F016】这里**必须明说「内部未检查」** —— 因为整包超限时我们连中央目录都还没读，
+      // 更不可能知道它 require 了什么。沉默会让用户以为「只是大了点」，
+      // 而真实原因往往在包内（rainbow-csv 顶层就要 child_process）。
+      "VSIX size out of L1 bounds (" + archive.length + " B packed; " + HOST_SHAPE +
+      "). The archive contents were not inspected, so what it requires is unknown.",
+    );
+  }
   const bytes = new Uint8Array(archive);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const u16 = (n: number): number => view.getUint16(n, true);
@@ -381,9 +476,24 @@ export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; so
     Number.isSafeInteger(start) && Number.isSafeInteger(length) && start >= 0 && length >= 0 && start + length <= bytes.length;
   // Local fixture ZIPs have no trailing comment. Other ZIP variants are explicitly unsupported.
   const end = bytes.length - 22;
+  // 【F016】条目数不是 2 时，**说清实际结构**而不是只报「不是 2」。
+  //
+  // 原来的 `"VSIX requires exactly two plain ZIP entries"` 让用户知道「不是 2」，
+  // 但不知道是 6 还是 600 —— 而 6 个文件的 Node 程序（rainbow-csv）和
+  // 「作者多打了一个文件」是完全不同的处置。所以这里把**能免费读到的结构事实**
+  // 全报出来：条目数、解压后总量、以及本宿主支持什么。
+  const shape = describeArchiveShape(bytes, view, u16, u32);
   if (u32(end) !== 0x06054b50 || u16(end + 4) !== 0 || u16(end + 6) !== 0 ||
       u16(end + 8) !== 2 || u16(end + 10) !== 2 || u16(end + 20) !== 0) {
-    throw Error("VSIX requires exactly two plain ZIP entries");
+    const actual = shape
+      ? " (this package has " + shape.count + " entries, " +
+        Math.round((shape.unpackedTotal / 1024) * 10) / 10 + " KiB unpacked; " + HOST_SHAPE + ")"
+      : " (" + HOST_SHAPE + ")";
+    throw new VsixRejectError(
+      "VSIX_REJECT_STRUCTURE",
+      // 保留 `requires exactly two` 这个子串：既有套件按它断言，且它仍然准确。
+      "VSIX requires exactly two plain ZIP entries" + actual,
+    );
   }
   const centralSize = u32(end + 12), centralStart = u32(end + 16);
   if (!within(centralStart, centralSize) || centralStart + centralSize !== end) throw Error("Invalid VSIX central directory");
@@ -495,7 +605,21 @@ export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; so
     );
   }
   if (main.byteLength > SOURCE_LIMIT) {
-    throw Error("VSIX main entry exceeds " + SOURCE_LIMIT + " B (got " + main.byteLength + ")");
+    // 【F016】源码超限时**顺带说清它 require 了什么** —— 因为「超了 5 倍」这个事实
+    // 单独看会暗示「换个更小的版本就行」，而真实原因是它需要本宿主不放行的模块。
+    //
+    // 这里能读到源码（`main` 已解出来），所以扫描是**可以做的**；但它是启发式，
+    // 见 `scanUnsupportedImports` 的注释：**扫到就是证据，扫不到不是保证**。
+    const unsupported = scanUnsupportedImports(decoder.decode(main));
+    const why = unsupported.length > 0
+      ? " It also requires modules this host does not allow: " + unsupported.join(", ") +
+        ". That is a structural mismatch, not a size difference."
+      : "";
+    throw new VsixRejectError(
+      "VSIX_REJECT_TOO_LARGE",
+      // 保留 `main entry exceeds <N> B` 这个子串：既有套件按它断言，且它仍然准确。
+      "VSIX main entry exceeds " + SOURCE_LIMIT + " B (got " + main.byteLength + ")" + why,
+    );
   }
   return { packageJson: parsed, source: decoder.decode(main) };
 }

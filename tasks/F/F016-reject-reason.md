@@ -1,6 +1,6 @@
 # F016｜让「装不进来」的原因说准确，并且不再暗示「再大一点就能装」
 
-- Status: ready-for-agent
+- Status: **done**（见文末回写）
 - Category: **P0 扩展主线**（最后一张）
 - Depends on: F015（`38e5f5c8`，多命令 L1）
 - Exclusive writable files:
@@ -174,3 +174,81 @@ u16(end + 8) !== 2 || u16(end + 10) !== 2 || u16(end + 20) !== 0
 - 若将来真做多文件支持，「解压总量上限 1 MiB」是**有依据的**数字（250.8 KiB × 4.08 余量）——
   **但它服务的那个目标当前不通，因为终点卡在 `child_process`。别把「有个有依据的数字」
   当成「方向是对的」。**
+
+---
+
+## 回写
+
+### 1. 两种拒绝怎么被机器区分（没动契约）
+
+`vscodeL1Bridge.ts` 内新增（**不导出到契约层**）：
+
+```ts
+export type VsixRejectCode = "VSIX_REJECT_TOO_LARGE" | "VSIX_REJECT_STRUCTURE" | "VSIX_REJECT_INVALID";
+export class VsixRejectError extends Error {
+  constructor(readonly code: VsixRejectCode, message: string) { super(message); this.name = "VsixRejectError"; }
+}
+```
+
+判据不是文案，是 `code`。套件第 3 组直接断言 `structRes.code !== sizeRes.code` ——
+**不读英文句子**。同时 `message` 仍然保留既有的可读子串（`requires exactly two`、
+`main entry exceeds 24576 B`、`size out of L1 bounds`），**既有套件零改动仍然绿**。
+
+### 2. `rainbow-csv` 现在报什么（完整原文）
+
+```
+VSIX size out of L1 bounds (153799 B packed; this host accepts exactly 2 ZIP entries
+(extension/package.json + the declared main), up to 128 KiB packed).
+The archive contents were not inspected, so what it requires is unknown.
+```
+
+**⚠️ 这里有一个我原本没预料到、但很关键的事实**：真实扩展的 STORE 包是
+**153,799 B，先撞整包上限** —— 不是源码限额。整包超限时连中央目录都还没读，
+更不可能知道它 require 了什么。所以这一条**必须明说「内部未检查」**，
+否则沉默会让用户以为「只是大了点」，而真实原因在包内（它顶层要 `child_process`）。
+
+这条是套件第 7 组逼出来的：第一版没写这句，那条断言红。
+
+### 3. require 扫描的启发式边界写在哪
+
+`scanUnsupportedImports()` 的函数注释里，原文要点：
+
+> ⚠️ **这是启发式，不是判据，更不是安全边界。**
+> - 正则扫不到 `require(variable)` / 动态 import / 运行时拼出来的模块名；
+> - **扫到就是证据，扫不到不是保证。**
+>
+> 所以：**扫到 → 报出来；扫不到 → 一个字都不说**（绝不写「没有问题」）。
+> 谁把「扫不到」读成「这个包安全」，谁就把它变成了一道假门禁。
+
+套件第 5 组是它的负控：源码无 require 时，断言信息里**既无 `It also requires`
+也无 `no problems|safe|OK` 这类假保证**。
+
+### 4. 变异结果（预期 vs 实际）
+
+| 变异 | 预期 | 实际 |
+|---|---|---|
+| M1 结构文案改回只报尺寸 | 2 条红 | **3 条红**（多的一条是第 6 组「报的是总和」——它也依赖解压后总量，合理） |
+| M2 条目数报成 0 | 1 条红 | **1 条红** ✓ |
+| M3 扫不到也报「No problems found」 | 1 条红 | **1 条红** ✓ |
+| M4（追加）去掉「未检查」那句 | 1 条红 | **1 条红** ✓ |
+
+每条都 `git diff --numstat` 自证改动已落盘；还原后 `sha256sum` **逐字节一致: True**。
+
+### 5. 套件结果
+
+- 新套 `vsix-reject-reason-smoke`：**25/25**
+- 既有回归：`vsix-deflate-smoke 24/24`、`vsix-size-limits-smoke 21/21`、
+  `vsix-end-to-end-smoke 10/10`、`vsix-manifest-schema-smoke 16/16`、
+  `vsix-main-path-smoke 30/30` —— **零改动、全绿**
+
+### 6. 我认为不对但没改的
+
+**`install()` 里还有第二道 `SOURCE_LIMIT` 检查**（`:1033` 附近），
+它抛的是裸 `Error("VSIX entry exceeds the L1 source limit (… B)")`，**没有 `code`**。
+正常路径走不到它（`readMinimalVsix` 先拦），所以本卡没动。
+但如果将来有人改了读取顺序，那道就会变成一个没有 `code` 的漏网，**机器侧又分不出类型了**。
+建议下一张卡顺手统一，**本卡边界不含它**。
+
+### 7. 提交
+
+（见提交信息）
