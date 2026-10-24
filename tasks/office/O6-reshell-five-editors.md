@@ -708,3 +708,101 @@ M2 / M2b 与 pdf 同形：**改一个只红一条，改另一个只红另一条�
    且放映外观由 `--slides-show-*` 决定（不在覆盖集）。但**这一条是从代码读出来的，没有真跑**——
    套件只验普通编辑窗。
 3. **Konva 画布上的内容（幻灯片本体）本来就不吃 CSS token** —— 那是文档内容，正确。
+
+---
+
+## 结果回写：sheets（第四批，最后一个，2026-10-24/25）
+
+### 1. 覆盖 54 个共享 chrome token（与五家一致）
+
+### 2. ★ Sheets 的特殊之处：网格是 Univer canvas，外壳是自家 DOM
+
+**上游自己的注释就是答案**（`App.tsx:1736`）：
+
+```
+// Univer paints the grid on canvas, so it can't follow the CSS tokens —
+// mirror the canvas state into its official darkMode flag
+```
+
+**网格不跟 token —— 而它也不该跟**：单元格、条件格式、图表配色是**文档内容**。
+网格明暗由 Univer 的 `darkMode` 布尔决定，那个布尔读 `data-theme` / `prefers-color-scheme`
+（`App.tsx:1745-1747`）—— 和本文件的开关同源，所以暗色下网格跟着变，那是上游自己的行为。
+
+**外壳**（ribbon / 名字框 / 状态栏 / 对话框）是 `ExcelShell.tsx` 的自家 DOM，全走共享 token。
+
+**一个副作用**：`.spreadsheet { background: var(--surface) }`（`styles.css:1938`）会被改掉，
+但 Univer canvas 盖在它上面，用户看不见。**无害，但读代码的人会以为网格背景被换了。**
+
+### 3. 91 个 app 私有 token 全部不覆盖
+
+| 族 | 是什么 |
+|---|---|
+| `--sheets-paper` | 单元格纸张（`#ffffff`） |
+| `--sheets-chart-*` / `--chart-*` | 图表配色与标签（文档数据） |
+| `--sheets-pie-label-*` | 饼图标签 |
+| `--sheets-shape-*` | 形状填充/描边（文档内容） |
+| `--sheets-excel-blue` / `--excel-green*` | Excel 的语义蓝/绿 |
+| `--sheets-content-danger` / `--sheets-validation-*` | 内容危险态 / 数据验证提示 |
+| `--univer-primary-600` | Univer 自己的主题色 |
+| `--sheets-statusbar-*` / `--sheets-scroll-thumb` / `--sheets-focus-ring` / `--sheets-shadow-*` | app 私有 chrome（规则 A：不动） |
+
+### 4. ★ M2b 全绿 —— 这是正确的，且已记账
+
+| 变异 | pdf | slides | **sheets** |
+|---|---|---|---|
+| M2 `--surface` → `#ffffff` | 1 红 | 1 红 | **2 红**（token + `.ribbon`） |
+| M2b `--chrome-bg` → `#ffffff` | 1 红 | 1 红 | **0 红** |
+
+**原因**：sheets 的 `.ribbon` 读 `--surface`（`styles.css` 的 `.ribbon` 规则），
+pdf/slides 的读 `--chrome-bg`。**同一个语义位置，三个 app 用不同 token。**
+
+**`--chrome-bg` 在 sheets 里零消费者**（renderer CSS 与共享 UI CSS 都没有）。覆盖它无害但无用；
+不覆盖它会让覆盖集与另外五家分叉。**所以保留覆盖并记账。**
+
+**新增一条断言把这事实打出来**：
+```
+覆盖集里本 app 不消费的 token（16）: --chrome-bg --pressed --active-bg --bg-hover …
+ok  ★ 覆盖集里「本 app 零消费者」的 token 不超过 20 个
+```
+它不判对错，只钉住「数量不会悄悄涨」——涨了说明覆盖集混进了本 app 用不到的东西。
+
+### 5. 判据：`o6-reshell-sheets-smoke` 42/42
+
+四种模式（宿主/独立 × 亮/暗）+ 两条前提 + 正控 + 不消费记账 + 边界 8 条 + 规则 A。
+
+### 6. 变异
+
+| 变异 | 实际 |
+|---|---|
+| M1 去 UA 门 | **11 红**（独立 6 + 暗色独立 4 + 契约 1） |
+| M2 `--surface` → `#ffffff` | **2 红**（token + `.ribbon`） |
+| M2b `--chrome-bg` → `#ffffff` | **0 红**（正确答案，见 §4） |
+| M3 删 import | **12 红**（宿主 6 + 暗色宿主 5 + 契约 1） |
+
+还原后 sha256 逐字节（main `f840ae89…`、theme `996b5759…`），重建回 42/42。
+
+### 7. 写这个套件时抓到两个断言 bug（都是我自己写的）
+
+1. **DOM 断言假设有 `.app` 容器** —— sheets 没有（`ExcelShell` 直接渲染 `.ribbon` + `.sheet-body`）。
+   改成 `.ribbon` / `#univer-container` / `.status-bar` / `.qa-btn`。
+2. **「不是 window.desktop」用了子串匹配** —— 而 sheets 的 preload 暴露的是 `window.desktopApi`，
+   **`includes("window.desktop")` 会被它满足**。改成单词边界 `/window\.desktop(?!\w)/`。
+   **这是「断言的名字比它检查的范围大」的又一实例**：名字说「不是 window.desktop」，
+   子串匹配把 `window.desktopApi` 也算进去了。
+
+### 8. 交付物
+
+- vendor 提交 `e9b4c41615f1ca615dd06ee10d05cbaac9382462`（2 文件，+270），父 `58cd1a13`
+- `patches/genoffice/0020-feat-sheets-reshell-the-chrome-in-Mcode-s-design-tok.patch`（13523 B，sha256 `ff90a3e7…097b8`）
+- 账本：lock 20 条、`revision` → `e9b4c416`、`expectedTree` → `0013dff4`；verify 同步
+- `apps/desktop/scripts/o6-reshell-sheets-smoke/{build.mjs, probe.cjs, run.sh}`
+
+### 9. 未做 / 需知
+
+1. **sheets 构建要 Rust `cargo`，这台机器没有**。我用 `npx electron-vite build`（在 `apps/sheets`
+   下）跳过 `native:build` —— 因为 `native/xlsx-engine/target/release/xlsx-sidecar.exe` **已存在**。
+   **这不是常规构建路径**：正式重建 vendor 时应跑完整 `npm run build -w @genoffice/sheets`。
+2. **`verify-genoffice-upstream.cjs` 仍跑不了** —— vendor 树里 O8（`docs/src/renderer/main.tsx`）
+   与 O10（`save-pdf.ts` / `slides-main.ts` / `document-save-guard.ts` / 三家 main）的未提交改动还在。
+   提交时逐条核过暂存区只有我的两个 sheets 文件。
+3. **`NOT-COVERED` 已输出**：网格明暗只验了 CSS chrome，Univer canvas 的明暗未实测。

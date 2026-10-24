@@ -343,10 +343,24 @@ const tokensSrc = stripComments(readFileSync(tokensCssPath, "utf8"));
 const sharedNames = new Set(
   [...tokensSrc.matchAll(/^\s*(--[\w-]+)\s*:/gm)].map((m) => m[1]),
 );
+// 一条 token 会在亮色 / 暗色 / system-dark 三块里各声明一次，所以「声明行数」约是
+// 「不同 token 数」的三倍。两个数都是真的，但报出去时必须说清单位 ——
+// 「覆盖了 152 个 token」在共享层只有 65 个的前提下是不可能的事，
+// 而一个不可能的数字会被仔细的人当 bug 查、被不仔细的人当「覆盖面很广」。
 const overriddenNames = [...themeSrc.matchAll(/^\s*(--[\w-]+)\s*:/gm)].map((m) => m[1]);
+const overriddenUnique = [...new Set(overriddenNames)];
 const privateOnes = overriddenNames.filter((name) => !sharedNames.has(name));
+
+// ★ 正控：解析确实拿到了 token。没有它，正则一旦失效 → 空数组 →
+// 下面那条 `privateOnes.length === 0` 恒真（「从不报」的判据是最危险的形态）。
+// 取 40 不钉 54：上游增删 token 时这条不该无辜变红，但「误删一大半」必须红。
 check(
-  `覆盖的每个 token 都来自 tokens.css（共享层共 ${sharedNames.size} 个，本文件覆盖 ${overriddenNames.length} 个）`,
+  `★ 正控：确实解析到了被覆盖的 token（${overriddenUnique.length} 个，要求 ≥ 40）`,
+  overriddenUnique.length >= 40,
+  overriddenUnique.slice(0, 5),
+);
+check(
+  `覆盖的每个 token 都来自 tokens.css（共享层 ${sharedNames.size} 个；本文件覆盖 ${overriddenUnique.length} 个不同 token / ${overriddenNames.length} 条声明：亮+暗+system-dark）`,
   privateOnes.length === 0,
   privateOnes.slice(0, 8),
 );
