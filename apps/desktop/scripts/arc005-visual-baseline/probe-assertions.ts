@@ -51,6 +51,16 @@ export const ARC005_MEASURE_SELECTORS: ReadonlyArray<readonly [string, string]> 
   ["sidebar-row", "[data-testid='workspace-sidebar'] button"],
   ["main", "[data-testid='workspace-main']"],
   ["message", "[data-testid='workspace-main'] .prose, [data-testid='workspace-main'] [data-message-id]"],
+  // 【T149】`message` 命中的是**外层容器**（`.prose` 容器，16px/24px 继承值），
+  // 不是正文本身。正文是 `.chat-md`（`Markdown.tsx:912`），它的字号/行高来自
+  // `--chat-font-size` / `--chat-md-leading`。
+  //
+  // 没有这一项时，**任何正文排版改动在基线 JSON 里完全不可见** —— T147 把行高
+  // 从 21.75px 改到 24.375px，PNG 变了，JSON 一个字段没变。全 51 格共享这个盲区。
+  //
+  // 场景里没有正文（空态/设置/纯面板）时这一项是 `present: false`，**显式缺席**，
+  // 不是静默跳过 —— 见 compare.mjs 的 measured 比对。
+  ["chat-body", "[data-testid='workspace-main'] .chat-md"],
   ["tool-row", ARC005_PROBE_TARGETS["tool-row"].measurementSelector],
   ["composer", ARC005_PROBE_TARGETS.composer.measurementSelector],
   ["approval", "[role='alertdialog']"],

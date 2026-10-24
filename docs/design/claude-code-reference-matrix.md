@@ -260,6 +260,28 @@ Claude 侧一致性全部**待测**。ARC-005 的「开发完成 / 独立复核�
 
 本轮 39 格有 **16 张有效真实截图**、23 格 `data-missing`，不存在拿旧 PNG 或替身面板充数的情况。每格至少一个 JSON 存有 `snapshot.tokens` + 15 个目标元素的 `getComputedStyle`（不存在的目标 `present:false`），及 Electron 原生 DPI/窗口配置。由于复用的既有 Electron 脚手架故意替代了 LeftBar/StreamSidebar、且无 PTY/真实文件/WorkflowBoard 宿主，相关状态尚缺真用户旅程；不能将全部 ARC-005 判为完成。
 
+> **【T149 追加，2026-10-24】正文排版现在也有机器判据了。**
+>
+> 上面那句「15 个目标元素」里的 `message` 项，它的选择器是
+> `[data-testid='workspace-main'] .prose, …` —— **命中的是外层容器**（16px/24px 继承值），
+> **不是正文**。正文是 `.chat-md`（`Markdown.tsx:912`），字号与行高来自
+> `--chat-font-size` / `--chat-md-leading`。
+>
+> 所以在此之前，**任何正文排版改动在基线 JSON 里完全不可见**：T147 把行高从
+> 21.75px 改到 24.375px，PNG 变了，`diff.md` 一个字段没变。T139 的字号与缩进同理。
+>
+> 现在 `ARC005_MEASURE_SELECTORS` 多一项 `chat-body`（`.chat-md`），
+> 且 `compare.mjs` **新增 `measured` 比对路径**（此前只比 `snapshot.tokens`）。
+> 期望值登记在 `compare.mjs` 的 `measuredChecks`：字号 15px、行高 24.375px
+> （= `--chat-font-size` × `--chat-md-leading` 默认档 1.625）。
+>
+> **覆盖范围是 6 格**：`messages` / `approval` 的亮/暗/窄窗三种条件。
+> 其余 45 格没有正文，显式记 `present: false` 并计入「已知（场景不适用）」——
+> 不是静默跳过，所以「没量到」和「量到了没问题」在输出里分得开。
+>
+> **变异已验证**：把 `--chat-md-leading` 改回 1.45，`unregistered` 从 0 变 6，
+> 六条全部精确指向 `chat-body.lineHeight`（21.75px vs 期望 24.375px）。
+
 ### 参考矩阵原先“待测”的 3 个窄窗格：实际采样
 
 | 原先待测的格子 | 真 Electron 计算样式原始实测值 | 能得出的结论 |

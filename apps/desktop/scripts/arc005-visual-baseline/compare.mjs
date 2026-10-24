@@ -87,6 +87,26 @@ const motion = {
   "--ease-snap":["cubic-bezier(.32,.72,0,1)","--cds-ease-snap","一致"],
   "--ease-overshoot":["cubic-bezier(.34,1.3,.64,1)","--cds-ease-overshoot","一致"],
 };
+
+// 【T149】正文排版：根 token 表看不到 `.chat-md` 的**计算值**。
+//
+// `--chat-md-leading` / `--chat-font-size` 是变量，但变量被谁读、读到多高，
+// 只有 `measured` 知道。而这个文件此前**只比 `snapshot.tokens`**，从不读
+// `measured` —— 于是任何正文排版改动（字号、行高、字重）在输出里都不可见。
+//
+// T147 是最直接的证据：行高 21.75px → 24.375px，PNG 变了、diff.md 一个字段没变。
+//
+// 这里登记的是**期望的计算值**，不是 token 值。改动正文排版时同步改这里；
+// 改了而不同步，会出现「未登记差异」—— 那是想要的行为（它拦住了静默变化）。
+const measuredChecks = {
+  // 正文本体。字号 = --chat-font-size（默认 15px）；行高 = 字号 × --chat-md-leading
+  // 默认档 1.625 → 24.375px。真正的上游依据见 ChatMessageBubbles.tsx:361 的
+  // `text-[15px] leading-relaxed`。
+  "chat-body": {
+    fontSize: "15px",
+    lineHeight: "24.375px",
+  },
+};
 function normalized(v) {
   const s = String(v ?? "").trim().replace(/\s+/g, "");
   const rem = s.match(/^([\d.]+)rem$/);
@@ -129,6 +149,33 @@ for(const row of manifest) {
     if(!agree)unknown++;else if(judgment.startsWith("已知"))known++;else equal++;
     fileRows.push(`| ↳ ${key} | Mcode=${actual.replaceAll("|","/")} | 上游=${upstreamValue.replaceAll("|","/")}；矩阵判定=${judgment}；实测=${agree?"与矩阵登记相符":"偏离矩阵登记 "+reference} | ${verdict} |`);
   }
+
+  // 【T149】正文排版：比 `snapshot.measured` 里 `.chat-md` 的**计算值**。
+  //
+  // 「没量到」和「量到了但没问题」必须分得开：场景里没有正文（空态/设置页/
+  // 纯面板）时选择器落空，这里**显式写 present: false**，计入 known 而不是
+  // 静默跳过 —— 否则「一半格子没量」会看起来和「全都对」一模一样。
+  const measured = Array.isArray(sample.snapshot?.measured) ? sample.snapshot.measured : [];
+  for (const [name, want] of Object.entries(measuredChecks)) {
+    const hit = measured.find((m) => m?.name === name);
+    if (!hit) {
+      unknown++;
+      fileRows.push(`| ↳ measured:${name} | ${row.condition} | 探针未产出这一项 | 未登记差异 |`);
+      continue;
+    }
+    if (!hit.present) {
+      // 显式缺席：该场景本来就没有正文。不算差异，但要在表里看得见。
+      known++;
+      fileRows.push(`| ↳ measured:${name} | ${row.condition} | 本场景无正文（present=false）| 已知（场景不适用）|`);
+      continue;
+    }
+    for (const [field, expectedValue] of Object.entries(want)) {
+      const actualValue = hit[field];
+      const ok = String(actualValue ?? "").trim() === expectedValue;
+      if (!ok) unknown++; else equal++;
+      fileRows.push(`| ↳ measured:${name}.${field} | Mcode=${String(actualValue ?? "(缺失)").replaceAll("|","/")} | 期望=${expectedValue} | ${ok ? "一致" : "未登记差异"} |`);
+    }
+  }
 }
 const lines=[
  "# ARC-005 V4：Electron 计算样式逐项比对",
@@ -136,6 +183,7 @@ const lines=[
  "参考：docs/design/claude-code-reference-matrix.md §二/四/五；上游为 open-claude-ui/code-examples/cds-theme.css（第三方逆向产物，非用户安装 Claude 版）。",
  "仅判上述已经登记的 surface/content/edge、圆角、动效；差异按矩阵原有判断，不以像素等值代替语义关系。",
  "root token 与窗口实际可见元素的 getComputedStyle 分别存于同名 JSON：snapshot.tokens 和 snapshot.measured（含尺寸、字号、行高、背景、颜色、圆角、padding）。",
+ "【T149】正文排版另比对 `measured`：`chat-body` 取 `.chat-md` 的**计算值**（字号/行高）。root token 表看不到它 —— `--chat-md-leading` 是变量，被谁读、读到多高只有计算值知道。本场景没有正文时显式记 present=false。",
  "",
  `总格数：${expectedCells}；有图：${manifest.length-missing}；data-missing：${missing}。比较条目：一致 ${equal}、已知差异 ${known}、未登记差异 ${unknown}。`,
  "",
