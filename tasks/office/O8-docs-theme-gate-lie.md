@@ -41,11 +41,18 @@ genoffice/apps/markdown/src/preload/index.ts:164  exposeInMainWorld('markdownApi
 
 ### 4.1 硬判据（必须真 Electron）
 
-| # | 断言 |
-|---|---|
-| 1 | **宿主里**打开 docs → `document.styleSheets` 里**有** `mcode-theme` |
-| 2 | **独立 GenOffice 里**打开 docs（app 名非 Mcode）→ **没有** `mcode-theme` |
-| 3 | 两条都在**真 Electron** 里跑，**不是读源码** |
+| # | 断言 | 防的是什么 |
+|---|---|---|
+| 1 | **宿主里**打开 docs → `document.styleSheets` 里**有** `mcode-theme` | **「恒 false」** —— 一个从不换壳的实现也能过判据 2 |
+| 2 | **独立 GenOffice 里**打开 docs（app 名非 Mcode）→ **没有** `mcode-theme` | **本卡要修的缺陷** |
+| 3 | 两条都在**真 Electron** 里跑，**不是读源码** | **「形状 ≠ 行为」** —— 0014 就栽在这 |
+
+**⚠️ 判据 1 和 2 缺一不可。**
+
+**只有 2** → 把开关改成恒 `false` 就能过，**那不是一个修复，是换了一个 bug**
+（用户永远看不到 Mcode 的配色，而套件全绿）。
+
+**只有 1** → 现在的缺陷照样存在（独立运行时也换壳）。
 
 **判据 2 是这张卡存在的理由。** 没有它，就只是把开关换了个说法。
 
