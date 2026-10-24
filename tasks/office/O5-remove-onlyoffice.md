@@ -455,3 +455,65 @@ pnpm test:smoke t150-smokes-for-contracts-smoke        PASS
   onlyoffice 档位，批二删 `policy.ts` 条目时一并处理。
 - 工作区里 `packages/contracts/src/conditionBridge.ts`（未跟踪）是**工作流线**的新文件，
   与本卡无关，**未动**。
+
+### 批二（主进程 + preload）回写 —— 2026-10-24，提交 `00af5199`
+
+**范围**：`apps/desktop/src/main/**`、`apps/desktop/src/preload/**` 及相关套件。
+**`renderer/**` 一行未改**（批三）。
+
+**删除**：`main/onlyoffice/`（Bridge / localInstall / persistenceAlerts 三个文件）、
+`main/ipc/onlyoffice.ts` 与它在 `ipc/index.ts` 的注册、`preload/index.ts` 的
+`onlyoffice` 命名空间（8 个通道）、`mobileRpc.ts` 的 `onlyoffice:open|close` 白名单项。
+三套被测对象随之消失的套件一并删除：`onlyoffice-smoke`（Bridge 全链，含假 DS）、
+`onlyoffice-sdk-origin-smoke`（DS SDK loader 区段）、`maint-m21-smoke`（Windows 安装器链路）。
+
+**从功能里摘掉（它们只为 OnlyOffice 存在）**：
+- `index.ts`：退出不再 flush DS 会话（没有会话了）；渲染端 CSP 不再放行外部 office 源。
+  `desktopCsp` 的第三参数保留并改名 `extraFrameOrigin` —— `editor-market-smoke` 的
+  Electron 夹具仍用它立一个本地编辑器源；「非法源不能注入指令」的守卫一字未改。
+- `ipc/app.ts`：迁移数据根不再等 office 会话。
+- `env/toolchain.ts` / `env/toolInstall.ts`：工具链的 `onlyoffice` 项、它的安装器与
+  错误码翻译整段删除。`env/systemToolPaths.ts` 的拆分保留（纯路径表不该依赖存储层），注释更新。
+- `appControl/policy.ts`：8 条方法档位、CREDENTIAL_BEARING 三条、域标签与关键词。
+- `appControl/commandOutcome.ts`：`forceSave`/`close` 的两条结果描述符。
+
+**★ 按卡 §四之3 判过、并决定保留的（数据卫生，不是代码整洁）**：
+`main/lib/secretKeys.ts` 的 `onlyoffice.config` 与 `settings/settingsTransfer.ts` 的导出排除
+**都留着**，并在两处写了理由：删掉键名不会让用户盘上的旧值消失，只会让它**不再被当密钥**
+—— `setting.get` 能把它交给模型、导出设置能把它写进分享出去的文件。清理旧值是独立的
+数据迁移决定（卡 §四之3），不在本批顺手做。
+
+**套件调整**：
+- `t101`：`office` 入参改由 `isOfficeDocumentKind(documentKindOf(x))` 推导 —— 与被删的
+  `isOnlyOfficeSupportedPath` 是同一组扩展名表（批一已把那张表留在 `documentKind.ts`）。
+  本套的被测对象（`isGenofficeViewAvailableFor`）没变，批三之后它是 office 打开的唯一判据。
+- `db-persistence-smoke`：退出夹具跟着新的 `before-quit` 走；删掉「Office 保存失败取消退出」
+  「Office 会话阻止迁移」两组断言 —— 那两条行为已不存在，留着就是验空气。
+- `app-control-smoke`：删 3d-9（onlyoffice 域）、凭据族三条、READ_OK 里的两条、泄漏键一条。
+  `maybePartial`→UNCERTAIN / `refusal`→REJECTED 的覆盖在 git、relay、skills、MC-021 仍有。
+- `updater-tools-smoke`、`dialog-shell-smoke`、`release-readiness-smoke`、`docs/editor-market-fixes.md`：
+  去掉对已删模块/路径/套件的引用。
+
+**验收（总控指定的判据）**：
+
+```
+npx tsc --noEmit -p apps/desktop/tsconfig.json
+  → 剩余错误 100% 落在 renderer/ 的 8 个文件（批三）：
+    OnlyOfficeEditorPane.tsx、OnlyOfficeConfigCard.tsx、ToolchainSection.tsx、
+    FileEditor.tsx、FilePreview.tsx、FileViewer.tsx、MobileFileViewer.tsx、webApi.ts
+npx tsc --noEmit -p packages/contracts/tsconfig.json → exit=0
+```
+
+绿：app-control / installers-ipc / updater-tools / db-persistence / dialog-shell /
+desktop-csp-boundary / ipc-wiring / memory-codex / t40-renderer-registry / agent-env /
+settings-export-secrets / settings-import-backup / mobile-pairing。
+
+**已知红（批三，预期）**：`mobile-api-surface-smoke` 的 [B] 与 [C] —— `webApi.ts` 仍实现
+`api.onlyoffice.open/close` 指向本批已删的通道（[B]「61 条 rpc 目标全部在主进程手机白名单里」
+报 2 条 unknown；[C]「webApi 列出的命名空间全部存在于 preload」报 `phantom: ["onlyoffice"]`）。
+这正是批三要删的那一段，**不是批二的遗漏**。
+
+**未做/存疑**：
+- `onlyoffice.config` 的旧值清理（数据迁移）留给用户裁决，同 §四之3。
+- 批三要注意：`FileEditor.tsx:44` 的 `office` 入参目前仍取 `isOnlyOfficeSupportedPath`
+  （已删）—— 必须换成 `documentKind` 的等价判据，否则 `genofficeViewForOffice` 恒 false。
