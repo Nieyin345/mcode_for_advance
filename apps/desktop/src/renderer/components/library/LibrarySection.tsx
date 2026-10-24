@@ -1160,7 +1160,7 @@ export function LibrarySection({
           </span>
           <button
             type="button"
-            className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted hover:bg-surface-hover"
+            className="cds-hover-ghost shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted"
             onClick={() => void loadCollectionItems(c.id)}
           >
             {t("library.retry")}
@@ -1189,7 +1189,7 @@ export function LibrarySection({
             </span>
             <button
               type="button"
-              className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted hover:bg-surface-hover"
+              className="cds-hover-ghost shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted"
               onClick={() => void loadCollectionItems(c.id)}
             >
               {t("library.retry")}
@@ -1258,7 +1258,7 @@ export function LibrarySection({
           </span>
           <button
             type="button"
-            className="shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted hover:bg-surface-hover"
+            className="cds-hover-ghost shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-muted"
             onClick={() => void loadAllItems()}
           >
             {t("library.retry")}

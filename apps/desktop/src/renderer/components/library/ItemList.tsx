@@ -100,7 +100,7 @@ export function ItemList({
           </div>
           <button
             onClick={onShowAll}
-            className="mt-1 flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-code text-content-muted hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost mt-1 flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-code text-content-muted hover:text-content"
           >
             <IconSearch size={13} />
             {t("library.list.showAll")}
@@ -127,7 +127,7 @@ export function ItemList({
           </button>
           <button
             onClick={onSearch}
-            className="flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-code text-content-muted hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost flex items-center gap-1.5 rounded border border-edge px-3 py-1.5 text-code text-content-muted hover:text-content"
           >
             <IconSearch size={13} />
             {t("library.action.search")}

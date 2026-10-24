@@ -385,7 +385,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
                 <button
                   key={f.name}
                   onClick={() => navigateLibraryPath(relPath === null ? f.name : `${relPath}/${f.name}`)}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-code text-content-muted hover:bg-surface-hover hover:text-content"
+                  className="cds-hover-ghost flex w-full items-center gap-2 rounded px-2 py-1 text-left text-code text-content-muted hover:text-content"
                 >
                   {f.isDir ? (
                     <IconFolder size={13} className="shrink-0 text-content-subtle" />
@@ -584,7 +584,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
 }
 
 const headerBtn =
-  "shrink-0 rounded p-1 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-40";
+  "cds-hover-ghost shrink-0 rounded p-1 text-content-subtle hover:text-content disabled:opacity-40";
 
 /**
  * `PdfPreview` 只认一个条目 id(见它签名那段)。这里给一个**只够它画**的壳:

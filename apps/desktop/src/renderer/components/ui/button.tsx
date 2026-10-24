@@ -3,10 +3,26 @@
  *
  * Built on @base-ui/react Button primitive + cva() variant management.
  *
+ * ## ⚠️ 不要在调用处再写 `hover:bg-*`
+ *
+ * `secondary` / `ghost` / `outline` 三个变体已经通过 `.cds-hover-ghost`
+ * 处理了悬停与按下（含 `:active` 的一档）。调用处再传
+ * `className="hover:bg-surface-hover"` 是**重复且多半无效的**：
+ *
+ * - `cn()` 是 twMerge，它不认识 `.cds-hover-ghost` 这个自定义类，
+ *   所以两者会**同时留在 DOM 上**；
+ * - 最终胜者由 CSS 决定。实测（T128，浏览器里读 CSSOM）：两条规则算出的
+ *   颜色**完全相同**（裸类只是把同一个变量包进 `--tw-bg-opacity`，默认 1），
+ *   所以那段类**什么都没做**，只是让读者以为它在做事。
+ * - 真正要改悬停表现时，用 `variant`，或者显式覆盖 `--surface-hover`。
+ *
+ * 2026-10-24 在 `settings/` 下清掉 15 处这类死覆盖；同一模式在别处仍可能出现。
+ *
  * @example
  *   <Button>Default</Button>
  *   <Button variant="primary" size="sm">Save</Button>
  *   <Button variant="danger" disabled>Delete</Button>
+ *   <Button variant="ghost" className="px-1">…</Button>
  */
 import { forwardRef } from "react";
 import { Button as BaseButton } from "@base-ui/react/button";

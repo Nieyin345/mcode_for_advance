@@ -252,7 +252,7 @@ export function FilePreview({
                 // 从前这里把 relPath 整个清成 null —— 翻进 `a/b` 再点它直接弹回条目根,
                 // 越过了 `a`,而按钮上印的明明是「返回上级」。
                 onClick={() => setRelPath(relPath.includes("/") ? relPath.slice(0, relPath.lastIndexOf("/")) : null)}
-                className="flex items-center gap-1 rounded px-1 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
+                className="cds-hover-ghost flex items-center gap-1 rounded px-1 py-0.5 text-[0.7857em] text-content-muted hover:text-content"
               >
                 <IconArrowLeft size={12} />
                 {t("library.file.back")}
@@ -272,7 +272,7 @@ export function FilePreview({
                 <button
                   key={f.name}
                   onClick={() => open(f.name, f.isDir)}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-code text-content-muted hover:bg-surface-hover hover:text-content"
+                  className="cds-hover-ghost flex w-full items-center gap-2 rounded px-2 py-1 text-left text-code text-content-muted hover:text-content"
                 >
                   {f.isDir ? (
                     <IconFolder size={13} className="shrink-0 text-content-subtle" />

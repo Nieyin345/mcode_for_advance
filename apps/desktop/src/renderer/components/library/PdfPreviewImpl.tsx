@@ -482,7 +482,7 @@ export function PdfPreview({
         <div className="flex items-center gap-2">
           <button
             onClick={() => setNonce((n) => n + 1)}
-            className="inline-flex items-center gap-1 rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost inline-flex items-center gap-1 rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:text-content"
           >
             <IconRefresh size={11} />
             {t("library.preview.retry")}
@@ -490,7 +490,7 @@ export function PdfPreview({
           {/* 读不了就退到外部程序 —— 不能只留一句错误 */}
           <button
             onClick={open}
-            className="inline-flex items-center gap-1 rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost inline-flex items-center gap-1 rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:text-content"
           >
             <IconExternalLink size={11} />
             {t("library.pdfViewer.openExternal")}
@@ -513,7 +513,7 @@ export function PdfPreview({
             disabled={saveState === "saving"}
             className={cn(
               "rounded border border-edge px-2 py-0.5 text-[0.7857em] transition-colors",
-              "text-content-muted hover:bg-surface-hover hover:text-content",
+              "cds-hover-ghost text-content-muted hover:text-content",
               "disabled:opacity-40 disabled:hover:bg-transparent",
             )}
           >
@@ -543,7 +543,7 @@ export function PdfPreview({
             type="button"
             data-index-retry={true}
             onClick={() => setIndexReload((n) => n + 1)}
-            className="shrink-0 rounded border border-edge px-2 py-0.5 hover:bg-surface-hover"
+            className="cds-hover-ghost shrink-0 rounded border border-edge px-2 py-0.5"
           >
             重新检查索引
           </button>

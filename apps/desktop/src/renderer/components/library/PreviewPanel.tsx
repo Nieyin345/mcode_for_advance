@@ -67,7 +67,7 @@ export function PreviewPanel() {
           <button
             onClick={() => useLibraryStore.getState().openPreview(item.id)}
             title={t("library.ctx.offerMd")}
-            className="shrink-0 rounded px-1.5 py-0.5 text-[0.7857em] text-accent hover:bg-surface-hover"
+            className="cds-hover-ghost shrink-0 rounded px-1.5 py-0.5 text-[0.7857em] text-accent"
           >
             {t("library.ctx.offerMd")}
           </button>

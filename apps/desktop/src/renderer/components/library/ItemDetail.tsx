@@ -264,7 +264,7 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
             setPickerOpen(true);
           }}
           disabled={busy}
-          className="ml-auto inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+          className="cds-hover-ghost ml-auto inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[0.7857em] text-content-muted hover:text-content disabled:opacity-50"
         >
           <IconPlus size={11} />
           {t("library.links.add")}
@@ -275,7 +275,7 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
           onClick={() => void addFromDisk()}
           disabled={busy}
           title={t("library.links.addFromDiskHint")}
-          className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+          className="cds-hover-ghost inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[0.7857em] text-content-muted hover:text-content disabled:opacity-50"
         >
           <IconFolderOpen size={11} />
           {t("library.links.addFromDisk")}
@@ -460,7 +460,7 @@ export function ItemDetail({ item, onChanged }: Props) {
                     }
                   });
               }}
-              className="inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
+              className="cds-hover-ghost inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 text-[0.7857em] text-content-muted hover:text-content"
             >
               <IconFolderOpen size={12} />
               {t("library.pdf.revealFile")}
@@ -494,7 +494,7 @@ export function ItemDetail({ item, onChanged }: Props) {
                   });
                 }}
                 title={t("library.convert.revealMd")}
-                className="rounded border border-edge p-0.5 text-content-muted hover:bg-surface-hover hover:text-content"
+                className="cds-hover-ghost rounded border border-edge p-0.5 text-content-muted hover:text-content"
               >
                 <IconFolderOpen size={12} />
               </button>
@@ -506,7 +506,7 @@ export function ItemDetail({ item, onChanged }: Props) {
                 onClick={() => void adoptMarkdown()}
                 disabled={converting}
                 title={t("library.convert.adoptHint")}
-                className="inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+                className="cds-hover-ghost inline-flex items-center gap-1 rounded border border-edge px-2 py-0.5 text-[0.7857em] text-content-muted hover:text-content disabled:opacity-50"
               >
                 {t("library.convert.adopt")}
               </button>

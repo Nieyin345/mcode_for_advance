@@ -148,7 +148,7 @@ export function ItemNotes({ item }: { item: LibraryItem }) {
             setEditing(null);
             setDraft("");
           }}
-          className="rounded border border-edge px-2 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
+          className="cds-hover-ghost rounded border border-edge px-2 py-0.5 text-[0.7857em] text-content-muted hover:text-content"
         >
           {t("library.collection.cancel")}
         </button>
@@ -172,7 +172,7 @@ export function ItemNotes({ item }: { item: LibraryItem }) {
         {editing !== "new" && (
           <button
             onClick={startNew}
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.7857em] text-content-muted hover:text-content"
           >
             <IconPlus size={11} />
             {t("library.itemNote.add")}

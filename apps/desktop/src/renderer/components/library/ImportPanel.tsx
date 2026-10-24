@@ -218,21 +218,21 @@ export function ImportBar({
         <button
           onClick={() => void pickFiles()}
           disabled={busy}
-          className="rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+          className="cds-hover-ghost rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:text-content disabled:opacity-50"
         >
           {t("library.import.pickFile")}
         </button>
         <button
           onClick={() => void pickFolder()}
           disabled={busy}
-          className="rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+          className="cds-hover-ghost rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:text-content disabled:opacity-50"
         >
           {t("library.import.pickFolder")}
         </button>
         <button
           onClick={() => void explodeFolder()}
           disabled={busy}
-          className="rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:bg-surface-hover hover:text-content disabled:opacity-50"
+          className="cds-hover-ghost rounded border border-edge px-2 py-1 text-[0.7857em] text-content-muted hover:text-content disabled:opacity-50"
         >
           {t("library.import.explodeFolder")}
         </button>
@@ -243,7 +243,7 @@ export function ImportBar({
         <button
           onClick={onClose}
           title={t("library.collection.cancel")}
-          className="ml-auto shrink-0 rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+          className="cds-hover-ghost ml-auto shrink-0 rounded p-1 text-content-subtle hover:text-content"
         >
           <IconX size={13} />
         </button>
