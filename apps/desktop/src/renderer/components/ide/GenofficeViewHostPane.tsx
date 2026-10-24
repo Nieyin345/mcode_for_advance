@@ -79,6 +79,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
 import type { DocViewRect } from "@contracts/ipc";
 import { genofficeAppForPath, type GenofficeApp } from "@contracts/genofficeFileRoute";
+import { handoffOfficeToMcode } from "./officeChatHandoff.js";
 
 /** GenOffice 编辑器 module 名（与 vendor 的 `rendererUrl` host 同名）。 */
 export type GenofficeEditorHost = GenofficeApp;
@@ -436,6 +437,26 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {/* The AI belongs to Mcode, not the embedded editor. Keep this action in
+          the React host (outside the OS-level WebContentsView). Its height is
+          excluded from the native view's measured bounds by stageRef. */}
+      {url !== null && active && (
+        <div className="flex h-8 shrink-0 items-center justify-end gap-2 border-b border-edge bg-surface px-2" data-office-mcode-toolbar="">
+          <span className="mr-auto min-w-0 truncate text-[11px] text-content-muted" title={filePath}>
+            {filePath.replace(/^.*[\\/]/, "")}
+          </span>
+          <button
+            type="button"
+            data-office-ask-mcode=""
+            disabled={!mcodeSessionId}
+            title={mcodeSessionId ? t("ide.genoffice.askMcodeHint") : t("ide.genoffice.askMcodeNoSession")}
+            className="flex shrink-0 items-center gap-1 rounded-[var(--radius-btn-xs)] border border-edge px-2 py-0.5 text-[11px] font-medium text-content transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => handoffOfficeToMcode(filePath, mcodeSessionId, useSessionStore.getState())}
+          >
+            {t("ide.genoffice.askMcode")}
+          </button>
+        </div>
+      )}
       {caps.loading && <LoadingNote label={t("common.loading")} />}
       {/* 【ARC-007】sheets/slides：**显式**说明打开为什么不可用（原因：vendor 的
           打开通道在其主进程里），不装空白。这一支必须排在「未构建」之前 —— CLI 是否

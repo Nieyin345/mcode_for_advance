@@ -97,7 +97,8 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O11** `slides:save-as` 第二个入口 | ✅ **实现并有界验证** | `O11-slides-save-as-second-entrance.md` | Mcode `7fcc9f52` / vendor `483ce544` | 失败安全 6/6、既有 5/5；Slides 真 Electron 普通保存冲突 U1 通过；另存为完整 GUI U1 尚未验证 |
 | **O12** Electron 44 Slides 剪贴板兼容 | ✅ **实现并有界验证** | `O12-slides-electron44-clipboard.md` | Mcode `56d1282a` / vendor `ec21271a` | 同步/异步 mock 13/13；真实 Electron `slides-edit-smoke` 无 handler 替身 PASS；跨应用粘贴 U1 未验 |
 | **O13** Sheets 工作簿加载卡住 | 🟡 **首帧风险已修，U1 2× PASS；长期稳定性待验** | `O13-sheets-workbook-opening-hang.md` | Mcode `68eced39` / vendor `f6d8e8a` | 原始红例 120s opening；无帧回归 3/3（去掉兜底按预期红）；修复后相同真实 Electron 旅程独立两次 PASS，原始偶发根因尚未唯一确认 |
-| **O14** Mcode AI 唯一 UI + 原厂 Office 编辑器嵌入 | ✅ **有界交付，整屏 U1 待验** | `O14-mcode-ai-only-office-ui.md` | vendor `5f6b1d9` / Mcode 待提交 | Mcode 宿主六原厂 AI 面板、Genspark 功能组、选区弹窗卸载，保留编辑内核；六格式 T7 真 Electron 打开→编辑→保存→重启→重开 **6/6 PASS**，每家新增 AI DOM 负断言；26 patches 验证 PASS |
+| **O14** Mcode AI 唯一 UI + 原厂 Office 编辑器嵌入 | ✅ **有界交付，整屏 U1 待验** | `O14-mcode-ai-only-office-ui.md` | vendor `5f6b1d9` / Mcode `2bbc780f` | Mcode 宿主六原厂 AI 面板、Genspark 功能组、选区弹窗卸载，保留编辑内核；六格式 T7 真 Electron 打开→编辑→保存→重启→重开 **6/6 PASS**，每家新增 AI DOM 负断言；26 patches 验证 PASS |
+| **O15** Office 六格式停靠与 Mcode AI 会话草稿交接 | ✅ **有界交付，真实整屏与在线模型待验** | `O15-mcode-office-dock-chat-handoff.md` | Mcode 本轮提交 | 六编辑器右侧停靠；宿主「交给 Mcode AI」将文件引用交给现有 Mcode ChatPane 草稿，不自动发送，原编辑器并排；4 smoke PASS + desktop/contracts tsc PASS |
 
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）

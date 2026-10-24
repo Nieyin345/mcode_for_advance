@@ -2,6 +2,7 @@ import { useBrowserStore } from "@renderer/stores/browserStore.js";
 import { useEffect, useMemo, useState } from "react";
 import { GenofficeViewHostPane } from "@renderer/components/ide/GenofficeViewHostPane.js";
 import { stableDocId } from "@renderer/components/ide/GenofficeViewHostPane.js";
+import { canDockOfficeFile } from "@renderer/components/ide/officeChatHandoff.js";
 import { hostedPaneContent } from "./paneLayout.js";
 import { EngineRuntimePanel } from "@renderer/components/settings/workflows/EngineRuntimePanel.js";
 import { api } from "@renderer/lib/api.js";
@@ -72,7 +73,9 @@ export function RightPanel() {
   const settingsOpen = useSessionStore((s) => s.settingsOpen);
   const activeFile = useSessionStore((s) => s.activeProjectId
     ? s.ideActiveFileByProject[s.activeProjectId] ?? null : null);
-  const dockableDoc = activeFile && /\.docx$/i.test(activeFile) ? activeFile : null;
+  // The native editor supports six GenOffice applications, not just DOCX.
+  // Reuse its single routing contract; unknown formats remain disabled.
+  const dockableDoc = canDockOfficeFile(activeFile) ? activeFile : null;
   const pinnedDoc = content?.kind === "document" ? content.documentId : null;
   const pinnedFlow = content?.kind === "flow" ? content.flowId : null;
   const [visitedDocs, setVisitedDocs] = useState<ReadonlySet<string>>(() => new Set());
@@ -272,7 +275,7 @@ export function RightPanel() {
             setActiveCustom(null);
             setRightOpen(true);
           }} title={t("layout.paneDocument")}>
-            <span aria-hidden="true" className="font-mono text-[10px]">DOC</span>
+            <span aria-hidden="true" className="font-mono text-[10px]">OFF</span>
           </RailButton>
           <RailButton active={pinnedFlow !== null} onClick={() => {
             setActiveModuleView(false);
