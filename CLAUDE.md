@@ -791,12 +791,60 @@ grep -P "[\x00-\x08\x0e-\x1f]" <file>   # 有没有控制字符
 
 **⚠️ 第二种（`grep -P`）能一次性扫全文件，适合写完立刻跑一遍。**
 
-**合起来**：
+### ⚠️ 但 `grep -P` 在这台机器上跑不起来（2026-10-24 实测）
 
 ```bash
-# 改完含正则/反斜杠的文件，立刻：
-grep -Pn "[\x00-\x08\x0e-\x1f]" <改的文件> && echo "⚠️ 有控制字符" || echo "干净"
+$ grep -Pn "[\x00-\x08\x0e-\x1f]" CLAUDE.md
+grep: -P supports only unibyte and UTF-8 locales
+
+$ LC_ALL=C grep -Pn "[\x00-\x08\x0e-\x1f]" CLAUDE.md
+grep: -P supports only unibyte and UTF-8 locales      ← 换 locale 也不行
 ```
+
+**中文 Windows 的默认 locale 下 `grep -P` 不可用。**
+
+**用 Python 读字节，不关心 locale：**
+
+```bash
+python -c "
+import io, re, sys
+bad = re.compile(rb'[\x00-\x08\x0e-\x1f]')
+for f in sys.argv[1:]:
+    m = bad.search(io.open(f, 'rb').read())
+    if m: print(f, 'byte=0x%02x' % m.group()[0])
+" <file1> <file2> ...
+```
+
+**批量扫一个目录：**
+
+```bash
+python -c "
+import glob, io, re
+bad = re.compile(rb'[\x00-\x08\x0e-\x1f]')
+for f in glob.glob('tasks/office/*.md'):
+    m = bad.search(io.open(f, 'rb').read())
+    if m: print(f, 'byte=0x%02x' % m.group()[0])
+"
+```
+
+### 这条本身就是本节主题的又一次
+
+**「别人环境里能跑的命令」≠「在这里能跑」。**
+
+**而这两件事的差别，只有真的跑一次才会暴露。**
+
+**同一天同一个形态出现了三次：**
+
+| # | 命令 | 隐含前提 |
+|---|---|---|
+| 1 | `bash apps/desktop/scripts/<name>/run.sh` | **cwd 是仓库根时，脚本内部 `cd` 后 `$0` 仍有效**（不成立，T145 修） |
+| 2 | `smokes-for.sh <path>` | **这个路径在依赖图范围内**（vendor 不在，T152） |
+| 3 | **`grep -P '\x00-\x1f'`** | **系统 locale 支持 PCRE**（中文 Windows 不支持） |
+
+**共同点：命令在某个前提成立时才工作，而那个前提没人写出来。**
+
+**判据：给别人的命令，要么不依赖前提，要么把前提一起写出来。**
+**「在我这能跑」不是证据 —— 除非你知道为什么它能跑。**
 
 ## 代价为什么这么高
 
