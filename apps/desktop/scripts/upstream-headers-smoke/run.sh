@@ -6,14 +6,15 @@
 # bridge cases stub globalThis.fetch to capture the outgoing upstream request.
 # See main.ts for the covered scenarios.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-headers-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/upstream-headers-smoke/main.ts \
   --bundle --platform=node --format=esm \

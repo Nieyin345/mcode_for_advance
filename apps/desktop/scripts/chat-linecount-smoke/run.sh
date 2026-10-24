@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # chat-linecount-smoke — Write 卡「N 行」徽标的末尾换行 off-by-one(见 main.ts 文件头)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d /tmp/mcode-chat-linecount.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "esbuild not found in node_modules (no network fallback)" >&2; exit 1; fi
 "$ESBUILD" scripts/chat-linecount-smoke/main.ts \
   --bundle --platform=node --format=esm \

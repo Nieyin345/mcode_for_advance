@@ -7,11 +7,12 @@
 # 路径装配(main/ipc/context.ts,依赖 electron 与真数据根)和各引擎的消费点
 # (要活的会话),靠真机验收。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-context-files-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/context-files-smoke/main.ts \
   --bundle --platform=node --format=esm \

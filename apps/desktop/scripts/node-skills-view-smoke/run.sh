@@ -3,11 +3,12 @@
 #
 # 纯数据（一个常量 + 一个收集算法），不碰磁盘、不碰数据库、不碰 electron。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-node-skills-view-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/node-skills-view-smoke/main.ts \
   --bundle --platform=node --format=esm \

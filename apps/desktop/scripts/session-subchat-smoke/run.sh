@@ -8,7 +8,8 @@
 # 引擎那一侧是假的(stubs/runtimeManager.ts):真的 RuntimeManager 一 bindSession 就会
 # 把三个引擎实现全拉起来,无头跑不起来。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-session-subchat-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-session-subchat-data.XXXXXX)
@@ -16,7 +17,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 **sql.js** 的:它的 asm 构建里有 `require("node:fs")`,而定死的
 # ESM 输出没有 `require`(理由同 run-store-smoke/run.sh)。

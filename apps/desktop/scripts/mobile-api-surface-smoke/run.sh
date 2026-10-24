@@ -11,12 +11,13 @@
 # 运行时的 node 从产物所在目录向上解析得到它 —— 所以产物必须落在 apps/desktop/.tmp
 # (与 mobile-pairing-smoke 同一个理由:外部化包的解析).
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 mkdir -p ./.tmp
 OUT=$(mktemp -d ./.tmp/mcode-mobile-api-surface-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/mobile-api-surface-smoke/main.ts \
   --bundle --platform=node --format=esm \

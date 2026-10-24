@@ -20,7 +20,8 @@
 #
 # Run: scripts/file-snapshot-smoke/run.sh
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # esbuild 的启动器是 `#!/usr/bin/env node` 脚本，所以 esbuild 和产物都要能解析到 node。
 # 本脚本被交互 shell 直接跑时 PATH 里通常有；但被别的进程（如变异脚本的 subprocess）
@@ -33,7 +34,7 @@ fi
 
 OUT=$(mktemp -d ./.tmp/file-snapshot-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/file-snapshot-smoke/main.ts \
   --bundle --platform=node --format=esm \

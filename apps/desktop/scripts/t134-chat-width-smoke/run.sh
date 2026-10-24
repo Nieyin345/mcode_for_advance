@@ -4,8 +4,8 @@
 # 这套不 import 产品代码、不起 Electron —— 它读 uiPrefs.ts 与 ChatPane.tsx，
 # 断言两张宽度表的取值、分工与 fallback 同步。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
 HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "Missing existing esbuild; no dependency installation attempted" >&2; exit 1; fi
 

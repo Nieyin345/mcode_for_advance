@@ -7,11 +7,12 @@
 # entry point the IPC event stream uses — so the stamping chain is exercised for
 # real rather than re-implemented by the test.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-model-anchor-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # Same monaco exclusion as session-store-smoke: the store's sole dynamic import
 # drags in vite-only asset types and is never reached here.

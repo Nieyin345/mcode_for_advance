@@ -16,13 +16,14 @@
 # `tools.ts` 的链 import electron 且动态 import RuntimeManager(见 app-control-smoke/run.sh 的
 # 警告),这里照该套的取舍整套换桩;`dataRoot` 换临时目录桩。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-scene-apply.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-scene-apply-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/scene-apply-smoke/main.ts \
   --bundle --platform=node --format=esm \

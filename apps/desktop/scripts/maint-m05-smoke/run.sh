@@ -5,11 +5,12 @@
 # feeds them synthetic app-server notification frames. No codex binary, no
 # app-server process, no network, no user data.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-maint-m05.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "esbuild not found in node_modules (no network fallback)" >&2; exit 1; fi
 
 "$ESBUILD" scripts/maint-m05-smoke/main.ts \

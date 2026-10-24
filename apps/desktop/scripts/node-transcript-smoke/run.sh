@@ -6,14 +6,15 @@
 # SDK), so nothing needs replacing. See main.ts's header for what is and is not
 # covered.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-node-transcript-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/node-transcript-smoke/main.ts \
   --bundle --platform=node --format=esm \

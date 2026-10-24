@@ -32,7 +32,8 @@
 # `--banner:js` 那一行**非有不可**:sql.js 的 asm 构建里有 `require("node:fs")`,
 # 而定死的 ESM 输出没有 `require`(理由同 run-store-smoke/run.sh)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-observability-ipc-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-observability-ipc-data.XXXXXX)
@@ -40,7 +41,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/observability-ipc-smoke/main.ts \
   --bundle --platform=node --format=esm \

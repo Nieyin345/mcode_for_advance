@@ -11,12 +11,13 @@
 #   - 叶子 @main 模块(dataRoot/logger/pluginManager/浏览器工具/…)→ 内存桩,避免拉进
 #     electron / sql.js / 真磁盘。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-resume-fault.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-resume-fault-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 外置的相对依赖:每条都要单独 esbuild 成同名 .js 铺在 bundle 旁边,并让主 bundle
 # `--external` 它。用 `--packages=external` 让裸 specifier(electron 等)也从 bundle

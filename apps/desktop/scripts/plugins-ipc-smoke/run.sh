@@ -15,12 +15,13 @@
 # 换成内存桩就够了 —— 本套一行 sqlite 都不碰,也就没有"指错库毁聊天记录"的风险。
 # 真正要防的是文件系统的那个根,上面那段管的就是它。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-plugins-ipc-smoke.XXXXXX)
 SMOKE_HOME=$(mktemp -d /tmp/mcode-plugins-ipc-home.XXXXXX)
 trap 'rm -rf "$OUT" "$SMOKE_HOME"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner`:sql.js 的 asm 构建里有 `require("node:fs")`,而定死的 ESM 输出没有
 # `require` —— 这里其实走不到 sql.js(SettingRepo 被换了),但那行 banner 无害,

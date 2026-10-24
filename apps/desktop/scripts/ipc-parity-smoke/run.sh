@@ -9,11 +9,12 @@
 # electron / sql.js 那一片。哪天真够到了,再按 `library-trash-smoke/run.sh`
 # 那一串补上。
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 OUT=$(mktemp -d /tmp/mcode-ipc-parity.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行留着:今天这条 import 图够不到 sql.js,但 `IPC` 表所在的
 # `@contracts/ipc` 是个 barrel,加一条 import 就可能把 sql.js 的 asm 构建拉进来

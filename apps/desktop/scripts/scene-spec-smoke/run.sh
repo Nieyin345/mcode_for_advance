@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Headless smoke for SceneSpec 声明 + 校验(ARC-002 / MC-058 第一片)。纯契约、纯函数。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-scene-spec-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/scene-spec-smoke/main.ts \
   --bundle --platform=node --format=esm \

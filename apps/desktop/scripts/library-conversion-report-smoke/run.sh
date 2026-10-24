@@ -5,13 +5,14 @@
 # 所以别名只要 dataRoot / logger 两个(见 db-migrate-smoke 的桩)。数据根换成临时目录,
 # 跑完就删 —— 本套会真的建库、真的往"库根"里写 Markdown。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-convreport-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-convreport-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/library-conversion-report-smoke/main.ts \
   --bundle --platform=node --format=esm \

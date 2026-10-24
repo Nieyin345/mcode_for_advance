@@ -11,7 +11,8 @@
 # 整个 `mcode.db`**)。所以 `MCODE_SMOKE_DATA_ROOT` 指向真库等于毁数据。临时目录这一条
 # 不是洁癖,是这套脚本能跑的前提。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-automation-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-automation-data.XXXXXX)
@@ -19,7 +20,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # ── 先打那份**外置的桩**(`@main/orchestration/runner.js` 的替身)──────────────
 #

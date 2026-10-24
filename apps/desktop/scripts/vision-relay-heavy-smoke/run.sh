@@ -18,13 +18,14 @@
 #
 # ⚠️ 最后那条**必须是包名**才换得掉:被测代码里写的是 `await import("@anthropic-ai/claude-agent-sdk")`。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-vision-relay-heavy.XXXXXX)
 HOME_DIR=$(mktemp -d /tmp/mcode-vision-relay-heavy-home.XXXXXX)
 trap 'rm -rf "$OUT" "$HOME_DIR"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/vision-relay-heavy-smoke/main.ts \
   --bundle --platform=node --format=esm \

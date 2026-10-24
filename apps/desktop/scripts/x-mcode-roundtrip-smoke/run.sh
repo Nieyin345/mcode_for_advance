@@ -7,14 +7,15 @@
 # 仓库没有 vendor Node-RED（node-red/ 目录）时，真上游段显式 SKIP（main.ts 里打印
 # 原因并以 0 退出），源码级声明契约段仍然执行 —— 不是假绿。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 mkdir -p .tmp
 OUT=$(mktemp -d ./.tmp/x-mcode-roundtrip.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-x-mcode-roundtrip-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # flowMigration / builtinManifestById 的 import 链会碰 dataRoot(electron) 与 logger；
 # 本套件只做纯逻辑与 vm 往返，按仓库惯例换桩。

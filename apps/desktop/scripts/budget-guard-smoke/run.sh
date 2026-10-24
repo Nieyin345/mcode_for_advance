@@ -7,11 +7,12 @@
 # before it emits turn.notice + interrupt. Pure functions only — the
 # emit/interrupt side effects need a live RuntimeManager and stay manual.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-budget-guard-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/budget-guard-smoke/main.ts \
   --bundle --platform=node --format=esm \

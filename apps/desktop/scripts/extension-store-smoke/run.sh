@@ -12,13 +12,14 @@
 # 那里顶部 import 了 `SessionRepo` —— 不换桩会顺带把 `repositories → db → electron`
 # 整条链收进 bundle。换掉 `repositories`(与 memory-smoke 同一份形状),本套不读会话。
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 OUT=$(mktemp -d /tmp/mcode-extension-store.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-extension-store-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/extension-store-smoke/main.ts \
   --bundle --platform=node --format=esm \

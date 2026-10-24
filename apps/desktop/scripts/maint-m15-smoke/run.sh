@@ -7,7 +7,8 @@
 # the sqlite store lives in a mktemp data root, and the web root / its sibling
 # "secret" dir live in their own mktemp box. Nothing touches the LAN or userData.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # Built under apps/desktop/.tmp so the externalised ssh2 resolves at runtime
 # (same reason as mobile-pairing-smoke).
@@ -16,7 +17,7 @@ OUT=$(mktemp -d ./.tmp/mcode-maint-m15-smoke.XXXXXX)
 DATA=$(mktemp -d "${TMPDIR:-/tmp}/mcode-maint-m15-data.XXXXXX")
 BOX=$(mktemp -d "${TMPDIR:-/tmp}/mcode-maint-m15-box.XXXXXX")
 trap 'rm -rf "$OUT" "$DATA" "$BOX"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "esbuild not found in node_modules (no network fallback)" >&2; exit 1; fi
 
 BANNER="import { createRequire as __cr } from 'node:module'; \

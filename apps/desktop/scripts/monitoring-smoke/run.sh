@@ -5,14 +5,15 @@
 # stderr 桩(见 stubs/logger.ts)。单进程即可 —— 持久化验的是 NDJSON 文件
 # 本身(写入后按行重读,坏行跳过),不需要跨进程。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-monitoring-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # stubs 换掉 import 了 electron 的 logger;@contracts 与其余 @main/* 走 tsconfig
 # 的 paths(与 runtime-state-smoke 同一套)。

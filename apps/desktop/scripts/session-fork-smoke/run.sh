@@ -7,7 +7,8 @@
 # 引擎那一侧是假的(stubs/providerRegistry.ts):真正复制会话文件那一步在 SDK 里,
 # 这里验的是调用方有没有把对的参数交出去、拿到之后有没有做对事。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-session-fork-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-session-fork-data.XXXXXX)
@@ -15,7 +16,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 **sql.js** 的:它的 asm 构建里有 `require("node:fs")` /
 # `require("node:crypto")`,而定死的 ESM 输出**没有 `require`** —— esbuild 会把它换成

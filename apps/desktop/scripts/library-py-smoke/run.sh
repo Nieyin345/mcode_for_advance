@@ -20,7 +20,8 @@
 #
 # Run: scripts/library-py-smoke/run.sh
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-libpy-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
@@ -29,7 +30,7 @@ trap 'rm -rf "$OUT"' EXIT
 #    ⚠️ 走 esbuild 打包再 import,而不是正则抠源码 —— 抠源码的话,TMPl literal 里
 #    将来出现转义(`\${`、`\`)时抠出来的东西与真实运行的那份不一样,而那正是这套
 #    要防的。打包是**真值**。
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/library-py-smoke/main.ts \
   --bundle --platform=node --format=esm \

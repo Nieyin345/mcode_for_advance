@@ -30,7 +30,8 @@
 #
 # Run: scripts/agent-mail-smoke/run.sh
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # ⚠️ **产物目录必须在 `.tmp/` 下,不能是 `/tmp`。** `--external:ssh2` 留着的那条 import
 # 要由 node 在**运行时**解析,而它从产物目录**往上**找 `node_modules`。`/tmp` 在 Windows
@@ -41,7 +42,7 @@ mkdir -p .tmp
 OUT=$(mktemp -d ./.tmp/agent-mail-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-agent-mail-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--external:ssh2` 与 mcode-admin-smoke 同一条理由:它链上来的 `cpu-features` 是个
 # 原生模块(`.node` 二进制),esbuild 解析不了;而这一套根本不碰 ssh。

@@ -4,13 +4,14 @@
 # 不碰用户真实资料库;不起 Electron。`electron.shell.openPath` 换成**记名**替身,本套要断言
 # 「打开」最终落到哪个路径。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-maint-cf-smoke.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/maint-c-followup-smoke/main.ts \
   --bundle --platform=node --format=esm \

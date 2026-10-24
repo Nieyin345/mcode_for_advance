@@ -2,11 +2,12 @@
 # `lib/modelEndpoint.ts`(向网关端点发一次轻请求)的回归网。
 # 纯件只 import node:http/node:url,不碰 electron,故无需换桩。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-model-endpoint.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/model-endpoint-smoke/main.ts \
   --bundle --platform=node --format=esm \

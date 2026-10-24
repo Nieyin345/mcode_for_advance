@@ -7,12 +7,13 @@
 # 跨进程是这一条的题面:播种的"每进程只播一次"闸在进程内,重启才是用户真实遇到的
 # 场景。第四趟验导入保真(ARC-006),只读它自己的虚构档案。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-workflow-seed-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-workflow-seed-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/workflow-seed-smoke/main.ts \
   --bundle --platform=node --format=esm \

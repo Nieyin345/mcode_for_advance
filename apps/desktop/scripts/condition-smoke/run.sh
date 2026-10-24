@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # No Electron or live DB. Real catalog + scheduler + validator with injected ports.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 mkdir -p .tmp
 OUT=$(mktemp -d "${PWD}/.tmp/mcode-condition-smoke.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 export TMPDIR="$OUT"
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Installed esbuild not found; no network install attempted.' >&2; exit 1; fi
 node "$ESBUILD" scripts/condition-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

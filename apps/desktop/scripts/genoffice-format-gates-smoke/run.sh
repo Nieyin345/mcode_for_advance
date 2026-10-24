@@ -10,12 +10,13 @@
 # 还要把 `electron` 整个包换成显式抛桩（同 library-trash-smoke；db.ts 顶层
 # `import { app } from "electron"`，真包在无头 ESM 下直接起不来）。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-genoffice-gates-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-genoffice-gates-smoke-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/genoffice-format-gates-smoke/main.ts \
   --bundle --platform=node --format=esm \

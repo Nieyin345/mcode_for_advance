@@ -74,7 +74,51 @@ RENDERER = DESKTOP / "src" / "renderer"
 # 依赖也算依赖:契约改了这边也会跟着变。
 IMPORT_RE = re.compile(r"""(?:from|import)\s*\(?\s*["']([^"']+)["']""")
 # .mjs 的测试可能动态转译源文件;逐个明确声明真实执行过的模块。
-SMOKE_COVERS_RE = re.compile(r"^\s*//\s*@smoke-covers\s+(src/main/[\w./-]+\.ts)\s*$", re.MULTILINE)
+#
+# 【T150】路径从「只能是 src/main/」放宽成「仓库相对路径」。原因：
+# `app-control-smoke` 用 `readFileSync` + `ts.createSourceFile` 读
+# `packages/contracts/src/ipc/rpcMap.ts` —— **那不是 import，解析器永远看不见它**。
+# 而加一个 RPC 的人，动的正是那个文件。它问「改这里该跑哪几套」得到的
+# 是一句「没有套件覆盖」，于是那条「先问该跑哪几套」的规矩在最需要的
+# 地方失效。显式声明是这里唯一可靠的路。
+#
+# 路径形状收得仍然紧:必须是仓库内 `apps/desktop/src/` 或 `packages/` 下的
+# `.ts`。放开成任意路径会让声明变成「什么都能写」，那时它守不住任何东西
+# —— 而它是 `covered` 集合的唯一来源之一，误写等于谎报回归网。
+SMOKE_COVERS_RE = re.compile(
+    r"^\s*//\s*@smoke-covers\s+((?:src/main/|src/renderer/|packages/)[\w./-]+\.ts)\s*$",
+    re.MULTILINE)
+
+
+def display_path(p: Path | None) -> str:
+    """把路径显示成**相对 apps/desktop**，退到相对仓库根，都不行就给绝对路径。
+
+    ## 【T150】为什么不是一句 `p.relative_to(DESKTOP)`
+
+    `resolve()` 明确放过**相对 import 越过包边界**：`@contracts/` 被丢掉（对），
+    但 `"../../../../packages/contracts/src/capability.js"` 走 `.` 分支解析成功
+    —— 于是 `packages/contracts/` 下的文件会进入依赖图。这是**正确的行为**
+    （套件真的 import 了它们，改契约就该跑那些套件），漏的是这里的显示基准。
+
+    在此之前这里写的是 `p.relative_to(DESKTOP)`。只要「上一跳」落在
+    `packages/contracts/` 下（`closure()` 顺着 `modules.ts → moduleCapability.ts`
+    这种边走一跳就会），`relative_to` 抛 `ValueError`，整个脚本 traceback 退出
+    —— **连「这套覆盖了哪些」都打印不出来**，而那正是它唯一该回答的问题。
+
+    ## 为什么不 try/except 吞掉
+
+    吞掉会让「上一跳到底是谁」这个信息消失，而那是「可选」分组的全部价值
+    （`经由 X（N 套）` 那一行就是在回答「这套为什么被带进来」）。所以退化路径
+    必须**仍然给出可读的路径**，只是换一个基准。
+    """
+    if p is None:
+        return "(不可达)"
+    for base in (DESKTOP, ROOT):
+        try:
+            return p.relative_to(base).as_posix()
+        except ValueError:
+            continue
+    return p.as_posix()
 
 
 def resolve(spec: str, from_file: Path) -> Path | None:
@@ -414,7 +458,7 @@ def main() -> None:
                 # 按「上一跳」分组 —— 那个中间模块才是「为什么它会被带进来」的答案。
                 by_parent: dict[str, list[str]] = {}
                 for _d, p, n in optional:
-                    key = p.relative_to(DESKTOP).as_posix() if p is not None else "(不可达)"
+                    key = display_path(p)
                     by_parent.setdefault(key, []).append(n)
                 print(f"\n  可选（≥{NEED_JUMP + 1} 跳，{len(optional)} 套）:")
                 for key in sorted(by_parent, key=lambda k: (-len(by_parent[k]), k)):
@@ -431,7 +475,11 @@ def main() -> None:
             if optional:
                 print(f"\n  ⚠️ 可选里多数只是被中间模块带进 bundle 的，不是「改了它就一定坏」。")
                 print(f"     必跑那 {len(must)} 套是改动直接波及的；可选 {len(optional)} 套按你的判断取舍。")
-            print("\n  bash apps/desktop/scripts/<名字>/run.sh")
+            # 【T145】从前这里是 `bash apps/desktop/scripts/<名字>/run.sh` —— 从仓库根调
+            # **会挂**：那些 run.sh 里 `cd "$(dirname "$0")/../.."` 之后还用相对路径的
+            # `$0` 去 source esbuild-path.sh，拼出来是 apps/desktop/apps/desktop/...。
+            # 用绝对路径调就不受调用者 cwd 影响，无论你在哪个目录都能贴。
+            print("\n  bash " + (DESKTOP / "scripts" / "<名字>" / "run.sh").as_posix())
         else:
             print("  ⚠️ 没有套件覆盖它 —— 改这里没有回归网。")
             print("     要么补一套,要么改完自己写一次性探针验一遍然后删掉。")

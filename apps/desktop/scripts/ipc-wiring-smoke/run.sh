@@ -9,14 +9,15 @@
 # (已核:packages/contracts/src 里零个 `from "electron"`),所以 esbuild 不会碰到
 # electron,不需要换桩。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-ipc-wiring-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/ipc-wiring-smoke/main.ts \
   --bundle --platform=node --format=esm \

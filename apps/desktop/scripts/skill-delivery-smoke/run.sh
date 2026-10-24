@@ -21,13 +21,14 @@
 #     数据灌用户的技能库。
 #   - main.ts 在任何被测 import **之前**就把 HOME/USERPROFILE 指到临时目录。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-skill-delivery.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-skill-delivery-data.XXXXXX)
 HOME_DIR=$(mktemp -d /tmp/mcode-skill-delivery-home.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA" "$HOME_DIR"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--packages=external` 让裸 specifier(electron 等)从 bundle 位置解析 —— 先软链 node_modules。
 source scripts/lib/runtime-node-modules.sh

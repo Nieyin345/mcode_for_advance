@@ -24,7 +24,8 @@
 #   - BrowserManager / theme / secretStore —— electron 的那一截在**下载**那条路上,本套
 #     一次都不走它,但 import 图会拉到。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-adopt-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-adopt-data.XXXXXX)
@@ -48,7 +49,7 @@ cleanup() {
   rm -rf "$OUT" "$DATA"
 }
 trap cleanup EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/library-adopt-smoke/main.ts \
   --bundle --platform=node --format=esm \

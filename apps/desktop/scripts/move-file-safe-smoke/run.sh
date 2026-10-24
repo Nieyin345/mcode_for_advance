@@ -3,13 +3,14 @@
 # 对特定 fs.promises 调用注入一次 EPERM/EXDEV（见 stubs 里 stub-fs.ts）。
 # 只碰本脚本自建的临时目录，绝不指向真实用户路径。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-move-file-safe-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-move-file-safe-smoke-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then
   echo "esbuild is missing; install workspace dependencies before running smoke tests" >&2
   exit 1

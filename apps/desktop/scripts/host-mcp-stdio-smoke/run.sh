@@ -18,10 +18,11 @@
 # `--external:ssh2` 与产物位置同 host-mcp-server-smoke:ssh2 的 import 运行时解析,产物必须在
 # 仓库 `.tmp/` 下才找得到 node_modules。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 mkdir -p ./.tmp/host-mcp-stdio-smoke
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 1) 子进程入口 —— 与生产同形:ELECTRON_RUN_AS_NODE=1 时它就是 Node 语义,不带任何替身。
 "$ESBUILD" src/main/mcp/hostMcpMain.ts \

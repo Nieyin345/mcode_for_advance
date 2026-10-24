@@ -5,11 +5,12 @@
 # 把它引用的技能悄悄算进"没被任何节点用到"。真 `SkillNodesView` 挂极小 React
 # 运行时上跑,`api` 换成可编程替身。不起浏览器、不写盘。
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 OUT=$(mktemp -d /tmp/mcode-skills-nodes-ui.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/skills-nodes-ui-smoke/main.ts \
   --bundle --platform=node --format=esm \

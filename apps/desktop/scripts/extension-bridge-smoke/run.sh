@@ -6,14 +6,15 @@
 # plays the role of the extension and talks to the real bridge server over real
 # HTTP on 127.0.0.1. See main.ts for the covered scenarios.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-ext-bridge-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/extension-bridge-smoke/main.ts \
   --bundle --platform=node --format=esm \

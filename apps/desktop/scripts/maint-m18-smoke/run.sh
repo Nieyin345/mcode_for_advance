@@ -4,11 +4,12 @@
 # mktemp box; electron/window/logger are replaced by local stubs, and the
 # electron stub throws on app.getPath so nothing can fall back to userData.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-maint-m18.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "esbuild not found in node_modules (no network fallback)" >&2; exit 1; fi
 
 "$ESBUILD" scripts/maint-m18-smoke/main.ts \

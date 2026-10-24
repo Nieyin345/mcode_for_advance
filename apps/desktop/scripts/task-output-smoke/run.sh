@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Isolated regression for strict ordering in the Claude SDK settle gate.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-task-output.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then
   echo "Existing esbuild dependency not found; refusing network fallback." >&2
   exit 127

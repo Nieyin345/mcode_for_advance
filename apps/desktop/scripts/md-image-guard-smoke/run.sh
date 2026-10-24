@@ -12,14 +12,15 @@
 # （electron 整个包 / window / RuntimeManager / BrowserManager / library-http /
 # workflows-seed，其中 workflows/seed 非有不可，否则 esbuild 撞上 `.py` 的 loader）。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-mdimg-guard.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-mdimg-data.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/md-image-guard-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -12,14 +12,15 @@
 # a port, so the smoke injects a fake one that records start/end timestamps and
 # can be told to fail or to stall.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-scheduler-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # ESM, not CJS: the smoke drives the scheduler with top-level await, which the
 # cjs output format rejects. Nothing in this bundle is CommonJS-only (no

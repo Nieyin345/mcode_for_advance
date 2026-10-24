@@ -32,13 +32,14 @@
 # 两个桩(`dataRoot` / `logger`)直接从 `run-store-smoke/stubs/` 复用 —— 那两份是
 # "没设就抛 / 故意不静默"的标准取舍,不该各写一份不一样的。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-rg-install-smoke.XXXXXX)
 INSTALL_ROOT=$(mktemp -d /tmp/mcode-rg-install-root.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-rg-install-data.XXXXXX)
 trap 'rm -rf "$OUT" "$INSTALL_ROOT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 **sql.js** 的:它的 asm 构建里有 `require("node:fs")`,而定死的
 # ESM 输出没有 `require`(同 run-store-smoke/run.sh 同一段理由)。

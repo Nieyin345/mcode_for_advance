@@ -25,7 +25,8 @@
 #     `No loader is configured for ".py" files` 直接挂掉打包。seed 与删除一个字都不沾,
 #     桩里顺带记下"确实被调到了"。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-lib-delete-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-lib-delete-data.XXXXXX)
@@ -40,7 +41,7 @@ DATA=$(mktemp -d /tmp/mcode-lib-delete-data.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/library-delete-smoke/main.ts \
   --bundle --platform=node --format=esm \

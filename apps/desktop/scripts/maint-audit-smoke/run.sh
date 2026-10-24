@@ -5,11 +5,12 @@
 # 打包方式:§2 要真 store,照抄 session-store-smoke 的 external(monacoSetup);
 # §1 只多 import 一个 @main/workflows/assets.js(自包含,mineru-py-smoke 同法)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-maint-audit-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/maint-audit-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 mkdir -p .tmp
 OUT=$(mktemp "$PWD/.tmp/library-create-smoke.XXXXXX.mjs")
 trap 'rm -f "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Installed esbuild not found' >&2; exit 1; fi
 "$ESBUILD" scripts/library-create-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

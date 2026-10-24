@@ -12,11 +12,12 @@
 # stubs (same set as `public-mcp-session-smoke/run.sh`). `RuntimeManager` is aliased to a
 # recording stub so the whole provider graph (ssh2 native module) never enters the bundle.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 mkdir -p ./.tmp
 OUT=$(mktemp -d ./.tmp/mcode-delegate-host-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/delegate-host-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

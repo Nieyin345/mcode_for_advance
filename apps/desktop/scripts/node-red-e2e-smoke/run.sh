@@ -8,12 +8,13 @@
 #
 # 需要：已安装 node-red@5.0.8（见 main.ts 文件头的安装命令）。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-nr-e2e-smoke.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # registry.ts / runtimeSupervisor.ts 的 import 链会拖进 dataRoot（electron app.getPath）
 # 与 logger（electron 日志目录）；无头里换桩。dataRoot 桩把 MCODE_SMOKE_DATA_ROOT 当

@@ -29,7 +29,8 @@
 # `SettingRepo.set`(内部就是 `persist()`,**重写整个库文件**)。指错地方等于拿空库盖掉
 # 用户的聊天记录。`stubs/dataRoot.ts` 那句"没设环境变量就抛"就是为这件事。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-claude-ipc-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-claude-ipc-data.XXXXXX)
@@ -38,7 +39,7 @@ DATA=$(mktemp -d /tmp/mcode-claude-ipc-data.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 这里**只留 alias 一条路**(下面那行 `--alias:@main/orchestration/runner.js=...`),
 # 不再单独打一份外置的桩、也不再 `--external` —— 理由见下面那段长注释:那两样凑在一起

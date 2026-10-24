@@ -22,14 +22,15 @@
 # `persist()`,**重写整个库文件**)。`stubs/dataRoot.ts` 那句"没设环境变量就抛"就是
 # 为这件事。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-projects-ipc-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-projects-ipc-data.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/projects-ipc-smoke/main.ts \
   --bundle --platform=node --format=esm \

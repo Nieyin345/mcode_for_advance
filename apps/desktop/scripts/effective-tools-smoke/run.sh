@@ -14,13 +14,14 @@
 # 产物落在 `apps/desktop/.tmp/`(不是 /tmp):`@anthropic-ai/claude-agent-sdk` 保持
 # external,裸包名按产物位置往上找 node_modules。
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 OUT=$(mktemp -d ./.tmp/effective-tools-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-effective-tools-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/effective-tools-smoke/main.ts \
   --bundle --platform=node --format=esm \

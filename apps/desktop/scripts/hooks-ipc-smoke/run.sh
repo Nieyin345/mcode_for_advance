@@ -20,7 +20,8 @@
 # `@main/store/db.js` 的 import 图里没有 `?raw`(那只有 orchestration/* 有),所以不需要
 # 再给 `.py` / `.md` 配 loader。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-hooks-ipc-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-hooks-ipc-data.XXXXXX)
@@ -28,7 +29,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 **sql.js** 的(本套的 import 图里有 store/db):它内部有
 # `require("node:fs")`,而定死的 ESM 输出没有 `require`。

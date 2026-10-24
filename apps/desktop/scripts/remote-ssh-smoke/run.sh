@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Reliable SSH / detached remote-job smoke.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 mkdir -p ./.tmp/remote-ssh-smoke
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/remote-ssh-smoke/main.ts \
   --bundle --platform=node --format=esm \

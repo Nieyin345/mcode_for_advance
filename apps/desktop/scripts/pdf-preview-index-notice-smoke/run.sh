@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d /tmp/mcode-pdf-index-ui.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/pdf-preview-index-notice-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
   --define:import.meta.env.BASE_URL='"./"' \

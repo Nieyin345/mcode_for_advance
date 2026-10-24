@@ -12,7 +12,8 @@
 #   - workflows/seed —— `registerLibraryHandlers` 注册时调 `ensureWorkflows()`,
 #     底层是二十几个 Vite `?raw` 的 `.py`,esbuild 打不动。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-maint-m33-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-maint-m33-data.XXXXXX)
@@ -21,7 +22,7 @@ DATA=$(mktemp -d /tmp/mcode-maint-m33-data.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/maint-m33-smoke/main.ts \
   --bundle --platform=node --format=esm \

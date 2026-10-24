@@ -11,12 +11,13 @@
 # ⚠️ logger 那份必须是"记录"而不是"打印到 stderr 就算"：本套断言的是
 #    **坏数据有没有被上报**，判据读的就是 log.error 的调用。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-secret-map-store.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/secret-map-store-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -7,11 +7,12 @@
 # enabledSkillNames/Dirs 的矩阵过滤。没有覆盖的:SKILLS_ENGINES_SET IPC handler
 # (依赖 electron)和三引擎 provider 的消费点(要活的会话),靠真机验收。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-skill-engines-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/skill-engines-smoke/main.ts \
   --bundle --platform=node --format=esm \

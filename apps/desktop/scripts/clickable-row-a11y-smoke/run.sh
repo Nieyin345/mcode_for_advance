@@ -6,11 +6,12 @@
 # `ClickableRow` 与真 `BrowserToolbar` 原样跑在上面;静态层用 TypeScript AST 扫
 # `src/renderer/**/*.tsx`。不起浏览器、不写盘。
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 OUT=$(mktemp -d /tmp/mcode-clickable-row-a11y.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/clickable-row-a11y-smoke/main.ts \
   --bundle --platform=node --format=esm \

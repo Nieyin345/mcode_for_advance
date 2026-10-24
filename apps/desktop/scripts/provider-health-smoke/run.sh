@@ -10,12 +10,13 @@
 #   - `node:child_process` → 假 execFile(记录 child.kill 调用);
 #   - 叶子 @main 模块(dataRoot/logger/pluginManager/…)→ 内存桩,避免拉进 electron / sql.js。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-provider-health.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-provider-health-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 外置的相对依赖:每条单独 esbuild 成同名 .js 铺在 bundle 旁边,主 bundle `--external` 它。
 # 用 `--packages=external` 让裸 specifier(electron 等)也从 bundle 位置解析 —— 故先软链 node_modules。

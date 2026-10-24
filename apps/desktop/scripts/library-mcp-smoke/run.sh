@@ -18,7 +18,8 @@
 #     **下载**那条路上(convert.ts → downloader.ts → BrowserManager.ts),本套一次都
 #     不走它,但 import 图会拉到。三个都是显式报错式的替身,不是空实现。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-lib-mcp-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-lib-mcp-data.XXXXXX)
@@ -33,7 +34,7 @@ DATA=$(mktemp -d /tmp/mcode-lib-mcp-data.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/library-mcp-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -6,7 +6,8 @@
 # run-store-smoke 的桩 —— 数据根指到临时目录,环境变量没设时桩会直接抛,指不进
 # 用户真正的数据。跑完连目录一起删。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-memory-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-memory-data.XXXXXX)
@@ -14,7 +15,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 【MC-092/093 真实入口】本套现在要经**真** `app_api_call`(invokeAppTool)调记忆 RPC —— 那是
 # 界面按按钮与 agent 共用的同一段代码。`tools.ts` 的静态/动态 import 图里有 `@main/window.js`

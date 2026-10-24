@@ -5,11 +5,12 @@
 # / getTrustedProjectMcpServers。持久化用内存桩(SettingRepo → Map),db/logger 桩掉以避开
 # electron 与 sql.js,绝不碰真库(sql.js 的 db.export() 会重写整个 mcode.db)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-mcp-trust.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/mcp-trust-identity-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -14,7 +14,8 @@
 #     `ensureWorkflows()`,而它底层是二十几个 Vite `?raw` 导入的 `.py`,esbuild 会以
 #     `No loader is configured for ".py" files` 挂掉打包。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-entry-path-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-entry-path-data.XXXXXX)
@@ -23,7 +24,7 @@ DATA=$(mktemp -d /tmp/mcode-entry-path-data.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/library-entry-path-smoke/main.ts \
   --bundle --platform=node --format=esm \

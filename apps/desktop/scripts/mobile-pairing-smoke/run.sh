@@ -28,7 +28,8 @@
 #   - RuntimeManager —— 真那个一路拖到三个引擎实现;SSE 的 `runningSessionIds()` 由
 #     脚本用 `__setRunning` 指定。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # 建在 apps/desktop 下,不建在 /tmp —— 与 mcp-endpoint-smoke / mcode-admin-smoke 同款。
 # 理由见 mcp-endpoint-smoke 那段:外部化的包(这里新增的 `--external:ssh2`)要在运行时
@@ -38,7 +39,7 @@ mkdir -p ./.tmp
 OUT=$(mktemp -d ./.tmp/mcode-mobile-pairing-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-mobile-pairing-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 有两件事要做:
 #   1. 给 **sql.js** 一个真的 `require`:它的 asm 构建里有 `require("node:fs")` /

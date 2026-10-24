@@ -3,11 +3,12 @@
 # 裸 specifier 装不上。换桩:logger(真模块拉 electron)、managedRuntimeRoots(取
 # userData 根)、以及裸 pi specifier(本机 node_modules 里装着,必须桩成装不上)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-pi-loader-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/pi-loader-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -7,12 +7,13 @@
 # 脚下数据根换成临时目录(见 stubs/dataRoot.ts 里那句"没设就抛":指错地方就是拿
 # 一个空库盖掉用户的聊天记录)。真正的库外文件也是 main.ts 自己在 tmp 里建的。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-attach-links-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-attach-links-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `main.ts` 用**相对路径** import 桩(绕开 @main 映射,typecheck 才不会去对真模块
 # 要测试钩子);run.sh 这里再把被测代码内部的引用也指过去 —— 两个入口解析到同一个

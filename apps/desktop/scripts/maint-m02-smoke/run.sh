@@ -2,12 +2,13 @@
 # Isolated M02 regression: forking transiently active sessions must not copy
 # their running/approval state into the newly created session row.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-maint-m02.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-maint-m02-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then
   echo "Existing esbuild dependency not found; refusing network fallback." >&2
   exit 127

@@ -6,11 +6,12 @@
 # compileSceneCommands),不碰 DOM / store / api,所以 esbuild 打包后直接 node 跑,
 # 不需要任何 --alias(与 `scene-spec-smoke` 同款)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-scene-deploy-view-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/scene-deploy-view-smoke/main.ts \
   --bundle --platform=node --format=esm \

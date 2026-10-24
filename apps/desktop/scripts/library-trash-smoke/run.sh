@@ -15,7 +15,8 @@
 # `No loader is configured for ".py" files` 挂掉(报的是 seed 里那几行,看着和被测
 # 代码无关)。所以下面这一组跟 `library-delete-smoke` 摆同一套,逐条理由见那支。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-trash-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-trash-data.XXXXXX)
@@ -24,7 +25,7 @@ DATA=$(mktemp -d /tmp/mcode-trash-data.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 sql.js 的(理由同 run-store-smoke/run.sh):它的 asm 构建里有
 # `require("node:fs")`,而定死的 ESM 输出没有 `require`。

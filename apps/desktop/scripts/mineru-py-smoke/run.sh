@@ -23,14 +23,15 @@
 #
 # Run: scripts/mineru-py-smoke/run.sh
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-mineru-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # 走 esbuild 打包再 import，而不是正则抠源码 —— 抠源码的话，模板字符串里出现转义时
 # 抠出来的东西与真实运行的那份不一样，而那正是这套要防的。打包是**真值**。
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/mineru-py-smoke/main.ts \
   --bundle --platform=node --format=esm \

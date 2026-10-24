@@ -36,7 +36,8 @@
 #   - **sessionSync** —— 真那个要用 mobileEventBus,本套要断言归档广播了;
 #   - **dataRoot / logger** —— db-migrate-smoke 的老桩,db.ts 的两个依赖。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-archiver-installer-smoke.XXXXXX)
 CLEAN_OUT=$(mktemp -d /tmp/mcode-archiver-installer-clean.XXXXXX)
@@ -51,7 +52,7 @@ trap 'rm -rf "$OUT" "$CLEAN_OUT" "$DATA" "$RUNTIMES" "$RUNTIMES_CLEAN"' EXIT
 # 软链一份真的进去,而不是设 NODE_PATH(后者只管 CJS,而 tar 7 的入口是 ESM)。
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 **sql.js** 的:它的 asm 构建里有 `require("node:fs")`,而定死的
 # ESM 输出没有 `require`(同 run-store-smoke/run.sh 同一段理由)。

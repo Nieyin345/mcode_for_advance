@@ -19,11 +19,12 @@
 # `killLeftovers`):那是为了"关掉之后还有没有残留进程"这条断言 —— 所以脚本
 # 必须留到最后一刻才动手,失败退出时也要走同一条路。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-lsp-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 sql.js 的(理由同 run-store-smoke/run.sh):它的 asm 构建里有
 # `require("node:fs")`,而定死的 ESM 输出没有 `require`,esbuild 会把它换成一句抛错。

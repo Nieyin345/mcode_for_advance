@@ -7,7 +7,8 @@
 # 被测的 `criteriaInject.ts` 刻意不 import `runner.ts`(那一头拖着 RuntimeManager 和
 # 三家 provider),所以这里一行 RuntimeManager 的桩都不用打。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-criteria-inject-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-criteria-inject-data.XXXXXX)
@@ -15,7 +16,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 **sql.js** 的:它的 asm 构建里有 `require("node:fs")` /
 # `require("node:crypto")`,而定死的 ESM 输出**没有 `require`** —— esbuild 会把它换成

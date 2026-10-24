@@ -4,11 +4,12 @@
 #
 # 纯模块(不 import electron / store),直接 bundle 就能跑,不需要任何桩。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-custom-ui-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/custom-ui-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -14,11 +14,12 @@
 #
 # 不起服务、不碰磁盘、无数据根。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-file-routing.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 mkdir -p "$OUT/stubs"
 cat > "$OUT/stubs/noop.ts" <<'TS'

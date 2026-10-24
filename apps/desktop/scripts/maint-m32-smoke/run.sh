@@ -11,11 +11,12 @@
 #   - `@tabler/icons-react` → 空壳。那是个几千个导出的 barrel,打进来只会让这套
 #     慢十几秒;图标在惰性 JSX 里从不会被调用。
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 OUT=$(mktemp -d /tmp/mcode-maint-m32.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/maint-m32-smoke/main.ts \
   --bundle --platform=node --format=esm \

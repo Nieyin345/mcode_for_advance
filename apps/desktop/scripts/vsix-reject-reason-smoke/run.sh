@@ -7,8 +7,9 @@
 #
 # 本套不碰磁盘、不联网：自己用 `node:zlib` 造 ZIP，直接喂 `readMinimalVsix`。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "Missing existing esbuild; no dependency installation attempted" >&2; exit 1; fi
 
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-f016-reject.XXXXXX")

@@ -11,11 +11,12 @@
 # 内置清单生成(与 workflow-ui-smoke 同一手法),数据根与插件目录两个会碰用户环境的
 # 模块换桩;生成本身不写用户数据。
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 OUT=$(mktemp -d /tmp/mcode-settings-form-lifecycle.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/settings-form-lifecycle-smoke/metadata.ts \
   --bundle --platform=node --format=cjs \

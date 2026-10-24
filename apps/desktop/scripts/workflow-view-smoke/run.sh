@@ -7,14 +7,15 @@
 # editor is rendered through react-dom/server against real documents in both
 # locales. See main.ts for what is and is not covered.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-workflow-view-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # CJS, not ESM (unlike the other smokes): `react-dom/server` is CommonJS and
 # requires node builtins (`util`). Bundled to ESM that becomes esbuild's

@@ -13,12 +13,13 @@
 #     且原来那几条内联装配**不再留在 index.ts** —— 这是「抽出去了却没人接线」那类洞的回归网
 #     （抽出来的纯函数没被 index.ts 接上 = 装配整个消失，而单测照样绿）。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-startup-wiring-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-startup-wiring-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then
   echo 'esbuild is missing; install workspace dependencies before running smoke tests' >&2
   exit 1

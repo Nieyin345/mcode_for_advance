@@ -2,13 +2,14 @@
 # Headless smoke for DurableOperationLedger 的 durableRevision 落账(ARC-009)。
 # 真 sql.js + 真临时库;数据根指向 mktemp -d(指错地方等于拿空库盖掉用户数据)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-op-ledger-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-op-ledger-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/operation-ledger-smoke/main.ts \
   --bundle --platform=node --format=esm \

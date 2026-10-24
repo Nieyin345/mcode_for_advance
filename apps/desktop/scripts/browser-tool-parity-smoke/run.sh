@@ -5,12 +5,13 @@
 # (`claude-sdk` / `codex-sdk` / `pi-sdk`)再互相对账,所以没有桩、没有数据根 ——
 # 文件挪走了就应该红(说明扫描器看不懂了,得补它)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-browser-tool-parity.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/browser-tool-parity-smoke/main.ts \
   --bundle --platform=node --format=esm \

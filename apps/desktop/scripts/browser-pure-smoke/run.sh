@@ -2,11 +2,12 @@
 # `browserPure.ts`(从 BrowserManager 抽出的无头纯函数)的回归网。
 # 纯件只 import node:fs/node:path 与 contracts 的 type,不碰 electron,故无需换桩。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-browser-pure.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/browser-pure-smoke/main.ts \
   --bundle --platform=node --format=esm \

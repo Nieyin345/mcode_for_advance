@@ -44,12 +44,13 @@
 # 按那个写的(见 main.ts §10)。**别**因为想让版本号读出来就软链 node_modules:
 # 那会让断言依赖机器上装了哪个版本的 SDK。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-settings-panel-smoke.XXXXXX)
 HOME_DIR=$(mktemp -d /tmp/mcode-settings-panel-home.XXXXXX)
 trap 'rm -rf "$OUT" "$HOME_DIR"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/settings-panel-smoke/main.ts \
   --bundle --platform=node --format=esm \

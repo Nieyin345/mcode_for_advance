@@ -2,7 +2,8 @@
 # Real temporary PDF/DOCX/PPTX/XLSX fixtures through agent_read_document.
 # Requires existing Python with python-pptx/openpyxl; no dependency installation.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # Keep the bundle inside apps/desktop so runtime dynamic imports / require.resolve
 # (notably pdfjs-dist + its cmaps) can walk up to this package's node_modules.
@@ -13,7 +14,7 @@ trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # fail clearly when absent rather than installing dependencies.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "Missing existing esbuild; dependencies must be prepared separately" >&2; exit 1; fi
 
 # 别名:

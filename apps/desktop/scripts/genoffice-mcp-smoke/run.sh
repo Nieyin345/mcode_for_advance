@@ -13,7 +13,8 @@
 # 所以下面除了数据根桩之外**还必须**把 HOME 换到临时目录，否则就是拿空配置覆盖
 # 用户真实的 ~/.mcode（与 mcp-ipc-smoke 的 run.sh 同一条安全前提）。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 DESKTOP="$PWD"
 
 OUT=$(mktemp -d /tmp/mcode-genoffice-mcp-smoke.XXXXXX)
@@ -21,7 +22,7 @@ DATA=$(mktemp -d /tmp/mcode-genoffice-mcp-smoke-data.XXXXXX)
 FAKE_HOME=$(mktemp -d /tmp/mcode-genoffice-mcp-smoke-home.XXXXXX)
 HOME="$FAKE_HOME" USERPROFILE="$FAKE_HOME" mkdir -p "$FAKE_HOME/.mcode"
 trap 'rm -rf "$OUT" "$DATA" "$FAKE_HOME"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/genoffice-mcp-smoke/main.ts \
   --bundle --platform=node --format=esm \

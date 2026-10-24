@@ -4,12 +4,13 @@
 # 被测文件 `main/browser/snapshotScript.ts` **零 import、纯字符串常量**,所以本套
 # 不需要任何桩、不碰数据根、不起 Electron、不连网 —— 只把那个模块单独打进来跑。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-browser-script-injection.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/browser-script-injection-smoke/main.ts \
   --bundle --platform=node --format=esm \

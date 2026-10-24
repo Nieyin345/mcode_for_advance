@@ -6,8 +6,8 @@
 #
 # 用 esbuild 打一次薄包（main.ts 是 TS），然后 node 跑。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
 HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "Missing existing esbuild; no dependency installation attempted" >&2; exit 1; fi
 

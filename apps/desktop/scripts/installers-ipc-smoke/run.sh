@@ -43,14 +43,15 @@
 # ⚠️ `--alias:` **只认包名,换不掉相对 import**。这里换的都是 `@main/...` 或包名,
 # 所以不会踩那条"两份模块实例"的坑:桩与脚本指的是**同一个文件**。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-installers-ipc.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-installers-ipc-data.XXXXXX)
 RUNTIMES=$(mktemp -d /tmp/mcode-installers-ipc-runtimes.XXXXXX)
 TOOLS=$(mktemp -d /tmp/mcode-installers-ipc-tools.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA" "$RUNTIMES" "$TOOLS"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 **sql.js** 的:它的 asm 构建里有 `require("node:fs")`,而定死的
 # ESM 输出没有 `require`(同 run-store-smoke/run.sh 同一段理由)。

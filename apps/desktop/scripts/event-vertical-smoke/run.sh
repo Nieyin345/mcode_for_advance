@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 mkdir -p .tmp
 OUT=$(mktemp -d "${PWD}/.tmp/event-vertical-smoke.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 export MCODE_SMOKE_DATA_ROOT="$OUT/data"
 export TMPDIR="$OUT"
 mkdir -p "$MCODE_SMOKE_DATA_ROOT" "$OUT/stubs"
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Installed esbuild not found; no network install attempted.' >&2; exit 1; fi
 node "$ESBUILD" scripts/automation-smoke/stubs/runner.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

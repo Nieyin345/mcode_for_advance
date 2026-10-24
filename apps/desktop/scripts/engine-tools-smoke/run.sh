@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 # 这套测纯策略模块 + 读 provider 源码断言接线，第 9/10 节还用 fakeIpc 真驱动
 # `ipc/engineTools.ts` 的两个 handler（走**默认策略路径**）。不建库、不起 Electron。
@@ -12,7 +13,7 @@ cd "$(dirname "$0")/../.."          # → apps/desktop
 OUT=$(mktemp -d /tmp/mcode-engine-tools.XXXXXX)
 HOME_DIR=$(mktemp -d /tmp/mcode-engine-tools-home.XXXXXX)
 trap 'rm -rf "$OUT" "$HOME_DIR"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/engine-tools-smoke/main.ts \
   --bundle --platform=node --format=esm \

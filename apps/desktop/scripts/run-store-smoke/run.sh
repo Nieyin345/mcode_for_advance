@@ -7,7 +7,8 @@
 # **跑两趟**,因为要验的那一条按定义跨进程:上一次死掉时还在跑的那些,下一次启动
 # 才会被标成 `interrupted`(见 main.ts 文件头)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-run-store-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-run-store-data.XXXXXX)
@@ -15,7 +16,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 那两个模块 import 了 electron,换掉(见 stubs/)。被测的那份代码一行都没改。
 #

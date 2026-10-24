@@ -9,11 +9,12 @@
 #
 # 不起服务、不碰磁盘。
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 OUT=$(mktemp -d /tmp/mcode-preview-panel.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Missing local esbuild; no network install' >&2; exit 2; fi
 
 # 复制真 PreviewPanel,只把相对 import 换成 alias —— 函数体必须保持原样。

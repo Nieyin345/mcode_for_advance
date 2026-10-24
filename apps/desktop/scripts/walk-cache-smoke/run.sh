@@ -4,11 +4,12 @@
 # 它是纯件(只 import node:fs / node:path),没有主进程依赖,所以不需要任何 --alias。
 # 真建临时目录树、真调 `cachedTreeFiles`,断言缓存/失效/预算三条链。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-walk-cache-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/walk-cache-smoke/main.ts \
   --bundle --platform=node --format=esm \

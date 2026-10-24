@@ -7,12 +7,13 @@
 # 引擎数据目录。dataRoot/logger 桩照例挂上 —— 万一被测链路上有模块意外触碰数据根，
 # 会在没设 MCODE_SMOKE_DATA_ROOT 时直接抛，不会回落到用户真数据。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-engine-node-registry.XXXXXX")
 DATA=$(mktemp -d "${TMPDIR:-/tmp}/mcode-engine-node-registry-data.XXXXXX")
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/engine-node-registry-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -11,14 +11,15 @@
 # 的文案与参数表 —— 那两件事在夹具上断言等于在测抄本。为此 run.sh 带了 stubs +
 # banner,见下面的注释。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-wfvalidation-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 给 sql.js 的 asm 构建一个真的 require(同 automation-smoke / run-store-smoke)。
 # 两个 `--alias` 是**对着内置节点清单那一段**加的:冒烟现在要 import

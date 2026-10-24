@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Linux/macOS runner for the same isolated test; never touch user data.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=".tmp/memory-review-$(date +%s)-$$"
 mkdir -p "$OUT/data"
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'project esbuild not found' >&2; exit 1; fi
 node "$ESBUILD" scripts/memory-review-smoke/main.ts \
   --bundle --platform=node --format=cjs --tsconfig=tsconfig.json \

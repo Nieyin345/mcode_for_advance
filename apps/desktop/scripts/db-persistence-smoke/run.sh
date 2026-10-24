@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Isolated persistence failure injection. Never points at the real data root.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d /tmp/mcode-db-persistence-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then
   echo "esbuild is missing; install workspace dependencies before running smoke tests" >&2
   exit 1

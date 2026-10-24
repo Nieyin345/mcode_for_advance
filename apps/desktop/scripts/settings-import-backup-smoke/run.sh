@@ -26,12 +26,13 @@
 #
 # ⚠️ `--alias:` **只认包名**,相对路径的 import 换不掉。这里一条 `--external` 都不用。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-settings-import-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-settings-import-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/settings-import-backup-smoke/main.ts \
   --bundle --platform=node --format=esm \

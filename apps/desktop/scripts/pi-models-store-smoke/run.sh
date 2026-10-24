@@ -4,12 +4,13 @@
 # ⚠️ HOME / USERPROFILE 必须指向临时目录:这一套真的会写 `~/.pi/agent/models.json`,
 # 指错地方等于改用户真的 Pi 配置(main.ts 开头会校验,没指到就拒绝运行)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-pi-models-store-smoke.XXXXXX)
 FAKE_HOME=$(mktemp -d /tmp/mcode-pi-models-home.XXXXXX)
 trap 'rm -rf "$OUT" "$FAKE_HOME"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 换桩的三个都是因为 electron:SettingRepo(数据库)、safeStorage、日志文件。
 "$ESBUILD" scripts/pi-models-store-smoke/main.ts \

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d /tmp/mcode-t51.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-t51-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/extension-authoring-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \

@@ -15,13 +15,14 @@
 #    会炸(`Buffer`/`process` 在多环境垫片下);而这是跑在 node 里的无头套件 ——
 #    让 node 自己去 node_modules 解析就行。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-pdf-annot-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/pdf-annotation-smoke/main.ts \
   --bundle --platform=node --format=esm \

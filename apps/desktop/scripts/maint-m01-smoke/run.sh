@@ -8,14 +8,15 @@
 # 真建库、真落盘、真重开,但数据根是 mktemp 出来的临时目录(见 stubs/dataRoot.ts:
 # 环境变量没设就抛 —— 指错地方等于拿空库盖掉用户的聊天记录)。不联网、不起 Electron。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-maint-m01-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-maint-m01-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild 是 vite 的传递依赖(不是直接依赖),找不到再退回 npx。
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # banner 那一行是给 sql.js 的 asm 构建用的(它内部 require("node:fs"),而 ESM 输出
 # 没有 require)。electron 相关的两个模块换成 stubs/,被测代码一行未改。

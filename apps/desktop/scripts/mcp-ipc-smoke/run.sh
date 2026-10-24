@@ -35,7 +35,8 @@
 # 本套验不到原生插件),`window.ts` 因此整条不进来 —— 于是这里跑的是真 window。
 # 只换终端会是**打地鼠**:window → lib/theme 自己还有 `nativeTheme`。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # `$(dirname "$0")` 在 Windows 上是相对路径,而下面的 esbuild 用的是 cd 之后的相对
 # 目标 —— 先把工作目录钉死在 apps/desktop,后面所有路径都以它为基准。
@@ -51,7 +52,7 @@ trap 'rm -rf "$OUT" "$DATA" "$fake_home"' EXIT
 # `require("node:crypto")`,而定死的 ESM 输出**没有 `require`** —— esbuild 会把它换成
 # 一句 `throw new Error('Dynamic require of "node:fs" is not supported')`。
 # 本套真的建 sql.js 库(不是内存桩),所以这一行是能不能跑起来的前提。
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # ## ⚠️ 假 HOME 是**唯一一件替掉用户 `~/.mcode` 的东西** —— 别把它删了
 #

@@ -9,7 +9,8 @@
 # 写会话行、写运行存档,而 `SettingRepo.set` 内部就是 `persist()`,**重写整个 `mcode.db`**。
 # 指向真库等于毁掉用户的聊天记录。临时目录这一条不是洁癖,是这套脚本能跑的前提。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # 建在 apps/desktop 下,不建在 /tmp —— 见 mobile-pairing-smoke 里同一处的说明
 # (`--external:ssh2` 要在运行时被解析到,`/tmp` 下的 bundle 走不到本包 node_modules)。
@@ -20,7 +21,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行是给 **sql.js** 的:它的 asm 构建里有 `require("node:fs")`,而定死的
 # ESM 输出**没有 `require`** —— esbuild 会把它换成一句

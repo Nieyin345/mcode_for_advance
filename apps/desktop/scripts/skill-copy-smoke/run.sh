@@ -13,11 +13,12 @@
 # 数据往用户的技能库里灌。Node 的 `os.homedir()` 在 POSIX 上认 HOME、在 win32 上
 # 认 USERPROFILE,两个都要设(同 plugins-smoke 的做法)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-skill-copy-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/skill-copy-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -6,11 +6,12 @@
 # 防御)、派生视图(enabled ∧ assigned ∧ 不在 stash)与 toggle 行为表(含纯度)。
 # 没有覆盖的:db 绑定的 IPC handler 与两个引擎的物化消费点,靠真机验收。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-mcp-engines-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/mcp-engines-smoke/main.ts \
   --bundle --platform=node --format=esm \

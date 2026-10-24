@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Headless smoke for ARC-009 的桌面刷新通知 outbox(settingSync)。纯逻辑,不碰 electron 真窗口。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-setting-notify-outbox.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # settingSync 只 import @contracts/* 与 logger —— logger 换成 stubs 里那份(不写文件、不拉 electron)。
 "$ESBUILD" scripts/setting-notify-outbox-smoke/main.ts \

@@ -13,11 +13,12 @@
 #   - 断线补齐:库为准的消息重拉、在跑的会话等 turn.done 之后再拉。
 # 不起服务、不连网。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-mobile-sync-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/mobile-sync-smoke/main.ts \
   --bundle --platform=node --format=esm \

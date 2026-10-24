@@ -3,7 +3,8 @@
 # **它会真的往"库根"里写文件** —— 所以数据根必须换成临时目录(复用 db-migrate-smoke
 # 的 stubs),跑完就删,绝不碰用户真正的资料库。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-lib-import-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-lib-import-data.XXXXXX)
@@ -34,7 +35,7 @@ await pdf.destroy();
 console.log('runtime pdfjs-dist resolve + true PDF parse PASS');
 PDF_PROBE
 node "$OUT/verify-pdf-runtime.mjs" "$PWD/scripts/fixtures/sample-paper.pdf"
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 换掉 `@main/window.js` 与 `@main/claude/RuntimeManager.js`(理由见那两个 stub):
 # 真的两个都 import 了 electron,而 RuntimeManager 还一路拖到三个引擎实现(每个都要

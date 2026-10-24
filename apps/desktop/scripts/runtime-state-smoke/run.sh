@@ -5,7 +5,8 @@
 # 里那句"没设就抛":指错地方等于拿空库盖掉用户的聊天记录)。单进程即可:跨进程的
 # `interrupted` 迁移归 run-store-smoke,那份跑两趟。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-runtime-state-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-runtime-state-data.XXXXXX)
@@ -13,7 +14,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # stubs 换掉 import 了 electron 的两个模块;`--banner` 给 sql.js 的 asm 构建一个真的
 # `require`(详 run-store-smoke/run.sh 同一段注释)。

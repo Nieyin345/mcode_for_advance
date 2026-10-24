@@ -6,13 +6,14 @@
 # 指错地方等于拿空库盖掉用户的聊天记录)。**跑两趟**,因为"durable 跨进程"这件事按定义
 # 要一个新进程才验得了:第一趟写(含物理写故障注入),第二趟全新进程读回。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-scene-deploy-persist.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-scene-deploy-persist-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 被测的 store 链 import 了 electron;store 的两个宿主依赖(dataRoot/logger)与 fs 换桩。
 # `--banner` 那行给 **sql.js** 的 asm 构建:它 `require("node:fs")`/`node:crypto`,而 ESM

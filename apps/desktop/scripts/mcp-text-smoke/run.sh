@@ -8,7 +8,8 @@
 #   2. the real tool host — its dispatch, zod validation and approval gate — driven
 #      directly, with the library table stubbed (see stubs/libraryServer.ts).
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # Keep the bundle inside apps/desktop so runtime dynamic imports / require.resolve
 # (notably pdfjs-dist + its cmaps) can walk up to this package's node_modules.
@@ -19,7 +20,7 @@ trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 别名:
 #   - logger —— 真那份拉 electron(理由同 extension-bridge-smoke);

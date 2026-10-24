@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # M20: headless, fake audio + in-memory RPC/settings + blocked network.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-maint-m20.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Local esbuild is required (no network installs)' >&2; exit 2; fi
 "$ESBUILD" scripts/maint-m20-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

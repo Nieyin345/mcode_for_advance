@@ -7,11 +7,12 @@
 # braces), schema validation over the supported subset, and the combined
 # parseStructuredOutput entry.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-structured-output-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/structured-output-smoke/main.ts \
   --bundle --platform=node --format=esm \

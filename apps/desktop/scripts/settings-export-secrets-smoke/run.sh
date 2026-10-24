@@ -4,10 +4,11 @@
 # `settingsTransfer.ts` 是纯模块(不 import electron),esbuild 打包后直接 node 跑,
 # 不需要 --alias。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d /tmp/mcode-settings-export-secrets.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "esbuild not found in node_modules (no network fallback)" >&2; exit 1; fi
 "$ESBUILD" scripts/settings-export-secrets-smoke/main.ts \
   --bundle --platform=node --format=esm \

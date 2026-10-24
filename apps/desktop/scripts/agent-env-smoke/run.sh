@@ -5,14 +5,15 @@
 # 也不用临时数据根。这两块是「改一个字符串」型的地方,看代码看不出来、错了不报错,
 # 只有真调一遍才知道(见 main.ts 的文件头)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-agent-env-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/agent-env-smoke/main.ts \
   --bundle --platform=node --format=esm \

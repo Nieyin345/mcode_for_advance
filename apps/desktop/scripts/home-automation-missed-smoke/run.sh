@@ -7,10 +7,11 @@
 #   - `@tabler/icons-react` / `@renderer/lib/icons.js` → 空壳 barrel(图标是惰性 JSX)。
 # 不起服务、不碰磁盘、不连 IPC。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d /tmp/mcode-home-automation-missed.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/home-automation-missed-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \

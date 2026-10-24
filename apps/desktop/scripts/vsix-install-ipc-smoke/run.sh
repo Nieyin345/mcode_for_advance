@@ -8,8 +8,9 @@
 #   3. `deny` 在**读文件之前**就中止（磁盘零写入）
 #   4. UI 在用户选文件**之前**就说明了 24 KiB 限制
 set -euo pipefail
-cd "$(dirname "$0")/../.."
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "Missing existing esbuild; no dependency installation attempted" >&2; exit 1; fi
 
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-vsix-ipc.XXXXXX")

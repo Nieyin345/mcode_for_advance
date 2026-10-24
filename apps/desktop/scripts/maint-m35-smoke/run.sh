@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # M35: only temporary fixtures; no user library, PDF or real main process touched.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d /tmp/mcode-m35-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Missing local esbuild; no network install' >&2; exit 2; fi
 
 "$ESBUILD" scripts/maint-m35-smoke/main.ts \

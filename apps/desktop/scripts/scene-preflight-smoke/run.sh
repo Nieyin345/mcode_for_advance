@@ -2,11 +2,12 @@
 # Headless smoke for 场景预检服务(ARC-002 / MC-058)。esbuild 打包 + node 直跑。
 # 三个宿主依赖(provider 注册表 / 已启用插件 / 执行器注册表)换桩,不碰磁盘、不起 Electron。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-scene-preflight-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/scene-preflight-smoke/main.ts \
   --bundle --platform=node --format=esm \

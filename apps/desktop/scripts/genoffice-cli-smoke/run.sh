@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-genoffice-cli-smoke.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "Missing existing esbuild; no dependency installation attempted" >&2; exit 1; fi
 "$ESBUILD" scripts/genoffice-cli-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

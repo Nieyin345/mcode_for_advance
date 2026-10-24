@@ -6,7 +6,8 @@
 # SessionRepo)。所以数据根换临时目录是**必须的**,不是洁癖 —— 指错地方等于拿空库
 # 盖掉用户的聊天记录(见 stubs/dataRoot.ts 里那句"没设就抛")。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-hook-runner-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-hook-runner-data.XXXXXX)
@@ -14,7 +15,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 换桩的三个,都是因为 import 了 electron:
 #  - `dataRoot` / `logger` —— 同其它套件;

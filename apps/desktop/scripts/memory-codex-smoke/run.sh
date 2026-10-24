@@ -16,7 +16,8 @@
 # 没有 `require`。长的那半是 `__dirname` —— `notifications/NotificationManager.ts`
 # 顶层有一句 `join(__dirname, "../../build/icon.png")`,ESM 作用域里没有它。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-memcodex-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-memcodex-data.XXXXXX)
@@ -26,7 +27,7 @@ HOMEDIR=$(mktemp -d /tmp/mcode-memcodex-home.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA" "$HOMEDIR"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # The full IPC registry also imports Slides; this suite does not exercise PPTX.
 # Alias to the production fail-closed vendor stub rather than resolving absent

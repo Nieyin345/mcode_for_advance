@@ -26,12 +26,13 @@
 # 第二份实例、共享状态对不上、大面积变红)。所以 main.ts 里对桩的引用写的是
 # `./stubs/browserManager.js` —— esbuild 按**同一个文件**解析,不多打一份。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-browser-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-browser-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行**非有不可**:sql.js 的 asm 构建里有 `require("node:fs")` /
 # `require("node:crypto")`,而定死的 ESM 输出没有 `require` —— esbuild 会把它换成

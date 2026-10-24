@@ -9,7 +9,8 @@
 # 换成临时数据根(见 stubs/dataRoot.ts 里那句"没设就抛"):这套会真的建库、写行、
 # 删文件,指错地方就是拿空库盖掉用户的聊天记录。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-library-paths-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-library-paths-data.XXXXXX)
@@ -17,7 +18,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 数据根与日志换桩 —— 真的那两个都 import 了 electron。被测的代码一行都没改。
 #

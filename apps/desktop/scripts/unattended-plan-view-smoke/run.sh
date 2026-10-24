@@ -5,11 +5,12 @@
 # 一层源码正则 backstop(面板接线 / 挂载链 / policy 钉 blocked)—— 不碰 DOM / store / api,
 # esbuild 打包后直接 node 跑(与 `scene-deploy-view-smoke` 同款)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-unattended-plan-view-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/unattended-plan-view-smoke/main.ts \
   --bundle --platform=node --format=esm \

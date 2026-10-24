@@ -8,13 +8,14 @@
 # 数据根换成 mktemp 目录（复用 run-store-smoke 的 dataRoot/logger 桩）——
 # `ensureWorkflows` 会往 `<数据根>/workflows/` 真写文件，绝不碰用户真库。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-preset-sync-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-preset-sync-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/preset-scripts-sync-smoke/main.ts \
   --bundle --platform=node --format=esm \

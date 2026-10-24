@@ -8,13 +8,14 @@
 # byte-identity after decoding, caching and the legacy sibling path. Nothing
 # touches userData, the LAN or the real out/renderer.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 mkdir -p ./.tmp
 OUT=$(mktemp -d ./.tmp/mcode-mobile-static-compress-smoke.XXXXXX)
 BOX=$(mktemp -d "${TMPDIR:-/tmp}/mcode-mobile-static-box.XXXXXX")
 trap 'rm -rf "$OUT" "$BOX"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "esbuild not found in node_modules (no network fallback)" >&2; exit 1; fi
 
 BANNER="import { createRequire as __cr } from 'node:module'; \

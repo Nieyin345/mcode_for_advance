@@ -21,12 +21,13 @@
 #     ⚠️ **只换这一个** —— `NotificationManager` 自己留真的,本套验的一半就是
 #     "内存里那份 prefs",换掉它等于验桩自己。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-notif-ipc-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-notif-ipc-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # ⚠️ **banner 里那两行是给 `__dirname` 补的,别删。** `NotificationManager` 顶层有一句
 # `join(__dirname, "../../build/icon.png")`(通知卡片的图标),esbuild 会把 `__dirname`

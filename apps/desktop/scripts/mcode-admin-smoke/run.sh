@@ -12,7 +12,8 @@
 # The store layer really runs, so it needs a data root: it gets a temp one. The
 # modules that import electron are replaced (see stubs/).
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # ⚠️ 产物必须落在**仓库里**(`.tmp/` 下),不能在 mktemp 的目录里:后半段要 `import
 # ("@anthropic-ai/claude-agent-sdk")`,而裸包名是按**产物文件的位置**往上找 node_modules
@@ -23,7 +24,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # SDK 保持惰性 `import`(不打进 bundle):它很大,而且里面那套东西本来就不是给无头脚本
 # 准备的。留着 external,node 从 .tmp/ 往上就能找到 apps/desktop/node_modules 里那一份。

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # T42 isolated managed-node-pack + Host IPC + mutation checks.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-t42-test.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/t42-node-pack-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \

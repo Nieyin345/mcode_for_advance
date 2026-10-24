@@ -15,7 +15,8 @@
 # `MCODE_SMOKE_DATA_ROOT` 必须指临时目录 —— sql.js 的 `db.export()` 重写整个
 # `mcode.db`，指到真数据根 = 拿空库盖掉用户的聊天记录。桩里没设时**直接抛**。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-t40-registry.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-t40-registry-data.XXXXXX)
@@ -23,7 +24,7 @@ HOMEDIR=$(mktemp -d /tmp/mcode-t40-registry-home.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA" "$HOMEDIR"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/t40-renderer-registry-smoke/main.ts \
   --bundle --platform=node --format=esm \

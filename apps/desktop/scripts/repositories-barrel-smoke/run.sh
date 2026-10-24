@@ -2,13 +2,14 @@
 # Headless smoke for **Repository 层的导出契约**（拆分之后不许少一个）。
 # 见 main.ts 文件头。数据根换成临时目录 —— 它 import 了真的 db.ts。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-repositories-barrel.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-repositories-barrel-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/repositories-barrel-smoke/main.ts \
   --bundle --platform=node --format=esm \

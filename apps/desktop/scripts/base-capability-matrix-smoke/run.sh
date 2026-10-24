@@ -5,13 +5,14 @@
 # electron 的 logger / BrowserManager 依赖,用 effective-tools-smoke 同款桩，不起 Electron、
 # 不碰 ~/.mcode、不写盘。
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 # 产物必须落在 `apps/desktop/.tmp/`(不是 /tmp):`--external:ssh2` 的裸包名由 node
 # 从产物目录往上找 node_modules;Windows 的 /tmp 落在 %LOCALAPPDATA%\Temp,往上找不到仓库。
 OUT=$(mktemp -d ./.tmp/base-capability-matrix.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "${ESBUILD:-}" ]]; then echo "esbuild not found in node_modules (no network fallback)" >&2; exit 1; fi
 mkdir -p ./.tmp
 

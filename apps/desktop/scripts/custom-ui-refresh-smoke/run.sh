@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d /tmp/mcode-custom-ui-refresh.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/custom-ui-refresh-smoke/main.ts --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
  --banner:js="import {createRequire} from 'node:module';const require=createRequire(import.meta.url);" \
  --alias:@main/window.js=./scripts/custom-ui-refresh-smoke/stubs/window.ts \

@@ -20,7 +20,8 @@
 # 本套只碰:临时目录里的假 HOME、`$TMPDIR` 下自己建的进程/搜索夹具。
 # 不起服务器、不占端口、不发网络请求、不碰用户真实的 ~/.mcode 与数据根。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-maint-m14-smoke.XXXXXX)
 fake_home=$(mktemp -d /tmp/mcode-maint-m14-home.XXXXXX)
@@ -36,7 +37,7 @@ cat > "$fake_home/.mcode/.claude.json" <<'JSON'
 }
 JSON
 trap 'rm -rf "$OUT" "$fake_home"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/maint-m14-smoke/main.ts \
   --bundle --platform=node --format=esm \

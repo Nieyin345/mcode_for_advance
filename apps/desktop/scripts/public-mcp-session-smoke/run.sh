@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 mkdir -p ./.tmp
 OUT=$(mktemp -d ./.tmp/mcode-public-mcp-session-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/public-mcp-session-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \

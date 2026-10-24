@@ -32,12 +32,13 @@
 # §7 要**真的** node-pty,所以下面顺手把真包的绝对路径算出来传进去 ——
 # `require.resolve` 从 `apps/desktop/src/main/` 出发,与 `TerminalManager` 那句同源。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-terminal-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-terminal-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # ── 真 node-pty 的绝对路径(给 §7 用) ──
 # ⚠️ **不能写 `node -e "…'$PWD/src/main/'…"`** —— 在 git-bash 里 `$PWD` 是 MSYS 形态

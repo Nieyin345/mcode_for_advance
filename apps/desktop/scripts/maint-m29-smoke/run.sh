@@ -7,12 +7,13 @@
 # (run-store-smoke 那两份)+ 临时数据根 + `--banner` 给 sql.js 一个真 require。
 # 只用 fixture,不触任何真实服务;跑完连临时目录一起删。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-maint-m29-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-maint-m29-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/maint-m29-smoke/main.ts \
   --bundle --platform=node --format=esm \

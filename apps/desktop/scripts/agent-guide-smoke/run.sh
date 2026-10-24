@@ -4,12 +4,13 @@
 # 数据根指向 mktemp(SettingRepo 走内存桩,WorkflowRepo 走真库 —— sql.js 的 persist()
 # 会重写整个 mcode.db,指错就是毁用户数据)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 OUT=$(mktemp -d /tmp/mcode-agent-guide.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-agent-guide-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 换桩口径与 app-control-smoke 一致(本套经 invokeAppTool 走真工具表):
 #   - electron 整包替掉(dataRoot/dialogText 链上有 electron);

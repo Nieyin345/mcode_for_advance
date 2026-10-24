@@ -26,12 +26,13 @@
 # ⚠️ 数据根指向 `mktemp -d`(桩里没设就抛):这一套会建库、写 settings 行,而
 #    `SettingRepo.set` 内部就是整库重写 —— 指错地方等于拿空库盖掉用户的聊天记录。跑完即删。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-memory-handoff.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-memory-handoff-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [ -z "$ESBUILD" ]; then ESBUILD="npx esbuild"; fi
 
 # 三个 `--alias`:

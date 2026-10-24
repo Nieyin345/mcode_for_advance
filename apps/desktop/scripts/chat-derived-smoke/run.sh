@@ -4,11 +4,12 @@
 # delta flushes. Bundles the real components/chat/chatDerived.ts with esbuild
 # (react aliased to a tiny single-component useState stand-in) and runs it.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 mkdir -p ./.tmp
 OUT=$(mktemp -d ./.tmp/mcode-chat-derived-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo "esbuild not found in node_modules (no network fallback)" >&2; exit 1; fi
 "$ESBUILD" scripts/chat-derived-smoke/main.ts \
   --bundle --platform=node --format=esm \

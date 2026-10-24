@@ -7,7 +7,8 @@
 # 是**重写整个 `mcode.db`**,指到真库等于拿空库盖掉用户的聊天记录。
 # 搬家的目标同样是另一个 `mktemp -d` —— **绝不拿真路径试**。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-theme-ipc-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-theme-ipc-data.XXXXXX)
@@ -15,7 +16,7 @@ DATA=$(mktemp -d /tmp/mcode-theme-ipc-data.XXXXXX)
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # ## 别名只有两条,这是刻意的
 #

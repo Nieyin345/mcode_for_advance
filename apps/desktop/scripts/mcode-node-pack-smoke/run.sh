@@ -13,7 +13,8 @@
 # —— 106MB 的 node-red 不复制，而 `engine-trust.json` / `flows.json` / `bootstrap.cjs`
 # / `.engine-admin-token` 全部落在本套的临时目录里，互不干扰。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # Externals (ssh2) resolve from the generated ESM file; keep it under desktop/node_modules reach.
 mkdir -p .tmp
@@ -22,7 +23,7 @@ OUT=$(mktemp -d ./.tmp/mcode-node-pack.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-node-pack-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # ① 节点包本体（Node-RED 在引擎进程里 require 的那份，CJS）。两份：agent 单类型
 #    历史入口 + 7 类型总包（C 段用后者）。

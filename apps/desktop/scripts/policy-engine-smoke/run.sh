@@ -2,11 +2,12 @@
 # Headless smoke for the PolicyEngine 判定核(ARC-004 实施步 ①)。esbuild 打包 + node 直跑。
 # policyEngine.ts 只 import contracts + policy.ts(零 electron / 零存储),所以别名极少。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-policy-engine-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/policy-engine-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -27,12 +27,13 @@
 #     它**默认不抛**,于是「模型没选 / 文件不全」那两条 RPC 能验到底;
 #     要验"addon 挂了"时由 `__failNextLoad()` 让它在模块体里抛(与真的同形)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-voice-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-voice-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行非有不可:sql.js 的 asm 构建里有 `require("node:fs")` /
 # `require("node:crypto")`,而定死的 ESM 输出**没有 `require`** —— esbuild 会把它

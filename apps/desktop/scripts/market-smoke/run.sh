@@ -8,11 +8,12 @@
 #
 # ⚠️ HOME/USERPROFILE 必须重定向:安装会真往 `~/.mcode/skills` 写。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-market-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/market-smoke/main.ts \
   --bundle --platform=node --format=esm \

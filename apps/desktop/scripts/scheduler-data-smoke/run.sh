@@ -9,14 +9,15 @@
 # to assert the four things the plan asked for — real concurrency, strict
 # dependency ordering, failure propagation, and that cancel stops dispatch.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-scheduler-data-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # ESM, not CJS: the smoke drives the scheduler with top-level await, which the
 # cjs output format rejects. Nothing in this bundle is CommonJS-only (no

@@ -19,13 +19,14 @@
 #     会往 `<home>/.mcode/codex/` 写 AGENTS.md，技能矩阵与插件根也拼在 homedir() 下，
 #     指到真家目录就是拿测试数据灌用户的技能库。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-codex-effort.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-codex-effort-data.XXXXXX)
 HOME_DIR=$(mktemp -d /tmp/mcode-codex-effort-home.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA" "$HOME_DIR"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--packages=external` 让裸 specifier(electron 等)从 bundle 位置解析 —— 先软链 node_modules。
 source scripts/lib/runtime-node-modules.sh

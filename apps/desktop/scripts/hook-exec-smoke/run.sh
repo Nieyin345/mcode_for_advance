@@ -8,7 +8,8 @@
 # ⚠️ **dataRoot 必须指向临时目录。** 存放层真的会写 `hooks.json`,指错地方等于拿一份空
 # 配置盖掉用户亲手写的钩子(见 stubs/dataRoot.ts 里那句"没设就抛")。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-hook-exec-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-hook-exec-data.XXXXXX)
@@ -16,7 +17,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 换桩的两个,都是因为 import 了 electron(`app.getPath("userData")`):
 #  - `dataRoot` —— 存放层的文件系统根;

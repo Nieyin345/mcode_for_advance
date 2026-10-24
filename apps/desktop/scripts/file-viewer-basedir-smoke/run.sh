@@ -2,11 +2,12 @@
 # file-viewer-basedir-smoke — 【MC-086】目录 linked 里翻进子文件时,图片 baseDir 必须是
 # 该 md 自己所在目录。直接驱动导出的 loadViewData(只依赖 api.library.*/api.file.*,无头换桩)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-file-viewer-basedir.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/file-viewer-basedir-smoke/main.ts \
   --bundle --platform=node --format=esm \

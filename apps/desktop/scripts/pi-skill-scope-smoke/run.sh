@@ -3,12 +3,13 @@
 # specifier `@earendil-works/pi-coding-agent` 换假 loader(见 stubs/piSdk.ts);
 # 其余叶子桩(dataRoot/logger)走通用桩 —— piSkillBridge 会拉 skillEngines → appContext。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-pi-skill-scope.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-pi-skill-scope-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/pi-skill-scope-smoke/main.ts \
   --bundle --platform=node --format=esm \

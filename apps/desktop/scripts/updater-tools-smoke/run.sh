@@ -68,12 +68,13 @@
 # 更绕。现在这条路(不换桩)是三个里最短的。
 #
 set -euo pipefail
-cd "$(dirname "$0")/../.."          # → apps/desktop
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."          # → apps/desktop
 
 OUT=$(mktemp -d /tmp/mcode-updater-tools-smoke.XXXXXX)
 USER_DATA=$(mktemp -d /tmp/mcode-updater-tools-userdata.XXXXXX)
 trap 'rm -rf "$OUT" "$USER_DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 被外置的那几个模块要在 `$OUT` 里能被解析到 node 内建以外的依赖;`--platform=node`
 # 把内建标成 external,所以只需要一份 node_modules 让 esbuild 自己找得到它的运行时。

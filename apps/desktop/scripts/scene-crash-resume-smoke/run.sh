@@ -11,13 +11,14 @@
 # 临时目录 —— `initDb()` 在路径不存在时会新建空库,**指错地方等于毁用户数据**。
 # 数据根换来的是 `$MCODE_SMOKE_DATA_ROOT`(桩里没设就抛,见 run-store-smoke/stubs/dataRoot.ts)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-scene-crash-resume.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-scene-crash-resume-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 被测链 import electron(tools.ts 那条)与真实 logger / dataRoot;照 scene-apply-smoke
 # 的取舍整套换桩。

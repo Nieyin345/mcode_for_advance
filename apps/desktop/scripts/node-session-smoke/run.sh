@@ -9,7 +9,8 @@
 # ⚠️ 数据根指向 `mktemp -d`(见 stubs/dataRoot.ts 里那句"没设就抛"):这一套会建库、
 # 写会话行,指错了就是拿空库盖掉用户的聊天记录。跑完连目录一起删。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-node-session-smoke.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-node-session-data.XXXXXX)
@@ -17,7 +18,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [ -z "$ESBUILD" ]; then ESBUILD="npx esbuild"; fi
 
 # `--banner` 那一行是给 **sql.js** 的:它的 asm 构建里有 `require("node:fs")`,

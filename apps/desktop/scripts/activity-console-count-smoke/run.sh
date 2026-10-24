@@ -6,10 +6,11 @@
 #   - `@tabler/icons-react` 与 `react-icons/*` → 空壳 barrel(图标是惰性 JSX,从不被调用)。
 # 不起服务、不碰磁盘、不连 IPC。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d /tmp/mcode-activity-console-count.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/activity-console-count-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \

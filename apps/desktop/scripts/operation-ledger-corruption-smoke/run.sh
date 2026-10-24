@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 OUT=$(mktemp -d /tmp/mcode-operation-corrupt.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-operation-corrupt-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/operation-ledger-corruption-smoke/main.ts \
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \

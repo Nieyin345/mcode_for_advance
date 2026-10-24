@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Isolated HOME, mocked HTTP, clone forbidden; no user data or network.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-skill-lazy-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/skill-lazy-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -5,12 +5,13 @@
 # 按名字检索(并入 app_api_list)→ describe 看参数 → params 校验(好参放行 / 坏参
 # 执行前拒绝)→ 撤销后检索不到。不起 Electron、不碰用户库(MCODE_SMOKE_DATA_ROOT)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-published-tools.XXXXXX)
 DATA=$(mktemp -d /tmp/mcode-published-tools-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/published-tools-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -16,10 +16,11 @@
 # `--external:ssh2`:ssh2 的 import 运行时解析,故产物必须放在 `.tmp/` 下(从产物目录
 # 往上才能找到仓库的 node_modules;/tmp 在 Windows 上找不到)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 mkdir -p ./.tmp/host-mcp-server-smoke
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行非有不可:sql.js 的 asm 构建里有 `require("node:fs")`,而定死的
 # ESM 输出没有 `require`,esbuild 会把它换成一句抛错。

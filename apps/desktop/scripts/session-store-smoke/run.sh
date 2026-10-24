@@ -7,14 +7,15 @@
 # useSessionStore.getState().ingestEvent, the same entry point the IPC event
 # stream drives. See main.ts for the covered scenarios.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-session-store-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # The store's sole dynamic import is monacoSetup (LSP worker bootstrap), which
 # drags in the whole monaco bundle + ?worker/.ttf assets that only vite can

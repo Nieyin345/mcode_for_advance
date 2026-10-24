@@ -38,7 +38,8 @@
 # 所以让这条 import 原样留在产物里,再把 app 的 node_modules 软链到 bundle 旁边
 # (照 library-adopt-smoke 给 pdfjs-dist 的那一手;不设 NODE_PATH —— 那条路只管 CJS)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # 本套要拿磁盘上那份真的 `forwarder.py` 与 SFTP 上传的逐字节比。产物在临时目录里跑,
 # 从 `import.meta.url` 往上找必然找不着(见 fakeVps.ts 的注释),所以根从这里给。
@@ -50,7 +51,7 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 source scripts/lib/runtime-node-modules.sh
 mcode_link_runtime_node_modules "$OUT" "$PWD/node_modules"
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 给 sql.js:它的 asm 构建里有 `require("node:fs")` / `require("node:crypto")`,
 # 而定死的 ESM 输出**没有 `require`** —— esbuild 会把它换成一句

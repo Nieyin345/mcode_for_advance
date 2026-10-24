@@ -24,7 +24,8 @@
 # ⚠️ 最后那条**必须是包名**才换得掉:被测代码里写的就是
 # `await import("@anthropic-ai/claude-agent-sdk")`。相对 import 换不掉(见技能文档)。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-custom-model-smoke.XXXXXX)
 HOME_DIR=$(mktemp -d /tmp/mcode-custom-model-home.XXXXXX)
@@ -35,7 +36,7 @@ trap 'rm -rf "$OUT" "$HOME_DIR"' EXIT
 #   `.claude/`     —— 配置目录本身
 printf '{"hasCompletedOnboarding":true}' > "$HOME_DIR/.claude.json"
 mkdir -p "$HOME_DIR/.claude"
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # `--banner` 那一行非有不可:sql.js 的 asm 构建里有 `require("node:fs")`,定死的 ESM
 # 输出没有 `require`,esbuild 会把它换成一句抛错。这一套经 `secretStore` 桩绕开了

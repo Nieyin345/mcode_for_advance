@@ -12,12 +12,13 @@
 # ⚠️ 但 contracts 那条链(`@contracts/ipc` → 别的 contracts 模块)可能间接碰到
 # `node:*`,所以 `--banner` 那行(给 `require` 兜底)照旧保留 —— 与其它套件一致。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-vision-relay-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/vision-relay-smoke/main.ts \
   --bundle --platform=node --format=esm \

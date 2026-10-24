@@ -5,14 +5,15 @@
 # 所以这一套不用桩、不用临时数据根:造一个 ctx 收事件,喂真实的 SDK 消息进去,
 # 看事件有没有出来。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-engine-commands-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 # esbuild rides along as vite's transitive dep (not a direct dependency); fall
 # back to npx when absent.
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/engine-commands-smoke/main.ts \
   --bundle --platform=node --format=esm \

@@ -7,11 +7,12 @@
 # 三个都**不碰 DOM / store**(只 import type),所以 esbuild 打包后直接 node 跑,
 # 不需要任何 --alias。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-renderer-pure-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/renderer-pure-smoke/main.ts \
   --bundle --platform=node --format=esm \

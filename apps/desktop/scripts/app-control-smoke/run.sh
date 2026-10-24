@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Headless smoke for mcode-app(本地 agent 控制 Mcode 的工具组)。esbuild 打包 + node 直跑,不进 Electron。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 # ⚠️ **产物目录必须在 `.tmp/` 下,不能是 `/tmp`。** 【MC-052】之后本套经 `--external:ssh2`
 # 拉着 ssh2 的 import 到运行时,**由 node 从产物目录往上**找 `node_modules`;`/tmp` 在 Windows
@@ -13,7 +14,7 @@ mkdir -p ./.tmp/app-control-smoke
 # 数据根指向 mktemp 副本 —— sql.js 的 persist() 会重写整个 mcode.db,指错就是毁用户数据。
 DATA=$(mktemp -d /tmp/mcode-app-control-data.XXXXXX)
 trap 'rm -rf "$DATA"' EXIT
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # ⚠️ `--alias:@main/claude/RuntimeManager.js` 是**必需的**,不是保险。【MC-059】之后
 # `appControl/tools.ts` 的 headlessNewSession / headlessSend 会**动态** import RuntimeManager,
