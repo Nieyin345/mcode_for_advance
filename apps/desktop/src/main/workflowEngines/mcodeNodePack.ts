@@ -256,7 +256,7 @@ export function normalizeAgentConfig(config: McodeAgentNodeConfig): {
   // Preserve unknown migration metadata; overwrite only fields actually
   // exposed by the upstream Node-RED node form and present in the native node.
   for (const key of [
-    "decider", "note", "triggerKind", "task", "cron",
+    "decider", "note", "triggerKind", "task", "events", "eventFilter", "cron",
     "moduleId", "contributionId", "path",
     "enginePath", "engineMethod", "engineBody", "sessionId", "projectPath",
   ]) {

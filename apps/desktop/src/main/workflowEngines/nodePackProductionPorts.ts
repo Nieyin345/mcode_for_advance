@@ -289,12 +289,29 @@ export function productionNodePackServices(
       if (payload.triggerKind !== "event") {
         throw Error("Use Node-RED native inject/watch for manual, schedule, or file triggers");
       }
-      const eventType = asString(params.task);
-      if (!eventType || eventType.length > 100) throw Error("Trigger event type must be specified");
+      // Old mcode.trigger stores HookEvent identifiers in `events` while `task`
+      // is prose for the Agent. Hand-authored native nodes without `events`
+      // retain the previous single `task` event-name fallback. A nonempty
+      // native `events` field is authoritative; never silently fall back
+      // to an unrelated human instruction if its entries are invalid.
+      if (typeof params.eventFilter === "string" && params.eventFilter.trim() !== "") {
+        throw Error("Legacy eventFilter is not implemented for Node-RED: migrate the filter explicitly or clear it before deploying");
+      }
+      const hasEvents = params.events !== undefined;
+      const source = hasEvents ? params.events : params.task;
+      const rawEvents = Array.isArray(source) ? source : typeof source === "string" ? source.split(/[\r\n,]+/) : [];
+      const names = [...new Set(rawEvents.map(e => typeof e === "string" ? e.trim() : ""))].filter(Boolean);
+      if (!names.length || names.length > 16
+        || names.some(name => name.length > 100 || !/^[a-z0-9][a-z0-9._-]*$/.test(name))) {
+        throw Error("Trigger event type must be specified (use the Events field, not Task)");
+      }
       // Same Mcode event stream as automationRunner, but this Node-RED node
       // only emits into its *existing* flow — no second executor is started.
+      const eventNames = new Set(names);
       return runtimeManager.subscribe((event) => {
-        if (event.type !== eventType) return;
+        if (!eventNames.has(event.type)) return;
+        // This is NOT TriggerPayload.input from the old custom-UI form.
+        // Never infer trigger.input.doi from event.itemId or task prose.
         emit({ payload: { event: event.type, sessionId: event.sessionId, at: Date.now() } });
       });
     },

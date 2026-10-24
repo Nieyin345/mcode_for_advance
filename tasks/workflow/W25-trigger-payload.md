@@ -153,3 +153,34 @@ grep -rn "lossy\|needsHumanDecision" apps/desktop/src/renderer/components/settin
 
 W17 把一个「安静走错分支」换成了「显式失败」，那是对的 ——
 **但用户要的是「能用」，不是「错得响亮」。**
+
+
+## 2026-10-25 结果回写（本轮 W25：事件订阅已修；运行前输入仍属不兼容语义）
+
+### ① 两种 trigger 的数据到底是什么
+
+- 旧侧 `apps/desktop/src/main/orchestration/automationPayload.ts:27-62,111,231-254,261-317`：`TriggerInputValues = Record<string, string | string[]>`。自定义 UI 的运行前表单会把该值传给 `automationRunner.runWithTarget(..., input)`（`automationRunner.ts:2015-2065`）；其 `payloadFactsOf` 把字段拍平为 `input.doi` 一类属性，以解析 `{{trigger.input.doi}}`。它**不是** HookEvent 自身的属性。
+- 实际预设 `apps/desktop/resources/presets/workflows.json` 的 `wf_auto_download`：`mcode.trigger.params.events="library.item.imported"`，但 `params.task` 是给模型看的长段自然语言工作说明；条件节点引用 `{{trigger.input.doi}}`。
+- 本轮开工前生产 `nodePackProductionPorts.ts` 错把 `params.task` 当作唯一事件名，且限制 100 字：这个真实出厂预设订阅会被拒绝，或根本匹配不到事件。Node-RED 的 `runtimeManager.subscribe` 事件消息只有 `event.type`、`event.sessionId` 等宿主 runtime 事实；此前 `emit` 的结构是 `{payload:{event,sessionId,at}}`，**没有** `input` 或 `doi`。
+
+### ② 采用的两层方案与安全边界
+
+- **真实修复事件订阅 (A 的一部分，不是假冒 input 已接通)**：`flowMigration.nativeNodeConfigOf` 将旧 `events` 暴露在 Node-RED 原生可编辑字段；原生字段覆盖旧 sidecar，反向回读不复活过时事件名；旧数组形式做往返保形。节点 HTML 加 `events` 与 `eventFilter` 表单，并把 `task` 文案标清“不是事件名”。
+- 生产 Host `trigger.subscribe` 使用 `params.events` 的一项或多项 HookEvent 名称，旧手建、完全没有 `events` 字段的节点保留原 `task` 单事件名兼容；**如果 events 字段存在但被清空/填错，绝不回退到 task**。限制事件名语法、数量（最多 16）和长度，Host 对不匹配事件不派发、unsubscribe 后不派发。
+- 旧 `eventFilter` 当前 Host 没有等价过滤器：**非空时明确拒绝订阅**，不得把“只处理某些对象”静默变成“处理事件中的全部对象”；迁移器保留可编辑字段并在人类裁决项点名。
+- **`{{trigger.input.doi}}` 不能靠 A/B 直接等价修复**：这是 UI 运行前输入，不存在于普通 RuntimeEvent，也不能把 `itemId` 伪造为 DOI。保留 W17 fail-closed 的条件求值，并为实际含 `{{trigger.*}}` 的条件追加专门的 `lossy` 文案：**“【迁移后不能执行】…即使 Deploy，条件仍显式失败；需先改写条件及输入来源”**。没有不经证据便把表达式转写为 `msg.payload.*`。
+- **用户能看到迁移问题**：卡原本声称「渲染端没显示 lossy」已过期。实际上 `nativeLibraryLoad.ts:knownLossLines` 把 `report.lossy` 装进需要人工确认的 `reason`，`WorkflowNativeEditorEntry.tsx` 在 `result.requiresConfirmation` 时以 `<p role="alert">` 显示并提供确认/取消。新测试直接走生产 `loadWorkflowIntoNative`（隔离临时目录）断言返回给 UI 的 reason 含 `【迁移后不能执行】` 与 `trigger.input.doi`，而不是仅测试数组。
+- 没有放宽用户审批、触发执行权、Hub 事件范围或自动重启；没有引入第二套触发器。
+
+### ③ 变更与验收
+
+修改四处原有生产实现：`flowMigration.ts`、`mcodeNodePack.ts`、`mcodeNodeTypes.ts`、`nodePackProductionPorts.ts`；新增 `apps/desktop/scripts/mcode-trigger-events-smoke/`（从真实 shipped `wf_auto_download` 读取，调用**真实**迁移器、节点归一化与生产 Host subscribe，只有宿主 runtime emitter 使用现有测试 stub）。
+- 最终新套件 **20/20 PASS**，涵盖真实事件名、任务说明不覆盖、原生表单往返、Host 回执/事件过滤/取消订阅、两个事件、空值/坏值、非等价筛选拒绝、原生迁移确认文案到 UI 返回。
+- 连同 `flow-migration-smoke` / `mcode-condition-bridge-smoke` / `mcode-node-pack-smoke` / `mcode-node-pack-ports-smoke` / `mcode-conversation-session-smoke` / `workflow-native-load-smoke`：**7 PASS / 0 FAIL**，日志 `apps/desktop/.tmp/smoke-runs/1792873522529-29164-zZvUbT/`。Desktop + Contracts 两套 `tsc --noEmit` 均 EXIT=0。
+- 变异 #1：生产端把 `source` 强制恢复 `params.task`，新增套件 EXIT=1，确实因长任务说明无法注册正确事件而在真实 subscribe 抛错，符合原故障；随后恢复原代码。
+- 变异 #2：移除 `eventFilter` 保护，新增套件 **16/17**，`旧事件筛选未实现时不得静默扩大触发范围` 精确红；恢复代码后 20/20 全绿。
+
+### ④ 明确未完成的部分
+
+- **不宣称 `wf_auto_download` 已整图可用**：它的 `trigger.input.doi` 原生侧仍没有真实来源；这需要 UI 触发入口向 Node-RED 注入可信的运行前输入，并维护所属 workflow、来源会话、项目身份及审批，不能仅从普通 HookEvent 构造。当前在迁移前向用户明确展示此限制，执行时继续拒绝错误求值。
+- 本轮未跑真实 Electron 自定义 UI → 原生 Host 的整图行为；测试是原生生产 Host + 隔离 stub runtime、隔离 native load。未跑全量 smoke；未修改正在被其他对话使用的 t8 / W26 UI。

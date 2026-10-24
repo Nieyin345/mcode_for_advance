@@ -357,6 +357,11 @@ function nativeNodeConfigOf(
   } else if (kind === "trigger" && effectiveType === "mcode-trigger") {
     config.triggerKind = stringOf(TRIGGER_KIND_KEY, "event");
     config.task = stringOf("task");
+    // Task is a human-readable instruction, NOT the HookEvent subscription.
+    // Preserve the legacy events field in an editable native form.
+    const eventSpec = params["events"];
+    config.events = Array.isArray(eventSpec) ? eventSpec.filter((e): e is string => typeof e === "string").join(", ") : stringOf("events");
+    config.eventFilter = stringOf("eventFilter");
     config.cron = stringOf(TRIGGER_CRON_KEY);
   } else if (kind === MODULE_CAPABILITY_RUNNER_KIND) {
     config.moduleId = stringOf("moduleId");
@@ -469,6 +474,17 @@ function paramsFromNativeNode(node: NodeRedNode, savedParams: unknown): Record<s
     case "mcode-trigger":
       assign("triggerKind", "triggerKind", "event");
       assign("task", "task", "", true);
+      // Keep legacy array encoding when the editor has not changed its values.
+      const nativeEvents = nativeStringField(node, "events");
+      if (nativeEvents !== undefined) {
+        const savedEvents = params["events"];
+        if (Array.isArray(savedEvents)) {
+          const prior = savedEvents.filter((entry): entry is string => typeof entry === "string");
+          const current = nativeEvents.split(/[\r\n,]+/).map(entry => entry.trim()).filter(Boolean);
+          params["events"] = JSON.stringify(current) === JSON.stringify(prior) ? savedEvents : current;
+        } else assign("events");
+      }
+      assign("eventFilter");
       assign("cron");
       break;
     case "mcode-module-capability":
@@ -670,7 +686,7 @@ function humanDecisionIssuesOf(
         nodeId: node.id,
         message:
           `trigger 的触发方式是 ${triggerKind}（应用事件）—— Node-RED 内置没有对应节点，保留 mcode-trigger；`
-          + "订阅源（HookEvent / 事件筛选）由 Host RPC 承担，需人工确认事件名与载荷映射。",
+          + "订阅的 HookEvent 事件名从 events 原生字段读取（task 仅为说明）；旧 eventFilter 暂无法在 Host 等价执行，配置了筛选条件的节点会拒绝订阅而非扩大触发范围。触发源不提供旧自定义 UI 的 trigger.input 数据，需人工调整条件与输入来源。",
       });
     }
   }
@@ -898,6 +914,19 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
       }
     }
     if (kind === "condition") {
+      // Old custom-UI runtime inputs are not an event's HookEvent payload.
+      // Report this as an execution blocker in the confirmation dialog, not
+      // as a generic "some metadata stays in x-mcode" representation caveat.
+      const expression = parseConditionExpression(node.params["expression"]);
+      if (expression.ok && expression.expression.rules.some(rule =>
+        typeof rule.ref === "string" && rule.ref.startsWith("{{trigger."))) {
+        lossy.push({
+          code: "lossy",
+          nodeId: node.id,
+          message: "【迁移后不能执行】此条件引用 {{trigger.*}}（如 {{trigger.input.doi}}）：旧值来自自定义 UI 的运行前输入，Node-RED 的 mcode-trigger 事件只带事件名、会话 ID 与时间，没有 input 数据。"
+            + "即使确认装载并成功 Deploy，这个条件仍会显式失败且不会走下游。必须先改写条件及真实输入数据来源，不可直接启用。",
+        });
+      }
       lossy.push({
         code: "lossy",
         nodeId: node.id,

@@ -693,7 +693,9 @@ export function branchNodeHtml(): string {
 export function triggerNodeHtml(): string {
   return htmlFor(MCODE_TRIGGER_NODE_TYPE, [
     { id: "triggerKind", label: "Trigger kind", kind: "select", options: ["manual", "schedule", "file", "event"] },
-    { id: "task", label: "Task", kind: "textarea" },
+    { id: "task", label: "Task instructions (not the event type)", kind: "textarea" },
+    { id: "events", label: "Event types (comma-separated, e.g. library.item.imported)", kind: "text" },
+    { id: "eventFilter", label: "Legacy event filter (unsupported; clear before Deploy)", kind: "text" },
     { id: "cron", label: "Cron", kind: "text" },
   ]);
 }
