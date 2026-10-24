@@ -180,3 +180,138 @@ grep -n "chat-row-gap-assistant\|chat-row-gap-user\|chat-leading" apps/desktop/s
 3. 差距 C 的语义对照表（**即使决定不改也要写**）；
 4. 套件数字、变异结果（红的条数 vs 预期）、提交 SHA；
 5. **有没有你觉得不对但没改的地方。**
+
+---
+
+## 结果回写（2026-10-24，G）
+
+### 一、差距 A：默认档间距对齐上游（**已改**）
+
+上游两个值不是独立数字，是同一乘积的两档（`cds-theme.css:178-181`）：
+
+```
+--chat-body: 14px   --chat-leading: 1.42857
+chat-turn-gap = 14 × 1.42857 × .75 = 15px
+chat-item-gap = 14 × 1.42857 × .50 = 10px
+```
+
+| 变量 | 改前 | 改后 | 上游 | 方向 |
+|---|---|---|---|---|
+| `--chat-row-gap-user` | 20px | **15px** | 15px | 收紧 |
+| `--chat-row-gap-assistant` | 12px | **10px** | 10px | 收紧 |
+| `--chat-block-gap` | 8px | **10px** | 10px | **放宽** |
+
+**三个数方向不一致，所以不是「整体偏松」** —— 旧值是「轮次之间太松、消息内块之间太紧」。只调其中两个会把层次调反。
+
+**只有默认档（comfortable）改了**，compact / cozy 保持原值：那是用户主动选的松紧，不该被拉回上游默认值。注释里写明了。
+
+**`assistant` 与 `block` 都等于 10px 不是合并错误**：`MessageRow.tsx:322-325` 里 `tightTop` 的 assistant 行**本来就走的 `--chat-block-gap`**。上游只有两档，我们这三层里的第三层是自造的。所以「轮内项间距 = 消息内块间距」本来就是上游语义，不会丢层次。
+
+### 二、差距 B：**卡面的假设是错的**（**未改，只报数**）
+
+卡说「助手没有 text-inset，加一个内缩」。核实后发现**两处卡面事实都不成立**：
+
+1. **上游的 `--cds-assistant-message-text-stop` 只声明、零消费**（`grep -rn "var(--cds-assistant-message-text-stop)" open-claude-ui/` → 0 命中）。只有 `inset: 4px` 真的用在 `ChatMessageBubbles.tsx:279` 的 `paddingLeft` 上。
+2. **我们已有等效机制**：`--chat-max-w` 硬上限 + 居中 + 容器查询驱动的 `--chat-gutter`。加 inset 会变成双重约束。
+
+**实测（纯算术，`.tmp/t122-widths2.mjs`）**
+
+| 窗口 | 右栏 | chat pane | 旧 gutter | 我们正文 | 上游(仅4px) |
+|---|---|---|---|---|---|
+| 1200 | 开 | 720 | 80 | 560 | 712 |
+| 1440 | 关 | 1152 | 128 | 896 | 1144 |
+| 1600 | 关 | 1280 | 128 | 1024 | 1272 |
+| 2000 | 关 | 1600 | 128 | 1024 | 1592 |
+
+**方向与卡面猜测相反：我们比上游窄，不是宽。**
+
+**另外两条实测结论**：
+- **`--chat-max-w: 1024px` 在旧 gutter 下从未生效** —— 8 种组合里 `pane − 2×gutter` 全部 ≤ 1024（最大正好 1024）。真正决定宽度的是 gutter。
+- 1200px + 右栏开时正文只有 **560px**，14px 正文一行不到 40 个汉字。
+
+### 三、★ 差距 B'（新发现）：gutter 台阶让「窗口变宽 → 正文变窄」
+
+**这是这一卡最重要的发现，比间距 20→15 更值得先修。**
+
+台阶式 gutter 跨断点时跳变 G，而 pane 只增加 1px，于是内容宽变化 = 1 − 2G。**G > 0.5px 就倒挂。**
+
+旧值（20 / 48 / 80 / 128）在三个断点全部倒挂：
+
+| pane | content | 变化 |
+|---|---|---|
+| 447 → 448 | 407 → 352 | **−55px** |
+| 703 → 704 | 607 → 544 | **−63px** |
+| 1023 → 1024 | 863 → 768 | **−95px** |
+
+**用户拖宽 1px，正文突然少 95px。**
+
+**修法（已实施）**：连续 `clamp()` 替掉四个 `@container` 块。
+
+```css
+@supports (width: 1cqw) {
+  [data-chat-root] * {
+    --chat-gutter: clamp(20px, calc((100cqw - 384px) * 0.175), 56px);
+  }
+}
+```
+
+- `100cqw` = 容器宽（`[data-chat-root]` 已是 `container-type: inline-size`）
+- 与上游 `clamp(0px, (100% - 384px) * .175, 56px)` **逐字同型**，只把地板从 0 抬到 20px
+- **用 px 字面量不用 rem**：`rem` 依赖根字号。实测一个 `font: 14px` 的页面上 `24rem` 算出 336px（比 384 少 48px），公式会静默漂移。
+
+**四个 `@container` 块已整块删除** —— 它们写在 clamp **之后**，会覆盖 clamp（我第一版把它们留作"兜底"并注释"clamp 声明在后"，那句话是**反的**，被总控核实后改正）。
+
+**浏览器实测**（`.tmp/t122-cqprobe/`，viewport 2000×900）：
+- `CSS.supports('width','1cqw')` → `true`
+- **300–1700px 逐像素扫描：倒挂 0 处**
+- 饱和点 **704px**：`(704−384)×0.175 = 56` ✓，之后 gutter 恒 56px
+- 400px → 20px（地板）；600px → 37.8px
+
+**`--chat-max-w` 未动** —— 它是用户可改的四档（48/64/80/none），改默认值 = 改所有用户默认体验，是产品决策不是这一卡能定的。
+
+### 四、差距 C：滚动语义对照表（**未改代码**）
+
+| 上游语义 | 上游值 | Mcode 对应 | Mcode 值 | 判定 |
+|---|---|---|---|---|
+| 用户输入冷却窗口 | 150ms | **无** | — | **缺**（`maintainScrollAtEnd` 只按距离判断，不按时间） |
+| 底部容差 | 40px | `NEAR_BOTTOM_THRESHOLD` | **80px** | 不同（我们更宽松） |
+| 底部缓冲区 | 35vh | **无** | — | **缺** |
+| `behavior: "auto"` 防抖 | 瞬时对齐 | `scrollToEnd({ animated: true })` | smooth | **不同**（我们更"滑"） |
+| 「跳至最新」阈值 | 120px | 复用 `NEAR_BOTTOM_THRESHOLD` | **80px** | 不同（我们出现得更早） |
+
+**Mcode 另有一整套上游没有的 `anchorSuspension`**（`ChatPane.tsx:765-838`）：TurnPanel 展开/折叠时临时停掉底部吸附，避免「往上挤」「闪一下」。**这是修真实 bug 得来的，比上游多一层保护。**
+
+**结论：不重写。** 差异主要在 40 vs 80px 与 120 vs 80px 这两个阈值，和缺 150ms 冷却/35vh 缓冲三项。**改这些需要单独验证流式手感，不是改数字就能确认的。**
+
+### 五、套件
+
+新建 `apps/desktop/scripts/t122-chat-rhythm-smoke/`（**26/26**），五节：
+
+1. 默认档间距 vs 上游公式（含 ★ 对照组）；
+2. 层次关系（轮次 > 轮内；块不窄于轮内）；
+3. compact / cozy 不被拉回默认值（三档单调）；
+4. **★ gutter 不倒挂**（逐像素扫描 + 斜率 `1−2k≥0` + 饱和点 + 地板）；
+5. 变量真的有消费者（剥注释后 grep）。
+
+**断言打在算出来的像素上**，不是源码文本：套件先剥 CSS 注释再解析声明，然后按 `clamp()` 语义算出最终值。**没有一条 `source.includes()`。**
+
+另跑：`arc005-pane-docking 28/28`、`arc005-pane-free-grid 34/34`、`arc005-pane-layout-edges 15/15`、`arc005-editor-keepalive 12/12`、`arc005-right-pane-keepalive 17/17`、`message-collapse 31/31`、`image-panzoom 54/54`。**desktop typecheck 0 错误。**
+
+### 六、变异（先写预期，四轮）
+
+| 变异 | 预期 | 实红 | 结论 |
+|---|---|---|---|
+| `--chat-row-gap-user` → 20px | 2 | **2** | 对照 + 上界。**关系断言抓不到它**（20>10 仍成立）→ 见下 |
+| `--chat-block-gap` → 8px | 2 | **2** | 对照 + `block>=assistant` |
+| gutter clamp 整块去掉 | 6 | **7** | 多 1 条（地板那条也 FAIL）|
+| （第一轮未加 fail-explicit 时）gutter | 6 | **3** | **差 3 条因为 `if (clamp)` 把它们静默跳过了** |
+
+**第一轮 gutter 变异只红 3 条，差的 3 条不是"断言太弱"，是"断言没跑"。** 已改成 `checkOrFailWhenNoClamp`：clamp 缺失时逐条显式 FAIL。**跳过的断言和通过的断言在输出里长得一样**，这是本仓反复踩的形态。
+
+**另一个发现**：变异 2（user → 20px）时，原本预期的「轮次 > 轮内」那条**没红**（20 > 10 仍成立）。关系断言只能抓"层次反了"，抓不到"整体太松"。**已补三条上界断言**（不超过上游值 125%），旧值 20px 是 133%，会被抓住。
+
+### 七、没做的 / 觉得不对但没改的
+
+1. **`--chat-max-w` 默认档 1024px 偏宽**（上游示例用 672px）—— 这是产品决策，需总控定。
+2. **`apps/desktop/scripts/t121-border-contrast-smoke/run.sh` 是坏的**（不是我的边界）：`cd $(dirname "$0")/../..` 之后 `source "$(dirname "$0")/../lib/esbuild-path.sh"` 用的是相对路径，此时 cwd 已变 → `No such file or directory`。**同一个 bug 在 t122 里我踩过并修了**（先算绝对路径 `HERE=$(cd "$(dirname "$0")" && pwd)`）。**F 的 t121 现在跑不起来**，建议派给 F 修。
+3. **差距 C 的 150ms 冷却 / 35vh 缓冲未实现** —— 需要单独验证流式手感。

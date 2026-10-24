@@ -1759,33 +1759,62 @@ button.chat-ledger-head:hover {
  * @container block overrides --chat-gutter on [data-chat-root]'s descendants
  * (which inherit it). Narrow panes get a tight gutter so text isn't squeezed;
  * wide panes breathe. Stepped (not clamp()) so each breakpoint is a clean,
- * predictable padding. */
+ * predictable padding.
+ *
+ * 【T122】**每一档的增量必须小于它所在的档宽，否则「窗口变宽 → 正文变窄」。**
+ *
+ * 台阶式的陷阱：内容宽 = pane − 2×gutter。跨过一个断点时 gutter 跳变 G，
+ * 而 pane 只增加了 1px，于是内容宽变化 = 1 − 2G。**G > 0.5px 就倒挂。**
+ *
+ * 旧值（20 / 48 / 80 / 128）在三个断点上都倒挂，实测：
+ *
+ *   pane 447 → 448：content 407 → 352（**窄了 40px**）
+ *   pane 703 → 704：content 607 → 544（**窄了 48px**）
+ *   pane 1023 → 1024：content 863 → 768（**窄了 80px**）
+ *
+ * 用户拖宽 1px，正文突然少 80px —— 可见的抖动，不只是理论问题。
+ *
+ * 现在（20 / 32 / 44 / 56）每档 +12px，仍会倒挂 1 − 2×12 = −23px。
+ * **所以本套件不放行「纯台阶」** —— 见下面那条连续 clamp。
+ *
+ * 上限 56px 有据：上游 `--cds-assistant-message-text-stop:
+ * clamp(0px, (100% - 384px) * .175, 56px)` 的饱和值就是 56px，而旧的
+ * 128px 是它的 2.3 倍。 */
+
+/* 【T122】连续 gutter —— 用容器查询单位，替掉台阶的倒挂。
+ *
+ * `100cqw` = 最近的 inline-size 容器的宽度，而 [data-chat-root] 就是那个
+ * 容器（container-type: inline-size）。公式与上游逐字同型：
+ *
+ *   上游：clamp(0px,            (100% - 384px) * .175, 56px)
+ *   这里：clamp(1.25rem, ... , 3.5rem)  —— 20px 是地板（窄 pane 下正文不能被挤没），
+ *                                      56px 是上游的饱和值（天花板）
+ *
+ * 连续函数意味着 pane 每加 1px，content 增加 1 − 2×0.175 = 0.65px，
+ * **永远为正，永不倒挂**。
+ *
+ * ⚠️ **四个台阶块已删除**（2026-10-24, T122）。留着它们会打架：台阶写在
+ * clamp **之后**，声明顺序上后者胜出，于是 clamp 永远不生效。总控核实过
+ * 这一点，指示整块删掉而不是"留作兜底"。
+ *
+ * **为什么不需要兜底**：`@supports (width: 1cqw)` 本身就是能力检测。
+ * Electron 44 一定支持容器查询单位（实测 `CSS.supports('width','1cqw')`
+ * 为 true），不支持的环境会跳过整块，回落到上面 `[data-chat-root]` 里
+ * 那 20px 地板 —— 那正是我们想要的降级行为（贴边但不挤没）。
+ *
+ * **为什么不靠 rem**：上游的 384 / 56 是像素字面量。rem 依赖根字号 ——
+ * 实测过一个 `font: 14px` 的页面里 `24rem` 算出 336px，比 384 少 48px，
+ * 公式会静默漂移且没人会发现。 */
+@supports (width: 1cqw) {
+  [data-chat-root] * {
+    --chat-gutter: clamp(20px, calc((100cqw - 384px) * 0.175), 56px);
+  }
+}
 [data-chat-root] {
   container-type: inline-size;
   --chat-gutter: 1.25rem; /* 20px floor - always keep >=20px so content never
                               touches the pane edges, even at the narrowest
                               width (both sidebars open). */
-}
-
-@container (width < 28rem) {
-  [data-chat-root] * {
-    --chat-gutter: 1.25rem; /* 20px */
-  }
-}
-@container (28rem <= width < 44rem) {
-  [data-chat-root] * {
-    --chat-gutter: 3rem; /* 48px */
-  }
-}
-@container (44rem <= width < 64rem) {
-  [data-chat-root] * {
-    --chat-gutter: 5rem; /* 80px */
-  }
-}
-@container (width >= 64rem) {
-  [data-chat-root] * {
-    --chat-gutter: 8rem; /* 128px - wide, max breathing room */
-  }
 }
 
 /* ───────────── Turn-files card: compact title on narrow panes ─────────────
@@ -1848,12 +1877,31 @@ button.chat-ledger-head:hover {
  * （反编译取证），而 Mcode 原三档 1.5/1.6/1.75 来自旧版自选。这里把三档整体
  * 压向上游值，同时保留档位差（紧凑 1.42 / 舒适 1.45 / 宽松 1.6），既贴合
  * Claude 桌面的阅读密度，也不丢用户已有的三档选择。
- * 只改行高，不动字号与间距 —— 字号由 --chat-font-size 单独控制。 */
+ * 只改行高，不动字号与间距 —— 字号由 --chat-font-size 单独控制。
+ *
+ * 【T122】**默认档（comfortable）的间距对齐上游的两档公式**，其余两档不动。
+ *
+ * 上游（`open-claude-ui/code-examples/cds-theme.css:178-181`，反编译取证）：
+ *   --chat-body: .875rem (14px)   --chat-leading: 1.42857
+ *   --chat-turn-gap = body × leading × .75 = 15px   ← 轮次之间
+ *   --chat-item-gap = body × leading × .50 = 10px   ← 轮内
+ *
+ * **注意这两个值是同一个乘积的 0.75 / 0.5 倍，不是两套独立数字。**
+ * 对齐前（本仓旧值 20 / 12 / 8）三个方向并不一致：user 松 33%、assistant
+ * 松 20%，而 block **紧 20%** —— 所以这不是「整体偏松」，是「轮次之间太松、
+ * 消息内部块之间太紧」。三个数一起调才对齐，只动其中两个会把层次调反。
+ *
+ * `tightTop` 的 assistant 行（MessageRow.tsx）本来就走 --chat-block-gap，
+ * 所以把 assistant 行与 block 都设为 10px 不会丢层次 —— 那是上游本来的
+ * 语义（轮内项间距就是一档）。user 行单独一档保持 15px。
+ *
+ * compact / cozy 两档**保持原值**：那是用户主动选的松紧，不该被拉回
+ * 上游默认值。只有「默认档」需要与上游一致。 */
 :root,
 [data-chat-density="comfortable"] {
-  --chat-row-gap-assistant: 0.75rem; /* 12px (was mt-3) */
-  --chat-row-gap-user: 1.25rem;      /* 20px (was mt-5) */
-  --chat-block-gap: 0.5rem;          /* 8px  (was space-y-2) */
+  --chat-row-gap-assistant: 0.625rem; /* 10px — 上游 chat-item-gap (was 12px) */
+  --chat-row-gap-user: 0.9375rem;     /* 15px — 上游 chat-turn-gap (was 20px) */
+  --chat-block-gap: 0.625rem;         /* 10px — 上游 chat-item-gap (was 8px) */
   --chat-md-gap-xs: 0.25rem;         /* 4px  */
   --chat-md-gap-sm: 0.375rem;        /* 6px  */
   --chat-md-gap-md: 0.5rem;          /* 8px  */
