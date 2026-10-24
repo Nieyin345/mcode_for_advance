@@ -252,3 +252,79 @@ text-code → { fontSize: "12px", lineHeight: "16px" }   ← 完全一致
 - **`text-lg`（18/28）仍无对应档** —— 比 `heading`(16) 大、比 `title`(20) 小。
 - **`chat/` 的 89 处 `text-xs`**：那里应该换成 `[font-size:var(--chat-fs-xs)]`（跟用户设置走），不是固定的 12px。**T132 的后续。**
 - **`tsc` 有 4 个错误，全部在 `src/main/modules/vscodeL1Bridge.ts`** —— 那是另一个会话 17:08 改的（`MANIFEST_LIMIT` / `SOURCE_LIMIT` 未定义），**与本批无关**。我的文件类型检查干净。
+
+---
+
+## 结果回写（2026-10-24，K）· 第 3 批：**不做，并说明为什么**
+
+### 零、规模先量
+
+```
+text-base  11 处
+text-xl     1 处
+变体        0 处
+```
+
+**两批都小，但两批都不该做。**
+
+### 一、★ `text-base` 的 11 处里，9 处是「平台阈值」，不是排版档位
+
+```
+MobileGitScreenParts.tsx:191   // text-base: iOS Safari zooms on focus below 16px
+MobileSessionDrawer.tsx:323    // text-base (16px): iOS Safari zooms the viewport on focusing
+                               //   an input rendered below 16px — keep it at the threshold.
+MobileSessionDrawer.tsx:807    // text-base (16px) — see the search input's iOS zoom note.
+```
+
+**这 9 处输入框用 `text-base` 的理由是「iOS Safari 在 <16px 时自动缩放视口」，不是「这段文字该是正文大小」。**
+
+`text-heading` 的字号也是 16px，**阈值仍然满足** —— 从兼容性看是安全的。**但它把两种语义混在了一起**：
+
+| 写法 | 表达的是 |
+|---|---|
+| `text-base` + 注释 | 「这里是 16px，因为 iOS 要求 ≥16px」 |
+| `text-heading` | 「这里是标题档」 |
+
+**下一个人看到 `text-heading` 不会知道它是为了 iOS 不缩放**，而那条注释会变成「注释说的和代码写的不是一回事」—— 这个仓库今天已经因为这类事栽过两次。
+
+**要做的话，正确形态是给这个阈值一个语义名**（比如 `text-input-threshold`），而不是借用排版档位。**那是一件独立的事，不是第 3 批。**
+
+### 二、`text-xl` 那 1 处：行高收紧会改变控件尺寸
+
+`PairingScreen.tsx:210` 是配对码输入框（`font-mono text-xl tracking-[0.4em]`，20px 字 + 0.4em 字距）。
+
+**实测（Chromium）：**
+
+```
+text-xl    → lineHeight 28px, input height 30px
+text-title → lineHeight 24px, input height 26px   ← 矮 4px
+```
+
+外层 `min-h-11`(44px) 兜住了，不会塌 —— **但那个框的字号/字距/高度比例是设计过的**，改它属于重新设计那个控件，不是字号迁移。
+
+### 三、剩下 2 处：在 `chat/ChatPane.tsx`（禁区）
+
+```
+:307  text-base font-semibold text-warning   （错误提示）
+:329  text-base font-medium text-content     （空态提示）
+```
+
+**禁区，且 T134 刚动过。** 而且这两处是**多行文本**（卡上说要跳过的类型）。
+
+### 四、所以这一批的真实结论
+
+**12 处里，0 处适合迁移。**
+
+- 9 处是平台阈值（语义不同）
+- 1 处是交互控件的比例设计
+- 2 处在禁区且是多行文本
+
+**这不是「没做完」，是「做完判断后不应该做」。** 强行迁移会让 `text-base` 那条 iOS 注释变成错的，而**错的注释比没有注释更坏**（CLAUDE.md 第七条）。
+
+### 五、如果以后要做，需要先解决什么
+
+1. **给 iOS 阈值一个语义名**（`--text-input-min` 或一个 `text-input` 档），把这 9 处迁过去；
+2. **`text-xl` 那 1 处**：确认配对码框的高度是不是设计要求，是就不动；
+3. **`chat/` 那 2 处**：等多行文本的宽度/行高一起评估。
+
+**这三件都不是第 3 批该顺手做的事。**
