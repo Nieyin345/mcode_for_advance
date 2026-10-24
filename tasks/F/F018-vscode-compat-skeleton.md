@@ -418,3 +418,14 @@ error TS2352: Conversion of type '{...}' to type 'typeof commands' may be a mist
 6. **`_gate.ts` 里 `commands` 写了 1 个成员、其余 15 个命名空间写空对象** —— 空对象也是一种「故意不完整」，报错会一次性列出全部缺口（`showTextDocument, …, and 53 more`）。**逐个造假实现对 57 个成员的窗口没有信息量**，卡里也允许用注释；但注释不会红，所以我保留了空对象的 `satisfies` 行（**它仍然真的红**）。
 7. **没跑全量、没起 Electron、没碰 `apps/desktop/src/**` 和 `packages/contracts/**`**。
 8. **desktop 单包 typecheck（`npx tsc --noEmit -p apps/desktop/tsconfig.json`）exit 0** —— 新套件在 `scripts/**/*` 内，已被它检查。
+
+---
+
+### 提交
+
+```
+ae3cb73a  feat(F018): VS Code compat skeleton + compile-time gate (no implementation)
+```
+
+8 个文件 / 812 行新增（`_gate.ts` 107、套件 388+22、包配置 61、lockfile 14、回写 220）。
+`git show --numstat HEAD` 核对过：没有卷进任何别的会话的文件。
