@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { CRITICAL_SUITES, discoverSuites, resolveBash, runSuites, selectSuites } from "./run-smokes.mjs";
+import { acquireHeavyTestLease } from "./lib/heavy-test-lease.mjs";
 
 function fixture(t, scripts) {
   const root = mkdtempSync(join(tmpdir(), "mcode-smoke-runner-"));
@@ -130,6 +131,41 @@ test("another running smoke keeps all fresh build directories even beyond retent
     assert.ok(existsSync(join(tmp, `a-${String(i).padStart(6, "0")}`)),
       "do not prune another still-running worker's build");
   }
+});
+
+test("electron build fixture is heavy and respects another agent's lease", async (t) => {
+  const f = fixture(t, { "ui-electron-smoke": "process.exit(0)" });
+  writeFileSync(join(f.root, "scripts", "ui-electron-smoke", "build.mjs"),
+    'import {spawnSync} from "node:child_process"; spawnSync(electron, []);');
+  const owner = acquireHeavyTestLease(f.root, "unrelated AI U1", { inheritedToken: "" });
+  try {
+    await assert.rejects(runSuites(["ui-electron-smoke"], f.options), /heavy test busy/);
+  } finally { owner.release(); }
+  assert.equal(await runSuites(["ui-electron-smoke"], f.options), 0);
+  assert.ok(f.lines.some(s => s.includes("browser/Electron ×1")));
+});
+
+test("native Electron launched from a .cjs helper cannot bypass the heavy budget", async (t) => {
+  const f = fixture(t, { "hidden-heavy-smoke": "process.exit(0)" });
+  writeFileSync(join(f.root, "scripts", "hidden-heavy-smoke", "native.cjs"),
+    'spawnSync(electron, []);');
+  const owner = acquireHeavyTestLease(f.root, "other UI test", { inheritedToken: "" });
+  try {
+    await assert.rejects(runSuites(["hidden-heavy-smoke"], f.options), /heavy test busy/);
+  } finally { owner.release(); }
+});
+
+test("default smoke suite budget is serial and does not overlap with a heavy job", async (t) => {
+  const f = fixture(t, {
+    "a-smoke": "console.log('light'); process.exit(0)",
+    "z-electron-smoke": "console.log('heavy'); process.exit(0)",
+  });
+  writeFileSync(join(f.root, "scripts", "z-electron-smoke", "build.mjs"),
+    'spawnSync(electron, []);');
+  assert.equal(await runSuites(["--all"], f.options), 0);
+  assert.ok(f.lines.some(s => s.includes("light ×1, browser/Electron ×1")));
+  assert.deepEqual(f.lines.filter(s => s.startsWith("PASS  ")),
+    ["PASS  a-smoke", "PASS  z-electron-smoke"]);
 });
 
 test("a spawn error fails instead of reporting a passing suite", async (t) => {

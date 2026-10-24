@@ -10,12 +10,14 @@ import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {createHash} from 'node:crypto';
 import {buildTailwindCached} from '../lib/tailwind-cache.mjs';
+import {guardHeavyTestProcess} from '../lib/heavy-test-lease.mjs';
 
 const suite=dirname(fileURLToPath(import.meta.url));
 const desktop=resolve(suite,'../..');
 const root=join(desktop,'src/renderer');
 const pnpm=resolve(desktop,'../../node_modules/.pnpm');
 if(process.argv.length>2)throw Error('no options accepted');
+guardHeavyTestProcess(desktop,'arc005-pane-electron-smoke/build.mjs');
 const pkg=(prefix,sub)=>{
  const n=readdirSync(pnpm).filter(x=>x.startsWith(prefix)).sort().at(-1);
  if(!n)throw Error('Missing '+prefix);

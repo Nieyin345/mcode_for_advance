@@ -4,9 +4,9 @@
  * Logs are unique per invocation; empty selections and child failures fail. */
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { cpus } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { acquireHeavyTestLease } from "./lib/heavy-test-lease.mjs";
 
 export const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const CRITICAL_SUITES = Object.freeze([
@@ -84,14 +84,14 @@ function terminateTree(child) {
   }
 }
 
-async function runOne(bash, name, appDir, logFile, timeoutMs) {
+async function runOne(bash, name, appDir, logFile, timeoutMs, extraEnv = {}) {
   const fd = openSync(logFile, "w");
   let child;
   try {
     child = spawn(bash, [`scripts/${name}/run.sh`], {
       cwd: appDir, stdio: ["ignore", fd, fd], windowsHide: true,
       detached: process.platform !== "win32",
-      env: { ...process.env, npm_config_yes: "false", npm_config_offline: "true" },
+      env: { ...process.env, ...extraEnv, npm_config_yes: "false", npm_config_offline: "true" },
     });
     return await new Promise((done) => {
       let timedOut = false;
@@ -138,30 +138,32 @@ function precomputeEsbuildPath(appDir, logger) {
   }
 }
 
-/** 会起**真浏览器**的套件 —— 它们各自 spawn 一个 Chrome + 渲染,单套 ~30 秒,且彼此抢
- *  CPU/内存。并发跑要单独限流,免得一起起 13 个浏览器把机器拖垮。判据:目录里有 .mjs
- *  引用了 `withAuditPage`(共享的 CDP 辅助)或 `MCODE_TEST_BROWSER`。 */
+/** 会起**真浏览器**或 Electron 的套件 —— 它们各自加载 Chromium + 渲染,单套 ~30 秒,且彼此抢
+ *  CPU/内存。按目录里的 run.sh、*.mjs 和 build.mjs 的 browser/Electron
+ *  启动标记保守归类；未知可读性失败也按重型处理，不能误放进轻量池。 */
 function isBrowserSuite(appDir, name) {
+  // A suite whose name explicitly says Electron/browser cannot be lightweight
+  // merely because it launches its process from a .cjs or nested helper.
+  if (/\b(?:electron|browser)\b/.test(name)) return true;
   try {
     const dir = join(appDir, "scripts", name);
     for (const f of readdirSync(dir)) {
-      if (!f.endsWith(".mjs")) continue;
+      if (!/\.(mjs|cjs|js)$/.test(f) && f !== "run.sh") continue;
       const text = readFileSync(join(dir, f), "utf8");
-      if (text.includes("withAuditPage") || text.includes("MCODE_TEST_BROWSER")) return true;
+      if (text.includes("withAuditPage") || text.includes("MCODE_TEST_BROWSER") ||
+          /electron-u1\/build\.mjs|spawnSync\(electron|spawn\(electron|electron-host\.cjs/.test(text)) return true;
+      // A standalone build.mjs can spawn Chromium without a literal helper import.
+      if (f === "build.mjs" && /\belectron\b|\bchromium\b/i.test(text)) return true;
     }
-  } catch { /* 读不到就不当重型 */ }
+  } catch { return true; /* Unknown/unreadable suite: schedule conservatively. */ }
   return false;
 }
 
-/** 跑一个 worker 池:并发上限 `jobs`,重型(浏览器)套件另受 `heavyJobs` 限制。
+/** 跑一个 worker 池：并发上限 `jobs`；重型套件强制单线程并且跨进程独占。
  *  按 `selected` 顺序领活;每个结果一出就回调(保留每套的 PASS/FAIL 行)。
  *
- *  ## 为什么要并发
- *
- *  从前是**纯串行** `for (… await runOne …)` —— 一次只跑一套。而 190 套里绝大多数是
- *  无头轻量件(await 文件/子进程,CPU 几乎闲着),串行 = 把大部分时间花在"等"上。
- *  并发后全量从十几分钟降到几分钟,且**不改变任何断言**——每套仍在自己的进程、自己的
- *  日志、自己的超时里跑,只是不再排队。 */
+ * 轻量套件可由调用方显式提高 jobs，但默认 1；与重型池不重叠。
+ * 每套仍有自己的日志、隔离进程和超时判据。 */
 async function runPool(items, jobs, runner) {
   const results = new Array(items.length);
   let next = 0;
@@ -243,17 +245,20 @@ export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(),
   mkdirSync(logRoot, { recursive: true });
   const logDir = mkdtempSync(join(logRoot, `${Date.now()}-${process.pid}-`));
   logger.log(`Smoke logs: ${logDir}`);
-  // T52: Windows 0x1A memory faults and Chrome/esbuild bursts make CPU-core-based
-  // concurrency unreliable. Proven local budget for the full smoke batch: 2
-  // light + 1 browser. Explicit jobs/environment overrides remain supported.
-  const cores = cpus().length;
-  const totalJobs = Math.max(1, jobs ?? (Number(process.env.MCODE_SMOKE_JOBS) || Math.min(2, cores)));
-  const heavyJobs = Math.max(1, jobs ?? (Number(process.env.MCODE_SMOKE_HEAVY_JOBS) || 1));
-  logger.log(`Running ${selected.length} suites (light ×${totalJobs}, browser ×${heavyJobs})`);
+  // Multiple AI conversations share this Windows machine. Default to one
+  // lightweight suite and one heavy suite, never running those pools together.
+  // An explicit light-job override is allowed; heavy runs are always serialized.
+  const totalJobs = Math.max(1, jobs ?? (Number(process.env.MCODE_SMOKE_JOBS) || 1));
+  const heavyJobs = 1;
+  logger.log(`Running ${selected.length} suites (light ×${totalJobs}, browser/Electron ×${heavyJobs}; pools sequential)`);
 
   // 浏览器套件单独一条通道(它们各起一个 Chrome,吃内存);其余走主通道。
   const heavy = selected.filter((n) => isBrowserSuite(appDir, n));
   const light = selected.filter((n) => !isBrowserSuite(appDir, n));
+  // Fail fast across *other* agent processes before a browser or Electron
+  // build starts. Standalone U1 builds use this same lock; wrappers inherit
+  // the token so their nested builders do not deadlock.
+  const heavyLease = heavy.length ? acquireHeavyTestLease(appDir, `run-smokes (${heavy.length} heavy suites)`) : null;
   let failed = 0;
   let interrupted = false;
   /** 失败的套件名 —— 汇总行要连同名字一起印出来。从前只印数字，222 套跑完
@@ -266,7 +271,8 @@ export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(),
     // second Node process; 240s is below its measured isolated Windows runtime.
     // Keep the normal bound for every other suite; don't turn timeouts off.
     const suiteTimeoutMs = name === "automation-smoke" ? Math.max(timeoutMs, 600_000) : timeoutMs;
-    const result = await runOne(bash, name, appDir, logFile, suiteTimeoutMs);
+    const result = await runOne(bash, name, appDir, logFile, suiteTimeoutMs,
+      heavyLease && heavy.includes(name) ? { MCODE_HEAVY_TEST_TOKEN: heavyLease.token } : {});
     if (result.ok) logger.log(`PASS  ${name}`);
     else {
       failed++;
@@ -278,12 +284,14 @@ export async function runSuites(names, { appDir = APP_DIR, bash = resolveBash(),
     return result;
   };
 
-  // 轻量与重型**同时**开跑:重型(浏览器,各 ~20s)是长尾,先让它们起跑、与轻量段时间重叠,
-  // 而不是等 178 个轻量跑完才轮到它们。两条池各有自己的并发上限(重型更保守,吃内存)。
-  await Promise.all([
-    runPool(light, totalJobs, runOneLogged),
-    runPool(heavy, heavyJobs, runOneLogged),
-  ]);
+  // On memory-constrained developer desktops, do not overlap browser/Electron
+  // builds with the light pool. Release the shared lease on normal and error exits.
+  try {
+    await runPool(light, totalJobs, runOneLogged);
+    await runPool(heavy, heavyJobs, runOneLogged);
+  } finally {
+    heavyLease?.release();
+  }
 
   // 收尾清掉老的构建目录(留最近几个供排查),避免 `.tmp` 无限膨胀。
   const pruned = pruneBuildDirs(appDir);

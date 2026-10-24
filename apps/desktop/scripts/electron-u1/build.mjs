@@ -4,7 +4,7 @@
  * 职责链：
  *   1. 一次性构建：真 App bundle（App.tsx + 真 store + api-stub）、产品真 preload、
  *      旅程 runner（driver/runner.ts）、旅程注册表（journeys/index.ts）、最小页面。
- *   2. 每条旅程：mkdir 证据目录 → 按「一代进程」循环 spawnSync Electron
+ *   2. 每条旅程：mkdir 证据目录 → 按「一代进程」运行受控 Electron 子进程
  *      （runner 以 exit 77 请求 relaunch 时换新进程继续）→ 读回 journey-result.json。
  *   3. 汇总三档退出码（见 driver/verdict.ts）：
  *        0 = 全部旅程按声明通过（**含**「故意失败」按预期失败）；
@@ -34,9 +34,10 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { spawnSync } from "node:child_process";
+import { runOwnedProcess } from "../lib/owned-test-process.mjs";
 import { createRequire } from "node:module";
 import { buildTailwindCached } from "../lib/tailwind-cache.mjs";
+import { guardHeavyTestProcess } from "../lib/heavy-test-lease.mjs";
 
 const suite = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(suite, "../..");
@@ -80,6 +81,10 @@ for (const a of args) {
   else if (a.startsWith("--prebuild=")) prebuildSpec = resolve(a.slice("--prebuild=".length));
   else throw Error("Unknown option: " + a);
 }
+
+// Claim the shared UI test budget *before* importing esbuild or launching Electron.
+// Nested smoke wrappers inherit the parent lease token rather than deadlocking.
+guardHeavyTestProcess(desktop, "electron-u1/build.mjs");
 
 const pkgPath = (prefix, sub) => {
   const n = readdirSync(pnpm).filter((x) => x.startsWith(prefix)).sort().at(-1);
@@ -349,7 +354,7 @@ for (let k = 0; k < journeys.length; k++) {
   let lastStatus = null;
   for (;;) {
     generation += 1;
-    const run = spawnSync(electron, [join(suite, "electron-host.cjs")], {
+    const run = await runOwnedProcess(electron, [join(suite, "electron-host.cjs")], {
       cwd: desktop,
       env,
       encoding: "utf8",
@@ -361,6 +366,9 @@ for (let k = 0; k < journeys.length; k++) {
     process.stdout.write(run.stdout ?? "");
     if (run.stderr) process.stderr.write(run.stderr);
     lastStatus = run.status;
+    if (run.error?.code === "SIGINT" || run.error?.code === "SIGTERM") {
+      throw run.error; // Stop the entire journey loop after interruption.
+    }
     if (run.status === 77) {
       // relaunch 请求 —— 读 state 里下一步的偏移，仅用于日志。
       const st = JSON.parse(readFileSync(stateFile, "utf8"));
