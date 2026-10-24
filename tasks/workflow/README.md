@@ -8,14 +8,20 @@
 > **Node-RED 工作流/自动化** —— 原生画布、运行时、存储、触发权与 Mcode Agent/Host/权限统一
 > **唯一流程内核、唯一触发/存储事实源；不长期保留两套运行器或双触发**
 
-四条拆解（验收时逐条对照）：
+四条拆解（验收时逐条对照）。**下表是 W0 实测后的版本**（原文写于写卡时，有两条被 W0 纠正）：
 
-| # | 要求 | 当前判断 | 依据 |
+| # | 要求 | 当前判断（W0 实测） | 依据 |
 |---|---|---|---|
-| 1 | **原生画布** | 已达成 | `WorkflowCanvas.tsx` 已于 T45（`351e4d9b`）删除，入口换成原厂编辑器 |
-| 2 | **运行时统一** | 已达成的形态是「一个调度器 + 多个执行器」 | `nodeRedExecutor` 注册进自研 `ExecutionEngine`（`executionEngine.ts:266`），分派靠 `manifest.runner.kind` |
-| 3 | **存储、触发权统一** | U1 已验单 owner + 跨进程 CAS | `t8-node-red-u1` 旅程 `trigger-single-ownership` / `cross-process-owner-cas` |
-| 4 | **不长期保留两套运行器/双触发** | 结构上满足；**「只在一处触发」的边界还需持续守** | 同上 |
+| 1 | **原生画布** | **有画布，缺库内编辑入口**。手写 `WorkflowCanvas.tsx` 已于 T45（`351e4d9b`）删除，`grep -rn "WorkflowCanvas" apps/desktop/src/` = **0**；UI 挂的是原生 `WebContentsView` 里的原厂编辑器。**但 `setSelectedNodeId` 的 4 处写入全是初始化/清空，无一处由点击驱动** —— 用户点不到节点、看不到它的参数（缺口 G2） | W0 §1①、§G2 |
+| 2 | **运行时统一** | **对「旧 runner」成立，对「整机」不成立**。调用链只有一条（`manifest.runner.kind` → `runner.ts` → `ExecutionEngine` → `nodeRedExecutor`），但**模块级 `executionEngine` 单例永远不注册 `node-red` 执行器**（装配顺序：`index.ts:46` 的 import 早于 `:86` 的端口注入），实际存在两个执行面 | W0 §2.2 探针 |
+| 3 | **存储、触发权统一** | **两份存储**：SQL `workflows` 表与 `<engineDir>/flows.json`。`NodeRedFlowStorage` 只是装载日志（`JOURNAL_PROJECT_ID = null`），**不是真相源**。触发分流由 `legacyTriggerOwnerOf` 执行且 fail-closed，`t3-engine-trigger-gate-smoke` 54/54 | W0 §1③ |
+| 4 | **不长期保留两套运行器/双触发** | **双跑 = 否**（四层防线全过）；**只保留一套 = 否**（两套都在，靠 owner 表互斥）。**红线满足，目标未达成**，属迁移期状态 | W0 §1④ |
+
+**W0 纠正的三处卡面错误**（已订正，原始判断留在这里以免有人复述旧话）：
+
+- 旅程是 **20 步**，不是 12 步；
+- README 原第 1 条「原生画布已达成」→ 应为「有画布、缺库内编辑入口」；
+- README 原第 2 条「运行时统一」→ 只对旧 runner 成立。
 
 ## 卡列表
 
