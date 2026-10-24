@@ -176,3 +176,79 @@ grep -rn "open-claude-ui" apps/desktop/src/renderer/ | head
 **`ChatComposer` 移植优先于结构改造** —— 因为用户说「最主要的是 ai 聊天部分的 ui 重构」，而输入框是用户每次都在用的部件。
 
 **顺序**：① `ClaudeComposer.tsx` 移植并替换现有输入框 → ② `rightSurface` 两栏模式 → ③ 36 条断言回归验证。
+
+---
+
+## ⚠️ 卡面修正二（2026-10-24，C 核实）：那 36 条源码文本断言挡不住「注释掉」
+
+**A 先发现，C 复现并扩大了范围。** 这一节是 C 追加的记录，不是 A 的回写区。
+
+### 一、缺陷本身
+
+`arc005-pane-docking-smoke` 里那条：
+
+```js
+layout.includes("order: order.aside,")
+```
+
+把真代码注释掉：
+
+```diff
+-            order: order.aside,
++            // order: order.aside,
+```
+
+**跑 `arc005-pane-docking-smoke` → EXIT=0，28/28 全绿。** 那个属性已经从组件里消失了，
+断言却认为它还在 —— 因为**注释里的文字照样被 `includes` 命中**。
+
+**带花括号也一样**（C 实测）：`layout.includes("style={{ order: order.center }}")`
+在把它注释掉之后**仍然为 true**。`{/* … */}` 是合法 JSX 注释。
+
+**「注释掉」比「删除」更常见**（更容易回滚），所以这是移除代码的**主要**形态。
+
+### 二、★ 规模比卡面估的大：94 处源码变量的 `includes`，不是 36
+
+卡面上「合计 36 条源码文本断言」数的是**断言条数**；一处断言里可能含 3～4 个 `includes`。
+按「变量是不是从源文件读来的字符串」逐个核对后：
+
+| 套件 | 源码变量的 `includes` 处数 |
+|---|---|
+| `arc005-pane-docking-smoke` | **34** |
+| `arc005-pane-free-grid-smoke` | **21** |
+| `arc005-pane-layout-edges-smoke` | **20**（`rail` 3 + `src` 17） |
+| `arc005-editor-keepalive-smoke` | **11**（`layout` 5 + `shell` 4 + `terminal` 2） |
+| `arc005-right-pane-keepalive-smoke` | **8**（`browser` 3 + `layout` 5） |
+| **合计** | **94** |
+
+**判定方法**：先列出每个套件里 `X.includes(` 的 `X` 分布，再逐个确认 `X` 是什么。
+`layout` / `shell` / `rail` / `store` / `types` / `src` / `terminal` / `browser` / `app`
+**全部是 `readFileSync(...)` 或 `source(...)` 读来的源码字符串** —— 受同一缺陷影响。
+唯一的例外是 `arc005-pane-docking-smoke` 里的 `PANE_DOCK_MIME.includes("pane-dock")`，
+那是常量不是源码，**不受影响**。
+
+> ⚠️ **这个数字我改了三次**（36 → 89 → 94）。前两次口径都不对：第一次只数了部分变量名，
+> 第二次漏了 `src` 和 `terminal`。**「94」是按「变量是不是源码字符串」逐个判定后的口径。**
+> **谁再改这节，请按同一口径数，别按字符串匹配数。**
+
+### 三、修法（已就绪，未执行）
+
+`apps/desktop/scripts/lib/sourceText.ts` 提供 `sourceHas(src, needle)`：
+剥掉行注释 / 块注释 / JSX 注释后再匹配。C 已在
+`image-panzoom-smoke`（54/54）与 `message-collapse-smoke`（31/31）上改完并验过。
+
+**改的时候按这个顺序，第 3 步不能省**：
+
+1. 三条换成 `sourceHas`；
+2. **逐条重跑「注释掉真代码」的变异**，确认真的会红；
+3. **若有任何一条仍绿，说明那条断言的 needle 本身就靠注释或别的位置通过** ——
+   那才是真发现。C 在 `image-panzoom-smoke` 上就揪出过一条：
+   `"上游滚轮用 Math.exp"` 的 needle 命中的是上游**文档注释**里引用的公式，
+   真代码在 `:396` 且用的是**常量**不是字面量。**换任何剥注释的实现都会让它红。**
+
+**第 3 步是这一节的全部价值**：`sourceHas` 只解决「注释也算」，
+解决不了「needle 选错字符串」。前者是工具问题，后者是判据从一开始就错了。
+
+### 四、C 为什么没有直接改
+
+`arc005-*` 在 **T119 的可写边界内**（A 负责），不在 C 的边界内。
+A 已把它记进回写区并交接给下一张卡。**C 只做核实与记录，不动代码。**
