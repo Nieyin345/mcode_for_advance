@@ -25,6 +25,19 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog } from "./dialog.js";
+import {
+  INITIAL_TRANSFORM,
+  computeAnchorZoom,
+  doubleClickToggle,
+  exceedsDragDeadzone,
+  isZoomed,
+  maxScaleFor,
+  panBy,
+  transformCss,
+  wheelZoomFactor,
+  type FitRects,
+  type TransformState,
+} from "./imageTransform.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
@@ -200,6 +213,108 @@ export function ImageWithPreview({
   // backdrop click that closes the lightbox).
   const overChromeRef = useRef(false);
 
+  /* ── 【T120】平移 / 缩放 ──
+   *
+   * 数学全部在 `imageTransform.ts`（纯函数、可无头测）；这里只负责量 DOM 与接事件。
+   * 上游 `MediaLightboxViewer.tsx` 是同一套公式，Mcode 原先**完全没有交互** ——
+   * 用户点开图片只能看，不能放大看细节。
+   */
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const [transform, setTransform] = useState<TransformState>(INITIAL_TRANSFORM);
+  // `measureFit` 要用**当前**的 scale 把变换后的尺寸还原成基准尺寸，但它被
+  // `useCallback` 包着、又被事件处理器调用 —— 如果依赖 `transform.scale`，
+  // 闭包会拿到**上一次渲染**的值，缩放时基准就算错了（滚轮连滚两格会漂）。
+  // 用 ref 持有最新值，callback 依赖为空。
+  const scaleRef = useRef(1);
+  scaleRef.current = transform.scale;
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<{ startX: number; startY: number; lastX: number; lastY: number; active: boolean }>({
+    startX: 0, startY: 0, lastX: 0, lastY: 0, active: false,
+  });
+
+  /** 量当前图片在视口里的实际几何。量不到返回 null（首次渲染 / 图未加载）。 */
+  const measureFit = useCallback((): FitRects | null => {
+    const img = imgRef.current;
+    const stage = stageRef.current;
+    if (!img || !stage) return null;
+    const imgRect = img.getBoundingClientRect();
+    const stageRect = stage.getBoundingClientRect();
+    if (imgRect.width <= 0 || imgRect.height <= 0 || stageRect.width <= 0) return null;
+    // 放大后用 getBoundingClientRect 量到的是**变换后**的尺寸，会越量越大。
+    // 所以先除掉当前 scale，还原成「适应视口」的基准尺寸。
+    // 用 ref 而不是 `transform.scale` —— 见 `scaleRef` 的注释（闭包会过期）。
+    const sc = scaleRef.current || 1;
+    const baseW = imgRect.width / sc;
+    const baseH = imgRect.height / sc;
+    return {
+      fitWidth: baseW,
+      fitHeight: baseH,
+      viewportWidth: stageRect.width,
+      viewportHeight: stageRect.height,
+      maxScale: maxScaleFor(img.naturalWidth, baseW),
+    };
+  }, []);
+
+  /** 换图 / 图重新加载时回到「适合视口」。 */
+  const resetTransform = useCallback(() => setTransform(INITIAL_TRANSFORM), []);
+
+  const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    const fit = measureFit();
+    if (!fit) return;
+    // 让浏览器不要同时滚动背后的聊天流。
+    e.preventDefault();
+    const stage = stageRef.current!;
+    const rect = stage.getBoundingClientRect();
+    // 锚点相对**视口中心** —— 与上游 computeAnchorZoom 的语义一致。
+    const anchor = {
+      x: e.clientX - (rect.left + rect.width / 2),
+      y: e.clientY - (rect.top + rect.height / 2),
+    };
+    setTransform((cur) => computeAnchorZoom(fit, cur, cur.scale * wheelZoomFactor(e.deltaY), anchor));
+  }, [measureFit]);
+
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    dragRef.current = { startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, active: false };
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  }, []);
+
+  const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (d.startX === 0 && d.startY === 0) return;
+    // 起手先过死区（上游 DRAG_DEADZONE = 4px）：不足 4px 不动，杜绝微抖。
+    if (!d.active) {
+      if (!exceedsDragDeadzone(e.clientX - d.startX, e.clientY - d.startY)) return;
+      d.active = true;
+      setDragging(true);
+    }
+    const dx = e.clientX - d.lastX;
+    const dy = e.clientY - d.lastY;
+    d.lastX = e.clientX;
+    d.lastY = e.clientY;
+    const fit = measureFit();
+    if (!fit) return;
+    setTransform((cur) => panBy(fit, cur, dx, dy));
+  }, [measureFit]);
+
+  const onPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current.active) setDragging(false);
+    dragRef.current = { startX: 0, startY: 0, lastX: 0, lastY: 0, active: false };
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  }, []);
+
+  const onDoubleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const fit = measureFit();
+    if (!fit) return;
+    const stage = stageRef.current!;
+    const rect = stage.getBoundingClientRect();
+    const anchor = { x: e.clientX - (rect.left + rect.width / 2), y: e.clientY - (rect.top + rect.height / 2) };
+    setTransform((cur) => doubleClickToggle(fit, cur, anchor));
+  }, [measureFit]);
+
+  const zoomed = isZoomed(transform);
+
   const applyChrome = useCallback((visible: boolean) => {
     if (chromeRef.current === visible) return;
     chromeRef.current = visible;
@@ -336,11 +451,34 @@ export function ImageWithPreview({
           >
             {/* Visually-hidden title for a11y (Dialog expects a Title). */}
             <Dialog.Title className="sr-only">{curAlt || t("layout.image.previewTitle")}</Dialog.Title>
-            <div className="pointer-events-none flex min-h-0 flex-1 items-center justify-center px-6 pb-2 pt-6">
+            <div
+              ref={stageRef}
+              onWheel={onWheel}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerUp}
+              onDoubleClick={onDoubleClick}
+              className={cn(
+                "pointer-events-none flex min-h-0 flex-1 items-center justify-center px-6 pb-2 pt-6",
+                // 放大后光标变成抓手；拖动中变抓取。`touch-none` 让触控拖动不被
+                // 浏览器的滚动接管（否则手机上拖不动图）。
+                zoomed ? "cursor-grab active:cursor-grabbing" : "",
+              )}
+            >
               <img
+                ref={imgRef}
                 src={curSrc}
                 alt={curAlt}
                 draggable={false}
+                onLoad={resetTransform}
+                style={{
+                  transform: transformCss(transform),
+                  // 拖动时不要过渡（跟随手指）；缩放时给一点点，避免一格一格跳。
+                  transition: dragging ? "none" : "transform 120ms ease-out",
+                  // 放大后需要能拖出视口，所以取消 max 约束的高度
+                  touchAction: "none",
+                }}
                 className="lightbox-figure pointer-events-auto block max-h-full max-w-full rounded-lg object-contain shadow-2xl"
               />
             </div>
