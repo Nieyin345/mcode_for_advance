@@ -806,3 +806,59 @@ ok  ★ 覆盖集里「本 app 零消费者」的 token 不超过 20 个
    与 O10（`save-pdf.ts` / `slides-main.ts` / `document-save-guard.ts` / 三家 main）的未提交改动还在。
    提交时逐条核过暂存区只有我的两个 sheets 文件。
 3. **`NOT-COVERED` 已输出**：网格明暗只验了 CSS chrome，Univer canvas 的明暗未实测。
+
+---
+
+## 五家收尾状态（2026-10-25）
+
+### 五套全绿（真 Electron，每次自建产物）
+
+| 格式 | 套件 | 断言数 |
+|---|---|---|
+| html | `o6-reshell-html-smoke` | **36/36** |
+| markdown | `o6-reshell-markdown-smoke` | **45/45** |
+| pdf | `o6-reshell-pdf-smoke` | **39/39** |
+| slides | `o6-reshell-slides-smoke` | **40/40** |
+| sheets | `o6-reshell-sheets-smoke` | **42/42** |
+| | **合计** | **202** |
+
+### 五个 vendor 提交 / 五个补丁
+
+| # | 格式 | vendor SHA | 补丁 | 字节 |
+|---|---|---|---|---|
+| 0016 | html | `87d9b4b` | `0016-feat-html-reshell-…patch` | 13077 |
+| 0017 | markdown | `f69db1d` | `0017-feat-markdown-reshell-…patch` | 17152 |
+| 0018 | pdf | `4c893cf` | `0018-feat-pdf-reshell-…patch` | 12492 |
+| 0019 | slides | `58cd1a1` | `0019-feat-slides-reshell-…patch` | 12836 |
+| 0020 | sheets | `e9b4c41` | `0020-feat-sheets-reshell-…patch` | 13523 |
+
+lock 现有 **20 条** patchSeries，`revision` = `e9b4c416`、`expectedTree` = `0013dff4`。
+
+### typecheck
+
+- **contracts：exit 0**
+- **desktop：exit 0**（101 → 38 → 0，O5/O10 落地后归零）
+
+### 仍未验的一件事（如实）
+
+**`verify-genoffice-upstream.cjs` 跑不了** —— vendor 树里还有 O10 的未提交改动
+（`markdown-main.ts` / `save-pdf.ts` / `slides-main.ts` / `electron-utils/package.json` /
+`document-save-guard.ts`）。**verify 正确拒绝 dirty tree。**
+**O10 提交后必须补跑一次**，预期：
+```
+GenOffice original upstream approved: e9b4c416 (base cbec600, 20 patches, tree 0013dff4)
+```
+**在那之前，这五个补丁的「在干净树上能逐条 replay」这一条没有证据。**
+
+### 五家共同的结论（给后续维护者）
+
+1. **换壳 = 换共享 token，app 私有 token 一律不动**（规则 A）。可验：套件断言覆盖集的
+   每个 token 都出现在 `tokens.css` 里，且有正控（≥ 40 个）防止正则失效后恒真。
+2. **开关用 UA 产品号，不用 `window.desktop`** —— 它在 docs 恒真、在 slides 也恒真
+   （slides 的 preload 用 `desktop` 暴露附件 API）、在 html/markdown/pdf/sheets 恒假。
+   **一个名字在六个 app 上有四种含义。**
+3. **断言要念它实际读的 token**：pdf/slides 的 `.ribbon` 读 `--chrome-bg`，sheets 的读
+   `--surface`。写错时亮色下同值、只有暗色才暴露（实测：pdf 第一次就栽在这）。
+4. **文档内容各有各的形态**：html 是预览 iframe 的底、markdown 是与 chrome 撞名的
+   `.doc-page` 纸张、pdf 是 app 私有的 `--pdf-paper`、slides 是 138 个内容/语义 token、
+   sheets 是 Univer canvas。**同一个卡、五种不一样的做法。**
