@@ -30,65 +30,107 @@ $ bash apps/desktop/scripts/smokes-for.sh packages/contracts/src/modules.ts
 **`smokes-for.py:417` 的 `p.relative_to(DESKTOP)`** —— 「上一跳」在 `packages/contracts` 下，
 不在 `apps/desktop` 下，`relative_to` 抛 `ValueError`。
 
-## 二、症状 A 的根因（扩展线已查）
+## 二、⚠️ 这是**两个不同的 bug**，不是一件事
 
-`app-control-smoke/main.ts:774` 用 **`readFileSync` 读 `rpcMap.ts` 的文本**，不是 `import` 它：
+**我第一版卡把 A 和 B 写在一起，是错的。** 扩展线查清之后：
 
-```ts
-const rpcMapSrc = readFileSync(join(contractsDir, "ipc/rpcMap.ts"), "utf8");
+| 症状 | 真问题 | 修法 |
+|---|---|---|
+| **B（崩溃）** | **依赖图能看见，但算距离时 `p` 在 `packages/contracts` 下** | 修 `:417` 的**路径基准** |
+| **A（`rpcMap.ts` 说没覆盖）** | **`readFileSync` 根本不是 import，依赖图看不见它** | 要**显式声明** |
+
+**两个症状、两个修法、两个 PR 都可接受。别混。**
+
+### 症状 B 的完整机制（扩展线查的）
+
+`smokes-for.py` 的 `resolve()`：
+
+```python
+elif spec.startswith("@contracts/"):
+    return None                                # 包边界，丢掉（这条是对的）
+elif spec.startswith("."):
+    base = (from_file.parent / spec).resolve() # 相对路径 → 不认包边界
 ```
 
-**`smokes-for.py` 的依赖图只走 `import`，所以这条依赖它看不见。**
+**而很大一批套件是这样 import 的**（真实存在）：
 
-**⚠️ 这是「按名字搜是引用数，按来源区分才是出口数」（CLAUDE.md 第十五条）的工具化版本** ——
-工具只认一种来源（import），漏掉了另一种（读文件）。
+```ts
+// apps/desktop/scripts/capability-smoke/main.ts:1
+import { resolveCapabilities } from "../../../../packages/contracts/src/capability.js";
+```
+
+**`../../../../packages/contracts/...` 走 `.` 分支，解析成功，contracts 文件进了图。**
+`distances_to` 能到达它，`rank()` 给出「上一跳」`p`，而 `p` 在 `packages/contracts` 下 → `:417` 抛。
+
+**为什么崩在 `moduleCapability.ts` 而不是 `modules.ts`**：`modules.ts:4` 有
+`import type ... from "./moduleCapability.js"`，`closure()` 顺着这条边再走一跳。
+
+### 症状 A 的完整机制（扩展线查的）
+
+**`app-control-smoke` 是用 `readFileSync` + `ts.createSourceFile` 读 `rpcMap.ts` 的 —— 连相对路径 import 都没有。**
+
+所以**任何解析器都看不见它**。这里需要的是**一条显式声明**。
+
+**⚠️ 而 `@smoke-covers` 现在不能用** —— 它硬拒绝 `src/main` 以外的路径：
+
+```
+smokes-for.py:77   SMOKE_COVERS_RE 的正则
+smokes-for.py:277  is_relative_to(MAIN)
+```
+
+**所以「显式声明」这条路要先放宽那条限制，而那是另一次改动。**
 
 ## 三、任务
 
-### 第一步：先让 B 不崩
+### 第一步：修症状 B（便宜、清晰、无争议）
 
 ```python
 # smokes-for.py:417 附近
 # 现在：
-p.relative_to(DESKTOP)
+key = p.relative_to(DESKTOP).as_posix() if p is not None else "(不可达)"
 
-# 应该：
-try:
-    rel = p.relative_to(DESKTOP)
-except ValueError:
-    rel = p   # 或用 os.path.relpath / 直接显示绝对路径
+# 改成：先试 DESKTOP，失败试 ROOT，都失败给原文
 ```
 
-**⚠️ 但「不崩」不等于「修好」。** 崩之前它该返回什么？
-**至少要说清「这个路径不在 apps/desktop 下，所以依赖图对它不适用」**，而不是静默给个空答案。
+**⚠️ 正确改法不是 `try/except` 吞掉。** 理由（扩展线原话）：
 
-### 第二步：让 A 能发现 `readFileSync` 依赖
+> 吞掉会让「上一跳到底是谁」这个信息消失，**而那个信息是 `--why` 的全部价值。**
 
-**这是更难的一半。** 两条路：
+**`p` 不在 `DESKTOP` 下时，正确的显示是它相对仓库根的路径。**
 
-| 方案 | 做法 | 代价 |
-|---|---|---|
-| **A1. 解析 `readFileSync` 的路径参数** | 在 AST 里找 `readFileSync(join(X, "literal"))` 这类模式，把它当依赖边 | 只能抓字面量，动态拼接的抓不到 |
-| **A2. 加一张手写的「声明式覆盖表」** | 每个套件在自己目录里写 `covers.json`，列出「我读了哪些非 import 的文件」 | 要人维护，但准确 |
-| **A3. 两者结合** | A1 抓常见的，A2 兜住剩下的 | 成本最高 |
+### 第二步：症状 A —— 加显式声明（**要额外放宽一条限制**）
 
-**我倾向 A1 + 一条「覆盖性断言」**：
-- A1 自动抓 `readFileSync(<静态路径>)`；
-- **如果 A1 一条都抓不到，说明解析逻辑失效** —— 加一条断言证明它至少抓到了已知的那几条。
+**两种做法，选一个并写清理由：**
 
-**⚠️ 这正是 CLAUDE.md 第八条第 8 种形态**：「被测代码的分支一次没跑，但套件全绿」。
-**A1 写完之后，必须有一条断言证明它真的抓到了 `app-control-smoke → rpcMap.ts` 这条边。**
+| 做法 | 代价 |
+|---|---|
+| **A1. 放宽 `@smoke-covers` 的路径限制**（允许 `packages/contracts/`），然后在 `app-control-smoke` 里写一条声明 | 改 `smokes-for.py:77/277`，影响所有套件的声明能力 |
+| **A2. 单独的「读取声明」机制**（比如套件目录下 `reads.json`），只解决 `readFileSync` 这类 | 新增一套机制，但不动现有的 |
 
-### 第三步：验证
+**⚠️ 不要用「解析 `readFileSync` 的静态路径」去修 A。** 我第一版卡提了这个方向，**是错的** ——
+`app-control-smoke` 用的是 `readFileSync` + `ts.createSourceFile`，路径还是 `join(contractsDir, "ipc/rpcMap.ts")`，
+**解析器追不到这种组合。** 显式声明是唯一可靠的路。
+
+### 第三步：验证（**这条最关键**）
+
+**⚠️ 断言 `rc == 0` 不够 —— 现在的行为就是 `rc == 0`**（它打印完「没有套件覆盖」正常退出）。
+
+**必须断言输出内容：**
 
 ```bash
-# 修好之后，这两条应该都成立：
+# 改完之后必须同时成立：
 bash apps/desktop/scripts/smokes-for.sh packages/contracts/src/ipc/rpcMap.ts
-# → 应该列出 app-control-smoke（至少）
-
-bash apps/desktop/scripts/smokes-for.sh packages/contracts/src/modules.ts
-# → 不崩，且说清覆盖情况
+# ① 输出里有 "app-control-smoke"
+# ② 且它不在「没有套件覆盖」那句下面
 ```
+
+**写套件时用这两条，不要用 rc。**
+
+**并且要有一条「覆盖性断言」**：证明这个检查**真的抓到了那条边**，不是「不报错」。
+（CLAUDE.md 第八条第 8 种：「被测代码的分支一次没跑，但套件全绿」。）
+
+**判断信号**：如果改完之后 `smokes-for.sh rpcMap.ts` **仍然说「没有套件覆盖」**，
+那就是没生效 —— 不管代码看起来多对。
 
 ## 四、验收
 
