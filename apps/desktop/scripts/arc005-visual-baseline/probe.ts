@@ -34,6 +34,23 @@ const CONDITIONS = [
   { id: "dark", width: 1280, height: 800, dark: true },
   { id: "narrow", width: 1024, height: 640, dark: false },
 ] as const;
+/**
+ * 【T141】**登记过的**拍不出来的场景。每一条都要有理由，而且理由要能说清
+ * 「为什么它拍不出来」而不是「先跳过」。
+ *
+ * 为什么需要这张表：`sidechat` 的断言是「侧聊仍是隔离夹具、没有真实工作流
+ * IPC/data」（`probe-assertions.ts` 的 `fixture-only` 分支，自 `d250a159` 起）。
+ * 也就是说它**按设计**永远拍不出内容。
+ *
+ * 如果没有这张表，那么「让 data-missing 也算不完整」会把门禁变成**永远红** ——
+ * 而一个永远红的门禁和一个永远绿的门禁一样没人看。所以区分两件事：
+ *
+ *   - **登记过的 data-missing** → 已知缺口，如实写进 result.json，不挡门禁；
+ *   - **没登记过的** → 说明某次拍摄崩了或场景被改坏，**必须变红**。
+ */
+const KNOWN_UNCAPTURED = new Map<string, string>([
+  ["sidechat", "侧聊仍是隔离夹具，没有真实工作流 IPC/data（probe-assertions 的 fixture-only 分支）"],
+]);
 const SELECTORS = ARC005_MEASURE_SELECTORS;
 const TOKENS = [
  "--surface", "--surface-muted", "--surface-hover", "--content",
@@ -301,12 +318,26 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
       }
     }
     writeFileSync(join(dir,"checks.json"),JSON.stringify(results.map(r=>({name:r.file,status:r.status==="CAPTURED"?"PASS":"DATA_MISSING",reason:r.reason})),null,2));
+    // 【T141】期望格数的**唯一来源**。build.mjs 与 compare.mjs 是两个进程，
+    // 谁都读不到本文件的 SCREENS/CONDITIONS 运行时值，所以把「应该是多少格」
+    // 写进一个文件给它们读 —— 而不是在它们里面各写一个数字。
+    //
+    // 加场景时只改本文件的 SCREENS，这里自动跟着变；下游那些断言读的是
+    // expected.cells，不会再出现「场景加到 51、判据还写 39」这种过期。
+    writeFileSync(join(dir,"expected.json"),JSON.stringify({
+      cells: SCREENS.length*CONDITIONS.length,
+      screens: SCREENS.map(s=>s[0]),
+      conditions: CONDITIONS.map(c=>c.id),
+      // 【T141】登记过的拍不出来的场景（见 `KNOWN_UNCAPTURED` 的文件头）。
+      // 下游用它判断「这一格 missing 是已知缺口，还是这次拍崩了」。
+      knownUncaptured: [...KNOWN_UNCAPTURED].map(([screen, reason]) => ({ screen, reason })),
+    },null,2));
     writeFileSync(join(dir,"environment.json"),JSON.stringify({
       electron:process.versions.electron,windows:process.getSystemVersion?.(),dpi:await js("window.devicePixelRatio"),
       total:results.length,captured:results.filter(r=>r.status==="CAPTURED").length,
       missing:results.filter(r=>r.status==="DATA_MISSING").length,errors
     },null,2));
-    if (results.length !== SCREENS.length*CONDITIONS.length) throw Error("39 slots missing");
+    if (results.length !== SCREENS.length*CONDITIONS.length) throw Error(`${SCREENS.length*CONDITIONS.length} slots missing (got ${results.length})`);
   } finally {
     win.destroy();
   }

@@ -48,7 +48,14 @@ const expected = {
     "--content": ["#151515","--cds-text-primary","一致"],
     "--content-muted": ["#52514e","--cds-text-secondary","已知差异（矩阵已登记，理由见矩阵）"],
     "--content-subtle": ["#6d6b67","--cds-text-muted","已知差异（矩阵已登记，理由见矩阵）"],
-    "--edge": ["#c3c2b7","--cds-border","已知差异（矩阵已登记，理由见矩阵）"],
+    // 【T141】`--edge` 的登记值是 **R G B 三元组**（`styles.css:181` 存的就是 `217 217 216`），
+    // 不是十六进制 —— 所以这里也写成三元组，让 `normalized` 两边同一形态比较。
+    //
+    // 【为什么以前是 `#c3c2b7`】那是 T121（`b736c814`，2026-10-24 14:58）之前的值。
+    // 那次提交按「既要在画布上看得见、又要和 `--surface-hover` 分得开」重定了这一档，
+    // 但没有同步更新本题和参考矩阵的登记值 —— 于是 51 格（17 场景 × 亮/暗/窄）全部
+    // 报「未登记差异」。**51 条其实是同一个根因在两个明度上的重复计数，不是 51 个问题。**
+    "--edge": ["217 217 216","--cds-border","已知差异（矩阵已登记，理由见矩阵）"],
   },
   dark: {
     "--surface": ["#151515","--cds-surface-1","一致"],
@@ -57,7 +64,7 @@ const expected = {
     "--content": ["#f9f9f7","--cds-text-primary","已知差异（矩阵已登记，理由见矩阵）"],
     "--content-muted": ["#b4b3a8","--cds-text-secondary","已知差异（矩阵已登记，理由见矩阵）"],
     "--content-subtle": ["#97958d","--cds-text-muted","已知差异（矩阵已登记，理由见矩阵）"],
-    "--edge": ["#c3c2b7","--cds-border","已知差异（矩阵已登记，理由见矩阵）"],
+    "--edge": ["63 63 63","--cds-border","已知差异（矩阵已登记，理由见矩阵）"],
   },
 };
 const geometry = {
@@ -88,7 +95,11 @@ function normalized(v) {
   return normalizeColor(v).replace(/0\.(\d+)/g,'.$1').replace(/\s+/g,'').toLowerCase();
 }
 const manifest = JSON.parse(readFileSync(join(evidence,"manifest.json"),"utf8"));
-if (manifest.length !== 39) throw Error("39 grid cells required; got "+manifest.length);
+// 【T141】期望格数从 probe.ts 写的 expected.json 读，不在这里写死。
+// 以前是 `!== 39`，而场景加到 51 之后它必然抛错 —— 门禁从此一次都没跑成。
+const expectedCells = JSON.parse(readFileSync(join(evidence,"expected.json"),"utf8")).cells;
+if (!Number.isInteger(expectedCells)) throw Error("expected.json is missing a numeric cells field");
+if (manifest.length !== expectedCells) throw Error(`${expectedCells} grid cells required; got ${manifest.length}`);
 const fileRows=[];
 let unknown=0, known=0, equal=0, missing=0;
 const seen=new Set();
@@ -126,7 +137,7 @@ const lines=[
  "仅判上述已经登记的 surface/content/edge、圆角、动效；差异按矩阵原有判断，不以像素等值代替语义关系。",
  "root token 与窗口实际可见元素的 getComputedStyle 分别存于同名 JSON：snapshot.tokens 和 snapshot.measured（含尺寸、字号、行高、背景、颜色、圆角、padding）。",
  "",
- `总格数：39；有图：${manifest.length-missing}；data-missing：${missing}。比较条目：一致 ${equal}、已知差异 ${known}、未登记差异 ${unknown}。`,
+ `总格数：${expectedCells}；有图：${manifest.length-missing}；data-missing：${missing}。比较条目：一致 ${equal}、已知差异 ${known}、未登记差异 ${unknown}。`,
  "",
  "| 屏幕 / token | 条件或 Mcode 实测 | 上游值 / 矩阵判定 / 本次实测 | 结论 |",
  "|---|---|---|---|",
@@ -139,5 +150,5 @@ const lines=[
  "- 暗色 edge 若后续 token 表登记值变更，必须先复核矩阵，再修改比较器的登记期望。",
 ];
 writeFileSync(output,lines.join("\n")+"\n");
-console.log(JSON.stringify({output,grid:manifest.length,captured:manifest.length-missing,missing,equal,known,unregistered:unknown}));
+console.log(JSON.stringify({output,grid:manifest.length,expected:expectedCells,captured:manifest.length-missing,missing,equal,known,unregistered:unknown}));
 if(unknown) process.exitCode=2;

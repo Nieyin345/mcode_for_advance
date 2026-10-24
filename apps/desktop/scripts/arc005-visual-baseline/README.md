@@ -72,7 +72,26 @@ const sample = JSON.parse(readFileSync(path, "utf8"));
 
 **⚠️ 拍不出来就记 `data-missing` 并写清原因**，不要用别的场景顶替。
 
-## 39 格的证据属性
+## 格数的证据属性
+
+**期望格数不是常量，是算出来的**：`SCREENS.length × CONDITIONS.length`
+（现在是 17 × 3 = **51**）。`probe.ts` 把它写进 `.tmp/arc005-visual/expected.json`，
+`build.mjs` 与 `compare.mjs` 都读那个文件 —— 它们与 `probe.ts` 是两个进程，
+读不到运行时的 `SCREENS`，所以必须有这个文件当唯一来源。
+
+**加场景只改 `probe.ts` 的 `SCREENS`，另两个文件不用碰。** 以前两处各写死一个
+`39`，T136 把场景扩到 17 个之后全部恒假，`build.mjs` 每次 exit 1、`run.sh`
+的 `set -e` 直接把 token 比对整段吞掉 —— **门禁一次都没跑过，而屏幕上打的是
+`failed=0`**（T141）。
+
+**`data-missing` 分两种，别混**：
+
+- **登记过的**（`probe.ts` 的 `KNOWN_UNCAPTURED`，写进 `expected.json`）→ 已知缺口，
+  如实记录，**不挡门禁**；
+- **没登记的** → 某次拍摄崩了或场景被改坏，**必须红**。
+
+不区分的话，「让 data-missing 也算失败」会把门禁变成永远红（`sidechat` 按设计就
+拍不出内容），**而一个永远红的门禁和一个永远绿的一样没人看**。
 
 每格按 `<screen>-<condition>-<nominal-width>.json/.png` 输出到
 `.tmp/arc005-visual/`。截图均由真实 Electron `capturePage()` 生成，
@@ -129,7 +148,7 @@ surface/content/edge、圆角及动效；生成 `.tmp/arc005-visual/diff.md`。
 看同一轮的 `diff.md` 与 token 快照；PNG 只用来「看长什么样」。
 
 **为什么没把尺寸抖动也修掉**：那要重排 `probe.ts` 的等待逻辑，风险覆盖全部
-48 格；而 `compare.mjs` 本来就不按像素比。**为了「让 PNG 逐字节稳定」去改核心
+51 格；而 `compare.mjs` 本来就不按像素比。**为了「让 PNG 逐字节稳定」去改核心
 时序，代价大于收益。**
 
 **如果要修，正确做法是**：`setSize` 之后等 `win.once('resize')` + 一个渲染帧，

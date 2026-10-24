@@ -63,7 +63,7 @@
 |---|---|---|---|
 | `--surface-*` | `--surface`=gray-10 `#fcfcfb`、`--surface-muted`=gray-20 `#f9f9f7`、`--surface-hover`=gray-50 `#f0efec`（`styles.css:111-113`）；暗色 `gray-850 #151515` / `gray-800 #20201f` / `gray-750 #2c2c2a`（`:238-240`） | 报告 §1.1 只给亮色：surface-0 `#f9f9f7`、surface-1 `#fcfcfb`、surface-2 `#fff`；暗色只说「指向灰阶另一端」未给值。上游 E1 暗色：surface-0 `#0b0b0b`、surface-1 `#151515`、surface-2 `#1a1a19`、surface-3 `#20201f` | 亮色对齐（muted↔0、surface↔1）；**缺** surface-2/3/popover 角色档；暗色**不一致（Mcode 侧栏 `--surface-muted`=`#20201f`，上游 surface-0=`#0b0b0b`）**；`--surface-hover` 为实色，上游为 alpha-1 合成（近似，结构不同） |
 | `--text-*` | **家族名缺**（Mcode 等价实现是 `--content` / `--content-muted` / `--content-subtle`，`styles.css:117-119,241-243`） | 报告正文未给 text 色值；上游 E1 亮色 primary `#151515` / secondary `#525252` / muted `#8a8a8a`，暗色 `#f5f5f5` / `#a3a3a3` / `#666666` | 亮色 primary 一致；**不一致（Mcode content-muted=`#52514e`, 上游=`#525252`；content-subtle=`#6d6b67`, 上游=`#8a8a8a`）**；暗色 **不一致（Mcode `#f9f9f7`/`#b4b3a8`/`#97958d`, 上游 `#f5f5f5`/`#a3a3a3`/`#666666`）**（Mcode 为 AA 刻意加深，见 `styles.css:114-119`） |
-| `--border-*` | **家族名缺**；等价 `--edge`=`gray-200 #c3c2b7` 实色、`--panel-edge`=`gray-150`、`--input-edge`=`gray-250`（`styles.css:124-135`） | 报告/上游：`--cds-border`=alpha-2 = `hsla(0,0%,8%,.10)`（亮）/ `hsla(0,0%,100%,.09)`（暗） | **不一致（Mcode `--edge`=`#c3c2b7` 实色，上游=10% alpha；合成到 `#fcfcfb` 上约 `#e5e4e4`）**；Mcode 刻意加深一档以让分隔线可读（`styles.css:120-129` 注释） |
+| `--border-*` | **家族名缺**；等价 `--edge`=**亮 `217 217 216` `#d9d9d8`（14% 黑合成）/ 暗 `63 63 63` `#3f3f3f`（18% 白合成）**、`--panel-edge`=亮 `227 227 226` / 暗 `--m-gray-750`、`--input-edge`=亮 `--m-gray-250` / 暗 `72 72 72`（`styles.css:181,196,202,410,419,424`） | 报告/上游：`--cds-border`=alpha-2 = `hsla(0,0%,8%,.10)`（亮）/ `hsla(0,0%,100%,.09)`（暗） | **不一致（Mcode `--edge` 实色，上游=10% alpha；合成到 `#fcfcfb` 上约 `#e3e3e2`）**；Mcode 刻意加深一档（亮 1.38:1 / 暗 1.73:1）以让分隔线可读，**且必须与 `--surface-hover` 分得开**（10% alpha 对 hover 填充只有 1.12:1，边框落在悬停行上会消失）——见 `styles.css:168-180` 注释与 `tasks/T121`（`b736c814`，2026-10-24 14:58 重定此档） |
 | `--accent-*` | `--accent: 5 150 105`（emerald-600）、`--accent-strong: 4 120 87`；暗色 strong `16 185 129`（`styles.css:147-148,247`）；备选 `--brand-clay`=`#eb6834`（`--m-orange-350`，`:145-146`） | 报告/上游：`--cds-clay: #d97757`，`--cds-text-accent: var(--cds-clay)`、`--cds-fill-brand` | **不一致（Mcode=emerald `rgb(5 150 105)`, 报告=clay `#d97757`）** —— 产品决策 D：换 clay 会让 350 处 `text-accent`（331 处 `text-accent` + 19 处 `text-accent-strong`，2026-10-18 统计）跌破 AA |
 | `--diff-*` | **缺** —— 无 `--diff-*` token；增删行硬编码 `DiffView.tsx:49-53`（red/green-600 + 暗色 400） | 报告未给出 diff 色值 | **缺 + 待测**（需用户安装版本真机取色：增删行背景/前景/行号栏） |
 | `--radius-*` | `--radius-panel`=10px、`--composer-radius`=20px、`--radius-control`=`--radius-sm`=.25rem/4px、`--radius-bubble`=`calc(8px + .25rem×1)`≈12px（`styles.css:879-897`；`tokens.cds.css:83-87,102`） | 报告正文未给完整阶梯；上游 E1：panel 10px、composer 20px、message-bubble `calc(8px + .25rem × var(--cds-rem-scale))`、radius-sm 4px、radius-md 6px、radius-lg 8px、radius-xl 12px、btn-xs 6px、btn-md 8px、dialog 16px、code 12px；`--cds-rem-scale` 上游示例为 `16/17`，报告 §1.4 称真实 app 中该变量**运行时写入、文档里不声明** | panel/composer/control 一致；**不一致（Mcode 气泡=`12px`, 上游≈`11.76px`）** —— 生成器把 `--cds-rem-scale` 钉为 1（`gen-cds-tokens.mjs` 的 `VAR_MAP`）；**缺** btn-xs/btn-md/dialog/code/card 档（`GEOMETRY_KEYS` 未收）；Mcode 按钮实际用 Tailwind `rounded`=4px（`components/ui/button.tsx:21`），与上游按钮档 6/8px 不一致 |
@@ -244,10 +244,10 @@ Claude 侧一致性全部**待测**。ARC-005 的「开发完成 / 独立复核�
 
 | 原矩阵行 | 浅色 1280×800 | 深色 1280×800 | 窄窗 1024×640 |
 |---|---|---|---|
-| 初始空会话 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：未登记差异（暗色 --edge=44 44 42，矩阵 §二旧值 #c3c2b7） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
-| 已有消息 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：未登记差异（暗色 --edge=44 44 42，矩阵 §二旧值 #c3c2b7） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
-| 工具运行中/完成/失败 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：未登记差异（暗色 --edge=44 44 42，矩阵 §二旧值 #c3c2b7） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
-| 权限审批 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：未登记差异（暗色 --edge=44 44 42，矩阵 §二旧值 #c3c2b7） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+| 初始空会话 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：已知差异（T141 后 0 未登记；旧登记值已随 T121 的 --edge 重定一并更新） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+| 已有消息 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：已知差异（T141 后 0 未登记；旧登记值已随 T121 的 --edge 重定一并更新） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+| 工具运行中/完成/失败 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：已知差异（T141 后 0 未登记；旧登记值已随 T121 的 --edge 重定一并更新） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+| 权限审批 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：已知差异（T141 后 0 未登记；旧登记值已随 T121 的 --edge 重定一并更新） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
 | 代码/文件 Diff | 未实测：data-missing（无带旧版本的真实文件 Diff 夹具：不伪造 Monaco diff） | 未实测：data-missing（无带旧版本的真实文件 Diff 夹具：不伪造 Monaco diff） | 未实测：data-missing（无带旧版本的真实文件 Diff 夹具：不伪造 Monaco diff） |
 | 侧聊 | 未实测：data-missing（右侧聊依赖独立 WorkflowBoard IPC；复用脚手架下真实面板会卸载，缺端到端夹具） | 未实测：data-missing（右侧聊依赖独立 WorkflowBoard IPC；复用脚手架下真实面板会卸载，缺端到端夹具） | 未实测：data-missing（右侧聊依赖独立 WorkflowBoard IPC；复用脚手架下真实面板会卸载，缺端到端夹具） |
 | 终端 | 未实测：data-missing（无独立 PTY 宿主：直接打开会触发原生终端创建，超出本隔离截图夹具范围） | 未实测：data-missing（无独立 PTY 宿主：直接打开会触发原生终端创建，超出本隔离截图夹具范围） | 未实测：data-missing（无独立 PTY 宿主：直接打开会触发原生终端创建，超出本隔离截图夹具范围） |
@@ -255,7 +255,7 @@ Claude 侧一致性全部**待测**。ARC-005 的「开发完成 / 独立复核�
 | 预览 | 未实测：data-missing（无真实可预览文件夹具：不伪造 PDF/图片/Markdown） | 未实测：data-missing（无真实可预览文件夹具：不伪造 PDF/图片/Markdown） | 未实测：data-missing（无真实可预览文件夹具：不伪造 PDF/图片/Markdown） |
 | 并行会话侧栏 | 未实测：data-missing（StreamSidebar 是原有 Electron 焦点脚手架替身；不能当成真正并行会话侧栏截图） | 未实测：data-missing（StreamSidebar 是原有 Electron 焦点脚手架替身；不能当成真正并行会话侧栏截图） | 未实测：data-missing（StreamSidebar 是原有 Electron 焦点脚手架替身；不能当成真正并行会话侧栏截图） |
 | 项目切换 | 未实测：data-missing（LeftBar 为上游现成脚手架替身，项目列表不可见；需真实 LeftBar 的独立 Electron 环境） | 未实测：data-missing（LeftBar 为上游现成脚手架替身，项目列表不可见；需真实 LeftBar 的独立 Electron 环境） | 未实测：data-missing（LeftBar 为上游现成脚手架替身，项目列表不可见；需真实 LeftBar 的独立 Electron 环境） |
-| 设置菜单 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：未登记差异（暗色 --edge=44 44 42，矩阵 §二旧值 #c3c2b7） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
+| 设置菜单 | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） | 已实测：已知差异（T141 后 0 未登记；旧登记值已随 T121 的 --edge 重定一并更新） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
 | 窗口缩窄 | 未实测：data-missing（窗口未缩至 1024px） | 未实测：data-missing（窗口未缩至 1024px） | 已实测：已知差异（Mcode 真实截图；与上游的既有 token 差异见 §二；Claude 安装版未采） |
 
 本轮 39 格有 **16 张有效真实截图**、23 格 `data-missing`，不存在拿旧 PNG 或替身面板充数的情况。每格至少一个 JSON 存有 `snapshot.tokens` + 15 个目标元素的 `getComputedStyle`（不存在的目标 `present:false`），及 Electron 原生 DPI/窗口配置。由于复用的既有 Electron 脚手架故意替代了 LeftBar/StreamSidebar、且无 PTY/真实文件/WorkflowBoard 宿主，相关状态尚缺真用户旅程；不能将全部 ARC-005 判为完成。
@@ -270,9 +270,9 @@ Claude 侧一致性全部**待测**。ARC-005 的「开发完成 / 独立复核�
 
 ### CSS 令牌比对与现场环境
 
-- 比对详情 `.tmp/arc005-visual/diff.md`：每条含 `Mcode token 原始值 / 上游解析值 / 矩阵原判定 / 实测 / 结论`，可以按同名 JSON 复核。唯一一种未登记差异是 **暗色 `--edge` 实测 `44 44 42` / `#2c2c2a`，矩阵 §二旧登记 `#c3c2b7`**；它在 13 个暗色屏格重复出现（13 条，不是 13 个独立根因）。
+- 比对详情 `.tmp/arc005-visual/diff.md`：每条含 `Mcode token 原始值 / 上游解析值 / 矩阵原判定 / 实测 / 结论`，可以按同名 JSON 复核。**截至 2026-10-24 21:10（T141 修完格数门禁后的首次完整运行）：51 格，一致 833 / 已知差异 340 / 未登记差异 0。** 此前的「13 条暗色 `--edge` 未登记」已在 T141 一并结清 —— 那不是回归，是 T121（`b736c814`）按对比度重定 `--edge` 之后，矩阵 §二与本比较器的登记值都没跟着改。
 - 既有 surface/text/edge 实色-vs-alpha、按钮/气泡圆角、动画曲线的差异仍按照 §二原判定如实记录；上游样本只是第三方逆向 CSS，不能冒充 Claude 官方真实屏幕。
-- `environment.json` 与 39 份 JSON：Electron 44.4.5；Windows 内核版本 10.0.22000；devicePixelRatio=1.75（175%）；正常条件请求 1280×800、窄窗请求 1024×640，DOM viewport 窄窗实为 1024×614（含窗口框架差）。
+- `environment.json` 与 51 份 JSON：Electron 44.4.5；Windows 内核版本 10.0.22000；devicePixelRatio=1.75（175%）；正常条件请求 1280×800、窄窗请求 1024×640，DOM viewport 窄窗实为 1024×614（含窗口框架差）。**⚠️ 这个分母以前写的是 39，而场景早已是 51 —— 与 T141 修掉的是同一个过期数字。**
 - 本机取证未获取用户安装的 Claude Code/Desktop 对照图。参考矩阵原“待测”是**参考侧待测**，本轮仅增加 Mcode 侧实测值，不擅自关闭 ARC-005。
 
 ### 2026-10-21 T12 补拍：原 23 个缺格
@@ -290,4 +290,4 @@ Claude 侧一致性全部**待测**。ARC-005 的「开发完成 / 独立复核�
 | 项目切换 | 3/3，`real-LeftBar` | 真实树形组件 + 2 个虚构项目 |
 | 窗口缩窄浅/深 | 2/2，`stub-editor+real-layout` | 实际 BrowserWindow 1024×640，左右栏展开 + 只读编辑器桩，文件名中的 1280 只表示所属主题条件 |
 
-所有新增 PNG 的同名 JSON 都有顶层 `fixture`；无未注明来源的面板替身。复核 `.tmp/arc005-visual/manifest.json`、`environment.json`、`diff.md`：比较结果仍是 **637 一致 / 247 已知差异 / 13 未登记差异**（只有暗色 `--edge` 的同一旧矩阵根因，**没有新增未登记差异**）。恶意改写 `empty-light-1280.json` 的 `--surface` 为 `255 0 255` 后变为 14，逐字节还原后回到 13，证据在 `.tmp/arc005-visual/mutation-t12.json`。仍**不能**宣称上游 Claude 安装版逐屏相符或侧聊/PTY/Monaco/PDF 等完整用户旅程通过，§一和旧 V4 数据保留原样。
+所有新增 PNG 的同名 JSON 都有顶层 `fixture`；无未注明来源的面板替身。复核 `.tmp/arc005-visual/manifest.json`、`environment.json`、`diff.md`：**T141 之后（2026-10-24 21:10）的实测是 51 格 / 833 一致 / 340 已知差异 / 0 未登记差异**，`run.sh` 退出码 0。上面的 **637 一致 / 247 已知差异 / 13 未登记差异** 是 T136 扩到 51 格之前、且在格数门禁坏掉期间取的旧数据，保留作追溯。恶意改写 `empty-light-1280.json` 的 `--surface` 为 `255 0 255` 后未登记差异会增加，逐字节还原后回到基线，证据在 `.tmp/arc005-visual/mutation-t12.json`。仍**不能**宣称上游 Claude 安装版逐屏相符或侧聊/PTY/Monaco/PDF 等完整用户旅程通过，§一和旧 V4 数据保留原样。

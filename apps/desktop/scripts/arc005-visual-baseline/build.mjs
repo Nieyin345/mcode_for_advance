@@ -39,6 +39,13 @@ mkdirSync(dir, { recursive: true });
 for (const name of readdirSync(dir)) {
   if (/^(empty|messages|tools|approval|diff|sidechat|terminal|editor|preview|parallel|projects|settings|narrow-window|files-pane|git-pane|taskcenter|workflow-board)-(light|dark|narrow)-(1280|1024)\.(png|json)$/.test(name)) unlinkSync(join(dir, name));
 }
+// 【T141】汇总文件也要在开跑前清掉。上一轮如果崩在中途，`manifest.json` 会留
+// 一条半截的（我们实测见过只剩 20 行的），而它只在 probe 里逐格追加 ——
+// 不先删的话下一轮 compare 会读到「51 格只写了 20 格」并抛错，看起来像
+// 场景拍漏了，其实是脏文件。
+for (const name of ["manifest.json", "checks.json", "expected.json", "result.json", "environment.json"]) {
+  try { unlinkSync(join(dir, name)); } catch { /* 不存在就是干净的 */ }
+}
 console.log("ARC-005 visual electron evidence: " + dir);
 
 /** `.js` 说明符 → 磁盘上的 `.ts`/`.tsx`。 */
@@ -191,6 +198,37 @@ try {
 } catch {
   checks = [];
 }
+// 【T141】期望格数从 probe.ts 写的 `expected.json` 读 —— 那是**唯一来源**。
+// 以前这里写死 39，而 SCREENS 加到 17 个场景（51 格）之后它恒假，于是本文件
+// 每次都 exit 1，`run.sh` 的 `set -e` 直接把后面整段 token 比对吞掉 ——
+// 门禁一次都没跑过，而屏幕上打的是 `failed=0`。
+let expectedCells = null;
+try {
+  expectedCells = JSON.parse(readFileSync(join(dir, "expected.json"), "utf8")).cells ?? null;
+} catch {
+  expectedCells = null;
+}
+if (!Number.isInteger(expectedCells)) {
+  console.error("ARC005 VISUAL E2E FAILED: probe did not emit expected.json (cell count unknown)");
+  process.exitCode = 1;
+}
+// 【T141】`failed` 只表示「拍了但没拍成 / 缺取证」，**不含 data-missing**。
+// data-missing 分两种，别混：
+//   - **登记过的**（`expected.json` 的 knownUncaptured）→ 已知缺口，不挡门禁；
+//   - **没登记的** → 这次拍崩了或场景被改坏，**必须红**。
+// 分不清这两者的话，「让 data-missing 也红」会把门禁变成永远红（sidechat 按
+// 设计就拍不出内容），那和永远绿一样没人看。
+const dataMissing = checks.filter((c) => c.status === "DATA_MISSING");
+let knownScreens = new Map();
+try {
+  const exp = JSON.parse(readFileSync(join(dir, "expected.json"), "utf8"));
+  knownScreens = new Map((exp.knownUncaptured ?? []).map((k) => [k.screen, k.reason]));
+} catch {
+  knownScreens = new Map();
+}
+const screenOf = (name) => name.replace(/-(light|dark|narrow)-.*$/, "");
+const knownMissing = dataMissing.filter((c) => knownScreens.has(screenOf(c.name)));
+const unexpectedMissing = dataMissing.filter((c) => !knownScreens.has(screenOf(c.name)));
 const failed = checks.filter((c) => c.status !== "PASS" && c.status !== "DATA_MISSING");
 // T12 provenance gate: an Electron screenshot alone cannot authenticate a
 // renderer fixture. Every captured PNG must have a typed JSON provenance.
@@ -207,12 +245,30 @@ for (const check of checks) {
     failed.push({ ...check, reason: "captured scene missing JSON: " + String(error) });
   }
 }
-const complete = checks.length === 39 && failed.length === 0;
-const result = { dir, exitCode: run.status, signal: run.signal, checks: checks.length, failed, complete };
+const complete =
+  expectedCells !== null &&
+  checks.length === expectedCells &&
+  failed.length === 0 &&
+  unexpectedMissing.length === 0;
+const result = {
+  dir, exitCode: run.status, signal: run.signal,
+  checks: checks.length, expected: expectedCells,
+  failed,
+  dataMissing: dataMissing.map((c) => ({ name: c.name, reason: c.reason })),
+  knownMissing: knownMissing.map((c) => ({ name: c.name, reason: knownScreens.get(screenOf(c.name)) })),
+  unexpectedMissing: unexpectedMissing.map((c) => ({ name: c.name, reason: c.reason })),
+  complete,
+};
 writeFileSync(join(dir, "result.json"), JSON.stringify(result, null, 2));
 if (run.status !== 0 || !complete) {
-  console.error(`ARC005 VISUAL E2E FAILED: exit=${run.status} checks=${checks.length} failed=${failed.length}`);
+  // 【T141】说清**为什么**不完整 —— 「格数不对」「拍崩了」「有没登记的缺口」
+  // 是三件不同的事，混成一个 failed 数就只能靠猜。
+  console.error(
+    `ARC005 VISUAL E2E FAILED: exit=${run.status} checks=${checks.length}/${expectedCells ?? "?"} ` +
+    `captureFailed=${failed.length} knownMissing=${knownMissing.length} unexpectedMissing=${unexpectedMissing.length}`,
+  );
+  for (const c of unexpectedMissing) console.error(`  unexpected data-missing: ${c.name} — ${c.reason}`);
   process.exitCode = 1;
 } else {
-  console.log(`arc005-visual-baseline: ${checks.filter(x=>x.status==="PASS").length}/39 真 Electron 场景已拍；其余 data-missing 已显式登记`);
+  console.log(`arc005-visual-baseline: ${checks.length}/${expectedCells} 格（${knownMissing.length} 格登记为拍不出内容）`);
 }
