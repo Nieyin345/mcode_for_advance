@@ -109,6 +109,8 @@ export const pdfJourney = defineU1Journey({
         ? { ok: true, observed: { pages: text.pages, layer: text.layer.slice(0, 120) } }
         : { ok: false, observed: { bridge, workerProbe, errHook, consume, readBytes, text }, detail: "pdf.js 文本层里没有夹具文本（或页面没渲染出来）" };
     }, "pdf-text-layer-has-fixture", { assert: true }),
+    step.assertDom(".ai-dock", { exists: false }, "mcode-pdf-vendor-ai-panel-absent"),
+    step.assertDom(".ai-entry", { exists: false }, "mcode-pdf-vendor-ai-ribbon-absent"),
     step.screenshot("pdf-opened"),
 
     // ── 编辑：真 UI ——「页面」tab →「向右旋转」（rotation 90°）──

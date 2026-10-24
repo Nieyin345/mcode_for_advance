@@ -75,6 +75,15 @@ export const journeys: LazyJourney[] = journeyNames.map((name) => {
  * （`build.mjs`）加载，那时 electron 不存在。
  */
 export function beforeReady(): void {
+  // Mirror production main/index.ts:99. GenOffice's embedded UI checks the
+  // Electron product user agent to distinguish Mcode-owned editor chrome from
+  // standalone GenOffice. Without the name, U1 mis-tests the standalone UI.
+  // Preserve the test's already isolated userData root: setName affects it.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { app } = require("electron") as typeof import("electron");
+  const isolatedUserData = app.getPath("userData");
+  app.setName("Mcode");
+  app.setPath("userData", isolatedUserData);
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const factories = require("../../../src/main/document/genofficeViewFactories.js") as typeof import("../../../src/main/document/genofficeViewFactories.js");
   factories.registerGenofficeNativeScheme();

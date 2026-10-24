@@ -51,6 +51,8 @@ export const markdownJourney = defineU1Journey({
     step.waitFor(".doc-editor", "md-editor-mounted", { timeoutMs: 30_000 }),
     step.waitFor(".doc-editor", "md-shows-unique-text", { text: UNIQUE.markdown, timeoutMs: 30_000 }),
     step.assertDom(".doc-editor", { textContains: UNIQUE.markdown }, "md-dom-has-unique-text"),
+    step.assertDom(".ai-dock", { exists: false }, "mcode-markdown-vendor-ai-panel-absent"),
+    step.assertDom(".ai-entry", { exists: false }, "mcode-markdown-vendor-ai-ribbon-absent"),
     step.screenshot("md-opened"),
 
     // ── 编辑：真 ProseMirror transaction ──

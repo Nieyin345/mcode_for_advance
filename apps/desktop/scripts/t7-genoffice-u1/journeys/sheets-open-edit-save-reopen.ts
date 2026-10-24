@@ -62,6 +62,8 @@ export const sheetsJourney = defineU1Journey({
     step.waitFor("#univer-container", "xl-workbook-container", { timeoutMs: 40_000 }),
     step.assertDom('[data-u-comp="defined-name"] input', { exists: true }, "xl-name-box-present"),
     step.assertDom("#univer-container canvas", { exists: true }, "xl-grid-canvas-present"),
+    step.assertDom(".copilot", { exists: false }, "mcode-sheets-vendor-ai-panel-absent"),
+    step.assertDom(".ai-entry", { exists: false }, "mcode-sheets-vendor-ai-ribbon-absent"),
     step.screenshot("xl-opened"),
 
     // ── 编辑：**真 UI 输入** —— 名称框选 A1（Enter 提交，真聚焦），公式栏里键入，

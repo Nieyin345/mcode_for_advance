@@ -1,0 +1,558 @@
+From 5f6b1d9bda041cdfc087218d2f4b77e8e58dd329 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 04:15:09 +0800
+Subject: [PATCH] feat(office): use Mcode AI UI and embed vendor editing
+ surfaces only
+
+---
+ apps/docs/src/renderer/App.tsx                |  5 ++--
+ apps/docs/src/renderer/components/Ribbon.tsx  |  5 +++-
+ apps/html/src/renderer/App.tsx                |  7 +++---
+ apps/html/src/renderer/components/Ribbon.tsx  |  3 +++
+ apps/markdown/src/renderer/App.tsx            |  7 +++---
+ .../src/renderer/components/Ribbon.tsx        |  3 +++
+ apps/pdf/src/renderer/App.tsx                 | 23 +++++++++++--------
+ apps/sheets/src/renderer/ExcelShell.tsx       | 15 ++++++------
+ apps/slides/src/renderer/App.tsx              | 11 +++++----
+ .../slides/src/renderer/components/Ribbon.tsx |  3 +++
+ .../src/renderer/components/RibbonHomeTab.tsx |  4 +++-
+ packages/ui/src/index.ts                      |  1 +
+ packages/ui/src/mcode-host.ts                 |  9 ++++++++
+ packages/ui/tests/mcode-host.test.ts          | 18 +++++++++++++++
+ 14 files changed, 83 insertions(+), 31 deletions(-)
+ create mode 100644 packages/ui/src/mcode-host.ts
+ create mode 100644 packages/ui/tests/mcode-host.test.ts
+
+diff --git a/apps/docs/src/renderer/App.tsx b/apps/docs/src/renderer/App.tsx
+index 086c95b..163c4aa 100644
+--- a/apps/docs/src/renderer/App.tsx
++++ b/apps/docs/src/renderer/App.tsx
+@@ -94,6 +94,7 @@ import type { AiDocContent, AiSettings, MenuCommand, OpenDocxResult } from '../s
+ import { AI_PROVIDERS } from '../shared/ipc'
+ import { ZoteroDocumentController } from './zotero/controller'
+ import { AiPanel, AI_REVISION_AUTHOR } from './ai/AiPanel'
++import { isMcodeHostedUi } from '@genoffice/ui'
+ import type { AiCommentsAccess, AiDocExtras, AiHeaderFooterAccess } from './ai/tools'
+ import type { AiStyleInfo } from './ai/style-ops'
+ import { applyResolvedPageSetup, describeSection, type AiPageSetupAccess } from './ai/page-setup'
+@@ -7373,7 +7374,7 @@ export function App() {
+       />
+ 
+       <div className="app-main">
+-        {doc && (
++        {doc && !isMcodeHostedUi() && (
+           <div
+             className={`ai-dock${showAi ? '' : ' collapsed'}${
+               !aiSidebarEnabled && !showAi ? ' ai-dock-off' : ''
+@@ -7436,7 +7437,7 @@ export function App() {
+                 onClose={closeNav}
+               />
+             )}
+-            {doc && (
++            {doc && !isMcodeHostedUi() && (
+               <AiAskPopover
+                 editor={editor}
+                 queueFull={editQueue.length >= EDIT_QUEUE_MAX}
+diff --git a/apps/docs/src/renderer/components/Ribbon.tsx b/apps/docs/src/renderer/components/Ribbon.tsx
+index 7190e2a..4c7c0fd 100644
+--- a/apps/docs/src/renderer/components/Ribbon.tsx
++++ b/apps/docs/src/renderer/components/Ribbon.tsx
+@@ -43,6 +43,7 @@ import type {
+ } from '@genoffice/docx-engine'
+ import {
+   Dropdown,
++  isMcodeHostedUi,
+   isSymbolFontFamily,
+   useDismissablePopover,
+   useRibbonCollapse,
+@@ -3064,7 +3065,8 @@ function RibbonInner({
+           </div>
+         ) : tab === 'home' ? (
+           <>
+-            {/* ---- Genspark AI (first slot: entry + one-click AI actions) ---- */}
++            {/* Mcode's own chat handles AI: never mount the vendor AI ribbon. */}
++            {!isMcodeHostedUi() && <>
+             <div className="ribbon-group">
+               <div className="ribbon-group-items">
+                 <button
+@@ -3204,6 +3206,7 @@ function RibbonInner({
+             </div>
+ 
+             <div className="ribbon-sep" />
++            </>}
+ 
+             <div className="ribbon-group">
+               <div className="ribbon-group-items">
+diff --git a/apps/html/src/renderer/App.tsx b/apps/html/src/renderer/App.tsx
+index a7a5d38..6380df3 100644
+--- a/apps/html/src/renderer/App.tsx
++++ b/apps/html/src/renderer/App.tsx
+@@ -28,6 +28,7 @@ import { instrumentForPreview } from './preview/instrument'
+ import type { ComputedSnapshot, ElementRect, FromInspector } from './preview/inspector-protocol'
+ import inspectorSource from './preview/inspector.js?raw'
+ import { AiPanel, GensparkMark, type AiPreset, type HtmlAiDeps } from './ai/AiPanel'
++import { isMcodeHostedUi } from '@genoffice/ui'
+ import { AiAskPopover, type AnchorRect, type AskMode } from './components/AiAskPopover'
+ import {
+   EDIT_QUEUE_MAX,
+@@ -1588,7 +1589,7 @@ export default function App() {
+       />
+ 
+       <div className="app-main">
+-        <div
++        {!isMcodeHostedUi() && <div
+           className={`ai-dock${aiOpen ? '' : ' collapsed'}${
+             !aiSidebarEnabled && !aiOpen ? ' ai-dock-off' : ''
+           }`}
+@@ -1616,7 +1617,7 @@ export default function App() {
+             onQueueConsume={queueConsume}
+             onCollapse={() => setAiOpen(false)}
+           />
+-        </div>
++        </div>}
+         <div className="app-content">
+           {findTarget && (
+             <FindPanel
+@@ -1805,7 +1806,7 @@ export default function App() {
+           </footer>
+         </div>
+       </div>
+-      {askTarget && askMode && canvasMode !== 'present' && (
++      {!isMcodeHostedUi() && askTarget && askMode && canvasMode !== 'present' && (
+         <AiAskPopover
+           key={askMode.kind === 'edit' ? askMode.qid : 'new'}
+           target={askTarget}
+diff --git a/apps/html/src/renderer/components/Ribbon.tsx b/apps/html/src/renderer/components/Ribbon.tsx
+index d1770d7..988f0e7 100644
+--- a/apps/html/src/renderer/components/Ribbon.tsx
++++ b/apps/html/src/renderer/components/Ribbon.tsx
+@@ -8,6 +8,7 @@ import {
+ import { useI18n } from '../i18n/locale'
+ import type { StringKey } from '../i18n/locale'
+ import { GensparkMark } from '../ai/AiPanel'
++import { isMcodeHostedUi } from '@genoffice/ui'
+ import type { InsertKind, InsertOptions } from '../document/insert-presets'
+ import {
+   IconBullets,
+@@ -274,6 +275,7 @@ export function Ribbon(p: Props) {
+       </div>
+ 
+       <div className="ribbon-body" data-ribbon-body="">
++        {!isMcodeHostedUi() && <>
+         <div className="ribbon-group">
+           <div className="ribbon-group-items">
+             <button
+@@ -361,6 +363,7 @@ export function Ribbon(p: Props) {
+         </div>
+ 
+         <div className="rb-sep" />
++        </>}
+ 
+         <div className="ribbon-group">
+           <div className="ribbon-group-items">
+diff --git a/apps/markdown/src/renderer/App.tsx b/apps/markdown/src/renderer/App.tsx
+index 88c2b08..e8a0a19 100644
+--- a/apps/markdown/src/renderer/App.tsx
++++ b/apps/markdown/src/renderer/App.tsx
+@@ -58,6 +58,7 @@ import { TableMenu } from './components/TableMenu'
+ import { FrontmatterPanel } from './components/FrontmatterPanel'
+ import { AiAskPopover } from './components/AiAskPopover'
+ import { AiPanel, GensparkMark, type AiPreset, type MarkdownAiDeps } from './ai/AiPanel'
++import { isMcodeHostedUi } from '@genoffice/ui'
+ import { EDIT_QUEUE_MAX, selectionForAnchor, type EditQueueItem } from './ai/edit-queue'
+ import { addQueueAnchor, clearQueueAnchors, removeQueueAnchors } from './editor/aiQueueAnchors'
+ import { DOCX_MAX_IMAGE_PX, exportDocxBytes } from './export/docxExport'
+@@ -1179,7 +1180,7 @@ export default function App() {
+       />
+       {status === 'loading' && <div className="center-note">{t('loading')}</div>}
+       <div className="app-main" style={status === 'ready' ? undefined : { display: 'none' }}>
+-        <div
++        {!isMcodeHostedUi() && <div
+           className={`ai-dock${aiOpen ? '' : ' collapsed'}${
+             !aiSidebarEnabled && !aiOpen ? ' ai-dock-off' : ''
+           }`}
+@@ -1209,7 +1210,7 @@ export default function App() {
+               onQueueConsume={queueConsume}
+             />
+           )}
+-        </div>
++        </div>}
+         {outlineOpen && !sourceMode && (
+           <OutlinePane
+             items={outlineItems}
+@@ -1354,7 +1355,7 @@ export default function App() {
+         />
+       )}
+       {!sourceMode && <TableMenu editor={editor} scrollRef={scrollRef} zoom={zoom} />}
+-      {editor && !sourceMode && status === 'ready' && (
++      {!isMcodeHostedUi() && editor && !sourceMode && status === 'ready' && (
+         <AiAskPopover
+           editor={editor}
+           queueFull={editQueue.length >= EDIT_QUEUE_MAX}
+diff --git a/apps/markdown/src/renderer/components/Ribbon.tsx b/apps/markdown/src/renderer/components/Ribbon.tsx
+index 17c4bb4..223ba53 100644
+--- a/apps/markdown/src/renderer/components/Ribbon.tsx
++++ b/apps/markdown/src/renderer/components/Ribbon.tsx
+@@ -13,6 +13,7 @@ import { useI18n } from '../i18n/locale'
+ import { MARKDOWN_THEME_IDS, type MarkdownTheme } from '../../shared/markdown-theme'
+ import type { StringKey } from '../i18n/locale'
+ import { GensparkMark } from '../ai/AiPanel'
++import { isMcodeHostedUi } from '@genoffice/ui'
+ import { uiOp, type BlockType, type ListKind, type StylableMark } from '../editor/ops'
+ import {
+   IconBullets,
+@@ -449,6 +450,7 @@ export function Ribbon({
+       </div>
+ 
+       <div className="ribbon-body" data-ribbon-body="">
++        {!isMcodeHostedUi() && <>
+         <div className="ribbon-group">
+           <div className="ribbon-group-items">
+             <button
+@@ -486,6 +488,7 @@ export function Ribbon({
+         </div>
+ 
+         <div className="rb-sep" />
++        </>}
+ 
+         {!sourceMode && (
+           <div className="ribbon-group">
+diff --git a/apps/pdf/src/renderer/App.tsx b/apps/pdf/src/renderer/App.tsx
+index d6639d5..b67300f 100644
+--- a/apps/pdf/src/renderer/App.tsx
++++ b/apps/pdf/src/renderer/App.tsx
+@@ -7,6 +7,7 @@ import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mj
+ import type { PDFDocumentProxy } from 'pdfjs-dist'
+ import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
+ import { AiPanel, GensparkMark } from './ai/AiPanel'
++import { isMcodeHostedUi } from '@genoffice/ui'
+ import { AiAskPopover, type AskAnchorRect } from './AiAskPopover'
+ import {
+   createSavedAnnotCountsLoader,
+@@ -7381,7 +7382,8 @@ export default function App() {
+         <div className="ribbon-body" data-ribbon-body="">
+           {ribbonTab === 'home' && (
+             <>
+-              {/* ---- Genspark AI (first slot: entry + one-click AI actions, docs parity) ---- */}
++              {/* Mcode's own chat owns AI when this editor is embedded. */}
++              {!isMcodeHostedUi() && <>
+               <div className="ribbon-group">
+                 <div className="ribbon-group-items">
+                   <button
+@@ -7429,6 +7431,7 @@ export default function App() {
+                 </div>
+               </div>
+               <div className="ribbon-sep" />
++              </>}
+               {markupGroup}
+               <div className="ribbon-sep" />
+               {/* Edit entries lead; Search moved after page/zoom (⌘F is the common path) */}
+@@ -7514,6 +7517,7 @@ export default function App() {
+           )}
+           {ribbonTab === 'annotate' && (
+             <>
++              {!isMcodeHostedUi() && <>
+               <div className="ribbon-group">
+                 <div className="ribbon-group-items">
+                   <button
+@@ -7544,6 +7548,7 @@ export default function App() {
+                 </div>
+               </div>
+               <div className="ribbon-sep" />
++              </>}
+               {markupGroup}
+               <div className="ribbon-sep" />
+               <div className="ribbon-group">
+@@ -7732,7 +7737,7 @@ export default function App() {
+             <>
+               <div className="ribbon-group">
+                 <div className="ribbon-group-items">
+-                  <button
++                  {!isMcodeHostedUi() && <button
+                     className="rb-big ai-entry"
+                     disabled={readOnly}
+                     data-tip={t('aiFillFormBtn')}
+@@ -7742,7 +7747,7 @@ export default function App() {
+                       <IconFormAiFill />
+                     </span>
+                     <span>{t('aiFillFormBtn')}</span>
+-                  </button>
++                  </button>}
+                   <button
+                     className={`rb-big${pendingStaticFill === 'text' ? ' active' : ''}`}
+                     disabled={readOnly}
+@@ -8198,8 +8203,8 @@ export default function App() {
+         }}
+       />
+       <div className="app-main">
+-        {/* dock wrapper animates the width between panel and rail (docs-style 180ms ease);
+-              the panel stays mounted while collapsed so the chat history survives */}
++        {/* In Mcode the host chat replaces this entire vendor AI dock. */}
++        {!isMcodeHostedUi() && (
+         <div
+           className={`ai-dock${aiCollapsed ? ' collapsed' : ''}${
+             !aiSidebarEnabled && aiCollapsed ? ' ai-dock-off' : ''
+@@ -8223,7 +8228,7 @@ export default function App() {
+             onRunDone={() => void autoSaveAfterAiRun()}
+             onClearSelection={() => setAiSelection(null)}
+           />
+-        </div>
++        </div>)}
+         <div className="app-content">
+           {digitalSignatures.length > 0 && (
+             <div className={`pdf-sig-banner ${overallSignatureStatus(digitalSignatures)}`}>
+@@ -9824,7 +9829,7 @@ export default function App() {
+                     <span className="pdf-sel-popup-sep" aria-hidden />
+                   </>
+                 )}
+-                <button
++                {!isMcodeHostedUi() && <button
+                   type="button"
+                   className="pdf-sel-ask"
+                   data-tip={t('aiAskTitle')}
+@@ -9838,10 +9843,10 @@ export default function App() {
+                     />
+                   </svg>
+                   {t('aiAskBtn')}
+-                </button>
++                </button>}
+               </div>
+             )}
+-            {askPop && (
++            {!isMcodeHostedUi() && askPop && (
+               <AiAskPopover
+                 rect={askPop.rect}
+                 excerpt={askPop.excerpt}
+diff --git a/apps/sheets/src/renderer/ExcelShell.tsx b/apps/sheets/src/renderer/ExcelShell.tsx
+index de99545..43d1c88 100644
+--- a/apps/sheets/src/renderer/ExcelShell.tsx
++++ b/apps/sheets/src/renderer/ExcelShell.tsx
+@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
+ import { platformShortcuts } from '@genoffice/i18n'
+ import {
+   Dropdown,
++  isMcodeHostedUi,
+   SHAPE_GALLERY_GROUPS,
+   ShapePreview,
+   useDismissablePopover,
+@@ -833,8 +834,8 @@ export function ExcelShell({
+ 
+   return (
+     <main
+-      className={`app-shell ${isCopilotOpen ? '' : 'copilot-collapsed'}${
+-        !isCopilotOpen && !aiSidebarEnabled ? ' copilot-off' : ''
++      className={`app-shell ${isCopilotOpen && !isMcodeHostedUi() ? '' : 'copilot-collapsed'}${
++        (isMcodeHostedUi() || (!isCopilotOpen && !aiSidebarEnabled)) ? ' copilot-off' : ''
+       }`}
+       inert={openingWorkbook}
+       aria-busy={openingWorkbook}
+@@ -956,7 +957,7 @@ export function ExcelShell({
+ 
+       {/* AI panel docks on the left, full height under the ribbon (unified with docs) */}
+       <div className="sheet-body">
+-        <AiChatPanel
++        {!isMcodeHostedUi() && <AiChatPanel
+           isOpen={isCopilotOpen}
+           hideRail={!aiSidebarEnabled}
+           hasContent={sheetHasContent}
+@@ -989,7 +990,7 @@ export function ExcelShell({
+           onCitation={onAiCitation}
+           onExpand={() => setIsCopilotOpen(true)}
+           onCollapse={() => setIsCopilotOpen(false)}
+-        />
++        />}
+         <div className="sheet-main">
+           <section className="workbook-area">
+             <div id="univer-container" className="spreadsheet" />
+@@ -1010,7 +1011,7 @@ export function ExcelShell({
+               </div>
+             )}
+           </section>
+-          {aiSelectionAskAnchor && aiScopeRange && !aiBusy && (
++          {!isMcodeHostedUi() && aiSelectionAskAnchor && aiScopeRange && !aiBusy && (
+             <AiSelectionAsk
+               anchor={aiSelectionAskAnchor}
+               range={aiScopeRange}
+@@ -3347,7 +3348,7 @@ function Ribbon({
+     : [...fontSizes, echoSize].sort((a, b) => a - b)
+   return (
+     <div className="ribbon" data-ribbon-body="">
+-      <RibbonGroup label={t('appGroupAiAssistant')}>
++      {!isMcodeHostedUi() && <RibbonGroup label={t('appGroupAiAssistant')}>
+         <button
+           className={`ribbon-tool as-button large ai-entry ${aiOpen ? 'active' : ''}`}
+           data-tip={t('aiOpenAssistant')}
+@@ -3417,7 +3418,7 @@ function Ribbon({
+             <strong>{t('aiAnalyzeBtn')}</strong>
+           </span>
+         </button>
+-      </RibbonGroup>
++      </RibbonGroup>}
+       <RibbonGroup label={t('appGroupClipboard')}>
+         <button
+           className="ribbon-tool as-button large"
+diff --git a/apps/slides/src/renderer/App.tsx b/apps/slides/src/renderer/App.tsx
+index 9e0b219..28a480b 100644
+--- a/apps/slides/src/renderer/App.tsx
++++ b/apps/slides/src/renderer/App.tsx
+@@ -114,6 +114,7 @@ import { ToastHost } from './components/toast'
+ import { showToast } from './components/toast-bus'
+ import { t, useI18n } from './i18n/locale'
+ import { AiPanel } from './ai/AiPanel'
++import { isMcodeHostedUi } from '@genoffice/ui'
+ import { ChartDataDialog } from './components/ChartDataDialog'
+ import type { BrushFormat } from './format-brush'
+ import { isTextUndoTarget, shouldRouteHistoryToDeck } from './undo-routing'
+@@ -3578,7 +3579,7 @@ export function App() {
+       />
+ 
+       <div className="app-main">
+-        {slide && viewMode !== 'reading' && viewMode !== 'sorter' && (
++        {!isMcodeHostedUi() && slide && viewMode !== 'reading' && viewMode !== 'sorter' && (
+           <div
+             className={`ai-dock${showAi && aiSettings ? '' : ' collapsed'}${
+               !aiSidebarEnabled && !showAi ? ' ai-dock-off' : ''
+@@ -3965,7 +3966,7 @@ export function App() {
+                             : undefined
+                         }
+                       >
+-                        <div className="stage-ai-bar">
++                        {!isMcodeHostedUi() && <div className="stage-ai-bar">
+                           <div className="stage-ai-group">
+                             <button
+                               className={`stage-ai-btn${showAi ? ' active' : ''}`}
+@@ -4015,7 +4016,7 @@ export function App() {
+                               </>
+                             )}
+                           </div>
+-                        </div>
++                        </div>}
+                         <div
+                           ref={stageScaleRef}
+                           className="stage-scale"
+@@ -4640,7 +4641,7 @@ export function App() {
+         </div>
+       )}
+ 
+-      {!askState &&
++      {!isMcodeHostedUi() && !askState &&
+         !editing &&
+         !editingCell &&
+         !cropTarget &&
+@@ -4650,7 +4651,7 @@ export function App() {
+           <AiAskTrigger getAnchorRect={getAskTriggerRect} onOpen={openAskPopover} />
+         )}
+ 
+-      {askState && askTargets.length > 0 && (
++      {!isMcodeHostedUi() && askState && askTargets.length > 0 && (
+         <AiAskPopover
+           targets={askTargets}
+           getAnchorRect={getAskAnchorRect}
+diff --git a/apps/slides/src/renderer/components/Ribbon.tsx b/apps/slides/src/renderer/components/Ribbon.tsx
+index 1f66f48..3954608 100644
+--- a/apps/slides/src/renderer/components/Ribbon.tsx
++++ b/apps/slides/src/renderer/components/Ribbon.tsx
+@@ -15,6 +15,7 @@ import type { AnimEffectKind, GradientFillSpec, TransitionKind } from '../../sha
+ import type { ChartStyleInfo } from '@genoffice/pptx-render'
+ import {
+   useDismissablePopover,
++  isMcodeHostedUi,
+   useRibbonCollapse,
+   Dropdown,
+   THEME_COLORS,
+@@ -2561,6 +2562,7 @@ export function Ribbon({
+           </>
+         ) : tab === 'review' ? (
+           <>
++            {!isMcodeHostedUi() && <>
+             <Group label={t('ribbonGroupProofing')}>
+               <button
+                 className="rb-big"
+@@ -2616,6 +2618,7 @@ export function Ribbon({
+               </div>
+             </Group>
+             <div className="ribbon-sep" />
++            </>}
+             <Group label={t('ribbonGroupComments')}>
+               <button
+                 className="rb-big"
+diff --git a/apps/slides/src/renderer/components/RibbonHomeTab.tsx b/apps/slides/src/renderer/components/RibbonHomeTab.tsx
+index 88460f2..96bcb9a 100644
+--- a/apps/slides/src/renderer/components/RibbonHomeTab.tsx
++++ b/apps/slides/src/renderer/components/RibbonHomeTab.tsx
+@@ -1,7 +1,7 @@
+ /** Home tab of the slides ribbon. Extracted from Ribbon.tsx. */
+ import { useState } from 'react'
+ import { platformShortcuts } from '@genoffice/i18n'
+-import { ColorPicker, isSymbolFontFamily, partitionFontFamilies } from '@genoffice/ui'
++import { ColorPicker, isMcodeHostedUi, isSymbolFontFamily, partitionFontFamilies } from '@genoffice/ui'
+ import { saveEditSelection } from '../TextEditOverlay'
+ import { armColorInput } from '../color-input'
+ import { displayFontFamily } from '../konva-adapter'
+@@ -229,6 +229,7 @@ export function RibbonHomeTab({ rb }: { rb: RibbonTabCtx }) {
+   }
+   return (
+     <>
++      {!isMcodeHostedUi() && <>
+       <Group label="Genspark AI">
+         <button
+           className={`rb-big ai-entry${aiOpen ? ' active' : ''}`}
+@@ -281,6 +282,7 @@ export function RibbonHomeTab({ rb }: { rb: RibbonTabCtx }) {
+         </button>
+       </Group>
+       <div className="ribbon-sep" />
++      </>}
+       <Group label={t('ribbonGroupClipboard')}>
+         <button
+           className="rb-big"
+diff --git a/packages/ui/src/index.ts b/packages/ui/src/index.ts
+index aff6932..9c9c8f9 100644
+--- a/packages/ui/src/index.ts
++++ b/packages/ui/src/index.ts
+@@ -1,3 +1,4 @@
++export { isMcodeHostedUi } from './mcode-host'
+ export { AiPanelSideButton } from './AiPanelSideButton'
+ export { AiComposer } from './AiComposer'
+ export { AiQueueStrip } from './AiQueueStrip'
+diff --git a/packages/ui/src/mcode-host.ts b/packages/ui/src/mcode-host.ts
+new file mode 100644
+index 0000000..5fb579f
+--- /dev/null
++++ b/packages/ui/src/mcode-host.ts
+@@ -0,0 +1,9 @@
++/**
++ * Only the Mcode desktop product embeds these editor views. Do not infer host
++ * ownership from a preload namespace: standalone GenOffice also exposes one.
++ * Match the same Electron product UA used by the native Mcode theme gate.
++ */
++export function isMcodeHostedUi(userAgent?: string): boolean {
++  const ua = userAgent ?? (typeof navigator === 'undefined' ? '' : navigator.userAgent)
++  return /\bMcode\//.test(ua)
++}
+diff --git a/packages/ui/tests/mcode-host.test.ts b/packages/ui/tests/mcode-host.test.ts
+new file mode 100644
+index 0000000..c4c43dd
+--- /dev/null
++++ b/packages/ui/tests/mcode-host.test.ts
+@@ -0,0 +1,18 @@
++import { describe, expect, it } from 'vitest'
++import { isMcodeHostedUi } from '../src/mcode-host'
++
++describe('Mcode-owned Office renderer mode', () => {
++  it('matches the Electron Mcode product identity used by editor theme gates', () => {
++    expect(isMcodeHostedUi('Mozilla/5.0 Mcode/44.4.5 Electron/44.4.5')).toBe(true)
++    expect(isMcodeHostedUi('Mcode/44.4.5')).toBe(true)
++  })
++  it('does not remove vendor AI from standalone GenOffice desktop apps', () => {
++    for (const ua of ['GenOfficeSlides/44.4.5', 'GenOfficePDF/44.4.5', 'Mozilla/5.0']) {
++      expect(isMcodeHostedUi(ua)).toBe(false)
++    }
++  })
++  it('rejects a misleading token embedded in a longer product name', () => {
++    expect(isMcodeHostedUi('NotMcode/44.4.5')).toBe(false)
++    expect(isMcodeHostedUi('')).toBe(false)
++  })
++})
+-- 
+2.52.0.windows.1
+

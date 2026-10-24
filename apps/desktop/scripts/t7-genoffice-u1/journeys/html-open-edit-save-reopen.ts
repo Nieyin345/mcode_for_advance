@@ -74,6 +74,8 @@ export const htmlJourney = defineU1Journey({
         ? { ok: true, observed: { text: seen.text.slice(0, 200) } }
         : { ok: false, detail: "30s 内 CodeMirror 源码里没有夹具文本" };
     }, "html-dom-has-unique-text", { assert: true }),
+    step.assertDom(".ai-dock", { exists: false }, "mcode-html-vendor-ai-panel-absent"),
+    step.assertDom(".ai-entry", { exists: false }, "mcode-html-vendor-ai-ribbon-absent"),
     step.screenshot("html-opened"),
 
     // ── 编辑：**真键入**（CodeMirror 编辑器聚焦后 `insertText` 走真输入栈）──

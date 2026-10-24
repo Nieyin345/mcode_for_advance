@@ -100,6 +100,8 @@ export const docsJourney = defineU1Journey({
     step.waitFor(".ProseMirror", "docs-editor-mounted", { timeoutMs: 30_000 }),
     step.waitFor(".ProseMirror", "docs-shows-unique-text", { text: UNIQUE.docs, timeoutMs: 30_000 }),
     step.assertDom(".ProseMirror", { textContains: UNIQUE.docs }, "docs-dom-has-unique-text"),
+    step.assertDom(".ai-dock", { exists: false }, "mcode-docs-vendor-ai-panel-absent"),
+    step.assertDom(".ai-entry", { exists: false }, "mcode-docs-vendor-ai-ribbon-absent"),
     step.screenshot("docs-opened"),
 
     // ── 编辑：真 ProseMirror transaction ──

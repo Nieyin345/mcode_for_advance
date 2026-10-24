@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "f6d8e8a3c0e99e9328dc6fa7dd76ca559518545e",
-  "expectedTree": "34b48057f108cc762da580911a5d912aeacc6cce",
+  "revision": "5f6b1d9bda041cdfc087218d2f4b77e8e58dd329",
+  "expectedTree": "0c7f36855f2acecf4353db516094dcf609d5fa90",
   "patchSeries": [
     {
       "index": 1,
@@ -238,6 +238,15 @@
       "sha256": "c13afa894bc417f038b1dd75d3b858ad9f1a019d0c01ad20403236c456bb584f",
       "bytes": 6096,
       "subject": "fix(sheets): hydrate opened workbooks when first animation frame is suspended"
+    },
+    {
+      "index": 26,
+      "file": "patches/genoffice/0026-feat-office-mcode-ai-only-ui.patch",
+      "revision": "5f6b1d9bda041cdfc087218d2f4b77e8e58dd329",
+      "parentRevision": "f6d8e8a3c0e99e9328dc6fa7dd76ca559518545e",
+      "sha256": "059faea963c3cdf1b968141001c57fd9960207b7d474f313339edd88ac3935c4",
+      "bytes": 23436,
+      "subject": "feat(office): use Mcode AI UI and embed vendor editing surfaces only"
     }
   ],
   "license": "Apache-2.0",

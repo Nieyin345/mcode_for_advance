@@ -77,6 +77,8 @@ export const slidesJourney = defineU1Journey({
     step.waitFor(".outline-pane", "pp-outline-visible", { timeoutMs: 20_000 }),
     step.waitFor(".outline-pane", "pp-outline-shows-unique-text", { text: UNIQUE.slides, timeoutMs: 20_000 }),
     step.assertDom(".outline-pane", { textContains: UNIQUE.slides }, "pp-outline-text"),
+    step.assertDom(".ai-dock", { exists: false }, "mcode-slides-vendor-ai-panel-absent"),
+    step.assertDom(".ai-entry", { exists: false }, "mcode-slides-vendor-ai-ribbon-absent"),
     step.screenshot("pp-outline"),
 
     // ── 切回普通视图，双击画布上的文本框 → 真 contentEditable → 键入 → 提交 ──
