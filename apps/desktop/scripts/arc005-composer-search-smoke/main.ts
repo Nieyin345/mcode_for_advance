@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { searchResultsNavigable, stepSearchResultIndex } from "../../src/renderer/components/ide/searchResultNavigation.js";
 import { composerFluidTier } from "../../src/renderer/components/chat/composerFluidTier.js";
 import { sourceHas } from "../lib/sourceText.js";
+import { openEscapeLayer, claimEscape, resetEscapeLayersForTests } from "../../src/renderer/lib/escapeLayer.js";
 
 let total = 0, failed = 0;
 const check = (name: string, ok: boolean) => {
@@ -104,6 +105,20 @@ check("Attachment: dedicated file/image/library/slash actions are retained",
   ["onClick={onPickFiles}","onClick={onPickImages}","onClick={onPickLibraries}","onClick={onSlashCommand}"]
     .every((s) => sourceHas(attach,s)));
 
+resetEscapeLayersForTests();
+const closeOuter = openEscapeLayer("chat.new-subchat-picker");
+const closeInner = openEscapeLayer("chat.slash-command-picker");
+check("Subchat: actual Escape-layer arbitration leaves lower picker inactive",
+  !claimEscape("chat.new-subchat-picker") && claimEscape("chat.slash-command-picker"));
+closeInner();
+check("Subchat: after closing nested picker, underlying picker regains Escape",
+  claimEscape("chat.new-subchat-picker"));
+closeOuter();
+resetEscapeLayersForTests();
+check("Subchat: UI subscribes to the same Escape-layer mechanism as sibling pickers",
+  sourceHas(subChat, 'openEscapeLayer("chat.new-subchat-picker")') &&
+  sourceHas(subChat, 'isTopEscapeLayer("chat.new-subchat-picker")') &&
+  sourceHas(subChat, 'claimEscape("chat.new-subchat-picker")'));
 check("Subchat: fresh opening clears stale profile choices before async load",
   sourceHas(subChat, 'setProfiles([]);') &&
   sourceHas(subChat, "const res = await api.workflow.agentProfiles()"));

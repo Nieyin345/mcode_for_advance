@@ -33,6 +33,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { isSessionAgentProfile, agentProfileInstruction } from "@contracts/agentProfile";
 import type { AgentProfile } from "@contracts/agentProfile";
 import { cn } from "@renderer/lib/cn.js";
+import { openEscapeLayer, claimEscape, isTopEscapeLayer } from "@renderer/lib/escapeLayer.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { IconCheck, IconLoader2, IconSearch, IconUserStar } from "@renderer/lib/icons.js";
@@ -159,7 +160,14 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
     onClose();
   };
 
-  // 键盘:↑↓ 导航、回车选、Esc 关、Alt+M 切记忆开关。捕获阶段,免得被编辑器的按键处理吃掉。
+  // Keep the picker behind nested menus on Escape without remounting the
+  // layer every time filtering/highlighting changes.
+  useEffect(() => {
+    if (!open) return;
+    return openEscapeLayer("chat.new-subchat-picker");
+  }, [open]);
+
+  // 键盘:↑↓ 导航、回车选、Esc 关。捕获阶段,免得被编辑器的按键处理吃掉。
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e: KeyboardEvent) => {
@@ -168,7 +176,9 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
       // hitting Enter to confirm the candidate must NOT create a subchat.
       // Same guard as the sibling pickers (FileMentionPicker / LibraryPicker).
       if (e.isComposing || e.keyCode === 229) return;
+      if (!isTopEscapeLayer("chat.new-subchat-picker")) return;
       if (e.key === "Escape") {
+        if (!claimEscape("chat.new-subchat-picker")) return;
         e.preventDefault();
         e.stopPropagation();
         onClose();
