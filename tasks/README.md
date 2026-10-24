@@ -137,7 +137,8 @@
 | T122 | 🔴 **AI 聊天区的排版节律与滚动手感**（间距 20/12 vs 上游 15/10；助手 `text-inset` 零命中；滚动语义待对照） | **P0 产品主线** | T119+T120 | ZZ | 🔄 进行中（G） |
 | T123 | 🔴 **Office 产物不进任务中心**：`document_tool_call` 不在 `FILE_MUTATING_TOOLS` → `turn.files` 空 → `classifyTurn` 判成「问答不是任务」 | **P0 核心闭环** | T97 | ZZ | ✅ done（`e3fc94bc`，13/13；`fileSnapshot`/`autoCreate` 零改动） |
 | T124 | **`document_md_edit` 的同病**：Markdown 编辑的产物同样不进任务中心 | P1 核心闭环 | T123 | ZZ | ✅ done（`a4a8c8b2`）—— **前提被推翻，不修**：`document_md_edit` 改的是 `.docx`，`before` 读不到，照卡修会让撤销清空文件 |
-| T125 | 🔴 **不可还原的产物**：`before` 读不到的文件（.docx/.pdf/GBK 文本）既进不了任务中心、也不该进 rewind —— 要一个 `restorable` 状态 | **P0 核心闭环+数据安全** | T123+T124 | ZZ | ⬜ 待开工（分析 `d4bac082`） |
+| T125 | 🔴 **不可还原的产物**：`before` 读不到的文件（.docx/.pdf/GBK 文本）既进不了任务中心、也不该进 rewind —— 要一个 `restorable` 状态 | **P0 核心闭环+数据安全** | T123+T124 | ZZ | ✅ done（`9821e69c`，27/27；变异证实去掉守卫会清空文件） |
+| T126 | **`document_md_edit` 走 T125 的 `restorable` 路** | P2 核心闭环 | T125 | ZZ | ⬜ 待开工 |
 
 ### T43 为什么是 P0（用户最高痛点）
 
