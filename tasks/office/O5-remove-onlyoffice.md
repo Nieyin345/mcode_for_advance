@@ -517,3 +517,80 @@ settings-export-secrets / settings-import-backup / mobile-pairing。
 - `onlyoffice.config` 的旧值清理（数据迁移）留给用户裁决，同 §四之3。
 - 批三要注意：`FileEditor.tsx:44` 的 `office` 入参目前仍取 `isOnlyOfficeSupportedPath`
   （已删）—— 必须换成 `documentKind` 的等价判据，否则 `genofficeViewForOffice` 恒 false。
+
+### 批三（渲染端）回写 —— 2026-10-24，提交 `c29abf9e`
+
+**范围**：`apps/desktop/src/renderer/**` 全部 + 主体是渲染端的那几套。**main/preload 一行未改。**
+
+**删除**：`ide/OnlyOfficeEditorPane.tsx`、`settings/OnlyOfficeConfigCard.tsx`、
+`lib/webApi.ts` 的 onlyoffice 命名空间、`ToolchainSection` 的 onlyoffice 项与配置卡挂载、
+两本词典的 OnlyOffice 专属键（`settings.toolchain.onlyoffice.*`、
+`settings.toolchain.tool.onlyoffice.*`、`ide.office.opening/loadingEditor/
+documentLoadTimeout/notConfigured/notConfiguredDesc/openSettings/useGenofficeView/
+externalChanged/savedToConflictCopy`），外加两个孤儿键
+（`ide.editor.switchToOfficeEdit`、`settings.toolchain.useInstalled`）。
+`ide.office.openFailed` **保留**（`FileViewer`/`FilePreview` 仍用它报「拿不到磁盘路径」，
+文案改为中性）。
+
+**★ §五 的默认档（本卡核心）**：
+
+```ts
+const defaultMode = markdown ? "wysiwyg"
+  : office ? (genofficeViewForOffice ? "genoffice-view"
+             : genofficeReady ? "genoffice" : "preview")
+  : isPdfFile ? "preview" : "edit";
+```
+
+office 第一次打开就落 **GenOffice 原生视图**；能力位缺 → 结构化视图；CLI 都没有 →
+仍进 GenOffice（它自己报原因）。**刻意不退回本地 Office renderer，也不退回 OnlyOffice。**
+
+**写这条判据时发现并修掉的三个真 bug**（都不是测试凑数）：
+1. office 分支**吞掉用户显式偏好** —— `viewModePref === "edit"` 被 `defaultMode` 覆盖。
+   现在显式偏好优先（只有已死的 `"wysiwyg"` 对 office 被忽略）。
+2. `useGenofficeView` 用的是 `nativeViewReady`，它对 office 只判「CLI 在」、
+   **不查 `hosts.*`** —— 正是 T101 当年点过的「两个面不对齐」。改用
+   `genofficeViewForOffice`。
+3. `preview` 档把 office 送进 `MarkdownPreviewPane`（拿 md 渲染器读二进制）。
+   现在在那里拦截到 `GenofficeDocumentPane`。
+
+**库/手机三处**（`FileViewer` / `FilePreview` / `MobileFileViewer`）：office 一律
+`GenofficeDocumentPane`（结构化、只读、不可用时**显式报原因**），不再是已删的编辑器。
+
+**`SettingsPage`**：`"office"` 深链映射**保留**（注释改写）—— 它曾是
+`OnlyOfficeEditorPane` 三处「打开设置」的目标，现在没有发起方了，保留只为
+**已持久化的旧设置状态**不落到「常规」。
+
+**判据（总控指定，用 TypeScript API 探测，不用退出码）**：
+
+```
+cd apps/desktop && node .tmp/probe-tsc.cjs
+  files in program: 2417
+  total diagnostics: 0
+  renderer: 0   main+preload: 0
+```
+
+`renderer` 从 **38 → 0**。（`.tmp/probe-tsc.cjs` 是总控给的脚本，用
+`incremental:false` 绕开 `.tsbuildinfo` 滞后；不用退出码是因为 TS 5.7 在
+`incremental` 下同一错误连跑三次会自己从 2 变 1。）`packages/contracts` tsc exit=0。
+
+**套件全绿**：`markdown-mode-smoke`（含新增的默认档判据）、`mobile-api-surface-smoke`、
+`maint-m37-smoke`、`file-viewer-basedir-smoke`、`document-view-renderer-smoke`、
+`maint-m35-smoke`、`markdown-preview-smoke`、`md-preview-read-error-smoke`、
+`mobile-viewport-smoke`、`ide-quote-snapshot-smoke`、`t101`、`o2-conflict-u1`、
+`document-view-{electron,open,vendor-page}-smoke`、`o0-format-fidelity`、`o4-docs-close`。
+
+（`t7-genoffice-u1` **不是可独立跑的套件** —— 它是被 `o0` / `o2` / `o4` 共用的
+harness 目录，名字不以 `-smoke` 结尾，`run-smokes` 发现不了。跑的是那三套。）
+
+**变异（§七 第 1 条 + 我加的恒 false）**：
+- `defaultMode` 改回 `markdown || office ? "wysiwyg"` → **红 10 条**，每条都说
+  「实际 `MarkdownEditorPane`」——**红的原因正是「office 默认没落 GenOffice」**；
+- `office` 判据改成恒 `false` → 同一组红 10 条，报「实际 `EditPane`」；
+- 还原后 `sha256` 逐字节一致。
+
+**刻意不删（数据卫生，不是漏）**：`secretKeys.ts:65` 的 `"onlyoffice.config"` 与
+`settings/settingsTransfer.ts:111` 仍把它当密钥。删键名不会清掉用户盘上的旧值，
+只会让它**不再被当密钥**（`setting.get` 能交给模型、导出能写进分享文件）。
+
+**收尾 grep**（`apps/desktop/src/` 全部 `isOnlyOffice|OnlyOffice`）：
+**零处非注释引用** —— 剩下的全是「这里曾经是什么、为什么删了」的说明性注释。
