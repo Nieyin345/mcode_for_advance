@@ -183,7 +183,7 @@ export function SkillPresetsView({
                 type="button"
                 title={t("settings.skills.presetApply")}
                 onClick={() => onCopyPreset(p.skills)}
-                className="shrink-0 rounded p-1 text-content-subtle transition-colors hover:bg-surface-hover hover:text-content"
+                className="shrink-0 rounded p-1 text-content-subtle transition-colors hover:text-content"
               >
                 <IconCopy size={13} />
               </Button>

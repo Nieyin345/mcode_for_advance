@@ -171,7 +171,7 @@ export function OutputStylePanel() {
             aria-label={t("settings.outputStyle.refresh")}
             className={cn(
               "flex shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] p-0.5 transition-colors",
-              "text-content-subtle hover:bg-surface-hover hover:text-content",
+              "text-content-subtle hover:text-content",
             )}
           >
             <IconRefresh size={14} />

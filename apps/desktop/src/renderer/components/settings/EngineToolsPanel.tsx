@@ -120,7 +120,7 @@ function EngineCard({
                       "rounded-md border px-2.5 py-1 font-mono text-code transition-colors",
                       on
                         ? "border-danger/60 bg-danger/10 text-danger"
-                        : "border-edge bg-surface text-content hover:bg-surface-hover",
+                        : "border-edge bg-surface text-content",
                     )}
                     title={on ? t("settings.engineTools.clickToEnable") : t("settings.engineTools.clickToDisable")}
                   >

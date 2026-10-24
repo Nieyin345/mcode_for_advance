@@ -651,7 +651,7 @@ export function CustomUiPanel() {
                   "flex w-full items-center justify-between gap-2 rounded px-3 py-2 text-left text-code transition-colors",
                   s === slot
                     ? "bg-surface-hover font-medium text-content"
-                    : "text-content-muted hover:bg-surface-hover hover:text-content",
+                    : "text-content-muted hover:text-content",
                 )}
               >
                 <span className="truncate">{t(`customUi.slot.${s}` as MessageId)}</span>

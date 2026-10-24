@@ -1822,7 +1822,7 @@ function PiProviderForm({
                         ? <Spinner size="xs" />
                         : <IconPlugConnected size={12} />}
                     </Button>
-                    <Button variant="ghost" size={null} type="button" onClick={() => setExpandedModel(expandedModel === idx ? null : idx)} className="rounded p-0.5 text-content-muted hover:bg-surface-hover" title={expandedModel === idx ? t("settings.customModels.collapse") : t("settings.customModels.expandModel")}>
+                    <Button variant="ghost" size={null} type="button" onClick={() => setExpandedModel(expandedModel === idx ? null : idx)} className="rounded p-0.5 text-content-muted" title={expandedModel === idx ? t("settings.customModels.collapse") : t("settings.customModels.expandModel")}>
                       {expandedModel === idx ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
                     </Button>
                     <Button variant="ghost" size="icon" onClick={() => removeModel(idx)} title={t("settings.customModels.deleteModel")}>

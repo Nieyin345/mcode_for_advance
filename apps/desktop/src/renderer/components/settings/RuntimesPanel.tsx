@@ -245,7 +245,7 @@ function RuntimeRow({
           aria-expanded={expanded}
           className={cn(
             "flex shrink-0 items-center justify-center rounded p-0.5 text-content-subtle transition-colors",
-            "hover:bg-surface-hover hover:text-content",
+            " hover:text-content",
           )}
           title={t("settings.runtimes.toggleDetails")}
         >
@@ -334,7 +334,7 @@ function RuntimeRow({
               <Button variant="ghost" size={null}
                 type="button"
                 onClick={doCopyPath}
-                className="ml-2 flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[0.92em] text-content-subtle hover:bg-surface-hover hover:text-content"
+                className="ml-2 flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[0.92em] text-content-subtle hover:text-content"
                 title={t("settings.runtimes.copy")}
               >
                 {copied ? <IconCheck size={11} className="text-accent" /> : <IconCopy size={11} />}
@@ -343,7 +343,7 @@ function RuntimeRow({
               <Button variant="ghost" size={null}
                 type="button"
                 onClick={() => void api.shell.showItemInFolder({ path: activePath })}
-                className="ml-1 flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[0.92em] text-content-subtle hover:bg-surface-hover hover:text-content"
+                className="ml-1 flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[0.92em] text-content-subtle hover:text-content"
                 title={t("settings.runtimes.reveal")}
               >
                 <IconFolderOpen size={11} />

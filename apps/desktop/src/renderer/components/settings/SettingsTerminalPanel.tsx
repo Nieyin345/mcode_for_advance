@@ -265,7 +265,7 @@ function CommandsSection() {
                     <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                       <Button variant="ghost" size={null}
                         type="button"
-                        className="rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+                        className="rounded p-1 text-content-subtle hover:text-content"
                         title={t("common.edit")}
                         onClick={() => openEdit(cmd)}
                       >
@@ -273,7 +273,7 @@ function CommandsSection() {
                       </Button>
                       <Button variant="ghost" size={null}
                         type="button"
-                        className="rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-danger"
+                        className="rounded p-1 text-content-subtle hover:text-danger"
                         title={t("common.delete")}
                         onClick={() => remove(cmd.id)}
                       >

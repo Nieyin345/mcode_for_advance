@@ -77,7 +77,7 @@ function StepperButton({
       onClick={onClick}
       className={cn(
         "flex h-6 w-6 items-center justify-center rounded text-content-muted transition-colors",
-        "hover:bg-surface-hover hover:text-content",
+        " hover:text-content",
         "disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-muted",
       )}
     >
