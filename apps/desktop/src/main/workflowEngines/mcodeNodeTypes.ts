@@ -634,7 +634,7 @@ const nodeEditorUi: Record<string, {
     approval: "Approval: evaluation is read-only and never calls a model or a command. A reference this Host cannot resolve (trigger payload, structured output variables, native node status) fails the node instead of quietly choosing the false branch.",
   },
 };
-function htmlFor(type: string, params: Array<{ id: string; label: string; kind: "text" | "select" | "textarea"; options?: string[]; defaultValue?: string }>, extraDefs = ""): string {
+function htmlFor(type: string, params: Array<{ id: string; label: string; kind: "text" | "select" | "textarea"; options?: string[]; defaultValue?: string; required?: boolean }>, extraDefs = ""): string {
   const ui = nodeEditorUi[type];
   if (!ui) throw new Error("Unknown Mcode editor type: " + type);
   const rows = params.map((p) => {
@@ -651,7 +651,7 @@ function htmlFor(type: string, params: Array<{ id: string; label: string; kind: 
   RED.nodes.registerType("${type}", {
     category: "mcode",
     color: "#8ea6b8",
-    defaults: { name: { value: "" }, ${params.map((p) => `${p.id}: { value: ${JSON.stringify(p.defaultValue ?? "")} }`).join(", ")}, ${MCODE_X_MCODE_DEFAULT_ENTRY} },
+    defaults: { name: { value: "" }, ${params.map((p) => `${p.id}: { value: ${JSON.stringify(p.defaultValue ?? "")}${p.required ? ", required: true" : ""} }`).join(", ")}, ${MCODE_X_MCODE_DEFAULT_ENTRY} },
     inputs: ${type === MCODE_TRIGGER_NODE_TYPE ? 0 : 1},
     outputs: ${extraDefs === "multi" ? "function () { return Math.max(1, (this.wires && this.wires.length) || 1); }" : 1},
     icon: "font-awesome/${ui.icon}",
@@ -679,7 +679,7 @@ export function conversationNodeHtml(): string {
     { id: "instruction", label: "Instruction", kind: "textarea" },
     { id: "capability", label: "Capability", kind: "select", options: ["read", "write"] },
     { id: "outputVar", label: "Output variable", kind: "text" },
-    { id: "sessionId", label: "Mcode session ID", kind: "text" },
+    { id: "sessionId", label: "Mcode session ID", kind: "text", required: true },
   ]);
 }
 export function branchNodeHtml(): string {

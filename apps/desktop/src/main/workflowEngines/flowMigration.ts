@@ -345,6 +345,11 @@ function nativeNodeConfigOf(
       : node.capability === "read" ? "read"
       : params["capability"] === "write" ? "write" : "read";
     config.outputVar = stringOf("outputVar");
+    // A native Node-RED editor owns this field. Keep an explicitly selected
+    // session visible/editable instead of hiding it in x-mcode.params.
+    // An old mcode.main has NO inherent persisted chat identity: empty means
+    // the user must bind an existing visible session, never "current chat".
+    config.sessionId = stringOf("sessionId");
   } else if (kind === "branch") {
     config.decider = params["decider"] === "model" ? "model" : "user";
     config.outputVar = stringOf("outputVar");
@@ -446,6 +451,9 @@ function paramsFromNativeNode(node: NodeRedNode, savedParams: unknown): Record<s
     case "mcode-conversation":
       assign("instruction", "instruction", "", true);
       assign("outputVar");
+      // A native editor clear must supersede a stale imported x-mcode value;
+      // an explicit ID round-trips without silently retargeting the session.
+      assign("sessionId");
       // The native capability form is a *different* authority from stale
       // x-mcode.params: if the old doc stored a capability param, update that
       // copy as well or a later Host path may resurrect write permission.
@@ -612,8 +620,8 @@ function humanDecisionIssuesOf(
       nodeId: node.id,
       merge0Item: 1,
       message: isMain
-        ? "主代理（mcode.main）跑在「用户此刻正在看的那个对话」里；Node-RED 由事件触发时不存在这条对话。是每次运行绑定会话 id，还是禁止后台触发入口节点 —— 需人工裁决（MERGE-0 未知语义 #1）。"
-        : "对话节点跑在主对话里；Node-RED 消息流没有「用户正在看的那个对话」概念。注入目标（self / origin）如何解析需人工裁决（MERGE-0 未知语义 #1）。",
+        ? "主代理（mcode.main）原本跑在发起工作流的聊天会话里，旧图并不持久绑定一个会话。迁入 Node-RED 后必须在 mcode-conversation 节点的「Mcode 会话 ID」填写现有可见聊天会话，并经用户确认，才能部署运行；不得自动使用当前活动会话（MERGE-0 未知语义 #1）。"
+        : "对话节点原本使用发起流程的主会话；Node-RED 没有「当前聊天会话」。必须在节点的「Mcode 会话 ID」显式填写现有可见会话，并核对分享/导入后的归属，才能部署运行（MERGE-0 未知语义 #1）。",
     });
   }
   if (kind === "branch" && params["decider"] !== "model") {

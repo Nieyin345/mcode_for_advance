@@ -119,3 +119,34 @@ W8 的探针实测：`sessionId(native)=null / sidecar=null`。
 4. 两个变异各红在哪一条；
 5. **你没能验证的东西**；
 6. **卡上写错的地方**（尤其行号 —— 我引的是 W8 报的，没自己核）。
+
+
+## 结果回写（2026-10-25：实现完成，定向回归通过；真实用户部署 U1 未验）
+
+### 旧会话语义与方案
+
+- 源码依据：`apps/desktop/src/main/orchestration/nodeTypes.ts` 里的 `mcode.main`（约 631 行）与 `mcode.conversation`（约 699 行）均为 `runner.kind = "conversation"`，其 usage 写明运行在**用户发起流程的主对话**，不是工作流本身持久绑定的聊天 ID。旧 `WorkflowDoc` 不包含可安全猜出的发起会话标识。
+- 选择本任务卡的**方案 B（原生 Node-RED 编辑器显式选择/填写 ID）**：只有用户明确填写的现有可见会话才可作为执行对象；不拿 `x-mcode.docId` 冒充 chat ID，不把“当前活动聊天”静默带进可分享工作流。工作流转发/导入后，用户须核对节点的目标会话再部署。Host 仍以 `SessionRepo` 校验目标必须是存在的 `chat`，并保留原 provider / 授权 / 工作目录防线。
+- 未绑定时保持**缺省为空**，迁移报告明确说必须绑定；原生表单 `mcode-conversation.sessionId` 声明 `required: true`，在编辑器部署阶段暴露必填条件；生产 Host 的 `conversation.run` 缺失或无效 ID 返回可操作的中文错误。旧 `agent.run` / `branch.decide` 的既有错误契约不改变。
+
+### 产品修改
+
+1. `flowMigration.ts`：`prompt/conversation` 将原文档中明确设置的 `sessionId` 写入 Node-RED 原生可编辑顶层字段；反向迁移使用表单当前值覆盖 sidecar，用户清空不得从旧 `x-mcode.params` 复活；对话节点缺绑定的 `needsHumanDecision` 报告讲清处理方法。
+2. `mcodeNodeTypes.ts`：复用既有 `htmlFor`，只为 `mcode-conversation` 的会话字段声明 `required: true`，不让无关节点获得新的必填约束。
+3. `nodePackProductionPorts.ts`：只对 `conversation.run` 的缺失/无效会话使用中文拒绝信息，保留其他节点原有拒绝字符串和安全语义。
+4. 新建 `apps/desktop/scripts/mcode-conversation-session-smoke/` 三个文件：迁移与原生节点 `registerType → input → fake Host port` 的真调用路径；加一份读取真实 SQL（隔离临时 `mcode.db`）的生产端口缺参/不存在会话拒绝测试。没有写用户原始数据库。
+
+### 测试与证据
+
+- `node apps/desktop/scripts/run-smokes.mjs mcode-conversation-session-smoke flow-migration-smoke mcode-node-pack-smoke mcode-node-pack-ports-smoke`：**4 PASS / 0 FAIL**；日志 `apps/desktop/.tmp/smoke-runs/1792871193485-3784-dJCXcC/`。
+- 新套件 **20/20** 迁移与执行路径断言 + **4/4** 生产端口错误契约断言；包括 `sessionId` 原生字段、显式选择优先、清空不复活、旧 sidecar-only 格式、真实 Node-RED 输入处理器投递假 Host。
+- 项目实际 `resources/presets/workflows.json` 共 7 份：**4 份图形工作流**（`search`、`write`、`wf_auto_download`、`wf_auto_convert`）迁移无未知节点；另 **3 份是无节点的 prompt-only 预设**，不能按“Node-RED 图可执行”计。四份图中只有 **2 份含 `mcode.main`**（`search`、`write`），不是原卡所写 3 份。两份主会话节点在显式填写测试会话后均走过实际 Node-RED `input` 注册处理器 → 假 Host 端口。
+- `cd apps/desktop && node_modules/.bin/tsc.cmd --noEmit --pretty false`：EXIT=0；`git diff --check`：PASS。
+- 双向变异（每次修改后**立即恢复正确代码**）：将 `config.sessionId` 恒置空，新套件由 11/11 降至 **8/11**，原生值、回读和真实端口接收项都红；将其硬编码为其他会话，降至 **7/11**，明确绑定优先与“不伪造身份”均红。变异前后的失败详情分别在 `apps/desktop/.tmp/smoke-runs/1792870939469-22608-7F7f5R/`、`1792870951845-17904-zxQrb1/`。恢复后新套件升级到含真实预设的 20/20 再通过。
+
+### 已知验收边界
+
+- **尚未执行真 Electron U1 的“缺会话 → 编辑器阻止 Deploy”手势**；只验证真实生成的 Node-RED 节点 HTML `required:true`、迁移链和生产 Host 拒绝，不把源代码检查伪装成真 UI。
+- 真实 LLM/provider 的长会话轮次没有跑（fake Host port），只证明绑定身份经生产注册路径到达端口和生产入口的缺参拒绝。4 份图中非会话节点的**整图运行语义**不是本卡已验内容。
+- 旧卡“7/7 都含可执行图、3 张含 main”是过时断言，本轮按实际内容订正为 4 张图、其中 2 张含 main，3 张纯提示词。
+- 未放宽权限、未启用自动当前会话绑定；工作流重启自动执行的 `engine-trust.json` 授权闭环仍属另一项任务，不能从本卡绿灯推断已修。

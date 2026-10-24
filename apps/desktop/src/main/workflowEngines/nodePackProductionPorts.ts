@@ -80,9 +80,21 @@ async function runSelectedSession(
 ): Promise<{ text: string; artifacts: []; runId: string }> {
   const params = paramsOf(payload);
   const sessionId = asString(params.sessionId);
-  if (!sessionId) throw Error("Mcode sessionId is required; select an existing visible session in the node editor");
+  if (!sessionId) {
+    // W18: migrated main/conversation nodes have no implicit chat identity.
+    // Keep the established error contract for agent/branch callers (covered
+    // by mcode-node-pack-ports-smoke); give conversation users an actionable
+    // message rather than an internal field name.
+    throw Error(nodeType === "mcode-conversation"
+      ? "此对话节点尚未绑定 Mcode 聊天会话：请在 Node-RED 节点编辑器填写现有可见的「Mcode 会话 ID」，保存后重新部署。"
+      : "Mcode sessionId is required");
+  }
   const session = SessionRepo.get(sessionId);
-  if (!session || session.kind !== "chat") throw Error("Mcode Host session missing or not user-visible");
+  if (!session || session.kind !== "chat") {
+    throw Error(nodeType === "mcode-conversation"
+      ? "所选 Mcode 会话不存在或不是可用的聊天会话；请在 Node-RED 节点编辑器检查「Mcode 会话 ID」，不要使用其他人的会话标识。"
+      : "Mcode Host session missing or not user-visible");
+  }
   if (!["claude-sdk", "pi-sdk", "codex-sdk"].includes(session.providerId))
     throw Error("Mcode Host session is not backed by a supported native engine");
   const project = ProjectRepo.get(session.projectId);
