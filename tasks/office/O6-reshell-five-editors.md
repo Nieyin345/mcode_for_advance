@@ -156,6 +156,49 @@ docs / sheets / slides / pdf / markdown / html   →  genoffice/packages/ui/src/
 
 **先做 html（57 个 token，最小）** —— 用最小的验证机制成立，再推到大的。
 
+## 六之一、⚠️ UA 判据的两个前提（先验，别假设）
+
+**UI 线提醒的两个风险，我核过代码但没跑成探针 —— 你要在真 Electron 里验。**
+
+### 前提 1：`app.setName` 必须在 `whenReady` 之前调用
+
+```
+apps/desktop/src/main/index.ts:101   app.setName("Mcode");
+apps/desktop/src/main/index.ts:177   app.whenReady().then(...)
+```
+
+**101 < 177，成立。** 但**这是「读代码得到的」，不是「跑出来的」** ——
+`setName` 在 ready 之后调用时，UA 可能只对之后创建的窗口生效。**你要在真 Electron 里看一眼 UA 字符串。**
+
+### 前提 2：文档视图不能覆盖 UA
+
+```bash
+$ grep -rn "userAgent\|setUserAgent" apps/desktop/src/main/document/*.ts
+(空)
+```
+
+**没覆盖。** 但如果你发现 GenOffice 的 BrowserWindow 用了独立的 `webPreferences`，
+UA 可能不同 —— **核对 `genofficeViewFactories.ts` 创建窗口时的 `webPreferences`。**
+
+### 如果 UA 判据不成立，退路是什么
+
+**UI 线给的方向**：**在 preload 里注入一个由宿主设置的标记**。
+**代价**：宿主和 vendor 两边都要改，比 UA 贵得多。
+
+**先别走到那一步。** 先确认 UA 到底行不行 —— **一条 `console.log(navigator.userAgent)` 就够。**
+
+### ★ 这条要作为「第一个判据」先跑
+
+**在写任何 CSS 之前，先做这一步**：
+
+1. 用真 Electron 打开 html（宿主里）；
+2. 打印 `navigator.userAgent`；
+3. 把 app 名改成 `GenOffice HTML` 再跑一次；
+4. **两次的 UA 不同 → 判据成立；相同 → 停下来回报，别继续写五个格式的 CSS。**
+
+**理由**：如果 UA 判据不成立，**你写的五份 `mcode-theme.css` 全部落空**
+（和我在卡里抄 `if (window.desktop)` 是同一个错，只是换了一层）。
+
 ## 六之二、⚠️ `smokes-for.sh` 看不见这个目录 —— 那是**假阴性**，不是真的没覆盖
 
 **实测**（2026-10-24）：
