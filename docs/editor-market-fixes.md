@@ -25,7 +25,7 @@
 在 `apps/desktop` 下运行：
 
 ```sh
-node scripts/run-smokes.mjs editor-market-smoke market-smoke plugins-smoke plugins-ipc-smoke onlyoffice-smoke pdf-annotation-smoke command-runner-smoke code-runner-smoke ipc-wiring-smoke
+node scripts/run-smokes.mjs editor-market-smoke market-smoke plugins-smoke plugins-ipc-smoke pdf-annotation-smoke command-runner-smoke code-runner-smoke ipc-wiring-smoke
 ```
 
 新套件覆盖 CSP 作用域、Blob 策略、超时/代理/错误、目录替换回滚、真实子进程 CR 输出、有限缓冲、临时本地 Git 仓库克隆，以及 Electron 中的 Blob 图片/读取、外部 iframe 内联脚本、主页面内联脚本禁用、React 进度关联与解除订阅。

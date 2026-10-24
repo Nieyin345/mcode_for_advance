@@ -2,7 +2,8 @@
  * Synthetic PPTX/chart only, disposable Electron profile, no external networking.
  *
  * 【2026-10-17】`pptx-preview` 与它带进来的 `echarts` 已随三个本地 Office
- * 预览组件一起删掉(Office 预览走 OnlyOffice,见 commit e0a90713)。因此本文件
+ * 预览组件一起删掉(当时 Office 预览走 OnlyOffice,见 commit e0a90713;OnlyOffice
+ * 本身也已于 2026-10-24 删除,见 O5)。因此本文件
  * 里那条 "PPTX + ECharts + 图表实例" 的浏览器检查**不再有被测对象** —— 它测的是
  * 已移除依赖的内部行为,留着只会让 release-readiness 永远红。清理时保留的仍是
  * 有被测对象的几条:DOMPurify(经 @milkdown/crepe 传递)、Tiptap 编辑器挂载与

@@ -20,7 +20,7 @@ import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
 
 /** 当前界面语言。读不到(启动早期 DB 未就绪)就退回 `zh`(与 NotificationManager 同款兜底)。
  *  **导出**给别处共用 —— 同一句 `SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh"`
- *  曾在 `ipc/onlyoffice.ts` / `ipc/titleGen.ts` / `orchestration/library.ts`(两处) /
+ *  曾在 `ipc/onlyoffice.ts`（O5 批二已删）/ `ipc/titleGen.ts` / `orchestration/library.ts`(两处) /
  *  `mobile/mobileRpc.ts` 各写一遍(而且那些副本**没有** DB 未就绪的兜底)。一份就够。 */
 export function uiLocale(): "zh" | "en" {
   try {

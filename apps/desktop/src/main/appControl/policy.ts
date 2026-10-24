@@ -82,9 +82,9 @@ const BLOCKED: Record<string, string> = {
   "customModel.getToken": "API Key / 令牌不给模型",
   "piModels.getApiKey": "API Key 不给模型",
   "codexModels.getApiKey": "API Key 不给模型",
-  // 【MC-004】`relay.getConfig` / `onlyoffice.getConfig` / `onlyoffice.detectLocal` /
-  // `webBridge.*` / `publicMcp.*` 这一批**凭据本体方法**从前逐条列在这里或散在
-  // `DANGER` / `EXPLICIT` 里 —— 判据不统一、按名追漏正是漏掉 `relay.getConfig` 的原因。
+  // 【MC-004】`relay.getConfig` / `webBridge.*` / `publicMcp.*` 这一批**凭据本体方法**
+  // 从前逐条列在这里或散在 `DANGER` / `EXPLICIT` 里 —— 判据不统一、按名追漏正是漏掉
+  // `relay.getConfig` 的原因。
   // 现已收成下面唯一一张表 {@link CREDENTIAL_BEARING}，`policyFor` 里先于动词兜底执行。
   // 加新方法请加**那张表**，不要再往这里加。
   "voice.start": "需要麦克风音频流,只能在界面上用",
@@ -312,8 +312,6 @@ const DANGER: Record<string, string> = {
   "piModels.delete": "删除 Pi 模型提供方",
   "codexModels.save": "新增/修改 Codex 模型提供方(含密钥)",
   "codexModels.delete": "删除 Codex 模型提供方",
-  // 【MC-004】`onlyoffice.setConfig` 已收进 {@link CREDENTIAL_BEARING}(它的返回体带 jwtSecret 原文)
-  // —— 不再在这里留一条永不可达的死条目。
   // 远程访问:开了就是把这台机器交给别人。
   // 【MC-004】`webBridge.regenerateToken` / `publicMcp.*` 这一族返回体里都带凭据本体,
   // 已统一收进 {@link CREDENTIAL_BEARING}(blocked) —— 别再往这里加它们的同族方法。
@@ -440,9 +438,6 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   "projectInit.listPresets": "read",
   "projectInit.importPreset": "write",
   "outputStyle.list": "read",
-  // 【MC-004】`onlyoffice.detectLocal` 从前钉在这里 —— 它返回体里带 jwtSecret,已收进
-  // {@link CREDENTIAL_BEARING}(blocked)。要看状态用 `onlyoffice.status`(连通性,不含密钥)。
-  "onlyoffice.sessionState": "read",
   "theme.get": "read",
   "voice.modelList": "read",
   "voice.getModelDir": "read",
@@ -483,21 +478,12 @@ const READ_VERB = /^(list|get|read|status|search|info|stats|overview|catalog|his
  *
  * ⚠️ **加新方法之前先问**:它返回的字段里有没有**可直接拿去用的**凭据?
  * 若是「有没有配 / 连没连上 / 地址是什么」这类**摘要**,不要加进来 —— 那是该给模型看的
- * (`relay.status` / `onlyoffice.status` / `mobile.getStatus` / `git.status` 就是不收的先例)。
+ * (`relay.status` / `mobile.getStatus` / `git.status` 就是不收的先例)。
  * 真需要状态,请给那个域加一个**不含密钥的摘要方法**。
  */
 const CREDENTIAL_BEARING = new Map<string, string>([
   // 中继配置含明文 SSH 密码(`RelayVpsConfig.password`)。要看状态用 relay.status。
   ["relay.getConfig", "中继配置含明文 SSH 密码;要看状态用 relay.status(不含凭据)"],
-  // ONLYOFFICE 配置含文档服务器的 JWT 密钥(`jwtSecret`,签发/伪造回调令牌用)。
-  // 要看状态用 onlyoffice.status(连通性)或 onlyoffice.sessionState(会话)。
-  ["onlyoffice.getConfig", "只读配置里有 JWT 密钥;要看状态用 onlyoffice.status"],
-  // 本机探测结果里带着同一个 jwtSecret(见 localInstall 的 detectLocal)。
-  ["onlyoffice.detectLocal", "本机探测结果里带 JWT 密钥;要看状态用 onlyoffice.status"],
-  // 【MC-004 复核补漏】写入口**返回的也是同一份 `OnlyOfficeConfig`**(含 `jwtSecret` 原文,
-  // 见 `setOnlyOfficeConfig` 的返回)。从前它只走 DANGER(每次弹卡),模型点一次卡就能拿到
-  // 密钥 —— 与 `getConfig` 同一条洞。设置页经 `window.api` 直接调,不走这里,不受影响。
-  ["onlyoffice.setConfig", "写入返回体里带 JWT 密钥;配置请在 设置 → 文档工具链 里改"],
   // 扩展桥状态里带 `token`(浏览器扩展的配对令牌,拿到即可冒充扩展)。
   ["webBridge.status", "状态里带浏览器扩展配对令牌,拿到即可冒充扩展"],
   ["webBridge.regenerateToken", "返回新的扩展配对令牌(已连的扩展会被断开)"],
@@ -639,7 +625,6 @@ export const DOMAIN_LABELS: Record<string, string> = {
   clipboard: "剪贴板",
   browser: "内置浏览器(界面层):书签、设备模拟、缓存、历史、下载",
   lsp: "语言服务器",
-  onlyoffice: "OnlyOffice 文档编辑",
   notification: "系统通知偏好、聚焦对话",
   voice: "语音输入模型",
   app: "应用:版本信息、数据目录、检查更新",
@@ -715,7 +700,6 @@ export const DOMAIN_TASK_ALIASES: Record<string, readonly string[]> = {
   clipboard: ["剪贴板", "复制", "clipboard", "copy"],
   browser: ["浏览器", "内嵌浏览器", "网页", "browser", "web page"],
   lsp: ["语言服务器", "lsp", "language server"],
-  onlyoffice: ["office", "文档编辑", "docx", "xlsx"],
   notification: ["通知", "notification", "提醒"],
   voice: ["语音输入", "语音模型", "voice"],
   app: ["应用信息", "版本", "更新", "version", "update"],

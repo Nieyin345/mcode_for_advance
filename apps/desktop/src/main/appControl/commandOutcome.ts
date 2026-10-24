@@ -230,15 +230,6 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   // `skills.enginesSetBulk` 走 `writeEnginesMap` → `atomicWrite`(temp + rename,失败时
   // 目标原样),抛错即"没写" → refusal。与上面的 presets 非原子写相反。
   ["skills.enginesSetBulk", { falseMeans: "refusal" }],
-  /* ── 【MC-066 残余① 续】onlyoffice 域 ─────────────────────────────────────
-   *
-   * `onlyoffice.forceSave`:`forceSave(sessionKey)` 的 `{ok:false,error}` 里有一条是
-   * **已经向 DS 发出 forcesave 命令之后**才失败(HTTP 非 2xx / 命令被拒 / 等本地回写超时)——
-   * 远端文档可能已经落了一部分,重试前要先查真实状态 → `maybePartial`(UNCERTAIN)。
-   * `onlyoffice.close`:`closeSession` 返回 false 只表示「session 不存在」(没碰到任何东西)
-   * → `refusal`。 */
-  ["onlyoffice.forceSave", { falseMeans: "maybePartial" }],
-  ["onlyoffice.close", { falseMeans: "refusal" }],
   /* ── 【MC-066 残余① 续】skills 写类域 ────────────────────────────────────
    *
    * `ipc/skills.ts` 的写类 handler 合法返回 `{ok:false,…}`(不抛异常),从前**没登记**

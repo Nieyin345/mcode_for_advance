@@ -4,12 +4,14 @@
  *
  * ## 为什么从 toolchain.ts 里拆出来
  *
- * `agentEnv` 只要一个同步的纯函数(`systemToolBinDirs`),而 `toolchain.ts` 自从把
- * OnlyOffice 并进工具链,就静态引入了 `onlyoffice/localInstall` 与 `OnlyOfficeBridge`
+ * `agentEnv` 只要一个同步的纯函数(`systemToolBinDirs`),而 `toolchain.ts` 当时
+ * 静态引入了 `onlyoffice/localInstall` 与 `OnlyOfficeBridge`
  * (→ `repositories` → `db` → sql.js、`logger` → electron)。于是只想要一张路径表的
  * `agentEnv`(以及声明「纯函数、没有桩」的 agent-env-smoke)被连坐拉进了整个存储层,
  * smoke 在运行时直接死在 `Dynamic require of "fs"` 上。这里只依赖 node:fs / node:path
  * 与契约里的工具 id 表。
+ * （2026-10-24 O5 批二：OnlyOffice 已删，上面那条「连坐」的成因不复存在；拆分本身
+ * 仍然成立 —— 纯路径表不该依赖存储层。）
  */
 import { accessSync, constants, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";

@@ -1,7 +1,14 @@
 import { PANEL_SCHEME } from "@contracts/customUiPanel";
 /** CSP belongs to Mcode's renderer document, not to every response in the
- * default session. In particular, keep Document Server iframe headers intact. */
-export function desktopCsp(requestUrl: string, rendererUrl: string, officeOrigin = ""): string | null {
+ * default session. In particular, keep an embedded external editor's iframe
+ * headers intact.
+ *
+ * `extraFrameOrigin` adds one trusted external origin to the policy. Production
+ * no longer passes it (OnlyOffice, its only caller, was removed on 2026-10-24);
+ * `editor-market-smoke`'s Electron fixture still uses it to stand up a local
+ * editor origin. Keep the guard below: an invalid origin must never be able to
+ * inject directives into the main renderer's policy. */
+export function desktopCsp(requestUrl: string, rendererUrl: string, extraFrameOrigin = ""): string | null {
   const clean = (value: string): string => {
     // WHATWG URL parsing silently drops TAB/LF/CR and leading/trailing
     // whitespace. Comparing only the parsed result can accidentally apply
@@ -16,10 +23,10 @@ export function desktopCsp(requestUrl: string, rendererUrl: string, officeOrigin
   };
   try { if (clean(requestUrl) !== clean(rendererUrl)) return null; }
   catch { return null; }
-  let office = "";
+  let extra = "";
   try {
-    const url = new URL(officeOrigin);
-    if (url.protocol === "http:" || url.protocol === "https:") office = ` ${url.origin}`;
+    const url = new URL(extraFrameOrigin);
+    if (url.protocol === "http:" || url.protocol === "https:") extra = ` ${url.origin}`;
   } catch { /* not configured */ }
-  return `default-src 'self'${office}; script-src 'self' 'wasm-unsafe-eval'${office}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'${office}; img-src 'self' data: blob:${office}; font-src 'self' data:${office}; frame-src 'self' ${PANEL_SCHEME}:${office}; connect-src 'self' blob:${office}`;
+  return `default-src 'self'${extra}; script-src 'self' 'wasm-unsafe-eval'${extra}; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'${extra}; img-src 'self' data: blob:${extra}; font-src 'self' data:${extra}; frame-src 'self' ${PANEL_SCHEME}:${extra}; connect-src 'self' blob:${extra}`;
 }

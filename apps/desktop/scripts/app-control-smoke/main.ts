@@ -104,15 +104,11 @@ check("清单里没有构建机绝对路径", !API_CATALOG.some((e) => /[A-Z]:\/
 // 【MC-004】**凭据本体方法**必须整族 blocked:判据是「返回体里带可直接拿去用的凭据」,
 // 不是「名字里带密钥词」。钉在这里的是**一族**,不是五个方法 —— `publicMcp` 整个域
 // (每个方法都返回同一份 `publicMcpStatus()`,含主密钥 + 各项目链接密钥)与
-// `webBridge` 的对、`onlyoffice` 的配置/探测。撤掉 `CREDENTIAL_BEARING` 里任一条 → 红。
+// `webBridge` 的对。撤掉 `CREDENTIAL_BEARING` 里任一条 → 红。
 {
   const CREDENTIAL_METHODS = [
     // 中继配置(明文 SSH 密码)。从前单列在 BLOCKED,现在归一族。
     "relay.getConfig",
-    // ONLYOFFICE 配置 / 本机探测 / **写入**(写入口返回的也是同一份含 jwtSecret 的配置)。
-    "onlyoffice.getConfig",
-    "onlyoffice.detectLocal",
-    "onlyoffice.setConfig",
     // 扩展桥:状态与重置都返回配对令牌。
     "webBridge.status",
     "webBridge.regenerateToken",
@@ -141,8 +137,8 @@ check("清单里没有构建机绝对路径", !API_CATALOG.some((e) => /[A-Z]:\/
   const guided = CREDENTIAL_METHODS.filter((m) => (policyFor(m).reason ?? "").length >= 8);
   check("★ MC-004:每条都有引导语(要看状态走哪条路)", guided.length === CREDENTIAL_METHODS.length, guided);
   // **正控:不含密钥的同域摘要方法照常是 read** —— 别把整域一刀切,那会让模型连
-  // "OnlyOffice 通没通"都问不了(与 relay.getConfig 收进黑名单而 relay.status 不收同一条)。
-  const READ_OK = ["relay.status", "onlyoffice.status", "onlyoffice.sessionState", "mobile.getStatus"];
+  // 同域摘要都问不了(与 relay.getConfig 收进黑名单而 relay.status 不收同一条)。
+  const READ_OK = ["relay.status", "mobile.getStatus", "git.status"];
   const wronglyBlocked = READ_OK.filter((m) => policyFor(m).level !== "read");
   check("★ MC-004 正控:不含密钥的同域摘要方法仍是 read", wronglyBlocked.length === 0, wronglyBlocked.map((m) => `${m}=${policyFor(m).level}`));
   // 族与 `isCredentialBearingMethod` 一致(两个出口同一个判据,别分家)。
@@ -150,7 +146,7 @@ check("清单里没有构建机绝对路径", !API_CATALOG.some((e) => /[A-Z]:\/
     "★ MC-004:isCredentialBearingMethod 与族表一致",
     CREDENTIAL_METHODS.every((m) => isCredentialBearingMethod(m)) &&
       !isCredentialBearingMethod("relay.status") &&
-      !isCredentialBearingMethod("onlyoffice.status"),
+      !isCredentialBearingMethod("git.status"),
   );
 }
 const levels = new Map<string, number>();
@@ -540,7 +536,6 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     piProviderKeys: JSON.stringify({ p1: "RU5DSVBIRVJFRF9BUFBfS0VZ" }),
     codexProviderKeys: JSON.stringify({ c1: "RU5DSVBIRVJFRF9BUFBfS0VZ" }),
     "relay.vpsConfig": JSON.stringify({ host: "1.2.3.4", sshPort: 22, username: "root", password: "S3cr3t-vps-pw!", publicPort: 7331 }),
-    "onlyoffice.config": JSON.stringify({ baseUrl: "http://x", jwtSecret: "my-jwt-signing-secret-abc" }),
     "publicMcp.projectLinks": JSON.stringify([{ projectId: "p1", secret: "Pr0j3ctL1nkS3cr3t-abcdefghijklmnop", sessionId: null }]),
     "mobile.pairedDevices": JSON.stringify([{ deviceId: "dev_ab12", name: "Pixel", pairedAt: 1, lastSeenAt: 1, deviceToken: "0123456789abcdef".repeat(4) }]),
     // MCP server 的 env/headers 里常放 API key / Authorization 头,而键名不含密钥词。
@@ -583,7 +578,7 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
     check(`★ 结构性判据不分大小写:${key} 也被挡`, r.isError === true, textOf(r));
   }
   // ⚠️ **"整块 JSON、键名不含密钥词"的另几个实例(2026-10-09)。** 它们的键名
-  // (`relay.vpsConfig` / `onlyoffice.config` / `publicMcp.projectLinks` / `mobile.pairedDevices`)
+  // (`relay.vpsConfig` / `publicMcp.projectLinks` / `mobile.pairedDevices`)
   // 两道键名正则都不命中,而值是**一个字符串**,里面嵌着 `password`/`jwtSecret`/`secret`/
   // `deviceToken`。`renderResult` 只按值的**形态**认密钥,认不出前面三个 —— 而
   // `mobile.pairedDevices` 的令牌**恰好**是 64 位十六进制、被"值的形态"那道偶然拦下,
@@ -594,7 +589,6 @@ const call = (method: string, input: unknown, ctx: ProviderContext) => invokeApp
   // 确实没进返回文本)。
   const LEAK_KEYS: Array<[string, string]> = [
     ["relay.vpsConfig", "S3cr3t-vps-pw!"],
-    ["onlyoffice.config", "my-jwt-signing-secret-abc"],
     ["publicMcp.projectLinks", "Pr0j3ctL1nkS3cr3t-abcdefghijklmnop"],
     ["mobile.pairedDevices", "dev_ab12"],
     ["mcp.management", "ghp_SENTINEL_MCP_TOKEN_1234567890"],
@@ -2250,25 +2244,6 @@ console.log("\n§ARC-002 用户派生工具：检索 → help → 结构化执�
   check("★ MC-011:library.importFiles 不是信封方法(聚合合同另立一张表)", isEnvelopeMethod("library.importFiles") === false);
   check("★ MC-011:isAggregateMethod 认得聚合族", isAggregateMethod("skills.import") && isAggregateMethod("library.importNotes") && isAggregateMethod("library.importGeneric"));
   check("★ MC-011 正控:isAggregateMethod 不认信封方法", isAggregateMethod("skills.save") === false && isAggregateMethod("browser.create") === false);
-}
-
-/* ── 3d-9. 【MC-066 残余① 续】onlyoffice 域 ──────────────────────────────────
- *
- * `onlyoffice.forceSave` 的 ok:false 可能在**已向 DS 发出 forcesave 命令之后**才出现
- * (HTTP 非 2xx / 命令被拒 / 等本地回写超时)—— 远端文档可能已落一部分 → UNCERTAIN。
- * `onlyoffice.close` 的 closeSession 返回 false 只表示 session 不存在(没碰任何东西)→ REJECTED。 */
-{
-  const { ctx } = ctxWith({ allow: true });
-  recordRpcHandler("onlyoffice:forceSave", async () => ({ ok: false as const, error: "Command Service error 4" }));
-  recordRpcHandler("onlyoffice:close", async () => ({ ok: false as const }));
-  {
-    const r = await invokeAppTool("app_api_call", { method: "onlyoffice.forceSave", input: { sessionKey: "k1" } }, "me", ctx);
-    check("★ MC-066:onlyoffice.forceSave 合法 ok:false → UNCERTAIN(命令已发出,可能半成)", opResultOf(r)?.resultKind === "UNCERTAIN", opResultOf(r));
-  }
-  {
-    const r = await invokeAppTool("app_api_call", { method: "onlyoffice.close", input: { sessionKey: "k_gone" } }, "me", ctx);
-    check("★ MC-066:onlyoffice.close 合法 ok:false → REJECTED(session 不存在)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
-  }
 }
 
 /* ── 3d-10. 【MC-066 残余① 续】skills 市场域 与 library.writeHighlights ──────

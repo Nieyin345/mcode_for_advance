@@ -1,5 +1,12 @@
 /**
- * t101-office-genoffice-fallback-smoke —— 【T101】OnlyOffice 未配置时的第二条路。
+ * t101-office-genoffice-fallback-smoke —— 【T101】GenOffice 视图的可用性判据。
+ *
+ * ⚠️ O5 批二（2026-10-24）：OnlyOffice 已删，本套原先验的「OnlyOffice 未配置时的
+ * 第二条路」这个**场景**不复存在。但**核心判据**（`isGenofficeViewAvailableFor`）
+ * 没有消失 —— 批三之后它是 office 文件**唯一**的打开判据。本套保留，场景描述改在
+ * 这里；`office` 入参改用 `@contracts/documentKind` 的等价判据
+ * （`isOfficeDocumentKind(documentKindOf(x))`，与被删的 `isOnlyOfficeSupportedPath`
+ * 是同一组扩展名表）。
  *
  * ## 它验的是哪一层（**名字要说清**）
  *
@@ -24,8 +31,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
-import { isOnlyOfficeSupportedPath } from "@contracts/ipc";
+import { documentKindOf, isOfficeDocumentKind } from "@contracts/documentKind";
 import { isGenofficeViewAvailableFor } from "@renderer/components/ide/fileEditorKinds.js";
+
+/** 这个文件是不是 Office 文档 —— 与被删的 `isOnlyOfficeSupportedPath` 等价
+ *  （可编辑档 ∪ 只读档，同一组扩展名）。 */
+const isOfficePath = (p: string): boolean => isOfficeDocumentKind(documentKindOf(p));
 
 let passed = 0;
 const failures: string[] = [];
@@ -54,7 +65,7 @@ const ALL = { pdf: true, markdown: true, html: true, sheets: true, slides: true,
  */
 function forPath(filePath: string, hosts: Partial<Record<string, boolean>> | undefined): boolean {
   return isGenofficeViewAvailableFor({
-    office: isOnlyOfficeSupportedPath(filePath),
+    office: isOfficePath(filePath),
     nativeViewReady: true,
     host: genofficeAppForPath(filePath),
     hosts,
@@ -70,12 +81,12 @@ for (const f of ["/w/a.docx", "/w/a.xlsx", "/w/a.pptx"]) {
 /* ================== 2. 不该给出口的，一个都不给 ================== */
 section("2. 不该给出口的情形");
 
-// 2a. **本判据存在的首要理由**：OnlyOffice 认得比 GenOffice 多。
+// 2a. **本判据存在的首要理由**：Office 格式表比 GenOffice 路由表宽。
 {
   const gap = ["/w/a.docm", "/w/a.dotx", "/w/a.xltx", "/w/a.pptm", "/w/a.potx"];
   for (const f of gap) {
-    // 前提：这五个确实「OnlyOffice 认、GenOffice 不认」—— 否则这条断言没在验东西。
-    check(`  [前提] ${f} 被 OnlyOffice 认`, isOnlyOfficeSupportedPath(f) === true);
+    // 前提：这五个确实「是 Office 文档、GenOffice 不路由」—— 否则这条断言没在验东西。
+    check(`  [前提] ${f} 是 Office 文档`, isOfficePath(f) === true);
     check(`  [前提] ${f} 无 GenOffice 路由`, genofficeAppForPath(f) === undefined, genofficeAppForPath(f));
     check(`★ ${f} 不给出口（给了就是死按钮）`, forPath(f, ALL) === false);
   }

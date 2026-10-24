@@ -39,7 +39,7 @@
  *
  * ## 哪些**不算**(别误伤)
  *
- * 「有没有配 / 连没连上 / 地址是什么」这类**摘要**不是密钥本体:`onlyoffice.status`、
+ * 「有没有配 / 连没连上 / 地址是什么」这类**摘要**不是密钥本体:`relay.status`、
  * `mobile.getStatus`、`git.status` 这些**方法**的返回体不含凭据(与 {@link SECRET_SETTING_KEYS}
  * 无关);设置键里 `app.dataRoot` / `ui.*` 这些是路径与偏好,照常可读可导出。
  *
@@ -55,7 +55,13 @@ export const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set([
   // ── 名字里一个密钥词都没有、值里却嵌着凭据的(2026-10-09 补的那批)──
   /** SSH 主机 + 用户 + **password**(见 `@contracts/relay` 的 `RelayVpsConfig`)。 */
   "relay.vpsConfig",
-  /** 服务地址 + **JWT 签名密钥**(`jwtSecret`,能签发/伪造 OnlyOffice 令牌)。 */
+  /** 服务地址 + **JWT 签名密钥**（`jwtSecret`）。
+   *
+   *  ⚠️ **O5 批二（2026-10-24）删掉了 OnlyOffice 功能，但这个键名必须留着。**
+   *  用户盘上可能还存着这条设置（值里是明文的 JWT 密钥）。把它从名单里删掉不会
+   *  让旧值消失，只会让它**不再被当密钥** —— `setting.get` 能把它交给模型、导出
+   *  设置能把它写进分享出去的文件。清理旧值是另一件事（数据迁移），见
+   *  `tasks/office/O5-remove-onlyoffice.md` §四之3。 */
   "onlyoffice.config",
   /** 每条项目链接的 `/mcp/<secret>` 明文密钥(见 `publicMcpSession.ts`)。 */
   "publicMcp.projectLinks",

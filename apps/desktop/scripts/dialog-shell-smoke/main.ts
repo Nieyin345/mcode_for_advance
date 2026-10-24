@@ -333,7 +333,7 @@ console.log("\n1. 文件 / 目录选择:取消、空、多选");
     check("★ 中文界面:同一条变回中文", zh?.title === "选择图片", zh?.title);
 
     // ★ **界面语言规则只有一份。** `SettingRepo.get(UI_LOCALE_SETTING_KEY) === "en" ? "en" : "zh"`
-    //   曾在 onlyoffice / titleGen / orchestration.library(两处) / mobileRpc 各内联一遍
+    //   曾在 onlyoffice（O5 批二已删）/ titleGen / orchestration.library(两处) / mobileRpc 各内联一遍
     //   (那些副本还没有 DB 未就绪的兜底)。现在都走 `dialogText.uiLocale`。判据钉在源码上:
     //   那几个文件里不许再出现内联的三元。
     {
@@ -341,7 +341,6 @@ console.log("\n1. 文件 / 目录选择:取消、空、多选");
       const { join } = await import("node:path");
       const root = process.cwd();
       const files = [
-        "src/main/ipc/onlyoffice.ts",
         "src/main/ipc/titleGen.ts",
         "src/main/orchestration/library.ts",
         "src/main/orchestration/runner.ts",

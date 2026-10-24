@@ -105,6 +105,9 @@ const EXCLUDED_KEYS = new Set<string>([
   "ui.projectGroups",
   "project.colors",
   "relay.vpsConfig",
+  // O5 批二（2026-10-24）：OnlyOffice 功能已删，但用户盘上可能还存着这条设置
+  // （值是含 JWT 密钥的 JSON）。删掉这一条不会让旧值消失，只会让导出把旧密钥
+  // 写进分享出去的文件 —— 保留排除，清理旧值是另一件事（见 O5 §四之3）。
   "onlyoffice.config",
   "mobile.enabled",
   "mobile.port",

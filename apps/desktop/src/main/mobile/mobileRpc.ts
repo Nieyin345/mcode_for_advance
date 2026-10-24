@@ -66,10 +66,7 @@ import {
   GetManySettingsSchema,
   ProviderHealthCheckSchema,
   ProviderCommandsSchema,
-  OnlyOfficeOpenSchema,
-  OnlyOfficeSessionSchema,
 } from "@contracts/ipc";
-import { nativeTheme } from "electron";
 import type {
   SaveMessagesInput,
   UpsertMessagesInput,
@@ -80,7 +77,6 @@ import { SessionRepo, ProjectRepo, MessageRepo, SettingRepo } from "@main/store/
 import { probeProviderHealth, providerRegistry } from "@main/providers/registry.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { log } from "@main/lib/logger.js";
-import { uiLocale } from "@main/lib/dialogText.js";
 import {
   broadcastProjectsChanged,
   broadcastSessionChanged,
@@ -110,7 +106,6 @@ import { generateSessionTitle } from "@main/ipc/titleGen.js";
 // 研究脚本)是两件事,别被名字带偏 —— 见 `main/ipc/orchestration.ts` 文件头。
 import { getWorkflow, listWorkflows } from "@main/orchestration/library.js";
 import { workflowReviewError } from "@main/orchestration/workflowTrust.js";
-import { closeSession, openOnlyOfficeSession } from "@main/onlyoffice/OnlyOfficeBridge.js";
 import {
   beginChannelOperation,
   channelOperationResult,
@@ -294,22 +289,8 @@ const HANDLERS: Record<string, RpcHandler> = {
   // A paired phone may open an Office file only in the view-only surface.
   // The desktop bridge still enforces workspace-root/path checks and this
   // transport deliberately never exposes forceSave or write permissions.
-  "onlyoffice:open": async (raw) => {
-    const input = OnlyOfficeOpenSchema.parse(raw);
-    // 界面语言规则只有一份(`dialogText.uiLocale`,带 DB 未就绪兜底)。
-    return openOnlyOfficeSession(input.filePath, {
-      lang: uiLocale(),
-      dark: nativeTheme.shouldUseDarkColors,
-      userName: "Mcode",
-      mode: "view",
-      deviceType: "mobile",
-    });
-  },
-
-  "onlyoffice:close": (raw) => {
-    const input = OnlyOfficeSessionSchema.parse(raw);
-    return { ok: closeSession(input.sessionKey) };
-  },
+  // ⚠️ O5 批二（2026-10-24）：OnlyOffice 已删，这两条通道与桌面端一起移除 ——
+  // 手机查看 Office 文档改走 GenOffice 视图（renderer 侧，批三接）。
 
   /** 终端列表 —— **只读的一条**,手机端拿它显示"这台电脑上开着哪些终端、谁开的"。
    *

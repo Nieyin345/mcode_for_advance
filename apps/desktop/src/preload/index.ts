@@ -787,26 +787,6 @@ const api = {
     usage: ((input) => ipcRenderer.invoke(IPC.TOOLS_USAGE, input)) as RpcMap["tools.usage"],
   },
 
-  /** OnlyOffice Document Server：Office 文档（docx / xlsx / pptx…）可视化编辑。
-   *  编辑器本体由 DS 的 api.js 在渲染端起；这里只管开会话 / 存 / 关 / 配置。 */
-  onlyoffice: {
-    open: ((input) =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_OPEN, input)) as RpcMap["onlyoffice.open"],
-    forceSave: ((input) =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_FORCE_SAVE, input)) as RpcMap["onlyoffice.forceSave"],
-    sessionState: ((input) =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_SESSION_STATE, input)) as RpcMap["onlyoffice.sessionState"],
-    close: ((input) =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_CLOSE, input)) as RpcMap["onlyoffice.close"],
-    status: (() => ipcRenderer.invoke(IPC.ONLYOFFICE_STATUS)) as RpcMap["onlyoffice.status"],
-    getConfig: (() =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_GET_CONFIG)) as RpcMap["onlyoffice.getConfig"],
-    setConfig: ((input) =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_SET_CONFIG, input)) as RpcMap["onlyoffice.setConfig"],
-    detectLocal: (() =>
-      ipcRenderer.invoke(IPC.ONLYOFFICE_DETECT_LOCAL)) as RpcMap["onlyoffice.detectLocal"],
-  },
-
   outputStyle: {
     list: ((input) =>
       ipcRenderer.invoke(IPC.OUTPUT_STYLE_LIST, input)) as RpcMap["outputStyle.list"],

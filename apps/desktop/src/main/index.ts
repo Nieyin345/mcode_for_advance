@@ -53,8 +53,6 @@ import { log } from "@main/lib/logger.js";
 import { setManagedRuntimeRoot } from "@main/runtimes/managedRuntimeRoots.js";
 import { setToolRoot } from "@main/env/managedToolRoots.js";
 import { applyAgentEnvironment } from "@main/env/agentEnv.js";
-import { getOnlyOfficeOrigin, shutdownOnlyOfficeBridge, flushOnlyOfficeSessions } from "@main/onlyoffice/OnlyOfficeBridge.js";
-import { showOnlyOfficeSaveError } from "@main/onlyoffice/persistenceAlerts.js";
 import { join } from "node:path";
 import { configureLibraryEvents, notifyLibraryChanged } from "@main/library/broadcast.js";
 import { importAnyFiles } from "@main/library/importDispatch.js";
@@ -281,7 +279,7 @@ app.whenReady().then(async () => {
   // strict CSP would block, leaving the page blank.
   if (is.prod) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-      const policy = desktopCsp(details.url, pathToFileURL(join(__dirname, "../renderer/index.html")).href, getOnlyOfficeOrigin() ?? "");
+      const policy = desktopCsp(details.url, pathToFileURL(join(__dirname, "../renderer/index.html")).href);
       if (!policy) { callback({}); return; }
       const headers = { ...details.responseHeaders };
       for (const name of Object.keys(headers)) if (name.toLowerCase() === "content-security-policy") delete headers[name];
@@ -464,12 +462,8 @@ app.on("before-quit", (event) => {
         const timeout = new Promise<void>((r) => setTimeout(r, 3000).unref());
         try { await Promise.race([BrowserManager.saveCookieVault(), timeout]); }
         catch (error) { log.warn(`cookie vault flush failed: ${String(error)}`); }
-        await flushOnlyOfficeSessions();
         sessionCookiesFlushed = true;
         app.quit();
-      } catch (error) {
-        // Keep the callback server, DB and other services alive for retry.
-        showOnlyOfficeSaveError(error);
       } finally {
         quitPreparationPending = false;
         if (!sessionCookiesFlushed) {
@@ -491,7 +485,6 @@ app.on("before-quit", (event) => {
   BridgeRegistry.disposeAll();
   stopExtensionBridge();
   disposePublicMcp();
-  shutdownOnlyOfficeBridge();
   TerminalManager.disposeAll();
   // agent 起的后台进程(npm run dev 之类)不会随应用退出,这里杀掉。
   disposeAllAgentResources();
