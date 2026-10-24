@@ -1,6 +1,6 @@
 # W28｜单屏机器上，U1 骨架永远红：无副屏分支把窗口摆到了所有显示器之外
 
-- Status: ready-for-agent
+- Status: **delivered（回写已追加；改动未提交，见 `## 结果回写`）**
 - Category: **测试基础设施缺陷（影响全部 U1 套件）**
 - Priority: **P0 —— 换一台单屏机器、或这台一直单屏，所有 U1 套件就永远是红的**
 - Depends on: W24（发现者）
@@ -217,6 +217,176 @@ grep "U1 host window:" <证据目录>/run-g1.log
 
 ---
 
+## 结果回写（W28，2026-10-25 02:40）
+
+> **改动未提交**（总控统一提交）。改动只有 `apps/desktop/scripts/electron-u1/driver/runner.ts`
+> 一个文件（+ 新增无头套件 `apps/desktop/scripts/u1-placement-smoke/`）。
+> **本机单屏**（Electron 44.4.5 实测 `displays: 1`，主屏 1463×823，workArea 1463×775），
+> 所以**每一趟 U1 都走无副屏分支**（每个证据目录的 `run-g*.log` 都核过 `U1 host window:` 那一行）。
+
+### 1. 改前 / 改后的坐标（实测值）
+
+| | 无副屏分支返回 | 日志 `U1 host window:` |
+|---|---|---|
+| **改前** | `{ x: wa.x + wa.width + 80, y: wa.y + wa.height + 80 }` = **`(1543, 903)`** | `offscreen right-below primary work area 1463x775 (no secondary display) (x=1543, y=903)` |
+| **改后** | `{ x: wa.x + 20, y: wa.y + 20 }` = **`(20, 20)`** | `inside primary work area (invisible) 1463x775 (no secondary display) (x=20, y=20)` |
+
+**注**：卡面写的是 `(1543, 855)`（W24 探针时的 workArea 高度 815）；本机现在的 workArea 是
+1463×**775**，所以同一个表达式今天算出 **903**。**表达式一致、数值随 workArea 变** ——
+这也是判据不能写死数字的原因（见第 2 节）。
+
+**另外改了的两处**：
+
+- `placement` 现在**自带 `opacity`**（无副屏 → 0；副屏 → 1；`screen` 不可用兜底 → 1）。
+  这是为了让「屏内必须靠 opacity 隐身」这件事跟位置**同源**，不再由调用方各自决定。
+  副屏分支**保持 1**：`副屏 + opacity 0` **没测过**（见第 5 节）。
+- 注释：`pickHostWindowPlacement` 的整段文件头（条件 / 优先级 / 出处 / 后果）、
+  调用点那段「离屏 + opacity 0 会抛」的错误因果、`createWindow` 上方那句
+  「放在屏幕外且透明」（单屏上现在是屏内，这句已经变成假的）—— **三处都写了条件 + 出处 + 后果**，
+  没有写「我实测过所以对」。
+
+### 2. 纯函数断言怎么写的
+
+**把算术内核抽成导出的 `chooseHostWindowPlacement(primary, others)`**，`pickHostWindowPlacement`
+只负责读 `screen` 和兜底；判定逻辑只有一份。新套件
+`apps/desktop/scripts/u1-placement-smoke/`（`main.ts` + `run.sh` + `stubs/electron.ts`）**直接 import 真身**，
+不在套件里抄逻辑。
+
+`run.sh` 用 esbuild 打包：`--alias:electron=<全显式抛错的桩>`（`runner.ts` 顶层不碰 electron，
+真碰了会当场炸）+ `--external:@main/*`（`runner.ts` 函数体内有几处 `await import("@main/...")`，
+esbuild 会把动态 import 也打进 bundle，整套主进程图会被拖进来 —— 本套只要纯算术那一块）。
+
+**9 条断言**，其中两条是**判据自检（正控）**，其余七条分三组：
+
+| 组 | 断言 |
+|---|---|
+| 自检 | `inside()` 认得出屏内点 **且** 把旧坐标 `(1543,903)` 判为屏外 —— **没有这两条，`return true` 的实现会让主判据恒绿** |
+| 无副屏 | ① 原点落在 `workArea` 内；② `note` 不含 `offscreen` 且说明没有副屏；③ `opacity === 0` |
+| 无副屏 + 原点非零 | 主屏 workArea 从 `(1920,-200)` 起时坐标**仍在该 workArea 内** —— 防「把 20,20 写死成绝对坐标」 |
+| 有副屏 | ① 落在副屏 `workArea` 内且内缩 60；② `note` 带 id；③ `opacity === 1` |
+
+`inside()` 用半开区间 `[x, x+width) × [y, y+height)`，**不是** `<= x+width`
+（窗口正好压在右边界上时，那不是「屏内」）。
+
+### 3. 本机单屏 —— U1 实跑结果（**截图步骤过没过**）
+
+**本机只有一块屏**（探针输出 `displays: 1`），所以每趟都走无副屏分支。
+每趟都用 `grep "U1 host window:" <证据目录>/run-g*.log` 核过 —— **全部是
+`inside primary work area ... (no secondary display)`，没有一条走副屏分支**（判据 5 的坑已避开）。
+
+| 套件 | 结果 | 截图步骤 | 说明 |
+|---|---|---|---|
+| **`t7-genoffice-u1`** | **`T7: PASS`，EXIT=0，6/6 旅程** | **28 个截图步骤，全部 PASS**（0 条 FAIL） | 六个 GenOffice 编辑器全绿；12 次建窗口全部 `inside primary work area` |
+| **`t8-node-red-u1`**（run 4） | **`T8: PASS`，EXIT=0** | 7 个截图步骤全 PASS（3+2+2） | 见下「抖动」 |
+| `t8-node-red-u1`（run 1/3/5） | EXIT=2，但**不是截图位置问题** | run1：截图全过，红在 `canvas-label-shows-rename`；run3：`step-09-screenshot` 红（**`Current display surface not available`**）；run5：红在 `canvas-label-shows-rename` | 见下「抖动」 |
+| `t30-document-tools-u1` | EXIT=2，**失败点前移到 `apps-discovery`**（`目录总数不是 139`） | `docs-editor-opened` / `docs-fixture-text-visible` 两个截图步骤 **PASS** | **与 W24 临时变异时观察到的失败点完全一致**；`139→140` 是 W24 §4 记过的过期字面量，不在本卡范围 |
+
+**结论：位置这条已经不再是红因。** 换单屏机器后所有 U1 套件不再「永远红在截图」——
+`t7` 全绿、`t8` 有一趟全绿、`t30` 的失败点前移到已知的过期断言。
+
+#### ⚠️ 残留抖动（**如实记，未修**）
+
+`t8` 跑了 5 趟（run1–run5，本机单屏、无副屏分支），**只有 1 趟全绿**：
+
+| run | 结果 | 红在哪 |
+|---|---|---|
+| 1 | EXIT=2 | `canvas-label-shows-rename`（DOM 断言） |
+| 2 | EXIT=2 | **GPU 进程崩溃**（`GPU process exited unexpectedly: exit_code=1` → `document view renderer gone`），当趟 `steps: []` |
+| 3 | EXIT=2 | `step-09-screenshot`：`Current display surface not available for capture`（**generation 2**，新进程刚起 2ms） |
+| 4 | **PASS** | — |
+| 5 | EXIT=2 | 同 run1 |
+
+**两条观察，都指向「不是 opacity、也不是位置」：**
+
+1. **`canvas-label-shows-rename` 是判据早了一帧，不是改名失败**：失败步的 DOM 快照
+   （`failure-canvas-label-shows-rename-g1.html`，**失败时**抓的）里**已经含有** `T8-已改名-DEPLOYED`；
+   `rename-node-via-tray` 的 `committedValue` 也等于目标名（`ok: true`）。同一个旅程单独跑时 PASS。
+2. **`step-09-screenshot` 那一格在 W24 的矩阵之外**：W24 测的是「窗口建好后 +93/+122ms」，
+   **没测「view 挂上后 2ms」**。这条探针我补了两种（`.tmp/w28-raf-probe.cjs` /
+   `.tmp/w28-long-idle-probe.cjs` / `.tmp/w28-order-probe.cjs`）：
+   - **rAF 不被 `opacity: 0` 节流**：400ms 内 67 vs 67 帧，DOM 变更 0–1ms 内可见；
+   - **capture 不随时间退化**：0.25s / 2s / 8s / 20s / 30s 五个时点，`opacity: 0` 全部成功；
+   - **顺序对照**：把「第一个 case」换成 `opacity: 1`，仍然只有它失败 —— 变量是**先后**
+     （首建 / 第二个窗口），不是 opacity。
+
+   所以 run3 那一格更像「刚建好的窗口，view 的 surface 还没到位」的**建窗口瞬间竞态**，
+   与 W24 记的「`addChildView` 之后约 100–250ms 才拿到 surface」同源。**没修**（不在本卡边界内，
+   而且 `runner.ts` 的 `takeScreenshot` 已有窗口兜底 —— 这次连兜底窗口也拿不到，说明是更早的时刻）。
+
+**这是本卡改完后仍然存在的红，下一张卡该查它。**
+
+### 4. 变异结果
+
+**变异**：把无副屏分支的两行改回 `x: wa.x + wa.width + 80, y: wa.y + wa.height + 80`
+（`grep` 确认改了、`git diff` 确认落盘，才跑的套件）。
+
+**预期红 2 条**（两条「落在 workArea 内」），**实际红 2 条，正是这两条**：
+
+```
+  ok   ★ 正控：inside() 认得出屏内的点（wa.x+20, wa.y+20）
+  ok   ★ 正控：inside() 把旧的无副屏坐标（wa 右下再 +80）判为屏外
+  FAIL 无副屏：窗口原点落在主屏 workArea 内 {"placement":{"x":1543,"y":903},"workArea":{"x":0,"y":0,"width":1463,"height":823}}
+  ok   无副屏：note 不再说 offscreen，且说明没有副屏
+  ok   无副屏：opacity 为 0（隐身靠它，不靠屏外位置）
+  FAIL 无副屏（workArea 原点非零 1920,-200）：坐标仍落在该 workArea 内 {"placement":{"x":3463,"y":703},...}
+  ...（副屏三条仍绿）
+u1-placement-smoke:7/9 通过
+```
+**EXIT=1。正控全绿**（红的不是判据自己坏了）。
+
+**还原**：`.tmp/w28-bak/runner.ts.bak` → `cp` 回，`sha256sum -c` **OK**、`cmp` 逐字节 **0**；
+还原后重跑套件 **9/9 通过**，`grep "wa.x + wa.width"` 在文件里 **0 命中**。
+
+**另外两处我主动做的、卡面没要求的验证**：
+
+- **`opacity: 0` 不是「靠位置隐身」的替代品被误用**：正控 `inside()` 两个方向都认
+  （屏内 true / 屏外 false），否则主判据在 `inside() === true` 恒真时静默全绿；
+- **`tsc` EXIT=0**（`npx tsc --noEmit -p apps/desktop/tsconfig.json`；顺带用
+  `grep -cE '(^|/)src/renderer/'` 核过 **0 条** —— O5 不在途）。
+
+### 5. 我没能验证的东西
+
+1. **副屏分支整条没有验证** —— 本机只有一块屏（`displays: 1`），那条分支在本机**不存在**。
+   纯函数层面有 3 条断言（位置、note、`opacity === 1`），但**真 Electron 上没跑过一次**。
+   特别是**「副屏 + `opacity: 0`」仍然是空白格**（W24 的探针全程单屏，也未测过）——
+   所以我把副屏的 `opacity` 保持成 1，并在注释里写明「要改成 0 得先自己测一遍 capturePage 仍然成功」。
+2. **`step-09-screenshot` 的 `Current display surface not available`**（run3）**只复现了 1 次**，
+   我没有在该次现场抓到「view 是否已 attach / surface 是否已到位」的中间状态；
+   上面的三个探针（raf / 长时 / 顺序）**不能证明**它就是「建窗口瞬间竞态」——
+   **它们只排除了「opacity」和「时间退化」两个变量**。
+3. **`t8` 的 `canvas-label-shows-rename` 抖动**：5 趟里 2 趟红（run1、run5），
+   DOM 快照证明**失败时值已经在 DOM 里**，所以判据本身（`some(...includes(...))` 对整个集合求值）
+   **大概率早了一帧**；但我**没有**改成 `waitFor`（那在 `journeys/` 里，不在本卡边界）。
+4. **`t30` 的 `apps-discovery`（139→140）** 我只确认了「失败点前移到它」，
+   **没有判断 140 是不是新的正确值**（W24 §4 说这需要有人决定，不在本卡范围）。
+5. **`t7` 只跑了一次**（6/6 全绿），没有像 `t8` 那样连跑 5 趟检验抖动 ——
+   所以「t7 是否有同源抖动」**没有数据**。
+
+### 6. W24 / 这张卡上写错的地方
+
+1. **卡面说「W24 实测过这个位置，临时改 + 跑 t30：截图步骤从 FAIL 变 PASS」——这条对，
+   但它当时测的是「主屏内 (20,20)」这个**坐标**，不是「`opacity: 0` 跟位置同源」这个**设计**。**
+   我按后者做了（`placement.opacity`），这是**超出卡面示例的结构改动**：
+   理由是「屏内必须靠 opacity 隐身」这件事如果留在调用点，下一个改位置的人会再次把它们拆开
+   （这正是本卡的病因形态）。**如果总控认为应该保留 `{x,y}` 的窄接口，把它改回去只需要删掉
+   `opacity` 字段、在调用点写死 `opacity: 0` + 一行注释。**
+2. **卡面 §「②」引用的行号 `runner.ts:869-870` 说的是旧文件的行号**；改完之后那段在
+   `:899-910` 附近（我改完后整文件 +88/−38，行号会再漂）。**行号是写卡那一刻的坐标**，
+   下一次读卡时按内容找（`没有实测过` / `副屏 + opacity 0`）比按行号可靠。
+3. **卡面 §一 的示例返回 `{ x, y, note }`，没有 `opacity`**，而 §三 又说「那里加不加 `opacity`
+   由你判断」—— 两节对「opacity 归谁管」不一致。我选了**归 `placement` 管**（理由见上），
+   并在注释和本节都写清了。**这不是卡写错了，是卡没写清**；写下来是为了下一个人不用猜。
+4. **W24 的矩阵少一格**：它的三格都是「窗口建好之后 +93/+122ms」，
+   **没有「view 刚 attach、surface 还没到位」的时刻**。run3 的 `step-09-screenshot` 正落在这个缺口里。
+   卡面引用矩阵时把它当成「位置 vs opacity 的完整二维表」，**实际上时间这一维是空的**。
+5. **`(1543,855)` 这个逐字坐标今天已经不等于 `(1543,903)`**（workArea 高度从 815 变成 775）。
+   卡面把它写成「无副屏分支的逐字坐标」—— 表达式是逐字的，**算出来的值不是**。
+   任何把它当常量写死进断言的判据，换一台机器（或换一次任务栏高度）就会**假红或假绿**。
+   我的断言用的是 `inside(placement, workArea)`，不写死数字。
+
+
+---
+
 ## 附记：另一条同类缺陷（不属于本卡，但下一个读的人该知道）
 
 **`t30/apps-discovery` 断言 `apps.totalTools !== 139` 现在红在 140。**
@@ -244,3 +414,63 @@ if (apps.totalTools !== 139) return { ok: false, ... };    // ← 守数字（�
 **自检**：「如果明年又多一个目录呢？」
 - 断言性质 → 「只要新工具不破坏完整性，它还绿」← **是判据**
 - 断言计数 → 「再改一次」← **是提醒**
+
+---
+
+## 总控验收（2026-10-25 02:00）
+
+**结论：通过。而且我做了单文件回滚对照，证明它修的是真问题。**
+
+### 一、我的对照实验（这是本卡的核心证据）
+
+把 `runner.ts` 单独 `git stash` 回 HEAD，跑同一条旅程：
+
+| 版本 | 结果 |
+|---|---|
+| **HEAD**（W28 之前） | **`EXIT=2`，红在 `canvas-editor-ready`** ← 窗口屏外的老症状 |
+| **W28 版** | 截图步骤全 PASS，抖动红在 `canvas-label-shows-rename`（判据早一帧） |
+
+**还原后 `sha256sum` = `cd1d5586...`，与它交付时逐字节一致。**
+
+**所以：位置这条确实修好了，而抖动是另一个既有问题。**
+
+### 二、我跑的验收
+
+| 项 | 结果 |
+|---|---|
+| 新套件 `u1-placement-smoke` | 我自己跑：**PASS**，EXIT=0 |
+| `tsc` | EXIT=0 |
+| 改动范围 | 只 `runner.ts` + 新套件；`build.mjs` / `src/**` / `journeys/` 都没碰 |
+
+### 三、它超出卡面的结构改动，我接受
+
+它把 `placement` 加上 `opacity`（无副屏 → 0，副屏/兜底 → 1），**理由写在回写第 6 节且有回退方法**。
+
+**我接受，因为**：卡面没写「opacity 该由谁定」，而实际它必须**随分支变** ——
+无副屏要隐身（屏内位置），副屏不用（本来就不在主屏）。
+把它放进 `placement` 比在 `createWindow` 里写条件清楚。
+
+### 四、它做对的三处（都是我没要求的）
+
+1. **把注释写成「条件 + 出处 + 后果」**，并且**在代码注释里写明「副屏 + opacity 0 未验证，
+   要加得先自己测」** —— 这正是我被 W24 纠正的那条，它落到了代码里而不是只在卡里；
+2. **纯函数 `chooseHostWindowPlacement` 导出**，判定逻辑只放一处，套件 import 真身；
+3. **变异恰好红 2 条（预期 2 条）**，还原后 `sha256sum -c` + `cmp` + `grep` 三重核对。
+
+### 五、它报的 t8 抖动：我确认不是它引入的
+
+它说「5 趟只有 1 趟全绿」，两种红：`canvas-label-shows-rename` 和
+`step-09-screenshot` 抛 `Current display surface not available`（generation 2，view 刚 attach 2ms）。
+
+**它补了三个探针**：rAF 不被 `opacity:0` 节流（67 vs 67 帧）、capture 不随时间退化
+（0.25–30s 全成功）、顺序对照证明变量是先后不是 opacity。
+
+**我接受这个结论** —— 而且它自己说了「不是本卡改动的产物，但也没修（不在边界内）」。
+**这是正确的边界判断。**
+
+**抖动本身值得另一张卡**（W29）。
+
+### 六、它如实说的「副屏分支完全没验证」
+
+本机无副屏，所以副屏分支的坐标与 `opacity` 都没跑过。
+**它在代码注释里写明了「要往副屏窗口加 opacity，得先自己测一遍」** —— 这是对的。

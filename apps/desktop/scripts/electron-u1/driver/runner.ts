@@ -632,40 +632,86 @@ function loadState(env: GenerationEnv): State {
 /**
  * 宿主窗口放哪。
  *
- * `WebContentsView.capturePage()` 需要「当前 display surface 可用」，所以窗口
- * 不能 `show:false`、也不能 `opacity:0`。但用户明确要求**别在主屏弹窗**，
- * 于是按优先级选：
+ * 条件：`WebContentsView.capturePage()` 要求窗口**落在某个显示器的坐标空间内**。
+ * 屏外的窗口（哪怕 `show:true`）拿不到 display surface，`capturePage()` 一直抛
+ * `Current display surface not available for capture`，截图永远是空图。
+ * **位置的这条约束是硬的；`opacity` 不是**（见下面的实测出处）。
  *
- *   1. **有副屏 → 放副屏**（用户偏好）。取副屏工作区左上角内缩 60px。
- *   2. **没副屏 → 主屏工作区右下之外**：窗口原点是 `workArea` 的右下角再往外，
- *      合成器仍认为它在某个显示器的坐标空间里，但用户看不见。
- *   3. 上面都不成立 → 主屏左上角。
+ * 优先级：
+ *   1. 有副屏 → 放副屏（用户偏好：别在主屏弹窗）。
+ *   2. 没副屏 → **主屏工作区内**。单屏机器上没有「屏外还能合成」的位置，所以
+ *      「用户看不见」改由 `opacity: 0` 保证，不是由位置保证。
+ *   3. `screen` 尚不可用 → (0,0) 兜底（见 catch）。
+ *
+ * 出处（W24，2026-10-25，本机单屏 1463x823，探针在 `.tmp/w24-display-probe*.cjs`）：
+ *   `WebContentsView.capturePage()` 的三格 ——
+ *   屏外 (1543,855)（旧无副屏分支的逐字坐标）→ 永不成功，load 完也不行；
+ *   主屏内 + `opacity: 0` → +122ms 成功；主屏内 + `opacity: 1` → +93ms 成功。
+ *   旧注释「不能 opacity:0」是把 `BrowserWindow.capturePage`（不受位置影响）与
+ *   `WebContentsView.capturePage`（受位置影响）混成了一件。
+ *   **副屏分支的 `opacity` 没有测过**（探针全程单屏，副屏分支不存在、无法测）——
+ *   要往副屏窗口加 `opacity`，得先自己测一遍 `capturePage()` 仍然成功。
  *
  * 返回值的 `note` 会打日志 —— 下次有人查「窗口为什么在那」时不用猜。
- * 调用方用 `{ x, y }`，不要把 `note` 摊进 BrowserWindow 的构造参数。
+ * 调用方按需取字段，**不要整个摊进 BrowserWindow 的构造参数**：`note` 不是窗口
+ * 选项；`opacity` 是**分支相关**的（兜底路径是 1），摊进 `createWindow` 会让
+ * 「screen 不可用」时那个本该隐身的窗口变成可见。
  */
-function pickHostWindowPlacement(size: { width: number; height: number }): { x: number; y: number; note: string } {
+export interface HostWindowPlacement {
+  x: number;
+  y: number;
+  /** 窗口不透明度：由位置分支决定（主屏内 → 0；副屏 / 兜底 → 1，保持旧行为）。理由见调用点。 */
+  opacity: number;
+  note: string;
+}
+
+/** `chooseHostWindowPlacement` 需要的 display 形状 —— `Electron.Display` 结构上满足它。 */
+export interface PlacementDisplay {
+  id: number;
+  bounds: { width: number; height: number };
+  workArea: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * `pickHostWindowPlacement` 的纯算术内核：不读 `screen`、不碰 Electron ——
+ * 无头套件（`u1-placement-smoke`）直接 import 它断言坐标，变异（把坐标改回屏外）
+ * 必须让它红。判定逻辑只放在这里，别再往调用方抄一份。
+ */
+export function chooseHostWindowPlacement(
+  primary: PlacementDisplay,
+  others: readonly PlacementDisplay[],
+): HostWindowPlacement {
+  if (others.length > 0) {
+    const target = others[0];
+    return {
+      x: target.workArea.x + 60,
+      y: target.workArea.y + 60,
+      // 副屏分支的 opacity 保持 1（不透明）：这里用户本来就不看，而
+      // 「副屏 + opacity 0」没有测过 —— 未验证的组合不进这个文件（见函数注释）。
+      opacity: 1,
+      note: `secondary display (id=${target.id}, ${target.bounds.width}x${target.bounds.height})`,
+    };
+  }
+  const wa = primary.workArea;
+  return {
+    x: wa.x + 20,
+    y: wa.y + 20,
+    // 主屏内必须靠 opacity 隐身：「主屏 + opacity 0」是 W24 实测成功的组合
+    // （+122ms），而屏外位置会让 `WebContentsView.capturePage()` 永不成功。
+    opacity: 0,
+    note: `inside primary work area (invisible) ${wa.width}x${wa.height} (no secondary display)`,
+  };
+}
+
+function pickHostWindowPlacement(size: { width: number; height: number }): HostWindowPlacement {
   try {
     const primary = screen.getPrimaryDisplay();
     const others = screen.getAllDisplays().filter((d) => d.id !== primary.id);
-    if (others.length > 0) {
-      const target = others[0];
-      return {
-        x: target.workArea.x + 60,
-        y: target.workArea.y + 60,
-        note: `secondary display (id=${target.id}, ${target.bounds.width}x${target.bounds.height})`,
-      };
-    }
-    const wa = primary.workArea;
-    return {
-      x: wa.x + wa.width + 80,
-      y: wa.y + wa.height + 80,
-      note: `offscreen right-below primary work area ${wa.width}x${wa.height} (no secondary display)`,
-    };
+    return chooseHostWindowPlacement(primary, others);
   } catch (error) {
     // `screen` 在 ready 之前不可用；这里只是位置，不该让整趟旅程失败。
     console.log(`U1 placement probe failed, falling back to 0,0: ${String(error)}`);
-    return { x: 0, y: 0, note: "fallback (screen unavailable)" };
+    return { x: 0, y: 0, opacity: 1, note: "fallback (screen unavailable)" };
   }
 }
 
@@ -682,8 +728,9 @@ async function createWindow(ctx: Ctx, pageHtml: string, preload?: string): Promi
     width: size.width,
     height: size.height,
     // 与 settings-focus-electron-smoke 相同的取舍：窗口必须「存在且可聚焦」
-    //（隐藏窗口 document.hasFocus() 恒 false，真键盘事件不可观测），但放在屏幕外
-    // 且透明 —— 用户看不见，判据只读 DOM/磁盘。
+    //（隐藏窗口 document.hasFocus() 恒 false，真键盘事件不可观测）。
+    // 用户看不见由 `opacity: 0` 保证，不是由位置保证 —— 单屏机器上位置在主屏
+    // 工作区内（屏外会拿不到 display surface，见 `pickHostWindowPlacement`）。
     show: true,
     opacity: 0,
     ...hostWindowXY(size),
@@ -842,19 +889,17 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
   if (wantWindow) {
     await createWindow(ctx, pageHtml, preload);
   } else {
-    // 没有宿主窗口时也留一个不可见的最小窗口给 WebContentsView 使用 ——
+    // 没有宿主窗口时也留一个最小窗口给 WebContentsView 使用 ——
     // `win.contentView.addChildView(view)` 需要一个活窗口；GenOffice 的宿主
     // （DocumentViewHost）恰恰从 `getMainWindow()` 取它。
     const size = journey.launch?.size ?? { width: 1280, height: 900 };
     mkdirSync(join(ctx.runDir, "home"), { recursive: true });
-    // `WebContentsView.capturePage()` 在「当前 display surface 不可用」
-    //（离屏 + opacity 0 的窗口）时会直接抛，所以宿主窗口必须真实可见。
-    //
-    // 但「可见」不等于「必须占用户的屏幕」。按优先级选位置：
-    //   1. 有副屏 → 放副屏（用户的偏好：别在主屏弹）
-    //   2. 没副屏 → 放到主屏工作区**右下角之外**（越界显示区），
-    //      窗口仍被合成器认为有 surface，但用户看不到
-    //   3. 兜底 → 主屏正常位置
+    // 条件：`WebContentsView.capturePage()` 要求窗口落在某个显示器的坐标空间内
+    //   （屏外 → `Current display surface not available for capture`，永不成功）。
+    // 出处：W24 2026-10-25 的探针矩阵，见 `pickHostWindowPlacement` 上方注释。
+    // 后果：位置由 `pickHostWindowPlacement` 决定 —— 有副屏放副屏；没副屏放
+    //   主屏工作区内，用户看不见由 `opacity` 保证（`chooseHostWindowPlacement`
+    //   跟着位置一起给出，理由见下方 `opacity` 一行）。
     // 判据只读 DOM/磁盘，截图只是证据；窗口本身几秒内就会被关掉。
     const placement = pickHostWindowPlacement(size);
     const win = new BrowserWindow({
@@ -866,11 +911,16 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
       // `skipTaskbar`：副屏窗口不该在任务栏占一格 —— 那会让用户在**主屏**的任务栏上
       // 看到测试窗口的图标，看起来像「又弹了一个」。
       //
-      // ⚠️ 这里**不加 `opacity: 0`**：旧注释说「离屏 + opacity 0 会让 capturePage 抛」，
-      // 而「副屏 + opacity 0 行不行」**没有实测过**。
-      // 未验证的改动不进这个文件 —— 要加它，先在 t7 里验一次 capturePage 仍然成功。
+      // `opacity` 跟着**位置分支**走，不写死：
+      //   - 主屏内（无副屏分支）→ 0。「主屏 + `opacity: 0` + `WebContentsView.capturePage()`
+      //     成功（+122ms）」是 W24 实测过的组合；单屏机器上这是唯一能既不挡用户
+      //     又不失败的位置。
+      //   - 副屏（有副屏分支）→ 1（不透明，与此前行为一致）。「副屏 + `opacity: 0`」
+      //     **没有测过**（W24 的探针全程单屏，副屏分支不存在）—— 要改成 0，
+      //     得先在有多块屏的机器上验一次 capturePage 仍然成功。
       show: true,
       skipTaskbar: true,
+      opacity: placement.opacity,
       x: placement.x,
       y: placement.y,
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
