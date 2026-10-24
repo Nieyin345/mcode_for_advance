@@ -85,6 +85,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "void"
  },
  {
+  "method": "approval.list",
+  "channel": "approval:list",
+  "doc": "【T109】审批历史（按会话）。签名里没有 taskId —— 见 approval.ts 的说明。",
+  "input": "{ sessionId: string // 哪个会话的审批历史。**必填** —— 全局列表没有意义（会混所有会话）。; limit?: number | undefined // 上限（1–500，默认 200）。; before?: number | undefined // 游标分页：只取早于这个时间戳的。 }",
+  "inputFull": "{ sessionId: string // 哪个会话的审批历史。**必填** —— 全局列表没有意义（会混所有会话）。; limit?: number | undefined // 上限（1–500，默认 200）。; before?: number | undefined // 游标分页：只取早于这个时间戳的。 }",
+  "output": "{ approvals: Approval[] }"
+ },
+ {
   "method": "automation.preflight",
   "channel": "automation:preflight",
   "doc": "**触发前只读预检**:回答「它会跑哪条工作流、缺什么执行器、要不要先审查、参数坏没坏」。 **不产生任何副作用**(不建会话、不写运行记录、不派发)。`ok` 只表示预检没发现问题, 不是执行授权。返回形状见 `AutomationPreflightResult`。",

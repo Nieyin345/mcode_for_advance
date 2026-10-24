@@ -599,6 +599,10 @@ export const DOMAIN_LABELS: Record<string, string> = {
   // 【T105】任务是一级对象(路线图 §3/§5)。agent 能**看**(list/get 只读)但**不能验收**
   // —— accept / reject / reopen / transition 四条在 BLOCKED 档,见上。
   task: "任务:列出与查看任务(可用 task.list 看清有哪些任务、状态与产物路径);验收与退回只能由用户在任务中心给出",
+  // 【T109】审批历史(按会话)。**没有 taskId** —— 审批发生在 turn.done 之前,任务在
+  // turn.done 才建,存一个当时还不存在的 id 只能存 null。界面上必须说清范围是
+  // 「这个对话里的全部」,不能写成「本任务的审批」。
+  approval: "审批历史:按会话查用户做过哪些审批(工具/问答/计划三种);只读,不能代替用户做决定",
   // 【ARC-007】受控文档视图宿主(界面层,与 browser 面板同档):视图的开关/几何/焦点。
   documentView: "文档视图宿主(界面层):打开/定位/显示/隐藏/聚焦/关闭编辑器视图、状态诊断",
   workflowEngine: "第三方工作流引擎:启动/停止/状态(独立子进程,只绑回环)",
