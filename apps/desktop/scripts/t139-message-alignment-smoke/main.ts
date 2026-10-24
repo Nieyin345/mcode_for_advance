@@ -62,15 +62,56 @@ check(
   "★ 身份头用 IconSparkles 图标",
   sourceHas(row, "<IconSparkles size={10} />"),
 );
-// 关键：身份头的渲染条件里不能出现 turnMeta —— 否则没有回合元数据的消息就没有头。
-// 取**渲染表达式本身**（从 `{!isUser && !tightTop && (` 到它闭合的 `)}`），
-// 不含紧随其后的 TurnStatRow 注释与渲染。
-const headCondRe = /\{!isUser && !tightTop && \([\s\S]*?\)\}/;
-const headCond = headCondRe.exec(row)?.[0] ?? "";
+// 关键：身份头**本身**的渲染条件里不能出现 turnMeta —— 否则没有回合元数据的
+// 消息整条头都没有。只取条件表达式 `{!isUser && !tightTop && (` 本身，
+// 不含块内的 `{msg.turnMeta && <ModelBadge/>}` —— 模型徽标**可以**依赖它，
+// 因为那只是「这个回合有没有记录模型」，不是「整条头存不存在」。
+const headCondExpr = /\{!isUser && !tightTop && \(/.exec(row)?.[0] ?? "";
 check(
-  "★ 身份头的条件不依赖 turnMeta（否则无元数据的消息看不到头）",
-  headCond.length > 0 && !headCond.includes("turnMeta"),
-  { found: headCond.length > 0, hasTurnMeta: headCond.includes("turnMeta") },
+  "★ 身份头的渲染条件不依赖 turnMeta（否则无元数据的消息整条头都没有）",
+  headCondExpr.length > 0 && !headCondExpr.includes("turnMeta"),
+  { cond: headCondExpr },
+);
+
+// ── [4b] 模型徽标归身份头，不归 TurnStatRow ──
+// 上游的头部是 `[✦] Claude [model]` —— 模型属于「谁在说话」。而 TurnStatRow
+// 是运行状态（时钟/用时/实时操作），两者同屏但职责不同。
+//
+// 取整块的边界用**下一行的注释/条件**做锚，而不是靠正则括号配平
+// （JSX 里嵌套的 `)}` 会让贪婪正则吃过头）。
+const headStart = row.indexOf("{!isUser && !tightTop && (");
+const headEnd = row.indexOf("{!isUser && msg.turnMeta && !hideTurnStat", headStart);
+const headBlock = headStart >= 0 && headEnd > headStart ? row.slice(headStart, headEnd) : "";
+check(
+  "★ 模型徽标在身份头里（上游 [✦] Claude [model] 的形状）",
+  headBlock.length > 0 && headBlock.includes("<ModelBadge"),
+  { headLen: headBlock.length },
+);
+const statRowStart = row.indexOf("export function TurnStatRow");
+const statRowEnd = row.indexOf("export const MessageRow", statRowStart);
+const statRowBody = statRowStart >= 0 ? row.slice(statRowStart, statRowEnd) : "";
+check(
+  "★ TurnStatRow 不再渲染 ModelBadge（否则模型名出现两次）",
+  statRowBody.length > 0 && !statRowBody.includes("<ModelBadge"),
+  { statRowLen: statRowBody.length },
+);
+// ★ 正控：把徽标挪走后，这一行的另外三样必须**都还在**。
+// 没有这三条，上面那条「不再有 ModelBadge」在整行被清空时也是绿的 ——
+// 「否定断言必须配正控」（T101 的教训：判据退化成恒假时全体静默通过）。
+check(
+  "★ TurnStatRow 仍有时钟（fmtClock）",
+  statRowBody.length > 0 && sourceHas(statRowBody, "fmtClock(meta.startedAt)"),
+  { statRowLen: statRowBody.length },
+);
+check(
+  "★ TurnStatRow 仍有用时（fmtDuration）",
+  statRowBody.length > 0 && sourceHas(statRowBody, "fmtDuration(duration)"),
+  { statRowLen: statRowBody.length },
+);
+check(
+  "★ TurnStatRow 仍有实时操作 ticker（CurrentOpTicker）",
+  statRowBody.length > 0 && sourceHas(statRowBody, "<CurrentOpTicker"),
+  { statRowLen: statRowBody.length },
 );
 
 // ── [5] 默认字号 15px ──
@@ -104,13 +145,10 @@ check(
   !sourceHas(row, "rounded-br-[5px] px-3 py-2"),
 );
 // 身份头不能出现在 TurnStatRow 内部（那会让它只在有 turnMeta 时渲染）
-const statRowStart = row.indexOf("export function TurnStatRow");
-const statRowEnd = row.indexOf("export const MessageRow", statRowStart);
-const statRow = statRowStart >= 0 ? row.slice(statRowStart, statRowEnd) : "";
 check(
   "负控：TurnStatRow 内不再有 Mcode 标签（避免双份/局部可见）",
-  statRow.length > 0 && !sourceHas(statRow, ">Mcode</span>"),
-  { statRowLen: statRow.length },
+  statRowBody.length > 0 && !sourceHas(statRowBody, ">Mcode</span>"),
+  { statRowLen: statRowBody.length },
 );
 
 console.log(`\nt139-message-alignment-smoke:${total - failures}/${total} 通过`);

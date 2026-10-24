@@ -162,3 +162,76 @@ grep -n "createdAt" apps/desktop/src/renderer/components/chat/MessageRow.tsx | h
 3. 哪几项做了、哪几项没做（尤其 👍👎 和 14.5px）
 4. 视觉基线对比
 5. 套件数字、变异、提交 SHA
+
+---
+
+## 八、回写（执行结果）
+
+### 8.1 三件「动手前必须先核」的答案
+
+**一、`TurnStatRow` 显示什么 —— 模型 / 时钟 / 用时 / 步数 / 实时操作 ticker。**
+
+核完之后决定：**拆开，不合并。** 理由是上游 `ChatMessageBubbles.tsx` 把两者放在**不同位置**：
+
+| 上游 | 内容 | 出现时机 |
+|---|---|---|
+| 头部行 | `[✦] Claude` + 模型角标 + `•` + 时间 | **每条助手消息** |
+| （无对应） | 运行状态 | 只在回合首条 |
+
+所以 `ModelBadge` 从 `TurnStatRow` **挪到头部**，`TurnStatRow` 保留时钟/用时/实时操作。**这不是「并存两份模型名」，是把「谁在说话」归位到头部。**
+
+**二、Copy 按钮现在在哪 —— 气泡下方、行悬停显示**（`MessageRow.tsx:405` 起的 action row，在气泡**外面**）。上游也是这个位置，**未改动**。
+
+**三、`msg.createdAt` 有没有 —— 有**，用户气泡用它做 `title` 悬停提示。助手头部**没有**加时间：上游头部的时间是「回合开始时间」，而 `TurnStatRow` 已经显示 `fmtClock(meta.startedAt)`，加第二处会让同一条消息出现两个时间。
+
+### 8.2 做了什么
+
+| # | 改动 | 文件 |
+|---|---|---|
+| 1 | 用户气泡 `px-4 py-3`（上游 16/12） + `0 1px 2px rgba(0,0,0,0.04)` 阴影 | `MessageRow.tsx:376,379` |
+| 2 | 助手正文 4px 左缩进 `--cds-assistant-message-text-inset` | `MessageRow.tsx:376` |
+| 3 | **助手身份头** `[✦ Mcode] [模型角标]`，**不依赖 `turnMeta`** | `MessageRow.tsx:345-360` |
+| 4 | `ModelBadge` 从 `TurnStatRow` **挪到**身份头 | `MessageRow.tsx:102-107`（注释）、`:358` |
+| 5 | `--chat-font-size` 默认 14→15（亮/暗两处） | `styles.css`、`sessionStore.ts`、`AppearancePanel.tsx` |
+
+### 8.3 哪几项没做（**如实登记**）
+
+| 上游有 | 我们没做 | 为什么 |
+|---|---|---|
+| 👍 / 👎 反馈按钮 | **未做** | 需要后端记录反馈，属于功能不是样式 |
+| 用户气泡 `14.5px` | **未做**（仍随 `--chat-font-size`） | 用户可 12–20 调字号；写死 14.5 会让「可调」失效 |
+| 头部时间 `• 14:32` | **未做** | `TurnStatRow` 已有同一时间，加第二处是重复 |
+| `max-w-2xl` (672px) 助手宽度 | **未改** | 与 `--chat-max-w` 体系冲突，另卡处理 |
+
+### 8.4 套件与变异
+
+**新套件**：`apps/desktop/scripts/t139-message-alignment-smoke/`（15 条）
+
+**变异（每条都实测）**：
+
+| 变异 | 预期红 | 实测红 | 红的哪条 |
+|---|---|---|---|
+| 把 `ModelBadge` 放回 `TurnStatRow` | 1 | **1** | ★ TurnStatRow 不再渲染 ModelBadge |
+| 删掉时钟那一行 | 1 | **1** | ★ TurnStatRow 仍有时钟（fmtClock） |
+| 整个身份头块删除（M1-delete） | 3 | **3** | 头存在 / 用 IconSparkles / 模型徽标在头里 |
+
+**还原后逐字节核验**：`sha256 = cd143f0318a1baf691c5afd7ba3027631d592b35a351532edc25398e79e34992`，与变异前一致。
+
+**回归**（`smokes-for.sh` 查出的两套必跑）：
+
+| 套件 | 结果 |
+|---|---|
+| `chat-copy-payload-smoke` | 12/12 |
+| `maint-m22-smoke` | 16/16 |
+
+### 8.5 视觉基线
+
+**做得到的**：`messages-light-1280.png` / `messages-dark-1280.png` 已重拍，**身份头在亮/暗两种条件下都清晰可见**（`[✦] Mcode`，橙色圆角图标 + 加粗名字），用户气泡右侧对齐、有底色和内边距。
+
+**做不到的（必须说清）**：视觉夹具的消息**不带 `turnMeta`**，所以截图里**看不到模型角标，也看不到 `TurnStatRow`**。**因此截图只证明了「身份头存在且不依赖 turnMeta」，不证明「模型角标与时钟同屏」。** 后者目前**只有源码断言守着**。
+
+**⚠️ 顺带查出一个既有缺陷（不在 T139 范围）**：`arc005-visual-baseline` 的 `compare.mjs:91` 与 `build.mjs:210` 都硬编码 `39`，而 T136 把场景加到 51 个之后**没有同步这两个常量**。后果是 **`compare.mjs` 直接抛错退出**，token 比对门禁当前**跑不起来**。本次不是我的改动引入的（`git log` 确认 `compare.mjs` 自 `8e9e2e34` 未改、`build.mjs` 的 51 格是 T136 加的）。**T139 的视觉验证因此只用到 PNG，没用到 token 判据。** 建议另开卡修。
+
+### 8.6 提交
+
+见下方 SHA。

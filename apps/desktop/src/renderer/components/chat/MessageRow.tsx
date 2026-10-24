@@ -99,9 +99,12 @@ export function TurnStatRow({
 
   return (
     <div className="-ml-[7px] flex min-w-0 items-center gap-1.5 rounded-lg px-[7px] py-1 text-content-subtle text-footnote">
-      {/* Which model is running THIS turn — avatar + name on the left, matching
-          TurnPanel's header. Absent for turns with no recorded model. */}
-      <ModelBadge model={meta.model} />
+      {/* 【T139】模型徽标**不在这里** —— 它归身份头（`MessageRow` 里那行
+       * `[✦] Mcode [模型]`），因为上游把「谁在说话」放在头部，而这一行是
+       * **运行状态**（时钟 / 用时 / 实时操作）。两者同屏但职责不同：
+       * 身份每条消息都有，运行状态只在回合首条。
+       * 挪走后本行的 `-ml-[7px]` 负边距不再服务于 avatar 对齐，但保留原值 ——
+       * 它同时承担「让这一行与正文左缘齐平」的作用，见下方 px-[7px]。 */}
       {live && (
         <span className="live-eq shrink-0" data-tempo={op ? undefined : "slow"} aria-hidden>
           <span />
@@ -330,9 +333,9 @@ export const MessageRow = memo(function MessageRow({
          *
          * 上游每条助手消息顶部都有「✦ + 名字 + 模型角标 + • + 时间」。
          *
-         * ⚠️ **不依赖 `turnMeta`**：那个字段只有回合的首条消息才有，而身份头
-         * 应该每条都有。所以它独立渲染，模型/时间仍由下面的 TurnStatRow 提供
-         * （那一行本来就有，不重复造）。
+         * ⚠️ **头本身不依赖 `turnMeta`**：那个字段只有回合的首条消息才有，而身份头
+         * 应该每条都有。所以「Mcode」这一行独立渲染；只有模型角标在块内单独判
+         * `msg.turnMeta`（后续块没有回合元数据，就只显示 `[✦] Mcode`）。
          *
          * 名字用 "Mcode" 而不是 "Claude"：用户要的是「像 Claude 的样子」，
          * 不是让产品自称 Claude。
@@ -348,6 +351,11 @@ export const MessageRow = memo(function MessageRow({
               <IconSparkles size={10} />
             </span>
             <span className="font-semibold text-content">Mcode</span>
+            {/* 【T139】模型徽标跟着身份走 —— 上游的头部是 `[✦] Claude [model]`。
+             * 它只在有 `turnMeta` 时才有值（该字段只有回合首条消息带），
+             * 所以后续块的消息头部只显示 `[✦] Mcode`，与「运行状态只在首条」
+             * 是同一套语义。 */}
+            {msg.turnMeta && <ModelBadge model={msg.turnMeta.model} />}
           </div>
         )}
         {/* Per-turn stat row - only on the first assistant message of a
