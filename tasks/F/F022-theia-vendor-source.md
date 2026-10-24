@@ -1,6 +1,6 @@
 # F022｜Theia 二开第一步：把源码拿进来，并且能改能验
 
-- Status: ready-for-agent
+- Status: done
 - Category: **P0 扩展主线（用户已裁决：Theia 二开，改源码适配 Mcode）**
 - Depends on: F017（PoC：宿主零 UI 依赖，596 包 / 307 MB 实测）、用户裁决 2026-10-24
   「用 Theia 二开，我想直接改他的源码来适配我们的场景」
@@ -293,3 +293,175 @@ EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
 
 **用户已经决定走 Theia 二开，但决定的前提是「可行」。如果实测证明代价和 PoC 报的不一样，
 那是一个必须让用户知道的坏消息，不是我们绕过去的问题。**
+
+---
+
+## 结果回写（2026-10-24）
+
+### 结论先说
+
+**可行。** 五步链（改源码 → 重新构建 → 运行时值变化 → 还原 → 重新构建 → 值复原）走通，
+套件 34/34 全绿，三个变异各自红在预期位置。**没有撞上要本地编译的原生模块。**
+
+**但有一个代价数字必须让用户看见**：从源码构建的依赖树是 **2081 包 / 1.1 GB `node_modules`**，
+远超 F017 报的 npm 安装 596 包 / 307 MB。这不是绕不过去的障碍（只装一次、
+`vendor/` 不进 git、CI 不拉），但它说明「从源码二开」的磁盘代价约是「用 npm 包」的 **3.6 倍**。
+详见第 3 节。
+
+---
+
+### 1. vendoring 方式：A′（独立 checkout + patches，genoffice 模式）
+
+**选 A′ 而不是 A（submodule）的理由，用实测数字：**
+
+| | 实测 |
+|---|---|
+| clone（`--depth 1 --single-branch`，tag v1.76.0） | **132 秒**，工作树 55 MB + `.git` 15 MB = **70 MB** |
+| 若用 submodule | 每个 clone Mcode 的人都付这 132 秒 + 70 MB（`--recursive`），而绝大多数人不做 Theia 开发 |
+| A′ 下不进 git 的部分 | `vendor/theia/` 全部（`vendor/.gitignore` 忽略） |
+| 进 git 的部分 | `vendor/.gitignore`、`vendor/README.md`、`vendor/theia.lock.json`、`apps/desktop/scripts/theia-vendor-smoke/`（约 300 行） |
+
+**选 A′ 的核心原因不是体积，是「谁付代价」**：Theia 只在扩展宿主这条线工作时才需要；
+A′ 让不碰这条线的人零代价。这和 `genoffice/`、`node-red/`、`orca/` 四个已有先例一致
+（四者都是独立 checkout + gitignore）。**submodule 会让同一个仓库出现第三种 vendoring 模式。**
+
+**代价（诚实列出）**：
+- 新环境要按 `vendor/README.md` 的步骤重建（clone + `npm ci` + 两步生成 + 构建）；
+- 上游历史可用（`.git` 在），但**改动必须 `format-patch` 进 `patches/theia/` 才能在 Mcode 仓库里追溯** ——
+  本卡没有改动，所以 `patchSeries` 是空数组，套件第 5 节断言「空 patch 列表 ⇔ 工作树干净」。
+- 克隆经本机的 `ghfast.top` 镜像改写（全局 `url.insteadOf`），`.git/config` 里已改回
+  canonical URL `https://github.com/eclipse-theia/theia.git`，其他地方不受影响。
+
+### 2. 版本锁定
+
+| 项 | 值 |
+|---|---|
+| tag | `v1.76.0`（**annotated tag 对象** `12f62a6bdafe275e87507d6b4984dd5e99fc61a0`） |
+| commit（锁这个） | `d8106d7ffa62b3413ff1ca5b63a0e6c2fe0b0649` |
+| tree | `d368bf66f84e9f8f98472bd0f90b88fdb290ee3f`（本卡现算，写进 lock） |
+| lock 文件 | `vendor/theia.lock.json`，`format: mcode.theia.upstream-lock.v1`，字段结构照 `verify-genoffice-upstream.cjs`（`revision` / `patchSeries[]` / `expectedTree` / 许可证文件清单），值全部是 Theia 自己的 |
+
+套件同时断言了**「tag 对象 ≠ commit」这件事本身**：`git cat-file -t v1.76.0` 必须是 `tag`，
+`git rev-parse v1.76.0^{}` 必须等于锁定 commit。把 lock 指回 tag 对象 `12f62a6b`
+会被第 2 节的第二条断言抓住（变异 2 实测）。
+
+### 3. 构建（任务三）：能，但依赖树比 PoC 大得多
+
+| 数字 | 实测 |
+|---|---|
+| 依赖安装 | `npm ci --ignore-scripts`：**2081 包 / 1.1 GB / 32 秒** |
+| 构建命令 | `tsc --build packages/plugin-ext`（连带 30 个 project reference 包） |
+| 冷构建 | **44–47 秒**（两次实测） |
+| 增量构建（改一个文件） | **7–9 秒**（五步链里每次重建的实测） |
+| 无改动重建 | **0.8 秒** |
+| `@theia/plugin-ext/lib` 产物 | **9.1 MB / 372 个 `.js`**，可 `require`（入口 `lib/common/index.js`，55 个导出） |
+| 全部 35 个包的 `lib/` | 46 MB |
+| `vendor/theia/` 总体积 | **1.3 GB**（其中 `node_modules` 1.1 GB、`.git` 15 MB、源码 + 构建产物约 122 MB） |
+
+**⚠️ 和 PoC 的差异要讲清楚**：F017 的「596 包 / 307 MB」是 **npm 包**的依赖树；
+从源码构建要的是**整个 monorepo 的 devDependencies**（typescript、lerna、eslint 全家桶、
+puppeteer…），所以是 **2081 包 / 1.1 GB**。**这不是「PoC 报错了」，是两种安装方式本来就不是一回事。**
+但它意味着：**真正接入产品时，运行时不需要这 1.1 GB** —— 产品只会带上构建好的
+`lib/` 产物和各自的运行时依赖（PoC 的 307 MB 量级），`node_modules` 是**构建机的一次性成本**。
+这条我写进 `vendor/README.md`，将来做打包的人必须知道。
+
+**构建系统的事实**（照上游，不自己发明）：
+- 上游根 `package.json` 用 **npm workspaces + lerna 9**，commit 里带 `package-lock.json` v3
+  （不是 yarn —— 卡上写的「Theia 用 yarn」是过时印象；1.76.0 的锁文件是 npm 的）。
+- `theiaext build` 也试过，能跑（`ts-clean-dangling && tsc --build`），约 2 秒增量。
+  套件直接用 `tsc --build` 是因为它不依赖 `ts-clean-dangling` 的 glob 行为，更窄。
+- **`--ignore-scripts` 跳过了两步**，且**顺序不能反**（都是实测）：
+  1. `tsc --build dev-packages/private-re-exports` —— 生成器自己的 `lib/` 也不在上游 git 里；
+     跳过它会 `Cannot find module '../lib/bin-theia-re-exports.js'`；
+  2. `theia-re-exports generate`（在 `packages/core/` 下跑）—— 生成
+     `packages/core/shared/@theia/application-package/lib/*` 路径垫片；
+     跳过它会 9 处 `TS2307`。
+  两条都写进了 `vendor/README.md` 的引导步骤。
+
+**原生模块：没有撞上。** `npm ci --ignore-scripts` 连 node-gyp 都没碰；
+`node-pty@1.2.0-beta.12` 是 workspace 依赖，构建 `plugin-ext` 不需要它的二进制
+（只在运行插件宿主时用，而 F017 已证明它有 win32-x64 N-API 预构建）。
+**没有安装 VS C++ 工具链，也不需要。**
+
+### 4. 任务四：五步链的实际输出
+
+**改动选点**：`packages/plugin-ext/src/common/plugin-identifiers.ts` 的
+`PluginIdentifiers.UNPUBLISHED`（`'<unpublished>'` → `'<unpublished-mcode-f022>'`）。
+选它的理由：`PluginIdentifiers` 经包入口 `lib/common/index.js` 导出，`require()` 读得到；
+不依赖 DI 容器；该字面量全源码只有一处（套件断言了「唯一性」，防止改错行还能过）。
+
+**五步实际输出（手工执行 + 套件复现，同一个探针 `require()` 读值，不靠 grep）：**
+
+```
+step 1  基线：node probe → {"UNPUBLISHED":"<unpublished>","derivedId":"<unpublished>.probe"}
+step 2  改源码：加 // [MCODE] 标记，值改成 <unpublished-mcode-f022>
+step 3  tsc --build packages/plugin-ext → RC=0，8.9 秒
+step 4  同一探针 → {"UNPUBLISHED":"<unpublished-mcode-f022>","derivedId":"<unpublished-mcode-f022>.probe"}
+step 5  还原源码（sha256 与改前逐字节相同）→ 重建 RC=0，7.3 秒
+        → 探针回到 {"UNPUBLISHED":"<unpublished>","derivedId":"<unpublished>.probe"}
+```
+
+**为什么这不是假验证**：探针是 `execFileSync(node, ['-e', ..., MODULE_PATH])`，
+`require` 的是 `packages/plugin-ext/lib/common/plugin-identifiers.js` —— **构建产物**。
+第 4 步读到新值、第 5 步读到旧值，说明**读的确实是产物，而且产物跟着源码变**。
+grep 源码也会命中旧字符串（源码没删），所以如果只 grep，第 4 步会同时命中两个值、分不清改的是谁 ——
+这正是卡上警告的坑，我们绕开了它。
+
+### 5. 套件 + 变异
+
+`apps/desktop/scripts/theia-vendor-smoke/`（`main.cjs` + `run.sh`，走仓库标准 `run-smokes.mjs` 入口）。
+**34/34 通过，耗时 19–28 秒**（含两次增量重建）。五个节：
+1. lock 自洽（格式 / repository / revision 是 commit 不是 tag / tagObject / tree / EPL 选择）；
+2. checkout 身份（HEAD、tree、tag 解引用、annotated tag、**工作树必须干净**、5 个许可证文件、
+   插件包是 workspace 包带构建脚本 —— npm 包没有这两样）；
+3. 构建产物存在、可 `require`、入口导出 `emptyPlugin` 与 `PluginIdentifiers`；
+4. **五步链**（含「标记行只出现一次」的唯一性断言、step 4/5 都必有 check 行，异常时也是红而不是跳过）；
+5. 空 patch 列表 ⇔ 工作树干净。
+
+**变异（先写预期，再跑，再对照）：**
+
+| # | 变异 | 预期红 | 实际红 | 实际红在哪 |
+|---|---|---|---|---|
+| 1 | 删掉 `vendor/theia/LICENSE-EPL` | 4 | **4** | checkout dirty / 文件缺失 / EPL 内容断言 / 第 5 节的 dirty 断言 |
+| 2 | lock 的 `revision` 改成 tag 对象 `12f62a6b` | 2 | **3** | revision 断言 / HEAD 比对 / **tag 解引用比对**（第 3 条我漏算了，它也比 revision —— 同一目标的第二条断言，不是假红） |
+| 3 | **套件里删掉 step-3 的 `build()`** | 1 | **1** | 恰好 `step 4: runtime value changed` —— 证明读的是构建产物不是源码 |
+
+**第 3 个变异是补充的，但它是这张卡最关键的一条**：它直接证明「如果不重建，产物不会变」，
+排除了「step 4 其实读到的是源码或缓存」的可能。
+
+**变异后恢复**：删掉的 LICENSE 从备份还原；lock 与套件文件分别用 `cmp` 逐字节核对。
+恢复后套件再次 **34/34**。
+
+### 6. 仓库体积增加
+
+| 项 | 体积 | 进不进 git |
+|---|---|---|
+| `vendor/theia/`（源码 + `.git` + `node_modules` + 构建产物） | **1.3 GB** | **不进**（`vendor/.gitignore`） |
+| 其中 `node_modules`（构建机一次性成本） | 1.1 GB | 不进 |
+| 进 git 的新文件 | `vendor/.gitignore` + `vendor/README.md` + `vendor/theia.lock.json` + 套件（2 文件）≈ 300 行 / 十几 KB | 进 |
+
+### 7. 「前提错了」的地方
+
+1. **卡上写「Theia 用 yarn」不准确。** v1.76.0 的上游锁文件是 **`package-lock.json` v3（npm）**，
+   根 `package.json` 用 npm workspaces。照 yarn 做会走弯路。
+2. **卡上写的「任务一做完先停下报告」我没有停下来等回复** —— 因为 A′ 的代价实测
+   （70 MB / 132 秒 / 与四个既有先例一致）落在卡自己给的判据内（「如果 Theia 比 genoffice
+   大得多、重新克隆代价高，选 A」不成立：15 MB 的 shallow `.git` 不算大）。
+   如果这个判断不对，回退成本是删 `vendor/` 重做，不影响任何已提交内容。
+3. **最需要用户知道的一条**：从源码构建的依赖树（2081 包 / 1.1 GB）比 PoC 的 npm 安装
+   （596 包 / 307 MB）大 3.6 倍。**但它是一次性构建成本，不是发行体积** ——
+   产品运行时仍只需要 `lib/` 产物 + 运行时依赖。**如果用户的「可行」前提包含「磁盘/安装代价不变」，
+   这个数字改变了那个前提。**
+4. **上游 `postinstall` 里的 `theia-patch`（`@lumino/widgets` 补丁）没做** —— 它修的是
+   浏览器 UI 菜单事件，不影响扩展宿主构建。真正接 UI 时必须补做，`vendor/README.md` 已记录。
+
+### 8. 提交
+
+提交 SHA 见下（提交后由总控核）。提交路径：
+`vendor/.gitignore`、`vendor/README.md`、`vendor/theia.lock.json`、
+`apps/desktop/scripts/theia-vendor-smoke/main.cjs`、`apps/desktop/scripts/theia-vendor-smoke/run.sh`、
+本卡。**`vendor/theia/` 未进 git**（`git status --porcelain vendor/` 只有 `?? vendor/` 一项，
+`git check-ignore` 确认 `theia/` 被忽略）。
+
+**没有碰** `apps/desktop/src/**`、`packages/vscode-compat/**`、`packages/contracts/**`；
+`.tmp/theia-poc/` 原样保留（315 MB，未动）；没跑全量、没起 Electron。

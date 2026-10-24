@@ -1,0 +1,20 @@
+{
+  "format": "mcode.theia.upstream-lock.v1",
+  "repository": "https://github.com/eclipse-theia/theia",
+  "tag": "v1.76.0",
+  "tagObject": "12f62a6bdafe275e87507d6b4984dd5e99fc61a0",
+  "revision": "d8106d7ffa62b3413ff1ca5b63a0e6c2fe0b0649",
+  "expectedTree": "d368bf66f84e9f8f98472bd0f90b88fdb290ee3f",
+  "lockedAt": "2026-10-24",
+  "license": "EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0",
+  "chosenLicense": "EPL-2.0",
+  "licenseFiles": [
+    "LICENSE-EPL",
+    "LICENSE-GPL-2.0-ONLY-CLASSPATH-EXCEPTION",
+    "LICENSE-MIT.txt",
+    "LICENSE-vscode.txt",
+    "NOTICE.md"
+  ],
+  "buildTarget": "@theia/plugin-ext",
+  "patchSeries": []
+}
