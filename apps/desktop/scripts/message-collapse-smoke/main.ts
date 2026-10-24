@@ -22,6 +22,8 @@
  * | **接入** | `MessageRow.tsx` 真的调了它们（**没有它，函数写对了但没人用**） |
  */
 import { readFileSync } from "node:fs";
+// 【T120】源码文本断言必须剥注释（实测：注释掉真代码后裸 includes 仍绿）。
+import { sourceHas } from "../lib/sourceText.js";
 import { resolve } from "node:path";
 import {
   COLLAPSED_MAX_HEIGHT_PX,
@@ -86,15 +88,15 @@ ck("★ 不折叠时没有按钮", collapseToggleLabel("fits") === null);
 console.log("\n⑤ 接入（没有这一节，函数写对了也可能没人用）");
 {
   const row = readFileSync(resolve("src/renderer/components/chat/MessageRow.tsx"), "utf8");
-  ck("★ MessageRow 导入了判据", row.includes("messageCollapse.js"));
-  ck("★ MessageRow 调用了 collapsibleBubbleState", row.includes("collapsibleBubbleState("));
-  ck("★ MessageRow 调用了 bubbleBodyStyle", row.includes("bubbleBodyStyle("));
-  ck("★ MessageRow 调用了 collapseToggleLabel", row.includes("collapseToggleLabel("));
-  ck("★ 折叠按钮真的渲染了", row.includes("setBubbleExpanded"));
+  ck("★ MessageRow 导入了判据", sourceHas(row, "messageCollapse.js"));
+  ck("★ MessageRow 调用了 collapsibleBubbleState", sourceHas(row, "collapsibleBubbleState("));
+  ck("★ MessageRow 调用了 bubbleBodyStyle", sourceHas(row, "bubbleBodyStyle("));
+  ck("★ MessageRow 调用了 collapseToggleLabel", sourceHas(row, "collapseToggleLabel("));
+  ck("★ 折叠按钮真的渲染了", sourceHas(row, "setBubbleExpanded"));
   // 这一条钉的是「只对用户消息」——助手侧折叠会让流式输出期间视口反复跳动，
   // 上游也只对用户消息做（ChatMessageBubbles 的 UserMessageProps）。
-  ck("★ 只在用户消息上判定", row.includes("isUser\n    ? collapsibleBubbleState") || row.includes("isUser ?\n      collapsibleBubbleState") || /isUser[\s\S]{0,40}collapsibleBubbleState/.test(row));
-  ck("★ 量高度用的是 scrollHeight（不受 maxHeight 影响）", row.includes("scrollHeight"));
+  ck("★ 只在用户消息上判定", sourceHas(row, "isUser\n    ? collapsibleBubbleState") || sourceHas(row, "isUser ?\n      collapsibleBubbleState") || /isUser[\s\S]{0,40}collapsibleBubbleState/.test(row));
+  ck("★ 量高度用的是 scrollHeight（不受 maxHeight 影响）", sourceHas(row, "scrollHeight"));
 }
 
 /* ── ⑥ 与上游同形 ───────────────────────────────────────────────── */
@@ -107,9 +109,9 @@ console.log("\n⑥ 与上游常数对齐");
     resolve("../../open-claude-ui/code-examples/ChatMessageBubbles.tsx"),
     "utf8",
   );
-  ck("上游确实有 collapseThreshold = 300", upstream.includes("collapseThreshold = 300"));
-  ck("上游确实用 max-h-[300px]", upstream.includes("max-h-[300px]"));
-  ck("★ 上游渐变的 3rem 等于我们的 48px", upstream.includes("calc(100%_-_3rem)"));
+  ck("上游确实有 collapseThreshold = 300", sourceHas(upstream, "collapseThreshold = 300"));
+  ck("上游确实用 max-h-[300px]", sourceHas(upstream, "max-h-[300px]"));
+  ck("★ 上游渐变的 3rem 等于我们的 48px", sourceHas(upstream, "calc(100%_-_3rem)"));
 }
 
 console.log(`\nmessage-collapse-smoke: ${total - bad}/${total} 通过`);

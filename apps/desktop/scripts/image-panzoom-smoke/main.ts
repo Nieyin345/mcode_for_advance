@@ -18,6 +18,9 @@
  * | **接入** | `image-preview.tsx` 真的接了事件与 transform |
  */
 import { readFileSync } from "node:fs";
+// 【T120】源码文本断言必须剥注释 —— 见 scripts/lib/sourceText.ts 头部。
+// 实测：注释掉真代码后，裸 includes 仍然绿（49/49）。
+import { sourceHas } from "../lib/sourceText.js";
 import { resolve } from "node:path";
 import {
   DRAG_DEADZONE,
@@ -141,15 +144,15 @@ ck("maxScaleFor 坏输入 → 回落到 2", maxScaleFor(Number.NaN, 0) === 2);
 console.log("\n⑦ 接入（没有这一节，数学写对了也可能没人用）");
 {
   const src = readFileSync(resolve("src/renderer/components/ui/image-preview.tsx"), "utf8");
-  ck("★ 导入了 imageTransform", src.includes('"./imageTransform.js"'));
-  ck("★ 接了 onWheel", src.includes("onWheel={onWheel}"));
-  ck("★ 接了 onPointerDown", src.includes("onPointerDown={onPointerDown}"));
-  ck("★ 接了 onPointerMove", src.includes("onPointerMove={onPointerMove}"));
-  ck("★ 接了 onDoubleClick", src.includes("onDoubleClick={onDoubleClick}"));
+  ck("★ 导入了 imageTransform", sourceHas(src, '"./imageTransform.js"'));
+  ck("★ 接了 onWheel", sourceHas(src, "onWheel={onWheel}"));
+  ck("★ 接了 onPointerDown", sourceHas(src, "onPointerDown={onPointerDown}"));
+  ck("★ 接了 onPointerMove", sourceHas(src, "onPointerMove={onPointerMove}"));
+  ck("★ 接了 onDoubleClick", sourceHas(src, "onDoubleClick={onDoubleClick}"));
   ck("★ img 的 transform 真的用 transformCss", /transform:\s*transformCss\(/.test(src));
-  ck("★ 换图/加载后重置变换", src.includes("onLoad={resetTransform}"));
-  ck("★ 用 ref 避免闭包拿到过期 scale", src.includes("scaleRef"));
-  ck("★ 没有直接拼 translate3d（单一出口）", !src.includes("translate3d("));
+  ck("★ 换图/加载后重置变换", sourceHas(src, "onLoad={resetTransform}"));
+  ck("★ 用 ref 避免闭包拿到过期 scale", sourceHas(src, "scaleRef"));
+  ck("★ 没有直接拼 translate3d（单一出口）", !sourceHas(src, "translate3d("));
 }
 
 /* ── ⑧ 与上游同形 ─────────────────────────────────────────────────── */
@@ -160,11 +163,41 @@ console.log("\n⑧ 上游常数核对（直接读上游文件，不写死一份�
     resolve("../../open-claude-ui/code-examples/MediaLightboxViewer.tsx"),
     "utf8",
   );
-  ck("上游 MIN_MAX_SCALE = 2.0", upstream.includes("MIN_MAX_SCALE = 2.0"));
-  ck("上游 DRAG_DEADZONE = 4.0", upstream.includes("DRAG_DEADZONE = 4.0"));
-  ck("上游 WHEEL_SENSITIVITY = 0.01", upstream.includes("WHEEL_SENSITIVITY = 0.01"));
-  ck("上游 SNAP_MIN_SCALE = 1.05", upstream.includes("SNAP_MIN_SCALE = 1.05"));
-  ck("★ 上游滚轮确实是 Math.exp 指数", upstream.includes("Math.exp(-deltaY"));
+  ck("上游 MIN_MAX_SCALE = 2.0", sourceHas(upstream, "MIN_MAX_SCALE = 2.0"));
+  ck("上游 DRAG_DEADZONE = 4.0", sourceHas(upstream, "DRAG_DEADZONE = 4.0"));
+  ck("上游 WHEEL_SENSITIVITY = 0.01", sourceHas(upstream, "WHEEL_SENSITIVITY = 0.01"));
+  ck("上游 SNAP_MIN_SCALE = 1.05", sourceHas(upstream, "SNAP_MIN_SCALE = 1.05"));
+  // ⚠️ 这一条**必须指向真代码**：上游 `:13` 是文档注释里写的 `Math.exp(-deltaY * 0.01)`，
+  // 而真代码在 `:396` —— `Math.exp(-e.deltaY * WHEEL_SENSITIVITY)`，用的是常量不是字面量。
+  // 第一版我写的 needle 是 `Math.exp(-deltaY`，**它只命中注释那一行**（剥注释后立刻红）。
+  ck("★ 上游滚轮真的是 Math.exp 指数（指向真代码 :396，不是注释）",
+    sourceHas(upstream, "Math.exp(-e.deltaY * WHEEL_SENSITIVITY)"));
+}
+
+/* ── ⑨ ★ 判据自身：剥注释必须能挡「注释掉真代码」 ─────────────────── */
+
+console.log("\n⑨ 判据自身：注释掉真代码必须能让 ⑦ 的接入选言变红");
+{
+  // 这一节验的是 ⑦ 那组断言**在什么条件下会失效**。
+  //
+  // 2026-10-24 实测：`src.includes("onWheel={onWheel}")` 在把真代码注释成
+  // `{/* onWheel={onWheel} */}` 之后**仍然为 true** —— 套件 49/49 全绿，
+  // 而那个 handler 已经不在组件上了。带不带花括号都一样
+  // （A 在 `arc005-pane-docking-smoke` 上验过 `order: order.aside,` 同形态）。
+  //
+  // 所以 ⑦ 现在走 `sourceHas`（剥注释后再 includes）。这里从两个方向钉住它：
+  //  - 若有人把 sourceHas 换回 includes，B/C/D 会红；
+  //  - 若剥离器失效（剥不掉注释），同样 B/C/D 会红。
+  const real = `export const a = <div onWheel={onWheel} />;`;
+  const commented = `export const a = <div>{/* onWheel={onWheel} */}</div>;`;
+  ck("★ A：剥注释后，真代码仍算「有」", sourceHas(real, "onWheel={onWheel}"));
+  ck("★ B：注释里的大括号写法**不算**「有」（这是本次修的缺陷）",
+    !sourceHas(commented, "onWheel={onWheel}"));
+  ck("★ C：行注释里的不算", !sourceHas("// x\nconst y = 1;", "// x"));
+  ck("★ D：块注释里的不算", !sourceHas("/*\n * onWheel={onWheel}\n */\nconst x = 1;", "onWheel={onWheel}"));
+  // 对照：不能把 URL 里那些斜杠当成行注释，把同行的真代码剥掉。
+  ck("★ 对照：URL 那行的真代码不被误剥",
+    sourceHas('const u = "https://e.com/x"; const b = <div onWheel={onWheel} />;', "onWheel={onWheel}"));
 }
 
 console.log(`\nimage-panzoom-smoke: ${total - bad}/${total} 通过`);
