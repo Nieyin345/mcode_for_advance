@@ -8,13 +8,34 @@
 ```bash
 pnpm test:smoke o2-conflict-u1-smoke                       # 全量六格式（~85–120s）
 pnpm test:smoke o2-conflict-u1-smoke --only=o2-conflict-docs  # 单个格式（调试）
+node scripts/o2-conflict-u1-smoke/run.mjs --classify-only   # 只跑静态归类（~4s，不启动 Electron）
 node scripts/o2-conflict-u1-smoke/mutation.mjs              # 三条变异（~3×90s）
 node scripts/o2-conflict-u1-smoke/run.mjs --variant=expect-green  # 修复后的回归门禁（现在必红）
 ```
 
 退出码：**0 = 结论与 `expectations.ts` 一致**（docs/sheets 拦住；其余四个按预期被静默覆盖）。
 **0 不代表六格全绿。** 构建失败同样退出 1，`run.mjs` 读 `suite-summary.json` 判定，
-不把「构建崩了」读成「预期红」（第一版踩过，见 `run.mjs` 文件头）。
+不把「构建崩了」读成「预期红」（第一版踩过，见 `run.mjs` 文件头）。静态归类不成立时
+在启动 Electron 之前就红（`--classify-only` 只跑这一段）。
+
+## 保存路径归类（静态，决定修复卡规模）
+
+`save-paths.ts` 在**启动 Electron 之前**读源码，把六个格式归成三类。它是
+「下一张修复卡多大」的**机器化结论**，源码漂移时会自己红：
+
+| 类 | 含义 | 格式 | 修复方向 |
+|---|---|---|---|
+| `host-cas` | 走 Mcode host 的乐观锁 | docs | — |
+| `vendor-own-guard` | vendor handler 自己比 sha256 | sheets | — |
+| `bypass` | **vendor 主进程自己写盘，Mcode 无拦截** | slides / pdf / markdown / html | 在 Mcode 侧包住那四条通道，或动 vendor |
+
+`bypass` 的四条还有一个共同事实：**请求类型里根本没有版本字段**
+（`SavePdfRequest` / `SaveMarkdownRequest` / `SaveHtmlRequest` 无 revision；slides 的
+`save()` 连参数都没有）。所以不是「传了没校验」，是**这条路从未有过版本概念** ——
+修复需要在 Mcode 侧接管这四条通道（进而在写盘前后比版本），不能靠「给页面加个参数」。
+
+`--classify-only` 的用途：渲染端被别的会话改坏、`electron-u1` 构建失败时，
+仍然能回答归类问题（本次就是这样用的）。
 
 ## 六格式 × 四条判据（2026-10-24 实测结论）
 

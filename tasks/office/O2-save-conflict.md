@@ -211,3 +211,30 @@ cd apps/desktop && node scripts/t7-genoffice-u1/run.mjs   # 基线
    待 O5 批三让渲染端重新可构建后，重跑一次全套（约 2 分钟）即可回答。
 7. **没有写「已验证」的地方**：`a1efc42e` 之后的 sheets 稳定性、以及 `hide-notice` 变异在
    新焦点语义下的行为。若这两项被当作交付前提，请在批三之后重跑 `mutation.mjs`。
+
+### 补记（同日）：保存路径**静态归类**，回答「修复卡多大」
+
+`save-paths.ts`（套件内，`--classify-only` 可单独跑，~4s，不启动 Electron）读源码给出三类：
+
+| 类 | 格式 | 含义 | 修复方向 |
+|---|---|---|---|
+| `host-cas` | docs | 走 host `saveOpenedFile` 的乐观锁 | — |
+| `vendor-own-guard` | sheets | vendor handler 自己比 `session.sha256` | — |
+| `bypass` | **slides / pdf / markdown / html** | **vendor 主进程自己注册 handler、自己写盘；Mcode 侧零拦截** | 在 Mcode 侧接管这四条通道 |
+
+**关键区分（总控问的那个）**：这四条**不是**「传了 `expectedRevision` 但没校验」——
+**它们的请求类型里根本没有版本字段**：
+
+- `SavePdfRequest`（`genoffice/apps/pdf/src/shared/ipc.ts`）：无 revision/version/sha；
+- `SaveMarkdownRequest`、`SaveHtmlRequest`：同上；
+- slides：preload `save: () => ipcRenderer.invoke('slides:save')` —— **连参数都没有**。
+
+**所以修复卡是 C 类（最大）**：这四条 handler 都由 vendor 自己的 `register*Ipc` 注册
+（`registerPdfIpc` / `registerMarkdownIpc` / `registerHtmlIpc` / `registerSlidesIpc`），
+Mcode 的 `ipc/documentView.ts`、`genofficeNativeVendor.ts`、`ipc/index.ts` 里没有任何
+拦截点。给页面加参数不够，必须**在 Mcode 侧接管这四条通道的写盘**（类比 docs 的
+`saveOpenedFile`：同一份 `withOsFileLease` + `fileContentVersion`）。
+
+**归类的机器化**：这条结论现在是套件的静态断言（`save-paths.ts`），源码漂移会自己红；
+用 `mutation.mjs` 同款纪律验证过它会红（把 `wrappedByMcode` 改成恒真 → 四条全部报
+「归类可能已从 bypass 改变」），验证后逐字节还原。

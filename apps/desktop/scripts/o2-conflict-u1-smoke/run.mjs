@@ -32,7 +32,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const suite = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(suite, "../..");
@@ -43,11 +43,15 @@ const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fil
 const args = isMain ? process.argv.slice(2) : [];
 const passthrough = [];
 let variant = "accept-red";
+/** `--classify-only`：只跑静态归类（不启动 Electron，~4s）——渲染端被别的会话
+ *  改坏时，仍然能回答「下一张修复卡多大」这个问题。 */
+let classifyOnly = false;
 for (const value of args) {
   if (value === "--variant=accept-red") variant = "accept-red";
   else if (value === "--variant=expect-green") variant = "expect-green";
   else if (value.startsWith("--only=")) passthrough.push(value);
   else if (value === "--keep") passthrough.push(value);
+  else if (value === "--classify-only") classifyOnly = true;
   else throw new Error(`Unknown option: ${value}`);
 }
 
@@ -139,6 +143,31 @@ export function judge(run, mode) {
 }
 
 if (isMain) {
+  // ── 先做**静态归类**（不启动 Electron）──
+  // 它回答「下一张修复卡多大」：docs=host-cas / sheets=vendor-own-guard /
+  // slides·pdf·markdown·html=bypass。归类不成立（源码漂移）时整套直接红 ——
+  // 后面所有运行时判据都建立在「哪条链没有版本校验」这个前提上。
+  let classification;
+  try {
+    const { buildTs } = await import("./esbuild-load.mjs");
+    const built = await buildTs(join(suite, "save-paths.ts"), join(suite, ".save-paths.cjs"));
+    const mod = await import(pathToFileURL(built).href + `?t=${Date.now()}`);
+    classification = mod.classifySavePaths();
+  } catch (error) {
+    console.error(`O2: 保存路径归类无法执行：${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+  console.log("保存路径归类（静态，决定修复卡规模）：");
+  for (const row of classification.perFormat) console.log(`  ${row.format.padEnd(9)} ${row.klass}`);
+  if (!classification.ok) {
+    console.error(`O2: FAIL —— 保存路径归类与套件前提不一致：${classification.detail ?? ""}`);
+    process.exit(1);
+  }
+  if (classifyOnly) {
+    console.log("O2: 归类通过（--classify-only：未跑 Electron）");
+    process.exit(0);
+  }
+
   const run = runSuite();
   const verdict = judge(run, variant);
   if (run.summary !== null) {
