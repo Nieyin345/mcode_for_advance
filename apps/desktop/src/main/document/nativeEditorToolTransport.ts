@@ -245,10 +245,11 @@ function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
 
-/** Resolve when the renderer call settles or the turn's signal aborts. */
+/** Resolve when the renderer settles or either the turn or individual SDK call aborts. */
 function awaitWithAbort<T>(
   promise: Promise<T>,
   signal: ProviderAbortSignal,
+  callSignal?: ProviderAbortSignal,
 ): Promise<{ aborted: true } | { aborted: false; value: T } | { aborted: false; failure: unknown }> {
   return new Promise((resolve) => {
     let settled = false;
@@ -256,14 +257,16 @@ function awaitWithAbort<T>(
       if (settled) return;
       settled = true;
       signal.removeEventListener("abort", onAbort);
+      callSignal?.removeEventListener("abort", onAbort);
       resolve(result);
     };
     const onAbort = () => finish({ aborted: true });
-    if (signal.aborted) {
+    if (signal.aborted || callSignal?.aborted) {
       finish({ aborted: true });
       return;
     }
     signal.addEventListener("abort", onAbort, { once: true });
+    callSignal?.addEventListener("abort", onAbort, { once: true });
     promise.then(
       (value) => finish({ aborted: false, value }),
       (failure: unknown) => finish({ aborted: false, failure }),
@@ -337,6 +340,7 @@ export function createNativeEditorToolBridge(args: {
         return args.invokeRendererTool(rendererCall, definition);
       }),
       args.signal,
+      callSignal,
     );
     if (raced.aborted || callSignal?.aborted) {
       return cancelledResult(sessionId, record.callId, "native editor tool call cancelled before the renderer ACK");

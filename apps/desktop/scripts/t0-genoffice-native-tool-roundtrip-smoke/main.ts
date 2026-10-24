@@ -28,6 +28,7 @@ import {
   planNativeEditorTurn,
   type GenOfficeNativeToolDefinition,
   type GenOfficeNativeToolInvoker,
+  type GenOfficeNativeToolResult,
 } from "../../src/main/document/nativeEditorToolTransport";
 import { dispatchDocsAiTurn, docsAiPrompt, docsAiPorts } from "../../src/main/document/docsAiPorts";
 import type { FakeTurn } from "./stubs/nativeAiMcode";
@@ -439,6 +440,48 @@ async function runSuite(): Promise<void> {
     check("Stop between validation and microtask dispatch prevents the editor call entirely",
       queuedReply.status === "cancelled" && queuedRendererCalls === 0,
       { status: queuedReply.status, queuedRendererCalls });
+
+    // A provider may cancel only one tool use, leaving the rest of the SDK
+    // turn alive. A hung renderer ACK must not hold that cancelled tool call
+    // indefinitely. This checks cancellation BEFORE the renderer resolves.
+    const toolOnlyAbort = new AbortController();
+    let releaseToolAck: ((result: GenOfficeNativeToolResult) => void) | undefined;
+    let toolStarted = 0;
+    const toolAck = new Promise<GenOfficeNativeToolResult>((resolve) => { releaseToolAck = resolve; });
+    const callOnlyBridge = createNativeEditorToolBridge({
+      sessionId: "session-a",
+      tools: [{ name: editTool.name, description: editTool.description, inputSchema: editTool.inputSchema }],
+      definitions: new Map([[editTool.name, editTool]]),
+      invokeRendererTool: async () => {
+        toolStarted++;
+        return toolAck;
+      },
+      signal: new AbortController().signal,
+    });
+    const toolOnlyPending = callOnlyBridge(
+      { sessionId: "session-a", callId: "call-only-abort", name: editTool.name, input: { html: "<p>no late edit</p>" } },
+      toolOnlyAbort.signal,
+    );
+    await flush();
+    check("call-only cancellation test genuinely reached the awaited renderer ACK", toolStarted === 1, { toolStarted });
+    toolOnlyAbort.abort();
+    let cancelTimeout: ReturnType<typeof setTimeout> | undefined;
+    const earlyReply = await Promise.race([
+      toolOnlyPending.then((reply) => ({ kind: "settled" as const, reply })),
+      new Promise<{ kind: "timeout" }>((resolve) => {
+        cancelTimeout = setTimeout(() => resolve({ kind: "timeout" }), 120);
+      }),
+    ]);
+    if (cancelTimeout) clearTimeout(cancelTimeout);
+    check("SDK call-only abort returns cancelled promptly without waiting for renderer ACK",
+      earlyReply.kind === "settled" && earlyReply.reply.status === "cancelled",
+      earlyReply);
+    // Let the detached renderer promise eventually complete. Its old success
+    // must not replace the already cancelled SDK tool result.
+    releaseToolAck?.({ status: "success", output: "stale renderer success" });
+    const afterAck = await toolOnlyPending;
+    check("late ACK cannot revive a call-only cancelled SDK result",
+      afterAck.status === "cancelled", afterAck);
 
     const turnAbort = new AbortController();
     let lateSettled = false;

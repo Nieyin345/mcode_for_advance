@@ -225,3 +225,17 @@ npx tsc --noEmit -p packages/contracts/tsconfig.json → exit 0
 **修复后的测试**：`t0-genoffice-native-tool-roundtrip-smoke` **57/57 PASS**，包含两项专门判据（执行计数必须 0，而非只检查 cancelled 回包）。`o1-three-provider-ai-smoke` 原本三家 **46/46 PASS**，`genoffice-ai-ask-smoke` 与新增 `o7-coverage-smoke` 同批四套 smoke **4/4 PASS**。Mcode Desktop/Contracts 双包 TypeScript 检查 0。所有测试使用隔离协议替身与受控内存编辑器，无真实账号/文档写入；未声称真实在线 SDK 消耗额度的 U1 已完成。
 
 **精确提交 SHA**：Mcode `08df1861ddddec5dca8873e1a9fcdb6443407894`，只提交 `docsAiPorts.ts`、`nativeEditorToolTransport.ts`、T0 原生 ACK 竞态回归和本卡证据，不修改 GenOffice 原厂，也不扩大 AI 授权。
+
+---
+
+## 2026-10-25 非 UI 收尾：单个 SDK 工具取消后等待 ACK 卡住
+
+**缺陷**：`apps/desktop/src/main/document/nativeEditorToolTransport.ts` 的 `awaitWithAbort` 仅监听整轮请求 `args.signal`，不监听每个 SDK `callSignal`。当 SDK 只取消一个正在执行的原生 Office 编辑工具、整轮继续运行，而渲染器没有及时发送 ACK 时，桥仍持续等待渲染器，无法及时向 SDK 报告本次工具已取消。最终渲染器回包后可能被转换为 `cancelled`，但这并不满足**及时结束等待**的要求。
+
+**旧红→新绿**：在现有 `t0-genoffice-native-tool-roundtrip-smoke/main.ts` 内增加隔离测试，实际触发 renderer call 后让其 ACK Promise 暂不 settle，再 abort **仅当前工具**。旧实现是 `59/60 PASS`，唯一 FAIL 为 `SDK call-only abort returns cancelled promptly without waiting for renderer ACK — {"kind":"timeout"}`，证据 `apps/desktop/.tmp/smoke-runs/1792874360244-37804-cqsNSn`。修复后是 `60/60 PASS`，证据 `1792874401117-26776-WmGX7z`；测试还断言迟到的 success ACK 不能复活已取消的工具结果。
+
+**实现**：仅扩展 `awaitWithAbort` 监听两路 `ProviderAbortSignal`；任何一路取消立即返回 `cancelled`，清理两边的 abort event listener；renderer Promise 晚到仍由既有 Promise rejection/success 处理，不再更改 SDK 本次结果。正常操作/审批/同轮结果绑定与用户点击停止整轮的路径不变。单个工具调用取消**只确保桥的结果和等待行为**，不能声称已开始的渲染器编辑动作被原子撤销；该层要由 renderer/事务协议另作显式支持。
+
+**回归**：`node apps/desktop/scripts/run-smokes.mjs t0-genoffice-native-tool-roundtrip-smoke t83-mcode-editor-tool-bridge-smoke o1-three-provider-ai-smoke genoffice-ai-ask-smoke`，**4/4 PASS**，证据 `apps/desktop/.tmp/smoke-runs/1792874556036-32016-DT9YfU`。Desktop/Contracts 两个 `tsc --noEmit` 均 PASS；`git diff --check` PASS。受信 GenOffice Docs `mcode-ai.ts` 原有 `MAX_TOOL_RESULT_BYTES = 64*1024` 和超限显式错误，未改动、不另建重复的 result limiter。
+
+**未完成验收**：仍未拿到真实在线 Claude/Pi/Codex 对 Office 的完整三家 U1，以及「SDK 单工具取消后，已经进入 renderer 的修改动作能够回滚」的保证。此项是 O1/T0 的取消链路补强，不意味着 ARC-007 全完成。
