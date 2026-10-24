@@ -105,6 +105,38 @@ const defaultMode: FileViewMode = markdown || office ? "wysiwyg" : ...
 **判据**：六格式文件打开时，**第一次就落在 GenOffice 原生视图**，不需要用户切模式。
 **不许**「先显示一个『选择编辑器』再切」。
 
+## 四点五、★ 删 `onlyoffice.ts` 会撞的两份表对账（我读出来的，不是猜的）
+
+`packages/contracts/src/ipc/onlyoffice.ts` 的注释原文（`:88-97`）：
+
+> **【ARC-007】文档种类的唯一判据在本文件之上层（`@contracts/documentKind`）。**
+> 这三条 DS 判据保留原签名（既有调用方不改），但内部改走 `documentKindOf`。
+> ⚠️ 依赖方向：本文件（叶子）不 import `documentKind`（那会形成循环）。
+> 所以这三条**保留自己的字符串判断**，而 `documentKind.ts` 里的
+> `OFFICE_EDITABLE` / `OFFICE_VIEW_ONLY` 与它们是**两份表** ——
+> 由 **`document-router-smoke` 逐项对账，漂了即红**。
+
+**所以：**
+
+1. **`ONLYOFFICE_EDITABLE` / `ONLYOFFICE_VIEW_ONLY` 不只是「OnlyOffice 的东西」** ——
+   它们是「哪些扩展名是 Office 文档」的**历史来源之一**；
+2. **`documentKind.ts` 已经有独立的一份**（ARC-007 迁移时建的 `OFFICE_EDITABLE` / `OFFICE_VIEW_ONLY`）；
+3. **`document-router-smoke` 会逐项对账两份表** —— **你删掉一份，它会红**。
+
+**这不是障碍，是提示**：删掉 `onlyoffice.ts` 的那两份表之后，
+**`document-router-smoke` 的对账段要跟着改**（从「两份表比」变成「只剩一份」）。
+
+**⚠️ 不要为了让套件绿而把 `documentKind.ts` 的表也删掉** ——
+那是唯一的判据了。**要改的是套件的对账段，不是判据本身。**
+
+**判据**：
+
+```bash
+grep -c "ONLYOFFICE_EDITABLE\|ONLYOFFICE_VIEW_ONLY" packages/contracts/src/ipc/onlyoffice.ts   # 删完应文件不存在
+grep -c "OFFICE_EDITABLE\|OFFICE_VIEW_ONLY" packages/contracts/src/documentKind.ts              # 必须还在
+pnpm test:smoke document-router-smoke                                                             # 必须绿
+```
+
 ## 五之零、★ 一条可验的收尾判据：生成物里不该再有 onlyoffice
 
 **现状（2026-10-24 22:30 实测）**：
