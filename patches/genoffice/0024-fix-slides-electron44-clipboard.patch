@@ -1,0 +1,560 @@
+From ec21271a1b502154c6be6568c43ba8c4b0ae30e2 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 03:10:30 +0800
+Subject: [PATCH] fix(slides): support Electron 44 asynchronous clipboard API
+
+---
+ apps/slides/src/main/clipboard-compat.ts    | 114 ++++++++++++++++++++
+ apps/slides/src/main/element-clipboard.ts   |  41 +++----
+ apps/slides/src/main/slides-main.ts         |  55 +++++-----
+ apps/slides/tests/clipboard-compat.test.ts  |  93 ++++++++++++++++
+ apps/slides/tests/element-clipboard.test.ts |  39 +++----
+ 5 files changed, 280 insertions(+), 62 deletions(-)
+ create mode 100644 apps/slides/src/main/clipboard-compat.ts
+ create mode 100644 apps/slides/tests/clipboard-compat.test.ts
+
+diff --git a/apps/slides/src/main/clipboard-compat.ts b/apps/slides/src/main/clipboard-compat.ts
+new file mode 100644
+index 0000000..f293796
+--- /dev/null
++++ b/apps/slides/src/main/clipboard-compat.ts
+@@ -0,0 +1,114 @@
++/**
++ * Slides clipboard adapter across Electron <=43 (sync clipboard helpers)
++ * and Electron 44+ (async ClipboardItem API).
++ *
++ * Keep all platform clipboard access in the main process. Raw app markers are
++ * OS-specific custom formats, not arbitrary renderer-supplied MIME names.
++ */
++import { clipboard, nativeImage } from 'electron'
++import * as electron from 'electron'
++
++const rawFormat = (name: string): string => `electron application/osclipboard;format="${name}"`
++
++type Item = { types: readonly string[]; getType(type: string): Promise<Blob> }
++const modern = clipboard as unknown as {
++  read(): Promise<Item[]>
++  readText(): Promise<string>
++  write(items: unknown[]): Promise<void>
++}
++const legacy = clipboard as unknown as {
++  availableFormats?(): string[]
++  readBuffer?(name: string): Buffer
++  writeBuffer?(name: string, bytes: Buffer): void
++  readHTML?(): string
++  readImage?(): { isEmpty(): boolean; toPNG(): Buffer }
++  readText?(): string
++  write?(input: { image: ReturnType<typeof nativeImage.createFromBuffer>; html: string }): void
++}
++const ItemCtor = () =>
++  (electron as unknown as { ClipboardItem: new (data: Record<string, Blob | string>) => unknown }).ClipboardItem
++
++function isLegacy(): boolean {
++  return typeof legacy.availableFormats === 'function'
++}
++
++export async function readRawClipboardMarker(name: string): Promise<Buffer | null> {
++  if (typeof legacy.readBuffer === 'function') {
++    try {
++      const bytes = legacy.readBuffer(name)
++      return bytes.length ? bytes : null
++    } catch {
++      return null
++    }
++  }
++  const mime = rawFormat(name)
++  const items = await modern.read()
++  const item = items.find((entry) => entry.types.includes(mime))
++  if (!item) return null
++  const blob = await item.getType(mime)
++  const bytes = Buffer.from(await blob.arrayBuffer())
++  return bytes.length ? bytes : null
++}
++
++export async function writeRawClipboardMarker(name: string, bytes: Buffer): Promise<void> {
++  if (typeof legacy.writeBuffer === 'function') {
++    legacy.writeBuffer(name, bytes)
++    return
++  }
++  await modern.write([new (ItemCtor())({
++    [rawFormat(name)]: new Blob([new Uint8Array(bytes)]),
++  })])
++}
++
++export async function readClipboardHtml(): Promise<string> {
++  if (typeof legacy.readHTML === 'function') return legacy.readHTML()
++  const items = await modern.read()
++  const item = items.find((entry) => entry.types.includes('text/html'))
++  if (!item) return ''
++  return (await item.getType('text/html')).text()
++}
++
++export async function readClipboardText(): Promise<string> {
++  return Promise.resolve(clipboard.readText() as unknown as string | Promise<string>)
++}
++
++export async function readClipboardImagePng(): Promise<Buffer | null> {
++  if (typeof legacy.readImage === 'function') {
++    const image = legacy.readImage()
++    return image.isEmpty() ? null : image.toPNG()
++  }
++  const items = await modern.read()
++  const imageType = ['image/png', 'image/jpeg', 'image/webp'].find(
++    (type) => items.some((item) => item.types.includes(type)),
++  )
++  if (!imageType) return null
++  const item = items.find((entry) => entry.types.includes(imageType))!
++  const blob = await item.getType(imageType)
++  const image = nativeImage.createFromBuffer(Buffer.from(await blob.arrayBuffer()))
++  return image.isEmpty() ? null : image.toPNG()
++}
++
++export async function clipboardHasPasteableContent(): Promise<boolean> {
++  if (isLegacy()) {
++    if (legacy.availableFormats!().some((format) => format.startsWith('image/'))) return true
++  } else {
++    const items = await modern.read()
++    if (items.some((entry) => entry.types.some((type) => type.startsWith('image/')))) return true
++  }
++  return (await readClipboardText()).trim().length > 0
++}
++
++export async function writeClipboardImageWithHtml(
++  png: Buffer,
++  html: string,
++  normalizedImage?: ReturnType<typeof nativeImage.createFromBuffer>,
++): Promise<void> {
++  if (isLegacy()) {
++    legacy.write!({ image: normalizedImage ?? nativeImage.createFromBuffer(png), html })
++    return
++  }
++  await modern.write([new (ItemCtor())({
++    'image/png': new Blob([new Uint8Array(png)], { type: 'image/png' }),
++    'text/html': html,
++  })])
++}
+diff --git a/apps/slides/src/main/element-clipboard.ts b/apps/slides/src/main/element-clipboard.ts
+index 77e5eff..cba0a54 100644
+--- a/apps/slides/src/main/element-clipboard.ts
++++ b/apps/slides/src/main/element-clipboard.ts
+@@ -1,4 +1,9 @@
+-import { clipboard, nativeImage } from 'electron'
++import { nativeImage } from 'electron'
++import {
++  readRawClipboardMarker,
++  readClipboardHtml,
++  writeClipboardImageWithHtml,
++} from './clipboard-compat'
+ 
+ export const ELEMENT_CLIPBOARD_FORMAT = 'io.genoffice.slides.elements'
+ 
+@@ -11,19 +16,19 @@ export function isElementClipboardToken(value: unknown): value is string {
+   return typeof value === 'string' && value.length > 0 && value.length <= MAX_TOKEN_LENGTH
+ }
+ 
+-function markerBufferMatches(token: string): boolean {
++async function markerBufferMatches(token: string): Promise<boolean> {
+   try {
+-    return clipboard.readBuffer(ELEMENT_CLIPBOARD_FORMAT).equals(Buffer.from(token))
++    const marker = await readRawClipboardMarker(ELEMENT_CLIPBOARD_FORMAT)
++    return marker !== null && marker.equals(Buffer.from(token))
+   } catch {
+     return false
+   }
+ }
+ 
+-function markerHtmlMatches(token: string): boolean {
++async function markerHtmlMatches(token: string): Promise<boolean> {
+   try {
+     const encodedToken = encodeURIComponent(token)
+-    const images = clipboard
+-      .readHTML()
++    const images = (await readClipboardHtml())
+       .matchAll(/<img\b[^>]*\bdata-genoffice-slides-elements\s*=\s*"([^"]*)"[^>]*>/gi)
+     return [...images].some((match) => match[1] === encodedToken)
+   } catch {
+@@ -32,22 +37,18 @@ function markerHtmlMatches(token: string): boolean {
+ }
+ 
+ /** Whether the OS clipboard still belongs to the supplied element-copy token. */
+-export function elementClipboardMarkerMatches(token: string): boolean {
+-  return isElementClipboardToken(token) && (markerBufferMatches(token) || markerHtmlMatches(token))
++export async function elementClipboardMarkerMatches(token: string): Promise<boolean> {
++  return isElementClipboardToken(token) && ((await markerBufferMatches(token)) || (await markerHtmlMatches(token)))
+ }
+ 
+ /** Prevent a delayed renderer PNG from replacing a later copy or an external clipboard change. */
+-export function canWriteElementClipboardImage(
++export async function canWriteElementClipboardImage(
+   current: ElementClipboardIdentity | null,
+   senderId: number,
+   token: unknown,
+-): token is string {
+-  return (
+-    isElementClipboardToken(token) &&
+-    current?.senderId === senderId &&
+-    current.token === token &&
+-    elementClipboardMarkerMatches(token)
+-  )
++): Promise<boolean> {
++  if (!isElementClipboardToken(token) || current?.senderId !== senderId || current.token !== token) return false
++  return elementClipboardMarkerMatches(token)
+ }
+ 
+ function decodePngBase64(pngBase64: unknown): Buffer | null {
+@@ -65,7 +66,7 @@ function decodePngBase64(pngBase64: unknown): Buffer | null {
+ }
+ 
+ /** Writes a standard image and an HTML marker together so external apps can paste the image. */
+-export function writeElementClipboardImage(token: string, pngBase64: unknown): boolean {
++export async function writeElementClipboardImage(token: string, pngBase64: unknown): Promise<boolean> {
+   if (!isElementClipboardToken(token)) return false
+   const bytes = decodePngBase64(pngBase64)
+   if (!bytes) return false
+@@ -75,8 +76,10 @@ export function writeElementClipboardImage(token: string, pngBase64: unknown): b
+     const normalizedPng = decoded.toPNG()
+     if (!normalizedPng.length) return false
+     const html = `<img src="data:image/png;base64,${normalizedPng.toString('base64')}" data-genoffice-slides-elements="${encodeURIComponent(token)}">`
+-    if (!elementClipboardMarkerMatches(token)) return false
+-    clipboard.write({ image: decoded, html })
++    // Re-check *after* PNG normalization: an external copy during rendering
++    // must not be overwritten by a stale delayed preview.
++    if (!(await elementClipboardMarkerMatches(token))) return false
++    await writeClipboardImageWithHtml(normalizedPng, html, decoded)
+     return true
+   } catch {
+     return false
+diff --git a/apps/slides/src/main/slides-main.ts b/apps/slides/src/main/slides-main.ts
+index 75830ba..617ca38 100644
+--- a/apps/slides/src/main/slides-main.ts
++++ b/apps/slides/src/main/slides-main.ts
+@@ -5,7 +5,6 @@
+  * future shell reuse.
+  */
+ import {
+-  clipboard,
+   app,
+   BrowserWindow,
+   desktopCapturer,
+@@ -82,6 +81,13 @@ import {
+   isElementClipboardToken,
+   writeElementClipboardImage,
+ } from './element-clipboard'
++import {
++  readRawClipboardMarker,
++  writeRawClipboardMarker,
++  readClipboardImagePng,
++  readClipboardText,
++  clipboardHasPasteableContent,
++} from './clipboard-compat'
+ import { getUiLang, normalizeLang, setUiLang } from '@genoffice/i18n'
+ import { ProjectStore } from '@genoffice/project-store'
+ import {
+@@ -2689,7 +2695,7 @@ export function registerSlidesIpc(): void {
+   })
+ 
+   // App-wide, so a slide copied in one tab can be pasted into another deck.
+-  ipcMain.handle('slides:copy-slides', (e, op: CopySlidesOp) => {
++  ipcMain.handle('slides:copy-slides', async (e, op: CopySlidesOp) => {
+     const session = sessions.get(e.sender.id)
+     if (!session || !op.slideIndexes.length) return false
+     const bundles: SlideBundle[] = []
+@@ -2699,9 +2705,10 @@ export function registerSlidesIpc(): void {
+       bundles.push(bundle)
+     }
+     const pngs = op.pngs?.length === bundles.length ? op.pngs : undefined
++    // Write the OS marker before advertising the internal slide clipboard:
++    // Electron 44 clipboard writes are asynchronous.
++    await writeRawClipboardMarker('io.genoffice.slides.slide', Buffer.from('1'))
+     slideClipboard = { bundles, ...(pngs ? { pngs } : {}) }
+-    // Marker so plain ⌘V knows the latest copy was a slide (element copies / external copies overwrite it)
+-    clipboard.writeBuffer('io.genoffice.slides.slide', Buffer.from('1'))
+     return true
+   })
+ 
+@@ -3565,36 +3572,35 @@ export function registerSlidesIpc(): void {
+     },
+   )
+ 
+-  // Our marker still present = the last copy came from this app -> use internal element paste
+-  // (on macOS custom formats don't appear in availableFormats, so check via readBuffer)
+-  const clipboardMarker = (format: string) => {
++  // An internal clipboard is usable only while its OS marker still matches;
++  // a newer external copy must supersede it. Electron 44 reads are async.
++  const clipboardMarker = async (format: string): Promise<boolean> => {
+     try {
+-      return clipboard.readBuffer(format).length > 0
++      return (await readRawClipboardMarker(format)) !== null
+     } catch {
+       return false
+     }
+   }
+ 
+-  ipcMain.handle('slides:clipboard-external', () => {
+-    if (slideClipboard && clipboardMarker('io.genoffice.slides.slide')) return { kind: 'slide' }
+-    if (elementClipboard && elementClipboardMarkerMatches(elementClipboard.token))
++  ipcMain.handle('slides:clipboard-external', async () => {
++    if (slideClipboard && await clipboardMarker('io.genoffice.slides.slide')) return { kind: 'slide' }
++    if (elementClipboard && await elementClipboardMarkerMatches(elementClipboard.token))
+       return { kind: 'internal' }
+-    const img = clipboard.readImage()
+-    if (!img.isEmpty()) return { kind: 'image', base64: img.toPNG().toString('base64'), ext: 'png' }
+-    const text = clipboard.readText()
++    const png = await readClipboardImagePng()
++    if (png) return { kind: 'image', base64: png.toString('base64'), ext: 'png' }
++    const text = await readClipboardText()
+     if (text.trim()) return { kind: 'text', text }
+     return { kind: 'none' }
+   })
+ 
+   // Menu-enable probe: is there anything a paste would act on? (no image decode)
+-  ipcMain.handle('slides:clipboard-probe', () => {
+-    if (slideClipboard && clipboardMarker('io.genoffice.slides.slide')) return true
+-    if (elementClipboard && elementClipboardMarkerMatches(elementClipboard.token)) return true
+-    if (clipboard.availableFormats().some((f) => f.startsWith('image/'))) return true
+-    return clipboard.readText().trim().length > 0
++  ipcMain.handle('slides:clipboard-probe', async () => {
++    if (slideClipboard && await clipboardMarker('io.genoffice.slides.slide')) return true
++    if (elementClipboard && await elementClipboardMarkerMatches(elementClipboard.token)) return true
++    return clipboardHasPasteableContent()
+   })
+ 
+-  ipcMain.handle('slides:copy-elements', (e, op: CopyElementsOp) => {
++  ipcMain.handle('slides:copy-elements', async (e, op: CopyElementsOp) => {
+     const session = sessions.get(e.sender.id)
+     if (!session) return 0
+     const slide = session.opened.deck.slides[op.slideIndex]
+@@ -3605,20 +3611,21 @@ export function registerSlidesIpc(): void {
+       .map((el) => copyElementData(session.opened, slide, el))
+     if (items.length) {
+       const token = isElementClipboardToken(op.clipboardToken) ? op.clipboardToken : randomUUID()
++      // Only publish the in-memory copy once the asynchronous Electron 44
++      // marker is durably on the OS clipboard.
++      await writeRawClipboardMarker(ELEMENT_CLIPBOARD_FORMAT, Buffer.from(token))
+       elementClipboard = {
+         items,
+         cascade: newPasteCascade(op.cut ? null : pageKey(e.sender.id, op.slideIndex)),
+         token,
+         senderId: e.sender.id,
+       }
+-      // Write our marker to the OS clipboard: an external copy overwrites it, so at paste time it tells whether internal or external is newer
+-      clipboard.writeBuffer(ELEMENT_CLIPBOARD_FORMAT, Buffer.from(token))
+     }
+     return items.length
+   })
+ 
+-  ipcMain.handle('slides:copy-elements-image', (e, clipboardToken: string, pngBase64: string) => {
+-    if (!canWriteElementClipboardImage(elementClipboard, e.sender.id, clipboardToken)) return false
++  ipcMain.handle('slides:copy-elements-image', async (e, clipboardToken: string, pngBase64: string) => {
++    if (!(await canWriteElementClipboardImage(elementClipboard, e.sender.id, clipboardToken))) return false
+     return writeElementClipboardImage(clipboardToken, pngBase64)
+   })
+ 
+diff --git a/apps/slides/tests/clipboard-compat.test.ts b/apps/slides/tests/clipboard-compat.test.ts
+new file mode 100644
+index 0000000..8aa8206
+--- /dev/null
++++ b/apps/slides/tests/clipboard-compat.test.ts
+@@ -0,0 +1,93 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest'
++
++const electron = vi.hoisted(() => {
++  class ClipboardItem {
++    readonly data: Record<string, Blob | string>
++    constructor(data: Record<string, Blob | string>) {
++      this.data = data
++    }
++  }
++  return {
++    ClipboardItem,
++    clipboard: { read: vi.fn(), readText: vi.fn(), write: vi.fn() },
++    nativeImage: { createFromBuffer: vi.fn() },
++  }
++})
++vi.mock('electron', () => electron)
++
++import {
++  clipboardHasPasteableContent,
++  readClipboardHtml,
++  readClipboardImagePng,
++  readClipboardText,
++  readRawClipboardMarker,
++  writeClipboardImageWithHtml,
++  writeRawClipboardMarker,
++} from '../src/main/clipboard-compat'
++import { elementClipboardMarkerMatches } from '../src/main/element-clipboard'
++
++const rawType = (name: string) => `electron application/osclipboard;format="${name}"`
++const item = (mime: string, bytes: string | Uint8Array) => ({
++  types: [mime],
++  getType: vi.fn(async () => new Blob([typeof bytes === 'string' ? bytes : new Uint8Array(Array.from(bytes))])),
++})
++
++beforeEach(() => {
++  electron.clipboard.read.mockReset().mockResolvedValue([])
++  electron.clipboard.readText.mockReset().mockResolvedValue('')
++  electron.clipboard.write.mockReset().mockResolvedValue(undefined)
++  electron.nativeImage.createFromBuffer.mockReset().mockReturnValue({
++    isEmpty: () => false, toPNG: () => Buffer.from('png-normalized'),
++  })
++})
++
++describe('Electron 44 async clipboard migration', () => {
++  it('reads a custom raw marker and rejects a replaced marker', async () => {
++    electron.clipboard.read.mockResolvedValue([item(rawType('io.genoffice.slides.elements'), 't-1')])
++    expect((await readRawClipboardMarker('io.genoffice.slides.elements'))?.toString()).toBe('t-1')
++    expect(await elementClipboardMarkerMatches('t-1')).toBe(true)
++    expect(await elementClipboardMarkerMatches('t-2')).toBe(false)
++  })
++
++  it('writes custom raw marker as a single ClipboardItem, without the removed writeBuffer API', async () => {
++    await writeRawClipboardMarker('io.genoffice.slides.slide', Buffer.from('1'))
++    expect(electron.clipboard.write).toHaveBeenCalledTimes(1)
++    const [entries] = electron.clipboard.write.mock.calls[0]!
++    expect(entries).toHaveLength(1)
++    const stored = entries[0].data[rawType('io.genoffice.slides.slide')] as Blob
++    expect(Buffer.from(await stored.arrayBuffer()).toString()).toBe('1')
++  })
++
++  it('reads external image data as normalized PNG and preserves image priority over text', async () => {
++    electron.clipboard.read.mockResolvedValue([item('image/jpeg', new Uint8Array([1, 2, 3]))])
++    electron.clipboard.readText.mockResolvedValue('external text')
++    expect(await clipboardHasPasteableContent()).toBe(true)
++    expect((await readClipboardImagePng())?.toString()).toBe('png-normalized')
++    expect(electron.nativeImage.createFromBuffer).toHaveBeenCalledWith(Buffer.from([1, 2, 3]))
++  })
++
++  it('reads HTML and text without the removed readHTML helper', async () => {
++    electron.clipboard.read.mockResolvedValue([item('text/html', '<b>copy</b>')])
++    electron.clipboard.readText.mockResolvedValue('copied')
++    expect(await readClipboardHtml()).toBe('<b>copy</b>')
++    expect(await readClipboardText()).toBe('copied')
++  })
++
++  it('writes image and HTML together in a single modern clipboard transaction', async () => {
++    await writeClipboardImageWithHtml(Buffer.from('png-data'), '<b>image</b>')
++    expect(electron.clipboard.write).toHaveBeenCalledTimes(1)
++    const [entries] = electron.clipboard.write.mock.calls[0]!
++    const data = entries[0].data
++    expect(Object.keys(data).sort()).toEqual(['image/png', 'text/html'])
++    expect(Buffer.from(await (data['image/png'] as Blob).arrayBuffer()).toString()).toBe('png-data')
++    expect(data['text/html']).toBe('<b>image</b>')
++  })
++
++  it('reports no paste content on empty image items and whitespace-only text', async () => {
++    electron.clipboard.read.mockResolvedValue([item('application/json', '{}')])
++    electron.clipboard.readText.mockResolvedValue('   ')
++    expect(await clipboardHasPasteableContent()).toBe(false)
++    expect(await readClipboardImagePng()).toBeNull()
++    expect(await readRawClipboardMarker('io.genoffice.slides.slide')).toBeNull()
++  })
++})
+diff --git a/apps/slides/tests/element-clipboard.test.ts b/apps/slides/tests/element-clipboard.test.ts
+index be69c46..12b7949 100644
+--- a/apps/slides/tests/element-clipboard.test.ts
++++ b/apps/slides/tests/element-clipboard.test.ts
+@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
+ 
+ const electron = vi.hoisted(() => ({
+   clipboard: {
++    availableFormats: vi.fn(() => []),
+     readBuffer: vi.fn(),
+     readHTML: vi.fn(),
+     write: vi.fn(),
+@@ -32,42 +33,42 @@ beforeEach(() => {
+ })
+ 
+ describe('element clipboard OS marker', () => {
+-  it('only recognizes the exact custom-format token as internal', () => {
++  it('only recognizes the exact custom-format token as internal', async () => {
+     electron.clipboard.readBuffer.mockReturnValue(Buffer.from(token))
+-    expect(elementClipboardMarkerMatches(token)).toBe(true)
++    expect(await elementClipboardMarkerMatches(token)).toBe(true)
+ 
+     electron.clipboard.readBuffer.mockReturnValue(Buffer.from(`${token}-other`))
+-    expect(elementClipboardMarkerMatches(token)).toBe(false)
++    expect(await elementClipboardMarkerMatches(token)).toBe(false)
+   })
+ 
+-  it('recognizes the token in the HTML image marker when custom formats are absent', () => {
++  it('recognizes the token in the HTML image marker when custom formats are absent', async () => {
+     electron.clipboard.readHTML.mockReturnValue(
+       '<img src="data:image/png;base64,cG5n" data-genoffice-slides-elements="copy-token-1">',
+     )
+ 
+-    expect(elementClipboardMarkerMatches(token)).toBe(true)
++    expect(await elementClipboardMarkerMatches(token)).toBe(true)
+   })
+ 
+-  it('rejects a stale token and an externally replaced clipboard before image write', () => {
++  it('rejects a stale token and an externally replaced clipboard before image write', async () => {
+     electron.clipboard.readBuffer.mockReturnValue(Buffer.from('new-token'))
+     const current = { token: 'new-token', senderId: 42 }
+ 
+-    expect(canWriteElementClipboardImage(current, 42, token)).toBe(false)
+-    expect(canWriteElementClipboardImage(current, 7, 'new-token')).toBe(false)
+-    expect(canWriteElementClipboardImage(current, 42, 'new-token')).toBe(true)
++    expect(await canWriteElementClipboardImage(current, 42, token)).toBe(false)
++    expect(await canWriteElementClipboardImage(current, 7, 'new-token')).toBe(false)
++    expect(await canWriteElementClipboardImage(current, 42, 'new-token')).toBe(true)
+ 
+     electron.clipboard.readBuffer.mockReturnValue(Buffer.from('external-copy'))
+-    expect(canWriteElementClipboardImage(current, 42, 'new-token')).toBe(false)
++    expect(await canWriteElementClipboardImage(current, 42, 'new-token')).toBe(false)
+   })
+ })
+ 
+ describe('element clipboard PNG writer', () => {
+-  it('writes normalized PNG and HTML marker in one clipboard operation', () => {
++  it('writes normalized PNG and HTML marker in one clipboard operation', async () => {
+     const decoded = { isEmpty: () => false, toPNG: () => Buffer.from('normalized-png') }
+     electron.nativeImage.createFromBuffer.mockReturnValue(decoded)
+     electron.clipboard.readBuffer.mockReturnValue(Buffer.from('copy token'))
+ 
+-    expect(writeElementClipboardImage('copy token', 'cG5n')).toBe(true)
++    expect(await writeElementClipboardImage('copy token', 'cG5n')).toBe(true)
+ 
+     expect(electron.clipboard.write).toHaveBeenCalledOnce()
+     expect(electron.clipboard.write).toHaveBeenCalledWith({
+@@ -77,7 +78,7 @@ describe('element clipboard PNG writer', () => {
+     expect(electron.nativeImage.createFromBuffer).toHaveBeenCalledOnce()
+   })
+ 
+-  it('does not overwrite an external copy made while PNG normalization runs', () => {
++  it('does not overwrite an external copy made while PNG normalization runs', async () => {
+     electron.clipboard.readBuffer.mockReturnValue(Buffer.from(token))
+     electron.nativeImage.createFromBuffer.mockReturnValue({
+       isEmpty: () => false,
+@@ -87,23 +88,23 @@ describe('element clipboard PNG writer', () => {
+       },
+     })
+ 
+-    expect(writeElementClipboardImage(token, 'cG5n')).toBe(false)
++    expect(await writeElementClipboardImage(token, 'cG5n')).toBe(false)
+     expect(electron.clipboard.write).not.toHaveBeenCalled()
+   })
+ 
+-  it('leaves the clipboard untouched for an empty or undecodable PNG', () => {
+-    expect(writeElementClipboardImage(token, '')).toBe(false)
+-    expect(writeElementClipboardImage(token, 'AA==')).toBe(false)
++  it('leaves the clipboard untouched for an empty or undecodable PNG', async () => {
++    expect(await writeElementClipboardImage(token, '')).toBe(false)
++    expect(await writeElementClipboardImage(token, 'AA==')).toBe(false)
+ 
+     expect(electron.clipboard.write).not.toHaveBeenCalled()
+   })
+ 
+-  it('leaves the clipboard untouched when PNG decoding throws', () => {
++  it('leaves the clipboard untouched when PNG decoding throws', async () => {
+     electron.nativeImage.createFromBuffer.mockImplementationOnce(() => {
+       throw new Error('invalid PNG')
+     })
+ 
+-    expect(writeElementClipboardImage(token, 'cG5n')).toBe(false)
++    expect(await writeElementClipboardImage(token, 'cG5n')).toBe(false)
+     expect(electron.clipboard.write).not.toHaveBeenCalled()
+   })
+ })
+-- 
+2.52.0.windows.1
+

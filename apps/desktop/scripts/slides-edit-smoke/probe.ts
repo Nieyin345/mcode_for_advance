@@ -58,7 +58,7 @@
  *    只能挂载不能编辑 —— 这是本片要诚实报告的结论；
  *  - 保存只落套件隔离目录（`documents` 重指），不碰用户真实文档。
  */
-import { BrowserWindow, ipcMain, app, clipboard } from "electron";
+import { BrowserWindow, ipcMain, app } from "electron";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync as mkdirSyncFs, readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -153,30 +153,12 @@ export async function runSlidesEditProbe(dir: string): Promise<void> {
     }
   }
 
-  // ── Electron 44 兼容缺口（vendor 的已知缺陷，探针点名并记录） ──
-  // `slides-main.ts:3580` 的 `slides:clipboard-probe` 用 `clipboard.availableFormats()`
-  // 与 `clipboard.readImage()` —— 这两个同步 API 在 Mcode 的 Electron 44 里已不存在
-  // （44 的 clipboard 是异步 `has/read/readText`，见 electron.d.ts:6985-7029）。
-  // 这是**vendor 代码本身**在 Electron 44 下的兼容问题，不是 Mcode 的缺口。
-  // 探针里把该通道替换为 Electron 44 形状的诚实实现（同样的语义：探测剪贴板是否
-  // 有可粘贴内容），并把它记进 evidence 供报告点名。vendor 源码不动。
-  let clipboardCompatGap: string | null = null;
-  try {
-    ipcMain.removeHandler("slides:clipboard-probe");
-    ipcMain.handle("slides:clipboard-probe", async () => {
-      try {
-        const text = await (clipboard as unknown as { readText(): Promise<string> }).readText();
-        return typeof text === "string" && text.trim().length > 0;
-      } catch {
-        return false;
-      }
-    });
-    clipboardCompatGap =
-      "vendor slides-main.ts:3580 的 clipboard.availableFormats()/readImage() 是 Electron 43 同步 API；Electron 44 只有异步 has/read/readText。探针用等价语义替换该通道。";
-  } catch {
-    /* 无法替换则保留 vendor 版本，异常断言会如实红 */
-  }
-  evidence.clipboardCompatGap = clipboardCompatGap;
+  // Exercise the *real vendor handler* in Electron 44, without overriding
+  // slides:clipboard-probe. Earlier harness versions replaced it with a text-
+  // only mock to hide removed Electron 43 synchronous clipboard methods.
+  // The vendor now uses the async ClipboardItem adapter; a regression must
+  // surface as a real unhandled exception rather than a permanently green mock.
+  evidence.clipboardCompatGap = null;
   evidence.ipcRegistered = true;
 
   const win = new BrowserWindow({

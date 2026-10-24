@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "483ce5442c2c4ce3988427775fa4f79d005a02b1",
-  "expectedTree": "e30e83bfc0a4562d42eb8a533751fde8c54873e1",
+  "revision": "ec21271a1b502154c6be6568c43ba8c4b0ae30e2",
+  "expectedTree": "a1e47d3ac02f6e2e70755b9536ed3492c2365c95",
   "patchSeries": [
     {
       "index": 1,
@@ -220,6 +220,15 @@
       "sha256": "9635ce04fc1b71458b79283aee9ac7ebdca36624a92ed48994bc4f39bd83e1cc",
       "bytes": 3676,
       "subject": "fix(slides): make Save As atomic and show clean conflict errors"
+    },
+    {
+      "index": 24,
+      "file": "patches/genoffice/0024-fix-slides-electron44-clipboard.patch",
+      "revision": "ec21271a1b502154c6be6568c43ba8c4b0ae30e2",
+      "parentRevision": "483ce5442c2c4ce3988427775fa4f79d005a02b1",
+      "sha256": "5488f55c3ea68a0ba39dcf4bab5f0cd450e49860a4f3d56107e92c6035f5188f",
+      "bytes": 25065,
+      "subject": "fix(slides): support Electron 44 asynchronous clipboard API"
     }
   ],
   "license": "Apache-2.0",
