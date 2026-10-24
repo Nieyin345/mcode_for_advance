@@ -243,6 +243,61 @@ bash apps/desktop/scripts/o6-reshell-<format>-smoke/run.sh
 **不要因为 `smokes-for.sh` 说「没有回归网」而怀疑自己没做对。**
 也**不要**为了「让它闭嘴」而去改 `apps/desktop/` 里无关的东西。
 
+## 六之三、★ 通用规则（2026-10-24 探测后确立）：**换壳 = 换共享 token，app 私有 token 一律不动**
+
+**这条比「覆盖 54 个 chrome token」更准确，因为它解释了「为什么是这 54 个」** ——
+**不是因为它们看起来像 chrome，是因为它们在共享层里。**
+
+### 硬证据
+
+```
+$ grep -c -- "--pdf-statusbar-bg" genoffice/packages/ui/src/tokens.css
+0                                                   ← 不在共享层
+
+$ grep -n -- "--docs-statusbar-bg" genoffice/apps/docs/src/renderer/styles.css
+44:  --docs-statusbar-bg: #f3f4f6;                   ← docs（已换壳）也没换它
+```
+
+**docs 是 0014 换过壳的，`--docs-statusbar-bg` 还是 `#f3f4f6`。**
+**所以「只覆盖共享 token」不是偏好，是已经发生的事情。**
+
+### 可验的形式（每个格式都加这条断言）
+
+```bash
+# 覆盖的每个 token 必须在 tokens.css 里
+grep -oE '^\s*--[a-z0-9-]+' apps/<app>/src/renderer/mcode-theme.css   | sed 's/^\s*//' | while read t; do
+    grep -q -- "$t:" genoffice/packages/ui/src/tokens.css || echo "私有 token 被覆盖了: $t"
+  done
+```
+
+**它防的是「有人觉得某个私有 chrome 也该换」而悄悄加进去** ——
+**那是 html/markdown 套件里「不覆盖 `--hx-*` / `--md-*`」那些断言的通用化。**
+
+### 各格式的私有 chrome 与内容色（探测结果，2026-10-24）
+
+| app | 可覆盖（∩tokens.css） | app 私有 | 私有的典型 | 该不该换 |
+|---|---|---|---|---|
+| html | 41 | 26 | `--hx-*` | ❌ |
+| markdown | 43 | 61 | `--md-*` / `--mdt-*` | ❌ |
+| **pdf** | **41** | **82** | `--pdf-paper` / `--pdf-statusbar-bg` / `--pdf-ink-*` / `--pdf-search-hit-*` | ❌ |
+| **slides** | **42** | **138** | `--slides-paper` / `--slides-show-fill-*` / `--slides-anim-*` | ❌ |
+| **sheets** | **40** | **91** | `--sheets-paper` / `--sheets-chart-*` | ❌ |
+
+**可覆盖的数几乎不变（40–43），私有的从 26 涨到 138** ——
+**机制成立，但适用范围随 app 复杂度收窄。**
+
+### canvas 不是第三层风险（探测结论）
+
+**三家都没有 chrome 画在 canvas 上**：
+
+| app | canvas 画什么 | 是 chrome 吗 |
+|---|---|---|
+| pdf | 页面渲染 + 导出填白 | ❌ 内容 |
+| slides | 脱敏框（`redactFrame` 3 个值，注释明写「两种主题画得一样」） | ❌ 内容语义 |
+| sheets | Univer 网格；**上游注释明说不吃 CSS token**（`App.tsx:1736`） | ❌ 内容 |
+
+**所以「chrome 是 canvas 画的，CSS 管不到」这个担心不成立。**
+
 ## 七、不要做的事
 
 - **不要用 `insertCSS` 从外面硬藏**（那是 A 方案，用户明确选了 B）。
