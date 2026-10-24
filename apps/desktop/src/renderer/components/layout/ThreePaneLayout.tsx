@@ -27,6 +27,23 @@ interface Props {
   onChangeRightOpen?: (open: boolean) => void;
   /** Bottom-bar terminal node (keep-alive: always mounted). */
   bottomTerminal?: ReactNode;
+  /**
+   * 【T119】右栏的承载方式。
+   *
+   * - `"pane"`（默认）：右栏是 flex 里的第三栏 —— 今天的全部行为，`order` 排序、
+   *   拖拽停靠、50/50 吸附、宽屏百分比都走这条。
+   * - `"drawer"`：右栏**离开 flex 流**，绝对定位贴在右边、浮在对话区之上；
+   *   对话区按抽屉宽度**收窄**（`marginRight`），所以**不遮住对话** ——
+   *   用户要的是「对话和文件同时看得见」，不是浮层挡住一半。
+   *
+   * ⚠️ **两种模式下右栏都保持挂载**（`rightEverMounted` 的语义不变）。
+   * 卸载会拆掉 `RightPanel` 里的文件树 / Git 扫描状态，而那条规则是
+   * `rightPaneKeepAlive.ts` 的核心；drawer 只是换定位，不是换生命周期。
+   *
+   * ⚠️ drawer 模式下**停靠拖拽不参与**（`order` / `rightDock` / 50/50 吸附都只对
+   * pane 有意义）。那套逻辑仍在，见下面的 `isDrawer` 分支。
+   */
+  rightSurface?: "pane" | "drawer";
   /** Whether the bottom terminal bar is expanded. When false the bar collapses
    *  to height 0 but stays mounted so PTYs survive — see App.tsx. */
   bottomTerminalOpen?: boolean;
@@ -97,6 +114,7 @@ export function ThreePaneLayout({
   onChangeRightOpen,
   bottomTerminal,
   bottomTerminalOpen = false,
+  rightSurface = "pane",
   leftWidth,
   rightWidth,
   rightWidthPct,
@@ -210,6 +228,19 @@ export function ThreePaneLayout({
     if (rightOpen) setHasOpenedRight(true);
   }, [rightOpen]);
   const rightEverMounted = shouldMountRightPane(rightOpen, hasOpenedRight);
+  /* 【T119】drawer 模式：右栏离开 flex 流，对话区按它的宽度收窄。
+   *
+   * 为什么收窄而不是纯浮层：用户要「对话和文件同时看得见」。纯 overlay 会把
+   * 对话右半边压在下面 —— 那正是他抱怨的「只能中间显示」换了个形式。
+   *
+   * 宽度封顶 30%：抽屉是辅助视图，不该把主对话挤到读不了。pane 模式下用户
+   * 可以拖到 50%（宽屏模式），那是「专注看文件」的主动选择；drawer 是常驻的
+   * 辅助位，30% 是它的默认上限。
+   */
+  const isDrawer = rightSurface === "drawer";
+  const drawerOpenWidth = rightWidthPct !== undefined
+    ? `min(${rightWidthPct}%, 30%)`
+    : `min(${rightWidth ?? 360}px, 30%)`;
   // Reordering stable flex children avoids remounting Chromium/Monaco/PTY.
   const order = dockFlexOrder(rightDock);
   const [dockPreview, setDockPreview] = useState<DockSide | null>(null);
@@ -228,6 +259,8 @@ export function ThreePaneLayout({
     };
   }, []);
   const handleDockDragOver = (e: DragEvent<HTMLElement>) => {
+    // drawer 模式没有停靠语义（位置固定在右侧），拖拽停靠的预览与落点都不生效。
+    if (rightSurface === "drawer") return;
     if (!rightOpen || (!onChangeRightDock && !onMovePane) ||
         !Array.from(e.dataTransfer.types).includes(PANE_DOCK_MIME)) return;
     const bounds = e.currentTarget.getBoundingClientRect();
@@ -374,7 +407,10 @@ export function ThreePaneLayout({
 
       {toolbar && <div data-pane-toolbar="" className={cn("flex shrink-0", rightAtBottom ? "h-[calc(100%-var(--pane-bottom-share))]" : "h-full")} style={{ order: order.toolbar }}>{toolbar}</div>}
 
-      {rightOpen && onResizeRight && !rightAtBottom && (
+      {/* 【T119】drawer 模式下不渲染分隔条：抽屉宽度封顶 30%、位置固定在右侧，
+          没有可拖的边界。宽度仍可由 store 改（例如后续给一个预设按钮），
+          但那不该伪装成一条可拖的分割线。 */}
+      {rightOpen && onResizeRight && !rightAtBottom && !isDrawer && (
         <Divider
           orientation="vertical"
           className={rightDock === "left" ? "order-3" : "order-4"}
@@ -398,10 +434,21 @@ export function ThreePaneLayout({
       {rightEverMounted && (
         <aside
           data-cds-aside=""
+          data-right-surface={rightSurface}
           className="flex h-full min-w-0 shrink-0 flex-col overflow-hidden border-t border-edge-panel bg-surface"
           aria-hidden={!rightOpen}
           inert={!rightOpen}
-          style={{
+          style={isDrawer ? {
+            /* 【T119】drawer：**仍留在 flex 流里**（不是 absolute 浮层）——
+               两栏并排，谁也不遮谁。与 pane 的三点差别：
+                 ① 无 `order`（固定贴右，不参与 DOM 顺序重排）；
+                 ② 宽度封顶 30%（辅助视图不挤压主对话）；
+                 ③ 不受停靠/宽屏的百分比（那些是 pane 的专注模式）。 */
+            position: "relative",
+            maxWidth: "30%",
+            width: drawerOpenWidth,
+            display: rightOpen ? "flex" : "none",
+          } : {
             position: "relative",
             order: order.aside,
             // Preserve the stored width across window shrink/restore,
@@ -414,8 +461,11 @@ export function ThreePaneLayout({
             display: rightOpen ? "flex" : "none",
           }}
         >
-          <PaneDndHandle onStart={(x, y) => { dndOrigin.current = { x, y }; }} />
-          <div className={cn("min-h-0 flex-1 overflow-hidden border-edge-panel/60", rightDock === "left" ? "border-r" : "border-l")} style={paneDragging ? { pointerEvents: "none" } : undefined}>{right}</div>
+          {/* drawer 里不给停靠手柄：拖拽换边是 pane 的能力，抽屉只有贴右一种位置。 */}
+          {!isDrawer && <PaneDndHandle onStart={(x, y) => { dndOrigin.current = { x, y }; }} />}
+          <div className={cn("min-h-0 flex-1 overflow-hidden border-edge-panel/60",
+            isDrawer ? "border-l" : (rightDock === "left" ? "border-r" : "border-l"))}
+            style={paneDragging ? { pointerEvents: "none" } : undefined}>{right}</div>
           {paneDragging && <div data-pane-iframe-shield="" className="pointer-events-none absolute inset-0 z-50 bg-transparent" aria-hidden="true" />}
         </aside>
       )}
