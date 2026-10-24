@@ -128,6 +128,7 @@
 | T113 | **`hook-runner-smoke` 一条时序假设**：「撤权一定发生在第 2 条 spawn 之前」（全量偶发红之二） | **P1 测试正确性** | 无 | ZZ | ⬜ 待开工 |
 | T114 | **`design-tokens-smoke` 那条判据只认一种写法**：`bg-accent/15 text-accent` 紧邻组合，其他四种写法全漏 | **P1 测试判别力** | T111 | ZZ | ⬜ 待开工 |
 | T115 | 🔴 **中文 docx 没有 `w:eastAsia`**：上游有能力（`BlankDocxOptions`），CLI 的 `blankDocument()` 没传 | **P0 产品缺陷** | T102 | ZZ | 🔄 进行中（F） |
+| T116 | **六处选中态改用中性色**（T114 判据改造后暴露） | **P0 产品缺陷** | T114 | ZZ | ✅ done（`de6cd867`，345/345；深色 ring 待裁决） |
 
 ### T43 为什么是 P0（用户最高痛点）
 
