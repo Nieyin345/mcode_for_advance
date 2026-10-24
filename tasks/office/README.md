@@ -88,8 +88,8 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O2** 六格式保存冲突 | 🔄 执行中 | `153d6686` | — | `scripts/o2-conflict-u1-smoke/`（**注意目录名带 `-smoke`**） |
 | **O3** 安装版 Office | ✅ 交付 | `53413379` | `f383922b` | 16/16；23/23 变异 |
 | **O4** docs 关闭缺陷修复 | ✅ 交付 | `2120284e` | `fa6eb917` | 19/19；3 变异（M2 证两条断言独立） |
-| **O5** 删 OnlyOffice | 🔄 批一执行中 | `b380ced8` | — | 契约层；`packages/contracts/**` |
-| **O6** 五个编辑器换壳（B） | 🔄 执行中 | `a655762c` | — | `genoffice/apps/*/src/renderer/`（html+markdown 先行） |
+| **O5** 删 OnlyOffice | 🔄 批二执行中 | `b380ced8` | `bd7c8cd5`（批一） | 契约层✅ / 主进程+preload←现在 |
+| **O6** 五个编辑器换壳（B） | 🔄 批一✅ / 批二待开 | `a655762c` | `f61e4168`（批一） | html 25/25、markdown 29/29；待补暗色断言 |
 | **O7** 覆盖边界进输出 | 📝 已写卡未派 | `b2c1bc60` | — | 等 O0/O3/O1 收尾 |
 | **O8** docs 换壳开关撒谎 | 📝 已写卡未派 | `5f00299b` | — | `genoffice/apps/docs/src/renderer/main.tsx` |
 
