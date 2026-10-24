@@ -169,9 +169,16 @@ export async function dispatchDocsAiTurn(
     }
   });
   let handle: TurnHandle | null = null;
-  const abort = () => { handle?.interrupt(); };
-  signal.addEventListener("abort", abort, { once: true });
   const externalAbort = new AbortController();
+  // Interrupting the SDK can be asynchronous. Shut down the request-local
+  // renderer tool bridge *now*, not in finally after handle.done; a late tool
+  // use must not edit the document after the user pressed Stop.
+  const abort = () => {
+    externalAbort.abort();
+    handle?.interrupt();
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
   try {
     const input: Parameters<typeof env.sendTurn>[1] = {
       prompt,

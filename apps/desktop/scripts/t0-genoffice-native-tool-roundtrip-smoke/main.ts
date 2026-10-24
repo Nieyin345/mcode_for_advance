@@ -29,7 +29,7 @@ import {
   type GenOfficeNativeToolDefinition,
   type GenOfficeNativeToolInvoker,
 } from "../../src/main/document/nativeEditorToolTransport";
-import { docsAiPrompt, docsAiPorts } from "../../src/main/document/docsAiPorts";
+import { dispatchDocsAiTurn, docsAiPrompt, docsAiPorts } from "../../src/main/document/docsAiPorts";
 import type { FakeTurn } from "./stubs/nativeAiMcode";
 
 type StubState = {
@@ -416,6 +416,30 @@ async function runSuite(): Promise<void> {
     const cancelled = await bridge({ sessionId: "session-a", callId: "c5", name: "read_blocks", input: {} }, cancelledController.signal);
     check("bridge reports cancellation, never success", cancelled.status === "cancelled" && ackLog.length === 1, cancelled);
 
+    const microtaskAbort = new AbortController();
+    let queuedRendererCalls = 0;
+    const queuedBridge = createNativeEditorToolBridge({
+      sessionId: "session-a",
+      tools: [{ name: editTool.name, description: editTool.description, inputSchema: editTool.inputSchema }],
+      definitions: new Map([[editTool.name, editTool]]),
+      invokeRendererTool: async () => {
+        queuedRendererCalls++;
+        return { status: "success", output: "bad queued edit" };
+      },
+      signal: microtaskAbort.signal,
+    });
+    const queuedCall = queuedBridge(
+      { sessionId: "session-a", callId: "microtask-race", name: "replace_selection", input: { html: "<p>no edit</p>" } },
+      new AbortController().signal,
+    );
+    // A real Stop event may arrive after synchronous validation but before
+    // the renderer invocation queued by Promise.resolve().then() is dispatched.
+    microtaskAbort.abort();
+    const queuedReply = await queuedCall;
+    check("Stop between validation and microtask dispatch prevents the editor call entirely",
+      queuedReply.status === "cancelled" && queuedRendererCalls === 0,
+      { status: queuedReply.status, queuedRendererCalls });
+
     const turnAbort = new AbortController();
     let lateSettled = false;
     const lateBridge = createNativeEditorToolBridge({
@@ -542,6 +566,55 @@ async function runSuite(): Promise<void> {
         /ACK/.test((results[0]!.result as { error?: string }).error ?? ""),
       results);
     host.close();
+  }
+
+  console.log("\n7b. Host abort immediately closes a pending SDK native-tool bridge");
+  {
+    // An SDK may still emit tool calls after interrupt() is requested, before
+    // the provider's done promise settles. Aborting the hosted *request* must
+    // close its renderer tool bridge immediately, not only in finally.
+    const requestAbort = new AbortController();
+    let releaseDone: (() => void) | null = null;
+    let externalHandler: ExternalToolHandler | undefined;
+    let interrupted = 0;
+    let rendererInvocations = 0;
+    const env = {
+      lookup: () => ({
+        session: { id: "session-a", providerId: "claude-sdk" },
+        cwd: "C:/sandbox",
+      }),
+      subscribe: () => () => {},
+      sendTurn: async (_session: unknown, input: { externalToolHandler?: ExternalToolHandler }) => {
+        externalHandler = input.externalToolHandler;
+        return {
+          interrupt: () => { interrupted++; },
+          done: new Promise<void>((resolve) => { releaseDone = resolve; }),
+        };
+      },
+    } as unknown as Parameters<typeof dispatchDocsAiTurn>[3];
+    const pending = dispatchDocsAiTurn(
+      { requestId: "req-abort-host", user: "read blocks", tools: [readTool], context: contextA },
+      () => {},
+      requestAbort.signal,
+      env,
+      async () => {
+        rendererInvocations++;
+        return { status: "success", output: "should not run" };
+      },
+    );
+    await flush();
+    if (!externalHandler) throw new Error("SDK handler not installed in host abort test");
+    requestAbort.abort();
+    const reply = await externalHandler(
+      { sessionId: "session-a", callId: "host-abort-late", name: readTool.name, input: {} },
+      new AbortController().signal,
+    );
+    check("host abort cancels a tool call before SDK done and prevents renderer edits",
+      reply.status === "cancelled" && rendererInvocations === 0 && interrupted === 1,
+      { status: reply.status, rendererInvocations, interrupted });
+    if (!releaseDone) throw new Error("SDK done resolver missing");
+    (releaseDone as () => void)();
+    await pending;
   }
 
   console.log("\n8. Text-only hosted turns never touch the tool bridge");

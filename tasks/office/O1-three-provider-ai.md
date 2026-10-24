@@ -211,3 +211,15 @@ npx tsc --noEmit -p packages/contracts/tsconfig.json → exit 0
 - **`t0-genoffice-native-tool-roundtrip-smoke` 与 `genoffice-ai-ask-smoke` 未改动**，
   本卡只在 `docsAiPorts` 外层加新证据。
 - **未跑全量**（按仓库规矩需总控批准）。
+
+---
+
+## 2026-10-25 增补：停止请求后仍可触发原生编辑工具的竞态修复
+
+这属于 O1 已验过的「取消后不再改动」判据的**额外并发入口**，因此回写到现有 O1，不新造同根因任务。
+
+**旧代码真实红例 A**：用户 abort `docsAiPorts.run` 后，SDK 的 `handle.interrupt()` 已被调用但 `handle.done` 尚未 settle；此时 SDK 又发一个有效 `replace_selection`，`createNativeEditorToolBridge` 的请求级 AbortController 直到 `finally` 才触发，因此渲染端被调用 **1 次**且结果竟是 `success`。新断言原实现 `t0` 输出 **55/56 PASS**，具体红例 `status: success, rendererInvocations:1, interrupted:1`。修复：在 `apps/desktop/src/main/document/docsAiPorts.ts` 的中止回调里先同步中断请求级工具桥，再请求 SDK interrupt；`finally` 的清理仍保留。
+
+**旧代码真实红例 B**：工具校验结束，但尚未执行 `Promise.resolve().then(...invokeRendererTool)` 的微任务时用户取消；旧代码 ACK 虽为 cancelled，仍调用了编辑器 **1 次**。第二断言旧实现 `t0` **56/57 PASS**，`status: cancelled, queuedRendererCalls:1`。修复：`nativeEditorToolTransport.ts` 在异步派发前再次检查请求与 SDK 工具调用两路 `AbortSignal`，直接返回取消而不调用渲染端。
+
+**修复后的测试**：`t0-genoffice-native-tool-roundtrip-smoke` **57/57 PASS**，包含两项专门判据（执行计数必须 0，而非只检查 cancelled 回包）。`o1-three-provider-ai-smoke` 原本三家 **46/46 PASS**，`genoffice-ai-ask-smoke` 与新增 `o7-coverage-smoke` 同批四套 smoke **4/4 PASS**。Mcode Desktop/Contracts 双包 TypeScript 检查 0。所有测试使用隔离协议替身与受控内存编辑器，无真实账号/文档写入；未声称真实在线 SDK 消耗额度的 U1 已完成。

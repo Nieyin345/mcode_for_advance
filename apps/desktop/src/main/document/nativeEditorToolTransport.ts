@@ -328,7 +328,14 @@ export function createNativeEditorToolBridge(args: {
       input: record.input,
     };
     const raced = await awaitWithAbort(
-      Promise.resolve().then(() => args.invokeRendererTool(rendererCall, definition)),
+      Promise.resolve().then(() => {
+        // Cancellation may occur after synchronous validation but before this
+        // microtask starts. Do not dispatch an edit merely to discard its ACK.
+        if (args.signal.aborted || callSignal?.aborted) {
+          return { status: "cancelled", output: "native editor tool call cancelled before dispatch" } as const;
+        }
+        return args.invokeRendererTool(rendererCall, definition);
+      }),
       args.signal,
     );
     if (raced.aborted || callSignal?.aborted) {
