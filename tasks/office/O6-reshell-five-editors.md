@@ -67,7 +67,7 @@ app 名 `GenOffice HTML` 时 UA 是 `GenOfficeHTML/44.4.5`，app 名 `Mcode` 时
 
 ```ts
 // 各 app 的 main.tsx
-if (/Mcode\//.test(navigator.userAgent)) import('./mcode-theme.css')
+if (/\bMcode\//.test(navigator.userAgent)) import('./mcode-theme.css')
 ```
 
 **为什么 UA 更好**：`window.desktop` 问的是「我是谁」，而各 app 自己的命名空间在独立运行时也存在；
