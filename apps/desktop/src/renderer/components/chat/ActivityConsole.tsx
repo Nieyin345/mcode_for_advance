@@ -30,7 +30,7 @@
  * shells from drifting apart while letting each own its geometry.
  * Every user-visible string is an i18n key.
  */
-import { useState, type ComponentType, type ReactNode } from "react";
+import { useRef, useState, type ComponentType, type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useNow } from "@renderer/hooks/useNow.js";
@@ -130,7 +130,7 @@ function FilterChip({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] font-semibold transition-colors",
+        "flex min-h-8 items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10.5px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         active
           ? "border-edge bg-surface-muted text-content"
           : "border-transparent text-content-subtle hover:bg-surface-muted/70 hover:text-content",
@@ -220,7 +220,7 @@ function SubagentRow({
       className={cn(
         "group relative border-b border-edge/35 py-2 pl-3.5 pr-3 last:border-b-0",
         onPick &&
-          "cursor-pointer hover:bg-surface-muted/60 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
+          "cursor-pointer hover:bg-surface-muted/60 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent",
       )}
     >
       {/* Left stripe: a sweeping shimmer while the agent is alive, a static
@@ -272,7 +272,7 @@ function SubagentRow({
           </span>
         ))}
         {onPick && (
-          <span className="ml-auto text-[10px] font-semibold text-accent-strong opacity-0 transition-opacity group-hover:opacity-100">
+          <span className="ml-auto text-[10px] font-semibold text-accent-strong opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             {t("chatStream.activity.viewSubagent")}
           </span>
         )}
@@ -439,7 +439,7 @@ function PlansBody({
               type="button"
               onClick={() => onPickPlan(block.plan)}
               title={t("chatStream.activity.viewPlan")}
-              className="group flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-surface-muted/60"
+              className="group flex min-h-10 w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-surface-muted/60 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
             >
               <span
                 className={cn(
@@ -495,11 +495,20 @@ function BookmarkRow({
   // Inline-edit state for ONE row at a time (the panel is transient).
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  // Enter and blur can both fire before React unmounts the input. Escape must
+  // suppress the blur commit too, or cancelling a rename still writes it.
+  const renameFinishedRef = useRef(false);
   const label = bookmark.title ?? bookmark.excerpt;
 
   const commit = () => {
+    if (renameFinishedRef.current) return;
+    renameFinishedRef.current = true;
     setEditing(false);
     onRename?.(bookmark, draft);
+  };
+  const cancel = () => {
+    renameFinishedRef.current = true;
+    setEditing(false);
   };
 
   return (
@@ -521,11 +530,11 @@ function BookmarkRow({
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) commit();
-              else if (e.key === "Escape") setEditing(false);
+              else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancel(); }
             }}
             onBlur={commit}
             placeholder={t("chatStream.bookmark.renamePlaceholder")}
-            className="min-w-0 flex-1 rounded border border-accent/50 bg-surface-muted px-1.5 py-0.5 text-[11px] text-content outline-none"
+            className="min-h-8 min-w-0 flex-1 rounded-[var(--radius-btn-xs)] border border-accent/50 bg-surface-muted px-2 py-0.5 text-[11px] text-content outline-none focus-visible:ring-2 focus-visible:ring-accent"
           />
         </div>
       ) : (
@@ -536,7 +545,7 @@ function BookmarkRow({
             onClick={() => onPick?.(bookmark)}
             title={stale ? undefined : bookmark.title ? bookmark.excerpt : t("chatStream.bookmark.jumpTitle")}
             className={cn(
-              "flex w-full items-center gap-2 py-1.5 pr-12 text-left transition-colors",
+              "flex min-h-9 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] py-1.5 pr-16 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent",
               stale || !onPick ? "cursor-default" : "hover:bg-surface-muted/60",
             )}
           >
@@ -557,11 +566,13 @@ function BookmarkRow({
             <button
               type="button"
               onClick={() => {
+                renameFinishedRef.current = false;
                 setDraft(bookmark.title ?? "");
                 setEditing(true);
               }}
               title={t("chatStream.bookmark.rename")}
-              className="cds-hover-ghost absolute right-7 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-content-subtle transition-colors hover:text-content group-hover/row:block"
+              aria-label={`${t("chatStream.bookmark.rename")}: ${label}`}
+              className="cds-hover-ghost absolute right-9 top-1/2 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle opacity-60 transition-colors hover:text-content hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <IconPencil size={11} />
             </button>
@@ -571,7 +582,8 @@ function BookmarkRow({
               type="button"
               onClick={() => onRemove(bookmark)}
               title={t("chatStream.bookmark.remove")}
-              className="cds-hover-ghost absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-content-subtle transition-colors hover:text-danger group-hover/row:block"
+              aria-label={`${t("chatStream.bookmark.remove")}: ${label}`}
+              className="cds-hover-ghost absolute right-0.5 top-1/2 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle opacity-60 transition-colors hover:text-danger hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <IconX size={11} />
             </button>
@@ -923,8 +935,9 @@ export function ActivityConsole({
                 key={k}
                 type="button"
                 onClick={() => onPickNode(k)}
+                aria-pressed={active}
                 className={cn(
-                  "flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors",
+                  "flex min-h-8 shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   active ? "border-edge bg-surface-muted text-content" : "border-transparent text-content-subtle",
                 )}
               >
@@ -951,7 +964,8 @@ export function ActivityConsole({
               type="button"
               onClick={rightAction.run}
               title={rightAction.label}
-              className="cds-hover-ghost grid h-6 w-6 place-items-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:text-content"
+              aria-label={rightAction.label}
+              className="cds-hover-ghost grid size-8 place-items-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <IconLayoutSidebarRightExpand size={13} />
             </button>
@@ -960,7 +974,8 @@ export function ActivityConsole({
             type="button"
             onClick={onClose}
             title={t("chatStream.activity.close")}
-            className="cds-hover-ghost grid h-6 w-6 place-items-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:text-content"
+            aria-label={t("chatStream.activity.close")}
+            className="cds-hover-ghost grid size-8 place-items-center rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/60 text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <IconX size={13} />
           </button>

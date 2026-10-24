@@ -93,6 +93,14 @@ export function CurrentOpTicker({
   // Snapshot of the front row's block; kept live while `op` refers to the same
   // tool (its status may flip running→done under us).
   const frontOpRef = useRef<ToolUseBlock | null>(null);
+  const firstFrameRef = useRef<number | null>(null);
+  const secondFrameRef = useRef<number | null>(null);
+  // LegendList recycles chat rows while streaming; pending animation frames
+  // must never mutate the next row that occupies an unmounted ticker slot.
+  useEffect(() => () => {
+    if (firstFrameRef.current !== null) cancelAnimationFrame(firstFrameRef.current);
+    if (secondFrameRef.current !== null) cancelAnimationFrame(secondFrameRef.current);
+  }, []);
 
   // Live app-preference and OS subscription. A one-time matchMedia memo
   // misses both user setting changes and OS toggles while a turn is running.
@@ -101,7 +109,12 @@ export function CurrentOpTicker({
   // An OS/app motion change can happen mid-roll. When animations become
   // disabled there will be no transitionend to commit the next tool row.
   useEffect(() => {
-    if (!reducedMotion || !nextOp) return;
+    if (!reducedMotion) return;
+    if (firstFrameRef.current !== null) cancelAnimationFrame(firstFrameRef.current);
+    if (secondFrameRef.current !== null) cancelAnimationFrame(secondFrameRef.current);
+    firstFrameRef.current = null;
+    secondFrameRef.current = null;
+    if (!nextOp) return;
     frontOpRef.current = nextOp;
     setFrontId(nextOp.toolCallId);
     setNextOp(null);
@@ -166,8 +179,8 @@ export function CurrentOpTicker({
   const frontRunning = !!op && !!frontId && op.toolCallId === frontId;
 
   return (
-    <span className="flex min-w-0 items-center border-l border-edge pl-2">
-      <span className="block min-w-0 max-w-60" style={{ height: ROW_HEIGHT, overflow: "hidden" }}>
+    <span className="flex min-w-0 items-center border-l border-edge pl-2" aria-live="off">
+      <span className="block min-w-0 max-w-[min(15rem,38vw)]" style={{ height: ROW_HEIGHT, overflow: "hidden" }}>
         <span
           className="block"
           onTransitionEnd={(e) => {
@@ -179,9 +192,15 @@ export function CurrentOpTicker({
             setFrontId(nextOp.toolCallId);
             setRolled(false);
             setNextOp(null);
-            requestAnimationFrame(() =>
-              requestAnimationFrame(() => setTransitionEnabled(true)),
-            );
+            if (firstFrameRef.current !== null) cancelAnimationFrame(firstFrameRef.current);
+            if (secondFrameRef.current !== null) cancelAnimationFrame(secondFrameRef.current);
+            firstFrameRef.current = requestAnimationFrame(() => {
+              firstFrameRef.current = null;
+              secondFrameRef.current = requestAnimationFrame(() => {
+                secondFrameRef.current = null;
+                setTransitionEnabled(true);
+              });
+            });
           }}
           style={{
             transform: rolled ? `translateY(-${ROW_HEIGHT}px)` : "translateY(0px)",

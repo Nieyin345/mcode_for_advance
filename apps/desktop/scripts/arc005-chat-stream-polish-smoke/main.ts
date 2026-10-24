@@ -10,6 +10,8 @@ const timeline = read("src/renderer/components/chat/MessageTimeline.tsx");
 const row = read("src/renderer/components/chat/MessageRow.tsx");
 const files = read("src/renderer/components/chat/TurnFilesCard.tsx");
 const activity = read("src/renderer/components/chat/ActivityCluster.tsx");
+const consoleUi = read("src/renderer/components/chat/ActivityConsole.tsx");
+const ticker = read("src/renderer/components/chat/CurrentOpTicker.tsx");
 const selection = read("src/renderer/components/chat/SelectionToolbar.tsx");
 const context = read("src/renderer/components/chat/ContextStatsPopover.tsx");
 const css = read("src/renderer/arc005-workspace-surface.css");
@@ -211,6 +213,55 @@ ck("Floating chat overlays: source subscriptions use shared Escape arbiter",
   sourceHas(context, 'claimEscape("chat.context-stats")') &&
   sourceHas(selection, 'openEscapeLayer("chat.selection-toolbar")') &&
   sourceHas(selection, 'claimEscape("chat.selection-toolbar")'));
+
+ck("Activity console: bookmark Escape cancels rename before blur can write",
+  sourceHas(consoleUi, "const renameFinishedRef = useRef(false);") &&
+  sourceHas(consoleUi, "if (renameFinishedRef.current) return;") &&
+  sourceHas(consoleUi, "renameFinishedRef.current = true;") &&
+  sourceHas(consoleUi, 'else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancel(); }'));
+ck("Activity console: Enter and blur cannot both invoke duplicate bookmark rename",
+  sourceHas(consoleUi, "const commit = () => {") &&
+  sourceHas(consoleUi, "if (renameFinishedRef.current) return;") &&
+  sourceHas(consoleUi, "onBlur={commit}"));
+ck("Activity console: re-opening bookmark rename resets the commit fence",
+  sourceHas(consoleUi, "renameFinishedRef.current = false;") &&
+  sourceHas(consoleUi, 'setDraft(bookmark.title ?? "")'));
+ck("Activity console: stale bookmark still has keyboard-reachable remove and rename",
+  sourceHas(consoleUi, "disabled={stale || !onPick}") &&
+  (consoleUi.match(/inline-flex size-8 -translate-y-1\/2 items-center justify-center/g) || []).length >= 2 &&
+  sourceHas(consoleUi, "onRemove(bookmark)"));
+ck("Activity console: bookmark action labels include the actual bookmark text",
+  sourceHas(consoleUi, 'aria-label={`${t("chatStream.bookmark.rename")}: ${label}`}') &&
+  sourceHas(consoleUi, 'aria-label={`${t("chatStream.bookmark.remove")}: ${label}`}'));
+ck("Activity console: node switch is announced and keyboard focus is visible",
+  sourceHas(consoleUi, "aria-pressed={active}") &&
+  (consoleUi.match(/focus-visible:outline-offset-2 focus-visible:outline-accent/g) || []).length >= 4);
+ck("Activity console: active filter chips remain real buttons with independent counts",
+  sourceHas(consoleUi, "aria-pressed={active}") &&
+  sourceHas(consoleUi, "onTabChange(node, f.key)") &&
+  sourceHas(consoleUi, "min-h-8 items-center gap-1 rounded-full"));
+ck("Activity console: opening an agent and plan preserves original callbacks",
+  sourceHas(consoleUi, "onPick?.(agent)") &&
+  sourceHas(consoleUi, "onPickPlan(block.plan)"));
+ck("Activity console: close and right-action buttons each expose accessible names",
+  sourceHas(consoleUi, "aria-label={rightAction.label}") &&
+  sourceHas(consoleUi, 'aria-label={t("chatStream.activity.close")}'));
+ck("Ticker: pending animation frames are cancelled on row unmount",
+  sourceHas(ticker, "cancelAnimationFrame(firstFrameRef.current)") &&
+  sourceHas(ticker, "cancelAnimationFrame(secondFrameRef.current)") &&
+  sourceHas(ticker, "useEffect(() => () =>"));
+ck("Ticker: reduced-motion toggles cancel previously scheduled animation callbacks",
+  sourceHas(ticker, "if (!reducedMotion) return;") &&
+  sourceHas(ticker, "firstFrameRef.current = null;") &&
+  sourceHas(ticker, "secondFrameRef.current = null;"));
+ck("Ticker: changing status still uses stable toolCallId, not transition counter as identity",
+  sourceHas(ticker, "op.toolCallId === frontId") &&
+  sourceHas(ticker, "setFrontId(nextOp.toolCallId)"));
+ck("Ticker: narrow screens cap rolling status width and suppress noisy duplicate live announcements",
+  sourceHas(ticker, "max-w-[min(15rem,38vw)]") &&
+  sourceHas(ticker, 'aria-live="off"'));
+ck("Ticker: no untracked nested animation frame remains",
+  !sourceHas(ticker, "requestAnimationFrame(() =>\n              requestAnimationFrame(() =>"));
 
 ck("Negative: deleting preview portal breaks scroll-safe tooltips",
   !sourceHas(timeline.replace("createPortal(", "inlineTooltip("), "createPortal("));
