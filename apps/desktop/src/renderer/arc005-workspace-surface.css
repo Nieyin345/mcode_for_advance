@@ -118,3 +118,34 @@ html:not(.sketch) [data-ui-shell-variant="workspace"] .composer-host .ProseMirro
     min-width: 0;
   }
 }
+
+/* ARC-005 chat-stream convergence: one compact set of rules for message
+   actions, long tool results and chat layouts. Never change store state,
+   virtualization, overlay ownership or the stream's measured row heights. */
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] [data-message-id] {
+  min-width: 0;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] .message-actions button {
+  min-height: 1.75rem;
+  min-width: 1.75rem;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] pre,
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] code {
+  max-width: 100%;
+}
+/* Touch users cannot hover a message to expose copy / edit / regenerate.
+   Make those existing actions permanently visible on non-hover pointers,
+   without exposing disabled or unavailable actions. */
+@media (hover: none), (pointer: coarse) {
+  html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] .message-actions {
+    opacity: 1;
+  }
+}
+@media (max-width: 700px) {
+  html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] [data-message-id] {
+    max-width: 100%;
+  }
+  html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] .chat-ledger-head {
+    overflow-wrap: anywhere;
+  }
+}

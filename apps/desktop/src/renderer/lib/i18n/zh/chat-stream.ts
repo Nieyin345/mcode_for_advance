@@ -7,6 +7,9 @@ export const zh = {
   "chatStream.showMore": "展开全文",
   "chatStream.showLess": "收起",
   // ── MessageTimeline ──
+  "chatStream.selection.toolbar": "所选文字操作",
+  "chatStream.timeline.navigation": "消息时间线",
+  "chatStream.timeline.jumpTo": "跳转到 {time} 的消息：{text}",
   "chatStream.timeline.current": "当前",
   "chatStream.timeline.noText": "(无文本内容)",
   "chatStream.timeline.attachmentLine": "[附件] {text}",

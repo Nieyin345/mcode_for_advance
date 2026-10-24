@@ -36,6 +36,8 @@ import type { ContextSnapshot, TurnUsageRecord } from "@contracts/runtime";
 import { ContextTooltipBody } from "./ContextRing.js";
 import { IconCalendarStats, IconChartBar, IconClock } from "@renderer/lib/icons.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
+import { previewPosition } from "./previewGeometry.js";
+import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
 
 type View = "current" | "history";
 
@@ -62,6 +64,7 @@ export function ContextStatsPopover({
    *  avoiding a redundant first screen. Defaults to "current". */
   initialView?: View;
 }) {
+  const { t } = useI18n();
   const panelRef = useRef<HTMLDivElement>(null);
   // This popover is only mounted while open (parent gates `open && anchorRect`),
   // so a constant-true suppression covers its whole lifetime — but only when
@@ -70,50 +73,41 @@ export function ContextStatsPopover({
   useSuppressBrowserView(true, panelRef);
   const [view, setView] = useState<View>(initialView);
   const breakdown = getContextBreakdown(snapshot);
-  // Whether the panel has room to sit ABOVE the ring; falls back to below.
-  // Computed after first measure so we can read the panel's own height.
-  const [placeAbove, setPlaceAbove] = useState(true);
+  const [position, setPosition] = useState({ left: 8, top: 8 });
 
-  // Measure once mounted and decide above/below. Also re-check on resize so
-  // a window shrink doesn't leave the panel overflowing the top edge.
+  // Measure the *rendered* panel, not an assumed 380px width or initial
+  // height. View switches, history growth, high DPI and window resizes can
+  // all change its size after first mount; clamp to every viewport edge.
   useLayoutEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
     const recompute = () => {
-      const el = panelRef.current;
-      if (!el) return;
-      // 4px gap between panel and ring (mirrors the old mb-1).
-      setPlaceAbove(anchorRect.top - 4 - el.offsetHeight >= 0);
+      const next = previewPosition(anchorRect, el.offsetWidth, el.offsetHeight,
+        window.innerWidth, window.innerHeight, 8, 4);
+      setPosition((old) => old.left === next.left && old.top === next.top ? old : next);
     };
     recompute();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(recompute);
+    observer?.observe(el);
     window.addEventListener("resize", recompute);
-    return () => window.removeEventListener("resize", recompute);
-  }, [anchorRect.top]);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", recompute); };
+  }, [anchorRect.top, anchorRect.right, anchorRect.bottom, view, history.length]);
 
-  // 【MC-049 同族】Escape 关闭 —— backdrop 是鼠标专属出口,键盘用户没有它。
-  // WatchSegment 的同类 popover 已有这条(window keydown);这里补齐,口径一致。
+  // Only the topmost overlay may consume Escape. Without the shared layer
+  // arbitration a nested picker and this panel can both close at once.
   useEffect(() => {
+    const closeLayer = openEscapeLayer("chat.context-stats");
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape" || e.isComposing || e.keyCode === 229) return;
+      if (!claimEscape("chat.context-stats")) return;
+      e.preventDefault(); e.stopPropagation();
+      onClose();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => { closeLayer(); window.removeEventListener("keydown", onKey, true); };
   }, [onClose]);
 
-  // Fixed positioning relative to the viewport (portaled to <body> so the
-  // composer card's overflow-hidden can't clip the panel — the same reason
-  // the thinking-level dropdown portals through Menu.Portal). Right-align to
-  // the ring's right edge; clamp the left so a wide panel never overflows
-  // the viewport. Vertically: sit just above (or below) the ring.
-  const right = window.innerWidth - anchorRect.right;
-  const style: React.CSSProperties = {
-    position: "fixed",
-    right: Math.max(right, 8),
-    // When right-clamped (panel wider than the space on the right), switch
-    // to a left anchor so it stays on screen.
-    ...(right < 8 ? { left: 8, right: "auto" as const } : {}),
-    ...(placeAbove
-      ? { bottom: window.innerHeight - anchorRect.top + 4 }
-      : { top: anchorRect.bottom + 4 }),
-  };
+  const style: React.CSSProperties = { position: "fixed", ...position };
 
   return createPortal(
     <>
@@ -123,9 +117,11 @@ export function ContextStatsPopover({
       <div
         ref={panelRef}
         style={style}
+        role="dialog"
+        aria-label={t("chat.context.stats")}
         className={cn(
-          "z-50 w-[380px] max-w-[calc(100vw-16px)]",
-          "overflow-hidden rounded-[var(--radius-btn-xs)] border border-edge bg-surface shadow-[var(--shadow-popover)]",
+          "z-50 w-[min(380px,calc(100vw-16px))] max-h-[calc(100vh-16px)]",
+          "overflow-y-auto rounded-[var(--radius-btn-xs)] border border-edge bg-surface shadow-[var(--shadow-popover)]",
         )}
         // Stop-click so interacting with the panel doesn't hit the backdrop.
         onClick={(e) => e.stopPropagation()}
@@ -168,7 +164,7 @@ function CurrentView({
           type="button"
           onClick={onShowHistory}
           className={cn(
-            "flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-[11px] transition-colors",
+            "flex min-h-9 w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             "text-content-muted hover:bg-surface-muted",
           )}
         >

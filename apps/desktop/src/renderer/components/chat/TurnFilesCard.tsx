@@ -168,18 +168,18 @@ export function TurnFilesCard({
   );
 
   return (
-    <div className={cn("mb-[5px] rounded-lg border border-edge bg-surface-muted/60 shadow-sm text-xs text-content-muted", rewound && "opacity-60")}>
+    <div className={cn("mb-[5px] min-w-0 overflow-hidden rounded-[var(--radius-card)] border border-edge bg-surface-muted/60 text-xs text-content-muted", rewound && "opacity-60")}>
       {/* 【MC-012】表头从前是 `div[role="button"] tabIndex=0`,**里面又套了可聚焦的
           <button>**(撤销本轮)—— 父 role=button 包含子 button,读屏器与键盘遍历都拿不准
           "回车到底触发折叠还是撤销"。现在拆成**同级**两个真控件:折叠是个真 `<button>`
           (aria-expanded/aria-controls),撤销按钮是它的**兄弟**、不再被任何 role=button 包住。 */}
-      <div className="flex w-full items-center gap-2.5 px-3 py-2">
+      <div className="flex w-full min-w-0 flex-wrap items-center gap-2 px-3 py-2">
         <button
           type="button"
           aria-expanded={open}
           aria-controls={`tfc-panel-${panelId}`}
           onClick={() => setOpen((v) => !v)}
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left transition-colors hover:opacity-80"
+          className="flex min-h-8 min-w-0 flex-[1_1_14rem] cursor-pointer items-center gap-2 rounded-[var(--radius-btn-xs)] text-left transition-colors hover:opacity-80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           <IconFile size={14} className="shrink-0 text-content-subtle" />
           <span className="whitespace-nowrap font-semibold text-content">
@@ -201,7 +201,7 @@ export function TurnFilesCard({
           </span>
         </button>
         {/* 撤销本轮:与折叠按钮**同级**的兄弟控件。已经撤销的卡片换成一个 danger 徽标。 */}
-        <div className="ml-2 flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {/* 【MC-002】部分撤销:显示一个"部分撤销"N/M 的徽标(与「已撤销」区分),
               按钮**保留**(用户可重试)。整轮成功才走下面的「已撤销」徽标、隐藏按钮。 */}
           {rewindPartial !== undefined && (
@@ -217,7 +217,7 @@ export function TurnFilesCard({
               type="button"
               onClick={() => setConfirmOpen(true)}
               disabled={rewinding || done}
-              className="rounded-md bg-surface-hover px-3 py-1 font-medium text-content transition-colors hover:bg-edge disabled:cursor-not-allowed disabled:text-content-subtle"
+              className="inline-flex min-h-8 items-center rounded-[var(--radius-btn-xs)] bg-surface-hover px-3 py-1 font-medium text-content transition-colors hover:bg-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:text-content-subtle"
               title={isLatestTurn ? t("chatStream.turnFiles.rewindLatestTitle") : t("chatStream.turnFiles.rewindHistoryTitle")}
             >
               {done ? t("chatStream.turnFiles.rewoundCheck") : rewinding ? t("chatStream.turnFiles.rewinding") : (
@@ -371,12 +371,12 @@ function FileRow({ entry }: { entry: TurnFileEntry }) {
     // (鼠标点击照样打开差异,但**不可聚焦**),行内放两个**同级**的真实 button ——
     // 「打开差异」与「在文件树中定位」各自独立可聚焦、各有 aria-label,读屏能区分。
     <div
-      className="flex w-full items-center gap-2 rounded-md bg-surface-muted/40 px-2 py-1.5 text-left transition-colors hover:bg-surface-hover"
+      className="flex min-h-9 min-w-0 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] bg-surface-muted/40 px-2 py-1.5 text-left transition-colors hover:bg-surface-hover"
     >
       <button
         type="button"
         onClick={() => void handleOpen()}
-        className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        className="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-btn-xs)] text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         title={t("chatStream.turnFiles.reviewDiff")}
         aria-label={`${t("chatStream.turnFiles.reviewDiff")}: ${entry.filePath}`}
       >
@@ -417,9 +417,9 @@ function FileRow({ entry }: { entry: TurnFileEntry }) {
         <button
           type="button"
           onClick={() => useSessionStore.getState().revealInFileTree(entry.filePath)}
-          className="cds-hover-ghost inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:text-content focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          className="cds-hover-ghost inline-flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           title={t("chatStream.turnFiles.locateTitle")}
-          aria-label={t("chatStream.turnFiles.locateTitle")}
+          aria-label={`${t("chatStream.turnFiles.locateTitle")}: ${entry.filePath}`}
         >
           <IconFocus size={12} className="block" />
         </button>

@@ -13,12 +13,14 @@
  * any scroll. The rect is a mouseup snapshot, so once anything scrolls the
  * anchor is stale — closing is simpler and calmer than tracking it live.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconBookmark, IconCheck, IconCopy, IconMessages, IconQuote } from "@renderer/lib/icons.js";
 import { SelectionCustomButtons } from "@renderer/components/customUi/CustomSlotHosts.js";
+import { selectionToolbarPosition } from "./selectionToolbarGeometry.js";
+import { openEscapeLayer, claimEscape } from "@renderer/lib/escapeLayer.js";
 
 /** What the owning ChatPane captured at mouseup: a viewport-space snapshot of
  *  the selection plus the message it belongs to (resolved from
@@ -71,30 +73,59 @@ export function SelectionToolbar({
   const { t } = useI18n();
   const barRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
+  const [position, setPosition] = useState({ left: 8, top: 8 });
+  // Re-measure after custom module buttons mount/unmount or fonts reflow.
+  useLayoutEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    const recompute = () => {
+      const next = selectionToolbarPosition(state.rect, el.offsetWidth, el.offsetHeight,
+        window.innerWidth, window.innerHeight);
+      setPosition((old) => old.left === next.left && old.top === next.top ? old : next);
+    };
+    recompute();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(recompute);
+    observer?.observe(el);
+    window.addEventListener("resize", recompute);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", recompute); };
+  }, [state.rect.top, state.rect.left, state.rect.right, state.rect.bottom]);
 
   useEffect(() => {
+    const closeLayer = openEscapeLayer("chat.selection-toolbar");
     const onDown = (e: MouseEvent) => {
       if (barRef.current && !barRef.current.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape" || e.isComposing || e.keyCode === 229) return;
+      if (!claimEscape("chat.selection-toolbar")) return;
+      e.preventDefault(); e.stopPropagation();
+      onClose();
     };
     const onSelectionChange = () => {
       if (selectionSource === "monaco") return;
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || sel.toString().trim().length === 0) onClose();
     };
+    const onScroll = (event?: Event) => {
+      // In a very short window the toolbar itself may scroll; that is not
+      // movement of the captured text selection and must not dismiss it.
+      // A missing event is treated as an outside scroll (legacy test harness
+      // invokes the listener directly without a synthetic DOM event).
+      if (event?.target && event.target instanceof Node && barRef.current?.contains(event.target)) return;
+      onClose();
+    };
     document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     document.addEventListener("selectionchange", onSelectionChange);
     // Capture phase: the chat scrolls inside the LegendList container, which
     // doesn't bubble a scroll event to document.
-    document.addEventListener("scroll", onClose, true);
+    document.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
+      closeLayer();
+      document.removeEventListener("keydown", onKey, true);
       document.removeEventListener("selectionchange", onSelectionChange);
-      document.removeEventListener("scroll", onClose, true);
+      document.removeEventListener("scroll", onScroll, true);
     };
   }, [onClose, selectionSource]);
 
@@ -114,34 +145,41 @@ export function SelectionToolbar({
     }
   };
 
-  const centerX = (state.rect.left + state.rect.right) / 2;
-  const clampedX = Math.min(Math.max(centerX, 64), window.innerWidth - 64);
-  const above = state.rect.top > 44;
-  const style: React.CSSProperties = {
-    position: "fixed",
-    left: clampedX,
-    transform: "translateX(-50%)",
-    ...(above
-      ? { top: Math.max(state.rect.top - 36, 6) }
-      : { top: state.rect.bottom + 8 }),
-  };
+  const style: React.CSSProperties = { position: "fixed", ...position };
 
   return createPortal(
     <div
       ref={barRef}
       style={style}
+      role="toolbar"
+      aria-label={t("chatStream.selection.toolbar")}
+      onKeyDown={(e) => {
+        if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+        if (!(e.target instanceof Element) || !e.target.closest("button")) return;
+        const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+        const current = buttons.indexOf(e.target.closest<HTMLButtonElement>("button")!);
+        if (current < 0 || buttons.length === 0) return;
+        const next = e.key === "ArrowRight" ? (current + 1) % buttons.length
+          : e.key === "ArrowLeft" ? (current - 1 + buttons.length) % buttons.length
+          : e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : null;
+        if (next === null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        buttons[next]?.focus();
+      }}
       // preventDefault on mousedown keeps the text selected while the user
       // reaches for a button — without it the click collapses the selection
       // and the selectionchange close above fires before the click lands.
       onMouseDown={(e) => e.preventDefault()}
-      className="animate-[bookmark-bar-in_120ms_ease-out] z-50 flex items-center gap-0.5 rounded-lg border border-edge bg-surface px-1 py-0.5 shadow-xl"
+      className="animate-[bookmark-bar-in_120ms_ease-out] z-50 flex max-h-[calc(100vh-16px)] max-w-[calc(100vw-16px)] flex-wrap items-center gap-0.5 overflow-y-auto rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-1 py-0.5 shadow-[var(--shadow-popover)]"
     >
       <button
         type="button"
         onClick={() => void handleCopy()}
-        title={copied ? t("chatStream.bookmark.copied") : undefined}
+        title={copied ? t("common.copied") : t("common.copy")}
+        aria-label={copied ? t("common.copied") : t("common.copy")}
         className={cn(
-          "flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] transition-colors",
+          "flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-xs)] px-1.5 py-1 text-[10px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           "cds-hover-ghost text-content-subtle hover:text-content-muted",
           copied && "text-accent",
         )}
@@ -155,7 +193,8 @@ export function SelectionToolbar({
             type="button"
             onClick={() => onAddBookmark(state)}
             title={t("chatStream.bookmark.add")}
-            className="cds-hover-ghost flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-warning"
+            aria-label={t("chatStream.bookmark.add")}
+            className="cds-hover-ghost flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-xs)] px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-warning focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <IconBookmark size={12} />
           </button>
@@ -168,7 +207,8 @@ export function SelectionToolbar({
         type="button"
         onClick={() => onAskSideChat(state)}
         title={t("chatStream.bookmark.askSideChat")}
-        className="cds-hover-ghost flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content"
+        aria-label={t("chatStream.bookmark.askSideChat")}
+        className="cds-hover-ghost flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-xs)] px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <IconMessages size={12} />
       </button>
@@ -179,7 +219,8 @@ export function SelectionToolbar({
         type="button"
         onClick={() => onQuote(state)}
         title={t("chatStream.quote.action")}
-        className="cds-hover-ghost flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content"
+        aria-label={t("chatStream.quote.action")}
+        className="cds-hover-ghost flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-xs)] px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <IconQuote size={12} />
       </button>

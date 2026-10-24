@@ -292,7 +292,7 @@ export const MessageRow = memo(function MessageRow({
   if (isUser && isEditing) {
     return (
       <div className="mt-5 mb-4 flex justify-end">
-        <div className="max-w-[85%] w-full">
+        <div className="min-w-0 w-full max-w-[min(85%,48rem)]">
           <UserMessageEditor
             msg={msg}
             onSubmit={(newText, images) => onSubmitEdit?.(msg, newText, images)}
@@ -327,7 +327,7 @@ export const MessageRow = memo(function MessageRow({
       // scrolling. Static per row — no effect on the memo shallow-compare.
       data-message-id={msg.id}
       className={cn(
-        "group",
+        "group min-w-0",
         // Vertical rhythm is driven by the chat-density CSS vars (see
         // styles.css). User rows get a larger gap than assistant rows so a
         // new user prompt still reads as a distinct input even in compact
@@ -339,7 +339,7 @@ export const MessageRow = memo(function MessageRow({
             : "mt-[var(--chat-row-gap-assistant)]",
       )}
     >
-      <div className={isUser ? "max-w-[85%] min-w-0" : "w-full min-w-0"}>
+      <div className={isUser ? "max-w-[min(85%,48rem)] min-w-0" : "w-full min-w-0"}>
         {/* 【T139】助手身份头 —— 对齐上游 `ChatMessageBubbles.tsx` 的头部。
          *
          * 上游每条助手消息顶部都有「✦ + 名字 + 模型角标 + • + 时间」。
@@ -418,7 +418,7 @@ export const MessageRow = memo(function MessageRow({
               onClick={() => setBubbleExpanded((v) => !v)}
               aria-expanded={collapseState === "expanded"}
               aria-controls={bubbleContentId}
-              className="mt-1 inline-flex items-center gap-0.5 rounded text-[11px] font-medium text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              className="mt-1 inline-flex min-h-7 items-center gap-1 rounded-[var(--radius-btn-xs)] px-1 text-[11px] font-medium text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               {toggleLabel === "expand" ? t("chatStream.showMore") : t("chatStream.showLess")}
             </button>
@@ -432,7 +432,7 @@ export const MessageRow = memo(function MessageRow({
         {(showCopy || showEdit) && (
           <div
             className={cn(
-              "mt-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
+              "message-actions mt-1 flex min-h-7 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
               isUser ? "justify-end" : "justify-start",
             )}
           >
@@ -445,7 +445,7 @@ export const MessageRow = memo(function MessageRow({
                 onClick={() => onStartEdit?.(msg)}
                 title={t("common.edit")}
                 aria-label={t("common.edit")}
-                className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                className="cds-hover-ghost inline-flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <IconPencil size={12} />
               </button>
@@ -456,7 +456,7 @@ export const MessageRow = memo(function MessageRow({
                 onClick={() => onRegenerate(msg)}
                 title={t("chatStream.regenerate")}
                 aria-label={t("chatStream.regenerate")}
-                className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                className="cds-hover-ghost inline-flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <IconRefresh size={12} />
               </button>
@@ -517,11 +517,14 @@ export function blocksToText(blocks: Block[]): string {
 function CopyButton({ text }: { text: string }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (resetTimer.current) clearTimeout(resetTimer.current); }, []);
   const onCopy = async () => {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      if (resetTimer.current) clearTimeout(resetTimer.current);
+      resetTimer.current = setTimeout(() => { setCopied(false); resetTimer.current = null; }, 1500);
     } catch {
       // clipboard may be unavailable (sandbox); silently no-op so the
       // message stream stays usable.
@@ -531,9 +534,9 @@ function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       onClick={onCopy}
-      title={t("common.copy")}
-      aria-label={t("common.copy")}
-      className="cds-hover-ghost inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      title={copied ? t("common.copied") : t("common.copy")}
+      aria-label={copied ? t("common.copied") : t("common.copy")}
+      className="cds-hover-ghost inline-flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
       {copied ? <IconCheck size={12} className="text-accent" /> : <IconCopy size={12} />}
     </button>
@@ -673,7 +676,7 @@ function UserMessageEditor({
                 type="button"
                 onClick={() => setImages((prev) => prev.filter((p) => p.id !== img.id))}
                 aria-label={t("chat.removeImageN", { n: i + 1 })}
-                className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition-[opacity,background-color] hover:bg-black/80 hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                className="absolute right-0.5 top-0.5 flex size-7 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition-[opacity,background-color] hover:bg-black/80 hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <IconX size={12} />
               </button>
@@ -688,14 +691,14 @@ function UserMessageEditor({
         onKeyDown={handleKeyDown}
         rows={1}
         aria-label={t("common.edit")}
-        className="w-full resize-none border-0 bg-transparent text-content outline-none focus-visible:ring-1 focus-visible:ring-accent placeholder:text-content-subtle"
+        className="w-full min-w-0 resize-none rounded-[var(--radius-btn-xs)] border-0 bg-transparent text-content outline-none focus-visible:ring-2 focus-visible:ring-accent placeholder:text-content-subtle"
         style={{ minHeight: "1.5em", maxHeight: "min(40vh, 320px)", overflowY: "auto" }}
       />
       <div className="mt-2 flex items-center justify-end gap-2">
         <button
           type="button"
           onClick={onCancel}
-          className="cds-hover-ghost rounded px-2 py-1 text-[11px] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="cds-hover-ghost inline-flex min-h-8 items-center rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-[11px] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {t("common.cancel")}
         </button>
@@ -704,7 +707,7 @@ function UserMessageEditor({
           onClick={() => canSubmit && onSubmit(text.trim(), toPromptImages(images))}
           disabled={!canSubmit}
           className={cn(
-            "inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] transition-colors",
+            "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             canSubmit
               ? "bg-accent text-white hover:bg-accent/90"
               : "cursor-not-allowed bg-surface-hover text-content-subtle",

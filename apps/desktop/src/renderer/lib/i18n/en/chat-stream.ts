@@ -4,6 +4,9 @@ export const en = {
   "chatStream.showMore": "Show full message",
   "chatStream.showLess": "Collapse",
   // ── MessageTimeline ──
+  "chatStream.selection.toolbar": "Text selection actions",
+  "chatStream.timeline.navigation": "Message timeline",
+  "chatStream.timeline.jumpTo": "Jump to message at {time}: {text}",
   "chatStream.timeline.current": "Current",
   "chatStream.timeline.noText": "(no text)",
   "chatStream.timeline.attachmentLine": "[Attachment] {text}",

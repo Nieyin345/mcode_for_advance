@@ -163,7 +163,7 @@ export function ActivityCluster({
         aria-expanded={isElectron ? !!openKind : !!sheetNode}
         aria-label={t("chatStream.activity.cluster.aria")}
         className={cn(
-          "relative grid h-[30px] w-[30px] shrink-0 place-items-center transition-colors",
+          "relative grid size-[30px] shrink-0 place-items-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           attn
             ? "text-warning"
             : running.length > 0
@@ -217,7 +217,7 @@ export function ActivityCluster({
           type="button"
           onClick={() => openConsole("plans")}
           title={t("chatStream.activity.cluster.openPlans")}
-          className="whitespace-nowrap text-[11px] tabular-nums text-content-subtle transition-colors hover:text-content"
+          className="inline-flex min-h-7 items-center whitespace-nowrap rounded-[var(--radius-btn-xs)] px-1 text-[11px] tabular-nums text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {planBlocks.length > 0
             ? t("chatStream.activity.cluster.plans", { n: planBlocks.length })
@@ -265,7 +265,7 @@ export function ActivityCluster({
         <div
           ref={panelRef}
           className={cn(
-            "pointer-events-auto absolute right-0 top-[38px] z-40 flex max-h-[70dvh] w-[380px]",
+            "pointer-events-auto absolute right-0 top-[38px] z-40 flex max-h-[min(70dvh,calc(100dvh-56px))] w-[380px]",
             "max-w-[calc(100vw-64px)] flex-col overflow-hidden rounded-2xl border border-edge bg-surface/95",
             "backdrop-blur-xl shadow-[inset_0_1px_0_rgb(255_255_255/0.08),0_24px_48px_-12px_rgb(0_0_0/0.35)]",
             "animate-[capsule-pop-in_180ms_cubic-bezier(0.2,0.8,0.3,1)]",

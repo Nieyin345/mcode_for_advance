@@ -30,10 +30,12 @@
  *     bookmark's excerpt instead of the full message text).
  *   - Click to scroll to that message (via onJumpItem).
  */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useLayoutEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { IconBookmark } from "@renderer/lib/icons.js";
+import { timelinePreviewPosition } from "./timelinePreviewGeometry.js";
 import { ClickableRow } from "@renderer/components/ui/clickable-row.js";
 import type { Block, ChatMessage } from "@renderer/stores/sessionStore.js";
 
@@ -119,6 +121,7 @@ export function MessageTimeline({
   bookmarkedItems,
   onJumpItem,
 }: MessageTimelineProps) {
+  const { t } = useI18n();
   const userMessages = useMemo(
     () => messages.filter((m) => m.role === "user"),
     [messages],
@@ -176,11 +179,11 @@ export function MessageTimeline({
   if (dashes.length === 0) return null;
 
   return (
-    <div
+    <nav
+      aria-label={t("chatStream.timeline.navigation")}
       className="pointer-events-none absolute left-0 top-1/2 z-10 -translate-y-1/2"
-      aria-hidden
     >
-      <div className="pointer-events-auto flex max-h-[70vh] flex-col items-center justify-center gap-1.5 py-1">
+      <div className="pointer-events-auto flex max-h-[70vh] flex-col items-center justify-start gap-1.5 overflow-y-auto overflow-x-visible py-1 [scrollbar-width:thin]">
         {dashes.map((d) => (
           <TimelineDash
             key={d.key}
@@ -189,13 +192,14 @@ export function MessageTimeline({
             bookmarked={d.bookmarked}
             excerpt={d.excerpt}
             title={d.title}
+            canJump={d.index >= 0 && !!onJumpItem}
             onJump={() => {
               if (d.index >= 0 && onJumpItem) onJumpItem(d.message.id, d.index, d.excerpt);
             }}
           />
         ))}
       </div>
-    </div>
+    </nav>
   );
 }
 
@@ -206,6 +210,7 @@ function TimelineDash({
   bookmarked,
   excerpt,
   title,
+  canJump,
   onJump,
 }: {
   message: ChatMessage;
@@ -216,11 +221,39 @@ function TimelineDash({
   excerpt?: string;
   /** Renamed bookmark's display title (hover card headline). */
   title?: string | null;
+  canJump: boolean;
   onJump: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const anchorRef = useRef<HTMLElement | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const [previewPos, setPreviewPos] = useState({ left: 8, top: 8 });
   const { t } = useI18n();
   const text = excerpt ?? blocksToText(message.blocks, t);
+  // A long conversation needs its timeline to scroll. The hover preview must
+  // therefore live outside that scroll viewport or it gets clipped. Measure
+  // both the dash and portal card, and keep it within the active window.
+  useLayoutEffect(() => {
+    if (!hovered || !anchorRef.current || !previewRef.current) return;
+    const measure = () => {
+      const anchor = anchorRef.current?.getBoundingClientRect();
+      const preview = previewRef.current;
+      if (!anchor || !preview) return;
+      const next = timelinePreviewPosition(anchor, preview.offsetWidth, preview.offsetHeight,
+        window.innerWidth, window.innerHeight);
+      setPreviewPos((old) => old.left === next.left && old.top === next.top ? old : next);
+    };
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    if (previewRef.current) observer?.observe(previewRef.current);
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
+    };
+  }, [hovered, text, title]);
 
   return (
     // 【MC-049】刻度点击跳到该消息 —— 键盘也要能跳(共享 ClickableRow)。
@@ -228,11 +261,12 @@ function TimelineDash({
     // 纯色块没有任何提示。鼠标离开/失焦都收起。aria-label 用预览正文当名字
     // (纯色刻度自身无文本,读屏无从念起)。
     <ClickableRow
-      className="relative flex h-5 w-5 cursor-pointer items-center justify-center rounded focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
-      aria-label={title ?? text ?? t("chatStream.timeline.noText")}
-      onMouseEnter={() => setHovered(true)}
+      className="relative flex min-h-6 min-w-6 shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-btn-xs)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      disabled={!canJump}
+      aria-label={t("chatStream.timeline.jumpTo", { time: fmtClock(message.createdAt), text: (title ?? text ?? t("chatStream.timeline.noText")).slice(0, 140) })}
+      onMouseEnter={(e) => { anchorRef.current = e.currentTarget; setHovered(true); }}
       onMouseLeave={() => setHovered(false)}
-      onFocus={() => setHovered(true)}
+      onFocus={(e) => { anchorRef.current = e.currentTarget; setHovered(true); }}
       onBlur={() => setHovered(false)}
       onClick={onJump}
     >
@@ -253,10 +287,13 @@ function TimelineDash({
           )}
         />
       )}
-      {hovered && (
+      {hovered && createPortal(
         <div
+          ref={previewRef}
+          aria-hidden="true"
+          style={{ position: "fixed", left: previewPos.left, top: previewPos.top }}
           className={cn(
-            "absolute left-full top-1/2 z-40 ml-2 w-72 -translate-y-1/2",
+            "pointer-events-none z-[80] max-h-[calc(100vh-16px)] w-[min(18rem,calc(100vw-16px))] overflow-y-auto",
             "rounded-[var(--radius-btn-xs)] border border-edge bg-surface p-3 shadow-[var(--shadow-popover)]",
           )}
         >
@@ -283,7 +320,8 @@ function TimelineDash({
           <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-[13px] leading-relaxed text-content">
             {text || <span className="text-content-subtle">{t("chatStream.timeline.noText")}</span>}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </ClickableRow>
   );
