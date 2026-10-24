@@ -189,7 +189,7 @@ catalog.modules ids: [ 'user.line-counter' ]
 改之前先跑：
 
 ```bash
-node apps/desktop/scripts/t129-extension-honesty-smoke/run.sh
+node apps/desktop/scripts/extension-honesty-smoke/run.sh
 ```
 
 那套会验「文档说的和代码做的是不是一回事」——包括本文档里的清单 JSON 能不能被

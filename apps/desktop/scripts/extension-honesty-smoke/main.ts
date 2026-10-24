@@ -1,5 +1,5 @@
 /**
- * 【T129】扩展线的**文档诚实性**回归。
+ * 【】扩展线的**文档诚实性**回归。
  *
  * ## 这套验的不是扩展功能，是「文档说的和代码做的是不是一回事」
  *
@@ -103,7 +103,7 @@ console.log("[5] VscodeL1Bridge 的调用范围（两个范围分开断言）");
   // ⚠️ **必须排除本套件自己** —— 本文件里就写着 `VscodeL1Bridge` 这几个字（作为判据的一部分），
   // 不排除的话它会把自己算成一个调用方。这是「按名字搜是引用数」的典型形态：
   // 名字出现在一个地方，不代表那里在用这个东西。
-  const self = resolve(process.cwd(), "scripts/t129-extension-honesty-smoke/main.ts");
+  const self = resolve(process.cwd(), "scripts/extension-honesty-smoke/main.ts");
   const scriptHits = walkScriptsHits.filter((p) => p !== self);
   check(
     "★ scripts/ 内唯一引用是 vscode-l1-smoke/main.ts（排除本套件自身）",
@@ -163,5 +163,5 @@ console.log("[7] 负控：modules.install 的 handler 仍然存在（且没被�
   check("★ RpcMap 里有 modules.install", rpc.includes('"modules.install"'), {});
 }
 
-console.log(`\nt129-extension-honesty-smoke: ${total - failed}/${total} 通过`);
+console.log(`\nextension-honesty-smoke: ${total - failed}/${total} 通过`);
 if (failed > 0) process.exit(1);
