@@ -95,3 +95,5 @@ NOT-COVERED: <没覆盖什么>
 - 新增 `apps/desktop/scripts/o7-coverage-smoke/`：11/11，包括三份字面覆盖声明、三个实际接线、O0/O3 主程序的 `--coverage-only` 输出检查，及三种变异（删除未覆盖行、改成散文、删除 TIER）均按预期**被拒绝**。该参数是诊断输出模式，不创建/启动重型 Electron 进程。
 - 真实调用 `node apps/desktop/scripts/run-smokes.mjs o1-three-provider-ai-smoke` PASS，日志第一三行确实分别以 `TIER: smoke`、`COVERAGE:` 和 `NOT-COVERED:` 开头。合并回归 `genoffice-ai-ask-smoke`、`t0-genoffice-native-tool-roundtrip-smoke`、`o1-three-provider-ai-smoke`、`o7-coverage-smoke` 四套全部 PASS。
 - **边界**：O0/O3 的完整 Electron 重跑未在本小任务中触发（避免与其他对话争抢重型测试窗口）；对其新输出行用实际 `--coverage-only` 入口验证。修改纯在测试运行器和新测试，不改变原厂渲染、排版或磁盘数据。
+
+**精确提交 SHA**：Mcode `002b0927cc068aa8bebb52c4adb060cca0696b87`，仅 O7 三套测试入口、共享覆盖声明、11 条回归与 Office 进度记录。

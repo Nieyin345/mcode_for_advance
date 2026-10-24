@@ -223,3 +223,5 @@ npx tsc --noEmit -p packages/contracts/tsconfig.json → exit 0
 **旧代码真实红例 B**：工具校验结束，但尚未执行 `Promise.resolve().then(...invokeRendererTool)` 的微任务时用户取消；旧代码 ACK 虽为 cancelled，仍调用了编辑器 **1 次**。第二断言旧实现 `t0` **56/57 PASS**，`status: cancelled, queuedRendererCalls:1`。修复：`nativeEditorToolTransport.ts` 在异步派发前再次检查请求与 SDK 工具调用两路 `AbortSignal`，直接返回取消而不调用渲染端。
 
 **修复后的测试**：`t0-genoffice-native-tool-roundtrip-smoke` **57/57 PASS**，包含两项专门判据（执行计数必须 0，而非只检查 cancelled 回包）。`o1-three-provider-ai-smoke` 原本三家 **46/46 PASS**，`genoffice-ai-ask-smoke` 与新增 `o7-coverage-smoke` 同批四套 smoke **4/4 PASS**。Mcode Desktop/Contracts 双包 TypeScript 检查 0。所有测试使用隔离协议替身与受控内存编辑器，无真实账号/文档写入；未声称真实在线 SDK 消耗额度的 U1 已完成。
+
+**精确提交 SHA**：Mcode `08df1861ddddec5dca8873e1a9fcdb6443407894`，只提交 `docsAiPorts.ts`、`nativeEditorToolTransport.ts`、T0 原生 ACK 竞态回归和本卡证据，不修改 GenOffice 原厂，也不扩大 AI 授权。
