@@ -74,6 +74,53 @@ $ grep -rhoE "^import .*from ['\"][^'\"]+['\"]" apps/desktop/scripts/electron-u1
 
 **执行时必须验证**：`electron-u1` 被收录 **之后**，`src/preload/index.ts` 的答案是什么。
 
+### ⚠️ 但影响面比预想的小（Office 总控问的，我实测了）
+
+**它问：「那 9 个目录里，有几个是通过非 import 途径覆盖源码的？
+如果大多数都走 entryPoints，那『按 import 建依赖图』这个模型对它们根本不成立。」**
+
+**我实测的结果：**
+
+```bash
+$ for d in arc005-visual-baseline electron-u1 o3-packaged-u1 flow-preview \
+           mc035-egress-probe md-preview preset-scripts-sync t96-probe vscode-api-census; do
+    grep -l "entryPoints" apps/desktop/scripts/$d/*.mjs apps/desktop/scripts/$d/*.cjs apps/desktop/scripts/$d/*.ts
+  done
+```
+
+**只有 2 个用 `entryPoints`：**
+
+```
+arc005-visual-baseline/build.mjs
+electron-u1/build.mjs
+```
+
+**其余 7 个完全不用。**
+
+**而且这 2 个的 `entryPoints` 里，只有一个真的指向仓库源码：**
+
+```js
+// electron-u1/build.mjs:215   ← 这一条是真的
+entryPoints: [join(desktop, "src/preload/index.ts")]
+
+// electron-u1/build.mjs:128 / arc005:70   ← 这些指向 .tmp/ 里的生成 entry
+const entry = join(buildDir, "app-entry.tsx");
+const entry = join(desktop, ".tmp/arc005-visual-entry.tsx");
+```
+
+**所以「entryPoints 覆盖源码」这个缺口只在 `electron-u1 → src/preload/index.ts` 这一条上是实的。**
+
+**这改变了 T153 的难度判断：不是「模型对这个类根本不成立」，是「有一个具体例外」。**
+
+**建议的执行顺序：**
+
+1. **先只加目录**（便宜的改动）；
+2. **验证 `src/preload/index.ts` 的答案有没有变**；
+3. **如果没变**，再单独处理那一条 `entryPoints` 边（可能就是一个 `@smoke-covers` 声明，
+   或者让工具认 `entryPoints: [<literal>]` 这种形态）。
+
+**⚠️ 第 2 步是关键**。不做它，你会以为第 1 步修好了。
+
 ## 三、为什么它们不叫 `-smoke`
 
 **看名字就知道：**
