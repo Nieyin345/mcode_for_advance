@@ -279,14 +279,14 @@ export function TaskListPanel() {
     <div className="flex h-full min-h-0 flex-col">
       {/* 标题条:这一页是什么 + 一共几个在跑 + 手动刷新。 */}
       <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1.5">
-        <span className="text-[11px] font-medium text-content">{t("ide.task.pageTitle")}</span>
-        <span className="text-[10px] tabular-nums text-content-subtle">{count}</span>
+        <span className="text-caption font-medium text-content">{t("ide.task.pageTitle")}</span>
+        <span className="text-caption tabular-nums text-content-subtle">{count}</span>
         <InfoHint side="bottom">{t("ide.task.pageDesc")}</InfoHint>
         <button
           type="button"
           title={t("ide.task.refresh")}
           onClick={() => void refresh()}
-          className="cds-hover-ghost ml-auto shrink-0 rounded p-1 text-content-subtle hover:text-content"
+          className="cds-hover-ghost ml-auto shrink-0 rounded-[var(--radius-btn-xs)] p-1 text-content-subtle hover:text-content"
         >
           <IconRefresh size={12} />
         </button>
@@ -298,7 +298,7 @@ export function TaskListPanel() {
             <IconListTree size={20} />
           </div>
           <p className="text-code font-medium text-content-muted">{t("ide.task.empty")}</p>
-          <p className="text-[11px] leading-relaxed text-content-subtle">{t("ide.task.emptyHint")}</p>
+          <p className="text-caption leading-relaxed text-content-subtle">{t("ide.task.emptyHint")}</p>
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto pb-2">
@@ -406,14 +406,14 @@ function Group({
   if (total === 0) return null;
   return (
     <div className="mt-2 flex items-center gap-1.5 px-2 py-0.5">
-      <span className="text-[9px] uppercase tracking-wide text-content-subtle">{label}</span>
-      <span className="text-[9px] tabular-nums text-content-subtle/70">{total}</span>
+      <span className="text-caption uppercase tracking-wide text-content-subtle">{label}</span>
+      <span className="text-caption tabular-nums text-content-subtle/70">{total}</span>
       {action && (
         <button
           type="button"
           title={action.title}
           onClick={action.onClick}
-          className="cds-hover-ghost ml-auto shrink-0 rounded px-1 text-[9px] text-content-subtle hover:text-content"
+          className="cds-hover-ghost ml-auto shrink-0 rounded-[var(--radius-btn-xs)] px-1 text-caption text-content-subtle hover:text-content"
         >
           {action.label}
         </button>
@@ -426,7 +426,7 @@ function More({ total }: { total: number }) {
   const { t } = useI18n();
   if (total <= GROUP_CAP) return null;
   return (
-    <div className="px-2 pb-1 text-[10px] leading-relaxed text-content-subtle">
+    <div className="px-2 pb-1 text-caption leading-relaxed text-content-subtle">
       {t("ide.task.listMore", { n: total - GROUP_CAP })}
     </div>
   );
@@ -492,7 +492,7 @@ function TaskKindBadge({ kind }: { kind: "agent" | "bash" }) {
   return (
     <span
       className={cn(
-        "shrink-0 rounded px-1 text-[9px] font-medium uppercase tracking-wide",
+        "shrink-0 rounded-[var(--radius-btn-xs)] px-1 text-caption font-medium uppercase tracking-wide",
         kind === "bash" ? "bg-warning/20 text-warning" : "bg-info/20 text-info",
       )}
     >
@@ -544,11 +544,11 @@ function Row({
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
           {badge}
-          <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-content" title={title}>
+          <span className="min-w-0 flex-1 truncate text-caption font-medium text-content" title={title}>
             {title}
           </span>
         </span>
-        <span className="block truncate font-mono text-[10px] text-content-subtle" title={full ?? sub}>
+        <span className="block truncate font-mono text-caption text-content-subtle" title={full ?? sub}>
           {sub}
         </span>
       </span>
@@ -559,7 +559,7 @@ function Row({
         title={trailing.title}
         aria-label={trailing.title}
         onClick={trailing.onClick}
-        className="cds-hover-ghost mr-1 mt-1 shrink-0 rounded p-1 text-content-subtle opacity-60 hover:text-danger group-hover:opacity-100"
+        className="cds-hover-ghost mr-1 mt-1 shrink-0 rounded-[var(--radius-btn-xs)] p-1 text-content-subtle opacity-60 hover:text-danger group-hover:opacity-100"
       >
         <IconX size={12} />
       </button>
@@ -609,15 +609,15 @@ function DetailHeader({
         type="button"
         title={t("ide.task.back")}
         onClick={onBack}
-        className="cds-hover-ghost mt-0.5 shrink-0 rounded p-1 text-content-subtle hover:text-content"
+        className="cds-hover-ghost mt-0.5 shrink-0 rounded-[var(--radius-btn-xs)] p-1 text-content-subtle hover:text-content"
       >
         <IconArrowLeft size={13} />
       </button>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[11px] font-medium text-content" title={title}>
+        <div className="truncate text-caption font-medium text-content" title={title}>
           {title}
         </div>
-        <div className="truncate font-mono text-[10px] text-content-subtle" title={sub}>
+        <div className="truncate font-mono text-caption text-content-subtle" title={sub}>
           {sub}
         </div>
       </div>
@@ -626,7 +626,7 @@ function DetailHeader({
           type="button"
           title={t("ide.task.killTerminal")}
           onClick={onKill}
-          className="cds-hover-ghost mt-0.5 flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[10px] text-content-subtle hover:text-danger"
+          className="cds-hover-ghost mt-0.5 flex shrink-0 items-center gap-1 rounded-[var(--radius-btn-xs)] px-1.5 py-1 text-caption text-content-subtle hover:text-danger"
         >
           <IconX size={12} />
           {t("ide.task.killTerminalShort")}
@@ -708,7 +708,7 @@ function TerminalOutputPanel({ info }: { info: TerminalInfo }) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1 text-[10px] text-content-subtle">
+      <div className="flex shrink-0 items-center gap-2 border-b border-edge px-2 py-1 text-caption text-content-subtle">
         <span className="truncate">{t("ide.task.readOnly")}</span>
         <span className="ml-auto shrink-0">{gone ? t("ide.task.gone") : t("ide.task.following")}</span>
       </div>
@@ -721,7 +721,7 @@ function TerminalOutputPanel({ info }: { info: TerminalInfo }) {
       ) : (
       <pre
         ref={preRef}
-        className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all bg-surface-muted/30 p-2 font-mono text-[11px] leading-tight text-content"
+        className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all bg-surface-muted/30 p-2 font-mono text-caption leading-tight text-content"
       >
         {/* 没有输出时说一句（用户 2026-09-21 点名要的：「如果没有内容输出就显示
             还没有输出」）。**不能留空白** —— 一片空的 `<pre>` 和"终端卡住了/没接上"
@@ -784,12 +784,12 @@ function SubagentTranscript({ sessionId, agent }: { sessionId: string; agent: Su
     <div className="flex h-full flex-col">
       {brief !== undefined && brief.trim() !== "" && (
         <div className="shrink-0 border-b border-edge px-3 py-2">
-          <div className="mb-1 text-[9px] uppercase tracking-wide text-content-subtle">
+          <div className="mb-1 text-caption uppercase tracking-wide text-content-subtle">
             {t(isBash ? "ide.task.bashCommand" : "ide.task.agentBrief")}
           </div>
           {/* 任务原文可能很长且带换行（子代理的 brief 就是一整段提示词）——
               限高 + 可滚，别把它撑成一屏把下面的过程挤没。 */}
-          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-content">
+          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-caption leading-relaxed text-content">
             {brief}
           </pre>
         </div>
@@ -797,7 +797,7 @@ function SubagentTranscript({ sessionId, agent }: { sessionId: string; agent: Su
       <div className="min-h-0 flex-1">
         {isBash ? (
           bashErr !== null ? (
-            <p className="px-3 py-4 text-[11px] text-danger">{t("ide.task.taskOutputUnreadable", { error: bashErr })}</p>
+            <p className="px-3 py-4 text-caption text-danger">{t("ide.task.taskOutputUnreadable", { error: bashErr })}</p>
           ) : (
             <ReadonlyTranscript
               source={
@@ -864,7 +864,7 @@ function ReadonlyTranscript({
   return (
     <div ref={scrollRef} className="h-full overflow-y-auto px-3 py-2">
       {blocks.length === 0 ? (
-        <p className="py-4 text-[11px] text-content-subtle">{emptyHint}</p>
+        <p className="py-4 text-caption text-content-subtle">{emptyHint}</p>
       ) : (
         <MessageBlocks blocks={blocks} />
       )}

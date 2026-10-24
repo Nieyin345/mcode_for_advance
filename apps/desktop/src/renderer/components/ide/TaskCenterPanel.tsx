@@ -328,7 +328,7 @@ export function TaskCenterPanel() {
       {/* ── 头部：标题 + 等你的数量 + 状态筛选 ── */}
       <div className="flex shrink-0 flex-col gap-2 border-b border-edge px-3 py-2">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 text-[12px] font-medium text-content">
+          <div className="flex items-center gap-1.5 text-footnote font-medium text-content">
             <IconListCheck size={14} />
             {t("taskCenter.title")}
           </div>
@@ -442,8 +442,21 @@ function FilterChip({ active, onClick, label }: { active: boolean; onClick: () =
       type="button"
       onClick={onClick}
       aria-pressed={active}
+      /*
+       * ⚠️ 字号走内联 `fontSize`，**不走 className 里的 `text-caption`**。
+       *
+       * `cn()` 是裸 `twMerge`，而 twMerge 不认识我们自定义的档位名
+       * （`caption`/`footnote`/`code`/… 只在 tailwind.config.js 里扩展过）。
+       * 它把 `text-caption` 归进「文字颜色」那一组 —— 与后面的 `text-content`
+       * 同组冲突，**先出现的被丢掉**。于是字号静默回落到继承值：chip 从 11px
+       * 变成继承的 14px，筛选条从两行挤成三行，把下面的任务列表往下推。
+       *
+       * 根因与全仓 29 处同类失效在 `tasks/T140`；`cn.ts` 修好之后这里可以
+       * 改回 `text-caption`，本行注释随之删除。
+       */
+      style={{ fontSize: "11px", lineHeight: "16px" }}
       className={cn(
-        "rounded border px-1.5 py-0.5 text-[11px] transition-colors",
+        "rounded-[var(--radius-btn-xs)] border px-1.5 py-0.5 transition-colors",
         active
           ? "border-edge bg-surface-muted text-content"
           : "cds-hover-ghost border-transparent text-content-muted hover:text-content",
@@ -603,12 +616,12 @@ export function TaskRow({
               )}
               {/* 轮次只在退回过之后才显示 —— 首次验收的「第 1 轮」是噪音。 */}
               {task.acceptance !== null && task.acceptance.round > 1 && (
-                <span className="text-[11px] text-content-muted">
+                <span className="text-caption text-content-muted">
                   {t("taskCenter.round", { n: task.acceptance.round })}
                 </span>
               )}
             </div>
-            <div className="mt-1 break-words text-[12px] leading-snug text-content">{task.goal}</div>
+            <div className="mt-1 break-words text-footnote leading-snug text-content">{task.goal}</div>
           </button>
           <div className="flex shrink-0 items-center gap-1">
             {canAccept && decision === null && (
@@ -644,21 +657,21 @@ export function TaskRow({
         {expanded && (
           <div className="mt-1 flex flex-col gap-1.5 border-l-2 border-edge pl-2" data-task-detail="">
             {task.failureReason !== null && (
-              <div className="rounded bg-danger/5 px-2 py-1 text-[11px] text-danger" data-detail="failure">
+              <div className="rounded-[var(--radius-btn-md)] bg-danger/5 px-2 py-1 text-caption text-danger" data-detail="failure">
                 {t("taskCenter.failureReason")}{task.failureReason}
               </div>
             )}
             {task.rejectionReason !== null && (
-              <div className="rounded bg-warning/5 px-2 py-1 text-[11px] text-warning" data-detail="rejection">
+              <div className="rounded-[var(--radius-btn-md)] bg-warning/5 px-2 py-1 text-caption text-warning" data-detail="rejection">
                 {t("taskCenter.rejectionReason")}{task.rejectionReason}
               </div>
             )}
             {task.artifacts.length > 0 && (
               <div data-detail="artifacts">
-                <div className="text-[10px] text-content-subtle">{t("taskCenter.detailArtifacts")}</div>
+                <div className="text-caption text-content-subtle">{t("taskCenter.detailArtifacts")}</div>
                 <ul className="flex flex-col gap-0.5">
                   {task.artifacts.map((a) => (
-                    <li key={a.path} className="truncate text-[11px] text-content-muted" title={a.path}>
+                    <li key={a.path} className="truncate text-caption text-content-muted" title={a.path}>
                       {a.description}
                     </li>
                   ))}
@@ -666,14 +679,14 @@ export function TaskRow({
               </div>
             )}
             {task.acceptance !== null && task.status === "accepted" && (
-              <div className="rounded bg-success/5 px-2 py-1 text-[11px] text-success" data-detail="acceptance">
+              <div className="rounded-[var(--radius-btn-md)] bg-success/5 px-2 py-1 text-caption text-success" data-detail="acceptance">
                 {t("taskCenter.acceptanceEvidence")}{task.acceptance.evidence}
               </div>
             )}
-            <div className="text-[11px] text-content-muted" data-detail="origin">
+            <div className="text-caption text-content-muted" data-detail="origin">
               {originLine.text}
               {originLine.ref !== null && (
-                <span className="ml-1 text-[10px] text-content-subtle">{originLine.ref}</span>
+                <span className="ml-1 text-caption text-content-subtle">{originLine.ref}</span>
               )}
             </div>
             {/*
@@ -684,19 +697,19 @@ export function TaskRow({
             */}
             {approvalsScope === "session" && (
               <div data-detail="approvals">
-                <div className="text-[10px] text-content-subtle">
+                <div className="text-caption text-content-subtle">
                   {t("taskCenter.detailApprovals")}
                   <span className="ml-1 text-content-subtle/70">{t("taskCenter.detailApprovalsScope")}</span>
                 </div>
                 {approvalsLoading && approvals.length === 0 ? (
-                  <div className="text-[11px] text-content-subtle">{t("taskCenter.approvalsLoading")}</div>
+                  <div className="text-caption text-content-subtle">{t("taskCenter.approvalsLoading")}</div>
                 ) : approvals.length === 0 ? (
                   // 空态要说清是「这一轮没有需要你批的操作」，不是「记录丢了」。
-                  <div className="text-[11px] text-content-subtle">{t("taskCenter.approvalsEmpty")}</div>
+                  <div className="text-caption text-content-subtle">{t("taskCenter.approvalsEmpty")}</div>
                 ) : (
                   <ul className="flex flex-col gap-0.5">
                     {approvals.map((a) => (
-                      <li key={a.id} className="flex items-start gap-1.5 text-[11px]" data-approval-id={a.id}>
+                      <li key={a.id} className="flex items-start gap-1.5 text-caption" data-approval-id={a.id}>
                         <span className="shrink-0 text-content-subtle">
                           {t(APPROVAL_OUTCOME_META[a.decision].key)}
                         </span>
@@ -704,7 +717,7 @@ export function TaskRow({
                           {a.subject}
                         </span>
                         {a.always && (
-                          <span className="shrink-0 text-[10px] text-content-subtle">
+                          <span className="shrink-0 text-caption text-content-subtle">
                             {t("taskCenter.approvalAlways")}
                           </span>
                         )}
@@ -714,7 +727,7 @@ export function TaskRow({
                 )}
               </div>
             )}
-            <div className="flex items-center gap-2 text-[10px] text-content-subtle" data-detail="meta">
+            <div className="flex items-center gap-2 text-caption text-content-subtle" data-detail="meta">
               <IconClock size={10} />
               <span>{new Date(task.updatedAt).toLocaleString()}</span>
               <span className="text-content-subtle/60">{task.id}</span>
@@ -725,8 +738,8 @@ export function TaskRow({
         {/* ── 验收 / 退回的输入区（受控，理由必填） ──
             与「展开详情」是两件事：点动作按钮进入这一态，不要求先展开。 */}
         {decision !== null && (
-          <div className="mt-1 flex flex-col gap-1.5 rounded border border-edge bg-surface/60 p-2">
-            <div className="text-[11px] text-content">
+          <div className="mt-1 flex flex-col gap-1.5 rounded-[var(--radius-panel)] border border-edge bg-surface/60 p-2">
+            <div className="text-caption text-content">
               {decision === "accept" ? t("taskCenter.evidencePrompt") : t("taskCenter.reasonPrompt")}
             </div>
             <textarea
@@ -735,7 +748,7 @@ export function TaskRow({
               rows={3}
               autoFocus
               placeholder={decision === "accept" ? t("taskCenter.evidencePlaceholder") : t("taskCenter.reasonPlaceholder")}
-              className="w-full resize-y rounded border border-edge bg-surface px-2 py-1 text-[12px] text-content outline-none focus:border-accent"
+              className="w-full resize-y rounded-[var(--radius-btn-md)] border border-edge bg-surface px-2 py-1 text-footnote text-content outline-none focus:border-accent"
               disabled={busy}
             />
             <div className="flex items-center justify-end gap-1.5">
@@ -756,7 +769,7 @@ export function TaskRow({
               </Button>
             </div>
             {evidenceRequired && (
-              <div className="text-[10px] text-content-subtle">{t("taskCenter.reasonRequired")}</div>
+              <div className="text-caption text-content-subtle">{t("taskCenter.reasonRequired")}</div>
             )}
           </div>
         )}
