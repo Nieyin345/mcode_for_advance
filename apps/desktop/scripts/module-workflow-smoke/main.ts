@@ -283,7 +283,11 @@ await check("未知贡献失败而不是落到模型", async () => {
 });
 await check("真实主进程 IPC 与 preload 原样携带元数据、工作流目标与授权分面", async () => {
   registerModuleHandlers(fakeIpcMain);
-  assert.equal(handlers.size, 12); // T16 egress get/set + T48 user's permission update
+  // 13，不是 12：【F006】`901e58ee` 加了 `MODULE_INSTALL_VSIX`。
+  // 光改数字不够 —— 那条断言只说明「多了一条」，不说明多的是哪条。所以补一条
+  // `has(MODULE_INSTALL_VSIX)`：下次再加 IPC，红的那条会点名。
+  assert.equal(handlers.size, 13); // T16 egress get/set + T48 user's permission update + F006 vsix install
+  assert.ok(handlers.has(IPC.MODULE_INSTALL_VSIX), "F006 的 vsix 安装入口必须在主进程注册");
   assert.ok(handlers.has(IPC.MODULE_EGRESS_CONSENT_GET));
   assert.ok(handlers.has(IPC.MODULE_EGRESS_CONSENT_SET));
   const api = preloadApi();

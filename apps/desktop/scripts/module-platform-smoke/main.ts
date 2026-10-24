@@ -64,7 +64,12 @@ setTestHost(host);
 const ipcHandlers=new Map<string,(event:never,raw:unknown)=>unknown>();
 const ipcStub:Pick<IpcMain,"handle">={handle(channel,handler){ipcHandlers.set(channel,handler);}};
 registerModuleHandlers(ipcStub as IpcMain);
-await test("all eleven IPC routes registered, including T16 user-only consent",()=>{assert.equal(ipcHandlers.size,12);assert.ok(ipcHandlers.has(IPC.MODULE_SET_PERMISSIONS));assert.ok(ipcHandlers.has(IPC.MODULE_EGRESS_CONSENT_GET));assert.ok(ipcHandlers.has(IPC.MODULE_EGRESS_CONSENT_SET));});
+// 计数从 12 改成 13：【F006】`901e58ee` 加了 `MODULE_INSTALL_VSIX`（装 .vsix 的入口）。
+// 标题里的 "eleven" 也一起改 —— 它比数字更早过期（12 的时候就已经写着 eleven）。
+//
+// 光改数字不够：数字只说明"多了一条"，不说明**多的是哪一条**。所以下面补一条
+// `has(MODULE_INSTALL_VSIX)` —— 下次再加 IPC 时，红的那条会点名是哪个。
+await test("all thirteen IPC routes registered, including T16 user-only consent and F006 vsix install",()=>{assert.equal(ipcHandlers.size,13);assert.ok(ipcHandlers.has(IPC.MODULE_INSTALL_VSIX));assert.ok(ipcHandlers.has(IPC.MODULE_SET_PERMISSIONS));assert.ok(ipcHandlers.has(IPC.MODULE_EGRESS_CONSENT_GET));assert.ok(ipcHandlers.has(IPC.MODULE_EGRESS_CONSENT_SET));});
 await test("IPC install rejects absent explicit consent",()=>assert.rejects(Promise.resolve(ipcHandlers.get(IPC.MODULE_INSTALL)!({} as never,{manifest}))));
 await test("IPC invoke rejects unknown caller fields",()=>assert.rejects(Promise.resolve(ipcHandlers.get(IPC.MODULE_INVOKE)!({} as never,{moduleId:"core.inspect",contributionId:"inspect",resource,requestId:"badipc",trusted:true}))));
 await test("IPC catalog calls the same host",async()=>{const catalog=await ipcHandlers.get(IPC.MODULE_CATALOG)!({} as never,undefined);assert.deepEqual(catalog,host.catalog());});
