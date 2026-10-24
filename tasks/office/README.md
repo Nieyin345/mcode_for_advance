@@ -89,6 +89,7 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | O3 安装版 Office | **✅ 交付** | `53413379`（卡）/ `f383922b`（代码） | 已完成 | 16/16 PASS，23/23 变异 |
 | O4 docs 关闭缺陷修复 | **执行中** | `2120284e`（卡） | 已派 | `scripts/o4-docs-close-smoke/**` |
 | O5 删 OnlyOffice，六格式走 GenOffice | **已写卡，未派** | `b380ced8`（卡） | **等 O2/O4 收工** | 跨四层，见卡 |
+| O6 五个编辑器换壳（**B 方案**） | **执行中** | `a655762c`（卡） | 已派（html+markdown） | `genoffice/apps/*/src/renderer/` |
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）
 
@@ -203,6 +204,53 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 
 **iframe 方向已排除**：vendor preload 依赖 `contextBridge` + `ipcRenderer` + `webUtils`，
 iframe 里没有这些；且 `WebContentsView` 的 sender 校验是安全边界，**为性能拆边界不值得**。
+
+## O6：用户选 B —— 五个编辑器换壳
+
+**用户看着一张截图说**：「你的测试完全是 genoffice 的 ui 啊，不是我们的 mcode 的 ui」。
+
+**截图里是完整的 GenOffice 应用**：自己的 ribbon、File/Edit/View 菜单、Genspark AI 侧栏、品牌。
+
+**根因**：`genofficeViewFactories.ts` 加载的是 `genoffice/apps/<k>/out/renderer/index.html`，
+**上游原封不动的产物**；`documentViewHost.ts` / `genofficeViewFactories.ts` 里
+**一行 `insertCSS` / `executeJavaScript` 都没有**（我 grep 过）。
+
+**测试一直绿，是因为它们断言的是上游特征 DOM 存在** —— 那是它们被要求做的事。
+**不是测试撒谎，是我把「上游应用加载了」读成了「嵌入完成」。**
+
+### 用户选了 B（vendor 二开），不是 A（外部 CSS 硬藏）、不是 C（接受）
+
+### ★ 这件事已经做过一次
+
+`05da63c feat(docs): reshell the chrome in Mcode's design tokens` —— **docs 两天前就换壳了**，
+235 行 CSS、2 个文件。做法是**重指 token**，不是改组件：
+
+> GenOffice 的 chrome 颜色全部走 `packages/ui/src/tokens.css` 的语义 token，
+> 而且它有自己的 CI（`tools/check-theme-colors.mjs`）强制 renderer CSS 里不许有裸色值。
+> 所以换壳是**替换 token 的取值**：组件树、编辑内核、导出/打印路径一行不动。
+
+加载方式 `if (window.desktop) import('./mcode-theme.css')` —— **单独跑 GenOffice 时不换壳**。
+
+**我核实过：六个 app 的 `main.tsx` 全部 import 同一个 `tokens.css`**，所以机制对五个格式都成立。
+
+### 工作量（按 token 数排）
+
+| 格式 | token 数 | 状态 |
+|---|---|---|
+| docs | 197 | **已完成** |
+| slides | 150 | 待做 |
+| pdf | 115 | 待做 |
+| sheets | 109 | 待做（截图那个） |
+| markdown | 95 | 待做（本批） |
+| html | 57 | 待做（本批，最小，先验机制） |
+
+### 硬边界（卡里反复强调）
+
+**文档内容色和语义色一律不动**：纸张、单元格、导出、打印、图表调色板、
+**公式引用高亮、错误值红、条件格式色**、修订条、查找命中。
+
+> **「宿主里的编辑器和单独跑的 GenOffice 是同一个应用，只是 chrome 换成了 Mcode 的配色。」
+> 不是「重新画了一个编辑器」。**
 
 ## 下一批
 
