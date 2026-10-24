@@ -21,7 +21,18 @@
 
 | 卡 | 标题 | 状态 |
 |---|---|---|
-| [W0](W0-workflow-baseline-and-gaps.md) | 工作流主线基线核实与缺口清单 | ready-for-agent |
+| [W0](W0-workflow-baseline-and-gaps.md) | 工作流主线基线核实与缺口清单 | ready-for-agent（已派，进行中） |
+| [W1](W1-palette-drag-from-scratch.md) | 从 palette 拖节点：把「从零搭」变成可验收旅程 | ready-for-agent（已派，进行中） |
+| [W2](W2-run-and-see-result.md) | 在 UI 里点一下，看到执行结果 | **blocked-by W1** |
+
+### 队列里还没写的（按依赖排序）
+
+| 下一张 | 要解决什么 | 为什么还没写 |
+|---|---|---|
+| W3 | **Agent 建图有没有证据**（不是「能不能」） | 已核实：`workflow_guide` 有完整方法论（节点选择表、数据流、失败重试、验收四步），`workflow.nodeTypes` 给参数，`workflow.save` 的 `expectedRevision: null` 就是「创建」。**能力齐全，缺的是「成功过一次」的证据。** 等 W0 确认是否已有。 |
+| W4 | 两条触发路径的**同一份事实**（`automationRunner` 与 Node-RED runtime） | 已核实：`automationRunner` 最终也走 `startWorkflowRun`，且 T3 有 `legacyTriggerOwnerOf` fail-closed 守卫。**等 W0 的实测确认守卫真的生效。** |
+| W5 | 存储单一事实源：`nodeRedStorage.ts` 与 `workflow.save` 是否同一份 | 已核实：`nodeRedStorage.ts` 609 行，每 flow 一文件 + CAS + 坏档不装空。**等 W0 确认它与 `workflow.save` 的关系。** |
+
 
 ## 已完成（不在本目录）
 
