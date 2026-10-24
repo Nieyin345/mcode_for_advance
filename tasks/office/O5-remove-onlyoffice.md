@@ -245,8 +245,11 @@ return hosts?.slidesNative === true || hosts?.slides === true;   // slides 两�
 **给他们一条区分命令**：
 
 ```bash
-pnpm test:smoke <你的套件> 2>&1 | grep -c "isOnlyOffice\|onlyoffice"
-# > 0 → 是 O5 在途；= 0 → 是你自己的
+# ⚠️ 不要用管道取退出码（CLAUDE.md 第二十二条）—— 先重定向，再分别看
+cd apps/desktop
+node scripts/run-smokes.mjs <你的套件> > /tmp/o 2>&1; echo "EXIT=$?"
+grep -c "isOnlyOffice\|onlyoffice" /tmp/o
+# grep 命中 > 0 → 是 O5 在途；= 0 → 是你自己的
 ```
 
 ### 完成时该做的
