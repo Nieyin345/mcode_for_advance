@@ -590,4 +590,14 @@ export const en = {
   "taskCenter.approval.approved": "Plan approved",
   "taskCenter.approval.rejected": "Plan rejected",
   "taskCenter.approval.cancelled": "Session cancelled",
+  // 【F006】Install a real VS Code extension from a .vsix file.
+  // `vsixLimitNotice` shows **before** the file picker opens: only extensions whose
+  // executable entry is <= 24 KiB can be installed today, and real marketplace
+  // extensions are typically well over 100 KB.
+  "ide.modules.vsixTitle": "Install a VS Code extension from .vsix",
+  "ide.modules.vsixLimitNotice": "Only extensions whose executable entry is at most 24 KiB are supported right now. Real marketplace extensions are typically over 100 KB (Rainbow CSV's extension.js is 136 KB) and will be rejected by that limit. This is the honest boundary of the current host, not a configuration problem.",
+  "ide.modules.vsixPick": "Choose a .vsix file…",
+  "ide.modules.vsixInstalling": "Installing…",
+  "ide.modules.vsixInstalled": "Installed: {id}",
+  "ide.modules.vsixFilter": "VS Code extension package",
 } as const;

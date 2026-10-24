@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import type { IpcMain } from "electron";
-import { IPC, ModuleInstallSchema, ModuleInvokeSchema, ModuleRemoveSchema, ModuleTaskRefSchema, ModuleWorkspaceSchema } from "@contracts/ipc";
+import { IPC, ModuleInstallSchema, ModuleInstallVsixSchema, ModuleInvokeSchema, ModuleRemoveSchema, ModuleTaskRefSchema, ModuleWorkspaceSchema } from "@contracts/ipc";
 import { ModulePermissionUpdateSchema } from "@contracts/modulePermissions";
 import { ModuleWorkflowGrantSchema } from "@contracts/moduleCapability";
 import { getModuleHost } from "@main/modules/service.js";
@@ -43,6 +44,35 @@ export function registerModuleHandlers(ipcMain:IpcMain):void {
     const input=ModuleInstallSchema.parse(raw);
     const decision=resolveInstallDecision(input,event);
     return (await getModuleHost()).install(input.manifest, input.grantedPermissions, decision);
+  });
+  // 【F006】从 `.vsix` 安装 —— 与 `MODULE_INSTALL` 是同一个宿主能力的两条入口。
+  //
+  // **顺序是安全属性，别调换**：
+  //   1. 解析入参（形状）
+  //   2. `resolveInstallDecision` —— `deny` 在这里就返回，**文件还没被读过**
+  //   3. 读字节
+  //   4. `VscodeL1Bridge.install` —— 解析 vsix、转成 manifest、交给 `host.install`
+  //
+  // ⚠️ `VscodeL1Bridge.install` **当前不透传 decision**（它内部调 `host.install(manifest)`
+  // 用的是默认 `allow-once`）。所以「deny = 磁盘零写入」这条保证**由上面第 2 步实现**：
+  // 拒绝时根本走不到读文件。若将来 bridge 加了 decision 参数，把第 2 步的结果一并传下去，
+  // 那时才是两处都挡 —— **在此之前不要以为 bridge 里已经挡过了**。
+  ipcMain.handle(IPC.MODULE_INSTALL_VSIX,async(event,raw:unknown)=>{
+    const input=ModuleInstallVsixSchema.parse(raw);
+    const decision=resolveInstallDecision(input,event);
+    if (decision === "deny") throw Error("用户拒绝了这次安装，未读取任何文件");
+    const bytes=new Uint8Array(readFileSync(input.path));
+    const { VscodeL1Bridge }=await import("@main/modules/vscodeL1Bridge.js");
+    const bridge=await VscodeL1Bridge.install(await getModuleHost(), bytes, {
+      confirmReadAccess:input.confirmReadAccess,
+      // vsix 里的 `extension.js` 是要在本机跑的程序 —— 与 `modules.install` 同一条规矩。
+      confirmExecutableCode:input.confirmExecutableCode === true,
+    });
+    // 返回形状与 `modules.install` 对齐（`ModuleChangeResult`），调用方拿 catalog 重画。
+    // `cancelledTasks` / `cancelFailures` 在这条通道上是 0 / 空：VSIX 安装**只新增或替换
+    // 同 ID 的模块**，而 bridge 内部走的 `host.install` 已经做了它那份取消诊断 ——
+    // 只是没回传。这里如实给 0，而不是编一个数。
+    return { catalog:(await getModuleHost()).catalog(), cancelledTasks:0, cancelFailures:[], moduleId:bridge.moduleId };
   });
   // User-only edit path. appControl.policy blocks this method for agents/panels.
   ipcMain.handle(IPC.MODULE_SET_PERMISSIONS,async(_event,raw:unknown)=>

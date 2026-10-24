@@ -160,6 +160,19 @@ export interface RpcMap {
   "modules.catalog": () => Promise<import("../modules.js").ModuleCatalog>;
   /** 安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单,以及这次变更取消掉的运行中任务数/失败原因(升级换执行体时为非零)。 */
   "modules.install": (input: import("./modules.js").ModuleInstallInput) => Promise<import("../modules.js").ModuleChangeResult>;
+  /** 【F006】从一个 `.vsix` 文件安装真实 VS Code 扩展（走 `VscodeL1Bridge`）。
+   *
+   *  **现状的能力边界（读之前先看这里）**：只有**可执行入口 ≤ 24 KiB**的扩展装得进来。
+   *  真实市场扩展普遍 100 KB 以上（`rainbow-csv` 的 `extension.js` 是 136 KB），
+   *  会被这条限额拒绝，错误信息会点名「exceeds the L1 source limit」。
+   *
+   *  与 `modules.install` 的关系：**同一个宿主能力的另一条入口**。两者最终都调
+   *  `ModuleHost.install`，审批档位也相同（可执行代码，`appControl/policy.ts` 里
+   *  与 `modules.install` 同档）。区别只在于这条多一步 VSIX 解析。
+   *
+   *  `installConsent` 三态语义与 `modules.install` 完全一致；`deny` 时**磁盘零写入**
+   *  （在解析出的源码交给宿主之前就中止）。 */
+  "modules.installVsix": (input: import("./modules.js").ModuleInstallVsixInput) => Promise<import("./modules.js").ModuleInstallVsixResult>;
   /** 卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单与取消诊断。 */
   "modules.remove": (input: {moduleId:string}) => Promise<import("../modules.js").ModuleChangeResult>;
   /** 触发模块的一个贡献项。按能力 `kind` 分流:非 task 的直接跑出结果,是 task 的立刻返回 `{type:"task"}` 句柄(进度靠 `modules.task` 拉)。 */
@@ -1720,6 +1733,10 @@ export interface RpcMap {
 export const IPC = {
   MODULE_CATALOG: "modules:catalog",
   MODULE_INSTALL: "modules:install",
+  /** 【F006】从 `.vsix` 安装 —— 与 `MODULE_INSTALL` 是**同一个宿主能力**的两条入口:
+   *  一条收渲染端拼好的 manifest,这条收磁盘上的 vsix 字节。两条都落到
+   *  `ModuleHost.install`;VSIX 那条中间多一步 `VscodeL1Bridge.install` 的解析与转化。 */
+  MODULE_INSTALL_VSIX: "modules:installVsix",
   MODULE_REMOVE: "modules:remove",
   MODULE_INVOKE: "modules:invoke",
   MODULE_TASK: "modules:task",

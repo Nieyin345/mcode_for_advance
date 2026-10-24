@@ -1271,6 +1271,10 @@ export function createWebApi(): Api {
       issueWorkflowGrant: async () => webUnsupported("modules.issueWorkflowGrant"),
       revokeWorkflowGrant: async () => webUnsupported("modules.revokeWorkflowGrant"),
       setPermissions: async () => webUnsupported("modules.setPermissions"),
+      // 【F006】从 .vsix 装扩展同样是桌面专属动作:它要选本机文件、并让用户对
+      // 「在本机跑一段程序」当面确认。网页壳明确 unsupported,不是忘了接
+      // (与整个 modules 面同一取舍)。
+      installVsix: async () => webUnsupported("modules.installVsix"),
       // Desktop-only user risk acknowledgment: never expose it through mobile/web.
       egressConsentGet: async () => webUnsupported("modules.egressConsentGet"),
       egressConsentSet: async () => webUnsupported("modules.egressConsentSet"),

@@ -255,6 +255,10 @@ const DANGER: Record<string, string> = {
   "mcp.marketSourceAdd": "添加 MCP 市场源(注册中心地址)",
   "mcp.marketSourceRemove": "移除 MCP 市场源",
   "modules.install": "安装扩展模块(可执行代码)",
+  // 【F006】从 .vsix 装真实 VS Code 扩展 —— 与 `modules.install` **同档**：
+  // 两者最终都落到 `ModuleHost.install` 装可执行代码，区别只是清单来自哪个通道。
+  // 分档处理会让「从 vsix 装」变成绕过审批的后门。
+  "modules.installVsix": "从 .vsix 安装 VS Code 扩展(可执行代码)",
   "modules.remove": "卸载扩展模块",
   "claude.saveSubagents": "改子代理定义(会改变 agent 的行为指令)",
   "context.save": "改全局指令(写入各引擎的 CLAUDE.md / AGENTS.md)",

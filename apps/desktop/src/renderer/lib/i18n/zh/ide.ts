@@ -608,4 +608,14 @@ export const zh = {
   "taskCenter.approval.approved": "批准了计划",
   "taskCenter.approval.rejected": "否掉了计划",
   "taskCenter.approval.cancelled": "会话取消",
+  // 【F006】从 .vsix 安装真实 VS Code 扩展。
+  // ⚠️ `vsixLimitNotice` **必须在用户选文件之前就显示** —— 现在只有可执行入口
+  // ≤ 24 KiB 的扩展装得进来，真实市场扩展普遍 100 KB 以上。先说了再让他选，
+  // 比选完等一会儿看报错好。
+  "ide.modules.vsixTitle": "从 .vsix 安装 VS Code 扩展",
+  "ide.modules.vsixLimitNotice": "当前只支持可执行入口不超过 24 KiB 的扩展。真实市场扩展普遍在 100 KB 以上（例如 Rainbow CSV 的 extension.js 是 136 KB），会被这条限额拒绝。这是现阶段的真实边界，不是配置问题。",
+  "ide.modules.vsixPick": "选择 .vsix 文件…",
+  "ide.modules.vsixInstalling": "正在安装…",
+  "ide.modules.vsixInstalled": "已安装：{id}",
+  "ide.modules.vsixFilter": "VS Code 扩展包",
 } as const;

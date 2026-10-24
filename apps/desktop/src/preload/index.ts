@@ -11,6 +11,9 @@ const api = {
   modules: {
     catalog: (() => ipcRenderer.invoke(IPC.MODULE_CATALOG)) as RpcMap["modules.catalog"],
     install: ((input) => ipcRenderer.invoke(IPC.MODULE_INSTALL,input)) as RpcMap["modules.install"],
+    /** 【F006】从 `.vsix` 装真实 VS Code 扩展。与 `install` 是同一个宿主能力的另一条入口
+     *  （那条收渲染端拼好的 manifest，这条收磁盘上的 vsix 字节），审批同档。 */
+    installVsix: ((input) => ipcRenderer.invoke(IPC.MODULE_INSTALL_VSIX,input)) as RpcMap["modules.installVsix"],
     remove: ((input) => ipcRenderer.invoke(IPC.MODULE_REMOVE,input)) as RpcMap["modules.remove"],
     invoke: ((input) => ipcRenderer.invoke(IPC.MODULE_INVOKE,input)) as RpcMap["modules.invoke"],
     task: ((input) => ipcRenderer.invoke(IPC.MODULE_TASK,input)) as RpcMap["modules.task"],

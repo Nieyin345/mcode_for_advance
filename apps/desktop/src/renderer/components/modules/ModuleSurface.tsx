@@ -13,6 +13,7 @@ import { useToastStore } from "@renderer/stores/toastStore.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
 import { CapabilityCatalogPanel } from "./CapabilityCatalogPanel.js";
 import { ModuleInstallConsentHost, useInstallConsentCard } from "./ModuleInstallConsentCard.js";
+import { VsixInstallSection } from "./VsixInstallSection.js";
 
 export interface SurfaceContext {
   catalog:ModuleCatalog | undefined;
@@ -160,6 +161,9 @@ export function ModuleSurface({projectPath,children}:{projectPath:string;childre
           </section>}
         </div>)}</div>
         <CapabilityCatalogPanel catalog={catalog.data} loading={catalog.loading} error={catalog.error} onRetry={()=>void catalog.refetch()}/>
+        {/* 【F006】从 .vsix 装真实扩展 —— 放在手填清单**之前**：对绝大多数用户来说
+            这是他们真正想要的那条路，手填 JSON 是给写扩展的人的。 */}
+        <VsixInstallSection onInstalled={()=>void catalog.refetch()}/>
         <label className="block space-y-2 text-body"><span>{t("ide.modules.manifest")}</span>
           <textarea data-testid="module-manifest" className="h-52 w-full rounded border border-edge bg-surface-muted p-2 font-mono text-code" value={draft} onChange={e=>{setDraft(e.target.value);setConsent(false);setCodeConsent(false);
             try{setGranted(defaultModuleGrants(ModuleManifestSchema.parse(JSON.parse(e.target.value))));}catch{setGranted([]);}
