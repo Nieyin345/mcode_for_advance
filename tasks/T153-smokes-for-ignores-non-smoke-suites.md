@@ -17,60 +17,96 @@ for d in sorted(HERE.iterdir()):
 
 **只扫 `-smoke` 结尾的目录。**
 
-**所以下面这 9 个目录的覆盖完全不计入：**
+**磁盘上有 9 个不叫 `-smoke` 的目录：**
 
-```bash
-$ ls -d apps/desktop/scripts/*/ | 排除 *-smoke
-  arc005-visual-baseline       ← 真套件（build.mjs + compare.mjs + probe）
-  electron-u1                  ← 真套件（journeys/）
-  o3-packaged-u1               ← 真套件（main.mjs + run.sh）
-  flow-preview
-  mc035-egress-probe
-  md-preview
-  preset-scripts-sync
-  t96-probe
-  vscode-api-census
+```
+arc005-visual-baseline
+electron-u1
+o3-packaged-u1
+flow-preview
+mc035-egress-probe
+md-preview
+preset-scripts-sync
+t96-probe
+vscode-api-census
 ```
 
-**其中至少 3 个是真的有覆盖能力的套件。**
+## 一之二、⚠️ 但这 9 个不是同一类东西（我实测分的）
+
+**「9 个被漏掉」听起来严重，实际只有 3 个真的覆盖 `apps/desktop/src`。**
+
+```bash
+$ for d in <9 个>; do
+    echo "$d: $(grep -rhoE 'src/main/[...]|@main/[...]' apps/desktop/scripts/$d/ | sort -u | wc -l)"
+  done
+```
+
+| 目录 | 引用 src/main 的路径数 | **它实际是什么** | 该不该进依赖图 |
+|---|---|---|---|
+| **`t96-probe`** | **8** | **真探针，读写源码** | ✅ **要** |
+| **`mc035-egress-probe`** | **2** | **真探针** | ✅ **要** |
+| **`preset-scripts-sync`** | **1** | **可能真（需核实）** | ⚠️ 核实后定 |
+| **`arc005-visual-baseline`** | **2** | 但那 2 个是 `@main/window` / `@main/window.js` —— **桩映射，不是覆盖** | ❌ |
+| **`electron-u1`** | **4** | 3 个是 `@main/*` **桩映射**，1 个是 `src/main/lib/dataRoot.ts`（**也是桩**，`stubs/dataRoot.ts` 的别名目标）**，另有一条 `entryPoints` 真覆盖 `src/preload/index.ts`** | ❌（除那一条） |
+| **`o3-packaged-u1`** | **0** | **跑打包产物，覆的是 `resources/genoffice/**`** | ❌ |
+| `md-preview` / `flow-preview` / `vscode-api-census` | 0 | 预览台 / 普查工具 | ❌ |
+
+**⚠️ 关键：`@main/*` 出现在 `alias` / stub 配置里，表示「把这个真实模块替换成桩」——
+那是「让代码不碰它」，不是「覆盖它」。**
+
+```bash
+$ grep -rhoE "src/main/[...]|@main/[...]" apps/desktop/scripts/electron-u1/ | sort -u
+@main/ipc/files.js            ← 桩映射
+@main/store/db.js             ← 桩映射
+@main/store/repositories.js   ← 桩映射
+src/main/lib/dataRoot.ts      ← 桩的别名目标
+```
+
+**所以真正被漏掉的覆盖关系是 3 个目录（`t96-probe` / `mc035-egress-probe` / `preset-scripts-sync` 待核）。**
+
+**⚠️ 本卡的范围应该收窄到这 3 个，不是 9 个。**
 
 ## 二、后果
 
-**「改这个文件有没有回归网」的答案会漏掉这些套件。**
+**「改这个文件有没有回归网」的答案会漏掉 `t96-probe` / `mc035-egress-probe`（`preset-scripts-sync` 待核）。**
 
-**⚠️ 而且比「漏掉目录」更深：有些套件的覆盖关系在 `build.mjs` 的 `entryPoints` 里，不在 import 图上。**
+**⚠️ 而且有一个单独的例外：`electron-u1` 通过 esbuild `entryPoints` 真覆盖 `src/preload/index.ts`。**
 
-**我实测的（写卡时）：**
-
-```bash
-# electron-u1/build.mjs 直接打包真实源码
-:215   entryPoints: [join(desktop, "src/preload/index.ts")]
-:249   entryPoints: [join(suite, "driver/runner.ts")]
-:269   entryPoints: [registry]
-
-# 但 journeys/ 里没有任何 `import ... from "@main/..."` 语句
-$ grep -rhoE "^import .*from ['\"][^'\"]+['\"]" apps/desktop/scripts/electron-u1/ | grep -E "@main|src/main"
-(空)
+```js
+// electron-u1/build.mjs:215
+entryPoints: [join(desktop, "src/preload/index.ts")]
 ```
 
-**所以 `electron-u1` 确实覆盖 `src/preload/index.ts`，但依赖图看不见这条边**
-—— 因为它不是 `import`，是 esbuild 的 `entryPoints` 配置。
+**但那 9 个目录里的其它 `entryPoints` 都指向 `.tmp/` 下的生成 entry，不碰仓库源码：**
 
-**⚠️ 这和 T150 的 `readFileSync` 是同一类问题（非 import 的覆盖关系），
-但形态不同：**
+```js
+// electron-u1/build.mjs:128
+const entry = join(buildDir, "app-entry.tsx");      // .tmp/ 里
+// arc005-visual-baseline/build.mjs:70
+const entry = join(desktop, ".tmp/arc005-visual-entry.tsx");
+```
 
-| 形态 | 例子 | 图看得见吗 |
-|---|---|---|
-| `import` 静态路径 | 大多数套件 | ✅ |
-| `readFileSync` + 解析 | `app-control-smoke` → `rpcMap.ts` | ❌（T150） |
-| **esbuild `entryPoints`** | **`electron-u1` → `src/preload/index.ts`** | **❌（本卡）** |
+**所以「entryPoints 覆盖源码」这个缺口只有一条边，不是一类。**
 
-**所以本卡不只是「加几个目录」，还要让工具认得 `entryPoints` 这种覆盖声明。**
+## 二之二、覆盖关系的四种形态（本卡和其它两张卡的全景）
 
-**⚠️ 如果只加目录而不认 `entryPoints`，结果仍然是「套件被发现了但覆盖集合是空的」。**
+| 形态 | 例子 | 图看得见吗 | 谁修 |
+|---|---|---|---|
+| `import` 静态路径 | 大多数套件 | ✅ | — |
+| `readFileSync` + 解析 | `app-control-smoke` → `rpcMap.ts` | ❌ | **T150** |
+| 路径在索引范围外 | `genoffice/**` | ❌ | **T152** |
+| **目录名不是 `-smoke`** | **`t96-probe` / `mc035-egress-probe`** | **❌** | **本卡** |
+| **`entryPoints` 指向源码** | **`electron-u1` → `src/preload/index.ts`** | **❌** | **本卡（单独一条）** |
 
-**这个区别很重要**：目录加进 `suites` 之后，如果 `covered` 是空集，
-答案仍然是「没有套件覆盖」—— **只是从「目录不认」变成了「认了但没内容」。**
+**⚠️ 而 `o3-packaged-u1` / `md-preview` / `flow-preview` / `vscode-api-census` 根本不该进图**
+—— 它们不覆盖 `apps/desktop/src`，加进去只会产生空覆盖集。
+
+**Office 总控的原话：**
+
+> **把它们加进依赖图也不会有边 —— 它验的是 vendor 的 CSS 生效。**
+> **「加了但没内容」比现在更难排查。**
+
+**所以本卡的第一条纪律是：先分类，再改。不要对着「9 个」这个数字去加。**
 
 **执行时必须验证**：`electron-u1` 被收录 **之后**，`src/preload/index.ts` 的答案是什么。
 
