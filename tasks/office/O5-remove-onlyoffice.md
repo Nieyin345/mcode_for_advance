@@ -237,6 +237,28 @@ return hosts?.slidesNative === true || hosts?.slides === true;   // slides 两�
 **⚠️ 这意味着：「在批三完成之前，任何动 `apps/desktop/src/renderer/**` 的其他会话，
 都会看到一个红的必跑套件，而那不是他们的。」**
 
+### ⚠️⚠️ 范围比「几个套件」大得多 —— 2026-10-24 实测更正
+
+**我最初只报了 `workflow-ui-smoke`。那是说小了。**
+
+**准确的判据是「打不打包渲染端」，不是「提到不提到 onlyoffice」**：
+
+```bash
+$ npx tsc --noEmit -p apps/desktop/tsconfig.json > /tmp/tsc.txt 2>&1
+$ grep -cE "^apps/desktop/src/(main|preload)/" /tmp/tsc.txt    # 批二落地后 = 0
+$ grep -cE "^apps/desktop/src/renderer/" /tmp/tsc.txt          # 批三落地前 = 38
+```
+
+**批二落地后，`main/` 和 `preload/` 已经是 0 条错误，只剩渲染端 38 条。**
+
+**所以受影响的是**：
+- **所有 U1 套件**（`t7` / `t29` / `t30` / `t46` / `o0` / `o4`）—— 它们打真渲染端；
+- **所有渲染端组件套件**；
+- **而只打 `src/main/**` 的套件不受影响**（主进程已干净）。
+
+**报范围时说「所有打渲染端的套件」，不要说「几个套件」** ——
+**前者让别人能自己判断，后者只能靠猜。**
+
 ### 派活时该做的
 
 **开工前通知相关线**：「O5 三批进行中，`FileEditor.tsx` / `preload/index.ts` 会在 2–4 小时内报
