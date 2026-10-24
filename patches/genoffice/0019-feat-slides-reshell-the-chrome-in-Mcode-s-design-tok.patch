@@ -1,0 +1,320 @@
+From 58cd1a13fb2482eae14962f758aac9e2d349936e Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sat, 24 Oct 2026 23:57:06 +0800
+Subject: [PATCH] feat(slides): reshell the chrome in Mcode's design tokens
+
+Third batch of O6. Same 54 shared chrome token values as Docs (0014), HTML
+(0016), Markdown (0017) and PDF (0018).
+
+The gate matters more here than anywhere else: Slides' preload exposes
+`desktop` as well as `slidesApi` (src/preload/index.ts:499, the attachment
+API), so copying the Docs guard `if (window.desktop)` would fire in standalone
+runs too - which is exactly what we measured happening to Docs. The gate is
+the UA product token instead.
+
+Slides carries 138 app-private tokens, and they are almost all content or
+document semantics rather than chrome: --slides-paper, --slides-show-* (the
+presenter's fixed black-on-white show), --slides-anim-* (PowerPoint's
+entrance/emphasis/exit/path colour coding), --slides-crop-* with the guides
+and grid, --slides-reading-* (fixed dark), --slides-laser-*. None are touched,
+per the rule the PDF batch settled: the shell swap replaces shared tokens
+only. App-private chrome (--slides-statusbar-bg, --slides-rail-bg,
+--slides-focus-ring, --slides-shadow-menu) also stays put, because a per-app
+override would split one menu into six greys.
+
+canvas-colors.ts is left alone too: it holds three redact-frame values and is
+drawing a document mark, not chrome.
+
+o6-reshell-slides-smoke: 39/39 in real Electron, four modes (hosted/standalone
+x light/dark), with the same two premises as the other suites (dark actually
+reached the page; light != dark). Mutations: gate removed 11 red across the
+standalone and dark-standalone groups, --surface reverted 1 red, --chrome-bg
+reverted 1 red (independent of the previous one, as in PDF), import removed
+12 red. No fixture is needed: standalone Slides opens a blank deck itself.
+---
+ apps/slides/src/renderer/main.tsx        |  14 ++
+ apps/slides/src/renderer/mcode-theme.css | 247 +++++++++++++++++++++++
+ 2 files changed, 261 insertions(+)
+ create mode 100644 apps/slides/src/renderer/mcode-theme.css
+
+diff --git a/apps/slides/src/renderer/main.tsx b/apps/slides/src/renderer/main.tsx
+index f15cb46..3a5da93 100644
+--- a/apps/slides/src/renderer/main.tsx
++++ b/apps/slides/src/renderer/main.tsx
+@@ -17,6 +17,20 @@ import '@genoffice/ui/markdown.css'
+ import '@genoffice/ui/ai-panel-prefs.css'
+ import '@genoffice/ui/ai-scope-quote.css'
+ import './styles.css'
++// 【O6】Mcode 宿主主题层：把 GenOffice 的语义 token 重指到 Mcode 的 CDS 色阶。
++// **只在 Mcode 里加载** —— 单独跑 GenOffice 时保持自己的视觉语言。
++//
++// ⚠️ 这里**绝不能**抄 docs 的 `if (window.desktop)`: slides 的 preload **也** expose
++// 了 `desktop`（src/preload/index.ts:499，那是文件附件 API `filesApi`），那个守卫
++// 在本 app 上恒为真 —— 独立运行也会被换壳。docs 那边已经实际发生过这件事。
++//
++// 用 UA 里的产品号：Electron 默认把 `app.getName()` 写进 UA 注释段。Mcode 主进程
++// 在 whenReady 之前 `app.setName("Mcode")`（apps/desktop/src/main/index.ts:101），
++// 且文档视图不覆盖 UA —— 所以宿主里是 `Mcode/44.x`，单独跑是 `GenOfficeSlides/44.x`。
++// 真 Electron 双模式实测见 apps/desktop/scripts/o6-reshell-slides-smoke/。
++//
++// 放在 `styles.css` 之后：token 是自定义属性，后者先定义、这里覆盖，顺序决定胜负。
++if (/\bMcode\//.test(navigator.userAgent)) import('./mcode-theme.css')
+ import { applyAiPanelPrefs, installScreenTips } from '@genoffice/ui'
+ 
+ installScreenTips()
+diff --git a/apps/slides/src/renderer/mcode-theme.css b/apps/slides/src/renderer/mcode-theme.css
+new file mode 100644
+index 0000000..ad51ff4
+--- /dev/null
++++ b/apps/slides/src/renderer/mcode-theme.css
+@@ -0,0 +1,247 @@
++/* Mcode 宿主主题层（Slides）—— 把 GenOffice 的**语义 token** 重指到 Mcode 的 CDS 色阶。
++ *
++ * ## 这是什么，不是什么
++ *
++ * 与 docs（0014）、html（0016）、markdown（0017）、pdf（0018）同一套机制、同一批取值：
++ * chrome 颜色全部走 `packages/ui/src/tokens.css` 的语义 token，换壳 = 替换 token 取值。
++ * 组件树、Konva 画布、deck 模型、放映与导出路径一行不动。
++ *
++ * 覆盖集与 docs 那份**逐字相同**（54 个共享 chrome token）。
++ *
++ * ## ★ 为什么这里绝不能抄 docs 的 `window.desktop` 守卫
++ *
++ * docs 用 `if (window.desktop)`。**slides 的 preload 也 expose 了 `desktop`**
++ * （`apps/slides/src/preload/index.ts:499`，那是文件附件 API `filesApi`），
++ * 所以那个守卫在 slides 上**恒为真** —— 独立运行也会被换壳，与 0014 在 docs 上
++ * 实际发生的事同型（我们实测过）。
++ *
++ * 这里用 **UA 产品号**：Electron 默认把 `app.getName()` 写进 UA 注释段。Mcode 主进程
++ * 在 `whenReady` 之前 `app.setName("Mcode")`，且文档视图不覆盖 UA —— 宿主里是
++ * `Mcode/44.x`，单独跑是 `GenOfficeSlides/44.x`。真 Electron 双模式实测见
++ * `apps/desktop/scripts/o6-reshell-slides-smoke/`。
++ *
++ * ## 边界（硬规矩）
++ *
++ * **规则 A：换壳 = 换共享 token，app 私有 token 一律不动。**
++ * slides 有 138 个 app 私有 token，绝大多数是**内容/语义**色，用户靠它们认
++ * 「这是演示文稿的哪一类标记」：
++ *
++ * - `--slides-paper`（幻灯片纸张）
++ * - `--slides-show-*`（放映模式的深色底与各级墨色 —— 放映时不跟 UI 主题）
++ * - `--slides-anim-*`（动画类型色标：进入/强调/退出/路径）
++ * - `--slides-crop-*` / `--slides-guide` / `--slides-grid-line`（裁剪与参考线）
++ * - `--slides-laser-*`（激光笔）
++ * - `--slides-reading-*`（阅读视图）
++ *
++ * **`canvas-colors.ts` 不在这里动**：它只有 `redactFrame` 三个值（stroke/chip/label），
++ * 注释明写「红框随图片进缩略图，两种主题画得一样」—— 那是脱敏标记，不是 chrome。
++ *
++ * 也不碰 `--accent*`（品牌色）、`--search-hit-*` / `--docs-revision-bar`（文档语义标记）。
++ *
++ * ## 渲染窗（`?mode=audience`）
++ *
++ * `main.tsx` 的 `mode === 'audience'` 分支不调 `applyTheme`（放映窗不跟 UI 主题）。
++ * 本文件只覆盖 `:root` 与 `[data-theme='dark']` 的 token；放映窗不设 `data-theme`，
++ * 但**仍会加载本文件**（开关在模块顶层）。放映窗的外观由 `--slides-show-*` 自己决定，
++ * 那些 token 不在覆盖集里 —— 所以放映不受影响。
++ */
++
++/* ── 亮色 ─────────────────────────────────────────────────────────────── */
++:root {
++  /* 表面阶梯 → CDS gray 阶（Mcode 的 --surface = var(--m-gray-10) = #fcfcfb） */
++  --surface: #fcfcfb;
++  --surface-subtle: #f9f9f7;
++  --chrome-bg: #fcfcfb;
++  --canvas: #f0efec;
++  --bg-content: #f9f9f7;
++
++  /* 边框 → CDS 发丝边 */
++  --border: #e1e0d9;
++  --border-subtle: #edece8;
++  --border-strong: #d2d1c7;
++  --border-hover: #c3c2b7;
++
++  /* 文字 → CDS 对比阶梯（Mcode 的 --content = var(--m-gray-850) = #151515） */
++  --text: #151515;
++  --text-primary: #151515;
++  --text-secondary: #52514e;
++  --text-tertiary: #6d6b67;
++  --text-muted: #6d6b67;
++  --text-dim: #52514e;
++
++  /* 交互态 */
++  --hover: #f0efec;
++  --pressed: #eae9e4;
++  --active-bg: #e1e0d9;
++  --bg-hover: #f0efec;
++  --bg-hover-subtle: #f6f6f4;
++  --bg-hover-strong: #eae9e4;
++  --bg-hover-accent: #e1e0d9;
++  --icon-muted: #a5a49a;
++
++  /* 状态色：保留语义，只换到 CDS 色系的饱和度 */
++  --danger: #b4352f;
++  --danger-bg: #fdf3f2;
++  --danger-border: #f0c8c4;
++  --success: #2f6b4a;
++  --success-bg: #eef6f1;
++  --success-border: #c8e0d2;
++
++  /* 阴影：CDS 的头发丝阴影 */
++  --shadow-btn-hover: 0 1px 3px rgb(21 21 21 / 8%);
++  --shadow-modal-strong: 0 12px 32px rgb(21 21 21 / 12%);
++  --shadow-menu: 0 6px 20px rgb(21 21 21 / 14%);
++
++  /* 主按钮 / AI 动作：Claude 的陶土橙不是 GenOffice 的 #e8663f */
++  --color-btn-primary: #151515;
++  --color-btn-primary-hover: #2c2c2a;
++  --color-btn-primary-text: #fcfcfb;
++  --color-ai-action: #c96442;
++  --color-ai-action-hover: #b55538;
++  --color-ai-action-text: #fcfcfb;
++  --color-brand-secondary: #c96442;
++  --color-border-brand: #c96442;
++
++  /* 与 chrome 同名的重复语义（AI 面板沿用这一组） */
++  --color-text-primary: #151515;
++  --color-text-secondary: #52514e;
++  --color-text-tertiary: #6d6b67;
++  --color-bg-page: #fcfcfb;
++  --color-bg-subtle: #f9f9f7;
++  --color-border-default: #e1e0d9;
++  --color-border-strong: #d2d1c7;
++  --color-error: #b4352f;
++  --color-error-hover: #9c2c27;
++
++  /* 字体族：Mcode 用系统 sans 栈，不用 Arial 打头 */
++  --gs-font-sans:
++    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, 'Helvetica Neue', sans-serif;
++
++  /* 圆角：CDS 比 Word 更圆一档 */
++  --radius-6: 6px;
++  --radius-8: 8px;
++  --radius-12: 12px;
++  --radius-16: 16px;
++}
++
++/* ── 暗色 ─────────────────────────────────────────────────────────────── */
++[data-theme='dark'] {
++  --surface: #151515;
++  --surface-subtle: #20201f;
++  --chrome-bg: #1b1b1a;
++  --canvas: #0f0f0e;
++  --bg-content: #1b1b1a;
++
++  --border: #383835;
++  --border-subtle: #2c2c2a;
++  --border-strong: #454442;
++  --border-hover: #52514e;
++
++  --text: #f9f9f7;
++  --text-primary: #f9f9f7;
++  --text-secondary: #b4b3a8;
++  --text-tertiary: #97958d;
++  --text-muted: #97958d;
++  --text-dim: #b4b3a8;
++
++  --hover: #2c2c2a;
++  --pressed: #383835;
++  --active-bg: #454442;
++  --bg-hover: #2c2c2a;
++  --bg-hover-subtle: #242423;
++  --bg-hover-strong: #383835;
++  --bg-hover-accent: #454442;
++  --icon-muted: #6d6b67;
++
++  --danger: #e58980;
++  --danger-bg: #3a201f;
++  --danger-border: #5a3030;
++  --success: #7fc3a0;
++  --success-bg: #1c2f26;
++  --success-border: #33543f;
++
++  --shadow-btn-hover: 0 1px 3px rgb(0 0 0 / 45%);
++  --shadow-modal-strong: 0 12px 32px rgb(0 0 0 / 40%);
++  --shadow-menu: 0 6px 20px rgb(0 0 0 / 50%);
++
++  --color-btn-primary: #f9f9f7;
++  --color-btn-primary-hover: #e1e0d9;
++  --color-btn-primary-text: #151515;
++  --color-ai-action: #d97757;
++  --color-ai-action-hover: #e58966;
++  --color-ai-action-text: #151515;
++  --color-brand-secondary: #d97757;
++  --color-border-brand: #d97757;
++
++  --color-text-primary: #f9f9f7;
++  --color-text-secondary: #b4b3a8;
++  --color-text-tertiary: #97958d;
++  --color-bg-page: #151515;
++  --color-bg-subtle: #20201f;
++  --color-border-default: #383835;
++  --color-border-strong: #454442;
++  --color-error: #e58980;
++  --color-error-hover: #f0a09a;
++}
++
++/* ── 系统暗色（无 data-theme 属性时跟随 OS） ───────────────────────────── */
++@media (prefers-color-scheme: dark) {
++  :root:not([data-theme='light']):not([data-theme='dark']) {
++    --surface: #151515;
++    --surface-subtle: #20201f;
++    --chrome-bg: #1b1b1a;
++    --canvas: #0f0f0e;
++    --bg-content: #1b1b1a;
++
++    --border: #383835;
++    --border-subtle: #2c2c2a;
++    --border-strong: #454442;
++    --border-hover: #52514e;
++
++    --text: #f9f9f7;
++    --text-primary: #f9f9f7;
++    --text-secondary: #b4b3a8;
++    --text-tertiary: #97958d;
++    --text-muted: #97958d;
++    --text-dim: #b4b3a8;
++
++    --hover: #2c2c2a;
++    --pressed: #383835;
++    --active-bg: #454442;
++    --bg-hover: #2c2c2a;
++    --bg-hover-subtle: #242423;
++    --bg-hover-strong: #383835;
++    --bg-hover-accent: #454442;
++    --icon-muted: #6d6b67;
++
++    --danger: #e58980;
++    --danger-bg: #3a201f;
++    --danger-border: #5a3030;
++    --success: #7fc3a0;
++    --success-bg: #1c2f26;
++    --success-border: #33543f;
++
++    --shadow-btn-hover: 0 1px 3px rgb(0 0 0 / 45%);
++    --shadow-modal-strong: 0 12px 32px rgb(0 0 0 / 40%);
++    --shadow-menu: 0 6px 20px rgb(0 0 0 / 50%);
++
++    --color-btn-primary: #f9f9f7;
++    --color-btn-primary-hover: #e1e0d9;
++    --color-btn-primary-text: #151515;
++    --color-ai-action: #d97757;
++    --color-ai-action-hover: #e58966;
++    --color-ai-action-text: #151515;
++    --color-brand-secondary: #d97757;
++    --color-border-brand: #d97757;
++
++    --color-text-primary: #f9f9f7;
++    --color-text-secondary: #b4b3a8;
++    --color-text-tertiary: #97958d;
++    --color-bg-page: #151515;
++    --color-bg-subtle: #20201f;
++    --color-border-default: #383835;
++    --color-border-strong: #454442;
++    --color-error: #e58980;
++    --color-error-hover: #f0a09a;
++  }
++}
+-- 
+2.52.0.windows.1
+

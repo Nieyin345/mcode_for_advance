@@ -620,3 +620,91 @@ markdown 的 `.doc-page` 用共享的 `var(--surface)`，必须在作用域内�
    不联网、不依赖用户文件、不污染仓库。
 3. 暗色的两个期望值（rgb(27,27,26) / rgb(37,37,37)）是 `--chrome-bg` 的暗色值，
    不是 `--surface` 的 —— 第一次写错成 `--surface` 的值，红了两条；那是断言错，不是代码错。
+
+---
+
+## 结果回写：slides（第三批，2026-10-24）
+
+### 1. ★ 这个 app 的开关最危险 —— 它自己也 expose 了 `window.desktop`
+
+```
+apps/slides/src/preload/index.ts:485   exposeInMainWorld('slidesApi', api)
+apps/slides/src/preload/index.ts:499   exposeInMainWorld('desktop', filesApi)   ← 文件附件 API
+```
+
+**所以 docs 的 `if (window.desktop)` 在 slides 上恒为真** —— 独立运行也会被换壳，
+和 0014 在 docs 上实际发生的事同型。用 UA 产品号（`/\bMcode\//`）才能区分。
+
+### 2. 覆盖 54 个共享 chrome token（与四家一致）
+
+### 3. ★ 138 个 app 私有 token 逐个判断：全部不覆盖
+
+slides 是五个里私有 token 最多的（138 个），而且「该不该动」最难判断 —— pdf 只有
+一个 `--pdf-paper`，slides 有母版、放映、动画一整套。逐个分类：
+
+| 族 | 是什么 | 判断 |
+|---|---|---|
+| `--slides-paper` | 幻灯片纸张 `#fff` | **文档内容**，不动 |
+| `--slides-show-*`（22 个） | 放映模式：`--slides-show-black: #000`、`--slides-show-white/ink/fill-*` | **放映是固定黑底白字，不跟 UI 主题**，不动 |
+| `--slides-anim-*`（5 个） | 进入 `#107c41` / 强调 `#c28e00` / 退出 `#c43e1c` / 路径 `#2b7cd3` / 媒体 `#7a5cc4` | **PowerPoint 的动画类型色标** —— 用户靠颜色认是哪一类动画，不动 |
+| `--slides-crop-*` / `--slides-guide` / `--slides-grid-line` | 裁剪遮罩、红色参考线、网格 | **编辑辅助语义**，不动 |
+| `--slides-reading-*` | 阅读视图 `#2b2b2b` / `#eee` | **固定深色**，不跟主题，不动 |
+| `--slides-laser-*` | 激光笔（红） | **演示语义**，不动 |
+| `--slides-statusbar-bg` `#f3f4f6` / `--slides-rail-bg` `#ececec` / `--slides-focus-ring` / `--slides-shadow-menu` | **app 私有 chrome** | **规则 A：不动** —— 与 docs 的 `--docs-statusbar-bg` 在 0014 后仍是 `#f3f4f6` 一致 |
+| `--slides-select-*` / `--slides-hover-wash*` / `--slides-cell-focus-bg` | 由 `var(--accent)` 派生 | 派生自品牌色，**它们自己会跟着 `--accent` 走**（而 `--accent` 不在覆盖集） |
+| `--slides-ai-error*` / `--slides-error*` / `--slides-ok` | 状态语义 | 不动 |
+| `--slides-ko*` / `--slides-badge-*` / `--slides-ph-*` / `--slides-swatch-*` | 占位符、徽标、色板环 | 不动 |
+
+**`canvas-colors.ts` 也不动**：全文只有 `redactFrame: { stroke, chip, label }` 三个值，
+注释明写「红框随图片进缩略图，两种主题画得一样」。**那是脱敏标记，不是 chrome。**
+
+### 4. 判据（真 Electron，四种模式）
+
+`o6-reshell-slides-smoke`：**39/39**。
+
+| 组 | 断言 |
+|---|---|
+| 前提 | 独立暗色 `--surface` = `#1e1e1e`；亮 ≠ 暗 |
+| 宿主亮 | theme 加载、`--surface` #fcfcfb、`--text` #151515、`--border` #e1e0d9、`.ribbon` rgb(252,252,251)、字体栈 |
+| 独立亮 | 不加载、三个 token = 上游、`.ribbon` rgb(255,255,255)、Arial |
+| 宿主暗 | theme 加载、`--surface` #151515、`--text` #f9f9f7、`.ribbon` rgb(27,27,26) |
+| 独立暗 | 不加载、`--text` #e4e4e4、`.ribbon` rgb(37,37,37) |
+| 对照 | 宿主暗 `.ribbon` ≠ 独立暗 |
+| 文档内容 | `--slides-paper` 两种模式都是 `#fff` |
+| 组件树 | `.ribbon` / `.app` / `.status-bar` |
+| 边界 | 不覆盖 `--accent*` / `--word-blue` / `--slides-paper` / `--slides-show-*` / `--slides-anim-*` / `--slides-crop-*`+guide+grid / `--slides-reading-*` / `--slides-laser-*` / `--slides-statusbar-*`+rail+focus-ring+shadow-menu / `--search-hit-*`+revision-bar |
+| 规则 A | 覆盖的每个 token 都来自 `tokens.css` |
+
+**不需要 fixture**：`startSlidesStandalone()` 没有 `.pptx` argv 时，渲染端自己调
+`newBlank(FIT_WIDTH)` 开空 deck（`App.tsx:1231`），外壳照样渲染。
+（pdf 那套要造最小 PDF，因为它的 ribbon 只在打开文档后出现。）
+
+### 5. 变异
+
+| 变异 | 预期 | 实际 |
+|---|---|---|
+| M1 去 UA 门 | 独立 6 + 暗色独立 4 + 开关契约 1 | **11 红** ✅ |
+| M2 `--surface` → `#ffffff` | 1 | **1 红**（token 值）✅ |
+| M2b `--chrome-bg` → `#ffffff` | 1 | **1 红**（`.ribbon`）✅ |
+| M3 删 import | 宿主 6 + 暗色宿主 5 + 契约 1 | **12 红** ✅ |
+
+M2 / M2b 与 pdf 同形：**改一个只红一条，改另一个只红另一条，互不兜底。**
+
+还原后 sha256 逐字节（main `84e43322…`、theme `277fd9a2…`），重建回 39/39。
+
+### 6. 交付物
+
+- vendor 提交 `58cd1a13fb2482eae14962f758aac9e2d349936e`（2 文件，+261），父提交 `4c893cf`（pdf）
+- `patches/genoffice/0019-feat-slides-reshell-the-chrome-in-Mcode-s-design-tok.patch`（12836 B，sha256 `fea2602d…aa853`）
+- 账本：lock `revision` → `58cd1a13`、`expectedTree` → `a39cff94`、patchSeries 19 条；verify 同步
+- `apps/desktop/scripts/o6-reshell-slides-smoke/{build.mjs, probe.cjs, run.sh}`
+
+### 7. 未做 / 需知
+
+1. **`verify-genoffice-upstream.cjs` 仍跑不了** —— vendor 树里 O10 的未提交改动
+   （`save-pdf.ts`、`slides-main.ts`、`document-save-guard.ts`、三家 main、`electron-utils/package.json`）
+   还在。**提交时我逐条核过暂存区只有我的两个 slides 文件**，没碰他们的、也没 stash。
+2. **`?mode=audience` 放映窗不受影响**：`main.tsx` 的 audience 分支不调 `applyTheme`，
+   且放映外观由 `--slides-show-*` 决定（不在覆盖集）。但**这一条是从代码读出来的，没有真跑**——
+   套件只验普通编辑窗。
+3. **Konva 画布上的内容（幻灯片本体）本来就不吃 CSS token** —— 那是文档内容，正确。
