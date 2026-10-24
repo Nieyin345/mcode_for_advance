@@ -1960,10 +1960,18 @@ button.chat-ledger-head:hover {
  * The three presets are spread wide enough that switching is immediately
  * perceptible: compact packs messages tightly, comfortable is the balanced
  * default, cozy gives generous breathing room between turns. */
-/* 【ARC-005 V2】**阅读行高对齐上游 CDS**：上游正文 `--chat-leading: 1.42857`
- * （反编译取证），而 Mcode 原三档 1.5/1.6/1.75 来自旧版自选。这里把三档整体
- * 压向上游值，同时保留档位差（紧凑 1.42 / 舒适 1.45 / 宽松 1.6），既贴合
- * Claude 桌面的阅读密度，也不丢用户已有的三档选择。
+/* 【ARC-005 V2】**阅读行高对齐上游 CDS**：上游正文真身是
+ * `ChatMessageBubbles.tsx:361` 的 `prose text-[15px] leading-relaxed`
+ * —— `leading-relaxed` 是 Tailwind 内置的 1.625（上游 tailwind.config.js
+ * 没有 lineHeight 段，所以没被覆盖过）。
+ *
+ * 【T147 更正】本段此前写「上游 `--chat-leading: 1.42857`（反编译取证）」，
+ * 那个值是从 `cds-theme.css:179` 抄来的，但**它只被 :180/:181 用来算间距，
+ * 从来没有被任何组件的行高读过**（`grep -rn "chat-leading" code-examples/*.tsx`
+ * 只命中一行注释）。按它定行高是读错了变量 —— 和 `--chat-body` 同一个陷阱：
+ * CSS 里定义了一个值，不代表它在用。三档因此从 1.42/1.45/1.6 改为
+ * 1.5/1.625/1.75，默认档与上游 `leading-relaxed` 完全一致。
+ *
  * 只改行高，不动字号与间距 —— 字号由 --chat-font-size 单独控制。
  *
  * 【T122】**默认档（comfortable）的间距对齐上游的两档公式**，其余两档不动。
@@ -1972,6 +1980,9 @@ button.chat-ledger-head:hover {
  *   --chat-body: .875rem (14px)   --chat-leading: 1.42857
  *   --chat-turn-gap = body × leading × .75 = 15px   ← 轮次之间
  *   --chat-item-gap = body × leading × .50 = 10px   ← 轮内
+ *
+ * **⚠️ `--chat-leading` 只用来推导这两个间距，不代表行高** —— 行高见下面
+ * 【T147】那段：上游组件用的是 `leading-relaxed`（1.625），不是 1.42857。
  *
  * **注意这两个值是同一个乘积的 0.75 / 0.5 倍，不是两套独立数字。**
  * 对齐前（本仓旧值 20 / 12 / 8）三个方向并不一致：user 松 33%、assistant
@@ -1993,7 +2004,11 @@ button.chat-ledger-head:hover {
   --chat-md-gap-sm: 0.375rem;        /* 6px  */
   --chat-md-gap-md: 0.5rem;          /* 8px  */
   --chat-md-gap-lg: 0.75rem;         /* 12px */
-  --chat-md-leading: 1.45;           /* CDS 上游 1.42857,取整到 1.45 */
+  /* 【T147】上游正文行高真身是 ChatMessageBubbles.tsx:361 的 `leading-relaxed`
+   * （Tailwind 内置 1.625，上游 tailwind.config.js 未覆盖 lineHeight）。
+   * cds-theme.css 里的 `--chat-leading: 1.42857` 是个没有被任何组件引用的
+   * 变量 —— 只有 :180/:181 用它算间距，行高本身没人读。别再用它当依据。 */
+  --chat-md-leading: 1.625;
 }
 [data-chat-density="compact"] {
   --chat-row-gap-assistant: 0.25rem; /* 4px */
@@ -2003,7 +2018,8 @@ button.chat-ledger-head:hover {
   --chat-md-gap-sm: 0.25rem;         /* 4px */
   --chat-md-gap-md: 0.375rem;        /* 6px */
   --chat-md-gap-lg: 0.5rem;          /* 8px */
-  --chat-md-leading: 1.42;           /* 接近上游 1.42857 */
+  /* 紧凑档：默认（1.625）向下 7.7%，保持「紧凑确实更紧」而不偏离上游太远 */
+  --chat-md-leading: 1.5;
 }
 [data-chat-density="cozy"] {
   --chat-row-gap-assistant: 1.75rem; /* 28px */
@@ -2013,7 +2029,8 @@ button.chat-ledger-head:hover {
   --chat-md-gap-sm: 0.625rem;        /* 10px */
   --chat-md-gap-md: 0.875rem;        /* 14px */
   --chat-md-gap-lg: 1.25rem;         /* 20px */
-  --chat-md-leading: 1.6;            /* 宽松档,比上游略松 */
+  /* 宽松档：默认（1.625）向上 7.7%，保持三档等距 */
+  --chat-md-leading: 1.75;
 }
 
 /* ───────────── Composer action row · mini pill (方案 B, single-pill) ─────────────
