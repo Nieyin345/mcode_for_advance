@@ -117,11 +117,16 @@ div:has(> [role="menu"]) {
   --content: var(--m-gray-850); /* #151515 — near-black, max contrast on #fcfcfb */
   --content-muted: var(--m-gray-600); /* #52514e ≈ 7.5:1 */
   --content-subtle: var(--m-gray-500); /* #6d6b67 ≈ 5.1:1 (AA for small text) */
-  /* borders. --edge is a cool zinc-300, one stop DEEPER than --surface-hover:
-   * borders must read as separators on white (~1.46:1) — the old zinc-200
-   * equaled the hover fill, so panel dividers / card outlines washed out and
-   * hover feedback had the same value as the border it sat next to. */
-  --edge: var(--m-gray-200); /* #c3c2b7 — CDS hairline tone */
+  /* borders. --edge 必须在**两个**参照上都可读，只满足一个就会坏：
+   *   - 对 --surface（#fcfcfb）：1.38:1，够作分隔线；
+   *   - 对 --surface-hover（#f0efec）：1.23:1，坐在悬停填充上时不与填充融在一起。
+   *
+   * 这两条约束是 CDS 的 10% alpha 拉不过来的：10% 合成是 #e3e3e2，
+   * 对 surface 是 1.25:1，但对 hover 填充只有 1.12:1 —— 和填充本身对
+   * surface 的对比度（1.12:1）完全相等，边框落在悬停行上会消失。
+   * 规范值没错，是它的 --surface-hover 跨度与这里不同。
+   * 取值见 tasks/T121-cds-spec-for-implementers.md 的「取值表」。 */
+  --edge: 217 217 216; /* #d9d9d8 — 14% 黑叠在 #fcfcfb 上的合成色 */
   /* 【T116】选中态的边框 —— **必须和 --surface-hover 不同值**。
    * 选中行的表达是「surface-hover 填充 + 边框」，而 --edge 在深色主题下
    * 恰好等于 --surface-hover（都是 #2c2c2a），边框会完全消失，
@@ -132,8 +137,10 @@ div:has(> [role="menu"]) {
    * splitter hairlines, the tab-strip underline) — one stop LIGHTER than
    * --edge: these lines run the full window height, and at the card-border
    * value they read as heavy rules across the whole UI. Cards and in-panel
-   * separators keep --edge. */
-  --panel-edge: var(--m-gray-150); /* #d2d1c7 (~1.3:1 on #fcfcfb) */
+   * separators keep --edge.
+   * 【T121】--edge 降到 1.38:1 之后，原来的 gray-150（1.49:1）反而比它更深，
+   * 「长线更淡」这层关系就倒了。这一档取 10% 合成（1.25:1）恢复顺序。 */
+  --panel-edge: 227 227 226; /* #e3e3e2 — 10% 黑合成，比 --edge 淡一档 */
   /* Composer input box outline — one stop deeper than --edge so the box
    * reads clearly at a glance in both themes (dark needs the brighter-than-
    * edge direction, light the deeper-than-edge direction). Only the composer
@@ -303,12 +310,17 @@ div:has(> [role="menu"]) {
   --content: var(--m-gray-20); /* #f9f9f7 — dark text, ~15:1 on #151515 */
   --content-muted: var(--m-gray-250); /* #b4b3a8 — secondary */
   --content-subtle: var(--m-gray-350); /* #97958d ≈ 4.7:1 — metadata */
-  --edge: var(--m-gray-750); /* #2c2c2a */
+  --edge: 63 63 63; /* #3f3f3f — 18% 白叠在 #151515 上。原先等于 --surface-hover
+                     * （都是 #2c2c2a），边框落在悬停行上时与填充完全重合（1.00:1）
+                     * 而消失。这一档对 surface 1.73:1、对 hover 填充 1.33:1。
+                     * 取值理由与亮色共用一份，见 tasks/T121。 */
   /* 【T116】选中态边框。深色下 --edge 与 --surface-hover 都是 #2c2c2a ——
    * 用 --edge 画选中行的边框等于没画。这一档比 hover 填充亮两级，边框可见。 */
   --selected-edge: var(--m-gray-650); /* #454442 */
-  --panel-edge: var(--m-gray-750); /* mirrors --edge */
-  --input-edge: var(--m-gray-700); /* #383835 — brighter than --edge */
+  --panel-edge: var(--m-gray-750); /* #2c2c2a — 结构长线，比 --edge 淡一档（1.31 < 1.73） */
+  /* 【T121】--edge 提到 #3f3f3f（1.73:1）之后，gray-700（1.55:1）反而比它淡，
+   * 「输入框比卡片边框更清楚」这层关系就倒了。取 22% 白（1.79:1）恢复。 */
+  --input-edge: 72 72 72; /* #484848 — 22% 白叠在 #151515 上，比 --edge 深一档 */
   /* 【ARC-005 2026-10-20】暗色品牌色：orange-300 #ec835a → 6.92:1 on #151515，
    * 小字与图形同一档即可（与旧 emerald 的做法一致）。 */
   --accent: 236 131 90; /* #ec835a */
