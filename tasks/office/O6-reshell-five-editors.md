@@ -127,6 +127,32 @@ docs / sheets / slides / pdf / markdown / html   →  genoffice/packages/ui/src/
 
 **先做 html（57 个 token，最小）** —— 用最小的验证机制成立，再推到大的。
 
+## 六之二、⚠️ `smokes-for.sh` 看不见这个目录 —— 那是**假阴性**，不是真的没覆盖
+
+**实测**（2026-10-24）：
+
+```bash
+$ bash apps/desktop/scripts/smokes-for.sh genoffice/apps/html/src/renderer/main.tsx
+genoffice/apps/html/src/renderer/main.tsx
+  ⚠️ 没有套件覆盖它 —— 改这里没有回归网。
+```
+
+**这句话在这里是错的。**
+
+`smokes-for.py` 建的是 `apps/desktop/src/**` → `apps/desktop/scripts/*` 的依赖图。
+**`genoffice/` 是独立 git 仓库，从来不在那张图上。**
+
+**所以它对 `genoffice/` 下的任何改动都会说「没覆盖」—— 包括你正要改的五个 renderer。**
+
+**真正的覆盖是**：
+
+```bash
+pnpm test:smoke o6-reshell-<format>      # 你那套
+```
+
+**不要因为 `smokes-for.sh` 说「没有回归网」而怀疑自己没做对。**
+也**不要**为了「让它闭嘴」而去改 `apps/desktop/` 里无关的东西。
+
 ## 七、不要做的事
 
 - **不要用 `insertCSS` 从外面硬藏**（那是 A 方案，用户明确选了 B）。
