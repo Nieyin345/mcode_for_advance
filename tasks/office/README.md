@@ -714,3 +714,38 @@ O1 验的是**三家真 SDK 驱动 AI 编辑**。
 
 **这打破了「四家都一样」的直觉** —— 同样是 `bypass` 类，修复工作量不同。
 已把这条连同建议（守卫的 `write` 对 slides 额外包原子写）发给 O10 的执行者。
+
+---
+
+## 九、⚠️ `t7-genoffice-u1` 不是能直接跑的套件（2026-10-24 O5 会话指出）
+
+**它是被 `o0` / `o2` / `o4` 共用的 harness 目录**，名字不以 `-smoke` 结尾，
+所以 `run-smokes.mjs` 的发现器不认它（判据在 `smokes-for.py:331-332`：
+`if not d.name.endswith("-smoke"): continue`）。
+
+```
+$ pnpm test:smoke t7-genoffice-u1
+  → 没这套（不是红，是找不到）
+```
+
+**上面 §二 和 §八 那两行说的「`t7-genoffice-u1` 6 journeys all-pass」是真实发生过的验收**
+（真 Electron、2 OS 进程、六格式），**但它不是一个你可以复跑的入口。**
+
+**想复跑六格式：**
+
+```bash
+pnpm test:smoke o0-format-fidelity-smoke     # 六格式复杂部件 + U1
+pnpm test:smoke o2-conflict-u1-smoke         # 六格式保存冲突
+pnpm test:smoke o4-docs-close-smoke          # docs 关闭
+```
+
+**⚠️ 上面三条目录名我 `ls` 过**（`apps/desktop/scripts/` 下确实有这三个）。
+**而第一版我写的是 `o4-docs-close`（少了 `-smoke`）** —— 那正是本节要讲的那个错，
+**写卡人自己又犯了一次。** 这条留在这里当反面样本。
+
+**这条和 §五之三（`smokes-for.sh` 对 `genoffice/` 一律说「没有覆盖」）是同一族**：
+**工具说「没有」时，先分清是「查过了没有」还是「不在它的范围里」。**
+
+**同一天出现两次的形态**：`document-read-smoke` 和 `genoffice-format-gates-smoke` 我跑红过，
+以为是套件坏了，实际是 `run.sh` 的 cwd 依赖（见 `suite-startup-failure-looks-like-zero-red`）。
+**三次「看起来是套件的问题」，三次都是调用方式。**
