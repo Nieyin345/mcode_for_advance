@@ -302,3 +302,83 @@ zh/en 各 +3 行 i18n key。
 - 缺口 ②（图片 pan/zoom）与 ③（限流倒计时）**未开始**；
 - **三个缺口都不依赖 framer-motion**（实测 grep 均为 0），所以本阶段**不需要引入动画库**；
 - `DraggableSessionList` / `ArtifactsSplitPaneResizer` 仍等 A 的布局改造。
+
+---
+
+## 第二阶段回写二（2026-10-24）：接了缺口 ② 图片平移/缩放
+
+`feat(T120)`：4 文件，+523/−1。
+
+### 一、改了什么
+
+**`components/ui/imageTransform.ts`（新建，202 行）** —— 数学是**纯函数**，
+每个公式标了上游行号：
+
+| 函数 | 上游出处 |
+|---|---|
+| `clampSymmetric` | `MediaLightboxViewer.tsx:89` |
+| `calcOverflow` | `:94` |
+| `calcMaxTranslate` | `:99-101` |
+| `computeAnchorZoom` | `:136-160` |
+| `wheelZoomFactor` = `exp(-deltaY × 0.01)` | `:13`、`:69` |
+| `exceedsDragDeadzone`（4px） | `:14`、`:68` |
+| `panBy` / `doubleClickToggle` / `transformCss` | `:172-190`、`:341` |
+
+**`image-preview.tsx` +139/−1**：接 `onWheel` / `onPointerDown/Move/Up` / `onDoubleClick`，
+图片套 `transformCss`，放大后光标变抓手。
+
+### 二、★ `calcMaxTranslate` 里那个 `(scale - 1.05) / 0.95` 不是魔数
+
+```ts
+factor = min(1, max(0, (scale - SNAP_MIN_SCALE) / 0.95))   // SNAP_MIN_SCALE = 1.05
+```
+
+**放大到 1.05 倍以下时 factor = 0 → 完全不允许平移**；到 **2.0 倍才等于 1**。
+理由：图还没超出视口时，拖它只会露出背景。**这是「拖不动」而不是「拖丢了」**，
+而且它解释了为什么用户在小图上拖没反应 —— **那是刻意的**。
+
+套件里专门有两条钉这个零点（`scale=1` 和 `scale=1.05` 都必须是 0）。
+
+### 三、★ 接线时发现一个闭包 bug
+
+`measureFit` 要把 `getBoundingClientRect` 量到的**变换后**宽度除以当前 `scale`
+还原基准尺寸。第一版依赖 `transform.scale`，而它被 `useCallback` 包着又被事件处理器调用 ——
+**闭包里拿到的是上一次渲染的值**，连滚两格会漂。
+
+改成 `scaleRef.current`，callback 依赖为空。**套件里有一条断言钉住 `image-preview.tsx`
+必须出现 `scaleRef`** —— 没有它，这个 bug 改回去也不会有测试红。
+
+### 四、变异（五个，全部精确变红）
+
+| 变异 | 红的断言 |
+|---|---|
+| `SNAP_MIN_SCALE` 1.05 → 0 | 3 |
+| 滚轮符号翻转 | 2 |
+| 去掉锚点项（`idealTx = current.idealTx * c`） | 1 |
+| `clamp` 直接返回原值 | 3 |
+| **`image-preview` 不接 `onWheel`** | **1（接入）** |
+
+### 五、★ 一条断言红了，红的是 fixture 不是公式
+
+第一版 ③ 节我用 `fitWidth: 400 / viewportWidth: 800` 测「scale=1.5 时能平移」，
+**红了**。追下去：400 × 1.5 = 600 **仍然小于视口 800** → `overflow = 0` →
+`maxTranslate = 0` 是**正确**的。
+
+**换成 800/800（放大后 1200 > 800 真溢出）才测得出 factor 的作用。**
+卡里把这段写进了注释 —— 下一个人不会再拿一个装得下的样本去测「能不能拖」。
+
+### 六、套件
+
+`image-panzoom-smoke`（新建，**49/49**）。八节：常数 / 数学原语 / **factor 零点** /
+锚点缩放 / 交互行为 / CSS 与状态 / **接入** / **上游常数核对**（直接读
+`MediaLightboxViewer.tsx`，不在套件里写死一份）。
+
+另：`approval-keyboard-safety-smoke` 51/51、`message-collapse-smoke` 31/31、
+`chat-copy-payload-smoke` 12/12。**desktop typecheck 0 错误。**
+
+### 七、没做的
+
+- 缺口 ③（限流倒计时）未开始 —— 总控说另开卡；
+- **上游的「共享元素变形」（`startViewTransition`）与「75vw 画廊跑道」没有移植**：
+  Mcode 已有自己的画廊导航（prev/next + 计数器 + 键盘），换掉会破坏现有手感；
+  共享元素过渡要动 `viewTransition.ts`，那是另一件事。
