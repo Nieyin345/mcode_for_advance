@@ -862,3 +862,52 @@ GenOffice original upstream approved: e9b4c416 (base cbec600, 20 patches, tree 0
 4. **文档内容各有各的形态**：html 是预览 iframe 的底、markdown 是与 chrome 撞名的
    `.doc-page` 纸张、pdf 是 app 私有的 `--pdf-paper`、slides 是 138 个内容/语义 token、
    sheets 是 Univer canvas。**同一个卡、五种不一样的做法。**
+
+### 10. 补：sheets 那 16 个「零消费者」token 的分类（2026-10-25）
+
+总控问：「这 16 个里，有多少是『为了和另外四家一致』，有多少是『上游本来就没定义』？」
+
+**答案：16 个全部属于第一种 —— 它们在 `tokens.css` 里都有定义，只是 sheets 不消费。**
+
+```bash
+$ python  # 逐个查 tokens.css
+in tokens.css: 16 ['--chrome-bg' '--pressed' '--active-bg' '--bg-hover' '--bg-hover-subtle'
+                   '--bg-hover-strong' '--bg-hover-accent' '--danger-bg' '--danger-border'
+                   '--success' '--success-bg' '--success-border' '--shadow-btn-hover'
+                   '--color-border-brand' '--color-border-strong' '--color-error-hover']
+NOT in tokens.css: 0 []
+```
+
+**所以没有「上游死 token」这一类。** 它们是跨 app 一致性的代价：覆盖集是五家统一的
+46 个 + 8 个（54），某个 app 不读其中几个是正常的。**留着是对的。**
+
+**（取证时踩了一次自己的坑）**：第一次跑这段脚本时 16 个全报 MISS —— 因为我从
+`re.findall(r'^\s*--([\w-]+)')` 得到的名字**不带 `--`**，而手写的清单里**带 `--`**，
+两边直接比必然全不匹配。**改掉前缀后 16/16 命中。**
+这正是「取证的坐标不一致」——同一个词在两边不是同一个形状。
+
+### 11. 新增跨 app 套件 `o6-reshell-cross-app-smoke`（23/23）
+
+**为什么需要**：五套各自验「我这个 app 换了壳」，**它们看不见「五个还一样吗」**。
+如果明天有人给 sheets 加一个 token 而没给 pdf 加，两个 app 就分家，而五套全绿。
+
+**判据**：
+- ★ 五个 `:root` 覆盖集**逐字相同**（各 54 个）
+- ★ 每个覆盖的 token 都来自 `tokens.css`（规则 A 的跨 app 版）
+- ★ 五个 `main.tsx` 都用 UA 判据、都不是 `window.desktop`
+- ★ `.doc-page` 钉住块**只在 markdown**（它的纸张与 `--surface` 撞名）；其余四家没有 —— **这是正确的差异，不是缺陷**
+
+**变异（两个方向，都精确点名）**：
+
+| 变异 | 输出 |
+|---|---|
+| 给 sheets 加一个只有它有的 token | `[{"app":"sheets","onlyHere":["only-sheets-extra"]}]` |
+| 从 pdf 删掉 `--radius-16` | `[{"app":"pdf","missingHere":["radius-16"]}]` |
+
+**为什么用「完全相同」而不是「报告差集 + 钉住大小」**：写这套的时刻五个 `:root`
+**确实完全相同**，所以「相等」和「差集为 0」是同一件事，但前者更简单、更直接。
+**如果将来它们真的需要不同**，那时改这条断言并写明理由 —— **那是一个决定，不是一次漂移。**
+
+**边界（如实）**：只比对 `:root`。`:root` 之外（markdown 的 `.doc-page` 钉住、
+暗色块的值）不在比对范围 —— 那是各 app 的合法差异。**不启动 Electron**，
+所以它不验「token 真的生效」（那是五套各自的工作）。
