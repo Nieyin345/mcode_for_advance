@@ -123,3 +123,161 @@ H 报了一条已知的账：
 2. 修完前后的 `classifyTurn` 输出（两段）
 3. 套件数字、**变异（正控/负控分开）**、提交 SHA
 4. **你觉得不对但没改的地方**
+
+---
+
+## 结果回写（2026-10-24）
+
+> 执行会话 **H**。**本卡没有改任何产品代码。**
+>
+> 探针结论推翻了三处卡面前提，而剩下的一处让「照卡修」变成一件**会引入更严重缺陷**的事。
+> 卡上第零节写了「如果它根本不存在、或者它的行为与描述无关，卡的前提就废了，回写里写清即可 ——
+> 那也算合格交付」。**这一节就是那个交付。**
+
+### 一、★ 探针结论：`document_md_edit` 不是编辑 `.md`，是**用 Markdown 编辑 Word**
+
+卡、以及我上一轮 T97 的表述「Markdown 编辑的产物」，都暗示它改的是 `.md` 文件。
+**实测不是。** 工具描述原文（`appControl/tools.ts:1458`）：
+
+> 「用 Markdown 编辑 Word：insert（在 afterBlock 之后插入，-1 = 文首）、append（文末续写）、
+> replace（替换块区间）、delete（删除块区间）。Markdown 片段经 CLI 转 restricted HTML
+> 后交给 docs apply；默认记成 Word 修订（可逐条接受/拒绝）。」
+
+实现也是 `docsApply(ports, args.filePath, ops, …)`（`documentToolRuntime.ts:1293`）——
+**它的目标是 `.docx`，走 docs apply 原地改。**
+
+**第一次探针我用 `.md` 当目标，报 `zip: end of central directory not found`** ——
+那个错误本身就是证据：它要的是 zip（docx），不是纯文本。
+
+### 二、★ 三个堵点，逐个实测（这才是「修不了」的实际理由）
+
+**堵点 1：已存在的 `.docx` 进不了 `originals`。**
+
+```
+$ node .tmp/t124/blockers.mjs
+═══ 堵点 1 ═══
+FileSnapshot: skip …\existing.docx (not valid UTF-8, cannot restore losslessly)
+  originals: 0  unrestorable: 1
+  → 已存在的二进制 .docx: ❌ 进不去
+  freeze 结果: 0 条
+```
+
+`capturePre` 的 `STRICT_UTF8.decode` 抛错 → 记进 `unrestorable` 并**主动跳过**。
+**这是刻意的**，`fileSnapshot.ts:145` 的注释写着：
+
+> A lossy decode would put U+FFFD into `before`, and rewinding would then write that mangled
+> text over the user's file — **the undo itself would corrupt it.**
+
+**也就是说：总控在卡上警告的那个风险（`before` 拿错 → rewind 毁文件），代码已经在防它了。**
+`document_md_edit` 是「原地改已存在的二进制」，正好落在这条防线的**拒绝侧**。
+
+**堵点 2：绕过它（强行塞进 `originals`）会得到 `before: ""`。**
+
+```
+═══ 堵点 2（强制塞进去，模拟绕过）═══
+[{"kind":"modified","adds":1,"dels":0,"before":""}]
+```
+
+而 `restoreFiles` 对 `kind: "modified"` 执行的是 `atomicReplaceFile(path, entry.before)`
+（`fileSnapshot.ts:487`）。**`before: ""` 会把用户的 docx 清空成 0 字节。**
+我逐行读了 `restoreFiles:355-400` 的校验，**没有**「`before` 为空但 kind 是 modified」这条防线 ——
+`typeof entry.before !== "string"` 只挡类型，挡不住空串。
+
+**堵点 3：即使前两条都解决，`artifactsOf` 仍会把它滤掉。**
+
+`autoCreate.ts:99`：
+
+```ts
+const grew = f.kind === "modified" && f.adds - f.dels > 0;
+if (!isNew && !grew) continue;
+```
+
+而二进制文件的 `adds`/`dels` 来自 `countLineDiff(before, after)`，`before` 是空串时
+得到 `adds=1, dels=0`（堵点 2 的输出），**这次能过**；但若 `before` 与 `after` 都是
+解不出的二进制，两边都退化成 `""`，得到 `0/0` → 被滤掉。实测：
+
+```
+modified, adds=0 dels=0（二进制）  → create=false  (这一轮没有产出文件，是问答不是任务)
+```
+
+**三层叠在一起：`document_md_edit` 改的是一份已存在的二进制文件，而整条
+「产物 → 任务」的管道是围绕**文本可还原**设计的。**
+
+### 三、为什么我没有按卡上的第三节修
+
+卡上说「两种都要记」，并给出两种写法。**两种都过不了堵点 1** —— 无论用
+`CREATE_DOCUMENT_TOOLS` 还是并进 `FILE_MUTATING_TOOLS` 的 `if`，最终都落到
+`snapshots.recordPre(...)`，而它对该文件是**主动跳过**。
+
+**唯一能绕过的写法是「不走 `recordPre`，直接往 `originals` 里塞一条 `before: ""`」** ——
+那正是堵点 2，**它会让 rewind 清空用户的 Word 文件**。
+
+**所以「照卡修」在这里 = 用「任务中心看不见产物」（P1）换「撤销会毁文件」（P0）。** 我不做这个交换。
+
+### 四、我也不打算只修一半（只让产物进 turn.files、不让它进 rewind）
+
+技术上可行：给 `recordPre` 加一个「记录但不入还原集」的旁路，让 `freeze()` 里
+`kind: "modified"` + `before: ""` 的条目**在 rewind 时被明确排除**而不是被当作空文件写回。
+
+**但那要改 `fileSnapshot.ts`，而卡上和 T123 都明令「不许碰它」。**
+而且它需要一个新的契约字段（比如 `restorable: false`），`TurnFileEntry` 要改，
+渲染端的「撤销本轮」按钮也要跟着变 —— **那是另一张卡，不是本卡的边界。**
+
+### 五、我建议的正确形状（供总控裁）
+
+**根因不是「少记了一个工具」，是「产物管道只认文本」。**
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| **a. 只覆盖新建的 Office 产物**（现状） | T123 已做：`create_document` / `build_deck` 的**新建** `.docx` 能进任务中心 | 已交付 |
+| **b. 给 `TurnFileEntry` 加 `restorable`** | 二进制产物进 turn.files 与任务中心，但 rewind 明确跳过 | 改契约 + 渲染端 + `fileSnapshot.ts`，一张独立卡 |
+| **c. `document_md_edit` 自己报产物** | 工具返回里带上「我改了哪个文件、多少字节」，由 `autoCreate` 认这条来源 | 绕开 `FileSnapshot`，但要在 `autoCreate` 加第二个产物来源 |
+
+**我倾向 b**（它同时解决「二进制产物看不见」和「二进制文件不该被 rewind」两个真问题），
+**但它必须是一张有 `fileSnapshot.ts` 写权限的卡。**
+
+### 六、有没有改产品代码
+
+**没有。** `git status` 里 `SdkMessageAdapter.ts` 的改动全部来自 T123 的两个提交
+（`e3fc94bc` / `6a5a5aa9`），本卡一个字没动。探针全在 `.tmp/t124/`。
+
+### 七、这条对「同病同修」的修正
+
+**T123 和 T124 不是同一个病。** 我上一轮报「`document_md_edit` 有同一个病」时，
+依据是「它也不写 `FILE_MUTATING_TOOLS`」—— **那个依据是对的，但结论错了**：
+
+- `create_document` 的问题是**路径没被记**（修法：记上）；
+- `document_md_edit` 的问题是**它改的文件不可无损还原**（修法：不是记不记，是能不能记）。
+
+**「症状相同、根因不同」—— 这正是「按名字搜是引用数」那一族。我只比了一个属性
+（在不在那个集合里），就判定两个东西同病。**
+
+---
+
+### 八、★ 顺带测出来的：T123 也只覆盖了「新建」，没覆盖「修改」
+
+验完堵点之后我想确认一件事：`document_md_edit` 并不是唯一改已存在 docx 的路径 ——
+`document_tool_call` + `apply_ops` 也是。**实测它同样漏：**
+
+```
+$ node .tmp/t124/t123gap.mjs
+document_tool_call + apply_ops 改已存在 docx:
+  turn.files = 0 条
+  classifyTurn = {"create":false,"failed":false,"why":"这一轮没有产出文件，是问答不是任务"}
+```
+
+**原因是同一个：** T123 只把 `create_document` / `build_deck` 放进了
+`CREATE_DOCUMENT_TOOLS`，而 **`apply_ops` 不在里面**（`apply` 类工具的 `filePath`
+是用户当前打开的文档，我刻意排除了它 —— 见 T123 §二的注释）。
+
+**那个排除的决定在 T123 的语境下是对的**（记 read 类会把没发生的写报成产物），
+**但它把 `apply` 类一起排掉了，而 `apply` 是真写盘。**
+
+**所以「Office 产物能进任务中心」这个说法，当前只对「新建」成立。**
+用户说「改一下这份报告」时，`apply_ops` 真的改了那份 .docx，任务中心看不见 ——
+**而这正是 334 twips 表格那条问题最常出现的地方（改一份已有的文档）。**
+
+**这不是本卡引入的，是 T123 的覆盖边界，我把它如实报上来。**
+
+修它同样撞堵点 1（已存在的 .docx 是非 UTF-8 → `recordPre` 跳过），
+**所以和 §二 是同一个根因，需要同一个解法（方案 b）。**
