@@ -154,6 +154,38 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
   check("styles.css 引入了微动效", read("src/renderer/styles.css").includes('@import "./chat-motion.css";'));
 
   const cssAliases = read("src/renderer/styles.css");
+  // 【T116】选中态边框必须与「悬停填充」不同值。
+  //
+  // 选中行是「bg-surface-hover 填充 + 边框」。深色主题下 `--surface-hover` 与
+  // `--edge` 都是 #2c2c2a —— 用 --edge 画边框等于没画，「选中」和「悬停」长一样。
+  // 那次是靠人肉算对比度发现的，套件当时 345/345 全绿：**判据体系对「看不看得见」是盲区**。
+  // 这条把那一格补上：两个 token 的**字面值**不许相同。
+  {
+    const cdst = read("src/renderer/tokens.cds.css");
+    // styles.css 的主题块：`:root {` 是浅色，`.dark {` 是深色。
+    const blockOf = (selector: string): string | null => {
+      const at = cssAliases.indexOf("\n" + selector + " {");
+      if (at < 0) return null;
+      const end = cssAliases.indexOf("\n}", at);
+      return end < 0 ? null : cssAliases.slice(at, end);
+    };
+    const resolve = (block: string | null, name: string): string | null => {
+      if (block === null) return null;
+      const m = new RegExp("--" + name + ":\\s*var\\(--(m-gray-\\d+)\\)").exec(block);
+      if (m === null) return null;
+      const hex = new RegExp("--" + m[1] + ":\\s*[\\d\\s]+;\\s*/\\*\\s*(#[0-9a-fA-F]+)").exec(cdst);
+      return hex === null ? null : hex[1].toLowerCase();
+    };
+    for (const [selector, themeName] of [["", "浅色"], [".dark", "深色"]] as const) {
+      const block = blockOf(selector === "" ? ":root" : selector);
+      const hover = resolve(block, "surface-hover");
+      const selected = resolve(block, "selected-edge");
+      check(`★ [${themeName}] --selected-edge 已定义且可解析`, selected !== null && hover !== null,
+        { hover, selected });
+      check(`★ [${themeName}] 选中边框 ${selected ?? "?"} 必须 ≠ 悬停填充 ${hover ?? "?"}（同值 = 边框看不见）`,
+        selected !== null && hover !== null && selected !== hover, { hover, selected });
+    }
+  }
   // 【反向】`--spring-btn` 曾经定义过但全仓零调用 —— 死 token 会让人以为哪里
   // 有弹簧动画。断言它**不存在**；真要加弹簧时，定义与第一个调用点同批落地。
   check("★ 没有无人调用的死弹簧 token", !/--spring-btn\s*:/.test(cssAliases));

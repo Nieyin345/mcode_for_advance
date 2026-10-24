@@ -183,7 +183,7 @@ export function AskChoiceDialog() {
                 className={cn(
                   "cursor-pointer rounded border px-2.5 py-1.5 text-left transition-colors disabled:cursor-default",
                   picked === o.id
-                    ? "border-content-subtle bg-surface-hover text-content"
+                    ? "border-edge-selected bg-surface-hover text-content"
                     : "border-edge text-content-muted hover:border-edge hover:text-content",
                 )}
               >

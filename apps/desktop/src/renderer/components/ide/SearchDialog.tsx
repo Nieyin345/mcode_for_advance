@@ -645,7 +645,7 @@ function NameSearchResults({
             className={cn(
               "flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors",
               isActive
-                ? "bg-surface-hover text-content font-medium ring-1 ring-inset ring-edge/70"
+                ? "bg-surface-hover text-content font-medium ring-1 ring-inset ring-edge-selected"
                 : "text-content-muted hover:bg-surface-hover/50",
             )}
             title={f.path}
@@ -777,7 +777,7 @@ function ContentSearchResults({
                 className={cn(
                   "flex w-full items-start gap-2 py-0.5 pr-3 pl-8 text-left transition-colors",
                   isActive
-                    ? "bg-surface-hover text-content font-medium ring-1 ring-inset ring-edge/70"
+                    ? "bg-surface-hover text-content font-medium ring-1 ring-inset ring-edge-selected"
                     : "text-content-muted hover:bg-surface-hover/50",
                 )}
                 title={m.path}

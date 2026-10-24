@@ -1333,7 +1333,7 @@ function FileNodeRow({
               onDoubleClick={onDoubleClick}
               className={cn(
                 "flex w-full items-center gap-1 py-0.5 pr-2 text-left transition-colors",
-                active ? "bg-surface-hover text-content font-medium" : "text-content-muted hover:bg-surface-hover/50",
+                active ? "bg-surface-hover text-content font-medium ring-1 ring-inset ring-edge-selected" : "text-content-muted hover:bg-surface-hover/50",
                 // Copied-file marker (VS Code parity): the row sitting in the
                 // tree clipboard stays dimmed until pasted or another file is
                 // copied, making the pending 粘贴 visible at a glance.

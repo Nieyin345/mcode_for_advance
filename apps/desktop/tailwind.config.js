@@ -44,6 +44,9 @@ export default {
           DEFAULT: "rgb(var(--edge) / <alpha-value>)",
           input: "rgb(var(--input-edge) / <alpha-value>)",
           panel: "rgb(var(--panel-edge) / <alpha-value>)",
+          // T116: 选中态边框。--edge 在深色主题下等于 --surface-hover，
+          // 用它画选中行边框等于没画。
+          selected: "rgb(var(--selected-edge) / <alpha-value>)",
         },
         // DEFAULT = brand (buttons/icons/rings); strong = the small-TEXT
         // variant — light needs a 700 stop for the 4.5:1 AA bar, dark

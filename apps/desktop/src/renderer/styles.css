@@ -122,6 +122,12 @@ div:has(> [role="menu"]) {
    * equaled the hover fill, so panel dividers / card outlines washed out and
    * hover feedback had the same value as the border it sat next to. */
   --edge: var(--m-gray-200); /* #c3c2b7 — CDS hairline tone */
+  /* 【T116】选中态的边框 —— **必须和 --surface-hover 不同值**。
+   * 选中行的表达是「surface-hover 填充 + 边框」，而 --edge 在深色主题下
+   * 恰好等于 --surface-hover（都是 #2c2c2a），边框会完全消失，
+   * 于是「选中」和「悬停」在深色下长一样。浅色不受影响但同样取更深的档，
+   * 保持两主题观感一致。 */
+  --selected-edge: var(--m-gray-300); /* #a5a49a */
   /* Structural pane dividers (three-pane shell borders, the draggable
    * splitter hairlines, the tab-strip underline) — one stop LIGHTER than
    * --edge: these lines run the full window height, and at the card-border
@@ -298,6 +304,9 @@ div:has(> [role="menu"]) {
   --content-muted: var(--m-gray-250); /* #b4b3a8 — secondary */
   --content-subtle: var(--m-gray-350); /* #97958d ≈ 4.7:1 — metadata */
   --edge: var(--m-gray-750); /* #2c2c2a */
+  /* 【T116】选中态边框。深色下 --edge 与 --surface-hover 都是 #2c2c2a ——
+   * 用 --edge 画选中行的边框等于没画。这一档比 hover 填充亮两级，边框可见。 */
+  --selected-edge: var(--m-gray-650); /* #454442 */
   --panel-edge: var(--m-gray-750); /* mirrors --edge */
   --input-edge: var(--m-gray-700); /* #383835 — brighter than --edge */
   /* 【ARC-005 2026-10-20】暗色品牌色：orange-300 #ec835a → 6.92:1 on #151515，
