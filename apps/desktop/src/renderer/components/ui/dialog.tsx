@@ -81,7 +81,9 @@ function DialogPopup({ className, ...props }: DialogPopupProps) {
         "fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2",
         // 【ARC-005】弹窗档圆角走 --radius-dialog（上游 16px）；sketch 主题
         // 在 styles.css 把该 token 指回手抖档，形状映射不丢。
-        "rounded-[var(--radius-dialog)] border border-edge bg-surface shadow-[var(--shadow-lg)]",
+        // 【T121】弹窗升到 Surface 3（--surface-overlay）—— 它是明度阶梯的最高层，
+        // 此前与主画布共用 --surface，纵深只能靠 --shadow-lg 一个人撑。
+        "rounded-[var(--radius-dialog)] border border-edge bg-surface-overlay shadow-[var(--shadow-lg)]",
         "data-[ending-style]:scale-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
         // 【ARC-005】弹窗进出场读动效词表：--dur-base = 200ms「默认」档，
         // --ease-pop = 上游取证的回弹曲线（弹窗档）。旧值 150ms 是词表外的裸毫秒。

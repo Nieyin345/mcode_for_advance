@@ -111,6 +111,20 @@ div:has(> [role="menu"]) {
   --surface: var(--m-gray-10); /* #fcfcfb — center pane, right panel, popups */
   --surface-muted: var(--m-gray-20); /* #f9f9f7 — sidebar track, inset wells */
   --surface-hover: var(--m-gray-50); /* #f0efec — hover/active fills */
+  /* 【T121】Surface 0–3 阶梯的上两层 —— CDS storybook `:629` 给的是**四层明度阶梯**，
+   * 而这里原本只有两层（muted 与 surface），卡片/浮层/弹窗**共用同一个 --surface**，
+   * 层次全靠边框与阴影撑。这是「Claude 那边有纵深、我们这边平」的直接原因。
+   *
+   * 规范值与我们的落位（规范 → 这里）：
+   *   Surface 0  #f5f5f3 → --surface-muted（侧栏最底）
+   *   Surface 1  #fcfcfb → --surface      （主画布）
+   *   Surface 2  #ffffff → --surface-raised（独立卡片/面板）
+   *   Surface 3  #ffffff → --surface-overlay（输入框/浮层顶色）
+   *
+   * ⚠️ **亮色下 2 和 3 都是纯白**（规范如此），所以亮色里真正起作用的只有
+   * 「比主画布亮一档」这一步 + 阴影；层次的主要载体是暗色阶梯。 */
+  --surface-raised: #ffffff;  /* Surface 2 — cards, panels, popovers */
+  --surface-overlay: #ffffff; /* Surface 3 — inputs, modal tops */
   /* content (text) — deepened one stop for stronger contrast on white.
    * Body stays at near-black zinc-950; muted/subtle drop one shade each
    * (zinc-700 / zinc-500) so secondary text doesn't wash out. */
@@ -318,6 +332,14 @@ div:has(> [role="menu"]) {
   --surface: var(--m-gray-850); /* #151515 — Claude dark canvas */
   --surface-muted: var(--m-gray-800); /* #20201f — recess / sidebar track */
   --surface-hover: var(--m-gray-750); /* #2c2c2a — hover/active */
+  --surface-raised: #1a1a19;  /* Surface 2 — cards, panels, popovers */
+  --surface-overlay: #20201e; /* Surface 3 — inputs, modal tops */
+  /* 【T121】暗色才是这条阶梯真正起作用的地方（亮色 2 和 3 都是纯白）。
+   *
+   * ⚠️ 注意 `--surface-muted` 已经是 `#20201f`，**比 Surface 2 的 `#1a1a19` 还亮** ——
+   * 这不是错。muted 是「凹槽/侧栏轨道」（向下），raised 是「浮起的面板」（向上），
+   * 两者是**不同方向**的语义，只是碰巧明度交错。不要为了「排序好看」把它们调成
+   * 单调递增 —— 那会破坏侧栏的凹陷感。 */
   --content: var(--m-gray-20); /* #f9f9f7 — dark text, ~15:1 on #151515 */
   --content-muted: var(--m-gray-250); /* #b4b3a8 — secondary */
   --content-subtle: var(--m-gray-350); /* #97958d ≈ 4.7:1 — metadata */

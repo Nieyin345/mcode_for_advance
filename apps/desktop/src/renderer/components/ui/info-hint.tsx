@@ -63,7 +63,8 @@ export function InfoHint({ children, size = 13, side = "top", className, label }
         <BaseTooltip.Positioner side={side} sideOffset={6} className="z-[70] outline-none">
           <BaseTooltip.Popup
             className={cn(
-              "max-w-[340px] select-text whitespace-pre-line rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-3 py-2",
+              // 【T121】浮层走 Surface 2（--surface-raised），与背后的主画布分层。
+              "max-w-[340px] select-text whitespace-pre-line rounded-[var(--radius-btn-xs)] border border-edge bg-surface-raised px-3 py-2",
               "text-[12px] leading-relaxed text-content-muted shadow-[var(--shadow-popover)]",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
