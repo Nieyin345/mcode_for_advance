@@ -9,6 +9,7 @@ import {
 } from "../../src/renderer/components/layout/paneLayout.js";
 import { parseSavedPaneLayout } from "../../src/renderer/stores/paneLayoutPrefs.js";
 import { createCoalescedPaneWriter } from "../../src/renderer/stores/paneWidthWriteQueue.js";
+import { sourceHas } from "../lib/sourceText.js";
 
 let passed = 0; let failed = 0;
 const check = (name: string, fn: () => void) => {
@@ -205,34 +206,34 @@ const layout = readFileSync(resolve("src/renderer/components/layout/ThreePaneLay
 const store = readFileSync(resolve("src/renderer/stores/sessionStore.ts"),"utf8");
 const shell = readFileSync(resolve("src/renderer/components/shell/ClassicShell.tsx"),"utf8");
 check("real DndContext and draggable activator connected to placement state",()=>{
-  assert.ok(layout.includes("<DndContext sensors={sensors}"));
-  assert.ok(layout.includes('useDraggable({ id: "mcode-pane-right" })'));
-  assert.ok(layout.includes('onMovePane("right", side, 0)'));
-  assert.ok(shell.includes("paneLayout={paneLayout}"));
+  assert.ok(sourceHas(layout, "<DndContext sensors={sensors}"));
+  assert.ok(sourceHas(layout, 'useDraggable({ id: "mcode-pane-right" })'));
+  assert.ok(sourceHas(layout, 'onMovePane("right", side, 0)'));
+  assert.ok(sourceHas(shell, "paneLayout={paneLayout}"));
 });
 check("escape discards split preview and keeps old store size",()=>{
-  assert.ok(layout.includes('e.key !== "Escape"'));
-  assert.ok(layout.includes("setSplitPreview(null)"));
-  assert.ok(layout.includes("onPointerUpCapture={endSplit}"));
+  assert.ok(sourceHas(layout, 'e.key !== "Escape"'));
+  assert.ok(sourceHas(layout, "setSplitPreview(null)"));
+  assert.ok(sourceHas(layout, "onPointerUpCapture={endSplit}"));
 });
 check("double-click split handle uses 50/50 snap",()=>{
-  assert.ok(layout.includes("width * (1 - SPLIT_SNAP_RATIO)"));
-  assert.ok(layout.includes("onDoubleClick={() => {"));
+  assert.ok(sourceHas(layout, "width * (1 - SPLIT_SNAP_RATIO)"));
+  assert.ok(sourceHas(layout, "onDoubleClick={() => {"));
 });
 check("★ 50/50 吸附走直接设定，不走 delta 双重取反",()=>{
   // 行为判据：单靠源码里有 `width * (1 - SPLIT_SNAP_RATIO)` 证明不了落点是 50%。
   // delta 链路会经 dockResizeDelta 与 adjustRightWidth 内部各取反一次，
   // rightDock === "left" 时符号抵消错位。必须存在直接设定路径并被使用。
-  assert.ok(layout.includes("onSetRightWidth(target)"),
+  assert.ok(sourceHas(layout, "onSetRightWidth(target)"),
     "双击必须优先走 onSetRightWidth(直接设宽)");
-  assert.ok(layout.includes("if (onSetRightWidth) { onSetRightWidth(target); onSetPaneRightSizePct?.(50, width, true); return; }"),
+  assert.ok(sourceHas(layout, "if (onSetRightWidth) { onSetRightWidth(target); onSetPaneRightSizePct?.(50, width, true); return; }"),
     "直接设定必须在 delta 兜底之前 return");
   assert.ok(!/onDoubleClick[\s\S]{0,600}?onResizeRight\(rightDock === "left" \(target - current\) : current - target\)\s*;\s*\}\}/.test(layout)
     || layout.indexOf("onSetRightWidth(target)") < layout.indexOf('onResizeRight(rightDock === "left" ? target - current'),
     "delta 兜底只能排在直接设定之后");
 });
 check("★ setRightWidthPx 直接落值并用同一套夹取",()=>{
-  assert.ok(store.includes("setRightWidthPx: (px) =>"),
+  assert.ok(sourceHas(store, "setRightWidthPx: (px) =>"),
     "store 必须有直接设定 action");
   const body = store.slice(store.indexOf("setRightWidthPx: (px) =>"));
   assert.ok(body.slice(0, 400).includes("clampRightWidth(px,"),
@@ -241,20 +242,20 @@ check("★ setRightWidthPx 直接落值并用同一套夹取",()=>{
     "直接设定必须走同一持久化队列");
 });
 check("root drag attribute and iframe/browser pointer shield",()=>{
-  assert.ok(layout.includes('data-pane-dragging={paneDragging ? "true" : undefined}'));
-  assert.ok(layout.includes('data-pane-iframe-shield="" className="pointer-events-none'));
-  assert.ok(layout.includes('style={paneDragging ? { pointerEvents: "none" } : undefined}'));
+  assert.ok(sourceHas(layout, 'data-pane-dragging={paneDragging ? "true" : undefined}'));
+  assert.ok(sourceHas(layout, 'data-pane-iframe-shield="" className="pointer-events-none'));
+  assert.ok(sourceHas(layout, 'style={paneDragging ? { pointerEvents: "none" } : undefined}'));
 });
 check("first paint uses canonical key and old widths are read-only migration",()=>{
-  assert.ok(store.includes('key: UI_PANE_LAYOUT_SETTING_KEY,'));
-  assert.ok(store.includes("UI_PANE_LAYOUT_SETTING_KEY,\n          UI_PANE_WIDTHS_SETTING_KEY"));
-  assert.ok(store.includes("parseSavedPaneLayout(fp[UI_PANE_WIDTHS_SETTING_KEY])"));
-  assert.ok(!store.includes("key: UI_PANE_WIDTHS_SETTING_KEY,"));
+  assert.ok(sourceHas(store, 'key: UI_PANE_LAYOUT_SETTING_KEY,'));
+  assert.ok(sourceHas(store, "UI_PANE_LAYOUT_SETTING_KEY,\n          UI_PANE_WIDTHS_SETTING_KEY"));
+  assert.ok(sourceHas(store, "parseSavedPaneLayout(fp[UI_PANE_WIDTHS_SETTING_KEY])"));
+  assert.ok(!sourceHas(store, "key: UI_PANE_WIDTHS_SETTING_KEY,"));
   assert.ok(parseSavedPaneLayout(JSON.stringify({paneLayout:good}))?.paneLayout);
 });
 check("corrupt layout emits visible warning and safe default",()=>{
-  assert.ok(store.includes('"store.toast.paneLayoutRepaired"'));
-  assert.ok(store.includes('kind: "warning"'));
+  assert.ok(sourceHas(store, '"store.toast.paneLayoutRepaired"'));
+  assert.ok(sourceHas(store, 'kind: "warning"'));
   assert.deepEqual(parseSavedPaneLayout(JSON.stringify({paneLayout:{bad:1}}))?.paneLayout,good);
 });
 console.log(`arc005-pane-free-grid ${passed}/${passed+failed}`);
