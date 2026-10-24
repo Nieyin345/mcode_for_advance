@@ -51,10 +51,14 @@ import {
   canvasNodeCenter,
   clickDeploy,
   confirmDeployWarningIfPresent,
+  deployRequestNames,
   dismissFirstRunOverlays,
   importFlowNodes,
+  installDeployProbe,
   js,
+  readDeployProbe,
   renameNodeViaEditor,
+  resetDeployProbe,
   switchToTab,
   waitEditorReady,
   waitFor,
@@ -220,29 +224,140 @@ export const nodeRedCanvasJourney = defineU1Journey({
     // 先做一次**基线部署**：让磁盘上的 flows.json 成为「改名之前」的真实版本。
     // 之后改名再部署，字节对比才是同一台引擎、同一份图的 before/after
     // （否则第一次部署面对的是「文件根本还没写」—— `beforeSha=null`，那不是对比）。
+    //
+    // ── W5：这一步必须证明的是「**部署被服务器接受了**」，不是「flows.json 里有名字」 ──
+    //
+    // 旧判据（`deploy.clicked && baselineSha !== null && agent.name === "检查 README"`）
+    // 三件事全都不成立：
+    //   - `clicked` 只说明鼠标点到了按钮；
+    //   - `flows.json` 是更早的 `loadWorkflowIntoNative`（生产 T59 装载）写下的，
+    //     而装载会**停掉旧引擎、换端口重启**（`nativeLibraryLoad.ts` 的 stop → start）。
+    //     本旅程在装载之前就打开了编辑器页，装载之后也没有像生产渲染端那样把视图
+    //     重新导航到新 URL（`EngineRuntimePanel` 的 `status.editorUrl` effect）；
+    //     于是点部署时页面还停在**已关闭的旧端口**上 —— 「部署失败: 服务器没有响应」
+    //     是真的（连接被拒：`xhr.status = 0`、`responseText = ""`，上游
+    //     `ui/deploy.js:685` 正是这个条件弹那句通知）；
+    //   - 「文件里有名字」成立与否跟这次点击毫无因果关系。
+    //
+    // 新判据（缺一即红，detail 逐条点名）：
+    //   入口：页面 origin 端口 == 引擎此刻的监听端口（否则请求根本到不了这台引擎）；
+    //   网络：一次 `POST */flows` 的响应 2xx（失败/无响应都会在这里红）；
+    //   事件：`RED.events` 发出 `deploy`（上游只在成功回调里发，失败不发）；
+    //   DOM ：没有 `red-ui-notification-error` / 「部署失败」通知（成功通知是旁证）；
+    //   内容：请求体里带着基线名字（证明部署的就是这张图，不是别的请求）；
+    //   磁盘：**事后** flows.json 仍存在且 agent 名字是基线的（不要求字节不变 ——
+    //         成功部署会重写文件，字节变不变都不是成败信号）。
+    //
+    // 判据来源（上游 5.0.8）：`@node-red/editor-client/src/js/ui/deploy.js`
+    //   save()：`$.ajax({url:"flows", type:"POST"})` 成功回调 `RED.events.emit("deploy")`
+    //   并弹 `deploy.successfulDeploy`；fail 回调按 401/409/responseText 分支，
+    //   `responseText` 为空时弹 `deploy.deployFailed` + `deploy.errors.noResponse`
+    //   （zh-CN：`部署失败: 服务器没有响应`）。
     step.run(async ({ runtime }) => {
       const rt = runtime as T8Runtime;
       const wc = rt.harness.editorWebContents();
       if (wc === null) return { ok: false, detail: "编辑器视图不存在" };
+      const baselineName = "检查 README";
+
+      // 入口有效性：编辑器页的 origin 与引擎当前的监听端口必须一致。
+      // 装载（T59）会重启引擎换端口；旅程没有生产渲染端那层「editorUrl 变了就
+      // 重新 open」的 effect，所以这里把两个端口如实记录 —— 不一致本身就是
+      // 「部署不可能被接受」的直接原因，要原样进 detail，而不是被一句
+      // 「flows.json 里有名字」盖住。
+      const pageOrigin = await js<string>(wc, `window.location.origin`);
+      const enginePort = rt.harness.enginePort();
+      const pageUrl = await js<string>(wc, `window.location.href`);
+      const pagePort = (() => {
+        try { return Number(new URL(pageOrigin).port) || null; } catch { return null; }
+      })();
+      const entryLive = pagePort !== null && enginePort !== null && pagePort === enginePort;
+
+      // 三层信号探针必须在点击**之前**装好（失败通知只活 5 秒，轮询会错过）。
+      const probeInstall = await installDeployProbe(wc);
+      if (probeInstall.installed) await resetDeployProbe(wc);
+
+      const beforeBytes = rt.harness.nativeFlowsBytes();
+      const beforeSha = beforeBytes === null ? null : sha256(beforeBytes);
+
+      // 即使入口已死也**真点一次**：这条红的价值就在于把「服务器没有响应」从
+      // 一条绿断言底下翻出来。点到 / 没点到由 clickDeploy 如实返回。
       const deploy = await clickDeploy(wc);
       let confirmed = false;
-      const baselineName = "检查 README";
-      const wroteBaseline = await waitFor(async () => {
+      // 轮询「这一次部署有了结论」：拿到部署请求的响应，或看到 `deploy` 事件，
+      // 或出现失败通知。超时也继续 —— 超时本身就是证据（无响应）。
+      const deadline = Date.now() + 30_000;
+      for (;;) {
         if (!confirmed) confirmed = await confirmDeployWarningIfPresent(wc);
-        const parsedNow = rt.harness.nativeFlows() as Array<Record<string, unknown>> | null;
-        const agentNow = Array.isArray(parsedNow) ? parsedNow.find((n) => n["type"] === NATIVE_AGENT_TYPE) : undefined;
-        return agentNow?.["name"] === baselineName;
-      }, 45_000);
-      const baselineBytes = rt.harness.nativeFlowsBytes();
-      const baselineSha = baselineBytes === null ? null : sha256(baselineBytes);
-      void wroteBaseline;
-      // 基线版本里节点名必须仍是「检查 README」（证明对比起点真实存在）。
+        const read = await readDeployProbe(wc);
+        const failedNotice = read.notifications.some((n) => n.cls.includes("red-ui-notification-error") || n.text.includes("部署失败"));
+        if (read.deployRequests.length > 0 || read.deployEvents > 0 || failedNotice) break;
+        if (Date.now() > deadline) break;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      // 等响应落定后再读一次（`loadend` 可能比轮询晚一拍；通知也可能刚弹出来）。
+      await new Promise((r) => setTimeout(r, 300));
+      const probe = await readDeployProbe(wc);
+
+      const deployRequests = probe?.deployRequests ?? [];
+      const response = deployRequests.length > 0 ? deployRequests[deployRequests.length - 1]! : null;
+      const responseOk = response !== null && response.status >= 200 && response.status < 300;
+      const deployEventSeen = (probe?.deployEvents ?? 0) > 0;
+      const failureNotices = (probe?.notifications ?? []).filter((n) => n.cls.includes("red-ui-notification-error") || n.text.includes("部署失败"));
+      const successNotices = (probe?.notifications ?? []).filter((n) => n.cls.includes("red-ui-notification-success") || n.text.includes("部署成功"));
+      // 内容层：请求体里必须出现基线名字（部署提交的就是这张图）。
+      const payload = response === null ? null : deployRequestNames(response.body);
+      const payloadHasBaseline = payload !== null && payload.ok && payload.names.includes(baselineName);
+
+      // 磁盘层（只做「事后仍在」的兜底，不做字节判据）：
+      const afterBytes = rt.harness.nativeFlowsBytes();
+      const afterSha = afterBytes === null ? null : sha256(afterBytes);
       const parsed = rt.harness.nativeFlows() as Array<Record<string, unknown>> | null;
       const agent = Array.isArray(parsed) ? parsed.find((n) => n["type"] === NATIVE_AGENT_TYPE) : undefined;
+      const baselineNameOnDisk = agent?.["name"] ?? null;
+
+      const ok = deploy.clicked
+        && responseOk
+        && deployEventSeen
+        && failureNotices.length === 0
+        && payloadHasBaseline
+        && afterSha !== null
+        && baselineNameOnDisk === baselineName;
+      // `entry` 只是根因诊断，不单独进 `ok`：部署成功与否由上面那些信号判
+      // （入口已死时网络层必然 status 0 —— 那一条本身就是失败）。但红的时候
+      // 两个端口都要写进 detail，否则下一个人只能像 W0 那样从截图里猜。
+      const entryHint = entryLive
+        ? null
+        : `（根因线索：编辑器页端口 ${String(pagePort)} ≠ 引擎监听端口 ${String(enginePort)} —— 装载重启引擎换了端口，页面停在已关闭的旧端口，请求到不了这台引擎）`;
+      const failures: string[] = [];
+      if (!deploy.clicked) failures.push("部署按钮没点到");
+      if (deploy.clicked && response === null) failures.push(`没有观察到 POST /flows 请求（部署按钮可能禁用，或编辑器没发出请求）${entryHint ?? ""}`);
+      if (response !== null && !responseOk) {
+        failures.push(`部署请求未成功：HTTP ${response.status}${response.responseText !== "" ? `（${response.responseText.slice(0, 160)}）` : "（无响应体 —— 上游正因此弹「服务器没有响应」）"}${entryHint ?? ""}`);
+      }
+      if (responseOk && !deployEventSeen) failures.push("部署请求 2xx 但编辑器没有发出 deploy 事件");
+      if (failureNotices.length > 0) failures.push(`出现部署失败通知：${failureNotices.map((n) => n.text).join(" / ")}`);
+      if (response !== null && !payloadHasBaseline) failures.push(payload !== null && payload.ok ? `部署内容里没有「${baselineName}」（${payload.names.join(",") || "无名字节点"}）` : `部署请求体解析失败：${payload?.parseError ?? "未知"}`);
+      if (baselineNameOnDisk !== baselineName) failures.push(`磁盘上基线名字是「${String(baselineNameOnDisk)}」而不是「${baselineName}」`);
       return {
-        ok: deploy.clicked && baselineSha !== null && agent?.["name"] === "检查 README",
-        observed: { deployClicked: deploy.clicked, deployWarningConfirmed: confirmed, baselineSha, baselineName: agent?.["name"] ?? null },
-        ...(baselineSha !== null && agent?.["name"] === "检查 README" ? {} : { detail: `基线部署没有写出预期的 flows.json（sha=${String(baselineSha)}, name=${String(agent?.["name"])}）` }),
+        ok,
+        observed: {
+          entry: { pageUrl, pageOrigin, pagePort, enginePort, entryLive },
+          deployClicked: deploy.clicked,
+          deployDisabledBefore: deploy.disabledBefore,
+          deployWarningConfirmed: confirmed,
+          probeInstalled: probeInstall,
+          network: {
+            deployRequestCount: deployRequests.length,
+            last: response === null ? null : { method: response.method, url: response.url, status: response.status, responseText: response.responseText },
+            otherRequests: probe?.otherRequests ?? 0,
+            responseOk,
+          },
+          events: { deployEventSeen, deployEvents: probe?.deployEvents ?? 0 },
+          dom: { notifications: probe?.notifications ?? [], failureNotices, successNoticeCount: successNotices.length },
+          payload: payload === null ? null : { ok: payload.ok, names: payload.names, types: payload.types, hasBaseline: payloadHasBaseline, parseError: payload.parseError ?? null },
+          disk: { beforeSha, afterSha, baselineName: baselineNameOnDisk, note: "基线部署成功会重写 flows.json（字节变不变不是成败信号）；它出现时仍带着基线名字即可" },
+        },
+        ...(ok ? {} : { detail: `基线部署没有被证明成功：${failures.join("；")}` }),
       };
     }, "baseline-deploy", { assert: true }),
 

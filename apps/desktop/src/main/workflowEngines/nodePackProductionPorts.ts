@@ -10,7 +10,7 @@ import { getModuleHost } from "@main/modules/service.js";
 import type { NodePackHostServices, NodePackAction } from "./nodePackHost.js";
 import type { EngineRuntimeStatus } from "./runtimeSupervisor.js";
 
-import type { RuntimeEvent } from "@contracts/runtime";
+import type { PermissionMode, RuntimeEvent } from "@contracts/runtime";
 
 /** T60: one Host emitter for Node-RED native stages and Mcode Host-backed
  * stages. Do not create a parallel event bus or a fake Agent session. */
@@ -26,6 +26,53 @@ const paramsOf = (payload: Payload): Payload => {
   return p as Payload;
 };
 const MAX_TEXT = 256_000;
+type Capability = "read" | "write";
+
+/**
+ * W21: the node's declared `capability` decides **how this turn is dispatched**.
+ *
+ * Why this exists: the native Node-RED form exposes `capability: "read" | "write"`
+ * (`mcodeNodePack.ts`), and the old graph runner honored it by deriving the
+ * session's `permissionMode` on every dispatch (`runner.ts` `nodeSessionOf` →
+ * `permissionModeForCapability`, `runner.ts:282`). This port is the production
+ * path for `mcode-agent` / `mcode-conversation`, and it used to drop the field
+ * on the floor: a node the user marked read-only still ran under whatever mode
+ * the session row happened to carry. "Field exists" vs "field takes effect".
+ *
+ * Why the mapping is repeated here instead of imported: `runner.ts` statically
+ * pulls the three provider implementations (and a `?raw` asset chain) — the
+ * standalone Node-RED child bundle cannot carry that graph, and the regression
+ * suite for this file bundles without those loaders (see
+ * `scripts/mcode-agent-capability-smoke/`, which imports the real
+ * `permissionModeForCapability` and asserts this table stays identical).
+ * The production app is a single electron-vite bundle where both copies are
+ * compiled together; the two mode strings are pinned to the real function by
+ * that cross-suite assertion, not a second source of truth in practice.
+ *
+ * Why `plan` means *approval*, not *denial*: the shared contract is "make
+ * writes visible" — a write-class tool under `plan` prompts the user; it is not
+ * silently refused (`permissionModeForCapability` doc comment, `runner.ts:275`).
+ * Making `read` a hard deny here would be *stronger* than the old behavior and
+ * would regress migrated graphs (see W21 card §"派活时总控追加").
+ */
+const CAPABILITY_PERMISSION_MODE: Record<Capability, PermissionMode> = {
+  read: "plan",
+  write: "acceptEdits",
+};
+/**
+ * Only the two `mcode-agent` values exist on the native form. Anything else
+ * (missing field, stale `exec` / `net` from a hand-written flow, wrong type)
+ * keeps the session's own mode — never invent a permission out of a malformed
+ * value. Node-RED serializes node config as plain JSON, so the union must be
+ * re-established at this untrusted boundary rather than trusted from TS.
+ */
+function capabilityOf(payload: Payload, params: Payload): Capability | null {
+  // `mcodeNodePack.ts` normalizes the native editor field into BOTH the payload
+  // top level and `params.capability` (when the native form field exists). The
+  // top-level one is authoritative; the params copy is the migration fallback.
+  const raw = payload.capability !== undefined ? payload.capability : params.capability;
+  return raw === "read" || raw === "write" ? raw : null;
+}
 async function runSelectedSession(
   payload: Payload, promptOverride?: string,
   resolveWorkflow?: (tabId: string) => string | null,
@@ -41,6 +88,25 @@ async function runSelectedSession(
   const project = ProjectRepo.get(session.projectId);
   if (!project) throw Error("Mcode Host project not found");
   const cwd = session.worktreePath ?? project.path;
+  // W21 capability gate. Only `mcode-agent` carries the form field: the old
+  // graph never applied capability to a conversation run (`showsNodeCapability`
+  // → only `runner.kind === "prompt"`), and the native conversation form's
+  // flag has no old-side meaning, so applying it there would be a new behavior
+  // change smuggled in with a fix.
+  const capability = nodeType === "mcode-agent" ? capabilityOf(payload, params) : null;
+  // What this turn will run under. `permissionMode` rides two paths and they
+  // must agree:
+  //   1. the in-memory session we hand `sendTurn` → StartTurnRequest/provider
+  //      option (the engine's own SDK-level mode);
+  //   2. the ApprovalBridge's live gate (`getPermissionMode`) that every
+  //      provider consults right before `shouldAutoApprove` — the host-side
+  //      canUseTool check that actually turns `plan` into "prompt on writes".
+  // `bindSession` seeds the bridge from the persisted row and is idempotent,
+  // so a session bound earlier in the app's life still holds the row's mode.
+  // The bridge is written inside the try (below) so every early `throw` leaves
+  // it untouched, and the `finally` puts the session's own mode back.
+  const dispatchedSession = capability === null ? session
+    : { ...session, permissionMode: CAPABILITY_PERMISSION_MODE[capability] };
   const instruction = asString(payload.instruction);
   const input = payload.input;
   const prompt = promptOverride ?? [instruction, input === null || input === undefined ? ""
@@ -70,9 +136,11 @@ async function runSelectedSession(
     else if (event.type === "turn.done") terminal = event.reason;
   });
   try {
+    // Gate the FIRST tool call: write the bridge before any dispatch below.
+    if (capability !== null) runtimeManager.setPermissionMode(sessionId, dispatchedSession.permissionMode);
     emitStep({ type: "workflow.node.queued" });
     emitStep({ type: "workflow.node.progress", nodeType, title, phase: "running", message: "Node-RED 节点已开始执行" });
-    const handle = await runtimeManager.sendTurn(session, { prompt, cwd });
+    const handle = await runtimeManager.sendTurn(dispatchedSession, { prompt, cwd });
     if (!handle) throw Error("Mcode session busy; native engine did not accept this turn");
     await handle.done;
     if (eventError) throw Error(eventError);
@@ -86,6 +154,20 @@ async function runSelectedSession(
     throw err;
   } finally {
     unsubscribe();
+    // Restore the session's own mode so the node's capability does not leak
+    // into the user's next manual message: this port borrows the user's chat
+    // session (the old graph used a dedicated node session whose mode *was*
+    // the node's). The dispatch snapshot above is per-turn; the bridge gate is
+    // session-scoped, so it must be put back explicitly. Re-read the row
+    // instead of reusing `session`: the user may have changed the mode in the
+    // UI while the node ran (that path persists via `SessionRepo.updateSettings`).
+    // Known cost, by bridge design: each mode flip clears the session's
+    // "always allow" grants (`ApprovalBridge.setPermissionMode`) — the safe
+    // direction (a grant given under another policy is re-asked once).
+    if (capability !== null) {
+      const current = SessionRepo.get(sessionId)?.permissionMode ?? session.permissionMode;
+      runtimeManager.setPermissionMode(sessionId, current);
+    }
   }
 }
 async function chooseBranch(payload: Payload): Promise<{ port: number }> {
@@ -99,7 +181,14 @@ async function chooseBranch(payload: Payload): Promise<{ port: number }> {
     const prompt = "Choose exactly one output port (integer 0 to " + (portCount - 1)
       + "). Reply with the number ONLY. Node context: " + JSON.stringify(payload.input ?? null)
       + "\nNode note: " + asString(params.note);
-    const result = await runSelectedSession(payload, prompt);
+    // A branch payload never carries the agent form's `capability`, but a
+    // hand-built msg could. "The model picks a port" must not inherit a
+    // permission switch the branch form never had, so strip both copies
+    // before reusing the shared dispatch path.
+    const { capability: _unusedTop, ...branchPayload } = payload;
+    const branchParams = { ...params };
+    delete branchParams.capability;
+    const result = await runSelectedSession({ ...branchPayload, params: branchParams }, prompt);
     const choice = result.text.trim();
     if (!/^(0|[1-9][0-9]*)$/.test(choice)) throw Error("Model branch did not return a single numeric port");
     const port = Number(choice);

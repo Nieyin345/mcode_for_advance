@@ -1,8 +1,22 @@
 /**
- * 工作流库：左侧选文档，中部入口跳往 Node-RED 原厂编辑器，右侧保留文档检查器。
+ * 工作流库：左侧选文档 + 该文档的节点列表，中部入口跳往 Node-RED 原厂编辑器，
+ * 右侧保留文档检查器。
  *
- * ## 数据从哪来
+ * ## 节点怎么选中（2026-10-24，W3）
  *
+ * T45 把自研画布删掉之后，`selectedNodeId` 只剩「打开时选中触发器」和几处清空 ——
+ * **没有任何 UI 能把它设成别的值**，于是 `NodeInspector` 永远画「工作流本体」，
+ * 节点的参数（模型、指令、超时……）在 Mcode 里再也改不到。
+ *
+ * 原厂编辑器**不会**把它的选中同步回来：`documentViewHost` 只有 open/bounds/hide/
+ * close 四条通道，编辑器页没有任何「选中变了」的上报口（见 W3 回写）。所以在库视图
+ * 里造一套自己的选中**不是**第二套真相 —— 原厂那边的选中从来不进 Mcode。
+ *
+ * 列表放在左侧栏底部而不是再造一块画布：`WorkflowNodeCard` 是画布专用的（今天
+ * 零调用点），把这个列表做成按钮行，键盘和读屏都天然可用。
+ *
+ * 数据从哪来
+ * ----------
  * `workflow.list` 只给**列表项**(不含 `nodes` / `edges`),选中之后才走
  * `workflow.get` 取完整文档 —— 库里可能有几十个工作流,把每张图的全部节点都塞进
  * 列表响应是白花带宽(见 `WorkflowListEntry` 的注释)。
@@ -50,13 +64,15 @@ import { MAIN_NODE_TYPE_ID, TRIGGER_NODE_TYPE_ID, type NodeTypeCatalog } from "@
 import type { WorkflowDoc, WorkflowListEntry, WorkflowNode, WorkflowReviewInfo } from "@contracts/workflow";
 import { workflowDisplayName, workflowIcon } from "@renderer/lib/workflowLabels.js";
 import { isEditableTarget } from "@renderer/lib/shortcuts.js";
-import { IconAlertTriangle, IconArrowsSplit, IconDownload, IconPlus, IconRefresh } from "@renderer/lib/icons.js";
+import { IconAlertTriangle, IconArrowsSplit, IconChevronLeft, IconDownload, IconPlus, IconRefresh } from "@renderer/lib/icons.js";
 import {
+  findNodeType,
   isDocDirty,
   forSave,
   isNodeDeleteKey,
   isProtectedNode,
   missingRequiredName,
+  nodeTitle,
   purposeOf,
   removeActionOf,
   uniqueWorkflowName,
@@ -838,6 +854,13 @@ export function WorkflowLibraryView({
     [stashDraft, refreshDrafts, loadList, openWorkflow],
   );
 
+  /** 下拉选择节点。**这是选中唯一的人手入口**（`openWorkflow` 的初始值除外）——
+   *  检查器关着的时候先打开它，否则用户点了列表行却看不到任何反应。 */
+  const selectNode = useCallback((id: string | null) => {
+    setSelectedNodeId(id);
+    if (id !== null) setInspectorOpen(true);
+  }, []);
+
   /* ── 文档与检查器动作（不再实现自绘图形操作） ── */
 
   /**
@@ -955,7 +978,7 @@ export function WorkflowLibraryView({
         <Button size="sm" variant="ghost" disabled={!history.current.canRedo} onClick={() => travel("redo")}>{t("settings.workflows.redo")}</Button>
       </div>
       <div ref={editorRef} data-workflow-editor className="grid min-h-0 flex-1 gap-4" style={{ gridTemplateColumns: libraryOpen ? "200px minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
-        {/* ───────── 左:库列表 ───────── */}
+        {/* ───────── 左:库列表 + 节点列表 ───────── */}
         <aside className={cn("min-h-0 flex-col rounded-md border border-edge bg-surface/40", libraryOpen ? "flex" : "hidden")}>
           <div className="flex items-center justify-between px-2.5 py-2 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
             <span>{t(labels.library)}</span>
@@ -987,6 +1010,54 @@ export function WorkflowLibraryView({
               </ErrorNote>
             )}
           </nav>
+          {/* ── 节点列表 ──
+              这是「点某个节点 → 右侧看它的参数」唯一的人手入口（见文件头）。只在
+              图型文档上画；提示词型（没有节点）本来就只看工作流本体。
+              **行是 `<button>`** —— 键盘 Tab / Enter 天然可用，读屏拿到的是
+              `aria-current`，不需要另造一套可点击 div。 */}
+          {working !== null && working.nodes.length > 0 && (
+            <div className="border-t border-edge" data-workflow-node-list>
+              <div className="flex items-center justify-between px-2.5 py-1.5 text-[0.7143em] font-medium uppercase tracking-wide text-content-subtle">
+                <span>{t("settings.workflows.nodeListTitle")}</span>
+                <span className="tabular-nums">
+                  {t("settings.workflows.graphSummary", {
+                    nodes: working.nodes.length,
+                    edges: working.edges.length,
+                  })}
+                </span>
+              </div>
+              <ul className="max-h-56 min-h-0 space-y-0.5 overflow-y-auto px-1.5 pb-1.5">
+                {working.nodes.map((n) => {
+                  const typeEntry = catalog ? findNodeType(catalog.entries, n.type) : undefined;
+                  const active = n.id === selectedNodeId;
+                  return (
+                    <li key={n.id}>
+                      <button
+                        type="button"
+                        onClick={() => selectNode(n.id)}
+                        // 键盘等价路径：Enter/Space 由原生 button 提供，不需要额外
+                        // onKeyDown；选中态由 `aria-current` 说给读屏，竖条只是视觉。
+                        aria-current={active ? "true" : undefined}
+                        aria-label={t("settings.workflows.nodeSelect", { name: nodeTitle(n, typeEntry) })}
+                        className={cn(
+                          "relative block w-full rounded px-2 py-1 text-left text-[0.7857em] transition-colors",
+                          active
+                            ? "bg-surface-hover font-medium text-content"
+                            : "text-content-muted hover:bg-surface-hover/60 hover:text-content",
+                        )}
+                      >
+                        {active && (
+                          <span aria-hidden className="absolute left-0 top-1/2 h-3.5 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
+                        )}
+                        <span className="block truncate">{nodeTitle(n, typeEntry)}</span>
+                        <span className="block truncate font-mono text-[0.9em] text-content-subtle">{n.type}</span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
           <div className="border-t border-edge p-1.5">
             <Button
               variant="ghost"
@@ -1158,6 +1229,7 @@ export function WorkflowLibraryView({
                     profiles={profiles}
                     profileError={profileError}
                     selectedNodeId={selectedNodeId}
+                    onDeselectNode={() => selectNode(null)}
                     purpose={purpose}
                     onUpdateNode={handleUpdateNode}
                     onUpdateWorkflow={handleUpdateWorkflow}

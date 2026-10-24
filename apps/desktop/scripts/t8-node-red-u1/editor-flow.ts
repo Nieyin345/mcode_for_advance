@@ -867,3 +867,217 @@ export async function readNotifications(wc: WebContents): Promise<{
     };
   })()`);
 }
+
+/* ─────────────────── W5：部署观测探针（三层信号，页面内） ─────────────────── */
+
+/**
+ * 部署观测探针 —— 在**页面内**同时挂三个互不替代的信号源。
+ *
+ *  | 层 | 上游事实 | 失败长什么样 |
+ *  |---|---|---|
+ *  | 网络 | `deploy.js` 的 `save()` 发 `POST flows`（jQuery `$.ajax` → `XMLHttpRequest`） | 连接被拒时 `status = 0`、`responseText = ""` |
+ *  | 事件 | 成功回调里 `RED.events.emit("deploy")`（`ui/deploy.js:674`） | **失败回调从不发** —— 「有事件」只在成功路径上成立 |
+ *  | DOM | `#red-ui-notifications` 的 `red-ui-notification-success/error` | 失败弹 `deploy.deployFailed` + `deploy.errors.noResponse`（zh-CN「部署失败: 服务器没有响应」） |
+ *
+ * **为什么需要探针**：`flows.json` 在更早的 `loadWorkflowIntoNative`（
+ * `nativeLibraryLoad.ts` 的 `replaceNativeCanvas`）里就被宿主写过。编辑器点部署
+ * 成不成功**完全不影响这份文件** —— 只读它无法证明「这次部署被服务器接受」。
+ *
+ * **通知必须抢在它消失前记录**：`notifications.js` 的 `setTimeout(n.close, timeout||5000)`
+ * 让一条通知只活 5 秒，轮询可能错过；所以这里用 `MutationObserver` 记录它出现的
+ * **那一刻**（含 5 秒内闪过的失败通知）。
+ *
+ * 「部署请求」的口径由 {@link readDeployProbe} 统一（POST 且路径以 `/flows` 结尾）——
+ * `flows/state`（启停流程）与 `flow/:id`（单流程操作）都不算部署。
+ */
+export async function installDeployProbe(wc: WebContents): Promise<{ installed: boolean; reused: boolean; reason?: string }> {
+  return await js<{ installed: boolean; reused: boolean; reason?: string }>(wc, `(() => {
+    try {
+      if (window.__mcodeDeployProbe) return { installed: true, reused: true };
+      if (typeof RED === 'undefined' || !RED.events) {
+        return { installed: false, reused: false, reason: 'RED.events 不可用（编辑器页还没就绪）' };
+      }
+      const XHR = window.XMLHttpRequest;
+      if (!XHR || !XHR.prototype) return { installed: false, reused: false, reason: 'XMLHttpRequest 不可用' };
+      const probe = { xhr: [], fetch: [], deployEvents: [], notifications: [], observer: null };
+      const rawOpen = XHR.prototype.open;
+      const rawSend = XHR.prototype.send;
+      XHR.prototype.open = function (method, url) {
+        try { this.__mcodeDeployCall = { method: String(method || 'GET').toUpperCase(), url: String(url || '') }; }
+        catch (e) { /* 记录失败不影响请求本身 */ }
+        return rawOpen.apply(this, arguments);
+      };
+      XHR.prototype.send = function () {
+        try {
+          const call = this.__mcodeDeployCall;
+          if (call) {
+            const xhr = this;
+            // 请求体是「编辑器这一刻真的要部署的那张图」—— 部署成功时用它核对
+            // 内容，比读 flows.json 强：文件可能是更早的装载写下的（那正是本卡缺陷）。
+            let body = '';
+            try {
+              const raw = arguments[0];
+              body = typeof raw === 'string' ? raw : (raw === undefined || raw === null ? '' : '[non-string body]');
+            } catch (e) { body = '[unreadable body]'; }
+            xhr.addEventListener('loadend', function () {
+              probe.xhr.push({
+                method: call.method,
+                url: call.url,
+                status: Number(xhr.status) || 0,
+                responseText: String(xhr.responseText || '').slice(0, 300),
+                body: body.slice(0, 200000),
+                at: Date.now(),
+              });
+            });
+          }
+        } catch (e) { /* 探针只记录，不改写请求 */ }
+        return rawSend.apply(this, arguments);
+      };
+      if (typeof window.fetch === 'function') {
+        const rawFetch = window.fetch;
+        window.fetch = function (input, init) {
+          const url = typeof input === 'string' ? input : ((input && input.url) || '');
+          const method = String((init && init.method) || 'GET').toUpperCase();
+          const pending = rawFetch.apply(this, arguments);
+          try {
+            pending.then(function (res) {
+              probe.fetch.push({ method: method, url: String(url), status: res.status, responseText: '', body: '', at: Date.now() });
+            }, function (err) {
+              probe.fetch.push({ method: method, url: String(url), status: 0, responseText: String((err && err.message) || err || ''), body: '', at: Date.now() });
+            });
+          } catch (e) { /* 同 XHR：只记录 */ }
+          return pending;
+        };
+      }
+      try {
+        RED.events.on('deploy', function () { probe.deployEvents.push({ at: Date.now() }); });
+      } catch (e) {
+        return { installed: false, reused: false, reason: '挂 deploy 事件失败：' + String(e) };
+      }
+      const host = document.getElementById('red-ui-notifications');
+      if (host) {
+        const record = function () {
+          const els = host.querySelectorAll('.red-ui-notification');
+          const baseline = probe.existingNotificationIds || [];
+          for (let i = 0; i < els.length; i += 1) {
+            const el = els[i];
+            if (!el.id) continue;
+            // 点击前就存在的通知不算本次部署的因果（见 resetDeployProbe）。
+            let preexisting = false;
+            for (let k = 0; k < baseline.length; k += 1) {
+              if (baseline[k] === el.id) { preexisting = true; break; }
+            }
+            if (preexisting) continue;
+            let seen = false;
+            for (let j = 0; j < probe.notifications.length; j += 1) {
+              if (probe.notifications[j].id === el.id) { seen = true; break; }
+            }
+            if (seen) continue;
+            probe.notifications.push({
+              id: el.id,
+              text: String(el.textContent || '').trim().slice(0, 300),
+              cls: String(el.className || ''),
+              at: Date.now(),
+            });
+          }
+        };
+        record();
+        probe.observer = new MutationObserver(record);
+        probe.observer.observe(host, { childList: true, subtree: true });
+      }
+      window.__mcodeDeployProbe = probe;
+      return { installed: true, reused: false };
+    } catch (e) {
+      return { installed: false, reused: false, reason: String((e && e.message) || e) };
+    }
+  })()`);
+}
+
+/** 清空探针已记录的事件（监听器保留），把观测窗口收窄到「这一次点击」。
+ *
+ * 同时记下**此刻已经存在**的通知 id：点击后 DOM 一变动，`MutationObserver` 会把
+ * 现存通知重新扫进来（`record()` 是全量扫描）。判据只把**新出现的**通知算成本次
+ * 部署的因果，旧通知（例如上一轮残留的失败提示）不参与判定。
+ * Node-RED 的通知 id 是页面内单调递增的 `red-ui-notification-<n>`，不会复用。 */
+export async function resetDeployProbe(wc: WebContents): Promise<boolean> {
+  return await js<boolean>(wc, `(() => {
+    const p = window.__mcodeDeployProbe;
+    if (!p) return false;
+    p.xhr = [];
+    p.fetch = [];
+    p.deployEvents = [];
+    p.notifications = [];
+    const ids = [];
+    const host = document.getElementById('red-ui-notifications');
+    if (host) {
+      const els = host.querySelectorAll('.red-ui-notification');
+      for (let i = 0; i < els.length; i += 1) if (els[i].id) ids.push(els[i].id);
+    }
+    p.existingNotificationIds = ids;
+    return true;
+  })()`);
+}
+
+/** 读探针并挑出「部署请求」。
+ *
+ * 判据是**方法 + 路径**，不是「有没有失败通知」：`deploy.js` 的 `save()` 用
+ * `url: "flows"`（相对页面根），而 `stopStartFlows()` 用 `flows/state`、
+ * 单流程操作走 `/flow/<id>`。三者都在同一个页面上发生，只用「有 XHR」会把
+ * 启停流程也算成部署。
+ *
+ * `body` 是点击那一刻编辑器提交的图（`{"flows":[...],"rev":N}`）—— 部署成功时
+ * 用它核对「提交的图 == 要部署的图」，失败时用它证明「请求确实带了内容，只是
+ * 服务器没接」。
+ */
+export async function readDeployProbe(wc: WebContents): Promise<{
+  deployRequests: Array<{ method: string; url: string; status: number; responseText: string; body: string; at: number }>;
+  otherRequests: number;
+  deployEvents: number;
+  notifications: Array<{ id: string; text: string; cls: string; at: number }>;
+}> {
+  return await js(wc, `(() => {
+    const p = window.__mcodeDeployProbe;
+    if (!p) return { deployRequests: [], otherRequests: 0, deployEvents: 0, notifications: [] };
+    const all = p.xhr.concat(p.fetch);
+    const isDeploy = function (r) {
+      if (r.method !== 'POST') return false;
+      let path = String(r.url || '');
+      const q = path.indexOf('?');
+      if (q >= 0) path = path.slice(0, q);
+      const hash = path.indexOf('#');
+      if (hash >= 0) path = path.slice(0, hash);
+      if (path === 'flows' || path === '/flows') return true;
+      return path.length > 6 && path.slice(-6) === '/flows';
+    };
+    return {
+      deployRequests: all.filter(isDeploy),
+      otherRequests: all.filter(function (r) { return !isDeploy(r); }).length,
+      deployEvents: p.deployEvents.length,
+      notifications: p.notifications.slice(),
+    };
+  })()`);
+}
+
+/**
+ * 从探针的部署请求体里抽出节点名（`{"flows":[{"type":"mcode-agent","name":"…"}, …]}`）。
+ *
+ * 只返回能解析的请求体；解析不了返回 `null` —— 调用方必须把「解析不了」和
+ * 「名字不匹配」分开记，它们意味着不同的失败。
+ */
+export function deployRequestNames(body: string): { ok: boolean; names: string[]; types: string[]; parseError?: string } {
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    const flows = Array.isArray(parsed)
+      ? parsed
+      : (parsed !== null && typeof parsed === "object" ? (parsed as { flows?: unknown }).flows : undefined);
+    if (!Array.isArray(flows)) return { ok: false, names: [], types: [], parseError: "请求体里没有 flows 数组" };
+    const nodes = flows.filter((n): n is Record<string, unknown> => n !== null && typeof n === "object");
+    return {
+      ok: true,
+      names: nodes.filter((n) => typeof n["name"] === "string").map((n) => n["name"] as string),
+      types: nodes.filter((n) => typeof n["type"] === "string").map((n) => n["type"] as string),
+    };
+  } catch (err) {
+    return { ok: false, names: [], types: [], parseError: err instanceof Error ? err.message : String(err) };
+  }
+}

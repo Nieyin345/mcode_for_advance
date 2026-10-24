@@ -1431,6 +1431,9 @@ export const en = {
   "settings.workflows.engine.installPath": "<data folder>/workflow-engines/node-red/",
   "settings.workflows.engine.waitingReady": "The engine is starting — its editor will appear here once it is ready…",
   "settings.workflows.engine.editorHint": "Start the engine and its editor will be embedded here.",
+  // 【W15】Same wording pair as zh: where the editor is, and one action to bring it back.
+  "settings.workflows.engine.dockedHint": "This editor is currently shown docked in the right panel.",
+  "settings.workflows.engine.dockedBringBack": "Bring it back here",
   "settings.workflows.engine.viewOpenFailed": "The editor view could not be opened",
   "settings.workflows.engine.viewStageTooSmall": "The panel has no usable display area (zero width or height); the view was not opened",
   "settings.workflows.engine.noneTitle": "No third-party engines available",
@@ -1742,6 +1745,8 @@ export const en = {
 
   // ── Node ──
   "settings.workflows.nodeInspectorTitle": "Node",
+  "settings.workflows.nodeListTitle": "Nodes",
+  "settings.workflows.backToWorkflow": "Back to the workflow",
   "settings.workflows.nodeTitle": "Title",
   "settings.workflows.nodeCapability": "Capability",
   "settings.workflows.nodeCapabilityDefault": "Follow the type ({fallback})",

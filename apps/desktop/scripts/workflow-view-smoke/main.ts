@@ -106,7 +106,9 @@ import { WorkflowNodeCard } from "@renderer/components/settings/workflows/Workfl
 import { WorkflowNativeEditorEntry } from "@renderer/components/settings/workflows/WorkflowNativeEditorEntry.js";
 import { BranchChoiceCard } from "@renderer/components/chat/BranchChoiceCard.js";
 import { BRANCH_STOP_CHOICE } from "@contracts/nodeType";import type { RuntimeEvent } from "@contracts/runtime";import {  __applyWorkflowLiveEvent,  __resetWorkflowLive,  __workflowLiveSnapshot,  dismissSettled,} from "@renderer/lib/workflowLive.js";import type {  LiveNode,  WorkflowLiveSnapshot,} from "@renderer/lib/workflowLive.js";
-import { WorkflowsPanel } from "@renderer/components/settings/workflows/WorkflowsPanel.js";
+// 【W15】连同 `initialWorkflowsView` 一起 import：默认页签是个判据而不是字面量，
+// 断言要对着**那个函数**，不能对着一个抄过来的 `"engines"`。
+import { WorkflowsPanel, initialWorkflowsView } from "@renderer/components/settings/workflows/WorkflowsPanel.js";
 import {
   EngineCallbackSection,
   EngineRow,
@@ -2190,24 +2192,36 @@ console.log("\nWorkflowsPanel(页签容器)");
 const panelHtml = withLocale("zh", () => html(createElement(WorkflowsPanel, { purpose: "workflow" })));
 const panelClass = (id: string): string =>
   new RegExp(`id="${id}"[^>]*class="([^"]*)"`).exec(panelHtml)?.[1] ?? "";
+// 【W15 2026-10-24】默认页从库改成了原厂画布（用户原话：「默认就是 node-red 的编辑
+// 页面」）。原来的两条断言把「库是 flex / 引擎是 hidden」写死了，改默认页之后它们
+// 恒红 —— **红的原因是假设过期，不是回归**。
+//
+// 下面改成钉**不变量**而不是钉某一个页签：**四个页签同时挂载，恰好一个可见**，
+// 且「可见的那一个」必须等于 `initialWorkflowsView` 说的那个。这样下次再改默认页，
+// 只需要改那个导出函数，这两条不必再动。
+//
+// 判断哪个可见：`flex` 是可见、`hidden` 是隐藏（`hidden` **类**，不是属性）。
+const VISIBLE_CLASS = "flex";
+const panelIsVisible = (id: string): boolean =>
+  panelClass(id).split(" ").includes(VISIBLE_CLASS);
+const ALL_WORKFLOW_TABS = ["library", "nodeTypes", "profiles", "engines"] as const;
+const visibleTabs = ALL_WORKFLOW_TABS.filter((id) => panelIsVisible(`workflows-panel-${id}`));
 check(
-  "工作流库那一块默认是 flex",
-  panelClass("workflows-panel-library").split(" ").includes("flex"),
+  "★ 四个页签同时挂载，恰好一个可见（漏一个就两页叠在一起）",
+  visibleTabs.length === 1,
+  `visible=${JSON.stringify(visibleTabs)}`,
+);
+check(
+  "★ 默认显示的那一页 = `initialWorkflowsView(\"workflow\", null)` 说的那个",
+  visibleTabs[0] === initialWorkflowsView("workflow", null),
+  `visible=${visibleTabs[0]} expected=${initialWorkflowsView("workflow", null)}`,
+);
+check(
+  "★ 默认不再是旧的手写库页（用户要求；这条是这次改动的正控）",
+  !panelIsVisible("workflows-panel-library"),
   panelClass("workflows-panel-library"),
 );
-check(
-  "节点类型那一块默认带 hidden 类",
-  panelClass("workflows-panel-nodeTypes").split(" ").includes("hidden"),
-  panelClass("workflows-panel-nodeTypes"),
-);
 check("没有用 hidden 属性(它压不过 .flex)", !panelHtml.includes('hidden=""'));
-// 代理档案是**第三个页签**(2026-09-20 从节点类型那一页的下半部分搬出来)。它默认也
-// 得是 hidden 的类 —— 三个页签同时挂载,漏一个就是两页叠在一起。
-check(
-  "代理档案那一块默认带 hidden 类",
-  panelClass("workflows-panel-profiles").split(" ").includes("hidden"),
-  panelClass("workflows-panel-profiles"),
-);
 check("工作流那边有三个页签(库 / 类型 / 档案)", panelHtml.includes('id="workflows-tab-profiles"'));
 
 /* ────────────────────── 第三方工作流引擎（ARC-006 NR2）────────────────────── */
@@ -2217,11 +2231,6 @@ console.log("\n第三方引擎页签");
 // 漏成 hidden 属性的话,引擎页会和库页一起显示,而且引擎页里的原生视图占位区
 // 会被量成一个错误的矩形。
 check("第三方引擎是第四个页签", panelHtml.includes('id="workflows-tab-engines"'));
-check(
-  "第三方引擎那一块默认带 hidden 类",
-  panelClass("workflows-panel-engines").split(" ").includes("hidden"),
-  panelClass("workflows-panel-engines"),
-);
 check(
   "英文界面页签名跟着换",
   withLocale("en", () => html(createElement(WorkflowsPanel, { purpose: "workflow" }))).includes("Third-party engines"),

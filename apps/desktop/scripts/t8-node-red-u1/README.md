@@ -6,20 +6,46 @@
 
 ```bash
 cd apps/desktop
-node scripts/t8-node-red-u1/run.mjs              # 正常跑：期望退出码 1（见下）
+node scripts/t8-node-red-u1/run.mjs              # 正常跑：期望退出码 0（见下）
 node scripts/t8-node-red-u1/run.mjs --mutation   # 变异跑：期望 0（断言被旁路后故意失败变绿）
 bash scripts/t8-node-red-u1/negative-control.sh  # 负控：期望 PASS（正式旅程按预期变红）
 ```
 
-## 退出码（沿用 T16 三档语义）
+## 退出码
+
+> **⚠️ 2026-10-24 W22 重写。** 原来只有 0/1/2 三档，而**构建失败**（esbuild 语法错、
+> `build.mjs` 崩溃、spawn 失败）也落在 1 上 —— 于是 `run.mjs` 把它打印成
+> **`T8: PASS`**。那是一个假门禁：**改坏一个文件，套件照样说「通过」**。
+> 现在「没跑完」有自己的码，永远不碰 0–2。
+
+### 子进程的旅程结论（原样透传）
 
 | 码 | 含义 | 何时出现 |
 |---|---|---|
 | **0** | 全部旅程按声明通过 | 只在 `--mutation` 跑里应出现 |
-| **1** | 唯一失败的是 `expect:"fail"` 旅程，且形态符合预期 | **正常跑**（注册表里有骨架自检旅程） |
+| **1** | 唯一失败的是 `expect:"fail"` 旅程，且形态符合预期 | 正常跑时子进程退 1 |
 | **2** | 出现非预期失败（真正的坏消息） | 正式旅程红了 / 骨架崩了 |
+| **3** | `build.mjs` 自检失败（`electron-u1/build.mjs` 自己的 `exitCode = 3`） | 构建产物核对不上 |
 
-`run.mjs` 把「1」翻译成 `T8: PASS` 并以 0 退出；负控/变异各自核对目标退出码。
+**注意**：子进程退 **1**（正常）时，**包装器退 0** 并打印 `T8: PASS`。
+不要把「子进程的 1」和「包装器的退出码」混着读。
+
+### 包装器自己的结论（W22 新增，`wrapper-verdict.mjs`）
+
+| 包装器码 | 含义 | 打印 |
+|---|---|---|
+| **4** | **构建期失败**：esbuild 编译错（语法错误等） | `T8: BUILD FAILED` |
+| **5** | **构建脚本崩溃**：`build.mjs` 自己 throw、选项拼错、完成探针没落盘 | `T8: BUILD CRASHED` |
+| **6** | **根本没跑起来**：`spawnSync.status === null`（ENOENT / 被信号终止） | `T8: SPAWN FAILED` |
+
+**判据是「进程有没有自然走完」，不是读产物猜。** `child-completion-probe.mjs` 注入子进程，
+记录 `beforeExit` / `uncaughtExceptionMonitor` / `exit` 三个事件；只有触发过 `beforeExit`
+才算 `completed`。**降级方向是安全的**：即便 esbuild 改了文案，最坏也只是从 4 变 5 ——
+仍是「没跑完」的明确信号，**永远不会变成 0/1 那种「旅程结论」**。
+
+自检（11 条，含一次真实 ENOENT 测量）：`node scripts/t8-node-red-u1/wrapper-verdict.mjs`
+
+**负控/变异各自核对目标退出码。**
 
 ## 旅程
 

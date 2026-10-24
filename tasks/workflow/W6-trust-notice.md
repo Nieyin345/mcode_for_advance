@@ -113,6 +113,36 @@ registry.ts:873:  MCODE_ENGINE_TRUSTED: isFlowTrusted(dir) ? "1" : "0",   ← �
 - **不碰** `ClassicShell.tsx` / `ThreePaneLayout.tsx` / `App.tsx`（UI 总控）；
 - 不碰 `tasks/T*.md`、`tasks/README.md`。
 
+## ⚠️ 派活时总控追加：我核过上游，事实比卡面更精确 —— 别写成绝对说法
+
+**上游源码**（`node-red/packages/node_modules/@node-red/runtime/lib/`）：
+
+| 位置 | 行为 |
+|---|---|
+| `flows/index.js:320-327` | `if (settings.safeMode) { … state = 'safe'; emit('runtime-state', {state:'safe', error:'safe-mode'}); return; }` —— **装载了但一个节点都不启动** |
+| `flows/index.js:124-131` | `if (settings.safeMode) { if (type !== "load") { type = "full"; delete settings.safeMode; } }` |
+| `api/flows.js:314-316` | `state: "start"` 分支同样 `delete runtime.settings.safeMode` |
+
+**所以准确的用户事实是三层，不是一句「重启后不跑」：**
+
+1. **引擎启动时**（`registry.ts:109` `safeMode = process.env.MCODE_ENGINE_TRUSTED !== "1"`，
+   而 `MCODE_ENGINE_TRUSTED` 来自 `registry.ts:873` 的 `isFlowTrusted(dir)`，恒 false）
+   → **流被装载但不启动**（`state: 'safe'`）；
+2. **用户只要在编辑器里点一次「部署」（full deploy）→ safeMode 被删掉、流真启动**
+   —— 所以「当前会话内能跑」成立，且**重启后点一次部署也能跑**；
+3. **但没有任何东西会替用户点那次部署** —— 重启后不打开编辑器、不点部署，
+   inject 定时 / http-in 就是不会跑，而 UI 不说这件事。
+
+**所以文案不许写成「重启后不运行」这种绝对说法**，那会误导用户以为流坏了。
+正确的是：「重启后，**在你再次点部署之前**，这条流不会自动运行」。
+
+**还有一层要注意**：引擎本身也**不会自动启动**（我 grep 过 `autoStart|startEngine|autostart`
+在 `EngineRuntimePanel.tsx` 与 `apps/desktop/src/main/workflowEngines/` 都是零命中）。
+所以重启后用户实际面对的是**两道手动步骤**（启动引擎 + 部署）。文案要把这个说清楚，
+否则用户点了「启动」发现还是没跑，会以为是 bug。
+
+**验证这三层是你的任务第一节的内容，别照抄我这段当结论** —— 我是读源码推的，你实跑一次。
+
 ## 回写
 
 `tasks/workflow/W6-trust-notice.md` 末尾追加 `## 结果回写`：

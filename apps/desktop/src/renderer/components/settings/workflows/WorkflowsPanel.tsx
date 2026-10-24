@@ -69,6 +69,34 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 type WorkflowsView = "library" | "nodeTypes" | "profiles" | "engines";
 
+/**
+ * 默认页签（用户原话，2026-10-24）：「默认就是 node-red 的编辑页面，不要之前自己写的
+ * 编辑页面了」。手写画布已删除（见 `WorkflowLibraryView` 文件头），工作流库那一页现在
+ * 只剩列表与检查器 —— 打开「工作流」时用户想看到的是 Node-RED 原厂画布。
+ *
+ * **导出**：默认值是一个判据而不是一行字面量 —— 冒烟脚本要能断言"初值来自这里"，
+ * 而不是在组件源码里 grep 一个字符串（见 `scripts/workflow-engine-view-owner-smoke`）。
+ */
+export const DEFAULT_WORKFLOWS_VIEW: WorkflowsView = "engines";
+
+/**
+ * 打开面板时先落在哪一页。三个输入：
+ *
+ * - `focusWorkflowId`（技能/插件页的「节点」反查带来的目标）**优先** —— 用户是点着
+ *   一份工作流进来的，必须落在库那页去把它选中；否则反查会落在一个看不见的页上。
+ * - `purpose === "workflow"` → 默认 `DEFAULT_WORKFLOWS_VIEW`（原厂画布）。
+ * - `purpose === "automation"` → 保持 `library`。自动化那一页回答的是「我有哪些
+ *   自动化、它们什么时候跑」，它的库是有内容的；引擎页是"引擎进程 + 同一块画布"，
+ *   对一个来看触发器的人来说不是下一步。读代码没有找到相反的证据。
+ */
+export function initialWorkflowsView(
+  purpose: WorkflowPurpose,
+  focusWorkflowId: string | null | undefined,
+): WorkflowsView {
+  if (focusWorkflowId) return "library";
+  return purpose === "workflow" ? DEFAULT_WORKFLOWS_VIEW : "library";
+}
+
 const VIEWS: ReadonlyArray<{ id: WorkflowsView; labelKey: MessageId }> = [
   { id: "library", labelKey: "settings.workflows.tabLibrary" },
   { id: "nodeTypes", labelKey: "settings.workflows.tabNodeTypes" },
@@ -80,14 +108,17 @@ const VIEWS: ReadonlyArray<{ id: WorkflowsView; labelKey: MessageId }> = [
 
 export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
   const { t } = useI18n();
-  const [view, setView] = useState<WorkflowsView>("library");
-  // A native flows.json swap restarts Node-RED; remount its status/view so an
-  // old editor WebContentsView cannot keep showing the previous canvas.
-  const [nativeCanvasEpoch, setNativeCanvasEpoch] = useState(0);
   // 一次性焦点:技能/插件页的「节点」反查点一行时带的"要打开哪一份"(见 store 的
   // `settingsFocusWorkflowId`)。这里只负责**切到库那一页**;真正打开那份图、用完清掉
   // 由 `WorkflowLibraryView` 做(它才拿得到 `openWorkflow`)。
+  // 先于 `useState` 读 store:初值要经过 `initialWorkflowsView`(反查优先)。
   const focusWorkflowId = useSessionStore((s) => s.settingsFocusWorkflowId);
+  const [view, setView] = useState<WorkflowsView>(() =>
+    initialWorkflowsView(purpose, focusWorkflowId),
+  );
+  // A native flows.json swap restarts Node-RED; remount its status/view so an
+  // old editor WebContentsView cannot keep showing the previous canvas.
+  const [nativeCanvasEpoch, setNativeCanvasEpoch] = useState(0);
   const flowDocked = useSessionStore((s) => s.paneLayout?.placements?.some(p => p.content?.kind === "flow") ?? false);
   useEffect(() => {
     if (focusWorkflowId) setView("library");
@@ -260,7 +291,33 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
         aria-labelledby={tabId(prefix, "engines")}
         className={cn("min-h-0 flex-1 flex-col", view === "engines" ? "flex" : "hidden")}
       >
-        <EngineRuntimePanel key={nativeCanvasEpoch} active={view === "engines" && !flowDocked} />
+        {/* 【W15】有流停靠在右侧时，编辑器由右侧面板显示，本页的实例 active=false
+            —— 从前这里是一块什么都画不出来的空白（`EngineRow` 的 stage div 占了
+            整块，而 effects 早退、没人往里画）。现在把原因和动作摆出来：要么去
+            右侧看，要么把它收回来（收回 = 清掉停靠位，本页立刻接管同一个视图）。 */}
+        {flowDocked && (
+          <div
+            className="flex min-h-24 flex-1 flex-col items-center justify-center gap-2 rounded border border-dashed border-edge px-4 py-6 text-center text-[0.7857em] text-content-muted"
+            data-engine-docked=""
+          >
+            <p>{t("settings.workflows.engine.dockedHint")}</p>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                // 与右侧面板那个「×」（`layout.paneRestore`）走同一个 store action：
+                // 清掉右栏的停靠内容 → `flowDocked` 变 false → 本页实例 active=true
+                // 并 open/复用同一个 docId（视图从未关闭，只是换了宿主显示）。
+                useSessionStore.getState().setLayoutPaneContent("right", undefined);
+              }}
+            >
+              {t("settings.workflows.engine.dockedBringBack")}
+            </Button>
+          </div>
+        )}
+        <div className={cn("min-h-0 flex-1 flex-col", flowDocked ? "hidden" : "flex")}>
+          <EngineRuntimePanel key={nativeCanvasEpoch} active={view === "engines" && !flowDocked} />
+        </div>
       </div>
     </div>
   );

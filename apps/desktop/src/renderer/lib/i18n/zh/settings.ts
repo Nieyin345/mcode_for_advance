@@ -1431,6 +1431,10 @@ export const zh = {
   "settings.workflows.engine.installPath": "<数据目录>/workflow-engines/node-red/",
   "settings.workflows.engine.waitingReady": "引擎正在启动，就绪后编辑器会出现在这里…",
   "settings.workflows.engine.editorHint": "启动引擎后，它的编辑器会嵌入这里。",
+  // 【W15】流停靠在右侧面板时，设置页这一块不画编辑器（同一块画布不能显示两处）。
+  // 两句话：一句说清编辑器在哪，一句给出能把它收回来的动作（按钮文案）。
+  "settings.workflows.engine.dockedHint": "这个编辑器正停靠在右侧面板里显示。",
+  "settings.workflows.engine.dockedBringBack": "收回到这里",
   "settings.workflows.engine.viewOpenFailed": "编辑器视图没能打开",
   "settings.workflows.engine.viewStageTooSmall": "面板没有可用的显示区域（宽或高为 0），视图未打开",
   "settings.workflows.engine.noneTitle": "没有可用的第三方引擎",
@@ -1737,6 +1741,12 @@ export const zh = {
 
   // ── 节点 ──
   "settings.workflows.nodeInspectorTitle": "节点",
+  // 左栏底部那块节点列表(W3)。与 `nodeInspectorTitle` 分开:那一个是检查器里的
+  // 小节名(单数,"节点"),这一块是列表头(复数,"节点列表"),两者的意图不同。
+  "settings.workflows.nodeListTitle": "节点列表",
+  // 选中一个节点之后回到文档级表单的唯一入口。文案要说出"回到的是哪一层",
+  // 单写「返回」在两侧都有面板时指不清方向。
+  "settings.workflows.backToWorkflow": "返回工作流本体",
   "settings.workflows.nodeTitle": "标题",
   "settings.workflows.nodeCapability": "能力",
   "settings.workflows.nodeCapabilityDefault": "跟随类型（{fallback}）",

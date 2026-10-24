@@ -70,6 +70,7 @@ import { ensureEngineBootstrap } from "./bootstrapManifest.js";
 import { ensureNodePack } from "./nodePackManifest.js";
 import { NodePackHost, type NodePackHostServices } from "./nodePackHost.js";
 import { productionNodePackServices, emitNativeRunboardEvent } from "@main/workflowEngines/nodePackProductionPorts.js";
+import { withConditionEvaluation } from "./conditionHostPorts.js";
 import { assertNativeEngineSelection } from "./workflowEngineSelection.js";
 import { getWorkflow } from "@main/orchestration/library.js";
 import { workflowSaveVersion } from "@main/orchestration/workflowSaveVersion.js";
@@ -720,13 +721,21 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     // returns; failures stay pending and visible, never block the engine.
     void this.retryLibraryMirror().catch(err =>
       log.error(`Node-RED 库镜像对账重试失败（保持待对账）：${err instanceof Error ? err.message : String(err)}`));
-    this.nodePackHost = new NodePackHost(this.nodeServices ?? productionNodePackServices(
-      () => this.status(), options.probeIdentity?.adminToken,
-      (tabId) => {
-        const docId = this.nativeTabs.get(tabId);
-        return docId && this.ownership.executorOwnerOf(docId) === "node-red" ? docId : null;
-      },
-    ));
+    const resolveWorkflow = (tabId: string): string | null => {
+      const docId = this.nativeTabs.get(tabId);
+      return docId && this.ownership.executorOwnerOf(docId) === "node-red" ? docId : null;
+    };
+    const nodeServices = this.nodeServices ?? productionNodePackServices(
+      () => this.status(), options.probeIdentity?.adminToken, resolveWorkflow,
+    );
+    // W17：`condition.evaluate` 走旧的条件求值器（Host 侧，复用
+    // `@contracts/condition`）；其它动作原样交给上面的生产服务 / 注入的测试服务。
+    // 求值需要「宿主库里的那张文档」—— 注入服务（测试）拿不到库时，`getDoc`
+    // 仍走生产 `getWorkflow`（测试夹具里的 docId 不在库里会显式失败，不猜）。
+    this.nodePackHost = new NodePackHost(withConditionEvaluation(nodeServices, {
+      getDoc: (id) => (this.lookupDoc ?? getWorkflow)(id),
+      resolveWorkflow,
+    }));
     try {
       const status = await super.start({
         ...options,

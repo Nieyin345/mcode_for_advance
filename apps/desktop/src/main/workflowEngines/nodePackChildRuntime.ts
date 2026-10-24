@@ -71,6 +71,9 @@ const ports: McodeNodePorts = {
   branch: { decide: (payload) => invoke("branch.decide", payload) },
   moduleCapability: { run: (payload) => invoke("module.invoke", payload) },
   nodeRedCall: { run: (payload) => invoke("node-red.call", payload) },
+  // W17：条件求值由 Host 用旧的那一份 `evaluateConditionExpression` 完成 ——
+  // 引擎子进程读不到上游执行记录，在这里求值等于发明第二套语义。
+  conditionEval: { evaluate: (payload) => invoke("condition.evaluate", payload) },
   trigger: {
     subscribe(payload, emit) {
       requireChannel();

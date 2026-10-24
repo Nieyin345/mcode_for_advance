@@ -4,14 +4,14 @@
  * kinds/identifiers from mcode-deploy-* (ownership handshake).
  */
 export type NodePackAction = "agent.run" | "conversation.run" | "branch.decide"
-  | "trigger.subscribe" | "module.invoke" | "node-red.call";
+  | "trigger.subscribe" | "module.invoke" | "node-red.call" | "condition.evaluate";
 export interface NodePackHostServices {
   execute(operation: NodePackAction, payload: Record<string, unknown>): Promise<unknown>;
   subscribe(payload: Record<string, unknown>, emit: (payload: Record<string, unknown>) => void): () => void;
 }
 const ACTIONS = new Set<NodePackAction>([
   "agent.run", "conversation.run", "branch.decide", "trigger.subscribe",
-  "module.invoke", "node-red.call",
+  "module.invoke", "node-red.call", "condition.evaluate",
 ]);
 export class NodePackHost {
   private disposed = false;

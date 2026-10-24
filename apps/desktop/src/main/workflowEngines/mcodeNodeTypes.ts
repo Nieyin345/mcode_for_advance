@@ -50,14 +50,21 @@ import {
   type NodeRedNodeLike,
   type NodeRedRuntimeApi,
 } from "./mcodeNodePack.js";
+import {
+  CONDITION_EVAL_BRIDGE_KEY,
+  CONDITION_SWITCH_PROPERTY,
+  MCODE_CONDITION_EVAL_NODE_TYPE,
+} from "@contracts/conditionBridge";
 
 export const MCODE_CONVERSATION_NODE_TYPE = "mcode-conversation";
 export const MCODE_BRANCH_NODE_TYPE = "mcode-branch";
 export const MCODE_TRIGGER_NODE_TYPE = "mcode-trigger";
 export const MCODE_MODULE_CAPABILITY_NODE_TYPE = "mcode-module-capability";
 export const MCODE_NODE_RED_CALL_NODE_TYPE = "mcode-node-red-call";
+export { MCODE_CONDITION_EVAL_NODE_TYPE };
 
-/** 所有经本节点包注册的类型（GET /nodes 的断言基准）。 */
+/** **用户可放置的节点类型**（palette）。内部适配节点不在这个表里，见
+ *  {@link MCODE_INTERNAL_NODE_TYPES}。 */
 export const MCODE_NODE_PACK_TYPES = [
   MCODE_AGENT_NODE_TYPE,
   MCODE_CONVERSATION_NODE_TYPE,
@@ -65,6 +72,25 @@ export const MCODE_NODE_PACK_TYPES = [
   MCODE_TRIGGER_NODE_TYPE,
   MCODE_MODULE_CAPABILITY_NODE_TYPE,
   MCODE_NODE_RED_CALL_NODE_TYPE,
+] as const;
+
+/**
+ * **结构性内部节点**：用户不放置、由迁移器插入、语义完全由 Host 定义。
+ *
+ * 它们与 palette 类型走同一条 `registerType` 与 `<type>.js` 安装路径（否则编辑器
+ * 会把它们当 unknown 处理、导出时丢掉 `x-mcode`），但**不进** `MCODE_NODE_PACK_TYPES`：
+ * 那张表是「用户可以拖进画布的节点」的清单，混进内部节点会让调色板、文档与
+ * 覆盖断言三处都说不清「这几类到底是什么」。
+ */
+export const MCODE_INTERNAL_NODE_TYPES = [
+  MCODE_CONDITION_EVAL_NODE_TYPE,
+] as const;
+
+/** 本节点包**实际注册**的全部类型（palette + 内部）。`package.json` 的
+ *  `node-red.nodes` 与安装清单都按这一份生成。 */
+export const MCODE_REGISTERED_NODE_TYPES = [
+  ...MCODE_NODE_PACK_TYPES,
+  ...MCODE_INTERNAL_NODE_TYPES,
 ] as const;
 
 type Cfg = McodeAgentNodeConfig & { wires?: string[][] };
@@ -76,6 +102,8 @@ export interface McodeNodeBasePayload {
   nodeId: string;
   runId: string | null;
   tabId?: string;
+  /** Node-RED message id：同一批消息（一次触发派生的整条流）共享它。 */
+  msgId?: string;
 }
 
 type Invocation = ReturnType<typeof snapshotMcodeNodeInvocation>;
@@ -98,11 +126,21 @@ function outputMsg(
 ): Record<string, unknown> {
   const safeResult = assertMcodeNodePortResult(result);
   const { normalized, incomingMcode, messageSnapshot, runId } = invocation;
+  // W17：每个 mcode-* 节点在输出上追加自己这条执行事实，条件求值节点据此拼旧调度器
+  // 那份 outcome 表（Host 只看得见它自己那一次调用，看不见上游）。上限 64 条：
+  // 一条消息走过几十个节点已罕见；再多说明流被手改成环了，截断比无界增长安全
+  // （`conditionHost.sanitizeConditionResults` 也只取尾部）。
+  const priorResults = Array.isArray(incomingMcode["results"]) ? incomingMcode["results"] as unknown[] : [];
   const mcode: Record<string, unknown> = {
     ...incomingMcode,
     nodeId: normalized.nodeId,
     runId: safeResult.runId ?? runId,
     ...(normalized.outputVar !== null ? { outputVar: normalized.outputVar } : {}),
+    results: [...priorResults.slice(-63), {
+      nodeId: normalized.nodeId,
+      summary: safeResult.text,
+      status: "success",
+    }],
     ...extraMcode,
   };
   // The new native editor's empty output binding takes precedence over the
@@ -258,6 +296,74 @@ export interface McodeNodeRedCallPort {
   }>;
 }
 
+/* ── condition-eval（W17：迁移后的条件图求值） ── */
+
+/**
+ * 条件求值端口。**求值在 Host 做**（见 `@contracts/conditionBridge` 文件头）：
+ * 这里只交出「我是谁、我的表达式是什么、这条消息流上已经发生过什么」。
+ *
+ * 返回**布尔**。抛错 = 这次求值失败（引用不存在 / 算不了 / 宿主库不一致），
+ * 外壳会 `node.error` 且**不发送消息** —— 与旧调度器「条件求值失败 → 节点失败、
+ * 下游不跑」一致，而不是安静地走 else。
+ */
+export interface McodeConditionEvalPort {
+  evaluate(payload: McodeNodeBasePayload & { expression: unknown; results: unknown[] }): Promise<{ matched: boolean }>;
+}
+
+/** 消息流上已发生的 mcode-* 执行事实（见 `mcodeNodePack.ts` 的 `outputMsg`）。 */
+function carriedResultsOf(mcode: Record<string, unknown>): unknown[] {
+  const raw = mcode["results"];
+  return Array.isArray(raw) ? raw : [];
+}
+
+/** 条件节点自己的「结果文本」：上游透传的那段（和旧 `carriedTextOf` 同义）。 */
+function carriedTextOf(payload: unknown): string {
+  if (typeof payload === "string") return payload;
+  if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+    const text = (payload as Record<string, unknown>)["text"];
+    if (typeof text === "string") return text;
+  }
+  return "";
+}
+
+export async function runConditionEvalNode(
+  inputMsg: Record<string, unknown>,
+  config: Cfg,
+  port: McodeConditionEvalPort,
+): Promise<{ msg: Record<string, unknown> }> {
+  const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
+  const base = basePayload(invocation);
+  const expression = base.params["expression"];
+  const results = carriedResultsOf(invocation.incomingMcode).slice(-64);
+  // **求值与执行记录都以原条件节点的 Mcode id 为准**（`bridgesNodeId`），不是适配
+  // 节点自己的 `x-mcode.nodeId` —— 旧调度器里这一步的结局挂在条件节点名下，下游
+  // `{{条件.status}}` 与流程记录都按那个 id 查。适配节点的 id 只是画布上的容器。
+  const meta = config["x-mcode"];
+  const bridgeTarget = meta !== null && typeof meta === "object" && !Array.isArray(meta)
+    ? (meta as Record<string, unknown>)[CONDITION_EVAL_BRIDGE_KEY] : undefined;
+  if (typeof bridgeTarget !== "string" || bridgeTarget.trim() === "") {
+    throw new Error("condition 求值节点缺少 bridgesNodeId —— 不在迁移产物里的节点，拒绝执行");
+  }
+  const outcome = await port.evaluate({ ...base, nodeId: bridgeTarget, expression, results });
+  if (outcome === null || typeof outcome !== "object" || typeof outcome.matched !== "boolean") {
+    throw new Error("Host condition.evaluate result invalid: expected { matched: boolean }");
+  }
+  const mcode: Record<string, unknown> = {
+    ...invocation.incomingMcode,
+    nodeId: bridgeTarget,
+    runId: invocation.runId,
+    // 上游 `switch` 的 `{t:"true", vt:"bool"}` 规则读的就是它（实测：规则比较
+    // property 与 true 全等，不读规则自带的值）。
+    [CONDITION_SWITCH_PROPERTY]: outcome.matched,
+    results: [...results, {
+      nodeId: bridgeTarget,
+      summary: carriedTextOf(invocation.inputSnapshot),
+      status: "success",
+    }],
+  };
+  return { msg: { ...invocation.messageSnapshot, mcode } };
+}
+
 export async function runNodeRedCallNode(
   inputMsg: Record<string, unknown>,
   config: Cfg,
@@ -296,6 +402,7 @@ export interface McodeNodePorts {
   trigger: McodeTriggerPort;
   moduleCapability: McodeModuleCapabilityPort;
   nodeRedCall: McodeNodeRedCallPort;
+  conditionEval: McodeConditionEvalPort;
 }
 
 /* ── 注册外壳（统一形状：createNode → on input → run → send / error+done） ── */
@@ -356,6 +463,9 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
   if (!onlyType || onlyType === MCODE_NODE_RED_CALL_NODE_TYPE)
     registerIoSugar(RED, MCODE_NODE_RED_CALL_NODE_TYPE, (msg, config) =>
       runNodeRedCallNode(msg, config, getPorts().nodeRedCall));
+  if (!onlyType || onlyType === MCODE_CONDITION_EVAL_NODE_TYPE)
+    registerIoSugar(RED, MCODE_CONDITION_EVAL_NODE_TYPE, (msg, config) =>
+      runConditionEvalNode(msg, config, getPorts().conditionEval));
 
   // ── branch：1 入 N 出，按端口 send ──
   if (!onlyType || onlyType === MCODE_BRANCH_NODE_TYPE) RED.nodes.registerType(MCODE_BRANCH_NODE_TYPE, function (this: NodeInstance, config: Cfg) {
@@ -478,7 +588,7 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
     });
   } as unknown as new (config: Cfg) => NodeRedNodeLike);
 
-  RED.log?.info?.(`[mcode-node-pack] registered ${onlyType ?? MCODE_NODE_PACK_TYPES.join(", ")} (v${MCODE_NODE_PACK_VERSION})`);
+  RED.log?.info?.(`[mcode-node-pack] registered ${onlyType ?? MCODE_REGISTERED_NODE_TYPES.join(", ")} (v${MCODE_NODE_PACK_VERSION})`);
 }
 
 /* ── 编辑器 HTML（每类型最小三格参数；Node-RED 只认有同名 .html 的 .js） ── */
@@ -516,6 +626,12 @@ const nodeEditorUi: Record<string, {
     input: "Input: msg.payload accompanies the configured Node-RED API path, method and body.",
     output: "Output: response becomes msg.payload with { text, artifacts }; HTTP status is stored in msg.mcode.engineStatus.",
     approval: "Approval: GET is Host scoped; POST /flows requires user deployment approval and ownership checks. Other mutations are rejected.",
+  },
+  [MCODE_CONDITION_EVAL_NODE_TYPE]: {
+    icon: "fa-code-fork",
+    input: "Input: the original message; the saved condition expression and the upstream results already seen on this flow go to the Host for evaluation.",
+    output: "Output: the same message with msg.mcode.condition set to the boolean result. The native switch AFTER this node routes true/false; this node never routes on its own.",
+    approval: "Approval: evaluation is read-only and never calls a model or a command. A reference this Host cannot resolve (trigger payload, structured output variables, native node status) fails the node instead of quietly choosing the false branch.",
   },
 };
 function htmlFor(type: string, params: Array<{ id: string; label: string; kind: "text" | "select" | "textarea"; options?: string[]; defaultValue?: string }>, extraDefs = ""): string {
@@ -597,9 +713,54 @@ export function nodeRedCallNodeHtml(): string {
   ]);
 }
 
-/** 整个节点包的 HTML（agent + conversation/branch/trigger/module-capability/node-red-call
- *  共 6 类型；`<userDir>/nodes/<name>.html` 用它。condition/command 走内置，
- *  code 走内置 function/exec —— 节点统一后不再有 mcode-code）。 */
+/**
+ * 条件求值适配节点。**没有可编辑的表单**：表达式住在它的 `x-mcode.params` 里
+ * （由迁移器从原条件节点抄过来），native 侧改它等于改条件语义 —— 那应该回 Mcode
+ * 画布改，不是在 Node-RED 里手改一份影子。所以这个模板只显示一句说明。
+ *
+ * 但它**必须**有 `<script type="text/html" data-template-name=...>` 块：上游编辑器
+ * 对没有注册模板的类型会把节点当 `unknown` 处理，导出时只保留 `_orig` 原样字段、
+ * 丢失 `x-mcode`（`editor-client/src/js/nodes.js` 的 `convertNode`）。没有模板
+ * 就等于往返一次身份就没了。
+ */
+export function conditionEvalNodeHtml(): string {
+  return `<script type="text/javascript">
+  RED.nodes.registerType("${MCODE_CONDITION_EVAL_NODE_TYPE}", {
+    category: "mcode",
+    color: "#b8c4d0",
+    defaults: { name: { value: "" }, ${MCODE_X_MCODE_DEFAULT_ENTRY} },
+    inputs: 1,
+    outputs: 1,
+    icon: "font-awesome/fa-code-fork",
+    label: function () { return this.name || "condition"; },
+    paletteLabel: "condition",
+  });
+</script>
+<script type="text/javascript">
+${tabMetaDefaultsScript()}
+</script>
+<script type="text/html" data-template-name="${MCODE_CONDITION_EVAL_NODE_TYPE}">
+  <div class="form-row">
+    <label for="node-input-name" data-i18n="[title]mcode.tooltip.name"><i class="fa fa-tag"></i> <span data-i18n="common.label.name">Name</span></label>
+    <input type="text" id="node-input-name" placeholder="Name" data-i18n="[placeholder]common.label.name">
+  </div>
+  <div class="form-row">
+    <p data-i18n="mcode.help.conditionEvalForm">The condition expression is owned by the Mcode workflow. Edit it there; this node only evaluates it at run time.</p>
+  </div>
+</script>
+<script type="text/html" data-help-name="${MCODE_CONDITION_EVAL_NODE_TYPE}">
+  <p data-i18n="mcode.help.input">Input: the original message; the saved condition expression and the upstream results already seen on this flow go to the Host for evaluation.</p>
+  <p data-i18n="mcode.help.output">Output: the same message with msg.mcode.condition set to the boolean result. Wire it into a switch that reads mcode.condition (true → output 1, else → output 2).</p>
+  <p data-i18n="mcode.help.approval">Approval: evaluation is read-only. A reference this Host cannot resolve fails the node instead of quietly choosing the false branch.</p>
+</script>
+`;
+}
+
+/** 整个节点包的 HTML（palette 六类型；`<userDir>/nodes/<name>.html` 用它。
+ *  condition/command 走内置，code 走内置 function/exec —— 节点统一后不再有
+ *  mcode-code）。内部求值适配节点有自己的一对 js/html（见
+ *  `MCODE_INTERNAL_NODE_TYPES`），不进这一份 —— 这一份的消费者按「六个 palette
+ *  类型」计数。 */
 export function allNodeHtml(): string {
   return [
     agentNodeHtml(),

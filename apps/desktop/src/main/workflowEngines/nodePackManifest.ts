@@ -8,8 +8,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, copyFileSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  MCODE_NODE_PACK_TYPES, conversationNodeHtml, branchNodeHtml,
+  MCODE_REGISTERED_NODE_TYPES, conversationNodeHtml, branchNodeHtml,
   triggerNodeHtml, moduleCapabilityNodeHtml, nodeRedCallNodeHtml,
+  conditionEvalNodeHtml,
 } from "./mcodeNodeTypes.js";
 import { agentNodeHtml } from "./mcodeNodePack.js";
 import { MCODE_NODE_PACK_BUNDLE } from "./nodePackBundle.generated.js";
@@ -23,6 +24,9 @@ export const MCODE_NODE_PACK_SCHEMA = "mcode.workflow-engine.node-pack/v1";
 export const MCODE_NODE_PACK_INSTALL_VERSION = 3;
 
 const htmlByType: Record<string, () => string> = {
+  // W17 内部求值适配节点：与 palette 六类型走同一条安装路径（`<type>.js` +
+  // `<type>.html`），但不在 `MCODE_NODE_PACK_TYPES` 里（用户不放置它）。
+  "mcode-condition-eval": conditionEvalNodeHtml,
   "mcode-agent": agentNodeHtml,
   "mcode-conversation": conversationNodeHtml,
   "mcode-branch": branchNodeHtml,
@@ -174,6 +178,11 @@ function localeText(type: string, language: "en-US" | "zh-CN"): string {
         output: "Output: response becomes msg.payload with { text, artifacts }; HTTP status is in msg.mcode.engineStatus.",
         approval: "Approval: GET is Host scoped; POST /flows requires user approval and deployment ownership checks. Other mutations are rejected.",
       },
+      "mcode-condition-eval": {
+        input: "Input: the original message plus the saved condition expression; the Host evaluates it using the upstream results already seen on this flow.",
+        output: "Output: the same message with msg.mcode.condition set to the boolean result. The switch after this node routes on it; this node never routes by itself.",
+        approval: "Approval: evaluation is read-only and never calls a model or a command. A reference this Host cannot resolve fails the node instead of quietly choosing the false branch.",
+      },
     },
     "zh-CN": {
       "mcode-agent": {
@@ -206,6 +215,11 @@ function localeText(type: string, language: "en-US" | "zh-CN"): string {
         output: "输出：响应写入 msg.payload（{ text, artifacts }），HTTP 状态在 msg.mcode.engineStatus。",
         approval: "审批：GET 受宿主管控；POST /flows 须经用户审批和部署归属检查；其他修改操作拒绝。",
       },
+      "mcode-condition-eval": {
+        input: "输入：原始消息加上保存好的条件表达式；宿主用这条流上已经发生的上游结果求值。",
+        output: "输出：同一条消息，msg.mcode.condition 为布尔结果。它后面的 switch 按这个值分流；本节点自己不分流。",
+        approval: "审批：求值只读，不调用模型或命令。宿主解析不了的引用会让节点失败，而不是安静地走 false 出口。",
+      },
     },
   };
   const localizedHelp = help[language][type];
@@ -223,11 +237,11 @@ export function expectedNodePackFiles(): Record<string, string> {
   const files: Record<string, string> = {
     "package.json": JSON.stringify({
       name: "mcode-node-pack", version: "2.0.0", private: true,
-      "node-red": { nodes: Object.fromEntries(MCODE_NODE_PACK_TYPES.map((type) => [type, type + ".js"])) },
+      "node-red": { nodes: Object.fromEntries(MCODE_REGISTERED_NODE_TYPES.map((type) => [type, type + ".js"])) },
     }, null, 2) + "\n",
     "mcode-runtime.cjs": MCODE_NODE_PACK_BUNDLE,
   };
-  for (const type of MCODE_NODE_PACK_TYPES) {
+  for (const type of MCODE_REGISTERED_NODE_TYPES) {
     files[type + ".js"] = '"use strict";\nmodule.exports = function(RED) {\n'
       + '  require("./mcode-runtime.cjs").registerType(RED, ' + JSON.stringify(type) + ');\n};\n';
     files[type + ".html"] = htmlByType[type]!();

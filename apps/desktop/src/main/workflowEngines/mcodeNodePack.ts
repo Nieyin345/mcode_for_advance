@@ -333,6 +333,7 @@ export function snapshotMcodeNodeInvocation(
   inputSnapshot: unknown;
   runId: string | null;
   tabId?: string;
+  msgId?: string;
 } {
   const normalized = normalizeAgentConfig(config);
   if (normalized.nodeId.trim() === "") {
@@ -356,7 +357,8 @@ export function snapshotMcodeNodeInvocation(
   const runId = typeof incomingMcode["runId"] === "string" ? incomingMcode["runId"]
     : typeof messageSnapshot["_msgid"] === "string" ? messageSnapshot["_msgid"] : null;
   return { normalized, messageSnapshot, incomingMcode, paramsSnapshot, inputSnapshot, runId,
-    ...(typeof config.z === "string" ? { tabId: config.z } : {}) };
+    ...(typeof config.z === "string" ? { tabId: config.z } : {}),
+    ...(typeof messageSnapshot["_msgid"] === "string" ? { msgId: messageSnapshot["_msgid"] } : {}) };
 }
 
 /**
@@ -384,6 +386,10 @@ export async function runAgentNode(
   };
   // Validate and detach the Host result before exposing it downstream.
   const result = assertMcodeNodePortResult(await port.run(payload));
+  // W17：与 `mcodeNodeTypes.ts` 的 `outputMsg` 同一件事 —— 每个 mcode-* 节点在输出上
+  // 追加自己这条执行事实，条件求值节点据此拼旧调度器那份 outcome 表（Host 只看得见
+  // 它自己那一次调用，看不见上游）。上限 64 条，理由见那边的注释。
+  const priorResults = Array.isArray(incomingMcode["results"]) ? incomingMcode["results"] as unknown[] : [];
   // 产出形状与 Mcode 侧「这一步交什么」一致：text + artifacts。
   const msg: Record<string, unknown> = {
     ...messageSnapshot,
@@ -393,6 +399,11 @@ export async function runAgentNode(
       nodeId: normalized.nodeId,
       runId: result.runId ?? runId,
       ...(normalized.outputVar !== null ? { outputVar: normalized.outputVar } : {}),
+      results: [...priorResults.slice(-63), {
+        nodeId: normalized.nodeId,
+        summary: result.text,
+        status: "success",
+      }],
     },
   };
   // An upstream node's outputVar is not this node's output binding. Clearing

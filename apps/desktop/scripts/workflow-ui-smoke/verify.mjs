@@ -11,6 +11,11 @@ function check(name,ok,detail){checks.push({name,ok,detail});console.log((ok?'PA
 const helper=`window.__ui={
   button(t){return [...document.querySelectorAll('button')].find(b=>b.getClientRects().length&&b.textContent.trim()===t);},
   open(name){const nav=document.querySelector('#workflows-panel-library nav');const b=[...nav.querySelectorAll('button')].find(x=>x.textContent.includes(name));if(!b)throw Error('Missing library row '+name);b.click();},
+  /* W15：工作流的默认页签改成了原厂画布，「库」那一页要先点页签才可见。
+     这里照**用户真实路径**走一步：点「工作流库」页签（按 id，不按文案 ——
+     zh/en 两套词典都通）。不点的话下面 field() 的 getClientRects 判据会认不出
+     "元素在 DOM 里但整页 hidden"，报 Missing field 而不是报"你忘了切页签"。 */
+  showLibrary(){const t=document.querySelector('#workflows-tab-library');if(!t)throw Error('Missing workflows library tab');if(t.getAttribute('aria-selected')!=='true')t.click();},
   field(name){const e=[...document.querySelectorAll('div.mb-2.block.w-full')].find(x=>x.getClientRects().length&&x.firstElementChild?.textContent.includes(name));if(!e)throw Error('Missing field '+name);return e;},
   set(name,value){const e=this.field(name).querySelector('input,textarea');if(!e)throw Error('No editable input '+name);Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,value);e.dispatchEvent(new Event('input',{bubbles:true}));},
   nav(name){const b=[...document.querySelector('aside nav').querySelectorAll('button')].find(x=>x.textContent.trim()===name);if(!b)throw Error('Missing settings nav '+name);b.click();}
@@ -19,6 +24,9 @@ const nativeEntry='#workflows-panel-library section[aria-label]';
 async function open(page,locale='zh'){
   await page.goto('case=workflow&locale='+locale);
   await page.eval(helper);
+  await page.waitFor('document.querySelector("#workflows-tab-library")');
+  await page.eval('__ui.showLibrary()');
+  await page.waitFor('document.querySelector("#workflows-panel-library").classList.contains("flex")');
   await page.waitFor('document.querySelector("#workflows-panel-library nav button")');
   await page.eval('__ui.open("资料整理流程")');
   await page.waitFor(`document.querySelector("${nativeEntry}")`);
@@ -50,6 +58,8 @@ await withAuditPage(here,async page=>{
     await page.eval('__ui.nav("自动化")');
     await page.waitFor('document.querySelector("#automation-panel-library")');
     await page.eval('__ui.nav("工作流")');
+    await page.eval('__ui.showLibrary()');
+    await page.waitFor('document.querySelector("#workflows-panel-library").classList.contains("flex")');
     await page.waitFor('document.querySelector("#workflows-panel-library nav button")');
     await page.eval('__ui.open("资料整理流程")');await page.waitFor(`document.querySelector('${nativeEntry}')`);
     check('draft survives settings remount',await page.eval('__ui.field("名称").querySelector("input").value==="跨栏目草稿"'));
@@ -65,6 +75,8 @@ await withAuditPage(here,async page=>{
   await test('native-deploy-refresh-without-losing-draft',async()=>{
     await page.goto('case=review-pending&locale=zh');
     await page.eval(helper);
+    await page.eval('__ui.showLibrary()');
+    await page.waitFor('document.querySelector("#workflows-panel-library").classList.contains("flex")');
     await page.waitFor('document.querySelector("#workflows-panel-library nav button")');
     await page.eval('__ui.open("资料整理流程")');
     await page.waitFor(`document.querySelector('${nativeEntry}')`);
@@ -85,6 +97,9 @@ await withAuditPage(here,async page=>{
     await page.goto('case=automation&locale=zh');
     await page.eval(helper);
     await page.waitFor('document.querySelector("#automation-panel-library nav button")');
+    // W15：自动化的默认页签**保持「库」**（不是原厂画布）。这条是那条产品判断
+    // 的真浏览器证据 —— 无头套件断言的是同一个函数，这里断言的是它真的兑现。
+    check('automation still opens on the library tab',await page.eval('document.querySelector("#automation-panel-library").classList.contains("flex")&&document.querySelector("#automation-panel-engines").classList.contains("hidden")'));
     await page.eval(`(()=>{const b=[...document.querySelectorAll('#automation-panel-library nav button')].find(e=>e.textContent.includes('文件清单自动化'));b?.click()})()`);
     await page.waitFor('document.querySelector("#automation-panel-library section[aria-label]")');
     check('automation shares native editor entry',await page.eval('!!document.querySelector("#automation-panel-library section[aria-label] button")'));

@@ -73,6 +73,13 @@ import {
   type NodeRunnerKind,
 } from "@contracts/nodeType";
 import { MODULE_CAPABILITY_RUNNER_KIND } from "@contracts/moduleCapability";
+import {
+  CONDITION_EVAL_BRIDGE_KEY,
+  MCODE_CONDITION_EVAL_NODE_TYPE,
+  conditionEvalTargetOf,
+  conditionSwitchShape,
+} from "@contracts/conditionBridge";
+import { parseConditionExpression } from "@contracts/condition";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
@@ -154,6 +161,9 @@ export interface NodeRedNode {
     position?: { x: number; y: number };
     unknown?: Record<string, unknown>;
     unknownPosition?: Record<string, unknown>;
+    /** W17：条件求值适配节点指向的原 Mcode 条件节点（反向迁移据此折回，
+     *  适配节点不进 `WorkflowDoc.nodes`）。 */
+    bridgesNodeId?: string;
     /** Edge notes are not native wires properties. Keep them on the source
      * node, which survives upstream GET /flows, tied to exact native IDs. */
     edgeMeta?: Array<{
@@ -744,6 +754,10 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
 
   const nodeRedOf = new Map<string, NodeRedNode>();
   const kindOf = new Map<string, NodeRunnerKind | "unknown">();
+  // W17：表达式能解析的条件节点各配一个求值适配节点（见 `@contracts/conditionBridge`）。
+  // 键 = Mcode 节点 id，值 = 适配节点的 native id。**解析在这里做一次**，下面插节点、
+  // 改写 wire、报告都读这一份，不各判一次。
+  const conditionEvaluators = new Map<string, string>();
 
   for (const [index, node] of doc.nodes.entries()) {
     const manifest = types?.get(node.type);
@@ -803,24 +817,13 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
       wires: Array.from({ length: outPorts }, () => [] as string[]),
       ...builtinConfig,
       ...nativeNodeConfigOf(kind, effectiveType, node),
-      // condition → 原生 switch 的**最小可执行形状**（2026-10-19 真引擎实测：
-      // 只写 type:"switch" 不给 rules/property 时，switch 没有任何规则、消息不会
-      // 转发到任何一个口 —— 整条下游静默不动）。按 `msg.mcode.condition`（布尔）
-      // 分两路：true → 口 0，否则（含 else 规则）→ 口 1。Mcode 的完整表达式求值
-      // （{{上游.字段}} / logic and-or / 多种 op）属于 Host 侧，MERGE-3 接
-      // `mcode-condition` 时替换本规则；此前它是"可启动的最小语义"，报告里点名。
-      ...(kind === "condition"
-        ? {
-            rules: [
-              { t: "true", v: "", vt: "bool" },
-              { t: "else" },
-            ],
-            property: "mcode.condition",
-            propertyType: "msg",
-            checkall: "false",
-            repair: false,
-          }
-        : {}),
+      // condition → 原生 switch 的**最小可执行形状**。规则、属性名与 checkall 的
+      // 唯一来源是 `@contracts/conditionBridge` 的 `conditionSwitchShape()` —— 从前
+      // 这里是三处字面量，而写 `msg.mcode.condition` 的生产者不存在：
+      // 迁移后的条件图**永远走 else 口**（见 conditionBridge.ts 文件头）。
+      // 现在求值由紧随其前的 `mcode-condition-eval` 适配节点 + Host 完成（见下面
+      // 的 `conditionEvaluators`），switch 只负责按布尔分流。
+      ...(kind === "condition" ? conditionSwitchShape() : {}),
       "x-mcode": {
         nodeId: node.id,
         nativeId: nodeRedId,
@@ -846,13 +849,55 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     }
     nodeRedOf.set(node.id, nrNode);
     if (kind === "condition") {
+      // W17：表达式能解析 → 插一个 `mcode-condition-eval` 适配节点，由 Host 用旧的
+      // `evaluateConditionExpression` 求值并写 `msg.mcode.condition`；switch 仍只负责
+      // 按布尔分流。表达式**不能**解析（旧档案 / 空规则）→ 不插，且报告明确说
+      // 「这张图此后仍永远走 else 口」—— 静默走错分支正是本卡要修的那种坏法。
+      const parsed = parseConditionExpression(node.params["expression"]);
+      if (parsed.ok) {
+        const evalRedId = nodeRedIdOf("n", `${node.id}__condition_eval`, usedIds, nodeCollisions);
+        conditionEvaluators.set(node.id, evalRedId);
+        const evalNode: NodeRedNode = {
+          id: evalRedId,
+          type: MCODE_CONDITION_EVAL_NODE_TYPE,
+          name: `${node.title || node.id} · 求值`,
+          x: Math.round(node.position.x) - 180,
+          y: Math.round(node.position.y),
+          wires: [[nodeRedId]],
+          "x-mcode": {
+            // 适配节点**不是** Mcode 文档里的节点：它的 nodeId 留空，靠
+            // `bridgesNodeId` 指回原条件节点。反向迁移会把它折回去（见
+            // `conditionEvalTargetOf` 与 `flowToWorkflowDoc`）。
+            nodeId: `${node.id}__condition_eval`,
+            type: node.type,
+            nativeId: evalRedId,
+            nativeType: MCODE_CONDITION_EVAL_NODE_TYPE,
+            [CONDITION_EVAL_BRIDGE_KEY]: node.id,
+            title: `${node.title || node.id} · 求值`,
+            params: { expression: node.params["expression"] },
+            position: { x: Math.round(node.position.x) - 180, y: Math.round(node.position.y) },
+          },
+        };
+        nodeRedOf.set(`${node.id}__condition_eval`, evalNode);
+      } else {
+        lossy.push({
+          code: "lossy",
+          nodeId: node.id,
+          message:
+            `条件表达式无法解析（${parsed.error}）—— 迁到 Node-RED 后**没有求值节点**，`
+            + "这条条件此后永远走 false 口。请在 Mcode 画布上修正表达式后重新迁移。",
+        });
+      }
+    }
+    if (kind === "condition") {
       lossy.push({
         code: "lossy",
         nodeId: node.id,
         message:
-          "condition 迁为原生 switch，规则暂为「msg.mcode.condition 为 true → 口 0，否则口 1」；"
-          + "Mcode 的完整表达式求值（{{上游.字段}} / and-or / op）由 Host 侧承担（MERGE-3 接 mcode-condition），"
-          + "此前该节点只保证整组能启动、消息按布尔分流。",
+          "condition 迁为原生 switch + mcode-condition-eval 求值节点：switch 读 "
+          + "`msg.mcode.condition` 分真/假两路，求值由 Host 用旧的表达式求值器完成。"
+          + "边界：{{trigger.*}}、结构化产出变量与原生节点结局在 Node-RED 侧没有数据源，"
+          + "引用它们会让条件节点**显式失败**（而不是安静地走 false）。",
       });
     }
     if ((kind === "code" || kind === "command")
@@ -911,11 +956,15 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     const edgeUnknownKeys = unknownKeysForEdge(unknownPaths, index);
     const edgeUnknown = pickKeys(edge as unknown as Record<string, unknown>, edgeUnknownKeys);
     const linkId = edgeIds.get(edge.id)!;
+    // W17：这条边若指向一个带求值适配节点的条件，native 侧的**连接**改成
+    // 「上游 → 适配节点 → switch」；而 links sidecar 仍记「上游 → 条件节点」——
+    // 它描述的是 **Mcode 的图**，不描述插入的适配节点。反向迁移按适配节点折回。
+    const evalRedId = conditionEvaluators.get(edge.to);
     const link: NodeRedLink = {
       id: linkId,
       source: sourceNr.id,
       sourcePort,
-      target: targetNr.id,
+      target: evalRedId ?? targetNr.id,
       targetPort: 0,
       "x-mcode-edge": {
         edgeId: edge.id,
@@ -969,9 +1018,11 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     } else if (kind === "condition") {
       sourcePort = edge.label?.trim() === "false" ? 1 : 0;
     }
+    // W17：指向带求值节点的条件时，真实连接是「上游 → 适配节点」。
+    const targetRedId = conditionEvaluators.get(edge.to) ?? targetNr.id;
     const key = `${sourceNr.id}#${sourcePort}`;
     const list = linkTargets.get(key) ?? [];
-    list.push(targetNr.id);
+    list.push(targetRedId);
     linkTargets.set(key, list);
   }
   for (const [key, targets] of linkTargets) {
@@ -1110,6 +1161,61 @@ export function flowToWorkflowDoc(flow: NodeRedFlow): WorkflowDoc {
   // The returned editor document is mutable. Detach all nested values from
   // the source flow so editing a restored doc cannot alter the archive bytes.
   flow = structuredClone(flow);
+  // ── W17：先把条件求值适配节点**折回**原条件节点 ──
+  //
+  // 适配节点是迁移器插进去的容器（用户不可见、不在 WorkflowDoc.nodes 里）。不折的
+  // 话，一次往返就多出一个节点：`roundTripMismatchPaths` 会把每张含条件的图报成
+  // `nodes.length(N→N+1)`，迁移预检据此 REJECT —— 而那是本卡要修的同一张图。
+  //
+  // 折叠规则（与正向插入严格对称）：
+  //   1. 适配节点自身不进 nodes；
+  //   2. 指向适配节点的边，目标改回原条件节点；
+  //   3. 适配节点 → switch 的那条边是**插进去的连接**，不是用户的边，丢弃；
+  //   4. 原条件节点的 native id 不变（它就是那个 switch）。
+  //
+  // `conditionEvalTargetOf` 对「类型对但 bridgesNodeId 坏掉」抛错 —— 被复制或手改的
+  // 适配节点绝不能悄悄退化成一条普通节点，更不能折到错的条件下。
+  const evalBridgeToTarget = new Map<string, string>(); // 适配 native id → Mcode 条件 id
+  for (const nrNode of flow.nodes) {
+    const target = conditionEvalTargetOf(nrNode as { type?: unknown; "x-mcode"?: unknown });
+    if (target === null) continue;
+    if (!flow.nodes.some((candidate) => candidate["x-mcode"]?.nodeId === target)) {
+      throw new Error(`condition 求值适配节点 ${nrNode.id} 指向的 Mcode 节点「${target}」不在这张 flow 里 —— 拒绝折叠，须重新迁移`);
+    }
+    evalBridgeToTarget.set(nrNode.id, target);
+  }
+  if (evalBridgeToTarget.size > 0) {
+    flow = {
+      ...flow,
+      nodes: flow.nodes
+        .filter((nrNode) => !evalBridgeToTarget.has(nrNode.id))
+        .map((nrNode) => {
+          // edgeMeta 的 targetNativeId 记的是**真实 native 连接**（正向迁移时即适配
+          // 节点）；折回后要指向条件 switch，否则真实编辑器读回的那条路径
+          // （没有 links sidecar，靠 edgeMeta 恢复注释）会丢掉这条边的 label/note。
+          const edgeMeta = nrNode["x-mcode"]?.edgeMeta?.map((annotation) => ({
+            ...annotation,
+            targetNativeId: evalBridgeToTarget.get(annotation.targetNativeId) ?? annotation.targetNativeId,
+          }));
+          const metaNext = nrNode["x-mcode"] === undefined ? undefined
+            : { ...nrNode["x-mcode"], ...(edgeMeta !== undefined ? { edgeMeta } : {}) };
+          // 指向适配节点的 wire **改回**条件 switch（不是删掉）：那条 wire 就是
+          // 用户原来的「上游 → 条件」那条边，删掉等于把边丢了。适配节点 → switch
+          // 的那条插入连接随适配节点一起消失（源节点被过滤掉）。
+          const wires = nrNode.wires === undefined ? undefined
+            : nrNode.wires.map((targets) => targets.map((target) => evalBridgeToTarget.get(target) ?? target));
+          if (wires === undefined && metaNext === undefined) return nrNode;
+          return { ...nrNode, ...(wires !== undefined ? { wires } : {}), ...(metaNext !== undefined ? { "x-mcode": metaNext } : {}) };
+        }),
+      // sidecar 里的 link target 同样是适配节点（正向迁移时 `link.target` 指向它）。
+      ...(flow.links !== undefined
+        ? { links: flow.links.map((link) => ({
+            ...link,
+            target: evalBridgeToTarget.get(link.target) ?? link.target,
+          })) }
+        : {}),
+    };
+  }
   // 文档级元数据优先取 flow 顶层；从真引擎读回的数组没有顶层元数据 —— 它挂在 tab 上
   // （见正向迁移里 `(tab as ...)["x-mcode"] = docMeta`）。
   const tab = flow.nodes.find((n) => n.type === "tab");

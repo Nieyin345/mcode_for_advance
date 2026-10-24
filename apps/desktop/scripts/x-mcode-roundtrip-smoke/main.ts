@@ -50,6 +50,7 @@ import {
 } from "@main/workflowEngines/mcodeNodePack.js";
 import {
   MCODE_NODE_PACK_TYPES,
+  MCODE_REGISTERED_NODE_TYPES,
   allNodeHtml,
   branchNodeHtml,
   conversationNodeHtml,
@@ -480,8 +481,11 @@ console.log("\nD. 安装到 <userDir>/nodes 的节点包字节 = 生成器当前
   eq("清单里 tab 补丁脚本计数 = 6", allHtml.split(tabMetaDefaultsScript()).length - 1, 6);
   check("runtime CJS 不含 HTML（HTML 是独立资产，安装器逐文件写盘）",
     !(files["mcode-runtime.cjs"] ?? "").includes("data-template-name"));
-  check("package.json 的 node-red.nodes 仍声明六个类型",
-    Object.keys((JSON.parse(files["package.json"] ?? "{}") as { "node-red"?: { nodes?: Record<string, string> } })["node-red"]?.nodes ?? {}).length === 6);
+  // 声明数 = **实际安装**的类型数（palette 六 + 内部求值适配节点）。从前写死 6：
+  // W17 加了内部节点后这条会假红，而它想验的是「package.json 与安装清单同源」。
+  check("package.json 的 node-red.nodes 与安装的类型清单同源",
+    Object.keys((JSON.parse(files["package.json"] ?? "{}") as { "node-red"?: { nodes?: Record<string, string> } })["node-red"]?.nodes ?? {}).length
+      === MCODE_REGISTERED_NODE_TYPES.length);
   const manifest = JSON.parse(files["package.json"] ?? "{}") as { name?: string };
   eq("package 名字仍是 mcode-node-pack", manifest.name, "mcode-node-pack");
   // 安装版本号是清单的一部分 —— 资产变了而不前进，旧数据目录里的 HTML 就不会被重写。

@@ -11,6 +11,7 @@ import {
   ensureNodePack, expectedNodePackFiles, MCODE_NODE_PACK_MANIFEST,
   MCODE_NODE_PACK_DIR, MCODE_NODE_PACK_SCHEMA, MCODE_NODE_PACK_INSTALL_VERSION,
 } from "@main/workflowEngines/nodePackManifest.js";
+import { MCODE_REGISTERED_NODE_TYPES } from "@main/workflowEngines/mcodeNodeTypes.js";
 import { NodePackHost } from "@main/workflowEngines/nodePackHost.js";
 
 let total = 0;
@@ -24,16 +25,30 @@ const hash = (value: string | Buffer) => createHash("sha256").update(value).dige
 const root = mkdtempSync(join(tmpdir(), "mcode-t42-pack-"));
 try {
   const contents = expectedNodePackFiles();
-  check("6 independent js/html pairs with one shared bundled runtime",
-    Object.keys(contents).filter((n) => n.endsWith(".js")).length === 6
-      && Object.keys(contents).filter((n) => n.endsWith(".html")).length === 6
-      && Object.keys(contents).includes("mcode-runtime.cjs"));
-  check("6 x 2 locale files", Object.keys(contents).filter((n) => n.startsWith("locales/")).length === 12);
+  // 条数从**导出的类型清单**取，不写死 —— 从前这里写死 6，W17 加了内部求值适配节点
+  // （palette 不算它，安装清单算）之后这 3 条会变成「数错了」的假红，而不是「东西少
+  // 了」的真红。数量断言要验的是「每个类型都有一对 js/html 与两套 locale」，
+  // 不是「世界上恰好有 6 个类型」。
+  const registryTypes = [...MCODE_REGISTERED_NODE_TYPES];
+  check("one independent js/html pair per registered type + one shared bundled runtime",
+    Object.keys(contents).filter((n) => n.endsWith(".js")).length === registryTypes.length
+      && Object.keys(contents).filter((n) => n.endsWith(".html")).length === registryTypes.length
+      && registryTypes.every((t) => contents[t + ".js"] !== undefined && contents[t + ".html"] !== undefined)
+      && Object.keys(contents).includes("mcode-runtime.cjs"),
+    { types: registryTypes.length, js: Object.keys(contents).filter((n) => n.endsWith(".js")).length });
+  check("one locale pair per registered type",
+    Object.keys(contents).filter((n) => n.startsWith("locales/")).length === registryTypes.length * 2,
+    Object.keys(contents).filter((n) => n.startsWith("locales/")).length);
   const initial = ensureNodePack(root, "node-red");
   check("managed package initial install", initial.ok && initial.action === "written", initial);
   const manifest = JSON.parse(readFileSync(join(root, MCODE_NODE_PACK_MANIFEST), "utf8"));
-  check("manifest schema/version and 26 SHA-256 records", manifest.schema === MCODE_NODE_PACK_SCHEMA
-    && manifest.pack.version === MCODE_NODE_PACK_INSTALL_VERSION && Object.keys(manifest.files).length === 26);
+  // 记录数 = package.json + runtime + 每类型 (js + html + 2 locale)。
+  const expectedRecordCount = 2 + registryTypes.length * 4;
+  check("manifest schema/version and one SHA-256 record per installed file",
+    manifest.schema === MCODE_NODE_PACK_SCHEMA
+      && manifest.pack.version === MCODE_NODE_PACK_INSTALL_VERSION
+      && Object.keys(manifest.files).length === expectedRecordCount,
+    { records: Object.keys(manifest.files).length, expected: expectedRecordCount });
   const installed = join(root, MCODE_NODE_PACK_DIR);
   const asset = join(installed, "mcode-agent.html");
   check("installed HTML byte-hash matches manifest", hash(readFileSync(asset)) === manifest.files["mcode-agent.html"]);

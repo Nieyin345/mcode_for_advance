@@ -82,6 +82,77 @@ export function canOpenEditor(status: WorkflowEngineStatusView): boolean {
   return status.editorUrl !== null;
 }
 
+/* ── 同一个 docId 的多个宿主：谁开的、还有谁在用 ── */
+
+/**
+ * 【W15】宿主的视图按 docId 复用（`documentViewHost.open` 的注释：「同 docId 重复
+ * open = 复用同一个 view」）。设置页的引擎页签与右侧面板的 NR 停靠位各挂一份
+ * `EngineRow`，两份用同一个 `engineDocId(engineId)` —— 于是**一个原生视图、两个
+ * 实例**。关闭是实例动作，而视图是共享资源：谁卸载谁 `close` 就会把另一个实例
+ * 正在显示的编辑器一并销毁（症状是另一个实例下一次 `sync()` 收到
+ * `文档视图不存在或已关闭`，而且它不会自己重新 open）。
+ *
+ * 判据抽在这里（不是藏在 effect 里）：effect 在 SSR 里不跑，埋在 effect 里的
+ * 判断没法被无头断言碰到。`shouldCloseAfterRelease` 是纯函数，持有表由
+ * `acquireView` / `releaseView` 维护；组件只用这几个入口。
+ *
+ * 规则：**只有释放后持有表为空，才关。** 没登记过的调用方永远得到 `false`
+ * —— 它没有资格关别人的视图。
+ */
+export type DocViewHolders = ReadonlyMap<string, ReadonlySet<string>>;
+
+/** 释放 `holderId` 之后该不该 `close(docId)`。纯判据，可独立断言。 */
+export function shouldCloseAfterRelease(
+  holders: DocViewHolders,
+  docId: string,
+  holderId: string,
+): boolean {
+  const set = holders.get(docId);
+  if (set === undefined || !set.has(holderId)) return false; // 没登记过 = 不是我的
+  return set.size === 1; // 只剩我 = 最后一个持有者
+}
+
+/** 进程内持有表。渲染端只有一棵树，模块单例就是两个宿主实例共享的那一份。 */
+const viewHolders = new Map<string, Set<string>>();
+let viewHolderSeq = 0;
+
+/** 每个 `EngineRow` 实例一个稳定 id（同一实例的重复 acquire 是幂等的）。 */
+export function nextViewHolderId(): string {
+  viewHolderSeq += 1;
+  return `engine-row-${viewHolderSeq}`;
+}
+
+/** 本实例现在持有这个 docId（视图已由它 open 或复用）。 */
+export function acquireView(docId: string, holderId: string): void {
+  let set = viewHolders.get(docId);
+  if (set === undefined) {
+    set = new Set();
+    viewHolders.set(docId, set);
+  }
+  set.add(holderId);
+}
+
+/** 释放本实例的持有；返回 true 表示它是最后一个持有者、应当 close。 */
+export function releaseView(docId: string, holderId: string): boolean {
+  const close = shouldCloseAfterRelease(viewHolders, docId, holderId);
+  const set = viewHolders.get(docId);
+  if (set !== undefined) {
+    set.delete(holderId);
+    if (set.size === 0) viewHolders.delete(docId);
+  }
+  return close;
+}
+
+/** 诊断/冒烟用：当前有几个存活实例持有这个 docId。 */
+export function __viewHolderCount(docId: string): number {
+  return viewHolders.get(docId)?.size ?? 0;
+}
+
+/** 冒烟用：清空持有表（每个用例从空表出发，避免上一轮状态污染）。 */
+export function __resetViewHolders(): void {
+  viewHolders.clear();
+}
+
 /**
  * 「要不要给安装指引」。
  *
@@ -120,6 +191,21 @@ function closeQuietly(docId: string): void {
   }
 }
 
+/**
+ * 【W15】最后一个持有者释放之后，**延后一拍再确认**才关。
+ *
+ * 为什么不能立刻关：设置页关闭时，「设置实例卸载」与「右侧面板实例变 active」
+ * 发生在**同一个 commit**——React 先跑卸载清理、再跑其余 effect，所以清理那一刻
+ * 右侧面板还没登记。若在这里直接 `close`，紧接着右侧面板的 `open` 只能重建视图
+ * （Node-RED 编辑器页重新加载，画了一半的流没了）。延后到本轮 effect 全部跑完，
+ * 接手的实例已经登记，持有表非空，就不关。
+ */
+function closeIfStillUnowned(docId: string): void {
+  queueMicrotask(() => {
+    if (__viewHolderCount(docId) === 0) closeQuietly(docId);
+  });
+}
+
 /** 一次启动/停止的结局。写操作用显式 await，不塞进 useRpc。 */
 type EngineActionError = { kind: "start" | "stop"; reason: string } | null;
 
@@ -147,6 +233,16 @@ export function EngineRow({
   const [retryNonce, setRetryNonce] = useState(0);
   /** 上一轮 open 用的 URL。URL 换了要重新 open（宿主按 URL 变化决定是否导航）。 */
   const openedUrlRef = useRef<string | null>(null);
+  /** 【W15】本实例在共享视图持有表里的身份 —— 一个 `EngineRow` 一个，跨 effect 重跑不变。 */
+  const [holderId] = useState(() => nextViewHolderId());
+  /** 在途的 `documentView.open` 条数。卸载时若有在途 open，close 要等它落地
+   *  （先 close 后建 = 视图在 close 之后才被建出来，没人关，浮在窗口最上层）。 */
+  const openInFlightRef = useRef(0);
+  /** 卸载时发现自己是最后一个持有者、但 open 还在途 —— 等落地再关。 */
+  const closeWhenSettledRef = useRef(false);
+  /** 最近一次渲染的 active。用于在途 open 落地时判断"这个视图现在还有人要显示吗"。 */
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const stageRef = useRef<HTMLDivElement | null>(null);
   const docId = useMemo(() => engineDocId(status.engineId), [status.engineId]);
   const badge = engineStateBadge(status.state);
@@ -185,10 +281,21 @@ export function EngineRow({
     }
   };
 
+  // 【W15】本实例要销毁时调这一句：释放持有、必要时延后确认关闭。**只在真正的
+  // 「本实例不再用这个视图」时调**（卸载 / 引擎离开 running / 重试前丢弃旧视图）。
+  // 返回 true = 本实例是最后一个持有者（调用方据此决定要不要等 open 落地再关）。
+  const releaseOwnership = (targetDocId: string): boolean => {
+    return releaseView(targetDocId, holderId);
+  };
   // 【ARC-006】running 时把编辑器嵌进占位区。几何同步与 GenOffice 同一条做法：
   // rAF 节流 + ResizeObserver。**关视图只发生在两处**：离开 running（本 effect
   // 的 url === null 分支）与卸载（下面那条空依赖 effect）—— 页签切走**不关**，
   // 只 hide（见 `active` 分支；浏览器面板"保留浏览状态、切回来还在"的同一取舍）。
+  //
+  // 【W15】同一个 docId 有两个宿主（设置页的引擎页签 + 右侧面板的 NR 停靠位），
+  // 视图按 docId 复用。所以「关」不是实例动作：离开 running / 卸载时先释放持有，
+  // **只有持有表空了才关**（`shouldCloseAfterRelease`）。另一个实例还在用的时候
+  // 谁都不许关。
   //
   // 为什么 `active` 在依赖里却不在本 effect 的清理里关视图：页签切换会让本 effect
   // 重跑（拿到新的 active），如果清理函数无条件 close，切走就等于关 —— 用户画了
@@ -197,16 +304,25 @@ export function EngineRow({
     const url = status.editorUrl;
     if (url === null) {
       // 离开 running（停止/失败）：把还开着的视图关掉，别让一块原生视图浮在设置页上。
+      // 【W15】只有最后一个持有者才关 —— 另一个宿主还在显示它的时候关掉，
+      // 对方的下一次 sync 会收到「文档视图不存在或已关闭」。
       if (openedUrlRef.current !== null) {
         openedUrlRef.current = null;
-        closeQuietly(docId);
+        const last = releaseOwnership(docId);
+        if (last) {
+          if (openInFlightRef.current > 0) closeWhenSettledRef.current = true;
+          else closeIfStillUnowned(docId);
+        }
       }
       return;
     }
     if (!active) {
       // 视图已经建出来就只是藏起来；还没建（刚 running、用户没切到本页）就什么都不做
       // —— 等用户真的打开这一页再建，否则 Node-RED 编辑器页会在后台白加载一次。
+      // 【W15】藏起来同样要登记持有：本实例还在用这个视图（只是没显示），
+      // 另一个宿主关闭时不能替本实例把它销毁。
       if (openedUrlRef.current !== null) {
+        acquireView(docId, holderId);
         try {
           void api.documentView.hide({ docId }).catch(() => {});
         } catch {
@@ -227,13 +343,27 @@ export function EngineRow({
     const sendOpen = (bounds: DocViewRect): void => {
       lastKey = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
       openedUrlRef.current = url;
+      // 【W15】open 成功之前就登记：从这一刻起本实例"要用这个视图"，别的宿主
+      // 卸载时不能替本实例关掉它。
+      acquireView(docId, holderId);
       // 【ARC-006 Gate A 缺口】把 engineId 一起递下去：宿主据此从主进程注入
       // `Authorization`（令牌不进 URL / 不进 status/list）。渲染端拿不到令牌。
+      openInFlightRef.current += 1;
       const pending = api.documentView.open({ docId, url, bounds, visible: true, workflowEngineId: status.engineId });
       void pending.then(
         (result) => {
+          openInFlightRef.current -= 1;
           if (disposed) {
-            closeQuietly(docId);
+            // 【W15】这次 open 已被**本实例**的新一轮 effect 取代（retry / url 变化），
+            // 或本实例已卸载。两种情况都**不许无条件 close** —— 视图可能与另一个
+            // 宿主共享：
+            //   · `closeWhenSettledRef` 表示卸载时本实例是最后一个持有者、只是在等
+            //     这次 open 落地；落地后仍是空表才关（期间别的实例可能已接手）。
+            //   · 否则持有登记属于本实例的**新一轮**，不能在这里撤。
+            if (closeWhenSettledRef.current) {
+              closeWhenSettledRef.current = false;
+              if (__viewHolderCount(docId) === 0) closeIfStillUnowned(docId);
+            }
             return;
           }
           if (!result.ok) {
@@ -241,9 +371,28 @@ export function EngineRow({
             return;
           }
           setViewError(null);
+          // 在途期间用户把面板藏了：视图已经 visible=true 地建出来，这里补一声 hide，
+          // 免得编辑器浮在别的页签上面。
+          if (!activeRef.current) {
+            try {
+              void api.documentView.hide({ docId }).catch(() => {});
+            } catch {
+              /* web 传输同步拒绝 */
+            }
+          }
         },
         (err: unknown) => {
-          if (!disposed) setViewError(err instanceof Error ? err.message : String(err));
+          openInFlightRef.current -= 1;
+          if (disposed) {
+            if (closeWhenSettledRef.current) {
+              closeWhenSettledRef.current = false;
+              if (__viewHolderCount(docId) === 0) closeIfStillUnowned(docId);
+            }
+            return;
+          }
+          setViewError(err instanceof Error ? err.message : String(err));
+          // 抛错 = 视图没建出来；本实例的持有登记撤回（视图不存在，没人该"持有"它）。
+          releaseOwnership(docId);
         },
       );
     };
@@ -306,12 +455,28 @@ export function EngineRow({
   // React 树），漏掉这一步会在设置页关掉后把一块编辑器永远浮在窗口最上层。空依赖：
   // 只跑卸载那一次。用 ref 取最新的 docId（挂载后 engineId 不会再变，但闭包里拿
   // 第一次 render 的值是惯例上最容易错的地方）。
+  //
+  // 【W15】**只有最后一个持有者才关**。同一个 docId 有两个宿主时（设置页引擎页签
+  // + 右侧面板 NR 停靠位），先卸载的那个把共享视图关掉，另一个正在显示的编辑器
+  // 就没了 —— 它的下一次 sync 会收到「文档视图不存在或已关闭」，而且不会自己恢复
+  // （依赖项一个都没变，不会再 open 一次）。卸载时若自己的 open 还在途，close 要
+  // 等它落地（先 close 后建 = 视图在 close 之后才被建出来，没人关）。
   useEffect(() => {
     const docIdAtMount = engineDocId(status.engineId);
     return () => {
       if (openedUrlRef.current !== null) {
         openedUrlRef.current = null;
-        closeQuietly(docIdAtMount);
+        const last = releaseView(docIdAtMount, holderId);
+        if (last) {
+          if (openInFlightRef.current > 0) closeWhenSettledRef.current = true;
+          else closeIfStillUnowned(docIdAtMount);
+        }
+      } else {
+        // 没有 openedUrlRef（从未 open / 已由别的分支释放）仍可能有登记残留：
+        // 幂等释放，最后一个持有者照样关。
+        if (releaseView(docIdAtMount, holderId) && openInFlightRef.current === 0) {
+          closeIfStillUnowned(docIdAtMount);
+        }
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -405,17 +570,27 @@ export function EngineRow({
       )}
 
       {/* 占位区：running 时主进程把 WebContentsView 摆到它的窗口矩形上。空 div 是
-          故意的 —— 不与原生视图抢像素。非 running 时这里画出"为什么没有编辑器"。 */}
+          故意的 —— 不与原生视图抢像素。非 running 时这里画出"为什么没有编辑器"，
+          而且把**下一步**（启动）直接放在这段话下面：默认页签落到引擎页之后，
+          这一块是用户打开「工作流」看到的第一屏。 */}
       {editorOpen ? (
         <div ref={stageRef} className="min-h-0 flex-1" data-engine-view-stage="" />
       ) : (
         <div
-          className="flex min-h-24 flex-1 items-center justify-center rounded border border-dashed border-edge px-4 py-6 text-center text-[0.7857em] text-content-muted"
+          className="flex min-h-24 flex-1 flex-col items-center justify-center gap-2 rounded border border-dashed border-edge px-4 py-6 text-center text-[0.7857em] text-content-muted"
           data-engine-empty=""
         >
-          {status.state === "starting"
-            ? t("settings.workflows.engine.waitingReady")
-            : t("settings.workflows.engine.editorHint")}
+          <span>
+            {status.state === "starting"
+              ? t("settings.workflows.engine.waitingReady")
+              : t("settings.workflows.engine.editorHint")}
+          </span>
+          {status.state !== "starting" && (
+            <Button size="sm" variant="primary" disabled={busy} onClick={() => void run("start")}>
+              <IconPlayerPlay size={12} />
+              {t("settings.workflows.engine.start")}
+            </Button>
+          )}
         </div>
       )}
     </div>

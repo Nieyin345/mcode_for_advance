@@ -56,6 +56,7 @@ import {
   IconArrowsSplit,
   IconCheck,
   IconChevronDown,
+  IconChevronLeft,
   IconPlus,
   IconTrash,
 } from "@renderer/lib/icons.js";
@@ -99,6 +100,7 @@ export function NodeInspector({
   onRestoreDefault,
   pinned = false,
   onImported,
+  onDeselectNode,
 }: {
   doc: WorkflowDoc;
   savedDoc?: WorkflowDoc;
@@ -131,26 +133,47 @@ export function NodeInspector({
   pinned?: boolean;
   /** 导入成功之后叫一声(参数是落库后的 id)—— 见 `TransferSection`。 */
   onImported: (id: string) => void;
+  /** **退回「工作流本体」** —— 选中一个节点之后唯一能回到文档级表单的入口。
+   *  省略时不画那颗按钮(T56 之前检查器没有节点可进,老的调用点不受影响)。 */
+  onDeselectNode?: () => void;
 }) {
+  const { t } = useI18n();
   const node = doc.nodes.find((n) => n.id === selectedNodeId) ?? null;
 
   return (
     <aside className="flex w-[300px] shrink-0 flex-col overflow-y-auto rounded-md border border-edge bg-surface/40 p-3">
       {node ? (
-        <NodeSection
-          doc={doc}
-          node={node}
-          purpose={purpose}
-          catalog={catalog}
-          profiles={profiles}
-          profileError={profileError}
-          onUpdateNode={onUpdateNode}
-          onRemoveNode={onRemoveNode}
-          onSetDependency={onSetDependency}
-          onUpdateEdge={onUpdateEdge}
-          onSaveProfile={onSaveProfile}
-          onRemoveProfile={onRemoveProfile}
-        />
+        <>
+          {/* 返回文档级表单。**必须有一颗**：选中节点之后检查器就只剩这个节点，
+              没有它用户回不到「名称 / 说明 / 流程文字」，而那个入口从前是靠点画布
+              空白处给的（画布已删，见 W3）。放在最上面而不是塞进底部操作区：「我现在
+              在看什么、怎么回去」要在看见第一屏时就能回答。 */}
+          {onDeselectNode !== undefined && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onDeselectNode}
+              className="mb-2 -ml-1 w-fit gap-1 px-1.5"
+            >
+              <IconChevronLeft size={12} />
+              {t("settings.workflows.backToWorkflow")}
+            </Button>
+          )}
+          <NodeSection
+            doc={doc}
+            node={node}
+            purpose={purpose}
+            catalog={catalog}
+            profiles={profiles}
+            profileError={profileError}
+            onUpdateNode={onUpdateNode}
+            onRemoveNode={onRemoveNode}
+            onSetDependency={onSetDependency}
+            onUpdateEdge={onUpdateEdge}
+            onSaveProfile={onSaveProfile}
+            onRemoveProfile={onRemoveProfile}
+          />
+        </>
       ) : (
         <WorkflowSection
           doc={doc}

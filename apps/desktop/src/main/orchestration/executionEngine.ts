@@ -148,12 +148,46 @@ function workflowEngineUsable(engineId: string): boolean {
 export class ExecutionEngine {
   /** 兜底执行器:`execute` 必备,`start`/`settle` 可选(与 NodeExecutor 同一套钩子)。 */
   private fallback?: Pick<NodeExecutor, "execute"> & Partial<Pick<NodeExecutor, "start" | "settle">>;
+  /** 「此刻能不能注册」要**晚于构造**才判得出来的执行器(见 `registerWhenAvailable`)。 */
+  private readonly deferred = new Set<() => NodeExecutor | null>();
 
   constructor(private readonly registry = new NodeExecutorRegistry()) {}
 
   register(executor: NodeExecutor): this {
     this.registry.register(executor);
     return this;
+  }
+
+  /**
+   * 注册一个**可用性晚于构造才成立**的执行器。
+   *
+   * 条件:执行器的前置状态(如可选引擎在不在跑)由宿主在**构造之后**注入,构造那一刻
+   * 答不出来。`create` 返回 `null` = 此刻仍不可用 —— **不注册**,但留在队列里,下一次
+   * 观察注册表时再问;返回执行器 = 注册并移出队列(注册一次即保留,与 `register` 同语义)。
+   *
+   * 后果(不这样做的代价):模块级单例在 `main/index.ts` 调用
+   * `setWorkflowEngineStatusPort` **之前**就已经构造完(W4 探针实测:单例的 `kinds()`
+   * 永远缺 `node-red`,而同一时刻新建的引擎有),读单例的预检入口会拿到一份错误的
+   * 执行器清单。
+   *
+   * 重复注册不靠调用方自律:`settleDeferred` 先移出队列再注册,而注册表本身对
+   * 同名 kind 抛错(第二道闸)。
+   */
+  registerWhenAvailable(create: () => NodeExecutor | null): this {
+    this.deferred.add(create);
+    return this;
+  }
+
+  /** 每次观察注册表前,逐个重试延迟注册;仍返回 `null` 的留在队列里等下次。 */
+  private settleDeferred(): void {
+    if (this.deferred.size === 0) return;
+    for (const create of [...this.deferred]) {
+      const executor = create();
+      if (executor === null) continue;
+      // 先移出再注册:注册抛错时异常照常上抛(不静默吞),队列不保留半注册状态。
+      this.deferred.delete(create);
+      this.registry.register(executor);
+    }
   }
 
   /**
@@ -171,14 +205,18 @@ export class ExecutionEngine {
   }
 
   has(kind: string): boolean {
+    this.settleDeferred();
     return this.registry.has(kind);
   }
 
   kinds(): string[] {
+    this.settleDeferred();
     return this.registry.kinds();
   }
 
   async execute(context: ExecutionContext): Promise<NodeOutcome> {
+    // 派发前先补齐延迟注册:构造后才可用的执行器不该被当成"没有执行器"落进兜底。
+    this.settleDeferred();
     const kind = context.manifest.runner.kind;
     const startedAt = Date.now();
     const executionOf = (finishedAt: number) => ({
@@ -256,24 +294,38 @@ export class ExecutionEngine {
  *  「缺少执行器「node-red」」明确失败。这一道闸**必须在调度器预检里**：`ExecutionEngine.execute`
  *  对未注册的 kind 会落模型兜底（只有 module-capability 例外），不能指望执行引擎替它拦。
  *  注册一次即保留：引擎随后停掉时，节点拿到的是代码里那句"引擎尚未运行 —— 请先启动它"
- *  （可照着做），而不是"没有能执行这种节点的执行器"。 */
+ *  （可照着做），而不是"没有能执行这种节点的执行器"。
+ *
+ *  **判据的时机是「观察注册表那一次」，不是「构造那一刻」** —— 见下面
+ *  `registerWhenAvailable` 那段为什么不能写成构造期 `if`。
+ *  （`workflows/W4` 实测：模块单例在端口注入前构造，构造期判据恒假。） */
 export function createBuiltinExecutionEngine(): ExecutionEngine {
   const engine = new ExecutionEngine()
     .register(new CommandExecutor())
     .register(new CodeExecutor())
     .register(moduleExecutor());
-  if (workflowEngineUsable(NODE_RED_ENGINE_ID)) {
-    engine.register(nodeRedExecutor({
-      // 惰性读取：start() 那一刻引擎可能已被用户停掉，执行器要报"未运行"而不是
-      // 拿装配期的旧快照继续发请求。
-      engine: {
-        status: () =>
-          workflowEngineStatusPort?.(NODE_RED_ENGINE_ID)
-          ?? { engineId: NODE_RED_ENGINE_ID, state: "stopped", port: null, reason: null },
-      },
-      fetch: (request) => defaultNodeRedFetch(request),
-    }));
-  }
+  // **不能在这里 `if (workflowEngineUsable(...))`**：模块级单例由
+  // `export const executionEngine = createBuiltinExecutionEngine()` 在**模块加载时**
+  // 构造，而 `main/index.ts` 要到更晚才调 `setWorkflowEngineStatusPort` —— 构造那一刻
+  // 端口必然还是 null，条件恒假，单例永远不注册 node-red（W4 探针实测：单例
+  // `kinds()` 缺 node-red，同一时刻新建的引擎有）。于是读单例的自动化预检 / 场景预检
+  // 谎报「缺执行器」，而那条流在运行期其实跑得起来。
+  // `registerWhenAvailable` 把判据挪到**观察注册表时**：端口没装 / 引擎没跑时仍不注册
+  // （fail-closed 不变），装好并 running 之后的下一次 `kinds()`/`has()`/`execute()`
+  // 补上。按次新建的引擎（runner）行为不变 —— 它们构造时端口早已就位。
+  engine.registerWhenAvailable(() =>
+    workflowEngineUsable(NODE_RED_ENGINE_ID)
+      ? nodeRedExecutor({
+          // 惰性读取：start() 那一刻引擎可能已被用户停掉，执行器要报"未运行"而不是
+          // 拿装配期的旧快照继续发请求。
+          engine: {
+            status: () =>
+              workflowEngineStatusPort?.(NODE_RED_ENGINE_ID)
+              ?? { engineId: NODE_RED_ENGINE_ID, state: "stopped", port: null, reason: null },
+          },
+          fetch: (request) => defaultNodeRedFetch(request),
+        })
+      : null);
   return engine;
 }
 
