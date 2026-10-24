@@ -174,6 +174,8 @@ registry（`registry.ts:93-95`）恰好只注册这三家——同一道围栏�
 改完后它还立刻红了一次（`saveCalls:1`，因为 save 被请求但被脏检查挡下 = 0 次写入），
 促成了 `saveRequests` / `saveCalls` 两个计数的区分。
 
+**提交 SHA：`e77fe9f1`**（8 个文件，1452 行新增；`git show --numstat` 核对无越界路径）。
+
 ### 7.6 验证命令与结果
 
 ```
