@@ -1,6 +1,6 @@
 # O2｜六格式真 Electron 下的保存冲突：用户和 Agent 同时改同一份文件
 
-- Status: **ready-for-agent**
+- Status: **done**（2026-10-24，见 §八 执行回写）
 - Category: **Office / E2E-4 后半 —— 数据丢失类**
 - Priority: **P0 —— 旧结果覆盖新内容是数据丢失，比任何 UI 问题严重**
 - Depends on: `document-view-host-smoke` §11（host 层冲突检测已实现且有覆盖）、`t7-genoffice-u1`（六格式 U1 骨架）
@@ -127,3 +127,77 @@ cd apps/desktop && node scripts/t7-genoffice-u1/run.mjs   # 基线
 ## 八、结果回写区
 
 （执行会话在此追加：六格式各自的红绿、哪几个会静默覆盖、变异记录、套件结果、提交 SHA）
+
+### 2026-10-24｜O2 执行回写
+
+**套件**：`apps/desktop/scripts/o2-conflict-u1-smoke/`（新建；真 Electron + U1 执行器）。
+**运行**：`pnpm test:smoke o2-conflict-u1-smoke`（~85–120s）。退出码 0 = 与
+`expectations.ts` 的结论一致（不是「六格全绿」，见下）。
+
+#### 一、六格式 × 四条判据（实测）
+
+| 格式 | 4a 冲突被拒 | 4b 盘上保住外部内容 | 4c 用户看得见 | #5 正常保存不误报 |
+|---|---|---|---|---|
+| docs | ✅ `reason:"conflict"` + `currentRevision` | ✅ 逐字节仍是外部内容 | ✅ 状态栏「保存失败：文档已被别处改动…」 | ✅ |
+| sheets | ✅ 抛「工作簿在打开后被磁盘上的改动覆盖——请改用另存为」 | ✅ | ✅ 错误 toast + 状态栏 | ✅ |
+| slides | ❌ **保存成功 `{ok:true}`** | ❌ **外部内容被覆盖** | ❌ 显示「已保存」 | ✅ |
+| pdf | ❌ 同上 | ❌ | ❌ | ✅ |
+| markdown | ❌ 同上 | ❌ | ❌ 显示「已保存」 | ✅ |
+| html | ❌ 同上 | ❌ | ❌ 显示「已保存」 | ✅ |
+
+#### 二、哪几个会静默覆盖数据
+
+**slides / pdf / markdown / html 四个。** 生产保存链上没有「打开时版本 vs 盘上版本」的比较：
+
+- slides：原生视图的 `slidesApi.save()` 走 vendor `slides-main.ts` 的 `slides:save` →
+  `savePptxToFile` 直写；`slidesExecutor.ts` 的 CAS 只在 Mcode `SlidesBridge` 路线上生效，
+  **原生视图不经它**（T13 台账已记录「生产 native 路线保存走 vendor 直写、无 Mcode CAS」）。
+  这是卡 §二 点名的「独立分支」——**确认它没走同一套 revision 校验**。
+- pdf：`pdf-main.ts` 的 `PDF_CHANNELS.save` 只校验路径授权，然后 `savePdfToPath` 读源→
+  应用编辑→原子写；没有版本比较。
+- markdown / html：`resolveSaveTarget` 直接返回本会话路径，随后 `writeTextAtomic`；没有版本比较。
+
+**另开卡修**（本卡不改产品代码，卡 §四）。修法方向不是本卡结论的一部分，但源码位置已在上表。
+
+#### 三、变异记录（`mutation.mjs`，三条全部 CAUGHT）
+
+1. **`strip-revision`**（改 `documentViewHost.ts` 的 `if (current !== expected)` 为恒假，
+   跑完逐字节还原、`git status` 确认干净）→ docs 4a/4b/4c 全红，docs 负控与 sheets 4a 仍绿。
+2. **`hide-notice`**（页面注入 CSS 让提示元素不可见，不改 vendor 源码）→ **docs/sheets 的
+   4a、4b 仍绿，只有 4c 红**。这条正是卡 §五 变异 2 要的：4c 验的是「用户看得见」，
+   不是「host 返回了」。
+3. **`negative-conflict`**（负控保存前改盘）→ docs/sheets 的 #5 都红。
+
+> 4a/4b/4c 放在**同一个步骤**里各出一个 ok 标志（`4-conflict-criteria`），不是拆成三步：
+> runner 遇 FAIL 立即结束旅程，拆开时 4a 一红，4b/4c 就没执行过（变异 1 第一次跑
+> 得到 `docs4b=MISSING`，就是被这条咬到的）。
+
+#### 四、套件结果与提交
+
+- 全量连跑 3 次：`PASS`（docs/sheets all-pass；slides/pdf/markdown/html expected-failure），
+  墙钟 84–119s。
+- 双包 typecheck：`npx tsc --noEmit -p apps/desktop/tsconfig.json` 对
+  `scripts/o2-conflict-u1-smoke/**` 零错误。
+- 提交 SHA：见本卡提交 `test(O2): …`（`apps/desktop/scripts/o2-conflict-u1-smoke/` +
+  本段回写）。
+
+#### 五、未做的事 / 我觉得不对但没改的
+
+1. **修那四个格式**不在本卡（卡 §四明确「记录 + 另开卡修」）。修好后把
+   `expectations.ts` 的 `expectConflict` 翻成 `true`，`run.mjs --variant=expect-green`
+   就是六格全绿的回归门禁。
+2. **sheets 的编辑编排仍有残余不稳定**：保存后 vendor 重开工作簿 + Univer 重建 DOM
+   与键入竞争。已修掉两个确定性根因（第二轮不能选 `A2`——夹具只有 1 行，惰性会话会夹回
+   `B1`；「保存按钮 disabled」不等于工作簿已开，现在要求工作表标签 + 真实单元格引用），
+   修后单跑 4/4、整跑 3/3 全绿。若仍偶发红，证据会写清卡在 `select` 还是 `type`。
+3. **`electron-u1` 宿主的 150s 进程级超时会掩盖 pdf 的慢首帧**：pdf 就绪预算已压到
+   40s + 45s reload（最坏 ~90s），留 ~60s 给编辑/保存。若哪天 pdf.js 更慢，会明确报
+   「没渲染出页面」而不是撞全局超时——但**那个全局超时本身没有暴露成可配**
+   （`electron-host.cjs:57` 硬编码 150000），多编辑器旅程迟早会撞到，值得另开卡。
+4. **4c 的探针认识六个 vendor 页面各自的失败反馈位**（`.status-msg` / `.app-toast.error` /
+   `.tb-save-error` / `.pdf-toast-notice` / `.status-save.status-failed`）。vendor 改文案或
+   改结构时这只会**红**（不会静默假绿），需跟着改。
+5. 本卡只验「保存被拒」；**没有**验「用户重新打开后是不是拿到外部那一版」（另一个决定）。
+6. 并行会话提醒：执行期间 `apps/desktop/scripts/electron-u1/driver/runner.ts` 被另一个会话
+   改动（`5ec95339` 把测试窗口放到副屏）。我在它提交后才重跑，结论基于该提交之后的状态；
+   若后续再改 runner，本套件的证据需要重跑确认。
