@@ -1,6 +1,6 @@
 # F015｜多命令：让 `commands[1..N]` 真的能跑（而不是只有第一条）
 
-- Status: **in-progress**（派给执行会话）
+- Status: **done**（`38e5f5c8` + `5b7399cb`；L1 注册通 24/24，L2/L3 卡在共享契约，总控裁决不做）
 - Category: **P0 扩展主线**
 - Depends on: F014（`86e74e65`，清单层全通过；`6b8dbe16`，module 路由计数修正）
 - Exclusive writable files:
