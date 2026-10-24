@@ -129,3 +129,26 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 是**相对父容器的百分比**，不是像素。正文 `max-w: 672` 不改变它。
 
 **抽屉开 30% 时编辑器会很窄**，但那是「窄」不是「被盖」，且 `ResizeObserver` 会重算 bounds，不会错位。
+
+### 6.4 面板边框与圆角：现有唯一先例是 6px，不是 10px
+
+UI 总控给的数值我逐条核过：
+
+| token | 存在？ | 谁在用 |
+|---|---|---|
+| `--panel-edge`（`#e3e3e2` 亮 / `#2c2c2a` 暗 / 另有 sketch、暖色两套） | ✅ `styles.css:195/404/2610/2641` | 结构长线 |
+| `border-edge-panel` → `--panel-edge` | ✅ `tailwind.config.js:80` | 三栏分隔、右栏面板 |
+| `--radius-panel` = 10px | ✅ `styles.css:1099` | **没有任何大面板在用** |
+
+**UI 说「右栏面板用的就是 --panel-edge」，边框对、圆角错。**
+
+`RightPanel.tsx:345/:357` 实际是 `rounded-md border border-edge-panel`。
+Tailwind **没自定义 `borderRadius`**（`tailwind.config.js` 只有 colors），所以 `rounded-md` = 默认 **6px**。
+
+全仓「`rounded-{md,lg,xl}` + `border border-edge-panel`」的组合**只有这两处** —— 这是唯一先例。
+
+**所以 Office 面板若用 10px，会和右栏的 6px 不一致**，而且 4px 差异在小尺度上不明显，
+不会被立刻发现。等 UI 总控定夺；定了之后把最终值写在这里。
+
+**这一条的意义不在于 4px**，在于：**「token 存在」不等于「token 在用」**。
+UI 给的是「设计意图」，代码里是「实际取值」，两者不一致时以代码为准，并**把这个不一致报出来**。
