@@ -18,6 +18,7 @@ import {
 } from "@renderer/lib/icons.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useRgStatus } from "@renderer/lib/useRgStatus.js";
+import { searchResultsNavigable, stepSearchResultIndex } from "./searchResultNavigation.js";
 
 /** Search debounce + result caps. Name/content share the debounce; caps differ
  *  (name search returns files, content returns line-level matches). Mirrors the
@@ -219,6 +220,14 @@ export function SearchDialog() {
       setActiveIdx(0);
       return;
     }
+    // A changed query/mode/filter must never keep an old clickable match on
+    // screen during debounce or IPC. Clear synchronously with invalidation;
+    // otherwise Enter can open a file belonging to the previous search.
+    setNameResults([]);
+    setGrepResults([]);
+    setActiveIdx(0);
+    setTruncated(false);
+    setIncompleteScan(false);
     setLoading(true);
     setSearchError(null);
     const myId = ++reqIdRef.current;
@@ -307,20 +316,22 @@ export function SearchDialog() {
   // box, so arrow/enter/esc are simplest handled here. Esc clears the query if
   // there is one, otherwise closes the dialog.
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // IME arrow/Enter/Escape keys belong to the candidate picker, not search.
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
     if (e.key === "ArrowDown") {
-      if (flatCount === 0) return;
+      if (!searchResultsNavigable(loading, searchError, flatCount)) return;
       e.preventDefault();
-      setActiveIdx((i) => Math.min(flatCount - 1, i + 1));
+      setActiveIdx((i) => stepSearchResultIndex(i, flatCount, 1));
       return;
     }
     if (e.key === "ArrowUp") {
-      if (flatCount === 0) return;
+      if (!searchResultsNavigable(loading, searchError, flatCount)) return;
       e.preventDefault();
-      setActiveIdx((i) => Math.max(0, i - 1));
+      setActiveIdx((i) => stepSearchResultIndex(i, flatCount, -1));
       return;
     }
-    if (e.key === "Enter" && !(e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) {
-      if (flatCount === 0) return;
+    if (e.key === "Enter") {
+      if (!searchResultsNavigable(loading, searchError, flatCount)) return;
       e.preventDefault();
       openActive();
       return;
@@ -369,7 +380,7 @@ export function SearchDialog() {
               title={mode === "name" ? t("ide.search.modeNameHint") : t("ide.search.modeContentHint")}
               aria-label={mode === "name" ? t("ide.search.switchToContentAria") : t("ide.search.switchToNameAria")}
               className={cn(
-                "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
+                "flex size-7 shrink-0 items-center justify-center rounded transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                 "cds-hover-ghost text-content-subtle hover:text-content",
               )}
             >
@@ -382,8 +393,10 @@ export function SearchDialog() {
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onKeyDown}
               placeholder={mode === "name" ? t("ide.search.namePlaceholder") : t("ide.search.contentPlaceholder")}
+              aria-label={mode === "name" ? t("ide.search.namePlaceholder") : t("ide.search.contentPlaceholder")}
+              aria-busy={loading}
               spellCheck={false}
-              className="h-6 min-w-0 flex-1 bg-transparent text-body text-content outline-none placeholder:text-content-subtle"
+              className="h-6 min-w-0 flex-1 rounded bg-transparent text-body text-content outline-none placeholder:text-content-subtle focus-visible:ring-2 focus-visible:ring-accent"
             />
             {/* File-type filter: free-form input (auto-completes from previously typed
                 values via the datalist). Accepts "*.java"/".java"/"java" and
@@ -403,7 +416,7 @@ export function SearchDialog() {
               title={t("ide.search.fileTypeHint")}
               aria-label={t("ide.search.fileTypeHint")}
               spellCheck={false}
-              className="h-6 w-[84px] shrink-0 rounded border border-edge bg-transparent px-1 text-[11px] text-content-muted outline-none placeholder:text-content-subtle hover:text-content focus:text-content"
+              className="h-7 w-[clamp(56px,16vw,96px)] shrink-0 rounded border border-edge bg-transparent px-1 text-[11px] text-content-muted outline-none placeholder:text-content-subtle hover:text-content focus:text-content focus-visible:ring-2 focus-visible:ring-accent"
             />
             <datalist id="search-filetype-list">
               {fileTypeHistory.map((h) => (
@@ -423,7 +436,7 @@ export function SearchDialog() {
                 aria-label={t("ide.search.caseToggleAria")}
                 aria-pressed={caseSensitive}
                 className={cn(
-                  "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
+                  "flex size-7 shrink-0 items-center justify-center rounded transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   caseSensitive
                     ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
                     : "cds-hover-ghost text-content-subtle hover:text-content",
@@ -441,8 +454,9 @@ export function SearchDialog() {
                   setQuery("");
                   inputRef.current?.focus();
                 }}
-                className="shrink-0 rounded text-content-subtle transition-colors hover:text-content"
+                className="flex size-7 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 title={t("ide.search.clear")}
+                aria-label={t("ide.search.clear")}
               >
                 <IconX size={15} />
               </button>
@@ -549,9 +563,9 @@ export function SearchDialog() {
                 <kbd className="rounded border border-edge px-1">esc</kbd> {t("common.close")}
               </span>
             </span>
-            <span>
+            <span role="status" aria-live="polite" aria-atomic="true">
               {isSearching
-                ? t("ide.search.resultCount", { n: flatCount })
+                ? t("ide.search.resultCount", { n: loading ? 0 : flatCount })
                 : mode === "name"
                   ? t("ide.search.modeName")
                   : t("ide.search.modeContent")}
@@ -640,10 +654,11 @@ function NameSearchResults({
             key={f.path}
             type="button"
             data-idx={idx}
+            aria-current={isActive ? "true" : undefined}
             onMouseEnter={() => onHover(idx)}
             onClick={() => onOpen(f.path)}
             className={cn(
-              "flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors",
+              "flex min-h-9 w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
               isActive
                 ? "bg-surface-hover text-content font-medium ring-1 ring-inset ring-edge-selected"
                 : "text-content-muted hover:bg-surface-hover/50",
@@ -772,15 +787,17 @@ function ContentSearchResults({
                 key={`${m.path}:${m.lineNumber}`}
                 type="button"
                 data-idx={flatIdx}
+                aria-current={isActive ? "true" : undefined}
                 onMouseEnter={() => onHover(flatIdx)}
                 onClick={() => onOpen(m.path, m.lineNumber)}
                 className={cn(
-                  "flex w-full items-start gap-2 py-0.5 pr-3 pl-8 text-left transition-colors",
+                  "flex min-h-8 w-full items-start gap-2 py-0.5 pr-3 pl-8 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   isActive
                     ? "bg-surface-hover text-content font-medium ring-1 ring-inset ring-edge-selected"
                     : "text-content-muted hover:bg-surface-hover/50",
                 )}
-                title={m.path}
+                title={`${m.relativePath}:${m.lineNumber}`}
+                aria-label={`${m.relativePath}:${m.lineNumber}`}
               >
                 <span className="shrink-0 select-none text-[10px] leading-6 text-content-subtle">
                   {m.lineNumber}

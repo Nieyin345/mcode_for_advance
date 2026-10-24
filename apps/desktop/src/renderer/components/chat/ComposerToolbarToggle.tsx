@@ -47,8 +47,8 @@ export function ComposerToolbarToggle({ sessionId }: { sessionId: string }) {
             />
           }
           className={cn(
-            "composer-chip inline-flex h-8 w-8 items-center justify-center rounded-xl text-content-muted transition-all duration-150 ease-out",
-            "cds-hover-ghost hover:scale-110 hover:text-content active:scale-95",
+            "composer-chip inline-flex size-8 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+            "cds-hover-ghost hover:text-content",
           )}
         >
           <IconAdjustmentsHorizontal size={18} />
@@ -67,7 +67,7 @@ export function ComposerToolbarToggle({ sessionId }: { sessionId: string }) {
               ref={popupRef}
               className={cn(
                 // overflow-visible: let portaled child menus escape the box.
-                "z-50 overflow-visible rounded-[var(--radius-btn-xs)] border border-edge bg-surface p-1.5 shadow-[var(--shadow-popover)]",
+                "z-50 max-w-[calc(100vw-16px)] overflow-visible rounded-[var(--radius-btn-xs)] border border-edge bg-surface p-1.5 shadow-[var(--shadow-popover)]",
                 "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                 "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                 "transition-[transform,opacity] duration-100",

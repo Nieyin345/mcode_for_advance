@@ -94,9 +94,13 @@ export function ComposerToolbar({
     const parent = pillRef.current?.parentElement;
     if (!parent) return;
     const measure = () => setFluidTier(composerFluidTier(parent.clientWidth));
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
     const observer = new ResizeObserver(measure);
     observer.observe(parent);
-    measure();
     return () => observer.disconnect();
   }, [layout]);
   // Context-window snapshot for THIS pane's session. Drives the ring segment
@@ -122,7 +126,7 @@ export function ComposerToolbar({
 
   if (layout === "row") {
     return (
-      <div className="flex w-72 flex-col items-stretch gap-0.5">
+      <div className="flex w-[min(18rem,calc(100vw-24px))] max-w-full min-w-0 flex-col items-stretch gap-0.5">
         <ModelDropdown layout="row" sessionId={sessionId} />
         <EffortChip layout="row" />
         <PermissionChip layout="row" />
@@ -156,7 +160,7 @@ export function ComposerToolbar({
   const hasAttach =
     !!onPickFiles && !!onPickImages && !!onPickLibraries && !!onSlashCommand;
   return (
-    <div ref={pillRef} className="composer-minipill" data-fluid-tier={fluidTier} data-compact={compact ? "1" : "0"}>
+    <div ref={pillRef} className="composer-minipill min-w-0 max-w-full" role="group" aria-label={t("chat.toolbarToggle")} data-fluid-tier={fluidTier} data-compact={compact ? "1" : "0"}>
       {hasAttach && (
         <>
           <AttachMenuButton

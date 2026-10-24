@@ -75,6 +75,7 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
   useEffect(() => {
     if (!open) return undefined;
     setQuery("");
+    setProfiles([]);
     setActiveIdx(0);
     setError(null);
     const id = setTimeout(() => inputRef.current?.focus(), 0);
@@ -142,7 +143,7 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
   const optionCount = options.length;
 
   useEffect(() => {
-    setActiveIdx((i) => Math.min(i, Math.max(0, optionCount - 1)));
+    setActiveIdx((i) => Math.max(0, Math.min(i, Math.max(0, optionCount - 1))));
   }, [optionCount]);
 
   /**
@@ -153,6 +154,7 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
    * 两条路收成一条。
    */
   const pickOption = (opt: Option) => {
+    if (loading || error) return;
     onPick({ profile: opt.profile, memory: opt.memory });
     onClose();
   };
@@ -175,18 +177,21 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
       // （原来这里有个 Alt+M「切记忆开关」的快捷键。2026-09-21 连同那个开关一起去掉了
       //   —— 记忆现在是**平铺的一档选项**，直接选它就行，不需要一个修饰键去切。）
       if (e.key === "ArrowDown") {
+        if (optionCount === 0) return;
         e.preventDefault();
         e.stopPropagation();
         setActiveIdx((i) => Math.min(i + 1, optionCount - 1));
         return;
       }
       if (e.key === "ArrowUp") {
+        if (optionCount === 0) return;
         e.preventDefault();
         e.stopPropagation();
         setActiveIdx((i) => Math.max(i - 1, 0));
         return;
       }
       if (e.key === "Enter") {
+        if (loading || error || optionCount === 0) return;
         e.preventDefault();
         e.stopPropagation();
         const target = options[activeIdx];
@@ -222,7 +227,7 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
    * `left` 那两行）：两边各留 8px，窗口比面板窄时**以左边为准**（宁可右边溢出一点，
    * 也别让面板左边缘跑出屏幕 —— 用户从左边开始读）。
    */
-  const width = Math.min(Math.max(anchorRect.width, 300), 420);
+  const width = Math.min(Math.max(anchorRect.width, 300), 420, Math.max(0, window.innerWidth - 16));
   const left = Math.min(
     Math.max(anchorRect.left, 8),
     Math.max(window.innerWidth - width - 8, 8),
@@ -244,12 +249,14 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
   const spaceAbove = anchorRect.top - 8;
   const spaceBelow = window.innerHeight - anchorRect.bottom - 8;
   const openUp = spaceAbove >= Math.min(PANEL_MAX_H, spaceBelow);
-  const maxH = Math.max(120, Math.min(PANEL_MAX_H, openUp ? spaceAbove : spaceBelow));
+  const maxH = Math.max(48, Math.min(PANEL_MAX_H, openUp ? spaceAbove : spaceBelow, window.innerHeight - 16));
 
   return (
     <div
       ref={rootRef}
-      className="fixed z-[70] flex flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl"
+      role="dialog"
+      aria-label={t("chat.newSubChat")}
+      className="fixed z-[70] flex flex-col overflow-hidden rounded-[var(--radius-panel)] border border-edge bg-surface shadow-[var(--shadow-popover)]"
       style={{
         left,
         width,
@@ -267,7 +274,8 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t("chat.newSubChat.searchPlaceholder")}
-          className="h-6 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle"
+          aria-label={t("chat.newSubChat.searchPlaceholder")}
+          className="h-7 min-w-0 flex-1 rounded bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle focus-visible:ring-2 focus-visible:ring-accent"
         />
       </div>
 
@@ -302,9 +310,10 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
                 key={opt.key}
                 type="button"
                 onMouseEnter={() => setActiveIdx(idx)}
+                aria-current={active ? "true" : undefined}
                 onClick={() => pickOption(opt)}
                 className={cn(
-                  "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] transition-colors",
+                  "flex min-h-9 w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   active ? "bg-surface-muted text-content" : "text-content-muted",
                 )}
                 title={

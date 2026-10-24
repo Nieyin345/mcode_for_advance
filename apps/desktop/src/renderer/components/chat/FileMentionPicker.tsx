@@ -336,7 +336,7 @@ export function FileMentionPicker({
     <div
       ref={rootRef}
       className={cn(
-        "fixed z-[70] flex max-h-64 flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl",
+        "fixed z-[70] flex max-h-[calc(100vh-16px)] flex-col overflow-hidden rounded-[var(--radius-panel)] border border-edge bg-surface shadow-[var(--shadow-popover)]",
       )}
       style={{
         left: placement.left,
@@ -357,12 +357,13 @@ export function FileMentionPicker({
             value={localQuery}
             onChange={(e) => setLocalQuery(e.target.value)}
             placeholder={t("chat.mention.searchPlaceholder")}
-            className="h-6 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle"
+            aria-label={t("chat.mention.searchPlaceholder")}
+            className="h-7 min-w-0 flex-1 rounded bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle focus-visible:ring-2 focus-visible:ring-accent"
           />
           {eligibleSelectedCount > 0 && (
             <button
               type="button"
-              className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-surface hover:brightness-110"
+              className="min-h-7 shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-surface hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               onClick={confirmAttach}
             >
               {t("chat.mention.addN", { n: eligibleSelectedCount })}
@@ -385,7 +386,7 @@ export function FileMentionPicker({
           disabled={pickPending}
           className={cn(
             "mx-1.5 mt-1.5 flex items-center gap-1.5 rounded-md border border-dashed border-edge px-2 py-1.5 text-left text-[12px] text-content-muted",
-            "cds-hover-ghost transition-colors hover:border-edge hover:text-content",
+            "cds-hover-ghost transition-colors hover:border-edge hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           )}
           title={t("chat.mention.externalTitle")}
         >
@@ -429,6 +430,9 @@ export function FileMentionPicker({
                 type="button"
                 data-idx={idx}
                 disabled={already && mode === "mention"}
+                aria-disabled={already}
+                aria-pressed={mode === "attach" ? isSel || already : undefined}
+                aria-current={isActive ? "true" : undefined}
                 onMouseEnter={() => setActiveIdx(idx)}
                 onClick={() => {
                   if (mode === "mention") {
@@ -438,7 +442,7 @@ export function FileMentionPicker({
                   }
                 }}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors",
+                  "flex min-h-9 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-2 py-1.5 text-left text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   isActive
                     ? "bg-surface-hover text-content ring-1 ring-inset ring-edge-selected"
                     : "cds-hover-ghost text-content",
@@ -482,7 +486,7 @@ export function FileMentionPicker({
           {" "}
           {mode === "attach" ? t("chat.mention.confirm") : t("chat.mention.select")}
         </span>
-        <span>{t("chat.mention.count", { n: files.length })}</span>
+        <span role="status" aria-live="polite">{t("chat.mention.count", { n: visibleFiles.length })}</span>
       </div>
     </div>
   );

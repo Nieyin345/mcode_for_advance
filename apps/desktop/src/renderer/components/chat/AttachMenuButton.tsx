@@ -102,6 +102,10 @@ export function AttachMenuButton({
   const createSubChat = useSessionStore((s) => s.createSubChat);
   /** 建失败的原因 —— 「点了没反应」是这里最坏的表现,所以必须显示出来。 */
   const [createError, setCreateError] = useState<string | null>(null);
+  // A picker selection can fire twice before React commits state. The ref is
+  // synchronous so two clicks cannot create two child conversations.
+  const subChatCreatePendingRef = useRef(false);
+  const [creatingSubChat, setCreatingSubChat] = useState(false);
 
   const openSubChatPicker = () => {
     setCreateError(null);
@@ -110,6 +114,10 @@ export function AttachMenuButton({
   };
 
   const onSubChatPick = (choice: SubChatChoice) => {
+    if (subChatCreatePendingRef.current) return;
+    subChatCreatePendingRef.current = true;
+    setCreatingSubChat(true);
+    setCreateError(null);
     void (async () => {
       try {
         const session = await createSubChat({
@@ -120,7 +128,10 @@ export function AttachMenuButton({
         // 那不是错误,不显示红字。
         if (session) onNewSubChat?.({ id: session.id, title: session.title });
       } catch (err) {
-        setCreateError(t("chat.newSubChat.createFailed", { error: (err as Error).message }));
+        setCreateError(t("chat.newSubChat.createFailed", { error: err instanceof Error ? err.message : String(err) }));
+      } finally {
+        subChatCreatePendingRef.current = false;
+        setCreatingSubChat(false);
       }
     })();
   };
@@ -130,12 +141,12 @@ export function AttachMenuButton({
       <Menu.Root open={open} onOpenChange={setOpen}>
         <Menu.Trigger
           ref={triggerRef}
-          disabled={disabled}
+          disabled={disabled || creatingSubChat}
           className={cn(
             segment
               ? "composer-minipill-seg w-7 justify-center"
-              : "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-content-muted transition-all duration-150 ease-out hover:scale-110 hover:bg-surface-hover hover:text-content active:scale-95",
-            "disabled:scale-100 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-muted disabled:hover:scale-100",
+              : "inline-flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content",
+            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-muted",
           )}
           title={t("chat.attachMenu")}
           aria-label={t("chat.attachMenu")}
@@ -147,7 +158,7 @@ export function AttachMenuButton({
             <Menu.Popup
               ref={popupRef}
               className={cn(
-                "z-50 min-w-[200px] origin-bottom-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
+                "z-50 max-h-[calc(100vh-24px)] min-w-[min(200px,calc(100vw-24px))] overflow-y-auto origin-bottom-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
                 "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                 "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                 "transition-[transform,opacity] duration-100",
@@ -157,7 +168,7 @@ export function AttachMenuButton({
                 onClick={onPickFiles}
                 className={cn(
                   "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
-                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
+                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
                 <IconFileText size={14} className="shrink-0 opacity-80" />
@@ -167,7 +178,7 @@ export function AttachMenuButton({
                 onClick={onPickImages}
                 className={cn(
                   "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
-                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
+                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
                 <IconPhoto size={14} className="shrink-0 opacity-80" />
@@ -181,7 +192,7 @@ export function AttachMenuButton({
                 onClick={onPickLibraries}
                 className={cn(
                   "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
-                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
+                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
                 <IconBook size={14} className="shrink-0 opacity-80" />
@@ -201,9 +212,10 @@ export function AttachMenuButton({
               <div className="my-1 border-t border-edge" />
               <Menu.Item
                 onClick={openSubChatPicker}
+                disabled={creatingSubChat}
                 className={cn(
                   "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
-                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
+                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
                 <IconUserStar size={14} className="shrink-0 opacity-80" />
@@ -216,7 +228,7 @@ export function AttachMenuButton({
                 onClick={onSlashCommand}
                 className={cn(
                   "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
-                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content",
+                  "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
                 <IconCommand size={14} className="shrink-0 opacity-80" />
@@ -238,9 +250,10 @@ export function AttachMenuButton({
           并且**不会**被输入框的布局挤动。 */}
       {createError && (
         <div
-          className="fixed z-[70] max-w-[420px] rounded-lg border border-red-500/40 bg-surface px-3 py-2 text-[12px] text-red-500 shadow-xl"
+          role="alert"
+          className="fixed z-[70] max-w-[min(420px,calc(100vw-16px))] rounded-lg border border-danger/40 bg-surface px-3 py-2 text-[12px] text-danger shadow-[var(--shadow-popover)]"
           style={{
-            left: pickerAnchor?.left ?? 16,
+            left: Math.max(8, Math.min(pickerAnchor?.left ?? 16, window.innerWidth - 240)),
             top: Math.max(8, (pickerAnchor?.top ?? 40) - 8),
             transform: "translateY(-100%)",
           }}

@@ -19,7 +19,7 @@
  *
  * Visual language matches FileMentionPicker.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { openEscapeLayer, claimEscape, isTopEscapeLayer } from "@renderer/lib/escapeLayer.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -78,6 +78,7 @@ export function SlashCommandPicker({
   onClose,
 }: SlashCommandPickerProps) {
   const { t } = useI18n();
+  const panelId = useId();
   // Compute every tab's filtered list up front so we can auto-switch.
   const skillCmds = useMemo(() => filterSkillCommands(query, skills.filter(s => !s.name.toLowerCase().startsWith("init-"))), [query, skills]);
   const builtinCmds = useMemo(() => [...filterBuiltInCommands(query), ...projectInitCommands.filter(c => `${c.name} ${c.description}`.toLowerCase().includes(query.toLowerCase()))], [query, projectInitCommands]);
@@ -234,7 +235,9 @@ export function SlashCommandPicker({
   return (
     <div
       ref={popupRef}
-      className="fixed z-[70] flex max-h-64 flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl"
+      role="region"
+      aria-label={t("chat.slash.switchTab")}
+      className="fixed z-[70] flex max-h-[calc(100vh-16px)] flex-col overflow-hidden rounded-[var(--radius-panel)] border border-edge bg-surface shadow-[var(--shadow-popover)]"
       style={{
         left: placement.left,
         width: placement.width,
@@ -244,8 +247,9 @@ export function SlashCommandPicker({
       onMouseDown={(e) => e.preventDefault()}
     >
       {/* Tab bar: Skill | 命令 | 当前引擎. Each tab shows its live result count. */}
-      <div className="flex items-stretch border-b border-edge">
+      <div role="tablist" aria-label={t("chat.slash.switchTab")} className="flex items-stretch border-b border-edge">
         <TabButton
+          panelId={panelId}
           active={activeTab === "skill"}
           onClick={() => setActiveTab("skill")}
           icon={<IconSparkles size={12} className="shrink-0 opacity-70" />}
@@ -253,6 +257,7 @@ export function SlashCommandPicker({
           count={skillCmds.length}
         />
         <TabButton
+          panelId={panelId}
           active={activeTab === "command"}
           onClick={() => setActiveTab("command")}
           icon={<IconCommand size={12} className="shrink-0 opacity-70" />}
@@ -262,6 +267,7 @@ export function SlashCommandPicker({
         {/* 引擎那一栏常驻显示（哪怕还没拉到清单），否则用户永远不知道有这么一栏
             —— 「用不了 claude code 内置的命令」最初就是看不见造成的。 */}
         <TabButton
+          panelId={panelId}
           active={activeTab === "engine"}
           onClick={() => setActiveTab("engine")}
           icon={<IconTerminal size={12} className="shrink-0 opacity-70" />}
@@ -270,7 +276,7 @@ export function SlashCommandPicker({
         />
       </div>
 
-      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-1">
+      <div id={panelId} role="tabpanel" ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-1">
         {commands.length === 0 ? (
           <div className="px-3 py-6 text-center text-[12px] text-content-subtle">
             {activeTab === "skill"
@@ -302,6 +308,7 @@ export function SlashCommandPicker({
                 key={isEngine ? `engine:${name}` : isBuiltin ? `builtin:${name}` : `${(entry as SkillInfo).source}:${name}`}
                 type="button"
                 data-idx={idx}
+                aria-current={isActive ? "true" : undefined}
                 onMouseEnter={() => setActiveIdx(idx)}
                 onClick={() => {
                   if (isEngine) onPickEngineCommand(entry as EngineCommand);
@@ -309,7 +316,7 @@ export function SlashCommandPicker({
                   else onPickSkill(entry as SkillInfo);
                 }}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors",
+                  "flex min-h-9 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-2 py-1.5 text-left text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   isActive
                     ? "bg-surface-hover text-content ring-1 ring-inset ring-edge-selected"
                     : "cds-hover-ghost text-content",
@@ -366,7 +373,7 @@ export function SlashCommandPicker({
           <kbd className="ml-1 rounded border border-edge px-1">↵</kbd>
           {" "}{t("chat.slash.insert")}
         </span>
-        <span>{t("chat.slash.count", { n: commands.length })}</span>
+        <span role="status" aria-live="polite">{t("chat.slash.count", { n: commands.length })}</span>
       </div>
     </div>
   );
@@ -374,12 +381,14 @@ export function SlashCommandPicker({
 
 /** A single tab button in the picker header. */
 function TabButton({
+  panelId,
   active,
   onClick,
   icon,
   label,
   count,
 }: {
+  panelId: string;
   active: boolean;
   onClick: () => void;
   icon: React.ReactNode;
@@ -389,9 +398,12 @@ function TabButton({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
+      aria-controls={panelId}
       onClick={onClick}
       className={cn(
-        "flex flex-1 items-center justify-center gap-1.5 px-2.5 py-1.5 text-[11px] transition-colors",
+        "flex min-w-0 flex-1 items-center justify-center gap-1 px-1.5 py-1.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         active
           ? "border-b-2 border-accent text-content"
           : "border-b-2 border-transparent text-content-muted hover:text-content",

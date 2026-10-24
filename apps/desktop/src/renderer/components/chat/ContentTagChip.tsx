@@ -42,7 +42,7 @@ export const ContentTagChip = forwardRef<
       className={cn(
         // composer-tag-in: spring entrance when the chip mounts (paste
         // promotion, file drop, @-mention pick) — see styles.css.
-        "composer-tag-in inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition-colors",
+        "composer-tag-in inline-flex max-w-full min-w-0 items-center gap-1 rounded-[var(--radius-btn-xs)] border px-1.5 py-0.5 text-[11px] transition-colors",
         open
           ? "border-accent bg-accent/20 text-accent"
           : "border-edge bg-surface-muted/60 text-content-muted hover:border-edge hover:bg-surface-hover hover:text-content",
@@ -51,6 +51,8 @@ export const ContentTagChip = forwardRef<
       <button
         type="button"
         onClick={onToggle}
+        aria-expanded={open}
+        aria-label={tag.preview}
         title={
           isFile
             ? (tag.filePath ?? tag.preview)
@@ -63,7 +65,7 @@ export const ContentTagChip = forwardRef<
                 ? (open ? t("chat.tag.hidePreview") : t("chat.tag.viewElement"))
                 : open ? t("chat.tag.hidePreview") : t("chat.tag.viewContent")
         }
-        className="flex items-center gap-1"
+        className="flex min-h-6 min-w-0 items-center gap-1 rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         {isFile ? (
           isImageFile(tag) ? (
@@ -80,14 +82,14 @@ export const ContentTagChip = forwardRef<
         ) : (
           <IconClipboard size={12} className="opacity-80" />
         )}
-        <span className="max-w-[160px] truncate font-normal">{tag.preview}</span>
+        <span className="max-w-[160px] min-w-0 truncate font-normal">{tag.preview}</span>
       </button>
       <button
         type="button"
         onClick={onRemove}
         title={t("chat.tag.removeTitle")}
         aria-label={t("chat.tag.removeTitle")}
-        className="cds-hover-ghost ml-0.5 flex h-4 w-4 items-center justify-center rounded text-content-subtle transition-colors hover:text-content"
+        className="cds-hover-ghost ml-0.5 flex size-6 shrink-0 items-center justify-center rounded text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <IconX size={11} />
       </button>
