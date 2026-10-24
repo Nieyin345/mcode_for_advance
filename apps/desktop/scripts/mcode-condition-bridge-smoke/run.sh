@@ -4,13 +4,14 @@
 # 纯逻辑 + **真上游 10-switch.js 原文**（进程内加载，不起引擎、不部署）。
 # 不起 Electron、不碰用户数据根。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 mkdir -p .tmp
 OUT=$(mktemp -d ./.tmp/mcode-condition-bridge.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 if [[ -z "$ESBUILD" ]]; then echo 'Installed esbuild not found; no network install attempted.' >&2; exit 1; fi
 
 # 本套件的 import 链（flowMigration / conditionHost / mcodeNodeTypes / nodeTypes）

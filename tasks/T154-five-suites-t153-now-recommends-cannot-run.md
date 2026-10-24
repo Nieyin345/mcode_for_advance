@@ -140,13 +140,121 @@ grep -n "glob\|rglob\|-smoke" apps/desktop/scripts/t145-runsh-path-smoke/main.* 
 
 ## 七、回写
 
-1. 5 个目录各自的形状（是不是同一个 bug）
-2. 改了什么、从仓库根实跑的结果
-3. **T145 守卫的范围扩没扩，判据是否和 T153 的发现逻辑一致**
-4. 变异结果
-5. `smokes-for.sh` 推荐的套件抽样实跑结果
-6. 提交 SHA
-7. **未做项 / 觉得不对但没改的**
+### 1. 5 个目录各自的形状
+
+**全部是同一个 bug，没有例外。** `mcode-condition-bridge-smoke` 虽然更新，结构与另外四个一致：
+
+| 目录 | 原来的 `cd` 行 | 原来的 `source` 行 |
+|---|---|---|
+| `flow-preview` | `:8` | `:12` |
+| `mcode-condition-bridge-smoke` | `:7` | `:13` |
+| `md-preview` | `:8` | `:12` |
+| `preset-scripts-sync` | `:10` | `:15` |
+| `t96-probe` | `:16` | `:23` |
+
+**⚠️ 注意 `flow-preview` / `md-preview` 还有第二次 `cd scripts/ui-probe`（`:25` / `:24`）** ——
+那是相对 `apps/desktop` 的，**改成 `HERE` 之后不受影响**（它在 `cd "$HERE/../.."` 之后执行）。
+
+### 2. 改了什么、从仓库根实跑的结果
+
+**统一改成 `HERE` 形状，每套只动两处（`cd` 行 + `source` 行）：**
+
+```bash
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
+source "$HERE/../lib/esbuild-path.sh"
+```
+
+**改前（全部 rc=1，全是路径错）：**
+
+```
+flow-preview                   rc=1  .../lib/esbuild-path.sh: No such file or directory
+mcode-condition-bridge-smoke   rc=1  同上
+md-preview                     rc=1  同上
+preset-scripts-sync            rc=1  同上
+t96-probe                      rc=1  同上
+```
+
+**改后（从仓库根跑）：**
+
+| 目录 | rc | path_err | 结果 |
+|---|---|---|---|
+| `flow-preview` | **0** | 0 | `20/20 通过 · 截图 3 张` |
+| `mcode-condition-bridge-smoke` | **0** | 0 | `47/47 通过（其中负控 9 条）` |
+| `md-preview` | **0** | 0 | `10/10 通过 · 截图 2 张` |
+| `preset-scripts-sync` | **2** | 0 | **用法错**（见下） |
+| `t96-probe` | **1** | 0 | 53/54，1 条真 FAIL（见下） |
+
+**⚠️ `preset-scripts-sync` 的 rc=2 不是回归**：它要求 `--check` 或 `--write`，不带参数就退出 2。
+**带 `--check` 从仓库根跑 → EXIT=0**（已验证：`预设里的 Python 正文与 assets.ts 一致`）。
+
+**⚠️ `t96-probe` 的 rc=1 不是本卡引入的**：我用 `git stash` 把 `run.sh` 退回改前状态、
+从 `apps/desktop` 跑（那条路改前就是通的），**同样 rc=1、同样 2 行 FAIL**。
+失败内容是 `★ 6 个节点类型各有一个 .js — [7 个 .js]`（实际 7 个，断言写死 6 个）。
+**与路径无关，是另一条线的账，本卡不改。**
+
+### 3. T145 守卫的范围扩没扩
+
+**扩了。** `t145-runsh-path-smoke/build.mjs:46` 原来：
+
+```js
+.filter((n) => n.endsWith("-smoke") && ...)
+```
+
+**改成 `allRunShDirs`（所有含 `run.sh` 的目录），判据循环也换到它上面。**
+
+**判据与 T153 的发现逻辑一致**：T153 的 `suite_kind()` 用
+`SUITE_ENTRY_NAMES = ("run.sh", "run.mjs", "main.ts", "main.mjs", "main.mts")`；
+守 scope 取其中「有 `run.sh`」的子集 —— **因为本守卫要扫的就是 `run.sh`。**
+差异只在于 T153 还认 `main.ts` 之类的入口（那些没有 `run.sh`，本守卫没有可扫的对象）。
+
+**扫描规模：625 个 `-smoke` → 633 个含 `run.sh` 的目录。**
+
+**改后 8/8 全绿**（包括 `o4-docs-close-smoke` —— 它已经被 Office 线修好了）。
+
+### 4. 变异
+
+| # | 变异 | 预期 | 实际 |
+|---|---|---|---|
+| M-1 | 把 `flow-preview` 改回 `cd` + `dirname "$0"` | 红 1（第 [1] 条） | **红 1**，点名 `flow-preview/run.sh:12` ✅ |
+
+**还原用 `cp` + `cmp` 逐字节核对通过。还原后守卫复绿 8/8。**
+
+### 5. `smokes-for.sh` 推荐的套件抽样实跑
+
+**非 `-smoke` 且有 `run.sh` 的 8 个目录，全部从仓库根实跑：**
+
+| 目录 | rc | path_err |
+|---|---|---|
+| `flow-preview` | 0 | 0 |
+| `mcode-condition-bridge-smoke`（名字带 `-smoke`，一并验） | 0 | 0 |
+| `md-preview` | 0 | 0 |
+| `preset-scripts-sync` | 2（用法） | **0** |
+| `t96-probe` | 1（真 FAIL） | **0** |
+| `o3-packaged-u1` | 0（`O3: PASS`） | 0 |
+| `vscode-api-census` | 0 | 0 |
+| `arc005-visual-baseline` / `electron-u1` | **未实跑**（真 Electron，几分钟起） | 静态检查：只在 `cd` 那行用 `$0`，之后不再用 —— **安全** |
+
+**⚠️ `arc005` / `electron-u1` 没实跑的原因**：它们起真 Electron，单套几分钟。
+**它们的 `run.sh` 里 `$0` 只出现在 `cd` 行**（那行在 `cd` 之前求值，正确），
+**所以静态判据已经能排除这个 bug。** 但「能跑」这件事我没实测 —— 记为未做。
+
+### 6. 提交 SHA
+
+见下方「提交」。
+
+### 7. 未做 / 觉得不对但没改的
+
+1. **`arc005-visual-baseline` / `electron-u1` 没从仓库根实跑** —— 真 Electron，几分钟。
+   静态判据通过（`$0` 只在 `cd` 行），但「能跑」未实测。
+2. **`t96-probe` 的 1 条 FAIL**（`6 个节点类型各有一个 .js` vs 实际 7 个）——
+   与本卡无关（改前就是红的），**但它现在被 T153 收进推荐列表了，会在必跑里显示红。**
+   这是另一条线的账，我没开卡（超出本卡边界）。
+3. **`preset-scripts-sync` 不带参数 rc=2** —— 这是它的用法设计（要求 `--check` / `--write`）。
+   **但 `smokes-for.sh` 推荐它时打印的用法不带参数** —— 读者照抄会得到 rc=2。
+   **和本卡的症状是同一族**（工具推荐的东西按推荐用法跑不通），**但修法不同**（要么改用法提示，要么改推荐）。没改。
+4. **守卫的判据 `runShCount > 400` 没跟着调** —— 现在是 633，阈值 400 仍然过，但**它离实际值越来越远**。
+   没改（改阈值会削弱「零输入恒绿」的保护，需要单独判断）。
 
 ---
 

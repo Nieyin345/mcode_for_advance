@@ -5,11 +5,12 @@
 # 在真浏览器里**真的把图放出来了** —— 规划里这一条改过但从没在真浏览器看过图。
 # 见 docs/前端怎么核对.md。需要本机有 Chrome。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=.tmp/md-preview
 mkdir -p "$OUT"
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 cp scripts/md-preview/index.html "$OUT/index.html"
 cp scripts/md-preview/styles.css "$OUT/styles.css"

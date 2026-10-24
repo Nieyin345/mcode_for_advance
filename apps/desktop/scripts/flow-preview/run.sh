@@ -5,11 +5,12 @@
 # 由 `scripts/ui-probe/drive-flow.mjs` 用真 Chrome 量几何/颜色/墨量/裁切。
 # 见 docs/前端怎么核对.md。需要本机有 Chrome。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=.tmp/flow-preview
 mkdir -p "$OUT"
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 # 静态资源（html / css）原样拷过去，bundle 现打。
 cp scripts/flow-preview/index.html "$OUT/index.html"

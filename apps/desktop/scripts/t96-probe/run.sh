@@ -13,14 +13,15 @@
 # 私有 mktemp 数据根 + `node_modules` junction 指回共享安装树（106MB 不复制），
 # 与 `mcode-node-pack-smoke` / `node-red-e2e-smoke` 同一种做法。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 mkdir -p .tmp
 OUT=$(mktemp -d ./.tmp/t96-probe.XXXXXX)
 DATA=$(mktemp -d "${TMPDIR:-/tmp}/mcode-t96-data.XXXXXX")
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/t96-probe/main.ts \
   --bundle --platform=node --format=esm \

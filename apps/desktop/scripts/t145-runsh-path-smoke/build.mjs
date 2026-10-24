@@ -48,6 +48,24 @@ const suites = readdirSync(SCRIPTS)
   .sort();
 
 /**
+ * 【T154】同样的扫描，但范围是所有带 `run.sh` 的目录，不只 `-smoke`。
+ *
+ * T153 把 `smokes-for.py` 的发现逻辑从「名字以 -smoke 结尾」改成「有入口文件」，
+ * 于是 `flow-preview` / `md-preview` / `preset-scripts-sync` / `t96-probe` /
+ * `mcode-condition-bridge-smoke` 五个目录第一次出现在推荐列表里 —— 而它们
+ * 全都还带着本套件要抓的那个 bug。守 `-smoke` 那一半就抓不到它们。
+ */
+const allRunShDirs = readdirSync(SCRIPTS)
+  .filter((n) => {
+    try {
+      return statSync(join(SCRIPTS, n)).isDirectory() && statSync(join(SCRIPTS, n, "run.sh")).isFile();
+    } catch {
+      return false;
+    }
+  })
+  .sort();
+
+/**
  * 返回该 run.sh 里「cd 之后仍在用 dirname "$0"」的行号（1-based），没有就是 []。
  * 注释行（# 开头）跳过 —— 那些是解释，不是用法。
  */
@@ -66,11 +84,13 @@ function offendingLines(src) {
   return hits;
 }
 
-console.log(`t145-runsh-path-smoke —— ${suites.length} 个 smoke 目录\n`);
+console.log(`t145-runsh-path-smoke —— ${suites.length} 个 smoke 目录，共 ${allRunShDirs.length} 个带 run.sh 的目录\n`);
 
 // [1] 主判据：全部套件，cd 之后不许在用 dirname "$0"
+// 【T154】范围从 `-smoke` 扩到「所有带 run.sh 的目录」—— T153 之后工具会推荐
+// 非 -smoke 的套件，守一半等于让另一半裸奔。
 const offenders = [];
-for (const name of suites) {
+for (const name of allRunShDirs) {
   const file = join(SCRIPTS, name, "run.sh");
   let src;
   try {
@@ -88,13 +108,7 @@ check(
 );
 
 // [2] 覆盖性正控：扫描确实看到了文件（否则 [1] 会因为「一套都没读到」而恒绿）
-const runShCount = suites.filter((n) => {
-  try {
-    return statSync(join(SCRIPTS, n, "run.sh")).isFile();
-  } catch {
-    return false;
-  }
-}).length;
+const runShCount = allRunShDirs.length;
 check("★ 扫描确实读到了 run.sh（否则第 [1] 条会因为零输入而恒绿）", runShCount > 400, { runShCount });
 check("存在使用 HERE 正确形状的样板（t138/t139/t140 之一）", suites.includes("t140-cn-tier-smoke"));
 

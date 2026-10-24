@@ -7,12 +7,13 @@
 #
 # 打包后再跑：`assets.ts` 是纯字面量，打包结果就是真值（同 mineru-py-smoke 的理由）。
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE=$(cd "$(dirname "$0")" && pwd)
+cd "$HERE/../.."
 
 OUT=$(mktemp -d /tmp/mcode-preset-scripts-sync.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
-source "$(dirname "$0")/../lib/esbuild-path.sh"
+source "$HERE/../lib/esbuild-path.sh"
 
 "$ESBUILD" scripts/preset-scripts-sync/main.ts \
   --bundle --platform=node --format=esm \
