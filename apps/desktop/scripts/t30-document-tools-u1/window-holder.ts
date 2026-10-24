@@ -13,12 +13,43 @@ import type { BrowserWindow } from "electron";
 
 let mainWindow: BrowserWindow | null = null;
 
-/** 由本套件的 setup 注入（探针窗口）。 */
+/**
+ * 由本套件的 setup 注入（探针窗口）。
+ *
+ * ## ⚠️ 为什么还要问 T7 的替身（W24 实测，假门禁盖住的第二个缺陷）
+ *
+ * esbuild 把 `@main/window.js` 别名到**本文件**，而 `t7-genoffice-u1/harness.ts`
+ * 是用**相对路径** `./window-holder.js` import 它自己那一份的 —— 于是同一份逻辑在
+ * 产物里是**两个模块实例**（实测 `journeys.cjs` 里 `window_holder` + `window_holder2`）：
+ *
+ *  - `assembleHarness()` 调的是 T7 那份的 `setMainWindowForU1(win)`；
+ *  - 生产 `documentViewHost.liveWindow()` 经 `@main/window.js` 读的是**本文件**这份，
+ *    它的 `mainWindow` 永远是 null → `主窗口尚未就绪，无法创建文档视图`。
+ *
+ * 所以本文件不能自己存一份就完事：**先读 T7 那份**（若它在同一个 bundle 里），
+ * 让两条路径看到同一个窗口。这样不必改 T7 的交付物，也不会出现两份状态。
+ *
+ * `import` 是惰性的且只在 t30 的 bundle 里成立；t30 的 vendor-esbuild 已把
+ * `t7-genoffice-u1/harness.js` 打进同一产物，T7 的 `window-holder.js` 一定在。
+ */
+import * as t7WindowHolder from "../t7-genoffice-u1/window-holder.js";
+
+const t7Holder = t7WindowHolder as unknown as {
+  getMainWindow?: () => BrowserWindow | null;
+};
+
 export function setMainWindowForU1(win: BrowserWindow | null): void {
   mainWindow = win;
+  // 同步给 T7 那份：`harness.ts` 自己会调它的 setter，但生产 `@main/window.js`
+  // 在 t30 里指向本文件 —— 两边都要看得见同一个窗口。
+  (t7WindowHolder as unknown as { setMainWindowForU1?: (w: BrowserWindow | null) => void })
+    .setMainWindowForU1?.(win);
 }
 
 export function getMainWindow(): BrowserWindow | null {
+  // T7 先（`harness.ts` 在 setup 阶段只调它的 setter）；本文件的副本作兜底。
+  const fromT7 = t7Holder.getMainWindow?.() ?? null;
+  if (fromT7 !== null && !fromT7.isDestroyed()) return fromT7;
   if (mainWindow !== null && mainWindow.isDestroyed()) mainWindow = null;
   return mainWindow;
 }

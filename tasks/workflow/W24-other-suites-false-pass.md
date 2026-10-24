@@ -808,3 +808,177 @@ M1/M2 比预期多出来的 2/1 条是**我预期没写全**，不是判据弱 �
 1. **它把「构建失败注入」做成 5 套 × 3 项 = 预期 15、实际 15/15**，全部 `sha256sum -c` 逐字节还原；
 2. **它把判据抽成 `apps/desktop/scripts/lib/electron-u1-verdict.mjs`（358 行），6 个包装器共用，
    且明确「未混用」**：t8 继续用自己的探针，o2 不动。**这正是「共享实现只有一份」那条的正面样本。**
+
+---
+
+## 结果回写补记（W24 续，2026-10-25 00:50）：你的 externals 修好后，假门禁后面还有两个真缺陷
+
+**总控的 `69c2c835` 生效**：`t30` 不再 `BUILD FAILED`，构建期通了。然后第一次真正跑到旅程，
+**`T30: PASS` 这块布下面盖着的两个缺陷露出来了。两个都已修，改动在工作区（未提交）。**
+
+### 缺陷 A：t30 的惰性注册表吞掉了 `failBecause` → 故意失败旅程被判「非预期」
+
+构建期打通后第一次跑（00:39）：
+```
+UNEXPECTED FAILURE deliberate-failure: expect:"fail" 缺少 failBecause
+```
+**而 `deliberate-failure.ts` 里有 `failBecause`**（`deacf188` 起就有，没人删过）。
+问题在 `journeys/index.ts` 的惰性壳：它只透出 `name/launch/steps/expect`，`failBecause` 被吞。
+`driver/verdict.ts` 的 `classifyJourney` 读的是 journey 对象本身 → 找不到 → 判 `unexpected-failure`。
+
+**这是 `t8` 和 `o2` 注册表里都写过的同一个坑**：
+- `t8/journeys/index.ts:53-55`：「惰性壳必须把 `failBecause` 一起透出……只给 name/steps/launch 会让
+  『故意失败』被判成『缺少 failBecause』」；
+- `o2/journeys/index.ts:33-36` 同一句。
+
+**t30 的注册表（`deacf188` 建）从来没有透出它。** 这个缺陷被假门禁盖了 6 天：旧包装器对构建失败
+打印 PASS，套件从没跑到「注册表被真正的 verdict 读」那一步。
+
+**修**：`apps/desktop/scripts/t30-document-tools-u1/journeys/index.ts` 给 `LazyJourney` 加
+`failBecause?`，惰性壳加 `get failBecause()`。
+**实测**：`--only=deliberate-failure` → `expectation=expected-failure (failed at assert-missing-view)`；
+`--mutation` → `literal=PASS expectation=all-pass`、exit 0（**两个方向都对**）。
+
+> **边界说明**：卡写「各套件的 `journeys/**` 不许碰（除非某处确实是判据本身）」。这一处**是判据的输入** ——
+> 注册表决定 `classifyJourney` 看见什么，不是产品旅程逻辑。改的是 3 行 getter + 类型，没有碰任何旅程步骤。
+
+### 缺陷 B：`@main/window.js` 在 t30 的产物里是**两份模块实例**，生产单例读到 null
+
+修完 A 再跑，三条产品旅程全部：
+```
+Error: T30: docs 视图打开失败：主窗口尚未就绪，无法创建文档视图
+```
+`t30/window-holder.ts` 的注释写着「直接复用 T7 的 `window-holder.ts`」——**但它是抄的一份，不是同一份**。
+esbuild 产物里实测**两个模块**（`grep -c "function setMainWindowForU1" .tmp/electron-u1-build-*/journeys.cjs` → **2**；
+初始化器叫 `window_holder` 与 `window_holder2`）：
+
+| 谁 | import 形态 | 落到哪份 |
+|---|---|---|
+| `t7-genoffice-u1/harness.ts` 的 `setMainWindowForU1(win)` | **相对路径** `./window-holder.js` | T7 那份 |
+| 生产 `documentViewHost.liveWindow()` 的 `@main/window.js` | **esbuild alias** | t30 那份 |
+
+于是 harness 把窗口写进 T7 那份，生产单例从 t30 那份读 → **永远 null**。
+
+**这是「共享实现只有一份」的反面实例**：注释说「直接复用」，实际是复制；两条 import 路径让复制品
+在同一个 bundle 里变成两个实例。
+
+**修**：`t30/window-holder.ts` 的 `getMainWindow()` **先读 T7 那份**（`import * as` 同一 bundle 内成立），
+`setMainWindowForU1()` 两边都写。不改 T7 的交付物（卡边界），不出现两份状态。
+**实测**：`sheets-tool-call` 由「setup 抛错」变成 **all-pass**；`docs-tool-*` 两条从「视图创建失败」
+前进到 `docs-editor-opened` / `wired-docs-opened` —— **卡在 `capturePage 返回空图`**（下面的环境问题）。
+
+### 这两个缺陷为什么现在才发现 —— 这正是本卡的论点
+
+**假门禁的代价不只是「一次误报」，是它把后面所有的红都盖住了。** t30 从 `deacf188`（10-23）起
+就一直 `T30: PASS`，所以没有人跑到旅程、没有人看到注册表吞 `failBecause`、没有人看到双 window-holder。
+**修好一块假门禁，露出两层真缺陷。**
+
+### 现在 t30 的状态（措辞按三档表）
+
+| 项 | 状态 |
+|---|---|
+| 构建期 | ✅ 通（总控 `69c2c835`） |
+| `deliberate-failure`（含变异两方向） | ✅ **绿 / 翻转正确** |
+| `sheets-tool-call` | ✅ **all-pass** |
+| `docs-tool-roundtrip-production` / `-wired` | ⚠️ 红在 `capturePage 返回空图`（**环境**，见下） |
+| t30 套件整体 | **判据已修 + 两个真缺陷已修；真跑待显示环境恢复** |
+
+### 环境问题的决定性证据（补强总控的复现）
+
+| 时刻 | 宿主窗口落点 | 结果 |
+|---|---|---|
+| 00:01 | **`secondary display (id=3569894473, 1920x1080) (x=1523, y=60)`** | t7 **6/6 绿**、o0 **6/6 绿** |
+| 00:20 之后 | **`offscreen right-below primary work area 1463x775 (no secondary display) (x=1543, y=855)`** | `capturePage 返回空图` / `display surface not available` |
+
+**同一份代码，窗口从「有第二显示器」变成「没有第二显示器、摆到主屏右下角外」**。
+`driver/runner.ts:468,477` 的 `capturePage` 对屏幕外窗口返回空图 —— 这就是全部红因。
+**这台机器的第二显示器在 00:01–00:20 之间掉了。** 不是代码，不是任何会话的改动。
+
+### 本轮新增/改动的文件（仍未提交）
+
+```
+ M apps/desktop/scripts/t30-document-tools-u1/journeys/index.ts   （缺陷 A，3 行 getter + 类型）
+ M apps/desktop/scripts/t30-document-tools-u1/window-holder.ts    （缺陷 B，读 T7 那份 + 双向 set）
+```
+`tsc`（`apps/desktop`）重跑 **EXIT=0、0 错**。t7 不 import t30 的任何文件（依赖是单向 t30→t7），
+`--only=markdown-open-edit-save-reopen` 红在 `step-07-screenshot`（同一环境）。
+
+---
+
+## 总控验收·补记（2026-10-25 00:55）
+
+**我修 externals 之后，它挖出了两个被假门禁盖住的真缺陷。两个都核实成立。**
+
+### 我核实 A：`failBecause` 被惰性注册表吞掉
+
+| 检查 | 结果 |
+|---|---|
+| `deliberate-failure.ts` 有 `failBecause` 吗 | **有**（`deacf188` 起） |
+| `t30/journeys/index.ts` 的惰性壳透出它吗 | **没有** —— 它只透出 `name/launch/steps/expect` |
+| `classifyJourney` 读哪 | **journey 对象本身** → 判 `unexpected-failure` |
+
+**它指出 `t8`（`:53-55`）和 `o2`（`:33-36`）的注册表都写了注释警告过这件事，
+只有 `t30` 的注册表从来没透出。** 这个判断对 —— 而且这正是「坏东西显式报出来」的反面。
+
+**它修的是 3 行 getter + 类型，没碰任何步骤。** 边界说明也写清了（那是 verdict 的输入，
+不是旅程逻辑）。**我接受这个越界判断。**
+
+### 我核实 B：两份 `window-holder` 模块实例
+
+| 检查 | 结果 |
+|---|---|
+| `t30/window-holder.ts` 与 `t7/window-holder.ts` 内容一样吗 | **不一样**：3472 vs 1743 字节 |
+| `t30` 那份多什么 | `updateTitleBarOverlay` / `createMainWindow`（t7 那份没有） |
+| `t30` 的 alias 指向 | **自己那份**（`resolve("scripts/t30-document-tools-u1/window-holder.ts")`） |
+| `o0` 的 alias 指向 | **`t7` 那份** ← 所以 `o0` 没有这个问题 |
+
+**所以它说的「同一个逻辑在产物里是两个模块实例」成立**：
+`t7/harness.ts` 用相对路径 import 它自己那份，而生产 `documentViewHost` 经 alias 读 `t30` 那份。
+
+**它修的方案（让 t30 那份去读 t7 那份）是对症的权宜之计。我接受，但记下真正的解法：**
+
+> **真正的解法是「只有一份」**：把 `updateTitleBarOverlay` / `createMainWindow` 两个 no-op
+> 补进 `t7-genoffice-u1/window-holder.ts`，然后把 `t30` 的 alias 改成指向 `t7` 那份
+> （像 `o0` / `o4` 那样），删掉 t30 自己那份。
+>
+> **它没这么做是对的** —— 那要改 `t7` 的交付物，超出本卡边界。
+> **这是 W27 的事。**
+
+### 它的同族建议：我 grep 了，只有 `t30` 一处
+
+它说：
+
+> **B 那个「注释说复用、实际复制」的形态值得 grep 一遍** ——
+> 其它套件的 `window-holder`/替身模块可能有同族（两条 import 路径 → 两个实例）。
+
+**我 grep 了，结论是「没有同族」：**
+
+```
+重名桩文件：electron.ts 41 份、window.ts 36 份、logger.ts 33 份、dataRoot.ts 29 份、
+repositories.ts 23 份、runtimeManager.ts 23 份 ...
+```
+
+**这些重复本身不是缺陷** —— 每个套件要的假行为不同。
+
+**真正的缺陷形态是「同一个逻辑被两条 import 路径带进同一个 bundle」**，
+而那只在**同时 import 别人的 harness、且自己的 alias 指向另一份**时发生。
+
+**逐个核对三个候选：**
+
+| 套件 | alias 指向 | import 谁 | 是同一份吗 |
+|---|---|---|---|
+| `o0` | `t7/window-holder.ts` | `../t7-genoffice-u1/harness.js` | ✅ 是 |
+| `o4` | （用 `o0` 的 vendor-esbuild） | 同 `t7` | ✅ 是 |
+| **`t30`** | **自己那份** | `../t7-genoffice-u1/harness.js` | ❌ **不是** |
+
+**只有 `t30` 一处。** 它的怀疑方向对，但范围比它想的小。
+
+### 它找到的环境决定性证据，我采纳
+
+> | 时刻 | 宿主窗口落点 | 结果 |
+> |---|---|---|
+> | **00:01** | `secondary display (id=3569894473, 1920x1080) (x=1523,y=60)` | t7 6/6 绿、o0 6/6 绿 |
+> | **00:20 后** | `offscreen ... 1463x775 (no secondary display) (x=1543,y=855)` | `capturePage 返回空图` |
+
+**第二显示器在 00:01–00:20 之间掉了。** 这比我那条「23:49 绿 / 00:35 红」更精确 ——
+**它给出了「什么时候、什么变了」。**

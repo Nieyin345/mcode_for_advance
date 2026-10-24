@@ -10,6 +10,12 @@ interface LazyJourney {
   readonly launch: unknown;
   readonly steps: unknown[];
   readonly expect: "pass" | "fail";
+  /** `expect:"fail"` 的旅程必须透出它，否则 verdict 判成「缺少 failBecause」。
+   *  【W24 2026-10-25】惰性壳此前只给 name/launch/steps/expect，`deliberate-failure`
+   *  的 `failBecause` 被吞掉 —— 它红在**指定步骤**上却被判 `unexpected-failure`。
+   *  这个缺陷一直被假门禁盖着（旧包装器对构建失败也打印 PASS），构建修好后第一次跑
+   *  才露出来。t8 / o2 的注册表都透出了这一项，同一形态（见那两处注释）。 */
+  readonly failBecause?: (evidence: unknown[]) => boolean;
 }
 
 const loaders: Record<string, () => { default: unknown }> = {
@@ -39,6 +45,10 @@ export const journeys: LazyJourney[] = journeyNames.map((name) => {
     get launch() { return materialize().launch; },
     get steps() { return materialize().steps; },
     get expect() { return materialize().expect; },
+    // 惰性壳必须把 `failBecause` 一起透出：`classifyJourney`（driver/verdict.ts）读的
+    // 是 journey 对象本身，只给 name/steps/launch/expect 会让「故意失败」被判成
+    // 「缺少 failBecause」→ unexpected-failure（W24 实测）。
+    get failBecause() { return materialize().failBecause; },
   };
 });
 
