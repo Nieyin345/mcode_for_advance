@@ -282,3 +282,70 @@ const composerMax = { narrow: 48, standard: 56, wide: 72, full: null }[tier];
 2. 实测宽度（四个窗口 × drawer 开关 × 四档设置）
 3. 套件数字、变异、提交 SHA
 4. 你觉得不对但没改的地方
+
+---
+
+## 十、精确改动点（我数过，只有 8 处，全在一个文件）
+
+```bash
+grep -rn "chat-max-w" apps/desktop/src/renderer/ --include=*.tsx
+```
+
+**结果：8 处，全在 `ChatPane.tsx`。**
+
+| 行 | 用途 | 改成 |
+|---|---|---|
+| `:2635` | 对话轮次 | `--chat-max-w`（不变） |
+| `:2657` | 内容区 | 不变 |
+| `:2692` | 内容区 | 不变 |
+| `:2738` | 内容区 | 不变 |
+| `:2879` | 对话轮次 | 不变 |
+| `:2908` | 内容区 | 不变 |
+| `:3060` | 绝对定位的浮层 | 不变 |
+| **`:3164`** | **输入框宿主**（`empty ? "max-w-4xl" : "max-w-[var(--chat-max-w)]"`） | **改成 `--composer-max-w`** |
+
+**所以只需改一行 + 加一个 token。**
+
+### 取值方案（推荐 C：一个用户设置派生两个值）
+
+`uiPrefs.ts` 现在：
+
+```ts
+const CHAT_MAX_WIDTH_CSS: Record<ChatMaxWidth, string> = {
+  narrow: "48rem",     // 768
+  standard: "64rem",   // 1024  ← 默认
+  wide: "80rem",       // 1280
+  full: "none",
+};
+```
+
+**改成两个表，同一个用户选择：**
+
+```ts
+// 消息正文 —— 对齐上游助手消息的 max-w-2xl (672)
+const CHAT_MAX_WIDTH_CSS: Record<ChatMaxWidth, string> = {
+  narrow: "40rem",     // 640
+  standard: "42rem",   // 672  ← 上游 = max-w-2xl
+  wide: "48rem",       // 768
+  full: "none",
+};
+// 输入框 —— 对齐上游 composer 的 max-w-3xl (768)
+const COMPOSER_MAX_WIDTH_CSS: Record<ChatMaxWidth, string> = {
+  narrow: "44rem",     // 704
+  standard: "48rem",   // 768  ← 上游 = max-w-3xl
+  wide: "56rem",       // 896
+  full: "none",
+};
+```
+
+**⚠️ `full` 两处都必须是 `none`** —— 否则会出现「消息不限宽、输入框还卡在 896」。
+
+**⚠️ 这会让所有现有用户的正文变成 672（原来 1024）。** 这是用户明确要求的（「claude 什么样子，你就什么样子」），**但要在提交信息里写明这个变化是刻意的。**
+
+### 断言
+
+1. **`standard` 档：消息 672px、输入框 768px**（两个不同的值）。
+2. **`full` 档：两者都是 `none`**。
+3. **四档单调递增**（两个表各自）。
+4. **`:3164` 用 `--composer-max-w`，其余 7 处用 `--chat-max-w`**（有断言钉住这个分工）。
+5. **不回归**：`t122-chat-rhythm-smoke`。
