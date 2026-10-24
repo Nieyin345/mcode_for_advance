@@ -1,3 +1,4 @@
 .expectations.cjs
 .staged-write.test.cjs
+.save-as.test.cjs
 .save-paths.cjs

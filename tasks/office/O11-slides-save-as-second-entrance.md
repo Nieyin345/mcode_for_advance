@@ -1,6 +1,6 @@
 # O11｜`slides:save-as` 是同一个静默覆盖漏洞的第二个入口
 
-- Status: **ready-for-agent**
+- Status: **已实现并完成有界 E1 + Slides 真 Electron 保存冲突回归（2026-10-25）；整包 U1 仍未完成**
 - Category: **Office / 数据丢失 —— O10 修了 `slides:save`，但 `slides:save-as` 没修**
 - Priority: **P0**（与 O9 同级：用户丢数据且没有任何提示）
 - 发现于: O10 交付回写 §14.4（执行会话如实报告「未做」）
@@ -168,7 +168,7 @@ await stagedAtomicWrite({
 
 ## 八、结果回写区
 
-（执行会话追加：§三那个问题的答案、判据 1/2/3 的红绿、三个变异、提交 SHA、补丁文件名）
+（执行回写见文末 §四）
 
 ---
 
@@ -269,3 +269,15 @@ apps/desktop/scripts/electron-u1/driver/runner.ts:661
 里的「没副屏就挪远」分支。**两个不同的机制，别混。**
 
 **后果相同（都无 display surface → `capturePage` 失败），但按错的坐标去读代码会找错地方。**
+
+---
+
+## 四、O11 执行回写（2026-10-25，GenOffice 直接二开）
+
+- **GenOffice 独立仓库提交**：`483ce5442c2c4ce3988427775fa4f79d005a02b1`（父提交 `a29039825f3ec49dcc09d9342b36fd4dcb4f4359`），仅修改 `apps/slides/src/main/slides-main.ts` 与共享 `packages/electron-utils/src/document-save-guard.ts`。
+- **发布补丁**：`patches/genoffice/0023-fix-slides-make-save-as-atomic.patch`，SHA256 `9635ce04fc1b71458b79283aee9ac7ebdca36624a92ed48994bc4f39bd83e1cc`，3676 字节；现有锁文件和来源校验器由 22 个补丁增为 23 个，固定 tree `e30e83bfc0a4562d42eb8a533751fde8c54873e1`。
+- **原因与修复**：原 `slides:save-as` 在文件对话框确认后直接向目标 `savePptxToFile` 流式写；写失败时会截断已经存在的 PPTX 或留下新文件残骸。现在调用原厂已有的 `stagedAtomicWrite`：同目录先写完整暂存，成功才 rename。为 Save As 单独显式 `fallbackToInPlaceWrite:false`，确保原子替换失败时不退化为直写目标；普通 `slides:save` 的既有行为不变。原生对话框本来就负责覆盖确认，未添加重复提示。另将普通保存冲突消息中 `DocumentSaveConflictError` 的内部类名仅对该错误类型去掉，其他错误文本保持旧行为。
+- **测试先红再绿**：在修复前的源码上运行 `node scripts/o2-conflict-u1-smoke/run.mjs --classify-only`（以 `apps/desktop` 为 cwd），新 Save As 断言 **pass=1 fail=3**，实际抓到新目标残骸、已存在文件被改、rename 失败退回直写。接入生产 handler 的真实源码后，隔离临时目录执行 **6/6 PASS**：新目标失败、旧目标失败、成功后精确字节和路径、rename 失败保护+完整暂存、共享 helper 严格拒绝以及错误文案兼容。旧 O10 staged-write 失败路径仍 **5/5 PASS**。
+- **真实 Electron 有界复测**：`node scripts/o2-conflict-u1-smoke/run.mjs --only=o2-conflict-slides --variant=expect-green` **1/1 U1 PASS**（普通保存外部冲突拒写、提示与文件状态）；证据 `.tmp/electron-u1/2026-10-24T18-51-13-276Z`。运行日志有 `slides:clipboard-probe` 的 `clipboard.availableFormats is not a function` 未捕获异常，但旅程明确给出 all-pass；这是另一个需定位的剪贴板问题，不能以 O11 全绿掩盖。
+- **静态/发布**：GenOffice 的 `@genoffice/slides` 与 `@genoffice/electron-utils` typecheck 均 0；Mcode Desktop/Contracts 双包 tsc 均 0；`MCODE_INCLUDE_GENOFFICE_BUNDLE=1 node apps/desktop/build/verify-genoffice-upstream.cjs` 输出 23 patches、指定 tree，exit 0；`genoffice-source-smoke` 与 `genoffice-editors-release-smoke` 两套 PASS；`git diff --check` PASS。
+- **剩余条件**：目前的 Save As 测试是在真正 IPC handler 源码上注入假 dialog/文件写入，在隔离 Node 运行，**不是**用户真实点击「另存为」的 Electron/U1。还需真实交互另存为覆盖确认、另存为后的再次 Ctrl+S（含 Mcode Host 版本会话更新）及异常弹窗验证；外部第三方读取、跨 OS 安装版和全部 AI 选区体验依旧未闭。且原厂 `slides:save` 的既有 rename 失败退回原地写并未在 O11 扩大范围修改；应单独跟踪普通保存的残余原子性风险。本卡的有界修复不能计入 ARC-007 整体双勾。

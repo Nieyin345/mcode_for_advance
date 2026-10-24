@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "a29039825f3ec49dcc09d9342b36fd4dcb4f4359",
-  "expectedTree": "8894ca67497d62dac1f7dc1e277e9fd7c4a18ef9",
+  "revision": "483ce5442c2c4ce3988427775fa4f79d005a02b1",
+  "expectedTree": "e30e83bfc0a4562d42eb8a533751fde8c54873e1",
   "patchSeries": [
     {
       "index": 1,
@@ -211,6 +211,15 @@
       "sha256": "14da8b1cd2d26bb17ebd02ca14c68f76f8502d096018b36a0f10a14b49f2605d",
       "bytes": 17479,
       "subject": "feat(save): a host-installed save guard at the four document save call sites"
+    },
+    {
+      "index": 23,
+      "file": "patches/genoffice/0023-fix-slides-make-save-as-atomic.patch",
+      "revision": "483ce5442c2c4ce3988427775fa4f79d005a02b1",
+      "parentRevision": "a29039825f3ec49dcc09d9342b36fd4dcb4f4359",
+      "sha256": "9635ce04fc1b71458b79283aee9ac7ebdca36624a92ed48994bc4f39bd83e1cc",
+      "bytes": 3676,
+      "subject": "fix(slides): make Save As atomic and show clean conflict errors"
     }
   ],
   "license": "Apache-2.0",

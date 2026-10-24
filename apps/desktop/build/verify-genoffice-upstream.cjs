@@ -14,8 +14,8 @@ const FORMAT = "mcode.genoffice.upstream-lock.v2";
 const REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const BASE_REVISION = "cbec600ace9c930b2646b6739cf6df3741bb9d6a";
 const APPROVED_PATCH_REVISION = "73ba918083b5e2bedff7633925c3d7f625e04449";
-const FINAL_REVISION = "a29039825f3ec49dcc09d9342b36fd4dcb4f4359";
-const FINAL_TREE = "8894ca67497d62dac1f7dc1e277e9fd7c4a18ef9";
+const FINAL_REVISION = "483ce5442c2c4ce3988427775fa4f79d005a02b1";
+const FINAL_TREE = "e30e83bfc0a4562d42eb8a533751fde8c54873e1";
 const LICENSE_SOURCE_MANIFEST = "apps/desktop/build/vendor-licenses/genoffice/manifest.json";
 const APPROVED_PATHS = Object.freeze([
   "apps/pdf/src/main/atomic-write.ts",
@@ -44,6 +44,7 @@ const PATCHES = Object.freeze([
   { file: "patches/genoffice/0020-feat-sheets-reshell-the-chrome-in-Mcode-s-design-tok.patch", revision: "e9b4c41615f1ca615dd06ee10d05cbaac9382462", parentRevision: "58cd1a13fb2482eae14962f758aac9e2d349936e", sha256: "ff90a3e7d69f6c7b67ad390f37c9b5377cdaefa58bb4dbd00104abc2896097b8" },
   { file: "patches/genoffice/0021-fix-docs-the-reshell-gate-asked-who-am-I-not-who-is-.patch", revision: "f3c1043aedc3754ac315e79481857d59a3b7463e", parentRevision: "e9b4c41615f1ca615dd06ee10d05cbaac9382462", sha256: "e46bae153a0fff9796a591c74aec028aadeca521f34093784b35aa9bbd37b8e7" },
   { file: "patches/genoffice/0022-feat-save-a-host-installed-guard-at-the-four-save-c.patch", revision: "a29039825f3ec49dcc09d9342b36fd4dcb4f4359", parentRevision: "f3c1043aedc3754ac315e79481857d59a3b7463e", sha256: "14da8b1cd2d26bb17ebd02ca14c68f76f8502d096018b36a0f10a14b49f2605d" },
+  { file: "patches/genoffice/0023-fix-slides-make-save-as-atomic.patch", revision: "483ce5442c2c4ce3988427775fa4f79d005a02b1", parentRevision: "a29039825f3ec49dcc09d9342b36fd4dcb4f4359", sha256: "9635ce04fc1b71458b79283aee9ac7ebdca36624a92ed48994bc4f39bd83e1cc" },
 ]);
 
 function runGit(directory, ...args) {

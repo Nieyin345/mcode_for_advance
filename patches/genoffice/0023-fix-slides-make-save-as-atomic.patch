@@ -1,0 +1,82 @@
+From 483ce5442c2c4ce3988427775fa4f79d005a02b1 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 02:51:48 +0800
+Subject: [PATCH] fix(slides): make Save As atomic and show clean conflict
+ errors
+
+---
+ apps/slides/src/main/slides-main.ts           | 20 +++++++++++++++++--
+ .../electron-utils/src/document-save-guard.ts | 12 +++++++++++
+ 2 files changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/apps/slides/src/main/slides-main.ts b/apps/slides/src/main/slides-main.ts
+index 2b129fa..75830ba 100644
+--- a/apps/slides/src/main/slides-main.ts
++++ b/apps/slides/src/main/slides-main.ts
+@@ -4651,7 +4651,14 @@ export function registerSlidesIpc(): void {
+         slides: buildAllRenderSlides(session.opened, session.fitWidthPx),
+       }
+     } catch (err) {
+-      return { ok: false, error: String(err) }
++      // Host save conflicts are a user-facing state, not an internal class
++      // name. Preserve every other vendor error string as it was.
++      return {
++        ok: false,
++        error: err instanceof Error && err.name === 'DocumentSaveConflictError'
++          ? err.message
++          : String(err),
++      }
+     }
+   })
+ 
+@@ -4667,7 +4674,16 @@ export function registerSlidesIpc(): void {
+     if (r.canceled || !r.filePath) return { ok: false }
+     try {
+       const metaRevAtSave = session.metaRev ?? 0
+-      await savePptxToFile(session.opened, r.filePath)
++      // Electron's native Save As dialog already asks before overwriting an
++      // existing destination. It does not protect the target from a failed
++      // streaming write, so build the PPTX beside it and replace atomically.
++      // Never fall back to in-place writing on this explicit Save As path.
++      await stagedAtomicWrite({
++        target: r.filePath,
++        staging: join(dirname(r.filePath), `.${basename(r.filePath)}.${randomUUID()}.mcode-saving`),
++        writeTo: (path) => savePptxToFile(session.opened, path),
++        fallbackToInPlaceWrite: false,
++      })
+       session.path = r.filePath
+       autosaveBackoff.delete(r.filePath)
+       dropUntitledRecovery(e.sender.id)
+diff --git a/packages/electron-utils/src/document-save-guard.ts b/packages/electron-utils/src/document-save-guard.ts
+index 793ef89..cf1cd2b 100644
+--- a/packages/electron-utils/src/document-save-guard.ts
++++ b/packages/electron-utils/src/document-save-guard.ts
+@@ -87,6 +87,11 @@ export interface StagedWriteDeps {
+   staging: string
+   /** 原子替换（默认 `rename`）；测试注入失败以覆盖失败路径。 */
+   replace?: (from: string, to: string) => Promise<void>
++  /**
++   * 原子替换失败时是否容许原地直写（默认 true，兼容原本 Save 行为）。
++   * 对用户已确认覆盖的 Save As，必须设 false：失败也不能截断旧文件。
++   */
++  fallbackToInPlaceWrite?: boolean
+   /** 删除文件（默认 `rm -f`）。测试可观察它被调用了几次、对哪个路径。 */
+   remove?: (path: string) => Promise<void>
+ }
+@@ -128,6 +133,13 @@ export async function stagedAtomicWrite(deps: StagedWriteDeps): Promise<void> {
+     await replace(deps.staging, deps.target)
+     return
+   } catch (replaceError) {
++    if (deps.fallbackToInPlaceWrite === false) {
++      // Save As: no in-place fallback may touch the chosen target. Keep the
++      // complete staging file for recovery and report its exact location.
++      throw new Error(
++        `原子替换失败，目标文件未改动；完整的新文档保留在 ${deps.staging}。原因：${String(replaceError)}`,
++      )
++    }
+     try {
+       await deps.writeTo(deps.target)
+     } catch (fallbackError) {
+-- 
+2.52.0.windows.1
+

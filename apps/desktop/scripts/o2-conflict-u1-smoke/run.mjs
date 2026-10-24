@@ -211,8 +211,24 @@ O2: FAIL —— expectConflict=true 但 provenance 仍说「没有版本比较�
       process.exit(1);
     }
   }
+  // O11 checks the production Slides Save As IPC handler against an isolated
+  // filesystem. Unlike the normal Save path, this handler has no opened target
+  // revision; a failed streaming write must never leave a truncated output.
+  {
+    const { buildTs } = await import("./esbuild-load.mjs");
+    const testBuilt = await buildTs(join(suite, "save-as.test.ts"), join(suite, ".save-as.test.cjs"));
+    const r = spawnSync(process.execPath, ["--test", testBuilt], { encoding: "utf8", cwd: desktop });
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    const passLine = /# pass (\d+)/.exec(out);
+    const failLine = /# fail (\d+)/.exec(out);
+    console.log(`O11 另存为真实 handler 断言：pass=${passLine?.[1] ?? "?"} fail=${failLine?.[1] ?? "?"}`);
+    if ((r.status ?? 1) !== 0) {
+      console.error(out.split("\n").filter((line) => /not ok|error:|ERR_|Expected|actual|expected|location:/.test(line)).slice(0, 28).join("\n"));
+      process.exit(1);
+    }
+  }
   if (classifyOnly) {
-    console.log("O2: 归类通过（--classify-only：未跑 Electron）");
+    console.log("O2: 归类及 Save As 失败保护通过（--classify-only：未跑 Electron）");
     process.exit(0);
   }
 
