@@ -89,9 +89,9 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O3** 安装版 Office | ✅ 交付 | `53413379` | `f383922b` | 16/16；23/23 变异 |
 | **O4** docs 关闭缺陷修复 | ✅ 交付 | `2120284e` | `fa6eb917` | 19/19；3 变异（M2 证两条断言独立） |
 | **O5** 删 OnlyOffice | OK 三批全交付 | `b380ced8` | `bd7c8cd5` / `00af5199` / `c29abf9e` | renderer 38→0；四套回归我自己跑过（4 pass） |
-| **O6** 五个编辑器换壳（B） | 进行中：四家完成 / sheets 在做 | `a655762c` | `f61e4168` | html 36/36、markdown 45/45、pdf 38/38、slides 39/39（后两套我自己复现过） |
+| **O6** 五个编辑器换壳（B） | 已完成（五家 + 跨 app） | `a655762c` | `f61e4168`…`cacc35a9` | 36/45/39/40/42/23 = **225 条**；我亲手复现过 html/pdf/slides 三套 |
 | **O7** 覆盖边界进输出 | 📝 已写卡未派 | `b2c1bc60` | — | 等 O0/O3/O1 收尾 |
-| **O8** docs 换壳开关撒谎 | 执行中 | `5f00299b` | — | 只改 `main.tsx:26` 一行（另 126 处 `window.desktop` 不动） |
+| **O8** docs 换壳开关撒谎 | 已完成 | `5f00299b` | `719f3ae7` / vendor `f3c1043` | **23/23**；修复前 11/17；四变异全命中（M4 加固前全绿、加固后红 2 条） |
 | **O9** 四格式静默覆盖数据 | ✅ **诊断完成** | `6e58df25` | `0564f0ef` | 四个全是 **C（bypass）**；归类已机器化 |
 | **O10** 四格式写盘接缝 | 执行中（pdf/md/html 已 all-pass） | 本文件 | — | vendor 注释写明「版本+租约是 Host 的责任」；slides 待定位 |
 
@@ -749,3 +749,62 @@ pnpm test:smoke o4-docs-close-smoke          # docs 关闭
 **同一天出现两次的形态**：`document-read-smoke` 和 `genoffice-format-gates-smoke` 我跑红过，
 以为是套件坏了，实际是 `run.sh` 的 cwd 依赖（见 `suite-startup-failure-looks-like-zero-red`）。
 **三次「看起来是套件的问题」，三次都是调用方式。**
+
+---
+
+## 十、⚠️ 打包前必须能跑 `verify-genoffice-upstream.cjs`（P1，2026-10-24）
+
+**`verify-genoffice-upstream.cjs` 是 `patchSeries` 的唯一验证** —— 它逐条 replay 二十几个补丁，
+并核对最终 tree。**它跑不了的期间，没有任何证据证明「这些补丁能在干净树上按序应用」。**
+
+**现状**：vendor 树里有 O10 在途改动（4 家 main + `document-save-guard.ts`），
+`verify` 正确拒绝 dirty tree。
+
+**所以：在它能跑之前，不要打包。** 理由：
+
+- 打包会用当前 vendor 树，**而那份树没有 replay 证据**；
+- `patchSeries` 现在是 **21 条**（0016–0021），**每一条都是用户最终拿到的东西**；
+- 一条补丁应用顺序错、或 sha256 漂移，**症状是「用户装上的 vendor 和我们对不上」，而不是构建失败**。
+
+**⚠️ 数字变化**：O6 交付时是 20 条（0016–0020），**O8 的 0021 加进去了，所以是 21 条**。
+补跑时预期：
+
+```
+f3c1043aedc3754ac315e79481857d59a3b7463e (base cbec600, 21 patches, tree 05c511afbdcba58d7e0ca65b34f39e53ed166140)
+```
+
+（`base` 那个短串我没核过，以 `verify` 的实际输出为准。）
+
+---
+
+## 十一、★ 新增跨仓 import 时，「它在哪一层被解析」写进卡（2026-10-24，UI 线发现）
+
+**O10 加了 `@genoffice/electron-utils/document-save-guard` 的 import，`pnpm dev` 起不来：**
+
+```
+[vite]: Rollup failed to resolve import "@genoffice/electron-utils/document-save-guard"
+  from "apps/desktop/src/main/document/genofficeNativeVendor.ts"
+```
+
+**而 O10 的四条判据全绿、`tsc` exit 0。**
+
+| 层 | 走什么 | 会撞上 `electron.vite.config.ts` 的别名表吗 |
+|---|---|---|
+| `tsc --noEmit` | TS 模块解析（`node_modules` 符号链接） | ❌ |
+| esbuild 套件 | esbuild | ❌ |
+| 直接跑 vendor 产物 | 无解析 | ❌ |
+| **`pnpm dev` / 打包** | **Rollup + 手写别名表** | ✅ |
+
+**四层里只有第四层会撞上，而 O10 没有任何一条判据跑第四层。**
+
+**所以派活的规矩要加一条**：
+
+> **凡是新增 `@genoffice/*`（或任何跨仓）import 的卡，必须写明它工作在**哪一层**
+> （tsc / esbuild / Rollup / 运行时），并指出**验收判据覆盖了哪几层**。
+> **没覆盖的那几层，要在卡上显式写「本卡的判据不覆盖它」。**
+
+**这和仓库那条「打包期失败 ≠ 被测对象失败」是同一族的反面**：
+**那条说「别把构建失败读成产品失败」；这条说「别把套件全绿读成能构建」。**
+
+**修法**：`apps/desktop/electron.vite.config.ts` 的 `slidesVendorAliases()` 加子路径别名
+（排在包根别名**之前**，注释里写明「顺序即判据」）。
