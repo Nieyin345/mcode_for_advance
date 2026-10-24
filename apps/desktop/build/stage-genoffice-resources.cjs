@@ -230,6 +230,44 @@ function assertThirdPartyNoticeTextComplete(text) {
 function assertThirdPartyNoticeComplete(file) {
   return assertThirdPartyNoticeTextComplete(fs.readFileSync(file, "utf8"));
 }
+/**
+ * ⚠️ 这张表**不是**「发布物里有哪些包」，也**不是**「genoffice 的运行时依赖」。
+ *
+ * 它是一张**人工复核过的「我们需要自己留一份许可证原文」的清单** —— 但**它不是
+ * 「上游 notice 里缺正文的那些」的机械投影**。2026-10-24 实测这个关系：
+ *
+ * | 集合 | 数量 |
+ * |---|---|
+ * | 上游 `THIRD-PARTY-NOTICES.txt` 里的包（25581 行，其中 521 段带完整条款） | 570 |
+ * | 上游 notice 里**正文不足一行**的段落 | **15** |
+ * | 本清单 | **18** |
+ *
+ * 两个集合**互不包含**：
+ *  - 本清单里 `fastdom` / `hash.js` / `isarray` / `lazy-val` / `strictdom` **在上游
+ *    notice 里是有正文的** —— 它们被收进来是因为**正文不够 SPDX 要求的全部要素**
+ *    （见 `GENOFFICE_LICENSE_ELEMENTS` 的四条正则），不是因为"没有正文"；
+ *  - 上游 notice 里 `@fluentui/react-icons` / `@genspark/cli` 正文同样不足，**却没被收**。
+ *
+ * **所以「它不在 notice 的缺正文名单里」不能证明它该出清单，「它在 notice 里」也不能
+ * 单独证明它该进清单。** 出清单的唯一依据是：**这个包的许可证原文已经按
+ * `GENOFFICE_LICENSE_SOURCE_KINDS` 的某一种载体登记齐了**（`status: "verified"`）。
+ *
+ * ### 2026-10-24 差点删错一条
+ *
+ * `@electron-internal/extract-zip` 的依赖链是 `electron` → 七个 editor app 的
+ * **devDependencies**，看起来「不属于 genoffice」，于是被删掉了。
+ *
+ * 但**上游 notice 第 858 行确实列了它**（那一段只有 `Licensed under BSD-2-Clause.`
+ * 加一个链接，正文不足 —— 正是需要补原文的形态）。
+ *
+ * **删掉它的后果不是「少一个无关项」**：发布的 notice 里那一段会永远没有正文，
+ * 而门禁不再拦 —— 从「被拦住」变成「悄悄少一节」。
+ * `t11-genoffice-license-carrier-smoke` 当场抓住：
+ * `generated notice still has incomplete package license sections`。
+ *
+ * **教训**：「这个不该在这里」这个判断，依据必须是**「谁在用它」**（上游 notice 列了它、
+ * 发布的 notice 会少一节），不能是**「它是什么」**（运行时依赖还是 devDependency）。
+ */
 const REQUIRED_GENOFFICE_LICENSE_PACKAGES = Object.freeze([
   ["@electron-internal/extract-zip", "1.0.5", "BSD-2-Clause"],
   ["@napi-rs/canvas-win32-x64-msvc", "1.0.3", "MIT"],
