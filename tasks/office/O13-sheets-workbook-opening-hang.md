@@ -1,6 +1,6 @@
 # O13｜Sheets“正在打开工作簿…”卡住（已复现，根因未定）
 
-- Status: **BLOCKED：可复现真实 Electron 红例，待有界定位与修复**
+- Status: **PARTIAL MITIGATED：首帧兜底已实现，修复后真实 Electron U1 连续两次 PASS；原始间歇故障的唯一根因尚未证实**
 - Priority: P0 可用性（界面有格子、工作簿未进入可编辑状态）
 - 归属：ARC-007 / Office；**不得因为一个读写 smoke PASS 就伪报此项已关闭**。
 
@@ -38,3 +38,12 @@
 **尚未达到验收标准**：修复后的真 Electron `o2-conflict-sheets` 复跑连续两次被其他对话正在运行的 `heavy-test-lease` 合法拒绝启动（分别是 PID 44968、24524）；这些是**测试未执行**，绝不能按失败或通过计入 Sheets 功能质量。最终 U1 验证、真实显示/隐藏切换重开及高负载稳定性仍未完成。O13 维持 `PARTIAL / U1 BLOCKED`，不能标记完成。应在 Electron 测试独占锁空闲时复跑同一旅程，并在能看到红例时进一步缩小到主进程还是前端回调；不能说已证明彻底根治。
 
 **来源 smoke 调用纠正**：一度在同一个 cmd 中先 `set MCODE_INCLUDE_GENOFFICE_BUNDLE=1` 运行上游锁校验，再运行 `genoffice-source-smoke`，使套件的“默认 opt-out”负控错误继承启用标志，失败在缺失的空锁文件；这**不是源码锁失败**。改为全新命令行独立执行 `node apps/desktop/scripts/run-smokes.mjs genoffice-source-smoke` 后 **1/1 PASS**；源锁 opt-in 校验单独 **25 patches PASS**。
+
+## 修复后真实 Electron U1 复验（无诊断探针）
+
+修复后在原生产源码、不注入 `[O13-PROBE]` 日志、不缩短测试等待时，对原先失败的相同旅程执行两次：
+
+- `.tmp/electron-u1/2026-10-24T19-32-56-247Z`：`o2-conflict-sheets` **literal=PASS / expectation=all-pass**；从真实 XLSX 加载、负控编辑/保存、外部盘上修改的冲突拒写、用户提示到正常关闭均完成。主进程日志出现正常的 `workbook:select`、`workbook:save`，冲突分支按预期抛出“工作簿在打开后被磁盘上的改动覆盖——请改用另存为”。
+- `.tmp/electron-u1/2026-10-24T19-33-45-109Z`：同样 **literal=PASS / expectation=all-pass**，第二次独立 Electron 进程再次通过。
+
+因此 **O13 首帧挂起风险已完成有界修复 + E1 变异 + 两次 U1 正向复验**；将原先“U1 BLOCKED”更新为“U1 2× PASS”。但最初 120 秒红例恰好在没有探针的旧代码中，加入探针后又连续通过，**不能据此反推原始偶发卡住必然由 rAF 单一因素造成**。真实手工隐藏/显示驻留编辑器、连续更多次重开、复杂大 XLSX 和跨平台的可靠性仍未覆盖。不要将这些 PASS 宣称为 ARC-007 整体完成。

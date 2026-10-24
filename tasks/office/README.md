@@ -96,7 +96,7 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O10** 四格式写盘接缝 | ✅ 已交付 | 本文件 | `0919d5b0` / vendor `a290398` | 四格 4a/4b/4c/#5 全绿；失败路径 5/5；verify 22 条 |
 | **O11** `slides:save-as` 第二个入口 | ✅ **实现并有界验证** | `O11-slides-save-as-second-entrance.md` | Mcode `7fcc9f52` / vendor `483ce544` | 失败安全 6/6、既有 5/5；Slides 真 Electron 普通保存冲突 U1 通过；另存为完整 GUI U1 尚未验证 |
 | **O12** Electron 44 Slides 剪贴板兼容 | ✅ **实现并有界验证** | `O12-slides-electron44-clipboard.md` | Mcode `56d1282a` / vendor `ec21271a` | 同步/异步 mock 13/13；真实 Electron `slides-edit-smoke` 无 handler 替身 PASS；跨应用粘贴 U1 未验 |
-| **O13** Sheets 工作簿加载卡住 | 🟡 **已做首帧保底修复，完整 U1 待验** | `O13-sheets-workbook-opening-hang.md` | vendor `f6d8e8a` / Mcode 待提交 | 原始红例 120s opening；新的首帧/无帧互斥回归 3/3（撤掉保底则红）；实际 Electron U1 受另一执行对话独占锁阻断，不能算通过 |
+| **O13** Sheets 工作簿加载卡住 | 🟡 **首帧风险已修，U1 2× PASS；长期稳定性待验** | `O13-sheets-workbook-opening-hang.md` | Mcode `68eced39` / vendor `f6d8e8a` | 原始红例 120s opening；无帧回归 3/3（去掉兜底按预期红）；修复后相同真实 Electron 旅程独立两次 PASS，原始偶发根因尚未唯一确认 |
 
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）
