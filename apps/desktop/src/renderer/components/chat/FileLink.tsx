@@ -150,7 +150,7 @@ export function FileLink({
           title={t("chatStream.fileLink.clickToOpen")}
           onClick={handleClick}
           onAuxClick={(e) => e.preventDefault()}
-          className={cn("cursor-pointer underline hover:opacity-80", loading && "opacity-60")}
+          className={cn("cursor-pointer rounded-[2px] underline hover:opacity-80 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent", loading && "opacity-60")}
         >
           {content}
         </a>
@@ -166,7 +166,7 @@ export function FileLink({
           onKeyDown={handleKeyDown}
           className={cn(
             "cursor-pointer rounded-[2px] underline decoration-dotted decoration-accent/60 underline-offset-2",
-            "text-content-muted hover:bg-surface-hover hover:text-content",
+            "text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             loading && "opacity-60",
           )}
         >

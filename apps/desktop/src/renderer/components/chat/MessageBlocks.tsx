@@ -136,7 +136,7 @@ function toggleHoldPosition(
  *  背景沿用既有语义类 `hover:bg-surface-muted`（亮/暗由 styles.css 指到
  *  --m-gray-50 / --m-gray-800），不另造第二套命名。 */
 const TOOL_ROW_CLS =
-  "flex w-full items-center gap-2 rounded-[var(--radius-control)] py-1.5 text-left hover:bg-surface-muted/50";
+  "flex min-h-8 w-full items-center gap-2 rounded-[var(--radius-control)] py-1.5 text-left hover:bg-surface-muted/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
 
 /** 【ARC-005】工具卡展开体的左侧缩进发丝边：宽度走 `--hairline`
  *  （→ 生成物 `--m-ring-hairline` = 1px，上游 ring-hairline 取证值），
@@ -428,7 +428,9 @@ export function BatchToolGroup({
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
+        type="button"
         onClick={(e) => toggleHoldPosition(e, setOpen)}
+        aria-expanded={open}
         className={TOOL_ROW_CLS}
       >
         {/* 操作集合: a stack of layers reads as "a set of folded operations",
@@ -529,6 +531,7 @@ function ImageGallery({ blocks }: { blocks: Extract<Block, { kind: "image" }>[] 
               onClick={() => go(-1)}
               disabled={idx <= 0}
               title={t("chatStream.gallery.prev")}
+              aria-label={t("chatStream.gallery.prev")}
               className="absolute left-1 top-1/2 -translate-y-1/2 rounded-full bg-black/55 p-1.5 text-white/90 backdrop-blur-sm transition-colors enabled:hover:bg-black/80 enabled:hover:text-white disabled:opacity-30"
             >
               <IconChevronLeft size={18} />
@@ -538,6 +541,7 @@ function ImageGallery({ blocks }: { blocks: Extract<Block, { kind: "image" }>[] 
               onClick={() => go(1)}
               disabled={idx >= count - 1}
               title={t("chatStream.gallery.next")}
+              aria-label={t("chatStream.gallery.next")}
               className="absolute right-1 top-1/2 -translate-y-1/2 rounded-full bg-black/55 p-1.5 text-white/90 backdrop-blur-sm transition-colors enabled:hover:bg-black/80 enabled:hover:text-white disabled:opacity-30"
             >
               <IconChevronRight size={18} />
@@ -556,11 +560,15 @@ function ImageGallery({ blocks }: { blocks: Extract<Block, { kind: "image" }>[] 
                 type="button"
                 onClick={() => setIdx(i)}
                 title={t("chatStream.gallery.imageN", { n: i + 1 })}
-                className={cn(
+                aria-label={t("chatStream.gallery.imageN", { n: i + 1 })}
+                aria-current={i === idx ? "true" : undefined}
+                className="flex size-6 items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                <span aria-hidden="true" className={cn(
                   "h-1.5 rounded-full transition-all",
                   i === idx ? "w-3 bg-accent" : "w-1.5 bg-content-subtle/40 hover:bg-content-subtle/70",
-                )}
-              />
+                )} />
+              </button>
             ))}
           </span>
         </div>
@@ -876,6 +884,7 @@ export function TurnPanel({
           onToggleCollapse?.();
           toggleHoldPosition(e, setOpen);
         }}
+        aria-expanded={open}
         className="chat-ledger-head"
       >
         {/* Model that produced this turn — avatar + name on the LEFT, ahead of
@@ -1394,7 +1403,9 @@ function AttachmentCard({
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
         ref={btnRef}
+        type="button"
         onClick={handleClick}
+        aria-expanded={!isFile || isImage || !filePath ? open : undefined}
         title={
           isFile && !isImage
             ? (filePath ?? preview)
@@ -1539,7 +1550,9 @@ function EditToolCard({
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
+        type="button"
         onClick={(e) => toggleHoldPosition(e, setOpen)}
+        aria-expanded={open}
         className={TOOL_ROW_CLS}
       >
         <StatusIcon status={status} live={live} />
@@ -1623,7 +1636,9 @@ function WriteToolCard({
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
+        type="button"
         onClick={(e) => toggleHoldPosition(e, setOpen)}
+        aria-expanded={open}
         className={TOOL_ROW_CLS}
       >
         <StatusIcon status={status} live={live} />
@@ -1708,22 +1723,48 @@ function GenericToolCard({
 
   const card = (
     <div className="[font-size:var(--chat-fs-sm)]">
-      <button
-        onClick={(e) => toggleHoldPosition(e, setOpen)}
-        className={TOOL_ROW_CLS}
-      >
-        <StatusIcon status={block.status} live={live} />
-        <ToolIcon name={block.toolName} className="text-content-subtle" />
-        <span className="font-medium text-content-muted">{block.toolName}</span>
-        {summaryToolPath ? (
-          <span className="truncate font-mono text-content-subtle">
+      {/* FileLink is itself keyboard-operable. Nesting it inside a disclosure
+          button was invalid interactive markup and mixed two distinct actions.
+          Keep file-open and disclosure as separate controls on the same row. */}
+      {summaryToolPath ? (
+        <div className={cn(TOOL_ROW_CLS)}>
+          <button
+            type="button"
+            onClick={(e) => toggleHoldPosition(e, setOpen)}
+            aria-expanded={open}
+            className="inline-flex min-w-0 shrink-0 items-center gap-2 rounded-[var(--radius-control)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            <StatusIcon status={block.status} live={live} />
+            <ToolIcon name={block.toolName} className="text-content-subtle" />
+            <span className="font-medium text-content-muted">{block.toolName}</span>
+          </button>
+          <span className="min-w-0 flex-1 truncate font-mono text-content-subtle">
             <FileLink token={summaryToolPath} projectPath={projectPath} />
           </span>
-        ) : (
-          <span className="truncate text-content-subtle">{toolSummary(block.toolName, block.input, t)}</span>
-        )}
-        <Chevron open={open} />
-      </button>
+          <button
+            type="button"
+            onClick={(e) => toggleHoldPosition(e, setOpen)}
+            aria-expanded={open}
+            aria-label={`${block.toolName}: ${open ? t("chatStream.showLess") : t("chatStream.showMore")}`}
+            className="ml-auto inline-flex size-7 shrink-0 items-center justify-center rounded-[var(--radius-control)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            <Chevron open={open} />
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={(e) => toggleHoldPosition(e, setOpen)}
+          aria-expanded={open}
+          className={TOOL_ROW_CLS}
+        >
+          <StatusIcon status={block.status} live={live} />
+          <ToolIcon name={block.toolName} className="text-content-subtle" />
+          <span className="font-medium text-content-muted">{block.toolName}</span>
+          <span className="min-w-0 flex-1 truncate text-content-subtle">{toolSummary(block.toolName, block.input, t)}</span>
+          <Chevron open={open} />
+        </button>
+      )}
       {/* AI 写入成功后，给一个不打断对话的入口；点开既有记忆面板即可编辑。 */}
       {(block.toolName.endsWith("__memory_write") || block.toolName === "memory_write") &&
         block.status === "done" && resultPreview(block.result).includes("已记下「") && (
@@ -1805,14 +1846,16 @@ function ThinkingAccordion({
   return (
     <div className="relative [font-size:var(--chat-fs-sm)]" data-cds-thinking={live ? "live" : "done"} data-reasoning-glow={ambient.glow ? "active" : "idle"}>
       <button
+        type="button"
         onClick={(e) => {
           // 生成中剥夺折叠权（上游同一互斥物理）。
           if (live) return;
           toggleHoldPosition(e, setOpen);
         }}
         aria-expanded={isOpen}
+        aria-disabled={live}
         className={
-          "flex w-full items-center gap-2 rounded-md py-1.5 text-left text-content-muted hover:bg-surface-muted/40 " +
+          "flex min-h-8 w-full items-center gap-2 rounded-md py-1.5 text-left text-content-muted hover:bg-surface-muted/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent " +
           (live ? "cursor-default" : "")
         }
       >
@@ -1858,8 +1901,10 @@ function Collapsible({
   return (
     <div className="[font-size:var(--chat-fs-sm)]">
       <button
+        type="button"
         onClick={(e) => toggleHoldPosition(e, setOpen)}
-        className="flex w-full items-center gap-2 rounded-md py-1.5 text-left text-content-muted hover:bg-surface-muted/40"
+        aria-expanded={open}
+        className="flex min-h-8 w-full items-center gap-2 rounded-md py-1.5 text-left text-content-muted hover:bg-surface-muted/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <IconBulb size={13} className="shrink-0 text-content-subtle" />
         {/* shrink-0 + whitespace-nowrap keep the short label on one line even

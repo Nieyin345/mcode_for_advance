@@ -12,6 +12,7 @@ import {
   IconPhotoOff,
 } from "@renderer/lib/icons.js";
 import { isImageFile, type ContentTag } from "@renderer/lib/contentTag.js";
+import { previewPosition } from "./previewGeometry.js";
 
 /**
  * Floating preview for a single content-tag chip. Shows the full pasted
@@ -50,9 +51,9 @@ export function TagPopover({
   const { t } = useI18n();
   const popoverRef = useRef<HTMLDivElement>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  // Whether the popover has room to sit ABOVE the chip; falls back to below.
-  // Computed after first measure so we can read the popover's own height.
-  const [placeAbove, setPlaceAbove] = useState(true);
+  // Actual measured preview geometry: a right-edge-only offset can push a
+  // 28rem popover off-screen if a message/chip is near the left edge.
+  const [position, setPosition] = useState({ left: 8, top: 8 });
 
   // Image preview state (file tags whose path is a previewable image). null =
   // loading, "" = error/unreadable, non-empty = valid data URL.
@@ -82,22 +83,27 @@ export function TagPopover({
     };
   }, [isImage, tag.filePath]);
 
-  // Measure once mounted and decide above/below. Also re-check on resize so
-  // a window shrink doesn't leave the popover overflowing the top edge. For
-  // image tags, re-measure when the data URL arrives so placement accounts
-  // for the real image height (not the small loading spinner).
+  // The preview is portaled out of the virtualized chat list. Clamp its
+  // *measured* width/height on every size change, not only top vs bottom.
+  // ResizeObserver also catches image decode and font reflow without a window
+  // resize; keep the callback idempotent to avoid observer-render loops.
   useLayoutEffect(() => {
+    const el = popoverRef.current;
+    if (!el) return;
     const recompute = () => {
-      const el = popoverRef.current;
-      if (!el) return;
-      const h = el.offsetHeight;
-      // 8px gap between popover and chip.
-      setPlaceAbove(anchorRect.top - 8 - h >= 0);
+      const next = previewPosition(anchorRect, el.offsetWidth, el.offsetHeight,
+        window.innerWidth, window.innerHeight);
+      setPosition((old) => old.left === next.left && old.top === next.top ? old : next);
     };
     recompute();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(recompute);
+    observer?.observe(el);
     window.addEventListener("resize", recompute);
-    return () => window.removeEventListener("resize", recompute);
-  }, [anchorRect.top, dataUrl]);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", recompute);
+    };
+  }, [anchorRect.top, anchorRect.right, anchorRect.bottom, dataUrl, natural]);
 
   // Outside-click + ESC close. Mirrors ModelDropdown's pattern.
   useEffect(() => {
@@ -120,12 +126,20 @@ export function TagPopover({
         onClose();
       }
     };
+    // A scroll outside the preview moves the virtualized chip, invalidating
+    // its captured rect. Close rather than leaving a detached floating box.
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && popoverRef.current?.contains(event.target)) return;
+      onClose();
+    };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
     return () => {
       closeEscapeLayer();
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
     };
   }, [onClose]);
 
@@ -145,21 +159,10 @@ export function TagPopover({
     }
   };
 
-  // Fixed positioning relative to the viewport. Right-align to the chip's
-  // right edge; clamp the left so a wide popover never overflows the left
-  // edge of the viewport. Vertically: sit just above (or below) the chip
-  // with an 8px gap.
-  const right = window.innerWidth - anchorRect.right;
-  const minLeft = 8;
   const style: React.CSSProperties = {
     position: "fixed",
-    right: Math.max(right, minLeft - 0) + 0,
-    // When right-clamped (popover wider than available space on the right),
-    // switch to a left anchor so it stays on screen.
-    ...(right < minLeft ? { left: minLeft, right: "auto" as const } : {}),
-    ...(placeAbove
-      ? { bottom: window.innerHeight - anchorRect.top + 8 }
-      : { top: anchorRect.bottom + 8 }),
+    left: position.left,
+    top: position.top,
   };
 
   // Image tags: pop up the bare image with no frame — no header bar, border,
@@ -168,7 +171,7 @@ export function TagPopover({
   // / ESC (handled above); click the image to toggle zoom-to-fit / enlarged.
   if (isImage) {
     return (
-      <div ref={popoverRef} style={style} className="z-30">
+      <div ref={popoverRef} style={style} role="region" aria-label={tag.preview} className="z-30">
         {dataUrl === null ? (
           <div className="flex items-center gap-1.5 rounded-[var(--radius-btn-xs)] bg-surface/95 px-2.5 py-1.5 text-[11px] text-content-subtle shadow-[var(--shadow-popover)]">
             <IconLoader2 size={12} className="animate-spin" /> {t("chat.tagPopover.loadingImage")}
@@ -179,21 +182,26 @@ export function TagPopover({
             <p className="text-[11px]">{t("chat.tagPopover.imageFailed")}</p>
           </div>
         ) : (
-          <img
-            src={dataUrl}
-            alt={tag.preview}
+          <button
+            type="button"
             onClick={() => setNatural((n) => !n)}
-            title={natural ? t("chat.tagPopover.shrink") : t("chat.tagPopover.enlarge")}
-            className={cn(
-              "rounded-[var(--radius-btn-xs)] shadow-[var(--shadow-popover)]",
-              natural ? "cursor-zoom-out" : "cursor-zoom-in",
-            )}
-            style={
-              natural
-                ? { maxWidth: "calc(100vw - 16px)", maxHeight: "90vh" }
-                : { maxWidth: "min(32rem, calc(100vw - 16px))", maxHeight: "70vh" }
-            }
-          />
+            aria-label={natural ? t("chat.tagPopover.shrink") : t("chat.tagPopover.enlarge")}
+            className="rounded-[var(--radius-btn-xs)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            <img
+              src={dataUrl}
+              alt={tag.preview}
+              className={cn(
+                "rounded-[var(--radius-btn-xs)] shadow-[var(--shadow-popover)]",
+                natural ? "cursor-zoom-out" : "cursor-zoom-in",
+              )}
+              style={
+                natural
+                  ? { maxWidth: "calc(100vw - 16px)", maxHeight: "min(90vh, calc(100vh - 16px))" }
+                  : { maxWidth: "min(32rem, calc(100vw - 16px))", maxHeight: "70vh" }
+              }
+            />
+          </button>
         )}
       </div>
     );
@@ -204,7 +212,9 @@ export function TagPopover({
     <div
       ref={popoverRef}
       style={style}
-      className="z-30 flex max-h-60 w-[min(28rem,calc(100vw-16px))] flex-col overflow-hidden rounded-[var(--radius-btn-xs)] border border-edge bg-surface shadow-[var(--shadow-popover)]"
+      role="region"
+      aria-label={tag.preview}
+      className="z-30 flex max-h-[min(15rem,calc(100vh-16px))] w-[min(28rem,calc(100vw-16px))] flex-col overflow-hidden rounded-[var(--radius-btn-xs)] border border-edge bg-surface shadow-[var(--shadow-popover)]"
     >
       {/* Header: char count + copy/close */}
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-edge bg-surface-muted px-2 py-1">
@@ -215,7 +225,7 @@ export function TagPopover({
           <button
             type="button"
             onClick={handleCopy}
-            className="cds-hover-ghost flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:text-content"
+            className="cds-hover-ghost flex min-h-7 items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             title={t("chat.tagPopover.copyFull")}
           >
             {copyState === "copied" ? (
@@ -237,7 +247,7 @@ export function TagPopover({
                 onExpand();
                 onClose();
               }}
-              className="cds-hover-ghost flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:text-content"
+              className="cds-hover-ghost flex min-h-7 items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               title={t("chat.tagPopover.expandTitle")}
             >
               <IconArrowsMaximize size={11} /> {t("chat.tagPopover.expand")}
@@ -246,7 +256,7 @@ export function TagPopover({
           <button
             type="button"
             onClick={onClose}
-            className="cds-hover-ghost flex h-4 w-4 items-center justify-center rounded text-content-muted transition-colors hover:text-content"
+            className="cds-hover-ghost flex size-7 items-center justify-center rounded text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             title={t("common.close")}
             aria-label={t("chat.tagPopover.closePreview")}
           >
