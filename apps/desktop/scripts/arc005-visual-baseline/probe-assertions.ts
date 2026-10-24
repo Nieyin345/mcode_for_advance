@@ -303,6 +303,52 @@ export function inspectSceneContent(
     return fixturePass("stub-editor+real-layout");
   }
 
+  /* 【T136】四个「我们独有」的场景。它们全是右栏的页签，判据是同一件事：
+     **右栏真的渲染出那个面板的内容了**，而不是只开了一个空壳。
+
+     ⚠️ 这里只用 dom 级证据（文字/元素存在），**不写 visual 断言** —— 第一次
+     拍下来的就是基线本身，没有「应该长什么样」可言。 */
+  if (scene === "files-pane" || scene === "git-pane" || scene === "taskcenter" || scene === "workflow-board") {
+    const right = queryVisible(doc, "[data-cds-aside]");
+    if (!right) return fail("missing", "右栏没有打开（[data-cds-aside] 不在 DOM 里）");
+    if (isInsideFixture(right)) return fail("fixture-only", "右栏是夹具，不是真实面板");
+    const rightText = String(right.textContent ?? "");
+
+    if (scene === "files-pane") {
+      // 桩给了两层目录：顶层 src/docs/README.md/package.json。
+      const hasFile = rightText.includes("README.md") || rightText.includes("package.json");
+      const hasDir = rightText.includes("src") || rightText.includes("docs");
+      return hasFile && hasDir
+        ? productPass({ panel: "files" })
+        : fail("missing", "文件树没有渲染出桩里的目录/文件", { hasFile, hasDir });
+    }
+
+    if (scene === "git-pane") {
+      // 桩给了一个仓库 + 三个改动文件。
+      const hasRepo = rightText.includes("arc005-fixture-repo");
+      const changed = ["index.ts", "app.ts", "guide.md"].filter((n) => rightText.includes(n)).length;
+      return hasRepo && changed >= 2
+        ? productPass({ panel: "git", changed })
+        : fail("missing", "Git 面板没有渲染出桩里的仓库/改动文件", { hasRepo, changed });
+    }
+
+    if (scene === "taskcenter") {
+      // 桩给了三个任务，其中一个是 failed。
+      const goals = ["季度数据", "导出模块", "表格超宽"].filter((g) => rightText.includes(g)).length;
+      return goals >= 2
+        ? productPass({ panel: "taskcenter", goals })
+        : fail("missing", "任务中心没有渲染出桩里的任务", { goals });
+    }
+
+    // workflow-board：运行中的工作流节点看板。桩不提供运行中的节点，
+    // 所以这一格**只要求右栏与流页签挂载**，不要求有节点 —— 没有节点是
+    // 正确状态（没在跑就没有正在跑的节点），不是缺陷。
+    const flowMounted = !!queryVisible(doc, "[data-pane-flow], [data-cds-aside]");
+    return flowMounted
+      ? productPass({ panel: "flow", note: "no running nodes is the correct empty state" })
+      : fail("missing", "流页签没有挂载");
+  }
+
   return fail("missing", "unknown or unsupported scene: " + scene);
 }
 

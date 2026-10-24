@@ -22,6 +22,12 @@ const SCREENS = [
   ["preview", "预览"], ["parallel", "并行会话侧栏"],
   ["projects", "项目切换"], ["settings", "设置菜单"],
   ["narrow-window", "窗口缩窄"],
+  // 【T136】下列四个是我们**独有**的界面（Claude 没有）。加进基线之后，
+  // 后续任何 UI 改动都有「改前」可对照 —— 这四个此前从未被拍过。
+  ["files-pane", "右栏文件树"],
+  ["git-pane", "右栏 Git 面板"],
+  ["taskcenter", "任务中心"],
+  ["workflow-board", "工作流看板"],
 ] as const;
 const CONDITIONS = [
   { id: "light", width: 1280, height: 800, dark: false },
@@ -194,6 +200,20 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
             else if (id === 'narrow-window') {
               st.setState({leftOpen:true,rightOpen:true,rightPanelTab:'files',leftBarMode:'tree'});
               window.__arcShowFixture?.('editor');
+            }
+            // 【T136】四个「我们独有」的场景：都是右栏的页签。打开右栏 +
+            // 切到对应 tab 即可 —— 面板自己会调 api（桩见 api-stub.js）。
+            else if (id === 'files-pane') {
+              st.setState({rightOpen:true,rightPanelTab:'files',leftBarMode:'tree'});
+            }
+            else if (id === 'git-pane') {
+              st.setState({rightOpen:true,rightPanelTab:'git'});
+            }
+            else if (id === 'taskcenter') {
+              st.setState({rightOpen:true,rightPanelTab:'taskcenter'});
+            }
+            else if (id === 'workflow-board') {
+              st.setState({rightOpen:true,rightPanelTab:'flow'});
             }
             await new Promise(r=>setTimeout(r,300));
             return ${buildSceneAssertionScript(screen)};
