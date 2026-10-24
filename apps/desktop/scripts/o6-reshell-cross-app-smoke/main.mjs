@@ -100,7 +100,32 @@ if (APPS.some((a) => !themes[a].exists)) {
   process.exit(1);
 }
 
-/* ── 2. ★ 五个 :root 覆盖集逐字相同 ────────────────────────────────────── */
+/* ── 2. ★ 五个 :root 覆盖集逐字相同 ──────────────────────────────────────
+ *
+ * ## 为什么是「相等」而不是「报告差集 + 钉住差集大小」
+ *
+ * **在这条断言写下之前，我们先量了事实**（2026-10-25）：
+ *
+ *     html      :root tokens = 54
+ *     markdown  :root tokens = 54   vs html: SAME
+ *     pdf       :root tokens = 54   vs html: SAME
+ *     slides    :root tokens = 54   vs html: SAME
+ *     sheets    :root tokens = 54   vs html: SAME
+ *
+ * 五个集合**逐字相同**。所以「相等」和「差集为 0」是同一件事，前者更简单直接，
+ * 也更难在维护中悄悄放宽。
+ *
+ * **⚠️ 将来这条红的时候，读它的人需要知道一个前提**：它是从「五个相等」起步的，
+ * 不是「本来就不相等，这条断言一直错」。如果某个 app 真的需要只有它有的 token，
+ * 那是**一个要写下来的决定**（改这条断言 + 在卡里说明为什么分家），不是一次漂移。
+ *
+ * ## 为什么还要单独钉住 `.doc-page` 钉住块（判据 5）
+ *
+ * **「五个相等」单独存在时，抓不住「五个一起少了一样东西」** —— 比如有人
+ * 把 markdown 的 `.doc-page` 钉住块删掉，五个仍然相等（都少了它），
+ * 而文档纸张会被 chrome 染成暖白。**「正确的差异」和「漂移」长得一样，都是「不一样」；
+ * 钉住差异的方向，才分得出来。**
+ */
 console.log("\n★ 跨 app：五个 :root 覆盖集必须相同");
 const roots = {};
 for (const app of APPS) roots[app] = blockTokens(themes[app].src, ":root {");
