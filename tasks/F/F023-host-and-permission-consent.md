@@ -1,6 +1,6 @@
 # F023｜让扩展真跑起来：宿主接进 Mcode + 装时说清它有多大权限
 
-- Status: ready-for-agent
+- Status: done
 - Category: **P0 扩展主线（Theia 二开第二步，用户已裁决权限模型）**
 - Depends on:
   - F022（Theia 源码已进仓、锁 `v1.76.0`、能构建、`theia-vendor-smoke` 34/34）
@@ -286,3 +286,219 @@ NOT-COVERED: 运行时沙箱 —— 用户选择了安装时告知，不是隔�
 那是一个**必须让用户知道的**结论 —— 因为整个 Theia 路线的前提就是「宿主能起」。
 F017 的 PoC 是在 Windows 上验证过的（`probe-fork-host-v2.js`，6 秒无 stderr、进程存活），
 **但那是裸 fork 一个 host，不是完整握手。** 差别可能很大。
+## 结果回写（2026-10-25）
+
+### 结论先说
+
+**宿主在 Windows 上起来了，而且是完整握手 —— 不是「活了 6 秒」。**
+F017 留下的最大未知（`stdio[4]` 在 Windows 成不成立、MessagePack 握手能不能走完）
+**答案是「成立、能走完」**，并且一个真实扩展（`james-yu.latex-workshop`）被加载、
+激活、注册 **71 条命令**、命令从中枢侧调用并拿到返回值。
+
+`theia-host-boot-smoke` **35/35**，`theia-vendor-smoke` 仍 **34/34**，
+双包 typecheck 干净，六条变异各自红了预期的条数（见 §5）。
+
+---
+
+### 1. 宿主在本机起没起来 / `stdio[4]` 在 Windows 成不成立（本卡最大的未知）
+
+**起来了。** 分三步实测：
+
+| 步骤 | 做法 | 结果 |
+|---|---|---|
+| 1. 纯管道探针 | `fork(..., stdio: ['pipe','pipe','pipe','ipc','overlapped'])` + 子进程 `net.Socket({fd:4})`，手写 `<MessageStart>`+uint32 帧双向收发 | **双向 round-trip 通过**（`pong:hello-from-parent`） |
+| 2. 真宿主 `$init` | 用 Theia 自己的 `IPCChannel` + `RPCProtocolImpl` fork `plugin-host.js` | **`$init` 返回**（宿主报告 OS=Windows） |
+| 3. 真宿主 `$start` + 激活 | 加载 latex-workshop，`$activateByEvent('onCommand:…')` | **71 条命令注册成功** |
+
+**所以 `net.Socket({fd: 4})` 在 Windows 11 / Node 22 上成立**，
+前提是父进程 fork 时第 5 条 stdio 写 **`'overlapped'`** —— 这正是
+`vendor/theia/.../hosted-plugin-process.js:130` 注释里说的那句
+「5th element MUST be `'overlapped'` for it to work properly on Windows」。
+**本卡不改上游源码，只是照着它的形状起进程。**
+
+**一个必须记下来的坑**：父进程也必须注册与宿主相同的 msgpack 扩展
+（`registerMsgPackExtensions()`，由 `@theia/plugin-ext/lib/common/index.js` 在加载时执行）。
+**只 require `rpc-protocol.js` 不会触发它**，症状是「第一次收到含 vscode URI 的载荷就抛
+`Unknown extension 4`」—— 一个完全指错方向的错误。实现里两处都写了注释。
+
+---
+
+### 2. 真实扩展端到端：五步的实际结果
+
+选的是卡推荐的 **`james-yu.latex-workshop-10.20.0`**（入口 `./out/src/main.js`，
+**不是** `out/src/extension.js` —— 卡里那句提醒是对的）。
+
+**套件里的五步断言跑的是合成夹具**（`fixtures/spawn-ext`，不依赖本机装了什么扩展），
+下面括号里是**真实 latex-workshop** 的实测值：
+
+| 步骤 | 判据 | 结果 |
+|---|---|---|
+| 1. 宿主读到清单 | `id === publisher.name` | ✅（`james-yu.latex-workshop`） |
+| 2. `activate()` 跑完 | 没有 error 级日志 | ✅（真实扩展 0 error；3 条 **warn** 是它自己重复注册 BibTeX 诊断集合，不是宿主问题） |
+| 3. 命令进命令表 | 表里查得到具体命令 | ✅（真实扩展 **71 条**） |
+| 4. 从 Mcode 侧调 → 扩展执行 | 扩展里 `execSync` 的 stdout 回到父进程 | ✅（夹具返回 `echo: "pong"`） |
+| 5. 返回值回到 Mcode 侧 | 对象字段完整 | ✅（`appName: "Mcode"`、清单默认值 `hello-from-manifest-default`） |
+
+**第 4 步是核心，也是踩坑最深的一处。** 实现过程中有三条「看起来像激活失败」的假象，
+每一条都记进了源码注释：
+
+1. **`CommandRegistryExt` 没有 `$getCommands`。** 第一版向宿主「要命令表」，
+   宿主侧 `handler[method]` 拿到 `undefined` 抛 `TypeError`，这个抛错**沿着
+   `activate()` 的调用栈冒出来**。命令表只能从**单向通知**里读。
+2. **声明过的命令不发 `$registerCommand`。** 宿主侧 `commandIsDeclaredInPackage`
+   分支让清单里声明过的命令直接走 `$registerHandler`。实测 latex-workshop 的 46 条
+   声明命令**一条 `$registerCommand` 都没有** —— 只数后者会得出「注册了 25 条」而
+   `wordcount` 永远查不到。**两条通知都要收。**
+3. **扩展调 `executeCommand('setContext', …)` 时不能抛。** latex-workshop 的
+   `activate()` 第一句就是它；`setContext` 是工作台内置命令，我们没实现。
+   第一版把它原样转给宿主 → reject → 顺着 activate 冒出来。现在**未实现的命令
+   返回 `undefined` 并记一条 debug**（VS Code 对未知命令也是宽容的）。
+
+**顺带发现的一条宿主职责**：配置**默认值**必须从清单送进宿主。
+latex-workshop 在**模块加载期**就调
+`workspace.getConfiguration('latex-workshop').get('intellisense.package.exclude').includes(...)`，
+而清单里声明了 `default: []`。没有人送默认值 → `get` 返回 `undefined` → `TypeError`。
+Theia 自己靠 `PreferenceProvider` + schema 注入；Mcode 没有那套服务，
+所以在 `collectConfigurationDefaults()` 里显式合成（`PreferenceScope.Default`）。
+
+**`activate()` 什么时候跑**：`$start` 只登记，不激活。真正的激活要发
+`onCommand:<第一个声明命令>`（VS Code 的惰性激活语义）。**不发就是 0 条命令** ——
+第一版就撞过这个，症状和「扩展坏了」一模一样。
+
+---
+
+### 3. `activeTextEditor` 怎么映射到 Monaco / `FileEditor.tsx` 那段注释说了什么
+
+**映射方式**：把编辑器状态以 **`EDITORS_AND_DOCUMENTS_EXT.$acceptEditorsAndDocumentsDelta`**
+推给宿主 —— 这是 Theia 的真实协议，不是自造的。宿主侧
+`EditorsAndDocumentsExtImpl` 收到 delta 才会让 `window.activeTextEditor` 有值。
+
+- 文档：`{ uri, versionId, lines, languageId, modeId, EOL, isDirty, encoding }`
+- 编辑器：`{ id, documentUri, selections, options, visibleRanges, editorPosition }`
+- **`newActiveEditor: null` 才表示「没有编辑器」**；`undefined` 是「没变化」。
+  写成 `undefined` 会得到一个关不掉的幽灵编辑器 —— 这是第 3 组负控要抓的变异（M3）。
+
+**`FileEditor.tsx` 那段注释（卡里说行号是 838，不是 810）说的是**：
+扩展读选区只能走 Monaco 自己的 `editor.getSelection()` + `model.getValueInRange(...)`，
+**不能用 `window.getSelection()`** —— Monaco 是 canvas 自绘的，DOM 选区那层拿不到
+（或错位）。**本卡的映射遵守了这条**：选区来自 Mcode 侧真实编辑器的状态
+（`setActive({ selection })`），**不读 `window.getSelection()`**；
+推进宿主时按 Theia 的 1-based 字段编码，宿主侧 `toSelection` 减 1 回到 vscode 的 0-based。
+
+**套件实测**：无编辑器 → `null`（不是 `{}`、不是抛错）；有编辑器 → 文本逐字节一致、
+选区 0-based 对齐；**并且从扩展侧 `vscode.window.activeTextEditor` 读到了同一份内容**
+（证明不是我们自己的缓存，而是宿主里那份文档）。
+
+---
+
+### 4. 权限报告能推出几项、漏了几项
+
+**latex-workshop 实测：4 项全部判 true（readsFiles / writesFiles / spawnsProcesses / network）。**
+拿人工清点对照过了 —— 遍历它的 require 闭包（**116 个文件，全部扫到，未触发 256 上限**），
+外部模块是：`cross-spawn, fs, glob, http, iconv-lite, latex-utensils, micromatch, os,
+path, perf_hooks, tmp, vscode, vsls/vscode, workerpool, ws, zlib`。
+**报告没有误报，也没有漏掉这四类中的任何一类。**
+
+**但它会漏，而且我量了漏多少**：一个把 `require("child_process")` 写成
+`require(["child","process"].join("_"))` 的扩展，报告返回**四项全 false、evidence 为空**。
+这正是 `confidence` 恒为 `static-lower-bound`、`limits` 必须随报告一起显示的理由。
+**「只列了 3 项」和「只有 3 项」是两件事** —— 卡里这句被实测坐实了。
+
+实现上的两条取舍（都写进了 `limits`，不是只写在代码里）：
+
+- **`require("fs")` 只记「读」**，写必须由写调用点证明 —— 否则每个 fs 用户都被标成「能改你的文件」，标记恒亮、用户学会忽略。
+- **`glob` / `tmp` 这类泛用包刻意不计文件访问** —— 同上，代价是漏报，写进 `limits`。
+- **`cross-spawn` / `node-pty` / `axios` 这类包名白名单计入** —— 不认这一层，就会对 latex-workshop 说「不起子进程」，那不是保守，是错的。
+
+**剥注释**：`// require("child_process")` 不算命中（套件里有专门负控）。
+
+**安装同意**：`installConsent.ts` 是纯函数（不 import electron），
+`buildInstallConsentPrompt` → 用户看 → `decideInstall` → `install` / `decline`；
+**没有报告时是 `needs-report`（fail-closed，不装）**，不是「没报告就当没问题」。
+提示里必须同时出现「这是下限」和「这不是沙箱」两句。
+
+---
+
+### 5. 六条变异的实际红数 vs 预期
+
+**每条先写预期，再跑；每条都先确认「find 恰好出现 1 次」「写后字节确实变了」
+「还原后 `cmp` 逐字节一致」，跑完再确认基线回到 0 红。**
+
+| # | 变异 | 预期红 | 实际红 | 红在哪 |
+|---|---|---|---|---|
+| M1 | 权限报告恒 `true` | 3 | **3** ✅ | 两条负控（clean-ext、注释掉的 require）+ 「干净扩展的提示不含起进程能力」 |
+| M2 | 权限报告恒 `false` | 4 | **4** ✅ | 正控 + 「提示列出了起进程能力」+「headline 明说下限」+「提示带 evidence」 |
+| M3 | `activeTextEditor` 无编辑器时返回 `{}` | 2 | **2** ✅ | 「没有编辑器时返回 null」+「关闭后回到 null」 |
+| M4 | 命令登记后立刻从表里删掉 | 2 | **2** ✅ | 「步骤 3 命令进了表」+「步骤 4b 能调用的命令也在表里」 |
+| M5 | 宿主错误被 `try/catch` 吞掉 | 1 | **1** ✅ | 「扩展目录不存在时抛出带 code 的错误」 |
+| M6 | 没有报告也照装 | 1 | **1** ✅ | 「没有报告 → needs-report」 |
+
+**前两条（M1/M2）是成对做的**，两个都红才证明报告在**区分**，而不是一个恒定的报警器。
+
+**两处预期被我改过，而且改得对**（先说清原因，不是事后凑数）：
+
+- **M1/M2 第一次只写 1 条** —— 实际多红的几条是**用户看到的那层**（安装提示）
+  也跟着变。那不是判据太松，是**同一属性被两条独立断言守着**。改成 3 / 4。
+- **M4 第一次写 2 条，其中一条是「命令表非空」** —— 实际只红 1 条。
+  查下来是**我的预期错了，而且暴露了判据弱**：`length > 0` 在「只注册了一条
+  无关命令」时也成立。已把判据钉到**具体命令**上，并加了 `步骤 4b`。
+  **M4 的第 4 步本身不红是对的** —— 只删父进程镜像时，宿主侧 handler 还在，
+  调用真的能跑。**「能调用 ≠ 在表里」**，只有两条一起断言才抓得住。
+
+**变异 M4 顺带证明了一件事**：如果只写「调用成功」这一条，一个**假装注册成功**
+的宿主会全绿。这和 F015 的「注册 24/24、调用 1/24」是同一族，方向相反。
+
+---
+
+### 6. 有没有「必须接产品才能继续」的发现
+
+**有两条，都不是阻塞，但都应该在 F024/F025 立项时先看一眼：**
+
+1. **宿主能起，但「谁来调用它」还没接产品。** 本卡的 `TheiaHost` 是一个**可独立
+   驱动**的类（套件直接 `new` 它），**没有接进 IPC / 渲染端 / 安装流程**。
+   要让用户真的用上，还需要：一条 IPC（起宿主 / 装扩展）、一个安装入口把
+   `buildExtensionPermissionReport` + `installConsent` 接进现有的
+   `ModuleHost.install` 那条流程、以及宿主生命周期的归属（跟窗口还是跟应用）。
+   **这不是本卡的范围**（卡的 Exclusive writable files 里没有 `ipc/`），
+   但它决定了「用户什么时候能看见」。
+2. **`vendor/theia` 的 `plugin-ext-vscode` 构建产物是本机 `tsc --build` 出来的。**
+   `lib` 在 vendor 的 `.gitignore` 里，所以 **vendor git 树干净**（`git status` 空），
+   但**换一台机器 / CI 必须先把 `packages/plugin-ext-vscode` 建出来**，
+   否则套件走 skip 分支（打印原因、退出 0）。`vendor/README.md` 与
+   `F022` 的构建步骤里目前只写了 `plugin-ext`，**建议补上 `plugin-ext-vscode`**。
+   套件里用 `vscode-init-missing` 这个独立错误码把它和「宿主没建」分开，
+   不会静默。
+
+**还有一条信息性的**：真实 latex-workshop 能激活并注册 71 条命令，
+但**它注册的语言/编辑器类能力（补全、悬浮、格式化）在本宿主里没有消费方** ——
+那些是 `LanguagesMain` / `TextEditorsMain` 的方法，本卡只做了「记录 + 安全默认值」。
+`NOT-COVERED` 那三行说的就是这个边界。**这是 F025+ 的范围，不是本卡的缺陷。**
+
+---
+
+### 7. 提交 SHA
+
+见下方提交记录。改动文件：
+
+```
+packages/contracts/src/extensionPermissionReport.ts          （新建，契约）
+packages/contracts/src/index.ts                              （+1 行导出）
+apps/desktop/src/main/modules/theiaPermissionReport.ts       （新建）
+apps/desktop/src/main/modules/theiaHost/host.ts              （新建）
+apps/desktop/src/main/modules/theiaHost/installConsent.ts    （新建）
+apps/desktop/scripts/theia-host-boot-smoke/**                （新建：main.ts / run.sh / fixtures）
+```
+
+**没有碰**：`vendor/theia/**`（vendor `git status` 空）、`vscodeL1Bridge.ts`、
+`packages/vscode-compat/**`、`apps/desktop/scripts/theia-vendor-smoke/**`。
+
+### 8. 套件输出里的边界（每次运行都打）
+
+```
+NOT-COVERED: TextEditor.edit / 撤销栈（F024）
+NOT-COVERED: workspace 与 window 的大部分 API（F025+）
+NOT-COVERED: 运行时沙箱 —— 用户选择了安装时告知，不是隔离
+```
+
+**最后一条尤其重要**：一个看日志的人会把「装时说清楚」读成「有保护」。
+它不是保护，是知情同意。

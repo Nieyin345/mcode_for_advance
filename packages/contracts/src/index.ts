@@ -26,3 +26,4 @@ export * from "./sceneProjectInit.js";
 export * from "./hostHookGrant.js";
 export * from "./commit.js";
 export * from "./baseToolCapabilities.js";
+export * from "./extensionPermissionReport.js";

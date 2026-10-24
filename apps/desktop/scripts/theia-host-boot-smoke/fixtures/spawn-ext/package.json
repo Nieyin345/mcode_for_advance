@@ -1,0 +1,20 @@
+{
+  "name": "spawn-ext",
+  "publisher": "mcode-smoke",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.80.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onCommand:mcodeSmoke.spawnEcho"],
+  "contributes": {
+    "commands": [
+      { "command": "mcodeSmoke.spawnEcho", "title": "Mcode smoke: spawn echo" },
+      { "command": "mcodeSmoke.declaredOnly", "title": "Mcode smoke: declared only" }
+    ],
+    "configuration": {
+      "title": "Mcode smoke",
+      "properties": {
+        "mcodeSmoke.greeting": { "type": "string", "default": "hello-from-manifest-default" }
+      }
+    }
+  }
+}

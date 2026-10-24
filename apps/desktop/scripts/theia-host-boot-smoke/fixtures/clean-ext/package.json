@@ -1,0 +1,11 @@
+{
+  "name": "clean-ext",
+  "publisher": "mcode-smoke",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.80.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onCommand:mcodeSmoke.clean"],
+  "contributes": {
+    "commands": [{ "command": "mcodeSmoke.clean", "title": "Mcode smoke: clean" }]
+  }
+}
