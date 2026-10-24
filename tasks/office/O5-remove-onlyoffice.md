@@ -105,6 +105,29 @@ const defaultMode: FileViewMode = markdown || office ? "wysiwyg" : ...
 **判据**：六格式文件打开时，**第一次就落在 GenOffice 原生视图**，不需要用户切模式。
 **不许**「先显示一个『选择编辑器』再切」。
 
+## 五之一、⚠️ 两个桩文件已被 O4 改过，不要改回旧形态
+
+`fa6eb917`（O4）把这两个文件里的 `ipcMain.on` 从 `notHere(...)` 抛错桩改成了记录式：
+
+```
+apps/desktop/scripts/memory-codex-smoke/stubs/electron.ts
+apps/desktop/scripts/t40-renderer-registry-smoke/stubs/electron.ts
+```
+
+**原因是**：那两套桩按「当时总注册表里没有任何一条 `ipc.on`」校准；O4 修好
+`createDbGuardedIpc.on` 之后，生产装配**真的**会注册 `close-check-result` 监听器 ——
+桩的前提被合法推翻，导出面跟着重新校准。
+
+**⚠️ 你删 OnlyOffice 的 8 条 IPC 时，如果你也要动这两个桩，先 `git log -- <文件>` 看最新版，
+不要把它们改回 `notHere`。**
+
+**补充事实（O4 的执行会话替你核过）**：`onlyoffice.ts` 的注册器是
+`registerOnlyOfficeHandlers(ipcMain: IpcMain)`，**只用 `ipcMain.handle`，没有 `ipc.on`** ——
+所以 O5 不涉及 O4 修的 `on` 面。
+
+**这两个套件里没有一处提到 ONLYOFFICE**（grep 0/0），它们只验「总注册表装得起来 + 表里每条都有 handler」。
+删通道会改变数量，但不会改它们的断言对象 —— **除非你动了它们的桩。**
+
 ## 五之二、★ 改默认时必须判能力，不能无条件改成 GenOffice
 
 `FileEditor.tsx:171` 已有：
