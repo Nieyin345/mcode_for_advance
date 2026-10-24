@@ -250,7 +250,8 @@ section("C. 主列几何按 shell variant 一致切换（Claude 风格不是只�
     /variant\?: ShellVariant/.test(pane) && /variant = "classic"/.test(pane));
   check("★ workspace 主列仍使用 10px 圆角，右停靠为左缘、左停靠为右缘",
     /variant === "workspace"/.test(pane) &&
-    /rightDock === "left" \? "rounded-tr-\[10px\] rounded-br-\[10px\]" : "rounded-tl-\[10px\] rounded-bl-\[10px\]"/.test(pane));
+    /visibleDock === "left" \? "rounded-tr-\[10px\] rounded-br-\[10px\]" : "rounded-tl-\[10px\] rounded-bl-\[10px\]"/.test(pane) &&
+    /visibleRightPaneGeometry\(rightSurface, rightOpen, rightDock, rightPlacement\?\.side === "bottom"\)/.test(pane));
   check("★ classic 主列仍保留历史 24px 左上/左下圆角，不破坏原工作区",
     /rounded-tl-3xl rounded-bl-3xl/.test(pane));
   check("★ 主列为同一 main 元素 class 切换，禁止双树互换造成 PTY/草稿被销毁",

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parsePaneDock, dockSideAtPoint, dockResizeDelta, dockFlexOrder, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID } from "../../src/renderer/components/layout/paneDock.js";
+import { parsePaneDock, dockSideAtPoint, dockResizeDelta, dockFlexOrder, visibleRightPaneGeometry, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID } from "../../src/renderer/components/layout/paneDock.js";
 import { dockSideAtRect } from "../../src/renderer/components/layout/paneLayout.js";
 import { sourceHas } from "../lib/sourceText.js";
 const src=(path:string)=>readFileSync(resolve("src/renderer",path),"utf8");
@@ -27,7 +27,7 @@ check("Hydration validates dock field strictly",sourceHas(store, "parseSavedPane
 check("Initial dock defaults right and setter persists",sourceHas(store, 'rightDock: "right"')&&sourceHas(store, "setRightDock: (dock)")&&sourceHas(store, 'schedulePaneWidthPersist(get, "rightDock")'));
 check("Store type includes right dock and action",sourceHas(types, "rightDock: PaneDock")&&sourceHas(types, "setRightDock: (dock: PaneDock) => void"));
 check("App subscribes and forwards dock store state",sourceHas(app, "const rightDock = useSessionStore")&&sourceHas(app, "rightDock={rightDock}"));
-check("Shell and layout forward dock while preserving center tree",sourceHas(shell, "rightDock={rightDock}")&&sourceHas(layout, "dockFlexOrder(rightDock)"));
+check("Shell forwards saved dock, layout uses the visible dock without remounting center",sourceHas(shell, "rightDock={rightDock}")&&sourceHas(layout, "dockFlexOrder(visibleDock)")&&sourceHas(layout, "visibleRightPaneGeometry(rightSurface, rightOpen, rightDock, rightPlacement?.side === \"bottom\")")&&visibleRightPaneGeometry("drawer",true,"left",false).visibleDock==="right");
 check("DOM order only, not ternary swapping pane component identities",sourceHas(layout, "style={{ order: order.center }}")&&sourceHas(layout, "order: order.aside,")&&sourceHas(layout, "style={{ order: order.toolbar }}"));
 check("Divider stays direct flex child so its ResizeObserver measures full row",
   !sourceHas(layout, '<div className="flex shrink-0" style={{ order: order.divider }}>') &&

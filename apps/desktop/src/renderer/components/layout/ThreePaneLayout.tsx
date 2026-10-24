@@ -5,7 +5,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { Divider } from "./Divider.js";
 import { ModuleViewDock } from "@renderer/components/modules/ModuleContributions.js";
 import { shouldMountRightPane } from "./rightPaneKeepAlive.js";
-import { dockFlexOrder, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, type PaneDock } from "./paneDock.js";
+import { dockFlexOrder, visibleRightPaneGeometry, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, type PaneDock } from "./paneDock.js";
 import type { ShellVariant } from "../shell/shellPrefs.js";
 import { computeSplitDrag, dockSideAtRect, DEFAULT_PANE_LAYOUT, SPLIT_SNAP_RATIO, type DockSide, type PaneId, type PaneLayout } from "./paneLayout.js";
 
@@ -132,7 +132,9 @@ export function ThreePaneLayout({
   const dndOrigin = useRef({ x: 0, y: 0 });
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
   const rightPlacement = paneLayout.placements.find(p => p.id === "right");
-  const rightAtBottom = rightPlacement?.side === "bottom";
+  // Store docking preferences survive presentation mode changes; only the
+  // visible geometry is overridden for the right-only drawer or closed pane.
+  const { visibleDock, atBottom: rightAtBottom } = visibleRightPaneGeometry(rightSurface, rightOpen, rightDock, rightPlacement?.side === "bottom");
   const bottomShare = rightPlacement?.sizePct ?? 30;
   // Keep live drag previews local; Escape cancels without persisting a write.
   const [splitPreview, setSplitPreview] = useState<number | null>(null);
@@ -242,13 +244,13 @@ export function ThreePaneLayout({
     ? `min(${rightWidthPct}%, 30%)`
     : `min(${rightWidth ?? 360}px, 30%)`;
   // Reordering stable flex children avoids remounting Chromium/Monaco/PTY.
-  const order = dockFlexOrder(rightDock);
+  const order = dockFlexOrder(visibleDock);
   const [dockPreview, setDockPreview] = useState<DockSide | null>(null);
   // Closing or moving the panel invalidates any outstanding HTML5 drag hover.
   // A lost dragend (e.g. over native WebContentsView) must not strand its ghost.
   useEffect(() => {
     setDockPreview(null);
-  }, [rightOpen, rightDock]);
+  }, [rightOpen, rightDock, rightSurface]);
   useEffect(() => {
     const clearPreview = () => setDockPreview(null);
     window.addEventListener("dragend", clearPreview);
@@ -295,7 +297,7 @@ export function ThreePaneLayout({
         className="relative flex h-full min-h-0 min-w-0 flex-1 flex-wrap"
         style={{ "--pane-bottom-share": `${bottomShare}%` } as CSSProperties}
         onDoubleClickCapture={(e) => {
-          if (!(e.target as HTMLElement).closest('[data-divider="vertical"]') || !onResizeRight) return;
+          if (isDrawer || !(e.target as HTMLElement).closest('[data-divider="vertical"]') || !onResizeRight) return;
           const width = e.currentTarget.getBoundingClientRect().width;
           if (width <= 0) return;
           const target = width * (1 - SPLIT_SNAP_RATIO);
@@ -308,7 +310,7 @@ export function ThreePaneLayout({
           onResizeRight(rightDock === "left" ? target - current : current - target);
         }}
         onPointerDownCapture={(e) => {
-          if (!rightOpen || rightAtBottom || !onResizeRight || !e.isPrimary || e.button !== 0 || e.detail > 1) return;
+          if (isDrawer || !rightOpen || rightAtBottom || !onResizeRight || !e.isPrimary || e.button !== 0 || e.detail > 1) return;
           const dividers = Array.from(e.currentTarget.querySelectorAll('[data-divider="vertical"]'));
           const target = (e.target as HTMLElement).closest('[data-divider="vertical"]');
           if (!target || target !== dividers[dividers.length - 1]) return;
@@ -362,8 +364,8 @@ export function ThreePaneLayout({
         "relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden border-t border-edge-panel bg-surface",
         rightAtBottom ? "h-[calc(100%-var(--pane-bottom-share))]" : "h-full",
         variant === "workspace"
-          ? (rightDock === "left" ? "rounded-tr-[10px] rounded-br-[10px]" : "rounded-tl-[10px] rounded-bl-[10px]")
-          : (rightDock === "left" ? "rounded-tr-3xl rounded-br-3xl" : "rounded-tl-3xl rounded-bl-3xl"),
+          ? (visibleDock === "left" ? "rounded-tr-[10px] rounded-br-[10px]" : "rounded-tl-[10px] rounded-bl-[10px]")
+          : (visibleDock === "left" ? "rounded-tr-3xl rounded-br-3xl" : "rounded-tl-3xl rounded-bl-3xl"),
       )} data-cds-center="" style={{ order: order.center }} onDragOverCapture={handleDockDragOver}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDockPreview(null); }}
         onDropCapture={handleDockDrop}>

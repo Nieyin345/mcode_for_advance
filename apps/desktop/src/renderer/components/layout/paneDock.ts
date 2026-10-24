@@ -9,6 +9,23 @@ export function parsePaneDock(value: unknown): PaneDock {
   return value === "left" ? "left" : "right";
 }
 
+/** The persisted pane placement is a preference, not necessarily today's
+ * visible geometry. A compact right-only drawer ignores stored left/bottom
+ * docking, and closing a bottom-docked pane must restore the center to full
+ * height. Never write these temporary display decisions back to preferences:
+ * reopening the full pane must restore the saved placement. */
+export function visibleRightPaneGeometry(
+  surface: "pane" | "drawer",
+  open: boolean,
+  savedDock: PaneDock,
+  savedAtBottom: boolean,
+): { visibleDock: PaneDock; atBottom: boolean } {
+  if (surface === "drawer" || !open) {
+    return { visibleDock: "right", atBottom: false };
+  }
+  return { visibleDock: savedDock, atBottom: savedAtBottom };
+}
+
 /** A dropped panel docks on the side of the workspace under the pointer.
  * Unmeasured, non-finite or zero-size rectangles never change the layout.
  */
