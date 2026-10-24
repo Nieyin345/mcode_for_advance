@@ -175,13 +175,17 @@ console.log("[7] 负控：尺寸与 entry 数限制**没有**被放宽");
   try { readMinimalVsix(three); } catch (e) { threw = true; msg = String(e); }
   check("★ 3 个 entry 仍被拒（entry 数没放宽）", threw && /two plain ZIP entries/.test(msg), { msg });
 
-  // 7b: 总量超过 128 KiB 仍拒绝（本卡没放宽总尺寸）
+  // 7b: 总量超过 128 KiB 仍拒绝（F002 没放宽总尺寸）
   //
   // ⚠️ **必须验「被哪一道限制拒的」，不能只验「抛错了」**。
-  // 变异 M3 把总尺寸放宽到 16 MiB 之后，这个包仍然会被**后面的
-  // 24 KiB 条目限额**拒掉 —— 只验「抛错」的话断言照样绿，而放宽是真的发生了。
-  // 要区分：错误信息必须是 `size out of L1 bounds`（总尺寸那道），
-  // 不能是 `exceeds L1 bound` / `Missing or oversized`（条目那道）。
+  // 变异 M3 把总尺寸放宽到 16 MiB 之后，这个包仍然会被**后面的条目限额**
+  // 拒掉 —— 只验「抛错」的话断言照样绿，而放宽是真的发生了。
+  //
+  // 【F003】错误信息被拆细之后这里要改：原来排除的是 `exceeds L1 bound` /
+  // `Missing or oversized` 两个**措辞**，而新消息是 `main entry exceeds 24576 B` /
+  // `manifest exceeds 65536 B`。**这是按措辞写断言的代价。**
+  // 改成正面断言：总尺寸那条必须**点名总尺寸的界限值 131072**，且不能出现
+  // 任何一个条目限额的数字（24576 / 65536）或条目字样。
   const huge = new Uint8Array(200 * 1024).fill(65);
   const bigZip = buildZip([
     { name: "extension/package.json", data: pkgBytes },
@@ -192,7 +196,11 @@ console.log("[7] 负控：尺寸与 entry 数限制**没有**被放宽");
   check("★ 总包 >128 KiB 被拒绝", !bigRes.ok, { error: bigRes.ok ? "unexpectedly accepted" : bigRes.error });
   check(
     "★ 拒绝理由是「总尺寸超限」而不是条目限额（区分是哪道限制）",
-    !bigRes.ok && /size out of L1 bounds/.test(bigRes.error) && !/exceeds L1 bound|Missing or oversized/.test(bigRes.error),
+    !bigRes.ok &&
+      /size out of L1 bounds/.test(bigRes.error) &&
+      // 正面断言：总尺寸那条**不会**提到任何条目限额的数字或条目字样。
+      // 用数字而不是措辞，是因为措辞会变、限额值不会。
+      !/24576|65536|manifest|main entry/.test(bigRes.error),
     { error: bigRes.ok ? undefined : bigRes.error },
   );
 
@@ -209,7 +217,12 @@ console.log("[7] 负控：尺寸与 entry 数限制**没有**被放宽");
   let threw3 = false;
   let msg3 = "";
   try { readMinimalVsix(deflatedBig); } catch (e) { threw3 = true; msg3 = String(e); }
-  check("★ 解压后 >24 KiB 的 main 仍被拒（单条目限额没放宽）", threw3 && /exceeds L1 bound/.test(msg3), { msg3 });
+  // 【F003】改成正面断言具体限额值与条目名 —— 措辞会变，数字不会。
+  check(
+    "★ 解压后 >24 KiB 的 main 仍被拒，且点名是 main 那条限额",
+    threw3 && /main entry/.test(msg3) && /24576/.test(msg3),
+    { msg3 },
+  );
 }
 
 console.log("[8] 负控：允许的 method 之外仍拒绝");

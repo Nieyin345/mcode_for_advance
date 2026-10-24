@@ -56,6 +56,42 @@ const l2DiagnosticsSchema = z.array(z.object({
 }).strict()).max(4);
 
 /**
+ * 【F003】两个条目各自的**上限**，与「为什么是这些数」。
+ *
+ * **这两个数字原本没有任何依据。** `68a7121c`（限制最初引入的提交）的提交信息是空的，
+ * `docs/planning/extension-vscode-compat.md` §4 从未写过理由，`tasks/archive/` 里也没有。
+ * 结论：它们是 L1 原型阶段随手定的安全边界。
+ *
+ * - **`MANIFEST_LIMIT` 从 4096 放宽到 65536（64 KiB）。**
+ *   依据是实测：真实扩展里最大的 `package.json` 是 `mechatroner.rainbow-csv-3.24.1`
+ *   的 **17 021 B**，超旧限 4.2 倍。64 KiB 给它约 3.8 倍余量。
+ *   放宽它**不会**加重「装进来但 API 全缺」的问题 —— 那个问题只跟可执行入口有关，
+ *   而 `package.json` 是**声明**：变大只意味着多了命令、配置项、activationEvents，
+ *   不引入任何新能力。
+ *
+ * - **`SOURCE_LIMIT` 保持 24576（24 KiB），本卡不放宽。**
+ *   这道墙后面才是真正的难题：`extension.js` 一旦能进，用户就会期望它**能跑**，
+ *   而 `require` 白名单目前只有 `"vscode"`、53 个 `vscode.*` 成员没有一个是完整实现。
+ *   **放宽等于承诺一个跑不起来的运行时** —— 装进去了、能列出、一调用就崩，
+ *   比「装不进来」更坏。要让真实扩展（rainbow-csv 是 136 516 B）进得来，
+ *   得先把运行时做出来，或者明确接受「装得进但跑不了」并告知用户。
+ */
+const MANIFEST_LIMIT = 64 * 1024;
+const SOURCE_LIMIT = 24 * 1024;
+
+/** 条目名 → 它该受哪一道限额管。拆开是为了让错误信息能说清「被哪道拒的」。 */
+function limitFor(name: string): number {
+  if (name === "extension/package.json") return MANIFEST_LIMIT;
+  if (name === "extension/extension.js") return SOURCE_LIMIT;
+  // 调用前已过 allowlist，这里只是防将来加条目时忘记配套限额。
+  throw Error("VSIX entry has no size limit configured: " + name);
+}
+
+function entryLabel(name: string): string {
+  return name === "extension/package.json" ? "manifest" : "main entry";
+}
+
+/**
  * 只认 ZIP STORE 或 DEFLATE，精确偏移 + CRC32；不处理目录穿越、符号链接、zip64 与其他条目。
  *
  * 【F002】市场扩展**一律是 DEFLATE**（method 8），只认 STORE 等于一个真实扩展都进不来。
@@ -129,12 +165,11 @@ export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; so
       data = raw;
     } else {
       // 声明尺寸先卡一遍上限，避免一个声称 4 GiB 的包把解压撑爆内存。
-      // 这里的上限用**现有最严格的条目上限**（24 KiB），不放宽。
-      if (unpacked > 24 * 1024 && name === "extension/extension.js") {
-        throw Error("VSIX DEFLATE entry declared size exceeds L1 bound: " + name);
-      }
-      if (unpacked > 4096 && name === "extension/package.json") {
-        throw Error("VSIX DEFLATE entry declared size exceeds L1 bound: " + name);
+      // 【F003】两个上限各自不同、且错误信息要能区分是哪一道 —— 见文件末尾的限额常量。
+      if (unpacked > limitFor(name)) {
+        throw Error(
+          "VSIX DEFLATE " + entryLabel(name) + " exceeds " + limitFor(name) + " B (header declares " + unpacked + ")",
+        );
       }
       try {
         data = new Uint8Array(inflateRawSync(raw, { maxOutputLength: Math.max(unpacked, 1) }));
@@ -163,8 +198,17 @@ export function readMinimalVsix(archive: Uint8Array): { packageJson: unknown; so
   if (pos !== end) throw Error("Extra VSIX directory data");
   const manifest = entries.get("extension/package.json");
   const main = entries.get("extension/extension.js");
-  if (!manifest || !main || manifest.byteLength > 4096 || main.byteLength > 24 * 1024) {
-    throw Error("Missing or oversized VSIX manifest/entry");
+  // 【F003】原来这里是一句 `Missing or oversized VSIX manifest/entry`，把「缺了」和
+  // 「两大类条目各自超限」混在同一个消息里。那让「被哪道限制拒的」无法断言 ——
+  // F002 的变异 M3 就是这么发现问题：放宽总尺寸后大包仍被拒（换成了条目限额），
+  // 而笼统的错误让套件分不出「该红的红了没有」。现在四种拒绝各自可区分。
+  if (!manifest) throw Error("VSIX archive has no extension/package.json");
+  if (!main) throw Error("VSIX archive has no extension/extension.js");
+  if (manifest.byteLength > MANIFEST_LIMIT) {
+    throw Error("VSIX manifest exceeds " + MANIFEST_LIMIT + " B (got " + manifest.byteLength + ")");
+  }
+  if (main.byteLength > SOURCE_LIMIT) {
+    throw Error("VSIX main entry exceeds " + SOURCE_LIMIT + " B (got " + main.byteLength + ")");
   }
   return { packageJson: JSON.parse(decoder.decode(manifest)) as unknown, source: decoder.decode(main) };
 }
@@ -358,7 +402,12 @@ export class VscodeL1Bridge {
         pkg.activationEvents[0] !== "onCommand:" + commandId)) {
       throw Error("Only the declared onCommand activation is supported");
     }
-    if (source.length > 24 * 1024) throw Error("VSIX entry exceeds the L1 source limit");
+    // 【F003】用统一常量而非字面量 —— 否则改一处忘一处，两道限额会分叉。
+    // 这条错误与 `readMinimalVsix` 里那条**不同消息**：那个说「压缩包里的声明的多大」，
+    // 这个说「解出来交给运行时的源码多长」，排查时指向不同的层。
+    if (source.length > SOURCE_LIMIT) {
+      throw Error("VSIX entry exceeds the L1 source limit (" + SOURCE_LIMIT + " B)");
+    }
     const moduleId = "user." + pkg.publisher + "." + pkg.name;
     const title = pkg.displayName ?? pkg.name;
     const configuration = l2ConfigSchema.parse(l2?.configuration ?? {});

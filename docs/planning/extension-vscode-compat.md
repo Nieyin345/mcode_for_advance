@@ -77,7 +77,7 @@ L2 与 L3 可随真实宿主接线/上游复用重新评估；在此之前 manif
 **文件**：`apps/desktop/src/main/modules/vscodeL1Bridge.ts`，专项无头测试 `apps/desktop/scripts/vscode-l1-smoke/`。不改 ModuleHost 主体或现有 renderer。执行流：
 
 ```text
-本地虚构 VSIX (ZIP STORE 两文件，extension/package.json + extension/extension.js)
+本地虚构 VSIX (ZIP 两文件，STORE 或 DEFLATE，extension/package.json + extension/extension.js)
    → ZIP 目录/CRC/长度/路径白名单 + VS Code manifest schema
    → 双重安装确认 (confirmReadAccess + confirmExecutableCode)
    → ModuleHost.install(program + module.run / files.context contribution)
@@ -88,7 +88,24 @@ L2 与 L3 可随真实宿主接线/上游复用重新评估；在此之前 manif
    → 安全结果解析 → Host DTO statusBarItem()
 ```
 
-这是**对一个最小本地伪造 VSIX 的兼容实验**：没有 Open VSX 网络、无动态 ZIP 解压器、无通用 CJS/ESM loader、无 VSIX signature/供应链校验、无 renderer 绘制/Agent 对外 RPC、无长期扩展状态，遇到不允许的 ZIP/清单/API 立即失败。测试的 ZIP 是**真实二进制 ZIP**但严格只接受 *STORE + 精确两项*，一般市场 VSIX 往往是 DEFLATE、含更多资源，故绝大多数真实 VSIX **当前会被拒**。这比误声称“市场兼容”更安全。
+这是**对一个最小本地伪造 VSIX 的兼容实验**：没有 Open VSX 网络、无通用 CJS/ESM loader、无 VSIX signature/供应链校验、无 renderer 绘制/Agent 对外 RPC、无长期扩展状态，遇到不允许的 ZIP/清单/API 立即失败。测试的 ZIP 是**真实二进制 ZIP**，只接受 *恰好两项*；**压缩方法 STORE(0) 与 DEFLATE(8) 都支持**（F002 补齐，用 `node:zlib` 的 `inflateRawSync`）。含更多资源的一般市场 VSIX 仍会被拒。
+
+### 4.1 两个单文件限额：**原来没有依据，F003 补上理由**
+
+| 限额 | 值 | 依据 |
+|---|---|---|
+| 总包 | **128 KiB** | 未查到书面依据（L1 原型期定的）。当前保留。 |
+| `extension/package.json` | **64 KiB**（原 4096 B） | **F003 放宽。** 实测最大真实值 17 021 B（`mechatroner.rainbow-csv-3.24.1`），旧限超 4.2 倍。它是**声明不是代码**，变大只多命令/配置项/activationEvents，不引入新能力。 |
+| `extension/extension.js` | **24 KiB**（**未放宽**） | **F003 明确保留。** 见下。 |
+| entry 数 | **恰好 2** | 未查到书面依据。当前保留。 |
+
+**为什么 `extension.js` 的 24 KiB 不能放宽：**
+
+放开它等于承诺一个**跑不起来的运行时**。`require` 白名单目前只有 `"vscode"`，53 个 `vscode.*` 成员没有一个是完整实现。真实扩展（rainbow-csv 的 `extension.js` 是 **136 516 B**，超限 5.6 倍）一旦能进，用户就会期望它能跑 —— 而结果是**装进去了、能列出、一调用就崩**，这比「装不进来」更坏。
+
+**要让真实扩展能跑，得先做运行时**（或明确接受「装得进但跑不了」并如实告知）。在那之前，这道限额是一句诚实的「这里还不行」。
+
+**查证记录**（`tasks/F/F003`）：`68a7121c`（限制最初引入）的提交信息为空；§4 从未写过理由；`tasks/archive/` 无相关记录。**结论：4096 / 24576 都是 L1 原型阶段随手定的，不是推导出来的。** 所以放宽 `package.json` 不是「违反设计」，是「补上一个从未有过的决定」。
 
 **局限与缺口**：`require("vscode")` 在受控执行进程里只有这一小部分 API，激活仅按本次调用重做，`ExtensionContext.subscriptions` 没有长驻 disposal 管理；`statusBarItem()` 是本轮命令完成的快照，并非真正 VS Code API 对象的持续生命期。用户文件只经一次 `ModuleResource` 授权；用户安装/逐次审批取决于实际业务装配（本测试为可信宿主注入测试端口），不是对任意插件免审批的入口。
 
