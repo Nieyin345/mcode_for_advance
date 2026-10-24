@@ -370,7 +370,7 @@ export function SearchDialog() {
               aria-label={mode === "name" ? t("ide.search.switchToContentAria") : t("ide.search.switchToNameAria")}
               className={cn(
                 "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
-                "text-content-subtle hover:bg-surface-hover hover:text-content",
+                "cds-hover-ghost text-content-subtle hover:text-content",
               )}
             >
               {mode === "name" ? <IconFileSearch size={16} /> : <IconTextScan2 size={16} />}
@@ -426,7 +426,7 @@ export function SearchDialog() {
                   "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
                   caseSensitive
                     ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
-                    : "text-content-subtle hover:bg-surface-hover hover:text-content",
+                    : "cds-hover-ghost text-content-subtle hover:text-content",
                 )}
               >
                 <IconLetterCase size={16} />
@@ -494,7 +494,7 @@ export function SearchDialog() {
                     <button
                       type="button"
                       onClick={() => setSearchRetryNonce((n) => n + 1)}
-                      className="rounded-md border border-edge px-2 py-1 text-[11px] text-accent transition-colors hover:bg-surface-hover"
+                      className="cds-hover-ghost rounded-md border border-edge px-2 py-1 text-[11px] text-accent transition-colors"
                     >
                       {t("common.retry")}
                     </button>

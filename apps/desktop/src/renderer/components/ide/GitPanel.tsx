@@ -100,7 +100,7 @@ export function GitPanel() {
         <button
           type="button"
           onClick={() => void scan(projectPath)}
-          className="mt-1 flex items-center gap-1 rounded px-2 py-1 [font-size:var(--right-panel-font-size)] text-content-muted hover:bg-surface-hover"
+          className="cds-hover-ghost mt-1 flex items-center gap-1 rounded px-2 py-1 [font-size:var(--right-panel-font-size)] text-content-muted"
         >
           <IconRefresh size={11} /> {t("ide.git.rescan")}
         </button>
@@ -135,7 +135,7 @@ export function GitPanel() {
           <button
             type="button"
             onClick={() => void scan(projectPath)}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost flex items-center gap-1 rounded px-1.5 py-0.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:text-content"
             title={t("ide.git.rescanRepos")}
             aria-label={t("ide.git.rescanRepos")}
           >

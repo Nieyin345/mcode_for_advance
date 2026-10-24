@@ -498,7 +498,7 @@ export function MarkdownEditorPane({
               type="button"
               onClick={() => loadDiskVersion(conflict)}
               title={t("ide.editor.reloadFromDiskHint")}
-              className="rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover"
+              className="cds-hover-ghost rounded px-1.5 py-0.5 text-accent transition-colors"
             >
               {t("ide.editor.reloadFromDisk")}
             </button>
@@ -506,7 +506,7 @@ export function MarkdownEditorPane({
               type="button"
               onClick={overwriteDisk}
               title={t("ide.editor.overwriteDiskHint")}
-              className="rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover"
+              className="cds-hover-ghost rounded px-1.5 py-0.5 text-content-muted transition-colors"
             >
               {t("ide.editor.overwriteDisk")}
             </button>

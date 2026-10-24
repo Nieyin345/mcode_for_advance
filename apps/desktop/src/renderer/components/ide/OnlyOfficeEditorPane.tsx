@@ -451,7 +451,7 @@ export function OnlyOfficeEditorPane({
             type="button"
             onClick={reloadFromDisk}
             title={t("ide.editor.reloadFromDiskHint")}
-            className="shrink-0 rounded px-1.5 py-0.5 text-accent transition-colors hover:bg-surface-hover"
+            className="cds-hover-ghost shrink-0 rounded px-1.5 py-0.5 text-accent transition-colors"
           >
             {t("ide.editor.reloadFromDisk")}
           </button>

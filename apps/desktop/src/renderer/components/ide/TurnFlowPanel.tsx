@@ -254,7 +254,7 @@ export function TurnFlowPanel() {
             type="button"
             disabled={loadingOlder}
             onClick={() => sessionId && loadOlder(sessionId)}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-edge px-2 py-1 text-[11px] text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-60"
+            className="cds-hover-ghost flex w-full items-center justify-center gap-1.5 rounded-md border border-edge px-2 py-1 text-[11px] text-content-muted transition-colors hover:text-content disabled:opacity-60"
           >
             {loadingOlder && <IconLoader2 size={11} className="animate-spin" />}
             {loadingOlder ? t("ide.turns.loading") : t("ide.turns.loadOlder")}
@@ -382,7 +382,7 @@ function TurnSection({
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center gap-1.5 px-2.5 py-2 text-left transition-colors hover:bg-surface-hover"
+        className="cds-hover-ghost flex w-full items-center gap-1.5 px-2.5 py-2 text-left transition-colors"
       >
         {expanded ? (
           <IconChevronDown size={12} className="shrink-0 text-content-subtle" />

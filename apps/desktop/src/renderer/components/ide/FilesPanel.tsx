@@ -109,7 +109,7 @@ export function FilesPanel() {
           aria-label={t("ide.files.refreshDir")}
           className={cn(
             "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
-            "text-content-subtle hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost text-content-subtle hover:text-content",
           )}
         >
           <IconRefresh size={14} />
@@ -121,7 +121,7 @@ export function FilesPanel() {
           aria-label={t("ide.files.searchFiles")}
           className={cn(
             "flex shrink-0 items-center justify-center rounded p-0.5 transition-colors",
-            "text-content-subtle hover:bg-surface-hover hover:text-content",
+            "cds-hover-ghost text-content-subtle hover:text-content",
           )}
         >
           <IconSearch size={14} />

@@ -446,7 +446,7 @@ function FilterChip({ active, onClick, label }: { active: boolean; onClick: () =
         "rounded border px-1.5 py-0.5 text-[11px] transition-colors",
         active
           ? "border-edge bg-surface-muted text-content"
-          : "border-transparent text-content-muted hover:bg-surface-hover hover:text-content",
+          : "cds-hover-ghost border-transparent text-content-muted hover:text-content",
       )}
     >
       {label}

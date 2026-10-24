@@ -97,7 +97,7 @@ export function TerminalCommandsMenu({
               title={disabled ? t("ide.term.selectProjectFirst") : t("ide.term.customCommands")}
               disabled={disabled}
               className={cn(
-                "rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-content",
+                "cds-hover-ghost rounded p-1 text-content-subtle hover:text-content",
                 disabled && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-content-subtle",
               )}
             />
@@ -152,7 +152,7 @@ export function TerminalCommandsMenu({
                     <div className="flex shrink-0 items-center opacity-0 group-hover:opacity-100 data-[highlighted]:opacity-100">
                       <button
                         type="button"
-                        className="rounded p-0.5 text-content-subtle hover:bg-surface-hover hover:text-content"
+                        className="cds-hover-ghost rounded p-0.5 text-content-subtle hover:text-content"
                         title={t("ide.term.runInCurrent")}
                         onClick={() => onRun(cmd.command)}
                       >
@@ -160,7 +160,7 @@ export function TerminalCommandsMenu({
                       </button>
                       <button
                         type="button"
-                        className="rounded p-0.5 text-content-subtle hover:bg-surface-hover hover:text-content"
+                        className="cds-hover-ghost rounded p-0.5 text-content-subtle hover:text-content"
                         title={t("common.edit")}
                         onClick={() => {
                           setMenuOpen(false);
@@ -171,7 +171,7 @@ export function TerminalCommandsMenu({
                       </button>
                       <button
                         type="button"
-                        className="rounded p-0.5 text-content-subtle hover:bg-surface-hover hover:text-danger"
+                        className="cds-hover-ghost rounded p-0.5 text-content-subtle hover:text-danger"
                         title={t("common.delete")}
                         onClick={() => remove(cmd.id)}
                       >

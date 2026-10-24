@@ -268,7 +268,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
         <button
           type="button"
           onClick={() => void loadCommits()}
-          className="flex shrink-0 items-center rounded px-1.5 py-0.5 text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+          className="cds-hover-ghost flex shrink-0 items-center rounded px-1.5 py-0.5 text-content-muted transition-colors hover:text-content"
           title={t("ide.git.refreshHistory")}
         >
           <IconRefresh size={12} />
@@ -326,7 +326,7 @@ export function GitHistoryView({ repos }: { repos: GitRepo[] }) {
                   type="button"
                   disabled={loadingMore}
                   onClick={() => void loadCommits({ append: true, skip: commits.length })}
-                  className="flex w-full items-center justify-center gap-1 rounded px-2 py-1.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content disabled:opacity-50"
+                  className="cds-hover-ghost flex w-full items-center justify-center gap-1 rounded px-2 py-1.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:text-content disabled:opacity-50"
                 >
                   {loadingMore ? (
                     <>
@@ -504,7 +504,7 @@ function CommitDetail({
         <button
           type="button"
           onClick={onBack}
-          className="mb-1.5 flex items-center gap-1 rounded px-1 py-0.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content"
+          className="cds-hover-ghost mb-1.5 flex items-center gap-1 rounded px-1 py-0.5 [font-size:var(--right-panel-font-size)] text-content-muted transition-colors hover:text-content"
         >
           <IconArrowLeft size={12} />
           {t("ide.git.backToList")}

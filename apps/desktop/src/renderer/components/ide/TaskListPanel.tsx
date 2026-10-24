@@ -286,7 +286,7 @@ export function TaskListPanel() {
           type="button"
           title={t("ide.task.refresh")}
           onClick={() => void refresh()}
-          className="ml-auto shrink-0 rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+          className="cds-hover-ghost ml-auto shrink-0 rounded p-1 text-content-subtle hover:text-content"
         >
           <IconRefresh size={12} />
         </button>
@@ -413,7 +413,7 @@ function Group({
           type="button"
           title={action.title}
           onClick={action.onClick}
-          className="ml-auto shrink-0 rounded px-1 text-[9px] text-content-subtle hover:bg-surface-hover hover:text-content"
+          className="cds-hover-ghost ml-auto shrink-0 rounded px-1 text-[9px] text-content-subtle hover:text-content"
         >
           {action.label}
         </button>
@@ -559,7 +559,7 @@ function Row({
         title={trailing.title}
         aria-label={trailing.title}
         onClick={trailing.onClick}
-        className="mr-1 mt-1 shrink-0 rounded p-1 text-content-subtle opacity-60 hover:bg-surface-hover hover:text-danger group-hover:opacity-100"
+        className="cds-hover-ghost mr-1 mt-1 shrink-0 rounded p-1 text-content-subtle opacity-60 hover:text-danger group-hover:opacity-100"
       >
         <IconX size={12} />
       </button>
@@ -609,7 +609,7 @@ function DetailHeader({
         type="button"
         title={t("ide.task.back")}
         onClick={onBack}
-        className="mt-0.5 shrink-0 rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+        className="cds-hover-ghost mt-0.5 shrink-0 rounded p-1 text-content-subtle hover:text-content"
       >
         <IconArrowLeft size={13} />
       </button>
@@ -626,7 +626,7 @@ function DetailHeader({
           type="button"
           title={t("ide.task.killTerminal")}
           onClick={onKill}
-          className="mt-0.5 flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[10px] text-content-subtle hover:bg-surface-hover hover:text-danger"
+          className="cds-hover-ghost mt-0.5 flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-[10px] text-content-subtle hover:text-danger"
         >
           <IconX size={12} />
           {t("ide.task.killTerminalShort")}

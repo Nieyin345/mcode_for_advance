@@ -367,7 +367,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
                 <button
                   type="button"
                   className={cn(
-                    "rounded p-0.5 transition-colors text-content-subtle hover:bg-surface-hover hover:text-content",
+                    "cds-hover-ghost rounded p-0.5 transition-colors text-content-subtle hover:text-content",
                     !isActive && "opacity-0 group-hover:opacity-100",
                   )}
                   title={t("ide.term.closeTerminal")}
@@ -383,7 +383,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
           })}
           <button
             type="button"
-            className="shrink-0 rounded p-1 text-content-subtle hover:bg-surface-hover hover:text-content"
+            className="cds-hover-ghost shrink-0 rounded p-1 text-content-subtle hover:text-content"
             title={t("ide.term.newTerminal")}
             onClick={addSession}
           >
@@ -431,7 +431,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
             </span>
             <button
               type="button"
-              className="shrink-0 rounded px-1.5 py-0.5 text-accent hover:bg-surface-hover"
+              className="cds-hover-ghost shrink-0 rounded px-1.5 py-0.5 text-accent"
               onClick={() => activeHandle?.restart()}
             >
               {t("ide.term.restart")}
@@ -512,7 +512,7 @@ function IconBtn({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "rounded-[var(--radius-btn-xs)] p-1 text-content-subtle hover:bg-surface-hover hover:text-content",
+        "cds-hover-ghost rounded-[var(--radius-btn-xs)] p-1 text-content-subtle hover:text-content",
         "disabled:pointer-events-none disabled:opacity-40",
       )}
     >
