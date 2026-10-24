@@ -644,7 +644,9 @@ function NameSearchResults({
             onClick={() => onOpen(f.path)}
             className={cn(
               "flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors",
-              isActive ? "bg-accent/15 text-content" : "text-content-muted hover:bg-surface-hover/50",
+              isActive
+                ? "bg-surface-hover text-content font-medium ring-1 ring-inset ring-edge/70"
+                : "text-content-muted hover:bg-surface-hover/50",
             )}
             title={f.path}
           >
@@ -775,7 +777,7 @@ function ContentSearchResults({
                 className={cn(
                   "flex w-full items-start gap-2 py-0.5 pr-3 pl-8 text-left transition-colors",
                   isActive
-                    ? "bg-accent/15 text-content"
+                    ? "bg-surface-hover text-content font-medium ring-1 ring-inset ring-edge/70"
                     : "text-content-muted hover:bg-surface-hover/50",
                 )}
                 title={m.path}

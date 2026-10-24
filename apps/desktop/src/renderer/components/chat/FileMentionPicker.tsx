@@ -440,7 +440,7 @@ export function FileMentionPicker({
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors",
                   isActive
-                    ? "bg-accent/15 text-content ring-1 ring-inset ring-accent/40"
+                    ? "bg-surface-hover text-content ring-1 ring-inset ring-edge"
                     : "text-content hover:bg-surface-hover",
                   already && "opacity-50",
                 )}
