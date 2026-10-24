@@ -118,10 +118,18 @@ extraResources:
       - "**/*"
   # T19: original Node-RED 5.0.8 runtime/editor + production npm deps as disk files.
   # The package script builds/stages these from a pinned vendor commit first.
+  #
+  # ⚠️ `**/node_modules/**` 这一条**不能删** —— 它不是「多复制一份」，而是
+  # `app-builder-lib/out/fileMatcher.js:128-137` 的开关：filter 里只要没有任何
+  # 模式含 `node_modules` 字样，它就 `push("!**/node_modules/**")` 全局排除。
+  # 少了这一条，`node_modules/` 不会被复制，而 `verify-node-red-after-pack.cjs:107`
+  # 明确要求它存在（还要查 `node_modules/express/package.json`）—— 打包会在
+  # afterPack 钩子以 ENOENT 失败，而那时 asar 已经打好了。
   - from: .tmp/node-red-release
     to: node-red
     filter:
       - "**/*"
+      - "**/node_modules/**"
   # T47: the official custom-theme CSS must be present as a real disk file,
   # because Node-RED editorTheme.page.css serves it via Express sendFile.
   - from: resources/node-red
@@ -134,6 +142,13 @@ extraResources:
 # index.html/entry JS must fail now, not ship a broken Office tab.
 # CLI-only/default packages remain valid and explicitly have editorsBundled=false.
 afterPack: ./build/verify-vendor-after-pack.cjs
+
+# T118: `extraResources` 复制 `.tmp/node-red-release` 时，electron-builder **硬编码
+# 跳过根的 `node_modules`**（`app-builder-lib/out/util/filter.js:42-45`，在 minimatch
+# 之前 `return false`，任何 filter 都改不了）。而 afterPack 的验证器要求它存在。
+# 这个钩子在打包前把源目录的 `node_modules` 改名成普通目录，让复制能发生；
+# afterPack 里再在产物中改回来。详见 `build/node-red-nodemodules-shim.cjs`。
+beforePack: ./build/node-red-before-pack.cjs
 
 # node-pty ships a native .node addon; sql.js loads a wasm/asm.js blob at
 # runtime. Unpack them from the asar so they can be require()'d from disk.
