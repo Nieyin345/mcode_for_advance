@@ -57,7 +57,9 @@ function RowHead({
   return (
     <>
       <div className="flex min-w-0 items-center gap-1.5">
-        <TitleTag {...(isLabel ? { htmlFor } : {})} className="text-[length:var(--chat-fs-xs)] font-medium text-content">
+        {/* 【T136】表单主文字走 CDS 的 body 档（14/20）。原来 `--chat-fs-xs` 是
+            12px 且**跟着 `--chat-font-size` 走** —— 设置项标题不该随对话字号变。 */}
+        <TitleTag {...(isLabel ? { htmlFor } : {})} className="text-body font-medium text-content">
           {title}
         </TitleTag>
         {hasHint && <InfoHint>{hint}</InfoHint>}

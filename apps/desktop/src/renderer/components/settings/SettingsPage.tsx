@@ -341,7 +341,7 @@ export function SettingsPage() {
       left={
         <nav
           data-settings-nav=""
-          className="h-full min-h-0 overflow-y-auto border-r border-edge bg-surface px-3 py-4"
+          className="h-full min-h-0 overflow-y-auto border-r border-edge bg-surface-muted px-3 py-4"
           style={{ fontSize: "var(--right-panel-font-size)" }}
         >
           {NAV_GROUPS.map((group, gi) => (
@@ -416,7 +416,7 @@ export function SettingsPage() {
           // a sticky element's self-margin positions it at rest but does not
           // offset where it sticks.
           data-settings-content=""
-          className="min-h-0 h-full overflow-y-auto bg-surface-muted/20 px-6 pb-5"
+          className="min-h-0 h-full overflow-y-auto bg-surface px-6 pb-5"
           style={{ fontSize: "var(--right-panel-font-size)" }}
         >
           <Suspense key={active} fallback={<PanelLoading />}>

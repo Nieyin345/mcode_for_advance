@@ -55,7 +55,12 @@ export function PanelHeader({
     >
       <div className="flex min-w-0 items-center gap-2">
         {Icon && <Icon size={16} className="shrink-0 text-accent" />}
-        <h2 className="truncate text-[length:var(--chat-fs-sm)] font-semibold leading-tight text-content">
+        {/* 【T136】页面标题走 CDS 的 heading 档（16/20）。
+            原来是 `--chat-fs-sm`（13px）—— 那是**对话面板**派生出来的档位，跟的是
+            `--chat-font-size`；而设置页根节点设的是 `--right-panel-font-size`。两者默认
+            都是 14px 所以看不出问题，但用户单独调「对话字号」时设置页会跟着动，那不是
+            它该跟的量。`text-heading` 是**固定值**，和规范一致。 */}
+        <h2 className="truncate text-heading font-semibold text-content">
           {title}
         </h2>
         {hint && <InfoHint side="bottom">{hint}</InfoHint>}
