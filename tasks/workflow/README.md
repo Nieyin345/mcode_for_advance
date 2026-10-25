@@ -309,3 +309,13 @@ T81（四步链路）、T84（journey 陈旧断言）、T89（fixup 崩溃）、
 - 新增 `shouldPollWorkflowEngineStatus(active,running,pageVisible)`；`visibilitychange` 隐藏时把 pageVisible 置 false，React 清理 setInterval，恢复可见时立即发一次 `refreshDeployState()` 再恢复定时更新。设置页隐藏和引擎停止仍按既有条件关闭轮询，绝不改变 Node-RED 所属 child/owner/触发机制。
 - `workflow-engine-view-owner-smoke` 正反例覆盖三个维度及事件监听/cleanup。人为移除 pageVisible 判据使 55/56 FAIL，恢复后 PASS。
 - 未做真 Electron 最小化后的 IPC/CPU/RSS 量化；这里只证明函数边界、React 生命周期接线和回归，不能把无头测试冒充 Electron U1。
+
+## 2026-10-26 Node-RED 多工作流合并及旧引擎显式迁移（DEV_CLAIM，真实用户 U1 待验）
+
+- 代码提交：`edf8bb06`，23 个文件，594 insertions / 76 deletions；在协作 Git 工作区中只提交本主线已暂存代码，未包含生成 API 目录和引擎选择源码的其他并行未暂存变更。
+- `nativeLibraryLoad` 现按可信 `x-mcode.docId` tab 合并到**同一** Node-RED `flows.json`，保留其他 Mcode tabs 与普通原生 Node-RED tab/节点；跨工作流同名 native ID 确定性隔离，并修正 `wires`、`edgeMeta`、journal `links`。不确定归属/重复 ID 时拒绝，不能用加载 B 删除 A。
+- `replaceNativeCanvas` 在磁盘 OS 租约内执行 expectedCanvas 对比，若确认后已有外部 Deploy 则拒绝过时写入；运行时启动失败、外部竞态导致失败时回滚画布和旧 journal。相同图重入沿用先前性能优化。
+- 历史文档 UI 不再有新旧引擎自由切换下拉框；仅旧 `mcode` 工作流显示迁移操作。草稿历史记录和保存合并包含 `engine`。迁移由普通 `workflow.save` 先检查；需人工裁决时主进程返回 `requiresConfirmation`，必须由用户经单独的 `workflow.confirmMigration` IPC 再确认。通用 API/Agent 控制策略阻止这条确认通道；有损、无映射或 round-trip 不一致仍不能通过确认绕过。确认入口有 expectedRevision 版本检查，未迁移文档不会提前修改。
+- 复跑 `node apps/desktop/scripts/run-smokes.mjs workflow-native-load-smoke t27-load-entry-deadlock-smoke t21-orphaned-adapters-wired-smoke flow-migration-smoke node-red-e2e-smoke node-red-deploy-reconciliation-smoke workflow-engine-selection-smoke workflow-engine-runtime-smoke executor-gate-d-smoke mcode-node-pack-smoke workflow-ui-smoke orchestration-ipc-smoke mcode-admin-smoke workflow-view-smoke app-control-smoke`：**15/15 PASS**，日志 `apps/desktop/.tmp/smoke-runs/1792950951466-60208-u48ZVk/`；Contracts/desktop TypeScript `tsc --noEmit` 两套 EXIT=0、`git diff --cached --check` EXIT=0。
+- 关键反向验证：尝试删去其他 tabs、跳过 native ID 冲突隔离、跳过外部 Deploy CAS、跳过 journal 失败恢复分别让装载测试变红，恢复后均绿；隔离测试与 Node-RED 5.0.8 真子进程验证两份历史流程以**一个** Node-RED 所有者持有。
+- **尚未关闭**：SQL `WorkflowDoc` 与 `flows.json` 的单物理事实源收敛、全部旧 `ExecutionEngine` 真实退役、需要实际会话绑定的迁移前置条件、真实 Electron U1 和内存/CPU 量化验收。未改动用户真实 `flows.json`，不可标为全系统单执行器 REVIEW_PASSED。
