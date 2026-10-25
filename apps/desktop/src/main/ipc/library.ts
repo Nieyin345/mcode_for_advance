@@ -58,7 +58,7 @@ import {
   CollectionMoveSchema,
   CollectionRenameSchema,
 } from "@contracts/ipc";
-import type { FullTextMatch, LibraryCollection, LibraryItem, PdfHighlight } from "@contracts/library";
+import type { LibraryCollection, LibraryItem, PdfHighlight } from "@contracts/library";
 // 删除的失败清单 —— 类型与它的上游 schema 住在同一处(`@contracts/ipc/library.ts`)。
 import type {
   LibraryDeleteFailure,
@@ -69,7 +69,7 @@ import type {
 } from "@contracts/ipc";
 import { LibraryRepo, CollectionRepo, LibraryLinkRepo, NoteRepo } from "@main/store/repositories.js";
 import { awaitDb } from "@main/store/db.js";
-import { rgGrep } from "@main/lib/rgSearch.js";
+import { searchRegisteredLibraryText } from "@main/library/textSearch.js";
 import { log } from "@main/lib/logger.js";
 import { createNote, importNoteFiles, writeNote } from "@main/library/notesImport.js";
 import { convertItemToMarkdown, conversionReport, repairCollectionMarkdown } from "@main/library/convert.js";
@@ -1072,56 +1072,28 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
 
   /* ─────────────────────────── 全文检索 ─────────────────────── */
 
-  /**
-   * 全文检索走 ripgrep 而不是 SQL —— sql.js 不含 FTS5(已在 node_modules 里核实)。
-   *
-   * 只用**已转换的 Markdown** 作为检索面:PDF 是二进制,rg 无从下手;
-   * 转换是异步的,没转的条目自然搜不到(界面上有「待转换」状态可见)。
-   *
-   * 顺带白拿一个好处:rgGrep 内部做了 UTF-8 + GBK 双通道,中文文献可搜。
-   */
+  /** Search registered library text assets. PDF/Office remain binary until
+   * converted, but generic attached text files and editable notes now share
+   * the same bounded ripgrep path as converted Markdown. Never return orphan
+   * files under the data root that are not attached to database items. */
   ipcMain.handle(IPC.LIBRARY_FULL_TEXT_SEARCH, async (_evt, raw) => {
     const input = LibraryFullTextSearchSchema.parse(raw);
     const seq = ++fullTextSearchSeq;
-    const root = libraryRoot();
-    const markdownDir = `${root}/markdown`;
-    if (!existsSync(markdownDir)) return { matches: [] };
-
-    const result = await rgGrep(
-      markdownDir,
-      input.query,
-      { caseSensitive: false, limit: input.limit ?? 100, maxPerFile: 5, includeExts: ["md"] },
-      [],
+    const filter = input.collectionIds?.length ? new Set(input.collectionIds) : null;
+    const collectionCache = new Map<string, boolean>();
+    const inScope = (itemId: string): boolean => {
+      if (!filter) return true;
+      const cached = collectionCache.get(itemId);
+      if (cached !== undefined) return cached;
+      const allowed = CollectionRepo.collectionsOfItem(itemId).some((id) => filter.has(id));
+      collectionCache.set(itemId, allowed);
+      return allowed;
+    };
+    const matches = await searchRegisteredLibraryText(
+      libraryRoot(), LibraryRepo.listAllItems(), input.query, input.limit ?? 100,
+      inScope, () => seq === fullTextSearchSeq,
     );
-    // 后发的检索请求胜出 —— 避免用户在输入框里连打时旧结果覆盖新结果
-    if (seq !== fullTextSearchSeq) return { matches: [] };
-    if (!result) return { matches: [] };
-
-    // 逻辑路径 → 条目。md 落在 markdown/<ab>/<cd>/<sha>.md,而库里存的是
-    // 相对库根的路径,所以要把它拼回去再比对。
-    const byRel = new Map<string, LibraryItem>();
-    for (const item of LibraryRepo.list({ limit: 100000 }).items) {
-      if (item.mdPath) byRel.set(item.mdPath, item);
-    }
-
-    const matches: FullTextMatch[] = [];
-    for (const m of result.matches) {
-      const rel = `markdown/${m.relativePath}`.replace(/\\/g, "/");
-      const item = byRel.get(rel);
-      if (!item) continue;
-      if (input.collectionIds?.length) {
-        const owned = CollectionRepo.collectionsOfItem(item.id);
-        if (!owned.some((c) => input.collectionIds!.includes(c))) continue;
-      }
-      matches.push({
-        itemId: item.id,
-        title: item.title,
-        relativePath: rel,
-        lineNumber: m.lineNumber,
-        lineText: m.lineText,
-      });
-    }
-    return { matches };
+    return { matches: seq === fullTextSearchSeq ? matches : [] };
   });
 
   /**
