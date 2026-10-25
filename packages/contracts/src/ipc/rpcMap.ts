@@ -172,6 +172,8 @@ export interface RpcMap {
    *  `installConsent` 三态语义与 `modules.install` 完全一致；`deny` 时**磁盘零写入**
    *  （在解析出的源码交给宿主之前就中止）。 */
   "modules.installVsix": (input: import("./modules.js").ModuleInstallVsixInput) => Promise<import("./modules.js").ModuleInstallVsixResult>;
+  /** F025 Temporary Theia VSIX inspect / start / execute / stop; no persistent module registration. */
+  "modules.theiaPreview": (input: import("./modules.js").TheiaPreviewInput) => Promise<import("./modules.js").TheiaPreviewResult>;
   /** 卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单与取消诊断。 */
   "modules.remove": (input: {moduleId:string}) => Promise<import("../modules.js").ModuleChangeResult>;
   /** 触发模块的一个贡献项。按能力 `kind` 分流:非 task 的直接跑出结果,是 task 的立刻返回 `{type:"task"}` 句柄(进度靠 `modules.task` 拉)。 */
@@ -1712,6 +1714,8 @@ export const IPC = {
    *  一条收渲染端拼好的 manifest,这条收磁盘上的 vsix 字节。两条都落到
    *  `ModuleHost.install`;VSIX 那条中间多一步 `VscodeL1Bridge.install` 的解析与转化。 */
   MODULE_INSTALL_VSIX: "modules:installVsix",
+  /** Desktop-only temporary Theia compatibility preview (not ModuleHost.install). */
+  MODULE_THEIA_PREVIEW: "modules:theiaPreview",
   MODULE_REMOVE: "modules:remove",
   MODULE_INVOKE: "modules:invoke",
   MODULE_TASK: "modules:task",

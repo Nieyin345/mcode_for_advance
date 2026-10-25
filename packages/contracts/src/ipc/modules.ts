@@ -95,3 +95,27 @@ export interface ModuleInstallVsixResult {
   moduleId: string;
   ignoredContributions: IgnoredVsixContribution[];
 }
+
+/** F025: an explicit, temporary Theia compatibility preview, NOT a persistent module install.
+ * Inspection performs no extension execution. Start needs a short-lived one-use ticket and a
+ * second explicit user gesture. No session or ticket may come from an Agent bridge. */
+export const TheiaPreviewInputSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("inspect"), path: z.string().min(1).max(4096) }).strict(),
+  z.object({ op: z.literal("start"), ticket: z.string().uuid(), accepted: z.literal(true) }).strict(),
+  z.object({ op: z.literal("cancel"), ticket: z.string().uuid() }).strict(),
+  z.object({ op: z.literal("execute"), sessionId: z.string().uuid(), commandId: z.string().min(1).max(256) }).strict(),
+  z.object({ op: z.literal("stop"), sessionId: z.string().uuid() }).strict(),
+]);
+export type TheiaPreviewInput = z.infer<typeof TheiaPreviewInputSchema>;
+export interface TheiaPreviewPermissionPrompt {
+  extensionId: string;
+  headline: string;
+  capabilities: Array<{ capability: "readsFiles" | "writesFiles" | "spawnsProcesses" | "network"; label: string; evidence: string[] }>;
+  limits: string[];
+  disclosure: string;
+}
+export type TheiaPreviewResult =
+  | { kind: "inspection"; ticket: string; extensionId: string; fileCount: number; prompt: TheiaPreviewPermissionPrompt }
+  | { kind: "started"; sessionId: string; extensionId: string; commands: string[]; activationErrors: string[] }
+  | { kind: "executed"; result: string }
+  | { kind: "stopped" };

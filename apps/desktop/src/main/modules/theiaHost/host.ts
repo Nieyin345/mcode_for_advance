@@ -38,7 +38,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
-import { createRequire } from "node:module";
+import { createRequire as createTheiaRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { prepareTheiaEdits, type EditorEditTransaction, type TheiaTextEdit, type TheiaEditOptions } from "./editorTransactions.js";
 
@@ -184,7 +184,7 @@ function loadTheiaModules(theiaRoot: string): TheiaModules {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const requireFromTheia = createRequire(path.join(theiaRoot, "package.json"));
+  const requireFromTheia = createTheiaRequire(path.join(theiaRoot, "package.json"));
   // ⚠️ 两件事分属两个模块，**都要**：
   //   - `common/index.js` 在加载时执行 `registerMsgPackExtensions()`（漏了它，第一次
   //     收到含 vscode URI 的载荷就抛 `Unknown extension 4`）；

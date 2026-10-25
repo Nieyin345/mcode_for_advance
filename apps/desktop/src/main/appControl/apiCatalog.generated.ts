@@ -376,8 +376,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "claude.readTaskOutput",
   "channel": "claude:readTaskOutput",
   "doc": "读一个 bash 任务的输出（`task_notification.output_file`）。 `truncated` 表示读到的只是尾部 —— 那个文件可能很大，而主进程有窗口上限 （同 `COMMAND_OUTPUT_TAIL_CHARS` 的取舍：错误栈与结果都在尾部）。",
-  "input": "{ taskId: string; sessionId: string }",
-  "inputFull": "{ taskId: string; sessionId: string }",
+  "input": "{ sessionId: string; taskId: string }",
+  "inputFull": "{ sessionId: string; taskId: string }",
   "output": "{ text: string; truncated: boolean }"
  },
  {
@@ -432,8 +432,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "claude.stopTask",
   "channel": "claude:stopTask",
   "doc": "停掉某一个正在跑的子任务（子代理）。返回 `{ stopped }` —— 同 `claude.inject` 的 口径：**\"停了没有\"，不是\"发出去了没有\"**。引擎不支持、taskId 认不出来、或者它刚好 已经跑完，都是 `false`，界面据实说一句，不当作错误。",
-  "input": "{ taskId: string; sessionId: string }",
-  "inputFull": "{ taskId: string; sessionId: string }",
+  "input": "{ sessionId: string; taskId: string }",
+  "inputFull": "{ sessionId: string; taskId: string }",
   "output": "{ stopped: boolean }"
  },
  {
@@ -648,8 +648,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "document.markdownEdit",
   "channel": "document:markdownEdit",
   "doc": "【T24】Markdown 续写/替换/删除；内部经 CLI 转 restricted HTML 后 apply。",
-  "input": "{ filePath: string; operations: ({ markdown: string; op: 'insert'; afterBlock: number; } | { markdown: string; op: 'append'; } | { markdown: string; op: 'replace'; startBlock: number; endBloc…; dryRun?: boolean | undefined // 只演练，不写盘。; track?: boolean | undefined // 记成 Word 修订（默认 true）。 }",
-  "inputFull": "{ filePath: string; operations: ({ markdown: string; op: 'insert'; afterBlock: number; } | { markdown: string; op: 'append'; } | { markdown: string; op: 'replace'; startBlock: number; endBloc…; dryRun?: boolean | undefined // 只演练，不写盘。; track?: boolean | undefined // 记成 Word 修订（默认 true）。 }",
+  "input": "{ filePath: string; operations: ({ op: 'insert'; markdown: string; afterBlock: number; } | { op: 'append'; markdown: string; } | { op: 'replace'; markdown: string; startBlock: number; endBloc…; dryRun?: boolean | undefined // 只演练，不写盘。; track?: boolean | undefined // 记成 Word 修订（默认 true）。 }",
+  "inputFull": "{ filePath: string; operations: ({ op: 'insert'; markdown: string; afterBlock: number; } | { op: 'append'; markdown: string; } | { op: 'replace'; markdown: string; startBlock: number; endBloc…; dryRun?: boolean | undefined // 只演练，不写盘。; track?: boolean | undefined // 记成 Word 修订（默认 true）。 }",
   "output": "{ ok: true; applied: number; blocks: number // 写入后的块数（与下一次 markdownRead 的 blocks 一致）。; qa?: DocumentQaReportWire | undefined; revision: string | null; text: string } | { ok: false; kind: 'failed' | 'unavailable' | 'refused' | 'conflict'; reason: string; qa?: …"
  },
  {
@@ -1864,8 +1864,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "memory.assistant",
   "channel": "memory:assistant",
   "doc": "记忆助手:一次 `op`(list/start/cancel/discard/deliver)驱动在**隐藏工作会话**里跑的记忆作业(capture/checkpoint/health)。返回作业列表,并视 op 带上 incoming 作业 / 目标会话 / 注入回执。",
-  "input": "{ sessionId: string; op: 'list' } | { kind: 'capture' | 'checkpoint' | 'health'; sessionId: string; op: 'start' } | { sessionId: string; op: 'cancel'; jobId: string } | { sessionId: string; op: 'discard'; jobId: string } | { sessionId: string; op: 'deliver'; …",
-  "inputFull": "{ sessionId: string; op: 'list' } | { kind: 'capture' | 'checkpoint' | 'health'; sessionId: string; op: 'start' } | { sessionId: string; op: 'cancel'; jobId: string } | { sessionId: string; op: 'discard'; jobId: string } | { sessionId: string; op: 'deliver'; …",
+  "input": "{ op: 'list'; sessionId: string } | { kind: 'capture' | 'checkpoint' | 'health'; op: 'start'; sessionId: string } | { op: 'cancel'; sessionId: string; jobId: string } | { op: 'discard'; sessionId: string; jobId: string } | { op: 'deliver'; sessionId: string; …",
+  "inputFull": "{ op: 'list'; sessionId: string } | { kind: 'capture' | 'checkpoint' | 'health'; op: 'start'; sessionId: string } | { op: 'cancel'; sessionId: string; jobId: string } | { op: 'discard'; sessionId: string; jobId: string } | { op: 'deliver'; sessionId: string; …",
   "output": "{ jobs: { status: 'running' | 'failed' | 'cancelled' | 'ready' | 'expired' | 'queued' | 'consumed'; id: string; kind: 'capture' | 'checkpoint' | 'health'; result: stri…; incoming?: { status: 'running' | 'failed' | 'cancelled' | 'ready' | 'expired' | 'queued' …"
  },
  {
@@ -1978,7 +1978,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "手机自有域名的隧道状态(和「远程控制」/ 公网 MCP 无关,单独一份)。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'failed' | 'stopped' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
+  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'failed' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
  },
  {
   "method": "mobile.listDevices",
@@ -2010,7 +2010,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "存手机隧道配置(token 留空 = 沿用)。隧道在跑且配置变了会按新配置重起。",
   "input": "{ mode: 'named' | 'external' | 'off'; hostname: string; token?: string | undefined // 留空 = 沿用已存的那串。; clearToken?: boolean | undefined // 显式删掉已存的 token。 }",
   "inputFull": "{ mode: 'named' | 'external' | 'off'; hostname: string; token?: string | undefined // 留空 = 沿用已存的那串。; clearToken?: boolean | undefined // 显式删掉已存的 token。 }",
-  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'failed' | 'stopped' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
+  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'failed' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
  },
  {
   "method": "mobile.startPairing",
@@ -2026,7 +2026,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "启动手机隧道(named 模式起 cloudflared;并记住下次启动自动开)。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'failed' | 'stopped' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
+  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'failed' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
  },
  {
   "method": "mobile.stopTunnel",
@@ -2034,7 +2034,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "停止手机隧道(并取消自动开启)。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'failed' | 'stopped' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
+  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'failed' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
  },
  {
   "method": "modules.cancel",
@@ -2139,6 +2139,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "input": "{ projectPath: string }",
   "inputFull": "{ projectPath: string }",
   "output": "{ length: number // Gets or sets the length of the array.; toString: () => string // Returns a string representation of an array.; toLocaleString: { (): string; (locales: string | string[], options?: Intl.NumberFormatOptions & Intl.DateTimeFormatOptions): str…"
+ },
+ {
+  "method": "modules.theiaPreview",
+  "channel": "modules:theiaPreview",
+  "doc": "F025 Temporary Theia VSIX inspect / start / execute / stop; no persistent module registration.",
+  "input": "{ path: string; op: 'inspect' } | { op: 'start'; ticket: string; accepted: true } | { op: 'cancel'; ticket: string } | { op: 'execute'; sessionId: string; commandId: string } | { op: 'stop'; sessionId: string }",
+  "inputFull": "{ path: string; op: 'inspect' } | { op: 'start'; ticket: string; accepted: true } | { op: 'cancel'; ticket: string } | { op: 'execute'; sessionId: string; commandId: string } | { op: 'stop'; sessionId: string }",
+  "output": "{ kind: 'inspection'; ticket: string; extensionId: string; fileCount: number; prompt: TheiaPreviewPermissionPrompt } | { kind: 'started'; sessionId: string; extensionId: string; commands: string[]; activationErrors: string[] } | { kind: 'executed'; result: st…"
  },
  {
   "method": "monitoring.overview",
@@ -3122,7 +3130,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "验收通过。**只有用户能调**（执行方路径够不到这两个方法）。",
   "input": "{ id: string; evidence: string // 验收证据 —— **必填**。没有理由的「通过」不算验收。 }",
   "inputFull": "{ id: string; evidence: string // 验收证据 —— **必填**。没有理由的「通过」不算验收。 }",
-  "output": "{ status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath…"
+  "output": "{ status: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath…"
  },
  {
   "method": "task.get",
@@ -3130,15 +3138,15 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "",
   "input": "{ id: string }",
   "inputFull": "{ id: string }",
-  "output": "null | { status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; proj…"
+  "output": "null | { status: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; proj…"
  },
  {
   "method": "task.list",
   "channel": "task:list",
   "doc": "",
-  "input": "{ status?: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
-  "inputFull": "{ status?: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
-  "output": "{ tasks: { status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string; createdAt: number; origin: { kind: 'session' | 'user' | … }"
+  "input": "{ status?: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
+  "inputFull": "{ status?: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
+  "output": "{ tasks: { status: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string; createdAt: number; origin: { kind: 'session' | 'user' | … }"
  },
  {
   "method": "task.reject",
@@ -3146,7 +3154,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "退回返修。",
   "input": "{ id: string; reason: string // 退回理由 —— **必填**。返修的人要知道改什么。 }",
   "inputFull": "{ id: string; reason: string // 退回理由 —— **必填**。返修的人要知道改什么。 }",
-  "output": "{ status: 'running' | 'failed' | 'accepted' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath…"
+  "output": "{ status: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath…"
  },
  {
   "method": "terminal.create",

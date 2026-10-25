@@ -45,6 +45,7 @@ import { getMainWindow, hasLiveRendererWindow, sendToRenderer } from "@main/wind
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { registerUnattendedHandlers } from "./unattended.js";
 import { registerModuleHandlers } from "./modules.js";
+import { registerTheiaPreviewHandlers } from "./theiaPreview.js";
 import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
 import { ipcMain, session, type IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
@@ -124,6 +125,7 @@ export function registerIpcHandlers(): void {
   registerThemeHandlers(ipc);
   registerFileHandlers(ipc);
   registerModuleHandlers(ipc);
+  registerTheiaPreviewHandlers(ipc);
   registerRgHandlers(ipc);
   registerGitHandlers(ipc);
   registerTerminalHandlers(ipc);
