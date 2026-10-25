@@ -36,7 +36,7 @@ export function ComposerToolbarToggle({ sessionId }: { sessionId: string }) {
   const popupRef = useRef<HTMLDivElement>(null);
   useSuppressBrowserView(open, popupRef);
   return (
-    <span className="composer-chips-toggle shrink-0">
+    <span className="composer-chips-toggle min-w-0 shrink-0">
       <Popover.Root open={open} onOpenChange={setOpen}>
         <Popover.Trigger
           render={
@@ -73,7 +73,12 @@ export function ComposerToolbarToggle({ sessionId }: { sessionId: string }) {
                 "transition-[transform,opacity] duration-100",
               )}
             >
-              <ComposerToolbar sessionId={sessionId} layout="row" />
+              {/* The popup keeps overflow visible for separately-portaled model,
+                  effort and permission menus, while this inner container owns
+                  vertical scrolling in short/docked chat panes. */}
+              <div className="max-h-[calc(100dvh-28px)] min-w-0 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+                <ComposerToolbar sessionId={sessionId} layout="row" />
+              </div>
             </Popover.Popup>
           </Popover.Positioner>
         </Popover.Portal>

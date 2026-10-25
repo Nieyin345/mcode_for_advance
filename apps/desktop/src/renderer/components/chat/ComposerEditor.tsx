@@ -43,6 +43,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useUiPrefsStore } from "@renderer/lib/uiPrefs.js";
 import type { SkillInfo } from "@contracts/ipc";
 import { composerEditorHeightCap, isPostCompositionEnter } from "./composerPhysicalRules.js";
+import { composerTextOffsetToPos } from "./composerTextOffset.js";
 
 /** Sync the `is-empty` class the placeholder CSS rule keys on (styles.css).
  *  Tiptap v3 adds no such class on its own (and no Placeholder extension is
@@ -344,6 +345,9 @@ export const ComposerEditor = forwardRef<
       // doesn't send the message). Ctrl/Cmd+Enter is passed through as a
       // modifier — the parent uses it for "插话"(塞进正在跑的那一轮)。
       handleKeyDown: (view, event) => {
+        // The parent may lock the composer during an approval. Read-only
+        // ProseMirror still receives keydown; never forward Enter as a send.
+        if (!view.editable) return false;
         if (isPostCompositionEnter(
           event.key,
           event.timeStamp,
@@ -489,41 +493,7 @@ export const ComposerEditor = forwardRef<
    *  trigger-token range into the doc. */
   function textOffsetToPos(ed: typeof editor, offset: number): number {
     if (!ed) return 0;
-    const { doc } = ed.state;
-    let pos = 0;
-    let acc = 0;
-    doc.descendants((node, p) => {
-      if (acc >= offset) return false;
-      if (node.isText) {
-        const len = node.text?.length ?? 0;
-        if (acc + len >= offset) {
-          pos = p + (offset - acc);
-          acc = offset;
-          return false;
-        }
-        acc += len;
-      } else if (node.type.name === "skill") {
-        const len = `/${node.attrs.label ?? node.attrs.id ?? ""}`.length;
-        if (acc + len >= offset) {
-          // Snap to the pill's end — pills are atomic.
-          pos = p + node.nodeSize;
-          acc = offset;
-          return false;
-        }
-        acc += len;
-      } else if (node.type.name === "hardBreak") {
-        // Mirrors textWithSkills: a hard break serializes as "\n".
-        if (acc + 1 >= offset) {
-          pos = p + 1;
-          acc = offset;
-          return false;
-        }
-        acc += 1;
-      }
-      return true;
-    });
-    if (acc < offset) pos = doc.content.size; // past the end
-    return pos;
+    return composerTextOffsetToPos(ed.state.doc, offset);
   }
 
   /** Shared pill-insertion logic for both skills and built-in commands.

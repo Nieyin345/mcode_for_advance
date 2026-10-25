@@ -70,6 +70,7 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const [, forcePlacement] = useState(0);
   useEffect(() => {
     if (!open) return;
@@ -158,6 +159,14 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
   useEffect(() => {
     setActiveIdx((i) => Math.max(0, Math.min(i, Math.max(0, optionCount - 1))));
   }, [optionCount]);
+  // Arrow-key traversal of long profile lists must keep the highlighted
+  // target inside the scrollable viewport, without moving keyboard focus
+  // away from the search input (for immediate further filtering).
+  useEffect(() => {
+    if (!open || optionCount === 0) return;
+    const activeRow = listRef.current?.querySelector<HTMLElement>(`[data-subchat-index="${activeIdx}"]`);
+    activeRow?.scrollIntoView?.({ block: "nearest" });
+  }, [open, activeIdx, optionCount]);
 
   /**
    * 选一档。**只有这一个入口**（2026-09-21 改）。
@@ -277,14 +286,14 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
         <input
           ref={inputRef}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => { setQuery(e.target.value); setActiveIdx(0); }}
           placeholder={t("chat.newSubChat.searchPlaceholder")}
           aria-label={t("chat.newSubChat.searchPlaceholder")}
           className="min-h-8 min-w-0 flex-1 rounded-[var(--radius-btn-xs)] bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle focus-visible:ring-2 focus-visible:ring-accent"
         />
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto py-1">
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto py-1">
         {/* 一列平铺的选项：**每份档案占两行**（不带记忆 / 带记忆），外加最上面那档
             「空白」。见 `options` 那段注释 —— 记忆从"一个勾"变成了"选项自己的一部分"。 */}
         {loading ? (
@@ -314,6 +323,7 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
               <button
                 key={opt.key}
                 type="button"
+                data-subchat-index={idx}
                 onMouseEnter={() => setActiveIdx(idx)}
                 aria-current={active ? "true" : undefined}
                 onClick={() => pickOption(opt)}
