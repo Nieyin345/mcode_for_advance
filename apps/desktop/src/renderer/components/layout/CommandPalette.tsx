@@ -62,6 +62,8 @@ import { useModuleContributions, contributionsOf, ModuleCatalogNotice } from "@r
 import { createModuleClient } from "@contracts/moduleClient";
 import { CUSTOM_ICONS } from "@renderer/components/customUi/registry.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
+import type { TheiaInstalledEntry } from "@contracts/ipc/modules.js";
+import { collectTheiaPaletteCommands } from "@renderer/lib/theiaCommandBridge.js";
 
 /** Translator signature used by the module-level copy helpers below. */
 type Translator = (key: MessageId, params?: Record<string, string | number>) => string;
@@ -163,6 +165,20 @@ export function CommandPalette() {
   const { t, locale } = useI18n();
   const open = useSessionStore((s) => s.commandPaletteOpen);
   const moduleCatalog = useModuleContributions(open);
+  const [theiaActive, setTheiaActive] = useState<TheiaInstalledEntry[]>([]);
+  // No idle-time poll. Resolve only when the user opens Mcode's existing palette;
+  // closing invalidates in-flight replies so stale extension commands cannot leak.
+  useEffect(() => {
+    if (!open) {setTheiaActive([]);return;}
+    let current = true;
+    void api.modules.theiaInstalled({op:"list"}).then((result) => {
+      if (current && result.kind==="list") setTheiaActive(result.items);
+    }).catch(() => {
+      // Web host / missing Theia runtime: built-in and ModuleHost commands remain available.
+      if (current) setTheiaActive([]);
+    });
+    return () => {current=false;};
+  }, [open]);
   const setOpen = useSessionStore((s) => s.setCommandPaletteOpen);
   // Subscribe to overrides so <kbd> hints update live when the user rebinds.
   const overrides = useSessionStore((s) => s.shortcutOverrides);
@@ -227,7 +243,12 @@ export function CommandPalette() {
         }
       },
     }));
-    return [...builtin,...extensions].map((cmd) => {
+    const theia = collectTheiaPaletteCommands(
+      theiaActive,
+      (input) => api.modules.theiaInstalled(input),
+      (message) => useToastStore.getState().push(message),
+    );
+    return [...builtin,...extensions,...theia].map((cmd) => {
       const effective = resolveShortcut(cmd.id, overrides);
       return {
         ...cmd,
@@ -235,7 +256,7 @@ export function CommandPalette() {
         kind: "command" as const,
       };
     });
-  }, [open, overrides, moduleCatalog.data, locale]);
+  }, [open, overrides, moduleCatalog.data, locale, theiaActive]);
 
   // Drive the async searches off the live query + active scope. Only the
   // searches the current scope includes are fired, so picking e.g. "线程" never

@@ -114,16 +114,19 @@ export class TheiaInstalledRegistry {
     await walk(base);
     if(seen.size!==Object.keys(rec.files).length) deny("扩展文件缺失");
   }
-  private item(rec:Saved):TheiaInstalledEntry {
+  private item(rec:Saved,senderId?:number):TheiaInstalledEntry {
+    const current=this.running;
+    const owned=current?.id===rec.id && senderId!==undefined && current.senderId===senderId && !this.closed.has(senderId);
     return {id:rec.id,extensionId:rec.extensionId,version:rec.version,enabled:rec.enabled,
-      installedAt:rec.installedAt,running:this.running?.id===rec.id,integrity:"not-checked"};
+      installedAt:rec.installedAt,running:current?.id===rec.id,integrity:"not-checked",
+      ...(owned ? {activeSession:{sessionId:current.sessionId,commands:[...current.commands].sort()}} : {})};
   }
   /** Metadata-only list: never read/hash extension payloads when opening the Mcode panel. */
-  list():TheiaInstalledEntry[] {
+  list(senderId?:number):TheiaInstalledEntry[] {
     const items:TheiaInstalledEntry[]=[];
     for(const name of readdirSync(this.installed)) {
       if(!UUID.test(name)) continue;
-      try {const rec=this.read(name);items.push(this.item(rec));}
+      try {const rec=this.read(name);items.push(this.item(rec,senderId));}
       catch {items.push({id:name,extensionId:"[corrupt installation]",version:"?",enabled:false,
         installedAt:0,running:false,corrupted:true,integrity:"corrupt"});}
     }

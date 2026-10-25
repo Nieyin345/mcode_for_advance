@@ -41,7 +41,7 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
       });
     }
     switch(input.op){
-      case "list":return {kind:"list" as const,items:manager.list()};
+      case "list":return {kind:"list" as const,items:manager.list(senderId)};
       case "inspect":return manager.inspect(senderId,input.path);
       case "cancel":return manager.cancel(senderId,input.ticket);
       case "install":return manager.install(senderId,input.ticket,input.accepted);

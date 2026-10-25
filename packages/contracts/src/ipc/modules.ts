@@ -138,6 +138,8 @@ export interface TheiaInstalledEntry {
   running:boolean; corrupted?:boolean;
   /** Metadata-only catalogue is not a security check. Full payload verification occurs before launch. */
   integrity:"not-checked"|"corrupt";
+  /** F028: only the desktop sender that owns a live Theia session receives command metadata. Never persisted. */
+  activeSession?: {sessionId:string;commands:string[]};
 }
 export type TheiaInstalledResult =
   | {kind:"list";items:TheiaInstalledEntry[]}

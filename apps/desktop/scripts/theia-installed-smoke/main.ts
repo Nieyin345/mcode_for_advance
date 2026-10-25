@@ -115,6 +115,11 @@ try{
   const run=await manager.start(51,id);
   if(run.kind!=="started")throw Error("could not start");
   check("手动启动真正 Theia Host 后命令已注册",run.commands.includes("mcodeSmoke.spawnEcho"),run);
+  const ownCommands=manager.list(51)[0].activeSession;
+  check("Mcode 原生命令面板能发现本人会话的真实 Theia 命令",
+    ownCommands?.sessionId===run.sessionId&&ownCommands.commands.includes("mcodeSmoke.spawnEcho"));
+  check("另一桌面窗口不能取得运行会话的可执行令牌",manager.list(52)[0].activeSession===undefined);
+  check("无 sender 的普通安装列表不能泄露扩展执行令牌",manager.list()[0].activeSession===undefined);
   await rejects("运行时禁止重复启动",()=>manager!.start(51,id));
   await rejects("未注册命令不得调用",()=>manager!.execute(51,run.sessionId,"mcodeSmoke.declaredOnly"));
   await rejects("另一窗口不得调用扩展命令",()=>manager!.execute(52,run.sessionId,"mcodeSmoke.spawnEcho"));
@@ -124,6 +129,7 @@ try{
   await rejects("扩展运行中禁止禁用",()=>manager!.setEnabled(id,false));
   const stopped=await manager.stop(51,run.sessionId);
   check("停止真实子进程不会删除已安装扩展",stopped.kind==="stopped"&&manager.list().length===1);
+  check("停止扩展后不再向 Mcode 命令面板发布注册命令",manager.list(51)[0].activeSession===undefined);
   await rejects("停止后的旧会话不能继续执行",()=>manager!.execute(51,run.sessionId,"mcodeSmoke.spawnEcho"));
   // F027: synthetic 24 MiB payload in the ISOLATED temp root. Catalogue must never hash it.
   const large=path.join(store,"installed",id,"extension","perf-data.bin");
@@ -197,6 +203,10 @@ try{
   const ipcLive=await invoke(actor,{op:"start",id:ipcAdded.item.id}) as
     {kind:string;sessionId:string;commands:string[]};
   check("IPC 手动启动真实 Theia 子进程",ipcLive.kind==="started"&&ipcLive.commands.includes("mcodeSmoke.spawnEcho"));
+  const ipcRunningList=await invoke(actor,{op:"list"}) as {kind:string;items:Array<{activeSession?:{sessionId:string;commands:string[]}}>} ;
+  check("真实 IPC list 返回当前窗口可执行的注册命令",
+    ipcRunningList.items[0]?.activeSession?.sessionId===ipcLive.sessionId&&
+    ipcRunningList.items[0]?.activeSession?.commands.includes("mcodeSmoke.spawnEcho")===true);
   const ipcOutput=await invoke(actor,{op:"execute",sessionId:ipcLive.sessionId,commandId:"mcodeSmoke.spawnEcho"}) as
     {kind:string;result:string};
   check("IPC 扩展命令结果正常返回",ipcOutput.kind==="executed"&&ipcOutput.result.includes('"echo":"pong"'));
