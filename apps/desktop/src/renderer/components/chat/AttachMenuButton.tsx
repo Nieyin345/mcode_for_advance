@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Menu } from "@base-ui/react/menu";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -15,6 +15,7 @@ import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.j
 import { useLibraryStore } from "@renderer/stores/libraryStore.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { NewSubChatPicker, type SubChatChoice } from "./NewSubChatPicker.js";
+import { subChatErrorPlacement } from "./subChatPickerPlacement.js";
 
 /**
  * Single "+" entry for composer attachments and quick triggers.
@@ -102,6 +103,32 @@ export function AttachMenuButton({
   const createSubChat = useSessionStore((s) => s.createSubChat);
   /** 建失败的原因 —— 「点了没反应」是这里最坏的表现,所以必须显示出来。 */
   const [createError, setCreateError] = useState<string | null>(null);
+  const createErrorRef = useRef<HTMLDivElement>(null);
+  const [errorPosition, setErrorPosition] = useState({ left: 8, top: 8 });
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  // Error text can wrap to several lines on a short/narrow window.
+  // Anchor against the measured popup instead of using translateY(-100%),
+  // which previously put the complete error message above the screen.
+  useLayoutEffect(() => {
+    const el = createErrorRef.current;
+    if (!createError || !el) return;
+    const measure = () => {
+      const anchor = triggerRef.current?.getBoundingClientRect() ?? pickerAnchor;
+      if (!anchor) return;
+      const next = subChatErrorPlacement(anchor, el.offsetWidth, el.offsetHeight,
+        window.innerWidth, window.innerHeight);
+      setErrorPosition((prev) => prev.left === next.left && prev.top === next.top ? prev : next);
+    };
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    window.addEventListener("resize", measure);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
+  }, [createError, pickerAnchor]);
   // A picker selection can fire twice before React commits state. The ref is
   // synchronous so two clicks cannot create two child conversations.
   const subChatCreatePendingRef = useRef(false);
@@ -126,12 +153,12 @@ export function AttachMenuButton({
         });
         // null = 守卫拦下了(没主会话 / 没配模型,后者自己会弹配置窗)——
         // 那不是错误,不显示红字。
-        if (session) onNewSubChat?.({ id: session.id, title: session.title });
+        if (session && mountedRef.current) onNewSubChat?.({ id: session.id, title: session.title });
       } catch (err) {
-        setCreateError(t("chat.newSubChat.createFailed", { error: err instanceof Error ? err.message : String(err) }));
+        if (mountedRef.current) setCreateError(t("chat.newSubChat.createFailed", { error: err instanceof Error ? err.message : String(err) }));
       } finally {
         subChatCreatePendingRef.current = false;
-        setCreatingSubChat(false);
+        if (mountedRef.current) setCreatingSubChat(false);
       }
     })();
   };
@@ -158,7 +185,7 @@ export function AttachMenuButton({
             <Menu.Popup
               ref={popupRef}
               className={cn(
-                "z-50 max-h-[calc(100vh-24px)] min-w-[min(200px,calc(100vw-24px))] overflow-y-auto origin-bottom-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
+                "z-50 max-h-[calc(100vh-24px)] min-w-[min(200px,calc(100vw-24px))] max-w-[calc(100vw-24px)] overflow-y-auto origin-bottom-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
                 "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                 "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                 "transition-[transform,opacity] duration-100",
@@ -167,7 +194,7 @@ export function AttachMenuButton({
               <Menu.Item
                 onClick={onPickFiles}
                 className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                  "flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
                   "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
@@ -177,7 +204,7 @@ export function AttachMenuButton({
               <Menu.Item
                 onClick={onPickImages}
                 className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                  "flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
                   "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
@@ -191,7 +218,7 @@ export function AttachMenuButton({
               <Menu.Item
                 onClick={onPickLibraries}
                 className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                  "flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
                   "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
@@ -214,7 +241,7 @@ export function AttachMenuButton({
                 onClick={openSubChatPicker}
                 disabled={creatingSubChat}
                 className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                  "flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
                   "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
@@ -227,7 +254,7 @@ export function AttachMenuButton({
               <Menu.Item
                 onClick={onSlashCommand}
                 className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                  "flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
                   "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
@@ -250,13 +277,10 @@ export function AttachMenuButton({
           并且**不会**被输入框的布局挤动。 */}
       {createError && (
         <div
+          ref={createErrorRef}
           role="alert"
-          className="fixed z-[70] max-w-[min(420px,calc(100vw-16px))] rounded-lg border border-danger/40 bg-surface px-3 py-2 text-[12px] text-danger shadow-[var(--shadow-popover)]"
-          style={{
-            left: Math.max(8, Math.min(pickerAnchor?.left ?? 16, window.innerWidth - 240)),
-            top: Math.max(8, (pickerAnchor?.top ?? 40) - 8),
-            transform: "translateY(-100%)",
-          }}
+          className="fixed z-[70] max-h-[calc(100vh-16px)] max-w-[calc(100vw-16px)] overflow-y-auto break-words rounded-[var(--radius-panel)] border border-danger/40 bg-surface px-3 py-2 text-[12px] text-danger shadow-[var(--shadow-popover)]"
+          style={errorPosition}
         >
           {createError}
         </div>

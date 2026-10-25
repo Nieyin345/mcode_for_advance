@@ -35,6 +35,7 @@ import type { AgentProfile } from "@contracts/agentProfile";
 import { cn } from "@renderer/lib/cn.js";
 import { openEscapeLayer, claimEscape, isTopEscapeLayer } from "@renderer/lib/escapeLayer.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
+import { subChatPickerPlacement } from "./subChatPickerPlacement.js";
 import { api } from "@renderer/lib/api.js";
 import { IconCheck, IconLoader2, IconSearch, IconUserStar } from "@renderer/lib/icons.js";
 
@@ -69,6 +70,17 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
+  const [, forcePlacement] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    const remeasure = () => forcePlacement((v) => v + 1);
+    window.addEventListener("resize", remeasure);
+    window.visualViewport?.addEventListener("resize", remeasure);
+    return () => {
+      window.removeEventListener("resize", remeasure);
+      window.visualViewport?.removeEventListener("resize", remeasure);
+    };
+  }, [open]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // 打开即拉一次 + 聚焦搜索框。**不缓存**:档案是磁盘上的文件,用户刚存的那一份就该
@@ -237,12 +249,6 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
    * `left` 那两行）：两边各留 8px，窗口比面板窄时**以左边为准**（宁可右边溢出一点，
    * 也别让面板左边缘跑出屏幕 —— 用户从左边开始读）。
    */
-  const width = Math.min(Math.max(anchorRect.width, 300), 420, Math.max(0, window.innerWidth - 16));
-  const left = Math.min(
-    Math.max(anchorRect.left, 8),
-    Math.max(window.innerWidth - width - 8, 8),
-  );
-
   /**
    * **向上生长，但撞到窗口顶上就改成向下**（2026-09-21）。
    *
@@ -255,27 +261,16 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
    * 现在按可用空间择向：上面放得下就向上（贴着锚点），放不下就向下。
    * 高度上限也跟着可用空间走 —— 不然向下那一档可能又超出底部。
    */
-  const PANEL_MAX_H = 320;
-  const spaceAbove = anchorRect.top - 8;
-  const spaceBelow = window.innerHeight - anchorRect.bottom - 8;
-  const openUp = spaceAbove >= Math.min(PANEL_MAX_H, spaceBelow);
-  const maxH = Math.max(48, Math.min(PANEL_MAX_H, openUp ? spaceAbove : spaceBelow, window.innerHeight - 16));
+  const placement = subChatPickerPlacement(anchorRect, window.innerWidth, window.innerHeight);
 
   return (
     <div
       ref={rootRef}
       role="dialog"
       aria-label={t("chat.newSubChat")}
-      className="fixed z-[70] flex flex-col overflow-hidden rounded-[var(--radius-panel)] border border-edge bg-surface shadow-[var(--shadow-popover)]"
-      style={{
-        left,
-        width,
-        maxHeight: maxH,
-        // 向上：面板底边贴着锚点顶（`translateY(-100%)`）；向下：顶边贴着锚点底。
-        ...(openUp
-          ? { top: anchorRect.top - 8, transform: "translateY(-100%)" }
-          : { top: anchorRect.bottom + 8 }),
-      }}
+      aria-busy={loading}
+      className="fixed z-[70] flex min-w-0 flex-col overflow-hidden rounded-[var(--radius-panel)] border border-edge bg-surface shadow-[var(--shadow-popover)]"
+      style={placement}
     >
       <div className="flex items-center gap-1.5 border-b border-edge px-2 py-1">
         <IconSearch size={12} className="shrink-0 text-content-muted" />
@@ -285,7 +280,7 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t("chat.newSubChat.searchPlaceholder")}
           aria-label={t("chat.newSubChat.searchPlaceholder")}
-          className="h-7 min-w-0 flex-1 rounded bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle focus-visible:ring-2 focus-visible:ring-accent"
+          className="min-h-8 min-w-0 flex-1 rounded-[var(--radius-btn-xs)] bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle focus-visible:ring-2 focus-visible:ring-accent"
         />
       </div>
 
@@ -298,7 +293,7 @@ export function NewSubChatPicker({ open, anchorRect, onPick, onClose }: Props) {
             {t("common.loading")}
           </div>
         ) : error ? (
-          <div className="px-3 py-4 text-center text-[12px] text-red-500">{error}</div>
+          <div role="alert" className="px-3 py-4 text-center text-[12px] text-danger">{error}</div>
         ) : options.length === 0 ? (
           <div className="px-3 py-4 text-center text-[12px] text-content-subtle">
             {profiles.length === 0 ? (

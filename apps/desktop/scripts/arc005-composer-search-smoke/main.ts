@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { searchResultsNavigable, stepSearchResultIndex } from "../../src/renderer/components/ide/searchResultNavigation.js";
 import { composerFluidTier } from "../../src/renderer/components/chat/composerFluidTier.js";
+import { subChatPickerPlacement } from "../../src/renderer/components/chat/subChatPickerPlacement.js";
 import { sourceHas } from "../lib/sourceText.js";
 import { openEscapeLayer, claimEscape, resetEscapeLayersForTests } from "../../src/renderer/lib/escapeLayer.js";
 
@@ -108,7 +109,7 @@ check("Attachment: creating disables menu trigger and duplicate selection",
   sourceHas(attach, 'disabled={creatingSubChat}'));
 check("Attachment: creation still calls production store action and optional callback",
   sourceHas(attach, "await createSubChat({") &&
-  sourceHas(attach, "if (session) onNewSubChat?.({ id: session.id, title: session.title })"));
+  sourceHas(attach, "if (session && mountedRef.current) onNewSubChat?.({ id: session.id, title: session.title })"));
 check("Attachment: error is visible, translated and readable by assistive technology",
   sourceHas(attach, 'role="alert"') &&
   sourceHas(attach, 't("chat.newSubChat.createFailed"'));
@@ -143,8 +144,11 @@ check("Subchat: Enter cannot pick while profiles load or failed",
   sourceHas(subChat, 'if (loading || error || optionCount === 0) return;') &&
   sourceHas(subChat, "if (loading || error) return;"));
 check("Subchat: tiny screen clamps width and list height to viewport",
-  sourceHas(subChat, 'Math.max(0, window.innerWidth - 16)') &&
-  sourceHas(subChat, "window.innerHeight - 16"));
+  sourceHas(subChat, "subChatPickerPlacement(anchorRect, window.innerWidth, window.innerHeight)") &&
+  (() => {
+    const box = subChatPickerPlacement({ left: 120, top: 28, bottom: 40, width: 32 }, 160, 96);
+    return box.width <= 144 && box.maxHeight <= 80 && box.top >= 8 && box.top + box.maxHeight <= 88;
+  })());
 check("Subchat: accessible picker dialog, focused search, and visible row selection",
   sourceHas(subChat, 'role="dialog"') &&
   sourceHas(subChat, 'aria-label={t("chat.newSubChat")}') &&
