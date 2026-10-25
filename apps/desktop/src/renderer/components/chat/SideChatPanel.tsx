@@ -28,15 +28,20 @@ import {
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { useSessionStore, type Block } from "@renderer/stores/sessionStore.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { ConfirmDialog } from "@renderer/components/ui/index.js";
 import { ChatPane } from "@renderer/components/chat/ChatPane.js";
-import { NewSubChatPicker } from "./NewSubChatPicker.js";
+import { NewSubChatPicker, type SubChatChoice } from "./NewSubChatPicker.js";
+import { visibleSideChat, type ScopedSideNode } from "./visibleSideChat.js";
 // （`useFileViewStore` 的 import 已删 —— 2026-09-22 主对话改成常驻之后，
 //   这个文件里不再需要"中间是不是在看文件"那个判据了。）
 import { MessageBlocks } from "./MessageBlocks.js";
 import { mapTranscriptBlock } from "./transcriptBlocks.js";
 
 export function SideChatPanel() {
+  const { t } = useI18n();
+  const creatingRef = useRef(false);
+  const activeParentRef = useRef<string | null>(null);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const sideChats = useSessionStore((s) =>
     s.activeSessionId ? s.sideChatsByParent[s.activeSessionId] : undefined,
@@ -48,6 +53,7 @@ export function SideChatPanel() {
   const closeSideChatView = useSessionStore((s) => s.closeSideChatView);
   const openTab = useSessionStore((s) => s.openTab);
   const createSubChat = useSessionStore((s) => s.createSubChat);
+  activeParentRef.current = activeSessionId;
   /** 「选档案」选择器开着没有 —— 非 null 时的那个矩形是它的锚（那个「+」的位置）。 */
   const [pickerAnchor, setPickerAnchor] = useState<DOMRect | null>(null);
 
@@ -87,9 +93,10 @@ export function SideChatPanel() {
    * 会话的查询，见 `SelectionQuoteMenu` 的头注）。只在 side 列表查不到时才发，
    * 所以常态（点子对话）没有额外开销。
    */
-  const [nodeSession, setNodeSession] = useState<Session | null>(null);
+  const [nodeSession, setNodeSession] = useState<ScopedSideNode<Session> | null>(null);
   useEffect(() => {
-    if (!activeSideChatId || fromSideList) {
+    // A parent row is not a node: do not issue a listNodes RPC for it.
+    if (!activeSideChatId || !activeSessionId || activeSideChatId === activeSessionId || fromSideList) {
       setNodeSession(null);
       return;
     }
@@ -98,7 +105,8 @@ export function SideChatPanel() {
       .listNodes({ sessionId: activeSessionId ?? "" })
       .then((res) => {
         if (cancelled) return;
-        setNodeSession(res.sessions.find((x) => x.id === activeSideChatId) ?? null);
+        const row = res.sessions.find((x) => x.id === activeSideChatId);
+        setNodeSession(row ? { parentId: activeSessionId, targetId: activeSideChatId, row } : null);
       })
       .catch(() => {
         if (!cancelled) setNodeSession(null);
@@ -128,8 +136,38 @@ export function SideChatPanel() {
   // CURRENT parent — after a main-session switch the stale id falls back to
   // the list view (derived, so no reset effect is needed).
 
-  const activeSide = fromSideList ?? nodeSession ?? mainRow ?? undefined;
+  // Effects run AFTER render. Filter node data synchronously by CURRENT
+  // parent and selection so a stale async result cannot flash a foreign chat.
+  const activeSide = visibleSideChat(activeSessionId, activeSideChatId,
+    sideChats, nodeSession, mainRow);
   const view: "list" | "chat" = activeSide ? "chat" : "list";
+
+  const handleChooseProfile = (choice: SubChatChoice) => {
+    // The picker can activate twice before a render; the list must not create
+    // two children or select a new child after the user switched parent chats.
+    if (creatingRef.current || !activeSessionId) return;
+    const parentAtStart = activeSessionId;
+    creatingRef.current = true;
+    setPickerAnchor(null);
+    void (async () => {
+      try {
+        const session = await createSubChat({
+          profile: choice.profile ?? null,
+          memory: choice.memory,
+        });
+        if (session && activeParentRef.current === parentAtStart) {
+          void selectSideChat(session.id);
+        }
+      } catch (err) {
+        useToastStore.getState().push({
+          kind: "error",
+          title: t("chat.newSubChat.createFailed", { error: err instanceof Error ? err.message : String(err) }),
+        });
+      } finally {
+        creatingRef.current = false;
+      }
+    })();
+  };
 
   if (view === "chat" && activeSide) {
     return <SideChatView session={activeSide} parentRow={parentRow} />;
@@ -151,17 +189,7 @@ export function SideChatPanel() {
         open={pickerAnchor !== null}
         anchorRect={pickerAnchor}
         onClose={() => setPickerAnchor(null)}
-        onPick={(choice) => {
-          void (async () => {
-            const session = await createSubChat({
-              profile: choice.profile ?? null,
-              memory: choice.memory,
-            });
-            setPickerAnchor(null);
-            // 建完就展开它 —— 点了「新建」，下一步一定是要跟它说话。
-            if (session) void selectSideChat(session.id);
-          })();
-        }}
+        onPick={handleChooseProfile}
       />
     </>
   );
@@ -358,8 +386,9 @@ function MainSessionRow({
         // 会话本身（`SideChatView` 用 `ChatPane`，主对话和子对话在那里是同一个东西）。
         onClick={() => (open ? close() : void select(activeSessionId as string))}
         title={open ? t("sideChat.collapseMain") : t("sideChat.expandMain")}
+        aria-expanded={open}
         className={cn(
-          "flex min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2 py-1 text-left transition-colors",
+          "flex min-h-9 min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-btn-xs)] border px-2 py-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           open
             ? "border-accent bg-accent/10"
             : "border-accent/50 bg-accent/5 hover:bg-accent/10",
@@ -379,7 +408,9 @@ function MainSessionRow({
         type="button"
         onClick={(e) => onChooseProfile(e.currentTarget.getBoundingClientRect())}
         title={t("sideChat.newChat")}
-        className="cds-hover-ghost flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-content-subtle transition-colors hover:text-content"
+        aria-label={t("sideChat.newChat")}
+        disabled={!hasMainSession}
+        className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40"
       >
         <IconPlus size={13} />
       </button>
@@ -403,11 +434,11 @@ function SideChatRow({
     // sibling buttons (a button inside a button is invalid HTML). The delete
     // affordance appears on hover, LeftBar row style, and is gated while the
     // chat's turn is running — deleting mid-stream would orphan the runtime.
-    <li className="group flex items-center rounded-md pr-0.5 transition-colors hover:bg-surface-hover">
+    <li className="group flex min-w-0 items-center rounded-[var(--radius-btn-xs)] pr-0.5 transition-colors hover:bg-surface-hover focus-within:bg-surface-hover/60">
       <button
         type="button"
         onClick={() => onOpen(session.id)}
-        className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+        className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-btn-xs)] px-2 py-1.5 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <span
           className={cn(
@@ -428,10 +459,10 @@ function SideChatRow({
         disabled={running}
         onClick={() => onDelete(session)}
         title={running ? undefined : t("sideChat.deleteChat")}
+        aria-label={t("sideChat.deleteChat")}
         className={cn(
-          "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-subtle transition-all",
-          "cds-hover-ghost  hover:text-danger focus-visible:opacity-100",
-          "opacity-0 group-hover:opacity-100",
+          "cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors",
+          "opacity-60 hover:text-danger hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           running && "pointer-events-none opacity-0",
         )}
       >
@@ -469,7 +500,8 @@ function SideChatView({ session, parentRow }: { session: Session; parentRow?: Se
           type="button"
           onClick={closeSideChatView}
           title={t("sideChat.backToList")}
-          className="cds-hover-ghost flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-muted transition-colors hover:text-content"
+          aria-label={t("sideChat.backToList")}
+          className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           <IconArrowLeft size={15} />
         </button>
@@ -484,7 +516,7 @@ function SideChatView({ session, parentRow }: { session: Session; parentRow?: Se
               onClick={() => void openTab(session.parentSessionId as string)}
               title={parentGone ? t("sideChat.parentDeleted") : t("sideChat.goToParent")}
               className={cn(
-                "block max-w-full truncate text-left text-[10px]",
+                "block max-w-full truncate rounded-[var(--radius-btn-xs)] text-left text-[10px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                 parentGone
                   ? "cursor-default text-content-subtle"
                   : "text-accent hover:underline",
@@ -511,9 +543,10 @@ function SideChatView({ session, parentRow }: { session: Session; parentRow?: Se
           disabled={running}
           onClick={() => setConfirmDelete(true)}
           title={running ? undefined : t("sideChat.deleteChat")}
+          aria-label={t("sideChat.deleteChat")}
           className={cn(
-            "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-content-muted transition-colors",
-            "cds-hover-ghost  hover:text-danger",
+            "cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+            "hover:text-danger",
             running && "pointer-events-none opacity-40",
           )}
         >
