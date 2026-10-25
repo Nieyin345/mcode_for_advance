@@ -28,7 +28,7 @@ ck("tool batch, Edit, Write and generic cards expose native expanded state",
   count("aria-expanded=\\{open\\}") >= 5);
 ck("turn ledger exposes expanded state on its actual button",
   /className="chat-ledger-head"/.test(src) &&
-  /<button\s+type="button"\s+onClick=\{\(e\) => \{[\s\S]{0,200}?toggleHoldPosition\(e, setOpen\);[\s\S]{0,150}?aria-expanded=\{open\}/.test(src));
+  /<button\s+type="button"\s+(?:data-ui-tool-summary=\{[^}]+\}\s+)?onClick=\{\(e\) => \{[\s\S]{0,200}?toggleHoldPosition\(e, setOpen\);[\s\S]{0,150}?aria-expanded=\{open\}/.test(src));
 ck("thinking accordion exposes live disabled state but still displays live content",
   sourceHas(src, "aria-disabled={live}") &&
   sourceHas(src, "aria-expanded={isOpen}") &&

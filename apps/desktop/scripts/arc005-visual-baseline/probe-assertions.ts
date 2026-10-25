@@ -29,8 +29,8 @@ export const ARC005_PROBE_TARGETS = {
   },
   "tool-row": {
     containerSelector: "[data-testid='workspace-main']",
-    selector: "button[class*='flex w-full items-center gap-2'][class*='py-1.5 text-left hover:bg-surface-muted/50']",
-    measurementSelector: "[data-testid='workspace-main'] button[class*='flex w-full items-center gap-2'][class*='py-1.5 text-left hover:bg-surface-muted/50']",
+    selector: "button[data-ui-tool-row],button[data-ui-tool-summary]",
+    measurementSelector: "[data-testid='workspace-main'] button[data-ui-tool-row], [data-testid='workspace-main'] button[data-ui-tool-summary]",
     fixtureSelector: "[data-testid='arc005-fixture-panel']",
     lookalikes: [{ selector: "[data-testid*='tool']", scope: "container" }],
   },

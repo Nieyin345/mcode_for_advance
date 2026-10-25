@@ -132,6 +132,11 @@ const css = buildTailwindCached({
   cwd: desktop,
 });
 if (css.status !== undefined && css.status !== 0) throw Error("tailwind failed");
+// Production main.tsx imports the workspace-only ARC-005 layer AFTER styles.css.
+// The Electron visual fixture bypasses main.tsx and historically captured only
+// app.css, falsely reporting unstyled workspace changes as visual evidence.
+// Load the exact production layer as a separate stylesheet in the same order.
+copyFileSync(join(root, "arc005-workspace-surface.css"), join(dir, "arc005-workspace-surface.css"));
 
 copyFileSync(join(suite, "api-stub.js"), join(dir, "api-stub.js"));
 copyFileSync(join(suite, "bridge.cjs"), join(dir, "bridge.cjs"));
@@ -141,7 +146,7 @@ writeFileSync(
   join(dir, "page.html"),
   `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; worker-src 'none'">
-<title>settings focus electron u1</title><link rel="stylesheet" href="./app.css"></head>
+<title>settings focus electron u1</title><link rel="stylesheet" href="./app.css"><link rel="stylesheet" href="./arc005-workspace-surface.css"></head>
 <body style="margin:0"><div id="root" style="height:100vh"></div><script src="./api-stub.js"></script><script src="./bundle.js"></script></body></html>`,
 );
 

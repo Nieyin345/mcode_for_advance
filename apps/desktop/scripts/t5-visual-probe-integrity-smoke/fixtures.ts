@@ -192,6 +192,6 @@ export function fixturePanel(kind: string, children: SyntheticNodeInput[] = []):
 
 export function toolRow(): SyntheticNodeInput {
   return el("button", {
-    class: "flex w-full items-center gap-2 rounded-[var(--radius-control)] py-1.5 text-left hover:bg-surface-muted/50",
+    "data-ui-tool-row": "",
   }, "Read demo.ts");
 }

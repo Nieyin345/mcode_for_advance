@@ -34,6 +34,19 @@ const CONDITIONS = [
   { id: "dark", width: 1280, height: 800, dark: true },
   { id: "narrow", width: 1024, height: 640, dark: false },
 ] as const;
+// Optional targeted U1 run for rapid UI iteration. Default remains the full
+// 17 × 3 real-Electron evidence matrix. Unknown screen IDs are rejected.
+const selectedScreens = process.env.ARC005_VISUAL_SCENES?.split(",").filter(Boolean);
+const selectedConditions = process.env.ARC005_VISUAL_CONDITIONS?.split(",").filter(Boolean);
+if (selectedScreens?.some(id => !SCREENS.some(([screen]) => screen === id))) {
+  throw Error("Unknown ARC005_VISUAL_SCENES selection");
+}
+if (selectedConditions?.some(id => !CONDITIONS.some(c => c.id === id))) {
+  throw Error("Unknown ARC005_VISUAL_CONDITIONS selection");
+}
+const captureScreens = selectedScreens ? SCREENS.filter(([id]) => selectedScreens.includes(id)) : SCREENS;
+const captureConditions = selectedConditions ? CONDITIONS.filter(c => selectedConditions.includes(c.id)) : CONDITIONS;
+if (!captureScreens.length || !captureConditions.length) throw Error("Empty ARC005 visual selection");
 /**
  * 【T141】**登记过的**拍不出来的场景。每一条都要有理由，而且理由要能说清
  * 「为什么它拍不出来」而不是「先跳过」。
@@ -152,12 +165,12 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
       return true;
     })()`;
     await js(fixture);
-    for (const condition of CONDITIONS) {
+    for (const condition of captureConditions) {
       win.setSize(condition.width, condition.height);
       nativeTheme.themeSource = condition.dark ? "dark" : "light";
       await js(`document.documentElement.classList.toggle("dark", ${condition.dark}); document.documentElement.dataset.arcCondition = ${JSON.stringify(condition.id)}`);
       await sleep(300);
-      for (const [screen, title] of SCREENS) {
+      for (const [screen, title] of captureScreens) {
         const file = `${screen}-${condition.id}-${condition.width}`;
         // 【T136】本场景的起始时刻 —— 冻结时钟用它，这样「用时」那类文字仍是
         // 有意义的数（不是 0），而秒位不再随真实时间漂移。
@@ -241,6 +254,18 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
           await sleep(350);
           const alive = await js<boolean>("!!document.querySelector('[data-testid=workspace-main]') && !!document.querySelector('button')");
           if (probe.ok && !alive) probe = {ok:false,reason:"真实 App 不再挂载；不能抓取空白页"};
+          if (screen === "tools" && !probe.ok) {
+            const debug = await js<string>(`(() => JSON.stringify({
+              text: document.querySelector("[data-testid=workspace-main]")?.innerText.slice(0,600),
+              ledger: document.querySelectorAll(".chat-ledger").length,
+              summary: document.querySelectorAll("[data-ui-tool-summary]").length,
+              blocks: window.__store.getState().messagesBySession?.s1?.map(m=>({
+                role:m.role,id:m.id,blocks:m.blocks.map(b=>({kind:b.kind,status:b.status}))
+              })),
+              errors: [...document.querySelectorAll('[role="alert"],[data-testid*="error"]')].map(x=>x.textContent?.slice(0,150))
+            }))()`);
+            console.warn("ARC005 tools missing semantic content:",debug.slice(0,1800));
+          }
         } catch (e) {
           probe = { ok: false, reason: "scene error: " + String(e) };
           errors.push(file + ": " + String(e));
@@ -265,6 +290,14 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
           const targetSpecs = ${JSON.stringify(ARC005_PROBE_TARGETS)};
           const inspectVisualProbeTarget = ${inspectVisualProbeTarget.toString()};
           const root = getComputedStyle(document.documentElement);
+          const workspaceNode = document.querySelector('[data-ui-shell-variant="workspace"]');
+          const workspaceStyle = workspaceNode ? getComputedStyle(workspaceNode) : null;
+          const workspaceSkin = {
+            mounted: !!workspaceNode,
+            layerLinked: !!document.querySelector('link[href="./arc005-workspace-surface.css"]'),
+            controlSize: workspaceStyle?.getPropertyValue("--workspace-control-size").trim() ?? "",
+            focusOutline: workspaceStyle?.getPropertyValue("--workspace-focus-outline").trim() ?? "",
+          };
           const measured = selectors.map(([name,sel]) => {
             let el; try { el = [...document.querySelectorAll(sel)].find(e => e.getClientRects().length > 0); } catch {}
             const targetSpec = targetSpecs[name];
@@ -281,11 +314,15 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               padding:st.padding,
               bounds:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}};
           });
-          return {measured,tokens:Object.fromEntries(tokens.map(k=>[k,root.getPropertyValue(k).trim()])),
+          return {measured,workspaceSkin,tokens:Object.fromEntries(tokens.map(k=>[k,root.getPropertyValue(k).trim()])),
             viewport:{width:innerWidth,height:innerHeight},
             dark:document.documentElement.classList.contains('dark'),
             textSample:document.body.innerText.slice(0,400)};
         })()`);
+        const skin = (snapshot as {workspaceSkin?: {mounted:boolean;layerLinked:boolean;controlSize:string;focusOutline:string}}).workspaceSkin;
+        if (probe.ok && (!skin?.mounted || !skin.layerLinked || skin.controlSize !== "2rem" || !skin.focusOutline)) {
+          probe = {ok:false,reason:"ARC-005 workspace presentation layer was not active in this real Electron frame"};
+        }
         const probeValue = probe.value as {fixture?:string;sourceType?:string}|undefined;
         const metadata = {
           schema:1,screen,title,condition:condition.id,
@@ -325,9 +362,9 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
     // 加场景时只改本文件的 SCREENS，这里自动跟着变；下游那些断言读的是
     // expected.cells，不会再出现「场景加到 51、判据还写 39」这种过期。
     writeFileSync(join(dir,"expected.json"),JSON.stringify({
-      cells: SCREENS.length*CONDITIONS.length,
-      screens: SCREENS.map(s=>s[0]),
-      conditions: CONDITIONS.map(c=>c.id),
+      cells: captureScreens.length*captureConditions.length,
+      screens: captureScreens.map(s=>s[0]),
+      conditions: captureConditions.map(c=>c.id),
       // 【T141】登记过的拍不出来的场景（见 `KNOWN_UNCAPTURED` 的文件头）。
       // 下游用它判断「这一格 missing 是已知缺口，还是这次拍崩了」。
       knownUncaptured: [...KNOWN_UNCAPTURED].map(([screen, reason]) => ({ screen, reason })),
@@ -337,7 +374,7 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
       total:results.length,captured:results.filter(r=>r.status==="CAPTURED").length,
       missing:results.filter(r=>r.status==="DATA_MISSING").length,errors
     },null,2));
-    if (results.length !== SCREENS.length*CONDITIONS.length) throw Error(`${SCREENS.length*CONDITIONS.length} slots missing (got ${results.length})`);
+    if (results.length !== captureScreens.length*captureConditions.length) throw Error(`${captureScreens.length*captureConditions.length} slots missing (got ${results.length})`);
   } finally {
     win.destroy();
   }
