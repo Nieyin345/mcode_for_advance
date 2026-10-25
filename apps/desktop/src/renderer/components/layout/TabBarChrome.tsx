@@ -4,6 +4,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { IconCheck, IconChevronLeft, IconChevronRight, IconDotsVertical } from "@renderer/lib/icons.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { canNavigateTabKey, tabNavigationTargetIndex } from "./tabNavigationKeys.js";
+import { revealTabWithin } from "./panelRailScroll.js";
 
 /**
  * Shared tab-bar chrome for the center pane's two tab strips:
@@ -35,7 +36,7 @@ export function handleTabListKeyDown(e: KeyboardEvent<HTMLDivElement>) {
   e.stopPropagation();
   const next = tabs[nextIndex];
   next?.focus({ preventScroll: true });
-  next?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  if (next) revealTabWithin(e.currentTarget, next);
   next?.click();
 }
 

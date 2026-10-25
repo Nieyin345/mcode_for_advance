@@ -1,7 +1,7 @@
 /** ARC-005: rail keyboard navigation may only scroll its own horizontal track.
  * Tests production scroll helper with DOM-geometry stand-ins (no browser mock
  * semantics for scrollIntoView that would hide parent scrolling bugs). */
-import { railScrollLeft, revealRailItemWithin } from "../../src/renderer/components/layout/panelRailScroll.js";
+import { railScrollLeft, revealRailItemWithin, revealTabWithin } from "../../src/renderer/components/layout/panelRailScroll.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 let n=0,err=0;
@@ -9,6 +9,9 @@ const check=(name:string,ok:boolean)=>{n++;if(!ok)err++;console.log((ok?"PASS ":
 const source=(name:string)=>readFileSync(resolve("src/renderer",name),"utf8");
 const panel=source("components/layout/RightPanel.tsx");
 const terminal=source("components/ide/TerminalPanel.tsx");
+const sharedTabs=source("components/layout/TabBarChrome.tsx");
+const sessionTabs=source("components/layout/SessionTabs.tsx");
+const unifiedTabs=source("components/layout/UnifiedTabsBar.tsx");
 const zh=source("lib/i18n/zh/ide.ts");
 const en=source("lib/i18n/en/ide.ts");
 const mk=(from:number,to:number)=>({left:from,right:to});
@@ -55,6 +58,44 @@ check("terminal close on touch is visible and has usable 28px target",
  terminal.includes('[@media(hover:none)]:opacity-100') &&
  terminal.includes("flex size-7 shrink-0") &&
  terminal.includes('aria-label={\`\${t("ide.term.closeTerminal")}: \${sessionTitle}\`}'));
+check("shared session and file keyboard strips reveal only within their own track",
+ sharedTabs.includes("revealTabWithin(e.currentTarget, next)") &&
+ sharedTabs.includes("next?.focus({ preventScroll: true })") &&
+ sharedTabs.includes("next?.click()") &&
+ !sharedTabs.includes("next?.scrollIntoView"));
+check("shared tab handler remains wired to actual tablist in both views",
+ sessionTabs.includes("onKeyDown={handleTabListKeyDown}") &&
+ unifiedTabs.includes("onKeyDown={handleTabListKeyDown}") &&
+ sharedTabs.includes("tabNavigationTargetIndex(e.key, index, tabs.length)"));
+check("multi-row tab list scrolls its own vertical viewport without touching ancestor",
+ (() => {
+   const movements:Array<{left:number;top:number;behavior:string}>=[];
+   const tabTrack = {
+     scrollLeft:0,scrollTop:20,
+     contains:()=>true,
+     getBoundingClientRect:()=>({left:20,right:450,top:50,bottom:132}),
+     scrollTo:(move:{left:number;top:number;behavior:string})=>{movements.push(move);}
+   };
+   const row={getBoundingClientRect:()=>({left:75,right:165,top:138,bottom:163})};
+   const moved=revealTabWithin(tabTrack as never,row as never);
+   return moved&&movements.length===1&&movements[0].left===0&&movements[0].top===55&&
+     movements[0].behavior==="instant";
+ })());
+check("multi-row tab does not scroll if already visible in both axes",
+ (() => {
+   let calls=0;
+   const tabTrack={
+     scrollLeft:14,scrollTop:25,contains:()=>true,
+     getBoundingClientRect:()=>({left:20,right:450,top:50,bottom:132}),
+     scrollTo:()=>{calls++;}
+   };
+   return !revealTabWithin(tabTrack as never,{
+     getBoundingClientRect:()=>({left:60,right:130,top:70,bottom:102})
+   } as never)&&calls===0;
+ })());
+check("shared tab handler respects IME, modifiers and disabled tabs",
+ sharedTabs.includes("if (!canNavigateTabKey(e)) return") &&
+ sharedTabs.includes('not([aria-disabled="true"]):not([disabled])'));
 check("xterm keeps its tab and content aria relationship",
  terminal.includes('aria-selected={isActive}') &&
  terminal.includes('aria-controls={\`terminal-panel-\${s.key}\`}') &&
