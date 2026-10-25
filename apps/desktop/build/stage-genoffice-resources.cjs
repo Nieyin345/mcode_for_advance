@@ -16,6 +16,7 @@
 const { createHash, randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const { createRequire } = require("node:module");
+const { execFileSync } = require("node:child_process");
 const { isAbsolute, join, resolve, relative, sep, dirname } = require("node:path");
 const EDITOR_APPS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown", "html"]);
 /**
@@ -788,6 +789,32 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
   const completeLicenseBundle = include && requireCompleteLicenseBundle;
   const productionRepo = resolve(__dirname, "../../..");
   const isTestFixtureRoot = resolve(repo).toLowerCase() !== productionRepo.toLowerCase();
+  // Release-only source attestation: bind the staged six editors to the
+  // audited GenOffice fork HEAD/TREE and the exact Mcode build commit.
+  // Read only. For isolated packaging fixtures, avoid requiring Git repos.
+  let sourceAttestation = null;
+  if (includeEditors && !isTestFixtureRoot) {
+    const runGit = (cwd, ...args) => execFileSync("git", args, {
+      cwd, encoding:"utf8", timeout:15000, windowsHide:true,
+    }).trim();
+    const reviewed = JSON.parse(fs.readFileSync(join(app,"build","genoffice-upstream.lock.json"),"utf8"));
+    const vendorHead = runGit(vendor,"rev-parse","HEAD");
+    const vendorTree = runGit(vendor,"rev-parse","HEAD^{tree}");
+    if (vendorHead !== reviewed.revision || vendorTree !== reviewed.expectedTree) {
+      throw new Error("GenOffice release staging rejected: checked-out fork revision/tree differs from approved lock");
+    }
+    if (runGit(vendor,"status","--porcelain") !== "") {
+      throw new Error("GenOffice release staging rejected: uncommitted vendor source changes cannot be attested");
+    }
+    const mcodeHead = runGit(repo,"rev-parse","HEAD");
+    const mcodeWorkingTreeClean = runGit(repo,"status","--porcelain")==="";
+    sourceAttestation = {
+      genofficeSourceRevision: vendorHead,
+      genofficeSourceTree: vendorTree,
+      mcodeSourceRevision: mcodeHead,
+      mcodeSourceClean: mcodeWorkingTreeClean,
+    };
+  }
   const sourceLicenseManifest = licenseManifestPath ? resolve(licenseManifestPath) : null;
   if (completeLicenseBundle && !sourceLicenseManifest && !isTestFixtureRoot) {
     throw new Error("GenOffice strict release staging requires the reviewed third-party license source manifest");
@@ -927,6 +954,7 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
       bundled: include,
       editorsBundled: includeEditors,
       editors: includeEditors ? [...EDITOR_APPS] : [],
+      ...(sourceAttestation ?? {}),
       ...(include ? {
         licenseBundleVersion: licenseValidation ? 3 : requireCompleteLicenseBundle ? 2 : 1,
         licenseAssetsSha256: Object.fromEntries(licenses.map(([, name]) => [

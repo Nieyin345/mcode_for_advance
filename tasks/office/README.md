@@ -108,6 +108,7 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O22** Mcode AI 原生工具修改保存事务 | ✅ **确定性模型替身的真实编辑器功能 U1 PASS；在线三 SDK 待验** | `O21-O23-functional-backend-proof.md` | Mcode 本轮提交 | 真 Docs ProseMirror 工具调用/ACK、伪造 ID 拒绝、Mcode CAS 保存、独立进程读回；现有 SDK 工具协议 3 smoke PASS，不声称在线模型/E2E 完成 |
 | **O23** Slides / Sheets / Docs 真实 Office 保真 | ✅ **微软 Word/Excel/PowerPoint 实际回读 3/3 PASS；WPS 待验** | `O21-O23-functional-backend-proof.md` | vendor `f174a91` / Mcode 本轮提交 | 实测微软 PowerPoint 原先因 notesMasterIdLst 写入顺序拒绝 6/7 文件；修复原厂 PPTX OOXML 序列化后七阶段全部可打开，备注/动画/图表可见；Word/Excel/PowerPoint 同机 COM 3/3 + Python 解析 3/3 PASS；32 patch 来源校验 |
 | **O24** 真 Electron 主进程外部强杀 + 已提交 DOCX 恢复 | ✅ **真 OS kill + 3 代 Electron PASS；正常退出伪装的反例已打红** | `O24-electron-hard-kill-recovery.md` | Mcode 本轮提交 | 监督器用本进程 UUID 挑战主动 `taskkill /T /F` 隔离 Electron，PID/代数/退出码匹配；第二代恢复稿且原件不变，正常 CAS 保存后第三代重开 PASS；正常退出变异 exit=2；原 U1 正常/故意失败正反向保持一致 |
+| **O25** 三 SDK 在线前置条件与最新 Windows 安装器发布门禁 | ✅ **发布门禁 13/13 测试 PASS；旧安装器正式发布 BLOCKED** | `O25-online-providers-and-release-gate.md` | Mcode 本轮提交 | Codex CLI 已登录、Claude 未登录、Pi 认证文件存在但有效性未知；独立真实在线模型 E2E 未验；只读校验安装器/更新元数据 SHA512、真实六编辑器资源哈希、签名、Git 构建来源；旧 0.1.62 未签名且早于最新 HEAD，不冒称验收通过 |
 
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）
