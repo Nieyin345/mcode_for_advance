@@ -287,3 +287,9 @@ T81（四步链路）、T84（journey 陈旧断言）、T89（fixup 崩溃）、
 - workflow-ui-smoke Chromium 浏览器使用真实 SettingsPage 和计数 API 桩，证实首帧 workflow.list/nodeTypes/agentProfiles 都为 0，首次访问库各 1 次、离开后回来仍保持各 1 次。恢复无条件首帧 nodeTypes 会红；恢复按 view 切换 enabled 会红。变异均已恢复。
 - focusWorkflowId 是一次性意图：库消费并清空后不能退回画布；新增浏览器断言。旧 automation 深链首帧直接进入同一工作流库的自动化分类，无中间引擎画布闪现。
 - 量化 RSS / CPU / Electron startup / 可见视图数仍需要后续真实进程 U1；不宣称目前已经证明内存下降具体数值。
+
+### 2026-10-25 最终代码提交与回归
+- 源码及 Chromium 验收提交：`275122b8`（9 文件，213 insertions / 97 deletions），精准提交，没有包含并行 UI/Office/资料库对话的修改。
+- `node apps/desktop/scripts/run-smokes.mjs workflow-engine-view-owner-smoke workflow-view-smoke workflow-ui-smoke settings-lazy-smoke renderer-pure-smoke scene-deploy-view-smoke settings-tokens-smoke`：7 PASS / 0 FAIL；日志 `apps/desktop/.tmp/smoke-runs/1792913805336-7872-w6oNaU/`。
+- Desktop、Contracts `tsc --noEmit` EXIT=0，定向 `git diff --check` EXIT=0。两组真实性变异（首帧无条件 catalog 查询、切页时反复 enabled 切换）均令 workflow-ui-smoke FAIL，恢复后 PASS。
+- 保留未验：真 Electron 应用的冷启动到可交互画布耗时、Node-RED/Electron 子进程 RSS、编辑器可见/隐藏切换耗时、旧执行器彻底下线与库/flows 单一真相源。未测值不得标为已改善的量化成果。
