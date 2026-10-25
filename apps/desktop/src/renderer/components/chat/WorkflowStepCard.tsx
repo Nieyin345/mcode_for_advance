@@ -23,7 +23,7 @@
  * 提出来的值用 `checkOutput` —— **和调度器校验产出用的是同一个解析器**,所以卡片上
  * 显示的就是下游拿到的那一份,不会出现"界面说交齐了、下游说少一样"这种两套说法。
  */
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import {
   IconAlertTriangle,
@@ -107,6 +107,8 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
   );
   const [open, setOpen] = useState(false);
   const [openProcess, setOpenProcess] = useState(false);
+  const summaryId = useId();
+  const processId = useId();
   // 「排队中」chip:节点进队没起跑的那段时间(见 `workflowQueued.ts`)。收场卡出现时
   // 队列事实多半已经摘掉 —— 留这个口子是为了排队→起跑的瞬间两张卡不会各说各的。
   const queued = useQueuedNode(block.runId, block.nodeId);
@@ -154,7 +156,7 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
   return (
     <div
       className={cn(
-        "rounded-md border bg-surface/40 px-3 py-2 [font-size:var(--chat-fs-sm)]",
+        "min-w-0 max-w-full rounded-[var(--radius-card)] border bg-surface/40 px-3 py-2 [font-size:var(--chat-fs-sm)]",
         block.status === "failed" ? "border-danger/40" : "border-edge",
       )}
     >
@@ -163,15 +165,17 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
         // 折起来的时候整行可点;不折的时候没有可点的东西,别给一个假按钮。
         disabled={!collapsible}
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={collapsible ? open : undefined}
+        aria-controls={collapsible ? summaryId : undefined}
         className={cn(
-          "flex w-full items-center gap-2 text-left",
+          "flex min-h-9 min-w-0 w-full flex-wrap items-center gap-2 rounded-[var(--radius-btn-xs)] text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           collapsible && "cursor-pointer",
         )}
       >
         <Icon size={14} className={cn("shrink-0", status.tone)} />
-        <span className="min-w-0 flex-1 truncate text-content">{block.title}</span>
+        <span className="min-w-0 flex-[1_1_9rem] truncate text-content" title={block.title}>{block.title}</span>
         {/* 类型 id 等宽、不翻译 —— 与画布上的卡片一致(作者在 README 里读到的就是它)。 */}
-        <code className="shrink-0 text-[0.9em] text-content-subtle">{block.nodeType}</code>
+        <code className="max-w-[min(12rem,60%)] min-w-0 truncate text-[0.9em] text-content-subtle" title={block.nodeType}>{block.nodeType}</code>
         {queued && (
           <span className="shrink-0 rounded bg-surface-muted px-1.5 py-0.5 text-[0.85em] text-content-muted">
             {t("chatStream.workflowStep.queued")}
@@ -218,8 +222,9 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
       {/* 声明了产出变量的那一步:**逐项摆变量**,不摆原文(原文就是那头一个对象,
           摊出来正是用户说过不要看的那一坨)。名字在上、值在下,和"一步一张卡"同一种
           读法:先看它叫什么,再看它是什么。 */}
+      <div id={summaryId} className="min-w-0">
       {outputs ? (
-        <div className="mt-1 space-y-1.5">
+        <div className="mt-1 min-w-0 space-y-1.5">
           {outputs.map((v) => {
             const cut = collapsible && !open && v.text.length > COLLAPSE_AT;
             return (
@@ -242,6 +247,7 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
       {empty && (
         <p className="mt-1 text-content-subtle">{t("chatStream.workflowStep.empty")}</p>
       )}
+      </div>
 
       {/* Persist the actual execution choice on the result card. This is the
           only reliable answer after a node/provider setting changes later. */}
@@ -312,7 +318,8 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
                   {openable && (
                     <button
                       type="button"
-                      className="cds-hover-ghost shrink-0 rounded border border-edge px-1.5 py-0.5 text-content-subtle hover:text-content"
+                      aria-label={`${t("chatStream.workflowStep.open")}: ${artifact.name ?? artifact.uri}`}
+                      className="cds-hover-ghost inline-flex min-h-8 shrink-0 items-center rounded-[var(--radius-btn-xs)] border border-edge px-2.5 text-content-subtle hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                       onClick={() =>
                         void (artifact.kind === "directory"
                           ? api.shell.openPath({ path: localPath })
@@ -336,7 +343,9 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
           <button
             type="button"
             onClick={() => setOpenProcess((v) => !v)}
-            className="mt-1.5 flex cursor-pointer items-center gap-1 text-content-subtle transition-colors hover:text-content-muted"
+            aria-expanded={openProcess}
+            aria-controls={openProcess ? processId : undefined}
+            className="mt-1.5 flex min-h-8 cursor-pointer items-center gap-1 rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <IconChevronDown
               size={12}
@@ -347,8 +356,9 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
               <span className="text-[0.9em]">· {t("chatStream.workflowStep.processSteps", { n: process.length })}</span>
             )}
           </button>
-          {openProcess &&
-            (process.length > 0 ? (
+          {openProcess && (
+            <div id={processId}>
+            {process.length > 0 ? (
               // 只读 —— `MessageBlocks` 是纯展示组件(没有输入框、没有发送路径),这一步
               // 是模型在跑、用户在看。与侧栏那个子代理查看器同一条路。
               <div className="mt-1 border-l border-edge pl-2">
@@ -362,7 +372,9 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
                     : "chatStream.workflowStep.noTranscript",
                 )}
               </p>
-            ))}
+            )}
+            </div>
+          )}
         </>
       )}
     </div>
