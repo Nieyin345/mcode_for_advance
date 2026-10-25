@@ -71,6 +71,10 @@ import {
   NODE_RED_ENGINE_ID,
 } from "@main/orchestration/nodeRedExecutor.js";
 import { isBlockedPort } from "@main/lib/loopbackPort.js";
+import { migrateWorkflowDoc } from "@main/workflowEngines/flowMigration.js";
+import { builtinManifestById } from "@main/orchestration/nodeTypes.js";
+import type { WorkflowDoc } from "@contracts/workflow";
+import type { NodeTypeManifest } from "@contracts/nodeType";
 
 /* ══════════ 基础设施 ══════════ */
 let failures = 0;
@@ -522,6 +526,83 @@ try {
   evidence("HTTP-in after authorized deploy", registered === null ? null : { status: registered.status });
   check("★【P0-1】带凭据部署后 HTTP-in 真的注册并应答（200）", registered !== null);
 
+  // W25: true Node-RED event graph, real upstream 20-inject HTTP endpoint.
+  // The function node records ONLY the ticket; never any DOI/form secret.
+  // An independent HTTP-in endpoint reads state so "POST 200" alone cannot
+  // satisfy this test without actual downstream node execution.
+  const manualFlow = [
+    ...echoFlow(),
+    {
+      id: "manual-in", type: "inject", z: "flow1", name: "Explicit manual W25",
+      once: false, onceDelay: 0, repeat: "", crontab: "",
+      props: [{ p: "payload" }], payload: "", payloadType: "str",
+      x: 110, y: 340, wires: [["manual-record"]],
+    },
+    {
+      id: "manual-record", type: "function", z: "flow1", name: "Record actual injection",
+      func: "flow.set('w25-ticket', (msg.mcode || {}).triggerTicket || null);"
+        + "flow.set('w25-received', (flow.get('w25-received') || 0)+1);return null;",
+      outputs: 1, noerr: 0, initialize: "", finalize: "", libs: [],
+      x: 280, y: 340, wires: [[]],
+    },
+    { id: "manual-check-in", type: "http in", z: "flow1", name: "Observable result",
+      url: "/manual-state", method: "get", wires: [["manual-check-fn"]] },
+    {
+      id: "manual-check-fn", type: "function", z: "flow1", name: "Read executed context",
+      func: "msg.payload={received:flow.get('w25-received')||0,ticket:flow.get('w25-ticket')||null};"
+        + "msg.headers={'content-type':'application/json'};return msg;",
+      outputs: 1, noerr: 0, initialize: "", finalize: "", libs: [],
+      wires: [["manual-check-out"]],
+    },
+    { id: "manual-check-out", type: "http response", z: "flow1", wires: [] },
+  ];
+  const manualDeploy = await fetchOn(portA, "/flows", {
+    method: "POST",
+    headers: {
+      ...authHeaders,
+      "content-type": "application/json",
+      "Node-RED-Deployment-Type": "full",
+      "Node-RED-API-Version": "v2",
+    },
+    body: JSON.stringify({ flows: manualFlow }),
+  }, 15_000);
+  check("W25 真 Node-RED 受控部署手动 Inject+下游函数+结果观察端口",
+    manualDeploy.status === 200, { status: manualDeploy.status, body: manualDeploy.text.slice(0, 250) });
+  const readManual = async (): Promise<{ received: number; ticket: string | null } | null> => {
+    const response = await fetchOn(portA, "/api/manual-state");
+    if (response.status !== 200) return null;
+    try {
+      return JSON.parse(response.text) as { received: number; ticket: string | null };
+    } catch { return null; }
+  };
+  const beforeManual = await waitFor(readManual, 10_000);
+  check("W25 真引擎部署之后 manual once=false 不自动运行", beforeManual?.received === 0,
+    beforeManual);
+  const forgedWithoutAuth = await fetchOn(portA, "/inject/manual-in", {
+    method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  check("W25 未授权调用原生 inject 管理端点被拒（401）",
+    forgedWithoutAuth.status === 401, { status: forgedWithoutAuth.status });
+  const actualTicket = randomUUID();
+  const manualPost = await fetchOn(portA, "/inject/manual-in", {
+    method: "POST",
+    headers: { ...authHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ __user_inject_props__: [
+      { p: "mcode.triggerTicket", v: actualTicket, vt: "str" },
+    ] }),
+  });
+  check("W25 真 Node-RED /inject/:id 收到带单次票据的手动调用",
+    manualPost.status === 200, { status: manualPost.status, body: manualPost.text.slice(0, 220) });
+  const confirmedManual = await waitFor(async () => {
+    const value = await readManual();
+    return value?.received === 1 && value.ticket === actualTicket ? value : null;
+  }, 10_000);
+  check("W25 真下游函数已执行并收到正确嵌套票据，不只是 Inject HTTP 200",
+    confirmedManual !== null, { actual: await readManual(), expectedTicket: actualTicket });
+  const persistedManual = readFileSync(join(INSTALLED, "flows.json"), "utf8");
+  check("W25 原生 Inject 最终图保留 manual once=false（无部署即运行）",
+    persistedManual.includes('"manual-in"') && persistedManual.includes('"once":false'));
+
   // —— A8. stop：端口释放（真子进程） ——
   const stoppedA = await runtimeA.stop(2_000);
   evidence("A stop status", stoppedA);
@@ -611,6 +692,155 @@ try {
   const brokenLaunch = registry.launchSpec(NODE_RED_ENGINE_ID);
   check("★【P0-2】可信标记损坏 → 按 untrusted 处理（fail-closed）",
     brokenLaunch !== null && brokenLaunch.env?.MCODE_ENGINE_TRUSTED === "0");
+
+  // W25 production-owned Host -> true Node-RED Inject -> condition + switch
+  // -> mcode-agent -> real Host IPC. Only the provider implementation is a
+  // deterministic stub. The real child, node pack, wires and dispatch remain.
+  cleanProductionState();
+  const docId = "w25-real-custom-ui";
+  const triggerId = "w25-real-trigger";
+  const expression = { logic: "and", rules: [
+    { ref: "{{trigger.input.doi}}", op: "equal", value: "10.1000/real-native" },
+  ] };
+  const manualDoc: WorkflowDoc = {
+    id: docId, name: "W25 real native manual graph", engine: "node-red",
+    builtin: false, updatedAt: 1,
+    nodes: [
+      { id: triggerId, type: "mcode.trigger", title: "Only on user click",
+        params: { triggerKind: "manual" }, position: { x: 0, y: 0 } },
+      { id: "w25-real-condition", type: "mcode.condition", title: "DOI matches",
+        params: { expression }, position: { x: 150, y: 0 } },
+      { id: "w25-real-agent", type: "mcode.agent", title: "Read DOI",
+        params: { instruction: "Look up {{trigger.input.doi}}", capability: "read" },
+        position: { x: 300, y: 0 } },
+    ],
+    edges: [
+      { id: "w25-edge-1", from: triggerId, to: "w25-real-condition" },
+      { id: "w25-edge-2", from: "w25-real-condition", to: "w25-real-agent", label: "true" },
+    ],
+  } as WorkflowDoc;
+  const manualTypes = new Map<string, NodeTypeManifest>();
+  for (const type of ["mcode.trigger", "mcode.condition", "mcode.agent"]) {
+    const builtin = builtinManifestById(type);
+    if (builtin) manualTypes.set(type, builtin);
+  }
+  const graph = migrateWorkflowDoc(manualDoc, { types: manualTypes });
+  check("W25 真实手动流程迁移包含原生 Inject、条件 adapter、Switch 和 Agent",
+    graph.report.unmapped.length === 0 &&
+      ["inject", "mcode-condition-eval", "switch", "mcode-agent"].every(
+        type => graph.flow.nodes.some(node => node.type === type)),
+    { missing: graph.report.unmapped });
+  const manualGraphNodes = structuredClone(graph.flow.nodes);
+  const nativeSwitch = manualGraphNodes.find(n => n.type === "switch");
+  const nativeTab = manualGraphNodes.find(n => n.type === "tab");
+  if (!nativeSwitch || !nativeTab) throw Error("Migrated W25 condition switch/tab missing");
+  // The false branch has a real observable downstream node. Waiting for its
+  // settled event proves a mismatch was routed, rather than merely sleeping
+  // and hoping an Agent has not executed yet.
+  const falseDebugId = "w25-false-debug";
+  const originalWires = nativeSwitch["wires"] as string[][] | undefined;
+  nativeSwitch["wires"] = [originalWires?.[0] ?? [], [falseDebugId]];
+  manualGraphNodes.push({
+    id: falseDebugId, type: "debug", z: nativeTab["id"],
+    name: "W25 false branch reached", active: true,
+    tosidebar: true, complete: "payload", targetType: "msg", wires: [],
+  });
+  const hostAgentCalls: Array<Record<string, unknown>> = [];
+  const manualServices = {
+    execute: async (operation: string, payload: Record<string, unknown>) => {
+      if (operation !== "agent.run") throw Error("Unexpected W25 Host operation: " + operation);
+      hostAgentCalls.push(payload);
+      return { text: "Done: " + payload.instruction, artifacts: [], runId: randomUUID() };
+    },
+    subscribe: () => () => {},
+  };
+  const manualPorts = recordingPorts();
+  const manualMessages: Array<{kind: string; operation?: string; nodeId?: unknown; stage?: unknown; ok?: unknown; error?: unknown; tabId?: unknown; hasTicket?: boolean; ticketSize?: number}> = [];
+  const priorSpawn = manualPorts.spawn.bind(manualPorts);
+  manualPorts.spawn = (spec) => {
+    const child = priorSpawn(spec);
+    const originalOnMessage = child.onMessage?.bind(child);
+    child.onMessage = (listener) => originalOnMessage?.(message => {
+      if (message && typeof message === "object") {
+        const m = message as Record<string, unknown>;
+        if (String(m["kind"]).startsWith("mcode-")) {
+          const reqPayload = m["payload"] && typeof m["payload"] === "object" && !Array.isArray(m["payload"])
+            ? m["payload"] as Record<string, unknown> : {};
+          manualMessages.push({kind:String(m["kind"]),operation:typeof m["operation"]==="string"?m["operation"]:undefined,
+            nodeId:reqPayload["nodeId"] ?? m["nodeId"],stage:m["stage"],ok:m["ok"],error:m["error"],tabId:reqPayload["tabId"],
+            hasTicket:typeof reqPayload["triggerTicket"] === "string",
+            ticketSize:typeof reqPayload["triggerTicket"] === "string" ? reqPayload["triggerTicket"].length : 0});
+        }
+      }
+      listener(message);
+    });
+    return child;
+  };
+  const manualRuntime = new OwnedNodeRedRuntime(
+    NODE_RED_ENGINE_ID, manualPorts, createInMemoryExecutorOwnership(),
+    manualServices, undefined, id => id === docId ? manualDoc : null,
+  );
+  runtimeA = manualRuntime;
+  const manualLaunch = registry.launchSpec(NODE_RED_ENGINE_ID);
+  if (!manualLaunch) throw Error("W25 launchSpec unexpectedly null");
+  const manualStatus = await manualRuntime.start({
+    engineId: NODE_RED_ENGINE_ID, dataDir: manualLaunch.dataDir,
+    command: manualLaunch.command, args: manualLaunch.args,
+    ...(manualLaunch.env ? { env: manualLaunch.env } : {}),
+    ...(manualLaunch.probeIdentity ? { probeIdentity: manualLaunch.probeIdentity } : {}),
+    readyTimeoutMs: 20_000,
+  });
+  childA = manualPorts.children[0];
+  check("W25 真生产 Host 子进程安全启动", manualStatus.state === "running" &&
+    typeof manualStatus.port === "number", manualStatus);
+  const manualPort = manualStatus.port ?? 0;
+  const nativeW25Deploy = await fetchOn(manualPort, "/flows", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer " + (manualLaunch.env?.MCODE_ENGINE_ADMIN_TOKEN ?? ""),
+      "content-type": "application/json",
+      "Node-RED-Deployment-Type": "full", "Node-RED-API-Version": "v2",
+    },
+    body: JSON.stringify({ flows: manualGraphNodes }),
+  }, 15_000);
+  check("W25 真原生带 Host 归属的迁移整图可部署", nativeW25Deploy.status === 200,
+    { status: nativeW25Deploy.status, body: nativeW25Deploy.text.slice(0, 250) });
+  const ownerReady = await waitFor(() => {
+    try { return manualRuntime.nativeManualTarget(docId, triggerId); }
+    catch { return null; }
+  }, 10_000);
+  check("W25 Host 收到真实 Deploy 回执并确认唯一手动 Inject",
+    ownerReady !== null, ownerReady ? { nodeId: ownerReady.nodeId, port: ownerReady.port } : null);
+  const runResponse = await manualRuntime.runNativeManual(docId, triggerId, {
+    kind: "event", event: "library.item.imported", "input.doi": "10.1000/real-native",
+  });
+  check("W25 真 Host 只发送受控 ticket 到原生 Inject", runResponse.ok, runResponse);
+  const ran = await waitFor(() => hostAgentCalls.some(call =>
+    call["instruction"] === "Look up 10.1000/real-native"), 10_000);
+  check("W25 真 Node-RED 条件→Switch→Host Agent 实际执行且 DOI 插值正确",
+    ran === true, { calls: hostAgentCalls.map(call => ({
+      nodeId: call["nodeId"], instruction: call["instruction"],
+    })), messages: manualMessages.slice(-30), tail: manualPorts.children[0]?.tailOutput().slice(-1300) });
+  check("W25 本次真实触发只派发一次 Host Agent",
+    hostAgentCalls.length === 1, { executions: hostAgentCalls.length });
+  const badRun = await manualRuntime.runNativeManual(docId, triggerId, {
+    kind: "event", event: "library.item.imported", "input.doi": "10.1000/mismatch",
+  });
+  check("W25 不匹配 DOI 仍可成功 Inject，但不能因此判 Agent 成功",
+    badRun.ok, badRun);
+  const falseSettled = await waitFor(() => manualMessages.some(m =>
+    m.kind === "mcode-native-node-stage" && m.nodeId === falseDebugId &&
+    m.stage === "settled"), 10_000);
+  check("W25 不匹配 DOI 真正走到 false 分支原生节点（不靠固定睡眠）",
+    falseSettled === true, manualMessages.filter(m => m.nodeId === falseDebugId));
+  check("W25 不匹配 DOI 由真 Switch 截断，不执行 Host Agent",
+    falseSettled === true && hostAgentCalls.length === 1, hostAgentCalls.length);
+  const stoppedManual = await manualRuntime.stop(2_000);
+  check("W25 真引擎 Stop 释放主进程归属", stoppedManual.state === "stopped" &&
+    stoppedManual.port === null, stoppedManual);
+  childA = undefined;
+  runtimeA = null;
+
 } catch (err) {
   check(`A 段未抛异常（${err instanceof Error ? err.message : String(err)}）`, false);
 } finally {

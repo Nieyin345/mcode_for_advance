@@ -228,3 +228,13 @@ W17 把一个「安静走错分支」换成了「显式失败」，那是对的 
 - 定向 **12/12 PASS**：`apps/desktop/.tmp/smoke-runs/1792908957402-23536-p9907U/`；Desktop/Contracts `tsc --noEmit` EXIT=0；修改文件 `git diff --check` EXIT=0；提交后目标范围 Git status 干净。
 - 新加安全变异：移除部署结果不确定保护，`executor-gate-d-smoke` **117/118** 红；允许悬空线，**117/118** 红；两项均恢复后验绿。
 - 仍未完成真实 Electron+Node-RED 整图 U1 与最终业务回执核验；HTTP 200 不等于整图执行完成。
+
+## 2026-10-25 W25 真 Node-RED 端到端与生成 bundle 漂移修复
+
+- **真实红灯**：新增真正的 OwnedNodeRedRuntime + Node-RED 5.0.8 OS 子进程 + 原生 manual Inject → mcode-condition-eval → switch → mcode-agent 后，最初 119/122（3 FAIL）。真实 child IPC 的 condition.evaluate 负载没有 triggerTicket，Host 拒绝 trigger.input.doi，Agent 实际 0 次调用。之前源代码单测不能证明真生产节点包已部署。
+- **根因**：nodePackBundle.generated.ts 是发布到子进程的预编译快照，此前更新 mcodeNodeTypes.ts 时漏掉了 build/build-node-pack.cjs；旧 bundle 不含 triggerTicket，并保留了旧错误的 mcode.condition 字面量键。之前的 T96 仅对照节点类型清单，没抓到行为漂移。
+- **修复**：用正式生成器刷新 nodePackBundle.generated.ts；生成器增加 --check 严格对照完整字节，两个真引擎 smoke 的 run.sh 在启动前先运行 --check。明确 absWorkingDir 为 apps/desktop，解决从 repo 根与 apps/desktop 启动生成 28657/28611 字节不一致的伪漂移。修复后两种 CWD 都稳定是 28611 bytes。
+- **变异**：人为修改 bundle header 使 --check EXIT=1，恢复后正式重新生成并从两个 cwd 校验 EXIT=0；原本 119/122 的真引擎 3 FAIL 已转绿。
+- **真引擎场景**：生产 Owner+Admin 归属确认、真原生 Deploy、Inject 请求；不匹配 DOI 真正走到 false Debug 节点（等 settled 信号，不用固定 sleep）；匹配 DOI 通过 Host 票据+主进程条件求值进入 Agent Host RPC，正确插值且调用恰好一次。Agent 提供者端口刻意用 fake 避免对外调用大模型；其余 Node-RED 原生节点包、IPC、switch、部署、Admin 授权和 Host condition adapter 使用生产实现。
+- **9 套定向 PASS**：node-red-e2e-smoke、mcode-node-pack-smoke、mcode-manual-inject-smoke、mcode-custom-ui-native-smoke、executor-gate-d-smoke、flow-migration-smoke、mcode-condition-bridge-smoke、mcode-trigger-condition-context-smoke、workflow-native-load-smoke。node-red-e2e-smoke 内 123/123，日志 apps/desktop/.tmp/smoke-runs/1792911211760-43508-1ux1X3/。Desktop、Contracts 两套 tsc --noEmit EXIT=0。
+- **保留边界**：真实 Electron 页面自定义 UI 填表和审批、外部大模型业务结果、实际 wf_auto_download 文献写入、已打包的安装形态未做 U1。W26 设置页旅程其他对话正在未提交修改，本轮未触碰。W25 保持 DEV_CLAIM / U1-pending，不签 REVIEW_PASSED。

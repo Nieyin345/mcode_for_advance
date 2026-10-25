@@ -25,6 +25,9 @@ trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 source "$HERE/../lib/esbuild-path.sh"
 
+# Fail early if the shipped child payload is older than its TS entrypoints.
+node build/build-node-pack.cjs --check
+
 # ① 节点包本体（Node-RED 在引擎进程里 require 的那份，CJS）。两份：agent 单类型
 #    历史入口 + 7 类型总包（C 段用后者）。
 "$ESBUILD" src/main/workflowEngines/mcodeNodePack.ts \

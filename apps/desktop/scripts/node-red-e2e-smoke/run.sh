@@ -16,6 +16,11 @@ trap 'rm -rf "$OUT"' EXIT
 
 source "$HERE/../lib/esbuild-path.sh"
 
+# The real child loads nodePackBundle.generated.ts, NOT current TS sources.
+# A missing regeneration used to make all unit tests green while production
+# Node-RED silently dropped triggerTicket and routed true to the false branch.
+node build/build-node-pack.cjs --check
+
 # registry.ts / runtimeSupervisor.ts 的 import 链会拖进 dataRoot（electron app.getPath）
 # 与 logger（electron 日志目录）；无头里换桩。dataRoot 桩把 MCODE_SMOKE_DATA_ROOT 当
 # 数据根本身，所以这里必须给它**本套私有的**临时目录 —— 从前指向 node-red 安装根
