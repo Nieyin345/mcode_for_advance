@@ -123,8 +123,8 @@ ck("Terminal saved commands: editing flow still uses project scoped store writer
 ck("Negative: removing keyboard reachability breaks saved command menu contract",
   !sourceHas(terminalMenu.replace("group-focus-within:opacity-100", ""), "group-focus-within:opacity-100"));
 
-ck("Overflow tabs: paging chevrons have larger 28px hit areas",
-  sourceHas(tabs, "mb-0.5 flex size-7 shrink-0 items-center"));
+ck("Overflow tabs: paging chevrons have accessible 32px hit areas",
+  sourceHas(tabs, "mb-0.5 flex size-8 shrink-0 items-center"));
 ck("Overflow: menu width and height stay inside 16px viewport inset",
   sourceHas(tabs, "max-h-[calc(100vh-16px)]") &&
   sourceHas(tabs, "min-w-[min(200px,calc(100vw-16px))]") &&

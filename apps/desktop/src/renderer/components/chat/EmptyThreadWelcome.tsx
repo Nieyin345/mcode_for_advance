@@ -74,8 +74,8 @@ export function EmptyThreadWelcome({ projectName }: EmptyThreadWelcomeProps) {
   const today = usage?.summary;
 
   return (
-    <div data-arc005-welcome="" className="mx-auto mb-5 flex w-full max-w-[760px] animate-[home-fade-up_var(--dur-base)_var(--ease-out)] flex-col items-center gap-2">
-      <h2 className="max-w-full text-balance text-center text-[26px] font-semibold leading-tight tracking-tight text-content">
+    <div data-arc005-welcome="" className="mx-auto mb-5 flex w-full max-w-[800px] min-w-0 animate-[home-fade-up_var(--dur-base)_var(--ease-out)] flex-col items-center gap-2 px-2">
+      <h2 className="max-w-full text-balance break-words text-center text-[clamp(1.3rem,3.4vw,1.75rem)] font-semibold leading-[1.25] tracking-[-0.025em] text-content">
         {projectName
           ? t("chatStream.welcome.withProject", { name: projectName })
           : t("chatStream.welcome.title")}
@@ -132,9 +132,9 @@ function StartPoints() {
   return (
     <div
       className={cn(
-        "mt-6 grid max-h-[min(390px,48vh)] w-full gap-2 overflow-y-auto text-left",
+        "mt-6 grid max-h-[min(440px,52vh)] w-full min-w-0 gap-3 overflow-y-auto overscroll-contain p-0.5 text-left [scrollbar-width:thin]",
         // 两列装得下就两列（max-w-4xl 下正好两列），窄栏自动一列。
-        "grid-cols-[repeat(auto-fit,minmax(min(290px,100%),1fr))]",
+        "grid-cols-[repeat(auto-fit,minmax(min(260px,100%),1fr))]",
         "[@media(max-height:640px)]:hidden",
       )}
     >
@@ -265,8 +265,8 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section data-home-section={id} data-arc005-starter-card="" className="min-w-0 rounded-[var(--radius-panel)] border border-edge/50 bg-surface/60 p-1.5">
-      <h3 className="flex items-center gap-1.5 px-2 pb-1 pt-0.5 [font-size:var(--chat-fs-xxs)] font-medium text-content-subtle">
+    <section data-home-section={id} data-arc005-starter-card="" className="min-w-0 rounded-[var(--radius-panel)] border border-edge/70 bg-surface/80 p-2 transition-colors hover:border-edge focus-within:border-accent/50">
+      <h3 className="flex min-h-7 items-center gap-2 px-2 pb-1 pt-0.5 [font-size:var(--chat-fs-xs)] font-semibold text-content-muted">
         <Icon size={13} className="shrink-0" />
         {title}
       </h3>
@@ -299,14 +299,14 @@ function Row({
       onClick={onClick}
       title={label}
       className={cn(
-        "flex min-h-8 w-full min-w-0 items-center gap-2 rounded-[var(--radius-btn-xs)] px-2 py-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+        "flex min-h-10 w-full min-w-0 items-center gap-2 rounded-[var(--radius-btn-xs)] px-2.5 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         pressed ? "bg-surface-hover text-content" : "hover:bg-surface-hover/70",
       )}
     >
       {lead && <span className="flex w-4 shrink-0 items-center justify-center">{lead}</span>}
       <span className="min-w-0 flex-1 truncate [font-size:var(--chat-fs-xs)] text-content">{label}</span>
       {meta && (
-        <span className="max-w-[45%] shrink-0 truncate text-[0.7143em] text-content-subtle">{meta}</span>
+        <span className="max-w-[42%] shrink-0 truncate text-[0.7143em] text-content-subtle">{meta}</span>
       )}
     </button>
   );

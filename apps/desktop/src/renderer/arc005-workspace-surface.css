@@ -119,6 +119,104 @@ html:not(.sketch) [data-ui-shell-variant="workspace"] .composer-host .ProseMirro
   }
 }
 
+
+/* ARC-005 desktop convergence: one visual and interaction rhythm across the
+   chat home, side sessions, tab chrome, and native pane rail. Presentation
+   only: no layout branch remounts, no duplicate theme token definitions. */
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-ui-pane-layout="workspace"] {
+  --workspace-action-hit: 2rem;
+  --workspace-panel-border: rgb(var(--panel-edge));
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-ui-pane-layout="workspace"] [data-cds-aside] {
+  min-width: 0;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-ui-pane-layout="workspace"] [data-cds-aside] [data-pane-rail-track] {
+  scroll-padding-inline: .4rem;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-pane-rail-button][aria-pressed="true"] {
+  box-shadow: inset 0 -2px 0 -1px currentColor;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-ui-sidechat-list] {
+  scrollbar-gutter: stable;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-ui-sidechat-row] {
+  min-width: 0;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-ui-sidechat-row]:focus-within {
+  box-shadow: inset 0 0 0 1px rgb(var(--accent) / .25);
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-arc005-welcome] {
+  container-type: inline-size;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-arc005-welcome] [data-home-section] {
+  min-width: 0;
+  overflow: hidden;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-arc005-welcome] [data-home-section] [data-home-row] {
+  min-width: 0;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-arc005-welcome] [data-home-row]:focus-visible {
+  outline-offset: -2px;
+}
+@container (max-width: 360px) {
+  [data-arc005-welcome] [data-home-section] [data-home-row] {
+    gap: .375rem;
+  }
+  [data-arc005-welcome] [data-home-row] > :last-child:not(:first-child) {
+    max-width: 32%;
+  }
+}
+/* Keep the assistant response typographic measure readable while long paths
+   and code excerpts can still wrap inside their existing scrollable blocks. */
+html:not(.sketch) [data-ui-shell-variant="workspace"]
+[data-chat-root] [data-message-id] {
+  overflow-wrap: anywhere;
+}
+/* Hoverless layouts must never hide the affordances needed to manage an
+   existing message or side session. Do not alter their enabled state. */
+@media (hover: none), (pointer: coarse) {
+  [data-ui-shell-variant="workspace"] [data-ui-sidechat-row] button {
+    min-width: 2rem;
+  }
+  [data-ui-shell-variant="workspace"] [data-ui-sidechat-row] button[aria-label] {
+    opacity: 1;
+  }
+}
+@media (max-width: 700px) {
+  html:not(.sketch) [data-ui-shell-variant="workspace"] [data-ui-center-pane] {
+    min-width: 0;
+  }
+  html:not(.sketch) [data-ui-shell-variant="workspace"]
+  [data-ui-pane-layout="workspace"][data-ui-right-open="true"] [data-cds-aside] {
+    min-width: 0;
+  }
+}
+@media (forced-colors: active) {
+  [data-ui-shell-variant="workspace"] [data-pane-rail-button][aria-pressed="true"] {
+    outline: 1px solid Highlight;
+  }
+  [data-ui-shell-variant="workspace"] [data-home-section]:focus-within {
+    outline: 1px solid Highlight;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-ui-shell-variant="workspace"] [data-home-row],
+  [data-ui-shell-variant="workspace"] [data-pane-rail-button],
+  [data-ui-shell-variant="workspace"] [data-ui-sidechat-row] {
+    transition-duration: 0ms;
+  }
+}
+
 /* ARC-005 chat-stream convergence: one compact set of rules for message
    actions, long tool results and chat layouts. Never change store state,
    virtualization, overlay ownership or the stream's measured row heights. */

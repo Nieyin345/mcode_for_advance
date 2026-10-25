@@ -255,7 +255,7 @@ section("C. 主列几何按 shell variant 一致切换（Claude 风格不是只�
   check("★ classic 主列仍保留历史 24px 左上/左下圆角，不破坏原工作区",
     /rounded-tl-3xl rounded-bl-3xl/.test(pane));
   check("★ 主列为同一 main 元素 class 切换，禁止双树互换造成 PTY/草稿被销毁",
-    /<main\s+className=\{cn\(/.test(pane) && !/variant\s*===\s*"workspace"\s*\?\s*<main/.test(pane));
+    /<main\b[^>]*className=\{cn\(/.test(pane) && !/variant\s*===\s*"workspace"\s*\?\s*<main/.test(pane));
 }
 
 section("D. 复用本机 Claude Desktop v2 逆向：密度 token 仅作用于 workspace，保留经典和真实业务");

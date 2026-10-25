@@ -250,7 +250,7 @@ function SideChatListView({
           还有这个主对话框放在一排」）。见那个函数。 */}
 
       {/* List body. */}
-      <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+      <div data-ui-sidechat-list="" className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain p-2 [scrollbar-width:thin]">
         {/* **主对话那一行**（2026-09-21）。用户的要求：「主对话不是一直都在这个列表里面…
             只有主页面被占据了他才会过去」，以及「在列表最上面，稍微和其他的子代理有点
             不一样就行，边框加粗之类的」。
@@ -434,11 +434,11 @@ function SideChatRow({
     // sibling buttons (a button inside a button is invalid HTML). The delete
     // affordance appears on hover, LeftBar row style, and is gated while the
     // chat's turn is running — deleting mid-stream would orphan the runtime.
-    <li className="group flex min-w-0 items-center rounded-[var(--radius-btn-xs)] pr-0.5 transition-colors hover:bg-surface-hover focus-within:bg-surface-hover/60">
+    <li data-ui-sidechat-row="" className="group flex min-w-0 items-center rounded-[var(--radius-btn-xs)] border border-transparent pr-0.5 transition-[background-color,border-color] hover:border-edge/70 hover:bg-surface-hover focus-within:border-accent/40 focus-within:bg-surface-hover/60">
       <button
         type="button"
         onClick={() => onOpen(session.id)}
-        className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-btn-xs)] px-2 py-1.5 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-btn-xs)] px-2.5 py-2 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <span
           className={cn(
@@ -496,7 +496,7 @@ function SideChatView({ session, parentRow }: { session: Session; parentRow?: Se
   return (
     <div className="flex h-full flex-col">
       {/* Header: back + side chat title + parent jump + delete. */}
-      <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-edge bg-surface px-2">
+      <div className="flex h-10 min-w-0 shrink-0 items-center gap-1.5 border-b border-edge bg-surface px-2">
         <button
           type="button"
           onClick={closeSideChatView}

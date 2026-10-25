@@ -1,5 +1,5 @@
 import { useBrowserStore } from "@renderer/stores/browserStore.js";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { GenofficeViewHostPane } from "@renderer/components/ide/GenofficeViewHostPane.js";
 import { stableDocId } from "@renderer/components/ide/GenofficeViewHostPane.js";
 import { canDockOfficeFile } from "@renderer/components/ide/officeChatHandoff.js";
@@ -36,6 +36,7 @@ import {
 import { CustomTabView } from "@renderer/components/customUi/CustomTabView.js";
 import { useWorkspaceTarget } from "@renderer/components/customUi/useWorkspaceTarget.js";
 import { nextRailFocusIndex } from "./panelRailNavigation.js";
+import { railScrollLeft } from "./panelRailScroll.js";
 import { CACHED_BUILTIN_RIGHT_TABS, prunePanelIds, rememberPanelId, rememberRightTab, shouldMountCachedBuiltin } from "./rightPanelKeepAlive.js";
 import { PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, paneDockFromKeyboard } from "./paneDock.js";
 
@@ -127,6 +128,7 @@ export function RightPanel() {
   const moduleViews = contributionsOf(moduleCatalog.data,"view").filter(({contribution})=>contribution.location==="right");
   const [activeModuleView,setActiveModuleView] = useState(false);
   const moduleVisible = activeModuleView && moduleViews.length>0;
+  const railTrackRef = useRef<HTMLDivElement>(null);
 
   const showBuiltin = (id: RightPanelTab) => {
     setContent("right", undefined);
@@ -183,6 +185,23 @@ export function RightPanel() {
   const badgeOf = (id: BuiltinTabId): number =>
     id === "browser" ? browserTabCount : id === "flow" ? runningNodeCount : 0;
 
+  // When a command or keyboard shortcut switches to a tab currently scrolled
+  // out of the rail, reveal it INSIDE the rail's scroll viewport. Avoid
+  // scrollIntoView here: it would also scroll parent panels/chat vertically.
+  useEffect(() => {
+    if (pinnedDoc || pinnedFlow) return;
+    const id = requestAnimationFrame(() => {
+      const track = railTrackRef.current;
+      const selected = track?.querySelector<HTMLElement>('[data-pane-rail-button][aria-pressed="true"]');
+      if (!track || !selected) return;
+      const viewport = track.getBoundingClientRect();
+      const item = selected.getBoundingClientRect();
+      const next = railScrollLeft(track.scrollLeft, viewport.left, viewport.right, item.left, item.right);
+      if (Math.abs(next - track.scrollLeft) > 1) track.scrollTo({ left: next, behavior: "auto" });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [tab, activeCustomId, moduleVisible, pinnedDoc, pinnedFlow, entries.length]);
+
   const titleOf = (id: BuiltinTabId, fallback: string): string => {
     if (id === "browser") return tab === "browser" && !activeCustom ? t("layout.closeSidebarBrowser") : t("layout.openBrowser");
     if (id === "git") return "Git"; /* brand name */
@@ -196,7 +215,7 @@ export function RightPanel() {
           the accent token. 顺序 / 显隐 / 自定义页签都来自「设置 → 自定义 UI →
           右栏页签」;宽屏按钮是布局开关,不参与排,固定在最右。 */}
       <div
-        className="flex h-9 shrink-0 flex-row items-center gap-1 border-b border-edge/60 bg-surface px-1.5"
+        className="flex h-10 min-w-0 shrink-0 flex-row items-center gap-1 border-b border-edge/60 bg-surface px-2"
         role="toolbar"
         aria-label={t("customUi.slot.rightPanel.tab")}
         onKeyDown={(e) => {
@@ -225,7 +244,9 @@ export function RightPanel() {
         }}
       >
         <div
-          className="flex min-w-0 flex-row items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+          data-pane-rail-track=""
+          ref={railTrackRef}
+          className="flex min-w-0 flex-1 flex-row items-center gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:thin]"
         >
           {entries.map((e) => {
             if (e.kind === "builtin") {
@@ -317,7 +338,7 @@ export function RightPanel() {
             e.dataTransfer.setData(PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID);
             e.dataTransfer.effectAllowed = "move";
           }}
-          className="flex size-7 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           <span aria-hidden="true" className="text-[15px] tracking-tighter">⋮⋮</span>
         </button>
@@ -449,7 +470,7 @@ function RailButton({
       aria-label={title}
       aria-pressed={active}
       className={cn(
-        "flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40",
+        "flex size-8 items-center justify-center rounded-[var(--radius-btn-xs)] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40",
         active
           ? "bg-surface-hover text-content ring-1 ring-inset ring-edge/70"
           : "cds-hover-ghost text-content-muted hover:text-content",

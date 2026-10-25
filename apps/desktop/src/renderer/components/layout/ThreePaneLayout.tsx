@@ -95,7 +95,7 @@ function PaneDndHandle({ onStart }: { onStart: (x: number, y: number) => void })
     aria-label={t("layout.movePane")} title={t("layout.movePane")}
     {...attributes} {...listeners}
     onPointerDownCapture={(e) => { if (e.button === 0) onStart(e.clientX, e.clientY); }}
-    className="absolute right-1 top-9 z-30 h-5 w-5 cursor-grab rounded text-content-muted hover:bg-surface-hover"
+    className="absolute right-1 top-10 z-30 flex size-8 cursor-grab items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:cursor-grabbing"
     style={{ opacity: isDragging ? 0.5 : 1 }}>⋮</button>;
 }
 
@@ -294,6 +294,9 @@ export function ThreePaneLayout({
       onDragCancel={() => { setDockPreview(null); setDndDragging(false); }}>
       <div ref={rootRef}
         data-pane-dragging={paneDragging ? "true" : undefined}
+        data-ui-pane-layout={variant}
+        data-ui-right-mode={rightSurface}
+        data-ui-right-open={rightOpen ? "true" : "false"}
         className="relative flex h-full min-h-0 min-w-0 flex-1 flex-wrap"
         style={{ "--pane-bottom-share": `${bottomShare}%` } as CSSProperties}
         onDoubleClickCapture={(e) => {
@@ -365,7 +368,7 @@ export function ThreePaneLayout({
          behind the arc. Non-scrolling overflow-hidden is xterm-safe (see the
          note on the right sidebar).
          Stacks the center content above an optional bottom terminal bar. */}
-      <main className={cn(
+      <main data-ui-center-pane="" className={cn(
         "relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden border-t border-edge-panel bg-surface",
         rightAtBottom ? "h-[calc(100%-var(--pane-bottom-share))]" : "h-full",
         variant === "workspace"

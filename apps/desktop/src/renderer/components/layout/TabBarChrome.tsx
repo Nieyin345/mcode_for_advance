@@ -20,7 +20,7 @@ export function handleTabListKeyDown(e: KeyboardEvent<HTMLDivElement>) {
   if (!canNavigateTabKey(e)) return;
   const target = e.target;
   if (!(target instanceof HTMLElement) || target.getAttribute("role") !== "tab") return;
-  const tabs = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]'));
+  const tabs = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]:not([aria-disabled="true"]):not([disabled])'));
   const index = tabs.indexOf(target);
   if (index < 0) return;
   if (e.key === "Enter" || e.key === " ") {
@@ -57,7 +57,7 @@ export function TabBarChevronButton({ dir, onClick, title }: ChevronButtonProps)
       onClick={onClick}
       title={title}
       aria-label={title}
-      className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
+      className="mb-0.5 flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
     >
       <Icon size={14} />
     </button>
@@ -107,7 +107,7 @@ export function TabBarOverflowMenu({
   return (
     <Menu.Root>
       <Menu.Trigger
-        className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
+        className="mb-0.5 flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong"
         title={heading}
         aria-label={heading}
       >
@@ -152,6 +152,7 @@ export function TabBarOverflowMenu({
               {items.map((item) => (
                 <Menu.Item
                   key={item.key}
+                  aria-current={item.active ? "true" : undefined}
                   onClick={() => onSelect(item.key)}
                   className={cn(
                     "flex min-h-8 w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
