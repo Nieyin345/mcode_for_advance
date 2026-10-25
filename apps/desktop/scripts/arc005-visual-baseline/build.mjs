@@ -37,7 +37,7 @@ mkdirSync(dir, { recursive: true });
 // 【T136】新增的四个场景名也必须在白名单里 —— 少了它们的后果是旧图不被清理、
 // 重跑时残留图与本次结果混在一起，比对会看到不该存在的差异。
 for (const name of readdirSync(dir)) {
-  if (/^(empty|messages|tools|approval|diff|sidechat|terminal|editor|preview|parallel|projects|settings|narrow-window|files-pane|git-pane|taskcenter|workflow-board)-(light|dark|narrow)-(1280|1024)\.(png|json)$/.test(name)) unlinkSync(join(dir, name));
+  if (/^(empty|messages|long-chat|tools|approval|diff|sidechat|terminal|editor|preview|parallel|projects|settings|narrow-window|files-pane|git-pane|taskcenter|workflow-board)-(light|dark|narrow)-(1280|1024)\.(png|json)$/.test(name)) unlinkSync(join(dir, name));
 }
 // 【T141】汇总文件也要在开跑前清掉。上一轮如果崩在中途，`manifest.json` 会留
 // 一条半截的（我们实测见过只剩 20 行的），而它只在 probe 里逐格追加 ——

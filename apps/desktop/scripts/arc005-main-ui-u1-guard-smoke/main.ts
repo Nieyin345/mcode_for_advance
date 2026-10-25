@@ -19,6 +19,9 @@ const tabs=read("src/renderer/components/layout/TabBarChrome.tsx");
 const clock=read("src/renderer/hooks/useNow.ts");
 const blocks=read("src/renderer/components/chat/MessageBlocks.tsx");
 const visualTargets=read("scripts/arc005-visual-baseline/probe-assertions.ts");
+const paneProbe=read("scripts/arc005-pane-electron-smoke/probe.ts");
+const paneBuild=read("scripts/arc005-pane-electron-smoke/build.mjs");
+const visualBuild=read("scripts/arc005-visual-baseline/build.mjs");
 const fixturePanels=read("scripts/arc005-visual-baseline/fixture-panels.tsx");
 const apiStub=read("scripts/arc005-visual-baseline/api-stub.js");
 
@@ -145,6 +148,31 @@ check("Electron visual probe checks native split-pane geometry and rejects overl
  probe.includes("(overlapX > 2 && overlapY > 2)"));
 check("No permanent known-missing exception remains for the UI sidechat scene",
  probe.includes("const KNOWN_UNCAPTURED = new Map<string, string>();"));
+check("Actual Electron pane U1 uses full docking mode rather than undraggable drawer",
+ paneProbe.includes("widePanelOpen:true") &&
+ paneProbe.includes("DOCK_POINTER_LEFT_RIGHT"));
+check("Actual Electron pane U1 verifies PTY, Monaco and unsaved draft across hide/reopen",
+ paneProbe.includes("UNSAVED_MONACO_DRAFT_STABLE") &&
+ paneProbe.includes("COLLAPSED_COMPONENTS_PERSIST") &&
+ paneProbe.includes("REOPEN_PTY_AND_MONACO_DRAFT"));
+check("Pane U1 negative mutations still fail for React rekey and silent corruption",
+ paneBuild.includes("statuses.REOPEN_PTY_AND_MONACO_DRAFT==='FAIL'") &&
+ paneBuild.includes("statuses.CORRUPTION_NOTICE==='FAIL'") &&
+ paneBuild.includes("checks.length>=12"));
+check("Real long chat sample uses 640 isolated messages through Zustand store",
+ probe.includes("Array.from({length:640}") &&
+ probe.includes("st.setState({messagesBySession:{s1:many,s2:[],s3:[]}})"));
+check("Long chat smoke requires actual virtualization, not simply 640 raw DOM rows",
+ probe.includes("stress.mounted > 160") &&
+ visualTargets.includes('fixture:"real-ChatPane-LegendList"') &&
+ visualTargets.includes("rendered > 160"));
+check("Long chat metric is captured with source data and real scroll region",
+ probe.includes("window.__arcLongStart = performance.now()") &&
+ probe.includes("elapsedMs:performance.now()") &&
+ probe.includes("scrollOk"));
+check("Long chat gets a clean independent screenshot in baseline matrix",
+ visualBuild.includes("long-chat") &&
+ probe.includes('["long-chat", "长会话虚拟化压力"]'));
 check("Negative: removing live isolation invalidates our own performance contract",
  !(stream.replace("<StreamRunningDuration startedAt={status.startedAt} />","").includes("<StreamRunningDuration startedAt={status.startedAt} />")));
 console.log("arc005-main-ui-u1-guard-smoke: "+(count-failed)+"/"+count);

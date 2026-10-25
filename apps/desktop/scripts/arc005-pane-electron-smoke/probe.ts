@@ -55,7 +55,9 @@ export async function runPaneProbe(dir:string):Promise<boolean>{
     projects:[{id:'pane-u1-project',name:'pane-u1',path:'C:/pane-u1-fixture'}],
     activeProjectId:'pane-u1-project',
     activeSessionId:null,
-    rightOpen:true,bottomTerminalOpen:true,leftOpen:false,
+    // Dock handles only exist for the full pane. The compact right drawer
+    // intentionally disallows docking; do not test a handle it never renders.
+    rightOpen:true,widePanelOpen:true,bottomTerminalOpen:true,leftOpen:false,
     ideOpenFilesByProject:{'pane-u1-project':['C:/pane-u1-fixture/model.txt']},
     ideActiveFileByProject:{'pane-u1-project':'C:/pane-u1-fixture/model.txt'},
     centerTabFocus:'editor'
@@ -90,6 +92,10 @@ export async function runPaneProbe(dir:string):Promise<boolean>{
    assert(initial.terminalIds.length===1&&initial.sessionKey&&initial.hostFound,'one PTY with mounted xterm required '+JSON.stringify(initial));
    assert(initial.modelCount>0&&initial.modelUris.some(u=>u.includes('model.txt')),'real Monaco model required '+JSON.stringify(initial));
   });
+  // Mutate only the isolated in-memory Monaco TextModel. There is no Ctrl+S,
+  // no disk write and no access to the user's original project.
+  const draft='ARC005 unsaved model edit — keep it across layout changes';
+  await js(`window.__monaco.editor.getModels().find(m=>m.uri.toString().includes('model.txt')).setValue(${JSON.stringify('ARC005 unsaved model edit — keep it across layout changes')})`);
 
   const dragTo=async(side:'left'|'right')=>{
    // DndContext's grip is the docking control; the vertical divider is resize-only.
@@ -140,6 +146,38 @@ export async function runPaneProbe(dir:string):Promise<boolean>{
    assert(identities.monacoSame,'Monaco DOM editor recreated');
    assert(initial.modelCount===after.modelCount&&initial.modelUris.join('|')===after.modelUris.join('|'),
     'Monaco model count/URI changed '+JSON.stringify({initial,after}));
+  });
+  await check('UNSAVED_MONACO_DRAFT_STABLE',async()=>{
+   const value=await js<string>(`window.__monaco.editor.getModels().find(m=>m.uri.toString().includes('model.txt'))?.getValue() ?? ''`);
+   assert(value===draft,'Unsaved Monaco draft changed after native dock gestures '+JSON.stringify(value));
+  });
+  // Collapse and restore through PRODUCT store actions, not DOM style edits:
+  // hidden panes remain mounted/inert and must not spawn duplicate PTYs or
+  // lose the uncommitted Monaco model state when the same panel is reopened.
+  await js(`(() => {const s=window.__store.getState();s.setRightOpen(false);s.setBottomTerminalOpen(false)})()`);
+  await delay(350);
+  const hidden=await js<{ptySame:boolean;monacoSame:boolean;terminalHidden:boolean;rightHidden:boolean}>(`(() => ({
+   ptySame:window.__ptyHost===document.querySelector('[data-terminal-session]'),
+   monacoSame:window.__editorNode===document.querySelector('.monaco-editor'),
+   terminalHidden:!!document.querySelector('[data-terminal-session]')?.closest('[aria-hidden="true"]'),
+   rightHidden:document.querySelector('[data-cds-aside]')?.getAttribute('aria-hidden')==='true',
+  }))()`);
+  await check('COLLAPSED_COMPONENTS_PERSIST',()=>{
+   assert(hidden.ptySame&&hidden.monacoSame,'closing pane destroyed PTY/Monaco '+JSON.stringify(hidden));
+   assert(hidden.terminalHidden&&hidden.rightHidden,'closed panes remained interactable '+JSON.stringify(hidden));
+  });
+  await js(`(() => {const s=window.__store.getState();s.setRightOpen(true);s.setBottomTerminalOpen(true)})()`);
+  await delay(350);
+  const restored=await before();
+  const restoredValue=await js<string>(`window.__monaco.editor.getModels().find(m=>m.uri.toString().includes('model.txt'))?.getValue() ?? ''`);
+  const restoredIds=await js<{ptySame:boolean;monacoSame:boolean}>(`(() => ({
+    ptySame:window.__ptyHost===document.querySelector('[data-terminal-session]'),
+    monacoSame:window.__editorNode===document.querySelector('.monaco-editor')
+  }))()`);
+  await check('REOPEN_PTY_AND_MONACO_DRAFT',()=>{
+   assert(restoredIds.ptySame&&restoredIds.monacoSame,'reopen changed component identity '+JSON.stringify(restoredIds));
+   assert(restoredValue===draft,'unsaved in-memory draft disappeared during hide/reopen');
+   assert(restored.terminalIds.length===1&&restored.killIds.length===0,'duplicate PTY or kill after reopen '+JSON.stringify(restored));
   });
   await check('NO_RUNTIME_ERRORS',async()=>{
    assert((await js<string[]>('window.__uncaught')).length===0,'uncaught renderer exception '+JSON.stringify(await js('window.__uncaught')));

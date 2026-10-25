@@ -217,6 +217,14 @@ export function inspectSceneContent(
       : fail(inspected.state, inspected.reason ?? "real tool row was not found", { targetState: inspected.state });
   }
 
+  if (scene === "long-chat") {
+    const root = queryVisible(doc, "[data-chat-root]");
+    const rendered = root?.querySelectorAll("[data-message-id]").length ?? 0;
+    if (!root || rendered < 1) return fail("missing", "real long-chat has no visible rows");
+    if (rendered > 160) return fail("missing", "long-chat rendered too many rows: virtual list may be disabled");
+    return productPass({ fixture:"real-ChatPane-LegendList", rendered });
+  }
+
   if (scene === "approval") {
     const dialog = queryVisible(doc, "[role='alertdialog']");
     if (!dialog) return fail("missing", "approval alertdialog is missing");

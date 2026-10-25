@@ -85,9 +85,9 @@ for(const variant of ['green','rekey','silent']){
    b.onLoad({filter:/.*/,namespace:'mutation'},a=>{
     let code=readFileSync(a.path,'utf8');
     if(variant==='rekey'){
-      const needle='<main className={cn(';
+      const needle='<main data-ui-center-pane="" className={cn(';
       if(!code.includes(needle))throw Error('rekey mutation target missing');
-      code=code.replace(needle,'<main key={rightDock} className={cn(');
+      code=code.replace(needle,'<main key={rightDock} data-ui-center-pane="" className={cn(');
     }else{
       const needle='if (canonicalCorrupt) {\n      // Corruption must be visible';
       if(!code.includes(needle))throw Error('silent mutation target missing');
@@ -105,12 +105,15 @@ writeFileSync(configPath,readFileSync(join(desktop,'tailwind.config.js'),'utf8')
 const css=buildTailwindCached({cliPath:pkg('tailwindcss@','tailwindcss/lib/cli.js'),
  configPath,inputCss:'src/renderer/styles.css',outPath:join(dir,'app.css'),cwd:desktop});
 if(css.status!==undefined&&css.status!==0)throw Error('tailwind failed');
+// Match the production renderer's stylesheet cascade: ARC-005 loads after
+// base theme CSS. Without this line pane U1 verifies an outdated design.
+copyFileSync(join(root,'arc005-workspace-surface.css'),join(dir,'arc005-workspace-surface.css'));
 for(const f of ['api-stub.js','bridge.cjs','electron-host.cjs'])copyFileSync(join(suite,f),join(dir,f));
 for(const variant of ['green','rekey','silent']){
  writeFileSync(join(dir,'page-'+variant+'.html'),`<!doctype html><html lang="zh-CN">
 <head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy"
 content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; worker-src 'self' blob:">
-<title>pane electron U1</title><link rel="stylesheet" href="./app.css"></head>
+<title>pane electron U1</title><link rel="stylesheet" href="./app.css"><link rel="stylesheet" href="./arc005-workspace-surface.css"></head>
 <body><div id="root" style="height:900px"></div><script src="./api-stub.js"></script>
 <script src="./bundle-${variant}.js"></script></body></html>`);
 }
@@ -137,10 +140,10 @@ for(const variant of (process.env.MCODE_PANE_U1_ONLY ? [process.env.MCODE_PANE_U
  let checks=[];try{checks=JSON.parse(readFileSync(join(dir,'checks-'+variant+'.json'),'utf8'))}catch{}
  const statuses=Object.fromEntries(checks.map(c=>[c.name,c.status]));
  const expected=variant==='green'
-  ? checks.length>=7&&checks.every(c=>c.status==='PASS')&&run.status===0
+  ? checks.length>=12&&checks.every(c=>c.status==='PASS')&&run.status===0
   : variant==='rekey'
-  ? statuses.PTY_STABLE==='FAIL'&&statuses.MONACO_STABLE==='FAIL'&&run.status!==0
-  : statuses.CORRUPTION_NOTICE==='FAIL'&&run.status!==0;
+  ? statuses.PTY_STABLE==='FAIL'&&statuses.MONACO_STABLE==='FAIL'&&statuses.REOPEN_PTY_AND_MONACO_DRAFT==='FAIL'&&run.status!==0
+  : statuses.CORRUPTION_NOTICE==='FAIL'&&statuses.PTY_STABLE==='PASS'&&statuses.MONACO_STABLE==='PASS'&&run.status!==0;
  result.variants[variant]={exitCode:run.status,checks,statuses,expected};
  console.log('PANE U1 '+variant+': '+(expected?'EXPECTED':'UNEXPECTED')+' '+JSON.stringify(statuses));
  if(!expected)allOk=false;

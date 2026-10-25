@@ -16,6 +16,7 @@ import {
 
 const SCREENS = [
   ["empty", "初始空会话"], ["messages", "已有消息"],
+  ["long-chat", "长会话虚拟化压力"],
   ["tools", "工具运行中/完成/失败"], ["approval", "权限审批"],
   ["diff", "代码/文件 Diff"], ["sidechat", "侧聊"],
   ["terminal", "终端"], ["editor", "文件编辑"],
@@ -35,7 +36,7 @@ const CONDITIONS = [
   { id: "narrow", width: 1024, height: 640, dark: false },
 ] as const;
 // Optional targeted U1 run for rapid UI iteration. Default remains the full
-// 17 × 3 real-Electron evidence matrix. Unknown screen IDs are rejected.
+// 18 × 3 real-Electron evidence matrix. Unknown screen IDs are rejected.
 const selectedScreens = process.env.ARC005_VISUAL_SCENES?.split(",").filter(Boolean);
 const selectedConditions = process.env.ARC005_VISUAL_CONDITIONS?.split(",").filter(Boolean);
 if (selectedScreens?.some(id => !SCREENS.some(([screen]) => screen === id))) {
@@ -186,6 +187,18 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               mk('m2','assistant',[{kind:'text',text:'视觉基线记录真实界面字体、颜色、几何和组件状态。'}])
             ];
             if (id === 'messages') st.setState({messagesBySession:{s1:msg,s2:[],s3:[]}});
+            else if (id === 'long-chat') {
+              // Large, isolated synthetic transcript. Do NOT inject 640 DOM
+              // nodes directly: this tests the real ChatPane + LegendList.
+              const many = Array.from({length:640},(_,i)=>({
+                id:'stress-'+i,sessionId:sid,
+                role:i%2===0?'user':'assistant',
+                createdAt:10000+i*1000,
+                blocks:[{kind:'text',text:'ARC005 virtualized chat message '+i+' — '+('Rendered content '.repeat(8))}]
+              }));
+              window.__arcLongStart = performance.now();
+              st.setState({messagesBySession:{s1:many,s2:[],s3:[]}});
+            }
             else if (id === 'tools') {
               const cases = [
                 mk('t1','assistant',[{kind:'tool_use',toolCallId:'call1',toolName:'Read',input:{file_path:'demo.ts'},status:'running'}]),
@@ -253,6 +266,34 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
           // Actual sidechat UI interaction (real event handlers + store): open
           // a child session, verify selection, then return to list before the
           // screenshot. Fixture data never enters a real database / workflow.
+          if (screen === "long-chat" && probe.ok) {
+            const stress = await js<{total:number;mounted:number;elapsedMs:number;scrollOk:boolean}>(`(async () => {
+              const root = document.querySelector('[data-chat-root]');
+              const mountedBefore = root?.querySelectorAll('[data-message-id]').length ?? 0;
+              const scrollNode = [...(root?.querySelectorAll('*') ?? [])].find(el =>
+                el.scrollHeight > el.clientHeight + 80 && getComputedStyle(el).overflowY !== 'visible'
+              );
+              if (scrollNode) {
+                scrollNode.scrollTop = Math.max(0,scrollNode.scrollHeight/2);
+                scrollNode.dispatchEvent(new Event('scroll',{bubbles:true}));
+                await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+              }
+              const mountedAfter = root?.querySelectorAll('[data-message-id]').length ?? 0;
+              return {
+                total:window.__store.getState().messagesBySession?.s1?.length ?? 0,
+                mounted:Math.max(mountedBefore,mountedAfter),
+                elapsedMs:performance.now()-(window.__arcLongStart ?? performance.now()),
+                scrollOk:!!scrollNode && scrollNode.scrollHeight > scrollNode.clientHeight,
+              };
+            })()`);
+            // A result with all 640 rows in the DOM would indicate lost
+            // virtualisation (or an accidentally rendered nonvirtual list).
+            if (stress.total !== 640 || stress.mounted < 1 || stress.mounted > 160 || !stress.scrollOk) {
+              probe={ok:false,reason:"long-chat virtual list failed: "+JSON.stringify(stress)};
+            } else {
+              probe={...probe,value:{...(probe.value as object ?? {}),stress}};
+            }
+          }
           if (screen === "sidechat" && probe.ok) {
             const interaction = await js<boolean>(`(async () => {
               const item = document.querySelector('[data-cds-aside] [data-ui-sidechat-row] button');
