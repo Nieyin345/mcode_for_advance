@@ -36,6 +36,7 @@ import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconBookmark } from "@renderer/lib/icons.js";
 import { timelinePreviewPosition } from "./timelinePreviewGeometry.js";
+import { timelineDashWindow, TIMELINE_WINDOW_THRESHOLD } from "./timelineVirtualWindow.js";
 import { ClickableRow } from "@renderer/components/ui/clickable-row.js";
 import type { ChatMessage } from "@renderer/stores/sessionStore.js";
 import { timelineAccessibleSummary, timelineBlocksPreview, truncateTimelineExcerpt } from "./timelineTextPreview.js";
@@ -158,6 +159,46 @@ export function MessageTimeline({
     return out;
   }, [userMessages, bookmarkGroups, userItemIndices]);
 
+  // LegendList virtualizes the chat body, but not its independent timeline.
+  // Thousands of user turns used to mount thousands of ClickableRow controls
+  // and per-row memo hooks in a 70vh strip. Keep every target in the scroll
+  // range while only mounting the markers near the visible viewport.
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(720);
+  const windowed = dashes.length > TIMELINE_WINDOW_THRESHOLD;
+  useLayoutEffect(() => {
+    if (!windowed) return;
+    const track = stripRef.current;
+    if (!track) return;
+    const measure = () => {
+      const height = track.clientHeight;
+      setViewportHeight(previous => height > 0 && previous !== height ? height : previous);
+      setScrollTop(previous => previous !== track.scrollTop ? track.scrollTop : previous);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(track);
+    return () => observer.disconnect();
+  }, [windowed, dashes.length]);
+
+  const range = timelineDashWindow(dashes.length, scrollTop, viewportHeight);
+  const renderDash = (d: DashEntry) => (
+    <TimelineDash
+      key={d.key}
+      message={d.message}
+      active={d.message.id === activeId}
+      bookmarked={d.bookmarked}
+      excerpt={d.excerpt}
+      title={d.title}
+      canJump={d.index >= 0 && !!onJumpItem}
+      onJump={() => {
+        if (d.index >= 0 && onJumpItem) onJumpItem(d.message.id, d.index, d.excerpt);
+      }}
+    />
+  );
+
   if (dashes.length === 0) return null;
 
   return (
@@ -165,21 +206,23 @@ export function MessageTimeline({
       aria-label={t("chatStream.timeline.navigation")}
       className="pointer-events-none absolute left-0 top-1/2 z-10 -translate-y-1/2"
     >
-      <div className="pointer-events-auto flex max-h-[70vh] flex-col items-center justify-start gap-1.5 overflow-y-auto overflow-x-visible py-1 [scrollbar-width:thin]">
-        {dashes.map((d) => (
-          <TimelineDash
-            key={d.key}
-            message={d.message}
-            active={d.message.id === activeId}
-            bookmarked={d.bookmarked}
-            excerpt={d.excerpt}
-            title={d.title}
-            canJump={d.index >= 0 && !!onJumpItem}
-            onJump={() => {
-              if (d.index >= 0 && onJumpItem) onJumpItem(d.message.id, d.index, d.excerpt);
-            }}
-          />
-        ))}
+      <div
+        ref={stripRef}
+        data-ui-timeline-strip=""
+        data-ui-timeline-windowed={windowed ? "true" : "false"}
+        tabIndex={windowed ? 0 : undefined}
+        onScroll={windowed ? (event) => setScrollTop(event.currentTarget.scrollTop) : undefined}
+        className="pointer-events-auto flex max-h-[70vh] flex-col items-center justify-start gap-1.5 overflow-y-auto overflow-x-visible py-1 [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      >
+        {windowed ? (
+          <div className="relative w-6 shrink-0" style={{ height: range.totalHeight }}>
+            {dashes.slice(range.start, range.end).map((d, index) => (
+              <div key={d.key} className="absolute left-0 top-0 w-6" style={{ transform: `translateY(${(range.start + index) * range.pitch}px)` }}>
+                {renderDash(d)}
+              </div>
+            ))}
+          </div>
+        ) : dashes.map(renderDash)}
       </div>
     </nav>
   );
@@ -281,6 +324,7 @@ function TimelineDash({
       {hovered && createPortal(
         <div
           ref={previewRef}
+          data-ui-timeline-preview=""
           aria-hidden="true"
           style={{ position: "fixed", left: previewPos.left, top: previewPos.top }}
           className={cn(
