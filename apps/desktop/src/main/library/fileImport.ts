@@ -1,8 +1,8 @@
 /**
  * 通用文件条目的导入(统一资料库)—— 把**任何**文件/目录变成一条库条目。
  *
- * 与 `pdfImport.ts`(文献流:抓元数据、排队下载、转 md)分工:这里是"东西进库"的
- * 那一半 —— ppt、word、照片、用户手上的任意文件。它不做文献才做的事,只解决两件事:
+ * 与 `pdfImport.ts` 的 PDF 魔数校验和内容寻址导入分工：这里负责
+ * PPT、Word、照片及任意普通文件/目录的通用入库，不进行隐式转换。重点是两件事：
  * **文件从哪来**(复制进库 / 引用原路径)和**条目长什么样**。
  *
  * ## 两种模式(见 `LibraryItem.entryMode`)
@@ -15,7 +15,7 @@
  * linked **可以是目录**:模版"目录即条目"的形状在这里原样保留,`filePath` 存目录
  * 绝对路径,读的时候按目录列文件(见 `library:readFile`)。
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import * as path from "node:path";
 import { basename, extname, join } from "node:path";
 import type { LibraryItem } from "@contracts/library";
@@ -25,6 +25,7 @@ import { assignImportedToCollections } from "./operations.js";
 import { libraryRoot, ensureLibraryDirs, fromLibraryRelative } from "./paths.js";
 import { log } from "@main/lib/logger.js";
 import { pathWithin } from "@main/lib/pathGuard.js";
+import { hashFile } from "./pdfFile.js";
 import { isFileSuppressed } from "./suppress.js";
 
 /** attached 文件的落点:`<库根>/files/`。**扁平 + 条目 id 前缀** —— 不按扩展名分子
@@ -77,6 +78,10 @@ export function importGenericFiles(input: {
    * 文件,拿到的那一条该是同一条,不能第二次给回 `undefined`。
    */
   const seen = new Map<string, LibraryItem | null>();
+  // This is a snapshot of *registered* attached assets only, never an open
+  // directory scan. Capture once per import batch and extend it on success.
+  const attachedCandidates = mode === "attached" ? LibraryRepo.listAllItems() : [];
+  const candidateHashes = new Map<string, string>();
 
   for (const p of input.paths) {
     // 【MC-072】每项提交前检查取消:同批里取消后**未开始**的项不再入库(已提交的保留)。
@@ -88,7 +93,8 @@ export function importGenericFiles(input: {
         errors.push({ path: p, error: "文件不存在" });
         continue;
       }
-      const isDir = statSync(abs).isDirectory();
+      const sourceStat = statSync(abs);
+      const isDir = sourceStat.isDirectory();
       // attached 的语义是"把**文件**复制进库"。目录条目的唯一合法形态是 linked
       // (见文件头「linked **可以是目录**」;`importAnyFiles` 也是这么分派的)。
       // 从前这里对目录照走 attached:复制那一步被 `if (!isDir)` 静默跳过,
@@ -105,9 +111,12 @@ export function importGenericFiles(input: {
         }
         continue;
       }
-      // 查库只对 `linked` 有意义(理由见 `findExisting`)。`attached` 的重复只靠
-      // 上面那张本趟的表挡。
-      const dup = effectiveMode === "linked" ? findExisting(abs) : undefined;
+      // linked 去重仍以来源路径为身份；attached 是独立副本，复用时必须
+      // 比较已入库文件的真实内容，不能凭同名或相同大小误合并。
+      // 有同尺寸同扩展名的候选才读文件哈希，以免每次导入都额外读取大文件。
+      const dup = effectiveMode === "linked"
+        ? findExisting(abs)
+        : findMatchingAttachedFile(abs, sourceStat.size, attachedCandidates, candidateHashes);
       if (dup) {
         assignImportedToCollections(dup.id, input.collectionIds);
         seen.set(abs, dup);
@@ -144,6 +153,7 @@ export function importGenericFiles(input: {
           throw err;
         }
         assignImportedToCollections(fresh.id, input.collectionIds);
+        attachedCandidates.push(fresh);
         seen.set(abs, fresh);
         items.push(fresh);
         added += 1;
@@ -173,6 +183,58 @@ export function importGenericFiles(input: {
   return { items, added, skipped, errors };
 }
 
+/** Cross-import identity for manageable attached files (<=8 MiB).
+ * Compare only registered file copies inside `<library>/files/`. Their
+ * filenames include generated item ids, so source path equality is useless.
+ *
+ * Skip overly large files to avoid blocking the Electron main thread with
+ * repeated multi-GB hashes. The long-term solution is an asynchronously
+ * maintained persistent content hash index; no schema migration here.
+ */
+const MAX_SYNC_DEDUP_BYTES = 8 * 1024 * 1024;
+
+function findMatchingAttachedFile(
+  sourcePath: string,
+  sourceSize: number,
+  candidates: readonly LibraryItem[],
+  candidateHashes: Map<string, string>,
+): LibraryItem | undefined {
+  if (!Number.isFinite(sourceSize) || sourceSize > MAX_SYNC_DEDUP_BYTES) return undefined;
+  const ext = extname(sourcePath).toLowerCase();
+  const sourceBefore = statSync(sourcePath);
+  if (!sourceBefore.isFile() || sourceBefore.size !== sourceSize) return undefined;
+  const root = libraryRoot();
+  let sourceHash: string | undefined;
+  for (const item of candidates) {
+    if (item.entryMode !== "attached" || !item.filePath) continue;
+    const rel = item.filePath.replace(/\\/g, "/");
+    // Reject legacy malformed records, absolute paths and directory traversal.
+    if (!/^files\/[^/]+$/.test(rel) || extname(rel).toLowerCase() !== ext) continue;
+    const candidatePath = path.resolve(root, rel);
+    if (!pathWithin(root, candidatePath)) continue;
+    try {
+      const st = lstatSync(candidatePath);
+      if (!st.isFile() || st.isSymbolicLink() || st.size !== sourceSize) continue;
+    } catch {
+      continue; // Missing/damaged old copy must not prevent a new good import.
+    }
+    if (sourceHash === undefined) sourceHash = hashFile(sourcePath);
+    let candidateHash = candidateHashes.get(candidatePath);
+    if (!candidateHash) {
+      try { candidateHash = hashFile(candidatePath); }
+      catch { continue; }
+      candidateHashes.set(candidatePath, candidateHash);
+    }
+    if (sourceHash === candidateHash) {
+      // Fail safe if the user edits the source while it is being compared.
+      const after = statSync(sourcePath);
+      if (!after.isFile() || after.size !== sourceSize || after.mtimeMs !== sourceBefore.mtimeMs) return undefined;
+      return item;
+    }
+  }
+  return undefined;
+}
+
 /** 绝对路径 → 相对库根。给 attached 用;linked 不走它(存的就是绝对路径)。 */
 function toRel(abs: string): string {
   const root = libraryRoot();
@@ -187,17 +249,9 @@ function toRel(abs: string): string {
  * `linked` 的 `file_path` 存的是用户给的**绝对路径原样**,所以有键可查 —— 用户对
  * 同一个文件点两次「导入」是常态,不挡的话会出现两个标题一样的条目。
  *
- * ## `attached` 那一支为什么没有这个键(所以去重只能靠这一趟自己)
- *
- * 它的 `file_path` 是 `<库根>/files/<条目 id>-<原名>`,而 **id 是新建时才生成的**
- * —— 落盘之前根本算不出来。库里也不记来源路径,所以"这个文件是不是已经复制进库过"
- * 事后问不出答案。早先这里两种模式都拿 `filePath === abs` 去比,于是 attached 那一支
- * **恒假**(存的是相对路径,拿绝对路径比,永远是 undefined),同一个文件拖两次就进
- * 两条、各自复制一份 —— 而入口那几处都是 `linked`,所以一直没人撞见。
- *
- * 修法不是硬造一个键,而是**把去重挪到这一趟自己的表上**(见 `seen`):一次导入里
- * 同一个路径出现两次,第二条挡掉。跨调用的那份重复仍认不出来 —— 那是这个存储形态的
- * 真实代价(改成按内容哈希命名才能根治,那是另一个量级的改动),不假装它被修好了。
+ * attached 的文件按 `<条目 id>-<原名>` 存相对路径，不能用来源绝对路径
+ * 匹配。它独立走 `findMatchingAttachedFile`：只比较已登记的同扩展名、同尺寸
+ * 副本，最终以内容 sha256 判同一份文件；大文件暂不执行同步去重。
  */
 function findExisting(abs: string): LibraryItem | undefined {
   return LibraryRepo.findLinkedByPath(abs);

@@ -237,17 +237,27 @@ check("落在库根的 files/ 下面", copiedAbs.startsWith(join(ROOT, "files") 
 const reread = readEntryFile(attachedItem.id);
 eq("attached 条目读得动", reread.type, "text");
 
-// ⚠️ **这里曾经想断言"同一个文件再按 attached 导入一次会跳过",但那个断言是错的** ——
-// 记一笔免得以后有人再写一遍。`attached` 的 `file_path` 是
-// `<库根>/files/<条目 id>-<原名>`,而 id 是**新建时**才生成的;库里也不记来源路径。
-// 所以"这个文件是不是已经复制进库过"**事后问不出答案**,跨调用的重复认不出来。
-// (早先的写法是拿绝对路径去比这个相对路径列,那一支恒假 —— 也是假的,只是假在
-// 另一头:它连同一趟里的重复都不挡。)
-//
-// 能挡住的是**同一趟里**的重复(用户拖一个文件夹,里面两个东西指同一个文件;或者
-// 手滑点两次)—— 见上面 `twice` 那一段。
+// 内容重复不等于同一路径:附加副本的真实路径有条目 id 前缀，不能按来源路径
+// 与 attached 的相对文件路径相等来判断。应先通过大小与扩展名筛候选，最后用
+// sha256 确认内容相同再复用条目；单纯同名或者同大小不同内容不得误判。
 const attachAgain = importGenericFiles({ paths: [attachSrc], mode: "attached" });
-eq("attached 跨调用认不出重复(已知的形态代价,不是这次修的)", attachAgain.added, 1);
+eq("★ attached 同一路径跨批再次导入应跳过", attachAgain.skipped, 1);
+eq("★ 内容重复不创建第二条记录", attachAgain.added, 0);
+eq("★ 复用原条目 id", attachAgain.items[0]?.id, attachedItem.id);
+const aliasSrc = join(SRC, "同内容不同名字.md");
+writeFileSync(aliasSrc, "# 标题", "utf8");
+const attachedAlias = importGenericFiles({ paths: [aliasSrc], mode: "attached" });
+eq("★ 同内容+同格式但不同来源路径，仍复用已保存副本", attachedAlias.skipped, 1);
+eq("★ 归属原条目而不是仅回报跳过", attachedAlias.items[0]?.id, attachedItem.id);
+const changedSrc = join(SRC, "看起来一样大小的不同内容.md");
+writeFileSync(changedSrc, "# 标那", "utf8");
+const changed = importGenericFiles({ paths: [changedSrc], mode: "attached" });
+eq("★ 同尺寸/同扩展名但不同内容不能误合并", changed.added, 1);
+check("★ 不同内容创建独立条目", changed.items[0]?.id !== attachedItem.id);
+const otherFormat = join(SRC, "相同正文但不同文件格式.txt");
+writeFileSync(otherFormat, "# 标题", "utf8");
+const independentFormat = importGenericFiles({ paths: [otherFormat], mode: "attached" });
+eq("★ 相同字节、不同扩展名保留不同类型条目", independentFormat.added, 1);
 
 // 但**同一趟里**的重复必须挡住 —— 拖进来一个文件夹时里面两个东西指同一个文件是常事。
 // 这一条是 `seen` 那张表存在的唯一理由:`linked` 有键可查(建条目时就把绝对路径写上
@@ -283,15 +293,10 @@ const emitted = importedIds();
 check("attached 那条发了", emitted.includes(attachedItem.id), { emitted, want: attachedItem.id });
 check("linked 那条发了", emitted.includes(linkedItem!.id), { emitted, want: linkedItem!.id });
 check("目录条目也发了", emitted.includes(dirItem.id), { emitted, want: dirItem.id });
-// 一次导入一条,不多不少:**十一条**进过库(linked 的文件、那个目录、linked 同源另存
-// 的 attached 副本、同一批里那第二条路径首次入库、attached 的 md、那个不认识的扩展名、
-// 上面那条 attached 重复导入(它确实又进了一条,那是这个落法的形态代价)、
-// attached 同一批里的第二条路径首次入库、点文件那一份、普通文件那一份,以及 §2b
-// 那个「有断链的文件夹」目录条目)。上面被跳过的那三次(重复导入、同一批里的第二次、
-// 同源另存之后再按 attached 存一次)以及那个不存在的路径都**不该**发 —— 计数正好把
-// 这一点也钉住(数目对不上就是"跳过/失败也发了",那种假信号会让自动化对着一条根本
-// 没进库的东西跑起来)。
-eq("一次导入一条,不多不少", emitted.length, 11);
+// 准确的新增次数是 12：旧成功场景继续发事件；新增的不同内容 / 不同扩展名
+// 各有新条目，跨批次同内容的两次重复导入不发事件。缺失文件与同批重复同样
+// 不能伪造成功事件，否则会让自动化对着不存在的新条目执行。
+eq("实际新增条目才发事件,内容去重不冒充新导入", emitted.length, 12);
 
 // 而 attached 那条**真的复制了一份进库** —— 去重若按来源路径判,这里会被当成
 // "已经导过"而跳过,文件就不会出现在库里(条目还在,点开是空的)。
@@ -318,6 +323,10 @@ console.log("\n通用导入 · 选定分类要生效(文件/文件夹/已存在�
   const result = await importAnyFiles([doc], { collectionIds: [first] });
   eq("通用文档入库一条", result.added, 1);
   check("★ attached 文档归到了所选分类", CollectionRepo.collectionsOfItem(result.items[0]!.id).includes(first));
+  const docAgain = await importAnyFiles([doc], { collectionIds: [second] });
+  eq("★ 跨批次复用 attached 文件时不再多建一条", docAgain.skipped, 1);
+  eq("★ 复用仍然返回原条目 id", docAgain.items[0]?.id, result.items[0]?.id);
+  check("★ 复用的 attached 条目仍可归入本次新分类", CollectionRepo.collectionsOfItem(result.items[0]!.id).includes(second));
 
   const folder = join(SRC, "要归类的文件夹");
   mkdirSync(folder);
@@ -363,7 +372,21 @@ console.log("\n通用导入 · 选定分类要生效(文件/文件夹/已存在�
   check("★ 而且没有 md_path(走的不是笔记管线)", dotMdRes.items[0]?.mdPath === undefined, dotMdRes.items[0]);
 }
 
-/* ──────────────── 5b. 【MC-072】取消贯穿批量导入的**组内**与**组间** ────────────────
+/* ──────────────── 5b. 损坏的旧副本不能被内容去重冒充成好文件 ──────────────── */
+{
+  const original = join(SRC, "需要保留的原文.data");
+  writeFileSync(original, "this is good", "utf8");
+  const first = importGenericFiles({ paths: [original], mode: "attached" });
+  eq("隔离夹具首先生成一份副本", first.added, 1);
+  const oldCopy = entryFileAbsPath(first.items[0]!);
+  if (oldCopy) writeFileSync(oldCopy, "this is evil", "utf8"); // same byte size, changed content
+  const retry = importGenericFiles({ paths: [original], mode: "attached" });
+  eq("★ 同尺寸但旧副本已损坏时重新复制原文", retry.added, 1);
+  check("★ 修复副本拥有新条目，旧数据未静默覆盖", retry.items[0]?.id !== first.items[0]?.id);
+  check("★ 新副本正文仍正确", retry.items[0] && readFileSync(entryFileAbsPath(retry.items[0])!, "utf8") === "this is good");
+}
+
+/* ──────────────── 5c. 【MC-072】取消贯穿批量导入的**组内**与**组间** ────────────────
  *
  * `importAnyFiles` 把一批路径拆成三条管线(PDF / 笔记 / 通用),通用管线又分
  * `dirs`(linked)与 `files`(attached)两组。取消信号必须：
