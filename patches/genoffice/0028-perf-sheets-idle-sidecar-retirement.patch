@@ -1,0 +1,258 @@
+From b6435363663f26050bf92742a01dedb65b03e46d Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 12:34:21 +0800
+Subject: [PATCH] perf(sheets): retire idle Rust sidecar after last tab closes
+
+---
+ apps/sheets/src/main/sheets-main.ts           |  24 +++-
+ .../src/main/sidecar-idle-retirement.ts       |  46 ++++++++
+ apps/sheets/src/main/xlsx-sidecar-client.ts   |   6 +
+ .../tests/sidecar-idle-retirement.test.ts     | 103 ++++++++++++++++++
+ 4 files changed, 178 insertions(+), 1 deletion(-)
+ create mode 100644 apps/sheets/src/main/sidecar-idle-retirement.ts
+ create mode 100644 apps/sheets/tests/sidecar-idle-retirement.test.ts
+
+diff --git a/apps/sheets/src/main/sheets-main.ts b/apps/sheets/src/main/sheets-main.ts
+index 6b79dd2..7bba260 100644
+--- a/apps/sheets/src/main/sheets-main.ts
++++ b/apps/sheets/src/main/sheets-main.ts
+@@ -170,6 +170,7 @@ import {
+   cleanupSessionResources,
+ } from './temp-files'
+ import { XlsxSidecarClient } from './xlsx-sidecar-client'
++import { SidecarIdleRetirement } from './sidecar-idle-retirement'
+ import { sessionAfterRename } from './session-rename'
+ 
+ /**
+@@ -1797,6 +1798,22 @@ const MAX_REMOTE_IMAGE_BYTES = 20 * 1024 * 1024
+ const MAX_DELIMITED_IMPORT_BYTES = 32 * 1024 * 1024
+ 
+ const sheetsTabs = new Map<number, SheetsTabSession>()
++/**
++ * One shared Rust worker for all open workbooks, not one worker per editor.
++ * Closing the final tab waits for its sidecar sessions and any pending archive
++ * jobs before stopping an otherwise resident worker after 60 s. No live tab,
++ * pending save or pending open can be killed by this memory optimization.
++ */
++const idleSidecar = new SidecarIdleRetirement<XlsxSidecarClient>({
++  current: () => sidecar,
++  noLiveTabs: () => sheetsTabs.size === 0,
++  hasInFlightRequests: (client) => client.hasPendingRequests(),
++  stop: (client) => {
++    if (sidecar !== client) return
++    sidecar = null
++    client.stop()
++  },
++})
+ let activeSheetsWebContents: WebContents | null = null
+ let pastedTempCleanupStarted = false
+ 
+@@ -1882,6 +1899,7 @@ function broadcastSidecarCrash(client: XlsxSidecarClient): void {
+ }
+ 
+ function registerSheetsSession(webContents: WebContents, client: XlsxSidecarClient): void {
++  idleSidecar.cancel()
+   startPastedTempCleanup()
+   if (!crashNotifiedClients.has(client)) {
+     crashNotifiedClients.add(client)
+@@ -1902,7 +1920,10 @@ function registerSheetsSession(webContents: WebContents, client: XlsxSidecarClie
+       // Free pending chunked-save uploads with the tab (the sweep timer's
+       // closure would otherwise keep them reachable until the idle expiry).
+       entry.saveTransfers.dispose()
+-      void closeAllSessions(entry)
++      void closeAllSessions(entry).then(
++        () => idleSidecar.scheduleIfNoTabs(),
++        () => idleSidecar.scheduleIfNoTabs(),
++      )
+     }
+     if (activeSheetsWebContents === webContents) activeSheetsWebContents = null
+   })
+@@ -4835,6 +4856,7 @@ function installApplicationMenu(): void {
+ 
+ /** stop the Rust sidecar (shell calls this from its own before-quit hook) */
+ export function stopSheetsSidecar(): void {
++  idleSidecar.cancel()
+   sidecar?.stop()
+   sidecar = null
+ }
+diff --git a/apps/sheets/src/main/sidecar-idle-retirement.ts b/apps/sheets/src/main/sidecar-idle-retirement.ts
+new file mode 100644
+index 0000000..d1f68ff
+--- /dev/null
++++ b/apps/sheets/src/main/sidecar-idle-retirement.ts
+@@ -0,0 +1,46 @@
++/**
++ * Reclaim the XLSX worker only after the last Sheets tab is gone and all
++ * outstanding sidecar requests have completed. A running/dirty tab is never
++ * evicted: this releases ONLY a process that has no remaining consumers.
++ *
++ * A fresh tab cancels retirement synchronously; a request still in flight
++ * postpones retirement for another grace period instead of being killed.
++ */
++export class SidecarIdleRetirement<T> {
++  private timer: ReturnType<typeof setTimeout> | null = null
++
++  constructor(
++    private readonly ports: {
++      current(): T | null
++      noLiveTabs(): boolean
++      hasInFlightRequests(client: T): boolean
++      stop(client: T): void
++    },
++    private readonly graceMs = 60_000,
++  ) {}
++
++  scheduleIfNoTabs(): void {
++    if (this.timer !== null || !this.ports.noLiveTabs()) return
++    const timer = setTimeout(() => {
++      this.timer = null
++      if (!this.ports.noLiveTabs()) return
++      const current = this.ports.current()
++      if (!current) return
++      if (this.ports.hasInFlightRequests(current)) {
++        // In particular, an abandoned renderer can still have a late
++        // workbook:open or archive/save request that must finish safely.
++        this.scheduleIfNoTabs()
++        return
++      }
++      this.ports.stop(current)
++    }, this.graceMs)
++    timer.unref?.()
++    this.timer = timer
++  }
++
++  cancel(): void {
++    if (this.timer === null) return
++    clearTimeout(this.timer)
++    this.timer = null
++  }
++}
+diff --git a/apps/sheets/src/main/xlsx-sidecar-client.ts b/apps/sheets/src/main/xlsx-sidecar-client.ts
+index c64f103..2cc6619 100644
+--- a/apps/sheets/src/main/xlsx-sidecar-client.ts
++++ b/apps/sheets/src/main/xlsx-sidecar-client.ts
+@@ -203,6 +203,12 @@ export class XlsxSidecarClient {
+     return this.process?.pid ?? null
+   }
+ 
++  /** A background worker cannot be retired while a save, late open, export
++   * or read is still awaiting its authoritative response. */
++  hasPendingRequests(): boolean {
++    return this.pending.size > 0
++  }
++
+   stop(): void {
+     this.lines?.close()
+     this.lines = null
+diff --git a/apps/sheets/tests/sidecar-idle-retirement.test.ts b/apps/sheets/tests/sidecar-idle-retirement.test.ts
+new file mode 100644
+index 0000000..0762137
+--- /dev/null
++++ b/apps/sheets/tests/sidecar-idle-retirement.test.ts
+@@ -0,0 +1,103 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { SidecarIdleRetirement } from '../src/main/sidecar-idle-retirement'
++
++interface MockClient { id: number; pending: boolean }
++describe('shared XLSX sidecar idle retirement', () => {
++  beforeEach(() => vi.useFakeTimers())
++  afterEach(() => { vi.clearAllTimers(); vi.useRealTimers() })
++
++  const create = () => {
++    let tabs = 0
++    let client: MockClient | null = { id: 1, pending: false }
++    const stopped: number[] = []
++    const retirement = new SidecarIdleRetirement({
++      current: () => client,
++      noLiveTabs: () => tabs === 0,
++      hasInFlightRequests: (value) => value.pending,
++      stop: (value) => {
++        // Same host identity policy as the shared sheets-main singleton.
++        if (client !== value) return
++        stopped.push(value.id)
++        client = null
++      },
++    }, 1_000)
++    return {
++      retirement, stopped,
++      setTabs(value: number) { tabs = value },
++      setPending(value: boolean) { if (client) client.pending = value },
++      replaceClient(value: MockClient | null) { client = value },
++      current: () => client,
++    }
++  }
++
++  it('does not stop the Rust worker while any workbook tab remains alive', () => {
++    const h = create()
++    h.setTabs(1)
++    h.retirement.scheduleIfNoTabs()
++    vi.advanceTimersByTime(10_000)
++    expect(h.stopped).toEqual([])
++    expect(h.current()).not.toBeNull()
++  })
++
++  it('stops the worker once after the last tab and 60s-equivalent grace', () => {
++    const h = create()
++    h.retirement.scheduleIfNoTabs()
++    vi.advanceTimersByTime(999)
++    expect(h.stopped).toEqual([])
++    vi.advanceTimersByTime(1)
++    expect(h.stopped).toEqual([1])
++    expect(h.current()).toBeNull()
++    vi.advanceTimersByTime(10_000)
++    expect(h.stopped).toEqual([1])
++  })
++
++  it('new tab cancels retirement; normal close and reopen are cheap', () => {
++    const h = create()
++    h.retirement.scheduleIfNoTabs()
++    h.setTabs(1)
++    h.retirement.cancel()
++    vi.advanceTimersByTime(4_000)
++    expect(h.stopped).toEqual([])
++    h.setTabs(0)
++    h.retirement.scheduleIfNoTabs()
++    vi.advanceTimersByTime(1_000)
++    expect(h.stopped).toEqual([1])
++  })
++
++  it('pending save or late open must complete before worker can be retired', () => {
++    const h = create()
++    h.setPending(true)
++    h.retirement.scheduleIfNoTabs()
++    vi.advanceTimersByTime(1_000)
++    expect(h.stopped).toEqual([])
++    h.setPending(false)
++    vi.advanceTimersByTime(999)
++    expect(h.stopped).toEqual([])
++    vi.advanceTimersByTime(1)
++    expect(h.stopped).toEqual([1])
++  })
++
++  it('if a new tab appears even without an explicit cancel, worker is retained', () => {
++    const h = create()
++    h.retirement.scheduleIfNoTabs()
++    h.setTabs(1)
++    vi.advanceTimersByTime(2_000)
++    expect(h.stopped).toEqual([])
++  })
++
++  it('the worker is not stopped if the global client was already shut down', () => {
++    const h = create()
++    h.retirement.scheduleIfNoTabs()
++    h.replaceClient(null)
++    vi.advanceTimersByTime(2_000)
++    expect(h.stopped).toEqual([])
++  })
++
++  it('a replacement worker is retired only by its own timer after no tabs', () => {
++    const h = create()
++    h.retirement.scheduleIfNoTabs()
++    h.replaceClient({ id: 2, pending: false })
++    vi.advanceTimersByTime(1_000)
++    expect(h.stopped).toEqual([2])
++  })
++})
+-- 
+2.52.0.windows.1
+

@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "daf2f54627dfecf08dc81ecee176d37a37696a0b",
-  "expectedTree": "bb7403fa7cf3e60d189f0d83958bf2713ff3d60a",
+  "revision": "b6435363663f26050bf92742a01dedb65b03e46d",
+  "expectedTree": "5f9e7a6d3e3f9b9bd34c6f06c362ab308bfe2718",
   "patchSeries": [
     {
       "index": 1,
@@ -256,6 +256,15 @@
       "sha256": "b696f0b241a45edcc7fd44dcb2cdb304c3ad5c4790a4867ae6c8bf70a0389e4c",
       "bytes": 4539,
       "subject": "fix(docs): discard cancelled per-tool ACK slots without ending SDK turn"
+    },
+    {
+      "index": 28,
+      "file": "patches/genoffice/0028-perf-sheets-idle-sidecar-retirement.patch",
+      "revision": "b6435363663f26050bf92742a01dedb65b03e46d",
+      "parentRevision": "daf2f54627dfecf08dc81ecee176d37a37696a0b",
+      "sha256": "a26c0f437796ee04376f52ca4390a967c91be3075e92b26bc11634f1de049752",
+      "bytes": 9239,
+      "subject": "perf(sheets): retire idle Rust sidecar after last tab closes"
     }
   ],
   "license": "Apache-2.0",
