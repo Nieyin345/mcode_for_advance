@@ -34,6 +34,54 @@ async function open(page,locale='zh'){
 await withAuditPage(here,async page=>{
   async function test(name,fn){try{await fn();check(name+': no JS exceptions',page.exceptions.length===0,page.exceptions.slice());}
     catch(e){errors.push(name+': '+(e.stack??e));console.error('HARNESS ERROR '+errors.at(-1));}}
+  await test('single-surface-lazy-first-frame',async()=>{
+    await page.goto('case=workflow&locale=zh');
+    await page.waitFor('window.__audit?.apiCalls.includes("workflowEngine.list")');
+    const first=await page.eval(`({
+      nav:[...document.querySelectorAll('aside nav button')].filter(b=>/^(工作流|自动化)$/.test(b.textContent.trim())).map(b=>b.textContent.trim()),
+      selected:document.querySelector('#workflows-tab-engines')?.getAttribute('aria-selected'),
+      calls:window.__audit.apiCalls.slice(),
+      libraryMounted:!!document.querySelector('#workflows-panel-library nav button')
+    })`);
+    check('single workflow entry instead of separate automation settings',first.nav.length===1&&first.nav[0]==='工作流',first.nav);
+    check('native Node-RED canvas is the default work surface',first.selected==='true',first.selected);
+    check('first canvas paint avoids hidden library/catalog/profiles IPC and DOM work',
+      !first.libraryMounted && first.calls.includes('workflowEngine.list') &&
+      !first.calls.some(c=>['workflow.list','workflow.nodeTypes','workflow.agentProfiles'].includes(c)),
+      first);
+    await page.eval(helper);
+    await page.eval('__ui.showLibrary()');
+    await page.waitFor('window.__audit.apiCalls.includes("workflow.list") && window.__audit.apiCalls.includes("workflow.nodeTypes") && window.__audit.apiCalls.includes("workflow.agentProfiles")');
+    check('library and metadata load on first actual visit, not on app startup',
+      await page.eval('!!document.querySelector("#workflows-panel-library nav button")'));
+    const metadataBefore=await page.eval(`({
+      catalog:window.__audit.apiCalls.filter(v=>v==='workflow.nodeTypes').length,
+      profiles:window.__audit.apiCalls.filter(v=>v==='workflow.agentProfiles').length,
+    })`);
+    await page.eval('document.querySelector("#workflows-tab-engines").click()');
+    await page.waitFor('document.querySelector("#workflows-tab-engines")?.getAttribute("aria-selected")==="true"');
+    await page.eval('document.querySelector("#workflows-tab-library").click()');
+    await page.waitFor('document.querySelector("#workflows-tab-library")?.getAttribute("aria-selected")==="true"');
+    await page.eval('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    const metadataAfter=await page.eval(`({
+      catalog:window.__audit.apiCalls.filter(v=>v==='workflow.nodeTypes').length,
+      profiles:window.__audit.apiCalls.filter(v=>v==='workflow.agentProfiles').length,
+    })`);
+    check('returning to the canvas and library does not re-fetch cached metadata',
+      metadataBefore.catalog===1 && metadataBefore.profiles===1 &&
+      JSON.stringify(metadataBefore)===JSON.stringify(metadataAfter),
+      {metadataBefore,metadataAfter});
+  });
+
+  await test('deep-link-focus-is-sticky',async()=>{
+    await page.goto('case=focus&locale=zh');
+    await page.waitFor('window.__audit?.focusId()===null');
+    check('library stays visible after one-shot focus intent is consumed',
+      await page.eval('document.querySelector("#workflows-panel-library")?.classList.contains("flex") && document.querySelector("#workflows-tab-library")?.getAttribute("aria-selected")==="true"'));
+    await page.waitFor('document.querySelector("#workflows-panel-library nav button[aria-current=true]")');
+    check('focused workflow selected instead of showing an unrelated canvas',
+      await page.eval('document.querySelector("#workflows-panel-library nav button[aria-current=true]")?.textContent.includes("资料整理流程")'));
+  });
   await test('native-editor-entry',async()=>{
     await open(page);
     check('real native entry replaces deleted WorkflowCanvas',await page.eval(`!!document.querySelector('${nativeEntry}')&&!document.querySelector('[data-workflow-viewport]')`));
@@ -55,10 +103,13 @@ await withAuditPage(here,async page=>{
     await page.eval('__ui.set("名称","跨栏目草稿")');
     await page.sleep(120);
     check('unsaved draft enables explicit save',await page.eval('!__ui.button("保存").disabled'));
-    await page.eval('__ui.nav("自动化")');
-    await page.waitFor('document.querySelector("#automation-panel-library")');
-    await page.eval('__ui.nav("工作流")');
-    await page.eval('__ui.showLibrary()');
+    // Switching the category stays within ONE settings destination and
+    // keeps the draft in the shared library state instead of remounting
+    // two independent workflow settings trees.
+    check('only one workflow settings entry is visible',await page.eval(`[...document.querySelectorAll('aside nav button')].filter(b=>b.textContent.trim()==='工作流').length===1 && ![...document.querySelectorAll('aside nav button')].some(b=>b.textContent.trim()==='自动化')`));
+    await page.eval(`[...document.querySelectorAll('#workflows-panel-library [role="group"] button')].find(b=>b.textContent.trim()==='自动化')?.click()`);
+    await page.waitFor('document.querySelector("#workflows-panel-library nav button")?.textContent?.includes("文件清单自动化")');
+    await page.eval(`[...document.querySelectorAll('#workflows-panel-library [role="group"] button')].find(b=>b.textContent.trim()==='工作流')?.click()`);
     await page.waitFor('document.querySelector("#workflows-panel-library").classList.contains("flex")');
     await page.waitFor('document.querySelector("#workflows-panel-library nav button")');
     await page.eval('__ui.open("资料整理流程")');await page.waitFor(`document.querySelector('${nativeEntry}')`);
@@ -96,13 +147,14 @@ await withAuditPage(here,async page=>{
     check('English native-entry text',await page.eval(`document.querySelector('${nativeEntry}').textContent.includes('Node-RED')`));
     await page.goto('case=automation&locale=zh');
     await page.eval(helper);
-    await page.waitFor('document.querySelector("#automation-panel-library nav button")');
-    // W15：自动化的默认页签**保持「库」**（不是原厂画布）。这条是那条产品判断
-    // 的真浏览器证据 —— 无头套件断言的是同一个函数，这里断言的是它真的兑现。
-    check('automation still opens on the library tab',await page.eval('document.querySelector("#automation-panel-library").classList.contains("flex")&&document.querySelector("#automation-panel-engines").classList.contains("hidden")'));
-    await page.eval(`(()=>{const b=[...document.querySelectorAll('#automation-panel-library nav button')].find(e=>e.textContent.includes('文件清单自动化'));b?.click()})()`);
-    await page.waitFor('document.querySelector("#automation-panel-library section[aria-label]")');
-    check('automation shares native editor entry',await page.eval('!!document.querySelector("#automation-panel-library section[aria-label] button")'));
+    await page.waitFor('document.querySelector("#workflows-panel-library nav button")');
+    check('legacy automation deep link routes into one workflow surface',
+      await page.eval('document.querySelector("#workflows-panel-library").classList.contains("flex") && document.querySelector("#workflows-panel-engines").classList.contains("hidden") && ![...document.querySelectorAll("aside nav button")].some(b=>b.textContent.trim()==="自动化")'));
+    check('legacy automation deep link activates automation category',
+      await page.eval('[...document.querySelectorAll("#workflows-panel-library [role=group] button")].some(b=>b.textContent.trim()==="自动化" && b.getAttribute("aria-pressed")==="true")'));
+    await page.eval(`(()=>{const b=[...document.querySelectorAll('#workflows-panel-library nav button')].find(e=>e.textContent.includes('文件清单自动化'));b?.click()})()`);
+    await page.waitFor('document.querySelector("#workflows-panel-library section[aria-label]")');
+    check('automation shares native editor entry',await page.eval('!!document.querySelector("#workflows-panel-library section[aria-label] button")'));
   });
 });
 const result={checks,errors,summary:{passed:checks.filter(x=>x.ok).length,failed:checks.filter(x=>!x.ok).length,errors:errors.length}};

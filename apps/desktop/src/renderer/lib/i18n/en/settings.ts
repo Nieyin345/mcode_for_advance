@@ -1392,7 +1392,7 @@ export const en = {
   "settings.workflows.tabNodeTypes": "Node types",
 
   // ── Third-party workflow engines (ARC-006 NR2, tab + EngineRuntimePanel) ──
-  "settings.workflows.tabEngines": "Third-party engines",
+  "settings.workflows.tabEngines": "Workflow canvas",
   "settings.workflows.nativeEditorTitle": "Node-RED native editor",
   "settings.workflows.openNativeEditor": "Open Node-RED editor",
   "settings.workflows.nativeEditorNote": "The hand-built canvas has been removed. The selected library workflow is not imported automatically. A successful Node-RED deploy syncs only existing Mcode-tagged workflows back to this library; standalone native tabs are not imported.",

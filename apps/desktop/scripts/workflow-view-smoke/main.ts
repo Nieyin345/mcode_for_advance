@@ -2138,7 +2138,8 @@ check("入口不自行画边/节点", !nativeEntryZh.includes("workflow-edge-arr
 const nativeLibrarySrc = readFileSync("src/renderer/components/settings/workflows/WorkflowLibraryView.tsx", "utf8");
 const nativePanelSrc = readFileSync("src/renderer/components/settings/workflows/WorkflowsPanel.tsx", "utf8");
 check("工作流详情已换成原厂编辑器入口", nativeLibrarySrc.includes("workflowId={baseline.id} dirty={dirty || saving} onOpen={onOpenNativeEditor}"));
-check("编辑按钮切到已挂载的引擎页签", nativePanelSrc.includes('onOpenNativeEditor={() => { setNativeCanvasEpoch(n => n + 1); setView("engines"); }}'));
+check("编辑按钮切到统一原生画布且沿用一个导航状态入口",
+  nativePanelSrc.includes('onOpenNativeEditor={() => { setNativeCanvasEpoch(n => n + 1); chooseView("engines"); }}'));
 check("自动化也能打开同一引擎编辑页", nativePanelSrc.includes('v.id === "library" || v.id === "engines"'));
 check("仍由同一个 EngineRuntimePanel 承载原厂编辑器", nativePanelSrc.includes('<EngineRuntimePanel key={nativeCanvasEpoch} active={view === "engines" && !flowDocked} />'));
 
@@ -2232,8 +2233,8 @@ console.log("\n第三方引擎页签");
 // 会被量成一个错误的矩形。
 check("第三方引擎是第四个页签", panelHtml.includes('id="workflows-tab-engines"'));
 check(
-  "英文界面页签名跟着换",
-  withLocale("en", () => html(createElement(WorkflowsPanel, { purpose: "workflow" }))).includes("Third-party engines"),
+  "英文界面统一工作流画布命名，不再把 Node-RED 当第三方独立应用",
+  withLocale("en", () => html(createElement(WorkflowsPanel, { purpose: "workflow" }))).includes("Workflow canvas"),
 );
 
 console.log("\nEngineRuntimePanel(纯判据)");

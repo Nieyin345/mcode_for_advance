@@ -1392,7 +1392,7 @@ export const zh = {
   "settings.workflows.tabNodeTypes": "节点类型",
 
   // ── 第三方工作流引擎（ARC-006 NR2，页签 + EngineRuntimePanel）──
-  "settings.workflows.tabEngines": "第三方引擎",
+  "settings.workflows.tabEngines": "工作流画布",
   "settings.workflows.nativeEditorTitle": "使用 Node-RED 原厂编辑器",
   "settings.workflows.openNativeEditor": "打开 Node-RED 编辑器",
   "settings.workflows.nativeEditorNote": "手写画布已移除。当前不会自动载入列表中选中的工作流；仅已在原厂编辑器中的、带 Mcode 文档标记的工作流，部署成功后才同步回本列表。原厂独立流程不会自动导入。",

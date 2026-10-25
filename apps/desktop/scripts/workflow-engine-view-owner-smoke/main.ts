@@ -209,7 +209,7 @@ console.log("\nA3. 反向断言：初值来自导出常量，不是组件里的�
   eq("★ DEFAULT_WORKFLOWS_VIEW 就是 engines", DEFAULT_WORKFLOWS_VIEW, "engines");
   check(
     "★ 组件用 initialWorkflowsView(...) 计算初值（不是 useState(\"library\")）",
-    /useState<WorkflowsView>\(\(\)\s*=>\s*initialWorkflowsView\(purpose,\s*focusWorkflowId\)/.test(
+    /useState<WorkflowsView>\(\(\)\s*=>\s*initialWorkflowsView\(purpose,\s*focusWorkflowId,\s*initialLibraryPurpose\)/.test(
       stripComments(readFileSync(WORKFLOWS_PANEL_SRC, "utf8")),
     ),
   );
@@ -226,6 +226,8 @@ console.log("\nA4. automation 保持 library（卡上的判断：没有相反证
   eq("initialWorkflowsView: automation → library", initialWorkflowsView("automation", null), "library");
   eq("initialWorkflowsView: automation + undefined → library", initialWorkflowsView("automation", undefined), "library");
   eq("initialWorkflowsView: workflow → engines", initialWorkflowsView("workflow", null), "engines");
+  eq("旧自动化深链：首帧直接进入统一工作流库、不初始化画布",
+    initialWorkflowsView("workflow", null, "automation"), "library");
   const auto = withLocale("zh", () => html(createElement(WorkflowsPanel, { purpose: "automation" })));
   check(
     "★ 自动化面板首帧仍在 library",

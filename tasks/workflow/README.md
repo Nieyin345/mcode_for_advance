@@ -272,3 +272,18 @@ T81（四步链路）、T84（journey 陈旧断言）、T89（fixup 崩溃）、
 
 **核心变异**：注释掉 `EngineRuntimePanel` 的 `open` 那一步 → 第 5 步必须红。
 **它证明的是「视图真的开了」，不是「组件渲染了」。**
+
+## 2026-10-25：产品面「只有一套工作流」与首屏性能修复（阶段交付）
+
+- **统一产品入口**：SettingsPage 只展示一个「工作流」导航项。工作流与自动化是同一 WorkflowLibraryView 的两个筛选分类，而非两个设置页、两套编辑器。旧 `settingsSection=automation` 深链保留并直接落到统一库的自动化分类；其他来源跳入特定工作流后消耗一次性 focus 不会把用户弹回画布。
+- **唯一画布**：默认进入原生 Node-RED 画布；页签从「第三方引擎」更名为「工作流画布」/「Workflow canvas」。既有 EngineRuntimePanel + shared documentView docId 保留，复用原生 WebContentsView 与安全的凭据绑定，不新增自研画布或第二个 Electron 视图。
+- **启动与切页成本**：从默认画布进入不再挂载隐藏的 WorkflowLibraryView/NodeTypesView/AgentProfilesView，也不会先读取 workflow.list/nodeTypes/agentProfiles；三个较重 UI 模块用 React.lazy 按首次使用拆分，切页后保留已挂载树与草稿，避免重新解析/重建。引擎列表仍照常读取以驱动画布。
+- **实证**：真实 Chromium SettingsPage 浏览器旅程核对单导航、初始画布、初始 RPC 数量、第一次访问库后的查询、工作流/自动化分类切换与草稿保留、旧深链和焦点行为；故意把 nodeTypes RPC 重新设为无条件读取后 workflow-ui-smoke EXIT=1，恢复后 PASS。7 套设置与工作流回归通过，Desktop/Contracts tsc --noEmit 通过。具体日志按最终提交回写。
+- **架构上尚未完成**：本次是 UI/首屏资源加载合一，后台历史 ExecutionEngine 仍受 owner 互斥保护存在，SQL WorkflowDoc 与 Node-RED flows.json 尚需完成统一存储/迁移验收；不得将导航合并冒充后台已删除第二执行器。真实 Electron U1 仍需检查视图复用与内存/CPU（RSS、startup latency、可见/隐藏切页耗时），不从减少 IPC 数量推测已下降多少 MB。并行 W26 Electron 设置旅程文件未触碰。
+
+### 2026-10-25 二次补强：首帧与切页缓存实证
+- 三个重型界面模块（WorkflowLibraryView / NodeTypesView / AgentProfilesView）通过 React.lazy+Suspense 首次访问才下载，初始 Node-RED canvas 不提前加载隐藏 JS 和业务 DOM。
+- 已访问 catalog/profiles 的 enabled 标志保持为 true，返回 canvas 再回库不触发 useRpc false→true 的重复 IPC 查询；显式刷新与保存后 refetch 仍有效。
+- workflow-ui-smoke Chromium 浏览器使用真实 SettingsPage 和计数 API 桩，证实首帧 workflow.list/nodeTypes/agentProfiles 都为 0，首次访问库各 1 次、离开后回来仍保持各 1 次。恢复无条件首帧 nodeTypes 会红；恢复按 view 切换 enabled 会红。变异均已恢复。
+- focusWorkflowId 是一次性意图：库消费并清空后不能退回画布；新增浏览器断言。旧 automation 深链首帧直接进入同一工作流库的自动化分类，无中间引擎画布闪现。
+- 量化 RSS / CPU / Electron startup / 可见视图数仍需要后续真实进程 U1；不宣称目前已经证明内存下降具体数值。

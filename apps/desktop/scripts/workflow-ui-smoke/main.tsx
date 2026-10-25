@@ -61,6 +61,7 @@ let hasRun = false;
 const runCalls: Array<{workflowId:string;triggerNodeId:string;savedTask:unknown}> = [];
 const saves: WorkflowDoc[] = [];
 const nativeLoads: string[] = [];
+const apiCalls: string[] = [];
 const apiImpl: Record<string,Record<string,(...args: never[]) => unknown>> = {};
 // The preview kit looks methods up on this object at call time. No real bridge exists.
 const impl = {
@@ -69,15 +70,16 @@ const impl = {
       nativeLoads.push(workflowId);
       return {ok:true};
     },
-    list: async () => ({engines:[]}),
+    list: async () => { apiCalls.push("workflowEngine.list"); return {engines:[]}; },
   },
   workflow:{
-    nodeTypes:async()=>clone(catalog),
+    nodeTypes:async()=>{apiCalls.push("workflow.nodeTypes");return clone(catalog);},
     agentProfiles:async()=>{
+      apiCalls.push("workflow.agentProfiles");
       if(scenario==='profiles-error') throw new Error('审查注入：档案读取失败');
       return {profiles:[],problems:[]};
     },
-    list:async()=>({workflows:Object.values(docs).map(d=>clone({...d,edited:false,nodeCount:d.nodes.length}))}),
+    list:async()=>{apiCalls.push("workflow.list");return {workflows:Object.values(docs).map(d=>clone({...d,edited:false,nodeCount:d.nodes.length}))};},
     get:async({id}:{id:string})=>({workflow:clone(docs[id] ?? null),review:{pending:scenario==='review-pending',revision:'fixture-revision'}}),
     save:async({workflow:d}:{workflow:WorkflowDoc})=>{
       saves.push(clone(d));
@@ -125,15 +127,16 @@ interface AuditWindow {
   __apiImpl: typeof apiImpl;
   __apiCalls?: string[];
   api: {platform:string;on:{workflowsChanged:(fn:(event?:{reason:string})=>void)=>()=>void}};
-  __audit:{docs:typeof docs;saves:typeof saves;nativeLoads:typeof nativeLoads;runCalls:typeof runCalls;completeRun:()=>void;emitWorkflowChange:()=>void};
+  __audit:{docs:typeof docs;saves:typeof saves;nativeLoads:typeof nativeLoads;apiCalls:typeof apiCalls;focusId:()=>string|null;runCalls:typeof runCalls;completeRun:()=>void;emitWorkflowChange:()=>void};
   __ready:boolean;
 }
 const w=window as unknown as AuditWindow;
 w.__apiImpl=apiImpl;
 w.api={platform:'win32',on:{workflowsChanged:(fn)=>{workflowListeners.add(fn);return()=>{workflowListeners.delete(fn);};}}};
-w.__audit={docs,saves,nativeLoads,runCalls,completeRun:()=>{status='success';},emitWorkflowChange:()=>{for(const fn of workflowListeners)fn({reason:'node-red:deploy:audit-workflow'});}};
+w.__audit={docs,saves,nativeLoads,apiCalls,focusId:()=>useSessionStore.getState().settingsFocusWorkflowId,runCalls,completeRun:()=>{status='success';},emitWorkflowChange:()=>{for(const fn of workflowListeners)fn({reason:'node-red:deploy:audit-workflow'});}};
 useSessionStore.setState({
   settingsSection: scenario.startsWith('automation') ? 'automation' : 'workflows',
+  settingsFocusWorkflowId: scenario === 'focus' ? 'audit-workflow' : null,
   locale:query.get('locale')==='en'?'en':'zh',
   providers:[],
   projects:[{id:'audit-project',name:'审查样例项目',path:'C:/audit-fixture',archived:false,sortOrder:0,pinnedAt:null,createdAt:0,updatedAt:0}],

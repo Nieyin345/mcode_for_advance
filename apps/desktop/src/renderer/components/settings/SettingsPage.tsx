@@ -23,7 +23,6 @@ import {
   IconPuzzle,
   IconActivity,
   IconArrowsSplit,
-  IconBolt,
   IconBook,
   McpIcon,
   IconNotebook,
@@ -232,10 +231,11 @@ const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: "settings.navGroup.docs",
     items: [
-      // 工作流/自动化是"AI 按什么流程做事"，与文档/编辑器同属工作台产出物；
-      // 两者排在一起，同一张图、同一个编辑器，差别只在谁把它跑起来。
+      // 工作流与自动化共用一套工作台：画布、数据与 Node-RED 执行器唯一；
+      // 自动化只是工作流库中的类型，旧深链仍能进入这个入口。
+      // One workflow surface. Automation is a library category (same native
+      // Node-RED process/canvas), not a second settings destination.
       { id: "workflows", labelKey: "settings.nav.workflows", icon: IconArrowsSplit },
-      { id: "automation", labelKey: "settings.nav.automation", icon: IconBolt },
       // 数据根与资料库设置合并在同一个入口;入口名保留「文档管理」,内容先显示
       // 数据位置,再配置文档如何供 AI 使用。旧 data-root 深链在初始化时映射到这里。
       { id: "library-types", labelKey: "settings.nav.libraryTypes", icon: IconBook },
@@ -288,11 +288,17 @@ export function SettingsPage() {
   // 只为**已持久化的旧设置状态**：不映射的话那些旧值会回落到 `NAV_ITEMS[0]`（常规），
   // 与用户上一步看到的栏目对不上。
   const requestedSection =
-    settingsSection === "data-root"
+    settingsSection === "automation" ? "workflows"
+    : settingsSection === "data-root"
       ? "library-types"
       : settingsSection === "office"
         ? "runtimes"
         : settingsSection;
+  // Preserve existing automations deep links without mounting a second copy
+  // of WorkflowsPanel. Navigating to the single entry selects the canvas.
+  const [workflowCategory, setWorkflowCategory] = useState<"workflow" | "automation">(
+    settingsSection === "automation" ? "automation" : "workflow",
+  );
   const [active, setActive] = useState<SectionId>(
     () =>
       (requestedSection && NAV_ITEMS.some((n) => n.id === requestedSection)
@@ -311,7 +317,11 @@ export function SettingsPage() {
     if (!settingsNavRevision) return;
     const section = useSessionStore.getState().settingsSection;
     const mapped =
-      section === "data-root" ? "library-types" : section === "office" ? "runtimes" : section;
+      section === "automation" ? "workflows"
+      : section === "data-root" ? "library-types" : section === "office" ? "runtimes" : section;
+    if (section === "automation" || section === "workflows") {
+      setWorkflowCategory(section === "automation" ? "automation" : "workflow");
+    }
     if (mapped && NAV_ITEMS.some((n) => n.id === mapped)) {
       setActive(mapped as SectionId);
     } else if (mapped) {
@@ -366,7 +376,10 @@ export function SettingsPage() {
                       variant="ghost"
                       size="md"
                       aria-current={isActive ? "page" : undefined}
-                      onClick={() => setActive(item.id)}
+                      onClick={() => {
+                        if (item.id === "workflows") setWorkflowCategory("workflow");
+                        setActive(item.id);
+                      }}
                       // 【ARC-005 V2】导航项改用 CDS 控件档圆角与 32px 行高，
                       // 与侧栏会话行、分段控件同一密度；激活态保留左侧 accent 竖条
                       // （颜色之外的第二个可辨信号）。
@@ -434,8 +447,7 @@ export function SettingsPage() {
             {active === "gestures" && <GesturesPanel />}
             {active === "voice" && <VoicePanel />}
             {active === "skills" && <SkillsPanel />}
-            {active === "workflows" && <WorkflowsPanel purpose="workflow" />}
-            {active === "automation" && <WorkflowsPanel purpose="automation" />}
+            {active === "workflows" && <WorkflowsPanel purpose="workflow" initialLibraryPurpose={workflowCategory} />}
             {active === "hooks" && <HooksPanel />}
             {/* 【MC-001】同一个治理视图:场景部署 + 无人值守任务计划(后端全通却没入口的那条) ——
                 两半共用「计划 → 批准(绑正文)→ 执行(只递 grantId)」的心算模型,挂在一起用户学一次就够。 */}

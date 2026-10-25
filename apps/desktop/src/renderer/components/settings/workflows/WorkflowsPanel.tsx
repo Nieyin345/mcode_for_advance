@@ -1,55 +1,23 @@
 /**
- * 设置 → 工作流。
+ * Mcode's ONE workflow workbench.
  *
- * ## 这一页面朝谁
+ * Node-RED is the native canvas and execution runtime, not a separate product.
+ * Ordinary workflows and event-driven automations share the same canvas,
+ * node catalog and Host permission/ownership model. The library's category
+ * selector changes which documents are listed; it does not create an editor
+ * or a second execution engine.
  *
- * 面朝**流程的作者**,也就是用户自己。原来的「对话模式」在
- * `main/lib/systemPrompt.ts` 里写死,只有改代码才能动;这一页把同一批流程变成用户
- * 能读、能改、能画的东西 —— 这正是整个功能存在的理由(见方案:模型拿到技能之后仍然
- * 在"一步步试",根因是流程没有固化)。
+ * Fast first paint: on the default canvas we mount ONLY EngineRuntimePanel.
+ * Library, catalog, profile editing and their IPC reads are deferred until
+ * first visit. After visiting, their trees are retained to preserve unsaved
+ * drafts and avoid reconstructing them during frequent tab switching.
  *
- * ## 四个页签,一个 section
+ * The legacy `purpose="automation"` input remains for existing caller/tests,
+ * but SettingsPage routes both deep links through one workflow entry.
  *
- * - **工作流库**：文档列表与检查器，中部入口改为既有 Node-RED 原厂编辑器；
- *   不再维护自己的拖拽/连线画布。
- * - **节点类型**:节点引用什么类型、每种类型要什么参数、哪些清单读不进来。
- * - **代理档案**:存下来的那几份配置**,按节点类型分成组** —— 每个类型一组、每组下面
- *   是那个类型的档案,点开就能改(见 `AgentProfilesView` 的新文件头)。
- * - **第三方引擎**(ARC-006 NR2)：Node-RED 原厂编辑器的唯一宿主和引擎起停页
- *   （见 `EngineRuntimePanel`）。
- *
- * 它们合成一个页签而不是三个设置项:节点类型是**工作流的底座**(没有类型就没有
- * 节点),档案是"某个类型的一组参数"(没有类型就没有档案)—— 三者是同一条线上的
- * 三段,拆成三个设置项之后每换一页都要重新找自己在哪。装插件那条路走的是
- * 「设置 → 插件」,这里只负责把"当前有什么"说清楚。
- *
- * ## 节点类型清单与档案列表由**这一层**持有
- *
- * 三个页签都要它们:画布的「添加节点」菜单要按类型列、按档案建节点,检查器要按类型
- * 生成参数表单、按档案套用,节点类型那页要列来源,档案那页要按类型分组。各读各的会让
- * "点刷新"只刷新其中一处。所以在这里读一次、往下传 —— 顺带 `NodeTypesView` 与
- * `AgentProfilesView` 都变成纯展示组件(喂数据就能画,见冒烟脚本)。
- *
- * ## 档案在**打开这一页时**就取一次,不必先点进那个页签
- *
- * 三个页签同时挂载(靠 `hidden` 切换),所以这句话不是为了省一次渲染 —— 是为了让
- * "这一页里存了一份档案"这件事在页签之间**立刻**一致。把取数挪进页签里就等于说
- * "你先点它一下才有数据",而用户点它的那一刻看到的会是空列表再闪一下。
- *
- * ⚠️ 这里**不嵌 `ThreePaneLayout`** —— 它已经是设置页的窗口级外壳,面板内部要自己
- * 写 flex/grid(与 SkillsPanel / 模型配置同一形状:`h-full` + 内部各自滚动)。
- *
- * ## 同一个面板,两种用途(工作流 / 自动化)
- *
- * `purpose` 这一个参数决定了标题、图标、页签数量,以及库视图列哪些东西。两者**共用
- * 同一份数据、同一个编辑器**,差别只在"谁把它跑起来"(见 `@contracts/workflow`)——
- * 所以不是一个新面板,而是这个面板的另一种用法。
- *
- * 自动化那边**没有「节点类型」和「代理档案」页签**:节点类型是节点的底座,两者用的是
- * 同一批类型,说明书放一份就够了(在工作流那一边);而自动化那一页根本画不出档案能套
- * 的节点(它的起点是触发器)。
+ * Do not nest another ThreePaneLayout; SettingsPage owns the window shell.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { Button, ErrorNote } from "@renderer/components/ui/index.js";
 import { localizeWorkflowCatalog } from "./workflowPresentation.js";
@@ -60,9 +28,14 @@ import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { IconArrowsSplit, IconBolt } from "@renderer/lib/icons.js";
 import type { AgentProfile } from "@contracts/agentProfile";
 import { PanelHeader } from "../PanelHeader.js";
-import { WorkflowLibraryView } from "./WorkflowLibraryView.js";
-import { NodeTypesView } from "./NodeTypesView.js";
-import { AgentProfilesView } from "./AgentProfilesView.js";
+// Heavy library/inspector modules are downloaded only when their tab is first
+// visited. Keeping their mounted tree after that avoids draft/state loss.
+const WorkflowLibraryView = lazy(() => import("./WorkflowLibraryView.js")
+  .then(module => ({ default: module.WorkflowLibraryView })));
+const NodeTypesView = lazy(() => import("./NodeTypesView.js")
+  .then(module => ({ default: module.NodeTypesView })));
+const AgentProfilesView = lazy(() => import("./AgentProfilesView.js")
+  .then(module => ({ default: module.AgentProfilesView })));
 import { EngineRuntimePanel } from "./EngineRuntimePanel.js";
 import type { WorkflowPurpose } from "./workflowView.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
@@ -92,8 +65,9 @@ export const DEFAULT_WORKFLOWS_VIEW: WorkflowsView = "engines";
 export function initialWorkflowsView(
   purpose: WorkflowPurpose,
   focusWorkflowId: string | null | undefined,
+  libraryPurpose: WorkflowPurpose = purpose,
 ): WorkflowsView {
-  if (focusWorkflowId) return "library";
+  if (focusWorkflowId || libraryPurpose === "automation") return "library";
   return purpose === "workflow" ? DEFAULT_WORKFLOWS_VIEW : "library";
 }
 
@@ -101,12 +75,16 @@ const VIEWS: ReadonlyArray<{ id: WorkflowsView; labelKey: MessageId }> = [
   { id: "library", labelKey: "settings.workflows.tabLibrary" },
   { id: "nodeTypes", labelKey: "settings.workflows.tabNodeTypes" },
   { id: "profiles", labelKey: "settings.workflows.tabProfiles" },
-  // 【ARC-006 NR2】第三方引擎。它和节点类型 / 代理档案同一层：工作流库那一边画的是
-  // Mcode 自己的图，这一页管的是**外部引擎**的进程与它自己的编辑器。
+  // Native Node-RED canvas is Mcode’s ONLY workflow editor. Its runtime is
+  // an internal implementation detail, not a second third-party workspace.
   { id: "engines", labelKey: "settings.workflows.tabEngines" },
 ];
 
-export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
+export function WorkflowsPanel({ purpose, initialLibraryPurpose = purpose }: {
+  purpose: WorkflowPurpose;
+  /** Legacy automation deep links enter the same workflow surface with its library filter selected. */
+  initialLibraryPurpose?: WorkflowPurpose;
+}) {
   const { t } = useI18n();
   // 一次性焦点:技能/插件页的「节点」反查点一行时带的"要打开哪一份"(见 store 的
   // `settingsFocusWorkflowId`)。这里只负责**切到库那一页**;真正打开那份图、用完清掉
@@ -114,23 +92,57 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
   // 先于 `useState` 读 store:初值要经过 `initialWorkflowsView`(反查优先)。
   const focusWorkflowId = useSessionStore((s) => s.settingsFocusWorkflowId);
   const [view, setView] = useState<WorkflowsView>(() =>
-    initialWorkflowsView(purpose, focusWorkflowId),
+    initialWorkflowsView(purpose, focusWorkflowId, initialLibraryPurpose),
   );
   // A native flows.json swap restarts Node-RED; remount its status/view so an
   // old editor WebContentsView cannot keep showing the previous canvas.
   const [nativeCanvasEpoch, setNativeCanvasEpoch] = useState(0);
+  const [libraryPurpose, setLibraryPurpose] = useState<WorkflowPurpose>(initialLibraryPurpose);
+  // Focus is a one-shot navigation intent consumed by WorkflowLibraryView.
+  // Its later clearing must NOT throw the user back to the canvas.
+  const focusRef = useRef(focusWorkflowId);
+  focusRef.current = focusWorkflowId;
+  // A workflow editor is a heavyweight WebContentsView. The library, catalog
+  // and profiles are not prerequisites for opening the native canvas. Mount
+  // those trees on first visit, then retain drafts across tab switches.
+  const [visitedLibrary, setVisitedLibrary] = useState(() =>
+    initialWorkflowsView(purpose, focusWorkflowId, initialLibraryPurpose) === "library");
+  const [visitedNodeTypes, setVisitedNodeTypes] = useState(false);
+  const [visitedProfiles, setVisitedProfiles] = useState(false);
+  const chooseView = useCallback((next: WorkflowsView) => {
+    setView(next);
+    if (next === "library") setVisitedLibrary(true);
+    if (next === "nodeTypes") setVisitedNodeTypes(true);
+    if (next === "profiles") setVisitedProfiles(true);
+  }, []);
+  useEffect(() => {
+    setLibraryPurpose(initialLibraryPurpose);
+    if (initialLibraryPurpose === "automation") chooseView("library");
+    else if (purpose === "workflow" && !focusRef.current) chooseView(DEFAULT_WORKFLOWS_VIEW);
+  }, [initialLibraryPurpose, purpose, chooseView]);
   const flowDocked = useSessionStore((s) => s.paneLayout?.placements?.some(p => p.content?.kind === "flow") ?? false);
   useEffect(() => {
-    if (focusWorkflowId) setView("library");
-  }, [focusWorkflowId]);
+    if (focusWorkflowId) chooseView("library");
+  }, [focusWorkflowId, chooseView]);
   const isAutomation = purpose === "automation";
   // 自动化和工作流共用原厂引擎；节点类型与档案说明仍只在工作流页展示。
   // Both workflow and automation libraries use the same native Node-RED editor.
   const views = isAutomation ? VIEWS.filter((v) => v.id === "library" || v.id === "engines") : VIEWS;
   const prefix = isAutomation ? "automation" : "workflows";
 
-  const catalogRead = useRpc(() => api.workflow.nodeTypes(), [], { toastOnError: false });
-  const profilesRead = useRpc(() => api.workflow.agentProfiles(), [], { toastOnError: false });
+  // Skip both IPC reads on the common "open workflows -> native canvas"
+  // path. The same result is shared by all library/inspector/profile consumers.
+  // Once a panel has requested shared metadata, keep its read cache live.
+  // Toggling library -> canvas -> library should not send the same two IPC
+  // requests again (useRpc re-fetches every time enabled flips false->true).
+  const needsCatalog = visitedLibrary || visitedNodeTypes || visitedProfiles;
+  const needsProfiles = visitedLibrary || visitedProfiles;
+  const catalogRead = useRpc(() => api.workflow.nodeTypes(), [], {
+    toastOnError: false, enabled: needsCatalog,
+  });
+  const profilesRead = useRpc(() => api.workflow.agentProfiles(), [], {
+    toastOnError: false, enabled: needsProfiles,
+  });
   const catalog = useMemo(() => catalogRead.data ? localizeWorkflowCatalog(catalogRead.data, t) : null, [catalogRead.data, t]);
   const catalogError = catalogRead.error?.message ?? null;
   const catalogLoading = catalogRead.loading;
@@ -203,7 +215,7 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
                   aria-controls={panelId(prefix, item.id)}
                   tabIndex={active ? 0 : -1}
                   onKeyDown={moveTabFocus}
-                  onClick={() => setView(item.id)}
+                  onClick={() => chooseView(item.id)}
                   className={cn(
                     "rounded border px-2 py-1 text-[0.7857em] transition-colors",
                     active
@@ -229,8 +241,25 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
         aria-labelledby={tabId(prefix, "library")}
         className={cn("min-h-0 flex-1 flex-col", view === "library" ? "flex" : "hidden")}
       >
+        {visitedLibrary && <>
+        {/* Workflow and automation are categories of ONE library, not two
+            copies of the editor or two navigation destinations. */}
+        <div className="flex shrink-0 items-center gap-1 pb-2" role="group" aria-label={t("settings.nav.workflows")}>
+          <Button size="sm" variant={libraryPurpose === "workflow" ? "secondary" : "ghost"}
+            aria-pressed={libraryPurpose === "workflow"}
+            onClick={() => setLibraryPurpose("workflow")}>
+            {t("settings.nav.workflows")}
+          </Button>
+          <Button size="sm" variant={libraryPurpose === "automation" ? "secondary" : "ghost"}
+            aria-pressed={libraryPurpose === "automation"}
+            onClick={() => setLibraryPurpose("automation")}>
+            {t("settings.nav.automation")}
+          </Button>
+        </div>
+        <Suspense fallback={<div className="px-3 py-4 text-content-muted">{t("common.loading")}</div>}>
         <WorkflowLibraryView
-          purpose={purpose}
+          key={libraryPurpose}
+          purpose={libraryPurpose}
           catalog={catalog}
           catalogError={catalogError}
           onRetryCatalog={() => void loadCatalog()}
@@ -239,8 +268,10 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
           onSaveProfile={saveProfile}
           onRemoveProfile={removeProfile}
           focusWorkflowId={focusWorkflowId}
-          onOpenNativeEditor={() => { setNativeCanvasEpoch(n => n + 1); setView("engines"); }}
+          onOpenNativeEditor={() => { setNativeCanvasEpoch(n => n + 1); chooseView("engines"); }}
         />
+        </Suspense>
+        </>}
       </div>
       {/* 节点类型与代理档案这两页只有工作流那边有(`views` 里已经筛掉了),所以这整块
           对自动化不渲染 —— 挂一棵永远 `hidden` 的子树没有意义。 */}
@@ -255,12 +286,12 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
               view === "nodeTypes" ? "block" : "hidden",
             )}
           >
-            <NodeTypesView
+            {visitedNodeTypes && <Suspense fallback={<div className="px-3 py-4 text-content-muted">{t("common.loading")}</div>}><NodeTypesView
               catalog={catalog}
               loading={catalogLoading}
               error={catalogError}
               onRefresh={() => void loadCatalog()}
-            />
+            /></Suspense>}
           </div>
           {/* 代理档案是**自己的一页**(2026-09-20):它长得和节点类型那一页不一样 ——
               左边是分类、右边是这一类里的档案,而且右栏就地编辑。挤在节点类型下半部分
@@ -271,8 +302,8 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
             aria-labelledby={tabId(prefix, "profiles")}
             className={cn("min-h-0 flex-1 flex-col", view === "profiles" ? "flex" : "hidden")}
           >
-            {profilesRead.error && <ErrorNote className="mb-2" action={<Button size="sm" variant="secondary" onClick={() => void loadProfiles()}>{t("common.retry")}</Button>}>{profilesRead.error.message}</ErrorNote>}
-            {(!profilesRead.error || profilesRead.data) && <AgentProfilesView
+            {visitedProfiles && profilesRead.error && <ErrorNote className="mb-2" action={<Button size="sm" variant="secondary" onClick={() => void loadProfiles()}>{t("common.retry")}</Button>}>{profilesRead.error.message}</ErrorNote>}
+            {visitedProfiles && (!profilesRead.error || profilesRead.data) && <Suspense fallback={<div className="px-3 py-4 text-content-muted">{t("common.loading")}</div>}><AgentProfilesView
               catalog={catalog}
               profiles={profiles}
               loading={profilesLoading}
@@ -280,7 +311,7 @@ export function WorkflowsPanel({ purpose }: { purpose: WorkflowPurpose }) {
               error={profileMutationError}
               onSave={saveProfile}
               onRemove={removeProfile}
-            />}
+            /></Suspense>}
           </div>
         </>
       )}
