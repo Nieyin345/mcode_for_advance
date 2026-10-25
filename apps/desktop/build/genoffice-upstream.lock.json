@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "6a5a5cbf23e2e0ba608055a3138ae4e2b8665b67",
-  "expectedTree": "12a3eaf5586fbd48a371b212510ef63f999880b2",
+  "revision": "4c75d53afa5a2487766c38c71582b775f043c8f3",
+  "expectedTree": "38aa7ebc46c8edc9ffaa467e9640d47156e7336a",
   "patchSeries": [
     {
       "index": 1,
@@ -274,6 +274,15 @@
       "sha256": "4632af559844ab13214b2c2acfded75d88e7f10466875391c0876536600cd600",
       "bytes": 5466,
       "subject": "perf(office): defer standalone Docs and Slides AI bundles in Mcode"
+    },
+    {
+      "index": 30,
+      "file": "patches/genoffice/0030-perf-sheets-lazy-icon-equation-tools.patch",
+      "revision": "4c75d53afa5a2487766c38c71582b775f043c8f3",
+      "parentRevision": "6a5a5cbf23e2e0ba608055a3138ae4e2b8665b67",
+      "sha256": "6693a818dde049566bc780731d8e912db19dde5fb9d42161c7b42f741413c175",
+      "bytes": 3253,
+      "subject": "perf(sheets): defer optional icon and equation bundles until insert"
     }
   ],
   "license": "Apache-2.0",

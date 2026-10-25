@@ -1,0 +1,76 @@
+From 4c75d53afa5a2487766c38c71582b775f043c8f3 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 15:16:21 +0800
+Subject: [PATCH] perf(sheets): defer optional icon and equation bundles until
+ insert
+
+---
+ apps/sheets/src/renderer/App.tsx | 36 +++++++++++++++++++-------------
+ 1 file changed, 21 insertions(+), 15 deletions(-)
+
+diff --git a/apps/sheets/src/renderer/App.tsx b/apps/sheets/src/renderer/App.tsx
+index 3917481..3ddefe4 100644
+--- a/apps/sheets/src/renderer/App.tsx
++++ b/apps/sheets/src/renderer/App.tsx
+@@ -69,7 +69,7 @@ import { isNumericIdentifierText } from './cell-warning'
+ import { consumePendingUndoCarry, undoStackDepth } from './undo-carry'
+ import { createSaveGate, shouldRunSaveTick } from './save-scheduler'
+ import { onFrameOrTimeout } from './initial-hydration-frame'
+-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
++import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+ import {
+   useAutoSavePref,
+   addTokenUsage,
+@@ -480,8 +480,10 @@ import { RecoveryDialog } from './RecoveryDialog'
+ import { ToastHost } from './toast'
+ import { showToast } from './toast-bus'
+ import { AdvancedFilterDialog, type AdvancedFilterColumn } from './AdvancedFilterDialog'
+-import { EquationDialog } from './EquationDialog'
+-import { IconsDialog } from './IconsDialog'
++// Heavy optional insertion engines must not initialize before the first grid.
++// Lazy mounts retain the original journal-backed picture insert path.
++const EquationDialog = lazy(() => import('./EquationDialog').then((m) => ({ default: m.EquationDialog })))
++const IconsDialog = lazy(() => import('./IconsDialog').then((m) => ({ default: m.IconsDialog })))
+ import { RecommendedChartsDialog } from './RecommendedChartsDialog'
+ import { installPictureTransfer } from './picture-paste'
+ import { installWheelZoomSteps } from './wheel-zoom'
+@@ -5267,20 +5269,24 @@ export function App({
+         />
+       )}
+       {iconsDialogOpen && (
+-        <IconsDialog
+-          onInsert={(dataUrl, size, name) =>
+-            handleInsertIconImpl(visualContext(), dataUrl, size, name)
+-          }
+-          onClose={() => setIconsDialogOpen(false)}
+-        />
++        <Suspense fallback={null}>
++          <IconsDialog
++            onInsert={(dataUrl, size, name) =>
++              handleInsertIconImpl(visualContext(), dataUrl, size, name)
++            }
++            onClose={() => setIconsDialogOpen(false)}
++          />
++        </Suspense>
+       )}
+       {equationDialogOpen && (
+-        <EquationDialog
+-          onInsert={(dataUrl, width, height) =>
+-            handleInsertEquationImpl(visualContext(), dataUrl, width, height)
+-          }
+-          onClose={() => setEquationDialogOpen(false)}
+-        />
++        <Suspense fallback={null}>
++          <EquationDialog
++            onInsert={(dataUrl, width, height) =>
++              handleInsertEquationImpl(visualContext(), dataUrl, width, height)
++            }
++            onClose={() => setEquationDialogOpen(false)}
++          />
++        </Suspense>
+       )}
+       {recommendedCharts !== null && (
+         <RecommendedChartsDialog
+-- 
+2.52.0.windows.1
+

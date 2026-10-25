@@ -102,7 +102,8 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O16** Mcode 内建 Office 性能接缝 | ✅ **有界交付，真 Electron 性能指标待验** | `O16-inprocess-office-performance.md` | Mcode `f84c090e` | renderer 资源改为异步 realpath + 一份宿主协议，无第二服务；100× 相同 bounds：101 次原生布局→1 次；34/34 专项 PASS、关联 4 smoke PASS、双包 tsc PASS；U1 当时因重型租约被占未执行 |
 | **O17** Mcode 内建 Sheets 共享 Rust sidecar 空闲回收 | ✅ **有界交付；真实空闲回收与复启 2× PASS** | `O17-sheets-sidecar-idle-memory.md` | vendor `b643536` / Mcode `f009e9a4` + `c02b2a63` | 原 33/33 单测 + Sheets 编辑保存重开 U1 通过；另独立性能 U1 在同一 Electron OS 进程中双表格共享 worker、8 秒保活、约 62.7 秒自动回收、重新打开新 PID + Canvas，**两次真实进程级验收 PASS**；测得单 sidecar 工作集约 6.1 MiB，尚非整体 Mcode RAM/P95 |
 | **O18** 六编辑器后台驻留与进程开销基线 | ✅ **有界交付，真实 Electron 2× PASS** | `O18-six-editor-residency-baseline.md` | Mcode `caac1922` | 同一 Mcode 窗口六编辑器真实宿主渲染，全部隐藏保活/切回且 PID 不变；总 11 Electron 进程，工作集约 1.70 GiB（仅该机及样本），3 秒后台 CPU/内存采样；独立可复现性能 U1；未声称全面性能优化或完整六格式文件编辑验收 |
-| **O19** Mcode 内建 Docs/Slides 原厂 AI 模块拆包 | ✅ **有界交付，启动入口 JS 减少约 1.05 MB** | `O19-standalone-ai-lazy-bundles.md` | vendor `6a5a5cb` / Mcode 本轮提交 | Mcode Docs/Slides 正常启动无需静态解析 GenOffice 原厂 Agent UI；生产包 Docs 首包 -280,094 B、Slides -765,830 B；29 补丁来源校验；两家真 Electron 编辑保存重开 PASS；4 smoke PASS；原厂 Docs AI collapse 2 例测试缺少 desktop preload mock，单列未绿 |
+| **O19** Mcode 内建 Docs/Slides 原厂 AI 模块拆包 | ✅ **有界交付，启动入口 JS 减少约 1.05 MB** | `O19-standalone-ai-lazy-bundles.md` | vendor `6a5a5cb` / Mcode `c44cce65` | Mcode Docs/Slides 正常启动无需静态解析 GenOffice 原厂 Agent UI；生产包 Docs 首包 -280,094 B、Slides -765,830 B；29 补丁来源校验；两家真 Electron 编辑保存重开 PASS；4 smoke PASS；原厂 Docs AI collapse 2 例测试缺少 desktop preload mock，单列未绿 |
+| **O20** Sheets 可选图标/公式插入引擎延迟加载 | ✅ **有界交付；原始截图 T7 因远程显示不可捕获待测** | `O20-sheets-lazy-optional-insert-engines.md` | vendor `4c75d53` / Mcode 本轮提交 | 主入口 20,774,701→19,959,703 B（-814,998 B / -3.92%），两个可选插入 chunk 按需加载；真正独立 XLSX 回读 + OS 重启的非截图镜像 U1 PASS；30 patch 来源校验、4 smoke PASS；截图和可选对话框 GUI 功能未单独验收 |
 
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）

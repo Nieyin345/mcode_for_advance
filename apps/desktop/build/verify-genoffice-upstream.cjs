@@ -14,8 +14,8 @@ const FORMAT = "mcode.genoffice.upstream-lock.v2";
 const REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const BASE_REVISION = "cbec600ace9c930b2646b6739cf6df3741bb9d6a";
 const APPROVED_PATCH_REVISION = "73ba918083b5e2bedff7633925c3d7f625e04449";
-const FINAL_REVISION = "6a5a5cbf23e2e0ba608055a3138ae4e2b8665b67";
-const FINAL_TREE = "12a3eaf5586fbd48a371b212510ef63f999880b2";
+const FINAL_REVISION = "4c75d53afa5a2487766c38c71582b775f043c8f3";
+const FINAL_TREE = "38aa7ebc46c8edc9ffaa467e9640d47156e7336a";
 const LICENSE_SOURCE_MANIFEST = "apps/desktop/build/vendor-licenses/genoffice/manifest.json";
 const APPROVED_PATHS = Object.freeze([
   "apps/pdf/src/main/atomic-write.ts",
@@ -51,6 +51,7 @@ const PATCHES = Object.freeze([
   { file: "patches/genoffice/0027-fix-docs-call-scoped-ack-cancellation.patch", revision: "daf2f54627dfecf08dc81ecee176d37a37696a0b", parentRevision: "5f6b1d9bda041cdfc087218d2f4b77e8e58dd329", sha256: "b696f0b241a45edcc7fd44dcb2cdb304c3ad5c4790a4867ae6c8bf70a0389e4c" },
   { file: "patches/genoffice/0028-perf-sheets-idle-sidecar-retirement.patch", revision: "b6435363663f26050bf92742a01dedb65b03e46d", parentRevision: "daf2f54627dfecf08dc81ecee176d37a37696a0b", sha256: "a26c0f437796ee04376f52ca4390a967c91be3075e92b26bc11634f1de049752" },
   { file: "patches/genoffice/0029-perf-office-defer-standalone-ai-bundles.patch", revision: "6a5a5cbf23e2e0ba608055a3138ae4e2b8665b67", parentRevision: "b6435363663f26050bf92742a01dedb65b03e46d", sha256: "4632af559844ab13214b2c2acfded75d88e7f10466875391c0876536600cd600" },
+  { file: "patches/genoffice/0030-perf-sheets-lazy-icon-equation-tools.patch", revision: "4c75d53afa5a2487766c38c71582b775f043c8f3", parentRevision: "6a5a5cbf23e2e0ba608055a3138ae4e2b8665b67", sha256: "6693a818dde049566bc780731d8e912db19dde5fb9d42161c7b42f741413c175" },
 ]);
 
 function runGit(directory, ...args) {

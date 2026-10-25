@@ -12,7 +12,7 @@ const t7=resolve(here,"../t7-genoffice-u1");
 const desktop=resolve(here,"../..");
 const passthrough=process.argv.slice(2);
 for (const arg of passthrough) {
-  if (!["--only=sheets-shared-worker-idle-restart", "--only=six-editor-residency"].includes(arg)) {
+  if (!["--only=sheets-shared-worker-idle-restart", "--only=six-editor-residency", "--only=sheets-nonvisual-edit-save-reopen"].includes(arg)) {
     throw new Error("Unsupported option: "+arg);
   }
 }
