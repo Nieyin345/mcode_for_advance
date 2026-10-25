@@ -1,0 +1,77 @@
+From f174a91f27c3f499fc5be1d6aa7cc3f63204addd Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 21:26:40 +0800
+Subject: [PATCH] fix(pptx): place notes master list after slide IDs for
+ PowerPoint
+
+---
+ packages/pptx-engine/src/notes.ts             | 19 +++++++++++++------
+ .../pptx-engine/tests/speaker-notes.test.ts   | 15 +++++++++++++++
+ 2 files changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/packages/pptx-engine/src/notes.ts b/packages/pptx-engine/src/notes.ts
+index 751b130..7e8d709 100644
+--- a/packages/pptx-engine/src/notes.ts
++++ b/packages/pptx-engine/src/notes.ts
+@@ -210,12 +210,19 @@ function ensureNotesMaster(archive: PackageArchive): string | null {
+         'notesMasters/notesMaster1.xml',
+       )
+       const list = `<p:notesMasterIdLst><p:notesMasterId r:id="${rid}"/></p:notesMasterIdLst>`
+-      const next = existingList
+-        ? pres.replace(existingList, () => list)
+-        : pres.includes('</p:sldMasterIdLst>')
+-          ? pres.replace('</p:sldMasterIdLst>', () => `</p:sldMasterIdLst>${list}`)
+-          : pres.replace('<p:sldIdLst>', () => `${list}<p:sldIdLst>`)
+-      setEntry(archive, presPath, next)
++      // The p:notesMasterIdLst MUST follow p:sldIdLst. The previous
++      // serializer inserted it immediately after sldMasterIdLst, before
++      // sldIdLst. GenOffice itself reopens such XML, but Microsoft PowerPoint
++      // refuses the saved PPTX even when ZIP CRC and relationships are valid.
++      // Move a pre-existing empty list too; replacing it in place would
++      // preserve the broken ordering.
++      const withoutEmptyList = existingList ? pres.replace(existingList, '') : pres
++      const withList = withoutEmptyList.includes('</p:sldIdLst>')
++        ? withoutEmptyList.replace('</p:sldIdLst>', () => `</p:sldIdLst>${list}`)
++        : withoutEmptyList.includes('<p:sldIdLst/>')
++          ? withoutEmptyList.replace('<p:sldIdLst/>', () => `<p:sldIdLst/>${list}`)
++          : withoutEmptyList.replace(/<p:sldSz\b/, () => `${list}<p:sldSz`)
++      setEntry(archive, presPath, withList)
+     }
+   }
+   return path
+diff --git a/packages/pptx-engine/tests/speaker-notes.test.ts b/packages/pptx-engine/tests/speaker-notes.test.ts
+index 591cc4b..efc1096 100644
+--- a/packages/pptx-engine/tests/speaker-notes.test.ts
++++ b/packages/pptx-engine/tests/speaker-notes.test.ts
+@@ -55,6 +55,18 @@ describe('speaker notes', () => {
+     )
+     expect(getSlideNotes(opened.archive, slidePath)).toBe('Hello world ')
+   })
++
++  it('writes notesMasterIdLst AFTER sldIdLst so Microsoft PowerPoint can open the saved PPTX', async () => {
++    const opened = await openPptx(await createBlankPptx())
++    expect(setSlideNotes(opened, 0, 'compatibility note')).toBe(true)
++    const pres = opened.archive.readText('ppt/presentation.xml')!
++    const slideEnd = pres.indexOf('</p:sldIdLst>')
++    const notesStart = pres.indexOf('<p:notesMasterIdLst>')
++    expect(slideEnd).toBeGreaterThan(-1)
++    expect(notesStart).toBeGreaterThan(slideEnd)
++    const reopened = await openPptx(await savePptx(opened))
++    expect(getSlideNotes(reopened.archive, reopened.deck.slides[0]!.path)).toBe('compatibility note')
++  })
+   it('replaces an empty notes-master list instead of duplicating it', async () => {
+     const opened = await openPptx(await createBlankPptx())
+     const presentationPath = 'ppt/presentation.xml'
+@@ -71,6 +83,9 @@ describe('speaker notes', () => {
+     expect(updated).toMatch(
+       /<p:notesMasterIdLst><p:notesMasterId r:id="rId\d+"\/><\/p:notesMasterIdLst>/,
+     )
++    // The pre-existing empty tag was deliberately injected BEFORE sldIdLst.
++    // Repair must relocate it, not merely substitute children in place.
++    expect(updated.indexOf('<p:notesMasterIdLst>')).toBeGreaterThan(updated.indexOf('</p:sldIdLst>'))
+   })
+ 
+   it('save → reopen persists notes (notesSlide part auto-created)', async () => {
+-- 
+2.52.0.windows.1
+

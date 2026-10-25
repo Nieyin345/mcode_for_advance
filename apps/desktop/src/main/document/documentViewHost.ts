@@ -972,7 +972,15 @@ export class DocumentViewHost {
       return { ok: false, reason: `不是可读的 docx（魔数 ${bytes.subarray(0, 2).toString("latin1")}）` };
     }
     const diskHash = createHash("sha256").update(bytes).digest("hex");
-    const recovery = await inspectDocRecovery(pending.filePath, dataRoot(), diskHash);
+    let recovery: Awaited<ReturnType<typeof inspectDocRecovery>>;
+    try {
+      recovery = await inspectDocRecovery(pending.filePath, dataRoot(), diskHash);
+    } catch (err) {
+      // A corrupt manifest, missing referenced snapshot or busy recovery
+      // lease is NOT evidence that there is no unsaved draft. Present an
+      // actionable error instead of opening the older disk file silently.
+      return { ok: false, reason: err instanceof Error ? err.message : "DOCX 恢复文件检查失败" };
+    }
     if (recovery) {
       if (!this.confirmRecovery) {
         return { ok: false, reason: "发现未保存 DOCX 恢复副本，但没有配置受信恢复确认，拒绝静默覆盖" };

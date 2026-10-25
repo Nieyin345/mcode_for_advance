@@ -9,4 +9,8 @@ trap 'rm -rf "$OUT"' EXIT
   --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
   --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --outfile="$OUT/smoke.mjs" --log-level=error
-node "$OUT/smoke.mjs"
+"$ESBUILD" scripts/document-recovery-smoke/crashWorker.ts \
+  --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
+  --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
+  --outfile="$OUT/crash-worker.mjs" --log-level=error
+MCODE_DOC_RECOVERY_CRASH_WORKER="$OUT/crash-worker.mjs" node "$OUT/smoke.mjs"

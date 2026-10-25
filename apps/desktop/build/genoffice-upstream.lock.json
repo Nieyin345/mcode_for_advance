@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "9cec29e38a972f60bec2e9d956f1aa2c8a02f085",
-  "expectedTree": "58381c33953f5255f7721b6a5f7e6c99fe860c4d",
+  "revision": "f174a91f27c3f499fc5be1d6aa7cc3f63204addd",
+  "expectedTree": "5164ed29fb33cc6d6dd7fc6939861c553648d94c",
   "patchSeries": [
     {
       "index": 1,
@@ -292,6 +292,15 @@
       "sha256": "1dbbc17e1a7c7080d5adb369c05554b382d3886292e55ef18902dbf7f110e50d",
       "bytes": 2237,
       "subject": "feat(docs): route crash-recovery snapshots to Mcode trusted host"
+    },
+    {
+      "index": 32,
+      "file": "patches/genoffice/0032-fix-pptx-notes-master-order-powerpoint.patch",
+      "revision": "f174a91f27c3f499fc5be1d6aa7cc3f63204addd",
+      "parentRevision": "9cec29e38a972f60bec2e9d956f1aa2c8a02f085",
+      "sha256": "65437076a8725f341bae7200f18a340b6f3b12f95da0dd1ed48b1f3583f1d672",
+      "bytes": 3953,
+      "subject": "fix(pptx): place notes master list after slide IDs for PowerPoint"
     }
   ],
   "license": "Apache-2.0",

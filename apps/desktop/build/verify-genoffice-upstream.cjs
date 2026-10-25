@@ -14,8 +14,8 @@ const FORMAT = "mcode.genoffice.upstream-lock.v2";
 const REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const BASE_REVISION = "cbec600ace9c930b2646b6739cf6df3741bb9d6a";
 const APPROVED_PATCH_REVISION = "73ba918083b5e2bedff7633925c3d7f625e04449";
-const FINAL_REVISION = "9cec29e38a972f60bec2e9d956f1aa2c8a02f085";
-const FINAL_TREE = "58381c33953f5255f7721b6a5f7e6c99fe860c4d";
+const FINAL_REVISION = "f174a91f27c3f499fc5be1d6aa7cc3f63204addd";
+const FINAL_TREE = "5164ed29fb33cc6d6dd7fc6939861c553648d94c";
 const LICENSE_SOURCE_MANIFEST = "apps/desktop/build/vendor-licenses/genoffice/manifest.json";
 const APPROVED_PATHS = Object.freeze([
   "apps/pdf/src/main/atomic-write.ts",
@@ -53,6 +53,7 @@ const PATCHES = Object.freeze([
   { file: "patches/genoffice/0029-perf-office-defer-standalone-ai-bundles.patch", revision: "6a5a5cbf23e2e0ba608055a3138ae4e2b8665b67", parentRevision: "b6435363663f26050bf92742a01dedb65b03e46d", sha256: "4632af559844ab13214b2c2acfded75d88e7f10466875391c0876536600cd600" },
   { file: "patches/genoffice/0030-perf-sheets-lazy-icon-equation-tools.patch", revision: "4c75d53afa5a2487766c38c71582b775f043c8f3", parentRevision: "6a5a5cbf23e2e0ba608055a3138ae4e2b8665b67", sha256: "6693a818dde049566bc780731d8e912db19dde5fb9d42161c7b42f741413c175" },
   { file: "patches/genoffice/0031-feat-docs-mcode-guarded-crash-recovery.patch", revision: "9cec29e38a972f60bec2e9d956f1aa2c8a02f085", parentRevision: "4c75d53afa5a2487766c38c71582b775f043c8f3", sha256: "1dbbc17e1a7c7080d5adb369c05554b382d3886292e55ef18902dbf7f110e50d" },
+  { file: "patches/genoffice/0032-fix-pptx-notes-master-order-powerpoint.patch", revision: "f174a91f27c3f499fc5be1d6aa7cc3f63204addd", parentRevision: "9cec29e38a972f60bec2e9d956f1aa2c8a02f085", sha256: "65437076a8725f341bae7200f18a340b6f3b12f95da0dd1ed48b1f3583f1d672" },
 ]);
 
 function runGit(directory, ...args) {

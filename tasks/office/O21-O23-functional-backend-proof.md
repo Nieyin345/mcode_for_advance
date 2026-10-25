@@ -60,3 +60,26 @@
 - `docs-ai-tool-native-transaction` → **PASS / 2 独立 OS 进程**，`.tmp/electron-u1/2026-10-25T11-22-04-417Z`。
 
 备注：`document-view-host-smoke` 重跑仍为 **537/538**，唯一失败是旧 IPC 清单中固定内部通道数量（8）与新增 `write-recovery` 通道不符，见 `apps/desktop/.tmp/smoke-runs/1792926625324-33220-MmnUyv`。该测试文件正在其他执行对话中修改，本次不更改其内容；其余相关 5 smoke 与三套真实 U1 通过不代表这套旧验收已绿。
+
+
+## 2026-10-25 最终交付前主线批次：强制崩溃存储 + Microsoft Office 真回读 + 32 号 PPTX 修复
+
+### 恢复副本 v2 的真实崩溃边界
+
+旧 Mcode 恢复存储 v1 顺次对固定 `key.docx` 和 `key.json` 两个目标原子替换：进程若在**新 payload 替换成功而清单尚未写入**时死亡，旧 manifest 会指向已经被覆盖的新 payload，旧恢复稿损坏或被静默遗漏。新 `documentRecovery.ts` 将 payload 置为 SHA256 内容寻址的**不可变文件**，确保新 payload 先 fsync 落盘，最后原子替换唯一有效 manifest 指针。清理仅在完整提交后按 hash 白名单执行；保留 v1 旧格式的读取和清理兼容。任何已提交清单损坏、清单指向的字节缺失或哈希校验错误**必须拒绝打开并保留证据**，不把恢复失败解释为“没有恢复稿”。Mcode `DocumentViewHost.readOpened` 将拒绝转换为可见 `ok:false/reason`，避免未经确认静默载入旧文件。
+
+`document-recovery-smoke` 新增崩溃中断注入、原快照留存、新快照切换、旧文件迁移读取、损坏清单 fail closed，以及**独立 Node OS writer 进程**在新 snapshot fsync 完成后、manifest 提交前被父进程 `SIGKILL` 真终止，主进程随后自动回收死进程文件租约、旧恢复稿与原始 DOCX 均完好。**32/32 PASS**（`apps/desktop/.tmp/smoke-runs/1792934895195-10844-giPGVb/document-recovery-smoke.log`；后续完整关联 `6/6` 独立组合 PASS，见日志 `1792933269903-9464-1mWuE9`）。这是恢复 writer 的真实进程终止，**并非对生产 Electron 主进程直接 kill**，两者范围不可混淆。
+
+v2 写盘修复后真 Electron：`docs-crash-recovery-mcode` 3 个 OS 进程 PASS（`.tmp/electron-u1/2026-10-25T13-02-51-850Z`）、`docs-recovery-external-conflict` 2 进程 PASS（`.tmp/electron-u1/2026-10-25T13-03-01-736Z`）、`docs-ai-tool-native-transaction` 2 进程 PASS（`.tmp/electron-u1/2026-10-25T13-03-09-049Z`）。所用是真正 Mcode 受信 session + GenOffice 原生 Docs，但 AI 工具由确定性 SDK 替身驱动，不冒充在线 Claude/Pi/Codex。
+
+### 真实 Microsoft PowerPoint 拒绝打开的产品缺陷（本轮已修）
+
+1. 真实 Mcode Slides 保存的含备注/动画/图表 PPTX 可被 GenOffice 自身和 Python `python-pptx` 读取，但 `PowerPoint.Application.Presentations.Open(..., ReadOnly=True, WithWindow=False)` 报错。已有官方 Microsoft Office 安装于当前 Windows 系统（仅未列入 PATH），通过 `DispatchEx` 独立只读 COM 实例完成验证。
+2. 新增 U1 `slides-ms-office-interop-isolation`（真实原厂 native renderer/main/preload + Mcode Host）逐步保存独立的 **7 份 PPTX**：baseline、notes、transition、section、comment、animation、chart，按次序操作、真实落盘。修复前真实 Microsoft PowerPoint **仅 baseline PASS，其他 6 份 FAIL**（`.tmp/electron-u1/2026-10-25T13-14-57-047Z`）。
+3. 验证 ZIP CRC 无损、XML 语法有效、内部 relationship target 存在；重新压缩、`python-pptx` 重保存仍失败，原始 baseline 能被微软打开。用 OOXML 手术对照证明只移动 `ppt/presentation.xml` 内的 `p:notesMasterIdLst`，使其在 `p:sldIdLst` **之后**而非原厂的 `p:sldMasterIdLst` 之后，就能让微软 PowerPoint 打开并访问备注。
+4. **修复 GenOffice 真源码** `packages/pptx-engine/src/notes.ts`：新生成和已有自闭合空列表均需插在正确的 slide ID list 后，而不是原位替换或直接删除元素。添加 `speaker-notes.test.ts` 失败优先的反例，旧代码 **11/12、唯一 FAIL**（`notesStart=365` 早于 `slideEnd=479`），修改后连 `notes-comments.test.ts` 共 **20/20 PASS**，PPTX engine + Slides 两套 TypeScript PASS，Slides 生产 electron-vite 构建 PASS。
+5. **真正的跨软件绿证据**：用同一个 U1 + Microsoft PowerPoint `ppt_matrix.py` 重跑，`7/7` 全 PASS（`.tmp/electron-u1/2026-10-25T13-23-13-170Z`）。微软 COM 读取到 `Interop stage notes` 正文、1 条动画、图表对象及一个数据系列，不只是 PowerPoint 启动成功。原厂 fork commit `f174a91f27c3f499fc5be1d6aa7cc3f63204addd`，tree `5164ed29fb33cc6d6dd7fc6939861c553648d94c`，第 32 条源代码补丁 `patches/genoffice/0032-fix-pptx-notes-master-order-powerpoint.patch`，SHA256 `65437076a8725f341bae7200f18a340b6f3b12f95da0dd1ed48b1f3583f1d672`，**32/32 来源校验通过**。
+6. 独立第三方 Office 样本交叉回读：真 AI 修改 DOCX、真 XLSX `A1=5 B1=7 C1=SUM(A1:B1)`、真 PPTX 带备注动画图表，`readback.py --with-office` → `openpyxl/python-pptx/zipfile` **3/3 PASS**，真正安装的 Microsoft Word、Excel、PowerPoint 的只读 COM **3/3 PASS**。环境未发现 WPS、LibreOffice；只表示这三份样本及这台机器通过。可复跑说明位于 `apps/desktop/scripts/office-interop/README.md`。
+7. `node apps/desktop/scripts/run-smokes.mjs o3-packaged-smoke` → 现有 `win-unpacked` 解压版六格式验收 PASS（`apps/desktop/.tmp/smoke-runs/1792933338935-27572-g4Hgbg`），**但此旧构建不含本轮源码修复**；现有 `release/Mcode-0.1.62-x64.exe` Authenticode **NotSigned**；未申请证书、未擅自重打包、未运行 NSIS 安装/升级/卸载，故正式发布未达到验收。
+8. Office smokes 源码、SDK 协议、native view、release 输出等已分别验证；尝试一次含复杂 `o0-format-fidelity-smoke` 的十套合集因执行时间长超时，不能把整批写为 10/10 PASS，必要日志分别保留于 `apps/desktop/.tmp/smoke-runs/1792934895195-10844-giPGVb`。双包 Mcode `tsc --noEmit` PASS。
+9. `document-view-host-smoke` 旧的 8 通道数目硬编码仍导致 537/538；该套已有并行对话的未提交修改，故本批次不擅自覆盖。仍未得到三在线 SDK 真凭据；WPS、跨 OS、全面复杂格式与 **最新源码**的安装版验收仍需继续。**ARC-007 整体验收不得勾选**。

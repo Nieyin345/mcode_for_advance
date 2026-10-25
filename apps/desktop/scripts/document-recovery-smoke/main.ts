@@ -1,4 +1,6 @@
-import { mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, stat, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
@@ -88,13 +90,100 @@ try {
    inspected?.bytes.equals(modified) === true && inspected.baseRevision === changed);
  // Find the name of exactly this test's cache and corrupt its contents;
  // parsing must NEVER treat a broken snapshot as genuine recovery material.
- const { readdir } = await import("node:fs/promises");
  const dir=join(dataRoot,"docs","recovery");
- const f=(await readdir(dir)).find(n=>n.endsWith(".docx"));
+ const names=await readdir(dir);
+ const f=names.find(n=>n.endsWith(".docx"));
  if (!f) throw Error("missing expected recovery file");
  await writeFile(join(dir,f),Buffer.from("corrupt"));
- check("tampered recovery data fails checksum/ZIP and is never restored",
-   await inspectDocRecovery(original,dataRoot,changed)===null);
+ let corruptRejected=false;
+ try { await inspectDocRecovery(original,dataRoot,changed); }
+ catch(e){corruptRejected=String(e).includes("校验失败");}
+ check("tampered recovery data fails CLOSED rather than opening old DOCX",corruptRejected);
+ await clearDocRecovery(original,dataRoot);
+
+ // Crash consistency: a newly fsynced payload MUST NOT corrupt an older
+ // committed snapshot when the process dies before manifest publication.
+ const oldCopy=Buffer.from([0x50,0x4b,0x03,0x04,0x41,0x42]);
+ const newCopy=Buffer.from([0x50,0x4b,0x03,0x04,0x61,0x62]);
+ check("v2 first committed snapshot succeeds",
+   (await writeDocRecovery({filePath:original,baseRevision:changed,dataRoot,bytes:oldCopy})).ok);
+ const crashed=await writeDocRecovery({
+   filePath:original,baseRevision:changed,dataRoot,bytes:newCopy,
+   beforeManifestCommit:async()=>{throw Error("simulated process death after payload fsync");},
+ });
+ check("injected crash between payload and manifest is reported",!crashed.ok);
+ const survived=await inspectDocRecovery(original,dataRoot,changed);
+ check("crash BEFORE manifest rename preserves previous committed DOCX",
+   survived?.bytes.equals(oldCopy)===true && survived.baseRevision===changed);
+ check("new committed snapshot survives without modifying original",
+   (await writeDocRecovery({filePath:original,baseRevision:changed,dataRoot,bytes:newCopy})).ok);
+ const newSnapshot=await inspectDocRecovery(original,dataRoot,changed);
+ check("manifest switches atomically to validated newer payload",
+   newSnapshot?.bytes.equals(newCopy)===true && (await readFile(original)).length===5);
+ const entries=await readdir(dir);
+ check("old/orphan DOCX snapshots collected after commit",
+   entries.filter(n=>n.endsWith(".docx")).length===1,entries);
+
+ // REAL PROCESS KILL (not an orderly teardown): another Node OS process
+ // obtains the cross-process file lease, fsyncs a replacement snapshot,
+ // pauses immediately BEFORE its commit point, and gets forcibly killed.
+ // Old recovery bytes and the original file must survive and the deceased
+ // process's .mcode-lock must be safely reclaimed.
+ const workerPath=process.env.MCODE_DOC_RECOVERY_CRASH_WORKER;
+ if(!workerPath)throw Error("missing isolated crash worker: run through run.sh");
+ const child=spawn(process.execPath,[workerPath,original,dataRoot,changed],{
+   windowsHide:true,stdio:["ignore","pipe","pipe"],
+ });
+ let childOutput="";
+ let childError="";
+ child.stderr?.on("data",(b:Buffer)=>{childError+=String(b);});
+ try {
+   await new Promise<void>((resolve,reject)=>{
+     let settled=false;
+     const timeout=setTimeout(()=>{if(!settled){settled=true;reject(Error("child didn't reach crash point "+childOutput+" "+childError));}},15000);
+     child.stdout?.on("data",(buf:Buffer)=>{
+       childOutput+=String(buf);
+       if(!settled && childOutput.includes("READY_TO_KILL")){
+         settled=true;clearTimeout(timeout);resolve();
+       }
+     });
+     child.once("error",err=>{if(!settled){settled=true;clearTimeout(timeout);reject(err);}});
+     child.once("exit",()=>{if(!settled){settled=true;clearTimeout(timeout);reject(Error("child exited before crash point "+childError));}});
+   });
+   const killed=child.kill("SIGKILL");
+   check("only isolated recovery writer child is forcibly terminated",killed,{pid:child.pid});
+   await new Promise<void>((resolve,reject)=>{
+     if(child.exitCode!==null || child.signalCode!==null){resolve();return;}
+     const timeout=setTimeout(()=>reject(Error("kill did not exit child "+child.pid)),10000);
+     child.once("exit",()=>{clearTimeout(timeout);resolve();});
+   });
+   const postKill=await inspectDocRecovery(original,dataRoot,changed);
+   check("real OS crash after new fsync still exposes previous committed draft",
+     postKill?.bytes.equals(newCopy)===true && postKill.baseRevision===changed);
+   check("real process kill never rewrites original disk document",
+     (await readFile(original)).length===5);
+ }finally{ if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL"); }
+
+ // Legacy on-disk v1 format remains compatible after upgrade to v2.
+ await clearDocRecovery(original,dataRoot);
+ const real=await (await import("node:fs/promises")).realpath(original);
+ const key=createHash("sha256").update(real).digest("hex");
+ await writeFile(join(dir,key+".docx"),oldCopy);
+ await writeFile(join(dir,key+".json"),JSON.stringify({
+   version:1,baseRevision:changed,snapshotSha256:createHash("sha256").update(oldCopy).digest("hex"),savedAt:123,
+ }));
+ const oldVersion=await inspectDocRecovery(original,dataRoot,changed);
+ check("previous-release v1 recovery manifest is still readable",
+   oldVersion?.bytes.equals(oldCopy)===true && oldVersion.savedAt===123);
+ await clearDocRecovery(original,dataRoot);
+ check("legacy v1 cleanup removes old payload",
+   (await readdir(dir)).filter(n=>n.endsWith(".docx")).length===0);
+
+ await writeFile(join(dir,key+".json"),"{not-json");
+ let badManifestRejected=false;
+ try {await inspectDocRecovery(original,dataRoot,changed);}
+ catch(e){badManifestRejected=String(e).includes("恢复清单损坏");}
+ check("malformed committed manifest fails CLOSED",badManifestRejected);
  await clearDocRecovery(original,dataRoot);
  check("clear leaves no original DOCX mutation",(await stat(original)).size===5);
 } finally {await rm(root,{recursive:true,force:true});}

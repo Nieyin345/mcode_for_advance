@@ -12,7 +12,7 @@ const t7=resolve(here,"../t7-genoffice-u1");
 const desktop=resolve(here,"../..");
 const passthrough=process.argv.slice(2);
 for (const arg of passthrough) {
-  if (!["--only=sheets-shared-worker-idle-restart", "--only=six-editor-residency", "--only=sheets-nonvisual-edit-save-reopen", "--only=slides-native-semantics", "--only=docs-crash-recovery-mcode", "--only=docs-ai-tool-native-transaction", "--only=sheets-formula-native-roundtrip", "--only=docs-recovery-external-conflict"].includes(arg)) {
+  if (!["--only=sheets-shared-worker-idle-restart", "--only=six-editor-residency", "--only=sheets-nonvisual-edit-save-reopen", "--only=slides-native-semantics", "--only=docs-crash-recovery-mcode", "--only=docs-ai-tool-native-transaction", "--only=sheets-formula-native-roundtrip", "--only=docs-recovery-external-conflict", "--only=slides-ms-office-interop-isolation"].includes(arg)) {
     throw new Error("Unsupported option: "+arg);
   }
 }

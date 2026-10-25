@@ -8,7 +8,7 @@
 export { beforeReady, afterReady } from "../../t7-genoffice-u1/journeys/index.js";
 import type { U1Journey } from "../../electron-u1/driver/types.js";
 
-export const journeyNames = ["sheets-shared-worker-idle-restart", "six-editor-residency", "sheets-nonvisual-edit-save-reopen", "slides-native-semantics", "docs-crash-recovery-mcode", "docs-ai-tool-native-transaction", "sheets-formula-native-roundtrip", "docs-recovery-external-conflict"] as const;
+export const journeyNames = ["sheets-shared-worker-idle-restart", "six-editor-residency", "sheets-nonvisual-edit-save-reopen", "slides-native-semantics", "docs-crash-recovery-mcode", "docs-ai-tool-native-transaction", "sheets-formula-native-roundtrip", "docs-recovery-external-conflict", "slides-ms-office-interop-isolation"] as const;
 const loaders: Record<string, () => U1Journey> = {
   "sheets-shared-worker-idle-restart": () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -19,6 +19,12 @@ const loaders: Record<string, () => U1Journey> = {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require("./six-editor-residency.js") as typeof import("./six-editor-residency.js");
     return mod.sixEditorResidencyJourney;
+  },
+  "slides-ms-office-interop-isolation": () => {
+    // Real vendor slide mutations saved one at a time for independent MS PowerPoint readback.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("./slides-ms-office-interop-isolation.js") as typeof import("./slides-ms-office-interop-isolation.js");
+    return mod.slidesInteropIsolationJourney;
   },
   "docs-recovery-external-conflict": () => {
     // Stale restored DOCX against external writer: normal Mcode CAS must reject.

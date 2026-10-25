@@ -104,9 +104,9 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O18** 六编辑器后台驻留与进程开销基线 | ✅ **有界交付，真实 Electron 2× PASS** | `O18-six-editor-residency-baseline.md` | Mcode `caac1922` | 同一 Mcode 窗口六编辑器真实宿主渲染，全部隐藏保活/切回且 PID 不变；总 11 Electron 进程，工作集约 1.70 GiB（仅该机及样本），3 秒后台 CPU/内存采样；独立可复现性能 U1；未声称全面性能优化或完整六格式文件编辑验收 |
 | **O19** Mcode 内建 Docs/Slides 原厂 AI 模块拆包 | ✅ **有界交付，启动入口 JS 减少约 1.05 MB** | `O19-standalone-ai-lazy-bundles.md` | vendor `6a5a5cb` / Mcode `c44cce65` | Mcode Docs/Slides 正常启动无需静态解析 GenOffice 原厂 Agent UI；生产包 Docs 首包 -280,094 B、Slides -765,830 B；29 补丁来源校验；两家真 Electron 编辑保存重开 PASS；4 smoke PASS；原厂 Docs AI collapse 2 例测试缺少 desktop preload mock，单列未绿 |
 | **O20** Sheets 可选图标/公式插入引擎延迟加载 | ✅ **有界交付；原始截图 T7 因远程显示不可捕获待测** | `O20-sheets-lazy-optional-insert-engines.md` | vendor `4c75d53` / Mcode 本轮提交 | 主入口 20,774,701→19,959,703 B（-814,998 B / -3.92%），两个可选插入 chunk 按需加载；真正独立 XLSX 回读 + OS 重启的非截图镜像 U1 PASS；30 patch 来源校验、4 smoke PASS；截图和可选对话框 GUI 功能未单独验收 |
-| **O21** Mcode Docs 二进制崩溃恢复与新旧版本冲突 | ✅ **功能闭环 U1 PASS；真实 OS kill/加密恢复待验** | `O21-O23-functional-backend-proof.md` | vendor `9cec29e` / Mcode 本轮提交 | Mcode 唯一受信 dataRoot 快照、版本检查、恢复选择、CAS 冲突、防旧恢复稿覆盖新磁盘；3 进程恢复保存 + 2 进程旧稿冲突 U1 PASS；31 patch 来源校验 |
+| **O21** Mcode Docs 二进制崩溃恢复与新旧版本冲突 | ✅ **真实 writer OS kill 已验证；加密 DOCX 待验** | `O21-O23-functional-backend-proof.md` | vendor `9cec29e` / Mcode 本轮提交 | Mcode v2 不可变 SHA256 快照 + 单原子清单指针；真实子进程在字节 fsync 后、清单提交前强杀，旧快照保留且死锁租约可回收；兼容 v1；损坏清单拒绝静默跳过；正常恢复 3 代 Electron、冲突 2 代 PASS |
 | **O22** Mcode AI 原生工具修改保存事务 | ✅ **确定性模型替身的真实编辑器功能 U1 PASS；在线三 SDK 待验** | `O21-O23-functional-backend-proof.md` | Mcode 本轮提交 | 真 Docs ProseMirror 工具调用/ACK、伪造 ID 拒绝、Mcode CAS 保存、独立进程读回；现有 SDK 工具协议 3 smoke PASS，不声称在线模型/E2E 完成 |
-| **O23** Slides 动画图表 / Sheets 公式真实保真 | ✅ **有界格式 U1 PASS；Word/WPS 外部回读待验** | `O21-O23-functional-backend-proof.md` | Mcode 本轮提交 | PPTX 备注/章节/动画/图表/批注/Undo-Redo 写入重开；XLSX SUM 公式经 Rust sidecar 写入 + 独立 CLI/XML + 重启读回；未覆盖所有复杂格式 |
+| **O23** Slides / Sheets / Docs 真实 Office 保真 | ✅ **微软 Word/Excel/PowerPoint 实际回读 3/3 PASS；WPS 待验** | `O21-O23-functional-backend-proof.md` | vendor `f174a91` / Mcode 本轮提交 | 实测微软 PowerPoint 原先因 notesMasterIdLst 写入顺序拒绝 6/7 文件；修复原厂 PPTX OOXML 序列化后七阶段全部可打开，备注/动画/图表可见；Word/Excel/PowerPoint 同机 COM 3/3 + Python 解析 3/3 PASS；32 patch 来源校验 |
 
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）
