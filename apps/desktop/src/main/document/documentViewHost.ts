@@ -278,6 +278,9 @@ interface LiveDocumentView {
   url: string;
   /** 最近一次渲染端量出来的可见几何。 */
   bounds: DocViewRect;
+  /** Last geometry successfully sent to the OS view (including offscreen).
+   *  Kept separately so a failed setBounds can be retried with the same rect. */
+  appliedBounds: DocViewRect | null;
   visible: boolean;
   /** 【ARC-007】这个视图**当前打开的那份文档**（`openPath` 成功发送后记下）。
    *
@@ -643,6 +646,7 @@ export class DocumentViewHost {
       view,
       url: checked.url,
       bounds: input.bounds,
+      appliedBounds: null,
       visible: false,
       openedFilePath: null,
       mcodeSessionId: input.mcodeSessionId ?? null,
@@ -1969,24 +1973,29 @@ export class DocumentViewHost {
     }
   }
 
-  private applyBounds(live: LiveDocumentView): void {
+  /** One native-layout seam for visible and parked editors. A failed
+   *  setBounds never enters the dedup cache: the next identical measurement
+   *  retries rather than treating a missing OS layout as already applied. */
+  private applyNativeBounds(live: LiveDocumentView, bounds: DocViewRect, operation: string): void {
+    const prev = live.appliedBounds;
+    if (prev && prev.x === bounds.x && prev.y === bounds.y &&
+        prev.width === bounds.width && prev.height === bounds.height) return;
     try {
-      live.view.setBounds(live.bounds);
+      live.view.setBounds(bounds);
+      live.appliedBounds = { ...bounds };
     } catch (err) {
       log.warn(
-        `document view setBounds failed: ${live.docId} ${err instanceof Error ? err.message : String(err)}`,
+        `document view ${operation} failed: ${live.docId} ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
 
+  private applyBounds(live: LiveDocumentView): void {
+    this.applyNativeBounds(live, live.bounds, "setBounds");
+  }
+
   private parkOffscreen(live: LiveDocumentView): void {
-    try {
-      live.view.setBounds(offscreenBounds(live.bounds));
-    } catch (err) {
-      log.warn(
-        `document view park failed: ${live.docId} ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    this.applyNativeBounds(live, offscreenBounds(live.bounds), "park");
   }
 
   private detachAndDestroy(live: LiveDocumentView): void {

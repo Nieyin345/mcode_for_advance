@@ -3,14 +3,15 @@
  * The single resource resolver accepts only the same two CLI layouts as
  * editorPageUrl / resolveGenofficeCliPath, never guesses an arbitrary folder.
  */
-import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { lstatSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { net, protocol } from "electron";
 import { pathToFileURL } from "node:url";
 import { createNativeView, configureNativeRuntimes, vendorAvailable } from "@main/document/genofficeNativeVendor.js";
 import { DOCUMENT_HANDOFF_SCHEME } from "./documentViewHandoff.js";
 import { PANEL_SCHEME } from "@contracts/customUiPanel";
 import type { DocumentViewLike } from "./documentViewHost.js";
+import { resolveSafeGenofficeAsset } from "./genofficeAssetPath.js";
 
 export type NativeKind = "pdf" | "markdown" | "html" | "sheets" | "slides";
 export type NativeHostStatus = Record<NativeKind, boolean>;
@@ -92,26 +93,19 @@ export function registerGenofficeNativeScheme(): void {
   ]);
 }
 
-/** One bounded scheme endpoint for the five original renderer bundles. */
+/** One bounded, asynchronous scheme endpoint for the five renderer bundles.
+ *  Every chunk/font request used to block Electron's main thread on several
+ *  synchronous filesystem operations. Never cache a symlink decision: roots
+ *  and targets must still pass the same physical containment gate per request. */
 export function installGenofficeNativeProtocol(): void {
-  protocol.handle("genoffice-app", (request) => {
+  protocol.handle("genoffice-app", async (request) => {
     let url: URL;
     try { url = new URL(request.url); } catch { return new Response(null, { status: 404 }); }
     if (url.protocol !== "genoffice-app:" || !kinds.includes(url.hostname as NativeKind)) return new Response(null, { status: 404 });
     const root = roots?.[url.hostname as NativeKind];
     if (!root) return new Response(null, { status: 404 });
-    let relative: string;
-    try { relative = decodeURIComponent(url.pathname).replace(/\\/g, "/").replace(/^\/+/, ""); }
-    catch { return new Response(null, { status: 404 }); }
-    if (!relative || relative.length > 4096 || relative.includes("\0")) return new Response(null, { status: 404 });
-    const file = resolve(root, relative);
-    const canonicalRoot = resolve(root);
-    if (!file.startsWith(canonicalRoot + sep) || !existsSync(file)) return new Response(null, { status: 404 });
-    // A symlink under renderer/assets must not escape the staged vendor root.
-    let realRoot: string, realFile: string;
-    try { realRoot = realpathSync(canonicalRoot); realFile = realpathSync(file); }
-    catch { return new Response(null, { status: 404 }); }
-    if (!realFile.startsWith(realRoot + sep)) return new Response(null, { status: 404 });
-    return net.fetch(pathToFileURL(realFile).href).catch(() => new Response(null, { status: 404 }));
+    const file = await resolveSafeGenofficeAsset(root, url.pathname);
+    if (!file) return new Response(null, { status: 404 });
+    return net.fetch(pathToFileURL(file).href).catch(() => new Response(null, { status: 404 }));
   });
 }
