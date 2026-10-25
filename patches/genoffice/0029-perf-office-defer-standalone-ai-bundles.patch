@@ -1,0 +1,124 @@
+From 6a5a5cbf23e2e0ba608055a3138ae4e2b8665b67 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 14:59:58 +0800
+Subject: [PATCH] perf(office): defer standalone Docs and Slides AI bundles in
+ Mcode
+
+---
+ apps/docs/src/renderer/App.tsx               | 12 ++++++++++--
+ apps/docs/src/renderer/ai/AiPanel.tsx        |  5 +++--
+ apps/docs/src/renderer/ai/revision-author.ts |  6 ++++++
+ apps/slides/src/renderer/App.tsx             |  8 +++++++-
+ 4 files changed, 26 insertions(+), 5 deletions(-)
+ create mode 100644 apps/docs/src/renderer/ai/revision-author.ts
+
+diff --git a/apps/docs/src/renderer/App.tsx b/apps/docs/src/renderer/App.tsx
+index 163c4aa..ebda016 100644
+--- a/apps/docs/src/renderer/App.tsx
++++ b/apps/docs/src/renderer/App.tsx
+@@ -9,6 +9,8 @@ import {
+   useReducer,
+   useRef,
+   useState,
++  lazy,
++  Suspense,
+ } from 'react'
+ import type { CSSProperties, MouseEvent as ReactMouseEvent, SetStateAction } from 'react'
+ import { EditorContent, useEditor } from '@tiptap/react'
+@@ -93,8 +95,12 @@ import {
+ import type { AiDocContent, AiSettings, MenuCommand, OpenDocxResult } from '../shared/ipc'
+ import { AI_PROVIDERS } from '../shared/ipc'
+ import { ZoteroDocumentController } from './zotero/controller'
+-import { AiPanel, AI_REVISION_AUTHOR } from './ai/AiPanel'
++import { AI_REVISION_AUTHOR } from './ai/revision-author'
+ import { isMcodeHostedUi } from '@genoffice/ui'
++
++// Mcode owns the sole AI engine/UI. Keep GenOffice's standalone AI panel out of
++// Mcode's normal document renderer startup and chunk graph until requested.
++const AiPanel = lazy(() => import('./ai/AiPanel').then((m) => ({ default: m.AiPanel })))
+ import type { AiCommentsAccess, AiDocExtras, AiHeaderFooterAccess } from './ai/tools'
+ import type { AiStyleInfo } from './ai/style-ops'
+ import { applyResolvedPageSetup, describeSection, type AiPageSetupAccess } from './ai/page-setup'
+@@ -7380,7 +7386,8 @@ export function App() {
+               !aiSidebarEnabled && !showAi ? ' ai-dock-off' : ''
+             }`}
+           >
+-            {/* always mounted: collapse must not drop state or in-flight runs */}
++            {/* Remains mounted after first standalone load: collapse preserves runs. */}
++            <Suspense fallback={null}>
+             <AiPanel
+               key={aiPanelKey}
+               editor={editor}
+@@ -7408,6 +7415,7 @@ export function App() {
+               docExtras={aiDocExtras}
+               notesAccess={aiNotesAccess}
+             />
++            </Suspense>
+           </div>
+         )}
+         <div className="app-content">
+diff --git a/apps/docs/src/renderer/ai/AiPanel.tsx b/apps/docs/src/renderer/ai/AiPanel.tsx
+index 7295c4c..b671001 100644
+--- a/apps/docs/src/renderer/ai/AiPanel.tsx
++++ b/apps/docs/src/renderer/ai/AiPanel.tsx
+@@ -306,8 +306,9 @@ function SentAttachments({
+   )
+ }
+ 
+-/** author name on AI-generated tracked revisions (accept/reject via Review) */
+-export const AI_REVISION_AUTHOR = 'AI Assistant'
++/** Kept at the original export for standalone integrations. No runtime AI bundle needed for its constant. */
++export { AI_REVISION_AUTHOR } from './revision-author'
++import { AI_REVISION_AUTHOR } from './revision-author'
+ 
+ interface AiPanelProps {
+   editor: Editor
+diff --git a/apps/docs/src/renderer/ai/revision-author.ts b/apps/docs/src/renderer/ai/revision-author.ts
+new file mode 100644
+index 0000000..f3a9d3f
+--- /dev/null
++++ b/apps/docs/src/renderer/ai/revision-author.ts
+@@ -0,0 +1,6 @@
++/**
++ * This label is referenced by the editor's review/comment actions even
++ * when the GenOffice AI panel is absent (Mcode uses its own AI SDK).
++ * Keep it independent from the multi-megabyte standalone AI renderer.
++ */
++export const AI_REVISION_AUTHOR = 'AI Assistant'
+diff --git a/apps/slides/src/renderer/App.tsx b/apps/slides/src/renderer/App.tsx
+index 28a480b..f90a31e 100644
+--- a/apps/slides/src/renderer/App.tsx
++++ b/apps/slides/src/renderer/App.tsx
+@@ -113,8 +113,12 @@ import { GensparkMark, IconAiBeautify, IconAiFactCheck, IconAiImage } from './co
+ import { ToastHost } from './components/toast'
+ import { showToast } from './components/toast-bus'
+ import { t, useI18n } from './i18n/locale'
+-import { AiPanel } from './ai/AiPanel'
+ import { isMcodeHostedUi } from '@genoffice/ui'
++
++// Mcode delegates AI to its own SDK. Do not eagerly parse the standalone
++// GenOffice AgentLoop, model transports and AI widgets in the Slides renderer.
++// Standalone Slides still loads the unchanged AI panel only when mounted.
++const AiPanel = React.lazy(() => import('./ai/AiPanel').then((m) => ({ default: m.AiPanel })))
+ import { ChartDataDialog } from './components/ChartDataDialog'
+ import type { BrushFormat } from './format-brush'
+ import { isTextUndoTarget, shouldRouteHistoryToDeck } from './undo-routing'
+@@ -3587,6 +3591,7 @@ export function App() {
+           >
+             {/* always mounted once settings load: collapse must not drop state or in-flight runs */}
+             {aiSettings ? (
++              <React.Suspense fallback={null}>
+               <AiPanel
+                 key={aiPanelKey}
+                 slides={slides}
+@@ -3623,6 +3628,7 @@ export function App() {
+                   setEditQueue((prev) => prev.filter((it) => !keys.includes(it.key)))
+                 }
+               />
++              </React.Suspense>
+             ) : aiSidebarEnabled ? (
+               <button
+                 className="ai-rail"
+-- 
+2.52.0.windows.1
+

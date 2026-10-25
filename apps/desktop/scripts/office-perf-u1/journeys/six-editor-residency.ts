@@ -153,6 +153,47 @@ export const sixEditorResidencyJourney = defineU1Journey({
 
     step.run(async ({ runtime }) => {
       const rt = runtime as PerfRuntime;
+      const observed: Record<string, unknown> = {};
+      let ok = true;
+      for (const kind of ["slides", "docs"] as const) {
+        const wc = rt.harness.webContentsOf("office-resident-" + kind);
+        if (!wc) return { ok: false, detail: "missing editor for resource audit: " + kind };
+        const resources = await js<{ host: boolean; aiChunks: string[]; sourceChunks: string[]; trackedResourceCount: number }>(
+          wc,
+          `(() => {
+            const urls = performance.getEntriesByType('resource').map(e => e.name);
+            return {
+              host: /\\bMcode\\//.test(navigator.userAgent),
+              aiChunks: [
+                ...urls,
+                ...[...document.scripts].map(s => s.src),
+              ].filter(url => /\\/AiPanel-[^/]+\\.js(?:\\?|$)/.test(url)),
+              // Chromium does not necessarily record the entry module in
+              // PerformanceResourceTiming; the DOM script source is
+              // authoritative evidence that the normal editor did load.
+              sourceChunks: [...document.scripts].map(s => s.src)
+                .filter(url => /\\/index-[^/]+\\.js(?:\\?|$)/.test(url)),
+              trackedResourceCount: urls.length,
+            };
+          })()`,
+        );
+        observed[kind] = resources;
+        // Chromium may omit local app/file module fetches entirely from
+        // Resource Timing (trackedResourceCount can be zero). This verifies
+        // a Mcode host editor mounted its main entry and no AI chunk was
+        // observed, NOT a complete network trace. Build split is verified
+        // independently from the production bundle output.
+        ok = ok && resources.host && resources.aiChunks.length === 0 && resources.sourceChunks.length > 0;
+      }
+      return {
+        ok,
+        observed,
+        detail: ok ? undefined : "Mcode Office view did not mount the expected main entry or observed an unexpected AI chunk",
+      };
+    }, "mcode-docs-slides-use-main-entry-without-observed-ai-chunk", { assert: true }),
+
+    step.run(async ({ runtime }) => {
+      const rt = runtime as PerfRuntime;
       // AppMetrics is sampled twice; CPU percentage from one isolated sample
       // is not a usable "steady-state CPU" claim.
       const before = app.getAppMetrics();

@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "b6435363663f26050bf92742a01dedb65b03e46d",
-  "expectedTree": "5f9e7a6d3e3f9b9bd34c6f06c362ab308bfe2718",
+  "revision": "6a5a5cbf23e2e0ba608055a3138ae4e2b8665b67",
+  "expectedTree": "12a3eaf5586fbd48a371b212510ef63f999880b2",
   "patchSeries": [
     {
       "index": 1,
@@ -265,6 +265,15 @@
       "sha256": "a26c0f437796ee04376f52ca4390a967c91be3075e92b26bc11634f1de049752",
       "bytes": 9239,
       "subject": "perf(sheets): retire idle Rust sidecar after last tab closes"
+    },
+    {
+      "index": 29,
+      "file": "patches/genoffice/0029-perf-office-defer-standalone-ai-bundles.patch",
+      "revision": "6a5a5cbf23e2e0ba608055a3138ae4e2b8665b67",
+      "parentRevision": "b6435363663f26050bf92742a01dedb65b03e46d",
+      "sha256": "4632af559844ab13214b2c2acfded75d88e7f10466875391c0876536600cd600",
+      "bytes": 5466,
+      "subject": "perf(office): defer standalone Docs and Slides AI bundles in Mcode"
     }
   ],
   "license": "Apache-2.0",
