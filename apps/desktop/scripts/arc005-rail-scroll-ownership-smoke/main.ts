@@ -12,6 +12,7 @@ const terminal=source("components/ide/TerminalPanel.tsx");
 const sharedTabs=source("components/layout/TabBarChrome.tsx");
 const sessionTabs=source("components/layout/SessionTabs.tsx");
 const unifiedTabs=source("components/layout/UnifiedTabsBar.tsx");
+const openTabs=source("components/ide/OpenTabsBar.tsx");
 const zh=source("lib/i18n/zh/ide.ts");
 const en=source("lib/i18n/en/ide.ts");
 const mk=(from:number,to:number)=>({left:from,right:to});
@@ -93,6 +94,17 @@ check("multi-row tab does not scroll if already visible in both axes",
      getBoundingClientRect:()=>({left:60,right:130,top:70,bottom:102})
    } as never)&&calls===0;
  })());
+check("three active-tab effects reveal tabs only inside their own scroll viewport",
+ sessionTabs.includes("revealTabWithin(track, node, tabScrollBehavior())") &&
+ unifiedTabs.includes("revealTabWithin(el, node, tabScrollBehavior())") &&
+ openTabs.includes("revealTabWithin(el, node, tabScrollBehavior())") &&
+ !sessionTabs.includes("node?.scrollIntoView(") &&
+ !unifiedTabs.includes("node.scrollIntoView(") &&
+ !openTabs.includes("node.scrollIntoView("));
+check("active-tab auto-reveal preserves reduced-motion preference",
+ sessionTabs.includes("tabScrollBehavior()") &&
+ unifiedTabs.includes("tabScrollBehavior()") &&
+ openTabs.includes("tabScrollBehavior()"));
 check("shared tab handler respects IME, modifiers and disabled tabs",
  sharedTabs.includes("if (!canNavigateTabKey(e)) return") &&
  sharedTabs.includes('not([aria-disabled="true"]):not([disabled])'));

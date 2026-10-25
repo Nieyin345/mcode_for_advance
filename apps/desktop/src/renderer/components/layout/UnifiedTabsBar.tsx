@@ -23,6 +23,7 @@ import { SortableSessionTab, findSession } from "./SessionTabs.js";
 import { SessionTabContextMenu } from "./SessionTabContextMenu.js";
 import { liveSessionTabMenu, sessionTabsToClose, sessionTabMenuPosition, type ProjectSessionTabMenu } from "./sessionTabContextActions.js";
 import { tabScrollBehavior } from "./tabScrollMotion.js";
+import { revealTabWithin } from "./panelRailScroll.js";
 import { keyboardReorderTarget } from "./tabKeyboardReorder.js";
 import {
   PLAN_TAB_KEY,
@@ -194,7 +195,7 @@ export function UnifiedTabsBar() {
       // Multi-row layout has no horizontal overflow — just reveal the tab's
       // row vertically (the track scrolls vertically past the ~3-row cap).
       if (multiRow) {
-        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: tabScrollBehavior() });
+        revealTabWithin(el, node, tabScrollBehavior());
         return;
       }
       const nodeRect = node.getBoundingClientRect();

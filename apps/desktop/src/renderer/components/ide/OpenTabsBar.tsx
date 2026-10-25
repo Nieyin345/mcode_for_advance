@@ -29,6 +29,7 @@ import {
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { handleTabListKeyDown, TabBarChevronButton, TabBarOverflowMenu } from "../layout/TabBarChrome.js";
 import { tabScrollBehavior } from "../layout/tabScrollMotion.js";
+import { revealTabWithin } from "../layout/panelRailScroll.js";
 import { keyboardReorderTarget, handleTabReorderKeyDown } from "../layout/tabKeyboardReorder.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
@@ -186,7 +187,7 @@ export function OpenTabsBar() {
       // Multi-row layout has no horizontal overflow — just reveal the tab's
       // row vertically (the track scrolls vertically past the ~3-row cap).
       if (multiRow) {
-        node.scrollIntoView({ block: "nearest", inline: "nearest", behavior: tabScrollBehavior() });
+        revealTabWithin(el, node, tabScrollBehavior());
         return;
       }
       const nodeRect = node.getBoundingClientRect();

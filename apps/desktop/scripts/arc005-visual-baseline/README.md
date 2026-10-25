@@ -11,7 +11,7 @@ node apps/desktop/node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tscon
 
 针对界面收敛的快速实际 Electron 检查可设置环境变量后运行 build：
 `set "ARC005_VISUAL_SCENES=sidechat,files-pane,git-pane,narrow-window"` 与
-`set "ARC005_VISUAL_CONDITIONS=narrow"`。不设置则**完整 18×3=54 格**。
+`set "ARC005_VISUAL_CONDITIONS=narrow"`。不设置则**完整 19×3=57 格**。
 轻量源码 E1 检查：`node apps/desktop/scripts/run-smokes.mjs arc005-main-ui-u1-guard-smoke t5-visual-probe-integrity-smoke`。
 
 仅使用现成 Electron/esbuild/Tailwind/React 依赖。根组件始终是**真实 App**
@@ -81,7 +81,7 @@ const sample = JSON.parse(readFileSync(path, "utf8"));
 ## 格数的证据属性
 
 **期望格数不是常量，是算出来的**：`SCREENS.length × CONDITIONS.length`
-（现在是 18 × 3 = **54**）。`probe.ts` 把它写进 `.tmp/arc005-visual/expected.json`，
+（现在是 19 × 3 = **57**）。`probe.ts` 把它写进 `.tmp/arc005-visual/expected.json`，
 `build.mjs` 与 `compare.mjs` 都读那个文件 —— 它们与 `probe.ts` 是两个进程，
 读不到运行时的 `SCREENS`，所以必须有这个文件当唯一来源。
 
@@ -109,6 +109,7 @@ const sample = JSON.parse(readFileSync(path, "utf8"));
 | 场景 | fixture | 取证边界 |
 |---|---|---|
 | empty/messages/tools/approval/settings | `real-app` | 真 App + store，内容是虚构的 |
+| tab-overflow | `real-UnifiedTabsBar` | 36 个虚构会话标签进入真实标签栏，点击首末标签验证真实激活、局部横向滚动及聊天主区/页面滚动偏移不变 |
 | long-chat | `real-ChatPane-LegendList` | 640 条虚构消息注入真实 ChatPane/LegendList，要求实际挂载行数小于 160、真实滚动区域存在。`elapsedMs` 是单次本机采样，不能代表 FPS 或用户数据性能 |
 | parallel | `real-StreamSidebar` | 真实侧栏组件，三条假会话及运行状态 |
 | projects | `real-LeftBar` | 真实项目树，两个假项目 |
@@ -161,7 +162,7 @@ surface/content/edge、圆角及动效；生成 `.tmp/arc005-visual/diff.md`。
 看同一轮的 `diff.md` 与 token 快照；PNG 只用来「看长什么样」。
 
 **为什么没把尺寸抖动也修掉**：那要重排 `probe.ts` 的等待逻辑，风险覆盖全部
-54 格；而 `compare.mjs` 本来就不按像素比。**为了「让 PNG 逐字节稳定」去改核心
+57 格；而 `compare.mjs` 本来就不按像素比。**为了「让 PNG 逐字节稳定」去改核心
 时序，代价大于收益。**
 
 **如果要修，正确做法是**：`setSize` 之后等 `win.once('resize')` + 一个渲染帧，

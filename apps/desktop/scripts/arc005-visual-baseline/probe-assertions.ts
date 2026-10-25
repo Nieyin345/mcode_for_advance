@@ -217,6 +217,15 @@ export function inspectSceneContent(
       : fail(inspected.state, inspected.reason ?? "real tool row was not found", { targetState: inspected.state });
   }
 
+  if (scene === "tab-overflow") {
+    const list = queryVisible(doc, "[data-ui-center-pane] [role='tablist']");
+    const tabs = Array.from(list?.querySelectorAll("[role='tab']") ?? []).filter(visible);
+    if (tabs.length < 32) return fail("missing", "overflow tablist contains too few actual session tabs");
+    const selected = tabs.filter(tab => tab.getAttribute("aria-selected") === "true");
+    if (selected.length !== 1) return fail("missing", "overflow tablist has no unique selected tab");
+    return productPass({fixture:"real-UnifiedTabsBar",totalTabs:tabs.length});
+  }
+
   if (scene === "long-chat") {
     const root = queryVisible(doc, "[data-chat-root]");
     const rendered = root?.querySelectorAll("[data-message-id]").length ?? 0;

@@ -26,6 +26,7 @@ import { keyboardReorderTarget, handleTabReorderKeyDown } from "./tabKeyboardReo
 import { SessionTabContextMenu } from "./SessionTabContextMenu.js";
 import { liveSessionTabMenu, sessionTabsToClose, sessionTabMenuPosition, type ProjectSessionTabMenu } from "./sessionTabContextActions.js";
 import { tabScrollBehavior } from "./tabScrollMotion.js";
+import { revealTabWithin } from "./panelRailScroll.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
 /** Tab strip rendered along the top of the center pane in `tabs` display
@@ -67,7 +68,7 @@ export function SessionTabs() {
   const setTabBarMultiRow = useSessionStore((s) => s.setTabBarMultiRow);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Maps a tab id → its DOM node, used to scrollIntoView the active tab.
+  // Maps a tab id → its DOM node, used to reveal it within this tab track.
   const tabNodes = useRef<Map<string, HTMLDivElement>>(new Map());
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -100,7 +101,8 @@ export function SessionTabs() {
   useEffect(() => {
     if (!activeId) return;
     const node = tabNodes.current.get(activeId);
-    node?.scrollIntoView({ inline: "nearest", behavior: tabScrollBehavior(), block: "nearest" });
+    const track = scrollRef.current;
+    if (node && track) revealTabWithin(track, node, tabScrollBehavior());
     // Recompute after the smooth scroll settles.
     const t = setTimeout(recomputeScrollState, 260);
     return () => clearTimeout(t);

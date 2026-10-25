@@ -29,7 +29,7 @@ export function railScrollLeft(
 /** Shared session/file tablist can wrap into a vertical scroll viewport.
  * Reveal the focused row in both axes but only scroll the tablist element,
  * never ancestor chat/composer panes. */
-export function revealTabWithin(track: HTMLElement, item: Element): boolean {
+export function revealTabWithin(track: HTMLElement, item: Element, behavior: ScrollBehavior = "instant"): boolean {
   if (!track.contains(item)) return false;
   const viewport = track.getBoundingClientRect();
   const bounds = item.getBoundingClientRect();
@@ -38,7 +38,7 @@ export function revealTabWithin(track: HTMLElement, item: Element): boolean {
   const top = railScrollLeft(track.scrollTop, viewport.top, viewport.bottom,
     bounds.top, bounds.bottom, 4);
   if (Math.abs(left - track.scrollLeft) <= 1 && Math.abs(top - track.scrollTop) <= 1) return false;
-  track.scrollTo({ left, top, behavior: "instant" });
+  track.scrollTo({ left, top, behavior });
   return true;
 }
 

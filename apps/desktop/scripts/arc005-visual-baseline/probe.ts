@@ -17,6 +17,7 @@ import {
 const SCREENS = [
   ["empty", "初始空会话"], ["messages", "已有消息"],
   ["long-chat", "长会话虚拟化压力"],
+  ["tab-overflow", "会话标签溢出与焦点"],
   ["tools", "工具运行中/完成/失败"], ["approval", "权限审批"],
   ["diff", "代码/文件 Diff"], ["sidechat", "侧聊"],
   ["terminal", "终端"], ["editor", "文件编辑"],
@@ -36,7 +37,7 @@ const CONDITIONS = [
   { id: "narrow", width: 1024, height: 640, dark: false },
 ] as const;
 // Optional targeted U1 run for rapid UI iteration. Default remains the full
-// 18 × 3 real-Electron evidence matrix. Unknown screen IDs are rejected.
+// 19 × 3 real-Electron evidence matrix. Unknown screen IDs are rejected.
 const selectedScreens = process.env.ARC005_VISUAL_SCENES?.split(",").filter(Boolean);
 const selectedConditions = process.env.ARC005_VISUAL_CONDITIONS?.split(",").filter(Boolean);
 if (selectedScreens?.some(id => !SCREENS.some(([screen]) => screen === id))) {
@@ -187,6 +188,19 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               mk('m2','assistant',[{kind:'text',text:'视觉基线记录真实界面字体、颜色、几何和组件状态。'}])
             ];
             if (id === 'messages') st.setState({messagesBySession:{s1:msg,s2:[],s3:[]}});
+            else if (id === 'tab-overflow') {
+              const many = Array.from({length:36},(_,i)=>({
+                ...a.sessions[0], id:'overflow-'+i,
+                title:'会话标签 '+String(i).padStart(2,'0')+' — 长标题用于横向溢出',
+                createdAt:1000+i,updatedAt:2000+i,
+              }));
+              st.setState({
+                sessions:many,
+                sessionsByProject:{p1:many,p2:a.sessions.slice(2)},
+                openTabs:many.map(s=>s.id),activeSessionId:many[many.length-1].id,
+                displayMode:'tabs',centerTabFocus:'chat',tabBarMultiRow:false,
+              });
+            }
             else if (id === 'long-chat') {
               // Large, isolated synthetic transcript. Do NOT inject 640 DOM
               // nodes directly: this tests the real ChatPane + LegendList.
@@ -266,6 +280,46 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
           // Actual sidechat UI interaction (real event handlers + store): open
           // a child session, verify selection, then return to list before the
           // screenshot. Fixture data never enters a real database / workflow.
+          if (screen === "tab-overflow" && probe.ok) {
+            // The actual active-tab effect runs after the renderer commit.
+            // Audit browser geometry and scroll ownership, not utility class.
+            const focus = await js<{
+              tabs:number;initialLeft:number;finalLeft:number;
+              initialPageTop:number;finalPageTop:number;
+              initialMainTop:number;finalMainTop:number;
+              firstSelected:boolean;lastSelected:boolean;
+            }>(`(async () => {
+              const track=document.querySelector('[data-ui-center-pane] [role="tablist"]');
+              const main=document.querySelector('[data-ui-center-pane]');
+              const page=document.scrollingElement;
+              const items=[...(track?.querySelectorAll('[role="tab"]')??[])];
+              const initialPageTop=page?.scrollTop??0;
+              const initialMainTop=main?.scrollTop??0;
+              const initialLeft=track?.scrollLeft??0;
+              const first=items[0];
+              const last=items.at(-1);
+              first?.click();
+              await new Promise(resolve=>setTimeout(resolve,360));
+              const firstSelected=first?.getAttribute('aria-selected')==='true';
+              last?.click();
+              await new Promise(resolve=>setTimeout(resolve,360));
+              return {
+                tabs:items.length,initialLeft,finalLeft:track?.scrollLeft??0,
+                initialPageTop,finalPageTop:page?.scrollTop??0,
+                initialMainTop,finalMainTop:main?.scrollTop??0,
+                firstSelected,
+                lastSelected:last?.getAttribute('aria-selected')==='true',
+              };
+            })()`);
+            if (focus.tabs < 32 || focus.finalLeft <= 0 ||
+                !focus.firstSelected || !focus.lastSelected ||
+                Math.abs(focus.finalPageTop - focus.initialPageTop) > 1 ||
+                Math.abs(focus.finalMainTop - focus.initialMainTop) > 1) {
+              probe={ok:false,reason:"active tab scrolled its ancestor or failed selection: "+JSON.stringify(focus)};
+            } else {
+              probe={...probe,value:{...(probe.value as object ?? {}),focus}};
+            }
+          }
           if (screen === "long-chat" && probe.ok) {
             const stress = await js<{total:number;mounted:number;elapsedMs:number;scrollOk:boolean}>(`(async () => {
               const root = document.querySelector('[data-chat-root]');
