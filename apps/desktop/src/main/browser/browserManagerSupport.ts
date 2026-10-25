@@ -7,7 +7,7 @@
  *   - 只吃 Session / SettingRepo 的会话与 cookie 助手(browserSession /
  *     isPersistLoginEnabled / getBrowserCookies / clearBrowserCookiesForDomains);
  *   - 程序化下载那条路(DownloadIntent / downloadViaBrowser / printUrlToPdf 及意图
- *     登记表),文献库「下载走内嵌浏览器」的原则靠它;
+ *     登记表),资料库「下载走内嵌浏览器」的原则靠它;
  *   - cookie 保管库与移动 UA 两张表(VaultCookie / DeviceUaSpec / MOBILE_USER_AGENTS …);
  *   - 视图形状与默认落点(LiveBrowser / BrowserBounds / HIDDEN_BOUNDS /
  *     defaultOnscreenBounds)。
@@ -244,13 +244,13 @@ export async function clearBrowserCookiesForDomains(domains: string[]): Promise<
   return removed;
 }
 
-/* ─────────────────── 程序化下载(文献库用) ─────────────────── */
+/* ─────────────────── 程序化下载(资料库用) ─────────────────── */
 
 /**
  * 「下载意图」—— 让程序化发起的下载存到指定路径,而不是默认下载目录。
  *
  * 为什么需要它:共享分区上的 `will-download` 钩子(见 installDownloadListener)
- * 会把**所有**下载都存到 `<downloads>/mcode-browser/` 并重命名去重。文献库需要
+ * 会把**所有**下载都存到 `<downloads>/mcode-browser/` 并重命名去重。资料库需要
  * 精确控制落点(要按 sha256 命名、放进库目录),所以下载前先登记一个意图,
  * 钩子在 `setSavePath` 时优先采用它。
  *
@@ -333,7 +333,7 @@ export function downloadViaBrowser(req: {
        *
        * 这个钩子原来只在**创建浏览器视图**时装(见 `createBrowser` →
        * `installDownloadListener`)。于是「点下载时还没打开过浏览器面板」—— 也就是
-       * 文献库最常见的用法 —— 会掉进 Chromium 的**默认下载行为**:
+       * 资料库最常见的用法 —— 会掉进 Chromium 的**默认下载行为**:
        *
        *   ① 弹出系统「另存为」对话框(而这里根本没人能回答它);
        *   ② 把响应原样存到用户选的路径 —— 认证/反爬页返回的是 HTML,于是用户拿到

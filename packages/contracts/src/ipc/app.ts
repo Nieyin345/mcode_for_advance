@@ -130,7 +130,7 @@ export interface PersistedUpdateState {
 }
 
 /**
- * **统一数据根**。聊天记录(数据库)、文献库、模版库都放在它下面:
+ * **统一数据根**。聊天记录(数据库)、资料库、模版库都放在它下面:
  *
  * ```
  * <数据根>/mcode.db  ·  <数据根>/library/  ·  <数据根>/templates/

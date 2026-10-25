@@ -6,7 +6,7 @@
  * 从前预览分在两处:`library.readFile` + `FilePreview`(文献/通用文件那一套,右栏)
  * 和 `templates.readFile`(模版那一套,也右栏)。两条路各有一份取数逻辑、各有一套
  * 文件类型判断,而且**形状不一样** —— 前者二进制走 base64,后者主进程已经把 office
- * 解成了 `Uint8Array`。同一张 pptx 从文献库点开和从模版库点开,走的是两份代码。
+ * 解成了 `Uint8Array`。同一张 pptx 从资料库点开和从模版库点开,走的是两份代码。
  *
  * 2026-09-20 起:文件预览**统一搬到中间**,右栏留给对话;而这两条取数路合并成
  * 一个 `FileViewer`,它按**来源**选一条去读,读回来的都归一到一种形状。
@@ -30,7 +30,7 @@ import { useToastStore } from "./toastStore.js";
 /** 预览的来源。决定 `FileViewer` 走哪条 RPC 去取字节。 */
 export type FileSource =
   /**
-   * 文献库条目。`ref` 是条目 id,可选 `relPath`(目录条目里往下翻)。
+   * 资料库条目。`ref` 是条目 id,可选 `relPath`(目录条目里往下翻)。
    *
    * `which` 同 `library.readFile` 的那一格（2026-09-21）:省略 = 看本体（通用条目给
    * 文件本身、论文给 **PDF**），`"md"` 才是"我要看转录"。它**必须能传下来** ——

@@ -25,7 +25,7 @@ import { subChatErrorPlacement } from "./subChatPickerPlacement.js";
  * two keeps the row calm. The menu carries:
  *   - attach context files (project file picker)
  *   - add images (OS picker)
- *   - 文献库:open the searchable library picker (see LibraryPicker)
+ *   - 资料库:open the searchable library picker (see LibraryPicker)
  *   - 新建子对话:create a child conversation under the CURRENT session — 空白 /
  *     一份代理档案 / 档案+记忆 (see NewSubChatPicker). The picker itself lives
  *     HERE, not in ChatPane: it is this menu item that knows where it was
@@ -61,7 +61,7 @@ export function AttachMenuButton({
   onPickFiles: () => void;
   /** Open the OS image picker (same action as the old photo button). */
   onPickImages: () => void;
-  /** 打开文献库选择器。与 onPickFiles 同款:选择器本体挂在 ChatPane 上,
+  /** 打开资料库选择器。与 onPickFiles 同款:选择器本体挂在 ChatPane 上,
    *  这里只负责发出请求 —— 因为选中结果要落成 composer 的 tag,那状态归 ChatPane。 */
   onPickLibraries: () => void;
   /** Insert a `/` trigger into the editor, opening the command picker. */
@@ -213,7 +213,7 @@ export function AttachMenuButton({
               </Menu.Item>
 
               <div className="my-1 border-t border-edge" />
-              {/* 文献库 —— 点开是一个**可搜索的多选选择器**(与「添加上下文文件」
+              {/* 资料库 —— 点开是一个**可搜索的多选选择器**(与「添加上下文文件」
                   同款形态)。库会很多,平铺进菜单会把菜单撑爆。 */}
               <Menu.Item
                 onClick={onPickLibraries}

@@ -41,7 +41,7 @@ import { pathWithin, physicalTargetInRoot } from "@main/lib/realPathWithin.js";
  * 库根目录 —— **统一数据根下的 `library/`**(`<数据根>/library`)。
  *
  * 早先这里读 `LIBRARY_ROOT_SETTING_KEY` 单独配、默认在 `<userData>/library`;现在
- * 统一到数据根下(用户要求「文献库、模版库、聊天记录放在一起,改路径时整体迁移」)。
+ * 统一到数据根下(用户要求「资料库、模版库、聊天记录放在一起,改路径时整体迁移」)。
  * 位置上仍然**一律存相对路径** —— 换根只换指向,不会让已有记录失效,理由见文件头。
  */
 export function libraryRoot(): string {

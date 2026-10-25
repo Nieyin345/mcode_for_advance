@@ -3,7 +3,7 @@
  *
  * ## 按来源取数 → 归一 → 一套渲染分支
  *
- * 两条来源:文献库条目(`library.readFile`,目录会给一份文件名列表)与项目文件
+ * 两条来源:资料库条目(`library.readFile`,目录会给一份文件名列表)与项目文件
  * (`file.readFile` / `file.readBinary`)。**渲染分支才是重复的大头**
  * (文本/图片/pdf/GenOffice 结构化视图/目录/不支持),所以取数分两支、渲染只有一套。
  *
@@ -15,8 +15,9 @@
  *
  * ## 顶栏那一条出口只给项目文件
  *
- * 「用系统程序打开」走 `shell.openPath`(它自带项目根围栏)。文献库那一侧还没有对应的
- * RPC,所以不画 —— 一个按下去什么都不发生的按钮比没有更坏。
+ * 顶栏「用系统程序打开」目前只对项目文件显示，使用带路径围栏的 `shell.openPath`。
+ * 资料库的条目路径需由 `library.entryPath` 解析，且可能是 linked/目录/PDF 特殊
+ * 条目；在统一安全打开路径与权限判据前，这里不展示不可用按钮。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
@@ -49,7 +50,7 @@ import { Button } from "@renderer/components/ui/button.js";
  * 归一之后的预览数据。**两条来源都落到这里**,下面的渲染分支只认这个类型。
  *
  * 与 `LibraryFileContent` 的差别只有一处,但很要紧:二进制分支给的是**字节**
- * (`bytes`),不是 base64。文献库那条路回来的是 base64,在这里就地解掉；PDF/图片
+ * (`bytes`),不是 base64。资料库那条路回来的是 base64,在这里就地解掉；PDF/图片
  * 用这些字节，Office 则通过绝对路径交给 GenOffice（结构化只读视图）。
  */
 type ViewData =
@@ -64,7 +65,7 @@ type ViewData =
       base64: string;
       /**
        * 这个二进制文件在磁盘上的**绝对路径** —— PDF 保存批注与 GenOffice 打开都用它。
-       * 文献库条目要走 `library.entryPath` 换一次；换不出来就不给，PDF 退化成只读，
+       * 资料库条目要走 `library.entryPath` 换一次；换不出来就不给，PDF 退化成只读，
        * Office 显示明确错误而不退回本地 renderer。
        */
       filePath?: string;
@@ -307,8 +308,8 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   // ── 顶栏:文件名 + 出口。**一直在** —— 加载中/失败时用户也要知道在看哪个文件,
   //    以及能从这里出去。
   //
-  //    ⚠️ 出口**只对项目文件画**。文献库还没有"从条目拿绝对路径"那个 RPC
-  //    (见文件头那段)—— 画一个按下去什么都不发生的按钮比没有更坏。
+  //    顶栏「用系统程序打开」目前只对项目文件显示，资料库条目的绝对路径
+  //    需先解析并确认路径/权限；不要画无效的入口。
   const header = (
     <div className="flex shrink-0 items-center gap-1.5 border-b border-edge px-3 py-1.5">
       {relPath !== null && target.source.kind === "library" && (
@@ -324,9 +325,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
       <span className="min-w-0 flex-1 truncate text-code text-content" title={visibleName}>
         {visibleName}
       </span>
-      {/* 「用系统程序打开」**只给项目文件那一支**（2026-09-21）—— 它走
-          `shell.openPath`（自带项目根围栏）。文献库那一侧还没有对应的 RPC，
-          画一个按下去不动的按钮比不画更坏。 */}
+      {/* 项目文件可用系统程序打开；资料库条目需单独验证路径权限后才能提供此入口。 */}
       {target.source.kind === "project" && (
         <button
           onClick={() => void openExternal()}
@@ -584,7 +583,7 @@ const headerBtn =
 
 /**
  * `PdfPreview` 只认一个条目 id(见它签名那段)。这里给一个**只够它画**的壳:
- * 文献库那一支给条目 id(「用系统程序打开」要用它去找路径);模版那一支没有条目,
+ * 资料库那一支给条目 id(「用系统程序打开」要用它去找路径);模版那一支没有条目,
  * 给空串 —— 那条出口由 `onOpenExternal` 接管。
  */
 function itemOf(target: FileViewTarget): { id: string } {

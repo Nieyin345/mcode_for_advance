@@ -1385,7 +1385,7 @@ class BrowserManagerImpl {
        *
        * 原来这段把 setSavePath 放在几行记账**之后**,而记账的第一行是
        * `wc.isDestroyed()`。对 `session.downloadURL()` 发起的**程序化下载**
-       * (文献库走的正是这条),Electron 传进来的 `wc` 是 **undefined** —— 于是回调
+       * (资料库走的正是这条),Electron 传进来的 `wc` 是 **undefined** —— 于是回调
        * 一进门就抛异常,`setSavePath` 永远执行不到。用户看到的就是:弹保存对话框、
        * 存下来的是 HTML(反爬页/登录页)、我们这边一直等到超时。
        *

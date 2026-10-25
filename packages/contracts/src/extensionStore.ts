@@ -15,7 +15,7 @@
  * ```
  * <数据根>/
  *   ├── mcode.db            ← 聊天记录
- *   ├── library/            ← 文献库
+ *   ├── library/            ← 资料库
  *   └── extensions/         ← ★ 本模块
  *         └── <扩展 id>/
  *               └── .mcode-store.json   ← 该扩展私有的键值存储(点前缀保留命名空间)

@@ -112,7 +112,7 @@ export function registerContextHandlers(ipcMain: IpcMain): void {
     const input = ToolsUsageGetSchema.parse(raw);
     const groups: ToolUsageGroup[] = [];
 
-    // ── 进程内工具(工作流 + 文献库):specs 就是线上形态的声明,直接估。
+    // ── 进程内工具(工作流 + 资料库):specs 就是线上形态的声明,直接估。
     // 各引擎经各自通路消费同一份表(claude 走 SDK MCP,codex/pi 走桥),静态
     // 开销一致 —— 所以这里不做引擎区分。
     const inSpecs = (specs: McpToolSpec[]): ToolUsageItem[] =>

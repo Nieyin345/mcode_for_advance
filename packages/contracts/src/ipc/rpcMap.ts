@@ -1425,7 +1425,7 @@ export interface RpcMap {
   /** Read the current relay status. */
   "relay.status": () => Promise<RelayStatus>;
 
-  // 文献库 —— 条目
+  // 资料库 —— 条目
   /** 左栏大类:当前生效的分组(已过滤掉引用了已删类型的行)。 */
   "library.groupsGet": (input: LibraryGroupsGetInput) => Promise<{ groups: LibraryGroupMeta[] }>;
   /** 整表替换大类。校验(一个类型只属一个组等)在主进程。 */
@@ -1435,7 +1435,7 @@ export interface RpcMap {
   /** 整表替换屏蔽规则。校验(前缀合法、扩展名规范化)在主进程过 `parseSuppressJson`。 */
   "library.suppressSave": (input: LibrarySuppressSaveInput) => Promise<{ ok: true } | { ok: false; error: string }>;
 
-  // 文献库 —— 条目关联
+  // 资料库 —— 条目关联
   /** 一条条目的关联,**双向都返回**(`direction` 区分)。界面上的「关联」区用它。
    *
    *  `target` 是目标那一条的摘要(**主进程一次查好**,渲染端不必再逐条拉)——
@@ -1680,7 +1680,7 @@ export interface RpcMap {
     input: LibraryAttachToChatInput,
   ) => Promise<{ ok: boolean; name?: string; count?: number; error?: string }>;
 
-  // 文献库 —— 集合
+  // 资料库 —— 集合
   /** 列全部集合(树形;已摊成渲染端要的形状)。**返回值里含回收站**(`{ name:"回收站", isTrash:true }`)—— 调用方要自己按 `isTrash` 滤掉,别把它当成一个真分类(报告真机实测 NEW-4)。 */
   "library.listCollections": () => Promise<{ collections: LibraryCollection[] }>;
   /** 新建/改名/删除集合 —— 均返回**完整的新列表**,渲染端整体替换缓存(既定模式)。 */
@@ -1789,7 +1789,7 @@ export const IPC = {
   SETTING_IMPORT_FILE: "setting:importFromFile",
   SETTING_EXPORT_TO_PATH: "setting:exportToPath",
   SETTING_IMPORT_FROM_TEXT: "setting:importFromText",
-  // 文献库 —— 条目
+  // 资料库 —— 条目
   LIBRARY_LIST: "library:list",
   LIBRARY_GET: "library:get",
   LIBRARY_ADD_ITEMS: "library:addItems",
@@ -1799,7 +1799,7 @@ export const IPC = {
   /** 删除前的"会带走什么"预览(只读)。 */
   LIBRARY_DELETE_PREVIEW: "library:deletePreview",
   LIBRARY_FULL_TEXT_SEARCH: "library:fullTextSearch",
-  // 文献库:PDF 文件导入 / 转 Markdown
+  // 资料库:PDF 文件导入 / 转 Markdown
   LIBRARY_IMPORT_FILES: "library:importFiles",
   /** 导入 Markdown 笔记(笔记库)。 */
   LIBRARY_IMPORT_NOTES: "library:importNotes",
@@ -1850,7 +1850,7 @@ export const IPC = {
   LIBRARY_DELETE_NOTE: "library:deleteNote",
   LIBRARY_CREATE_NOTE: "library:createNote",
   LIBRARY_WRITE_NOTE: "library:writeNote",
-  // 文献库 —— 集合
+  // 资料库 —— 集合
   LIBRARY_LIST_COLLECTIONS: "library:listCollections",
   LIBRARY_CREATE_COLLECTION: "library:createCollection",
   LIBRARY_RENAME_COLLECTION: "library:renameCollection",

@@ -178,7 +178,7 @@ export function ComposerToolbar({
       <ModelDropdown layout="pill" sessionId={sessionId} />
       {/* 工作模式选择器（默认 / 文献检索 / 文献精读 / 文献写作 / 文献评审 / 代码编辑）。
           模式跟着会话走，与模型选择同一套机制；除默认与检索外都会变成系统提示词片段。
-          绑哪个文献库仍由「+」菜单里的「文献库」负责 —— 药丸上不重复这个入口。 */}
+          绑哪个资料库仍由「+」菜单里的「资料库」负责 —— 药丸上不重复这个入口。 */}
       <span className="composer-minipill-mid" aria-hidden />
       <WorkflowDropdown layout="pill" />
       {/* 长任务守望(桌面专属):起跑面板里选模板 / 现写命令,把一条长命令绑到当前

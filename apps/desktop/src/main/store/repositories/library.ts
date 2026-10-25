@@ -9,7 +9,7 @@ import { getDb, persist } from "../db.js";
 import { v, type BindValue } from "../sessionSchema.js";
 import { withStatement } from "./withStatement.js";
 
-/* ──────────────────────────────── 文献库 ───────────────────────────────── */
+/* ──────────────────────────────── 资料库 ───────────────────────────────── */
 
 /** 生成带前缀的本地 id。与 customModel 的 `cm_...` 同构,前缀区分实体类型,
  *  便于在日志与错误信息里一眼看出这是什么。 */

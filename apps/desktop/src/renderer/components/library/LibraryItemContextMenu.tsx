@@ -60,7 +60,7 @@ import {
 
 export interface LibraryCtxTarget {
   item: LibraryItem;
-  /** 右键落在哪个库上 —— 「从当前文献库移除」移除的就是它。null = 在「全部文献」里右键。 */
+  /** 右键落在哪个库上 —— 「从当前资料库移除」移除的就是它。null = 在「全部文献」里右键。 */
   collectionId: string | null;
   /**
    * 右键落在的库是不是**回收站**。
@@ -68,7 +68,7 @@ export interface LibraryCtxTarget {
    * 这一个布尔值决定菜单里那个红色项是哪个意思,而两者的后果天差地别:
    *   - 回收站里 → **真正的删除**:数据库行加磁盘上的 PDF / Markdown 一起没;
    *   - 别处     → 只是把它移出这个分组:沦为孤儿后自动落进回收站,**捞得回来**。
-   * 少了它,回收站里只剩「从当前文献库移除」—— 那在这里恰好是反的(摘出回收站,
+   * 少了它,回收站里只剩「从当前资料库移除」—— 那在这里恰好是反的(摘出回收站,
    * 却没删掉),条目会变成界面上再也找不回来的僵尸记录。
    */
   isTrash: boolean;
@@ -187,7 +187,7 @@ export function LibraryItemContextMenu({
    */
   const builtins: Record<string, BuiltinRuntime | undefined> = item
     ? {
-        // 挂到当前对话 —— 与「+ → 添加文献库到上下文」和 AI 的 library_attach_to_chat
+        // 挂到当前对话 —— 与「+ → 添加资料库到上下文」和 AI 的 library_attach_to_chat
         // 共用主进程那一份实现(见 lib/attachToChat.ts)。
         attachToChat: { run: () => void attachToCurrentChat(`i:${item.id}`) },
         // 「文献信息」「采纳 MD」内置项已退役(2026-09-28,见 registry.ts 那条注释):

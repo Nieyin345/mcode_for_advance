@@ -96,7 +96,7 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
   const [links, setLinks] = useState<LibraryLinkView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /** 选择器的开关与锚点 —— 复用「+ → 添加文献库到上下文」那个选择器。 */
+  /** 选择器的开关与锚点 —— 复用「+ → 添加资料库到上下文」那个选择器。 */
   const [pickerOpen, setPickerOpen] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
@@ -353,7 +353,7 @@ export function ItemLinks({ item, onChanged }: { item: LibraryItem; onChanged?: 
         </div>
       )}
 
-      {/* 选择器复用「+ → 添加文献库到上下文」那一个 —— 同一套搜索/展开/多选,
+      {/* 选择器复用「+ → 添加资料库到上下文」那一个 —— 同一套搜索/展开/多选,
           用户不用学第二遍。已经关联过的不再列出来。 */}
       <LibraryPicker
         open={pickerOpen}

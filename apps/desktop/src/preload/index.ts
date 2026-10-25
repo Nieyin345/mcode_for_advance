@@ -294,7 +294,7 @@ const api = {
       ipcRenderer.invoke(IPC.THEME_SET, input)) as RpcMap["theme.set"],
   },
 
-  /** 文献库 —— 条目、集合、检索导入、全文检索、库位置。
+  /** 资料库 —— 条目、集合、检索导入、全文检索、库位置。
    *  变更类方法一律返回新的完整列表,渲染端整体替换缓存。 */
   library: {
     groupsGet: (() =>
@@ -400,7 +400,7 @@ const api = {
    *  About panel. Parameterless RPC. */
   app: {
     info: (() => ipcRenderer.invoke(IPC.APP_INFO)) as RpcMap["app.info"],
-    /** 统一数据根:数据库、文献库、模版库都在它下面。 */
+    /** 统一数据根:数据库、资料库、模版库都在它下面。 */
     getDataRoot: (() =>
       ipcRenderer.invoke(IPC.APP_GET_DATA_ROOT)) as RpcMap["app.getDataRoot"],
     /** 迁移整个数据根到新位置 —— **成功后会重启应用**。 */

@@ -1977,7 +1977,7 @@ export function MarkdownPreviewPane({ filePath, projectPath }: { filePath: strin
  * ## 为什么自己也读一遍字节,而不是把 id 丢给 `PdfPreview`
  *
  * `PdfPreview` 有两条取数路：**调用方给了 `bytes` 就用它**；不给才回退
- * `library.readPdf({ id })` —— 而**那条只认文献库的条目 id**。项目文件没有条目 id,
+ * `library.readPdf({ id })` —— 而**那条只认资料库的条目 id**。项目文件没有条目 id,
  * 回退必然失败。用户报的「左边栏点击 pdf 文件不打开」正是这个形状（`FileViewer`
  * 那边 2026-09-21 修过同一处）。
  *

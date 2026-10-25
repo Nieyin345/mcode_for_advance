@@ -45,7 +45,7 @@ import { pathWithin } from "@main/lib/realPathWithin.js";
 
 /** 外面要给的东西:库根,加上两次"这条清单挂着哪个大类"。 */
 export interface ContextLookup {
-  /** 文献库根(`<数据根>/library`)。 */
+  /** 资料库根(`<数据根>/library`)。 */
   libraryRoot: string;
   /**
    * 一个**分类**挂着的大类 id。**返回 `undefined` = 库里没有这个分类**(那是"这不是
@@ -116,7 +116,7 @@ export interface ContextRef {
    * 拿来**查内容**还是**仿格式** —— 由 {@link purposeOfPath} 在认出这条路径的那一刻
    * 一起算好(那时 `lookup` 就在手上),不是后面按类目名反推。
    *
-   * 早先这个判断是 `contextPurposeOf(kind)` 一个纯函数,靠"类目名属不属于文献库那八类"
+   * 早先这个判断是 `contextPurposeOf(kind)` 一个纯函数,靠"类目名属不属于资料库那八类"
    * 分。kind 退役后资料库那侧的类目换成了用户自己起的大类名,那个判据就再也不成立了 ——
    * 详见 {@link purposeOfPath}。
    */

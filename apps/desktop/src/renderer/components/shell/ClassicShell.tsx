@@ -204,7 +204,7 @@ function UnifiedTabbedPane({ wide }: { wide: boolean }) {
     (s) => (activeSessionId ? s.planTabActiveBySession[activeSessionId] ?? false : false),
   );
   const centerTabFocus = useSessionStore((s) => s.centerTabFocus);
-  // 只读预览(文献库条目 / 模版库文件 / 项目文件)。**与可编辑文件是两回事** ——
+  // 只读预览(资料库条目 / 模版库文件 / 项目文件)。**与可编辑文件是两回事** ——
   // 见 `fileViewStore` 开头那段:可编辑的走 `openFiles` + `ideActiveFile`,预览走这里。
   const fileView = useFileViewStore((s) => s.target);
   // The editor owns the content area only while focused AND it has content.

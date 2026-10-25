@@ -184,7 +184,7 @@ const DEFAULT_TEXT_OUTPUT_SHAPE: Record<string, unknown> = {
 export function createWebToolHost(deps: WebToolHostDeps): McpToolHost {
   // ⚠️ **网页端不再挂 `libraryMcpTools()`。**
   //
-  // 那 22 个库工具是"库是文献库"那个时代留下的:检索、加论文、查期刊分区、模版库……
+  // 旧的 22 个工具包含论文检索、期刊分区与模板等学术场景专用能力，
   // 用户要的是**通用文档管理**,资料库的内容用通用文件工具就能读(库是磁盘上的真目录,
   // 见 `library/paths.ts`),库里有什么改用 `agent_context` 一次问清(见那边)。
   //

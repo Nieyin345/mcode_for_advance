@@ -925,7 +925,7 @@ const workflowEngine: Api["workflowEngine"] = {
  * `WEB_UNSUPPORTED_MARKER` + 本地化原因,调用方能把"平台不支持"与"真失败"分开。
  * **少列一个方法就是一次 `undefined is not a function`**(见文件头那条规矩)。
  *
- * 取舍:手机壳不挂它们的面板(文献库 / 记忆 / 插件 / 计划任务 / 监控),主进程
+ * 取舍:手机壳不挂它们的面板(资料库 / 记忆 / 插件 / 计划任务 / 监控),主进程
  * 手机 RPC 白名单也**没有**这些 handler —— 所以全部是桩,不是"还没接"。 */
 
 /** 自动化(触发器跑一次 / 运行史 / 会话 / 守望)。`watch` 那一组是输入框守望面板的,
@@ -963,7 +963,7 @@ const customUi: Api["customUi"] = {
   panelApiCall: () => webUnsupported("customUi.panelApiCall"),
 };
 
-/** 文献库。手机壳的输入框「+」菜单里有「文献库」入口(`LibraryPicker` / `attachToChat`
+/** 资料库。手机壳的输入框「+」菜单里有「资料库」入口(`LibraryPicker` / `attachToChat`
  *  是共用组件),但主进程手机 RPC 白名单**没有** `library:*`。从前它整个落 Proxy:
  *  `LibraryPicker.loadItems` 那种 `api.library.list(...).then(...).catch(...)` 会在
  *  `.catch` 挂上之前同步抛出、逃进 effect。这里改成 **async 桩**(rejected Promise),

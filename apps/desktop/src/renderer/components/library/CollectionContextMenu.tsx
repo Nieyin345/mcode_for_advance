@@ -8,18 +8,15 @@
  * (导入条里那个输入框)的原因。右键菜单把这类"对这个分类做的事"集中到一处:
  * 添加到当前对话 / 新建笔记 / 改父级 / 重命名 / 删除。
  *
- * ## 「新建笔记」只在笔记库里出现
+ * ## 「新建笔记」适用于任何分类
  *
- * 文献库和教材库里的条目是 PDF(导入进来的),没有"就地新建一篇"这回事;笔记是
- * 用户自己写的,才有新建。菜单项按 kind 决定是否出现,而不是给一个点了没用的项。
+ * 统一资料库已取消笔记/论文类型限定；任意分类都可以新建 Markdown 笔记。
+ * 菜单调用统一的 onNewNote，不根据旧 kind 排除普通文件分类。
  *
- * ## 分类是**最后一级** —— 这里没有"再建下一级"
+ * ## 分类树按现有大类 → 根分类 → 子分类 → 条目的层级约束
  *
- * 用户定的层次只有三级:大类 → 小类 → 分类。所以这一层的菜单**没有**「新建…」那一项,
- * 它是三个菜单里唯一不"往下建"的。用户的纠正原话:「三级的 collection 还能新建子集合,
- * 那就是四级了,我们只有三级呀」。
- *
- * 于是三个菜单的规矩变成:**能往下建的就把那一项排最前,到头的那个直接开始管自己**。
+ * 根分类可以新建子分类，子分类不可再向下嵌套。组件通过 parentId
+ * 判断当前层级；不得恢复旧 kind 分流或允许无限级创建。
  *
  * ## 「移动到…」 —— 两步点进的列表,和文献行那个一模一样
  *
@@ -79,7 +76,7 @@ export function CollectionContextMenu({
   groupId,
 }: {
   target: CollectionCtxTarget | null;
-  /** 同一个 kind 下的全部集合 —— 「移动到」那一屏列的就是它们(去掉自己与自己的子树)。 */
+  /** 可移动到的分类候选列表，排除本节点及其后代以避免形成环。 */
   collections: readonly LibraryCollection[];
   onClose: () => void;
   onRename: (c: LibraryCollection) => void;
@@ -96,7 +93,7 @@ export function CollectionContextMenu({
    * (子分类不再往下建,四级封顶 —— 与自定义 UI 的两个 collection 挂载位对齐)。
    */
   onNewSub: (c: LibraryCollection) => void;
-  /** 新建一篇笔记并归入这个分类。只在笔记库里用得上。 */
+  /** 在当前分类中新建 Markdown 笔记，不限制所属资料类型。 */
   onNewNote: (c: LibraryCollection) => void;
   /**
    * **导入到这里** —— 导进来的东西直接归这个分类（2026-09-21）。
@@ -178,7 +175,7 @@ export function CollectionContextMenu({
   /** 内置功能项「点了做什么」;显示与否、先后按自定义 UI 的配置。 */
   const builtins: Record<string, BuiltinRuntime | undefined> = c
     ? {
-        // 挂到当前对话 —— 整段流程与「+ → 添加文献库到上下文」共用主进程那一份
+        // 挂到当前对话 —— 整段流程与「+ → 添加资料库到上下文」共用主进程那一份
         // 实现(见 lib/attachToChat.ts),所以挂出来的是同一个 chip、同一份清单。
         attachToChat: { run: () => void attachToCurrentChat(`c:${c.id}`) },
         // 「分类信息」卡片(条目数)。从前那三种引用格式的导出也在卡片里,

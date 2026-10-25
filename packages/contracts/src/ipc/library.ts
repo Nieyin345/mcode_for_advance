@@ -36,7 +36,7 @@ export function libraryTrashSettingKey(kind: string): string {
   return `${LIBRARY_TRASH_COLLECTION_SETTING_KEY}.${kind}`;
 }
 
-/* ── 文献库:PDF 文件导入 + 转 Markdown ── */
+/* ── 资料库:PDF 文件导入 + 转 Markdown ── */
 
 /**
  * 库 kind 的 IPC 入参。**开放字符串**:统一资料库后 kind 的合法取值由类型注册表
@@ -186,7 +186,7 @@ export type LibraryOpenFileInput = z.infer<typeof LibraryOpenFileSchema>;
  *
  * ⚠️ **这不构成"渲染端能读任意文件"**：路径是主进程按库里的记录算出来的，
  * 渲染端只能请求**某个条目**的路径，请求不了别的。而那个路径能不能真被读写，
- * 还要再过一道 `pathGuard` 的围栏（文献库根是合法工作区根之一，
+ * 还要再过一道 `pathGuard` 的围栏（资料库根是合法工作区根之一，
  * 见 `main/lib/pathGuard.ts`）。
  *
  * `which` 同 `revealFile`：省略 = 本体（通用条目给文件本身、论文给 PDF）。
@@ -707,7 +707,7 @@ export const CollectionAssignSchema = z.object({
 export type CollectionAssignInput = z.infer<typeof CollectionAssignSchema>;
 
 /**
- * 为一个文献库生成/刷新清单文件,返回其绝对路径。
+ * 为一个资料库生成/刷新清单文件,返回其绝对路径。
  *
  * 为什么需要它:把库加进对话上下文的方式**刻意与「添加上下文文件」完全一致** ——
  * 提示词里只放一行 `@路径`,内容由 agent 用 Read 工具自己读,不预先内联。
@@ -786,7 +786,7 @@ export interface WorkflowChangedMessage {
 }
 
 /**
- * 往某次对话的输入框里挂一个附件(文献库分类 / 单篇,或模版库的一条模版)。
+ * 往某次对话的输入框里挂一个附件(资料库分类 / 单篇,或模版库的一条模版)。
  *
  * 两个发起方:AI(走 MCP 工具的 `library_attach_to_chat`)和**用户自己**(左栏
  * 右键「添加到当前对话」)。渲染端收到后按 `makeLibraryTag` / `makeTemplateTag`

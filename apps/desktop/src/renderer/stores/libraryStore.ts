@@ -1,16 +1,16 @@
 /**
- * 文献库的全局状态。
+ * 资料库的全局状态。
  *
  * 单独开一个 store 而不是往 `sessionStore` 里塞:`sessionStore` 已经一万多行,
- * 而文献库与「会话/项目」是**正交**的概念(用户明确要求两者独立),混在一起只会
+ * 而资料库与「会话/项目」是**正交**的概念(用户明确要求两者独立),混在一起只会
  * 让两边的语义都变糊。
  *
- * ## 两个「当前库」是不同的事,不要合并
+ * ## 左栏当前分类与对话绑定分类是两个不同的状态，不要合并
  *
- *   - `activeCollectionId` —— **主区正在看哪个库**(左栏点击的结果)
- *   - `chatCollectionId`   —— **当前对话绑定哪个库**(决定 AI 能读哪些文献)
+ *   - `activeCollectionId` —— **左栏当前选中的分类**
+ *   - `chatCollectionId`   —— **当前对话所选的资料库分类**（历史兼容字段）
  *
- * 它们确实不同:用户完全可能一边看 A 库的文献列表,一边在和 AI 聊 B 库的内容。
+ * 它们确实不同：用户可能在左栏看 A 分类的资料，同时让 AI 使用 B 分类的上下文。
  * 硬绑成一个字段会逼用户二选一。
  *
  * ## 「文献检索」模式已经搬走了
@@ -50,7 +50,7 @@ const latestItemsRequest = new Map<string, number>();
 let allItemsRequest = 0;
 
 interface LibraryState {
-  /** 全部文献库(Zotero 意义上的 collection)。左栏与选择器共用这一份缓存。 */
+  /** 全部资料库(Zotero 意义上的 collection)。左栏与选择器共用这一份缓存。 */
   collections: LibraryCollection[];
   /**
    * 当前在哪个大类下（kind 退役后：左栏按大类分段，段内就是分类树）。
@@ -58,7 +58,7 @@ interface LibraryState {
   activeGroupId: string | null;
   /** 主区正在展示的库;null 表示没在看任何库(主区回到会话视图)。 */
   activeCollectionId: string | null;
-  /** 右栏文献库面板里当前打开的那一篇。左栏点文献也是写这里。 */
+  /** 右栏资料库面板里当前打开的那一篇。左栏点文献也是写这里。 */
   activeItemId: string | null;
   /**
    * 详情屏当前看哪一页:**元数据** / **原文(Markdown)** / **PDF 原文**。

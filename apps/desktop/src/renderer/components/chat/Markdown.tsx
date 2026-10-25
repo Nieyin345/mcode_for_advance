@@ -543,7 +543,7 @@ function MarkdownLocalImage({
  *
  * ## 为什么还要额外放行 `data:image/*`
  *
- * 文献库的**原文预览**把 Markdown 里引用的图片读成 data URL,再喂给 `<img src>`
+ * 资料库的**原文预览**把 Markdown 里引用的图片读成 data URL,再喂给 `<img src>`
  * (渲染时按 `baseDir` 读盘那条在下面 `img` 分支的 `MarkdownLocalImage`;主进程
  * 预先内联那条在 `library/markdownPreview.ts` —— 两条都还在)。而
  * `defaultUrlTransform` 的白名单是 `http(s)/irc/mailto/xmpp`,`data:` 不在其中 ——

@@ -57,15 +57,15 @@ export function isKnownProjectPath(projectPath: string): boolean {
   return ProjectRepo.listPaths().some((p) => samePath(p, projectPath));
 }
 
-/* ── Workspace roots: projects ∪ materialized session worktrees ∪ 文献库 ──
+/* ── Workspace roots: projects ∪ materialized session worktrees ∪ 资料库 ──
  *  A worktree session's isolated checkout lives OUTSIDE every project root
  *  by design, yet the session legitimately operates there (its cwd, its
  *  file tree, its git panel). These guards admit those directories as a
  *  SECOND class of legal root: project roots keep priority, worktree roots
  *  (the distinct sessions.worktree_path values) form the fallback tier.
  *
- *  **文献库是第三类**（2026-09-21）。用户的规矩是「我不管从哪打开，只要你在主页面
- *  显示它，我就该能编辑它」—— 而文献库的文件住在 `<数据根>/library/{papers,markdown}/…`，
+ *  **资料库是第三类**（2026-09-21）。用户的规矩是「我不管从哪打开，只要你在主页面
+ *  显示它，我就该能编辑它」—— 而资料库的文件住在 `<数据根>/library/{papers,markdown}/…`，
  *  不归任何项目根管，于是那些文件一旦送进 `FileEditor`（它读写全走 `file:readFile`
  *  / `file:writeFile`），**读会被拒、写更会被拒**，表现是"打开了但是空的、存不下去"。
  *
@@ -73,7 +73,7 @@ export function isKnownProjectPath(projectPath: string): boolean {
  *
  *  **范围最小**。数据根底下还有 `mcode.db`、`workflows/`、`hooks.json`、`memory/`
  *  这些 Mcode 自己管理的状态 —— 它们各有各的 IPC 和校验，**不该**从"随便读写一个
- *  文件"这条通用口子进去。而 `library/`（文献库）和 `templates/`（模版库）里装的
+ *  文件"这条通用口子进去。而 `library/`（资料库）和 `templates/`（模版库）里装的
  *  是**用户自己的文档**，那才是要能直接编辑的东西。
  *
  *  ⚠️ 两个都要 —— 只放 library 是我第一版的漏：模版库的文件在 `<数据根>/templates/`
@@ -94,7 +94,7 @@ function userDocRootsForGuard(): string[] {
 }
 
 /** True if `path` is a registered project root OR some session's
- *  materialized worktree root OR inside the 文献库 / 模版库根. */
+ *  materialized worktree root OR inside the 资料库 / 模版库根. */
 export function isKnownWorkspaceRoot(path: string): boolean {
   if (isKnownProjectPath(path)) return true;
   if (SessionRepo.listWorktreeRoots().some((r) => samePath(r, path))) return true;
@@ -103,7 +103,7 @@ export function isKnownWorkspaceRoot(path: string): boolean {
 
 /** The workspace root containing `absPath` — the matching project root if
  *  any, otherwise the first worktree root that contains it, otherwise the
- *  文献库 / 模版库根 that contains it, else null. */
+ *  资料库 / 模版库根 that contains it, else null. */
 export function findContainingWorkspaceRoot(absPath: string): string | null {
   const project = findContainingProject(absPath);
   if (project) return project;
@@ -114,7 +114,7 @@ export function findContainingWorkspaceRoot(absPath: string): string | null {
 
 /**
  * **所有已知工作区根的并集** —— 与 `isKnownWorkspaceRoot` /
- * `findContainingWorkspaceRoot` 同一条判据(项目 ∪ 会话工作树 ∪ 文献库/模版库),
+ * `findContainingWorkspaceRoot` 同一条判据(项目 ∪ 会话工作树 ∪ 资料库/模版库),
  * 只是返回整个集合而不是判定单个路径。
  *
  * 为什么需要它:GenOffice 的 MCP 子进程里**没有** Mcode 的这层守卫
@@ -123,7 +123,7 @@ export function findContainingWorkspaceRoot(absPath: string): string | null {
  * 与"编辑器里允许的目录"就会分家 —— 那正是第二条旁路。
  *
  * 去重按 `samePath`(Windows/macOS 大小写不敏感),顺序与包含判定的优先级一致:
- * 项目根在前,工作树其次,文献库/模版库最后。相对路径直接丢弃:围栏需要能与
+ * 项目根在前,工作树其次,资料库/模版库最后。相对路径直接丢弃:围栏需要能与
  * 绝对路径比较的根,一条相对路径在 GenOffice 侧只会永远不命中(fail-closed)。
  */
 export function listKnownWorkspaceRoots(): string[] {

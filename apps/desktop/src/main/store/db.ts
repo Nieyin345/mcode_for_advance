@@ -353,7 +353,7 @@ function migrate(database: Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_fork_orphans_status ON fork_orphans(status, created_at DESC);
 
-    /* ── 文献库 ──────────────────────────────────────────────────────────
+    /* ── 资料库 ──────────────────────────────────────────────────────────
        与会话数据完全解耦:库是全局的(所有项目共用),不挂在 project 下。
        pdf_path / md_path 一律存**相对库根目录**的路径 —— 库位置可被用户改,
        存绝对路径会在搬迁后全部失效。 */

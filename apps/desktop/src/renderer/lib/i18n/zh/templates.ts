@@ -25,7 +25,7 @@ export const zh = {
   "settings.templates.kind.code": "代码",
   "settings.templates.kind.image": "图片",
 
-  /** 「全部<类目>模版」那一行,也是挂整类目时 chip 上的字 —— 与文献库
+  /** 「全部<类目>模版」那一行,也是挂整类目时 chip 上的字 —— 与资料库
    *  「全部文献 / 全部教材 / 全部笔记」逐字同款。 */
   "templates.section.all": "全部{kind}模版",
 

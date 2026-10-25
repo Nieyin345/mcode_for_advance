@@ -1,5 +1,5 @@
 /**
- * 文献库区域文案。键名遵循本区域的 `library.` 前缀约定。
+ * 资料库区域文案。键名遵循本区域的 `library.` 前缀约定。
  * zh 是 `MessageId` 的事实源 —— 新增键先加在这里。
  */
 export const zh = {
@@ -17,8 +17,7 @@ export const zh = {
   "library.collection.duplicateName": "已有同名分类",
   "library.collection.rename": "重命名",
   "library.collection.delete": "删除分类",
-  /** ⚠️ 说的是**分类**不是库 —— 「文献库」在这个产品里指整个库（论文/教材/笔记），
-   *  而这一条删的是树上的一个节点。原来写成「删除文献库」会让用户以为整个库要没了。 */
+  /** 删除的是资料库分类节点，不是整个资料库，也不会删除其条目数据。 */
   "library.collection.deleteConfirm": "删除分类「{name}」？里面的资料不会被删除，只是不再属于这个分类。",
   "library.collection.empty": "这个分类还没有资料",
   "library.loadFailed": "这个分类的资料读不出来:{error}",
@@ -328,7 +327,7 @@ export const zh = {
   "library.preview.imageNotInlined": "（图片未内联:{ref}）",
 
 
-  // 设置页:文献库
+  // 设置页:资料库
   "settings.nav.library": "资料库",
   "settings.library.title": "资料库",
   "settings.library.layoutTitle": "目录结构",
@@ -405,7 +404,7 @@ export const zh = {
   "library.fullText.searching": "检索中…",
   "library.fullText.noResult": "正文里没有找到这个词(也可能那一篇还没转成 Markdown)",
   "library.fullText.count": "命中 {n} 处",
-  // 聊天输入框「挂文献库」确认后的两类失败提示（ChatPane.handlePickLibraries）。
+  // 聊天输入框「挂资料库」确认后的两类失败提示（ChatPane.handlePickLibraries）。
   // {page} 取 `settings.nav.libraryTypes`，设置页改名时这里跟着走。
   "library.attach.blocked": "这些被屏蔽了，没挂上：{list}",
   "library.attach.blockedHint": "设置 → {page} 里可以改屏蔽规则。",

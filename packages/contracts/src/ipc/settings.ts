@@ -610,7 +610,7 @@ export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
 /** zod schema + TS union for the right-panel tab preference. "sidechat" (the
  *  side-chat Q&A tab) is session-only like "browser": hydrate ignores a
  *  persisted value so the ask tab never auto-opens at startup. "library" 同理
- *  —— 文献库是被左栏点击唤起的,不该在启动时自己占住右栏。
+ *  —— 资料库是被左栏点击唤起的,不该在启动时自己占住右栏。
  *
  *  "tasks"(任务列表)是**用户主动点右栏那个图标**才进来的,不是被别处唤起的,
  *  所以它跟 files / git 一样持久化:上次开着,重启还开着。
@@ -622,7 +622,7 @@ export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
  * 右栏有哪几个标签。
  *
  * ⚠️ **2026-09-21：`library` / `templates` 删了，改成 `preview`。**
- * 原来那两个是「文献库面板」和「模版库面板」—— 它们把列表、检索、导入、详情全塞在
+ * 原来那两个是「资料库面板」和「模版库面板」—— 它们把列表、检索、导入、详情全塞在
  * 一个 400px 宽的栏里。现在：
  *
  *   - 检索 → Ctrl+K 的「文档」tab；导入 / 转换 / 引用 / 关联 / 文献信息 → 左栏右键；

@@ -193,7 +193,7 @@ function resolveGenofficeInstallPrereq():
   if (roots.length === 0) {
     return {
       ok: false,
-      reason: "还没有任何工作区根(项目 / 会话工作树 / 文献库),GenOffice 的路径围栏会是空的 —— 空围栏等于不设防,已拒绝。请先打开一个项目再安装。",
+      reason: "还没有任何工作区根(项目 / 会话工作树 / 资料库),GenOffice 的路径围栏会是空的 —— 空围栏等于不设防,已拒绝。请先打开一个项目再安装。",
     };
   }
   return { ok: true, cliPath, roots };

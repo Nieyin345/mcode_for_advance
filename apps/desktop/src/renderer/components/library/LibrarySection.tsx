@@ -109,7 +109,7 @@ export function MiniInput({
   onChange: (next: string) => void;
   onSubmit: () => void;
   onCancel: () => void;
-  /** 失焦也提交(与文献库行内输入同一语义:点别处就是"就改这个")。 */
+  /** 失焦也提交(与资料库行内输入同一语义:点别处就是"就改这个")。 */
   onBlur?: () => void;
   placeholder?: string;
   error?: string | null;
@@ -499,7 +499,7 @@ export function LibrarySection({
   }, []);
 
   /**
-   * 点一个分类:选中它(右栏切到文献库标签)**并切换展开态**。
+   * 点一个分类：设置当前选中项并切换左栏树的展开态，不切换右栏。
    *
    * 展开是"用户点它就是想看里面的东西"的自然结果;但**再点一次要合上** ——
    * 只展开不收合的话,左栏会越点越满,用户没有收起来的办法(箭头能收,但点名字
@@ -509,7 +509,7 @@ export function LibrarySection({
    */
   const openCollection = (id: string) => {
     setActive(id);
-    // ⚠️ **点分类不再切右栏**（2026-09-21）。原来切的是「文献库」那个 tab，而它删了。
+    // 分类是导航节点，不是文件预览目标：选中分类不应强制切换右侧面板。
     // 也不能切到「预览」—— 那是给**某一个文件**的，而这里用户点的是一个分类
     // （可能展开出一列文件）。切过去只会显示上一次预览的那一篇，误导。
     toggleExpanded(id);
@@ -1420,7 +1420,7 @@ export function LibrarySection({
    * (子集合不再缩进到父集合下面,和其它库并排),这是模式本身的意思。
    *
    * 但库本身**永远可见**,文献直接跟在库名下面。这一条是硬要求:早先的版本在
-   * 这个模式下只列文献、不列库,结果一条文献都没有时整个「文献库」段是空的,
+   * 这个模式下曾只列条目而不列分类，空分类时整段便不可见，
    * 用户会以为自己的库没了。
    */
   const renderStreamCollection = (c: LibraryCollection) => {

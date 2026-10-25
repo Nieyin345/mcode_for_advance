@@ -250,7 +250,7 @@ export function isImageFile(tag: ContentTag): boolean {
 }
 
 /**
- * 把「文献库」加成 tag。
+ * 把「资料库」加成 tag。
  *
  * 机制**刻意与 file tag 完全一致**:content 是一行 `@<清单文件路径>`,不内联任何
  * 正文 —— agent 用 Read 工具自己去读那份清单(清单里列了这个库有哪些文献、
@@ -277,7 +277,7 @@ export function makeLibraryTag(params: {
   };
 }
 
-/** 追加文献库 tag,跳过已存在的(按 collectionId 去重)。 */
+/** 追加资料库 tag,跳过已存在的(按 collectionId 去重)。 */
 export function appendUniqueLibraryTags(
   prev: ReadonlyArray<ContentTag>,
   additions: ReadonlyArray<{ collectionId: string; name: string; manifestPath: string }>,

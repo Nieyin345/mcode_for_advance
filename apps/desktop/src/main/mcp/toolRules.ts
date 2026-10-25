@@ -205,7 +205,7 @@ function isReadOnlyNamespacedTool(toolName: string): boolean {
 export function shouldAutoApprove(mode: PermissionMode | undefined, toolName: string): boolean {
   if (!mode) return false;
   if (mode === "bypassPermissions") return true;
-  // 只读的那几类(浏览器 / 文献库 / 工作流 / 记忆)从来不问 —— 它们改不了任何东西。
+  // 只读的那几类(浏览器 / 资料库 / 工作流 / 记忆)从来不问 —— 它们改不了任何东西。
   if (isReadOnlyNamespacedTool(toolName)) return true;
   if (mode === "acceptEdits") return FILE_EDIT_TOOLS.has(toolName);
   return false;
