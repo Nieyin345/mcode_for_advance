@@ -690,7 +690,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【T24】单个工具的完整参数；CLI 承载的 op 取 `genoffice guide` 的原文。",
   "input": "{ tool: string; detail?: 'full' | 'compact' | undefined // full = 强制从 CLI 取 `guide <domain> <op>` 的完整 schema（CLI 承载的 op）。; app?: 'pdf' | 'markdown' | 'html' | 'docs' | 'sheets' | 'slides' | undefined }",
   "inputFull": "{ tool: string; detail?: 'full' | 'compact' | undefined // full = 强制从 CLI 取 `guide <domain> <op>` 的完整 schema（CLI 承载的 op）。; app?: 'pdf' | 'markdown' | 'html' | 'docs' | 'sheets' | 'slides' | undefined }",
-  "output": "{ ok: true; app: 'pdf' | 'markdown' | 'html' | 'docs' | 'sheets' | 'slides'; tool: string; doc: string; schemaText: string // 参数/示例正文（CLI guide 的原文或目录里的说明）。; route: 'cli' | 'editor' | 'editor-only'; withheld?: string | undefined // 该工具是否超出 T86 请求级契约（withheld）…"
+  "output": "{ ok: true; app: 'pdf' | 'markdown' | 'html' | 'docs' | 'sheets' | 'slides'; tool: string; doc: string; schemaText: string // 参数/示例正文（CLI guide 的原文或目录里的说明）。; route: 'editor' | 'cli' | 'editor-only'; withheld?: string | undefined // 该工具是否超出 T86 请求级契约（withheld）…"
  },
  {
   "method": "document.toolsList",
@@ -912,8 +912,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "file.writeFile",
   "channel": "file:writeFile",
   "doc": "【MC-097】`conflict:true` = 带 `expectedVersion` 的 CAS 冲突(磁盘已被改动,未写)。 【MC-024】冲突时本次 `content` **不丢**:另存为同目录 `<name>.conflict-<ISO 时间戳><ext>` 并把落盘路径回在 `conflictPath`(副本写入失败时缺省 —— 此时回包仍是冲突,只是没有副本)。",
-  "input": "{ content: string; filePath: string // Absolute or cwd-relative path.; expectedVersion?: string | undefined // 【MC-097】可选**乐观并发条件**:调用方读到的那一版内容的哈希(见 `file:readFile` 回传的 `version`)。给了它,主进程在**最终提交点**重读当… }",
-  "inputFull": "{ content: string; filePath: string // Absolute or cwd-relative path.; expectedVersion?: string | undefined // 【MC-097】可选**乐观并发条件**:调用方读到的那一版内容的哈希(见 `file:readFile` 回传的 `version`)。给了它,主进程在**最终提交点**重读当… }",
+  "input": "{ filePath: string // Absolute or cwd-relative path.; content: string; expectedVersion?: string | undefined // 【MC-097】可选**乐观并发条件**:调用方读到的那一版内容的哈希(见 `file:readFile` 回传的 `version`)。给了它,主进程在**最终提交点**重读当… }",
+  "inputFull": "{ filePath: string // Absolute or cwd-relative path.; content: string; expectedVersion?: string | undefined // 【MC-097】可选**乐观并发条件**:调用方读到的那一版内容的哈希(见 `file:readFile` 回传的 `version`)。给了它,主进程在**最终提交点**重读当… }",
   "output": "{ ok: boolean; conflict?: boolean | undefined; conflictPath?: string | undefined }"
  },
  {
@@ -1000,8 +1000,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "git.fileBlob",
   "channel": "git:fileBlob",
   "doc": "Full old-side blob for the Git panel's diff view (`git show rev:path`).",
-  "input": "{ side: 'index' | 'HEAD'; filePath: string; repoPath: string }",
-  "inputFull": "{ side: 'index' | 'HEAD'; filePath: string; repoPath: string }",
+  "input": "{ filePath: string; side: 'index' | 'HEAD'; repoPath: string }",
+  "inputFull": "{ filePath: string; side: 'index' | 'HEAD'; repoPath: string }",
   "output": "{ content: string }"
  },
  {
@@ -1608,16 +1608,16 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "lsp.didChange",
   "channel": "lsp:didChange",
   "doc": "Notify the server of a full-content change (textDocument/didChange).",
-  "input": "{ version: number; text: string; filePath: string; workspacePath: string }",
-  "inputFull": "{ version: number; text: string; filePath: string; workspacePath: string }",
+  "input": "{ version: number; filePath: string; text: string; workspacePath: string }",
+  "inputFull": "{ version: number; filePath: string; text: string; workspacePath: string }",
   "output": "void"
  },
  {
   "method": "lsp.didSave",
   "channel": "lsp:didSave",
   "doc": "Notify the server of a save (textDocument/didSave).",
-  "input": "{ text: string; filePath: string; workspacePath: string }",
-  "inputFull": "{ text: string; filePath: string; workspacePath: string }",
+  "input": "{ filePath: string; text: string; workspacePath: string }",
+  "inputFull": "{ filePath: string; text: string; workspacePath: string }",
   "output": "void"
  },
  {
@@ -2144,8 +2144,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "modules.theiaInstalled",
   "channel": "modules:theiaInstalled",
   "doc": "F026 Persist installed VSIX separately from L1; explicit human confirmation and no automatic execution.",
-  "input": "{ op: 'list' } | { path: string; op: 'inspect' } | { op: 'cancel'; ticket: string } | { op: 'install'; ticket: string; accepted: true } | { id: string; op: 'start' } | { op: 'execute'; sessionId: string; commandId: string } | { op: 'stop'; sessionId: string }…",
-  "inputFull": "{ op: 'list' } | { path: string; op: 'inspect' } | { op: 'cancel'; ticket: string } | { op: 'install'; ticket: string; accepted: true } | { id: string; op: 'start' } | { op: 'execute'; sessionId: string; commandId: string } | { op: 'stop'; sessionId: string }…",
+  "input": "{ op: 'list' } | { path: string; op: 'inspect' } | { op: 'cancel'; ticket: string } | { op: 'install'; ticket: string; accepted: true } | { id: string; op: 'start' } | { op: 'execute'; sessionId: string; commandId: string; args?: string[] | undefined } | { op…",
+  "inputFull": "{ op: 'list' } | { path: string; op: 'inspect' } | { op: 'cancel'; ticket: string } | { op: 'install'; ticket: string; accepted: true } | { id: string; op: 'start' } | { op: 'execute'; sessionId: string; commandId: string; args?: string[] | undefined } | { op…",
   "output": "{ kind: 'list'; items: TheiaInstalledEntry[] } | { kind: 'inspected'; ticket: string; extensionId: string; fileCount: number; prompt: TheiaPreviewPermissionPrompt } | { kind: 'installed' | 'updated'; item: TheiaInstalledEntry } | { kind: 'started'; id: string…"
  },
  {

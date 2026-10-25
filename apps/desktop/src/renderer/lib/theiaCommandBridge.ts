@@ -4,6 +4,7 @@
  */
 import type { TheiaInstalledEntry, TheiaInstalledInput, TheiaInstalledResult } from "@contracts/ipc/modules.js";
 import type { CommandDef } from "./commands.js";
+import { executeTheiaWithMonaco } from "./theiaMonacoOwner.js";
 
 export type NativeTheiaInvoke = (input: TheiaInstalledInput) => Promise<TheiaInstalledResult>;
 export type NativeTheiaNotify = (message: {kind:"info"|"error";title:string;body?:string}) => void;
@@ -33,7 +34,7 @@ export function collectTheiaPaletteCommands(
         keywords:[commandId,item.extensionId,"VS Code","Theia","扩展"],
         perform:async()=>{
           try {
-            const response = await invoke({op:"execute",sessionId,commandId});
+            const response = await executeTheiaWithMonaco(invoke,sessionId,commandId);
             if (response.kind !== "executed") throw Error("Theia 扩展命令未完成");
             notify({kind:"info",title,body:response.result});
           } catch (error) {

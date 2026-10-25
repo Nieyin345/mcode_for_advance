@@ -30,6 +30,7 @@ import { SelectionToolbar, type SelectionToolbarState } from "@renderer/componen
 import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/SelectionQuoteMenu.js";
 import { makeQuoteTag } from "@renderer/lib/contentTag.js";
 import { captureMonacoCitationSelection, subscribeMonacoCitationChanges } from "./monacoCitationSelection.js";
+import { registerTheiaMonacoOwner, subscribeTheiaMonacoEdits } from "@renderer/lib/theiaMonacoOwner.js";
 // LSP provider bridge: registers definition/references/hover providers, syncs
 // documents, and applies diagnostics markers to the model.
 import {
@@ -1445,6 +1446,19 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
   const handleEditorMount = (editor_: editor.IStandaloneCodeEditor, monaco: typeof import("monaco-editor")) => {
     editorRef.current = editor_;
     monacoRef.current = monaco;
+    // F029: register THIS actual Monaco instance as the only extension edit owner.
+    // Models are swapped in place; resolve the current file/model for each request.
+    const unregisterTheiaOwner = registerTheiaMonacoOwner(()=>{
+      const ctx=readyCtxRef.current;
+      const model=editorRef.current?.getModel();
+      if(!ctx||!model||getModelEntry(ctx.path)?.model!==model)return null;
+      return {editor:editor_,model,filePath:ctx.path};
+    });
+    const unsubscribeTheia = subscribeTheiaMonacoEdits({
+      invoke:input=>api.modules.theiaInstalled(input),
+      subscribe:handler=>api.on.theiaEditorApply(handler),
+    });
+    unmountCleanupsRef.current.push(unregisterTheiaOwner,unsubscribeTheia);
     editor_.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void handleSaveRef.current();
     });

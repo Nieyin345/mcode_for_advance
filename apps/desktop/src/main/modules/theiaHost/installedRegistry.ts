@@ -7,7 +7,7 @@ import { buildExtensionPermissionReport } from "../theiaPermissionReport.js";
 import { buildInstallConsentPrompt } from "./installConsent.js";
 import { parseTheiaVsix } from "./theiaVsixPreview.js";
 import { TheiaHost, type TheiaExtensionHandle } from "./host.js";
-import type { TheiaInstalledEntry, TheiaInstalledResult } from "@contracts/ipc/modules.js";
+import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaMonacoEditorSnapshot } from "@contracts/ipc/modules.js";
 
 const MAX_ARCHIVE = 64 * 1024 * 1024;
 const AGE_MS = 5 * 60 * 1000;
@@ -22,7 +22,10 @@ interface Saved {
   archiveHash: string; installedAt: number; enabled: boolean; files: Record<string,string>;
 }
 interface Pending { ticket: string; senderId: number; createdAt: number; root: string; record: Saved }
-interface Running { id: string; senderId: number; sessionId: string; host: TheiaHost; handle: TheiaExtensionHandle; commands: Set<string> }
+interface Running { id: string; senderId: number; sessionId: string; host: TheiaHost;
+  handle: TheiaExtensionHandle; commands: Set<string>;
+  editorBridge?: ReturnType<TheiaHost["editors"]>; syncing?: boolean; executing?: boolean;
+}
 
 function validateRecord(input: unknown, id: string): Saved {
   if (!input || typeof input !== "object" || Array.isArray(input)) deny("安装记录无效");
@@ -225,13 +228,34 @@ export class TheiaInstalledRegistry {
     }catch(error){await host.dispose();throw error;}
     finally{this.starting=false;this.startingSender=null;this.startingId=null;}
   }
-  async execute(senderId:number,sessionId:string,commandId:string):Promise<TheiaInstalledResult>{
+  /** Sync one REAL Mcode editor snapshot on user command invocation, not on every keystroke.
+   * Owner callback only resolves after the renderer's Monaco model accepted the undoable edits.
+   */
+  async editorSync(senderId:number,sessionId:string,input:TheiaMonacoEditorSnapshot|null,
+    apply: (transaction:import("./editorTransactions.js").EditorEditTransaction)=>Promise<boolean>):Promise<TheiaInstalledResult> {
     const current=this.running;
-    if(!current||current.senderId!==senderId||current.sessionId!==sessionId||!current.commands.has(commandId)) deny("扩展会话或命令不存在");
-    const result=await current.handle.executeCommand<unknown>(commandId);
-    if(this.running!==current||this.closed.has(senderId)) deny("扩展已停止");
-    let output:string;try{output=JSON.stringify(result)??"undefined";}catch{output="[unserializable]";}
-    return {kind:"executed",result:output.slice(0,3000)};
+    if(!current||current.senderId!==senderId||current.sessionId!==sessionId||this.closed.has(senderId)||
+       current.syncing||current.executing) deny("仅当前窗口的空闲运行会话可以同步编辑器");
+    if(input && (!path.isAbsolute(input.filePath)||input.text.length>2_000_000)) deny("编辑器文档不符合安全边界");
+    current.syncing=true;
+    try{
+      const bridge=current.editorBridge??=current.host.editors();
+      await bridge.setActive(input===null?null:{...input,applyEdits:apply});
+      if(this.running!==current||this.closed.has(senderId)) deny("同步期间会话已失效");
+      return {kind:"editorSynced",active:input!==null};
+    }finally{current.syncing=false;}
+  }
+  async execute(senderId:number,sessionId:string,commandId:string,args:readonly string[]=[]):Promise<TheiaInstalledResult>{
+    const current=this.running;
+    if(!current||current.senderId!==senderId||current.sessionId!==sessionId||
+       !current.commands.has(commandId)||current.syncing||current.executing) deny("扩展会话或命令不存在/正在忙碌");
+    current.executing=true;
+    try{
+      const result=await current.handle.executeCommand<unknown>(commandId,...args);
+      if(this.running!==current||this.closed.has(senderId)) deny("扩展已停止");
+      let output:string;try{output=JSON.stringify(result)??"undefined";}catch{output="[unserializable]";}
+      return {kind:"executed",result:output.slice(0,3000)};
+    }finally{current.executing=false;}
   }
   async stop(senderId:number,sessionId:string):Promise<TheiaInstalledResult>{
     const current=this.running;

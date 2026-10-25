@@ -11,6 +11,8 @@ import { IPC } from "@contracts/ipc";
 import { TheiaInstalledRegistry } from "../../src/main/modules/theiaHost/installedRegistry.js";
 import { policyFor } from "../../src/main/appControl/policy.js";
 import { APP_METHOD_PERMISSIONS } from "@contracts/appPermission";
+import { registerTheiaMonacoOwner, subscribeTheiaMonacoEdits, executeTheiaWithMonaco, applyTheiaMonacoEdit } from "../../src/renderer/lib/theiaMonacoOwner.js";
+import type { TheiaMonacoEditRequest } from "@contracts/ipc/modules.js";
 
 const root=process.env.MCODE_SMOKE_REPO_ROOT;
 if(!root) throw Error("MCODE_SMOKE_REPO_ROOT missing");
@@ -187,7 +189,16 @@ try{
   check("持久扩展桌面 IPC 单独注册",calls.size===1&&typeof invoke==="function");
   if(!invoke)throw Error("missing F026 IPC handler");
   const mainFrame={};
-  const wc=Object.assign(new EventEmitter(),{id:99,mainFrame,isDestroyed:()=>false});
+  let deliverEditor:((request:TheiaMonacoEditRequest)=>void)|null=null;
+  let editorRequestCount=0;
+  const wc=Object.assign(new EventEmitter(),{id:99,mainFrame,isDestroyed:()=>false,
+    send:(channel:string,message:TheiaMonacoEditRequest)=>{
+      if(channel===IPC.MODULE_THEIA_EDITOR_APPLY) {
+        editorRequestCount++;
+        deliverEditor?.(message);
+      }
+    },
+  });
   const actor={sender:wc,senderFrame:mainFrame};
   await rejects("没有桌面 sender 的调用被拒绝",()=>invoke({}, {op:"list"}));
   await rejects("子框架的调用被拒绝",()=>invoke({sender:wc,senderFrame:{}}, {op:"list"}));
@@ -203,6 +214,51 @@ try{
   const ipcLive=await invoke(actor,{op:"start",id:ipcAdded.item.id}) as
     {kind:string;sessionId:string;commands:string[]};
   check("IPC 手动启动真实 Theia 子进程",ipcLive.kind==="started"&&ipcLive.commands.includes("mcodeSmoke.spawnEcho"));
+  // Synthetic Monaco owner exercises the *same renderer adapter* registered by real EditPane.
+  // No real user files: the real Theia child calls vscode.window.activeTextEditor.edit,
+  // main forwards via its sender-scoped broker, renderer confirms after applying undoable edits.
+  let editorText="abcdef and more";
+  const editorFile=path.join(dir,"monaco-test.txt");
+  const undoMarks:number[]=[];
+  const model={
+    getValue:()=>editorText,
+    getLanguageId:()=>"plaintext",
+    isDisposed:()=>false,
+  };
+  const fakeEditor={
+    getModel:()=>model,
+    getSelection:()=>({startLineNumber:1,startColumn:2,endLineNumber:1,endColumn:4}),
+    getRawOptions:()=>({readOnly:false}),
+    pushUndoStop:()=>{undoMarks.push(editorText.length);return true;},
+    executeEdits:(_source:string,operations:Array<{range:{startLineNumber:number;startColumn:number;endLineNumber:number;endColumn:number};text:string}>)=>{
+      for(const {range,text} of operations){
+        if(range.startLineNumber!==1||range.endLineNumber!==1)return false;
+        editorText=editorText.slice(0,range.startColumn-1)+text+editorText.slice(range.endColumn-1);
+      }
+      return true;
+    },
+  };
+  const unregisterMonaco=registerTheiaMonacoOwner(()=>({editor:fakeEditor,model,filePath:editorFile} as never));
+  const unsubscribe=subscribeTheiaMonacoEdits({
+    invoke: input=>invoke(actor,input) as Promise<import("@contracts/ipc/modules.js").TheiaInstalledResult>,
+    subscribe:handler=>{deliverEditor=handler;return ()=>{deliverEditor=null;};},
+  });
+  const editInvoke=(input:import("@contracts/ipc/modules.js").TheiaInstalledInput)=>
+    invoke(actor,input) as Promise<import("@contracts/ipc/modules.js").TheiaInstalledResult>;
+  const editorResult=await executeTheiaWithMonaco(editInvoke,ipcLive.sessionId,"mcodeSmoke.editActive",["EDITED"]);
+  check("真实 Theia TextEditor.edit 经 Electron IPC broker 交给 Monaco owner",editorResult.kind==="executed"&&editorResult.result==="true",editorResult);
+  check("编辑使用 Monaco 的 executeEdits 修改真正的模型文本",editorText.startsWith("EDITED")&&editorRequestCount>=1,{editorText,editorRequestCount});
+  check("Monaco 撤销组由原生编辑器生成而非直写磁盘",undoMarks.length===2);
+  const beforeOverlap=editorText;
+  await rejects("Theia 原生拒绝重叠编辑，不能绕过 Monaco",()=>executeTheiaWithMonaco(editInvoke,ipcLive.sessionId,"mcodeSmoke.overlapEdit"));
+  check("重叠编辑拒绝后 Monaco 内容未变化",editorText===beforeOverlap);
+  check("错误文件不允许修改 Monaco 模型",!applyTheiaMonacoEdit({
+    filePath:path.join(dir,"other.txt"),version:1,beforeText:editorText,afterText:"x",edits:[{range:{startLineNumber:1,startColumn:1,endLineNumber:1,endColumn:1},text:"x",rangeOffset:0,rangeLength:0}],undoStopBefore:true,undoStopAfter:true,
+  }));
+  unsubscribe();unregisterMonaco();
+  const noOwner=await executeTheiaWithMonaco(editInvoke,ipcLive.sessionId,"mcodeSmoke.editActive",["NOPE"]);
+  check("真实编辑器卸载后扩展不能修改旧模型",noOwner.kind==="executed"&&noOwner.result==="false"&&editorText===beforeOverlap);
+
   const ipcRunningList=await invoke(actor,{op:"list"}) as {kind:string;items:Array<{activeSession?:{sessionId:string;commands:string[]}}>} ;
   check("真实 IPC list 返回当前窗口可执行的注册命令",
     ipcRunningList.items[0]?.activeSession?.sessionId===ipcLive.sessionId&&
@@ -219,6 +275,6 @@ try{
   if(manager)await manager.disposeAll();
   rmSync(dir,{recursive:true,force:true});
 }
-console.log("NOT-COVERED: Electron U1, packaged Theia runtime, Monaco editor, runtime sandbox, auto-start intentionally disabled");
+console.log("NOT-COVERED: Electron U1 actual Monaco window, packaged Theia runtime, continuous document delta outside explicit commands, shared multi-extension host, runtime sandbox, auto-start intentionally disabled");
 console.log("theia-installed-smoke: "+pass+"/"+(pass+fail)+" 通过");
 process.exitCode=fail?1:0;

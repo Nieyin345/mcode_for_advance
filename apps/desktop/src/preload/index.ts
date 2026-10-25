@@ -1167,6 +1167,15 @@ const api = {
 
   // ── Push events (main → renderer) ──
   on: {
+    /** F029: edit request is from an activated Theia extension, not a disk write.
+     * The real Monaco owner decides and replies via modules.theiaInstalled(editorApplied). */
+    theiaEditorApply(handler: (msg: import("@contracts/ipc/modules.js").TheiaMonacoEditRequest) => void): () => void {
+      const listener = (_event: unknown, msg: import("@contracts/ipc/modules.js").TheiaMonacoEditRequest) => {
+        if (msg.channel === IPC.MODULE_THEIA_EDITOR_APPLY) handler(msg);
+      };
+      ipcRenderer.on(IPC.MODULE_THEIA_EDITOR_APPLY, listener);
+      return () => { ipcRenderer.off(IPC.MODULE_THEIA_EDITOR_APPLY, listener); };
+    },
     marketProgress(handler: (msg: Extract<MainToRendererMessage, { channel: "market:progress" }>) => void): () => void {
       const listener = (_e: unknown, msg: MainToRendererMessage) => {
         if (msg.channel === IPC.MARKET_PROGRESS) handler(msg);

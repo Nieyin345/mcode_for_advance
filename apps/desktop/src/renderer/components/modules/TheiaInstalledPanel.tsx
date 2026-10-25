@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { TheiaInstalledEntry, TheiaInstalledResult } from "@contracts/ipc/modules.js";
 import { api } from "@renderer/lib/api.js";
 import { Button, ErrorNote } from "@renderer/components/ui/index.js";
+import { executeTheiaWithMonaco } from "@renderer/lib/theiaMonacoOwner.js";
 
 type Inspected = Extract<TheiaInstalledResult,{kind:"inspected"}>;
 type Started = Extract<TheiaInstalledResult,{kind:"started"}>;
@@ -74,7 +75,7 @@ export function TheiaInstalledPanel() {
   });
   const execute=()=>void task(async()=>{
     if(!session||!command)return;
-    const result=await api.modules.theiaInstalled({op:"execute",sessionId:session.sessionId,commandId:command});
+    const result=await executeTheiaWithMonaco(input=>api.modules.theiaInstalled(input),session.sessionId,command);
     if(result.kind!=="executed")throw Error("命令调用未完成");
     setOutput(result.result);
   });

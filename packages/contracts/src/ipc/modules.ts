@@ -120,6 +120,24 @@ export type TheiaPreviewResult =
   | { kind: "executed"; result: string }
   | { kind: "stopped" };
 
+/** F029: bounded Mcode editor owner snapshot + reverse edit confirmation.
+ * Transaction ranges are 1-based (Monaco), text offsets UTF-16.
+ */
+export interface TheiaMonacoEditorSnapshot {
+  filePath:string; languageId:string; text:string;
+  selection?:{start:{line:number;character:number};end:{line:number;character:number}};
+}
+export interface TheiaMonacoEditRequest {
+  channel:"modules:theiaEditorApply";
+  requestId:string; sessionId:string;
+  transaction:{
+    filePath:string;version:number;beforeText:string;afterText:string;
+    edits:Array<{range:{startLineNumber:number;startColumn:number;endLineNumber:number;endColumn:number};
+      text:string;rangeOffset:number;rangeLength:number}>;
+    undoStopBefore:boolean;undoStopAfter:boolean;
+  };
+}
+
 /** F026: persistent Theia VSIX installs. Every command is desktop-only and non-delegable. */
 export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
   z.object({op:z.literal("list")}).strict(),
@@ -127,7 +145,13 @@ export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
   z.object({op:z.literal("cancel"),ticket:z.string().uuid()}).strict(),
   z.object({op:z.literal("install"),ticket:z.string().uuid(),accepted:z.literal(true)}).strict(),
   z.object({op:z.literal("start"),id:z.string().uuid()}).strict(),
-  z.object({op:z.literal("execute"),sessionId:z.string().uuid(),commandId:z.string().min(1).max(256)}).strict(),
+  z.object({op:z.literal("execute"),sessionId:z.string().uuid(),commandId:z.string().min(1).max(256),args:z.array(z.string().max(4096)).max(5).optional()}).strict(),
+  z.object({op:z.literal("editorSync"),sessionId:z.string().uuid(),editor:z.object({
+    filePath:z.string().min(1).max(4096),languageId:z.string().min(1).max(100),text:z.string().max(2_000_000),
+    selection:z.object({start:z.object({line:z.number().int().min(0),character:z.number().int().min(0)}).strict(),
+      end:z.object({line:z.number().int().min(0),character:z.number().int().min(0)}).strict()}).strict().optional(),
+  }).strict().nullable()}).strict(),
+  z.object({op:z.literal("editorApplied"),sessionId:z.string().uuid(),requestId:z.string().uuid(),accepted:z.boolean()}).strict(),
   z.object({op:z.literal("stop"),sessionId:z.string().uuid()}).strict(),
   z.object({op:z.literal("setEnabled"),id:z.string().uuid(),enabled:z.boolean()}).strict(),
   z.object({op:z.literal("remove"),id:z.string().uuid()}).strict(),
@@ -147,5 +171,7 @@ export type TheiaInstalledResult =
   | {kind:"installed"|"updated";item:TheiaInstalledEntry}
   | {kind:"started";id:string;sessionId:string;commands:string[];activationErrors:string[]}
   | {kind:"executed";result:string}
+  | {kind:"editorSynced";active:boolean}
+  | {kind:"editorAcknowledged"}
   | {kind:"removed";id:string}
   | {kind:"stopped"};

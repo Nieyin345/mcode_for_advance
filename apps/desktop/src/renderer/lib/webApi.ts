@@ -1155,6 +1155,7 @@ const on: Api["on"] = {
   // 而共用组件在 effect 里碰到会同步抛的 Proxy 会让 React 19 整棵卸载(见文件头)。
   toolchainEvent: () => () => {},
   marketProgress: () => () => {}, // Desktop-only progress, like toolchain events.
+  theiaEditorApply: () => () => {}, // F029: no Monaco owner request over mobile/web.
   browserEvent: () => () => {},
   themeChanged: () => () => {},
   updateAvailable: () => () => {},

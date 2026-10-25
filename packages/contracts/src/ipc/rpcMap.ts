@@ -1719,6 +1719,8 @@ export const IPC = {
   /** Desktop-only temporary Theia compatibility preview (not ModuleHost.install). */
   MODULE_THEIA_PREVIEW: "modules:theiaPreview",
   MODULE_THEIA_INSTALLED: "modules:theiaInstalled",
+  /** Native Monaco editor owner request (main → renderer, no direct host file writes). */
+  MODULE_THEIA_EDITOR_APPLY: "modules:theiaEditorApply",
   MODULE_REMOVE: "modules:remove",
   MODULE_INVOKE: "modules:invoke",
   MODULE_TASK: "modules:task",
