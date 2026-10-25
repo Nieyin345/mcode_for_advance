@@ -222,3 +222,9 @@ W17 把一个「安静走错分支」换成了「显式失败」，那是对的 
 - 使用的回归覆盖：`mcode-custom-ui-native-smoke`（UI dispatch 和旧执行器不回退），`mcode-manual-inject-smoke`（真实上游 Node-RED Inject 源码 + Host 临时凭据 + DOI 条件/Agent 插值），`executor-gate-d-smoke`（Host 归属/非可信部署/回执不确定/禁用、无连线、悬空连线、周期触发、非法 sidecar），`workflow-native-load-smoke`（DOI 警告真正返回给 UI），以及其他 Node-RED/迁移/Custom UI 定向回归。
 - 安全反向变异：把 once=false 恢复为 true，`mcode-manual-inject-smoke` 的自动定时与 `flow-migration-smoke` 都会红；删掉 native 路由使 Custom UI 测试红；删掉旧 Once 引擎启动拦截使真实 runtime.start 测试红；去掉部署不确定守卫或悬空连线校验也分别使 `executor-gate-d-smoke` 精确红。**变异后均恢复正确源码。**
 - 尚未验证真实 Electron 页面和真实安装后的 Node-RED 全业务执行；真实 UI 的运行完成回执、用户确认操作与写权限审批行为需再走 U1。未创建实际用户工作流，未运行全仓测试，不覆盖其他对话修改，也不宣称 `wf_auto_download` 已实现最终业务效果。
+
+### 2026-10-25 精准提交与最终验证
+- 生产代码、兼容测试、新增隔离套件与本任务卡精准提交：**`7ed39673`**（24 文件，812 行新增、46 行删除；其他对话文件不纳入提交）。
+- 定向 **12/12 PASS**：`apps/desktop/.tmp/smoke-runs/1792908957402-23536-p9907U/`；Desktop/Contracts `tsc --noEmit` EXIT=0；修改文件 `git diff --check` EXIT=0；提交后目标范围 Git status 干净。
+- 新加安全变异：移除部署结果不确定保护，`executor-gate-d-smoke` **117/118** 红；允许悬空线，**117/118** 红；两项均恢复后验绿。
+- 仍未完成真实 Electron+Node-RED 整图 U1 与最终业务回执核验；HTTP 200 不等于整图执行完成。
