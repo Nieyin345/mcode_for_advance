@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "5f6b1d9bda041cdfc087218d2f4b77e8e58dd329",
-  "expectedTree": "0c7f36855f2acecf4353db516094dcf609d5fa90",
+  "revision": "daf2f54627dfecf08dc81ecee176d37a37696a0b",
+  "expectedTree": "bb7403fa7cf3e60d189f0d83958bf2713ff3d60a",
   "patchSeries": [
     {
       "index": 1,
@@ -247,6 +247,15 @@
       "sha256": "059faea963c3cdf1b968141001c57fd9960207b7d474f313339edd88ac3935c4",
       "bytes": 23436,
       "subject": "feat(office): use Mcode AI UI and embed vendor editing surfaces only"
+    },
+    {
+      "index": 27,
+      "file": "patches/genoffice/0027-fix-docs-call-scoped-ack-cancellation.patch",
+      "revision": "daf2f54627dfecf08dc81ecee176d37a37696a0b",
+      "parentRevision": "5f6b1d9bda041cdfc087218d2f4b77e8e58dd329",
+      "sha256": "b696f0b241a45edcc7fd44dcb2cdb304c3ad5c4790a4867ae6c8bf70a0389e4c",
+      "bytes": 4539,
+      "subject": "fix(docs): discard cancelled per-tool ACK slots without ending SDK turn"
     }
   ],
   "license": "Apache-2.0",

@@ -160,14 +160,18 @@ function makeSender(id: number): FakeSender {
     },
   };
 }
-function makeDocsHost(options: { ackTimeoutMs?: number; confirm?: () => Promise<boolean> } = {}) {
+function makeDocsHost(options: {
+  ackTimeoutMs?: number;
+  confirm?: () => Promise<boolean>;
+  run?: DocsAiPorts["run"];
+} = {}) {
   const handlers = new Map<string, Handler>();
   const owners = new WeakMap<object, { context: DocsAiContext; ports: DocsAiPorts }>();
   const ports: DocsAiPorts = {
     describe: () => ({ ok: true, provider: "mcode-test", model: "fake-sdk" }),
     confirm: options.confirm ?? (async () => true),
     run: (request, onChunk, signal, invokeRendererTool) =>
-      docsAiPorts.run(request, onChunk, signal, invokeRendererTool),
+      (options.run ?? docsAiPorts.run)(request, onChunk, signal, invokeRendererTool),
   };
   const fakeIpc = {
     handle(channel: string, handler: Handler) {
@@ -483,6 +487,28 @@ async function runSuite(): Promise<void> {
     check("late ACK cannot revive a call-only cancelled SDK result",
       afterAck.status === "cancelled", afterAck);
 
+    // T98's real pending-ACK handler must receive the individual signal,
+    // rather than only observing it locally in Mcode's Promise.race.
+    let observedCallSignal: unknown = null;
+    const forwardBridge = createNativeEditorToolBridge({
+      sessionId: "session-a",
+      tools: [{ name: readTool.name, description: readTool.description, inputSchema: readTool.inputSchema }],
+      definitions: new Map([[readTool.name, readTool]]),
+      invokeRendererTool: async (_call, _definition, signal) => {
+        observedCallSignal = signal;
+        return { status: "success", output: "ok" };
+      },
+      signal: new AbortController().signal,
+    });
+    const sdkCallSignal = new AbortController();
+    const forwardResult = await forwardBridge(
+      { sessionId: "session-a", callId: "forward-call-signal", name: readTool.name, input: {} },
+      sdkCallSignal.signal,
+    );
+    check("Mcode forwards SDK call AbortSignal to the trusted renderer ACK adapter",
+      forwardResult.status === "success" && observedCallSignal === sdkCallSignal.signal,
+      { status: forwardResult.status, forwarded: observedCallSignal === sdkCallSignal.signal });
+
     const turnAbort = new AbortController();
     let lateSettled = false;
     const lateBridge = createNativeEditorToolBridge({
@@ -608,6 +634,93 @@ async function runSuite(): Promise<void> {
       results.length === 1 && results[0]!.result.status === "error" &&
         /ACK/.test((results[0]!.result as { error?: string }).error ?? ""),
       results);
+    host.close();
+  }
+
+  console.log("\n7a. Call-local cancellation cleans trusted Docs ACKs and rejects stale renderer results");
+  {
+    const toolAbort = new AbortController();
+    let notifyStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve; });
+    let sdkResult: string | undefined;
+    const host = makeDocsHost({
+      ackTimeoutMs: 1_000,
+      run: async (_req, _chunk, _requestSignal, invoke) => {
+        if (!invoke) throw new Error("trusted renderer tool invoker absent");
+        const pendingTool = invoke(
+          { id: "individual-stop", name: readTool.name, input: { startBlockIndex: 0, endBlockIndex: 0 } },
+          readTool,
+          toolAbort.signal,
+        );
+        notifyStarted?.();
+        sdkResult = (await pendingTool).status;
+      },
+    });
+    const sender = host.addSender(77, contextA);
+    const pendingTurn = host.invoke(STREAM, sender, docsRequest("req-individual-stop", [readTool])) as Promise<void>;
+    await started;
+    check("trusted host forwarded one renderer call before a call-local stop",
+      toolChunks(sender, "req-individual-stop").length === 1);
+    toolAbort.abort();
+    let expiry: ReturnType<typeof setTimeout> | undefined;
+    const rapid = await Promise.race([
+      pendingTurn.then(() => "settled"),
+      new Promise<string>((resolve) => { expiry = setTimeout(() => resolve("timeout"), 120); }),
+    ]);
+    if (expiry) clearTimeout(expiry);
+    check("call-only abort releases the T98 pending ACK immediately (no 60s slot leak)",
+      rapid === "settled" && sdkResult === "cancelled", { rapid, sdkResult });
+    const stale = host.invoke(ACK, sender, ack("req-individual-stop", "individual-stop", readTool.name, "unexpected late success"));
+    check("late renderer ACK after call-only abort is never accepted by T98",
+      (stale as { ok: boolean }).ok === false, stale);
+    // On the old code this ACK releases the otherwise stuck pending request.
+    await pendingTurn;
+    host.close();
+  }
+
+  {
+    // Cancellation must be call-scoped: a second tool in the SAME SDK turn
+    // can still complete with a trusted ACK after the first one is cancelled.
+    const firstAbort = new AbortController();
+    let notifyReady: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => { notifyReady = resolve; });
+    let firstStatus: string | undefined;
+    let secondStatus: string | undefined;
+    const host = makeDocsHost({
+      ackTimeoutMs: 1_000,
+      run: async (_req, _chunk, _signal, invoke) => {
+        if (!invoke) throw new Error("expected trusted native tool callback");
+        const first = invoke(
+          { id: "one-cancelled", name: readTool.name, input: { startBlockIndex: 0, endBlockIndex: 0 } },
+          readTool,
+          firstAbort.signal,
+        );
+        const second = invoke(
+          { id: "two-survives", name: readTool.name, input: { startBlockIndex: 1, endBlockIndex: 1 } },
+          readTool,
+          new AbortController().signal,
+        );
+        notifyReady?.();
+        firstStatus = (await first).status;
+        secondStatus = (await second).status;
+      },
+    });
+    const sender = host.addSender(78, contextA);
+    const turn = host.invoke(STREAM, sender, docsRequest("req-two-native-calls", [readTool])) as Promise<void>;
+    await ready;
+    check("two renderer tools were dispatched in one Mcode SDK turn",
+      toolChunks(sender, "req-two-native-calls").length === 2);
+    firstAbort.abort();
+    const secondAck = host.invoke(ACK, sender, ack("req-two-native-calls", "two-survives", readTool.name, "approved result"));
+    check("the uncancelled call can still receive a trusted ACK",
+      (secondAck as { ok: boolean }).ok === true, secondAck);
+    const staleFirst = host.invoke(ACK, sender, ack("req-two-native-calls", "one-cancelled", readTool.name, "not approved"));
+    check("the cancelled sibling's late ACK is rejected without cancelling the whole turn",
+      (staleFirst as { ok: boolean }).ok === false, staleFirst);
+    await turn;
+    check("one cancelled tool does not poison its sibling SDK result",
+      firstStatus === "cancelled" && secondStatus === "success",
+      { firstStatus, secondStatus });
     host.close();
   }
 

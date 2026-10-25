@@ -81,6 +81,8 @@ export interface GenOfficeNativeToolResult {
 export type GenOfficeNativeToolInvoker = (
   call: GenOfficeNativeToolCall,
   hostToolDefinition: GenOfficeNativeToolDefinition,
+  /** The per-call SDK cancellation, distinct from the whole request abort. */
+  callSignal?: ProviderAbortSignal,
 ) => Promise<GenOfficeNativeToolResult>;
 
 /** Host limits mirrored from the request-scoped provider contract. */
@@ -337,7 +339,7 @@ export function createNativeEditorToolBridge(args: {
         if (args.signal.aborted || callSignal?.aborted) {
           return { status: "cancelled", output: "native editor tool call cancelled before dispatch" } as const;
         }
-        return args.invokeRendererTool(rendererCall, definition);
+        return args.invokeRendererTool(rendererCall, definition, callSignal);
       }),
       args.signal,
       callSignal,

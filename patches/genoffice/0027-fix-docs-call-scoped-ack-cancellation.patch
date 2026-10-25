@@ -1,0 +1,107 @@
+From daf2f54627dfecf08dc81ecee176d37a37696a0b Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 11:44:59 +0800
+Subject: [PATCH] fix(docs): discard cancelled per-tool ACK slots without
+ ending SDK turn
+
+---
+ apps/docs/src/main/mcode-ai.ts | 35 +++++++++++++++++++++++++++++-----
+ 1 file changed, 30 insertions(+), 5 deletions(-)
+
+diff --git a/apps/docs/src/main/mcode-ai.ts b/apps/docs/src/main/mcode-ai.ts
+index 50041a6..68d48f2 100644
+--- a/apps/docs/src/main/mcode-ai.ts
++++ b/apps/docs/src/main/mcode-ai.ts
+@@ -30,10 +30,20 @@ export type DocsAiRequest = {
+   context: DocsAiContext
+ }
+ export type DocsAiToolResult = { status: DocsAiToolResultStatus; output: string }
++/**
++ * SDK call-scoped abort shape; structurally compatible with Mcode's
++ * ProviderAbortSignal without importing Mcode contracts into upstream.
++ */
++export interface DocsAiToolAbortSignal {
++  readonly aborted: boolean
++  addEventListener(type: 'abort', listener: () => void, options?: { once?: boolean }): void
++  removeEventListener(type: 'abort', listener: () => void): void
++}
+ /** Host-supplied definition is required; renderer-provided tool lists are not authority. */
+ export type DocsAiToolResultHandler = (
+   call: AgentToolCall,
+   hostToolDefinition: AgentToolDef,
++  callSignal?: DocsAiToolAbortSignal,
+ ) => Promise<DocsAiToolResult>
+ export interface DocsAiPorts {
+   describe(
+@@ -229,6 +239,8 @@ interface PendingToolCall {
+   name: string
+   resolve(result: DocsAiToolResult): void
+   timer: ReturnType<typeof setTimeout>
++  signal?: DocsAiToolAbortSignal
++  onAbort?: () => void
+ }
+ interface ActiveRequest {
+   sender: IpcMainInvokeEvent['sender']
+@@ -254,6 +266,7 @@ function resolvePendingToolCall(
+   if (!pending) return false
+   active.pendingToolCalls.delete(callId)
+   clearTimeout(pending.timer)
++  if (pending.onAbort) pending.signal?.removeEventListener('abort', pending.onAbort)
+   pending.resolve(result)
+   return true
+ }
+@@ -308,6 +321,7 @@ export function registerDocsAiIpc(
+     rawCall: AgentToolCall,
+     rawHostToolDefinition: AgentToolDef,
+     send: (chunk: DocsAiChunk) => void,
++    callSignal?: DocsAiToolAbortSignal,
+   ): Promise<DocsAiToolResult> => {
+     const call = normalizeToolCall(rawCall)
+     const hostToolDefinition = parseToolDefinition(rawHostToolDefinition)
+@@ -317,10 +331,10 @@ export function registerDocsAiIpc(
+         output: 'Host refused a malformed native tool call or tool definition',
+       })
+     }
+-    if (active.closed || active.controller.signal.aborted || active.sender.isDestroyed?.()) {
++    if (active.closed || active.controller.signal.aborted || callSignal?.aborted || active.sender.isDestroyed?.()) {
+       return Promise.resolve({
+         status: 'cancelled',
+-        output: 'Host request was cancelled before renderer execution',
++        output: 'Host request or SDK tool call was cancelled before renderer execution',
+       })
+     }
+     const rendererToolDefinition = active.tools.get(call.name)
+@@ -366,7 +380,18 @@ export function registerDocsAiIpc(
+           output: TOOL_ACK_TIMEOUT_OUTPUT,
+         })
+       }, ackTimeoutMs)
+-      active.pendingToolCalls.set(call.id, { name: call.name, resolve, timer })
++      const onCallAbort = () => resolvePendingToolCall(active, call.id, {
++        status: 'cancelled',
++        output: 'SDK tool call was cancelled before renderer ACK',
++      })
++      active.pendingToolCalls.set(call.id, {
++        name: call.name, resolve, timer, signal: callSignal, onAbort: onCallAbort,
++      })
++      callSignal?.addEventListener('abort', onCallAbort, { once: true })
++      // Guard the narrow race between the early aborted check and listener
++      // installation. If it fired in between, do not dispatch a stale edit.
++      if (callSignal?.aborted) onCallAbort()
++      if (!active.pendingToolCalls.has(call.id)) return
+       try {
+         send({
+           requestId: active.request.requestId,
+@@ -460,8 +485,8 @@ export function registerDocsAiIpc(
+         send({ requestId, type: 'error', error: '文档 AI 已取消' })
+         return
+       }
+-      await authority.ports.run(request, send, controller.signal, (call, hostToolDefinition) =>
+-        requestRendererTool(active, call, hostToolDefinition, send),
++      await authority.ports.run(request, send, controller.signal, (call, hostToolDefinition, callSignal) =>
++        requestRendererTool(active, call, hostToolDefinition, send, callSignal),
+       )
+     } catch (error) {
+       send({
+-- 
+2.52.0.windows.1
+

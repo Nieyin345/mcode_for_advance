@@ -239,3 +239,30 @@ npx tsc --noEmit -p packages/contracts/tsconfig.json → exit 0
 **回归**：`node apps/desktop/scripts/run-smokes.mjs t0-genoffice-native-tool-roundtrip-smoke t83-mcode-editor-tool-bridge-smoke o1-three-provider-ai-smoke genoffice-ai-ask-smoke`，**4/4 PASS**，证据 `apps/desktop/.tmp/smoke-runs/1792874556036-32016-DT9YfU`。Desktop/Contracts 两个 `tsc --noEmit` 均 PASS；`git diff --check` PASS。受信 GenOffice Docs `mcode-ai.ts` 原有 `MAX_TOOL_RESULT_BYTES = 64*1024` 和超限显式错误，未改动、不另建重复的 result limiter。
 
 **未完成验收**：仍未拿到真实在线 Claude/Pi/Codex 对 Office 的完整三家 U1，以及「SDK 单工具取消后，已经进入 renderer 的修改动作能够回滚」的保证。此项是 O1/T0 的取消链路补强，不意味着 ARC-007 全完成。
+
+---
+
+## 2026-10-25 非 UI 续修：单次 SDK 取消信号进入原厂 Docs ACK 管理层
+
+**属于现有 O1/T0 的同一取消根因，不新建平行任务。**
+
+### 动态红例（修复前，E1）
+
+上一轮 Mcode SDK 层已能**及时**将单个工具 abort 回给模型，但下游 GenOffice Docs `requestRendererTool` 只有**整轮** controller；其独立 `pendingToolCalls` 仍保留调用 ID 和 ACK 定时器，用户已取消的工具可能占满 8 个 pending 配额，其过期 ACK 仍被原厂接收。新增真实 `registerDocsAiIpc` + scoped sender + fake SDK 的同轮用例，修复前 **61/64 PASS**，两条明确红例：
+
+- `call-only abort releases the T98 pending ACK immediately`：`rapid: timeout`（原厂 1 秒后才退出；生产默认 ACK 超时 60 秒）。
+- `late renderer ACK after call-only abort is never accepted by T98`：`{ok:true}`（应拒绝）。
+
+另有桥层断言证实 Mcode 尚未把单个 `callSignal` 传递到原生工具 invoker。红例日志：`apps/desktop/.tmp/smoke-runs/1792899610458-11816-JS18Ia`。
+
+### 实现与验证（有界）
+
+- 在 **Mcode** `nativeEditorToolTransport.ts` 的原有 `GenOfficeNativeToolInvoker` 增加可选 `ProviderAbortSignal` 参数，调用原厂受信 invoker 时传入 SDK 的当前 call signal，仍保留原有请求级 abort 与 microtask 前的双门。
+- 在 **GenOffice fork 原厂 Docs** `apps/docs/src/main/mcode-ai.ts` 的相应 `DocsAiToolResultHandler` 增加结构兼容的 `DocsAiToolAbortSignal` 可选参数；`requestRendererTool` 在每条 pending 记录中注册 call-local abort，提前取消时不派发，取消后立即调用同一 `resolvePendingToolCall`（解除 ACK 定时器/监听并从 Map 删除）；迟到 ACK 不能匹配 pending ID，明确拒绝。**不复制 Agent loop、审批、账号或文件写盘。**
+- 又追加同一 SDK 回合两条并发工具的反例：取消 A 后 B 正常 ACK 成功，A 的旧 ACK 拒绝，且取消 A 不会中止整个回合。
+- 修复后 `t0-genoffice-native-tool-roundtrip-smoke` **68/68 PASS**；关联 `t83-mcode-editor-tool-bridge-smoke` / `o1-three-provider-ai-smoke` / `genoffice-ai-ask-smoke` **4/4 PASS**，日志 `apps/desktop/.tmp/smoke-runs/1792899825452-39160-3ig2N7`。
+- `npx tsc --noEmit -p apps/desktop/tsconfig.json`、`npx tsc --noEmit -p packages/contracts/tsconfig.json`、`npm run typecheck -w @genoffice/docs` 均 **PASS**。
+- GenOffice vendor 新提交 `daf2f54627dfecf08dc81ecee176d37a37696a0b`，父提交 `5f6b1d9bda041cdfc087218d2f4b77e8e58dd329`，树 `bb7403fa7cf3e60d189f0d83958bf2713ff3d60a`；第 27 条 patch `patches/genoffice/0027-fix-docs-call-scoped-ack-cancellation.patch`，4539 bytes、SHA256 `b696f0b241a45edcc7fd44dcb2cdb304c3ad5c4790a4867ae6c8bf70a0389e4c`。
+- GenOffice 来源锁 `MCODE_INCLUDE_GENOFFICE_BUNDLE=1` 独立校验 **27 patches PASS**，`genoffice-source-smoke` + `genoffice-editors-release-smoke` **2/2 PASS**，日志 `apps/desktop/.tmp/smoke-runs/1792899957888-29908-miXm7n`。
+
+**未解决边界**：本轮保证取消后的主进程等待与 ACK 安全、同轮其他工具可继续；不能据此声称已经在 renderer 内开始执行的写入事务自动回滚，也未做真实在线 SDK + Office 编辑/保存/重开 U1。ARC-007 开发与独立验收仍未整包完成。
