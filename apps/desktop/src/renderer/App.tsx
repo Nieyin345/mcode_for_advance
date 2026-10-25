@@ -8,6 +8,7 @@ import { BrowserPanel } from "./components/browser/BrowserPanel.js";
 import { Toaster } from "./components/layout/Toaster.js";
 import { CustomUiHost } from "./components/customUi/CustomUiHost.js";
 import { ModuleInstallConsentHost } from "./components/modules/ModuleInstallConsentCard.js";
+import { TheiaRuntimeMessageHost } from "./components/modules/TheiaRuntimeMessageHost.js";
 import { ClassicShell } from "./components/shell/ClassicShell.js";
 import { shellVariantOf } from "./components/shell/WorkspaceShell.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
@@ -358,6 +359,9 @@ export function App() {
         <UpdateNotification />
         <Toaster />
       </div>
+      {/* Extension notices reuse the Mcode toast store; actionable prompts live
+          at the app root so settings/editor overlays cannot clip them. */}
+      <TheiaRuntimeMessageHost />
       {/* Global voice-dictation indicator - floats top-center while any
           composer is listening. Renders null when idle. */}
       <VoiceListeningOverlay />

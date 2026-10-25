@@ -82,6 +82,11 @@ export interface TheiaHostOptions {
   storageRoot: string;
   /** 日志回调；不传就丢弃。 */
   onLog?: (entry: TheiaHostLogEntry) => void;
+  /** F031: live notification/user action bridge into Mcode's native toast/dialog.
+   * Called even during activate(), before the installed session becomes active.
+   * Action indices match Theia's MainMessageItem handles. No callback = no UI.
+   */
+  onMessage?: (input:{type:number;message:string;detail?:string;modal:boolean;actions:string[]})=>Promise<number|undefined>;
   /** 宿主 stdout/stderr 原文；不传就丢弃。 */
   onHostOutput?: (stream: "stdout" | "stderr", text: string) => void;
   /** 握手超时（毫秒）。默认 15 s。 */
@@ -859,8 +864,15 @@ export class TheiaHost {
       $getEnvVariable: async (name: string) => process.env[name] ?? null,
     } as never);
     setProxyHandler(P.MESSAGE_REGISTRY_MAIN, {
-      // 接受并丢弃：安装期不弹窗（用户裁决是「装时说清楚」，不是运行时打断）
-      $showMessage: async () => undefined,
+      $showMessage: async (type:number,message:string,options:{modal?:boolean;detail?:string}|undefined,
+        actions:Array<{title:string}>|undefined):Promise<number|undefined> => {
+        if(!this.options.onMessage)return undefined;
+        return this.options.onMessage({
+          type,message:String(message),modal:options?.modal===true,
+          ...(typeof options?.detail==="string"?{detail:options.detail}:{}),
+          actions:Array.isArray(actions)?actions.map(item=>String(item?.title??"")):[],
+        });
+      },
     } as never);
     setProxyHandler(P.STATUS_BAR_MESSAGE_REGISTRY_MAIN, {
       $setMessage: async () => undefined,

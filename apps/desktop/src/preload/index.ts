@@ -1167,6 +1167,16 @@ const api = {
 
   // ── Push events (main → renderer) ──
   on: {
+    /** F031: live extension alerts and choices, owned by the desktop window.
+     * Actions are acknowledged by modules.theiaInstalled(messageRespond).
+     */
+    theiaRuntimeMessage(handler:(msg:import("@contracts/ipc/modules.js").TheiaRuntimeMessage)=>void):()=>void {
+      const listener=(_evt:unknown,msg:import("@contracts/ipc/modules.js").TheiaRuntimeMessage)=>{
+        if(msg.channel===IPC.MODULE_THEIA_RUNTIME_MESSAGE)handler(msg);
+      };
+      ipcRenderer.on(IPC.MODULE_THEIA_RUNTIME_MESSAGE,listener);
+      return ()=>ipcRenderer.off(IPC.MODULE_THEIA_RUNTIME_MESSAGE,listener);
+    },
     /** F029: edit request is from an activated Theia extension, not a disk write.
      * The real Monaco owner decides and replies via modules.theiaInstalled(editorApplied). */
     theiaEditorApply(handler: (msg: import("@contracts/ipc/modules.js").TheiaMonacoEditRequest) => void): () => void {

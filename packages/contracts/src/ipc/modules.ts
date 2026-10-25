@@ -138,6 +138,14 @@ export interface TheiaMonacoEditRequest {
   };
 }
 
+/** F031: runtime extension notifications, rendered by Mcode's existing toast/dialog layer.
+ * Exact source sender and session are checked when returning an action choice.
+ */
+export interface TheiaRuntimeMessage {
+  channel:"modules:theiaRuntimeMessage";requestId:string;sessionId:string;extensionId:string;
+  kind:"info"|"warning"|"error";message:string;detail?:string;
+  modal:boolean;actions:string[];
+}
 /** F026: persistent Theia VSIX installs. Every command is desktop-only and non-delegable. */
 export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
   z.object({op:z.literal("list")}).strict(),
@@ -152,6 +160,7 @@ export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
       end:z.object({line:z.number().int().min(0),character:z.number().int().min(0)}).strict()}).strict().optional(),
   }).strict().nullable()}).strict(),
   z.object({op:z.literal("editorApplied"),sessionId:z.string().uuid(),requestId:z.string().uuid(),accepted:z.boolean()}).strict(),
+  z.object({op:z.literal("messageRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),choice:z.number().int().min(0).max(7).nullable()}).strict(),
   z.object({op:z.literal("stop"),sessionId:z.string().uuid()}).strict(),
   z.object({op:z.literal("setEnabled"),id:z.string().uuid(),enabled:z.boolean()}).strict(),
   z.object({op:z.literal("remove"),id:z.string().uuid()}).strict(),
@@ -173,5 +182,6 @@ export type TheiaInstalledResult =
   | {kind:"executed";result:string}
   | {kind:"editorSynced";active:boolean}
   | {kind:"editorAcknowledged"}
+  | {kind:"messageAcknowledged"}
   | {kind:"removed";id:string}
   | {kind:"stopped"};

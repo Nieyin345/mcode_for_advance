@@ -1721,6 +1721,7 @@ export const IPC = {
   MODULE_THEIA_INSTALLED: "modules:theiaInstalled",
   /** Native Monaco editor owner request (main → renderer, no direct host file writes). */
   MODULE_THEIA_EDITOR_APPLY: "modules:theiaEditorApply",
+  MODULE_THEIA_RUNTIME_MESSAGE: "modules:theiaRuntimeMessage",
   MODULE_REMOVE: "modules:remove",
   MODULE_INVOKE: "modules:invoke",
   MODULE_TASK: "modules:task",

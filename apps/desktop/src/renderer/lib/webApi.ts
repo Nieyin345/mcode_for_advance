@@ -1156,6 +1156,7 @@ const on: Api["on"] = {
   toolchainEvent: () => () => {},
   marketProgress: () => () => {}, // Desktop-only progress, like toolchain events.
   theiaEditorApply: () => () => {}, // F029: no Monaco owner request over mobile/web.
+  theiaRuntimeMessage: () => () => {}, // F031: extension dialogs are desktop-only.
   browserEvent: () => () => {},
   themeChanged: () => () => {},
   updateAvailable: () => () => {},

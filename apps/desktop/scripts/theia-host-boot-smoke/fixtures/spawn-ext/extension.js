@@ -29,6 +29,12 @@ function activate(context) {
       if (!editor) return false;
       return editor.edit(builder => builder.replace(new vscode.Range(0, 0, 0, 6), replacement));
     }),
+    vscode.commands.registerCommand("mcodeSmoke.askChoice", async () => {
+      return vscode.window.showInformationMessage("Apply this extension action?", { modal: true, detail: "Mcode native prompt" }, "Apply", "Ignore");
+    }),
+    vscode.commands.registerCommand("mcodeSmoke.notifyWarning", async () => {
+      return vscode.window.showWarningMessage("Mcode extension warning");
+    }),
     vscode.commands.registerCommand("mcodeSmoke.overlapEdit", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return false;

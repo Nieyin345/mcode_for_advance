@@ -1,6 +1,7 @@
 /** F026: distinct persistent Theia lifecycle IPC; no Agent delegation or auto-start. */
 import { existsSync } from "node:fs";
 import { TheiaEditorApplyBroker } from "@main/modules/theiaHost/editorApplyBroker.js";
+import { TheiaRuntimeMessageBroker } from "@main/modules/theiaHost/runtimeMessageBroker.js";
 import { resolve, join } from "node:path";
 import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
@@ -27,6 +28,7 @@ async function registry(options:DataOptions) {
 export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions):void {
   const watched = new Set<number>(), destroyed = new Set<number>();
   const editorBroker = new TheiaEditorApplyBroker();
+  const messageBroker = new TheiaRuntimeMessageBroker();
   ipc.handle(IPC.MODULE_THEIA_INSTALLED,async(event,raw:unknown)=>{
     const senderId=theiaDesktopSender(event);
     if(destroyed.has(senderId)) throw Error("旧窗口不可管理或执行已安装扩展");
@@ -40,6 +42,7 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
         watched.delete(senderId);
         destroyed.add(senderId);
         editorBroker.cancelSender(senderId);
+        messageBroker.cancelSender(senderId);
         void manager.disposeSender(senderId).catch(error=>console.warn("[theia-installed] cleanup failed:",error));
       });
     }
@@ -48,7 +51,11 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
       case "inspect":return manager.inspect(senderId,input.path);
       case "cancel":return manager.cancel(senderId,input.ticket);
       case "install":return manager.install(senderId,input.ticket,input.accepted);
-      case "start":return manager.start(senderId,input.id);
+      case "start":return manager.start(senderId,input.id,(sessionId,extensionId,message)=>
+        messageBroker.request(senderId,sessionId,extensionId,message,
+          payload=>{if(sender.isDestroyed?.()||destroyed.has(senderId))throw Error("窗口已关闭");
+            sender.send(IPC.MODULE_THEIA_RUNTIME_MESSAGE,payload);})
+      );
       case "execute":return manager.execute(senderId,input.sessionId,input.commandId,input.args);
       case "editorSync":return manager.editorSync(senderId,input.sessionId,input.editor,
         transaction=>editorBroker.request(senderId,input.sessionId,transaction,
@@ -57,7 +64,12 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
         if(!editorBroker.acknowledge(senderId,input.sessionId,input.requestId,input.accepted))
           throw Error("未知、过期或其他桌面窗口的编辑事务");
         return {kind:"editorAcknowledged" as const};
+      case "messageRespond":
+        if(!messageBroker.respond(senderId,input.sessionId,input.requestId,input.choice))
+          throw Error("消息选项不存在、已失效或不属于当前窗口");
+        return {kind:"messageAcknowledged" as const};
       case "stop":
+        messageBroker.cancelSession(senderId,input.sessionId);
         editorBroker.cancelSession(senderId,input.sessionId);
         return manager.stop(senderId,input.sessionId);
       case "setEnabled":return manager.setEnabled(input.id,input.enabled);

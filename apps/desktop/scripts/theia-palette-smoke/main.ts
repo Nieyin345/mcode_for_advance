@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { collectTheiaPaletteCommands } from "../../src/renderer/lib/theiaCommandBridge.js";
 import { TheiaEditorApplyBroker } from "../../src/main/modules/theiaHost/editorApplyBroker.js";
+import { TheiaRuntimeMessageBroker } from "../../src/main/modules/theiaHost/runtimeMessageBroker.js";
 import type { TheiaInstalledEntry, TheiaInstalledInput, TheiaInstalledResult } from "@contracts/ipc/modules.js";
 
 let count=0,failed=0;
@@ -62,6 +63,33 @@ const pending=broker.request(101,base.activeSession!.sessionId,txn,()=>{});
 broker.cancelSender(101);
 check("窗口销毁立即拒绝仍待编辑的事务",await pending===false&&broker.size===0);
 
+const messageBroker=new TheiaRuntimeMessageBroker(30);
+let plainType="";
+const noActions=await messageBroker.request(101,base.activeSession!.sessionId,base.extensionId,{
+  type:1,message:"Watch for issues",actions:[],modal:false
+},message=>{plainType=message.kind;});
+check("非交互式 VS Code 警告进入 Mcode 提醒且不挂起扩展",plainType==="warning"&&noActions===undefined&&messageBroker.pendingCount===0);
+let msgId="";
+const pendingChoice=messageBroker.request(101,base.activeSession!.sessionId,base.extensionId,{
+  type:2,message:"Choose",modal:true,detail:"Prompt",actions:["Apply","Ignore"]
+},message=>{msgId=message.requestId;});
+check("交互式扩展消息进入有界请求表",messageBroker.pendingCount===1);
+check("另一窗口不可伪造 VS Code 通知选项",!messageBroker.respond(102,base.activeSession!.sessionId,msgId,0));
+check("另一会话不可伪造 VS Code 通知选项",!messageBroker.respond(101,"00000000-0000-4000-a000-000000000000",msgId,0));
+check("越界选项索引不能回给扩展",!messageBroker.respond(101,base.activeSession!.sessionId,msgId,2));
+check("正确桌面窗口选项能准确回到扩展",messageBroker.respond(101,base.activeSession!.sessionId,msgId,1)&&await pendingChoice===1);
+check("扩展消息的重复响应不可重放",!messageBroker.respond(101,base.activeSession!.sessionId,msgId,1));
+const messageKeepalive=setTimeout(()=>{},150);
+const timedMessage=await messageBroker.request(101,base.activeSession!.sessionId,base.extensionId,{
+  type:0,message:"Timed out",modal:true,actions:["Proceed"]
+},()=>{});
+clearTimeout(messageKeepalive);
+check("无人响应的扩展弹窗超时返回取消",timedMessage===undefined&&messageBroker.pendingCount===0);
+const pendingDismiss=messageBroker.request(101,base.activeSession!.sessionId,base.extensionId,{
+  type:2,message:"Pending",actions:["Yes"]
+},()=>{});
+messageBroker.cancelSender(101);
+check("桌面窗口关闭时通知事务立即取消",await pendingDismiss===undefined&&messageBroker.pendingCount===0);
 const codeRoot=process.env.MCODE_SMOKE_REPO_ROOT;
 if(!codeRoot)throw Error("MCODE_SMOKE_REPO_ROOT missing");
 const palette=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/layout/CommandPalette.tsx"),"utf8");
@@ -81,5 +109,10 @@ check("已启动多个扩展按各自会话渲染和停止",lifecycleUi.includes
   lifecycleUi.includes('sessionId:item.activeSession')===false&&lifecycleUi.includes('sessionId=item.activeSession?.sessionId'));
 check("管理页面不进行自动启动和全局轮询",!lifecycleUi.includes('setInterval(')&&
   !lifecycleUi.includes('void api.modules.theiaInstalled({op:"start"'));
+const runtimeHost=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/modules/TheiaRuntimeMessageHost.tsx"),"utf8");
+const app=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/App.tsx"),"utf8");
+check("扩展消息订阅挂在 Mcode 根 UI，而非随设置页卸载",app.includes("<TheiaRuntimeMessageHost />")&&runtimeHost.includes("api.on.theiaRuntimeMessage("));
+check("普通扩展通知走 Mcode 全局 toast store",runtimeHost.includes("useToastStore.getState().push("));
+check("扩展操作按钮由用户点击触发并通过正式 IPC 回执",runtimeHost.includes('op:"messageRespond"')&&runtimeHost.includes("onClick={()=>reply(msg,index)}"));
 console.log("theia-palette-smoke: "+(count-failed)+"/"+count+" 通过");
 process.exitCode=failed?1:0;

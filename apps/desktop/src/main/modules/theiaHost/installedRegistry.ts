@@ -218,18 +218,25 @@ export class TheiaInstalledRegistry {
     const rec=this.read(id);rec.enabled=enabled;this.update(rec);
     return {kind:"updated",item:this.item(rec)};
   }
-  async start(senderId:number,id:string):Promise<TheiaInstalledResult>{
+  async start(senderId:number,id:string,onMessage?:(
+    sessionId:string,extensionId:string,input:{type:number;message:string;detail?:string;modal:boolean;actions:string[]}
+  )=>Promise<number|undefined>):Promise<TheiaInstalledResult>{
     if(this.closed.has(senderId)||this.starting||this.running.has(id)) deny("该扩展已启动或正在启动");
     if(this.running.size>=this.maxActive) deny("同时运行的扩展已达资源上限");
     const rec=this.read(id);
     if(!rec.enabled) deny("扩展已禁用");
     this.starting=true;this.startingSender=senderId;this.startingId=id;
-    const host=new TheiaHost({theiaRoot:this.theiaRoot,extensionDir:path.join(this.dir(id),"extension"),storageRoot:path.join(this.dir(id),"storage")});
+    // Allocate a stable session before activation: many extensions display an
+    // informational prompt while activate() is pending. Responses must be
+    // sender/session-scoped even before the extension reaches Running.
+    const sessionId=randomUUID();
+    const host=new TheiaHost({theiaRoot:this.theiaRoot,extensionDir:path.join(this.dir(id),"extension"),
+      storageRoot:path.join(this.dir(id),"storage"),
+      onMessage: onMessage?(input)=>onMessage(sessionId,rec.extensionId,input):undefined});
     try{
       await this.verify(id,rec); // fail closed before any untrusted extension code is spawned
       await host.start();const handle=await host.activate(),commands=await handle.commands();
       if(this.closed.has(senderId)) deny("启动期间窗口已关闭");
-      const sessionId=randomUUID();
       this.running.set(id,{id,senderId,sessionId,host,handle,commands:new Set(commands)});
       return {kind:"started",id,sessionId,commands,activationErrors:handle.activationErrors.map(e=>e.message).slice(0,8)};
     }catch(error){await host.dispose();throw error;}

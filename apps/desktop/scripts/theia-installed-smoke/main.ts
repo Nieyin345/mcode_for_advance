@@ -12,7 +12,7 @@ import { TheiaInstalledRegistry } from "../../src/main/modules/theiaHost/install
 import { policyFor } from "../../src/main/appControl/policy.js";
 import { APP_METHOD_PERMISSIONS } from "@contracts/appPermission";
 import { registerTheiaMonacoOwner, subscribeTheiaMonacoEdits, executeTheiaWithMonaco, applyTheiaMonacoEdit } from "../../src/renderer/lib/theiaMonacoOwner.js";
-import type { TheiaMonacoEditRequest } from "@contracts/ipc/modules.js";
+import type { TheiaMonacoEditRequest, TheiaRuntimeMessage } from "@contracts/ipc/modules.js";
 
 const root=process.env.MCODE_SMOKE_REPO_ROOT;
 if(!root) throw Error("MCODE_SMOKE_REPO_ROOT missing");
@@ -222,11 +222,20 @@ try{
   const mainFrame={};
   let deliverEditor:((request:TheiaMonacoEditRequest)=>void)|null=null;
   let editorRequestCount=0;
+  const runtimeMessages:TheiaRuntimeMessage[]=[];
+  const acknowledgements:Promise<unknown>[]=[];
   const wc=Object.assign(new EventEmitter(),{id:99,mainFrame,isDestroyed:()=>false,
-    send:(channel:string,message:TheiaMonacoEditRequest)=>{
-      if(channel===IPC.MODULE_THEIA_EDITOR_APPLY) {
+    send:(channel:string,message:TheiaMonacoEditRequest|TheiaRuntimeMessage)=>{
+      if(channel===IPC.MODULE_THEIA_EDITOR_APPLY&&message.channel===IPC.MODULE_THEIA_EDITOR_APPLY){
         editorRequestCount++;
         deliverEditor?.(message);
+      }else if(channel===IPC.MODULE_THEIA_RUNTIME_MESSAGE&&message.channel===IPC.MODULE_THEIA_RUNTIME_MESSAGE){
+        runtimeMessages.push(message);
+        if(message.actions.length>0){
+          acknowledgements.push(invoke!(actor,{
+            op:"messageRespond",sessionId:message.sessionId,requestId:message.requestId,choice:1
+          }));
+        }
       }
     },
   });
@@ -245,6 +254,17 @@ try{
   const ipcLive=await invoke(actor,{op:"start",id:ipcAdded.item.id}) as
     {kind:string;sessionId:string;commands:string[]};
   check("IPC 手动启动真实 Theia 子进程",ipcLive.kind==="started"&&ipcLive.commands.includes("mcodeSmoke.spawnEcho"));
+  const modalReply=await invoke(actor,{op:"execute",sessionId:ipcLive.sessionId,commandId:"mcodeSmoke.askChoice"}) as
+    {kind:string;result:string};
+  await Promise.all(acknowledgements);
+  check("真实 Theia vscode.window.showInformationMessage 进入原生对话并返回用户选择",
+    modalReply.kind==="executed"&&modalReply.result==='"Ignore"'&&
+    runtimeMessages.some(msg=>msg.actions.join(",")==="Apply,Ignore"&&msg.modal&&msg.detail==="Mcode native prompt"));
+  const toastReply=await invoke(actor,{op:"execute",sessionId:ipcLive.sessionId,commandId:"mcodeSmoke.notifyWarning"}) as
+    {kind:string;result:string};
+  check("真实 Theia warning 通知到达 Mcode 而非被吞掉",
+    toastReply.kind==="executed"&&runtimeMessages.some(msg=>msg.kind==="warning"&&msg.message==="Mcode extension warning"&&msg.actions.length===0));
+
   // Synthetic Monaco owner exercises the *same renderer adapter* registered by real EditPane.
   // No real user files: the real Theia child calls vscode.window.activeTextEditor.edit,
   // main forwards via its sender-scoped broker, renderer confirms after applying undoable edits.
@@ -306,6 +326,6 @@ try{
   if(manager)await manager.disposeAll();
   rmSync(dir,{recursive:true,force:true});
 }
-console.log("NOT-COVERED: Electron U1 actual Monaco window, packaged Theia runtime, continuous document delta outside explicit commands, shared multi-extension host, runtime sandbox, auto-start intentionally disabled");
+console.log("NOT-COVERED: Electron U1 actual Monaco window/native message dialog, packaged Theia runtime, continuous document delta, status bar/quick pick/webviews/debugger, shared host, runtime sandbox, auto-start intentionally disabled");
 console.log("theia-installed-smoke: "+pass+"/"+(pass+fail)+" 通过");
 process.exitCode=fail?1:0;
