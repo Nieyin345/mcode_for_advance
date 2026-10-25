@@ -293,3 +293,13 @@ T81（四步链路）、T84（journey 陈旧断言）、T89（fixup 崩溃）、
 - `node apps/desktop/scripts/run-smokes.mjs workflow-engine-view-owner-smoke workflow-view-smoke workflow-ui-smoke settings-lazy-smoke renderer-pure-smoke scene-deploy-view-smoke settings-tokens-smoke`：7 PASS / 0 FAIL；日志 `apps/desktop/.tmp/smoke-runs/1792913805336-7872-w6oNaU/`。
 - Desktop、Contracts `tsc --noEmit` EXIT=0，定向 `git diff --check` EXIT=0。两组真实性变异（首帧无条件 catalog 查询、切页时反复 enabled 切换）均令 workflow-ui-smoke FAIL，恢复后 PASS。
 - 保留未验：真 Electron 应用的冷启动到可交互画布耗时、Node-RED/Electron 子进程 RSS、编辑器可见/隐藏切换耗时、旧执行器彻底下线与库/flows 单一真相源。未测值不得标为已改善的量化成果。
+
+## 2026-10-25 单一 Node-RED 运行时重入/热复用性能修复（后端+编辑器）
+
+- **根因**：`loadWorkflowIntoNative` 即使工作流库文件、磁盘 `flows.json` 与按 docId 的装载 journal 完全相同、Node-RED 仍 running，也继续走确认、`runtime.stop()`、写盘、`runtime.start()`；`WorkflowNativeEditorEntry` 每次成功均发 `mcode:native-canvas-loaded`，`WorkflowsPanel` 强制增加 nativeCanvasEpoch，导致原生 WebContentsView 宿主不必要重建/重载。`WORKFLOW_ENGINE_START` IPC 对 running 引擎每次仍做 `launchSpec()`，包括 bootstrap/节点包/令牌磁盘操作。
+- **修复**：先执行既有 REJECT/UNREADABLE 迁移预检，再比对当前磁盘原生图、迁移后的库图和按 docId 记录的上次装载图；三份 JSON 语义相同、journal 完整且引擎 `running` 时返回 `{ok:true, unchanged:true}`，无 journal 写入、无 stop/start/备份/部署、无副作用。变更文档、外部原生 Deploy、损坏 journal、引擎 stopped/failed、迁移拒绝一律保留原确认/回滚安全路径。
+- **前端贯通**：`WorkflowEngineLoadResult` 增添可选 `unchanged`；`WorkflowNativeEditorEntry` 仅在真正替换画布时广播 native-canvas-loaded，并把 reloaded 传给 `WorkflowsPanel`；无变化只切到已有 Node-RED 画布，不增加 `nativeCanvasEpoch`，继续保持同一 WebContentsView 和节点选中状态。IPC `onStart` 在宿主权威状态已经 running 时直接返回状态，不重读 launch spec，不新增子进程；starting 仍走既有单飞。
+- **实证**：`workflow-native-load-smoke` 在隔离目录/假引擎计数 start/stop 和磁盘画布，证明 A/B 相同文档重入不启停，不改 journal/画布；文档修改、真实 flows.json 外部编辑、failed 引擎的同图重入不得绕过确认。`workflow-ui-smoke` 真 Chromium 模拟 `{ok:true,unchanged:true}`，证实不广播重新载入事件。`workflow-engine-runtime-smoke` 记录 launchSpec 调用和子进程 spawn 数，证明重复 Start 各仅一次。
+- **变异负控**：关闭原生同图复用使 workflow-native-load-smoke EXIT=1；删除 running Start 快速返回使 workflow-engine-runtime-smoke EXIT=1；强制广播即使 unchanged 也重载使 workflow-ui-smoke EXIT=1；三个变异全部原位恢复。
+- **最终回归**：`node apps/desktop/scripts/run-smokes.mjs workflow-native-load-smoke workflow-engine-runtime-smoke workflow-ui-smoke workflow-view-smoke workflow-engine-view-owner-smoke node-red-deploy-reconciliation-smoke flow-migration-smoke` 7/7 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792917524876-1796-pYTKLI/`；Desktop + Contracts `tsc --noEmit` EXIT=0，定向 `git diff --check` EXIT=0。
+- **仍开放**：未做真 Electron 的 RSS/CPU/冷启动延迟量化，未将 SQL 与 flows.json 收敛为唯一写入事实源，旧 ExecutionEngine 尚受 owner 排他保护，不能宣告后台彻底只剩一个执行器。没有修改/清理任何实际用户 flows.json、并行工作区。

@@ -193,7 +193,7 @@ export function WorkflowLibraryView({
    */
   focusWorkflowId?: string | null;
   /** Route to the existing authenticated Node-RED editor; do not create a second canvas. */
-  onOpenNativeEditor: () => void;
+  onOpenNativeEditor: (reloaded: boolean) => void;
 }) {
   const { t, locale } = useI18n();
   const labels = PURPOSE_LABELS[purpose];

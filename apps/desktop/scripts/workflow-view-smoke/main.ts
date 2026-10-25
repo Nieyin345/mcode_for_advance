@@ -2139,7 +2139,7 @@ const nativeLibrarySrc = readFileSync("src/renderer/components/settings/workflow
 const nativePanelSrc = readFileSync("src/renderer/components/settings/workflows/WorkflowsPanel.tsx", "utf8");
 check("工作流详情已换成原厂编辑器入口", nativeLibrarySrc.includes("workflowId={baseline.id} dirty={dirty || saving} onOpen={onOpenNativeEditor}"));
 check("编辑按钮切到统一原生画布且沿用一个导航状态入口",
-  nativePanelSrc.includes('onOpenNativeEditor={() => { setNativeCanvasEpoch(n => n + 1); chooseView("engines"); }}'));
+  nativePanelSrc.includes('onOpenNativeEditor={(reloaded) => { if (reloaded) setNativeCanvasEpoch(n => n + 1); chooseView("engines"); }}'));
 check("自动化也能打开同一引擎编辑页", nativePanelSrc.includes('v.id === "library" || v.id === "engines"'));
 check("仍由同一个 EngineRuntimePanel 承载原厂编辑器", nativePanelSrc.includes('<EngineRuntimePanel key={nativeCanvasEpoch} active={view === "engines" && !flowDocked} />'));
 

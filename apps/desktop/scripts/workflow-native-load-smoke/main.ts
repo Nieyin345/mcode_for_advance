@@ -1,6 +1,6 @@
 /** T59 isolated canvas-load evidence. Uses a temporary Node-RED dir and fake
  * process; NO real DB, Electron, user flows.json, or runtime is touched. */
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkflowDoc } from "@contracts/workflow";
@@ -71,8 +71,18 @@ try {
   };
 
   let result = await loadWorkflowIntoNative("A", ports);
-  check("A 从工作流库打开 -> 引擎真的读到 A", result.ok && canvasDocId() === "A", { result, canvas: canvasDocId() });
+  check("A 从工作流库打开 -> 引擎真的读到 A", result.ok && result.unchanged !== true && canvasDocId() === "A", { result, canvas: canvasDocId() });
   check("启动不是 POST /flows: 工作流 updatedAt 未变", docs.get("A")!.updatedAt === originalAUpdatedAt);
+  // Native editor reentry for the already-mounted same graph must not stop
+  // the shared Node-RED engine or spend another process startup. The document
+  // preflight still runs, and three persisted facts must agree.
+  const beforeNoOp = readNativeCanvas(dir);
+  result = await loadWorkflowIntoNative("A", ports);
+  check("相同工作流再次打开直接复用已运行 Node-RED，不要求再次确认", result.ok && result.unchanged === true,
+    result);
+  check("重复打开不调用 stop/start、不重写原生画布",
+    stops === 0 && starts === 1 && readNativeCanvas(dir) === beforeNoOp,
+    { stops, starts, canvasUnchanged: readNativeCanvas(dir) === beforeNoOp });
 
   result = await loadWorkflowIntoNative("B", ports);
   check("运行中打开 B 必须先提示替换与未部署编辑风险",
@@ -86,6 +96,43 @@ try {
     docs.get("A")!.updatedAt === originalAUpdatedAt && docs.get("B")!.updatedAt === originalBUpdatedAt);
   check("旧 A 画布保留了内容寻址备份",
     readdirSync(dir).some(name => name.startsWith(".mcode-flows-backup-") && name.endsWith(".json")));
+  result = await loadWorkflowIntoNative("B", ports);
+  check("已装载 B 的真正无改动重入，无需用户确认/引擎重启",
+    result.ok && result.unchanged === true && stops === 1 && starts === 2 && canvasDocId() === "B",
+    { result, stops, starts });
+  // Updating the saved library doc invalidates this fast path even if the
+  // running editor still shows the old graph.
+  const unchangedB = docs.get("B")!;
+  docs.set("B", { ...unchangedB, nodes: unchangedB.nodes.map(node =>
+    ({ ...node, params: { ...node.params, instruction: "modified source" } })) });
+  result = await loadWorkflowIntoNative("B", ports);
+  check("同一 docId 但库文档变更必须重新确认，不能用旧画布冒充最新版",
+    !result.ok && result.requiresConfirmation === true && stops === 1 && starts === 2,
+    { result, stops, starts });
+  docs.set("B", unchangedB);
+  const nativeBytesBefore = readNativeCanvas(dir)!;
+  // Simulate a real editor Deploy changing flows.json without rewriting
+  // Mcode's last load record. A no-op here would conceal native changes.
+  const nativeEdited = JSON.parse(nativeBytesBefore) as Array<Record<string, unknown>>;
+  nativeEdited.push({ id: "native-debug", type: "debug", z: "tab_B", name: "edited natively" });
+  writeFileSync(join(dir, "flows.json"), JSON.stringify(nativeEdited), "utf8");
+  result = await loadWorkflowIntoNative("B", ports);
+  check("原生编辑器另行 Deploy 后即使 docId 相同也不得跳过替换确认",
+    !result.ok && result.requiresConfirmation === true && stops === 1 && starts === 2,
+    { result, stops, starts });
+  writeFileSync(join(dir, "flows.json"), nativeBytesBefore, "utf8");
+  result = await loadWorkflowIntoNative("B", ports);
+  check("恢复原生画布后，三份权威数据一致才允许再次复用",
+    result.ok && result.unchanged === true && stops === 1 && starts === 2, result);
+  // Reuse is meaningful only for a healthy *running* child, never for
+  // failed/stopped runtime with matching persisted bytes.
+  const runningBefore = status;
+  status = { ...status, state: "failed", reason: "simulated crash" };
+  result = await loadWorkflowIntoNative("B", ports);
+  check("失败引擎即使图与 journal 完全相同也不冒充仍可复用",
+    !result.ok && result.requiresConfirmation === true && stops === 1 && starts === 2,
+    result);
+  status = runningBefore;
 
   result = await loadWorkflowIntoNative("unmapped", ports, true);
   check("缺节点清单拒绝并列出类型", !result.ok && result.reason.includes("not-installed"), result);

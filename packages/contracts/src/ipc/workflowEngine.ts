@@ -64,7 +64,7 @@ export const WorkflowEngineLoadSchema = z.object({
 }).strict();
 export type WorkflowEngineLoadInput = z.input<typeof WorkflowEngineLoadSchema>;
 export type WorkflowEngineLoadResult =
-  | { ok: true }
+  | { ok: true; /** True only when running canvas + doc + load journal all matched; no restart. */ unchanged?: boolean }
   | { ok: false; reason: string; requiresConfirmation?: boolean };
 
 /**

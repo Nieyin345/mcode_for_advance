@@ -232,6 +232,7 @@ console.log(`\nworkflow-engine-runtime-smoke:${total - failures}/${total} 通过
 
   const ports = makePorts();
   const runtime = new EngineRuntime("node-red", ports);
+  let launchSpecs = 0;
   const handlers = new Map<string, (event: unknown, raw: unknown) => unknown>();
   const fakeIpc = {
     handle(channel: string, listener: (event: unknown, raw: unknown) => unknown): void {
@@ -241,10 +242,12 @@ console.log(`\nworkflow-engine-runtime-smoke:${total - failures}/${total} 通过
   } as unknown as Parameters<typeof registerWorkflowEngineHandlers>[0];
   registerWorkflowEngineHandlers(fakeIpc, {
     registry: { get: (id) => (id === "node-red" ? runtime : null), ids: () => ["node-red"] },
-    launchSpec: (id) =>
-      id === "node-red"
+    launchSpec: (id) => {
+      launchSpecs++;
+      return id === "node-red"
         ? { command: "node", args: () => ["bootstrap.cjs"], dataDir: "/tmp/engine" }
-        : null,
+        : null;
+    },
   });
   const call = async (channel: string, raw?: unknown): Promise<unknown> =>
     (await handlers.get(channel)!(null, raw));
@@ -272,6 +275,13 @@ console.log(`\nworkflow-engine-runtime-smoke:${total - failures}/${total} 通过
   eq("handler start → ok", started.ok, true);
   eq("start 后状态 running", started.status?.state, "running");
   eq("★ editorUrl 是回环地址", started.status?.editorUrl, "http://127.0.0.1:3527/");
+  const runningAgain = (await call(IPC.WORKFLOW_ENGINE_START, { engineId: "node-red" })) as
+    { ok: boolean; status?: { state: string; editorUrl: string | null } };
+  check("IPC 运行中重复 Start 只复用状态，不重复解析启动清单/生成 bootstrap",
+    runningAgain.ok && runningAgain.status?.state === "running"
+      && runningAgain.status.editorUrl === started.status?.editorUrl
+      && launchSpecs === 1 && ports.spawned.length === 1,
+    { runningAgain, launchSpecs, spawned: ports.spawned.length });
 
   const bad = (await call(IPC.WORKFLOW_ENGINE_START, { engineId: "Not Valid" })) as { ok: boolean; reason: string };
   check("★ 非法 engineId 被 zod 拒", bad.ok === false && typeof bad.reason === "string", bad);

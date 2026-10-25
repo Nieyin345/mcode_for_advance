@@ -85,7 +85,7 @@ import type { EngineRuntimeStatus } from "./runtimeSupervisor.js";
 import type { WorkflowEngineLaunchSpec } from "@main/ipc/workflowEngine.js";
 
 export type NativeLoadResult =
-  | { ok: true }
+  | { ok: true; unchanged?: boolean }
   | { ok: false; reason: string; requiresConfirmation?: boolean };
 
 export interface NativeLoadPorts {
@@ -206,9 +206,23 @@ export function loadWorkflowIntoNative(
       const before = readNativeCanvas(dataDir);
       const nodes = migrated.flow.nodes;
       const next = JSON.stringify(nodes);
-      const canvasDiffers = before !== null && JSON.stringify(JSON.parse(before)) !== next;
+      const currentCanvas = before === null ? null : JSON.stringify(JSON.parse(before));
+      const canvasDiffers = currentCanvas !== null && currentCanvas !== next;
       const canvasDivergedFromLastLoad = previousLoad.ok
-        && before !== null && JSON.stringify(previousLoad.flow.nodes) !== JSON.stringify(JSON.parse(before));
+        && currentCanvas !== null && JSON.stringify(previousLoad.flow.nodes) !== currentCanvas;
+      // Opening the SAME saved graph is navigation, not a deploy operation.
+      // If the running child, on-disk native graph and doc-bound load journal
+      // all agree byte-for-byte (after JSON parsing), reusing the existing
+      // editor avoids a costly full Node-RED process restart, a WebContents
+      // reload and disruption to other flows. Only a verified journal match
+      // can take this shortcut: missing/corrupt journal, changed library doc,
+      // external Deploy or stopped/failed runtime retain the guarded load.
+      // G0/G1 REJECT/UNREADABLE checks above must always run first.
+      if (status.state === "running" && previousLoad.ok
+        && currentCanvas === next
+        && JSON.stringify(previousLoad.flow.nodes) === next) {
+        return { ok: true, unchanged: true };
+      }
       // Only the preflight decides whether an acknowledgment is needed: whenever
       // the migrator reports lossy/human items it returns HUMAN, so duplicating
       // that test here would be a second, drift-prone authority. The loss list

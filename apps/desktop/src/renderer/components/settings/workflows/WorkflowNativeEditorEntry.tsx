@@ -7,7 +7,7 @@ import { Button } from "@renderer/components/ui/index.js";
 
 export function WorkflowNativeEditorEntry({
   workflowId, dirty, onOpen,
-}: { workflowId: string; dirty: boolean; onOpen: () => void }) {
+}: { workflowId: string; dirty: boolean; onOpen: (reloaded: boolean) => void }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState<string | null>(null);
@@ -20,9 +20,15 @@ export function WorkflowNativeEditorEntry({
     try {
       const result = await api.workflowEngine.load({ workflowId, confirmReplace });
       if (result.ok) {
-        // Also refresh an editor hosted in the right-hand flow dock.
-        window.dispatchEvent(new Event("mcode:native-canvas-loaded"));
-        onOpen();
+        // A verified reentry does NOT restart Node-RED or replace its graph.
+        // Do not remount the shared WebContentsView or refresh its URL:
+        // that would defeat the runtime optimization and lose UI selection.
+        if (result.unchanged !== true) {
+          // A genuinely replaced graph may restart the engine; refresh a
+          // docked view as well as the settings-hosted editor.
+          window.dispatchEvent(new Event("mcode:native-canvas-loaded"));
+        }
+        onOpen(result.unchanged !== true);
       }
       else {
         setReason(result.reason);

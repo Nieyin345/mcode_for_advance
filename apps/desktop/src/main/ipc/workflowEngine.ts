@@ -109,7 +109,13 @@ export function registerWorkflowEngineHandlers(ipc: IpcMain, ports: WorkflowEngi
       if (runtime === null) return failed(`未知工作流引擎：${input.engineId}`, null);
       // 清单/备份存在争议时绝不能先执行第三方 Node-RED 代码再报错。
       status = toStatusView(runtime.status());
-      if (status.state !== "running") await ports.beforeStart?.(input.engineId);
+      // Already running: this is a status request, not another launch.
+      // Avoid regenerating bootstrap, verifying/installing the node pack,
+      // and reading admin-token material on every repeated Start click.
+      // The runtime is already owned/probed; EngineRuntime.start is
+      // idempotent, but launchSpec() has disk work before it is called.
+      if (status.state === "running") return { ok: true, status };
+      await ports.beforeStart?.(input.engineId);
       const spec = ports.launchSpec(input.engineId);
       if (spec === null) return failed(`引擎 ${input.engineId} 没有配置启动命令`, toStatusView(runtime.status()));
       const result = await runtime.start({

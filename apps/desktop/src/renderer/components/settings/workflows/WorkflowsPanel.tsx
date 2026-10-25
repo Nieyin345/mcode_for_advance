@@ -268,7 +268,7 @@ export function WorkflowsPanel({ purpose, initialLibraryPurpose = purpose }: {
           onSaveProfile={saveProfile}
           onRemoveProfile={removeProfile}
           focusWorkflowId={focusWorkflowId}
-          onOpenNativeEditor={() => { setNativeCanvasEpoch(n => n + 1); chooseView("engines"); }}
+          onOpenNativeEditor={(reloaded) => { if (reloaded) setNativeCanvasEpoch(n => n + 1); chooseView("engines"); }}
         />
         </Suspense>
         </>}

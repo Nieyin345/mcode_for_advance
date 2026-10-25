@@ -82,6 +82,19 @@ await withAuditPage(here,async page=>{
     check('focused workflow selected instead of showing an unrelated canvas',
       await page.eval('document.querySelector("#workflows-panel-library nav button[aria-current=true]")?.textContent.includes("资料整理流程")'));
   });
+  await test('native-noop-reentry-does-not-reload-editor',async()=>{
+    await page.goto('case=native-unchanged&locale=zh');
+    await page.eval(helper);
+    await page.waitFor('document.querySelector("#workflows-tab-library")');
+    await page.eval('__ui.showLibrary()');
+    await page.waitFor('document.querySelector("#workflows-panel-library nav button")');
+    await page.eval('__ui.open("资料整理流程")');
+    await page.waitFor("document.querySelector('#workflows-panel-library section[aria-label] button')");
+    await page.eval("document.querySelector('#workflows-panel-library section[aria-label] button').click()");
+    await page.waitFor('document.querySelector("#workflows-tab-engines")?.getAttribute("aria-selected")==="true"');
+    check('same saved workflow navigates to existing canvas without native loaded event',
+      await page.eval('__audit.nativeLoads.length===1 && __audit.nativeLoadEvents.length===0'));
+  });
   await test('native-editor-entry',async()=>{
     await open(page);
     check('real native entry replaces deleted WorkflowCanvas',await page.eval(`!!document.querySelector('${nativeEntry}')&&!document.querySelector('[data-workflow-viewport]')`));

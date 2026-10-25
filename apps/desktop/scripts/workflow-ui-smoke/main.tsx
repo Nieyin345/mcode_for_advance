@@ -61,6 +61,8 @@ let hasRun = false;
 const runCalls: Array<{workflowId:string;triggerNodeId:string;savedTask:unknown}> = [];
 const saves: WorkflowDoc[] = [];
 const nativeLoads: string[] = [];
+const nativeLoadEvents: string[] = [];
+window.addEventListener("mcode:native-canvas-loaded", () => nativeLoadEvents.push("replaced"));
 const apiCalls: string[] = [];
 const apiImpl: Record<string,Record<string,(...args: never[]) => unknown>> = {};
 // The preview kit looks methods up on this object at call time. No real bridge exists.
@@ -68,7 +70,7 @@ const impl = {
   workflowEngine: {
     load: async ({workflowId}:{workflowId:string}) => {
       nativeLoads.push(workflowId);
-      return {ok:true};
+      return scenario === "native-unchanged" ? {ok:true,unchanged:true} : {ok:true};
     },
     list: async () => { apiCalls.push("workflowEngine.list"); return {engines:[]}; },
   },
@@ -127,13 +129,13 @@ interface AuditWindow {
   __apiImpl: typeof apiImpl;
   __apiCalls?: string[];
   api: {platform:string;on:{workflowsChanged:(fn:(event?:{reason:string})=>void)=>()=>void}};
-  __audit:{docs:typeof docs;saves:typeof saves;nativeLoads:typeof nativeLoads;apiCalls:typeof apiCalls;focusId:()=>string|null;runCalls:typeof runCalls;completeRun:()=>void;emitWorkflowChange:()=>void};
+  __audit:{docs:typeof docs;saves:typeof saves;nativeLoads:typeof nativeLoads;nativeLoadEvents:typeof nativeLoadEvents;apiCalls:typeof apiCalls;focusId:()=>string|null;runCalls:typeof runCalls;completeRun:()=>void;emitWorkflowChange:()=>void};
   __ready:boolean;
 }
 const w=window as unknown as AuditWindow;
 w.__apiImpl=apiImpl;
 w.api={platform:'win32',on:{workflowsChanged:(fn)=>{workflowListeners.add(fn);return()=>{workflowListeners.delete(fn);};}}};
-w.__audit={docs,saves,nativeLoads,apiCalls,focusId:()=>useSessionStore.getState().settingsFocusWorkflowId,runCalls,completeRun:()=>{status='success';},emitWorkflowChange:()=>{for(const fn of workflowListeners)fn({reason:'node-red:deploy:audit-workflow'});}};
+w.__audit={docs,saves,nativeLoads,nativeLoadEvents,apiCalls,focusId:()=>useSessionStore.getState().settingsFocusWorkflowId,runCalls,completeRun:()=>{status='success';},emitWorkflowChange:()=>{for(const fn of workflowListeners)fn({reason:'node-red:deploy:audit-workflow'});}};
 useSessionStore.setState({
   settingsSection: scenario.startsWith('automation') ? 'automation' : 'workflows',
   settingsFocusWorkflowId: scenario === 'focus' ? 'audit-workflow' : null,
