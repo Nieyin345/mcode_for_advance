@@ -6,8 +6,10 @@
  * A linked file outside the data root is intentionally not traversed here:
  * blindly grepping its parent would search unrelated user documents.
  */
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
+import { pathWithin } from "@main/lib/realPathWithin.js";
 import type { LibraryItem, FullTextMatch } from "@contracts/library";
 import { rgGrep } from "@main/lib/rgSearch.js";
 
@@ -54,6 +56,75 @@ export function libraryTextPathOwners(items: readonly LibraryItem[]): Map<string
   return paths;
 }
 
+
+/** Slow-path only: an unavailable rg must not make a healthy library look
+ * empty. Restrict reads to recorded files under the current data root.
+ * Linked external paths / symlinks, binary data, and files above 2 MiB are
+ * deliberately excluded (no unbounded scanning on Electron's main process).
+ * TextDecoder rejects invalid UTF-8, rather than misreporting binary bytes.
+ */
+const FALLBACK_MAX_BYTES = 2 * 1024 * 1024;
+
+async function scanRegisteredTextFallback(
+  root: string,
+  folder: string,
+  owners: ReadonlyMap<string, readonly LibraryItem[]>,
+  query: string,
+  limit: number,
+  collectionAllows: (itemId: string) => boolean,
+  isCurrent: () => boolean,
+): Promise<FullTextMatch[]> {
+  const out: FullTextMatch[] = [];
+  const dir = join(root, folder);
+  const needle = query.toLowerCase();
+  const extList: readonly string[] = folder === "files" ? LIBRARY_PLAIN_TEXT_EXTS : ["md"];
+  for (const [rel, items] of owners) {
+    if (!isCurrent() || out.length >= limit) break;
+    if (!safeLibraryTextPath(rel, folder, extList)) continue;
+    const target = join(root, rel);
+    // Physical containment prevents symlinks/junctions in the library tree
+    // from turning an index hit into a read of an arbitrary user file.
+    if (!pathWithin(dir, target)) continue;
+    let buffer: Buffer;
+    try {
+      const stat = lstatSync(target);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > FALLBACK_MAX_BYTES) continue;
+      buffer = await readFile(target);
+      if (buffer.length > FALLBACK_MAX_BYTES) continue;
+    } catch {
+      continue; // File may have been moved since it was added to the library.
+    }
+    const isUtf16le = buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe;
+    // Decode only a real text stream. NUL without a UTF-16 BOM means binary.
+    if (!isUtf16le && buffer.includes(0)) continue;
+    let text: string;
+    try {
+      text = new TextDecoder(isUtf16le ? "utf-16le" : "utf-8", { fatal: true })
+        .decode(isUtf16le ? buffer.subarray(2) : buffer);
+    } catch {
+      continue;
+    }
+    let perFile = 0;
+    for (const [i, line] of text.split(/\r?\n/).entries()) {
+      if (!isCurrent() || out.length >= limit || perFile >= 5) break;
+      if (!line.toLowerCase().includes(needle)) continue;
+      perFile++;
+      for (const item of items) {
+        if (!collectionAllows(item.id)) continue;
+        out.push({
+          itemId: item.id,
+          title: item.title,
+          relativePath: rel,
+          lineNumber: i + 1,
+          lineText: line,
+        });
+        if (out.length >= limit) break;
+      }
+    }
+  }
+  return isCurrent() ? out : [];
+}
+
 /** Uses existing bounded rgGrep (fixed-string, max-size, timeout) and preserves
  * the IPC FullTextMatch shape. Capped globally after database-ownership check.
  * Other callers can pass a collection filter without changing search syntax.
@@ -78,7 +149,15 @@ export async function searchRegisteredLibraryText(
       caseSensitive: false, limit, maxPerFile: 5, includeExts: [...extensions],
     }, []);
     if (!isCurrent()) return [];
-    if (!scan) continue;
+    if (!scan) {
+      // ripgrep may be missing on a newly installed computer. Fall back to
+      // exact registered files only, using a strict per-file byte limit and
+      // the physical path guard instead of recursively reading a directory.
+      const remaining = limit - out.length;
+      out.push(...await scanRegisteredTextFallback(root, folder, owners, query, remaining, collectionAllows, isCurrent));
+      if (!isCurrent()) return [];
+      continue;
+    }
     for (const match of scan.matches) {
       const rel = safeLibraryTextPath(folder + "/" + match.relativePath, folder, extensions);
       if (!rel) continue;

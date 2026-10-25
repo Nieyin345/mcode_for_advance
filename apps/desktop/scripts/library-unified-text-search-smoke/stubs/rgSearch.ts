@@ -6,6 +6,7 @@ export async function rgGrep(root:string,query:string,opts:{
  caseSensitive:boolean;limit:number;maxPerFile:number;includeExts?:string[],
 },_ignored:unknown){
  calls.push({folder:root,limit:opts.limit,maxPerFile:opts.maxPerFile,extensions:opts.includeExts??[]});
+ if (query === "fallback") return null; // Simulate ripgrep missing or spawn failure.
  const rows:Array<{path:string;relativePath:string;lineNumber:number;lineText:string;matches:Array<{start:number;end:number}>}> = [];
  const walk=(dir:string)=>{
    for(const d of readdirSync(dir,{withFileTypes:true})){

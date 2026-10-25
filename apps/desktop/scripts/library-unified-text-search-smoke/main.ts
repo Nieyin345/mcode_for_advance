@@ -27,6 +27,9 @@ const records:LibraryItem[]=[
  item("unsafe",{filePath:"files/../../private.txt"}),
  item("outside",{mdPath:"../../private.md"}),
  item("idempotent",{mdPath:"notes/writing.md",filePath:"files/01-brief.txt"}),
+ item("binaryText",{filePath:"files/05-binary.txt"}),
+ item("largeText",{filePath:"files/06-large.txt"}),
+ item("utf16",{mdPath:"notes/utf16.md"}),
 ];
 const pathIndex=libraryTextPathOwners(records);
 check("Legacy PDF transcript is indexed by its real relative mdPath",
@@ -51,13 +54,16 @@ try {
    writeFileSync(p,contents,"utf8");
  };
  put("markdown/ab/cd/source.md","intro\nneedle scientific report\n");
- put("notes/writing.md","个人笔记 needle\n");
- put("files/01-brief.txt","needle content\ntrailer");
+ put("notes/writing.md","个人笔记 needle\nfallback from note\n");
+ put("files/01-brief.txt","needle content\nfallback from text\ntrailer");
  put("files/02-data.json",'{"context":"needle item"}\n');
  put("files/03-parser.ts",'export const needle = "hello";\n');
  put("files/04-slides.pptx","needle this is a mock binary but must not scan");
  put("files/999-orphan.txt","needle leaked orphan not indexed");
  put("markdown/orphan.md","needle orphan md not indexed");
+ put("files/05-binary.txt","fallback"+String.fromCharCode(0)+"hidden");
+ put("files/06-large.txt","fallback"+"x".repeat(2*1024*1024));
+ writeFileSync(join(root,"notes/utf16.md"),Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from("fallback utf16 text","utf16le")]));
  const found=await searchRegisteredLibraryText(root,records,"needle",50);
  const ids=new Set(found.map(m=>m.itemId));
  check("PDF conversion, editable notes, generic plain text and code all searchable",
@@ -86,6 +92,19 @@ try {
  check("Actual scanning uses only bounded fixed-string rg with supported extensions",
  calls.some(c=>c.extensions.includes("txt")) && calls.some(c=>c.extensions.includes("md")) &&
  calls.every(c=>c.limit<=50&&c.maxPerFile===5));
+ const fallback=await searchRegisteredLibraryText(root,records,"fallback",50);
+ check("Missing ripgrep still scans recorded text and notes",
+   fallback.some(m=>m.itemId==="text") && fallback.some(m=>m.itemId==="note"));
+ check("Fallback never scans unregistered files or linked external paths",
+   fallback.every(m=>!m.relativePath.includes("orphan")&&m.itemId!=="linked"));
+ check("Fallback preserves multiple item owners of one physical file",
+   fallback.some(m=>m.itemId==="dup") && fallback.some(m=>m.itemId==="idempotent"));
+ check("Fallback refuses NUL-bearing binary and large files",
+   fallback.every(m=>m.itemId!=="binaryText"&&m.itemId!=="largeText"));
+ check("Fallback can read small UTF-16LE text with an explicit BOM",
+   fallback.some(m=>m.itemId==="utf16"&&m.lineText==="fallback utf16 text"));
+ check("Fallback respects the same collection filter",
+   (await searchRegisteredLibraryText(root,records,"fallback",50,id=>id==="text")).every(m=>m.itemId==="text"));
  check("Empty query returns no fabricated results",
  (await searchRegisteredLibraryText(root,records,"",50)).length===0);
  const ipc=readFileSync(join(process.cwd(),"src/main/ipc/library.ts"),"utf8");
