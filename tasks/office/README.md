@@ -100,7 +100,8 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O14** Mcode AI 唯一 UI + 原厂 Office 编辑器嵌入 | ✅ **有界交付，整屏 U1 待验** | `O14-mcode-ai-only-office-ui.md` | vendor `5f6b1d9` / Mcode `2bbc780f` | Mcode 宿主六原厂 AI 面板、Genspark 功能组、选区弹窗卸载，保留编辑内核；六格式 T7 真 Electron 打开→编辑→保存→重启→重开 **6/6 PASS**，每家新增 AI DOM 负断言；26 patches 验证 PASS |
 | **O15** Office 六格式停靠与 Mcode AI 会话草稿交接 | ✅ **有界交付，真实整屏与在线模型待验** | `O15-mcode-office-dock-chat-handoff.md` | Mcode `61cfc8ba` | 六编辑器右侧停靠；宿主「交给 Mcode AI」将文件引用交给现有 Mcode ChatPane 草稿，不自动发送，原编辑器并排；4 smoke PASS + desktop/contracts tsc PASS |
 | **O16** Mcode 内建 Office 性能接缝 | ✅ **有界交付，真 Electron 性能指标待验** | `O16-inprocess-office-performance.md` | Mcode `f84c090e` | renderer 资源改为异步 realpath + 一份宿主协议，无第二服务；100× 相同 bounds：101 次原生布局→1 次；34/34 专项 PASS、关联 4 smoke PASS、双包 tsc PASS；U1 当时因重型租约被占未执行 |
-| **O17** Mcode 内建 Sheets 共享 Rust sidecar 空闲回收 | ✅ **有界交付；真实空闲回收与复启 2× PASS** | `O17-sheets-sidecar-idle-memory.md` | vendor `b643536` / Mcode `f009e9a4` + 验收提交 | 原 33/33 单测 + Sheets 编辑保存重开 U1 通过；另独立性能 U1 在同一 Electron OS 进程中双表格共享 worker、8 秒保活、约 62.7 秒自动回收、重新打开新 PID + Canvas，**两次真实进程级验收 PASS**；测得单 sidecar 工作集约 6.1 MiB，尚非整体 Mcode RAM/P95 |
+| **O17** Mcode 内建 Sheets 共享 Rust sidecar 空闲回收 | ✅ **有界交付；真实空闲回收与复启 2× PASS** | `O17-sheets-sidecar-idle-memory.md` | vendor `b643536` / Mcode `f009e9a4` + `c02b2a63` | 原 33/33 单测 + Sheets 编辑保存重开 U1 通过；另独立性能 U1 在同一 Electron OS 进程中双表格共享 worker、8 秒保活、约 62.7 秒自动回收、重新打开新 PID + Canvas，**两次真实进程级验收 PASS**；测得单 sidecar 工作集约 6.1 MiB，尚非整体 Mcode RAM/P95 |
+| **O18** 六编辑器后台驻留与进程开销基线 | ✅ **有界交付，真实 Electron 2× PASS** | `O18-six-editor-residency-baseline.md` | Mcode 本轮提交 | 同一 Mcode 窗口六编辑器真实宿主渲染，全部隐藏保活/切回且 PID 不变；总 11 Electron 进程，工作集约 1.70 GiB（仅该机及样本），3 秒后台 CPU/内存采样；独立可复现性能 U1；未声称全面性能优化或完整六格式文件编辑验收 |
 
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）

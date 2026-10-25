@@ -10,8 +10,15 @@ import { runElectronU1, classifyU1Run, reportIncompleteAndExit } from "../lib/el
 const here=dirname(fileURLToPath(import.meta.url));
 const t7=resolve(here,"../t7-genoffice-u1");
 const desktop=resolve(here,"../..");
+const passthrough=process.argv.slice(2);
+for (const arg of passthrough) {
+  if (!["--only=sheets-shared-worker-idle-restart", "--only=six-editor-residency"].includes(arg)) {
+    throw new Error("Unsupported option: "+arg);
+  }
+}
 const run=runElectronU1({
   suite:t7,
+  passthrough,
   desktop,
   registry:join(here,"journeys/index.ts"),
   esbuild:join(t7,"vendor-esbuild.mjs"),
