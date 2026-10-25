@@ -58,6 +58,7 @@
 | F033 | **长期可用核心能力**：真实扩展 global/workspace 状态、原生文件监听、原位升级回滚、Monaco 诊断标记 | ⚠️ E1 106/106 + 53/53；联合 11/12（外部 IPC）；Electron U1 与大 API 面待验 | `79ee2a72` |
 | F034 | **复杂功能继续集成**：Mcode 原生 PTY、VS Code Hover/Completion、隔离 Webview 和消息双向回传 | ⚠️ E1 123/123 + 61/61；联合 11/12（外部文档 IPC）；Electron U1 待验 | `9bd56b9f` |
 | F035 | **VS Code 代码导航**：跳转定义、查找引用、查找实现、类型定义接入原生 Monaco | ⚠️ E1 128/128 + 66/66；联合 11/12（外部文档 IPC）；Desktop typecheck 被并行 Workflow UI 契约错误阻塞；Electron U1 待验 | `bf6e74f7` |
+| F036 | **原生文档大纲、格式化与签名提示**：真实 Theia Provider → Mcode Monaco，安全过滤与无后台轮询 | ⚠️ E1 132/132 + 72/72；双包 TS PASS；联合 11/12（外部文档 IPC）；Electron U1 待验 | `7749ce05` |
 
 ## 扩展闭环的进度（截至 F015）
 
