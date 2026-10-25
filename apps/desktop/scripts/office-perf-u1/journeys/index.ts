@@ -8,7 +8,7 @@
 export { beforeReady, afterReady } from "../../t7-genoffice-u1/journeys/index.js";
 import type { U1Journey } from "../../electron-u1/driver/types.js";
 
-export const journeyNames = ["sheets-shared-worker-idle-restart", "six-editor-residency", "sheets-nonvisual-edit-save-reopen", "slides-native-semantics", "docs-crash-recovery-mcode", "docs-ai-tool-native-transaction", "sheets-formula-native-roundtrip", "docs-recovery-external-conflict", "slides-ms-office-interop-isolation"] as const;
+export const journeyNames = ["sheets-shared-worker-idle-restart", "six-editor-residency", "sheets-nonvisual-edit-save-reopen", "slides-native-semantics", "docs-crash-recovery-mcode", "docs-ai-tool-native-transaction", "sheets-formula-native-roundtrip", "docs-recovery-external-conflict", "slides-ms-office-interop-isolation", "docs-hard-kill-recovery"] as const;
 const loaders: Record<string, () => U1Journey> = {
   "sheets-shared-worker-idle-restart": () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -43,6 +43,12 @@ const loaders: Record<string, () => U1Journey> = {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require("./docs-ai-tool-native-transaction.js") as typeof import("./docs-ai-tool-native-transaction.js");
     return mod.docsAiNativeToolJourney;
+  },
+  "docs-hard-kill-recovery": () => {
+    // Actually terminate the isolated Electron host with SIGKILL, never dispose.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("./docs-hard-kill-recovery.js") as typeof import("./docs-hard-kill-recovery.js");
+    return mod.docsHardKillRecoveryJourney;
   },
   "docs-crash-recovery-mcode": () => {
     // True DOCX renderer and three independent OS generations of restore/save.

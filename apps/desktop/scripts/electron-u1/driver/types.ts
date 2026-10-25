@@ -160,6 +160,8 @@ export type U1Step = StepBase &
       }
     /** 关闭当前 Electron 进程并真正重开一个新的（同一 runDir/数据根）。 */
     | { op: "relaunch"; reason?: string }
+    /** Deliberately SIGKILL the *test Electron host OS process* (no dispose/app.exit), then relaunch. */
+    | { op: "crashRelaunch"; reason?: string }
     /**
      * 主进程内的一段任意装配/取证（T7 起）。`fn` 只能在**探针主进程**里跑，
      * 收到的 `runtime.setup` 就是 `launch.setup` 的返回值 —— 这样「关闭视图」

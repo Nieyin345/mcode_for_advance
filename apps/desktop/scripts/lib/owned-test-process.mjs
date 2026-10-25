@@ -24,6 +24,8 @@ export function terminateOwnedTree(child, platform = process.platform) {
 /** spawnSync-shaped return: {status, signal, stdout, stderr, error, pid}. */
 export function runOwnedProcess(command, args, {
   cwd, env, timeout = 180_000, maxBuffer = 32 * 1024 * 1024,
+  /** Exact per-child supervisor challenge. Kills only THIS owned child tree. */
+  killOnStdout = null,
 } = {}) {
   if (!Number.isFinite(timeout) || timeout <= 0 || !Number.isFinite(maxBuffer) || maxBuffer <= 0)
     return Promise.reject(new Error("Invalid subprocess resource budget"));
@@ -40,16 +42,26 @@ export function runOwnedProcess(command, args, {
     }
     const out = [], err = [];
     let bytes = 0, reason = null, spawnError = null, killing = false;
+    let supervisorKilled = false, outputTail = "";
     const stop = (code) => {
       if (!reason) reason = code;
       if (!killing) { killing = true; terminateOwnedTree(child); }
     };
-    const collect = (dest) => (data) => {
+    const collect = (dest, stdout = false) => (data) => {
       bytes += data.length;
       if (bytes > maxBuffer) return stop("ENOBUFS");
       dest.push(data);
+      if (stdout && typeof killOnStdout === "string" && killOnStdout.length > 0 && !supervisorKilled) {
+        // The child is not allowed to choose its own exit code as proof of
+        // SIGKILL. This external supervisor executes the termination itself.
+        outputTail = (outputTail + String(data)).slice(-Math.max(512, killOnStdout.length * 2));
+        if (outputTail.includes(killOnStdout)) {
+          supervisorKilled = true;
+          terminateOwnedTree(child);
+        }
+      }
     };
-    child.stdout?.on("data", collect(out));
+    child.stdout?.on("data", collect(out, true));
     child.stderr?.on("data", collect(err));
     const timer = setTimeout(() => stop("ETIMEDOUT"), timeout);
     const int = () => stop("SIGINT");
@@ -68,6 +80,7 @@ export function runOwnedProcess(command, args, {
         stdout: Buffer.concat(out).toString("utf8"),
         stderr: Buffer.concat(err).toString("utf8"),
         error: spawnError ?? (reason ? Object.assign(new Error(reason), { code: reason }) : undefined),
+        supervisorKilled,
       };
       // Signal handling must retain the parent's nonzero exit status; do not
       // start the next Electron relaunch generation after an interruption.

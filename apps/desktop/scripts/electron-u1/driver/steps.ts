@@ -78,6 +78,11 @@ export const step = {
     op: "relaunch", ...(name === undefined ? {} : { name }), ...(reason === undefined ? {} : { reason }),
   }),
 
+  /** Assert unexpected OS termination and relaunch from the same isolated data root. */
+  crashRelaunch: (name?: string, reason?: string): U1Step => ({
+    op: "crashRelaunch", ...(name === undefined ? {} : { name }), ...(reason === undefined ? {} : { reason }),
+  }),
+
   /**
    * 在**探针主进程**里跑一段任意装配/取证（T7 起）。`fn` 收到 `launch.setup`
    * 返回的 `runtime` —— 用于「用真宿主读回磁盘」「关闭视图」「用独立解析器

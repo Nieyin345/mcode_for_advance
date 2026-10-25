@@ -54,6 +54,10 @@ interface State {
   done: boolean;
   failedStep: string | null;
   startedAt: number;
+  /** Armed synchronously before SIGKILL; supervisor must observe abnormal exit. */
+  crashArmed?: { pid: number; generation: number; stepOffset: number };
+  /** Set only by the supervisor after checking the OS child really died. */
+  confirmedCrash?: { pid: number; generation: number; status: number | null; signal: string | null };
 }
 
 interface Ctx {
@@ -534,7 +538,8 @@ async function evaluateStep(ctx: Ctx, s: U1Step, index: number): Promise<{
       return finish("sideEffect", `assertSideEffect ${s.file}`, JSON.stringify(s), { ok, observed, ...(detail ? { detail } : {}) });
     }
 
-    case "relaunch": {
+    case "relaunch":
+    case "crashRelaunch": {
       // 由 runGeneration 的主循环处理（它要退出进程），这里只占位保证 switch 穷尽。
       return finish("action", `relaunch ${s.reason ?? ""}`, null, { ok: false, detail: "relaunch 不应到达 evaluateStep" });
     }
@@ -965,12 +970,13 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
     const startedAt = Date.now();
     const at = new Date().toISOString();
 
-    if (s.op === "relaunch") {
+    if (s.op === "relaunch" || s.op === "crashRelaunch") {
+      const crash = s.op === "crashRelaunch";
       const entry: U1Evidence = {
         journey: journey.name, step: name,
-        action: `relaunch（${s.reason ?? "无说明"}）`,
+        action: `${crash ? "SIGKILL + relaunch" : "relaunch"}（${s.reason ?? "无说明"}）`,
         assertion: null, kind: "action", status: assertionStatus(true),
-        observed: { fromPid: process.pid, generation: state.generation },
+        observed: { fromPid: process.pid, generation: state.generation, abrupt: crash },
         screenshot: null,
         domSnapshot: await captureDomSnapshot(ctx, name),
         at, pid: process.pid, generation: state.generation,
@@ -978,6 +984,25 @@ export async function runGeneration(journeys: U1Journey[]): Promise<void> {
       };
       state.evidence.push(entry);
       state.stepOffset = i + 1;
+      if (crash) {
+        // No graceful app.exit, BrowserWindow destroy, document host dispose,
+        // renderer close guard or database teardown. The supervisor MUST
+        // observe this exact PID and an abnormal OS exit before relaunch.
+        state.crashArmed = { pid: process.pid, generation: state.generation, stepOffset: i + 1 };
+        writeJson(env.stateFile, state);
+        // Negative control: intentionally exit normally after arming. The
+        // parent must reject it because no supervisor SIGKILL occurred.
+        if (process.env.MCODE_U1_MUTATE_CRASH_TO_NORMAL_EXIT === "1") {
+          app.exit(0);
+          return;
+        }
+        const token = process.env.MCODE_U1_CRASH_TOKEN;
+        if (!token) throw new Error("U1 hard-kill supervisor challenge absent");
+        // Only the external Node launcher may terminate this owned Electron
+        // process. This process does NOT run editor teardown or app.exit().
+        process.stdout.write("MCODE_U1_CRASH_READY:" + token + "\n");
+        await new Promise<void>(() => undefined);
+      }
       writeJson(env.stateFile, state);
       // T7：装配了 setup 钩子时，重开前先释放视图/会话（新进程会重新装配）。
       if (ctx.setupResult && typeof ctx.setupResult.dispose === "function") {

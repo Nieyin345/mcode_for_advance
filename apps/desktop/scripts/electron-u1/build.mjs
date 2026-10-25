@@ -36,6 +36,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runOwnedProcess } from "../lib/owned-test-process.mjs";
 import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
 import { buildTailwindCached } from "../lib/tailwind-cache.mjs";
 import { guardHeavyTestProcess } from "../lib/heavy-test-lease.mjs";
 
@@ -325,6 +326,7 @@ for (let k = 0; k < journeys.length; k++) {
   const homeDir = join(runDir, "home");
   for (const p of [dataDir, projectDir, homeDir, join(runDir, "userData"), join(runDir, "temp")]) mkdirSync(p, { recursive: true });
   const stateFile = join(runDir, "state.json");
+  const crashToken = randomUUID();
   writeFileSync(stateFile, "null");
   const docPath = join(projectDir, "u1-doc.txt");
   writeFileSync(docPath, "U1 alpha\n");
@@ -339,6 +341,7 @@ for (let k = 0; k < journeys.length; k++) {
     MCODE_U1_DOC: docPath,
     MCODE_U1_JOURNEY: String(journeyIndex),
     MCODE_U1_STATE: stateFile,
+    MCODE_U1_CRASH_TOKEN: crashToken,
     MCODE_U1_REPO: repo,
     HOME: homeDir,
     USERPROFILE: homeDir,
@@ -360,6 +363,7 @@ for (let k = 0; k < journeys.length; k++) {
       encoding: "utf8",
       timeout: 180_000,
       maxBuffer: 32 * 1024 * 1024,
+      killOnStdout: "MCODE_U1_CRASH_READY:" + crashToken,
     });
     const logFile = join(dir, `run-g${generation}.log`);
     writeFileSync(logFile, (run.stdout ?? "") + (run.stderr ?? ""));
@@ -373,6 +377,29 @@ for (let k = 0; k < journeys.length; k++) {
       // relaunch 请求 —— 读 state 里下一步的偏移，仅用于日志。
       const st = JSON.parse(readFileSync(stateFile, "utf8"));
       console.log(`  [relaunch] generation ${generation} exited 77 (stepOffset=${st.stepOffset}); starting a NEW OS process`);
+      continue;
+    }
+    // A dedicated crashRelaunch step must really kill the isolated Electron
+    // OS process. Never treat a normal exit, arbitrary timeout/spawn error or
+    // stale state from another generation as a successful crash.
+    let crashState = null;
+    try { crashState = JSON.parse(readFileSync(stateFile, "utf8")); } catch { /* absent */ }
+    const armed = crashState?.crashArmed;
+    const crashConfirmed = armed &&
+      crashState.generation === generation &&
+      armed.generation === generation &&
+      armed.stepOffset === crashState.stepOffset &&
+      armed.pid === crashState.pids?.at(-1) &&
+      !run.error &&
+      run.supervisorKilled === true &&
+      (run.signal === "SIGKILL" || (process.platform === "win32" && run.status !== null && run.status !== 0 && run.status !== 77));
+    if (crashConfirmed) {
+      crashState.confirmedCrash = {
+        pid: armed.pid, generation, status: run.status, signal: run.signal,
+      };
+      delete crashState.crashArmed;
+      writeFileSync(stateFile, JSON.stringify(crashState, null, 2));
+      console.log(`  [SIGKILL] verified abrupt Electron process death, pid=${armed.pid}, exit=${run.status}, signal=${run.signal}; starting fresh OS process`);
       continue;
     }
     if (run.status === null) {
