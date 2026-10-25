@@ -184,7 +184,8 @@ export interface TheiaQuickInputRequest {
 }
 /** VS Code language-provider contributions supported by Mcode's native Monaco. */
 export type TheiaLanguageProviderKind =
-  | "hover" | "completion" | "definition" | "references" | "implementation" | "typeDefinition";
+  | "hover" | "completion" | "definition" | "references" | "implementation" | "typeDefinition"
+  | "documentSymbols" | "formatting" | "signatureHelp";
 /** File location returned by an installed extension. Coordinates are zero-based VS Code positions. */
 export interface TheiaLanguageLocation {
   uri:string;
@@ -192,6 +193,22 @@ export interface TheiaLanguageLocation {
     start:{line:number;character:number};
     end:{line:number;character:number};
   };
+}
+/** F036: bounded native Monaco language contributions; no extension-controlled file write. */
+export interface TheiaLanguageRange {
+  start:{line:number;character:number};
+  end:{line:number;character:number};
+}
+export interface TheiaLanguageSymbol {
+  name:string;detail:string;kind:number;range:TheiaLanguageRange;
+  selectionRange:TheiaLanguageRange;children:TheiaLanguageSymbol[];
+}
+export interface TheiaLanguageSignature {
+  label:string;documentation?:string;parameters:Array<{label:string;documentation?:string}>;
+  activeParameter?:number;
+}
+export interface TheiaSignatureHelp {
+  signatures:TheiaLanguageSignature[];activeSignature:number;activeParameter:number;
 }
 /** F026: persistent Theia VSIX installs. Every command is desktop-only and non-delegable. */
 export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
@@ -212,9 +229,13 @@ export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
   z.object({op:z.literal("webviewDispose"),sessionId:z.string().uuid(),
     handle:z.string().min(1).max(256)}).strict(),
   z.object({op:z.literal("languageQuery"),sessionId:z.string().uuid(),
-    query:z.enum(["hover","completion","definition","references","implementation","typeDefinition"]),
+    query:z.enum(["hover","completion","definition","references","implementation","typeDefinition",
+      "documentSymbols","formatting","signatureHelp"]),
     lineNumber:z.number().int().min(1).max(100000),column:z.number().int().min(1).max(100000),
-    includeDeclaration:z.boolean().optional()}).strict(),
+    includeDeclaration:z.boolean().optional(),
+    formatOptions:z.object({tabSize:z.number().int().min(1).max(16),insertSpaces:z.boolean()}).strict().optional(),
+    signatureContext:z.object({triggerKind:z.number().int().min(1).max(3),
+      isRetrigger:z.boolean(),triggerCharacter:z.string().max(2).optional()}).strict().optional()}).strict(),
   z.object({op:z.literal("messageRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),choice:z.number().int().min(0).max(7).nullable()}).strict(),
   z.object({op:z.literal("quickRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),
     choice:z.union([z.string().max(4096),z.array(z.number().int().min(0).max(199)).max(50),z.null()])}).strict(),
@@ -233,7 +254,8 @@ export interface TheiaInstalledEntry {
   integrity:"not-checked"|"corrupt";
   /** F028: only the desktop sender that owns a live Theia session receives command metadata. Never persisted. */
   activeSession?: {sessionId:string;commands:string[];editorMenus?:TheiaEditorMenu[];
-    languageProviders?:Array<{kind:TheiaLanguageProviderKind;language:string}>};
+    languageProviders?:Array<{kind:TheiaLanguageProviderKind;language:string;
+      triggerCharacters?:string[];retriggerCharacters?:string[]}>};
 }
 export interface TheiaNativeConfigSetting {
   key:string;type:"string"|"number"|"boolean";description?:string;
@@ -249,7 +271,10 @@ export type TheiaInstalledResult =
   | {kind:"webviewAcknowledged"}
   | {kind:"languageResult";contents:string[];
     suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;
-    locations?:TheiaLanguageLocation[]}
+    locations?:TheiaLanguageLocation[];
+    formattingEdits?:Array<{range:TheiaLanguageRange;text:string}>;
+    documentSymbols?:TheiaLanguageSymbol[];
+    signatureHelp?:TheiaSignatureHelp}
   | {kind:"editorAcknowledged"}
   | {kind:"messageAcknowledged"}
   | {kind:"quickAcknowledged"}

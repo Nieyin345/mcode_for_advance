@@ -45,7 +45,8 @@ import { McodeExtensionPreferences } from "./mcodeExtensionPreferences.js";
 import { McodeExtensionState } from "./mcodeExtensionState.js";
 import { McodeWorkspaceWatcher } from "./mcodeWorkspaceWatcher.js";
 import { prepareTheiaEdits, type EditorEditTransaction, type TheiaTextEdit, type TheiaEditOptions } from "./editorTransactions.js";
-import type { TheiaLanguageLocation, TheiaLanguageProviderKind } from "@contracts/ipc/modules.js";
+import type { TheiaLanguageLocation, TheiaLanguageProviderKind, TheiaLanguageSymbol, TheiaSignatureHelp } from "@contracts/ipc/modules.js";
+import { formattingEdits, documentSymbols, signatureHelp } from "./languageResults.js";
 
 /* ───────────────────────── 依赖定位 ───────────────────────── */
 
@@ -401,7 +402,7 @@ export class TheiaHost {
   private activeEditorSession: EditorSession | null = null;
   private extensionPreferences: McodeExtensionPreferences | null = null;
   private extensionState:McodeExtensionState|null=null;
-  private readonly languageProviders=new Map<number,{kind:TheiaLanguageProviderKind;languages:string[]}>();
+  private readonly languageProviders=new Map<number,{kind:TheiaLanguageProviderKind;languages:string[];triggerCharacters?:string[];retriggerCharacters?:string[]}>();
   private readonly webviewHandles=new Set<string>();
   async sendWebviewMessage(handle:string,payload:unknown):Promise<void>{
     if(!this.webviewHandles.has(handle)||!this.rpc||!this.modules||this.disposed)
@@ -418,13 +419,21 @@ export class TheiaHost {
       this.modules.MAIN_RPC_CONTEXT.WEBVIEWS_EXT);
     await ext.$onDidDisposeWebviewPanel(handle);
   }
-  getLanguageDescriptors():Array<{kind:TheiaLanguageProviderKind;language:string}>{
+  getLanguageDescriptors():Array<{kind:TheiaLanguageProviderKind;language:string;triggerCharacters?:string[];retriggerCharacters?:string[]}>{
     return [...new Map([...this.languageProviders.values()].flatMap(item=>
-      item.languages.map(language=>[item.kind+":"+language,{kind:item.kind,language}] as const)
+      item.languages.map(language=>[item.kind+":"+language,{
+        kind:item.kind,language,
+        ...(item.triggerCharacters?{triggerCharacters:item.triggerCharacters}:{}),
+        ...(item.retriggerCharacters?{retriggerCharacters:item.retriggerCharacters}:{})
+      }] as const)
     )).values()];
   }
-  async languageQuery(kind:TheiaLanguageProviderKind,lineNumber:number,column:number,includeDeclaration=true):
-    Promise<{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;locations:TheiaLanguageLocation[]}>{
+  async languageQuery(kind:TheiaLanguageProviderKind,lineNumber:number,column:number,includeDeclaration=true,
+    formatOptions?:{tabSize:number;insertSpaces:boolean},
+    signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string}):
+    Promise<{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;
+      locations:TheiaLanguageLocation[];formattingEdits:Array<{range:import("@contracts/ipc/modules.js").TheiaLanguageRange;text:string}>;
+      documentSymbols:TheiaLanguageSymbol[];signatureHelp?:TheiaSignatureHelp}>{
     const current=this.activeEditorSession,modules=this.modules,rpc=this.rpc;
     if(!current||!modules||!rpc||this.disposed||!this.started||
       !Number.isSafeInteger(lineNumber)||!Number.isSafeInteger(column)||
@@ -436,8 +445,10 @@ export class TheiaHost {
     const ext=rpc.getProxy<Record<string,(...args:unknown[])=>Promise<unknown>>>(modules.MAIN_RPC_CONTEXT.LANGUAGES_EXT);
     const token={isCancellationRequested:false,onCancellationRequested:()=>({dispose:()=>{}})};
     const position={lineNumber,column};
-    const results:{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;locations:TheiaLanguageLocation[]}=
-      {contents:[],suggestions:[],locations:[]};
+    const results:{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;
+      locations:TheiaLanguageLocation[];formattingEdits:Array<{range:import("@contracts/ipc/modules.js").TheiaLanguageRange;text:string}>;
+      documentSymbols:TheiaLanguageSymbol[];signatureHelp?:TheiaSignatureHelp}=
+      {contents:[],suggestions:[],locations:[],formattingEdits:[],documentSymbols:[]};
     for(const [handle] of eligible){
       let operation:Promise<unknown>;
       switch(kind){
@@ -447,6 +458,13 @@ export class TheiaHost {
         case "references":operation=ext.$provideReferences(handle,current.uri,position,{includeDeclaration},token);break;
         case "implementation":operation=ext.$provideImplementation(handle,current.uri,position,token);break;
         case "typeDefinition":operation=ext.$provideTypeDefinition(handle,current.uri,position,token);break;
+        case "documentSymbols":operation=ext.$provideDocumentSymbols(handle,current.uri,token);break;
+        case "formatting":operation=ext.$provideDocumentFormattingEdits(handle,current.uri,
+          {tabSize:formatOptions?.tabSize??4,insertSpaces:formatOptions?.insertSpaces??true},token);break;
+        case "signatureHelp":operation=ext.$provideSignatureHelp(handle,current.uri,position,{
+          triggerKind:signatureContext?.triggerKind??1,isRetrigger:signatureContext?.isRetrigger??false,
+          ...(signatureContext?.triggerCharacter?{triggerCharacter:signatureContext.triggerCharacter}:{})
+        },token);break;
       }
       let timer:NodeJS.Timeout|undefined;
       try{
@@ -471,6 +489,18 @@ export class TheiaHost {
               insertText:typeof item.insertText==="string"?item.insertText.slice(0,4000):label.slice(0,180),
               kind:Number.isInteger(item.kind)?item.kind!:18,
               ...(typeof item.detail==="string"?{detail:item.detail.slice(0,320)}:{})});
+          }
+        }else if(kind==="documentSymbols"){
+          results.documentSymbols.push(...documentSymbols(output));
+        }else if(kind==="formatting"){
+          results.formattingEdits.push(...formattingEdits(output));
+        }else if(kind==="signatureHelp"){
+          const value=signatureHelp(output);
+          if(value)results.signatureHelp=value;
+          const signatureId=output&&typeof output==="object"?
+            (output as {id?:unknown}).id:undefined;
+          if(typeof signatureId==="number"&&Number.isSafeInteger(signatureId)){
+            void ext.$releaseSignatureHelp(handle,signatureId).catch(()=>{});
           }
         }else{
           const rows=Array.isArray(output)?output:
@@ -1172,6 +1202,24 @@ export class TheiaHost {
         if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
         this.languageProviders.set(handle,{kind:"typeDefinition",
           languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerOutlineSupport:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"documentSymbols",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerDocumentFormattingSupport:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"formatting",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerSignatureHelpProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>,
+        metadata?:{triggerCharacters?:string[];retriggerCharacters?:string[]})=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"signatureHelp",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*"),
+          triggerCharacters:(metadata?.triggerCharacters??[]).filter(c=>typeof c==="string"&&c.length<=2).slice(0,10),
+          retriggerCharacters:(metadata?.retriggerCharacters??[]).filter(c=>typeof c==="string"&&c.length<=2).slice(0,10)});
       },
       $unregister:(handle:number)=>{this.languageProviders.delete(handle);},
       $getLanguages:async()=>["plaintext","javascript","typescript","python","json","markdown","html","css","xml","yaml"],

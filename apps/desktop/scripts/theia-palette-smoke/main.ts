@@ -5,6 +5,7 @@ import { collectTheiaPaletteCommands } from "../../src/renderer/lib/theiaCommand
 import { TheiaEditorApplyBroker } from "../../src/main/modules/theiaHost/editorApplyBroker.js";
 import { TheiaRuntimeMessageBroker } from "../../src/main/modules/theiaHost/runtimeMessageBroker.js";
 import { TheiaQuickInputBroker } from "../../src/main/modules/theiaHost/quickInputBroker.js";
+import {formattingEdits,documentSymbols,signatureHelp} from "../../src/main/modules/theiaHost/languageResults.js";
 import type { TheiaInstalledEntry, TheiaInstalledInput, TheiaInstalledResult } from "@contracts/ipc/modules.js";
 
 let count=0,failed=0;
@@ -132,6 +133,31 @@ receiveTheiaDiagnostics({channel:"modules:theiaDiagnostics",sessionId:base.activ
 check("扩展停止后的诊断事件清空旧 Monaco 警告",
   markerWrites.at(-1)?.count===0);
 removeMarkers();
+check("扩展格式化只接受有效坐标和受限 TextEdit，不直接触及文件内容",
+  formattingEdits([
+    {range:{startLineNumber:1,startColumn:1,endLineNumber:1,endColumn:4},text:"abc"},
+    {range:{startLineNumber:3,startColumn:6,endLineNumber:1,endColumn:1},text:"invalid"},
+    {range:{startLineNumber:1,startColumn:1,endLineNumber:1,endColumn:2},text:"x".repeat(9000)}
+  ]).length===1);
+check("重叠的 VS Code 格式化编辑建议不会交给 Monaco 破坏撤销事务",
+  formattingEdits([
+    {range:{startLineNumber:1,startColumn:1,endLineNumber:1,endColumn:5},text:"first"},
+    {range:{startLineNumber:1,startColumn:2,endLineNumber:1,endColumn:6},text:"overlap"},
+    {range:{startLineNumber:2,startColumn:1,endLineNumber:2,endColumn:2},text:"other"},
+  ]).length===2);
+check("扩展大纲必须包含有效 selectionRange，排除逆序范围",
+  documentSymbols([
+    {name:"valid",kind:12,range:{startLineNumber:1,startColumn:1,endLineNumber:1,endColumn:8},
+      selectionRange:{startLineNumber:1,startColumn:1,endLineNumber:1,endColumn:4},children:[]},
+    {name:"invalid",kind:12,range:{startLineNumber:9,startColumn:1,endLineNumber:1,endColumn:2}}
+  ]).map(x=>x.name).join(",")==="valid");
+check("不可信扩展签名结果裁剪无效活动索引和超量参数",
+  signatureHelp({activeSignature:99,activeParameter:99,signatures:[
+    {label:"f(arg)",parameters:[{label:[2,5],documentation:{value:"parameter"}}]}
+  ]})?.signatures[0]?.parameters[0]?.label==="arg"&&
+  signatureHelp({activeSignature:99,activeParameter:99,signatures:[
+    {label:"f(arg)",parameters:[{label:"arg"}]}
+  ]})?.activeSignature===0);
 const codeRoot=process.env.MCODE_SMOKE_REPO_ROOT;
 if(!codeRoot)throw Error("MCODE_SMOKE_REPO_ROOT missing");
 const palette=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/layout/CommandPalette.tsx"),"utf8");
@@ -185,6 +211,13 @@ check("Theia 主 RPC 记录四类语言导航贡献并转发到真实扩展 Prov
 check("语言位置跨 IPC 前拒绝非 file URI、越界坐标和反向范围",
   languageHost.includes("function languageLocation(value: unknown)")&&
   languageHost.includes("input.scheme !== \"file\"")&&languageHost.includes("results.locations.length<100"));
+check("三类新增语言能力使用 Mcode 原生 Monaco 符号/格式化/签名入口",
+  nativeLanguage.includes("registerDocumentSymbolProvider(")&&
+  nativeLanguage.includes("registerDocumentFormattingEditProvider(")&&
+  nativeLanguage.includes("registerSignatureHelpProvider("));
+check("格式化只返回 Monaco Edits 并保留模型版本拒绝迟到结果",
+  nativeLanguage.includes('"formatting",model,token')&&
+  nativeLanguage.includes("model.getVersionId()!==version"));
 const nativeMenus=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/lib/theiaEditorMenus.ts"),"utf8");
 const realEditor=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/ide/FileEditor.tsx"),"utf8");
 check("VS Code editor/context 菜单实际进入 Monaco 原生菜单而非独立菜单 UI",

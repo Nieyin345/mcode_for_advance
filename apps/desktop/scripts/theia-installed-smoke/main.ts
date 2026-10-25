@@ -216,7 +216,7 @@ try{
   check("重启宿主时从 Mcode 配置存储加载用户设置",
     initialConfigured.kind==="executed"&&initialConfigured.result.includes("from-mcode-ui"));
   check("真实 VS Code Provider 注册进入 Mcode 宿主能力目录",
-    ["hover","completion","definition","references","implementation","typeDefinition"].every(kind=>
+    ["hover","completion","definition","references","implementation","typeDefinition","documentSymbols","formatting","signatureHelp"].every(kind=>
       manager!.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>
         x.kind===kind&&x.language==="plaintext")===true));
   writeFileSync(path.join(workspace,"f035-language-target.txt"),"target-language-symbol");
@@ -245,6 +245,24 @@ try{
   const typeDefinition=await manager.languageQuery(51,run.sessionId,"typeDefinition",1,3);
   check("真实 Theia Type Definition Provider 返回原生导航位置",
     typeDefinition.kind==="languageResult"&&typeDefinition.locations?.some(x=>x.uri.endsWith("f035-language-target.txt"))===true,typeDefinition);
+  const outline=await manager.languageQuery(51,run.sessionId,"documentSymbols",1,1);
+  check("真实 VS Code 文档符号 Provider 提供原生 Monaco 大纲节点",
+    outline.kind==="languageResult"&&outline.documentSymbols?.some(x=>
+      x.name==="McodeNativeOutline"&&x.range.start.line===0&&x.selectionRange.end.character===5)===true,
+    outline);
+  const format=await manager.languageQuery(51,run.sessionId,"formatting",1,1,true,
+    {tabSize:2,insertSpaces:true});
+  check("真实格式化 Provider 只返回编辑建议，不直接改动 Mcode 当前文档",
+    format.kind==="languageResult"&&format.formattingEdits?.some(x=>
+      x.text==="spaces-2"&&x.range.start.character===0&&x.range.end.character===6)===true,format);
+  const signature=await manager.languageQuery(51,run.sessionId,"signatureHelp",1,3,true,undefined,
+    {triggerKind:2,isRetrigger:false,triggerCharacter:"("});
+  check("真实 VS Code SignatureHelp Provider 返回 Mcode 函数签名与参数",
+    signature.kind==="languageResult"&&signature.signatureHelp?.signatures[0]?.label==="mcodeNative(arg)"&&
+    signature.signatureHelp.signatures[0]?.parameters[0]?.label==="arg",signature);
+  check("签名帮助自动补全触发字符进入 Mcode 原生 Provider 配置",
+    manager.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>
+      x.kind==="signatureHelp"&&x.triggerCharacters?.includes("("))===true);
   const fsReply=await manager.execute(51,run.sessionId,"mcodeSmoke.workspaceFs");
   check("真实 VS Code workspace.fs 读写 Mcode 当前项目",
     fsReply.kind==="executed"&&fsReply.result.includes("native-workspace")&&fsReply.result.includes('"names":true')&&fsReply.result.includes('"search":true'),fsReply);

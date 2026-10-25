@@ -99,6 +99,24 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
     return locations.map(location=>({...location,
       uri:samePath(location.uri.fsPath,snapshot.filePath)?model.uri:location.uri}));
   };
+  const queryDocument=async(sessionId:string,query:"documentSymbols"|"formatting"|"signatureHelp",
+    model:Monaco.editor.ITextModel,token:Monaco.CancellationToken,
+    extra?:{formatOptions?:{tabSize:number;insertSpaces:boolean};
+      signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string}})=>{
+    const version=model.getVersionId();
+    if(!live||token.isCancellationRequested||!await sync(sessionId,model))return null;
+    try{
+      const result=await api.modules.theiaInstalled({op:"languageQuery",sessionId,query,
+        lineNumber:1,column:1,...extra});
+      if(result.kind!=="languageResult"||!live||token.isCancellationRequested||
+        instance.getModel()!==model||model.getVersionId()!==version)return null;
+      return result;
+    }catch{return null;}
+  };
+  const toRange=(range:{start:{line:number;character:number};end:{line:number;character:number}})=>({
+    startLineNumber:range.start.line+1,startColumn:range.start.character+1,
+    endLineNumber:range.end.line+1,endColumn:range.end.character+1,
+  });
   const refresh=async()=>{
     const epoch=++serial;
     try{
@@ -146,6 +164,46 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
                   ...(item.detail?{detail:item.detail}:{}),range,
                 }))};
               }catch{return {suggestions:[]};}
+            }
+          }));
+          if(kinds.has("documentSymbols"))registered.push(monaco.languages.registerDocumentSymbolProvider(selector,{
+            provideDocumentSymbols:async(model,token)=>{
+              const result=await queryDocument(active.sessionId,"documentSymbols",model,token);
+              if(!result?.documentSymbols?.length)return [];
+              const transform=(items:NonNullable<typeof result.documentSymbols>):Monaco.languages.DocumentSymbol[]=>
+                items.map(item=>({name:item.name,detail:item.detail,kind:item.kind,
+                  tags:[],range:toRange(item.range),selectionRange:toRange(item.selectionRange),
+                  children:transform(item.children)}));
+              return transform(result.documentSymbols);
+            }
+          }));
+          if(kinds.has("formatting"))registered.push(monaco.languages.registerDocumentFormattingEditProvider(selector,{
+            provideDocumentFormattingEdits:async(model,options,token)=>{
+              const result=await queryDocument(active.sessionId,"formatting",model,token,{
+                formatOptions:{tabSize:options.tabSize,insertSpaces:options.insertSpaces}});
+              return (result?.formattingEdits??[]).map(item=>({range:toRange(item.range),text:item.text}));
+            }
+          }));
+          if(kinds.has("signatureHelp"))registered.push(monaco.languages.registerSignatureHelpProvider(selector,{
+            signatureHelpTriggerCharacters:active.languageProviders?.find(x=>x.kind==="signatureHelp"&&x.language===language)?.triggerCharacters??[],
+            signatureHelpRetriggerCharacters:active.languageProviders?.find(x=>x.kind==="signatureHelp"&&x.language===language)?.retriggerCharacters??[],
+            provideSignatureHelp:async(model,position,token,context)=>{
+              const version=model.getVersionId();
+              if(!live||token.isCancellationRequested||!await sync(active.sessionId,model))return null;
+              try{
+                const result=await api.modules.theiaInstalled({op:"languageQuery",sessionId:active.sessionId,
+                  query:"signatureHelp",lineNumber:position.lineNumber,column:position.column,
+                  signatureContext:{triggerKind:context.triggerKind,isRetrigger:context.isRetrigger,
+                    ...(context.triggerCharacter?{triggerCharacter:context.triggerCharacter}:{})}});
+                if(result.kind!=="languageResult"||!result.signatureHelp||token.isCancellationRequested||
+                  !live||model!==instance.getModel()||model.getVersionId()!==version)return null;
+                const help=result.signatureHelp;
+                return {value:{activeSignature:help.activeSignature,activeParameter:help.activeParameter,
+                  signatures:help.signatures.map(sig=>({
+                    label:sig.label,documentation:sig.documentation,
+                    parameters:sig.parameters.map(param=>({label:param.label,documentation:param.documentation}))
+                  }))},dispose:()=>{}};
+              }catch{return null;}
             }
           }));
           if(kinds.has("definition"))registered.push(monaco.languages.registerDefinitionProvider(selector,{

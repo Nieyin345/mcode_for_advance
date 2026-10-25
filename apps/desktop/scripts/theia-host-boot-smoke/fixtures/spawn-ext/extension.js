@@ -67,6 +67,27 @@ function activate(context) {
     vscode.languages.registerTypeDefinitionProvider({language:"plaintext"},{
       provideTypeDefinition:()=>targetLanguageLocation()
     }),
+    vscode.languages.registerDocumentSymbolProvider({language:"plaintext"},{
+      provideDocumentSymbols:()=>[new vscode.DocumentSymbol(
+        "McodeNativeOutline","test symbol",vscode.SymbolKind.Function,
+        new vscode.Range(0,0,0,14),new vscode.Range(0,0,0,5)
+      )]
+    }),
+    vscode.languages.registerDocumentFormattingEditProvider({language:"plaintext"},{
+      provideDocumentFormattingEdits:(_doc,options)=>[
+        vscode.TextEdit.replace(new vscode.Range(0,0,0,6),
+          options.insertSpaces?"spaces-"+options.tabSize:"tabs-"+options.tabSize)
+      ]
+    }),
+    vscode.languages.registerSignatureHelpProvider({language:"plaintext"},{
+      provideSignatureHelp:()=>{
+        const help=new vscode.SignatureHelp();
+        const signature=new vscode.SignatureInformation("mcodeNative(arg)","Mcode native signature");
+        signature.parameters=[new vscode.ParameterInformation("arg","Mcode parameter")];
+        help.signatures=[signature];help.activeSignature=0;help.activeParameter=0;
+        return help;
+      }
+    },"(",","),
   );
   context.subscriptions.push(
     vscode.commands.registerCommand("mcodeSmoke.spawnEcho", async () => {

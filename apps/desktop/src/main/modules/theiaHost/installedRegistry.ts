@@ -26,7 +26,7 @@ interface Saved {
 interface Pending { ticket: string; senderId: number; createdAt: number; root: string; record: Saved; upgradeOf?:string; oldVersion?:string; previousArchiveHash?:string }
 interface Running { id: string; senderId: number; sessionId: string; host: TheiaHost;
   handle: TheiaExtensionHandle; commands: Set<string>; editorMenus:TheiaEditorMenu[];
-  languageProviders:Array<{kind:TheiaLanguageProviderKind;language:string}>;
+  languageProviders:Array<{kind:TheiaLanguageProviderKind;language:string;triggerCharacters?:string[];retriggerCharacters?:string[]}>;
   editorBridge?: ReturnType<TheiaHost["editors"]>; syncing?: boolean; executing?: boolean;
 }
 
@@ -436,11 +436,13 @@ export class TheiaInstalledRegistry {
     return {kind:"webviewAcknowledged"};
   }
   async languageQuery(senderId:number,sessionId:string,kind:TheiaLanguageProviderKind,
-    lineNumber:number,column:number,includeDeclaration=true):Promise<TheiaInstalledResult>{
+    lineNumber:number,column:number,includeDeclaration=true,
+    formatOptions?:{tabSize:number;insertSpaces:boolean},
+    signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string}):Promise<TheiaInstalledResult>{
     const active=this.findSession(sessionId);
     if(!active||active.senderId!==senderId||this.closed.has(senderId)||active.syncing||
       active.executing)deny("非法或忙碌的扩展语言会话");
-    return {kind:"languageResult",...await active.host.languageQuery(kind,lineNumber,column,includeDeclaration)};
+    return {kind:"languageResult",...await active.host.languageQuery(kind,lineNumber,column,includeDeclaration,formatOptions,signatureContext)};
   }
   async execute(senderId:number,sessionId:string,commandId:string,args:readonly string[]=[]):Promise<TheiaInstalledResult>{
     const current=this.findSession(sessionId);
