@@ -243,7 +243,7 @@ export interface NodeRedFlow {
  * 原 Mcode 节点身份、旧审批或特权，变更原生类型的旧 sidecar 不可复活。
  * 旧 v2/v3 没有 nativeId/nativeType 时仍按遗留兼容规则读取。
  */
-export const FLOW_MIGRATOR_VERSION = 4;
+export const FLOW_MIGRATOR_VERSION = 5;
 
 /* ── runner.kind → Node-RED 节点类型 ── */
 
@@ -671,7 +671,7 @@ function humanDecisionIssuesOf(
         code: "lossy",
         nodeId: node.id,
         message:
-          `trigger 迁移到内置 inject（${triggerKind === "schedule" ? "crontab 由 Mcode 5 段 cron 原样写入" : "once = 手动/立即运行一次"}）；`
+          `trigger 迁移到内置 inject（${triggerKind === "schedule" ? "crontab 由 Mcode 5 段 cron 原样写入" : "手动触发：once=false，仅明确点击后运行"}）；`
           + "Mcode 的合并窗口 debounceMs、项目 id、task 文本保留在 x-mcode.params，内置 inject 不表达 —— 执行侧由 Host 承担。",
       });
     } else if (triggerKind === "file") {
@@ -689,7 +689,7 @@ function humanDecisionIssuesOf(
         nodeId: node.id,
         message:
           `trigger 的触发方式是 ${triggerKind}（应用事件）—— Node-RED 内置没有对应节点，保留 mcode-trigger；`
-          + "订阅的 HookEvent 事件名从 events 原生字段读取（task 仅为说明）；旧 eventFilter 暂无法在 Host 等价执行，配置了筛选条件的节点会拒绝订阅而非扩大触发范围。触发源不提供旧自定义 UI 的 trigger.input 数据，需人工调整条件与输入来源。",
+          + "订阅的 HookEvent 事件名从 events 原生字段读取（task 仅为说明）；旧 eventFilter 的工具名、turn.files 项目路径匹配复用 Mcode 的旧 matcher；其他无法等价匹配的事件仍拒绝订阅，不扩大触发范围。触发源不提供旧自定义 UI 的 trigger.input 数据，需人工调整条件与输入来源。",
       });
     }
   }
@@ -811,9 +811,12 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
         builtinConfig.repeat = "";
         builtinConfig.once = false;
       } else {
-        builtinConfig.once = true;
-        builtinConfig.onceDelay = 0.1;
+        // Manual means *only* an explicit editor/Host inject action.
+        // once=true fires on Deploy and on trusted restart, silently changing
+        // a user gesture into unattended execution of potentially write nodes.
+        builtinConfig.once = false;
         builtinConfig.repeat = "";
+        builtinConfig.crontab = "";
       }
       builtinConfig.props = [{ p: "payload" }];
       builtinConfig.topic = "";
@@ -925,19 +928,33 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
       const hasHostEvent = doc.nodes.some(candidate =>
         upstream.has(candidate.id) && candidate.type === "mcode.trigger"
         && candidate.params["triggerKind"] === "event");
+      const hasNativeManual = doc.nodes.some(candidate =>
+        upstream.has(candidate.id) && candidate.type === "mcode.trigger"
+        && candidate.params["triggerKind"] === "manual");
       const supported = new Set<string>(CONDITION_HOST_TRIGGER_FIELDS);
       const unsupportedTrigger = expression.ok ? expression.expression.rules.find(rule => {
         if (typeof rule.ref !== "string" || !rule.ref.startsWith("{{trigger.")) return false;
         const key = rule.ref.endsWith("}}") ? rule.ref.slice("{{trigger.".length, -2) : "";
-        return !(hasHostEvent && supported.has(key));
+        return !((hasHostEvent && supported.has(key))
+          || (hasNativeManual && (supported.has(key) || key === "collectionId"
+            || key === "files" || /^input\.[a-z][a-z0-9_]{0,23}$/.test(key))));
       }) : undefined;
+      const manualInputRule = expression.ok ? expression.expression.rules.find(rule =>
+        typeof rule.ref === "string" && rule.ref.startsWith("{{trigger.input.")) : undefined;
+      if (hasNativeManual && manualInputRule !== undefined) {
+        needsHumanDecision.push({ code: "needs-human-decision", nodeId: node.id,
+          message: "【需从 Mcode 自定义 UI 运行】这张手动工作流的 " + manualInputRule.ref + " 来自运行前表单。"
+            + "只有由 Mcode 自定义 UI 确认并使用 Host 原生 /inject/:id 的一次性凭据运行时才可读取；"
+            + "直接点击 Node-RED 编辑器 Inject 不携带输入，会明确失败。",
+        });
+      }
       if (unsupportedTrigger !== undefined) {
         lossy.push({
           code: "lossy",
           nodeId: node.id,
           message: "【迁移后不能执行】此条件引用 " + unsupportedTrigger.ref
-            + "：只有经 Mcode Host 事件订阅产生的触发凭据，才能提供 kind/event/itemId/itemTitle/pdfPath/filePath。"
-            + "自定义 UI 的运行前 input.*、原生 inject/watch 不会自动获得这些数据；不能靠普通 msg.payload 冒充。"
+            + "：Host 的真实事件订阅只提供 kind/event/条目字段，手动自定义 UI 输入必须经过受归属校验的原生 Inject 才可读取 input.*。"
+            + "普通事件和原生编辑器直接点击 Inject 不携带运行前输入；不能靠 msg.payload 冒充。"
             + "即使确认装载并 Deploy，该引用仍会显式失败。必须先改写条件及输入来源，不可直接启用。",
         });
       }
@@ -947,8 +964,8 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
         message:
           "condition 迁为原生 switch + mcode-condition-eval 求值节点：switch 读 "
           + "`msg.mcode.condition` 分真/假两路，求值由 Host 用旧的表达式求值器完成。"
-          + "边界：只有经 Host 事件订阅产生的触发凭据能恢复 trigger.kind/event/条目字段；"
-          + "自定义 UI input.*、原生 inject/watch、结构化产出变量及原生节点结局仍无数据源，"
+          + "边界：Host 事件凭据可恢复 kind/event/条目字段，Mcode 自定义 UI 的手动运行可经一次性 Inject 凭据恢复 input.*；"
+          + "原生编辑器直接 Inject、原生 watch、结构化产出变量及原生节点结局仍无相同数据源，"
           + "引用它们会显式失败（而不是安静地走 false）。",
       });
     }

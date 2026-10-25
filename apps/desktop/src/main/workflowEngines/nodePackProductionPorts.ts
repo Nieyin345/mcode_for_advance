@@ -315,12 +315,12 @@ export function productionNodePackServices(
       if (names.some(name => !validEvents.has(name))) {
         throw Error("Unknown HookEvent in Events field; select an event supported by Mcode");
       }
-      // eventFilter is the legacy Hook matcher: tool name or file path, not an
-      // arbitrary expression on event JSON. Tool events can be matched with the
-      // identical shared helper. File-path globs require a verified workflow
-      // cwd, not a string written by a Node-RED node; keep those fail-closed.
-      if (matcher && names.some(name => hookSubjectOf(name as HookEvent) !== "tool")) {
-        throw Error("Legacy eventFilter is not implemented for this Node-RED event type: only tool-name filters are supported; clear the filter or migrate it explicitly");
+      // The old matcher operates on tool names or file paths, depending on
+      // the event. File-path matching needs a cwd from a real Host session,
+      // never from editable native node parameters. Unfilterable kinds fail
+      // closed rather than receiving ALL events.
+      if (matcher && names.some(name => hookSubjectOf(name as HookEvent) === null)) {
+        throw Error("Legacy eventFilter is not implemented for this Node-RED event type: only tool-name and turn.files path filters are supported");
       }
       const eventNames = new Set(names);
       const subjects = createEventSubjects();
@@ -330,8 +330,16 @@ export function productionNodePackServices(
         const facts = subjects.factsOf(event);
         const eventName = HOOK_EVENT_OF[event.type];
         if (eventName === null || !eventNames.has(eventName)) return;
-        if (matcher && !matchesAnyGlob(matcher,
-          subjects.subjectsOf(event, "", facts.toolName) ?? [])) return;
+        if (matcher) {
+          let cwd = "";
+          if (hookSubjectOf(eventName) === "path") {
+            const session = SessionRepo.get(event.sessionId);
+            const project = session ? ProjectRepo.get(session.projectId) : null;
+            if (!project?.path) return; // unknown/stale session has no verified cwd
+            cwd = project.path;
+          }
+          if (!matchesAnyGlob(matcher, subjects.subjectsOf(event, cwd, facts.toolName) ?? [])) return;
+        }
         // Same Mcode event stream as automationRunner. Item facts come from
         // the original RuntimeEvent through the shared contract mapping,
         // never from msg.mcode or a guessed "latest" library item.

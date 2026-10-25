@@ -804,6 +804,38 @@ console.log("\nG · trigger.subscribe:只收 event 触发 + 事件过滤");
   eq("退订后不再发出", received.length, 1);
 }
 
+
+/* ── W25: native file matcher with Host-verified session/project cwd ── */
+{
+  resetAll();
+  const delivered: Array<Record<string, unknown>> = [];
+  const unsubscribe = services().subscribe(
+    { triggerKind: "event", params: { events: "turn.files", eventFilter: "src/*.md" } },
+    p => delivered.push(p),
+  );
+  emitEvent({
+    type: "turn.files", sessionId: "s_chat",
+    files: [{ filePath: "D:\\smoke\\project\\src\\report.md" }],
+  } as unknown as RuntimeEvent);
+  eq("W25 已知会话 + 当前项目相对目录匹配后触发", delivered.length, 1);
+  emitEvent({
+    type: "turn.files", sessionId: "s_chat",
+    files: [{ filePath: "D:\\smoke\\project\\src\\image.png" }],
+  } as unknown as RuntimeEvent);
+  eq("W25 后缀不匹配时不能触发", delivered.length, 1);
+  emitEvent({
+    type: "turn.files", sessionId: "not-an-existing-session",
+    files: [{ filePath: "D:\\smoke\\project\\src\\report.md" }],
+  } as unknown as RuntimeEvent);
+  eq("W25 无有效会话身份，不能按攻击者提供的路径硬匹配", delivered.length, 1);
+  unsubscribe();
+  emitEvent({
+    type: "turn.files", sessionId: "s_chat",
+    files: [{ filePath: "D:\\smoke\\project\\src\\again.md" }],
+  } as unknown as RuntimeEvent);
+  eq("W25 退订后文件变化不再触发", delivered.length, 1);
+}
+
 /* ═════════════════════════ H. 未支持操作 ═════════════════════════ */
 
 console.log("\nH · 未支持的操作");

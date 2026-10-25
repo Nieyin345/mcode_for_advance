@@ -143,6 +143,18 @@ await (async () => {
     check("★ 未知参数原样交给 port（x-custom）", (call.params as Record<string, unknown>)["x-custom"] === 1, call.params);
   }
 
+  // Native trigger input is carried only as a Host lookup key. The renderer
+  // never passes DOI/other form fields inside the child node request.
+  {
+    const port = recordingPort();
+    await runAgentNode({
+      payload: { untrusted: "not a DOI" },
+      mcode: { triggerTicket: "trusted-from-host", runId: "r" },
+    }, migratedConfig, port);
+    eq("W25 Agent 把上游 Host ticket 传给执行端口", port.calls[0]?.triggerTicket,
+      "trusted-from-host");
+  }
+
   // 节点配置直接手填（编辑器里创建、未经迁移器）也能读。
   {
     const port = recordingPort();

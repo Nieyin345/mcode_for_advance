@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { FileExecutorOwnershipStore, OWNERSHIP_FILE } from "@main/workflowEngines/fileExecutorOwnershipStore.js";
 import { join } from "node:path";
 import { ExecutorOwnershipRegistry, InMemoryExecutorOwnershipStore, sharedExecutorOwnership } from "@main/workflowEngines/executorOwnership.js";
-import { ProductionWorkflowEngineRegistry } from "@main/workflowEngines/registry.js";
+import { OwnedNodeRedRuntime, ProductionWorkflowEngineRegistry, assertSafeMigratedManualInject } from "@main/workflowEngines/registry.js";
 import { syncNativeLibraryDocs } from "@main/workflowEngines/nativeLibrarySync.js";
 import { migrateWorkflowDoc } from "@main/workflowEngines/flowMigration.js";
 import type { WorkflowDoc } from "@contracts/workflow";
@@ -356,6 +356,136 @@ check("★ no orphaned production Node-RED owner remains", registry.list().lengt
   for (const fn of [...lateExitHandlers]) fn(9, null);
   eq("★ late confirmed process exit eventually releases claim", stuckStore.executorOwnerOf(flowId), null);
 }
+// W25: Host must authorize a *specific* deployed manual Inject before issuing
+// any ticket/HTTP call. This uses real OwnedNodeRedRuntime, fake OS child only.
+{
+  const manualDir = join(ROOT, "w25-native-manual");
+  mkdirSync(manualDir, { recursive: true });
+  const owned = "w25-manual-doc";
+  const manualId = "w25-manual-trigger";
+  const manualDocument = {
+    id: owned, name: "Trusted custom UI target", engine: "node-red",
+    builtin: false, updatedAt: 1, nodes: [{
+      id: manualId, type: "mcode.trigger", title: "Explicit manual",
+      position: { x: 0, y: 0 }, params: { triggerKind: "manual" },
+    }], edges: [],
+  } as WorkflowDoc;
+  const stored = [
+    { id: "w25-tab", type: "tab", "x-mcode": { docId: owned } },
+    { id: "w25-inject", type: "inject", z: "w25-tab",
+      "x-mcode": { nodeId: manualId, type: "mcode.trigger", params: { triggerKind: "manual" } },
+      once: false, repeat: "", crontab: "", wires: [["w25-next"]] },
+    { id: "w25-next", type: "debug", z: "w25-tab" },
+  ];
+  const brokenManual = stored.map(node => node["type"] === "inject"
+    ? { ...node, once: true, "x-mcode": {
+      ...(node["x-mcode"] ?? {}), type: "mcode.trigger", params: { triggerKind: "manual" },
+    } } : node);
+  check("W25 旧迁移器 once=true 的手动节点在引擎启动前会被检测",
+    (() => { try { assertSafeMigratedManualInject(brokenManual); return false; }
+      catch (e) { return e instanceof Error && e.message.includes("禁止自动执行"); } })());
+  check("W25 用户自己创建的普通 Node-RED 原生 Inject 不受此限制",
+    (() => { try { assertSafeMigratedManualInject([{ id: "native", type: "inject", once: true }]); return true; }
+      catch { return false; } })());
+  writeFileSync(join(manualDir, "flows.json"), JSON.stringify(brokenManual), "utf8");
+  const store = new ExecutorOwnershipRegistry(new InMemoryExecutorOwnershipStore());
+  const subject = new OwnedNodeRedRuntime("node-red", ports, store, undefined,
+    async () => [], id => id === owned ? manualDocument : null);
+  const untrustedOptions = {
+    ...options, dataDir: manualDir, probeIdentity: { adminToken: "w25-private-admin" },
+  };
+  const initialSpawns = spawns;
+  let unsafeStartRejected = false;
+  try { await subject.start(untrustedOptions); }
+  catch (e) { unsafeStartRejected = e instanceof Error && e.message.includes("禁止自动执行"); }
+  check("W25 已持久化的危险手动 Once 流在真实 runtime.start 边界拒绝，不生成子进程",
+    unsafeStartRejected && spawns === initialSpawns);
+  writeFileSync(join(manualDir, "flows.json"), JSON.stringify(stored), "utf8");
+  eq("W25 原生手动入口只读启动", (await subject.start(untrustedOptions)).state, "running");
+  check("W25 未部署的非可信流程拒绝 Custom UI 运行",
+    (() => { try { subject.nativeManualTarget(owned, manualId); return false; }
+      catch (e) { return e instanceof Error && e.message.includes("尚未确认"); } })());
+  await subject.stop();
+
+  const nativeOpts = { ...untrustedOptions, env: { MCODE_ENGINE_TRUSTED: "1" } };
+  eq("W25 可信原生引擎启动", (await subject.start(nativeOpts)).state, "running");
+  const deliverForManual = (msg: unknown): void => {
+    (subject as unknown as { onDeployMessage(message: unknown, reply: (response: unknown) => void): void })
+      .onDeployMessage(msg, () => {});
+  };
+  deliverForManual({ kind: "mcode-deploy-prepare", id: "manual-pending", flows: stored });
+  check("W25 原生部署尚未完成时不允许向旧 Inject 派发",
+    (() => { try { subject.nativeManualTarget(owned, manualId); return false; }
+      catch (e) { return e instanceof Error && e.message.includes("尚未确认"); } })());
+  deliverForManual({ kind: "mcode-deploy-final", id: "manual-pending", success: false, uncertain: true });
+  check("W25 部署回执不确定时即使是可信重启工作流也拒绝继续触发",
+    (() => { try { subject.nativeManualTarget(owned, manualId); return false; }
+      catch (e) { return e instanceof Error && e.message.includes("不确定"); } })());
+  await subject.stop();
+  eq("W25 不确定部署后必须经新生命周期重新确认才能触发",
+    (await subject.start(nativeOpts)).state, "running");
+  for (const [label, changed] of [
+    ["没有下游连线", { ...stored[1]!, wires: [[]] }],
+    ["连向已删除的节点", { ...stored[1]!, wires: [["missing-downstream"]] }],
+    ["已禁用", { ...stored[1]!, d: true }],
+    ["被改为周期自动触发", { ...stored[1]!, repeat: "60" }],
+    ["节点 sidecar 变更", { ...stored[1]!, "x-mcode": { nodeId: manualId } }],
+  ] as const) {
+    // The same production indexing used after native deploy and startup.
+    const variant = [stored[0]!, changed, stored[2]!];
+    (subject as unknown as { indexNativeNodes(flows: unknown): void }).indexNativeNodes(variant);
+    check("W25 原生 Inject " + label + "时不允许仅靠 200 假装已执行",
+      (() => { try { subject.nativeManualTarget(owned, manualId); return false; }
+        catch (e) { return e instanceof Error && e.message.includes("已禁用"); } })());
+  }
+  (subject as unknown as { indexNativeNodes(flows: unknown): void }).indexNativeNodes(stored);
+  check("W25 复原合法原生手动 Inject 后可以定位",
+    (() => { try { return subject.nativeManualTarget(owned, manualId).nodeId === "w25-inject"; }
+      catch { return false; } })());
+  check("W25 错的 triggerNodeId 不能执行",
+    (() => { try { subject.nativeManualTarget(owned, "other-trigger"); return false; }
+      catch (e) { return e instanceof Error && e.message.includes("不是已保存"); } })());
+  check("W25 错的 docId 不能跨工作流执行",
+    (() => { try { subject.nativeManualTarget("foreign-doc", manualId); return false; }
+      catch (e) { return e instanceof Error && e.message.includes("不属于"); } })());
+
+  const actualFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init: RequestInit }> = [];
+  try {
+    globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), init: init ?? {} });
+      return { ok: true, status: 200 } as Response;
+    };
+    const invoked = await subject.runNativeManual(owned, manualId, {
+      kind: "event", event: "library.item.imported", "input.doi": "10.1000/mcode",
+    });
+    check("W25 已归属/已部署的手动入口经 Host 才能运行", invoked.ok, invoked);
+    const call = requests[0];
+    const posted = JSON.parse(String(call?.init.body)) as {
+      __user_inject_props__?: Array<{ p: string; v: string }>;
+    };
+    check("W25 只调用指定 Node-RED 原生 inject 节点",
+      requests.length === 1 && call?.url.endsWith("/inject/w25-inject"), call);
+    check("W25 请求必须带本次私有 adminToken", call?.init.headers !== undefined
+      && (call.init.headers as Record<string, string>).Authorization === "Bearer w25-private-admin");
+    check("W25 用户 DOI 不泄露到 Node-RED 消息体，只传不透明短期票据",
+      posted.__user_inject_props__?.length === 1
+      && posted.__user_inject_props__[0]?.p === "mcode.triggerTicket"
+      && /^[a-f0-9-]{36}$/.test(posted.__user_inject_props__[0]?.v ?? "")
+      && !String(call?.init.body).includes("10.1000/mcode"), posted);
+    globalThis.fetch = async () => ({ ok: false, status: 403 }) as Response;
+    const rejected = await subject.runNativeManual(owned, manualId, { kind: "event", "input.doi": "error" });
+    check("W25 Admin API 授权失败时不会虚报运行成功",
+      !rejected.ok && rejected.error?.includes("403") === true, rejected);
+  } finally {
+    globalThis.fetch = actualFetch;
+    await subject.stop();
+  }
+  check("W25 引擎停止后拒绝继续注入", await subject.runNativeManual(
+    owned, manualId, { kind: "event", "input.doi": "late" },
+  ).then(r => !r.ok));
+}
+
 eq("★ shared registry lazily reconciles its real native flows.json", sharedExecutorOwnership.executorOwnerOf(flowId), "node-red");
 console.log("executor-gate-d-smoke: " + (total - failed) + "/" + total + " 通过");
 if (failed) process.exitCode = 1;

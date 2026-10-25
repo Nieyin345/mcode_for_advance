@@ -1,6 +1,6 @@
 # W25｜`{{trigger.*}}` 迁到 Node-RED 没有数据源 —— 现在会显式失败
 
-- Status: partial-delivered（2026-10-25：HookEvent 订阅修复；trigger.input 自定义 UI 数据仍不等价，已在装载确认前明确警示）
+- Status: implementation-tested / U1-pending（2026-10-25：Node-RED 手动 Inject + 自定义 UI `trigger.input.*` 原生通路已接通并定向验收；真实 Electron 用户交互及整图业务行为仍待验）
 - Category: **能力缺口（迁移后已知不可用，但有明确报错）**
 - Priority: **P2 —— 它不静默错，但 `wf_auto_download` 迁过去会失败**
 - Depends on: W17（已交付）
@@ -206,3 +206,19 @@ W17 把一个「安静走错分支」换成了「显式失败」，那是对的 
 - 八套回归 8 PASS / 0 FAIL：apps/desktop/.tmp/smoke-runs/1792875951115-32524-hlgiRO/。
 - Desktop 与 Contracts 的 TypeScript --noEmit 均 EXIT=0。新 Host 事件套件另验证工具事件即使带伪 itemId，也不会提升为文献条目事实；ticket 超时与撤销继续拒绝。
 - 明确未验：Electron 实机 UI 完整部署、旧自定义 UI 运行前 input 向 Node-RED 注入、未经审批工作流的持久自动恢复。
+
+## 2026-10-25 三次执行：Node-RED 原生手动触发 / Custom UI 输入通路（DEV_CLAIM，U1 仍开放）
+
+### 源码事实与选择
+- 原始表单值来自 `packages/contracts/src/customUi.ts:CustomUiRunAutomationSchema.input`（键符合 `[a-z][a-z0-9_]{0,23}`；string / string[]，有长度上限），用户确认后进入 `main/customUi/runAutomation.ts`。旧调度器 `automationRunner.runWithTarget` 构造 `TriggerPayload`，`automationPayload.payloadFactsOf` 形成平面 `input.doi`。这不是 `HookEvent` 自带字段，不能从 `library.item.imported` 猜测。
+- 选用**原生 Node-RED 手动 Inject**，而非另设第二个 Mcode 执行器，也不把自定义 UI 的输入改成不可信 `msg.payload`。Host 为本次调用保留有限时长、有限数量的平面输入事实，并给 Node-RED 的 `POST /inject/:nodeId` 仅发送随机 opaque `mcode.triggerTicket`。原版 `20-inject.js` 的 `__user_inject_props__` 从该请求为这次消息注入属性；后续 `mcode-condition-eval`、原生 Agent / conversation 在主进程按 docId 核对票据，再使用已有 `evaluateConditionExpression`、`expandTriggerVars`。
+- `customUi.runAutomation` 保留旧 `mcode` 所属工作流行为；`node-red` 所属工作流只允许 **已保存的 manual trigger、已归属且正在运行的宿主 Node-RED、已启动或已部署确认的图、当前 flow 中恰好一个有效的 Inject**。没有归属/部署/工作流/trigger 绑定就 fail closed，不能偷用旧调度器兜底。有效 Inject 必须未禁用、`once!==true`、没有 cron/repeat，且至少有一条指向同 tab 内有效节点的连线；否则 HTTP 200 并不能证明下游收到消息。
+- 旧迁移器曾把 `manual` 写成 `once=true`（上游 `20-inject.js` 的真正语义是启动/部署时自动发出消息）。现迁移器 v5 改为 `once=false`、无 repeat/crontab；持久化旧 flow 的危险 `once=true` 在启动 / deploy prepare 前拒绝，不修改用户原文件。正常 Node-RED 原生 Inject 不受影响。
+- `eventFilter` 的 `turn.files` 文件事件支持从 Host 的真实 `SessionRepo→ProjectRepo.path` 确定 cwd，再复用相同 `createEventSubjects + matchesAnyGlob`。没有已登记的会话/项目 cwd 则不触发，不接受原生节点自报 cwd。
+- `workflowMigrationPreflight` / `nativeLibraryLoad.knownLossLines` 已有迁移损失 UI 显示通路：`WorkflowNativeEditorEntry` 显示 `reason` 和确认按钮；此次把可处理的手动 `{{trigger.input.doi}}` 改为 **「需从 Mcode 自定义 UI 运行」**，由真实 `loadWorkflowIntoNative` 测试证实该文本在画布替换**之前**可见且未确认不会写盘。无数据源的引用仍继续拒绝。
+- **真实执行结果界限**：`POST /inject/:id` 的 200 = 本次请求已被原生节点接收，**不是**全图任务已经完成；后续执行成功/失败由工作流节点/runboard 事件观察，不能以 HTTP 200 自签成功。
+
+### 验证范围与明确未完成
+- 使用的回归覆盖：`mcode-custom-ui-native-smoke`（UI dispatch 和旧执行器不回退），`mcode-manual-inject-smoke`（真实上游 Node-RED Inject 源码 + Host 临时凭据 + DOI 条件/Agent 插值），`executor-gate-d-smoke`（Host 归属/非可信部署/回执不确定/禁用、无连线、悬空连线、周期触发、非法 sidecar），`workflow-native-load-smoke`（DOI 警告真正返回给 UI），以及其他 Node-RED/迁移/Custom UI 定向回归。
+- 安全反向变异：把 once=false 恢复为 true，`mcode-manual-inject-smoke` 的自动定时与 `flow-migration-smoke` 都会红；删掉 native 路由使 Custom UI 测试红；删掉旧 Once 引擎启动拦截使真实 runtime.start 测试红；去掉部署不确定守卫或悬空连线校验也分别使 `executor-gate-d-smoke` 精确红。**变异后均恢复正确源码。**
+- 尚未验证真实 Electron 页面和真实安装后的 Node-RED 全业务执行；真实 UI 的运行完成回执、用户确认操作与写权限审批行为需再走 U1。未创建实际用户工作流，未运行全仓测试，不覆盖其他对话修改，也不宣称 `wf_auto_download` 已实现最终业务效果。

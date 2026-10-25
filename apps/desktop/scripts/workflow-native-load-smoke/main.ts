@@ -35,7 +35,13 @@ try {
   let startShouldFail = false;
   const ports: NativeLoadPorts = {
     get: id => docs.get(id) ?? null,
-    types: async () => new Map([["known", { runner: { kind: "prompt" } } as NodeTypeManifest]]),
+    types: async () => new Map([
+      ["known", { runner: { kind: "prompt" } } as NodeTypeManifest],
+      ["mcode.trigger", { id: "mcode.trigger", manifestVersion: 1, name: "Trigger",
+        runner: { kind: "trigger" }, capability: "read", params: [] } as NodeTypeManifest],
+      ["mcode.condition", { id: "mcode.condition", manifestVersion: 1, name: "Condition",
+        runner: { kind: "condition" }, capability: "read", params: [] } as NodeTypeManifest],
+    ]),
     dataDir: () => dir,
     // 【T21】装载前会过迁移预检，它要宿主事实。这里是夹具的诚实声明：
     // 没有任何审批记录（= 本地既有工作流），也没有在跑的执行（空集，不是"未知"）。
@@ -99,6 +105,28 @@ try {
   result = await loadWorkflowIntoNative("loss", ports, true);
   check("【T27】用户确认后已知损失照常装载（不再被当作拒绝理由）",
     result.ok && canvasDocId() === "loss", { result, canvas: canvasDocId() });
+
+  const manualDoc: WorkflowDoc = {
+    ...docOf("manual-warning"),
+    nodes: [
+      { id: "manual-trigger", type: "mcode.trigger", title: "Manual",
+        params: { triggerKind: "manual" }, position: { x: 10, y: 10 } },
+      { id: "manual-condition", type: "mcode.condition", title: "DOI gate",
+        params: { expression: { logic: "and", rules: [
+          { ref: "{{trigger.input.doi}}", op: "exists" },
+        ] } }, position: { x: 40, y: 10 } },
+    ],
+    edges: [{ id: "manual-to-condition", from: "manual-trigger", to: "manual-condition" }],
+  };
+  docs.set("manual-warning", manualDoc);
+  const beforeWarning = canvasDocId();
+  result = await loadWorkflowIntoNative("manual-warning", ports, false);
+  check("W25 迁移提示从真实装载接口暴露 DOI 输入限制，而非仅记在 report",
+    !result.ok && result.requiresConfirmation === true
+      && result.reason.includes("【需从 Mcode 自定义 UI 运行】")
+      && result.reason.includes("{{trigger.input.doi}}"), result);
+  check("W25 尚未确认 DOI 输入限制时原生画布绝不被替换",
+    canvasDocId() === beforeWarning, { beforeWarning, after: canvasDocId() });
 
   startShouldFail = true;
   result = await loadWorkflowIntoNative("A", ports, true);

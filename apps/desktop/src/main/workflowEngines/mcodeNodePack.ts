@@ -178,6 +178,8 @@ export interface McodeAgentRunPayload {
   runId: string | null;
   /** Native tab membership, verified independently against Host-owned flow metadata. */
   tabId?: string;
+  /** Opaque Host-owned trigger context lookup; never a permission grant. */
+  triggerTicket?: string;
   /** 迁移器带过来的其余参数（未知字段原样交给 port）。 */
   params: Record<string, unknown>;
 }
@@ -382,6 +384,8 @@ export async function runAgentNode(
     nodeId: normalized.nodeId,
     runId,
     ...(typeof config.z === "string" ? { tabId: config.z } : {}),
+    ...(typeof incomingMcode["triggerTicket"] === "string" && incomingMcode["triggerTicket"].length <= 128
+      ? { triggerTicket: incomingMcode["triggerTicket"] } : {}),
     params: paramsSnapshot,
   };
   // Validate and detach the Host result before exposing it downstream.

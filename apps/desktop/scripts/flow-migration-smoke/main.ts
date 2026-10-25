@@ -273,6 +273,17 @@ console.log("\n1. 7 种 runner.kind 全映射，未知语义逐条点名");
     !flow.nodes.some((n) => n.type === "mcode-code"), flow.nodes.map((n) => n.type));
   // 四种 triggerKind 的分流表（纯函数面直接钉）。
   eq("★【节点统一】manual → inject", effectiveNodeRedTypeOf("trigger", { triggerKind: "manual" }), "inject");
+  const manualGraph = migrateWorkflowDoc(
+    { ...richDoc, nodes: [node("manual", "mcode.trigger", { triggerKind: "manual", task: "只在我点运行后执行" })], edges: [] } as WorkflowDoc,
+    { types: TYPES },
+  );
+  const manualInject = manualGraph.flow.nodes.find(n => n["x-mcode"]?.nodeId === "manual");
+  check("★ manual inject 部署/重启不得自动运行；没有周期/cron", manualInject?.type === "inject"
+    && manualInject["once"] === false && manualInject["repeat"] === ""
+    && manualInject["crontab"] === "",
+    manualInject);
+  check("★ manual 迁移报告必须明确只在点击后运行",
+    manualGraph.report.lossy.some(issue => issue.nodeId === "manual" && issue.message.includes("once=false")));
   eq("★【节点统一】schedule → inject", effectiveNodeRedTypeOf("trigger", { triggerKind: "schedule" }), "inject");
   eq("★【节点统一】file → watch（内置文件监听）", effectiveNodeRedTypeOf("trigger", { triggerKind: "file" }), "watch");
   eq("★【节点统一】event → mcode-trigger（内置没有应用事件）", effectiveNodeRedTypeOf("trigger", { triggerKind: "event" }), "mcode-trigger");
@@ -286,7 +297,7 @@ console.log("\n1. 7 种 runner.kind 全映射，未知语义逐条点名");
   // 内置确认不重复：condition/command/code(JS) 没有自定义替身。
   eq("★【节点统一】condition 仍走内置 switch（无自定义替身）", effectiveNodeRedTypeOf("condition", {}), "switch");
   eq("★【节点统一】command 仍走内置 exec", effectiveNodeRedTypeOf("command", { command: "echo hi" }), "exec");
-  check("★【MERGE-0】v4 原生克隆身份/类型护栏版本可追溯", FLOW_MIGRATOR_VERSION === 4, FLOW_MIGRATOR_VERSION);
+  check("★【MERGE-0】v5 保留原生克隆身份/类型护栏并修正 manual once", FLOW_MIGRATOR_VERSION === 5, FLOW_MIGRATOR_VERSION);
 
   // 端口规则：branch = 每条出边一个口；condition = true 口 0 / false 口 1。
   const branchNode = flow.nodes.find((n) => n["x-mcode"]?.nodeId === "n_branch");

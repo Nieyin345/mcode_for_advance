@@ -103,6 +103,8 @@ export interface McodeNodeBasePayload {
   tabId?: string;
   /** Node-RED message id：同一批消息（一次触发派生的整条流）共享它。 */
   msgId?: string;
+  /** Host lookup key only, checked against native tab/document at dispatch. */
+  triggerTicket?: string;
 }
 
 type Invocation = ReturnType<typeof snapshotMcodeNodeInvocation>;
@@ -114,6 +116,9 @@ function basePayload(invocation: Invocation): McodeNodeBasePayload {
     nodeId: invocation.normalized.nodeId,
     runId: invocation.runId,
     ...(invocation.tabId !== undefined ? { tabId: invocation.tabId } : {}),
+    ...(typeof invocation.incomingMcode["triggerTicket"] === "string"
+      && invocation.incomingMcode["triggerTicket"].length <= 128
+      ? { triggerTicket: invocation.incomingMcode["triggerTicket"] } : {}),
   };
 }
 

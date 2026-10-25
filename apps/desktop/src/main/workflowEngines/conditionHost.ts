@@ -76,6 +76,8 @@ export interface ConditionHostInput {
   results: readonly ConditionResultEntry[];
   /** Obtained from a parent-owned, tab-scoped event ticket, never msg.payload. */
   trigger?: Readonly<Record<string, unknown>>;
+  /** Only the Host can mark a ticket as coming from validated custom UI input. */
+  triggerSource?: "hook" | "custom-ui";
 }
 
 export type ConditionHostOutcome =
@@ -163,8 +165,11 @@ export function evaluateConditionForHost(input: ConditionHostInput): ConditionHo
     const classified = classifyConditionRef(rule.ref);
     const key = rule.ref.startsWith("{{trigger.") && rule.ref.endsWith("}}")
       ? rule.ref.slice("{{trigger.".length, -2) : null;
+    const uiInputRef = input.triggerSource === "custom-ui" && key !== null
+      && (eventFields.has(key) || key === "collectionId" || key === "files"
+        || /^input\.[a-z][a-z0-9_]{0,23}$/.test(key));
     const carriedEventRef = input.trigger !== undefined && key !== null
-      && eventFields.has(key) && input.trigger["kind"] === "event";
+      && ((eventFields.has(key) && input.trigger["kind"] === "event") || uiInputRef);
     if (!classified.supported && !carriedEventRef) {
       return { ok: false, error: `条件引用「${rule.ref}」在 Node-RED 侧算不了：${classified.reason}` };
     }

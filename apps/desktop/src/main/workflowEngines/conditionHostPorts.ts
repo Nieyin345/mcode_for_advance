@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import { HOOK_EVENTS } from "@contracts/hook";
 import type { WorkflowDoc } from "@contracts/workflow";
 import { evaluateConditionForHost, type ConditionResultEntry } from "./conditionHost.js";
+import { expandTriggerVars } from "@main/orchestration/triggerVars.js";
 import type { NodePackAction, NodePackHostServices } from "./nodePackHost.js";
 
 export interface ConditionEvaluationDeps {
@@ -28,10 +29,20 @@ export interface ConditionEvaluationDeps {
   getDoc: (docId: string) => WorkflowDoc | null;
   /** native tab → Mcode docId；**只有归属经核对的 tab 才返回**，否则 null。 */
   resolveWorkflow?: (tabId: string) => string | null;
-  resolveTriggerTicket?: (ticket: string, docId: string) => Readonly<Record<string, unknown>> | null;
+  resolveTriggerTicket?: (ticket: string, docId: string) => TriggerContext | null;
 }
 
 const asString = (value: unknown): string => (typeof value === "string" ? value : "");
+
+export interface TriggerContext {
+  facts: Readonly<Record<string, unknown>>;
+  source: "hook" | "custom-ui";
+}
+
+export interface ManualTicket {
+  ticket: string;
+  revoke(): void;
+}
 
 /**
  * 执行一次 `condition.evaluate`。失败**抛错**（`NodePackHost` 会把错误变成
@@ -52,9 +63,9 @@ export function evaluateConditionPayload(
   const nodeId = asString(payload["nodeId"]);
   const results: unknown = payload["results"];
   const ticket = asString(payload["triggerTicket"]);
-  const trigger = ticket ? deps.resolveTriggerTicket?.(ticket, docId) ?? null : null;
+  const context = ticket ? deps.resolveTriggerTicket?.(ticket, docId) ?? null : null;
   const outcome = evaluateConditionForHost({
-    ...(trigger === null ? {} : { trigger }),
+    ...(context === null ? {} : { trigger: context.facts, triggerSource: context.source }),
     expression: payload["expression"],
     doc,
     nodeId,
@@ -68,17 +79,17 @@ export function evaluateConditionPayload(
  * 给既有服务包一层：`condition.evaluate` 走本文件，其余动作**原样**交给 `base`。
  * 不复制 `base` 的任何判据，也不改变它的返回形状。
  */
-export function withConditionEvaluation(
+export function createConditionTriggerBridge(
   base: NodePackHostServices,
   deps: ConditionEvaluationDeps,
-): NodePackHostServices {
+): { services: NodePackHostServices; issueManual(docId: string, facts: Readonly<Record<string, unknown>>): ManualTicket } {
   // A bounded, process-local lookup table. Trigger facts are issued by the
   // production Host event subscription, never accepted from mutable Node-RED msg.
   const tickets = new Map<string, {
     docId: string;
     subscription: symbol;
     at: number;
-    facts: Readonly<Record<string, unknown>>;
+    context: TriggerContext;
   }>();
   const maxAgeMs = 5 * 60_000;
   const maxTickets = 256;
@@ -88,18 +99,55 @@ export function withConditionEvaluation(
     while (tickets.size > maxTickets) tickets.delete(tickets.keys().next().value!);
   };
   const allowed = new Set<string>(HOOK_EVENTS);
-  const resolveTriggerTicket = (id: string, docId: string): Readonly<Record<string, unknown>> | null => {
+  const resolveTriggerTicket = (id: string, docId: string): TriggerContext | null => {
     prune();
     const entry = tickets.get(id);
-    return entry?.docId === docId ? entry.facts : null;
+    return entry?.docId === docId ? entry.context : null;
+  };
+  const issueManual = (docId: string, facts: Readonly<Record<string, unknown>>): ManualTicket => {
+    if (!docId || docId.length > 512) throw Error("Native input requires a bound workflow");
+    if (facts["kind"] !== "event" && facts["kind"] !== "file") throw Error("Unsupported manual input kind");
+    if (Object.keys(facts).length > 80) throw Error("Too many native manual input facts");
+    // Only the trusted caller can issue these facts. Do not copy arbitrary
+    // object/constructor/prototype fields into the trigger variable namespace.
+    const normalized: Record<string, unknown> = Object.create(null);
+    normalized["kind"] = facts["kind"];
+    for (const [key, value] of Object.entries(facts)) {
+      if (key === "kind") continue;
+      if (!(key === "event" || key === "collectionId" || key === "files"
+          || key === "itemId" || key === "itemTitle" || key === "pdfPath" || key === "filePath"
+          || /^input\.[a-z][a-z0-9_]{0,23}$/.test(key))) continue;
+      if (typeof value === "string" && value.length <= 4096) normalized[key] = value;
+      else if (Array.isArray(value) && value.length <= 50
+        && value.every(item => typeof item === "string" && item.length <= 4096)) normalized[key] = [...value];
+    }
+    prune();
+    const ticket = randomUUID();
+    const subscription = Symbol("custom-ui-input");
+    tickets.set(ticket, { docId, subscription, at: Date.now(), context: { facts: normalized, source: "custom-ui" } });
+    prune();
+    return { ticket, revoke: () => { tickets.delete(ticket); } };
   };
 
-  return {
+  return { issueManual, services: {
     execute(operation: NodePackAction, payload: Record<string, unknown>): Promise<unknown> {
       if (operation === "condition.evaluate") {
         return Promise.resolve().then(() => evaluateConditionPayload(payload, {
           ...deps, resolveTriggerTicket,
         }));
+      }
+      if ((operation === "agent.run" || operation === "conversation.run")
+        && typeof payload["instruction"] === "string"
+        && payload["instruction"].includes("{{trigger.")) {
+        // Old runner expanded {{trigger.*}} before calling the agent. Native
+        // Node-RED must use the SAME pure resolver, with Host-owned facts only.
+        return Promise.resolve().then(() => {
+          const tabId = asString(payload["tabId"]);
+          const docId = tabId ? deps.resolveWorkflow?.(tabId) ?? null : null;
+          const context = docId ? resolveTriggerTicket(asString(payload["triggerTicket"]), docId) : null;
+          const expanded = expandTriggerVars({ instruction: payload["instruction"] }, context?.facts);
+          return base.execute(operation, { ...payload, instruction: expanded["instruction"] });
+        });
       }
       return base.execute(operation, payload);
     },
@@ -129,7 +177,7 @@ export function withConditionEvaluation(
           }
         }
         const ticket = randomUUID();
-        tickets.set(ticket, { docId, subscription, at: Date.now(), facts });
+        tickets.set(ticket, { docId, subscription, at: Date.now(), context: { facts, source: "hook" } });
         prune();
         const rawMeta = event["mcode"];
         const meta = rawMeta !== null && typeof rawMeta === "object" && !Array.isArray(rawMeta)
@@ -141,5 +189,10 @@ export function withConditionEvaluation(
         for (const [id, entry] of tickets) if (entry.subscription === subscription) tickets.delete(id);
       };
     },
-  };
+  } };
+}
+
+/** Backward-compatible wrapper for callers that need condition evaluation only. */
+export function withConditionEvaluation(base: NodePackHostServices, deps: ConditionEvaluationDeps): NodePackHostServices {
+  return createConditionTriggerBridge(base, deps).services;
 }

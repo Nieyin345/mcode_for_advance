@@ -70,8 +70,8 @@ import { ensureEngineBootstrap } from "./bootstrapManifest.js";
 import { ensureNodePack } from "./nodePackManifest.js";
 import { NodePackHost, type NodePackHostServices } from "./nodePackHost.js";
 import { productionNodePackServices, emitNativeRunboardEvent } from "@main/workflowEngines/nodePackProductionPorts.js";
-import { withConditionEvaluation } from "./conditionHostPorts.js";
-import { assertNativeEngineSelection } from "./workflowEngineSelection.js";
+import { createConditionTriggerBridge, type ManualTicket } from "./conditionHostPorts.js";
+import { assertNativeEngineSelection, effectiveWorkflowEngine } from "./workflowEngineSelection.js";
 import { getWorkflow } from "@main/orchestration/library.js";
 import { workflowSaveVersion } from "@main/orchestration/workflowSaveVersion.js";
 import {
@@ -427,6 +427,29 @@ export function isFlowTrusted(dataDir: string): boolean {
   }
 }
 
+/**
+ * Old migration accidentally saved manual Mcode triggers as once=true.
+ * Native Node-RED interprets this as "run at Deploy/start", not "click".
+ * Gate both saved flows.json on start and pending native deploy input; leave
+ * genuine Node-RED native inject nodes untouched.
+ */
+export function assertSafeMigratedManualInject(flows: unknown): void {
+  if (!Array.isArray(flows)) return;
+  for (const value of flows) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const node = value as Record<string, unknown>;
+    if (node["type"] !== "inject" || !node["once"]) continue;
+    const meta = node["x-mcode"];
+    if (!meta || typeof meta !== "object" || Array.isArray(meta)) continue;
+    const record = meta as Record<string, unknown>;
+    const params = record["params"];
+    if (record["type"] === "mcode.trigger" && params && typeof params === "object"
+      && !Array.isArray(params) && (params as Record<string, unknown>)["triggerKind"] === "manual") {
+      throw Error("旧版手动工作流启用了 once 自动运行：请移除 Inject 的「启动时注入」并重新部署，禁止自动执行");
+    }
+  }
+}
+
 /** Production runtime owns each native tab from before spawn to child exit. */
 export class OwnedNodeRedRuntime extends EngineRuntime {
   private ownedFlowIds: string[] = [];
@@ -434,9 +457,13 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
   /** Acknowledged native POST /flows in THIS OS child, not persisted trust. */
   private deploymentState: "not-deployed" | "deployed" | "unknown" = "unknown";
   private untrustedAtStart = true;
+  /** Uncertain deploy could have replaced the native graph without an ack. */
+  private nativeDeployUncertain = false;
   private nodePackHost: NodePackHost | null = null;
+  private manualTicketIssuer: ((docId: string, facts: Readonly<Record<string, unknown>>) => ManualTicket) | null = null;
+  private adminToken: string | null = null;
   private nativeTabs = new Map<string, string>();
-  private nativeNodes = new Map<string, { tabId: string; nodeId: string; type: string; title: string }>();
+  private nativeNodes = new Map<string, { tabId: string; nodeId: string; type: string; title: string; manualDispatchReady: boolean }>();
   private nativeSettled = new Set<string>();
   /** Engine data directory of the current start (hosts flows.json and the
    * deploy↔library reconciliation ledger). */
@@ -446,7 +473,14 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
    * never claimed to be one cross-store transaction. */
   private lastLibraryMirror: (NativeMirrorReport & { error: string | null }) | null = null;
   private indexNativeNodes(flows: unknown): void {
-    const next = new Map<string, { tabId: string; nodeId: string; type: string; title: string }>();
+    const next = new Map<string, { tabId: string; nodeId: string; type: string; title: string; manualDispatchReady: boolean }>();
+    const deployed = new Map<string, Record<string, unknown>>();
+    if (Array.isArray(flows)) for (const value of flows) {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const node = value as Record<string, unknown>;
+        if (typeof node["id"] === "string") deployed.set(node["id"], node);
+      }
+    }
     if (Array.isArray(flows)) for (const item of flows) {
       if (!item || typeof item !== "object" || Array.isArray(item)) continue;
       const n = item as Record<string, unknown>;
@@ -456,8 +490,26 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
       const meta = n["x-mcode"];
       const originalId = meta && typeof meta === "object" && !Array.isArray(meta)
         ? (meta as Record<string, unknown>)["nodeId"] : undefined;
+      // Admin POST /inject/:id returning 200 means only that Inject received
+      // a message, NOT that a workflow ran. Do not offer an unwired, disabled,
+      // scheduled or sidecar-mismatched node as a manual Custom UI action.
+      const cfg = meta !== null && typeof meta === "object" && !Array.isArray(meta)
+        ? meta as Record<string, unknown> : null;
+      const cfgParams = cfg?.["params"];
+      const nativeWires = n["wires"];
+      const manualDispatchReady = type === "inject" && n["d"] !== true
+        && cfg?.["type"] === "mcode.trigger"
+        && cfgParams !== null && typeof cfgParams === "object" && !Array.isArray(cfgParams)
+        && (cfgParams as Record<string, unknown>)["triggerKind"] === "manual"
+        && n["once"] !== true && !n["repeat"] && !n["crontab"]
+        && Array.isArray(nativeWires)
+        && nativeWires.some(w => Array.isArray(w) && w.some(target => {
+          if (typeof target !== "string" || !target) return false;
+          const downstream = deployed.get(target);
+          return downstream?.["z"] === z && downstream["d"] !== true && downstream["type"] !== "tab";
+        }));
       next.set(id, { tabId: z, nodeId: typeof originalId === "string" && originalId
-        ? originalId : id, type, title: typeof n["name"] === "string" && n["name"]
+        ? originalId : id, type, manualDispatchReady, title: typeof n["name"] === "string" && n["name"]
         ? n["name"] as string : type });
     }
     this.nativeNodes = next;
@@ -576,7 +628,77 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     }
   }
 
+  /** Native custom-UI manual entry: only an explicitly selected Mcode-owned
+   * inject node may receive a Host-issued input ticket. This is not Deploy,
+   * does not grant persistent trust, and does not use the legacy runner. */
+  nativeManualTarget(docId: string, triggerNodeId: string): { nodeId: string; port: number; token: string } {
+    const state = this.status();
+    if (state.state !== "running" || state.port === null || this.nodePackHost === null
+      || this.manualTicketIssuer === null || !this.adminToken) {
+      throw Error("Node-RED 引擎未就绪；请先启动并明确部署工作流");
+    }
+    if (this.pendingDeploy !== null || this.nativeDeployUncertain
+      || (this.untrustedAtStart && this.deploymentState !== "deployed")) {
+      throw Error("Node-RED 部署尚未确认或结果不确定，拒绝手动触发；请重新确认部署状态");
+    }
+    if (!this.ownedFlowIds.includes(docId) || this.ownership.executorOwnerOf(docId) !== "node-red") {
+      throw Error("工作流当前不属于 Node-RED 执行器，拒绝跨引擎触发");
+    }
+    const doc = (this.lookupDoc ?? getWorkflow)(docId);
+    if (!doc || effectiveWorkflowEngine(doc) !== "node-red") {
+      throw Error("工作流已删除或引擎归属发生变化");
+    }
+    const source = doc.nodes.find(n => n.id === triggerNodeId);
+    if (source?.type !== "mcode.trigger" || source.params["triggerKind"] !== "manual") {
+      throw Error("所选节点不是已保存的手动触发器，拒绝执行");
+    }
+    const matches = [...this.nativeNodes.entries()].filter(([, n]) =>
+      n.type === "inject" && n.nodeId === triggerNodeId
+      && this.nativeTabs.get(n.tabId) === docId);
+    if (matches.length !== 1) {
+      throw Error("无法唯一定位已部署的原生手动触发节点；请重新部署后再试");
+    }
+    if (!matches[0]![1].manualDispatchReady) {
+      throw Error("原生手动触发节点已禁用、未连线或配置已变更；请检查 Inject 后重新部署");
+    }
+    return { nodeId: matches[0]![0], port: state.port, token: this.adminToken };
+  }
+
+  async runNativeManual(
+    docId: string, triggerNodeId: string, facts: Readonly<Record<string, unknown>>,
+  ): Promise<{ ok: boolean; error?: string }> {
+    let issued: ManualTicket | null = null;
+    try {
+      const target = this.nativeManualTarget(docId, triggerNodeId);
+      const issue = this.manualTicketIssuer;
+      if (!issue) throw Error("Native input Host not available");
+      issued = issue(docId, facts);
+      const response = await fetch(
+        "http://127.0.0.1:" + target.port + "/inject/" + encodeURIComponent(target.nodeId), {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + target.token,
+            "Content-Type": "application/json",
+          },
+          // The data never passes through an editable Node-RED message.
+          // Only an opaque Host lookup key crosses the boundary.
+          body: JSON.stringify({ __user_inject_props__: [{
+            p: "mcode.triggerTicket", v: issued.ticket, vt: "str",
+          }] }),
+          signal: AbortSignal.timeout(5_000),
+        },
+      );
+      if (!response.ok) throw Error("Node-RED 原生手动入口返回 HTTP " + response.status);
+      return { ok: true };
+    } catch (error) {
+      issued?.revoke();
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   private releaseOwned(): void {
+    this.manualTicketIssuer = null;
+    this.adminToken = null;
     this.nodePackHost?.dispose();
     this.nodePackHost = null;
     this.nativeTabs.clear();
@@ -586,6 +708,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     this.ownedFlowIds = [];
     this.pendingDeploy = null;
     this.deploymentState = "unknown";
+    this.nativeDeployUncertain = false;
     for (const flowId of new Set(ids)) {
       const released = this.ownership.release(flowId, "node-red");
       if (!released.ok) log.warn(`[workflow-engine] Node-RED owner release failed: ${released.reason}`);
@@ -607,6 +730,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
       if (pending === null || pending.id !== id) return;
       this.pendingDeploy = null;
       if (msg["success"] === true) {
+        this.nativeDeployUncertain = false;
         // A committed full deploy with at least one actual runtime node is
         // different from an empty-tab deploy. Never infer this from flows.json.
         this.deploymentState = Array.isArray(pending.flows) && pending.flows.some(value =>
@@ -632,6 +756,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
         this.startDeployMirror(pending.flows);
       } else if (msg["uncertain"] === true) {
         this.deploymentState = "unknown";
+        this.nativeDeployUncertain = true;
         // The client may disconnect after native deployment has begun. It is
         // unsafe to give its flows to Mcode until this engine actually stops.
         this.ownedFlowIds = [...new Set([...this.ownedFlowIds, ...pending.flowIds])];
@@ -653,6 +778,7 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     let nextIds: string[];
     try {
       if (this.lookupDoc) assertNativeEngineSelection(msg["flows"], this.lookupDoc);
+      assertSafeMigratedManualInject(msg["flows"]);
       nextIds = nativeFlowIdsOfNodes(msg["flows"]);
     }
     catch (err) { reject(err instanceof Error ? err.message : String(err)); return; }
@@ -732,9 +858,11 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     this.engineDataDir = options.dataDir;
     // A trusted startup may auto-run; do not claim a manual deploy occurred.
     this.untrustedAtStart = options.env?.MCODE_ENGINE_TRUSTED !== "1";
+    this.nativeDeployUncertain = false;
     this.deploymentState = this.untrustedAtStart ? "not-deployed" : "unknown";
     this.ownedFlowIds = claimNativeFlows(this.ownership, nativeFlowIds(options.dataDir, (nodes) => {
       if (this.lookupDoc) assertNativeEngineSelection(nodes, this.lookupDoc);
+      assertSafeMigratedManualInject(nodes);
       this.nativeTabs = this.tabMap(nodes);
       this.indexNativeNodes(nodes);
     }));
@@ -754,10 +882,13 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     // `@contracts/condition`）；其它动作原样交给上面的生产服务 / 注入的测试服务。
     // 求值需要「宿主库里的那张文档」—— 注入服务（测试）拿不到库时，`getDoc`
     // 仍走生产 `getWorkflow`（测试夹具里的 docId 不在库里会显式失败，不猜）。
-    this.nodePackHost = new NodePackHost(withConditionEvaluation(nodeServices, {
+    const triggerBridge = createConditionTriggerBridge(nodeServices, {
       getDoc: (id) => (this.lookupDoc ?? getWorkflow)(id),
       resolveWorkflow,
-    }));
+    });
+    this.nodePackHost = new NodePackHost(triggerBridge.services);
+    this.manualTicketIssuer = triggerBridge.issueManual;
+    this.adminToken = options.probeIdentity?.adminToken ?? null;
     try {
       const status = await super.start({
         ...options,
