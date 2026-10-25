@@ -1,7 +1,5 @@
-/** ARC-005 / unified-library naming and integration boundary verification.
- * This runs on source, not a production user's database. The currently
- * shared ChatPane.tsx is explicitly reserved by another work conversation;
- * source check reports its outstanding terminology separately. */
+/** Unified-library naming and integration boundary verification.
+ * Scans all tracked source and smoke files; does not access the user database. */
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
@@ -15,9 +13,11 @@ function check(name:string,pass:boolean) {
  console.log((pass?"PASS ":"FAIL ")+name);
 }
 const all = files.filter(f=>/\.(?:tsx?|jsx?|sh)$/.test(f));
-const exceptions = new Set(["src/renderer/components/chat/ChatPane.tsx","scripts/library-terminology-smoke/main.ts"]);
-const references = all.filter(f=>!exceptions.has(f) && read(f).includes("文献库"));
-check("No retired literature-library label remains outside concurrently edited ChatPane",
+// Compose the retired label so this test does not introduce the same token
+// into the repository it is asserting should be clean.
+const retired = "文献" + "库";
+const references = all.filter(f=>read(f).includes(retired));
+check("No retired literature-library label remains in any tracked source or smoke file",
  references.length===0);
 if(references.length) console.log("Unexpected old terminology: "+references.join(", "));
 
@@ -71,7 +71,7 @@ check("Chat picker continues using shared library IDs and selection entry points
  picker.includes("selectedLibraryPickerEntries") &&
  picker.includes("buildLibraryPickerRows"));
 check("Visible MCP error is consistent with unified library terminology",
- api.includes("项目 / 会话工作树 / 资料库") && !api.includes("文献库"));
+ api.includes("项目 / 会话工作树 / 资料库") && !api.includes(retired));
 check("Deliberate future cleanup target: attached dedup only within one import batch",
  generic.includes("const seen = new Map") &&
  generic.includes('findExisting(abs)') &&
