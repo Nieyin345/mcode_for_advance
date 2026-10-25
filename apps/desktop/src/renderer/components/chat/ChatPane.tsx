@@ -227,7 +227,7 @@ type SendAttachment = {
  *  {@link attachmentKindOfTag} (one table, not one per call site) — see its
  *  comment for the element/paste drift that per-site copies caused.
  *
- *  文献库 tag 归为 "file" —— 它在提示词里就是一行 `@路径`(指向库的清单文件),
+ *  资料库 tag 归为 "file" —— 它在提示词里就是一行 `@路径`(指向库的清单文件),
  *  与文件附件同构,展示成附件卡片比展示成一大块"粘贴内容"更贴切。模版 tag 同理
  *  (`@清单路径`,清单里既有这份模版的全部文件路径、也有小文件的正文)。 */
 function composeSendAttachments(tags: ReadonlyArray<ContentTag>): SendAttachment[] {
@@ -856,7 +856,7 @@ function ChatPaneForSession({
   // "attach" mode: opened by the bottom-left + button (not by typing @). Same
   // UI as mention but multi-select and not tied to a textarea token.
   const [attachPickerOpen, setAttachPickerOpen] = useState(false);
-  /** 文献库选择器的开关。与 attachPickerOpen 平级 —— 两者都由「+」菜单唤起,
+  /** 资料库选择器的开关。与 attachPickerOpen 平级 —— 两者都由「+」菜单唤起,
    *  但选择器本体挂在 ChatPane 上(选中结果要落成 composer 的 tag)。 */
   const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
   const [attachPickerQuery, setAttachPickerQuery] = useState("");
@@ -1702,7 +1702,7 @@ function ChatPaneForSession({
     setAttachPickerOpen(true);
   }, [inputBlocked]);
 
-  /** 从「+」菜单打开文献库选择器。锚点复用 attachAnchor(同一个 + 按钮)。 */
+  /** 从「+」菜单打开资料库选择器。锚点复用 attachAnchor(同一个 + 按钮)。 */
   const openLibraryPicker = useCallback(() => {
     if (inputBlocked) return;
     const rect = editorRef.current?.getRect();
@@ -1711,7 +1711,7 @@ function ChatPaneForSession({
   }, [inputBlocked]);
 
   /**
-   * 文献库选择器确认:**整个分类**或**单独一篇**都能挂。
+   * 资料库选择器确认:**整个分类**或**单独一篇**都能挂。
    *
    * 机制与文件附件**完全一致**:先在主进程生成一份清单 Markdown,然后落成一个
    * content tag —— tag 的 content 只是一行 `@清单路径`,发送时进提示词,agent 用
@@ -3757,7 +3757,7 @@ function ChatPaneForSession({
             onPick={handleAttachPick}
             onClose={() => setAttachPickerOpen(false)}
           />
-          {/* 文献库选择器 —— 与上面的文件选择器同款形态与定位,由「+」菜单唤起。
+          {/* 资料库选择器 —— 与上面的文件选择器同款形态与定位,由「+」菜单唤起。
               多选;确认时每个库生成一份清单并落成一个 tag(内容是一行 @清单路径)。 */}
           <LibraryPicker
             open={libraryPickerOpen}
