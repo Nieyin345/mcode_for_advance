@@ -1725,6 +1725,7 @@ export const IPC = {
   MODULE_THEIA_QUICK_INPUT: "modules:theiaQuickInput",
   MODULE_THEIA_STATUS_ENTRY: "modules:theiaStatusEntry",
   MODULE_THEIA_CONTRIBUTION_CHANGED: "modules:theiaContributionChanged",
+  MODULE_THEIA_DIAGNOSTICS: "modules:theiaDiagnostics",
   MODULE_REMOVE: "modules:remove",
   MODULE_INVOKE: "modules:invoke",
   MODULE_TASK: "modules:task",

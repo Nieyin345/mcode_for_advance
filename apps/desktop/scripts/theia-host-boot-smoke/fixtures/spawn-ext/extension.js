@@ -7,6 +7,26 @@ const vscode = require("vscode");
 const cp = require("child_process");
 
 function activate(context) {
+  const seen={created:0,changed:0,deleted:0};
+  const nativeWatcher=vscode.workspace.createFileSystemWatcher("**/*.txt");
+  context.subscriptions.push(nativeWatcher);
+  context.subscriptions.push(
+    nativeWatcher.onDidCreate(()=>seen.created++),
+    nativeWatcher.onDidChange(()=>seen.changed++),
+    nativeWatcher.onDidDelete(()=>seen.deleted++),
+    vscode.commands.registerCommand("mcodeSmoke.watchEvents",()=>({...seen})),
+    vscode.commands.registerCommand("mcodeSmoke.setDiagnostics",()=>{
+      const folder=vscode.workspace.workspaceFolders?.[0];
+      if(!folder)return false;
+      const diagnostics=vscode.languages.createDiagnosticCollection("mcode-smoke");
+      context.subscriptions.push(diagnostics);
+      const uri=vscode.Uri.joinPath(folder.uri,"f032-roundtrip.txt");
+      diagnostics.set(uri,[new vscode.Diagnostic(
+        new vscode.Range(0,0,0,6),"Mcode extension diagnostic",vscode.DiagnosticSeverity.Warning
+      )]);
+      return true;
+    }),
+  );
   const status=vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left,5);
   status.text="Mcode F032";
   status.name="Mcode extension test status";
@@ -35,6 +55,17 @@ function activate(context) {
       if (!editor) return false;
       return editor.edit(builder => builder.replace(new vscode.Range(0, 0, 0, 6), replacement));
     }),
+    vscode.commands.registerCommand("mcodeSmoke.stateWrite", async () => {
+      const globalBefore=context.globalState.get("number",0);
+      const workspaceBefore=context.workspaceState.get("number",0);
+      await context.globalState.update("number",globalBefore+1);
+      await context.workspaceState.update("number",workspaceBefore+1);
+      return {globalBefore,workspaceBefore,globalAfter:context.globalState.get("number"),
+        workspaceAfter:context.workspaceState.get("number")};
+    }),
+    vscode.commands.registerCommand("mcodeSmoke.stateRead", async () => ({
+      global:context.globalState.get("number",0),workspace:context.workspaceState.get("number",0)
+    })),
     vscode.commands.registerCommand("mcodeSmoke.configRoundtrip", async () => {
       const config=vscode.workspace.getConfiguration("mcodeSmoke");
       const before=config.get("greeting");

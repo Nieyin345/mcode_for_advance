@@ -42,6 +42,8 @@ import { createRequire as createTheiaRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { McodeWorkspaceFs, fileResource, type FileResource } from "./mcodeWorkspaceFs.js";
 import { McodeExtensionPreferences } from "./mcodeExtensionPreferences.js";
+import { McodeExtensionState } from "./mcodeExtensionState.js";
+import { McodeWorkspaceWatcher } from "./mcodeWorkspaceWatcher.js";
 import { prepareTheiaEdits, type EditorEditTransaction, type TheiaTextEdit, type TheiaEditOptions } from "./editorTransactions.js";
 
 /* ───────────────────────── 依赖定位 ───────────────────────── */
@@ -93,6 +95,10 @@ export interface TheiaHostOptions {
   onMessage?: (input:{type:number;message:string;detail?:string;modal:boolean;actions:string[]})=>Promise<number|undefined>;
   /** Mcode-native Quick Pick / Input Box dialog, never a second Theia UI. */
   onStatus?: (input:{id:string;removed?:boolean;text?:string;name?:string;tooltip?:string;command?:string;priority?:number;alignment?:number})=>void;
+  onDiagnostics?: (collectionId:string,resource:string,markers:Array<{
+    severity:1|2|4|8;message:string;source?:string;code?:string;
+    startLineNumber:number;startColumn:number;endLineNumber:number;endColumn:number;
+  }>,removed?:boolean)=>void;
   onQuickInput?: (input:{
     kind:"input"|"pick";title?:string;placeholder?:string;value?:string;password?:boolean;
     canPickMany?:boolean;items?:Array<{label:string;description?:string;detail?:string}>;
@@ -343,6 +349,8 @@ export class TheiaHost {
   private exitReason: string | undefined;
   private activeEditorSession: EditorSession | null = null;
   private extensionPreferences: McodeExtensionPreferences | null = null;
+  private extensionState:McodeExtensionState|null=null;
+  private workspaceWatcher:McodeWorkspaceWatcher|undefined;
   private readonly quickPicks=new Map<number,{resolve:(selected:number|number[]|undefined)=>void;
     opts:{title?:string;placeHolder?:string;canPickMany?:boolean}}>();
   private configurationDefaults:Record<string,unknown>={};
@@ -432,16 +440,18 @@ export class TheiaHost {
     // handler with id EnvMain`。这一条注释就是防止下次再反。
     const manager = rpc.getProxy<PluginManagerProxy>(modules.MAIN_RPC_CONTEXT.HOSTED_PLUGIN_MANAGER_EXT);
     this.extensionPreferences=await McodeExtensionPreferences.open(this.options.storageRoot);
+    this.extensionState=await McodeExtensionState.open(this.options.storageRoot,this.options.workspaceFs?.root);
     this.configurationDefaults=this.options.preferenceDefaults ?? collectConfigurationDefaults(manifest);
     const preferences = this.buildPreferenceData(manifest);
     const timeoutMs = this.options.handshakeTimeoutMs ?? 15_000;
     let timer: NodeJS.Timeout | undefined;
     try {
+      const state=this.extensionState.snapshot();
       await Promise.race([
         manager.$init({
           preferences,
-          globalState: {},
-          workspaceState: {},
+          globalState: state.globalState,
+          workspaceState: state.workspaceState,
           env: {
             queryParams: {},
             language: "en",
@@ -494,6 +504,12 @@ export class TheiaHost {
     }
     this.started = true;
     if(this.options.workspaceFs){
+      const sink=rpc.getProxy<{ $onFileEvent(events:unknown):Promise<void>|void }>(
+        modules.MAIN_RPC_CONTEXT.ExtHostFileSystemEventService);
+      this.workspaceWatcher=new McodeWorkspaceWatcher(this.options.workspaceFs.root,events=>{
+        try{void sink.$onFileEvent(events);}catch{/* A crashed child must not crash Mcode. */}
+      });
+      this.workspaceWatcher.start();
       const proxy=rpc.getProxy<{ $onWorkspaceFoldersChanged(event:{roots:string[]}):Promise<void>|void }>(
         modules.MAIN_RPC_CONTEXT.WORKSPACE_EXT);
       await proxy.$onWorkspaceFoldersChanged({roots:[pathToFileURL(this.options.workspaceFs.root).toString()]});
@@ -718,6 +734,7 @@ export class TheiaHost {
   async dispose(): Promise<void> {
     this.disposed = true;
     this.activeEditorSession = null;
+    this.workspaceWatcher?.dispose();this.workspaceWatcher=undefined;
     const child = this.child;
     this.child = undefined;
     this.started = false;
@@ -929,6 +946,33 @@ export class TheiaHost {
         this.quickPicks.get(instance)?.resolve(undefined);this.quickPicks.delete(instance);
       },
     } as never);
+    setProxyHandler(P.LANGUAGES_MAIN, {
+      $getLanguages:async()=>["plaintext","javascript","typescript","python","json","markdown","html","css","xml","yaml"],
+      $changeDiagnostics:(collectionId:string,delta:Array<[string,Array<{
+        severity:number;message:string;source?:string;code?:string;
+        startLineNumber:number;startColumn:number;endLineNumber:number;endColumn:number;
+      }>]>)=>{
+        if(!this.options.onDiagnostics||typeof collectionId!=="string"||collectionId.length>150)return;
+        for(const [uri,raw] of Array.isArray(delta)?delta.slice(0,30):[]){
+          if(typeof uri!=="string"||uri.length>4096||!Array.isArray(raw))continue;
+          const markers=raw.slice(0,250).filter(item=>
+            typeof item?.message==="string"&&Number.isInteger(item.startLineNumber)&&
+            Number.isInteger(item.endLineNumber)&&Number.isInteger(item.startColumn)&&Number.isInteger(item.endColumn))
+            .map(item=>({
+              severity:([1,2,4,8].includes(item.severity)?item.severity:8) as 1|2|4|8,
+              message:item.message.slice(0,2000),
+              startLineNumber:Math.max(1,item.startLineNumber),startColumn:Math.max(1,item.startColumn),
+              endLineNumber:Math.max(1,item.endLineNumber),endColumn:Math.max(1,item.endColumn),
+              ...(typeof item.source==="string"?{source:item.source.slice(0,100)}:{}),
+              ...(typeof item.code==="string"?{code:item.code.slice(0,100)}:{}),
+            }));
+          this.options.onDiagnostics(collectionId,uri,markers);
+        }
+      },
+      $clearDiagnostics:(collectionId:string)=>{
+        if(typeof collectionId==="string")this.options.onDiagnostics?.(collectionId,"",[],true);
+      },
+    } as never);
     setProxyHandler(P.STATUS_BAR_MESSAGE_REGISTRY_MAIN, {
       $setMessage:async(id:string,name:string|undefined,text:string|undefined,
         priority:number,alignment:number,_color:unknown,_backgroundColor:unknown,
@@ -1013,6 +1057,14 @@ export class TheiaHost {
       if(!nativeFs)throw Error("未选择 Mcode 工作区，扩展文件 API 不可用");
       return nativeFs;
     };
+    setProxyHandler(P.FILE_SYSTEM_EVENT_SERVICE_MAIN, {
+      $watch:async(_id:number,uri:FileResource)=>{
+        if(!this.options.workspaceFs)throw Error("当前没有可用的 Mcode 工作区监听根");
+        await this.options.workspaceFs.resolve(uri);
+        if(!this.workspaceWatcher?.active)throw Error("本机平台无法启用原生项目文件监听");
+      },
+      $unwatch:async()=>undefined, // Single root watcher is disposed with its host.
+    } as never);
     setProxyHandler(P.FILE_SYSTEM_MAIN, {
       $stat:(uri:FileResource)=>mustFs().stat(uri),
       $readdir:(uri:FileResource)=>mustFs().readdir(uri),
@@ -1073,9 +1125,12 @@ export class TheiaHost {
       },
     } as never);
     setProxyHandler(P.STORAGE_MAIN, {
-      $set: async () => true,
-      $get: async () => undefined,
-      $getAll: async () => ({}),
+      $set:async(key:string,value:unknown,isGlobal:boolean)=>{
+        if(!this.extensionState)throw Error("扩展状态存储未初始化");
+        return this.extensionState.set(key,value,isGlobal);
+      },
+      $get:async(key:string,isGlobal:boolean)=>this.extensionState?.get(key,isGlobal),
+      $getAll:async(isGlobal:boolean)=>this.extensionState?.getAll(isGlobal)??{},
     } as never);
 
     // 其余：全部走「显式记录 + 安全默认值」的兜底。

@@ -109,6 +109,29 @@ const quickDismiss=quickBroker.request(101,base.activeSession!.sessionId,base.ex
 },()=>{});
 quickBroker.cancelSender(101);
 check("关闭窗口清除挂起的 VS Code 输入框",await quickDismiss===undefined&&quickBroker.size===0);
+// The real desktop renderer supplies window.api. This smoke injects only a
+// harmless native-API placeholder, never a browser or Electron instance.
+Object.assign(globalThis,{window:{api:{}}});
+const {receiveTheiaDiagnostics,registerTheiaDiagnosticMarkers}=
+  await import("../../src/renderer/lib/theiaDiagnostics.js");
+const fakeModel={isDisposed:()=>false};
+const markerWrites:Array<{owner:string;count:number;message:string|undefined}>=[];
+const mockMonaco={editor:{setModelMarkers:(_model:unknown,owner:string,markers:Array<{message:string}>)=>{
+  markerWrites.push({owner,count:markers.length,message:markers[0]?.message});
+}}};
+const mockEditor={getModel:()=>fakeModel,onDidChangeModel:()=>({dispose:()=>{}})};
+const removeMarkers=registerTheiaDiagnosticMarkers(mockEditor as never,mockMonaco as never,()=> "C:/sandbox/note.ts");
+receiveTheiaDiagnostics({channel:"modules:theiaDiagnostics",sessionId:base.activeSession!.sessionId,
+  collectionId:"diagnostics",resource:"file:///C:/sandbox/note.ts",
+  markers:[{severity:4,startLineNumber:1,startColumn:1,endLineNumber:1,endColumn:3,
+    message:"native warning"}]});
+check("扩展诊断发布到真正 Monaco marker owner",
+  markerWrites.some(x=>x.owner.includes(base.activeSession!.sessionId)&&x.message==="native warning"));
+receiveTheiaDiagnostics({channel:"modules:theiaDiagnostics",sessionId:base.activeSession!.sessionId,
+  collectionId:"*",resource:"",markers:[],removed:true});
+check("扩展停止后的诊断事件清空旧 Monaco 警告",
+  markerWrites.at(-1)?.count===0);
+removeMarkers();
 const codeRoot=process.env.MCODE_SMOKE_REPO_ROOT;
 if(!codeRoot)throw Error("MCODE_SMOKE_REPO_ROOT missing");
 const palette=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/layout/CommandPalette.tsx"),"utf8");

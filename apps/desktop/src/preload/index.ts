@@ -1167,6 +1167,13 @@ const api = {
 
   // ── Push events (main → renderer) ──
   on: {
+    theiaDiagnostics(handler:(msg:import("@contracts/ipc/modules.js").TheiaDiagnosticsEvent)=>void):()=>void {
+      const listener=(_evt:unknown,msg:import("@contracts/ipc/modules.js").TheiaDiagnosticsEvent)=>{
+        if(msg.channel===IPC.MODULE_THEIA_DIAGNOSTICS)handler(msg);
+      };
+      ipcRenderer.on(IPC.MODULE_THEIA_DIAGNOSTICS,listener);
+      return ()=>ipcRenderer.off(IPC.MODULE_THEIA_DIAGNOSTICS,listener);
+    },
     theiaContributionChanged(handler:(msg:import("@contracts/ipc/modules.js").TheiaContributionChanged)=>void):()=>void {
       const listener=(_evt:unknown,msg:import("@contracts/ipc/modules.js").TheiaContributionChanged)=>{
         if(msg.channel===IPC.MODULE_THEIA_CONTRIBUTION_CHANGED)handler(msg);

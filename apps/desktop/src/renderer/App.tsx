@@ -11,6 +11,7 @@ import { ModuleInstallConsentHost } from "./components/modules/ModuleInstallCons
 import { TheiaRuntimeMessageHost } from "./components/modules/TheiaRuntimeMessageHost.js";
 import { TheiaQuickInputHost } from "./components/modules/TheiaQuickInputHost.js";
 import { TheiaStatusStrip } from "./components/modules/TheiaStatusStrip.js";
+import { TheiaDiagnosticsHost } from "./lib/theiaDiagnostics.js";
 import { ClassicShell } from "./components/shell/ClassicShell.js";
 import { shellVariantOf } from "./components/shell/WorkspaceShell.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
@@ -366,6 +367,7 @@ export function App() {
       <TheiaRuntimeMessageHost />
       <TheiaQuickInputHost />
       <TheiaStatusStrip />
+      <TheiaDiagnosticsHost />
       {/* Global voice-dictation indicator - floats top-center while any
           composer is listening. Renders null when idle. */}
       <VoiceListeningOverlay />

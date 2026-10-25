@@ -146,6 +146,15 @@ export interface TheiaRuntimeMessage {
   kind:"info"|"warning"|"error";message:string;detail?:string;
   modal:boolean;actions:string[];
 }
+/** F033: native VS Code diagnostics owned by the active Theia session. */
+export interface TheiaExtensionDiagnostic {
+  startLineNumber:number;startColumn:number;endLineNumber:number;endColumn:number;
+  severity:1|2|4|8;message:string;source?:string;code?:string;
+}
+export interface TheiaDiagnosticsEvent {
+  channel:"modules:theiaDiagnostics";sessionId:string;collectionId:string;
+  resource:string;markers:TheiaExtensionDiagnostic[];removed?:boolean;
+}
 /** F032: status bar entries are ordinary Mcode chrome contributed by VS Code extensions. */
 export interface TheiaEditorMenu {
   commandId:string;label:string;group?:string;
@@ -203,8 +212,8 @@ export interface TheiaNativeConfigSetting {
 }
 export type TheiaInstalledResult =
   | {kind:"list";items:TheiaInstalledEntry[]}
-  | {kind:"inspected";ticket:string;extensionId:string;fileCount:number;prompt:TheiaPreviewPermissionPrompt}
-  | {kind:"installed"|"updated";item:TheiaInstalledEntry}
+  | {kind:"inspected";ticket:string;extensionId:string;fileCount:number;prompt:TheiaPreviewPermissionPrompt;upgradeFrom?:string;newVersion?:string}
+  | {kind:"installed"|"updated"|"upgraded";item:TheiaInstalledEntry}
   | {kind:"started";id:string;sessionId:string;commands:string[];activationErrors:string[]}
   | {kind:"executed";result:string}
   | {kind:"editorSynced";active:boolean}

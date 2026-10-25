@@ -1160,6 +1160,7 @@ const on: Api["on"] = {
   theiaQuickInput: () => () => {}, // F032: desktop extension input box.
   theiaStatusEntry: () => () => {}, // F032: extension status UI is desktop-only.
   theiaContributionChanged: () => () => {}, // F032: editor contribution invalidation.
+  theiaDiagnostics: () => () => {}, // F033: Monaco diagnostic markers.
   browserEvent: () => () => {},
   themeChanged: () => () => {},
   updateAvailable: () => () => {},

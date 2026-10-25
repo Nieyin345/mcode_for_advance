@@ -9,7 +9,7 @@ import { parseTheiaVsix } from "./theiaVsixPreview.js";
 import { TheiaHost, type TheiaExtensionHandle } from "./host.js";
 import { McodeWorkspaceFs } from "./mcodeWorkspaceFs.js";
 import { McodeExtensionPreferences } from "./mcodeExtensionPreferences.js";
-import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaMonacoEditorSnapshot, TheiaEditorMenu, TheiaNativeConfigSetting } from "@contracts/ipc/modules.js";
+import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaMonacoEditorSnapshot, TheiaEditorMenu, TheiaNativeConfigSetting, TheiaExtensionDiagnostic } from "@contracts/ipc/modules.js";
 
 const MAX_ARCHIVE = 64 * 1024 * 1024;
 const AGE_MS = 5 * 60 * 1000;
@@ -23,7 +23,7 @@ interface Saved {
   format: 1; id: string; extensionId: string; version: string; main: string;
   archiveHash: string; installedAt: number; enabled: boolean; files: Record<string,string>;
 }
-interface Pending { ticket: string; senderId: number; createdAt: number; root: string; record: Saved }
+interface Pending { ticket: string; senderId: number; createdAt: number; root: string; record: Saved; upgradeOf?:string; oldVersion?:string; previousArchiveHash?:string }
 interface Running { id: string; senderId: number; sessionId: string; host: TheiaHost;
   handle: TheiaExtensionHandle; commands: Set<string>; editorMenus:TheiaEditorMenu[];
   editorBridge?: ReturnType<TheiaHost["editors"]>; syncing?: boolean; executing?: boolean;
@@ -74,6 +74,26 @@ export class TheiaInstalledRegistry {
     for (const folder of [root,this.installed,this.staging]) {
       if (existsSync(folder) && (!lstatSync(folder).isDirectory() || lstatSync(folder).isSymbolicLink())) deny("扩展数据目录被重定向");
       mkdirSync(folder,{recursive:true});
+    }
+    // Crash recovery: an incomplete upgrade MUST NOT strand the old version.
+    // Restore any old installation held in a protected backup directory,
+    // preserving its storage instead of trusting an unfinished replacement.
+    for(const name of readdirSync(this.staging)){
+      if(!/^backup-[0-9a-f-]{36}$/i.test(name))continue;
+      const backup=path.join(this.staging,name);
+      try{
+        const rec=JSON.parse(readFileSync(path.join(backup,"record.json"),"utf8")) as Saved;
+        validateRecord(rec,rec.id);
+        const dest=this.dir(rec.id);
+        if(existsSync(dest)){
+          const saved=path.join(dest,"storage");
+          const oldStorage=path.join(backup,"storage");
+          if(existsSync(saved)&&!existsSync(oldStorage))renameSync(saved,oldStorage);
+          const abandoned=path.join(this.staging,"aborted-"+randomUUID());
+          renameSync(dest,abandoned);
+        }
+        renameSync(backup,dest);
+      }catch{/* Keep backup; never delete user data on an uncertain recovery. */}
     }
     // Expired staging files never restore user consent following a crash.
     for (const name of readdirSync(this.staging)) {
@@ -163,7 +183,23 @@ export class TheiaInstalledRegistry {
          typeof manifest.name!=="string"||!safeId.test(manifest.name)||
          typeof manifest.version!=="string"||!safeId.test(manifest.version)) deny("扩展身份字段非法");
       const extensionId=(manifest.publisher+"."+manifest.name).toLowerCase();
-      if(this.list().some(x=>!x.corrupted&&x.extensionId===extensionId)) deny("已安装此扩展，请先手动卸载旧版本");
+      const existing=this.list().find(x=>!x.corrupted&&x.extensionId===extensionId);
+      let upgradeOf:string|undefined,oldVersion:string|undefined,previousArchiveHash:string|undefined;
+      if(existing){
+        if(existing.running||this.startingId===existing.id)deny("升级前必须停止扩展");
+        const old=this.read(existing.id);
+        await this.verify(existing.id,old);
+        const parts=(version:string)=>{
+          const match=/^(\d+)\.(\d+)\.(\d+)(?:-([0-9a-z.-]+))?$/i.exec(version);
+          if(!match)deny("升级要求语义化版本号（如 1.2.3）");
+          return [Number(match[1]),Number(match[2]),Number(match[3]),match[4]??""] as const;
+        };
+        const current=parts(old.version),next=parts(manifest.version);
+        const cmp=next[0]-current[0]||next[1]-current[1]||next[2]-current[2]||
+          (current[3]!==next[3]?(current[3]?(next[3]?next[3].localeCompare(current[3]):1):-1):0);
+        if(cmp<=0)deny("升级版本必须高于现有版本");
+        upgradeOf=old.id;oldVersion=old.version;previousArchiveHash=old.archiveHash;
+      }
       this.discard();
       const id=randomUUID(),stage=path.join(this.staging,id);
       mkdirSync(path.join(stage,"extension"),{recursive:true});
@@ -180,14 +216,19 @@ export class TheiaInstalledRegistry {
         const report=await buildExtensionPermissionReport(path.join(stage,"extension"),{entry:archive.main});
         if(this.closed.has(senderId)) deny("预检期间窗口已关闭");
         if(report.limits.some(x=>/读取 package.json 失败|没有 main \/ browser|入口路径在扩展目录之外/.test(x))) deny("静态能力报告不完整");
-        const rec:Saved={format:1,id,extensionId,version:manifest.version,main:archive.main,
-          archiveHash:hash(bytes),installedAt:Date.now(),enabled:true,files};
-        validateRecord(rec,id);
+        const rec:Saved={format:1,id:upgradeOf??id,extensionId,version:manifest.version,main:archive.main,
+          archiveHash:hash(bytes),installedAt:upgradeOf?this.read(upgradeOf).installedAt:Date.now(),
+          enabled:upgradeOf?this.read(upgradeOf).enabled:true,files};
+        validateRecord(rec,rec.id);
         const ticket=randomUUID();
-        this.pending={senderId,ticket,createdAt:Date.now(),root:stage,record:rec};
+        this.pending={senderId,ticket,createdAt:Date.now(),root:stage,record:rec,
+          upgradeOf,oldVersion,previousArchiveHash};
         this.timer=setTimeout(()=>{if(this.pending?.ticket===ticket)this.discard();},AGE_MS);
         this.timer.unref?.();
-        return {kind:"inspected",ticket,extensionId,prompt:buildInstallConsentPrompt(report),fileCount:Object.keys(files).length};
+        return {kind:"inspected",ticket,extensionId,prompt:buildInstallConsentPrompt(report),
+          fileCount:Object.keys(files).length,
+          ...(upgradeOf?{upgradeFrom:oldVersion,newVersion:manifest.version}:{}),
+        };
       }catch(error){rmSync(stage,{recursive:true,force:true});throw error;}
     }finally{this.inspecting=false;}
   }
@@ -201,12 +242,43 @@ export class TheiaInstalledRegistry {
        this.closed.has(senderId)||accepted!==true||Date.now()-pending.createdAt>AGE_MS) deny("安装必须由预检窗口本人确认");
     this.pending=null;if(this.timer)clearTimeout(this.timer);this.timer=null;
     try{
-      if(this.list().some(x=>!x.corrupted&&x.extensionId===pending.record.extensionId)) deny("扩展已安装");
-      writeFileSync(path.join(pending.root,"record.json"),JSON.stringify(pending.record),{flag:"wx"});
       const dest=this.dir(pending.record.id);
-      if(existsSync(dest)) deny("目标已存在");
-      renameSync(pending.root,dest); // same volume, atomic appearance
-      return {kind:"installed",item:this.item(pending.record)};
+      if(!pending.upgradeOf){
+        if(this.list().some(x=>!x.corrupted&&x.extensionId===pending.record.extensionId)) deny("扩展已安装");
+        writeFileSync(path.join(pending.root,"record.json"),JSON.stringify(pending.record),{flag:"wx"});
+        if(existsSync(dest))deny("目标已存在");
+        renameSync(pending.root,dest);
+        return {kind:"installed",item:this.item(pending.record)};
+      }
+      if(pending.upgradeOf!==pending.record.id||this.running.has(pending.upgradeOf)||
+         this.startingId===pending.upgradeOf) deny("运行中的扩展不能升级");
+      const before=this.read(pending.upgradeOf);
+      if(before.extensionId!==pending.record.extensionId||before.version!==pending.oldVersion||
+         before.archiveHash!==pending.previousArchiveHash)deny("升级期间旧扩展已变化，请重新预检");
+      const backup=path.join(this.staging,"backup-"+randomUUID());
+      writeFileSync(path.join(pending.root,"record.json"),JSON.stringify(pending.record),{flag:"wx"});
+      // The entire old version is protected until the new installation exists
+      // with the SAME ID and the same user storage. Any incomplete backup
+      // is recovered conservatively in the registry constructor on next start.
+      renameSync(dest,backup);
+      let swapped=false,storageMoved=false;
+      try{
+        renameSync(pending.root,dest);swapped=true;
+        if(existsSync(path.join(backup,"storage"))){
+          renameSync(path.join(backup,"storage"),path.join(dest,"storage"));
+          storageMoved=true;
+        }
+      }catch(error){
+        try{
+          if(storageMoved)renameSync(path.join(dest,"storage"),path.join(backup,"storage"));
+          if(swapped)renameSync(dest,pending.root);
+          renameSync(backup,dest);
+        }catch{/* Preserve the backup for recovery, do not delete user data. */}
+        throw error;
+      }
+      // Fully installed. Backup contains only the retired payload.
+      rmSync(backup,{recursive:true,force:true});
+      return {kind:"upgraded",item:this.item(pending.record)};
     }catch(error){rmSync(pending.root,{recursive:true,force:true});throw error;}
   }
   private update(rec:Saved):void{
@@ -277,6 +349,9 @@ export class TheiaInstalledRegistry {
   )=>Promise<string|number[]|undefined>,onStatus?:(
     sessionId:string,extensionId:string,item:{id:string;removed?:boolean;text?:string;
       name?:string;tooltip?:string;command?:string;priority?:number;alignment?:number}
+  )=>void,onDiagnostics?:(
+    sessionId:string,collectionId:string,resource:string,
+    markers:TheiaExtensionDiagnostic[],removed?:boolean
   )=>void):Promise<TheiaInstalledResult>{
     if(this.closed.has(senderId)||this.starting||this.running.has(id)) deny("该扩展已启动或正在启动");
     if(this.running.size>=this.maxActive) deny("同时运行的扩展已达资源上限");
@@ -287,14 +362,16 @@ export class TheiaInstalledRegistry {
     // informational prompt while activate() is pending. Responses must be
     // sender/session-scoped even before the extension reaches Running.
     const sessionId=randomUUID();
+    let host:TheiaHost|undefined;
+    try{
     const workspaceFs=workspacePath?await McodeWorkspaceFs.open(workspacePath):undefined;
-    const host=new TheiaHost({theiaRoot:this.theiaRoot,extensionDir:path.join(this.dir(id),"extension"),
+    host=new TheiaHost({theiaRoot:this.theiaRoot,extensionDir:path.join(this.dir(id),"extension"),
       workspaceRoot:workspaceFs?.root,workspaceFs,
       storageRoot:path.join(this.dir(id),"storage"),
       onMessage: onMessage?(input)=>onMessage(sessionId,rec.extensionId,input):undefined,
       onQuickInput: onQuickInput?(input)=>onQuickInput(sessionId,rec.extensionId,input):undefined,
-      onStatus: onStatus?(item)=>onStatus(sessionId,rec.extensionId,item):undefined});
-    try{
+      onStatus: onStatus?(item)=>onStatus(sessionId,rec.extensionId,item):undefined,
+      onDiagnostics:onDiagnostics?(collectionId,resource,markers,removed)=>onDiagnostics(sessionId,collectionId,resource,markers,removed):undefined});
       await this.verify(id,rec); // fail closed before any untrusted extension code is spawned
       await host.start();const handle=await host.activate(),commands=await handle.commands();
       if(this.closed.has(senderId)) deny("启动期间窗口已关闭");
@@ -315,7 +392,7 @@ export class TheiaInstalledRegistry {
         }));
       this.running.set(id,{id,senderId,sessionId,host,handle,commands:new Set(commands),editorMenus});
       return {kind:"started",id,sessionId,commands,activationErrors:handle.activationErrors.map(e=>e.message).slice(0,8)};
-    }catch(error){await host.dispose();throw error;}
+    }catch(error){await host?.dispose();throw error;}
     finally{this.starting=false;this.startingSender=null;this.startingId=null;}
   }
   /** Sync one REAL Mcode editor snapshot on user command invocation, not on every keystroke.

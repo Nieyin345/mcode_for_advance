@@ -69,7 +69,7 @@ export function TheiaInstalledPanel() {
     pendingRef.current=null;
     const result=await api.modules.theiaInstalled({op:"install",ticket,accepted:true});
     setPending(null);setApproved(false);
-    if(result.kind!=="installed")throw Error("没有安装成功");
+    if(result.kind!=="installed"&&result.kind!=="upgraded")throw Error("安装或升级未完成");
     await refresh();
   });
   const start=(item:TheiaInstalledEntry)=>task(async()=>{
@@ -134,10 +134,14 @@ export function TheiaInstalledPanel() {
         你可以在 Mcode 命令面板调用它们，停止请使用每个扩展自己的「停止」按钮。
         第三方扩展运行于未隔离的 Node.js 进程，能够访问本机资源。
       </p>
-      <Button disabled={busy} onClick={inspect}>选择 VSIX 并预检安装</Button>
+      <Button disabled={busy} onClick={inspect}>选择 VSIX 安装或升级</Button>
       {pending&&(
         <div className="space-y-2 rounded border border-edge p-2" data-testid="theia-installed-consent">
           <p className="text-code font-semibold">{pending.extensionId} · {pending.fileCount} 个文件</p>
+          {pending.upgradeFrom&&<p className="text-code">
+            更新 {pending.upgradeFrom} → {pending.newVersion}。升级会保留本机已有扩展配置及状态；
+            需先停止旧版本，确认新版本权限和来源。
+          </p>}
           <p className="text-code">{pending.prompt.headline}</p>
           <ul className="list-disc pl-5 text-code">{pending.prompt.capabilities.map(c=><li key={c.capability}>{c.label}</li>)}</ul>
           <p className="text-code text-content-muted">{pending.prompt.disclosure}</p>
@@ -147,7 +151,7 @@ export function TheiaInstalledPanel() {
             <span>我了解安装并运行此扩展的潜在风险，明确同意持久安装。</span>
           </label>
           <div className="flex gap-2">
-            <Button disabled={busy||!approved} onClick={install}>确认安装</Button>
+            <Button disabled={busy||!approved} onClick={install}>{pending.upgradeFrom?"确认升级":"确认安装"}</Button>
             <Button disabled={busy} onClick={cancel}>取消并清理</Button>
           </div>
         </div>

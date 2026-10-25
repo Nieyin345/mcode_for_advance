@@ -9,10 +9,11 @@ import { EventEmitter } from "node:events";
 import { registerTheiaInstalledHandlers } from "../../src/main/ipc/theiaInstalled.js";
 import { IPC } from "@contracts/ipc";
 import { TheiaInstalledRegistry } from "../../src/main/modules/theiaHost/installedRegistry.js";
+import { McodeExtensionState } from "../../src/main/modules/theiaHost/mcodeExtensionState.js";
 import { policyFor } from "../../src/main/appControl/policy.js";
 import { APP_METHOD_PERMISSIONS } from "@contracts/appPermission";
 import { registerTheiaMonacoOwner, subscribeTheiaMonacoEdits, executeTheiaWithMonaco, applyTheiaMonacoEdit } from "../../src/renderer/lib/theiaMonacoOwner.js";
-import type { TheiaMonacoEditRequest, TheiaRuntimeMessage, TheiaQuickInputRequest, TheiaStatusEntry } from "@contracts/ipc/modules.js";
+import type { TheiaMonacoEditRequest, TheiaRuntimeMessage, TheiaQuickInputRequest, TheiaStatusEntry, TheiaDiagnosticsEvent } from "@contracts/ipc/modules.js";
 
 const root=process.env.MCODE_SMOKE_REPO_ROOT;
 if(!root) throw Error("MCODE_SMOKE_REPO_ROOT missing");
@@ -93,6 +94,15 @@ try{
   check("F026: 扩展不得委托宿主安装其他代码",APP_METHOD_PERMISSIONS["modules.theiaInstalled"]===null);
   manager=new TheiaInstalledRegistry(store,theia);
   check("全新数据根列表为空",manager.list().length===0);
+  const storageTest=await McodeExtensionState.open(path.join(dir,"concurrency-state"),path.join(dir,"concurrency-project"));
+  await Promise.all([
+    storageTest.set("first.extension",{count:1},true),
+    storageTest.set("second.extension",{count:2},true),
+  ]);
+  const reopenedState=await McodeExtensionState.open(path.join(dir,"concurrency-state"),path.join(dir,"concurrency-project"));
+  check("并行扩展状态写入不会丢失前一个插件的数据",
+    reopenedState.get("first.extension",true)?.count===1&&
+    reopenedState.get("second.extension",true)?.count===2);
   const first=await manager.inspect(51,vsix);
   check("预检发放一次性 ticket 与静态权限报告",first.kind==="inspected"&&first.prompt.disclosure.includes("不是沙箱"));
   if(first.kind!=="inspected")throw Error("inspection missing");
@@ -129,6 +139,10 @@ try{
   const run=await manager.start(51,id,undefined,workspace);
   if(run.kind!=="started")throw Error("could not start");
   check("手动启动真正 Theia Host 后命令已注册",run.commands.includes("mcodeSmoke.spawnEcho"),run);
+  const initialState=await manager.execute(51,run.sessionId,"mcodeSmoke.stateWrite");
+  check("真实扩展 globalState/workspaceState 第一次写入并可读回",
+    initialState.kind==="executed"&&initialState.result.includes('"globalAfter":1')&&
+    initialState.result.includes('"workspaceAfter":1'),initialState);
   check("真实 VSIX editor/context 菜单被识别为 Mcode 原生编辑器菜单贡献",
     manager.list(51).find(x=>x.id===id)?.activeSession?.editorMenus?.some(m=>
       m.commandId==="mcodeSmoke.spawnEcho"&&m.label==="Mcode smoke: spawn echo")===true);
@@ -140,6 +154,18 @@ try{
     fsReply.kind==="executed"&&fsReply.result.includes("native-workspace")&&fsReply.result.includes('"names":true')&&fsReply.result.includes('"search":true'),fsReply);
   check("扩展写入的是 Mcode 项目真实文件而非宿主目录",
     readFileSync(path.join(workspace,"f032-roundtrip.txt"),"utf8")==="native-workspace");
+  writeFileSync(path.join(workspace,"f033-watch.txt"),"outside-change");
+  let watchResult="";
+  for(let tries=0;tries<24;tries++){
+    await new Promise(resolve=>setTimeout(resolve,70));
+    const observed=await manager.execute(51,run.sessionId,"mcodeSmoke.watchEvents");
+    if(observed.kind==="executed"){
+      watchResult=observed.result;
+      if(/"(?:created|changed)":[1-9]/.test(watchResult))break;
+    }
+  }
+  check("Mcode 原生文件监听把外部文件变化真正转给 VS Code createFileSystemWatcher",
+    /"(?:created|changed)":[1-9]/.test(watchResult),watchResult);
   const configReply=await manager.execute(51,run.sessionId,"mcodeSmoke.configRoundtrip");
   check("真实 VS Code getConfiguration/update 写入 Mcode 扩展私有配置",
     configReply.kind==="executed"&&configReply.result.includes("mcode-persisted"),JSON.stringify(configReply));
@@ -200,6 +226,73 @@ try{
   const stopped=await manager.stop(51,run.sessionId);
   check("停止真实子进程不会删除已安装扩展",stopped.kind==="stopped"&&manager.list().length===1);
   check("停止扩展后不再向 Mcode 命令面板发布注册命令",manager.list(51)[0].activeSession===undefined);
+  const restarted=await manager.start(51,id,undefined,workspace);
+  if(restarted.kind!=="started")throw Error("cannot restart to verify persistence");
+  const persisted=await manager.execute(51,restarted.sessionId,"mcodeSmoke.stateRead");
+  check("扩展重启后恢复真实 globalState/workspaceState，而非初始化空对象",
+    persisted.kind==="executed"&&persisted.result.includes('"global":1')&&
+    persisted.result.includes('"workspace":1'),persisted);
+  await manager.stop(51,restarted.sessionId);
+  const otherWorkspace=path.join(dir,"other-mcode-project");
+  mkdirSync(otherWorkspace,{recursive:true});
+  const scoped=await manager.start(51,id,undefined,otherWorkspace);
+  if(scoped.kind!=="started")throw Error("cannot open alternate workspace");
+  const different=await manager.execute(51,scoped.sessionId,"mcodeSmoke.stateRead");
+  check("切换 Mcode 项目只隔离 workspaceState，globalState 仍保留",
+    different.kind==="executed"&&different.result.includes('"global":1')&&
+    different.result.includes('"workspace":0'),different);
+  await manager.stop(51,scoped.sessionId);
+  await rejects("无效工作区启动失败也必须解除启动互斥锁",
+    ()=>manager!.start(51,id,undefined,path.join(dir,"workspace-does-not-exist")));
+  const afterInvalid=await manager.start(51,id,undefined,workspace);
+  check("启动错误后正常扩展仍能再次启动",afterInvalid.kind==="started");
+  if(afterInvalid.kind==="started")await manager.stop(51,afterInvalid.sessionId);
+  const upgradedManifest=JSON.parse(pkg.toString("utf8")) as Record<string,unknown>;
+  upgradedManifest.version="1.1.0";
+  const upgradeVsix=path.join(dir,"updated.vsix");
+  writeFileSync(upgradeVsix,zip([
+    {name:"extension/package.json",bytes:Buffer.from(JSON.stringify(upgradedManifest))},
+    {name:"extension/extension.js",bytes:main},
+    {name:"extension/docs/info.txt",bytes:Buffer.from("new version")}
+  ]));
+  const oldId=id,oldConfig=readFileSync(path.join(store,"installed",id,"storage","preferences.json"),"utf8");
+  const preflight=await manager.inspect(51,upgradeVsix);
+  check("原位升级先预检新的 VSIX、显示旧版与目标版本",
+    preflight.kind==="inspected"&&preflight.upgradeFrom==="1.0.0"&&preflight.newVersion==="1.1.0");
+  if(preflight.kind!=="inspected")throw Error("upgrade preflight failed");
+  check("升级预检不能直接覆盖旧版本",manager.list()[0].version==="1.0.0");
+  await rejects("升级许可票据只允许原窗口本人使用",
+    ()=>manager!.install(52,preflight.ticket,true));
+  const upgradeDone=manager.install(51,preflight.ticket,true);
+  check("真正升级保留安装 ID、版本提升且不自动启动",
+    upgradeDone.kind==="upgraded"&&upgradeDone.item.id===oldId&&
+    manager.list()[0].version==="1.1.0"&&manager.list()[0].running===false);
+  check("升级过程保留此前真实扩展配置和 globalState/workspaceState",
+    readFileSync(path.join(store,"installed",id,"storage","preferences.json"),"utf8")===oldConfig&&
+    existsSync(path.join(store,"installed",id,"storage","global-state.json")));
+  await rejects("禁止同版本伪装为升级来反复覆盖扩展",
+    ()=>manager!.inspect(51,upgradeVsix));
+  const postUpgrade=await manager.start(51,id,undefined,workspace);
+  if(postUpgrade.kind!=="started")throw Error("new VSIX failed to start");
+  const stateAfterUpgrade=await manager.execute(51,postUpgrade.sessionId,"mcodeSmoke.stateRead");
+  check("真实新版 Theia 进程读回旧版扩展状态",
+    stateAfterUpgrade.kind==="executed"&&stateAfterUpgrade.result.includes('"global":1')&&
+    stateAfterUpgrade.result.includes('"workspace":1'),stateAfterUpgrade);
+  await rejects("升级时已运行的扩展禁止替换",
+    ()=>manager!.inspect(51,upgradeVsix));
+  await manager.stop(51,postUpgrade.sessionId);
+  await rejects("旧版本 VSIX 不能降级覆盖已有扩展",
+    ()=>manager!.inspect(51,vsix));
+  // Simulate power loss immediately after moving the old installation into
+  // a recovery backup but before the new stage can be renamed into place.
+  const crashBackup=path.join(store,"staging","backup-00000000-0000-4000-8000-000000000001");
+  renameSync(path.join(store,"installed",id),crashBackup);
+  manager=new TheiaInstalledRegistry(store,theia);
+  check("模拟升级中断后启动自动恢复上一个完整安装和用户数据",
+    manager.list().length===1&&manager.list()[0].version==="1.1.0"&&
+    existsSync(path.join(store,"installed",id,"storage","global-state.json"))&&
+    !existsSync(crashBackup));
+
   await rejects("停止后的旧会话不能继续执行",()=>manager!.execute(51,run.sessionId,"mcodeSmoke.spawnEcho"));
   // F027: synthetic 24 MiB payload in the ISOLATED temp root. Catalogue must never hash it.
   const large=path.join(store,"installed",id,"extension","perf-data.bin");
@@ -262,12 +355,15 @@ try{
   const runtimeMessages:TheiaRuntimeMessage[]=[];
   const quickInputs:TheiaQuickInputRequest[]=[];
   const statusEntries:TheiaStatusEntry[]=[];
+  const diagnosticEntries:TheiaDiagnosticsEvent[]=[];
   const acknowledgements:Promise<unknown>[]=[];
   const wc=Object.assign(new EventEmitter(),{id:99,mainFrame,isDestroyed:()=>false,
-    send:(channel:string,message:TheiaMonacoEditRequest|TheiaRuntimeMessage|TheiaQuickInputRequest|TheiaStatusEntry)=>{
+    send:(channel:string,message:TheiaMonacoEditRequest|TheiaRuntimeMessage|TheiaQuickInputRequest|TheiaStatusEntry|TheiaDiagnosticsEvent)=>{
       if(channel===IPC.MODULE_THEIA_EDITOR_APPLY&&message.channel===IPC.MODULE_THEIA_EDITOR_APPLY){
         editorRequestCount++;
         deliverEditor?.(message);
+      }else if(channel===IPC.MODULE_THEIA_DIAGNOSTICS&&message.channel===IPC.MODULE_THEIA_DIAGNOSTICS){
+        diagnosticEntries.push(message);
       }else if(channel===IPC.MODULE_THEIA_STATUS_ENTRY&&message.channel===IPC.MODULE_THEIA_STATUS_ENTRY){
         statusEntries.push(message);
       }else if(channel===IPC.MODULE_THEIA_QUICK_INPUT&&message.channel===IPC.MODULE_THEIA_QUICK_INPUT){
@@ -296,9 +392,15 @@ try{
   const ipcAdded=await invoke(actor,{op:"install",ticket:ipcInspect.ticket,accepted:true}) as
     {kind:string;item:{id:string}};
   check("IPC 用户确认后真实写入持久安装",ipcAdded.kind==="installed"&&!!ipcAdded.item.id);
-  const ipcLive=await invoke(actor,{op:"start",id:ipcAdded.item.id}) as
+  const ipcLive=await invoke(actor,{op:"start",id:ipcAdded.item.id,workspacePath:workspace}) as
     {kind:string;sessionId:string;commands:string[]};
   check("IPC 手动启动真实 Theia 子进程",ipcLive.kind==="started"&&ipcLive.commands.includes("mcodeSmoke.spawnEcho"));
+  const diagnosticsResult=await invoke(actor,{op:"execute",sessionId:ipcLive.sessionId,
+    commandId:"mcodeSmoke.setDiagnostics"}) as {kind:string;result:string};
+  check("真实 VS Code 诊断 collection 发布给 Mcode Monaco 标记通道",
+    diagnosticsResult.kind==="executed"&&diagnosticsResult.result==="true"&&
+    diagnosticEntries.some(event=>event.markers.some(m=>m.message==="Mcode extension diagnostic"&&m.severity===4)),
+    diagnosticsResult);
   await new Promise(resolve=>setTimeout(resolve,80));
   check("真实 VS Code 扩展状态栏条目进入 Mcode native status",
     statusEntries.some(x=>x.text==="Mcode F032"&&x.command==="mcodeSmoke.spawnEcho"));
@@ -377,6 +479,8 @@ try{
     {kind:string;result:string};
   check("IPC 扩展命令结果正常返回",ipcOutput.kind==="executed"&&ipcOutput.result.includes('"echo":"pong"'));
   await invoke(actor,{op:"stop",sessionId:ipcLive.sessionId});
+  check("停止扩展会清除该会话发布的所有 Monaco 诊断",
+    diagnosticEntries.some(event=>event.sessionId===ipcLive.sessionId&&event.collectionId==="*"&&event.removed));
   check("扩展停止时清空已贡献的 Mcode 状态栏条目",
     statusEntries.some(x=>x.sessionId===ipcLive.sessionId&&x.id==="*"&&x.removed===true));
   await invoke(actor,{op:"remove",id:ipcAdded.item.id});

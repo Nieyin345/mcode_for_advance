@@ -67,6 +67,13 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
           sender.send(IPC.MODULE_THEIA_STATUS_ENTRY,{
             channel:"modules:theiaStatusEntry",sessionId,extensionId,...item,
           });
+        },
+        (sessionId,collectionId,resource,markers,removed)=>{
+          if(sender.isDestroyed?.()||destroyed.has(senderId))return;
+          sender.send(IPC.MODULE_THEIA_DIAGNOSTICS,{
+            channel:"modules:theiaDiagnostics",sessionId,collectionId,resource,markers,
+            ...(removed?{removed:true}:{}),
+          });
         }
         );
         sender.send(IPC.MODULE_THEIA_CONTRIBUTION_CHANGED,{
@@ -97,6 +104,10 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
           channel:"modules:theiaStatusEntry",sessionId:input.sessionId,extensionId:"",id:"*",removed:true,
         });
         editorBroker.cancelSession(senderId,input.sessionId);
+        sender.send(IPC.MODULE_THEIA_DIAGNOSTICS,{
+          channel:"modules:theiaDiagnostics",sessionId:input.sessionId,
+          collectionId:"*",resource:"",markers:[],removed:true,
+        });
         const stopped=await manager.stop(senderId,input.sessionId);
         sender.send(IPC.MODULE_THEIA_CONTRIBUTION_CHANGED,{
           channel:"modules:theiaContributionChanged",sessionId:input.sessionId,
