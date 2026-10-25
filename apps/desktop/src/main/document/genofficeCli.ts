@@ -715,9 +715,16 @@ function slidesToBlocks(envelope: GenofficeEnvelope): { blocks: number; items: u
 }
 
 /** pdf `pdf read` 的信封 → 块形状（每页一块）。 */
-function pdfPagesToBlocks(envelope: GenofficeEnvelope): { blocks: number; items: unknown[] } {
-  const detail = envelope.detail as { pages?: Array<{ page?: number; text?: string }> } | null;
-  const pages = Array.isArray(detail?.pages) ? detail.pages : [];
+function pdfPagesToBlocks(envelope: GenofficeEnvelope): { blocks: number; items: unknown[]; truncated: boolean } {
+  // Native GenOffice `pdf read --full --json` currently emits a numeric
+  // `pages` count and the actual per-page text under `pages_read`. Accept
+  // either form for vendor compatibility; do not interpret the numeric page
+  // count as an empty successful extraction.
+  const detail = envelope.detail as { pages?: number | Array<{ page?:number;text?:string;truncated?:boolean }>;
+    pages_read?: Array<{ page?:number;text?:string;truncated?:boolean }>; truncated?:boolean } | null;
+  const pages = Array.isArray(detail?.pages_read) ? detail.pages_read :
+    Array.isArray(detail?.pages) ? detail.pages : [];
+  const total = typeof detail?.pages === "number" ? detail.pages : pages.length;
   const items: unknown[] = [];
   let index = 0;
   for (const page of pages) {
@@ -727,7 +734,8 @@ function pdfPagesToBlocks(envelope: GenofficeEnvelope): { blocks: number; items:
     });
     index += 1;
   }
-  return { blocks: items.length, items };
+  return { blocks: items.length, items,
+    truncated: detail?.truncated === true || pages.some((p) => p.truncated === true) || pages.length < total };
 }
 
 /**

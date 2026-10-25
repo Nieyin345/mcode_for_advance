@@ -1656,7 +1656,7 @@ export interface RpcMap {
    *  `ok:false` + `error` 时不重启,设置也不改。 */
   "app.moveDataRoot": (input: { path: string }) => Promise<{ ok: boolean; error?: string }>;
   /** 全文检索(ripgrep;sql.js 不含 FTS5)。 */
-  "library.fullTextSearch": (input: LibraryFullTextSearchInput) => Promise<{ matches: FullTextMatch[] }>;
+  "library.fullTextSearch": (input: LibraryFullTextSearchInput) => Promise<{ matches: FullTextMatch[]; indexing?: number; indexErrors?: number }>;
   /** 生成/刷新某个库的清单 Markdown,返回其绝对路径(count = 收录条数)。
    *  清单是给 agent 读的 —— 对话里只放 `@该路径`,与文件附件的机制一致。 */
   "library.manifest": (input: LibraryManifestInput) => Promise<{ path: string; count: number }>;
@@ -1722,6 +1722,9 @@ export const IPC = {
   /** Native Monaco editor owner request (main → renderer, no direct host file writes). */
   MODULE_THEIA_EDITOR_APPLY: "modules:theiaEditorApply",
   MODULE_THEIA_RUNTIME_MESSAGE: "modules:theiaRuntimeMessage",
+  MODULE_THEIA_QUICK_INPUT: "modules:theiaQuickInput",
+  MODULE_THEIA_STATUS_ENTRY: "modules:theiaStatusEntry",
+  MODULE_THEIA_CONTRIBUTION_CHANGED: "modules:theiaContributionChanged",
   MODULE_REMOVE: "modules:remove",
   MODULE_INVOKE: "modules:invoke",
   MODULE_TASK: "modules:task",

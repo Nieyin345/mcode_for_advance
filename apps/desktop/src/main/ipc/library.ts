@@ -58,7 +58,7 @@ import {
   CollectionMoveSchema,
   CollectionRenameSchema,
 } from "@contracts/ipc";
-import type { LibraryCollection, LibraryItem, PdfHighlight } from "@contracts/library";
+import type { FullTextMatch, LibraryCollection, LibraryItem, PdfHighlight } from "@contracts/library";
 // 删除的失败清单 —— 类型与它的上游 schema 住在同一处(`@contracts/ipc/library.ts`)。
 import type {
   LibraryDeleteFailure,
@@ -709,6 +709,9 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
       convert: input.convert,
     });
     notifyLibraryChanged(`import_files:${res.added}`);
+    // Index independently of the import response: GenOffice extraction must
+    // never make ordinary drag-and-drop block until a binary is parsed.
+    void import("@main/library/documentIndexService.js").then((m) => m.scheduleImportedDocuments(res.items)).catch(() => undefined);
     return res;
   });
 
@@ -1089,11 +1092,25 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
       collectionCache.set(itemId, allowed);
       return allowed;
     };
-    const matches = await searchRegisteredLibraryText(
-      libraryRoot(), LibraryRepo.listAllItems(), input.query, input.limit ?? 100,
-      inScope, () => seq === fullTextSearchSeq,
-    );
-    return { matches: seq === fullTextSearchSeq ? matches : [] };
+    const items = LibraryRepo.listAllItems();
+    const totalLimit = input.limit ?? 100;
+    const isCurrent = () => seq === fullTextSearchSeq;
+    const [plain, indexed] = await Promise.all([
+      searchRegisteredLibraryText(libraryRoot(), items, input.query, totalLimit, inScope, isCurrent),
+      import("@main/library/documentIndexService.js").then((module) => {
+        const service = module.libraryDocumentIndexService();
+        return service.search(module.indexableLibraryDocuments(items), input.query, totalLimit, inScope, isCurrent);
+      }).catch(() => ({ matches: [] as FullTextMatch[], pending: 0, errors: 1 })),
+    ]);
+    // Interleave native-document and text matches instead of allowing a long
+    // Markdown transcript to monopolize the entire search result budget.
+    const matches: typeof plain = [];
+    for (let i = 0; matches.length < totalLimit && (i < plain.length || i < indexed.matches.length); i++) {
+      if (indexed.matches[i] && matches.length < totalLimit) matches.push(indexed.matches[i]!);
+      if (plain[i] && matches.length < totalLimit) matches.push(plain[i]!);
+    }
+    return { matches: isCurrent() ? matches : [], indexing: isCurrent() ? indexed.pending : 0,
+      indexErrors: isCurrent() ? indexed.errors : 0 };
   });
 
   /**
@@ -1204,6 +1221,7 @@ function deletePreviewCore(ids: string[]): LibraryDeletePreviewResult {
       collectionIds: input.collectionIds,
     });
     notifyLibraryChanged(`import_generic:${res.added}`);
+    void import("@main/library/documentIndexService.js").then((m) => m.scheduleImportedDocuments(res.items)).catch(() => undefined);
     return res;
   });
 

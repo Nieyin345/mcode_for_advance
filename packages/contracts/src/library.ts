@@ -268,6 +268,18 @@ export interface FullTextMatch {
   relativePath: string;
   lineNumber: number;
   lineText: string;
+  /** Optional locator in the ORIGINAL document. Index-only results are not
+   * library-relative source files; consumers should open itemId and use it. */
+  location?: {
+    page?: number;
+    slide?: number;
+    sheet?: string;
+    row?: number;
+    block?: number;
+    line?: number;
+  };
+  /** Partial extraction (e.g. a spreadsheet active sheet) is not exhaustive. */
+  coverage?: "complete" | "partial";
 }
 
 /**
