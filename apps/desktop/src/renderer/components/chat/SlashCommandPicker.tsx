@@ -35,6 +35,7 @@ import {
 } from "@renderer/lib/slashCommands.js";
 import type { SkillInfo } from "@contracts/ipc";
 import { useComposerPickerPlacement } from "./useComposerPickerPlacement.js";
+import { clampSlashIndex, preferredSlashTab } from "./slashTabSelection.js";
 
 type TabKind = "skill" | "command" | "engine";
 
@@ -97,6 +98,8 @@ export function SlashCommandPicker({
   );
 
   const [activeTab, setActiveTab] = useState<TabKind>("skill");
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
   const [activeIdx, setActiveIdx] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
@@ -105,21 +108,18 @@ export function SlashCommandPicker({
   const commands =
     activeTab === "skill" ? skillCmds : activeTab === "command" ? activeBuiltinCmds : engineCmds;
 
-  // Auto-switch: if the active tab is empty but another has results, jump.
-  // Runs on query / open / busy changes (busy affects the command tab count).
-  // 顺序是有讲究的：命令（Mcode 那四条）优先于引擎那一栏 —— 用户打 `/co` 想找的是
-  // `/compact`（Mcode 的，会立刻执行），而 CLI 那边恰好也有个别的命令能匹配上。
+  // Auto-switch only when the search/open/busy or fetched result counts
+  // change. A MANUAL tab click must not be undone by this effect just because
+  // that tab is empty: its "not supported / waiting" text is meaningful.
+  // Filtering prefers skills then Mcode built-ins then engine commands.
   useEffect(() => {
     if (!open) return;
-    if (commands.length > 0) return;
-    if (activeTab !== "skill" && skillCmds.length > 0) {
-      setActiveTab("skill");
-    } else if (activeTab === "skill" && activeBuiltinCmds.length > 0) {
-      setActiveTab("command");
-    } else if (activeBuiltinCmds.length === 0 && engineCmds.length > 0) {
-      setActiveTab("engine");
-    }
-  }, [open, query, activeTab, commands.length, activeBuiltinCmds.length, skillCmds.length, engineCmds.length]);
+    const current = activeTabRef.current;
+    const next = preferredSlashTab(current, {
+      skill: skillCmds.length, command: activeBuiltinCmds.length, engine: engineCmds.length,
+    });
+    if (next !== current) setActiveTab(next);
+  }, [open, query, busy, skillCmds.length, activeBuiltinCmds.length, engineCmds.length]);
 
   // Reset selection to the first row whenever the query, tab, or open state
   // changes. This guarantees the first row is the active selection on open and
@@ -128,6 +128,11 @@ export function SlashCommandPicker({
   useEffect(() => {
     setActiveIdx(0);
   }, [query, open, activeTab]);
+  // Command lists can contract after a provider refresh or busy-state
+  // filtering. Never leave a highlighted index outside the current results.
+  useEffect(() => {
+    setActiveIdx((index) => clampSlashIndex(index, commands.length));
+  }, [commands.length]);
 
   // Scroll the active row into view whenever it changes.
   useEffect(() => {
@@ -141,12 +146,11 @@ export function SlashCommandPicker({
   // Keyboard navigation (capture phase so we beat the editor's Enter handler).
   // We mirror activeTab / commands.length / activeIdx in refs so the keydown
   // handler always sees fresh values without re-binding on every keystroke.
-  const activeTabRef = useRef(activeTab);
   const commandsLenRef = useRef(commands.length);
   const activeIdxRef = useRef(activeIdx);
   activeTabRef.current = activeTab;
   commandsLenRef.current = commands.length;
-  activeIdxRef.current = activeIdx;
+  activeIdxRef.current = clampSlashIndex(activeIdx, commands.length);
 
   // Do not re-register an overlay every time a command list changes.
   useEffect(() => {
@@ -218,7 +222,7 @@ export function SlashCommandPicker({
         if (commands.length === 0) return;
         e.preventDefault();
         e.stopPropagation();
-        const entry = commands[activeIdxRef.current];
+        const entry = commands[clampSlashIndex(activeIdxRef.current, commands.length)];
         if (!entry) return;
         if (isEngineCommand(entry)) onPickEngineCommand(entry);
         else if (isBuiltInCommand(entry)) onPickCommand(entry);
@@ -293,7 +297,7 @@ export function SlashCommandPicker({
           </div>
         ) : (
           commands.map((entry, idx) => {
-            const isActive = idx === activeIdx;
+            const isActive = idx === clampSlashIndex(activeIdx, commands.length);
             const isEngine = isEngineCommand(entry);
             const isBuiltin = !isEngine && isBuiltInCommand(entry);
             const name = entry.name;

@@ -29,7 +29,7 @@
  * 界面上是「—」,在提示词里不存在 —— 不会出现"界面显示着 10 条、模型其实没被告知"
  * 的错位。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { api } from "@renderer/lib/api.js";
 import { Tooltip } from "@renderer/components/ui/index.js";
@@ -40,6 +40,7 @@ import type { NodeParamRefSource } from "@contracts/nodeType";
 import { useRefOptions } from "@renderer/components/settings/workflows/useRefOptions.js";
 import type { WorkflowDoc } from "@contracts/workflow";
 import { IconAdjustmentsHorizontal, IconInfoCircle } from "@renderer/lib/icons.js";
+import { nextCriteriaSelection, queueCriteriaPreferenceSave } from "./criteriaPreferenceQueue.js";
 
 /** 主节点条件表在聊天侧的一行(候选值滤过空串;note 是给模型的解释,可空)。 */
 interface CriteriaRow {
@@ -114,11 +115,18 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
   const [conditions, setConditions] = useState<CriteriaRow[] | null>(null);
   /** 各条件的选中值("" = 未设 → 显示「—」、注入时跳过)。 */
   const [values, setValues] = useState<Record<string, string>>({});
+  // Ref captures every selection synchronously, before React paints the next
+  // dropdown. Save tasks are serialized per workflow, not across projects.
+  const valuesRef = useRef<Record<string, string>>({});
+  const savingRef = useRef(new Map<string, Promise<void>>());
+  const [loadedWorkflowId, setLoadedWorkflowId] = useState<string | null>(null);
 
   // 条件表长在**这份文档**的主节点上,值存这份文档名下 —— workflowId 一换就得重读。
   useEffect(() => {
     let cancelled = false;
     setConditions(null);
+    setLoadedWorkflowId(null);
+    valuesRef.current = {};
     setValues({});
     void (async () => {
       try {
@@ -127,13 +135,18 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
           api.setting.get({ key: WORKFLOW_NODE_PREFS_SETTING_PREFIX + workflowId }),
         ]);
         if (cancelled) return;
+        const saved = parsePrefs(prefsRes.value) ?? {};
+        valuesRef.current = saved;
         setConditions(criteriaRowsOf(docRes.workflow));
-        setValues(parsePrefs(prefsRes.value) ?? {});
+        setValues(saved);
+        setLoadedWorkflowId(workflowId);
       } catch {
         // 手机端 web shim:没有这些命名空间,访问即同步抛(见 `lib/webApi.ts`)。当没有条件表。
         if (!cancelled) {
+          valuesRef.current = {};
           setConditions([]);
           setValues({});
+          setLoadedWorkflowId(workflowId);
         }
       }
     })();
@@ -144,7 +157,10 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
 
   /** 选中一格:落设置表(整份覆盖 —— 值就是一张小地图)。 */
   const pick = (name: string, value: string): void => {
-    const next = { ...(values ?? {}), [name]: value };
+    // The current React render may be stale when two native selects fire in
+    // one event batch. Use the synchronous snapshot, not rendered values.
+    const next = nextCriteriaSelection(valuesRef.current, name, value);
+    valuesRef.current = next;
     setValues(next);
     // ⚠️ **落盘失败要说出来。** 这是"先乐观改 state、再落盘"的偏好:失败静默的话
     // 用户以为选好了,而下一轮注入读到的仍是旧值(或压根没存)。从前这里注释写着
@@ -152,9 +168,12 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
     // 是白名单里的一员(见那里的 `setting` 段),所以手机端也会真的写;写失败就是
     // 写失败,不是"这端存不了"。走与 `uiPrefs` / `sessionStore` 那批同一句
     // `store.toast.settingSaveFailed`。
-    void api.setting
-      .set({ key: WORKFLOW_NODE_PREFS_SETTING_PREFIX + workflowId, value: JSON.stringify(next) })
-      .catch((err: unknown) => {
+    void queueCriteriaPreferenceSave(
+      savingRef.current,
+      workflowId,
+      JSON.stringify(next),
+      (id, json) => api.setting.set({ key: WORKFLOW_NODE_PREFS_SETTING_PREFIX + id, value: json }),
+    ).catch((err: unknown) => {
         useToastStore.getState().push({
           kind: "error",
           title: t("store.toast.settingSaveFailed"),
@@ -164,7 +183,7 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
   };
 
   // 还没读到,或读到了但没有条件:整条不渲染。
-  if (!conditions || conditions.length === 0) return null;
+  if (loadedWorkflowId !== workflowId || !conditions || conditions.length === 0) return null;
 
   return (
     /**
@@ -184,7 +203,7 @@ export function SearchFilterBar({ workflowId }: { workflowId: string }) {
      *  - 既然等宽，就**不再横滑**了（`overflow-x-auto` 拿掉）—— 挤的时候是一起变窄，
      *    而不是把右边的条件推到看不见的地方。
      */
-    <div className="flex flex-nowrap items-center gap-x-3 border-t border-edge px-2.5 pt-1.5 pb-0.5">
+    <div role="group" aria-label={t("chat.nodeCriteria.title")} className="flex min-w-0 flex-nowrap items-center gap-x-3 border-t border-edge px-2.5 pt-1.5 pb-0.5">
       <span className="flex shrink-0 items-center gap-1 [font-size:var(--chat-fs-xxs)] text-content-subtle">
         <IconAdjustmentsHorizontal size={12} />
         {t("chat.nodeCriteria.title")}
@@ -261,7 +280,7 @@ function CriteriaDropdown({
   const orphaned = live && current !== "" && !choices.includes(current);
 
   return (
-    <label className="flex min-w-0 flex-1 basis-0 items-center gap-1.5">
+    <label className="flex min-h-8 min-w-0 flex-1 basis-0 items-center gap-1.5">
       {/* 条件名上挂着解释(配置时写给模型的那句):悬停可见 —— 用户看得见
           "选它是什么口径",不必切回设置页翻。
 
@@ -287,7 +306,8 @@ function CriteriaDropdown({
         disabled={live && choices.length === 0}
         // 原生的 select:它在这个位置比自绘弹层稳(输入框区域已经有一层
         // base-ui 的 portal),而这里要的就是"点开、选一个"这么简单的事。
-        className="min-w-0 flex-1 rounded border border-edge bg-surface/40 px-1.5 py-0.5 [font-size:var(--chat-fs-xxs)] text-content-muted outline-none hover:text-content focus:border-accent disabled:opacity-50"
+        aria-label={cond.name}
+        className="min-h-8 min-w-0 flex-1 rounded-[var(--radius-btn-xs)] border border-edge bg-surface/40 px-2 py-1 [font-size:var(--chat-fs-xxs)] text-content-muted outline-none hover:text-content focus:border-accent focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
       >
         {/* 未设的显示「—」:诚实的空态 —— 它在提示词里也不存在,两头一致。 */}
         {current === "" && <option value="">—</option>}
