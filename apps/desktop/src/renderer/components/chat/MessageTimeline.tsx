@@ -38,7 +38,7 @@ import { IconBookmark } from "@renderer/lib/icons.js";
 import { timelinePreviewPosition } from "./timelinePreviewGeometry.js";
 import { ClickableRow } from "@renderer/components/ui/clickable-row.js";
 import type { ChatMessage } from "@renderer/stores/sessionStore.js";
-import { timelineBlocksPreview, truncateTimelineExcerpt } from "./timelineTextPreview.js";
+import { timelineAccessibleSummary, timelineBlocksPreview, truncateTimelineExcerpt } from "./timelineTextPreview.js";
 
 /** Map of messageId → render-item index (from the virtual list's data array). */
 export type UserItemIndexMap = Map<string, number>;
@@ -211,9 +211,16 @@ function TimelineDash({
   const previewRef = useRef<HTMLDivElement | null>(null);
   const [previewPos, setPreviewPos] = useState({ left: 8, top: 8 });
   const { t } = useI18n();
-  const text = useMemo(() => excerpt
+  const summary = useMemo(() => (title || excerpt?.slice(0, 140) ||
+    timelineAccessibleSummary(message.blocks, t) ||
+    t("chatStream.timeline.noText")).slice(0, 140), [title, excerpt, message.blocks, t]);
+  // Keep an accessible name on every dash, but defer expensive 1200-char
+  // tooltip formatting until hover / keyboard focus. Large conversations can
+  // have hundreds of timeline dashes even though LegendList virtualizes the
+  // message rows underneath them.
+  const text = useMemo(() => !hovered ? "" : excerpt
     ? truncateTimelineExcerpt(excerpt)
-    : timelineBlocksPreview(message.blocks, t), [excerpt, message.blocks, t]);
+    : timelineBlocksPreview(message.blocks, t), [hovered, excerpt, message.blocks, t]);
   // A long conversation needs its timeline to scroll. The hover preview must
   // therefore live outside that scroll viewport or it gets clipped. Measure
   // both the dash and portal card, and keep it within the active window.
@@ -247,7 +254,7 @@ function TimelineDash({
     <ClickableRow
       className="relative flex min-h-6 min-w-6 shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-btn-xs)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       disabled={!canJump}
-      aria-label={t("chatStream.timeline.jumpTo", { time: fmtClock(message.createdAt), text: (title ?? text ?? t("chatStream.timeline.noText")).slice(0, 140) })}
+      aria-label={t("chatStream.timeline.jumpTo", { time: fmtClock(message.createdAt), text: summary })}
       onMouseEnter={(e) => { anchorRef.current = e.currentTarget; setHovered(true); }}
       onMouseLeave={() => setHovered(false)}
       onFocus={(e) => { anchorRef.current = e.currentTarget; setHovered(true); }}

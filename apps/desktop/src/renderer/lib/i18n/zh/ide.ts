@@ -304,6 +304,7 @@ export const zh = {
 
   /* ── terminal ── */
   "ide.term.tabTitle": "{name} {n}",
+  "ide.term.tabs": "终端标签页",
   "ide.term.noProjectDesc": "在左侧栏添加一个项目文件夹后,即可在此打开集成终端",
   "ide.term.closeTerminal": "关闭终端",
   "ide.term.newTerminal": "新建终端",

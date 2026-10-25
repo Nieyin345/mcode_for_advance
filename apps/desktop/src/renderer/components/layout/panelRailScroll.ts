@@ -25,3 +25,19 @@ export function railScrollLeft(
   }
   return scrollLeft;
 }
+
+/** Reveal an item within its own horizontal toolbar/tab strip.
+ * Unlike Element.scrollIntoView, this must NOT scroll ancestor containers
+ * (notably the chat timeline, editor, or the entire Electron workspace).
+ * Return whether scrolling was required to make this testable at call sites.
+ */
+export function revealRailItemWithin(track: HTMLElement, item: Element): boolean {
+  if (!track.contains(item)) return false;
+  const viewport = track.getBoundingClientRect();
+  const bounds = item.getBoundingClientRect();
+  const next = railScrollLeft(track.scrollLeft, viewport.left, viewport.right,
+    bounds.left, bounds.right);
+  if (Math.abs(next - track.scrollLeft) <= 1) return false;
+  track.scrollTo({ left: next, behavior: "instant" });
+  return true;
+}

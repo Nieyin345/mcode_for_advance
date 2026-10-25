@@ -15,6 +15,7 @@ import type { TerminalSessionStatus, TerminalViewHandle } from "./TerminalView.j
 import { subscribeTerminalRunRequests } from "@renderer/lib/terminalRunBus.js";
 import { TerminalCommandsMenu } from "./TerminalCommandsMenu.js";
 import { terminalTabTarget } from "./terminalTabNavigation.js";
+import { revealRailItemWithin } from "../layout/panelRailScroll.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 
 // xterm (+ its CSS) is only needed once a terminal tab actually exists; the
@@ -325,7 +326,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
     <div className="flex h-full min-h-0 flex-col">
       {/* Session tab strip + actions */}
       <div className="flex min-h-9 shrink-0 items-center gap-0.5 border-b border-edge px-1">
-        <div role="tablist" aria-label={t("ide.term.newTerminal")}
+        <div role="tablist" aria-label={t("ide.term.tabs")}
           onKeyDown={(e) => {
             if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
             if (!(e.target instanceof Element)) return;
@@ -336,9 +337,10 @@ export function TerminalPanel({ active }: { active: boolean }) {
             if (next === null) return;
             e.preventDefault();
             e.stopPropagation();
-            tabs[next]?.focus({ preventScroll: true });
-            tabs[next]?.click();
-            tabs[next]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+            const tab = tabs[next];
+            tab?.focus({ preventScroll: true });
+            tab?.click();
+            if (tab) revealRailItemWithin(e.currentTarget, tab);
           }}
           className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto py-0.5">
           {sessions.map((s) => {
@@ -363,7 +365,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
                   aria-selected={isActive}
                   aria-controls={`terminal-panel-${s.key}`}
                   tabIndex={isActive ? 0 : -1}
-                  className="min-h-7 min-w-0 truncate rounded-[var(--radius-btn-xs)] px-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  className="min-h-8 min-w-0 truncate rounded-[var(--radius-btn-xs)] px-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                   onClick={() => {
                     if (!projectPath) return;
                     const st = termsRef.current.get(projectPath);
@@ -389,8 +391,8 @@ export function TerminalPanel({ active }: { active: boolean }) {
                 <button
                   type="button"
                   className={cn(
-                    "cds-hover-ghost flex size-6 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-                    !isActive && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100",
+                    "cds-hover-ghost flex size-7 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                    !isActive && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
                   )}
                   title={t("ide.term.closeTerminal")}
                   aria-label={`${t("ide.term.closeTerminal")}: ${sessionTitle}`}
@@ -404,16 +406,18 @@ export function TerminalPanel({ active }: { active: boolean }) {
               </div>
             );
           })}
-          <button
-            type="button"
-            className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            title={t("ide.term.newTerminal")}
-            aria-label={t("ide.term.newTerminal")}
-            onClick={addSession}
-          >
-            <IconPlus size={13} />
-          </button>
         </div>
+        {/* Creating a tab is a toolbar action, not an existing role=tab.
+            Keep it outside tablist for correct screen-reader roving focus. */}
+        <button
+          type="button"
+          className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          title={t("ide.term.newTerminal")}
+          aria-label={t("ide.term.newTerminal")}
+          onClick={addSession}
+        >
+          <IconPlus size={13} />
+        </button>
 
         <div className="flex shrink-0 items-center gap-0.5 border-l border-edge pl-1">
           <TerminalCommandsMenu onRun={runCommand} onRunInNewTerminal={runCommandInNewTerminal} />

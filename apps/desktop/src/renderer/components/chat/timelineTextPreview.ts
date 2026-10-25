@@ -11,6 +11,27 @@ export function truncateTimelineExcerpt(text: string): string {
     : text;
 }
 
+/** Cheap accessible label for the always-mounted navigation dash.
+ * Do not pre-format the 1200-character tooltip of every historical message;
+ * most timeline dashes are never hovered. Keep screen-reader text available
+ * at all times, including while no tooltip portal exists.
+ */
+export function timelineAccessibleSummary(blocks: readonly Block[], t: AttachmentLabel): string {
+  const limit = 140;
+  for (const block of blocks) {
+    if (block.kind === "text") {
+      const sample = block.text.slice(0, limit).trim();
+      if (sample) return sample;
+    } else if (block.kind === "thinking") {
+      const sample = block.text.slice(0, limit).trim();
+      if (sample) return sample;
+    } else if (block.kind === "attachment") {
+      return t("chatStream.timeline.attachmentLine", { text: block.preview.slice(0, limit) }).slice(0, limit);
+    }
+  }
+  return "";
+}
+
 export function timelineBlocksPreview(blocks: readonly Block[], t: AttachmentLabel): string {
   const out: string[] = [];
   let remaining = TIMELINE_EXCERPT_LIMIT;

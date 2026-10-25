@@ -296,6 +296,7 @@ export const en = {
 
   /* ── terminal ── */
   "ide.term.tabTitle": "{name} {n}",
+  "ide.term.tabs": "Terminal tabs",
   "ide.term.noProjectDesc": "Add a project folder in the left bar to use the integrated terminal",
   "ide.term.closeTerminal": "Close terminal",
   "ide.term.newTerminal": "New terminal",

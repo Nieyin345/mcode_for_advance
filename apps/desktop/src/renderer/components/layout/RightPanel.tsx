@@ -36,7 +36,7 @@ import {
 import { CustomTabView } from "@renderer/components/customUi/CustomTabView.js";
 import { useWorkspaceTarget } from "@renderer/components/customUi/useWorkspaceTarget.js";
 import { nextRailFocusIndex } from "./panelRailNavigation.js";
-import { railScrollLeft } from "./panelRailScroll.js";
+import { railScrollLeft, revealRailItemWithin } from "./panelRailScroll.js";
 import { CACHED_BUILTIN_RIGHT_TABS, prunePanelIds, rememberPanelId, rememberRightTab, shouldMountCachedBuiltin } from "./rightPanelKeepAlive.js";
 import { PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, paneDockFromKeyboard } from "./paneDock.js";
 
@@ -235,8 +235,9 @@ export function RightPanel() {
           e.stopPropagation();
           const nextButton = buttons[nextIndex];
           if (!nextButton) return;
-          nextButton.focus();
-          nextButton.scrollIntoView({ block: "nearest", inline: "nearest" });
+          nextButton.focus({ preventScroll: true });
+          const rail = railTrackRef.current;
+          if (rail?.contains(nextButton)) revealRailItemWithin(rail, nextButton);
         }}
         onContextMenu={(e) => {
           e.preventDefault();
