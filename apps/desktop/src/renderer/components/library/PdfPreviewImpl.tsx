@@ -75,11 +75,14 @@ export function PdfPreview({
   filePath,
   onOpenExternal,
   fileViewTarget,
+  searchPage,
 }: {
   item: Pick<LibraryItem, "id">;
   bytes?: Uint8Array;
   /** Only the central FileViewer owns its global leave guard; other PDF panes must not steal it. */
   fileViewTarget?: FileViewTarget;
+  /** One-based page from a registered full-text hit; navigation never reloads bytes. */
+  searchPage?: number;
   /**
    * PDF 在磁盘上的绝对路径。**只有它才能保存批注** ——
    * `library.writeHighlights` 按路径寻址（那条路要原子替换原文件 +
@@ -98,6 +101,8 @@ export function PdfPreview({
    */
   const wasmUrl = `${import.meta.env.BASE_URL}embedpdf/pdfium.wasm`;
   const viewerRef = useRef<PDFViewerRef>(null);
+  const scrollToPageRef = useRef<((options:{pageNumber:number;behavior?:string})=>void)|null>(null);
+  const [readyForNavigation, setReadyForNavigation] = useState(-1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /** 重新加载的把手：失败后「重试」用。 */
@@ -169,6 +174,8 @@ export function PdfPreview({
     setSaveErr(null);
     setLoadedRevision(null);
     setDocBytes(null);
+    scrollToPageRef.current = null;
+    setReadyForNavigation(-1);
 
     // async IIFE 而不是直接挂 .then：手机端的 web shim 对没有映射的命名空间是同步
     // 抛错的，把异常甩出 effect 会让 React 19 整棵卸载（见 webApi.ts 的说明）
@@ -447,6 +454,20 @@ export function PdfPreview({
     const getPlugin = (
       registry as { getPlugin?: (n: string) => { provides: () => unknown } | undefined } | null
     )?.getPlugin;
+    const scrollSource = getPlugin ? getPlugin.call(registry, "scroll")?.provides() : undefined;
+    const documentManager = (getPlugin ? getPlugin.call(registry, "document-manager")?.provides() : undefined) as
+      { getActiveDocumentId?:()=>string|null } | undefined;
+    const scroll = scrollSource as { scrollToPage?: (opts:{pageNumber:number;behavior?:string})=>void;
+      forDocument?: (id:string)=>{scrollToPage?:(opts:{pageNumber:number;behavior?:string})=>void} } | undefined;
+    scrollToPageRef.current = (opts) => {
+      // EmbedPDF 2.x exposes navigation per document; older viewers may
+      // provide scrollToPage directly. Resolve active id on each navigation
+      // rather than capturing an id before PDF loading finishes.
+      const id = documentManager?.getActiveDocumentId?.();
+      const navigator = id && scroll?.forDocument ? scroll.forDocument(id) : scroll;
+      navigator?.scrollToPage?.(opts);
+    };
+    setReadyForNavigation(readyEpoch);
     const annotation = (getPlugin ? getPlugin.call(registry, "annotation")?.provides() : undefined) as
       | { onAnnotationEvent?: (cb: (e: { type: string }) => void) => unknown }
       | undefined;
@@ -461,6 +482,14 @@ export function PdfPreview({
     });
     unsubRef.current = typeof sub === "function" ? (sub as () => void) : null;
   }, [markDirty, fileViewTarget]);
+
+  // A new search result can jump within the SAME PDF instance. This must
+  // not change initialDocuments or cause annotation state to be thrown away.
+  useEffect(() => {
+    if (!Number.isInteger(searchPage) || (searchPage ?? 0) < 1) return;
+    if (readyForNavigation !== documentEpochRef.current) return;
+    scrollToPageRef.current?.({pageNumber:searchPage!,behavior:"smooth"});
+  }, [searchPage,readyForNavigation]);
 
   /** 撤销订阅。面板卸载/换文件时调，否则监听器会堆在这条会话上。 */
   useEffect(

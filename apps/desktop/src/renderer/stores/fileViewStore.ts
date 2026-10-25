@@ -26,6 +26,7 @@
  */
 import { create } from "zustand";
 import { useToastStore } from "./toastStore.js";
+import type { FullTextMatch } from "@contracts/library";
 
 /** 预览的来源。决定 `FileViewer` 走哪条 RPC 去取字节。 */
 export type FileSource =
@@ -78,6 +79,10 @@ interface FileViewState {
    * 有就弹确认(保存 / 放弃 / 取消),不再静默丢弃。
    */
   dirty: boolean;
+  /** Search-hit anchor is independent of target identity. Updating it must
+   * never remount a live PDF viewer and discard unsaved annotations. */
+  searchHit: FullTextMatch | null;
+  setSearchHit: (hit: FullTextMatch | null) => void;
   /** 谁在预览里改了什么 → 由预览组件(如 PDF 批注)登记/清除。 */
   setDirty: (dirty: boolean) => void;
   /**
@@ -187,6 +192,8 @@ export async function saveCurrentPreview(): Promise<boolean> {
 export const useFileViewStore = create<FileViewState>((set) => ({
   target: null,
   dirty: false,
+  searchHit: null,
+  setSearchHit: (searchHit) => set({ searchHit }),
   setDirty: (dirty) => set({ dirty }),
   /**
    * **打开一个文件 = 中间显示它 + 右栏切到流程图页 + 把主对话展开。**
@@ -228,7 +235,11 @@ export const useFileViewStore = create<FileViewState>((set) => ({
     const proceed = (): void => {
       if (request !== leaveRequestSeq || useFileViewStore.getState().target !== prevTarget) return;
       if (needsConfirmation && guardGeneration !== leaveGuardGeneration) return;
-      set({ target, dirty: false });
+      set((state) => ({
+        target, dirty: false,
+        searchHit: target.source.kind === "library" && state.searchHit?.itemId === target.source.ref
+          ? state.searchHit : null,
+      }));
       void import("./sessionStore.js").then(({ useSessionStore, isCenterShowingDocument }) => {
         // Opening the side pane is a consequence of THIS navigation, not an
         // independent command. Ignore an import that resolves after close/B.
@@ -263,7 +274,7 @@ export const useFileViewStore = create<FileViewState>((set) => ({
     const proceed = (): void => {
       if (request !== leaveRequestSeq || useFileViewStore.getState().target !== previous) return;
       if (needsConfirmation && guardGeneration !== leaveGuardGeneration) return;
-      set({ target: null, dirty: false });
+      set({ target: null, dirty: false, searchHit: null });
     };
     if (needsConfirmation) {
       if (openGuard !== null) openGuard(null, proceed);

@@ -210,6 +210,8 @@ export function CommandPalette() {
   /** 文档（资料库）两组结果 —— 元数据命中与正文命中。 */
   const [docItems, setDocItems] = useState<AsyncResult<LibraryItem[]>>(undefined);
   const [docTexts, setDocTexts] = useState<AsyncResult<FullTextMatch[]>>(undefined);
+  const [documentIndexing, setDocumentIndexing] = useState(0);
+  const [documentIndexErrors, setDocumentIndexErrors] = useState(0);
 
   const trimmed = query.trim();
   const isSearching = trimmed.length > 0;
@@ -278,6 +280,8 @@ export function CommandPalette() {
       setGreps(undefined);
       setDocItems(undefined);
       setDocTexts(undefined);
+      setDocumentIndexing(0);
+      setDocumentIndexErrors(0);
       return;
     }
     if (wantSession) setSessions({ loading: true });
@@ -348,17 +352,27 @@ export function CommandPalette() {
           });
       }
     };
-    /** 正文检索（ripgrep），与 grep 同批 —— 都慢，都在 GREP_DEBOUNCE_MS 之后跑。 */
+    /** Document extraction can continue after the first search response.
+     * Poll a bounded number of times while files are indexing; never block
+     * typing or keep an orphaned timer after the palette changes query. */
+    let indexPoll: number | null = null;
+    let indexAttempts = 0;
+    let cancelled = false;
     const runDocText = (): void => {
-      void api.library
-        .fullTextSearch({ query: trimmed, limit: DOC_TEXT_LIMIT })
+      void api.library.fullTextSearch({ query: trimmed, limit: DOC_TEXT_LIMIT })
         .then((res) => {
-          if (reqIdRef.current !== myId) return;
+          if (cancelled || reqIdRef.current !== myId) return;
           setDocTexts({ loading: false, value: res.matches ?? [] });
-        })
-        .catch(() => {
-          if (reqIdRef.current !== myId) return;
+          setDocumentIndexing(res.indexing ?? 0);
+          setDocumentIndexErrors(res.indexErrors ?? 0);
+          if ((res.indexing ?? 0) > 0 && indexAttempts++ < 6) {
+            indexPoll = window.setTimeout(runDocText, 1800);
+          }
+        }).catch(() => {
+          if (cancelled || reqIdRef.current !== myId) return;
           setDocTexts({ loading: false, value: [] });
+          setDocumentIndexing(0);
+          setDocumentIndexErrors(0);
         });
     };
     const runGrep = (): void => {
@@ -386,6 +400,8 @@ export function CommandPalette() {
       window.clearTimeout(t1);
       if (t2 !== null) window.clearTimeout(t2);
       if (t3 !== null) window.clearTimeout(t3);
+      cancelled = true;
+      if (indexPoll !== null) window.clearTimeout(indexPoll);
     };
   }, [open, isSearching, trimmed, scope, projectPath]);
 
@@ -401,6 +417,8 @@ export function CommandPalette() {
     setGreps(undefined);
     setDocItems(undefined);
     setDocTexts(undefined);
+    setDocumentIndexing(0);
+    setDocumentIndexErrors(0);
     reqIdRef.current++;
   }, [open]);
 
@@ -462,12 +480,14 @@ export function CommandPalette() {
           name: item.item.title,
         });
         break;
-      case "docText":
-        useFileViewStore.getState().open({
-          source: { kind: "library", ref: item.match.itemId },
-          name: item.match.title,
-        });
+      case "docText": {
+        // Keep hit location independent of FileViewTarget identity; reopening
+        // an already-open PDF must NOT reload unsaved annotation state.
+        const fileView = useFileViewStore.getState();
+        fileView.open({source:{kind:"library",ref:item.match.itemId},name:item.match.title});
+        fileView.setSearchHit(item.match);
         break;
+      }
     }
     close();
   };
@@ -698,7 +718,20 @@ export function CommandPalette() {
                   {t("common.close")}
                 </span>
               </span>
-              <span>{t("layout.palette.resultCount", { n: totalCount })}</span>
+              <span className="flex items-center gap-2" role="status" aria-live="polite">
+                {documentIndexing > 0 && (
+                  <span className="flex items-center gap-1 text-accent">
+                    <IconLoader2 size={11} className="animate-spin" />
+                    {locale === "zh" ? `资料库正在索引 ${documentIndexing} 项` : `Indexing ${documentIndexing} library documents`}
+                  </span>
+                )}
+                {documentIndexErrors > 0 && (
+                  <span className="text-warning" title={locale === "zh" ? "部分文档索引失败；可稍后重试" : "Some documents could not be indexed"}>
+                    {locale === "zh" ? `${documentIndexErrors} 项暂未索引` : `${documentIndexErrors} not indexed`}
+                  </span>
+                )}
+                {t("layout.palette.resultCount", { n: totalCount })}
+              </span>
             </div>
           </Combobox.Root>
         </BaseDialog.Popup>
@@ -870,7 +903,14 @@ function DocTextRowContent({ match }: { match: FullTextMatch }) {
     <>
       <IconFileText size={15} className="shrink-0 text-content-muted group-data-[highlighted]:text-accent" />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12px] text-content-muted">{match.title}</span>
+        <span className="flex min-w-0 items-center gap-2 text-[12px] text-content-muted">
+          <span className="min-w-0 truncate">{match.title}</span>
+          {match.location?.page !== undefined && <span className="shrink-0">P{match.location.page}</span>}
+          {match.location?.slide !== undefined && <span className="shrink-0">S{match.location.slide}</span>}
+          {match.location?.sheet && <span className="max-w-24 shrink-0 truncate">{match.location.sheet}</span>}
+          {match.location?.row !== undefined && <span className="shrink-0">R{match.location.row}</span>}
+          {match.coverage === "partial" && <span className="shrink-0 text-warning">部分索引</span>}
+        </span>
         <span className="block truncate text-[12px] text-content">{match.lineText.trim()}</span>
       </span>
       <span className="shrink-0 tabular-nums text-[11px] text-content-subtle">{match.lineNumber}</span>

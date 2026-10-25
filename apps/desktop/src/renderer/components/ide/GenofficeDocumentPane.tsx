@@ -18,6 +18,8 @@
  * 与「按需挂载」的通用取舍一致：面板只在文件被打开时挂载，`document.read`
  * 走 `useRpc`（硬规矩 7）。读失败/CLI 缺失/格式无路由都**显式画出来**，不装作空文档。
  */
+import { useEffect, useRef } from "react";
+import type { FullTextMatch } from "@contracts/library";
 import { useRpc } from "@renderer/hooks/useRpc.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -32,8 +34,11 @@ interface GenofficeDetail {
   pages?: Array<{ index?: number; id?: string; elements?: unknown[] }>;
 }
 
-export function GenofficeDocumentPane({ filePath }: { filePath: string }) {
+export function GenofficeDocumentPane({ filePath, searchLocation, searchText }: {
+  filePath: string; searchLocation?: FullTextMatch["location"]; searchText?:string;
+}) {
   const { t } = useI18n();
+  const scrollRootRef = useRef<HTMLDivElement>(null);
   // 能力诊断与文档读取分开取：能力失败不影响读（读会自己报 unavailable）。
   const caps = useRpc(() => api.document.capabilities(), [], { toastOnError: false });
   const doc = useRpc(() => api.document.read({ filePath, full: true }), [filePath], { toastOnError: false });
@@ -42,6 +47,18 @@ export function GenofficeDocumentPane({ filePath }: { filePath: string }) {
     doc.data !== undefined && doc.data.ok === false && doc.data.kind === "unavailable" ? doc.data.reason : null;
   const refusedReason =
     doc.data !== undefined && doc.data.ok === false && doc.data.kind === "refused" ? doc.data.reason : null;
+
+  useEffect(() => {
+    if (!doc.data?.ok || searchLocation?.block === undefined) return;
+    const block = searchLocation.block;
+    if (!Number.isInteger(block) || block < 0) return;
+    // RequestAnimationFrame runs after the structured rows are painted.
+    const frame = requestAnimationFrame(() => {
+      scrollRootRef.current?.querySelector<HTMLElement>(`[data-document-block="${block}"]`)
+        ?.scrollIntoView({block:"center",behavior:"smooth"});
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [doc.data,searchLocation?.block]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -60,7 +77,7 @@ export function GenofficeDocumentPane({ filePath }: { filePath: string }) {
         </span>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div ref={scrollRootRef} className="min-h-0 flex-1 overflow-y-auto p-4">
         {doc.loading && <Spinner label={t("common.loading")} />}
         {doc.error !== null && (
           <ErrorNote action={<Button onClick={() => void doc.refetch()}>{t("common.retry")}</Button>}>
@@ -83,11 +100,12 @@ export function GenofficeDocumentPane({ filePath }: { filePath: string }) {
 
         {doc.data !== undefined && doc.data.ok && (() => {
           const detail = (doc.data.detail ?? {}) as GenofficeDetail;
-          const rows: Array<{ key: string; text: string }> = [];
+          const rows: Array<{ key: string; text: string; block: number }> = [];
           if (detail.items !== undefined) {
             for (const item of detail.items) {
               rows.push({
                 key: `b${item.index ?? rows.length}`,
+                block: item.index ?? rows.length,
                 text: `${item.type ?? "?"} · ${(item.text ?? item.title ?? "").slice(0, 200)}`,
               });
             }
@@ -96,6 +114,7 @@ export function GenofficeDocumentPane({ filePath }: { filePath: string }) {
             for (const page of detail.pages) {
               rows.push({
                 key: `p${page.index ?? rows.length}`,
+                block: page.index ?? rows.length,
                 text: `${t("ide.genoffice.page")} ${(page.index ?? 0) + 1} · ${page.elements?.length ?? 0} ${t("ide.genoffice.elements")}`,
               });
             }
@@ -111,8 +130,12 @@ export function GenofficeDocumentPane({ filePath }: { filePath: string }) {
               {rows.length > 0 ? (
                 <ol className="space-y-1">
                   {rows.map((r) => (
-                    <li key={r.key} className="rounded border border-edge bg-surface-muted px-2 py-1 font-mono text-code text-content">
+                    <li key={r.key} data-document-block={r.block}
+                      className={`rounded border px-2 py-1 font-mono text-code text-content ${
+                        searchLocation?.block === r.block ? "border-accent bg-accent/10" : "border-edge bg-surface-muted"
+                      }`}>
                       {r.text}
+                      {searchLocation?.block === r.block && searchText && <span className="mt-1 block break-words text-accent">{searchText.slice(0,300)}</span>}
                     </li>
                   ))}
                 </ol>

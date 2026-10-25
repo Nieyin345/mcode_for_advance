@@ -82,6 +82,9 @@ function base64ToBytes(base64: string): Uint8Array {
 
 export function FileViewer({ target }: { target: FileViewTarget }) {
   const { t } = useI18n();
+  const pendingHit = useFileViewStore((s) => s.searchHit);
+  const searchHit = target.source.kind === "library" && pendingHit?.itemId === target.source.ref
+    ? pendingHit : null;
   // The store target is the ONLY navigation identity. A parallel local
   // relPath would bypass the central unsaved-annotation confirmation.
   const relPath = target.source.kind === "library" ? (target.source.relPath ?? null) : null;
@@ -458,6 +461,7 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
           bytes={bytes}
           {...(data.filePath ? { filePath: data.filePath } : {})}
           onOpenExternal={openExternal}
+          searchPage={searchHit?.location?.page}
         />
       );
     }
@@ -472,7 +476,8 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
           </div>
         );
       }
-      return <GenofficeDocumentPane key={data.filePath} filePath={data.filePath} />;
+      return <GenofficeDocumentPane key={data.filePath} filePath={data.filePath}
+        searchLocation={searchHit?.location} searchText={searchHit?.lineText} />;
     }
     return (
       <div className="flex flex-1 items-start justify-center p-6">
@@ -486,6 +491,22 @@ export function FileViewer({ target }: { target: FileViewTarget }) {
   return (
     <div ref={bodyRef} className="flex h-full min-h-0 flex-col bg-surface">
       {header}
+      {searchHit !== null && (
+        <div role="status" className="flex shrink-0 min-w-0 items-start gap-2 border-b border-accent/30 bg-accent/5 px-3 py-2 text-[11px] text-content">
+          <span className="min-w-0 flex-1">
+            <strong>{searchHit.location?.page ? `PDF 第 ${searchHit.location.page} 页` :
+              searchHit.location?.slide ? `幻灯片 ${searchHit.location.slide}` :
+              searchHit.location?.sheet ? `工作表 ${searchHit.location.sheet}${searchHit.location.row ? ` · 第 ${searchHit.location.row} 行` : ""}` :
+              searchHit.location?.block !== undefined ? `正文块 ${searchHit.location.block + 1}` :
+              `正文第 ${searchHit.lineNumber} 行`}</strong>
+            {searchHit.coverage === "partial" && <span className="ml-2 text-warning">部分索引</span>}
+            <span className="ml-2 break-words text-content-muted">{searchHit.lineText.slice(0,280)}</span>
+          </span>
+          <button type="button" onClick={() => useFileViewStore.getState().setSearchHit(null)}
+            className="rounded-[var(--radius-btn-xs)] px-2 py-1 text-content-subtle hover:text-content focus-visible:outline-2 focus-visible:outline-accent"
+            aria-label="关闭搜索定位提示">×</button>
+        </div>
+      )}
       {/* `ref` 挂在**根那一层**上（2026-09-21）—— 见下面 `root.contains` 那句：
           选中的文字必须落在这一整块里才算数。**不多包任何一层 div**：多包一层会让
           `PdfPreview` / `GenofficeDocumentPane` 那几支"自己管滚动"的布局多经一道（它们靠父容器
