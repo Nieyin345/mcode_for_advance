@@ -47,6 +47,7 @@ import {
   nextViewHolderId,
   releaseView,
   shouldCloseAfterRelease,
+  shouldPollWorkflowEngineStatus,
 } from "@renderer/components/settings/workflows/EngineRuntimePanel.js";
 
 let checks = 0;
@@ -176,6 +177,21 @@ console.log("\nA1. 默认页签：工作流 → 原厂画布（engines）");
   );
   eq("★ 同一时刻恰好一个页签面板可见", visible.join(","), "engines");
   check("没有用 hidden 属性（它压不过 .flex）", !markup.includes('hidden=""'));
+}
+
+console.log("\nA1b. Node-RED 后台运行不意味着隐藏页面继续轮询");
+{
+  eq("可见的运行中画布需要轮询", shouldPollWorkflowEngineStatus(true, true, true), true);
+  eq("窗口最小化时停止状态轮询", shouldPollWorkflowEngineStatus(true, true, false), false);
+  eq("页面切离工作流时停止状态轮询", shouldPollWorkflowEngineStatus(false, true, true), false);
+  eq("引擎停止后不要轮询", shouldPollWorkflowEngineStatus(true, false, true), false);
+  const code = stripComments(readFileSync(WORKFLOWS_PANEL_SRC.replace("WorkflowsPanel.tsx", "EngineRuntimePanel.tsx"), "utf8"));
+  check("可见性改变时主动取消轮询 interval 并在恢复后同步状态",
+    code.includes('document.addEventListener("visibilitychange", onVisibility)')
+    && code.includes('document.removeEventListener("visibilitychange", onVisibility)')
+    && code.includes("setPageVisible(visible)")
+    && code.includes("if (visible && activeTab && running) void refreshDeployState()")
+    && code.includes("window.clearInterval(timer)"));
 }
 
 console.log("\nA2. focusWorkflowId 的反查仍然优先（技能/插件页点「节点」进来）");

@@ -845,6 +845,12 @@ export function EngineNodePackagesSection() {
   );
 }
 
+/** Only a visible workflow pane needs deploy-status polling. The engine and
+ * triggers continue running in Host when Electron is minimized/backgrounded. */
+export function shouldPollWorkflowEngineStatus(active: boolean, running: boolean, pageVisible: boolean): boolean {
+  return active && running && pageVisible;
+}
+
 export function EngineRuntimePanel({ active: activeTab = true, engineId, editorOnly = false }: { active?: boolean; engineId?: string; editorOnly?: boolean }) {
   const { t } = useI18n();
   const listRead = useRpc(() => api.workflowEngine.list(), [], { toastOnError: false });
@@ -852,9 +858,25 @@ export function EngineRuntimePanel({ active: activeTab = true, engineId, editorO
   // Read the Host's acknowledged deploy receipt through the existing list IPC
   // only while this pane is active. A status poll never causes a deploy.
   const refreshDeployState = listRead.refetch;
-  const shouldPollDeploy = activeTab && (listRead.data?.engines.some(
+  const running = listRead.data?.engines.some(
     e => e.engineId === "node-red" && e.state === "running",
-  ) ?? false);
+  ) ?? false;
+  const [pageVisible, setPageVisible] = useState(() =>
+    typeof document === "undefined" || !document.hidden);
+  // A minimized/backgrounded Electron window has no visible editor to keep
+  // up to date. Completely suspend the interval rather than waking every
+  // 2.5s just to discover document.hidden. On resume perform one immediate
+  // status refresh so a Deploy/Stop while hidden appears without delay.
+  useEffect(() => {
+    const onVisibility = (): void => {
+      const visible = !document.hidden;
+      setPageVisible(visible);
+      if (visible && activeTab && running) void refreshDeployState();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [activeTab, running, refreshDeployState]);
+  const shouldPollDeploy = shouldPollWorkflowEngineStatus(activeTab, running, pageVisible);
   useEffect(() => {
     if (!shouldPollDeploy) return;
     const timer = window.setInterval(() => { void refreshDeployState(); }, 2500);

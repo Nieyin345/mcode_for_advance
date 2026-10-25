@@ -303,3 +303,9 @@ T81（四步链路）、T84（journey 陈旧断言）、T89（fixup 崩溃）、
 - **变异负控**：关闭原生同图复用使 workflow-native-load-smoke EXIT=1；删除 running Start 快速返回使 workflow-engine-runtime-smoke EXIT=1；强制广播即使 unchanged 也重载使 workflow-ui-smoke EXIT=1；三个变异全部原位恢复。
 - **最终回归**：`node apps/desktop/scripts/run-smokes.mjs workflow-native-load-smoke workflow-engine-runtime-smoke workflow-ui-smoke workflow-view-smoke workflow-engine-view-owner-smoke node-red-deploy-reconciliation-smoke flow-migration-smoke` 7/7 PASS，日志 `apps/desktop/.tmp/smoke-runs/1792917524876-1796-pYTKLI/`；Desktop + Contracts `tsc --noEmit` EXIT=0，定向 `git diff --check` EXIT=0。
 - **仍开放**：未做真 Electron 的 RSS/CPU/冷启动延迟量化，未将 SQL 与 flows.json 收敛为唯一写入事实源，旧 ExecutionEngine 尚受 owner 排他保护，不能宣告后台彻底只剩一个执行器。没有修改/清理任何实际用户 flows.json、并行工作区。
+
+### 2026-10-25 Node-RED 编辑器隐藏/最小化时暂停状态 IPC 轮询
+- 原 `EngineRuntimePanel` 在 active + Node-RED running 时无条件每 2500ms `workflowEngine.list()`；应用被最小化/后台隐藏仍有 timer 和 IPC。此查询仅供编辑器显示部署回执，不是运行/触发器心跳，暂停不会停止引擎或遗漏业务执行。
+- 新增 `shouldPollWorkflowEngineStatus(active,running,pageVisible)`；`visibilitychange` 隐藏时把 pageVisible 置 false，React 清理 setInterval，恢复可见时立即发一次 `refreshDeployState()` 再恢复定时更新。设置页隐藏和引擎停止仍按既有条件关闭轮询，绝不改变 Node-RED 所属 child/owner/触发机制。
+- `workflow-engine-view-owner-smoke` 正反例覆盖三个维度及事件监听/cleanup。人为移除 pageVisible 判据使 55/56 FAIL，恢复后 PASS。
+- 未做真 Electron 最小化后的 IPC/CPU/RSS 量化；这里只证明函数边界、React 生命周期接线和回归，不能把无头测试冒充 Electron U1。
