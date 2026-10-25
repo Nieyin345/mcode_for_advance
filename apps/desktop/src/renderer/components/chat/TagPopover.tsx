@@ -13,6 +13,7 @@ import {
 } from "@renderer/lib/icons.js";
 import { isImageFile, type ContentTag } from "@renderer/lib/contentTag.js";
 import { previewPosition } from "./previewGeometry.js";
+import { visibleTagImage } from "./tagPreviewImageIdentity.js";
 
 /**
  * Floating preview for a single content-tag chip. Shows the full pasted
@@ -51,6 +52,12 @@ export function TagPopover({
   const { t } = useI18n();
   const popoverRef = useRef<HTMLDivElement>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copyGenerationRef = useRef(0);
+  useEffect(() => {
+    copyGenerationRef.current++;
+    setCopyState("idle");
+    return () => { copyGenerationRef.current++; };
+  }, [tag.id, tag.content]);
   // Actual measured preview geometry: a right-edge-only offset can push a
   // 28rem popover off-screen if a message/chip is near the left edge.
   const [position, setPosition] = useState({ left: 8, top: 8 });
@@ -58,8 +65,13 @@ export function TagPopover({
   // Image preview state (file tags whose path is a previewable image). null =
   // loading, "" = error/unreadable, non-empty = valid data URL.
   const isImage = isImageFile(tag);
-  const [natural, setNatural] = useState(false);
-  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [naturalFor, setNaturalFor] = useState<string | null>(null);
+  const natural = naturalFor === tag.filePath && !!tag.filePath;
+  // Results are bound to the source file identity. State resetting in a
+  // passive effect happens AFTER the next render, so unkeyed dataUrl briefly
+  // showed the previous image when switching between two attachment chips.
+  const [imageResult, setImageResult] = useState<{ path: string; url: string } | null>(null);
+  const dataUrl = visibleTagImage(tag.filePath, imageResult);
 
   // Lazily load the image bytes as a data URL when the popover opens for an
   // image tag. Reuses the same IPC the IDE's image preview uses
@@ -68,15 +80,15 @@ export function TagPopover({
   useEffect(() => {
     if (!isImage || !tag.filePath) return;
     let cancelled = false;
-    setDataUrl(null);
-    setNatural(false);
+    setImageResult(null);
+    setNaturalFor(null);
     api.file
       .readBinary({ filePath: tag.filePath })
       .then(({ dataUrl: url }) => {
-        if (!cancelled) setDataUrl(url);
+        if (!cancelled) setImageResult({ path: tag.filePath!, url });
       })
       .catch(() => {
-        if (!cancelled) setDataUrl("");
+        if (!cancelled) setImageResult({ path: tag.filePath!, url: "" });
       });
     return () => {
       cancelled = true;
@@ -121,8 +133,10 @@ export function TagPopover({
       }
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !e.isComposing && e.keyCode !== 229) {
         if (!claimEscape("chat.tag-popover")) return;
+        e.preventDefault();
+        e.stopPropagation();
         onClose();
       }
     };
@@ -133,12 +147,12 @@ export function TagPopover({
       onClose();
     };
     document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     window.addEventListener("scroll", onScroll, true);
     return () => {
       closeEscapeLayer();
       document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("scroll", onScroll, true);
     };
   }, [onClose]);
@@ -151,11 +165,12 @@ export function TagPopover({
   }, [copyState]);
 
   const handleCopy = async () => {
+    const generation = ++copyGenerationRef.current;
     try {
       await navigator.clipboard.writeText(tag.content);
-      setCopyState("copied");
+      if (generation === copyGenerationRef.current) setCopyState("copied");
     } catch {
-      setCopyState("failed");
+      if (generation === copyGenerationRef.current) setCopyState("failed");
     }
   };
 
@@ -184,8 +199,9 @@ export function TagPopover({
         ) : (
           <button
             type="button"
-            onClick={() => setNatural((n) => !n)}
+            onClick={() => setNaturalFor(natural ? null : tag.filePath ?? null)}
             aria-label={natural ? t("chat.tagPopover.shrink") : t("chat.tagPopover.enlarge")}
+            aria-pressed={natural}
             className="rounded-[var(--radius-btn-xs)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <img
@@ -225,8 +241,9 @@ export function TagPopover({
           <button
             type="button"
             onClick={handleCopy}
-            className="cds-hover-ghost flex min-h-7 items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="cds-hover-ghost flex min-h-8 items-center gap-0.5 rounded-[var(--radius-btn-xs)] px-2 py-0.5 text-[10px] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             title={t("chat.tagPopover.copyFull")}
+            aria-label={copyState === "copied" ? t("common.copied") : copyState === "failed" ? t("chat.tagPopover.copyFailed") : t("chat.tagPopover.copyFull")}
           >
             {copyState === "copied" ? (
               <>
@@ -247,8 +264,9 @@ export function TagPopover({
                 onExpand();
                 onClose();
               }}
-              className="cds-hover-ghost flex min-h-7 items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              className="cds-hover-ghost flex min-h-8 items-center gap-0.5 rounded-[var(--radius-btn-xs)] px-2 py-0.5 text-[10px] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               title={t("chat.tagPopover.expandTitle")}
+              aria-label={t("chat.tagPopover.expandTitle")}
             >
               <IconArrowsMaximize size={11} /> {t("chat.tagPopover.expand")}
             </button>
@@ -256,7 +274,7 @@ export function TagPopover({
           <button
             type="button"
             onClick={onClose}
-            className="cds-hover-ghost flex size-7 items-center justify-center rounded text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="cds-hover-ghost flex size-8 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             title={t("common.close")}
             aria-label={t("chat.tagPopover.closePreview")}
           >

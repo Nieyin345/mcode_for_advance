@@ -181,12 +181,14 @@ function ContextRingWithData({
             <button
               type="button"
               aria-label={t("chat.context.stats")}
+              aria-haspopup="dialog"
+              aria-expanded={open}
               title={t("chat.context.stats")}
             />
           }
           className={cn(
-            "inline-flex cursor-pointer items-center gap-1 rounded-sm px-0.5 tabular-nums outline-none transition-colors",
-            "hover:bg-surface-muted focus-visible:bg-surface-muted",
+            "inline-flex min-h-7 cursor-pointer items-center gap-1 rounded-[var(--radius-btn-xs)] px-1 tabular-nums outline-none transition-colors",
+            "hover:bg-surface-muted focus-visible:bg-surface-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             colorClass,
             selected && "bg-surface-muted text-accent",
           )}

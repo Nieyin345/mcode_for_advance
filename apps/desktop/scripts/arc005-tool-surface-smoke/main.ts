@@ -98,7 +98,8 @@ ck("popover: scrolling virtualized chat closes stale anchored preview",
   sourceHas(popover, 'window.removeEventListener("scroll", onScroll, true)'));
 ck("popover: image zoom uses a real keyboard-accessible button",
   sourceHas(popover, 'aria-label={natural ? t("chat.tagPopover.shrink") : t("chat.tagPopover.enlarge")}') &&
-  sourceHas(popover, 'onClick={() => setNatural((n) => !n)}') &&
+  sourceHas(popover, 'onClick={() => setNaturalFor(natural ? null : tag.filePath ?? null)}') &&
+  sourceHas(popover, 'aria-pressed={natural}') &&
   sourceHas(popover, 'focus-visible:outline-offset-2'));
 ck("MCP: true execution status is announced and busy state tracked",
   sourceHas(mcp, 'aria-busy={outcome === "running"}') &&
