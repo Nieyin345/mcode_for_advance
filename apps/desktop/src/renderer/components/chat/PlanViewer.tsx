@@ -20,6 +20,7 @@ import {
   IconEye,
 } from "@renderer/lib/icons.js";
 import { Markdown } from "./Markdown.js";
+import { planEditorModelPath } from "./planEditorModelPath.js";
 
 /**
  * Plan content viewer rendered in the center-pane editor column (replacing
@@ -52,10 +53,8 @@ import { Markdown } from "./Markdown.js";
  * `prose-plan` styling, consistent with the inline PlanStreamBlock preview.
  */
 
-/** Unique Monaco model path for the plan editor. Using a stable path keeps a
- *  single model so undo history persists across read/edit toggles within one
- *  open. The .md extension sets the language to markdown. */
-const PLAN_EDITOR_PATH = "__plan__.md";
+// A virtual Monaco model is scoped per session, not shared between the
+// centre-pane main chat and the right-pane side chats.
 
 export function PlanViewer({
   plan,
@@ -79,6 +78,10 @@ export function PlanViewer({
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const modelPath = planEditorModelPath(sessionId);
+  // An editing session is explicit: changing tabs before the reset effect
+  // runs must not let the previous plan save into the newly selected session.
+  const editingSessionRef = useRef(sessionId);
 
   const updatePlanDrawerPlan = useSessionStore((s) => s.updatePlanDrawerPlan);
   const setPlanApprovalDraft = useSessionStore((s) => s.setPlanApprovalDraft);
@@ -111,10 +114,22 @@ export function PlanViewer({
     if (!editing) setDraft(plan);
   }, [plan, editing]);
 
-  const dirty = editing && draft !== plan;
+  // The centre pane can swap from one session plan to another without
+  // unmounting the viewer. Never carry an unsaved edit or a success toast
+  // from the previous session into the newly selected plan.
+  useEffect(() => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    setSaveState("idle");
+    setEditing(false);
+  }, [sessionId]);
+
+  const dirty = editing && editingSessionRef.current === sessionId && draft !== plan;
 
   const handleSave = useCallback(() => {
-    if (!editing) return;
+    if (!editing || editingSessionRef.current !== sessionId) return;
     setSaveState("saving");
     try {
       // Always update the local view text so the read mode reflects edits.
@@ -163,12 +178,17 @@ export function PlanViewer({
 
   // Enter edit mode: seed the draft from the current plan text.
   const enterEdit = useCallback(() => {
+    editingSessionRef.current = sessionId;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    setSaveState("idle");
     setDraft(plan);
     setEditing(true);
-  }, [plan]);
+  }, [plan, sessionId]);
 
   // Cancel edit: discard the draft and drop back to read mode.
   const cancelEdit = useCallback(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    setSaveState("idle");
     setDraft(plan);
     setEditing(false);
   }, [plan]);
@@ -182,7 +202,7 @@ export function PlanViewer({
   useEffect(() => {
     const closeLayer = openEscapeLayer("chat.plan-viewer");
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !e.isComposing && e.keyCode !== 229) {
         if (!claimEscape("chat.plan-viewer")) return;
         e.preventDefault();
         e.stopPropagation();
@@ -205,17 +225,17 @@ export function PlanViewer({
   }, []);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div role="region" aria-label={t("chat.planViewer.title")} className="flex h-full min-h-0 min-w-0 flex-col">
       {/* Header - sticky title bar with edit / save / close actions. */}
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-edge px-3 py-2">
+      <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-1.5 border-b border-edge px-3 py-2">
         <IconClipboard size={15} className="shrink-0 text-content-subtle" />
-        <span className="text-xs font-semibold text-content">{t("chat.planViewer.title")}</span>
+        <span className="min-w-0 truncate text-xs font-semibold text-content">{t("chat.planViewer.title")}</span>
         {isApprovalPending && (
           <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-accent">
             {t("chat.plan.pendingReview")}
           </span>
         )}
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
           {editing ? (
             <>
               <button
@@ -224,7 +244,7 @@ export function PlanViewer({
                 title={t("chat.planViewer.cancelEdit")}
                 aria-label={t("chat.planViewer.cancelEdit")}
                 className={cn(
-                  "inline-flex h-6 items-center gap-1 rounded-md px-2 text-[11px] text-content-muted transition-colors",
+                  "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2.5 text-[11px] text-content-muted transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   "hover:bg-surface-muted hover:text-content",
                 )}
               >
@@ -238,7 +258,7 @@ export function PlanViewer({
                 title={dirty ? t("chat.planViewer.saveTitle") : t("chat.planViewer.noChanges")}
                 aria-label={t("common.save")}
                 className={cn(
-                  "inline-flex h-6 items-center gap-1 rounded-md px-2 text-[11px] transition-colors",
+                  "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   dirty
                     ? "bg-accent/15 text-accent hover:bg-accent/25"
                     : "text-content-subtle",
@@ -258,7 +278,7 @@ export function PlanViewer({
                 title={t("chat.planViewer.finishTitle")}
                 aria-label={t("chat.planViewer.finish")}
                 className={cn(
-                  "inline-flex h-6 w-6 items-center justify-center rounded-md text-content-muted transition-colors",
+                  "inline-flex size-8 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                   "hover:bg-surface-muted hover:text-content",
                 )}
               >
@@ -272,7 +292,7 @@ export function PlanViewer({
               title={t("chat.plan.editPlan")}
               aria-label={t("chat.plan.editPlan")}
               className={cn(
-                "inline-flex h-6 items-center gap-1 rounded-md px-2 text-[11px] text-content-muted transition-colors",
+                "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2.5 text-[11px] text-content-muted transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                 "hover:bg-surface-muted hover:text-content",
               )}
             >
@@ -286,7 +306,7 @@ export function PlanViewer({
             title={t("chat.planViewer.close")}
             aria-label={t("chat.planViewer.close")}
             className={cn(
-              "inline-flex h-6 w-6 items-center justify-center rounded-md text-content-muted transition-colors",
+              "inline-flex size-8 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
               "hover:bg-surface-muted hover:text-content",
             )}
           >
@@ -299,7 +319,7 @@ export function PlanViewer({
         {editing ? (
           <Editor
             height="100%"
-            path={PLAN_EDITOR_PATH}
+            path={modelPath}
             language="markdown"
             value={draft}
             theme={theme}
@@ -319,8 +339,8 @@ export function PlanViewer({
             }}
           />
         ) : (
-          <div className="h-full overflow-auto p-4">
-            <div className="prose-plan text-[13px] leading-relaxed text-content">
+          <div className="h-full min-w-0 overflow-auto p-4">
+            <div className="prose-plan min-w-0 max-w-full break-words text-[13px] leading-relaxed text-content">
               <Markdown projectPath={projectPath}>{plan || t("chat.planViewer.empty")}</Markdown>
             </div>
           </div>
@@ -328,8 +348,11 @@ export function PlanViewer({
         {/* Save status toast - bottom-right, non-blocking. Mirrors FileEditor. */}
         {saveState !== "idle" && (
           <div
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
             className={cn(
-              "pointer-events-none absolute bottom-3 right-3 flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] shadow-sm",
+              "pointer-events-none absolute bottom-3 right-3 flex max-w-[calc(100%_-_24px)] items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-2 py-1 text-[11px] shadow-sm",
               saveState === "saving" && "bg-surface text-content-muted",
               saveState === "saved" && "bg-accent/15 text-accent",
               saveState === "error" && "bg-danger/15 text-danger",
