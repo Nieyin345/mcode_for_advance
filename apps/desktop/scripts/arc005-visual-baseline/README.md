@@ -110,7 +110,7 @@ const sample = JSON.parse(readFileSync(path, "utf8"));
 |---|---|---|
 | empty/messages/tools/approval/settings | `real-app` | 真 App + store，内容是虚构的 |
 | tab-overflow | `real-UnifiedTabsBar` | 36 个虚构会话标签进入真实标签栏，点击首末标签验证真实激活、局部横向滚动及聊天主区/页面滚动偏移不变 |
-| long-chat | `real-ChatPane-LegendList` | 640 条虚构消息注入真实 ChatPane/LegendList，要求实际挂载行数小于 160、真实滚动区域存在。`elapsedMs` 是单次本机采样，不能代表 FPS 或用户数据性能 |
+| long-chat | `real-ChatPane-LegendList` | 640 条虚构消息进入真实 ChatPane/LegendList，要求正文挂载行数少于 160；同时单独验证真正的 LegendList 滚动区（不能误选时间轴）以及左边 320 个历史刻度的窗口化：初始/滚动后均最多挂载 90 个、刻度组随滚动变化、键盘聚焦预览出现且失焦关闭。`elapsedMs` 为单次本机采样，**不等于 FPS 或真实用户数据性能** |
 | parallel | `real-StreamSidebar` | 真实侧栏组件，三条假会话及运行状态 |
 | projects | `real-LeftBar` | 真实项目树，两个假项目 |
 | diff | `real-lineDiff-DiffView` | `.tmp` 下 v1.ts、v2.ts 两版，真实 `lineDiff` 计算与 `DiffView` 渲染；不是 Monaco 编辑器 |

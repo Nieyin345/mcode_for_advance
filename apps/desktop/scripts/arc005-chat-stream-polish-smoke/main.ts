@@ -65,7 +65,7 @@ ck("Timeline: dark/light hover card stays within small viewport",
   sourceHas(timeline, "w-[min(18rem,calc(100vw-16px))]"));
 
 ck("Message: existing user/assistant alignment and turn statistics remain distinct",
-  sourceHas(row, 'isUser ? "max-w-[min(85%,48rem)] min-w-0"') &&
+  sourceHas(row, 'isUser ? "max-w-[min(92%,48rem)] sm:max-w-[min(85%,48rem)] min-w-0"') &&
   sourceHas(row, "<TurnStatRow meta={msg.turnMeta}") &&
   sourceHas(row, "<ModelBadge model={msg.turnMeta.model}"));
 ck("Message: long bubble clips independently and accessible show more remains",

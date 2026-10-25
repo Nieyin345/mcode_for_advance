@@ -321,11 +321,18 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
             }
           }
           if (screen === "long-chat" && probe.ok) {
-            const stress = await js<{total:number;mounted:number;elapsedMs:number;scrollOk:boolean}>(`(async () => {
+            const stress = await js<{total:number;mounted:number;elapsedMs:number;scrollOk:boolean;timelineTotal:number;timelineMountedBefore:number;timelineMountedAfter:number;timelineScrolled:boolean;timelineWindowed:boolean;timelineBeforeTop:number;timelineAfterTop:number;timelineScrollHeight:number;timelineClientHeight:number;timelineFocusPreview:boolean;timelineBlurClearsPreview:boolean}>(`(async () => {
               const root = document.querySelector('[data-chat-root]');
               const mountedBefore = root?.querySelectorAll('[data-message-id]').length ?? 0;
+              // This must target LegendList, NOT the independently scrollable
+              // left-edge message timeline. Previous tests accidentally
+              // scrolled the first matching overflow box and could pass even
+              // without scrolling the message list at all.
               const scrollNode = [...(root?.querySelectorAll('*') ?? [])].find(el =>
-                el.scrollHeight > el.clientHeight + 80 && getComputedStyle(el).overflowY !== 'visible'
+                el !== root && !el.matches('[data-ui-timeline-strip]') &&
+                !el.closest('[data-ui-timeline-strip]') &&
+                el.scrollHeight > el.clientHeight + 80 &&
+                ['auto','scroll'].includes(getComputedStyle(el).overflowY)
               );
               if (scrollNode) {
                 scrollNode.scrollTop = Math.max(0,scrollNode.scrollHeight/2);
@@ -333,16 +340,45 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
                 await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
               }
               const mountedAfter = root?.querySelectorAll('[data-message-id]').length ?? 0;
+              const timeline = document.querySelector('[data-ui-timeline-strip]');
+              const timelineTotal = 320; // half of 640 alternating user/assistant messages
+              const timelineMountedBefore = timeline?.querySelectorAll('[aria-label]').length ?? 0;
+              const timelineBeforeTop = timeline?.scrollTop ?? 0;
+              const firstDashBefore = timeline?.querySelector('[aria-label]')?.getAttribute('aria-label')??'';
+              if (timeline) {
+                timeline.scrollTop = (timeline.scrollHeight-timeline.clientHeight)*0.62;
+                timeline.dispatchEvent(new Event('scroll',{bubbles:true}));
+                await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+              }
+              const timelineMountedAfter = timeline?.querySelectorAll('[aria-label]').length ?? 0;
+              const firstDashAfter = timeline?.querySelector('[aria-label]')?.getAttribute('aria-label')??'';
+              const focusedDash = timeline?.querySelector('[aria-label]');
+              focusedDash?.focus({preventScroll:true});
+              await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+              const timelineFocusPreview=!!document.querySelector('[data-ui-timeline-preview]');
+              focusedDash?.blur();
+              await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+              const timelineBlurClearsPreview=!document.querySelector('[data-ui-timeline-preview]');
               return {
                 total:window.__store.getState().messagesBySession?.s1?.length ?? 0,
                 mounted:Math.max(mountedBefore,mountedAfter),
                 elapsedMs:performance.now()-(window.__arcLongStart ?? performance.now()),
                 scrollOk:!!scrollNode && scrollNode.scrollHeight > scrollNode.clientHeight,
+                timelineTotal, timelineMountedBefore, timelineMountedAfter,
+                timelineScrolled:!!timeline && Math.abs(timeline.scrollTop - timelineBeforeTop) > 30 && firstDashBefore !== firstDashAfter,
+                timelineWindowed:timeline?.getAttribute('data-ui-timeline-windowed')==='true',
+                timelineBeforeTop,timelineAfterTop:timeline?.scrollTop??0,
+                timelineScrollHeight:timeline?.scrollHeight??0,timelineClientHeight:timeline?.clientHeight??0,
+                timelineFocusPreview,timelineBlurClearsPreview,
               };
             })()`);
             // A result with all 640 rows in the DOM would indicate lost
             // virtualisation (or an accidentally rendered nonvirtual list).
-            if (stress.total !== 640 || stress.mounted < 1 || stress.mounted > 160 || !stress.scrollOk) {
+            if (stress.total !== 640 || stress.mounted < 1 || stress.mounted > 160 || !stress.scrollOk ||
+                !stress.timelineWindowed || !stress.timelineScrolled ||
+                stress.timelineMountedBefore > 90 || stress.timelineMountedAfter > 90 ||
+                stress.timelineMountedAfter < 1 ||
+                !stress.timelineFocusPreview || !stress.timelineBlurClearsPreview) {
               probe={ok:false,reason:"long-chat virtual list failed: "+JSON.stringify(stress)};
             } else {
               probe={...probe,value:{...(probe.value as object ?? {}),stress}};
