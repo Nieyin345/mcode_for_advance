@@ -1,6 +1,7 @@
 /** F026: persistent Theia VSIX installs. Startup only restores metadata; never auto-runs code. */
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { lstat as lstatAsync, readdir as readdirAsync } from "node:fs/promises";
 import * as path from "node:path";
 import { buildExtensionPermissionReport } from "../theiaPermissionReport.js";
 import { buildInstallConsentPrompt } from "./installConsent.js";
@@ -82,34 +83,49 @@ export class TheiaInstalledRegistry {
     try {value=JSON.parse(readFileSync(file,"utf8"));} catch {deny("安装记录 JSON 损坏");}
     return validateRecord(value,id);
   }
-  private verify(id:string, rec:Saved):void {
-    const base=path.join(this.dir(id),"extension"), stat=lstatSync(base);
+  /** Full integrity is a LAUNCH gate, not an Electron main-thread catalogue operation.
+   * Stream via async filesystem I/O: no 32 MB per-file Buffer and no synchronous hashing loop.
+   * This is still an integrity check, not OS-level filesystem isolation / a sandbox.
+   */
+  private async verify(id:string, rec:Saved):Promise<void> {
+    const base=path.join(this.dir(id),"extension"), stat=await lstatAsync(base);
     if(!stat.isDirectory()||stat.isSymbolicLink()) deny("扩展根目录可能被替换");
     const seen=new Set<string>();
-    const walk=(dir:string,prefix=""):void=>{
-      for(const item of readdirSync(dir)){
-        const name=prefix?prefix+"/"+item:item, absolute=path.join(dir,item), st=lstatSync(absolute);
+    const walk=async(dir:string,prefix=""):Promise<void>=>{
+      for(const item of await readdirAsync(dir)){
+        const name=prefix?prefix+"/"+item:item, absolute=path.join(dir,item), st=await lstatAsync(absolute);
         if(st.isSymbolicLink()) deny("扩展包含符号链接");
-        if(st.isDirectory()) {walk(absolute,name);continue;}
+        if(st.isDirectory()) {await walk(absolute,name);continue;}
         if(!st.isFile()||st.nlink!==1||st.size>32*1024*1024||
-            !Object.hasOwn(rec.files,name)||hash(readFileSync(absolute))!==rec.files[name]) deny("扩展文件校验失败: "+name);
+            !Object.hasOwn(rec.files,name)) deny("扩展文件校验失败: "+name);
+        const digest=createHash("sha256");
+        let total=0;
+        // The async iterator returns to the event loop between bounded chunks.
+        for await(const chunk of createReadStream(absolute,{highWaterMark:128*1024})){
+          const bytes=chunk as Buffer;
+          total+=bytes.length;
+          if(total>32*1024*1024) deny("扩展文件在校验期间变得过大: "+name);
+          digest.update(bytes);
+        }
+        if(total!==st.size||digest.digest("hex")!==rec.files[name]) deny("扩展文件校验失败: "+name);
         seen.add(name);
       }
     };
-    walk(base);
+    await walk(base);
     if(seen.size!==Object.keys(rec.files).length) deny("扩展文件缺失");
   }
   private item(rec:Saved):TheiaInstalledEntry {
     return {id:rec.id,extensionId:rec.extensionId,version:rec.version,enabled:rec.enabled,
-      installedAt:rec.installedAt,running:this.running?.id===rec.id};
+      installedAt:rec.installedAt,running:this.running?.id===rec.id,integrity:"not-checked"};
   }
+  /** Metadata-only list: never read/hash extension payloads when opening the Mcode panel. */
   list():TheiaInstalledEntry[] {
     const items:TheiaInstalledEntry[]=[];
     for(const name of readdirSync(this.installed)) {
       if(!UUID.test(name)) continue;
-      try {const rec=this.read(name);this.verify(name,rec);items.push(this.item(rec));}
+      try {const rec=this.read(name);items.push(this.item(rec));}
       catch {items.push({id:name,extensionId:"[corrupt installation]",version:"?",enabled:false,
-        installedAt:0,running:false,corrupted:true});}
+        installedAt:0,running:false,corrupted:true,integrity:"corrupt"});}
     }
     return items.sort((a,b)=>a.extensionId.localeCompare(b.extensionId));
   }
@@ -186,17 +202,18 @@ export class TheiaInstalledRegistry {
   }
   setEnabled(id:string,enabled:boolean):TheiaInstalledResult{
     if(this.running?.id===id||this.startingId===id) deny("请先停止扩展");
-    const rec=this.read(id);this.verify(id,rec);rec.enabled=enabled;this.update(rec);
+    // Changing metadata cannot execute extension code; full integrity is checked on start.
+    const rec=this.read(id);rec.enabled=enabled;this.update(rec);
     return {kind:"updated",item:this.item(rec)};
   }
   async start(senderId:number,id:string):Promise<TheiaInstalledResult>{
     if(this.closed.has(senderId)||this.starting||this.running) deny("已有扩展启动或运行");
     const rec=this.read(id);
     if(!rec.enabled) deny("扩展已禁用");
-    this.verify(id,rec);
     this.starting=true;this.startingSender=senderId;this.startingId=id;
     const host=new TheiaHost({theiaRoot:this.theiaRoot,extensionDir:path.join(this.dir(id),"extension"),storageRoot:path.join(this.dir(id),"storage")});
     try{
+      await this.verify(id,rec); // fail closed before any untrusted extension code is spawned
       await host.start();const handle=await host.activate(),commands=await handle.commands();
       if(this.closed.has(senderId)) deny("启动期间窗口已关闭");
       const sessionId=randomUUID();

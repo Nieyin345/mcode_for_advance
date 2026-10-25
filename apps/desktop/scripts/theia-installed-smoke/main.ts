@@ -1,8 +1,10 @@
 /** F026: no user data; injected temp root, real Theia host and tamper-negative tests. */
-import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync, readdirSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { deflateRawSync } from "node:zlib";
+import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { EventEmitter } from "node:events";
 import { registerTheiaInstalledHandlers } from "../../src/main/ipc/theiaInstalled.js";
 import { IPC } from "@contracts/ipc";
@@ -105,7 +107,7 @@ try{
   await rejects("重复同一 publisher.name 被明确拒绝",()=>manager!.inspect(51,vsix));
   await manager.disposeAll();
   manager=new TheiaInstalledRegistry(store,theia);
-  check("重建管理器后扩展列表持久存在但没有自动运行",manager.list().length===1&&manager.list()[0].running===false);
+  check("重建管理器后只恢复元数据，不自动运行也不假称校验通过",manager.list().length===1&&manager.list()[0].running===false&&manager.list()[0].integrity==="not-checked");
   const disabled=manager.setEnabled(id,false);
   check("禁用状态持久化",disabled.kind==="updated"&&!disabled.item.enabled);
   await rejects("禁用后的扩展不能启动",()=>manager!.start(51,id));
@@ -123,12 +125,44 @@ try{
   const stopped=await manager.stop(51,run.sessionId);
   check("停止真实子进程不会删除已安装扩展",stopped.kind==="stopped"&&manager.list().length===1);
   await rejects("停止后的旧会话不能继续执行",()=>manager!.execute(51,run.sessionId,"mcodeSmoke.spawnEcho"));
+  // F027: synthetic 24 MiB payload in the ISOLATED temp root. Catalogue must never hash it.
+  const large=path.join(store,"installed",id,"extension","perf-data.bin");
+  const sample=Buffer.alloc(24*1024*1024,0x57);
+  writeFileSync(large,sample);
+  const recordPath=path.join(store,"installed",id,"record.json");
+  const record=JSON.parse(readFileSync(recordPath,"utf8")) as {files:Record<string,string>};
+  record.files["perf-data.bin"]=createHash("sha256").update(sample).digest("hex");
+  writeFileSync(recordPath,JSON.stringify(record));
+  const beforeList=performance.now();
+  for(let k=0;k<40;k++)manager.list();
+  const listMs=performance.now()-beforeList;
+  const beforeHash=performance.now();
+  for(let k=0;k<10;k++)createHash("sha256").update(readFileSync(large)).digest("hex");
+  const fullHashMs=performance.now()-beforeHash;
+  console.log("  PERF (same machine, synthetic temp fixture): list 40x="+listMs.toFixed(1)+"ms; full SHA-256 24MiB 10x="+fullHashMs.toFixed(1)+"ms");
+  check("40 次扩展列表无需重复哈希 24MiB 文件",listMs<fullHashMs,{listMs,fullHashMs});
+  // A disappearing payload must not block an ordinary catalogue view; startup still fails closed.
+  const hidden=large+".hidden";
+  renameSync(large,hidden);
+  check("列表不扫描文件内容：未校验的元数据不能被显示成校验通过",manager.list()[0].integrity==="not-checked");
+  renameSync(hidden,large);
   const extFile=path.join(store,"installed",id,"extension","extension.js");
   writeFileSync(extFile,Buffer.concat([main,Buffer.from("\n// tampered\n")]));
-  check("扩展文件被篡改时列表标记损坏而不是假装完好",manager.list()[0].corrupted===true);
+  check("列表不扫描扩展内容，并明确标注启动前才做完整性检查",manager.list()[0].integrity==="not-checked");
+  let eventLoopTick=false;
+  const tick=setTimeout(()=>{eventLoopTick=true;},0);
   await rejects("扩展文件被篡改必须拒绝启动",()=>manager!.start(51,id));
+  clearTimeout(tick);
+  check("大文件完整性校验让出主线程事件循环",eventLoopTick);
   writeFileSync(extFile,main);
-  check("恢复源文件后哈希校验重新通过",manager.list()[0].corrupted!==true);
+  check("恢复源文件后列表保持元数据状态",manager.list()[0].integrity==="not-checked");
+  rmSync(large,{force:true});
+  delete record.files["perf-data.bin"];
+  writeFileSync(recordPath,JSON.stringify(record));
+  const originalRecord=readFileSync(recordPath,"utf8");
+  writeFileSync(recordPath,"invalid-json");
+  check("损坏安装记录仍在列表中明确报告",manager.list()[0].integrity==="corrupt"&&manager.list()[0].corrupted===true);
+  writeFileSync(recordPath,originalRecord);
   const removed=manager.remove(id);
   check("卸载后持久目录消失",removed.kind==="removed"&&!existsSync(path.join(store,"installed",id)));
   check("卸载后的目录和列表都为空",manager.list().length===0);

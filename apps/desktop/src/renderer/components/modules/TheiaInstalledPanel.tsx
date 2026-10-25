@@ -117,7 +117,7 @@ export function TheiaInstalledPanel() {
         {items.length===0&&<p className="text-code text-content-muted">尚未安装 Theia 扩展。</p>}
         {items.map(item=><div key={item.id} className="space-y-1 rounded border border-edge p-2">
           <p className="text-code font-semibold">{item.extensionId} · {item.version}</p>
-          <p className="text-code text-content-muted">{item.corrupted?"文件校验失败，已禁止启动":item.enabled?"已安装，可手动启动":"已禁用"}{item.running?" · 运行中":""}</p>
+          <p className="text-code text-content-muted">{item.corrupted?"安装记录损坏，已禁止启动":item.enabled?"已安装，启动前会验证全部文件":"已禁用，启动前会验证全部文件"}{item.running?" · 运行中":""}</p>
           <div className="flex flex-wrap gap-2">
             <Button disabled={busy||!!session||!item.enabled||!!item.corrupted} onClick={()=>start(item.id)}>启动</Button>
             <Button disabled={busy||item.running||!!item.corrupted} onClick={()=>toggle(item)}>{item.enabled?"禁用":"启用"}</Button>

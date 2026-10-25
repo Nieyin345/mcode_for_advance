@@ -136,6 +136,8 @@ export type TheiaInstalledInput = z.infer<typeof TheiaInstalledInputSchema>;
 export interface TheiaInstalledEntry {
   id:string; extensionId:string; version:string; enabled:boolean; installedAt:number;
   running:boolean; corrupted?:boolean;
+  /** Metadata-only catalogue is not a security check. Full payload verification occurs before launch. */
+  integrity:"not-checked"|"corrupt";
 }
 export type TheiaInstalledResult =
   | {kind:"list";items:TheiaInstalledEntry[]}
