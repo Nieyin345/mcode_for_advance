@@ -19,6 +19,8 @@ const tabs=read("src/renderer/components/layout/TabBarChrome.tsx");
 const clock=read("src/renderer/hooks/useNow.ts");
 const blocks=read("src/renderer/components/chat/MessageBlocks.tsx");
 const visualTargets=read("scripts/arc005-visual-baseline/probe-assertions.ts");
+const fixturePanels=read("scripts/arc005-visual-baseline/fixture-panels.tsx");
+const apiStub=read("scripts/arc005-visual-baseline/api-stub.js");
 
 check("Sidebar no longer owns one-second timer which reconciles all cards",
  !stream.includes("setNowTick(Date.now())")&&!stream.includes("now={nowTick}")&&
@@ -120,6 +122,29 @@ check("Visual tool probe targets real tool controls not incidental CSS utility s
 check("Visual U1 fails closed when workspace stylesheet is missing or inactive",
  probe.includes('probe = {ok:false,reason:"ARC-005 workspace presentation layer was not active') &&
  probe.includes('skin.controlSize !== "2rem"'));
+check("Sidechat U1 uses actual Mcode right panel and two separate synthetic sessions",
+ probe.includes("rightOpen: true, rightPanelTab: 'flow'") &&
+ probe.includes("sideChatsByParent: {s1:a.sideChats}") &&
+ visualTargets.includes('fixture: "real-SideChatPanel"') &&
+ visualTargets.includes('"[data-ui-sidechat-row]"'));
+check("Real sidechat row is clicked and selection verified before returning to list",
+ probe.includes("item.click()") &&
+ probe.includes("activeSideChatId === 'side1'") &&
+ probe.includes("activeSideChatId: null"));
+check("Old sidechat fake WorkflowBoardPanel overlay is no longer rendered",
+ !fixturePanels.includes("IsolatedBoardBoundary") &&
+ !fixturePanels.includes("sidechat-partial") &&
+ !fixturePanels.includes("<WorkflowBoardPanel"));
+check("Sidechat probe mocks only isolated read-only sessions, not real execution",
+ apiStub.includes("window.__arcSideChatScene && a ? a.sideChats : []") &&
+ apiStub.includes("messages: function () { return Promise.resolve({ messages: [], hasMore: false }); }"));
+check("Electron visual probe checks native split-pane geometry and rejects overlap",
+ probe.includes("paneGeometry") &&
+ probe.includes("center.width < 240") &&
+ probe.includes("right.width < 130") &&
+ probe.includes("(overlapX > 2 && overlapY > 2)"));
+check("No permanent known-missing exception remains for the UI sidechat scene",
+ probe.includes("const KNOWN_UNCAPTURED = new Map<string, string>();"));
 check("Negative: removing live isolation invalidates our own performance contract",
  !(stream.replace("<StreamRunningDuration startedAt={status.startedAt} />","").includes("<StreamRunningDuration startedAt={status.startedAt} />")));
 console.log("arc005-main-ui-u1-guard-smoke: "+(count-failed)+"/"+count);

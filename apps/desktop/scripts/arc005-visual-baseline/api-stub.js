@@ -38,10 +38,13 @@
     codexModels: { list: function () { return Promise.resolve({ providers: [] }); } },
     runtimes: { list: function () { return Promise.resolve({ runtimes: [] }); } },
     lsp: { list: function () { return Promise.resolve({ languages: [] }); } },
-    claude: { listSideChats: function () { return Promise.resolve({ sessions: [] }); } },
+    claude: { listSideChats: function () { var a = window.__arcFixture; return Promise.resolve({ sessions: window.__arcSideChatScene && a ? a.sideChats : [] }); } },
     session: {
       listPinned: function () { return Promise.resolve({ sessions: [] }); },
       list: function () { return Promise.resolve({ sessions: [] }); },
+      // SideChatPanel uses the real selection → history hydration path.
+      // Keep this deliberately empty, isolated and read-only in the probe.
+      messages: function () { return Promise.resolve({ messages: [], hasMore: false }); },
       listAll: function () { var a = window.__arcFixture; return Promise.resolve({ sessions: a ? a.sessions : [], total: a ? a.sessions.length : 0, hasMore: false }); },
     },
     file: new Proxy({

@@ -225,7 +225,24 @@ export function inspectSceneContent(
       : productPass();
   }
 
-  if (scene === "diff" || scene === "terminal" || scene === "editor" || scene === "preview" || scene === "sidechat") {
+  if (scene === "sidechat") {
+    const aside = queryVisible(doc, "[data-cds-aside][aria-hidden='false']");
+    if (!aside) return fail("missing", "right panel is not visible for sidechat");
+    const list = queryVisible(aside, "[data-ui-sidechat-list]");
+    if (!list || isInsideFixture(list)) {
+      return fail(list ? "fixture-only" : "missing", "real SideChatPanel list is not rendered in right panel");
+    }
+    const rows = Array.from(list.querySelectorAll("[data-ui-sidechat-row]")).filter(visible);
+    const titles = rows.map(el => String(el.textContent ?? ""));
+    if (rows.length < 2 ||
+      !titles.some(t => t.includes("侧聊界面探针 A")) ||
+      !titles.some(t => t.includes("侧聊界面探针 B"))) {
+      return fail("missing", "real SideChatPanel lacks both isolated test sessions");
+    }
+    return productPass({ fixture: "real-SideChatPanel", verifiedRows: rows.length });
+  }
+
+  if (scene === "diff" || scene === "terminal" || scene === "editor" || scene === "preview") {
     const panel = queryVisible(doc, fixtureSelector);
     if (!panel) return fail("missing", "expected visual fixture panel is missing");
     const kind = panel.getAttribute?.("data-arc-fixture") ?? "";
@@ -234,32 +251,11 @@ export function inspectSceneContent(
       terminal: "static-terminal",
       editor: "stub-editor",
       preview: "real-markdown-renderer",
-      sidechat: "sidechat-partial",
     };
     if (kind !== expectedKinds[scene]) {
       return fail("wrong-container", "fixture kind does not match the requested scene", { fixture: kind });
     }
 
-    if (scene === "sidechat") {
-      const wrapper = queryVisible(panel, "[data-testid='arc005-sidechat-partial']");
-      if (!wrapper) return fail("missing", "sidechat wrapper is missing", { fixture: kind });
-      if (queryVisible(wrapper, "[data-sidechat-partial='error']")) {
-        return fail("fixture-only", "sidechat child rendered its error boundary; wrapper presence is not health", {
-          fixture: kind,
-          partial: true,
-        });
-      }
-      if (!queryVisible(wrapper, "[data-node-card]")) {
-        return fail("fixture-only", "sidechat wrapper is present but no workflow-node content was rendered", {
-          fixture: kind,
-          partial: true,
-        });
-      }
-      return fail("fixture-only", "sidechat is still an isolated fixture without live workflow IPC/data", {
-        fixture: kind,
-        partial: true,
-      });
-    }
 
     const expectedContent: Record<string, string[]> = {
       diff: [".diff-add", ".diff-del"],

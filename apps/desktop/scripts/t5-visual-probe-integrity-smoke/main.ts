@@ -247,45 +247,50 @@ check("diff fixture wrapper without expected rows is missing content", () => {
   assert.equal(result.value.sourceType, "missing");
 });
 
-check("sidechat child error boundary rejects wrapper-only false positive", () => {
+check("old isolated workflow sidechat fixture does not count as actual sidechat UI", () => {
+  const doc = new SyntheticDocument([fixturePanel("sidechat-partial", [
+    el("div", { "data-testid": "arc005-sidechat-partial" }, "legacy fixture"),
+  ])]);
+  const result = inspectScene("sidechat", doc);
+  assert.equal(result.ok, false);
+  assert.equal(result.value.sourceType, "missing");
+});
+
+check("sidechat right panel without actual list cannot pass", () => {
   const doc = new SyntheticDocument([
-    fixturePanel("sidechat-partial", [
-      el("div", { "data-testid": "arc005-sidechat-partial" }, "", [
-        el("p", { "data-sidechat-partial": "error" }, "IPC unavailable"),
+    el("aside", { "data-cds-aside": "", "aria-hidden": "false" }, "", []),
+  ]);
+  const result = inspectScene("sidechat", doc);
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /SideChatPanel list/);
+});
+
+check("sidechat one fake row is insufficient", () => {
+  const doc = new SyntheticDocument([
+    el("aside", { "data-cds-aside": "", "aria-hidden": "false" }, "", [
+      el("div", { "data-ui-sidechat-list": "" }, "", [
+        el("li", { "data-ui-sidechat-row": "" }, "侧聊界面探针 A"),
       ]),
     ]),
   ]);
   const result = inspectScene("sidechat", doc);
   assert.equal(result.ok, false);
-  assert.equal(result.value.sourceType, "fixture-only");
-  assert.equal(result.value.partial, true);
-  assert.match(result.reason, /error boundary/);
+  assert.match(result.reason, /both isolated test sessions/);
 });
 
-check("sidechat wrapper without child content is not healthy", () => {
+check("two real side chat rows in right panel with sample data satisfy UI-only evidence", () => {
   const doc = new SyntheticDocument([
-    fixturePanel("sidechat-partial", [
-      el("div", { "data-testid": "arc005-sidechat-partial" }),
-    ]),
-  ]);
-  const result = inspectScene("sidechat", doc);
-  assert.equal(result.ok, false);
-  assert.equal(result.value.partial, true);
-  assert.match(result.reason, /no workflow-node content/);
-});
-
-check("sidechat node cards in isolated fixture still cannot prove live IPC", () => {
-  const doc = new SyntheticDocument([
-    fixturePanel("sidechat-partial", [
-      el("div", { "data-testid": "arc005-sidechat-partial" }, "", [
-        el("div", { "data-node-card": "node-1" }, "Fixture node"),
+    el("aside", { "data-cds-aside": "", "aria-hidden": "false" }, "", [
+      el("div", { "data-ui-sidechat-list": "" }, "", [
+        el("li", { "data-ui-sidechat-row": "" }, "侧聊界面探针 A"),
+        el("li", { "data-ui-sidechat-row": "" }, "侧聊界面探针 B"),
       ]),
     ]),
   ]);
   const result = inspectScene("sidechat", doc);
-  assert.equal(result.ok, false);
-  assert.equal(result.value.sourceType, "fixture-only");
-  assert.match(result.reason, /without live workflow IPC\/data/);
+  assert.equal(result.ok, true);
+  assert.equal(result.value.sourceType, "real-content");
+  assert.equal(result.value.fixture, "real-SideChatPanel");
 });
 
 check("narrow-window fixture cannot pass at the wrong viewport", () => {

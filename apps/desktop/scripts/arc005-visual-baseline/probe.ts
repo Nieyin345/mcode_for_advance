@@ -47,23 +47,11 @@ if (selectedConditions?.some(id => !CONDITIONS.some(c => c.id === id))) {
 const captureScreens = selectedScreens ? SCREENS.filter(([id]) => selectedScreens.includes(id)) : SCREENS;
 const captureConditions = selectedConditions ? CONDITIONS.filter(c => selectedConditions.includes(c.id)) : CONDITIONS;
 if (!captureScreens.length || !captureConditions.length) throw Error("Empty ARC005 visual selection");
-/**
- * 【T141】**登记过的**拍不出来的场景。每一条都要有理由，而且理由要能说清
- * 「为什么它拍不出来」而不是「先跳过」。
- *
- * 为什么需要这张表：`sidechat` 的断言是「侧聊仍是隔离夹具、没有真实工作流
- * IPC/data」（`probe-assertions.ts` 的 `fixture-only` 分支，自 `d250a159` 起）。
- * 也就是说它**按设计**永远拍不出内容。
- *
- * 如果没有这张表，那么「让 data-missing 也算不完整」会把门禁变成**永远红** ——
- * 而一个永远红的门禁和一个永远绿的门禁一样没人看。所以区分两件事：
- *
- *   - **登记过的 data-missing** → 已知缺口，如实写进 result.json，不挡门禁；
- *   - **没登记过的** → 说明某次拍摄崩了或场景被改坏，**必须变红**。
- */
-const KNOWN_UNCAPTURED = new Map<string, string>([
-  ["sidechat", "侧聊仍是隔离夹具，没有真实工作流 IPC/data（probe-assertions 的 fixture-only 分支）"],
-]);
+/** Explicit exemptions for fixture scenes that CANNOT prove rendered UI.
+ * Currently empty: sidechat now mounts the real RightPanel → WorkflowBoardPanel
+ * → SideChatPanel, and exercises actual child-session selection using isolated
+ * API/store rows. Real workflow execution/IPC remains outside this visual U1. */
+const KNOWN_UNCAPTURED = new Map<string, string>();
 const SELECTORS = ARC005_MEASURE_SELECTORS;
 const TOKENS = [
  "--surface", "--surface-muted", "--surface-hover", "--content",
@@ -129,6 +117,10 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
       window.__arcFixture = {
         projects: [project('p1','视觉探针项目 A'), project('p2','视觉探针项目 B')],
         sessions: [session('s1','p1','视觉探针对话 A'), session('s2','p1','并行会话 B'), session('s3','p2','切换目标项目')],
+        sideChats: [
+          {...session('side1','p1','侧聊界面探针 A'),kind:'side',parentSessionId:'s1'},
+          {...session('side2','p1','侧聊界面探针 B'),kind:'side',parentSessionId:'s1'}
+        ],
       };
       const a = window.__arcFixture;
       s.setState({
@@ -145,6 +137,7 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
         centerTabFocus:'chat', displayMode:'tabs', leftBarMode:'tree', locale:'zh'
       });
       window.__arcReset = () => {
+        window.__arcSideChatScene = false;
         window.__arcShowFixture?.('');
         const a = window.__arcFixture;
         s.getState().setSettingsOpen(false);
@@ -155,6 +148,7 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
           openTabs:['s1'],messagesBySession:{s1:[],s2:[],s3:[]},
           historyLoadedBySession:{s1:true,s2:true,s3:true},
           runningBySession:{},pendingApprovals:[],
+          sideChatsByParent:{},activeSideChatId:null,
           rightPanelTab:'files',leftBarMode:'tree', centerTabFocus:'chat',
           streamSessions:[],streamDirty:false,streamTotal:0,streamHasMore:false,
           leftOpen:true,rightOpen:false,
@@ -210,7 +204,11 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               window.__arcShowFixture?.('diff', ${JSON.stringify(diffBefore)}, ${JSON.stringify(diffAfter)});
             }
             else if (id === 'sidechat') {
-              window.__arcShowFixture?.('sidechat');
+              window.__arcSideChatScene = true;
+              st.setState({
+                rightOpen: true, rightPanelTab: 'flow', activeSideChatId: null,
+                sideChatsByParent: {s1:a.sideChats}, leftBarMode:'tree'
+              });
             }
             else if (id === 'terminal') {
               window.__arcShowFixture?.('terminal');
@@ -252,6 +250,22 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
             return ${buildSceneAssertionScript(screen)};
           })()`);
           await sleep(350);
+          // Actual sidechat UI interaction (real event handlers + store): open
+          // a child session, verify selection, then return to list before the
+          // screenshot. Fixture data never enters a real database / workflow.
+          if (screen === "sidechat" && probe.ok) {
+            const interaction = await js<boolean>(`(async () => {
+              const item = document.querySelector('[data-cds-aside] [data-ui-sidechat-row] button');
+              if (!item) return false;
+              item.click();
+              await new Promise(resolve => setTimeout(resolve, 90));
+              const selected = window.__store.getState().activeSideChatId === 'side1';
+              window.__store.setState({activeSideChatId: null});
+              await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+              return selected;
+            })()`);
+            if (!interaction) probe = {ok:false,reason:"real SideChatPanel row click did not select the child session"};
+          }
           const alive = await js<boolean>("!!document.querySelector('[data-testid=workspace-main]') && !!document.querySelector('button')");
           if (probe.ok && !alive) probe = {ok:false,reason:"真实 App 不再挂载；不能抓取空白页"};
           if (screen === "tools" && !probe.ok) {
@@ -298,6 +312,18 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
             controlSize: workspaceStyle?.getPropertyValue("--workspace-control-size").trim() ?? "",
             focusOutline: workspaceStyle?.getPropertyValue("--workspace-focus-outline").trim() ?? "",
           };
+          const visibleRect = (selector) => {
+            const el = [...document.querySelectorAll(selector)]
+              .find(node => node.getClientRects().length && getComputedStyle(node).display !== "none");
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};
+          };
+          const paneGeometry = {
+            sidebar: visibleRect("[data-testid='workspace-sidebar']"),
+            center: visibleRect("[data-ui-center-pane]"),
+            right: visibleRect("[data-cds-aside][aria-hidden='false']"),
+          };
           const measured = selectors.map(([name,sel]) => {
             let el; try { el = [...document.querySelectorAll(sel)].find(e => e.getClientRects().length > 0); } catch {}
             const targetSpec = targetSpecs[name];
@@ -314,12 +340,28 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               padding:st.padding,
               bounds:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}};
           });
-          return {measured,workspaceSkin,tokens:Object.fromEntries(tokens.map(k=>[k,root.getPropertyValue(k).trim()])),
+          return {measured,workspaceSkin,paneGeometry,tokens:Object.fromEntries(tokens.map(k=>[k,root.getPropertyValue(k).trim()])),
             viewport:{width:innerWidth,height:innerHeight},
             dark:document.documentElement.classList.contains('dark'),
             textSample:document.body.innerText.slice(0,400)};
         })()`);
         const skin = (snapshot as {workspaceSkin?: {mounted:boolean;layerLinked:boolean;controlSize:string;focusOutline:string}}).workspaceSkin;
+        // Real browser geometry is a UI invariant, not a token comparison:
+        // the right pane must occupy its own flex slot instead of covering
+        // the composer, and a 1024px workspace must retain readable chat.
+        if (probe.ok && ["sidechat","files-pane","git-pane","narrow-window"].includes(screen)) {
+          type Rect = {x:number;y:number;width:number;height:number;right:number;bottom:number};
+          const geometry = (snapshot as {paneGeometry?: {
+            sidebar:Rect|null;center:Rect|null;right:Rect|null;
+          }}).paneGeometry;
+          const center = geometry?.center, right = geometry?.right;
+          const overlapX = center && right ? Math.min(center.right,right.right)-Math.max(center.x,right.x) : 0;
+          const overlapY = center && right ? Math.min(center.bottom,right.bottom)-Math.max(center.y,right.y) : 0;
+          if (!center || !right || center.width < 240 || right.width < 130 ||
+              (overlapX > 2 && overlapY > 2)) {
+            probe = {ok:false,reason:"real center/right pane geometry collapsed or overlaps: "+JSON.stringify(geometry)};
+          }
+        }
         if (probe.ok && (!skin?.mounted || !skin.layerLinked || skin.controlSize !== "2rem" || !skin.focusOutline)) {
           probe = {ok:false,reason:"ARC-005 workspace presentation layer was not active in this real Electron frame"};
         }

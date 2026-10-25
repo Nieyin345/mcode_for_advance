@@ -3,10 +3,16 @@
 从仓库根目录运行：
 
 ```bash
-bash apps/desktop/scripts/arc005-visual-baseline/run.sh
+# Windows cmd.exe / native Node (works without WSL Node)
+node apps/desktop/scripts/arc005-visual-baseline/build.mjs
 node apps/desktop/scripts/arc005-visual-baseline/compare.mjs
-npx tsc --noEmit -p apps/desktop/tsconfig.json
+node apps/desktop/node_modules/typescript/bin/tsc --noEmit -p apps/desktop/tsconfig.json
 ```
+
+针对界面收敛的快速实际 Electron 检查可设置环境变量后运行 build：
+`set "ARC005_VISUAL_SCENES=sidechat,files-pane,git-pane,narrow-window"` 与
+`set "ARC005_VISUAL_CONDITIONS=narrow"`。不设置则**完整 17×3=51 格**。
+轻量源码 E1 检查：`node apps/desktop/scripts/run-smokes.mjs arc005-main-ui-u1-guard-smoke t5-visual-probe-integrity-smoke`。
 
 仅使用现成 Electron/esbuild/Tailwind/React 依赖。根组件始终是**真实 App**
 和真实 Zustand store，LeftBar / StreamSidebar **不再用占位组件替换**；
@@ -90,8 +96,10 @@ const sample = JSON.parse(readFileSync(path, "utf8"));
   如实记录，**不挡门禁**；
 - **没登记的** → 某次拍摄崩了或场景被改坏，**必须红**。
 
-不区分的话，「让 data-missing 也算失败」会把门禁变成永远红（`sidechat` 按设计就
-拍不出内容），**而一个永远红的门禁和一个永远绿的一样没人看**。
+以前 `sidechat` 是未接入工作流 IPC 的隔离面板，3 格永远标记为
+`DATA_MISSING`。现在它真实打开右栏的 `WorkflowBoardPanel → SideChatPanel`，
+展示两条虚构子对话并通过点击验证真实会话选择，**不再允许登记为常驻缺失**。
+仍坚持失败时退出非零，不能用看起来相似的占位元素混过门禁。
 
 每格按 `<screen>-<condition>-<nominal-width>.json/.png` 输出到
 `.tmp/arc005-visual/`。截图均由真实 Electron `capturePage()` 生成，
@@ -107,12 +115,16 @@ const sample = JSON.parse(readFileSync(path, "utf8"));
 | preview | `real-markdown-renderer` | 真生产 `Markdown` 渲染；尚未验证 PDF/图片 |
 | terminal | `static-terminal` | 只验证 token/排版；**没有 PTY** |
 | editor | `stub-editor` | 假只读源码面板；**不是 Monaco** |
-| sidechat | `sidechat-partial` | 真 `WorkflowBoardPanel` 尝试渲染；数据/订阅来自空 stub，无真实 workflow IPC/运行，错误边界保留框架 |
+| sidechat | `real-SideChatPanel` | **真实 App 右侧工作流面板内的 SideChatPanel**；虚构的两条子会话通过只读 API 桩加载，并测试点击第一条子会话的选择状态、再返回列表截图；**不代表**工作流 IPC/节点执行验收 |
 | narrow-window | `stub-editor+real-layout` | 强制实际窗口 1024×640，打开左栏/右栏并覆盖只读编辑器桩；light/dark 也在 1024 实拍 |
 
 **特别注意：** 文件名中的 `light-1280` / `dark-1280` 对 `narrow-window`
 代表**主题条件**，不是实际 viewport；实际 window size 见 JSON
 `requested`、`snapshot.viewport`。其他行按命名窗口尺寸拍摄。
+
+每张 JSON 还写入 `snapshot.workspaceSkin`，验证 ARC-005 视觉层样式表确已加载、工作区存在、控件尺寸及焦点色均非空；漏加载样式会令捕获失败，而不再产生误导性的通过。
+
+`sidechat`、`files-pane`、`git-pane` 与 `narrow-window` 还检查真实 `snapshot.paneGeometry`：中心区宽至少 240px、右栏宽至少 130px，并要求二者没有实际二维覆盖。窗口布局退化为重叠浮层或把聊天主窗挤没时会标记 `DATA_MISSING`，不再只比较颜色令牌。
 
 每张 JSON 都写入 `snapshot.measured`（固定 16 个选择器的
 `getComputedStyle`，不出现标 `present:false`），
@@ -163,9 +175,7 @@ T12 的 token 变异验证保存在
 
 ## 仍未覆盖的功能
 
-- 侧聊的 live WorkflowBoard IPC 和真实异步运行未被夹具提供；
-  如要验业务互动，需产品级真 preload/主进程工作流订阅环境，
-  仅在本测试目录添 stub 不等价。
+- 侧聊的 UI 本体、列表呈现和子会话选择已覆盖，**live WorkflowBoard IPC、节点执行与真实异步运行尚未覆盖**；如要验业务互动，需产品级真 preload/主进程工作流订阅环境，仅在本测试目录提供虚构行和只读 stub 不等价。
 - 编辑器真实 Monaco worker、PTY 的会话生命周期、PDF 和图片预览
   不是本批视觉夹具的证据。后续验收不能拿静态桩代替 U1 功能结论。
 - 仅代表本机 Mcode 的真实 Electron 画面；未取得用户安装版 Claude
