@@ -8,7 +8,7 @@
 export { beforeReady, afterReady } from "../../t7-genoffice-u1/journeys/index.js";
 import type { U1Journey } from "../../electron-u1/driver/types.js";
 
-export const journeyNames = ["sheets-shared-worker-idle-restart", "six-editor-residency", "sheets-nonvisual-edit-save-reopen"] as const;
+export const journeyNames = ["sheets-shared-worker-idle-restart", "six-editor-residency", "sheets-nonvisual-edit-save-reopen", "slides-native-semantics"] as const;
 const loaders: Record<string, () => U1Journey> = {
   "sheets-shared-worker-idle-restart": () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -19,6 +19,12 @@ const loaders: Record<string, () => U1Journey> = {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require("./six-editor-residency.js") as typeof import("./six-editor-residency.js");
     return mod.sixEditorResidencyJourney;
+  },
+  "slides-native-semantics": () => {
+    // Real vendor Slides session/read/write/OOXML persistence, not the old Mcode stub.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("./slides-native-semantics.js") as typeof import("./slides-native-semantics.js");
+    return mod.slidesNativeSemanticJourney;
   },
   "sheets-nonvisual-edit-save-reopen": () => {
     // Same native click, save, independent XLSX readback and OS relaunch as T7.

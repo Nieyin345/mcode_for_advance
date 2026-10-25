@@ -336,3 +336,23 @@ git status apps/desktop/scripts/t7-genoffice-u1/ → 无改动
 
 见提交 SHA（交付回报里给；本卡文件与 `o0-format-fidelity-smoke/**` 同一次提交）。
 
+
+---
+
+## 2026-10-25｜主线补充 U1：原厂 Slides 备注、切换、章节、批注、撤销/重做、PPTX 重开
+
+**归属：现有 O0 / ARC-007（不新建重复业务迁移任务）**。本次在复核 `documentViewPreload.ts` 的历史假空值后，沿**当前生产入口**确认：原生 Slides 视图实际由 `genofficeNativeVendor.createNativeView('slides')` → `createSlidesView(path)` → 原厂 `apps/slides/src/preload/index.ts` + 原厂 `registerSlidesIpc` 服务。Mcode 的旧公共 `documentViewPreload.ts` 内部 `getNotes:'', getTransition:'none', getAnimations:[], getSections:[]` 并非该原生 Slides 生产路径的源头。不能误把旧兼容 fallback 的空值当作现行原生 Slides 的全部功能缺失，也不应该在 Mcode 自己重写一套动画/备注数据模型。
+
+**新增可复跑真 Electron 旅程**：`apps/desktop/scripts/office-perf-u1/journeys/slides-native-semantics.ts`，`node apps/desktop/scripts/office-perf-u1/run.mjs --only=slides-native-semantics`。沿用 T7 的 `editorSetup('slides')` / 受信工作区 / 原生 preload / 原厂 main handler / 两个独立 Electron OS 进程与隔离样本，不修改用户原文件，不 mock 原厂编辑业务，也不依赖不可捕获的显示器截图。判据包括：
+
+1. 真原厂 preload 返回文档第一页的 notes / animations / sections / transition，且 Mcode Host 已承认唯一 opened session。
+2. 原厂 `setNotes(0,text)` 写入独一无二备注，再 `getNotes` 回读；`setTransition({slideIndex:0,kind:'fade'})`；`addSection({atSlideIndex:0,name})`；`addComment({slideIndex:0,text})`，每项立即用各自原厂读取接口确认。
+3. 原厂 `undo()` 必须把刚添加的批注撤销，`redo()` 必须使批注恢复。这里测试的是原厂唯一 session/history，而不是自行维护一个 DeckSession。
+4. 原厂 `slidesApi.save()` 必须真正改变磁盘 PPTX SHA256，`DocumentViewHost.close` 清除会话。
+5. 启动**第二个操作系统进程**重新打开保存后的 PPTX，备注、fade 切换、章节名称、批注内容都必须真实存在；animations 必须返回结构化原厂数组（当前样本本身没有动画，所以**没有声称动画写回已验**）。
+
+**实际执行**：四轮逐步扩展的真 Electron `1/1 PASS`，最终记录 `.tmp/electron-u1/2026-10-25T08-06-01-389Z/slides-native-semantics/journey-result.json`（重启两次不同 OS 进程）。类型检查 `npx tsc --noEmit -p apps/desktop/tsconfig.json` 与 `npx tsc --noEmit -p packages/contracts/tsconfig.json` 均 PASS。联合 `run-smokes.mjs genoffice-native-view-smoke slides-edit-smoke slides-preload-abi-smoke o0-format-fidelity-smoke` **未运行**：执行前因其他对话重型测试锁 PID 30632 被拒（日志 `apps/desktop/.tmp/smoke-runs/1792915630245-36032-MoAjKw`），未抢锁；不可写成 PASS。
+
+**未完成与真实阻断**：这次没有完成真实 GUI 的评论/章节/动画控件手势（直接走**同一生产 preload 接口**），没有构造带动画的 PPTX 并进行 setAnimations/undo 的重开保真，也未验证 Word/WPS 打开该改后 PPTX。Docs 原厂二进制崩溃恢复在 Mcode 受限 preload `writeRecoveryCopy` 仍显式 `{ok:false}`：原厂实现涉及密码保护、版本竞态、用户丢弃稿后的恢复副本清理，不能直接启用原厂全局 userData 写入或拿 UTF-8 FileSnapshot 冒充 DOCX 原生恢复；需以原厂算法 + Mcode 受信路径/同版本清理/授权的单一数据存储接入，**本次未修复**。ARC-007 整包开发/独立复核仍不应打勾。
+
+**补充重跑**：其他对话重型测试锁释放后，`node apps/desktop/scripts/run-smokes.mjs slides-edit-smoke slides-preload-abi-smoke genoffice-native-view-smoke` 已 **3/3 PASS**，日志 `apps/desktop/.tmp/smoke-runs/1792915736202-22704-HqAZ0Z`。原先四套套件的联合尝试仍是因测试锁未执行，不能以这次三套结果冒充原始第四套也已跑。
