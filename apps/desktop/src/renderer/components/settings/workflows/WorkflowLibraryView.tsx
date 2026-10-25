@@ -219,6 +219,7 @@ export function WorkflowLibraryView({
   const [docError, setDocError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [engineMigrationConfirmationRequired, setEngineMigrationConfirmationRequired] = useState(false);
   /** 上一次保存成功时校验器给的提醒。只在"和磁盘一致"时显示(一改动就换成"有未保存的改动")。 */
   const [saveNotes, setSaveNotes] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
@@ -318,6 +319,7 @@ export function WorkflowLibraryView({
       setPendingApproval(false);
       setDocError(null);
       setSaveError(null);
+      setEngineMigrationConfirmationRequired(false);
       setSaveNotes([]);
       setDocLoading(true);
       docRequestRef.current = id;
@@ -395,7 +397,7 @@ export function WorkflowLibraryView({
    *  晚到的那一次会把刚删掉的那一行写回去。 */
   const removingRef = useRef(false);
 
-  const flush = useCallback(async (): Promise<FlushResult> => {
+  const flush = useCallback(async (confirmEngineMigration = false): Promise<FlushResult> => {
     const requestedId = latest.current?.working.id;
     // 上一次落地了再决定这一次,而且**是重新判、不是复用上一次的结论** —— 等它的
     // 这段时间里用户可能又改了。
@@ -416,15 +418,19 @@ export function WorkflowLibraryView({
     inflight.current = gate;
     setSaving(true);
     setSaveError(null);
+    setEngineMigrationConfirmationRequired(false);
     setSaveNotes([]);
     try {
       const expectedRevision = baselineRevision.current?.id === id
         ? baselineRevision.current.value : null;
-      const res = await api.workflow.save({ workflow: payload, expectedRevision });
+      const res = confirmEngineMigration
+        ? await api.workflow.confirmMigration({ workflow: payload, expectedRevision })
+        : await api.workflow.save({ workflow: payload, expectedRevision });
       if (!res.ok) {
         // 报错也要看是哪一份文档的错 —— 用户已经切走的话,这句话不该挂到别人头上。
         if (latest.current?.working.id === id) {
           setSaveError(res.error ?? t("settings.workflows.unknownError"));
+          setEngineMigrationConfirmationRequired(!confirmEngineMigration && "requiresConfirmation" in res && res.requiresConfirmation === true);
         }
         return "failed";
       }
@@ -456,12 +462,16 @@ export function WorkflowLibraryView({
         setReview(saved.review);
         setReviewDoc(saved.workflow);
       }
-      if (mounted.current && latest.current?.working.id === id) setSaveNotes(res.warnings ?? []);
+      if (mounted.current && latest.current?.working.id === id) {
+        setSaveNotes(res.warnings ?? []);
+        setEngineMigrationConfirmationRequired(false);
+      }
       void loadList();
       return "ok";
     } catch (err) {
       if (latest.current?.working.id === id) {
         setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
+        setEngineMigrationConfirmationRequired(false);
       }
       return "failed";
     } finally {
@@ -510,8 +520,8 @@ export function WorkflowLibraryView({
    * 成功之后才把草稿从袋子里撤掉:失败(名称空着、主进程拒了)时它得留着,否则用户
    * 改的那一份就真的没地方找了,而状态行还在说"保存受阻"。
    */
-  const save = useCallback(async (): Promise<void> => {
-    await flush();
+  const save = useCallback(async (confirmEngineMigration = false): Promise<void> => {
+    await flush(confirmEngineMigration);
     if (mounted.current) refreshDrafts();
   }, [flush, refreshDrafts]);
 
@@ -563,6 +573,7 @@ export function WorkflowLibraryView({
     latest.current = { ...current, working: normalized };
     setWorking(normalized);
     setSaveError(null);
+    setEngineMigrationConfirmationRequired(false);
     setSaveNotes([]);
   };
   const travel = (direction: "undo" | "redo") => {
@@ -574,6 +585,7 @@ export function WorkflowLibraryView({
     latest.current = { ...current, working: normalized };
     setWorking(normalized);
     setSaveError(null);
+    setEngineMigrationConfirmationRequired(false);
     setSaveNotes([]);
     if (!next.nodes.some((n) => n.id === selectedNodeId)) setSelectedNodeId(null);
   };
@@ -1113,22 +1125,40 @@ export function WorkflowLibraryView({
               {entry?.shippedUpdate && (
                 <WorkflowBadge tone="info">{t("settings.workflows.badgeShippedUpdate")}</WorkflowBadge>
               )}
-              <label className="flex items-center gap-2 text-[0.7857em] text-content-muted">
-                执行引擎
-                <select aria-label="工作流执行引擎" value={working.engine ?? "mcode"}
-                  onChange={(event) => handleUpdateWorkflow({ engine: event.target.value as "mcode" | "node-red" })}
-                  className="rounded border border-edge bg-surface px-2 py-1 text-content"
-                  disabled={saving}>
-                  <option value="mcode">Mcode（旧工作流）</option>
-                  <option value="node-red">Node-RED</option>
-                </select>
-              </label>
+              {/* One workflow workbench; no end-user switch back to the legacy
+                  graph executor. Old saved docs retain their engine marker
+                  until the user explicitly starts a guarded migration. */}
+              {(baseline.engine ?? "mcode") === "mcode" ? (
+                (working.engine ?? "mcode") === "node-red" ? (
+                  <span role="status" className="text-[0.7857em] text-warning">
+                    {t("settings.workflows.migrationSavePending")}
+                  </span>
+                ) : (
+                  <Button size="sm" variant="secondary" disabled={saving || dirty}
+                    onClick={() => handleUpdateWorkflow({ engine: "node-red" })}>
+                    {t("settings.workflows.migrateToNodeRed")}
+                  </Button>
+                )
+              ) : (
+                <span aria-label={t("settings.workflows.nativeEngineLabel")}
+                  className="rounded border border-edge/70 px-2 py-1 text-[0.7857em] text-content-muted">
+                  Node-RED
+                </span>
+              )}
               {/* 保存 / 放弃 + 状态行。**摆在标题行,和"我在编辑哪个工作流"同一行** ——
                   这是这一页唯一一处"整份文档"的位置,而这两个动作正是文档级的。
                   自动保存那会儿没有这一块,因为没有什么可点的。
                   按钮**一直在**(不是有改动才冒出来):它同时是"现在存没存"这个问题的
                   答案,藏在 dirty 后面的话,用户没法从界面上看出"已经存好了"。 */}
               <span className="ml-auto flex shrink-0 items-center gap-2">
+                {engineMigrationConfirmationRequired
+                  && (baseline.engine ?? "mcode") === "mcode"
+                  && working.engine === "node-red" && (
+                    <Button size="sm" variant="secondary" disabled={saving || nameMissing}
+                      onClick={() => void save(true)}>
+                      {t("settings.workflows.confirmEngineMigration")}
+                    </Button>
+                  )}
                 <SaveStateLine state={saveState} />
                 <Button
                   variant="ghost"
@@ -1219,7 +1249,11 @@ export function WorkflowLibraryView({
             ) : working && baseline ? (
               catalog ? (
                 <>
-                  <WorkflowNativeEditorEntry key={baseline.id} workflowId={baseline.id} dirty={dirty || saving} onOpen={onOpenNativeEditor} />
+                  {(baseline.engine ?? "mcode") === "node-red"
+                    ? <WorkflowNativeEditorEntry key={baseline.id} workflowId={baseline.id} dirty={dirty || saving} onOpen={onOpenNativeEditor} />
+                    : <div role="status" className="rounded border border-warning/40 bg-warning/10 p-3 text-[0.7857em] text-content">
+                        {t("settings.workflows.legacyOpenHint")}
+                      </div>}
                   <div className={cn("min-h-0 shrink-0", inspectorOpen ? "flex" : "hidden")}>
                   <NodeInspector
                     doc={working}

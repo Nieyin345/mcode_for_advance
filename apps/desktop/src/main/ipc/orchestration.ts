@@ -38,6 +38,7 @@ import {
   WorkflowRetrySchema,
   WorkflowExportSchema,
   WorkflowApproveSchema,
+  WorkflowConfirmMigrationSchema,
   WorkflowGetSchema,
   WorkflowImportSchema,
   WorkflowImportPresetSchema,
@@ -168,6 +169,31 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
     // MCP(`main/mcp/mcodeServer.ts`),而那个模块**无头也会被 import 并真被调用**
     // (见 `scripts/mcode-admin-smoke`),直接 import 执行器会把 electron 拖进那套冒烟。
     if (res.ok) requestWorkflowReload(input.workflow.id);
+    return res;
+  });
+
+  // A distinct renderer-only channel: ordinary workflow.save (including
+  // scene commands and agent calls) cannot acknowledge executor migration.
+  // The endpoint accepts only an existing mcode-owned doc -> Node-RED and
+  // requires the exact saved revision shown in the UI.
+  ipcMain.handle(IPC.WORKFLOW_CONFIRM_MIGRATION, async (_evt, raw) => {
+    const input = WorkflowConfirmMigrationSchema.parse(raw);
+    if (!input.expectedRevision) {
+      return { ok: false, error: "迁移确认缺少当前保存版本，拒绝覆盖可能已变化的工作流" };
+    }
+    const current = getWorkflow(input.workflow.id);
+    if (!current || current.engine === "node-red" || input.workflow.engine !== "node-red") {
+      return { ok: false, error: "迁移确认只允许把现有旧工作流显式切换到 Node-RED" };
+    }
+    const workflow = mergeUnknownWorkflowFields(input.workflow, (raw as { workflow?: unknown } | null)?.workflow);
+    const res = await saveWorkflow(workflow, {
+      expectedRevision: input.expectedRevision,
+      confirmEngineMigration: true,
+    });
+    if (res.ok) {
+      notifyWorkflowsChanged(`ipc:workflow_confirm_migration:${input.workflow.id}`);
+      requestWorkflowReload(input.workflow.id);
+    }
     return res;
   });
 

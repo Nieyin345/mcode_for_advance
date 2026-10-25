@@ -162,17 +162,17 @@ async function callAsync(channel: string, raw?: unknown): Promise<unknown> {
 /** 把 `unknown` 收成能点属性的形状 —— 断言里读返回值的字段用。 */
 const obj = (v: unknown): Record<string, unknown> => v as Record<string, unknown>;
 
-/* ──────────────── 1. 32 条 handler 一条不少、一条不多 ──────────────── */
+/* ──────────────── 1. 33 条 handler 一条不少、一条不多 ──────────────── */
 
 console.log("\n注册面");
 
-// 32 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
+// 33 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
 // 点了没反应;多一条 = 白名单那边没跟上(renderer 根本调不到,但说明有人改了这里
 // 却没改契约那一份)。
 const registered = [...handlers.keys()].sort();
 check(
-  `注册了 32 条 handler(实际 ${registered.length})`,
-  registered.length === 32,
+  `注册了 33 条 handler(实际 ${registered.length})`,
+  registered.length === 33,
   registered,
 );
 
@@ -183,6 +183,7 @@ const expectedChannels: Array<[string, string]> = [
   ["审查并启用外来工作流", IPC.WORKFLOW_APPROVE],
   ["节点类型清单", IPC.WORKFLOW_NODE_TYPES],
   ["存一份工作流", IPC.WORKFLOW_SAVE],
+  ["用户明确确认迁移旧工作流", IPC.WORKFLOW_CONFIRM_MIGRATION],
   ["删/恢复默认", IPC.WORKFLOW_REMOVE],
   ["导出", IPC.WORKFLOW_EXPORT],
   ["导入(文本)", IPC.WORKFLOW_IMPORT],
@@ -951,6 +952,36 @@ resetSent();
     JSON.stringify(sent[0]?.payload).includes("wf_smoke"),
     sent[0]?.payload,
   );
+}
+
+// 迁移确认必须走独立的用户专用 IPC。普通 workflow.save 即使被传入
+// confirmEngineMigration=true 也会被 schema 剥离，不能替用户确认人类裁决项。
+{
+  const id = "wf_explicit_migration_confirmation";
+  const legacy = goodDoc({ id, name: "需人工确认的旧工作流", engine: "mcode" });
+  const seeded = obj(await callAsync(IPC.WORKFLOW_SAVE, { workflow: legacy }));
+  eq("迁移确认夹具存为 mcode", seeded.ok, true);
+  const before = obj(await callAsync(IPC.WORKFLOW_GET, { id }));
+  const revision = String(before.revision);
+  const target = { ...(before.workflow as WorkflowDoc), engine: "node-red" as const };
+
+  resetSent();
+  const genericAttempt = obj(await callAsync(IPC.WORKFLOW_SAVE, {
+    workflow: target, expectedRevision: revision, confirmEngineMigration: true,
+  }));
+  eq("普通 workflow.save 不能消费伪造的迁移确认字段", genericAttempt.ok, false);
+  eq("普通保存明确返回需要人工确认", genericAttempt.requiresConfirmation, true);
+  eq("被拒绝的尝试不改变引擎归属", obj(obj(await callAsync(IPC.WORKFLOW_GET, { id })).workflow).engine, "mcode");
+  same("未确认迁移不广播", sent.length, 0);
+
+  const noRevision = obj(await callAsync(IPC.WORKFLOW_CONFIRM_MIGRATION, { workflow: target }));
+  eq("用户专用迁移确认缺少版本时拒绝", noRevision.ok, false);
+  const confirmed = obj(await callAsync(IPC.WORKFLOW_CONFIRM_MIGRATION, {
+    workflow: target, expectedRevision: revision,
+  }));
+  eq("专用确认通道允许显式确认的无损迁移", confirmed.ok, true);
+  eq("确认后才切换到 Node-RED", obj(obj(await callAsync(IPC.WORKFLOW_GET, { id })).workflow).engine, "node-red");
+  eq("确认成功只广播一次", sent.filter((s) => s.channel === IPC.WORKFLOW_CHANGED).length, 1);
 }
 
 // **校验不通过时:不落盘、不广播。** 判据立在"用户下次打开看到的是哪一份"上。

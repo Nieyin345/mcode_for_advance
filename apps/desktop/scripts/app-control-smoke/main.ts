@@ -164,6 +164,7 @@ const pin: Array<[string, string]> = [
   ["claude.approve", "blocked"],
   ["claude.respondQuestion", "blocked"],
   ["workflow.approve", "blocked"],
+  ["workflow.confirmMigration", "blocked"],
   ["customModel.getToken", "blocked"],
   // 中继配置含明文 SSH 密码 —— 与 customModel.getToken / *Models.getApiKey 同类,
   // 必须同档(报告附录 C:「relay.getConfig 靠按**键名**打码兜底,换个字段名就漏」)。

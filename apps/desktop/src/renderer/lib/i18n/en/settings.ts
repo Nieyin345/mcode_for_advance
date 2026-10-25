@@ -1889,6 +1889,11 @@ export const en = {
   "settings.workflows.promptAutoSaveHint":
     "A graph workflow is defined by its nodes. Edits remain in-memory drafts until you click Save or press Ctrl/Cmd+S.",
   "settings.workflows.newWorkflow": "New workflow",
+  "settings.workflows.migrateToNodeRed": "Migrate legacy workflow to Node-RED",
+  "settings.workflows.migrationSavePending": "Migration selected · save to run Mcode migration checks",
+  "settings.workflows.confirmEngineMigration": "I reviewed the differences; continue migration",
+  "settings.workflows.nativeEngineLabel": "Workflow engine",
+  "settings.workflows.legacyOpenHint": "This legacy workflow still belongs to the previous executor. Migrate it and pass save-time safety checks before editing it in the unified Node-RED canvas.",
   "settings.workflows.newWorkflowName": "New workflow",
   "settings.workflows.actionFailed": "That did not work: {error}",
   "settings.workflows.unknownError": "unknown error",

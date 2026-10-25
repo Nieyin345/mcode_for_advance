@@ -12,6 +12,9 @@ export function mergeSavedWorkflow(current: WorkflowDoc, submitted: WorkflowDoc,
     icon: current.icon === submitted.icon ? saved.icon : current.icon,
     prompt: current.prompt === submitted.prompt ? saved.prompt : current.prompt,
     frameworkNote: current.frameworkNote === submitted.frameworkNote ? saved.frameworkNote : current.frameworkNote,
+    // Engine ownership is an editable workflow-level field. Keep a migration
+    // chosen while save is in flight, just like prompt/metadata edits.
+    engine: current.engine === submitted.engine ? saved.engine : current.engine,
     nodes: same(current.nodes, submitted.nodes) ? saved.nodes : current.nodes,
     edges: same(current.edges, submitted.edges) ? saved.edges : current.edges,
   };
@@ -26,7 +29,7 @@ export function normalizeDraft(doc: WorkflowDoc, baseline: WorkflowDoc): Workflo
 }
 
 export function sameEditableWorkflow(a: WorkflowDoc, b: WorkflowDoc): boolean {
-  return a.id === b.id && a.prompt === b.prompt && a.frameworkNote === b.frameworkNote &&
+  return a.id === b.id && a.engine === b.engine && a.prompt === b.prompt && a.frameworkNote === b.frameworkNote &&
     (a.builtin || (a.name === b.name && a.description === b.description)) &&
     same(a.nodes, b.nodes) && same(a.edges, b.edges);
 }

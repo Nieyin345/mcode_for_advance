@@ -166,6 +166,7 @@ const BLOCKED: Record<string, string> = {
   // 【ARC-006 Gate E】审批应答 = 「用户本人点头」这件事的落点：agent 任何理由都不该
   // 自己回答一张安装审批卡（答了就等于自己批准自己装可执行代码）。
   "workflowEngine.respondNodeInstallApproval": "安装审批的应答只能由用户在审批卡上本人点击",
+  "workflow.confirmMigration": "工作流引擎迁移的人工确认只能由用户在工作流界面本人点击",
   "unattendedPlans.resume": "续跑无人值守计划会在本机建会话,只能由用户本人发起",
   "unattendedPlans.abandon": "放弃计划是用户的治理动作,只能由用户本人发起",
   // 【T105】任务验收 = 路线图 §5「执行完成 ≠ 验收通过」的落点。四条的动词

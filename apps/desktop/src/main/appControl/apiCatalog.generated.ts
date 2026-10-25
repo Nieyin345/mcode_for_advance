@@ -3445,6 +3445,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
+  "method": "workflow.confirmMigration",
+  "channel": "workflow:confirmMigration",
+  "doc": "User-only explicit acknowledgement after the first save reports human-decision migration items.",
+  "input": "{ workflow: { id: string; name: string; builtin: boolean; updatedAt: number; nodes: { params: Record<string, unknown>; type: string; id: string; title: string; position: {…; expectedRevision?: string | null | undefined }",
+  "inputFull": "{ workflow: { id: string; name: string // 名称**不能为空** —— 库里一行没有名字,列表、选择器、确认框里都会显示成一片空白。; builtin: boolean // true = 随应用发布的内置工作流(默认版在代码里,用户的修改存表里覆盖它)。; updatedAt: number; nodes: Array<{ params: Record<string, unknown> // 这个类型的参数。**这里只当袋子** —— 值的合法性由该类型的清单校验 (`validateNodeParams`),因为只有清单知道哪些键必填、各自该是什么类型。; type: string // 节点类型的 id,形如 `mcode.agent`。见 `nodeType.ts` 的 `NODE_TYPE_ID_RE`。; id: string // `\"n_\"` 前缀 + 随机。图内唯一。; title: string // 卡片标题。用户可改;留空则显示类型名。; position: { x: number; y: number }; capability?: \"read\" | \"write\" | \"exec\" | \"net\" | undefined // 覆盖类型的默认能力。省略 = 用清单声明的默认值。 }>; edges: Array<{ id: string; from: string; to: string; label?: string | undefined // 分支节点的选项名。留空 = 用目标节点的标题。; note?: string | undefined // 选了这一项之后给下一步的一句说明(会拼进它的提示词)。 }>; icon?: string | undefined // 图标键,渲染端映射成具体图标。; description?: string | undefined; schemaVersion?: string | undefined // 文档的**读写版本**(WF-05)。导出时写上,导入时按兼容规则核对:缺失或等于现值 (见 `workflowValidation.ts` 的 `WORKFLOW_SCHEMA…; inputSchema?: Record<string, unknown> | undefined // 这张图对**输入**的声明(WF-05,宽松形状) —— 描述\"起一次运行该给什么\":参数名、 类型、是否必填之类,JSON-Schema 风格的自由对象。; outputSchema?: Record<string, unknown> | undefined // 同 {@link WorkflowDocSchema.inputSchema },声明的是**产出**端:整张图跑完交什么。; prompt?: string | undefined // 提示词型工作流的正文 —— 就是原来 `COMPOSER_MODE_PROMPTS` 里那段流程文字。; engine?: \"mcode\" | \"node-red\" | undefined; trigger?: \"manual\" | \"schedule\" | \"file\" | \"event\" | \"webhook\" | undefined // 触发方式。**有它就是一条自动化,没有它就是一张工作流。** 用**一个字段的有没有**来区分两者,而不是再加一个 `purpose: \"workflow\" | \"automat…; frameworkNote?: string | undefined // 工作流级的**追加框架说明**(可选)。拼进这张图每个节点提示词的「整条流程」 框架段之后、其余各节之前(见 `main/orchestration/schedulerPromp… }; … }",
+  "output": "{ ok: boolean; error?: string | undefined; warnings?: string[] | undefined }"
+ },
+ {
   "method": "workflow.dismissShippedUpdate",
   "channel": "workflow:dismissShippedUpdate",
   "doc": "忽略这次出厂更新(内容不动;出厂内容再变时重新提示)。",
@@ -3562,7 +3570,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "存一份。**存盘前过 DAG 校验 + 每个节点的参数校验**,有环/悬空边/参数不合法 直接拒绝 —— 有环的图会让调度器永远等不到就绪节点,那不是报错是静默卡死。",
   "input": "{ workflow: { id: string; name: string; builtin: boolean; updatedAt: number; nodes: { params: Record<string, unknown>; type: string; id: string; title: string; position: {…; expectedRevision?: string | null | undefined // Hash returned by workflow.get, or null only when creating a new id. }",
   "inputFull": "{ workflow: { id: string; name: string // 名称**不能为空** —— 库里一行没有名字,列表、选择器、确认框里都会显示成一片空白。; builtin: boolean // true = 随应用发布的内置工作流(默认版在代码里,用户的修改存表里覆盖它)。; updatedAt: number; nodes: Array<{ params: Record<string, unknown> // 这个类型的参数。**这里只当袋子** —— 值的合法性由该类型的清单校验 (`validateNodeParams`),因为只有清单知道哪些键必填、各自该是什么类型。; type: string // 节点类型的 id,形如 `mcode.agent`。见 `nodeType.ts` 的 `NODE_TYPE_ID_RE`。; id: string // `\"n_\"` 前缀 + 随机。图内唯一。; title: string // 卡片标题。用户可改;留空则显示类型名。; position: { x: number; y: number }; capability?: \"read\" | \"write\" | \"exec\" | \"net\" | undefined // 覆盖类型的默认能力。省略 = 用清单声明的默认值。 }>; edges: Array<{ id: string; from: string; to: string; label?: string | undefined // 分支节点的选项名。留空 = 用目标节点的标题。; note?: string | undefined // 选了这一项之后给下一步的一句说明(会拼进它的提示词)。 }>; icon?: string | undefined // 图标键,渲染端映射成具体图标。; description?: string | undefined; schemaVersion?: string | undefined // 文档的**读写版本**(WF-05)。导出时写上,导入时按兼容规则核对:缺失或等于现值 (见 `workflowValidation.ts` 的 `WORKFLOW_SCHEMA…; inputSchema?: Record<string, unknown> | undefined // 这张图对**输入**的声明(WF-05,宽松形状) —— 描述\"起一次运行该给什么\":参数名、 类型、是否必填之类,JSON-Schema 风格的自由对象。; outputSchema?: Record<string, unknown> | undefined // 同 {@link WorkflowDocSchema.inputSchema },声明的是**产出**端:整张图跑完交什么。; prompt?: string | undefined // 提示词型工作流的正文 —— 就是原来 `COMPOSER_MODE_PROMPTS` 里那段流程文字。; engine?: \"mcode\" | \"node-red\" | undefined; trigger?: \"manual\" | \"schedule\" | \"file\" | \"event\" | \"webhook\" | undefined // 触发方式。**有它就是一条自动化,没有它就是一张工作流。** 用**一个字段的有没有**来区分两者,而不是再加一个 `purpose: \"workflow\" | \"automat…; frameworkNote?: string | undefined // 工作流级的**追加框架说明**(可选)。拼进这张图每个节点提示词的「整条流程」 框架段之后、其余各节之前(见 `main/orchestration/schedulerPromp… }; … }",
-  "output": "{ ok: boolean; error?: string | undefined; warnings?: string[] | undefined }"
+  "output": "{ ok: boolean; error?: string | undefined; warnings?: string[] | undefined; requiresConfirmation?: boolean | undefined }"
  },
  {
   "method": "workflow.saveAgentProfile",
@@ -3586,7 +3594,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "T59: load an existing node-red-owned Mcode document into the native canvas.",
   "input": "{ workflowId: string; confirmReplace?: boolean | undefined }",
   "inputFull": "{ workflowId: string; confirmReplace?: boolean | undefined }",
-  "output": "{ ok: true } | { ok: false; reason: string; requiresConfirmation?: boolean | undefined }"
+  "output": "{ ok: true; unchanged?: boolean | undefined } | { ok: false; reason: string; requiresConfirmation?: boolean | undefined }"
  },
  {
   "method": "workflowEngine.nodeInstall",

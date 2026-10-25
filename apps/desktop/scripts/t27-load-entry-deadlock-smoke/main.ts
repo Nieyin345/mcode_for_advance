@@ -346,7 +346,8 @@ if (!existsSync(vendorPkg)) {
     try {
       // 1) 先让生产装载入口把这个夹具的迁移产物写进 engineDir 的 flows.json。
       const doc = manualTriggerDoc("wf_t27_manual");
-      const h = harnessDocs([doc]);
+      const secondDoc = manualTriggerDoc("wf_t27_secondary");
+      const h = harnessDocs([doc, secondDoc]);
       const ports: NativeLoadPorts = { ...h.ports, dataDir: () => engineDir };
       const loaded = await loadWorkflowIntoNative("wf_t27_manual", ports, true);
       check("★ 真引擎段前置：生产装载入口写出画布", loaded.ok === true, loaded);
@@ -354,6 +355,18 @@ if (!existsSync(vendorPkg)) {
       check("★ 真引擎段前置：flows.json 已落盘且含 tab/inject/mcode-agent",
         written !== null && ["tab", "inject", "mcode-agent"].every((t) => written.includes(`"${t}"`)),
         written === null ? null : written.slice(0, 200));
+      // Two historical graphs contain identical local node ids: the second
+      // must coexist in the SAME running Node-RED, never erase the first tab.
+      const secondLoad = await loadWorkflowIntoNative(secondDoc.id, ports, true);
+      const combined = JSON.parse(readNativeCanvas(engineDir) ?? "[]") as Array<Record<string, unknown>>;
+      check("★ 生产装载第二张历史图时仍保留第一张完整 tab",
+        secondLoad.ok && ["wf_t27_manual", "wf_t27_secondary"].every(id =>
+          combined.some(n => n["type"] === "tab"
+            && (n["x-mcode"] as { docId?: string } | undefined)?.docId === id)),
+        { secondLoad, tabs: combined.filter(n => n["type"] === "tab") });
+      const ids = combined.map(n => n["id"]);
+      check("★ 两张图同名 node 映射后整份原生画布没有重复 ID",
+        ids.length === new Set(ids).size, ids);
       rmSync(h.dir, { recursive: true, force: true });
 
       // 2) 生产注册表的 launchSpec（真 bootstrap.cjs + vendor 解析 + adminAuth +
@@ -382,6 +395,11 @@ if (!existsSync(vendorPkg)) {
         readyTimeoutMs: 30_000,
       });
       check("★ 真 node-red@5.0.8 引擎经生产路径就绪", status.state === "running" && status.port !== null, status);
+      check("★ 单个真实 Node-RED 子进程同时持有两张 Mcode 工作流的执行归属",
+        runtimeOwner.executorOwnerOf("wf_t27_manual") === "node-red"
+          && runtimeOwner.executorOwnerOf("wf_t27_secondary") === "node-red",
+        { first: runtimeOwner.executorOwnerOf("wf_t27_manual"),
+          second: runtimeOwner.executorOwnerOf("wf_t27_secondary") });
       if (status.state === "running" && status.port !== null) {
         const token = launch.env?.MCODE_ENGINE_ADMIN_TOKEN ?? "";
         const res = await fetch(`http://127.0.0.1:${status.port}/flows`, {
@@ -395,8 +413,12 @@ if (!existsSync(vendorPkg)) {
           readTypes.includes("tab") && readTypes.includes("inject") && readTypes.includes("mcode-agent"), readTypes);
         const readTab = readFlows.find((n) => n["type"] === "tab") as { "x-mcode"?: { docId?: string } } | undefined;
         check("★ 读回里 tab 仍绑定 docId（引擎侧身份不丢）", readTab?.["x-mcode"]?.docId === "wf_t27_manual", readTab?.["x-mcode"]);
+        check("★ 真 Node-RED 5.0.8 实际读回两份同属 Mcode 的工作流 tab",
+          readFlows.filter(n => n["type"] === "tab"
+            && ["wf_t27_manual","wf_t27_secondary"].includes(
+              String((n["x-mcode"] as { docId?: string } | undefined)?.docId))).length === 2);
         const inject = readFlows.find((n) => n["type"] === "inject") as Record<string, unknown> | undefined;
-        check("★ 读回里 inject 保留迁移器写入的 once 语义（manual 触发器）", inject?.["once"] === true, inject);
+        check("★ 手动 Inject once=false：真实 Node-RED 启动不应未经用户触发就跑任务", inject?.["once"] === false, inject);
       }
     } finally {
       if (runtime !== null) {

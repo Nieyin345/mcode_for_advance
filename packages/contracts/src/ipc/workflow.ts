@@ -33,6 +33,15 @@ export const WorkflowSaveSchema = z.object({
 });
 export type WorkflowSaveInput = z.infer<typeof WorkflowSaveSchema>;
 
+/** Separate user-only channel for acknowledging human-decision migration items.
+ * Kept out of WorkflowSaveSchema so generic agents and scene commands cannot
+ * turn an ordinary save into an implicit executor migration. */
+export const WorkflowConfirmMigrationSchema = z.object({
+  workflow: WorkflowDocSchema,
+  expectedRevision: z.string().regex(/^[0-9a-f]{64}$/).nullable().optional(),
+});
+export type WorkflowConfirmMigrationInput = z.infer<typeof WorkflowConfirmMigrationSchema>;
+
 /** 删一份工作流。对内置 id 来说**这就是「恢复默认」** —— 两种在存储层是同一个操作,
  *  所以只有一个删除动词,见 `main/orchestration/library.ts` 的文件头。 */
 export const WorkflowRemoveSchema = z.object({ id: z.string().min(1) });

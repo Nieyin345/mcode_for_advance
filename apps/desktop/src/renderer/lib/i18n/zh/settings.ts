@@ -1888,6 +1888,11 @@ export const zh = {
   "settings.workflows.promptAutoSaveHint":
     "图型流程由节点表达。编辑仅保留为内存草稿；点击「保存」或按 Ctrl/Cmd+S 后才生效。",
   "settings.workflows.newWorkflow": "新建工作流",
+  "settings.workflows.migrateToNodeRed": "迁移旧工作流到 Node-RED",
+  "settings.workflows.migrationSavePending": "已选择迁移 · 保存后由 Mcode 校验迁移安全性",
+  "settings.workflows.confirmEngineMigration": "我已阅读差异，确认继续迁移",
+  "settings.workflows.nativeEngineLabel": "当前工作流引擎",
+  "settings.workflows.legacyOpenHint": "这份历史工作流仍归旧执行器。请先迁移并通过保存时的安全检查，之后才能在统一 Node-RED 画布编辑。",
   "settings.workflows.newWorkflowName": "新工作流",
   "settings.workflows.actionFailed": "操作失败：{error}",
   "settings.workflows.unknownError": "未知错误",

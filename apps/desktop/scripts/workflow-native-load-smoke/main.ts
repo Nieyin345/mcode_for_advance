@@ -6,8 +6,9 @@ import { join } from "node:path";
 import type { WorkflowDoc } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 import type { EngineRuntimeStatus } from "../../src/main/workflowEngines/runtimeSupervisor.js";
-import { loadWorkflowIntoNative, type NativeLoadPorts } from "../../src/main/workflowEngines/nativeLibraryLoad.js";
-import { readNativeCanvas } from "../../src/main/workflowEngines/nodeRedStorage.js";
+import { loadWorkflowIntoNative, mergeNativeWorkflowTab, type NativeLoadPorts } from "../../src/main/workflowEngines/nativeLibraryLoad.js";
+import { NodeRedFlowStorage, readNativeCanvas, replaceNativeCanvas } from "../../src/main/workflowEngines/nodeRedStorage.js";
+import { flowToWorkflowDoc } from "../../src/main/workflowEngines/flowMigration.js";
 
 let total = 0;
 let failed = 0;
@@ -63,12 +64,13 @@ try {
     beforeStart: async () => {},
     launchSpec: () => ({ command: "fake-node", dataDir: dir, args: () => [] }),
   };
-  const canvasDocId = () => {
+  const canvasDocIds = (): string[] => {
     const bytes = readNativeCanvas(dir);
-    if (!bytes) return null;
-    const tab = (JSON.parse(bytes) as Array<{ type: string; "x-mcode"?: { docId?: string } }>).find(n => n.type === "tab");
-    return tab?.["x-mcode"]?.docId ?? null;
+    return bytes === null ? [] : (JSON.parse(bytes) as Array<{ type: string; "x-mcode"?: { docId?: string } }>)
+      .filter(n => n.type === "tab").map(n => n["x-mcode"]?.docId ?? "").filter(Boolean);
   };
+  const canvasDocId = () => canvasDocIds().at(-1) ?? null;
+  const hasDoc = (id: string) => canvasDocIds().includes(id);
 
   let result = await loadWorkflowIntoNative("A", ports);
   check("A 从工作流库打开 -> 引擎真的读到 A", result.ok && result.unchanged !== true && canvasDocId() === "A", { result, canvas: canvasDocId() });
@@ -90,15 +92,17 @@ try {
   check("未确认时不停止 A，不改画布", canvasDocId() === "A" && stops === 0);
 
   result = await loadWorkflowIntoNative("B", ports, true);
-  check("确认后停止旧引擎、装载 B、重新启动", result.ok && canvasDocId() === "B" && stops === 1 && starts === 2,
+  check("确认后停止旧引擎、装载 B、重新启动", result.ok && hasDoc("A") && hasDoc("B") && stops === 1 && starts === 2,
     { result, canvas: canvasDocId(), stops, starts });
   check("A -> B 不是用户 Deploy，两张库文档 updatedAt 都不变",
     docs.get("A")!.updatedAt === originalAUpdatedAt && docs.get("B")!.updatedAt === originalBUpdatedAt);
+  check("加载 B 后 A 仍在同一 Node-RED canvas（不是两个引擎、也未丢图）",
+    canvasDocIds().join(",") === "A,B", canvasDocIds());
   check("旧 A 画布保留了内容寻址备份",
     readdirSync(dir).some(name => name.startsWith(".mcode-flows-backup-") && name.endsWith(".json")));
   result = await loadWorkflowIntoNative("B", ports);
   check("已装载 B 的真正无改动重入，无需用户确认/引擎重启",
-    result.ok && result.unchanged === true && stops === 1 && starts === 2 && canvasDocId() === "B",
+    result.ok && result.unchanged === true && stops === 1 && starts === 2 && hasDoc("B"),
     { result, stops, starts });
   // Updating the saved library doc invalidates this fast path even if the
   // running editor still shows the old graph.
@@ -136,11 +140,11 @@ try {
 
   result = await loadWorkflowIntoNative("unmapped", ports, true);
   check("缺节点清单拒绝并列出类型", !result.ok && result.reason.includes("not-installed"), result);
-  check("拒绝迁移仍保留 B", canvasDocId() === "B");
+  check("拒绝迁移仍保留 A 与 B", hasDoc("A") && hasDoc("B"));
 
   result = await loadWorkflowIntoNative("legacy", ports, true);
   check("mcode-owned 图不静默切引擎", !result.ok && result.reason.includes("原生调度器"), result);
-  check("mcode-owned 拒绝没有停止现有运行", stops === 1 && canvasDocId() === "B");
+  check("mcode-owned 拒绝没有停止现有运行", stops === 1 && hasDoc("A") && hasDoc("B"));
 
   docs.set("loss", { ...docOf("loss"), nodes: [{ ...docOf("loss").nodes[0], position: { x: 3.5, y: 1 } }] });
   // 【T27】已知损失（坐标取整、trigger 的 debounce 留在 x-mcode.params…）不是拒绝理由：
@@ -148,10 +152,10 @@ try {
   result = await loadWorkflowIntoNative("loss", ports, false);
   check("【T27】已知损失先要求确认，且点名具体损失（坐标舍入）",
     !result.ok && result.requiresConfirmation === true && result.reason.includes("舍入"), result);
-  check("未确认时画布仍是 B", canvasDocId() === "B");
+  check("未确认时画布仍有 A 与 B", hasDoc("A") && hasDoc("B") && !hasDoc("loss"));
   result = await loadWorkflowIntoNative("loss", ports, true);
   check("【T27】用户确认后已知损失照常装载（不再被当作拒绝理由）",
-    result.ok && canvasDocId() === "loss", { result, canvas: canvasDocId() });
+    result.ok && hasDoc("A") && hasDoc("B") && hasDoc("loss"), { result, canvas: canvasDocIds() });
 
   const manualDoc: WorkflowDoc = {
     ...docOf("manual-warning"),
@@ -175,14 +179,120 @@ try {
   check("W25 尚未确认 DOI 输入限制时原生画布绝不被替换",
     canvasDocId() === beforeWarning, { beforeWarning, after: canvasDocId() });
 
+  const beforeFailure = readNativeCanvas(dir);
+  const unmodifiedA = docs.get("A")!;
+  docs.set("A", { ...unmodifiedA, nodes: unmodifiedA.nodes.map(node =>
+    ({ ...node, params: { ...node.params, instruction: "changed before failing restart" } })) });
   startShouldFail = true;
   result = await loadWorkflowIntoNative("A", ports, true);
   check("启动失败显式报错", !result.ok && result.reason.includes("synthetic startup failed"), result);
-  check("引擎启动失败原子回滚原画布", canvasDocId() === "loss");
+  check("引擎启动失败原子回滚原画布及其他全部 tab", readNativeCanvas(dir) === beforeFailure);
+  docs.set("A", unmodifiedA);
   startShouldFail = false;
   result = await loadWorkflowIntoNative("A", ports, true);
-  check("B -> A 第三次打开恢复 A", result.ok && canvasDocId() === "A", { result, canvas: canvasDocId() });
+  check("A 重新进入仍保留 A/B/loss 所有 tab", result.ok && ["A","B","loss"].every(hasDoc), { result, canvas: canvasDocIds() });
   check("所有装载都没有反向写库（updatedAt 不变）", docs.get("A")!.updatedAt === originalAUpdatedAt && docs.get("B")!.updatedAt === originalBUpdatedAt);
+
+  // Multiple independent tabs belong to ONE Node-RED runtime; opening
+  // C/D must preserve A/B/loss and a native-only Node-RED tab. C/D use
+  // identical Mcode-local node IDs, exercising cross-workflow collisions.
+  const nativeOnly = [
+    { id: "native-tab", type: "tab", label: "Native only" },
+    { id: "native-debug", type: "debug", z: "native-tab", name: "Unrelated" },
+  ];
+  const beforeNative = JSON.parse(readNativeCanvas(dir)!) as Array<Record<string, unknown>>;
+  writeFileSync(join(dir, "flows.json"), JSON.stringify([...beforeNative, ...nativeOnly]), "utf8");
+  const sharedDoc = (id: string): WorkflowDoc => ({
+    ...docOf(id),
+    nodes: [
+      { ...docOf(id).nodes[0], id: "shared", title: "Shared local identity" },
+      { ...docOf(id).nodes[0], id: "shared-target", title: "Target", position: { x: 300, y: 50 } },
+    ],
+    edges: [{ id: "shared-edge", from: "shared", to: "shared-target", label: "Preserve original edge" }],
+  });
+  docs.set("C", sharedDoc("C"));
+  docs.set("D", sharedDoc("D"));
+  result = await loadWorkflowIntoNative("C", ports, true);
+  check("同一原生工作台装载 C 保留旧 A/B/loss + 原生独立 tab",
+    result.ok && ["A","B","loss","C"].every(hasDoc)
+      && readNativeCanvas(dir)!.includes('"native-tab"'), { result, ids: canvasDocIds() });
+  result = await loadWorkflowIntoNative("D", ports, true);
+  const sharedCanvas = JSON.parse(readNativeCanvas(dir)!) as Array<Record<string, unknown>>;
+  const cNode = sharedCanvas.find(n => (n["x-mcode"] as { nodeId?: string } | undefined)?.nodeId === "shared" && n["z"] === "tab_C");
+  const dNode = sharedCanvas.find(n => (n["x-mcode"] as { nodeId?: string } | undefined)?.nodeId === "shared" && n["z"] === "tab_D");
+  check("C 与 D 的同名本地节点被确定性隔离，nativeId 同步真实 ID",
+    result.ok && cNode?.["id"] !== dNode?.["id"]
+      && typeof cNode?.["id"] === "string" && typeof dNode?.["id"] === "string"
+      && (cNode?.["x-mcode"] as { nativeId?: string } | undefined)?.nativeId === cNode?.["id"]
+      && (dNode?.["x-mcode"] as { nativeId?: string } | undefined)?.nativeId === dNode?.["id"],
+    { c: cNode?.["id"], d: dNode?.["id"] });
+  const dTarget = sharedCanvas.find(n => (n["x-mcode"] as { nodeId?: string } | undefined)?.nodeId === "shared-target"
+    && n["z"] === "tab_D");
+  const dSidecar = dNode?.["x-mcode"] as { edgeMeta?: Array<{ sourceNativeId: string; targetNativeId: string }> } | undefined;
+  const dJournal = new NodeRedFlowStorage(dir).loadFlow(null, "D");
+  const dReversed = dJournal.ok ? flowToWorkflowDoc(dJournal.flow) : null;
+  check("同名节点改名也同步 wires、edgeMeta、journal links；反向迁移仍恢复原始边",
+    (dNode?.["wires"] as string[][] | undefined)?.[0]?.[0] === dTarget?.["id"]
+      && dSidecar?.edgeMeta?.[0]?.sourceNativeId === dNode?.["id"]
+      && dSidecar?.edgeMeta?.[0]?.targetNativeId === dTarget?.["id"]
+      && dReversed?.edges.some(edge => edge.from === "shared" && edge.to === "shared-target"
+        && edge.label === "Preserve original edge") === true,
+    { source: dNode?.["id"], target: dTarget?.["id"], wires: dNode?.["wires"], metadata: dSidecar, reversed: dReversed?.edges });
+  check("Node-RED 原生 tab 和节点未发生结构变化",
+    nativeOnly.every(node => sharedCanvas.some(n => JSON.stringify(n) === JSON.stringify(node))),
+    sharedCanvas.filter(n => n["z"] === "native-tab" || n["id"] === "native-tab"));
+  const beforeReentry = readNativeCanvas(dir);
+  const startsBeforeReentry = starts;
+  result = await loadWorkflowIntoNative("C", ports);
+  check("单一 Node-RED 中切回 C 不重新启动，更不删除 D",
+    result.ok && result.unchanged === true && starts === startsBeforeReentry
+      && readNativeCanvas(dir) === beforeReentry && hasDoc("D"), result);
+
+  // A path-level compare-and-swap catches an unrelated native Deploy after
+  // confirmation, before the OS lease is acquired for the merged write.
+  const oldCanvas = readNativeCanvas(dir)!;
+  const altered = [...sharedCanvas, { id: "late-native", type: "debug", z: "native-tab", name: "External deploy" }];
+  writeFileSync(join(dir, "flows.json"), JSON.stringify(altered), "utf8");
+  let raceRejected = false;
+  try {
+    await replaceNativeCanvas(dir, sharedCanvas as never, { expectedCanvas: oldCanvas });
+  } catch (error) { raceRejected = String(error).includes("其他操作更改"); }
+  check("其他进程先完成 Deploy，旧画布快照不许覆盖外部节点",
+    raceRejected && (readNativeCanvas(dir) ?? "").includes("late-native"));
+  writeFileSync(join(dir, "flows.json"), oldCanvas, "utf8");
+
+  // Corrupt old canvas identity must be rejected rather than silently
+  // trusting the first matching tab.
+  let duplicateRejected = false;
+  try {
+    mergeNativeWorkflowTab([...sharedCanvas, structuredClone(sharedCanvas[0]!) ] as never,
+      sharedCanvas.filter(n => n["z"] === "tab_C" || n["id"] === "tab_C") as never, "C");
+  } catch (error) { duplicateRejected = /重复(?:节点| tab) id/.test(String(error)); }
+  check("已有画布内重复 node id 时拒绝不确定归属，不执行合并", duplicateRejected);
+
+  // A native editor/other process could Deploy while Mcode is installing the
+  // node pack. The OS-level CAS must reject stale whole-canvas replacement
+  // AND restore this document's journal, not just keep the other tab's bytes.
+  const preRaceDoc = docs.get("D")!;
+  docs.set("D", { ...preRaceDoc, nodes: preRaceDoc.nodes.map(node =>
+    node.id === "shared" ? { ...node, params: { ...node.params, instruction: "source updated" } } : node) });
+  const preRaceJournal = new NodeRedFlowStorage(dir).loadFlow(null, "D");
+  const externalNode = { id: "outside-deploy", type: "debug", z: "native-tab", name: "newer external deploy" };
+  const racePorts: NativeLoadPorts = { ...ports, beforeStart: async () => {
+    const current = JSON.parse(readNativeCanvas(dir) ?? "[]") as Array<Record<string, unknown>>;
+    writeFileSync(join(dir, "flows.json"), JSON.stringify([...current, externalNode]), "utf8");
+  } };
+  result = await loadWorkflowIntoNative("D", racePorts, true);
+  const afterRaceJournal = new NodeRedFlowStorage(dir).loadFlow(null, "D");
+  check("确认后其他进程先 Deploy：装载明确 CAS 失败，不覆盖刚部署的原生节点",
+    !result.ok && result.reason.includes("其他操作更改")
+      && (readNativeCanvas(dir) ?? "").includes("outside-deploy"), result);
+  check("外部 Deploy 竞争导致装载失败时恢复旧 journal，而不是留下假完成记录",
+    preRaceJournal.ok && afterRaceJournal.ok
+      && preRaceJournal.revision === afterRaceJournal.revision,
+    { before: preRaceJournal.ok ? preRaceJournal.revision : null,
+      after: afterRaceJournal.ok ? afterRaceJournal.revision : null });
+  docs.set("D", preRaceDoc);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

@@ -670,6 +670,7 @@ const workflow: Api["workflow"] = {
   approve: () => webUnsupported("workflow.approve"),
   nodeTypes: () => webUnsupported("workflow.nodeTypes"),
   save: () => webUnsupported("workflow.save"),
+  confirmMigration: () => webUnsupported("workflow.confirmMigration"),
   remove: () => webUnsupported("workflow.remove"),
   // 「设为默认」是桌面设置页的事(与 save/remove 同一立场)—— 但**必须列出来**,
   // 理由见文件头:proxy 只对没列出的名字兜底,少一个方法就是 undefined is not a function。

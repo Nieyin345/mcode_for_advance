@@ -77,7 +77,7 @@ export function nativeFlowForWorkflow(nodes: unknown, docId: string): NodeRedFlo
 
 export type EngineSwitchCheck =
   | { ok: true }
-  | { ok: false; paths: string[]; reason: string };
+  | { ok: false; paths: string[]; reason: string; requiresConfirmation?: boolean };
 
 /** No implicit switch: lossless serialisation alone is insufficient when an
  * unsupported native node changes semantics. Expose exact loss paths/causes. */
@@ -86,6 +86,7 @@ export function checkEngineSwitch(
   target: WorkflowEngine,
   types: ReadonlyMap<string, NodeTypeManifest>,
   nativeFlow?: NodeRedFlow,
+  confirmHumanDecisions = false,
 ): EngineSwitchCheck {
   if (effectiveWorkflowEngine(source) === target) return { ok: true };
   if (source.nodes.length === 0) return { ok: true };
@@ -106,14 +107,25 @@ export function checkEngineSwitch(
   // Reverse migration must also verify native node semantics against the Mcode
   // manifest: round-trip of preserved sidecars alone cannot prove executability.
   const checked = generated ?? migrateWorkflowDoc(nativeDoc!, { types: new Map(types) });
-  const issues = [
-    ...checked.report.unmapped.map((i) => `nodes[${i.nodeId}]: ${i.reason}`),
-    ...checked.report.needsHumanDecision.map((i) => `nodes[${i.nodeId ?? "?"}]: ${i.message}`),
-    ...checked.report.lossy.filter((i) => !/位置|坐标/.test(i.message)).map((i) =>
-      `nodes[${i.nodeId ?? "?"}]: ${i.message}`),
-  ];
-  const paths = [...mismatches, ...issues];
+  const unmappedPaths = checked.report.unmapped.map((i) => `nodes[${i.nodeId}]: ${i.reason}`);
+  const humanDecisionPaths = checked.report.needsHumanDecision.map((i) =>
+    `nodes[${i.nodeId ?? "?"}]: ${i.message}`);
+  const lossyPaths = checked.report.lossy.filter((i) => !/位置|坐标/.test(i.message)).map((i) =>
+    `nodes[${i.nodeId ?? "?"}]: ${i.message}`);
+  const hardPaths = [...mismatches, ...unmappedPaths, ...lossyPaths];
+  const paths = [...hardPaths, ...humanDecisionPaths];
+  // Human decisions may be acknowledged only on the explicit legacy -> Node-RED
+  // migration path. Unknown node mappings, changed round-trips, and lossy
+  // conversions remain non-overridable even when the caller confirms.
+  const humanOnly = target === "node-red"
+    && hardPaths.length === 0 && humanDecisionPaths.length > 0;
+  if (humanOnly && confirmHumanDecisions) return { ok: true };
   return paths.length === 0
     ? { ok: true }
-    : { ok: false, paths, reason: `切换到 ${target} 会丢失/改变以下内容：${paths.join("；")}` };
+    : {
+        ok: false,
+        paths,
+        reason: `切换到 ${target} 会丢失/改变以下内容：${paths.join("；")}`,
+        ...(humanOnly ? { requiresConfirmation: true } : {}),
+      };
 }

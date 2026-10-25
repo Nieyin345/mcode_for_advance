@@ -418,6 +418,52 @@ async function main(): Promise<void> {
   // 所以这里是"播种行 + 刚存的这一行"。
   eq("表里真的多了一行(播种行之外)", WorkflowRepo.list().length, BUILTIN_WORKFLOWS.length + 1);
 
+  // Exercise the real save gate used by the library UI's explicit legacy
+  // migration action. A safe graph changes ownership only after round-trip
+  // validation; a graph with an unmapped node must stay on the legacy runner.
+  const migrationId = "wf_engine_migration_preflight";
+  const migrationSource: WorkflowDoc = {
+    ...good.doc, id: migrationId, name: "安全迁移校验", engine: "mcode",
+  };
+  const migrationSeed = await saveWorkflow(migrationSource);
+  check("引擎迁移测试夹具先以旧执行器归属存盘", migrationSeed.ok
+    && getWorkflow(migrationId)?.engine === "mcode", migrationSeed);
+  const migrationNeedsReview = await saveWorkflow({ ...migrationSource, engine: "node-red" });
+  check("含主会话语义的迁移先要求明确确认，且不会提前改变归属",
+    !migrationNeedsReview.ok && migrationNeedsReview.requiresConfirmation === true
+      && getWorkflow(migrationId)?.engine === "mcode", migrationNeedsReview);
+  const migrationAccepted = await saveWorkflow({ ...migrationSource, engine: "node-red" }, {
+    confirmEngineMigration: true,
+  });
+  check("用户确认迁移差异后通过真实 saveWorkflow 闸门",
+    migrationAccepted.ok && getWorkflow(migrationId)?.engine === "node-red", migrationAccepted);
+
+  const lossyMigrationId = "wf_engine_migration_lossy";
+  const lossyMigrationSource: WorkflowDoc = {
+    ...good.doc,
+    id: lossyMigrationId,
+    name: "不可无损迁移校验",
+    engine: "mcode",
+    nodes: [
+      good.doc.nodes[0]!,
+      { id: "unknown-step", type: "unknown-plugin", title: "Unknown", position: { x: 300, y: 0 }, params: {} },
+    ],
+    edges: [{ id: "migration-edge", from: good.doc.nodes[0]!.id, to: "unknown-step" }],
+  };
+  const lossySeed = await saveWorkflow(lossyMigrationSource);
+  check("未知插件工作流作为旧执行器存盘（只告警，不伪造支持）", lossySeed.ok
+    && getWorkflow(lossyMigrationId)?.engine === "mcode", lossySeed);
+  const lossyMigration = await saveWorkflow({ ...lossyMigrationSource, engine: "node-red" });
+  check("无映射的旧节点在真实保存入口被拒绝且归属不变",
+    !lossyMigration.ok && !lossyMigration.requiresConfirmation
+      && lossyMigration.error.includes("丢失/改变")
+      && getWorkflow(lossyMigrationId)?.engine === "mcode", lossyMigration);
+  const lossyConfirmed = await saveWorkflow({ ...lossyMigrationSource, engine: "node-red" }, {
+    confirmEngineMigration: true,
+  });
+  check("显式确认也不能绕过无映射节点/有损迁移硬闸",
+    !lossyConfirmed.ok && getWorkflow(lossyMigrationId)?.engine === "mcode", lossyConfirmed);
+
   const cyclic = await ok(
     twoStep({
       nodes: [

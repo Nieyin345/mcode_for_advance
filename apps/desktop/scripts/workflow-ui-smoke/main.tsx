@@ -54,12 +54,16 @@ const docs: Record<string,WorkflowDoc> = {
   'audit-workflow-b': {...clone(workflow),id:'audit-workflow-b',name:'第二条普通工作流'},
   [automation.id]: clone(automation),
 };
+if (scenario === "legacy-migration") docs["audit-workflow"] = {
+  ...docs["audit-workflow"]!, engine: "mcode",
+};
 const workflowListeners = new Set<(event?: {reason:string}) => void>();
 type RunStatus = 'running'|'success'|'failed';
 let status: RunStatus = 'running';
 let hasRun = false;
 const runCalls: Array<{workflowId:string;triggerNodeId:string;savedTask:unknown}> = [];
 const saves: WorkflowDoc[] = [];
+const saveAttempts: Array<{ workflow: WorkflowDoc; confirmEngineMigration?: boolean }> = [];
 const nativeLoads: string[] = [];
 const nativeLoadEvents: string[] = [];
 window.addEventListener("mcode:native-canvas-loaded", () => nativeLoadEvents.push("replaced"));
@@ -93,9 +97,23 @@ const impl = {
     },
     list:async()=>{apiCalls.push("workflow.list");return {workflows:Object.values(docs).map(d=>clone({...d,edited:false,nodeCount:d.nodes.length}))};},
     get:async({id}:{id:string})=>({workflow:clone(docs[id] ?? null),review:{pending:scenario==='review-pending',revision:'fixture-revision'}}),
-    save:async({workflow:d}:{workflow:WorkflowDoc})=>{
+    save:async({workflow:d,confirmEngineMigration}:{workflow:WorkflowDoc;confirmEngineMigration?:boolean})=>{
+      saveAttempts.push({workflow:clone(d),confirmEngineMigration});
+      if(scenario==='legacy-migration' && d.engine==='node-red' && confirmEngineMigration!==true) {
+        return {ok:false,error:'迁移预检要求人工确认：主代理原本绑定发起聊天；请阅读迁移差异后明确确认。',requiresConfirmation:true};
+      }
       saves.push(clone(d));
       // Real backend canonicalization (AST-extracted); persistence is in memory only.
+      const derived=deriveTrigger(d,new Map(catalog.entries.map(e=>[e.id,e.manifest])));
+      if(!derived.ok)return derived;
+      docs[d.id]=clone({...derived.doc,updatedAt:Date.now()});
+      for(const fn of workflowListeners) fn();
+      return {ok:true};
+    },
+    confirmMigration:async({workflow:d}:{workflow:WorkflowDoc})=>{
+      saveAttempts.push({workflow:clone(d),confirmEngineMigration:true});
+      if(scenario!=='legacy-migration' || d.engine!=='node-red') return {ok:false,error:'迁移确认仅用于历史工作流迁往 Node-RED。'};
+      saves.push(clone(d));
       const derived=deriveTrigger(d,new Map(catalog.entries.map(e=>[e.id,e.manifest])));
       if(!derived.ok)return derived;
       docs[d.id]=clone({...derived.doc,updatedAt:Date.now()});
@@ -139,13 +157,13 @@ interface AuditWindow {
   __apiImpl: typeof apiImpl;
   __apiCalls?: string[];
   api: {platform:string;on:{workflowsChanged:(fn:(event?:{reason:string})=>void)=>()=>void}};
-  __audit:{docs:typeof docs;saves:typeof saves;nativeLoads:typeof nativeLoads;nativeLoadEvents:typeof nativeLoadEvents;apiCalls:typeof apiCalls;focusId:()=>string|null;runCalls:typeof runCalls;completeRun:()=>void;emitWorkflowChange:()=>void};
+  __audit:{docs:typeof docs;saves:typeof saves;saveAttempts:typeof saveAttempts;nativeLoads:typeof nativeLoads;nativeLoadEvents:typeof nativeLoadEvents;apiCalls:typeof apiCalls;focusId:()=>string|null;runCalls:typeof runCalls;completeRun:()=>void;emitWorkflowChange:()=>void};
   __ready:boolean;
 }
 const w=window as unknown as AuditWindow;
 w.__apiImpl=apiImpl;
 w.api={platform:'win32',on:{workflowsChanged:(fn)=>{workflowListeners.add(fn);return()=>{workflowListeners.delete(fn);};}}};
-w.__audit={docs,saves,nativeLoads,nativeLoadEvents,apiCalls,focusId:()=>useSessionStore.getState().settingsFocusWorkflowId,runCalls,completeRun:()=>{status='success';},emitWorkflowChange:()=>{for(const fn of workflowListeners)fn({reason:'node-red:deploy:audit-workflow'});}};
+w.__audit={docs,saves,saveAttempts,nativeLoads,nativeLoadEvents,apiCalls,focusId:()=>useSessionStore.getState().settingsFocusWorkflowId,runCalls,completeRun:()=>{status='success';},emitWorkflowChange:()=>{for(const fn of workflowListeners)fn({reason:'node-red:deploy:audit-workflow'});}};
 useSessionStore.setState({
   settingsSection: scenario.startsWith('automation') ? 'automation' : 'workflows',
   settingsFocusWorkflowId: scenario === 'focus' ? 'audit-workflow' : null,

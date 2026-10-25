@@ -298,7 +298,7 @@ export function getWorkflowPrompt(id: string): string | undefined {
 
 /** `warnings`:校验器的**提醒**(能存、能跑,但多半画错了 —— 断链、不会被走到的回头线…)。
  *  原来算完就扔了,界面和 AI 都看不到;现在随成功结果带回去,由调用方决定怎么说。 */
-export type SaveResult = { ok: true; warnings?: string[] } | { ok: false; error: string };
+export type SaveResult = { ok: true; warnings?: string[] } | { ok: false; error: string; requiresConfirmation?: boolean };
 
 /** 存一份工作流。**存盘前必须过校验闸门**(`workflowValidation.ts`):
  *
@@ -312,7 +312,7 @@ export type SaveResult = { ok: true; warnings?: string[] } | { ok: false; error:
  *  图照样能存能看 —— 只是跑不了。把"类型缺失"做成硬错误会让工作流没法分享。 */
 export async function saveWorkflow(
   doc: WorkflowDoc,
-  opts: { untrustedOrigin?: WorkflowOrigin; expectedRevision?: string | null } = {},
+  opts: { untrustedOrigin?: WorkflowOrigin; expectedRevision?: string | null; confirmEngineMigration?: boolean } = {},
 ): Promise<SaveResult> {
   const types = new Map((await loadNodeTypes()).entries.map((e) => [e.id, e.manifest]));
 
@@ -374,8 +374,10 @@ export async function saveWorkflow(
         return { ok: false, error: `Node-RED → Mcode 无法验证真实 flow：${error instanceof Error ? error.message : String(error)}` };
       }
     }
-    const checked = checkEngineSwitch(previous, effectiveWorkflowEngine(derived.doc), types, nativeFlow);
-    if (!checked.ok) return { ok: false, error: checked.reason };
+    const checked = checkEngineSwitch(previous, effectiveWorkflowEngine(derived.doc), types, nativeFlow,
+      opts.confirmEngineMigration === true);
+    if (!checked.ok) return { ok: false, error: checked.reason,
+      ...(checked.requiresConfirmation ? { requiresConfirmation: true } : {}) };
   }
   // All asynchronous validation must happen BEFORE CAS: no await between
   // freshness check and the synchronous SQL write.

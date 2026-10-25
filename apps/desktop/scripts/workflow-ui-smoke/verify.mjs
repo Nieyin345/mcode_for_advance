@@ -102,6 +102,37 @@ await withAuditPage(here,async page=>{
     check('same saved workflow navigates to existing canvas without native loaded event',
       await page.eval('__audit.nativeLoads.length===1 && __audit.nativeLoadEvents.length===0'));
   });
+  await test('one-engine-legacy-migration-entry',async()=>{
+    await page.goto('case=legacy-migration&locale=zh');
+    await page.eval(helper);
+    await page.eval('__ui.showLibrary()');
+    await page.waitFor('document.querySelector("#workflows-panel-library nav button")');
+    await page.eval('__ui.open("资料整理流程")');
+    await page.waitFor('document.querySelector("#workflows-panel-library button")?.textContent.includes("迁移") || [...document.querySelectorAll("#workflows-panel-library button")].some(b=>b.textContent.includes("迁移旧工作流"))');
+    check('legacy document offers an explicit one-way migration action, not a dual-engine selector',
+      await page.eval(`[...document.querySelectorAll("#workflows-panel-library button")].some(b=>b.textContent.includes("迁移旧工作流到 Node-RED")) && !document.querySelector('select[aria-label="工作流执行引擎"]')`));
+    check('legacy graph cannot falsely open an unowned Node-RED native editor',
+      await page.eval(`!document.querySelector('${nativeEntry}') && [...document.querySelectorAll('#workflows-panel-library [role=status]')].some(e=>e.textContent.includes('历史工作流'))`));
+    const buttonState = await page.eval(`(()=>{const b=[...document.querySelectorAll("#workflows-panel-library button")].find(b=>b.textContent.includes("迁移旧工作流到 Node-RED"));return {disabled:b?.disabled,visible:!!b?.getClientRects().length}})()`);
+    await page.eval('[...document.querySelectorAll("#workflows-panel-library button")].find(b=>b.textContent.includes("迁移旧工作流到 Node-RED"))?.click()');
+    await page.sleep(120);
+    const migrationUi = await page.eval(`({pending:[...document.querySelectorAll("#workflows-panel-library [role=status]")].map(e=>e.textContent),actions:[...document.querySelectorAll("#workflows-panel-library button")].filter(e=>e.textContent.includes("迁移")).map(e=>({text:e.textContent,disabled:e.disabled})),saveDisabled:window.__ui?.button("保存")?.disabled})`);
+    check('migration selection leaves an unsaved, explicit native ownership draft',
+      buttonState.disabled===false && migrationUi.pending.some(e=>e.includes("保存后")) && migrationUi.saveDisabled===false,
+      {buttonState,migrationUi});
+    check('choosing migration changes only the unsaved draft and still requires Save',
+      await page.eval('__audit.docs["audit-workflow"].engine==="mcode" && __audit.saves.length===0 && !__ui.button("保存").disabled'));
+    await page.eval('__ui.button("保存").click()');
+    await page.waitFor('__audit.saveAttempts.length===1 && [...document.querySelectorAll("#workflows-panel-library button")].some(b=>b.textContent.includes("我已阅读差异，确认继续迁移"))');
+    check('backend migration gate blocks an unconfirmed engine change and leaves legacy ownership intact',
+      await page.eval('__audit.docs["audit-workflow"].engine==="mcode" && __audit.saves.length===0 && __audit.saveAttempts[0].confirmEngineMigration!==true'));
+    check('migration blocker is shown before the explicit confirmation action',
+      await page.eval('[...document.querySelectorAll("#workflows-panel-library span")].some(e=>e.textContent.includes("迁移预检要求人工确认"))'));
+    await page.eval('[...document.querySelectorAll("#workflows-panel-library button")].find(b=>b.textContent.includes("我已阅读差异，确认继续迁移"))?.click()');
+    await page.waitFor('__audit.saves.length===1');
+    check('confirmed legacy migration submits node-red ownership through the explicit confirmation flag',
+      await page.eval(`__audit.saveAttempts.length===2 && __audit.saveAttempts[1].confirmEngineMigration===true && __audit.saves[0].engine==="node-red" && !!document.querySelector('[aria-label="当前工作流引擎"]')`));
+  });
   await test('native-editor-entry',async()=>{
     await open(page);
     check('real native entry replaces deleted WorkflowCanvas',await page.eval(`!!document.querySelector('${nativeEntry}')&&!document.querySelector('[data-workflow-viewport]')`));

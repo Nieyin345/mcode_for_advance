@@ -3392,6 +3392,19 @@ console.log("\n保存归并、撤销重做、多入口与标签布局回归");
   const graphEdit = { ...sent, nodes: [node("late", 0, 0)] };
   check("保存期间的新图编辑保留", mergeSavedWorkflow(graphEdit, sent, canonical).nodes === graphEdit.nodes);
   const h = new WorkflowEditHistory();
+  const legacyEngineDoc = { ...before, engine: "mcode" as const };
+  const nativeEngineDoc = { ...legacyEngineDoc, engine: "node-red" as const };
+  check("选择迁移引擎会被当作真实编辑写入历史", h.record(legacyEngineDoc, nativeEngineDoc));
+  eq("撤销迁移会恢复旧执行器标记", h.undo(nativeEngineDoc)?.engine, "mcode");
+  eq("重做迁移会恢复 Node-RED 归属", h.redo(legacyEngineDoc)?.engine, "node-red");
+  const engineSaveRace = mergeSavedWorkflow(nativeEngineDoc, legacyEngineDoc, {
+    ...legacyEngineDoc, updatedAt: 789,
+  });
+  eq("保存进行中选择迁移时，不会被旧引擎响应覆盖", engineSaveRace.engine, "node-red");
+  const engineSaved = mergeSavedWorkflow(nativeEngineDoc, nativeEngineDoc, {
+    ...nativeEngineDoc, updatedAt: 790,
+  });
+  eq("迁移成功的服务端引擎归属回写", engineSaved.engine, "node-red");
   check("第一次编辑可记入历史", h.record(before, sent));
   eq("撤销回到之前的名称", h.undo(sent)?.name, before.name);
   eq("重做回到编辑后名称", h.redo(before)?.name, sent.name);

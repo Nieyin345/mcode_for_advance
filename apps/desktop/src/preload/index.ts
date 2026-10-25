@@ -875,6 +875,7 @@ const api = {
     nodeTypes: (() =>
       ipcRenderer.invoke(IPC.WORKFLOW_NODE_TYPES)) as RpcMap["workflow.nodeTypes"],
     save: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_SAVE, input)) as RpcMap["workflow.save"],
+    confirmMigration: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_CONFIRM_MIGRATION, input)) as RpcMap["workflow.confirmMigration"],
     remove: ((input) =>
       ipcRenderer.invoke(IPC.WORKFLOW_REMOVE, input)) as RpcMap["workflow.remove"],
     pinDefault: ((input) =>

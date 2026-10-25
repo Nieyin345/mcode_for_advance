@@ -71,9 +71,11 @@
  *     artifact about to be written (the preflight already rejects these, so
  *     this can only refuse more, never wave anything through).
  */
+import { createHash } from "node:crypto";
 import type { WorkflowDoc, WorkflowReviewInfo } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
-import { migrateWorkflowDoc } from "./flowMigration.js";
+import { migrateWorkflowDoc, type NodeRedNode } from "./flowMigration.js";
+import { nativeFlowIdsOfNodes } from "./nodeRedOwnership.js";
 import { NodeRedFlowStorage, readNativeCanvas, replaceNativeCanvas } from "./nodeRedStorage.js";
 import {
   evaluateWorkflowMigration,
@@ -113,6 +115,115 @@ let tail: Promise<void> = Promise.resolve();
 /** The journal lives in the engine's legacy singleton project directory — the
  * same directory `registry.dataDirOf("node-red")` hands the runtime. */
 const JOURNAL_PROJECT_ID: string | null = null;
+
+/** Assemble ONE Mcode tab into the single real Node-RED canvas.
+ * Other tabs (including native-only tabs) remain byte-for-byte identical as
+ * JSON values. Never treat opening B as permission to delete deployed A.
+ * Reject ambiguous identity, dangling membership, duplicate node ids and
+ * aliases instead of guessing whether a node belongs to this document.
+ */
+export function mergeNativeWorkflowTab(
+  current: readonly NodeRedNode[] | null,
+  replacement: readonly NodeRedNode[],
+  docId: string,
+): { nodes: NodeRedNode[]; currentTab: NodeRedNode[] | null; imported: NodeRedNode[]; idRemap: ReadonlyMap<string, string> } {
+  if (!Array.isArray(replacement)) throw Error("Node-RED 迁移结果不是节点数组");
+  const tabs = replacement.filter(node => node.type === "tab");
+  const meta = tabs[0]?.["x-mcode"];
+  if (tabs.length !== 1 || !meta || typeof meta !== "object"
+    || (meta as Record<string, unknown>)["docId"] !== docId
+    || typeof tabs[0]?.id !== "string") {
+    throw Error("待装载工作流没有唯一可信的 Mcode tab 身份");
+  }
+  const incomingTabId = tabs[0]!.id;
+  const old = current === null ? [] : [...current];
+  // The same identity and node-membership requirements as engine startup.
+  nativeFlowIdsOfNodes(replacement);
+  nativeFlowIdsOfNodes(old);
+  const ids = new Set<string>();
+  const existingIds = new Set<string>();
+  for (const node of old) {
+    if (typeof node.id !== "string" || !node.id.trim()) throw Error("Node-RED 节点 id 无效");
+    if (existingIds.has(node.id)) throw Error("已有原生画布含重复节点 id，拒绝有歧义的合并");
+    existingIds.add(node.id);
+  }
+  for (const node of replacement) {
+    if (typeof node.id !== "string" || !node.id.trim()) throw Error("Node-RED 迁移节点 id 无效");
+  }
+  const targetTabs = old.filter(node =>
+    node.type === "tab"
+    && (node["x-mcode"] as Record<string, unknown> | undefined)?.["docId"] === docId);
+  if (targetTabs.length > 1) throw Error("同一工作流存在多个 Node-RED tab，拒绝猜测覆盖范围");
+  const previousTabId = targetTabs[0]?.id ?? null;
+  // Only a tab plus its direct members can be replaced. Unscoped config
+  // nodes may be shared; they are preserved, never inferred as part of B.
+  for (const node of replacement) {
+    if (node.type !== "tab" && node.z !== incomingTabId)
+      throw Error("迁移结果含无法归属到目标 tab 的节点，拒绝合并");
+    if (ids.has(node.id)) throw Error("迁移结果存在重复节点 id");
+    ids.add(node.id);
+  }
+  const target: NodeRedNode[] = [];
+  const retained: NodeRedNode[] = [];
+  for (const node of old) {
+    if ((node.type === "tab" && node.id === previousTabId)
+      || (previousTabId !== null && node.type !== "tab" && node.z === previousTabId)) {
+      target.push(node);
+    } else {
+      retained.push(node);
+    }
+  }
+  // Older migration artifacts derived native node IDs from local node IDs,
+  // so unrelated documents with nodes "t" collide on "n_t". Namespace only
+  // genuine collisions, updating wires and signed sidecars consistently.
+  const reserved = new Set(retained.map(node => node.id));
+  const remap = new Map<string, string>();
+  const allocated = new Set<string>(ids);
+  const suffix = createHash("sha256").update(docId).digest("hex").slice(0, 16);
+  for (const node of replacement) {
+    if (!reserved.has(node.id)) continue;
+    const scoped = `${node.id}__${suffix}`;
+    if (reserved.has(scoped) || allocated.has(scoped))
+      throw Error(`原生工作流节点身份冲突无法安全消除：${node.id}`);
+    remap.set(node.id, scoped);
+    allocated.add(scoped);
+  }
+  const idOf = (id: string): string => remap.get(id) ?? id;
+  const imported = replacement.map(original => {
+    const node: NodeRedNode = structuredClone(original);
+    node.id = idOf(node.id);
+    if (typeof node.z === "string") node.z = idOf(node.z);
+    if (Array.isArray(node.wires)) node.wires = node.wires.map(port =>
+      Array.isArray(port) ? port.map(id => typeof id === "string" ? idOf(id) : id) : port);
+    const meta = node["x-mcode"];
+    if (meta && typeof meta === "object") {
+      if (typeof meta.nativeId === "string") meta.nativeId = idOf(meta.nativeId);
+      if (Array.isArray(meta.edgeMeta)) meta.edgeMeta = meta.edgeMeta.map(edge => ({
+        ...edge,
+        sourceNativeId: idOf(edge.sourceNativeId),
+        targetNativeId: idOf(edge.targetNativeId),
+      }));
+    }
+    return node;
+  });
+  for (const node of imported) {
+    if (reserved.has(node.id)) throw Error(`工作流节点 id 与其他 Node-RED 工作流冲突：${node.id}`);
+  }
+  // Keep the target tab at its previous position to avoid unnecessary
+  // reordering; newly imported tabs append, never discard other flows.
+  const firstTargetIndex = previousTabId === null ? -1 : old.findIndex(node => node.id === previousTabId);
+  const prefixCount = firstTargetIndex < 0
+    ? retained.length
+    : old.slice(0, firstTargetIndex).filter(node =>
+      node.id !== previousTabId && !(previousTabId !== null && node.z === previousTabId)).length;
+  const nodes = [
+    ...retained.slice(0, prefixCount),
+    ...imported,
+    ...retained.slice(prefixCount),
+  ];
+  nativeFlowIdsOfNodes(nodes);
+  return { nodes, currentTab: previousTabId === null ? null : target, imported, idRemap: remap };
+}
 
 function reasonLines(evaluation: WorkflowMigrationEvaluation): string {
   return evaluation.reasons.map((reason) => `- ${reason.summary}（${reason.code}）`).join("\n");
@@ -204,12 +315,27 @@ export function loadWorkflowIntoNative(
       // Compare the exact native canvas, not a sidecar archive. An external
       // Node-RED Deploy may already have changed the on-disk graph.
       const before = readNativeCanvas(dataDir);
-      const nodes = migrated.flow.nodes;
+      const existingNodes = before === null ? null : JSON.parse(before) as NodeRedNode[];
+      const merged = mergeNativeWorkflowTab(existingNodes, migrated.flow.nodes, doc.id);
+      const nodes = merged.nodes;
+      const idOf = (id: string): string => merged.idRemap.get(id) ?? id;
+      const importedFlow = { ...migrated.flow, nodes: merged.imported,
+        ...(migrated.flow.links === undefined ? {} : {
+          links: migrated.flow.links.map(link => ({
+            ...link, source: idOf(link.source), target: idOf(link.target),
+          })),
+        }),
+      };
       const next = JSON.stringify(nodes);
-      const currentCanvas = before === null ? null : JSON.stringify(JSON.parse(before));
+      const currentCanvas = before === null ? null : JSON.stringify(existingNodes);
       const canvasDiffers = currentCanvas !== null && currentCanvas !== next;
+      // Only this document's deployed tab can diverge from its journal.
+      // Deploying/editing another tab must not force a replacement of this
+      // already-open Mcode workflow or lose changes to unrelated native flows.
+      const currentTab = merged.currentTab === null ? null : JSON.stringify(merged.currentTab);
+      const journalTab = previousLoad.ok ? JSON.stringify(previousLoad.flow.nodes) : null;
       const canvasDivergedFromLastLoad = previousLoad.ok
-        && currentCanvas !== null && JSON.stringify(previousLoad.flow.nodes) !== currentCanvas;
+        && currentTab !== journalTab;
       // Opening the SAME saved graph is navigation, not a deploy operation.
       // If the running child, on-disk native graph and doc-bound load journal
       // all agree byte-for-byte (after JSON parsing), reusing the existing
@@ -218,9 +344,9 @@ export function loadWorkflowIntoNative(
       // can take this shortcut: missing/corrupt journal, changed library doc,
       // external Deploy or stopped/failed runtime retain the guarded load.
       // G0/G1 REJECT/UNREADABLE checks above must always run first.
-      if (status.state === "running" && previousLoad.ok
-        && currentCanvas === next
-        && JSON.stringify(previousLoad.flow.nodes) === next) {
+      if (status.state === "running" && evaluation.decision === "SAFE"
+        && previousLoad.ok && currentCanvas === next
+        && currentTab === journalTab) {
         return { ok: true, unchanged: true };
       }
       // Only the preflight decides whether an acknowledgment is needed: whenever
@@ -243,14 +369,14 @@ export function loadWorkflowIntoNative(
         return {
           ok: false,
           requiresConfirmation: true,
-          reason: "切换会替换当前 Node-RED 画布并重启运行中的引擎。尚未 Deploy 的编辑无法从磁盘恢复；请先在原生编辑器部署或另存。旧的已部署 flows.json 将保留内容寻址备份。确定继续？"
+          reason: "装载会更新当前工作流对应的 Node-RED tab，并重启运行中的引擎；其他 tab 会保留。尚未 Deploy 的编辑无法从磁盘恢复；请先在原生编辑器部署或另存。旧的已部署 flows.json 将保留内容寻址备份。确定继续？"
             + divergencePart + migrationPart + lossPart,
         };
       }
 
       // ── T21 ② 装载记录（写前记账）：先落 CAS 记录，再动画布。 ──
       // 另一个进程在同一文档上抢先写入 → conflict，本进程在碰画布之前就退出。
-      const journalSaved = await journal.saveFlow(JOURNAL_PROJECT_ID, doc.id, migrated.flow, {
+      const journalSaved = await journal.saveFlow(JOURNAL_PROJECT_ID, doc.id, importedFlow, {
         expectedRevision: previousLoad.ok ? previousLoad.revision : null,
       });
       if (!journalSaved.ok) {
@@ -263,15 +389,19 @@ export function loadWorkflowIntoNative(
       // No POST /flows: that endpoint is a *user* Deploy and would cause T58
       // to rewrite library updatedAt. A stopped runtime reads flows.json only
       // on startup, so no deploy-final handshake fires on load.
-      if (status.state === "running" || status.state === "failed") {
-        const stopped = await ports.runtime.stop();
-        if (stopped.state !== "stopped") throw new Error("无法安全停止旧 Node-RED 引擎");
-      }
-      await ports.beforeStart();
-      const spec = ports.launchSpec();
-      if (!spec) throw new Error("Node-RED 启动参数不可用，已拒绝写入画布");
-      const written = await replaceNativeCanvas(dataDir, nodes);
+      // The journal was written before stopping; restore it on ANY failure
+      // (stop, install, launch spec, concurrent native Deploy, or child boot).
+      // Previously a pre-start failure silently left a stale "loaded" journal.
+      let written: Awaited<ReturnType<typeof replaceNativeCanvas>> | null = null;
       try {
+        if (status.state === "running" || status.state === "failed") {
+          const stopped = await ports.runtime.stop();
+          if (stopped.state !== "stopped") throw new Error("无法安全停止旧 Node-RED 引擎");
+        }
+        await ports.beforeStart();
+        const spec = ports.launchSpec();
+        if (!spec) throw new Error("Node-RED 启动参数不可用，已拒绝写入画布");
+        written = await replaceNativeCanvas(dataDir, nodes, { expectedCanvas: before });
         const started = await ports.runtime.start({
           engineId: "node-red", dataDir: spec.dataDir, command: spec.command, args: spec.args,
           ...(spec.env ? { env: spec.env } : {}),
@@ -281,7 +411,7 @@ export function loadWorkflowIntoNative(
         return { ok: true };
       } catch (err) {
         // Only restore if no other actor replaced our exact bytes.
-        if (written.changed) await written.rollback();
+        if (written?.changed) await written.rollback();
         // The journal recorded *this* load's intent before the canvas write.
         // A failed load must not keep claiming a completed load: restore the
         // previous record when there was one; a first-ever failed load leaves

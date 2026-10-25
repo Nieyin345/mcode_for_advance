@@ -569,13 +569,19 @@ export interface NativeCanvasWrite {
  * use the same atomic file primitive and cross-process file lease as normal
  * NodeRedFlowStorage. Rollback refuses to clobber a later unrelated write.
  */
-export async function replaceNativeCanvas(engineDir: string, nodes: readonly NodeRedNode[]): Promise<NativeCanvasWrite> {
+export async function replaceNativeCanvas(engineDir: string, nodes: readonly NodeRedNode[], options: { expectedCanvas?: string | null } = {}): Promise<NativeCanvasWrite> {
   nativeFlowIdsOfNodes(nodes);
   const path = join(engineDir, "flows.json");
   const next = JSON.stringify(nodes, null, 2);
   let previous: string | null = null;
   const changed = await withOsFileLease(path, async () => {
     previous = readNativeCanvas(engineDir);
+    // Compare under the OS lease, not only in the earlier UI preflight:
+    // an external Deploy between confirmation and lock acquisition must not
+    // get erased by a stale merged graph of another workflow.
+    if (options.expectedCanvas !== undefined && previous !== options.expectedCanvas) {
+      throw Error("Node-RED flows.json 在装载确认后被其他操作更改，请重新读取再尝试；未覆盖任何工作流");
+    }
     if (previous !== null && JSON.stringify(JSON.parse(previous)) === JSON.stringify(nodes)) return false;
     if (previous !== null) {
       const digest = createHash("sha256").update(previous).digest("hex");
