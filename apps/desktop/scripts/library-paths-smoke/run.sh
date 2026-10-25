@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Headless smoke for 文献库的**越界守卫**(`main/library/paths.ts`)。
+# Headless smoke for 资料库的**越界守卫**(`main/library/paths.ts`)。
 #
 # 为什么单独一套:那两处守卫(`notesImport.writeNote` 写、`ipc/library.dropAbs` 删)
 # 一个会覆盖用户磁盘上的文件、一个会删掉用户的文件,而它们早先用的判据恒假 ——

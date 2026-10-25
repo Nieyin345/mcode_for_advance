@@ -14,7 +14,7 @@
  *
  * ## 没覆盖的(写清楚,免得被当已验)
  *
- *  - **文献库那十几个真 handler**:库存真相在 sql.js 里,无头给不出来。它们由各自那条
+ *  - **资料库那十几个真 handler**:库存真相在 sql.js 里,无头给不出来。它们由各自那条
  *    路覆盖(真机用一次)。这里用的是形状相同的替身表(见 stubs/libraryServer.ts);
  *  - **审批卡在界面上真的弹出来**:那要一次真人操作。这里验到"闸门问了,而且按回答办事";
  *  - **扩展那侧**:它是个标准 MCP 客户端,由它自己的测试管。
@@ -1147,7 +1147,7 @@ eq("bash 也是写工具", annOf("agent_bash").readOnlyHint, false);
 eq("触网工具 openWorldHint=true(agent_read_url)", annOf("agent_read_url").openWorldHint, true);
 eq("触网工具 openWorldHint=true(SSH)", annOf("agent_ssh_status").openWorldHint, true);
 eq("纯本地读文件 openWorldHint=false", annOf("agent_read_file").openWorldHint, false);
-// 文献库/工作流那些 server 的工具同样带上了(共用一份判定)。
+// 资料库/工作流那些 server 的工具同样带上了(共用一份判定)。
 eq("库里的读工具也带了 annotations", annOf("workflow_list").readOnlyHint, true);
 check("表里也有真工作流的工具(同一份表)", names.includes("workflow_list"), names);
 check("agent 工具进表：文件/搜索/系统进程/持久进程/技能", [

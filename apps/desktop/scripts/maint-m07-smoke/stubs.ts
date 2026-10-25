@@ -10,7 +10,7 @@ export const projectPaths: string[] = [];
 export const worktreeRoots: string[] = [];
 export const ProjectRepo = { listPaths: (): string[] => projectPaths };
 export const SessionRepo = { listWorktreeRoots: (): string[] => worktreeRoots };
-/** 本套件不碰数据根:文献库/模版库那一类根在这里一律不存在。 */
+/** 本套件不碰数据根:资料库/模版库那一类根在这里一律不存在。 */
 export function dataRoot(): never { throw new Error("No user data root in this smoke"); }
 
 /** 被拒绝时 files.ts 只写日志、对渲染端静默返回 —— 把日志收下来当证据。 */

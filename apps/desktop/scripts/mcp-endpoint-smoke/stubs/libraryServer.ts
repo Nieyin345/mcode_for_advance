@@ -6,7 +6,7 @@
  * 真的那份在模块顶层 import 了 `LibraryRepo / CollectionRepo / NoteRepo / SettingRepo`,
  * 而仓库桩(`mcode-admin-smoke/stubs/repositories.ts`)只实现了工作流那几个 —— 无头
  * 环境里给不出真的库。这一套要验的是 **webToolHost 的派发与闸门**(会话缺失要不要拒、
- * 参数校验、只读放行 / 写操作弹卡 / 拒绝后不执行),不是文献库那十几个 handler 本身
+ * 参数校验、只读放行 / 写操作弹卡 / 拒绝后不执行),不是资料库那十几个 handler 本身
  * (它们有自己那条路的覆盖)。
  *
  * 所以这里造三张**形状各异**的声明,把它们真正需要的东西都压出来:

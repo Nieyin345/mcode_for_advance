@@ -36,7 +36,7 @@ export function copyDataRootTo(_target: string): string | null {
   return "memory-codex-smoke 的 dataRoot 桩不支持搬家(本套不验那条路)";
 }
 
-/** **空操作。** 真的那个把老位置(`%APPDATA%`)里的库和文献库搬进数据根,那是给从旧
+/** **空操作。** 真的那个把老位置(`%APPDATA%`)里的库和资料库搬进数据根,那是给从旧
  *  版本升上来的用户用的;这里的数据根是刚 `mktemp` 出来的,没有"老位置"可言。 */
 export function migrateLegacyIntoDataRoot(): void {
   /* 无头脚本里没有可搬的东西 */

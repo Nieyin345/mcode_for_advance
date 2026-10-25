@@ -861,13 +861,13 @@ console.log("\n6. 多个项目根之间不串");
   eqArr("但外层根没被连坐", e5, [`showItemInFolder:${join(ROOT_A, "top.txt")}`]);
 }
 
-/* ──────────────── 文献库根也是合法工作区根（2026-09-21） ──────────────── */
+/* ──────────────── 资料库根也是合法工作区根（2026-09-21） ──────────────── */
 
-console.log("\n文献库根 · 编辑那里面的文件要通得过这道闸");
+console.log("\n资料库根 · 编辑那里面的文件要通得过这道闸");
 
 {
   // ★ 用户的规矩是「我不管从哪打开，只要在主页面显示它，我就该能编辑它」——
-  //   而文献库的 PDF/markdown 住在 `<数据根>/library/` 下，**不归任何项目根管**。
+  //   而资料库的 PDF/markdown 住在 `<数据根>/library/` 下，**不归任何项目根管**。
   //   不加这一类根，那些文件送进 FileEditor（读写全走 file:readFile / file:writeFile）
   //   会**读被拒、写更被拒**，表现是"打开了但是空的、存不下去"。
   //
@@ -900,7 +900,7 @@ console.log("\n文献库根 · 编辑那里面的文件要通得过这道闸");
     findContainingWorkspaceRoot(dataRoot()) === null,
   );
   // 反面二：系统目录更不该在。
-  // 模版库也要 —— 它在 `<数据根>/templates/`,与文献库**并列**。只放开 library
+  // 模版库也要 —— 它在 `<数据根>/templates/`,与资料库**并列**。只放开 library
   // 是第一版的漏:那边同样是"用户自己的文档、同样要在主页面里编辑"。
   const tpl = join(dataRoot(), "templates");
   mkdirSync(join(tpl, "code", "x"), { recursive: true });

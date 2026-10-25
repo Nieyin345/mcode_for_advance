@@ -19,7 +19,7 @@ export function dataRoot(): string {
 export const DATA_DB_FILENAME = "mcode.db";
 
 /**
- * **空操作。** 真的那个把老位置(`%APPDATA%`)里的库和文献库搬进数据根,那是给
+ * **空操作。** 真的那个把老位置(`%APPDATA%`)里的库和资料库搬进数据根,那是给
  * 从旧版本升上来的用户用的;这里的数据根是刚 `mktemp` 出来的,没有"老位置"可言。
  */
 export function migrateLegacyIntoDataRoot(): void {
