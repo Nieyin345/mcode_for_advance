@@ -46,6 +46,8 @@ import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { registerUnattendedHandlers } from "./unattended.js";
 import { registerModuleHandlers } from "./modules.js";
 import { registerTheiaPreviewHandlers } from "./theiaPreview.js";
+import { registerTheiaInstalledHandlers } from "./theiaInstalled.js";
+import { dataRoot } from "@main/lib/dataRoot.js";
 import { registerMemoryAssistantHandlers } from "./memoryAssistant.js";
 import { ipcMain, session, type IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
@@ -126,6 +128,7 @@ export function registerIpcHandlers(): void {
   registerFileHandlers(ipc);
   registerModuleHandlers(ipc);
   registerTheiaPreviewHandlers(ipc);
+  registerTheiaInstalledHandlers(ipc,{dataRoot});
   registerRgHandlers(ipc);
   registerGitHandlers(ipc);
   registerTerminalHandlers(ipc);

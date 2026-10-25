@@ -15,6 +15,7 @@ const api = {
      *  （那条收渲染端拼好的 manifest，这条收磁盘上的 vsix 字节），审批同档。 */
     installVsix: ((input) => ipcRenderer.invoke(IPC.MODULE_INSTALL_VSIX,input)) as RpcMap["modules.installVsix"],
     theiaPreview: ((input) => ipcRenderer.invoke(IPC.MODULE_THEIA_PREVIEW, input)) as RpcMap["modules.theiaPreview"],
+    theiaInstalled: ((input) => ipcRenderer.invoke(IPC.MODULE_THEIA_INSTALLED, input)) as RpcMap["modules.theiaInstalled"],
     remove: ((input) => ipcRenderer.invoke(IPC.MODULE_REMOVE,input)) as RpcMap["modules.remove"],
     invoke: ((input) => ipcRenderer.invoke(IPC.MODULE_INVOKE,input)) as RpcMap["modules.invoke"],
     task: ((input) => ipcRenderer.invoke(IPC.MODULE_TASK,input)) as RpcMap["modules.task"],

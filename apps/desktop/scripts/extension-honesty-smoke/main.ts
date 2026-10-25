@@ -66,6 +66,8 @@ console.log("[5] VscodeL1Bridge 的调用范围（两个范围分开断言）");
   // 新建一个未跟踪的探针文件，`git grep` 看不见它，套件仍然全绿。
   const srcRoot = resolve(process.cwd(), "src");
   const defFile = resolve(process.cwd(), "src/main/modules/vscodeL1Bridge.ts");
+  // Generated API catalogue is prose metadata derived from RpcMap JSDoc, not a runtime caller.
+  const generatedCatalog = resolve(process.cwd(), "src/main/appControl/apiCatalog.generated.ts");
   const hits: string[] = [];
   const walk = (dir: string): void => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -74,7 +76,7 @@ console.log("[5] VscodeL1Bridge 的调用范围（两个范围分开断言）");
         walk(full);
         continue;
       }
-      if (full === defFile) continue;
+      if (full === defFile || full === generatedCatalog) continue;
       if (!/\.(ts|tsx|mts|cts|js|mjs|cjs)$/.test(e.name)) continue;
       const text = readFileSync(full, "utf8");
       if (/VscodeL1Bridge|readMinimalVsix/.test(text)) hits.push(full);

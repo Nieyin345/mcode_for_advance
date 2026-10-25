@@ -79,6 +79,7 @@ const BLOCKED: Record<string, string> = {
   "modules.setPermissions": "扩展安装权限只能由用户在扩展设置页本人授权或撤销",
   // 【F025】临时试运行可以执行任意第三方 Node 代码，只能桌面本人直接操作。
   "modules.theiaPreview": "Theia VSIX 临时试运行只能由桌面用户预检并明确确认，不能由 Agent 自授权",
+  "modules.theiaInstalled": "持久安装/启停/卸载可执行扩展只能由桌面用户本人操作，不能委托 Agent",
   "modules.egressConsentGet": "扩展网络隔离降级开关仅在桌面设置页操作",
   "modules.egressConsentSet": "网络隔离风险许可只能由用户本人在桌面设置页确认",
   "customModel.getToken": "API Key / 令牌不给模型",
@@ -533,6 +534,7 @@ const BLOCKED_MUTATING: ReadonlySet<string> = new Set([
   "modules.issueWorkflowGrant",
   "modules.revokeWorkflowGrant",
   "modules.theiaPreview",
+  "modules.theiaInstalled",
   "scene.approve",
   "scene.apply",
   "scene.resume",

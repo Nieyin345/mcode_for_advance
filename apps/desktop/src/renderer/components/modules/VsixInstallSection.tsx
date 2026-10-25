@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { TheiaPreviewResult } from "@contracts/ipc/modules.js";
+import { TheiaInstalledPanel } from "./TheiaInstalledPanel.js";
 import { api } from "@renderer/lib/api.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ErrorNote } from "@renderer/components/ui/index.js";
@@ -198,6 +199,7 @@ export function VsixInstallSection({ onInstalled }: { onInstalled: () => void })
       <Button disabled={busy} onClick={() => void pickAndInstall()}>
         {busy ? t("ide.modules.vsixInstalling") : t("ide.modules.vsixPick")}
       </Button>
+      <TheiaInstalledPanel />
       <section className="space-y-2 rounded border border-edge p-3" data-testid="theia-vsix-preview">
         <p className="text-body font-semibold">Theia 兼容试运行（多文件 VSIX）</p>
         <p className="text-code text-content-muted">

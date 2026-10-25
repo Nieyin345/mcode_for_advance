@@ -320,8 +320,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "browser.setPickMode",
   "channel": "browser:setPickMode",
   "doc": "Inject/remove the DOM element picker into the page's main world.",
-  "input": "{ browserId: string; enabled: boolean }",
-  "inputFull": "{ browserId: string; enabled: boolean }",
+  "input": "{ enabled: boolean; browserId: string }",
+  "inputFull": "{ enabled: boolean; browserId: string }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
@@ -1848,8 +1848,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "mcp.toggle",
   "channel": "mcp:toggle",
   "doc": "Enable/disable a server. User scope moves the config between the config file and the management stash; project/builtin update the management state. Takes effect on the next turn.",
-  "input": "{ name: string; scope: 'user' | 'plugin' | 'builtin'; enabled: boolean }",
-  "inputFull": "{ name: string; scope: 'user' | 'plugin' | 'builtin'; enabled: boolean }",
+  "input": "{ enabled: boolean; name: string; scope: 'user' | 'plugin' | 'builtin' }",
+  "inputFull": "{ enabled: boolean; name: string; scope: 'user' | 'plugin' | 'builtin' }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
@@ -2141,6 +2141,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ length: number // Gets or sets the length of the array.; toString: () => string // Returns a string representation of an array.; toLocaleString: { (): string; (locales: string | string[], options?: Intl.NumberFormatOptions & Intl.DateTimeFormatOptions): str…"
  },
  {
+  "method": "modules.theiaInstalled",
+  "channel": "modules:theiaInstalled",
+  "doc": "F026 Persist installed VSIX separately from L1; explicit human confirmation and no automatic execution.",
+  "input": "{ op: 'list' } | { path: string; op: 'inspect' } | { op: 'cancel'; ticket: string } | { op: 'install'; ticket: string; accepted: true } | { id: string; op: 'start' } | { op: 'execute'; sessionId: string; commandId: string } | { op: 'stop'; sessionId: string }…",
+  "inputFull": "{ op: 'list' } | { path: string; op: 'inspect' } | { op: 'cancel'; ticket: string } | { op: 'install'; ticket: string; accepted: true } | { id: string; op: 'start' } | { op: 'execute'; sessionId: string; commandId: string } | { op: 'stop'; sessionId: string }…",
+  "output": "{ kind: 'list'; items: TheiaInstalledEntry[] } | { kind: 'inspected'; ticket: string; extensionId: string; fileCount: number; prompt: TheiaPreviewPermissionPrompt } | { kind: 'installed' | 'updated'; item: TheiaInstalledEntry } | { kind: 'started'; id: string…"
+ },
+ {
   "method": "modules.theiaPreview",
   "channel": "modules:theiaPreview",
   "doc": "F025 Temporary Theia VSIX inspect / start / execute / stop; no persistent module registration.",
@@ -2352,8 +2360,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "plugins.setEnabled",
   "channel": "plugins:setEnabled",
   "doc": "Enable/disable a plugin for subsequent turns.",
-  "input": "{ name: string; enabled: boolean }",
-  "inputFull": "{ name: string; enabled: boolean }",
+  "input": "{ enabled: boolean; name: string }",
+  "inputFull": "{ enabled: boolean; name: string }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {

@@ -766,6 +766,7 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "modules.tasks": [
     "modules.read"
   ],
+  "modules.theiaInstalled": null,
   "modules.theiaPreview": null,
   "monitoring.overview": [
     "workflow.read"

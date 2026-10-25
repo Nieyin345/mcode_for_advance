@@ -119,3 +119,29 @@ export type TheiaPreviewResult =
   | { kind: "started"; sessionId: string; extensionId: string; commands: string[]; activationErrors: string[] }
   | { kind: "executed"; result: string }
   | { kind: "stopped" };
+
+/** F026: persistent Theia VSIX installs. Every command is desktop-only and non-delegable. */
+export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
+  z.object({op:z.literal("list")}).strict(),
+  z.object({op:z.literal("inspect"),path:z.string().min(1).max(4096)}).strict(),
+  z.object({op:z.literal("cancel"),ticket:z.string().uuid()}).strict(),
+  z.object({op:z.literal("install"),ticket:z.string().uuid(),accepted:z.literal(true)}).strict(),
+  z.object({op:z.literal("start"),id:z.string().uuid()}).strict(),
+  z.object({op:z.literal("execute"),sessionId:z.string().uuid(),commandId:z.string().min(1).max(256)}).strict(),
+  z.object({op:z.literal("stop"),sessionId:z.string().uuid()}).strict(),
+  z.object({op:z.literal("setEnabled"),id:z.string().uuid(),enabled:z.boolean()}).strict(),
+  z.object({op:z.literal("remove"),id:z.string().uuid()}).strict(),
+]);
+export type TheiaInstalledInput = z.infer<typeof TheiaInstalledInputSchema>;
+export interface TheiaInstalledEntry {
+  id:string; extensionId:string; version:string; enabled:boolean; installedAt:number;
+  running:boolean; corrupted?:boolean;
+}
+export type TheiaInstalledResult =
+  | {kind:"list";items:TheiaInstalledEntry[]}
+  | {kind:"inspected";ticket:string;extensionId:string;fileCount:number;prompt:TheiaPreviewPermissionPrompt}
+  | {kind:"installed"|"updated";item:TheiaInstalledEntry}
+  | {kind:"started";id:string;sessionId:string;commands:string[];activationErrors:string[]}
+  | {kind:"executed";result:string}
+  | {kind:"removed";id:string}
+  | {kind:"stopped"};

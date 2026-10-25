@@ -1262,6 +1262,7 @@ export function createWebApi(): Api {
       // (与整个 modules 面同一取舍)。
       installVsix: async () => webUnsupported("modules.installVsix"),
       theiaPreview: async () => webUnsupported("modules.theiaPreview"),
+      theiaInstalled: async () => webUnsupported("modules.theiaInstalled"),
       // Desktop-only user risk acknowledgment: never expose it through mobile/web.
       egressConsentGet: async () => webUnsupported("modules.egressConsentGet"),
       egressConsentSet: async () => webUnsupported("modules.egressConsentSet"),
