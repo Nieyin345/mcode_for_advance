@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Block } from "../../src/renderer/stores/sessionStore.js";
-import { timelineBlocksPreview, truncateTimelineExcerpt, TIMELINE_EXCERPT_LIMIT } from "../../src/renderer/components/chat/timelineTextPreview.js";
+import { timelineAccessibleSummary, timelineBlocksPreview, truncateTimelineExcerpt, TIMELINE_EXCERPT_LIMIT } from "../../src/renderer/components/chat/timelineTextPreview.js";
 
 let n=0, failed=0;
 function check(label:string,pass:boolean){n++;if(!pass)failed++;console.log((pass?"PASS ":"FAIL ")+label);}
@@ -31,6 +31,12 @@ check("Bookmark excerpt remains untouched if it fits",
  truncateTimelineExcerpt("bookmark text")==="bookmark text");
 check("Long bookmark excerpt is bounded without changing saved content",
  truncateTimelineExcerpt(long).length<=TIMELINE_EXCERPT_LIMIT+1);
+check("Accessible timeline summary reads at most the preview's tiny prefix",
+ timelineAccessibleSummary(longBlocks,t)==="A".repeat(140));
+check("Accessible summaries skip empty blocks and preserve localized attachment",
+ timelineAccessibleSummary([textBlock("  "),{kind:"attachment",preview:"file.md"} as Block],t)==="Attachment: file.md");
+check("Accessible summary is always available without hover portal",
+ timelineAccessibleSummary([{kind:"thinking",text:"reasoning"} as Block],t)==="reasoning");
 check("Original stored content remains unchanged",
  longBlocks[0]?.kind==="text" && longBlocks[0].text.length===4*1024*1024);
 
@@ -44,10 +50,13 @@ check("Only LiveTurnStatRow subscribes to the shared global ticker",
  row.indexOf("const now = useNow()")<row.indexOf("function TurnStatContent"));
 check("Live turn still drives the existing animated operation ticker",
  row.includes("<CurrentOpTicker op={op} turnActive />") && row.includes('data-tempo={op ? undefined : "slow"}'));
-check("Timeline preview formatter memoizes per message blocks and locale",
- timeline.includes("const text = useMemo(") &&
+check("Timeline only builds full hover preview when the dash is focused or hovered",
+ timeline.includes('const text = useMemo(() => !hovered ? "" : excerpt') &&
  timeline.includes("timelineBlocksPreview(message.blocks, t)") &&
- timeline.includes("[excerpt, message.blocks, t]"));
+ timeline.includes("[hovered, excerpt, message.blocks, t]"));
+check("Timeline keeps accessible names even before any tooltip is opened",
+ timeline.includes("timelineAccessibleSummary(message.blocks, t)") &&
+ timeline.includes("text: summary"));
 check("Timeline retains virtual-list jump and bookmark ownership behavior",
  timeline.includes("onJumpItem(d.message.id, d.index, d.excerpt)") &&
  timeline.includes("bookmarkGroups"));

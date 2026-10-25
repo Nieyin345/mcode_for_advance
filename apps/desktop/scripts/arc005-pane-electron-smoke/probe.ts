@@ -179,6 +179,69 @@ export async function runPaneProbe(dir:string):Promise<boolean>{
    assert(restoredValue===draft,'unsaved in-memory draft disappeared during hide/reopen');
    assert(restored.terminalIds.length===1&&restored.killIds.length===0,'duplicate PTY or kill after reopen '+JSON.stringify(restored));
   });
+  if (variant === 'green') {
+    // The new-tab action sits OUTSIDE role=tablist. Use the actual visible
+    // button, then dispatch real Chromium key events on selected tabs rather
+    // than manually mutating TerminalPanel's private refs.
+    const added=await js<boolean>(`(() => {
+      const list=document.querySelector('[role="tablist"]');
+      const newButton=list?.nextElementSibling;
+      if (!list || newButton?.tagName!=='BUTTON' || !newButton.getAttribute('aria-label')) return false;
+      newButton.click();
+      return true;
+    })()`);
+    await check('NATIVE_TERMINAL_NEW_TAB',async()=>{
+      assert(added,'new terminal action missing / inserted inside tablist');
+      await until(()=>js<boolean>(`window.__paneEvents.creates.length===2 &&
+        document.querySelectorAll('[role="tablist"] button[data-terminal-tab]').length===2`),'second terminal created');
+      const state=await js<{tabs:number;selected:number}>(`(() => ({
+        tabs:document.querySelectorAll('[role="tablist"] button[data-terminal-tab]').length,
+        selected:document.querySelectorAll('[role="tablist"] button[data-terminal-tab][aria-selected="true"]').length
+      }))()`);
+      assert(state.tabs===2&&state.selected===1,'new tab should become selected '+JSON.stringify(state));
+    });
+    const nativeArrow=async(direction:'Left'|'Right')=>{
+      await js(`document.querySelector('[role="tablist"] button[aria-selected="true"]')?.focus({preventScroll:true})`);
+      win.focus();
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:direction});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:direction});
+      await delay(140);
+      return js<number>(`[...document.querySelectorAll('[role="tablist"] button[data-terminal-tab]')].findIndex(el=>el.getAttribute('aria-selected')==='true')`);
+    };
+    const leftIndex=await nativeArrow('Left');
+    const rightIndex=await nativeArrow('Right');
+    await check('NATIVE_TERMINAL_ARROW_TABS',async()=>{
+      assert(leftIndex===0&&rightIndex===1,'native ArrowLeft/Right did not activate correct tab '+JSON.stringify({leftIndex,rightIndex}));
+      const counts=await js<{creates:number;kills:number}>(`(() => ({
+        creates:window.__paneEvents.creates.length,kills:window.__paneEvents.kills.length
+      }))()`);
+      assert(counts.creates===2&&counts.kills===0,'tab-key navigation restarted/killed a PTY '+JSON.stringify(counts));
+    });
+    const railReady=await js<boolean>(`(() => {
+      const buttons=document.querySelectorAll('[data-cds-aside] button[data-pane-rail-button]');
+      if(buttons.length<2)return false;
+      buttons[0].focus({preventScroll:true});
+      return document.activeElement===buttons[0];
+    })()`);
+    if(railReady) {
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:'Right'});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:'Right'});
+      await delay(90);
+    }
+    await check('NATIVE_RIGHT_RAIL_FOCUS',async()=>{
+      assert(railReady,'right rail has fewer than two keyboard buttons');
+      const state=await js<{focusedIndex:number;activeTab:string;scrollMethod:boolean}>(`(() => {
+        const buttons=[...document.querySelectorAll('[data-cds-aside] button[data-pane-rail-button]:not(:disabled)')];
+        return {
+          focusedIndex:buttons.indexOf(document.activeElement),
+          activeTab:window.__store.getState().rightPanelTab,
+          scrollMethod:typeof document.querySelector('[data-pane-rail-track]')?.scrollTo==='function',
+        };
+      })()`);
+      assert(state.focusedIndex===1,'ArrowRight did not move keyboard focus '+JSON.stringify(state));
+      assert(state.scrollMethod,'rail no longer has its own scroll surface');
+    });
+  }
   await check('NO_RUNTIME_ERRORS',async()=>{
    assert((await js<string[]>('window.__uncaught')).length===0,'uncaught renderer exception '+JSON.stringify(await js('window.__uncaught')));
    assert(clean?.errors.length===0,'native renderer failure '+clean?.errors.join(','));

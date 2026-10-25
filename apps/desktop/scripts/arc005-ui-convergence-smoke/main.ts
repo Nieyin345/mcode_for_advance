@@ -36,7 +36,7 @@ check("Rail: selected item is revealed without browser scrollIntoView on render"
 check("Rail: selected item auto-scroll cleans up its animation frame",
  panel.includes("cancelAnimationFrame(id)") && panel.includes("requestAnimationFrame(() => {"));
 check("Rail: keyboard focus still uses shared arrow navigation helper",
- panel.includes("nextRailFocusIndex(e.key, index, buttons.length)") && panel.includes("nextButton.focus()"));
+ panel.includes("nextRailFocusIndex(e.key, index, buttons.length)") && panel.includes("nextButton.focus({ preventScroll: true })"));
 check("Rail: selected builtins and custom tabs keep aria-pressed semantics",
  panel.includes("aria-pressed={active}") && panel.includes("data-pane-rail-button"));
 check("Rail: horizontally scrollable icon track leaves dock and wide actions accessible",

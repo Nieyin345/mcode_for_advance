@@ -72,8 +72,9 @@ ck("Terminal toolbar delegates navigation only from actual tab buttons",
   sourceHas(terminal, "next = terminalTabTarget(e.key, tabs.indexOf(currentTab), tabs.length)") &&
   sourceHas(terminal, 'button[data-terminal-tab]'));
 ck("Terminal: keyboard selection invokes the existing active-tab handler, no duplicate PTY spawn",
-  sourceHas(terminal, "tabs[next]?.focus({ preventScroll: true });") &&
-  sourceHas(terminal, "tabs[next]?.click();") &&
+  sourceHas(terminal, "tab?.focus({ preventScroll: true });") &&
+  sourceHas(terminal, "tab?.click();") &&
+  sourceHas(terminal, "revealRailItemWithin(e.currentTarget, tab);") &&
   sourceHas(terminal, "st.activeKey = s.key;"));
 ck("Terminal: active tab and panel have paired aria identity",
   sourceHas(terminal, 'id={`terminal-tab-${s.key}`}') &&

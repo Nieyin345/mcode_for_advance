@@ -158,7 +158,7 @@ check("Actual Electron pane U1 verifies PTY, Monaco and unsaved draft across hid
 check("Pane U1 negative mutations still fail for React rekey and silent corruption",
  paneBuild.includes("statuses.REOPEN_PTY_AND_MONACO_DRAFT==='FAIL'") &&
  paneBuild.includes("statuses.CORRUPTION_NOTICE==='FAIL'") &&
- paneBuild.includes("checks.length>=12"));
+ paneBuild.includes("checks.length>=15"));
 check("Real long chat sample uses 640 isolated messages through Zustand store",
  probe.includes("Array.from({length:640}") &&
  probe.includes("st.setState({messagesBySession:{s1:many,s2:[],s3:[]}})"));
@@ -173,6 +173,11 @@ check("Long chat metric is captured with source data and real scroll region",
 check("Long chat gets a clean independent screenshot in baseline matrix",
  visualBuild.includes("long-chat") &&
  probe.includes('["long-chat", "长会话虚拟化压力"]'));
+check("Native Electron U1 checks keyboard focus, two terminal tabs and no spurious PTY lifecycle",
+ paneProbe.includes("NATIVE_TERMINAL_NEW_TAB") &&
+ paneProbe.includes("NATIVE_TERMINAL_ARROW_TABS") &&
+ paneProbe.includes("NATIVE_RIGHT_RAIL_FOCUS") &&
+ paneBuild.includes("checks.length>=15"));
 check("Negative: removing live isolation invalidates our own performance contract",
  !(stream.replace("<StreamRunningDuration startedAt={status.startedAt} />","").includes("<StreamRunningDuration startedAt={status.startedAt} />")));
 console.log("arc005-main-ui-u1-guard-smoke: "+(count-failed)+"/"+count);
