@@ -117,6 +117,37 @@ try{
   const run=await manager.start(51,id);
   if(run.kind!=="started")throw Error("could not start");
   check("手动启动真正 Theia Host 后命令已注册",run.commands.includes("mcodeSmoke.spawnEcho"),run);
+  // F030: install a DIFFERENT VSIX while the first real Theia host is active.
+  // Distinct Node child processes guarantee cross-extension command isolation
+  // until shared-worker semantics are implemented and independently verified.
+  const secondManifest=JSON.parse(pkg.toString("utf8")) as Record<string,unknown>;
+  secondManifest.name=String(secondManifest.name)+"-second";
+  const vsix2=path.join(dir,"second.vsix");
+  writeFileSync(vsix2,zip([
+    {name:"extension/package.json",bytes:Buffer.from(JSON.stringify(secondManifest))},
+    {name:"extension/extension.js",bytes:main},
+    {name:"extension/docs/info.txt",bytes:Buffer.from("fixture second")}
+  ]));
+  const secondInspection=await manager.inspect(51,vsix2);
+  if(secondInspection.kind!=="inspected")throw Error("second VSIX inspection failed");
+  const secondInstalled=manager.install(51,secondInspection.ticket,true);
+  if(secondInstalled.kind!=="installed")throw Error("second VSIX install failed");
+  const secondId=secondInstalled.item.id;
+  const secondRun=await manager.start(51,secondId);
+  if(secondRun.kind!=="started")throw Error("second VSIX start failed");
+  check("两个不同 VSIX 可同时启动并保持不同会话",manager.list(51).filter(x=>x.running).length===2&&run.sessionId!==secondRun.sessionId);
+  check("Mcode 原生命令面板可同时发现两扩展命令",manager.list(51).filter(x=>x.activeSession?.commands.includes("mcodeSmoke.spawnEcho")).length===2);
+  await rejects("一个已启动扩展不能二次启动",()=>manager!.start(51,secondId));
+  const firstReply=await manager.execute(51,run.sessionId,"mcodeSmoke.spawnEcho");
+  const secondReply=await manager.execute(51,secondRun.sessionId,"mcodeSmoke.spawnEcho");
+  check("两个独立 Theia 会话都能执行真实命令",firstReply.kind==="executed"&&secondReply.kind==="executed"&&firstReply.result.includes('"echo":"pong"')&&secondReply.result.includes('"echo":"pong"'));
+  await rejects("另一窗口不能停止第二扩展",()=>manager!.stop(52,secondRun.sessionId));
+  await rejects("运行中第二扩展不能卸载",()=>manager!.remove(secondId));
+  await manager.stop(51,secondRun.sessionId);
+  check("停止第二扩展不影响第一扩展",manager.list(51).find(x=>x.id===id)?.activeSession?.sessionId===run.sessionId&&manager.list().filter(x=>x.running).length===1);
+  await rejects("停止后的第二扩展旧会话不能继续执行",()=>manager!.execute(51,secondRun.sessionId,"mcodeSmoke.spawnEcho"));
+  manager.remove(secondId);
+  check("卸载第二扩展后第一扩展仍持续运行",manager.list().length===1&&manager.list()[0].running===true);
   const ownCommands=manager.list(51)[0].activeSession;
   check("Mcode 原生命令面板能发现本人会话的真实 Theia 命令",
     ownCommands?.sessionId===run.sessionId&&ownCommands.commands.includes("mcodeSmoke.spawnEcho"));

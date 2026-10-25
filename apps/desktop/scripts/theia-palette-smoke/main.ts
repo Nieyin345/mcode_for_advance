@@ -74,5 +74,12 @@ check("产品 VSIX 默认入口是持久化 Theia 而非并列三个运行器",
   !installSurface.includes('data-testid="theia-vsix-preview"'));
 check("旧 L1 兼容入口仍有真实限制告知和确认按钮",
   installSurface.includes('data-testid="module-vsix-limit-notice"')&&installSurface.includes("modules.installVsix"));
+const lifecycleUi=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/modules/TheiaInstalledPanel.tsx"),"utf8");
+check("切换离开扩展管理页不会调用 stop，已启动命令留在 Mcode",lifecycleUi.includes("离开这个页面不会停止")&&
+  !lifecycleUi.includes('if(sessionId)void api.modules.theiaInstalled({op:"stop"'));
+check("已启动多个扩展按各自会话渲染和停止",lifecycleUi.includes("item.activeSession")&&
+  lifecycleUi.includes('sessionId:item.activeSession')===false&&lifecycleUi.includes('sessionId=item.activeSession?.sessionId'));
+check("管理页面不进行自动启动和全局轮询",!lifecycleUi.includes('setInterval(')&&
+  !lifecycleUi.includes('void api.modules.theiaInstalled({op:"start"'));
 console.log("theia-palette-smoke: "+(count-failed)+"/"+count+" 通过");
 process.exitCode=failed?1:0;

@@ -57,7 +57,13 @@ export class TheiaInstalledRegistry {
   private starting = false;
   private startingSender: number | null = null;
   private startingId: string | null = null;
-  private running: Running | null = null;
+  /** One session per installed extension. Different extensions may run together; no automatic startup. */
+  private readonly running = new Map<string, Running>();
+  private readonly maxActive = 8;
+  private findSession(sessionId: string): Running | undefined {
+    for (const run of this.running.values()) if (run.sessionId === sessionId) return run;
+    return undefined;
+  }
   private closed = new Set<number>();
   constructor(private readonly root: string, private readonly theiaRoot: string) {
     if (!path.isAbsolute(root)) deny("扩展数据根必须是绝对路径");
@@ -118,10 +124,10 @@ export class TheiaInstalledRegistry {
     if(seen.size!==Object.keys(rec.files).length) deny("扩展文件缺失");
   }
   private item(rec:Saved,senderId?:number):TheiaInstalledEntry {
-    const current=this.running;
-    const owned=current?.id===rec.id && senderId!==undefined && current.senderId===senderId && !this.closed.has(senderId);
+    const current=this.running.get(rec.id);
+    const owned=current!==undefined && senderId!==undefined && current.senderId===senderId && !this.closed.has(senderId);
     return {id:rec.id,extensionId:rec.extensionId,version:rec.version,enabled:rec.enabled,
-      installedAt:rec.installedAt,running:current?.id===rec.id,integrity:"not-checked",
+      installedAt:rec.installedAt,running:current!==undefined,integrity:"not-checked",
       ...(owned ? {activeSession:{sessionId:current.sessionId,commands:[...current.commands].sort()}} : {})};
   }
   /** Metadata-only list: never read/hash extension payloads when opening the Mcode panel. */
@@ -207,13 +213,14 @@ export class TheiaInstalledRegistry {
     finally{rmSync(tmp,{force:true});}
   }
   setEnabled(id:string,enabled:boolean):TheiaInstalledResult{
-    if(this.running?.id===id||this.startingId===id) deny("请先停止扩展");
+    if(this.running.has(id)||this.startingId===id) deny("请先停止扩展");
     // Changing metadata cannot execute extension code; full integrity is checked on start.
     const rec=this.read(id);rec.enabled=enabled;this.update(rec);
     return {kind:"updated",item:this.item(rec)};
   }
   async start(senderId:number,id:string):Promise<TheiaInstalledResult>{
-    if(this.closed.has(senderId)||this.starting||this.running) deny("已有扩展启动或运行");
+    if(this.closed.has(senderId)||this.starting||this.running.has(id)) deny("该扩展已启动或正在启动");
+    if(this.running.size>=this.maxActive) deny("同时运行的扩展已达资源上限");
     const rec=this.read(id);
     if(!rec.enabled) deny("扩展已禁用");
     this.starting=true;this.startingSender=senderId;this.startingId=id;
@@ -223,7 +230,7 @@ export class TheiaInstalledRegistry {
       await host.start();const handle=await host.activate(),commands=await handle.commands();
       if(this.closed.has(senderId)) deny("启动期间窗口已关闭");
       const sessionId=randomUUID();
-      this.running={id,senderId,sessionId,host,handle,commands:new Set(commands)};
+      this.running.set(id,{id,senderId,sessionId,host,handle,commands:new Set(commands)});
       return {kind:"started",id,sessionId,commands,activationErrors:handle.activationErrors.map(e=>e.message).slice(0,8)};
     }catch(error){await host.dispose();throw error;}
     finally{this.starting=false;this.startingSender=null;this.startingId=null;}
@@ -233,48 +240,50 @@ export class TheiaInstalledRegistry {
    */
   async editorSync(senderId:number,sessionId:string,input:TheiaMonacoEditorSnapshot|null,
     apply: (transaction:import("./editorTransactions.js").EditorEditTransaction)=>Promise<boolean>):Promise<TheiaInstalledResult> {
-    const current=this.running;
-    if(!current||current.senderId!==senderId||current.sessionId!==sessionId||this.closed.has(senderId)||
+    const current=this.findSession(sessionId);
+    if(!current||current.senderId!==senderId||this.closed.has(senderId)||
        current.syncing||current.executing) deny("仅当前窗口的空闲运行会话可以同步编辑器");
     if(input && (!path.isAbsolute(input.filePath)||input.text.length>2_000_000)) deny("编辑器文档不符合安全边界");
     current.syncing=true;
     try{
       const bridge=current.editorBridge??=current.host.editors();
       await bridge.setActive(input===null?null:{...input,applyEdits:apply});
-      if(this.running!==current||this.closed.has(senderId)) deny("同步期间会话已失效");
+      if(this.running.get(current.id)!==current||this.closed.has(senderId)) deny("同步期间会话已失效");
       return {kind:"editorSynced",active:input!==null};
     }finally{current.syncing=false;}
   }
   async execute(senderId:number,sessionId:string,commandId:string,args:readonly string[]=[]):Promise<TheiaInstalledResult>{
-    const current=this.running;
-    if(!current||current.senderId!==senderId||current.sessionId!==sessionId||
+    const current=this.findSession(sessionId);
+    if(!current||current.senderId!==senderId||
        !current.commands.has(commandId)||current.syncing||current.executing) deny("扩展会话或命令不存在/正在忙碌");
     current.executing=true;
     try{
       const result=await current.handle.executeCommand<unknown>(commandId,...args);
-      if(this.running!==current||this.closed.has(senderId)) deny("扩展已停止");
+      if(this.running.get(current.id)!==current||this.closed.has(senderId)) deny("扩展已停止");
       let output:string;try{output=JSON.stringify(result)??"undefined";}catch{output="[unserializable]";}
       return {kind:"executed",result:output.slice(0,3000)};
     }finally{current.executing=false;}
   }
   async stop(senderId:number,sessionId:string):Promise<TheiaInstalledResult>{
-    const current=this.running;
-    if(!current||current.senderId!==senderId||current.sessionId!==sessionId) deny("扩展会话不存在");
-    this.running=null;await current.host.dispose();return {kind:"stopped"};
+    const current=this.findSession(sessionId);
+    if(!current||current.senderId!==senderId) deny("扩展会话不存在");
+    this.running.delete(current.id);await current.host.dispose();return {kind:"stopped"};
   }
   remove(id:string):TheiaInstalledResult{
-    if(this.running?.id===id||this.startingId===id) deny("请先停止正在启动或运行的扩展");
+    if(this.running.has(id)||this.startingId===id) deny("请先停止正在启动或运行的扩展");
     this.read(id);rmSync(this.dir(id),{recursive:true,force:true});return {kind:"removed",id};
   }
   async disposeSender(senderId:number):Promise<void>{
     this.closed.add(senderId);
     if(this.pending?.senderId===senderId)this.discard();
-    const run=this.running;
-    if(run?.senderId===senderId){this.running=null;await run.host.dispose();}
+    const owned=[...this.running.values()].filter(run=>run.senderId===senderId);
+    for(const run of owned)this.running.delete(run.id);
+    await Promise.allSettled(owned.map(run=>run.host.dispose()));
   }
   async disposeAll():Promise<void>{
     this.discard();
     if(this.startingSender!==null)this.closed.add(this.startingSender);
-    const run=this.running;this.running=null;if(run)await run.host.dispose();
+    const active=[...this.running.values()];this.running.clear();
+    await Promise.allSettled(active.map(run=>run.host.dispose()));
   }
 }
