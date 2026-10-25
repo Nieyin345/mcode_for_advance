@@ -241,6 +241,47 @@ export async function runPaneProbe(dir:string):Promise<boolean>{
       assert(state.focusedIndex===1,'ArrowRight did not move keyboard focus '+JSON.stringify(state));
       assert(state.scrollMethod,'rail no longer has its own scroll surface');
     });
+    // Closing a focused tab removes its DOM button. Focus must land on the
+    // remaining active tab; after closing the last tab, on '+' (not <body>).
+    // The final close must NEVER re-spawn the PTY automatically.
+    const closeFocusedTab = async () => {
+      const ready=await js<boolean>(`(() => {
+        const tab=document.querySelector('[role="tablist"] button[data-terminal-tab][aria-selected="true"]');
+        const close=tab?.parentElement?.querySelector('button[aria-label]');
+        if(!close)return false;
+        close.focus({preventScroll:true});
+        close.click();
+        return true;
+      })()`);
+      await delay(120);
+      return ready;
+    };
+    const firstCloseReady=await closeFocusedTab();
+    const afterFirstClose=await js<{tabs:number;focusOnTab:boolean;focusTag:string;focusHtml:string;selectedHtml:string;creates:number;kills:number}>(`(() => ({
+      tabs:document.querySelectorAll('[role="tablist"] button[data-terminal-tab]').length,
+      focusOnTab:document.activeElement?.matches('[role="tablist"] button[data-terminal-tab][aria-selected="true"]')??false,
+      focusTag:document.activeElement?.tagName??'',focusHtml:document.activeElement?.outerHTML.slice(0,270)??'',
+      selectedHtml:document.querySelector('[role="tablist"] button[data-terminal-tab][aria-selected="true"]')?.outerHTML.slice(0,270)??'',
+      creates:window.__paneEvents.creates.length,kills:window.__paneEvents.kills.length
+    }))()`);
+    await check('NATIVE_TERMINAL_CLOSE_FOCUS',()=>{
+      assert(firstCloseReady&&afterFirstClose.tabs===1&&afterFirstClose.focusOnTab,
+        'closing a focused terminal tab dropped keyboard focus '+JSON.stringify(afterFirstClose));
+      assert(afterFirstClose.creates===2&&afterFirstClose.kills===1,
+        'closing one terminal affected other PTY lifetimes '+JSON.stringify(afterFirstClose));
+    });
+    const lastCloseReady=await closeFocusedTab();
+    const afterLastClose=await js<{tabs:number;focusOnCreate:boolean;creates:number;kills:number}>(`(() => ({
+      tabs:document.querySelectorAll('[role="tablist"] button[data-terminal-tab]').length,
+      focusOnCreate:document.activeElement===document.querySelector('[role="tablist"]')?.nextElementSibling,
+      creates:window.__paneEvents.creates.length,kills:window.__paneEvents.kills.length
+    }))()`);
+    await check('NATIVE_TERMINAL_LAST_CLOSE_FOCUS',()=>{
+      assert(lastCloseReady&&afterLastClose.tabs===0&&afterLastClose.focusOnCreate,
+        'closing last focused terminal must leave focus on New Terminal '+JSON.stringify(afterLastClose));
+      assert(afterLastClose.creates===2&&afterLastClose.kills===2,
+        'last close unexpectedly respawned or leaked PTY '+JSON.stringify(afterLastClose));
+    });
   }
   await check('NO_RUNTIME_ERRORS',async()=>{
    assert((await js<string[]>('window.__uncaught')).length===0,'uncaught renderer exception '+JSON.stringify(await js('window.__uncaught')));

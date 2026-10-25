@@ -2,6 +2,7 @@
  * Tests production scroll helper with DOM-geometry stand-ins (no browser mock
  * semantics for scrollIntoView that would hide parent scrolling bugs). */
 import { railScrollLeft, revealRailItemWithin, revealTabWithin } from "../../src/renderer/components/layout/panelRailScroll.js";
+import { mayAutoFocusTerminal } from "../../src/renderer/components/ide/terminalFocusPolicy.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 let n=0,err=0;
@@ -9,6 +10,7 @@ const check=(name:string,ok:boolean)=>{n++;if(!ok)err++;console.log((ok?"PASS ":
 const source=(name:string)=>readFileSync(resolve("src/renderer",name),"utf8");
 const panel=source("components/layout/RightPanel.tsx");
 const terminal=source("components/ide/TerminalPanel.tsx");
+const terminalView=source("components/ide/TerminalView.tsx");
 const sharedTabs=source("components/layout/TabBarChrome.tsx");
 const sessionTabs=source("components/layout/SessionTabs.tsx");
 const unifiedTabs=source("components/layout/UnifiedTabsBar.tsx");
@@ -45,6 +47,20 @@ check("terminal arrow keys use same parent-safe rail helper",
  terminal.includes("tab?.focus({ preventScroll: true })") &&
  terminal.includes("revealRailItemWithin(e.currentTarget, tab)") &&
  !terminal.includes("tabs[next]?.scrollIntoView"));
+check("terminal activation never overrides focused keyboard tabs",
+ !mayAutoFocusTerminal({closest:(s:string)=>s==='[role="tablist"]'?{}:null}) &&
+ mayAutoFocusTerminal({closest:()=>null}) &&
+ mayAutoFocusTerminal(null));
+check("both terminal boot and activation respect the same focus policy",
+ terminalView.includes("if (active && mayAutoFocusTerminal(document.activeElement)) term.focus()") &&
+ terminalView.includes("if (mayAutoFocusTerminal(document.activeElement)) termRef.current?.focus()"));
+check("closing a focused terminal restores focus to remaining selected tab",
+ terminal.includes("closeSessionAndRestoreFocus(s.key, e.currentTarget)") &&
+ terminal.includes('button.getAttribute("aria-selected") === "true"') &&
+ terminal.includes('(tab ?? newTabButtonRef.current)?.focus({ preventScroll: true })'));
+check("terminal close focus repair cancels unmount-pending frames",
+ terminal.includes("pendingFocusFrame.current") &&
+ terminal.includes("cancelAnimationFrame(pendingFocusFrame.current)"));
 check("terminal arrow selection dispatches existing active-tab handler",
  terminal.includes("tab?.click()") && terminal.includes("st.activeKey = s.key"));
 check("terminal list is labeled with terminal tab purpose, not new-tab action",

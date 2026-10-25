@@ -21,6 +21,7 @@ The positive `green` run verifies:
 - Closing/reopening the actual bottom terminal and right panel via store
   actions preserves terminal DOM, session identity, Monaco DOM and draft
 - Native Chromium keyboard input creates a second xterm tab and uses ArrowLeft / ArrowRight to switch without additional PTY spawn/kill; the right toolbar's ArrowRight moves focus without invoking a tab action
+- Closing a focused tab restores keyboard focus to the remaining selected tab; closing the last one focuses **New Terminal** and does not silently create another PTY. xterm auto-focus is suppressed while a tablist control is focused.
 - Both collapsed areas are inert / hidden from accessibility
 - Corrupt pane-layout JSON or structure restores defaults and renders a
   user-visible warning rather than silently discarding preference data
@@ -29,7 +30,7 @@ Two **negative mutation runs** are compulsory: `rekey` adds a wrong React
 `key` to the real center pane and must cause PTY/Monaco identity failures;
 `silent` removes the visible corruption warning and must fail the notice
 check. Their expected nonzero exit codes are *test evidence*, not flaky
-production failures. A green run passes only if all 15 checks pass, and the
+production failures. A green run passes only if all 17 checks pass, and the
 source-file SHA comparison confirms no project source mutations.
 
 `MCODE_PANE_U1_ONLY=green` can limit quick diagnostic execution; full
@@ -43,6 +44,6 @@ process lifecycle or real backend persistence.
 
 The visual-only baseline is a different suite:
 `node apps/desktop/scripts/arc005-visual-baseline/build.mjs`.
-It measures the full 18×3 theme/layout matrix and includes a 640-message
+It measures the full 19×3 theme/layout matrix and includes a 640-message
 virtualized ChatPane sample. Its editor and terminal *visual scenes* remain
 explicit static fixtures; only this pane U1 suite mounts Monaco/xterm.

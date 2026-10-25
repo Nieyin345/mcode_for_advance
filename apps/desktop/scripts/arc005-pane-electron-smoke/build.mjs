@@ -140,7 +140,7 @@ for(const variant of (process.env.MCODE_PANE_U1_ONLY ? [process.env.MCODE_PANE_U
  let checks=[];try{checks=JSON.parse(readFileSync(join(dir,'checks-'+variant+'.json'),'utf8'))}catch{}
  const statuses=Object.fromEntries(checks.map(c=>[c.name,c.status]));
  const expected=variant==='green'
-  ? checks.length>=15&&checks.every(c=>c.status==='PASS')&&run.status===0
+  ? checks.length>=17&&checks.every(c=>c.status==='PASS')&&run.status===0
   : variant==='rekey'
   ? statuses.PTY_STABLE==='FAIL'&&statuses.MONACO_STABLE==='FAIL'&&statuses.REOPEN_PTY_AND_MONACO_DRAFT==='FAIL'&&run.status!==0
   : statuses.CORRUPTION_NOTICE==='FAIL'&&statuses.PTY_STABLE==='PASS'&&statuses.MONACO_STABLE==='PASS'&&run.status!==0;
