@@ -253,9 +253,13 @@ export interface RgGrepResult {
 export function rgGrep(
   root: string,
   query: string,
-  opts: { caseSensitive: boolean; limit: number; maxPerFile: number; includeExts?: string[] },
+  opts: { caseSensitive: boolean; limit: number; maxPerFile: number; includeExts?: string[]; files?: string[] },
   ignored: Iterable<string>,
 ): Promise<RgGrepResult | null> {
+  // Narrowly scoped scans supply explicit relative paths; never fall back to
+  // "." when the registered set is empty, and never accept traversal/flags.
+  if (opts.files?.length === 0) return Promise.resolve({ matches: [], truncated: false });
+  if (opts.files?.some((file) => !file || file.startsWith("/") || file.includes("\\") || file.includes("\0") || file.split("/").some((part) => !part || part === "." || part === "..") || file.includes(":"))) return Promise.resolve(null);
   const rg = resolveRg();
   if (!rg) return Promise.resolve(null);
   const hasNonAscii = /[^\x00-\x7F]/.test(query);
@@ -289,7 +293,7 @@ function runGrepPass(
   rg: string,
   root: string,
   query: string,
-  opts: { caseSensitive: boolean; limit: number; maxPerFile: number; includeExts?: string[] },
+  opts: { caseSensitive: boolean; limit: number; maxPerFile: number; includeExts?: string[]; files?: string[] },
   ignored: Iterable<string>,
   encoding: "utf-8" | "gbk",
 ): Promise<RgGrepMatch[] | null> {
@@ -317,8 +321,9 @@ function runGrepPass(
     opts.caseSensitive ? "--case-sensitive" : "--ignore-case",
     ...ignoreGlobArgs(ignored),
     ...includeGlobs,
-    query,
-    ".",
+    "-e", query,
+    "--",
+    ...(opts.files ?? ["."]),
   ];
   return new Promise((resolvePromise) => {
     const child = spawn(rg, args, {
