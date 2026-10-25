@@ -216,6 +216,9 @@ export interface MarketProgress {
 export interface MarketProgressMessage { channel: "market:progress"; payload: MarketProgress }
 
 export type MainToRendererMessage =
+  | import("./modules.js").TheiaContributionChanged
+  | import("./modules.js").TheiaStatusEntry
+  | import("./modules.js").TheiaQuickInputRequest
   | import("./modules.js").TheiaRuntimeMessage
   | import("./modules.js").TheiaMonacoEditRequest
   | MarketProgressMessage

@@ -31,6 +31,7 @@ import { SelectionQuoteMenu, type QuoteTarget } from "@renderer/components/chat/
 import { makeQuoteTag } from "@renderer/lib/contentTag.js";
 import { captureMonacoCitationSelection, subscribeMonacoCitationChanges } from "./monacoCitationSelection.js";
 import { registerTheiaMonacoOwner, subscribeTheiaMonacoEdits } from "@renderer/lib/theiaMonacoOwner.js";
+import { registerTheiaEditorMenus } from "@renderer/lib/theiaEditorMenus.js";
 // LSP provider bridge: registers definition/references/hover providers, syncs
 // documents, and applies diagnostics markers to the model.
 import {
@@ -1458,7 +1459,8 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
       invoke:input=>api.modules.theiaInstalled(input),
       subscribe:handler=>api.on.theiaEditorApply(handler),
     });
-    unmountCleanupsRef.current.push(unregisterTheiaOwner,unsubscribeTheia);
+    const unregisterTheiaMenus=registerTheiaEditorMenus(editor_);
+    unmountCleanupsRef.current.push(unregisterTheiaOwner,unsubscribeTheia,unregisterTheiaMenus);
     editor_.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void handleSaveRef.current();
     });

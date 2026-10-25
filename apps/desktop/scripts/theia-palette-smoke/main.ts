@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { collectTheiaPaletteCommands } from "../../src/renderer/lib/theiaCommandBridge.js";
 import { TheiaEditorApplyBroker } from "../../src/main/modules/theiaHost/editorApplyBroker.js";
 import { TheiaRuntimeMessageBroker } from "../../src/main/modules/theiaHost/runtimeMessageBroker.js";
+import { TheiaQuickInputBroker } from "../../src/main/modules/theiaHost/quickInputBroker.js";
 import type { TheiaInstalledEntry, TheiaInstalledInput, TheiaInstalledResult } from "@contracts/ipc/modules.js";
 
 let count=0,failed=0;
@@ -90,6 +91,24 @@ const pendingDismiss=messageBroker.request(101,base.activeSession!.sessionId,bas
 },()=>{});
 messageBroker.cancelSender(101);
 check("桌面窗口关闭时通知事务立即取消",await pendingDismiss===undefined&&messageBroker.pendingCount===0);
+const quickBroker=new TheiaQuickInputBroker(40);
+let quickId="";
+const quickPending=quickBroker.request(101,base.activeSession!.sessionId,base.extensionId,{
+  kind:"pick",canPickMany:false,items:[{label:"One"},{label:"Two"}]
+},message=>{quickId=message.requestId;});
+check("VS Code Quick Pick 请求通过可取消的 Mcode owner broker",quickBroker.size===1);
+check("其他窗口无法代选扩展 Quick Pick",!quickBroker.respond(102,base.activeSession!.sessionId,quickId,[0]));
+check("无效 Quick Pick 索引被拒绝",!quickBroker.respond(101,base.activeSession!.sessionId,quickId,[2]));
+check("非多选 Quick Pick 不接受伪造多项结果",!quickBroker.respond(101,base.activeSession!.sessionId,quickId,[0,1]));
+check("正确用户选择返回指定索引",
+  quickBroker.respond(101,base.activeSession!.sessionId,quickId,[1])&&
+  JSON.stringify(await quickPending)==="[1]");
+check("Quick Pick 旧请求不能重复使用",!quickBroker.respond(101,base.activeSession!.sessionId,quickId,[1]));
+const quickDismiss=quickBroker.request(101,base.activeSession!.sessionId,base.extensionId,{
+  kind:"input",placeholder:"Name"
+},()=>{});
+quickBroker.cancelSender(101);
+check("关闭窗口清除挂起的 VS Code 输入框",await quickDismiss===undefined&&quickBroker.size===0);
 const codeRoot=process.env.MCODE_SMOKE_REPO_ROOT;
 if(!codeRoot)throw Error("MCODE_SMOKE_REPO_ROOT missing");
 const palette=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/layout/CommandPalette.tsx"),"utf8");
@@ -114,5 +133,18 @@ const app=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/App.tsx"),"
 check("扩展消息订阅挂在 Mcode 根 UI，而非随设置页卸载",app.includes("<TheiaRuntimeMessageHost />")&&runtimeHost.includes("api.on.theiaRuntimeMessage("));
 check("普通扩展通知走 Mcode 全局 toast store",runtimeHost.includes("useToastStore.getState().push("));
 check("扩展操作按钮由用户点击触发并通过正式 IPC 回执",runtimeHost.includes('op:"messageRespond"')&&runtimeHost.includes("onClick={()=>reply(msg,index)}"));
+const nativeMenus=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/lib/theiaEditorMenus.ts"),"utf8");
+const realEditor=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/ide/FileEditor.tsx"),"utf8");
+check("VS Code editor/context 菜单实际进入 Monaco 原生菜单而非独立菜单 UI",
+  realEditor.includes("registerTheiaEditorMenus(editor_)")&&nativeMenus.includes("instance.addAction({")&&
+  nativeMenus.includes("contextMenuGroupId:"));
+check("菜单更新由真实扩展贡献事件触发，不通过后台轮询",
+  nativeMenus.includes("api.on.theiaContributionChanged(")&&!nativeMenus.includes("setInterval("));
+const nativeInput=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/modules/TheiaQuickInputHost.tsx"),"utf8");
+const nativeStatus=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/modules/TheiaStatusStrip.tsx"),"utf8");
+check("Quick Pick 与输入框复用 Mcode 原生焦点管理及同一 IPC 回执",
+  nativeInput.includes("useFocusTrap(")&&nativeInput.includes('op:"quickRespond"'));
+check("状态栏原生呈现并可执行注册的扩展命令",
+  nativeStatus.includes("api.on.theiaStatusEntry(")&&nativeStatus.includes("executeTheiaWithMonaco("));
 console.log("theia-palette-smoke: "+(count-failed)+"/"+count+" 通过");
 process.exitCode=failed?1:0;

@@ -1,5 +1,5 @@
 /** F026: no user data; injected temp root, real Theia host and tamper-negative tests. */
-import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync, readdirSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync, readdirSync, renameSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { deflateRawSync } from "node:zlib";
@@ -12,7 +12,7 @@ import { TheiaInstalledRegistry } from "../../src/main/modules/theiaHost/install
 import { policyFor } from "../../src/main/appControl/policy.js";
 import { APP_METHOD_PERMISSIONS } from "@contracts/appPermission";
 import { registerTheiaMonacoOwner, subscribeTheiaMonacoEdits, executeTheiaWithMonaco, applyTheiaMonacoEdit } from "../../src/renderer/lib/theiaMonacoOwner.js";
-import type { TheiaMonacoEditRequest, TheiaRuntimeMessage } from "@contracts/ipc/modules.js";
+import type { TheiaMonacoEditRequest, TheiaRuntimeMessage, TheiaQuickInputRequest, TheiaStatusEntry } from "@contracts/ipc/modules.js";
 
 const root=process.env.MCODE_SMOKE_REPO_ROOT;
 if(!root) throw Error("MCODE_SMOKE_REPO_ROOT missing");
@@ -103,6 +103,16 @@ try{
   const installed=manager.install(51,first.ticket,true);
   if(installed.kind!=="installed")throw Error("installation failed");
   const id=installed.item.id;
+  const availableConfig=await manager.configList(id);
+  check("Mcode 扩展设置页读取 VS Code 清单声明的真实配置",
+    availableConfig.kind==="configurations"&&availableConfig.settings.some(s=>
+      s.key==="mcodeSmoke.greeting"&&s.value==="hello-from-manifest-default"));
+  await rejects("拒绝未在 VS Code 扩展清单中声明的配置项",
+    ()=>manager!.configSet(51,id,"other.extension.unsafe","x"));
+  const configured=await manager.configSet(51,id,"mcodeSmoke.greeting","from-mcode-ui");
+  check("Mcode 原生扩展配置保存到托管数据根",
+    configured.kind==="configurationUpdated"&&
+    readFileSync(path.join(store,"installed",id,"storage","preferences.json"),"utf8").includes("from-mcode-ui"));
   check("明确同意后持久安装入库",manager.list().length===1&&manager.list()[0].id===id);
   check("安装目标在注入数据根而非用户目录",existsSync(path.join(store,"installed",id,"record.json")));
   await rejects("一个 ticket 不能装第二遍",()=>manager!.install(51,first.ticket,true));
@@ -114,9 +124,36 @@ try{
   check("禁用状态持久化",disabled.kind==="updated"&&!disabled.item.enabled);
   await rejects("禁用后的扩展不能启动",()=>manager!.start(51,id));
   manager.setEnabled(id,true);
-  const run=await manager.start(51,id);
+  const workspace=path.join(dir,"mcode-project");
+  mkdirSync(workspace,{recursive:true});
+  const run=await manager.start(51,id,undefined,workspace);
   if(run.kind!=="started")throw Error("could not start");
   check("手动启动真正 Theia Host 后命令已注册",run.commands.includes("mcodeSmoke.spawnEcho"),run);
+  check("真实 VSIX editor/context 菜单被识别为 Mcode 原生编辑器菜单贡献",
+    manager.list(51).find(x=>x.id===id)?.activeSession?.editorMenus?.some(m=>
+      m.commandId==="mcodeSmoke.spawnEcho"&&m.label==="Mcode smoke: spawn echo")===true);
+  const initialConfigured=await manager.execute(51,run.sessionId,"mcodeSmoke.spawnEcho");
+  check("重启宿主时从 Mcode 配置存储加载用户设置",
+    initialConfigured.kind==="executed"&&initialConfigured.result.includes("from-mcode-ui"));
+  const fsReply=await manager.execute(51,run.sessionId,"mcodeSmoke.workspaceFs");
+  check("真实 VS Code workspace.fs 读写 Mcode 当前项目",
+    fsReply.kind==="executed"&&fsReply.result.includes("native-workspace")&&fsReply.result.includes('"names":true')&&fsReply.result.includes('"search":true'),fsReply);
+  check("扩展写入的是 Mcode 项目真实文件而非宿主目录",
+    readFileSync(path.join(workspace,"f032-roundtrip.txt"),"utf8")==="native-workspace");
+  const configReply=await manager.execute(51,run.sessionId,"mcodeSmoke.configRoundtrip");
+  check("真实 VS Code getConfiguration/update 写入 Mcode 扩展私有配置",
+    configReply.kind==="executed"&&configReply.result.includes("mcode-persisted"),JSON.stringify(configReply));
+  await rejects("运行中另一窗口不可修改本窗口扩展配置",
+    ()=>manager!.configSet(52,id,"mcodeSmoke.greeting","intruder"));
+  await manager.configSet(51,id,"mcodeSmoke.greeting","updated-from-mcode-ui");
+  const liveConfig=await manager.execute(51,run.sessionId,"mcodeSmoke.spawnEcho");
+  check("Mcode 设置页面的更改无需重启即可推送 VS Code 配置事件",
+    liveConfig.kind==="executed"&&liveConfig.result.includes("updated-from-mcode-ui"),liveConfig);
+  check("配置持久化位于扩展安装数据而非 Mcode 通用设置",
+    readFileSync(path.join(store,"installed",id,"storage","preferences.json"),"utf8").includes("updated-from-mcode-ui"));
+  const escape=await manager.execute(51,run.sessionId,"mcodeSmoke.fsEscape");
+  check("vscode.workspace.fs 禁止通过 .. 访问工作区外文件",
+    escape.kind==="executed"&&escape.result==='"blocked"',escape);
   // F030: install a DIFFERENT VSIX while the first real Theia host is active.
   // Distinct Node child processes guarantee cross-extension command isolation
   // until shared-worker semantics are implemented and independently verified.
@@ -223,12 +260,20 @@ try{
   let deliverEditor:((request:TheiaMonacoEditRequest)=>void)|null=null;
   let editorRequestCount=0;
   const runtimeMessages:TheiaRuntimeMessage[]=[];
+  const quickInputs:TheiaQuickInputRequest[]=[];
+  const statusEntries:TheiaStatusEntry[]=[];
   const acknowledgements:Promise<unknown>[]=[];
   const wc=Object.assign(new EventEmitter(),{id:99,mainFrame,isDestroyed:()=>false,
-    send:(channel:string,message:TheiaMonacoEditRequest|TheiaRuntimeMessage)=>{
+    send:(channel:string,message:TheiaMonacoEditRequest|TheiaRuntimeMessage|TheiaQuickInputRequest|TheiaStatusEntry)=>{
       if(channel===IPC.MODULE_THEIA_EDITOR_APPLY&&message.channel===IPC.MODULE_THEIA_EDITOR_APPLY){
         editorRequestCount++;
         deliverEditor?.(message);
+      }else if(channel===IPC.MODULE_THEIA_STATUS_ENTRY&&message.channel===IPC.MODULE_THEIA_STATUS_ENTRY){
+        statusEntries.push(message);
+      }else if(channel===IPC.MODULE_THEIA_QUICK_INPUT&&message.channel===IPC.MODULE_THEIA_QUICK_INPUT){
+        quickInputs.push(message);
+        acknowledgements.push(invoke!(actor,{op:"quickRespond",sessionId:message.sessionId,
+          requestId:message.requestId,choice:message.kind==="input"?"mcode-input":[1]}));
       }else if(channel===IPC.MODULE_THEIA_RUNTIME_MESSAGE&&message.channel===IPC.MODULE_THEIA_RUNTIME_MESSAGE){
         runtimeMessages.push(message);
         if(message.actions.length>0){
@@ -254,6 +299,20 @@ try{
   const ipcLive=await invoke(actor,{op:"start",id:ipcAdded.item.id}) as
     {kind:string;sessionId:string;commands:string[]};
   check("IPC 手动启动真实 Theia 子进程",ipcLive.kind==="started"&&ipcLive.commands.includes("mcodeSmoke.spawnEcho"));
+  await new Promise(resolve=>setTimeout(resolve,80));
+  check("真实 VS Code 扩展状态栏条目进入 Mcode native status",
+    statusEntries.some(x=>x.text==="Mcode F032"&&x.command==="mcodeSmoke.spawnEcho"));
+
+  const quickResult=await invoke(actor,{op:"execute",sessionId:ipcLive.sessionId,commandId:"mcodeSmoke.quickPick"}) as
+    {kind:string;result:string};
+  check("真实 Theia showQuickPick 使用 Mcode UI 并返回选中项",
+    quickResult.kind==="executed"&&quickResult.result==='"Beta"'&&
+    quickInputs.some(x=>x.kind==="pick"&&x.items?.[1]?.label==="Beta"),quickResult);
+  const inputResult=await invoke(actor,{op:"execute",sessionId:ipcLive.sessionId,commandId:"mcodeSmoke.inputBox"}) as
+    {kind:string;result:string};
+  check("真实 Theia showInputBox 使用 Mcode UI 并返回输入文本",
+    inputResult.kind==="executed"&&inputResult.result==='"mcode-input"'&&
+    quickInputs.some(x=>x.kind==="input"&&x.title==="Enter a name"),inputResult);
   const modalReply=await invoke(actor,{op:"execute",sessionId:ipcLive.sessionId,commandId:"mcodeSmoke.askChoice"}) as
     {kind:string;result:string};
   await Promise.all(acknowledgements);
@@ -318,6 +377,8 @@ try{
     {kind:string;result:string};
   check("IPC 扩展命令结果正常返回",ipcOutput.kind==="executed"&&ipcOutput.result.includes('"echo":"pong"'));
   await invoke(actor,{op:"stop",sessionId:ipcLive.sessionId});
+  check("扩展停止时清空已贡献的 Mcode 状态栏条目",
+    statusEntries.some(x=>x.sessionId===ipcLive.sessionId&&x.id==="*"&&x.removed===true));
   await invoke(actor,{op:"remove",id:ipcAdded.item.id});
   check("IPC 卸载后恢复空列表",(await invoke(actor,{op:"list"}) as {items:unknown[]}).items.length===0);
   wc.emit("destroyed");

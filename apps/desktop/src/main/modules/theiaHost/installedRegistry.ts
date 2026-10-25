@@ -7,7 +7,9 @@ import { buildExtensionPermissionReport } from "../theiaPermissionReport.js";
 import { buildInstallConsentPrompt } from "./installConsent.js";
 import { parseTheiaVsix } from "./theiaVsixPreview.js";
 import { TheiaHost, type TheiaExtensionHandle } from "./host.js";
-import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaMonacoEditorSnapshot } from "@contracts/ipc/modules.js";
+import { McodeWorkspaceFs } from "./mcodeWorkspaceFs.js";
+import { McodeExtensionPreferences } from "./mcodeExtensionPreferences.js";
+import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaMonacoEditorSnapshot, TheiaEditorMenu, TheiaNativeConfigSetting } from "@contracts/ipc/modules.js";
 
 const MAX_ARCHIVE = 64 * 1024 * 1024;
 const AGE_MS = 5 * 60 * 1000;
@@ -23,7 +25,7 @@ interface Saved {
 }
 interface Pending { ticket: string; senderId: number; createdAt: number; root: string; record: Saved }
 interface Running { id: string; senderId: number; sessionId: string; host: TheiaHost;
-  handle: TheiaExtensionHandle; commands: Set<string>;
+  handle: TheiaExtensionHandle; commands: Set<string>; editorMenus:TheiaEditorMenu[];
   editorBridge?: ReturnType<TheiaHost["editors"]>; syncing?: boolean; executing?: boolean;
 }
 
@@ -128,7 +130,7 @@ export class TheiaInstalledRegistry {
     const owned=current!==undefined && senderId!==undefined && current.senderId===senderId && !this.closed.has(senderId);
     return {id:rec.id,extensionId:rec.extensionId,version:rec.version,enabled:rec.enabled,
       installedAt:rec.installedAt,running:current!==undefined,integrity:"not-checked",
-      ...(owned ? {activeSession:{sessionId:current.sessionId,commands:[...current.commands].sort()}} : {})};
+      ...(owned ? {activeSession:{sessionId:current.sessionId,commands:[...current.commands].sort(),editorMenus:current.editorMenus}} : {})};
   }
   /** Metadata-only list: never read/hash extension payloads when opening the Mcode panel. */
   list(senderId?:number):TheiaInstalledEntry[] {
@@ -212,6 +214,54 @@ export class TheiaInstalledRegistry {
     try{writeFileSync(tmp,JSON.stringify(rec),{flag:"wx"});renameSync(tmp,path.join(folder,"record.json"));}
     finally{rmSync(tmp,{force:true});}
   }
+  /** Manage ONLY settings declared in this installed extension's own manifest. */
+  private async settings(id:string):Promise<{
+    settings:TheiaNativeConfigSetting[];types:Map<string,TheiaNativeConfigSetting["type"]>;
+  }> {
+    const rec=this.read(id);
+    await this.verify(id,rec);
+    const manifest=JSON.parse(readFileSync(path.join(this.dir(id),"extension","package.json"),"utf8")) as {
+      contributes?:{configuration?:{properties?:Record<string,{
+        type?:unknown;default?:unknown;description?:unknown;
+      }>}|Array<{properties?:Record<string,{
+        type?:unknown;default?:unknown;description?:unknown;
+      }>}>};
+    };
+    const sections=Array.isArray(manifest.contributes?.configuration)?
+      manifest.contributes.configuration:manifest.contributes?.configuration?[manifest.contributes.configuration]:[];
+    const prefs=await McodeExtensionPreferences.open(path.join(this.dir(id),"storage"));
+    const user=prefs.user,settings:TheiaNativeConfigSetting[]=[];
+    const types=new Map<string,TheiaNativeConfigSetting["type"]>();
+    for(const section of sections){
+      for(const [key,spec] of Object.entries(section.properties??{})){
+        if(!/^[a-zA-Z0-9_.-]{1,150}$/.test(key)||types.has(key)||settings.length>=150)continue;
+        if(spec.type!=="string"&&spec.type!=="boolean"&&spec.type!=="number")continue;
+        const type=spec.type;
+        const value=Object.hasOwn(user,key)?user[key]:spec.default;
+        if(value!==undefined&&typeof value!==type)continue;
+        types.set(key,type);
+        settings.push({key,type,value:(value??null) as string|number|boolean|null,
+          ...(typeof spec.description==="string"?{description:spec.description.slice(0,500)}:{})});
+      }
+    }
+    return {settings:settings.sort((a,b)=>a.key.localeCompare(b.key)),types};
+  }
+  async configList(id:string):Promise<TheiaInstalledResult>{
+    return {kind:"configurations",settings:(await this.settings(id)).settings};
+  }
+  async configSet(senderId:number,id:string,key:string,value:string|number|boolean|null):Promise<TheiaInstalledResult>{
+    if(this.startingId===id)deny("扩展启动期间不可修改配置");
+    const {types}=await this.settings(id);
+    const type=types.get(key);
+    if(!type)deny("配置项并非该扩展声明的合法设置");
+    if(value!==null&&typeof value!==type)deny("配置类型不匹配");
+    const current=this.running.get(id);
+    if(current&&current.senderId!==senderId)deny("其他桌面窗口不可修改运行中扩展的配置");
+    if(current)await current.host.updatePreference(key,value===null?undefined:value);
+    else await (await McodeExtensionPreferences.open(path.join(this.dir(id),"storage")))
+      .update(key,value===null?undefined:value);
+    return {kind:"configurationUpdated"};
+  }
   setEnabled(id:string,enabled:boolean):TheiaInstalledResult{
     if(this.running.has(id)||this.startingId===id) deny("请先停止扩展");
     // Changing metadata cannot execute extension code; full integrity is checked on start.
@@ -220,7 +270,14 @@ export class TheiaInstalledRegistry {
   }
   async start(senderId:number,id:string,onMessage?:(
     sessionId:string,extensionId:string,input:{type:number;message:string;detail?:string;modal:boolean;actions:string[]}
-  )=>Promise<number|undefined>):Promise<TheiaInstalledResult>{
+  )=>Promise<number|undefined>,workspacePath?:string,onQuickInput?:(
+    sessionId:string,extensionId:string,input:{kind:"input"|"pick";title?:string;placeholder?:string;
+      value?:string;password?:boolean;canPickMany?:boolean;
+      items?:Array<{label:string;description?:string;detail?:string}>}
+  )=>Promise<string|number[]|undefined>,onStatus?:(
+    sessionId:string,extensionId:string,item:{id:string;removed?:boolean;text?:string;
+      name?:string;tooltip?:string;command?:string;priority?:number;alignment?:number}
+  )=>void):Promise<TheiaInstalledResult>{
     if(this.closed.has(senderId)||this.starting||this.running.has(id)) deny("该扩展已启动或正在启动");
     if(this.running.size>=this.maxActive) deny("同时运行的扩展已达资源上限");
     const rec=this.read(id);
@@ -230,14 +287,33 @@ export class TheiaInstalledRegistry {
     // informational prompt while activate() is pending. Responses must be
     // sender/session-scoped even before the extension reaches Running.
     const sessionId=randomUUID();
+    const workspaceFs=workspacePath?await McodeWorkspaceFs.open(workspacePath):undefined;
     const host=new TheiaHost({theiaRoot:this.theiaRoot,extensionDir:path.join(this.dir(id),"extension"),
+      workspaceRoot:workspaceFs?.root,workspaceFs,
       storageRoot:path.join(this.dir(id),"storage"),
-      onMessage: onMessage?(input)=>onMessage(sessionId,rec.extensionId,input):undefined});
+      onMessage: onMessage?(input)=>onMessage(sessionId,rec.extensionId,input):undefined,
+      onQuickInput: onQuickInput?(input)=>onQuickInput(sessionId,rec.extensionId,input):undefined,
+      onStatus: onStatus?(item)=>onStatus(sessionId,rec.extensionId,item):undefined});
     try{
       await this.verify(id,rec); // fail closed before any untrusted extension code is spawned
       await host.start();const handle=await host.activate(),commands=await handle.commands();
       if(this.closed.has(senderId)) deny("启动期间窗口已关闭");
-      this.running.set(id,{id,senderId,sessionId,host,handle,commands:new Set(commands)});
+      // Main-owned, integrity-checked manifest contributions. Only supported
+      // unconditional/editor-focus menus enter Monaco, not a fabricated Theia UI.
+      const manifest=JSON.parse(readFileSync(path.join(this.dir(id),"extension","package.json"),"utf8")) as {
+        contributes?:{commands?:Array<{command?:string;title?:string}>;
+          menus?:Record<string,Array<{command?:string;when?:string;group?:string}>>};
+      };
+      const titles=new Map((manifest.contributes?.commands??[])
+        .filter(c=>typeof c.command==="string").map(c=>[c.command!,c.title??c.command!]));
+      const editorMenus:TheiaEditorMenu[]=(manifest.contributes?.menus?.["editor/context"]??[])
+        .filter(menu=>typeof menu.command==="string"&&commands.includes(menu.command)&&
+          (!menu.when||menu.when==="editorTextFocus"))
+        .slice(0,40).map(menu=>({
+          commandId:menu.command!,label:titles.get(menu.command!)??menu.command!,
+          ...(typeof menu.group==="string"?{group:menu.group.slice(0,100)}:{}),
+        }));
+      this.running.set(id,{id,senderId,sessionId,host,handle,commands:new Set(commands),editorMenus});
       return {kind:"started",id,sessionId,commands,activationErrors:handle.activationErrors.map(e=>e.message).slice(0,8)};
     }catch(error){await host.dispose();throw error;}
     finally{this.starting=false;this.startingSender=null;this.startingId=null;}

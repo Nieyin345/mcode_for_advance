@@ -39,7 +39,9 @@ import { fork, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import { createRequire as createTheiaRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { McodeWorkspaceFs, fileResource, type FileResource } from "./mcodeWorkspaceFs.js";
+import { McodeExtensionPreferences } from "./mcodeExtensionPreferences.js";
 import { prepareTheiaEdits, type EditorEditTransaction, type TheiaTextEdit, type TheiaEditOptions } from "./editorTransactions.js";
 
 /* ───────────────────────── 依赖定位 ───────────────────────── */
@@ -78,6 +80,8 @@ export interface TheiaHostOptions {
   preferenceDefaults?: Record<string, unknown>;
   /** 工作区根目录（`workspaceFolders`）。可选 —— 本卡只做只读编辑器桥。 */
   workspaceRoot?: string;
+  /** Validated native filesystem adapter; absence means no real workspace. */
+  workspaceFs?: McodeWorkspaceFs;
   /** 宿主的临时目录（日志 / 存储）。必须可写。 */
   storageRoot: string;
   /** 日志回调；不传就丢弃。 */
@@ -87,6 +91,12 @@ export interface TheiaHostOptions {
    * Action indices match Theia's MainMessageItem handles. No callback = no UI.
    */
   onMessage?: (input:{type:number;message:string;detail?:string;modal:boolean;actions:string[]})=>Promise<number|undefined>;
+  /** Mcode-native Quick Pick / Input Box dialog, never a second Theia UI. */
+  onStatus?: (input:{id:string;removed?:boolean;text?:string;name?:string;tooltip?:string;command?:string;priority?:number;alignment?:number})=>void;
+  onQuickInput?: (input:{
+    kind:"input"|"pick";title?:string;placeholder?:string;value?:string;password?:boolean;
+    canPickMany?:boolean;items?:Array<{label:string;description?:string;detail?:string}>;
+  })=>Promise<string|number[]|undefined>;
   /** 宿主 stdout/stderr 原文；不传就丢弃。 */
   onHostOutput?: (stream: "stdout" | "stderr", text: string) => void;
   /** 握手超时（毫秒）。默认 15 s。 */
@@ -156,6 +166,7 @@ interface TheiaModules {
   loadManifest(pluginPath: string): Promise<Record<string, unknown>>;
   /** 父进程也必须注册与宿主相同的 msgpack 扩展，否则含 vscode URI 的载荷解码会抛。 */
   registerMsgPackExtensions(): void;
+  BinaryBuffer: {wrap(bytes:Uint8Array):unknown};
 }
 
 /**
@@ -211,6 +222,7 @@ function loadTheiaModules(theiaRoot: string): TheiaModules {
     buildModelForVsCode: TheiaModules["buildModelForVsCode"];
     buildLifecycle: TheiaModules["buildLifecycle"];
   };
+  const binary = requireFromTheia("@theia/core/lib/common/buffer.js") as {BinaryBuffer:TheiaModules["BinaryBuffer"]};
   const pluginManifest = requireFromTheia("@theia/plugin-utils/lib/node/plugin-manifest.js") as {
     loadManifest: TheiaModules["loadManifest"];
   };
@@ -223,6 +235,7 @@ function loadTheiaModules(theiaRoot: string): TheiaModules {
     buildLifecycle: pluginModel.buildLifecycle,
     loadManifest: pluginManifest.loadManifest,
     registerMsgPackExtensions: rpcProtocol.registerMsgPackExtensions,
+    BinaryBuffer:binary.BinaryBuffer,
   };
 }
 
@@ -329,6 +342,10 @@ export class TheiaHost {
   private declaredCommands: string[] = [];
   private exitReason: string | undefined;
   private activeEditorSession: EditorSession | null = null;
+  private extensionPreferences: McodeExtensionPreferences | null = null;
+  private readonly quickPicks=new Map<number,{resolve:(selected:number|number[]|undefined)=>void;
+    opts:{title?:string;placeHolder?:string;canPickMany?:boolean}}>();
+  private configurationDefaults:Record<string,unknown>={};
 
   constructor(private readonly options: TheiaHostOptions) {
     this.log = options.onLog ?? (() => undefined);
@@ -414,6 +431,8 @@ export class TheiaHost {
     // 第一版把方向搞反了，症状是宿主收到一个它没有的服务 id，回 `no local service
     // handler with id EnvMain`。这一条注释就是防止下次再反。
     const manager = rpc.getProxy<PluginManagerProxy>(modules.MAIN_RPC_CONTEXT.HOSTED_PLUGIN_MANAGER_EXT);
+    this.extensionPreferences=await McodeExtensionPreferences.open(this.options.storageRoot);
+    this.configurationDefaults=this.options.preferenceDefaults ?? collectConfigurationDefaults(manifest);
     const preferences = this.buildPreferenceData(manifest);
     const timeoutMs = this.options.handshakeTimeoutMs ?? 15_000;
     let timer: NodeJS.Timeout | undefined;
@@ -474,6 +493,11 @@ export class TheiaHost {
       if (timer) clearTimeout(timer);
     }
     this.started = true;
+    if(this.options.workspaceFs){
+      const proxy=rpc.getProxy<{ $onWorkspaceFoldersChanged(event:{roots:string[]}):Promise<void>|void }>(
+        modules.MAIN_RPC_CONTEXT.WORKSPACE_EXT);
+      await proxy.$onWorkspaceFoldersChanged({roots:[pathToFileURL(this.options.workspaceFs.root).toString()]});
+    }
   }
 
   /**
@@ -874,9 +898,51 @@ export class TheiaHost {
         });
       },
     } as never);
+    setProxyHandler(P.QUICK_OPEN_MAIN, {
+      $show:(instance:number,opts:{title?:string;placeHolder?:string;canPickMany?:boolean})=>{
+        if(!this.options.onQuickInput)return Promise.resolve(undefined);
+        return new Promise<number|number[]|undefined>(resolve=>{
+          this.quickPicks.set(instance,{resolve,opts:opts??{}});
+        });
+      },
+      $setItems:async(instance:number,items:Array<{label:string;description?:string;detail?:string}>)=>{
+        const request=this.quickPicks.get(instance);
+        if(!request)return;
+        this.quickPicks.delete(instance);
+        try{
+          const choice=await this.options.onQuickInput?.({
+            kind:"pick",title:request.opts.title,placeholder:request.opts.placeHolder,
+            canPickMany:request.opts.canPickMany,items,
+          });
+          request.resolve(Array.isArray(choice)?(request.opts.canPickMany?choice:choice[0]):undefined);
+        }catch{request.resolve(undefined);}
+      },
+      $setError:async(instance:number)=>{this.quickPicks.get(instance)?.resolve(undefined);this.quickPicks.delete(instance);},
+      $input:async(opts:{prompt?:string;placeHolder?:string;value?:string;password?:boolean})=>
+        this.options.onQuickInput?.({kind:"input",title:opts?.prompt,
+          placeholder:opts?.placeHolder,value:opts?.value,password:opts?.password}),
+      $showInputBox:async(opts:{prompt?:string;placeholder?:string;value?:string;password?:boolean})=>
+        this.options.onQuickInput?.({kind:"input",title:opts?.prompt,
+          placeholder:opts?.placeholder,value:opts?.value,password:opts?.password}),
+      $hide:()=>{for(const pick of this.quickPicks.values())pick.resolve(undefined);this.quickPicks.clear();},
+      $dispose:async(instance:number)=>{
+        this.quickPicks.get(instance)?.resolve(undefined);this.quickPicks.delete(instance);
+      },
+    } as never);
     setProxyHandler(P.STATUS_BAR_MESSAGE_REGISTRY_MAIN, {
-      $setMessage: async () => undefined,
-      $dispose: () => undefined,
+      $setMessage:async(id:string,name:string|undefined,text:string|undefined,
+        priority:number,alignment:number,_color:unknown,_backgroundColor:unknown,
+        tooltip:unknown,command:string|undefined)=>{
+        if(typeof id!=="string"||id.length>256)return;
+        this.options.onStatus?.({
+          id,text:typeof text==="string"?text.slice(0,160):"",
+          ...(typeof name==="string"?{name:name.slice(0,160)}:{}),
+          ...(typeof tooltip==="string"?{tooltip:tooltip.slice(0,400)}:{}),
+          ...(typeof command==="string"?{command:command.slice(0,256)}:{}),
+          priority:Number.isFinite(priority)?priority:0,alignment:Number(alignment)||1,
+        });
+      },
+      $dispose:(id:string)=>{if(typeof id==="string")this.options.onStatus?.({id,removed:true});},
     } as never);
     // 进度条：扩展激活时会 `$startProgress`（latex-workshop 就调）。
     // 返回一个**稳定的 id**是必要的 —— 宿主侧拿它当 key 调 `$stopProgress`，
@@ -940,6 +1006,72 @@ export class TheiaHost {
         }
       },
     } as never);
+    // F032: vscode.workspace.fs uses Mcode's current project rather than a
+    // fake provider. No workspace selected means all file operations fail closed.
+    const nativeFs=this.options.workspaceFs;
+    const mustFs=():McodeWorkspaceFs=>{
+      if(!nativeFs)throw Error("未选择 Mcode 工作区，扩展文件 API 不可用");
+      return nativeFs;
+    };
+    setProxyHandler(P.FILE_SYSTEM_MAIN, {
+      $stat:(uri:FileResource)=>mustFs().stat(uri),
+      $readdir:(uri:FileResource)=>mustFs().readdir(uri),
+      $readFile:async(uri:FileResource)=>modules.BinaryBuffer.wrap(await mustFs().readFile(uri)),
+      $writeFile:(uri:FileResource,binary:{buffer:Uint8Array})=>mustFs().writeFile(uri,binary.buffer),
+      $mkdir:(uri:FileResource)=>mustFs().mkdir(uri),
+      $rename:(src:FileResource,dst:FileResource,opts:{overwrite?:boolean})=>
+        mustFs().rename(src,dst,opts?.overwrite===true),
+      $copy:(src:FileResource,dst:FileResource,opts:{overwrite?:boolean})=>
+        mustFs().copy(src,dst,opts?.overwrite===true),
+      $delete:(uri:FileResource,opts:{recursive?:boolean})=>mustFs().delete(uri,opts?.recursive===true),
+    } as never);
+    setProxyHandler(P.WORKSPACE_MAIN, {
+      $getWorkspace:async()=>nativeFs?{
+        resource:pathToFileURL(nativeFs.root).toString(),name:path.basename(nativeFs.root),
+        isDirectory:true,mtime:0,ctime:0,size:0,
+      }:undefined,
+      $pickWorkspaceFolder:async()=>undefined,
+      $requestWorkspaceTrust:async()=>Boolean(nativeFs),
+      $updateWorkspaceFolders:async()=>{throw Error("请在 Mcode 原生项目界面切换工作区");},
+      $startFileSearch:async(pattern:string,folder:string|undefined,opts:{
+        exclude?:string;maxResults?:number
+      })=>{
+        const root=mustFs();
+        let scope:FileResource|undefined;
+        if(folder){
+          const parsed=new URL(folder);
+          if(parsed.protocol!=="file:")throw Error("仅支持 Mcode 本地工作区搜索");
+          scope={scheme:"file",path:decodeURIComponent(parsed.pathname),authority:parsed.host};
+        }
+        return root.findFiles(pattern,opts?.exclude,opts?.maxResults??200,scope);
+      },
+      $resolveProxy:async()=>undefined,
+      $resolveDecoding:async()=>({preferredEncoding:"utf8",guessEncoding:false}),
+      $resolveEncoding:async()=>({encoding:"utf8",hasBOM:false}),
+      $getValidEncoding:async()=>("utf8"),
+    } as never);
+    setProxyHandler(P.PREFERENCE_REGISTRY_MAIN, {
+      $updateConfigurationOption:async(_target:unknown,key:string,value:unknown,resource?:string)=>{
+        if(resource)throw Error("Mcode 暂不支持扩展按资源覆盖配置");
+        const prefs=this.extensionPreferences;
+        if(!prefs)throw Error("扩展配置尚未初始化");
+        await prefs.update(key,value);
+        const ext=rpc.getProxy<{$acceptConfigurationChanged(
+          data:Record<number,unknown>,changes:Array<{preferenceName:string}>
+        ):Promise<void>}>(modules.MAIN_RPC_CONTEXT.PREFERENCE_REGISTRY_EXT);
+        await ext.$acceptConfigurationChanged(this.buildPreferenceData(),[{preferenceName:key}]);
+      },
+      $removeConfigurationOption:async(target:unknown,key:string,resource?:string)=>{
+        if(resource)throw Error("Mcode 暂不支持扩展按资源覆盖配置");
+        const prefs=this.extensionPreferences;
+        if(!prefs)throw Error("扩展配置尚未初始化");
+        await prefs.update(key,undefined);
+        const ext=rpc.getProxy<{$acceptConfigurationChanged(
+          data:Record<number,unknown>,changes:Array<{preferenceName:string}>
+        ):Promise<void>}>(modules.MAIN_RPC_CONTEXT.PREFERENCE_REGISTRY_EXT);
+        await ext.$acceptConfigurationChanged(this.buildPreferenceData(),[{preferenceName:key}]);
+      },
+    } as never);
     setProxyHandler(P.STORAGE_MAIN, {
       $set: async () => true,
       $get: async () => undefined,
@@ -959,10 +1091,24 @@ export class TheiaHost {
     }
   }
 
-  private buildPreferenceData(manifest: Record<string, unknown>): Record<number, unknown> {
-    const defaults = this.options.preferenceDefaults ?? collectConfigurationDefaults(manifest);
-    // PreferenceScope: 0=Default 1=User 2=Workspace 3=Folder
-    return { 0: defaults, 1: {}, 2: {}, 3: {} };
+  /** Native Mcode settings changes update the live Theia extension without restart. */
+  async updatePreference(key:string,value:unknown):Promise<void>{
+    const prefs=this.extensionPreferences;
+    if(!prefs)throw Error("扩展配置未就绪");
+    await prefs.update(key,value);
+    if(this.rpc&&this.modules&&this.started&&!this.disposed){
+      const ext=this.rpc.getProxy<{$acceptConfigurationChanged(
+        data:Record<number,unknown>,changes:Array<{preferenceName:string}>
+      ):Promise<void>}>(this.modules.MAIN_RPC_CONTEXT.PREFERENCE_REGISTRY_EXT);
+      await ext.$acceptConfigurationChanged(this.buildPreferenceData(),[{preferenceName:key}]);
+    }
+  }
+  private buildPreferenceData(manifest?: Record<string, unknown>): Record<number, unknown> {
+    const defaults=manifest
+      ?this.options.preferenceDefaults??collectConfigurationDefaults(manifest)
+      :this.configurationDefaults;
+    // 0 Default, 1 User; Mcode extension-specific settings in app dataRoot.
+    return {0:defaults,1:this.extensionPreferences?.user??{},2:{},3:{}};
   }
 
 }

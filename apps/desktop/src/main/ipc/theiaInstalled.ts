@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { TheiaEditorApplyBroker } from "@main/modules/theiaHost/editorApplyBroker.js";
 import { TheiaRuntimeMessageBroker } from "@main/modules/theiaHost/runtimeMessageBroker.js";
+import { TheiaQuickInputBroker } from "@main/modules/theiaHost/quickInputBroker.js";
 import { resolve, join } from "node:path";
 import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
@@ -29,6 +30,7 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
   const watched = new Set<number>(), destroyed = new Set<number>();
   const editorBroker = new TheiaEditorApplyBroker();
   const messageBroker = new TheiaRuntimeMessageBroker();
+  const quickBroker = new TheiaQuickInputBroker();
   ipc.handle(IPC.MODULE_THEIA_INSTALLED,async(event,raw:unknown)=>{
     const senderId=theiaDesktopSender(event);
     if(destroyed.has(senderId)) throw Error("旧窗口不可管理或执行已安装扩展");
@@ -43,6 +45,7 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
         destroyed.add(senderId);
         editorBroker.cancelSender(senderId);
         messageBroker.cancelSender(senderId);
+        quickBroker.cancelSender(senderId);
         void manager.disposeSender(senderId).catch(error=>console.warn("[theia-installed] cleanup failed:",error));
       });
     }
@@ -51,11 +54,26 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
       case "inspect":return manager.inspect(senderId,input.path);
       case "cancel":return manager.cancel(senderId,input.ticket);
       case "install":return manager.install(senderId,input.ticket,input.accepted);
-      case "start":return manager.start(senderId,input.id,(sessionId,extensionId,message)=>
+      case "start":{
+        const started=await manager.start(senderId,input.id,(sessionId,extensionId,message)=>
         messageBroker.request(senderId,sessionId,extensionId,message,
           payload=>{if(sender.isDestroyed?.()||destroyed.has(senderId))throw Error("窗口已关闭");
-            sender.send(IPC.MODULE_THEIA_RUNTIME_MESSAGE,payload);})
-      );
+            sender.send(IPC.MODULE_THEIA_RUNTIME_MESSAGE,payload);}),input.workspacePath,
+        (sessionId,extensionId,quick)=>quickBroker.request(senderId,sessionId,extensionId,quick,
+          payload=>{if(sender.isDestroyed?.()||destroyed.has(senderId))throw Error("窗口已关闭");
+            sender.send(IPC.MODULE_THEIA_QUICK_INPUT,payload);}),
+        (sessionId,extensionId,item)=>{
+          if(sender.isDestroyed?.()||destroyed.has(senderId))return;
+          sender.send(IPC.MODULE_THEIA_STATUS_ENTRY,{
+            channel:"modules:theiaStatusEntry",sessionId,extensionId,...item,
+          });
+        }
+        );
+        sender.send(IPC.MODULE_THEIA_CONTRIBUTION_CHANGED,{
+          channel:"modules:theiaContributionChanged",sessionId:started.kind==="started"?started.sessionId:"",
+        });
+        return started;
+      }
       case "execute":return manager.execute(senderId,input.sessionId,input.commandId,input.args);
       case "editorSync":return manager.editorSync(senderId,input.sessionId,input.editor,
         transaction=>editorBroker.request(senderId,input.sessionId,transaction,
@@ -68,10 +86,24 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
         if(!messageBroker.respond(senderId,input.sessionId,input.requestId,input.choice))
           throw Error("消息选项不存在、已失效或不属于当前窗口");
         return {kind:"messageAcknowledged" as const};
+      case "quickRespond":
+        if(!quickBroker.respond(senderId,input.sessionId,input.requestId,input.choice))
+          throw Error("输入选择不存在、无效或属于其他窗口");
+        return {kind:"quickAcknowledged" as const};
       case "stop":
+        quickBroker.cancelSession(senderId,input.sessionId);
         messageBroker.cancelSession(senderId,input.sessionId);
+        sender.send(IPC.MODULE_THEIA_STATUS_ENTRY,{
+          channel:"modules:theiaStatusEntry",sessionId:input.sessionId,extensionId:"",id:"*",removed:true,
+        });
         editorBroker.cancelSession(senderId,input.sessionId);
-        return manager.stop(senderId,input.sessionId);
+        const stopped=await manager.stop(senderId,input.sessionId);
+        sender.send(IPC.MODULE_THEIA_CONTRIBUTION_CHANGED,{
+          channel:"modules:theiaContributionChanged",sessionId:input.sessionId,
+        });
+        return stopped;
+      case "configList":return manager.configList(input.id);
+      case "configSet":return manager.configSet(senderId,input.id,input.key,input.value);
       case "setEnabled":return manager.setEnabled(input.id,input.enabled);
       case "remove":return manager.remove(input.id);
     }

@@ -6,6 +6,7 @@
   "main": "./extension.js",
   "activationEvents": ["onCommand:mcodeSmoke.spawnEcho"],
   "contributes": {
+    "menus": {"editor/context": [{"command":"mcodeSmoke.spawnEcho","group":"9_mcode"}]},
     "commands": [
       { "command": "mcodeSmoke.spawnEcho", "title": "Mcode smoke: spawn echo" },
       { "command": "mcodeSmoke.declaredOnly", "title": "Mcode smoke: declared only" }

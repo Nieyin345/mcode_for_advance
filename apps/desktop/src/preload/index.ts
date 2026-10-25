@@ -1167,6 +1167,27 @@ const api = {
 
   // ── Push events (main → renderer) ──
   on: {
+    theiaContributionChanged(handler:(msg:import("@contracts/ipc/modules.js").TheiaContributionChanged)=>void):()=>void {
+      const listener=(_evt:unknown,msg:import("@contracts/ipc/modules.js").TheiaContributionChanged)=>{
+        if(msg.channel===IPC.MODULE_THEIA_CONTRIBUTION_CHANGED)handler(msg);
+      };
+      ipcRenderer.on(IPC.MODULE_THEIA_CONTRIBUTION_CHANGED,listener);
+      return ()=>ipcRenderer.off(IPC.MODULE_THEIA_CONTRIBUTION_CHANGED,listener);
+    },
+    theiaStatusEntry(handler:(msg:import("@contracts/ipc/modules.js").TheiaStatusEntry)=>void):()=>void{
+      const listener=(_evt:unknown,msg:import("@contracts/ipc/modules.js").TheiaStatusEntry)=>{
+        if(msg.channel===IPC.MODULE_THEIA_STATUS_ENTRY)handler(msg);
+      };
+      ipcRenderer.on(IPC.MODULE_THEIA_STATUS_ENTRY,listener);
+      return ()=>ipcRenderer.off(IPC.MODULE_THEIA_STATUS_ENTRY,listener);
+    },
+    theiaQuickInput(handler:(msg:import("@contracts/ipc/modules.js").TheiaQuickInputRequest)=>void):()=>void {
+      const listener=(_evt:unknown,msg:import("@contracts/ipc/modules.js").TheiaQuickInputRequest)=>{
+        if(msg.channel===IPC.MODULE_THEIA_QUICK_INPUT)handler(msg);
+      };
+      ipcRenderer.on(IPC.MODULE_THEIA_QUICK_INPUT,listener);
+      return ()=>ipcRenderer.off(IPC.MODULE_THEIA_QUICK_INPUT,listener);
+    },
     /** F031: live extension alerts and choices, owned by the desktop window.
      * Actions are acknowledged by modules.theiaInstalled(messageRespond).
      */

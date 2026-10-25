@@ -146,13 +146,31 @@ export interface TheiaRuntimeMessage {
   kind:"info"|"warning"|"error";message:string;detail?:string;
   modal:boolean;actions:string[];
 }
+/** F032: status bar entries are ordinary Mcode chrome contributed by VS Code extensions. */
+export interface TheiaEditorMenu {
+  commandId:string;label:string;group?:string;
+}
+export interface TheiaContributionChanged {
+  channel:"modules:theiaContributionChanged";sessionId:string;
+}
+export interface TheiaStatusEntry {
+  channel:"modules:theiaStatusEntry";sessionId:string;extensionId:string;id:string;
+  removed?:boolean;text?:string;name?:string;tooltip?:string;command?:string;
+  priority?:number;alignment?:number;
+}
+/** F032: Quick Pick/Input Box using native Mcode modal UI. */
+export interface TheiaQuickInputRequest {
+  channel:"modules:theiaQuickInput";requestId:string;sessionId:string;extensionId:string;
+  kind:"input"|"pick";title?:string;placeholder?:string;value?:string;password?:boolean;
+  canPickMany?:boolean;items?:Array<{label:string;description?:string;detail?:string}>;
+}
 /** F026: persistent Theia VSIX installs. Every command is desktop-only and non-delegable. */
 export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
   z.object({op:z.literal("list")}).strict(),
   z.object({op:z.literal("inspect"),path:z.string().min(1).max(4096)}).strict(),
   z.object({op:z.literal("cancel"),ticket:z.string().uuid()}).strict(),
   z.object({op:z.literal("install"),ticket:z.string().uuid(),accepted:z.literal(true)}).strict(),
-  z.object({op:z.literal("start"),id:z.string().uuid()}).strict(),
+  z.object({op:z.literal("start"),id:z.string().uuid(),workspacePath:z.string().min(1).max(4096).optional()}).strict(),
   z.object({op:z.literal("execute"),sessionId:z.string().uuid(),commandId:z.string().min(1).max(256),args:z.array(z.string().max(4096)).max(5).optional()}).strict(),
   z.object({op:z.literal("editorSync"),sessionId:z.string().uuid(),editor:z.object({
     filePath:z.string().min(1).max(4096),languageId:z.string().min(1).max(100),text:z.string().max(2_000_000),
@@ -161,8 +179,13 @@ export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
   }).strict().nullable()}).strict(),
   z.object({op:z.literal("editorApplied"),sessionId:z.string().uuid(),requestId:z.string().uuid(),accepted:z.boolean()}).strict(),
   z.object({op:z.literal("messageRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),choice:z.number().int().min(0).max(7).nullable()}).strict(),
+  z.object({op:z.literal("quickRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),
+    choice:z.union([z.string().max(4096),z.array(z.number().int().min(0).max(199)).max(50),z.null()])}).strict(),
   z.object({op:z.literal("stop"),sessionId:z.string().uuid()}).strict(),
   z.object({op:z.literal("setEnabled"),id:z.string().uuid(),enabled:z.boolean()}).strict(),
+  z.object({op:z.literal("configList"),id:z.string().uuid()}).strict(),
+  z.object({op:z.literal("configSet"),id:z.string().uuid(),key:z.string().min(1).max(150),
+    value:z.union([z.string().max(4096),z.number().finite(),z.boolean(),z.null()])}).strict(),
   z.object({op:z.literal("remove"),id:z.string().uuid()}).strict(),
 ]);
 export type TheiaInstalledInput = z.infer<typeof TheiaInstalledInputSchema>;
@@ -172,7 +195,11 @@ export interface TheiaInstalledEntry {
   /** Metadata-only catalogue is not a security check. Full payload verification occurs before launch. */
   integrity:"not-checked"|"corrupt";
   /** F028: only the desktop sender that owns a live Theia session receives command metadata. Never persisted. */
-  activeSession?: {sessionId:string;commands:string[]};
+  activeSession?: {sessionId:string;commands:string[];editorMenus?:TheiaEditorMenu[]};
+}
+export interface TheiaNativeConfigSetting {
+  key:string;type:"string"|"number"|"boolean";description?:string;
+  value:string|number|boolean|null;
 }
 export type TheiaInstalledResult =
   | {kind:"list";items:TheiaInstalledEntry[]}
@@ -183,5 +210,8 @@ export type TheiaInstalledResult =
   | {kind:"editorSynced";active:boolean}
   | {kind:"editorAcknowledged"}
   | {kind:"messageAcknowledged"}
+  | {kind:"quickAcknowledged"}
+  | {kind:"configurations";settings:TheiaNativeConfigSetting[]}
+  | {kind:"configurationUpdated"}
   | {kind:"removed";id:string}
   | {kind:"stopped"};

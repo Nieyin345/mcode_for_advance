@@ -3,10 +3,11 @@
  * Main process owns host lifetime; window destruction and explicit Stop dispose it.
  */
 import { useEffect, useRef, useState } from "react";
-import type { TheiaInstalledEntry, TheiaInstalledResult } from "@contracts/ipc/modules.js";
+import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaNativeConfigSetting } from "@contracts/ipc/modules.js";
 import { api } from "@renderer/lib/api.js";
 import { Button, ErrorNote } from "@renderer/components/ui/index.js";
 import { executeTheiaWithMonaco } from "@renderer/lib/theiaMonacoOwner.js";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 
 type Inspected = Extract<TheiaInstalledResult,{kind:"inspected"}>;
 export function TheiaInstalledPanel() {
@@ -17,6 +18,9 @@ export function TheiaInstalledPanel() {
   const [message,setMessage]=useState<string|null>(null);
   const [selected,setSelected]=useState<Record<string,string>>({});
   const [outputs,setOutputs]=useState<Record<string,string>>({});
+  const [configId,setConfigId]=useState<string|null>(null);
+  const [configSettings,setConfigSettings]=useState<TheiaNativeConfigSetting[]>([]);
+  const [configDrafts,setConfigDrafts]=useState<Record<string,string>>({});
   const pendingRef=useRef<string|null>(null);
   const alive=useRef(false);
 
@@ -69,7 +73,9 @@ export function TheiaInstalledPanel() {
     await refresh();
   });
   const start=(item:TheiaInstalledEntry)=>task(async()=>{
-    const result=await api.modules.theiaInstalled({op:"start",id:item.id});
+    const state=useSessionStore.getState();
+    const workspacePath=state.projects.find(p=>p.id===state.activeProjectId)?.path;
+    const result=await api.modules.theiaInstalled({op:"start",id:item.id,workspacePath});
     if(result.kind!=="started")throw Error("扩展未能启动");
     if(!alive.current)return; // no React owner to stop: process is owned by main
     setSelected(previous=>({...previous,[item.id]:result.commands[0]??""}));
@@ -89,6 +95,25 @@ export function TheiaInstalledPanel() {
     const result=await executeTheiaWithMonaco(input=>api.modules.theiaInstalled(input),sessionId,commandId);
     if(result.kind!=="executed")throw Error("命令执行失败");
     if(alive.current)setOutputs(previous=>({...previous,[item.id]:result.result}));
+  });
+  const showConfig=(item:TheiaInstalledEntry)=>task(async()=>{
+    if(configId===item.id){setConfigId(null);return;}
+    const result=await api.modules.theiaInstalled({op:"configList",id:item.id});
+    if(result.kind!=="configurations")throw Error("无法读取扩展配置");
+    setConfigId(item.id);setConfigSettings(result.settings);
+    setConfigDrafts(Object.fromEntries(result.settings.map(setting=>
+      [setting.key,String(setting.value??"")])));
+  });
+  const saveConfig=(item:TheiaInstalledEntry,setting:TheiaNativeConfigSetting)=>task(async()=>{
+    const raw=configDrafts[setting.key]??"";
+    const value=setting.type==="boolean"?raw==="true":
+      setting.type==="number"?Number(raw):raw;
+    if(setting.type==="number"&&(!raw||!Number.isFinite(value)))throw Error("请输入有效数字");
+    const result=await api.modules.theiaInstalled({
+      op:"configSet",id:item.id,key:setting.key,value,
+    });
+    if(result.kind!=="configurationUpdated")throw Error("扩展配置保存失败");
+    setMessage("已保存扩展配置："+setting.key);
   });
   const toggle=(item:TheiaInstalledEntry)=>task(async()=>{
     const result=await api.modules.theiaInstalled({op:"setEnabled",id:item.id,enabled:!item.enabled});
@@ -143,9 +168,28 @@ export function TheiaInstalledPanel() {
             <div className="flex flex-wrap gap-2">
               {!item.running&&<Button disabled={busy||!item.enabled||!!item.corrupted} onClick={()=>start(item)}>启动</Button>}
               {session&&<Button disabled={busy} onClick={()=>stop(item)}>停止</Button>}
+              <Button disabled={busy||!!item.corrupted} onClick={()=>showConfig(item)}>配置</Button>
               <Button disabled={busy||item.running||!!item.corrupted} onClick={()=>toggle(item)}>{item.enabled?"禁用":"启用"}</Button>
               <Button disabled={busy||item.running||!!item.corrupted} onClick={()=>remove(item)}>卸载</Button>
             </div>
+            {configId===item.id&&<div className="space-y-2 rounded border border-edge p-2"
+              data-testid="mcode-native-extension-config">
+              {configSettings.length===0&&<p className="text-code text-content-muted">此扩展没有声明受支持的配置项。</p>}
+              {configSettings.map(setting=><div key={setting.key} className="space-y-1">
+                <label className="block text-code font-semibold">{setting.key}</label>
+                {setting.description&&<p className="text-code text-content-muted">{setting.description}</p>}
+                <div className="flex items-center gap-2">
+                  {setting.type==="boolean"?
+                    <input type="checkbox" checked={configDrafts[setting.key]==="true"}
+                      onChange={e=>setConfigDrafts(old=>({...old,[setting.key]:String(e.target.checked)}))}/>:
+                    <input type={setting.type==="number"?"number":"text"}
+                      value={configDrafts[setting.key]??""}
+                      onChange={e=>setConfigDrafts(old=>({...old,[setting.key]:e.target.value}))}
+                      className="min-w-0 flex-1 rounded border border-edge bg-surface px-2 py-1 text-code" />}
+                  <Button disabled={busy} onClick={()=>saveConfig(item,setting)}>保存</Button>
+                </div>
+              </div>)}
+            </div>}
             {session&&(
               <div className="space-y-2" data-testid="theia-installed-running">
                 <p className="text-code text-content-muted">已注册 {commands.length} 个命令；与 Mcode 命令面板共享。</p>
