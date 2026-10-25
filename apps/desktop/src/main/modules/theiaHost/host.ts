@@ -45,6 +45,7 @@ import { McodeExtensionPreferences } from "./mcodeExtensionPreferences.js";
 import { McodeExtensionState } from "./mcodeExtensionState.js";
 import { McodeWorkspaceWatcher } from "./mcodeWorkspaceWatcher.js";
 import { prepareTheiaEdits, type EditorEditTransaction, type TheiaTextEdit, type TheiaEditOptions } from "./editorTransactions.js";
+import type { TheiaLanguageLocation, TheiaLanguageProviderKind } from "@contracts/ipc/modules.js";
 
 /* ───────────────────────── 依赖定位 ───────────────────────── */
 
@@ -331,6 +332,46 @@ function snapshotOf(_id: string, input: EditorInput): ActiveEditorSnapshot {
   };
 }
 
+/** Normalize untrusted VS Code Location/LocationLink DTOs before they cross IPC. */
+function languageFileUri(value: unknown): string | undefined {
+  if (typeof value === "string") return value.startsWith("file:") && value.length <= 4096 ? value : undefined;
+  if (!value || typeof value !== "object") return undefined;
+  const input = value as {scheme?:unknown;path?:unknown;fsPath?:unknown;authority?:unknown};
+  if (input.scheme !== "file") return undefined;
+  const rawPath = typeof input.path === "string" ? input.path
+    : typeof input.fsPath === "string" ? input.fsPath : "";
+  if (!rawPath || rawPath.length > 4096) return undefined;
+  const normalized = rawPath.replace(/\\/g, "/");
+  const absolute = normalized.startsWith("/") ? normalized : "/" + normalized;
+  const authority = typeof input.authority === "string" && input.authority.length <= 255
+    ? input.authority : "";
+  return "file://" + authority + encodeURI(absolute).replace(/#/g, "%23").replace(/\?/g, "%3F");
+}
+function languagePosition(value: unknown): {line:number;character:number} | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const p = value as {line?:unknown;character?:unknown;lineNumber?:unknown;column?:unknown};
+  const line = Number.isSafeInteger(p.line) ? Number(p.line)
+    : Number.isSafeInteger(p.lineNumber) ? Number(p.lineNumber) - 1 : -1;
+  const character = Number.isSafeInteger(p.character) ? Number(p.character)
+    : Number.isSafeInteger(p.column) ? Number(p.column) - 1 : -1;
+  if (line < 0 || character < 0 || line > 1_000_000 || character > 1_000_000) return undefined;
+  return {line,character};
+}
+function languageLocation(value: unknown): TheiaLanguageLocation | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const item = value as Record<string,unknown>;
+  const uri = languageFileUri(item.uri ?? item.targetUri);
+  const rangeValue = item.range ?? item.targetSelectionRange ?? item.targetRange;
+  if (!uri || !rangeValue || typeof rangeValue !== "object") return undefined;
+  const range = rangeValue as {start?:unknown;end?:unknown;
+    startLineNumber?:unknown;startColumn?:unknown;endLineNumber?:unknown;endColumn?:unknown};
+  const start = languagePosition(range.start??{lineNumber:range.startLineNumber,column:range.startColumn});
+  const end = languagePosition(range.end??{lineNumber:range.endLineNumber,column:range.endColumn});
+  if (!start || !end || end.line < start.line ||
+      (end.line === start.line && end.character < start.character)) return undefined;
+  return {uri,range:{start,end}};
+}
+
 /* ───────────────────────── 宿主 ───────────────────────── */
 
 /**
@@ -360,7 +401,7 @@ export class TheiaHost {
   private activeEditorSession: EditorSession | null = null;
   private extensionPreferences: McodeExtensionPreferences | null = null;
   private extensionState:McodeExtensionState|null=null;
-  private readonly languageProviders=new Map<number,{kind:"hover"|"completion";languages:string[]}>();
+  private readonly languageProviders=new Map<number,{kind:TheiaLanguageProviderKind;languages:string[]}>();
   private readonly webviewHandles=new Set<string>();
   async sendWebviewMessage(handle:string,payload:unknown):Promise<void>{
     if(!this.webviewHandles.has(handle)||!this.rpc||!this.modules||this.disposed)
@@ -377,13 +418,13 @@ export class TheiaHost {
       this.modules.MAIN_RPC_CONTEXT.WEBVIEWS_EXT);
     await ext.$onDidDisposeWebviewPanel(handle);
   }
-  getLanguageDescriptors():Array<{kind:"hover"|"completion";language:string}>{
+  getLanguageDescriptors():Array<{kind:TheiaLanguageProviderKind;language:string}>{
     return [...new Map([...this.languageProviders.values()].flatMap(item=>
       item.languages.map(language=>[item.kind+":"+language,{kind:item.kind,language}] as const)
     )).values()];
   }
-  async languageQuery(kind:"hover"|"completion",lineNumber:number,column:number):
-    Promise<{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>}>{
+  async languageQuery(kind:TheiaLanguageProviderKind,lineNumber:number,column:number,includeDeclaration=true):
+    Promise<{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;locations:TheiaLanguageLocation[]}>{
     const current=this.activeEditorSession,modules=this.modules,rpc=this.rpc;
     if(!current||!modules||!rpc||this.disposed||!this.started||
       !Number.isSafeInteger(lineNumber)||!Number.isSafeInteger(column)||
@@ -395,33 +436,49 @@ export class TheiaHost {
     const ext=rpc.getProxy<Record<string,(...args:unknown[])=>Promise<unknown>>>(modules.MAIN_RPC_CONTEXT.LANGUAGES_EXT);
     const token={isCancellationRequested:false,onCancellationRequested:()=>({dispose:()=>{}})};
     const position={lineNumber,column};
-    const results:{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>}=
-      {contents:[],suggestions:[]};
+    const results:{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;locations:TheiaLanguageLocation[]}=
+      {contents:[],suggestions:[],locations:[]};
     for(const [handle] of eligible){
-      const operation=kind==="hover"
-        ?ext.$provideHover(handle,current.uri,position,undefined,token)
-        :ext.$provideCompletionItems(handle,current.uri,position,{triggerKind:0},token);
+      let operation:Promise<unknown>;
+      switch(kind){
+        case "hover":operation=ext.$provideHover(handle,current.uri,position,undefined,token);break;
+        case "completion":operation=ext.$provideCompletionItems(handle,current.uri,position,{triggerKind:0},token);break;
+        case "definition":operation=ext.$provideDefinition(handle,current.uri,position,token);break;
+        case "references":operation=ext.$provideReferences(handle,current.uri,position,{includeDeclaration},token);break;
+        case "implementation":operation=ext.$provideImplementation(handle,current.uri,position,token);break;
+        case "typeDefinition":operation=ext.$provideTypeDefinition(handle,current.uri,position,token);break;
+      }
       let timer:NodeJS.Timeout|undefined;
       try{
         const output=await Promise.race([
           operation,
           new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error("扩展语言查询超时")),1800);timer.unref?.();}),
-        ]) as {contents?:Array<string|{value?:string}>;completions?:Array<{
-          label:string|{label:string};insertText?:string;kind?:number;detail?:string
-        }>};
+        ]);
         if(kind==="hover"){
-          for(const content of output?.contents??[]){
+          const payload=output as {contents?:Array<string|{value?:string}>}|undefined;
+          for(const content of payload?.contents??[]){
             const raw=typeof content==="string"?content:content?.value;
             if(typeof raw==="string"&&results.contents.length<12)results.contents.push(raw.slice(0,4000));
           }
-        }else{
-          for(const item of output?.completions??[]){
+        }else if(kind==="completion"){
+          const payload=output as {completions?:Array<{
+            label:string|{label:string};insertText?:string;kind?:number;detail?:string
+          }>}|undefined;
+          for(const item of payload?.completions??[]){
             const label=typeof item?.label==="string"?item.label:item?.label?.label;
             if(typeof label!=="string"||!label||results.suggestions.length>=100)continue;
             results.suggestions.push({label:label.slice(0,180),
               insertText:typeof item.insertText==="string"?item.insertText.slice(0,4000):label.slice(0,180),
               kind:Number.isInteger(item.kind)?item.kind!:18,
               ...(typeof item.detail==="string"?{detail:item.detail.slice(0,320)}:{})});
+          }
+        }else{
+          const rows=Array.isArray(output)?output:
+            output&&typeof output==="object"&&Array.isArray((output as {locations?:unknown}).locations)
+              ?(output as {locations:unknown[]}).locations:output?[output]:[];
+          for(const row of rows){
+            const location=languageLocation(row);
+            if(location&&results.locations.length<100)results.locations.push(location);
           }
         }
       }catch(error){
@@ -1094,6 +1151,26 @@ export class TheiaHost {
       $registerCompletionSupport:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
         if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
         this.languageProviders.set(handle,{kind:"completion",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerDefinitionProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"definition",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerReferenceProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"references",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerImplementationProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"implementation",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerTypeDefinitionProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"typeDefinition",
           languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
       },
       $unregister:(handle:number)=>{this.languageProviders.delete(handle);},

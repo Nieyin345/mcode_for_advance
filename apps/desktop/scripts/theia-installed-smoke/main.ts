@@ -216,8 +216,10 @@ try{
   check("重启宿主时从 Mcode 配置存储加载用户设置",
     initialConfigured.kind==="executed"&&initialConfigured.result.includes("from-mcode-ui"));
   check("真实 VS Code Provider 注册进入 Mcode 宿主能力目录",
-    manager.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>x.kind==="hover"&&x.language==="plaintext")===true&&
-    manager.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>x.kind==="completion"&&x.language==="plaintext")===true);
+    ["hover","completion","definition","references","implementation","typeDefinition"].every(kind=>
+      manager!.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>
+        x.kind===kind&&x.language==="plaintext")===true));
+  writeFileSync(path.join(workspace,"f035-language-target.txt"),"target-language-symbol");
   await manager.editorSync(51,run.sessionId,{
     filePath:path.join(workspace,"f032-roundtrip.txt"),languageId:"plaintext",text:"native-workspace"
   },async()=>false);
@@ -227,6 +229,22 @@ try{
   const completion=await manager.languageQuery(51,run.sessionId,"completion",1,3);
   check("真实 Theia vscode.languages Completion Provider 返回原生补全文本",
     completion.kind==="languageResult"&&completion.suggestions.some(x=>x.label==="mcodeNativeCompletion"),completion);
+  const definition=await manager.languageQuery(51,run.sessionId,"definition",1,3);
+  check("真实 Theia Definition Provider 返回已规范化的文件 URI 与 0-based range",
+    definition.kind==="languageResult"&&definition.locations?.some(x=>
+      x.uri.endsWith("f035-language-target.txt")&&x.range.start.line===0&&x.range.start.character===1)===true&&definition.locations?.length===1,definition);
+  const references=await manager.languageQuery(51,run.sessionId,"references",1,3,true);
+  check("真实 Theia References Provider 尊重 includeDeclaration=true",
+    references.kind==="languageResult"&&references.locations?.some(x=>x.uri.endsWith("f035-language-target.txt"))===true,references);
+  const noDeclaration=await manager.languageQuery(51,run.sessionId,"references",1,3,false);
+  check("真实 Theia References Provider 将 includeDeclaration=false 传给扩展",
+    noDeclaration.kind==="languageResult"&&noDeclaration.locations?.length===0,noDeclaration);
+  const implementation=await manager.languageQuery(51,run.sessionId,"implementation",1,3);
+  check("真实 Theia Implementation Provider 返回原生导航位置",
+    implementation.kind==="languageResult"&&implementation.locations?.some(x=>x.uri.endsWith("f035-language-target.txt"))===true,implementation);
+  const typeDefinition=await manager.languageQuery(51,run.sessionId,"typeDefinition",1,3);
+  check("真实 Theia Type Definition Provider 返回原生导航位置",
+    typeDefinition.kind==="languageResult"&&typeDefinition.locations?.some(x=>x.uri.endsWith("f035-language-target.txt"))===true,typeDefinition);
   const fsReply=await manager.execute(51,run.sessionId,"mcodeSmoke.workspaceFs");
   check("真实 VS Code workspace.fs 读写 Mcode 当前项目",
     fsReply.kind==="executed"&&fsReply.result.includes("native-workspace")&&fsReply.result.includes('"names":true')&&fsReply.result.includes('"search":true'),fsReply);

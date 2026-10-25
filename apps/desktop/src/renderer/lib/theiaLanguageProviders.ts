@@ -5,7 +5,8 @@
 import type * as Monaco from "monaco-editor";
 import {api} from "@renderer/lib/api.js";
 import {snapshotTheiaMonaco} from "./theiaMonacoOwner.js";
-import type {TheiaInstalledEntry} from "@contracts/ipc/modules.js";
+import {gotoLocation} from "./lspProviders.js";
+import type {TheiaInstalledEntry,TheiaLanguageProviderKind} from "@contracts/ipc/modules.js";
 
 export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandaloneCodeEditor,
   monaco:typeof Monaco):()=>void{
@@ -44,6 +45,60 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
     try{return await pending;}
     finally{if(inFlight.get(sessionId)?.promise===pending)inFlight.delete(sessionId);}
   };
+  type NativeLocation={uri:Monaco.Uri;range:{
+    startLineNumber:number;startColumn:number;endLineNumber:number;endColumn:number;
+  }};
+  const samePath=(left:string,right:string)=>{
+    const a=left.replace(/\\/g,"/"),b=right.replace(/\\/g,"/");
+    const windows=/^[a-z]:\//i.test(a)||/^[a-z]:\//i.test(b);
+    return windows?a.toLowerCase()===b.toLowerCase():a===b;
+  };
+  const nativePath=(uri:Monaco.Uri)=>{
+    const path=uri.fsPath;
+    return path.replace(/^([a-z]):(?=[\\/])/i,(_match,drive:string)=>drive.toUpperCase()+":");
+  };
+  const queryLocations=async(sessionId:string,query:Exclude<TheiaLanguageProviderKind,"hover"|"completion">,
+    model:Monaco.editor.ITextModel,position:Monaco.Position,token:Monaco.CancellationToken,
+    includeDeclaration?:boolean
+  ):Promise<NativeLocation[]|null>=>{
+    const version=model.getVersionId();
+    if(!live||token.isCancellationRequested||!await sync(sessionId,model))return null;
+    try{
+      const result=await api.modules.theiaInstalled({op:"languageQuery",sessionId,query,
+        lineNumber:position.lineNumber,column:position.column,
+        ...(includeDeclaration===undefined?{}:{includeDeclaration})});
+      if(result.kind!=="languageResult"||token.isCancellationRequested||
+        model!==instance.getModel()||model.getVersionId()!==version)return null;
+      const locations:NativeLocation[]=[];
+      for(const item of result.locations??[]){
+        if(locations.length>=100)break;
+        const uri=monaco.Uri.parse(item.uri);
+        if(uri.scheme!=="file")continue;
+        const {start,end}=item.range;
+        if(![start.line,start.character,end.line,end.character].every(Number.isSafeInteger)||
+          start.line<0||start.character<0||end.line<start.line||
+          (end.line===start.line&&end.character<start.character))continue;
+        locations.push({uri,range:{startLineNumber:start.line+1,startColumn:start.character+1,
+          endLineNumber:end.line+1,endColumn:end.character+1}});
+      }
+      return locations;
+    }catch{return null;}
+  };
+  const nativeNavigation=async(sessionId:string,kind:"definition"|"implementation"|"typeDefinition",
+    model:Monaco.editor.ITextModel,position:Monaco.Position,token:Monaco.CancellationToken
+  )=>{
+    const locations=await queryLocations(sessionId,kind,model,position,token);
+    if(!locations?.length)return null;
+    const snapshot=snapshotTheiaMonaco();
+    if(!snapshot)return null;
+    const first=locations[0];
+    if(!samePath(first.uri.fsPath,snapshot.filePath)){
+      gotoLocation(nativePath(first.uri),first.range.startLineNumber,first.range.startColumn);
+      return null;
+    }
+    return locations.map(location=>({...location,
+      uri:samePath(location.uri.fsPath,snapshot.filePath)?model.uri:location.uri}));
+  };
   const refresh=async()=>{
     const epoch=++serial;
     try{
@@ -54,7 +109,7 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
       sessions=response.items.filter(s=>s.enabled&&s.running&&s.activeSession);
       for(const record of sessions){
         const active=record.activeSession!;
-        const languages=new Map<string,Set<"hover"|"completion">>();
+        const languages=new Map<string,Set<TheiaLanguageProviderKind>>();
         for(const spec of active.languageProviders??[]){
           const lang=spec.language||"*";
           if(!languages.has(lang))languages.set(lang,new Set());
@@ -92,6 +147,28 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
                 }))};
               }catch{return {suggestions:[]};}
             }
+          }));
+          if(kinds.has("definition"))registered.push(monaco.languages.registerDefinitionProvider(selector,{
+            provideDefinition:(model,position,token)=>
+              nativeNavigation(active.sessionId,"definition",model,position,token),
+          }));
+          if(kinds.has("references"))registered.push(monaco.languages.registerReferenceProvider(selector,{
+            provideReferences:async(model,position,context,token)=>{
+              const locations=await queryLocations(active.sessionId,"references",model,position,token,
+                context.includeDeclaration);
+              if(!locations?.length)return null;
+              const snapshot=snapshotTheiaMonaco();
+              return locations.map(location=>({...location,
+                uri:snapshot&&samePath(location.uri.fsPath,snapshot.filePath)?model.uri:location.uri}));
+            },
+          }));
+          if(kinds.has("implementation"))registered.push(monaco.languages.registerImplementationProvider(selector,{
+            provideImplementation:(model,position,token)=>
+              nativeNavigation(active.sessionId,"implementation",model,position,token),
+          }));
+          if(kinds.has("typeDefinition"))registered.push(monaco.languages.registerTypeDefinitionProvider(selector,{
+            provideTypeDefinition:(model,position,token)=>
+              nativeNavigation(active.sessionId,"typeDefinition",model,position,token),
           }));
         }
       }

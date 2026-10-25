@@ -6,6 +6,15 @@
 const vscode = require("vscode");
 const cp = require("child_process");
 
+function targetLanguageLocation() {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) return undefined;
+  return new vscode.Location(
+    vscode.Uri.joinPath(folder.uri, "f035-language-target.txt"),
+    new vscode.Range(0, 1, 0, 5)
+  );
+}
+
 function activate(context) {
   const seen={created:0,changed:0,deleted:0};
   const nativeWatcher=vscode.workspace.createFileSystemWatcher("**/*.txt");
@@ -39,6 +48,24 @@ function activate(context) {
     }),
     vscode.languages.registerCompletionItemProvider({language:"plaintext"},{
       provideCompletionItems:()=>[new vscode.CompletionItem("mcodeNativeCompletion",vscode.CompletionItemKind.Text)]
+    }),
+    vscode.languages.registerDefinitionProvider({language:"plaintext"},{
+      provideDefinition:()=>{
+        const location=targetLanguageLocation();
+        return location?[location,new vscode.Location(
+          vscode.Uri.parse("https://example.invalid/untrusted.ts"),
+          new vscode.Range(0,0,0,1)
+        )]:[];
+      }
+    }),
+    vscode.languages.registerReferenceProvider({language:"plaintext"},{
+      provideReferences:(_document,_position,context)=>context.includeDeclaration?[targetLanguageLocation()]:[]
+    }),
+    vscode.languages.registerImplementationProvider({language:"plaintext"},{
+      provideImplementation:()=>targetLanguageLocation()
+    }),
+    vscode.languages.registerTypeDefinitionProvider({language:"plaintext"},{
+      provideTypeDefinition:()=>targetLanguageLocation()
     }),
   );
   context.subscriptions.push(

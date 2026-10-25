@@ -182,6 +182,17 @@ export interface TheiaQuickInputRequest {
   kind:"input"|"pick";title?:string;placeholder?:string;value?:string;password?:boolean;
   canPickMany?:boolean;items?:Array<{label:string;description?:string;detail?:string}>;
 }
+/** VS Code language-provider contributions supported by Mcode's native Monaco. */
+export type TheiaLanguageProviderKind =
+  | "hover" | "completion" | "definition" | "references" | "implementation" | "typeDefinition";
+/** File location returned by an installed extension. Coordinates are zero-based VS Code positions. */
+export interface TheiaLanguageLocation {
+  uri:string;
+  range:{
+    start:{line:number;character:number};
+    end:{line:number;character:number};
+  };
+}
 /** F026: persistent Theia VSIX installs. Every command is desktop-only and non-delegable. */
 export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
   z.object({op:z.literal("list")}).strict(),
@@ -201,8 +212,9 @@ export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
   z.object({op:z.literal("webviewDispose"),sessionId:z.string().uuid(),
     handle:z.string().min(1).max(256)}).strict(),
   z.object({op:z.literal("languageQuery"),sessionId:z.string().uuid(),
-    query:z.enum(["hover","completion"]),
-    lineNumber:z.number().int().min(1).max(100000),column:z.number().int().min(1).max(100000)}).strict(),
+    query:z.enum(["hover","completion","definition","references","implementation","typeDefinition"]),
+    lineNumber:z.number().int().min(1).max(100000),column:z.number().int().min(1).max(100000),
+    includeDeclaration:z.boolean().optional()}).strict(),
   z.object({op:z.literal("messageRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),choice:z.number().int().min(0).max(7).nullable()}).strict(),
   z.object({op:z.literal("quickRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),
     choice:z.union([z.string().max(4096),z.array(z.number().int().min(0).max(199)).max(50),z.null()])}).strict(),
@@ -221,7 +233,7 @@ export interface TheiaInstalledEntry {
   integrity:"not-checked"|"corrupt";
   /** F028: only the desktop sender that owns a live Theia session receives command metadata. Never persisted. */
   activeSession?: {sessionId:string;commands:string[];editorMenus?:TheiaEditorMenu[];
-    languageProviders?:Array<{kind:"hover"|"completion";language:string}>};
+    languageProviders?:Array<{kind:TheiaLanguageProviderKind;language:string}>};
 }
 export interface TheiaNativeConfigSetting {
   key:string;type:"string"|"number"|"boolean";description?:string;
@@ -236,7 +248,8 @@ export type TheiaInstalledResult =
   | {kind:"editorSynced";active:boolean}
   | {kind:"webviewAcknowledged"}
   | {kind:"languageResult";contents:string[];
-    suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>}
+    suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;
+    locations?:TheiaLanguageLocation[]}
   | {kind:"editorAcknowledged"}
   | {kind:"messageAcknowledged"}
   | {kind:"quickAcknowledged"}

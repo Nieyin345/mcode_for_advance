@@ -9,7 +9,7 @@ import { parseTheiaVsix } from "./theiaVsixPreview.js";
 import { TheiaHost, type TheiaExtensionHandle, type TheiaNativeTerminalDriver } from "./host.js";
 import { McodeWorkspaceFs } from "./mcodeWorkspaceFs.js";
 import { McodeExtensionPreferences } from "./mcodeExtensionPreferences.js";
-import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaMonacoEditorSnapshot, TheiaEditorMenu, TheiaNativeConfigSetting, TheiaExtensionDiagnostic } from "@contracts/ipc/modules.js";
+import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaMonacoEditorSnapshot, TheiaEditorMenu, TheiaNativeConfigSetting, TheiaExtensionDiagnostic, TheiaLanguageProviderKind } from "@contracts/ipc/modules.js";
 
 const MAX_ARCHIVE = 64 * 1024 * 1024;
 const AGE_MS = 5 * 60 * 1000;
@@ -26,7 +26,7 @@ interface Saved {
 interface Pending { ticket: string; senderId: number; createdAt: number; root: string; record: Saved; upgradeOf?:string; oldVersion?:string; previousArchiveHash?:string }
 interface Running { id: string; senderId: number; sessionId: string; host: TheiaHost;
   handle: TheiaExtensionHandle; commands: Set<string>; editorMenus:TheiaEditorMenu[];
-  languageProviders:Array<{kind:"hover"|"completion";language:string}>;
+  languageProviders:Array<{kind:TheiaLanguageProviderKind;language:string}>;
   editorBridge?: ReturnType<TheiaHost["editors"]>; syncing?: boolean; executing?: boolean;
 }
 
@@ -435,12 +435,12 @@ export class TheiaInstalledRegistry {
     await current.host.disposeWebview(handle);
     return {kind:"webviewAcknowledged"};
   }
-  async languageQuery(senderId:number,sessionId:string,kind:"hover"|"completion",
-    lineNumber:number,column:number):Promise<TheiaInstalledResult>{
+  async languageQuery(senderId:number,sessionId:string,kind:TheiaLanguageProviderKind,
+    lineNumber:number,column:number,includeDeclaration=true):Promise<TheiaInstalledResult>{
     const active=this.findSession(sessionId);
     if(!active||active.senderId!==senderId||this.closed.has(senderId)||active.syncing||
       active.executing)deny("非法或忙碌的扩展语言会话");
-    return {kind:"languageResult",...await active.host.languageQuery(kind,lineNumber,column)};
+    return {kind:"languageResult",...await active.host.languageQuery(kind,lineNumber,column,includeDeclaration)};
   }
   async execute(senderId:number,sessionId:string,commandId:string,args:readonly string[]=[]):Promise<TheiaInstalledResult>{
     const current=this.findSession(sessionId);

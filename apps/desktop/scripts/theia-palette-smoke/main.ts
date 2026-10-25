@@ -168,6 +168,23 @@ check("语言服务基于 Monaco 当前文本增量失效，不每次悬停都�
 check("语言 Provider 由原生贡献事件注册及释放，没有后台轮询",
   nativeLanguage.includes("api.on.theiaContributionChanged(")&&!nativeLanguage.includes("setInterval(")&&
   nativeLanguage.includes("for(const item of registered)item.dispose()"));
+check("Mcode Monaco 注册真实扩展定义、引用、实现和类型定义四种导航 Provider",
+  nativeLanguage.includes("registerDefinitionProvider(")&&nativeLanguage.includes("registerReferenceProvider(")&&
+  nativeLanguage.includes("registerImplementationProvider(")&&nativeLanguage.includes("registerTypeDefinitionProvider("));
+check("跨文件定义通过 Mcode 原生 openFileInIde 导航，同文件位置复用现有 Monaco model",
+  nativeLanguage.includes("gotoLocation(nativePath(first.uri)")&&nativeLanguage.includes("?model.uri:"));
+check("引用查询尊重 includeDeclaration 并且检查取消/模型版本",
+  nativeLanguage.includes("context.includeDeclaration")&&nativeLanguage.includes("token.isCancellationRequested")&&
+  nativeLanguage.includes("model.getVersionId()!==version"));
+const languageHost=readFileSync(path.join(codeRoot,"apps/desktop/src/main/modules/theiaHost/host.ts"),"utf8");
+check("Theia 主 RPC 记录四类语言导航贡献并转发到真实扩展 Provider",
+  languageHost.includes("$registerDefinitionProvider:")&&languageHost.includes("$registerReferenceProvider:")&&
+  languageHost.includes("$registerImplementationProvider:")&&languageHost.includes("$registerTypeDefinitionProvider:")&&
+  languageHost.includes("ext.$provideDefinition(")&&languageHost.includes("ext.$provideReferences(")&&
+  languageHost.includes("ext.$provideImplementation(")&&languageHost.includes("ext.$provideTypeDefinition("));
+check("语言位置跨 IPC 前拒绝非 file URI、越界坐标和反向范围",
+  languageHost.includes("function languageLocation(value: unknown)")&&
+  languageHost.includes("input.scheme !== \"file\"")&&languageHost.includes("results.locations.length<100"));
 const nativeMenus=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/lib/theiaEditorMenus.ts"),"utf8");
 const realEditor=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/ide/FileEditor.tsx"),"utf8");
 check("VS Code editor/context 菜单实际进入 Monaco 原生菜单而非独立菜单 UI",
