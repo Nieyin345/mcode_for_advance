@@ -82,6 +82,13 @@ await withAuditPage(here,async page=>{
     check('focused workflow selected instead of showing an unrelated canvas',
       await page.eval('document.querySelector("#workflows-panel-library nav button[aria-current=true]")?.textContent.includes("资料整理流程")'));
   });
+  await test('native-library-reconciliation-warning',async()=>{
+    await page.goto('case=mirror-lag&locale=zh');
+    await page.waitFor('document.querySelector("#workflows-panel-engines [role=alert]")?.textContent.includes("2 份工作流")');
+    const notice=await page.eval('document.querySelector("#workflows-panel-engines [role=alert]")?.textContent');
+    check('Node-RED mirror divergence is visible in the ONE Mcode workflow workbench',
+      notice?.includes("2 份工作流") && notice.includes("未同步"),notice);
+  });
   await test('native-noop-reentry-does-not-reload-editor',async()=>{
     await page.goto('case=native-unchanged&locale=zh');
     await page.eval(helper);

@@ -1420,10 +1420,12 @@ export const zh = {
   "settings.workflows.engine.dockedBringBack": "收回到这里",
   "settings.workflows.engine.viewOpenFailed": "编辑器视图没能打开",
   "settings.workflows.engine.viewStageTooSmall": "面板没有可用的显示区域（宽或高为 0），视图未打开",
-  "settings.workflows.engine.noneTitle": "没有可用的第三方引擎",
-  "settings.workflows.engine.noneBody": "主进程的引擎注册表是空的——这通常意味着当前构建没有装配第三方引擎。",
+  "settings.workflows.engine.noneTitle": "工作流引擎不可用",
+  "settings.workflows.engine.noneBody": "Mcode 的 Node-RED 工作流内核未正确装配。",
   "settings.workflows.engine.footnote":
-    "引擎是独立进程：关掉这个视图不会停掉它，停止要按上面的「停止」。编辑器里画的流不会自动执行（deploy 仍由你在引擎里点）。",
+    "Node-RED 在 Mcode 内部独立运行；关闭工作流页面不会停止已有任务。修改流程后需点击「部署」才会生效。",
+  "settings.workflows.engine.libraryMirrorPending": "Node-RED 已部署，但有 {count} 份工作流尚未同步到 Mcode 库。请先处理对账，避免用旧版本继续编辑。",
+  "settings.workflows.engine.libraryMirrorError": "工作流库同步失败；原生部署结果可能与库内容不一致。详情见运行看板。",
   // ── ARC-006 Gate E：节点包（可执行代码）──
   "settings.workflows.engine.nodesTitle": "已装节点包",
   "settings.workflows.engine.nodesEmpty": "还没有安装任何节点包。",

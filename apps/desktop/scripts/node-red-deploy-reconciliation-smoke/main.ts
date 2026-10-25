@@ -270,6 +270,73 @@ console.log("\n4. 重复/迟到 ACK：同一回执幂等，旧回执不覆盖新
   void newer;
 }
 
+/* ─────── 4b. 同内容回执幂等，坏持久介质不可谎称有安全镜像 ─────── */
+console.log("\n4b. 原生图只镜像一次，坏账本 fail-closed");
+{
+  resetLedger();
+  const a = fixtures("wf_t2_same", "first");
+  const lib = fakeLibrary([a.doc]);
+  let now = 10_000;
+  const mirror = new NativeDeployLibraryMirror({ dataDir: ENGINE_DIR, ports: lib.ports, now: () => now });
+  const payload = withTabTitle(a.nodes, "same");
+  const first = await mirror.mirrorDeploy(payload);
+  eq("第一次原生图确实保存", first.docs[0]?.status, "mirrored");
+  eq("第一次 SQL 镜像只写入一次", lib.saves.length, 1);
+  now = 11_000;
+  const duplicate = await mirror.mirrorDeploy(structuredClone(payload));
+  eq("相同原生图重复 Deploy/ACK 不再重写 SQL", duplicate.docs[0]?.status, "superseded");
+  eq("重复 ACK 后库修订和事件仍只变化一次", lib.saves.length, 1);
+  eq("成功后的持久应用水位保持原版本", readNativeDeployReconciliation(ENGINE_DIR).applied["wf_t2_same"]?.at, 10_000);
+  // Two different deployments issued in the SAME millisecond still need
+  // distinct ordering in the durable journal; it must not depend on sleep.
+  now = 11_000;
+  const sameMsFirst = await mirror.mirrorDeploy(withTabTitle(a.nodes, "same-ms-first"));
+  eq("同一毫秒内先有一笔真正新 Deploy", sameMsFirst.docs[0]?.status, "mirrored");
+  const equalMillisecond = await mirror.mirrorDeploy(withTabTitle(a.nodes, "same-ms-newer"));
+  eq("同毫秒的后继 Deploy 仍能提交 SQL", equalMillisecond.docs[0]?.status, "mirrored");
+  check("同毫秒后继的持久序列严格大于上一笔",
+    (readNativeDeployReconciliation(ENGINE_DIR).applied["wf_t2_same"]?.at ?? 0) > 11_000,
+    readNativeDeployReconciliation(ENGINE_DIR).applied);
+  eq("同毫秒图更新后 SQL 已是最新版本", lib.docs.get("wf_t2_same")?.nodes[0]?.title, "same-ms-newer");
+  // A later native Deploy can legitimately fail. A very late duplicate of
+  // the already applied graph MUST NOT erase its pending reconciliation.
+  now = 12_000;
+  lib.reject.set("wf_t2_same", "新 Deploy 暂时无法同步");
+  const newer = await mirror.mirrorDeploy(withTabTitle(a.nodes, "different"));
+  eq("新图失败保留待对账", newer.docs[0]?.status, "failed");
+  now = 13_000;
+  const lateDuplicate = await mirror.mirrorDeploy(payload);
+  eq("更晚到达的旧相同图只读跳过", lateDuplicate.docs[0]?.status, "superseded");
+  const pending = readNativeDeployReconciliation(ENGINE_DIR).pending;
+  check("旧图重复回执不会清除较新图的待对账事实",
+    pending.length === 1 && pending[0]?.deployId === newer.deployId, pending);
+
+  const badDir = join(ROOT, "no-ledger-file");
+  mkdirSync(badDir, { recursive: true });
+  // A directory at the ledger filename makes atomicReplaceFileSync fail on
+  // both Windows and POSIX. This is *not* the user's workflow data root.
+  mkdirSync(join(badDir, NATIVE_DEPLOY_RECONCILIATION_FILE));
+  const broken = new NativeDeployLibraryMirror({ dataDir: badDir, ports: lib.ports });
+  const writesBefore = lib.saves.length;
+  let rejected: unknown;
+  try { await broken.mirrorDeploy(withTabTitle(a.nodes, "other")); }
+  catch (err) { rejected = err; }
+  check("对账账本不可写时明确失败而非先静默写 SQL", rejected instanceof Error &&
+    rejected.message.includes("无法持久记录"), String(rejected));
+  eq("无法写持久意图时没有触发 SQL 保存", lib.saves.length, writesBefore);
+
+  lib.reject.delete("wf_t2_same");
+  for (let i = 0; i < 12; i++) {
+    now = 20_000 + i;
+    const success = await mirror.mirrorDeploy(withTabTitle(a.nodes, "history-" + i));
+    eq("对账内容指纹滚动窗口内不同 Deploy 均可正常镜像 " + i,
+      success.docs[0]?.status, "mirrored");
+  }
+  const retained = readNativeDeployReconciliation(ENGINE_DIR).applied["wf_t2_same"]?.seen ?? [];
+  check("已经应用的 Deploy 历史是有界窗口，不随进程长期使用无限增长",
+    retained.length === 8 && new Set(retained).size === 8, { count: retained.length });
+}
+
 /* ───────── 5. 崩溃/重启：排队时中断仍有持久意图，启动重放 ───────── */
 
 console.log("\n5. 崩溃/重启：意图同步落盘，重启后重放（runboard 事件）");
@@ -478,6 +545,9 @@ console.log("\n10. Runtime：原生 Deploy 已提交、镜像失败 → 状态�
   const state = runtime.libraryMirrorState();
   check("Runtime：镜像失败在状态里可查（不是只剩日志）", state.report !== null && state.report.ok === false, state.report);
   check("Runtime：失败措辞说明“原生已提交、库镜像未完成”", state.report?.error !== null && state.report?.error !== undefined, state.report?.error);
+  check("Runtime：正在运行的原生引擎状态向统一工作流面板报告同步异常",
+    runtime.status().libraryMirrorError === true && runtime.status().libraryMirrorPending === 0,
+    runtime.status());
   eq("Runtime：失败不冒充 Deploy 失败（没有回滚 owner）", ownership.executorOwnerOf("wf_t2_m"), "node-red");
   await runtime.stop();
 }

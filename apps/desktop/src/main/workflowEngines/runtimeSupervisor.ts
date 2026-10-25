@@ -85,6 +85,9 @@ export interface EngineRuntimeStatus {
   instanceEpoch?: string;
   /** Only the Host-verified Node-RED deploy receipt can mark this runtime as deployed. */
   deploymentState?: "not-deployed" | "deployed" | "unknown";
+  /** Cached durable mirror health. Never populated from untrusted Node-RED messages. */
+  libraryMirrorPending?: number;
+  libraryMirrorError?: boolean;
 }
 
 export interface EngineSpawnSpec {

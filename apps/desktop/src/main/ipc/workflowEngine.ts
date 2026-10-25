@@ -94,6 +94,8 @@ export function toStatusView(status: EngineRuntimeStatus): WorkflowEngineStatusV
     port: status.port,
     reason: status.reason,
     ...(status.deploymentState === undefined ? {} : { deploymentState: status.deploymentState }),
+    ...(status.libraryMirrorPending === undefined ? {} : { libraryMirrorPending: status.libraryMirrorPending }),
+    ...(status.libraryMirrorError === undefined ? {} : { libraryMirrorError: status.libraryMirrorError }),
     editorUrl: status.state === "running" && status.port !== null
       ? `http://127.0.0.1:${status.port}/`
       : null,

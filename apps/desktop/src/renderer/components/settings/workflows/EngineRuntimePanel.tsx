@@ -957,6 +957,13 @@ export function EngineRuntimePanel({ active: activeTab = true, engineId, editorO
           onChanged={listRead.refetch}
         />
       )}
+      {selected !== null && ((selected.libraryMirrorPending ?? 0) > 0 || selected.libraryMirrorError === true) && (
+        <div role="alert" className="rounded-md border border-warning/50 bg-warning/10 px-3 py-2 text-[0.7857em] text-content">
+          {(selected.libraryMirrorPending ?? 0) > 0
+            ? t("settings.workflows.engine.libraryMirrorPending", { count: selected.libraryMirrorPending ?? 0 })
+            : t("settings.workflows.engine.libraryMirrorError")}
+        </div>
+      )}
       {/* 回调通道的预留位（桥 2）。放在引擎行下面而不是列表之上：它描述的是
           "引擎能对 Mcode 做什么"，是引擎配置的一部分，不是操作入口。 */}
       {!editorOnly && <EngineCallbackSection />}

@@ -205,7 +205,8 @@ export interface NativeDeployReconciliation {
   pending: PendingNativeMirror[];
   /** Last successfully applied deploy per document. Duplicate or late ACKs of
    * an older deploy must never overwrite newer content. */
-  applied: Record<string, { at: number; deployId: string }>;
+  applied: Record<string, { at: number; deployId: string; /** Bounded recent successful receipts, for late duplicate detection. */ seen?: string[] }>;
+
   /** Last non-document error (e.g. an invalid deploy payload whose doc identity
    * cannot be derived); informational, never auto-retried. */
   lastError?: { at: number; message: string };
@@ -260,7 +261,11 @@ function normalizeLedger(value: unknown): NativeDeployReconciliation | null {
     if (!mark || typeof mark !== "object" || Array.isArray(mark)) return null;
     const m = mark as Record<string, unknown>;
     if (typeof m["at"] !== "number" || !Number.isFinite(m["at"]) || typeof m["deployId"] !== "string") return null;
-    applied[docId] = { at: m["at"], deployId: m["deployId"] };
+    const seen = m["seen"];
+    if (seen !== undefined && (!Array.isArray(seen) || seen.length > 8 ||
+      seen.some(id => typeof id !== "string" || id.length !== 64 || !/^[a-f0-9]+$/.test(id)))) return null;
+    applied[docId] = { at: m["at"], deployId: m["deployId"],
+      ...(seen === undefined ? {} : { seen: seen as string[] }) };
   }
   let lastError: NativeDeployReconciliation["lastError"];
   if (raw["lastError"] !== undefined) {
@@ -338,7 +343,13 @@ const mirrorQueues = new Map<string, Promise<unknown>>();
 function enqueueMirror<T>(key: string, task: () => Promise<T>): Promise<T> {
   const tail = mirrorQueues.get(key) ?? Promise.resolve();
   const run = tail.then(task);
-  mirrorQueues.set(key, run.then(() => undefined, () => undefined));
+  const settled = run.then(() => undefined, () => undefined);
+  mirrorQueues.set(key, settled);
+  // A project can have many managed engine dirs over its lifetime. Retaining
+  // settled tails by path would leak a Map entry per directory forever.
+  void settled.then(() => {
+    if (mirrorQueues.get(key) === settled) mirrorQueues.delete(key);
+  });
   return run;
 }
 
@@ -435,8 +446,17 @@ export class NativeDeployLibraryMirror {
    * `lastError`; they never create fake pending documents.
    */
   mirrorDeploy(nodes: unknown): Promise<NativeMirrorReport> {
-    const at = this.now();
-    if (!nativePayloadHasMcodeTabs(nodes)) return Promise.resolve({ deployId: "", at, ok: true, docs: [] });
+    const currentTime = this.now();
+    if (!nativePayloadHasMcodeTabs(nodes)) return Promise.resolve({ deployId: "", at: currentTime, ok: true, docs: [] });
+    // Deploys can finish in the same millisecond. Equal "at" previously let
+    // one document's newer intent be overwritten by the older receipt; the
+    // comparison only guarded strict >. Store a monotonic logical receipt
+    // time across restarts, without scheduling a timer or busy-waiting.
+    const previousAt = readNativeDeployReconciliation(this.dataDir).updatedAt;
+    if (!Number.isSafeInteger(previousAt) || previousAt >= Number.MAX_SAFE_INTEGER - 1) {
+      throw Error("Node-RED 对账序列时间戳溢出，拒绝覆盖持久记录");
+    }
+    const at = Math.max(currentTime, previousAt + 1);
     const deployId = nativeDeployIdentity(nodes);
     let docs: WorkflowDoc[];
     try {
@@ -445,6 +465,9 @@ export class NativeDeployLibraryMirror {
       this.recordLastError(at, `Node-RED Deploy 载荷无法建立文档身份：${errText(err)}`);
       throw err;
     }
+    // The ledger is the crash-recovery handoff between native flows.json and
+    // SQL. If it cannot be written, do not silently start a mirror that may
+    // vanish mid-flight and never be recoverable after a crash.
     this.recordIntent(docs, deployId, at);
     return enqueueMirror(this.dataDir, async () => {
       const ports = await this.resolvePorts();
@@ -470,8 +493,9 @@ export class NativeDeployLibraryMirror {
     const ledger = readNativeDeployReconciliation(this.dataDir);
     const applied = ledger.applied[doc.id];
     const pending = ledger.pending.find(entry => entry.docId === doc.id);
-    const supersededBy = (applied !== undefined && applied.at > at)
-      || (pending !== undefined && pending.at > at);
+    const supersededBy = (applied !== undefined && (applied.at > at || applied.deployId === deployId || applied.seen?.includes(deployId) === true))
+      || (pending !== undefined && (pending.at > at
+        || (pending.at === at && pending.deployId !== deployId)));
     if (supersededBy) {
       return {
         docId: doc.id, status: "superseded", expectedRevision: null, observedRevision: null,
@@ -580,7 +604,9 @@ export class NativeDeployLibraryMirror {
       const byId = new Map(ledger.pending.map(entry => [entry.docId, entry]));
       for (const doc of docs) {
         const existing = byId.get(doc.id);
-        if (existing !== undefined && existing.at > at) continue;
+        if (ledger.applied[doc.id]?.deployId === deployId || ledger.applied[doc.id]?.seen?.includes(deployId)) continue;
+        if (existing !== undefined && (existing.at > at
+          || (existing.at === at && existing.deployId !== deployId))) continue;
         let expectedRevision: string | null = null;
         try {
           expectedRevision = this.revisionOf?.(doc.id) ?? null;
@@ -595,8 +621,12 @@ export class NativeDeployLibraryMirror {
         ...ledger, version: 1, updatedAt: at, pending: [...byId.values()],
       });
     } catch (err) {
-      // The mirror still runs; only its crash-recovery evidence is missing.
-      log.warn(`Node-RED 库镜像待对账意图写入失败：${errText(err)}`);
+      // Native Deploy has ALREADY committed, but the mirror is not durable.
+      // Surface a hard failure to Host/runboard instead of logging and
+      // pretending it is a recoverable pending transaction.
+      const reason = `Node-RED 已部署，但无法持久记录工作流库对账意图：${errText(err)}；必须人工修复存储后再对账`;
+      log.error(reason);
+      throw new Error(reason);
     }
   }
 
@@ -605,19 +635,23 @@ export class NativeDeployLibraryMirror {
    * this deploy or an older one; failure upserts only if no newer deploy already
    * owns the document. */
   private applyResult(docId: string, deployId: string, at: number, result: MirrorDocResult): void {
+    // An already-applied/late ACK is read-only. It must not clear an unrelated
+    // newer pending intent, even if its wall clock at is later (clock skew).
+    if (result.status === "superseded") return;
     try {
       const ledger = readNativeDeployReconciliation(this.dataDir);
       const existing = ledger.pending.find(entry => entry.docId === docId);
       if (existing !== undefined && existing.at > at) return;
       const remaining = ledger.pending.filter(entry => entry.docId !== docId);
       const resolved = result.status === "mirrored" || result.status === "skipped-native-only"
-        || result.status === "skipped-deleted" || result.status === "removed" || result.status === "superseded";
+        || result.status === "skipped-deleted" || result.status === "removed";
       if (resolved) {
         // A successful mirror of this deploy advances the applied watermark so a
         // duplicate/late ACK of an OLDER deploy cannot overwrite it later.
         const previous = ledger.applied[docId];
         const applied = result.status === "mirrored" && deployId !== "" && (previous === undefined || previous.at <= at)
-          ? { ...ledger.applied, [docId]: { at, deployId } }
+          ? { ...ledger.applied, [docId]: { at, deployId,
+            seen: [...new Set([...(previous?.seen ?? []), ...(previous ? [previous.deployId] : []), deployId])].slice(-8) } }
           : ledger.applied;
         if (existing === undefined && applied === ledger.applied) return;
         writeLedger(this.dataDir, { ...ledger, version: 1, updatedAt: at, pending: remaining, applied });

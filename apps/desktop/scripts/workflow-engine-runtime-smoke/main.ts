@@ -305,6 +305,11 @@ console.log(`\nworkflow-engine-runtime-smoke:${total - failures}/${total} 通过
   eq("W6 真实部署状态经主进程 IPC 视图传递", fromDeploy.deploymentState, "deployed");
   eq("W6 IPC 部署状态不泄露实例身份或控制面密钥",
     Object.keys(fromDeploy).sort(), ["deploymentState", "editorUrl", "engineId", "port", "reason", "state"]);
+  const lagging = toStatusView({ ...runtime.status(), state: "running", port: 3527,
+    libraryMirrorPending: 2, libraryMirrorError: true });
+  check("单一工作流状态可见原生库投影待对账数量与异常，但不暴露账本路径",
+    lagging.libraryMirrorPending === 2 && lagging.libraryMirrorError === true &&
+    !("instanceEpoch" in lagging) && !("dataDir" in lagging), lagging);
 }
 
 console.log(`\nworkflow-engine-runtime-smoke(含IPC):${total - failures}/${total} 通过`);

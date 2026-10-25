@@ -72,7 +72,17 @@ const impl = {
       nativeLoads.push(workflowId);
       return scenario === "native-unchanged" ? {ok:true,unchanged:true} : {ok:true};
     },
-    list: async () => { apiCalls.push("workflowEngine.list"); return {engines:[]}; },
+    list: async () => {
+      apiCalls.push("workflowEngine.list");
+      return {engines: scenario === "mirror-lag"
+        ? [{engineId:"node-red",state:"running",port:1880,reason:null,editorUrl:"http://127.0.0.1:1880/",
+          libraryMirrorPending:2,libraryMirrorError:true}]
+        : []};
+    },
+  },
+  documentView: {
+    open:async()=>({ok:true}),hide:async()=>({ok:true}),show:async()=>({ok:true}),
+    bounds:async()=>({ok:true}),close:async()=>({ok:true}),
   },
   workflow:{
     nodeTypes:async()=>{apiCalls.push("workflow.nodeTypes");return clone(catalog);},

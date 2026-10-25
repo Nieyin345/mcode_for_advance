@@ -85,6 +85,9 @@ export interface WorkflowEngineStatusView {
   editorUrl: string | null;
   /** Current engine process only; not evidence of persistent restart authorization. */
   deploymentState?: "not-deployed" | "deployed" | "unknown";
+  /** SQL library projection lagging behind a committed native Deploy. */
+  libraryMirrorPending?: number;
+  libraryMirrorError?: boolean;
 }
 
 export type WorkflowEngineResult =

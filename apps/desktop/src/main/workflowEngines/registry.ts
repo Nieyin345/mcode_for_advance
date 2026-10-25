@@ -472,6 +472,9 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
    * It is a *middle state* (“native deploy committed, library mirror pending”),
    * never claimed to be one cross-store transaction. */
   private lastLibraryMirror: (NativeMirrorReport & { error: string | null }) | null = null;
+  /** Updated on start/deploy/retry, never by the 2.5s UI status poll. */
+  private libraryMirrorPending = 0;
+  private libraryMirrorError = false;
   private indexNativeNodes(flows: unknown): void {
     const next = new Map<string, { tabId: string; nodeId: string; type: string; title: string; manualDispatchReady: boolean }>();
     const deployed = new Map<string, Record<string, unknown>>();
@@ -589,7 +592,9 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
   override status(): EngineRuntimeStatus {
     const state = super.status();
     return state.state === "running"
-      ? { ...state, deploymentState: this.deploymentState }
+      ? { ...state, deploymentState: this.deploymentState,
+          libraryMirrorPending: this.libraryMirrorPending,
+          libraryMirrorError: this.libraryMirrorError }
       : state;
   }
 
@@ -619,6 +624,10 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
    * without reading logs. The sink defaults to the production emitter. */
   private recordLibraryMirror(report: NativeMirrorReport & { error: string | null }): void {
     this.lastLibraryMirror = report;
+    if (this.engineDataDir !== null) {
+      this.libraryMirrorPending = readNativeDeployReconciliation(this.engineDataDir).pending.length;
+    }
+    this.libraryMirrorError = !report.ok || report.error !== null;
     if (report.ok && report.deployId === "" && report.docs.length === 0) return;
     const emit = this.nativeEventSink ?? emitNativeRunboardEvent;
     for (const event of nativeMirrorEvents(report)) {
@@ -856,6 +865,8 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     if (state === "running" || state === "starting") return super.start(options);
     if (this.ownedFlowIds.length > 0) throw new Error("旧引擎租约未释放，拒绝再次启动");
     this.engineDataDir = options.dataDir;
+    this.libraryMirrorPending = readNativeDeployReconciliation(options.dataDir).pending.length;
+    this.libraryMirrorError = this.libraryMirrorPending > 0;
     // A trusted startup may auto-run; do not claim a manual deploy occurred.
     this.untrustedAtStart = options.env?.MCODE_ENGINE_TRUSTED !== "1";
     this.nativeDeployUncertain = false;

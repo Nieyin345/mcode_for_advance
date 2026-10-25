@@ -1419,10 +1419,12 @@ export const en = {
   "settings.workflows.engine.dockedBringBack": "Bring it back here",
   "settings.workflows.engine.viewOpenFailed": "The editor view could not be opened",
   "settings.workflows.engine.viewStageTooSmall": "The panel has no usable display area (zero width or height); the view was not opened",
-  "settings.workflows.engine.noneTitle": "No third-party engines available",
-  "settings.workflows.engine.noneBody": "The main-process engine registry is empty — this build usually has no third-party engines wired up.",
+  "settings.workflows.engine.noneTitle": "Workflow engine unavailable",
+  "settings.workflows.engine.noneBody": "Mcode’s integrated Node-RED workflow engine is not configured.",
   "settings.workflows.engine.footnote":
-    "The engine is a standalone process: closing this view does not stop it — use Stop above. Flows you draw in its editor do not run by themselves (deploy is still your click inside the engine).",
+    "Node-RED runs inside Mcode as a managed process. Closing this page does not stop running workflows; click Deploy to apply changes.",
+  "settings.workflows.engine.libraryMirrorPending": "Node-RED has deployed changes, but {count} workflow documents have not yet synchronized to the Mcode library. Resolve reconciliation before editing stale content.",
+  "settings.workflows.engine.libraryMirrorError": "The workflow library could not synchronize; the saved documents may differ from the deployed graph. See the runboard for details.",
   // ── ARC-006 Gate E: node packages (executable code) ──
   "settings.workflows.engine.nodesTitle": "Installed node packages",
   "settings.workflows.engine.nodesEmpty": "No node packages installed yet.",
