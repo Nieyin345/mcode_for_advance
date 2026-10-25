@@ -63,6 +63,13 @@ export const DEFAULT_THEIA_ROOT = path.resolve(
 );
 
 /** 用**扩展自己的解析根**去 require Theia 的构建产物。 */
+export interface TheiaNativeTerminalDriver {
+  create(id:string,opts:{name?:string;cwd?:string;shellPath?:string;shellArgs?:unknown;isPseudo?:boolean}):Promise<string>;
+  sendText(id:string,text:string,execute?:boolean):Promise<void>;
+  dispose(id:string):Promise<void>;
+  disposeAll():Promise<void>;
+  getProcessId?(id:string):number|undefined;
+}
 export interface TheiaHostOptions {
   /** `vendor/theia` 的绝对路径。 */
   theiaRoot: string;
@@ -95,6 +102,9 @@ export interface TheiaHostOptions {
   onMessage?: (input:{type:number;message:string;detail?:string;modal:boolean;actions:string[]})=>Promise<number|undefined>;
   /** Mcode-native Quick Pick / Input Box dialog, never a second Theia UI. */
   onStatus?: (input:{id:string;removed?:boolean;text?:string;name?:string;tooltip?:string;command?:string;priority?:number;alignment?:number})=>void;
+  terminalDriver?:TheiaNativeTerminalDriver;
+  onWebview?:(event:{handle:string;action:"create"|"html"|"message"|"dispose"|"title";
+    title?:string;html?:string;payload?:unknown})=>void;
   onDiagnostics?: (collectionId:string,resource:string,markers:Array<{
     severity:1|2|4|8;message:string;source?:string;code?:string;
     startLineNumber:number;startColumn:number;endLineNumber:number;endColumn:number;
@@ -350,6 +360,76 @@ export class TheiaHost {
   private activeEditorSession: EditorSession | null = null;
   private extensionPreferences: McodeExtensionPreferences | null = null;
   private extensionState:McodeExtensionState|null=null;
+  private readonly languageProviders=new Map<number,{kind:"hover"|"completion";languages:string[]}>();
+  private readonly webviewHandles=new Set<string>();
+  async sendWebviewMessage(handle:string,payload:unknown):Promise<void>{
+    if(!this.webviewHandles.has(handle)||!this.rpc||!this.modules||this.disposed)
+      throw Error("扩展 Webview 已失效");
+    const ext=this.rpc.getProxy<{$onMessage(h:string,message:unknown):Promise<void>|void}>(
+      this.modules.MAIN_RPC_CONTEXT.WEBVIEWS_EXT);
+    await ext.$onMessage(handle,payload);
+  }
+  async disposeWebview(handle:string):Promise<void>{
+    if(!this.webviewHandles.delete(handle))throw Error("扩展 Webview 已失效");
+    this.options.onWebview?.({handle,action:"dispose"});
+    if(!this.rpc||!this.modules||this.disposed)return;
+    const ext=this.rpc.getProxy<{$onDidDisposeWebviewPanel(h:string):Promise<void>|void}>(
+      this.modules.MAIN_RPC_CONTEXT.WEBVIEWS_EXT);
+    await ext.$onDidDisposeWebviewPanel(handle);
+  }
+  getLanguageDescriptors():Array<{kind:"hover"|"completion";language:string}>{
+    return [...new Map([...this.languageProviders.values()].flatMap(item=>
+      item.languages.map(language=>[item.kind+":"+language,{kind:item.kind,language}] as const)
+    )).values()];
+  }
+  async languageQuery(kind:"hover"|"completion",lineNumber:number,column:number):
+    Promise<{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>}>{
+    const current=this.activeEditorSession,modules=this.modules,rpc=this.rpc;
+    if(!current||!modules||!rpc||this.disposed||!this.started||
+      !Number.isSafeInteger(lineNumber)||!Number.isSafeInteger(column)||
+      lineNumber<1||column<1||lineNumber>100000||column>100000)
+      throw Error("Mcode 当前编辑器无法执行扩展语言查询");
+    const requested=current.input.languageId;
+    const eligible=[...this.languageProviders.entries()].filter(([,provider])=>
+      provider.kind===kind&&provider.languages.some(language=>language==="*"||language===requested)).slice(0,6);
+    const ext=rpc.getProxy<Record<string,(...args:unknown[])=>Promise<unknown>>>(modules.MAIN_RPC_CONTEXT.LANGUAGES_EXT);
+    const token={isCancellationRequested:false,onCancellationRequested:()=>({dispose:()=>{}})};
+    const position={lineNumber,column};
+    const results:{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>}=
+      {contents:[],suggestions:[]};
+    for(const [handle] of eligible){
+      const operation=kind==="hover"
+        ?ext.$provideHover(handle,current.uri,position,undefined,token)
+        :ext.$provideCompletionItems(handle,current.uri,position,{triggerKind:0},token);
+      let timer:NodeJS.Timeout|undefined;
+      try{
+        const output=await Promise.race([
+          operation,
+          new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error("扩展语言查询超时")),1800);timer.unref?.();}),
+        ]) as {contents?:Array<string|{value?:string}>;completions?:Array<{
+          label:string|{label:string};insertText?:string;kind?:number;detail?:string
+        }>};
+        if(kind==="hover"){
+          for(const content of output?.contents??[]){
+            const raw=typeof content==="string"?content:content?.value;
+            if(typeof raw==="string"&&results.contents.length<12)results.contents.push(raw.slice(0,4000));
+          }
+        }else{
+          for(const item of output?.completions??[]){
+            const label=typeof item?.label==="string"?item.label:item?.label?.label;
+            if(typeof label!=="string"||!label||results.suggestions.length>=100)continue;
+            results.suggestions.push({label:label.slice(0,180),
+              insertText:typeof item.insertText==="string"?item.insertText.slice(0,4000):label.slice(0,180),
+              kind:Number.isInteger(item.kind)?item.kind!:18,
+              ...(typeof item.detail==="string"?{detail:item.detail.slice(0,320)}:{})});
+          }
+        }
+      }catch(error){
+        this.log({level:"warn",source:"theia-language",message:String(error)});
+      }finally{if(timer)clearTimeout(timer);}
+    }
+    return results;
+  }
   private workspaceWatcher:McodeWorkspaceWatcher|undefined;
   private readonly quickPicks=new Map<number,{resolve:(selected:number|number[]|undefined)=>void;
     opts:{title?:string;placeHolder?:string;canPickMany?:boolean}}>();
@@ -735,6 +815,9 @@ export class TheiaHost {
     this.disposed = true;
     this.activeEditorSession = null;
     this.workspaceWatcher?.dispose();this.workspaceWatcher=undefined;
+    for(const handle of this.webviewHandles)this.options.onWebview?.({handle,action:"dispose"});
+    this.webviewHandles.clear();
+    await this.options.terminalDriver?.disposeAll();
     const child = this.child;
     this.child = undefined;
     this.started = false;
@@ -915,6 +998,62 @@ export class TheiaHost {
         });
       },
     } as never);
+    // Sandboxed Mcode Webview drawer: never mount extension HTML in the parent
+    // React DOM or give it Node/Electron access. Full vscode-resource schemes
+    // are intentionally NOT emulated until a secure resolver exists.
+    setProxyHandler(P.WEBVIEWS_MAIN, {
+      $createWebviewPanel:(handle:string,_viewType:string,title:string)=>{
+        if(!this.options.onWebview)throw Error("此扩展会话未接入 Mcode 原生 Webview");
+        if(typeof handle!=="string"||handle.length>256||this.webviewHandles.size>=4)
+          throw Error("扩展 Webview 数量/标识不合法");
+        if(this.webviewHandles.has(handle))throw Error("扩展 Webview 重复创建");
+        this.webviewHandles.add(handle);
+        this.options.onWebview?.({handle,action:"create",title:String(title).slice(0,180)});
+      },
+      $setHtml:(handle:string,html:string)=>{
+        if(!this.webviewHandles.has(handle))throw Error("扩展 Webview 已失效");
+        if(typeof html!=="string"||html.length>256_000)throw Error("扩展 Webview 内容超出限额");
+        this.options.onWebview?.({handle,action:"html",html});
+      },
+      $setTitle:(handle:string,title:string)=>{
+        if(this.webviewHandles.has(handle))this.options.onWebview?.({
+          handle,action:"title",title:String(title).slice(0,180),
+        });
+      },
+      $postMessage:async(handle:string,payload:unknown)=>{
+        if(!this.webviewHandles.has(handle))return false;
+        const text=JSON.stringify(payload);
+        if(text===undefined||text.length>64_000)return false;
+        this.options.onWebview?.({handle,action:"message",payload});
+        return true;
+      },
+      $disposeWebview:(handle:string)=>this.disposeWebview(handle),
+      $reveal:async()=>undefined,
+      $setOptions:async()=>undefined,
+      $setIconPath:async()=>undefined,
+    } as never);
+    setProxyHandler(P.TERMINAL_MAIN, {
+      $createTerminal:(id:string,opts:{name?:string;cwd?:string;shellPath?:string;shellArgs?:unknown},_parent?:string,isPseudo=false)=>{
+        if(!this.options.terminalDriver)throw Error("当前运行环境没有可用的 Mcode 原生终端");
+        return this.options.terminalDriver.create(id,{...opts,isPseudo}).then(async created=>{
+          const extension=rpc.getProxy<{$terminalCreated(id:string,name:string):Promise<void>|void}>(
+            modules.MAIN_RPC_CONTEXT.TERMINAL_EXT);
+          await extension.$terminalCreated(created,opts?.name??"Mcode 扩展终端");
+          const pid=this.options.terminalDriver?.getProcessId?.(created);
+          if(pid!==undefined&&Number.isSafeInteger(pid)&&pid>0){
+            const opened=rpc.getProxy<{$terminalOpened(id:string,pid:number,terminalId:number,cols:number,rows:number):Promise<void>|void}>(
+              modules.MAIN_RPC_CONTEXT.TERMINAL_EXT);
+            await opened.$terminalOpened(created,pid,0,80,24);
+          }
+          return created;
+        });
+      },
+      $sendText:(id:string,text:string,shouldExecute?:boolean)=>this.options.terminalDriver?.sendText(id,text,shouldExecute),
+      $dispose:(id:string)=>this.options.terminalDriver?.dispose(id),
+      $show:async()=>undefined,
+      $hide:async()=>undefined,
+      $setName:async()=>undefined,
+    } as never);
     setProxyHandler(P.QUICK_OPEN_MAIN, {
       $show:(instance:number,opts:{title?:string;placeHolder?:string;canPickMany?:boolean})=>{
         if(!this.options.onQuickInput)return Promise.resolve(undefined);
@@ -947,6 +1086,17 @@ export class TheiaHost {
       },
     } as never);
     setProxyHandler(P.LANGUAGES_MAIN, {
+      $registerHoverProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"hover",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerCompletionSupport:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"completion",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $unregister:(handle:number)=>{this.languageProviders.delete(handle);},
       $getLanguages:async()=>["plaintext","javascript","typescript","python","json","markdown","html","css","xml","yaml"],
       $changeDiagnostics:(collectionId:string,delta:Array<[string,Array<{
         severity:number;message:string;source?:string;code?:string;

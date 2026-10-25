@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { TheiaEditorApplyBroker } from "@main/modules/theiaHost/editorApplyBroker.js";
 import { TheiaRuntimeMessageBroker } from "@main/modules/theiaHost/runtimeMessageBroker.js";
 import { TheiaQuickInputBroker } from "@main/modules/theiaHost/quickInputBroker.js";
+import { McodeTheiaTerminalDriver } from "@main/modules/theiaHost/mcodeTerminalDriver.js";
+import { currentTheiaNativePtyOps } from "@main/modules/theiaHost/nativePtyBinding.js";
 import { resolve, join } from "node:path";
 import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
@@ -74,6 +76,13 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
             channel:"modules:theiaDiagnostics",sessionId,collectionId,resource,markers,
             ...(removed?{removed:true}:{}),
           });
+        },
+        (sessionId,root)=>new McodeTheiaTerminalDriver(sessionId,root,currentTheiaNativePtyOps()),
+        (sessionId,extensionId,event)=>{
+          if(sender.isDestroyed?.()||destroyed.has(senderId))return;
+          sender.send(IPC.MODULE_THEIA_WEBVIEW,{
+            channel:"modules:theiaWebview",sessionId,extensionId,...event,
+          });
         }
         );
         sender.send(IPC.MODULE_THEIA_CONTRIBUTION_CHANGED,{
@@ -81,6 +90,9 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
         });
         return started;
       }
+      case "webviewMessage":return manager.webviewMessage(senderId,input.sessionId,input.handle,input.payload);
+      case "webviewDispose":return manager.webviewDispose(senderId,input.sessionId,input.handle);
+      case "languageQuery":return manager.languageQuery(senderId,input.sessionId,input.query,input.lineNumber,input.column);
       case "execute":return manager.execute(senderId,input.sessionId,input.commandId,input.args);
       case "editorSync":return manager.editorSync(senderId,input.sessionId,input.editor,
         transaction=>editorBroker.request(senderId,input.sessionId,transaction,

@@ -34,6 +34,14 @@ function activate(context) {
   status.show();
   context.subscriptions.push(status);
   context.subscriptions.push(
+    vscode.languages.registerHoverProvider({language:"plaintext"},{
+      provideHover:()=>new vscode.Hover("Mcode native hover provider")
+    }),
+    vscode.languages.registerCompletionItemProvider({language:"plaintext"},{
+      provideCompletionItems:()=>[new vscode.CompletionItem("mcodeNativeCompletion",vscode.CompletionItemKind.Text)]
+    }),
+  );
+  context.subscriptions.push(
     vscode.commands.registerCommand("mcodeSmoke.spawnEcho", async () => {
       return {
         // proving the host gives extensions a real Node runtime: `execSync` runs
@@ -62,6 +70,23 @@ function activate(context) {
       await context.workspaceState.update("number",workspaceBefore+1);
       return {globalBefore,workspaceBefore,globalAfter:context.globalState.get("number"),
         workspaceAfter:context.workspaceState.get("number")};
+    }),
+    vscode.commands.registerCommand("mcodeSmoke.webview", async () => {
+      const panel=vscode.window.createWebviewPanel("mcode-smoke.panel","Mcode inline Webview",vscode.ViewColumn.One,{
+        enableScripts:true
+      });
+      panel.webview.html="<h1>Mcode isolated Webview</h1><script>document.body.dataset.loaded='yes'</script>";
+      panel.webview.onDidReceiveMessage(msg=>{context.globalState.update("webviewReply",msg);});
+      const delivered=await panel.webview.postMessage({kind:"from-extension"});
+      return {delivered};
+    }),
+    vscode.commands.registerCommand("mcodeSmoke.webviewReply",async () => context.globalState.get("webviewReply",null)),
+    vscode.commands.registerCommand("mcodeSmoke.nativeTerminal", async () => {
+      const terminal=vscode.window.createTerminal({name:"Mcode native test"});
+      terminal.sendText("echo Mcode terminal",true);
+      const pid=await terminal.processId;
+      terminal.dispose();
+      return {state:"terminal-requested",pid};
     }),
     vscode.commands.registerCommand("mcodeSmoke.stateRead", async () => ({
       global:context.globalState.get("number",0),workspace:context.workspaceState.get("number",0)

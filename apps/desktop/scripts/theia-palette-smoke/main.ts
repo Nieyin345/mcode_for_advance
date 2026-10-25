@@ -156,6 +156,18 @@ const app=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/App.tsx"),"
 check("扩展消息订阅挂在 Mcode 根 UI，而非随设置页卸载",app.includes("<TheiaRuntimeMessageHost />")&&runtimeHost.includes("api.on.theiaRuntimeMessage("));
 check("普通扩展通知走 Mcode 全局 toast store",runtimeHost.includes("useToastStore.getState().push("));
 check("扩展操作按钮由用户点击触发并通过正式 IPC 回执",runtimeHost.includes('op:"messageRespond"')&&runtimeHost.includes("onClick={()=>reply(msg,index)}"));
+const nativeLanguage=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/lib/theiaLanguageProviders.ts"),"utf8");
+const realLanguageEditor=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/ide/FileEditor.tsx"),"utf8");
+check("真实 VS Code Hover/Completion Provider 映射到同一 Mcode Monaco",
+  nativeLanguage.includes("monaco.languages.registerHoverProvider(")&&
+  nativeLanguage.includes("monaco.languages.registerCompletionItemProvider(")&&
+  realLanguageEditor.includes("registerTheiaLanguageProviders(editor_,monaco)"));
+check("语言服务基于 Monaco 当前文本增量失效，不每次悬停都重传整个文档",
+  nativeLanguage.includes("model.getVersionId()")&&nativeLanguage.includes("recent.get(sessionId)===revision")&&
+  nativeLanguage.includes('op:"editorSync"')&&nativeLanguage.includes('op:"languageQuery"'));
+check("语言 Provider 由原生贡献事件注册及释放，没有后台轮询",
+  nativeLanguage.includes("api.on.theiaContributionChanged(")&&!nativeLanguage.includes("setInterval(")&&
+  nativeLanguage.includes("for(const item of registered)item.dispose()"));
 const nativeMenus=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/lib/theiaEditorMenus.ts"),"utf8");
 const realEditor=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/ide/FileEditor.tsx"),"utf8");
 check("VS Code editor/context 菜单实际进入 Monaco 原生菜单而非独立菜单 UI",
@@ -169,5 +181,26 @@ check("Quick Pick 与输入框复用 Mcode 原生焦点管理及同一 IPC 回�
   nativeInput.includes("useFocusTrap(")&&nativeInput.includes('op:"quickRespond"'));
 check("状态栏原生呈现并可执行注册的扩展命令",
   nativeStatus.includes("api.on.theiaStatusEntry(")&&nativeStatus.includes("executeTheiaWithMonaco("));
+const nativeWebview=readFileSync(path.join(codeRoot,
+  "apps/desktop/src/renderer/components/modules/TheiaWebviewHost.tsx"),"utf8");
+const nativeApp=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/App.tsx"),"utf8");
+check("Webview 被挂载在 Mcode 根布局的受限 iframe 而不是注入宿主 DOM",
+  nativeApp.includes("<TheiaWebviewHost />")&&nativeWebview.includes('sandbox="allow-scripts"')&&
+  !nativeWebview.includes('sandbox="allow-scripts allow-same-origin"')&&
+  nativeWebview.includes("srcDoc={documentFor(panel.html)}"));
+check("Webview 限制网络资源，拒绝原生 Electron / Node 权限",
+  nativeWebview.includes("default-src 'none'")&&nativeWebview.includes("connect-src 'none'")&&
+  nativeWebview.includes("frame-src 'none'")&&!nativeWebview.includes("nodeIntegration"));
+check("Webview 消息必须来源于当前拥有的 iframe 并通过受控 IPC 发送",
+  nativeWebview.includes("?.contentWindow===event.source")&&nativeWebview.includes('op:"webviewMessage"'));
+check("Webview 延迟到达消息有挂载后与加载后再次派发的处理路径",
+  nativeWebview.includes("useEffect(()=>{\n    for(const panel of panels)")&&
+  nativeWebview.includes("if(!ready.current.has(key)||!panel.pending.length)continue")&&
+  nativeWebview.includes("setPanels(current=>[...current])"));
+check("同一 Mcode 原生 PTY 通过既有终端服务注册，而非加载并列 node-pty",
+  readFileSync(path.join(codeRoot,"apps/desktop/src/main/ipc/terminal.ts"),"utf8")
+    .includes("registerTheiaNativePtyOps(")&&
+  !readFileSync(path.join(codeRoot,"apps/desktop/src/main/modules/theiaHost/mcodeTerminalDriver.ts"),"utf8")
+    .includes('import("node-pty")'));
 console.log("theia-palette-smoke: "+(count-failed)+"/"+count+" 通过");
 process.exitCode=failed?1:0;

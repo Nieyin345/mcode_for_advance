@@ -10,6 +10,7 @@ import { registerTheiaInstalledHandlers } from "../../src/main/ipc/theiaInstalle
 import { IPC } from "@contracts/ipc";
 import { TheiaInstalledRegistry } from "../../src/main/modules/theiaHost/installedRegistry.js";
 import { McodeExtensionState } from "../../src/main/modules/theiaHost/mcodeExtensionState.js";
+import { McodeTheiaTerminalDriver } from "../../src/main/modules/theiaHost/mcodeTerminalDriver.js";
 import { policyFor } from "../../src/main/appControl/policy.js";
 import { APP_METHOD_PERMISSIONS } from "@contracts/appPermission";
 import { registerTheiaMonacoOwner, subscribeTheiaMonacoEdits, executeTheiaWithMonaco, applyTheiaMonacoEdit } from "../../src/renderer/lib/theiaMonacoOwner.js";
@@ -94,6 +95,25 @@ try{
   check("F026: 扩展不得委托宿主安装其他代码",APP_METHOD_PERMISSIONS["modules.theiaInstalled"]===null);
   manager=new TheiaInstalledRegistry(store,theia);
   check("全新数据根列表为空",manager.list().length===0);
+  const driverRoot=path.join(dir,"terminal-workspace");
+  mkdirSync(driverRoot,{recursive:true});
+  const nativeCalls:string[]=[];
+  const driver=new McodeTheiaTerminalDriver("native-owner-1",driverRoot,{
+    create:async p=>{nativeCalls.push("create:"+p.cwd);return {ok:true,terminalId:"native-"+nativeCalls.length,pid:1042};},
+    write:(id,data)=>{nativeCalls.push("write:"+id+":"+data);return true;},
+    kill:id=>{nativeCalls.push("kill:"+id);return true;},
+  });
+  await rejects("扩展终端不得越出 Mcode 当前项目",()=>driver.create("bad",{cwd:"../outside"}));
+  await rejects("扩展终端不得选择其他 shell 可执行文件",()=>driver.create("override",{shellPath:"C:/other.exe"}));
+  const terminalOne=await driver.create("one",{name:"VS Code"});
+  check("原生扩展终端真正使用 Mcode 注入的 PTY create",terminalOne==="one"&&nativeCalls.some(x=>x.startsWith("create:"))&&driver.getProcessId("one")===1042);
+  await driver.sendText("one","echo native",true);
+  check("扩展终端输入由已有 Mcode PTY 管理器接收且保留回车语义",
+    nativeCalls.some(x=>x.includes("echo native\\r"))||nativeCalls.some(x=>x.includes("echo native\r")));
+  await driver.disposeAll();
+  check("停止扩展 session 只清理本会话创建的原生终端",
+    nativeCalls.some(x=>x.startsWith("kill:native-")));
+  await rejects("扩展停止后无法继续创建终端",()=>driver.create("late",{}));
   const storageTest=await McodeExtensionState.open(path.join(dir,"concurrency-state"),path.join(dir,"concurrency-project"));
   await Promise.all([
     storageTest.set("first.extension",{count:1},true),
@@ -136,9 +156,55 @@ try{
   manager.setEnabled(id,true);
   const workspace=path.join(dir,"mcode-project");
   mkdirSync(workspace,{recursive:true});
-  const run=await manager.start(51,id,undefined,workspace);
+  const webviewEvents:Array<{handle:string;action:string;html?:string;payload?:unknown}>=[];
+  const terminalEvents:string[]=[];
+  const terminalDriver=(sessionId:string,root:string)=>{
+    check("扩展终端和真实 Mcode 工作区与扩展会话绑定",!!sessionId&&root===workspace);
+    return {
+      create:async(terminalId:string,opts:{name?:string})=>{
+        terminalEvents.push("create:"+terminalId+":"+opts.name);return terminalId;
+      },
+      getProcessId:()=>1042,
+      sendText:async(terminalId:string,input:string,execute?:boolean)=>{
+        terminalEvents.push("send:"+terminalId+":"+input+":"+Boolean(execute));
+      },
+      dispose:async(terminalId:string)=>{terminalEvents.push("dispose:"+terminalId);},
+      disposeAll:async()=>{terminalEvents.push("disposeAll");},
+    };
+  };
+  const run=await manager.start(51,id,undefined,workspace,undefined,undefined,undefined,terminalDriver,
+    (_session,_extension,event)=>webviewEvents.push(event));
   if(run.kind!=="started")throw Error("could not start");
   check("手动启动真正 Theia Host 后命令已注册",run.commands.includes("mcodeSmoke.spawnEcho"),run);
+  const terminalResponse=await manager.execute(51,run.sessionId,"mcodeSmoke.nativeTerminal");
+  for(let attempts=0;attempts<30&&!terminalEvents.some(x=>x.startsWith("dispose:"));attempts++)
+    await new Promise(resolve=>setTimeout(resolve,15));
+  check("真实 VS Code 创建/发送/释放终端都经过注入的 Mcode 原生 driver",
+    terminalResponse.kind==="executed"&&terminalResponse.result.includes('"pid":1042')&&
+    terminalEvents.some(x=>x.startsWith("create:"))&&
+    terminalEvents.some(x=>x.includes("echo Mcode terminal"))&&
+    terminalEvents.some(x=>x.startsWith("dispose:")),terminalEvents);
+  const webviewCall=await manager.execute(51,run.sessionId,"mcodeSmoke.webview");
+  const webview=webviewEvents.find(event=>event.action==="create");
+  check("真实 VS Code Webview create/html/postMessage 进入 Mcode 隔离视图通道",
+    webviewCall.kind==="executed"&&webviewCall.result.includes('"delivered":true')&&
+    !!webview&&webviewEvents.some(e=>e.action==="html"&&e.html?.includes("Mcode isolated Webview"))&&
+    webviewEvents.some(e=>e.action==="message"),webviewEvents);
+  if(webview){
+    await rejects("其他窗口不能给本窗口 VS Code Webview 发消息",
+      ()=>manager!.webviewMessage(52,run.sessionId,webview.handle,{stolen:true}));
+    const acknowledged=await manager.webviewMessage(51,run.sessionId,webview.handle,{from:"mcode-ui"});
+    check("Mcode Webview 用户消息经 Theia RPC 进入真实扩展",
+      acknowledged.kind==="webviewAcknowledged");
+    const webReply=await manager.execute(51,run.sessionId,"mcodeSmoke.webviewReply");
+    check("真实 VS Code Webview onDidReceiveMessage 收到本会话消息",
+      webReply.kind==="executed"&&webReply.result.includes("mcode-ui"),webReply);
+    await manager.webviewDispose(51,run.sessionId,webview.handle);
+    check("用户关闭 Mcode Webview 会向真实扩展发送 dispose",
+      webviewEvents.some(e=>e.action==="dispose"&&e.handle===webview.handle));
+    await rejects("关闭的 Webview 标识不能被旧窗口继续发送消息",
+      ()=>manager!.webviewMessage(51,run.sessionId,webview.handle,{stale:true}));
+  }
   const initialState=await manager.execute(51,run.sessionId,"mcodeSmoke.stateWrite");
   check("真实扩展 globalState/workspaceState 第一次写入并可读回",
     initialState.kind==="executed"&&initialState.result.includes('"globalAfter":1')&&
@@ -149,6 +215,18 @@ try{
   const initialConfigured=await manager.execute(51,run.sessionId,"mcodeSmoke.spawnEcho");
   check("重启宿主时从 Mcode 配置存储加载用户设置",
     initialConfigured.kind==="executed"&&initialConfigured.result.includes("from-mcode-ui"));
+  check("真实 VS Code Provider 注册进入 Mcode 宿主能力目录",
+    manager.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>x.kind==="hover"&&x.language==="plaintext")===true&&
+    manager.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>x.kind==="completion"&&x.language==="plaintext")===true);
+  await manager.editorSync(51,run.sessionId,{
+    filePath:path.join(workspace,"f032-roundtrip.txt"),languageId:"plaintext",text:"native-workspace"
+  },async()=>false);
+  const hover=await manager.languageQuery(51,run.sessionId,"hover",1,3);
+  check("真实 Theia vscode.languages Hover Provider 返回 Mcode 编辑器悬停文本",
+    hover.kind==="languageResult"&&hover.contents.some(x=>x.includes("Mcode native hover provider")),hover);
+  const completion=await manager.languageQuery(51,run.sessionId,"completion",1,3);
+  check("真实 Theia vscode.languages Completion Provider 返回原生补全文本",
+    completion.kind==="languageResult"&&completion.suggestions.some(x=>x.label==="mcodeNativeCompletion"),completion);
   const fsReply=await manager.execute(51,run.sessionId,"mcodeSmoke.workspaceFs");
   check("真实 VS Code workspace.fs 读写 Mcode 当前项目",
     fsReply.kind==="executed"&&fsReply.result.includes("native-workspace")&&fsReply.result.includes('"names":true')&&fsReply.result.includes('"search":true'),fsReply);

@@ -21,11 +21,23 @@ import {
 import { isKnownWorkspaceRoot, pathWithin } from "@main/lib/pathGuard.js";
 import { SettingRepo } from "@main/store/repositories.js";
 import { TerminalManager } from "@main/terminal/TerminalManager.js";
+import { registerTheiaNativePtyOps } from "@main/modules/theiaHost/nativePtyBinding.js";
 import { log } from "@main/lib/logger.js";
 import { z } from "zod";
 import { errText, describeInputError } from "@main/lib/ipcError.js";
 
 export function registerTerminalHandlers(ipcMain: IpcMain): void {
+  // One real Mcode PTY service for desktop UI and installed VS Code extensions.
+  // This binding is lazy: merely opening the extension panel never loads node-pty.
+  registerTheiaNativePtyOps({
+    create:async request=>{
+      if(!isKnownWorkspaceRoot(request.projectPath))
+        return {ok:false,error:"未注册的 Mcode 项目禁止创建扩展终端"};
+      return TerminalManager.create(request);
+    },
+    write:(id,data)=>TerminalManager.write(id,data),
+    kill:id=>TerminalManager.kill(id),
+  });
   ipcMain.handle(IPC.TERMINAL_CREATE, async (_evt, raw) => {
     try {
       const input = TerminalCreateSchema.parse(raw);

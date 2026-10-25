@@ -146,6 +146,15 @@ export interface TheiaRuntimeMessage {
   kind:"info"|"warning"|"error";message:string;detail?:string;
   modal:boolean;actions:string[];
 }
+/** F034: sandboxed inline Webview event flow.
+ * No local file loading, Node integration, external scripts or untrusted
+ * scheme conversion; advanced VS Code Webview resources remain unsupported.
+ */
+export interface TheiaWebviewEvent {
+  channel:"modules:theiaWebview";sessionId:string;extensionId:string;
+  handle:string;action:"create"|"html"|"message"|"dispose"|"title";
+  title?:string;html?:string;payload?:unknown;
+}
 /** F033: native VS Code diagnostics owned by the active Theia session. */
 export interface TheiaExtensionDiagnostic {
   startLineNumber:number;startColumn:number;endLineNumber:number;endColumn:number;
@@ -187,6 +196,13 @@ export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
       end:z.object({line:z.number().int().min(0),character:z.number().int().min(0)}).strict()}).strict().optional(),
   }).strict().nullable()}).strict(),
   z.object({op:z.literal("editorApplied"),sessionId:z.string().uuid(),requestId:z.string().uuid(),accepted:z.boolean()}).strict(),
+  z.object({op:z.literal("webviewMessage"),sessionId:z.string().uuid(),
+    handle:z.string().min(1).max(256),payload:z.unknown()}).strict(),
+  z.object({op:z.literal("webviewDispose"),sessionId:z.string().uuid(),
+    handle:z.string().min(1).max(256)}).strict(),
+  z.object({op:z.literal("languageQuery"),sessionId:z.string().uuid(),
+    query:z.enum(["hover","completion"]),
+    lineNumber:z.number().int().min(1).max(100000),column:z.number().int().min(1).max(100000)}).strict(),
   z.object({op:z.literal("messageRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),choice:z.number().int().min(0).max(7).nullable()}).strict(),
   z.object({op:z.literal("quickRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),
     choice:z.union([z.string().max(4096),z.array(z.number().int().min(0).max(199)).max(50),z.null()])}).strict(),
@@ -204,7 +220,8 @@ export interface TheiaInstalledEntry {
   /** Metadata-only catalogue is not a security check. Full payload verification occurs before launch. */
   integrity:"not-checked"|"corrupt";
   /** F028: only the desktop sender that owns a live Theia session receives command metadata. Never persisted. */
-  activeSession?: {sessionId:string;commands:string[];editorMenus?:TheiaEditorMenu[]};
+  activeSession?: {sessionId:string;commands:string[];editorMenus?:TheiaEditorMenu[];
+    languageProviders?:Array<{kind:"hover"|"completion";language:string}>};
 }
 export interface TheiaNativeConfigSetting {
   key:string;type:"string"|"number"|"boolean";description?:string;
@@ -217,6 +234,9 @@ export type TheiaInstalledResult =
   | {kind:"started";id:string;sessionId:string;commands:string[];activationErrors:string[]}
   | {kind:"executed";result:string}
   | {kind:"editorSynced";active:boolean}
+  | {kind:"webviewAcknowledged"}
+  | {kind:"languageResult";contents:string[];
+    suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>}
   | {kind:"editorAcknowledged"}
   | {kind:"messageAcknowledged"}
   | {kind:"quickAcknowledged"}

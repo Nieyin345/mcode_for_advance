@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { buildExtensionPermissionReport } from "../theiaPermissionReport.js";
 import { buildInstallConsentPrompt } from "./installConsent.js";
 import { parseTheiaVsix } from "./theiaVsixPreview.js";
-import { TheiaHost, type TheiaExtensionHandle } from "./host.js";
+import { TheiaHost, type TheiaExtensionHandle, type TheiaNativeTerminalDriver } from "./host.js";
 import { McodeWorkspaceFs } from "./mcodeWorkspaceFs.js";
 import { McodeExtensionPreferences } from "./mcodeExtensionPreferences.js";
 import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaMonacoEditorSnapshot, TheiaEditorMenu, TheiaNativeConfigSetting, TheiaExtensionDiagnostic } from "@contracts/ipc/modules.js";
@@ -26,6 +26,7 @@ interface Saved {
 interface Pending { ticket: string; senderId: number; createdAt: number; root: string; record: Saved; upgradeOf?:string; oldVersion?:string; previousArchiveHash?:string }
 interface Running { id: string; senderId: number; sessionId: string; host: TheiaHost;
   handle: TheiaExtensionHandle; commands: Set<string>; editorMenus:TheiaEditorMenu[];
+  languageProviders:Array<{kind:"hover"|"completion";language:string}>;
   editorBridge?: ReturnType<TheiaHost["editors"]>; syncing?: boolean; executing?: boolean;
 }
 
@@ -150,7 +151,7 @@ export class TheiaInstalledRegistry {
     const owned=current!==undefined && senderId!==undefined && current.senderId===senderId && !this.closed.has(senderId);
     return {id:rec.id,extensionId:rec.extensionId,version:rec.version,enabled:rec.enabled,
       installedAt:rec.installedAt,running:current!==undefined,integrity:"not-checked",
-      ...(owned ? {activeSession:{sessionId:current.sessionId,commands:[...current.commands].sort(),editorMenus:current.editorMenus}} : {})};
+      ...(owned ? {activeSession:{sessionId:current.sessionId,commands:[...current.commands].sort(),editorMenus:current.editorMenus,languageProviders:current.languageProviders}} : {})};
   }
   /** Metadata-only list: never read/hash extension payloads when opening the Mcode panel. */
   list(senderId?:number):TheiaInstalledEntry[] {
@@ -352,7 +353,11 @@ export class TheiaInstalledRegistry {
   )=>void,onDiagnostics?:(
     sessionId:string,collectionId:string,resource:string,
     markers:TheiaExtensionDiagnostic[],removed?:boolean
-  )=>void):Promise<TheiaInstalledResult>{
+  )=>void,makeTerminalDriver?:(sessionId:string,root:string)=>TheiaNativeTerminalDriver,
+    onWebview?:(sessionId:string,extensionId:string,event:{
+      handle:string;action:"create"|"html"|"message"|"dispose"|"title";
+      title?:string;html?:string;payload?:unknown
+    })=>void):Promise<TheiaInstalledResult>{
     if(this.closed.has(senderId)||this.starting||this.running.has(id)) deny("该扩展已启动或正在启动");
     if(this.running.size>=this.maxActive) deny("同时运行的扩展已达资源上限");
     const rec=this.read(id);
@@ -367,11 +372,13 @@ export class TheiaInstalledRegistry {
     const workspaceFs=workspacePath?await McodeWorkspaceFs.open(workspacePath):undefined;
     host=new TheiaHost({theiaRoot:this.theiaRoot,extensionDir:path.join(this.dir(id),"extension"),
       workspaceRoot:workspaceFs?.root,workspaceFs,
+      ...(workspaceFs&&makeTerminalDriver?{terminalDriver:makeTerminalDriver(sessionId,workspaceFs.root)}:{}),
       storageRoot:path.join(this.dir(id),"storage"),
       onMessage: onMessage?(input)=>onMessage(sessionId,rec.extensionId,input):undefined,
       onQuickInput: onQuickInput?(input)=>onQuickInput(sessionId,rec.extensionId,input):undefined,
       onStatus: onStatus?(item)=>onStatus(sessionId,rec.extensionId,item):undefined,
-      onDiagnostics:onDiagnostics?(collectionId,resource,markers,removed)=>onDiagnostics(sessionId,collectionId,resource,markers,removed):undefined});
+      onDiagnostics:onDiagnostics?(collectionId,resource,markers,removed)=>onDiagnostics(sessionId,collectionId,resource,markers,removed):undefined,
+      onWebview:onWebview?(event)=>onWebview(sessionId,rec.extensionId,event):undefined});
       await this.verify(id,rec); // fail closed before any untrusted extension code is spawned
       await host.start();const handle=await host.activate(),commands=await handle.commands();
       if(this.closed.has(senderId)) deny("启动期间窗口已关闭");
@@ -390,7 +397,7 @@ export class TheiaInstalledRegistry {
           commandId:menu.command!,label:titles.get(menu.command!)??menu.command!,
           ...(typeof menu.group==="string"?{group:menu.group.slice(0,100)}:{}),
         }));
-      this.running.set(id,{id,senderId,sessionId,host,handle,commands:new Set(commands),editorMenus});
+      this.running.set(id,{id,senderId,sessionId,host,handle,commands:new Set(commands),editorMenus,languageProviders:host.getLanguageDescriptors()});
       return {kind:"started",id,sessionId,commands,activationErrors:handle.activationErrors.map(e=>e.message).slice(0,8)};
     }catch(error){await host?.dispose();throw error;}
     finally{this.starting=false;this.startingSender=null;this.startingId=null;}
@@ -411,6 +418,29 @@ export class TheiaInstalledRegistry {
       if(this.running.get(current.id)!==current||this.closed.has(senderId)) deny("同步期间会话已失效");
       return {kind:"editorSynced",active:input!==null};
     }finally{current.syncing=false;}
+  }
+  async webviewMessage(senderId:number,sessionId:string,handle:string,payload:unknown):Promise<TheiaInstalledResult>{
+    const current=this.findSession(sessionId);
+    if(!current||current.senderId!==senderId||this.closed.has(senderId))
+      deny("扩展 Webview 已失效或不属于当前窗口");
+    const value=JSON.stringify(payload);
+    if(value===undefined||value.length>64_000)deny("扩展 Webview 消息内容过大");
+    await current.host.sendWebviewMessage(handle,payload);
+    return {kind:"webviewAcknowledged"};
+  }
+  async webviewDispose(senderId:number,sessionId:string,handle:string):Promise<TheiaInstalledResult>{
+    const current=this.findSession(sessionId);
+    if(!current||current.senderId!==senderId||this.closed.has(senderId))
+      deny("扩展 Webview 已失效或不属于当前窗口");
+    await current.host.disposeWebview(handle);
+    return {kind:"webviewAcknowledged"};
+  }
+  async languageQuery(senderId:number,sessionId:string,kind:"hover"|"completion",
+    lineNumber:number,column:number):Promise<TheiaInstalledResult>{
+    const active=this.findSession(sessionId);
+    if(!active||active.senderId!==senderId||this.closed.has(senderId)||active.syncing||
+      active.executing)deny("非法或忙碌的扩展语言会话");
+    return {kind:"languageResult",...await active.host.languageQuery(kind,lineNumber,column)};
   }
   async execute(senderId:number,sessionId:string,commandId:string,args:readonly string[]=[]):Promise<TheiaInstalledResult>{
     const current=this.findSession(sessionId);
