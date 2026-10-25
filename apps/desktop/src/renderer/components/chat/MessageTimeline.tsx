@@ -33,15 +33,12 @@
 import { useState, useMemo, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@renderer/lib/cn.js";
-import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
 import { IconBookmark } from "@renderer/lib/icons.js";
 import { timelinePreviewPosition } from "./timelinePreviewGeometry.js";
 import { ClickableRow } from "@renderer/components/ui/clickable-row.js";
-import type { Block, ChatMessage } from "@renderer/stores/sessionStore.js";
-
-/** Translator signature matching the `t` returned by {@link useI18n}, so
- *  module-level helpers can localize without hook access. */
-type Translate = (key: MessageId, params?: Record<string, string | number>) => string;
+import type { ChatMessage } from "@renderer/stores/sessionStore.js";
+import { timelineBlocksPreview, truncateTimelineExcerpt } from "./timelineTextPreview.js";
 
 /** Map of messageId → render-item index (from the virtual list's data array). */
 export type UserItemIndexMap = Map<string, number>;
@@ -67,23 +64,8 @@ function fmtClock(ms: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-/** Flatten a message's blocks into plain text for the tooltip body. Takes the
- *  locale-bound translator so the attachment line localizes. */
-function blocksToText(blocks: Block[], t: Translate): string {
-  const out: string[] = [];
-  for (const b of blocks) {
-    if (b.kind === "text") {
-      out.push(b.text);
-    } else if (b.kind === "thinking") {
-      const thinking = b.text.trim();
-      if (thinking) out.push(`> ${thinking.replace(/\n/g, "\n> ")}`);
-    } else if (b.kind === "attachment") {
-      out.push(t("chatStream.timeline.attachmentLine", { text: b.preview }));
-    }
-  }
-  return out.join("\n\n").trim();
-}
-
+/** Hover body comes from a bounded, memoized preview formatter; the raw
+ * message and stored bookmark excerpts remain untouched. */
 interface MessageTimelineProps {
   messages: ChatMessage[];
   /** The user message currently at/above the viewport top (computed by the
@@ -229,7 +211,9 @@ function TimelineDash({
   const previewRef = useRef<HTMLDivElement | null>(null);
   const [previewPos, setPreviewPos] = useState({ left: 8, top: 8 });
   const { t } = useI18n();
-  const text = excerpt ?? blocksToText(message.blocks, t);
+  const text = useMemo(() => excerpt
+    ? truncateTimelineExcerpt(excerpt)
+    : timelineBlocksPreview(message.blocks, t), [excerpt, message.blocks, t]);
   // A long conversation needs its timeline to scroll. The hover preview must
   // therefore live outside that scroll viewport or it gets clipped. Measure
   // both the dash and portal card, and keep it within the active window.

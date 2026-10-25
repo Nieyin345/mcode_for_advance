@@ -89,14 +89,31 @@ export function TurnStatRow({
    *  or between commands). */
   op?: ToolUseBlock | null;
 }) {
-  const { t } = useI18n();
-  // Only subscribe to the global ticker while the turn is still running -
-  // frozen turns compute a static duration and pay nothing.
-  const now = useNow();
-  const end = meta.endedAt ?? now;
-  const duration = Math.max(0, end - meta.startedAt);
-  const live = meta.endedAt === undefined;
+  // A finished turn has a final duration. Mounting the useNow subscription
+  // for *every* historic turn causes the whole message history to receive a
+  // global 1-second notification even though nothing in those rows changes.
+  // Split into separate components so only the active row owns the clock.
+  if (meta.endedAt !== undefined) {
+    return <TurnStatContent meta={meta} end={meta.endedAt} live={false} />;
+  }
+  return <LiveTurnStatRow meta={meta} op={op} />;
+}
 
+function LiveTurnStatRow({ meta, op }: { meta: TurnMeta; op?: ToolUseBlock | null }) {
+  const now = useNow();
+  return <TurnStatContent meta={meta} end={now} live op={op} />;
+}
+
+function TurnStatContent({
+  meta, end, live, op,
+}: {
+  meta: TurnMeta;
+  end: number;
+  live: boolean;
+  op?: ToolUseBlock | null;
+}) {
+  const { t } = useI18n();
+  const duration = Math.max(0, end - meta.startedAt);
   return (
     <div className="-ml-[7px] flex min-w-0 items-center gap-1.5 rounded-lg px-[7px] py-1 text-content-subtle text-footnote">
       {/* 【T139】模型徽标**不在这里** —— 它归身份头（`MessageRow` 里那行
@@ -292,7 +309,7 @@ export const MessageRow = memo(function MessageRow({
   if (isUser && isEditing) {
     return (
       <div className="mt-5 mb-4 flex justify-end">
-        <div className="min-w-0 w-full max-w-[min(85%,48rem)]">
+        <div className="min-w-0 w-full max-w-[min(92%,48rem)] sm:max-w-[min(85%,48rem)]">
           <UserMessageEditor
             msg={msg}
             onSubmit={(newText, images) => onSubmitEdit?.(msg, newText, images)}
@@ -339,7 +356,7 @@ export const MessageRow = memo(function MessageRow({
             : "mt-[var(--chat-row-gap-assistant)]",
       )}
     >
-      <div className={isUser ? "max-w-[min(85%,48rem)] min-w-0" : "w-full min-w-0"}>
+      <div className={isUser ? "max-w-[min(92%,48rem)] sm:max-w-[min(85%,48rem)] min-w-0" : "w-full min-w-0"}>
         {/* 【T139】助手身份头 —— 对齐上游 `ChatMessageBubbles.tsx` 的头部。
          *
          * 上游每条助手消息顶部都有「✦ + 名字 + 模型角标 + • + 时间」。
@@ -432,7 +449,7 @@ export const MessageRow = memo(function MessageRow({
         {(showCopy || showEdit) && (
           <div
             className={cn(
-              "message-actions mt-1 flex min-h-7 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
+              "message-actions mt-1 flex min-h-7 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100",
               isUser ? "justify-end" : "justify-start",
             )}
           >

@@ -461,9 +461,10 @@ function SideChatRow({
         title={running ? undefined : t("sideChat.deleteChat")}
         aria-label={t("sideChat.deleteChat")}
         className={cn(
-          "cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-colors",
-          "opacity-60 hover:text-danger hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-          running && "pointer-events-none opacity-0",
+          "cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle transition-[opacity,color,background-color] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+          running
+            ? "pointer-events-none opacity-0"
+            : "opacity-0 hover:text-danger hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100",
         )}
       >
         <IconTrash size={13} />
