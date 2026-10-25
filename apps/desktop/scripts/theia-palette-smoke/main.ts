@@ -6,6 +6,7 @@ import { TheiaEditorApplyBroker } from "../../src/main/modules/theiaHost/editorA
 import { TheiaRuntimeMessageBroker } from "../../src/main/modules/theiaHost/runtimeMessageBroker.js";
 import { TheiaQuickInputBroker } from "../../src/main/modules/theiaHost/quickInputBroker.js";
 import {formattingEdits,documentSymbols,signatureHelp} from "../../src/main/modules/theiaHost/languageResults.js";
+import {TheiaInstalledInputSchema} from "@contracts/ipc/modules.js";
 import type { TheiaInstalledEntry, TheiaInstalledInput, TheiaInstalledResult } from "@contracts/ipc/modules.js";
 
 let count=0,failed=0;
@@ -215,6 +216,31 @@ check("三类新增语言能力使用 Mcode 原生 Monaco 符号/格式化/签�
   nativeLanguage.includes("registerDocumentSymbolProvider(")&&
   nativeLanguage.includes("registerDocumentFormattingEditProvider(")&&
   nativeLanguage.includes("registerSignatureHelpProvider("));
+check("选区和输入时格式化共用 Mcode Monaco，不打开 Theia 编辑器",
+  nativeLanguage.includes("registerDocumentRangeFormattingEditProvider(")&&
+  nativeLanguage.includes("registerOnTypeFormattingEditProvider(")&&
+  nativeLanguage.includes('"rangeFormatting",model,token')&&
+  nativeLanguage.includes('"onTypeFormatting",model,token')&&
+  languageHost.includes("$registerRangeFormattingSupport:")&&
+  languageHost.includes("$registerOnTypeFormattingProvider:")&&
+  languageHost.includes("ext.$provideDocumentRangeFormattingEdits(")&&
+  languageHost.includes("ext.$provideOnTypeFormattingEdits("));
+const baseLanguageQuery={op:"languageQuery",sessionId:base.activeSession!.sessionId,
+  query:"rangeFormatting",lineNumber:1,column:1};
+check("选区格式化 IPC 接受有界的 VS Code 0-based 范围",
+  TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,formatContext:{
+    range:{start:{line:0,character:2},end:{line:0,character:6}}
+  }}).success);
+check("语言 IPC 拒绝超大范围和额外未授权字段",
+  !TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,formatContext:{
+    range:{start:{line:100001,character:0},end:{line:100001,character:1}}
+  }}).success&&
+  !TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,formatContext:{extra:true}}).success);
+check("输入时格式化 IPC 限制触发字符长度",
+  TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,query:"onTypeFormatting",
+    formatContext:{triggerCharacter:";"}}).success&&
+  !TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,query:"onTypeFormatting",
+    formatContext:{triggerCharacter:"veryLongTrigger"}}).success);
 check("格式化只返回 Monaco Edits 并保留模型版本拒绝迟到结果",
   nativeLanguage.includes('"formatting",model,token')&&
   nativeLanguage.includes("model.getVersionId()!==version"));

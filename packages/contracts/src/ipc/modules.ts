@@ -185,7 +185,7 @@ export interface TheiaQuickInputRequest {
 /** VS Code language-provider contributions supported by Mcode's native Monaco. */
 export type TheiaLanguageProviderKind =
   | "hover" | "completion" | "definition" | "references" | "implementation" | "typeDefinition"
-  | "documentSymbols" | "formatting" | "signatureHelp";
+  | "documentSymbols" | "formatting" | "rangeFormatting" | "onTypeFormatting" | "signatureHelp";
 /** File location returned by an installed extension. Coordinates are zero-based VS Code positions. */
 export interface TheiaLanguageLocation {
   uri:string;
@@ -230,10 +230,14 @@ export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
     handle:z.string().min(1).max(256)}).strict(),
   z.object({op:z.literal("languageQuery"),sessionId:z.string().uuid(),
     query:z.enum(["hover","completion","definition","references","implementation","typeDefinition",
-      "documentSymbols","formatting","signatureHelp"]),
+      "documentSymbols","formatting","rangeFormatting","onTypeFormatting","signatureHelp"]),
     lineNumber:z.number().int().min(1).max(100000),column:z.number().int().min(1).max(100000),
     includeDeclaration:z.boolean().optional(),
     formatOptions:z.object({tabSize:z.number().int().min(1).max(16),insertSpaces:z.boolean()}).strict().optional(),
+    formatContext:z.object({range:z.object({
+      start:z.object({line:z.number().int().min(0).max(100000),character:z.number().int().min(0).max(100000)}).strict(),
+      end:z.object({line:z.number().int().min(0).max(100000),character:z.number().int().min(0).max(100000)}).strict(),
+    }).strict().optional(),triggerCharacter:z.string().min(1).max(2).optional()}).strict().optional(),
     signatureContext:z.object({triggerKind:z.number().int().min(1).max(3),
       isRetrigger:z.boolean(),triggerCharacter:z.string().max(2).optional()}).strict().optional()}).strict(),
   z.object({op:z.literal("messageRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),choice:z.number().int().min(0).max(7).nullable()}).strict(),

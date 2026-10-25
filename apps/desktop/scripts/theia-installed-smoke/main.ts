@@ -216,7 +216,7 @@ try{
   check("重启宿主时从 Mcode 配置存储加载用户设置",
     initialConfigured.kind==="executed"&&initialConfigured.result.includes("from-mcode-ui"));
   check("真实 VS Code Provider 注册进入 Mcode 宿主能力目录",
-    ["hover","completion","definition","references","implementation","typeDefinition","documentSymbols","formatting","signatureHelp"].every(kind=>
+    ["hover","completion","definition","references","implementation","typeDefinition","documentSymbols","formatting","rangeFormatting","onTypeFormatting","signatureHelp"].every(kind=>
       manager!.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>
         x.kind===kind&&x.language==="plaintext")===true));
   writeFileSync(path.join(workspace,"f035-language-target.txt"),"target-language-symbol");
@@ -255,6 +255,36 @@ try{
   check("真实格式化 Provider 只返回编辑建议，不直接改动 Mcode 当前文档",
     format.kind==="languageResult"&&format.formattingEdits?.some(x=>
       x.text==="spaces-2"&&x.range.start.character===0&&x.range.end.character===6)===true,format);
+  const selectedRange={start:{line:0,character:2},end:{line:0,character:7}};
+  const rangeFormat=await manager.languageQuery(51,run.sessionId,"rangeFormatting",1,1,true,
+    {tabSize:3,insertSpaces:false},undefined,{range:selectedRange});
+  check("真实 VS Code 选区格式化保留选区起止位置、tabSize，编辑建议不写盘",
+    rangeFormat.kind==="languageResult"&&rangeFormat.formattingEdits?.some(x=>
+      x.text==="selected-2-3"&&x.range.start.character===2&&x.range.end.character===7)===true,
+    rangeFormat);
+  const onType=await manager.languageQuery(51,run.sessionId,"onTypeFormatting",1,4,true,
+    {tabSize:2,insertSpaces:true},undefined,{triggerCharacter:";"});
+  check("真实 VS Code 输入时格式化保留光标、触发字符与空格选项",
+    onType.kind==="languageResult"&&onType.formattingEdits?.some(x=>
+      x.text==="typed-;-true"&&x.range.start.character===3&&x.range.end.character===3)===true,onType);
+  const secondOnType=await manager.languageQuery(51,run.sessionId,"onTypeFormatting",1,4,true,
+    {tabSize:4,insertSpaces:false},undefined,{triggerCharacter:"}"});
+  check("同一语言多个真实 VS Code 输入格式化 Provider 的触发字符均进入 Mcode",
+    secondOnType.kind==="languageResult"&&secondOnType.formattingEdits?.some(x=>
+      x.text==="typed-second-provider")===true&&
+    manager.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>
+      x.kind==="onTypeFormatting"&&x.triggerCharacters?.includes(";")&&
+      x.triggerCharacters?.includes("}"))===true,secondOnType);
+  const wrongTrigger=await manager.languageQuery(51,run.sessionId,"onTypeFormatting",1,4,true,
+    undefined,undefined,{triggerCharacter:"."});
+  check("只有扩展明确注册的触发字符才可调用输入格式化",
+    wrongTrigger.kind==="languageResult"&&wrongTrigger.formattingEdits?.length===0);
+  await rejects("无效选区不得调用 VS Code 扩展格式化",()=>manager!.languageQuery(51,run.sessionId,
+    "rangeFormatting",1,1,true,undefined,undefined,{
+      range:{start:{line:1,character:5},end:{line:0,character:0}}
+    }));
+  await rejects("空输入触发字符不得调用扩展",()=>manager!.languageQuery(51,run.sessionId,
+    "onTypeFormatting",1,4,true,undefined,undefined,{triggerCharacter:""}));
   const signature=await manager.languageQuery(51,run.sessionId,"signatureHelp",1,3,true,undefined,
     {triggerKind:2,isRetrigger:false,triggerCharacter:"("});
   check("真实 VS Code SignatureHelp Provider 返回 Mcode 函数签名与参数",

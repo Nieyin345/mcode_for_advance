@@ -46,7 +46,7 @@ import { McodeExtensionState } from "./mcodeExtensionState.js";
 import { McodeWorkspaceWatcher } from "./mcodeWorkspaceWatcher.js";
 import { prepareTheiaEdits, type EditorEditTransaction, type TheiaTextEdit, type TheiaEditOptions } from "./editorTransactions.js";
 import type { TheiaLanguageLocation, TheiaLanguageProviderKind, TheiaLanguageSymbol, TheiaSignatureHelp } from "@contracts/ipc/modules.js";
-import { formattingEdits, documentSymbols, signatureHelp } from "./languageResults.js";
+import { formattingEdits, documentSymbols, signatureHelp, languageRange } from "./languageResults.js";
 
 /* ───────────────────────── 依赖定位 ───────────────────────── */
 
@@ -420,17 +420,28 @@ export class TheiaHost {
     await ext.$onDidDisposeWebviewPanel(handle);
   }
   getLanguageDescriptors():Array<{kind:TheiaLanguageProviderKind;language:string;triggerCharacters?:string[];retriggerCharacters?:string[]}>{
-    return [...new Map([...this.languageProviders.values()].flatMap(item=>
-      item.languages.map(language=>[item.kind+":"+language,{
-        kind:item.kind,language,
-        ...(item.triggerCharacters?{triggerCharacters:item.triggerCharacters}:{}),
-        ...(item.retriggerCharacters?{retriggerCharacters:item.retriggerCharacters}:{})
-      }] as const)
-    )).values()];
+    type Descriptor={kind:TheiaLanguageProviderKind;language:string;
+      triggerCharacters?:string[];retriggerCharacters?:string[]};
+    const byKey=new Map<string,Descriptor>();
+    for(const item of this.languageProviders.values())for(const language of item.languages){
+      const key=item.kind+":"+language;
+      const existing=byKey.get(key);
+      if(!existing){byKey.set(key,{kind:item.kind,language,
+        ...(item.triggerCharacters?{triggerCharacters:[...item.triggerCharacters]}:{}),
+        ...(item.retriggerCharacters?{retriggerCharacters:[...item.retriggerCharacters]}:{})});
+        continue;
+      }
+      if(item.triggerCharacters)existing.triggerCharacters=[...new Set([
+        ...existing.triggerCharacters??[],...item.triggerCharacters])].slice(0,20);
+      if(item.retriggerCharacters)existing.retriggerCharacters=[...new Set([
+        ...existing.retriggerCharacters??[],...item.retriggerCharacters])].slice(0,20);
+    }
+    return [...byKey.values()];
   }
   async languageQuery(kind:TheiaLanguageProviderKind,lineNumber:number,column:number,includeDeclaration=true,
     formatOptions?:{tabSize:number;insertSpaces:boolean},
-    signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string}):
+    signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string},
+    formatContext?:{range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;triggerCharacter?:string}):
     Promise<{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;
       locations:TheiaLanguageLocation[];formattingEdits:Array<{range:import("@contracts/ipc/modules.js").TheiaLanguageRange;text:string}>;
       documentSymbols:TheiaLanguageSymbol[];signatureHelp?:TheiaSignatureHelp}>{
@@ -440,8 +451,15 @@ export class TheiaHost {
       lineNumber<1||column<1||lineNumber>100000||column>100000)
       throw Error("Mcode 当前编辑器无法执行扩展语言查询");
     const requested=current.input.languageId;
+    // Range and on-type formatting must not invoke an unrelated provider or
+    // accept arbitrary coordinates/characters from an untrusted IPC caller.
+    const requestedRange=kind==="rangeFormatting"?languageRange(formatContext?.range):null;
+    if(kind==="rangeFormatting"&&!requestedRange)throw Error("选区格式化范围无效");
+    const trigger=kind==="onTypeFormatting"?formatContext?.triggerCharacter:undefined;
+    if(kind==="onTypeFormatting"&&(!trigger||trigger.length!==1))throw Error("输入格式化触发字符无效");
     const eligible=[...this.languageProviders.entries()].filter(([,provider])=>
-      provider.kind===kind&&provider.languages.some(language=>language==="*"||language===requested)).slice(0,6);
+      provider.kind===kind&&provider.languages.some(language=>language==="*"||language===requested)&&
+      (kind!=="onTypeFormatting"||provider.triggerCharacters?.includes(trigger!))).slice(0,6);
     const ext=rpc.getProxy<Record<string,(...args:unknown[])=>Promise<unknown>>>(modules.MAIN_RPC_CONTEXT.LANGUAGES_EXT);
     const token={isCancellationRequested:false,onCancellationRequested:()=>({dispose:()=>{}})};
     const position={lineNumber,column};
@@ -460,6 +478,12 @@ export class TheiaHost {
         case "typeDefinition":operation=ext.$provideTypeDefinition(handle,current.uri,position,token);break;
         case "documentSymbols":operation=ext.$provideDocumentSymbols(handle,current.uri,token);break;
         case "formatting":operation=ext.$provideDocumentFormattingEdits(handle,current.uri,
+          {tabSize:formatOptions?.tabSize??4,insertSpaces:formatOptions?.insertSpaces??true},token);break;
+        case "rangeFormatting":operation=ext.$provideDocumentRangeFormattingEdits(handle,current.uri,{
+          startLineNumber:requestedRange!.start.line+1,startColumn:requestedRange!.start.character+1,
+          endLineNumber:requestedRange!.end.line+1,endColumn:requestedRange!.end.character+1,
+        },{tabSize:formatOptions?.tabSize??4,insertSpaces:formatOptions?.insertSpaces??true},token);break;
+        case "onTypeFormatting":operation=ext.$provideOnTypeFormattingEdits(handle,current.uri,position,trigger!,
           {tabSize:formatOptions?.tabSize??4,insertSpaces:formatOptions?.insertSpaces??true},token);break;
         case "signatureHelp":operation=ext.$provideSignatureHelp(handle,current.uri,position,{
           triggerKind:signatureContext?.triggerKind??1,isRetrigger:signatureContext?.isRetrigger??false,
@@ -492,7 +516,7 @@ export class TheiaHost {
           }
         }else if(kind==="documentSymbols"){
           results.documentSymbols.push(...documentSymbols(output));
-        }else if(kind==="formatting"){
+        }else if(kind==="formatting"||kind==="rangeFormatting"||kind==="onTypeFormatting"){
           results.formattingEdits.push(...formattingEdits(output));
         }else if(kind==="signatureHelp"){
           const value=signatureHelp(output);
@@ -515,6 +539,10 @@ export class TheiaHost {
         this.log({level:"warn",source:"theia-language",message:String(error)});
       }finally{if(timer)clearTimeout(timer);}
     }
+    // Multiple registered formatters may each return valid but overlapping edits.
+    // Enforce the same global bounds before exposing one Monaco undo operation.
+    if(kind==="formatting"||kind==="rangeFormatting"||kind==="onTypeFormatting")
+      results.formattingEdits=formattingEdits(results.formattingEdits);
     return results;
   }
   private workspaceWatcher:McodeWorkspaceWatcher|undefined;
@@ -1212,6 +1240,19 @@ export class TheiaHost {
         if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
         this.languageProviders.set(handle,{kind:"formatting",
           languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerRangeFormattingSupport:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"rangeFormatting",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerOnTypeFormattingProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>,
+        characters:string[])=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"onTypeFormatting",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*"),
+          triggerCharacters:(Array.isArray(characters)?characters:[])
+            .filter(c=>typeof c==="string"&&c.length===1).slice(0,10)});
       },
       $registerSignatureHelpProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>,
         metadata?:{triggerCharacters?:string[];retriggerCharacters?:string[]})=>{

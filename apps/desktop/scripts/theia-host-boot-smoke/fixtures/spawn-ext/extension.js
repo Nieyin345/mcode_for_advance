@@ -79,6 +79,21 @@ function activate(context) {
           options.insertSpaces?"spaces-"+options.tabSize:"tabs-"+options.tabSize)
       ]
     }),
+    vscode.languages.registerDocumentRangeFormattingEditProvider({language:"plaintext"},{
+      provideDocumentRangeFormattingEdits:(_doc,range,options)=>[
+        vscode.TextEdit.replace(range,`selected-${range.start.character}-${options.tabSize}`)
+      ]
+    }),
+    vscode.languages.registerOnTypeFormattingEditProvider({language:"plaintext"},{
+      provideOnTypeFormattingEdits:(_doc,position,ch,options)=>[
+        vscode.TextEdit.insert(position,`typed-${ch}-${options.insertSpaces}`)
+      ]
+    },";"),
+    vscode.languages.registerOnTypeFormattingEditProvider({language:"plaintext"},{
+      provideOnTypeFormattingEdits:(_doc,position)=>[
+        vscode.TextEdit.insert(position,"typed-second-provider")
+      ]
+    },"}"),
     vscode.languages.registerSignatureHelpProvider({language:"plaintext"},{
       provideSignatureHelp:()=>{
         const help=new vscode.SignatureHelp();

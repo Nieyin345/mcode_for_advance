@@ -99,15 +99,20 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
     return locations.map(location=>({...location,
       uri:samePath(location.uri.fsPath,snapshot.filePath)?model.uri:location.uri}));
   };
-  const queryDocument=async(sessionId:string,query:"documentSymbols"|"formatting"|"signatureHelp",
+  const queryDocument=async(sessionId:string,query:"documentSymbols"|"formatting"|"rangeFormatting"|"onTypeFormatting"|"signatureHelp",
     model:Monaco.editor.ITextModel,token:Monaco.CancellationToken,
     extra?:{formatOptions?:{tabSize:number;insertSpaces:boolean};
+      formatContext?:{range?:{start:{line:number;character:number};end:{line:number;character:number}};
+        triggerCharacter?:string};position?:{lineNumber:number;column:number};
       signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string}})=>{
     const version=model.getVersionId();
     if(!live||token.isCancellationRequested||!await sync(sessionId,model))return null;
     try{
       const result=await api.modules.theiaInstalled({op:"languageQuery",sessionId,query,
-        lineNumber:1,column:1,...extra});
+        lineNumber:extra?.position?.lineNumber??1,column:extra?.position?.column??1,
+        ...(extra?.formatOptions?{formatOptions:extra.formatOptions}:{}),
+        ...(extra?.formatContext?{formatContext:extra.formatContext}:{}),
+        ...(extra?.signatureContext?{signatureContext:extra.signatureContext}:{})});
       if(result.kind!=="languageResult"||!live||token.isCancellationRequested||
         instance.getModel()!==model||model.getVersionId()!==version)return null;
       return result;
@@ -181,6 +186,27 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
             provideDocumentFormattingEdits:async(model,options,token)=>{
               const result=await queryDocument(active.sessionId,"formatting",model,token,{
                 formatOptions:{tabSize:options.tabSize,insertSpaces:options.insertSpaces}});
+              return (result?.formattingEdits??[]).map(item=>({range:toRange(item.range),text:item.text}));
+            }
+          }));
+          if(kinds.has("rangeFormatting"))registered.push(monaco.languages.registerDocumentRangeFormattingEditProvider(selector,{
+            provideDocumentRangeFormattingEdits:async(model,range,options,token)=>{
+              const result=await queryDocument(active.sessionId,"rangeFormatting",model,token,{
+                formatOptions:{tabSize:options.tabSize,insertSpaces:options.insertSpaces},
+                formatContext:{range:{
+                  start:{line:range.startLineNumber-1,character:range.startColumn-1},
+                  end:{line:range.endLineNumber-1,character:range.endColumn-1}}}});
+              return (result?.formattingEdits??[]).map(item=>({range:toRange(item.range),text:item.text}));
+            }
+          }));
+          if(kinds.has("onTypeFormatting"))registered.push(monaco.languages.registerOnTypeFormattingEditProvider(selector,{
+            autoFormatTriggerCharacters:active.languageProviders?.find(x=>
+              x.kind==="onTypeFormatting"&&x.language===language)?.triggerCharacters??[],
+            provideOnTypeFormattingEdits:async(model,position,ch,options,token)=>{
+              const result=await queryDocument(active.sessionId,"onTypeFormatting",model,token,{
+                position:{lineNumber:position.lineNumber,column:position.column},
+                formatOptions:{tabSize:options.tabSize,insertSpaces:options.insertSpaces},
+                formatContext:{triggerCharacter:ch}});
               return (result?.formattingEdits??[]).map(item=>({range:toRange(item.range),text:item.text}));
             }
           }));

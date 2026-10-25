@@ -92,7 +92,7 @@ export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions)
       }
       case "webviewMessage":return manager.webviewMessage(senderId,input.sessionId,input.handle,input.payload);
       case "webviewDispose":return manager.webviewDispose(senderId,input.sessionId,input.handle);
-      case "languageQuery":return manager.languageQuery(senderId,input.sessionId,input.query,input.lineNumber,input.column,input.includeDeclaration,input.formatOptions,input.signatureContext);
+      case "languageQuery":return manager.languageQuery(senderId,input.sessionId,input.query,input.lineNumber,input.column,input.includeDeclaration,input.formatOptions,input.signatureContext,input.formatContext);
       case "execute":return manager.execute(senderId,input.sessionId,input.commandId,input.args);
       case "editorSync":return manager.editorSync(senderId,input.sessionId,input.editor,
         transaction=>editorBroker.request(senderId,input.sessionId,transaction,

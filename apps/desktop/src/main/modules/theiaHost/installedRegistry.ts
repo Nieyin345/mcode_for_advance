@@ -438,11 +438,15 @@ export class TheiaInstalledRegistry {
   async languageQuery(senderId:number,sessionId:string,kind:TheiaLanguageProviderKind,
     lineNumber:number,column:number,includeDeclaration=true,
     formatOptions?:{tabSize:number;insertSpaces:boolean},
-    signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string}):Promise<TheiaInstalledResult>{
+    signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string},
+    formatContext?:{range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;triggerCharacter?:string}):Promise<TheiaInstalledResult>{
     const active=this.findSession(sessionId);
     if(!active||active.senderId!==senderId||this.closed.has(senderId)||active.syncing||
       active.executing)deny("非法或忙碌的扩展语言会话");
-    return {kind:"languageResult",...await active.host.languageQuery(kind,lineNumber,column,includeDeclaration,formatOptions,signatureContext)};
+    const result=await active.host.languageQuery(kind,lineNumber,column,includeDeclaration,formatOptions,signatureContext,formatContext);
+    if(this.findSession(sessionId)!==active||this.closed.has(senderId))
+      deny("扩展会话已停止，语言结果无效");
+    return {kind:"languageResult",...result};
   }
   async execute(senderId:number,sessionId:string,commandId:string,args:readonly string[]=[]):Promise<TheiaInstalledResult>{
     const current=this.findSession(sessionId);
