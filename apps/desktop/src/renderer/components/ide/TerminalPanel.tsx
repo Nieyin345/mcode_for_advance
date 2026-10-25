@@ -105,6 +105,14 @@ export function TerminalPanel({ active }: { active: boolean }) {
   // invocations across multiple tabs never overwrite each other (matches the
   // per-session bucketing convention documented in AGENTS.md).
   const pendingCommandBySession = useRef<Map<string, string>>(new Map());
+  const tabListRef = useRef<HTMLDivElement>(null);
+  const newTabButtonRef = useRef<HTMLButtonElement>(null);
+  const pendingFocusFrame = useRef<number | null>(null);
+  // Only the terminal panel owns this focus transfer. Never query the entire
+  // workspace for a matching tab (another project/pane may have one).
+  useEffect(() => () => {
+    if (pendingFocusFrame.current !== null) cancelAnimationFrame(pendingFocusFrame.current);
+  }, []);
   const [, forceRender] = useReducer((n: number) => n + 1, 0);
 
   // Create a session in the given project's bucket (creating the bucket if
@@ -224,6 +232,21 @@ export function TerminalPanel({ active }: { active: boolean }) {
     [projectPath, appendSession],
   );
 
+  const closeSessionAndRestoreFocus = useCallback((key: string, closeButton: HTMLButtonElement) => {
+    const wasFocused = document.activeElement === closeButton;
+    closeSession(key);
+    if (!wasFocused || !active) return;
+    if (pendingFocusFrame.current !== null) cancelAnimationFrame(pendingFocusFrame.current);
+    pendingFocusFrame.current = requestAnimationFrame(() => {
+      pendingFocusFrame.current = null;
+      const list = tabListRef.current;
+      if (!list?.isConnected) return;
+      const tab = Array.from(list.querySelectorAll<HTMLButtonElement>("button[data-terminal-tab]"))
+        .find(button => button.getAttribute("aria-selected") === "true");
+      (tab ?? newTabButtonRef.current)?.focus({ preventScroll: true });
+    });
+  }, [closeSession, active]);
+
   const updateStatus = useCallback(
     (key: string, status: TerminalSessionStatus, detail?: string) => {
       const path = keyToPathRef.current.get(key);
@@ -326,7 +349,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
     <div className="flex h-full min-h-0 flex-col">
       {/* Session tab strip + actions */}
       <div className="flex min-h-9 shrink-0 items-center gap-0.5 border-b border-edge px-1">
-        <div role="tablist" aria-label={t("ide.term.tabs")}
+        <div ref={tabListRef} role="tablist" aria-label={t("ide.term.tabs")}
           onKeyDown={(e) => {
             if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
             if (!(e.target instanceof Element)) return;
@@ -398,7 +421,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
                   aria-label={`${t("ide.term.closeTerminal")}: ${sessionTitle}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    closeSession(s.key);
+                    closeSessionAndRestoreFocus(s.key, e.currentTarget);
                   }}
                 >
                   <IconX size={11} />
@@ -412,6 +435,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
         <button
           type="button"
           className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          ref={newTabButtonRef}
           title={t("ide.term.newTerminal")}
           aria-label={t("ide.term.newTerminal")}
           onClick={addSession}

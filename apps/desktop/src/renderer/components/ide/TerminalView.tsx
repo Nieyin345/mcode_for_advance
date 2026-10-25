@@ -8,6 +8,7 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { monoFontStack, useUiPrefsStore } from "@renderer/lib/uiPrefs.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { buildTerminalTheme } from "@renderer/lib/terminalTheme.js";
+import { mayAutoFocusTerminal } from "./terminalFocusPolicy.js";
 import type { ITheme } from "@xterm/xterm";
 
 export type TerminalSessionStatus = "starting" | "running" | "exited" | "error";
@@ -458,7 +459,7 @@ export function TerminalView({
         } catch {
           /* ignore */
         }
-        if (active) term.focus();
+        if (active && mayAutoFocusTerminal(document.activeElement)) term.focus();
       } catch (err) {
         if (cancelled || disposedRef.current) return;
         const msg = err instanceof Error ? err.message : String(err);
@@ -520,7 +521,7 @@ export function TerminalView({
     if (active) {
       raf = requestAnimationFrame(() => {
         doFit();
-        termRef.current?.focus();
+        if (mayAutoFocusTerminal(document.activeElement)) termRef.current?.focus();
       });
     }
 
