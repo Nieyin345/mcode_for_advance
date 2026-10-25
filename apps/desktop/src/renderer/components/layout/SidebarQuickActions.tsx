@@ -67,7 +67,7 @@ export function SidebarQuickActions({
   const canNewSession = newSessionOverride != null || activeProjectId !== null;
 
   return (
-    <div className="mb-2 flex flex-col gap-1" data-sidebar-quick-actions="">
+    <div className="mb-2 flex min-w-0 flex-col gap-1.5" data-sidebar-quick-actions="">
       {/* 新建会话 — 静止态与 hover 都不染品牌色：它只是「能点」，不是
           「正在跑」也不是「被选中」。与下方搜索入口保持同一套中性 hover。 */}
       <button
@@ -87,7 +87,7 @@ export function SidebarQuickActions({
               : t("layout.needProject")
         }
         className={cn(
-          "flex min-h-9 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-1.5 py-1.5 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+          "flex min-h-10 min-w-0 w-full items-center gap-2.5 rounded-[var(--radius-btn-xs)] px-2.5 py-2 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           "[font-size:var(--right-panel-font-size)]",
           canNewSession
             ? "text-content-muted hover:bg-surface-hover hover:text-content"
@@ -99,7 +99,7 @@ export function SidebarQuickActions({
         ) : (
           <IconPlus size={16} className="shrink-0" />
         )}
-        <span className="flex-1 text-left font-medium">{t("layout.newSession")}</span>
+        <span className="min-w-0 flex-1 truncate text-left font-medium">{t("layout.newSession")}</span>
         <ShortcutBadge commandId="session.new" />
       </button>
 
@@ -113,13 +113,13 @@ export function SidebarQuickActions({
           aria-label={t("common.search")}
           title={t("layout.palette.placeholder.all")}
           className={cn(
-            "flex min-h-9 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] px-1.5 py-1.5 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+            "flex min-h-10 min-w-0 w-full items-center gap-2.5 rounded-[var(--radius-btn-xs)] px-2.5 py-2 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             "[font-size:var(--right-panel-font-size)]",
             "cds-hover-ghost text-content-muted hover:text-content",
           )}
         >
           <IconSearch size={16} className="shrink-0" />
-          <span className="flex-1 text-left font-medium">{t("common.search")}</span>
+          <span className="min-w-0 flex-1 truncate text-left font-medium">{t("common.search")}</span>
           <ShortcutBadge commandId="command.palette" />
         </button>
       )}

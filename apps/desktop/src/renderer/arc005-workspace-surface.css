@@ -217,6 +217,81 @@ html:not(.sketch) [data-ui-shell-variant="workspace"]
   }
 }
 
+
+/* Chat main column + both sidebar implementations share a restrained desk UI.
+   These hooks are stable in the existing components, including the files
+   currently owned by parallel agents. No editing the shared component trees. */
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-sidebar-quick-actions] {
+  min-width: 0;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-sidebar-quick-actions] > button {
+  min-width: 0;
+  min-height: 2.5rem;
+  border-radius: var(--radius-btn-xs);
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-sidebar-quick-actions] > button:focus-visible,
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-tree-session-row]:focus-visible,
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-stream-session-row]:focus-visible {
+  outline: var(--workspace-focus-outline);
+  outline-offset: -2px;
+}
+/* A selected session should retain its active identity when the pointer is
+   over another row. Do not alter running/error/progress state accents. */
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-tree-session-row],
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-stream-session-row] {
+  min-width: 0;
+  max-width: 100%;
+  scroll-margin-block: .5rem;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-stream-session-row] {
+  transition-property: background-color, border-color, opacity;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-stream-session-row][aria-current="page"] {
+  box-shadow: inset 2px 0 0 rgb(var(--accent) / .55);
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-stream-session-row]:focus-within {
+  outline: var(--workspace-focus-outline);
+  outline-offset: -2px;
+}
+/* Prevent a long model chip, pasted path or filename from forcing the
+   composer card wider than the available pane. Keep edit and send actions
+   in their original DOM order and preserve explicit disabled semantics. */
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] .composer-action-row,
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] .composer-chips {
+  min-width: 0;
+  max-width: 100%;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] .composer-chips {
+  flex-wrap: wrap;
+  row-gap: .25rem;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] .composer-card:focus-within {
+  outline: 1px solid rgb(var(--accent) / .24);
+  outline-offset: -1px;
+}
+html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] .chat-turn {
+  max-width: min(100%, var(--chat-max-w, 48rem));
+}
+/* Native narrow windows should preserve usable message and input width.
+   Prefer intrinsic wrap over clipping action controls out of the page. */
+@media (max-width: 900px) {
+  html:not(.sketch) [data-ui-shell-variant="workspace"] [data-chat-root] .composer-action-row {
+    column-gap: .375rem;
+    row-gap: .375rem;
+  }
+  html:not(.sketch) [data-ui-shell-variant="workspace"] [data-sidebar-quick-actions] > button {
+    padding-inline: .5rem;
+  }
+}
+@media (forced-colors: active) {
+  [data-ui-shell-variant="workspace"] [data-stream-session-row][aria-current="page"] {
+    outline: 2px solid Highlight;
+  }
+  [data-ui-shell-variant="workspace"] [data-chat-root] .composer-card:focus-within {
+    outline-color: Highlight;
+  }
+}
+
 /* ARC-005 chat-stream convergence: one compact set of rules for message
    actions, long tool results and chat layouts. Never change store state,
    virtualization, overlay ownership or the stream's measured row heights. */

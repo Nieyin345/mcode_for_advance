@@ -46,6 +46,9 @@ function subscribe(cb: () => void): () => void {
 function getSnapshot(): number {
   return currentTick;
 }
+function inertSubscribe(_listener: () => void): () => void {
+  return () => {};
+}
 
 /** 只读一次的快照 —— **视觉基线专用**。
  *
@@ -63,11 +66,13 @@ function frozenNow(): number | null {
   return typeof v === "number" ? v : null;
 }
 
-/** Re-render roughly once per second. Returns the current wall-clock ms.
- *  Only subscribe when a live (ongoing) turn is visible, so finished turns
- *  don't pay for an unnecessary tick. */
-export function useNow(): number {
+/** Shared live clock. Historic turn rows may read the current snapshot but
+ * must not subscribe to every 1Hz tick. Importantly, always invoke the hook:
+ * the visual probe can freeze/unfreeze between renders without changing the
+ * number of React hooks in a mounted component. */
+export function useNow(active = true): number {
   const frozen = frozenNow();
-  if (frozen !== null) return frozen;
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const enabled = active && frozen === null;
+  const getCurrent = frozen === null ? getSnapshot : () => frozen;
+  return useSyncExternalStore(enabled ? subscribe : inertSubscribe, getCurrent, getCurrent);
 }

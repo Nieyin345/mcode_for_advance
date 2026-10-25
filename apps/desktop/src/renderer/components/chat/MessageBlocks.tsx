@@ -435,7 +435,7 @@ export function BatchToolGroup({
         onClick={(e) => toggleHoldPosition(e, setOpen)}
         aria-expanded={open}
         aria-controls={panelId}
-        className={TOOL_ROW_CLS}
+        data-ui-tool-row="" className={TOOL_ROW_CLS}
       >
         {/* 操作集合: a stack of layers reads as "a set of folded operations",
             clearer than the toolbox wrench for the N-ops batch header. */}
@@ -860,10 +860,9 @@ export function TurnPanel({
     return null;
   }, [toolBlocks]);
 
-  // Live duration via the app-wide 1s clock. Frozen turns compute a static
-  // value (endedAt - startedAt) and the useNow subscription is harmless
-  // (returns the same value every tick). This mirrors TurnStatRow's approach.
-  const now = useNow();
+  // Only the current turn subscribes to the 1s clock. Hundreds of historical
+  // process panels have frozen endedAt and must not repaint on each tick.
+  const now = useNow(!completed);
   const startedAt = turnMeta?.startedAt ?? now;
   const duration = Math.max(0, (turnMeta?.endedAt ?? now) - startedAt);
 
@@ -885,6 +884,7 @@ export function TurnPanel({
       >
       <button
         type="button"
+        data-ui-tool-summary={toolBlocks.length > 0 ? "" : undefined}
         onClick={(e) => {
           onToggleCollapse?.();
           toggleHoldPosition(e, setOpen);
@@ -1561,7 +1561,7 @@ function EditToolCard({
         onClick={(e) => toggleHoldPosition(e, setOpen)}
         aria-expanded={open}
         aria-controls={bodyId}
-        className={TOOL_ROW_CLS}
+        data-ui-tool-row="" className={TOOL_ROW_CLS}
       >
         <StatusIcon status={status} live={live} />
         <ToolIcon name="Edit" className="text-content-subtle" />
@@ -1642,7 +1642,7 @@ function WriteToolCard({
         onClick={(e) => toggleHoldPosition(e, setOpen)}
         aria-expanded={open}
         aria-controls={bodyId}
-        className={TOOL_ROW_CLS}
+        data-ui-tool-row="" className={TOOL_ROW_CLS}
       >
         <StatusIcon status={status} live={live} />
         <ToolIcon name="Write" className="text-content-subtle" />
@@ -1734,6 +1734,7 @@ function GenericToolCard({
         <div className={cn(TOOL_ROW_CLS)}>
           <button
             type="button"
+            data-ui-tool-row=""
             onClick={(e) => toggleHoldPosition(e, setOpen)}
             aria-expanded={open}
             aria-controls={bodyId}
@@ -1763,7 +1764,7 @@ function GenericToolCard({
           onClick={(e) => toggleHoldPosition(e, setOpen)}
           aria-expanded={open}
           aria-controls={bodyId}
-          className={TOOL_ROW_CLS}
+          data-ui-tool-row="" className={TOOL_ROW_CLS}
         >
           <StatusIcon status={block.status} live={live} />
           <ToolIcon name={block.toolName} className="text-content-subtle" />

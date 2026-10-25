@@ -67,6 +67,7 @@ import { useTheme, applyThemeClass } from "@renderer/lib/theme.js";
 import { Button, ConfirmDialog } from "@renderer/components/ui/index.js";
 import { api } from "@renderer/lib/api.js";
 import { useCursorAnchor } from "@renderer/hooks/useCursorAnchor.js";
+import { useNow } from "@renderer/hooks/useNow.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { WorktreeMergeBackDialog, WorktreeRemoveDialog } from "@renderer/components/chat/WorktreeMergeBack.js";
 import { ProjectManageMenuPopup, type ManageMenuState } from "./ProjectManageMenu.js";
@@ -405,15 +406,9 @@ function StreamSidebarBase() {
     [projectById, worktreeInfoByRepo],
   );
 
-  // ── Live duration ticker: only ticks while something is running.
-  const anyRunning = streamSessions.some((s) => runningBySession[s.id]) ||
-    pinnedSessions.some((s) => runningBySession[s.id]);
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  useEffect(() => {
-    if (!anyRunning) return;
-    const id = setInterval(() => setNowTick(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [anyRunning]);
+  // Live seconds are displayed inside each RUNNING card, not in the
+  // parent sidebar. Updating a parent ticker forced every project section,
+  // sortable card and archived row through reconciliation each second.
 
   const statusSignals: StreamStatusSignals = {
     runningBySession,
@@ -535,7 +530,6 @@ function StreamSidebarBase() {
           projectName={proj?.name ?? "?"}
           projectColor={proj ? projectDisplayColor(proj, projectColors) : "#71717a"}
           status={status}
-          now={nowTick}
           active={s.id === activeSessionId}
           pinned={opts.pinned}
           worktreeBranch={wt?.branch || null}
@@ -562,7 +556,7 @@ function StreamSidebarBase() {
     // statusSignals fields are read inside; they're all store slices this
     // component subscribes to already, so the callback refreshes with them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [projectById, projectColors, nowTick, activeSessionId, runningBySession, runningTurnStartedAt,
+    [projectById, projectColors, activeSessionId, runningBySession, runningTurnStartedAt,
       pendingQuestionBySession, turnErrorBySession, unreadBySession, worktreeOf, localBranchOf,
       openTab, startSession, setSessionPinned, archiveSession, registerNode, dropTarget, onSessionKeyboardMove],
   );
@@ -1049,10 +1043,18 @@ function StreamSidebarBase() {
 
 export const StreamSidebar = memo(StreamSidebarBase);
 
+/** Only running rows subscribe to the shared 1-second clock.
+ * Completed/idle cards and their sortable parent no longer repaint on ticks. */
+function StreamRunningDuration({ startedAt }: { startedAt: number }) {
+  const { t } = useI18n();
+  const now = useNow();
+  return <>{t("layout.stream.statusWorking", { dur: formatRunningDuration(now - startedAt) })}</>;
+}
+
 /* ── One rich card (3 lines: project identity+status / title / branch+provider) ── */
 
 function StreamCard({
-  session, projectName, projectColor, status, now, active, pinned,
+  session, projectName, projectColor, status, active, pinned,
   worktreeBranch, worktreeUnmerged, localBranch, onSelect, onNewSession, onTogglePin, onArchive, onDelete,
   onContext, registerNode, dropPosition, onKeyboardMove,
 }: {
@@ -1060,8 +1062,6 @@ function StreamCard({
   projectName: string;
   projectColor: string;
   status: StreamStatus;
-  /** Ticker snapshot for the running duration; only advances while running. */
-  now: number;
   active: boolean;
   pinned: boolean;
   /** Checked-out branch (null = detached or probe not landed). */
@@ -1111,7 +1111,7 @@ function StreamCard({
       return (
         <span className="flex items-center gap-1 font-semibold text-accent-strong">
           <StatusDot kind="running" />
-          {t("layout.stream.statusWorking", { dur: formatRunningDuration(now - status.startedAt) })}
+          <StreamRunningDuration startedAt={status.startedAt} />
         </span>
       );
     }
