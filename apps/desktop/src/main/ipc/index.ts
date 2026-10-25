@@ -248,6 +248,21 @@ export function registerIpcHandlers(): void {
   // T05b: use Mcode's existing pickers, pathGuard and modal approval UI.
   documentViewHost.setDocsPrivilegedPorts(docsPrivilegedPorts);
   documentViewHost.setDocsAiPorts(registryWrappedDocsAiPorts);
+  documentViewHost.setConfirmRecovery(async ({ filePath, diskNewer }) => {
+    const { dialog, BrowserWindow } = await import("electron");
+    const options = {
+      type: "warning" as const,
+      message: "发现未保存的 Word 文档恢复副本",
+      detail: `${filePath}${diskNewer ? "\\n磁盘文件此后已被修改；恢复后仍需手动保存，且保存将进行版本冲突检查。" : ""}`,
+      buttons: ["取消打开", "恢复未保存内容", "丢弃恢复副本并打开磁盘文件"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    };
+    const win = BrowserWindow.getAllWindows().find(w => !w.isDestroyed()) ?? null;
+    const result = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+    return result.response === 1 ? "restore" : result.response === 2 ? "discard" : "cancel";
+  });
   documentViewHost.setConfirmDirty(async ({ filePath }) => {
     const options = {
       type: "warning" as const,

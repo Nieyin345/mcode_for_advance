@@ -149,6 +149,17 @@ export function registerDocumentViewHandlers(
   // 内部通道（与 open-path/save 同形态；字面量注册的原因见下）。
   ipc.handle("mcode:document-view:read-opened", onReadOpened);
 
+  // Recovery is a separate, sender-bound binary cache, never a path-selected
+  // filesystem write. The trusted Host validates the active DOCX session.
+  ipc.handle("mcode:document-view:write-recovery", async (evt: unknown, raw: unknown) => {
+    try {
+      const docId = host.docIdForSender((evt as { sender?: unknown } | null)?.sender);
+      if (docId === null || !raw || typeof raw !== "object") return { ok: false, reason: "无权访问恢复会话" };
+      const data = raw as { path?: unknown; bytes?: unknown };
+      return await host.writeRecoveryCopy(docId, data.path, data.bytes);
+    } catch (error) { return { ok: false, reason: errText(error) }; }
+  });
+
   /**
    * 【ARC-007 P0】**页面回执**：vendor 页面成功打开后会调 `getRecentFiles()`
    * （成功路径唯一必经调用）；preload 在此回执 `openPathCommitted`。只有回执才

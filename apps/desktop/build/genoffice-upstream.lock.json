@@ -11,8 +11,8 @@
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
     ]
   },
-  "revision": "4c75d53afa5a2487766c38c71582b775f043c8f3",
-  "expectedTree": "38aa7ebc46c8edc9ffaa467e9640d47156e7336a",
+  "revision": "9cec29e38a972f60bec2e9d956f1aa2c8a02f085",
+  "expectedTree": "58381c33953f5255f7721b6a5f7e6c99fe860c4d",
   "patchSeries": [
     {
       "index": 1,
@@ -283,6 +283,15 @@
       "sha256": "6693a818dde049566bc780731d8e912db19dde5fb9d42161c7b42f741413c175",
       "bytes": 3253,
       "subject": "perf(sheets): defer optional icon and equation bundles until insert"
+    },
+    {
+      "index": 31,
+      "file": "patches/genoffice/0031-feat-docs-mcode-guarded-crash-recovery.patch",
+      "revision": "9cec29e38a972f60bec2e9d956f1aa2c8a02f085",
+      "parentRevision": "4c75d53afa5a2487766c38c71582b775f043c8f3",
+      "sha256": "1dbbc17e1a7c7080d5adb369c05554b382d3886292e55ef18902dbf7f110e50d",
+      "bytes": 2237,
+      "subject": "feat(docs): route crash-recovery snapshots to Mcode trusted host"
     }
   ],
   "license": "Apache-2.0",

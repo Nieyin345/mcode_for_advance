@@ -99,6 +99,7 @@ import { link, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { issueDocumentHandoff, revokeDocumentHandoffs } from "./documentViewHandoff.js";
+import { writeDocRecovery, inspectDocRecovery, clearDocRecovery } from "./documentRecovery.js";
 import { mcodeNativeDocsIpcAvailable, registerDocsIpc } from "@main/document/docsVendorIpc.js";
 import type { DocsPrivilegedPorts } from "./docsPrivilegedPorts.js";
 import type { DocsAiPorts } from "./docsAiPorts.js";
@@ -325,7 +326,7 @@ interface LiveDocumentView {
   /** 【ARC-007 P0】**待打开请求**：`openPath` 准备的路径，等页面经 `readOpened`
    *  拉取一次性字节响应；页面回执（`settlePendingOpen`）后才登记会话。
    *  失败/拒绝不占会话、不改 CAS 基准。 */
-  pendingOpen: { docId: string; filePath: string; requestedAt: number } | null;
+  pendingOpen: { docId: string; filePath: string; requestedAt: number; recoveryBaseRevision?: string; openedBytesRevision?: string } | null;
   /** 【ARC-007 P1/GA1】最近一次为这个视图解析好的 slides `OpenResult`（连同当时
    *  字节的 sha256）。页面在推送与拉取竞争/StrictMode 双挂载时重拉同一份结果，
    *  **不重复解析**也不重复提交会话。换文件（`prepareSlidesOpen`）时清空。 */
@@ -482,6 +483,8 @@ export class DocumentViewHost {
   /** T05b: Mcode-owned file/print approvals; no adapter means fail-closed. */
   private docsPrivileged: DocsPrivilegedPorts | null = null;
   private docsAi: DocsAiPorts | null = null;
+  /** Mcode-owned restore/discard prompt. No injected decision means fail closed. */
+  private confirmRecovery: ((input: { filePath: string; diskNewer: boolean }) => Promise<"restore" | "discard" | "cancel">) | null = null;
   /** 已经挂过 `closed` 清理钩子的那个窗口（换窗口时先摘旧的）。 */
   private cleanupWindow: DocumentViewHostWindow | null = null;
   private cleanupHandler: (() => void) | null = null;
@@ -901,6 +904,32 @@ export class DocumentViewHost {
    * 才登记。失败/读盘错/坏档 → `ok:false`，待打开请求保留（可重试）但**不占**
    * 任何文件会话。
    */
+  setConfirmRecovery(fn: typeof this.confirmRecovery): void {
+    this.confirmRecovery = fn;
+  }
+
+  /** Only a live, sender-owned, already committed DOCX may receive a binary recovery snapshot. */
+  async writeRecoveryCopy(docId: string, claimedPath: unknown, rawBytes: unknown): Promise<{ ok: boolean; reason?: string }> {
+    const live = this.views.get(docId);
+    const session = this.sessionOf(docId);
+    if (!live || !session || live.editor !== null || live.workflowEngineId !== null ||
+        !live.openedFilePath || !this.withinWorkspace(live.openedFilePath) ||
+        typeof claimedPath !== "string" || physicalPath(claimedPath) !== session.key ||
+        physicalPath(live.openedFilePath) !== session.key || live.view.webContents.isDestroyed?.() === true) {
+      return { ok: false, reason: "没有与当前 DOCX 视图匹配的受信文件会话" };
+    }
+    if (!(rawBytes instanceof Uint8Array) && !(rawBytes instanceof ArrayBuffer)) {
+      return { ok: false, reason: "恢复内容必须是二进制 DOCX" };
+    }
+    const bytes = Buffer.from(rawBytes instanceof ArrayBuffer ? new Uint8Array(rawBytes) : rawBytes);
+    const expected = await session.revision;
+    if (this.sessionOf(docId) !== session || this.views.get(docId) !== live ||
+        live.view.webContents.isDestroyed?.() === true || !this.withinWorkspace(live.openedFilePath)) {
+      return { ok: false, reason: "DOCX 恢复写入期间会话已改变" };
+    }
+    return writeDocRecovery({ filePath: live.openedFilePath, bytes, baseRevision: expected, dataRoot: dataRoot() });
+  }
+
   async readOpened(
     docId: string,
     withinWorkspace: (p: string) => boolean,
@@ -942,6 +971,40 @@ export class DocumentViewHost {
     if (!isLikelyDocx(bytes)) {
       return { ok: false, reason: `不是可读的 docx（魔数 ${bytes.subarray(0, 2).toString("latin1")}）` };
     }
+    const diskHash = createHash("sha256").update(bytes).digest("hex");
+    const recovery = await inspectDocRecovery(pending.filePath, dataRoot(), diskHash);
+    if (recovery) {
+      if (!this.confirmRecovery) {
+        return { ok: false, reason: "发现未保存 DOCX 恢复副本，但没有配置受信恢复确认，拒绝静默覆盖" };
+      }
+      let decision: "restore" | "discard" | "cancel" = "cancel";
+      try { decision = await this.confirmRecovery({ filePath: pending.filePath, diskNewer: !recovery.basedOnCurrent }); }
+      catch { /* cancel on prompt failure */ }
+      if (decision === "cancel") return { ok: false, reason: "用户取消恢复确认，原文件未修改" };
+      if (this.views.get(docId) !== live || live.pendingOpen !== pending ||
+          live.view.webContents.isDestroyed?.() === true || !withinWorkspace(pending.filePath) ||
+          (await fileContentVersion(pending.filePath)) !== diskHash) {
+        return { ok: false, reason: "恢复确认期间文件或视图发生变化，拒绝加载旧快照" };
+      }
+      if (decision === "restore") {
+        bytes = recovery.bytes;
+        // Preserve the unsaved draft's original CAS baseline. Reopening an
+        // older draft must never silently overwrite newer disk content.
+        pending.recoveryBaseRevision = recovery.baseRevision;
+      } else await clearDocRecovery(pending.filePath, dataRoot());
+    }
+    // inspectDocRecovery / user confirmation / fileContentVersion all await.
+    // Rebind authorization AFTER their last await, even when no recovery was
+    // found: a tab close or open A→B must not mint A\'s stale byte token.
+    if (this.views.get(docId) !== live || live.pendingOpen !== pending ||
+        live.view.webContents.isDestroyed?.() === true || !withinWorkspace(pending.filePath) ||
+        (await fileContentVersion(pending.filePath)) !== diskHash) {
+      return { ok: false, reason: "读取恢复副本期间文档、授权或磁盘版本已改变" };
+    }
+    // Bind the future CAS baseline to the bytes actually handed to the
+    // editor, not an independent later read during the async open ACK. An
+    // outside writer racing that ACK must never become implicitly authorized.
+    pending.openedBytesRevision = diskHash;
     const hash = createHash("sha256").update(bytes).digest("hex");
     const dataUrl = issueDocumentHandoff(bytes, {
       docId,
@@ -994,7 +1057,16 @@ export class DocumentViewHost {
     live.pendingOpen = null;
     live.lastFailure = undefined;
     live.openedFilePath = claim.session.filePath;
-    live.openedFileRevision = claim.session.revision;
+    if (pending.recoveryBaseRevision || pending.openedBytesRevision) {
+      // Normal save compares against the version FROM WHICH this recovery
+      // was generated, not the newer file that happened to be on disk when
+      // the user chose Restore. External edits therefore produce conflict.
+      const actualLoadedBase = Promise.resolve(pending.recoveryBaseRevision ?? pending.openedBytesRevision!);
+      claim.session.revision = actualLoadedBase;
+      live.openedFileRevision = actualLoadedBase;
+    } else {
+      live.openedFileRevision = claim.session.revision;
+    }
     log.info(`document view open-path: committed ${docId} ${pending.filePath}`);
     return { ok: true };
   }
@@ -1347,6 +1419,18 @@ export class DocumentViewHost {
       if (!(await this.confirmDocumentReplace(docId))) {
         return { ok: false, reason: '文档有未保存修改，且没有取得有效的放弃修改确认' };
       }
+      // The user explicitly confirmed closing this exact Docs view. Discard
+      // its recovery copy BEFORE the view is destroyed, otherwise it could
+      // resurrect edits the user deliberately discarded on next launch.
+      if (live.pageDirty && live.openedFilePath) {
+        // A restored draft may appear clean to the original renderer. Never
+        // remove its only recovery copy without a confirmed discard.
+        try { await clearDocRecovery(live.openedFilePath, dataRoot()); }
+        catch (err) { return { ok: false, reason: `无法清除旧 DOCX 恢复副本，已取消关闭：${String(err)}` }; }
+      }
+      if (this.views.get(docId) !== live || contents.isDestroyed?.() === true) {
+        return { ok: false, reason: "清理恢复副本期间文档视图已改变" };
+      }
       return this.close(docId);
     })();
     this.protectedCloses.set(docId, task);
@@ -1613,7 +1697,7 @@ export class DocumentViewHost {
       // 跨进程租约（`@main/lib/osFileLease`），不另起第二套锁。此前"重算 →
       // 比较"与 `atomicReplaceFile` 分属两步，两个保存可以都读到旧版本、都通过
       // 比较、再先后 rename —— 后者静默覆盖前者（注释里登记的 TOCTOU）。
-      return await withOsFileLease(target, async (real): Promise<SaveOutcome> => {
+      const result = await withOsFileLease(target, async (real): Promise<SaveOutcome> => {
         const current = await fileContentVersion(real);
         if (current !== expected) {
           // ⚠️ 顺序即判据：冲突检查必须在**写盘之前**，且冲突路径上一个字节都不落盘。
@@ -1664,6 +1748,13 @@ export class DocumentViewHost {
         log.info(`document view saved: ${docId} ${target} (${bytes.byteLength} bytes)`);
         return { ok: true, bytes: bytes.byteLength, filePath: target, revision };
       });
+      if (result.ok) {
+        // Only AFTER the writer releases the same OS lease: clearing inside
+        // its callback would deadlock. Never let cleanup failure undo a saved DOCX.
+        try { await clearDocRecovery(target, dataRoot(), result.revision); }
+        catch (err) { log.warn(`saved DOCX, but recovery cleanup failed: ${String(err)}`); }
+      }
+      return result;
     } catch (err) {
       // 租约等待超时 = 另一个进程正持有同一路径的写租约。按 conflict 回包
       // （不静默覆盖）—— 此时没有读过盘，不给 currentRevision（不编造版本）。

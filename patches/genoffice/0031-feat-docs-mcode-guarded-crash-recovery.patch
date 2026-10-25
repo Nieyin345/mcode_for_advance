@@ -1,0 +1,39 @@
+From 9cec29e38a972f60bec2e9d956f1aa2c8a02f085 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Sun, 25 Oct 2026 16:43:45 +0800
+Subject: [PATCH] feat(docs): route crash-recovery snapshots to Mcode trusted
+ host
+
+---
+ apps/docs/src/preload/mcode-view.ts | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/apps/docs/src/preload/mcode-view.ts b/apps/docs/src/preload/mcode-view.ts
+index 704c354..35c3c9d 100644
+--- a/apps/docs/src/preload/mcode-view.ts
++++ b/apps/docs/src/preload/mcode-view.ts
+@@ -27,6 +27,7 @@ export const MCODE_DOCS_CHANNEL_POLICY: Readonly<Record<string, Route>> = Object
+   'docs:open-path': { kind: 'invoke', to: 'mcode:document-view:read-opened' },
+   'docs:save': { kind: 'invoke', to: 'mcode:document-view:save' },
+   'docs:save-new': { kind: 'invoke', to: 'mcode:document-view:save' },
++  'docs:write-recovery': { kind: 'invoke', to: 'mcode:document-view:write-recovery' },
+   'docs:confirm-document-replace': { kind: 'invoke', to: 'mcode:document-view:confirm-replace' },
+   'docs:recent': { kind: 'invoke', to: 'mcode:document-view:open-committed' },
+   'docs:pick-image': { kind: 'invoke', to: 'mcode:docs:privileged-pick-image' },
+@@ -309,9 +310,10 @@ export const mcodeDocsDesktopApi = Object.freeze({
+   // Do not claim a successful mutation or instantiate GenOffice's password store.
+   docPasswordIntentRevision: () => Promise.resolve(0),
+   discardDocPasswordIntents: (_throughRevision: number) => Promise.resolve({ ok: false }),
+-  // FileSnapshot is UTF-8 turn rewind (not binary DOCX crash recovery); until
+-  // Host recovery is wired to its single atomic writer, refuse the operation.
+-  writeRecoveryCopy: (_path: string, _data: ArrayBuffer) => Promise.resolve({ ok: false }),
++  // DOCX recovery lives only under Mcode's guarded dataRoot. The claimed
++  // path is never used as a write target: host rebinds it to the live session.
++  writeRecoveryCopy: (path: string, data: ArrayBuffer) =>
++    invokeDocs('docs:write-recovery', { path, bytes: saveBytes(data) }) as ReturnType<DesktopApi['writeRecoveryCopy']>,
+ } satisfies Partial<DesktopApi>)
+ 
+ // Imported as a build-time source dependency by Mcode's documentViewPreload.
+-- 
+2.52.0.windows.1
+

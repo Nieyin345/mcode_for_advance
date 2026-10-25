@@ -13,6 +13,7 @@ import { UNIQUE } from "../../t7-genoffice-u1/fixtures.js";
 const NOTES = "Mcode native Slides notes " + UNIQUE.slides + " safe roundtrip";
 const SECTION = "Mcode native section " + UNIQUE.slides;
 const COMMENT = "Mcode native comment " + UNIQUE.slides;
+const CHART_TITLE = "Mcode verified chart " + UNIQUE.slides;
 type SlidesRuntime = EditorRuntime & { beforeHash?: string };
 
 export const slidesNativeSemanticJourney = defineU1Journey({
@@ -110,6 +111,47 @@ export const slidesNativeSemanticJourney = defineU1Journey({
     step.run(async ({ runtime }) => {
       const rt = runtime as SlidesRuntime;
       const wc = rt.harness.webContentsOf(rt.docId);
+      if (!wc) return {ok:false,detail:"Native Slides view missing before animation insert"};
+      const result=await js<{ok:boolean;sourceId?:string;animations?:unknown[];error?:string}>(wc,`(async()=>{
+        try {
+          const api=window.slidesApi;
+          // Native main maps animation targets by cNvPr SPID. The render
+          // tree's text payload is not an authoritative identity.
+          const keys=await api.getShapeKeys(0);
+          const sourceId=keys.find(x=>x.spid!=null)?.sourceId;
+          if(!sourceId)throw Error('native getShapeKeys returned no target');
+          const ok=await api.setAnimations({slideIndex:0,items:[{
+            sourceId,effect:'fade',trigger:'onClick',durationMs:900,delayMs:100,
+          }]});
+          const animations=await api.getAnimations(0);
+          return {ok:ok===true && animations.some(a=>a.effect==='fade' && a.durationMs===900),
+            sourceId,animations};
+        }catch(e){return {ok:false,error:String(e)};}
+      })()`);
+      return {ok:result.ok,observed:result,detail:result.error};
+    },"native-textbox-animation-write-and-immediate-readback",{assert:true}),
+    step.run(async ({ runtime }) => {
+      const rt = runtime as SlidesRuntime;
+      const wc = rt.harness.webContentsOf(rt.docId);
+      if (!wc) return {ok:false,detail:"Native Slides view missing before chart insert"};
+      const result=await js<{ok:boolean;sourceId?:string;chart?:unknown;error?:string}>(wc,`(async()=>{
+        try {
+          const api=window.slidesApi;
+          const r=await api.addChart({
+            slideIndex:0,kind:'bar',title:${JSON.stringify(CHART_TITLE)},
+            categories:['2025','2026'],series:[{name:'Test',values:[4,9]}],
+            xPx:150,yPx:170,wPx:440,hPx:310,fitWidthPx:1280,
+          });
+          if(!r?.sourceId)throw Error('native addChart returned no element identity');
+          const chart=await api.getChartData(0,r.sourceId);
+          return {ok:!!chart && JSON.stringify(chart).includes('2026'),sourceId:r.sourceId,chart};
+        }catch(e){return {ok:false,error:String(e)};}
+      })()`);
+      return {ok:result.ok,observed:result,detail:result.error};
+    },"native-pptx-chart-write-with-underlying-series-readback",{assert:true}),
+    step.run(async ({ runtime }) => {
+      const rt = runtime as SlidesRuntime;
+      const wc = rt.harness.webContentsOf(rt.docId);
       if (!wc) return { ok:false, detail:"Slides view destroyed before save" };
       const saved = await js<{ ok:boolean; reason?:string }>(wc, `(async () => {
         try {
@@ -139,7 +181,8 @@ export const slidesNativeSemanticJourney = defineU1Journey({
       const wc=rt.harness.webContentsOf(rt.docId);
       if (!wc) return {ok:false,detail:"Reopened Slides WebContents missing"};
       const found=await waitFor(async()=>js<{
-        notes:string;sections:Array<{name:string}>;animations:unknown[];transition:string;comments:unknown[]
+        notes:string;sections:Array<{name:string}>;animations:Array<{effect:string;durationMs:number}>;
+        transition:string;comments:unknown[];chart:{title:string;categories:string[];series:Array<{values:number[]}>}|null
       }>(wc,`(async () => {
         const api=window.slidesApi;
         return {
@@ -148,6 +191,14 @@ export const slidesNativeSemanticJourney = defineU1Journey({
           animations:await api.getAnimations(0),
           transition:await api.getTransition(0),
           comments:await api.getComments(0),
+          chart:await (async()=>{
+            const keys=await api.getShapeKeys(0);
+            for(const k of keys){
+              const data=await api.getChartData(0,k.sourceId);
+              if(data?.title===${JSON.stringify(CHART_TITLE)})return data;
+            }
+            return null;
+          })(),
         };
       })()`),15_000,300);
       const commentPresent=JSON.stringify(found?.comments ?? []).includes(COMMENT);
@@ -155,11 +206,18 @@ export const slidesNativeSemanticJourney = defineU1Journey({
         ok:found?.notes===NOTES && found.transition==="fade" &&
           Array.isArray(found?.sections) &&
           found.sections.some(s=>s.name===SECTION) &&
-          Array.isArray(found?.animations) && commentPresent,
+          Array.isArray(found?.animations) &&
+          found.animations.some(a=>a.effect==="fade" && a.durationMs===900) &&
+          found.chart?.title===CHART_TITLE &&
+          found.chart.categories.includes("2026") &&
+          found.chart.series.some(s=>s.values.includes(9)) &&
+          commentPresent,
         observed:{ notes:found?.notes, sectionNames:found?.sections?.map(s=>s.name),
-          transition:found?.transition,animationCount:found?.animations?.length,commentPresent },
-        detail:"Original vendor notes/transition/section/comment must survive an independent PPTX save and fresh-process reopen",
+          transition:found?.transition,animationCount:found?.animations?.length,
+          animationEffects:found?.animations?.map(a=>a.effect),
+          chart:found?.chart,commentPresent },
+        detail:"Original vendor notes/transition/section/comment/animation/chart must survive save and fresh-process reopen",
       };
-    }, "reopened-pptx-retains-notes-transitions-sections-comments", { assert:true }),
+    }, "reopened-pptx-retains-notes-transitions-sections-comments-animation-chart", { assert:true }),
   ],
 });
