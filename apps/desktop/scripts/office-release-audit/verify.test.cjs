@@ -6,6 +6,7 @@ const os=require("node:os");
 const path=require("node:path");
 const {createHash}=require("node:crypto");
 const {auditRelease,parseLatest,codes}=require("./verify.cjs");
+const {verifyInstallerContent}=require("./verify-nsis.cjs");
 const HASH="a".repeat(64);
 const GIT_HASH="a".repeat(40);
 function makeFixture(t) {
@@ -38,6 +39,7 @@ function makeFixture(t) {
   fs.utimesSync(manifestFile,new Date(now-8000),new Date(now-8000));
   fs.utimesSync(exe,new Date(now-4000),new Date(now-4000));
   const opts={repoRoot:repo,releaseDir:release,signatureStatus:"Valid",resourceVerifier:()=>true,
+    nsisInspector:()=>({manifest:JSON.parse(fs.readFileSync(manifestFile,"utf8")),missing:[],count:19}),
     gitEvidence:{head:GIT_HASH,commitTime:now-12000,dirty:false}};
   const codesFor=(options=opts)=>auditRelease(options).blockers.map(x=>x.code);
   const updateManifest=()=>fs.writeFileSync(manifestFile,JSON.stringify(manifest));
@@ -100,6 +102,37 @@ test("physical packaged editor/sidecar/preload integrity failure blocks release"
   const f=makeFixture(t);
   const result=f.codesFor({...f.opts,resourceVerifier:()=>{throw Error("sidecar mismatch");}});
   assert.ok(result.includes(codes.RESOURCE_INTEGRITY_MISMATCH));
+});
+test("rejects real NSIS image when it disables GenOffice although win-unpacked includes editors",t=>{
+  const f=makeFixture(t);
+  const notBundled={...f.manifest,bundled:false,editorsBundled:false,editors:[]};
+  const codesFor=f.codesFor({...f.opts,nsisInspector:()=>({manifest:notBundled,missing:[],count:1})});
+  assert.ok(codesFor.includes(codes.NSIS_PAYLOAD_MISSING_EDITORS));
+  assert.ok(codesFor.includes(codes.NSIS_MANIFEST_MISMATCH));
+});
+test("rejects NSIS image with declared editor assets but missing actual native preload",t=>{
+  const f=makeFixture(t);
+  const codesFor=f.codesFor({...f.opts,nsisInspector:()=>({
+    manifest:f.manifest,missing:["resources/genoffice/apps/slides/out/preload/index.js"],count:19,
+  })});
+  assert.ok(codesFor.includes(codes.NSIS_PAYLOAD_MISSING_EDITORS));
+});
+test("rejects uninspectable or encrypted/unsupported NSIS rather than claiming readiness",t=>{
+  const f=makeFixture(t);
+  const codesFor=f.codesFor({...f.opts,nsisInspector:()=>{throw Error("unavailable");}});
+  assert.ok(codesFor.includes(codes.NSIS_INSPECTION_FAILED));
+});
+test("CI gate inspects installer actual manifest, not just the staged unpacked directory",t=>{
+  const f=makeFixture(t);
+  const good=verifyInstallerContent(f.exe,f.manifestFile,
+    ()=>({manifest:f.manifest,missing:[],count:29}));
+  assert.equal(good.ok,true);
+  const hollow=verifyInstallerContent(f.exe,f.manifestFile,
+    ()=>({manifest:{format:"mcode.genoffice.resources.v1",bundled:false,editorsBundled:false,editors:[]},
+      missing:["resources/genoffice/apps/docs/out/renderer/index.html"],count:1}));
+  assert.equal(hollow.ok,false);
+  assert.ok(hollow.failures.some(x=>x.includes("disabled")));
+  assert.ok(hollow.failures.some(x=>x.includes("differs")));
 });
 test("refuses malformed release index without correct asset name",()=>{
   assert.throws(()=>parseLatest("path: ..\\payload.exe\nsha512: xxx\n"),/latest.yml/);

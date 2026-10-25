@@ -21,6 +21,9 @@ const codes = Object.freeze({
   MISSING_RESOURCE: "MISSING_RESOURCE",
   INVALID_RESOURCE_MANIFEST: "INVALID_RESOURCE_MANIFEST",
   RESOURCE_INTEGRITY_MISMATCH: "RESOURCE_INTEGRITY_MISMATCH",
+  NSIS_INSPECTION_FAILED: "NSIS_INSPECTION_FAILED",
+  NSIS_MANIFEST_MISMATCH: "NSIS_MANIFEST_MISMATCH",
+  NSIS_PAYLOAD_MISSING_EDITORS: "NSIS_PAYLOAD_MISSING_EDITORS",
   HASH_MISMATCH: "HASH_MISMATCH",
   VERSION_MISMATCH: "VERSION_MISMATCH",
   STALE_INSTALLER: "STALE_INSTALLER",
@@ -124,6 +127,28 @@ function auditRelease(opts={}) {
       if (exe && existsSync(exe) && statSync(manifestFile).mtimeMs > statSync(exe).mtimeMs)
         block(codes.STAGED_AFTER_INSTALLER,"unpacked resources were staged after the published installer; cannot prove parity");
     } catch (e) { block(codes.INVALID_RESOURCE_MANIFEST,String(e.message)); }
+  }
+  // Critical difference: win-unpacked is NOT the installer. NSIS can be
+  // built with Office disabled while its adjacent unpacked directory was
+  // restaged with six editors later. Inspect the EXE archive itself.
+  if(exe && existsSync(exe)) {
+    try {
+      const inspect=opts.nsisInspector ?? require("./nsis-inspector.cjs").readPayload;
+      const embedded=inspect(exe);
+      facts.installerGenofficeBundled=embedded.manifest?.bundled===true;
+      facts.installerEditorsBundled=embedded.manifest?.editorsBundled===true;
+      facts.installerGenofficeFiles=embedded.count;
+      if(embedded.manifest?.bundled!==true || embedded.manifest?.editorsBundled!==true ||
+         !EXPECTED_EDITORS.every(name=>embedded.manifest?.editors?.includes(name))) {
+        block(codes.NSIS_PAYLOAD_MISSING_EDITORS,"actual NSIS installer payload disables native GenOffice; unpacked success is not installer success");
+      } else if(embedded.missing?.length) {
+        block(codes.NSIS_PAYLOAD_MISSING_EDITORS,"actual NSIS payload is missing: "+embedded.missing.join(", "));
+      }
+      if(manifest && JSON.stringify(embedded.manifest)!==JSON.stringify(manifest))
+        block(codes.NSIS_MANIFEST_MISMATCH,"NSIS embedded availability.json differs from adjacent win-unpacked resources");
+    }catch(e){
+      block(codes.NSIS_INSPECTION_FAILED,"cannot inspect actual NSIS GenOffice manifest and assets: "+String(e.message));
+    }
   }
   if(manifest?.bundled === true && manifest?.editorsBundled === true) {
     try {

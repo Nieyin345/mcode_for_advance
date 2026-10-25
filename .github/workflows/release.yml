@@ -161,6 +161,20 @@ jobs:
           & "$env:ProgramFiles/7-Zip/7z.exe" t $installers[0].FullName
           if ($LASTEXITCODE -ne 0) { throw "Installer archive integrity check failed" }
 
+      # 7z "t" only checks compression CRC. An older installer contained
+      # resources/genoffice/availability.json with bundled=false, even while
+      # a separately restaged win-unpacked showed all six native editors.
+      # Read the ACTUAL NSIS 7z payload and refuse to publish hollow Office.
+      - name: Verify actual NSIS contains six native GenOffice editors
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem apps/desktop/release -Filter *.exe -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer" }
+          $env:MCODE_OFFICE_7ZA = "$env:ProgramFiles/7-Zip/7z.exe"
+          node apps/desktop/scripts/office-release-audit/verify-nsis.cjs $installers[0].FullName apps/desktop/release/win-unpacked/resources/genoffice/availability.json
+          if ($LASTEXITCODE -ne 0) { throw "Actual NSIS payload does not contain approved six GenOffice editors" }
+
       - name: Verify packaged Windows runtime (isolated)
         if: runner.os == 'Windows'
         shell: bash
