@@ -2,6 +2,7 @@ import { mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
+import { withOsFileLease } from "@main/lib/osFileLease.js";
 import { writeDocRecovery, inspectDocRecovery, clearDocRecovery } from "@main/document/documentRecovery.js";
 
 let total=0,fail=0;
@@ -53,6 +54,38 @@ try {
  await clearDocRecovery(original,dataRoot,changed);
  check("repeated post-save cleanup must preserve current draft",
    (await inspectDocRecovery(original,dataRoot,changed))?.baseRevision === changed);
+
+ // A confirmation made for the OLD disk revision cannot erase a recovery
+ // copy once another writer has published a newer revision.
+ let rejectedDiscard = false;
+ try { await clearDocRecovery(original,dataRoot,undefined,base); }
+ catch { rejectedDiscard = true; }
+ check("stale discard confirmation fails closed after external disk edit",rejectedDiscard);
+ check("stale discard leaves the candidate recoverable",
+   (await inspectDocRecovery(original,dataRoot,changed))?.bytes.equals(modified) === true);
+
+ // Manufacture the exact writer/read race under the ONE existing OS lease.
+ // Recovery inspection must wait for the writer, not observe a torn pair of
+ // manifest/bytes in the middle of a new snapshot publication.
+ let releaseWriter: (() => void) | undefined;
+ let writerEntered: (() => void) | undefined;
+ const writerGate = new Promise<void>(resolve => { releaseWriter = resolve; });
+ const ready = new Promise<void>(resolve => { writerEntered = resolve; });
+ const holdingWriter = withOsFileLease(original, async () => {
+   writerEntered?.();
+   await writerGate;
+ });
+ await ready;
+ let readerSettled = false;
+ const reader = inspectDocRecovery(original,dataRoot,changed)
+   .then(value => { readerSettled = true; return value; });
+ await new Promise(resolve => setTimeout(resolve,90));
+ check("recovery manifest and bytes inspection waits for active writer's OS lease",!readerSettled);
+ releaseWriter?.();
+ await holdingWriter;
+ const inspected = await reader;
+ check("read after lease release sees intact recovery contents and revision",
+   inspected?.bytes.equals(modified) === true && inspected.baseRevision === changed);
  // Find the name of exactly this test's cache and corrupt its contents;
  // parsing must NEVER treat a broken snapshot as genuine recovery material.
  const { readdir } = await import("node:fs/promises");

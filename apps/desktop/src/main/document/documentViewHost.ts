@@ -991,7 +991,13 @@ export class DocumentViewHost {
         // Preserve the unsaved draft's original CAS baseline. Reopening an
         // older draft must never silently overwrite newer disk content.
         pending.recoveryBaseRevision = recovery.baseRevision;
-      } else await clearDocRecovery(pending.filePath, dataRoot());
+      } else {
+        try {
+          await clearDocRecovery(pending.filePath, dataRoot(), undefined, diskHash);
+        } catch (err) {
+          return { ok: false, reason: err instanceof Error ? err.message : "丢弃恢复副本失败，保留原文档" };
+        }
+      }
     }
     // inspectDocRecovery / user confirmation / fileContentVersion all await.
     // Rebind authorization AFTER their last await, even when no recovery was

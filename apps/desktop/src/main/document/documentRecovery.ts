@@ -72,30 +72,48 @@ export async function inspectDocRecovery(
   filePath: string, dataRoot: string, currentRevision: string,
 ): Promise<{ bytes: Buffer; baseRevision: string; basedOnCurrent: boolean; savedAt: number } | null> {
   try {
-    const { realpath } = await import("node:fs/promises");
-    const real = await realpath(filePath);
-    const p = slot(dataRoot, real);
-    if (!existsSync(p.meta) || !existsSync(p.file)) return null;
-    const info: unknown = JSON.parse(await readFile(p.meta, "utf8"));
-    if (!info || typeof info !== "object") return null;
-    const m = info as Partial<Manifest>;
-    if (m.version !== 1 || typeof m.baseRevision !== "string" || !/^[a-f0-9]{64}$/.test(m.baseRevision) ||
-      typeof m.snapshotSha256 !== "string" || !/^[a-f0-9]{64}$/.test(m.snapshotSha256) ||
-      typeof m.savedAt !== "number") return null;
-    const { stat } = await import("node:fs/promises");
-    const s = await stat(p.file);
-    if (s.size <= 0 || s.size > MAX_BYTES) return null;
-    const bytes = await readFile(p.file);
-    if (!docxZip(bytes) || sha(bytes) !== m.snapshotSha256) return null;
-    return { bytes, baseRevision: m.baseRevision, basedOnCurrent: m.baseRevision === currentRevision, savedAt: m.savedAt };
-  } catch { return null; }
+    // The manifest and DOCX bytes are two atomically replaced files. Read
+    // BOTH under the same existing cross-process document lease used by
+    // writes and cleanup; otherwise a concurrent autosave may temporarily
+    // pair new bytes with an old manifest, hide a valid unsaved recovery
+    // snapshot, and let the editor silently open the original disk version.
+    return await withOsFileLease(filePath, async (real) => {
+      const p = slot(dataRoot, real);
+      if (!existsSync(p.meta) || !existsSync(p.file)) return null;
+      const info: unknown = JSON.parse(await readFile(p.meta, "utf8"));
+      if (!info || typeof info !== "object") return null;
+      const m = info as Partial<Manifest>;
+      if (m.version !== 1 || typeof m.baseRevision !== "string" || !/^[a-f0-9]{64}$/.test(m.baseRevision) ||
+        typeof m.snapshotSha256 !== "string" || !/^[a-f0-9]{64}$/.test(m.snapshotSha256) ||
+        typeof m.savedAt !== "number") return null;
+      const { stat } = await import("node:fs/promises");
+      const s = await stat(p.file);
+      if (s.size <= 0 || s.size > MAX_BYTES) return null;
+      const bytes = await readFile(p.file);
+      if (!docxZip(bytes) || sha(bytes) !== m.snapshotSha256) return null;
+      return { bytes, baseRevision: m.baseRevision, basedOnCurrent: m.baseRevision === currentRevision, savedAt: m.savedAt };
+    });
+  } catch (err) {
+    // A busy document lease means someone is saving/updating the manifest.
+    // Do not pretend there is no recovery copy and silently load disk data:
+    // propagate conflict so the Mcode open handler fails closed.
+    if (err instanceof Error && err.message.startsWith("FILE_VERSION_CONFLICT")) throw err;
+    return null;
+  }
 }
 
 /** Call ONLY after a successful CAS save, or an explicitly confirmed discard. */
 export async function clearDocRecovery(
   filePath: string, dataRoot: string, preserveBaseRevision?: string | null,
+  expectedDiskRevision?: string,
 ): Promise<void> {
   await withOsFileLease(filePath, async (real) => {
+    // A user may have chosen Discard before waiting for the file lease,
+    // but another editor may have saved meanwhile. Do not delete the user's
+    // last recovery copy based on a stale confirmation.
+    if (expectedDiskRevision && await fileContentVersion(real) !== expectedDiskRevision) {
+      throw new Error("丢弃恢复副本期间磁盘文件版本变化，已保留副本供重新确认");
+    }
     const p = slot(dataRoot, real);
     // A new edit can create a recovery copy for the just-saved version while
     // cleanup waits for this OS lease. Never discard that newer snapshot.

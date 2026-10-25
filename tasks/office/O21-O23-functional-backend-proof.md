@@ -43,3 +43,20 @@
 - `docs-crash-recovery-mcode` **PASS（3 OS 进程）**：`.tmp/electron-u1/2026-10-25T10-54-59-059Z`
 - `document-recovery-smoke` 补充新旧版本恢复副本清理的幂等与保留判据后 **PASS**：`apps/desktop/.tmp/smoke-runs/1792925619174-5184-ZanLlh`。
 - `Desktop/Contracts tsc --noEmit`、**31 份** GenOffice fork 补丁签名/完整树校验再次 PASS。
+
+
+### 2026-10-25 追加安全修复：恢复读写租约与丢弃确认的 TOCTOU
+
+- 发现原 `inspectDocRecovery` 在**没有共享租约**时先读恢复 manifest 再读独立 DOCX bytes；另一个自动保存可能在两次读取之间替换快照，导致新旧配对的 SHA 不符而返回 `null`，让打开流程错过应有的恢复提示。现在整段检查、大小上限和 SHA256 校验全部处于既有 `withOsFileLease(filePath)` 之内，**没有新建第二层锁，也不允许更改源文件**。
+- 如果获取读取租约超时（`FILE_VERSION_CONFLICT`），则显式向 Mcode `readOpened` 传播错误，而不再假装没有恢复副本。异常仍 fail-closed。
+- 用户明确选“丢弃恢复副本”后，在获取同一租约时重新验证当前磁盘 revision；若确认期间外部文件变化则拒绝丢弃，保存恢复副本供重新决定。已确认丢弃的既有操作语义不变。
+- `document-recovery-smoke` 新增 **4 项**：过期丢弃被拒、原快照保留、恢复读取在正在写入的 OS 租约之后排队、解除锁后读回完整原稿。**故意删除读取锁的反例**：19/20 通过、唯一 FAIL“recovery manifest and bytes inspection waits for active writer's OS lease”，日志 `apps/desktop/.tmp/smoke-runs/1792926923610-42748-1S2AwS`；逐字恢复保护后 **20/20 PASS**，关联 5 套 Office smoke **5/5 PASS**，日志 `apps/desktop/.tmp/smoke-runs/1792926992212-35732-kzxYzw`；Desktop / Contracts 两包 tsc **PASS**。
+- 一次单独的 Desktop tsc 曾在并行 UI 修改期间报告 `WorkflowLibraryView.tsx` 的翻译键错误；未改其他对话的 UI 文件，随后的完整双包 tsc 已通过。
+- 新代码的真实 Electron U1 最初被其他对话持有的 Mcode 重型测试锁阻止（`PID 7820`）；该次**未运行**，不能冒称通过。上文已经记录的 2–3 OS 进程成功旅程属于此补丁之前，需要在资源释放后重测。
+
+**测试资源释放后的三条真实 Electron 补测（均针对本次读锁/丢弃保护源码）：**
+- `docs-recovery-external-conflict` → **PASS / 2 独立 OS 进程**，`.tmp/electron-u1/2026-10-25T11-21-04-979Z`。
+- `docs-crash-recovery-mcode` → **PASS / 3 独立 OS 进程**，`.tmp/electron-u1/2026-10-25T11-21-45-999Z`。
+- `docs-ai-tool-native-transaction` → **PASS / 2 独立 OS 进程**，`.tmp/electron-u1/2026-10-25T11-22-04-417Z`。
+
+备注：`document-view-host-smoke` 重跑仍为 **537/538**，唯一失败是旧 IPC 清单中固定内部通道数量（8）与新增 `write-recovery` 通道不符，见 `apps/desktop/.tmp/smoke-runs/1792926625324-33220-MmnUyv`。该测试文件正在其他执行对话中修改，本次不更改其内容；其余相关 5 smoke 与三套真实 U1 通过不代表这套旧验收已绿。
