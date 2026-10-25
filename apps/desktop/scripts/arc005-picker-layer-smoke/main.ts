@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { openEscapeLayer, isTopEscapeLayer, resetEscapeLayersForTests } from "../../src/renderer/lib/escapeLayer.js";
+import { eligibleFileIndex } from "../../src/renderer/components/chat/filePickerKeyboard.js";
 
 let total=0, failed=0;
 const check=(name:string, yes:boolean)=>{total++; if(!yes)failed++; console.log("  "+(yes?"PASS ":"FAIL ")+name);};
@@ -42,7 +43,11 @@ check("slash tab buttons receive native keyboard activation",slash.includes("e.t
 check("library search input accepts Space for multiword queries",library.includes('e.key === " " && e.target === inputRef.current'));
 check("library button focused native activation is not overridden",library.includes("rootRef.current?.contains(e.target)") && library.includes("e.target.closest(\"button\")"));
 check("three pickers yield to foreign modal dialog input",[file,slash,library].every(s=>s.includes('e.target.closest(\'[role="dialog"], [role="alertdialog"]\')')));
-check("empty file options never set active index negative",file.includes("if (files.length === 0) return;") && file.includes("Math.min(files.length - 1"));
+check("empty file options never set active index negative",
+  file.includes("if (visibleFiles.length === 0) return;") &&
+  file.includes("eligibleFileIndex(visibleFiles, exclude, i, 1)") &&
+  eligibleFileIndex([],new Set(),0) === -1 &&
+  eligibleFileIndex([{path:"taken"}],new Set(["taken"]),0) === -1);
 check("empty library options never set active index negative",library.includes("if (options.length === 0) return;") && library.includes("Math.min(i + 1, options.length - 1)"));
 check("library picker invalidates callbacks after close",library.includes("requestGenerationRef.current++") && library.includes("if (generation !== requestGenerationRef.current) return;"));
 check("library picker resets cached item requests on fresh open",library.includes("loadedRef.current.clear()") && library.includes("setItemsOf({})"));

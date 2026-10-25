@@ -22,6 +22,7 @@ import { api } from "@renderer/lib/api.js";
 import type { LibraryCollection, LibraryItem } from "@contracts/library";
 import { IconBook, IconCheck, IconChevronRight, IconFileText, IconSearch } from "@renderer/lib/icons.js";
 import { buildLibraryPickerRows, selectedLibraryPickerEntries } from "./libraryPickerRows.js";
+import { useComposerPickerPlacement } from "./useComposerPickerPlacement.js";
 
 /** 三个库的文案 id。库名在不同库里可以重名,所以列表上必须标出它属于哪个库。 */
 
@@ -86,6 +87,7 @@ export function LibraryPicker({
   /** 展开时才拉的条目缓存。 */
   const [itemsOf, setItemsOf] = useState<Record<string, LibraryItem[] | "loading" | "error">>({});
   const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const excluded = useMemo(() => new Set(excludeCollectionIds), [excludeCollectionIds]);
@@ -223,6 +225,14 @@ export function LibraryPicker({
   useEffect(() => {
     setActiveIdx((i) => Math.min(i, Math.max(0, options.length - 1)));
   }, [options.length]);
+  useEffect(() => { if (open) setActiveIdx(0); }, [open, query]);
+  // Keep the current keyboard row visible inside the separately scrolling
+  // results; do not move focus away from search as the user keeps typing.
+  useEffect(() => {
+    if (!open || searchLoading || searchError) return;
+    listRef.current?.querySelector<HTMLElement>(`[data-idx="${activeIdx}"]`)
+      ?.scrollIntoView?.({ block: "nearest" });
+  }, [open, activeIdx, searchLoading, searchError, options.length]);
 
   // `autoExpandItems` 的兜底：首次打开时 `collections` 可能还没拉回来（上面那个
   // effect 里展开到的是空集合）。等它到位、且用户还没手动改过展开态时，补展开一次，
@@ -315,7 +325,8 @@ export function LibraryPicker({
       // input method, not the picker.
       if (e.isComposing || e.key === "Process" || e.keyCode === 229) return;
       if (!isTopEscapeLayer("chat.library-picker")) return;
-      if (e.target instanceof Element && e.target.closest('[role="dialog"], [role="alertdialog"]')) return;
+      const nestedDialog = e.target instanceof Element && e.target.closest('[role="dialog"], [role="alertdialog"]');
+      if (nestedDialog && nestedDialog !== rootRef.current) return;
       // The search input needs literal spaces for multiword queries; and the
       // focused expand/row/Add buttons should keep native Enter/Space.
       if (e.key === " " && e.target === inputRef.current) return;
@@ -348,12 +359,16 @@ export function LibraryPicker({
       }
       if (e.key === "Enter" || e.key === " ") {
         const target = options[activeIdx];
-        if (!target) return;
+        // Selected items survive across queries: Enter confirms them even
+        // when the current filter no longer has a highlighted row.
+        if (!target && (e.key === " " || selected.size === 0)) return;
         e.preventDefault();
         e.stopPropagation();
-        // 空格 = 勾选(多选语义);回车 = 确认。与 FileMentionPicker 的 attach 模式一致。
-        if (e.key === " ") toggle(target.key);
-        else confirm();
+        // First Enter selects the highlighted row instead of silently
+        // closing an empty selection. A subsequent Enter confirms the set.
+        if (e.key === " " || selected.size === 0) {
+          if (target) toggle(target.key);
+        } else confirm();
       }
     };
     document.addEventListener("keydown", onKey, true);
@@ -372,22 +387,16 @@ export function LibraryPicker({
     return () => document.removeEventListener("mousedown", onDown);
   }, [open, onClose]);
 
-  if (!open || !anchorRect) return null;
-
-  const left = anchorRect.left;
-  const width = Math.min(Math.max(anchorRect.width, 260), 380);
+  const placement = useComposerPickerPlacement(open, anchorRect, rootRef, 380);
+  if (!open || !placement) return null;
 
   return (
     <div
       ref={rootRef}
-      className="fixed z-[70] flex max-h-64 flex-col overflow-hidden rounded-lg border border-edge bg-surface shadow-xl"
-      style={{
-        left,
-        width,
-        top: Math.max(8, anchorRect.top - 8),
-        // 从锚点向上生长 —— 与 FileMentionPicker 一致(输入框在屏幕底部)
-        transform: "translateY(-100%)",
-      }}
+      role="dialog"
+      aria-label={t("library.chat.searchPlaceholder")}
+      className="fixed z-[70] flex min-w-0 flex-col overflow-hidden rounded-[var(--radius-panel)] border border-edge bg-surface shadow-[var(--shadow-popover)]"
+      style={{ left: placement.left, width: placement.width, top: placement.top, maxHeight: placement.maxHeight }}
     >
       <div className="flex items-center gap-1.5 border-b border-edge px-2 py-1">
         <IconSearch size={12} className="shrink-0 text-content-muted" />
@@ -396,13 +405,14 @@ export function LibraryPicker({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t("library.chat.searchPlaceholder")}
-          className="h-6 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle"
+          aria-label={t("library.chat.searchPlaceholder")}
+          className="min-h-8 min-w-0 flex-1 rounded-[var(--radius-btn-xs)] bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle focus-visible:ring-2 focus-visible:ring-accent"
         />
         {selected.size > 0 && (
           <button
             type="button"
             onClick={confirm}
-            className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-surface hover:brightness-110"
+            className="min-h-8 shrink-0 rounded-[var(--radius-btn-xs)] bg-accent px-2 py-0.5 text-[10px] font-medium text-surface hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             {t("library.chat.addN", { n: selected.size })}
           </button>
@@ -412,7 +422,7 @@ export function LibraryPicker({
       {confirmError && (
         <div className="px-3 py-1 text-[11px] text-danger" role="alert">{t("common.error")}</div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto py-1">
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto py-1">
         {searchLoading || searchError ? (
           <div className="flex items-center gap-2 px-3 py-4 text-[12px] text-content-subtle">
             {searchError ? (
@@ -448,11 +458,14 @@ export function LibraryPicker({
               return (
                 <button
                   key={row.key}
+                  type="button"
+                  data-idx={idx}
+                  aria-pressed={isSelected || isExcluded}
                   onMouseEnter={() => setActiveIdx(idx)}
                   onClick={() => toggle(row.key)}
                   disabled={isExcluded}
                   className={cn(
-                    "flex w-full items-center gap-2 py-1 pl-7 pr-2.5 text-left text-[12px] transition-colors",
+                    "flex min-h-9 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] py-1 pl-7 pr-2.5 text-left text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                     idx === activeIdx ? "bg-surface-muted text-content" : "text-content-muted",
                     isExcluded && "opacity-40",
                   )}
@@ -479,8 +492,11 @@ export function LibraryPicker({
                 )}
               >
                 <button
+                  type="button"
                   onClick={() => expand(c.id)}
-                  className="flex w-4 shrink-0 items-center justify-center text-content-subtle"
+                  aria-expanded={isOpen}
+                  aria-label={`${c.name}: ${isOpen ? t("layout.collapse") : t("layout.expand")}`}
+                  className="flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-subtle focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                   title={isOpen ? t("layout.collapse") : t("layout.expand")}
                 >
                   <IconChevronRight
@@ -489,11 +505,14 @@ export function LibraryPicker({
                   />
                 </button>
                 <button
+                  type="button"
+                  data-idx={idx}
+                  aria-pressed={isSelected || isExcluded}
                   onMouseEnter={() => setActiveIdx(idx)}
                   onClick={() => toggle(row.key)}
                   disabled={isExcluded}
                   className={cn(
-                    "flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1.5 text-left text-[12px]",
+                    "flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--radius-btn-xs)] py-1.5 pr-1.5 text-left text-[12px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                     isExcluded ? "opacity-40" : "text-content-muted",
                     idx === activeIdx && "text-content",
                   )}

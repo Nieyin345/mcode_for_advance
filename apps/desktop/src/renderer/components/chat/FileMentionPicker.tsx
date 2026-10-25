@@ -5,7 +5,7 @@
  * candidates via `api.file.search` with a debounced query. Keyboard:
  * ↑↓ move, Enter/Tab confirm, Esc close.
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { openEscapeLayer, claimEscape, isTopEscapeLayer } from "@renderer/lib/escapeLayer.js";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
@@ -13,6 +13,7 @@ import { api } from "@renderer/lib/api.js";
 import { IconFile, IconLoader2, IconPaperclip, IconSearch, IconUpload } from "@renderer/lib/icons.js";
 import type { FileSearchEntry } from "@contracts/ipc";
 import { useComposerPickerPlacement } from "./useComposerPickerPlacement.js";
+import { eligibleFileIndex } from "./filePickerKeyboard.js";
 
 export type FileMentionPickerMode = "mention" | "attach";
 
@@ -66,7 +67,11 @@ export function FileMentionPicker({
   // The native OS chooser may remain open after this picker closes/switches
   // projects. Its late result belongs only to the episode that opened it.
   const selectionGenerationRef = useRef(0);
-  const exclude = new Set(excludePaths);
+  // Use stable content-based identity instead of constructing a new Set on
+  // every keystroke, which used to tear down the global key listener each
+  // render (while React was trying to process an IME completion).
+  const excludedKey = JSON.stringify(excludePaths);
+  const exclude = useMemo(() => new Set<string>(JSON.parse(excludedKey) as string[]), [excludedKey]);
   const eligibleSelectedCount = [...selectedEntries.keys()].filter((path) => !exclude.has(path)).length;
 
   const effectiveQuery = mode === "attach" ? localQuery : query ?? "";
@@ -76,6 +81,7 @@ export function FileMentionPicker({
   const searchKey = JSON.stringify([projectPath, effectiveQuery.trim()]);
   const [completedSearchKey, setCompletedSearchKey] = useState<string | null>(null);
   const visibleFiles = completedSearchKey === searchKey ? files : [];
+  const selectableIdx = eligibleFileIndex(visibleFiles, exclude, activeIdx);
   const searchInFlight = !!projectPath && (loading || completedSearchKey !== searchKey);
   const currentSearchError = searchError && completedSearchKey === searchKey;
 
@@ -180,9 +186,9 @@ export function FileMentionPicker({
 
   const confirmMention = useCallback(
     (file: FileSearchEntry) => {
-      onPick([file]);
+      if (!exclude.has(file.path)) onPick([file]);
     },
-    [onPick],
+    [onPick, exclude],
   );
 
   const toggleAttach = useCallback((file: FileSearchEntry) => {
@@ -204,8 +210,9 @@ export function FileMentionPicker({
       return;
     }
     if (searchInFlight || currentSearchError) return;
-    if (visibleFiles[activeIdx] && !exclude.has(visibleFiles[activeIdx].path)) onPick([visibleFiles[activeIdx]]);
-  }, [visibleFiles, selectedEntries, exclude, activeIdx, onPick, searchInFlight, currentSearchError]);
+    const target = visibleFiles[selectableIdx];
+    if (target && !exclude.has(target.path)) onPick([target]);
+  }, [visibleFiles, selectedEntries, exclude, selectableIdx, onPick, searchInFlight, currentSearchError]);
 
   /** Open the native OS file picker so the user can attach files from OUTSIDE
    *  the project root (unlike `file.search`, which main scopes to known
@@ -284,26 +291,35 @@ export function FileMentionPicker({
         onClose();
         return;
       }
-      if (searchInFlight || currentSearchError) return;
-      if (e.key === "ArrowDown") {
-        if (files.length === 0) return;
+      // Selected attachments survive across search queries. Confirming them
+      // must work even while the new results are loading or show no matches.
+      if (mode === "attach" && eligibleSelectedCount > 0 && e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
-        setActiveIdx((i) => Math.min(files.length - 1, i + 1));
+        confirmAttach();
+        return;
+      }
+      if (searchInFlight || currentSearchError) return;
+      if (e.key === "ArrowDown") {
+        if (visibleFiles.length === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setActiveIdx((i) => eligibleFileIndex(visibleFiles, exclude, i, 1));
         return;
       }
       if (e.key === "ArrowUp") {
+        if (visibleFiles.length === 0) return;
         e.preventDefault();
         e.stopPropagation();
-        setActiveIdx((i) => Math.max(0, i - 1));
+        setActiveIdx((i) => eligibleFileIndex(visibleFiles, exclude, i, -1));
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
-        if (files.length === 0) return;
+        const f = visibleFiles[selectableIdx];
+        if (!f && mode === "mention") return;
         e.preventDefault();
         e.stopPropagation();
         if (mode === "mention") {
-          const f = visibleFiles[activeIdx];
           if (f) confirmMention(f);
         } else {
           confirmAttach();
@@ -313,7 +329,7 @@ export function FileMentionPicker({
     // Capture so we beat textarea Enter-to-send.
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [open, files, visibleFiles, activeIdx, mode, confirmMention, confirmAttach, onClose, searchInFlight, currentSearchError]);
+  }, [open, visibleFiles, selectableIdx, exclude, eligibleSelectedCount, mode, confirmMention, confirmAttach, onClose, searchInFlight, currentSearchError]);
 
   // Click outside the picker to close. Mirrors the ModelDropdown / TagPopover
   // pattern (document mousedown + ref.contains). Escape is already handled by
@@ -358,12 +374,12 @@ export function FileMentionPicker({
             onChange={(e) => setLocalQuery(e.target.value)}
             placeholder={t("chat.mention.searchPlaceholder")}
             aria-label={t("chat.mention.searchPlaceholder")}
-            className="h-7 min-w-0 flex-1 rounded bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle focus-visible:ring-2 focus-visible:ring-accent"
+            className="min-h-8 min-w-0 flex-1 rounded-[var(--radius-btn-xs)] bg-transparent text-[12px] text-content outline-none placeholder:text-content-subtle focus-visible:ring-2 focus-visible:ring-accent"
           />
           {eligibleSelectedCount > 0 && (
             <button
               type="button"
-              className="min-h-7 shrink-0 rounded bg-accent px-1.5 py-0.5 text-[10px] font-medium text-surface hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              className="min-h-8 shrink-0 rounded-[var(--radius-btn-xs)] bg-accent px-1.5 py-0.5 text-[10px] font-medium text-surface hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               onClick={confirmAttach}
             >
               {t("chat.mention.addN", { n: eligibleSelectedCount })}
@@ -385,7 +401,7 @@ export function FileMentionPicker({
           onClick={() => void handlePickExternal()}
           disabled={pickPending}
           className={cn(
-            "mx-1.5 mt-1.5 flex items-center gap-1.5 rounded-md border border-dashed border-edge px-2 py-1.5 text-left text-[12px] text-content-muted",
+            "mx-1.5 mt-1.5 flex min-h-9 items-center gap-1.5 rounded-[var(--radius-btn-xs)] border border-dashed border-edge px-2 py-1.5 text-left text-[12px] text-content-muted",
             "cds-hover-ghost transition-colors hover:border-edge hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           )}
           title={t("chat.mention.externalTitle")}
@@ -422,7 +438,7 @@ export function FileMentionPicker({
         ) : (
           visibleFiles.map((f, idx) => {
             const already = exclude.has(f.path);
-            const isActive = idx === activeIdx;
+            const isActive = idx === selectableIdx;
             const isSel = selectedEntries.has(f.path);
             return (
               <button
@@ -433,7 +449,7 @@ export function FileMentionPicker({
                 aria-disabled={already}
                 aria-pressed={mode === "attach" ? isSel || already : undefined}
                 aria-current={isActive ? "true" : undefined}
-                onMouseEnter={() => setActiveIdx(idx)}
+                onMouseEnter={() => { if (!already) setActiveIdx(idx); }}
                 onClick={() => {
                   if (mode === "mention") {
                     if (!already) confirmMention(f);
