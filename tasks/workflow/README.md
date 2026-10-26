@@ -319,3 +319,10 @@ T81（四步链路）、T84（journey 陈旧断言）、T89（fixup 崩溃）、
 - 复跑 `node apps/desktop/scripts/run-smokes.mjs workflow-native-load-smoke t27-load-entry-deadlock-smoke t21-orphaned-adapters-wired-smoke flow-migration-smoke node-red-e2e-smoke node-red-deploy-reconciliation-smoke workflow-engine-selection-smoke workflow-engine-runtime-smoke executor-gate-d-smoke mcode-node-pack-smoke workflow-ui-smoke orchestration-ipc-smoke mcode-admin-smoke workflow-view-smoke app-control-smoke`：**15/15 PASS**，日志 `apps/desktop/.tmp/smoke-runs/1792950951466-60208-u48ZVk/`；Contracts/desktop TypeScript `tsc --noEmit` 两套 EXIT=0、`git diff --cached --check` EXIT=0。
 - 关键反向验证：尝试删去其他 tabs、跳过 native ID 冲突隔离、跳过外部 Deploy CAS、跳过 journal 失败恢复分别让装载测试变红，恢复后均绿；隔离测试与 Node-RED 5.0.8 真子进程验证两份历史流程以**一个** Node-RED 所有者持有。
 - **尚未关闭**：SQL `WorkflowDoc` 与 `flows.json` 的单物理事实源收敛、全部旧 `ExecutionEngine` 真实退役、需要实际会话绑定的迁移前置条件、真实 Electron U1 和内存/CPU 量化验收。未改动用户真实 `flows.json`，不可标为全系统单执行器 REVIEW_PASSED。
+
+### 2026-10-26 W25 后续：原生多 tab 跨图引用安全边界（DEV_CLAIM）
+- Node-RED `mergeNativeWorkflowTab` 装载目标 Mcode tab 时，保留其他 tab 的原生 `wires`/`links` 不变。若待替换 tab 发生实际改变，而其他 tab 的节点通过 `wires` 或 Link in/out/call 的 `links` 指向目标原生节点，拒绝自动合并并说明冲突，**不会先停引擎**。避免旧 `flows.json` 的其他流程悬空/错误重定向。
+- 当目标 tab 与待装载内容结构一致时直接允许重入（即使其他 tab 存在原生跨图连线），不额外要求停止/重启 Node-RED；此判断仍受原有 running/journal/canvas 全量一致性检查约束。
+- `workflow-native-load-smoke` 现涵盖跨图 wires、Link 引用的有改动拒绝，以及完全未改动可重入；真实装载入口验证被拒时文件字节与 stop 次数不变。
+- 正反变异：删除引用阻断时 39/43（4 FAIL）；无条件阻断时 40/43（3 FAIL）；全部恢复。最终 `node apps/desktop/scripts/run-smokes.mjs workflow-native-load-smoke t27-load-entry-deadlock-smoke t21-orphaned-adapters-wired-smoke flow-migration-smoke node-red-e2e-smoke node-red-deploy-reconciliation-smoke workflow-engine-selection-smoke workflow-engine-runtime-smoke executor-gate-d-smoke mcode-node-pack-smoke workflow-ui-smoke orchestration-ipc-smoke mcode-admin-smoke workflow-view-smoke app-control-smoke` **15/15 PASS**，证据 `apps/desktop/.tmp/smoke-runs/1792986932071-41160-C8WOwq/`；Desktop/Contracts `tsc --noEmit` EXIT=0，`git diff --check` EXIT=0。
+- U1 安装版性能（RSS、CPU、切页延迟）、SQL/flows 单物理存储事实源与历史执行器完整退役仍开放，本项不得标记 ARC-006 全项目完成。

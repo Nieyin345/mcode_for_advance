@@ -241,6 +241,47 @@ try {
   check("Node-RED 原生 tab 和节点未发生结构变化",
     nativeOnly.every(node => sharedCanvas.some(n => JSON.stringify(n) === JSON.stringify(node))),
     sharedCanvas.filter(n => n["z"] === "native-tab" || n["id"] === "native-tab"));
+
+  const cGraph = sharedCanvas.filter(n => n["id"] === "tab_C" || n["z"] === "tab_C");
+  const changedCGraph = cGraph.map(n =>
+    n["id"] === cNode?.["id"] ? { ...n, name: "modified with cross-tab references" } : n);
+  for (const [kind, outsider] of [
+    ["wire", { id: "foreign-wire", type: "debug", z: "native-tab", wires: [[String(cNode?.["id"])]] }],
+    ["link", { id: "foreign-link", type: "link out", z: "native-tab", links: [String(cNode?.["id"])] }],
+  ] as const) {
+    const foreignGraph = [...sharedCanvas, outsider];
+    let blocked = false;
+    try { mergeNativeWorkflowTab(foreignGraph as never, changedCGraph as never, "C"); }
+    catch (error) { blocked = String(error).includes("跨 tab 连线"); }
+    check("另一个原生 tab 的跨图 " + kind + " 引用必须阻止静默替换 C", blocked);
+    let identicalSafe = false;
+    try {
+      const merged = mergeNativeWorkflowTab(foreignGraph as never, cGraph as never, "C");
+      identicalSafe = JSON.stringify(merged.nodes) === JSON.stringify(foreignGraph);
+    } catch { /* An unchanged native tab must be safe to revisit. */ }
+    check("跨图 " + kind + " 引用下，重复打开未改动 C 可以原样复用", identicalSafe);
+  }
+  const cBeforeConflict = docs.get("C")!;
+  const foreignGraph = [...sharedCanvas, {
+    id: "foreign-link", type: "link out", z: "native-tab", links: [String(cNode?.["id"])],
+  }];
+  writeFileSync(join(dir, "flows.json"), JSON.stringify(foreignGraph), "utf8");
+  const crossLinkedBytes = readNativeCanvas(dir);
+  const stopsBeforeCrossLink = stops;
+  result = await loadWorkflowIntoNative("C", ports);
+  check("存在跨 tab Link 引用但 C 完全未修改时，生产入口允许无副作用重入",
+    result.ok && result.unchanged === true && stops === stopsBeforeCrossLink
+      && readNativeCanvas(dir) === crossLinkedBytes, { result, stops });
+  docs.set("C", { ...cBeforeConflict, nodes: cBeforeConflict.nodes.map(n =>
+    n.id === "shared" ? { ...n, params: { ...n.params, instruction: "updated while cross-linked" } } : n) });
+  result = await loadWorkflowIntoNative("C", ports, true);
+  check("真实装载入口对跨 tab 引用在 stop/start 之前拒绝，且原生图未被修改",
+    !result.ok && result.reason.includes("跨 tab 连线")
+      && stops === stopsBeforeCrossLink && readNativeCanvas(dir) === crossLinkedBytes,
+    { result, stops, stopsBeforeCrossLink });
+  docs.set("C", cBeforeConflict);
+  writeFileSync(join(dir, "flows.json"), JSON.stringify(sharedCanvas), "utf8");
+
   const beforeReentry = readNativeCanvas(dir);
   const startsBeforeReentry = starts;
   result = await loadWorkflowIntoNative("C", ports);

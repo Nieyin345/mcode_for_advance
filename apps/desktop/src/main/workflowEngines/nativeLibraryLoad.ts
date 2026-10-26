@@ -209,6 +209,25 @@ export function mergeNativeWorkflowTab(
   for (const node of imported) {
     if (reserved.has(node.id)) throw Error(`工作流节点 id 与其他 Node-RED 工作流冲突：${node.id}`);
   }
+  // A byte-for-byte identical target tab may be revisited without changing
+  // any existing links. For an actual replacement, native Node-RED supports
+  // cross-tab links (link in/out/call) and even cross-tab wires. Updating a
+  // tab referenced from another one could silently disconnect or retarget
+  // the foreign workflow. Mcode owns only this tab; require the user to
+  // resolve the incoming links in the native editor before replacing it.
+  if (JSON.stringify(target) !== JSON.stringify(imported)) {
+    const replacedIds = new Set(target.map(node => node.id));
+    for (const node of retained) {
+      const foreign = node as Record<string, unknown>;
+      const wires = Array.isArray(node.wires) ? node.wires.flat() : [];
+      const nativeLinks = Array.isArray(foreign["links"]) ? foreign["links"] : [];
+      const incomingRef = [...wires, ...nativeLinks].find(
+        id => typeof id === "string" && replacedIds.has(id));
+      if (incomingRef !== undefined) {
+        throw Error(`其他 Node-RED 工作流节点 ${node.id} 仍引用目标工作流节点 ${incomingRef}；拒绝破坏跨 tab 连线，请先在原生编辑器处理`);
+      }
+    }
+  }
   // Keep the target tab at its previous position to avoid unnecessary
   // reordering; newly imported tabs append, never discard other flows.
   const firstTargetIndex = previousTabId === null ? -1 : old.findIndex(node => node.id === previousTabId);
