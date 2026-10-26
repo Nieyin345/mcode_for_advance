@@ -321,7 +321,7 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
             }
           }
           if (screen === "long-chat" && probe.ok) {
-            const stress = await js<{total:number;mounted:number;elapsedMs:number;scrollOk:boolean;timelineTotal:number;timelineMountedBefore:number;timelineMountedAfter:number;timelineScrolled:boolean;timelineWindowed:boolean;timelineBeforeTop:number;timelineAfterTop:number;timelineScrollHeight:number;timelineClientHeight:number;timelineFocusPreview:boolean;timelineBlurClearsPreview:boolean}>(`(async () => {
+            const stress = await js<{total:number;mounted:number;elapsedMs:number;scrollOk:boolean;timelineTotal:number;timelineMountedBefore:number;timelineMountedAfter:number;timelineScrolled:boolean;timelineWindowed:boolean;timelineBeforeTop:number;timelineAfterTop:number;timelineScrollHeight:number;timelineClientHeight:number;timelineFocusPreview:boolean;timelineBlurClearsPreview:boolean;timelineFocusPinned:boolean;timelineKeyboardMounted:number;timelineTabStops:number;timelineEndIndex:number;timelineArrowUpIndex:number;timelineHomeIndex:number;timelinePageDownIndex:number;timelinePageUpIndex:number;timelineJumpWorked:boolean;jumpScrollDelta:number}>(`(async () => {
               const root = document.querySelector('[data-chat-root]');
               const mountedBefore = root?.querySelectorAll('[data-message-id]').length ?? 0;
               // This must target LegendList, NOT the independently scrollable
@@ -352,6 +352,8 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               }
               const timelineMountedAfter = timeline?.querySelectorAll('[aria-label]').length ?? 0;
               const firstDashAfter = timeline?.querySelector('[aria-label]')?.getAttribute('aria-label')??'';
+              const timelineAfterTop = timeline?.scrollTop ?? 0;
+              const timelineScrolled = !!timeline && Math.abs(timelineAfterTop - timelineBeforeTop) > 30 && firstDashBefore !== firstDashAfter;
               const focusedDash = timeline?.querySelector('[aria-label]');
               focusedDash?.focus({preventScroll:true});
               await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
@@ -359,17 +361,65 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               focusedDash?.blur();
               await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
               const timelineBlurClearsPreview=!document.querySelector('[data-ui-timeline-preview]');
+
+              // Keyboard access must span the whole virtualized timeline, not
+              // just whichever dashes happen to be mounted. A focused marker
+              // must also survive wheel/scroll virtualization while pinned.
+              const tabStop=timeline?.querySelector('[data-ui-timeline-dash-index] [role="button"][tabindex="0"]');
+              tabStop?.focus({preventScroll:true});
+              await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+              const pinnedIndex=Number(tabStop?.closest('[data-ui-timeline-dash-index]')?.getAttribute('data-ui-timeline-dash-index'));
+              if (timeline) {
+                timeline.scrollTop=Math.max(0,timeline.scrollHeight-timeline.clientHeight);
+                timeline.dispatchEvent(new Event('scroll',{bubbles:true}));
+                await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+              }
+              const timelineFocusPinned=!!tabStop && document.activeElement===tabStop &&
+                tabStop.isConnected && Number(tabStop.closest('[data-ui-timeline-dash-index]')?.getAttribute('data-ui-timeline-dash-index'))===pinnedIndex;
+              const timelineKeyboardMounted=timeline?.querySelectorAll('[data-ui-timeline-dash-index]').length??0;
+              const timelineTabStops=timeline?.querySelectorAll('[data-ui-timeline-dash-index] [role="button"][tabindex="0"]').length??0;
+              const pressTimelineKey=async(key)=>{
+                const active=document.activeElement;
+                active?.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));
+                await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+                return Number(document.activeElement?.closest('[data-ui-timeline-dash-index]')?.getAttribute('data-ui-timeline-dash-index'));
+              };
+              const timelineEndIndex=await pressTimelineKey('End');
+              const timelineArrowUpIndex=await pressTimelineKey('ArrowUp');
+              const timelineHomeIndex=await pressTimelineKey('Home');
+              const timelinePageDownIndex=await pressTimelineKey('PageDown');
+              const timelinePageUpIndex=await pressTimelineKey('PageUp');
+
+              // Click a real timeline dash and verify ChatPane's production
+              // jumpToMessage scrolls the exact virtualized message into view.
+              const chatScrollBeforeJump=scrollNode?.scrollTop??0;
+              const jumpDash=timeline?.querySelector('[data-ui-timeline-dash-index="20"] [role="button"]');
+              jumpDash?.click();
+              let jumpTarget=null;
+              for(let attempt=0;attempt<24;attempt++){
+                await new Promise(resolve=>setTimeout(resolve,50));
+                jumpTarget=document.querySelector('[data-message-id="stress-40"]');
+                const rect=jumpTarget?.getBoundingClientRect();
+                if(rect && rect.bottom>0 && rect.top<window.innerHeight) break;
+              }
+              const jumpRect=jumpTarget?.getBoundingClientRect();
+              const jumpScrollDelta=Math.abs((scrollNode?.scrollTop??0)-chatScrollBeforeJump);
+              const timelineJumpWorked=!!jumpDash && !!jumpTarget && !!jumpRect &&
+                jumpRect.bottom>0 && jumpRect.top<window.innerHeight &&
+                jumpScrollDelta>80;
               return {
                 total:window.__store.getState().messagesBySession?.s1?.length ?? 0,
                 mounted:Math.max(mountedBefore,mountedAfter),
                 elapsedMs:performance.now()-(window.__arcLongStart ?? performance.now()),
                 scrollOk:!!scrollNode && scrollNode.scrollHeight > scrollNode.clientHeight,
                 timelineTotal, timelineMountedBefore, timelineMountedAfter,
-                timelineScrolled:!!timeline && Math.abs(timeline.scrollTop - timelineBeforeTop) > 30 && firstDashBefore !== firstDashAfter,
+                timelineScrolled,
                 timelineWindowed:timeline?.getAttribute('data-ui-timeline-windowed')==='true',
-                timelineBeforeTop,timelineAfterTop:timeline?.scrollTop??0,
+                timelineBeforeTop,timelineAfterTop,
                 timelineScrollHeight:timeline?.scrollHeight??0,timelineClientHeight:timeline?.clientHeight??0,
-                timelineFocusPreview,timelineBlurClearsPreview,
+                timelineFocusPreview,timelineBlurClearsPreview,timelineFocusPinned,timelineKeyboardMounted,timelineTabStops,
+                timelineEndIndex,timelineArrowUpIndex,timelineHomeIndex,timelinePageDownIndex,timelinePageUpIndex,
+                timelineJumpWorked,jumpScrollDelta,
               };
             })()`);
             // A result with all 640 rows in the DOM would indicate lost
@@ -378,7 +428,13 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
                 !stress.timelineWindowed || !stress.timelineScrolled ||
                 stress.timelineMountedBefore > 90 || stress.timelineMountedAfter > 90 ||
                 stress.timelineMountedAfter < 1 ||
-                !stress.timelineFocusPreview || !stress.timelineBlurClearsPreview) {
+                !stress.timelineFocusPreview || !stress.timelineBlurClearsPreview ||
+                !stress.timelineFocusPinned || stress.timelineKeyboardMounted > 90 || stress.timelineTabStops !== 1 ||
+                stress.timelineEndIndex !== stress.timelineTotal - 1 ||
+                stress.timelineArrowUpIndex !== stress.timelineTotal - 2 ||
+                stress.timelineHomeIndex !== 0 ||
+                stress.timelinePageDownIndex <= 0 || stress.timelinePageUpIndex !== 0 ||
+                !stress.timelineJumpWorked) {
               probe={ok:false,reason:"long-chat virtual list failed: "+JSON.stringify(stress)};
             } else {
               probe={...probe,value:{...(probe.value as object ?? {}),stress}};
@@ -454,6 +510,60 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
             sidebar: visibleRect("[data-testid='workspace-sidebar']"),
             center: visibleRect("[data-ui-center-pane]"),
             right: visibleRect("[data-cds-aside][aria-hidden='false']"),
+            // 【诊断】l1 的两个子级（l2 与 bottomTerminal）各自的高度 ——
+            // 用来判断「l2 塌成 0」是不是被兄弟挤掉。
+            siblings: (() => {
+              const el = document.querySelector("[data-ui-center-pane]");
+              if (!el) return null;
+              // 往上找到有 2 个子级的 flex-col（就是 l1）。
+              let n = el;
+              for (let i = 0; i < 10 && n; i++) {
+                const cs = getComputedStyle(n);
+                if (cs.display === "flex" && cs.flexDirection === "column" && n.children.length === 2) {
+                  return [...n.children].map((c) => {
+                    const r = c.getBoundingClientRect();
+                    return {
+                      tag: c.tagName.toLowerCase(),
+                      h: Math.round(r.height),
+                      flex: getComputedStyle(c).flex,
+                      cls: String(c.className).slice(0, 90),
+                    };
+                  });
+                }
+                n = n.parentElement;
+              }
+              return null;
+            })(),
+            // 【诊断】主列高度链：每一层的 tag/class/height，用来定位
+            // 「center height === 0」断在哪一层。只在开发期看，不影响断言。
+            chain: (() => {
+              const el = document.querySelector("[data-ui-center-pane]");
+              if (!el) return null;
+              const out = [];
+              let n = el;
+              for (let i = 0; i < 10 && n && n !== document.body; i++) {
+                const r = n.getBoundingClientRect();
+                const cs = getComputedStyle(n);
+                out.push({
+                  tag: n.tagName.toLowerCase(),
+                  attrs: (n.getAttribute("data-chat-column") || n.getAttribute("data-pane-root") || n.getAttribute("data-testid") || ""),
+                  h: Math.round(r.height),
+                  display: cs.display,
+                  flex: cs.flex,
+                  minH: cs.minHeight,
+                  overflow: cs.overflow,
+                  // 交叉轴与定位：区分「flex 分配失败」和「被 absolute 抽走」。
+                  alignSelf: cs.alignSelf,
+                  position: cs.position,
+                  boxSizing: cs.boxSizing,
+                  flexDirection: cs.flexDirection,
+                  childCount: n.children.length,
+                  absChildren: [...n.children].filter((c) => getComputedStyle(c).position === "absolute").length,
+                });
+                n = n.parentElement;
+              }
+              return out;
+            })(),
           };
           const measured = selectors.map(([name,sel]) => {
             let el; try { el = [...document.querySelectorAll(sel)].find(e => e.getClientRects().length > 0); } catch {}

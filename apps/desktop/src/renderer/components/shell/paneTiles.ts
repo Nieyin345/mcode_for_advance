@@ -212,3 +212,50 @@ export function parseTileLayout(raw: unknown): TileLayout {
   };
   return validNode(o.root) ? (o as TileLayout) : DEFAULT_TILE_LAYOUT;
 }
+
+/**
+ * 拖拽分栏：把某个 stack 里相邻两个子节点的 flex 改成 `na` / `nb`。
+ *
+ * 用**结构相等**定位那对节点（不是按下标）—— 树是递归的，下标只在本层有意义，
+ * 而调用方拿到的是节点对象本身，按引用定位会把「同一份布局的克隆」判成不同。
+ */
+export function resizeStack(
+  layout: TileLayout,
+  target: PaneStack,
+  a: PaneNode,
+  na: number,
+  b: PaneNode,
+  nb: number,
+): TileLayout {
+  const idOf = (n: PaneNode): string =>
+    n.kind === "tile" ? n.tileId : n.children.map(idOf).join("|");
+
+  const aId = idOf(a);
+  const bId = idOf(b);
+  let touched = false;
+
+  const walk = (node: PaneNode): PaneNode => {
+    if (node.kind === "tile") return node;
+    // 找到同一个 stack：方向一致且子节点集合一致。
+    const sameStack =
+      node.direction === target.direction &&
+      node.children.length === target.children.length &&
+      node.children.map(idOf).join(",") === target.children.map(idOf).join(",");
+    if (sameStack) {
+      touched = true;
+      return {
+        ...node,
+        children: node.children.map((c) => {
+          const id = idOf(c);
+          if (id === aId && c.kind === "tile") return { ...c, flex: na };
+          if (id === bId && c.kind === "tile") return { ...c, flex: nb };
+          return c;
+        }),
+      };
+    }
+    return { ...node, children: node.children.map(walk) };
+  };
+
+  const root = walk(layout.root);
+  return touched ? { ...layout, root: root.kind === "stack" ? root : layout.root } : layout;
+}

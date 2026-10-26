@@ -380,7 +380,14 @@ div:has(> [role="menu"]) {
    * the whole app chrome (left bar, right files/git/terminal, settings page).
    * Overridden at runtime by lib/appearance.ts. The derived --rp-fs-* variants
    * (below) track this via calc. */
-  --right-panel-font-size: 14px;
+  /* 【UI 重建 2026-10-27】设置页/左栏/右栏的字号基准改成 Claude 的正文尺寸。
+   *
+   * 之前是 14px（Mcode 自己的选择）。Claude 的界面正文（含设置页）读
+   * `--cds-font-size-body` ≈ 12.24px。整屏文字密度差 14%，与聊天正文的
+   * 23% 一致方向 —— 两处都改才能真正「像」。
+   *
+   * 用户在设置里选的字号仍经 lib/appearance.ts 覆盖这项。 */
+  --right-panel-font-size: 12.24px;
 
   color-scheme: light;
 }

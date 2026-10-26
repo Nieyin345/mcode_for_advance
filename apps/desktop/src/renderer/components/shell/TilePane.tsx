@@ -22,7 +22,7 @@
  * 因为拖动要改 store 持久化，而那属于基础壳之后的批次。
  */
 import { cn } from "@renderer/lib/cn.js";
-import type { ReactNode } from "react";
+import { Fragment, useCallback, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type { PaneNode, PaneTile, PaneStack } from "./paneTiles.js";
 import { isNonChatTile } from "./paneTiles.js";
 
@@ -34,6 +34,11 @@ export interface TilePaneProps {
   onCloseTile?: (tileId: string) => void;
   /** 主对话那一格的内容。 */
   chatColumn: ReactNode;
+  /**
+   * 拖拽分栏回调：某个 stack 里相邻两格的 flex 要改成 na / nb。
+   * 不传则分栏条只画不拖（只读场景）。
+   */
+  onResize?: (stack: PaneStack, a: PaneNode, na: number, b: PaneNode, nb: number) => void;
 }
 
 /** 一个叶子格。 */
@@ -55,7 +60,7 @@ function Tile({
       // 【兼容标记】探针用 `[data-ui-center-pane]` 量中心区、用
       // `[data-cds-aside]` 量右栏。新壳里两者都是 tile，各自沿用对应属性。
       {...(isChat ? { "data-ui-center-pane": "" } : { "data-cds-aside": "", "aria-hidden": "false" })}
-      className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--m-surface-0)]"
+      className="flex min-h-0 min-w-0 flex-1 self-stretch flex-col overflow-hidden bg-[var(--m-surface-0)]"
     >
       {!isChat && (
         <div
@@ -77,31 +82,114 @@ function Tile({
           )}
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 min-w-0 flex-1 self-stretch overflow-auto">
         {isChat ? chatColumn : renderTile(tile.tileId)}
       </div>
     </div>
   );
 }
 
+/** 相邻格之间的拖拽条。Claude 用 `data-tile-divider` 标它。 */
+function TileDivider({
+  direction,
+  onDrag,
+}: {
+  direction: "row" | "column";
+  onDrag: (deltaPx: number, containerPx: number) => void;
+}) {
+  const dragging = useRef<{ start: number; container: number } | null>(null);
+  const isRow = direction === "row";
+
+  const onPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      const container = e.currentTarget.parentElement;
+      if (!container) return;
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const rect = container.getBoundingClientRect();
+      dragging.current = { start: isRow ? e.clientX : e.clientY, container: isRow ? rect.width : rect.height };
+    },
+    [isRow],
+  );
+
+  const onPointerMove = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      const d = dragging.current;
+      if (!d) return;
+      const now = isRow ? e.clientX : e.clientY;
+      onDrag(now - d.start, d.container);
+      // 每帧都把起点推到当前位置 —— 这样 onDrag 收到的是增量，
+      // 而两侧 flex 已经在上一帧被改过，累积不会重复应用。
+      dragging.current = { ...d, start: now };
+    },
+    [isRow, onDrag],
+  );
+
+  const end = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    dragging.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  }, []);
+
+  return (
+    <div
+      data-tile-divider=""
+      role="separator"
+      aria-orientation={isRow ? "vertical" : "horizontal"}
+      className={cn(
+        "shrink-0 bg-[var(--m-border)] transition-colors hover:bg-[var(--m-fill-accent)]",
+        isRow ? "cursor-col-resize" : "cursor-row-resize",
+      )}
+      style={isRow ? { width: 1 } : { height: 1 }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={end}
+      onPointerCancel={end}
+    />
+  );
+}
+
 /** 递归渲染一个节点。props 显式往下传，不用 spread（避免把 layout 带下去）。 */
-function Node({ node, renderTile, onCloseTile, chatColumn }: { node: PaneNode } & Omit<TilePaneProps, "layout">) {
+function Node({ node, renderTile, onCloseTile, chatColumn, onResize }: { node: PaneNode } & Omit<TilePaneProps, "layout">) {
   if (node.kind === "tile") {
     return <Tile tile={node} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} />;
   }
   const dir = node.direction === "row" ? "flex-row" : "flex-col";
+  const total = node.children.reduce((n, c) => n + nodeFlex(c), 0) || 1;
   return (
-    // `h-full` 是关键：父级是 flex 行，本节点若只写 flex-1 而没有确定高度，
-    // 子 tile 的 height 会算成 0（实测：右栏 width 512 / height 0）。
-    <div className={cn("flex h-full min-h-0 min-w-0 flex-1", dir)}>
+    // 高度链：`min-h-0 + flex-1` 让 flex 自己分配。**不写 `h-full`** ——
+    // 它和 `flex-1` 同时出现时高度会算成 0（实测 center/right 恒为 0）。
+    // `min-w-0` 同理，否则横向的 `flex-1` 会被内容撑破。
+    <div className={cn("flex min-h-0 min-w-0 flex-1 self-stretch", dir)}>
       {node.children.map((child, i) => (
-        <div
-          key={child.kind === "tile" ? child.tileId : `stack-${i}`}
-          className="flex h-full min-h-0 min-w-0"
-          style={{ flex: String(nodeFlex(child)) }}
-        >
-          <Node node={child} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} />
-        </div>
+        <Fragment key={child.kind === "tile" ? child.tileId : `stack-${i}`}>
+          {/* 相邻格之间的拖拽条（Claude 的同名属性 `data-tile-divider`）。
+              第一条之前不画。拖动时把 px 位移换算成两侧 flex 的此消彼长。 */}
+          {i > 0 && onResize && (
+            <TileDivider
+              direction={node.direction}
+              onDrag={(deltaPx, containerPx) => {
+                const prev = node.children[i - 1];
+                const cur = child;
+                const a = nodeFlex(prev);
+                const b = nodeFlex(cur);
+                const share = containerPx > 0 ? deltaPx / containerPx : 0;
+                const delta = share * total;
+                // 两侧都至少保留 10% 的份额，避免拖成 0 宽。
+                const na = Math.max(total * 0.1, Math.min(total * 0.9, a + delta));
+                const nb = Math.max(total * 0.1, a + b - na);
+                onResize(node, prev, na, cur, nb);
+              }}
+            />
+          )}
+          <div
+            className="flex min-h-0 min-w-0 self-stretch"
+            style={{ flex: String(nodeFlex(child)) }}
+          >
+            <Node node={child} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} />
+          </div>
+        </Fragment>
       ))}
     </div>
   );
@@ -140,10 +228,10 @@ function CloseIcon() {
 }
 
 /** 对外入口。 */
-export function TilePane({ layout, renderTile, onCloseTile, chatColumn }: TilePaneProps) {
+export function TilePane({ layout, renderTile, onCloseTile, chatColumn, onResize }: TilePaneProps) {
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1" data-pane-layout-root="">
-      <Node node={layout.root} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} />
+    <div className="flex min-h-0 min-w-0 flex-1 self-stretch" data-pane-layout-root="">
+      <Node node={layout.root} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} />
     </div>
   );
 }

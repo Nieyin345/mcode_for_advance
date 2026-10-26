@@ -30,7 +30,7 @@
  * 每个分支都留了 `TODO(ui-rebuild/<line>)` 标记，三条线各自替换自己那一段，
  * 互不覆盖。
  */
-import { useMemo } from "react";
+import { useState } from "react";
 import { useSessionStore } from "../../stores/sessionStore.js";
 import { ClaudeShell } from "./ClaudeShell.js";
 import { ClaudeSidebar, type ClaudeProjectGroup, type ClaudeSession } from "./ClaudeSidebar.js";
@@ -40,7 +40,7 @@ import { LeftBar } from "../layout/LeftBar.js";
 import { ChatPane } from "../chat/ChatPane.js";
 import { BottomTerminalBar } from "../layout/BottomTerminalBar.js";
 import { renderPaneContent } from "./paneContent.js";
-import type { TileLayout } from "./paneTiles.js";
+import { resizeStack, type TileLayout } from "./paneTiles.js";
 
 /** Claude 侧栏的固定宽（来自其产物：`--static-sidebar-width: 18rem` = 288px）。 */
 const CLAUDE_SIDEBAR_PX = 288;
@@ -197,20 +197,17 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   // 这里保留一个 `file` tile 作为默认右栏，内容由 RightPanel 承担 —— 这样
   // 「右侧有东西」与「页签不常驻」两件事同时成立，也保住了既有的
   // 「对话和文件同时看得见」这项用户要求。
-  const tileLayout: TileLayout = useMemo(
-    () => ({
-      version: 2,
-      root: {
-        kind: "stack",
-        direction: "row",
-        children: [
-          { kind: "tile", tileId: "chat", flex: 1 },
-          { kind: "tile", tileId: "file", flex: 1 },
-        ],
-      },
-    }),
-    [],
-  );
+  const [tileLayout, setTileLayout] = useState<TileLayout>({
+    version: 2,
+    root: {
+      kind: "stack",
+      direction: "row",
+      children: [
+        { kind: "tile", tileId: "chat", flex: 1 },
+        { kind: "tile", tileId: "file", flex: 1 },
+      ],
+    },
+  });
 
   return (
     <ClaudeShell
@@ -251,6 +248,8 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       leftWidth={sidebarWidthPx(props.leftWidthPct)}
       tileLayout={tileLayout}
       isLoadingThread={!!loadingMessages}
+      onResizeTile={(_stack, a, na, b, nb) =>
+        setTileLayout((prev) => resizeStack(prev, _stack, a, na, b, nb))}
       renderTile={(tileId) => renderPaneContent(tileId)}
     />
   );

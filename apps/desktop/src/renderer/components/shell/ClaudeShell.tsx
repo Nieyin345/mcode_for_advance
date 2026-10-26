@@ -56,6 +56,8 @@ export interface ClaudeShellProps {
   renderTile: (tileId: string) => ReactNode;
   /** 关闭某个 tile。 */
   onCloseTile?: (tileId: string) => void;
+  /** 拖拽分栏：相邻两格的 flex 改成 na / nb。 */
+  onResizeTile?: (stack: import("./paneTiles.js").PaneStack, a: import("./paneTiles.js").PaneNode, na: number, b: import("./paneTiles.js").PaneNode, nb: number) => void;
   /** 当前是否有会话在加载。 */
   isLoadingThread: boolean;
 }
@@ -84,14 +86,12 @@ const Column = memo(function Column({
       inert={covered}
       aria-hidden={covered || undefined}
       className={cn(
-        "flex min-h-0 min-w-0 flex-col",
-        // **被盖住的列用 absolute 铺满父级，未盖住的列用 relative + flex-1**。
-        // 两者都必须有确定高度来源 —— 父级已补 `h-full`，
-        // 这里再显式写 `h-full`，否则子级 height 会算成 0
-        //（实测：center/right 的 getBoundingClientRect().height === 0）。
+        // `self-stretch` **无条件加**：这一层在 flex-row 父级里，
+        // `flex-1` 只分配宽度，高度全靠交叉轴拉伸。
+        "flex min-h-0 min-w-0 flex-col self-stretch",
         covered
-          ? "pointer-events-none absolute inset-0 h-full w-full opacity-0"
-          : "relative h-full min-h-0 flex-1",
+          ? "pointer-events-none absolute inset-0 opacity-0"
+          : "relative min-h-0 flex-1",
       )}
     >
       {children}
@@ -127,6 +127,7 @@ export function ClaudeShell({
   tileLayout,
   renderTile,
   onCloseTile,
+  onResizeTile,
   isLoadingThread,
 }: ClaudeShellProps) {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
@@ -154,12 +155,14 @@ export function ClaudeShell({
         </aside>
       )}
 
-      <div className="flex h-full min-w-0 flex-1 flex-col" data-testid="workspace-main">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="workspace-main">
         {titlebar}
-        {/* `h-full` 必须一路传到 tile 树 —— 中间任何一层只写 flex-1 而没有
-            确定高度，子级的 height 都会算成 0（实测右栏 width 512 / height 0）。 */}
+        {/* 高度链。**每一层都同时给 `h-full` 与 `flex-1`**：
+            - `h-full` 从父级的确定高度取 100%（父级 h 已知时这是可靠的）；
+            - `flex-1` 让它在兄弟之间分配剩余空间。
+            只写 `flex-1` 在「父级高度来自 flex 分配」时会算成 0（实测）。 */}
         <div className="relative flex h-full min-h-0 flex-1 flex-col">
-          <div className="relative flex h-full min-h-0 flex-1">
+          <div className="relative flex h-full min-h-0 flex-1 items-stretch">
             {/* project 列**始终挂载**：它承载项目首页（会话列表/起点卡片），
                 被 thread 盖住时不卸载，切回来滚动位置与草稿都还在。 */}
             <Column column="project" active={column}>
@@ -172,6 +175,7 @@ export function ClaudeShell({
                     layout={tileLayout}
                     renderTile={renderTile}
                     onCloseTile={onCloseTile}
+                    onResize={onResizeTile}
                     chatColumn={threadColumn}
                   />
                 ) : (
@@ -182,7 +186,23 @@ export function ClaudeShell({
               </Column>
             )}
           </div>
-          {bottomTerminal}
+          {/* 底部终端：**必须包一层高度容器**。
+              `BottomTerminalBar` 自己始终 `h-full`，折叠靠父级给 0 高度
+              （与旧壳 `ThreePaneLayout:414-417` 完全一致的契约）。
+              直接放进来会让它 `h-full` 吃掉全部剩余高度 —— 实测 727px，
+              把主对话挤成 height 0。 */}
+          {bottomTerminal && (
+            <div
+              className={cn(
+                "shrink-0 overflow-hidden",
+                bottomTerminalOpen ? "border-t border-[var(--m-border)]" : "h-0",
+              )}
+              inert={!bottomTerminalOpen}
+              aria-hidden={!bottomTerminalOpen}
+            >
+              {bottomTerminal}
+            </div>
+          )}
         </div>
       </div>
     </div>
