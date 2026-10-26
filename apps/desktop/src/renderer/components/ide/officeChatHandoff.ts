@@ -11,10 +11,22 @@ export function canDockOfficeFile(path: string | null | undefined): boolean {
   return typeof path === "string" && genofficeAppForPath(path) !== undefined;
 }
 
+/**
+ * Windows workspace paths are case-insensitive and may arrive with either slash
+ * style; POSIX paths remain case-sensitive. Use this only for draft-tag identity,
+ * never as an authorization or filesystem path check.
+ */
+function fileReferenceKey(path: string): string {
+  const windowsPath = /^[a-z]:[\\/]/i.test(path) || /^\\\\/.test(path);
+  const normalized = path.replace(/[\\/]+/g, "/").replace(/\/$/, "");
+  return windowsPath ? normalized.toLowerCase() : normalized;
+}
+
 /** Keep unsent prompt/HTML and other file/quote chips unchanged. */
 export function officeDraftWithFile(path: string, previous: ComposerDraft | undefined): ComposerDraft {
   const tags: ContentTag[] = previous?.tags ?? [];
-  if (tags.some((tag) => tag.kind === "file" && tag.filePath === path)) {
+  const targetKey = fileReferenceKey(path);
+  if (tags.some((tag) => tag.kind === "file" && fileReferenceKey(tag.filePath) === targetKey)) {
     return { text: previous?.text ?? "", html: previous?.html ?? "", tags };
   }
   return {

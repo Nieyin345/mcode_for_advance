@@ -668,6 +668,7 @@ function EditorToolbar({
               "cds-hover-ghost text-content-muted hover:text-content",
               genofficeActive && "text-accent",
             )}
+            aria-pressed={genofficeActive}
             title={t("ide.genoffice.toggleHint")}
           >
             <IconEye size={12} />
@@ -686,7 +687,8 @@ function EditorToolbar({
               "cds-hover-ghost text-content-muted hover:text-content",
               genofficeViewActive && "text-accent",
             )}
-            title={t("ide.genoffice.viewHostHint")}
+            aria-pressed={genofficeViewActive}
+            title={t(genofficeViewActive ? "ide.genoffice.viewHostActiveHint" : "ide.genoffice.viewHostHint")}
           >
             <IconWorld size={12} />
             {t("ide.genoffice.viewHost")}
