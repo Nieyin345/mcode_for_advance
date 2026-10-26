@@ -30,7 +30,7 @@
  * 每个分支都留了 `TODO(ui-rebuild/<line>)` 标记，三条线各自替换自己那一段，
  * 互不覆盖。
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSessionStore } from "../../stores/sessionStore.js";
 import { ClaudeShell } from "./ClaudeShell.js";
 import { ClaudeSidebar, type ClaudeProjectGroup, type ClaudeSession } from "./ClaudeSidebar.js";
@@ -40,7 +40,7 @@ import { LeftBar } from "../layout/LeftBar.js";
 import { ChatPane } from "../chat/ChatPane.js";
 import { BottomTerminalBar } from "../layout/BottomTerminalBar.js";
 import { renderPaneContent } from "./paneContent.js";
-import { resizeStack, type TileLayout } from "./paneTiles.js";
+import { resizeStack, type PaneTileKind, type TileLayout } from "./paneTiles.js";
 
 /** Claude 侧栏的固定宽（来自其产物：`--static-sidebar-width: 18rem` = 288px）。 */
 const CLAUDE_SIDEBAR_PX = 288;
@@ -192,13 +192,26 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
     <ChatPane sessionId={activeSessionId} isActive />
   ) : null;
 
-  // tile 布局：chat + 一个默认打开的右侧 pane。
+  // tile 布局：chat + 右侧那个由 `rightPanelTab` 决定的面板。
   //
-  // **不是「只有 chat」**：Claude 打开 Code 页时右侧确实有一块内容区
-  // （文件/改动/终端按需切换），只是它的**页签**不像 Mcode 那样常驻八个。
-  // 这里保留一个 `file` tile 作为默认右栏，内容由 RightPanel 承担 —— 这样
-  // 「右侧有东西」与「页签不常驻」两件事同时成立，也保住了既有的
-  // 「对话和文件同时看得见」这项用户要求。
+  // **Claude 的右侧是「按需出现的 pane」**，Open 什么由当前上下文决定。
+  // Mcode 的对应状态就是 `rightPanelTab`（文件/Git/浏览器/轮次/工作流/任务/
+  // 任务中心/预览）—— 让新壳读同一个字段，功能与旧右栏一致，只是呈现换了。
+  //
+  // 映射：`rightPanelTab` → tile 类型（见 paneContent 的 switch）。
+  const rightPanelTab = useSessionStore((s) => s.rightPanelTab);
+  const tileForTab = (tab: string): PaneTileKind => {
+    switch (tab) {
+      case "git": return "diff";
+      case "preview": return "preview";
+      case "turns": return "turns";
+      case "flow": return "watercolor";
+      case "tasks": return "pr";
+      case "taskcenter": return "cr";
+      case "browser": return "mcpapp";
+      default: return "file";
+    }
+  };
   const [tileLayout, setTileLayout] = useState<TileLayout>({
     version: 2,
     root: {
@@ -206,10 +219,28 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       direction: "row",
       children: [
         { kind: "tile", tileId: "chat", flex: 1 },
-        { kind: "tile", tileId: "file", flex: 1 },
+        { kind: "tile", tileId: tileForTab(rightPanelTab), flex: 1 },
       ],
     },
   });
+  // 右栏页签变了 → 换 tile，但**保留用户拖出来的分栏比例**：
+  // 只换 tileId，不动 flex；两个 tile 时按位置替换右侧那个。
+  const prevTab = useRef(rightPanelTab);
+  useEffect(() => {
+    if (prevTab.current === rightPanelTab) return;
+    prevTab.current = rightPanelTab;
+    const want = tileForTab(rightPanelTab);
+    setTileLayout((prev) => {
+      const root = prev.root;
+      if (root.direction !== "row" || root.children.length !== 2) return prev;
+      const [a, b] = root.children;
+      if (a.kind !== "tile" || b.kind !== "tile") return prev;
+      if (a.tileId === "chat") {
+        return { ...prev, root: { ...root, children: [a, { ...b, tileId: want }] } };
+      }
+      return { ...prev, root: { ...root, children: [{ ...a, tileId: want }, b] } };
+    });
+  }, [rightPanelTab]);
 
   return (
     <ClaudeShell

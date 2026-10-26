@@ -35,6 +35,7 @@
  */
 import { useState, type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
+import { useI18n } from "@renderer/lib/i18n/index.js";
 
 export interface ClaudeSession {
   id: string;
@@ -94,6 +95,7 @@ export function ClaudeSidebar({
   onOpenSettings,
   onCollapse,
 }: ClaudeSidebarProps) {
+  const { t } = useI18n();
   return (
     <nav
       data-cds="Sidebar"
@@ -102,13 +104,13 @@ export function ClaudeSidebar({
     >
       {/* ── 顶部：折叠 + 品牌 + 新建 ── */}
       <div className="flex shrink-0 items-center gap-1 px-2 pt-2">
-        <IconButton label="折叠侧栏" onClick={onCollapse}>
+        <IconButton label={t("layout.collapseSidebar")} onClick={onCollapse}>
           <CollapseIcon />
         </IconButton>
         <span className="min-w-0 flex-1 truncate px-1 text-[var(--m-fs-body)] font-medium text-[var(--m-text-primary)]">
           {brand}
         </span>
-        <IconButton label="新建会话" onClick={onNewSession}>
+        <IconButton label={t("layout.newSession")} onClick={onNewSession}>
           <PlusIcon />
         </IconButton>
       </div>
@@ -122,24 +124,24 @@ export function ClaudeSidebar({
           onClick={onSearch}
         >
           <SearchIcon />
-          <span className="flex-1">Search</span>
+          <span className="flex-1">{t("layout.search")}</span>
           <kbd className="text-[var(--m-fs-caption)] opacity-60">Ctrl K</kbd>
         </button>
       </div>
 
       {/* ── 会话区（可滚） ── */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
-        <Section title="Pinned" items={pinned} activeId={activeSessionId} onSelect={onSelectSession} />
+        <Section title={t("layout.pinned")} items={pinned} activeId={activeSessionId} onSelect={onSelectSession} />
         {projects.map((p) => (
           <ProjectGroup key={p.id} group={p} activeId={activeSessionId} onSelect={onSelectSession} />
         ))}
-        <Section title="Recents" items={recents} activeId={activeSessionId} onSelect={onSelectSession} />
+        <Section title={t("layout.recents")} items={recents} activeId={activeSessionId} onSelect={onSelectSession} />
       </div>
 
       {/* ── 底部：Mcode 自有入口 ── */}
       <div className="shrink-0 border-t border-[var(--m-border)] px-2 py-1.5">
-        <RowButton onClick={onOpenLibrary} icon={<LibraryIcon />}>资料库</RowButton>
-        <RowButton onClick={onOpenSettings} icon={<SettingsIcon />}>设置</RowButton>
+        <RowButton onClick={onOpenLibrary} icon={<LibraryIcon />}>{t("layout.library")}</RowButton>
+        <RowButton onClick={onOpenSettings} icon={<SettingsIcon />}>{t("layout.settings")}</RowButton>
       </div>
     </nav>
   );
