@@ -86,6 +86,20 @@ function failed(err: unknown, status: WorkflowEngineStatusView | null = null): W
   return { ok: false, reason: errText(err), status };
 }
 
+/**
+ * 【Q5】迁移待办的事实来源 —— 由装配层注入（`ipc/index.ts` 读设置）。
+ *
+ * 做成注入而不是在这里 import `SettingRepo`：本模块被多个无头套件用桩替代仓储层，
+ * 顶层 import 会在打包期就失败（同一个理由见 `nativeRunHistory.ts` 顶部那段）。
+ */
+let pendingMigrationProvider: (() => WorkflowEngineStatusView["pendingMigration"]) | null = null;
+
+export function setPendingMigrationProvider(
+  provider: (() => WorkflowEngineStatusView["pendingMigration"]) | null,
+): void {
+  pendingMigrationProvider = provider;
+}
+
 /** 把内部状态翻成契约视图：地址只在 running 时给出，且恒为回环。 */
 export function toStatusView(status: EngineRuntimeStatus): WorkflowEngineStatusView {
   return {
@@ -96,47 +110,74 @@ export function toStatusView(status: EngineRuntimeStatus): WorkflowEngineStatusV
     ...(status.deploymentState === undefined ? {} : { deploymentState: status.deploymentState }),
     ...(status.libraryMirrorPending === undefined ? {} : { libraryMirrorPending: status.libraryMirrorPending }),
     ...(status.libraryMirrorError === undefined ? {} : { libraryMirrorError: status.libraryMirrorError }),
+    ...(status.trustedAtStart === undefined ? {} : { trustedAtStart: status.trustedAtStart }),
+    ...(() => {
+      // 迁移待办与引擎是否在跑无关 —— 引擎停着也要能告诉用户"这几张图没迁"。
+      const pending = pendingMigrationProvider?.() ?? null;
+      return pending === null ? {} : { pendingMigration: pending };
+    })(),
     editorUrl: status.state === "running" && status.port !== null
       ? `http://127.0.0.1:${status.port}/`
       : null,
   };
 }
 
+/**
+ * **启动一个引擎 —— UI 按钮与应用自启共用的唯一实现。**
+ *
+ * 抽出来是因为两条入口（`workflowEngine.start` IPC 与
+ * `engineAutostart.startEngineIfNeeded`）必须走**同一串**前置校验：
+ * `beforeStart`（可执行节点清单/崩溃备份/撤权恢复）→ `launchSpec`（bootstrap 完整性、
+ * 节点包校验、vendor 解析、Node 版本门槛）。少了任何一步，自启就会绕过一道安全门。
+ *
+ * 返回的 `ok:false` 不是异常 —— 它带着"停在哪一步"的状态，调用方据此记账。
+ */
+export async function startWorkflowEngine(
+  ports: Pick<WorkflowEngineHandlerPorts, "registry" | "launchSpec" | "beforeStart">,
+  engineId: string,
+): Promise<WorkflowEngineResult> {
+  let status: WorkflowEngineStatusView | null = null;
+  try {
+    const runtime = ports.registry.get(engineId);
+    if (runtime === null) return failed(`未知工作流引擎：${engineId}`, null);
+    // 清单/备份存在争议时绝不能先执行第三方 Node-RED 代码再报错。
+    status = toStatusView(runtime.status());
+    // Already running: this is a status request, not another launch.
+    // Avoid regenerating bootstrap, verifying/installing the node pack,
+    // and reading admin-token material on every repeated Start click.
+    // The runtime is already owned/probed; EngineRuntime.start is
+    // idempotent, but launchSpec() has disk work before it is called.
+    if (status.state === "running") return { ok: true, status };
+    await ports.beforeStart?.(engineId);
+    const spec = ports.launchSpec(engineId);
+    if (spec === null) return failed(`引擎 ${engineId} 没有配置启动命令`, toStatusView(runtime.status()));
+    const result = await runtime.start({
+      engineId,
+      dataDir: spec.dataDir,
+      command: spec.command,
+      args: spec.args,
+      ...(spec.env !== undefined ? { env: spec.env } : {}),
+      ...(spec.probeIdentity !== undefined ? { probeIdentity: spec.probeIdentity } : {}),
+    });
+    status = toStatusView(result);
+    if (result.state === "failed") {
+      // 失败也回 ok:false + 当前状态 —— 调用方能看到"停在哪一步"。
+      return { ok: false, reason: result.reason ?? "引擎启动失败", status };
+    }
+    log.info(`[workflow-engine:${engineId}] start → ${result.state}`);
+    return { ok: true, status };
+  } catch (err) {
+    return failed(err, status);
+  }
+}
+
 export function registerWorkflowEngineHandlers(ipc: IpcMain, ports: WorkflowEngineHandlerPorts): void {
   const onStart = async (_evt: unknown, raw: unknown): Promise<WorkflowEngineResult> => {
-    let status: WorkflowEngineStatusView | null = null;
     try {
       const input = WorkflowEngineStartSchema.parse(raw);
-      const runtime = ports.registry.get(input.engineId);
-      if (runtime === null) return failed(`未知工作流引擎：${input.engineId}`, null);
-      // 清单/备份存在争议时绝不能先执行第三方 Node-RED 代码再报错。
-      status = toStatusView(runtime.status());
-      // Already running: this is a status request, not another launch.
-      // Avoid regenerating bootstrap, verifying/installing the node pack,
-      // and reading admin-token material on every repeated Start click.
-      // The runtime is already owned/probed; EngineRuntime.start is
-      // idempotent, but launchSpec() has disk work before it is called.
-      if (status.state === "running") return { ok: true, status };
-      await ports.beforeStart?.(input.engineId);
-      const spec = ports.launchSpec(input.engineId);
-      if (spec === null) return failed(`引擎 ${input.engineId} 没有配置启动命令`, toStatusView(runtime.status()));
-      const result = await runtime.start({
-        engineId: input.engineId,
-        dataDir: spec.dataDir,
-        command: spec.command,
-        args: spec.args,
-        ...(spec.env !== undefined ? { env: spec.env } : {}),
-        ...(spec.probeIdentity !== undefined ? { probeIdentity: spec.probeIdentity } : {}),
-      });
-      status = toStatusView(result);
-      if (result.state === "failed") {
-        // 失败也回 ok:false + 当前状态 —— 调用方能看到"停在哪一步"。
-        return { ok: false, reason: result.reason ?? "引擎启动失败", status };
-      }
-      log.info(`[workflow-engine:${input.engineId}] start → ${result.state}`);
-      return { ok: true, status };
+      return await startWorkflowEngine(ports, input.engineId);
     } catch (err) {
-      return failed(err, status);
+      return failed(err);
     }
   };
   recordRpcHandler(IPC.WORKFLOW_ENGINE_START, onStart);

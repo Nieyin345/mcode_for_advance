@@ -7,8 +7,15 @@ import { registerDocumentViewHandlers, isApprovedDocumentViewOpen } from "./docu
 import { resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
 import { registerWorkflowEngineHandlers } from "./workflowEngine.js";
 import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
+import { startEngineIfNeeded, type EngineAutostartPorts, type EngineAutostartResult } from "@main/workflowEngines/engineAutostart.js";
+import { setPendingMigrationProvider } from "./workflowEngine.js";
+import { migrateLegacyWorkflows, describeMigrationReport, pendingMigrationNoticeOf, MIGRATION_REPORT_SETTING_KEY } from "@main/workflowEngines/legacyMigration.js";
+import { evaluateWorkflowMigration } from "@main/workflowEngines/workflowMigrationGate.js";
 import { loadWorkflowIntoNative } from "@main/workflowEngines/nativeLibraryLoad.js";
-import { getWorkflow } from "@main/orchestration/library.js";
+import { getWorkflow, listWorkflows, saveWorkflow } from "@main/orchestration/library.js";
+import { workflowSaveVersion } from "@main/orchestration/workflowSaveVersion.js";
+import { SettingRepo, WorkflowRepo } from "@main/store/repositories.js";
+import { log } from "@main/lib/logger.js";
 import { workflowReviewOf } from "@main/orchestration/workflowTrust.js";
 import { sharedExecutorOwnership } from "@main/workflowEngines/executorOwnership.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
@@ -44,7 +51,6 @@ import { NodeInstallApprovalBridge } from "@main/workflowEngines/engineNodeAppro
 import { getMainWindow, hasLiveRendererWindow, sendToRenderer } from "@main/window.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { registerUnattendedHandlers } from "./unattended.js";
-import { registerModuleHandlers } from "./modules.js";
 import { registerTheiaPreviewHandlers } from "./theiaPreview.js";
 import { registerTheiaInstalledHandlers } from "./theiaInstalled.js";
 import { dataRoot } from "@main/lib/dataRoot.js";
@@ -116,8 +122,23 @@ export { createDbGuardedIpc };
 
 
 /** Register all renderer->main IPC handlers. */
-export function registerIpcHandlers(): void {
-  const ipc = createDbGuardedIpc(ipcMain);
+// 【Q8】引擎自启的装配缝。`registerIpcHandlers` 里装配，`main/index.ts` 在 DB
+// 就绪后调用 `runEngineAutostart()`。**存成模块级函数而不是直接导出端口**，是为了让
+// `main/index.ts` 不必 import `workflowEngines/*`（那会把它拖进 Electron 之外的依赖面）。
+let engineAutostartRunner: (() => Promise<EngineAutostartResult>) | null = null;
+
+/** 装配自启（幂等；生产只在 `registerIpcHandlers` 里调一次）。 */
+export function setEngineAutostartRunner(runner: (() => Promise<EngineAutostartResult>) | null): void {
+  engineAutostartRunner = runner;
+}
+
+/** 需要就拉起引擎。未装配 = 未调用 `registerIpcHandlers`，返回"不需要"。 */
+export async function runEngineAutostart(): Promise<EngineAutostartResult> {
+  if (engineAutostartRunner === null) return { started: false, reason: null };
+  return engineAutostartRunner();
+}
+
+export function registerIpcHandlers(): void {  const ipc = createDbGuardedIpc(ipcMain);
   registerProjectHandlers(ipc);
   registerClaudeHandlers(ipc);
   registerDialogHandlers(ipc);
@@ -126,7 +147,6 @@ export function registerIpcHandlers(): void {
   registerCodexModelsHandlers(ipc);
   registerThemeHandlers(ipc);
   registerFileHandlers(ipc);
-  registerModuleHandlers(ipc);
   registerTheiaPreviewHandlers(ipc);
   registerTheiaInstalledHandlers(ipc,{dataRoot});
   registerRgHandlers(ipc);
@@ -145,7 +165,31 @@ export function registerIpcHandlers(): void {
   registerLspHandlers(ipc);
   registerRuntimesHandlers(ipc);
   registerToolchainHandlers(ipc);
-  registerWorkflowHandlers(ipc);
+  registerWorkflowHandlers(ipc, () => workflowEngineRegistry.dataDirOf("node-red"));
+  // 【Q5】迁移待办：启动时迁不动的那几张，由这里读给引擎状态（引擎页显示）。
+  setPendingMigrationProvider(() => {
+    try {
+      const raw = SettingRepo.get(MIGRATION_REPORT_SETTING_KEY);
+      if (raw === null || raw === "") return null;
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      const notice = parsed as { summary?: unknown; pending?: unknown; at?: unknown };
+      if (typeof notice.summary !== "string" || !Array.isArray(notice.pending)) return null;
+      return {
+        summary: notice.summary,
+        pending: notice.pending.flatMap((item) => {
+          if (item === null || typeof item !== "object") return [];
+          const row = item as { workflowId?: unknown; name?: unknown; reason?: unknown };
+          if (typeof row.workflowId !== "string" || typeof row.name !== "string") return [];
+          return [{ workflowId: row.workflowId, name: row.name,
+            reason: typeof row.reason === "string" ? row.reason : "未知原因" }];
+        }),
+        at: typeof notice.at === "number" ? notice.at : 0,
+      };
+    } catch {
+      return null;
+    }
+  });
   registerHookHandlers(ipc);
   registerPluginsHandlers(ipc);
   registerBrowserHandlers(ipc);
@@ -400,6 +444,70 @@ export function registerIpcHandlers(): void {
   registerMonitoringHandlers(ipc);
   registerCustomUiPanelHandlers(ipc);
   registerExtensionStoreHandlers(ipc);
+
+  // 【Q8】引擎常驻的装配口。放在这里而不是 `main/index.ts`，是因为启动要用的
+  // `beforeStart`（节点清单闸门）与 `launchSpec` 都挂在上面那个 `engineNodeRegistry`
+  // 上 —— 在别处重建一份只会得到两个互不知晓的清单实例。
+  //
+  // 由 `main/index.ts` 在 DB 就绪后调用；返回结果**原样带出**，不在这里吞失败。
+  setEngineAutostartRunner(async () => {
+    const ports: EngineAutostartPorts = {
+      hasNativeWorkflows: () => listWorkflows().some((entry) => entry.engine === "node-red"),
+      engine: {
+        registry: workflowEngineRegistry,
+        launchSpec: (engineId) => workflowEngineRegistry.launchSpec(engineId),
+        beforeStart: async (engineId) => {
+          if (engineId === "node-red") await ensureEngineNodesReady();
+        },
+      },
+    };
+    // 【Q6】**先把旧图迁过来，再决定起不起引擎**。顺序反了的话，只有旧图的新用户
+    // 第一次启动时引擎不会起（此刻库里还没有 node-red 图），要等第二次启动才生效。
+    const migration = await migrateLegacyWorkflows({
+      legacyGraphs: () => WorkflowRepo.list()
+        .map((row) => row.doc)
+        .filter((doc) => (doc.engine ?? "mcode") === "mcode" && doc.nodes.length > 0),
+      types: async () => new Map((await loadNodeTypes()).entries.map((entry) => [entry.id, entry.manifest])),
+      // 走**保存那条路**（CAS / 审批记录 / 广播都跟着），不是直接 WorkflowRepo.save。
+      // 直接写表会绕过 `requireWorkflowReview` 与引擎切换体检。
+      save: async (doc) => {
+        // `getWorkflow` 在这一刻可能已经读不到（并发删除）：那说明这张图不该再迁，
+        // 如实交回失败而不是用一个 null 版本号去撞 CAS。
+        const current = getWorkflow(doc.id);
+        if (current === null) return { ok: false, error: "工作流已不存在" };
+        const result = await saveWorkflow(doc, { expectedRevision: workflowSaveVersion(current) });
+        return result.ok ? { ok: true } : { ok: false, ...(result.error !== undefined ? { error: result.error } : {}) };
+      },
+      evaluate: (doc, types) => {
+        const evaluation = evaluateWorkflowMigration({
+          doc,
+          types,
+          // 迁移预检的在途判据要一个"哪些图正在跑"的集合。启动时刻旧执行器还没
+          // 挂触发器、引擎也还没起，所以是空集 —— 这是**查过且确认没在跑**，
+          // 不是"没有可信快照"（后者该传 undefined，预检会按 unknown 处理）。
+          facts: { review: workflowReviewOf(doc), inFlightWorkflowIds: new Set<string>() },
+        });
+        return { decision: evaluation.decision, summary: evaluation.summary };
+      },
+    });
+    if (migration.outcomes.length > 0) {
+      log.info(`[workflow-migration] ${describeMigrationReport(migration)}`);
+      for (const outcome of migration.outcomes) {
+        if (outcome.decision !== "migrated") {
+          log.warn(`[workflow-migration] 「${outcome.name}」未迁移：${outcome.reason ?? "未知原因"}`);
+        }
+      }
+      // 【Q5】结果落进设置 —— 迁移发生在**窗口还没开**的时候，那一刻广播没有听众。
+      // 用户事后打开工作流面板才需要看到「有哪几张没迁」。全迁完就清掉这条。
+      try {
+        const notice = pendingMigrationNoticeOf(migration);
+        SettingRepo.set(MIGRATION_REPORT_SETTING_KEY, notice === null ? "" : JSON.stringify(notice));
+      } catch (err) {
+        log.warn(`[workflow-migration] 迁移结果未能写入设置（界面不会显示这条）：${(err as Error).message}`);
+      }
+    }
+    return startEngineIfNeeded(ports);
+  });
 }
 
 // Re-export channel constants so handlers stay aligned with the contract.

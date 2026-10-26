@@ -31,6 +31,7 @@ import { CollectionRepo, LibraryRepo, ProjectRepo } from "@main/store/repositori
 import { allTrashCollectionIds, trashedItemIds } from "@main/library/trash.js";
 import { loadLibraryGroups } from "@main/library/groupRegistry.js";
 import { automationRunner } from "@main/orchestration/automationRunner.js";
+import { retiredGraphError } from "@main/workflowEngines/workflowEngineSelection.js";
 import { getWorkflow } from "@main/orchestration/library.js";
 import { effectiveWorkflowEngine } from "@main/workflowEngines/workflowEngineSelection.js";
 import { payloadFactsOf, type TriggerPayload } from "@main/orchestration/automationPayload.js";
@@ -166,9 +167,10 @@ async function runInContext(input: CustomUiRunAutomationInput): Promise<CustomUi
     return { ...result, count: 0, skipped: 0 };
   }
   if (input.dryRun === true) return { ok: true, count: 0, skipped: 0 };
-  return automationRunner
-    .runWithTarget(input.workflowId, input.triggerNodeId, { collectionId: target.collectionId }, input.input)
-    .then((res) => (res.ok ? { ok: true, count: 0, skipped: 0 } : { ok: false, error: res.error, count: 0, skipped: 0 }));
+  // 【Q5】非原生图 = 还挂在旧执行器上的用户图，已退场。与手动运行、钩子动作、
+  // 自动化手动跑给**同一句**可照做的拒绝 —— 而不是让它落到旧 runner 里去撞一个
+  // 更含糊的错误。
+  return { ok: false, error: retiredGraphError(getWorkflow(input.workflowId)?.name ?? input.workflowId), count: 0, skipped: 0 };
 }
 
 export async function runCustomUiAutomation(input: CustomUiRunAutomationInput): Promise<CustomUiRunAutomationResult> {

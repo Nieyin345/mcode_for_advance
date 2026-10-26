@@ -88,13 +88,6 @@ import {
   type AutomationTriggerFacts,
 } from "./automationStatus.js";
 import {
-  WATCH_COMMAND_NODE_ID,
-  WATCH_DEFAULT_TASK,
-  WATCH_SAY_NODE_ID,
-  WATCH_TRIGGER_NODE_ID,
-  WATCH_WORKFLOW_ID,
-} from "./builtins.js";
-import {
   claimCancelledReason,
   claimFailureReason,
   claimRecoveryReason,
@@ -122,7 +115,7 @@ import {
 } from "@main/workflowEngines/executorOwnership.js";
 // 【T3】与保存 / 启动 / 派发三个闸门**同一份**引擎判据（`doc.engine ?? "mcode"`，
 // 历史图无标记 → 旧 runner；新增引擎值未显式放行前一律不装监听 —— fail-closed）。
-import { effectiveWorkflowEngine } from "@main/workflowEngines/workflowEngineSelection.js";
+import { effectiveWorkflowEngine, retiredGraphError } from "@main/workflowEngines/workflowEngineSelection.js";
 
 import {
   TICK_MS,
@@ -520,14 +513,22 @@ class AutomationRunner {
     const raw: unknown = doc.engine;
     if (raw !== undefined && raw !== "mcode" && raw !== "node-red") return { legacy: false, owner: "unknown" };
     const owner = effectiveWorkflowEngine(doc);
-    return owner === "mcode" ? { legacy: true } : { legacy: false, owner };
+    // 【Q5】旧执行器**不再安装任何触发器**，包括归 mcode 的图：统一到 Node-RED 之后，
+    // 旧 cron/文件监听/事件订阅如果还挂着就会和引擎侧的 inject/watch 抢同一张图。
+    return owner === "mcode"
+      ? { legacy: false, owner: "mcode" as WorkflowEngine }
+      : { legacy: false, owner };
   }
 
   /** 事实表里那条「这条触发器由谁装」的句子（用户可见，界面读 `detail`）。 */
-  private static foreignTriggerDetail(owner: WorkflowEngine | "unknown"): string {
-    return owner === "node-red"
-      ? "由 Node-RED 引擎管理：旧自动化执行器不安装 cron / 文件监听 / 事件订阅（触发在引擎侧）"
-      : "工作流引擎标记无法识别（既不是 mcode 也不是 node-red）：旧自动化执行器拒绝安装任何监听（fail-closed）";
+  private static foreignTriggerDetail(owner: WorkflowEngine | "unknown", workflowName: string): string {
+    if (owner === "node-red") {
+      return "由 Node-RED 引擎管理：旧自动化执行器不安装 cron / 文件监听 / 事件订阅（触发在引擎侧）";
+    }
+    if (owner === "mcode") {
+      return retiredGraphError(workflowName);
+    }
+    return "工作流引擎标记无法识别（既不是 mcode 也不是 node-red）：旧自动化执行器拒绝安装任何监听（fail-closed）";
   }
 
   /** 手动入口的同一道闸：这幅图不归旧 runner 时给一句可读的拒绝，而不是"找不到触发器"。 */
@@ -535,7 +536,7 @@ class AutomationRunner {
     const doc = getWorkflow(workflowId);
     if (doc === null) return null;
     const owner = this.legacyTriggerOwnerOf(doc);
-    return owner.legacy ? null : AutomationRunner.foreignTriggerDetail(owner.owner);
+    return owner.legacy ? null : AutomationRunner.foreignTriggerDetail(owner.owner, doc.name);
   }
 
   private buildTriggers(workflowId: string, types: Map<string, NodeTypeManifest>): LoadedTrigger[] {
@@ -574,7 +575,7 @@ class AutomationRunner {
         // 不装任何监听；原因进事实（`armed: false` + 可读 detail）。这里**不**用
         // `parseTriggerSpec` 再验参数 —— 参数好坏是引擎侧的事，旧 runner 没有立场
         // 对一张自己不执行的图报"参数写坏了"。
-        this.facts.recordSetup(seed, false, AutomationRunner.foreignTriggerDetail(owner.owner));
+        this.facts.recordSetup(seed, false, AutomationRunner.foreignTriggerDetail(owner.owner, doc.name));
         continue;
       }
       if (pendingReview !== null) {
@@ -1981,9 +1982,11 @@ class AutomationRunner {
       const reviewError = workflowReviewError(saved);
       if (reviewError !== null) return { ok: false, error: reviewError };
     }
-    // 【T3】Node-RED 拥有的图没有手动入口：它的触发与运行都在引擎里。以前这里会一路
-    // 建会话、claim、再到 `runner.ts` 的 assert 才失败，留下一次失败运行；现在在入口
-    // 就说清楚（与 buildTriggers / fire 同一份引擎判据）。
+    // 【Q5】原生图的手动运行**转发到引擎**，不是拒绝：用户图统一到 Node-RED 之后，
+    // 「立刻运行一次」是用户唯一的手动入口，拒绝它等于删掉这个功能。
+    if (saved !== null && effectiveWorkflowEngine(saved) === "node-red") {
+      return this.runNativeFromLegacyEntry(workflowId, triggerNodeId);
+    }
     const foreign = this.foreignOwnerOf(workflowId);
     if (foreign !== null) return { ok: false, error: foreign };
     const find = (): LoadedTrigger | undefined =>
@@ -2015,6 +2018,30 @@ class AutomationRunner {
    *     典型:文献导入)。用户右键的那个分类是**落点**,不是"这次要办的那一批" ——
    *     所以载荷里只有分类 id 和运行前输入,`items` 一条都不给。
    */
+  /**
+   * 【Q5】把旧入口（「立刻运行一次」、自定义界面右键、手机端）转发到 Node-RED。
+   *
+   * 这些入口共用 `AutomationRunResult` 与"起跑前拒绝用 ok:false"的约定；各改各的会把
+   * 同一条转换抄三份。引擎侧的错误本来就是人话、也是 ok:false，直接搬过来就对得上。
+   */
+  private async runNativeFromLegacyEntry(
+    workflowId: string, triggerNodeId: string,
+  ): Promise<AutomationRunResult> {
+    const { workflowEngineRegistry } = await import("@main/workflowEngines/registry.js");
+    const runtime = workflowEngineRegistry.get("node-red");
+    if (runtime === null) return { ok: false, error: "Node-RED 引擎未注册" };
+    const tool = runtime as unknown as {
+      runNativeManual?: (
+        docId: string, triggerNodeId: string, facts: Readonly<Record<string, unknown>>,
+      ) => Promise<{ ok: boolean; error?: string }>;
+    };
+    if (typeof tool.runNativeManual !== "function") {
+      return { ok: false, error: "当前引擎不支持原生手动触发" };
+    }
+    const result = await tool.runNativeManual(workflowId, triggerNodeId, { kind: "manual", at: Date.now() });
+    return result.ok ? { ok: true } : { ok: false, error: result.error ?? "引擎拒绝了这次手动运行" };
+  }
+
   async runWithTarget(
     workflowId: string,
     triggerNodeId: string,
@@ -2024,7 +2051,12 @@ class AutomationRunner {
       | { collectionId: string },
     input?: Readonly<Record<string, string | readonly string[]>>,
   ): Promise<AutomationRunResult> {
-    // 【T3】同 `runNow`：不归旧 runner 的图在自定义 UI 这条入口也直接说明由谁管。
+    // 【Q5】同 `runNow`：原生图转发到引擎，不在这里拒绝。
+    const targetDoc = getWorkflow(workflowId);
+    if (targetDoc !== null && effectiveWorkflowEngine(targetDoc) === "node-red") {
+      return this.runNativeFromLegacyEntry(workflowId, triggerNodeId);
+    }
+    // 【T3】不归旧 runner 的图在自定义 UI 这条入口也直接说明由谁管。
     const foreign = this.foreignOwnerOf(workflowId);
     if (foreign !== null) return { ok: false, error: foreign };
     const find = (): LoadedTrigger | undefined =>
@@ -2057,146 +2089,6 @@ class AutomationRunner {
       payload = { kind: "event", event: subscribed ?? "library.item.imported", items: target.items, ...withInput };
     }
     return this.fire(trigger, payload, { manual: true });
-  }
-
-  /**
-   * **守望起跑**(会话输入区那颗「守望」按钮,D3)。它不挂任何后台监听 —— 点击
-   * 就是给**当前这条会话**起一次模板运行,命令跑完由「回话」那一步把结果注回来。
-   *
-   * ## 它和 `runNow` 走的不是同一条查找路
-   *
-   * `runNow` 从 `this.all()` 里找触发器,而那张表要求触发器的项目**真实存在**
-   * (`buildTriggers` 查不到项目就跳过)。守望模板没法预知这台机器上有哪些项目,
-   * 它的触发器在起跑之前一直处于"项目没填"状态,进不了那张表 —— 所以这里**自己
-   * 拼一次运行**:项目、工作目录、发起会话全部按**这一次**的来,模板只是形状。
-   *
-   * ## 起跑会顺手改模板,这是有意的
-   *
-   * 命令与消息长在**节点参数**里(`D1`:模板就是配置的真相),面板上现写的命令、
-   * 自定义的消息要落到参数里才跑得起来。所以起跑前把这几样写进模板并存一份
-   * (对内置 id 就是覆盖行):项目、任务兜底、命令(给了才写)、消息(给了才写)。
-   * 副作用是**看得见的** —— 库里那份「长任务守望」显示的就是上一次守望用的配置,
-   * 想改默认去节点上改,和 `D1` 说的是同一件事。
-   *
-   * ## 重入保护在改模板**之前**
-   *
-   * 上一次还在跑时,这一次带来的新命令不能把正在跑的那条覆盖掉 —— 先查活跃,
-   * 再动参数。`fire()` 里那道是**通用**的 D12(按后台会话判),这里是守望自己的
-   * 入口提示,两边都要。
-   */
-  async startWatch(args: {
-    /** 发起会话(按钮所在的那个对话)。命令在**它的**项目目录里跑,结果注回**它**。 */
-    originSessionId: string;
-    /** 这一次要跑的命令(面板选的模板或现写的)。不给 = 沿用模板里现在那条。 */
-    command?: string;
-    /** 注入时说的那句话。不给/空 = 沿用模板默认。 */
-    message?: string;
-  }): Promise<AutomationRunResult> {
-    const origin = SessionRepo.get(args.originSessionId);
-    if (origin === undefined) {
-      return { ok: false, error: "发起会话不在了(它可能已经被删)—— 回到那条对话再点一次" };
-    }
-    const project = ProjectRepo.get(origin.projectId);
-    if (project === undefined) {
-      return {
-        ok: false,
-        error: `发起会话的项目不在了(${origin.projectId})—— 守望要在那个项目目录里跑命令`,
-      };
-    }
-
-    if (SessionRepo.listAutomationsByWorkflow(WATCH_WORKFLOW_ID).some((s) => hasActiveRun(s.id))) {
-      return { ok: false, error: "上一次守望还在跑 —— 等它结束,或在运行历史里看进度" };
-    }
-
-    const doc = getWorkflow(WATCH_WORKFLOW_ID);
-    if (doc === null) {
-      return { ok: false, error: "内置模板「长任务守望」不见了 —— 到工作流库把它恢复一下" };
-    }
-
-    // 把这一次的配置写进模板。三个节点 id 找不到 = 图被改得不认得了(节点被删),
-    // 下面 `present` 那一关会说清楚。
-    const command = args.command?.trim() ?? "";
-    const message = args.message?.trim() ?? "";
-    let changed = false;
-    const nodes = doc.nodes.map((node) => {
-      if (node.id === WATCH_TRIGGER_NODE_ID) {
-        const params = { ...node.params };
-        let touched = false;
-        if (params[NODE_TRIGGER_PROJECT_PARAM_KEY] !== project.id) {
-          params[NODE_TRIGGER_PROJECT_PARAM_KEY] = project.id;
-          touched = true;
-        }
-        const task = params[NODE_TRIGGER_TASK_PARAM_KEY];
-        if (typeof task !== "string" || task.trim().length === 0) {
-          // 存盘那一关要求它非空 —— 不能把一句空话存进去。
-          params[NODE_TRIGGER_TASK_PARAM_KEY] = WATCH_DEFAULT_TASK;
-          touched = true;
-        }
-        if (touched) {
-          changed = true;
-          return { ...node, params };
-        }
-        return node;
-      }
-      if (node.id === WATCH_COMMAND_NODE_ID && command.length > 0) {
-        changed = true;
-        return { ...node, params: { ...node.params, [NODE_COMMAND_PARAM_KEY]: command } };
-      }
-      if (node.id === WATCH_SAY_NODE_ID && message.length > 0) {
-        changed = true;
-        return { ...node, params: { ...node.params, [NODE_PROMPT_PARAM_KEY]: message } };
-      }
-      return node;
-    });
-    const present = (id: string): boolean => nodes.some((n) => n.id === id);
-    if (!present(WATCH_TRIGGER_NODE_ID) || !present(WATCH_COMMAND_NODE_ID) || !present(WATCH_SAY_NODE_ID)) {
-      return {
-        ok: false,
-        error: "模板「长任务守望」缺了起跑要用的节点(触发器 / 跑命令 / 回话)—— 到工作流库把它恢复一下",
-      };
-    }
-    if (changed) {
-      const saved = await saveWorkflow({ ...doc, nodes }, { expectedRevision: workflowSaveVersion(doc) });
-      if (!saved.ok) return { ok: false, error: saved.error };
-    }
-
-    const triggerNode = nodes.find((n) => n.id === WATCH_TRIGGER_NODE_ID);
-    const taskRaw = triggerNode?.params[NODE_TRIGGER_TASK_PARAM_KEY];
-    const task =
-      typeof taskRaw === "string" && taskRaw.trim().length > 0 ? taskRaw.trim() : WATCH_DEFAULT_TASK;
-    return this.fire(
-      {
-        workflowId: WATCH_WORKFLOW_ID,
-        workflowRevision: workflowRevision({ ...doc, nodes }),
-        workflowName: doc.name,
-        nodeId: WATCH_TRIGGER_NODE_ID,
-        title: (triggerNode?.title ?? "").trim() || "守望入口",
-        spec: { kind: "manual" },
-        projectId: project.id,
-        cwd: project.path,
-        task,
-        // 守望模板的参数袋照实带上(它**就在图上**)。守望这条路的 `disarmed` 是写死的
-        // false —— 点在按钮上的那一下不看「启用」开关(见
-        // `NODE_TRIGGER_ENABLED_PARAM_KEY`),但事实里那条记录仍该照模板说真话:
-        // 模板上的开关关着,它就不会自动响。
-        params: triggerNode?.params ?? {},
-        disarmed: false,
-      },
-      { kind: "manual" },
-      { originSessionId: origin.id, manual: true },
-    );
-  }
-
-  /**
-   * 这条会话上有没有**正在跑的守望**(面板据此提示"上一次还在跑",D3)。
-   *
-   * 在守望的全部项目会话中检查发起会话与活跃状态。不能只取最新一条，
-   * 否则新项目的一条空闲会话会遮住旧项目仍在运行的守望。
-   */
-  activeWatchOf(originSessionId: string): boolean {
-    return SessionRepo.listAutomationsByWorkflow(WATCH_WORKFLOW_ID).some(
-      (session) => session.parentSessionId === originSessionId && hasActiveRun(session.id),
-    );
   }
 
   /* ────────────────────────── 事实状态(AUTO-09)────────────────────────── */
@@ -2388,7 +2280,8 @@ class AutomationRunner {
       if (!engineOwner.legacy) {
         this.releaseExecutorOwner(trigger.workflowId);
         settleClaim();
-        return this.skip(trigger, AutomationRunner.foreignTriggerDetail(engineOwner.owner));
+        return this.skip(trigger, AutomationRunner.foreignTriggerDetail(engineOwner.owner,
+          getWorkflow(trigger.workflowId)?.name ?? trigger.workflowId));
       }
       // A save reloads node manifests asynchronously. A debounce timer or cron
       // tick can fire before `entries` is replaced; never execute that stale

@@ -19,6 +19,10 @@ function build(id: string, name: string, description: string, steps: Array<{ id:
   edges.unshift({ id: "e_memory_entry", from: "memory-entry", to: steps[0]!.id });
   const positions = autoLayout(nodes, edges);
   return { id, name, description, icon: "clipboard-text", trigger: "manual", builtin: true, updatedAt: 0,
+    // 【Q5】记忆图归 **Node-RED** 执行。它们由 `mcode.trigger` + `mcode.agent` 组成，
+    // 原生侧完全能表达；留在旧执行器上就是"两套执行器长期并存"。
+    // 触发入口是 `registry.runNativeManualWithResults`（见 `memory/assistant.ts`）。
+    engine: "node-red",
     nodes: nodes.map(node => ({ ...node, position: positions.get(node.id) ?? node.position })), edges };
 }
 export const MEMORY_WORKFLOWS: WorkflowDoc[] = [

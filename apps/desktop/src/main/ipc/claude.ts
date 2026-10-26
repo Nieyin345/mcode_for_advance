@@ -60,6 +60,7 @@ import {
 } from "@main/orchestration/runner.js";
 import { getWorkflow } from "@main/orchestration/library.js";
 import { workflowReviewError } from "@main/orchestration/workflowTrust.js";
+import { isRetiredLegacyGraph, retiredGraphError } from "@main/workflowEngines/workflowEngineSelection.js";
 import { generateSessionTitle } from "@main/ipc/titleGen.js";
 import { createBranchedWorktree, createDetachedWorktree, nextWorktreeDir } from "@main/lib/worktreeOps.js";
 import { stat } from "node:fs/promises";
@@ -249,6 +250,15 @@ export function registerClaudeHandlers(ipcMain: IpcMain): void {
       const selected = getWorkflow(updated.workflowId);
       const reviewError = selected === null ? null : workflowReviewError(selected);
       if (reviewError !== null) throw new Error(reviewError);
+      // 【Q5 / 批次 3】**用户图退场**：旧执行器不再跑用户的工作流。
+      //
+      // 闸门放在这里而不是 `runner.startWorkflowRun`：那个函数被五个调用者复用
+      // （记忆助手、钩子动作、自动化、手机端、本入口），在它里面拒会把**产品功能**
+      // 和**用户图**一起拒掉 —— 我第一版就是这么写的，实测把记忆助手和钩子动作
+      // 当场弄坏。真正的"用户选了这张图要它跑"只有这一个入口。
+      if (selected !== null && isRetiredLegacyGraph(selected)) {
+        throw new Error(retiredGraphError(selected.name));
+      }
     }
 
     // ── MC-049: 忙判断 / 启动权预检必须在**改会话状态之前**完成。 ──

@@ -16,10 +16,9 @@ import type { IpcMain } from "electron";
 import { dialog } from "electron";
 import { readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import type { AutomationRunEntry, AutomationRunStep, AutomationTriggerFacts, PersistedWorkflowRunLite, WatchCommandTemplate } from "@contracts/ipc";
+import type { AutomationRunEntry, AutomationRunStep, AutomationTriggerFacts, PersistedWorkflowRunLite } from "@contracts/ipc";
 import { diagnoseTriggerFacts } from "@contracts/ipc";
 import { shouldRetryOutcome } from "@contracts/nodeType";
-import { watchTemplatesRevision } from "@contracts/ipc/workflow";
 import {
   AgentProfileRemoveSchema,
   AgentProfileSaveSchema,
@@ -29,11 +28,6 @@ import {
   AutomationSessionsSchema,
   IPC,
   RunsHistorySchema,
-  WatchCommandTemplateSchema,
-  WatchStartSchema,
-  WatchStatusSchema,
-  WatchTemplatesRebuildSchema,
-  WatchTemplatesSaveSchema,
   WorkflowChooseSchema,
   WorkflowRetrySchema,
   WorkflowExportSchema,
@@ -70,7 +64,7 @@ import { notifyWorkflowsChanged } from "@main/orchestration/broadcast.js";
 import { decodeSnapshot, runHistory } from "@main/orchestration/runStore.js";
 import { configDrift, resolveConfigBinding, runStartBindings, staleBindings } from "@contracts/configBinding";
 import { requestWorkflowReload } from "@main/orchestration/reloadRequest.js";
-import { approveWorkflowRevision, workflowReviewOf } from "@main/orchestration/workflowTrust.js";
+import { approveWorkflowRevision, setWorkflowReviewChangeListener, workflowReviewOf } from "@main/orchestration/workflowTrust.js";
 import { workflowSaveVersion } from "@main/orchestration/workflowSaveVersion.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { ensureLocalNodeTypesDir } from "@main/orchestration/nodeTypesSeed.js";
@@ -82,6 +76,7 @@ import {
   collectCapabilityInventory,
 } from "@main/orchestration/capabilityResolver.js";
 import { executionEngine } from "@main/orchestration/executionEngine.js";
+import { refreshEngineTrustMarker } from "@main/workflowEngines/engineTrustMarker.js";
 import { providerRegistry } from "@main/providers/registry.js";
 import { getEnabledPlugins } from "@main/plugins/pluginManager.js";
 import { decoratePresetCatalog, readPresetCatalog, readPresetWorkflow } from "@main/orchestration/presetWorkflows.js";
@@ -110,7 +105,40 @@ export function sanitizeFileBase(name: string | undefined, fallback: string): st
   return /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(cleaned) ? `${cleaned}_` : cleaned;
 }
 
-export function registerWorkflowHandlers(ipcMain: IpcMain): void {
+/**
+ * @param workflowEngineDataDir 引擎数据目录（信任标记的落点）。省略时**不写**信任标记
+ *   —— 无头套件与单元测试不该因为一次工作流 CRUD 就在磁盘上留下引擎级的信任状态。
+ *   生产装配（`ipc/index.ts`）必须传，否则用户批准后引擎重启仍是 safeMode。
+ */
+export function registerWorkflowHandlers(ipcMain: IpcMain, workflowEngineDataDir?: () => string): void {
+  // 【Q8】审批账本 → 引擎信任标记的唯一翻译点。
+  //
+  // `engine-trust.json` 是**进程级**开关（`safeMode` 作用于整个 Node-RED 子进程），
+  // 所以判据不能是"刚批准的这份"，而是"库里全部 node-red 图都通过" —— 见
+  // `engineTrustMarker.ts` 文件头的粒度说明。账本有四个写入口（保存/审批/恢复默认/
+  // 出厂更新），逐个调用必漏；`workflowTrust` 在每次写入后广播一次，这里集中算。
+  setWorkflowReviewChangeListener(() => {
+    // 未装配 dataDir = 无头/单元环境：不落信任标记（见参数说明）。
+    if (workflowEngineDataDir === undefined) return;
+    try {
+      const nativeFlows = listWorkflows()
+        .filter((entry) => entry.engine === "node-red")
+        .map((entry) => {
+          const doc = getWorkflow(entry.id);
+          // 图读不到（并发删除）= 没有可执行的文档，按"不在库里"处理而不是待审。
+          if (doc === null || doc.nodes.length === 0) return null;
+          return { id: entry.id, pending: workflowReviewOf(doc)?.pending === true };
+        })
+        .filter((item): item is { id: string; pending: boolean } => item !== null);
+      const result = refreshEngineTrustMarker(workflowEngineDataDir(), { nativeFlows: () => nativeFlows });
+      if (!result.ok) log.info(`[workflow-engine:node-red] 信任标记未放开：${result.reason}`);
+    } catch (err) {
+      // 写标记失败**不能**让保存/审批失败（账本已经落盘），但必须留痕：
+      // 静默的话用户会以为批准生效了，而重启后引擎仍 safeMode。
+      log.error(`[workflow-engine:node-red] 信任标记刷新失败：${(err as Error).message}`);
+    }
+  });
+
   // 用户自写的节点类型目录 + 它的规范,随启动铺一次(已存在就跳过,不覆盖用户改过的)。
   // 放在注册函数里而不是 `main/orchestration` 的模块顶层,是因为**它是副作用**;注册
   // 函数是启动路径上一个明确的落点 —— 与 `registerLibraryHandlers` 里那句
@@ -375,6 +403,24 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
   // 错误 —— 界面上是一句"这张卡不适用了",不是红框。
   ipcMain.handle(IPC.WORKFLOW_RETRY, async (_evt, raw) => {
     const input = WorkflowRetrySchema.parse(raw);
+    // 【WF-06】原生 Node-RED 运行的重试走自己的入口。
+    //
+    // 判据是 sessionId 的**命名空间前缀**（`@node-red-runboard:`），不是"库里这张图
+    // 是不是 node-red" —— 后者会让一张刚切过引擎的图的旧卡片被送进错误的执行器。
+    // 前缀由 `nativeRunHistory.nativeRunboardSessionId` 统一生成，两边逐字一致。
+    const NATIVE_RUNBOARD_PREFIX = "@node-red-runboard:";
+    if (input.sessionId.startsWith(NATIVE_RUNBOARD_PREFIX)) {
+      const workflowId = input.sessionId.slice(NATIVE_RUNBOARD_PREFIX.length);
+      if (workflowId.length === 0) return { ok: false, error: "这条运行记录没有对应的工作流" };
+      const { workflowEngineRegistry } = await import("@main/workflowEngines/registry.js");
+      const runtime = workflowEngineRegistry.get("node-red");
+      if (runtime === null) return { ok: false, error: "Node-RED 引擎未注册" };
+      if (typeof (runtime as { retryNativeFlow?: unknown }).retryNativeFlow !== "function") {
+        return { ok: false, error: "当前引擎不支持重跑原生工作流" };
+      }
+      return (runtime as unknown as { retryNativeFlow(id: string): Promise<{ ok: boolean; error?: string }> })
+        .retryNativeFlow(workflowId);
+    }
     return resolveWorkflowRetry(input);
   });
 
@@ -525,267 +571,13 @@ export function registerWorkflowHandlers(ipcMain: IpcMain): void {
     return runs;
   });
 
-  // ── 守望(会话输入区那颗「守望」按钮,D3/D4)──
+  // ── 长任务守望已移除（2026-10-27）──
   //
-  // 起跑、查活跃、命令模板三件事。起跑有**可见的副作用**(command / message 会写进
-  // 内置模板的节点参数,见 `automationRunner.startWatch` 的说明);模板存 setting,
-  // **不单开设置页**(D4)—— 面板里管。
+  // 它是"用户能用工作流自己搭出来"的东西，做成内置模板等于把一种做法锁死在宿主里。
+  // 这里的起跑 / 状态两个 handler 与契约一并删除；命令模板库
+  // （`automation.watchTemplates*`）是它的配套，同批移除。
 
-  ipcMain.handle(IPC.AUTOMATION_WATCH, async (_evt, raw) => {
-    const input = WatchStartSchema.parse(raw);
-    return automationRunner.startWatch({
-      originSessionId: input.sessionId,
-      ...(input.command !== undefined ? { command: input.command } : {}),
-      ...(input.message !== undefined ? { message: input.message } : {}),
-    });
-  });
-
-  ipcMain.handle(IPC.AUTOMATION_WATCH_STATUS, async (_evt, raw) => {
-    const input = WatchStatusSchema.parse(raw);
-    return { active: automationRunner.activeWatchOf(input.sessionId) };
-  });
-
-  // 无参 handler,同 `WORKFLOW_AGENT_PROFILES`。
-  // 【MC-054】返回值带**完整性状态**:`health` 区分「没配过/好好的/整份坏/读不动」,
-  // `problems` 列出被跳过的坏条目 —— 界面据此把「一条都没有」与「有几条读不出来」
-  // 分开说(从前只有日志,界面上一句都没有)。
-  ipcMain.handle(IPC.AUTOMATION_WATCH_TEMPLATES, async () => loadWatchTemplatesReport());
-
-  // 【MC-054】整份损坏时**拒绝**普通保存 —— 与 MC-051 的 hooks.json 同一条纪律
-  // (损坏原件不静默覆盖;显式修复走 `automation.rebuildCorruptWatchTemplates`)。
-  ipcMain.handle(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, async (_evt, raw) => {
-    const input = WatchTemplatesSaveSchema.parse(raw);
-    const health = classifyWatchTemplates();
-    if (health.state === "corrupt" || health.state === "read_error") {
-      log.warn(`[workflow] 拒绝保存命令模板:${WATCH_TEMPLATES_KEY} 损坏(${health.detail}) —— 原值保持不动`);
-      return {
-        ok: false,
-        error: `命令模板的设置在库里坏得读不出来(${health.detail})—— 为保住你的原始内容,这次保存被拒绝。请在守望面板上用「备份并重建」显式重建(原值会先备份成 ${WATCH_TEMPLATES_KEY}.corrupt-<时间>)。`,
-      };
-    }
-    // 逐条坏(个别条目读不了)时**也拒全量写** —— 那份 `input.templates` 是从界面当前列表
-    // 来的,而界面根本没看见被跳过的坏条目:照写等于替用户把它们抹掉(台账点名的
-    // 「新保存会覆盖原始设置」)。用户要抹,走显式重建。
-    if (health.state === "partial") {
-      return {
-        ok: false,
-        error: `命令模板里还有 ${health.problems.length} 条读不出来的条目 —— 直接整份保存会把你手写的那几条抹掉。请先修好它们,或在守望面板上用「备份并重建」显式重建。`,
-      };
-    }
-    // 【MC-054】原值版本检查(两端并发编辑)**是默认要求,不是可选项**。
-    //
-    // 第十七轮复核点破了上一版的口子:上一版把 expectedRevision 设成 optional,
-    // 「没给 = 整表覆盖」,于是旧调用方(含 Agent 经 `app_api_*` 调的宿主方法)
-    // 仍能静默丢别人的更新 —— 两条旧快照各存 [A]/[B],最后只剩 [B]。
-    //
-    // 现在的判据:
-    //   - 给了 revision:必须与盘上现算一致,否则冲突(带回 currentRevision);
-    //   - **没给 revision**:一律拒绝,并明确告诉调用方先读 `automation.watchTemplates`
-    //     拿 revision 再重试。旧调用方不会被静默放行。
-    //
-    // 旧版留下的第二个绕过口：普通 save 收到显式 null 就跳过 CAS。
-    // 即使 Agent/UI 明确传 null 也不得获得无条件覆盖能力；重建只能走单独
-    // `automation.rebuildWatchTemplates`（备份原始字节 + 审批）通道。
-    const current = loadWatchTemplatesReport();
-    if (input.expectedRevision === undefined) {
-      log.warn("[workflow] 拒绝保存命令模板:调用方没有带 expectedRevision");
-      return {
-        ok: false,
-        conflict: true,
-        currentRevision: current.revision,
-        error:
-          "这次保存没有带原值版本(expectedRevision)。为避免覆盖别人刚保存的内容," +
-          "请先读一次命令模板(automation.watchTemplates)拿到 revision,改完再带着它保存。" +
-          "如果你的本意是修复损坏的模板,请用「备份并重建」而不是普通保存。",
-      };
-    }
-    if (input.expectedRevision === null) {
-      log.warn("[workflow] 拒绝保存命令模板:普通保存不允许用 null 跳过版本围栏");
-      return {
-        ok: false,
-        conflict: true,
-        currentRevision: current.revision,
-        error: "命令模板的普通保存必须携带当前原值版本(expectedRevision)，不能用 null 跳过并发保护。请先重新读取模板；若要修复损坏数据，请使用「备份并重建」专用入口。",
-      };
-    }
-    if (input.expectedRevision !== current.revision) {
-      log.warn(`[workflow] 拒绝保存命令模板:版本已变(期望 ${input.expectedRevision},当前 ${current.revision})`);
-      return {
-        ok: false,
-        conflict: true,
-        currentRevision: current.revision,
-        error: "命令模板已被别处改动(另一个窗口、Agent 或设置导入)—— 为避免覆盖对方刚保存的内容,这次保存被拒绝。请重新加载后再改。",
-      };
-    }
-    // 读得懂(或没配过、或整份是空)→ 正常整份写。
-    SettingRepo.set(WATCH_TEMPLATES_KEY, JSON.stringify(input.templates));
-    return { ok: true };
-  });
-
-  // 【MC-054】显式「备份损坏原值 → 校验 → 重建」—— 唯一能吃下损坏/部分损坏的操作。
-  ipcMain.handle(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, async (_evt, raw) => {
-    const input = WatchTemplatesRebuildSchema.parse(raw);
-    return rebuildCorruptWatchTemplates(input.templates);
-  });
-
-  // 【MC-054】部分损坏时的「显式抢救」:把读得出的好条目原样**重写**成一份干净的
-  // (原值先备份)。与上面那条区别:那条要求调用方给完整新列表,这条复用当前读得出的那些。
-}
-
-/* ── 命令模板的存取(D4:名字 + 命令的数组,存 setting)── */
-
-const WATCH_TEMPLATES_KEY = "automation.watch.templates";
-
-/**
- * 【MC-054】命令模板设置的**健康分类** —— 读/保存/重建三处共用一份判据
- * (与 MC-051 的 `classifyHooksFile` 同一条纪律)。
- *
- *  - `absent`    键不存在 / 空串 —— 「没配过」,唯一允许随意写的状态;
- *  - `valid`     读得懂且**每一条都过得去 schema**;
- *  - `partial`   读得懂(是数组),但有条目过不去 schema —— 好的照常显示,
- *                坏的要报出来;**普通全量保存拒绝**(界面看不见那些条目,
- *                照写就是替用户抹掉,台账红例);
- *  - `corrupt`   不是 JSON / 顶层不是数组 —— 一条都读不出来;
- *  - `read_error` `SettingRepo.get` 抛(库未就绪 / 磁盘拒读)。
- */
-type WatchTemplatesHealth =
-  | { state: "absent" }
-  | { state: "valid"; templates: WatchCommandTemplate[] }
-  | { state: "partial"; templates: WatchCommandTemplate[]; problems: string[]; raw: string }
-  | { state: "corrupt"; detail: string; raw: string }
-  | { state: "read_error"; detail: string };
-
-function classifyWatchTemplates(): WatchTemplatesHealth {
-  let raw: string | null;
-  try {
-    raw = SettingRepo.get(WATCH_TEMPLATES_KEY);
-  } catch (err) {
-    return { state: "read_error", detail: err instanceof Error ? err.message : String(err) };
-  }
-  if (raw === null || raw.length === 0) return { state: "absent" };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    return { state: "corrupt", detail: `不是合法的 JSON:${(err as Error).message}`, raw };
-  }
-  if (!Array.isArray(parsed)) return { state: "corrupt", detail: "存的不是数组", raw };
-  const templates: WatchCommandTemplate[] = [];
-  const problems: string[] = [];
-  for (const item of parsed) {
-    const check = WatchCommandTemplateSchema.safeParse(item);
-    if (check.success) templates.push(check.data);
-    else problems.push(check.error.issues[0]?.message ?? "形状不对");
-  }
-  if (problems.length > 0) return { state: "partial", templates, problems, raw };
-  return { state: "valid", templates };
-}
-
-/**
- * 读出来时**逐条过一遍 schema**:setting 是用户数据,手改坏了一条不该把整个面板
- * 弄挂 —— 坏的丢掉,好的照常显示。丢掉的那几条要说话(**日志 + 返回值两条路都要**;
- * 从前只有日志,界面上一句都没有 —— MC-054)。
- */
-function loadWatchTemplatesReport(): {
-  templates: WatchCommandTemplate[];
-  health: "absent" | "valid" | "partial" | "corrupt" | "read_error";
-  problems: string[];
-  /** 【MC-054】当前内容的权威修订(保存方的 `expectedRevision` 与它比对)。 */
-  revision: string;
-} {
-  const health = classifyWatchTemplates();
-  switch (health.state) {
-    case "absent":
-      return { templates: [], health: "absent", problems: [], revision: watchTemplatesRevision([]) };
-    case "valid":
-      return { templates: health.templates, health: "valid", problems: [], revision: watchTemplatesRevision(health.templates) };
-    case "partial":
-      log.warn(
-        `[workflow] 命令模板里有 ${health.problems.length} 条读不了,已跳过(好的照常显示):${health.problems.join(" / ")}`,
-      );
-      return { templates: health.templates, health: "partial", problems: health.problems, revision: watchTemplatesRevision(health.templates) };
-    case "corrupt":
-      log.warn(`[workflow] 命令模板${health.detail},当没有模板处理(保存会被拒绝,原件保全)`);
-      return { templates: [], health: "corrupt", problems: [health.detail], revision: watchTemplatesRevision([]) };
-    case "read_error":
-      log.warn(`[workflow] 命令模板读不出来:${health.detail}`);
-      // 读不动时 revision 无从谈起 —— 给空表的修订只是形状占位;保存侧在
-      // `read_error` 已经被拒(上面那条分支先于 CAS),故它不会被用于比对。
-      return { templates: [], health: "read_error", problems: [health.detail], revision: watchTemplatesRevision([]) };
-  }
-}
-
-/**
- * 【MC-054】**显式**把损坏 / 部分损坏的命令模板备份并重建 —— 唯一能吃下坏状态的操作。
- *
- * 与 MC-051 的 `rebuildCorruptHooksFile` 同一套顺序:读原值 → 写备份键
- * (`<key>.corrupt-<时间戳>`)→ **校验备份与原文逐字节一致** → 才写主键。任何一步
- * 失败即中止、原值不动。`templates` 省略 = 把**当前读得出的好条目**原样保住重写
- * (部分损坏的常用法:救回好的,丢掉读不出的那几条 —— 这一步是用户明确点的)。
- */
-function rebuildCorruptWatchTemplates(
-  next: WatchCommandTemplate[] | undefined,
-): { ok: true; backupKey: string; kept: number } | { ok: false; error: string } {
-  const health = classifyWatchTemplates();
-  if (health.state === "absent" || health.state === "valid") {
-    return { ok: false, error: "命令模板没有损坏,不需要重建(直接普通保存即可)" };
-  }
-  // 【MC-054】第一次 IO 读错不代表原件内容损坏。若随后读取突然成功，
-  // 旧逻辑会把健康原件当 corrupt 备份，再以 [] 覆盖所有模板。
-  // 读错必须先恢复可读性并重新分类，绝不以失败快照进入任何重建路径。
-  if (health.state === "read_error") {
-    return { ok: false, error: `命令模板当前无法读取(${health.detail})，不能证明文件损坏，也不能安全重建；请先恢复读取后重新打开面板。` };
-  }
-  let original: string | null = null;
-  try {
-    original = SettingRepo.get(WATCH_TEMPLATES_KEY);
-  } catch {
-    original = null;
-  }
-  if (original === null || original.length === 0) {
-    return { ok: false, error: "命令模板的原值读不出来,连备份都做不了" };
-  }
-  // 【MC-054】分类时见过的坏档必须仍是同一份原始字节。若期间有人修复
-  // 或修改设置，绝不能备份了别人的新内容，却按旧 partial 快照重建清空。
-  // 此比较与同主进程同步写入一起防止本地旧快照覆盖；跨进程仍需真正事务 CAS。
-  if (original !== health.raw) {
-    return { ok: false, error: "命令模板在检查损坏情况后已被其他操作更改，已拒绝按过期快照重建；请重新读取当前模板。" };
-  }
-  // 同一毫秒内可能已有历史备份。不能把「修复损坏数据」变成覆盖旧原件。
-  // 随机 UUID 让不同重建调用各有独立键；写前仍核验目标不存在，若设置读
-  // 失败则 fail-closed（绝不猜测为空）。普通保存与重建始终共用此唯一入口。
-  let backupKey = "";
-  try {
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const candidate = `${WATCH_TEMPLATES_KEY}.corrupt-${Date.now()}-${randomUUID()}`;
-      if (SettingRepo.get(candidate) !== null) continue;
-      backupKey = candidate;
-      break;
-    }
-  } catch (err) {
-    return { ok: false, error: `无法检查命令模板备份是否已存在:${(err as Error).message} —— 未重建,原值未动` };
-  }
-  if (backupKey === "") return { ok: false, error: "无法分配不冲突的备份键，原值未动" };
-  try {
-    SettingRepo.set(backupKey, original);
-  } catch (err) {
-    return { ok: false, error: `备份写不进去(${backupKey}):${(err as Error).message} —— 未重建,原值未动` };
-  }
-  // 校验备份与原文逐字节一致 —— 「先备份再重建」的承诺在这里被核验。
-  let backupText: string | null;
-  try {
-    backupText = SettingRepo.get(backupKey);
-  } catch (err) {
-    return { ok: false, error: `备份写完后读不回来(${backupKey}):${(err as Error).message} —— 未重建,原值未动` };
-  }
-  if (backupText !== original) {
-    return { ok: false, error: `备份与原文不一致(${backupKey})—— 未重建,原值未动` };
-  }
-  // 重建内容:调用方给了就用它;没给 = 把当前读得出的好条目原样保住(部分损坏的常用法)。
-  const kept = next ?? (health.state === "partial" ? health.templates : []);
-  SettingRepo.set(WATCH_TEMPLATES_KEY, JSON.stringify(kept));
-  log.info(`[workflow] 损坏的命令模板已备份到 ${backupKey} 并重建(${kept.length} 条)`);
-  return { ok: true, backupKey, kept: kept.length };
+  /* 命令模板库随长任务守望一并移除（2026-10-27）。 */
 }
 
 /** 一次给界面看几条历史。窗口里只有一条列表,给多了也是滚 —— 二十条够看出"它在按时跑"。 */

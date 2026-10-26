@@ -2339,6 +2339,9 @@ class Run {
 export async function runWorkflow(args: RunArgs): Promise<RunResult> {
   // Even direct scheduler callers must obey Host engine ownership. An API or
   // future automation entry may bypass runner.startWorkflowRun entirely.
+  // 【Q5】"用户图退场"那条判据不在这里 —— 本函数拿不到会话种类，判不出这次是
+  // 用户选的图还是内部编排（记忆助手/钩子）。分流在 `runner.startWorkflowRun`
+  // 的文档闸门处（那里有 `session.kind`）。这里只保留引擎归属。
   assertWorkflowExecutor(args.doc, "mcode");
   return new Run().run(args);
 }

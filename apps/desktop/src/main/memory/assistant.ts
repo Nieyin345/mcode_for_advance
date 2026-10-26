@@ -4,7 +4,7 @@ import type { Session } from "@contracts/session";
 import type { MemoryAssistantInput, MemoryAssistantJob, MemoryAssistantResult } from "@contracts/memoryAssistant";
 import { MessageRepo, ProjectRepo, SessionRepo, WorkflowRunRepo } from "@main/store/repositories.js";
 import { runtimeManager } from "@main/claude/RuntimeManager.js";
-import { startWorkflowRun, cancelWorkflowRun, hasActiveRun } from "@main/orchestration/runner.js";
+import { hasActiveRun } from "@main/orchestration/runner.js";
 import { getWorkflow } from "@main/orchestration/library.js";
 import { decodeSnapshot } from "@main/orchestration/runStore.js";
 import { broadcastSessionChanged } from "@main/lib/sessionSync.js";
@@ -12,6 +12,60 @@ import { cancelAssistantJob, createAssistantJob, listAssistantJobs, pendingAssis
 import { clampRunEvidence, clampSourceContext, textOf, SOURCE_BUDGET } from "./sourceText.js";
 import { currentAgentMemoryProjectId } from "./agentScope.js";
 const active = new Map<string, AbortController>();
+
+/**
+ * 【Q5】跑一张记忆图 —— 走 Node-RED 原生路径。
+ *
+ * ## 为什么单独一个函数
+ *
+ * 记忆助手需要三样旧调度器给过的东西：**终点产出**、**取消**、**失败原因**。
+ * 原生侧这三样都有，但分散在不同入口（`runNativeManualWithResults` 给前两个，
+ * 引擎未就绪/未部署由它自己报错）。收在这里，让上面那段编排只看见一个结果对象。
+ *
+ * ## 前置条件不满足时给的是**可照做**的话
+ *
+ * 引擎没起、这张图没部署 —— 这些不是"内部错误"，是用户能自己解决的。原生侧的
+ * 错误信息本来就写清了下一步（"请先启动并明确部署工作流"），这里原样透传。
+ */
+async function runMemoryWorkflowNatively(
+  workflowId: string,
+  context: string,
+  signal: AbortSignal,
+): Promise<{
+  ok: boolean;
+  aborted?: boolean;
+  error?: string;
+  outputs?: Map<string, { title: string; status: "success" | "failed"; summary: string; error?: string }>;
+}> {
+  if (signal.aborted) return { ok: false, aborted: true };
+  const { workflowEngineRegistry } = await import("@main/workflowEngines/registry.js");
+  const runtime = workflowEngineRegistry.get("node-red");
+  if (runtime === null) return { ok: false, error: "Node-RED 引擎未注册，无法整理记忆" };
+  const tool = runtime as unknown as {
+    runNativeManualWithResults?: (
+      docId: string, triggerNodeId: string, facts: Readonly<Record<string, unknown>>,
+    ) => Promise<{ ok: boolean; error?: string; outputs?: Map<string, { title: string; status: "success" | "failed"; summary: string; error?: string }> }>;
+  };
+  if (typeof tool.runNativeManualWithResults !== "function") {
+    return { ok: false, error: "当前引擎不支持带产出的手动触发，无法整理记忆" };
+  }
+  // 上下文作为触发载荷的一部分交给 `memory-entry` —— 与旧路径 `entry.payload` 同义。
+  const pending = tool.runNativeManualWithResults(workflowId, "memory-entry", {
+    kind: "manual", at: Date.now(), context,
+  });
+  // 取消：`runNativeManualWithResults` 自己不接 signal，所以这里用竞速把它「放弃」。
+  // 引擎侧的节点仍会跑完那一步 —— 但用户按的是取消，界面必须立刻停，而
+  // `settle(..., "cancelled")` 已经把这次整理记为取消，不会被当成结果投递。
+  if (!signal.aborted) {
+    const aborted = new Promise<{ aborted: true }>((resolve) => {
+      signal.addEventListener("abort", () => resolve({ aborted: true }), { once: true });
+    });
+    const outcome = await Promise.race([pending, aborted]);
+    if ("aborted" in outcome) return { ok: false, aborted: true };
+    return outcome;
+  }
+  return { ok: false, aborted: true };
+}
 function freshSession(source: Session, kind: "automation" | "chat", workflowId: string): Session {
   return { ...source, id: `sess_${randomUUID()}`, kind, workflowId, parentSessionId: kind === "automation" ? source.id : null,
     nodeId: null, agentProfile: null, claudeSessionId: null, title: kind === "automation" ? "记忆助手" : "交接继续",
@@ -26,7 +80,14 @@ function freshSession(source: Session, kind: "automation" | "chat", workflowId: 
  */
 const MESSAGE_SLICE = 24_000;
 
-function sourceContext(source: Session): string {
+/**
+ * 这一轮整理要交给模型的材料。
+ *
+ * **导出**：它是纯函数（读库 → 拼文本），与执行引擎无关。判定它是否泄漏图片/密钥、
+ * 是否读到了真实运行证据，应该直接调它验 —— 不必起一个引擎、跑一次模型。
+ * 见 `scripts/node-session-smoke` 里那几条内容断言。
+ */
+export function sourceContext(source: Session): string {
   const page = MessageRepo.listBySession(source.id, { limit: 48 });
   const messages = page.messages.map(m => `[${m.role} / ${m.id}]\n${textOf(m.content)}`).join("\n\n").slice(-MESSAGE_SLICE);
   const runs = WorkflowRunRepo.listForSession(source.id, 3).map(row => {
@@ -76,22 +137,28 @@ export async function memoryAssistant(input: MemoryAssistantInput): Promise<Memo
     try {
       runtimeManager.bindSession(worker);
       runtimeManager.setInteractiveProxy(worker.id, source.id);
-      void startWorkflowRun({ session: worker, startSignal: active.get(job.id)!.signal, cwd: source.worktreePath ?? project.path, prompt: context,
-        entry: { nodeId: "memory-entry", summary: context, payload: { kind: "manual", at: Date.now() } },
-      }).then(result => {
-        if (!result || result.status !== "success") {
-          const errors = [...(result?.outcomes.values() ?? [])].map(o => o.error).filter(Boolean).join("；");
-          settle(job, result?.status === "cancelled" ? "cancelled" : "failed", "", errors || "任务未完成，请查看运行记录");
-          return;
-        }
-        const terminal = input.kind === "capture" ? "save" : input.kind === "health" ? "report" : "main";
-        const body = result.outcomes.get(terminal)?.summary.trim() ?? "";
-        if (!body) { settle(job, "failed", "", "AI 没有生成可用结果"); return; }
-        if (body.length > SOURCE_BUDGET) { settle(job, "failed", "", "结果超过交接上限，完整结果保留在运行记录，请缩小整理范围后重试"); return; }
-        settle(job, "ready", body);
-      }).catch(error => settle(job, "failed", "", String(error))).finally(() => {
-        active.delete(job.id); runtimeManager.dispose(worker.id);
-      });
+      // 【Q5】**记忆整理走 Node-RED 原生执行**，不再经旧调度器。
+      //
+      // 三张记忆图（`memoryWorkflows.ts`）本来就是 `mcode.trigger` + `mcode.agent`，
+      // 原生侧完全能表达；把它们留在旧执行器上是"两套执行器长期并存"，与本轮
+      // "统一到 Node-RED"直接冲突。
+      //
+      // 触发入口用 `runNativeManualWithResults` —— 它走的是与画布手动点、UI 按钮
+      // **同一条**已验证路径（Host 签发票据 → 回环 inject），并把每个节点的产出
+      // 带回来。终点节点的 `summary` 就是这一轮要交给用户的结果。
+      void runMemoryWorkflowNatively(workflowId, context, active.get(job.id)!.signal)
+        .then(result => {
+          if (result.aborted) { settle(job, "cancelled", "", ""); return; }
+          if (!result.ok) { settle(job, "failed", "", result.error ?? "任务未完成，请查看运行记录"); return; }
+          const terminal = input.kind === "capture" ? "save" : input.kind === "health" ? "report" : "main";
+          const body = result.outputs?.get(terminal)?.summary.trim() ?? "";
+          if (!body) { settle(job, "failed", "", "AI 没有生成可用结果"); return; }
+          if (body.length > SOURCE_BUDGET) { settle(job, "failed", "", "结果超过交接上限，完整结果保留在运行记录，请缩小整理范围后重试"); return; }
+          settle(job, "ready", body);
+        })
+        .catch(error => settle(job, "failed", "", String(error))).finally(() => {
+          active.delete(job.id); runtimeManager.dispose(worker.id);
+        });
     } catch (error) { active.delete(job.id); settle(job, "failed", "", String(error)); runtimeManager.dispose(worker.id); throw error; }
   } else if (input.op !== "list") {
     const job = readAssistantJob(input.jobId);
@@ -101,7 +168,13 @@ export async function memoryAssistant(input: MemoryAssistantInput): Promise<Memo
         throw new Error("目标对话已经开始接收，不能撤回已发送的上下文；请先停止目标回合");
       }
       if (job.status === "consumed" || job.status === "expired") return { jobs: listAssistantJobs(source.id), incoming: pendingAssistantHandoff(source.id) ?? undefined, injections: memoryInjectionsFor(source.id) };
-      if (job.status === "running") { active.get(job.id)?.abort(); cancelWorkflowRun(job.workerSessionId); }
+      if (job.status === "running") {
+        // 【Q5】记忆整理现在跑在 Node-RED 引擎里，`cancelWorkflowRun`（旧调度器的
+        // 取消）够不到它。取消 = 放弃等待：`active` 的 abort 让这次的 promise
+        // 立刻按"已取消"收尾，界面不再等；已经进引擎的那一轮会自己跑完，
+        // 它的产出不会再被当成结果投递（`settle` 已经落到 cancelled）。
+        active.get(job.id)?.abort();
+      }
       // 【MC-025】取消也走存储核:job 终结与目标指针清理同一事务(见 cancelAssistantJob 注释)。
       cancelAssistantJob(job);
     } else {

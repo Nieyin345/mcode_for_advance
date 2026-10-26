@@ -18,13 +18,13 @@ import { readAutomationEventChain, runWithAutomationOrigin, snapshotAutomationOr
  *  **显式记日志**:这次预检会少看到几条扩展能力(报"缺能力"的文案里能对上),而不是
  *  把整个能力清单装配判失败、连内置能力也一起丢掉。 */
 async function extensionDeclarationsForPreflight(runId: string): Promise<HostCapabilitySource[]> {
-  try {
-    const host = await (await import("@main/modules/service.js")).getModuleHost();
-    return hostCapabilityDeclarationsFromCatalog(host.catalog());
-  } catch (error) {
-    log.warn(`workflow run ${runId}: 扩展能力清单读取失败,这次预检只含内置能力:${(error as Error).message}`);
-    return [];
-  }
+  // 【EXT-07】ModuleHost 已随扩展系统重构删除（2026-10-27）—— 原来这里从它的目录里
+  // 读宿主能力声明。现在扩展走 Theia 插件宿主、不再提供这份目录，所以预检只看内置能力。
+  //
+  // **不静默**：留一条日志说明"这次少了什么"，与从前 catch 分支的口径一致
+  // （那条路径本来就是 fail-open：读不到就只含内置能力）。
+  log.info(`workflow run ${runId}: 扩展能力目录已随 ModuleHost 移除，本次预检只含内置能力`);
+  return [];
 }
 
 function displayTitle(node: WorkflowNode, manifest: NodeTypeManifest | undefined): string {

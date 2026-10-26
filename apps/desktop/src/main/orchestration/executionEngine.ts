@@ -20,6 +20,7 @@ import {
 } from "./nodeRedExecutor.js";
 import { buildNodeInput, nodeInputBuilderRegistry } from "./nodeInputBuilders.js";
 import type { EngineRuntimeStatus } from "@main/workflowEngines/runtimeSupervisor.js";
+import { log } from "@main/lib/logger.js";
 
 /** 【ARC-006 桥 1】`node-red` 节点的**输入构造** —— 让"变量展开后的三个扁平参数"
  *  真正到达执行器。
@@ -102,7 +103,15 @@ function moduleExecutor(): NodeExecutor {
     capabilities: executor.capabilities,
     start: async ({ input }) => {
       if (input.signal.aborted || !ModuleWorkflowExecutionInputSchema.safeParse(input.moduleCall).success) return;
-      host = await (await import("@main/modules/service.js")).getModuleHost();
+      // 【EXT-07】ModuleHost 已随扩展系统重构删除（2026-10-27）：旧的模块/贡献坐标
+      // 不再有宿主。`module-capability` 节点因此**保持不可执行**（fail-closed）——
+      // `execute` 一进来就会撞上 "Module host has not been initialized"，与它原本
+      // "缺执行器就明确拒绝、不静默跳过"的取向一致。
+      //
+      // 这条节点类型是否随扩展命令通道（`extensionCommandPort`）重生，属于扩展线的
+      // 决定；这里只保证**不会因为一个已删除的模块而让整棵执行引擎装不起来**。
+      log.warn("module-capability 节点暂时不可执行：它依赖的 ModuleHost 已随扩展系统重构移除");
+      return;
     },
     execute: (context) => executor.execute(context),
     cancel: (context) => executor.cancel(context),

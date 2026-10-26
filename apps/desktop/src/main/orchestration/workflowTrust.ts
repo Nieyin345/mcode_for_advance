@@ -64,11 +64,52 @@ function recordOf(id: string): ReviewRecord | null {
  * the previous revision disabled, never a new executable doc without a marker. */
 export function requireWorkflowReview(id: string, origin: WorkflowOrigin): void {
   SettingRepo.set(`${REVIEW_PREFIX}${id}`, JSON.stringify({ origin, approvedRevision: null }));
+  notifyReviewChanged();
 }
 
 export function clearWorkflowReview(id: string): void {
   // SettingRepo has no delete; an empty marker has the same meaning as absent.
   SettingRepo.set(`${REVIEW_PREFIX}${id}`, "");
+  notifyReviewChanged();
+}
+
+/* ── 审批状态变化的广播口（【Q8】引擎信任标记的触发点） ──
+ *
+ * **为什么是广播而不是每个写路径各调一次**：审批账本有四个写入口（保存、
+ * 审批、恢复默认、出厂更新），而引擎信任标记的判据是"库里全部图都通过"——
+ * 它依赖的是**整个账本**，不是刚写的那一条。逐个调用点伸手去算，等于把同一条
+ * 判据抄四份，漏一处就出现"批准了但引擎仍 safeMode"或更糟的"撤回了但仍 trust"。
+ *
+ * 监听器由装配层注册（见 `ipc/orchestration.ts`），本模块不 import 任何
+ * workflowEngines / dataRoot —— 那是纯逻辑层不该有的依赖。
+ */
+type ReviewChangeListener = () => void;
+let reviewChangeListener: ReviewChangeListener | null = null;
+
+/** 装配审批变化监听（幂等；生产只注册一次）。传 null 解除。 */
+export function setWorkflowReviewChangeListener(listener: ReviewChangeListener | null): void {
+  reviewChangeListener = listener;
+}
+
+/** 审批账本变了。**失败不能让调用方的保存失败** —— 保存已经落盘，
+ *  信任标记只是它的下游；把异常吞掉并留给监听器自己记日志。 */
+function notifyReviewChanged(): void {
+  try {
+    reviewChangeListener?.();
+  } catch {
+    /* 监听器内部已记日志；账本写入成功不该因下游失败而回滚 */
+  }
+}
+
+/**
+ * **账本没变、但"哪些图归 Node-RED"变了**时主动重算。
+ *
+ * 用于引擎切换（`saveWorkflow` 的 `checkEngineSwitch` 分支）：新文档是 mcode 图，
+ * 不写审批账本，所以 `requireWorkflowReview` 那条广播不会触发 —— 可信任判据里的
+ * 集合已经变了（少了一份 node-red 图），标记必须跟着重算。
+ */
+export function notifyWorkflowReviewFactsChanged(): void {
+  notifyReviewChanged();
 }
 
 export function workflowReviewOf(doc: WorkflowDoc): WorkflowReviewInfo | null {
@@ -118,6 +159,7 @@ export function approveWorkflowRevision(
   )) {
     return { ok: false, error: "审查期间审批账本已改变，请重新打开并检查最新审批状态" };
   }
+  notifyReviewChanged();
   return { ok: true, review: { origin: record.origin, revision, pending: false, reviewedAt } };
 }
 
