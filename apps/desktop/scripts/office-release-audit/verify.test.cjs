@@ -218,3 +218,18 @@ test("whole-tree verifier fails closed on corrupted non-entry JS chunks and remo
 test("refuses malformed release index without correct asset name",()=>{
   assert.throws(()=>parseLatest("path: ..\\payload.exe\nsha512: xxx\n"),/latest.yml/);
 });
+
+test("Windows publishing workflow runs the FULL signed/provenance gate before upload",()=>{
+  const workflow=fs.readFileSync(path.resolve(__dirname,"../../../../.github/workflows/release.yml"),"utf8");
+  const name="- name: Gate Windows installer release signature and provenance";
+  const i=workflow.indexOf(name);
+  assert.ok(i>0,"full Windows release gate must be present");
+  const fragment=workflow.slice(i,workflow.indexOf("\n      - name:",i+name.length));
+  assert.match(fragment,/if: runner\.os == 'Windows'/);
+  assert.match(fragment,/shell: pwsh/);
+  assert.match(fragment,/node apps\/desktop\/scripts\/office-release-audit\/verify\.cjs/);
+  assert.match(fragment,/if \(\$LASTEXITCODE -ne 0\) \{ throw /);
+  assert.ok(workflow.indexOf("      - name: Upload build artifacts")>i,
+    "reject untrusted NSIS BEFORE copying to artifacts/publish");
+  assert.doesNotMatch(fragment,/continue-on-error:\s*true/);
+});

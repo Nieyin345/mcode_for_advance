@@ -112,6 +112,7 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O26** 真 NSIS 压缩包检查：拒绝无 Office 的安装器 | ✅ **实物缺陷定位；CI 阻断已接入；旧安装器明确 FAIL** | `O26-nsis-real-payload-integrity.md` | Mcode 本轮提交 | 7za 直接从 NSIS 读到 `bundled:false`、`editorsBundled:false`，只有 availability.json；旁边 win-unpacked 却声明六格式完整。补原生 NSIS 清单及必要资源存在性校验、CI 发布前 fail-closed；不能把旧安装包当成正式交付 |
 | **O27** 从公开 GenOffice 上游和审核补丁重建二开 CI 源码 | ✅ **可复现 commit/tree 全链重放 PASS；远端完整打包待验** | `O27-rebuild-pinned-genoffice-ci.md` | Mcode 本轮提交 | 公开 `1f306a2` → 基线 `cbec600` → 首补丁 `73ba918` → 32 补丁 → 最终 `f174a91` + 精确 tree；独立 U1 Git 重放 smoke PASS；CI 新增 Rust、原厂六编辑器构建、来源/Tag 版本审查，仍拒绝旧 NSIS 空 Office |
 | **O28** NSIS 真实完整 GenOffice 资源树校验 | ✅ **核心文件 15× SHA256 + 全树实解压验收；旧安装器仍 BLOCKED** | `O28-nsis-full-tree-integrity.md` | Mcode 本轮提交 | 将实际 NSIS 内关键二进制与 unpacked 逐字节比对，并解压六编辑器全资源树复用 afterPack 的 SHA256 检查；21→23 项单测 PASS，2 smoke PASS；隔离真实 7z 2888 条目完整资源包正例 PASS，不冒充旧 NSIS 已可发布 |
+| **O29** Windows 完整安装器签名与源码来源发布门禁 | ✅ **CI 上传前硬阻断已接入；旧安装器仍 BLOCKED** | `O29-windows-release-full-gate.md` | Mcode 本轮提交 | Windows 发布流水线新增 `verify.cjs` 完整签名、Git 来源、Tag 版本及资源校验；24/24 自动断言、重建源码 4 smoke PASS；无签名或旧版 NSIS 不允许发布，最新安装器实际签名/安装尚未验收 |
 
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）

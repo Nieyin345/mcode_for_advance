@@ -14,8 +14,10 @@
 # merges them into one (x64 entry first, since electron-updater's findFile
 # falls back to files[0] when no url matches process.arch) before uploading.
 #
-# The app is NOT code-signed in this first pass (P6). macOS users must
-# right-click > Open on first launch; Windows shows a SmartScreen warning.
+# Windows installers MUST pass Authenticode and native Office provenance
+# checks before upload; unsigned builds are retained as build failures, not
+# silently promoted to published releases. macOS signing/notarization remains
+# a separate release-policy decision.
 name: Release
 
 on:
@@ -204,6 +206,17 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: node apps/desktop/scripts/release-readiness-smoke/check-unpacked.cjs apps/desktop/release/win-unpacked
+
+      # The narrow NSIS Office check is necessary but not sufficient: a valid
+      # archive may still be unsigned, stale, or built from unapproved source.
+      # Refuse to upload it unless the full provenance/signature gate passes.
+      - name: Gate Windows installer release signature and provenance
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:MCODE_OFFICE_7ZA = "$env:ProgramFiles/7-Zip/7z.exe"
+          node apps/desktop/scripts/office-release-audit/verify.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Unsigned, stale, untrusted or incomplete Office installer must not be released" }
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
