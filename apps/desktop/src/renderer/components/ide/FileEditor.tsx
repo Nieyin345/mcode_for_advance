@@ -17,7 +17,7 @@ import type { FileViewMode } from "@contracts/ipc";
 import { documentKindOf, isOfficeDocumentKind } from "@contracts/documentKind";
 import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
 import { GenofficeDocumentPane } from "./GenofficeDocumentPane.js";
-import { GenofficeViewHostPane } from "./GenofficeViewHostPane.js";
+import { GenofficeViewHostPane, stableDocId } from "./GenofficeViewHostPane.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
@@ -288,10 +288,35 @@ export function FileEditor({
         onToggleMode={() => setViewMode(filePath, effectiveMode === "edit" ? "diff" : "edit")}
         isMarkdown={markdown}
         genofficeViewActive={useGenofficeView}
-        canUseGenofficeView={genofficeViewAvailable}
-        onToggleGenofficeView={() =>
-          setViewMode(filePath, useGenofficeView ? genofficeViewFallbackMode : "genoffice-view")
-        }
+        canUseGenofficeView={genofficeViewAvailable && !documentDocked}
+        onToggleGenofficeView={() => {
+          if (!useGenofficeView) {
+            // Never open the native editor over unsaved Mcode/Monaco content.
+            if (ideDirtyTracker.hasEditor(filePath)) {
+              useToastStore.getState().push({
+                kind: "warning",
+                title: t("ide.genoffice.saveBeforeNative"),
+                body: filePath,
+              });
+              return;
+            }
+            setViewMode(filePath, "genoffice-view");
+            return;
+          }
+          // Preflight close before changing React mode. If the native editor's
+          // save/discard guard is cancelled, keep the view mounted and visible.
+          void api.documentView.close({ docId: stableDocId(filePath) }).then((result) => {
+            if (!result.ok) return;
+            ideDirtyTracker.setNative(filePath, false);
+            setViewMode(filePath, genofficeViewFallbackMode);
+          }).catch((err: unknown) => {
+            useToastStore.getState().push({
+              kind: "error",
+              title: t("ide.genoffice.viewHostCloseFailed"),
+              body: err instanceof Error ? err.message : String(err),
+            });
+          });
+        }}
         isImage={image}
         isUnsupported={unsupported}
         canPreviewHtml={htmlPreviewable}
@@ -1193,7 +1218,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
           // Rich Markdown edits may have landed after this source model was
           // cached. Never expose stale clean text (or overwrite dirty text).
           if (content !== cached.baseline) {
-            if (ideDirtyTracker.has(filePath)) {
+            if (ideDirtyTracker.hasEditor(filePath)) {
               flipTo(filePath, projectPath);
               setExternalChange(true);
               setLoadingPath(null);
@@ -1268,7 +1293,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
           if (disposedRef.current || seq !== flipSeqRef.current) return;
           const entry = getModelEntry(readyPath);
           if (!entry || disk === entry.baseline) return;
-          if (ideDirtyTracker.has(readyPath)) {
+          if (ideDirtyTracker.hasEditor(readyPath)) {
             setExternalChange(true);
           } else {
             try {
@@ -1390,7 +1415,7 @@ export function EditPane({ filePath, projectPath }: { filePath: string; projectP
         if (disposedRef.current || readyCtxRef.current?.path !== path || textFileWrites.hasPending(path)) return;
         const current = getModelEntry(path);
         if (!current || current.model.isDisposed() || disk === current.baseline) return;
-        if (ideDirtyTracker.has(path)) {
+        if (ideDirtyTracker.hasEditor(path)) {
           setExternalChange(true);
           return;
         }

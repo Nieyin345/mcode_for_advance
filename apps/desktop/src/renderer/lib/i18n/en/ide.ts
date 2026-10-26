@@ -430,6 +430,8 @@ export const en = {
   "ide.genoffice.askMcodeHint": "Add this document to your Mcode chat draft and show it beside the editor. Nothing is sent until you press Send.",
   "ide.genoffice.askMcodeNoSession": "Open a Mcode conversation first",
   "ide.genoffice.viewHost": "Native editor",
+  "ide.genoffice.saveBeforeNative": "Save your current edits before switching to the native editor",
+  "ide.genoffice.viewHostCloseFailed": "Could not close the native editor view",
   "ide.genoffice.viewHostReturn": "Return to Mcode view",
   "ide.genoffice.viewHostHint": "Open this format's native editor inside the Mcode workspace (requires the editor assets to be built)",
   "ide.genoffice.viewHostActiveHint": "The native editor is active; switch back to Mcode's format-safe view",

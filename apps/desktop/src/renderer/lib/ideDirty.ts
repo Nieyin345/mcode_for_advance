@@ -19,32 +19,50 @@
  */
 
 const dirtyFiles = new Set<string>();
+/** Dirty state reported by native document editors (Docs/Sheets/Slides/PDF/Markdown/HTML). */
+const nativeDirtyFiles = new Set<string>();
 const listeners = new Set<() => void>();
-/** 每次集合真的变了就换一个新对象 —— 见 `useDirtyFiles` 的说明。 */
+/** The UI snapshot is the union; the close guard checks both sources. */
 let dirtySnapshot: ReadonlySet<string> = new Set();
 
+function setDirtySource(source: Set<string>, filePath: string, dirty: boolean): void {
+  const had = source.has(filePath);
+  if (dirty === had) return;
+  const wasDirty = dirtyFiles.has(filePath) || nativeDirtyFiles.has(filePath);
+  if (dirty) source.add(filePath);
+  else source.delete(filePath);
+  const isDirty = dirtyFiles.has(filePath) || nativeDirtyFiles.has(filePath);
+  // If the other editor source still marks this path dirty, the public snapshot
+  // is unchanged and there is no reason to re-render every file tab.
+  if (wasDirty === isDirty) return;
+  dirtySnapshot = new Set([...dirtyFiles, ...nativeDirtyFiles]);
+  // Snapshot the observer set: one tab can unsubscribe a sibling while a dirty
+  // update is being delivered. Every listener present at notification start
+  // must get one chance; a crashing observer must not block the rest.
+  for (const fn of [...listeners]) {
+    try { fn(); }
+    catch (error) { console.warn("ideDirtyTracker observer failed:", error); }
+  }
+}
+
 export const ideDirtyTracker = {
+  /** Dirty state owned by the Monaco/Mcode text editor. */
   set(filePath: string, dirty: boolean) {
-    const had = dirtyFiles.has(filePath);
-    if (dirty && !had) dirtyFiles.add(filePath);
-    else if (!dirty && had) dirtyFiles.delete(filePath);
-    else return; // no change
-    // **换一个新 Set 当快照。** `useSyncExternalStore` 靠 `Object.is(prev, next)`
-    // 判断要不要重渲染 —— 原地改同一个 Set、snapshot 恒是同一个引用的话,
-    // 通知发了也不会重渲染,脏点要等某次无关的 store 更新才跟着出现(迟到)。
-    dirtySnapshot = new Set(dirtyFiles);
-    // Snapshot the observer set: one tab can unsubscribe a sibling while a
-    // dirty update is being delivered. Every listener present at notification
-    // start must get one chance; a crashing observer must not block the rest.
-    for (const fn of [...listeners]) {
-      try { fn(); }
-      catch (error) { console.warn("ideDirtyTracker observer failed:", error); }
-    }
+    setDirtySource(dirtyFiles, filePath, dirty);
   },
+  /** Dirty state reported by the embedded native Office/document editor. */
+  setNative(filePath: string, dirty: boolean) {
+    setDirtySource(nativeDirtyFiles, filePath, dirty);
+  },
+  /** Combined dirty state for tab close guards and file-tab indicators. */
   has(filePath: string) {
+    return dirtyFiles.has(filePath) || nativeDirtyFiles.has(filePath);
+  },
+  /** Monaco-only dirty state for editor model reconciliation; native dirty must not block disk refresh logic. */
+  hasEditor(filePath: string) {
     return dirtyFiles.has(filePath);
   },
-  /** 订阅用的快照 —— 每次集合变更都换新引用（见上）。 */
+  /** 订阅用的联合快照 —— 每次可见脏状态变化都换新引用。 */
   snapshot(): ReadonlySet<string> {
     return dirtySnapshot;
   },

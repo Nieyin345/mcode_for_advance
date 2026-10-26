@@ -82,6 +82,7 @@ import { genofficeAppForPath, type GenofficeApp } from "@contracts/genofficeFile
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { IconLoader2 } from "@renderer/lib/icons.js";
 import { handoffOfficeToMcode } from "./officeChatHandoff.js";
+import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
 
 /** GenOffice 编辑器 module 名（与 vendor 的 `rendererUrl` host 同名）。 */
 export type GenofficeEditorHost = GenofficeApp;
@@ -210,9 +211,11 @@ function measureBounds(el: HTMLElement): DocViewRect | null {
  * from the durable host identity; the Host stays sole file/revision owner. */
 const activeNativePaneOwners = new Map<string, symbol>();
 
-function closeQuietly(docId: string): void {
+function closeQuietly(docId: string, filePath?: string): void {
   try {
-    void api.documentView.close({ docId }).catch(() => {});
+    void api.documentView.close({ docId }).then((result) => {
+      if (result.ok && filePath) ideDirtyTracker.setNative(filePath, false);
+    }).catch(() => {});
   } catch {
     /* web 传输同步拒绝 —— 卸载路径无事可做 */
   }
@@ -310,7 +313,7 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
             // Cleanup has already issued close. The *only* case requiring
             // another close is an orphan where no newer component owns this
             // docId. Closing unconditionally would destroy the fresh view.
-            if (!activeNativePaneOwners.has(docId)) closeQuietly(docId);
+            if (!activeNativePaneOwners.has(docId)) closeQuietly(docId, filePath);
             return;
           }
           if (!result.ok) {
@@ -406,7 +409,7 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
       // this stable docId. A stale cleanup/ack must not close a replacement.
       if (activeNativePaneOwners.get(docId) === owner) {
         activeNativePaneOwners.delete(docId);
-        closeQuietly(docId);
+        closeQuietly(docId, filePath);
       }
     };
     // url/docId 变了要重建视图；retryNonce 是显式重试。t 只影响错误文案。
@@ -448,9 +451,11 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
           // the warning during that gap; the new snapshot clears it after open commits.
           if (mine === undefined) {
             setDirty(null);
+            ideDirtyTracker.setNative(filePath, false);
             return;
           }
           setDirty(typeof mine.dirty === "boolean" ? mine.dirty : null);
+          ideDirtyTracker.setNative(filePath, mine.dirty === true);
           setPageFailure(mine.lastFailure ?? null);
           // 【ARC-007】保存冲突走同一张快照（宿主在成功保存后清空它）。
           const conflict = mine?.lastSaveConflict;
