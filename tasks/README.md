@@ -138,7 +138,7 @@
 | T123 | 🔴 **Office 产物不进任务中心**：`document_tool_call` 不在 `FILE_MUTATING_TOOLS` → `turn.files` 空 → `classifyTurn` 判成「问答不是任务」 | **P0 核心闭环** | T97 | ZZ | ✅ done（`e3fc94bc`，13/13；`fileSnapshot`/`autoCreate` 零改动） |
 | T124 | **`document_md_edit` 的同病**：Markdown 编辑的产物同样不进任务中心 | P1 核心闭环 | T123 | ZZ | ✅ done（`a4a8c8b2`）—— **前提被推翻，不修**：`document_md_edit` 改的是 `.docx`，`before` 读不到，照卡修会让撤销清空文件 |
 | T125 | 🔴 **不可还原的产物**：`before` 读不到的文件（.docx/.pdf/GBK 文本）既进不了任务中心、也不该进 rewind —— 要一个 `restorable` 状态 | **P0 核心闭环+数据安全** | T123+T124 | ZZ | ✅ done（`9821e69c`，27/27；变异证实去掉守卫会清空文件） |
-| T126 | **`document_md_edit` 走 T125 的 `restorable` 路** | P2 核心闭环 | T125 | ZZ | ⬜ 待开工 |
+| T126 | **`document_md_edit` 走 T125 的 `restorable` 路** | P2 核心闭环 | T125 | ZZ | ✅ done（`46612ac8`，35/35；8 套相关 smoke PASS；Desktop tsc 有外部阻塞） |
 | T127 | **设置面板的默认色块只跟了经典主题**：sketch 下显示冷灰蓝、实际是暖灰 —— 同一默认值的第三处表示 | P1 产品缺陷 | T121 | ZZ | ⬜ 待开工 |
 | T128 | **Hover/Active 可复用类**：`--surface-hover` 注释写着 "hover/active fills"，两者同色 = 按下无反馈 | **P0 产品主线** | T121 | ZZ | 🔄 第一批 22 处已迁（`56341d62`，24/24）；选中态待改成上游的陶土色 |
 | T129 | **终端不再是布局的一部分** | P0 产品主线 | T119 | ZZ | ✅ done（`e07eedc1`）—— **前提被推翻**：它本来就是默认关闭 + 高度 0 + 始终挂载，卡改成钉住行为 |

@@ -1,6 +1,6 @@
 # T126｜`document_md_edit` 走 T125 的 `restorable` 路
 
-- Status: ready-for-agent（**不急**，P2）
+- Status: delivered（2026-10-26；相关 smoke 8/8 PASS；Desktop tsc 有范围外阻塞，见回写）
 - Category: 核心闭环（与 T123/T124/T125 同一条链）
 - Depends on: T125（`9821e69c`）
 - Exclusive writable files:
@@ -84,3 +84,34 @@ if (b.name === "document_md_edit") { ... }
 2. 修完前后两段 `classifyTurn`
 3. 套件数字、变异（正控/负控分开）、提交 SHA
 4. 你觉得不对但没改的地方
+
+## 结果回写（2026-10-26）
+
+### 参数与调用链实测
+
+- `apps/desktop/src/main/appControl/tools.ts` 将 `document_md_edit` 注册为独立工具，参数字段是 `filePath`；它不是 `document_tool_call` 的 `input.tool`。
+- `getToolFilePath()` 只读取 `file_path`（`NotebookEdit` 例外读取 `notebook_path`），所以通用快照分支无法捕获这个工具的目标路径。
+
+### 修复内容
+
+- 在 `SdkMessageAdapter.ts` 增加独立的 `b.name === "document_md_edit"` 分支，提取 `filePath`，沿用 `normalizeToolFilePath()` 并调用 `FileSnapshot.recordPre()`。
+- 没有把 `document_md_edit` 加进 `FILE_MUTATING_TOOLS`，没有改工作区围栏、审批或 rewind 语义。
+- 在既有 `t125-restorable-smoke` 中增加真实 `SdkMessageAdapter`、`FileSnapshot`、`classifyTurn`、`settleTurn` 和 `restoreFiles` 的集成检查，没有新建套件。
+
+### 红绿证据
+
+- 修复前：新增判据让 `t125-restorable-smoke` 从原有绿态变为 **30/35**；`turn.files` 为空、分类仍为 `create:false`、`settleTurn` 不建任务，`unrestorable` 也没有该路径。
+- 修复后：`t125-restorable-smoke` **35/35**。`classifyTurn` 前后输出：
+  - 前：`{"create":false,"failed":false,"why":"这一轮没有产出文件，是问答不是任务"}`
+  - 后：`{"create":true,"failed":false,"why":"产出 1 个文件"}`
+- 相关回归 **8/8 suites PASS**：`t125-restorable-smoke`、`t123-office-artifact-smoke`、`file-snapshot-smoke`、`task-message-auto-create-smoke`、`t100-task-center-smoke`、`document-router-smoke`、`genoffice-file-routing-smoke`、`office-mcode-handoff-smoke`。
+- 两项代码变异均使新增判据正确变红（30/35）：禁用 `document_md_edit` 分支；把真实参数名 `filePath` 错写为 `file_path`。还原后最终回归仍为 **35/35**。
+- 未直接变异 `fileSnapshot.ts` 强制 `restorable:true`：该文件不在 T126 的独占写入范围内；新增集成断言直接检查 `restorable === false`，原有 T125 检查仍覆盖不可还原文件的安全回退。
+
+### 其他验证与限制
+
+- `npx tsc --noEmit -p packages/contracts/tsconfig.json`：PASS。
+- `npx tsc --noEmit -p apps/desktop/tsconfig.json`：被范围外的两个 unresolved import 阻塞，均位于未跟踪文件 `apps/desktop/scripts/theia-native-u1/journeys/product.ts`（`../../src/main/ipc/dbGuardedIpc.js`、`../../src/main/ipc/theiaInstalled.js`）。本任务未修改该并行工作文件。
+- `git diff --check`：PASS。
+- 实现提交：`46612ac8`。
+- 未达成判据：本卡规定的功能与回归判据均达成；全 Desktop typecheck 仍有上述独立外部阻塞，需由对应工作线处理。
