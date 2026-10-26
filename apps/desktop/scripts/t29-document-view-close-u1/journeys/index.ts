@@ -1,5 +1,5 @@
 /**
- * T29 —— 旅程注册表（`electron-u1/build.mjs --registry=`）。
+ * T29 —— 旅程注册表（`electron-u1/build.mjs --registry=`），覆盖五个 vendor 编辑器关闭保护。
  *
  * 复用 T7 的 `editorSetup(kind)`（同一份 harness / 生产宿主 / 真 vendor 视图），
  * 外加两件本套件自己的端口：
@@ -22,7 +22,7 @@ import type { DialogPort } from "../dialog-port.js";
 interface T29Runtime {
   harness: import("../../t7-genoffice-u1/harness.js").GenofficeHarness;
   fixtures: import("../../t7-genoffice-u1/fixtures.js").FixturePaths;
-  kind: "pdf" | "markdown" | "html" | "sheets";
+  kind: "pdf" | "markdown" | "html" | "sheets" | "slides";
   docId: string;
   webContentsId: number;
   /** 本进程的确定性消息框端口（断言「关闭前确实弹过三选一」）。 */
@@ -49,7 +49,7 @@ function t29Setup(kind: T29Runtime["kind"]) {
     const base = await editorSetup(kind)(ctx);
     const runtime = base.runtime as T29Runtime;
     // 生产装配（`ipc/index.ts`）做的同一件事：把关闭请求转给 vendor 的
-    // `request*Close`。没有这一行，宿主对原厂四编辑器 fail-closed（旧形态）。
+    // `request*Close`。没有这一行，宿主对原厂编辑器 fail-closed（旧形态）。
     runtime.harness.host.setVendorCloseGuard(({ editor, webContents }) =>
       requestNativeViewClose(editor, webContents));
     runtime.dialog = dialogPort;
@@ -71,7 +71,7 @@ interface LazyJourney {
   readonly expect: "pass";
 }
 
-const KINDS = ["pdf", "markdown", "html", "sheets"] as const;
+const KINDS = ["pdf", "markdown", "html", "sheets", "slides"] as const;
 export const journeyNames = KINDS.map((kind) => `t29-close-${kind}-after-unsaved-guard`);
 
 const loaders: Record<string, () => { t29Journeys: Array<{ name: string; launch: unknown; steps: unknown[] }> }> = {
@@ -79,6 +79,7 @@ const loaders: Record<string, () => { t29Journeys: Array<{ name: string; launch:
   "t29-close-markdown-after-unsaved-guard": () => require("./close-journeys.js"),
   "t29-close-html-after-unsaved-guard": () => require("./close-journeys.js"),
   "t29-close-sheets-after-unsaved-guard": () => require("./close-journeys.js"),
+  "t29-close-slides-after-unsaved-guard": () => require("./close-journeys.js"),
 };
 
 /** 旅程表：读 `steps`/`launch` 时才加载旅程模块，并把 `launch.setup` 换成
@@ -91,7 +92,7 @@ export const journeys: LazyJourney[] = journeyNames.map((name) => {
       const found = mod.t29Journeys.find((j) => j.name === name);
       if (!found) throw new Error(`T29: journey 模块里没有 ${name}`);
       const launch = found.launch as { setup: (ctx: U1SetupContext) => Promise<U1SetupResult> };
-      const kind = /^t29-close-(pdf|markdown|html|sheets)-/.exec(name)![1] as T29Runtime["kind"];
+      const kind = /^t29-close-(pdf|markdown|html|sheets|slides)-/.exec(name)![1] as T29Runtime["kind"];
       materialized = {
         name,
         launch: { ...launch, setup: t29Setup(kind) },

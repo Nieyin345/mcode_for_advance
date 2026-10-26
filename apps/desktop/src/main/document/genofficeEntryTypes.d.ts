@@ -20,11 +20,13 @@ declare module "@main/document/genofficeSheetsEntry.js" {
   export function requestSheetsClose(contents: WebContents, parent?: unknown): Promise<boolean>;
 }
 declare module "@main/document/genofficeSlidesEntry.js" {
-  import type { WebContentsView } from "electron";
+  import type { WebContents, WebContentsView } from "electron";
   export function configureSlidesRuntime(config: {
     preloadPath: string; rendererFilePath: string; rendererDevUrl?: string;
     openGeneratedPath?: (path: string) => boolean;
     mcodePaneGuard?: GenofficeMcodePaneGuard;
   }): void;
   export function createSlidesView(openPath?: string | null): WebContentsView;
+  /** T155: 原厂 Slides dirty/save/discard/cancel 关闭守卫。 */
+  export function requestSlidesClose(contents: WebContents, parent?: unknown): Promise<boolean>;
 }

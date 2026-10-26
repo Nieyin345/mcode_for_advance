@@ -1,5 +1,5 @@
 /**
- * T29 U1 旅程 —— **原厂四编辑器（pdf / markdown / html / sheets）的标签真的能关**。
+ * T29 U1 旅程 —— **原厂五编辑器（pdf / markdown / html / sheets / slides）的标签真的能关**。
  *
  * ## 为什么必须真 Electron
  *
@@ -10,11 +10,11 @@
  *
  * ## 它钉什么（与 T29 卡判据逐条对应）
  *
- * 1. **四个编辑器逐个**：干净时生产 `documentView:close`（`closeWithDirtyProtection`）
+ * 1. **五个编辑器逐个**：干净时生产 `documentView:close`（`closeWithDirtyProtection`）
  *    必须成功、视图真的从宿主表里消失；关闭前文件字节**不变**（干净关闭不重写）。
- * 2. **未保存状态确实被保护**：在页面里制造脏状态（markdown 走真 ProseMirror
- *    编辑事务；其它三家经页面自己的 preload 上报 —— 与用户编辑时页面做的事
- *    同一个通道），此时关闭必须**拒绝**（vendor 守卫返回 false），视图保留。
+ * 2. **未保存状态确实被保护**：Markdown 走真 ProseMirror 编辑事务，PDF 走真实
+ *    ribbon 编辑，HTML/Sheets 走各自 preload 通道，Slides 通过 `slidesApi.editText`
+ *    修改原厂会话；关闭时必须出现原厂决策并保留取消状态下的视图。
  * 3. **关闭走的是 vendor 的守卫**：拒绝原因来自 Mcode 宿主（「未保存」），
  *    且此时视图与会话都还在 —— 不静默丢改动。
  * 4. **修复前必红**：把 `closeWithDirtyProtection` 的 vendor 分支撤掉后，第 1 步
@@ -30,9 +30,9 @@
 import { defineU1Journey, step } from "../../electron-u1/driver/index.js";
 import { editorSetup, js, sha256Of, waitFor } from "../../t7-genoffice-u1/editor-flow.js";
 import type { GenofficeHarness } from "../../t7-genoffice-u1/harness.js";
-import type { FixturePaths } from "../../t7-genoffice-u1/fixtures.js";
+import { UNIQUE, type FixturePaths } from "../../t7-genoffice-u1/fixtures.js";
 
-type Kind = "pdf" | "markdown" | "html" | "sheets";
+type Kind = "pdf" | "markdown" | "html" | "sheets" | "slides";
 
 interface CloseRun {
   harness: GenofficeHarness;
@@ -44,11 +44,11 @@ interface CloseRun {
   dialog: import("../dialog-port.js").DialogPort;
 }
 
-const KINDS: readonly Kind[] = ["pdf", "markdown", "html", "sheets"] as const;
+const KINDS: readonly Kind[] = ["pdf", "markdown", "html", "sheets", "slides"] as const;
 
 /** 每个编辑器「页面自己上报脏状态」的通道（vendor preload 与主进程之间的真实
  *  通道名；与用户编辑时页面调用的是同一个）。pages 的 dirty 报告都是单向 send。 */
-const DIRTY_CHANNELS: Record<Kind, string> = {
+const DIRTY_CHANNELS: Record<"pdf" | "markdown" | "html" | "sheets", string> = {
   pdf: "pdf:dirty-changed",
   markdown: "markdown:dirty-changed",
   html: "html:dirty-changed",
@@ -56,7 +56,7 @@ const DIRTY_CHANNELS: Record<Kind, string> = {
 };
 
 /**
- * 四条旅程共用的「关闭语义」步骤序列。每个 kind 单独一条 journey（T7 的注册表
+ * 五条旅程共用的「关闭语义」步骤序列。每个 kind 单独一条 journey（T7 的注册表
  * 也是 per-editor），因为 `launch.setup` 必须绑定编辑器类型。
  */
 function closeJourney(kind: Kind) {
@@ -78,7 +78,7 @@ function closeJourney(kind: Kind) {
       }, `record-opened-${kind}`),
       step.recordSideEffect(`@projectDir/${fixtureName(kind)}`, `${kind}-open`),
 
-      // ── 1. 干净视图：生产 close 必须成功（修复前：永远 2s 超时拒绝） ──
+      // ── 1. 干净视图：生产 close 必须成功（四家旧探针超时；Slides 旧分支则绕过保护） ──
       step.run(async ({ runtime }) => {
         const rt = runtime as CloseRun;
         const wc = rt.harness.webContentsOf(rt.docId);
@@ -115,7 +115,9 @@ function closeJourney(kind: Kind) {
           if (wc.isDestroyed()) return false;
           return await js<boolean>(wc, `(() => ({
             sheets: !!document.querySelector('#univer-container'),
-            pdf: !!document.querySelector('.app, .pdf-placeholder'),
+            slides: !!document.querySelector('.app') && !!document.querySelector("[class*='thumb']"),
+            // The PDF shell exists before its document and ribbon are ready; wait for the real Pages tab.
+            pdf: [...document.querySelectorAll('.ribbon-tab')].some((b) => ['页面', 'Pages'].includes((b.textContent || '').trim())),
             markdown: !!document.querySelector('.doc-editor, .app'),
             html: !!document.querySelector('.cm-editor, .app'),
           })["${kind}"] ?? null)()`);
@@ -180,11 +182,48 @@ function closeJourney(kind: Kind) {
             ? { ok: true, observed: applied }
             : { ok: false, observed: applied, detail: applied.reason };
         }
-        // html / sheets：页面自身的编辑入口需要复杂的 UI 手势（T7 里用真键鼠
-        // 驱动）。关闭守卫判断的是 **vendor 主进程的 dirty 记录**，而页面上报
-        // 它的通道与用户编辑后调用的是同一个（`htmlApi.setDirty` /
-        // `desktopApi.notifyPendingEdits`）。这里直接经页面自己的 preload 上报，
-        // 与「用户刚编辑过」在 vendor 侧的可见状态一致。
+        // Slides 的 dirty 位来自原厂 session；用原厂编辑桥制造真实会话修改，
+        // 并关闭其静默自动保存，以验证「保存 / 放弃 / 取消」分支。
+        if (kind === "slides") {
+          const edited = await js<{ ok: boolean; reason?: string; target?: unknown }>(wc, `(async () => {
+            const api = window.slidesApi;
+            if (!api || typeof api.editText !== 'function' || typeof api.consumePendingOpen !== 'function' ||
+                typeof api.setAutoSavePref !== 'function') {
+              return { ok: false, reason: 'slidesApi 缺 editText/consumePendingOpen/setAutoSavePref' };
+            }
+            // 禁用 vendor 的静默自动保存，让此旅程明确验证「保存 / 放弃 / 取消」。
+            api.setAutoSavePref(false);
+            const tree = await api.consumePendingOpen(1280);
+            if (!tree || !Array.isArray(tree.slides)) return { ok: false, reason: 'consumePendingOpen 没返回渲染树' };
+            // 与既有 T7 Slides U1 使用同一判据；PPTX renderer 可能归一化文本节点。
+            const needle = 'T7-';
+            let target = null;
+            tree.slides.forEach((slide, slideIndex) => {
+              if (target) return;
+              const walk = (node) => {
+                if (target || !node || typeof node !== 'object') return;
+                const txt = JSON.stringify(node.text ?? node.children ?? '');
+                if (typeof node.sourceId === 'string' && txt.includes(needle)) {
+                  target = { slideIndex, sourceId: node.sourceId };
+                  return;
+                }
+                (node.children ?? []).forEach(walk);
+              };
+              (slide.nodes ?? []).forEach(walk);
+            });
+            if (!target) return { ok: false, reason: '渲染树里找不到测试文本节点' };
+            const updated = await api.editText({
+              slideIndex: target.slideIndex,
+              sourceId: target.sourceId,
+              paragraphs: [{ runs: [{ text: ${JSON.stringify(`${UNIQUE.slides}-UNSAVED-EDIT`)} }] }],
+            });
+            return updated ? { ok: true, target } : { ok: false, reason: 'editText 返回 null' };
+          })()`);
+          if (!edited.ok) return { ok: false, observed: edited, detail: edited.reason ?? JSON.stringify(edited) };
+          return { ok: true, observed: { editorEdit: edited, reportedVia: "window.slidesApi.editText", autosaveDisabled: true } };
+        }
+        // HTML / Sheets：页面自己的复杂编辑手势由 T7 负责；这里经各自真实 preload
+        // 上报 dirty，与用户编辑后页面调用的是同一条 vendor 主进程通道。
         if (kind === "html") {
           await js(wc, `window.htmlApi.setDirty(true)`);
           return { ok: true, observed: { reportedVia: "window.htmlApi.setDirty(true)" } };
@@ -253,7 +292,7 @@ function closeJourney(kind: Kind) {
 }
 
 function fixtureName(kind: Kind): string {
-  return { pdf: "t7-pdf.pdf", markdown: "t7-markdown.md", html: "t7-html.html", sheets: "t7-sheets.xlsx" }[kind];
+  return { pdf: "t7-pdf.pdf", markdown: "t7-markdown.md", html: "t7-html.html", sheets: "t7-sheets.xlsx", slides: "t7-slides.pptx" }[kind];
 }
 
 export const t29Journeys = KINDS.map((kind) => closeJourney(kind));

@@ -179,20 +179,18 @@ export interface DocumentViewHostPorts {
    *  （`ipc/index.ts` 装配）；无头套件注入自动应答。省略 = fail-closed（脏时拒绝
    *  替换），绝不替用户点"放弃"。 */
   confirmDirty?: (input: { docId: string; filePath: string | null }) => Promise<boolean>;
-  /** 【T29】**原厂编辑器（pdf/markdown/html/sheets）的关闭守卫端口** —— 这四家
-   *  的 dirty 状态与"保存后才允许关闭"的流程长在 **vendor 主进程**里
-   *  （`dirtyByWc`/`pendingEditCounts` + `request*Close`），页面 preload **不订阅**
-   *  `mcode:document-view:close-check`。旧的探针路径对它们永远超时，用户关不掉
-   *  标签（T7 实测的 P1 缺陷）。
+  /** 【T29/T155】原厂编辑器（pdf/markdown/html/sheets/slides）的关闭守卫端口 —— 五家
+   *  的未保存状态与保存语义归各自 **vendor 主进程**，页面 preload 并不统一订阅
+   *  `mcode:document-view:close-check`。PDF/Markdown/HTML/Sheets 旧探针会超时；
+   *  Slides 原先被直接关闭旁路跳过，现统一接入其原厂 `requestSlidesClose`。
    *
    *  生产装配（`ipc/index.ts`）注入 vendor `request*Close` 的转发
    *  （`genofficeNativeVendor.ts` 的 `requestNativeViewClose`）；返回值 true =
    *  可以关闭（干净，或用户选择了保存/放弃），false = 用户取消或保存失败。
-   *  省略 = 退回 Mcode 的 close-check 探针（与修复前一致；无头套件/T7 探针的
-   *  旧装配形态）。 */
+   *  省略 = 原厂编辑器关闭 fail-closed，不得静默丢弃修改。 */
   vendorCloseGuard?: (input: {
     docId: string;
-    editor: "pdf" | "markdown" | "html" | "sheets";
+    editor: "pdf" | "markdown" | "html" | "sheets" | "slides";
     /** 视图的 webContents（vendor 的 `request*Close(contents, parent)` 接收的
      *  就是它）；宿主只透传，不解释。 */
     webContents: unknown;
@@ -1355,26 +1353,22 @@ export class DocumentViewHost {
       live.pageDirtyEpoch === epoch;
   }
 
-  /** T05a: native Docs close is a two-phase operation. Never destroy a page
-   * solely because its *previous* dirty report said clean. Query the live page,
-   * fail closed on timeout, and reuse the exact Mcode replacement guard for
-   * unsaved edits. Concurrent close clicks share this one probe/decision. */
+  /** Close protection for native Docs and embedded vendor editors. Docs query live
+   * page state rather than trusting a stale dirty report; vendor editors delegate to
+   * their own close/save guards below. Concurrent close clicks share one decision. */
   async closeWithDirtyProtection(docId: string): Promise<DocViewResult> {
     const pending = this.protectedCloses.get(docId);
     if (pending) return pending;
     const live = this.views.get(docId);
     if (!live) return this.close(docId);
-    if (live.editor === 'slides' || live.workflowEngineId !== null) return this.close(docId);
-    // 【T29】原厂四编辑器（pdf/markdown/html/sheets）的关闭语义长在 **vendor
-    // 主进程**：dirty 状态记在 vendor 的 `dirtyByWc` / `pendingEditCounts` 里，
-    // 「保存 / 放弃 / 取消」由 vendor 的 `request*Close` 弹窗并执行（保存走
-    // vendor 自己的写盘链，与 vendor 独立运行时同一个实现）。它们的页面 preload
-    // **不订阅** `mcode:document-view:close-check` —— 旧的探针路径对这四家必然
-    // 2 秒超时并拒绝关闭（T7 实测：用户关不掉标签，P1）。所以这里接同一份
-    // vendor 守卫（见 `DocumentViewHostPorts.vendorCloseGuard`），不再自造平行
-    // 的脏检查。
+    if (live.workflowEngineId !== null) return this.close(docId);
+    // 【T29/T155】原厂五编辑器（pdf/markdown/html/sheets/slides）的关闭语义归各自
+    // vendor 主进程：由原厂 `request*Close` 判断 dirty 并执行「保存 / 放弃 / 取消」；
+    // Mcode 只负责转发决策，不复制脏状态或保存实现。PDF/Markdown/HTML/Sheets 的
+    // 页面 preload 不订阅 `mcode:document-view:close-check`，旧探针会超时；Slides
+    // 之前则被特殊分支直接关闭。现在五家统一经过同一 vendor 守卫。
     const vendorEditor = live.editor === 'pdf' || live.editor === 'markdown' ||
-      live.editor === 'html' || live.editor === 'sheets' ? live.editor : null;
+      live.editor === 'html' || live.editor === 'sheets' || live.editor === 'slides' ? live.editor : null;
     if (vendorEditor !== null) {
       // 没有注入守卫 = 无法问清未保存状态：宁可不关也不静默丢改动（fail-closed）。
       if (this.vendorCloseGuard === null) {

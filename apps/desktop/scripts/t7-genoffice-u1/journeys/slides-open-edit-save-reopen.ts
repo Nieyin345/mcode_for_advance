@@ -14,8 +14,8 @@
  *  - 保存：**Quick Access 保存按钮**（`disabled={!dirty}`，编辑后启用）→
  *    `slidesApi.save()` → vendor `slides:save` → `savePptxToFile`（原生路线直写；
  *    T13 记录的「绕过 Mcode CAS」就是这条，本旅程照实走）；
- *  - 关闭：生产 `documentView:close`（slides 是生产里唯一**绕过** close-check 的
- *    编辑器，见 `documentViewHost.ts:1249`）；
+ *  - 关闭：生产 `documentView:close` → `DocumentViewHost` → 原厂 `requestSlidesClose`
+ *    （干净状态放行；未保存状态的取消/放弃语义由 T29 Slides U1 单独验证）；
  *  - 重开：真 OS 重开 → 新视图重开同一 pptx → 大纲里仍含编辑文本 + 磁盘一致。
  */
 import { defineU1Journey, step } from "../../electron-u1/driver/index.js";

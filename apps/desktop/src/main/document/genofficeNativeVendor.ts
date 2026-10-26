@@ -12,7 +12,7 @@ import { configureHtmlRuntime, createHtmlView, requestHtmlClose } from "../../..
 // @ts-ignore — optional upstream checkout; keep the original view entry points.
 import { configureSheetsRuntime, createSheetsView, queueWorkbookForView, requestSheetsClose } from "@main/document/genofficeSheetsEntry.js";
 // @ts-ignore — optional upstream checkout; the original slides main registers its own IPC.
-import { configureSlidesRuntime, createSlidesView } from "@main/document/genofficeSlidesEntry.js";
+import { configureSlidesRuntime, createSlidesView, requestSlidesClose } from "@main/document/genofficeSlidesEntry.js";
 import { documentViewHost, type DocumentViewLike } from "./documentViewHost.js";
 import { makeDocumentSaveGuard } from "./documentSaveGuard.js";
 import { setDocumentSaveGuard } from "@genoffice/electron-utils/document-save-guard";
@@ -91,14 +91,12 @@ export function createNativeView(path: string | null, kind: "pdf" | "markdown" |
 }
 
 /**
- * 【T29】原厂四编辑器（pdf/markdown/html/sheets）的**关闭守卫** —— 直接转发
- * vendor 自己的 `request*Close`，不复制它的脏判断或保存流程。
+ * 【T29/T155】原厂五编辑器（pdf/markdown/html/sheets/slides）的**关闭守卫** —— 直接转发
+ * vendor 自己的 `request*Close`，不复制它们的脏判断或保存流程。
  *
- * 为什么必须由 vendor 回答：dirty 状态记在 vendor 主进程的 `dirtyByWc` /
- * `pendingEditCounts` 里（页面经 `setDirty` / `notifyPendingEdits` 上报），
- * 「保存 > 放弃 > 取消」的弹窗和「选保存时让渲染端走它自己的保存链」也在
- * vendor 的 `request*Close` 里。Mcode 侧只有这两条现成的 `isDirty` 访问器，
- * 没有等价能力；把判断搬到宿主等于造第二套保存语义（仓库硬规矩 2）。
+ * 未保存状态分别由各 vendor 主进程维护；尤其 Slides 的 `requestSlidesClose`
+ * 使用原厂 session dirty、自动保存偏好与「保存 / 放弃 / 取消」对话框。Mcode
+ * 只负责把关闭决定交给正确的原厂函数，不建立第二套保存语义（仓库硬规矩 2）。
  *
  * vendor 的 `request*Close(contents, parent?)` 不传 parent 时用无父窗口的
  * `dialog.showMessageBox(options)` —— 在 Mcode 里由 `confirmDirty` 之外的一条
@@ -108,7 +106,7 @@ export function createNativeView(path: string | null, kind: "pdf" | "markdown" |
  * false = 用户取消或保存失败。未装配的 kind 一律 false（fail-closed）。
  */
 export async function requestNativeViewClose(
-  kind: "pdf" | "markdown" | "html" | "sheets",
+  kind: "pdf" | "markdown" | "html" | "sheets" | "slides",
   webContents: unknown,
 ): Promise<boolean> {
   // vendor 的签名是 `(contents: WebContents, parent?: BrowserWindow|null)`；
@@ -122,5 +120,6 @@ export async function requestNativeViewClose(
     case "markdown": return await requestMarkdownClose(contents, parent);
     case "html": return await requestHtmlClose(contents, parent);
     case "sheets": return await requestSheetsClose(contents, parent);
+    case "slides": return await requestSlidesClose(contents, parent);
   }
 }

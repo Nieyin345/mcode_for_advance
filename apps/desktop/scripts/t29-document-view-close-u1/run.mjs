@@ -1,5 +1,5 @@
 /**
- * T29 —— 运行「原厂四编辑器真的能关」的真 Electron U1 套件。
+ * T29/T155 —— 运行原厂 PDF、Markdown、HTML、Sheets 与 Slides 关闭保护的真 Electron U1 套件。
  *
  * 直接复用 `../electron-u1/build.mjs`（真 Electron 启动器 + 旅程断言/证据骨架）
  * 与 `../t7-genoffice-u1/{vendor-esbuild,prebuild}.mjs`（vendor 主进程打包别名、

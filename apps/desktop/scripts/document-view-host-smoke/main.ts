@@ -554,7 +554,7 @@ section("5. 窗口级清理：closed 事件与 dispose() 都销毁全部");
 
 /* ══════════════════ 6. IPC 层：注册 + zod + recordRpcHandler ══════════════════ */
 
-section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
+section("6. IPC：八条 documentView 通道注册齐全、入 zod、登记进 registry");
 {
   created.length = 0;
   const win = makeFakeWindow();
@@ -583,9 +583,9 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
     DOCUMENT_VIEW_OPEN_PATH_CHANNEL,
   ];
   eq("★ 八条 documentView:* 通道全注册上了", channels.filter((c) => !handlers.has(c)), []);
-  // 另有一条**内部通道**（视图 preload 的 open-path）：它不挂成 RPC，
-  // 但主进程必须注册 —— 页面打开文档靠它。
-  // 【ARC-007】内部通道：打开链（P0）、保存、slides 编辑两条、dirty/替换守卫。
+  // 另有多条**内部通道**：它们不挂成 RPC，但主进程必须注册，供页面打开、保存、
+  // dirty/替换守卫、恢复写盘和 Slides 编辑链使用。
+  // 【ARC-007】内部通道清单也用于保证这些页面能力不会意外漏进 Agent RPC 表。
   const internalChannels = [
     "mcode:document-view:open-path",
     "mcode:document-view:read-opened",
@@ -593,6 +593,7 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
     "mcode:document-view:confirm-replace",
     "mcode:document-view:close-check-result",
     "mcode:document-view:save",
+    "mcode:document-view:write-recovery",
     "mcode:document-view:slides-add-slide",
     "mcode:document-view:slides-edit-text",
     // 【ARC-007 P1/GA1】slides 打开/保存链：页面拉取 `OpenResult`；保存写回打开的
@@ -601,7 +602,7 @@ section("6. IPC：七条通道注册齐全、入 zod、登记进 registry");
     "mcode:document-view:slides-save",
   ];
   for (const ch of internalChannels) check(`内部通道已注册：${ch}`, handlers.has(ch));
-  check("注册的通道就是这八条 + 八条内部通道（不多不漏）",
+  check("注册的通道就是这八条 + 十一条内部通道（不多不漏）",
     JSON.stringify([...handlers.keys()].sort()) ===
       JSON.stringify([...channels, ...internalChannels].sort()),
     {
@@ -2611,15 +2612,19 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
     eq("T29 抛错场景清理关闭", await host.closeWithDirtyProtection("t29-throw"), { ok: true });
   }
 
-  // ── (f) slides 语义不变：仍直接关（不经过 vendor 守卫），docs 仍走 close-check 探针 ──
+  // ── (f) Slides 也走原厂 vendor 守卫；Docs 仍使用 close-check 探针 ──
   {
     const opened = openVendor(host, "t29-slides", "slides");
     eq("T29 slides 视图打开", opened.result, { ok: true });
     let slidesGuardCalls = 0;
     host.setVendorCloseGuard(async () => { slidesGuardCalls += 1; return false; });
-    eq("★ T29 slides 仍是直接关闭（既有语义，不经 vendor 守卫）",
-      await host.closeWithDirtyProtection("t29-slides"), { ok: true });
-    eq("T29 slides 关闭时守卫零调用", slidesGuardCalls, 0);
+    const refused = await host.closeWithDirtyProtection("t29-slides");
+    check("★ T155 Slides 关闭委托原厂守卫并尊重取消",
+      refused.ok === false && String(refused.reason).includes("已取消关闭"), refused);
+    eq("T155 Slides 关闭守卫调用一次", slidesGuardCalls, 1);
+    check("T155 Slides 取消后视图仍保留", host.list().some((v: { docId: string }) => v.docId === "t29-slides"));
+    host.setVendorCloseGuard(async () => true);
+    eq("T155 Slides 测试后清理关闭", await host.closeWithDirtyProtection("t29-slides"), { ok: true });
   }
 
   host.dispose();

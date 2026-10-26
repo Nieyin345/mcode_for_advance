@@ -31,7 +31,7 @@ import { withRendererToolRegistry } from "@main/document/documentToolRendererBin
 import { VendorSlidesExecutor } from "@main/document/slidesExecutor.js";
 import { slidesBridge } from "@main/document/slidesBridge.js";
 import { configureGenofficeNativeViews, makeGenofficeNativeView, nativeHostStatus } from "@main/document/genofficeViewFactories.js";
-// 【T29】原厂四编辑器的关闭守卫（vendor `request*Close` 的转发）。静态 import：
+// 【T29/T155】原厂五编辑器的关闭守卫（vendor `request*Close` 的转发）。静态 import：
 // 快速失败于编译期；vendor 快照缺失时本模块被 build alias 到 stub，
 // `requestNativeViewClose` 恒 false（Host 侧 fail-closed）。
 import { installDocumentSaveGuard, requestNativeViewClose } from "@main/document/genofficeNativeVendor.js";
@@ -167,11 +167,10 @@ export function registerIpcHandlers(): void {
     Object.values(nativeHostStatus()).some(Boolean) ? makeGenofficeNativeView : null,
     (p) => findContainingWorkspaceRoot(p) !== null,
   );
-  // 【T29】原厂四编辑器（pdf/markdown/html/sheets）的关闭守卫：这四家的 dirty
-  // 状态与保存/放弃弹窗长在 vendor 主进程（`request*Close`），页面 preload 不
-  // 订阅 `mcode:document-view:close-check`。宿主把关闭请求转给 vendor 同一份
-  // 实现 —— 不另造脏检查、不另写保存流程。vendor 快照缺失时 stub 恒 false，
-  // Host 对这四个 editor 的关闭 fail-closed（不会静默丢改动）。
+  // 【T29/T155】原厂五编辑器（pdf/markdown/html/sheets/slides）的关闭守卫：dirty
+  // 状态与保存/放弃/取消流程归 vendor 主进程（`request*Close`），页面 preload 不
+  // 统一订阅 `mcode:document-view:close-check`。宿主把关闭请求转给 vendor 原实现，
+  // 不另造脏检查或保存流程。vendor 快照缺失时 stub 恒 false，关闭 fail-closed。
   documentViewHost.setVendorCloseGuard(({ editor, webContents }) =>
     requestNativeViewClose(editor, webContents));
   // 【O10】四个 vendor 保存调用点（html/markdown/pdf/slides）的版本校验 + 文件租约。
