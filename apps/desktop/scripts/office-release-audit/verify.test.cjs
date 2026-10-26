@@ -7,6 +7,7 @@ const path=require("node:path");
 const {createHash}=require("node:crypto");
 const {auditRelease,parseLatest,codes}=require("./verify.cjs");
 const {verifyInstallerContent}=require("./verify-nsis.cjs");
+const {verifyCoreParity,verifyCompletePayload,REQUIRED}=require("./nsis-inspector.cjs");
 const HASH="a".repeat(64);
 const GIT_HASH="a".repeat(40);
 function makeFixture(t) {
@@ -39,7 +40,7 @@ function makeFixture(t) {
   fs.utimesSync(manifestFile,new Date(now-8000),new Date(now-8000));
   fs.utimesSync(exe,new Date(now-4000),new Date(now-4000));
   const opts={repoRoot:repo,releaseDir:release,signatureStatus:"Valid",resourceVerifier:()=>true,
-    nsisInspector:()=>({manifest:JSON.parse(fs.readFileSync(manifestFile,"utf8")),missing:[],count:19}),
+    nsisInspector:()=>({manifest:JSON.parse(fs.readFileSync(manifestFile,"utf8")),missing:[],count:19,coreParity:{ok:true,files:15},fullTreeParity:{ok:true,files:2584}}),
     gitEvidence:{head:GIT_HASH,commitTime:now-12000,dirty:false}};
   const codesFor=(options=opts)=>auditRelease(options).blockers.map(x=>x.code);
   const updateManifest=()=>fs.writeFileSync(manifestFile,JSON.stringify(manifest));
@@ -130,14 +131,89 @@ test("rejects uninspectable or encrypted/unsupported NSIS rather than claiming r
 test("CI gate inspects installer actual manifest, not just the staged unpacked directory",t=>{
   const f=makeFixture(t);
   const good=verifyInstallerContent(f.exe,f.manifestFile,
-    ()=>({manifest:f.manifest,missing:[],count:29}));
+    ()=>({manifest:f.manifest,missing:[],count:29,coreParity:{ok:true,files:15},fullTreeParity:{ok:true,files:2584}}));
   assert.equal(good.ok,true);
   const hollow=verifyInstallerContent(f.exe,f.manifestFile,
     ()=>({manifest:{format:"mcode.genoffice.resources.v1",bundled:false,editorsBundled:false,editors:[]},
-      missing:["resources/genoffice/apps/docs/out/renderer/index.html"],count:1}));
+      missing:["resources/genoffice/apps/docs/out/renderer/index.html"],count:1,coreParity:null}));
   assert.equal(hollow.ok,false);
   assert.ok(hollow.failures.some(x=>x.includes("disabled")));
   assert.ok(hollow.failures.some(x=>x.includes("differs")));
+});
+test("CI rejects a matching manifest if actual installer core bytes are not verified",t=>{
+  const f=makeFixture(t);
+  const hollow=verifyInstallerContent(f.exe,f.manifestFile,
+    ()=>({manifest:f.manifest,missing:[],count:29,coreParity:null}));
+  assert.equal(hollow.ok,false);
+  assert.ok(hollow.failures.some(x=>x.includes("core asset bytes")));
+  assert.ok(f.codesFor({...f.opts,nsisInspector:()=>({
+    manifest:f.manifest,missing:[],count:29,coreParity:{ok:false,files:15},
+  })}).includes(codes.NSIS_CORE_ASSET_MISMATCH));
+});
+test("independent SHA256 parity detects one tampered NSIS payload with identical paths and manifest",t=>{
+  const f=makeFixture(t);
+  const root=path.join(f.release,"win-unpacked","resources","genoffice");
+  for(const name of REQUIRED){
+    if(name.endsWith("/availability.json"))continue;
+    const relative=name.slice("resources/genoffice/".length);
+    const target=path.join(root,...relative.split("/"));
+    fs.mkdirSync(path.dirname(target),{recursive:true});
+    fs.writeFileSync(target,Buffer.from("safe-"+relative));
+  }
+  const fakeArchive=new Map(REQUIRED.filter(x=>!x.endsWith("/availability.json")).map(name=>{
+    const relative=name.slice("resources/genoffice/".length);
+    return [name.toLowerCase(),fs.readFileSync(path.join(root,...relative.split("/")))];
+  }));
+  const extract=(_bin,args)=>{
+    const key=args[3].replace(/\\/g,"/").toLowerCase();
+    return fakeArchive.get(key);
+  };
+  const original=verifyCoreParity(f.exe,root,"mock7za",extract);
+  assert.equal(original.ok,true);
+  assert.equal(original.files,15);
+  const targeted="resources/genoffice/native/xlsx-sidecar.exe";
+  fakeArchive.set(targeted,Buffer.from("unsafe-sidecar-byte-change"));
+  assert.throws(()=>verifyCoreParity(f.exe,root,"mock7za",extract),/SHA256 differs|length differs/);
+});
+test("missing whole-tree verification blocks a package despite matching entrypoints and manifest",t=>{
+  const f=makeFixture(t);
+  const result=f.codesFor({...f.opts,nsisInspector:()=>({
+    manifest:f.manifest,missing:[],count:2584,coreParity:{ok:true,files:15},fullTreeParity:null,
+  })});
+  assert.ok(result.includes(codes.NSIS_FULL_TREE_MISMATCH));
+  const gate=verifyInstallerContent(f.exe,f.manifestFile,()=>({
+    manifest:f.manifest,missing:[],count:2584,coreParity:{ok:true,files:15},fullTreeParity:null,
+  }));
+  assert.equal(gate.ok,false);
+  assert.ok(gate.failures.some(x=>x.includes("full GenOffice asset tree")));
+});
+test("whole-tree extractor blocks archive path traversal BEFORE unpack",()=>{
+  let unpacked=false;
+  assert.throws(()=>verifyCompletePayload("dummy","mock7za",
+    ["resources/genoffice/apps/../../outside.txt"],{
+      unpack:()=>{unpacked=true;},verify:()=>({editorsBundled:true}),
+    }),/Unsafe GenOffice/);
+  assert.equal(unpacked,false);
+});
+test("whole-tree verifier fails closed on corrupted non-entry JS chunks and removes only its own temp folder",()=>{
+  let tempRoot;
+  const unpack=(_bin,args)=>{
+    tempRoot=args.find(x=>x.startsWith("-o")).slice(2);
+    const js=path.join(tempRoot,"resources","genoffice","apps","sheets","out","renderer","assets","chart-chunk.js");
+    fs.mkdirSync(path.dirname(js),{recursive:true});
+    fs.writeFileSync(js,"corrupted");
+  };
+  const verify=root=>{
+    assert.equal(root,path.join(tempRoot,"resources","genoffice"));
+    const js=fs.readFileSync(path.join(root,"apps","sheets","out","renderer","assets","chart-chunk.js"),"utf8");
+    if(js!=="expected")throw Error("renderer tree SHA256 mismatch: non-entry JS chunk");
+    return {editorsBundled:true};
+  };
+  assert.throws(()=>verifyCompletePayload("mock-archive","mock7za",
+    ["resources/genoffice/apps/sheets/out/renderer/assets/chart-chunk.js"],{
+      unpack,verify,
+    }),/renderer tree SHA256 mismatch/);
+  assert.equal(fs.existsSync(tempRoot),false,"owned extraction directory must be removed even on verifier failure");
 });
 test("refuses malformed release index without correct asset name",()=>{
   assert.throws(()=>parseLatest("path: ..\\payload.exe\nsha512: xxx\n"),/latest.yml/);

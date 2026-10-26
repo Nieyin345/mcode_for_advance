@@ -25,6 +25,8 @@ const codes = Object.freeze({
   NSIS_INSPECTION_FAILED: "NSIS_INSPECTION_FAILED",
   NSIS_MANIFEST_MISMATCH: "NSIS_MANIFEST_MISMATCH",
   NSIS_PAYLOAD_MISSING_EDITORS: "NSIS_PAYLOAD_MISSING_EDITORS",
+  NSIS_CORE_ASSET_MISMATCH: "NSIS_CORE_ASSET_MISMATCH",
+  NSIS_FULL_TREE_MISMATCH: "NSIS_FULL_TREE_MISMATCH",
   HASH_MISMATCH: "HASH_MISMATCH",
   VERSION_MISMATCH: "VERSION_MISMATCH",
   STALE_INSTALLER: "STALE_INSTALLER",
@@ -136,7 +138,7 @@ function auditRelease(opts={}) {
   if(exe && existsSync(exe)) {
     try {
       const inspect=opts.nsisInspector ?? require("./nsis-inspector.cjs").readPayload;
-      const embedded=inspect(exe);
+      const embedded=inspect(exe,{compareRoot:join(release,"win-unpacked","resources","genoffice")});
       facts.installerGenofficeBundled=embedded.manifest?.bundled===true;
       facts.installerEditorsBundled=embedded.manifest?.editorsBundled===true;
       facts.installerGenofficeFiles=embedded.count;
@@ -148,6 +150,10 @@ function auditRelease(opts={}) {
       }
       if(manifest && JSON.stringify(embedded.manifest)!==JSON.stringify(manifest))
         block(codes.NSIS_MANIFEST_MISMATCH,"NSIS embedded availability.json differs from adjacent win-unpacked resources");
+      if(embedded.coreParity?.ok!==true || embedded.coreParity.files!==require("./nsis-inspector.cjs").REQUIRED.length-1)
+        block(codes.NSIS_CORE_ASSET_MISMATCH,"NSIS actual core CLI/sidecar/WASM/renderer/preload/license bytes do not match verified unpacked assets");
+      if(embedded.fullTreeParity?.ok!==true)
+        block(codes.NSIS_FULL_TREE_MISMATCH,"NSIS complete extracted GenOffice resource tree not verified against embedded SHA256 digest manifest");
     }catch(e){
       block(codes.NSIS_INSPECTION_FAILED,"cannot inspect actual NSIS GenOffice manifest and assets: "+String(e.message));
     }
