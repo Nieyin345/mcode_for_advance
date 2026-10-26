@@ -162,6 +162,7 @@ export const en = {
   "layout.paneFlow": "Node-RED editor",
   "layout.paneRestore": "Return to original pane",
   "layout.paneDocumentMoved": "Document is open in the dockable pane",
+  "layout.showDockedDocument": "Show docked document",
   "layout.closeSidebarBrowser": "Close sidebar browser",
 
   /* ── side chat (right-panel ask tab) ── */

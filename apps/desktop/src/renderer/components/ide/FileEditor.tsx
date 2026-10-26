@@ -186,8 +186,11 @@ export function FileEditor({
    * 仍按各自的 hosts 位判（`nativeViewReady` 已含）。
    */
   const useGenofficeView = genofficeViewAvailable && viewModePref === "genoffice-view";
-  const documentDocked = useSessionStore((s) => s.paneLayout?.placements?.some(p =>
-    p.content?.kind === "document" && p.content.documentId === filePath));
+  const documentDockSide = useSessionStore((s) => s.paneLayout?.placements?.find(p =>
+    p.content?.kind === "document" && p.content.documentId === filePath)?.side);
+  const documentDocked = documentDockSide !== undefined;
+  const rightOpen = useSessionStore((s) => s.rightOpen);
+  const setRightOpen = useSessionStore((s) => s.setRightOpen);
   /**
    * First-open routing for the native GenOffice family. All six supported formats
    * enter their original editor when the matching host is ready. A missing host
@@ -315,8 +318,17 @@ export function FileEditor({
           <GenofficeDocumentPane key={filePath} filePath={filePath} />
         ) : effectiveMode === "genoffice-view" ? (
           documentDocked ? (
-            <div className="flex h-full items-center justify-center text-content-muted" data-document-docked="">
-              {t("layout.paneDocumentMoved")}
+            <div className="flex h-full flex-col items-center justify-center gap-2 p-3 text-content-muted" data-document-docked="">
+              <span>{t("layout.paneDocumentMoved")}</span>
+              {documentDockSide === "right" && !rightOpen && (
+                <button
+                  type="button"
+                  onClick={() => setRightOpen(true)}
+                  className="rounded-[var(--radius-btn-xs)] border border-edge px-2.5 py-1 text-[11px] font-medium text-content transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent"
+                >
+                  {t("layout.showDockedDocument")}
+                </button>
+              )}
             </div>
           ) : <GenofficeViewHostPane key={filePath} filePath={filePath} />
         ) : effectiveMode === "wysiwyg" ? (

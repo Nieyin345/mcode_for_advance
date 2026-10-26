@@ -172,6 +172,7 @@ export const zh = {
   "layout.paneFlow": "Node-RED 编辑器",
   "layout.paneRestore": "返回原有面板",
   "layout.paneDocumentMoved": "文档已在可停靠面板中打开",
+  "layout.showDockedDocument": "显示停靠的文档",
   "layout.closeSidebarBrowser": "关闭侧边栏浏览器",
 
   /* ── side chat (right-panel ask tab) ── */
