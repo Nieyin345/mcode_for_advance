@@ -128,6 +128,8 @@ export interface DocViewSnapshot {
   url: string;
   visible: boolean;
   bounds: DocViewRect;
+  /** Vendor-reported unsaved state; absent until the editor reports dirty state at least once. */
+  dirty?: boolean;
   /** 【ARC-007】最近一次加载/渲染失败（成功后清空）。
    *
    *  为什么要有:vendor 编辑器页依赖 preload 桥（`window.desktop.*`），而本宿主

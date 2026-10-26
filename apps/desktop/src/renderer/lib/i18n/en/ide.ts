@@ -434,6 +434,7 @@ export const en = {
   "ide.genoffice.viewHost": "Native editor",
   "ide.genoffice.viewHostHint": "Open this format's native editor inside the Mcode workspace (requires the editor assets to be built)",
   "ide.genoffice.viewHostActiveHint": "The native editor is active; switch back to Mcode's format-safe view",
+  "ide.genoffice.unsavedChanges": "Unsaved changes",
   "ide.genoffice.viewHostOpenFailed": "Failed to open the native editor view",
   "ide.genoffice.viewHostStageTooSmall": "The panel has no usable display area (width or height is 0); the view was not opened",
   "ide.genoffice.viewHostUnsupported": "The GenOffice presentation editor is unavailable on this machine",

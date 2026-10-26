@@ -451,6 +451,7 @@ export const zh = {
   "ide.genoffice.viewHost": "原生编辑器",
   "ide.genoffice.viewHostHint": "在 Mcode 工作区中打开该格式的原生编辑器（需要相应编辑器资源已构建）",
   "ide.genoffice.viewHostActiveHint": "当前正在使用原生编辑器；点击切回 Mcode 的格式安全视图",
+  "ide.genoffice.unsavedChanges": "未保存",
   "ide.genoffice.viewHostOpenFailed": "原生编辑器视图打开失败",
   "ide.genoffice.viewHostStageTooSmall": "面板没有可用的显示区域（宽或高为 0），视图未打开",
   "ide.genoffice.viewHostUnsupported": "演示文稿的原厂编辑视图在这台机器上不可用",

@@ -236,6 +236,8 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
   /** 【ARC-007】保存冲突（宿主侧乐观锁拦下的保存）。与 pageFailure 分开显示：
    *  页面没坏，只是**保存被拒**，用户需要先重新载入再改。 */
   const [saveConflict, setSaveConflict] = useState<{ message: string; at: number } | null>(null);
+  /** null means the vendor has not reported its dirty state yet. */
+  const [dirty, setDirty] = useState<boolean | null>(null);
   /** A document tool wrote a newer disk revision while this editor retained its in-memory copy. */
   const [externalMutation, setExternalMutation] = useState<{
     at: number;
@@ -444,7 +446,11 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
           const mine = result.views.find((v) => v.docId === docId);
           // A deliberate reload closes and recreates this native view. Preserve
           // the warning during that gap; the new snapshot clears it after open commits.
-          if (mine === undefined) return;
+          if (mine === undefined) {
+            setDirty(null);
+            return;
+          }
+          setDirty(typeof mine.dirty === "boolean" ? mine.dirty : null);
           setPageFailure(mine.lastFailure ?? null);
           // 【ARC-007】保存冲突走同一张快照（宿主在成功保存后清空它）。
           const conflict = mine?.lastSaveConflict;
@@ -468,11 +474,17 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
           the React host (outside the OS-level WebContentsView). Its height is
           excluded from the native view's measured bounds by stageRef. */}
       {url !== null && active && (
-        <div className="flex h-8 shrink-0 items-center justify-end gap-2 border-b border-edge bg-surface px-2" data-office-mcode-toolbar="">
+        <div className="flex h-8 shrink-0 items-center justify-end gap-2 border-b border-edge bg-surface px-2" data-office-mcode-toolbar="" data-office-dirty-state={dirty === null ? "unknown" : dirty ? "dirty" : "clean"}>
           <span className="mr-auto flex min-w-0 items-center truncate text-[11px] text-content-muted" title={filePath}>
             <FileTypeIcon path={filePath} size={13} className="mr-1 shrink-0" />
             <span className="truncate">{filePath.replace(/^.*[\\/]/, "")}</span>
           </span>
+          {dirty === true && (
+            <span data-office-unsaved="" className="flex shrink-0 items-center gap-1 text-[10px] font-medium text-warning" title={t("ide.genoffice.unsavedChanges")}>
+              <span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />
+              {t("ide.genoffice.unsavedChanges")}
+            </span>
+          )}
           {opening && (
             <span role="status" aria-label={t("common.loading")} title={t("common.loading")} className="shrink-0 text-content-muted">
               <IconLoader2 size={12} className="animate-spin" />

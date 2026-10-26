@@ -2038,6 +2038,7 @@ export class DocumentViewHost {
       url: live.url,
       visible: live.visible,
       bounds: { ...live.bounds },
+      ...(live.pageDirtyEpoch > 0 ? { dirty: live.pageDirty } : {}),
       ...(live.lastFailure !== undefined ? { lastFailure: { ...live.lastFailure } } : {}),
       ...(live.lastSaveConflict !== undefined ? { lastSaveConflict: { ...live.lastSaveConflict } } : {}),
       ...(live.lastExternalMutation !== undefined ? { lastExternalMutation: { ...live.lastExternalMutation } } : {}),
