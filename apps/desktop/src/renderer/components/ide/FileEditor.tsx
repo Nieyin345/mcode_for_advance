@@ -216,10 +216,9 @@ export function FileEditor({
     if (preference === "genoffice-view" && !genofficeViewAvailable) return defaultMode;
     return preference ?? defaultMode;
   });
-  // Derive the structured-mode state from the resolved mode, not only the saved
-  // preference. Otherwise a first-open fallback already in `genoffice` looks inactive
-  // and its toolbar button writes the same mode again instead of toggling away.
-  const useGenoffice = office && genofficeReady && viewMode === "genoffice";
+  // A single native-editor toggle switches between the original editor and the
+  // structured Mcode fallback. When the native host is absent, the structured view
+  // remains the only Office route and does not need a redundant mode button.
   const useGenofficeView = genofficeViewAvailable && viewMode === "genoffice-view";
   const setViewMode = useSessionStore((s) => s.setIdeFileViewMode);
   const editorMode = useSessionStore((s) => s.ideEditorMode);
@@ -257,8 +256,6 @@ export function FileEditor({
     (viewModePref !== "genoffice-view" || genofficeViewAvailable);
   const effectiveMode: FileViewMode = useGenofficeView
     ? "genoffice-view"
-    : useGenoffice
-    ? "genoffice"
     : office && officePrefUsable
     ? viewMode
     : office
@@ -290,13 +287,6 @@ export function FileEditor({
         canDiff={diffBefore != null && !historyOnly && !office}
         onToggleMode={() => setViewMode(filePath, effectiveMode === "edit" ? "diff" : "edit")}
         isMarkdown={markdown}
-        canUseGenoffice={office && genofficeReady}
-        genofficeActive={useGenoffice}
-        onToggleGenoffice={() =>
-          setViewMode(filePath, useGenoffice
-            ? (genofficeViewAvailable ? "genoffice-view" : "preview")
-            : "genoffice")
-        }
         genofficeViewActive={useGenofficeView}
         canUseGenofficeView={genofficeViewAvailable}
         onToggleGenofficeView={() =>
@@ -447,9 +437,6 @@ function EditorToolbar({
   isUnsupported,
   canPreviewHtml,
   onTogglePreview,
-  canUseGenoffice,
-  genofficeActive,
-  onToggleGenoffice,
   canUseGenofficeView,
   genofficeViewActive,
   onToggleGenofficeView,
@@ -467,10 +454,6 @@ function EditorToolbar({
   /** 【ARC-005】工作区内 HTML：显示「在浏览器中预览」入口。 */
   canPreviewHtml: boolean;
   onTogglePreview: () => void;
-  /** 【ARC-007】GenOffice CLI 就绪时才出现「GenOffice 视图」按钮。 */
-  canUseGenoffice: boolean;
-  genofficeActive: boolean;
-  onToggleGenoffice: () => void;
   /** 【ARC-007】可视化编辑视图（受控 WebContentsView）—— 与结构化视图同一条
    *  gating 判据（GenOffice CLI 就绪），但命中不同的偏好档。 */
   canUseGenofficeView: boolean;
@@ -654,25 +637,6 @@ function EditorToolbar({
           >
             {mode === "edit" ? <IconEye size={12} /> : <IconEdit size={12} />}
             {t(mode === "edit" ? "ide.editor.modeDiffLabel" : "ide.editor.modeEditLabel")}
-          </button>
-        )}
-        {/* The structured fallback is a separate choice only when the matching
-            native host is unavailable. When both routes exist, show one switch below
-            rather than two competing controls for the same document. */}
-        {canUseGenoffice && !canUseGenofficeView && (
-          <button
-            type="button"
-            onClick={onToggleGenoffice}
-            className={cn(
-              "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
-              "cds-hover-ghost text-content-muted hover:text-content",
-              genofficeActive && "text-accent",
-            )}
-            aria-pressed={genofficeActive}
-            title={t("ide.genoffice.toggleHint")}
-          >
-            <IconEye size={12} />
-            {t("ide.genoffice.toggle")}
           </button>
         )}
         {/* Native GenOffice view is the first-open mode for all six routed formats

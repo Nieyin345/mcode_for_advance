@@ -412,8 +412,6 @@ export const en = {
   "ide.turns.usageTotal": "{n} tokens total",
   "ide.turns.cacheHit": "{n}% cache hit",
   "ide.turns.noUsage": "No usage record",
-  "ide.genoffice.toggle": "Structured view",
-  "ide.genoffice.toggleHint": "Switch between Mcode's structured view and the format-safe fallback (the native editor is unavailable)",
   "ide.genoffice.cliReady": "Native document tools ready",
   "ide.genoffice.cliMissing": "Native editor not built",
   "ide.genoffice.unavailable": "This document cannot be opened in Mcode yet",

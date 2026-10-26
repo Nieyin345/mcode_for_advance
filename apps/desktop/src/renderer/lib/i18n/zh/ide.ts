@@ -429,8 +429,6 @@ export const zh = {
   "ide.turns.usageTotal": "共 {n} tokens",
   "ide.turns.cacheHit": "缓存命中 {n}%",
   "ide.turns.noUsage": "无用量记录",
-  "ide.genoffice.toggle": "结构化视图",
-  "ide.genoffice.toggleHint": "在 Mcode 结构化文档视图与格式安全的回退视图之间切换（原生编辑器当前不可用）",
   "ide.genoffice.cliReady": "原生文档能力就绪",
   "ide.genoffice.cliMissing": "原生编辑器未构建",
   "ide.genoffice.unavailable": "这个文档暂时无法在 Mcode 中打开",
