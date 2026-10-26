@@ -104,7 +104,7 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
     extra?:{formatOptions?:{tabSize:number;insertSpaces:boolean};
       formatContext?:{range?:{start:{line:number;character:number};end:{line:number;character:number}};
         triggerCharacter?:string};position?:{lineNumber:number;column:number};
-      editContext?:{newName?:string;range?:{start:{line:number;character:number};end:{line:number;character:number}};
+      editContext?:{newName?:string;prepare?:boolean;range?:{start:{line:number;character:number};end:{line:number;character:number}};
         trigger?:number};
       signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string}})=>{
     const version=model.getVersionId();
@@ -236,6 +236,16 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
             }
           }));
           if(kinds.has("rename"))registered.push(monaco.languages.registerRenameProvider(selector,{
+            resolveRenameLocation:active.languageProviders?.some(item=>
+              item.kind==="rename"&&item.language===language&&item.supportsRenameLocation===true)
+              ?async(model,position,token)=>{
+                const result=await queryDocument(active.sessionId,"rename",model,token,{
+                  position:{lineNumber:position.lineNumber,column:position.column},editContext:{prepare:true}});
+                if(result?.renameLocation)return{range:toRange(result.renameLocation.range),text:result.renameLocation.text};
+                return {range:{startLineNumber:position.lineNumber,startColumn:position.column,
+                  endLineNumber:position.lineNumber,endColumn:position.column},text:"",
+                  rejectReason:result?.renameRejectReason??"扩展的重命名选区已失效"};
+              }:undefined,
             provideRenameEdits:async(model,position,newName,token)=>{
               const result=await queryDocument(active.sessionId,"rename",model,token,{
                 position:{lineNumber:position.lineNumber,column:position.column},editContext:{newName}});

@@ -440,7 +440,7 @@ export class TheiaInstalledRegistry {
     formatOptions?:{tabSize:number;insertSpaces:boolean},
     signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string},
     formatContext?:{range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;triggerCharacter?:string},
-    editContext?:{newName?:string;range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;trigger?:number}):Promise<TheiaInstalledResult>{
+    editContext?:{newName?:string;prepare?:boolean;range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;trigger?:number}):Promise<TheiaInstalledResult>{
     const active=this.findSession(sessionId);
     if(!active||active.senderId!==senderId||this.closed.has(senderId)||active.syncing||
       active.executing)deny("非法或忙碌的扩展语言会话");

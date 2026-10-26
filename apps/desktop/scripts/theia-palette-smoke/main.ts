@@ -227,6 +227,18 @@ check("选区和输入时格式化共用 Mcode Monaco，不打开 Theia 编辑�
   languageHost.includes("ext.$provideOnTypeFormattingEdits("));
 const baseLanguageQuery={op:"languageQuery",sessionId:base.activeSession!.sessionId,
   query:"rangeFormatting",lineNumber:1,column:1};
+check("真实 Theia prepareRename 接入原生 Monaco 的重命名范围 Provider",
+  nativeLanguage.includes("resolveRenameLocation:")&&
+  nativeLanguage.includes("editContext:{prepare:true}")&&
+  languageHost.includes("$resolveRenameLocation(")&&
+  languageHost.includes("supportsRenameLocation"));
+check("prepareRename IPC 接受布尔值并拒绝伪装的执行参数",
+  TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,query:"rename",
+    editContext:{prepare:true}}).success&&
+  !TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,query:"rename",
+    editContext:{prepare:"yes"}}).success&&
+  !TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,query:"rename",
+    editContext:{prepare:true,command:"rm"}}).success);
 check("选区格式化 IPC 接受有界的 VS Code 0-based 范围",
   TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,formatContext:{
     range:{start:{line:0,character:2},end:{line:0,character:6}}
@@ -268,6 +280,24 @@ check("WorkspaceEdit 拒绝文件操作、重叠编辑及越界坐标",
   localWorkspaceTextEdits({edits:[sameEdit.edits[0],sameEdit.edits[0]]},localFile,"native-workspace")===null&&
   localWorkspaceTextEdits(editDto(localUri,{start:{line:8,character:0},end:{line:8,character:2}},"x"),
     localFile,"native-workspace")===null);
+const position={start:{line:0,character:2},end:{line:0,character:2}};
+check("两个零宽插入不能共用同一坐标造成非确定性结果",
+  localWorkspaceTextEdits({edits:[
+    {resource:localUri,textEdit:{range:position,text:"A"}},
+    {resource:localUri,textEdit:{range:position,text:"B"}}
+  ]},localFile,"native-workspace")===null);
+check("WorkspaceEdit 拒绝 query/fragment 资源及隐式 snippet，避免不同文档 URI 混用",
+  localWorkspaceTextEdits(editDto({...localUri,fragment:"revision"},position,"A"),
+    localFile,"native-workspace")===null&&
+  localWorkspaceTextEdits(editDto({...localUri,query:"version=2"},position,"A"),
+    localFile,"native-workspace")===null&&
+  localWorkspaceTextEdits({edits:[{resource:localUri,textEdit:{range:position,text:"A",insertAsSnippet:"true"}}]},
+    localFile,"native-workspace")===null);
+check("相邻非重叠插入和替换仍能通过，不误伤合法 Rename",
+  localWorkspaceTextEdits({edits:[
+    {resource:localUri,textEdit:{range:{start:{line:0,character:0},end:{line:0,character:2}},text:"AB"}},
+    {resource:localUri,textEdit:{range:{start:{line:0,character:2},end:{line:0,character:3}},text:"C"}}
+  ]},localFile,"native-workspace")?.length===2);
 check("代码操作 IPC 不接收超长重命名或额外危险字段",
   TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,query:"rename",
     editContext:{newName:"new"}}).success&&

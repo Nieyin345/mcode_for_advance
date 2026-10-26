@@ -3,7 +3,7 @@
  */
 import type {TheiaLanguageRange,TheiaLanguageSymbol,TheiaSignatureHelp,TheiaLanguageTextEdit} from "@contracts/ipc/modules.js";
 import * as path from "node:path";
-import {fileURLToPath,pathToFileURL} from "node:url";
+import {fileURLToPath} from "node:url";
 
 function record(value:unknown):Record<string,unknown>|null{
   return value!==null&&typeof value==="object"&&!Array.isArray(value)
@@ -66,8 +66,10 @@ export function localWorkspaceTextEdits(input:unknown,filePath:string,documentTe
     const row=record(item),resource=record(row?.resource),edit=record(row?.textEdit);
     if(!row||!resource||resource.scheme!=="file"||typeof resource.path!=="string"||
       (resource.authority!==undefined&&resource.authority!=="")||
-      !edit||edit.insertAsSnippet===true||row.cellEdit!==undefined||
-      record(row.metadata)?.needsConfirmation===true)return null;
+      (resource.query!==undefined&&resource.query!=="")||
+      (resource.fragment!==undefined&&resource.fragment!=="")||
+      !edit||edit.insertAsSnippet!==undefined&&edit.insertAsSnippet!==false||
+      row.cellEdit!==undefined||record(row.metadata)?.needsConfirmation===true)return null;
     let target:string;
     try{
       const encoded=encodeURI(resource.path).replace(/#/g,"%23").replace(/\?/g,"%3F");
@@ -82,7 +84,14 @@ export function localWorkspaceTextEdits(input:unknown,filePath:string,documentTe
     size+=edit.text.length;edits.push({range,text:edit.text});
   }
   const clean=formattingEdits(edits);
-  return clean.length===edits.length?clean:null;
+  if(clean.length!==edits.length)return null;
+  // Monaco cannot deterministically order two insertions at one position.
+  // Neither may be applied when both were proposed in the same workspace edit.
+  for(let i=1;i<clean.length;i++){
+    const left=clean[i-1].range.start,right=clean[i].range.start;
+    if(left.line===right.line&&left.character===right.character)return null;
+  }
+  return clean;
 }
 export function documentSymbols(input:unknown):TheiaLanguageSymbol[]{
   if(!Array.isArray(input))return [];

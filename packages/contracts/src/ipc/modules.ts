@@ -206,6 +206,7 @@ export interface TheiaLanguageSymbol {
 }
 /** F038: only bounded same-document text edits; never file operations or commands. */
 export interface TheiaLanguageTextEdit {range:TheiaLanguageRange;text:string}
+export interface TheiaRenameLocation {range:TheiaLanguageRange;text:string}
 export interface TheiaLanguageCodeAction {title:string;kind?:string;isPreferred?:boolean;edits:TheiaLanguageTextEdit[]}
 export interface TheiaLanguageSignature {
   label:string;documentation?:string;parameters:Array<{label:string;documentation?:string}>;
@@ -238,7 +239,7 @@ export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
       "rename","codeActions"]),
     lineNumber:z.number().int().min(1).max(100000),column:z.number().int().min(1).max(100000),
     includeDeclaration:z.boolean().optional(),
-    editContext:z.object({newName:z.string().min(1).max(256).optional(),
+    editContext:z.object({newName:z.string().min(1).max(256).optional(),prepare:z.boolean().optional(),
       range:z.object({start:z.object({line:z.number().int().min(0).max(100000),character:z.number().int().min(0).max(100000)}).strict(),
         end:z.object({line:z.number().int().min(0).max(100000),character:z.number().int().min(0).max(100000)}).strict()}).strict().optional(),
       trigger:z.number().int().min(1).max(2).optional()}).strict().optional(),
@@ -268,7 +269,7 @@ export interface TheiaInstalledEntry {
   /** F028: only the desktop sender that owns a live Theia session receives command metadata. Never persisted. */
   activeSession?: {sessionId:string;commands:string[];editorMenus?:TheiaEditorMenu[];
     languageProviders?:Array<{kind:TheiaLanguageProviderKind;language:string;
-      triggerCharacters?:string[];retriggerCharacters?:string[]}>};
+      triggerCharacters?:string[];retriggerCharacters?:string[];supportsRenameLocation?:boolean}>};
 }
 export interface TheiaNativeConfigSetting {
   key:string;type:"string"|"number"|"boolean";description?:string;
@@ -288,6 +289,7 @@ export type TheiaInstalledResult =
     formattingEdits?:Array<{range:TheiaLanguageRange;text:string}>;
     documentSymbols?:TheiaLanguageSymbol[];
     renameEdits?:TheiaLanguageTextEdit[];
+    renameLocation?:TheiaRenameLocation;
     renameRejectReason?:string;
     codeActions?:TheiaLanguageCodeAction[];
     signatureHelp?:TheiaSignatureHelp}

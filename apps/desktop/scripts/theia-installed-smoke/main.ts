@@ -285,6 +285,15 @@ try{
     }));
   await rejects("空输入触发字符不得调用扩展",()=>manager!.languageQuery(51,run.sessionId,
     "onTypeFormatting",1,4,true,undefined,undefined,{triggerCharacter:""}));
+  const prepareRename=await manager.languageQuery(51,run.sessionId,"rename",1,3,true,undefined,
+    undefined,undefined,{prepare:true});
+  check("真实 Theia Rename prepareRename 返回指定选区和 placeholder，供 Monaco F2 直接使用",
+    prepareRename.kind==="languageResult"&&prepareRename.renameLocation?.text==="native"&&
+    prepareRename.renameLocation.range.start.line===0&&
+    prepareRename.renameLocation.range.end.character===6,prepareRename);
+  check("Rename Provider 的 prepareRename 能力声明传入 Mcode 原生目录",
+    manager.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>
+      x.kind==="rename"&&x.supportsRenameLocation===true)===true);
   const rename=await manager.languageQuery(51,run.sessionId,"rename",1,3,true,undefined,
     undefined,undefined,{newName:"renamed"});
   check("真实 VS Code Rename Provider 通过 Theia 返回当前 Monaco 文档内安全 WorkspaceEdit",

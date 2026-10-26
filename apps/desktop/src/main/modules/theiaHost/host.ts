@@ -402,7 +402,7 @@ export class TheiaHost {
   private activeEditorSession: EditorSession | null = null;
   private extensionPreferences: McodeExtensionPreferences | null = null;
   private extensionState:McodeExtensionState|null=null;
-  private readonly languageProviders=new Map<number,{kind:TheiaLanguageProviderKind;languages:string[];triggerCharacters?:string[];retriggerCharacters?:string[]}>();
+  private readonly languageProviders=new Map<number,{kind:TheiaLanguageProviderKind;languages:string[];triggerCharacters?:string[];retriggerCharacters?:string[];supportsRenameLocation?:boolean}>();
   private readonly webviewHandles=new Set<string>();
   async sendWebviewMessage(handle:string,payload:unknown):Promise<void>{
     if(!this.webviewHandles.has(handle)||!this.rpc||!this.modules||this.disposed)
@@ -419,18 +419,20 @@ export class TheiaHost {
       this.modules.MAIN_RPC_CONTEXT.WEBVIEWS_EXT);
     await ext.$onDidDisposeWebviewPanel(handle);
   }
-  getLanguageDescriptors():Array<{kind:TheiaLanguageProviderKind;language:string;triggerCharacters?:string[];retriggerCharacters?:string[]}>{
+  getLanguageDescriptors():Array<{kind:TheiaLanguageProviderKind;language:string;triggerCharacters?:string[];retriggerCharacters?:string[];supportsRenameLocation?:boolean}>{
     type Descriptor={kind:TheiaLanguageProviderKind;language:string;
-      triggerCharacters?:string[];retriggerCharacters?:string[]};
+      triggerCharacters?:string[];retriggerCharacters?:string[];supportsRenameLocation?:boolean};
     const byKey=new Map<string,Descriptor>();
     for(const item of this.languageProviders.values())for(const language of item.languages){
       const key=item.kind+":"+language;
       const existing=byKey.get(key);
       if(!existing){byKey.set(key,{kind:item.kind,language,
+        ...(item.supportsRenameLocation?{supportsRenameLocation:true}:{}),
         ...(item.triggerCharacters?{triggerCharacters:[...item.triggerCharacters]}:{}),
         ...(item.retriggerCharacters?{retriggerCharacters:[...item.retriggerCharacters]}:{})});
         continue;
       }
+      if(item.supportsRenameLocation)existing.supportsRenameLocation=true;
       if(item.triggerCharacters)existing.triggerCharacters=[...new Set([
         ...existing.triggerCharacters??[],...item.triggerCharacters])].slice(0,20);
       if(item.retriggerCharacters)existing.retriggerCharacters=[...new Set([
@@ -442,11 +444,11 @@ export class TheiaHost {
     formatOptions?:{tabSize:number;insertSpaces:boolean},
     signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string},
     formatContext?:{range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;triggerCharacter?:string},
-    editContext?:{newName?:string;range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;trigger?:number}):
+    editContext?:{newName?:string;prepare?:boolean;range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;trigger?:number}):
     Promise<{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;
       locations:TheiaLanguageLocation[];formattingEdits:Array<{range:import("@contracts/ipc/modules.js").TheiaLanguageRange;text:string}>;
       documentSymbols:TheiaLanguageSymbol[];signatureHelp?:TheiaSignatureHelp;
-      renameEdits?:TheiaLanguageTextEdit[];renameRejectReason?:string;codeActions?:TheiaLanguageCodeAction[]}>{
+      renameEdits?:TheiaLanguageTextEdit[];renameLocation?:{range:import("@contracts/ipc/modules.js").TheiaLanguageRange;text:string};renameRejectReason?:string;codeActions?:TheiaLanguageCodeAction[]}>{
     const current=this.activeEditorSession,modules=this.modules,rpc=this.rpc;
     if(!current||!modules||!rpc||this.disposed||!this.started||
       !Number.isSafeInteger(lineNumber)||!Number.isSafeInteger(column)||
@@ -461,18 +463,21 @@ export class TheiaHost {
     if(kind==="onTypeFormatting"&&(!trigger||trigger.length!==1))throw Error("输入格式化触发字符无效");
     const editRange=kind==="codeActions"?languageRange(editContext?.range):null;
     if(kind==="codeActions"&&!editRange)throw Error("代码操作选区无效");
-    if(kind==="rename"&&(!editContext?.newName||editContext.newName.length>256))
+    if(kind==="rename"&&editContext?.prepare!==true&&(!editContext?.newName||editContext.newName.length>256))
       throw Error("重命名目标无效");
     const eligible=[...this.languageProviders.entries()].filter(([,provider])=>
       provider.kind===kind&&provider.languages.some(language=>language==="*"||language===requested)&&
-      (kind!=="onTypeFormatting"||provider.triggerCharacters?.includes(trigger!))).slice(0,kind==="rename"?1:6);
+      (kind!=="onTypeFormatting"||provider.triggerCharacters?.includes(trigger!))&&
+      (kind!=="rename"||editContext?.prepare!==true||provider.supportsRenameLocation===true))
+      .sort((a,b)=>kind==="rename"?Number(b[1].supportsRenameLocation===true)-Number(a[1].supportsRenameLocation===true):0)
+      .slice(0,kind==="rename"?1:6);
     const ext=rpc.getProxy<Record<string,(...args:unknown[])=>Promise<unknown>>>(modules.MAIN_RPC_CONTEXT.LANGUAGES_EXT);
     const token={isCancellationRequested:false,onCancellationRequested:()=>({dispose:()=>{}})};
     const position={lineNumber,column};
     const results:{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;
       locations:TheiaLanguageLocation[];formattingEdits:Array<{range:import("@contracts/ipc/modules.js").TheiaLanguageRange;text:string}>;
       documentSymbols:TheiaLanguageSymbol[];signatureHelp?:TheiaSignatureHelp;
-      renameEdits?:TheiaLanguageTextEdit[];renameRejectReason?:string;codeActions?:TheiaLanguageCodeAction[]}=
+      renameEdits?:TheiaLanguageTextEdit[];renameLocation?:{range:import("@contracts/ipc/modules.js").TheiaLanguageRange;text:string};renameRejectReason?:string;codeActions?:TheiaLanguageCodeAction[]}=
       {contents:[],suggestions:[],locations:[],formattingEdits:[],documentSymbols:[]};
     for(const [handle] of eligible){
       let operation:Promise<unknown>;
@@ -492,7 +497,9 @@ export class TheiaHost {
         },{tabSize:formatOptions?.tabSize??4,insertSpaces:formatOptions?.insertSpaces??true},token);break;
         case "onTypeFormatting":operation=ext.$provideOnTypeFormattingEdits(handle,current.uri,position,trigger!,
           {tabSize:formatOptions?.tabSize??4,insertSpaces:formatOptions?.insertSpaces??true},token);break;
-        case "rename":operation=ext.$provideRenameEdits(handle,current.uri,position,editContext!.newName!,token);break;
+        case "rename":operation=editContext?.prepare===true
+          ?ext.$resolveRenameLocation(handle,current.uri,position,token)
+          :ext.$provideRenameEdits(handle,current.uri,position,editContext!.newName!,token);break;
         case "codeActions":operation=ext.$provideCodeActions(handle,current.uri,{
           startLineNumber:editRange!.start.line+1,startColumn:editRange!.start.character+1,
           endLineNumber:editRange!.end.line+1,endColumn:editRange!.end.character+1,
@@ -533,7 +540,16 @@ export class TheiaHost {
         }else if(kind==="rename"){
           const payload=output as {rejectReason?:unknown}|undefined;
           if(typeof payload?.rejectReason==="string")results.renameRejectReason=payload.rejectReason.slice(0,250);
-          else{
+          else if(editContext?.prepare===true){
+            const entry=output&&typeof output==="object"?output as Record<string,unknown>:null;
+            const range=languageRange(entry?.range);
+            const text=entry?.text;
+            const lines=current.input.text.split(/\r\n|\r|\n/);
+            const valid=(p:{line:number;character:number})=>p.line<lines.length&&p.character<=lines[p.line].length;
+            if(range&&valid(range.start)&&valid(range.end)&&typeof text==="string"&&text.length<=256)
+              results.renameLocation={range,text};
+            else results.renameRejectReason="扩展返回了无效的重命名选区";
+          }else{
             const edits=localWorkspaceTextEdits(output,current.input.filePath,current.input.text);
             if(edits)results.renameEdits=edits;
             else results.renameRejectReason="该重命名涉及其他文件或不支持的修改，Mcode 已拒绝执行";
@@ -1290,9 +1306,9 @@ export class TheiaHost {
           triggerCharacters:(Array.isArray(characters)?characters:[])
             .filter(c=>typeof c==="string"&&c.length===1).slice(0,10)});
       },
-      $registerRenameProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+      $registerRenameProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>,supportsResolveLocation=false)=>{
         if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
-        this.languageProviders.set(handle,{kind:"rename",
+        this.languageProviders.set(handle,{kind:"rename",supportsRenameLocation:supportsResolveLocation===true,
           languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
       },
       $registerQuickFixProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
