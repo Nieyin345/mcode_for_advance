@@ -1,6 +1,6 @@
 # T83｜`slidesAddSlide` 有通道、零渲染端调用：可视化编辑的断点
 
-- Status: ready-for-agent
+- Status: **done（2026-10-26 复核）**。原结果中的“slides 打不开”已被后续 ARC-007 接线与真实 Electron U1 证据取代；Mcode 自有 `slidesAddSlide` bridge 仍无渲染端调用，但这不等于原厂 Slides 编辑能力断路。
 - Category: **产品缺陷（能力已造好但接不上）**
 - Priority: **P0** —— 用户抱怨「AI 改 Word/PPT 很烂」，而人自己也不能编辑
 - Depends on: ARC-007（`documentView:*` 七条通道）、T40（渲染端 registry）
@@ -217,4 +217,27 @@ slides 专用 4 条（`mcode:document-view:slides-*`）：
 
 ### 七、提交
 
-（见下方 SHA）
+（历史结果无产品代码提交；2026-10-26 复核只追加本卡与主任务索引。）
+
+## 结果复核（2026-10-26；取代 §三的旧结论，不改写历史）
+
+### 当前源码确认
+
+- `GenofficeViewHostPane.tsx:277-311`：原生 Slides 宿主打开时显式传 `editor: "slides"` 与 `filePath`，随后调用 `api.documentView.openPath`。
+- `apps/desktop/src/main/ipc/documentView.ts:314-339`：Slides 的 `openPath` 走 `prepareSlidesOpen` → `slides.openDeck` → 缓存/通知 `slides:opened`；因此 2026-10-23 §三“打开 `.pptx` 第一环就断”的结论已经过期。
+- 用户可见的加页走的是 GenOffice 原厂编辑器自己的链：`genoffice/apps/slides/src/renderer/App.tsx:1575` → `renderer/slide-actions.ts:17` → 原厂 `window.slidesApi.addBlankSlide` → `preload/index.ts:240` → `main/slides-main.ts:2787`。不是 Mcode 自有的 `documentView.slidesAddSlide`。
+- Mcode 自有 `slidesAddSlide`/`slidesEditText` 通道依然在主进程注册，Mcode preload/RpcMap 与渲染端没有对应调用者。结论：这是**未被产品消费的备用桥**，不是原厂编辑器“不能加页”的证据；不应为了让 grep 有调用而再造第二条插入路径。
+- `GenofficeDocumentPane.tsx:10-14` 已于 2026-10-24 明确更正旧注释：受控 `WebContentsView` 的 `GenofficeViewHostPane` 已接入；结构化面板本身不承担编辑是产品分层，而不是等待方案 A。
+- 真实 Electron T7 六格式 `slides-open-edit-save-reopen` 最新完整 6/6 证据：`.tmp/electron-u1/2026-10-24T20-13-26-953Z/suite-summary.json`；后续 Slides 单旅程 `.tmp/electron-u1/2026-10-25T06-54-16-653Z/suite-summary.json` 也 PASS。此次复核只读源码/既有证据，没有起 Electron 或改产品代码。
+
+### 最终判断
+
+| 问题 | 复核结论 |
+|---|---|
+| `documentView:*` 基础通道 | 8 条已由 Mcode 主进程、preload 与渲染端接通；详见 §一表 |
+| Mcode 自有 `slides-*` 通道 | 主进程有，部分契约已定义，但 Mcode preload / renderer 无调用；目前不是用户操作原厂 Slides 的主链 |
+| 用户能否在 Mcode 内打开 PPTX、添加一页并保存 | 原厂 Slides 视图可打开；原厂 renderer/preload/main 提供加页动作，六格式真实 Electron 打开→编辑→保存→重开已有 6/6 PASS |
+| `GenofficeDocumentPane` 的旧注释 | 已更正，不再声称需要等待方案 A |
+| 是否需要本卡直接补 Mcode preload | **否**。先保持唯一产品编辑链为原厂 Slides API；若未来确有 Mcode 自有结构化编辑器要调用备用 bridge，再以独立需求定义权限、撤销、dirty 与保存语义 |
+
+本卡的只读诊断目标已完成。ARC-007 六格式整包、复杂文件保真、安装版/跨 OS 与独立复核仍按原台账保持开放，不因本卡关闭而改变。
