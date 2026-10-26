@@ -328,7 +328,7 @@ export const MessageRow = memo(function MessageRow({
   if (isUser && isEditing) {
     return (
       <div className="mt-5 mb-4 flex justify-end">
-        <div className="min-w-0 w-full max-w-[min(92%,48rem)] sm:max-w-[min(85%,48rem)]">
+        <div className="min-w-0 w-full max-w-[min(92%,48rem)] sm:max-w-[min(var(--m-bubble-max-w,85%),48rem)]">
           <UserMessageEditor
             msg={msg}
             onSubmit={(newText, images) => onSubmitEdit?.(msg, newText, images)}
@@ -377,7 +377,7 @@ export const MessageRow = memo(function MessageRow({
       )}
     >
       <div
-        className={isUser ? "max-w-[min(92%,48rem)] sm:max-w-[min(85%,48rem)] min-w-0" : "w-full min-w-0"}
+        className={isUser ? "max-w-[min(92%,48rem)] sm:max-w-[min(var(--m-bubble-max-w,85%),48rem)] min-w-0" : "w-full min-w-0"}
         style={isUser ? ({ "--chat-font-size-base": "var(--chat-font-size)" } as React.CSSProperties) : undefined}
       >
         {/* 【T139】助手身份头 —— 对齐上游 `ChatMessageBubbles.tsx` 的头部。
@@ -445,8 +445,9 @@ export const MessageRow = memo(function MessageRow({
                 "--chat-font-size": "calc(var(--chat-font-size-base) - 0.5px)",
               } as React.CSSProperties)
             // 助手正文缩进：Claude 的 `--cds-assistant-message-text-inset` 是 **0px**
-            // （无缩进，正文与卡片左缘对齐）。原先回落值是 4px，会整体右移。
-            : { paddingLeft: "var(--cds-assistant-message-text-inset, 0px)" }}
+            // （无缩进，正文与卡片左缘对齐）。Mcode 侧的名字是 --m-assistant-inset
+            // （由生成器从 Claude 产物导出到 tokens.cds.css）。
+            : { paddingLeft: "var(--m-assistant-inset, 0px)" }}
           className={
             isUser
               ? "user-bubble-fill overflow-hidden rounded-[var(--radius-bubble)] border border-edge/45 px-4 py-3 text-content [font-size:var(--chat-font-size)]" +

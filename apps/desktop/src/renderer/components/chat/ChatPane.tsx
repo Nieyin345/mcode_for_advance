@@ -30,6 +30,7 @@ import type { SubagentSnapshot } from "@contracts/runtime";
 import type { SessionBookmark } from "@contracts/session";
 import type { FileSearchEntry } from "@contracts/ipc";
 import { prepareImageForSend } from "@renderer/lib/imageResize.js";
+import { resolveModelSupportsVision } from "@renderer/stores/sessionStoreHelpers.js";
 import type { PromptImage } from "@renderer/stores/sessionStore.js";
 import {
   type ContentTag,
@@ -103,7 +104,16 @@ import { useUiPrefsStore } from "@renderer/lib/uiPrefs.js";
 
 /** 第一条消息与顶部(标签条 / 标题栏)之间的留白。作为滚动内容的顶部
  *  padding,停在顶部时可见,向下滚动后随内容滚走。 */
-const MESSAGE_LIST_TOP_PADDING = 10;
+/** 消息列表顶部留白。
+ *
+ * 【UI 重建 2026-10-27】10 → **48**。Claude 的 transcript 容器是
+ * `pt-[48px] pb-[32px]`（其 `epitaxy-transcript-typography` 的实际值）——
+ * 首条消息与顶栏之间留出明显呼吸区，而不是紧贴。10px 太挤，
+ * 这是「看着不像」的又一处。
+ *
+ * 只改顶部：底部留白由「回到底部」按钮与 composer 的外边距承担，
+ * 改 pb 会与输入框贴合逻辑打架。 */
+const MESSAGE_LIST_TOP_PADDING = 48;
 
 /** Picker trigger chars → picker kind. CJK soft keyboards often emit
  *  full-width variants (／ U+FF0F, ＠ U+FF20) for the slash/at keys, so
@@ -2105,10 +2115,27 @@ function ChatPaneForSession({
         });
         return null;
       }
+      /* 【CHAT-21】缩小过就**说一声**（产品要求：不静默改变模型看到的内容）。
+       * 用 toast 而不是消息正文：正文是用户自己写的，混进系统提示会让人以为
+       * 那句话是他打的。一条轻提示足够，而且不污染会话。 */
+      if (res.downscaled !== undefined) {
+        useToastStore.getState().push({
+          kind: "info",
+          title: t("chat.toast.imageDownscaled"),
+          body: t("chat.toast.imageDownscaledBody", {
+            name: img.name,
+            from: `${res.downscaled.fromWidth}×${res.downscaled.fromHeight}`,
+            to: `${res.downscaled.toWidth}×${res.downscaled.toHeight}`,
+          }),
+        });
+      }
       images.push(res.image);
     }
     return images;
   }, [pendingImages, t]);
+
+  /* 【CHAT-21】当前模型能不能读图（三态）。见 resolveModelSupportsVision 的注释。 */
+  const sessionModelSupportsVision = useSessionStore((s) => resolveModelSupportsVision(s));
 
   const handleSend = async () => {
     // Serialize the editor: text has skill pills inlined as `/name` at their
@@ -2139,6 +2166,26 @@ function ChatPaneForSession({
     // composer intact — the toast explains which one and why.
     const images = await preparePendingImages();
     if (images === null) return;
+    /* 【CHAT-21】模型**明确**看不了图 → 当场告诉用户，别让他以为发了。
+     *
+     * 判据是 `=== false` 而不是 `!supportsVision`：能力是**三态**的，
+     * `undefined` 表示"这个模型没声明"——那种情况我们不拦（未知不等于不能）。
+     *
+     * 数据源是**自定义模型清单里的 `supportsVision`**，不是 provider capability：
+     * 能不能看图是**模型级**的事（同一个 provider 下 DeepSeek 不能、Claude 能），
+     * 而 capability 是 provider 级的只读常量，按它判会在混用自定义模型时判错。
+     *
+     * 提示但**不阻止发送**：图片仍然发出去（用户可能下一轮换模型，或者这个模型
+     * 其实能看只是没勾）。拦下来比提示更糟 —— 用户会以为自己操作错了。 */
+    const visionUnknown = images !== undefined && images.length > 0
+      && sessionModelSupportsVision === false;
+    if (visionUnknown) {
+      useToastStore.getState().push({
+        kind: "warning",
+        title: t("chat.toast.visionUnsupported"),
+        body: t("chat.toast.visionUnsupportedBody", { provider: activeProviderName }),
+      });
+    }
     // Forward the tags as attachments so the sent user message keeps the
     // same chip-card presentation in the stream as it had in the composer.
     const attachments = composeSendAttachments(tags);
@@ -2400,7 +2447,43 @@ function ChatPaneForSession({
 
   /** 重新生成:把最后一条用户消息**原样**重发(文字、附件、图片、技能都照旧),
    *  走的就是编辑重发那条路 —— 截断它之后的回复再发。 */
+  /**
+   * 【CHAT-12】重新生成。
+   *
+   * 两种入口，语义不同：
+   *   - **用户消息**（原来那个）：把这条 prompt 改一改再发 —— 走 `handleEditSubmit`；
+   *   - **AI 回复**（本轮新增）：**找到它对应的那条用户消息**，原样重发。
+   *     这才是用户说「重新生成」时想要的：同一个问题，再答一次。
+   *
+   * 为什么 AI 回复上也要有：原来的按钮只在"最后一条用户消息"上出现，而用户
+   * 想重答的往往是**中间某一轮**（前面几轮都还行，第三条答歪了）。只有末尾
+   * 才有入口，等于逼用户把后面的对话全丢掉。
+   *
+   * 找不到对应的用户消息时**什么都不做**（不猜"大概是最后一条用户"）——
+   * 猜错会重发一个用户没想要的问题，比没有按钮更糟。
+   */
   const handleRegenerate = (msg: ChatMessage) => {
+    if (msg.role === "assistant") {
+      const list = useSessionStore.getState().messagesBySession[sessionId] ?? [];
+      const at = list.findIndex((m) => m.id === msg.id);
+      if (at < 0) return;
+      // 往上找最近的用户消息（assistant 轮之间可能夹着工具/思考块）。
+      let source: ChatMessage | null = null;
+      for (let i = at - 1; i >= 0; i -= 1) {
+        if (list[i]?.role === "user") { source = list[i]!; break; }
+      }
+      if (source === null) return;
+      const textBlock = source.blocks.find((b) => b.kind === "text") as
+        | Extract<Block, { kind: "text" }> | undefined;
+      const text = textBlock?.text ?? "";
+      if (!text.trim()) return;
+      const images: PromptImage[] = source.blocks
+        .filter((b): b is Extract<Block, { kind: "image" }> => b.kind === "image")
+        .map((b) => ({ data: b.data, mimeType: b.mimeType as PromptImage["mimeType"] }));
+      // 用**那条用户消息的原文**重发（不是 AI 的回复）。
+      void handleEditSubmit(source, text, images);
+      return;
+    }
     const textBlock = msg.blocks.find((b) => b.kind === "text") as Extract<Block, { kind: "text" }> | undefined;
     const text = textBlock?.text ?? "";
     if (!text.trim()) return;
@@ -3161,10 +3244,11 @@ function ChatPaneForSession({
           ? "flex flex-1 flex-col justify-end overflow-hidden pb-3"
           : "shrink-0 pb-3",
       )}>
-        <div className={cn("relative w-full", empty ? "max-w-4xl" : "mx-auto max-w-[var(--composer-max-w,48rem)] pt-5")}>
+        <div className={cn("relative mx-auto w-full", empty ? "max-w-4xl" : "max-w-[var(--composer-max-w,48rem)] pt-5")}>
           {empty && (
             <EmptyThreadWelcome projectName={projectName} />
           )}
+          <div className="mx-auto w-full min-w-0 max-w-[var(--composer-max-w,48rem)]">
           {/* Plan-approval card (ExitPlanMode) - the model drafted a plan in
               plan mode and is awaiting the user's approve/reject decision.
               Rendered inside the composer column so it sits directly above the
@@ -3174,6 +3258,7 @@ function ChatPaneForSession({
             <PlanApprovalPrompt
               active={promptActive}
               sessionId={sessionId}
+              requestId={pendingPlanApproval.requestId}
               plan={pendingPlanApproval.plan}
               onViewPlan={() => {
                 // Open the plan tab in the editor column (PlanViewer read
@@ -3245,12 +3330,13 @@ function ChatPaneForSession({
               working-environment picker. Both are quiet text triggers
               OUTSIDE the composer card; each hides itself once the
               conversation starts. */}
-          <div className="flex items-center gap-1 px-1 pb-1">
+          <div data-cds="ComposerContextRow" className="flex items-center gap-1 px-1 pb-1">
             <SessionDirectoryChip sessionId={sessionId} />
             <WorktreeModeChip sessionId={sessionId} />
           </div>
           <div
             ref={composerCardRef}
+            data-cds="ComposerCard"
             // composer-card: hooks for the 方案 B polish layers in styles.css —
             // a busy sweep bar along the top edge while a turn runs, and an
             // accent hairline that lights up on focus-within.
@@ -3259,8 +3345,12 @@ function ChatPaneForSession({
               // 外框几何/阴影一律读语义别名（styles.css → tokens.cds.css → 上游
               // cds-theme.css），不在组件里写 20px / 阴影字面量：数值只有生成物
               // 一份，上游变了重跑生成器即全体跟随。
-              "composer-card relative flex min-w-0 flex-col overflow-hidden rounded-[var(--composer-radius)] border border-edge-input bg-surface shadow-[var(--composer-shadow)] transition-all duration-200",
-              "focus-within:border-accent focus-within:shadow-[var(--composer-shadow-focus)]",
+              // 【UI 对齐 Claude / ChatComposer.tsx:102】上游输入框**没有 border** ——
+              // 边界全部由 `--cds-shadow-composer` 承担（一层微扩散 + 一层 inset 发丝）。
+              // 我们原来叠了一条 `border border-edge-input`，等于在阴影之外再画一圈线：
+              // 光看外框就比上游「重」一倍。去掉它之后 focus 态也不再靠边框变色。
+              "composer-card relative flex min-w-0 flex-col overflow-hidden rounded-[var(--composer-radius)] bg-surface shadow-[var(--composer-shadow)] transition-all duration-200",
+              "focus-within:shadow-[var(--composer-shadow-focus)]",
               // Highlight the composer while a file-tree drag hovers over it.
               dragOver && "border-accent ring-4 ring-accent/20",
               // Hide the composer card entirely while a bottom prompt (approval /
@@ -3493,7 +3583,7 @@ function ChatPaneForSession({
               </div>
             )}
             {tags.length > 0 && (
-              <div className={COMPOSER_ATTACHMENT_ROW}>
+              <div data-cds="ComposerAttachmentRow" className={COMPOSER_ATTACHMENT_ROW}>
                 {tags.map((tag) => {
                   const props = {
                     ref: (el: HTMLSpanElement | null) => {
@@ -3532,7 +3622,7 @@ function ChatPaneForSession({
               </div>
             )}
             {pendingImages.length > 0 && (
-              <div className={COMPOSER_ATTACHMENT_ROW}>
+              <div data-cds="ComposerAttachmentRow" className={COMPOSER_ATTACHMENT_ROW}>
                 {pendingImages.map((img) => (
                   <AttachmentTile
                     key={img.id}
@@ -3587,9 +3677,10 @@ function ChatPaneForSession({
             </RenderErrorBoundary>
             <div
               ref={composerActionRowRef}
+              data-cds="ComposerActionRow"
               className="composer-action-row flex flex-wrap items-center justify-between gap-2 px-2.5 pb-2 pt-1.5"
             >
-              <div className="composer-chips flex min-w-0 flex-1 items-center gap-1">
+              <div data-cds="ComposerConfigControls" className="composer-chips flex min-w-0 flex-1 items-center gap-1">
                 {chipsMode === "collapsed" ? (
                   // Narrow hosts (side-chat panel / phone shell): no pill —
                   // the single-icon entry popping the vertical settings list
@@ -3618,7 +3709,7 @@ function ChatPaneForSession({
               </div>
               {/* Right cluster: mic + provider picker + send, always visible
                   (the chip row/pill collapse in narrow mode; these don't). */}
-              <div className="flex shrink-0 items-center gap-1">
+              <div data-cds="ComposerPrimaryActions" className="flex shrink-0 items-center gap-1">
                 {/* Voice input: mic button with continuous / hold-to-talk modes
                     (mode switchable via the caret menu). `sessionId` wires the
                     voice.dictation keyboard shortcut to THIS pane's mic.
@@ -3654,8 +3745,9 @@ function ChatPaneForSession({
                     title={t("chat.stopGenerating")}
                     aria-label={t("chat.stopGenerating")}
                     className={cn(
-                      "composer-stop inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-danger text-surface transition-all duration-150 ease-out",
-                      "hover:scale-105 hover:brightness-110 active:scale-95 active:brightness-95",
+                      "composer-stop inline-flex shrink-0 items-center justify-center bg-danger text-surface shadow-sm",
+                      COMPOSER_SEND_BUTTON,
+                      "hover:brightness-105 active:scale-95 active:brightness-95",
                     )}
                   >
                     <IconPlayerStop size={16} />
@@ -3673,8 +3765,7 @@ function ChatPaneForSession({
                       // 【T119】圆角/尺寸/过渡对齐上游 `ChatComposer.tsx:258`。
                       // 原先这里是 `h-8 w-8 rounded-xl`，比上游圆一档（上游是 `rounded-lg`）。
                       COMPOSER_SEND_BUTTON,
-                      "hover:scale-110 hover:brightness-110 hover:shadow-md hover:shadow-accent/20",
-                      "active:scale-95 active:brightness-95",
+                      "hover:brightness-105 active:scale-95 active:brightness-95",
                       "disabled:scale-100 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-content-subtle disabled:shadow-none disabled:hover:scale-100",
                       // One-shot "launch" feedback after a send/enqueue: icon
                       // flies out and returns while a halo pulses (CSS).
@@ -3768,6 +3859,7 @@ function ChatPaneForSession({
             onPick={(ids) => void handlePickLibraries(ids)}
             onClose={() => setLibraryPickerOpen(false)}
           />
+          </div>
         </div>
       </div>
 

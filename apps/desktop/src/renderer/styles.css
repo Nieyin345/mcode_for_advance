@@ -342,6 +342,13 @@ div:has(> [role="menu"]) {
    * optically. Prose line-height is density-driven (--chat-md-leading in the
    * chat-density section below). Consumed by the Markdown container in
    * Markdown.tsx. */
+  /* 【UI 重建 2026-10-27】字重三档。
+   *
+   * ⚠️ 只有 `--chat-font-weight` 是**真正被消费**的那个（Markdown.tsx:941 的
+   * `[font-weight:var(--chat-font-weight)]`）。这里不另立 `--m-fw-*` 三档：
+   * 声明了却没人读 = 「改了配置表但没改用户看到的东西」（见 CLAUDE.md
+   * 第二十八条的同类）。要加档位，先把消费点写出来。
+   */
   --chat-font-weight: 450;
   /* 【T121】用户气泡底色。仍是可配置的 R G B 三元组 —— 设置里选过自定义色的
    * 用户走 lib/appearance.ts 的 applyUserBubbleColor，覆盖这里；没选过的回落到本值。
@@ -834,7 +841,10 @@ body,
   --m-lh-body: 18.82px;      /* --cds-leading-body    1.25rem   × .9412 */
   --m-lh-heading: 16.94px;   /* --cds-leading-heading 1.125rem  × .9412 */
 
-  /* 字重：Claude 用 400 / 500 / 580 三档（不是 Tailwind 的 400/500/600）。 */
+  /* 字重：Claude 用 400 / 500 / 580 三档（不是 Tailwind 的 400/500/600）。
+   * ⚠️ **当前唯一的消费点是 `--chat-font-weight`**（Markdown.tsx:941）。
+   * 这三档是 Claude 体系的完整映射，留给后续按档位接；不要以为改了它们
+   * 正文就会变 —— 正文读的是 --chat-font-weight。 */
   --m-fw-regular: 400;
   --m-fw-medium: 500;
   --m-fw-semibold: 580;
