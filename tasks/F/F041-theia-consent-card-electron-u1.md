@@ -1,6 +1,6 @@
 # F041｜Theia 安装同意卡真实产品 UI U1
 
-- Status: ✅ implementation and acceptance complete. Implementation commit: pending until scoped commit is created.
+- Status: ✅ implementation and acceptance complete. Implementation commit: `1bc68f231379e0861bd086cc09492b4ba825c9db`.
 - Depends: F023, F040, T16. Required Skills: `mcode-smoke`, `desktop-testing-electron`, `codebase-design`.
 - Goal: 在真实 Mcode App 中打开生产 `ModuleSurface → VsixInstallSection → TheiaInstalledPanel`，通过真实产品 preload / `MODULE_THEIA_INSTALLED` IPC 验证 VSIX 预检、取消、风险告知和用户明确同意后的安装；不再只在 E1 纯函数层证明 consent policy。
 - Exclusive write scope: `apps/desktop/scripts/electron-u1/build.mjs`, `apps/desktop/scripts/theia-native-u1/product-api-bridge.js`, `apps/desktop/scripts/theia-native-u1/journeys/product.ts`（只导出 F040 临时 fixture setup）、`apps/desktop/scripts/theia-native-u1/journeys/consent.ts`, `apps/desktop/src/main/modules/theiaHost/installConsent.ts`, `apps/desktop/src/renderer/components/modules/TheiaInstalledPanel.tsx`, `apps/desktop/scripts/theia-host-boot-smoke/main.ts`, this card, `tasks/F/README.md`, and a local append-only `DEV_CLAIM` event under ARC-006 in `audit-ledgers/Mcode_统一审查台账.md`. The ledger directory is intentionally ignored by `.gitignore`: preserve its local update, do not force-add it.
