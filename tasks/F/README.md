@@ -60,6 +60,7 @@
 | F035 | **VS Code 代码导航**：跳转定义、查找引用、查找实现、类型定义接入原生 Monaco | ⚠️ E1 128/128 + 66/66；联合 11/12（外部文档 IPC）；Desktop typecheck 被并行 Workflow UI 契约错误阻塞；Electron U1 待验 | `bf6e74f7` |
 | F036 | **原生文档大纲、格式化与签名提示**：真实 Theia Provider → Mcode Monaco，安全过滤与无后台轮询 | ⚠️ E1 132/132 + 72/72；双包 TS PASS；联合 11/12（外部文档 IPC）；Electron U1 待验 | `7749ce05` |
 | F037 | **原生选区/输入时格式化**：Theia 两类 Provider → Mcode Monaco；多 Provider 触发器合并与失效安全 | ⚠️ E1 138/138 + 76/76；双包 TS PASS；联合 11/12（外部文档 IPC）；Electron U1 待验 | `1d218541` |
+| F038 | **真实 Rename / Code Actions**：当前文档安全纯编辑桥，拒绝跨文件/命令型修改 | ⚠️ E1 143/143 + 81/81；双包 TS PASS；联合 11/12（外部文档 IPC）；Electron U1 待验 | `ffdfa09a` |
 
 ## 扩展闭环的进度（截至 F015）
 
