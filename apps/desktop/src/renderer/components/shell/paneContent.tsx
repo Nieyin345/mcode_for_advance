@@ -29,6 +29,7 @@
  * - **扩展**：`ModuleViewDock` 作为独立 tile
  */
 import { lazy, Suspense, type ReactNode } from "react";
+import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { FilesPanel } from "@renderer/components/ide/FilesPanel.js";
 import { GitPanel } from "@renderer/components/ide/GitPanel.js";
 import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
@@ -39,7 +40,18 @@ import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel
 import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
 import { ModuleViewDock } from "@renderer/components/modules/ModuleContributions.js";
 
-/** Claude 的 tile 类型 → Mcode 的面板。 */
+/** Claude 的 tile 类型 → Mcode 的面板。
+ *
+ * ## 三条线的接入位置
+ *
+ * | 线 | tile | 面板 |
+ * |---|---|---|
+ * | **Office** | `artifact`（文档产物）/ 文档停靠 | `GenofficeViewHostPane` |
+ * | **扩展** | `mcpapp` | `ModuleViewDock`（扩展视图） |
+ * | **工作流** | `watercolor` | `WorkflowBoardPanel`（Node-RED 看板） |
+ *
+ * 三条线各自替换自己那一格，互不覆盖。
+ */
 export function renderPaneContent(tileId: string): ReactNode {
   switch (tileId) {
     case "file":
@@ -49,20 +61,55 @@ export function renderPaneContent(tileId: string): ReactNode {
     case "preview":
       return <PreviewPanel />;
     case "artifact":
-      return <TaskCenterPanel />;
+      // 【Office 线】文档产物：GenOffice 原生编辑器宿主。
+      // 它需要 documentId，由 GenofficeViewHostPane 自己从 store 读当前文档。
+      return <OfficePaneLazy />;
     case "terminal":
       return <TerminalPaneLazy />;
     case "pr":
-      return <TurnFlowPanel />;
-    case "cr":
+      // 「此刻这台机器在跑什么」—— 与 Claude 的 PR 面板最接近的一层。
       return <TaskListPanel />;
+    case "cr":
+      // 任务中心（持久任务表 + 接受/退回）。Claude 的 `cr` 是「代码评审」，
+      // Mcode 没有评审流，用最接近的「需要人处理的任务」接上。
+      return <TaskCenterPanel />;
     case "mcpapp":
+      // 【扩展线】扩展贡献的视图。
       return <ModuleViewDock location="right" />;
     case "watercolor":
+      // 【工作流线】Node-RED / 工作流看板。
       return <WorkflowBoardPanel />;
+    case "turns":
+      // Mcode 自己新增的 tile 类型：每轮时间线。
+      // 它不在 Claude 的原始类型集里，是这个仓库多出来的一类面板。
+      return <TurnFlowPanel />;
     default:
       return null;
   }
+}
+
+/** 【Office 线】GenOffice 原生文档编辑器。
+ *
+ *  `GenofficeViewHostPane` 需要 `filePath`（要打开哪份文档）。右栏那边由
+ *  `RightPanel` 从「停靠的文档」状态里传进去；新壳里从同一份 store 读，
+ *  保证两条路径指向同一份数据（硬规矩 2）。 */
+const GenofficeViewHostPane = lazy(() =>
+  import("@renderer/components/ide/GenofficeViewHostPane.js").then((m) => ({
+    default: m.GenofficeViewHostPane,
+  })),
+);
+
+function OfficePaneLazy() {
+  const activeProjectId = useSessionStore((s) => s.activeProjectId);
+  const activeFile = useSessionStore((s) =>
+    activeProjectId ? s.ideActiveFileByProject[activeProjectId] ?? null : null,
+  );
+  if (!activeFile) return null;
+  return (
+    <Suspense fallback={null}>
+      <GenofficeViewHostPane filePath={activeFile} active />
+    </Suspense>
+  );
 }
 
 /** 终端面板：与底部终端共用同一个组件（按项目分桶保活）。 */

@@ -75,7 +75,10 @@ export function EmptyThreadWelcome({ projectName }: EmptyThreadWelcomeProps) {
 
   return (
     <div data-arc005-welcome="" className="mx-auto mb-5 flex w-full max-w-[800px] min-w-0 animate-[home-fade-up_var(--dur-base)_var(--ease-out)] flex-col items-center gap-2 px-2">
-      <h2 className="max-w-full text-balance break-words text-center text-[clamp(1.3rem,3.4vw,1.75rem)] font-semibold leading-[1.25] tracking-[-0.025em] text-content">
+      {/* 【UI 重建 2026-10-27】标题字号从 `clamp(1.3rem, 3.4vw, 1.75rem)`（最大 28px）
+          改成 Claude 的标题档 `--m-fs-title`（15.06px）。
+          原值比 Claude 大 86% —— 空态是最先看到的一屏，字号一不对整屏观感就不对。 */}
+      <h2 className="max-w-full text-balance break-words text-center text-[length:var(--m-fs-title)] font-medium leading-[1.25] tracking-[-0.025em] text-content">
         {projectName
           ? t("chatStream.welcome.withProject", { name: projectName })
           : t("chatStream.welcome.title")}
@@ -265,12 +268,12 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section data-home-section={id} data-arc005-starter-card="" className="min-w-0 rounded-[var(--radius-panel)] border border-edge/70 bg-surface/80 p-2 transition-colors hover:border-edge focus-within:border-accent/50">
-      <h3 className="flex min-h-7 items-center gap-2 px-2 pb-1 pt-0.5 [font-size:var(--chat-fs-xs)] font-semibold text-content-muted">
+    <section data-home-section={id} data-arc005-starter-card="" className="min-w-0 rounded-[var(--radius-panel)] border border-edge/45 bg-surface/50 p-1.5 transition-colors hover:border-edge/65 focus-within:border-accent/40">
+      <h3 className="flex min-h-7 items-center gap-2 px-2 pb-1 pt-0.5 [font-size:var(--chat-fs-xs)] font-medium text-content-muted">
         <Icon size={13} className="shrink-0" />
         {title}
       </h3>
-      <div className="space-y-0.5">{children}</div>
+      <div className="space-y-px">{children}</div>
     </section>
   );
 }
@@ -299,7 +302,7 @@ function Row({
       onClick={onClick}
       title={label}
       className={cn(
-        "flex min-h-10 w-full min-w-0 items-center gap-2 rounded-[var(--radius-btn-xs)] px-2.5 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+        "flex min-h-8 w-full min-w-0 items-center gap-2 rounded-[var(--radius-btn-md)] px-2 py-1.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         pressed ? "bg-surface-hover text-content" : "hover:bg-surface-hover/70",
       )}
     >

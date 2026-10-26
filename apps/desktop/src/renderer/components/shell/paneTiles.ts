@@ -33,7 +33,11 @@
  * 旧文件暂时保留（还有套件引用），但新壳只读这里。
  */
 
-/** Claude Code 页的 tile 类型。值取自其 bundle 的 Set 字面量。 */
+/** Claude Code 页的 tile 类型。值取自其 bundle 的 Set 字面量。
+ *
+ *  `turns` 是 **Mcode 新增**的一类（每轮时间线）—— Claude 没有这个概念，
+ *  但这个仓库有该面板，且它是用户确实会看的东西。加在末尾，不与 Claude 的
+ *  原始八类混淆。 */
 export type PaneTileKind =
   | "chat"
   | "diff"
@@ -44,7 +48,8 @@ export type PaneTileKind =
   | "cr"
   | "terminal"
   | "watercolor"
-  | "mcpapp";
+  | "mcpapp"
+  | "turns";
 
 /** 一个叶子 tile。 */
 export interface PaneTile {
@@ -69,9 +74,10 @@ export interface TileLayout {
   root: PaneStack;
 }
 
-/** 从 Claude 的 `Ti` Set 中读到的、会「抢占主区」的类型。 */
+/** 会「抢占主区」的类型（Claude 的 `Ti` Set）。`turns` 是 Mcode 新增，
+ *  同样算非 chat tile。 */
 const NON_CHAT_KINDS: readonly PaneTileKind[] = [
-  "diff", "preview", "artifact", "file", "pr", "cr", "watercolor", "mcpapp",
+  "diff", "preview", "artifact", "file", "pr", "cr", "watercolor", "mcpapp", "turns",
 ];
 
 export function isNonChatTile(kind: PaneTileKind): boolean {

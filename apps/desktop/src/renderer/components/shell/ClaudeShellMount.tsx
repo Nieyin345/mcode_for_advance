@@ -156,28 +156,30 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   const streamHasData = useSessionStore((s) => s.streamSessions.length > 0);
 
   const sidebar =
-    leftBarMode === "stream" && streamHasData ? (
-      <StreamSidebar />
-    ) : leftBarMode === "tree" ? (
-      // 项目树视图：迁移期间保留（三级项目树 + 分组拖拽 + 归档是 Mcode 独有，
-      // Claude 没有这些概念）。
+    // **tree 是用户显式选的「项目树」视图，尊重它。**
+    leftBarMode === "tree" ? (
       <LeftBar />
+    ) : // **并行会话数据存在时用旧 StreamSidebar** —— 它承载 `streamSessions`
+    // 这条独立数据源（运行秒表、未合并标记），ClaudeSidebar 还没接。
+    // 迁移完成、ClaudeSidebar 接上并行状态后删掉这个分支。
+    streamHasData ? (
+      <StreamSidebar />
     ) : (
       <ClaudeSidebar
-      brand="Mcode"
-      pinned={pinnedRows}
-      projects={projectGroups}
-      recents={recentRows}
-      activeSessionId={activeSessionId}
-      onSelectSession={(id) => void selectSession(id)}
-      onNewSession={() => void startSession()}
-      onSearch={() => setCommandPaletteOpen(true)}
-      onOpenLibrary={() => {
-        // 资料库挂在「右栏 pane」里（功能文档 UI-04 的挂载方式）。
-        props.setRightOpen(true);
-      }}
-      onOpenSettings={() => setSettingsOpen(true)}
-      onCollapse={() => props.setLeftOpen(false)}
+        brand="Mcode"
+        pinned={pinnedRows}
+        projects={projectGroups}
+        recents={recentRows}
+        activeSessionId={activeSessionId}
+        onSelectSession={(id) => void selectSession(id)}
+        onNewSession={() => void startSession()}
+        onSearch={() => setCommandPaletteOpen(true)}
+        onOpenLibrary={() => {
+          // 资料库挂在「右栏 pane」里（功能文档 UI-04 的挂载方式）。
+          props.setRightOpen(true);
+        }}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onCollapse={() => props.setLeftOpen(false)}
       />
     );
 

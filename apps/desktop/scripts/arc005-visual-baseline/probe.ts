@@ -136,7 +136,11 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
         streamSessions:[], streamDirty:false, streamHasMore:false, streamTotal:0,
         worktreeInfoByRepo:{}, gitChangeVersionByRepo:{}, pinnedSessions:[],
         bottomTerminalOpen:false, settingsOpen:false,
-        centerTabFocus:'chat', displayMode:'tabs', leftBarMode:'tree', locale:'zh'
+        centerTabFocus:'chat', displayMode:'tabs',
+        // 【UI 重建 2026-10-27】默认侧栏跟着产品默认走（stream → ClaudeSidebar）。
+        // 只有 projects 场景需要旧的项目树（它测的就是三级树），
+        // 在那边单独覆盖成 tree。
+        leftBarMode:'stream', locale:'zh'
       });
       window.__arcReset = () => {
         window.__arcSideChatScene = false;
@@ -151,7 +155,7 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
           historyLoadedBySession:{s1:true,s2:true,s3:true},
           runningBySession:{},pendingApprovals:[],
           sideChatsByParent:{},activeSideChatId:null,
-          rightPanelTab:'files',leftBarMode:'tree', centerTabFocus:'chat',
+          rightPanelTab:'files',leftBarMode:'stream', centerTabFocus:'chat',
           streamSessions:[],streamDirty:false,streamTotal:0,streamHasMore:false,
           leftOpen:true,rightOpen:false,
           ideOpenFilesByProject:{},ideActiveFileByProject:{},
@@ -234,7 +238,7 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               window.__arcSideChatScene = true;
               st.setState({
                 rightOpen: true, rightPanelTab: 'flow', activeSideChatId: null,
-                sideChatsByParent: {s1:a.sideChats}, leftBarMode:'tree'
+                sideChatsByParent: {s1:a.sideChats}, leftBarMode:'stream'
               });
             }
             else if (id === 'terminal') {
@@ -256,13 +260,13 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
             }
             else if (id === 'settings') st.getState().setSettingsOpen(true);
             else if (id === 'narrow-window') {
-              st.setState({leftOpen:true,rightOpen:true,rightPanelTab:'files',leftBarMode:'tree'});
+              st.setState({leftOpen:true,rightOpen:true,rightPanelTab:'files',leftBarMode:'stream'});
               window.__arcShowFixture?.('editor');
             }
             // 【T136】四个「我们独有」的场景：都是右栏的页签。打开右栏 +
             // 切到对应 tab 即可 —— 面板自己会调 api（桩见 api-stub.js）。
             else if (id === 'files-pane') {
-              st.setState({rightOpen:true,rightPanelTab:'files',leftBarMode:'tree'});
+              st.setState({rightOpen:true,rightPanelTab:'files',leftBarMode:'stream'});
             }
             else if (id === 'git-pane') {
               st.setState({rightOpen:true,rightPanelTab:'git'});
