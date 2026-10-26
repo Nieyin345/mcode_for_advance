@@ -1,9 +1,9 @@
 # F040｜产品 FileEditor + 真实 preload/VSIX 的扩展语言 U1
 
-- Status: ✅ implementation and acceptance complete (commit SHA recorded in the F registry after the scoped implementation commit).
+- Status: ✅ implementation and acceptance complete. Implementation commit: `43f3e793`. ARC-006 remains open; independent review has not been performed.
 - Depends: F039, T16 (Electron U1), F026/F038. Required Skills: `mcode-smoke`, `desktop-testing-electron`, `codebase-design`.
 - Goal: 从真实产品 `App.tsx` 打开真实 `FileEditor.tsx`，使用产品 preload、真实 `MODULE_THEIA_INSTALLED` IPC 和临时安装的真实 VSIX，完成 Rename / Code Action 用户旅程；不以独立 Monaco 页面代替产品编辑器。
-- Exclusive write scope: `apps/desktop/scripts/electron-u1/build.mjs`, `apps/desktop/scripts/theia-native-u1/product-api-bridge.js`, `apps/desktop/scripts/theia-native-u1/product-prebuild.mjs`, `apps/desktop/scripts/theia-native-u1/product-runtime.ts`, `apps/desktop/scripts/theia-native-u1/journeys/product.ts`, `tasks/F/F040-native-fileeditor-real-vsix-u1.md`, `tasks/F/README.md`, and one append-only `DEV_CLAIM` event under ARC-006 in `audit-ledgers/Mcode_统一审查台账.md`. Do not modify production UI owners, unrelated preload/main modules, vendor sources, or other tasks.
+- Exclusive write scope: `apps/desktop/scripts/electron-u1/build.mjs`, `apps/desktop/scripts/theia-native-u1/product-api-bridge.js`, `apps/desktop/scripts/theia-native-u1/product-prebuild.mjs`, `apps/desktop/scripts/theia-native-u1/product-runtime.ts`, `apps/desktop/scripts/theia-native-u1/journeys/product.ts`, `tasks/F/F040-native-fileeditor-real-vsix-u1.md`, `tasks/F/README.md`, and a local append-only `DEV_CLAIM` event under ARC-006 in `audit-ledgers/Mcode_统一审查台账.md` (the directory is intentionally ignored by `.gitignore`; preserve the local update and do not force-add it). Do not modify production UI owners, unrelated preload/main modules, vendor sources, or other tasks.
 
 ## Execution
 1. Add an opt-in `--monaco-workers` mode to the existing U1 build. Bundle the same five worker entry points used by production `monacoSetup.ts`; keep existing journeys' stub/default behavior unchanged.
@@ -36,4 +36,5 @@
 - Existing U1 compatibility: `ui-project-switch` **PASS 1/1** without `--monaco-workers` — evidence: `.tmp/electron-u1/2026-10-26T07-26-05-047Z/ui-project-switch/`.
 - `theia-installed-smoke`, `theia-palette-smoke`, `theia-host-boot-smoke`: all **PASS**. Dual TypeScript checks and `git diff --check`: **PASS**.
 - Worker evidence: at least one production Monaco worker constructed, zero worker error events; final run emitted no Theia IPC rejection. Explicit extension stop returned `stopped`, and a subsequent list confirmed the session was no longer running.
+- The ARC-006 `DEV_CLAIM` event was appended locally and verified by search. `audit-ledgers/` is intentionally ignored by `.gitignore` (only its README is tracked), so the ledger update is preserved locally and was not force-added.
 - Limits are intentional: this slice does not test the consent-card UI and does not boot every unrelated production IPC surface; those remain outside the declared F040 scope.
