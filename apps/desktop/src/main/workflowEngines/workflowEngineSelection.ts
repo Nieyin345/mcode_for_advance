@@ -11,12 +11,87 @@ export function effectiveWorkflowEngine(doc: Pick<WorkflowDoc, "engine">): Workf
   return doc.engine ?? "mcode";
 }
 
+/**
+ * 【Q5 / 批次 3】执行归属判定。
+ *
+ * ## 两个调用方，两种含义，不能合成一个
+ *
+ * | 调用方 | `executor` | 语义 |
+ * |---|---|---|
+ * | 用户图 / 自动化 | `"mcode"` | **拒绝**：旧执行器已退场，用户图统一走 Node-RED |
+ * | 内部编排（记忆助手、钩子动作、手机端） | `"mcode"` | **放行**：这些不是用户工作流，是产品功能 |
+ *
+ * ## ⚠️ 为什么内部编排必须放行（2026-10-27 实测回归）
+ *
+ * 我第一版把它写成"任何归 mcode 的图都不许进执行"，结果**记忆助手、钩子动作、手机端
+ * 三条功能当场全坏** —— 它们至今仍走 `startWorkflowRun`（旧调度器）：
+ *
+ * - `memory/assistant.ts:79`：记忆整理跑的是 `memory-capture` / `memory-checkpoint` /
+ *   `memory-health` 三张内置图（`memoryWorkflows.ts`，**没有 engine 字段** →
+ *   `effectiveWorkflowEngine` 得 `mcode`）；
+ * - `hooks/agentActions.ts:70`：钩子的 `workflow` 动作；
+ * - `mobile/mobileRpc.ts:97`。
+ *
+ * 这几条本来就在"待迁移到原生"的清单上（见功能文档 WF-07 末条）。在它们迁完之前
+ * 就停旧执行器，等于先拆桥再过河。**"退场"的对象是用户图，不是产品功能。**
+ *
+ * 判据用 `executor` 参数区分：内部编排永远传 `"mcode"`，而用户图的入口传的也是
+ * `"mcode"` —— 两者从签名上看不出来。所以真正的区分在**调用点**：用户图那条路
+ * （`scheduler.ts` / `automationRunner` / MCP 工具）必须先过 `isRetiredLegacyGraph`。
+ */
 export function assertWorkflowExecutor(doc: Pick<WorkflowDoc, "id" | "engine" | "nodes">, executor: WorkflowEngine): void {
   if (doc.nodes.length === 0) return; // prompt-only flows have no graph scheduler
   const owner = effectiveWorkflowEngine(doc);
-  if (owner !== executor) throw new Error(
+  if (owner === executor) return;
+  throw new Error(
     `工作流「${doc.id}」指定由 ${owner} 执行，拒绝由 ${executor} 重复执行。请先完成引擎迁移。`,
   );
+}
+
+/**
+ * 这张图是不是**该被旧执行器拒绝**的用户图。
+ *
+ * 与 {@link assertWorkflowExecutor} 分开正是因为上一条注释里的理由：旧的归属判定
+ * 表达不了"内部编排仍可跑"这件事。判据只有一条 —— 归 mcode 且有节点。**调用方必须
+ * 是用户图的入口**（调度器、自动化、MCP 工具），内部编排不要调它。
+ */
+export function isRetiredLegacyGraph(doc: Pick<WorkflowDoc, "engine" | "nodes">): boolean {
+  return doc.nodes.length > 0 && effectiveWorkflowEngine(doc) === "mcode";
+}
+
+/**
+ * 这张图是**Mcode 自己的内部编排**（不是用户工作流）。
+ *
+ * 目前只有记忆助手那三条内置模板（`memoryWorkflows.ts` 的 `memory-capture` /
+ * `memory-checkpoint` / `memory-health`）。它们的 id 是写死的常量，用户改不了 ——
+ * 所以按 id 判是可靠的。
+ *
+ * 钩子的 `workflow` 动作不在这里：它跑的是**用户自己选的图**，所以该跟着退场。
+ * 用户若给钩子挂了一张还归旧执行器的图，会得到与手动运行同一句迁移提示 ——
+ * 那是一致的行为，不是缺陷。
+ *
+ * **这张表要跟着 `MEMORY_WORKFLOWS` 走**：将来加第四条记忆模板而忘了加进这里，
+ * 症状是那条记醒来报"请迁移到 Node-RED"，而它根本不是用户的工作流。
+ */
+const INTERNAL_ORCHESTRATION_GRAPH_IDS: ReadonlySet<string> = new Set([
+  "memory-capture",
+  "memory-checkpoint",
+  "memory-health",
+]);
+
+export function isInternalOrchestrationGraph(workflowId: string): boolean {
+  return INTERNAL_ORCHESTRATION_GRAPH_IDS.has(workflowId);
+}
+
+/**
+ * 用户图仍挂在旧执行器上时的那句话 —— **所有入口共用同一句**。
+ *
+ * 手动运行、钩子动作、自动化手动跑、自定义 UI 右键运行，四处都会撞上这条拒绝；
+ * 各写一份必然漂移成四种说法，而用户看到的是同一件事。仓库硬规矩 2。
+ */
+export function retiredGraphError(workflowName: string): string {
+  return `工作流「${workflowName}」还挂在旧执行器上。Mcode 的用户工作流已统一到 Node-RED，`
+    + "请在设置 → 工作流里把它迁移过去（迁移会保留全部节点与参数）。";
 }
 
 /** Node-RED Admin and startup receive native tabs, not an authoritative engine flag.
@@ -125,7 +200,9 @@ export function checkEngineSwitch(
     : {
         ok: false,
         paths,
-        reason: `切换到 ${target} 会丢失/改变以下内容：${paths.join("；")}`,
+        reason: humanOnly
+          ? `迁移需要人工确认以下语义差异：${paths.join("；")}`
+          : `切换到 ${target} 会丢失/改变以下内容：${paths.join("；")}`,
         ...(humanOnly ? { requiresConfirmation: true } : {}),
       };
 }

@@ -4,8 +4,7 @@ import type { NodeTypeManifest } from "@contracts/nodeType";
 import { flowToWorkflowDoc, migrateWorkflowDoc, roundTripMismatchPaths } from "@main/workflowEngines/flowMigration.js";
 import {
   effectiveWorkflowEngine, assertWorkflowExecutor,
-  assertNativeEngineSelection, checkEngineSwitch,
-} from "@main/workflowEngines/workflowEngineSelection.js";
+  assertNativeEngineSelection, checkEngineSwitch, isRetiredLegacyGraph } from "@main/workflowEngines/workflowEngineSelection.js";
 let total = 0, failed = 0;
 function check(name: string, yes: boolean, details?: unknown): void {
   total++;
@@ -38,6 +37,10 @@ check("旧图 engine=mcode 不能进入 Node-RED", (() => {
   try { assertWorkflowExecutor(legacy, "node-red"); return false; }
   catch (e) { return e instanceof Error && e.message.includes("mcode") && e.message.includes("拒绝"); }
 })());
+// 【Q5】"用户图退场"是**另一个**判据，与上面的归属判定分开：旧的归属判定必须保持
+// 原样，因为记忆助手/钩子动作仍依赖它放行。退场判据只问"归 mcode 且有节点"。
+check("退场判据：归 mcode 且有节点 → 是退役图", isRetiredLegacyGraph(legacy));
+check("退场判据：纯提示词型（无节点）不退役", !isRetiredLegacyGraph({ engine: "mcode", nodes: [] }));
 const serialized = migrateWorkflowDoc(legacy, {types}).flow;
 const roundtrip = flowToWorkflowDoc(serialized);
 check("旧图迁移与反迁移引擎仍是 mcode", effectiveWorkflowEngine(roundtrip) === "mcode",
@@ -61,7 +64,11 @@ check("反向切换遇到未知节点类型拒绝", !impossible.ok && impossible
 const tab = [{ id:"tab1",type:"tab","x-mcode":{docId:legacy.id,engine:"node-red"} }];
 check("伪造 node-red 元数据无法越过宿主引擎归属", (() => {
   try { assertNativeEngineSelection(tab,()=>legacy); return false; }
-  catch(e) { return e instanceof Error && e.message.includes("mcode"); }
+  // 【Q5】伪造 x-mcode.engine 的 tab 指向一张仍归旧执行器的图 → 必须被拒，
+  // 且理由说得出"旧执行器 / 迁移"这两件用户能行动的事。
+  catch(e) {
+    return e instanceof Error && (e.message.includes("旧执行器") || e.message.includes("mcode"));
+  }
 })());
 check("真实 node-red 允许 Node-RED 部署", (() => {
   try { assertNativeEngineSelection(tab,()=>native); return true; }

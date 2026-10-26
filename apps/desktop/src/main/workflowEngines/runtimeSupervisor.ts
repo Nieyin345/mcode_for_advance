@@ -88,6 +88,9 @@ export interface EngineRuntimeStatus {
   /** Cached durable mirror health. Never populated from untrusted Node-RED messages. */
   libraryMirrorPending?: number;
   libraryMirrorError?: boolean;
+  /** 【Q8】Whether *this* process started under a trusted-engine marker. Drives
+   * the user-facing "will these flows run again after restart" hint. */
+  trustedAtStart?: boolean;
 }
 
 export interface EngineSpawnSpec {
