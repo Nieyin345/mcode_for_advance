@@ -655,7 +655,7 @@ function EditorToolbar({
             title={t(genofficeViewActive ? "ide.genoffice.viewHostActiveHint" : "ide.genoffice.viewHostHint")}
           >
             <IconWorld size={12} />
-            {t("ide.genoffice.viewHost")}
+            {t(genofficeViewActive ? "ide.genoffice.viewHostReturn" : "ide.genoffice.viewHost")}
           </button>
         )}
         {/* 【ARC-005】HTML 本地预览入口 —— 仅工作区内的 .html/.htm 出现。

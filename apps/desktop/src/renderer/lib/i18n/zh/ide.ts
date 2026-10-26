@@ -447,6 +447,7 @@ export const zh = {
   "ide.genoffice.askMcodeHint": "将当前文档放入 Mcode 对话草稿，同时在旁边显示编辑器；点击发送前不会调用模型。",
   "ide.genoffice.askMcodeNoSession": "请先打开一个 Mcode 对话",
   "ide.genoffice.viewHost": "原生编辑器",
+  "ide.genoffice.viewHostReturn": "返回 Mcode 视图",
   "ide.genoffice.viewHostHint": "在 Mcode 工作区中打开该格式的原生编辑器（需要相应编辑器资源已构建）",
   "ide.genoffice.viewHostActiveHint": "当前正在使用原生编辑器；点击切回 Mcode 的格式安全视图",
   "ide.genoffice.unsavedChanges": "未保存",
