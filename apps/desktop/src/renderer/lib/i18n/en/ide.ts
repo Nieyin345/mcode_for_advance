@@ -426,7 +426,7 @@ export const en = {
   "ide.genoffice.viewHostSaveConflict": "Save conflict: the file on disk was changed elsewhere",
   "ide.genoffice.viewHostSaveConflictRetry": "Reload",
   "ide.genoffice.viewHostExternalMutation": "Document updated on disk by Mcode tools",
-  "ide.genoffice.viewHostExternalMutationDesc": "Mcode AI wrote a newer version to disk. Reload to see it; any unsaved edits in this editor will be discarded by reloading.",
+  "ide.genoffice.viewHostExternalMutationDesc": "Mcode's document tools wrote a newer version to disk. Reload to see it; any unsaved edits in this editor will be discarded by reloading.",
   "ide.genoffice.viewHostExternalMutationReload": "Reload document",
   "ide.genoffice.askMcode": "Ask Mcode AI",
   "ide.genoffice.askMcodeHint": "Add this document to your Mcode chat draft and show it beside the editor. Nothing is sent until you press Send.",

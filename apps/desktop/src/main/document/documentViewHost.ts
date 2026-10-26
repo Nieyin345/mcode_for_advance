@@ -317,7 +317,10 @@ interface LiveDocumentView {
     at: number;
   };
   /** Disk content changed through an Mcode document tool while this native view was open. */
-  lastExternalMutation?: { at: number };
+  lastExternalMutation?: {
+    at: number;
+    source: DocumentMutationNotice["source"];
+  };
   /** 【ARC-006 Gate A 缺口】这个视图加载的是哪个工作流引擎的编辑器页
    *  （`open` 时由 `workflowEngineId` 记下）。换引擎/换回普通文档视图时要摘旧凭据绑定。 */
   workflowEngineId: string | null;
@@ -1624,7 +1627,7 @@ export class DocumentViewHost {
         this.views.get(session.docId) !== live || live.openedFilePath === null ||
         physicalPath(live.openedFilePath) !== key) return;
     if (notice.revision !== null && expected === notice.revision) return;
-    live.lastExternalMutation = { at: Date.now() };
+    live.lastExternalMutation = { at: Date.now(), source: notice.source };
     log.info(`document view external mutation: ${notice.source} ${session.docId} ${notice.filePath}`);
   }
 

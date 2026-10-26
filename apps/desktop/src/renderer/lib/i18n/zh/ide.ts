@@ -443,7 +443,7 @@ export const zh = {
   "ide.genoffice.viewHostSaveConflict": "文档保存冲突：磁盘上的文件已被别处改动",
   "ide.genoffice.viewHostSaveConflictRetry": "重新载入",
   "ide.genoffice.viewHostExternalMutation": "磁盘上的文档已被 Mcode 工具更新",
-  "ide.genoffice.viewHostExternalMutationDesc": "Mcode AI 已将新版本写入磁盘。重新载入后可查看新内容；如果当前编辑器还有未保存修改，重新载入会丢弃这些修改。",
+  "ide.genoffice.viewHostExternalMutationDesc": "Mcode 文档工具已将新版本写入磁盘。重新载入后可查看新内容；如果当前编辑器还有未保存修改，重新载入会丢弃这些修改。",
   "ide.genoffice.viewHostExternalMutationReload": "重新载入文档",
   "ide.genoffice.askMcode": "交给 Mcode AI",
   "ide.genoffice.askMcodeHint": "将当前文档放入 Mcode 对话草稿，同时在旁边显示编辑器；点击发送前不会调用模型。",

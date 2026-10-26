@@ -79,6 +79,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js";
 import type { DocViewRect } from "@contracts/ipc";
 import { genofficeAppForPath, type GenofficeApp } from "@contracts/genofficeFileRoute";
+import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { handoffOfficeToMcode } from "./officeChatHandoff.js";
 
 /** GenOffice 编辑器 module 名（与 vendor 的 `rendererUrl` host 同名）。 */
@@ -234,7 +235,10 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
    *  页面没坏，只是**保存被拒**，用户需要先重新载入再改。 */
   const [saveConflict, setSaveConflict] = useState<{ message: string; at: number } | null>(null);
   /** A document tool wrote a newer disk revision while this editor retained its in-memory copy. */
-  const [externalMutation, setExternalMutation] = useState<{ at: number } | null>(null);
+  const [externalMutation, setExternalMutation] = useState<{
+    at: number;
+    source: "document-tool" | "markdown-edit" | "document-edit";
+  } | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef(active);
@@ -421,7 +425,10 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
         (result) => {
           if (cancelled) return;
           const mine = result.views.find((v) => v.docId === docId);
-          setPageFailure(mine?.lastFailure ?? null);
+          // A deliberate reload closes and recreates this native view. Preserve
+          // the warning during that gap; the new snapshot clears it after open commits.
+          if (mine === undefined) return;
+          setPageFailure(mine.lastFailure ?? null);
           // 【ARC-007】保存冲突走同一张快照（宿主在成功保存后清空它）。
           const conflict = mine?.lastSaveConflict;
           setSaveConflict(conflict !== undefined ? { message: conflict.message, at: conflict.at } : null);
@@ -445,8 +452,9 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
           excluded from the native view's measured bounds by stageRef. */}
       {url !== null && active && (
         <div className="flex h-8 shrink-0 items-center justify-end gap-2 border-b border-edge bg-surface px-2" data-office-mcode-toolbar="">
-          <span className="mr-auto min-w-0 truncate text-[11px] text-content-muted" title={filePath}>
-            {filePath.replace(/^.*[\\/]/, "")}
+          <span className="mr-auto flex min-w-0 items-center truncate text-[11px] text-content-muted" title={filePath}>
+            <FileTypeIcon path={filePath} size={13} className="mr-1 shrink-0" />
+            <span className="truncate">{filePath.replace(/^.*[\\/]/, "")}</span>
           </span>
           <button
             type="button"
@@ -521,7 +529,7 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
         </div>
       )}
       {externalMutation !== null && saveConflict === null && (
-        <div className="p-3">
+        <div className="p-3" data-office-external-mutation={externalMutation.source}>
           <ErrorNote
             title={t("ide.genoffice.viewHostExternalMutation")}
             tone="warning"
@@ -532,7 +540,6 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
                 onClick={() => {
                   // Never reload automatically: this explicit action may discard unsaved
                   // local edits, so the warning text must be visible before the click.
-                  setExternalMutation(null);
                   setRetryNonce((n) => n + 1);
                 }}
               >

@@ -147,7 +147,10 @@ export interface DocViewSnapshot {
     at: number;
   };
   /** A disk-writing Mcode document tool changed the open file after this view loaded it. */
-  lastExternalMutation?: { at: number };
+  lastExternalMutation?: {
+    at: number;
+    source: "document-tool" | "markdown-edit" | "document-edit";
+  };
 }
 
 /**
