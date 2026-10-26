@@ -1,0 +1,93 @@
+From 73ba918083b5e2bedff7633925c3d7f625e04449 Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Tue, 20 Oct 2026 05:52:27 +0800
+Subject: [PATCH] fix(pdf): use privately owned atomic save temporary files
+
+---
+ apps/pdf/src/main/atomic-write.ts             | 30 +++++++++++++++----
+ .../tests/page-operation-atomic-write.test.ts | 16 ++++++++++
+ 2 files changed, 41 insertions(+), 5 deletions(-)
+
+diff --git a/apps/pdf/src/main/atomic-write.ts b/apps/pdf/src/main/atomic-write.ts
+index 6b30b63..dfcd8f9 100644
+--- a/apps/pdf/src/main/atomic-write.ts
++++ b/apps/pdf/src/main/atomic-write.ts
+@@ -1,16 +1,36 @@
+-import { rename, rm, writeFile } from 'node:fs/promises'
++import { randomUUID } from 'node:crypto'
++import { open, rename, rm } from 'node:fs/promises'
+ 
+ /**
+  * Write PDF bytes beside the destination, then atomically replace it.
+- * Any failed write or rename removes the partially written temp file.
++ * Only remove a temporary file if THIS invocation opened it exclusively:
++ * the previous pid-only name allowed two saves in the same process to
++ * truncate or delete each other's staged document.
++ *
++ * This primitive protects temporary-file ownership. The caller/Host must
++ * still enforce the source version and file lease for concurrent editors.
+  */
+ export async function writePdfAtomically(targetPath: string, bytes: Uint8Array): Promise<void> {
+-  const tmp = `${targetPath}.gensave-${process.pid}.tmp`
++  const tmp = `${targetPath}.gensave-${process.pid}-${randomUUID()}.tmp`
++  let owned = false
+   try {
+-    await writeFile(tmp, bytes)
++    const handle = await open(tmp, 'wx', 0o600)
++    owned = true
++    try {
++      await handle.writeFile(bytes)
++      await handle.sync()
++    } finally {
++      await handle.close()
++    }
+     await rename(tmp, targetPath)
+   } catch (err) {
+-    await rm(tmp, { force: true })
++    if (owned) {
++      try {
++        await rm(tmp, { force: true })
++      } catch {
++        // Cleanup must not replace the actual write/rename error.
++      }
++    }
+     throw err
+   }
+ }
+diff --git a/apps/pdf/tests/page-operation-atomic-write.test.ts b/apps/pdf/tests/page-operation-atomic-write.test.ts
+index 59b1590..c25aba0 100644
+--- a/apps/pdf/tests/page-operation-atomic-write.test.ts
++++ b/apps/pdf/tests/page-operation-atomic-write.test.ts
+@@ -10,6 +10,7 @@ import {
+ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+ import { PDFDocument } from 'pdf-lib'
++import { writePdfAtomically } from '../src/main/atomic-write'
+ import { afterEach, describe, expect, it, vi } from 'vitest'
+ 
+ type IpcHandler = (event: { sender: { id: number } }, ...args: unknown[]) => unknown
+@@ -93,6 +94,21 @@ afterEach(() => {
+   operationHook.beforeAtomicWrite = null
+ })
+ 
++describe('original GenOffice PDF atomic writer ownership', () => {
++  it('must not overwrite or unlink an unrelated writer temp in the same process', async () => {
++    dir = mkdtempSync(join(tmpdir(), 'pdf-temp-ownership-'))
++    const target = join(dir, 'source.pdf')
++    writeFileSync(target, 'original')
++    // Old implementation used this exact deterministic temporary pathname
++    // and writeFile(tmp) default truncate, even when it belonged to another caller.
++    const foreignTmp = `${target}.gensave-${process.pid}.tmp`
++    writeFileSync(foreignTmp, 'foreign writer owns these bytes')
++    await writePdfAtomically(target, new TextEncoder().encode('new payload'))
++    expect(readFileSync(target, 'utf8')).toBe('new payload')
++    expect(readFileSync(foreignTmp, 'utf8')).toBe('foreign writer owns these bytes')
++  })
++})
++
+ describe('in-place PDF page operation writes', () => {
+   it('removes the .gensave temp when an insert-page rename fails', async () => {
+     dir = mkdtempSync(join(tmpdir(), 'pdf-page-write-'))
+-- 
+2.52.0.windows.1
+

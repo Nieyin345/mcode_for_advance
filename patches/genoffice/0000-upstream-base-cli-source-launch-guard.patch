@@ -1,0 +1,150 @@
+From cbec600ace9c930b2646b6739cf6df3741bb9d6a Mon Sep 17 00:00:00 2001
+From: Nieyin345 <nieyin0703@outlook.com>
+Date: Mon, 19 Oct 2026 16:36:30 +0800
+Subject: [PATCH] fix(cli): refuse unbuilt source shell before launching
+ Electron
+
+---
+ packages/cli/src/resources.ts         | 41 +++++++++++++++++++++++++--
+ packages/cli/tests/app-export.test.ts | 38 ++++++++++++++++++++++---
+ 2 files changed, 72 insertions(+), 7 deletions(-)
+
+diff --git a/packages/cli/src/resources.ts b/packages/cli/src/resources.ts
+index f8f171d..16caa77 100644
+--- a/packages/cli/src/resources.ts
++++ b/packages/cli/src/resources.ts
+@@ -1,7 +1,7 @@
+-import { existsSync, readFileSync } from 'node:fs'
++import { existsSync, readFileSync, statSync } from 'node:fs'
+ import { createRequire } from 'node:module'
+ import { homedir } from 'node:os'
+-import { dirname, join, resolve } from 'node:path'
++import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ 
+ /**
+@@ -105,13 +105,48 @@ export function appLaunch(env: NodeJS.ProcessEnv = process.env): AppLaunch | nul
+   const root = repoRoot()
+   if (root) {
+     const electron = devElectronBinary(root)
+-    if (electron) return { command: electron, args: [join(root, 'apps', 'shell')] }
++    if (electron) {
++      const dev = devShellLaunch(root, electron)
++      if (dev) return dev
++    }
+   }
+   const installed = installedAppBinaries(env).find((p) => existsSync(p))
+   if (installed) return { command: installed, args: [] }
+   return null
+ }
+ 
++/**
++ * Do not launch an Electron binary with an unbuilt source checkout. Electron
++ * would show the native "Unable to find Electron app .../apps/shell" modal
++ * and the CLI would misleadingly report a conversion failure.
++ *
++ * Read the actual shell package.json main entry instead of inventing a second
++ * entry-point convention. A partial shell build (missing preload/renderer)
++ * is also not a valid headless-export host. An installed GenOffice app remains
++ * an allowed fallback in appLaunch().
++ */
++export function devShellLaunch(root: string, electron: string): AppLaunch | null {
++  const shell = join(root, 'apps', 'shell')
++  try {
++    const pkg: unknown = JSON.parse(readFileSync(join(shell, 'package.json'), 'utf8'))
++    const main = (pkg as { main?: unknown } | null)?.main
++    if (typeof main !== 'string' || !main.trim() || isAbsolute(main)) return null
++    const mainFile = resolve(shell, main)
++    const rel = relative(shell, mainFile)
++    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) return null
++    for (const file of [
++      mainFile,
++      join(shell, 'out', 'preload', 'index.js'),
++      join(shell, 'out', 'renderer', 'index.html'),
++    ]) {
++      if (!statSync(file).isFile()) return null
++    }
++    return { command: electron, args: [shell] }
++  } catch {
++    return null
++  }
++}
++
+ function installedAppBinaries(
+   env: NodeJS.ProcessEnv,
+   platform: NodeJS.Platform = process.platform,
+diff --git a/packages/cli/tests/app-export.test.ts b/packages/cli/tests/app-export.test.ts
+index 7c96907..a1adab9 100644
+--- a/packages/cli/tests/app-export.test.ts
++++ b/packages/cli/tests/app-export.test.ts
+@@ -1,10 +1,10 @@
+ import { EventEmitter } from 'node:events'
+-import { writeFileSync } from 'node:fs'
++import { mkdirSync, writeFileSync } from 'node:fs'
+ import { join } from 'node:path'
+ import { PassThrough } from 'node:stream'
+ import { describe, expect, it } from 'vitest'
+ import { exportViaApp, parseEnvelope } from '../src/formats/app-export'
+-import { appLaunch } from '../src/resources'
++import { appLaunch, devShellLaunch } from '../src/resources'
+ import { CliError } from '../src/result'
+ import { run, tempDir } from './helpers'
+ 
+@@ -72,7 +72,7 @@ describe('exportViaApp', () => {
+       env,
+       spawn: fakeSpawn(
+         {
+-          stdout: `log line\n{"status":"ok","summary":"Exported /tmp/a.docx to ${out}","output_path":"${out}"}\n`,
++          stdout: `log line\n${JSON.stringify({ status: "ok", summary: `Exported /tmp/a.docx to ${out}`, output_path: out })}\n`,
+           writeOutput: true,
+         },
+         calls,
+@@ -211,6 +211,36 @@ describe('exportViaApp', () => {
+     expect(signals).toEqual(['SIGTERM'])
+   })
+ 
++  it('refuses an unbuilt checkout Shell instead of spawning Electron with a missing main entry', () => {
++    const root = tempDir()
++    const shell = join(root, 'apps', 'shell')
++    const mainFile = join(shell, 'out', 'main', 'index.js')
++    mkdirSync(shell, { recursive: true })
++    writeFileSync(join(shell, 'package.json'), JSON.stringify({ main: 'out/main/index.js' }))
++    // Repro of Windows "Unable to find Electron app at .../apps/shell".
++    expect(devShellLaunch(root, '/fake/electron')).toBeNull()
++    mkdirSync(join(shell, 'out', 'main'), { recursive: true })
++    expect(devShellLaunch(root, '/fake/electron')).toBeNull()
++    writeFileSync(mainFile, 'console.log("built")')
++    // Main alone is not a functioning Electron app; it needs the original
++    // preload and renderer outputs as well.
++    expect(devShellLaunch(root, '/fake/electron')).toBeNull()
++    mkdirSync(join(shell, 'out', 'preload'), { recursive: true })
++    writeFileSync(join(shell, 'out', 'preload', 'index.js'), '// preload')
++    expect(devShellLaunch(root, '/fake/electron')).toBeNull()
++    mkdirSync(join(shell, 'out', 'renderer'), { recursive: true })
++    writeFileSync(join(shell, 'out', 'renderer', 'index.html'), '<div id="root"></div>')
++    expect(devShellLaunch(root, '/fake/electron')).toEqual({
++      command: '/fake/electron',
++      args: [shell],
++    })
++    // Use the real package.json entry, not a hardcoded "out" assumption.
++    writeFileSync(join(shell, 'package.json'), JSON.stringify({ main: 'out/main/other.js' }))
++    expect(devShellLaunch(root, '/fake/electron')).toBeNull()
++    writeFileSync(join(shell, 'package.json'), JSON.stringify({ main: '../outside.js' }))
++    expect(devShellLaunch(root, '/fake/electron')).toBeNull()
++  })
++
+   it('launches the checkout through the real Electron binary, not the npm shim', () => {
+     const launch = appLaunch({})
+     expect(launch).not.toBeNull()
+@@ -218,7 +248,7 @@ describe('exportViaApp', () => {
+     expect(launch!.command).toMatch(
+       process.platform === 'darwin' ? /MacOS\/Electron$/ : /electron/i,
+     )
+-    expect(launch!.args[0]).toMatch(/apps\/shell$/)
++    expect(launch!.args[0]).toMatch(/apps[\\/]shell$/)
+   })
+ 
+   it('parses the last JSON line of stdout', () => {
+-- 
+2.52.0.windows.1
+

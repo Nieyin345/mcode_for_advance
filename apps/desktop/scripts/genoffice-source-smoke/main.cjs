@@ -6,7 +6,7 @@
  * ({format, repository, revision, license, editors}) became
  * `mcode.genoffice.upstream-lock.v2`, which additionally pins the exact
  * upstream base commit, the reviewed PDF patch identity, the immutable
- * 13-patch series and the final tree, and refuses any lock that differs.
+ * 32-patch series and the final tree, and refuses any lock that differs.
  * A synthetic Git repository can therefore never satisfy the positive path:
  * the pinned SHAs are properties of the real vendored checkout. Sections A/B
  * still need no vendor (opt-in semantics, lock-format rejection); section C
@@ -84,6 +84,14 @@ try {
     writeLock((lock) => { lock.expectedTree = "0".repeat(40); });
     assert.throws(() => assertUpstreamRevision({ repoRoot: emptyRepo, lockPath: lockCopy }), /source lock differs/i);
   });
+  check("tampering with the public upstream reconstruction revision is rejected", () => {
+    writeLock((lock) => { lock.upstreamRevision = "0".repeat(40); });
+    assert.throws(() => assertUpstreamRevision({ repoRoot: emptyRepo, lockPath: lockCopy }), /source lock differs/i);
+  });
+  check("tampering with the public upstream baseline patch digest is rejected", () => {
+    writeLock((lock) => { lock.upstreamBasePatch.sha256 = "0".repeat(64); });
+    assert.throws(() => assertUpstreamRevision({ repoRoot: emptyRepo, lockPath: lockCopy }), /public upstream base patch/i);
+  });
   check("relabeling the reviewed PDF patch subject is rejected", () => {
     writeLock((lock) => { lock.approvedPatch.subject = "unreviewed change"; });
     assert.throws(() => assertUpstreamRevision({ repoRoot: emptyRepo, lockPath: lockCopy }),
@@ -99,12 +107,12 @@ try {
     assert.throws(() => assertUpstreamRevision({ repoRoot: emptyRepo, lockPath: lockCopy }),
       /first approved patch identity\/parent\/changed-path manifest mismatch/i);
   });
-  check("missing one entry of the 13-patch series is rejected", () => {
+  check("missing one entry of the 32-patch series is rejected", () => {
     writeLock((lock) => { lock.patchSeries.pop(); });
     assert.throws(() => assertUpstreamRevision({ repoRoot: emptyRepo, lockPath: lockCopy }),
       /patch series missing|unexpected patch count/i);
   });
-  check("reordering the 13-patch series is rejected", () => {
+  check("reordering the 32-patch series is rejected", () => {
     writeLock((lock) => {
       [lock.patchSeries[0], lock.patchSeries[1]] = [lock.patchSeries[1], lock.patchSeries[0]];
     });
@@ -134,7 +142,7 @@ try {
       stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 * 1024 * 1024,
     });
     put(cloneLock, fs.readFileSync(lockReal));
-    for (const entry of lockSource.patchSeries) {
+    for (const entry of [lockSource.upstreamBasePatch, lockSource.approvedPatch, ...lockSource.patchSeries]) {
       put(path.join(fixtureRoot, entry.file), fs.readFileSync(path.join(repoRootReal, entry.file)));
     }
     const verifyClone = () => assertUpstreamRevision({ repoRoot: fixtureRoot, lockPath: cloneLock });
@@ -149,6 +157,15 @@ try {
       assert.equal(r.patchCount, PATCHES.length);
       assert.deepEqual(r.editors, [...EDITORS]);
       assert.equal(verifyReleaseSource({ repoRoot: fixtureRoot, lockPath: cloneLock, env: { MCODE_INCLUDE_GENOFFICE_BUNDLE: "1" } }).checked, true);
+    });
+    check("tampered public upstream baseline patch bytes are rejected by the pinned SHA-256", () => {
+      const patch = path.join(fixtureRoot, lockSource.upstreamBasePatch.file);
+      const saved = fs.readFileSync(patch);
+      const tampered = Buffer.from(saved);
+      tampered[0] ^= 1;
+      fs.writeFileSync(patch, tampered);
+      try { assert.throws(verifyClone, /SHA-256 mismatch/i); }
+      finally { fs.writeFileSync(patch, saved); }
     });
     check("tampered patch bytes are rejected by the pinned SHA-256", () => {
       const patch = path.join(fixtureRoot, lockSource.patchSeries[3].file);

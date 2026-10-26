@@ -30,7 +30,7 @@ function makeFixture(t) {
     editorAssetsSha256:Object.fromEntries(["docs","sheets","slides","pdf","markdown","html"].map(x=>[x,HASH])),
     cliSha256:HASH,pdfiumWasmSha256:HASH,nativeSidecarSha256:HASH,
     genofficeSourceRevision:GIT_HASH,genofficeSourceTree:GIT_HASH,
-    mcodeSourceRevision:GIT_HASH,mcodeSourceClean:true,
+    mcodeSourceRevision:GIT_HASH,mcodeSourceClean:true,mcodeReleaseVersion:"0.1.62",
   };
   const manifestFile=path.join(res,"availability.json");
   fs.writeFileSync(manifestFile,JSON.stringify(manifest));
@@ -77,6 +77,11 @@ test("refuses missing GenOffice source attestation rather than assuming fresh pa
   const f=makeFixture(t);
   delete f.manifest.genofficeSourceRevision; f.updateManifest();
   assert.ok(f.codesFor().includes(codes.MISSING_SOURCE_ATTESTATION));
+});
+test("refuses an embedded release version that differs from latest.yml",t=>{
+  const f=makeFixture(t);
+  f.manifest.mcodeReleaseVersion="0.1.61";f.updateManifest();
+  assert.ok(f.codesFor().includes(codes.MCODE_BUILD_VERSION_MISMATCH));
 });
 test("refuses dirty or different Mcode build-source revision",t=>{
   const f=makeFixture(t);

@@ -68,6 +68,9 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Setup Rust toolchain for GenOffice Sheets sidecar
+        uses: dtolnay/rust-toolchain@stable
+
       # node-pty 1.1.0 pulls node-gyp@9, which still does
       # `from distutils.version import StrictVersion`. Both macOS and Windows
       # runners now ship Python 3.12+, which removed `distutils` entirely ->
@@ -116,6 +119,10 @@ jobs:
       # path.resolve against cwd because require() in `node -e` resolves
       # relative paths unreliably across Node versions/platforms (it failed
       # with MODULE_NOT_FOUND for './apps/desktop/package.json' on windows-2022).
+      - name: Prepare pinned GenOffice fork and build six native editors
+        shell: bash
+        run: node apps/desktop/build/prepare-genoffice-release.cjs
+
       - name: Set version from tag
         shell: bash
         env:
@@ -129,6 +136,7 @@ jobs:
             const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
             pkg.version = v;
             fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
+            fs.appendFileSync(process.env.GITHUB_ENV, "MCODE_RELEASE_VERSION=" + v + "\n");
             console.log("Release version: " + v);
           '
 
@@ -136,7 +144,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         working-directory: apps/desktop
-        run: node --test scripts/run-smokes.test.mjs && node scripts/run-smokes.mjs mcp-text-smoke release-readiness-smoke
+        run: node --test scripts/run-smokes.test.mjs && node scripts/run-smokes.mjs mcp-text-smoke release-readiness-smoke genoffice-source-smoke genoffice-reconstruct-smoke
 
       - name: Build & package
         # Use bash on Windows too (the runner ships Git Bash) so the env vars

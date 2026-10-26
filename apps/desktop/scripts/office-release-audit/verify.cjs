@@ -12,6 +12,7 @@ const { resolve, join, basename } = require("node:path");
 const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
+const { inspectMcodeSource } = require("../../build/release-source-state.cjs");
 
 const EXPECTED_EDITORS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown", "html"]);
 const DIGEST_RE = /^[a-f0-9]{64}$/;
@@ -31,6 +32,7 @@ const codes = Object.freeze({
   MISSING_SOURCE_ATTESTATION: "MISSING_SOURCE_ATTESTATION",
   SOURCE_REVISION_MISMATCH: "SOURCE_REVISION_MISMATCH",
   MCODE_BUILD_REVISION_MISMATCH: "MCODE_BUILD_REVISION_MISMATCH",
+  MCODE_BUILD_VERSION_MISMATCH: "MCODE_BUILD_VERSION_MISMATCH",
   UNATTESTED_BUILD: "UNATTESTED_BUILD",
   UNSIGNED_INSTALLER: "UNSIGNED_INSTALLER",
   DIRTY_WORKTREE: "DIRTY_WORKTREE",
@@ -177,6 +179,9 @@ function auditRelease(opts={}) {
     const git=opts.gitEvidence ?? defaultGit(repo);
     facts.head=git.head;
     if (manifest) {
+      if (typeof manifest.mcodeReleaseVersion !== "string" || manifest.mcodeReleaseVersion !== latest?.version) {
+        block(codes.MCODE_BUILD_VERSION_MISMATCH,"packaged Mcode release version differs from latest.yml");
+      }
       if(typeof manifest.mcodeSourceRevision!=="string" || typeof manifest.mcodeSourceClean!=="boolean") {
         block(codes.UNATTESTED_BUILD,"package does not record its Mcode source revision or source clean state");
       } else if(manifest.mcodeSourceRevision!==git.head || manifest.mcodeSourceClean!==true) {
@@ -186,7 +191,17 @@ function auditRelease(opts={}) {
     if (!Number.isFinite(git.commitTime))throw Error("invalid git commit timestamp");
     if (exe && existsSync(exe) && statSync(exe).mtimeMs < git.commitTime)
       block(codes.STALE_INSTALLER,"installer predates current Mcode source HEAD commit");
-    if(git.dirty)block(codes.DIRTY_WORKTREE,"concurrent uncommitted changes: source snapshot is not release-frozen");
+    if(git.dirty) {
+      let versionOnlyOverride=false;
+      if (latest && manifest?.mcodeReleaseVersion === latest.version) {
+        try {
+          const sourceState=inspectMcodeSource({repoRoot:repo,releaseVersion:latest.version});
+          versionOnlyOverride=sourceState.clean && sourceState.versionOverrideOnly;
+        } catch { /* dirty source remains a release blocker */ }
+      }
+      if(versionOnlyOverride)facts.mcodeReleaseVersionOverride="verified package.json version-only stamp";
+      else block(codes.DIRTY_WORKTREE,"concurrent uncommitted changes: source snapshot is not release-frozen");
+    }
   } catch(e) {block(codes.MISSING_GIT_EVIDENCE,"cannot verify release source git state: "+String(e.message));}
   return {status:blockers.length?"BLOCKED":"READY",blockers,facts};
 }

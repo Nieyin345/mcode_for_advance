@@ -2,10 +2,22 @@
   "format": "mcode.genoffice.upstream-lock.v2",
   "repository": "https://github.com/genspark-ai/genoffice",
   "baseRevision": "cbec600ace9c930b2646b6739cf6df3741bb9d6a",
+  "upstreamRevision": "1f306a2a496227cae9194097897212c93d00a4e6",
+  "upstreamBasePatch": {
+    "file": "patches/genoffice/0000-upstream-base-cli-source-launch-guard.patch",
+    "revision": "cbec600ace9c930b2646b6739cf6df3741bb9d6a",
+    "parentRevision": "1f306a2a496227cae9194097897212c93d00a4e6",
+    "sha256": "ed345f220a1a2ff6d95216bf1d843e99ab21fb2d8dc86e45082622d2dbe3452f",
+    "bytes": 6547,
+    "subject": "fix(cli): refuse unbuilt source shell before launching Electron"
+  },
   "approvedPatch": {
     "revision": "73ba918083b5e2bedff7633925c3d7f625e04449",
     "parentRevision": "cbec600ace9c930b2646b6739cf6df3741bb9d6a",
     "subject": "fix(pdf): use privately owned atomic save temporary files",
+    "file": "patches/genoffice/0000-fix-pdf-use-privately-owned-atomic-save-temporary-files.patch",
+    "sha256": "4e59d305ebf8334cb25266512b19e78fe1d11bb33cbf8321fa13c695f1c2fe4f",
+    "bytes": 3815,
     "paths": [
       "apps/pdf/src/main/atomic-write.ts",
       "apps/pdf/tests/page-operation-atomic-write.test.ts"
@@ -118,6 +130,7 @@
       "file": "patches/genoffice/0012-security-slides-hosted-ai-media-ipc.patch",
       "revision": "355e667353ad90da7d0b3c6823fad0f525b729c3",
       "parentRevision": "aba076cc9b292461cc419288ee555e524f6250e1",
+      "committerDate": "2026-10-21T22:53:20+08:00",
       "sha256": "881f66dfc32c09050831e5760ef040a9e2e2a8588e9ab9a19ad284389817b5fa",
       "bytes": 4808,
       "subject": "security(slides): fail closed for hosted ai media ipc"

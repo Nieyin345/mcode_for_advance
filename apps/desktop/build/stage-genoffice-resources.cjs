@@ -17,6 +17,7 @@ const { createHash, randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const { createRequire } = require("node:module");
 const { execFileSync } = require("node:child_process");
+const { inspectMcodeSource } = require("./release-source-state.cjs");
 const { isAbsolute, join, resolve, relative, sep, dirname } = require("node:path");
 const EDITOR_APPS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown", "html"]);
 /**
@@ -806,13 +807,18 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
     if (runGit(vendor,"status","--porcelain") !== "") {
       throw new Error("GenOffice release staging rejected: uncommitted vendor source changes cannot be attested");
     }
-    const mcodeHead = runGit(repo,"rev-parse","HEAD");
-    const mcodeWorkingTreeClean = runGit(repo,"status","--porcelain")==="";
+    const mcodeSource = inspectMcodeSource({
+      repoRoot: repo, releaseVersion: process.env.MCODE_RELEASE_VERSION || undefined,
+    });
+    if (!mcodeSource.clean) {
+      throw new Error("GenOffice release staging rejected: Mcode source is not frozen: " + mcodeSource.reason);
+    }
     sourceAttestation = {
       genofficeSourceRevision: vendorHead,
       genofficeSourceTree: vendorTree,
-      mcodeSourceRevision: mcodeHead,
-      mcodeSourceClean: mcodeWorkingTreeClean,
+      mcodeSourceRevision: mcodeSource.head,
+      mcodeSourceClean: mcodeSource.clean,
+      mcodeReleaseVersion: mcodeSource.releaseVersion,
     };
   }
   const sourceLicenseManifest = licenseManifestPath ? resolve(licenseManifestPath) : null;

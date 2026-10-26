@@ -110,6 +110,7 @@ mock 通过**不能证明**真 SDK 能驱动这条链。三家各自的差异（
 | **O24** 真 Electron 主进程外部强杀 + 已提交 DOCX 恢复 | ✅ **真 OS kill + 3 代 Electron PASS；正常退出伪装的反例已打红** | `O24-electron-hard-kill-recovery.md` | Mcode 本轮提交 | 监督器用本进程 UUID 挑战主动 `taskkill /T /F` 隔离 Electron，PID/代数/退出码匹配；第二代恢复稿且原件不变，正常 CAS 保存后第三代重开 PASS；正常退出变异 exit=2；原 U1 正常/故意失败正反向保持一致 |
 | **O25** 三 SDK 在线前置条件与最新 Windows 安装器发布门禁 | ✅ **发布门禁回归 17/17 PASS；旧安装器正式发布 BLOCKED** | `O25-online-providers-and-release-gate.md` | `af4aa7ce` + O26 补丁 | Codex CLI 已登录、Claude 未登录、Pi 认证文件存在但有效性未知；独立真实在线模型 E2E 未验；校验安装器 SHA512、真实六编辑器资源、签名、Git 构建来源；本轮新增 NSIS 压缩包实体内容验证 |
 | **O26** 真 NSIS 压缩包检查：拒绝无 Office 的安装器 | ✅ **实物缺陷定位；CI 阻断已接入；旧安装器明确 FAIL** | `O26-nsis-real-payload-integrity.md` | Mcode 本轮提交 | 7za 直接从 NSIS 读到 `bundled:false`、`editorsBundled:false`，只有 availability.json；旁边 win-unpacked 却声明六格式完整。补原生 NSIS 清单及必要资源存在性校验、CI 发布前 fail-closed；不能把旧安装包当成正式交付 |
+| **O27** 从公开 GenOffice 上游和审核补丁重建二开 CI 源码 | ✅ **可复现 commit/tree 全链重放 PASS；远端完整打包待验** | `O27-rebuild-pinned-genoffice-ci.md` | Mcode 本轮提交 | 公开 `1f306a2` → 基线 `cbec600` → 首补丁 `73ba918` → 32 补丁 → 最终 `f174a91` + 精确 tree；独立 U1 Git 重放 smoke PASS；CI 新增 Rust、原厂六编辑器构建、来源/Tag 版本审查，仍拒绝旧 NSIS 空 Office |
 
 
 ## O3 交付摘要（`f383922b`，16/16 PASS）

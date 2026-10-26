@@ -12,8 +12,15 @@ const { execFileSync } = require("node:child_process");
 const EDITORS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown", "html"]);
 const FORMAT = "mcode.genoffice.upstream-lock.v2";
 const REPOSITORY = "https://github.com/genspark-ai/genoffice";
+const UPSTREAM_REVISION = "1f306a2a496227cae9194097897212c93d00a4e6";
+const UPSTREAM_BASE_PATCH_FILE = "patches/genoffice/0000-upstream-base-cli-source-launch-guard.patch";
+const UPSTREAM_BASE_PATCH_SHA256 = "ed345f220a1a2ff6d95216bf1d843e99ab21fb2d8dc86e45082622d2dbe3452f";
+const UPSTREAM_BASE_PATCH_BYTES = 6547;
 const BASE_REVISION = "cbec600ace9c930b2646b6739cf6df3741bb9d6a";
 const APPROVED_PATCH_REVISION = "73ba918083b5e2bedff7633925c3d7f625e04449";
+const APPROVED_PATCH_FILE = "patches/genoffice/0000-fix-pdf-use-privately-owned-atomic-save-temporary-files.patch";
+const APPROVED_PATCH_SHA256 = "4e59d305ebf8334cb25266512b19e78fe1d11bb33cbf8321fa13c695f1c2fe4f";
+const APPROVED_PATCH_BYTES = 3815;
 const FINAL_REVISION = "f174a91f27c3f499fc5be1d6aa7cc3f63204addd";
 const FINAL_TREE = "5164ed29fb33cc6d6dd7fc6939861c553648d94c";
 const LICENSE_SOURCE_MANIFEST = "apps/desktop/build/vendor-licenses/genoffice/manifest.json";
@@ -33,7 +40,7 @@ const PATCHES = Object.freeze([
   { file: "patches/genoffice/0009-feat-docs-scoped-export-media-and-files-read.patch", revision: "545c83b8a1abc69af2f7499a22d1c49b0c62d8e7", parentRevision: "bb7f67cc72056c0327030369a1156b92bbe37e7d", sha256: "b80bda2dd6f4215ff9dcf2e3f64e84e4f8c44a3e9f3e3d0daa027007f5f825c1" },
   { file: "patches/genoffice/0010-feat-pdf-markdown-html-scoped-mcode-ai.patch", revision: "9959e731e650f9eb51bf19937df2e07e967fe244", parentRevision: "545c83b8a1abc69af2f7499a22d1c49b0c62d8e7", sha256: "a093c109577962a51eaa0ddfdf3df6968e94dd1d8b5185c6de3535456d6594f9" },
   { file: "patches/genoffice/0011-security-sheets-slides-scoped-ipc.patch", revision: "aba076cc9b292461cc419288ee555e524f6250e1", parentRevision: "9959e731e650f9eb51bf19937df2e07e967fe244", sha256: "2f45a4632a38f7a394c5ddffb6a3fd6c515d7f9081e9f07e1504831644b3feed" },
-  { file: "patches/genoffice/0012-security-slides-hosted-ai-media-ipc.patch", revision: "355e667353ad90da7d0b3c6823fad0f525b729c3", parentRevision: "aba076cc9b292461cc419288ee555e524f6250e1", sha256: "881f66dfc32c09050831e5760ef040a9e2e2a8588e9ab9a19ad284389817b5fa" },
+  { file: "patches/genoffice/0012-security-slides-hosted-ai-media-ipc.patch", revision: "355e667353ad90da7d0b3c6823fad0f525b729c3", parentRevision: "aba076cc9b292461cc419288ee555e524f6250e1", committerDate: "2026-10-21T22:53:20+08:00", sha256: "881f66dfc32c09050831e5760ef040a9e2e2a8588e9ab9a19ad284389817b5fa" },
   { file: "patches/genoffice/0013-feat-docs-ack-native-tool-results-in-hosted-turn.patch", revision: "635dee2f6a38d7f0a3aec31a487afc3e2369a5cf", parentRevision: "355e667353ad90da7d0b3c6823fad0f525b729c3", sha256: "7572ccf2650806cd7707f43d8e011d21ad1545e01ecbdbccbe15df6eb672409c" },
   { file: "patches/genoffice/0014-feat-docs-reshell-the-chrome-in-mcode-design-tokens.patch", revision: "05da63cdf6fcbec44176b07d10cb5b5f75f5f1cf", parentRevision: "635dee2f6a38d7f0a3aec31a487afc3e2369a5cf", sha256: "f2bc783ef20173e861f67e136bee00ee588e86cebc75a07701778d0d6a1a39af" },
   { file: "patches/genoffice/0015-feat-docs-write-eastAsia-so-new-docx-keeps-CJK-typo.patch", revision: "3cb99ab13e1e42989889e15cc338bd6f6c6fff5c", parentRevision: "05da63cdf6fcbec44176b07d10cb5b5f75f5f1cf", sha256: "7a529e41be46b1b26c9d98d34a0bc9e536971131406be7a8619f34b6e859a595" },
@@ -82,18 +89,27 @@ function sameJson(left, right) {
 }
 function assertPinnedLock(lock) {
   if (lock.format !== FORMAT || lock.repository !== REPOSITORY
-      || lock.baseRevision !== BASE_REVISION
+      || lock.baseRevision !== BASE_REVISION || lock.upstreamRevision !== UPSTREAM_REVISION
       || lock.revision !== FINAL_REVISION || lock.expectedTree !== FINAL_TREE
       || lock.license !== "Apache-2.0"
       || lock.licenseSourceManifest !== LICENSE_SOURCE_MANIFEST
       || !sameJson(lock.editors, EDITORS)) {
     throw new Error("GenOffice source lock differs from the pinned upstream/base/final-tree/six-app contract");
   }
+  const basePatch = lock.upstreamBasePatch;
+  if (!basePatch || basePatch.file !== UPSTREAM_BASE_PATCH_FILE
+      || basePatch.revision !== BASE_REVISION || basePatch.parentRevision !== UPSTREAM_REVISION
+      || basePatch.sha256 !== UPSTREAM_BASE_PATCH_SHA256 || basePatch.bytes !== UPSTREAM_BASE_PATCH_BYTES
+      || basePatch.subject !== "fix(cli): refuse unbuilt source shell before launching Electron") {
+    throw new Error("GenOffice public upstream base patch differs from pinned reproducible build metadata");
+  }
   const patch = lock.approvedPatch;
   if (!patch || typeof patch !== "object" || Array.isArray(patch)
       || patch.revision !== APPROVED_PATCH_REVISION
       || patch.parentRevision !== BASE_REVISION
       || patch.subject !== "fix(pdf): use privately owned atomic save temporary files"
+      || patch.file !== APPROVED_PATCH_FILE || patch.sha256 !== APPROVED_PATCH_SHA256
+      || patch.bytes !== APPROVED_PATCH_BYTES
       || !sameJson(patch.paths, APPROVED_PATHS)) {
     throw new Error("GenOffice first approved patch identity/parent/changed-path manifest mismatch");
   }
@@ -105,13 +121,45 @@ function assertPinnedLock(lock) {
     const expected = PATCHES[index];
     if (!actual || actual.index !== index + 1 || actual.file !== expected.file
         || actual.revision !== expected.revision || actual.parentRevision !== expected.parentRevision
-        || actual.sha256 !== expected.sha256 || typeof actual.subject !== "string"
-        || !actual.subject || !Number.isInteger(actual.bytes) || actual.bytes < 1) {
+        || actual.sha256 !== expected.sha256 || actual.committerDate !== expected.committerDate
+        || typeof actual.subject !== "string" || !actual.subject
+        || !Number.isInteger(actual.bytes) || actual.bytes < 1) {
       throw new Error("GenOffice patch series identity/order/hash/parent mismatch at index " + (index + 1));
     }
   }
 }
 function assertPatchFiles(repoRoot, lock) {
+  const root = path.resolve(repoRoot);
+  const baseFile = path.resolve(root, UPSTREAM_BASE_PATCH_FILE);
+  const baseRelative = path.relative(root, baseFile);
+  if (path.isAbsolute(baseRelative) || baseRelative === ".." || baseRelative.startsWith(".." + path.sep)) {
+    throw new Error("GenOffice upstream baseline patch path escapes Mcode root");
+  }
+  nonempty(baseFile, "public upstream baseline patch");
+  const baseStat = fs.lstatSync(baseFile);
+  if (!baseStat.isFile() || baseStat.isSymbolicLink() || baseStat.size !== UPSTREAM_BASE_PATCH_BYTES
+      || sha256File(baseFile) !== UPSTREAM_BASE_PATCH_SHA256) {
+    throw new Error("GenOffice public upstream baseline patch byte count/SHA-256 mismatch");
+  }
+  const baseHeader = /^From ([0-9a-f]{40}) /.exec(fs.readFileSync(baseFile, "utf8").split(/\r?\n/, 1)[0]);
+  if (!baseHeader || baseHeader[1] !== BASE_REVISION) {
+    throw new Error("GenOffice public upstream baseline patch commit mismatch");
+  }
+  const approvedFile = path.resolve(repoRoot, APPROVED_PATCH_FILE);
+  nonempty(approvedFile, "approved patch file");
+  const approvedRelative = path.relative(path.resolve(repoRoot), approvedFile);
+  if (path.isAbsolute(approvedRelative) || approvedRelative === ".." || approvedRelative.startsWith(".." + path.sep)) {
+    throw new Error("GenOffice approved patch path escapes Mcode root");
+  }
+  const approvedStat = fs.lstatSync(approvedFile);
+  if (!approvedStat.isFile() || approvedStat.isSymbolicLink() || approvedStat.size !== APPROVED_PATCH_BYTES
+      || sha256File(approvedFile) !== APPROVED_PATCH_SHA256) {
+    throw new Error("GenOffice approved patch byte count/SHA-256 mismatch");
+  }
+  const approvedHeader = /^From ([0-9a-f]{40}) /.exec(fs.readFileSync(approvedFile, "utf8").split(/\r?\n/, 1)[0]);
+  if (!approvedHeader || approvedHeader[1] !== APPROVED_PATCH_REVISION) {
+    throw new Error("GenOffice approved patch mail header does not identify its pinned commit");
+  }
   for (let index = 0; index < PATCHES.length; index++) {
     const expected = PATCHES[index];
     const entry = lock.patchSeries[index];
@@ -139,7 +187,7 @@ function readCommit(vendor, revision) {
   if (fields.length !== 3) throw new Error("GenOffice commit metadata malformed: " + revision);
   return { revision: fields[0], parentRevision: fields[1], subject: fields[2] };
 }
-function assertUpstreamRevision({ repoRoot, lockPath } = {}) {
+function assertUpstreamRevision({ repoRoot, lockPath, vendorDir } = {}) {
   if (typeof repoRoot !== "string") throw new Error("GenOffice source gate requires repoRoot");
   const root = path.resolve(repoRoot);
   const file = lockPath ?? path.resolve(__dirname, "genoffice-upstream.lock.json");
@@ -148,7 +196,7 @@ function assertUpstreamRevision({ repoRoot, lockPath } = {}) {
   assertPinnedLock(lock);
   assertPatchFiles(root, lock);
 
-  const vendor = path.join(root, "genoffice");
+  const vendor = path.resolve(vendorDir ?? path.join(root, "genoffice"));
   try {
     const stat = fs.lstatSync(vendor);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("not a real directory");
@@ -179,6 +227,10 @@ function assertUpstreamRevision({ repoRoot, lockPath } = {}) {
   }
   if (runGit(vendor, "rev-parse", BASE_REVISION) !== BASE_REVISION) {
     throw new Error("GenOffice pinned upstream base commit is unavailable");
+  }
+  const baseCommit = readCommit(vendor, BASE_REVISION);
+  if (baseCommit.parentRevision !== UPSTREAM_REVISION) {
+    throw new Error("GenOffice reconstructed baseline is not based on the pinned public upstream commit");
   }
   for (const expected of expectedCommits) {
     const actual = readCommit(vendor, expected.revision);
@@ -249,7 +301,7 @@ function assertUpstreamRevision({ repoRoot, lockPath } = {}) {
     editors: [...EDITORS],
   };
 }
-function verifyReleaseSource({ repoRoot, env = process.env, lockPath } = {}) {
+function verifyReleaseSource({ repoRoot, env = process.env, lockPath, vendorDir } = {}) {
   const cli = env.MCODE_INCLUDE_GENOFFICE_BUNDLE ?? "";
   const editors = env.MCODE_INCLUDE_GENOFFICE_EDITORS ?? "";
   if (!["", "0", "1"].includes(cli) || !["", "0", "1"].includes(editors)) {
@@ -259,7 +311,7 @@ function verifyReleaseSource({ repoRoot, env = process.env, lockPath } = {}) {
     throw new Error("Six GenOffice editors require MCODE_INCLUDE_GENOFFICE_BUNDLE=1");
   }
   if (cli !== "1") return { bundled: false, checked: false };
-  return { bundled: true, checked: true, ...assertUpstreamRevision({ repoRoot, lockPath }) };
+  return { bundled: true, checked: true, ...assertUpstreamRevision({ repoRoot, lockPath, vendorDir }) };
 }
 if (require.main === module) {
   try {
@@ -273,6 +325,8 @@ if (require.main === module) {
   }
 }
 module.exports = {
-  assertUpstreamRevision, verifyReleaseSource, EDITORS, PATCHES, BASE_REVISION,
-  APPROVED_PATCH_REVISION, FINAL_REVISION, FINAL_TREE, LICENSE_SOURCE_MANIFEST,
+  assertUpstreamRevision, verifyReleaseSource, assertPatchFiles, assertPinnedLock,
+  EDITORS, PATCHES, BASE_REVISION, UPSTREAM_REVISION, UPSTREAM_BASE_PATCH_FILE,
+  APPROVED_PATCH_REVISION, APPROVED_PATCH_FILE,
+  FINAL_REVISION, FINAL_TREE, LICENSE_SOURCE_MANIFEST,
 };
