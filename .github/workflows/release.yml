@@ -183,6 +183,23 @@ jobs:
           node apps/desktop/scripts/office-release-audit/verify-nsis.cjs $installers[0].FullName apps/desktop/release/win-unpacked/resources/genoffice/availability.json
           if ($LASTEXITCODE -ne 0) { throw "Actual NSIS payload does not contain approved six GenOffice editors" }
 
+      # Exercise negative controls before inspecting either Mac release file.
+      - name: Run macOS Office artifact verifier unit tests
+        if: runner.os == 'macOS'
+        shell: bash
+        run: node --test apps/desktop/scripts/office-release-audit/verify-macos-dmg.test.cjs
+
+      # Both distributables matter: the DMG is installed directly and the
+      # updater downloads the ZIP. A staged mac/ folder can be newer than the
+      # generated files; inspect each shipped image, not just afterPack.
+      - name: Verify macOS DMG and updater ZIP actually contain GenOffice
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/desktop/scripts/office-release-audit/verify-macos-artifacts.cjs \
+            apps/desktop/release apps/desktop/.tmp/genoffice-release/availability.json
+
       - name: Verify packaged Windows runtime (isolated)
         if: runner.os == 'Windows'
         shell: bash
