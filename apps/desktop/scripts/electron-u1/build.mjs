@@ -68,6 +68,8 @@ let esbuildSpec = null;
  * 打包后 `__dirname` 就是 main bundle 所在的 `out/main/`）。
  */
 let prebuildSpec = null;
+/** F040: opt-in production Monaco workers for product FileEditor U1. */
+let monacoWorkers = false;
 for (const a of args) {
   if (a === "--mutation=unconditional-pass") mutation = "unconditional-pass";
   // W24：`--keep` 是**文档化过的 no-op**（见头注释「证据保留」——本脚本从不自动
@@ -76,6 +78,7 @@ for (const a of args) {
   // 与文档一致地接受；即便将来再拒收，W24 的包装器也会归到 build-crashed（5），
   // 不会再变成 PASS。
   else if (a === "--keep") continue;
+  else if (a === "--monaco-workers") monacoWorkers = true;
   else if (a.startsWith("--registry=")) registry = resolve(a.slice("--registry=".length));
   else if (a.startsWith("--only=")) only = a.slice("--only=".length);
   else if (a.startsWith("--esbuild=")) esbuildSpec = resolve(a.slice("--esbuild=".length));
@@ -134,7 +137,7 @@ const resolveTs = (p) => {
 // 的模块。真 App + 真 store 保留。
 const stubs = {
   [absRenderer("lib/api.ts")]: "export const api=window.labApi;",
-  [absRenderer("lib/monacoSetup.ts")]: "export const monacoSetup=()=>{};export default {};",
+  ...(!monacoWorkers ? { [absRenderer("lib/monacoSetup.ts")]: "export const monacoSetup=()=>{};export default {};" } : {}),
 };
 
 const entry = join(buildDir, "app-entry.tsx");
@@ -178,7 +181,14 @@ await esbuild({
   plugins: [{
     name: "shell-stubs",
     setup(b) {
-      b.onResolve({ filter: /\?(worker|url|raw)$/ }, (a) => ({ path: a.path, external: true }));
+      b.onResolve({ filter: /\?(worker|url|raw)$/ }, (a) => {
+        if (monacoWorkers && a.path.endsWith("?worker")) return { path: a.path, namespace: "u1-monaco-worker" };
+        return { path: a.path, external: true };
+      });
+      b.onLoad({ filter: /.*/, namespace: "u1-monaco-worker" }, (a) => {
+        const stem = a.path.split("/").at(-1).replace(/\?worker$/, "").replace(/\.js$/, "");
+        return { contents: `export default class McodeU1Worker { constructor() { return new Worker(new URL(${JSON.stringify("./" + stem + ".js")}, window.location.href), { type: "module" }); } }`, loader: "js" };
+      });
       b.onResolve({ filter: /.*/ }, (a) => {
         if (a.kind !== "import-statement" && a.kind !== "require-call" && a.kind !== "dynamic-import") return undefined;
         const raw = a.path;
