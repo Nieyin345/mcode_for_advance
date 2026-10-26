@@ -80,6 +80,7 @@ import { Button, ErrorNote, LoadingNote } from "@renderer/components/ui/index.js
 import type { DocViewRect } from "@contracts/ipc";
 import { genofficeAppForPath, type GenofficeApp } from "@contracts/genofficeFileRoute";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
+import { IconLoader2 } from "@renderer/lib/icons.js";
 import { handoffOfficeToMcode } from "./officeChatHandoff.js";
 
 /** GenOffice 编辑器 module 名（与 vendor 的 `rendererUrl` host 同名）。 */
@@ -227,6 +228,7 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
   // 读能力报告走 useRpc（硬规矩 7）；本组件只用它拿 CLI 路径推仓库根。
   const caps = useRpc(() => api.document.capabilities(), [], { toastOnError: false });
   const [openError, setOpenError] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
   /** 【ARC-007】页面**加载/渲染失败**的诊断（与 openError 是两回事：open 成功了、
    *  页面却崩了）。vendor 编辑器页依赖 preload 桥，而本宿主刻意不给 preload ——
    *  没有这条，用户只看到一片空白，分不清"没加载"与"加载了但崩了"。 */
@@ -266,7 +268,10 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
   const unsupportedHost = host === undefined ? "unrecognized" : hasHostOpenChannel(host, slidesHostAvailable, nativeHosts) ? null : host;
 
   useEffect(() => {
-    if (url === null) return;
+    if (url === null) {
+      setOpening(false);
+      return;
+    }
     const stage = stageRef.current;
     if (stage === null) return;
 
@@ -280,6 +285,7 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
     let observer: ResizeObserver | null = null;
 
     const sendOpen = (bounds: DocViewRect): void => {
+      setOpening(true);
       // 【ARC-007 P1/GA1】slides 视图必须声明编辑器域：宿主据此把 openPath/保存
       // 接到 vendor 解析器与 slides 会话（docs 不声明，行为不变）。
       const pending = api.documentView.open({
@@ -306,6 +312,7 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
             return;
           }
           if (!result.ok) {
+            setOpening(false);
             setOpenError(result.reason);
             return;
           }
@@ -316,18 +323,26 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
           // 不请求的话用户看到的是空白文档。宿主侧会核对路径在工作区内。
           void api.documentView.openPath({ docId, filePath }).then(
             (opened) => {
-              if (!opened.ok && !disposed) setOpenError(opened.reason);
+              if (disposed) return;
+              setOpening(false);
+              if (!opened.ok) setOpenError(opened.reason);
             },
             (err: unknown) => {
               // Transport failures do not appear in host.list().lastFailure:
               // no page-side request was accepted. Surface this distinct
               // error instead of silently leaving a blank native editor.
-              if (!disposed) setOpenError(err instanceof Error ? err.message : String(err));
+              if (!disposed) {
+                setOpening(false);
+                setOpenError(err instanceof Error ? err.message : String(err));
+              }
             },
           );
         },
         (err: unknown) => {
-          if (!disposed) setOpenError(err instanceof Error ? err.message : String(err));
+          if (!disposed) {
+            setOpening(false);
+            setOpenError(err instanceof Error ? err.message : String(err));
+          }
         },
       );
     };
@@ -456,6 +471,11 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
             <FileTypeIcon path={filePath} size={13} className="mr-1 shrink-0" />
             <span className="truncate">{filePath.replace(/^.*[\\/]/, "")}</span>
           </span>
+          {opening && (
+            <span role="status" aria-label={t("common.loading")} title={t("common.loading")} className="shrink-0 text-content-muted">
+              <IconLoader2 size={12} className="animate-spin" />
+            </span>
+          )}
           <button
             type="button"
             data-office-ask-mcode=""
