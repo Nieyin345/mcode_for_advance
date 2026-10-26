@@ -433,7 +433,9 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
   // 宿主当前只有 list() 一条读口(没有推送通道),而这条诊断的价值是"出问题时
   // 看得见"——2 秒一次、只在面板挂载且视图已打开时跑,开销可忽略。
   useEffect(() => {
-    if (url === null) return;
+    // Keep the last diagnostic visible until the next open/openPath attempt settles.
+    // Polling the half-created view would otherwise clear it before the document loads.
+    if (url === null || opening) return;
     let cancelled = false;
     const tick = (): void => {
       void api.documentView.list().then(
@@ -458,7 +460,7 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
       cancelled = true;
       clearInterval(timer);
     };
-  }, [docId, url, retryNonce]);
+  }, [docId, url, retryNonce, opening]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -536,7 +538,6 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
                 size="sm"
                 variant="ghost"
                 onClick={() => {
-                  setPageFailure(null);
                   setRetryNonce((n) => n + 1);
                 }}
               >
@@ -581,7 +582,6 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
                 size="sm"
                 variant="ghost"
                 onClick={() => {
-                  setSaveConflict(null);
                   // 重新载入 = 重建视图并重新 openPath：宿主会记下新的打开时版本。
                   setRetryNonce((n) => n + 1);
                 }}
