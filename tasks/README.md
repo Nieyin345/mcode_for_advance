@@ -148,6 +148,7 @@
 | T134 | 🔴 **正文宽度 1024px，Claude 是 672/768**；而且消息与输入框在 Claude 是两个宽度、我们是一个 | **P0 产品主线** | T122 | ZZ | 🔄 待开工（用户已裁决：照 Claude 做） |
 | T141 | 🔴 **视觉基线格数常量过期**：`build.mjs`/`compare.mjs`/`probe.ts` 共 4 处写死 `39`，而 T136 已加到 51 格 → `compare.mjs` 直接抛错，**token 比对门禁跑不起来**（`run.sh` 还打印 `checks=51 failed=0`，看起来像通过） | **P1 假门禁** | 无 | ZZ | ⬜ ready-for-agent |
 | T142 | **字号迁移只做真正零变化的那 22 处**（`text-sm` 14/20 → `text-body` 14/20）。261 处 `text-[11px]` **不是零变化**（行高 13.2→16，写卡人第一版判断错了） | P1 产品主线 | T121 | ZZ | ⬜ ready-for-agent |
+| T155 | **Slides 标签关闭绕过原厂未保存保护**：已接入原厂 `requestSlidesClose`，取消时保留会话；U1 5/5、宿主 smoke 541/541、旧行为变异红 | **P1 产品缺陷** | T29+T94 | ZZ | ✅ done `439d1f86` |
 
 ### UI 对齐 Claude 的现状（2026-10-24 逐项核实）
 
