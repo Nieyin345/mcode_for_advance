@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { GenofficeViewHostPane } from "@renderer/components/ide/GenofficeViewHostPane.js";
 import { stableDocId } from "@renderer/components/ide/GenofficeViewHostPane.js";
 import { canDockOfficeFile } from "@renderer/components/ide/officeChatHandoff.js";
+import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { hostedPaneContent } from "./paneLayout.js";
 import { EngineRuntimePanel } from "@renderer/components/settings/workflows/EngineRuntimePanel.js";
 import { api } from "@renderer/lib/api.js";
@@ -310,7 +311,7 @@ export function RightPanel() {
             setActiveCustom(null);
             setRightOpen(true);
           }} title={t("layout.paneDocument")}>
-            <span aria-hidden="true" className="font-mono text-[10px]">OFF</span>
+            <FileTypeIcon path={dockableDoc ?? pinnedDoc ?? "document"} size={16} className="shrink-0" />
           </RailButton>
           <RailButton active={pinnedFlow !== null} onClick={() => {
             setActiveModuleView(false);

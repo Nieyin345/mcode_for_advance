@@ -151,7 +151,6 @@ export function FileEditor({
   const viewModePref = useSessionStore((s) =>
     pid ? s.ideFileViewModeByProject[pid]?.[filePath] : undefined,
   );
-  const useGenoffice = office && genofficeReady && viewModePref === "genoffice";
   /**
    * 【ARC-007】可视化编辑视图（受控 WebContentsView）与结构化视图**并列**、不互相
    * 取代：结构化视图无宿主也能用（诊断/回退面），可视化视图依赖 GenOffice 编辑器页
@@ -217,6 +216,10 @@ export function FileEditor({
     if (preference === "genoffice-view" && !genofficeViewAvailable) return defaultMode;
     return preference ?? defaultMode;
   });
+  // Derive the structured-mode state from the resolved mode, not only the saved
+  // preference. Otherwise a first-open fallback already in `genoffice` looks inactive
+  // and its toolbar button writes the same mode again instead of toggling away.
+  const useGenoffice = office && genofficeReady && viewMode === "genoffice";
   const useGenofficeView = genofficeViewAvailable && viewMode === "genoffice-view";
   const setViewMode = useSessionStore((s) => s.setIdeFileViewMode);
   const editorMode = useSessionStore((s) => s.ideEditorMode);
@@ -653,10 +656,10 @@ function EditorToolbar({
             {t(mode === "edit" ? "ide.editor.modeDiffLabel" : "ide.editor.modeEditLabel")}
           </button>
         )}
-        {/* Native GenOffice view is the default for supported formats. This control
-            switches back to that format's safe Mcode fallback or Office's structured
-            diagnostic pane; it is only shown when the selected native host is ready. */}
-        {canUseGenoffice && (
+        {/* The structured fallback is a separate choice only when the matching
+            native host is unavailable. When both routes exist, show one switch below
+            rather than two competing controls for the same document. */}
+        {canUseGenoffice && !canUseGenofficeView && (
           <button
             type="button"
             onClick={onToggleGenoffice}
