@@ -436,6 +436,14 @@ export async function dragPaletteNodeToCanvas(
   paletteSelector: string | null;
   targetInChart: boolean;
   workspaceLocked: boolean;
+  palettePoint?: { x: number; y: number };
+  targetPoint?: { x: number; y: number };
+  inputState?: {
+    documentHasFocus: boolean;
+    activeElement: string;
+    paletteHit: string | null;
+    targetHit: string | null;
+  };
 }> {
   const countOf = async (): Promise<number> =>
     await js<number>(wc, `RED.nodes.createCompleteNodeSet().filter((n) => n.type === ${JSON.stringify(nodeType)}).length`);
@@ -492,20 +500,39 @@ export async function dragPaletteNodeToCanvas(
 
   // 真按下前先移过去（palette 条目有 hover 弹出框；jQuery UI 也需要 mousedown 在条目上）。
   // 中间点取「起点与终点的中点」：只需一次真实位移就满足 distance>=1，再发终点让
-  // droppable 在最终位置上求交（tolerance:"intersect"）。
+  // droppable 在最终位置上求交（tolerance:"intersect"）。Electron 的 mouseMove 需要
+  // modifiers:["leftbuttondown"] 显式表达按键仍保持按下；不能只依赖 button 字段。
   const midX = Math.round((palette.x + target.x) / 2);
   const midY = Math.round((palette.y + target.y) / 2);
+  const inputState = await js<{
+    documentHasFocus: boolean;
+    activeElement: string;
+    paletteHit: string | null;
+    targetHit: string | null;
+  }>(wc, `(() => {
+    const describe = (el) => {
+      if (!el) return null;
+      const classes = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.');
+      return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (classes ? '.' + classes : '');
+    };
+    return {
+      documentHasFocus: document.hasFocus(),
+      activeElement: describe(document.activeElement),
+      paletteHit: describe(document.elementFromPoint(${palette.x}, ${palette.y})),
+      targetHit: describe(document.elementFromPoint(${target.x}, ${target.y})),
+    };
+  })()`);
   const page = wc as unknown as EditorPage;
   page.sendInputEvent({ type: "mouseMove", x: palette.x, y: palette.y });
   await sleep(80);
   page.sendInputEvent({ type: "mouseDown", x: palette.x, y: palette.y, button: "left", clickCount: 1 });
   await sleep(120);
-  page.sendInputEvent({ type: "mouseMove", x: midX, y: midY, button: "left" });
+  page.sendInputEvent({ type: "mouseMove", x: midX, y: midY, modifiers: ["leftbuttondown"] });
   await sleep(120);
-  page.sendInputEvent({ type: "mouseMove", x: target.x, y: target.y, button: "left" });
+  page.sendInputEvent({ type: "mouseMove", x: target.x, y: target.y, modifiers: ["leftbuttondown"] });
   await sleep(150);
   // 落点再补一次 move（jQuery UI 的 ddmanager 在 mouseup 前按最后一次移动位置求交）。
-  page.sendInputEvent({ type: "mouseMove", x: target.x + 1, y: target.y, button: "left" });
+  page.sendInputEvent({ type: "mouseMove", x: target.x + 1, y: target.y, modifiers: ["leftbuttondown"] });
   await sleep(80);
   page.sendInputEvent({ type: "mouseUp", x: target.x + 1, y: target.y, button: "left", clickCount: 1 });
 
@@ -515,7 +542,8 @@ export async function dragPaletteNodeToCanvas(
   return {
     dropped: landed && after > before,
     before, after, paletteSelector: selector, targetInChart: true, workspaceLocked: false,
-    ...(landed ? {} : { detail: `拖拽后 ${nodeType} 节点数仍是 ${after}（before=${before}）—— 落点无效被弹回，或拖拽没有触发` }),
+    palettePoint: palette, targetPoint: target, inputState,
+    ...(landed ? {} : { detail: `拖拽后 ${nodeType} 节点数仍是 ${after}（before=${before}）；palette=${JSON.stringify(palette)} target=${JSON.stringify(target)} inputState=${JSON.stringify(inputState)} —— 落点无效被弹回，或拖拽没有触发` }),
   };
 }
 
@@ -548,6 +576,12 @@ export async function dragNodeOutputToInput(
   targetPort: { x: number; y: number; inChart: boolean } | null;
   wires: string[] | null;
   linkCount: number;
+  inputState?: {
+    documentHasFocus: boolean;
+    activeElement: string;
+    startHit: string | null;
+    endHit: string | null;
+  };
 }> {
   const src = await canvasNodePorts(wc, sourceType);
   const dst = await canvasNodePorts(wc, targetType);
@@ -564,15 +598,33 @@ export async function dragNodeOutputToInput(
   const end = dst.input;
   const midX = Math.round((start.x + end.x) / 2);
   const midY = Math.round((start.y + end.y) / 2);
+  const inputState = await js<{
+    documentHasFocus: boolean;
+    activeElement: string;
+    startHit: string | null;
+    endHit: string | null;
+  }>(wc, `(() => {
+    const describe = (el) => {
+      if (!el) return null;
+      const classes = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.');
+      return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (classes ? '.' + classes : '');
+    };
+    return {
+      documentHasFocus: document.hasFocus(),
+      activeElement: describe(document.activeElement),
+      startHit: describe(document.elementFromPoint(${start.x}, ${start.y})),
+      endHit: describe(document.elementFromPoint(${end.x}, ${end.y})),
+    };
+  })()`);
   page.sendInputEvent({ type: "mouseMove", x: start.x, y: start.y });
   await sleep(100);
   page.sendInputEvent({ type: "mouseDown", x: start.x, y: start.y, button: "left", clickCount: 1 });
   await sleep(150);
   // 两段位移：JOINING 模式靠 canvasMouseMove 维护拖拽线，静止不动时 d3 也不会
   // 在目标上触发 mouseup 的命中断言。移动本身也让 jQuery/d3 有机会更新 mouse_position。
-  page.sendInputEvent({ type: "mouseMove", x: midX, y: midY, button: "left" });
+  page.sendInputEvent({ type: "mouseMove", x: midX, y: midY, modifiers: ["leftbuttondown"] });
   await sleep(120);
-  page.sendInputEvent({ type: "mouseMove", x: end.x, y: end.y, button: "left" });
+  page.sendInputEvent({ type: "mouseMove", x: end.x, y: end.y, modifiers: ["leftbuttondown"] });
   await sleep(150);
   page.sendInputEvent({ type: "mouseUp", x: end.x, y: end.y, button: "left", clickCount: 1 });
 
@@ -596,8 +648,8 @@ export async function dragNodeOutputToInput(
   return {
     linked,
     sourceId: src.id, targetId: dst.id, sourcePort: start, targetPort: end,
-    wires: observed.wires, linkCount: observed.linkCount,
-    ...(linked ? {} : { detail: `从 ${sourceType} 输出拖到 ${targetType} 输入后没有出现连线（filterLinks=${observed.linkCount}, wires=${JSON.stringify(observed.wires)}）` }),
+    wires: observed.wires, linkCount: observed.linkCount, inputState,
+    ...(linked ? {} : { detail: `从 ${sourceType} 输出拖到 ${targetType} 输入后没有出现连线（filterLinks=${observed.linkCount}, wires=${JSON.stringify(observed.wires)}；inputState=${JSON.stringify(inputState)}）` }),
   };
 }
 

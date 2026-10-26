@@ -154,7 +154,7 @@ export const nodeRedBuildFromScratchJourney = defineU1Journey({
       const ok = dragged.dropped && before === 0 && after === 1 && node !== null;
       return {
         ok,
-        observed: { chart, target, before, after, dragged, node, inputMethod: "sendInputEvent: mouseMove → mouseDown → mouseMove(中间点) → mouseMove(落点) → mouseUp" },
+        observed: { chart, target, before, after, dragged, node, inputMethod: "sendInputEvent: mouseMove → mouseDown → mouseMove(中间点, leftbuttondown) → mouseMove(落点, leftbuttondown) → mouseUp" },
         ...(ok ? {} : { detail: dragged.detail ?? `拖 inject 后节点数 ${after}（期望 1；before=${before}）` }),
       };
     }, "drag-inject-to-canvas", { assert: true }),
@@ -205,7 +205,7 @@ export const nodeRedBuildFromScratchJourney = defineU1Journey({
       return {
         ok,
         observed: {
-          inputMethod: "sendInputEvent：在 inject 的输出端口 rect 上 mouseDown → 两次 mouseMove → 在 debug 的输入端口 rect 上 mouseUp（不是 RED.nodes.addLink）",
+          inputMethod: "sendInputEvent：在 inject 输出端口 mouseDown → 两次 mouseMove(leftbuttondown) → 在 debug 输入端口 mouseUp（不是 RED.nodes.addLink）",
           wired, injectId, debugId,
           injectWires: model?.injectWires ?? null,
           linkCount: model?.linkCount ?? null,
