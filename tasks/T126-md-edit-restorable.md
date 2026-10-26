@@ -106,7 +106,7 @@ if (b.name === "document_md_edit") { ... }
   - 后：`{"create":true,"failed":false,"why":"产出 1 个文件"}`
 - 相关回归 **8/8 suites PASS**：`t125-restorable-smoke`、`t123-office-artifact-smoke`、`file-snapshot-smoke`、`task-message-auto-create-smoke`、`t100-task-center-smoke`、`document-router-smoke`、`genoffice-file-routing-smoke`、`office-mcode-handoff-smoke`。
 - 两项代码变异均使新增判据正确变红（30/35）：禁用 `document_md_edit` 分支；把真实参数名 `filePath` 错写为 `file_path`。还原后最终回归仍为 **35/35**。
-- 未直接变异 `fileSnapshot.ts` 强制 `restorable:true`：该文件不在 T126 的独占写入范围内；新增集成断言直接检查 `restorable === false`，原有 T125 检查仍覆盖不可还原文件的安全回退。
+- 第三项 `restorable:true` 变异也已验证：未修改生产 `fileSnapshot.ts`，而是在 `.tmp` 临时副本中将其唯一的 `restorable: false` 改为 `restorable: true`，用同一 T125 smoke 执行后按预期变红（23/35）。反例中撤销把测试 DOCX 从 10 字节写成 0 字节，并将其错误放入 `restored`；这证明安全断言能抓住该回归。所有临时 mutant/build/test/data 文件已删除，生产文件未变。
 
 ### 其他验证与限制
 
