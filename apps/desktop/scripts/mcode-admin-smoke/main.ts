@@ -27,6 +27,7 @@ import { __seedSessionLogs } from "./stubs/repositories.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getWorkflow, importWorkflowInto, saveWorkflow } from "@main/orchestration/library.js";
+import { registerWorkflowRunActivityProbe } from "@main/orchestration/workflowRunActivity.js";
 import { approveWorkflowRevision, workflowReviewError, workflowReviewOf, workflowRevision } from "@main/orchestration/workflowTrust.js";
 import { exportWorkflowDoc } from "@main/orchestration/workflowValidation.js";
 import { backEdgesOf, forwardEdgesOf, type WorkflowDoc } from "@contracts/workflow";
@@ -432,6 +433,27 @@ async function main(): Promise<void> {
   check("含主会话语义的迁移先要求明确确认，且不会提前改变归属",
     !migrationNeedsReview.ok && migrationNeedsReview.requiresConfirmation === true
       && getWorkflow(migrationId)?.engine === "mcode", migrationNeedsReview);
+  let activeWorkflowId: string | null = null;
+  let activityProbeUncertain = false;
+  registerWorkflowRunActivityProbe((id) => {
+    if (activityProbeUncertain) throw Error("模拟运行中会话身份无法核实");
+    return id === activeWorkflowId;
+  });
+  activeWorkflowId = migrationId;
+  const busyMigration = await saveWorkflow({ ...migrationSource, engine: "node-red" }, {
+    confirmEngineMigration: true,
+  });
+  check("旧图的运行中任务阻止显式确认后切换到 Node-RED",
+    !busyMigration.ok && busyMigration.error.includes("运行中")
+      && getWorkflow(migrationId)?.engine === "mcode", busyMigration);
+  activityProbeUncertain = true;
+  const uncertainMigration = await saveWorkflow({ ...migrationSource, engine: "node-red" }, {
+    confirmEngineMigration: true,
+  });
+  check("运行中的身份读取失败时 fail-closed，不伪称已经迁移",
+    !uncertainMigration.ok && getWorkflow(migrationId)?.engine === "mcode", uncertainMigration);
+  activityProbeUncertain = false;
+  activeWorkflowId = "unrelated-graph";
   const migrationAccepted = await saveWorkflow({ ...migrationSource, engine: "node-red" }, {
     confirmEngineMigration: true,
   });

@@ -40,6 +40,7 @@ import { clearWorkflowReview, requireWorkflowReview, workflowReviewError, type W
 import { importWorkflowDoc as parseWorkflowText, validateWorkflowDoc, exportWorkflowDoc } from "./workflowValidation.js";
 import { materializePresetScriptsFor } from "@main/workflows/presetScripts.js";
 import { checkEngineSwitch, effectiveWorkflowEngine, nativeFlowForWorkflow } from "@main/workflowEngines/workflowEngineSelection.js";
+import { hasActiveLegacyWorkflowRun } from "./workflowRunActivity.js";
 
 function summarize(doc: WorkflowDoc, pinned: boolean, shippedUpdate = false): WorkflowListEntry {
   return {
@@ -378,6 +379,15 @@ export async function saveWorkflow(
       opts.confirmEngineMigration === true);
     if (!checked.ok) return { ok: false, error: checked.reason,
       ...(checked.requiresConfirmation ? { requiresConfirmation: true } : {}) };
+    if (effectiveWorkflowEngine(previous) === "mcode") {
+      // The old graph could still be executing under a chat or automation
+      // session. The Runner registers a lightweight read-only activity probe
+      // once loaded; no full Runner/SDK import or extra await is needed in a
+      // normal workflow SQL save. Re-check immediately before the CAS write.
+      if (hasActiveLegacyWorkflowRun(previous.id)) {
+        return { ok: false, error: "旧 Mcode 工作流仍有运行中或正在启动的任务；请先等待完成或取消任务，再迁移到 Node-RED" };
+      }
+    }
   }
   // All asynchronous validation must happen BEFORE CAS: no await between
   // freshness check and the synchronous SQL write.

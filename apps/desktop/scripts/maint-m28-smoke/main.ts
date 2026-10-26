@@ -32,6 +32,7 @@ process.on("unhandledRejection", (reason) => {
 const { initDb } = await import("@main/store/db.js");
 const { ProjectRepo, SessionRepo, WorkflowRepo, WorkflowRunRepo } = await import("@main/store/repositories.js");
 const runner = await import("@main/orchestration/runner.js");
+const { hasActiveLegacyWorkflowRun } = await import("@main/orchestration/workflowRunActivity.js");
 const { saveRun } = await import("@main/orchestration/runStore.js");
 const { workflowRevision } = await import("@main/orchestration/workflowTrust.js");
 const { getWorkflow } = await import("@main/orchestration/library.js");
@@ -76,10 +77,13 @@ console.log("maint-m28-smoke —— 续跑/重试启动竞态与启动失败可�
   persistRetryable(runId);
   const pending = runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
   eq("catalog lookup reserves the session immediately", runner.hasActiveRun(PARENT), true);
+  eq("真实 Runner 的轻量活动探针包含异步启动预留", hasActiveLegacyWorkflowRun(WORKFLOW_ID), true);
+  eq("不相关工作流不会被误判在执行", hasActiveLegacyWorkflowRun("wf-unrelated"), false);
   runner.cancelWorkflowRun(PARENT);
   eq("stop during catalog lookup rejects the continuation", (await pending).ok, false);
   eq("cancelled catalog lookup never marks the old run running", WorkflowRunRepo.get(runId)?.status, "failed");
   eq("cancelled catalog reservation is released", runner.hasActiveRun(PARENT), false);
+  eq("预留解除后旧工作流不再被判断为执行中", hasActiveLegacyWorkflowRun(WORKFLOW_ID), false);
 }
 
 {
@@ -91,14 +95,17 @@ console.log("maint-m28-smoke —— 续跑/重试启动竞态与启动失败可�
   eq("第一次重试被受理", first.ok, true);
   await tick();
   eq("此时启动在预检中(pendingStarts):hasActiveRun 为真", runner.hasActiveRun(PARENT), true);
+  eq("引擎迁移的真实运行中判据覆盖 provider 健康预检窗口", hasActiveLegacyWorkflowRun(WORKFLOW_ID), true);
   const second = await runner.resolveWorkflowRetry({ sessionId: PARENT, runId, nodeId: "agentA" });
   eq("预检中再点重试:不得返回 ok(实际不会启动第二次)", second.ok, false);
   const choice = await runner.resolveWorkflowChoice({ sessionId: PARENT, runId, nodeId: "agentA", edgeId: "e1" });
   eq("预检中的岔路口续跑同样不得返回 ok", choice.ok, false);
   release();
   await waitFor("第一次重试真正启动", () => WorkflowRunRepo.get(runId)?.status === "running" && runner.hasActiveRun(PARENT));
+  eq("旧图真正执行中时迁移活动探针仍为真", hasActiveLegacyWorkflowRun(WORKFLOW_ID), true);
   runner.cancelWorkflowRun(PARENT);
   await waitFor("运行收尾", () => !runner.hasActiveRun(PARENT));
+  eq("执行结束后允许进行正常迁移预检", hasActiveLegacyWorkflowRun(WORKFLOW_ID), false);
 }
 
 /* 2. 预检失败:不得 unhandledRejection、不得僵死 */

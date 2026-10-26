@@ -128,6 +128,7 @@ import { runtimeManager } from "@main/claude/RuntimeManager.js";
 import { transcriptText } from "@main/claude/nodeTranscript.js";
 import { createBuiltinExecutionEngine, createWorkflowInputBuilder } from "./executionEngine.js";
 import { sharedExecutorOwnership } from "@main/workflowEngines/executorOwnership.js";
+import { registerWorkflowRunActivityProbe } from "./workflowRunActivity.js";
 import { assertWorkflowExecutor } from "@main/workflowEngines/workflowEngineSelection.js";
 import { conversationQueue } from "./conversationQueue.js";
 import { libraryRoot } from "@main/library/paths.js";
@@ -598,6 +599,29 @@ async function resumeRun(args: {
 export function hasActiveRun(sessionId: string): boolean {
   return runs.has(sessionId) || pendingStarts.has(sessionId);
 }
+
+/** A workflow-engine migration may not change ownership while any legacy
+ * session is executing or reserving a graph start. This covers ordinary chat
+ * sessions as well as automation sessions; querying only the automation
+ * session index misses manual runs. If the active session's identity cannot
+ * be read, fail closed rather than silently declare it unrelated. */
+export function hasActiveWorkflowRun(workflowId: string): boolean {
+  // ActiveRun pins the original workflow ID at launch, independently of any
+  // later session selection changes. Never infer it from the current UI tab.
+  for (const run of runs.values()) {
+    if (run.workflowId === workflowId) return true;
+  }
+  // A preflight reservation does not have an ActiveRun yet. Resolve the
+  // session identity for those reservations; unreadable identity is unsafe.
+  for (const sessionId of pendingStarts.keys()) {
+    let session: Session | undefined;
+    try { session = SessionRepo.get(sessionId) ?? undefined; }
+    catch { return true; }
+    if (session === undefined || session.workflowId === workflowId) return true;
+  }
+  return false;
+}
+registerWorkflowRunActivityProbe(hasActiveWorkflowRun);
 
 /**
  * 续跑/重试的启动**不 await**,但也**不能裸 `void`**(BUG-M28-02):`startWorkflowRun`
