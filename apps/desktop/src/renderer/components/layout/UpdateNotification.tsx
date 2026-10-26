@@ -248,11 +248,11 @@ function AvailableContent({ state }: { state: Extract<NoticeState, { kind: "avai
       : t("settings.update.availableBodyWin");
   return (
     <>
-      <div className="flex items-center gap-1.5 text-[13px] font-medium text-content">
+      <div className="flex items-center gap-1.5 text-[length:var(--m-fs-prose)] font-medium text-content">
         <IconDownload size={15} className="shrink-0 text-accent" />
         {t("settings.update.availableTitle", { version: state.version })}
       </div>
-      <div className="mt-0.5 text-[12px] leading-relaxed text-content-muted">{body}</div>
+      <div className="mt-0.5 text-[length:var(--m-fs-body)] leading-relaxed text-content-muted">{body}</div>
     </>
   );
 }
@@ -268,10 +268,10 @@ function DownloadingContent({ state }: { state: Extract<NoticeState, { kind: "do
   const speedText = state.bytesPerSecond > 0 ? ` · ${formatSpeed(state.bytesPerSecond)}` : "";
   return (
     <>
-      <div className="text-[13px] font-medium text-content">
+      <div className="text-[length:var(--m-fs-prose)] font-medium text-content">
         {t("settings.update.downloadingTitle", { version: state.version })}
       </div>
-      <div className="mt-1 tabular-nums text-[11px] text-content-muted">
+      <div className="mt-1 tabular-nums text-[length:var(--m-fs-caption)] text-content-muted">
         {percent.toFixed(0)}% · {bytesText}
         {speedText}
       </div>
@@ -290,11 +290,11 @@ function DownloadedContent({ state }: { state: Extract<NoticeState, { kind: "dow
   const { t } = useI18n();
   return (
     <>
-      <div className="flex items-center gap-1.5 text-[13px] font-medium text-content">
+      <div className="flex items-center gap-1.5 text-[length:var(--m-fs-prose)] font-medium text-content">
         <IconRocket size={15} className="shrink-0 text-accent" />
         {t("settings.update.downloadedTitle", { version: state.version })}
       </div>
-      <div className="mt-0.5 text-[12px] text-content-muted">{t("settings.update.downloadedBody")}</div>
+      <div className="mt-0.5 text-[length:var(--m-fs-body)] text-content-muted">{t("settings.update.downloadedBody")}</div>
     </>
   );
 }

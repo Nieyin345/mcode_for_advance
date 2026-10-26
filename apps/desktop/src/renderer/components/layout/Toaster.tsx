@@ -57,9 +57,9 @@ function ToastCard({ toast }: { toast: ToastItem }) {
 
   const body = (
     <>
-      <div className="text-[13px] font-medium text-content">{toast.title}</div>
+      <div className="text-[length:var(--m-fs-prose)] font-medium text-content">{toast.title}</div>
       {toast.body && (
-        <div className="mt-0.5 truncate text-[12px] text-content-muted">{toast.body}</div>
+        <div className="mt-0.5 truncate text-[length:var(--m-fs-body)] text-content-muted">{toast.body}</div>
       )}
     </>
   );
@@ -92,7 +92,7 @@ function ToastCard({ toast }: { toast: ToastItem }) {
           className="flex min-w-0 flex-1 items-start gap-2 rounded text-left outline-none hover:opacity-90 focus-visible:ring-2 focus-visible:ring-accent-strong focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
         >
           <div className="min-w-0 flex-1">{body}</div>
-          <span className="mt-0.5 flex shrink-0 items-center gap-0.5 text-[11px] text-accent">
+          <span className="mt-0.5 flex shrink-0 items-center gap-0.5 text-[length:var(--m-fs-caption)] text-accent">
             <IconArrowRight size={12} />
             {t("layout.toastOpenSource")}
           </span>
