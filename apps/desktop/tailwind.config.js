@@ -17,16 +17,31 @@ export default {
         // 半改状态（一半对齐、一半没有），比现在更乱。迁移按区域分批做，见 T121 §1.7
         // 的「内容-字号矩阵」。
         //
-        // 行高随档位一起给：规范里每个档位的行高是**固定值**（不是倍数），因为
-        // 11px 用 16px 行高（1.55）和 20px 用 24px（1.25）是不同的视觉密度。
+        // 【UI 重建 2026-10-27】七档的值改成 **本机 Claude 3.1623.4.0 的真实值**。
+        // 之前那套（11/12/12/14/15/16/20）比 Claude 大 15–35%，是「整屏文字偏大、
+        // 怎么调都不像」的直接来源。
+        //
+        // Claude 的算法：`--cds-font-size-X: calc(Nrem × --cds-rem-scale)`，
+        // 而 `--cds-rem-scale = calc(16/17) ≈ 0.9412`。所以 Nrem 的实际 px = N×16×0.9412。
+        // 行高同理来自 `--cds-leading-X`，**与字号成对定义**（不是倍数）。
+        //
+        //   档位      字号源                实际 px   行高源                实际 px
+        //   caption  .6875rem           11.29    1.0625rem           16.00
+        //   footnote .75rem              11.29    —（同 caption）
+        //   code     .75rem              11.29    —
+        //   body     .8125rem            12.24    1.25rem             18.82
+        //   prose    .875rem             13.18    1.125rem            16.94
+        //   heading  .875rem             13.18    —（同 prose）
+        //   title    1rem                15.06    1.25rem             18.82
+        //
         // 写成 `lineHeight` 让 `text-body` 一处同时定死两者。
-        caption: ["11px", { lineHeight: "16px" }], // 微型标签、Kbd、时间戳
-        footnote: ["12px", { lineHeight: "14px" }], // 辅助说明、文件大小
-        code: ["12px", { lineHeight: "16px" }], // 代码块、行内代码
-        body: ["14px", { lineHeight: "20px" }], // 对话正文、输入框、表单
-        prose: ["15px", { lineHeight: "22px" }], // 长文段落、Artifacts 正文
-        heading: ["16px", { lineHeight: "20px" }], // 卡片小节标题、弹窗标题
-        title: ["20px", { lineHeight: "24px" }], // 主页面大标题
+        caption: ["11.29px", { lineHeight: "16px" }], // 微型标签、Kbd、时间戳
+        footnote: ["11.29px", { lineHeight: "14px" }], // 辅助说明、文件大小
+        code: ["11.29px", { lineHeight: "16px" }], // 代码块、行内代码
+        body: ["12.24px", { lineHeight: "18.82px" }], // 对话正文、输入框、表单
+        prose: ["13.18px", { lineHeight: "16.94px" }], // 长文段落、Artifacts 正文
+        heading: ["13.18px", { lineHeight: "16.94px" }], // 卡片小节标题、弹窗标题
+        title: ["15.06px", { lineHeight: "18.82px" }], // 主页面大标题
       },
       fontFamily: {
         // Bundled JetBrains Mono Variable woff2 (imported in main.tsx) heads
