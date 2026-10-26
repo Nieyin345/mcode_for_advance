@@ -77,7 +77,13 @@ export interface TileLayout {
 /** 会「抢占主区」的类型（Claude 的 `Ti` Set）。`turns` 是 Mcode 新增，
  *  同样算非 chat tile。 */
 const NON_CHAT_KINDS: readonly PaneTileKind[] = [
-  "diff", "preview", "artifact", "file", "pr", "cr", "watercolor", "mcpapp", "turns",
+  // Claude 的 `Ti` Set 八类 + terminal（它也在 Claude 的 tile 类型里，
+  // 抄 Set 时漏过一次 —— claude-shell-smoke 的「terminal 应算非 chat tile」
+  // 抓住了。别删那一条断言。）
+  "diff", "preview", "artifact", "file", "pr", "cr", "watercolor", "mcpapp",
+  "terminal",
+  // Mcode 新增的一类（每轮时间线）。
+  "turns",
 ];
 
 export function isNonChatTile(kind: PaneTileKind): boolean {
