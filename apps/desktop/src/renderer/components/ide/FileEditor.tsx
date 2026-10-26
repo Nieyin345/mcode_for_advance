@@ -113,21 +113,18 @@ export function FileEditor({
   const { t } = useI18n();
   // View mode is scoped to the active project's bucket.
   //
-  // ## 默认档（2026-09-21 改）：md 进**所见即所得**
+  // ## 默认档：六类 GenOffice 文档优先进入 Mcode 内嵌的原厂编辑器
   //
-  // 用户的原话是「点开就该能改」—— 所以 md 不再先落一屏只读渲染，而是直接进
-  // 富文本编辑（`MarkdownEditorPane`，Milkdown / Crepe）。只保留编辑与源码两档，
-  // 不再把同一份 md 切到另一套只读渲染器。旧 preview 偏好在下面兼容为 wysiwyg。
+  // Docs / Sheets / Slides / PDF / Markdown / HTML 在各自的原生 Host 能力就绪时，
+  // 默认进入受控 WebContentsView。这样文件从 Mcode 工作区打开，不会先落到一套
+  // 功能不同的本地预览器，再要求用户手动切换到 GenOffice。
   //
-  // PDF 仍然默认**预览**：它是二进制，Monaco 画出来就是一屏乱码（用户截图里
-  // 那个坏状态）。其余文件（代码、json、日志）默认 `edit` —— 打开就是要改。
+  // 若某格式的原生 Host 尚不可用，则保留该格式原有的安全回退（Markdown 富文本、
+  // PDF 预览、HTML/文本源码）；Office 二进制仍只进入 GenOffice 的结构化诊断面板，
+  // 不会被送进 Monaco 或 Markdown renderer。用户已经明确保存的逐文件偏好仍优先。
   //
-  // 用户自己的选择仍然优先：`ideFileViewModeByProject` 里记着他在这个项目里为这个
-  // 文件选过哪一档，改完照旧留着（`??` 只在**没有记录**时生效）。
-  //
-  // 【O5 批三 2026-10-24】**OnlyOffice 已删**，Office 文档唯一的 provider 是 GenOffice。
-  // `office` 仍由契约的**种类**判据给出（`documentKind` 的可编辑档 ∪ 只读档）——
-  // 它比 GenOffice 的路由表宽，两者分工见下面 `genofficeViewForOffice`。
+  // 【O5】OnlyOffice 已移除。`office` 由 documentKind 分类，GenOffice 的真实格式
+  // 路由与 Host 能力则由下面的 `genofficeViewAvailable` 单独决定；两者不能混为一谈。
   const markdown = isMarkdown(filePath);
   const office = isOfficeDocumentKind(documentKindOf(filePath));
   /**
@@ -176,6 +173,11 @@ export function FileEditor({
     host: genofficeHostForFile,
     hosts: genoffice.data?.hosts,
   });
+  // Office files need the stricter kind + route + host check above. PDF, Markdown
+  // and HTML are already gated by their individual `hosts.*` capability in
+  // nativeViewReady. Use one result for both the default and the visible toggle so
+  // the toolbar can never advertise a native editor that the selected file cannot open.
+  const genofficeViewAvailable = office ? genofficeViewForOffice : nativeViewReady;
   /**
    * 【O5 批三】**office 必须用更严的 `genofficeViewForOffice`**（它还查 `hosts.*`，
    * 见下一段的说明）。旧的 `nativeViewReady` 对 office 只判「CLI 在」—— 用它会让
@@ -183,37 +185,24 @@ export function FileEditor({
    * T101 当年点名要避免的「看起来是条路、实际不是」。非 office 的 pdf/md/html
    * 仍按各自的 hosts 位判（`nativeViewReady` 已含）。
    */
-  const useGenofficeView = (office ? genofficeViewForOffice : nativeViewReady)
-    && viewModePref === "genoffice-view";
+  const useGenofficeView = genofficeViewAvailable && viewModePref === "genoffice-view";
   const documentDocked = useSessionStore((s) => s.paneLayout?.placements?.some(p =>
     p.content?.kind === "document" && p.content.documentId === filePath));
   /**
-   * 【O5 批三】**默认档**。用户裁决是「现在的 office 还有 md 全部走 genoffice 这一条线」，
-   * 且「默认啊」—— 所以 office 文件**第一次打开就落在 GenOffice**，不需要用户切模式。
-   *
-   * 三档，按能力退化（**不是**无条件写死，卡 §五之二）：
-   *
-   *  1. `genoffice-view` —— 原生视图就绪（`genofficeViewForOffice`：CLI + 该格式的
-   *     `hosts.*` 都有）。这是能真编辑的那一档。
-   *  2. `genoffice` —— 原生视图不可用但 CLI 在跑。结构化只读视图，读不了会显式
-   *     报原因（`GenofficeDocumentPane` 的 unavailable/refused 分支）。
-   *  3. `preview` —— 连 CLI 都没有。落到 `MarkdownPreviewPane` 的容器里？不 ——
-   *     见下面的 `office` 分支：它画 `GenofficeDocumentPane`，那一支自己会报
-   *     「CLI 缺失」。**刻意不退回本地 Office renderer，也不退回 OnlyOffice**。
-   *
-   * Markdown 仍是 `wysiwyg`（Milkdown，与 office 无关）。
+   * First-open routing for the native GenOffice family. All six supported formats
+   * enter their original editor when the matching host is ready. A missing host
+   * keeps a format-safe fallback; it never routes a binary file through Monaco.
    */
-  const defaultMode: FileViewMode = markdown
-    ? "wysiwyg"
-    : office
-      ? genofficeViewForOffice
-        ? "genoffice-view"
-        : genofficeReady
-          ? "genoffice"
-          : "preview"
+  const genofficeViewFallbackMode: FileViewMode = office
+    ? genofficeReady ? "genoffice" : "preview"
+    : markdown
+      ? "wysiwyg"
       : isPdfFile(filePath)
         ? "preview"
         : "edit";
+  const defaultMode: FileViewMode = genofficeViewAvailable
+    ? "genoffice-view"
+    : genofficeViewFallbackMode;
   const viewMode = useSessionStore((s) =>
     pid ? s.ideFileViewModeByProject[pid]?.[filePath] ?? defaultMode : defaultMode,
   );
@@ -291,12 +280,14 @@ export function FileEditor({
         canUseGenoffice={office && genofficeReady}
         genofficeActive={useGenoffice}
         onToggleGenoffice={() =>
-          setViewMode(filePath, useGenoffice ? "wysiwyg" : "genoffice")
+          setViewMode(filePath, useGenoffice
+            ? (genofficeViewAvailable ? "genoffice-view" : "preview")
+            : "genoffice")
         }
         genofficeViewActive={useGenofficeView}
-        canUseGenofficeView={nativeViewReady}
+        canUseGenofficeView={genofficeViewAvailable}
         onToggleGenofficeView={() =>
-          setViewMode(filePath, useGenofficeView ? "wysiwyg" : "genoffice-view")
+          setViewMode(filePath, useGenofficeView ? genofficeViewFallbackMode : "genoffice-view")
         }
         isImage={image}
         isUnsupported={unsupported}
@@ -643,8 +634,9 @@ function EditorToolbar({
             {t(mode === "edit" ? "ide.editor.modeDiffLabel" : "ide.editor.modeEditLabel")}
           </button>
         )}
-        {/* 【ARC-007】GenOffice 视图切换 —— 只在能力就绪时出现(未构建不画死按钮)。
-            只读结构化视图;完整可视化编辑等方案 A。 */}
+        {/* Native GenOffice view is the default for supported formats. This control
+            switches back to that format's safe Mcode fallback or Office's structured
+            diagnostic pane; it is only shown when the selected native host is ready. */}
         {canUseGenoffice && (
           <button
             type="button"
@@ -660,8 +652,9 @@ function EditorToolbar({
             {t("ide.genoffice.toggle")}
           </button>
         )}
-        {/* 【O5 批三】可视化编辑视图 —— office 文件的**默认档**，这个按钮把它切回
-            `genoffice`（结构化只读）。默认档由 `defaultMode` 决定，不在这里。 */}
+        {/* Native GenOffice view is the first-open mode for all six routed formats
+            when the matching host is ready. The button remains an explicit way to
+            return to the existing Mcode fallback/structured view. */}
         {canUseGenofficeView && (
           <button
             type="button"
