@@ -62,7 +62,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { sharedExecutorOwnership, type ExecutorOwnershipRegistry } from "./executorOwnership.js";
 import { nativeFlowIds, nativeFlowIdsOfNodes, claimNativeFlows } from "./nodeRedOwnership.js";
-import { join, relative, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { dataRoot } from "@main/lib/dataRoot.js";
 import { bindProjectDirectoryIdentity, resolveProjectFlowDir } from "./projectFlowDir.js";
 import { log } from "@main/lib/logger.js";
@@ -72,6 +72,9 @@ import { NodePackHost, type NodePackHostServices } from "./nodePackHost.js";
 import { productionNodePackServices, emitNativeRunboardEvent } from "@main/workflowEngines/nodePackProductionPorts.js";
 import { createConditionTriggerBridge, type ManualTicket } from "./conditionHostPorts.js";
 import { assertNativeEngineSelection, effectiveWorkflowEngine } from "./workflowEngineSelection.js";
+import { beginNativeRun, recordNativeNode, settleNativeRun } from "./nativeRunHistory.js";
+import { IPC } from "@contracts/ipc";
+import { writeCanvasChromeCss } from "./canvasChrome.js";
 import { getWorkflow } from "@main/orchestration/library.js";
 import { workflowSaveVersion } from "@main/orchestration/workflowSaveVersion.js";
 import {
@@ -97,6 +100,24 @@ import {
 } from "./runtimeSupervisor.js";
 import type { WorkflowEngineLaunchSpec, WorkflowEngineRegistry } from "@main/ipc/workflowEngine.js";
 
+/** 【WF-06】最后一个节点落定之后安静多久算"这次运行结束"。
+ *
+ *  Node-RED 的消息流没有整次结束的钩子，只能按静默窗口判。取 15 秒：一条链上
+ *  相邻节点之间通常只有毫秒到几秒，而任何一次模型调用自身就会持续数秒 ——
+ *  在跑的运行不会静默这么久。太短会把一次运行切成好几段，太长会让历史页迟迟
+ *  看不到结束。 */
+/** 【ARC-006 桥 2】引擎能力中继的 env 注入点（装配层设，见 `main/index.ts`）。 */
+let hostMcpRelayEnvPort: (() => Record<string, string>) | null = null;
+export function setHostMcpRelayEnvPort(port: (() => Record<string, string>) | null): void {
+  hostMcpRelayEnvPort = port;
+}
+
+const NATIVE_RUN_SETTLE_MS = 15_000;
+
+/** 【Q5】手动触发等产出的上限。记忆整理是几次模型调用，给足余量但不无限等 ——
+ *  一次整理卡住不该让按钮永远转圈。 */
+const NATIVE_MANUAL_RESULT_TIMEOUT_MS = 10 * 60_000;
+
 /** 引导脚本：官方 embedding 形状 + 宿主令牌认证 + 默认 safeMode（见文件头）。 */
 const BOOTSTRAP = `// 【ARC-006 Gate A】Node-RED 引导 —— 端口与数据目录由 Mcode 宿主给。
 // 挂载形状与 Node-RED 官方 embedding 一致：RED.httpAdmin / RED.httpNode 是等待
@@ -108,6 +129,8 @@ const port = Number(process.argv[2]);
 const userDir = process.argv[3];
 const adminToken = process.env.MCODE_ENGINE_ADMIN_TOKEN || "";
 const safeMode = process.env.MCODE_ENGINE_TRUSTED !== "1";
+// 【Q9b】外壳层样式由宿主写好、把**路径**传进来（page.css 只接受文件路径）。
+const chromeCss = process.env.MCODE_ENGINE_CHROME_CSS || "";
 
 const app = express();
 const server = http.createServer((req, res) => app(req, res));
@@ -125,7 +148,15 @@ RED.init(server, {
   safeMode,
   // T47: single editor stylesheet. Chromium prefers-color-scheme switches the
   // light/dark variables immediately; never restart a running flow to retheme.
-  editorTheme: { page: { css: process.env.MCODE_ENGINE_THEME_CSS || "" } },
+  // 【Q9c】徽标脚本走上游公开的 page.scripts 挂载点（不是改编辑器源码）。
+  editorTheme: {
+    page: {
+      css: [process.env.MCODE_ENGINE_THEME_CSS || "", chromeCss].filter(Boolean),
+      ...(process.env.MCODE_ENGINE_BADGES_JS
+        ? { scripts: [process.env.MCODE_ENGINE_BADGES_JS] }
+        : {}),
+    },
+  },
   // 控制面认证：只认宿主签发的那一个令牌。没有 default 匿名用户 —— 未带
   // Authorization: Bearer <token> 的客户端访问 Admin API 一律 401。
   adminAuth: {
@@ -146,6 +177,12 @@ RED.init(server, {
 // observe the documented message lifecycle hooks too. No message body leaves
 // the child: only identifiers, node type, stage, and bounded status text.
 const nativeRuns = new Map();
+/**
+ * 【AUTO-02】正在注入中的手动运行（docId）。
+ *
+ * 只覆盖"注入那几毫秒"—— 见 runNativeManual 的 finally。
+ */
+const nativeManualInjecting = new Set();
 const latestNativeRun = new Map();
 function publishNativeNode(node, msg, stage, error) {
   if (!node || typeof node.id !== "string" || typeof node.z !== "string"
@@ -187,8 +224,20 @@ RED.events.on("node-status", function (event) {
   const tracked = latest && nativeRuns.get(event.id + ":" + latest);
   if (!tracked) return;
   const fill = event.status.fill;
-  // Red and yellow are failures (exec uses yellow for nonzero rc).
-  if (fill === "red" || fill === "yellow") tracked.failed = true;
+  /* 【WF-03】**yellow 不是失败**。
+   *
+   * Node-RED 的 exec 节点用 yellow 表示「命令跑完了，但退出码非零」—— 那是**结果**，
+   * 不是**失败**：脚本用非零退出码表达「没找到 / 有差异」是常规做法，功能文档明确写着
+   * 非零退出码不算流程失败。以前这里把 yellow 一律记成 failed，于是**任何返回非零的
+   * 检查类脚本都会让整条流程显示成失败**。
+   *
+   * 真正的失败有两条来源，都不依赖 fill：
+   *   1. onComplete 钩子的 error 参数（publishNativeNode 已经在用它）；
+   *   2. red —— Node-RED 用它表示节点抛了异常。
+   *
+   * 所以这里只认 red。yellow 仍然会推给界面（用户能看到「这一步返回了非零」），
+   * 只是不把它记成流程失败。 */
+  if (fill === "red") tracked.failed = true;
   if (typeof process.send !== "function") return;
   try {
     process.send({
@@ -340,6 +389,19 @@ RED.start().then(
 );
 `;
 
+/**
+ * 【AUTO-02】正在注入中的手动运行（docId）。
+ *
+ * 只覆盖"注入那几毫秒"—— 见 runNativeManual 的 finally。
+ *
+ * ⚠️ **必须在宿主侧，不能放进 BOOTSTRAP 模板字符串**：那个模板是**子进程**执行的
+ * 代码，它的 `const` 与宿主侧类方法不共享作用域。放进模板里时 `runNativeManual`
+ * 会 `ReferenceError: nativeManualInjecting is not defined` —— 实测
+ * `executor-gate-d-smoke` 在最后一条断言之后崩掉。同理，模板里也不能出现反引号
+ * （它会提前终止模板字符串本身）。
+ */
+const nativeManualInjecting = new Set<string>();
+
 const ENGINE_IDS = ["node-red"] as const;
 
 /** T47: resolve the Node-RED theme shipped as a real file (outside ASAR).
@@ -356,6 +418,24 @@ export function resolveMcodeNodeRedThemeCss(options?: { resourcesPath?: string; 
   const css = candidates.find((path) => existsSync(path));
   if (!css) throw new Error("Node-RED Mcode 主题资源缺失：" + candidates.join(" | "));
   return css;
+}
+
+/**
+ * 【Q9c】画布徽标脚本的解析 —— 与主题 CSS 同一条资源路径规则。
+ *
+ * 走 Node-RED 上游的 `editorTheme.page.scripts`，**不是**改 vendor 编辑器源码。
+ * 文件缺失时返回 `null` 并**不阻断启动**：徽标是展示增强，不该让整个画布打不开
+ * （与主题 CSS 的 fail-closed 不同 —— 那个缺了会得到一块完全不可读的界面）。
+ */
+export function resolveMcodeCanvasBadgesScript(options?: { resourcesPath?: string; cwd?: string }): string | null {
+  const base = options?.cwd ?? process.cwd();
+  const resources = options?.resourcesPath ?? process.resourcesPath;
+  const candidates = [
+    ...(resources ? [join(resources, "node-red", "mcode-theme", "mcode-canvas-badges.js")] : []),
+    join(base, "resources", "node-red", "mcode-canvas-badges.js"),
+    join(base, "apps", "desktop", "resources", "node-red", "mcode-canvas-badges.js"),
+  ];
+  return candidates.find((path) => existsSync(path)) ?? null;
 }
 
 /**
@@ -465,6 +545,9 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
   private nativeTabs = new Map<string, string>();
   private nativeNodes = new Map<string, { tabId: string; nodeId: string; type: string; title: string; manualDispatchReady: boolean }>();
   private nativeSettled = new Set<string>();
+  /** 【WF-06】每个 `(workflowId, runId)` 的收尾定时器：Node-RED 的消息流没有
+   *  「整次运行结束」事件，只能按"最后一个节点落定后再安静一段时间"判收尾。 */
+  private nativeRunSettleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Engine data directory of the current start (hosts flows.json and the
    * deploy↔library reconciliation ledger). */
   private engineDataDir: string | null = null;
@@ -543,24 +626,69 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
       if (this.nativeSettled.has(key)) return true;
       this.nativeSettled.add(key);
       if (this.nativeSettled.size > 4096) this.nativeSettled.delete(this.nativeSettled.values().next().value!);
+      const errorText = typeof msg["text"] === "string" ? msg["text"].slice(0, 160) : "Node-RED node failed";
+      // 【WF-06】落运行史：失败那一步要能被"重试"这条路径认出来。
+      recordNativeNode(workflowId, runId, {
+        nodeId: node.nodeId, title: node.title, status: "failed", error: errorText,
+      });
       emit({ ...base, type: "workflow.node.result", nodeType: node.type, title: node.title,
-        status: "failed", summary: "", error: typeof msg["text"] === "string"
-          ? msg["text"].slice(0, 160) : "Node-RED node failed" });
+        status: "failed", summary: "", error: errorText });
       return true;
     }
     if (msg["stage"] === "running") {
       this.nativeSettled.delete(key);
+      // 【WF-06】第一次见到这次运行就把运行记录建起来（`beginNativeRun` 幂等）。
+      beginNativeRun(workflowId, runId);
+      recordNativeNode(workflowId, runId, {
+        nodeId: node.nodeId, title: node.title, status: "running",
+      });
       emit({ ...base, type: "workflow.node.progress", nodeType: node.type, title: node.title,
         phase: "running", message: "Node-RED 节点执行中" });
     } else if (msg["stage"] === "settled" && !this.nativeSettled.has(key)) {
       this.nativeSettled.add(key);
       if (this.nativeSettled.size > 4096) this.nativeSettled.delete(this.nativeSettled.values().next().value!);
       const failed = msg["failed"] === true;
+      // 【WF-06】节点落定也写运行史 —— 成功与失败都要留，重试才分得清是哪一步。
+      recordNativeNode(workflowId, runId, {
+        nodeId: node.nodeId, title: node.title, status: failed ? "failed" : "success",
+        ...(failed && typeof msg["text"] === "string" ? { error: msg["text"].slice(0, 160) } : {}),
+      });
       emit({ ...base, type: "workflow.node.result", nodeType: node.type, title: node.title,
         status: failed ? "failed" : "success", summary: "",
         ...(failed ? { error: "Node-RED node failed" } : {}) });
+      // 【WF-06】节点落定后重排收尾：Node-RED 不告诉我们整条流什么时候跑完，
+      // 只能按"安静够久"判。失败的运行**立刻**收尾 —— 失败就是失败，不用等。
+      this.scheduleNativeRunSettle(workflowId, runId, failed);
     }
     return true;
+  }
+
+  /**
+   * 【WF-06】排一次运行收尾。
+   *
+   * 判据是**最后一条节点事件之后安静 `NATIVE_RUN_SETTLE_MS`**：Node-RED 的消息流
+   * 没有"整次运行结束"的钩子，而一次触发产生的节点事件是连续的（同一条链上的节点
+   * 之间只有毫秒级间隔）。这个窗口实测足够宽 —— 大模型调用的节点自身就要几秒到
+   * 几十秒，**在跑的时候不会有这么长的静默**。
+   *
+   * 失败立即收尾：再等下去不会改变"失败了"这个事实，而用户等着看结果。
+   */
+  private scheduleNativeRunSettle(workflowId: string, runId: string, failed: boolean): void {
+    const key = `${workflowId}\u0000${runId}`;
+    const existing = this.nativeRunSettleTimers.get(key);
+    if (existing !== undefined) clearTimeout(existing);
+    const settle = (): void => {
+      this.nativeRunSettleTimers.delete(key);
+      settleNativeRun(workflowId, runId, failed ? "failed" : "success");
+    };
+    if (failed) {
+      settle();
+      return;
+    }
+    const timer = setTimeout(settle, NATIVE_RUN_SETTLE_MS);
+    // 不阻止进程退出：收尾记录是观测面，不该让应用关不掉。
+    if (typeof timer === "object" && "unref" in timer) timer.unref();
+    this.nativeRunSettleTimers.set(key, timer);
   }
   private tabMap(nodes: unknown): Map<string, string> {
     const map = new Map<string, string>();
@@ -594,7 +722,9 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     return state.state === "running"
       ? { ...state, deploymentState: this.deploymentState,
           libraryMirrorPending: this.libraryMirrorPending,
-          libraryMirrorError: this.libraryMirrorError }
+          libraryMirrorError: this.libraryMirrorError,
+          // `untrustedAtStart` 是启动那一刻的判定；取反就是"这次启动是否被信任"。
+          trustedAtStart: !this.untrustedAtStart }
       : state;
   }
 
@@ -673,9 +803,99 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     return { nodeId: matches[0]![0], port: state.port, token: this.adminToken };
   }
 
+  /**
+   * 【Q5】手动触发一次，并把**每个节点的产出**一并带回。
+   *
+   * `runNativeManual` 只回 `{ok}`，够 UI 用；但记忆助手需要「终点那一步说了什么」
+   * 才能组织回复，所以它走这个入口。
+   *
+   * ## 结果从哪来
+   *
+   * 不是从 Node-RED 内部猜 —— Mcode 节点在 `nodePackProductionPorts.ts` 里自己
+   * `emitExternal({type:"workflow.node.result", summary})`，那是节点交回宿主的真实
+   * 产出。这里只是在触发前挂一个收集器，按 `(workflowId, runId)` 收齐。
+   *
+   * ## 什么时候算跑完
+   *
+   * 用与运行史同一条判据（最后一个节点落定后安静 `NATIVE_RUN_SETTLE_MS`）。
+   * 有节点失败就提前收；超时也收（返回已收到的部分 + `timedOut`），
+   * **不无限等** —— 一次记忆整理卡住不该拖住整个按钮。
+   */
+  async runNativeManualWithResults(
+    docId: string, triggerNodeId: string, facts: Readonly<Record<string, unknown>>,
+    timeoutMs = NATIVE_MANUAL_RESULT_TIMEOUT_MS,
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    runId?: string;
+    /** 按节点 id 拿那一步的产出文本。 */
+    outputs?: Map<string, { title: string; status: "success" | "failed"; summary: string; error?: string }>;
+    timedOut?: boolean;
+  }> {
+    const collected = new Map<string, { title: string; status: "success" | "failed"; summary: string; error?: string }>();
+    let resolveDone: (() => void) | null = null;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    const done = new Promise<void>((resolve) => { resolveDone = resolve; });
+
+    // 节点产出经 `runtimeManager.emitExternal`（见 `nodePackProductionPorts.ts`
+    // 的 `emitStep`），不经 registry —— 所以在这里订阅同一条流，按 workflowId 过滤。
+    // 只收 `workflow.node.result`：那是节点交回宿主的**真实产出**，不是从
+    // Node-RED 内部猜的。
+    // **惰性 import**：`RuntimeManager` 会拖进 `window.ts` → electron，而无头套件把本
+    // 模块打进纯 node 跑（`workflow-engine-runtime-smoke` 就是，实测 41 条全绿之后在
+    // 收尾炸 `Dynamic require of "child_process"`）。顶层 import 在这里是不可行的。
+    const { runtimeManager } = await import("@main/claude/RuntimeManager.js");
+    const unsubscribe = runtimeManager.subscribe((event) => {
+      const record = event as unknown as Record<string, unknown>;
+      if (record["workflowId"] !== docId || record["type"] !== "workflow.node.result") return;
+      const id = typeof record["nodeId"] === "string" ? record["nodeId"] : null;
+      if (id === null) return;
+      collected.set(id, {
+        title: typeof record["title"] === "string" ? record["title"] : id,
+        status: record["status"] === "failed" ? "failed" : "success",
+        summary: typeof record["summary"] === "string" ? record["summary"] : "",
+        ...(typeof record["error"] === "string" ? { error: record["error"] } : {}),
+      });
+      // 失败立刻收尾；成功等静默窗口（同运行史的判据）。
+      if (settleTimer !== null) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => resolveDone?.(), record["status"] === "failed" ? 0 : NATIVE_RUN_SETTLE_MS);
+    });
+
+    const timeout = setTimeout(() => resolveDone?.(), timeoutMs);
+    try {
+      const started = await this.runNativeManual(docId, triggerNodeId, facts);
+      if (!started.ok) return { ok: false, ...(started.error === undefined ? {} : { error: started.error }) };
+      await done;
+      return { ok: true, outputs: collected, ...(collected.size === 0 ? { timedOut: true } : {}) };
+    } finally {
+      unsubscribe();
+      clearTimeout(timeout);
+      if (settleTimer !== null) clearTimeout(settleTimer);
+    }
+  }
+
+  /** 触发一次已部署的手动 Inject。只回成败；要产出用 {@link runNativeManualWithResults}。 */
   async runNativeManual(
     docId: string, triggerNodeId: string, facts: Readonly<Record<string, unknown>>,
   ): Promise<{ ok: boolean; error?: string }> {
+    /* 【AUTO-02】**防重入**：同一张图正在注入时拒绝这一次。
+     *
+     * 为什么必须在这里：旧调度器有一套自己的领取账本做去重，而原生运行**不经过它**
+     * —— Node-RED 由引擎自己触发，宿主只在注入入口插手。于是"连点两次立刻跑"
+     * 会真的起两次，两次共用同一批节点 id：运行史互相覆盖、看板进度来回跳。
+     *
+     * **只挡注入窗口，不挡整个运行**：`inject` 是"把消息推进流里"就同步返回，
+     * 真正的执行在 Node-RED 里继续。挡住整个运行会让长流程把用户锁死几分钟，
+     * 而我们要防的只是"连点两下起两次"。
+     *
+     * 拒绝要说清什么时候能再点 —— 否则用户会以为按钮坏了。 */
+    if (nativeManualInjecting.has(docId)) {
+      return {
+        ok: false,
+        error: "这张图正在启动一次运行，稍等一下再试（同一张图不能同时起两次：两次会共用同一批节点 id）",
+      };
+    }
+    nativeManualInjecting.add(docId);
     let issued: ManualTicket | null = null;
     try {
       const target = this.nativeManualTarget(docId, triggerNodeId);
@@ -702,7 +922,46 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     } catch (error) {
       issued?.revoke();
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      nativeManualInjecting.delete(docId);
     }
+  }
+
+  /**
+   * 【WF-06】**重跑一张原生图**（失败之后的"再试一次"）。
+   *
+   * ## 语义与旧引擎不同，必须说清
+   *
+   * 旧调度器能从**失败那一步连同下游**重跑，因为它的图状态在宿主手里（`runStore`
+   * 的存档里记着哪几步已定案）。Node-RED 的消息流不持久化"执行到哪一格"，
+   * 上游也没有"从某个节点重入"的公开入口 —— 所以原生侧的重试是**整条流重跑**。
+   *
+   * 这不是退化实现，是两种执行模型的真实差别：与其假装能从那一步续，不如让用户
+   * 知道点下去是重跑整条。功能文档 WF-06 已按这个事实写。
+   *
+   * ## 入口
+   *
+   * 复用 `runNativeManual` 的那条已验证路径（Host 签发票据 → 回环 inject），
+   * 不是绕过它新开一个。前置条件一样：引擎 running、部署已确认、这张图归
+   * Node-RED、且**这张图有已部署的手动触发器**。
+   *
+   * 没有手动触发器的图（定时/文件/事件驱动）无法重跑 —— 返回 `ok:false` 并说明，
+   * 不静默什么都不做。
+   */
+  async retryNativeFlow(docId: string): Promise<{ ok: boolean; error?: string }> {
+    const doc = (this.lookupDoc ?? getWorkflow)(docId);
+    if (!doc) return { ok: false, error: "工作流已删除" };
+    const manual = doc.nodes.find(
+      (n) => n.type === "mcode.trigger" && n.params["triggerKind"] === "manual",
+    );
+    if (manual === undefined) {
+      return {
+        ok: false,
+        error: "这张图没有手动触发器，无法重跑。定时/文件/事件驱动的自动化会在下次触发时自己跑；"
+          + "要现在跑一遍，请在画布上给它加一个手动触发器（Inject）并重新部署。",
+      };
+    }
+    return this.runNativeManual(docId, manual.id, { kind: "manual", at: Date.now() });
   }
 
   private releaseOwned(): void {
@@ -713,6 +972,15 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     this.nativeTabs.clear();
     this.nativeNodes.clear();
     this.nativeSettled.clear();
+    // 【WF-06】引擎停了 = 这些运行不可能再有后续节点事件。把没等到静默窗口的
+    // 运行**如实收成 cancelled**（不是 success —— 我们不知道它跑完没有），
+    // 并清掉定时器，避免停引擎之后还冒出一条"成功"。
+    for (const [settleKey, timer] of this.nativeRunSettleTimers) {
+      clearTimeout(timer);
+      const [workflowId, runId] = settleKey.split("\u0000");
+      if (workflowId && runId) settleNativeRun(workflowId, runId, "cancelled");
+    }
+    this.nativeRunSettleTimers.clear();
     const ids = [...this.ownedFlowIds, ...(this.pendingDeploy?.added ?? [])];
     this.ownedFlowIds = [];
     this.pendingDeploy = null;
@@ -888,6 +1156,8 @@ export class OwnedNodeRedRuntime extends EngineRuntime {
     };
     const nodeServices = this.nodeServices ?? productionNodePackServices(
       () => this.status(), options.probeIdentity?.adminToken, resolveWorkflow,
+      // 【WF-09】框架说明来自宿主库里的那张文档；测试注入服务时走 lookupDoc。
+      (id) => (this.lookupDoc ?? getWorkflow)(id),
     );
     // W17：`condition.evaluate` 走旧的条件求值器（Host 侧，复用
     // `@contracts/condition`）；其它动作原样交给上面的生产服务 / 注入的测试服务。
@@ -939,6 +1209,24 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
       runtime = new OwnedNodeRedRuntime(engineId, this.runtimePorts, this.ownership, undefined,
         this.nativeLibrarySync ?? null,
         this.runtimePorts === defaultEngineRuntimePorts ? (id) => getWorkflow(id) : undefined);
+      // 【Q9b】状态一变就推给渲染端 —— 界面不再靠 2.5 秒轮询猜「引擎起来没有」。
+      // 订阅挂在**创建**处而不是每次 get：一个实例一辈子只订阅一次。
+      runtime.onStateChange((id, state) => {
+        // **惰性 import**：`@main/window.js` 会拖进 electron，而无头套件把
+        // `workflowEngines/registry.ts` 打进纯 node 里跑（`workflow-engine-runtime-smoke`
+        // 就是）。顶层 import 会在**运行时**炸 `Dynamic require of "child_process"`
+        // —— 实测：那套件 41 条断言全绿之后在收尾崩掉。
+        void (async () => {
+          try {
+            const { sendToRenderer } = await import("@main/window.js");
+            sendToRenderer(IPC.WORKFLOW_ENGINE_CHANGED, {
+              channel: IPC.WORKFLOW_ENGINE_CHANGED, engineId: id, state,
+            });
+          } catch {
+            // 没有窗口在听（手机端 / 正在退出 / 无头套件）—— 不是错误。
+          }
+        })();
+      });
       this.runtimes.set(engineId, runtime);
     }
     return runtime;
@@ -1010,7 +1298,14 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
     if (!(ENGINE_IDS as readonly string[]).includes(engineId)) return null;
     const dir = this.dataDirOf(engineId);
     // 实现包由唯一 launch spec 解析器选择；不能在这里提前要求 npm 存在。
-    const bootstrapPath = join(dir, "bootstrap.cjs");
+    //
+    // ⚠️ **必须 resolve 成绝对路径**：`dataRoot()` 在无头套件里由桩返回一个相对路径
+    // （`MCODE_SMOKE_DATA_ROOT` 给的就是 `.tmp/...`）。`resolveEngineEntry` 只在
+    // `entryFile` 是绝对路径时才当"调用方已解析好"直接采用；相对路径会再
+    // `join(dataDir, entryFile)` 一次 —— 于是拼出
+    // `<dataDir>/<dataDir>/bootstrap.cjs`，启动参数生成抛错、launchSpec 返回 null。
+    // 实测：这套件 116/118，红的两条就是这里。
+    const bootstrapPath = resolve(dir, "bootstrap.cjs");
     // 【P1-5】完整性校验失败 → 返回 null（IPC 回"没有配置启动命令"并带原因），
     // **绝不**带着盘上的旧/被篡改脚本启动。
     if (!writeEngineBootstrap(engineId, dir)) {
@@ -1045,6 +1340,24 @@ export class ProductionWorkflowEngineRegistry implements WorkflowEngineRegistry 
           // 只有宿主写下的可信标记才让持久化 flow 进入 runtime（见 isFlowTrusted）。
           MCODE_ENGINE_TRUSTED: isFlowTrusted(dir) ? "1" : "0",
           MCODE_ENGINE_THEME_CSS: resolveMcodeNodeRedThemeCss(),
+          // 徽标脚本可缺省（展示增强），因此单独解析、缺了就不设这个变量。
+          ...(() => {
+            const badges = resolveMcodeCanvasBadgesScript();
+            return badges === null ? {} : { MCODE_ENGINE_BADGES_JS: badges };
+          })(),
+          // 【Q9b】外壳样式：写进数据目录后把**路径**交给引擎。
+          ...(() => {
+            const chrome = writeCanvasChromeCss(dir);
+            return chrome === null ? {} : { MCODE_ENGINE_CHROME_CSS: chrome };
+          })(),
+          // 【ARC-006 桥 2】引擎能力中继的地址与一次性令牌 —— **有才给**。
+          // 中继没起来（或套件里没装）时这两个变量缺席，`mcode-host-mcp` 会
+          // 拒绝启动（exit 2），而不是莫名其妙地连着空地址。
+          //
+          // 走注入（`setHostMcpRelayEnvPort`）而不是 import `hostMcpWiring`：
+          // 那个模块会拖进 `appControl/tools`（electron + sql.js），而本文件被
+          // 多个无头套件打进纯 node 里跑。
+          ...hostMcpRelayEnvPort?.() ?? {},
         },
       });
     } catch (err) {

@@ -37,6 +37,19 @@ export type TurnScript = (emit: (e: RuntimeEvent) => void) => void | Promise<voi
 let script: TurnScript | null = null;
 let busy = false;
 
+/** 脚本摆的「这一轮结算了多少用量」。默认没有历史（undefined）。 */
+export interface ScriptedUsage {
+  totalProcessedTokens: number;
+  outputTokens: number;
+  costUsd?: number;
+}
+let nextUsage: ScriptedUsage | undefined;
+
+/** 摆「这一轮有已结算的用量」；传 undefined 恢复成「没有历史」。 */
+export function scriptUsage(next: ScriptedUsage | undefined): void {
+  nextUsage = next;
+}
+
 /** 块级隔离:清空全部记录与状态。 */
 export function resetRuntime(): void {
   externalEvents.length = 0;
@@ -44,6 +57,7 @@ export function resetRuntime(): void {
   listeners.length = 0;
   script = null;
   busy = false;
+  nextUsage = undefined;
 }
 
 /** 摆下一轮 `sendTurn` 的演出脚本(消费一次就作废)。 */
@@ -73,6 +87,18 @@ export const runtimeManager = {
   emitExternal(event: RuntimeEvent): void {
     externalEvents.push(event);
     for (const listener of listeners.slice()) listener(event);
+  },
+
+  /**
+   * 真的那个返回 `TurnUsageRecord | undefined`（这一轮已结算的记录）。
+   *
+   * **必须存在**：`nodePackProductionPorts` 的 `usageSnapshot()` 在 `workflow.node.result`
+   * 上读它 —— 桩缺这个方法时生产端口抛 `usageOf is not a function`，
+   * 而那个异常被套件的 `expectReject` 分支误当成「模型返回不是数字口」的拒绝，
+   * 于是 31 条断言失败了却指向错误的原因（实测 `mcode-node-pack-ports-smoke` 147/178）。
+   */
+  usageOf(_sessionId: string): ScriptedUsage | undefined {
+    return nextUsage;
   },
 
   async sendTurn(session: Session, input: { prompt: string; cwd: string }) {

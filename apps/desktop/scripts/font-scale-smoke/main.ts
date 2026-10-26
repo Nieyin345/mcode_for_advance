@@ -213,24 +213,38 @@ console.log("\n── 三、判据把等价写法算成同一个数 ──");
 
 // ═══════════════════════════════════════════════════════════════
 // 四、tailwind.config.js 的七档已就位，且值 = 规范
+//
+// 【UI 重建 2026-10-27】七档的值改成**本机 Claude 3.1623.4.0 的真实值**。
+// 之前的 11/12/12/14/15/16/20 是第三方逆向（open-claude-ui）的值，
+// 比 Claude 大 15–35% —— 那是「整屏字偏大、怎么调都不像」的直接来源。
+//
+// Claude 的算法：`--cds-font-size-X: calc(Nrem × --cds-rem-scale)`，
+// `--cds-rem-scale = calc(16/17) ≈ .9412`，所以实际 px = N×16×.9412：
+//   caption .6875rem→11.29  footnote .75→11.29  code .75→11.29
+//   body .8125→12.24  prose .875→13.18  heading .875→13.18  title 1→15.06
+// 行高来自 `--cds-leading-X`（与字号成对，不是倍数）：
+//   caption 1.0625→16  body 1.25→18.82  prose 1.125→16.94
+//
+// ⚠️ 正则从 `(\d+)px` 放开到 `([\d.]+)px`：新值是小数，整数正则读不到会
+// 报 "missing" —— 那是正则失效，不是值不对，两者要分得开。
 // ═══════════════════════════════════════════════════════════════
-console.log("\n── 四、CDS 七档字阶（T121 · storybook :659）──");
+console.log("\n── 四、CDS 七档字阶（本机 Claude 3.1623.4.0）──");
 {
   const tw = readFileSync(join(ROOT, "tailwind.config.js"), "utf8");
   const spec: Array<[string, number, number]> = [
-    ["caption", 11, 16],
-    ["footnote", 12, 14],
-    ["code", 12, 16],
-    ["body", 14, 20],
-    ["prose", 15, 22],
-    ["heading", 16, 20],
-    ["title", 20, 24],
+    ["caption", 11.29, 16],
+    ["footnote", 11.29, 14],
+    ["code", 11.29, 16],
+    ["body", 12.24, 18.82],
+    ["prose", 13.18, 16.94],
+    ["heading", 13.18, 16.94],
+    ["title", 15.06, 18.82],
   ];
   for (const [name, size, lh] of spec) {
-    const m = tw.match(new RegExp(`${name}:\\s*\\["(\\d+)px",\\s*\\{\\s*lineHeight:\\s*"(\\d+)px"`));
+    const m = tw.match(new RegExp(`${name}:\\s*\\["([\\d.]+)px",\\s*\\{\\s*lineHeight:\\s*"([\\d.]+)px"`));
     check(
       `${name} = ${size}px / ${lh}px`,
-      m !== null && Number(m[1]) === size && Number(m[2]) === lh,
+      m !== null && Math.abs(Number(m[1]) - size) < 0.01 && Math.abs(Number(m[2]) - lh) < 0.01,
       m ? { actual: [m[1], m[2]] } : "missing",
     );
   }

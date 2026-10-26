@@ -37,6 +37,7 @@
  *
  * Run: bash scripts/mcode-node-pack-ports-smoke/run.sh
  */
+import { join } from "node:path";
 import { initDb } from "@main/store/db.js";
 import { ProjectRepo, SessionRepo } from "@main/store/repositories.js";
 import { productionNodePackServices } from "@main/workflowEngines/nodePackProductionPorts.js";
@@ -52,6 +53,9 @@ import {
   emitEvent, externalEvents, resetRuntime, scriptNextTurn, sendTurnCalls, setSessionBusy,
 } from "./stubs/runtimeManager.js";
 import { failNextInvoke, invokeCalls, resetModuleHost, setNextInvokeResult } from "./stubs/moduleService.js";
+import {
+  extensionCalls, failNextExtension, resetExtensionPort, setNextExtensionResult,
+} from "./stubs/extensionCommandPort.js";
 
 /* ── 断言助手(与仓库其它 smoke 同款) ── */
 let failures = 0;
@@ -189,6 +193,7 @@ function resetAll(): void {
   resetDialog();
   resetFetch();
   resetModuleHost();
+  resetExtensionPort();
   setMainWindowState("live");
   status = { ...RUNNING };
   adminToken = "tok-smoke";
@@ -347,7 +352,19 @@ console.log("\nB · runSelectedSession:会话 / 提示词 / 事件守卫");
   eq("★ 正控:返回的 text 是引擎流出的原文", result.text, "hello");
   eq("★ 正控:返回的 runId 用了 payload 给的", result.runId, "run-123");
   eq("★ 正控:artifacts 为空数组", JSON.stringify(result.artifacts), "[]");
-  eq("★ 正控:引擎收到 instruction 与 input 拼接的 prompt", sendTurnCalls[0]?.input.prompt, "Do X\n\n{\"k\":1}");
+  // 【WF-07】生产端口会在 body 前面拼一段「你在哪里」的结构上下文。断言要**分开**验两件事：
+  //   ① body（instruction + input）原样在 prompt 里；
+  //   ② 上下文确实存在，且点名了这张图和这一格。
+  // 直接 `eq(prompt, "Do X\n\n{...}")` 会把「上下文加没加」和「body 拼没拼对」
+  // 混成一条 —— 加了下文这条就红，而它其实不负责判上下文。
+  check("★ 正控:引擎收到 instruction 与 input 拼接的 prompt",
+    sendTurnCalls[0]?.input.prompt.endsWith("Do X\n\n{\"k\":1}"),
+    sendTurnCalls[0]?.input.prompt);
+  check("★【WF-07】prompt 带「你在哪里」上下文并点名流程与节点",
+    sendTurnCalls[0]?.input.prompt.includes("## 你在哪里")
+      && sendTurnCalls[0]?.input.prompt.includes("tab1")
+      && sendTurnCalls[0]?.input.prompt.includes("「标题」"),
+    sendTurnCalls[0]?.input.prompt.slice(0, 120));
   eq("★ 正控:cwd 落到项目路径(worktreePath 为 null)", sendTurnCalls[0]?.input.cwd, PROJECT_PATH);
 
   const types = externalEvents.map((e) => (e as { type: string }).type);
@@ -359,6 +376,39 @@ console.log("\nB · runSelectedSession:会话 / 提示词 / 事件守卫");
   eq("result 事件带 runId", resultEvent.runId, "run-123");
   eq("result 事件带 sessionId", resultEvent.sessionId, "s_chat");
   eq("result 事件 status=success", resultEvent.status, "success");
+
+  // ★【WF-07】injectMode: "auto" —— 发完即走，不等那一轮收尾。
+  //  判据：桩把这一轮摆成**永不结束**（不推 turn.done）。同步模式下它会卡死；
+  //  auto 模式下必须在 sendTurn 返回后立刻拿到结果。**没有"永不结束"这个对照，
+  //  这条断言在两条路径上都绿**，什么也没验。
+  resetAll();
+  scriptNextTurn(() => new Promise<void>(() => { /* 永不 resolve */ }));
+  const autoAttempt = await Promise.race([
+    attempt(() => run({
+      params: { sessionId: "s_chat", injectMode: "auto" },
+      instruction: "把事情交给主对话", nodeId: "n1", tabId: "tab1", runId: "run-auto",
+    }, (tabId) => (tabId === "tab1" ? "wf_1" : null))).then((r) => ({ kind: "returned" as const, r })),
+    new Promise<{ kind: "hung" }>((r) => setTimeout(() => r({ kind: "hung" }), 2_000)),
+  ]);
+  eq("★ WF-07:injectMode=auto 不等待那一轮(2s 内返回)", autoAttempt.kind, "returned");
+  if (autoAttempt.kind === "returned") {
+    check("★ WF-07:auto 模式下这一步记为成功", autoAttempt.r.ok === true,
+      autoAttempt.r.ok ? undefined : autoAttempt.r.error);
+    check("★ WF-07:auto 模式下 prompt 照样交给了引擎",
+      sendTurnCalls[0]?.input.prompt.endsWith("把事情交给主对话"),
+      sendTurnCalls[0]?.input.prompt);
+  }
+
+  // 负控：**不带** injectMode 时必须等（否则上面那条什么也没证明）。
+  resetAll();
+  scriptNextTurn(() => new Promise<void>(() => { /* 永不 resolve */ }));
+  const syncAttempt = await Promise.race([
+    attempt(() => run({
+      params: { sessionId: "s_chat" }, instruction: "同步跑", nodeId: "n1", tabId: "tab1",
+    }, (tabId) => (tabId === "tab1" ? "wf_1" : null))).then(() => ({ kind: "returned" as const })),
+    new Promise<{ kind: "hung" }>((r) => setTimeout(() => r({ kind: "hung" }), 1_000)),
+  ]);
+  eq("★ 负控:不带 auto 时确实会等那一轮(1s 内没返回)", syncAttempt.kind, "hung");
 
   // 不可信的 tabId 不能提名工作流:resolveWorkflow 返回 null → 不发阶段事件,
   // payload 里自带的 workflowId 也不被采信
@@ -446,53 +496,65 @@ console.log("\nB · runSelectedSession:会话 / 提示词 / 事件守卫");
 console.log("\nC · module.invoke:projectPath 是 Host 授权的落点,缺了必拒");
 
 {
+  // 【EXT-07】这个操作现在跑的是**已安装 VS Code 扩展的一条命令**（extensionId + commandId），
+  // 不再是 ModuleHost 的 moduleId/contributionId 坐标。C 节的判据不变：
+  //   - 没 projectPath → 在授权入口拒绝，不落到下游；
+  //   - 有 projectPath → 解析成绝对路径交给扩展端口，原样透传字段。
   const invoke = (payload: Record<string, unknown>) => services().execute("module.invoke", payload);
 
   resetAll();
   await throws("★ 缺 projectPath → 拒绝(不回退默认目录)",
-    () => invoke({ moduleId: "m1", contributionId: "c1", path: "x", params: {} }),
-    "Module workflow requires a projectPath bound to its Host grant");
-  eq("★ 缺 projectPath 时 ModuleHost 一次都没被调(拒绝发生在授权入口,不是下游)", invokeCalls.length, 0);
+    () => invoke({ extensionId: "pub.ext", commandId: "ext.cmd", path: "x", params: { extensionId: "pub.ext", commandId: "ext.cmd", path: "x" } }),
+    "扩展命令节点需要一个已登记的工作区（projectPath）");
+  eq("★ 缺 projectPath 时扩展端口一次都没被调(拒绝发生在授权入口,不是下游)", extensionCalls.length, 0);
 
   resetAll();
   await throws("projectPath 空串 → 同样拒绝",
-    () => invoke({ moduleId: "m1", contributionId: "c1", path: "x", params: { projectPath: "" } }),
-    "Module workflow requires a projectPath bound to its Host grant");
+    () => invoke({ extensionId: "pub.ext", commandId: "ext.cmd", path: "x", params: { extensionId: "pub.ext", commandId: "ext.cmd", path: "x", projectPath: "" } }),
+    "扩展命令节点需要一个已登记的工作区（projectPath）");
 
   resetAll();
   await throws("projectPath 不是字符串(数字)→ 同样拒绝",
-    () => invoke({ moduleId: "m1", contributionId: "c1", path: "x", params: { projectPath: 42 } }),
-    "Module workflow requires a projectPath bound to its Host grant");
+    () => invoke({ extensionId: "pub.ext", commandId: "ext.cmd", path: "x", params: { extensionId: "pub.ext", commandId: "ext.cmd", path: "x", projectPath: 42 } }),
+    "扩展命令节点需要一个已登记的工作区（projectPath）");
 
-  // ★ 正控:带上 projectPath 必须原样传进 ModuleHost
+  // 缺 extensionId / commandId 也必须显式拒绝 —— 旧的 moduleId/contributionId 不再被接受。
   resetAll();
-  setNextInvokeResult({ rows: [1, 2] });
+  await throws("★ 缺 extensionId → 拒绝(旧 moduleId 坐标已不再支持)",
+    () => invoke({ moduleId: "m1", contributionId: "c1", path: "x", params: { moduleId: "m1", contributionId: "c1", path: "x", projectPath: PROJECT_PATH } }),
+    "扩展命令节点需要 extensionId 与 commandId（旧的 moduleId/contributionId 已不再支持）");
+  eq("★ 缺 extensionId 时扩展端口一次都没被调", extensionCalls.length, 0);
+
+  // ★ 正控:带上 projectPath 必须原样传进扩展端口
+  resetAll();
+  setNextExtensionResult({ rows: [1, 2] });
   const outResult = await attempt(() => invoke({
-    moduleId: "m1", contributionId: "c1", path: "data/x.csv", params: { projectPath: PROJECT_PATH },
+    extensionId: "pub.ext", commandId: "ext.cmd", path: "data/x.csv",
+    params: { extensionId: "pub.ext", commandId: "ext.cmd", path: "data/x.csv", projectPath: PROJECT_PATH },
   }));
   check("★ 正控:带 projectPath 的 invoke 没有被拒绝", outResult.ok,
     { error: outResult.ok ? undefined : outResult.error });
-  eq("★ 正控:ModuleHost 收到绑定的 projectPath", invokeCalls[0]?.resource.projectPath, PROJECT_PATH);
-  eq("★ 正控:moduleId 原样透传", invokeCalls[0]?.moduleId, "m1");
-  eq("★ 正控:contributionId 原样透传", invokeCalls[0]?.contributionId, "c1");
-  eq("★ 正控:resource.path 原样透传", invokeCalls[0]?.resource.path, "data/x.csv");
+  eq("★ 正控:扩展端口收到解析后的绝对路径", extensionCalls[0]?.path,
+    join(PROJECT_PATH, "data/x.csv"));
+  eq("★ 正控:extensionId 原样透传", extensionCalls[0]?.extensionId, "pub.ext");
+  eq("★ 正控:commandId 原样透传", extensionCalls[0]?.commandId, "ext.cmd");
   eq("★ 正控:结果被 JSON 成 text",
     outResult.ok ? (outResult.value as { text: string }).text : null, JSON.stringify({ rows: [1, 2] }));
 
   resetAll();
-  const first = await attempt(() => invoke({ moduleId: "m1", contributionId: "c1", path: "a", params: { projectPath: PROJECT_PATH } }));
-  const second = await attempt(() => invoke({ moduleId: "m1", contributionId: "c1", path: "b", params: { projectPath: PROJECT_PATH } }));
+  const first = await attempt(() => invoke({ extensionId: "pub.ext", commandId: "ext.cmd", path: "a", params: { extensionId: "pub.ext", commandId: "ext.cmd", path: "a", projectPath: PROJECT_PATH } }));
+  const second = await attempt(() => invoke({ extensionId: "pub.ext", commandId: "ext.cmd", path: "b", params: { extensionId: "pub.ext", commandId: "ext.cmd", path: "b", projectPath: PROJECT_PATH } }));
   check("★ 正控:两次合法 invoke 都通过", first.ok && second.ok,
     { first: first.ok ? undefined : first.error, second: second.ok ? undefined : second.error });
-  check("每次 invoke 的 requestId 各自新生成(不复用)",
-    invokeCalls.length === 2 && invokeCalls[0].requestId !== invokeCalls[1].requestId,
-    invokeCalls.map((c) => c.requestId));
+  check("每次 invoke 各自落到扩展端口(不复用调用)",
+    extensionCalls.length === 2 && extensionCalls[0].path !== extensionCalls[1].path,
+    extensionCalls.map((c) => c.path));
 
   resetAll();
-  failNextInvoke("module exploded");
-  await throws("ModuleHost 抛错 → 原样上抛(不吞)",
-    () => invoke({ moduleId: "m1", contributionId: "c1", path: "a", params: { projectPath: PROJECT_PATH } }),
-    "module exploded");
+  failNextExtension("extension exploded");
+  await throws("扩展端口抛错 → 原样上抛(不吞)",
+    () => invoke({ extensionId: "pub.ext", commandId: "ext.cmd", path: "a", params: { extensionId: "pub.ext", commandId: "ext.cmd", path: "a", projectPath: PROJECT_PATH } }),
+    "extension exploded");
 }
 
 /* ═════════════════════════ D. node-red.call 路径围栏(安全边界 #1) ═════════════════════════ */

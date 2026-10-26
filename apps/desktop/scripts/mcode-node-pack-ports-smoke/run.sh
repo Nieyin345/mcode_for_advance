@@ -41,6 +41,7 @@ source "$HERE/../lib/esbuild-path.sh"
   --alias:@main/window.js=./scripts/mcode-node-pack-ports-smoke/stubs/window.ts \
   --alias:@main/claude/RuntimeManager.js=./scripts/mcode-node-pack-ports-smoke/stubs/runtimeManager.ts \
   --alias:@main/modules/service.js=./scripts/mcode-node-pack-ports-smoke/stubs/moduleService.ts \
+  --alias:@main/orchestration/extensionCommandPort.js=./scripts/mcode-node-pack-ports-smoke/stubs/extensionCommandPort.ts \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --outfile="$OUT/smoke.mjs" --log-level=error

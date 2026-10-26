@@ -597,6 +597,7 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
 {
   const {
     MCODE_NODE_PACK_TYPES,
+    MCODE_INTERNAL_NODE_TYPES,
     allNodeHtml,
     branchNodeHtml,
     triggerMessage,
@@ -614,9 +615,17 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
   });
 
   // ★ 7 个类型都在清单里（agent + 其余 6；condition/command 走原生节点，不注册）。
-  eq("★ 节点包注册类型 = 6（agent + 其余 5；condition/command/code 用内置）", [...MCODE_NODE_PACK_TYPES].sort(), [
+  // palette 类型 = 用户可以拖进画布的；`mcode-node-red-call` 已退役到内部清单
+  // （见 `MCODE_INTERNAL_NODE_TYPES` 的说明：不给 category = 不进 palette，但
+  // 仍完整注册，旧图照常读、照常跑）。这里钉的是 **palette** 那一份。
+  eq("★ 节点包 palette 类型 = 5（agent + branch + conversation + module-capability + trigger）", [...MCODE_NODE_PACK_TYPES].sort(), [
     "mcode-agent", "mcode-branch", "mcode-conversation",
-    "mcode-module-capability", "mcode-node-red-call", "mcode-trigger",
+    "mcode-module-capability", "mcode-trigger",
+  ]);
+  // 正控：退役的内部类型**仍在**注册表里。没有这条，"从 palette 移除"就可能悄悄
+  // 变成"从注册表移除" —— 那会让旧图里的这种节点变成 unknown，迁移器拒绝整张图。
+  eq("★ 内部类型仍完整注册（退役 ≠ 删除）", [...MCODE_INTERNAL_NODE_TYPES].sort(), [
+    "mcode-condition-eval", "mcode-node-red-call",
   ]);
 
   // ★【T96】子进程加载的是预编译的 nodePackBundle.generated.ts，**不是**上面这些
@@ -652,6 +661,31 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
     // 反向：bundle 里必须真的带着 IPC 传输层，否则节点在真引擎里根本调不到 Host。
     check("★【T96】bundle 里带着 mcode-node-request 传输层",
       MCODE_NODE_PACK_BUNDLE.includes('"mcode-node-request"'));
+
+    /* 【EXT-07】子进程包**不许**拖进宿主那一片。
+     *
+     * 实测事故：`mcodeNodeTypes.ts` 从 `@contracts/outputConstraint` import 一个常量，
+     * esbuild 就把 zod + 整片 contracts（含 `nodeType.ts` 里提到 `RuntimeManager` 的注释）
+     * 全打进这个**没有 electron、没有 sql.js** 的子进程包 —— 29 KB → 245 KB。
+     * 那条路径在真引擎里会在加载期炸，而类型检查与大部分断言都是绿的。
+     *
+     * 判据用**体积上限**而不是"某个字符串不存在"：字符串黑名单只能挡住已知的几个名字，
+     * 而体积是"有没有整片被拖进来"的直接量。 */
+    check("★【EXT-07】standalone CJS 没拖进宿主依赖图（体积 < 120 KB）",
+      Buffer.byteLength(MCODE_NODE_PACK_BUNDLE, "utf8") < 120_000,
+      Buffer.byteLength(MCODE_NODE_PACK_BUNDLE, "utf8"));
+  }
+
+  /* 【EXT-07】`mcodeNodeTypes.ts` 故意把「出路」这个键名**本地写死**（不 import），
+   * 为的是不把 zod / contracts 拖进子进程包（见那里的注释）。代价是两处可能漂移 ——
+   * 那就得有一条断言钉住它们**是同一个字符串**，否则「分支写出路、下游读不到」只会
+   * 等到运行期才暴露。 */
+  {
+    const { DECIDE_VAR_NAME } = await import("@contracts/outputConstraint");
+    const source = readFileSync(join(process.cwd(), "src/main/workflowEngines/mcodeNodeTypes.ts"), "utf8");
+    const local = source.match(/const DECIDE_VAR_NAME = "([^"]*)"/);
+    eq("★【EXT-07】mcodeNodeTypes 的本地「出路」与 contracts 常量一致",
+      local?.[1], DECIDE_VAR_NAME);
   }
   eq("★ HTML 覆盖全部 6 个类型", ["mcode-agent", "mcode-conversation", "mcode-branch", "mcode-trigger", "mcode-module-capability", "mcode-node-red-call"]
     .filter((t) => !allNodeHtml().includes(`data-template-name="${t}"`)), []);
@@ -739,7 +773,14 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
       decide: async (p) => ({ port: p.portCount - 1, label: "最后一条" }),
     });
     eq("★ branch：port 决定落在端口范围内", byPort.port, 2);
-    eq("★ branch：label 进 msg.mcode.branch", (byPort.msg.mcode as { branch?: unknown }).branch, { port: 2, label: "最后一条" });
+    // 分支注释现在带**身份**（源/目标节点），下游只认「指向自己」的那条
+    // （见 `branchContext.ts`）。断言要钉的是"label 与 port 对应正确"，
+    // 不是"形状恰好是这两个键"—— 后者会在加字段时无辜变红。
+    {
+      const branch = (byPort.msg.mcode as { branch?: Record<string, unknown> }).branch;
+      eq("★ branch：label 进 msg.mcode.branch", branch?.label, "最后一条");
+      eq("★ branch：port 一并带上", branch?.port, 2);
+    }
     let invalidPortError: unknown;
     try { await runBranchNode({}, cfg({}, wires), { decide: async () => ({ port: 99 }) }); }
     catch (err) { invalidPortError = err; }

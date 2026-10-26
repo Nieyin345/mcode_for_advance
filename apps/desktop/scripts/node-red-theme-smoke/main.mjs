@@ -78,8 +78,13 @@ check("Node category/brand/grid values untouched in light and original dark-mode
   [...baseVars].filter(([key]) => /^\$(palette-|view-grid-color|node-|github-)/.test(key))
     .every(([key,val]) => sourceLight.get(key) === val &&
       sourceDark.get(key) === (darkVendor.get(key) ?? val)));
+// 【AUTO/Q9b】`editorTheme.page.css` 现在是一个**数组**：宿主主题 + 画布外壳样式
+// （`MCODE_ENGINE_CANVAS_CSS`）。断言因此改成"概念级"：page.css 必须**读到宿主注入的
+// 那一个变量**。钉死旧字面量会让每一次合法的形状演进都假红 —— 而它本意是
+// 「外观样式真的挂上去了」。
+// ⚠️ 形状放宽了，所以要同时否定性地验一句：page.css 不能只挂外壳、丢掉宿主主题。
 check("T47 bootstrap actively mounts the injected CSS via editorTheme.page.css",
-  registry.includes('editorTheme: { page: { css: process.env.MCODE_ENGINE_THEME_CSS || "" } }'));
+  /editorTheme:\s*\{[\s\S]{0,400}?page:\s*\{[\s\S]{0,200}?css:\s*\[[\s\S]{0,200}?MCODE_ENGINE_THEME_CSS/.test(registry));
 check("Host injects the shipped CSS absolute path and explicitly fails missing assets",
   registry.includes("MCODE_ENGINE_THEME_CSS: resolveMcodeNodeRedThemeCss()") &&
   registry.includes("throw new Error(\"Node-RED Mcode 主题资源缺失"));

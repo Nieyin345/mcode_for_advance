@@ -12,6 +12,13 @@ const branch = read("BranchChoiceCard.tsx");
 const plan = read("PlanStreamBlock.tsx");
 const mail = read("AgentMailCard.tsx");
 const mcp = read("McpToolDecisionCard.tsx");
+const thinkingStart = blocks.indexOf("function ThinkingAccordion({");
+const thinkingEnd = blocks.indexOf("/** A collapsible section", thinkingStart);
+const thinkingAccordion = thinkingStart >= 0 && thinkingEnd > thinkingStart
+  ? blocks.slice(thinkingStart, thinkingEnd)
+  : "";
+// 【UI 重建 2026-10-27】思考块的几何在 CSS 里（JSX 只留 data-cds 挂点）。
+const thinkingCss = read("ClaudeThinkingAccordion.css");
 let total = 0, failed = 0;
 function ck(msg: string, ok: boolean) {
   total++;
@@ -66,6 +73,36 @@ ck("Thinking: live-state card keeps its real body expanded while running",
   sourceHas(blocks, "aria-controls={bodyId}") &&
   sourceHas(blocks, 'id={bodyId}') &&
   sourceHas(blocks, 'aria-disabled={live}'));
+/* 【UI 重建 2026-10-27】思考块的**形态变了**，断言跟着改。
+ *
+ * 旧断言测的是「卡片框」：`rounded-[var(--radius-card)] border bg-surface`
+ * + `px-3.5 py-2` 的标题行 + `p-3.5 font-mono` 的正文。
+ *
+ * 现在（与 Claude 一致）是**克制型**：整体透明无边框无阴影，标题行 28px，
+ * 正文用左侧发丝边 + 内缩表示「从属关系」，而不是再套一张卡片。
+ * 样式落在 `ClaudeThinkingAccordion.css`（JSX 里不再有那串 Tailwind）。
+ *
+ * 断言因此分两处：JSX 里有稳定的 `data-cds` 挂点，CSS 里有真实几何。 */
+ck("Thinking: 克制型思考块（透明无框 + 28px 标题行 + 左侧发丝边内容区）",
+  sourceHas(thinkingAccordion, 'data-cds="ThinkingAccordion"') &&
+  sourceHas(thinkingAccordion, 'data-cds="ThinkingAccordionHeader"') &&
+  sourceHas(thinkingAccordion, "flex items-center gap-2 select-none") &&
+  sourceHas(thinkingAccordion, "text-left text-content-muted") &&
+  // CSS 那侧的几何：透明底、28px 行高、内容区左发丝边。
+  sourceHas(thinkingCss, "background: transparent") &&
+  sourceHas(thinkingCss, "min-height: 28px") &&
+  sourceHas(thinkingCss, "border-left: 1px solid rgb(var(--edge)"),
+  // 负控：不许退回「每块都套一张卡片」的旧形态。
+  !sourceHas(thinkingAccordion, "rounded-[var(--radius-card)] border border-edge bg-surface"));
+ck("Thinking: Copy as quote is a separate localized control with guarded clipboard feedback",
+  sourceHas(thinkingAccordion, "navigator.clipboard.writeText") &&
+  sourceHas(thinkingAccordion, "text.split(") &&
+  sourceHas(thinkingAccordion, ".join(") &&
+  sourceHas(thinkingAccordion, 't("chatStream.copyQuote")') &&
+  sourceHas(thinkingAccordion, "copiedTimer.current") &&
+  sourceHas(thinkingAccordion, "clearTimeout(copiedTimer.current)") &&
+  sourceHas(thinkingAccordion, "catch {") &&
+  sourceHas(thinkingAccordion, 'aria-label={copied ? t("common.copied") : t("chatStream.copyQuote")}'));
 ck("Shared collapsible: details use ID linked to header with meaningful aria state",
   sourceHas(blocks, "function Collapsible") &&
   sourceHas(blocks, "const bodyId = useId();") &&
@@ -102,6 +139,22 @@ ck("Markdown: clipboard feedback timer cancelled on unmount and repeat copy",
 ck("Markdown: copy button announces current localized state and can be keyboard-focused",
   sourceHas(markdown, 'aria-label={copied ? t("common.copied") : t("chatStream.copyCode")}') &&
   sourceHas(markdown, "min-h-8 items-center gap-1"));
+/* 【UI 重建 2026-10-27】代码块的**几何已迁到 CSS**，JSX 只剩挂点与交互。
+ *
+ * 旧断言测的是 JSX 里的 Tailwind 串（`px-3.5 py-0` / `p-3.5 font-mono`）。
+ * 现在样式住在 `ClaudeCodeBlock.css`，断言因此分两处：
+ * JSX 侧要「有稳定的挂点 + 复制动作仍是文字优先」，CSS 侧要「有真实几何」。 */
+const codeBlockCss = read("ClaudeCodeBlock.css");
+ck("Markdown: fenced code block uses Claude-like header/body spacing and text-first copy action",
+  // CSS 侧：容器有发丝边 + 圆角；标题行有下边框 + 内边距；正文有内边距。
+  sourceHas(codeBlockCss, "border: 1px solid rgb(var(--edge)") &&
+  sourceHas(codeBlockCss, "border-radius: var(--radius-code") &&
+  sourceHas(codeBlockCss, "padding-inline: 12px") &&
+  sourceHas(codeBlockCss, "border-bottom: 1px solid rgb(var(--edge)") &&
+  // JSX 侧：复制动作是**文字优先**（复制 → 已复制），两态都带图标。
+  sourceHas(markdown, 'copied ? t("common.copied") : t("chatStream.copyCode")') &&
+  sourceHas(markdown, 'IconCheck size={12}') &&
+  sourceHas(markdown, '{t("chatStream.copyCode")}'));
 ck("Markdown: long code preview remeasures after resize and syntax highlighting",
   sourceHas(markdown, "new ResizeObserver(remeasure)") &&
   sourceHas(markdown, 'window.addEventListener("resize", remeasure)') &&
@@ -159,6 +212,19 @@ ck("MCP: long provider labels and statuses fit narrow chat panes",
   sourceHas(mcp, "flex min-w-0 flex-wrap items-center justify-between") &&
   sourceHas(mcp, "min-w-0 flex-1 truncate font-mono") &&
   sourceHas(mcp, "min-h-6 shrink-0 items-center"));
+ck("Tool rows: all disclosure headers share a padded hit area and align with nested details",
+  // 【UI 重建 2026-10-27】工具行高度从写死 `min-h-8`（32px）改成
+  // `--m-h-control`（26px，Claude 的真实控件档）。断言跟着认变量，
+  // 这样密度档切换时行高自动跟随，而断言不必再改。
+  sourceHas(blocks, 'const TOOL_ROW_CLS =\n  "flex min-h-[var(--m-h-control,26px)] w-full items-center gap-2 rounded-[var(--radius-control)] px-2 py-1') &&
+  sourceHas(blocks, 'const TOOL_BODY_RULE_CLS = "ml-2 border-l-[length:var(--hairline)] border-edge"'));
+ck("Tool details: Edit, Write and generic payloads use one readable, bounded code surface",
+  sourceHas(blocks, 'function ToolDetailSection({ label, children, maxHeightClass = "max-h-60" }') &&
+  sourceHas(blocks, 'data-cds="ToolDetailSection"') &&
+  sourceHas(blocks, "border border-edge/60 bg-surface-muted/40 p-3 font-mono leading-relaxed") &&
+  (blocks.match(/<ToolDetailSection label={t\("chatStream\.tool\.result"\)}/g) || []).length === 3 &&
+  sourceHas(blocks, '<ToolDetailSection label={t("chatStream.tool.input")}>') &&
+  sourceHas(blocks, '<ToolDetailSection label={t("chatStream.diff.newFileContent")} maxHeightClass="max-h-80">'));
 
 ck("Negative: reverting the Write path lookup contract is detectable",
   !sourceHas(blocks.replace("writePreviewBefore(beforeMap, filePath)", "unsafePrefixMatch(filePath)"), "writePreviewBefore(beforeMap, filePath)"));

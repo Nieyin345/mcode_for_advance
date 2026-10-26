@@ -119,15 +119,31 @@ check("comfortable 档有值", comfortable !== null, { comfortable });
 check("compact 档有值", compact !== null, { compact });
 check("cozy 档有值", cozy !== null, { cozy });
 
-console.log("\n[2] ★ 默认档必须等于上游 leading-relaxed（1.625）");
+/* 【UI 重建 2026-10-27】默认档的**依据换了**。
+ *
+ * 原来断言 1.625，出处是 `open-claude-ui` 里 `ChatMessageBubbles.tsx` 的
+ * Tailwind `leading-relaxed`。那份第三方逆向目录已按用户要求删除，
+ * 外观基准改成**用户本机安装的 Claude Desktop 3.1623.4.0**。
+ *
+ * 新依据（从它的产物里直接读到）：
+ *   --cds-font-size-body : calc(.8125rem × rem-scale)
+ *   --cds-leading-body   : calc(1.25rem  × rem-scale)
+ *   --cds-rem-scale      : calc(16 / 17)
+ * 两者相除 = 1.25 / 0.8125 = **1.538462**（rem-scale 约掉，与它无关）。
+ *
+ * 实现取 1.5378（与 1.538462 差 0.04%，是行高 px 取整造成的），
+ * 所以断言用一个容差而不是严格相等 —— 但**仍然钉住「必须是 Claude 的那个比例」**：
+ * 1.45 / 1.625 都落在容差外。 */
+const CLAUDE_BODY_LEADING = 1.25 / 0.8125; // = 1.538462
+console.log(`\n[2] ★ 默认档必须等于 Claude 的 leading/body 比例（${CLAUDE_BODY_LEADING.toFixed(6)}）`);
 check(
-  "comfortable === 1.625（上游 ChatMessageBubbles.tsx:361 的 leading-relaxed）",
-  comfortable === 1.625,
-  { comfortable, expected: 1.625 },
+  "comfortable ≈ 1.5385（Claude --cds-leading-body / --cds-font-size-body）",
+  comfortable !== null && Math.abs(comfortable - CLAUDE_BODY_LEADING) < 0.002,
+  { comfortable, expected: CLAUDE_BODY_LEADING },
 );
 check(
-  "负控：默认档不等于旧值 1.45（证明这条不是恒真）",
-  comfortable !== 1.45,
+  "负控：默认档既不等于旧值 1.45，也不等于第三方文档的 1.625（证明这条不是恒真）",
+  comfortable !== 1.45 && comfortable !== 1.625,
   { comfortable },
 );
 

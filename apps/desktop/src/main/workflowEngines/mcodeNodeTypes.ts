@@ -39,21 +39,46 @@ import {
   MCODE_NODE_PACK_VERSION,
   MCODE_X_MCODE_DEFAULT_ENTRY,
   agentNodeHtml,
+  appendWorkflowFailureResult,
   assertMcodeNodePortResult,
   createNodeInputLifecycle,
+  createNodeStatusReporter,
   normalizeAgentConfig,
   snapshotMcodeNodeInvocation,
   registerMcodeAgentNodes,
   tabMetaDefaultsScript,
+  workflowResultsForHost,
+  workflowUserTextOf,
   type McodeAgentNodeConfig,
   type McodeAgentPort,
   type NodeRedNodeLike,
   type NodeRedRuntimeApi,
 } from "./mcodeNodePack.js";
 import {
+  branchContextForNode,
+  type McodeBranchContext,
+  type McodeBranchOption,
+} from "./branchContext.js";
+import {
   CONDITION_EVAL_BRIDGE_KEY,
   MCODE_CONDITION_EVAL_NODE_TYPE,
 } from "@contracts/conditionBridge";
+
+/**
+ * 分支节点把「选了哪条出路」写进产出变量时的那个键名。
+ *
+ * ## ⚠️ 为什么不 `import { DECIDE_VAR_NAME } from "@contracts/outputConstraint"`
+ *
+ * 子进程包（`nodePackBundle.generated.ts`）是 **esbuild 从本文件打出来的独立 CJS**，
+ * 只该带"节点外壳"那几样。`outputConstraint.ts` 会拖进 zod 与整片 contracts 依赖图 ——
+ * 实测：加这一行 import 后包从 **29 KB 涨到 245 KB**，而 `t42-node-pack-smoke` 的
+ * 「standalone CJS 里不许有 RuntimeManager / provider SDK」那条判据随即变红
+ * （`nodeType.ts` 的注释里提到 `RuntimeManager`）。
+ *
+ * 判据仍然是**同一份字符串**：`mcode-node-pack-smoke` 有一条断言钉住这里与
+ * contracts 那个常量相等 —— 两处漂移会当场红，而不是等运行期产出变量对不上。
+ */
+const DECIDE_VAR_NAME = "出路";
 
 export const MCODE_CONVERSATION_NODE_TYPE = "mcode-conversation";
 export const MCODE_BRANCH_NODE_TYPE = "mcode-branch";
@@ -70,7 +95,6 @@ export const MCODE_NODE_PACK_TYPES = [
   MCODE_BRANCH_NODE_TYPE,
   MCODE_TRIGGER_NODE_TYPE,
   MCODE_MODULE_CAPABILITY_NODE_TYPE,
-  MCODE_NODE_RED_CALL_NODE_TYPE,
 ] as const;
 
 /**
@@ -83,6 +107,17 @@ export const MCODE_NODE_PACK_TYPES = [
  */
 export const MCODE_INTERNAL_NODE_TYPES = [
   MCODE_CONDITION_EVAL_NODE_TYPE,
+  // 【Q7】`mcode-node-red-call` 从 palette 退役 —— 它做的事（从一张图里调本机引擎的
+  // Admin API）在统一到 Node-RED 之后与原生 `http request` 重复，而它多出来的只有
+  // **回环端口围栏**这一个安全属性。
+  //
+  // 为什么**不删代码**：旧图里已经存在的这种节点必须还能读、还能跑 —— 删除注册会让
+  // 它们变成 `mcode-unknown`，而迁移器对 unknown 的处理是拒绝整张图（fail-closed），
+  // 等于把用户的旧工作流锁死。而把它们改迁成原生 `http request` 会**丢掉围栏**，
+  // 那是在"减少重复"的名义下削弱安全性。
+  //
+  // 所以：**用户拖不到新节点，已有的照常工作**。与条件求值适配节点同一档。
+  MCODE_NODE_RED_CALL_NODE_TYPE,
 ] as const;
 
 /** 本节点包**实际注册**的全部类型（palette + 内部）。`package.json` 的
@@ -105,11 +140,21 @@ export interface McodeNodeBasePayload {
   msgId?: string;
   /** Host lookup key only, checked against native tab/document at dispatch. */
   triggerTicket?: string;
+  /** Non-authoritative branch note for this exact target node only. */
+  branchContext?: McodeBranchContext;
+  /** Original workflow input, retained across native nodes for {{user}} templates. */
+  user?: string;
+  /** Bounded prior Mcode outcomes used by the shared node-template resolver. */
+  results?: unknown[];
 }
 
 type Invocation = ReturnType<typeof snapshotMcodeNodeInvocation>;
 
-function basePayload(invocation: Invocation): McodeNodeBasePayload {
+function basePayload(invocation: Invocation, config: Cfg): McodeNodeBasePayload {
+  const branchContext = branchContextForNode(invocation.incomingMcode, config.id);
+  const carriedUser = typeof invocation.incomingMcode["user"] === "string" && invocation.incomingMcode["user"].length > 0
+    ? invocation.incomingMcode["user"].slice(0, 32_000) : workflowUserTextOf(invocation.inputSnapshot);
+  const results = workflowResultsForHost(invocation.incomingMcode);
   return {
     input: invocation.inputSnapshot,
     params: invocation.paramsSnapshot,
@@ -119,13 +164,21 @@ function basePayload(invocation: Invocation): McodeNodeBasePayload {
     ...(typeof invocation.incomingMcode["triggerTicket"] === "string"
       && invocation.incomingMcode["triggerTicket"].length <= 128
       ? { triggerTicket: invocation.incomingMcode["triggerTicket"] } : {}),
+    ...(branchContext !== undefined ? { branchContext } : {}),
+    ...(carriedUser ? { user: carriedUser } : {}),
+    ...(results ? { results } : {}),
   };
 }
 
 /** Host return uses the *same* invocation snapshot sent to the port. */
 function outputMsg(
   invocation: Invocation,
-  result: { text: string; artifacts: Array<Record<string, unknown>>; runId?: string },
+  result: {
+    text: string;
+    artifacts: Array<Record<string, unknown>>;
+    runId?: string;
+    outputs?: Record<string, unknown>;
+  },
   extraMcode: Record<string, unknown> = {},
 ): Record<string, unknown> {
   const safeResult = assertMcodeNodePortResult(result);
@@ -135,8 +188,11 @@ function outputMsg(
   // 一条消息走过几十个节点已罕见；再多说明流被手改成环了，截断比无界增长安全
   // （`conditionHost.sanitizeConditionResults` 也只取尾部）。
   const priorResults = Array.isArray(incomingMcode["results"]) ? incomingMcode["results"] as unknown[] : [];
+  const carriedUser = typeof incomingMcode["user"] === "string" && incomingMcode["user"].length > 0
+    ? incomingMcode["user"].slice(0, 32_000) : workflowUserTextOf(invocation.inputSnapshot);
   const mcode: Record<string, unknown> = {
     ...incomingMcode,
+    ...(carriedUser ? { user: carriedUser } : {}),
     nodeId: normalized.nodeId,
     runId: safeResult.runId ?? runId,
     ...(normalized.outputVar !== null ? { outputVar: normalized.outputVar } : {}),
@@ -144,12 +200,17 @@ function outputMsg(
       nodeId: normalized.nodeId,
       summary: safeResult.text,
       status: "success",
+      ...(safeResult.outputs !== undefined ? { outputs: safeResult.outputs } : {}),
+      ...(safeResult.artifacts.length > 0 ? { artifacts: safeResult.artifacts } : {}),
     }],
     ...extraMcode,
   };
   // The new native editor's empty output binding takes precedence over the
   // previous upstream message, exactly as it does for mcode-agent.
   if (normalized.outputVar === null) delete mcode["outputVar"];
+  // Branch notes are for the direct target only. A new branch below replaces
+  // this value; every other Mcode node consumes it rather than leaking it onward.
+  if (!Object.prototype.hasOwnProperty.call(extraMcode, "branch")) delete mcode["branch"];
   return {
     ...messageSnapshot,
     payload: { text: safeResult.text, artifacts: safeResult.artifacts },
@@ -164,6 +225,7 @@ export interface McodeConversationPort {
     text: string;
     artifacts: Array<Record<string, unknown>>;
     runId?: string;
+    outputs?: Record<string, unknown>;
   }>;
 }
 
@@ -174,7 +236,7 @@ export async function runConversationNode(
   port: McodeConversationPort,
 ): Promise<{ msg: Record<string, unknown> }> {
   const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
-  const base = basePayload(invocation);
+  const base = basePayload(invocation, config);
   const result = await port.run({ ...base, instruction: invocation.normalized.instruction });
   return { msg: outputMsg(invocation, result) };
 }
@@ -183,7 +245,51 @@ export async function runConversationNode(
 
 export interface McodeBranchPort {
   /** 选哪条出边（0-based 端口，与出边文档顺序一致）。 */
-  decide(payload: McodeNodeBasePayload & { portCount: number; decider: string }): Promise<{ port: number; label?: string }>;
+  decide(payload: McodeNodeBasePayload & {
+    portCount: number;
+    decider: string;
+    options: McodeBranchOption[];
+  }): Promise<{ port: number; label?: string }>;
+}
+
+/**
+ * Recover user-authored edge metadata only while the exact native connection
+ * still exists. The sidecar is descriptive data, never an authorization source.
+ */
+function branchOptionForPort(config: Cfg, port: number): McodeBranchOption {
+  const rawTargets = config.wires?.[port];
+  const targets = Array.isArray(rawTargets)
+    ? rawTargets.filter((target): target is string => typeof target === "string") : [];
+  const meta = config["x-mcode"];
+  const rawEdgeMeta = meta !== null && typeof meta === "object" && !Array.isArray(meta)
+    ? (meta as Record<string, unknown>)["edgeMeta"] : undefined;
+  const matches = Array.isArray(rawEdgeMeta) ? rawEdgeMeta.filter((candidate): candidate is Record<string, unknown> =>
+    candidate !== null && typeof candidate === "object" && !Array.isArray(candidate)
+      && candidate["sourceNativeId"] === config.id
+      && candidate["sourcePort"] === port
+      && typeof candidate["targetNativeId"] === "string"
+      && targets.includes(candidate["targetNativeId"] as string)) : [];
+  const edge = matches.length === 1 ? matches[0] : undefined;
+  const targetNodeId = edge && typeof edge["targetNativeId"] === "string"
+    ? edge["targetNativeId"] as string : targets.length === 1 ? targets[0] : undefined;
+  const targetTitle = edge && typeof edge["targetTitle"] === "string" && edge["targetTitle"].length <= 500
+    ? edge["targetTitle"].trim() : "";
+  const explicitLabel = edge && typeof edge["label"] === "string" && edge["label"].length <= 500
+    ? edge["label"].trim() : "";
+  const label = explicitLabel || targetTitle;
+  const note = edge && typeof edge["note"] === "string" && edge["note"].length <= 2_000
+    ? edge["note"].trim() : "";
+  return {
+    port,
+    ...(targetNodeId !== undefined ? { targetNodeId } : {}),
+    ...(targetTitle !== "" ? { targetTitle } : {}),
+    ...(label !== "" ? { label } : {}),
+    ...(note !== "" ? { note } : {}),
+  };
+}
+
+function branchOptionsFor(config: Cfg, portCount: number): McodeBranchOption[] {
+  return Array.from({ length: portCount }, (_, port) => branchOptionForPort(config, port));
 }
 
 /**
@@ -199,7 +305,7 @@ export async function runBranchNode(
   port: McodeBranchPort,
 ): Promise<{ msg: Record<string, unknown>; port: number; label?: string }> {
   const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
-  const base = basePayload(invocation);
+  const base = basePayload(invocation, config);
   // Flows restored from disk are untrusted runtime objects, regardless of
   // the TypeScript type of a native editor's wires array. Never authorize
   // a Host routing decision using a synthetic/invalid output shape.
@@ -210,10 +316,13 @@ export async function runBranchNode(
     throw new Error("Node-RED branch wires invalid: expected string[][]");
   }
   const portCount = Math.max(1, wires?.length ?? 1);
+  if (portCount > 12) throw new Error("分支端口过多，最多支持 12 个");
+  const options = branchOptionsFor(config, portCount);
   const chosen = await port.decide({
     ...base,
     portCount,
     decider: typeof base.params["decider"] === "string" ? (base.params["decider"] as string) : "user",
+    options,
   });
   if (!chosen || typeof chosen !== "object" || !Number.isInteger(chosen.port) || chosen.port < 0 || chosen.port >= portCount) {
     throw new Error("分支端口无效，拒绝执行");
@@ -221,15 +330,45 @@ export async function runBranchNode(
   if (chosen.label !== undefined && typeof chosen.label !== "string") {
     throw new Error("Host branch label invalid: expected a string");
   }
+  const selectedOption = options[chosen.port];
+  const label = selectedOption.label ?? chosen.label;
+  const by = base.params["decider"] === "model" ? "agent" : "user";
+  const sourceNodeId = typeof config.id === "string" ? config.id : invocation.normalized.nodeId;
+  const branch: Record<string, unknown> = {
+    port: chosen.port,
+    sourceNodeId,
+    by,
+    ...(selectedOption.targetNodeId !== undefined ? { targetNodeId: selectedOption.targetNodeId } : {}),
+    ...(typeof label === "string" && label.trim() !== "" ? { label: label.trim().slice(0, 500) } : {}),
+    ...(selectedOption.note !== undefined ? { note: selectedOption.note } : {}),
+  };
+  const branchSummary = typeof label === "string" && label.trim() !== ""
+    ? label.trim() : `输出端口 ${chosen.port}`;
   const msg = outputMsg(
     invocation,
-    { text: "", artifacts: [] }, // branch 只负责路由，原输入从调用时快照恢复。
-    { branch: { port: chosen.port, ...(chosen.label !== undefined ? { label: chosen.label } : {}) } },
+    { text: branchSummary, artifacts: [] }, // branch 只负责路由，原输入从调用时快照恢复。
+    { branch },
   );
+  // The legacy model-decider exposes its chosen edge as the declared `出路`
+  // output variable. Keep that contract available to downstream templates.
+  if (by === "agent" && typeof label === "string" && label.trim() !== "") {
+    const mcode = msg["mcode"] as Record<string, unknown>;
+    const results = Array.isArray(mcode["results"]) ? [...mcode["results"] as unknown[]] : [];
+    const lastIndex = results.length - 1;
+    const last = results[lastIndex];
+    if (last !== null && typeof last === "object" && !Array.isArray(last)
+        && (last as Record<string, unknown>)["nodeId"] === invocation.normalized.nodeId) {
+      results[lastIndex] = {
+        ...(last as Record<string, unknown>),
+        outputs: { [DECIDE_VAR_NAME]: label.trim() },
+      };
+      mcode["results"] = results;
+    }
+  }
   msg["payload"] = invocation.inputSnapshot;
   delete (msg["mcode"] as Record<string, unknown>)["branchPort"];
   delete (msg["mcode"] as Record<string, unknown>)["branchLabel"];
-  return { msg, port: chosen.port, ...(chosen.label !== undefined ? { label: chosen.label } : {}) };
+  return { msg, port: chosen.port, ...(typeof label === "string" && label.trim() !== "" ? { label: label.trim() } : {}) };
 }
 
 /* ── trigger ── */
@@ -262,7 +401,7 @@ export function triggerSubscribePayload(config: Cfg): McodeNodeBasePayload & { t
   const invocation = snapshotMcodeNodeInvocation({}, config);
   const kind = typeof invocation.paramsSnapshot["triggerKind"] === "string"
     ? invocation.paramsSnapshot["triggerKind"] as string : "manual";
-  return { ...basePayload(invocation), triggerKind: kind };
+  return { ...basePayload(invocation, config), triggerKind: kind };
 }
 
 /* ── module-capability ── */
@@ -272,6 +411,7 @@ export interface McodeModuleCapabilityPort {
     text: string;
     artifacts: Array<Record<string, unknown>>;
     runId?: string;
+    outputs?: Record<string, unknown>;
   }>;
 }
 
@@ -281,7 +421,7 @@ export async function runModuleCapabilityNode(
   port: McodeModuleCapabilityPort,
 ): Promise<{ msg: Record<string, unknown> }> {
   const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
-  const base = basePayload(invocation);
+  const base = basePayload(invocation, config);
   const moduleId = typeof base.params["moduleId"] === "string" ? (base.params["moduleId"] as string) : "";
   const contributionId = typeof base.params["contributionId"] === "string" ? (base.params["contributionId"] as string) : "";
   const path = typeof base.params["path"] === "string" ? (base.params["path"] as string) : "";
@@ -297,6 +437,7 @@ export interface McodeNodeRedCallPort {
     artifacts: Array<Record<string, unknown>>;
     runId?: string;
     status?: number;
+    outputs?: Record<string, unknown>;
   }>;
 }
 
@@ -336,7 +477,7 @@ export async function runConditionEvalNode(
   port: McodeConditionEvalPort,
 ): Promise<{ msg: Record<string, unknown> }> {
   const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
-  const base = basePayload(invocation);
+  const base = basePayload(invocation, config);
   const expression = base.params["expression"];
   const results = carriedResultsOf(invocation.incomingMcode).slice(-64);
   // **求值与执行记录都以原条件节点的 Mcode id 为准**（`bridgesNodeId`），不是适配
@@ -369,8 +510,16 @@ export async function runConditionEvalNode(
       nodeId: bridgeTarget,
       summary: carriedTextOf(invocation.inputSnapshot),
       status: "success",
+      // The legacy condition runner exposes both values as referenceable
+      // outputs. Carry them in the shared result record so downstream Mcode
+      // nodes can use {{Condition.result}} / {{Condition.branch}}.
+      outputs: { result: outcome.matched, branch: outcome.matched ? "true" : "false" },
     }],
   };
+  // The condition adapter is the selected target for this branch context;
+  // it has no prompt of its own, so consume the note here instead of leaking it
+  // through the native switch to an unrelated later node.
+  delete mcode["branch"];
   return { msg: { ...invocation.messageSnapshot, mcode } };
 }
 
@@ -380,7 +529,7 @@ export async function runNodeRedCallNode(
   port: McodeNodeRedCallPort,
 ): Promise<{ msg: Record<string, unknown> }> {
   const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
-  const base = basePayload(invocation);
+  const base = basePayload(invocation, config);
   const enginePath = typeof base.params["enginePath"] === "string" ? (base.params["enginePath"] as string) : "";
   // Keep a freshly-created native palette node aligned with the Mcode
   // node-type manifest and Host executor: omitted/blank method means POST.
@@ -425,6 +574,19 @@ type NodeInstance = NodeRedNodeLike & {
   wires?: string[][];
 };
 
+/** The failure record must use the saved Mcode node identity, not the native adapter id. */
+function failureNodeIdOf(config: Cfg, type: string): string {
+  const rawMeta = config["x-mcode"];
+  const meta = rawMeta !== null && typeof rawMeta === "object" && !Array.isArray(rawMeta)
+    ? rawMeta as Record<string, unknown> : {};
+  if (type === MCODE_CONDITION_EVAL_NODE_TYPE) {
+    const bridgeTarget = meta[CONDITION_EVAL_BRIDGE_KEY];
+    if (typeof bridgeTarget === "string" && bridgeTarget.trim() !== "") return bridgeTarget;
+  }
+  if (typeof meta["nodeId"] === "string" && meta["nodeId"].trim() !== "") return meta["nodeId"];
+  return typeof config.id === "string" ? config.id : "";
+}
+
 /** 统一注册一个单输入单输出节点。 */
 function registerIoSugar(
   RED: NodeRedRuntimeApi,
@@ -436,17 +598,27 @@ function registerIoSugar(
     RED.nodes.createNode(node, config);
     // Share the Agent node's redeploy lifecycle: an indefinitely pending Host
     // call must not strand Node-RED's input accounting or publish into old wires.
-    const lifecycle = createNodeInputLifecycle(node);
+    // 【WF-05】画布状态行（与 mcode-agent 同一份实现）。
+    const status = createNodeStatusReporter(node);
+    const lifecycle = createNodeInputLifecycle(node, () => status.clear());
     node.on("input", (msg, send, done) => {
       const finish = lifecycle.begin(done);
       if (finish === null) return;
+      status.running();
       void (async () => {
         try {
           const outcome = await run(msg, config);
           if (!lifecycle.isClosed()) send(outcome.msg);
+          status.success();
           finish();
         } catch (err) {
-          if (!lifecycle.isClosed()) node.error(err, msg);
+          if (!lifecycle.isClosed()) {
+            appendWorkflowFailureResult(msg, failureNodeIdOf(config, type), err);
+            status.failed(err instanceof Error ? err.message : String(err));
+            node.error(err, msg);
+          } else {
+            status.clear();
+          }
           finish(lifecycle.isClosed() ? undefined : err instanceof Error ? err : new Error(String(err)));
         }
       })();
@@ -481,10 +653,13 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
   if (!onlyType || onlyType === MCODE_BRANCH_NODE_TYPE) RED.nodes.registerType(MCODE_BRANCH_NODE_TYPE, function (this: NodeInstance, config: Cfg) {
     const node = this;
     RED.nodes.createNode(node, config);
-    const lifecycle = createNodeInputLifecycle(node);
+    // 【WF-05】分支节点的状态行说的是"选了哪条出路"，比"完成"有用得多。
+    const status = createNodeStatusReporter(node);
+    const lifecycle = createNodeInputLifecycle(node, () => status.clear());
     node.on("input", (msg, send, done) => {
       const finish = lifecycle.begin(done);
       if (finish === null) return;
+      status.running();
       void (async () => {
         try {
           const outcome = await runBranchNode(msg, config, getPorts().branch);
@@ -493,10 +668,19 @@ export function registerMcodeNodePack(RED: NodeRedRuntimeApi, getPorts: () => Mc
             const ports: Array<Record<string, unknown> | null> = Array.from({ length: portCount }, () => null);
             ports[outcome.port] = outcome.msg;
             send(ports);
+            status.success(`已选第 ${outcome.port + 1} 条出路`);
+          } else {
+            status.clear();
           }
           finish();
         } catch (err) {
-          if (!lifecycle.isClosed()) node.error(err, msg);
+          if (!lifecycle.isClosed()) {
+            appendWorkflowFailureResult(msg, failureNodeIdOf(config, MCODE_BRANCH_NODE_TYPE), err);
+            status.failed(err instanceof Error ? err.message : String(err));
+            node.error(err, msg);
+          } else {
+            status.clear();
+          }
           finish(lifecycle.isClosed() ? undefined : err instanceof Error ? err : new Error(String(err)));
         }
       })();
@@ -650,6 +834,11 @@ const nodeEditorUi: Record<string, {
 function htmlFor(type: string, params: Array<{ id: string; label: string; kind: "text" | "select" | "textarea"; options?: string[]; defaultValue?: string; required?: boolean }>, extraDefs = ""): string {
   const ui = nodeEditorUi[type];
   if (!ui) throw new Error("Unknown Mcode editor type: " + type);
+  // 【Q7】内部节点（`MCODE_INTERNAL_NODE_TYPES`）**不给 category** —— 空字符串的
+  // 节点在 Node-RED 里不出现于 palette，用户拖不到新的；而已有的实例仍能渲染、
+  // 打开属性、保存。这正是"退役但保留读回"想要的形状。
+  const isInternal = (MCODE_INTERNAL_NODE_TYPES as readonly string[]).includes(type);
+  const category = isInternal ? "" : "mcode";
   const rows = params.map((p) => {
     const label = '<label for="node-input-' + p.id + '" data-i18n="[title]mcode.tooltip.' + p.id + '"><span data-i18n="mcode.label.' + p.id + '">' + p.label + '</span></label>';
     const control = p.kind === "select"
@@ -662,7 +851,7 @@ function htmlFor(type: string, params: Array<{ id: string; label: string; kind: 
   }).join("\n  ");
   return `<script type="text/javascript">
   RED.nodes.registerType("${type}", {
-    category: "mcode",
+    category: "${category}",
     color: "#8ea6b8",
     defaults: { name: { value: "" }, ${params.map((p) => `${p.id}: { value: ${JSON.stringify(p.defaultValue ?? "")}${p.required ? ", required: true" : ""} }`).join(", ")}, ${MCODE_X_MCODE_DEFAULT_ENTRY} },
     inputs: ${type === MCODE_TRIGGER_NODE_TYPE ? 0 : 1},
@@ -741,7 +930,8 @@ export function nodeRedCallNodeHtml(): string {
 export function conditionEvalNodeHtml(): string {
   return `<script type="text/javascript">
   RED.nodes.registerType("${MCODE_CONDITION_EVAL_NODE_TYPE}", {
-    category: "mcode",
+    // 【Q7】内部节点：不给 category = 不进 palette。已有的条件节点实例照常渲染。
+    category: "",
     color: "#b8c4d0",
     defaults: { name: { value: "" }, ${MCODE_X_MCODE_DEFAULT_ENTRY} },
     inputs: 1,

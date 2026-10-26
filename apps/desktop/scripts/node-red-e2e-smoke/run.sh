@@ -11,7 +11,11 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE/../.."
 
-OUT=$(mktemp -d "${TMPDIR:-/tmp}/mcode-nr-e2e-smoke.XXXXXX")
+# ⚠️ 产物目录必须在 `.tmp/` 下，不能用 /tmp。【MC-052】`--external:ssh2` 把 ssh2 的
+# import 留到运行时，由 node 从**产物目录往上**找 node_modules；/tmp 在 Windows 上
+# 不在仓库里，找不到就 ERR_MODULE_NOT_FOUND。
+mkdir -p .tmp
+OUT=$(mktemp -d .tmp/mcode-nr-e2e-smoke.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 source "$HERE/../lib/esbuild-path.sh"
@@ -30,7 +34,7 @@ node build/build-node-pack.cjs --check
 # junction 指回共享安装树，不动也不复制那 106MB。
 E2E_ROOT="${MCODE_NR_E2E_ROOT:-$PWD/.tmp/nr-e2e}"
 mkdir -p "$E2E_ROOT"
-DATA=$(mktemp -d "${TMPDIR:-/tmp}/mcode-nr-e2e-data.XXXXXX")
+DATA=$(mktemp -d .tmp/mcode-nr-e2e-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 export MCODE_SMOKE_DATA_ROOT="$DATA"
 export MCODE_NR_E2E_ROOT="$E2E_ROOT"
@@ -42,7 +46,8 @@ export MCODE_NR_E2E_ROOT="$E2E_ROOT"
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/workflowEngines/nodePackProductionPorts.js=./scripts/mcode-node-pack-smoke/productionPortsStub.ts \
-  --external:sherpa-onnx-node \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
+  --external:sherpa-onnx-node --external:ssh2 \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
 node "$OUT/smoke.mjs"
@@ -59,7 +64,8 @@ if [[ -f ".tmp/node-red-release/manifest.json" ]]; then
     --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
     --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/workflowEngines/nodePackProductionPorts.js=./scripts/mcode-node-pack-smoke/productionPortsStub.ts \
-    --external:sherpa-onnx-node \
+    --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
+    --external:sherpa-onnx-node --external:ssh2 \
     --outfile="$OUT/vendor.mjs" --log-level=error
   node "$OUT/vendor.mjs"
 else

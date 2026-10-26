@@ -143,8 +143,20 @@ await withAuditPage(here,async page=>{
     await page.eval('__ui.open("第二条普通工作流")');
     await page.waitFor(`document.querySelector('${nativeEntry}')`);
     check('choosing a second workflow keeps native entry',await page.eval(`!!document.querySelector('${nativeEntry}')`));
+    // 点之前先把"现在引擎页是隐藏的"钉住 —— 否则下面那条"真的切过去了"在
+    // **点之前就已经成立**（默认页签、或上一次 test 留下的状态），什么也没验。
+    check('before clicking, the engine tab is NOT the active view',
+      await page.eval('!document.querySelector("#workflows-panel-engines")?.classList.contains("flex")'));
     await page.eval(`document.querySelector('${nativeEntry} button').click()`);
     await page.waitFor('document.querySelector("#workflows-panel-engines")?.classList.contains("flex")');
+    const panelProbe=await page.eval(`(()=>{
+      const ids=[...document.querySelectorAll('[id*="panel-"]')].map(e=>e.id);
+      const tabs=[...document.querySelectorAll('[role=tab]')].map(e=>({id:e.id,sel:e.getAttribute('aria-selected')}));
+      return {ids,tabs,html:document.body.innerHTML.length};
+    })()`);
+    check('engine panel exists in the DOM after the click (id prefix did not drift)',
+      await page.eval('!!document.querySelector("#workflows-panel-engines")'),
+      {...panelProbe,exceptions:page.exceptions.slice()});
     check('native entry loads the selected B rather than previously selected A',await page.eval('__audit.nativeLoads.at(-1)==="audit-workflow-b"'));
     check('native entry really navigates to engine tab',await page.eval('document.querySelector("#workflows-panel-engines").classList.contains("flex")'));
     await page.screenshot('native-workflow-entry.png');

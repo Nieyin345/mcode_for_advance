@@ -289,10 +289,18 @@ console.log("\n① engine=node-red：旧 runner 不装监听、不起运行（�
   // 手动入口：同样在入口就说清楚，而不是建会话、claim、到最后 assert 才失败。
   const r2 = newRunner();
   try {
+    // 【Q5】手动入口不再回"由 Node-RED 引擎管理"那句 —— 它**转发到引擎**：
+    // 用户在设置里点「立刻运行一次」是他唯一的手动入口，拒绝它等于删掉这个功能。
+    // 无头套件里没有 EngineRuntime，所以这里可观测到的是引擎侧那句"未就绪"。
+    //
+    // ⚠️ 判据**不能**写成「包含 '未就绪'」就完事：那句话也可能是任何别的路径给的。
+    // 这里同时钉住「旧 runner 没有自己起一次运行」—— 转发 / 拒绝都行，**自己跑不行**。
     const now = await r2.runNow(wfCron, "t_cron");
-    check("runNow 对 node-red 图返回可读拒绝", now.ok === false && (now.error ?? "").includes(OWNED_DETAIL), now);
+    check("runNow 对 node-red 图转发到引擎（不是旧 runner 自己跑）",
+      now.ok === false && (now.error ?? "").includes("Node-RED"), now);
     const target = await r2.runWithTarget(wfFile, "t_file", { files: [join(NR_DIR, "gate-nr.md")] });
-    check("runWithTarget 对 node-red 图同样拒绝", target.ok === false && (target.error ?? "").includes(OWNED_DETAIL), target);
+    check("runWithTarget 对 node-red 图同样转发到引擎",
+      target.ok === false && (target.error ?? "").includes("Node-RED"), target);
     eq("手动入口拒绝之后没有任何运行", runs.length, 0);
   } finally {
     r2.dispose();
@@ -300,19 +308,21 @@ console.log("\n① engine=node-red：旧 runner 不装监听、不起运行（�
   resetRuns();
 }
 
-/* ── ② 无 engine 的历史图必须照旧运行（不能把旧图一起关掉） ── */
+/* ── ② 无 engine 的历史（用户）图：旧执行器同样不再代跑，事实表给迁移提示 ── */
 
-console.log("\n② 无 engine 的历史图：行为不变（定时照跑、同分钟只一次）");
+console.log("\n② 无 engine 的历史（用户）图：旧执行器同样不再装监听，事实表说「请迁移」");
 {
   const wfLegacy = "wf_t3_legacy_cron";
   saveDoc({
     id: wfLegacy,
-    // 故意不写 engine —— 历史存档的形状。
+    // 故意不写 engine —— 历史存档的形状。产品决定是**用户图统一到 Node-RED**，
+    // 所以它和显式 node-red 的图一样不归旧执行器；差别只在事实表那句话
+    // （迁移提示 vs「由引擎管理」），因为只有前者需要用户动手。
     nodes: [triggerNode("t_legacy_solo", {
       [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
       [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
       [NODE_TRIGGER_PROJECT_PARAM_KEY]: LEGACY_PROJECT,
-      task: "历史图照旧运行",
+      task: "历史图该被提示迁移",
     })],
   });
   const minute = 21_000_000;
@@ -321,12 +331,16 @@ console.log("\n② 无 engine 的历史图：行为不变（定时照跑、同�
   resetRuns();
   try {
     await withClockAsync(at, () => r.start());
-    eq("启动即本分钟：历史图起了 1 次", runsOfNode("t_legacy_solo").length, 1);
+    eq("历史图：启动那一跳 0 次（旧执行器不再代跑用户图）", runsOfNode("t_legacy_solo").length, 0);
     withClock(at + 20_000, () => r.onTick());
-    eq("同一分钟第二跳：仍然只 1 次（去重不变）", runsOfNode("t_legacy_solo").length, 1);
-    check("历史图在旧触发器表里（引擎判据没有误伤）", r.entries.has(wfLegacy), [...r.entries.keys()]);
+    eq("历史图：同一分钟第二跳仍然 0 次", runsOfNode("t_legacy_solo").length, 0);
+    check("历史图没有进入旧的触发器表", !r.entries.has(wfLegacy), [...r.entries.keys()]);
     const facts = r.statusOf(wfLegacy);
-    check("历史图事实是 armed（不是 node-red 那一行）", facts[0]?.armed === true, facts[0]);
+    // 事实表**必须留一行**：静默消失会让用户以为"这条自动化好好的"。
+    check("历史图在事实表里留了一行（不静默消失）", facts.length === 1, facts);
+    eq("历史图 armed=false（没有旧监听在跑）", facts[0]?.armed, false);
+    check("历史图的事实是「请迁移到 Node-RED」那句话",
+      (facts[0]?.detail ?? "").includes("请在设置 → 工作流里把它迁移过去"), facts[0]);
   } finally {
     r.dispose();
   }
@@ -335,7 +349,7 @@ console.log("\n② 无 engine 的历史图：行为不变（定时照跑、同�
 
 /* ── ③ 重启不复活：旧去重记录里的 node-red 条目被清掉，第二个进程也不装监听 ── */
 
-console.log("\n③ 重启：旧状态残留不复活双监听，legacy 的去重照旧跨重启");
+console.log("\n③ 重启：node-red 图与历史用户图的旧去重记录都被清掉，第二个进程也不装监听");
 {
   const wfNR = "wf_t3_nr_restart";
   const wfLegacy = "wf_t3_legacy_restart";
@@ -372,10 +386,12 @@ console.log("\n③ 重启：旧状态残留不复活双监听，legacy 的去重
   try {
     await withClockAsync(at, () => r1.start());
     eq("重启 #1：node-red 定时器 0 次", runsOfNode("t_nr").length, 0);
-    eq("重启 #1：legacy 去重仍跨重启（本分钟不再跑）", runsOfNode("t_legacy_restart").length, 0);
+    eq("重启 #1：历史用户图同样 0 次", runsOfNode("t_legacy_restart").length, 0);
     const disk = JSON.parse(SettingRepo.get("automation.lastMinute") ?? "{}") as Record<string, number>;
     check("node-red 图的旧去重记录被清掉（残留不复活）", disk[`${wfNR}:t_nr`] === undefined, disk);
-    eq("legacy 图的去重记录保留", disk[`${wfLegacy}:t_legacy_restart`], minute);
+    // 【Q5】历史用户图也不再由旧执行器跑，所以它那一格旧去重记录同样该被清掉 ——
+    // 保留一格永远不再被读的记录，只会在节点 id 被复用时撞出一个假「这一分钟跑过了」。
+    eq("历史用户图的旧去重记录同样被清掉", disk[`${wfLegacy}:t_legacy_restart`], undefined);
   } finally {
     r1.dispose();
   }
@@ -387,7 +403,8 @@ console.log("\n③ 重启：旧状态残留不复活双监听，legacy 的去重
     eq("重启 #2：node-red 定时器仍 0 次", runsOfNode("t_nr").length, 0);
     withClock((minute + 1) * 60_000, () => r2.onTick());
     eq("重启 #2：下一分钟 node-red 定时器仍 0 次", runsOfNode("t_nr").length, 0);
-    eq("重启 #2：legacy 图下一分钟照跑 1 次", runsOfNode("t_legacy_restart").length, 1);
+    eq("重启 #2：历史用户图下一分钟仍然 0 次", runsOfNode("t_legacy_restart").length, 0);
+    eq("重启 #2：历史用户图也没有进入旧表", r2.entries.has(wfLegacy), false);
     eq("重启 #2：node-red 图仍未进入旧表", r2.entries.has(wfNR), false);
   } finally {
     r2.dispose();
@@ -395,9 +412,9 @@ console.log("\n③ 重启：旧状态残留不复活双监听，legacy 的去重
   resetRuns();
 }
 
-/* ── ④ 晚到的旧计时器：图在 reload 之前被切到 node-red，派发那一刻必须拒绝 ── */
+/* ── ④ 迁移那一刻：事实表从「请迁移」翻到「由引擎管理」，且全程不派发 ── */
 
-console.log("\n④ 切换引擎后的晚到触发：派发时再核一次，不派发也不登记 owner");
+console.log("\n④ 历史图迁到 node-red：事实表翻页（请迁移 → 由引擎管理），全程 0 派发");
 {
   const wf = "wf_t3_late_switch";
   const nodeId = "t_late";
@@ -407,7 +424,7 @@ console.log("\n④ 切换引擎后的晚到触发：派发时再核一次，不�
       [NODE_TRIGGER_KIND_PARAM_KEY]: "schedule",
       [NODE_TRIGGER_CRON_PARAM_KEY]: EVERY_MINUTE,
       [NODE_TRIGGER_PROJECT_PARAM_KEY]: LEGACY_PROJECT,
-      task: "切换前安装、切换后晚到",
+      task: "迁移前后都不该由旧 runner 跑",
     })],
   });
   const minute = 23_000_000;
@@ -417,24 +434,30 @@ console.log("\n④ 切换引擎后的晚到触发：派发时再核一次，不�
   resetRuns();
   try {
     await withClockAsync(at, () => r.start());
-    eq("夹具：启动这一跳 legacy 图跑过 1 次", runsOfNode(nodeId).length, 1);
-    check("夹具：触发器已装进旧表", r.entries.has(wf), [...r.entries.keys()]);
+    // 【Q5】旧执行器对用户图**一条监听都不装**（①②③ 已证），所以这里不再有
+    // "先装上、晚到再拒绝"那个窗口 —— 改测**迁移那一刻用户看到的话术翻转**。
+    eq("迁移前：启动那一跳 0 次", runsOfNode(nodeId).length, 0);
+    check("迁移前：触发器不在旧表里", !r.entries.has(wf), [...r.entries.keys()]);
+    const before = r.statusOf(wf);
+    check("迁移前事实是「请迁移到 Node-RED」",
+      (before[0]?.detail ?? "").includes("请在设置 → 工作流里把它迁移过去"), before[0]);
 
     // 模拟"已存盘切到 node-red、reload 还没落地"：直接改库里的 engine（不走 saveWorkflow
-    // 的切换体检 —— 这一格要测的是旧执行器晚到的那一下）。
+    // 的切换体检 —— 这一格要测的是旧执行器读到新归属之后的表现）。
     const switched = WorkflowRepo.get(wf)!.doc;
     WorkflowRepo.save({ ...switched, engine: "node-red", updatedAt: Date.now() });
 
     resetRuns();
     withClock((minute + 1) * 60_000, () => r.onTick());
-    eq("切换后的晚到 tick：一次都没派发", runsOfNode(nodeId).length, 0);
-    eq("晚到拒绝不动 owner 账本（没有留下 mcode 登记）", registry.executorOwnerOf(wf), null);
-    const facts = r.statusOf(wf);
-    check("晚到拒绝写进事实（界面可见）", facts.some((f) => (f.lastError ?? "").includes(OWNED_DETAIL)), facts);
+    eq("迁移后的 tick：一次都没派发", runsOfNode(nodeId).length, 0);
+    eq("迁移全程不动 owner 账本（旧执行器从未 claim）", registry.executorOwnerOf(wf), null);
 
-    // 随后真正的 reload 落地：旧表里的触发器被摘掉。
+    // 真正的 reload 落地：事实表跟着翻到「由引擎管理」。
     await r.reload(wf);
-    check("reload 之后旧表里不再有这条触发器", !r.entries.has(wf), [...r.entries.keys()]);
+    check("reload 之后旧表里仍然没有这条触发器", !r.entries.has(wf), [...r.entries.keys()]);
+    const after = r.statusOf(wf);
+    check("迁移后事实翻成「由 Node-RED 引擎管理」",
+      (after[0]?.detail ?? "").includes(OWNED_DETAIL), after[0]);
     resetRuns();
     withClock((minute + 2) * 60_000, () => r.onTick());
     eq("reload 之后再下一分钟：仍然 0 次", runsOfNode(nodeId).length, 0);
@@ -444,9 +467,9 @@ console.log("\n④ 切换引擎后的晚到触发：派发时再核一次，不�
   resetRuns();
 }
 
-/* ── ⑤ 同一库里 legacy 文件监听正常、node-red 文件监听不装 ── */
+/* ── ⑤ 同一库里两种归属的文件图：一个 watcher 都不装 ── */
 
-console.log("\n⑤ 同一数据根混排：legacy 文件监听照装照跑，node-red 目录一个 watcher 都没有");
+console.log("\n⑤ 同一数据根混排：node-red 图与历史用户图都不装 watcher");
 {
   const wfLegacyFile = "wf_t3_legacy_file";
   const wfNRFile = "wf_t3_nr_file_mixed";
@@ -457,7 +480,7 @@ console.log("\n⑤ 同一数据根混排：legacy 文件监听照装照跑，nod
       [NODE_TRIGGER_PATHS_PARAM_KEY]: "*.md",
       [NODE_TRIGGER_DEBOUNCE_PARAM_KEY]: 0,
       [NODE_TRIGGER_PROJECT_PARAM_KEY]: LEGACY_PROJECT,
-      task: "legacy 文件触发照旧",
+      task: "历史用户图，旧执行器也不再装监听",
     })],
   });
   saveDoc({
@@ -476,12 +499,13 @@ console.log("\n⑤ 同一数据根混排：legacy 文件监听照装照跑，nod
   resetRuns();
   try {
     await r.start();
-    check("legacy 文件图的项目目录装了 watcher", r.watchers.has(LEGACY_DIR), [...r.watchers.keys()]);
+    // 【Q5】两种归属都不归旧执行器 —— 曾经的对照（"legacy 照装"）已不成立。
+    check("历史用户图的项目目录没有 watcher", !r.watchers.has(LEGACY_DIR), [...r.watchers.keys()]);
     check("node-red 文件图的项目目录没有 watcher", !r.watchers.has(NR_DIR), [...r.watchers.keys()]);
 
-    writeFileSync(join(LEGACY_DIR, "gate-legacy.md"), "# legacy 该跑");
+    writeFileSync(join(LEGACY_DIR, "gate-legacy.md"), "# 历史用户图：不该跑");
     await sleep(FILE_SETTLE_SLACK_MS);
-    eq("legacy 文件触发器真的起了 1 次", runsOfNode("t_legacy_file").length, 1);
+    eq("历史用户图文件触发器 0 次", runsOfNode("t_legacy_file").length, 0);
 
     writeFileSync(join(NR_DIR, "gate-nr-mixed.md"), "# node-red 不该跑");
     await sleep(FILE_SETTLE_SLACK_MS);
@@ -494,7 +518,7 @@ console.log("\n⑤ 同一数据根混排：legacy 文件监听照装照跑，nod
 
 /* ── ⑥ owner 冲突闸门没有因为引擎门而失效（legacy 图被 node-red 占用时照样拒绝） ── */
 
-console.log("\n⑥ legacy 图被 node-red 登记 owner 时：旧 runner 仍然拒绝派发");
+console.log("\n⑥ 历史图被 node-red 登记 owner 时：旧 runner 不派发、也不覆盖那条登记");
 {
   const wf = "wf_t3_conflict_legacy";
   saveDoc({
@@ -516,8 +540,12 @@ console.log("\n⑥ legacy 图被 node-red 登记 owner 时：旧 runner 仍然�
   try {
     await withClockAsync(at, () => r.start());
     eq("owner 冲突：一次都没派发", runsOfNode("t_conflict").length, 0);
+    // 【Q5】旧执行器对用户图**连监听都不装**，所以它不会再走到"派发时撞上 owner 冲突"
+    // 那一步 —— 这一格现在验的是**账本没被动过**（旧执行器没有用 mcode 覆盖 node-red），
+    // 以及事实表仍然给了用户一句可读的话（不是静默）。
     const facts = r.statusOf(wf);
-    check("owner 冲突写进事实并点名 node-red", facts.some((f) => (f.lastError ?? "").includes("node-red") || (f.lastError ?? "").includes("另一个")), facts);
+    check("事实表留了一行且给了可读原因",
+      facts.length === 1 && (facts[0]?.detail ?? "").length > 0, facts);
     eq("冲突不覆盖：owner 仍是 node-red", registry.executorOwnerOf(wf), "node-red");
   } finally {
     r.dispose();
@@ -538,9 +566,16 @@ console.log("\n⑦ 未知 engine：fail-closed（不把它当 mcode 装监听）
     const unknown = probe.legacyTriggerOwnerOf({ engine: "agent-x" });
     eq("未知 engine → 不归旧 runner", unknown.legacy, false);
     eq("未知 engine → 判成 unknown（不是 mcode、也不是 node-red）", unknown.owner, "unknown");
-    eq("mcode → 归旧 runner", probe.legacyTriggerOwnerOf({ engine: "mcode" }).legacy, true);
-    eq("缺省 engine → 归旧 runner（历史图兼容）", probe.legacyTriggerOwnerOf({}).legacy, true);
-    eq("node-red → 不归旧 runner", probe.legacyTriggerOwnerOf({ engine: "node-red" }).legacy, false);
+    // 【Q5】归 mcode 的用户图**也不再**由旧 runner 装监听。`legacy` 这个字段名现在
+    // 只剩历史含义：它永远为 false。判据改看 `owner` —— 那才是"这句话该怎么说"的依据。
+    eq("mcode → owner 是 mcode（事实表会给迁移提示）", probe.legacyTriggerOwnerOf({ engine: "mcode" }).owner, "mcode");
+    eq("缺省 engine → owner 也是 mcode（历史图按用户图处理）", probe.legacyTriggerOwnerOf({}).owner, "mcode");
+    eq("node-red → owner 是 node-red", probe.legacyTriggerOwnerOf({ engine: "node-red" }).owner, "node-red");
+    // 负控：`legacy` 退化成恒真会让「一条监听都不装」那半边全绿而实际全在跑。
+    eq("★ 负控：任何归属下 legacy 都不为 true",
+      [probe.legacyTriggerOwnerOf({}), probe.legacyTriggerOwnerOf({ engine: "mcode" }),
+       probe.legacyTriggerOwnerOf({ engine: "node-red" }), probe.legacyTriggerOwnerOf({ engine: "agent-x" })]
+        .filter((r) => r.legacy === true).length, 0);
   } finally {
     (probe as unknown as RunnerInternals).dispose();
   }
