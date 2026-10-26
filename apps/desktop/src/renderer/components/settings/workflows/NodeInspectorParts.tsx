@@ -53,7 +53,6 @@ import {
 } from "./workflowView.js";
 import { wouldCycle } from "./workflowEdit.js";
 import { Field, GrowingTextarea, ParamField } from "./ParamField.js";
-import { MODULE_CALL_PARAM_KEYS, ModuleCapabilityFields } from "./ModuleCapabilityFields.js";
 import { workflowDisplayDescription, workflowDisplayName } from "@renderer/lib/workflowLabels.js";
 import { WorkflowBadge } from "./WorkflowBadge.js";
 import { AutomationRunSection } from "./AutomationRunSection.js";
@@ -84,6 +83,8 @@ export function WorkflowSection({
   purpose,
   onUpdateWorkflow,
   onRemoveWorkflow,
+  onDuplicateWorkflow,
+  duplicating,
   onPinDefault,
   onRestoreDefault,
   pinned,
@@ -97,6 +98,10 @@ export function WorkflowSection({
   purpose: WorkflowPurpose;
   onUpdateWorkflow: (patch: Partial<Omit<WorkflowDoc, "id">>) => void;
   onRemoveWorkflow: () => void;
+  /** 【WF-09】复制这份工作流（新 id / 新节点 id，其余原样）。 */
+  onDuplicateWorkflow: () => void;
+  /** 复制进行中 —— 按钮禁用，避免连点产生多份。 */
+  duplicating?: boolean;
   onPinDefault: () => void;
   onRestoreDefault: () => void;
   pinned: boolean;
@@ -230,6 +235,16 @@ export function WorkflowSection({
             {t("settings.workflows.reset")}
           </Button>
         )}
+        {/* 【WF-09】复制 —— 放在删除左边：它比删除更常用，而且误点代价小得多。 */}
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={onDuplicateWorkflow}
+          disabled={duplicating === true}
+          title={t("settings.workflows.duplicateDesc")}
+        >
+          {t("settings.workflows.duplicate")}
+        </Button>
         <Button
           variant="danger"
           size="sm"
@@ -549,14 +564,10 @@ export function NodeSection({
       )}
 
       {isModuleCall && (
-        <ModuleCapabilityFields
-          params={node.params}
-          onChange={(params) => onUpdateNode(node.id, { params })}
-          insertables={vars}
-        />
+        <p className="text-code text-content-subtle">{t("settings.workflows.moduleCallInvalid", { detail: "" })}</p>
       )}
       {(entry ? visibleNodeParams(node, entry) : [])
-        .filter((spec) => !isModuleCall || !MODULE_CALL_PARAM_KEYS.includes(spec.key))
+        .filter((spec) => true)
         .map((spec) => (
         <ParamField
           key={spec.key}

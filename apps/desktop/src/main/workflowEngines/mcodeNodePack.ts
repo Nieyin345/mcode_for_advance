@@ -43,6 +43,98 @@
  * 不吞、不把失败伪装成空产出。port 缺失（装配错误）→ 同样显式报错，不静默成功。
  */
 
+import { branchContextForNode, type McodeBranchContext } from "./branchContext.js";
+
+/** Convert the first workflow message into a stable prompt value, with a hard IPC bound. */
+export function workflowUserTextOf(value: unknown): string {
+  if (typeof value === "string") return value.slice(0, 32_000);
+  if (value === null || typeof value !== "object") return "";
+  if (!Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    // Native triggers and injected messages often use the same { text } shape
+    // as Mcode's own node output. Preserve the human-readable request instead
+    // of serializing the wrapper object into every downstream prompt.
+    for (const key of ["text", "content", "question", "instruction"]) {
+      if (typeof record[key] === "string" && (record[key] as string).trim() !== "") {
+        return (record[key] as string).slice(0, 32_000);
+      }
+    }
+  }
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" ? serialized.slice(0, 32_000) : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Keep only bounded, template-relevant fields when forwarding prior node results to Host. */
+export function workflowResultsForHost(incomingMcode: Record<string, unknown>): unknown[] | undefined {
+  const raw = incomingMcode["results"];
+  if (!Array.isArray(raw)) return undefined;
+  const results: Record<string, unknown>[] = [];
+  for (const item of raw.slice(-64)) {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) continue;
+    const entry = item as Record<string, unknown>;
+    const nodeId = entry["nodeId"];
+    const status = entry["status"];
+    const summary = entry["summary"];
+    if (typeof nodeId !== "string" || nodeId.length === 0 || nodeId.length > 256
+        || (status !== "success" && status !== "failed" && status !== "unselected")
+        || typeof summary !== "string") continue;
+    const safe: Record<string, unknown> = { nodeId, status, summary: summary.slice(0, 8_192) };
+    if (status === "failed" && typeof entry["error"] === "string") safe["error"] = entry["error"].slice(0, 4_096);
+    const rawOutputs = entry["outputs"];
+    if (rawOutputs !== null && typeof rawOutputs === "object" && !Array.isArray(rawOutputs)) {
+      try {
+        const serialized = JSON.stringify(rawOutputs);
+        if (typeof serialized === "string" && serialized.length <= 32_000) {
+          safe["outputs"] = JSON.parse(serialized) as Record<string, unknown>;
+        }
+      } catch { /* invalid structured values are omitted at the IPC boundary */ }
+    }
+    const rawArtifacts = entry["artifacts"];
+    if (Array.isArray(rawArtifacts)) {
+      const artifacts = rawArtifacts.slice(0, 16).flatMap((item) => {
+        if (item === null || typeof item !== "object" || Array.isArray(item)) return [];
+        const artifact = item as Record<string, unknown>;
+        if (typeof artifact["kind"] !== "string" || artifact["kind"].length > 64
+            || typeof artifact["uri"] !== "string" || artifact["uri"].length === 0 || artifact["uri"].length > 4_096) return [];
+        return [{
+          kind: artifact["kind"], uri: artifact["uri"],
+          ...(typeof artifact["name"] === "string" ? { name: artifact["name"].slice(0, 512) } : {}),
+          ...(typeof artifact["mimeType"] === "string" ? { mimeType: artifact["mimeType"].slice(0, 256) } : {}),
+          ...(typeof artifact["sizeBytes"] === "number" && Number.isSafeInteger(artifact["sizeBytes"]) && artifact["sizeBytes"] >= 0
+            ? { sizeBytes: artifact["sizeBytes"] } : {}),
+        }];
+      });
+      if (artifacts.length > 0) safe["artifacts"] = artifacts;
+    }
+    results.push(safe);
+  }
+  return results.length > 0 ? results : undefined;
+}
+
+/** Append a bounded failed outcome before Node-RED routes the original msg to Catch. */
+export function appendWorkflowFailureResult(message: unknown, nodeId: unknown, error: unknown): void {
+  if (message === null || typeof message !== "object" || Array.isArray(message)
+      || typeof nodeId !== "string" || nodeId.trim() === "" || nodeId.length > 256) return;
+  const msg = message as Record<string, unknown>;
+  const rawMcode = msg["mcode"];
+  const mcode = rawMcode !== null && typeof rawMcode === "object" && !Array.isArray(rawMcode)
+    ? { ...(rawMcode as Record<string, unknown>) } : {};
+  const prior = Array.isArray(mcode["results"]) ? mcode["results"] as unknown[] : [];
+  const reason = error instanceof Error ? error.message : String(error);
+  mcode["nodeId"] = nodeId;
+  mcode["results"] = [...prior.slice(-63), {
+    nodeId,
+    summary: "",
+    status: "failed",
+    error: reason.slice(0, 4_096),
+  }];
+  msg["mcode"] = mcode;
+}
+
 /** 节点类型 id —— 与迁移器 `NODE_RED_TYPE_OF_RUNNER.prompt` 同一字符串。 */
 export const MCODE_AGENT_NODE_TYPE = "mcode-agent";
 
@@ -180,6 +272,12 @@ export interface McodeAgentRunPayload {
   tabId?: string;
   /** Opaque Host-owned trigger context lookup; never a permission grant. */
   triggerTicket?: string;
+  /** Selected-edge context for this exact node; informational only. */
+  branchContext?: McodeBranchContext;
+  /** Original workflow request carried across native nodes; prompt context only. */
+  user?: string;
+  /** Bounded prior node summaries for shared template expansion. */
+  results?: unknown[];
   /** 迁移器带过来的其余参数（未知字段原样交给 port）。 */
   params: Record<string, unknown>;
 }
@@ -190,6 +288,8 @@ export interface McodeAgentRunResult {
   artifacts: Array<{ kind: string; uri: string; name?: string; mimeType?: string; sizeBytes?: number }>;
   /** Host 签发/回执的 runId（可选；缺省沿用输入 msg 上的那份）。 */
   runId?: string;
+  /** Validated structured output variables, if the saved workflow declares them. */
+  outputs?: Record<string, unknown>;
 }
 
 /** 可注入的执行端口。生产将来接 Host RPC；测试给假实现。 */
@@ -300,6 +400,21 @@ export function assertMcodeNodePortResult<T>(result: T): T {
         || (result as unknown as { runId: string }).runId.trim() === ""))) {
     throw new Error("Host RPC result invalid: expected { text, artifacts, runId? }");
   }
+  const outputs = (result as { outputs?: unknown }).outputs;
+  if (outputs !== undefined) {
+    if (outputs === null || typeof outputs !== "object" || Array.isArray(outputs)) {
+      throw new Error("Host RPC result invalid: outputs must be an object");
+    }
+    try {
+      const serialized = JSON.stringify(outputs);
+      if (typeof serialized !== "string" || serialized.length > 64_000) {
+        throw new Error("Host RPC result invalid: structured outputs exceed the limit");
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("structured outputs exceed")) throw error;
+      throw new Error("Host RPC result invalid: outputs are not JSON-compatible");
+    }
+  }
   // The Host transport can return mutable objects or extra custom metadata.
   // A function/symbol hidden in an artifact cannot pass Node-RED IPC. Make a
   // detached result at the same trust boundary instead of leaking references.
@@ -377,6 +492,10 @@ export async function runAgentNode(
 ): Promise<McodeAgentNodeOutcome> {
   const { normalized, messageSnapshot, incomingMcode,
     paramsSnapshot, inputSnapshot, runId } = snapshotMcodeNodeInvocation(inputMsg, config);
+  const branchContext = branchContextForNode(incomingMcode, config.id);
+  const carriedUser = typeof incomingMcode["user"] === "string" && incomingMcode["user"].length > 0
+    ? incomingMcode["user"].slice(0, 32_000) : workflowUserTextOf(inputSnapshot);
+  const results = workflowResultsForHost(incomingMcode);
   const payload: McodeAgentRunPayload = {
     instruction: normalized.instruction,
     input: inputSnapshot,
@@ -386,6 +505,9 @@ export async function runAgentNode(
     ...(typeof config.z === "string" ? { tabId: config.z } : {}),
     ...(typeof incomingMcode["triggerTicket"] === "string" && incomingMcode["triggerTicket"].length <= 128
       ? { triggerTicket: incomingMcode["triggerTicket"] } : {}),
+    ...(branchContext !== undefined ? { branchContext } : {}),
+    ...(carriedUser ? { user: carriedUser } : {}),
+    ...(results ? { results } : {}),
     params: paramsSnapshot,
   };
   // Validate and detach the Host result before exposing it downstream.
@@ -395,20 +517,29 @@ export async function runAgentNode(
   // 它自己那一次调用，看不见上游）。上限 64 条，理由见那边的注释。
   const priorResults = Array.isArray(incomingMcode["results"]) ? incomingMcode["results"] as unknown[] : [];
   // 产出形状与 Mcode 侧「这一步交什么」一致：text + artifacts。
+  const nextMcode: Record<string, unknown> = {
+    ...incomingMcode,
+    ...((typeof incomingMcode["user"] === "string" && incomingMcode["user"].length > 0)
+      ? { user: incomingMcode["user"].slice(0, 32_000) }
+      : (workflowUserTextOf(inputSnapshot) ? { user: workflowUserTextOf(inputSnapshot) } : {})),
+    nodeId: normalized.nodeId,
+    runId: result.runId ?? runId,
+    ...(normalized.outputVar !== null ? { outputVar: normalized.outputVar } : {}),
+    results: [...priorResults.slice(-63), {
+      nodeId: normalized.nodeId,
+      summary: result.text,
+      status: "success",
+      ...(result.outputs !== undefined ? { outputs: result.outputs } : {}),
+      ...(result.artifacts.length > 0 ? { artifacts: result.artifacts } : {}),
+    }],
+  };
+  // Branch context is one-hop context for this node, not a sticky prompt that
+  // should leak into every later node in the message flow.
+  delete nextMcode["branch"];
   const msg: Record<string, unknown> = {
     ...messageSnapshot,
     payload: { text: result.text, artifacts: result.artifacts },
-    mcode: {
-      ...incomingMcode,
-      nodeId: normalized.nodeId,
-      runId: result.runId ?? runId,
-      ...(normalized.outputVar !== null ? { outputVar: normalized.outputVar } : {}),
-      results: [...priorResults.slice(-63), {
-        nodeId: normalized.nodeId,
-        summary: result.text,
-        status: "success",
-      }],
-    },
+    mcode: nextMcode,
   };
   // An upstream node's outputVar is not this node's output binding. Clearing
   // the native editor field must remove it instead of inheriting stale metadata.
@@ -452,7 +583,7 @@ export interface NodeRedNodeLike {
  * release every pending done() exactly once without publishing a stale result.
  * Physical Host cancellation is a separate, still unimplemented contract.
  */
-export function createNodeInputLifecycle(node: NodeRedNodeLike): {
+export function createNodeInputLifecycle(node: NodeRedNodeLike, onClose?: () => void): {
   isClosed(): boolean;
   begin(done: (err?: Error) => void): ((err?: Error) => void) | null;
 } {
@@ -461,6 +592,15 @@ export function createNodeInputLifecycle(node: NodeRedNodeLike): {
   node.on("close", () => {
     if (closed) return;
     closed = true;
+    // 【WF-05】清画布状态行。放**这个**监听器里而不是再加一个 `on("close")`：
+    // Node-RED 的 node 允许多个监听器，但本仓库的假 node（套件里的桩）只有一个
+    // 槽位 —— 后注册的会顶掉先注册的，直接把"关闭时结算在途输入"这条既有保证
+    // 弄没了（实测 13 条断言当场转红）。
+    try {
+      onClose?.();
+    } catch {
+      /* 清状态是展示动作，不能阻断在途输入结算 */
+    }
     for (const finish of [...pending]) {
       try {
         finish();
@@ -486,6 +626,66 @@ export function createNodeInputLifecycle(node: NodeRedNodeLike): {
       return finish;
     },
   };
+}
+
+/**
+ * 【Q10 / WF-05】**节点状态行** —— 画布上那一行小字。
+ *
+ * 这是 Node-RED 原生的 `node.status({fill, shape, text})` 机制，不是我们自造的
+ * 叠层（旧手写画布的"沿边框走亮线"随 T45 删除画布一并退场，见功能文档 WF-05）。
+ *
+ * 用户在画布上直接看到：这格在跑、跑了多久、成功还是失败。**耗时从第一次
+ * `running` 起算**，由节点自己计数 —— Node-RED 不给节点提供运行时钟。
+ *
+ * 为什么这是一个函数而不是各处直接 `node.status(...)`：五类 Mcode 节点要显示
+ * **同一种**语义（同一套文案、同一套颜色、同样从 running 起算耗时），各写一遍
+ * 必然漂移成五种样子。仓库硬规矩 2「共享实现只有一份」。
+ */
+export type NodeStatusReporter = {
+  running(label?: string): void;
+  success(label?: string): void;
+  failed(label: string): void;
+  /** 节点关闭/重新部署时清掉状态，避免画布上留一行"执行中"的幽灵。 */
+  clear(): void;
+};
+
+export function createNodeStatusReporter(node: NodeRedNodeLike): NodeStatusReporter {
+  let startedAt: number | null = null;
+  const put = (status: Record<string, unknown>): void => {
+    try {
+      node.status?.(status);
+    } catch {
+      // 状态行是**纯展示**：画布不可用（无头执行、编辑器未挂载）时不能让它
+      // 把一个正在跑的节点变成失败。
+    }
+  };
+  return {
+    running(label) {
+      if (startedAt === null) startedAt = Date.now();
+      put({ fill: "blue", shape: "dot", text: withElapsed(label ?? "执行中", startedAt) });
+    },
+    success(label) {
+      put({ fill: "green", shape: "dot", text: withElapsed(label ?? "完成", startedAt, true) });
+      startedAt = null;
+    },
+    failed(label) {
+      // 失败不显示耗时：用户此刻关心的是原因，不是它跑了多久。
+      put({ fill: "red", shape: "ring", text: label });
+      startedAt = null;
+    },
+    clear() {
+      startedAt = null;
+      put({});
+    },
+  };
+}
+
+/** 「执行中 · 12s」。`final` 时只保留一次耗时读数，不再随秒变化。 */
+function withElapsed(label: string, startedAt: number | null, final = false): string {
+  if (startedAt === null) return label;
+  const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  if (!final && seconds === 0) return label;
+  return `${label} · ${seconds}s`;
 }
 
 /** Node-RED 节点 HTML（编辑器 palette 里的外观；不含执行逻辑）。 */
@@ -556,17 +756,27 @@ export function registerMcodeAgentNodes(RED: NodeRedRuntimeApi, getPort: () => M
     // Node-RED 约定（核心节点同形）：先建基类节点 —— 否则这个实例没有 wires/_flow，
     // send() 会抛 "Node object is not a node-red Node"（真引擎实测抓到）。
     RED.nodes.createNode(node, config);
-    const lifecycle = createNodeInputLifecycle(node);
+    // 【WF-05】画布状态行：执行中带耗时，成功/失败各自可辨。
+    const status = createNodeStatusReporter(node);
+    const lifecycle = createNodeInputLifecycle(node, () => status.clear());
     node.on("input", (msg, send, done) => {
       const finish = lifecycle.begin(done);
       if (finish === null) return;
+      status.running();
       void (async () => {
         try {
           const outcome = await runAgentNode(msg, config, getPort());
           if (!lifecycle.isClosed()) send(outcome.msg);
+          status.success();
           finish();
         } catch (err) {
-          if (!lifecycle.isClosed()) node.error(err, msg);
+          if (!lifecycle.isClosed()) {
+            appendWorkflowFailureResult(msg, normalizeAgentConfig(config).nodeId, err);
+            status.failed(err instanceof Error ? err.message : String(err));
+            node.error(err, msg);
+          } else {
+            status.clear();
+          }
           finish(lifecycle.isClosed() ? undefined : err instanceof Error ? err : new Error(String(err)));
         }
       })();

@@ -43,7 +43,7 @@ import {
   type EngineNodeInstallRequest,
   type EngineNodeRecord,
 } from "./engineNodeRegistry.js";
-import { declaresNetwork } from "@contracts/modules";
+import { declaresNetwork } from "@contracts/nodeType";
 import { safeErrorMessage } from "@main/lib/safeErrorMessage.js";
 
 /** 安装请求的**元数据**（调用方能表达的全部事实）。

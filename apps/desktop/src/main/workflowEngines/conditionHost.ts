@@ -53,6 +53,7 @@ import {
   upstreamClosure,
   type WorkflowDoc,
 } from "@contracts/workflow";
+import type { NodeArtifact } from "@contracts/nodeType";
 import type { NodeTemplateNode, NodeTemplateScope } from "@contracts/nodeTemplate";
 
 /** 一个 `mcode-*` 节点在本次消息流上留下的执行事实。 */
@@ -61,8 +62,14 @@ export interface ConditionResultEntry {
   nodeId: string;
   /** 结果文本（`payload.text`）。 */
   summary: string;
-  /** `"success"` / `"failed"`；缺省按 success。 */
+  /** `success` / `failed` / `unselected`; missing status defaults to success. */
   status?: string;
+  /** Only declared output values are carried to downstream template/condition resolution. */
+  outputs?: Record<string, unknown>;
+  /** Stable external references, never artifact bytes. */
+  artifacts?: NodeArtifact[];
+  /** Bounded failure detail for `{{node.error}}`. */
+  error?: string;
 }
 
 export interface ConditionHostInput {
@@ -74,6 +81,8 @@ export interface ConditionHostInput {
   nodeId: string;
   /** 消息流上已经发生的 `mcode-*` 执行事实。 */
   results: readonly ConditionResultEntry[];
+  /** Original workflow input, passed as ordinary prompt/template context. */
+  user?: string;
   /** Obtained from a parent-owned, tab-scoped event ticket, never msg.payload. */
   trigger?: Readonly<Record<string, unknown>>;
   /** Only the Host can mark a ticket as coming from validated custom UI input. */
@@ -110,11 +119,44 @@ export function sanitizeConditionResults(
     if (typeof nodeId !== "string" || !known.has(nodeId)) continue;
     if (typeof summary !== "string") continue;
     const status = entry["status"];
-    byNode.set(nodeId, {
+    if (status !== undefined && status !== "success" && status !== "failed" && status !== "unselected") continue;
+    const safe: ConditionResultEntry = {
       nodeId,
       summary: summary.slice(0, 32_000),
-      ...(status === "success" || status === "failed" ? { status } : {}),
-    });
+      ...(status === "success" || status === "failed" || status === "unselected" ? { status } : {}),
+    };
+    if (status === "failed" && typeof entry["error"] === "string") safe.error = entry["error"].slice(0, 4_096);
+    const rawOutputs = entry["outputs"];
+    if (rawOutputs !== null && typeof rawOutputs === "object" && !Array.isArray(rawOutputs)) {
+      try {
+        const serialized = JSON.stringify(rawOutputs);
+        if (typeof serialized === "string" && serialized.length <= 32_000) {
+          safe.outputs = JSON.parse(serialized) as Record<string, unknown>;
+        }
+      } catch { /* uncloneable structured values are omitted at the Host boundary */ }
+    }
+    const rawArtifacts = entry["artifacts"];
+    if (Array.isArray(rawArtifacts)) {
+      const artifacts: NodeArtifact[] = [];
+      for (const item of rawArtifacts.slice(0, 16)) {
+        if (item === null || typeof item !== "object" || Array.isArray(item)) continue;
+        const artifact = item as Record<string, unknown>;
+        const kind = artifact["kind"];
+        const uri = artifact["uri"];
+        if ((kind !== "file" && kind !== "directory" && kind !== "data")
+            || typeof uri !== "string" || uri.length === 0 || uri.length > 4_096) continue;
+        artifacts.push({
+          kind,
+          uri,
+          ...(typeof artifact["name"] === "string" ? { name: artifact["name"].slice(0, 512) } : {}),
+          ...(typeof artifact["mimeType"] === "string" ? { mimeType: artifact["mimeType"].slice(0, 256) } : {}),
+          ...(typeof artifact["sizeBytes"] === "number" && Number.isSafeInteger(artifact["sizeBytes"]) && artifact["sizeBytes"] >= 0
+            ? { sizeBytes: artifact["sizeBytes"] } : {}),
+        });
+      }
+      if (artifacts.length > 0) safe.artifacts = artifacts;
+    }
+    byNode.set(nodeId, safe);
   }
   return [...byNode.values()];
 }
@@ -197,14 +239,14 @@ export function evaluateConditionForHost(input: ConditionHostInput): ConditionHo
     // 报「上游还没有结果」，这是刻意的 fail-closed。
     if (result !== undefined) {
       entry.outcome = {
-        status: result.status === "failed" ? "failed" : "success",
+        status: result.status === "failed" ? "failed" : result.status === "unselected" ? "unselected" : "success",
         summary: result.summary,
-        // `{{A.summary}}` 与 `{{A.output}}` 的**可观测结果**：`readConditionRef` 的
-        // `readVar` 先查 `outcome.outputs.summary`，查不到再回落到 `outcome.summary`
-        // （见 `@contracts/nodeTemplate` 的 `readVar`）。native 执行记录里
-        // `payload.text` 就是旧调度器那个 `summary` 的位置，所以直接放进去 ——
-        // 这不是「造一个产出变量」，是把它放在 `readVar` 找得到的那一格。
-        outputs: { summary: result.summary },
+        // Preserve declared structured values and artifact references for the
+        // shared node-template resolver. Summary remains the fallback for
+        // {{A.output}} / {{A.summary}} when no explicit output contract exists.
+        outputs: result.outputs ?? { summary: result.summary },
+        ...(result.artifacts ? { artifacts: result.artifacts } : {}),
+        ...(result.error ? { error: result.error } : {}),
       };
     } else if (hostBackedType(type)) {
       entry.outcome = { status: "unselected", summary: "" };
@@ -212,7 +254,7 @@ export function evaluateConditionForHost(input: ConditionHostInput): ConditionHo
   }
 
   const scope: NodeTemplateScope = {
-    user: "",
+    user: input.user ?? "",
     upstream: upstreamNames,
     nodes,
     ...(input.trigger === undefined ? {} : { trigger: input.trigger }),

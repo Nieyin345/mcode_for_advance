@@ -71,6 +71,7 @@ import {
 } from "@contracts/workflow";
 import {
   MAIN_NODE_TYPE_ID,
+  NODE_TRIGGER_ENABLED_PARAM_KEY,
   type NodeTypeManifest,
   type NodeRunnerKind,
 } from "@contracts/nodeType";
@@ -804,9 +805,25 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
     }
     // 内置 inject / watch / exec 的**最小可执行参数**（节点统一：不再造 mcode-code）。
     const builtinConfig: Record<string, unknown> = {};
+    /* 【AUTO-01】**关掉的触发器在部署时就不装调度**。
+     *
+     * `enabled: false` 以前只是留在 `x-mcode.params` 里给人看，引擎侧照样按 crontab 跑 ——
+     * 于是界面上关掉一个定时任务，它还会按时触发。用户看到的正是"我关了它，它还在跑"。
+     *
+     * 关掉的做法是**把调度清空**（`crontab` / `repeat` 置空），不是加一个运行期判断 ——
+     * Node-RED 的 inject 由引擎自己调度，宿主没有"注入前拦一下"的钩子；而一个空的
+     * `crontab` 就是"永不自动触发"的原生表达。
+     *
+     * **手动运行照旧**：手动走的是 Host 签发的一次性票据（`runNativeManual`），
+     * 不经过 crontab，所以关掉它不影响用户点「立刻运行一次」—— 这正是规格的要求。 */
+    const triggerDisabled = kind === "trigger" && node.params[NODE_TRIGGER_ENABLED_PARAM_KEY] === false;
     if (kind === "trigger" && effectiveType === "inject") {
       const triggerKind = typeof node.params[TRIGGER_KIND_KEY] === "string" ? (node.params[TRIGGER_KIND_KEY] as string) : "manual";
-      if (triggerKind === "schedule") {
+      if (triggerDisabled) {
+        builtinConfig.once = false;
+        builtinConfig.repeat = "";
+        builtinConfig.crontab = "";
+      } else if (triggerKind === "schedule") {
         builtinConfig.crontab = typeof node.params[TRIGGER_CRON_KEY] === "string" ? node.params[TRIGGER_CRON_KEY] : "";
         builtinConfig.repeat = "";
         builtinConfig.once = false;
@@ -822,15 +839,30 @@ export function migrateWorkflowDoc(doc: WorkflowDoc, options: MigrateOptions = {
       builtinConfig.topic = "";
     }
     if (kind === "trigger" && effectiveType === "watch") {
-      builtinConfig.files = typeof node.params[TRIGGER_PATHS_KEY] === "string" ? node.params[TRIGGER_PATHS_KEY] : "";
+      /* 关掉的 watch 不装监听：`files` 清空就是原生表达（watch 没有单独的开关字段）。 */
+      builtinConfig.files = triggerDisabled
+        ? ""
+        : (typeof node.params[TRIGGER_PATHS_KEY] === "string" ? node.params[TRIGGER_PATHS_KEY] : "");
       builtinConfig.recursive = false;
     }
     if (kind === "code" && effectiveType === "exec") {
       const command = execCommandForCode(node.params);
       builtinConfig.command = command ?? "";
-      // 非零退出在 Mcode 是 success（退出码进产物）；exec 默认当错误 —— MERGE-0 #4。
-      builtinConfig.addpay = false;
-      builtinConfig.append = "";
+      /* 【WF-04】**上游数据经 JSON stdin 交给脚本** —— 这是规格对"命令正文禁止插值"
+       * 那条的配套：命令固定，变化的东西走 stdin。
+       *
+       * `addpay: true` = 把进来的 `msg.payload` 追加到子进程的 stdin；
+       * `append: "json"` = 用 JSON 序列化（另一个选项是 `string`，那样上游给个对象
+       * 会变成 `[object Object]`）。
+       *
+       * 以前这里是 `addpay: false` + `append: ""` —— 等于**根本不传**，脚本只能读
+       * 自己写死的常量，多步流程在上游→脚本这一环断掉。迁移报告当时也自认
+       * 「input JSON 不会生效」。
+       *
+       * 非零退出仍然是结果而不是失败（退出码经 exec 的第 3 口交出去，
+       * 由 `registry.ts` 的 node-status 只认 red 来保证）。 */
+      builtinConfig.addpay = true;
+      builtinConfig.append = "json";
       builtinConfig.useSpawn = false;
       builtinConfig.timer = "";
       // Node-RED 5.0.8 exec 固定三口（stdout→口0、stderr→口1、退出码→口2），上面

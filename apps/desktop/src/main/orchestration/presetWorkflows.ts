@@ -37,6 +37,28 @@ export interface PresetCatalog {
  *
  *  `sameNameExists` 恒为 false:它需要库里的名字表,由 IPC handler 补
  *  (`decoratePresetCatalog`)。纯函数与 DB 解耦,smoke 才能直接断言分类逻辑。 */
+/**
+ * 【AUTO-03】这份预设导入后**要不要用户先做一步**。
+ *
+ * 判据来自迁移器（`flowMigration.ts`）的 MERGE-0 未决项，但这里**只报能提前
+ * 说清楚的那两种** —— 其余未决项要等真的部署才知道，提前猜会误导。
+ *
+ *   - conversation / mcode.main → 主对话身份要人填会话 ID（MERGE-0 #1）；
+ *   - code（非 node 语言）→ 语言面不等价（MERGE-0 #3）。
+ *
+ * 返回 undefined = 不需要用户做额外动作。
+ */
+function needsStepOf(doc: WorkflowDoc): string | undefined {
+  const kinds = new Set(doc.nodes.map((node) => node.type));
+  if (kinds.has("mcode.main") || kinds.has("mcode.conversation")) {
+    return "部署前要在 mcode-conversation 节点里填一个现有可见会话 ID（主对话身份不能自动推断）";
+  }
+  if (kinds.has("mcode.code")) {
+    return "代码节点需要人工确认：非 node 语言在 Node-RED 侧不等价";
+  }
+  return undefined;
+}
+
 export function readPresetCatalog(candidates: readonly string[] = presetRootCandidates()): PresetCatalog {
   const read = readPresetJson(WORKFLOW_PRESET_FILE, candidates);
   if (read.health !== "ok") {
@@ -84,6 +106,8 @@ export function readPresetCatalog(candidates: readonly string[] = presetRootCand
       ...(doc.trigger ? { trigger: doc.trigger } : {}),
       nodeCount: doc.nodes.length,
       sameNameExists: false,
+      ...(doc.engine !== undefined ? { engine: doc.engine } : {}),
+      ...(needsStepOf(doc) !== undefined ? { needsStep: needsStepOf(doc) } : {}),
     });
   }
 

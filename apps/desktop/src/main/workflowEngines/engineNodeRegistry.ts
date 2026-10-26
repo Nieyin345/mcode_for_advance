@@ -51,7 +51,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rename, rmdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { declaresNetwork } from "@contracts/modules";
+import { declaresNetwork } from "@contracts/nodeType";
 
 /** 清单文件名（引擎 dataDir 下，与 `bootstrap.manifest.json` 同级）。 */
 export const ENGINE_NODE_REGISTRY_FILENAME = "engine-nodes.json";

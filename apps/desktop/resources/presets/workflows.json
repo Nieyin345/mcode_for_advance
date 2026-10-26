@@ -130,7 +130,8 @@
         }
       ],
       "builtin": false,
-      "updatedAt": 0
+      "updatedAt": 0,
+      "engine": "node-red"
     },
     {
       "id": "read",
@@ -141,7 +142,8 @@
       "nodes": [],
       "edges": [],
       "builtin": false,
-      "updatedAt": 0
+      "updatedAt": 0,
+      "engine": "node-red"
     },
     {
       "id": "write",
@@ -259,7 +261,8 @@
         }
       ],
       "builtin": false,
-      "updatedAt": 0
+      "updatedAt": 0,
+      "engine": "node-red"
     },
     {
       "id": "review",
@@ -270,7 +273,8 @@
       "nodes": [],
       "edges": [],
       "builtin": false,
-      "updatedAt": 0
+      "updatedAt": 0,
+      "engine": "node-red"
     },
     {
       "id": "code",
@@ -281,7 +285,8 @@
       "nodes": [],
       "edges": [],
       "builtin": false,
-      "updatedAt": 0
+      "updatedAt": 0,
+      "engine": "node-red"
     },
     {
       "id": "wf_auto_download",
@@ -383,7 +388,8 @@
       ],
       "trigger": "event",
       "builtin": false,
-      "updatedAt": 0
+      "updatedAt": 0,
+      "engine": "node-red"
     },
     {
       "id": "wf_auto_convert",
@@ -431,7 +437,8 @@
       ],
       "trigger": "event",
       "builtin": false,
-      "updatedAt": 0
+      "updatedAt": 0,
+      "engine": "node-red"
     }
   ]
 }

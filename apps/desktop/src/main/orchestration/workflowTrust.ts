@@ -12,7 +12,15 @@ import type { WorkflowDoc, WorkflowReviewInfo } from "@contracts/workflow";
 import { SettingRepo } from "@main/store/repositories.js";
 import { parseFlowTrust, type FlowTrustRecord } from "@main/workflowEngines/flowTrustGate.js";
 
-export type WorkflowOrigin = "import" | "ai";
+/**
+ * 这份图是**怎么来的** —— 决定审查账本里记的理由。
+ *
+ * - `import` —— 从文件 / 预设导入；
+ * - `ai` —— AI 生成或改过；
+ * - `duplicate` —— 用户复制了另一份（**副本也是新的可执行文档**：
+ *   原图审过不代表副本审过，而且副本随时可能被改得和原件不同）。
+ */
+export type WorkflowOrigin = "import" | "ai" | "duplicate";
 
 const REVIEW_PREFIX = "workflow.review.v1.";
 /** Node-RED and the legacy execution runner share ONE approval parser, so

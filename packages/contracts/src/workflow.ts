@@ -416,6 +416,17 @@ export const PresetWorkflowSummarySchema = z.object({
   /** 库里**已有同名**工作流。导入永远新建(= 重名会自动加后缀),所以这是
    *  "你可能已经导过了"的提示,不是"就是同一条"。 */
   sameNameExists: z.boolean(),
+  /**
+   * 【AUTO-03】这份预设导入后落在哪条引擎上。
+   *
+   * 以前预设里没有这个字段，导入后按 `doc.engine ?? "mcode"` 落到**旧执行器**，
+   * 而它对用户图已被入口拒绝 —— 用户导入了示例、点运行、只得到一句「旧执行器已退场」，
+   * 原因藏在一个他没见过的字段里。现在预设自带 engine，这里原样透出来。
+   */
+  engine: z.enum(["mcode", "node-red"]).optional(),
+  /** 【AUTO-03】导入后**要用户先做一步**才能跑（不是坏，是迁移未决项）。
+   *  空/缺省 = 直接就能跑。界面据此在导入前就说明，而不是等用户点运行才撞墙。 */
+  needsStep: z.string().optional(),
 });
 export type PresetWorkflowSummary = z.infer<typeof PresetWorkflowSummarySchema>;
 
@@ -1148,3 +1159,22 @@ export function unknownWorkflowFieldPaths(doc: WorkflowDoc): string[] {
   });
   return paths;
 }
+
+/**
+ * 【WF-09】**复制一份工作流**。
+ *
+ * 与「导出再导入」的区别：复制**留在同一台机器上**，且新图的 `engine` /
+ * `trigger` / 提示词原样保留 —— 用户想的是「在这份基础上改」，不是「搬一份出去」。
+ */
+export interface WorkflowDuplicateInput {
+  /** 要复制的那份。 */
+  id: string;
+  /** 新名字；省略时自动加「 副本」并由仓储去重。 */
+  name?: string;
+}
+
+/** 复制工作流的入参校验。 */
+export const WorkflowDuplicateSchema = z.object({
+  id: z.string().min(1).max(200),
+  name: z.string().min(1).max(200).optional(),
+}).strict();

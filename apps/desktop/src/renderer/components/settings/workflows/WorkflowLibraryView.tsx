@@ -720,6 +720,35 @@ export function WorkflowLibraryView({
     }
   };
 
+  /**
+   * 【WF-09】复制当前选中的这份。
+   *
+   * 与「导出再导入」不同：复制**留在本机**，engine / trigger / 提示词原样保留 ——
+   * 用户想的是「在这份基础上改」，不是「搬一份出去」。
+   *
+   * 复制完**直接打开新的那份**（与新建同一条路径）：用户点「复制」的下一步
+   * 一定是改，把他留在原图上只会让他再找一遍。
+   */
+  const duplicateWorkflow = async () => {
+    if (!entry) return;
+    setCreating(true);
+    setSaveError(null);
+    try {
+      if (inflight.current) await inflight.current.promise;
+      const result = await api.workflow.duplicate({ id: entry.id });
+      if (!result.ok) {
+        setSaveError(t("settings.workflows.actionFailed", { error: result.error ?? "" }));
+        return;
+      }
+      await loadList();
+      if (result.id !== undefined) await openWorkflow(result.id);
+    } catch (err) {
+      setSaveError(t("settings.workflows.actionFailed", { error: (err as Error).message }));
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const removeWorkflow = async () => {
     if (!entry) return;
     setRemoving(true);
@@ -1273,6 +1302,8 @@ export function WorkflowLibraryView({
                     onSaveProfile={handleSaveProfile}
                     onRemoveProfile={onRemoveProfile}
                     onRemoveWorkflow={() => setPendingRemove(true)}
+                    onDuplicateWorkflow={() => void duplicateWorkflow()}
+                    duplicating={creating}
                         onPinDefault={() => setPendingPin(true)}
                         onRestoreDefault={() => setPendingRestore(true)}
                         pinned={entry?.pinned === true}

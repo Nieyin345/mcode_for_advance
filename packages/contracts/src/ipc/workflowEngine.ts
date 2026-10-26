@@ -88,6 +88,19 @@ export interface WorkflowEngineStatusView {
   /** SQL library projection lagging behind a committed native Deploy. */
   libraryMirrorPending?: number;
   libraryMirrorError?: boolean;
+  /** 【Q5】上次启动时**没迁成功**的旧工作流（迁移发生在窗口出现之前，只能事后读）。
+   *  `null`/缺省 = 没有待办。全迁完时宿主会清掉这条。 */
+  pendingMigration?: {
+    summary: string;
+    pending: Array<{ workflowId: string; name: string; reason: string }>;
+    at: number;
+  } | null;
+  /** 【Q8】当前引擎进程**启动时**是否已被信任（`engine-trust.json` = trusted）。
+   *
+   * 这决定「重启之后这些 flow 会不会自己跑」。`false` 有两种原因且都合法：
+   * 库里还有未审查的图（见 `engineTrustMarker.ts` 的粒度说明），或从来没有过
+   * node-red 图。界面据此提示，不要把它当成错误。 */
+  trustedAtStart?: boolean;
 }
 
 export type WorkflowEngineResult =
@@ -162,4 +175,16 @@ export interface WorkflowEngineNodeInstallApprovalMessage {
   network: boolean;
   sha256: string;
   intent: "install" | "upgrade";
+}
+
+/**
+ * 【Q9b】工作流引擎状态变了。
+ *
+ * 只带 `engineId` 与 `state` —— **不带状态快照**。收到就重读权威状态，
+ * 理由同 `WorkflowChangedMessage`：两份快照必然漂，而漂的那一份没人会发现。
+ */
+export interface WorkflowEngineChangedMessage {
+  channel: "workflowEngine:changed";
+  engineId: string;
+  state: "stopped" | "starting" | "running" | "failed";
 }

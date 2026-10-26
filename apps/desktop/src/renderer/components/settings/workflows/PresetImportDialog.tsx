@@ -156,6 +156,18 @@ export function PresetImportDialog({
                   {p.description && (
                     <div className="mt-0.5 truncate text-[0.7857em] text-content-subtle">{p.description}</div>
                   )}
+                  {/* 【AUTO-03】导入后要用户先做一步才能跑 —— **导入前就说明**，
+                      而不是等他点了运行撞上一句「旧执行器已退场」。
+                      这是迁移未决项（MERGE-0），不是这份预设坏了。 */}
+                  {p.needsStep !== undefined && (
+                    <div
+                      data-preset-needs-step=""
+                      className="mt-0.5 flex items-start gap-1 text-[0.7857em] text-warning"
+                    >
+                      <IconAlertTriangle size={11} className="mt-0.5 shrink-0" />
+                      <span>{p.needsStep}</span>
+                    </div>
+                  )}
                 </div>
                 <Button
                   variant="secondary"

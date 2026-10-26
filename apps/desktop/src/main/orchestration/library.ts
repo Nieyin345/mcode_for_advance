@@ -36,7 +36,7 @@ import { uiLocale } from "@main/lib/dialogText.js";
 import { BUILTIN_WORKFLOWS } from "./builtins.js";
 import { loadNodeTypes } from "./nodeTypes.js";
 import { workflowSaveIsStale, workflowSaveVersion } from "./workflowSaveVersion.js";
-import { clearWorkflowReview, requireWorkflowReview, workflowReviewError, type WorkflowOrigin } from "./workflowTrust.js";
+import { clearWorkflowReview, notifyWorkflowReviewFactsChanged, requireWorkflowReview, workflowReviewError, type WorkflowOrigin } from "./workflowTrust.js";
 import { importWorkflowDoc as parseWorkflowText, validateWorkflowDoc, exportWorkflowDoc } from "./workflowValidation.js";
 import { materializePresetScriptsFor } from "@main/workflows/presetScripts.js";
 import { checkEngineSwitch, effectiveWorkflowEngine, nativeFlowForWorkflow } from "@main/workflowEngines/workflowEngineSelection.js";
@@ -356,6 +356,12 @@ export async function saveWorkflow(
 
   const previous = getWorkflow(doc.id);
   if (previous !== null && effectiveWorkflowEngine(previous) !== effectiveWorkflowEngine(derived.doc)) {
+    // 【Q8】任何一次引擎归属变化都可能让"库里全部 node-red 图都已审查"这个前提失效
+    // （切走一份 = 少一份），也可能让新的图进入待审。信任标记由 `workflowTrust` 的
+    // 广播在账本写入后重算；这里额外处理**只在切走时**存在的一类：新文档是 mcode、
+    // 不需要审批，所以不会触发 `requireWorkflowReview`，账本不动 —— 但信任判据里的
+    // 集合变小了，必须重算一次。
+    notifyWorkflowReviewFactsChanged();
     let nativeFlow;
     if (effectiveWorkflowEngine(previous) === "node-red") {
       // A Node-RED -> Mcode switch must inspect the *actual* native tab, not

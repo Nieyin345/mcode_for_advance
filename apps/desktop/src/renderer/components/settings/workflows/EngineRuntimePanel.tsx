@@ -912,10 +912,30 @@ export function EngineRuntimePanel({ active: activeTab = true, engineId, editorO
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [activeTab, running, refreshDeployState]);
+  // 【Q9b】**先订阅推送，轮询只做兜底。**
+  //
+  // 以前只有 2.5 秒轮询：用户点「启动」之后那几秒界面是空转的，因为下一次 poll
+  // 还没到。现在主进程在状态变化的**那一刻**推一条，收到就重读权威状态。
+  //
+  // 轮询保留但**放宽到 15 秒**：推送是唯一的及时通道，轮询只兜「推送漏了」
+  // （例如渲染端重新挂载的那一瞬间）。两个都在时不会重复刷新 —— 推送那条走同一个
+  // `refetch`，React Query 会合并同一时刻的重复请求。
+  useEffect(() => {
+    if (typeof window === "undefined" || api.workflowEngine.engineChanged === undefined) return;
+    // ⚠️ **必须包一层再返回**。`useEffect` 的返回值为非 `undefined` 时 React 会把它
+    // 当成清理函数**调用**；这里若直接 `return api.workflowEngine.engineChanged(...)`，
+    // 一旦桥那一层没有给出函数（渲染端预览台 / 手机端 HTTP 桥漏补一项 / 旧 preload），
+    // 返回的就是 `undefined` 之外的东西，卸载时抛
+    // `TypeError: destroy_ is not a function`，**React 19 会把整棵树卸载** ——
+    // 画面空白，而控制台只剩一条与业务无关的类型错误。
+    // 实测：`workflow-ui-smoke` 点「打开 Node-RED」之后整页变空（body 102 字符）。
+    const off = api.workflowEngine.engineChanged(() => { void refreshDeployState(); });
+    return typeof off === "function" ? off : undefined;
+  }, [refreshDeployState]);
   const shouldPollDeploy = shouldPollWorkflowEngineStatus(activeTab, running, pageVisible);
   useEffect(() => {
     if (!shouldPollDeploy) return;
-    const timer = window.setInterval(() => { void refreshDeployState(); }, 2500);
+    const timer = window.setInterval(() => { void refreshDeployState(); }, 15_000);
     return () => window.clearInterval(timer);
   }, [shouldPollDeploy, refreshDeployState]);
   // T59: a library-load can restart the engine while this panel is docked.

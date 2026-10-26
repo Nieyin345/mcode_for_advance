@@ -17,7 +17,15 @@ import { injectTargetOf, isModelDecider, mcpServerNamesOf, pluginNamesOf, provid
 import type { WorkflowNode } from "@contracts/workflow";
 import type { AgentProvider } from "@contracts/provider";
 import type { ComponentDeliveryReport, PluginCapabilityDeclaration, PluginManifest } from "@contracts/plugin";
-import { BUILTIN_CAPABILITY_CATALOGUE } from "@main/modules/builtinCapabilityCatalogue.js";
+/** 宿主自带、实现在主进程里的能力。顺序即展示顺序。
+ *
+ *  【EXT-07】原来在 `modules/builtinCapabilityCatalogue.ts`；那份文件服务于
+ *  ModuleHost 的能力注册，随它删除。这里的**唯一使用者**是场景预检。
+ *  实现见 `main/modules/builtinMcCommands.ts`（`mcode.file.*`）。 */
+const BUILTIN_CAPABILITY_CATALOGUE: readonly { id: string; kind: "query" | "action" | "task"; source: string }[] = [
+  { id: "mcode.file.inspect", kind: "task", source: "host" },
+  { id: "mcode.file.info", kind: "query", source: "host" },
+];
 import { MODULE_CAPABILITY_PREFIX } from "@contracts/modules";
 
 export interface NodeCapabilityCheckContext {

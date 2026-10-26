@@ -44,6 +44,13 @@ export type WorkflowConfirmMigrationInput = z.infer<typeof WorkflowConfirmMigrat
 
 /** 删一份工作流。对内置 id 来说**这就是「恢复默认」** —— 两种在存储层是同一个操作,
  *  所以只有一个删除动词,见 `main/orchestration/library.ts` 的文件头。 */
+/** 【复制一份工作流】源 id + 新名字（可选，缺省由宿主生成）。 */
+export const WorkflowDuplicateSchema = z.object({
+  id: z.string().min(1).max(200),
+  name: z.string().min(1).max(200).optional(),
+});
+export type WorkflowDuplicateInput = z.infer<typeof WorkflowDuplicateSchema>;
+
 export const WorkflowRemoveSchema = z.object({ id: z.string().min(1) });
 export type WorkflowRemoveInput = z.infer<typeof WorkflowRemoveSchema>;
 
@@ -248,99 +255,9 @@ export type AutomationRunsInput = z.infer<typeof AutomationRunsSchema>;
 export const AutomationSessionsSchema = z.object({ workflowId: z.string().min(1) });
 export type AutomationSessionsInput = z.infer<typeof AutomationSessionsSchema>;
 
-/* ── 守望(会话输入区那颗「守望」按钮,D3/D4)── */
+/* 长任务守望已移除（2026-10-27）：契约一并删除 —— 它是用户能用工作流
+   自己搭出来的东西，不再做成内置功能。 */
 
-/**
- * 一条**命令模板**:守望面板下拉里的一项(名字 + 命令)。存在 setting 里
- * (D4:不单开设置页,面板里管)。
- */
-export const WatchCommandTemplateSchema = z.object({
-  id: z.string().min(1),
-  name: z.string().min(1),
-  command: z.string().min(1),
-});
-export type WatchCommandTemplate = z.infer<typeof WatchCommandTemplateSchema>;
-
-/**
- * **守望起跑**:以 `sessionId` 那条会话为**发起会话**,起一次内置模板
- * 「长任务守望」的运行(见 `main/orchestration/automationRunner.ts` 的
- * `startWatch`)。命令在发起会话的项目目录里跑,跑完注入回发起会话。
- *
- * `command` / `message` 不给 = 沿用模板里现在那条 —— 主进程会把给了的写进模板
- * (节点参数就是配置的真相),所以这个调用**有可见的副作用**:库里那份模板显示的
- * 就是上一次守望用的配置。
- */
-export const WatchStartSchema = z.object({
-  sessionId: z.string().min(1),
-  command: z.string().min(1).optional(),
-  message: z.string().optional(),
-});
-export type WatchStartInput = z.infer<typeof WatchStartSchema>;
-
-/** 这条会话上有没有**正在跑的守望**(面板据此提示"上一次还在跑")。 */
-export const WatchStatusSchema = z.object({ sessionId: z.string().min(1) });
-export type WatchStatusInput = z.infer<typeof WatchStatusSchema>;
-
-/**
- * 存**整份**命令模板列表(同 `AgentProfileSaveSchema` 的理由:模板是用户从头写的,
- * 局部更新在这里没有意义,整份给过来让校验只发生在一个地方)。
- */
-export const WatchTemplatesSaveSchema = z.object({
-  templates: z.array(WatchCommandTemplateSchema),
-  /** 【MC-054】**原值版本检查** —— 保存方上次读到的 revision(见
-   *  `automation.watchTemplates` 的返回值)。给了就必须与当前盘上一致:
-   *  另一端在此期间改过 → 拒绝并说明"已被别处改动,请重新加载"。
-   *
-   *  为什么是可选:老客户端/Agent 的旧调用不带它(行为与从前一致 = 整份覆盖);
-   *  桌面面板**总是**带(它在打开时就读到了 revision)—— 于是"界面上两份并发编辑"
-   *  这条台账红例被堵住,而既有调用方不被无谓打断。缺省不拒绝是**兼容取舍**,不是
-   *  安全默认:需要防丢更新的调用方必须给 revision。
-   */
-  /** 【MC-054】保存方上次读到的 revision。
-   *
-   *  **业务上必填**,但 schema 上保留 `optional()`:缺字段的调用要得到一条**可诊断的
-   *  业务拒绝**(`{ok:false, conflict:true, error:"请先读…"}`),而不是协议层 ZodError。
-   *  第十七轮复核点破的洞是"缺字段 = 整表覆盖"—— 那已在 handler 里改成拒绝;
-   *  这里不改成必填,是因为 ZodError 会让旧调用方看到一句 "Invalid input",
-   *  既不知道缺什么、也拿不到 currentRevision。
-   *
-   *  显式 `null` = "我知道自己在整表覆盖"(仅显式重建入口使用)。 */
-  expectedRevision: z.union([z.string().min(1).max(200), z.null()]).optional(),
-}).strict();
-export type WatchTemplatesSaveInput = z.infer<typeof WatchTemplatesSaveSchema>;
-
-/** 【MC-054】显式重建损坏/部分损坏的命令模板设置。`templates` 省略 = 把当前读得出的
- *  好条目原样保住重写(部分损坏的常用法);给了就过 schema 校验再写。 */
-export const WatchTemplatesRebuildSchema = z.object({
-  templates: z.array(WatchCommandTemplateSchema).max(200).optional(),
-});
-export type WatchTemplatesRebuildInput = z.infer<typeof WatchTemplatesRebuildSchema>;
-
-/**
- * 【MC-054】命令模板内容的**权威修订标识**(纯函数,主进程与渲染端共用)。
- *
- * 取值 = 对「规范化后的模板数组」做一次稳定哈希。规范化按 id 排序、只保留 schema 字段,
- * 于是"同样的内容、不同的键顺序"得到同一个 revision —— revision 判的是**内容**,
- * 不是字符串写法。读(`automation.watchTemplates`)与写(`...Save` 的 expectedRevision)
- * 用**同一个**函数,两边不可能漂开。
- *
- * 契约包不能 import node:crypto(渲染端也 import 它),所以用与 `scenePlan` 同款的
- * 确定性 fnv1a —— 这里要的是"变化可检测",不是密码学强度。
- */
-export function watchTemplatesRevision(templates: readonly unknown[]): string {
-  const canon = JSON.stringify(templates
-    .map((t) => {
-      const v = t as { id?: unknown; name?: unknown; command?: unknown };
-      return [typeof v.id === "string" ? v.id : "", typeof v.name === "string" ? v.name : "", typeof v.command === "string" ? v.command : ""];
-    })
-    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)));
-  let h = 0x811c9dc5;
-  for (let i = 0; i < canon.length; i++) {
-    h ^= canon.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return `watchtpl:fnv1a:${h.toString(16).padStart(8, "0")}`;
-}
 
 /**
  * 一次运行的结局。与 `workflow_runs.status` 那一列**一一对应**
@@ -435,3 +352,56 @@ export type HooksTestInput = z.infer<typeof HooksTestSchema>;
 // 与 `runtimes.list` 一致:无参 handler 不接 raw、也不 parse(不带参数 invoke 时
 // raw 是 undefined,`z.object({})` 会把 `undefined` 判为 invalid_type)。
 
+/* ───────────────── 【守望 WATCH】─────────────────
+ *
+ * 「把一条命令绑定到会话上运行，结束后把结果交回该会话」的那组接口。
+ * 形状从 `apiCatalog.generated.ts`（由 RpcMap 生成）反推，与主进程
+ * `ipc/orchestration.ts` 的 handler 参数逐字对应。
+ */
+
+/** 一条可复用的守望命令模板。 */
+export interface WatchCommandTemplate {
+  id: string;
+  command: string;
+  name: string;
+}
+
+/** 起一次守望。`ok:false` 时 `error` 是给人看的句子，不是异常。 */
+export interface WatchStartInput {
+  sessionId: string;
+  message?: string;
+  command?: string;
+}
+
+export interface WatchStatusInput {
+  sessionId: string;
+}
+
+export interface WatchTemplatesSaveInput {
+  templates: WatchCommandTemplate[];
+  /** 保存方上次读到的 revision；不匹配时返回 `conflict: true`。 */
+  expectedRevision?: string | null;
+}
+
+/** @deprecated 重建模板的通道已不在 RpcMap 里；保留类型只为老调用点编译得过。 */
+export interface WatchTemplatesRebuildInput {
+  sessionId?: string;
+}
+
+/** 守望模板的内容 revision（乐观并发用）。
+ *
+ *  **顺序无关**：模板顺序不同但内容相同 → 同一个 revision。这是套件
+ *  `orchestration-ipc-smoke` 的 MC-054 断言。 */
+export function watchTemplatesRevision(templates: readonly WatchCommandTemplate[]): string {
+  const canonical = [...templates]
+    .map(t => ({ id: t.id, command: t.command, name: t.name }))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // 用一条稳定的字符串化 + FNV-1a —— 这不是密码学哈希，只要「内容变了就不一样」。
+  const text = JSON.stringify(canonical);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return "rev-" + hash.toString(16).padStart(8, "0");
+}

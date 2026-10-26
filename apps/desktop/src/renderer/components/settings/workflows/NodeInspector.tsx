@@ -71,7 +71,6 @@ import {
 } from "./workflowView.js";
 import { wouldCycle } from "./workflowEdit.js";
 import { Field, GrowingTextarea, ParamField } from "./ParamField.js";
-import { MODULE_CALL_PARAM_KEYS, ModuleCapabilityFields } from "./ModuleCapabilityFields.js";
 import { workflowDisplayDescription, workflowDisplayName } from "@renderer/lib/workflowLabels.js";
 import { WorkflowBadge } from "./WorkflowBadge.js";
 import { AutomationRunSection } from "./AutomationRunSection.js";
@@ -96,6 +95,8 @@ export function NodeInspector({
   onSaveProfile,
   onRemoveProfile,
   onRemoveWorkflow,
+  onDuplicateWorkflow,
+  duplicating,
   onPinDefault,
   onRestoreDefault,
   pinned = false,
@@ -125,6 +126,10 @@ export function NodeInspector({
   onSaveProfile: (name: string) => Promise<boolean>;
   onRemoveProfile: (id: string) => Promise<void>;
   onRemoveWorkflow: () => void;
+  /** 【WF-09】复制这份工作流。 */
+  onDuplicateWorkflow: () => void;
+  /** 复制进行中（按钮禁用，避免连点产生多份）。 */
+  duplicating?: boolean;
   /** 把当前版本钉成「默认」(内置退役后对**所有**工作流开放)。 */
   onPinDefault: () => void;
   /** 「恢复默认」= 回到钉住的那版。只在 `pinned` 为真时画按钮。 */
@@ -183,6 +188,8 @@ export function NodeInspector({
           purpose={purpose}
           onUpdateWorkflow={onUpdateWorkflow}
           onRemoveWorkflow={onRemoveWorkflow}
+          onDuplicateWorkflow={onDuplicateWorkflow}
+          duplicating={duplicating}
           onPinDefault={onPinDefault}
           onRestoreDefault={onRestoreDefault}
           pinned={pinned}
