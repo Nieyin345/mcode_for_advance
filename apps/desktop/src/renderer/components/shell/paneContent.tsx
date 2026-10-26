@@ -38,7 +38,6 @@ import { TaskListPanel } from "@renderer/components/ide/TaskListPanel.js";
 import { TaskCenterPanel } from "@renderer/components/ide/TaskCenterPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
-import { ModuleViewDock } from "@renderer/components/modules/ModuleContributions.js";
 
 /** Claude 的 tile 类型 → Mcode 的面板。
  *
@@ -74,8 +73,10 @@ export function renderPaneContent(tileId: string): ReactNode {
       // Mcode 没有评审流，用最接近的「需要人处理的任务」接上。
       return <TaskCenterPanel />;
     case "mcpapp":
-      // 【扩展线】扩展贡献的视图。
-      return <ModuleViewDock location="right" />;
+      // 【扩展线】扩展贡献的视图走 Theia 宿主（ModuleHost 已随 2026-10-27
+      // 的「一个扩展系统」裁决删除）。当前没有对应的渲染端面板，
+      // 返回 null 让 tile 显示为空壳，而不是崩掉。
+      return null;
     case "watercolor":
       // 【工作流线】Node-RED / 工作流看板。
       return <WorkflowBoardPanel />;

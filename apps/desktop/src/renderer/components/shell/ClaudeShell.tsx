@@ -58,6 +58,10 @@ export interface ClaudeShellProps {
   onCloseTile?: (tileId: string) => void;
   /** 拖拽分栏：相邻两格的 flex 改成 na / nb。 */
   onResizeTile?: (stack: import("./paneTiles.js").PaneStack, a: import("./paneTiles.js").PaneNode, na: number, b: import("./paneTiles.js").PaneNode, nb: number) => void;
+  /** 放大/还原某一格（Claude 的 expandedTile）。null = 没有放大。 */
+  onExpandTile?: (tileId: string | null) => void;
+  /** 当前被放大的格。 */
+  expandedTile?: string | null;
   /** 当前是否有会话在加载。 */
   isLoadingThread: boolean;
 }
@@ -128,6 +132,8 @@ export function ClaudeShell({
   renderTile,
   onCloseTile,
   onResizeTile,
+  onExpandTile,
+  expandedTile,
   isLoadingThread,
 }: ClaudeShellProps) {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
@@ -176,6 +182,8 @@ export function ClaudeShell({
                     renderTile={renderTile}
                     onCloseTile={onCloseTile}
                     onResize={onResizeTile}
+                    onExpand={onExpandTile}
+                    expandedTile={expandedTile}
                     chatColumn={threadColumn}
                   />
                 ) : (

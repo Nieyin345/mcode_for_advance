@@ -1,0 +1,122 @@
+/* Claude Desktop composer toolbar parity.
+ *
+ * The reference composer uses a single outer editor surface and a quiet,
+ * unboxed row of independent controls. Mcode keeps its extra per-session
+ * controls, but they share that same visual grammar: no inner separators,
+ * neutral hover, and the reference's control rhythm.
+ *
+ * 【UI 重建 2026-10-27】**节奏改成 Claude chin 行的真实值**：
+ *   --cmp-chin-row-h = --cds-h-control--sm ≈ 18.8px 视觉行高
+ *   --cmp-chin-touch-grow 用负边距把命中区外扩到控件高（≈24.5px）
+ * 这样「看着紧凑、点着不费劲」—— 之前固定 32px 行高比 Claude 高 70%。
+ *
+ * Scoped to the inline pill presentation; the side-chat/phone settings list
+ * (layout="row") keeps its full-width row treatment.
+ */
+[data-chat-root] .composer-minipill.claude-composer-toolbar {
+  height: var(--cmp-chin-row-h, 1.25rem);
+  /* 触控补偿：视觉矮行，命中区够大。Claude 的 --cmp-chin-touch-grow 同思路。
+     顺序要紧：先 padding:0 再单独覆盖 block 方向，否则会被简写抹掉。 */
+  padding: 0;
+  padding-block: var(--cmp-chin-touch-grow, 0px);
+  margin-block: calc(-1 * var(--cmp-chin-touch-grow, 0px));
+  gap: 0.125rem;
+}
+
+[data-chat-root] .claude-composer-toolbar .composer-minipill-mid {
+  display: none;
+}
+
+[data-chat-root] .claude-composer-toolbar .composer-minipill-seg {
+  height: 2rem;
+  padding-inline: 0.5rem;
+  border-radius: var(--radius-btn-md);
+  font-size: 0.75rem;
+  transition:
+    background-color var(--dur-fast) var(--ease-swift),
+    color var(--dur-fast) ease,
+    gap var(--composer-dur-collapse) var(--composer-ease-out);
+}
+
+[data-chat-root] .claude-composer-toolbar .composer-minipill-seg:hover:not(:disabled) {
+  background-color: rgb(var(--surface-hover));
+  color: rgb(var(--content));
+}
+
+[data-chat-root] .claude-composer-toolbar .composer-minipill-seg[data-popup-open] {
+  background-color: rgb(var(--surface-hover));
+  color: rgb(var(--content));
+}
+
+[data-chat-root] .claude-composer-toolbar .composer-minipill-seg:active:not(:disabled) {
+  background-color: rgb(var(--surface-active));
+}
+
+[data-chat-root] .claude-composer-toolbar .composer-minipill-seg:focus-visible {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 1px;
+  z-index: 1;
+}
+
+[data-chat-root] .claude-composer-toolbar .composer-minipill-seg:disabled {
+  background: transparent;
+  color: rgb(var(--content-muted));
+}
+
+[data-chat-root] .claude-composer-toolbar .composer-minipill-ringseg {
+  padding-inline: 0.5rem;
+}
+
+/* The shared toolbar has container-query compression in styles.css. These
+ * scoped equivalents are intentionally repeated here because the Claude
+ * parity selectors are more specific than the generic rules; without them,
+ * the 8px pill padding wins at every width and the toolbar overflows early. */
+@container composer-toolbar (width < 576px) {
+  [data-chat-root] .composer-minipill.claude-composer-toolbar .composer-minipill-seg,
+  [data-chat-root] .composer-minipill.claude-composer-toolbar .composer-minipill-ringseg {
+    padding-inline: 5px;
+  }
+}
+
+@container composer-toolbar (width < 480px) {
+  [data-chat-root] .composer-minipill.claude-composer-toolbar {
+    padding-inline: 2px;
+  }
+
+  [data-chat-root] .composer-minipill.claude-composer-toolbar .composer-minipill-seg {
+    padding-inline: 4px;
+  }
+}
+
+@container composer-toolbar (width < 384px) {
+  [data-chat-root] .composer-minipill.claude-composer-toolbar .composer-minipill-seg,
+  [data-chat-root] .composer-minipill.claude-composer-toolbar .composer-minipill-ringseg {
+    padding-inline: 3px;
+  }
+
+  [data-chat-root] .composer-minipill.claude-composer-toolbar .composer-minipill-seg {
+    gap: 0;
+  }
+
+  [data-chat-root] .composer-minipill.claude-composer-toolbar .composer-lblwrap {
+    grid-template-columns: 0fr;
+  }
+}
+
+@container composer-toolbar (width < 320px) {
+  [data-chat-root] .composer-minipill.claude-composer-toolbar {
+    min-width: max-content;
+    gap: 0;
+  }
+
+  [data-chat-root] .composer-minipill.claude-composer-toolbar .composer-minipill-seg,
+  [data-chat-root] .composer-minipill.claude-composer-toolbar .composer-minipill-ringseg {
+    padding-inline: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-chat-root] .claude-composer-toolbar .composer-minipill-seg {
+    transition: none;
+  }
+}

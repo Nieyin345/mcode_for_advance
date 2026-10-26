@@ -39,6 +39,10 @@ export interface TilePaneProps {
    * 不传则分栏条只画不拖（只读场景）。
    */
   onResize?: (stack: PaneStack, a: PaneNode, na: number, b: PaneNode, nb: number) => void;
+  /** 放大/还原某一格（Claude 的 expandedTile）。 */
+  onExpand?: (tileId: string | null) => void;
+  /** 当前被放大的格（null = 没有）。 */
+  expandedTile?: string | null;
 }
 
 /** 一个叶子格。 */
@@ -47,11 +51,15 @@ function Tile({
   renderTile,
   onCloseTile,
   chatColumn,
+  onExpand,
+  expanded,
 }: {
   tile: PaneTile;
   renderTile: (id: string) => ReactNode;
   onCloseTile?: (id: string) => void;
   chatColumn: ReactNode;
+  onExpand?: (id: string | null) => void;
+  expanded?: boolean;
 }) {
   const isChat = tile.tileId === "chat";
   return (
@@ -70,6 +78,17 @@ function Tile({
           <span className="min-w-0 flex-1 truncate text-[var(--m-font-size-caption)] text-[var(--m-text-secondary)]">
             {tileLabel(tile.tileId)}
           </span>
+          {onExpand && (
+            <button
+              type="button"
+              aria-label={expanded ? "还原" : "放大"}
+              aria-pressed={expanded}
+              className="shrink-0 rounded p-1 hover:bg-[var(--m-fill-ghost-hover)]"
+              onClick={() => onExpand(expanded ? null : tile.tileId)}
+            >
+              {expanded ? <CollapseIcon /> : <ExpandIcon />}
+            </button>
+          )}
           {onCloseTile && (
             <button
               type="button"
@@ -151,12 +170,16 @@ function TileDivider({
 }
 
 /** 递归渲染一个节点。props 显式往下传，不用 spread（避免把 layout 带下去）。 */
-function Node({ node, renderTile, onCloseTile, chatColumn, onResize }: { node: PaneNode } & Omit<TilePaneProps, "layout">) {
+function Node({ node, renderTile, onCloseTile, chatColumn, onResize, onExpand, expandedTile }: { node: PaneNode } & Omit<TilePaneProps, "layout">) {
   if (node.kind === "tile") {
-    return <Tile tile={node} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} />;
+    return <Tile tile={node} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onExpand={onExpand} expanded={expandedTile === node.tileId} />;
   }
   const dir = node.direction === "row" ? "flex-row" : "flex-col";
   const total = node.children.reduce((n, c) => n + nodeFlex(c), 0) || 1;
+  // 放大态：若这一层里有被放大的格，它独占全部份额，兄弟归 0。
+  // **不改树**（Claude 的 expandedTile 也是记在旁路，退出时布局原样回来）。
+  const hasExpandedHere =
+    !!expandedTile && node.children.some((c) => c.kind === "tile" && c.tileId === expandedTile);
   return (
     // 高度链：`min-h-0 + flex-1` 让 flex 自己分配。**不写 `h-full`** ——
     // 它和 `flex-1` 同时出现时高度会算成 0（实测 center/right 恒为 0）。
@@ -185,9 +208,20 @@ function Node({ node, renderTile, onCloseTile, chatColumn, onResize }: { node: P
           )}
           <div
             className="flex min-h-0 min-w-0 self-stretch"
-            style={{ flex: String(nodeFlex(child)) }}
+            style={{
+              flex: String(
+                hasExpandedHere
+                  ? (child.kind === "tile" && child.tileId === expandedTile ? 1 : 0)
+                  : nodeFlex(child),
+              ),
+              // 归 0 的兄弟要彻底让开，否则 min-width/min-height 仍占位。
+              ...(hasExpandedHere &&
+              !(child.kind === "tile" && child.tileId === expandedTile)
+                ? { overflow: "hidden", minWidth: 0, minHeight: 0 }
+                : null),
+            }}
           >
-            <Node node={child} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} />
+            <Node node={child} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} onExpand={onExpand} expandedTile={expandedTile} />
           </div>
         </Fragment>
       ))}
@@ -219,6 +253,26 @@ function tileLabel(id: string): string {
   return map[id] ?? id;
 }
 
+/** 放大：四角向外的箭头。 */
+function ExpandIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+      <path d="M5.5 2.5h-3v3M8.5 2.5h3v3M5.5 11.5h-3v-3M8.5 11.5h3v-3"
+        stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** 还原：四角向内的箭头。 */
+function CollapseIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+      <path d="M2.5 5.5h3v-3M11.5 5.5h-3v-3M2.5 8.5h3v3M11.5 8.5h-3v3"
+        stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function CloseIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
@@ -228,10 +282,10 @@ function CloseIcon() {
 }
 
 /** 对外入口。 */
-export function TilePane({ layout, renderTile, onCloseTile, chatColumn, onResize }: TilePaneProps) {
+export function TilePane({ layout, renderTile, onCloseTile, chatColumn, onResize, onExpand, expandedTile }: TilePaneProps) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 self-stretch" data-pane-layout-root="">
-      <Node node={layout.root} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} />
+      <Node node={layout.root} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} onExpand={onExpand} expandedTile={expandedTile} />
     </div>
   );
 }

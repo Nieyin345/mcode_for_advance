@@ -26,12 +26,11 @@ import {
  * visible below but is locked (`textareaLocked`) while a decision is
  * pending, so the user can't type a competing prompt.
  *
- * Styling mirrors QuestionPrompt: a single rounded, bordered, elevated
- * card on neutral surface tokens, with the `warning` (amber) token used
- * sparingly for the accent/attention elements (header label, tool-name
- * code, the "允许" primary button). Amber remains the semantic signal for
- * "needs your permission", but the frame is otherwise neutral so the card
- * reads cleanly in both light and dark themes. No violet/purple is used.
+ * Styling follows Claude's pending tool-decision card: a neutral surface,
+ * compact details, an accent edge and a restrained accent halo. Explicitly
+ * high-risk app operations retain a danger edge and danger text; ordinary
+ * approvals use the product accent. Permission timing and verdict handling
+ * remain separate from these presentation choices.
  *
  * Queuing: when several approval.request events arrive in quick succession
  * (e.g. the model wants to run three Bash commands in one turn), the store
@@ -91,8 +90,10 @@ export function ApprovalPrompt({
   // One-line hint via the shared toolSummary (activityShared) so the user sees what
   // the tool is about without expanding.
   const summary = toolSummary(toolName, input, t);
-  // mcode-app 的高风险操作每次都要本人点:不给「始终允许」(主进程那头也不认)。
-  const allowAlways = !toolName.startsWith(APP_DANGER_APPROVAL_PREFIX);
+  // High-risk app operations require explicit approval every time; the main
+  // process enforces the same rule independently of this UI gate.
+  const isDangerousTool = toolName.startsWith(APP_DANGER_APPROVAL_PREFIX);
+  const allowAlways = !isDangerousTool;
   const isMcp = toolName.startsWith("mcp__");
 
   // Focus the CARD, never the "允许" button (ARC-005): with focus on the
@@ -120,6 +121,8 @@ export function ApprovalPrompt({
   // card, mirroring PlanApprovalPrompt.
   return (
     <div
+      data-cds="ToolApprovalPrompt"
+      data-dangerous={isDangerousTool ? "true" : "false"}
       ref={cardRef}
       tabIndex={-1}
       onKeyDown={(e) => {
@@ -134,20 +137,21 @@ export function ApprovalPrompt({
       role="alertdialog"
       aria-label={t("chat.approval.aria", { provider: providerName })}
       className={cn(
-        "mb-2 min-w-0 max-h-[min(65vh,540px)] overflow-y-auto rounded-[var(--radius-dialog)] border border-edge-input bg-surface px-3.5 py-3 text-xs text-content shadow-[var(--shadow-popover)]",
+        "mb-2 min-w-0 max-h-[min(65vh,540px)] overflow-y-auto rounded-[var(--radius-dialog)] border bg-surface px-3.5 py-3 text-xs text-content shadow-[var(--shadow-popover)]",
+        isDangerousTool ? "border-danger/50" : "border-edge-input",
         "animate-[qa-sheet-in_140ms_ease-out]",
       )}
     >
       {/* Header */}
       <div className="mb-2.5 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
-          <IconAlertTriangle size={14} className="shrink-0 text-warning" />
-          <span className="font-semibold text-warning">
+          <IconAlertTriangle size={14} className={cn("shrink-0", isDangerousTool ? "text-danger" : "text-accent")} />
+          <span className={cn("font-semibold", isDangerousTool ? "text-danger" : "text-content")}>
             {t("chat.approval.title", { provider: providerName })}
           </span>
           {queueTotal > 1 && (
             <span
-              className="rounded-full border border-warning/60 bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-warning"
+              className={cn("rounded-full border px-1.5 py-0.5 text-[length:var(--m-fs-caption)] font-medium tabular-nums", isDangerousTool ? "border-danger/50 bg-danger/10 text-danger" : "border-accent/30 bg-accent/10 text-accent")}
               title={t("chat.approval.queueTitle", { n: queueTotal - queuePosition })}
             >
               {queuePosition} / {queueTotal}
@@ -159,7 +163,7 @@ export function ApprovalPrompt({
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           className={cn(
-            "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2 py-0.5 text-[10px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+            "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-md)] px-2 py-0.5 text-[length:var(--m-fs-caption)] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             "cds-hover-ghost text-content-muted hover:text-content",
           )}
           title={open ? t("chat.approval.collapseTitle") : t("chat.approval.expandTitle")}
@@ -173,23 +177,23 @@ export function ApprovalPrompt({
       </div>
 
       {/* Tool name + summary */}
-      <div className="mb-2.5 min-w-0 rounded-[var(--radius-btn-xs)] border border-edge bg-surface-muted/40 px-3 py-2">
+      <div className="mb-2.5 min-w-0 rounded-[var(--radius-control)] border border-edge/45 bg-surface-muted/40 px-3 py-2">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <code className="rounded bg-warning/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-warning">
+          <code className={cn("rounded-[var(--radius-btn-xs)] px-1.5 py-0.5 font-mono text-[length:var(--m-fs-caption)] font-semibold", isDangerousTool ? "bg-danger/10 text-danger" : "bg-accent/10 text-accent")}>
             {toolName}
           </code>
           {summary && (
             <span className="line-clamp-2 break-all text-content-muted">{summary}</span>
           )}
         </div>
-        {description && <div className="mt-1 text-[11px] text-content-muted">{description}</div>}
+        {description && <div className="mt-1 text-[length:var(--m-fs-caption)] text-content-muted">{description}</div>}
       </div>
 
       {/* Expandable input */}
       {open && (
         <div className="mb-2.5">
-          <div className="mb-0.5 text-[10px] uppercase tracking-wide text-content-subtle">{t("chatStream.tool.input")}</div>
-          <pre className="max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-btn-xs)] bg-surface-muted/60 p-2 text-[11px] text-content-muted">
+          <div className="mb-0.5 text-[length:var(--m-fs-caption)] uppercase tracking-wide text-content-subtle">{t("chatStream.tool.input")}</div>
+          <pre className="max-h-40 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-control)] border border-edge/40 bg-surface-muted/40 p-2.5 text-[length:var(--m-fs-caption)] text-content-muted">
             {safeStringify(input)}
           </pre>
         </div>
@@ -199,17 +203,17 @@ export function ApprovalPrompt({
           the bottom of the card. */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-edge pt-2.5">
         {allowAlways && !isMcp ? (
-          <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-content-muted">
+          <label className="flex cursor-pointer items-center gap-1.5 text-[length:var(--m-fs-caption)] text-content-muted">
             <input
               type="checkbox"
               checked={always}
               onChange={(e) => setAlways(e.target.checked)}
-              className="h-3 w-3 cursor-pointer accent-warning"
+              className="h-3.5 w-3.5 cursor-pointer accent-warning"
             />
             {t("chat.approval.alwaysAllow", { tool: toolName })}
           </label>
         ) : (
-          <span className="text-[11px] text-warning">{isMcp ? toolName.split("__")[1] : t("chat.approval.everyTime")}</span>
+          <span className={cn("text-[length:var(--m-fs-caption)]", isDangerousTool ? "text-danger" : "text-content-muted")}>{isMcp ? toolName.split("__")[1] : t("chat.approval.everyTime")}</span>
         )}
         <div className="flex items-center gap-1.5">
           <Button
@@ -233,7 +237,7 @@ export function ApprovalPrompt({
                 const verdict = mcpApprovalVerdict("always_allow");
                 onDecide(verdict.granted, verdict.always);
               }}
-              className="cds-hover-ghost inline-flex min-h-8 items-center rounded-[var(--radius-btn-xs)] px-2 py-1 text-[11px] font-medium text-content-muted transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+              className="cds-hover-ghost inline-flex min-h-8 items-center rounded-[var(--radius-btn-md)] px-2 py-1 text-[length:var(--m-fs-caption)] font-medium text-content-muted transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
               title={t("chat.approval.alwaysAllow", { tool: toolName })}
             >
               {t("chat.approval.alwaysAllow", { tool: toolName })}
@@ -256,7 +260,7 @@ export function ApprovalPrompt({
             aria-disabled={!allowArmed}
             title={t("chat.approval.allowTitle")}
             className={cn(
-              "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2.5 text-[11px] font-medium transition-colors",
+              "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-md)] px-2.5 text-[length:var(--m-fs-caption)] font-medium transition-colors",
               "bg-warning text-surface hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-warning/50",
               "disabled:cursor-not-allowed disabled:opacity-50",
             )}

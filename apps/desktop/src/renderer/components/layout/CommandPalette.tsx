@@ -58,7 +58,6 @@ import {
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { useI18n, type MessageId } from "@renderer/lib/i18n/index.js";
 import { useRgStatus } from "@renderer/lib/useRgStatus.js";
-import { useModuleContributions, contributionsOf, ModuleCatalogNotice } from "@renderer/components/modules/ModuleContributions.js";
 import { createModuleClient } from "@contracts/moduleClient";
 import { CUSTOM_ICONS } from "@renderer/components/customUi/registry.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
@@ -164,20 +163,25 @@ type AsyncResult<T> = undefined | { loading: true } | { loading: false; value: T
 export function CommandPalette() {
   const { t, locale } = useI18n();
   const open = useSessionStore((s) => s.commandPaletteOpen);
-  const moduleCatalog = useModuleContributions(open);
   const [theiaActive, setTheiaActive] = useState<TheiaInstalledEntry[]>([]);
   // No idle-time poll. Resolve only when the user opens Mcode's existing palette;
   // closing invalidates in-flight replies so stale extension commands cannot leak.
   useEffect(() => {
     if (!open) {setTheiaActive([]);return;}
-    let current = true;
-    void api.modules.theiaInstalled({op:"list"}).then((result) => {
-      if (current && result.kind==="list") setTheiaActive(result.items);
-    }).catch(() => {
-      // Web host / missing Theia runtime: built-in and ModuleHost commands remain available.
-      if (current) setTheiaActive([]);
-    });
-    return () => {current=false;};
+    let current = true,epoch = 0;
+    const refresh = async () => {
+      const request = ++epoch;
+      try {
+        const result = await api.modules.theiaInstalled({op:"list"});
+        if (current && request===epoch && result.kind==="list") setTheiaActive(result.items);
+      } catch {
+        // Web host / missing Theia runtime: built-in and ModuleHost commands remain available.
+        if (current && request===epoch) setTheiaActive([]);
+      }
+    };
+    const unsubscribe = api.on.theiaContributionChanged(() => {void refresh();});
+    void refresh();
+    return () => {current=false;epoch++;unsubscribe();};
   }, [open]);
   const setOpen = useSessionStore((s) => s.setCommandPaletteOpen);
   // Subscribe to overrides so <kbd> hints update live when the user rebinds.
@@ -223,34 +227,13 @@ export function CommandPalette() {
     const builtin = collectCommands(useSessionStore.getState());
     // Extension commands join the SAME palette group and use the SAME host invoke
     // as file-menu modules. Labels name the extension to avoid collisions.
-    const extensions: CommandDef[] = contributionsOf(moduleCatalog.data,"command").map(({module,contribution})=>({
-      id:"extension:"+module.id+":"+contribution.id,
-      label:contribution.title[locale]+" · "+module.title[locale]+" ("+contribution.command+")",
-      group:"view",
-      keywords:[contribution.command,module.id,contribution.title.zh,contribution.title.en],
-      icon:contribution.icon ? CUSTOM_ICONS[contribution.icon] : undefined,
-      perform:async(s)=>{
-        const projectPath = s.projects.find(p=>p.id===s.activeProjectId)?.path;
-        const path = s.activeProjectId ? s.ideActiveFileByProject[s.activeProjectId] : undefined;
-        if (!projectPath || !path) {
-          useToastStore.getState().push({kind:"error",title:locale==="zh"?"扩展命令需要先打开工作区文件":"Open a workspace file before running this extension command"});
-          return;
-        }
-        try {
-          const result = await createModuleClient(api.modules,module.id).invoke(contribution.id,{projectPath,path},crypto.randomUUID());
-          const value = result.type==="result" ? result.value : {status:result.task.status,id:result.task.id};
-          useToastStore.getState().push({kind:"info",title:contribution.title[locale],body:JSON.stringify(value).slice(0,700)});
-        } catch(error) {
-          useToastStore.getState().push({kind:"error",title:contribution.title[locale],body:error instanceof Error?error.message:String(error)});
-        }
-      },
-    }));
+
     const theia = collectTheiaPaletteCommands(
       theiaActive,
       (input) => api.modules.theiaInstalled(input),
       (message) => useToastStore.getState().push(message),
     );
-    return [...builtin,...extensions,...theia].map((cmd) => {
+    return [...builtin,...theia].map((cmd) => {
       const effective = resolveShortcut(cmd.id, overrides);
       return {
         ...cmd,
@@ -258,7 +241,7 @@ export function CommandPalette() {
         kind: "command" as const,
       };
     });
-  }, [open, overrides, moduleCatalog.data, locale, theiaActive]);
+  }, [open, overrides, locale, theiaActive]);
 
   // Drive the async searches off the live query + active scope. Only the
   // searches the current scope includes are fired, so picking e.g. "线程" never
@@ -613,12 +596,11 @@ export function CommandPalette() {
           >
             {/* 【T41】目录形状异常时,扩展命令不会出现在列表里 —— 说清楚为什么,
                 而不是让用户以为"扩展没装"。 */}
-            <ModuleCatalogNotice catalog={moduleCatalog} className="mx-3 mt-2" />
             {/* ripgrep missing banner: file/content searches fall back to the slow JS
                   scanners; a one-click install restores the fast path. */}
             {!rg.ready && (
               <div className="flex flex-col gap-1 border-b border-edge bg-warning/10 px-3 py-1.5">
-                <div className="flex items-center gap-1.5 text-[11px] text-content-muted">
+                <div className="flex items-center gap-1.5 text-[length:var(--m-fs-caption)] text-content-muted">
                   <IconAlertTriangle size={13} className="shrink-0 text-warning" />
                   <span className="min-w-0 flex-1 truncate">
                     {t("layout.palette.rgMissingHint")}
@@ -632,14 +614,14 @@ export function CommandPalette() {
                     <button
                       type="button"
                       onClick={() => void rg.install()}
-                      className="shrink-0 rounded border border-accent/40 px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/10"
+                      className="shrink-0 rounded border border-accent/40 px-1.5 py-0.5 text-[length:var(--m-fs-caption)] font-medium text-accent transition-colors hover:bg-accent/10"
                     >
                       {t("layout.palette.rgInstall")}
                     </button>
                   )}
                 </div>
                 {rg.error && (
-                  <div className="text-[11px] text-content-subtle">
+                  <div className="text-[length:var(--m-fs-caption)] text-content-subtle">
                     {t("layout.palette.rgInstallFailed", { error: rg.error })}
                   </div>
                 )}
@@ -672,7 +654,7 @@ export function CommandPalette() {
                   <Combobox.Group key={group} className="flex flex-col gap-0.5">
                     <Combobox.GroupLabel
                       className={cn(
-                        "flex items-center gap-1.5 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                        "flex items-center gap-1.5 px-2 py-1 text-[length:var(--m-fs-caption)] font-semibold uppercase tracking-wide",
                         "text-content-subtle",
                       )}
                     >
@@ -689,7 +671,7 @@ export function CommandPalette() {
                   </Combobox.Group>
                 ))}
                 <Combobox.Empty
-                  className={cn("px-3 py-8 text-center text-[13px] text-content-subtle")}
+                  className={cn("px-3 py-8 text-center text-[length:var(--m-fs-prose)] text-content-subtle")}
                 >
                   {emptyMessageFor(t, scope, isSearching)}
                 </Combobox.Empty>
@@ -700,7 +682,7 @@ export function CommandPalette() {
             <div
               className={cn(
                 "flex items-center justify-between border-t border-edge px-3 py-1.5",
-                "text-[10px] text-content-subtle",
+                "text-[length:var(--m-fs-caption)] text-content-subtle",
               )}
             >
               <span className="flex items-center gap-2">
@@ -784,7 +766,7 @@ function ScopeTabs({
           </button>
         );
       })}
-      <span className="ml-auto flex items-center gap-1 text-[10px] text-content-subtle">
+      <span className="ml-auto flex items-center gap-1 text-[length:var(--m-fs-caption)] text-content-subtle">
         <kbd className="rounded border border-edge px-1">←</kbd>
         <kbd className="rounded border border-edge px-1">→</kbd>{" "}
         {t("layout.palette.switchScope")}
@@ -861,7 +843,7 @@ function PaletteRow({ item, onClick }: { item: PaletteItem; onClick: () => void 
       onClick={onClick}
       className={cn(
         "group flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5",
-        "text-[13px] text-content",
+        "text-[length:var(--m-fs-prose)] text-content",
         "data-[highlighted]:bg-accent/12 data-[highlighted]:text-content",
         "outline-none",
       )}
@@ -892,7 +874,7 @@ function DocItemRowContent({ item }: { item: LibraryItem }) {
     <>
       <IconFileText size={15} className="shrink-0 text-content-muted group-data-[highlighted]:text-accent" />
       <span className="min-w-0 flex-1 truncate">{item.title}</span>
-      {meta && <span className="shrink-0 truncate text-[11px] text-content-subtle">{meta}</span>}
+      {meta && <span className="shrink-0 truncate text-[length:var(--m-fs-caption)] text-content-subtle">{meta}</span>}
     </>
   );
 }
@@ -913,7 +895,7 @@ function DocTextRowContent({ match }: { match: FullTextMatch }) {
         </span>
         <span className="block truncate text-[12px] text-content">{match.lineText.trim()}</span>
       </span>
-      <span className="shrink-0 tabular-nums text-[11px] text-content-subtle">{match.lineNumber}</span>
+      <span className="shrink-0 tabular-nums text-[length:var(--m-fs-caption)] text-content-subtle">{match.lineNumber}</span>
     </>
   );
 }
@@ -930,7 +912,7 @@ function CommandRowContent({ cmd }: { cmd: CommandDef }) {
       )}
       <span className="min-w-0 flex-1 truncate">{cmd.label}</span>
       {cmd.shortcutHint && (
-        <kbd className="shrink-0 rounded border border-edge bg-surface-muted px-1 py-0.5 text-[10px] text-content-subtle">
+        <kbd className="shrink-0 rounded border border-edge bg-surface-muted px-1 py-0.5 text-[length:var(--m-fs-caption)] text-content-subtle">
           {cmd.shortcutHint}
         </kbd>
       )}
@@ -963,7 +945,7 @@ function BookmarkRowContent({ result }: { result: BookmarkSearchResult }) {
         <span className="block truncate font-medium">
           {b.title?.trim() || b.excerpt}
         </span>
-        <span className="block truncate text-[11px] text-content-subtle">
+        <span className="block truncate text-[length:var(--m-fs-caption)] text-content-subtle">
           {b.title?.trim() ? b.excerpt : sessionTitle}
         </span>
       </span>
@@ -980,7 +962,7 @@ function FileRowContent({ file }: { file: FileSearchEntry }) {
       />
       <span className="min-w-0 flex-1 leading-tight">
         <span className="block truncate font-medium">{file.name}</span>
-        <span className="block truncate text-[11px] text-content-subtle">
+        <span className="block truncate text-[length:var(--m-fs-caption)] text-content-subtle">
           {file.relativePath}
         </span>
       </span>
@@ -999,11 +981,11 @@ function GrepRowContent({ match }: { match: FileGrepEntry }) {
       <span className="min-w-0 flex-1 leading-tight">
         <span className="flex items-center gap-1">
           <span className="truncate font-medium">{fileName}</span>
-          <span className="shrink-0 rounded bg-surface-muted px-1 text-[10px] text-content-subtle">
+          <span className="shrink-0 rounded bg-surface-muted px-1 text-[length:var(--m-fs-caption)] text-content-subtle">
             L{match.lineNumber}
           </span>
         </span>
-        <span className="block truncate font-mono text-[11px] text-content-subtle">
+        <span className="block truncate font-mono text-[length:var(--m-fs-caption)] text-content-subtle">
           <HighlightedLine line={match.lineText} matches={match.matches} />
         </span>
       </span>

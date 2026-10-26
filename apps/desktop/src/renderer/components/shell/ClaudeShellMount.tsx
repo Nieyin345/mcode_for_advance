@@ -212,6 +212,9 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       default: return "file";
     }
   };
+  // 放大某一格（Claude 的 expandedTile）：只记 id，不改树 ——
+  // 退出放大时布局原样回来。
+  const [expandedTile, setExpandedTile] = useState<string | null>(null);
   const [tileLayout, setTileLayout] = useState<TileLayout>({
     version: 2,
     root: {
@@ -283,6 +286,8 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       isLoadingThread={!!loadingMessages}
       onResizeTile={(_stack, a, na, b, nb) =>
         setTileLayout((prev) => resizeStack(prev, _stack, a, na, b, nb))}
+      onExpandTile={setExpandedTile}
+      expandedTile={expandedTile}
       renderTile={(tileId) => renderPaneContent(tileId)}
     />
   );

@@ -54,6 +54,7 @@ import { isAgentMailTool } from "@renderer/lib/agentMail.js";
 import { AgentMailOutCard } from "./AgentMailCard.js";
 import { McpToolDecisionCard } from "./McpToolDecisionCard.js";
 import { writePreviewBefore } from "./writePreviewSource.js";
+import "./ClaudeThinkingAccordion.css";
 
 /** Map of absolute file path → its pre-turn content. Built from the
  *  `turn.files` event payload so the Write tool card can diff the new
@@ -135,15 +136,22 @@ function toggleHoldPosition(
  *  McpToolDecisionCard 的 rounded-2xl）。这里是一行可点的交互行、不是独立面板，
  *  所以取小档。旧值 `rounded-md`（6px）是散装字面量，已换回 token。
  *
- *  背景沿用既有语义类 `hover:bg-surface-muted`（亮/暗由 styles.css 指到
- *  --m-gray-50 / --m-gray-800），不另造第二套命名。 */
+ *  悬停/按下沿用共享 `.cds-hover-ghost`：悬停读 `--surface-hover`，按下读
+ *  `--surface-active`，并复用统一的短过渡与按压反馈，不在每个工具行重复定义。 */
+/* 【UI 重建 2026-10-27】工具行高度改成 Claude 的控件档。
+ *
+ * Claude 的工具卡是「一行 + hover 才出底色」的极简形态（其 `--cds-h-control`
+ * = 26px，紧凑档 1.25rem×rem-scale ≈ 18.8px）。Mcode 原来写死 `min-h-8`（32px）
+ * 比 Claude 高 23%，一行行排下来整片工具区就显得「胖」。
+ *
+ * 不写死 px：读 `--m-h-control`，密度档切换时自动跟随。 */
 const TOOL_ROW_CLS =
-  "flex min-h-8 w-full items-center gap-2 rounded-[var(--radius-control)] py-1.5 text-left hover:bg-surface-muted/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
+  "flex min-h-[var(--m-h-control,26px)] w-full items-center gap-2 rounded-[var(--radius-control)] px-2 py-1 text-left cds-hover-ghost focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
 
 /** 【ARC-005】工具卡展开体的左侧缩进发丝边：宽度走 `--hairline`
  *  （→ 生成物 `--m-ring-hairline` = 1px，上游 ring-hairline 取证值），
  *  不再是 Tailwind `border` 的隐式 1px 字面量；颜色仍是既有 `--edge`。 */
-const TOOL_BODY_RULE_CLS = "border-l-[length:var(--hairline)] border-edge";
+const TOOL_BODY_RULE_CLS = "ml-2 border-l-[length:var(--hairline)] border-edge";
 
 /** Render the content blocks of a message.
  *
@@ -439,7 +447,7 @@ export function BatchToolGroup({
       >
         {/* 操作集合: a stack of layers reads as "a set of folded operations",
             clearer than the toolbox wrench for the N-ops batch header. */}
-        <IconStack2 size={13} className="shrink-0 text-content-subtle" />
+        <IconStack2 size={14} className="shrink-0 text-content-subtle" />
         {/* shrink-0 + whitespace-nowrap: the count label is the row's anchor
             and must never wrap or shrink — under squeeze the breakdown (and
             the ticker) give way instead. Same pattern as the Collapsible
@@ -485,7 +493,7 @@ export function BatchToolGroup({
 function Chevron({ open, className }: { open: boolean; className?: string }) {
   return (
     <IconChevronDown
-      size={12}
+      size={14}
       className={cn(
         "shrink-0 text-content-subtle transition-transform",
         !open && "-rotate-90",
@@ -869,7 +877,7 @@ export function TurnPanel({
   const running = !completed;
 
   return (
-    <div className="[font-size:var(--chat-fs-sm)]">
+    <div data-cds="TurnPanel" className="[font-size:var(--chat-fs-sm)]">
       {/* 无框形态（2026-09-11，替代旧方案B 的带边框卡）：外层不再是有边框/
           底色的盒，只剩一行安静的元信息台头（模型 · 时钟 · 用时 · 回执统计，
           右端展开箭头）紧贴回复内容；运行中台头数着步子，结束后翻成回执。
@@ -1124,7 +1132,7 @@ const BlockView = memo(function BlockView({
 
     case "error":
       return (
-        <div className="flex max-h-64 items-start gap-1.5 overflow-y-auto rounded-md border border-danger bg-danger/30 px-3 py-2 text-danger [font-size:var(--chat-fs-sm)]">
+        <div data-cds="MessageError" className="flex max-h-64 items-start gap-1.5 overflow-y-auto rounded-md border border-danger bg-danger/30 px-3 py-2 text-danger [font-size:var(--chat-fs-sm)]">
           <IconAlertTriangle size={14} className="mt-0.5 shrink-0" />
           {/* min-w-0 + flex-1 let the text shrink within the flex row so it
               wraps at the card width; pre-wrap keeps the error's own line
@@ -1140,7 +1148,7 @@ const BlockView = memo(function BlockView({
       // never finished (empty final response). Amber, not red: the turn's
       // context is intact and sending "继续" resumes from where it stopped.
       return (
-        <div className="flex flex-col gap-1 rounded-md border border-warning/50 bg-warning/10 px-3 py-2 [font-size:var(--chat-fs-sm)]">
+        <div data-cds="TurnIncomplete" className="flex flex-col gap-1 rounded-md border border-warning/50 bg-warning/10 px-3 py-2 [font-size:var(--chat-fs-sm)]">
           <div className="flex items-center gap-1.5 font-medium text-warning">
             <IconAlertTriangle size={14} className="shrink-0" />
             <span>{t("chatStream.turnIncomplete.title")}</span>
@@ -1410,6 +1418,7 @@ function AttachmentCard({
       <button
         ref={btnRef}
         type="button"
+        data-cds="AttachmentCard"
         onClick={handleClick}
         aria-expanded={!isFile || isImage || !filePath ? open : undefined}
         title={
@@ -1519,6 +1528,26 @@ function ToolCard({
   return <GenericToolCard block={block} defaultOpen={defaultOpen} live={liveTurn} projectPath={projectPath} />;
 }
 
+/** Shared compact payload surface for expanded tool details. Keeping the
+ *  label and preformatted body in one component prevents Edit/Write/Bash and
+ *  file-read cards from drifting into different padding, contrast, and scroll
+ *  behavior. Content remains plain text; this component never interprets it. */
+function ToolDetailSection({ label, children, maxHeightClass = "max-h-60" }: {
+  label: string;
+  children: ReactNode;
+  maxHeightClass?: string;
+}) {
+  return (
+    <section data-cds="ToolDetailSection" className="min-w-0 space-y-1.5">
+      <div className="font-medium leading-5 text-content-subtle [font-size:var(--chat-fs-xs)]">{label}</div>
+      <pre className={cn(
+        "min-w-0 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-control)] border border-edge/60 bg-surface-muted/40 p-3 font-mono leading-relaxed text-content-muted [font-size:var(--chat-fs-xs)] select-text",
+        maxHeightClass,
+      )}>{children}</pre>
+    </section>
+  );
+}
+
 /** Edit tool card: line-level diff view. Inside an expanded TurnPanel it
  *  defaults to collapsed (`defaultOpen` false); the user clicks to inspect
  *  the diff. The header stays clickable so an individual edit can still be
@@ -1579,12 +1608,9 @@ function EditToolCard({
         <div id={bodyId} className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
           <DiffView diff={diff} />
           {result !== undefined && (
-            <div>
-              <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">{t("chatStream.tool.result")}</div>
-              <pre className="max-h-40 overflow-auto rounded bg-surface-muted/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
-                {truncateResult(result)}
-              </pre>
-            </div>
+            <ToolDetailSection label={t("chatStream.tool.result")} maxHeightClass="max-h-40">
+              {truncateResult(result)}
+            </ToolDetailSection>
           )}
         </div>
       )}
@@ -1667,20 +1693,14 @@ function WriteToolCard({
               <DiffView diff={diff} />
             </div>
           ) : (
-            <div>
-              <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">{t("chatStream.diff.newFileContent")}</div>
-              <pre className="max-h-80 overflow-auto rounded bg-surface-muted/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
-                {content || t("chatStream.emptyPlaceholder")}
-              </pre>
-            </div>
+            <ToolDetailSection label={t("chatStream.diff.newFileContent")} maxHeightClass="max-h-80">
+              {content || t("chatStream.emptyPlaceholder")}
+            </ToolDetailSection>
           )}
           {result !== undefined && (
-            <div>
-              <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">{t("chatStream.tool.result")}</div>
-              <pre className="max-h-40 overflow-auto rounded bg-surface-muted/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
-                {truncateResult(result)}
-              </pre>
-            </div>
+            <ToolDetailSection label={t("chatStream.tool.result")} maxHeightClass="max-h-40">
+              {truncateResult(result)}
+            </ToolDetailSection>
           )}
         </div>
       )}
@@ -1700,6 +1720,63 @@ function isPlanApprovalChannelFailure(block: Extract<Block, { kind: "tool_use" }
   if (block.toolName !== "ExitPlanMode" || block.status !== "error") return false;
   return /permission denied|permission request failed|stream closed|approval channel/i.test(
     resultPreview(block.result),
+  );
+}
+
+/**
+ * 【CHAT-20】渲染工具附带的界面内容。
+ *
+ * 三种形态：
+ *   - `images`：缩略图一行；点开走 `ImageWithPreview` 的大图预览（与用户自己发的图
+ *     同一个组件 —— "所有图都能点开"这件事不该有两套实现）；
+ *   - `links`：链接列表；
+ *   - `text`：一小段补充说明。
+ *
+ * **没有 `display` 时这个组件不画任何东西**（调用方已经判过），所以不会在
+ * 每个工具卡片上留下空行。
+ */
+type ToolDisplay = NonNullable<Extract<Block, { kind: "tool_use" }>["display"]>;
+
+function ToolDisplayBlock({ display }: { display: ToolDisplay }) {
+  if (display.kind === "images") {
+    const items = display.items ?? [];
+    if (items.length === 0) return null;
+    const srcs = items.map((item) => item.url);
+    return (
+      <div data-tool-display="images" className="mb-1.5 flex flex-wrap items-start gap-1.5">
+        {items.map((item, index) => (
+          <ImageWithPreview
+            key={`${item.url.slice(0, 48)}-${index}`}
+            src={item.url}
+            alt={item.title ?? `tool image ${index + 1}`}
+            gallery={srcs}
+            index={index}
+            maxThumbnailWidth={240}
+            maxThumbnailHeight={160}
+          />
+        ))}
+      </div>
+    );
+  }
+  if (display.kind === "links") {
+    return (
+      <ul data-tool-display="links" className="mb-1.5 space-y-0.5 pl-2 [font-size:var(--chat-fs-xs)]">
+        {(display.items ?? []).map((item) => (
+          <li key={item.url}>
+            <a href={item.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+              {item.title ?? item.url}
+            </a>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  const text = display.text ?? "";
+  if (text.trim() === "") return null;
+  return (
+    <div data-tool-display="text" className="mb-1.5 break-words pl-2 text-content-muted [font-size:var(--chat-fs-xs)]">
+      {text}
+    </div>
   );
 }
 
@@ -1795,21 +1872,19 @@ function GenericToolCard({
           <div className="text-content-muted">{t("chatStream.planApprovalBroken.desc")}</div>
         </div>
       )}
+      {/* 【CHAT-20】工具附带的、**只给界面看**的内容（截图 / 生图 / 链接）。
+          不放折叠区里：这些东西的价值就在于"一眼看到"，藏进折叠等于没做。
+          也不放进 `result`：那会进下一轮上下文（见契约 `display` 的注释）。 */}
+      {block.display !== undefined && <ToolDisplayBlock display={block.display} />}
       {open && (
         <div id={bodyId} className={cn("space-y-2 py-2 pl-2", TOOL_BODY_RULE_CLS)}>
-          <div>
-            <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">{t("chatStream.tool.input")}</div>
-            <pre className="max-h-60 overflow-auto rounded bg-surface-muted/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
-              {safeStringify(block.input)}
-            </pre>
-          </div>
+          <ToolDetailSection label={t("chatStream.tool.input")}>
+            {safeStringify(block.input)}
+          </ToolDetailSection>
           {block.result !== undefined && (
-            <div>
-              <div className="mb-0.5 uppercase text-content-subtle [font-size:var(--chat-fs-xxs)]">{t("chatStream.tool.result")}</div>
-              <pre className="max-h-60 overflow-auto rounded bg-surface-muted/60 p-2 text-content-muted [font-size:var(--chat-fs-xs)]">
-                {resultPreview(block.result)}
-              </pre>
-            </div>
+            <ToolDetailSection label={t("chatStream.tool.result")}>
+              {resultPreview(block.result)}
+            </ToolDetailSection>
           )}
         </div>
       )}
@@ -1832,8 +1907,8 @@ function GenericToolCard({
  *  - 完成后交还用户折叠权，箭头旋转；
  *  - 正文用 `grid-template-rows: 0fr↔1fr` + `cubic-bezier(.19,1,.22,1)`，
  *    高度过渡不抖动。
- * 与上游的唯一差别是颜色/字号接 Mcode 语义 token，以及沿用本文件的
- * `toggleHoldPosition`（折叠时保持滚动位置，见该函数注释）。
+ * 颜色/字号接 Mcode 语义 token；沿用本文件的 `toggleHoldPosition` 保持滚动位置，
+ * 并限制长思考正文在内部滚动区域内，避免它把整个聊天视口撑得过高。
  */
 function ThinkingAccordion({
   label,
@@ -1852,43 +1927,104 @@ function ThinkingAccordion({
   const bodyId = useId();
   const isOpen = live || open;
   const ambient = reasoningAmbientState(live);
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (copiedTimer.current) {
+        clearTimeout(copiedTimer.current);
+        copiedTimer.current = null;
+      }
+    };
+  }, []);
+
+  const copyAsQuote = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    const text = typeof children === "string" ? children : "";
+    if (!text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(`> ${text.split("\n").join("\n> ")}`);
+      if (!mounted.current) return;
+      setCopied(true);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => {
+        if (mounted.current) setCopied(false);
+        copiedTimer.current = null;
+      }, 2000);
+    } catch {
+      // Clipboard may be unavailable in a restricted renderer; never claim success.
+    }
+  };
+
+  const toggle = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (live) return;
+    toggleHoldPosition(event, setOpen);
+  };
+
   return (
-    <div className="relative [font-size:var(--chat-fs-sm)]" data-cds-thinking={live ? "live" : "done"} data-reasoning-glow={ambient.glow ? "active" : "idle"}>
-      <button
-        type="button"
-        onClick={(e) => {
-          // 生成中剥夺折叠权（上游同一互斥物理）。
-          if (live) return;
-          toggleHoldPosition(e, setOpen);
-        }}
-        aria-expanded={isOpen}
-        aria-controls={bodyId}
-        aria-disabled={live}
-        className={
-          "flex min-h-8 w-full items-center gap-2 rounded-md py-1.5 text-left text-content-muted hover:bg-surface-muted/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent " +
-          (live ? "cursor-default" : "")
-        }
-      >
-        {live ? (
-          <span className="cds-quiet-dots shrink-0" aria-hidden="true">
-            <i /><i /><i />
-          </span>
-        ) : (
-          <IconBulb size={13} className="shrink-0 text-content-subtle" />
-        )}
-        <span className={cn("shrink-0 whitespace-nowrap font-medium text-content-muted", ambient.shimmer && "reasoning-shimmer")}>{label}</span>
-        <span className="min-w-0 flex-1 truncate text-content-subtle">{hint}</span>
-        {!live && <Chevron open={isOpen} className="ml-auto" />}
-      </button>
+    <div className="claude-thinking-accordion relative my-1 overflow-hidden [font-size:var(--chat-fs-sm)]" data-cds="ThinkingAccordion" data-cds-thinking={live ? "live" : "done"} data-reasoning-glow={ambient.glow ? "active" : "idle"}>
+      <div data-cds="ThinkingAccordionHeader" className="flex items-center gap-2 select-none">
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={isOpen}
+          aria-controls={bodyId}
+          aria-disabled={live}
+          className={
+            "flex min-w-0 flex-1 items-center gap-2 text-left text-content-muted transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent " +
+            (live ? "cursor-default" : "cursor-pointer hover:text-content")
+          }
+        >
+          {live ? (
+            <span className="cds-quiet-dots shrink-0" aria-hidden="true">
+              <i /><i /><i />
+            </span>
+          ) : (
+            <IconBulb size={13} className="shrink-0 text-content-subtle" />
+          )}
+          <span className={cn("shrink-0 whitespace-nowrap font-medium text-content-muted", ambient.shimmer && "reasoning-shimmer")}>{label}</span>
+          <span className="min-w-0 flex-1 truncate text-content-subtle">{hint}</span>
+        </button>
+        <div data-cds="ThinkingAccordionActions" className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={copyAsQuote}
+            className="flex h-6 items-center gap-1 rounded px-1.5 text-[11px] font-medium text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            title={copied ? t("common.copied") : t("chatStream.copyQuote")}
+            aria-label={copied ? t("common.copied") : t("chatStream.copyQuote")}
+          >
+            {copied ? <span className="text-accent">✓ {t("common.copied")}</span> : t("chatStream.copyQuote")}
+          </button>
+          {!live && (
+            <button
+              type="button"
+              onClick={toggle}
+              aria-expanded={isOpen}
+              aria-controls={bodyId}
+              aria-label={isOpen ? t("chatStream.showLess") : t("chatStream.showMore")}
+              className="inline-flex size-6 items-center justify-center rounded-md text-content-subtle transition-colors hover:bg-surface-hover/60 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              <Chevron open={isOpen} />
+            </button>
+          )}
+        </div>
+      </div>
       <div
         id={bodyId}
+        data-cds="ThinkingAccordionBody"
+        data-open={isOpen ? "true" : "false"}
         aria-hidden={!isOpen}
         className="grid transition-[grid-template-rows] duration-200 [transition-timing-function:var(--ease-expand)]"
         style={{ gridTemplateRows: isOpen ? "1fr" : "0fr" }}
       >
         <div className="min-h-0 overflow-hidden">
-          <div className="max-h-80 overflow-y-auto border-l border-edge py-2 pl-2 text-content-muted">
-            <p className="whitespace-pre-wrap break-words">{children as unknown as string}</p>
+          <div data-cds="ThinkingAccordionContent" className="max-h-80 overflow-y-auto font-mono leading-relaxed text-content-muted whitespace-pre-wrap break-words select-text">
+            <p>{children as unknown as string}</p>
           </div>
         </div>
       </div>

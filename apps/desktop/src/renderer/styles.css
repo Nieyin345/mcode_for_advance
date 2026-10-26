@@ -3060,6 +3060,20 @@ button.chat-ledger-head:hover {
   --composer-gap-y: var(--cmp-gap-y);
 }
 
+/* 【UI 重建 2026-10-27】composer 的**直接子容器**统一读 Claude 的内边距变量。
+ *
+ * composer 内部有十几层嵌套，逐处替换 Tailwind 的 px-3/py-2 风险远大于收益；
+ * 而 Claude 的内边距本来就只作用在「卡片内缘」这一层。这里用 `:where()`
+ * 把**直接的 section 级子容器**（editor / attachment row / toolbar row）
+ * 统一到 --cmp-pad-x / --cmp-gap-y —— 字号一变内边距跟着算。
+ *
+ * ⚠️ 只命中带 `[data-cds^="Composer"]` 的子容器，不碰排队消息区与审批提示
+ *（它们有自己的贴合边距，改了会挤）。 */
+[data-chat-root] .composer-card > [data-cds^="Composer" i] {
+  padding-inline: var(--composer-pad-x, var(--cmp-pad-x));
+  row-gap: var(--composer-gap-y, var(--cmp-gap-y));
+}
+
 /* ── Card polish (方案 B 质感 baseline) ──────────────────────────────── */
 /* Focus: an accent hairline lights up along the card's top edge (the border
  * + halo come from the Tailwind focus-within utilities on the card). */
