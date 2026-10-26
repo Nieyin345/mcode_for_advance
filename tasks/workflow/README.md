@@ -326,3 +326,10 @@ T81（四步链路）、T84（journey 陈旧断言）、T89（fixup 崩溃）、
 - `workflow-native-load-smoke` 现涵盖跨图 wires、Link 引用的有改动拒绝，以及完全未改动可重入；真实装载入口验证被拒时文件字节与 stop 次数不变。
 - 正反变异：删除引用阻断时 39/43（4 FAIL）；无条件阻断时 40/43（3 FAIL）；全部恢复。最终 `node apps/desktop/scripts/run-smokes.mjs workflow-native-load-smoke t27-load-entry-deadlock-smoke t21-orphaned-adapters-wired-smoke flow-migration-smoke node-red-e2e-smoke node-red-deploy-reconciliation-smoke workflow-engine-selection-smoke workflow-engine-runtime-smoke executor-gate-d-smoke mcode-node-pack-smoke workflow-ui-smoke orchestration-ipc-smoke mcode-admin-smoke workflow-view-smoke app-control-smoke` **15/15 PASS**，证据 `apps/desktop/.tmp/smoke-runs/1792986932071-41160-C8WOwq/`；Desktop/Contracts `tsc --noEmit` EXIT=0，`git diff --check` EXIT=0。
 - U1 安装版性能（RSS、CPU、切页延迟）、SQL/flows 单物理存储事实源与历史执行器完整退役仍开放，本项不得标记 ARC-006 全项目完成。
+
+### 2026-10-26 原生 Deploy 待对账版本绑定（DEV_CLAIM）
+- 发现并复现：`NativeDeployLibraryMirror.retryPending()` 以前读取**当前** `flows.json` 后，直接用**旧 Deploy** 的 pending 记录重试 SQL 保存；如果后台期间原生画布已变化，则会把未经该记录确认的新原生图当作旧回执镜像进库。
+- 修复：重试队列内计算当前原生画布的 `nativeDeployIdentity`，与每份待对账的持久 `deployId` 比较。不同版本时，**自动**重试仅返回 `conflict`，保留 pending，绝不写 SQL；只有显式传入 `acceptNativeRevision: true` 才允许走原有带 SQL 版本 CAS 的人工接受路径。原生 tab 已被删除时继续保留 `removed` 语义（不复活 SQL）。无需新事实源/新引擎。
+- 隔离反例：旧 Deploy 镜像失败后，替换 `flows.json` 为更新内容；旧实现会错误写入 SQL（110 断言中 4 条失败），改后自动重试 `conflict`、库原文不变、pending 不清、人工接受后才改库；撤去指纹判据可稳定使回归红，恢复后通过。
+- 最终：`node apps/desktop/scripts/run-smokes.mjs node-red-deploy-reconciliation-smoke node-red-e2e-smoke workflow-native-load-smoke t27-load-entry-deadlock-smoke t21-orphaned-adapters-wired-smoke flow-migration-smoke workflow-engine-selection-smoke workflow-engine-runtime-smoke executor-gate-d-smoke mcode-node-pack-smoke workflow-ui-smoke orchestration-ipc-smoke mcode-admin-smoke workflow-view-smoke app-control-smoke` **15/15 PASS**；日志 `apps/desktop/.tmp/smoke-runs/1792993954096-42976-FqvwjO/`；Desktop/Contracts `tsc --noEmit` EXIT=0。
+- 仍未验：跨 OS 进程的真正原子 SQL+flows 提交、生产安装版 U1、历史 ExecutionEngine 退役及 RSS/CPU 量化；原生图指纹不符会要求人审（保守安全优先于自动覆盖）。不得把本切片标记为后端彻底单存储 REVIEW_PASSED。

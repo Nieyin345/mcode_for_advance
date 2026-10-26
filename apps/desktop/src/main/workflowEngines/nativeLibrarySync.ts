@@ -551,9 +551,23 @@ export class NativeDeployLibraryMirror {
         throw err;
       }
       const ports = await this.resolvePorts();
+      const nativeDeployId = nativeDeployIdentity(nativeNodes);
       const results: MirrorDocResult[] = [];
       for (const pending of ledger.pending) {
-        const result = await this.retryOne(pending, docsById.get(pending.docId), ports, options);
+        const doc = docsById.get(pending.docId);
+        // An old pending intent MUST NOT silently import a *different*
+        // flows.json revision. A native Deploy may have happened while the
+        // process was down or before a mirror's retry. Treat it as an
+        // explicit reconciliation conflict, not a successful replay of a
+        // graph that the recorded user action never deployed.
+        // Missing native tabs still resolve as 'removed' (no SQL write).
+        const result: MirrorDocResult = doc !== undefined
+          && nativeDeployId !== pending.deployId && !options.acceptNativeRevision
+          ? { docId: pending.docId, status: "conflict",
+              expectedRevision: pending.expectedRevision,
+              observedRevision: pending.observedRevision ?? null,
+              error: "待对账的 Node-RED Deploy 与当前 flows.json 内容不同；拒绝以新图自动覆盖库，请核对并明确选择原生版本" }
+          : await this.retryOne(pending, doc, ports, options);
         results.push(result);
         this.applyResult(pending.docId, pending.deployId, pending.at, result);
       }

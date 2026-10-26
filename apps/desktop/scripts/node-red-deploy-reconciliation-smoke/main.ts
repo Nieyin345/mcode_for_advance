@@ -202,6 +202,31 @@ console.log("\n2. 可恢复：retryPending 重放并清账（无需用户手工�
   eq("重试路径：无待对账时重试是幂等空操作", again.docs.length, 0);
 }
 
+/* ────── 2b. Pending revision must match the native graph it recorded ────── */
+console.log("\n2b. 旧对账意图不能自动以新的原生 Deploy 图覆盖 SQL");
+{
+  resetLedger();
+  const a = fixtures("wf_t2_changed_native", "sql-original");
+  const lib = fakeLibrary([a.doc]);
+  const mirror = new NativeDeployLibraryMirror({ dataDir: ENGINE_DIR, ports: lib.ports });
+  const oldPayload = withTabTitle(a.nodes, "old-deploy");
+  const newerPayload = withTabTitle(a.nodes, "newer-native-deploy");
+  lib.reject.set(a.doc.id, "首次同步失败");
+  const failed = await mirror.mirrorDeploy(oldPayload);
+  eq("旧意图已持久化为失败", failed.docs[0]?.status, "failed");
+  lib.reject.delete(a.doc.id);
+  const initialPending = readNativeDeployReconciliation(ENGINE_DIR).pending[0];
+  writeFileSync(join(ENGINE_DIR, "flows.json"), JSON.stringify(newerPayload), "utf8");
+  const auto = await mirror.retryPending();
+  eq("原生画布与旧 Deploy 内容指纹不同，自动重试不能保存为最新", auto.docs[0]?.status, "conflict");
+  eq("冲突不能覆盖 SQL 原版本", lib.docs.get(a.doc.id)?.nodes[0]?.title, "sql-original");
+  eq("跨版本待对账仍在持久账本", readNativeDeployReconciliation(ENGINE_DIR).pending[0]?.deployId, initialPending?.deployId);
+  const accepted = await mirror.retryPending(undefined, { acceptNativeRevision: true });
+  eq("用户显式接受当前原生版本后才写入", accepted.docs[0]?.status, "mirrored");
+  eq("人工确认后的 SQL 与当前原生图一致", lib.docs.get(a.doc.id)?.nodes[0]?.title, "newer-native-deploy");
+  eq("人工确认后旧待对账已解决", readNativeDeployReconciliation(ENGINE_DIR).pending.length, 0);
+}
+
 /* ────── 3. 冲突不自动覆盖；只有显式 acceptNativeRevision 才覆盖 ────── */
 
 console.log("\n3. 冲突守则：自动重试不覆盖并发编辑；显式接受才覆盖");
