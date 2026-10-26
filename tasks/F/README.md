@@ -61,6 +61,7 @@
 | F036 | **原生文档大纲、格式化与签名提示**：真实 Theia Provider → Mcode Monaco，安全过滤与无后台轮询 | ⚠️ E1 132/132 + 72/72；双包 TS PASS；联合 11/12（外部文档 IPC）；Electron U1 待验 | `7749ce05` |
 | F037 | **原生选区/输入时格式化**：Theia 两类 Provider → Mcode Monaco；多 Provider 触发器合并与失效安全 | ⚠️ E1 138/138 + 76/76；双包 TS PASS；联合 11/12（外部文档 IPC）；Electron U1 待验 | `1d218541` |
 | F038 | **真实 Rename / Code Actions**：当前文档安全纯编辑桥，拒绝跨文件/命令型修改 | ⚠️ E1 143/143 + 81/81；双包 TS PASS；联合 11/12（外部文档 IPC）；Electron U1 待验 | `ffdfa09a` |
+| F039 | **prepareRename + 原生 Monaco Electron 交互**：真实扩展准备选区，安全 WorkspaceEdit，F2/Quick Fix/撤销及拒绝场景 | ⚠️ E1 145/145 + 86/86；隔离 Monaco U1 1/1 PASS；双包 TS PASS；联合 11/12；全产品 U1 待验 | `feca10cb` |
 
 ## 扩展闭环的进度（截至 F015）
 
