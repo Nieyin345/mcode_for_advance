@@ -127,18 +127,24 @@ export function FileEditor({
   // 路由与 Host 能力则由下面的 `genofficeViewAvailable` 单独决定；两者不能混为一谈。
   const markdown = isMarkdown(filePath);
   const office = isOfficeDocumentKind(documentKindOf(filePath));
+  const genofficeHostForFile = genofficeAppForPath(filePath);
   /**
-   * 【O5 批三】`genoffice-view`（原生视图）现在是 office 文件的**默认档** —— 见下面
-   * `defaultMode`。这一段只保留取能力位；旧的「默认仍是 OnlyOffice」注释已作废。
+   * GenOffice 的原生视图是所有已支持格式的默认入口；下面的能力判据负责区分
+   * “原生编辑器已就绪”与“保留 Mcode 安全回退”，不靠扩展名猜测构建状态。
    */
   // ⚠️ `pid` 必须先于任何引用它的 hook 求值 —— 下面 useRpc 的 selector 与
   // viewModePref 都读它。放在后面会在首次渲染抛 TDZ（"Cannot access 'pid'
   // before initialization"），markdown-mode-smoke 的沙箱正是这样抓到的。
   const pid = useSessionStore((s) => s.activeProjectId);
-  const nativeViewCandidate = markdown || isPdfFile(filePath) || /\.html?$/i.test(filePath);
+  // CSV/TSV are routed to GenOffice Sheets even though the shared document-kind
+  // classifier correctly treats them as plain text rather than OOXML/ODF Office. Keep
+  // legacy .xls (office-readonly) on its declared read-only policy.
+  const routedTextSheet = genofficeHostForFile === "sheets" && documentKindOf(filePath) === "text";
+  const nativeViewCandidate = markdown || isPdfFile(filePath) || /\.html?$/i.test(filePath) || routedTextSheet;
   const genoffice = useRpc(() => api.document.capabilities(), [], { enabled: office || nativeViewCandidate, toastOnError: false });
   const genofficeReady = genoffice.data?.cli.available === true;
   const nativeViewReady = genofficeReady && (office ||
+    (routedTextSheet && genoffice.data?.hosts?.sheets === true) ||
     (isPdfFile(filePath) && genoffice.data?.hosts?.pdf === true) ||
     (markdown && genoffice.data?.hosts?.markdown === true) ||
     (/\.html?$/i.test(filePath) && genoffice.data?.hosts?.html === true));
@@ -166,7 +172,6 @@ export function FileEditor({
    * 所以这里按**目标编辑器**逐类判：`genofficeAppForPath` 给出路由，再拿它查
    * 对应的能力位。`docs` 没有 `hosts` 位（恒真，见 `ipc/document.ts:453`）。
    */
-  const genofficeHostForFile = genofficeAppForPath(filePath);
   const genofficeViewForOffice = isGenofficeViewAvailableFor({
     office,
     nativeViewReady,
@@ -185,7 +190,6 @@ export function FileEditor({
    * T101 当年点名要避免的「看起来是条路、实际不是」。非 office 的 pdf/md/html
    * 仍按各自的 hosts 位判（`nativeViewReady` 已含）。
    */
-  const useGenofficeView = genofficeViewAvailable && viewModePref === "genoffice-view";
   const documentDockSide = useSessionStore((s) => s.paneLayout?.placements?.find(p =>
     p.content?.kind === "document" && p.content.documentId === filePath)?.side);
   const documentDocked = documentDockSide !== undefined;
@@ -206,9 +210,14 @@ export function FileEditor({
   const defaultMode: FileViewMode = genofficeViewAvailable
     ? "genoffice-view"
     : genofficeViewFallbackMode;
-  const viewMode = useSessionStore((s) =>
-    pid ? s.ideFileViewModeByProject[pid]?.[filePath] ?? defaultMode : defaultMode,
-  );
+  const viewMode = useSessionStore((s) => {
+    const preference = pid ? s.ideFileViewModeByProject[pid]?.[filePath] : undefined;
+    // Old/stale preferences must not force an unsupported native view after a
+    // machine loses a vendor build or an extension route is narrowed.
+    if (preference === "genoffice-view" && !genofficeViewAvailable) return defaultMode;
+    return preference ?? defaultMode;
+  });
+  const useGenofficeView = genofficeViewAvailable && viewMode === "genoffice-view";
   const setViewMode = useSessionStore((s) => s.setIdeFileViewMode);
   const editorMode = useSessionStore((s) => s.ideEditorMode);
   const setEditorMode = useSessionStore((s) => s.setIdeEditorMode);
@@ -235,16 +244,14 @@ export function FileEditor({
   // Effective mode:
   //  - diff: history pairs (forced) OR explicitly requested with a snapshot.
   //  - preview: non-Markdown previews (PDF / images / legacy text).
-  //  - wysiwyg: Markdown 的所见即所得（Milkdown）。**office 不再进这一档**（O5 批三）。
-  // Markdown 的旧 preview 偏好只在此适配，不改其他文件/项目的已保存偏好。
-  //  - edit: the normal editable Monaco instance (default for non-md files).
-  //  - 【ARC-007】genoffice / genoffice-view: 用户显式选择的 GenOffice 结构化视图 /
-  //    可视化编辑视图（见上面 useGenofficeView 的说明）。两者互斥（同一时刻只有
-  //    一个偏好值），且都只在 office 文件上生效。
-  // 【O5 批三】office 的 `defaultMode` **只是默认**：用户显式选过的档必须照旧生效。
-  // 唯一被忽略的是 `"wysiwyg"` —— 它曾专指 OnlyOffice 编辑器，现在对 office 没有
-  // 对应物；留着它会把文件送回 `MarkdownEditorPane`（Milkdown 打开二进制）。
-  const officePrefUsable = viewModePref !== undefined && viewModePref !== "wysiwyg";
+  //  - wysiwyg: Markdown's explicit Mcode rich-text mode; source mode stays in Monaco.
+  //  - edit: the normal editable Monaco instance for text/code and safe fallbacks.
+  //  - genoffice-view: the native GenOffice editor for any supported routed format.
+  //  - genoffice: Office's structured diagnostic/fallback view when the native host is absent.
+  // Explicit user choices remain scoped to this file/project; stale native-view choices fall
+  // back safely when the selected host is no longer available.
+  const officePrefUsable = viewModePref !== undefined && viewModePref !== "wysiwyg" &&
+    (viewModePref !== "genoffice-view" || genofficeViewAvailable);
   const effectiveMode: FileViewMode = useGenofficeView
     ? "genoffice-view"
     : useGenoffice
