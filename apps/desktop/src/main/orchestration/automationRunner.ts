@@ -157,6 +157,19 @@ export type { AutomationRunResult } from "./automationRunnerTypes.js";
 
 class AutomationRunner {
   private started = false;
+  /**
+   * 【AUTO-02】Node-RED 引擎是不是在跑 —— 装配层注入。
+   *
+   * 为什么不在这个文件里直接问引擎注册表：`automationRunner` 被一批无头套件
+   * 打进纯 node（不引 electron），而引擎注册表会拖进 `window.ts`。用一个可选的
+   * 注入点，套件不设它时按"引擎没跑"处理（那正是套件的语境）。
+   */
+  private nodeRedEngineRunning: (() => boolean) | null = null;
+
+  /** 装配层调用：把"引擎在不在跑"接进来（状态行据此判 armed）。 */
+  setNodeRedEngineProbe(probe: (() => boolean) | null): void {
+    this.nodeRedEngineRunning = probe;
+  }
   /** 已经解好的触发条件:`workflowId → 该自动化的全部触发器`。 */
   private entries = new Map<string, LoadedTrigger[]>();
   /** 每个项目目录一个监听(见 `rebuildWatchers`)。 */
@@ -572,10 +585,32 @@ class AutomationRunner {
       };
       seen.add(triggerKey(seed));
       if (!owner.legacy) {
-        // 不装任何监听；原因进事实（`armed: false` + 可读 detail）。这里**不**用
-        // `parseTriggerSpec` 再验参数 —— 参数好坏是引擎侧的事，旧 runner 没有立场
-        // 对一张自己不执行的图报"参数写坏了"。
-        this.facts.recordSetup(seed, false, AutomationRunner.foreignTriggerDetail(owner.owner, doc.name));
+        /* 不装任何监听 —— 触发在引擎侧。这里**不**用 `parseTriggerSpec` 再验参数：
+         * 参数好坏是引擎侧的事，旧 runner 没有立场对一张自己不执行的图报"参数写坏了"。
+         *
+         * 【AUTO-02】但 **`armed` 不能恒为 false**。界面上 `armed: false` 显示成黄色的
+         * 「未挂上」（`AutomationRunSection` 的三态：绿=挂着 / 灰=用户关的 / 黄=出问题），
+         * 而 node-red 图**其实是挂着的**，只是挂在引擎侧。恒 false 等于对每一条正常的
+         * 自动化报一个不存在的故障。
+         *
+         * 所以：`armed` 取**引擎这一侧的真实状态** ——
+         *   - 用户关掉这个触发器 → false，且 `enabled: false` 让界面走灰色的「已关闭」；
+         *   - 引擎没在跑（没部署 / 进程不在）→ false，这时黄灯是**对的**；
+         *   - 引擎在跑 → true。
+         *
+         * detail 仍然保留那句话 —— 它解释的是"为什么旧 runner 不装监听"，
+         * 与"这条触发器到底有没有在工作"是两件事。 */
+        const engineRunning = this.nodeRedEngineRunning?.() === true;
+        const enabled = triggerEnabledOf(node.params);
+        this.facts.recordSetup(
+          seed,
+          enabled && engineRunning,
+          enabled
+            ? (engineRunning
+              ? "由 Node-RED 引擎管理：触发在引擎侧，引擎正在运行"
+              : "由 Node-RED 引擎管理，但引擎当前没有运行 —— 部署并启动引擎后它才会触发")
+            : "这条触发器已关闭（手动运行仍然可用）",
+        );
         continue;
       }
       if (pendingReview !== null) {

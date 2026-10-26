@@ -8,32 +8,34 @@ import { expectedNodePackFiles } from "@main/workflowEngines/nodePackManifest.js
 
 type Check = (name: string, passed: boolean, detail?: unknown) => void;
 type Field = { id: string; kind: "text" | "textarea" | "select"; options?: string[] };
-const defs: Array<{ type: string; icon: string; html: () => string; fields: Field[] }> = [
+/** `palette: false` = 内部节点：仍完整注册（能读、能跑），但**不给 category**，
+ *  用户拖不到新的。见 `MCODE_INTERNAL_NODE_TYPES` 的说明。 */
+const defs: Array<{ type: string; icon: string; html: () => string; fields: Field[]; palette: boolean }> = [
   { type: "mcode-agent", icon: "fa-user", html: agentNodeHtml, fields: [
     { id: "instruction", kind: "textarea" }, { id: "capability", kind: "select", options: ["read", "write"] },
     { id: "outputVar", kind: "text" }, { id: "sessionId", kind: "text" },
-  ] },
+  ], palette: true },
   { type: "mcode-conversation", icon: "fa-comments", html: conversationNodeHtml, fields: [
     { id: "instruction", kind: "textarea" }, { id: "capability", kind: "select", options: ["read", "write"] },
     { id: "outputVar", kind: "text" }, { id: "sessionId", kind: "text" },
-  ] },
+  ], palette: true },
   { type: "mcode-branch", icon: "fa-random", html: branchNodeHtml, fields: [
     { id: "decider", kind: "select", options: ["user", "model"] },
     { id: "outputVar", kind: "text" }, { id: "note", kind: "textarea" }, { id: "sessionId", kind: "text" },
-  ] },
+  ], palette: true },
   { type: "mcode-trigger", icon: "fa-bolt", html: triggerNodeHtml, fields: [
     { id: "triggerKind", kind: "select", options: ["manual", "schedule", "file", "event"] },
     { id: "task", kind: "textarea" }, { id: "cron", kind: "text" },
-  ] },
+  ], palette: true },
   { type: "mcode-module-capability", icon: "fa-puzzle-piece", html: moduleCapabilityNodeHtml, fields: [
     { id: "moduleId", kind: "text" }, { id: "contributionId", kind: "text" },
     { id: "path", kind: "text" }, { id: "projectPath", kind: "text" },
-  ] },
+  ], palette: true },
   { type: "mcode-node-red-call", icon: "fa-retweet", html: nodeRedCallNodeHtml, fields: [
     { id: "enginePath", kind: "text" },
     { id: "engineMethod", kind: "select", options: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
     { id: "engineBody", kind: "textarea" },
-  ] },
+  ], palette: false },
 ];
 function attr(tag: string, property: string): string | null {
   const match = tag.match(new RegExp("(?:^|\\s)" + property + '="([^"]*)"'));
@@ -51,11 +53,15 @@ export function checkPaletteResources(check: Check): void {
     const stem = d.type + ".html";
     check("T79 " + d.type + " manifest HTML equals generated editor form",
       files[stem] === html);
+    // 注册块三件套对**所有**类型都必须有（缺模板 = 上游把它当 unknown，导出丢 x-mcode）。
+    // category 分两档：palette 节点必须是 "mcode"，内部节点必须是空串（不进 palette）。
     check("T79 " + d.type + " all three Node-RED registration blocks",
       html.includes('RED.nodes.registerType("' + d.type + '"')
       && html.includes('data-template-name="' + d.type + '"')
-      && html.includes('data-help-name="' + d.type + '"')
-      && html.includes('category: "mcode"'));
+      && html.includes('data-help-name="' + d.type + '"'));
+    check("T79 " + d.type + (d.palette ? " 出现在 palette" : " 不出现在 palette"),
+      d.palette ? html.includes('category: "mcode"') : html.includes('category: ""'),
+      { palette: d.palette });
     const icon = html.match(/\bicon:\s*"font-awesome\/([^"]+)"/)?.[1] ?? "";
     observedIcons.push(icon);
     check("T79 " + d.type + " supported Font Awesome icon",
