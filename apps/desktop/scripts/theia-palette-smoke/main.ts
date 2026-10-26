@@ -161,19 +161,39 @@ check("不可信扩展签名结果裁剪无效活动索引和超量参数",
   ]})?.activeSignature===0);
 const codeRoot=process.env.MCODE_SMOKE_REPO_ROOT;
 if(!codeRoot)throw Error("MCODE_SMOKE_REPO_ROOT missing");
+// 源码文本断言一律先剥注释再查 —— 见下面 webview / lifecycle 两处的具体踩坑记录。
+const stripComments=(s:string):string=>s.replace(/\/\*[\s\S]*?\*\//g,"").replace(/\/\/[^\n]*/g,"");
 const palette=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/layout/CommandPalette.tsx"),"utf8");
-check("产品命令面板实际调用共享 Theia adapter",palette.includes("collectTheiaPaletteCommands(")&&palette.includes("...extensions,...theia"));
-check("仅面板打开时查询，关闭取消迟到数据",palette.includes("if (!open) {setTheiaActive([]);return;}")&&palette.includes("return () => {current=false;};"));
+// ⚠️ 断言钉的是**语义**，不是某一种拼写。2026-10-27：`CommandPalette` 把
+// `[...builtin,...extensions,...theia]` 重构成了先合成 `const theia = collectTheiaPaletteCommands(...)`
+// 再 `[...builtin,...theia]`。两者是同一件事，旧的正则却只认前一种。
+// 所以改成：① 共享 adapter 必须被调用；② 返回值必须被并进最终列表。
+check("产品命令面板实际调用共享 Theia adapter",
+  palette.includes("collectTheiaPaletteCommands(")&&/\.\.\.theia\b/.test(palette));
+check("仅面板打开时查询，关闭取消迟到数据",palette.includes("if (!open) {setTheiaActive([]);return;}")&&
+  /return \(\) => \{current=false;/.test(palette));
 check("不存在每次按键都全盘扫描已安装扩展的入口",!palette.includes('api.modules.theiaInstalled({op:"inspect"'));
-const installSurface=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/modules/VsixInstallSection.tsx"),"utf8");
-check("产品 VSIX 默认入口是持久化 Theia 而非并列三个运行器",
-  installSurface.includes("<TheiaInstalledPanel />")&&installSurface.includes("<details")&&
-  !installSurface.includes('data-testid="theia-vsix-preview"'));
-check("旧 L1 兼容入口仍有真实限制告知和确认按钮",
-  installSurface.includes('data-testid="module-vsix-limit-notice"')&&installSurface.includes("modules.installVsix"));
+// 【EXT-07】`VsixInstallSection.tsx` 是 L1 时代的第二个安装入口，随 L1 一起删除
+// （用户裁决：只要一个扩展系统）。旧的「L1 兼容入口仍有…」断言已随它作废。
+// 现在要守的变成反面：**L1 入口不该再以任何形式出现**。
+let l1SurfaceExists=true;
+try{readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/modules/VsixInstallSection.tsx"),"utf8");}
+catch{l1SurfaceExists=false;}
+check("L1 时代的三路运行器入口已删除（只留 Theia 持久宿主一个）",!l1SurfaceExists);
+check("扩展管理面板真的被产品挂载",(()=>{
+  const panel=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/modules/TheiaInstalledPanel.tsx"),"utf8");
+  return panel.includes("theiaInstalled")&&panel.includes("op:\"install\"");
+})());
 const lifecycleUi=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/components/modules/TheiaInstalledPanel.tsx"),"utf8");
-check("切换离开扩展管理页不会调用 stop，已启动命令留在 Mcode",lifecycleUi.includes("离开这个页面不会停止")&&
-  !lifecycleUi.includes('if(sessionId)void api.modules.theiaInstalled({op:"stop"'));
+// ⚠️ 这条断言用的是 `!includes(...)` —— 而第 80 行有一条**注释**
+// `// no React owner to stop: process is owned by main`，里面有 ` to stop`。
+// 不剥注释时它会被当成「页面在卸载时调了 stop」的反例命中，
+// 于是**正确实现反而变红**。所有 `!includes` 形式的断言都要先剥注释。
+const lifecycleCode=stripComments(lifecycleUi);
+check("切换离开扩展管理页不会调用 stop，已启动命令留在 Mcode",lifecycleUi.includes("离开设置页面不会停止扩展")&&
+  !/useEffect\(\(\)=>\{[^}]*theiaInstalled\(\{op:"stop"/.test(lifecycleCode)&&
+  // stop 只能由用户点击触发（`onClick={()=>stop(item)}`），不能挂在渲染/卸载路径上
+  lifecycleCode.includes("onClick={()=>stop(item)}"));
 check("已启动多个扩展按各自会话渲染和停止",lifecycleUi.includes("item.activeSession")&&
   lifecycleUi.includes('sessionId:item.activeSession')===false&&lifecycleUi.includes('sessionId=item.activeSession?.sessionId'));
 check("管理页面不进行自动启动和全局轮询",!lifecycleUi.includes('setInterval(')&&
@@ -324,13 +344,34 @@ check("状态栏原生呈现并可执行注册的扩展命令",
 const nativeWebview=readFileSync(path.join(codeRoot,
   "apps/desktop/src/renderer/components/modules/TheiaWebviewHost.tsx"),"utf8");
 const nativeApp=readFileSync(path.join(codeRoot,"apps/desktop/src/renderer/App.tsx"),"utf8");
+// ⚠️ 2026-10-27：这两条原来钉的是**更弱的策略** —— `connect-src 'none'` 一律禁止联网。
+// 产品现在改成 `connect-src <resourceOrigin>`，也就是**只允许该扩展自己的资源源**、
+// 其余一律不放。这是**更强**而不是更弱：全局仍然是 `default-src 'none'`，
+// 网络出口被收窄到一个受控 origin，而不是「全部关掉」或「全部放开」二选一。
+// 所以断言要跟到真正的安全属性：全局锁死 + 出口被限定 + 无 Node/Electron 权限。
+// ⚠️ 两条纪律，都来自本仓库踩过的坑：
+//
+// ① **剥注释再断言**。第 2 行的文档注释写着「NO allow-same-origin」，
+//    直接 `includes("allow-same-origin")` 会把**这句声明**当成违规命中 ——
+//    断言验的是「文件里有没有这个词」，不是「sandbox 属性给了什么」。
+// ② **断言真正的安全属性，不是某一种拼写**。原来钉 `connect-src 'none'`
+//    （一律禁网），产品现在是 `connect-src <resourceOrigin>`（只放行该扩展自己的资源源）
+//    —— 这是更强而不是更弱：全局 `default-src 'none'` 没变，出口从「全关或全开」变成「限定到一个受控 origin」。
+const webviewCode=stripComments(nativeWebview);
+// 取 `sandbox={...}` 的**实际取值表达式**，而不是文件里出现过哪些词。
+const sandboxExpr=/sandbox=\{([^}]*)\}/.exec(webviewCode)?.[1]??"";
 check("Webview 被挂载在 Mcode 根布局的受限 iframe 而不是注入宿主 DOM",
-  nativeApp.includes("<TheiaWebviewHost />")&&nativeWebview.includes('sandbox="allow-scripts"')&&
-  !nativeWebview.includes('sandbox="allow-scripts allow-same-origin"')&&
-  nativeWebview.includes("srcDoc={documentFor(panel.html)}"));
-check("Webview 限制网络资源，拒绝原生 Electron / Node 权限",
-  nativeWebview.includes("default-src 'none'")&&nativeWebview.includes("connect-src 'none'")&&
-  nativeWebview.includes("frame-src 'none'")&&!nativeWebview.includes("nodeIntegration"));
+  nativeApp.includes("<TheiaWebviewHost />")&&
+  // sandbox 表达式只能产出 allow-scripts 或空串；allow-same-origin 一旦出现在**代码**里就是破了不透明源
+  /allow-scripts/.test(sandboxExpr)&&!/allow-same-origin/.test(sandboxExpr)&&
+  nativeWebview.includes("srcDoc={documentFor(panel.html,panel.bootstrapState,panel.enableScripts,panel.resourceOrigin)}"));
+check("Webview 的首屏策略锁死一切，网络出口只放行该扩展自己的资源源",
+  webviewCode.includes("default-src 'none'")&&webviewCode.includes("frame-src 'none'")&&
+  webviewCode.includes("base-uri 'none'")&&webviewCode.includes("form-action 'none'")&&
+  // 出口必须绑定 resourceOrigin（受控），不能是裸 'none'（打不开自己资源）或 '*'（全开）
+  /connect-src "\+resourceOrigin/.test(webviewCode)&&
+  !webviewCode.includes("connect-src *")&&
+  !webviewCode.includes("nodeIntegration")&&!webviewCode.includes("require("));
 check("Webview 消息必须来源于当前拥有的 iframe 并通过受控 IPC 发送",
   nativeWebview.includes("?.contentWindow===event.source")&&nativeWebview.includes('op:"webviewMessage"'));
 check("Webview 延迟到达消息有挂载后与加载后再次派发的处理路径",

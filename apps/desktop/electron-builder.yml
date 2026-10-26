@@ -136,6 +136,24 @@ extraResources:
     to: node-red/mcode-theme
     filter:
       - "*.css"
+  # 【EXT-07】Theia plugin host runtime. Extensions are .vsix files that run in a
+  # real `plugin-host.js` child process, so the built Theia packages must ship as
+  # disk files (never inside asar: `plugin-host.js` is `fork()`ed by path, and
+  # `require`s its own siblings).
+  #
+  # Resolved at runtime by `theiaHost/theiaRoot.ts` — the ONLY place that decides
+  # where Theia lives. It looks at `<resources>/theia` when packaged
+  # (`app.isPackaged`), and at `vendor/theia` in development.
+  #
+  # Source is `vendor/theia` (A′ checkout, pinned by `vendor/theia.lock.json`),
+  # but electron-builder must not walk the whole 1.3 GB checkout: we only need the
+  # compiled `lib/` trees plus the `package.json` of the packages that are actually
+  # loaded at runtime. `build/stage-theia-resources.cjs` produces that minimal tree
+  # under `.tmp/`, and `afterPack` verifies the entry points survived.
+  - from: .tmp/theia-release
+    to: theia
+    filter:
+      - "**/*"
 
 # ARC-007: post-copy gate rechecks the six ORIGINAL GenOffice renderer trees
 # when MCODE_INCLUDE_GENOFFICE_EDITORS=1. An opt-in package with one missing

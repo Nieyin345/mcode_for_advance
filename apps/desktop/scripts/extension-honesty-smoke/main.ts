@@ -18,7 +18,6 @@
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { ModuleManifestSchema } from "@contracts/modules";
 
 let total = 0;
 let failed = 0;
@@ -57,100 +56,64 @@ console.log("[4] compat 文档顶部有边界声明");
   check("★ §3 顶部指向 §6.2", /§6\.2/.test(compat));
 }
 
-console.log("[5] VscodeL1Bridge 的调用范围（两个范围分开断言）");
+console.log("[5] 旧 L1 bridge 已彻底下线（不再有第二条 VSIX 路径）");
 {
-  // 5a: src/ 内零调用方（排除定义文件自身）
+  // ⚠️ 这一节原来钉的是「`VscodeL1Bridge` 在 src/ 内只被 IPC handler 引用一次」。
+  // 那个断言的前提是 L1 仍是一条产品路径。**2026-10-27 起 L1 被整体删除**
+  // （用户裁决：只要一个扩展系统 = Theia 持久宿主），所以原意翻转成：
+  // **它不该再以任何形式存在**。
   //
-  // ⚠️ **必须用文件系统遍历，不能用 `git grep`** —— `git grep` 只搜**已跟踪**文件，
-  // 而「有人刚加了一个 import、还没 git add」正是最该被抓到的时刻。变异 M6 就是这么漏的：
-  // 新建一个未跟踪的探针文件，`git grep` 看不见它，套件仍然全绿。
+  // 用文件系统遍历而不是 `git grep` —— `git grep` 只搜已跟踪文件，
+  // 有人新建一个未跟踪的同名文件时它看不见。
   const srcRoot = resolve(process.cwd(), "src");
-  const defFile = resolve(process.cwd(), "src/main/modules/vscodeL1Bridge.ts");
-  // Generated API catalogue is prose metadata derived from RpcMap JSDoc, not a runtime caller.
-  const generatedCatalog = resolve(process.cwd(), "src/main/appControl/apiCatalog.generated.ts");
   const hits: string[] = [];
   const walk = (dir: string): void => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, e.name);
-      if (e.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      if (full === defFile || full === generatedCatalog) continue;
+      if (e.isDirectory()) { walk(full); continue; }
       if (!/\.(ts|tsx|mts|cts|js|mjs|cjs)$/.test(e.name)) continue;
       const text = readFileSync(full, "utf8");
       if (/VscodeL1Bridge|readMinimalVsix/.test(text)) hits.push(full);
     }
   };
   walk(srcRoot);
-  // ⚠️ **【F006 后更新】这条断言的形状变了，但它是被有意推翻的，不是被弄绿的。**
-  //
-  // 原来断言「src/ 内零调用方」—— 那在 F001 写的诚实性卡里成立，因为当时
-  // `VscodeL1Bridge` 只在套件里被调。**F006 把它接进了产品**：`main/ipc/modules.ts`
-  // 的 `modules.installVsix` handler 现在真的调 `VscodeL1Bridge.install`。
-  //
-  // 所以「零调用方」不再是事实，而且**不应该再是**——用户能装 vsix 正是靠这个引用。
-  //
-  // 保留下来的原意是：**这条路径的入口必须唯一且受控**。现在重新表述为
-  // 「src/ 内只允许 IPC handler 这一处引用它」。多出第二处（比如某个业务模块
-  // 直接 new 一个 bridge）就说明它开始被当成普通工具用了，那才需要重看。
-  const ALLOWED_SRC_CALLERS = [resolve(process.cwd(), "src/main/ipc/modules.ts")];
-  const straySrcCallers = hits.filter((h) => !ALLOWED_SRC_CALLERS.includes(h));
-  check("★ src/ 内的引用只在 IPC handler 一处（F006 把它接进产品后为 1 处；不该再有第二处）",
-    straySrcCallers.length === 0 && hits.length >= 1, { hits, straySrcCallers });
+  check("★ src/ 内不再引用 VscodeL1Bridge / readMinimalVsix（L1 已删除）", hits.length === 0, { hits });
 
-  // 5b: scripts/ 内唯一命中 vscode-l1-smoke
+  // 文件本身也必须不在 —— 只删引用而留文件，下一个人会以为它还能用。
+  let defExists = true;
+  try { readFileSync(resolve(process.cwd(), "src/main/modules/vscodeL1Bridge.ts"), "utf8"); }
+  catch { defExists = false; }
+  check("★ src/main/modules/vscodeL1Bridge.ts 文件本身已删除", !defExists);
+
+  // scripts/ 下同样不该再有引用它的套件（那些套件随 L1 一起删了）。
   const scriptsRoot = resolve(process.cwd(), "scripts");
-  const walkScriptsHits: string[] = [];
+  const scriptHits: string[] = [];
   const walkScripts = (dir: string): void => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, e.name);
-      if (e.isDirectory()) {
-        walkScripts(full);
-        continue;
-      }
+      if (e.isDirectory()) { walkScripts(full); continue; }
       if (!/\.(ts|tsx|mts|cts|js|mjs|cjs)$/.test(e.name)) continue;
       const text = readFileSync(full, "utf8");
-      if (/VscodeL1Bridge|readMinimalVsix/.test(text)) walkScriptsHits.push(full);
+      if (/VscodeL1Bridge|readMinimalVsix/.test(text)) scriptHits.push(full);
     }
   };
   walkScripts(scriptsRoot);
-  const expected = resolve(process.cwd(), "scripts/vscode-l1-smoke/main.ts");
-  // ⚠️ **必须排除本套件自己** —— 本文件里就写着 `VscodeL1Bridge` 这几个字（作为判据的一部分），
-  // 不排除的话它会把自己算成一个调用方。这是「按名字搜是引用数」的典型形态：
-  // 名字出现在一个地方，不代表那里在用这个东西。
+  // 排除本套件自己 —— 它作为判据的一部分写着这两个名字。
   const self = resolve(process.cwd(), "scripts/extension-honesty-smoke/main.ts");
-  // ⚠️ **【F003 后更新】这条断言的原意不是「只能有一处引用」** ——
-  // 那个数字在 F002/F003 之后就不成立了：新增的 `vsix-deflate-smoke` /
-  // `vsix-size-limits-smoke` 是**专门测 VscodeL1Bridge 的套件**，引用它是正当的。
-  //
-  // **原意是：它是实验路径，不属于产品代码。** 所以真正的判据在上面那组
-  // （`src/` 内零调用方）—— 那一条才是「没接进产品」的证明。
-  //
-  // 这里保留的是更弱但仍有意义的一条：**scripts/ 下的引用只允许出现在
-  // 「名字里带 vscode-l1 / vsix」的套件里**。
-  //
-  // ⚠️ **【F004 后修正】第一版我写的是枚举名单**（`vscode-l1-smoke|vsix-deflate-smoke|
-  // vsix-size-limits-smoke`）—— **那违反了我自己反复强调的原则：每加一个套件就要改一次判据。**
-  // F004 新建 `vsix-manifest-schema-smoke` 时当场撞红，证明它是错的写法。
-  // 现在改成**按名字模式**判断：套件目录名里带 `vsix` 或 `vscode-l1` 就视为「它自己的测试」。
-  // 这比枚举更耐久，也仍然能抓住「一个无关套件突然开始引用它」这个信号。
-  const allowed = /scripts[\\/]([^\\/]*(vsix|vscode-l1)[^\\/]*)[\\/]/i;
-  const scriptHits = walkScriptsHits.filter((p) => p !== self);
-  const unexpected = scriptHits.filter((p) => !allowed.test(p));
-  check(
-    "★ scripts/ 内的引用只出现在 VscodeL1Bridge 自己的测试套件里（原「唯一」已随 F002/F003 失效）",
-    scriptHits.length >= 1 && scriptHits.some((p) => p === expected) && unexpected.length === 0,
-    { scriptHits, unexpected },
-  );
+  const otherScripts = scriptHits.filter((p) => p !== self);
+  check("★ scripts/ 内也没有别的套件引用它（vsix-* 套件已随 L1 删除）", otherScripts.length === 0, { otherScripts });
 }
 
-console.log("[6] 作者手册里的清单 JSON 能被真 schema 解析");
+console.log("[6] 作者手册里的 `package.json` 示例能被真解析器读，且是 VS Code 的形状");
 {
+  // ⚠️ 这一节原来用 `ModuleManifestSchema` 验手册里的 JSON。那个 schema 随 ModuleHost
+  // 一起删了。守的**意图**没变：**手册里的示例必须是能真的装进去的东西，不是纸上画的。**
+  //
+  // 现在唯一的扩展形态是 VS Code 扩展，所以判据换成：
+  // 手册里那段 `package.json` 必须能被 `JSON.parse`，且带 VS Code 清单的必需字段。
   const guide = read("../../docs/extensions/authoring-guide.md");
-  // 抽出第一个 ```json 代码块
   const m = /```json\n([\s\S]*?)```/.exec(guide);
-  check("★ 手册里有 json 代码块", m !== null);
+  check("★ 手册里有 json 代码块（示例不是纯文字描述）", m !== null);
   if (m) {
     let parsed: unknown = null;
     let parseError: unknown = null;
@@ -160,40 +123,70 @@ console.log("[6] 作者手册里的清单 JSON 能被真 schema 解析");
       parseError = String(e);
     }
     check("★ 代码块是合法 JSON", parseError === null, { parseError });
-    const r = ModuleManifestSchema.safeParse(parsed);
-    check("★ 通过 ModuleManifestSchema（不是纸上示例）", r.success, {
-      issues: r.success ? undefined : r.error.issues,
-    });
-    // 额外：手册声称它和预设同形，验一下确实是同一形状的关键字段
-    if (r.success) {
-      const a = r.data;
-      check("★ 清单 id 带 . 或 -（schema 要求多段）", /[.-]/.test(a.id), { id: a.id });
-      check("★ 带 program 的清单引用了至少一个 module.* 能力",
-        a.program === undefined || a.contributions.some((c) => c.capability.startsWith("module.")),
-        { capabilities: a.contributions.map((c) => c.capability) });
+    if (parseError === null && parsed && typeof parsed === "object") {
+      const pkg = parsed as Record<string, unknown>;
+      // VS Code 扩展清单的最小形状：name + version + main（或 engines.vscode）
+      const hasIdentity = typeof pkg.name === "string" && typeof pkg.version === "string";
+      const hasEntry = typeof pkg.main === "string" || (pkg.engines as Record<string, unknown> | undefined)?.vscode !== undefined;
+      check("★ 示例带 VS Code 清单的必需字段（name + version + main/engines）",
+        hasIdentity && hasEntry, { keys: Object.keys(pkg) });
     }
+  }
+  // 手册现在没有 json 代码块时，至少要求它给出的 `executeCommand` 形状是真的
+  check("★ 手册写了 `mcode.*` 的返回形状（ok / result / needsApproval）",
+    /ok:\s*true/.test(guide) && /needsApproval/.test(guide), {});
+}
+
+console.log("[7] 负控：唯一那条扩展安装路径真的存在（不是「文档说能装，代码里没入口」）");
+{
+  // 这一节原来守的是 `ipc/modules.ts` 里的 `IPC.MODULE_INSTALL` ——
+  // 那是 ModuleHost 的安装入口，随用户裁决「只要一个扩展系统」在 2026-10-27 整体删除。
+  //
+  // 断言的**意图**必须留住：**别让「文档说能装」和「代码里没有入口」同时为真。**
+  // 所以原意翻转成守新的唯一入口 —— `modules.theiaInstalled` 的 install op。
+  //
+  // ⚠️ 不变的那条纪律：**不能只查字符串在不在**。把 handle 注释掉，字符串还在，断言就绿。
+  // 所以剥掉注释再查，并且查的是「真的注册了 handler」，不是「提到了这个名字」。
+  const stripComments = (s: string): string => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+  const ipcCode = stripComments(read("src/main/ipc/theiaInstalled.ts"));
+  // ⚠️ 正则要匹配**能力**不是匹配一种拼写。这里参数名叫 `ipc`（注入的 IpcMain），
+  // 所以写法是 `ipc.handle(...)` 而不是 `ipcMain.handle(...)`。第一版写死 `ipcMain\.`
+  // 于是对正确代码报红 —— 和「判据的名字比它检查的范围窄」是同一形态。
+  check("★ theiaInstalled.ts 里真的注册了 IPC handler（剥掉注释后仍在）",
+    /\b\w+\.handle\(\s*IPC\.MODULE_THEIA_INSTALLED/.test(ipcCode), {});
+  check("★ handler 走的是持久安装（真 registry），不是预览",
+    /registry\(options\)/.test(ipcCode), {});
+
+  const rpc = read("../../packages/contracts/src/ipc/rpcMap.ts");
+  check("★ RpcMap 里有 modules.theiaInstalled（唯一扩展安装入口在契约层可见）",
+    rpc.includes('"modules.theiaInstalled"'), {});
+  check("★ RpcMap 里**没有** modules.install（旧 ModuleHost 入口已下线）",
+    !rpc.includes('"modules.install"'), {});
+
+  // 反过来守一次：契约里写的那个 op 集合，产品代码得真的认。
+  const schema = read("../../packages/contracts/src/ipc/modules.ts");
+  for (const op of ["install", "start", "stop", "remove", "inspect"]) {
+    check(`★ 契约接受 op="${op}"`, new RegExp(`["']${op}["']`).test(schema), {});
   }
 }
 
-console.log("[7] 负控：modules.install 的 handler 仍然存在（且没被注释掉）");
+console.log("[8] 作者手册不再教一条已经删掉的路");
 {
-  // 这条防「为了把文档改干净，顺手把实现删了」。
-  //
-  // ⚠️ **不能只查字符串 `IPC.MODULE_INSTALL` 在不在** —— 把它注释掉，字符串还在，
-  // 断言就绿了。变异 M8 证明了这一点（这正是 CLAUDE.md 第八条的「删得干净才红」形态）。
-  // 所以这里查的是**未被注释的调用行**：去掉注释后，那行 `ipcMain.handle(IPC.MODULE_INSTALL` 必须还在。
-  const ipcRaw = read("src/main/ipc/modules.ts");
-  const stripComments = (s: string): string => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-  const ipcCode = stripComments(ipcRaw);
-  check(
-    "★ registerModuleHandlers 里有生效的 MODULE_INSTALL handle（剥掉注释后仍在）",
-    /ipcMain\.handle\(\s*IPC\.MODULE_INSTALL/.test(ipcCode),
-    {},
-  );
-  // 再补一条：install 必须真的接到 ModuleHost，而不只是有个 handle 壳
-  check("★ MODULE_INSTALL 的 handler 体里调用了 ModuleHost.install", /getModuleHost\(\)\)\.install/.test(ipcCode), {});
-  const rpc = read("../../packages/contracts/src/ipc/rpcMap.ts");
-  check("★ RpcMap 里有 modules.install", rpc.includes('"modules.install"'), {});
+  // ⚠️ 这条是**反向**的：它守的是「文档里不该再出现的东西」。
+  // 2026-10-27 之前，本文档 §1–§5 整整 170 行在讲 ModuleHost 的 JSON 清单。
+  // 那条路删掉之后，一份还在教它的手册比没有手册更坏 —— 读者会照着写一个装不进去的东西。
+  const guide = read("../../docs/extensions/authoring-guide.md");
+  check("★ 手册不再把「Mcode 原生扩展 / JSON 清单」写成一条可走的路",
+    !/(Mcode\s*原生扩展)[^\n]{0,40}(完整|支持)/.test(guide), {});
+  check("★ 手册明确写了 ModuleHost 那条路已下线",
+    /已整体下线|这条路没有了|已下线/.test(guide), {});
+  check("★ 手册把 VS Code 扩展写成唯一形态",
+    /只有\*\*一套\*\*扩展系统|只有一套扩展系统/.test(guide), {});
+  // 正控：手册必须还在讲 mcode.* 怎么调 —— 别为了删旧的把有用的也删了
+  check("★ 手册仍在讲 mcode.* 能力桥", guide.includes("mcode.library.search") || guide.includes("mcode.<方法>"), {});
+  check("★ 手册仍在讲权限与 agent 同源",
+    /app_api_call/.test(guide) && /同源/.test(guide), {});
 }
 
 console.log(`\nextension-honesty-smoke: ${total - failed}/${total} 通过`);

@@ -1,27 +1,50 @@
 /** F026: distinct persistent Theia lifecycle IPC; no Agent delegation or auto-start. */
-import { existsSync } from "node:fs";
+
 import { TheiaEditorApplyBroker } from "@main/modules/theiaHost/editorApplyBroker.js";
 import { TheiaRuntimeMessageBroker } from "@main/modules/theiaHost/runtimeMessageBroker.js";
 import { TheiaQuickInputBroker } from "@main/modules/theiaHost/quickInputBroker.js";
 import { McodeTheiaTerminalDriver } from "@main/modules/theiaHost/mcodeTerminalDriver.js";
 import { currentTheiaNativePtyOps } from "@main/modules/theiaHost/nativePtyBinding.js";
-import { resolve, join } from "node:path";
+import { join } from "node:path";
 import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
 import { TheiaInstalledInputSchema } from "@contracts/ipc/modules.js";
 import { theiaDesktopSender } from "./theiaPreview.js";
+import { resolveTheiaRoot } from "@main/modules/theiaHost/theiaRoot.js";
 
 interface DataOptions { dataRoot: () => string; theiaRoot?: string }
+
+/** 【EXT-07】桥的端口。由 `main/index.ts` 在启动装配期注入。
+ *
+ *  **类型是结构定义的**（不 import 那两个模块）—— 本文件必须能被无头 smoke 打包，
+ *  而实现方 `appControl/tools.js` 会拉进整片主进程图（含 `.node` 原生模块）。 */
+interface ExtensionBridgePorts {
+  dispatch: (method: string, input: unknown, approved: boolean, label: string, operationId?: string)
+    => Promise<{ ok: boolean; result?: unknown; error?: string; needsApproval?: boolean;
+      level?: "write" | "danger"; description?: string }>;
+  requestApproval: (request: { method: string; level: "write" | "danger"; description: string;
+    extensionId: string; input: unknown }) => Promise<boolean>;
+  builtinLookup?: (id: string) => unknown;
+  knownRoot?: (path: string) => boolean;
+}
+let extensionBridgePorts: ExtensionBridgePorts | null = null;
+
+/** 装配入口（`main/index.ts` 调一次）。没装 = 不接桥。 */
+export function configureExtensionBridge(next: ExtensionBridgePorts | null): void {
+  extensionBridgePorts = next;
+  // 注册表可能已经建好了（IPC 先注册、装配后到）—— 端口要在已存在的注册表上也生效。
+  if (registryPromise) void registryPromise.then(store => store.setExtensionBridge(next ?? undefined)).catch(() => {});
+}
+
 let registryPromise: Promise<import("@main/modules/theiaHost/installedRegistry.js").TheiaInstalledRegistry> | null = null;
 async function registry(options:DataOptions) {
   if (!registryPromise) {
     registryPromise = import("@main/modules/theiaHost/installedRegistry.js").then(({TheiaInstalledRegistry})=>{
-      const choices = [options.theiaRoot, process.env.MCODE_THEIA_ROOT,
-        resolve(process.cwd(),"vendor/theia"),resolve(process.cwd(),"../../vendor/theia")].filter((p):p is string=>Boolean(p));
-      const root = choices.find(p => existsSync(join(p,"packages/plugin-ext/lib/hosted/node/plugin-host.js")) &&
-        existsSync(join(p,"packages/plugin-ext-vscode/lib/node/plugin-vscode-init.js")));
-      if(!root) throw Error("Theia persistent extensions require a built Theia runtime; packaged distribution is not yet supported");
-      const store = new TheiaInstalledRegistry(join(options.dataRoot(),"theia-extensions"),root);
+      // 路径判定只有一处 —— `theiaHost/theiaRoot.ts`。两边各写一份候选表时，
+      // 打包态（`<resources>/theia`）会被漏掉，症状是「开发能用、装完不能用」。
+      const root = resolveTheiaRoot(options.theiaRoot, "Theia 持久扩展");
+      const store = new TheiaInstalledRegistry(join(options.dataRoot(),"theia-extensions"),root,
+        extensionBridgePorts === null ? undefined : extensionBridgePorts as never);
       import("electron").then(({app}) => app.once("before-quit",()=>{void store.disposeAll();})).catch(()=>{});
       return store;
     }).catch(error=>{registryPromise=null;throw error;});

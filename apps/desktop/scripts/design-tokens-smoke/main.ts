@@ -24,6 +24,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { stripComments } from "../lib/sourceText.js";
 import {
   UI_REDUCE_MOTION_SETTING_KEY,
   ReduceMotionSchema,
@@ -135,11 +136,19 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
     checkOk = false;
     checkMsg = (e as { stderr?: string }).stderr ?? String(e);
   }
-  check("★ tokens.cds.css 与上游 open-claude-ui 一致", checkOk, checkMsg.slice(0, 300));
+  // 【UI 重建 2026-10-27】断言文案跟着基准换：上游不再是 open-claude-ui
+  //（第三方 2.x 逆向），而是**用户本机安装的 Claude Desktop**。
+  check("★ tokens.cds.css 与本机 Claude Desktop 一致", checkOk, checkMsg.slice(0, 300));
   // 几何/阴影:生成物不得残留上游变量名(--cds-*),否则整条阴影静默失效。
   const geomTokens = read("src/renderer/tokens.cds.css");
   check("★ 几何 token 不含未解析的上游变量(--cds-*)", !/var\(--cds-/.test(geomTokens), geomTokens.match(/var\(--cds-[^)]*/g));
-  for (const t of ["--m-panel-radius", "--m-radius-composer", "--m-message-bubble-radius", "--m-shadow-composer"]) {
+  /* 几何/阴影：生成物**必须**含这几档。
+   *
+   * 【UI 重建 2026-10-27】原列表里的 `--m-shadow-composer` 已移除 ——
+   * 它在 Claude 3.1623.4.0 的产物里不存在（是第三方 2.x 逆向的名字）。
+   * 换成实际存在的 `--m-panel-shadow`（Claude 的面板阴影）。
+   * `--m-panel-radius` 同理换成裸名的 `--radius-*` 档。 */
+  for (const t of ["--m-radius-composer", "--m-message-bubble-radius", "--m-panel-shadow", "--radius-sm", "--radius-md"]) {
     check("几何 token " + t + " 已生成", geomTokens.includes(t + ":"));
   }
   // 会话流微动效(从上游纯 CSS 提取):关键帧与类都在,且不残留上游变量。
@@ -207,8 +216,18 @@ section("5. 【ARC-005 V0】CDS 原始色阶与语义层映射");
     check("上游曲线 " + t.replace(":", "") + " 已接", css.includes(t));
   }
   check("styles.css 引入了生成物", css.includes('@import "./tokens.cds.css";'));
-  check("★ 亮色 --surface 指到 --m-gray-10", /--surface:\s*var\(--m-gray-10\)/.test(css));
-  check("★ 暗色 --surface 指到 --m-gray-850", /--surface:\s*var\(--m-gray-850\)/.test(css));
+  const gen = read("src/renderer/tokens.cds.css");
+  /* 【UI 重建 2026-10-27】`--surface` 现在走 Claude 的**四级表面阶梯**
+   * （`--m-surface-1`），而不是直接指色阶。两级是等价的
+   * （生成物里 `--m-surface-1: var(--m-gray-10)`），但多一层名字之后
+   * 「暗色把整条链反转」才能生效（Claude 的暗色就是靠语义链反转，不是逐个覆盖）。
+   * 所以断言改成：**指向 surface 阶梯**，并且**生成物里那一档确实指到目标色阶**。 */
+  check("★ 亮色 --surface 走 surface 阶梯，且该档指向 gray-10",
+    /--surface:\s*var\(--m-surface-1\)/.test(css) &&
+    /--m-surface-1:\s*var\(--m-gray-10\)/.test(gen));
+  check("★ 暗色 --surface 走同一条链（暗色靠语义链反转，不是覆盖色阶）",
+    /--surface:\s*var\(--m-surface-1\)/.test(css) &&
+    /--m-surface-1:\s*var\(--m-gray-850\)/.test(gen));
   check("★ 亮色 --content 指到 --m-gray-850", /--content:\s*var\(--m-gray-850\)/.test(css));
   check("★ 暗色 --content 指到 --m-gray-20", /--content:\s*var\(--m-gray-20\)/.test(css));
   // 【ARC-005 2026-10-20 用户拍板】品牌色已切到陶土橙。断言不再是「保持 emerald」，
@@ -292,10 +311,29 @@ section("6. 【ARC-005】Composer 外框接上游几何/阴影 token");
   // 语义别名必须**引用**生成物（tokens.cds.css 的 --m-*），不在语义层重抄数值。
   check("★ --composer-radius 指向 var(--m-radius-composer)",
     /--composer-radius:\s*var\(--m-radius-composer\)/.test(css));
-  check("★ --composer-shadow 指向 var(--m-shadow-composer)",
-    /--composer-shadow:\s*var\(--m-shadow-composer\)/.test(css));
-  check("★ --composer-shadow-focus 指向 var(--m-shadow-composer-focus)",
-    /--composer-shadow-focus:\s*var\(--m-shadow-composer-focus\)/.test(css));
+  /* 【UI 重建 2026-10-27】这两条原来断言 `--m-shadow-composer` /
+   * `--m-shadow-composer-focus`。那两个 token 是**第三方逆向文档 2.x 的名字**，
+   * 在用户本机的 Claude 3.1623.4.0 产物里**根本不存在** —— 而它们被引用时
+   * 会让整条 box-shadow 静默失效（输入框一直没有阴影，谁都不报错）。
+   *
+   * 现在改成断言「指向一个**真实存在**的阴影 token」，并且**反向断言它不再是
+   * 那两个不存在的名字** —— 否则这条断言会在有人手滑改回去时保持绿。 */
+  check("★ --composer-shadow 指向真实存在的阴影 token（不是已消失的 --m-shadow-composer）",
+    /--composer-shadow:\s*var\(--m-panel-shadow\)/.test(css) &&
+    !/--composer-shadow:\s*var\(--m-shadow-composer\)/.test(css));
+  check("★ --composer-shadow-focus 由真实 token 组合（不再指向已消失的名字）",
+    /--composer-shadow-focus:[\s\S]{0,160}--m-panel-shadow/.test(css) &&
+    !/--composer-shadow-focus:\s*var\(--m-shadow-composer-focus\)/.test(css));
+  // ⚠️ 这里原来传的是一个**函数**，而 `check(name, cond: boolean)` 的第二个参数是布尔值。
+  // 函数对象总是 truthy → `if (cond)` 恒真 → **这条断言从写下的那天起就没验过任何东西**。
+  // tsc 早就在报（`() => void` 不能赋给 `boolean`），只是没人把它当成 bug 看。
+  // 改成 IIFE 立即求值：抛错就是 false，并且把原因带进 detail。
+  check("★ styles.css 不引用任何未在生成物里定义的 --m-shadow-* token", (() => {
+    const gen = read("src/renderer/tokens.cds.css");
+    const used = [...css.matchAll(/var\((--m-shadow-[a-z-]+)\)/g)].map((m) => m[1]);
+    const missing = [...new Set(used)].filter((n) => !gen.includes(`${n}:`));
+    return missing.length === 0;
+  })());
   // 反向正控限定在通用语义层：新版 Claude Desktop v2 有独立 workspace
   // 密度作用域，可使用 14px comfortable Composer，但不许回写 :root 影响 classic。
   // 先剔除精确的 workspace 作用域块，再审查全局别名是否漂移。
@@ -317,9 +355,15 @@ section("6. 【ARC-005】Composer 外框接上游几何/阴影 token");
   const darkAt = tokens.indexOf(".dark {");
   const lightPart = darkAt >= 0 ? tokens.slice(0, darkAt) : tokens;
   const darkPart = darkAt >= 0 ? tokens.slice(darkAt) : "";
-  const countIn = (part: string): number => (part.match(/--m-shadow-composer/g) ?? []).length;
-  check("★ Composer 阴影 token 亮色 3 态", countIn(lightPart) === 3, countIn(lightPart));
-  check("★ Composer 阴影 token 暗色 3 态(上游 .dark 覆盖)", countIn(darkPart) === 3, countIn(darkPart));
+  const countIn = (part: string): number => (part.match(/--m-panel-shadow/g) ?? []).length;
+  /* 【UI 重建 2026-10-27】原断言数的是 `--m-shadow-composer` 的三态
+   *（resting/hover/focus）。那个 token 在 Claude 3.1623.4.0 里不存在，
+   * 现在改数 `--m-panel-shadow` —— Claude 真实的面板阴影。
+   * 亮色必有；暗色**可能没有独立覆写**（Claude 的暗色靠语义链反转，
+   * 不是逐个 token 重定义），所以暗色那条改成「有就是 1 份，没有也合法」。 */
+  check("★ 面板阴影 token 亮色已生成", countIn(lightPart) >= 1, countIn(lightPart));
+  check("面板阴影暗色覆写（有则 1 份；Claude 靠语义链反转，可以没有）",
+    countIn(darkPart) <= 1, countIn(darkPart));
   const shadowDecls = lightPart + String.fromCharCode(10) + darkPart;
   const bareRefs = shadowDecls.replace(/rgb\(var\(--(edge|input-edge)\)\)/g, "WRAPPED");
   check("★ Composer 阴影引用边线色都包了 rgb()(防整条阴影静默失效)",
@@ -357,7 +401,9 @@ section("7. 【ARC-005】工具调用卡接 CDS 几何/表面 token");
   check("★ MessageBlocks 有共享工具行常量 TOOL_ROW_CLS", /const TOOL_ROW_CLS\s*=/.test(blocks));
   check("★ TOOL_ROW_CLS 圆角引用 --radius-control",
     /TOOL_ROW_CLS\s*=\s*\n?\s*"[^"]*rounded-\[var\(--radius-control\)\]/.test(blocks));
-  check("★ TOOL_ROW_CLS 背景走既有 surface-muted", /TOOL_ROW_CLS[\s\S]{0,300}hover:bg-surface-muted\/50/.test(blocks));
+  check("★ TOOL_ROW_CLS 复用统一 hover/active 交互类且不保留旧 muted/50 覆盖",
+    /TOOL_ROW_CLS\s*=\s*\n?\s*"[^"]*cds-hover-ghost/.test(blocks) &&
+    !/TOOL_ROW_CLS[\s\S]{0,300}hover:bg-surface-muted\/50/.test(blocks));
   check("★ TOOL_ROW_CLS 被四处工具卡引用(批量组+Edit+Write+通用)",
     (blocks.match(/className=\{TOOL_ROW_CLS\}/g) ?? []).length === 4,
     (blocks.match(/className=\{TOOL_ROW_CLS\}/g) ?? []).length);
@@ -771,7 +817,12 @@ section("14. 【ARC-005】圆角 role 档（btn-xs/btn-md/dialog/code/card）");
   check("★ 上游 radius-lg = 8px（btn-md 档）", /--radius-lg:\s*\.5rem;/.test(tokens));
   check("★ 上游 radius-2xl = 16px（dialog 档）", /--radius-2xl:\s*1rem;/.test(tokens));
   check("★ 上游 radius-xl = 12px（code 档）", /--radius-xl:\s*\.75rem;/.test(tokens));
-  check("★ card 档与气泡同算式（≈12px）", /--m-message-bubble-radius:\s*calc\(8px \+ calc\(\.25rem \* 1\)\)/.test(tokens));
+  /* 【UI 重建 2026-10-27】断言改成认 `var(--m-rem-scale)` —— 生成器现在
+   * 保留变量引用（`calc(8px + calc(.25rem * var(--m-rem-scale)))`），
+   * 而不是把 rem-scale 摊平成 1。**保留引用是对的**：rem-scale 一变，
+   * 气泡圆角跟着变；写死 1 就断了这条链。 */
+  check("★ card 档与气泡同算式（calc(8px + .25rem × rem-scale)）",
+    /--m-message-bubble-radius:\s*calc\(8px \+ calc\(\.25rem \* var\(--m-rem-scale\)\)\)/.test(tokens));
 
   // ★ Button 各 size 不再写裸 rounded 数值 —— 三个 size 都消费 role 档。
   const button = read("src/renderer/components/ui/button.tsx");
@@ -892,6 +943,9 @@ section("16. 【ARC-005】每个被消费的语义 token 都真的有定义");
   const RUNTIME_WRITTEN = new Set([
     "--accent", "--accent-strong", "--brand-clay", "--brand-clay-strong",
     "--sf-top", "--sf-bottom", "--sf-left", "--sf-right",
+    // MessageRow writes this per-bubble alias inline so the Claude 14.5px user
+    // text size derives from the configurable global chat font without cycles.
+    "--chat-font-size-base",
   ]);
 
   // 只扫「本仓库命名的语义族」—— 不扫 Tailwind/第三方自带的（--tw-*、--radix-*）。
@@ -911,7 +965,8 @@ section("16. 【ARC-005】每个被消费的语义 token 都真的有定义");
 
   const missing = new Map<string, string[]>(); // token → 引用它的文件
   for (const file of srcFiles) {
-    const src = read(file);
+    // Token references in explanatory comments are documentation, not runtime consumers.
+    const src = stripComments(read(file));
     // 只取 var() 的**第一个参数**，并记下有没有 fallback：
     //  - `var(--x, 64rem)` 带回落值时，即使 --x 未定义也不会让整条声明失效
     //    （--chat-max-w 就是这种「用户自定义可选」变量），不列为缺陷；
@@ -1244,12 +1299,17 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   // 的注意力图标、拖放目标、手势录制中的按键、LSP 成功已改 success）。
   const TINT10_ALLOWED = [
     "chat/McpToolDecisionCard.tsx", // 真 MCP 执行中的状态徽标（非选择/开关态）
+    "chat/ApprovalPrompt.tsx", // 等待人工审批的强调状态，不是选择/开关态
     "browser/DownloadBar.tsx",
     "browser/PickedElementsBar.tsx",
     "chat/ContentTagChip.tsx",
     "chat/MessageBlocks.tsx",
     "chat/MessageRow.tsx",
     "chat/QuestionPrompt.tsx",
+    // 【UI 重建 2026-10-27】修订/评论徽标：与审批、标签同类 ——
+    // 「有未处理事项」的强调态，不是选择/开关态。该文件此前就用了
+    // bg-accent/10，只是没登记（套件一直红着这条，没人处理）。
+    "ide/RevisionPanel.tsx",
     "chat/SelectionQuoteMenu.tsx",
     "chat/SideChatPanel.tsx",
     "chat/SelectionToolbar.tsx",
@@ -1263,6 +1323,7 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
     "chat/PlanStreamBlock.tsx",
     "chat/BranchChoiceCard.tsx",
     "chat/ChatPane.tsx",
+    "ide/GenofficeDocumentPane.tsx", // 文档预览的命中块高亮（定位反馈，不是选中态）
     "ide/SearchDialog.tsx",
     "layout/CommandPalette.tsx",
     "chat/MicButton.tsx",               // 录音中
@@ -1280,7 +1341,8 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
       const st = statSync(join(root, rel));
       if (st.isDirectory()) { scan10(rel); continue; }
       if (!/\.[jt]sx?$/.test(name)) continue;
-      const src = read(rel);
+      // Count runtime class usage, not comments describing retired patterns.
+      const src = stripComments(read(rel));
       // 只看**非 hover** 的淡底：hover:bg-accent/10 已在第一批全部改中性。
       if (/[^:]bg-accent\/10/.test(src.replace(/hover:bg-accent\/10/g, ""))
         && !TINT10_ALLOWED.some((a) => rel.endsWith(a))) {

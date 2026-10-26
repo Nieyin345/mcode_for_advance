@@ -16,13 +16,17 @@
  */
 const verifyGenoffice = require("./verify-genoffice-editors-after-pack.cjs");
 const verifyNodeRed = require("./verify-node-red-after-pack.cjs");
+const verifyTheia = require("./verify-theia-after-pack.cjs");
 const { restorePackedNodeModules, restoreSourceNodeModules } = require("./node-red-nodemodules-shim.cjs");
 
 module.exports = async function verifyVendorAfterPack(context) {
   restorePackedNodeModules(context.appOutDir);
   try {
     await verifyGenoffice(context);
-    return await verifyNodeRed(context);
+    await verifyNodeRed(context);
+    // 【EXT-07】Theia 是扩展系统的唯一运行时。它不在产物里 = 所有扩展装不上，
+    // 而那个症状在开发态永远复现不了（开发态读 vendor/theia）。
+    return await verifyTheia(context);
   } finally {
     restoreSourceNodeModules();
   }

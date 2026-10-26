@@ -2,22 +2,26 @@
  * Separate from registerModuleHandlers: no extra catalog/install permission surface.
  * It never persists a ModuleHost installation and never answers to Agent RPC.
  */
-import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
 import type { IpcMain } from "electron";
 import { IPC } from "@contracts/ipc";
 import { TheiaPreviewInputSchema } from "@contracts/ipc/modules.js";
-import { desktopSenderId } from "@main/modules/installConsentPolicy.js";
+import { resolveTheiaRoot } from "@main/modules/theiaHost/theiaRoot.js";
+/** 从 IPC event 取真实渲染端发送方 id；拿不到返回 null。
+ *  原在 `modules/installConsentPolicy.ts`（随 ModuleHost 删除），判据原样搬来。 */
+function desktopSenderId(event: unknown): number | null {
+  if (!event || typeof event !== "object") return null;
+  const sender = (event as { sender?: { id?: unknown } }).sender;
+  const id = sender && typeof sender === "object" ? sender.id : undefined;
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? id : null;
+}
 
 let previewPromise: Promise<import("@main/modules/theiaHost/theiaVsixPreview.js").TheiaVsixPreview> | null = null;
 async function previewService() {
   if (!previewPromise) {
     previewPromise = import("@main/modules/theiaHost/theiaVsixPreview.js").then(({ TheiaVsixPreview }) => {
-      const roots = [process.env.MCODE_THEIA_ROOT, resolve(process.cwd(), "vendor/theia"), resolve(process.cwd(), "../../vendor/theia")]
-        .filter((p): p is string => Boolean(p));
-      const root = roots.find(p => existsSync(join(p, "packages/plugin-ext/lib/hosted/node/plugin-host.js")) &&
-        existsSync(join(p, "packages/plugin-ext-vscode/lib/node/plugin-vscode-init.js")));
-      if (!root) throw Error("Theia preview requires a built vendor/theia checkout (plugin-ext and plugin-ext-vscode). Not available in packaged builds yet.");
+      // 路径判定只有一处 —— `theiaHost/theiaRoot.ts`。两边各写一份候选表时，
+      // 打包态（`<resources>/theia`）会被漏掉，症状是「开发能用、装完不能用」。
+      const root = resolveTheiaRoot(undefined, "Theia 扩展预览");
       const service = new TheiaVsixPreview(root);
       import("electron").then(({ app }) => app.once("before-quit", () => { void service.disposeAll(); })).catch(() => {});
       return service;

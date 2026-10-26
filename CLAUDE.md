@@ -431,11 +431,14 @@ git show HEAD:a.txt
 git commit -F .git/COMMIT_MSG -- <path>
 ```
 
-⚠️ **改共享索引（`tasks/README.md`、`tasks/README.md` 类）前先 `git status`，只追加，提交后核对 `numstat`。**
+⚠️ **改任何被多个会话共享的文件前先 `git status`，只追加，提交后核对 `numstat`。**
 
-事故：A 加一行索引行时整份读改写，把另一个会话当时**未提交**的状态列工作一起提交了（48 行新增里只有 1 行是它的）。没造成丢失（逐行核对过是完整合并态），但**提交归属错了**，事后没人能从提交信息看出发生了什么。
+事故：A 给一份共享索引加一行时**整份读改写**，把另一个会话当时**未提交**的状态列工作一起提交了
+（48 行新增里只有 1 行是它的）。没造成丢失（逐行核对过是完整合并态），但**提交归属错了**，
+事后没人能从提交信息看出发生了什么。
 
-**核对方法**：`git show --numstat HEAD` 看一眼，如果 `tasks/README.md` 的 `+` 远多于你实际写的行数，说明卷进了别人的改动。
+**核对方法**：`git show --numstat HEAD` 看一眼，如果那个文件的 `+` 远多于你实际写的行数，
+说明卷进了别人的改动。
 
 事故：总控 `git add` 两张卡后执行不带路径的 `git commit`，把另一个会话在途的 438 行代码卷进了 doc 提交。暂存区是进程间共享的，你 `add` 完之后别人也可能 `add`，不带路径的 `commit` 会把他的一起交掉。
 
@@ -478,51 +481,33 @@ npx tsc --noEmit -p apps/desktop/tsconfig.json      # exit=0 才继续
 | UI 工作台 | `open-claude-ui/` Claude 桌面端逆向成果（CDS token 由 `gen-cds-tokens.mjs` 提取） | MIT |
 | 文档 | `genoffice/` 六原生编辑器（docs/sheets/slides/pdf/markdown/html） | Apache-2.0（`ee/` 企业条款不得拷入） |
 | 工作流 | `node-red/` 5.0.8 源码（原生画布 + runtime + registry + nodes） | Apache-2.0 |
-| 扩展 | **有两条路，别混**：① `ModuleHost` 手写 JSON 清单 —— **完整可用**；② `.vsix` —— **有安装入口但只支持一小类**（恰好 2 个 ZIP 条目 / 整包 ≤128 KiB / `main` ≤24 KiB / `require` 只放 `vscode`·`path`·受限 `fs`）。本机 24 个真实扩展里 12 个能过这些限制，**其中 9 个仍会因相对路径 `require` 崩掉** —— **「装进来」≠「能跑」**。`rainbow-csv`/`python`/`powershell` 在模块顶层 require `child_process`，那是**执行模型不匹配**，放宽任何限额都通向 `child_process`，我们不走那条路。**路线图目标是「尽可能让已有 VS Code 插件少改即可运行」，现状远未达到**。写法见 `docs/extensions/authoring-guide.md`；每道墙的理由见 `docs/planning/extension-vscode-compat.md` | 各自审查 |
+| 扩展 | **只有一套**：VS Code 扩展（`.vsix`）跑在 **Theia plugin host**（真子进程，`fork` 真实 `plugin-host.js`）。`ModuleHost` 手写 JSON 清单与旧 L1 路径**均已整体删除**（L1：2026-10-27 `85611357`；ModuleHost：同日）—— `extension-honesty-smoke` 断言两者都不该再以任何形式存在；`theia-palette-smoke` 断言 UI 只剩一个安装入口。**早期那组数字（2 个 ZIP 条目 / 整包 ≤128 KiB / `main` ≤24 KiB / `require` 白名单 / 「24 个里 12 过 9 崩」）全部作废，不要再引用。** 现有限额（`theiaHost/installedRegistry.ts` + `theiaVsixPreview.ts`）：整包 ≤64 MiB、条目 ≤3000、单条 ≤32 MiB、解压总量 ≤150 MiB、`extension/package.json` ≤256 KiB；**没有 require 白名单** —— Node 原生解析。**30/30 本机真实扩展激活成功**（`docs/planning/extension-real-matrix.md`）。**扩展调 Mcode 功能**走 `executeCommand("mcode.<方法>")`（`theiaHost/mcodeBridge.ts`，448 个方法 / 56 个域，与 agent `app_api_call` 同一条 `panelApiCall` 管线；内置命令 `mcode.file.*` 优先解析，扩展劫持不了）。「不做运行时隔离、允许 `child_process`」是明写设计（`theiaHost/host.ts:35`、`:38`）。**Theia 运行时路径只有一处判定**（`theiaHost/theiaRoot.ts`：`MCODE_THEIA_ROOT` → `<resources>/theia` → `vendor/theia`）；打包由 `build/stage-theia-resources.cjs` 装配最小运行集（约 10 MiB），`verify-theia-after-pack.cjs` 在产物里真的 require 一次。写法见 `docs/extensions/authoring-guide.md` | 各自审查 |
 
 L1 直接复用 → L2 薄宿主适配 → L3 可审计 fork → L4 最小自有逻辑（L4 必须附「已检索上游仍无对应能力」的源码证据）。三条线共享的硬边界：**不另造 Agent loop**、**不造第二套 Office/工作流/插件运行时**、**不引入默认 YOLO/跳过审批**。
 
-## 执行任务体系
+## 任务的规划与验收
 
-- **正式执行卡**在 `tasks/T<number>-*.md`，索引 `tasks/README.md`；旧卡归档在 `tasks/archive/legacy-2026-10-22/`，编号不复用、状态不作新验收。
-- 派活按**独占文件边界**拆，不按问题名称拆：同一文件同一时间只能有一个执行对话负责。开工先声明精确可写文件集，发现重叠即停。
-- 每张卡必须有 `## Required Skills`（只列相关的）、独占写入边界、验收判据、旧红→新绿要求、结果回写区。
-- **写回即完成**：执行对话把结果追加到卡末尾就算交付；有遗留另开新卡，不做「部分完成」的二次判定。
-- 规划票在 `.scratch/<feature-slug>/`（`spec.md` + `map.md` + `issues/`），它不替代 T 卡的执行验收。产品路线恢复稿在 `.scratch/mcode-product-roadmap/`。
+> **旧的「执行卡 + 总控派活」制度已废止（2026-10-26）。** `tasks/` 与 `audit-ledgers/`
+> 已删除，功能目标写在 **`docs/功能文档.md`**，进度直接看代码与套件。
+> 下面保留的是那套制度里**仍然成立的教训**，与制度本身无关。
 
-### 分工是硬的：卡只能由总控写（2026-10-23 用户当面纠正后加的）
+- **派活按独占文件边界拆，不按问题名称拆**：同一文件同一时间只能有一个执行者负责。
+  开工先声明精确可写文件集，发现重叠即停。
+- **规划票在 `.scratch/<feature-slug>/`**（`spec.md` + `map.md` + `issues/`）。
+  产品路线恢复稿在 `.scratch/mcode-product-roadmap/`。
+- **写回即完成**：把结果写进你被要求写的地方就算交付；有遗留单独记，不做「部分完成」的二次判定。
 
-**用户看不下去了才说的**：「为什么 a 对话要写任务卡啊，你是怎么是你分配任务，还还是这些子对话分配任务呀，我都被整糊涂了」
+### 动手前必查四件事（原「写卡前必查」——教训与卡制度无关）
 
-**我之前搞错了，具体错在：**
-
-- 让 A 去改 `tasks/T42-u1-silent-mode.md` —— **那是 E 正在做的卡，A 不该碰**；
-- 让 D 去改 `tasks/README.md` —— **索引是总控的职责**，结果 D 卷进了别人未提交的工作；
-- 让 D 改 13 张卡的 `Status` —— 本质还是让执行会话做总控的事。
-
-**现在的分工：**
-
-| 角色 | 做 | 不做 |
-|---|---|---|
-| **总控** | 写卡、派活、验收、维护 `tasks/README.md`、核实前提 | **不写代码** |
-| **执行会话** | 做卡上的活、写**自己那张卡**的回写区 | **不写别人的卡、不改索引、不派活** |
-
-**核实工作可以派**（D 的核查表就有价值），**但产出物由总控整合进卡里**。
-
-**判断方法**：如果某件事的产物会让「另一个执行会话读到错误信息」，那它就该由总控做——因为总控对全部卡的一致性负责。
-
-### 写卡前必查三件事（2026-10-23 五张卡被现实推翻后加的）
-
-**这一天里有五张卡的前提是错的，四张靠执行会话回头纠正。** 原因统一：写卡时没核现状。
-
-**一、这个问题还没被修吗？**
+**一、这件事还没被做过吗？**
 
 ```bash
 git log --oneline -8 -- <目标文件>      # 看最近有没有相关提交
 grep -n "<关键符号>" <目标文件>          # 看代码现在长什么样
 ```
 
-**实例**：T44 写「`genoffice-source-smoke` 原地篡改真实工作树」，而 T31 四小时前已改成克隆到副本并加了断言。**卡描述的是修复前的代码，白开一张。**
+**实例**：一份计划写「`genoffice-source-smoke` 原地篡改真实工作树」，而该问题四小时前
+已经修完（改成克隆到副本并加了断言）。**计划描述的是修复前的代码，白做一轮。**
 
 **二、这个符号有几个调用点？**
 
@@ -530,19 +515,23 @@ grep -n "<关键符号>" <目标文件>          # 看代码现在长什么样
 grep -rn "<符号名>" apps/desktop/src/ | wc -l
 ```
 
-**实例**：T40 写「一行修复，注入点 `ipc/index.ts:227`」，实际有**两处**注入（`registerGenofficeViewAiIpc` 和 `setDocsAiPorts`），只包一处等于没修。
+**实例**：计划写「一行修复，注入点 `ipc/index.ts:227`」，实际有**两处**注入
+（`registerGenofficeViewAiIpc` 和 `setDocsAiPorts`），只包一处等于没修。
 
 **三、验收判据的方法写了吗？**
 
 **「断言打在 X 上」不是判据，是愿望。** 必须写怎么打、参考哪个套件的哪一段。
 
-**实例**：T40 写「断言必须打在装配路径上」，但没写方法，最后是执行会话自己想出「用未包装的 ports 做对照组」。**最难的判断留给了执行者猜。**
+**实例**：计划写「断言必须打在装配路径上」但没写方法，执行者最后自己想出「用未包装的
+ports 做对照组」。**最难的判断被留给了执行者猜。**
 
-**正面样板**（照这个写）：`apps/desktop/scripts/t40-renderer-registry-smoke/main.ts` 的 `★ 对照组:未包装的 ports 中途查不到绑定(病灶复现)` —— **对照组证明断言分得清修没修**。没有对照组的套件，全绿也可能什么都没验（T24 的 59/59 就是）。
+**正面样板**：`apps/desktop/scripts/t40-renderer-registry-smoke/main.ts` 的
+`★ 对照组:未包装的 ports 中途查不到绑定(病灶复现)` —— **对照组证明断言分得清修没修**。
+没有对照组的套件，全绿也可能什么都没验。
 
-**四、卡里给的代码示例和事实断言，写卡人自己跑过吗？**
+**四、计划里给的代码示例和事实断言，自己跑过吗？**
 
-**2026-10-24 我（总控）在 T108 卡上给了一段「照这个写」的注释，三条事实全错**，D 核对后逐条纠正：
+**2026-10-24 我在一份计划里给了一段「照这个写」的注释，三条事实全错**：
 
 | 我写的 | 实际 |
 |---|---|
@@ -550,131 +539,13 @@ grep -rn "<符号名>" apps/desktop/src/ | wc -l
 | 「对比 `manifest.json` 的 `packageCount` 与 `node_modules` 目录数」 | **同一个值，永远相等** —— 一个恒等式伪装成判据 |
 | 「当前 1064」 | 实测 **1063** |
 
-**第 2 条最坏**：它看起来是一条判断方法，实际区分不了任何东西。**下一个人照它做，永远得不出结论，而且会以为「我核过了」。**
+**第 2 条最坏**：它看起来是一条判断方法，实际区分不了任何东西。**下一个人照它做，
+永远得不出结论，而且会以为「我核过了」。**
 
-**D 的话**：
+**核对它们只花了四条命令。** 所以「绝对说法要么可验要么别写」，验证成本其实很低。
 
-> **我核对它们只花了四条命令。** 所以「注释里的绝对说法要么可验要么别写」，验证成本其实很低。
-
-**所以卡里凡是出现①代码示例②数字③「文件里有 X / 没有 Y」这类事实断言，写卡人必须自己跑一遍。** 跑的成本很低 —— **而不跑的代价是，卡从一个规划工具变成一个陷阱。**
-
-**这条和第三条的区别**：第三条说「判据的方法要写清」，这条说「**你写的方法本身得是对的**」。**给一个错的方法，比不给方法更坏。**
-
-**六、任何断言的价值，都不超过它取证方法的正确性。**
-
-D 会话在同一天里先说了「否定断言比肯定断言耐放」，随后自己推翻：
-
-> **这条规律本身有前提**：否定断言只在**搜索范围正确**时才成立。更准确的说法是：**任何断言的价值都不超过它取证方法的正确性。**
-
-**而这条规律也适用于「变异验证」本身**，有一个特别隐蔽的形态（2026-10-23，E 踩到两次）：
-
-变异脚本里写 `assert s.count(old) == 1`，而 `old` 已被更早的一次编辑替换掉，`count == 0` → **脚本在写文件之前就抛 `AssertionError` 退出**。此时**文件根本没被改、被测套件也从没跑起来**，但人会把它误读成「跑过了、证据被吞」。
-
-**两种形态要分清**：一种是「改了但没生效」（跑出 0 条红），另一种是「根本没改、也没跑」（连红都没有）。**判断方法**：变异后先 `git diff <文件>` 看改动在不在，再跑套件；或者脚本里把 `assert` 换成显式 `if count != 1: sys.exit(2)`，让失败可区分。
-
-实例（同一天）：
-
-- 「`electron-u1` 骨架 grep 不到任何套件引用」——搜索范围只写了 `scripts/*/main.*`，而 U1 套件用 `journeys/`、`run.mjs`、`editor-flow.ts`。全目录重搜：**19 处引用、5 套套件**；
-- 「`policyFor("framework.list")` 返回 read」——那个名字当时根本不存在，`read` 是兜底逻辑对**任何**未注册名字的答复（`nonexistent.list` 也一样）。**一个从不说不的分类器，它的肯定不是证据**；
-- 「T7 六条 6/6 全绿」——那是在 HEAD 的 `show:true` 形态下测的。工作区已被改成 `show:false`，**旧绿不是新形态的证据**。
-
-**八、变异本身有九种失效形态，每一种都会让你以为「验证过了」。**
-
-2026-10-23 一天之内，五个不同的会话各踩了一种（1–5）；第 6 种在 T65/T75；第 7 种是 2026-10-24 G 在 T122 上踩到的。
-
-| # | 形态 | 现象 | 判断方法 |
-|---|---|---|---|
-| 1 | **脚本在写文件前就退出** | `assert s.count(old)==1` 而 `old` 已被替换 → 文件没改、套件没跑，但人读成「跑过了、证据被吞」 | 变异后先 `git diff` 看改动在不在 |
-| 2 | **删得干净才红** | 整行删除 → 红；**注释掉 → 仍绿**。判别力来自「删得够干净」，不是「断言本身强」 | 必须做**注释掉**这个形态 |
-| 3 | **改坏了程序，不是改坏了被验的东西** | 改被 import 的实现 → bundle 崩了。那是运行失败，不是断言红 | 断言读源码文本时，**变异也必须是文本层面的** |
-| 4 | **同一条断言里还有别的条件在兜底** | 把 `.some(...)` 换成 `true` 仍绿，因为同一行的 `x.ok && count > 0` 还在验 | 变异要撤**证据源**，不是改表达式；撤完问「还有没有别的条件兜底」 |
-| 5 | **状态污染：上一轮变异没撤销** | 脚本异常退出前已把源文件写成变异态，**下一轮从脏状态出发**，累积删掉了真实的调用行 | 每次从 `pristine` 重写；还原后 `cmp` 逐字节；显式检查 `rc == 1` 而不是 `!= 0` |
-
-**第 5 种的一个具体成因（2026-10-24 F012 实测，**它把一个文件写成另一个文件的内容**）：**
-
-```bash
-cp "$f" "/tmp/f012-$(basename $f).bak"     # ← 用 basename 命名备份
-```
-
-**而这个仓库里 `modules.ts` 有两份：**
-- `apps/desktop/src/main/ipc/modules.ts`
-- `packages/contracts/src/modules.ts`
-
-**两个备份都叫 `/tmp/f012-modules.ts.bak`，互相覆盖。** 还原时把 contracts 那份（380 行）**整个写进了 ipc 文件**（原本 109 行）。
-
-**发现方式是它自己的机器特征**，值得记：
-
-> 基线本该 21/21，实际 **19/21**，而且**每条变异都带出同样两条 FAIL** —— 那是「还原本身坏了」的机器特征，不是任何变异的效果。
-
-**判断方法**：**变异跑完之后，如果不止一条变异带出相同的一批 FAIL，先怀疑还原，不要怀疑被测代码。**
-
-**修法**：备份路径里保留**目录结构**，不要只用 basename：
-
-```bash
-# ❌ 跨目录撞名
-cp "$f" "/tmp/bak/$(basename $f)"
-# ✅ 保留路径
-cp "$f" "/tmp/bak/${f//\//__}"
-# ✅ 或者干脆 git stash / git restore
-```
-| 6 | **样本标签错了** | 判据是对的，**验的对象不是它以为的那个**。E 拿一个「卡片从 452 缩到 300 高」的样本当「空柱子」，而真正的空柱子是「固定卡片内文字缩水」 | 校准用的坏样本必须是**真实产生的坏产出**，不能是自己随手造的近似品 |
-| 7 | **判据被条件包着，条件不成立时整段静默跳过**（2026-10-24 G） | 变异跑出 **3 条红，预期 6 条**。差的 3 条不是「没红」，是**从来没跑**：整段包在 `if (clamp) { ... }` 里，clamp 解析失败就跳过 | **跳过的断言和通过的断言在输出里长得一样。** 条件缺失时必须**逐条显式 FAIL**，不能 `if (...) { ... }` 包住 |
-| 8 | **被测代码的分支条件恒假，分支一次没进**（2026-10-24 H，T123） | 写 `CREATE_DOCUMENT_TOOLS.has(b.name)`，而 `b.name` 永远是 `"document_tool_call"`，create 与否在 **`b.input.tool`** 里。**条件恒假，新分支一次没跑** —— 但套件正控（`Write`）是绿的，走另一条路 | **有绿 ≠ 新代码跑了。** 判断信号是**新分支自己的内部状态**（H 用 `inflight: 0` 发现 `recordPre` 连调都没调），不是 `freeze()` 返回空 |
-| 9 | **修了判据，但只用「它本来就会抓的那个形状」验修法**（2026-10-24 M，T128） | 判据从 `bg-surface-hover` 放宽成 `\bg-[a-z]`，验证时只用了 `bg-accent/20` —— **而那正是促使你放宽的那个样本**。等于「用一个已知答案测新判据」。真正验它的是**手工构造一个判据从没见过的形状**（`bg-surface-muted` 的选中态分支），精确红 1 条 | **用修法没见过的东西验修法。** 否则测的是「我记得的那个例子」，不是「判据变宽了没有」 |
-
-**九种共同的教训**：变异测试证明的是「这条断言会红」，不是「它红得对」。**红的原因必须和你要证明的东西是同一个。**
-
-**第 9 种的解药和前八种不同**：前八种都在问「红得对不对」，第 9 种问的是「**修完之后，判据的边界真的移动了吗**」。**用导致你修它的那个实例去验，永远测不出来** —— 因为那个实例在修之前就该红。
-
-**M 的原话**：
-
-> 原来那版判据也会通过这个测试 —— **因为它什么都能通过。**
-
-**「什么都能通过的判据」和「通过了的判据」在输出里一模一样。**
-
-**第 7 和第 8 是一对，方向相反：**
-
-| # | 谁没跑 | 输出上看起来 |
-|---|---|---|
-| 7 | **断言**没跑 | 那几条**不出现** |
-| 8 | **被测代码**没跑 | **一条不少，全绿** |
-
-**第 8 比第 7 更难发现**，因为第 7 至少「少了 3 条」是个可见的差；第 8 是数量完全对、全绿。**唯一的线索是新分支的内部行为没人观察过** —— 所以要给新分支加一条只有它才会满足的断言（H 的做法：断言 `document_tool_call` 不在 `FILE_MUTATING_TOOLS`，这条只有走对分支才成立）。
-
-**还有一条同源的工具问题**（T124 卡里）：**套件抓不住「清单漏了一项」** —— 判据的输入就是那张清单本身，它不可能知道自己缺了什么。这种只能靠注释记成「已知的账」，并写清理由、后果、出口。
-
-**发现方法**：**先写预期红几条**，而且**正控与负控分开列**。
-
-```
-正控（该红）: 5
-负控（该绿）: 1
-```
-
-H 在 T123 写了「预期 5 实际 4」，多的那一条是负控 —— **它不是判据弱，是记账方式错了**。混在一起时，「少红一条」看起来永远像判据不够强。
-
-**第 6 种和前面五种不同**：前五种是「执行过程出了问题」，第 6 种是**执行完全正确、判据也确实在它自己的目标上工作**——只是那个目标不是要抓的东西。
-
-E 的原话：
-
-> 用一个标签错误的样本去证明判据有效——这比「判据判反」严重，因为**判据在自己的目标上确实工作**，只是目标选错了。
-
-具体落到 T65/T75：整页级留白判据量「所有非满版元素的底边 / 画布高」，它抓「内容只占上半页」是**对的**；但「卡片内下半截空着」时卡片自己撑住了底边，ratio 照样 0.87。**两种丑法，判据只覆盖一种，而样本标错了，所以看起来两种都覆盖了。**
-
-**还有一条同源的：合并「反向断言」时，0 红可能是正确行为。** F 在 T68 做过完整示范——把目标代码加回去必须红（正向），把目标**以字符串形式**加回去必须**不红**（字符串不是代码）。后者是证明判据**不会误报**的唯一方式。**看到 0 红先问：是判据失效，还是这次本来就不该红？** 两种都要有对照组才能区分。
-
-**所以看到任何断言（自己写的、卡上的、别人报的），先问：它是在什么范围、什么形态下取的证？** 范围变了、形态变了，那份证据就作废了。
-
-**九、并行会话下，跑套件前先看目标文件的 `mtime`。**
-
-D 在 2026-10-23 撞到：跑 `provider-context-smoke` 报 `ReferenceError: parseSource is not defined`，一度以为套件坏了。查时间戳发现 `main.ts` 改于 `23:10:21`，而它跑于 `23:11` —— **它读到了另一个会话正在写的中途状态**。第二次跑 74/74 通过。
-
-这比「打包期失败 ≠ 被测对象失败」更隐蔽：那个是**语法错**（`X [ERROR]` / `Unterminated string literal`），一眼能认；这个是**时序**——文件语法完全正确，只是还没写完。
-
-**判断方法**：跑套件前 `ls -l --time-style=full-iso <目标文件>`，最近 1–2 分钟内改过就先等一下，或者先问一句「你还在改吗」。
-
-**十、生成代码时不要依赖转义层数。**
-
-> **⚠️ 2026-10-23 升级**：原来的写法是「生成代码时，转义层数要单独验一次」——**那是个提醒，不是个做法，而且没起作用。**
+**凡是出现①代码示例②数字③「文件里有 X / 没有 Y」这类事实断言，必须自己跑一遍。**
+不跑的代价是，一份计划从规划工具变成一个陷阱。
 
 ## 它怎么失败的
 
@@ -751,7 +622,7 @@ Python 里还可以用原始字符串 `r'...'`，但**注意它不能以反斜�
 **Office 总控在 O6 卡里写正则 `/\bMcode\//`，落盘变成了 `/\x08Mcode\//`（真的退格字节）。**
 
 ```
-$ cat -A tasks/office/O6-reshell-five-editors.md | sed -n '70p'
+$ cat -A <那份刚落盘的任务书> | sed -n '70p'
 if (/^HMcode\//.test(navigator.userAgent))     ← ^H 就是退格
 ```
 
@@ -821,7 +692,7 @@ for f in sys.argv[1:]:
 python -c "
 import glob, io, re
 bad = re.compile(rb'[\x00-\x08\x0e-\x1f]')
-for f in glob.glob('tasks/office/*.md'):
+for f in glob.glob('tasks/*.md'):      # 改成你实际写的那批文件
     m = bad.search(io.open(f, 'rb').read())
     if m: print(f, 'byte=0x%02x' % m.group()[0])
 "
@@ -1320,7 +1191,7 @@ C 自己的复述：
 2026-10-23 总控在 `dataRoot.ts` 写下：
 
 ```ts
-// 修复方向见 tasks/T90（非 ASCII 时降级到手写递归）。
+// 修复方向见 nodejs/node#54476。
 ```
 
 **三小时后，T90 定的是 `filter: () => true`，不是手写递归。**
@@ -1340,7 +1211,7 @@ C 自己的复述：
 // ✅ 写条件 + 出处
 // Node 22 on Windows crashes in cpSync's native fast path when the path has
 // non-ASCII characters (nodejs/node#54476, #63970).
-// 修法见 tasks/T90。
+// 修法见 nodejs/node#54476。
 ```
 
 **为什么「出处」比「方案」耐久**：
@@ -1428,7 +1299,7 @@ Node issue **`#61878`** 报告的就是这个静默不复制，**它给的临时
 
 **样本**：`t88` 的 `copyLicenseTree` 就是「非 ASCII 源 + 目标已存在」，实测 `ESRCH`；把目标换成全新目录，**同一份源复制成功**。
 
-**这条的修法见 `tasks/T107`。**
+**修法见 `nodejs/node#61878`（cpSync 在非 ASCII 路径上的已知缺陷）。**
 
 ### 同类：探针自身的对照
 
@@ -3443,13 +3314,17 @@ navigator.userAgent.includes("Mcode")
 
 ## Agent skills
 
-50 个 skill 装在本机 `.claude/skills/`（该目录被 gitignore，不进版本库）。名字、来源、用途、能否由模型自行调用的完整清单在 **`docs/agents/installed-skills.md`**。新建 T 卡时 `## Required Skills` 只从那份清单选。
+50 个 skill 装在本机 `.claude/skills/`（该目录被 gitignore，不进版本库）。名字、来源、用途、能否由模型自行调用的完整清单在 **`docs/agents/installed-skills.md`**。
 
 ### Issue tracker
 
 Engineering Skill specs and planning tickets live as local Markdown files under `.scratch/<feature-slug>/`. Use one `spec.md` per feature and one file per ticket under `issues/`. See `docs/agents/issue-tracker.md`.
 
-The authoritative execution ledger is `tasks/README.md`. New execution cards start at `tasks/T0-*.md`; legacy cards are preserved unchanged under `tasks/archive/legacy-2026-10-22/` with an SHA-256 inventory. Do not reuse legacy T numbers or treat archived status as fresh acceptance. Formal MC/ARC/UXG defect and architecture IDs in `audit-ledgers/` remain unchanged. Every new T task card must include a `## Required Skills` section listing only relevant skills and their purpose; do not bulk-add all installed skills or rewrite archived cards.
+**`docs/功能文档.md` is the single source of truth for what the product must do.** One numbered entry per capability (`CHAT-01`, `EDIT-04`, …). When a doc and the code disagree, **the functional doc wins on "what it should do"; the code wins on "what it currently does"** — and that gap is exactly what you fix. Other files under `docs/planning/` explain *why* a decision was made and *where the upstream source is*; they are not the spec.
+
+The functional doc records **goals only, never verification status** — do not add "verified / not verified" marks to it. Whether something actually works is answered by running the code and the suites, not by a claim in a document.
+
+The old execution-card system (`tasks/`) and the audit ledgers (`audit-ledgers/`) were **deleted on 2026-10-26**. Do not recreate them, and do not look for status there: progress is whatever the code and the smoke suites do today. Planning tickets stay under `.scratch/<feature-slug>/` (`spec.md` + `map.md` + `issues/`).
 
 ### Triage labels
 

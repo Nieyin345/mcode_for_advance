@@ -1,5 +1,28 @@
 # ARC-006 / MC-035/036 — VS Code extension API compatibility (scoped L1)
 
+## 🟢 现状（2026-10-27 覆写本文件的全部结论）
+
+> **本文档正文是 2026-10-20 的 L1 原型记录，其中每一个数字和每一条架构判断现在都是错的。**
+> 留着它只作历史追溯。**要了解扩展现在怎么工作，读 `docs/extensions/authoring-guide.md`。**
+
+**现在的实现：**
+
+| 项 | 当时的 L1 | 现在 |
+|---|---|---|
+| 扩展系统 | `ModuleHost`（手写 JSON 清单）+ L1 VSIX 薄壳，两套 | **只有一套**：VS Code 扩展，跑在 Theia plugin host 真子进程 |
+| L1 代码 | `VscodeL1Bridge` / `readMinimalVsix` | **已整体删除**（`85611357`）；`extension-honesty-smoke` 断言它不该以任何形式存在 |
+| 包大小限额 | 2 个 ZIP 条目 / 128 KiB / `main` ≤24 KiB | 整包 64 MiB / 3000 条目 / 单条 32 MiB / 解压总量 150 MiB |
+| `require` | 白名单（只有 `vscode` / `path` / 受限 `fs`） | **没有白名单**，Node 原生解析 |
+| 「24 个里 12 个能过、9 个崩」 | 当时实测 | **作废**。成因（相对路径 require 被判死）已消失。真实现状见 `extension-real-matrix.md`（本机 33 个扩展，30 个激活成功） |
+| 扩展调 Mcode 功能 | 无 | `executeCommand("mcode.<方法>")`，448 个方法 / 56 个域，与 agent 同一条权限管线 |
+
+**为什么删 L1**：用户裁决「只要一个扩展系统」，且手写清单能做的事 VS Code 协议都能做，
+而后者能直接吃现成生态。留着两套执行器是明令禁止的（见 `CLAUDE.md`）。
+
+---
+
+# 以下为 2026-10-20 的历史记录（已作废，仅供追溯）
+
 > 2026-10-20 · **设计 D + 源码核对 E2 + 本地隔离 E1**，不是 ARC-006 完成声明。
 > 首要规则：**ModuleHost 是唯一的权限、模块/能力注册、执行和撤权事实源**。Open VSX 仅为未来元数据与 VSIX 来源；本切片无网络下载、无自造完整插件运行时。
 
@@ -111,7 +134,7 @@ L2 与 L3 可随真实宿主接线/上游复用重新评估；在此之前 manif
 
 **要让真实扩展能跑，得先做运行时**（或明确接受「装得进但跑不了」并如实告知）。在那之前，这道限额是一句诚实的「这里还不行」。
 
-**查证记录**（`tasks/F/F003`）：`68a7121c`（限制最初引入）的提交信息为空；§4 从未写过理由；`tasks/archive/` 无相关记录。**结论：4096 / 24576 都是 L1 原型阶段随手定的，不是推导出来的。** 所以放宽 `package.json` 不是「违反设计」，是「补上一个从未有过的决定」。
+**查证记录**：`68a7121c`（限制最初引入）的提交信息为空；§4 从未写过理由；仓库里也查不到任何相关记录。**结论：4096 / 24576 都是 L1 原型阶段随手定的，不是推导出来的。** 所以放宽 `package.json` 不是「违反设计」，是「补上一个从未有过的决定」。
 
 **局限与缺口**：`require("vscode")` 在受控执行进程里只有这一小部分 API，激活仅按本次调用重做，`ExtensionContext.subscriptions` 没有长驻 disposal 管理；`statusBarItem()` 是本轮命令完成的快照，并非真正 VS Code API 对象的持续生命期。用户文件只经一次 `ModuleResource` 授权；用户安装/逐次审批取决于实际业务装配（本测试为可信宿主注入测试端口），不是对任意插件免审批的入口。
 
@@ -156,7 +179,7 @@ Theia 1.76.0 的 `@theia/plugin-ext-vscode`（**包装层**）`dependencies` 字
 > 不引入 Theia 编辑器」这个想法从依赖表看就不成立。**
 >
 > 这条数字是 `npm view @theia/plugin-ext@1.76.0 dependencies --json` 实测的，
-> 不是估的。见 `tasks/F/F017-theia-poc.md`（正在验证「接进来到底会怎样」）。
+> 不是估的（逐个扩展实测的）。
 Theia 官方 [Plugin API 说明](https://eclipse-theia.github.io/theia/docs/next/documents/Plugin-API.html)
 明确：`plugin-vscode-init.ts` 是将已经由 `plugin-ext` 提供的 Theia API
 转给 `vscode` 模块，再覆盖少数差异；真实 API/进程/RPC 并不在 init 文件里。
