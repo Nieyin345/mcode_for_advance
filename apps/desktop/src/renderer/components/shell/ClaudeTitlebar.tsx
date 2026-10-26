@@ -68,10 +68,14 @@ export function ClaudeTitlebar({
         className="flex items-center gap-2 px-3"
         style={{ height: TITLEBAR_H }}
       >
-        {!sidebarOpen && onToggleSidebar && (
+        {/* 【UI 重建】折叠按钮**始终显示**（Claude 顶栏一直有它）。
+            原来只在侧栏关闭时出现 —— 那样侧栏开着时标题会紧贴左边缘，
+            而折叠入口又只在 ⋯ 菜单里，用户得找两次。 */}
+        {onToggleSidebar && (
           <button
             type="button"
-            aria-label="展开侧栏"
+            aria-label={sidebarOpen ? "折叠侧栏" : "展开侧栏"}
+            aria-pressed={sidebarOpen}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)]"
             onClick={onToggleSidebar}
           >
@@ -106,7 +110,7 @@ export function ClaudeTitlebar({
                 <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
                 <div
                   role="menu"
-                  className="absolute right-0 top-8 z-50 min-w-[180px] rounded-[var(--m-radius-md)] border border-[var(--m-border)] bg-[var(--m-surface-3)] py-1 shadow-[var(--m-shadow-popover)]"
+                  className="absolute right-0 top-8 z-50 min-w-[180px] rounded-[var(--radius-md)] border border-[var(--m-border)] bg-[var(--m-surface-3)] py-1 shadow-[var(--m-shadow-popover)]"
                 >
                   {menuItems.map((item) => (
                     <button

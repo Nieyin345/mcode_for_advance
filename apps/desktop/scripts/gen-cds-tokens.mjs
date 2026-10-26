@@ -134,10 +134,13 @@ function isAmbientSelector(sel) {
 function parseTokens(css) {
   const all = new Map();      // name -> [{ sel, at, value }]
   for (const [sel, body, at] of iterRules(css)) {
-    // 值必须以 `;` 结尾。用 `[^;}]+` 而不是 `[^;]+` —— 后者在**最后一条声明
-    // 没有分号**时会越过 `}` 吞掉后面整段 CSS（实测把 `.dark` 块一起吃进来，
-    // 生成物里出现 `}}@media…`，postcss 报 Unexpected }）。
-    const re = /(--cds-[a-z0-9-]+)\s*:\s*([^;}]+)/g;
+    /* 收两类名字：
+     *  - `--cds-*`（Claude 的主要命名空间）
+     *  - **不带前缀的 `--radius-*` / `--shadow-*`**：Claude 的圆角/阴影档位
+     *    用的是裸名（实测 `--radius-sm` / `--radius-md` 存在，`--cds-radius-sm`
+     *    不存在）。不收它们会让圆角体系整个缺档。
+     * 值必须以 `;` 结尾（`[^;}]+`）—— 见下面 parseTokens 的说明。 */
+    const re = /(--(?:cds-[a-z0-9-]+|radius-[a-z0-9-]+))\s*:\s*([^;}]+)/g;
     let m;
     while ((m = re.exec(body)) !== null) {
       const name = m[1];
@@ -225,23 +228,36 @@ const VAR_MAP = {
   "--cds-fill-accent": "rgb(var(--accent))",
   "--cds-bg-accent": "rgb(var(--accent) / 0.12)",
 };
-function remapVars(value) {
-  return value
+function remapVars(value, depth = 0) {
+  if (depth > 6) return value; // 防御：自引用/超深嵌套
+  const once = value
     .replace(/var\((--cds-[a-z0-9-]+)(?:,\s*([^)]*))?\)/g, (_m, name, fallback) => {
       const mapped = VAR_MAP[name];
       if (mapped !== undefined) return mapped;
       // rem-scale / spacing 等基准量已经是 Mcode 自己的变量，改个名指过去。
       if (name === "--cds-rem-scale") return "var(--m-rem-scale)";
-      return fallback !== undefined ? fallback : "initial";
+      /* 未映射时的兜底**不能是 `initial`**：`initial` 在 `box-shadow` /
+       * `hsl(from …)` 里不是合法分量，会让整条声明失效（实测 7 处，
+       * 包括 --focus-shadow —— 那是可达性问题）。
+       * 用 `transparent` 更安全：它在颜色位置总是合法的，
+       * 阴影/描边退化成「看不见」而不是「整条规则被丢弃」。 */
+      return fallback !== undefined ? fallback : "transparent";
     })
     // Tailwind v4 风格的 `--color-<系>-<档>`（Claude 部分规则用这套）。
     // 不映射会让整条 color-mix 声明静默失效 —— 与 --edge 三元组那个坑同型。
     .replace(/var\(--color-([a-z]+)-(\d+)\)/g, (_m, hue, step) => `rgb(var(--m-${hue}-${step}))`);
+  /* **必须递归**：Claude 大量使用 `var(--a, var(--b))` 这种嵌套兜底
+   * （实测 `--cds-ring-color: var(--cds-border-line,var(--cds-border))`）。
+   * 只替换一层时，内层 `var(--cds-border)` 会原样留在生成物里 —— 而 Mcode
+   * 不定义任何 `--cds-*`，那条声明在浏览器里静默失效。 */
+  return once === value ? once : remapVars(once, depth + 1);
 }
 
 const geometry = new Map();
 for (const [name, entries] of tokens) {
-  if (!GEOMETRY_HINT.test(name)) continue;
+  // 裸名 `--radius-*` 一律算几何（Claude 的圆角档位就是这么命名的）。
+  const isBareRadius = /^--radius-/.test(name);
+  if (!isBareRadius && !GEOMETRY_HINT.test(name)) continue;
   const v = remapVars(defaultValue(entries));
   if (v.length === 0 || v.length > 400) continue;
   if (/^#[0-9a-fA-F]{3,8}$/.test(v)) continue; // 纯色值不算几何
@@ -434,6 +450,28 @@ if (compactTokens.size > 0) {
 }
 
 const output = lines.join("\n");
+
+/* 【硬检查】生成物里**不允许残留 `var(--cds-*)`**。
+ *
+ * Mcode 不定义任何一个 `--cds-*`（它们只存在于 Claude 的产物里）。残留一个
+ * 就意味着那条声明在浏览器里**静默失效** —— 阴影/边框直接消失，而构建、
+ * 类型检查、截图都不会报错。2026-10-27 实测 `--m-ring-color: var(--cds-border)`
+ * 就是这么漏出来的。
+ *
+ * 与其逐条追「哪个 token 没进映射」，不如在这里一次性挡住：**宁可让生成脚本
+ * 失败，也不要产出一份「看起来正常但某些声明是空的」样式表**。 */
+{
+  const leftovers = [...output.matchAll(/var\(--cds-[a-z0-9-]+[^)]*\)/g)].map((m) => m[0]);
+  if (leftovers.length > 0) {
+    const uniq = [...new Set(leftovers)];
+    console.error(
+      `生成物里还有 ${leftovers.length} 处未解析的上游变量（${uniq.length} 个不同）：\n  ` +
+        uniq.slice(0, 12).join("\n  "),
+    );
+    console.error("\n在 VAR_MAP 里补上映射，或在 GEOMETRY_HINT / SEMANTIC_PREFIX 里收进对应分组。");
+    process.exit(1);
+  }
+}
 if (process.argv.includes("--check")) {
   if (!existsSync(outPath)) {
     console.error(`生成物不存在：${outPath}`);
