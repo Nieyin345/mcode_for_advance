@@ -36,7 +36,7 @@ import {
 import { CustomTabView } from "@renderer/components/customUi/CustomTabView.js";
 import { useWorkspaceTarget } from "@renderer/components/customUi/useWorkspaceTarget.js";
 import { nextRailFocusIndex } from "./panelRailNavigation.js";
-import { railScrollLeft, revealRailItemWithin } from "./panelRailScroll.js";
+import { revealRailItemWithin } from "./panelRailScroll.js";
 import { CACHED_BUILTIN_RIGHT_TABS, prunePanelIds, rememberPanelId, rememberRightTab, shouldMountCachedBuiltin } from "./rightPanelKeepAlive.js";
 import { PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, paneDockFromKeyboard } from "./paneDock.js";
 
@@ -185,21 +185,34 @@ export function RightPanel() {
   const badgeOf = (id: BuiltinTabId): number =>
     id === "browser" ? browserTabCount : id === "flow" ? runningNodeCount : 0;
 
-  // When a command or keyboard shortcut switches to a tab currently scrolled
-  // out of the rail, reveal it INSIDE the rail's scroll viewport. Avoid
-  // scrollIntoView here: it would also scroll parent panels/chat vertically.
+  // Reveal the selected action INSIDE the rail, never via scrollIntoView:
+  // scrolling an ancestor could shift the chat composer or editor. Selection
+  // changes are not enough: docking, resizing, or opening another pane may
+  // shrink the rail while its selected action remains off-screen.
   useEffect(() => {
-    if (pinnedDoc || pinnedFlow) return;
-    const id = requestAnimationFrame(() => {
-      const track = railTrackRef.current;
-      const selected = track?.querySelector<HTMLElement>('[data-pane-rail-button][aria-pressed="true"]');
-      if (!track || !selected) return;
-      const viewport = track.getBoundingClientRect();
-      const item = selected.getBoundingClientRect();
-      const next = railScrollLeft(track.scrollLeft, viewport.left, viewport.right, item.left, item.right);
-      if (Math.abs(next - track.scrollLeft) > 1) track.scrollTo({ left: next, behavior: "auto" });
-    });
-    return () => cancelAnimationFrame(id);
+    const track = railTrackRef.current;
+    if (!track || pinnedDoc || pinnedFlow) return;
+    let frame = 0;
+    const reveal = () => {
+      const selected = track.querySelector<HTMLElement>(
+        '[data-pane-rail-button][aria-pressed="true"]',
+      );
+      if (selected) revealRailItemWithin(track, selected);
+    };
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(reveal);
+    };
+    schedule();
+    // ResizeObserver watches only this small rail viewport. No window-wide
+    // resize listener and no per-button observers; cleanup runs on unmount.
+    const observer = typeof ResizeObserver === "undefined"
+      ? null : new ResizeObserver(schedule);
+    observer?.observe(track);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+    };
   }, [tab, activeCustomId, moduleVisible, pinnedDoc, pinnedFlow, entries.length]);
 
   const titleOf = (id: BuiltinTabId, fallback: string): string => {

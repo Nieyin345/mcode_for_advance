@@ -241,6 +241,55 @@ export async function runPaneProbe(dir:string):Promise<boolean>{
       assert(state.focusedIndex===1,'ArrowRight did not move keyboard focus '+JSON.stringify(state));
       assert(state.scrollMethod,'rail no longer has its own scroll surface');
     });
+    // Resize the ACTUAL right-rail flex track after a button was selected.
+    // The selected icon can become hidden when the right pane narrows even
+    // when the current tab itself has not changed. Only the local track should
+    // move; no focus theft and no editor/terminal remount.
+    const railResizeReady=await js<boolean>(`(() => {
+      const rail=document.querySelector('[data-cds-aside] [data-pane-rail-track]');
+      const selected=rail?.querySelector('button[data-pane-rail-button][aria-pressed="true"]');
+      const cell=selected?.parentElement;
+      if (!rail || !selected || !cell) return false;
+      // Don't activate other business panels: the isolated fixture has no
+      // full Git/workflow IPC. Indent the ALREADY-selected icon to exercise
+      // precisely a width-change observer without changing product state.
+      cell.style.marginLeft='160px';
+      rail.style.flex='0 0 46px';
+      rail.style.width='46px';
+      rail.scrollLeft=0;
+      window.__railResizeFocus=document.activeElement;
+      window.__railMainScroll=document.querySelector('[data-cds-center]')?.scrollTop??0;
+      return true;
+    })()`);
+    await delay(350);
+    await check('NATIVE_RAIL_RESIZE_REVEALS_SELECTION',async()=>{
+      assert(railResizeReady,'could not create a real overflowing rail in Electron');
+      const measure=await js<{active:boolean;scrollLeft:number;visible:boolean;focusSame:boolean;mainScrollSame:boolean;ptySame:boolean;monacoSame:boolean}>(`(() => {
+        const rail=document.querySelector('[data-cds-aside] [data-pane-rail-track]');
+        const selected=rail?.querySelector('button[data-pane-rail-button][aria-pressed="true"]');
+        const r=rail?.getBoundingClientRect(),a=selected?.getBoundingClientRect();
+        return {
+          active:!!selected,scrollLeft:rail?.scrollLeft??0,
+          visible:!!r&&!!a&&a.left>=r.left-2&&a.right<=r.right+2,
+          focusSame:document.activeElement===window.__railResizeFocus,
+          mainScrollSame:(document.querySelector('[data-cds-center]')?.scrollTop??0)===window.__railMainScroll,
+          ptySame:window.__ptyHost===document.querySelector('[data-terminal-session]'),
+          monacoSame:window.__editorNode===document.querySelector('.monaco-editor')
+        };
+      })()`);
+      assert(measure.active&&measure.scrollLeft>0&&measure.visible,
+        'ResizeObserver failed to reveal selected icon in narrow rail '+JSON.stringify(measure));
+      assert(measure.focusSame&&measure.mainScrollSame&&measure.ptySame&&measure.monacoSame,
+        'rail resize stole focus/scrolled parent/remounted active content '+JSON.stringify(measure));
+    });
+    await js(`(() => {
+      const rail=document.querySelector('[data-cds-aside] [data-pane-rail-track]');
+      if(rail){
+        rail.style.flex='';rail.style.width='';
+        const selected=rail.querySelector('button[data-pane-rail-button][aria-pressed="true"]');
+        if(selected?.parentElement)selected.parentElement.style.marginLeft='';
+      }
+    })()`);
     // Closing a focused tab removes its DOM button. Focus must land on the
     // remaining active tab; after closing the last tab, on '+' (not <body>).
     // The final close must NEVER re-spawn the PTY automatically.

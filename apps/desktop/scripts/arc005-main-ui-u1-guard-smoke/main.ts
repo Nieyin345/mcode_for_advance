@@ -158,7 +158,7 @@ check("Actual Electron pane U1 verifies PTY, Monaco and unsaved draft across hid
 check("Pane U1 negative mutations still fail for React rekey and silent corruption",
  paneBuild.includes("statuses.REOPEN_PTY_AND_MONACO_DRAFT==='FAIL'") &&
  paneBuild.includes("statuses.CORRUPTION_NOTICE==='FAIL'") &&
- paneBuild.includes("checks.length>=17"));
+ paneBuild.includes("checks.length>=18"));
 check("Real long chat sample uses 640 isolated messages through Zustand store",
  probe.includes("Array.from({length:640}") &&
  probe.includes("st.setState({messagesBySession:{s1:many,s2:[],s3:[]}})"));
@@ -177,7 +177,12 @@ check("Native Electron U1 checks keyboard focus, two terminal tabs and no spurio
  paneProbe.includes("NATIVE_TERMINAL_NEW_TAB") &&
  paneProbe.includes("NATIVE_TERMINAL_ARROW_TABS") &&
  paneProbe.includes("NATIVE_RIGHT_RAIL_FOCUS") &&
- paneBuild.includes("checks.length>=17"));
+ paneBuild.includes("checks.length>=18"));
+check("Real right-rail U1 resizes the selected icon without focus or Monaco/xterm loss",
+ paneProbe.includes("NATIVE_RAIL_RESIZE_REVEALS_SELECTION") &&
+ paneProbe.includes("rail.style.flex='0 0 46px'") &&
+ paneProbe.includes("cell.style.marginLeft='160px'") &&
+ paneProbe.includes("measure.focusSame&&measure.mainScrollSame&&measure.ptySame&&measure.monacoSame"));
 check("Negative: removing live isolation invalidates our own performance contract",
  !(stream.replace("<StreamRunningDuration startedAt={status.startedAt} />","").includes("<StreamRunningDuration startedAt={status.startedAt} />")));
 console.log("arc005-main-ui-u1-guard-smoke: "+(count-failed)+"/"+count);

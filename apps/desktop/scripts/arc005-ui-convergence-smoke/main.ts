@@ -28,13 +28,16 @@ check("Rail: invalid geometry leaves scroll unchanged",
  railScrollLeft(16,Infinity,320,200,250)===16);
 check("Rail: zero viewport leaves scroll unchanged",
  railScrollLeft(16,100,100,200,250)===16);
-check("Rail: selected item is revealed without browser scrollIntoView on render",
- panel.includes("railScrollLeft(track.scrollLeft") &&
- panel.includes('track.scrollTo({ left: next, behavior: "auto" })') &&
+check("Rail: selected item is revealed only inside the local track",
+ panel.includes("revealRailItemWithin(track, selected)") &&
  panel.includes("railTrackRef.current") &&
- panel.includes('querySelector<HTMLElement>(\'[data-pane-rail-button][aria-pressed="true"]\')'));
-check("Rail: selected item auto-scroll cleans up its animation frame",
- panel.includes("cancelAnimationFrame(id)") && panel.includes("requestAnimationFrame(() => {"));
+ panel.includes("querySelector<HTMLElement>(") &&
+ panel.includes("'[data-pane-rail-button][aria-pressed=\"true\"]'"));
+check("Rail: selected item auto-scroll is also responsive to track width changes",
+ panel.includes("new ResizeObserver(schedule)") &&
+ panel.includes("observer?.observe(track)") &&
+ panel.includes("cancelAnimationFrame(frame)") &&
+ panel.includes("observer?.disconnect()"));
 check("Rail: keyboard focus still uses shared arrow navigation helper",
  panel.includes("nextRailFocusIndex(e.key, index, buttons.length)") && panel.includes("nextButton.focus({ preventScroll: true })"));
 check("Rail: selected builtins and custom tabs keep aria-pressed semantics",
