@@ -15,6 +15,7 @@ import type { RuntimeEventMessage, ToolchainEventMessage } from "./runtimes.js";
 import type { LibraryChangedMessage, WorkflowChangedMessage, ComposerAttachMessage } from "./library.js";
 import type { HostHookGrantsChangedMessage } from "./hostHookGrants.js";
 import type { WorkflowEngineNodeInstallApprovalMessage } from "./workflowEngine.js";
+import type { WorkflowEngineChangedMessage } from "./workflowEngine.js";
 
 /* ──────────────────────────  Main → Renderer (events)  ─────────────────────── */
 
@@ -245,5 +246,6 @@ export type MainToRendererMessage =
   | WorkflowChangedMessage
   | ComposerAttachMessage
   | HostHookGrantsChangedMessage
-  | WorkflowEngineNodeInstallApprovalMessage;
+  | WorkflowEngineNodeInstallApprovalMessage
+  | WorkflowEngineChangedMessage;
 

@@ -308,6 +308,31 @@ function wrapChild(child: ChildProcess, limit = 8000): EngineChildProcess {
 /** 一个引擎实例的运行时。同一 engineId 同时只允许一个实例。 */
 export class EngineRuntime {
   private state: EngineRuntimeState = "stopped";
+  /** 【Q9b】状态变化的监听者。渲染端不再靠 2.5 秒轮询猜 —— 宿主在变化的**那一刻**
+   *  推一条 `workflowEngine:changed`，界面收到再去读权威状态。
+   *
+   *  为什么监听而不是在 `status()` 里比对：那是拉模型的思路，界面不读就永远不发。
+   *  为什么载荷只带 engineId：快照会漂（`WorkflowChangedMessage` 同一条理由）。 */
+  private stateListeners = new Set<(engineId: string, state: EngineRuntimeState) => void>();
+
+  /** 订阅状态变化。返回退订函数。 */
+  onStateChange(listener: (engineId: string, state: EngineRuntimeState) => void): () => void {
+    this.stateListeners.add(listener);
+    return () => { this.stateListeners.delete(listener); };
+  }
+
+  /** 唯一的置位入口 —— 6 处裸赋值从这里走，变化才通知得到。 */
+  private setState(next: EngineRuntimeState): void {
+    if (this.state === next) return;
+    this.state = next;
+    for (const listener of this.stateListeners) {
+      try {
+        listener(this.engineId, next);
+      } catch {
+        // 一个监听者坏了不能挡住状态机本身。
+      }
+    }
+  }
   private port: number | null = null;
   private reason: string | null = null;
   private child: EngineChildProcess | null = null;
@@ -365,7 +390,7 @@ export class EngineRuntime {
   }
 
   private async startInner(options: EngineStartOptions, epoch: number): Promise<EngineRuntimeStatus> {
-    this.state = "starting";
+    this.setState("starting");
     this.reason = null;
     let port: number;
     try {
@@ -429,7 +454,7 @@ export class EngineRuntime {
       this.port = null;
       if (this.stopping) return; // stop() waits for this confirmed exit itself.
       if (this.state === "running" || this.state === "starting") {
-        this.state = "failed";
+        this.setState("failed");
         this.reason = `引擎进程意外退出（code=${code ?? "?"} signal=${signal ?? "-"}）`;
         log.warn(`[workflow-engine:${this.engineId}] ${this.reason}\n${child.tailOutput().slice(-1500)}`);
       }
@@ -462,7 +487,7 @@ export class EngineRuntime {
       // exit listener already released its executor owner: never resurrect it.
       if (exited || this.child !== child) return this.status();
       if (ok) {
-        this.state = "running";
+        this.setState("running");
         log.info(`[workflow-engine:${this.engineId}] ready on 127.0.0.1:${port}`);
         return this.status();
       }
@@ -486,7 +511,7 @@ export class EngineRuntime {
       this.starting = null;
       const child = this.child;
       if (child === null) {
-        this.state = "stopped";
+        this.setState("stopped");
         this.port = null;
         this.notifyTerminated();
         return this.status();
@@ -510,14 +535,14 @@ export class EngineRuntime {
         });
       });
       if (!confirmedExit) {
-        this.state = "failed";
+        this.setState("failed");
         this.reason = "停止引擎后未确认子进程退出，保留 flow owner 并拒绝重新启动";
         this.port = null;
         log.warn(`[workflow-engine:${this.engineId}] ${this.reason}`);
         return this.status();
       }
       this.child = null;
-      this.state = "stopped";
+      this.setState("stopped");
       this.port = null;
       this.reason = null;
       log.info(`[workflow-engine:${this.engineId}] stopped`);
@@ -533,7 +558,7 @@ export class EngineRuntime {
     ++this.epoch;
     this.starting = null;
     this.terminateChild();
-    this.state = "stopped";
+    this.setState("stopped");
     this.port = null;
     this.reason = null;
     this.notifyTerminated();
@@ -552,7 +577,7 @@ export class EngineRuntime {
   }
 
   private fail(reason: string): EngineRuntimeStatus {
-    this.state = "failed";
+    this.setState("failed");
     this.reason = reason;
     this.port = null;
     log.warn(`[workflow-engine:${this.engineId}] ${reason}`);

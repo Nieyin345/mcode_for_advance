@@ -4,8 +4,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-OUT=$(mktemp -d /tmp/mcode-wf-engine-runtime.XXXXXX)
-DATA=$(mktemp -d /tmp/mcode-wf-engine-runtime-data.XXXXXX)
+# ⚠️ 产物目录必须在 `.tmp/` 下，不能用 `/tmp`。【MC-052】之后本套经 `--external:ssh2`
+# 把 ssh2 的 import 留到运行时，由 node **从产物目录往上**找 `node_modules`；`/tmp` 在
+# Windows 上不在仓库里，找不到就 `ERR_MODULE_NOT_FOUND: Cannot find package 'ssh2'`。
+# `app-control-smoke` / `agent-mail-smoke` 是同一个坑。
+mkdir -p .tmp
+OUT=$(mktemp -d .tmp/mcode-wf-engine-runtime.XXXXXX)
+DATA=$(mktemp -d .tmp/mcode-wf-engine-runtime-data.XXXXXX)
 trap 'rm -rf "$OUT" "$DATA"' EXIT
 
 source "scripts/lib/esbuild-path.sh"
@@ -19,6 +24,7 @@ mcode_esbuild scripts/workflow-engine-runtime-smoke/main.ts \
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/workflowEngines/nodePackProductionPorts.js=./scripts/mcode-node-pack-smoke/productionPortsStub.ts \
+  --alias:@main/document/genofficeNativeVendor.js=./src/main/document/genofficeNativeVendorStub.ts \
   --external:sherpa-onnx-node --external:ssh2 \
   --outfile="$OUT/smoke.mjs" --log-level=error
 
