@@ -22,15 +22,17 @@ export function setDocumentMutationObserver(next: DocumentMutationObserver | nul
 }
 
 /**
- * Best-effort UI notification after a successful disk mutation. The write has
- * already committed, so a stale/closed view or observer error must not turn a
- * successful document operation into a reported failure.
+ * Fire-and-forget UI notification after a successful disk mutation. The write
+ * has already committed, so a stale/closed view or observer error must not turn a
+ * successful document operation into a reported failure or add view-refresh latency.
  */
 export async function notifyDocumentMutation(notice: DocumentMutationNotice): Promise<void> {
   const current = observer;
   if (current === null) return;
   try {
-    await current(notice);
+    // Start the observer immediately, but never make a successful file write wait
+    // for a revision read or a renderer refresh. The UI already polls host snapshots.
+    void Promise.resolve(current(notice)).catch(() => {});
   } catch {
     // The document write is authoritative; the view notice is supplementary.
   }
