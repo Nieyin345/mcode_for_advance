@@ -146,6 +146,8 @@ export interface DocViewSnapshot {
     message: string;
     at: number;
   };
+  /** A disk-writing Mcode document tool changed the open file after this view loaded it. */
+  lastExternalMutation?: { at: number };
 }
 
 /**

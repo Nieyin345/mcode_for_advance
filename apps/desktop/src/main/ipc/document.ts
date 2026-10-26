@@ -29,6 +29,7 @@ import { slidesBridge } from "@main/document/slidesBridge.js";
 import { nativeHostStatus } from "@main/document/genofficeViewFactories.js";
 import { findContainingWorkspaceRoot } from "@main/lib/pathGuard.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
+import { notifyDocumentMutation } from "@main/document/documentMutationNotifier.js";
 import { withOsFileLease } from "@main/lib/osFileLease.js";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -254,7 +255,10 @@ export function registerDocumentHandlers(ipc: IpcMain): void {
       // 成功时回传新版本(dryRun 不写盘,版本不变)。
       if (result.ok && input.dryRun !== true) {
         const wire = toWire(result);
-        return wire.ok ? { ...wire, revision: await fileContentVersion(input.filePath) } : wire;
+        if (!wire.ok) return wire;
+        const revision = await fileContentVersion(input.filePath);
+        await notifyDocumentMutation({ filePath: input.filePath, revision, source: "document-edit" });
+        return { ...wire, revision };
       }
       return toWire(result);
     };

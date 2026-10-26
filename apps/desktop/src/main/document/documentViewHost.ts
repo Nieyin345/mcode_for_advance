@@ -99,6 +99,7 @@ import { link, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { issueDocumentHandoff, revokeDocumentHandoffs } from "./documentViewHandoff.js";
+import { setDocumentMutationObserver, type DocumentMutationNotice } from "./documentMutationNotifier.js";
 import { writeDocRecovery, inspectDocRecovery, clearDocRecovery } from "./documentRecovery.js";
 import { mcodeNativeDocsIpcAvailable, registerDocsIpc } from "@main/document/docsVendorIpc.js";
 import type { DocsPrivilegedPorts } from "./docsPrivilegedPorts.js";
@@ -315,6 +316,8 @@ interface LiveDocumentView {
     message: string;
     at: number;
   };
+  /** Disk content changed through an Mcode document tool while this native view was open. */
+  lastExternalMutation?: { at: number };
   /** 【ARC-006 Gate A 缺口】这个视图加载的是哪个工作流引擎的编辑器页
    *  （`open` 时由 `workflowEngineId` 记下）。换引擎/换回普通文档视图时要摘旧凭据绑定。 */
   workflowEngineId: string | null;
@@ -1068,6 +1071,7 @@ export class DocumentViewHost {
     if (!claim.ok) return { ok: false, reason: claim.reason };
     live.pendingOpen = null;
     live.lastFailure = undefined;
+    live.lastExternalMutation = undefined;
     live.openedFilePath = claim.session.filePath;
     if (pending.recoveryBaseRevision || pending.openedBytesRevision) {
       // Normal save compares against the version FROM WHICH this recovery
@@ -1175,6 +1179,7 @@ export class DocumentViewHost {
     if (!claim.ok) return { ok: false, reason: claim.reason };
     live.pendingOpen = null;
     live.lastFailure = undefined;
+    live.lastExternalMutation = undefined;
     live.openedFilePath = claim.session.filePath;
     live.openedFileRevision = claim.session.revision;
     log.info(`document view slides-open: committed ${docId} ${pending.filePath}`);
@@ -1315,6 +1320,7 @@ export class DocumentViewHost {
     live.openedFileRevision = advanced;
     live.lastFailure = undefined;
     live.lastSaveConflict = undefined;
+    live.lastExternalMutation = undefined;
     log.info(`document view slides-save: committed ${docId} ${target.filePath} (${bytes} bytes)`);
     return { ok: true, bytes, filePath: target.filePath, revision };
   }
@@ -1590,7 +1596,36 @@ export class DocumentViewHost {
     if (live !== undefined && live.openedFilePath !== null &&
         physicalPath(live.openedFilePath) === physicalPathKey) {
       live.openedFileRevision = advanced;
+      live.lastExternalMutation = undefined;
     }
+  }
+
+  /**
+   * Record a successful disk mutation from Mcode's document-tool route. Never reload
+   * or write the editor automatically: the user must explicitly choose to reload,
+   * because the native view may contain unsaved local edits.
+   */
+  async noteExternalMutation(notice: DocumentMutationNotice): Promise<void> {
+    const key = physicalPath(notice.filePath);
+    if (key === null) return;
+    const session = this.sessions.get(key);
+    if (session === undefined) return;
+    const live = this.views.get(session.docId);
+    if (!live || live.openedFilePath === null || physicalPath(live.openedFilePath) !== key) return;
+    const revisionAtStart = session.revision;
+    let expected: string | null;
+    try {
+      expected = await revisionAtStart;
+    } catch {
+      expected = null;
+    }
+    // The user may have reloaded, closed, or saved the document while the revision was read.
+    if (this.sessions.get(key) !== session || session.revision !== revisionAtStart ||
+        this.views.get(session.docId) !== live || live.openedFilePath === null ||
+        physicalPath(live.openedFilePath) !== key) return;
+    if (notice.revision !== null && expected === notice.revision) return;
+    live.lastExternalMutation = { at: Date.now() };
+    log.info(`document view external mutation: ${notice.source} ${session.docId} ${notice.filePath}`);
   }
 
   /**
@@ -1753,6 +1788,7 @@ export class DocumentViewHost {
         session.revision = advanced;
         live.lastFailure = undefined;
         live.lastSaveConflict = undefined;
+        live.lastExternalMutation = undefined;
         log.info(`document view saved: ${docId} ${target} (${bytes.byteLength} bytes)`);
         return { ok: true, bytes: bytes.byteLength, filePath: target, revision };
       });
@@ -2001,6 +2037,7 @@ export class DocumentViewHost {
       bounds: { ...live.bounds },
       ...(live.lastFailure !== undefined ? { lastFailure: { ...live.lastFailure } } : {}),
       ...(live.lastSaveConflict !== undefined ? { lastSaveConflict: { ...live.lastSaveConflict } } : {}),
+      ...(live.lastExternalMutation !== undefined ? { lastExternalMutation: { ...live.lastExternalMutation } } : {}),
     }));
   }
 
@@ -2150,3 +2187,4 @@ export class DocumentViewHost {
  * 那时主窗口一定存在，模块加载时则未必。
  */
 export const documentViewHost = new DocumentViewHost({ getMainWindow });
+setDocumentMutationObserver((notice) => documentViewHost.noteExternalMutation(notice));

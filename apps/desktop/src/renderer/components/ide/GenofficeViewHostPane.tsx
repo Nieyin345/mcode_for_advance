@@ -233,6 +233,8 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
   /** 【ARC-007】保存冲突（宿主侧乐观锁拦下的保存）。与 pageFailure 分开显示：
    *  页面没坏，只是**保存被拒**，用户需要先重新载入再改。 */
   const [saveConflict, setSaveConflict] = useState<{ message: string; at: number } | null>(null);
+  /** A document tool wrote a newer disk revision while this editor retained its in-memory copy. */
+  const [externalMutation, setExternalMutation] = useState<{ at: number } | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef(active);
@@ -423,6 +425,7 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
           // 【ARC-007】保存冲突走同一张快照（宿主在成功保存后清空它）。
           const conflict = mine?.lastSaveConflict;
           setSaveConflict(conflict !== undefined ? { message: conflict.message, at: conflict.at } : null);
+          setExternalMutation(mine?.lastExternalMutation ?? null);
         },
         () => { /* 读不到快照不该刷错误条 */ },
       );
@@ -514,6 +517,30 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
             }
           >
             <div className="break-words">{pageFailure.reason}</div>
+          </ErrorNote>
+        </div>
+      )}
+      {externalMutation !== null && saveConflict === null && (
+        <div className="p-3">
+          <ErrorNote
+            title={t("ide.genoffice.viewHostExternalMutation")}
+            tone="warning"
+            action={
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  // Never reload automatically: this explicit action may discard unsaved
+                  // local edits, so the warning text must be visible before the click.
+                  setExternalMutation(null);
+                  setRetryNonce((n) => n + 1);
+                }}
+              >
+                {t("ide.genoffice.viewHostExternalMutationReload")}
+              </Button>
+            }
+          >
+            <div>{t("ide.genoffice.viewHostExternalMutationDesc")}</div>
           </ErrorNote>
         </div>
       )}

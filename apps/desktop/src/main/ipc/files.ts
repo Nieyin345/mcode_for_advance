@@ -94,6 +94,7 @@ import {
  *  保持既有调用方不变。 */
 export { fileContentVersion } from "@main/lib/fileVersion.js";
 import { fileContentVersion as currentFileVersion } from "@main/lib/fileVersion.js";
+import { notifyDocumentMutation } from "@main/document/documentMutationNotifier.js";
 
 /** 【MC-097】**原子替换**（【ARC-007】已抽到 `@main/lib/atomicFile`，文档视图的
  *  保存通道与本文件共用同一份实现）。此处保留同名导入，调用点不变。 */
@@ -582,6 +583,8 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
         return { ok: true } as const;
       });
       if (outcome.ok) {
+        const revision = await currentFileVersion(input.filePath).catch(() => null);
+        await notifyDocumentMutation({ filePath: input.filePath, revision, source: "document-edit" });
         log.info(`file.writeFile saved: ${relative(root, input.filePath) || input.filePath}`);
       }
       return outcome;

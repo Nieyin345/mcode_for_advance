@@ -83,6 +83,7 @@ import {
 } from "./genofficeCli.js";
 import { checkDeckPatterns, type DeckPageSpec, type PatternFinding } from "./deckPatternCheck.js";
 import { fileContentVersion } from "@main/lib/fileVersion.js";
+import { notifyDocumentMutation } from "./documentMutationNotifier.js";
 import { requireWorkspacePath, type GenofficePorts } from "./genofficeCli.js";
 import type {
   DocumentAppsResult,
@@ -1155,6 +1156,9 @@ export async function documentToolCall(
   }
   const qa = mutated ? await runQaGate(ports, entry.app, filePath) : null;
   const revision = mutated ? await fileContentVersion(filePath).catch(() => null) : undefined;
+  if (mutated) {
+    await notifyDocumentMutation({ filePath, revision: revision ?? null, source: "document-tool" });
+  }
   return {
     ok: true,
     route: "cli",
@@ -1302,6 +1306,9 @@ export async function documentMarkdownEdit(
   const reread = args.dryRun ? null : await docsRead(ports, args.filePath, { full: false, ...(ports.signal ? { signal: ports.signal } : {}) });
   const blocks = reread?.ok ? Number((reread.envelope.detail as { blocks?: unknown } | null)?.blocks ?? 0) : 0;
   const revision = await fileContentVersion(args.filePath).catch(() => null);
+  if (args.dryRun !== true) {
+    await notifyDocumentMutation({ filePath: args.filePath, revision, source: "markdown-edit" });
+  }
   const batch = (applied.envelope.detail as { batch?: { applied?: number } } | null)?.batch;
   return {
     ok: true,
