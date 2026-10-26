@@ -24,10 +24,12 @@ import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { FileSnapshot, restoreFiles } from "../../src/main/lib/fileSnapshot.js";
+import { FileSnapshot, FILE_MUTATING_TOOLS, restoreFiles } from "../../src/main/lib/fileSnapshot.js";
+import { SdkMessageAdapter } from "../../src/main/providers/claude-sdk/SdkMessageAdapter.js";
 import { initDb } from "../../src/main/store/db.js";
 import { SessionRepo, ProjectRepo } from "../../src/main/store/repositories.js";
-import { settleTurn } from "../../src/main/tasks/autoCreate.js";
+import { classifyTurn, settleTurn } from "../../src/main/tasks/autoCreate.js";
+import type { RuntimeEvent } from "@contracts/runtime";
 
 let total = 0;
 let failures = 0;
@@ -245,6 +247,83 @@ console.log("\n⑦ ★ 读不出的产物仍然算「这一轮产出了东西」
   // 没有这一条，上面那条在「反正什么都建」的实现里也会绿。
   const empty = settleTurn({ sessionId, files: [], reason: "end_turn" });
   check("★ 对照组：空文件列表仍然不建任务", empty.created === false, empty);
+}
+
+console.log("\n⑧ ★ document_md_edit 原地修改 Word：产物进 turn.files，且标记不可撤销");
+{
+  const workspace = join(WS, "md-edit-workspace");
+  mkdirSync(workspace, { recursive: true });
+  const target = join(workspace, "existing.docx");
+  writeFileSync(target, DOCX_BEFORE);
+
+  const events: RuntimeEvent[] = [];
+  const snapshots = new FileSnapshot();
+  const context = {
+    emit: (event: RuntimeEvent) => events.push(event),
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+  } as never;
+  const adapter = new SdkMessageAdapter(context, "t126", false, workspace, snapshots);
+  const message = {
+    type: "assistant",
+    message: {
+      id: "msg_t126_docx_edit",
+      role: "assistant",
+      model: "test-model",
+      content: [{
+        type: "tool_use",
+        id: "tu_t126_docx_edit",
+        name: "document_md_edit",
+        input: {
+          filePath: target,
+          operations: [{ op: "append", markdown: "新增一段" }],
+        },
+      }],
+    },
+  };
+
+  await adapter.dispatch(message as never);
+  // recordPre 是 fire-and-forget；先等它捕获修改前的字节，再模拟工具落盘。
+  const inflight = snapshots as never as { inflight: Map<string, unknown> };
+  for (let i = 0; i < 400 && inflight.inflight.size > 0; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  if (inflight.inflight.size > 0) throw new Error("document_md_edit recordPre 未在 800ms 内落地");
+  check("recordPre 在模拟写盘前完成", inflight.inflight.size === 0, inflight.inflight.size);
+  writeFileSync(target, DOCX_AFTER);
+  await adapter.flushFinal();
+  const mdEditFiles = events
+    .filter((event): event is Extract<RuntimeEvent, { type: "turn.files" }> => event.type === "turn.files")
+    .flatMap((event) => event.files);
+  const mdEditEntry = mdEditFiles.find((entry) => entry.filePath === target);
+
+  check("★ document_md_edit 的 DOCX 出现在 turn.files", mdEditEntry !== undefined, mdEditFiles);
+  check("★★ document_md_edit 的 DOCX 标记 restorable:false", mdEditEntry?.restorable === false, mdEditEntry);
+  check("★ document_md_edit 仍不在 FILE_MUTATING_TOOLS（不改变路径围栏/rewind 语义）", !FILE_MUTATING_TOOLS.has("document_md_edit"), [...FILE_MUTATING_TOOLS]);
+
+  const beforeVerdict = classifyTurn({ sessionKind: "chat", reason: "end_turn", artifacts: [] });
+  const afterVerdict = classifyTurn({
+    sessionKind: "chat",
+    reason: "end_turn",
+    artifacts: mdEditFiles.map((entry) => ({
+      path: entry.filePath,
+      description: "修改的 Word 文档（不可无损还原）",
+      createdAt: Date.now(),
+    })),
+  });
+  console.log("T126 分类修复前（空产物）:", JSON.stringify(beforeVerdict));
+  console.log("T126 分类修复后（document_md_edit）:", JSON.stringify(afterVerdict));
+  check("★ 空产物仍判为普通问答", beforeVerdict.create === false, beforeVerdict);
+  check("★★ document_md_edit 产物使回合进入任务分类", afterVerdict.create === true, { verdict: afterVerdict, files: mdEditFiles });
+
+  const task = settleTurn({ sessionId: makeChatSession(), files: mdEditFiles, reason: "end_turn" });
+  check("★★ 真实 settleTurn 为 document_md_edit 创建任务", task.created === true, task);
+
+  const bytesBeforeRestore = readFileSync(target);
+  const report = await restoreFiles(WS, mdEditEntry ? [mdEditEntry] : []);
+  const bytesAfterRestore = readFileSync(target);
+  check("★★ 撤销将该 DOCX 报入 unrestorable 且逐字节不变",
+    Boolean(mdEditEntry) && report.unrestorable.includes(target) && Buffer.compare(bytesBeforeRestore, bytesAfterRestore) === 0,
+    { entry: mdEditEntry, report, beforeLen: bytesBeforeRestore.length, afterLen: bytesAfterRestore.length });
 }
 
 console.log(`\nt125-restorable-smoke: ${total - failures}/${total} 通过`);

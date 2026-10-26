@@ -1378,6 +1378,19 @@ export class SdkMessageAdapter {
           }
         }
 
+        // 【T126】document_md_edit 是独立的模型工具名，不是
+        // document_tool_call.input.tool。它会原地修改已有 Word 文档（.docx），
+        // 但通用 getToolFilePath 只认 file_path；这里必须显式取 filePath。
+        // 记录它是为了让不可解码的 DOCX 进入 turn.files 并标为 restorable:false，
+        // 不把它塞进 FILE_MUTATING_TOOLS，避免改变工作区围栏与 rewind 的既有语义。
+        if (b.name === "document_md_edit") {
+          const fp = (b.input as Record<string, unknown> | undefined)?.filePath;
+          if (typeof fp === "string" && fp) {
+            const norm = normalizeToolFilePath(this.cwd, fp);
+            void this.snapshots.recordPre(this.cwd, norm?.absPath ?? fp);
+          }
+        }
+
         // TodoWrite is claude's canonical todo tool: it writes the WHOLE
         // list at once (every item with its current status), so a single
         // call both adds and flips items to completed/in_progress. We
