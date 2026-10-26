@@ -16,7 +16,7 @@
 // T66 采用逐域迁移：三个独立 store 负责真实状态和动作；旧 SessionState
 // 字段/动作仍由 sessionStoreDomainBridge 兼容同步，以免跨域消费方突变。
 // 后续只有等剩余调用方切走，才可以移除兼容字段；消息/回合大段逻辑
-// 仍属于会话主干，拆它需另开任务（见 tasks/T66-session-store-split.md）。
+// 仍属于会话主干，拆它需要单独一轮改动。
 //
 // 分区不改变任何行为：它只是注释边界。分区内成员的**顺序**是历史顺序，
 // 未按域重排（重排会改动代码行，本约束不允许）。
@@ -652,10 +652,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // Persisted under `ui.tabBarMultiRow`; init() overwrites from the DB.
   // Default false = the classic single scrolling row.
   tabBarMultiRow: false,
-  // Left-bar view: classic project tree is the default; init() overwrites
-  // from the persisted ui.leftBarMode preference.
+  // Left-bar view. 【UI 重建 2026-10-27】默认从 `tree` 改成 `stream`：
+  // Claude 的侧栏是「按项目分组的会话流」，不是项目树。项目树仍可切回
+  // （设置里保留这项），但新用户首屏看到的是 Claude 那种列表。
+  // init() 仍会覆盖为持久化的 ui.leftBarMode。
   // ─────────────── J 应用级 UI 外壳 ───────────────
-  leftBarMode: "tree",
+  leftBarMode: "stream",
   // UI theme style (orthogonal to light/dark). Default "classic"; init()
   // overwrites from the persisted ui.themeStyle preference.
   // ─────────────── K 设置镜像（落库偏好） ───────────────
@@ -4025,7 +4027,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             const imgs = extractImagesFromToolResult(e.content);
             const blocks: Block[] = m.blocks.map((b) => {
               if (b.kind === "tool_use" && b.toolCallId === e.toolCallId) {
-                return { ...b, status: e.isError ? "error" : "done", result: e.content };
+                return {
+                  ...b,
+                  status: e.isError ? "error" : "done",
+                  result: e.content,
+                  /* 【CHAT-20】工具的界面附件（截图 / 生图 / 链接）。
+                   * **必须在这里搬**：契约和渲染端都接好了，少了这一行，
+                   * 工具带了图也永远到不了界面 —— 而且块本身看起来完全正常
+                   * （status/result 都对），只是「AI 看到了什么」永远空着。 */
+                  ...(e.display !== undefined ? { display: e.display } : {}),
+                };
               }
               return b;
             });
@@ -4226,9 +4237,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           // same system clock, so this stays compatible with the renderer-side
           // startedAt used for durations. Falls back to now for older senders.
           const endedAt = e.endedAt ?? Date.now();
+          /* 【CHAT-15】把这一轮的花费一起落到 `turnMeta`，让回合行能显示。
+           *
+           * 来源是当轮 `context.usage` 快照的 `costUsd` —— **不是**再算一遍
+           * （那会和 `updateUsageHistory` 记的值分叉）。快照没有金额就不写
+           * （Codex 不报），回合行据此不显示，而不是显示 0。
+           *
+           * 必须与 `endedAt` 同一次 map：分开写会让"已结束但没有花费"的中
+           * 间态被 `endedAt === undefined` 的判据跳过。 */
+          const turnCost = get().contextSnapshotBySession[sid]?.costUsd;
           next = next.map((m) =>
             m.turnMeta && m.turnMeta.endedAt === undefined
-              ? { ...m, turnMeta: { ...m.turnMeta, endedAt } }
+              ? {
+                  ...m,
+                  turnMeta: {
+                    ...m.turnMeta,
+                    endedAt,
+                    ...(turnCost !== undefined ? { costUsd: turnCost } : {}),
+                  },
+                }
               : m,
           );
           // Freeze or prune the inline plan block(s) on this just-closed turn.
@@ -6981,7 +7008,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (gate.blocked.length > 0) return gate;
     // force = 文件已经不在了(删除路径):它的脏标记也没有意义了,一并清掉,
     // 免得同名文件后来再建出来时被一条陈旧的"未保存"挡住。
-    if (force) ideDirtyTracker.set(filePath, false);
+    if (force) ideDirtyTracker.clear(filePath);
     const open = prev.filter((p) => p !== filePath);
     // Active shifts to the previous file (or next, or null).
     let active = get().ideActiveFileByProject[pid] ?? null;
@@ -7074,7 +7101,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
     persistIdeBuckets(get);
     // 这些文件已经被删掉了 —— 它们的脏标记随之作废。
-    for (const p of removed) ideDirtyTracker.set(p, false);
+    for (const p of removed) ideDirtyTracker.clear(p);
   },
 
   renamePathInIde: (oldPath, newPath, isDir) => {
@@ -7124,8 +7151,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // "未保存"会在关不掉/不提示之间漂移。
       for (const p of prevOpen) {
         if (!ideDirtyTracker.has(p)) continue;
-        ideDirtyTracker.set(p, false);
-        ideDirtyTracker.set(p === oldPath ? newPath : newPath + p.slice(oldPath.length), true);
+        ideDirtyTracker.move(p, p === oldPath ? newPath : newPath + p.slice(oldPath.length));
       }
       return;
     }
@@ -7158,10 +7184,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
     persistIdeBuckets(get);
     // 单文件重命名同理:脏标记跟着新路径走。
-    if (ideDirtyTracker.has(oldPath)) {
-      ideDirtyTracker.set(oldPath, false);
-      ideDirtyTracker.set(newPath, true);
-    }
+    if (ideDirtyTracker.has(oldPath)) ideDirtyTracker.move(oldPath, newPath);
   },
 
   closeOtherFilesInIde: (keepFilePath, force = false) => {
@@ -7172,7 +7195,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // 未保存的改动不能被"关闭其他"顺手丢掉 —— 它们留在打开列表里,随 `blocked` 报出去。
     const others = prev.filter((p) => p !== keepFilePath);
     const gate = partitionClosable(others, ideDirtyTracker.has, force);
-    if (force) for (const p of gate.closed) ideDirtyTracker.set(p, false);
+    if (force) for (const p of gate.closed) ideDirtyTracker.clear(p);
     const survivors = new Set([keepFilePath, ...(force ? [] : gate.blocked)]);
     const open = prev.filter((p) => survivors.has(p));
     // Model cache: dispose the dropped background models; the DISPLAYED one
@@ -7205,7 +7228,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (prev.length === 0) return { closed: [], blocked: [] };
     // 有未保存改动的继续开着 —— 用户没打算丢它们(编辑器没有自动保存)。
     const gate = partitionClosable(prev, ideDirtyTracker.has, force);
-    if (force) for (const p of gate.closed) ideDirtyTracker.set(p, false);
+    if (force) for (const p of gate.closed) ideDirtyTracker.clear(p);
     const survivors = new Set(force ? [] : gate.blocked);
     const open = prev.filter((p) => survivors.has(p));
     // Model cache: dispose the dropped background models; the DISPLAYED one is

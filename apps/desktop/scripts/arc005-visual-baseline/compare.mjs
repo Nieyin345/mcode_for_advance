@@ -3,23 +3,64 @@
  * for families explicitly described in reference matrix §二/§四/§五.
  * Supports optional --out for isolated mutation verification.
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../../../..");
 const evidence = join(repo, ".tmp/arc005-visual");
 const args = process.argv.slice(2);
 const output = args.includes("--out") ? resolve(args[args.indexOf("--out")+1] ?? "") : join(evidence, "diff.md");
-const upstreamPath = join(repo,"open-claude-ui/code-examples/cds-theme.css");
+
+/** 【UI 重建 2026-10-27】上游参照从**第三方逆向 CSS** 换成**本机 Claude 安装包**。
+ *
+ *  旧的 `open-claude-ui/code-examples/cds-theme.css` 已废弃：它是对 2.x 的逆向，
+ *  其中若干 token 名在真实 3.1623.4.0 里不存在（实测 `--static-sidebar-width`
+ *  / `--chat-leading` 都查不到），拿它当基准会得出错误的「一致」结论。
+ *
+ *  新源：`Claude_<ver>` 的 `ion-dist/assets/v1/` 下最大的那个 .css。
+ *  与 `gen-cds-tokens.mjs` 用同一套查找逻辑（PowerShell 查 Appx 拿路径，
+ *  因为 WindowsApps 目录不允许列出）。找不到就**显式失败**，不静默跳过比对。
+ */
+function findClaudeCss() {
+  let loc = "";
+  try {
+    loc = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-Command",
+       "$p = Get-AppxPackage -Name Claude | Sort-Object Version -Descending | Select-Object -First 1; if ($p) { $p.InstallLocation }"],
+      { encoding: "utf8", windowsHide: true, timeout: 20000 },
+    ).trim();
+  } catch (e) {
+    throw new Error("查询 Claude 安装位置失败：" + e.message);
+  }
+  if (!loc) throw new Error("本机没有装 Claude Desktop —— 视觉比对没有参照物，拒绝出结论。");
+  const dir = join(loc, "app", "resources", "ion-dist", "assets", "v1");
+  if (!existsSync(dir)) throw new Error("找不到 Claude 的 assets/v1：" + dir);
+  const css = readdirSync(dir)
+    .filter((f) => f.endsWith(".css"))
+    .map((f) => ({ f, size: statSync(join(dir, f)).size }))
+    .sort((a, b) => b.size - a.size);
+  if (!css.length) throw new Error("Claude assets/v1 下没有 .css：" + dir);
+  return join(dir, css[0].f);
+}
+
+const upstreamPath = findClaudeCss();
 const matrixPath = join(repo,"docs/design/claude-code-reference-matrix.md");
 const upstreamCss = readFileSync(upstreamPath,"utf8");
 const matrix = readFileSync(matrixPath,"utf8");
 if (!matrix.includes("## 二、token 对照表") || !matrix.includes("## 五、动效")) throw Error("Reference matrix shape changed; refuse guessing");
-const darkStart = upstreamCss.indexOf('[data-mode="dark"], .dark');
-if (darkStart < 0) throw Error("upstream dark vars missing");
-const rootCss = upstreamCss.slice(0,darkStart);
+
+/** 本机 Claude 的暗色不是单一块，而是 `@media (prefers-color-scheme:dark)` +
+ *  `.dark` + 裸 `@media screen` 三处。这里把**整个文件**当亮色池，
+ *  暗色另取一份带暗色标记的片段（宽匹配，宁可多取不漏取）。 */
+const darkStart = (() => {
+  const i = upstreamCss.search(/@media[^{]*prefers-color-scheme:\s*dark|\[data-mode=["']?dark/);
+  return i < 0 ? upstreamCss.length : i;
+})();
+const rootCss = upstreamCss.slice(0, darkStart);
 const darkCss = upstreamCss.slice(darkStart);
 const getVar = (css,k) => {
   const lines = css.match(new RegExp("(?:^|\\n)\\s*"+k.replaceAll("-","\\-")+"\\s*:\\s*([^;]+);","m"));

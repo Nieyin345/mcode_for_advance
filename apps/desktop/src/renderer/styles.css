@@ -108,8 +108,22 @@ div:has(> [role="menu"]) {
    * tokens.cds.css 的生成说明）。语义名不变 —— 840 处 `bg-surface/50` 这类
    * alpha 用法零改动。方向与 Claude 一致：由外向内越来越亮（muted 20 → surface
    * 10 → 卡片 0），与旧 zinc 的冷偏色不同，改用中性偏暖的灰阶。 */
-  --surface: var(--m-gray-10); /* #fcfcfb — center pane, right panel, popups */
-  --surface-muted: var(--m-gray-20); /* #f9f9f7 — sidebar track, inset wells */
+  /* 【UI 重建 2026-10-27】语义层直接取**本机 Claude 3.1623.4.0** 的四级表面阶梯。
+   *
+   * Claude 不是「一深一浅两块底色」，是 **surface-0..3 四级**：
+   *   亮色：0 最外层(灰20) → 1 卡片(灰10) → 2 纸面(白) → 3 弹层(白)
+   *   暗色：同一组名字指到灰阶另一端，于是层级反转为「由内向外越来越暗」，
+   *         **变量名一个都不用改**（这正是 Claude 能用一个开关翻转整套主题的原因）。
+   *
+   * Mcode 原先只有 surface / surface-muted 两级，卡片和纸面同色，
+   * 所以「层」看不出来 —— 这是「看着不像」最直接的结构原因。
+   *
+   * 旧名保留并指到新阶梯：840 处 `bg-surface/50` 这类 alpha 用法零改动。
+   */
+  --surface: var(--m-surface-1); /* 卡片 / 面板（Claude surface-1） */
+  --surface-muted: var(--m-surface-0); /* 最外层画布 / 侧栏轨道（surface-0） */
+  --surface-raised: var(--m-surface-2); /* 纸面 / 内容区（surface-2） */
+  --surface-overlay: var(--m-surface-3); /* 弹层 / 菜单（surface-3） */
   --surface-hover: var(--m-gray-50); /* #f0efec — hover fills */
   /* 【T128】按下态单独一档。原本 hover 与 active 共用 `--surface-hover`
    * （旧注释原文就写着「hover/active fills」），于是**按下按钮和悬停一模一样** ——
@@ -304,10 +318,22 @@ div:has(> [role="menu"]) {
    *   --chat-font-size mirrors the old `text-sm` (14px);
    *   --user-bubble is a neutral gray (zinc-500) so user prompts read as a
    *     calm, non-distracting bubble; presets in Settings offer color picks. */
-  /* 【T139】默认 15px —— 上游 `ChatMessageBubbles.tsx` 的正文是 `text-[15px]`
-   * （本仓原为 14px）。这是**默认值**，不是写死：用户在设置里 12–20px 的
-   * 选择经 lib/appearance.ts 内联写到 <html> 上，优先级高于这里。 */
-  --chat-font-size: 15px; /* default = upstream message body size */
+  /* 【UI 重建 2026-10-27】**默认字号改成 Claude 的真实值。**
+   *
+   * 之前是 15px（依据 f3 的第三方逆向 `ChatMessageBubbles.tsx: text-[15px]`），
+   * 但那是对旧版本的读数。从本机 Claude 3.1623.4.0 的产物里直接读到：
+   *
+   *   --cds-font-size-body: calc(.8125rem * var(--cds-rem-scale))
+   *   --cds-rem-scale:      calc(16 / 17)  ≈ 0.9412
+   *   → .8125rem × 0.9412 × 16 ≈ **12.24px**
+   *
+   * 也就是说 Mcode 的正文比 Claude 大 **23%** —— 这是「看着不像」最直接的
+   * 原因，比任何配色差异都明显。行高同理：Claude 的 `--cds-leading-body`
+   * 是 1.25rem × 0.9412 ≈ **18.82px**，比例 18.82/12.24 ≈ 1.537。
+   *
+   * 这是**默认值**，用户在设置里选的 12–20px 仍经 lib/appearance.ts
+   * 内联写到 <html> 上，优先级更高。 */
+  --chat-font-size: 12.24px; /* Claude --cds-font-size-body */
   /* Chat prose base weight. A weight lifted toward the global base (450 vs
    * the 400 of the original design) gives comfortable, airy reading on both
    * themes — 400 read as visibly thinner than the app chrome (base 500 light
@@ -380,8 +406,12 @@ div:has(> [role="menu"]) {
    * = muted track, center/right = surface) read as one cool palette with
    * brightness hierarchy, not a warm/cold split. Text stays neutral
    * white/gray — it doesn't follow the tint, keeping contrast clean. */
-  --surface: var(--m-gray-850); /* #151515 — Claude dark canvas */
-  --surface-muted: var(--m-gray-800); /* #20201f — recess / sidebar track */
+  /* 【UI 重建 2026-10-27】暗色表面阶梯与亮色**共用同一组 token 名**：
+   * Claude 的做法是让 `--cds-surface-0..3` 在暗色下指向灰阶的另一端
+   * （生成器已把这条链导出到 tokens.cds.css 的 `.dark` 段），所以这里
+   * 只需要指过去，不用再手写第二套色值。 */
+  --surface: var(--m-surface-1); /* #151515 */
+  --surface-muted: var(--m-surface-0); /* #0b0b0b — 最外层画布 */
   --surface-hover: var(--m-gray-750); /* #2c2c2a — hover fills */
   /* 【T128】暗色按下态。对 --surface（#151515）**1.552:1**、对 --surface-hover
    * （#2c2c2a）**1.190:1**。同样取现成色阶档（m-gray-700），不合成新色。
@@ -396,8 +426,8 @@ div:has(> [role="menu"]) {
    * 在这里是 4.60:1 也够，但和我们其他地方的暗色品牌色不一致，取 --accent。 */
   --selected-bg: var(--m-gray-700); /* #383835 */
   --selected-content: var(--m-orange-250); /* #f09978 — 对选中底 5.34:1（--accent 的 4.46 不够） */
-  --surface-raised: #1a1a19;  /* Surface 2 — cards, panels, popovers */
-  --surface-overlay: #20201e; /* Surface 3 — inputs, modal tops */
+  --surface-raised: var(--m-surface-2);  /* Surface 2 — cards, panels, popovers */
+  --surface-overlay: var(--m-surface-3); /* Surface 3 — inputs, modal tops */
   /* 【T121】暗色才是这条阶梯真正起作用的地方（亮色 2 和 3 都是纯白）。
    *
    * ⚠️ 注意 `--surface-muted` 已经是 `#20201f`，**比 Surface 2 的 `#1a1a19` 还亮** ——
@@ -768,6 +798,71 @@ body,
     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "PingFang SC",
     "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* ───────────── Claude 字号阶梯（2026-10-27，UI 重建）─────────────
+ *
+ * 值全部来自本机 Claude 3.1623.4.0 的 `--cds-font-size-*` / `--cds-leading-*`，
+ * 乘以它的 `--cds-rem-scale: calc(16/17)` 换算成 px。**这是 Mcode 之前的
+ * 字号体系的整体替换**：之前各处是零散的 11/12/13/14/15px，Claude 是七档。
+ *
+ * 为什么必须换：Claude 的正文 12.24px，Mcode 原本 15px —— 大 23%。
+ * 这不是「配色差一点」，是**整屏文字的密度完全不同**，人一眼就看得出来。
+ *
+ * 用法：新组件直接读 `--m-fs-*` / `--m-lh-*`；老组件的 `text-[13px]` 这类
+ * 逐个迁（按面板切，一次一个面板）。
+ */
+:root {
+  /* 七档字号（Claude 的实际 px 值，rem-scale 已乘进去） */
+  --m-fs-caption: 11.29px;   /* --cds-font-size-caption  .6875rem × .9412 */
+  --m-fs-footnote: 11.29px;  /* --cds-font-size-footnote .75rem  × .9412 */
+  --m-fs-code: 11.29px;      /* --cds-font-size-code     .75rem  × .9412 */
+  --m-fs-body: 12.24px;      /* --cds-font-size-body     .8125rem × .9412 */
+  --m-fs-prose: 13.18px;     /* --cds-font-size-heading  .875rem × .9412 */
+  --m-fs-heading: 13.18px;   /* 同上（Claude heading 与 prose 同档） */
+  --m-fs-title: 15.06px;     /* --cds-font-size-title/1rem × .9412 */
+  /* 对应行高，**成对使用** —— Claude 的字号与行高是一对定义的，
+   * 只改字号不改行高会让正文挤在一起（这正是很多「字号设置」做残的地方）。 */
+  --m-lh-caption: 16.0px;    /* --cds-leading-caption 1.0625rem × .9412 */
+  --m-lh-body: 18.82px;      /* --cds-leading-body    1.25rem   × .9412 */
+  --m-lh-heading: 16.94px;   /* --cds-leading-heading 1.125rem  × .9412 */
+
+  /* 字重：Claude 用 400 / 500 / 580 三档（不是 Tailwind 的 400/500/600）。 */
+  --m-fw-regular: 400;
+  --m-fw-medium: 500;
+  --m-fw-semibold: 580;
+
+  /* 消息区几何（Claude 的真实值） */
+  --m-assistant-inset: 0px;  /* --cds-assistant-message-text-inset —— 助手正文**无缩进** */
+  --m-bubble-max-w: 85%;     /* 用户气泡最多占版心 85% */
+
+  /* ── Composer 专用（Claude 的 --cmp-* 全套，13 个）──────────────────
+   *
+   * 这些值来自本机 Claude 3.1623.4.0 的产物。它们是**联立的**：
+   *   --cmp-type-size  = 字号（取 text-entry-floor 与 font-size 的较大者）
+   *   --cmp-leading    = 行高（按字号 × 1.4 取整到 1px）
+   *   --cmp-row-py     = 上下内边距 = (控件高 - 行高) / 2
+   *   --cmp-row-h      = 单行总高 = 行高 + 2 × 内边距
+   *   --cmp-chin-row-h = 下颌行高 = 控件档位
+   *
+   * 所以改字号，行高与行高内边距**自动跟着算** —— 这是 Claude 输入框
+   * 「文字变大气泡跟着长」的机制，Mcode 原先全是写死的 px。
+   */
+  --cmp-pad-x: 0.75rem;                       /* 左右内边距 12px */
+  --cmp-gap-y: 0.5rem;                        /* 纵向间距 8px */
+  --cmp-type-size: max(
+    var(--cds-font-size-text-entry-floor, 0px),
+    var(--cds-font-size-prose, 13.18px)
+  );
+  --cmp-leading: round(calc(var(--cmp-type-size) * 1.4), 1px);
+  --cmp-row-py: max(0px, calc((var(--m-h-control) - var(--cmp-leading)) / 2));
+  --cmp-row-h: calc(var(--cmp-leading) + 2 * var(--cmp-row-py));
+  --cmp-chin-row-h: var(--m-h-control--sm);
+  --cmp-chin-start: calc(var(--cmp-pad-x) + 1px);
+  --cmp-chin-end: calc(var(--cmp-pad-x) + 2px);
+  /* 下颌行的**触控补偿**：视觉上矮（28px），但命中区要够 44px，
+   * Claude 用负外边距把命中区外扩 —— 这是它「看着紧凑但好点」的关键。 */
+  --cmp-chin-touch-grow: calc((var(--m-h-control) - var(--cmp-chin-row-h)) / 2);
 }
 
 /* ───────────── Document scroll lock (fullscreen shell) ─────────────
@@ -1142,7 +1237,16 @@ body {
   /* Composer 外框：几何与阴影的唯一真源是生成物里的上游值（gen-cds-tokens.mjs
    * 从 open-claude-ui 的 cds-theme.css 逐条解析），这里只留语义名字。若在本文件
    * 重写 20px / rgba，就会多出第二份会与上游漂移的数值。 */
-  --composer-radius: var(--m-radius-composer);    /* 20px 输入框外框 */
+  /* ── Composer 圆角：Claude 的**三档**，不是一个值 ─────────────────────
+   *
+   * 本机 Claude 3.1623.4.0 产物里的 `--cds-radius-composer` 有三处定义：
+   *   calc(.875rem  × rem-scale) ≈ 13.18px  ← **默认档**
+   *   calc(1.125rem × rem-scale) ≈ 16.94px
+   *   calc(1.25rem  × rem-scale) ≈ 18.82px
+   *
+   * Mcode 原先固定 20px —— 比 Claude 的默认档大 52%，这正是「输入框
+   * 看起来不是同一个东西」最直接的原因。取默认档 13.18px。 */
+  --composer-radius: var(--m-radius-composer);
   --composer-shadow: var(--m-shadow-composer);    /* resting 态：微扩散 + inset 发丝环 */
   --composer-shadow-focus: var(--m-shadow-composer-focus); /* focus-within 态：双环 + 更大扩散 */
   --radius-bubble: var(--m-message-bubble-radius);/* 消息气泡 */
@@ -1177,7 +1281,7 @@ body {
  * include project identity, live authorization/status and worktree metadata.
  * Compact them without hiding status/branch/approval affordances. */
 [data-ui-shell-variant="workspace"] {
-  --composer-radius: 14px; /* v2 comfortable; classic remains generated v1 20px */
+  --composer-radius: var(--m-radius-composer); /* Claude 默认档 ≈13.18px */
   /* 【ARC-005 V2】**尺寸档位**（上游 data-size 的 Mcode 版）。
    * 上游用一条规则翻转整套 --cds-h-control / --cds-pad-* / --cds-icon；
    * Mcode 的组件已经用 Tailwind 尺寸工具类写死，这里先用**变量**接住
@@ -1234,8 +1338,741 @@ body {
   box-shadow: var(--focus-ring);
 }
 @media (prefers-reduced-motion: reduce) {
+  [data-ui-shell-variant="workspace"] [data-tree-session-row],
   [data-ui-shell-variant="workspace"] [data-stream-session-row],
-  [data-ui-shell-variant="workspace"] [data-sidebar-quick-action="new"] {
+  [data-ui-shell-variant="workspace"] [data-sidebar-quick-action="new"],
+  [data-ui-shell-variant="workspace"] [data-sidebar-quick-action="search"],
+  [data-ui-shell-variant="workspace"] [data-sidebar-quick-action="connect-phone"],
+  [data-ui-shell-variant="workspace"] [data-cds="SidebarTopStrip"] button,
+  [data-ui-shell-variant="workspace"] [data-sidebar-project-row],
+  [data-ui-shell-variant="workspace"] [data-sidebar-worktree-row],
+  [data-ui-shell-variant="workspace"] [data-sidebar-group-row],
+  [data-ui-shell-variant="workspace"] [data-cds="SessionTab"],
+  [data-ui-shell-variant="workspace"] [data-cds="RightPanelRail"] [data-pane-rail-button],
+  [data-ui-shell-variant="workspace"] [data-cds="PaneDragHandle"] {
+    transition: none;
+  }
+}
+
+/* ARC-005: workspace sidebar density.
+ * Keep the project/session tree's extra Mcode capabilities, but normalize the
+ * rows to the compact 24–32px CDS rhythm. Everything is scoped to the workspace
+ * variant so classic, mobile drawers and embedded Office surfaces are untouched. */
+[data-ui-shell-variant="workspace"] [data-sidebar-quick-action="connect-phone"] {
+  min-height: 2rem;
+  padding: 4px 10px;
+  border-radius: var(--radius-btn-md);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SidebarNavigation"] {
+  min-width: 0;
+  padding-inline: 8px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SidebarTopStrip"] {
+  min-height: 32px;
+  margin-bottom: 4px;
+  gap: 4px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SidebarTopStrip"] button {
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: var(--radius-btn-md);
+}
+
+[data-ui-shell-variant="workspace"] [data-sidebar-project-section-header] {
+  min-height: 28px;
+  margin-bottom: 2px;
+  padding-inline: 4px;
+}
+
+[data-ui-shell-variant="workspace"] [data-sidebar-project-section-header] h3 {
+  color: rgb(var(--content-muted));
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+[data-ui-shell-variant="workspace"] [data-sidebar-section-heading] {
+  min-height: 26px;
+  padding: 4px 6px;
+  border-radius: var(--radius-btn-md);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SidebarRecentSection"],
+[data-ui-shell-variant="workspace"] [data-cds="SidebarPinnedSessionsSection"],
+[data-ui-shell-variant="workspace"] [data-cds="SidebarPinnedProjectsSection"] {
+  margin-bottom: 6px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SidebarRecentSection"] > ul,
+[data-ui-shell-variant="workspace"] [data-cds="SidebarPinnedSessionsSection"] > ul,
+[data-ui-shell-variant="workspace"] [data-cds="SidebarPinnedProjectsSection"] > ul {
+  margin-top: 2px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SidebarLibrarySection"] {
+  margin-top: 8px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SidebarArchivedSection"] {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top-color: rgb(var(--edge) / 0.4);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SidebarFooter"] {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top-color: rgb(var(--edge) / 0.4);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SidebarFooter"] button {
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: var(--radius-btn-md);
+}
+
+[data-ui-shell-variant="workspace"] [data-sidebar-project-row],
+[data-ui-shell-variant="workspace"] [data-sidebar-worktree-row] {
+  min-height: 28px;
+  padding: 4px 8px;
+  gap: 4px;
+  border-radius: var(--radius-btn-md);
+  transition: background-color var(--dur-snap) var(--ease-snap);
+}
+
+[data-ui-shell-variant="workspace"] [data-sidebar-project-row]:not([data-active="true"]):hover,
+[data-ui-shell-variant="workspace"] [data-sidebar-worktree-row]:hover {
+  background: rgb(var(--surface-hover));
+}
+
+[data-ui-shell-variant="workspace"] [data-sidebar-group-row] {
+  min-height: 26px;
+  padding: 3px 8px;
+  gap: 4px;
+  border-radius: var(--radius-btn-md);
+  font-size: 12px;
+  transition: background-color var(--dur-snap) var(--ease-snap);
+}
+
+[data-ui-shell-variant="workspace"] [data-sidebar-tree-children] {
+  margin-left: 12px;
+  padding-left: 8px;
+  border-color: rgb(var(--edge) / 0.4);
+}
+
+/* Assistant identity line: keep the name and model legible, but visually
+ * subordinate to the response body rather than presenting a branded tile. */
+[data-ui-shell-variant="workspace"] [data-cds="AssistantMessageHeader"] {
+  min-height: 20px;
+  margin-bottom: 4px;
+  gap: 6px;
+  font-size: 12px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="AssistantModelBadge"] {
+  padding: 2px 6px;
+  border: 1px solid rgb(var(--edge) / 0.45);
+  border-radius: var(--radius-btn-xs);
+  background: transparent;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="AssistantAvatar"] {
+  width: 16px;
+  height: 16px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: rgb(var(--content-muted));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="AssistantAvatar"] svg {
+  width: 14px;
+  height: 14px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="AssistantMessageName"] {
+  font-weight: 500;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="UserBubble"] {
+  border: 1px solid rgb(var(--edge) / 0.45);
+  border-radius: var(--radius-bubble);
+  box-shadow: none !important;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="MessageActionButton"] {
+  border-radius: var(--radius-btn-md);
+  font-size: 12px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="MessageActionButton"] svg {
+  width: 14px;
+  height: 14px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="MessageRow"] {
+  min-width: 0;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="MarkdownBody"] {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="MarkdownBody"] a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="InlineCode"] {
+  border-radius: var(--radius-control);
+  padding-inline: 5px;
+  box-decoration-break: clone;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="MarkdownBody"] blockquote {
+  border-left-color: rgb(var(--edge) / 0.65);
+  padding-left: 12px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="MarkdownBody"] table th,
+[data-ui-shell-variant="workspace"] [data-cds="MarkdownBody"] table td {
+  border-color: rgb(var(--edge) / 0.45);
+  padding: 5px 9px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="MarkdownBody"] table th {
+  background: rgb(var(--surface-muted) / 0.55);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="CodeBlock"] {
+  border-color: rgb(var(--edge) / 0.45);
+  border-radius: var(--radius-code);
+  background: rgb(var(--surface-muted) / 0.45);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="CodeBlockHeader"] {
+  min-height: 30px;
+  padding-inline: 10px;
+  border-bottom-color: rgb(var(--edge) / 0.4);
+  background: rgb(var(--surface-muted) / 0.25);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="CodeBlockHeader"] button {
+  min-height: 26px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="CodeBlockBody"] .overflow-auto {
+  scrollbar-color: rgb(var(--edge) / 0.45) transparent;
+}
+
+/* Tool activity is a readable event stream, not a stack of heavy cards.
+ * Keep each action compact and let its status icon / diff summary carry weight. */
+[data-ui-shell-variant="workspace"] [data-ui-tool-row] {
+  min-height: 30px;
+  padding: 5px 8px;
+  gap: 8px;
+  border-radius: var(--radius-btn-md);
+  font-size: 12px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ToolDetailSection"] {
+  gap: 4px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ToolDetailSection"] > div {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ToolDetailSection"] pre {
+  padding: 10px;
+  border-color: rgb(var(--edge) / 0.4);
+  border-radius: var(--radius-control);
+  background: rgb(var(--surface-muted) / 0.3);
+  line-height: 1.5;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="DiffView"] {
+  border: 1px solid rgb(var(--edge) / 0.45);
+  border-radius: var(--radius-code);
+  background: rgb(var(--surface-muted) / 0.4);
+  overscroll-behavior: contain;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="DiffLine"] > span:nth-child(1),
+[data-ui-shell-variant="workspace"] [data-cds="DiffLine"] > span:nth-child(2) {
+  width: 40px;
+  padding-inline: 6px;
+  font-size: var(--chat-fs-xxs);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="MessageError"] {
+  gap: 8px;
+  padding: 8px 10px;
+  border-color: rgb(var(--danger) / 0.4);
+  border-radius: var(--radius-control);
+  background: rgb(var(--danger) / 0.08);
+  color: rgb(var(--danger));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TurnIncomplete"] {
+  gap: 6px;
+  padding: 8px 10px;
+  border-color: rgb(var(--warning) / 0.35);
+  border-radius: var(--radius-control);
+  background: rgb(var(--warning) / 0.07);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TurnIncomplete"] > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="AttachmentCard"] {
+  min-height: 28px;
+  gap: 6px;
+  padding: 4px 8px;
+  border-color: rgb(var(--edge) / 0.45);
+  border-radius: var(--radius-btn-xs);
+  background: rgb(var(--surface-muted) / 0.35);
+  color: rgb(var(--content-muted));
+  font-size: 11px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="AttachmentCard"]:hover {
+  border-color: rgb(var(--edge) / 0.65);
+  background: rgb(var(--surface-hover) / 0.55);
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="AttachmentCard"][aria-expanded="true"] {
+  border-color: rgb(var(--edge) / 0.55);
+  background: rgb(var(--surface-hover));
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ToolApprovalPrompt"],
+[data-ui-shell-variant="workspace"] [data-cds="PlanApprovalPrompt"],
+[data-ui-shell-variant="workspace"] [data-cds="QuestionPrompt"] {
+  padding: 12px;
+  border-color: rgb(var(--edge) / 0.45);
+  border-radius: var(--radius-dialog);
+  background: rgb(var(--surface));
+  box-shadow: var(--shadow-popover);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ToolApprovalPrompt"][data-dangerous="true"] {
+  border-color: rgb(var(--danger) / 0.5);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ToolApprovalPrompt"] button,
+[data-ui-shell-variant="workspace"] [data-cds="PlanApprovalPrompt"] button,
+[data-ui-shell-variant="workspace"] [data-cds="QuestionPrompt"] button {
+  border-radius: var(--radius-btn-md);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="PlanApprovalPrompt"] .font-semibold.text-accent {
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="PlanApprovalMetaLabel"] {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TurnPanel"] .chat-ledger-head {
+  width: calc(100% + 8px);
+  margin-inline: -4px;
+  padding: 4px;
+  gap: 6px;
+  border-radius: var(--radius-btn-md);
+  font-size: 12px;
+  transition: background-color var(--dur-snap) var(--ease-snap), color var(--dur-snap) var(--ease-snap), border-color var(--dur-snap) var(--ease-snap);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TurnPanel"] .chat-ledger-head:hover {
+  background: rgb(var(--surface-hover) / 0.45);
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TurnPanel"] .chat-ledger-live {
+  font-weight: 500;
+  color: rgb(var(--content-muted));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TurnPanel"] .chat-ledger-scan {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(var(--accent) / 0.55), transparent) no-repeat;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SessionTabBar"] {
+  min-height: 40px;
+  padding-block: 4px;
+  padding-inline: 8px;
+  border-color: rgb(var(--edge) / 0.45);
+  background: transparent;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SessionTab"] {
+  min-height: 28px;
+  max-width: 200px;
+  padding: 6px 8px;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+  transition: background-color var(--dur-snap) var(--ease-snap), color var(--dur-snap) var(--ease-snap);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SessionTab"][data-active="true"] {
+  background: transparent;
+  box-shadow: inset 0 -2px 0 rgb(var(--accent) / 0.8);
+  color: rgb(var(--content));
+  font-weight: 500;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SessionTab"]:not([data-active="true"]):hover {
+  background: rgb(var(--surface-hover) / 0.35);
+  box-shadow: inset 0 -1px 0 rgb(var(--edge) / 0.35);
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="SessionTab"]:focus-visible {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: -2px;
+}
+
+/* The right rail is a control strip, not a separate heavy card. Keep the
+ * selected surface quiet and let the active state remain distinct from focus. */
+[data-ui-shell-variant="workspace"] [data-cds="RightPanel"] {
+  min-width: 0;
+  background: rgb(var(--surface));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="RightPanelRail"] {
+  height: 36px;
+  min-height: 36px;
+  gap: 2px;
+  padding-inline: 8px;
+  background: rgb(var(--surface-muted) / 0.25);
+  border-bottom-color: rgb(var(--edge) / 0.45);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="RightPanelContent"] {
+  min-width: 0;
+  overscroll-behavior: contain;
+  background: rgb(var(--surface));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="PaneDragHandle"] {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-btn-md);
+  background: rgb(var(--surface) / 0.92);
+  color: rgb(var(--content-subtle));
+  opacity: 0.72;
+  transition: background-color var(--dur-snap) var(--ease-snap), opacity var(--dur-snap) var(--ease-snap), color var(--dur-snap) var(--ease-snap);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="PaneDragHandle"]:hover,
+[data-ui-shell-variant="workspace"] [data-cds="PaneDragHandle"]:focus-visible {
+  background: rgb(var(--surface-hover));
+  color: rgb(var(--content));
+  opacity: 1;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="PaneDragHandle"][data-dragging="true"] {
+  opacity: 0.5;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="PaneDockPreview"] {
+  margin: 4px;
+  border-width: 1px;
+  border-radius: var(--radius-panel);
+  border-color: rgb(var(--accent) / 0.65);
+  background: rgb(var(--accent) / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(var(--accent) / 0.08);
+}
+
+[data-ui-shell-variant="workspace"] [data-pane-document],
+[data-ui-shell-variant="workspace"] [data-pane-flow] {
+  border-color: rgb(var(--edge) / 0.4);
+  background: rgb(var(--surface));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="RightPanelRail"] [data-pane-rail-button] {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-btn-md);
+  transition: background-color var(--dur-snap) var(--ease-snap), color var(--dur-snap) var(--ease-snap);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="RightPanelRail"] [data-pane-rail-button][aria-pressed="true"] {
+  border-radius: 0;
+  background: transparent;
+  box-shadow: inset 0 -2px 0 rgb(var(--accent) / 0.8);
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="RightPanelRail"] [data-pane-rail-button]:focus-visible {
+  outline-offset: -2px;
+}
+
+[data-cds="RightPanelDockIcon"] {
+  display: none;
+}
+
+[data-cds="RightPanelDockGlyph"] {
+  display: inline-block;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="RightPanelDockGlyph"] {
+  display: none;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="RightPanelDockIcon"] {
+  display: block;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="RightPanelDockHandle"] {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-btn-md);
+  color: rgb(var(--content-subtle));
+  opacity: 0.72;
+  transition: background-color var(--dur-snap) var(--ease-snap), color var(--dur-snap) var(--ease-snap), opacity var(--dur-snap) var(--ease-snap);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="RightPanelDockHandle"]:hover,
+[data-ui-shell-variant="workspace"] [data-cds="RightPanelDockHandle"]:focus-visible {
+  background: rgb(var(--surface-hover));
+  color: rgb(var(--content));
+  opacity: 1;
+}
+
+/* Terminal panel: compact, text-led tabs and a low-contrast tool rail.
+ * The PTY host and keep-alive tree are untouched; these are presentation hooks
+ * only and apply exclusively to the workspace shell. */
+[data-ui-shell-variant="workspace"] [data-cds="BottomTerminalBar"] {
+  border-top-color: rgb(var(--edge) / 0.45);
+  background: rgb(var(--surface));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalPanel"] {
+  background: rgb(var(--surface));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalToolbar"] {
+  min-height: 34px;
+  gap: 2px;
+  padding-inline: 6px;
+  border-bottom-color: rgb(var(--edge) / 0.45);
+  background: rgb(var(--surface-muted) / 0.35);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalTabList"] {
+  gap: 2px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalTab"] {
+  min-height: 28px;
+  padding: 0 4px;
+  border-radius: 0;
+  background: transparent;
+  color: rgb(var(--content-muted));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalTab"][data-active="true"] {
+  background: transparent;
+  box-shadow: inset 0 -2px 0 rgb(var(--accent) / 0.8);
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalTab"]:not([data-active="true"]):hover {
+  background: rgb(var(--surface-hover) / 0.4);
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-terminal-tab] {
+  min-height: 28px;
+  padding-inline: 5px;
+  border-radius: 0;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalActions"] {
+  gap: 2px;
+  border-left-color: rgb(var(--edge) / 0.4);
+  padding-left: 4px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalActions"] button {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-btn-md);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalStatusLine"] {
+  padding: 4px 8px;
+  border-bottom-color: rgb(var(--edge) / 0.4);
+  background: rgb(var(--surface-muted) / 0.35);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalViewport"] {
+  background: rgb(var(--surface));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="TerminalEmptyState"] > div:first-child {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-control);
+  background: rgb(var(--surface-muted));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-ui-shell-variant="workspace"] [data-cds="TerminalTab"] {
+    transition: none;
+  }
+}
+
+/* Editor tabs and explorer rows share the same low-noise navigation language:
+ * a single active underline / inset marker, not a row of raised pills. */
+[data-ui-shell-variant="workspace"] [data-cds="OpenTabsBar"],
+[data-ui-shell-variant="workspace"] [data-cds="UnifiedTabsBar"] {
+  min-height: 34px;
+  gap: 2px;
+  padding: 3px 8px;
+  border-bottom-color: rgb(var(--edge) / 0.45);
+  background: transparent;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="OpenTabsTrack"],
+[data-ui-shell-variant="workspace"] [data-cds="UnifiedTabsTrack"] {
+  gap: 2px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="EditorFileTab"],
+[data-ui-shell-variant="workspace"] [data-cds="PlanEditorTab"],
+[data-ui-shell-variant="workspace"] [data-cds="UnifiedPlanTab"],
+[data-ui-shell-variant="workspace"] [data-cds="UnifiedPreviewTab"] {
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+  transition: background-color var(--dur-snap) var(--ease-snap), color var(--dur-snap) var(--ease-snap);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="EditorFileTab"][data-active="true"],
+[data-ui-shell-variant="workspace"] [data-cds="PlanEditorTab"][data-active="true"],
+[data-ui-shell-variant="workspace"] [data-cds="UnifiedPlanTab"][data-active="true"],
+[data-ui-shell-variant="workspace"] [data-cds="UnifiedPreviewTab"][data-active="true"] {
+  background: transparent;
+  box-shadow: inset 0 -2px 0 rgb(var(--accent) / 0.8);
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="EditorFileTab"]:not([data-active="true"]):hover,
+[data-ui-shell-variant="workspace"] [data-cds="PlanEditorTab"]:not([data-active="true"]):hover,
+[data-ui-shell-variant="workspace"] [data-cds="UnifiedPlanTab"]:not([data-active="true"]):hover,
+[data-ui-shell-variant="workspace"] [data-cds="UnifiedPreviewTab"]:not([data-active="true"]):hover {
+  background: rgb(var(--surface-hover) / 0.4);
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FilesPanelHeader"] {
+  min-height: 34px;
+  gap: 4px;
+  padding: 3px 8px;
+  border-bottom-color: rgb(var(--edge) / 0.45);
+  background: rgb(var(--surface-muted) / 0.25);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FilesPanelHeader"] button {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-btn-md);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FilesTreeViewport"] {
+  overscroll-behavior: contain;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FileTree"] {
+  padding-block: 4px;
+  font-size: 12px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FileTreeDirectoryRow"],
+[data-ui-shell-variant="workspace"] [data-cds="FileTreeFileRow"] {
+  min-height: 27px;
+  gap: 6px;
+  padding-block: 3px;
+  border-radius: var(--radius-btn-xs);
+  transition: background-color var(--dur-snap) var(--ease-snap), color var(--dur-snap) var(--ease-snap);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FileTreeDirectoryRow"]:hover,
+[data-ui-shell-variant="workspace"] [data-cds="FileTreeFileRow"]:not([data-active="true"]):hover {
+  background: rgb(var(--surface-hover) / 0.55);
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FileTreeFileRow"][data-active="true"] {
+  background: rgb(var(--surface-hover) / 0.65);
+  box-shadow: inset 2px 0 0 rgb(var(--accent) / 0.8);
+  color: rgb(var(--content));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FilesEmptyState"] > div:first-child {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-control);
+  background: rgb(var(--surface-muted));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FileEditorToolbar"] {
+  min-height: 34px;
+  gap: 4px;
+  padding: 3px 8px;
+  border-bottom-color: rgb(var(--edge) / 0.45);
+  background: rgb(var(--surface-muted) / 0.25);
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FileEditorToolbar"] button {
+  min-height: 28px;
+  border-radius: var(--radius-btn-md);
+  font-size: 11px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FileEditorToolbar"] > div:first-child button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="FileEditorViewport"] {
+  min-width: 0;
+  background: rgb(var(--surface));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-ui-shell-variant="workspace"] [data-cds="EditorFileTab"],
+  [data-ui-shell-variant="workspace"] [data-cds="PlanEditorTab"],
+  [data-ui-shell-variant="workspace"] [data-cds="UnifiedPlanTab"],
+  [data-ui-shell-variant="workspace"] [data-cds="UnifiedPreviewTab"],
+  [data-ui-shell-variant="workspace"] [data-cds="FileTreeDirectoryRow"],
+  [data-ui-shell-variant="workspace"] [data-cds="FileTreeFileRow"] {
     transition: none;
   }
 }
@@ -1997,18 +2834,34 @@ button.chat-ledger-head:hover {
  * 上游默认值。只有「默认档」需要与上游一致。 */
 :root,
 [data-chat-density="comfortable"] {
-  --chat-row-gap-assistant: 0.625rem; /* 10px — 上游 chat-item-gap (was 12px) */
-  --chat-row-gap-user: 0.9375rem;     /* 15px — 上游 chat-turn-gap (was 20px) */
-  --chat-block-gap: 0.625rem;         /* 10px — 上游 chat-item-gap (was 8px) */
+  /* 【UI 重建 2026-10-27】**间距改成 Claude 的相对公式，不再写死 px。**
+   *
+   * Claude 的真实定义（本机 3.1623.4.0 产物）：
+   *   --chat-turn-gap = body × leading × .75    ← 轮次之间
+   *   --chat-item-gap = body × leading × .50    ← 轮内
+   *
+   * 用公式而不是常数，**改字号或行高时间距自动跟着变** —— 这正是不写死的好处。
+   * Mcode 原先写 `0.625rem` / `0.9375rem`，字号一变就与文字比例失衡。
+   *
+   * 按当前值算：body 12.24px × leading 1.5378 = 18.82px
+   *   turn-gap = 14.12px、item-gap = 9.41px
+   */
+  --chat-row-gap-assistant: calc(var(--chat-font-size) * var(--chat-md-leading) * 0.5);
+  --chat-row-gap-user: calc(var(--chat-font-size) * var(--chat-md-leading) * 0.75);
+  --chat-block-gap: calc(var(--chat-font-size) * var(--chat-md-leading) * 0.5);
   --chat-md-gap-xs: 0.25rem;         /* 4px  */
   --chat-md-gap-sm: 0.375rem;        /* 6px  */
   --chat-md-gap-md: 0.5rem;          /* 8px  */
   --chat-md-gap-lg: 0.75rem;         /* 12px */
-  /* 【T147】上游正文行高真身是 ChatMessageBubbles.tsx:361 的 `leading-relaxed`
-   * （Tailwind 内置 1.625，上游 tailwind.config.js 未覆盖 lineHeight）。
-   * cds-theme.css 里的 `--chat-leading: 1.42857` 是个没有被任何组件引用的
-   * 变量 —— 只有 :180/:181 用它算间距，行高本身没人读。别再用它当依据。 */
-  --chat-md-leading: 1.625;
+  /* 【UI 重建 2026-10-27】行高改成 Claude 的真实比例。
+   *
+   * T147 曾写「`--chat-leading: 1.42857` 是没人引用的变量，别用它当依据」——
+   * 那是对**第三方逆向产物**的判断。从本机 Claude 3.1623.4.0 直接读到的是
+   * `--cds-leading-body: calc(1.25rem * rem-scale)` ≈ 18.82px，配
+   * `--cds-font-size-body` ≈ 12.24px → **1.537**。
+   *
+   * 不是 1.42857，也不是原先的 1.625。18.82/12.24 = 1.5378。 */
+  --chat-md-leading: 1.5378;
 }
 [data-chat-density="compact"] {
   --chat-row-gap-assistant: 0.25rem; /* 4px */
@@ -2059,19 +2912,25 @@ button.chat-ledger-head:hover {
 }
 
 /* ── Mini pill ──────────────────────────────────────────────────────────
- * One bordered container; every segment is an independent trigger opening
+ * One container; every segment is an independent trigger opening
  * its own menu/popover — no behaviour change vs the old chip row, just a
- * tighter container that persists through every width. */
+ * tighter container that persists through every width.
+ *
+ * 【UI 对齐 Claude / ChatComposer.tsx:102-153】上游的输入框内部**没有一条边框**：
+ * 整个 composer 是一个圆角盒 + 底部一行透明分离线（`border-t border-transparent`），
+ * 里面的按钮只有 hover 才出现底色。原来这里给药丸画了 `1px solid rgb(var(--edge))`
+ * + 一层 `surface-muted/60` 底，等于在输入框里又放了一个带框控件 ——
+ * 这正是「换汤不换药」的来源：token 都对齐了，但每样东西仍各自带框。 */
 [data-chat-root] .composer-minipill {
   display: inline-flex;
   align-items: center;
   height: 1.75rem;            /* 28px — matches the chip row's visual height */
   padding: 0 0.1875rem;
-  border: 1px solid rgb(var(--edge));
+  border: none;
   /* 【ARC-005 V2】圆角走 CDS 控件档（与 Segmented 轨道同源），不再是
    * 9px 的一次性字面量。 */
   border-radius: var(--radius-btn-xs);
-  background: rgb(var(--surface-muted) / 0.6);
+  background: transparent;
   flex: none;
   min-width: 0;
 }
@@ -2175,6 +3034,23 @@ button.chat-ledger-head:hover {
 [data-chat-root] .composer-lvlbars > span.on {
   opacity: 1;
   background: rgb(var(--accent));
+}
+
+/* ── Composer 内部尺寸（UI 重建 2026-10-27）─────────────────────────
+ *
+ * Claude 的输入框内边距不是固定 px，而是一组联立变量（`--cmp-*`，见 :root）：
+ *   --cmp-pad-x  左右内边距（默认 .75rem = 12px）
+ *   --cmp-gap-y  纵向间距（默认 .5rem = 8px）
+ *   --cmp-row-h  单行总高 = 行高 + 2 × 内边距（按字号自动算）
+ *
+ * Mcode 的 composer 内部原来写死 Tailwind 的 px-3/px-4/py-2，字号一改
+ * 内边距就不成比例了。这里用**作用域覆盖**把它们统一到变量上 ——
+ * 不改 JSX，因为 composer 内部结构有十几层、逐处替换风险远大于收益。
+ *
+ * 作用域限定在 `.composer-card` 内部，不影响消息区与右栏。 */
+[data-chat-root] .composer-card > * {
+  --composer-pad-x: var(--cmp-pad-x);
+  --composer-gap-y: var(--cmp-gap-y);
 }
 
 /* ── Card polish (方案 B 质感 baseline) ──────────────────────────────── */
@@ -3259,10 +4135,109 @@ html[data-reduce-motion="true"] .cds-quiet-dots > i {
   height: 0.5px;
 }
 
-/* 顶栏：上游 45px 拖拽带的高度语义；Mcode 保持 40px 以兼容现有窗口控制
- * 按钮的布局断言，但把底色与侧栏拉平，让整个外壳读成一整块画布。 */
+/* 顶栏：沿用上游 45px 拖拽带的高度，并把底色与侧栏拉平，让整个外壳
+ * 读成一整块画布；平台窗口按钮的保留区仍由 Titlebar 自己计算。 */
 [data-ui-shell-variant="workspace"] [data-cds-titlebar] > div:first-child {
   background: rgb(var(--surface-muted));
+}
+
+/* Keep the titlebar's context readable without allowing the left-side chips to
+ * squeeze the panel actions out of view. Container queries follow the actual
+ * center/right toolbar width, not the overall window width. */
+[data-ui-shell-variant="workspace"] [data-cds-titlebar] {
+  container-name: cds-titlebar;
+  container-type: inline-size;
+}
+
+[data-ui-shell-variant="workspace"] [data-arc005-titlebar-context] {
+  gap: 6px;
+}
+
+[data-ui-shell-variant="workspace"] [data-arc005-titlebar-actions] {
+  gap: 4px;
+}
+
+[data-cds="PanePresetsIcon"] {
+  display: block;
+}
+
+[data-cds="PanePresetsLabel"] {
+  display: none;
+}
+
+[data-cds="PanePresetsButton"] {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--radius-btn-md);
+}
+
+@container cds-titlebar (width < 1050px) {
+  [data-titlebar-thread-title] {
+    max-width: 240px;
+  }
+
+  [data-titlebar-project-chip] {
+    max-width: 132px;
+    flex-basis: 32px;
+  }
+
+  [data-titlebar-worktree-chip] {
+    max-width: 112px;
+    flex-basis: 32px;
+  }
+}
+
+@container cds-titlebar (width < 850px) {
+  [data-ui-shell-variant="workspace"] [data-arc005-titlebar-context] {
+    gap: 4px;
+  }
+
+  [data-ui-shell-variant="workspace"] [data-arc005-titlebar-actions] {
+    gap: 2px;
+  }
+
+  [data-titlebar-thread-title] {
+    max-width: 180px;
+    gap: 5px;
+    font-size: 12px;
+  }
+
+  [data-titlebar-project-chip],
+  [data-titlebar-worktree-chip] {
+    max-width: 96px;
+    font-size: 11px;
+  }
+}
+
+@container cds-titlebar (width < 720px) {
+  [data-titlebar-project-chip],
+  [data-titlebar-worktree-chip] {
+    display: none;
+  }
+
+  [data-titlebar-thread-title] {
+    max-width: 160px;
+    flex-basis: 40px;
+  }
+
+  [data-ui-shell-variant="workspace"] [data-arc005-titlebar-actions] {
+    gap: 1px;
+  }
+}
+
+@container cds-titlebar (width < 600px) {
+  [data-titlebar-branch] {
+    display: none;
+  }
+
+  [data-titlebar-thread-title] {
+    max-width: 132px;
+  }
 }
 
 /* 中央画布与右栏之间的接缝：workspace 下不画左边框，靠色阶差分隔
@@ -3342,6 +4317,24 @@ html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
   transition: none;
 }
 
+html[data-reduce-motion="true"] [data-cds="SelectionToolbar"],
+html[data-reduce-motion="true"] [data-cds="SelectionQuoteMenu"],
+html[data-reduce-motion="true"] [data-cds="ToolApprovalPrompt"],
+html[data-reduce-motion="true"] [data-cds="PlanApprovalPrompt"],
+html[data-reduce-motion="true"] [data-cds="QuestionPrompt"] {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-reduce-motion="false"]) [data-cds="SelectionToolbar"],
+  html:not([data-reduce-motion="false"]) [data-cds="SelectionQuoteMenu"],
+  html:not([data-reduce-motion="false"]) [data-cds="ToolApprovalPrompt"],
+  html:not([data-reduce-motion="false"]) [data-cds="PlanApprovalPrompt"],
+  html:not([data-reduce-motion="false"]) [data-cds="QuestionPrompt"] {
+    animation: none;
+  }
+}
+
 /* ═══════════ 【ARC-005 V2】Composer 的 CDS 形态（workspace 作用域） ═══════════
  *
  * 上游 ChatComposer 的三条规范（`code-examples/ChatComposer.tsx`）：
@@ -3353,8 +4346,7 @@ html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
  * workspace 变体下生效（classic 保持现有手感）。
  */
 [data-ui-shell-variant="workspace"] .composer-card:hover:not(:focus-within) {
-  border-color: rgb(var(--input-edge) / 0.75);
-  box-shadow: var(--composer-shadow-focus);
+  box-shadow: var(--m-shadow-composer-hover);
 }
 [data-ui-shell-variant="workspace"] .composer-card:focus-within {
   box-shadow: var(--composer-shadow-focus);
@@ -3371,10 +4363,94 @@ html[data-reduce-motion="true"] [data-cds-segmented] > div[aria-hidden="true"] {
 [data-ui-shell-variant="workspace"] .composer-host .ProseMirror {
   min-height: 3rem;
 }
+
+/* Composer parity: keep Mcode-only controls, but make the input surface read
+ * as one calm editor with a single action rail instead of nested mini-cards. */
+[data-ui-shell-variant="workspace"] [data-cds="ComposerContextRow"] {
+  min-height: 22px;
+  gap: 2px;
+  padding-inline: 2px;
+  padding-bottom: 3px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ComposerContextRow"] > button,
+[data-ui-shell-variant="workspace"] [data-cds="ComposerContextRow"] [role="button"] {
+  min-height: 24px;
+  padding-inline: 7px;
+  border-radius: var(--radius-btn-xs);
+  font-size: 11px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ComposerCard"] {
+  min-width: 0;
+  border: 0;
+  background: rgb(var(--surface));
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ComposerAttachmentRow"] {
+  gap: 8px;
+  padding: 4px 14px 7px;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--edge) / 0.45) transparent;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ComposerActionRow"] {
+  min-height: 44px;
+  gap: 8px;
+  padding: 6px 10px 8px;
+  border-top: 1px solid transparent;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ComposerConfigControls"] {
+  min-width: 0;
+  gap: 2px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ComposerPrimaryActions"] {
+  gap: 4px;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ComposerPrimaryActions"] button {
+  flex-shrink: 0;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ComposerPrimaryActions"] .composer-send,
+[data-ui-shell-variant="workspace"] [data-cds="ComposerPrimaryActions"] .composer-stop {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-btn-md);
+  box-shadow: none;
+}
+
+[data-ui-shell-variant="workspace"] [data-cds="ComposerPrimaryActions"] .composer-send:disabled {
+  opacity: 0.3;
+  background: rgb(var(--surface-hover));
+  color: rgb(var(--content-subtle));
+}
+
 @media (prefers-reduced-motion: reduce) {
+  [data-ui-shell-variant="workspace"] .composer-card,
+  [data-ui-shell-variant="workspace"] .composer-card::before,
+  [data-ui-shell-variant="workspace"] .composer-card::after,
+  [data-ui-shell-variant="workspace"] [data-cds="RightPanelDockHandle"] {
+    transition: none !important;
+    animation: none !important;
+  }
+
   [data-ui-shell-variant="workspace"] .composer-send:not(:disabled):active {
     transform: none;
+    transition: none !important;
   }
+}
+
+html[data-reduce-motion="true"] [data-ui-shell-variant="workspace"] .composer-card,
+html[data-reduce-motion="true"] [data-ui-shell-variant="workspace"] .composer-card::before,
+html[data-reduce-motion="true"] [data-ui-shell-variant="workspace"] .composer-card::after,
+html[data-reduce-motion="true"] [data-ui-shell-variant="workspace"] [data-cds="RightPanelDockHandle"],
+html[data-reduce-motion="true"] [data-ui-shell-variant="workspace"] .composer-send:not(:disabled):active {
+  transition: none !important;
+  animation: none !important;
+  transform: none !important;
 }
 
 /* ═══════════ 【ARC-005 V2】View Transition（会话切换的共享元素过渡） ═══════════

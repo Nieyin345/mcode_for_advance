@@ -13,8 +13,7 @@ import { TheiaQuickInputHost } from "./components/modules/TheiaQuickInputHost.js
 import { TheiaStatusStrip } from "./components/modules/TheiaStatusStrip.js";
 import { TheiaDiagnosticsHost } from "./lib/theiaDiagnostics.js";
 import { TheiaWebviewHost } from "./components/modules/TheiaWebviewHost.js";
-import { ClassicShell } from "./components/shell/ClassicShell.js";
-import { shellVariantOf } from "./components/shell/WorkspaceShell.js";
+import { ClaudeShellMount } from "./components/shell/ClaudeShellMount.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
 import { VoiceListeningOverlay } from "./components/layout/VoiceListeningOverlay.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
@@ -215,26 +214,12 @@ export function App() {
   const bottomTerminalOpen = useSessionStore((s) => s.bottomTerminalOpen);
   const setBottomTerminalOpen = useSessionStore((s) => s.setBottomTerminalOpen);
   const widePanelOpen = useSessionStore((s) => s.widePanelOpen);
-  // Wide-panel (3:7) split share + its resize/reset actions. The wide mode
-  // reuses the layout's right aside (percentage width) instead of mounting a
-  // second RightPanel inside the center column, so toggling wide never
-  // unmounts the right panel (file tree, git scan, browser view ownership).
-  const widePanelPct = useSessionStore((s) => s.widePanelPct);
-  const adjustWidePanelPct = useSessionStore((s) => s.adjustWidePanelPct);
-  const resetWidePanelPct = useSessionStore((s) => s.resetWidePanelPct);
 
-  /** Draggable pane sizes + resize actions (from the store; persisted). */
+  /** Draggable pane sizes + resize actions (from the store; persisted).
+   *  【UI 重建】右侧现在是 tile 树，不再是可拖宽的 aside，所以只留左栏那组。 */
   const leftWidthPct = useSessionStore((s) => s.leftWidthPct);
-  const rightWidth = useSessionStore((s) => s.rightWidth);
-  const rightDock = useSessionStore((s) => s.rightDock);
-  const bottomTerminalHeight = useSessionStore((s) => s.bottomTerminalHeight);
   const adjustLeftWidthPct = useSessionStore((s) => s.adjustLeftWidthPct);
-  const adjustRightWidth = useSessionStore((s) => s.adjustRightWidth);
-  const setRightWidthPx = useSessionStore((s) => s.setRightWidthPx);
-  const adjustBottomTerminalHeight = useSessionStore((s) => s.adjustBottomTerminalHeight);
   const resetLeftWidthPct = useSessionStore((s) => s.resetLeftWidthPct);
-  const resetRightWidth = useSessionStore((s) => s.resetRightWidth);
-  const resetBottomTerminalHeight = useSessionStore((s) => s.resetBottomTerminalHeight);
 
   /** Command palette + file search dialog visibility is driven by the
    *  global shortcut listener (useGlobalShortcuts) via store actions, so we
@@ -256,12 +241,11 @@ export function App() {
     if (ideFocusNonce > 0) setRightOpen(true);
   }, [ideFocusNonce, setRightOpen]);
 
-  // 【ARC-005 V2】外壳偏好:**只换 variant,不换组件类型**。这里永远渲染同一个
-  // 经典外壳元素,`variant` 只影响左栏宽度下限/圆角/分隔线。写成
-  // `shell === "workspace" ? 工作区壳 : 经典壳` 会让 React 卸载
-  // 整棵工作区子树(TerminalView 的 cleanup 调 api.terminal.kill —— Windows 上
-  // 批量 kill 偶发崩主进程,Monaco/草稿也全丢)。见 ClassicShellProps.variant。
-  const shellPref = useSessionStore((s) => s.shellPref);
+  // 【UI 重建 2026-10-27】外壳不再是「同一组件的两个 variant」，而是换成了
+  // Claude Code 页的列覆盖模型（`ClaudeShell`）。那条「不许卸载工作区子树」
+  // 的不变量**仍然成立**：新外壳的列切换只做 inert + data-covered，
+  // 终端 PTY / Monaco / 草稿全程挂载（见 chatColumn.ts 与 ClaudeShell.tsx）。
+  // `shellPref` 设置项暂时保留（老用户的选择不清空），但不再影响渲染。
 
   // Root row ref — measures the full window width so the left divider's px
   // drag delta can be converted into percentage points of that width (the
@@ -284,13 +268,8 @@ export function App() {
   // the left sidebar closed (store guard), so the window width IS the layout
   // row width that widePanelPct is a share of. The sign flip (dragging right
   // shrinks the right panel) lives in adjustWidePanelPct.
-  const handleWidePanelResize = (deltaPx: number) => {
-    const el = rootRef.current;
-    if (!el) return;
-    const w = el.getBoundingClientRect().width;
-    if (w <= 0) return;
-    adjustWidePanelPct((deltaPx / w) * 100);
-  };
+  // 【UI 重建】右侧改成 tile 树后不再有「宽屏 3:7 分栏」，这段随之移除；
+  // `WidePlanDialog` 仍读 widePanelOpen，那个开关暂时保留给计划全屏用。
 
   return (
     // bg-surface-muted (matching the sidebar/toolbar/track) so the left
@@ -327,8 +306,12 @@ export function App() {
       {/* 【MC-046】工作区整体包进 inert 壳:设置打开时整棵后台子树退出
           Tab 序与辅助技术(几何逐像素不变,子树全程挂载 —— 见 WorkspaceInertShell
           自己的注释)。 */}
-      <ClassicShell
-        variant={shellVariantOf(shellPref)}
+      {/* 【UI 重建 2026-10-27】外壳换成 Claude Code 页的形态：
+          `data-chat-column` 列覆盖 + pane tile 树。
+          旧的 ClassicShell 暂时保留在仓库里（套件仍引用），但不再由 App 渲染。
+          同一条不变量照旧：列切换只做 inert + data-covered，绝不卸载工作区子树
+          （终端 PTY / Monaco / 草稿保活）。 */}
+      <ClaudeShellMount
         leftOpen={leftOpen}
         leftBarMode={leftBarMode}
         leftWidthPct={leftWidthPct}
@@ -339,18 +322,6 @@ export function App() {
         setRightOpen={setRightOpen}
         bottomTerminalOpen={bottomTerminalOpen}
         setBottomTerminalOpen={setBottomTerminalOpen}
-        widePanelOpen={widePanelOpen}
-        widePanelPct={widePanelPct}
-        rightWidth={rightWidth}
-        rightDock={rightDock}
-        bottomTerminalHeight={bottomTerminalHeight}
-        handleWidePanelResize={handleWidePanelResize}
-        adjustRightWidth={adjustRightWidth}
-        setRightWidthPx={setRightWidthPx}
-        adjustBottomTerminalHeight={adjustBottomTerminalHeight}
-        resetWidePanelPct={resetWidePanelPct}
-        resetRightWidth={resetRightWidth}
-        resetBottomTerminalHeight={resetBottomTerminalHeight}
       />
       {/* Settings is a full-window surface, mounted at the ROOT (not inside
           the workspace column) so no workspace ancestor's overflow or

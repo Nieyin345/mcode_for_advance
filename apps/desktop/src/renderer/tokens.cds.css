@@ -1,11 +1,81 @@
-/* 由 scripts/gen-cds-tokens.mjs 从 open-claude-ui/code-examples/cds-theme.css 生成。
- * 上游：MIT，Caho1/open-claude-ui（基于 REA 对 Claude 桌面端的逆向）。
- * 不要手改；改上游或生成器，然后重跑。
+/* 由 scripts/gen-cds-tokens.mjs 从**本机安装的 Claude Desktop 3.1623.4.0** 生成。
+ * 源文件：v1/c6a992d55-Bt_TAkxU.css
+ * 不要手改；重跑 `node scripts/gen-cds-tokens.mjs` 即可（Claude 升级后重跑）。
  *
- * 这些是**原始色阶**（--m-*），Mcode 的语义 token 在 styles.css 里指过来。
- * 用 "R G B" 三元组是为了让 Tailwind 的 <alpha-value> 继续工作（840 处 alpha 类）。
+ * 这些是**原始层**（--m-*），Mcode 的语义 token 在 styles.css 里指过来。
+ * 色阶用 "R G B" 三元组，让 Tailwind 的 <alpha-value> 继续工作（840 处 alpha 类）。
  */
 :root {
+  --m-aqua-0: 255 255 255; /* #fff */
+  --m-aqua-10: 249 253 251; /* #f9fdfb */
+  --m-aqua-100: 191 235 219; /* #bfebdb */
+  --m-aqua-150: 160 225 201; /* #a0e1c9 */
+  --m-aqua-20: 243 251 248; /* #f3fbf8 */
+  --m-aqua-200: 122 215 180; /* #7ad7b4 */
+  --m-aqua-250: 90 203 160; /* #5acba0 */
+  --m-aqua-30: 237 249 244; /* #edf9f4 */
+  --m-aqua-300: 59 189 140; /* #3bbd8c */
+  --m-aqua-350: 27 175 122; /* #1baf7a */
+  --m-aqua-40: 232 247 241; /* #e8f7f1 */
+  --m-aqua-400: 25 158 112; /* #199e70 */
+  --m-aqua-450: 19 142 101; /* #138e65 */
+  --m-aqua-50: 226 244 237; /* #e2f4ed */
+  --m-aqua-500: 15 126 92; /* #0f7e5c */
+  --m-aqua-550: 14 110 83; /* #0e6e53 */
+  --m-aqua-60: 220 242 234; /* #dcf2ea */
+  --m-aqua-600: 6 95 73; /* #065f49 */
+  --m-aqua-650: 9 80 64; /* #095040 */
+  --m-aqua-70: 213 240 230; /* #d5f0e6 */
+  --m-aqua-700: 3 66 53; /* #034235 */
+  --m-aqua-750: 2 52 43; /* #02342b */
+  --m-aqua-80: 206 239 226; /* #ceefe2 */
+  --m-aqua-800: 2 39 32; /* #022720 */
+  --m-aqua-810: 2 36 30; /* #02241e */
+  --m-aqua-820: 2 34 28; /* #02221c */
+  --m-aqua-830: 2 31 26; /* #021f1a */
+  --m-aqua-840: 3 28 24; /* #031c18 */
+  --m-aqua-850: 5 26 22; /* #051a16 */
+  --m-aqua-860: 7 23 19; /* #071713 */
+  --m-aqua-870: 8 20 17; /* #081411 */
+  --m-aqua-880: 10 17 15; /* #0a110f */
+  --m-aqua-890: 11 14 13; /* #0b0e0d */
+  --m-aqua-90: 199 237 223; /* #c7eddf */
+  --m-aqua-900: 11 11 11; /* #0b0b0b */
+  --m-blue-0: 255 255 255; /* #fff */
+  --m-blue-10: 250 252 255; /* #fafcff */
+  --m-blue-100: 205 226 251; /* #cde2fb */
+  --m-blue-150: 183 211 246; /* #b7d3f6 */
+  --m-blue-20: 245 249 254; /* #f5f9fe */
+  --m-blue-200: 158 197 244; /* #9ec5f4 */
+  --m-blue-250: 134 182 239; /* #86b6ef */
+  --m-blue-30: 240 247 254; /* #f0f7fe */
+  --m-blue-300: 109 167 236; /* #6da7ec */
+  --m-blue-350: 85 152 231; /* #5598e7 */
+  --m-blue-40: 235 244 252; /* #ebf4fc */
+  --m-blue-400: 57 135 229; /* #3987e5 */
+  --m-blue-450: 42 120 214; /* #2a78d6 */
+  --m-blue-50: 231 241 251; /* #e7f1fb */
+  --m-blue-500: 37 106 191; /* #256abf */
+  --m-blue-550: 28 92 171; /* #1c5cab */
+  --m-blue-60: 226 238 250; /* #e2eefa */
+  --m-blue-600: 24 79 149; /* #184f95 */
+  --m-blue-650: 16 66 129; /* #104281 */
+  --m-blue-70: 221 235 250; /* #ddebfa */
+  --m-blue-700: 13 54 107; /* #0d366b */
+  --m-blue-750: 6 43 87; /* #062b57 */
+  --m-blue-80: 215 232 250; /* #d7e8fa */
+  --m-blue-800: 3 32 66; /* #032042 */
+  --m-blue-810: 3 30 61; /* #031e3d */
+  --m-blue-820: 2 28 57; /* #021c39 */
+  --m-blue-830: 2 26 54; /* #021a36 */
+  --m-blue-840: 2 24 49; /* #021831 */
+  --m-blue-850: 3 22 44; /* #03162c */
+  --m-blue-860: 5 20 38; /* #051426 */
+  --m-blue-870: 7 18 31; /* #07121f */
+  --m-blue-880: 9 16 24; /* #091018 */
+  --m-blue-890: 10 13 17; /* #0a0d11 */
+  --m-blue-90: 210 229 250; /* #d2e5fa */
+  --m-blue-900: 11 11 11; /* #0b0b0b */
   --m-gray-0: 255 255 255; /* #fff */
   --m-gray-10: 252 252 251; /* #fcfcfb */
   --m-gray-100: 225 224 217; /* #e1e0d9 */
@@ -36,11 +106,83 @@
   --m-gray-840: 24 24 23; /* #181817 */
   --m-gray-850: 21 21 21; /* #151515 */
   --m-gray-860: 19 19 19; /* #131313 */
-  --m-gray-870: 17 17 17; /* #111111 */
+  --m-gray-870: 17 17 17; /* #111 */
   --m-gray-880: 15 15 15; /* #0f0f0f */
   --m-gray-890: 13 13 13; /* #0d0d0d */
   --m-gray-90: 228 227 221; /* #e4e3dd */
   --m-gray-900: 11 11 11; /* #0b0b0b */
+  --m-green-0: 255 255 255; /* #fff */
+  --m-green-10: 250 253 250; /* #fafdfa */
+  --m-green-100: 202 234 199; /* #caeac7 */
+  --m-green-150: 174 224 169; /* #aee0a9 */
+  --m-green-20: 245 251 244; /* #f5fbf4 */
+  --m-green-200: 145 214 139; /* #91d68b */
+  --m-green-250: 115 203 109; /* #73cb6d */
+  --m-green-30: 240 249 239; /* #f0f9ef */
+  --m-green-300: 85 191 80; /* #55bf50 */
+  --m-green-350: 53 178 49; /* #35b231 */
+  --m-green-40: 235 247 233; /* #ebf7e9 */
+  --m-green-400: 12 163 12; /* #0ca30c */
+  --m-green-450: 0 147 0; /* #009300 */
+  --m-green-50: 229 244 228; /* #e5f4e4 */
+  --m-green-500: 0 131 0; /* #008300 */
+  --m-green-550: 0 115 0; /* #007300 */
+  --m-green-60: 224 242 222; /* #e0f2de */
+  --m-green-600: 0 99 0; /* #006300 */
+  --m-green-650: 0 84 0; /* #005400 */
+  --m-green-70: 219 240 216; /* #dbf0d8 */
+  --m-green-700: 7 69 6; /* #074506 */
+  --m-green-750: 15 53 13; /* #0f350d */
+  --m-green-80: 213 238 211; /* #d5eed3 */
+  --m-green-800: 17 38 15; /* #11260f */
+  --m-green-810: 16 35 15; /* #10230f */
+  --m-green-820: 16 33 15; /* #10210f */
+  --m-green-830: 16 30 15; /* #101e0f */
+  --m-green-840: 16 27 15; /* #101b0f */
+  --m-green-850: 15 24 14; /* #0f180e */
+  --m-green-860: 14 22 14; /* #0e160e */
+  --m-green-870: 14 19 13; /* #0e130d */
+  --m-green-880: 13 16 13; /* #0d100d */
+  --m-green-890: 12 14 12; /* #0c0e0c */
+  --m-green-90: 208 236 205; /* #d0eccd */
+  --m-green-900: 11 11 11; /* #0b0b0b */
+  --m-magenta-0: 255 255 255; /* #fff */
+  --m-magenta-10: 254 251 252; /* #fefbfc */
+  --m-magenta-100: 249 212 226; /* #f9d4e2 */
+  --m-magenta-150: 243 192 211; /* #f3c0d3 */
+  --m-magenta-20: 254 246 249; /* #fef6f9 */
+  --m-magenta-200: 243 168 195; /* #f3a8c3 */
+  --m-magenta-250: 237 147 180; /* #ed93b4 */
+  --m-magenta-30: 253 242 246; /* #fdf2f6 */
+  --m-magenta-300: 232 123 164; /* #e87ba4 */
+  --m-magenta-350: 228 97 145; /* #e46191 */
+  --m-magenta-40: 251 239 243; /* #fbeff3 */
+  --m-magenta-400: 213 81 129; /* #d55181 */
+  --m-magenta-450: 192 72 115; /* #c04873 */
+  --m-magenta-50: 250 235 240; /* #faebf0 */
+  --m-magenta-500: 173 61 102; /* #ad3d66 */
+  --m-magenta-550: 153 52 88; /* #993458 */
+  --m-magenta-60: 249 230 237; /* #f9e6ed */
+  --m-magenta-600: 134 42 76; /* #862a4c */
+  --m-magenta-650: 114 35 64; /* #722340 */
+  --m-magenta-70: 249 226 235; /* #f9e2eb */
+  --m-magenta-700: 94 28 52; /* #5e1c34 */
+  --m-magenta-750: 76 20 41; /* #4c1429 */
+  --m-magenta-80: 249 222 232; /* #f9dee8 */
+  --m-magenta-800: 57 15 31; /* #390f1f */
+  --m-magenta-810: 54 13 28; /* #360d1c */
+  --m-magenta-820: 50 12 26; /* #320c1a */
+  --m-magenta-830: 47 11 24; /* #2f0b18 */
+  --m-magenta-840: 43 10 22; /* #2b0a16 */
+  --m-magenta-850: 39 10 20; /* #270a14 */
+  --m-magenta-860: 34 10 18; /* #220a12 */
+  --m-magenta-870: 28 11 17; /* #1c0b11 */
+  --m-magenta-880: 23 11 15; /* #170b0f */
+  --m-magenta-890: 17 11 13; /* #110b0d */
+  --m-magenta-90: 249 217 229; /* #f9d9e5 */
+  --m-magenta-900: 11 11 11; /* #0b0b0b */
+  --m-oncolor-200: 248 248 247; /* #f8f8f7bf */
+  --m-oncolor-300: 248 248 247; /* #f8f8f780 */
   --m-orange-0: 255 255 255; /* #fff */
   --m-orange-10: 254 251 250; /* #fefbfa */
   --m-orange-100: 247 216 203; /* #f7d8cb */
@@ -76,45 +218,640 @@
   --m-orange-890: 16 12 11; /* #100c0b */
   --m-orange-90: 247 220 209; /* #f7dcd1 */
   --m-orange-900: 11 11 11; /* #0b0b0b */
+  --m-red-0: 255 255 255; /* #fff */
+  --m-red-10: 255 251 251; /* #fffbfb */
+  --m-red-100: 250 214 214; /* #fad6d6 */
+  --m-red-150: 247 193 193; /* #f7c1c1 */
+  --m-red-20: 254 247 247; /* #fef7f7 */
+  --m-red-200: 244 171 171; /* #f4abab */
+  --m-red-250: 240 149 149; /* #f09595 */
+  --m-red-30: 254 243 243; /* #fef3f3 */
+  --m-red-300: 236 126 126; /* #ec7e7e */
+  --m-red-350: 230 103 103; /* #e66767 */
+  --m-red-40: 253 239 239; /* #fdefef */
+  --m-red-400: 227 73 72; /* #e34948 */
+  --m-red-450: 208 59 59; /* #d03b3b */
+  --m-red-50: 251 235 235; /* #fbebeb */
+  --m-red-500: 185 53 53; /* #b93535 */
+  --m-red-550: 163 44 44; /* #a32c2c */
+  --m-red-60: 250 231 231; /* #fae7e7 */
+  --m-red-600: 142 38 38; /* #8e2626 */
+  --m-red-650: 121 30 30; /* #791e1e */
+  --m-red-70: 250 227 227; /* #fae3e3 */
+  --m-red-700: 100 25 25; /* #641919 */
+  --m-red-750: 81 18 18; /* #511212 */
+  --m-red-80: 250 223 223; /* #fadfdf */
+  --m-red-800: 60 14 14; /* #3c0e0e */
+  --m-red-810: 56 13 13; /* #380d0d */
+  --m-red-820: 52 12 12; /* #340c0c */
+  --m-red-830: 49 11 11; /* #310b0b */
+  --m-red-840: 45 10 10; /* #2d0a0a */
+  --m-red-850: 40 10 10; /* #280a0a */
+  --m-red-860: 35 11 10; /* #230b0a */
+  --m-red-870: 29 11 10; /* #1d0b0a */
+  --m-red-880: 23 12 11; /* #170c0b */
+  --m-red-890: 17 12 11; /* #110c0b */
+  --m-red-90: 250 218 218; /* #fadada */
+  --m-red-900: 11 11 11; /* #0b0b0b */
+  --m-violet-0: 255 255 255; /* #fff */
+  --m-violet-10: 252 251 255; /* #fcfbff */
+  --m-violet-100: 223 219 253; /* #dfdbfd */
+  --m-violet-150: 207 202 251; /* #cfcafb */
+  --m-violet-20: 248 248 255; /* #f8f8ff */
+  --m-violet-200: 191 185 245; /* #bfb9f5 */
+  --m-violet-250: 176 167 242; /* #b0a7f2 */
+  --m-violet-30: 245 244 255; /* #f5f4ff */
+  --m-violet-300: 160 150 235; /* #a096eb */
+  --m-violet-350: 144 133 233; /* #9085e9 */
+  --m-violet-40: 242 241 255; /* #f2f1ff */
+  --m-violet-400: 129 115 227; /* #8173e3 */
+  --m-violet-450: 113 97 224; /* #7161e0 */
+  --m-violet-50: 239 237 255; /* #efedff */
+  --m-violet-500: 98 80 214; /* #6250d6 */
+  --m-violet-550: 86 69 190; /* #5645be */
+  --m-violet-60: 235 234 254; /* #ebeafe */
+  --m-violet-600: 74 58 167; /* #4a3aa7 */
+  --m-violet-650: 62 49 142; /* #3e318e */
+  --m-violet-70: 232 230 254; /* #e8e6fe */
+  --m-violet-700: 50 39 119; /* #322777 */
+  --m-violet-750: 39 30 96; /* #271e60 */
+  --m-violet-80: 229 226 253; /* #e5e2fd */
+  --m-violet-800: 29 22 73; /* #1d1649 */
+  --m-violet-810: 27 21 68; /* #1b1544 */
+  --m-violet-820: 25 19 63; /* #19133f */
+  --m-violet-830: 23 18 59; /* #17123b */
+  --m-violet-840: 21 16 54; /* #151036 */
+  --m-violet-850: 19 15 50; /* #130f32 */
+  --m-violet-860: 17 14 43; /* #110e2b */
+  --m-violet-870: 15 14 35; /* #0f0e23 */
+  --m-violet-880: 14 13 27; /* #0e0d1b */
+  --m-violet-890: 12 12 19; /* #0c0c13 */
+  --m-violet-90: 226 223 253; /* #e2dffd */
+  --m-violet-900: 11 11 11; /* #0b0b0b */
+  --m-yellow-0: 255 255 255; /* #fff */
+  --m-yellow-10: 254 252 248; /* #fefcf8 */
+  --m-yellow-100: 249 220 164; /* #f9dca4 */
+  --m-yellow-150: 249 200 104; /* #f9c868 */
+  --m-yellow-20: 252 248 241; /* #fcf8f1 */
+  --m-yellow-200: 250 178 25; /* #fab219 */
+  --m-yellow-250: 237 161 0; /* #eda100 */
+  --m-yellow-30: 251 245 234; /* #fbf5ea */
+  --m-yellow-300: 219 147 0; /* #db9300 */
+  --m-yellow-350: 201 133 0; /* #c98500 */
+  --m-yellow-40: 249 242 228; /* #f9f2e4 */
+  --m-yellow-400: 183 119 0; /* #b77700 */
+  --m-yellow-450: 166 106 0; /* #a66a00 */
+  --m-yellow-50: 249 238 218; /* #f9eeda */
+  --m-yellow-500: 148 93 0; /* #945d00 */
+  --m-yellow-550: 131 81 0; /* #835100 */
+  --m-yellow-60: 250 235 206; /* #faebce */
+  --m-yellow-600: 115 69 0; /* #734500 */
+  --m-yellow-650: 98 57 0; /* #623900 */
+  --m-yellow-70: 250 231 194; /* #fae7c2 */
+  --m-yellow-700: 81 46 0; /* #512e00 */
+  --m-yellow-750: 65 36 0; /* #412400 */
+  --m-yellow-80: 250 227 184; /* #fae3b8 */
+  --m-yellow-800: 49 26 0; /* #311a00 */
+  --m-yellow-810: 46 24 0; /* #2e1800 */
+  --m-yellow-820: 43 23 0; /* #2b1700 */
+  --m-yellow-830: 39 21 0; /* #271500 */
+  --m-yellow-840: 35 20 2; /* #231402 */
+  --m-yellow-850: 31 18 4; /* #1f1204 */
+  --m-yellow-860: 27 17 6; /* #1b1106 */
+  --m-yellow-870: 23 16 7; /* #171007 */
+  --m-yellow-880: 19 14 9; /* #130e09 */
+  --m-yellow-890: 15 13 10; /* #0f0d0a */
+  --m-yellow-90: 249 224 176; /* #f9e0b0 */
+  --m-yellow-900: 11 11 11; /* #0b0b0b */
 }
 
-/* 几何 / 阴影(与主题无关;值直接来自上游,不转三元组)。 */
+/* 基准量：从 Claude 产物里**现读**，不硬编码。
+ * --cds-rem-scale = calc(16 / 17) —— 所有字号/圆角/间距都乘它。
+ * 它一变，整套尺寸跟着变；写死就等于把这个版本钉住。 */
 :root {
-  --m-message-bubble-radius: calc(8px + calc(.25rem * 1));
-  --m-message-bubble-radius-meeting: 4px;
-  --m-panel-radius: 10px;
-  --m-radius-composer: 20px;
-  --m-radius-pill: 9999px;
-  --m-ring-hairline: 1px;
-  --m-ring-inner: 0px;
-  --m-ring-outer: 1px;
-  --m-shadow-composer: 0 4px 20px rgba(0, 0, 0, 0.035), inset 0 0 0 1px rgb(var(--edge));
-  --m-shadow-composer-focus: 0 4px 24px rgba(0, 0, 0, 0.08), inset 0 0 0 1px rgb(var(--input-edge)), 0 0 0 1px rgb(var(--input-edge));
-  --m-shadow-composer-hover: 0 4px 24px rgba(0, 0, 0, 0.06), inset 0 0 0 1px rgb(var(--input-edge));
-  --m-shadow-lg: 0 4px 8px 0 rgba(0, 0, 0, 0.06), 0 12px 28px -2px rgba(0, 0, 0, 0.08);
-  --m-shadow-md: 0 2px 4px 0 rgba(0, 0, 0, 0.05), 0 6px 16px 0 rgba(0, 0, 0, 0.08);
-  --m-shadow-popover: inset 0 0 0 initial initial, 0 0 0 initial initial, 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
-  --m-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05), 0 2px 8px 0 rgba(0, 0, 0, 0.08);
-  --radius-2xl: 1rem;
-  --radius-3xl: 1.5rem;
-  --radius-lg: .5rem;
-  --radius-md: .375rem;
-  --radius-sm: .25rem;
-  --radius-xl: .75rem;
-  --radius-xs: .125rem;
+  --m-rem-scale: calc(16 / 17);
+  --spacing: .25rem;
 }
 
-/* 暗色覆盖:上游 .dark 重定义的阴影(alpha 调强、边线换半透明白)。
- * 没有这段,暗色下卡片阴影会沿用亮色的 0.035 alpha,几乎不可见。 */
-.dark {
-  --m-message-bubble-radius: calc(8px + calc(.25rem * 1));
+/* composer 专用尺寸（Claude 的 --cmp-*，舒适档 = 默认档）。 */
+:root {
+  --cds-avatar-lg: calc(2.5rem * var(--m-rem-scale));
+  --cds-avatar-md: calc(2rem * var(--m-rem-scale));
+  --cds-avatar-sm: calc(1.5rem * var(--m-rem-scale));
+  --cds-avatar-text-xs: calc(.5625rem * var(--m-rem-scale));
+  --cds-avatar-xs: calc(1.25rem * var(--m-rem-scale));
+  --cds-checkbox: calc(1.25rem * var(--m-rem-scale));
+  --cds-checkbox--lg: calc(1.5rem * var(--m-rem-scale));
+  --cds-checkbox--sm: calc(1.125rem * var(--m-rem-scale));
+  --cds-checkbox--xs: calc(1rem * var(--m-rem-scale));
+  --cds-checkbox-glyph: calc(1rem * var(--m-rem-scale));
+  --cds-checkbox-glyph--lg: calc(1.25rem * var(--m-rem-scale));
+  --cds-checkbox-glyph--sm: calc(1rem * var(--m-rem-scale));
+  --cds-checkbox-glyph--xs: calc(1rem * var(--m-rem-scale));
+  --cds-checkbox-radius: calc(.3125rem * var(--m-rem-scale));
+  --cds-checkbox-radius--lg: calc(.375rem * var(--m-rem-scale));
+  --cds-checkbox-radius--sm: calc(.3125rem * var(--m-rem-scale));
+  --cds-checkbox-radius--xs: calc(.25rem * var(--m-rem-scale));
+  --cds-font-size-body: calc(.875rem * var(--m-rem-scale));
+  --cds-font-size-body--lg: calc(.9375rem * var(--m-rem-scale));
+  --cds-font-size-body--own: calc(.875rem * var(--m-rem-scale));
+  --cds-font-size-body--sm: calc(.875rem * var(--m-rem-scale));
+  --cds-font-size-body--textlg: calc(.9375rem * var(--m-rem-scale));
+  --cds-font-size-body--textmd: calc(.875rem * var(--m-rem-scale));
+  --cds-font-size-body--textsm: calc(.8125rem * var(--m-rem-scale));
+  --cds-font-size-body--xs: calc(.8125rem * var(--m-rem-scale));
+  --cds-font-size-caption: calc(.75rem * var(--m-rem-scale));
+  --cds-font-size-caption--lg: calc(.8125rem * var(--m-rem-scale));
+  --cds-font-size-caption--sm: calc(.75rem * var(--m-rem-scale));
+  --cds-font-size-caption--xs: calc(.6875rem * var(--m-rem-scale));
+  --cds-font-size-code: calc(.8125rem * var(--m-rem-scale));
+  --cds-font-size-footnote: calc(.8125rem * var(--m-rem-scale));
+  --cds-font-size-heading: calc(.9375rem * var(--m-rem-scale));
+  --cds-font-size-heading--textlg: calc(1rem * var(--m-rem-scale));
+  --cds-font-size-heading--textsm: calc(.875rem * var(--m-rem-scale));
+  --cds-font-size-prose: 1rem;
+  --cds-font-size-prose--lg: 1.125rem;
+  --cds-font-size-prose--lg--textlg: 1.125rem;
+  --cds-font-size-prose--lg--textsm: 1rem;
+  --cds-font-size-prose--sm: .9375rem;
+  --cds-font-size-prose--sm--textlg: 1rem;
+  --cds-font-size-prose--sm--textsm: .875rem;
+  --cds-font-size-prose--textlg: 1.125rem;
+  --cds-font-size-prose--textsm: .9375rem;
+  --cds-font-size-prose--xs: .875rem;
+  --cds-font-size-prose--xs--textlg: .9375rem;
+  --cds-font-size-prose--xs--textsm: .8125rem;
+  --cds-font-size-title: calc(1.375rem * var(--m-rem-scale));
+  --cds-gap-lg: calc(1.75rem * var(--m-rem-scale));
+  --cds-gap-md: calc(1rem * var(--m-rem-scale));
+  --cds-gap-sm: calc(.75rem * var(--m-rem-scale));
+  --cds-gap-xl: calc(2.5rem * var(--m-rem-scale));
+  --cds-gap-xs: calc(.5rem * var(--m-rem-scale));
+  --cds-h-control: calc(2rem * var(--m-rem-scale));
+  --cds-h-control--lg: calc(2.5rem * var(--m-rem-scale));
+  --cds-h-control--sm: calc(1.75rem * var(--m-rem-scale));
+  --cds-h-control--xs: calc(1.5rem * var(--m-rem-scale));
+  --cds-h-control-nested: calc(1.375rem * var(--m-rem-scale));
+  --cds-h-control-nested--lg: calc(1.75rem * var(--m-rem-scale));
+  --cds-h-control-nested--sm: calc(1.25rem * var(--m-rem-scale));
+  --cds-h-control-nested--xs: calc(1.125rem * var(--m-rem-scale));
+  --cds-icon: calc(1.25rem * var(--m-rem-scale));
+  --cds-icon--lg: calc(1.5rem * var(--m-rem-scale));
+  --cds-icon--sm: calc(1rem * var(--m-rem-scale));
+  --cds-icon--xs: calc(1rem * var(--m-rem-scale));
+  --cds-leading-body: calc(1.25rem * var(--m-rem-scale));
+  --cds-leading-body--lg: calc(1.375rem * var(--m-rem-scale));
+  --cds-leading-body--own: calc(1.25rem * var(--m-rem-scale));
+  --cds-leading-body--sm: calc(1.25rem * var(--m-rem-scale));
+  --cds-leading-body--textlg: calc(1.375rem * var(--m-rem-scale));
+  --cds-leading-body--textmd: calc(1.25rem * var(--m-rem-scale));
+  --cds-leading-body--textsm: calc(1.1875rem * var(--m-rem-scale));
+  --cds-leading-body--xs: calc(1.1875rem * var(--m-rem-scale));
+  --cds-leading-caption: calc(1.0625rem * var(--m-rem-scale));
+  --cds-leading-code: calc(1.1875rem * var(--m-rem-scale));
+  --cds-leading-footnote: calc(1.0625rem * var(--m-rem-scale));
+  --cds-leading-heading: calc(1.25rem * var(--m-rem-scale));
+  --cds-leading-heading--textlg: calc(1.5rem * var(--m-rem-scale));
+  --cds-leading-heading--textsm: calc(1.25rem * var(--m-rem-scale));
+  --cds-leading-prose: 1.5rem;
+  --cds-leading-prose--lg: 1.6875rem;
+  --cds-leading-prose--lg--textlg: 1.6875rem;
+  --cds-leading-prose--lg--textsm: 1.5rem;
+  --cds-leading-prose--sm: 1.375rem;
+  --cds-leading-prose--sm--textlg: 1.5rem;
+  --cds-leading-prose--sm--textsm: 1.25rem;
+  --cds-leading-prose--textlg: 1.6875rem;
+  --cds-leading-prose--textsm: 1.375rem;
+  --cds-leading-prose--xs: 1.25rem;
+  --cds-leading-prose--xs--textlg: 1.375rem;
+  --cds-leading-prose--xs--textsm: 1.1875rem;
+  --cds-leading-title: calc(1.75rem * var(--m-rem-scale));
+  --cds-pad-lg: calc(1rem * var(--m-rem-scale));
+  --cds-pad-lg--lg: calc(1.25rem * var(--m-rem-scale));
+  --cds-pad-lg--sm: calc(.875rem * var(--m-rem-scale));
+  --cds-pad-lg--xs: calc(.75rem * var(--m-rem-scale));
+  --cds-pad-md: calc(.75rem * var(--m-rem-scale));
+  --cds-pad-md--lg: calc(1rem * var(--m-rem-scale));
+  --cds-pad-md--sm: calc(.625rem * var(--m-rem-scale));
+  --cds-pad-md--xs: calc(.5rem * var(--m-rem-scale));
+  --cds-pad-sm: calc(.5rem * var(--m-rem-scale));
+  --cds-pad-sm--lg: calc(.75rem * var(--m-rem-scale));
+  --cds-pad-sm--sm: calc(.5rem * var(--m-rem-scale));
+  --cds-pad-sm--xs: calc(.375rem * var(--m-rem-scale));
+  --cds-pad-xl: calc(1.5rem * var(--m-rem-scale));
+  --cds-pad-xl--lg: calc(1.75rem * var(--m-rem-scale));
+  --cds-pad-xl--sm: calc(1.375rem * var(--m-rem-scale));
+  --cds-pad-xl--xs: calc(1.25rem * var(--m-rem-scale));
+  --cds-pad-xs: calc(.375rem * var(--m-rem-scale));
+  --cds-pad-xs--lg: calc(.5rem * var(--m-rem-scale));
+  --cds-pad-xs--sm: calc(.375rem * var(--m-rem-scale));
+  --cds-pad-xs--xs: calc(.25rem * var(--m-rem-scale));
+  --cds-panel-radius: calc(.75rem * var(--m-rem-scale));
+  --cds-radius: calc(.5rem * var(--m-rem-scale));
+  --cds-radius--lg: calc(.625rem * var(--m-rem-scale));
+  --cds-radius--sm: calc(.4375rem * var(--m-rem-scale));
+  --cds-radius--xs: calc(.375rem * var(--m-rem-scale));
+  --cds-radius-composer: calc(.875rem * var(--m-rem-scale));
+  --cds-switch-h: calc(1.25rem * var(--m-rem-scale));
+  --cds-switch-h--lg: calc(1.5rem * var(--m-rem-scale));
+  --cds-switch-h--sm: calc(1.125rem * var(--m-rem-scale));
+  --cds-switch-h--xs: calc(1rem * var(--m-rem-scale));
+  --cmp-chin-end: var(--cmp-pad-x);
+  --cmp-chin-touch-grow: calc((initial - var(--cmp-chin-row-h,initial)) / 2);
+  --cmp-gap-y: .5rem;
+  --cmp-pad-x: .75rem;
+}
+
+/* 几何 / 阴影 / 字号 / 动效（值直接来自 Claude 产物，不转三元组）。 */
+:root {
+  --m-banner-neutral-ring: initial;
+  --m-btn-spring: linear(0, .2459, .6526, .9468, 1.0764, 1.0915, 1.0585, 1.0219, .9993, .9914, .9921, .9957, .9988, 1.0004, 1);
+  --m-checkbox-radius: initial;
+  --m-checkbox-radius--lg: calc(.3125rem * var(--m-rem-scale));
+  --m-checkbox-radius--sm: calc(.25rem * var(--m-rem-scale));
+  --m-checkbox-radius--xs: calc(.25rem * var(--m-rem-scale));
+  --m-checkbox-xxs-radius: calc(.1875rem * var(--m-rem-scale));
+  --m-dur-base: .2s;
+  --m-dur-fast: 60ms;
+  --m-dur-sheet: .3s;
+  --m-dur-slow: .45s;
+  --m-dur-snap: .12s;
+  --m-ease-out: cubic-bezier(0, 0, .2, 1);
+  --m-ease-overshoot: cubic-bezier(.34, 1.3, .64, 1);
+  --m-ease-snap: cubic-bezier(.32, .72, 0, 1);
+  --m-fill-field-ring: rgb(var(--edge));
+  --m-fill-secondary-pressed-ring: rgb(var(--edge));
+  --m-fill-secondary-ring: rgb(var(--edge));
+  --m-focus-shadow: inset 0 0 0 1px initial, 0 0 0 1px rgb(var(--accent)), 0 0 6px 1px rgb(var(--accent) / 0.12);
+  --m-focus-shadow-danger: inset 0 0 0 1px initial, 0 0 0 1px initial, 0 0 6px 1px initial;
+  --m-font-size-body: calc(.8125rem * var(--m-rem-scale));
+  --m-font-size-body--lg: calc(.875rem * var(--m-rem-scale));
+  --m-font-size-body--own: calc(.8125rem * var(--m-rem-scale));
+  --m-font-size-body--sm: calc(.75rem * var(--m-rem-scale));
+  --m-font-size-body--textlg: calc(.9375rem * var(--m-rem-scale));
+  --m-font-size-body--textmd: calc(.875rem * var(--m-rem-scale));
+  --m-font-size-body--textsm: calc(.8125rem * var(--m-rem-scale));
+  --m-font-size-body--xs: calc(.75rem * var(--m-rem-scale));
+  --m-font-size-caption: calc(.6875rem * var(--m-rem-scale));
+  --m-font-size-caption--lg: calc(.75rem * var(--m-rem-scale));
+  --m-font-size-caption--sm: calc(.625rem * var(--m-rem-scale));
+  --m-font-size-caption--xs: calc(.625rem * var(--m-rem-scale));
+  --m-font-size-code: calc(.75rem * var(--m-rem-scale));
+  --m-font-size-footnote: calc(.75rem * var(--m-rem-scale));
+  --m-font-size-heading: calc(.875rem * var(--m-rem-scale));
+  --m-font-size-heading--textlg: calc(.9375rem * var(--m-rem-scale));
+  --m-font-size-heading--textsm: calc(.8125rem * var(--m-rem-scale));
+  --m-font-size-prose: .875rem;
+  --m-font-size-prose--lg: .9375rem;
+  --m-font-size-prose--lg--textlg: 1rem;
+  --m-font-size-prose--lg--textsm: .875rem;
+  --m-font-size-prose--sm: .8125rem;
+  --m-font-size-prose--sm--textlg: .875rem;
+  --m-font-size-prose--sm--textsm: .8125rem;
+  --m-font-size-prose--textlg: .9375rem;
+  --m-font-size-prose--textsm: .8125rem;
+  --m-font-size-prose--xs: .8125rem;
+  --m-font-size-prose--xs--textlg: .875rem;
+  --m-font-size-prose--xs--textsm: .8125rem;
+  --m-font-size-text-entry-floor: 16px;
+  --m-font-size-title: calc(1.25rem * var(--m-rem-scale));
+  --m-gap-lg: calc(1.25rem * var(--m-rem-scale));
+  --m-gap-md: calc(.75rem * var(--m-rem-scale));
+  --m-gap-sm: calc(.5rem * var(--m-rem-scale));
+  --m-gap-xl: calc(2rem * var(--m-rem-scale));
+  --m-gap-xs: calc(.375rem * var(--m-rem-scale));
+  --m-h-control: 26px;
+  --m-h-control--lg: calc(1.75rem * var(--m-rem-scale));
+  --m-h-control--sm: calc(1.25rem * var(--m-rem-scale));
+  --m-h-control--xs: calc(1.25rem * var(--m-rem-scale));
+  --m-h-control-nested: calc(2rem * var(--m-rem-scale));
+  --m-h-control-nested--lg: calc(1.25rem * var(--m-rem-scale));
+  --m-h-control-nested--sm: calc(1rem * var(--m-rem-scale));
+  --m-h-control-nested--xs: calc(1rem * var(--m-rem-scale));
+  --m-hit-gap-y: 0px;
+  --m-icon: calc(1rem * var(--m-rem-scale));
+  --m-icon--lg: calc(1rem * var(--m-rem-scale));
+  --m-icon--sm: calc(.75rem * var(--m-rem-scale));
+  --m-icon--xs: calc(.75rem * var(--m-rem-scale));
+  --m-icon-rotate: 0deg;
+  --m-leading-body: calc(1.25rem * var(--m-rem-scale));
+  --m-leading-body--lg: calc(1.25rem * var(--m-rem-scale));
+  --m-leading-body--own: calc(1.1875rem * var(--m-rem-scale));
+  --m-leading-body--sm: calc(1.0625rem * var(--m-rem-scale));
+  --m-leading-body--textlg: calc(1.375rem * var(--m-rem-scale));
+  --m-leading-body--textmd: calc(1.25rem * var(--m-rem-scale));
+  --m-leading-body--textsm: calc(1.1875rem * var(--m-rem-scale));
+  --m-leading-body--xs: calc(1.0625rem * var(--m-rem-scale));
+  --m-leading-caption: calc(1.0625rem * var(--m-rem-scale));
+  --m-leading-code: calc(1.0625rem * var(--m-rem-scale));
+  --m-leading-footnote: calc(.9375rem * var(--m-rem-scale));
+  --m-leading-heading: calc(1.125rem * var(--m-rem-scale));
+  --m-leading-heading--textlg: calc(1.375rem * var(--m-rem-scale));
+  --m-leading-heading--textsm: calc(1.125rem * var(--m-rem-scale));
+  --m-leading-prose: 1.25rem;
+  --m-leading-prose--lg: 1.375rem;
+  --m-leading-prose--lg--textlg: 1.5rem;
+  --m-leading-prose--lg--textsm: 1.25rem;
+  --m-leading-prose--sm: 1.1875rem;
+  --m-leading-prose--sm--textlg: 1.25rem;
+  --m-leading-prose--sm--textsm: 1.1875rem;
+  --m-leading-prose--textlg: 1.375rem;
+  --m-leading-prose--textsm: 1.1875rem;
+  --m-leading-prose--xs: 1.1875rem;
+  --m-leading-prose--xs--textlg: 1.25rem;
+  --m-leading-prose--xs--textsm: 1.1875rem;
+  --m-leading-title: calc(1.5625rem * var(--m-rem-scale));
+  --m-message-bubble-pad-x: initial;
+  --m-message-bubble-pad-y: initial;
+  --m-message-bubble-radius: calc(8px + calc(.25rem * var(--m-rem-scale)));
+  --m-opacity-icon-secondary: .4;
+  --m-pad-lg: calc(.75rem * var(--m-rem-scale));
+  --m-pad-lg--lg: calc(.875rem * var(--m-rem-scale));
+  --m-pad-lg--sm: calc(.625rem * var(--m-rem-scale));
+  --m-pad-lg--xs: calc(.625rem * var(--m-rem-scale));
+  --m-pad-md: calc(.375rem * var(--m-rem-scale));
+  --m-pad-md--lg: calc(.625rem * var(--m-rem-scale));
+  --m-pad-md--sm: calc(.375rem * var(--m-rem-scale));
+  --m-pad-md--xs: calc(.375rem * var(--m-rem-scale));
+  --m-pad-sm: calc(.375rem * var(--m-rem-scale));
+  --m-pad-sm--lg: calc(.5rem * var(--m-rem-scale));
+  --m-pad-sm--sm: calc(.25rem * var(--m-rem-scale));
+  --m-pad-sm--xs: calc(.25rem * var(--m-rem-scale));
+  --m-pad-xl: initial;
+  --m-pad-xl--lg: calc(1.375rem * var(--m-rem-scale));
+  --m-pad-xl--sm: calc(.875rem * var(--m-rem-scale));
+  --m-pad-xl--xs: calc(.875rem * var(--m-rem-scale));
+  --m-pad-xs: calc(.25rem * var(--m-rem-scale));
+  --m-pad-xs--lg: calc(.375rem * var(--m-rem-scale));
+  --m-pad-xs--sm: calc(.125rem * var(--m-rem-scale));
+  --m-pad-xs--xs: calc(.125rem * var(--m-rem-scale));
+  --m-page-header-title-leading: calc(2rem * var(--m-rem-scale));
+  --m-panel-header-pad-block: calc(.25rem * var(--m-rem-scale));
+  --m-panel-header-pad-inline: calc(.25rem * var(--m-rem-scale));
+  --m-panel-radius: calc(.625rem * var(--m-rem-scale));
+  --m-panel-shadow: 0 0 0 1px rgb(var(--edge)), initial;
+  --m-radius: calc(1.5rem * var(--m-rem-scale));
+  --m-radius--lg: calc(.4375rem * var(--m-rem-scale));
+  --m-radius--sm: calc(.3125rem * var(--m-rem-scale));
+  --m-radius--xs: calc(.3125rem * var(--m-rem-scale));
+  --m-radius-composer: calc(.875rem * var(--m-rem-scale));
+  --m-ring-color: var(--cds-border);
+  --m-ring-hairline: 1px;
   --m-ring-inner: 1px;
   --m-ring-outer: 0px;
-  --m-shadow-composer: 0 4px 20px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgb(var(--edge));
-  --m-shadow-composer-focus: 0 4px 24px rgba(0, 0, 0, 0.65), inset 0 0 0 1px rgba(255, 255, 255, 0.22), 0 0 0 1px rgba(255, 255, 255, 0.22);
-  --m-shadow-composer-hover: 0 4px 24px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgb(var(--input-edge));
-  --m-shadow-lg: 0 4px 8px 0 rgba(0, 0, 0, 0.5), 0 16px 36px -2px rgba(0, 0, 0, 0.08);
-  --m-shadow-md: 0 2px 4px 0 rgba(0, 0, 0, 0.4), 0 6px 16px 0 rgba(0, 0, 0, 0.08);
-  --m-shadow-popover: inset 0 0 0 1px rgba(255, 255, 255, 0.10), 0 8px 28px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.45);
-  --m-shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.4), 0 2px 8px 0 rgba(0, 0, 0, 0.08);
+  --m-segmented-control-thumb-shadow: initial;
+  --m-shadow-color: hsl(from initial h s l / 8%);
+  --m-shadow-drop-glow: inset 0 0 24px -2px hsl(from initial h s l / 20%);
+  --m-shadow-drop-glow-danger: inset 0 0 24px -2px hsl(from initial h s l / 20%);
+  --m-shadow-drop-ring: inset 0 0 0 2px initial;
+  --m-shadow-drop-ring-danger: inset 0 0 0 2px initial;
+  --m-shadow-lg: 0 10px 15px -3px #0000001a, 0 4px 6px -4px #0000001a;
+  --m-shadow-md: 0 4px 6px -1px #0000001a, 0 2px 4px -2px #0000001a;
+  --m-shadow-popover: 0 8px 24px #0000001f, 0 2px 6px #00000014;
+  --m-shadow-sm: 0 1px 2px 0 #0000000d;
+  --m-slider-handle-shadow-depth: hsl(from initial h s l / 6%);
+  --m-slider-handle-shadow-outer: hsl(from initial h s l / 4%);
+  --m-split-ring: rgb(var(--edge));
+  --m-toolbar-icon-box: calc(0rem * var(--m-rem-scale));
+  --m-toolbar-pad-block: calc(.25rem * var(--m-rem-scale));
+  --m-toolbar-pad-inline: calc(0rem * var(--m-rem-scale));
+}
+
+/* 语义映射链：值是指向色阶的 var()。亮暗的差别整个体现在这条链上 ——
+ * Claude 暗色不是逐个 token 覆盖，而是把 neutral-900 从 gray-0 改成 gray-900。 */
+:root {
+  --m-alpha-0: hsl(from var(--m-neutral-900) h s l / 0%);
+  --m-alpha-1: hsl(from var(--m-neutral-900) h s l / 5%);
+  --m-alpha-2: hsl(from var(--m-neutral-900) h s l / 10%);
+  --m-alpha-3: hsl(from var(--m-neutral-900) h s l / 20%);
+  --m-alpha-4: hsl(from var(--m-neutral-900) h s l / 35%);
+  --m-alpha-5: hsl(from var(--m-neutral-900) h s l / 50%);
+  --m-alpha-6: hsl(from var(--m-neutral-900) h s l / 60%);
+  --m-alpha-7: hsl(from var(--m-neutral-900) h s l / 70%);
+  --m-alpha-8: hsl(from var(--m-neutral-900) h s l / 85%);
+  --m-alpha-9: hsl(from var(--m-neutral-900) h s l / 95%);
+  --m-bg-editor-canvas: var(--m-neutral-60);
+  --m-bg-editor-highlight-blue: color-mix(in srgb, var(--m-blue-300) 33%, transparent);
+  --m-bg-editor-highlight-gray: color-mix(in srgb, var(--m-gray-300) 33%, transparent);
+  --m-bg-editor-highlight-green: color-mix(in srgb, var(--m-green-300) 33%, transparent);
+  --m-bg-editor-highlight-magenta: color-mix(in srgb, var(--m-magenta-300) 33%, transparent);
+  --m-bg-editor-highlight-violet: color-mix(in srgb, var(--m-violet-300) 33%, transparent);
+  --m-bg-neutral: var(--m-alpha-1);
+  --m-bg-neutral-hover: var(--m-alpha-2);
+  --m-bg-tint-aqua: rgb(from var(--m-aqua-100) calc((r - 163.8) / .35) calc((g - 163.8) / .35) calc((b - 163.15) / .35) / 35%);
+  --m-bg-tint-aqua-opaque: var(--m-aqua-100);
+  --m-bg-tint-blue: rgb(from var(--m-blue-100) calc((r - 163.8) / .35) calc((g - 163.8) / .35) calc((b - 163.15) / .35) / 35%);
+  --m-bg-tint-blue-opaque: var(--m-blue-100);
+  --m-bg-tint-green: rgb(from var(--m-green-100) calc((r - 163.8) / .35) calc((g - 163.8) / .35) calc((b - 163.15) / .35) / 35%);
+  --m-bg-tint-green-opaque: var(--m-green-100);
+  --m-bg-tint-magenta: rgb(from var(--m-magenta-100) calc((r - 163.8) / .35) calc((g - 163.8) / .35) calc((b - 163.15) / .35) / 35%);
+  --m-bg-tint-magenta-opaque: var(--m-magenta-100);
+  --m-bg-tint-orange: rgb(from var(--m-orange-100) calc((r - 163.8) / .35) calc((g - 163.8) / .35) calc((b - 163.15) / .35) / 35%);
+  --m-bg-tint-orange-opaque: var(--m-orange-100);
+  --m-bg-tint-red: rgb(from var(--m-red-100) calc((r - 163.8) / .35) calc((g - 163.8) / .35) calc((b - 163.15) / .35) / 35%);
+  --m-bg-tint-red-opaque: var(--m-red-100);
+  --m-bg-tint-violet: rgb(from var(--m-violet-100) calc((r - 163.8) / .35) calc((g - 163.8) / .35) calc((b - 163.15) / .35) / 35%);
+  --m-bg-tint-violet-opaque: var(--m-violet-100);
+  --m-bg-tint-yellow: rgb(from var(--m-yellow-100) calc((r - 163.8) / .35) calc((g - 163.8) / .35) calc((b - 163.15) / .35) / 35%);
+  --m-bg-tint-yellow-opaque: var(--m-yellow-100);
+  --m-border-editor-comment: var(--m-yellow-400);
+  --m-border-editor-comment-open: var(--m-yellow-450);
+  --m-border-editor-comment-target: var(--m-yellow-450);
+  --m-border-strong: var(--m-alpha-3);
+  --m-border-stronger: hsl(from var(--m-neutral-900) h s l / 40%);
+  --m-fill-control: var(--m-alpha-2);
+  --m-fill-control-hover: var(--m-alpha-3);
+  --m-fill-disabled: var(--m-alpha-1);
+  --m-fill-ghost-selected: var(--m-alpha-2);
+  --m-fill-primary: var(--m-neutral-900);
+  --m-fill-primary-hover: var(--m-neutral-750);
+  --m-fill-secondary-hover: var(--m-alpha-1);
+  --m-neutral-0: var(--m-gray-0);
+  --m-neutral-10: var(--m-gray-10);
+  --m-neutral-100: var(--m-gray-100);
+  --m-neutral-150: var(--m-gray-150);
+  --m-neutral-20: var(--m-gray-20);
+  --m-neutral-200: var(--m-gray-200);
+  --m-neutral-250: var(--m-gray-250);
+  --m-neutral-30: var(--m-gray-30);
+  --m-neutral-300: var(--m-gray-300);
+  --m-neutral-350: var(--m-gray-350);
+  --m-neutral-40: var(--m-gray-40);
+  --m-neutral-400: var(--m-gray-400);
+  --m-neutral-450: var(--m-gray-450);
+  --m-neutral-50: var(--m-gray-50);
+  --m-neutral-500: var(--m-gray-500);
+  --m-neutral-550: var(--m-gray-550);
+  --m-neutral-60: var(--m-gray-60);
+  --m-neutral-600: var(--m-gray-600);
+  --m-neutral-650: var(--m-gray-650);
+  --m-neutral-70: var(--m-gray-70);
+  --m-neutral-700: var(--m-gray-700);
+  --m-neutral-750: var(--m-gray-750);
+  --m-neutral-80: var(--m-gray-80);
+  --m-neutral-800: var(--m-gray-800);
+  --m-neutral-810: var(--m-gray-810);
+  --m-neutral-820: var(--m-gray-820);
+  --m-neutral-830: var(--m-gray-830);
+  --m-neutral-840: var(--m-gray-840);
+  --m-neutral-850: var(--m-gray-850);
+  --m-neutral-860: var(--m-gray-860);
+  --m-neutral-870: var(--m-gray-870);
+  --m-neutral-880: var(--m-gray-880);
+  --m-neutral-890: var(--m-gray-890);
+  --m-neutral-90: var(--m-gray-90);
+  --m-neutral-900: var(--m-gray-900);
+  --m-role-accent-100: var(--m-blue-100);
+  --m-role-accent-250: var(--m-blue-250);
+  --m-role-accent-300: var(--m-blue-300);
+  --m-role-accent-400: var(--m-blue-400);
+  --m-role-accent-450: var(--m-blue-450);
+  --m-role-accent-50: var(--m-blue-50);
+  --m-role-accent-600: var(--m-blue-600);
+  --m-role-accent-700: var(--m-blue-700);
+  --m-role-accent-800: var(--m-blue-800);
+  --m-role-accent-850: var(--m-blue-850);
+  --m-role-accent-on: var(--m-gray-0);
+  --m-role-danger-100: var(--m-red-100);
+  --m-role-danger-250: var(--m-red-250);
+  --m-role-danger-300: var(--m-red-300);
+  --m-role-danger-400: var(--m-red-400);
+  --m-role-danger-450: var(--m-red-450);
+  --m-role-danger-600: var(--m-red-600);
+  --m-role-danger-700: var(--m-red-700);
+  --m-role-danger-800: var(--m-red-800);
+  --m-role-danger-on: var(--m-gray-0);
+  --m-role-pro-100: var(--m-violet-100);
+  --m-role-pro-250: var(--m-violet-250);
+  --m-role-pro-300: var(--m-violet-300);
+  --m-role-pro-400: var(--m-violet-400);
+  --m-role-pro-450: var(--m-violet-450);
+  --m-role-pro-600: var(--m-violet-600);
+  --m-role-pro-700: var(--m-violet-700);
+  --m-role-pro-800: var(--m-violet-800);
+  --m-role-pro-on: var(--m-gray-0);
+  --m-role-success-100: var(--m-green-100);
+  --m-role-success-250: var(--m-green-250);
+  --m-role-success-400: var(--m-green-400);
+  --m-role-success-450: var(--m-green-450);
+  --m-role-success-600: var(--m-green-600);
+  --m-role-success-700: var(--m-green-700);
+  --m-role-success-800: var(--m-green-800);
+  --m-role-success-on: var(--m-gray-900);
+  --m-role-tooltip-bg: var(--m-gray-900);
+  --m-role-tooltip-fg: var(--m-gray-0);
+  --m-role-warning-100: var(--m-yellow-100);
+  --m-role-warning-200: var(--m-yellow-200);
+  --m-role-warning-250: var(--m-yellow-250);
+  --m-role-warning-300: var(--m-yellow-300);
+  --m-role-warning-600: var(--m-yellow-600);
+  --m-role-warning-700: var(--m-yellow-700);
+  --m-role-warning-800: var(--m-yellow-800);
+  --m-role-warning-on: var(--m-gray-900);
+  --m-surface-0: var(--m-gray-20);
+  --m-surface-1: var(--m-gray-10);
+  --m-surface-2: var(--m-gray-0);
+  --m-surface-3: var(--m-gray-0);
+  --m-surface-panel: var(--m-surface-2);
+  --m-surface-popover: var(--m-surface-3);
+  --m-text-disabled: var(--m-alpha-4);
+  --m-text-tint-aqua: var(--m-aqua-600);
+  --m-text-tint-blue: var(--m-blue-600);
+  --m-text-tint-green: var(--m-green-600);
+  --m-text-tint-magenta: var(--m-magenta-600);
+  --m-text-tint-orange: var(--m-orange-600);
+  --m-text-tint-red: var(--m-red-600);
+  --m-text-tint-violet: var(--m-violet-600);
+  --m-text-tint-yellow: var(--m-yellow-600);
+}
+
+/* 暗色：Claude 在 @media prefers-color-scheme:dark / [data-mode=dark] 下的那套。 */
+.dark {
+  --m-bg-tint-aqua: rgb(from var(--m-aqua-800) calc((r - 5.25) / .75) calc((g - 5.25) / .75) calc((b - 5.25) / .75) / 75%);
+  --m-bg-tint-aqua-opaque: var(--m-aqua-800);
+  --m-bg-tint-blue: rgb(from var(--m-blue-800) calc((r - 5.25) / .75) calc((g - 5.25) / .75) calc((b - 5.25) / .75) / 75%);
+  --m-bg-tint-blue-opaque: var(--m-blue-800);
+  --m-bg-tint-green: rgb(from var(--m-green-800) calc((r - 5.25) / .75) calc((g - 5.25) / .75) calc((b - 5.25) / .75) / 75%);
+  --m-bg-tint-green-opaque: var(--m-green-800);
+  --m-bg-tint-magenta: rgb(from var(--m-magenta-800) calc((r - 5.25) / .75) calc((g - 5.25) / .75) calc((b - 5.25) / .75) / 75%);
+  --m-bg-tint-magenta-opaque: var(--m-magenta-800);
+  --m-bg-tint-orange: rgb(from var(--m-orange-800) calc((r - 5.25) / .75) calc((g - 5.25) / .75) calc((b - 5.25) / .75) / 75%);
+  --m-bg-tint-orange-opaque: var(--m-orange-800);
+  --m-bg-tint-red: rgb(from var(--m-red-800) calc((r - 5.25) / .75) calc((g - 5.25) / .75) calc((b - 5.25) / .75) / 75%);
+  --m-bg-tint-red-opaque: var(--m-red-800);
+  --m-bg-tint-violet: rgb(from var(--m-violet-800) calc((r - 5.25) / .75) calc((g - 5.25) / .75) calc((b - 5.25) / .75) / 75%);
+  --m-bg-tint-violet-opaque: var(--m-violet-800);
+  --m-bg-tint-yellow: rgb(from var(--m-yellow-800) calc((r - 5.25) / .75) calc((g - 5.25) / .75) calc((b - 5.25) / .75) / 75%);
+  --m-bg-tint-yellow-opaque: var(--m-yellow-800);
+  --m-border-editor-comment: var(--m-yellow-300);
+  --m-border-editor-comment-open: var(--m-yellow-200);
+  --m-fill-ghost-selected: hsl(from var(--m-neutral-900) h s l / 15%);
+  --m-fill-primary-hover: var(--m-gray-100);
+  --m-fill-secondary-hover: hsl(from var(--m-neutral-900) h s l / 14%);
+  --m-neutral-0: var(--m-gray-900);
+  --m-neutral-10: var(--m-gray-890);
+  --m-neutral-100: var(--m-gray-800);
+  --m-neutral-150: var(--m-gray-750);
+  --m-neutral-20: var(--m-gray-880);
+  --m-neutral-200: var(--m-gray-700);
+  --m-neutral-250: var(--m-gray-650);
+  --m-neutral-30: var(--m-gray-870);
+  --m-neutral-300: var(--m-gray-600);
+  --m-neutral-350: var(--m-gray-550);
+  --m-neutral-40: var(--m-gray-860);
+  --m-neutral-400: var(--m-gray-500);
+  --m-neutral-450: var(--m-gray-450);
+  --m-neutral-50: var(--m-gray-850);
+  --m-neutral-500: var(--m-gray-400);
+  --m-neutral-550: var(--m-gray-350);
+  --m-neutral-60: var(--m-gray-840);
+  --m-neutral-600: var(--m-gray-300);
+  --m-neutral-650: var(--m-gray-250);
+  --m-neutral-70: var(--m-gray-830);
+  --m-neutral-700: var(--m-gray-200);
+  --m-neutral-750: var(--m-gray-150);
+  --m-neutral-80: var(--m-gray-820);
+  --m-neutral-800: var(--m-gray-100);
+  --m-neutral-810: var(--m-gray-90);
+  --m-neutral-820: var(--m-gray-80);
+  --m-neutral-830: var(--m-gray-70);
+  --m-neutral-840: var(--m-gray-60);
+  --m-neutral-850: var(--m-gray-50);
+  --m-neutral-860: var(--m-gray-40);
+  --m-neutral-870: var(--m-gray-30);
+  --m-neutral-880: var(--m-gray-20);
+  --m-neutral-890: var(--m-gray-10);
+  --m-neutral-90: var(--m-gray-810);
+  --m-neutral-900: var(--m-gray-0);
+  --m-surface-0: var(--m-gray-900);
+  --m-surface-1: var(--m-gray-850);
+  --m-surface-2: var(--m-gray-830);
+  --m-surface-3: var(--m-gray-800);
+  --m-text-tint-aqua: var(--m-aqua-300);
+  --m-text-tint-blue: var(--m-blue-300);
+  --m-text-tint-green: var(--m-green-300);
+  --m-text-tint-magenta: var(--m-magenta-300);
+  --m-text-tint-orange: var(--m-orange-300);
+  --m-text-tint-red: var(--m-red-300);
+  --m-text-tint-violet: var(--m-violet-300);
+  --m-text-tint-yellow: var(--m-yellow-300);
+  --m-fill-secondary-ring: transparent;
+  --m-focus-shadow: inset 0 0 0 1px initial, 0 0 0 1px rgb(var(--accent)), 0 0 6px 1px hsl(from initial h s l / 60%);
+  --m-focus-shadow-danger: inset 0 0 0 1px initial, 0 0 0 1px initial, 0 0 6px 1px hsl(from initial h s l / 60%);
+  --m-ring-color: initial;
+  --m-shadow-color: #0000003d;
+  --m-shadow-popover: 0 8px 24px #00000052, 0 2px 6px #0003;
+  --m-slider-handle-shadow-depth: hsl(from initial h s l / 24%);
+  --m-slider-handle-shadow-outer: hsl(from initial h s l / 0%);
+}
+
+/* 紧凑密度档：Claude 用 [data-density=compact] 整体翻转尺寸。
+ * 挂在 html 上（与 Claude 一样是全局开关），不是逐个组件改 class。 */
+html[data-density="compact"] {
+  --m-message-bubble-item-gap: 1rem;
+  --m-question-row-h: 2.25rem;
+  --m-radius-composer: calc(1.125rem * var(--m-rem-scale));
+  --cmp-chin-end: var(--cmp-pad-x);
+  --cmp-gap-y: .375rem;
+  --cmp-pad-x: .75rem;
 }

@@ -23,6 +23,28 @@ export function applyChatDensity(mode: ChatDensity): void {
   document.documentElement.setAttribute("data-chat-density", mode);
 }
 
+/**
+ * 【UI 重建 2026-10-27】**界面密度** → `<html data-density>`。
+ *
+ * 这是 Claude 的做法，与上面的 `data-chat-density` **不是同一件事**：
+ *
+ * | 属性 | 管什么 | 谁定义 |
+ * |---|---|---|
+ * | `data-chat-density` | 只有对话正文的行距（Mcode 自己的三档） | Mcode |
+ * | `data-density` | **整套界面尺寸**：控件高、内边距、字号、图标、圆角 | Claude |
+ *
+ * Claude 在 `:where([data-density=compact], [data-density=compact] *)` 下
+ * 用一条规则翻转整套尺寸（其产物里 compact 182 条 / comfortable 95 条）。
+ * Mcode 之前没有这个开关，尺寸散在各组件的 Tailwind 类里。
+ *
+ * `comfortable` 是 Claude 的默认档（其 index.html 上写的就是它），
+ * 所以传 comfortable 时也显式设置属性 —— 让 CSS 里的
+ * `html[data-density="compact"]` 有明确的「另一种状态」可比。
+ */
+export function applyDensity(mode: "compact" | "comfortable"): void {
+  document.documentElement.setAttribute("data-density", mode);
+}
+
 /** 减弱动效偏好 → `<html data-reduce-motion>`（`"system"` = 移除属性，
  *  交给 styles.css 的 `@media (prefers-reduced-motion: reduce)` 块）。 */
 export function applyReduceMotion(mode: ReduceMotion): void {

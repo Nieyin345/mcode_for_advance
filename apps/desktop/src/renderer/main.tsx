@@ -42,6 +42,11 @@ const AppMobile = lazy(() => import("./AppMobile.js").then((m) => ({ default: m.
 // of createRoot, and lives in this external module so it passes prod CSP.
 initFoucGuard();
 
+// 【UI 重建 2026-10-27】密度默认档 = comfortable（与 Claude 的 index.html 一致）。
+// 在挂载前写好，首帧尺寸就是对的，不会「先按一组尺寸画、再跳成另一组」。
+// 真正的用户开关在设置里（appearanceAttrs.applyDensity）。
+document.documentElement.setAttribute("data-density", "comfortable");
+
 // Mobile focus-zoom guard marker: on real phones/tablets stamp the shell so
 // styles.css can force ≥16px on every focusable control. iOS Safari zooms the
 // page to ~2x when an input/contenteditable with font-size < 16px gains focus,

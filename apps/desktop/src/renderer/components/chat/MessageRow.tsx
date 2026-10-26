@@ -12,13 +12,15 @@ import { pasteBlock } from "@renderer/lib/contentTag.js";
 import { MessageCustomMenu } from "@renderer/components/customUi/CustomSlotHosts.js";
 import { IconSend2, IconCopy, IconCheck, IconPaperclip, IconX, IconPencil, IconRefresh, IconSparkles } from "@renderer/lib/icons.js";
 import type { Block, ChatMessage, TurnMeta, PromptImage } from "@renderer/stores/sessionStore.js";
+import { fmtCost } from "@renderer/lib/contextWindow.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useNow } from "@renderer/hooks/useNow.js";
 import { MessageBlocks, type BeforeContentMap, type ToolUseBlock } from "./MessageBlocks.js";
 import { CurrentOpTicker } from "./CurrentOpTicker.js";
 import { AgentMailInCard } from "./AgentMailCard.js";
 import { isAgentMailMessageId } from "@renderer/lib/agentMail.js";
-import { ModelBadge } from "./ModelAvatar.js";
+import { modelDisplayName } from "@renderer/lib/modelAvatar.js";
+import "./ClaudeMessageActions.css";
 
 /** Preserve a user-typed message's single line breaks when rendering through
  *  Markdown: a lone "\n" is a soft break that markdown collapses to a space,
@@ -60,8 +62,9 @@ export function fmtDuration(ms: number): string {
   return `${h}h ${String(mm).padStart(2, "0")}m`;
 }
 
-/** Per-turn stat row shown ABOVE the first assistant message of a turn:
- *  "14:32:05 · 12.3s". While the turn is still streaming
+/** Per-turn runtime row shown ABOVE the first assistant message of a turn:
+ *  "12.3s" plus the live operation while streaming. The clock moved into the
+ *  assistant identity header to match Claude. While the turn is still streaming
  *  (turnMeta.endedAt undefined) the duration ticks live; once the turn ends it
  *  freezes at its final value.
  *
@@ -118,10 +121,9 @@ function TurnStatContent({
     <div className="-ml-[7px] flex min-w-0 items-center gap-1.5 rounded-lg px-[7px] py-1 text-content-subtle text-footnote">
       {/* 【T139】模型徽标**不在这里** —— 它归身份头（`MessageRow` 里那行
        * `[✦] Mcode [模型]`），因为上游把「谁在说话」放在头部，而这一行是
-       * **运行状态**（时钟 / 用时 / 实时操作）。两者同屏但职责不同：
+       * **运行状态**（用时 / 实时操作）；时钟在身份头里。两者同屏但职责不同：
        * 身份每条消息都有，运行状态只在回合首条。
-       * 挪走后本行的 `-ml-[7px]` 负边距不再服务于 avatar 对齐，但保留原值 ——
-       * 它同时承担「让这一行与正文左缘齐平」的作用，见下方 px-[7px]。 */}
+       * 负边距和内侧 padding 一起让运行状态行与正文左缘齐平，保持原有视觉脊线。 */}
       {live && (
         <span className="live-eq shrink-0" data-tempo={op ? undefined : "slow"} aria-hidden>
           <span />
@@ -129,9 +131,18 @@ function TurnStatContent({
           <span />
         </span>
       )}
-      <span className="shrink-0 tabular-nums">{fmtClock(meta.startedAt)}</span>
-      <span className="shrink-0 opacity-60">·</span>
       <span className="shrink-0 tabular-nums">{fmtDuration(duration)}</span>
+      {/* 【CHAT-15】这一轮花了多少（提供方上报了才显示）。
+          缺省不画 —— 显示一个猜出来的数字比不显示更糟（用户会拿它做预算判断）。
+          分隔点用 `·`，与身份头里的时钟行同一个视觉语汇。 */}
+      {meta.costUsd !== undefined && meta.costUsd > 0 && (
+        <>
+          <span aria-hidden className="shrink-0 text-content-subtle">·</span>
+          <span className="shrink-0 tabular-nums" data-turn-cost="">
+            {fmtCost(meta.costUsd)}
+          </span>
+        </>
+      )}
       {/* Live current-operation ticker — rolls like a slot machine as the agent
           moves between commands. This is the ONE surface carrying live progress
           in the flat streaming layout, so the ticker belongs here (not only
@@ -220,6 +231,7 @@ export const MessageRow = memo(function MessageRow({
 }) {
   const { t } = useI18n();
   const isUser = msg.role === "user";
+  const modelName = msg.turnMeta ? modelDisplayName(msg.turnMeta.model) : null;
   // 方案A: only a JUST-SENT user bubble plays the slide-in-from-right
   // entrance. The freshness gate keeps the animation off history hydration
   // and LegendList scroll remounts (an old bubble re-mounting mid-scroll
@@ -263,6 +275,13 @@ export const MessageRow = memo(function MessageRow({
   // rows NOT currently being edited (the editor replaces the row).
   // 只有 showEdit 之后才有展开按钮的位置 —— 与复制/编辑同一行。
   const showEdit = isUser && canEdit && !isEditing;
+  /* 【CHAT-12】重新生成对 **AI 回复**也开放（见 ChatPane 的 handleRegenerate）。
+   *
+   * 与"编辑"分开：编辑只对用户消息有意义（要改的是自己写的 prompt），
+   * 而重新生成对 AI 回复同样有意义 —— 同一个问题再答一次。
+   * 条件里保留 `isTurnTail` 的意图但**不强制**：中间轮也允许重答，
+   * 否则用户要重答第三条就必须丢掉后面所有对话。 */
+  const showRegenerate = !isEditing && canEdit;
 
   // ── 【T120】用户气泡的超长折叠 ──
   //
@@ -342,6 +361,7 @@ export const MessageRow = memo(function MessageRow({
       // selection belongs to by walking up from the selection's anchor node
       // to this attribute; jump-to-bookmark uses it to flash the row after
       // scrolling. Static per row — no effect on the memo shallow-compare.
+      data-cds="MessageRow"
       data-message-id={msg.id}
       className={cn(
         "group min-w-0",
@@ -356,7 +376,10 @@ export const MessageRow = memo(function MessageRow({
             : "mt-[var(--chat-row-gap-assistant)]",
       )}
     >
-      <div className={isUser ? "max-w-[min(92%,48rem)] sm:max-w-[min(85%,48rem)] min-w-0" : "w-full min-w-0"}>
+      <div
+        className={isUser ? "max-w-[min(92%,48rem)] sm:max-w-[min(85%,48rem)] min-w-0" : "w-full min-w-0"}
+        style={isUser ? ({ "--chat-font-size-base": "var(--chat-font-size)" } as React.CSSProperties) : undefined}
+      >
         {/* 【T139】助手身份头 —— 对齐上游 `ChatMessageBubbles.tsx` 的头部。
          *
          * 上游每条助手消息顶部都有「✦ + 名字 + 模型角标 + • + 时间」。
@@ -371,19 +394,32 @@ export const MessageRow = memo(function MessageRow({
          * `tightTop` 的消息（同回合内的后续块）不显示 —— 它们不是一轮的开头，
          * 每条都顶一个 "Mcode" 会让一屏出现十几次同样的标记。 */}
         {!isUser && !tightTop && (
-          <div className="mb-1 flex items-center gap-1.5 text-footnote text-content-subtle select-none">
+          <div data-cds="AssistantMessageHeader" className="mb-1 flex items-center gap-2 text-xs text-content-subtle select-none">
             <span
-              className="flex size-4 shrink-0 items-center justify-center rounded bg-accent text-surface"
+              data-cds="AssistantAvatar"
+              className="flex size-4 shrink-0 items-center justify-center text-content-muted"
               aria-hidden
             >
-              <IconSparkles size={10} />
+              <IconSparkles size={14} />
             </span>
-            <span className="font-semibold text-content">Mcode</span>
+            <span data-cds="AssistantMessageName" className="font-medium text-content">Mcode</span>
             {/* 【T139】模型徽标跟着身份走 —— 上游的头部是 `[✦] Claude [model]`。
              * 它只在有 `turnMeta` 时才有值（该字段只有回合首条消息带），
              * 所以后续块的消息头部只显示 `[✦] Mcode`，与「运行状态只在首条」
              * 是同一套语义。 */}
-            {msg.turnMeta && <ModelBadge model={msg.turnMeta.model} />}
+            {modelName && (
+              <span data-cds="AssistantModelBadge" className="shrink-0 rounded bg-surface-muted/60 px-1.5 py-0.5 font-mono text-[10px] leading-none text-content-muted">
+                {modelName}
+              </span>
+            )}
+            {!hideTurnStat && (
+              <>
+                <span aria-hidden>•</span>
+                <span className="shrink-0 font-mono text-[11px] tabular-nums">
+                  {fmtClock(msg.turnMeta?.startedAt ?? msg.createdAt)}
+                </span>
+              </>
+            )}
           </div>
         )}
         {/* Per-turn stat row - only on the first assistant message of a
@@ -393,17 +429,27 @@ export const MessageRow = memo(function MessageRow({
         <div
           // User messages get a native tooltip showing the full send date-time
           // on hover (assistant messages have no createdAt tooltip - the
-          // per-turn stat row already shows timing).
+          // identity header shows the timestamp; the stat row shows duration).
           // .user-bubble-fill (not bg-userBubble/<alpha>): the tint strength
           // must differ per theme — 15% over white is visible, over the
           // near-black dark surface it isn't (see --user-bubble-alpha).
-          // 方案A: directional corner radii (tight bottom-right corner points
-          // at the sender) + the freshness-gated slide-in above.
+          // 方案A: uniform Claude-style bubble radius with a quiet semantic
+          // edge to preserve separation where the configured fill is very subtle.
+          data-cds={isUser ? "UserBubble" : undefined}
           title={isUser ? fmtFullDateTime(msg.createdAt) : undefined}
-          style={isUser ? { boxShadow: "0 1px 2px 0 rgba(0, 0, 0, 0.04)" } : { paddingLeft: "var(--cds-assistant-message-text-inset, 4px)" }}
+          style={isUser
+            ? ({
+                // 【UI 重建 2026-10-27】用户气泡比正文小 0.5px —— Claude 的
+                // 做法是气泡文字略小于助手正文，保持「气泡是嵌入物」的观感。
+                // 基准 `--chat-font-size` 已改成 Claude 的 12.24px。
+                "--chat-font-size": "calc(var(--chat-font-size-base) - 0.5px)",
+              } as React.CSSProperties)
+            // 助手正文缩进：Claude 的 `--cds-assistant-message-text-inset` 是 **0px**
+            // （无缩进，正文与卡片左缘对齐）。原先回落值是 4px，会整体右移。
+            : { paddingLeft: "var(--cds-assistant-message-text-inset, 0px)" }}
           className={
             isUser
-              ? "user-bubble-fill overflow-hidden rounded-[var(--radius-bubble)] rounded-br-[5px] px-4 py-3 text-content [font-size:var(--chat-font-size)]" +
+              ? "user-bubble-fill overflow-hidden rounded-[var(--radius-bubble)] border border-edge/45 px-4 py-3 text-content [font-size:var(--chat-font-size)]" +
                 (freshBubble ? " chat-bubble-in" : "")
               : "text-content [font-size:var(--chat-font-size)]"
           }
@@ -448,8 +494,11 @@ export const MessageRow = memo(function MessageRow({
             side-by-side; for assistant messages only copy is shown. */}
         {(showCopy || showEdit) && (
           <div
+            data-cds="MessageActions"
+            role="toolbar"
+            aria-label={t("chatStream.messageActions")}
             className={cn(
-              "message-actions mt-1 flex min-h-7 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100",
+              "message-actions mt-1 flex min-h-7 items-center gap-1 pointer-events-none opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100",
               isUser ? "justify-end" : "justify-start",
             )}
           >
@@ -462,20 +511,22 @@ export const MessageRow = memo(function MessageRow({
                 onClick={() => onStartEdit?.(msg)}
                 title={t("common.edit")}
                 aria-label={t("common.edit")}
-                className="cds-hover-ghost inline-flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                data-cds="MessageActionButton"
+                className="cds-hover-ghost inline-flex size-7 items-center justify-center rounded-[var(--radius-btn-md)] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
-                <IconPencil size={12} />
+                <IconPencil size={14} />
               </button>
             )}
-            {showEdit && onRegenerate && (
+            {showRegenerate && onRegenerate && (
               <button
                 type="button"
                 onClick={() => onRegenerate(msg)}
                 title={t("chatStream.regenerate")}
                 aria-label={t("chatStream.regenerate")}
-                className="cds-hover-ghost inline-flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                data-cds="MessageActionButton"
+                className="cds-hover-ghost inline-flex size-7 items-center justify-center rounded-[var(--radius-btn-md)] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
-                <IconRefresh size={12} />
+                <IconRefresh size={14} />
               </button>
             )}
           </div>
@@ -553,9 +604,10 @@ function CopyButton({ text }: { text: string }) {
       onClick={onCopy}
       title={copied ? t("common.copied") : t("common.copy")}
       aria-label={copied ? t("common.copied") : t("common.copy")}
-      className="cds-hover-ghost inline-flex size-7 items-center justify-center rounded-[var(--radius-btn-xs)] text-[10px] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      data-cds="MessageActionButton"
+      className="cds-hover-ghost inline-flex size-7 items-center justify-center rounded-[var(--radius-btn-md)] text-content-subtle transition-colors hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
-      {copied ? <IconCheck size={12} className="text-accent" /> : <IconCopy size={12} />}
+      {copied ? <IconCheck size={14} className="text-accent" /> : <IconCopy size={14} />}
     </button>
   );
 }

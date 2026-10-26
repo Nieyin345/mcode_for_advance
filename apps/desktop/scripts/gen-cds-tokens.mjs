@@ -1,170 +1,434 @@
 /**
- * 【ARC-005 V0】**从 open-claude-ui 的 CDS 令牌生成 Mcode 的原始色阶层**。
+ * 【UI 重建】**从本机安装的 Claude Desktop 生成 Mcode 的原始 token 层**。
  *
- * ## 为什么用脚本而不是手抄
+ * ## 来源变更（2026-10-27）
  *
- * `open-claude-ui/code-examples/cds-theme.css`（MIT）是上游 reverse-engineered 的
- * 生产令牌表：35 阶灰度 + 35 阶陶土橙 + 表面阶梯 + 发丝边。Mcode 的 `styles.css`
- * 用的是 `"R G B"` 三元组（840 处 alpha 类依赖这种写法）。两边接起来需要：
+ * 旧版从仓库里的 `open-claude-ui/code-examples/cds-theme.css`（第三方对 2.x 的逆向）
+ * 生成。已废弃：那份产物里有若干 token 名在真实 3.1623.4.0 里**不存在**，
+ * 且只覆盖 gray + orange 两个色系，而真实产物有 **9 个色系 × 35 档**。
  *
- *   上游 `#rrggbb` → 三元组 → 写进 `tokens.cds.css` 的 `--m-*` 原始层。
+ * 现在直接读用户本机安装的 Claude Desktop 的 CSS 产物：
+ *   `%ProgramFiles%\WindowsApps\Claude_<ver>_x64__<hash>\app\resources\ion-dist\assets\v1\*.css`
  *
- * 手抄 70 个色值必然漂；脚本从上游 CSS 里**逐条解析**，并且：
- *  - 上游文件缺失时**显式失败**（不静默生成半张表）；
- *  - 生成结果带上游文件名与色值数量，便于对账；
- *  - `--check` 模式只比对不写，CI/套件据此钉住"生成物与上游一致"。
+ * 安装路径与版本号**不写死**——按 Appx 目录通配查找，取版本号最大的一个。
+ * 找不到就显式失败（不静默生成半张表）。
  *
- * ## 用在哪
+ * ## 产出
  *
- * `styles.css` 在 `:root` 里把现有语义 token（`--surface` / `--content` / …）
- * **重指**到这些原始层（语义名不变，840 处 class 用法零改动）。`.dark` 同理。
+ * `src/renderer/tokens.cds.css`：
+ *   - 全部 `--cds-<系>-<档>` 色阶 → `--m-<系>-<档>`（`"R G B"` 三元组，840 处 alpha 类依赖）
+ *   - 几何 / 阴影 / 圆角 token → `--m-*`（值里的上游 var() 逐条映射）
  *
- * 用法：
- *   node scripts/gen-cds-tokens.mjs            # 生成 src/renderer/tokens.cds.css
- *   node scripts/gen-cds-tokens.mjs --check    # 只比对，不一致 exit 1
+ * ## 用法
+ *
+ *   node scripts/gen-cds-tokens.mjs                 # 生成
+ *   node scripts/gen-cds-tokens.mjs --check         # 只比对，不一致 exit 1
+ *   node scripts/gen-cds-tokens.mjs --claude <dir>  # 指定 Claude 安装根目录
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(here, "..");
-const repo = resolve(desktop, "../..");
-const upstreamPath = join(repo, "open-claude-ui", "code-examples", "cds-theme.css");
 const outPath = join(desktop, "src", "renderer", "tokens.cds.css");
 
-/** 只取上游里**直接给出 hex** 的原始色阶（gray / orange / clay / 表面阶梯里
- *  用 var() 的不取 —— 那些是语义层，Mcode 有自己的语义名）。 */
-const RAMP_PREFIXES = ["--cds-gray-", "--cds-orange-"];
+const OS = process.env.ProgramFiles || "C:\\Program Files";
+const WINDOWS_APPS = join(OS, "WindowsApps");
 
-/** 几何/阴影类 token：上游给的是 px/rem/阴影串，Mcode 直接消费(不去三元组化)。
- *  只取**与主题无关**的那些；明暗分叉的语义 token 留在 styles.css。 */
-const GEOMETRY_KEYS = [
-  "--radius-xs", "--radius-sm", "--radius-md", "--radius-lg",
-  "--radius-xl", "--radius-2xl", "--radius-3xl",
-  "--cds-panel-radius", "--cds-radius-composer",
-  "--cds-message-bubble-radius", "--cds-message-bubble-radius-meeting",
-  "--cds-radius-pill",
-  "--cds-shadow-sm", "--cds-shadow-md", "--cds-shadow-lg", "--cds-shadow-popover",
-  "--cds-shadow-composer", "--cds-shadow-composer-hover", "--cds-shadow-composer-focus",
-  "--cds-ring-hairline", "--cds-ring-inner", "--cds-ring-outer",
-];
-
-function parseGeometry(css) {
-  const out = new Map();
-  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // 多行值(阴影串跨行):按 `key:` 起、到匹配的分号止。
-  for (const key of GEOMETRY_KEYS) {
-    const re = new RegExp(`^\\s*${escapeRe(key)}\\s*:([\\s\\S]*?);`, "m");
-    const m = re.exec(css);
-    if (!m) continue;
-    const value = m[1].replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ").trim();
-    if (value.length > 0 && value.length < 400) out.set(key, value);
+/** 找到本机安装的 Claude Desktop 的 ion-dist 目录。
+ *
+ *  `C:\Program Files\WindowsApps` **不允许列出目录**（EPERM），所以不能 scandir。
+ *  用 PowerShell 的 `Get-AppxPackage` 拿确切 InstallLocation —— 它只返回路径，
+ *  不枚举父目录。多个版本时取最高的。
+ */
+function findClaudeIonDist() {
+  const argIdx = process.argv.indexOf("--claude");
+  if (argIdx >= 0 && process.argv[argIdx + 1]) {
+    const root = resolve(process.argv[argIdx + 1]);
+    const ion = join(root, "app", "resources", "ion-dist");
+    if (existsSync(ion)) return ion;
+    const ion2 = join(root, "resources", "ion-dist");
+    if (existsSync(ion2)) return ion2;
+    throw new Error(`指定的 Claude 目录里找不到 ion-dist：${root}`);
   }
-  return out;
+  let loc = "";
+  try {
+    loc = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-Command",
+       "$p = Get-AppxPackage -Name Claude | Sort-Object Version -Descending | Select-Object -First 1; if ($p) { $p.InstallLocation }"],
+      { encoding: "utf8", windowsHide: true, timeout: 20000 },
+    ).trim();
+  } catch (err) {
+    throw new Error(`查询 Claude 安装位置失败：${err.message}`);
+  }
+  if (!loc) {
+    throw new Error("本机没有安装 Claude Desktop（Get-AppxPackage -Name Claude 无结果）。" +
+      "用 --claude <安装根目录> 指定，或先安装 Claude 桌面端。");
+  }
+  const ion = join(loc, "app", "resources", "ion-dist");
+  if (!existsSync(ion)) throw new Error(`Claude 安装目录里找不到 ion-dist：${ion}`);
+  return ion;
 }
 
-/** 暗色主题里**重定义**的几何/阴影 token。
- *
- *  为什么必须单独取:上游用 `.dark` / `[data-mode="dark"]` 把阴影的 alpha 调强
- *  (亮色 0.035 → 暗色 0.4、focus 0.08 → 0.65,并把边线换成半透明白)。只看第一处
- *  定义会让 Mcode 的暗色主题沿用亮色阴影 —— 在深底上几乎看不见,卡片浮不起来。
- *
- *  只取 GEOMETRY_KEYS 里的键(色阶是主题无关的原始层,不在此列)。找不到暗色块
- *  就返回空 Map(上游没有暗色覆盖也是合法状态),调用方据此决定是否生成 `.dark`。 */
-function parseDarkGeometry(css) {
-  const out = new Map();
-  const darkStart = css.search(/\[data-mode="dark"\]\s*,\s*\.dark\s*\{/);
-  if (darkStart < 0) return out;
-  // 从 dark 选择器起点截到文件尾:后续块里同名的不会再定义(上游结构如此)。
-  const dark = parseGeometry(css.slice(darkStart));
-  for (const key of GEOMETRY_KEYS) {
-    const value = dark.get(key);
-    if (value !== undefined) out.set(key, value);
-  }
-  return out;
+/** 主样式表：assets/v1 下最大的那份 .css（当前 1.4–1.5 MB，含 1000+ token）。 */
+function findMainCss(ionDist) {
+  const dir = join(ionDist, "assets", "v1");
+  if (!existsSync(dir)) throw new Error(`找不到 assets/v1：${dir}`);
+  const css = readdirSync(dir)
+    .filter((f) => f.endsWith(".css"))
+    .map((f) => ({ f, size: statSync(join(dir, f)).size }))
+    .sort((a, b) => b.size - a.size);
+  if (css.length === 0) throw new Error(`assets/v1 下没有 .css：${dir}`);
+  return join(dir, css[0].f);
 }
 
-function parseRamps(css) {
-  const ramp = new Map();
-  for (const line of css.split("\n")) {
-    const m = /^\s*(--cds-[a-z]+-\d+)\s*:\s*(#[0-9a-fA-F]{3,8})\s*;/.exec(line);
-    if (!m) continue;
-    if (!RAMP_PREFIXES.some((p) => m[1].startsWith(p))) continue;
-    ramp.set(m[1], m[2].toLowerCase());
+// ── 解析 ────────────────────────────────────────────────────────────────
+
+/** 极简规则遍历：摊平一层 at-rule，返回 [选择器, 正文, 祖先at规则]。
+ *
+ *  **必须带 at-rule 上下文**：Claude 的暗色不是 `.dark`，而是
+ *  `@media screen and (prefers-color-scheme: dark)` 加 `[data-mode=dark]`。
+ *  丢掉祖先会把暗色值和亮色值混成一份，暗色主题就全错。 */
+function* iterRules(css) {
+  let i = 0, n = css.length, depth = 0, selStart = 0, bodyStart = null, sel = "";
+  const atStack = [];
+  let pendingAt = "";
+  while (i < n) {
+    const ch = css[i];
+    if (ch === "{") {
+      if (depth === 0) {
+        sel = css.slice(selStart, i).trim();
+        bodyStart = i + 1;
+        if (sel.startsWith("@")) {
+          pendingAt = atStack.concat([sel]).join(" | ");
+        }
+      }
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && bodyStart !== null) {
+        yield [sel, css.slice(bodyStart, i), pendingAt];
+        bodyStart = null;
+        selStart = i + 1;
+        if (sel.startsWith("@")) pendingAt = "";
+      }
+    } else if (ch === ";" && depth === 0) {
+      selStart = i + 1;
+    }
+    i++;
   }
-  return ramp;
+}
+
+/** 是不是「默认档」的定义。
+ *
+ *  Claude 的密度/尺寸档位写成 `:where([data-density=compact], [data-density=compact] *)`
+ *  —— 属性在**函数内部**，不在选择器前缀。所以只判断选择器里有没有这些档位标记，
+ *  不判断位置。 */
+function isAmbientSelector(sel) {
+  return !/data-(density|mode|size|text-size)|\.dark\b|@media|@container|@supports/.test(sel);
+}
+
+function parseTokens(css) {
+  const all = new Map();      // name -> [{ sel, at, value }]
+  for (const [sel, body, at] of iterRules(css)) {
+    // 值必须以 `;` 结尾。用 `[^;}]+` 而不是 `[^;]+` —— 后者在**最后一条声明
+    // 没有分号**时会越过 `}` 吞掉后面整段 CSS（实测把 `.dark` 块一起吃进来，
+    // 生成物里出现 `}}@media…`，postcss 报 Unexpected }）。
+    const re = /(--cds-[a-z0-9-]+)\s*:\s*([^;}]+)/g;
+    let m;
+    while ((m = re.exec(body)) !== null) {
+      const name = m[1];
+      const value = m[2].replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ").trim();
+      if (!value) continue;
+      if (!all.has(name)) all.set(name, []);
+      all.get(name).push({ sel, at: at || "", value });
+    }
+  }
+  return all;
+}
+
+/** 是否暗色作用域。Claude 用四种写法，都要认：
+ *  `@media ... prefers-color-scheme:dark`、`[data-mode=dark]`、`.dark`，
+ *  以及**裸 `@media screen`** —— Claude 在 `.cds-root` 之后用一层无条件的
+ *  `@media screen` 块表达「系统主题」（外层已按亮/暗分别包好）。不带这个判断，
+ *  `neutral-900` 的亮色值会被暗色块里的 gray-900 覆盖。 */
+function isDark(entry) {
+  const scope = entry.at + " " + entry.sel;
+  if (/prefers-color-scheme:\s*dark|data-mode=["']?dark|(^|\s)\.dark\b/.test(scope)) return true;
+  // 裸媒体块：只认 `@media screen`（不含 prefers-color-scheme / min-width 等条件）
+  return /@media\s+screen\s*(\||$)/.test(scope) && !/prefers-color-scheme|min-width|max-width/.test(scope);
+}
+
+/** 取一个 token 的默认（亮色）值：外层、非暗色、非密度作用域里的第一处。 */
+function defaultValue(entries) {
+  const ambient = entries.find((e) => isAmbientSelector(e.sel) && !isDark(e));
+  return (ambient ?? entries.find((e) => !isDark(e)) ?? entries[0]).value;
+}
+
+/** 取暗色值：优先 `[data-mode=dark]`（显式），其次 prefers-color-scheme。 */
+function darkValue(entries) {
+  const explicit = entries.find((e) => /data-mode=["']?dark/.test(e.at + " " + e.sel));
+  if (explicit) return explicit.value;
+  const mq = entries.find((e) => /prefers-color-scheme:\s*dark/.test(e.at + " " + e.sel));
+  return mq ? mq.value : undefined;
 }
 
 function hexToTriplet(hex) {
-  const h = hex.slice(1);
-  if (h.length === 3) {
-    return `${parseInt(h[0] + h[0], 16)} ${parseInt(h[1] + h[1], 16)} ${parseInt(h[2] + h[2], 16)}`;
-  }
-  if (h.length === 6) {
-    return `${parseInt(h.slice(0, 2), 16)} ${parseInt(h.slice(2, 4), 16)} ${parseInt(h.slice(4, 6), 16)}`;
-  }
-  throw new Error(`不支持的色值:${hex}`);
+  const h = hex.replace(/^#/, "");
+  if (h.length === 3) return `${parseInt(h[0] + h[0], 16)} ${parseInt(h[1] + h[1], 16)} ${parseInt(h[2] + h[2], 16)}`;
+  if (h.length === 6) return `${parseInt(h.slice(0, 2), 16)} ${parseInt(h.slice(2, 4), 16)} ${parseInt(h.slice(4, 6), 16)}`;
+  if (h.length === 8) return `${parseInt(h.slice(0, 2), 16)} ${parseInt(h.slice(2, 4), 16)} ${parseInt(h.slice(4, 6), 16)}`;
+  throw new Error(`不支持的色值：${hex}`);
 }
 
-if (!existsSync(upstreamPath)) {
-  console.error(`缺少上游令牌文件:${upstreamPath}`);
-  console.error("open-claude-ui 应克隆到仓库根（gitignore 内），见 ARC-005 计划。");
-  process.exit(1);
+// ── 生成 ────────────────────────────────────────────────────────────────
+
+const ionDist = findClaudeIonDist();
+const cssPath = findMainCss(ionDist);
+const css = readFileSync(cssPath, "utf8");
+const tokens = parseTokens(css);
+
+// 1) 色阶：--cds-<系>-<数字>，值直接是 hex
+const RAMP_RE = /^--cds-([a-z]+)-(\d+)$/;
+const ramps = new Map();
+for (const [name, entries] of tokens) {
+  if (!RAMP_RE.test(name)) continue;
+  const v = defaultValue(entries);
+  if (/^#[0-9a-fA-F]{3,8}$/.test(v)) ramps.set(name, v);
 }
-const upstream = readFileSync(upstreamPath, "utf8");
-const ramps = parseRamps(upstream);
-const geometry = parseGeometry(upstream);
-if (ramps.size < 60) {
-  console.error(`只解析到 ${ramps.size} 个色阶，少于预期（>=60）—— 上游格式可能变了。`);
+if (ramps.size < 200) {
+  console.error(`只解析到 ${ramps.size} 个色阶，少于预期（>=200）—— Claude 产物格式可能变了。`);
   process.exit(1);
 }
 
-const lines = [
-  "/* 由 scripts/gen-cds-tokens.mjs 从 open-claude-ui/code-examples/cds-theme.css 生成。",
-  " * 上游：MIT，Caho1/open-claude-ui（基于 REA 对 Claude 桌面端的逆向）。",
-  " * 不要手改；改上游或生成器，然后重跑。",
-  " *",
-  " * 这些是**原始色阶**（--m-*），Mcode 的语义 token 在 styles.css 里指过来。",
-  " * 用 \"R G B\" 三元组是为了让 Tailwind 的 <alpha-value> 继续工作（840 处 alpha 类）。",
-  " */",
-  ":root {",
-];
-for (const [name, hex] of [...ramps].sort(([a], [b]) => (a < b ? -1 : 1))) {
-  const mname = name.replace(/^--cds-/, "--m-");
-  lines.push(`  ${mname}: ${hexToTriplet(hex)}; /* ${hex} */`);
-}
-lines.push("}", "");
-lines.push("/* 几何 / 阴影(与主题无关;值直接来自上游,不转三元组)。 */", ":root {");
-/** 上游几何值里引用的语义变量 → Mcode 的语义名（Mcode 不定义 --cds-*）。
- *  未映射的 var 会让整条阴影静默失效，所以这里必须逐条对齐。
- *  注意：Mcode 的 --edge / --input-edge 存的是 "R G B" 三元组（840 处 alpha
- *  类依赖这种写法），裸写进 box-shadow 会展开成 "195 194 183" —— 计算值阶段
- *  整条声明失效、阴影静默消失，所以这里必须包一层 rgb()。 */
+// 2) 几何 / 阴影 / 圆角：名字里带这些词、且值不是纯色阶引用的
+const GEOMETRY_HINT = /(radius|shadow|ring|hairline|btn-spring|dur-|ease-|leading|font-size|h-control|icon|gap-|pad-)/;
+
+/** 上游 var() → Mcode 语义名。Mcode 不定义 --cds-*，未映射的会让整条声明静默失效。 */
 const VAR_MAP = {
   "--cds-border": "rgb(var(--edge))",
   "--cds-border-strong": "rgb(var(--input-edge))",
   "--cds-shadow-color": "rgba(0, 0, 0, 0.08)",
-  "--cds-rem-scale": "1",
+  // **不要把 --cds-rem-scale 映射成常量**：它在下面自己的 :root 里以
+  // `--m-rem-scale: calc(16 / 17)` 导出。映射成 "1" 会让每条
+  // `calc(.875rem * var(--cds-rem-scale,1))` 变成 `.875rem` —— 字号比 Claude 大 6%。
   "--cds-radius": "8px",
+  "--cds-surface-0": "rgb(var(--surface-muted))",
+  "--cds-surface-1": "rgb(var(--surface))",
+  "--cds-surface-2": "rgb(var(--surface))",
+  "--cds-text-primary": "rgb(var(--content))",
+  "--cds-text-secondary": "rgb(var(--content-muted))",
+  "--cds-text-muted": "rgb(var(--content-subtle))",
+  "--cds-fill-accent": "rgb(var(--accent))",
+  "--cds-bg-accent": "rgb(var(--accent) / 0.12)",
 };
 function remapVars(value) {
-  return value.replace(/var\((--cds-[a-z-]+)(?:,\s*([^)]*))?\)/g, (_m, name, fallback) => {
-    const mapped = VAR_MAP[name];
-    if (mapped !== undefined) return mapped;
-    return fallback !== undefined ? fallback : "initial";
+  return value
+    .replace(/var\((--cds-[a-z0-9-]+)(?:,\s*([^)]*))?\)/g, (_m, name, fallback) => {
+      const mapped = VAR_MAP[name];
+      if (mapped !== undefined) return mapped;
+      // rem-scale / spacing 等基准量已经是 Mcode 自己的变量，改个名指过去。
+      if (name === "--cds-rem-scale") return "var(--m-rem-scale)";
+      return fallback !== undefined ? fallback : "initial";
+    })
+    // Tailwind v4 风格的 `--color-<系>-<档>`（Claude 部分规则用这套）。
+    // 不映射会让整条 color-mix 声明静默失效 —— 与 --edge 三元组那个坑同型。
+    .replace(/var\(--color-([a-z]+)-(\d+)\)/g, (_m, hue, step) => `rgb(var(--m-${hue}-${step}))`);
+}
+
+const geometry = new Map();
+for (const [name, entries] of tokens) {
+  if (!GEOMETRY_HINT.test(name)) continue;
+  const v = remapVars(defaultValue(entries));
+  if (v.length === 0 || v.length > 400) continue;
+  if (/^#[0-9a-fA-F]{3,8}$/.test(v)) continue; // 纯色值不算几何
+  geometry.set(name, v);
+}
+
+// `--cmp-*` 依赖 `--cds-h-control` / `--cds-h-control--sm` / `--cds-h-control--xs`
+// 这几个**尺寸档位**。它们不在 GEOMETRY_HINT 里（名字是 h-control，不是 pad/gap），
+// 漏了会让整条 `calc(var(--cds-h-control) - …)` 静默失效。单独收全。
+for (const [name, entries] of tokens) {
+  if (!/^--cds-h-control(--(xs|sm|lg|xl))?$/.test(name)) continue;
+  const v = remapVars(defaultValue(entries));
+  if (v && !/^initial$/.test(v) && v.length < 120) geometry.set(name, v);
+}
+
+// 3) 语义映射链（--cds-neutral-* / --cds-surface-* / --cds-text-* / --cds-fill-* …）
+//    这些的值是 `var(--cds-gray-N)`，亮暗的差别**整个体现在这条链上**：
+//    亮色 `--cds-neutral-900: var(--cds-gray-0)`，暗色 `var(--cds-gray-900)`。
+//    所以必须把链本身也导出来，并把暗色那份单独放 .dark。
+const SEMANTIC_PREFIX = /^--cds-(neutral|surface|text|fill|border|bg|stroke|alpha|role|icon|link|danger|warning|success|info|accent|clay)-/;
+
+function toM(name) {
+  // var(--cds-x-N) → var(--m-x-N)：指向我们已经生成的色阶层
+  return name.replace(/^--cds-/, "--m-");
+}
+
+const semantics = new Map();      // name -> { light, dark? }
+for (const [name, entries] of tokens) {
+  if (!SEMANTIC_PREFIX.test(name)) continue;
+  const light = defaultValue(entries);
+  if (!/var\(--cds-[a-z]+-\d+\)/.test(light)) continue; // 只收纯色阶引用
+  const dark = darkValue(entries);
+  semantics.set(name, {
+    light: toM(light.replace(/var\((--cds-[a-z]+-\d+)\)/g, (_m, n) => `var(${toM(n)})`)),
+    dark: dark && /var\(--cds-[a-z]+-\d+\)/.test(dark)
+      ? toM(dark.replace(/var\((--cds-[a-z]+-\d+)\)/g, (_m, n) => `var(${toM(n)})`))
+      : undefined,
   });
 }
-for (const [name, value] of [...geometry].sort(([a], [b]) => (a < b ? -1 : 1))) {
-  lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${remapVars(value)};`);
+
+// 4) 暗色覆写：几何 token 在暗色作用域下的重定义
+const darkGeometry = new Map();
+for (const [name, entries] of tokens) {
+  if (!geometry.has(name)) continue;
+  const d = darkValue(entries);
+  if (d === undefined) continue;
+  const v = remapVars(d);
+  if (v !== geometry.get(name)) darkGeometry.set(name, v);
+}
+
+// 5) 密度档：Claude 用 `[data-density=compact]` / `[data-density=comfortable]`
+//    在 `:where()` 里整体翻转尺寸。默认（:root）就是 comfortable 档，所以只导出
+//    compact 那份差异，挂在 `html[data-density="compact"]` 上。
+// 5) 密度档：Claude 用 `:where([data-density=compact], …)` 在**组件级**覆盖。
+//    它不是一个「整套 token 换一份」，而是逐组件的 Tailwind 变体类
+//    （`.compact:gap-sm`、`.compact:[--cds-radius-composer:…]`）。
+//    这里把**所有 compact 规则里设置的 --cds-* 变量**收成一份差距表，
+//    挂在 `html[data-density="compact"]` 上 —— 比 Claude 的逐组件类稍粗，
+//    但覆盖同一批变量，且 Mcode 的组件读的正是这些变量。
+const compactTokens = new Map();
+for (const [name, entries] of tokens) {
+  const c = entries.find((e) => /data-density=compact/.test(e.sel));
+  if (!c) continue;
+  const v = remapVars(c.value);
+  if (v && !/^initial$/.test(v.trim())) compactTokens.set(name, v);
+}
+// 另外把 Tailwind 的 `--cmp-*`（composer 专用）也收进来，它们是 Mcode 没有的一组。
+// comfortable 是默认档 → 进 :root；compact → 进密度覆盖。
+//
+// **不用 iterRules**：这些选择器里带转义冒号（`.compact\:gap-sm:where(...)`），
+// 用规则解析器会在冒号处切错。直接按「选择器片段 + 花括号正文」正则扫描。
+function collectCmp(density) {
+  const out = new Map();
+  // 两轮扫描：一是 `data-density=<档>` 块，二是**不带密度限定的全局 `--cmp-*`**。
+  const re = new RegExp(`[^{}]*data-density=${density}[^{}]*\\{([^}]*)\\}`, "g");
+  let m;
+  while ((m = re.exec(css)) !== null) {
+    const body = m[1];
+    const varRe = /(--(?:cmp|cds)-[a-z0-9-]+)\s*:\s*([^;]+)/g;
+    let v;
+    while ((v = varRe.exec(body)) !== null) {
+      const val = remapVars(v[2].trim());
+      if (val && !/^initial$/.test(val)) out.set(v[1], val);
+    }
+  }
+  if (density === "comfortable") {
+    // 全局 `--cmp-*`（不带密度限定）是默认档 —— 它们散在 :root / .cds-root 里，
+    // 上面那个按块扫的循环看不到。单独全文扫一遍。
+    const g = /(--cmp-[a-z0-9-]+)\s*:\s*([^;]+)/g;
+    let v;
+    while ((v = g.exec(css)) !== null) {
+      if (out.has(v[1])) continue;
+      const val = remapVars(v[2].trim());
+      if (val && !/^initial$/.test(val)) out.set(v[1], val);
+    }
+  }
+  return out;
+}
+const comfyCmp = collectCmp("comfortable");
+const compactCmp = collectCmp("compact");
+for (const [k, v] of compactCmp) compactTokens.set(k, v);
+
+// 基准量（rem-scale / spacing）**从产物里现读**，不硬编码 —— 它们一变，
+// 所有字号与间距跟着变，写死就等于把 Claude 的版本钉在这。
+function firstRaw(name) {
+  const e = tokens.get(name);
+  if (e) {
+    const v = defaultValue(e);
+    if (v && v !== "initial") return v;
+  }
+  // `--spacing` 这类**不带 --cds- 前缀**的基准量不在 tokens 里，直接扫原文。
+  const at = css.indexOf(name + ":");
+  if (at < 0) return undefined;
+  const rest = css.slice(at + name.length + 1);
+  const end = rest.search(/[;}]/);
+  return end > 0 ? rest.slice(0, end).trim() : undefined;
+}
+const baseRemScale = firstRaw("--cds-rem-scale");
+const baseSpacing = firstRaw("--spacing");
+
+// ── 输出 ────────────────────────────────────────────────────────────────
+
+const claudeVer = (() => {
+  const m = ionDist.match(/Claude_([\d.]+)_x64__/);
+  return m ? m[1] : "unknown";
+})();
+const cssRel = cssPath.split(/[\\/]/).slice(-2).join("/");
+
+const lines = [
+  `/* 由 scripts/gen-cds-tokens.mjs 从**本机安装的 Claude Desktop ${claudeVer}** 生成。`,
+  ` * 源文件：${cssRel}`,
+  " * 不要手改；重跑 `node scripts/gen-cds-tokens.mjs` 即可（Claude 升级后重跑）。",
+  " *",
+  " * 这些是**原始层**（--m-*），Mcode 的语义 token 在 styles.css 里指过来。",
+  ' * 色阶用 "R G B" 三元组，让 Tailwind 的 <alpha-value> 继续工作（840 处 alpha 类）。',
+  " */",
+  ":root {",
+];
+for (const [name, hex] of [...ramps].sort(([a], [b]) => (a < b ? -1 : 1))) {
+  lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${hexToTriplet(hex)}; /* ${hex} */`);
 }
 lines.push("}", "");
-// 暗色覆盖:同名 token 在 `.dark` 下重定。上游没有暗色块时整段省略(不留空块)。
-const darkGeometry = parseDarkGeometry(upstream);
-if (darkGeometry.size > 0) {
-  lines.push("/* 暗色覆盖:上游 .dark 重定义的阴影(alpha 调强、边线换半透明白)。", " * 没有这段,暗色下卡片阴影会沿用亮色的 0.035 alpha,几乎不可见。 */", ".dark {");
+lines.push(
+  "/* 基准量：从 Claude 产物里**现读**，不硬编码。",
+  ` * --cds-rem-scale = ${baseRemScale ?? "(未找到)"} —— 所有字号/圆角/间距都乘它。`,
+  " * 它一变，整套尺寸跟着变；写死就等于把这个版本钉住。 */",
+  ":root {",
+);
+if (baseRemScale) lines.push(`  --m-rem-scale: ${baseRemScale};`);
+if (baseSpacing) lines.push(`  --spacing: ${baseSpacing};`);
+lines.push("}", "");
+if (comfyCmp.size > 0) {
+  lines.push("/* composer 专用尺寸（Claude 的 --cmp-*，舒适档 = 默认档）。 */", ":root {");
+  for (const [name, value] of [...comfyCmp].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    lines.push(`  --${name.replace(/^--/, "")}: ${value};`);
+  }
+  lines.push("}", "");
+}
+lines.push("/* 几何 / 阴影 / 字号 / 动效（值直接来自 Claude 产物，不转三元组）。 */", ":root {");
+for (const [name, value] of [...geometry].sort(([a], [b]) => (a < b ? -1 : 1))) {
+  lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${value};`);
+}
+lines.push("}", "");
+lines.push("/* 语义映射链：值是指向色阶的 var()。亮暗的差别整个体现在这条链上 ——", " * Claude 暗色不是逐个 token 覆盖，而是把 neutral-900 从 gray-0 改成 gray-900。 */", ":root {");
+for (const [name, v] of [...semantics].sort(([a], [b]) => (a < b ? -1 : 1))) {
+  lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${v.light};`);
+}
+lines.push("}", "");
+const hasDark = darkGeometry.size > 0 || [...semantics.values()].some((v) => v.dark);
+if (hasDark) {
+  lines.push("/* 暗色：Claude 在 @media prefers-color-scheme:dark / [data-mode=dark] 下的那套。 */", ".dark {");
+  for (const [name, v] of [...semantics].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (v.dark) lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${v.dark};`);
+  }
   for (const [name, value] of [...darkGeometry].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${remapVars(value)};`);
+    lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${value};`);
+  }
+  lines.push("}", "");
+}
+if (compactTokens.size > 0) {
+  lines.push(
+    "/* 紧凑密度档：Claude 用 [data-density=compact] 整体翻转尺寸。",
+    " * 挂在 html 上（与 Claude 一样是全局开关），不是逐个组件改 class。 */",
+    'html[data-density="compact"] {',
+  );
+  for (const [name, value] of [...compactTokens].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    lines.push(`  ${name.replace(/^--cds-/, "--m-")}: ${value};`);
   }
   lines.push("}", "");
 }
@@ -172,16 +436,16 @@ if (darkGeometry.size > 0) {
 const output = lines.join("\n");
 if (process.argv.includes("--check")) {
   if (!existsSync(outPath)) {
-    console.error(`生成物不存在:${outPath}`);
+    console.error(`生成物不存在：${outPath}`);
     process.exit(1);
   }
-  const current = readFileSync(outPath, "utf8");
-  if (current !== output) {
-    console.error("tokens.cds.css 与上游不一致 —— 重跑 node scripts/gen-cds-tokens.mjs");
+  if (readFileSync(outPath, "utf8") !== output) {
+    console.error("tokens.cds.css 与 Claude 产物不一致 —— 重跑 node scripts/gen-cds-tokens.mjs");
     process.exit(1);
   }
-  console.log(`tokens.cds.css 与上游一致(${ramps.size} 个色阶 + ${geometry.size} 个几何/阴影 + ${darkGeometry.size} 个暗色覆写)。`);
+  console.log(`tokens.cds.css 与 Claude ${claudeVer} 一致（${ramps.size} 色阶 + ${geometry.size} 几何 + ${darkGeometry.size} 暗色覆写）。`);
 } else {
   writeFileSync(outPath, output, "utf8");
-  console.log(`wrote ${ramps.size} ramps + ${geometry.size} geometry + ${darkGeometry.size} dark overrides → ${outPath}`);
+  console.log(`Claude ${claudeVer} → ${ramps.size} 色阶 + ${geometry.size} 几何 + ${darkGeometry.size} 暗色覆写`);
+  console.log(`wrote ${outPath}`);
 }
