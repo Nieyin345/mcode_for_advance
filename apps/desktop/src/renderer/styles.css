@@ -163,43 +163,6 @@ div:has(> [role="menu"]) {
    * 暗色用 `--accent`（`#ec835a`）**不够** —— 对 #383835 只有 4.46:1，差一点点。
    * 改用 `m-orange-250`（`#f09978`），**5.34:1**，仍在同一 orange 色阶里。 */
   --selected-content: var(--accent-strong); /* #ae461c — 对选中底 4.51:1（AA） */
-
-  /* ─────────── 【UI 重建 2026-10-27】Claude 命名空间的别名层 ───────────
-   *
-   * 新外壳（ClaudeShell / ClaudeSidebar / ClaudeTitlebar / TilePane）直接写的是
-   * **Claude 的 token 名**（`--m-text-primary` / `--m-fill-ghost-hover` / …），
-   * 而不是 Mcode 自己的 `--content` / `--surface-hover`。
-   *
-   * 为什么要有这一层：那批名字有几个**在 Claude 产物里确实存在**
-   *（实测 `--cds-text-primary`、`--cds-fill-ghost-hover` 都在），但生成器只导出
-   * 「值是纯色阶引用」的那部分语义链，所以没被导出来。结果是新壳引用了
-   * **未定义的自定义属性 → 整条声明静默失效**（文字没颜色、hover 没底色）。
-   *
-   * `design-tokens-smoke` 的「所有被引用的自有 token 都有定义」抓到了这条
-   * —— 它列出的 12 个里 10 个是新壳引用的。
-   *
-   * 这层是**别名**：全部指回 Mcode 已有的语义 token，不新造数值。
-   * 名字两边都留着，将来把新壳的名字统一成 Mcode 那套时可以整层删掉。 */
-  --m-text-primary: rgb(var(--content));
-  --m-text-secondary: rgb(var(--content-muted));
-  --m-text-muted: rgb(var(--content-subtle));
-  --m-border: rgb(var(--edge));
-  --m-accent: rgb(var(--accent));
-  --m-danger: rgb(var(--danger));
-  --m-fill-ghost-hover: rgb(var(--surface-hover));
-  --m-fill-ghost-selected: rgb(var(--selected-bg));
-  --m-fill-accent: rgb(var(--accent));
-  /* ⚠️ 不要在这里写 `--m-surface-0: var(--m-surface-0)` —— 自引用是循环，
-   * 该变量会失效。`--m-surface-0..3` 由生成器导出的语义链提供，
-   * 本层只补 Claude 有、而生成器没导出的那些。 */
-  --m-radius-pill: 9999px;
-
-  /* Claude 原始命名空间的圆角别名。
-   * GenOffice 的三个组件（GenofficeViewHostPane / RevisionPanel / GenofficePanel）
-   * 直接写 `--cds-radius-btn-xs` —— 那是 GenOffice 上游的命名，不是 Mcode 的。
-   * 不定义它，那几处圆角在宿主里全部失效。 */
-  --cds-radius-btn-xs: var(--radius-btn-xs);
-  --cds-radius-btn-md: var(--radius-btn-md);
   /* 【T121】Surface 0–3 阶梯的上两层 —— CDS storybook `:629` 给的是**四层明度阶梯**，
    * 而这里原本只有两层（muted 与 surface），卡片/浮层/弹窗**共用同一个 --surface**，
    * 层次全靠边框与阴影撑。这是「Claude 那边有纵深、我们这边平」的直接原因。
@@ -1301,23 +1264,8 @@ body {
    * Mcode 原先固定 20px —— 比 Claude 的默认档大 52%，这正是「输入框
    * 看起来不是同一个东西」最直接的原因。取默认档 13.18px。 */
   --composer-radius: var(--m-radius-composer);
-  /* 【UI 重建 2026-10-27】**修一条静默失效的声明。**
-   *
-   * 原来这两行指向 `--m-shadow-composer` / `--m-shadow-composer-focus`，
-   * 而**这两个 token 在 Claude 3.1623.4.0 的产物里根本不存在**
-   *（它们是第三方逆向文档 2.x 的名字）。未定义的自定义属性会让整条
-   * `box-shadow` 在计算阶段失效 —— 输入框**一直没有阴影**，而构建、
-   * 类型检查、截图都不报错。
-   *
-   * 改用 Claude 真实存在的 `--cds-panel-shadow`（经生成器导出为
-   * `--m-panel-shadow`）：`0 0 0 1px rgb(var(--edge))`，即一圈发丝描边。
-   * focus 态沿用同一个再加一层 accent 环 —— Claude 的 focus 也是这套
-   * `--cds-focus-shadow` 思路（inset 背景色 + 1px 强调环 + 光晕）。 */
-  --composer-shadow: var(--m-panel-shadow);
-  --composer-shadow-focus:
-    var(--m-panel-shadow),
-    0 0 0 1px rgb(var(--accent)),
-    0 0 6px 1px rgb(var(--accent) / 0.18);
+  --composer-shadow: var(--m-shadow-composer);    /* resting 态：微扩散 + inset 发丝环 */
+  --composer-shadow-focus: var(--m-shadow-composer-focus); /* focus-within 态：双环 + 更大扩散 */
   --radius-bubble: var(--m-message-bubble-radius);/* 消息气泡 */
   --radius-pill: var(--m-radius-pill);
   --shadow-card: var(--m-shadow-sm);
@@ -4429,10 +4377,7 @@ html[data-reduce-motion="true"] [data-cds="QuestionPrompt"] {
  * workspace 变体下生效（classic 保持现有手感）。
  */
 [data-ui-shell-variant="workspace"] .composer-card:hover:not(:focus-within) {
-  /* 【UI 重建 2026-10-27】原值 `--m-shadow-composer-hover` 在 Claude 3.1623.4.0
-   * 里不存在 → 整条 box-shadow 静默失效（hover 没有反馈）。改用真实存在的
-   * `--m-shadow-md`（Claude 的中档阴影），hover 比 resting 抬高一档。 */
-  box-shadow: var(--m-shadow-md, var(--m-panel-shadow));
+  box-shadow: var(--m-shadow-composer-hover);
 }
 [data-ui-shell-variant="workspace"] .composer-card:focus-within {
   box-shadow: var(--composer-shadow-focus);

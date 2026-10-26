@@ -457,7 +457,7 @@
   --cds-switch-h--sm: calc(1.125rem * var(--m-rem-scale));
   --cds-switch-h--xs: calc(1rem * var(--m-rem-scale));
   --cmp-chin-end: var(--cmp-pad-x);
-  --cmp-chin-touch-grow: calc((transparent - var(--cmp-chin-row-h,transparent)) / 2);
+  --cmp-chin-touch-grow: calc((initial - var(--cmp-chin-row-h,initial)) / 2);
   --cmp-gap-y: .5rem;
   --cmp-pad-x: .75rem;
 }
@@ -466,7 +466,7 @@
 :root {
   --m-banner-neutral-ring: initial;
   --m-btn-spring: linear(0, .2459, .6526, .9468, 1.0764, 1.0915, 1.0585, 1.0219, .9993, .9914, .9921, .9957, .9988, 1.0004, 1);
-  --m-checkbox-radius: transparent;
+  --m-checkbox-radius: initial;
   --m-checkbox-radius--lg: calc(.3125rem * var(--m-rem-scale));
   --m-checkbox-radius--sm: calc(.25rem * var(--m-rem-scale));
   --m-checkbox-radius--xs: calc(.25rem * var(--m-rem-scale));
@@ -482,8 +482,8 @@
   --m-fill-field-ring: rgb(var(--edge));
   --m-fill-secondary-pressed-ring: rgb(var(--edge));
   --m-fill-secondary-ring: rgb(var(--edge));
-  --m-focus-shadow: inset 0 0 0 1px transparent, 0 0 0 1px rgb(var(--accent)), 0 0 6px 1px rgb(var(--accent) / 0.12);
-  --m-focus-shadow-danger: inset 0 0 0 1px transparent, 0 0 0 1px transparent, 0 0 6px 1px transparent;
+  --m-focus-shadow: inset 0 0 0 1px initial, 0 0 0 1px rgb(var(--accent)), 0 0 6px 1px rgb(var(--accent) / 0.12);
+  --m-focus-shadow-danger: inset 0 0 0 1px initial, 0 0 0 1px initial, 0 0 6px 1px initial;
   --m-font-size-body: calc(.8125rem * var(--m-rem-scale));
   --m-font-size-body--lg: calc(.875rem * var(--m-rem-scale));
   --m-font-size-body--own: calc(.8125rem * var(--m-rem-scale));
@@ -561,8 +561,8 @@
   --m-leading-prose--xs--textlg: 1.25rem;
   --m-leading-prose--xs--textsm: 1.1875rem;
   --m-leading-title: calc(1.5625rem * var(--m-rem-scale));
-  --m-message-bubble-pad-x: transparent;
-  --m-message-bubble-pad-y: transparent;
+  --m-message-bubble-pad-x: initial;
+  --m-message-bubble-pad-y: initial;
   --m-message-bubble-radius: calc(8px + calc(.25rem * var(--m-rem-scale)));
   --m-opacity-icon-secondary: .4;
   --m-pad-lg: calc(.75rem * var(--m-rem-scale));
@@ -577,7 +577,7 @@
   --m-pad-sm--lg: calc(.5rem * var(--m-rem-scale));
   --m-pad-sm--sm: calc(.25rem * var(--m-rem-scale));
   --m-pad-sm--xs: calc(.25rem * var(--m-rem-scale));
-  --m-pad-xl: transparent;
+  --m-pad-xl: initial;
   --m-pad-xl--lg: calc(1.375rem * var(--m-rem-scale));
   --m-pad-xl--sm: calc(.875rem * var(--m-rem-scale));
   --m-pad-xl--xs: calc(.875rem * var(--m-rem-scale));
@@ -589,40 +589,32 @@
   --m-panel-header-pad-block: calc(.25rem * var(--m-rem-scale));
   --m-panel-header-pad-inline: calc(.25rem * var(--m-rem-scale));
   --m-panel-radius: calc(.625rem * var(--m-rem-scale));
-  --m-panel-shadow: 0 0 0 1px rgb(var(--edge)), transparent;
+  --m-panel-shadow: 0 0 0 1px rgb(var(--edge)), initial;
   --m-radius: calc(1.5rem * var(--m-rem-scale));
   --m-radius--lg: calc(.4375rem * var(--m-rem-scale));
   --m-radius--sm: calc(.3125rem * var(--m-rem-scale));
   --m-radius--xs: calc(.3125rem * var(--m-rem-scale));
   --m-radius-composer: calc(.875rem * var(--m-rem-scale));
-  --m-ring-color: rgb(var(--edge));
+  --m-ring-color: var(--cds-border);
   --m-ring-hairline: 1px;
   --m-ring-inner: 1px;
   --m-ring-outer: 0px;
   --m-segmented-control-thumb-shadow: initial;
-  --m-shadow-color: hsl(from transparent h s l / 8%);
-  --m-shadow-drop-glow: inset 0 0 24px -2px hsl(from transparent h s l / 20%);
-  --m-shadow-drop-glow-danger: inset 0 0 24px -2px hsl(from transparent h s l / 20%);
-  --m-shadow-drop-ring: inset 0 0 0 2px transparent;
-  --m-shadow-drop-ring-danger: inset 0 0 0 2px transparent;
+  --m-shadow-color: hsl(from initial h s l / 8%);
+  --m-shadow-drop-glow: inset 0 0 24px -2px hsl(from initial h s l / 20%);
+  --m-shadow-drop-glow-danger: inset 0 0 24px -2px hsl(from initial h s l / 20%);
+  --m-shadow-drop-ring: inset 0 0 0 2px initial;
+  --m-shadow-drop-ring-danger: inset 0 0 0 2px initial;
   --m-shadow-lg: 0 10px 15px -3px #0000001a, 0 4px 6px -4px #0000001a;
   --m-shadow-md: 0 4px 6px -1px #0000001a, 0 2px 4px -2px #0000001a;
   --m-shadow-popover: 0 8px 24px #0000001f, 0 2px 6px #00000014;
   --m-shadow-sm: 0 1px 2px 0 #0000000d;
-  --m-slider-handle-shadow-depth: hsl(from transparent h s l / 6%);
-  --m-slider-handle-shadow-outer: hsl(from transparent h s l / 4%);
+  --m-slider-handle-shadow-depth: hsl(from initial h s l / 6%);
+  --m-slider-handle-shadow-outer: hsl(from initial h s l / 4%);
   --m-split-ring: rgb(var(--edge));
   --m-toolbar-icon-box: calc(0rem * var(--m-rem-scale));
   --m-toolbar-pad-block: calc(.25rem * var(--m-rem-scale));
   --m-toolbar-pad-inline: calc(0rem * var(--m-rem-scale));
-  --radius-2xl: 1rem;
-  --radius-3xl: 1.5rem;
-  --radius-card: calc(8px + calc(.25rem * var(--m-rem-scale)));
-  --radius-lg: .5rem;
-  --radius-md: .375rem;
-  --radius-sm: .25rem;
-  --radius-xl: .75rem;
-  --radius-xs: .125rem;
 }
 
 /* 语义映射链：值是指向色阶的 var()。亮暗的差别整个体现在这条链上 ——
@@ -844,13 +836,13 @@
   --m-text-tint-violet: var(--m-violet-300);
   --m-text-tint-yellow: var(--m-yellow-300);
   --m-fill-secondary-ring: transparent;
-  --m-focus-shadow: inset 0 0 0 1px transparent, 0 0 0 1px rgb(var(--accent)), 0 0 6px 1px hsl(from transparent h s l / 60%);
-  --m-focus-shadow-danger: inset 0 0 0 1px transparent, 0 0 0 1px transparent, 0 0 6px 1px hsl(from transparent h s l / 60%);
-  --m-ring-color: transparent;
+  --m-focus-shadow: inset 0 0 0 1px initial, 0 0 0 1px rgb(var(--accent)), 0 0 6px 1px hsl(from initial h s l / 60%);
+  --m-focus-shadow-danger: inset 0 0 0 1px initial, 0 0 0 1px initial, 0 0 6px 1px hsl(from initial h s l / 60%);
+  --m-ring-color: initial;
   --m-shadow-color: #0000003d;
   --m-shadow-popover: 0 8px 24px #00000052, 0 2px 6px #0003;
-  --m-slider-handle-shadow-depth: hsl(from transparent h s l / 24%);
-  --m-slider-handle-shadow-outer: hsl(from transparent h s l / 0%);
+  --m-slider-handle-shadow-depth: hsl(from initial h s l / 24%);
+  --m-slider-handle-shadow-outer: hsl(from initial h s l / 0%);
 }
 
 /* 紧凑密度档：Claude 用 [data-density=compact] 整体翻转尺寸。
