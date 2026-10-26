@@ -89,6 +89,17 @@ export function shouldShowRestartDeployNotice(status: WorkflowEngineStatusView):
     && status.deploymentState === "deployed";
 }
 
+/** 【Q8】这次启动没被信任时提示用户「重启后不会自动跑」。
+ *
+ *  与 `shouldShowRestartDeployNotice` 的区别：那条说的是"这次部署只在本次进程有效"，
+ *  这条说的是"引擎本身是在 safeMode 下起的"。两者可能同时成立，也可能只有其一 ——
+ *  只看 `trustedAtStart === false`，不猜它为什么是 false（可能是还有未审查的图，
+ *  也可能库里根本没有 node-red 图）。 */
+export function shouldShowUntrustedNotice(status: WorkflowEngineStatusView): boolean {
+  return status.engineId === "node-red" && status.state === "running"
+    && status.trustedAtStart === false;
+}
+
 /* ── 同一个 docId 的多个宿主：谁开的、还有谁在用 ── */
 
 /**
@@ -548,7 +559,32 @@ export function EngineRow({
           className="rounded border border-edge px-3 py-2 text-[0.7857em] leading-relaxed text-content-muted"
         >
           {t("settings.workflows.engine.restartRequiresDeploy")}
+          {shouldShowUntrustedNotice(status) && (
+            <div className="mt-1" data-engine-untrusted-notice="">
+              {t("settings.workflows.engine.pendingReviewHint")}
+            </div>
+          )}
         </div>
+      )}
+
+      {/* 【Q5】启动时没迁成功的旧工作流 —— 迁移发生在窗口出现之前，只能事后读。
+          用户最需要它的时机正是"我那张图怎么不跑"的时候，所以逐条列出来，
+          不只给一句汇总。 */}
+      {status.pendingMigration !== null && status.pendingMigration !== undefined && (
+        <ErrorNote
+          tone="warning"
+          icon={IconAlertTriangle}
+          title={t("settings.workflows.engine.pendingMigrationTitle")}
+        >
+          <div className="break-words">{status.pendingMigration.summary}</div>
+          <ul className="mt-1 space-y-0.5">
+            {status.pendingMigration.pending.map((item) => (
+              <li key={item.workflowId} className="break-words">
+                「{item.name}」— {item.reason}
+              </li>
+            ))}
+          </ul>
+        </ErrorNote>
       )}
 
       {/* 失败 / 停止且有原因：把主进程给的那句人话原样摆出来。 */}

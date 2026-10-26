@@ -22,6 +22,18 @@ import {
 import type { WorkflowListEntry } from "@contracts/workflow";
 import { WorkflowBadge } from "./WorkflowBadge.js";
 
+/**
+ * 【Q5】这张图还归旧执行器、且**有节点** —— 它不会被执行，需要迁移。
+ *
+ * 判据与主进程的 `isRetiredLegacyGraph` 同一份语义（`engine ?? "mcode"` 且有节点）。
+ * 渲染端不 import 主进程模块，所以按契约字段就地判：
+ * - `engine` 缺省 = 历史存档 = `"mcode"`（与 `effectiveWorkflowEngine` 同一归一）；
+ * - `kind === "graph"` = 有节点（纯提示词型没有图，不受引擎影响）。
+ */
+function retiredLegacy(entry: WorkflowListEntry): boolean {
+  return (entry.engine ?? "mcode") === "mcode" && entry.kind === "graph";
+}
+
 export function WorkflowListRow({
   entry,
   active,
@@ -71,6 +83,13 @@ export function WorkflowListRow({
         {/* 软件自带的这一份出厂版有更新(见 applyShippedWorkflowUpdate)。 */}
         {entry.shippedUpdate && (
           <WorkflowBadge tone="info">{t("settings.workflows.badgeShippedUpdate")}</WorkflowBadge>
+        )}
+        {/* 【Q5】**这张图还挂在旧执行器上，跑不了。**
+            列表是用户找「我那张图怎么不跑」的第一站 —— 只在启动日志里说等于没说
+            （见仓库规矩「边界要出现在输出里」）。判据与执行侧的 `isRetiredLegacyGraph`
+            同一份：归 mcode 且有节点。纯提示词型工作流不受影响。 */}
+        {retiredLegacy(entry) && (
+          <WorkflowBadge tone="accent">{t("settings.workflows.badgeNeedsMigration")}</WorkflowBadge>
         )}
         {unsaved && (
           // 一颗实心小点,不是徽章:它说的是"还没定下来",而徽章读起来像个状态。
