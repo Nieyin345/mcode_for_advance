@@ -23,6 +23,7 @@
   }
   window.__u1TheiaCalls = [];
   window.__u1ProductPreloadCalls = [];
+  window.__u1PickFilesMode = null;
   if (typeof window.Worker === "function") {
     const NativeWorker = window.Worker;
     window.Worker = class McodeU1ObservedWorker extends NativeWorker {
@@ -51,9 +52,29 @@
   const labApi = window.labApi;
   window.labApi = new Proxy(labApi, {
     get(target, namespace) {
+      if (namespace === "pickFiles" && window.__u1PickFilesMode === "theia-consent") {
+        return async (input) => {
+          const doc = new URLSearchParams(location.search).get("doc");
+          if (!doc) throw new Error("F041 requires the isolated temp document path");
+          const dir = doc.replace(/[\\/][^\\/]*$/, "");
+          const path = dir + "\\f040-spawn-ext.vsix";
+          window.__u1ProductPreloadCalls.push({
+            namespace: "dialog-fixture", method: "pickFiles", title: input && input.title, path,
+          });
+          return { paths: [path] };
+        };
+      }
       if (namespace === "modules") {
         return new Proxy(target.modules, {
           get(ns, method) {
+            if (method === "catalog") {
+              // ModuleSurface needs a structurally valid but intentionally empty
+              // catalogue; all non-Theia application surfaces remain fixture-backed.
+              return () => Promise.resolve({
+                modules: [], capabilities: [], workflowTargets: [],
+                modulePermissions: {}, moduleStaleConsents: {}, workflowGrantCandidates: [],
+              });
+            }
             if (method === "theiaInstalled") {
               return async (input) => {
                 let result;
@@ -67,7 +88,11 @@
                   });
                   throw error;
                 }
-                const record = { op: input && input.op, query: input && input.query };
+                const record = {
+                  op: input && input.op, query: input && input.query,
+                  path: input && input.path, accepted: input && input.accepted,
+                  ticket: input && input.ticket,
+                };
                 if (input && input.op === "editorSync") {
                   record.filePath = input.editor && input.editor.filePath;
                   record.textLength = input.editor && input.editor.text && input.editor.text.length;

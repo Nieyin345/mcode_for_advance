@@ -63,6 +63,7 @@
 | F038 | **真实 Rename / Code Actions**：当前文档安全纯编辑桥，拒绝跨文件/命令型修改 | ⚠️ E1 143/143 + 81/81；双包 TS PASS；联合 11/12（外部文档 IPC）；Electron U1 待验 | `ffdfa09a` |
 | F039 | **prepareRename + 原生 Monaco Electron 交互**：真实扩展准备选区，安全 WorkspaceEdit，F2/Quick Fix/撤销及拒绝场景 | ⚠️ E1 145/145 + 86/86；隔离 Monaco U1 1/1 PASS；双包 TS PASS；联合 11/12；全产品 U1 待验 | `feca10cb` |
 | F040 | **产品 FileEditor + 真实 preload/VSIX U1**：真实 App/编辑器挂载、真实扩展 IPC、临时 VSIX 和原生 Monaco Worker | ✅ 产品 U1 1/1；变异红例有效；三项 Theia smoke + 双包 TS PASS；完整主进程/授权卡 UI 不在此切片 | `43f3e793` |
+| F041 | **Theia 安装同意卡真实产品 UI U1**：预检、取消、风险告知、显式勾选与真实 IPC 安装 | ✅ U1 1/1；变异负控按预期红；2/2 Theia smoke、双包 TS、默认 UI U1 通过 | pending |
 
 ## 扩展闭环的进度（截至 F015）
 

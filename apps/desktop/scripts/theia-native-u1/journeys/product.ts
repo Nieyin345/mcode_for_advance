@@ -58,6 +58,8 @@ async function setup(ctx:{projectDir:string;dataDir:string;runDir:string}){
   return {runtime:{docPath,vsixPath,workspacePath:ctx.projectDir}};
 }
 
+export {setup as setupF040};
+
 export const journeys=[defineU1Journey({
   name:"product-fileeditor-real-vsix-rename-fix",
   launch:{page:{file:"product-page.html"},preload:"product",useRealDb:true,

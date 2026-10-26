@@ -143,7 +143,13 @@ export function TheiaInstalledPanel() {
             需先停止旧版本，确认新版本权限和来源。
           </p>}
           <p className="text-code">{pending.prompt.headline}</p>
-          <ul className="list-disc pl-5 text-code">{pending.prompt.capabilities.map(c=><li key={c.capability}>{c.label}</li>)}</ul>
+          <ul className="list-disc pl-5 text-code">{pending.prompt.capabilities.map(c=><li key={c.capability}>
+            {c.label}
+            {c.evidence.length>0&&<ul className="mt-1 list-disc pl-5 text-content-muted"
+              data-testid={`theia-consent-evidence-${c.capability}`}>
+              {c.evidence.map(evidence=><li key={evidence} className="break-all"><code>{evidence}</code></li>)}
+            </ul>}
+          </li>)}</ul>
           <p className="text-code text-content-muted">{pending.prompt.disclosure}</p>
           <ul className="list-disc pl-5 text-code text-content-muted">{pending.prompt.limits.map((v,i)=><li key={i}>{v}</li>)}</ul>
           <label className="flex items-start gap-2 text-code">

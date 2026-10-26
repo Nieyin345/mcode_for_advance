@@ -314,6 +314,7 @@ async function main(): Promise<void> {
   check("同意提示列出了起进程能力", prompt.capabilities.some((c) => c.capability === "spawnsProcesses"), prompt.capabilities.map((c) => c.capability));
   check("同意提示的 headline 明说这是下限", prompt.headline.includes("至少"), prompt.headline);
   check("同意提示带着 disclosure（不是保护，是知情同意）", prompt.disclosure.includes("知情同意"), prompt.disclosure.slice(0, 40));
+  check("用户可见的 disclosure 不包含原样 Markdown 标记", !prompt.disclosure.includes("**"), prompt.disclosure);
   check("同意提示带着 evidence 出处", prompt.capabilities[0]?.evidence.length > 0, prompt.capabilities[0]);
   const cleanPrompt = buildInstallConsentPrompt(cleanReport);
   check("负控：干净扩展的提示不含起进程能力", !cleanPrompt.capabilities.some((c) => c.capability === "spawnsProcesses"), cleanPrompt.capabilities);

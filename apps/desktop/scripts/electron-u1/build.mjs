@@ -70,6 +70,8 @@ let esbuildSpec = null;
 let prebuildSpec = null;
 /** F040: opt-in production Monaco workers for product FileEditor U1. */
 let monacoWorkers = false;
+/** F041: mutate only the in-memory U1 bundle to prove the consent guard assertion. */
+let theiaConsentMutation = false;
 for (const a of args) {
   if (a === "--mutation=unconditional-pass") mutation = "unconditional-pass";
   // W24：`--keep` 是**文档化过的 no-op**（见头注释「证据保留」——本脚本从不自动
@@ -79,6 +81,7 @@ for (const a of args) {
   // 不会再变成 PASS。
   else if (a === "--keep") continue;
   else if (a === "--monaco-workers") monacoWorkers = true;
+  else if (a === "--theia-consent-mutation=unguarded") theiaConsentMutation = true;
   else if (a.startsWith("--registry=")) registry = resolve(a.slice("--registry=".length));
   else if (a.startsWith("--only=")) only = a.slice("--only=".length);
   else if (a.startsWith("--esbuild=")) esbuildSpec = resolve(a.slice("--esbuild=".length));
@@ -181,6 +184,20 @@ await esbuild({
   plugins: [{
     name: "shell-stubs",
     setup(b) {
+      b.onLoad({ filter: /[\\/]TheiaInstalledPanel\.tsx$/ }, (a) => {
+        if (!theiaConsentMutation) return undefined;
+        const source = readFileSync(a.path, "utf8");
+        const needle = "disabled={busy||!approved}";
+        if (source.split(needle).length - 1 !== 1) {
+          throw Error("F041 consent-guard mutation target must occur exactly once");
+        }
+        console.log("U1 mutation: bundled TheiaInstalledPanel consent guard bypassed (source file untouched)");
+        return {
+          contents: source.replace(needle, "disabled={busy}"),
+          loader: "tsx",
+          resolveDir: dirname(a.path),
+        };
+      });
       b.onResolve({ filter: /\?(worker|url|raw)$/ }, (a) => {
         if (monacoWorkers && a.path.endsWith("?worker")) return { path: a.path, namespace: "u1-monaco-worker" };
         return { path: a.path, external: true };
