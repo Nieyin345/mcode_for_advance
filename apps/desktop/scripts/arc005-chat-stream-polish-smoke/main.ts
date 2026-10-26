@@ -64,10 +64,15 @@ ck("Timeline: dark/light hover card stays within small viewport",
   sourceHas(timeline, "max-h-[calc(100vh-16px)]") &&
   sourceHas(timeline, "w-[min(18rem,calc(100vw-16px))]"));
 
-ck("Message: existing user/assistant alignment and turn statistics remain distinct",
-  sourceHas(row, 'isUser ? "max-w-[min(92%,48rem)] sm:max-w-[min(85%,48rem)] min-w-0"') &&
+ck("Message: user/assistant alignment and Claude-style identity/runtime metadata remain distinct",
+  // 【UI 重建 2026-10-27】用户气泡宽度改成读 --m-bubble-max-w（默认 85%，
+  // 与 Claide 一致）。用变量而不是写死，密度档切换时能跟着调。
+  sourceHas(row, 'isUser ? "max-w-[min(92%,48rem)] sm:max-w-[min(var(--m-bubble-max-w,85%),48rem)] min-w-0"') &&
   sourceHas(row, "<TurnStatRow meta={msg.turnMeta}") &&
-  sourceHas(row, "<ModelBadge model={msg.turnMeta.model}"));
+  sourceHas(row, "modelName &&") &&
+  sourceHas(row, "fmtClock(msg.turnMeta?.startedAt ?? msg.createdAt)") &&
+  sourceHas(row, "fmtDuration(duration)") &&
+  !sourceHas(row, "fmtClock(meta.startedAt"));
 ck("Message: long bubble clips independently and accessible show more remains",
   sourceHas(row, 'aria-expanded={collapseState === "expanded"}') &&
   sourceHas(row, 'aria-controls={bubbleContentId}') &&

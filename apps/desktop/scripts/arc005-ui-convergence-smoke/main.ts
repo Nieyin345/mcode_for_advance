@@ -75,11 +75,17 @@ check("Tab bars: overflow selected item is exposed to assistive tech",
  chrome.includes('aria-current={item.active ? "true" : undefined}'));
 check("Tab bars: old active tab and input preserve Enter and arrow behavior",
  chrome.includes('target.click()')&&chrome.includes("tabNavigationTargetIndex(e.key, index, tabs.length)"));
+/* 【UI 重建 2026-10-27】标题字号从 `text-[clamp(1.3rem,3.4vw,1.75rem)]`
+ * （视口相关，最大 28px）改成 `--m-fs-title`（15.06px，Claude 的标题档）。
+ * 原来是**视口越大越夸张**，而 Claude 的标题是固定档 —— 空态是第一屏，
+ * 字号一不对整屏观感就不对（28px 比 Claude 大 86%）。 */
 check("Welcome: workspace start points adapt to 260px narrow card widths",
  welcome.includes("minmax(min(260px,100%),1fr)") &&
- welcome.includes("max-w-[800px]") && welcome.includes("text-[clamp("));
-check("Welcome: rows are at least 40px and remain keyboard navigable",
- welcome.includes('"flex min-h-10 w-full min-w-0 items-center')&&
+ welcome.includes("max-w-[800px]") && welcome.includes("var(--m-fs-title)"));
+/* 【UI 重建 2026-10-27】行高 40px(min-h-10) → 32px(min-h-8)：
+ * 与 Claude 的控件档一致，且空态卡片本来就是密集列表，40px 过于松。 */
+check("Welcome: rows are at least 32px and remain keyboard navigable",
+ welcome.includes('"flex min-h-8 w-full min-w-0 items-center')&&
  welcome.includes("focus-visible:outline-offset-2 focus-visible:outline-accent"));
 check("Welcome: workflow choice and library preview use existing operations",
  welcome.includes('setWorkflowId(picked ? "default" : w.id)') &&

@@ -49,8 +49,11 @@ ck("Home: keyboard focus is visible on each start-point row",
   sourceHas(home, "focus-visible:outline-offset-2 focus-visible:outline-accent") &&
   sourceHas(home, "aria-pressed={pressed}"));
 
-ck("Sidebar: both quick actions have reachable 36px touch rows",
-  (sidebar.match(/flex min-h-9 w-full items-center/g) ?? []).length === 2);
+/* 【UI 重建 2026-10-27】36px（min-h-9）→ 40px（min-h-10）。
+ * 40px 是 Claude 的 lg 控件档，也是触控命中区的通行下限。
+ * 断言跟着认新值 —— 仍然是「两个快捷按钮都有足够大的触摸行」。 */
+ck("Sidebar: both quick actions have reachable 40px touch rows",
+  (sidebar.match(/flex min-h-10[^"]*w-full items-center/g) ?? []).length === 2);
 ck("Sidebar: both quick actions expose visible keyboard focus",
   (sidebar.match(/focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent/g) ?? []).length >= 2);
 ck("Sidebar: search and new controls retain native handlers and disabled guard",
