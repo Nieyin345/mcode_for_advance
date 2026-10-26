@@ -185,7 +185,8 @@ export interface TheiaQuickInputRequest {
 /** VS Code language-provider contributions supported by Mcode's native Monaco. */
 export type TheiaLanguageProviderKind =
   | "hover" | "completion" | "definition" | "references" | "implementation" | "typeDefinition"
-  | "documentSymbols" | "formatting" | "rangeFormatting" | "onTypeFormatting" | "signatureHelp";
+  | "documentSymbols" | "formatting" | "rangeFormatting" | "onTypeFormatting" | "signatureHelp"
+  | "rename" | "codeActions";
 /** File location returned by an installed extension. Coordinates are zero-based VS Code positions. */
 export interface TheiaLanguageLocation {
   uri:string;
@@ -203,6 +204,9 @@ export interface TheiaLanguageSymbol {
   name:string;detail:string;kind:number;range:TheiaLanguageRange;
   selectionRange:TheiaLanguageRange;children:TheiaLanguageSymbol[];
 }
+/** F038: only bounded same-document text edits; never file operations or commands. */
+export interface TheiaLanguageTextEdit {range:TheiaLanguageRange;text:string}
+export interface TheiaLanguageCodeAction {title:string;kind?:string;isPreferred?:boolean;edits:TheiaLanguageTextEdit[]}
 export interface TheiaLanguageSignature {
   label:string;documentation?:string;parameters:Array<{label:string;documentation?:string}>;
   activeParameter?:number;
@@ -230,9 +234,14 @@ export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
     handle:z.string().min(1).max(256)}).strict(),
   z.object({op:z.literal("languageQuery"),sessionId:z.string().uuid(),
     query:z.enum(["hover","completion","definition","references","implementation","typeDefinition",
-      "documentSymbols","formatting","rangeFormatting","onTypeFormatting","signatureHelp"]),
+      "documentSymbols","formatting","rangeFormatting","onTypeFormatting","signatureHelp",
+      "rename","codeActions"]),
     lineNumber:z.number().int().min(1).max(100000),column:z.number().int().min(1).max(100000),
     includeDeclaration:z.boolean().optional(),
+    editContext:z.object({newName:z.string().min(1).max(256).optional(),
+      range:z.object({start:z.object({line:z.number().int().min(0).max(100000),character:z.number().int().min(0).max(100000)}).strict(),
+        end:z.object({line:z.number().int().min(0).max(100000),character:z.number().int().min(0).max(100000)}).strict()}).strict().optional(),
+      trigger:z.number().int().min(1).max(2).optional()}).strict().optional(),
     formatOptions:z.object({tabSize:z.number().int().min(1).max(16),insertSpaces:z.boolean()}).strict().optional(),
     formatContext:z.object({range:z.object({
       start:z.object({line:z.number().int().min(0).max(100000),character:z.number().int().min(0).max(100000)}).strict(),
@@ -278,6 +287,9 @@ export type TheiaInstalledResult =
     locations?:TheiaLanguageLocation[];
     formattingEdits?:Array<{range:TheiaLanguageRange;text:string}>;
     documentSymbols?:TheiaLanguageSymbol[];
+    renameEdits?:TheiaLanguageTextEdit[];
+    renameRejectReason?:string;
+    codeActions?:TheiaLanguageCodeAction[];
     signatureHelp?:TheiaSignatureHelp}
   | {kind:"editorAcknowledged"}
   | {kind:"messageAcknowledged"}

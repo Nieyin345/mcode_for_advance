@@ -99,11 +99,13 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
     return locations.map(location=>({...location,
       uri:samePath(location.uri.fsPath,snapshot.filePath)?model.uri:location.uri}));
   };
-  const queryDocument=async(sessionId:string,query:"documentSymbols"|"formatting"|"rangeFormatting"|"onTypeFormatting"|"signatureHelp",
+  const queryDocument=async(sessionId:string,query:"documentSymbols"|"formatting"|"rangeFormatting"|"onTypeFormatting"|"signatureHelp"|"rename"|"codeActions",
     model:Monaco.editor.ITextModel,token:Monaco.CancellationToken,
     extra?:{formatOptions?:{tabSize:number;insertSpaces:boolean};
       formatContext?:{range?:{start:{line:number;character:number};end:{line:number;character:number}};
         triggerCharacter?:string};position?:{lineNumber:number;column:number};
+      editContext?:{newName?:string;range?:{start:{line:number;character:number};end:{line:number;character:number}};
+        trigger?:number};
       signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string}})=>{
     const version=model.getVersionId();
     if(!live||token.isCancellationRequested||!await sync(sessionId,model))return null;
@@ -112,7 +114,8 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
         lineNumber:extra?.position?.lineNumber??1,column:extra?.position?.column??1,
         ...(extra?.formatOptions?{formatOptions:extra.formatOptions}:{}),
         ...(extra?.formatContext?{formatContext:extra.formatContext}:{}),
-        ...(extra?.signatureContext?{signatureContext:extra.signatureContext}:{})});
+        ...(extra?.signatureContext?{signatureContext:extra.signatureContext}:{}),
+        ...(extra?.editContext?{editContext:extra.editContext}:{})});
       if(result.kind!=="languageResult"||!live||token.isCancellationRequested||
         instance.getModel()!==model||model.getVersionId()!==version)return null;
       return result;
@@ -230,6 +233,31 @@ export function registerTheiaLanguageProviders(instance:Monaco.editor.IStandalon
                     parameters:sig.parameters.map(param=>({label:param.label,documentation:param.documentation}))
                   }))},dispose:()=>{}};
               }catch{return null;}
+            }
+          }));
+          if(kinds.has("rename"))registered.push(monaco.languages.registerRenameProvider(selector,{
+            provideRenameEdits:async(model,position,newName,token)=>{
+              const result=await queryDocument(active.sessionId,"rename",model,token,{
+                position:{lineNumber:position.lineNumber,column:position.column},editContext:{newName}});
+              if(!result)return {edits:[],rejectReason:"扩展重命名会话已失效"};
+              if(!result.renameEdits?.length)return {edits:[],
+                rejectReason:result.renameRejectReason??"当前扩展未返回可安全应用的重命名"};
+              return {edits:result.renameEdits.map(item=>({resource:model.uri,
+                textEdit:{range:toRange(item.range),text:item.text},versionId:model.getVersionId()}))};
+            },
+          }));
+          if(kinds.has("codeActions"))registered.push(monaco.languages.registerCodeActionProvider(selector,{
+            provideCodeActions:async(model,range,context,token)=>{
+              const result=await queryDocument(active.sessionId,"codeActions",model,token,{
+                editContext:{range:{
+                  start:{line:range.startLineNumber-1,character:range.startColumn-1},
+                  end:{line:range.endLineNumber-1,character:range.endColumn-1}},
+                  trigger:context.trigger}});
+              return {actions:(result?.codeActions??[]).map(action=>({
+                title:action.title,kind:action.kind,isPreferred:action.isPreferred,
+                edit:{edits:action.edits.map(item=>({resource:model.uri,
+                  textEdit:{range:toRange(item.range),text:item.text},versionId:model.getVersionId()}))}
+              })),dispose:()=>{}};
             }
           }));
           if(kinds.has("definition"))registered.push(monaco.languages.registerDefinitionProvider(selector,{

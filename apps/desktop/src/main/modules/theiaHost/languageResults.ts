@@ -1,7 +1,9 @@
 /** F036: Normalize results of untrusted VS Code language extensions before IPC.
  * The host never applies formatting edits: Mcode Monaco owns edits and undo.
  */
-import type {TheiaLanguageRange,TheiaLanguageSymbol,TheiaSignatureHelp} from "@contracts/ipc/modules.js";
+import type {TheiaLanguageRange,TheiaLanguageSymbol,TheiaSignatureHelp,TheiaLanguageTextEdit} from "@contracts/ipc/modules.js";
+import * as path from "node:path";
+import {fileURLToPath,pathToFileURL} from "node:url";
 
 function record(value:unknown):Record<string,unknown>|null{
   return value!==null&&typeof value==="object"&&!Array.isArray(value)
@@ -47,6 +49,40 @@ export function formattingEdits(input:unknown):Array<{range:TheiaLanguageRange;t
     clean.push(edit);
   }
   return clean;
+}
+/** Strictly convert a Theia WorkspaceEditDto to edits in the currently open
+ * Mcode document. A foreign URI, file operation, snippet, overlapping edit or
+ * confirmation-required entry rejects the WHOLE proposal, never a partial edit.
+ */
+export function localWorkspaceTextEdits(input:unknown,filePath:string,documentText:string):TheiaLanguageTextEdit[]|null{
+  const outer=record(input);
+  if(!outer||!Array.isArray(outer.edits)||outer.edits.length<1||outer.edits.length>80)return null;
+  const lines=documentText.split(/\r\n|\r|\n/);
+  const expected=path.normalize(path.resolve(filePath));
+  const normalized=(value:string)=>process.platform==="win32"?value.toLowerCase():value;
+  const edits:TheiaLanguageTextEdit[]=[];
+  let size=0;
+  for(const item of outer.edits){
+    const row=record(item),resource=record(row?.resource),edit=record(row?.textEdit);
+    if(!row||!resource||resource.scheme!=="file"||typeof resource.path!=="string"||
+      (resource.authority!==undefined&&resource.authority!=="")||
+      !edit||edit.insertAsSnippet===true||row.cellEdit!==undefined||
+      record(row.metadata)?.needsConfirmation===true)return null;
+    let target:string;
+    try{
+      const encoded=encodeURI(resource.path).replace(/#/g,"%23").replace(/\?/g,"%3F");
+      target=fileURLToPath("file://"+(encoded.startsWith("/")?encoded:"/"+encoded));
+    }catch{return null;}
+    if(normalized(path.normalize(target))!==normalized(expected))return null;
+    if(typeof edit.text!=="string"||edit.text.length>8000||size+edit.text.length>100000)return null;
+    const range=languageRange(edit.range);
+    if(!range)return null;
+    const valid=(p:{line:number;character:number})=>p.line<lines.length&&p.character<=lines[p.line].length;
+    if(!valid(range.start)||!valid(range.end))return null;
+    size+=edit.text.length;edits.push({range,text:edit.text});
+  }
+  const clean=formattingEdits(edits);
+  return clean.length===edits.length?clean:null;
 }
 export function documentSymbols(input:unknown):TheiaLanguageSymbol[]{
   if(!Array.isArray(input))return [];

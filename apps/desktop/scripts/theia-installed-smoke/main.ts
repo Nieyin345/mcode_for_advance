@@ -216,7 +216,7 @@ try{
   check("重启宿主时从 Mcode 配置存储加载用户设置",
     initialConfigured.kind==="executed"&&initialConfigured.result.includes("from-mcode-ui"));
   check("真实 VS Code Provider 注册进入 Mcode 宿主能力目录",
-    ["hover","completion","definition","references","implementation","typeDefinition","documentSymbols","formatting","rangeFormatting","onTypeFormatting","signatureHelp"].every(kind=>
+    ["hover","completion","definition","references","implementation","typeDefinition","documentSymbols","formatting","rangeFormatting","onTypeFormatting","signatureHelp","rename","codeActions"].every(kind=>
       manager!.list(51).find(x=>x.id===id)?.activeSession?.languageProviders?.some(x=>
         x.kind===kind&&x.language==="plaintext")===true));
   writeFileSync(path.join(workspace,"f035-language-target.txt"),"target-language-symbol");
@@ -285,6 +285,27 @@ try{
     }));
   await rejects("空输入触发字符不得调用扩展",()=>manager!.languageQuery(51,run.sessionId,
     "onTypeFormatting",1,4,true,undefined,undefined,{triggerCharacter:""}));
+  const rename=await manager.languageQuery(51,run.sessionId,"rename",1,3,true,undefined,
+    undefined,undefined,{newName:"renamed"});
+  check("真实 VS Code Rename Provider 通过 Theia 返回当前 Monaco 文档内安全 WorkspaceEdit",
+    rename.kind==="languageResult"&&rename.renameEdits?.length===1&&
+    rename.renameEdits[0].text==="renamed"&&
+    rename.renameEdits[0].range.end.character===6,rename);
+  const foreignRename=await manager.languageQuery(51,run.sessionId,"rename",1,3,true,undefined,
+    undefined,undefined,{newName:"cross-file"});
+  check("跨文件重命名整单拒绝，不能静默仅修改其中一部分",
+    foreignRename.kind==="languageResult"&&foreignRename.renameEdits===undefined&&
+    !!foreignRename.renameRejectReason,foreignRename);
+  const codeActions=await manager.languageQuery(51,run.sessionId,"codeActions",1,3,true,undefined,
+    undefined,undefined,{range:{start:{line:0,character:0},end:{line:0,character:6}},trigger:1});
+  check("真实 VS Code Code Action 仅准入同文档纯编辑，过滤跨文件及命令型快速修复",
+    codeActions.kind==="languageResult"&&codeActions.codeActions?.length===1&&
+    codeActions.codeActions[0].title==="Mcode safe local fix"&&
+    codeActions.codeActions[0].edits[0].text==="safe-fixed",codeActions);
+  await rejects("未提供新名称不能使用 Rename Provider",()=>manager!.languageQuery(51,
+    run.sessionId,"rename",1,3,true,undefined,undefined,undefined,{}));
+  await rejects("未提供选区不能使用 Code Actions",()=>manager!.languageQuery(51,
+    run.sessionId,"codeActions",1,3,true,undefined,undefined,undefined,{}));
   const signature=await manager.languageQuery(51,run.sessionId,"signatureHelp",1,3,true,undefined,
     {triggerKind:2,isRetrigger:false,triggerCharacter:"("});
   check("真实 VS Code SignatureHelp Provider 返回 Mcode 函数签名与参数",

@@ -439,11 +439,12 @@ export class TheiaInstalledRegistry {
     lineNumber:number,column:number,includeDeclaration=true,
     formatOptions?:{tabSize:number;insertSpaces:boolean},
     signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string},
-    formatContext?:{range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;triggerCharacter?:string}):Promise<TheiaInstalledResult>{
+    formatContext?:{range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;triggerCharacter?:string},
+    editContext?:{newName?:string;range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;trigger?:number}):Promise<TheiaInstalledResult>{
     const active=this.findSession(sessionId);
     if(!active||active.senderId!==senderId||this.closed.has(senderId)||active.syncing||
       active.executing)deny("非法或忙碌的扩展语言会话");
-    const result=await active.host.languageQuery(kind,lineNumber,column,includeDeclaration,formatOptions,signatureContext,formatContext);
+    const result=await active.host.languageQuery(kind,lineNumber,column,includeDeclaration,formatOptions,signatureContext,formatContext,editContext);
     if(this.findSession(sessionId)!==active||this.closed.has(senderId))
       deny("扩展会话已停止，语言结果无效");
     return {kind:"languageResult",...result};

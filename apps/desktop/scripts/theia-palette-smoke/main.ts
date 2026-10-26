@@ -5,7 +5,7 @@ import { collectTheiaPaletteCommands } from "../../src/renderer/lib/theiaCommand
 import { TheiaEditorApplyBroker } from "../../src/main/modules/theiaHost/editorApplyBroker.js";
 import { TheiaRuntimeMessageBroker } from "../../src/main/modules/theiaHost/runtimeMessageBroker.js";
 import { TheiaQuickInputBroker } from "../../src/main/modules/theiaHost/quickInputBroker.js";
-import {formattingEdits,documentSymbols,signatureHelp} from "../../src/main/modules/theiaHost/languageResults.js";
+import {formattingEdits,documentSymbols,signatureHelp,localWorkspaceTextEdits} from "../../src/main/modules/theiaHost/languageResults.js";
 import {TheiaInstalledInputSchema} from "@contracts/ipc/modules.js";
 import type { TheiaInstalledEntry, TheiaInstalledInput, TheiaInstalledResult } from "@contracts/ipc/modules.js";
 
@@ -241,6 +241,40 @@ check("输入时格式化 IPC 限制触发字符长度",
     formatContext:{triggerCharacter:";"}}).success&&
   !TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,query:"onTypeFormatting",
     formatContext:{triggerCharacter:"veryLongTrigger"}}).success);
+check("Mcode Monaco 注册 VS Code Rename/Code Actions，编辑只走原生版本控制",
+  nativeLanguage.includes("registerRenameProvider(")&&
+  nativeLanguage.includes("registerCodeActionProvider(")&&
+  nativeLanguage.includes("result.renameEdits.map(")&&
+  languageHost.includes("$registerRenameProvider:")&&
+  languageHost.includes("$registerQuickFixProvider:")&&
+  languageHost.includes("ext.$provideRenameEdits(")&&
+  languageHost.includes("ext.$provideCodeActions("));
+const editDto=(resource:unknown,range:unknown,text:string)=>({
+  edits:[{resource,textEdit:{range,text}}]});
+const localFile="C:/mcode/f038.txt";
+const localUri={scheme:"file",path:"/C:/mcode/f038.txt"};
+const sameEdit=editDto(localUri,{start:{line:0,character:0},end:{line:0,character:3}},"good");
+const validEdit=localWorkspaceTextEdits(sameEdit,localFile,"native-workspace");
+check("WorkspaceEdit 仅在当前编辑器文件内转换安全 TextEdit",
+  validEdit?.length===1&&validEdit[0].text==="good");
+check("恶意跨文件 WorkspaceEdit 整单拒绝，不执行一半",
+  localWorkspaceTextEdits({edits:[
+    sameEdit.edits[0],
+    {resource:{scheme:"file",path:"/C:/mcode/other.txt"},
+      textEdit:{range:{start:{line:0,character:0},end:{line:0,character:1}},text:"x"}}
+  ]},localFile,"native-workspace")===null);
+check("WorkspaceEdit 拒绝文件操作、重叠编辑及越界坐标",
+  localWorkspaceTextEdits({edits:[{oldResource:localUri,newResource:localUri}]},localFile,"native-workspace")===null&&
+  localWorkspaceTextEdits({edits:[sameEdit.edits[0],sameEdit.edits[0]]},localFile,"native-workspace")===null&&
+  localWorkspaceTextEdits(editDto(localUri,{start:{line:8,character:0},end:{line:8,character:2}},"x"),
+    localFile,"native-workspace")===null);
+check("代码操作 IPC 不接收超长重命名或额外危险字段",
+  TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,query:"rename",
+    editContext:{newName:"new"}}).success&&
+  !TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,query:"rename",
+    editContext:{newName:"x".repeat(257)}}).success&&
+  !TheiaInstalledInputSchema.safeParse({...baseLanguageQuery,query:"codeActions",
+    editContext:{range:{start:{line:0,character:0},end:{line:0,character:3}},exec:"shell"}}).success);
 check("格式化只返回 Monaco Edits 并保留模型版本拒绝迟到结果",
   nativeLanguage.includes('"formatting",model,token')&&
   nativeLanguage.includes("model.getVersionId()!==version"));

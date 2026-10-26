@@ -45,8 +45,8 @@ import { McodeExtensionPreferences } from "./mcodeExtensionPreferences.js";
 import { McodeExtensionState } from "./mcodeExtensionState.js";
 import { McodeWorkspaceWatcher } from "./mcodeWorkspaceWatcher.js";
 import { prepareTheiaEdits, type EditorEditTransaction, type TheiaTextEdit, type TheiaEditOptions } from "./editorTransactions.js";
-import type { TheiaLanguageLocation, TheiaLanguageProviderKind, TheiaLanguageSymbol, TheiaSignatureHelp } from "@contracts/ipc/modules.js";
-import { formattingEdits, documentSymbols, signatureHelp, languageRange } from "./languageResults.js";
+import type { TheiaLanguageLocation, TheiaLanguageProviderKind, TheiaLanguageSymbol, TheiaSignatureHelp, TheiaLanguageCodeAction, TheiaLanguageTextEdit } from "@contracts/ipc/modules.js";
+import { formattingEdits, documentSymbols, signatureHelp, languageRange, localWorkspaceTextEdits } from "./languageResults.js";
 
 /* ───────────────────────── 依赖定位 ───────────────────────── */
 
@@ -441,10 +441,12 @@ export class TheiaHost {
   async languageQuery(kind:TheiaLanguageProviderKind,lineNumber:number,column:number,includeDeclaration=true,
     formatOptions?:{tabSize:number;insertSpaces:boolean},
     signatureContext?:{triggerKind:number;isRetrigger:boolean;triggerCharacter?:string},
-    formatContext?:{range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;triggerCharacter?:string}):
+    formatContext?:{range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;triggerCharacter?:string},
+    editContext?:{newName?:string;range?:import("@contracts/ipc/modules.js").TheiaLanguageRange;trigger?:number}):
     Promise<{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;
       locations:TheiaLanguageLocation[];formattingEdits:Array<{range:import("@contracts/ipc/modules.js").TheiaLanguageRange;text:string}>;
-      documentSymbols:TheiaLanguageSymbol[];signatureHelp?:TheiaSignatureHelp}>{
+      documentSymbols:TheiaLanguageSymbol[];signatureHelp?:TheiaSignatureHelp;
+      renameEdits?:TheiaLanguageTextEdit[];renameRejectReason?:string;codeActions?:TheiaLanguageCodeAction[]}>{
     const current=this.activeEditorSession,modules=this.modules,rpc=this.rpc;
     if(!current||!modules||!rpc||this.disposed||!this.started||
       !Number.isSafeInteger(lineNumber)||!Number.isSafeInteger(column)||
@@ -457,15 +459,20 @@ export class TheiaHost {
     if(kind==="rangeFormatting"&&!requestedRange)throw Error("选区格式化范围无效");
     const trigger=kind==="onTypeFormatting"?formatContext?.triggerCharacter:undefined;
     if(kind==="onTypeFormatting"&&(!trigger||trigger.length!==1))throw Error("输入格式化触发字符无效");
+    const editRange=kind==="codeActions"?languageRange(editContext?.range):null;
+    if(kind==="codeActions"&&!editRange)throw Error("代码操作选区无效");
+    if(kind==="rename"&&(!editContext?.newName||editContext.newName.length>256))
+      throw Error("重命名目标无效");
     const eligible=[...this.languageProviders.entries()].filter(([,provider])=>
       provider.kind===kind&&provider.languages.some(language=>language==="*"||language===requested)&&
-      (kind!=="onTypeFormatting"||provider.triggerCharacters?.includes(trigger!))).slice(0,6);
+      (kind!=="onTypeFormatting"||provider.triggerCharacters?.includes(trigger!))).slice(0,kind==="rename"?1:6);
     const ext=rpc.getProxy<Record<string,(...args:unknown[])=>Promise<unknown>>>(modules.MAIN_RPC_CONTEXT.LANGUAGES_EXT);
     const token={isCancellationRequested:false,onCancellationRequested:()=>({dispose:()=>{}})};
     const position={lineNumber,column};
     const results:{contents:string[];suggestions:Array<{label:string;insertText:string;kind:number;detail?:string}>;
       locations:TheiaLanguageLocation[];formattingEdits:Array<{range:import("@contracts/ipc/modules.js").TheiaLanguageRange;text:string}>;
-      documentSymbols:TheiaLanguageSymbol[];signatureHelp?:TheiaSignatureHelp}=
+      documentSymbols:TheiaLanguageSymbol[];signatureHelp?:TheiaSignatureHelp;
+      renameEdits?:TheiaLanguageTextEdit[];renameRejectReason?:string;codeActions?:TheiaLanguageCodeAction[]}=
       {contents:[],suggestions:[],locations:[],formattingEdits:[],documentSymbols:[]};
     for(const [handle] of eligible){
       let operation:Promise<unknown>;
@@ -485,6 +492,11 @@ export class TheiaHost {
         },{tabSize:formatOptions?.tabSize??4,insertSpaces:formatOptions?.insertSpaces??true},token);break;
         case "onTypeFormatting":operation=ext.$provideOnTypeFormattingEdits(handle,current.uri,position,trigger!,
           {tabSize:formatOptions?.tabSize??4,insertSpaces:formatOptions?.insertSpaces??true},token);break;
+        case "rename":operation=ext.$provideRenameEdits(handle,current.uri,position,editContext!.newName!,token);break;
+        case "codeActions":operation=ext.$provideCodeActions(handle,current.uri,{
+          startLineNumber:editRange!.start.line+1,startColumn:editRange!.start.character+1,
+          endLineNumber:editRange!.end.line+1,endColumn:editRange!.end.character+1,
+        },{trigger:editContext?.trigger??1,markers:[]},token);break;
         case "signatureHelp":operation=ext.$provideSignatureHelp(handle,current.uri,position,{
           triggerKind:signatureContext?.triggerKind??1,isRetrigger:signatureContext?.isRetrigger??false,
           ...(signatureContext?.triggerCharacter?{triggerCharacter:signatureContext.triggerCharacter}:{})
@@ -518,6 +530,30 @@ export class TheiaHost {
           results.documentSymbols.push(...documentSymbols(output));
         }else if(kind==="formatting"||kind==="rangeFormatting"||kind==="onTypeFormatting"){
           results.formattingEdits.push(...formattingEdits(output));
+        }else if(kind==="rename"){
+          const payload=output as {rejectReason?:unknown}|undefined;
+          if(typeof payload?.rejectReason==="string")results.renameRejectReason=payload.rejectReason.slice(0,250);
+          else{
+            const edits=localWorkspaceTextEdits(output,current.input.filePath,current.input.text);
+            if(edits)results.renameEdits=edits;
+            else results.renameRejectReason="该重命名涉及其他文件或不支持的修改，Mcode 已拒绝执行";
+          }
+        }else if(kind==="codeActions"){
+          const entries=Array.isArray(output)?output:[];
+          const releaseIds:number[]=[];
+          for(const item of entries){
+            if(!item||typeof item!=="object")continue;
+            const candidate=item as Record<string,unknown>;
+            if(Number.isSafeInteger(candidate.cacheId))releaseIds.push(Number(candidate.cacheId));
+            if(results.codeActions?.length===20||typeof candidate.title!=="string"||
+              !candidate.title||candidate.title.length>250||candidate.disabled||candidate.command)continue;
+            const edits=localWorkspaceTextEdits(candidate.edit,current.input.filePath,current.input.text);
+            if(!edits)continue; // commands, cross-file and unresolved edits are not executable
+            (results.codeActions??=[]).push({title:candidate.title,
+              ...(typeof candidate.kind==="string"?{kind:candidate.kind.slice(0,80)}:{}),
+              ...(candidate.isPreferred===true?{isPreferred:true}:{}),edits});
+          }
+          if(releaseIds.length)void ext.$releaseCodeActions(handle,releaseIds).catch(()=>{});
         }else if(kind==="signatureHelp"){
           const value=signatureHelp(output);
           if(value)results.signatureHelp=value;
@@ -1253,6 +1289,16 @@ export class TheiaHost {
           languages:(selectors??[]).slice(0,12).map(x=>x.language??"*"),
           triggerCharacters:(Array.isArray(characters)?characters:[])
             .filter(c=>typeof c==="string"&&c.length===1).slice(0,10)});
+      },
+      $registerRenameProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"rename",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
+      },
+      $registerQuickFixProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>)=>{
+        if(this.languageProviders.size>=60||!Number.isInteger(handle))return;
+        this.languageProviders.set(handle,{kind:"codeActions",
+          languages:(selectors??[]).slice(0,12).map(x=>x.language??"*")});
       },
       $registerSignatureHelpProvider:(handle:number,_info:unknown,selectors:Array<{language?:string}>,
         metadata?:{triggerCharacters?:string[];retriggerCharacters?:string[]})=>{

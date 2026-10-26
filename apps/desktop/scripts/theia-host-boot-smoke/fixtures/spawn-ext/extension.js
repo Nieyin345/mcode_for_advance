@@ -94,6 +94,33 @@ function activate(context) {
         vscode.TextEdit.insert(position,"typed-second-provider")
       ]
     },"}"),
+    vscode.languages.registerRenameProvider({language:"plaintext"},{
+      prepareRename:(_doc,position)=>({
+        range:new vscode.Range(0,0,0,6),placeholder:"native"
+      }),
+      provideRenameEdits:(doc,_position,newName)=>{
+        const edit=new vscode.WorkspaceEdit();
+        if(newName==="cross-file"){
+          edit.replace(vscode.Uri.file(require("path").join(require("path").dirname(doc.uri.fsPath),"other-file.txt")),
+            new vscode.Range(0,0,0,3),newName);
+        }else edit.replace(doc.uri,new vscode.Range(0,0,0,6),newName);
+        return edit;
+      }
+    }),
+    vscode.languages.registerCodeActionsProvider({language:"plaintext"},{
+      provideCodeActions:(doc)=>{
+        const safe=new vscode.CodeAction("Mcode safe local fix",vscode.CodeActionKind.QuickFix);
+        safe.edit=new vscode.WorkspaceEdit();
+        safe.edit.replace(doc.uri,new vscode.Range(0,0,0,6),"safe-fixed");
+        const foreign=new vscode.CodeAction("Mcode forbidden cross-file",vscode.CodeActionKind.Refactor);
+        foreign.edit=new vscode.WorkspaceEdit();
+        foreign.edit.insert(vscode.Uri.file(require("path").join(require("path").dirname(doc.uri.fsPath),"other-file.txt")),
+          new vscode.Position(0,0),"unsafe");
+        const command=new vscode.CodeAction("Mcode forbidden command",vscode.CodeActionKind.QuickFix);
+        command.command={title:"Do not execute",command:"mcodeSmoke.undeclared"};
+        return [safe,foreign,command];
+      }
+    }),
     vscode.languages.registerSignatureHelpProvider({language:"plaintext"},{
       provideSignatureHelp:()=>{
         const help=new vscode.SignatureHelp();
