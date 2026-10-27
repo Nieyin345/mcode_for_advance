@@ -84,12 +84,6 @@ import {
 } from "./policy.js";
 import { guideFor, guideOverview, guideTopics } from "./guide.js";
 import { validateExtension } from "./extensionValidate.js";
-// 【T20】扩展工坊：AI 写扩展的六步闭环（draft → 静态校验 → 沙箱 → 交接用户确认）。
-// 只在工具 handler 内做**动态 import** —— 工坊模块会拉 `permissionedProcessRunner`
-// （子进程执行器），把它静态带进 tools.ts 的 import 图会让无头套件在打包时把它整条
-// 拖进来；这里只要类型与一个纯函数，按需取即可。
-import type { ExtensionWorkshopReport, ExtensionWorkshopInstallHandoff } from "@contracts/extensionWorkshop";
-// 类型只在编译期存在（`import type` 被 esbuild 原样擦除），不会把工坊模块带进 bundle。
 import { APP_API_TUTORIALS, tutorialsMatchingWord } from "./appApiTutorials.js";
 import {
   describeWorkflowToolParams,
@@ -198,11 +192,13 @@ export function secretSettingRefusal(method: string, input: unknown): string | n
 /**
  * 【MC-036】**工作流运行授权**的写保护不在本文件:授权落在一份**独立文件**
  * (`<数据根>/ui-modules/workflow-grants.json`,理由见 `@contracts/moduleCapability`),
- * 不经 `setting.set`,所以没有可被 Agent 整行改写的设置键。签发 / 撤销的唯一通道是
- * `modules.issueWorkflowGrant` / `modules.revokeWorkflowGrant` —— 那两条在
- * `appControl/policy.ts` 的 `BLOCKED` 表里,`app_api_call` 与面板桥都够不到;
- * 真正够得到的只有桌面设置页里用户本人的点击。文件本身用 tmp+rename 原子写,
- * 坏存档整表拒读拒写(见 `classifyModuleWorkflowGrants`)。
+ * 不经 `setting.set`,所以没有可被 Agent 整行改写的设置键。
+ *
+ * ⚠️ **2026-10-27 更正**:这里原先写「签发 / 撤销的唯一通道是
+ * `modules.issueWorkflowGrant` / `modules.revokeWorkflowGrant`」—— **那两个 RPC 已删除**
+ * (随 ModuleHost 一起)。现在没有任何 RPC 通道能签发 / 撤销这份授权文件,
+ * 写它的只有桌面设置页里用户本人的点击。**这条纪律没有变松,反而更严了:
+ * 从「有接口但 blocked」变成了「根本没有接口」。**
  */
 
 const LEVEL_LABEL = APP_POLICY_LEVEL_LABEL;
@@ -933,9 +929,6 @@ const UI_ACTIONS = [
 export const APP_READONLY_TOOLS: ReadonlySet<string> = new Set([
   "app_api_list", "app_api_describe", "app_api_tutorial", "app_guide", "app_ui_state",
   "app_panel_api_list", "extension_validate",
-  // 【T20】工坊状态是**只读投影**（不写盘、不对账）；`extension_build` 会写草稿目录，
-  // 故意**不**在这里 —— 它走 write 档审批（见 hostMcpServer 的 approvalTierOf 兜底）。
-  "extension_workshop_status",
   // 【T24】文档工具面的发现/只读半边（写操作在 invokeAppTool 里按工具分档弹卡）。
   "document_apps", "document_tools_list", "document_tool_describe", "document_md_read", "document_render",
 ]);
@@ -1212,7 +1205,11 @@ export function appMcpTools(): McpToolSpec[] {
       description:
         "列出 Mcode 能编辑的文档编辑器（docs / sheets / slides / pdf / markdown / html）：各自的常驻读工具、" +
         "工具总数、CLI 能承载的工具名、编辑后强制跑的 QA 门禁。改 Word/PPT/Excel/PDF 之前先调一次。" +
-        "下一步：document_tools_list({app, query}) 找工具 → document_tool_describe({tool}) 看参数 → document_tool_call 执行。",
+        "下一步：document_tools_list({app, query}) 找工具 → document_tool_describe({tool}) 看参数 → document_tool_call 执行。\n" +
+        "⚠️ **这一步只报「目录里有什么」，不报「这台机器上现在能不能用」。**" +
+        "如果后面 document_tool_call 连续失败（找不到 CLI / 文件没开在编辑器里），" +
+        "先调 `document_capabilities` 看 CLI 在不在、哪些路由需要 headless 宿主或原生 sidecar —— " +
+        "别再逐个试工具。",
       inputSchema: {},
       handler: async () => {
         const { documentApps } = await import("@main/document/documentToolRuntime.js");

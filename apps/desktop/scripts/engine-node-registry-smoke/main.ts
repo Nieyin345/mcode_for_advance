@@ -689,9 +689,15 @@ try {
         new RegExp(`recordRpcHandler\\(IPC\\.WORKFLOW_ENGINE_${suffix}`).test(handler)));
     check("★ 审批推送通道在契约域文件里",
       contract.includes('"workflowEngine:nodeInstallApproval"'));
-    check("★ policy：nodeInstall = danger（装可执行代码，每次本人批）",
-      /"workflowEngine\.nodeInstall":\s*"安装第三方节点包/.test(policy)
-      && policy.indexOf("workflowEngine.nodeInstall") > policy.indexOf("const DANGER"),
+    // 【2026-10-27】nodeInstall 从 DANGER 改成 BLOCKED。
+    // 理由不是"更安全了"，是**它原来对 Agent 就是坏的**：`ipc/workflowEngine.ts` 的
+    // `senderIdOf` 要求真实 WebContents 主 frame，而 Agent 走 `callRpc` 时 event 是 `{}`
+    // （`appControl/tools.ts` 的 `handler({}, input)`），永远拿不到 senderId →
+    // handler 必回 `approval_unavailable`。放在 DANGER 等于让用户先点一次「允许」再失败。
+    // 现在钉 blocked：Agent 一开始就知道够不到，真实入口留给人。
+    check("★ policy：nodeInstall = blocked（需要真实发起窗口，Agent 拿不到 senderId）",
+      /"workflowEngine\.nodeInstall":\s*"第三方节点包安装/.test(policy)
+      && policy.indexOf("workflowEngine.nodeInstall") < policy.indexOf("const DANGER"),
       policy.match(/"workflowEngine\.nodeInstall"[^\n]*/)?.[0]);
     check("★ policy：respondNodeInstallApproval = blocked（agent 不能替用户批准）",
       policy.includes('"workflowEngine.respondNodeInstallApproval"'),

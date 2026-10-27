@@ -537,9 +537,19 @@ function goodSpec(): unknown {
     check("★ plugin 无单一入口 → needsResolution 且无标签", SCENE_KIND_SERVICE_MAP.plugin.needsResolution && SCENE_KIND_SERVICE_MAP.plugin.serviceLabel === null, SCENE_KIND_SERVICE_MAP.plugin);
     check("★ panel 需并入整份配置 → needsResolution(标签指向归属服务 setting.set)", SCENE_KIND_SERVICE_MAP.panel.needsResolution && SCENE_KIND_SERVICE_MAP.panel.serviceLabel === "setting.set", SCENE_KIND_SERVICE_MAP.panel);
     check("★ scaffold 需先归模板再提交 → needsResolution(标签指向归属服务 projectInit.apply)", SCENE_KIND_SERVICE_MAP.scaffold.needsResolution && SCENE_KIND_SERVICE_MAP.scaffold.serviceLabel === "projectInit.apply", SCENE_KIND_SERVICE_MAP.scaffold);
-    check("非决议 kind 一律 needsResolution=false(workflow/skill/mcp/hook/module)", [SCENE_KIND_SERVICE_MAP.workflow, SCENE_KIND_SERVICE_MAP.automation, SCENE_KIND_SERVICE_MAP.skill, SCENE_KIND_SERVICE_MAP.mcp, SCENE_KIND_SERVICE_MAP.hook, SCENE_KIND_SERVICE_MAP.module].every((e) => !e.needsResolution));
-    eq("需决议的 3 类进入 unresolved", compiled.unresolved.length, 3);
-    check("unresolved 指名 plugin/panel/scaffold 三条命令", compiled.unresolved.every((id) => compiled.commands.some((c) => c.commandId === id && c.service.needsResolution)), compiled.unresolved);
+    // ⚠️ **2026-10-27：`module` 从「非决议」挪进了「需决议」。**
+    //
+    // 它原来映射到 `modules.install` / `modules.catalog` / `modules.remove` 三条 RPC，
+    // 而这三个**已随 ModuleHost 整体删除** —— 规划却仍判 `needsResolution: false`，
+    // 于是场景通过规划、用户批准、部署跑到这一步才抛「服务入口没有注册」，前面几步已落盘。
+    // 现在它进 needsResolution，dry-run 就标出「这一步不会跑」。
+    check("非决议 kind 一律 needsResolution=false(workflow/skill/mcp/hook)", [SCENE_KIND_SERVICE_MAP.workflow, SCENE_KIND_SERVICE_MAP.automation, SCENE_KIND_SERVICE_MAP.skill, SCENE_KIND_SERVICE_MAP.mcp, SCENE_KIND_SERVICE_MAP.hook].every((e) => !e.needsResolution));
+    check("★ module 需决议(映射的三个 RPC 已随 ModuleHost 删除)",
+      SCENE_KIND_SERVICE_MAP.module.needsResolution && SCENE_KIND_SERVICE_MAP.module.resolutionHint === "modules.theiaInstalled",
+      SCENE_KIND_SERVICE_MAP.module);
+    // 需决议的从 3 类变成 4 类（plugin / panel / scaffold / module）。
+    eq("需决议的 4 类进入 unresolved", compiled.unresolved.length, 4);
+    check("unresolved 指名的命令都真的 needsResolution", compiled.unresolved.every((id) => compiled.commands.some((c) => c.commandId === id && c.service.needsResolution)), compiled.unresolved);
     check("每条命令都带 commandId(部署绑定用)", compiled.commands.every((c) => typeof c.commandId === "string" && c.commandId.length > 0), compiled.commands.map((c) => c.commandId));
 
     // ★ 稳定:同一 plan + 同一 spec 重复编译 → 逐字节相同的 digest 与每条 commandId。

@@ -6,7 +6,7 @@
  * `app_api_list`/`app_api_describe` 解决"有这个功能吗、参数长什么样";但"创建自动化"
  * 这类**任务**是一串方法按顺序调 + 若干约定(先建图、再存、再开触发器),单看任何一个
  * 方法的说明都拼不出来。台账红例:agent 找得到 `workflow.save` 也未必知道
- * "新建自动化 = newWorkflowDoc 形状的图 + trigger 字段 + automation.watch"。
+ * "新建自动化 = newWorkflowDoc 形状的图 + trigger 字段 + Node-RED 部署"。
  *
  * ## 硬约定(与 MC-039 的目录同一份纪律)
  *
@@ -71,8 +71,7 @@ export function extensionAuthoringGuide(permissions: readonly string[]): string 
     ...permissions.map(p => "- `" + p + "` — " + (({
       "files.read": "读文件", "files.write": "写文件", "resource.read": "访问当前资源",
       "resource.write": "修改当前资源", "session.send": "向对话发送内容",
-      "workflow.run": "运行工作流", "library.read": "读资料库",
-      "modules.install": "安装扩展", "network": "网络访问（须满足 OS 沙箱）",
+      "workflow.run": "运行工作流", "library.read": "读资料库", "network": "网络访问（须满足 OS 沙箱）",
     } as Record<string, string>)[p] ?? "相应功能域权限")),
     "",
     "## c) 常用 API（面板与隔离扩展不能混用）",
@@ -89,7 +88,17 @@ export function extensionAuthoringGuide(permissions: readonly string[]): string 
     "```js", manifest.program.source, "```",
     "它用 Node 内置 fs 读取**本次经宿主校验并授权的 resource.path**，返回 {lines:number}。",
     "ModuleResult 必须是扁平对象，值只能是 string/number/boolean/null，不能返回 {ok, fields} 嵌套对象。",
-    "要运行它：先 extension_validate({manifest})；然后 app_api_call({method:'modules.install',input:{manifest,confirmReadAccess:true,confirmExecutableCode:true,grantedPermissions:['files.read']}})，安装时必须经真人审批。",
+    "",
+    "## d2) 谁能装 —— 你只能准备，装不了",
+    "**Agent 没有安装扩展的能力，这是设计。** 可执行扩展的安装 / 试运行在 `BLOCKED` 档：",
+    "- `modules.theiaInstalled`（持久安装 / 启停 / 卸载 .vsix）—— 只能桌面用户本人操作；",
+    "- `modules.theiaPreview`（临时试运行）—— 需要一枚**一次性 ticket**，只能由用户在设置页发起。",
+    "两条都要求「用户本人的新鲜动作」，Agent 自授权够不到。**所以 d) 段那个程序你写得出来、验得出来，但跑不起来。**",
+    "正确的交付方式是**交接到用户手上**：",
+    "1. `extension_validate({manifest})` —— 形状 / 权限 / 程序工厂都过一遍，拿 `installable`；",
+    "2. 把清单与 `program.source` 原样交给用户，说明它要哪些权限、会碰什么；",
+    "3. 用户在 **设置 → UI 扩展** 里装（或自己打成 `.vsix` 再装）。**不要**替用户点，也不要伪造 ticket。",
+    "装完之后它贡献的命令 / 菜单才会出现在界面上；`app_guide` 的「已装扩展」一节能看到它们。",
     "",
     "## e) 常见错误",
     "- 忘记 permissions：Schema 拒绝安装，运行时 API 越权也会拒绝。",
@@ -97,28 +106,29 @@ export function extensionAuthoringGuide(permissions: readonly string[]): string 
     "- 返回 {ok:true,fields:{...}}：不符合 ModuleResult 的扁平标量形状，调用失败。",
     "- program.source 写成 exports.count：工厂求值不是对象，安装核验失败。",
     "- 把 session.send 当成真实 RPC 方法：实际使用 claude.startSession / claude.sendTurn，调用前先用 app_api_list 核实。",
+    "- **去调 `modules.install` / `modules.installVsix` / `modules.remove`**：这三个方法**已经不存在**（ModuleHost 那一代已整体删除，现存的是 Theia VSIX 那条路）。调它只会得到「没有这个方法」。装扩展的入口只有 d2 段那两条，且都不给 Agent。",
     "",
     "## 安装的批准",
-    "modules.install 始终属于高风险 agent 操作；清单权限及静态 API 调用应展示在用户批准信息中，不能由 AI 自授权。",
+    "扩展安装**不是**「一个高风险 Agent 操作」，而是**Agent 根本够不到的操作**（见 d2）。" +
+    "清单权限与它会调用的 API 要在交接给用户时说清楚 —— 让用户知道自己批的是什么，而不是让 Agent 代批。",
   ].join("\n");
 }
 
 export const APP_API_TUTORIALS: readonly AppApiTutorial[] = [
   {
     id: "create-automation",
-    title: "创建一个自动化(事件驱动的图,常驻守望)",
-    keywords: ["创建自动化", "新建自动化", "自动化", "守望", "定时", "触发", "automation", "watch", "trigger"],
+    title: "创建一个自动化(事件触发的图)",
+    keywords: ["创建自动化", "新建自动化", "自动化", "定时", "触发", "automation", "watch", "trigger"],
     steps: [
       { method: "app_api_describe", note: "先 detail=\"full\" 看 workflow.save 的完整工作流结构(嵌套到节点/边)" },
       { method: "workflow.save", note: "存整份图:doc 里 nodes/edges + trigger 字段(触发器节点 mcode.trigger 也是普通节点)" },
-      { method: "automation.watch", note: "把这份工作流挂进守望:它是「常驻监听 + 事件驱动运行」的入口,没有这步图只是静态文档" },
-      { method: "automation.statusAll", note: "确认守望状态真的起来了" },
+      { method: "automation.statusAll", note: "确认触发器真的挂上了" },
       { method: "automation.run", note: "想立刻手动跑一遍验证链路时用它(手动运行不等事件)" },
     ],
     pitfalls: [
       "workflow.save 要求整份图(不是增量 patch)—— 改之前先 workflow.get 拿当前版",
       "trigger 是节点图的一部分(触发器节点),不是 workflow 上的独立开关;边必须连上它",
-      "守望是运行期状态:改完图记得 automation.watch 重挂,光保存不会自动生效",
+      "触发器是运行期状态:Node-RED 引擎没起或这张图没部署时它不会响",
     ],
   },
   {

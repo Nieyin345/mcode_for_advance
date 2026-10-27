@@ -35,6 +35,7 @@
 import { initDb, closeDb, getDb, commitNow } from "@main/store/db.js";
 import { validateSceneSpec, SCENE_SPEC_SCHEMA_VERSION, type SceneSpec } from "@contracts/sceneSpec";
 import { compileScenePlan } from "@contracts/scenePlan";
+import { compileSceneCommands } from "@contracts/sceneCommands";
 import { evaluateAcceptance } from "@contracts/sceneDeployment";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
 import { scenePlanCoreIntent } from "@main/appControl/policyEngine.js";
@@ -1848,25 +1849,30 @@ console.log("\n㉑ MC-058 残余②③:回读/补偿按真实服务身份钉死 
     }
   }
 
-  // 21d. ★ module:回读按 `ModuleManifest.id`(声明里的 spec.manifest.id);resourceUid 落该 id。
+  // 21d. ★★ module：**这个版本装不了** —— 断言它明确拒绝，而不是假造 handler 让它"成功"。
+  //
+  // 【2026-10-27 改】这一段原来 `recordRpcHandler("modules:install", ...)` 自己桩了一个
+  // handler，于是场景部署「成功」、四条断言全绿。但 `modules.install` / `modules.catalog` /
+  // `modules.remove` 三个 RPC **已随 ModuleHost 整体删除**（现在只剩 `modules.theiaInstalled`
+  // / `modules.theiaPreview`，都在 BLOCKED 档、要用户本人的 ticket）。
+  //
+  // 也就是说：那四条断言验的是**一个本仓库不存在的能力**，桩掉的真身。
+  // 这正是「套件里抄一份/桩一份逻辑 = 验的是副本」那条硬规矩的实例。
+  //
+  // 现在改成验**真实行为**：module 进 `needsResolution`，dry-run 标出「这一步不会跑」，
+  // 不派发、不假装成功。将来若真把安装通道接回来，这一段会红 —— 那时按真实入口改写。
   {
     clearRpcHandlers();
     const host = newHost();
-    // modules:install 收 {manifest, confirmReadAccess},把 manifest.id 登记进 catalog。
-    recordRpcHandler("modules:install", (_e, raw) => {
-      const m = (raw as Record<string, unknown> | undefined)?.manifest as Record<string, unknown> | undefined;
-      if (m !== undefined && typeof m.id === "string") host.modules.add(m.id);
-      return { modules: [...host.modules].map((id) => ({ id })), capabilities: [], workflowTargets: [] };
-    });
-    recordRpcHandler("modules:catalog", () => ({ modules: [...host.modules].map((id) => ({ id })) }));
     recordRpcHandler("workflow:get", () => ({ workflow: null, revision: null, review: null }));
     const manifest = {
       apiVersion: 1, id: "user.coverage.report", version: "1.0.0",
       title: { zh: "覆盖率报告", en: "Coverage" }, permissions: ["resource.read"],
       contributions: [{
-        id: "inspect", slot: "files.context", title: { zh: "生成", en: "Create" }, capability: "mcode.file.inspect",
+        id: "inspect", slot: "files.context", title: { zh: "生成", en: "Create" }, capability: "module.inspect",
         view: { title: { zh: "报告", en: "Report" }, fields: [{ key: "bytes", title: { zh: "字节", en: "Bytes" } }] },
       }],
+      program: { source: "() => ({ inspect: async () => ({ bytes: 0 }) })", timeoutMs: 15000 },
     };
     const spec = checked(specWith(
       "module_identity_scene",
@@ -1874,14 +1880,27 @@ console.log("\n㉑ MC-058 残余②③:回读/补偿按真实服务身份钉死 
       ["md_scene"],
     ));
     const plan = compileScenePlan(spec);
+    const compiled = compileSceneCommands(plan, spec);
+    // ★ 规划阶段就该知道：这一步要决议，不会跑。
+    //   `commandId` 是 hash 形态（`scenecmd:fnv1a:…`），不是声明的资源 id —— 按 actionId 找。
+    const moduleCmd = compiled.commands.find((c) => c.actionId === "md_scene");
+    const moduleCmdId = moduleCmd?.commandId;
+    check("★★ module 步进入 unresolved(不再假装能装)",
+      moduleCmdId !== undefined && compiled.unresolved.includes(moduleCmdId), { unresolved: compiled.unresolved, moduleCmdId });
+    check("★★ module 步 needsResolution=true(映射的三个 RPC 已删除)",
+      moduleCmd?.service.needsResolution === true, moduleCmd?.service);
+
     const r = await applyScene({ deploymentId: "dep_module_identity", spec, actor: ACTOR, grant: grantFor(plan.digest) });
-    check("apply 返回 applied", r.ok === true && r.kind === "applied", r);
+    // ★ 部署**不该**把它记成 done —— 它压根没派发。
     if (r.ok && r.kind === "applied") {
       const step = r.deployment.steps.find((s) => s.actionId === "md_scene");
-      eq("★ 模块步 done", step?.status, "done");
-      eq("★★ 回读按 ModuleManifest.id 命中", r.readback.observed.join(","), "md_scene");
-      eq("★★ resourceUid 落 ModuleManifest.id", step?.resourceUid, "user.coverage.report");
-      check("★ 宿主里登记的是 ModuleManifest.id", host.modules.has("user.coverage.report"));
+      check("★★ 模块步**不是** done(没派发)",
+        step?.status !== "done", step?.status);
+      check("★★ 宿主里**没有**登记这个模块(什么都没装)", !host.modules.has("user.coverage.report"));
+    } else {
+      // 若整份部署因 unresolved 直接被拒，也是可接受的结果 —— 但必须如实说明。
+      check("★★ module 场景被明确拒绝(不是静默成功)",
+        r.ok === false, r);
     }
   }
 

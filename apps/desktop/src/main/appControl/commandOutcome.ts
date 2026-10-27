@@ -152,16 +152,6 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
   ["file.mkdir", { falseMeans: "maybePartial" }],
   ["file.copy", { falseMeans: "maybePartial" }],
   ["file.rename", { falseMeans: "refusal" }],
-  /* ── 【MC-066 残余① 续】automation.watch ─────────────────────────────────
-   *
-   * `automationRunner.startWatch` 的 `{ok:false,error}` 全是**起跑前的拒绝**:发起会话/
-   * 项目不在了、上一次守望还在跑、内置模板没了、模板缺节点;唯一在 saveWorkflow 之后的
-   * `!saved.ok` 也是**写前拒绝**(saveWorkflow 原子,其 ok:false 在落库之前)→ `refusal`。
-   *
-   * 同批**确认无需登记**的:`git.cancelGenerateCommitMessage` **恒返回 `{ok:true}`**(没有任何
-   * ok:false 分支);`mcp.*` 除 `mcp.list`(返回 `{servers}` 数据对象、不是 ok/error 信封)
-   * 外**全部被 policy 钉 BLOCKED**,agent 到不了。 */
-  ["automation.watch", { falseMeans: "refusal" }],
   /* ── 【MC-066 残余① 续】git.generateCommitMessage ────────────────────────
    *
    * 这条是**纯计算**(让模型从 staged diff 生成一句提交信息),ok:false(模型没返回
@@ -391,9 +381,10 @@ const EXACT = new Map<string, CommandOutcomeDescriptor>([
    *   失败会回滚,回滚本身再失败就只 `log.error`,此刻真相层可能已落了一半(引擎视图与真相层
    *   不一致)→ 不能当"没执行",按最坏情况 `maybePartial`(UNCERTAIN,绝不默认可安全重试)。
    *
-   *  **不登记 `modules.install`**:`ModuleHost.install` 返回的是 `{modules,capabilities,workflowTargets}`
-   *  目录对象(**没有 `ok` 字段**),失败靠**抛异常**表达(见 `main/modules/ModuleHost.ts`)——
-   *  登进来会把每次成功也判成 UNCERTAIN(合同被违反)。抛异常已由调用端的 catch 支路处置。 */
+   *  **`modules.install` 已删除**(2026-10-27):它连同 ModuleHost 整体移除,不在 `RpcMap` 里,
+   *  所以这里没有、也不该有它的登记。现存的两条扩展通道是 `modules.theiaInstalled` /
+   *  `modules.theiaPreview`,都是 `BLOCKED`(agent 够不到),走 ticket 判定、不需要
+   *  结果合同。 */
   ["hooks.save", { falseMeans: "refusal" }],
   ["mcp.save", { falseMeans: "maybePartial" }],
 ]);

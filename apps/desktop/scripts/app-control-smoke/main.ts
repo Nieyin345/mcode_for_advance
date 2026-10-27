@@ -187,19 +187,19 @@ const pin: Array<[string, string]> = [
   ["unattendedPlans.list", "blocked"],
   ["unattendedPlans.resume", "blocked"],
   ["unattendedPlans.abandon", "blocked"],
-  // 【MC-036】用户模块的**工作流运行授权**(= 自动运行权)的签发 / 撤销。与
-  // `hooks.issueHostHookGrant` / `workflow.approve` 同一条纪律:agent 不得把"这个模块
-  // 菜单能调"自行升成"这个模块可以自动跑",故钉 blocked(不是可弹卡的 write)。
-  ["modules.issueWorkflowGrant", "blocked"],
-  ["modules.revokeWorkflowGrant", "blocked"],
-  // 【MC-035 / ARC-002】`modules.invoke` 是**扩展能力的执行入口** —— Agent 要能
-  // 经 app_api_call 发现并调用用户装好的扩展(能力经 `modules.catalog` 可见、
-  // 经 `app_api_*` 可描述)。它落 write(弹卡)而不是 blocked:blocked 会让扩展对
-  // Agent **完全不可用**,那正好否定了"三引擎能发现同一能力"这条验收。判据是
-  // "每次执行要用户批准",不是"不给用"。
-  ["modules.invoke", "write"],
-  ["modules.catalog", "read"],
-  ["modules.tasks", "read"],
+  // ⚠️ **2026-10-27：`modules.*` 这一组五条 pin 全部删除。**
+  //
+  // 它们原来是 `modules.issueWorkflowGrant` / `revokeWorkflowGrant` /
+  // `invoke` / `catalog` / `tasks` —— **五个名字没有一个还在 RpcMap 里**（ModuleHost
+  // 那一代整体删除后只剩 `modules.theiaInstalled` / `modules.theiaPreview`）。
+  //
+  // 这正是本文件下面那段闸门注释点破的陷阱：「`policyFor` 对**任何**未注册的名字都会给
+  // 一个答案（兜底），所以『它说 blocked』本身不能证明『这个通道存在且可达』」。
+  // 那五条 pin 当时测的就是一串不存在的字符串 —— 它们全绿，却什么都没守住。
+  //
+  // 保留一条**正面**判据：现存的两条扩展通道都在 blocked。
+  ["modules.theiaPreview", "blocked"],
+  ["modules.theiaInstalled", "blocked"],
   ["plugins.installGit", "danger"],
   ["mcp.save", "danger"],
   ["hooks.save", "danger"],
@@ -216,6 +216,8 @@ const pin: Array<[string, string]> = [
   ["git.status", "read"],
   ["setting.get", "read"],
   ["notification.focusSession", "ui"],
+  // ⚠️ **故意不存在的名字** —— 它测的是「未归类方法落到兜底 write」这条规则本身，
+  // 不是某个真实通道的权限。全表判据（见下）显式豁免它，见 `DELIBERATELY_UNREAL`。
   ["totally.newThing", "write"],
   // 【T105】任务验收 = 路线图 §5「执行完成 ≠ 验收通过」的落点。
   // 动词 `accept` / `reject` / `reopen` / `transition` 都不匹配 `READ_VERB`,不入 BLOCKED
@@ -224,8 +226,11 @@ const pin: Array<[string, string]> = [
   // T104 的探针量到过修复前的状态:`task.accept → write`。
   ["task.accept", "blocked"],
   ["task.reject", "blocked"],
-  ["task.reopen", "blocked"],
-  ["task.transition", "blocked"],
+  // ⚠️ **2026-10-27**：`task.reopen` / `task.transition` 从这里删掉了。
+  // 它们**不在 RpcMap 里** —— 本文件下面那段闸门注释早就点破过这一点
+  // （「T104 的探针里 task.transition / task.reopen 都答了 write，而它们没有 RpcMap 条目」）。
+  // 那时它们仍留在 pin 列表里，等于**用 policyFor 的兜底答案给自己作证**。
+  // 现在 policy.ts 也删了这两条分档：纪律由「根本没有这个接口」保证，不再靠分档。
   // 【T109】`list` / `get` 也从 read 改成 blocked —— 它们是**治理视图**
   // (`goal` 是用户原话、`artifacts` 是绝对路径、`acceptance` 是谁凭什么验收的),
   // 与 `unattendedPlans.list` 同档。T105 当时把这两条钉成 `read` 当正控,
@@ -280,6 +285,24 @@ for (const [m, l] of pin) check(`权限 ${m} = ${l}`, policyFor(m).level === l, 
     .filter((m) => !rpcSource.includes(`"${m}"`));
   check("★ T105 取证前提:四条被断言的任务 RPC 真的在 RpcMap 里声明",
     declaredTaskRpc.length === 0, declaredTaskRpc);
+
+  // ★★ **全表判据：pin 里出现的每一个方法名都必须真的在 RpcMap 里。**
+  //
+  // 上面那条只核了 `task.*` 四条 —— 而 2026-10-27 的事故正是**别的域**：`modules.*` 五条
+  // pin（issueWorkflowGrant / revokeWorkflowGrant / invoke / catalog / tasks）在 ModuleHost
+  // 删除后**全部悬空**，却一直绿着，因为 `policyFor` 对任何名字都给兜底答案。
+  //
+  // 判据收全表：「名字能查」不等于「通道存在」。任何 pin 若指向一个 `RpcMap` 里没有的名字，
+  // 它测的就是一个字符串常量，不是权限。
+  //
+  // 唯一的豁免是 `DELIBERATELY_UNREAL`：那一个名字**故意**不存在，用来测「兜底 write」规则
+  // 本身。豁免必须显式列名，不能写成 `startsWith("totally.")` 之类 —— 否则将来真的写错
+  // 一个 `totally.*` 的通道名也会被一起放过。
+  const DELIBERATELY_UNREAL = new Set(["totally.newThing"]);
+  const danglingPins = [...new Set(pin.map(([m]) => m))]
+    .filter((m) => !DELIBERATELY_UNREAL.has(m) && !rpcSource.includes(`"${m}"`));
+  check("★ 全表取证前提:pin 的每个方法名都真的在 RpcMap 里声明",
+    danglingPins.length === 0, danglingPins);
 }
 // 凡是名字里带 getToken / getApiKey 的都不能是可读档
 for (const e of API_CATALOG) {
@@ -1788,12 +1811,7 @@ console.log("\n§ARC-002 用户派生工具：检索 → help → 结构化执�
     );
   }
 
-  // automation.watch:startWatch 的 ok:false 全是起跑前拒绝 → REJECTED。
-  recordRpcHandler("automation:watch", async () => ({ ok: false as const, error: "发起会话不在了" }));
-  {
-    const r = await invokeAppTool("app_api_call", { method: "automation.watch", input: { sessionId: "s_gone" } }, "me", ctx);
-    check("★ MC-066:automation.watch 合法 ok:false → REJECTED(起跑前拒绝)", opResultOf(r)?.resultKind === "REJECTED", opResultOf(r));
-  }
+  // 长任务守望已移除（2026-10-27），它的分类登记随之删除。
 }
 
 /* ── 3d-4. 【MC-066 残余① 续】workflow.* 与 skills.* 的合法拒绝 ────────────────
@@ -2971,7 +2989,7 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
   const tutList = await invokeAppTool("app_api_tutorial", {}, "me", ctx);
   check("★ 不带参数列出全部教程主题", textOf(tutList).includes("创建自动化") && textOf(tutList).includes("自定义面板"), textOf(tutList).slice(0, 200));
   const tutHit = await invokeAppTool("app_api_tutorial", { query: "创建自动化" }, "me", ctx);
-  check("★ 「创建自动化」查得到步骤(含 workflow.save 与 automation.watch)", textOf(tutHit).includes("workflow.save") && textOf(tutHit).includes("automation.watch"), textOf(tutHit).slice(0, 220));
+  check("★ 「创建自动化」查得到步骤(含 workflow.save)", textOf(tutHit).includes("workflow.save"), textOf(tutHit).slice(0, 220));
   const tutMiss = await invokeAppTool("app_api_tutorial", { query: "zzzznonsense" }, "me", ctx);
   check("无关词查不到教程(不硬塞一篇)", textOf(tutMiss).includes("没有匹配"), textOf(tutMiss).slice(0, 120));
 

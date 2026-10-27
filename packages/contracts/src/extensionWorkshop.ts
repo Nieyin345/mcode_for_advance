@@ -10,19 +10,26 @@
  *  - `ExtensionWorkshopState` 是**工坊自己的进度记录**（尝试次数 / 可回滚点 / 上次错误），
  *    **不是授权** —— ModuleHost 的任何判定都不读它（见 `extensionWorkshop.ts` 顶注）。
  *  - `ExtensionWorkshopReport` 是 `buildExtension` 的返回值：`ok` 只表示「可以拿去给用户
- *    确认了」，**不表示已安装**。安装必须再过 T18 的安装卡（`modules.install`）。
+ *    确认了」，**不表示已安装**。
  *  - `ExtensionWorkshopInstallHandoff` 是给 AI 的**交接材料**：它只说明「下一步该调
- *    `modules.install`、带哪些字段」，`requiresUserApproval` 恒为 `true` —— 本契约里
- *    没有任何「已批准」字段，AI 拿不到也不可能构造出代签。
+ *    什么、带哪些字段」，`requiresUserApproval` 恒为 `true` —— 本契约里没有任何
+ *    「已批准」字段，AI 拿不到也不可能构造出代签。
+ *
+ * ## ⚠️ 现状：本契约**已失去实现**（2026-10-27 核）
+ *
+ * 全仓唯一消费者是 `appControl/tools.ts` 的一行 `import type`（编译期擦除，**已删**）。
+ * 原本的实现 `apps/desktop/src/main/modules/extensionWorkshop.ts`（887 行）**已从工作区删除**
+ * （未提交，`git status` 显示 `D`）。`extension_build` / `extension_workshop_status` 两个工具
+ * 从未注册。文件末尾的 `ExtensionWorkshopInstallHandoff` 还指着一个已删除的 RPC。
+ * **改这里的形状之前先确认它到底还服务谁** —— 目前答案是没有。
  *
  * ## 明确不做
  *
  *  - 不新增权限名：权限列表就是 `MODULE_PERMISSION_NAMES`（schema 层拒未知值）。
  *  - 不做市场 / 签名 / VS Code 扩展生成：草稿只有一份 `program.source`，不打包、不签名。
- *  - 不新增 RpcMap：工坊经**既有** `appMcpTools()` 工具面（`extension_build` /
- *    `extension_workshop_status`）与既有 `modules.*` 通道工作；新增一条 RPC 会强制重生成
- *    `apiCatalog.generated.ts` 与 `appPermission.ts`，后者会把 10 条目录已前进、权限映射
- *    尚未归类的方法一次性收进委托面（放宽方向），两者分别是其他卡/生成器的边界。
+ *  - **不新增 RpcMap**：新增一条会强制重生成 `apiCatalog.generated.ts` 与
+ *    `appPermission.ts`，后者会把目录已前进、权限映射尚未归类的方法一次性收进委托面
+ *    （放宽方向），那是其他卡/生成器的边界。
  */
 import { z } from "zod";
 import { ModuleManifestSchema } from "./modules.js";
@@ -64,7 +71,9 @@ export const WORKSHOP_STATUSES = ["drafting", "installed", "rolledBack", "repair
 export const ExtensionWorkshopStatusSchema = z.enum(WORKSHOP_STATUSES);
 export type ExtensionWorkshopStatus = z.infer<typeof ExtensionWorkshopStatusSchema>;
 
-/** 装机后的可回滚点（记录用；真正的回滚走 `modules.remove` 的既有事务）。 */
+/** 装机后的可回滚点（记录用）。
+ *  ⚠️ 原文写「真正的回滚走 `modules.remove` 的既有事务」—— **`modules.remove` 已删除**
+ *  （2026-10-27 核）。现在卸载走 `modules.theiaInstalled({op:...})`，且只有用户能操作。 */
 export const ExtensionWorkshopInstalledSchema = z.object({
   version: z.string(),
   /** 装机前的版本（同 id 升级）。`null` = 全新安装。 */
@@ -111,7 +120,7 @@ export type ExtensionWorkshopStage = (typeof WORKSHOP_STAGES)[number];
  * 一次生成的完整回执。
  *
  * - `ok:true` ⇒ `draft` 非空，`stage:"sandbox"`（已过静态校验与真沙箱冒烟），
- *   **仍然需要用户安装卡确认**。回执里带 `manifest` 全文，调用方原样交给 `modules.install`。
+ *   **仍然需要用户确认**。回执里带 `manifest` 全文，交接给用户在设置页安装。
  * - `ok:false` ⇒ `issues` 是可以照抄给用户的错误；`stage` 说明卡在哪一步。
  */
 export interface ExtensionWorkshopReport {
@@ -132,12 +141,23 @@ export interface ExtensionWorkshopReport {
 /**
  * 【T20】给 AI 的**安装交接材料** —— 只描述下一步，不构成授权。
  *
- * `requiresUserApproval` 是字面类型 `true`：任何构造出来的交接都必须经过用户卡片；
- * `input` 里**永远不出现** `installConsent:"allow-always"`（工坊的断言钉住这一点；
- * 即便 AI 自己改写，Agent 通道的 `resolveInstallDecision` 也会把无桌面发送方的
- * `allow-always` 收窄成 `allow-once` —— 两道独立的闸）。
+ * ## ⚠️ 这个契约目前**没有任何实现**，且它描述的安装通道已不存在
+ *
+ * 两处都已过期，读它之前先看这里：
+ *
+ *  1. **`modules.install` 这个 RPC 已经删了。** ModuleHost 那一代整体移除后，
+ *     `RpcMap` 里只剩 `modules.theiaInstalled` / `modules.theiaPreview` 两条，
+ *     且**都在 `BLOCKED` 档** —— 安装 .vsix 要用户本人在设置页操作，`theiaPreview`
+ *     还要一枚只能由用户发起的一次性 ticket。**Agent 够不到任何安装入口。**
+ *  2. **工坊实现已删除。** `apps/desktop/src/main/modules/extensionWorkshop.ts`（887 行）
+ *     已从工作区移除；`extension_build` / `extension_workshop_status` 从未注册。
+ *
+ * 保留契约本身是因为它记录了当时的设计意图；**别把它当成"现在能这么做"的说明**。
+ * 要做扩展，走 `app_api_tutorial({query:"扩展"})` 里那条真实路径：准备好清单 →
+ * `extension_validate` → 交给用户装。
  */
 export interface ExtensionWorkshopInstallHandoff {
+  /** @deprecated 这个 RPC 已不存在。真实入口是 `modules.theiaInstalled`（BLOCKED，仅用户可操作）。 */
   method: "modules.install";
   /** 原样交给 `app_api_call({method, input})` 的入参。 */
   input: Record<string, unknown>;

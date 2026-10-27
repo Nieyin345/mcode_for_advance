@@ -217,9 +217,21 @@ export const SCENE_KIND_SERVICE_MAP: Record<SceneResourceKind, SceneKindServiceE
     compensation: { label: "modules.remove", arg: "moduleId", note: "modules.remove 按模块 id 卸载刚装上的模块。" },
     // `modules.catalog` 返回 `{modules:[ModuleManifest]}`，稳定身份是 `ModuleManifest.id`（声明正文里的 `spec.manifest.id`）。
     identityPath: "manifest.id",
-    needsResolution: false,
-    resolutionHint: null,
-    note: "模块声明交既有 modules.install（ModuleInstallInput）。",
+    // ⚠️ **2026-10-27：改成 needsResolution。**
+    //
+    // 上面三条 label（`modules.install` / `modules.catalog` / `modules.remove`）**全部已从
+    // `RpcMap` 删除** —— ModuleHost 那一代整体移除后，只剩 `modules.theiaInstalled` /
+    // `modules.theiaPreview` 两条，都在 BLOCKED 档、且要用户本人的一次性 ticket。
+    //
+    // 从前这里写 `needsResolution: false`，后果是：场景规划**通过**（因为规划只编译不派发），
+    // 用户批准、部署跑到这一步才抛「服务入口「modules.install」在当前版本里没有注册」——
+    // 一个**中途失败**的部署，前面几步已经落盘。而真正的原因是「这个版本不支持从场景装扩展」。
+    //
+    // 改成 needsResolution 之后，`scene.plan` / `scene.preflight` 阶段就明确拒绝并给出
+    // resolutionHint，不会再让用户批准一份注定跑不完的计划。
+    needsResolution: true,
+    resolutionHint: "modules.theiaInstalled",
+    note: "⚠️ 场景部署**装不了扩展**：`modules.install` / `modules.catalog` / `modules.remove` 三个 RPC 已随 ModuleHost 删除。现存入口 `modules.theiaInstalled` 要用户本人在设置页操作（还要一次性 ticket），无法由场景部署代劳。扩展请走 extension_validate → 交给用户安装。",
   },
   panel: {
     kind: "panel",

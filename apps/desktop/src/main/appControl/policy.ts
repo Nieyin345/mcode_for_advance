@@ -74,14 +74,25 @@ const BLOCKED: Record<string, string> = {
   // 的事:agent 任何理由都不该把"这个模块菜单能调"自行升成"这个模块可以自动跑",故
   // 与 hostHookGrant / workflow.approve 一样钉 **blocked**(不是"每次弹卡"),让
   // `app_api_call` 与 `mcp.api.call` 都够不到;真正够得到的只有桌面设置页。
-  "modules.issueWorkflowGrant": "用户模块的工作流运行授权只能由用户在模块设置里授权",
-  "modules.revokeWorkflowGrant": "用户模块的工作流运行授权只能由用户本人撤销",
-  "modules.setPermissions": "扩展安装权限只能由用户在扩展设置页本人授权或撤销",
+  //
+  // ⚠️ **2026-10-27 起这一组的 RPC 已删除。** ModuleHost 那一代整体移除后,
+  // `modules.issueWorkflowGrant` / `revokeWorkflowGrant` / `setPermissions` /
+  // `egressConsentGet` / `egressConsentSet` 都不在 `RpcMap` 里了。原先这里有五条
+  // 分档条目,它们守的是**不存在的门** —— `policyFor` 永远查不到那些方法名。
+  // 现在真正存在的只有下面两条(F025),两者都在 blocked。
+  // 「扩展安装要用户本人点头」这条纪律仍成立,但落点变成了 `theiaInstalled` 的
+  // ticket 机制,不再是这里的分档。
   // 【F025】临时试运行可以执行任意第三方 Node 代码，只能桌面本人直接操作。
   "modules.theiaPreview": "Theia VSIX 临时试运行只能由桌面用户预检并明确确认，不能由 Agent 自授权",
   "modules.theiaInstalled": "持久安装/启停/卸载可执行扩展只能由桌面用户本人操作，不能委托 Agent",
-  "modules.egressConsentGet": "扩展网络隔离降级开关仅在桌面设置页操作",
-  "modules.egressConsentSet": "网络隔离风险许可只能由用户本人在桌面设置页确认",
+  // 【ARC-006 Gate E】**第三方节点包安装**（Node-RED require 的可执行代码）——与扩展安装
+  // 同一性质，且有一道**结构性**理由必须留在 blocked：
+  // `ipc/workflowEngine.ts` 的 `senderIdOf` 要求真实 WebContents 主 frame 证据，
+  // 而 Agent 走 `callRpc` 时 event 是 `{}`（`appControl/tools.ts` 的 `handler({}, input)`），
+  // **永远拿不到 senderId** → handler 必回 `approval_unavailable`。
+  // 从前它在 DANGER 档：用户会在审批卡上点一次「允许」，然后安装仍然失败 —— 白费一次批准。
+  // 真实入口是用户在画布/设置上点安装（那条路有真窗口）。
+  "workflowEngine.nodeInstall": "第三方节点包安装只能由桌面用户本人在审批卡上完成(需要真实发起窗口,Agent 通道拿不到)",
   "customModel.getToken": "API Key / 令牌不给模型",
   "piModels.getApiKey": "API Key 不给模型",
   "codexModels.getApiKey": "API Key 不给模型",
@@ -109,6 +120,27 @@ const BLOCKED: Record<string, string> = {
   "documentView.hide": "界面布局内部接口;文档视图由用户关闭",
   "documentView.focus": "界面布局内部接口;文档视图由用户操作",
   "documentView.close": "界面布局内部接口;文档视图由用户关闭",
+  /* 【EDIT-06/08/09】修订、复核、文件历史、评论 —— 与上面六条同档。
+   *
+   * 判据是**这些方法服务谁**：它们的存在理由是「左栏那个面板要和编辑器说话」，
+   * 而那个面板是用户界面的一部分。扩展调它们能做出的效果，是**替用户操作
+   * 他自己的复核界面**（把条目接受掉、把光标挪走、把模式切了），不是读写文档内容。
+   *
+   * 要改文档内容，扩展有 `document.edit` / `document.toolCall` —— 那条路受围栏、
+   * 受审批、留修订。从 `documentView.*` 绕进去只是绕过前面那些，不产生新能力。
+   *
+   * ⚠️ **`historyRestore` 尤其**：它会用一份历史快照**覆盖用户当前的文件**。
+   * 兜底把它判成 `read`（"只读"）是这条清单里唯一一处会直接误导人的错 ——
+   * 一个自称只读的方法实际在写盘。这里显式挡掉。 */
+  "documentView.revisionState": "界面布局内部接口;复核左栏的读端。改文档内容请用 document.edit(会留修订)",
+  "documentView.revisionDecide": "界面布局内部接口;接受/拒绝修订由用户点。扩展要改内容请用 document.edit",
+  "documentView.revisionMode": "界面布局内部接口;编辑/复核模式由用户切换",
+  "documentView.revisionFocus": "界面布局内部接口;把光标挪到某处属于界面导航",
+  "documentView.revisionRewrite": "界面布局内部接口;它只把选区文字取回来给草稿,不调模型也不写盘",
+  "documentView.commentCreate": "界面布局内部接口;评论锚在实时选区上,只有编辑器知道它指哪",
+  "documentView.commentMutate": "界面布局内部接口;评论线程属于用户界面",
+  "documentView.dormantList": "只读;列出可回收的后台视图。但它回答的是宿主内存状态,不是文档内容",
+  "documentView.historyList": "只读;列出某个文件的历史版本(读的是数据根下的快照,与编辑器是否开着无关)",
   "lsp.openDocument": "编辑器内部接口",
   "lsp.closeDocument": "编辑器内部接口",
   "lsp.didChange": "编辑器内部接口",
@@ -183,11 +215,11 @@ const BLOCKED: Record<string, string> = {
   // 不该由被退回的一方自己决定。
   "task.accept": "任务验收结论只能由用户在任务中心本人给出(执行完成不等于验收通过)",
   "task.reject": "任务退回只能由用户在任务中心本人给出",
-  "task.reopen": "返修的决定权在用户 —— 被退回的一方不能自己把任务重开",
-  // `transition` 本来能让执行方写 `accepted`,T99 在 handler 里用
-  // `TASK_EXECUTOR_STATUSES` 挡了一道(那是**执行方**白名单)。这里再挡一道是
-  // 纵深防御:那一层的白名单如果被放宽,policy 这层仍然够不到验收状态。
-  "task.transition": "任务状态流转只由主进程执行路径驱动,agent 不直接改写任务状态",
+  // `task.reopen` / `task.transition` 从前也在 blocked 档，守的是「被退回的一方不能自己
+  // 重开」「agent 不直接改写任务状态」。**2026-10-27 核：这两个 RPC 已不在 RpcMap 里** ——
+  // `TaskRepo.reopen()` 仍在，但没有任何 IPC 暴露它，任务状态流转只走 `task.accept` /
+  // `task.reject` 两条用户通道。所以这两条分档条目守的是不存在的门，已删除。
+  // 原纪律（返修决定权在用户）仍然成立，只是它现在由「根本没有这个接口」保证。
   // 【T109】任务列表与单条任务也是**治理视图** —— 与 `unattendedPlans.list` 同档。
   // `TaskSchema` 的每个字段都是治理事实:`goal` 是用户原话的前 40 字、`artifacts` 是
   // **文件绝对路径**、`acceptance` 是谁凭什么验收的、`failureReason` / `rejectionReason`
@@ -218,11 +250,12 @@ const DANGER: Record<string, string> = {
   "plugins.marketplaceRemove": "移除插件市场源",
   "plugins.marketplaceRefresh": "刷新插件市场(会联网拉取)",
   "mcp.save": "新增/修改 MCP 服务器(会在本机启动进程或连外部服务)",
-  // 【ARC-006 Gate E】安装第三方节点包 = **装可执行代码**（Node-RED 会 require 它）。
-  // 与 mcp.save / plugins.installLocal 同档：每次都要用户本人在审批卡上点头。
-  // 审批卡由主进程推给渲染端（`workflowEngine:nodeInstallApproval`），handler 不接受
-  // 任何 approvedByUser 字段。
-  "workflowEngine.nodeInstall": "安装第三方节点包(可执行代码,会由引擎进程 require)",
+  /* 测试连接会**真的起一个子进程**并发 JSON-RPC initialize —— 与 mcp.save 同档：
+   * 它执行的是用户配置里那条命令，不是一次无副作用的探测。 */
+  "mcp.testConnection": "真起子进程连一次 MCP 服务器(执行的是配置里那条命令)",
+  // 【ARC-006 Gate E】第三方节点包安装**不在这张表里** —— 它是 `BLOCKED`（见上）。
+  // 理由：`ipc/workflowEngine.ts` 的 `senderIdOf` 要求真实 WebContents 主 frame，
+  // 而 Agent 走 `callRpc` 时 event 是 `{}`，永远拿不到 —— 放 danger 等于让用户白批一次。
   // 【T67】加载资料库工作流会停掉正在运行的引擎并覆写 flows.json / 未部署草稿。
   // 比单纯 start/stop 的影响更大,Agent 每次调用都必须经用户本人确认。
   "workflowEngine.load": "加载工作流会停止运行中的引擎并覆盖画布上的未部署草稿",
@@ -258,20 +291,27 @@ const DANGER: Record<string, string> = {
   "skills.marketInstall": "从市场安装技能(会改变 agent 的行为指令)",
   "mcp.marketSourceAdd": "添加 MCP 市场源(注册中心地址)",
   "mcp.marketSourceRemove": "移除 MCP 市场源",
-  "modules.install": "安装扩展模块(可执行代码)",
-  // 【F006】从 .vsix 装真实 VS Code 扩展 —— 与 `modules.install` **同档**：
-  // 两者最终都落到 `ModuleHost.install` 装可执行代码，区别只是清单来自哪个通道。
-  // 分档处理会让「从 vsix 装」变成绕过审批的后门。
-  "modules.installVsix": "从 .vsix 安装 VS Code 扩展(可执行代码)",
-  "modules.remove": "卸载扩展模块",
-  "claude.saveSubagents": "改子代理定义(会改变 agent 的行为指令)",
+  // 【F025】扩展安装 / 卸载**不在**这张表里 —— 它们对 Agent 是 `BLOCKED`（见上），
+  // 不是「每次弹卡」。从前这里有 `modules.install` / `modules.installVsix` /
+  // `modules.remove` 三条，ModuleHost 删除后这三个 RPC 已经不存在（2026-10-27 核）。
+  // 真实入口是 `modules.theiaInstalled`，在 blocked 档、要用户本人操作。
   "context.save": "改全局指令(写入各引擎的 CLAUDE.md / AGENTS.md)",
   // 不可恢复 / 大范围
   "project.delete": "彻底删除项目及其全部对话(不可恢复)",
   "session.delete": "彻底删除对话(不可恢复)",
   "file.delete": "删除文件",
+  /* 【EDIT-01】移动与删除同档：两者都让文件**从原位置消失**，只是一个是移到回收站、
+   * 一个是移到别处。判成低档会让"挪走"变成绕开"删除"审批的后门。 */
+  "file.move": "把文件/目录移到别处(原位置不再有它;跨卷时拒绝而不是复制删除)",
   // 【ARC-007】文档编辑/转换会**直接改写用户文档** —— 与删除同档(每次问、不可撤销)。
   "document.edit": "编辑并保存文档(会改写原文件)",
+  /* 【EDIT-09】**回滚会覆盖用户当前的文件**（拿一份历史快照写盘）—— 与
+   * `document.edit` 同档：每次问、不留修订。
+   *
+   * ⚠️ 它**不能**留在 BLOCKED：BLOCKED 的语义是"谁都够不到"，而这个操作是
+   * 正经的文档能力（用户在界面上点得到，agent 也应该能替用户做）。过严的
+   * 分档和过宽一样是错的 —— 前者会让 agent 以为这个能力不存在。 */
+  "documentView.historyRestore": "用历史快照覆盖当前文件(不留修订,每次问)",
   "document.convert": "格式转换并写出新文件",
   // 【T33】T24 新增的两条**写**能力必须与 `document.edit` 同档，否则同一件事有两条路：
   //
@@ -340,7 +380,6 @@ const DANGER: Record<string, string> = {
   "session.updateSettings": "改对话的模型 / 权限模式",
   "notification.setPrefs": "改通知偏好",
   "workflow.choose": "替用户在工作流岔路口选择",
-  "automation.watchTemplatesSave": "改守望模板",
 };
 
 /** 动词猜不准、需要钉死的几条。 */
@@ -405,6 +444,9 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   "workflow.listPresets": "read",
   // 导入 = 往库里新增一行工作流,与 `workflow.import` 同一档(写,每次审批)。
   "workflow.importPreset": "write",
+  /* 复制 = 往库里新增一行工作流（并给节点/边重新发 id，不与源图共用）。
+   * 与 `workflow.importPreset` 同档：两者都是"新增一份图"，都不改动源图。 */
+  "workflow.duplicate": "write",
   "session.messages": "read",
   "session.hasNodes": "read",
   "tools.usage": "read",
@@ -429,8 +471,6 @@ const EXPLICIT: Record<string, AppPolicyLevel> = {
   "unattendedPlans.health": "read",
   "automation.sessions": "read",
   "automation.statusAll": "read",
-  "automation.watchStatus": "read",
-  "automation.watchTemplates": "read",
   "runs.history": "read",
   "monitoring.overview": "read",
   "monitoring.runs": "read",
@@ -532,21 +572,17 @@ const BLOCKED_MUTATING: ReadonlySet<string> = new Set([
   "workflow.approve",
   "hooks.issueHostHookGrant",
   "hooks.revokeHostHookGrant",
-  "modules.issueWorkflowGrant",
-  "modules.revokeWorkflowGrant",
   "modules.theiaPreview",
   "modules.theiaInstalled",
   "scene.approve",
   "scene.apply",
   "scene.resume",
-  // 【T100】四条都会写 `tasks` 表（`accept` / `reject` 还写 `acceptance`，`reopen` /
-  // `transition` 改状态），每条都 `persist()` 一次整库导出。它们全是 blocked，本不会
-  // 被 agent 调到；收进来是为了「重试不付一次免费的整库 fsync」这条规则**按方法名一致**，
-  // 而不是靠「反正够不到」——够不到这件事由上面那张表保证，这里只标副作用。
+  // 【T100】两条都会写 `tasks` 表（`accept` 还写 `acceptance`），每条都 `persist()` 一次
+  // 整库导出。它们全是 blocked，本不会被 agent 调到；收进来是为了「重试不付一次免费的
+  // 整库 fsync」这条规则**按方法名一致**，而不是靠「反正够不到」。
+  // `reopen` / `transition` 原先也在这里，但两个 RPC 已删除（见上面 BLOCKED 表的注）。
   "task.accept",
   "task.reject",
-  "task.reopen",
-  "task.transition",
   "unattended.approve",
   "unattended.run",
   "unattendedPlans.resume",
