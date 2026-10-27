@@ -1,0 +1,65 @@
+
+======================================================================
+侧栏 / 页面  [data-cds=Page]  1 条规则
+======================================================================
+  [data-cds=Toolbar]>[data-cds-part=toolbar-ground],[data-cds=Page] [data-cds-part=page-header-ground]
+      position: absolute; inset: 0
+
+======================================================================
+面板  [data-cds=Panel]  0 条规则
+======================================================================
+
+======================================================================
+输入框外壳  [data-cds=ChatComposerDock]  0 条规则
+======================================================================
+
+======================================================================
+输入框编辑器  [data-cds=ChatComposerEditor]  0 条规则
+======================================================================
+
+======================================================================
+输入框下巴  [data-cds=ChatComposerChin]  0 条规则
+======================================================================
+
+======================================================================
+输入框按钮区  [data-cds=ChatComposerActions]  0 条规则
+======================================================================
+
+======================================================================
+助手消息  [data-cds=AssistantMessage]  1 条规则
+======================================================================
+  .cds-root [data-cds=AssistantMessage][data-variant=bubble] [data-cds=Prose]:not([data-cds=AssistantMessage][data-variant=bubble] :where([data-cds]:not([data-cds=AssistantMessage][data-variant=bubble])) *)
+      width: fit-content; max-width: var(--cds-message-bubble-measure); padding: var(--cds-message-bubble-pad-y) var(--cds-message-bubble-pad-x); border-radius: var(--cds-message-bubble-radius)
+
+======================================================================
+用户消息  [data-cds=UserMessage]  0 条规则
+======================================================================
+
+======================================================================
+消息操作  [data-cds=MessageActions]  0 条规则
+======================================================================
+
+======================================================================
+回合状态  [data-cds=TurnStatus]  0 条规则
+======================================================================
+
+======================================================================
+工具条  [data-cds=Toolbar]  1 条规则
+======================================================================
+  [data-cds=Toolbar]>[data-cds-part=toolbar-ground],[data-cds=Page] [data-cds-part=page-header-ground]
+      position: absolute; inset: 0
+
+======================================================================
+最常见的 width 字面量（top 20）
+======================================================================
+  1px          ×21
+  120px        ×2
+  80px         ×1
+
+======================================================================
+侧栏候选宽度（含 288 / 17.x rem 的规则）
+======================================================================
+  @layer utilities
+      .\@container\/agents{container:agents/inline-size}.\@container\/branch-chip{container:branch-chip/inline-size}.\@container\/branch-row{container:branch-row/inline-size}.\@container\/browser{container:browser/inline-size}
+  .cds-root [data-cds=MessageAttachments][data-thumbnail-height] :is([data-cds=MessageAttachmentsImage],[data-cds=MessageAttachmentsVideo])[data-fit=natural]
+      max-width:min(100%,288px)

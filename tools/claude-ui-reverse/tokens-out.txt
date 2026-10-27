@@ -1,0 +1,122 @@
+扫到 2396 条 --cds-* 声明
+Claude 3.6556.2.0 —— 七档字阶（每一层都列，别把某层当成唯一值）
+
+=== 默认 .cds-root ===   (rem-scale = 0.941176)
+  caption      10.353px  lh   16.000px   [calc(.6875rem * var(--cds-rem-scale,1))]
+  footnote     11.294px  lh   14.118px   [calc(.75rem * var(--cds-rem-scale,1))]
+  code         11.294px  lh   16.000px   [calc(.75rem * var(--cds-rem-scale,1))]
+  body         12.235px  lh   17.882px   [calc(.8125rem * var(--cds-rem-scale,1))]
+  prose        14.000px  lh   20.000px   [.875rem]
+  heading      13.176px  lh   16.941px   [calc(.875rem * var(--cds-rem-scale,1))]
+  title        18.824px  lh   23.529px   [calc(1.25rem * var(--cds-rem-scale,1))]
+
+=== comfortable 密度 ===   (rem-scale = 0.941176)
+  caption      11.294px  lh   16.000px   [calc(.75rem * var(--cds-rem-scale,1))]
+  footnote     12.235px  lh   16.000px   [calc(.8125rem * var(--cds-rem-scale,1))]
+  code         12.235px  lh   17.882px   [calc(.8125rem * var(--cds-rem-scale,1))]
+  body         13.176px  lh   18.824px   [calc(.875rem * var(--cds-rem-scale,1))]
+  prose        16.000px  lh   24.000px   [1rem]
+  heading      14.118px  lh   18.824px   [calc(.9375rem * var(--cds-rem-scale,1))]
+  title        20.706px  lh   26.353px   [calc(1.375rem * var(--cds-rem-scale,1))]
+
+=== 文本大小 step=1 ===   (rem-scale = 0.941176)
+  caption       9.412px  lh   16.000px   [calc(.625rem * var(--cds-rem-scale,1))]
+  footnote     11.294px  lh   14.118px   [calc(.75rem * var(--cds-rem-scale,1))]
+  code         11.294px  lh   16.000px   [calc(.75rem * var(--cds-rem-scale,1))]
+  body         11.294px  lh   16.000px   [calc(.75rem * var(--cds-rem-scale,1))]
+  prose        13.000px  lh   19.000px   [.8125rem]
+  heading      13.176px  lh   16.941px   [calc(.875rem * var(--cds-rem-scale,1))]
+  title        18.824px  lh   23.529px   [calc(1.25rem * var(--cds-rem-scale,1))]
+
+=== 文本大小 step=2 ===   (rem-scale = 0.941176)
+  caption      10.353px  lh   16.000px   [calc(.6875rem * var(--cds-rem-scale,1))]
+  footnote     11.294px  lh   14.118px   [calc(.75rem * var(--cds-rem-scale,1))]
+  code         11.294px  lh   16.000px   [calc(.75rem * var(--cds-rem-scale,1))]
+  body         12.235px  lh   17.882px   [calc(.8125rem * var(--cds-rem-scale,1))]
+  prose        14.000px  lh   20.000px   [.875rem]
+  heading      13.176px  lh   16.941px   [calc(.875rem * var(--cds-rem-scale,1))]
+  title        18.824px  lh   23.529px   [calc(1.25rem * var(--cds-rem-scale,1))]
+
+=== 文本大小 step=3 ===   (rem-scale = 0.941176)
+  caption      11.294px  lh   16.000px   [calc(.75rem * var(--cds-rem-scale,1))]
+  footnote     11.294px  lh   14.118px   [calc(.75rem * var(--cds-rem-scale,1))]
+  code         11.294px  lh   16.000px   [calc(.75rem * var(--cds-rem-scale,1))]
+  body         13.176px  lh   18.824px   [calc(.875rem * var(--cds-rem-scale,1))]
+  prose        15.000px  lh   22.000px   [.9375rem]
+  heading      13.176px  lh   16.941px   [calc(.875rem * var(--cds-rem-scale,1))]
+  title        18.824px  lh   23.529px   [calc(1.25rem * var(--cds-rem-scale,1))]
+
+=== 文本大小 step=4 ===   (rem-scale = 0.941176)
+  caption      11.294px  lh   16.000px   [calc(.75rem * var(--cds-rem-scale,1))]
+  footnote     11.294px  lh   14.118px   [calc(.75rem * var(--cds-rem-scale,1))]
+  code         11.294px  lh   16.000px   [calc(.75rem * var(--cds-rem-scale,1))]
+  body         13.176px  lh   18.824px   [calc(.875rem * var(--cds-rem-scale,1))]
+  prose        16.000px  lh   24.000px   [1rem]
+  heading      13.176px  lh   16.941px   [calc(.875rem * var(--cds-rem-scale,1))]
+  title        18.824px  lh   23.529px   [calc(1.25rem * var(--cds-rem-scale,1))]
+
+=== 文本大小 step=5 ===   (rem-scale = 0.941176)
+  caption      12.235px  lh   16.000px   [calc(.8125rem * var(--cds-rem-scale,1))]
+  footnote     11.294px  lh   14.118px   [calc(.75rem * var(--cds-rem-scale,1))]
+  code         11.294px  lh   16.000px   [calc(.75rem * var(--cds-rem-scale,1))]
+  body         14.118px  lh   20.706px   [calc(.9375rem * var(--cds-rem-scale,1))]
+  prose        18.000px  lh   27.000px   [1.125rem]
+  heading      13.176px  lh   16.941px   [calc(.875rem * var(--cds-rem-scale,1))]
+  title        18.824px  lh   23.529px   [calc(1.25rem * var(--cds-rem-scale,1))]
+
+=== 几何 token（默认层 + 组件层）===
+  --cds-radius                           →     5.65px   [calc(.375rem * var(--cds-rem-scale,1))]
+  --cds-radius-composer                  →    11.29px   [calc(.75rem * var(--cds-rem-scale,1))]
+  --cds-radius--sm                       →     4.71px   [calc(.3125rem * var(--cds-rem-scale,1))]
+  --cds-radius--xs                       →     4.71px   [calc(.3125rem * var(--cds-rem-scale,1))]
+  --cds-panel-radius                     →     9.41px   [calc(.625rem * var(--cds-rem-scale,1))]
+  --cds-panel-gap                        →     7.53px   [calc(.5rem * var(--cds-rem-scale,1))]
+  --cds-panel-inset                      →     7.53px   [calc(.5rem * var(--cds-rem-scale,1))]
+  --cds-pad-xs                           →     3.76px   [calc(.25rem * var(--cds-rem-scale,1))]
+  --cds-pad-sm                           →     5.65px   [calc(.375rem * var(--cds-rem-scale,1))]
+  --cds-pad-md                           →     7.53px   [calc(.5rem * var(--cds-rem-scale,1))]
+  --cds-pad-lg                           →    11.29px   [calc(.75rem * var(--cds-rem-scale,1))]
+  --cds-pad-xl                           →    18.82px   [calc(1.25rem * var(--cds-rem-scale,1))]
+  --cds-gap-xs                           →     5.65px   [calc(.375rem * var(--cds-rem-scale,1))]
+  --cds-gap-sm                           →     7.53px   [calc(.5rem * var(--cds-rem-scale,1))]
+  --cds-gap-md                           →    11.29px   [calc(.75rem * var(--cds-rem-scale,1))]
+  --cds-gap-lg                           →    18.82px   [calc(1.25rem * var(--cds-rem-scale,1))]
+  --cds-gap-xl                           →    30.12px   [calc(2rem * var(--cds-rem-scale,1))]
+  --cds-h-control                        →    22.59px   [calc(1.5rem * var(--cds-rem-scale,1))]
+  --cds-h-control--sm                    →    18.82px   [calc(1.25rem * var(--cds-rem-scale,1))]
+  --cds-h-control--xs                    →    18.82px   [calc(1.25rem * var(--cds-rem-scale,1))]
+  --cds-h-control-nested                 →    16.94px   [calc(1.125rem * var(--cds-rem-scale,1))]
+  --cds-message-bubble-item-gap          → ?   [undefined]
+  --cds-message-bubble-stack-gap         → ?   [undefined]
+  --cds-message-bubble-measure           → ?   [undefined]
+  --cds-message-bubble-pad-x             → ?   [undefined]
+  --cds-message-bubble-pad-y             → ?   [undefined]
+  --cds-message-bubble-radius            → ?   [undefined]
+  --cds-assistant-message-text-inset     →     4.00px   [4px]
+  --cds-assistant-message-text-stop      → ?   [clamp(0px, (100% - 384px) * .175, 56px)]
+  --cds-font-size-text-entry-floor       →    16.00px   [16px]
+
+=== 组件层变量（各自的选择器上，不继承到别处）===
+
+  [cmp-assistant]  2 个
+    --cds-assistant-message-text-inset       4px                                                      = 4.00px
+    --cds-assistant-message-text-stop        clamp(0px, (100% - 384px) * .175, 56px)               
+
+  [cmp-user] 空
+
+  [cmp-user-and-bubble]  4 个
+    --cds-message-bubble-measure             85%                                                   
+    --cds-message-bubble-pad-x               var(--cds-pad-lg)                                     
+    --cds-message-bubble-pad-y               var(--cds-pad-md)                                     
+    --cds-message-bubble-radius              calc(var(--cds-radius) + calc(.25rem * var(--cds-rem  
+
+  [cmp-assistant-bubble]  4 个
+    --cds-assistant-message-text-inset       var(--cds-message-bubble-pad-x)                       
+    --cds-assistant-message-text-stop        0px                                                      = 0.00px
+    --cds-message-bubble-item-gap            0px                                                      = 0.00px
+    --cds-message-bubble-stack-gap           2px                                                      = 2.00px
+
+  [cmp-prose]  1 个
+    --cds-font-axis-wght                     var(--cds-font-axis-wght-body,var(--cds-font-axis-wg  
+
+全表：.tmp/rev/tokens.json

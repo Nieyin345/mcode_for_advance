@@ -1,0 +1,36 @@
+Claude 3.6556.2.0 —— 组件 className（含几何属性）
+
+========================================================================
+侧栏  (3 种)
+========================================================================
+  ms-[calc(var(--df-rail-shift,0px)/2)] flex size-[var(--df-leading-slot)] shrink-0 items-center justify-center
+  df-on-rail flex size-[var(--df-leading-slot)] shrink-0 items-center justify-center
+  ms-auto flex items-center gap-1 ${Bl.trailing}
+
+========================================================================
+面板  (3 种)
+========================================================================
+  ${A} bg-surface-panel shadow-panel-md flex max-w-[calc(100vw-2rem)] items-center gap-1.25 rounded-full py-0.75 pe-0.75 ps-md
+  ${A} bg-surface-panel shadow-panel-md flex w-[24rem] max-w-[calc(100vw-2rem)] flex-col gap-sm rounded-lg p-lg
+  px-2 md:px-0 in-data-cds-dock-masked:bg-page
+
+========================================================================
+消息  (2 种)
+========================================================================
+  epitaxy-transcript-typography ${xr} flex flex-col gap-[var(--chat-turn-gap)] pt-[48px] pb-[32px]
+  h-full [--placeholder-reveal-delay:var(--transcript-placeholder-reveal-delay)]
+
+========================================================================
+会话列表  (2 种)
+========================================================================
+  relative ms-xs grid size-icon shrink-0 place-items-center text-muted-as-secondary opacity-0 hover:bg-fill-ghost-hover hover:text-primary group-data-[highlighted]/recent:opacity-100 pointer-coarse:opacity-100
+  group/project flex items-center gap-1.5
+
+========================================================================
+输入框  (1 种)
+========================================================================
+  epitaxy-sticky-prompt-clip hide-focus-ring pointer-events-auto max-w-[85%] min-w-0
+
+========================================================================
+标题栏  (0 种)
+========================================================================
