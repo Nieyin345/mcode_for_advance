@@ -119,5 +119,47 @@ check("★ 清单里没有重复项", () => {
   assert.deepEqual(dup, [], `重复的页签：${[...new Set(dup)].join(", ")}`);
 });
 
+// ── §E 宽度账：13 个页签必须在一屏里排得开 ──────────────────────────
+check("★ 全部页签在同一行里排得开（不许靠横向滚动藏掉后面的）", () => {
+  /* 这条来自一次真实误读：另一个会话截图里只看到 8 个页签
+   * （概览/文件/Git/浏览器/终端/侧聊/扩展/画布），而 registry 有 13 个。
+   * 后 5 个（turns/flow/tasks/taskcenter/preview）被横向滚动条推到了不可见区。
+   *
+   * 为什么这对「扩展找不到」是致命的：`extensions` 排第 7，恰好卡在边界上 ——
+   * 用户装完扩展，大概率还是点不到。那条诉求等于没解决。
+   *
+   * 判据是**几何估算**（不跑浏览器，所以是近似的），但它能抓住「加回文字标签」
+   * 这类回退：加回去之后 13 个约 866px，远超右栏的半宽 ≈700px，这条立刻红。
+   *
+   * 估算口径：图标 13 + gap 4 + padding（选中 12 / 未选中 8）+ 项间 gap 2；
+   * 选中项另加文字宽度。中文按 13px/字，英文按 7px/字。 */
+  const entries = entriesFor();
+  const all = BUILTINS[SLOT].map((m) => ({ id: m.id, active: false }));
+  assert.ok(entries.length >= 12, `页签只有 ${entries.length} 个，可能被配置隐藏了`);
+
+  const textWidth = (label: string): number =>
+    [...label].reduce((w, c) => w + (/[一-鿿]/.test(c) ? 13 : 7), 0);
+
+  /* 最坏情况：选中的是**最长那个**（工作流运行 = 5 个汉字）。
+   * 用最坏情况而不是平均值 —— 用户随时可能选中它。 */
+  const worstLabel = "工作流运行";
+  let px = 0;
+  for (let i = 0; i < all.length; i++) {
+    const isActive = i === 7; // 占一个位置，宽度按选中算
+    px += isActive ? 13 + 4 + 12 + textWidth(worstLabel) : 13 + 8;
+    px += 2; // 项间 gap-0.5
+  }
+  /* 右栏半宽的下限：1440px 窗口下 tile 各占一半 ≈ 700px，再减标题行右侧
+   * 三个按钮（换边/放大/关闭）约 90px 与内边距 24px。 */
+  const budget = 700 - 90 - 24;
+  assert.ok(
+    px <= budget,
+    `页签行最坏情况约 ${px}px，超过右栏可用宽约 ${budget}px —— ` +
+      `后面的页签会被横向滚动藏掉（这正是 extensions 点不到的原因）。` +
+      `若要加回文字标签，请改为只在选中项显示。`,
+  );
+});
+
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

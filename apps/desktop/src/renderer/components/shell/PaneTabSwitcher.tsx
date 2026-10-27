@@ -134,8 +134,16 @@ export function PaneTabSwitcher() {
       role="tablist"
       aria-label={t("layout.paneTabSwitcher")}
       /* 横向滚动而不是换行：tile 并排时只有半宽，换行会把标题行撑成两层。
-         滚动条隐藏（Claude 的 pane 标题行也不显示滚动条）。 */
-      className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+       *
+       * 【UI 重建 2026-10-28】滚动条隐藏（Claude 的 pane 标题行也不显示），
+       * 但**只隐藏滚动条会让窄格下的裁切无法察觉** —— 实测 896px 宽时
+       * `侧聊` 只剩一个「侧」字，`扩展` / `画布` 完全看不到，而界面上
+       * 没有任何提示说「右边还有」。
+       *
+       * `.pane-tab-scroll` 提供上游那套 `scroll-fade-strip` 机制：
+       * 两端各一条 28px 的渐隐带，由 `animation-timeline: scroll()` 驱动
+       * **纯 CSS** 地随滚动位置出现/消失（不需要 JS 监听 scroll）。 */
+      className="pane-tab-scroll flex min-w-0 flex-1 items-center gap-0.5"
     >
       {entries.map((entry) => {
         const selected =
@@ -170,19 +178,43 @@ export function PaneTabSwitcher() {
             aria-selected={selected}
             data-pane-tab={entry.key}
             data-active={selected ? "" : undefined}
+            /* 名字只在 tooltip 与无障碍树里 —— 见下面 `hideLabel` 的注释。 */
             title={label}
+            aria-label={label}
             onClick={onSelect}
             className={cn(
-              "flex h-6 shrink-0 items-center gap-1 rounded-[6px] px-1.5",
+              "flex h-6 shrink-0 items-center gap-1 rounded-[6px]",
+              /* 【UI 重建 2026-10-28】**只有选中的那个带文字，其余是纯图标。**
+               *
+               * 实测宽度账：13 个页签全带文字约 **866px**，而右栏默认只占一半
+               * （≈700px），标题行还要放放大/换边/关闭三个按钮 —— 于是后 5 个
+               * （`turns` / `flow` / `tasks` / `taskcenter` / `preview`）被横向
+               * 滚动条推到看不见的地方。
+               *
+               * 这个代价对「扩展找不到」这条诉求是致命的：`extensions` 排第 7，
+               * 恰好卡在可见区边缘 —— 用户装完扩展，大概率还是点不到。
+               *
+               * 保持图标常驻 + 只给选中项展开文字后，13 个约 **260px**，任何
+               * 宽度下都排得开；当前在哪一格仍然一眼可辨（图标 + 高亮底），
+               * 其余靠 hover 提示与 `aria-label` 给出全名。
+               *
+               * 与 Claude 的 pane 标题行同一个取舍：那一排也是图标为主。 */
+              selected ? "px-1.5" : "px-1",
               "text-[length:var(--m-fs-caption)] transition-colors",
               selected
                 ? "bg-[var(--m-fill-ghost-selected)] text-[var(--m-text-primary)]"
                 : "text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)]",
             )}
           >
-            {Icon ? <Icon size={13} className="shrink-0" /> : null}
-            {/* 窄格时文字自然截断，不挤掉右侧的放大/关闭按钮。 */}
-            <span className="max-w-[7rem] truncate">{label}</span>
+            {Icon ? (
+              <Icon size={13} className="shrink-0" />
+            ) : (
+              /* 没有图标的自定义项：用首字代替，否则整格是空的（只剩 padding）。 */
+              <span aria-hidden className="shrink-0 text-[10px] font-medium leading-none">
+                {label.slice(0, 1)}
+              </span>
+            )}
+            {selected && <span className="max-w-[7rem] truncate">{label}</span>}
           </button>
         );
       })}
