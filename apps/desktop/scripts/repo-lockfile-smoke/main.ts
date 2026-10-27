@@ -64,9 +64,35 @@ function findRepoRoot(): string {
 }
 const ROOT = findRepoRoot();
 
-const tracked = execFileSync("git", ["ls-files"], { cwd: ROOT, encoding: "utf8" })
+/* 【2026-10-28】**必须显式给 `maxBuffer`。**
+ *
+ * `execFileSync` 的默认缓冲是 **1 MB**；`git ls-files` 在这棵树上输出
+ * **1,276,100 字节**（17,594 个文件），一超就抛
+ * `spawnSync git ENOBUFS`，而且 `signal: SIGTERM`、`status: null`
+ * —— 看起来像「git 崩了」，实际是被自己的缓冲掐掉的。
+ *
+ * 这不是理论风险：一次正常的功能提交（新增一批文件）就够把它顶过阈值，
+ * 于是**别人的正常开发会让这套件红**，而红因完全指不到真正的原因。
+ *
+ * 阈值给到 16 MB：即使仓库再长大 10 倍也够，同时仍然是个有限值（不是 Infinity）
+ * —— 万一某天真出了无限输出，这里还是要拦住它。 */
+const GIT_LIST_MAX_BUFFER = 16 * 1024 * 1024;
+
+const tracked = execFileSync("git", ["ls-files"], {
+  cwd: ROOT,
+  encoding: "utf8",
+  maxBuffer: GIT_LIST_MAX_BUFFER,
+})
   .split("\n")
   .filter(Boolean);
+
+/* 自检：真的数到了文件。空列表上「没有多余的锁文件」那类断言会**恒真**
+ *（与 `mutation-must-remove-the-evidence` 同族：空集合上什么都成立）。 */
+if (tracked.length < 1000) {
+  throw new Error(
+    `git ls-files 只返回了 ${tracked.length} 个文件（预期上万）—— 扫描器自己坏了，别信下面的结果`,
+  );
+}
 
 // ── §1 唯一 lockfile ──
 const lockfiles = tracked.filter((f) =>

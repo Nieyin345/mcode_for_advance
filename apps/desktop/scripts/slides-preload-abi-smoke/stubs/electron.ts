@@ -10,6 +10,12 @@ export function getExposed(name: string): Record<string, (...args: any[]) => Pro
   if (!api) throw new Error("not exposed: " + name);
   return api as Record<string, (...args: any[]) => Promise<any>>;
 }
+/* 【2026-10-28】`getExposed` 在找不到时**抛**（原设计：调用方总是期望它存在）。
+ * 退役后的判据要断言「它**不该**存在」，所以需要一个不抛的查询口。
+ * 加一个而不是改 `getExposed`：那会让所有既有调用方的「找不到就炸」失效。 */
+export function peekExposed(name: string): unknown {
+  return exposed.get(name);
+}
 export const contextBridge = {
   exposeInMainWorld: (name: string, api: unknown): void => { exposed.set(name, api); },
 };

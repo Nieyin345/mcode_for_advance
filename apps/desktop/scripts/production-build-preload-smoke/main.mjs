@@ -92,7 +92,20 @@ try {
     const code = readFileSync(emitted, "utf8");
     check("emitted view preload is CommonJS (sandbox preloads cannot be ESM)", !/^\s*(?:import|export)\s/m.test(code));
     check("emitted view preload requires electron", code.includes('require("electron")') || code.includes("require('electron')"));
-    check("emitted view preload installs the slides bridge", code.includes("slidesApi"));
+    /* 【2026-10-28 反向】**产物里不该再出现 `slidesApi`。**
+     *
+     * 原断言是 `code.includes("slidesApi")` —— 守「产物装上了 slides 桥」。
+     * 而那份手写的 `window.slidesApi` 最小桥已在 2026-10-26 删除
+     *（`documentViewPreload.ts:389` 记了理由：六种编辑器走 vendor 工厂，
+     *  vendor 自己的 `out/preload/index.js` 建 `window.slidesApi`；本文件只在
+     *  `kind === null` 的普通文档视图里挂，那份桥永远走不到）。
+     *
+     * 于是这条长期红着，红因写着「产物没装上 slides 桥」，看起来像构建漏了一步
+     * —— 实际是**被测对象已经不在了**。
+     *
+     * 改成反向：如果它重新出现，说明有人把那份死代码加回来了，这一条会提醒他
+     * 先想清楚「哪条路会走到它」。 */
+    check("emitted view preload does NOT reinstall a hand-written slidesApi bridge", !code.includes("slidesApi"));
     const variant = existsSync(join(desktop, "../../genoffice/apps/docs/src/preload/mcode-view.ts")) ? "vendor" : "stub";
     check(`emitted view preload carries the ${variant} Docs bridge`,
       variant === "vendor"
