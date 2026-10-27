@@ -97,6 +97,131 @@ function toPx(value: string | undefined): number | null {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   表达式求值（`calc(var(--a) * var(--b) * .75)`）
+   ══════════════════════════════════════════════════════════════════════
+
+   【UI 重建 2026-10-27】间距改成了 Claude 的相对公式（`calc()` 里乘
+   字号与行高），不再是 px 字面量。第一版的 `toPx` 只认 `Npx` / `Nrem`，
+   于是三个间距全解析成 null —— 十五条断言一起红，而**样式本身是对的**。
+
+   ⚠️ 不能只把 `calc(...)` 当字符串忽略：那会让「间距精确等于上游公式」
+   这条主控断言永远绿（`null !== 15` 是红，但 `skipped` 是绿的，
+   而这里没有 skip 分支）。必须真的算出像素。 */
+
+/** 从某个声明表（再退回 `:root`）里解 `var(--x)`；解不出返回 undefined。 */
+function lookupVar(name: string, block: Map<string, string>, depth = 0): string | undefined {
+  if (depth > 8) return undefined;
+  /* ⚠️ `name` 是**不带 `--` 前缀**的（正则 `var\(--([\w-]+)\)` 捕获的就是它）。
+   * 声明表的键却**带** `--`。第一版直接用 `block.get(name)`，于是永远查不到，
+   * 整个过程静默失败、`calc()` 解出 null —— 而两侧都「看起来」在正常工作。 */
+  const key = name.startsWith("--") ? name : `--${name}`;
+  const raw = block.get(key) ?? rootBlock().get(key);
+  if (raw === undefined) return undefined;
+  const alias = /^var\(--([\w-]+)\)$/.exec(raw.trim());
+  return alias ? lookupVar(alias[1]!, block, depth + 1) : raw;
+}
+
+let _rootBlock: Map<string, string> | null = null;
+function rootBlock(): Map<string, string> {
+  /* ⚠️ 必须匹配 `:root {`，不能匹配 `:root,`。
+   * 本文件里第一条命中 `:root\s*,` 的是**聊天间距块**（`:root, [data-chat-density="comfortable"]`），
+   * 它不含 `--chat-font-size` —— 用它当根，`calc()` 里的字号永远解不出来，
+   * 而中间件本身是好的。这是「解析器选错块」的第二例（第一例见 surface-layers）。 */
+  if (!_rootBlock) _rootBlock = declarationsInBlock(/:root\s*\{/);
+  return _rootBlock;
+}
+
+/**
+ * 求值一个 CSS 长度表达式。支持 `px` / `rem` / 无单位数字 / `var()` / `calc()`
+ * 与 `+ - * /`、括号。**只认这些** —— 遇到别的（`em`、`%`、`clamp()`）返回 null，
+ * 让调用方把它当「解析不出」处理，而不是猜一个数。
+ */
+function evalLength(raw: string | undefined, block: Map<string, string>): number | null {
+  if (!raw) return null;
+  let s = raw.trim();
+
+  // 1) 递归展开 var()
+  for (let i = 0; i < 8 && s.includes("var("); i++) {
+    let changed = false;
+    s = s.replace(/var\(\s*--([\w-]+)\s*\)/g, (_m, name: string) => {
+      const v = lookupVar(name, block);
+      if (v === undefined) return _m;
+      changed = true;
+      return `(${v.trim()})`;
+    });
+    if (!changed) return null;
+  }
+  if (s.includes("var(")) return null;
+
+  // 2) 去掉最外层 calc(...)（可以嵌套，逐层剥）
+  for (let i = 0; i < 8; i++) {
+    const t = s.trim();
+    const m = /^calc\(([\s\S]*)\)$/.exec(t);
+    if (!m) break;
+    // 确认这一对括号确实包住整个表达式（避免 `calc(a) + calc(b)` 被误剥）
+    let depth = 0;
+    let wrapsAll = true;
+    for (let j = 0; j < t.length; j++) {
+      if (t[j] === "(") depth++;
+      else if (t[j] === ")") {
+        depth--;
+        if (depth === 0 && j !== t.length - 1) { wrapsAll = false; break; }
+      }
+    }
+    if (!wrapsAll) break;
+    s = m[1]!;
+  }
+
+  // 3) 词法 + 求值（单位只允许 px/rem；混用单位时统一换成 px）
+  const tokens = s.match(/(-?\d*\.?\d+)(px|rem)?|[()+\-*/]/g);
+  if (!tokens) return null;
+  const rendered = tokens.join("");
+  if (rendered.replace(/\s/g, "") !== s.replace(/\s/g, "")) return null; // 有认不出的字符
+
+  let pos = 0;
+  function expr(): number | null {
+    let left = term();
+    while (left !== null && (tokens![pos] === "+" || tokens![pos] === "-")) {
+      const op = tokens![pos++]!;
+      const right = term();
+      if (right === null) return null;
+      left = op === "+" ? left + right : left - right;
+    }
+    return left;
+  }
+  function term(): number | null {
+    let left = factor();
+    while (left !== null && (tokens![pos] === "*" || tokens![pos] === "/")) {
+      const op = tokens![pos++]!;
+      const right = factor();
+      if (right === null) return null;
+      if (op === "/" && right === 0) return null;
+      left = op === "*" ? left * right : left / right;
+    }
+    return left;
+  }
+  function factor(): number | null {
+    const t = tokens![pos];
+    if (t === undefined) return null;
+    if (t === "(") {
+      pos++;
+      const v = expr();
+      if (tokens![pos] !== ")") return null;
+      pos++;
+      return v;
+    }
+    if (t === "-") { pos++; const v = factor(); return v === null ? null : -v; }
+    const m = /^(-?\d*\.?\d+)(px|rem)?$/.exec(t);
+    if (!m) return null;
+    pos++;
+    return m[2] === "rem" ? parseFloat(m[1]!) * 16 : parseFloat(m[1]!);
+  }
+  const out = expr();
+  if (out === null || pos !== tokens.length) return null;
+  return out;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    一、默认档间距对齐上游公式
    ══════════════════════════════════════════════════════════════════════ */
 
@@ -104,18 +229,30 @@ console.log("\n== 一、默认档间距对齐上游公式 ==");
 
 const comfortable = declarationsInBlock(/:root,\s*\n\[data-chat-density="comfortable"\]\s*\{/);
 
-const gapUser = toPx(comfortable.get("--chat-row-gap-user"));
-const gapAssistant = toPx(comfortable.get("--chat-row-gap-assistant"));
-const gapBlock = toPx(comfortable.get("--chat-block-gap"));
+const gapUser = evalLength(comfortable.get("--chat-row-gap-user"), comfortable);
+const gapAssistant = evalLength(comfortable.get("--chat-row-gap-assistant"), comfortable);
+const gapBlock = evalLength(comfortable.get("--chat-block-gap"), comfortable);
 
-// 上游公式（逐字复算，不是硬编码 15/10）。
-const CHAT_BODY = 14;
-const CHAT_LEADING = 1.42857;
-const UPSTREAM_TURN_GAP = CHAT_BODY * CHAT_LEADING * 0.75;
-const UPSTREAM_ITEM_GAP = CHAT_BODY * CHAT_LEADING * 0.5;
+/* 【UI 重建 2026-10-27】**上游常数换成我们从本机 Claude 读到的真值。**
+ *
+ * 原来这里写死 `CHAT_BODY = 14` / `CHAT_LEADING = 1.42857`（第三方逆向产物
+ * `open-claude-ui` 的值，已删除）。本机 Claude 3.1623.4.0 的真身是
+ * `--cds-font-size-body` ≈ 12.24px、`--cds-leading-body` ≈ 18.82px → 1.5378。
+ *
+ * 所以「上游 15px / 10px」这个参照已经过时：按真实取值，
+ * turn-gap = 12.24 × 1.5378 × .75 ≈ 14.12px，item-gap ≈ 9.41px。
+ *
+ * **但常数不能从被测代码自己读** —— 那样「间距 == 公式」会变成恒真。
+ * 这里用**独立常量**（从本机产物抄下来的原始值），并额外断言它俩与
+ * styles.css 里 `--chat-font-size` / `--chat-md-leading` 一致（见下面 §一末），
+ * 后者守的是「公式用的基数和样式表里的一致」，前者守的是「间距确实按公式算」。 */
+const CLAUDE_BODY_PX = 12.24;        // 本机 Claude --cds-font-size-body
+const CLAUDE_LEADING = 1.5378;       // 本机 Claude --cds-leading-body / body
+const UPSTREAM_TURN_GAP = CLAUDE_BODY_PX * CLAUDE_LEADING * 0.75;
+const UPSTREAM_ITEM_GAP = CLAUDE_BODY_PX * CLAUDE_LEADING * 0.5;
 
-console.log(`  · 上游 chat-turn-gap = ${CHAT_BODY} × ${CHAT_LEADING} × .75 = ${UPSTREAM_TURN_GAP.toFixed(4)}px`);
-console.log(`  · 上游 chat-item-gap = ${CHAT_BODY} × ${CHAT_LEADING} × .50 = ${UPSTREAM_ITEM_GAP.toFixed(4)}px`);
+console.log(`  · 上游 chat-turn-gap = ${CLAUDE_BODY_PX} × ${CLAUDE_LEADING} × .75 = ${UPSTREAM_TURN_GAP.toFixed(4)}px`);
+console.log(`  · 上游 chat-item-gap = ${CLAUDE_BODY_PX} × ${CLAUDE_LEADING} × .50 = ${UPSTREAM_ITEM_GAP.toFixed(4)}px`);
 console.log(`  · 我们的默认档: user=${gapUser} assistant=${gapAssistant} block=${gapBlock}`);
 
 check("默认档 --chat-row-gap-user 解析得出（不是 calc / 不是缺失）", gapUser !== null, {
@@ -124,6 +261,23 @@ check("默认档 --chat-row-gap-user 解析得出（不是 calc / 不是缺失�
 });
 check("默认档 --chat-row-gap-assistant 解析得出", gapAssistant !== null, { parsed: gapAssistant });
 check("默认档 --chat-block-gap 解析得出", gapBlock !== null, { parsed: gapBlock });
+
+/* ★ 常数守：上面那两个参照值必须和样式表里的基数一致。
+ *
+ * 没有这一条时，「间距 == 公式」验的是**公式自己**：把 `--chat-font-size`
+ * 改成 30px 而间距不变，前面三条照样绿（间距仍等于那个常数算出的值）。
+ * 这一条把常数钉在样式表上 —— 改基数不改间距，这里就红。 */
+const styleBody = evalLength(rootBlock().get("--chat-font-size"), rootBlock());
+/* `--chat-md-leading` 定义在**间距块**里（`:root, [data-chat-density="comfortable"]`），
+ * 不在真 `:root`。所以要和间距用同一个声明表查 —— 用 `rootBlock()` 会得到 null，
+ * 而 null 只会让这条断言红，不会让上面三条间距断言红（它们是另一条路径）。 */
+const styleLeading = evalLength(comfortable.get("--chat-md-leading"), comfortable);
+check(
+  "★ 参照基数与 styles.css 一致（--chat-font-size / --chat-md-leading）",
+  styleBody !== null && styleLeading !== null &&
+    Math.abs(styleBody - CLAUDE_BODY_PX) < 0.005 && Math.abs(styleLeading - CLAUDE_LEADING) < 0.005,
+  { styleBody, styleLeading, expected: [CLAUDE_BODY_PX, CLAUDE_LEADING] },
+);
 
 // ★ 对照组：上游换算值与我们的值同时给出。没有这一组时，「都等于 10」
 //   可能是两边都算错了（本仓踩过：判据测的是中间量）。
@@ -197,8 +351,8 @@ console.log("\n== 三、compact / cozy 不被拉回上游默认值 ==");
 
 const compact = declarationsInBlock(/\[data-chat-density="compact"\]\s*\{/);
 const cozy = declarationsInBlock(/\[data-chat-density="cozy"\]\s*\{/);
-const compactUser = toPx(compact.get("--chat-row-gap-user"));
-const cozyUser = toPx(cozy.get("--chat-row-gap-user"));
+const compactUser = evalLength(compact.get("--chat-row-gap-user"), compact);
+const cozyUser = evalLength(cozy.get("--chat-row-gap-user"), cozy);
 
 check(
   "紧凑档比默认档更紧（用户主动选的不能被拉回默认值）",

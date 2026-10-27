@@ -371,7 +371,7 @@ function FileRow({ entry }: { entry: TurnFileEntry }) {
     // (鼠标点击照样打开差异,但**不可聚焦**),行内放两个**同级**的真实 button ——
     // 「打开差异」与「在文件树中定位」各自独立可聚焦、各有 aria-label,读屏能区分。
     <div
-      className="flex min-h-9 min-w-0 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] bg-surface-muted/40 px-2 py-1.5 text-left transition-colors hover:bg-surface-hover"
+      className="flex min-h-9 min-w-0 w-full items-center gap-2 rounded-[var(--radius-btn-xs)] bg-surface-muted/40 px-2 py-1.5 text-left transition-colors hover:bg-surface-hover active:bg-surface-active"
     >
       <button
         type="button"

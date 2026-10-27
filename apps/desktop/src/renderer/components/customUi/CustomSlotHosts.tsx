@@ -176,7 +176,7 @@ function MessageCustomMenuInner({ id, role, text }: { id: string; role: "user" |
       <Menu.Trigger
         title={t("customUi.host.more")}
         aria-label={t("customUi.host.more")}
-        className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover hover:text-content-muted"
+        className="inline-flex items-center rounded px-1 py-0.5 text-[10px] text-content-subtle transition-colors hover:bg-surface-hover active:bg-surface-active hover:text-content-muted"
       >
         <IconDots size={12} />
       </Menu.Trigger>

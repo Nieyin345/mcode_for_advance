@@ -434,7 +434,7 @@ function SideChatRow({
     // sibling buttons (a button inside a button is invalid HTML). The delete
     // affordance appears on hover, LeftBar row style, and is gated while the
     // chat's turn is running — deleting mid-stream would orphan the runtime.
-    <li data-ui-sidechat-row="" className="group flex min-w-0 items-center rounded-[var(--radius-btn-xs)] border border-transparent pr-0.5 transition-[background-color,border-color] hover:border-edge/70 hover:bg-surface-hover focus-within:border-accent/40 focus-within:bg-surface-hover/60">
+    <li data-ui-sidechat-row="" className="group flex min-w-0 items-center rounded-[var(--radius-btn-xs)] border border-transparent pr-0.5 transition-[background-color,border-color] hover:border-edge/70 hover:bg-surface-hover active:bg-surface-active focus-within:border-accent/40 focus-within:bg-surface-hover/60">
       <button
         type="button"
         onClick={() => onOpen(session.id)}

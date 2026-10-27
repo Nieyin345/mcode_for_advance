@@ -1,6 +1,7 @@
 import { useBrowserStore } from "@renderer/stores/browserStore.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GenofficeViewHostPane } from "@renderer/components/ide/GenofficeViewHostPane.js";
+import { useOfficeMemoryReclaim } from "@renderer/components/ide/useOfficeMemoryReclaim.js";
 import { stableDocId } from "@renderer/components/ide/GenofficeViewHostPane.js";
 import { canDockOfficeFile } from "@renderer/components/ide/officeChatHandoff.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
@@ -10,7 +11,7 @@ import { api } from "@renderer/lib/api.js";
 import { cn } from "@renderer/lib/cn.js";
 import { customUiLabel, type CustomUiItem } from "@contracts/customUi";
 import type { RightPanelTab } from "@contracts/ipc";
-import { IconArrowsMaximize, IconArrowsMinimize } from "@renderer/lib/icons.js";
+import { IconArrowsMaximize, IconArrowsMinimize, IconGripVertical, IconPuzzle } from "@renderer/lib/icons.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useWorkflowLive } from "@renderer/lib/workflowLive.js";
 import { resolveShortcut, acceleratorToDisplayString } from "@renderer/lib/shortcuts.js";
@@ -22,7 +23,6 @@ import { TaskCenterPanel } from "@renderer/components/ide/TaskCenterPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { BrowserPanel } from "@renderer/components/browser/BrowserPanel.js";
 import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
-import { ModuleViewDock, ModuleCatalogNotice, useModuleContributions, contributionsOf, ModuleIcon } from "@renderer/components/modules/ModuleContributions.js";
 import { RenderErrorBoundary } from "@renderer/components/chat/RenderErrorBoundary.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { openCustomUiSettings, useCustomUiStore } from "@renderer/stores/customUiStore.js";
@@ -86,6 +86,14 @@ export function RightPanel() {
     if (pinnedDoc) setVisitedDocs(previous => previous.has(pinnedDoc) ? previous : new Set([...previous, pinnedDoc]));
     if (pinnedFlow) setVisitedFlows(previous => previous.has(pinnedFlow) ? previous : new Set([...previous, pinnedFlow]));
   }, [pinnedDoc, pinnedFlow]);
+  // 【Office 深度集成】后台编辑器视图的内存回收。六个 GenOffice 编辑器同时
+  // 驻留约 1.70 GiB（O18 实测），而 hide() 只把视图挪到屏幕外、页面仍满编常驻。
+  // 判据与安全线见 useOfficeMemoryReclaim.ts：当前激活的、脏的、太新的都不动。
+  // 面板组件会在它的 list() 轮询里发现"视图被回收了"并用同一 docId 重建。
+  useOfficeMemoryReclaim({
+    activeFilePath: pinnedDoc,
+    docIdForPath: stableDocId,
+  });
   const browserTabCount = useBrowserStore((s) => s.browserTabCount);
   const widePanelOpen = useSessionStore((s) => s.widePanelOpen);
   const setWidePanelOpen = useSessionStore((s) => s.setWidePanelOpen);
@@ -125,8 +133,7 @@ export function RightPanel() {
   const activeCustomId = useCustomUiStore((s) => s.activeTab);
   const setActiveCustom = useCustomUiStore((s) => s.setActiveTab);
   const target = useWorkspaceTarget();
-  const moduleCatalog = useModuleContributions();
-  const moduleViews = contributionsOf(moduleCatalog.data,"view").filter(({contribution})=>contribution.location==="right");
+  const moduleViews: Array<{ module: unknown; contribution: { location: string; icon?: string } }> = [];
   const [activeModuleView,setActiveModuleView] = useState(false);
   const moduleVisible = activeModuleView && moduleViews.length>0;
   const railTrackRef = useRef<HTMLDivElement>(null);
@@ -223,12 +230,13 @@ export function RightPanel() {
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div data-cds="RightPanel" className="flex h-full flex-col">
       {/* Horizontal icon rail — always visible, docked at the panel's top
           edge. Each icon is a square button; the active one is marked with
           the accent token. 顺序 / 显隐 / 自定义页签都来自「设置 → 自定义 UI →
           右栏页签」;宽屏按钮是布局开关,不参与排,固定在最右。 */}
       <div
+        data-cds="RightPanelRail"
         className="flex h-10 min-w-0 shrink-0 flex-row items-center gap-1 border-b border-edge/60 bg-surface px-2"
         role="toolbar"
         aria-label={t("customUi.slot.rightPanel.tab")}
@@ -298,7 +306,7 @@ export function RightPanel() {
             );
           })}
         </div>
-        {moduleViews.length>0 && <RailButton active={moduleVisible && !pinnedDoc && !pinnedFlow} onClick={()=>{setActiveModuleView(true);setContent("right",undefined);setActiveCustom(null);}} title={`${locale==="zh"?"扩展视图":"Extension views"} · ${moduleViews.length}`}><ModuleIcon name={moduleViews[0].contribution.icon}/></RailButton>}
+        {moduleViews.length>0 && <RailButton active={moduleVisible && !pinnedDoc && !pinnedFlow} onClick={()=>{setActiveModuleView(true);setContent("right",undefined);setActiveCustom(null);}} title={`${locale==="zh"?"扩展视图":"Extension views"} · ${moduleViews.length}`}><IconPuzzle /></RailButton>}
         {/* Native document and Node-RED share the same movable shell. Their
             component trees are cached instead of keyed by docking position:
             flex reorder must never navigate an unsaved editor. */}
@@ -332,6 +340,7 @@ export function RightPanel() {
             a click/Enter/Space toggles the same persistent side. */}
         <button type="button" draggable
           data-testid="right-pane-drag-handle"
+          data-cds="RightPanelDockHandle"
           title={dockTitle} aria-label={dockTitle}
           aria-keyshortcuts="ArrowLeft ArrowRight"
           onClick={() => setRightDock(rightDock === "left" ? "right" : "left")}
@@ -353,9 +362,10 @@ export function RightPanel() {
             e.dataTransfer.setData(PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID);
             e.dataTransfer.effectAllowed = "move";
           }}
-          className="flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted hover:bg-surface-hover active:bg-surface-active hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
-          <span aria-hidden="true" className="text-[15px] tracking-tighter">⋮⋮</span>
+          <span data-cds="RightPanelDockGlyph" aria-hidden="true" className="text-[15px] tracking-tighter">⋮⋮</span>
+          <IconGripVertical data-cds="RightPanelDockIcon" size={14} className="shrink-0" aria-hidden="true" />
         </button>
         {/* Wide-panel (3:7) mode - hide the left sidebar + center editor and
             split the workspace into this right panel (7/10) + the chat column
@@ -386,7 +396,7 @@ export function RightPanel() {
           overflow). Renders the panel matching the active tab. The browser
           sidebar (mobile-first) renders inline here; the PC-fullscreen overlay
           is rendered at the App root and covers the whole workspace. */}
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div data-cds="RightPanelContent" className="relative min-h-0 flex-1 overflow-hidden">
         {Array.from(visitedDocs).map(path => {
           const selected = pinnedDoc === path && !settingsOpen;
           return <div key={path} className="h-full min-h-0 overflow-hidden rounded-[var(--radius-panel)] border border-edge-panel bg-surface"
@@ -444,10 +454,6 @@ export function RightPanel() {
             回合流这些无关面板的异常也吞成一张卡,用户连切走的原因都看不到。
             `moduleViews` 是渲染期直接算出来的(没有 useMemo 托管),而扩展坞是它唯一的
             消费者;把边界收在这一块,坏目录最多让扩展坞显示错误卡,右栏其余部分照常。 */}
-        <RenderErrorBoundary>
-          <ModuleCatalogNotice catalog={moduleCatalog} className="mx-2 mt-2" />
-          {moduleVisible && !pinnedDoc && !pinnedFlow && <ModuleViewDock location="right" />}
-        </RenderErrorBoundary>
         {!moduleVisible && !activeCustom && tab === "turns" && <TurnFlowPanel />}
         {!moduleVisible && !activeCustom && tab === "flow" && <WorkflowBoardPanel />}
         {!moduleVisible && !activeCustom && tab === "tasks" && <TaskListPanel />}

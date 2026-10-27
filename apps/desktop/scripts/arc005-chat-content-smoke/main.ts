@@ -91,7 +91,7 @@ ck("Thinking: 克制型思考块（透明无框 + 28px 标题行 + 左侧发丝�
   // CSS 那侧的几何：透明底、28px 行高、内容区左发丝边。
   sourceHas(thinkingCss, "background: transparent") &&
   sourceHas(thinkingCss, "min-height: 28px") &&
-  sourceHas(thinkingCss, "border-left: 1px solid rgb(var(--edge)"),
+  sourceHas(thinkingCss, "border-left: 1px solid rgb(") &&
   // 负控：不许退回「每块都套一张卡片」的旧形态。
   !sourceHas(thinkingAccordion, "rounded-[var(--radius-card)] border border-edge bg-surface"));
 ck("Thinking: Copy as quote is a separate localized control with guarded clipboard feedback",

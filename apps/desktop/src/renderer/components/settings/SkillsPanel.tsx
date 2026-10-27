@@ -1102,7 +1102,7 @@ export function SkillsPanel() {
             role="separator"
             aria-orientation="vertical"
             onMouseDown={onDragHandleMouseDown}
-            className="absolute -right-2 top-0 z-10 h-full w-2 cursor-col-resize transition-colors hover:bg-surface-hover"
+            className="absolute -right-2 top-0 z-10 h-full w-2 cursor-col-resize transition-colors hover:bg-surface-hover active:bg-surface-active"
           />
           }
           title={

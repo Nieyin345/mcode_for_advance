@@ -175,6 +175,8 @@ export function ProjectNode(props: ProjectNodeProps) {
       style={sortableStyle}
     >
       <div
+        data-sidebar-project-row=""
+        data-active={isActiveProject ? "true" : "false"}
         {...sortableAttributes}
         {...sortableListeners}
         onContextMenu={(e) => {
@@ -185,7 +187,7 @@ export function ProjectNode(props: ProjectNodeProps) {
           "group flex items-center gap-1 rounded px-1 py-1 [font-size:var(--right-panel-font-size)]",
           isActiveProject
             ? "bg-selected text-selectedContent font-medium"
-            : "text-content-muted hover:bg-surface-hover",
+            : "text-content-muted hover:bg-surface-hover active:bg-surface-active",
           isDragging && "opacity-50",
         )}
       >
@@ -246,7 +248,7 @@ export function ProjectNode(props: ProjectNodeProps) {
       </div>
 
       {expanded && (
-        <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-edge/50 pl-2">
+        <ul data-sidebar-tree-children="" className="ml-3 mt-0.5 space-y-0.5 border-l border-edge/50 pl-2">
           {loaded === 0 ? (
             <li className="px-2 py-1 text-content-subtle [font-size:var(--rp-fs-md)]">{t("layout.noThreads")}</li>
           ) : (
@@ -314,10 +316,12 @@ function SessionRowIcon({ providerId, className }: { providerId: string; classNa
 }
 
 export function SessionRow({
-  session, active, isRunning, unreadCount, onSelect, onTogglePin, onArchive, onDelete, onNewWorktreeSession, hideWorktreeBadge, registerNode, onContext,
+  session, active, isRunning, unreadCount, onSelect, onTogglePin, onArchive, onDelete, onNewWorktreeSession, hideWorktreeBadge, contextLabel, registerNode, onContext,
 }: {
   session: Session;
   active: boolean;
+  /** Optional owner label used by the cross-project Recent list. */
+  contextLabel?: string;
   isRunning: boolean;
   /** Unread event count for this session (0 = no badge). Only rendered when
    *  the row is idle (not running) and the count is > 0. */
@@ -355,7 +359,7 @@ export function SessionRow({
   // timestamp. On hover the action buttons take precedence (so the user can
   // archive/delete without the badge getting in the way).
   const revealActions = hovered || focused;
-  const showTime = idle && !revealActions && !hasUnread;
+  const showTime = idle && !revealActions && !hasUnread && !contextLabel;
   const showActions = idle && revealActions;
   const showUnreadBadge = idle && !revealActions && hasUnread;
 
@@ -398,12 +402,21 @@ export function SessionRow({
         onContext(e.clientX, e.clientY);
       }}
       className={cn(
-        "group flex cursor-pointer items-center gap-1 rounded-md px-1 py-1 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong [font-size:var(--right-panel-font-size)]",
+        // 【完全抄 Claude / DraggableSessionList.tsx:232-235】
+        // 上游原文：
+        //   `group relative flex items-center justify-between px-2.5 py-2
+        //    rounded-lg cursor-pointer transition-all duration-150`
+        //   选中：`bg-[var(--cds-bg-selected)] text-[var(--cds-text-accent)] font-medium`
+        //   未选：`text-[var(--cds-text-primary)] hover:bg-[var(--cds-bg-hover)]`
+        // 上游选中态使用品牌色文字；这里用 `text-selectedContent`，它是按主题调节过的品牌色：
+        // 浅色映射 `--accent-strong`，深色映射 `--m-orange-250`，两者都满足小字号 AA。
+        // 不直接用 `text-accent`：普通 accent 在选中底色上的对比度不足。
+        "group relative flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 cursor-pointer outline-none transition-all duration-150 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong [font-size:var(--right-panel-font-size)]",
         active
-          ? "bg-selected text-selectedContent font-medium shadow-sm ring-1 ring-inset ring-accent/35"
-          : "text-content-muted hover:bg-surface-hover",
+          ? "bg-selected text-selectedContent font-medium"
+          : "text-content hover:bg-surface-hover active:bg-surface-active",
       )}
-      title={`${session.title}\n${formatFullTime(session.updatedAt)}`}
+      title={`${session.title}${contextLabel ? `\n${contextLabel}` : ""}\n${formatFullTime(session.updatedAt)}`}
     >
       {/* Pinned marker — always-visible badge at the very LEFT edge (before
           the provider icon) so a pinned thread reads as pinned at a glance,
@@ -419,6 +432,11 @@ export function SessionRow({
       <SessionRowIcon providerId={session.providerId} className="shrink-0" />
 
       <span className="min-w-0 flex-1 truncate">{session.title}</span>
+      {contextLabel && !revealActions && (
+        <span className="max-w-[5.5rem] shrink-0 truncate text-content-subtle/70 [font-size:var(--rp-fs-sm)]" title={contextLabel}>
+          {contextLabel}
+        </span>
+      )}
 
       {/* Worktree marker — this thread runs in an isolated detached checkout
           (parallel task). Small accent fork next to the title; full path via
@@ -429,15 +447,14 @@ export function SessionRow({
         </span>
       )}
 
-      {/* Relative time of the last activity (updatedAt), docked to the right
-          edge. The row swaps between two right-aligned payloads: the time
-          label by default, and the archive/delete action buttons on hover.
-          While an inline confirm is pending or a turn is running, neither the
-          time nor the normal actions show (the confirm buttons / spinner take
-          their place). The full timestamp stays available via the hover
-          tooltip on the <li>. */}
+      {/* 【UI 对齐 Claude / DraggableSessionList.tsx:247】时间戳**只在悬停时出现**。
+          上游把「时间」和「操作按钮」放在同一个右对齐槽位里，靠
+          `opacity-0 group-hover:opacity-100` 切换 —— 静止时那一整块是空的，
+          所以一列会话读起来是干净的文字列表。
+          我们原来让时间常驻，等于每行右边都挂着一个次要标签；
+          满屏会话时它会和标题争注意力。 */}
       {showTime && (
-        <span className="shrink-0 text-content-subtle/70 [font-size:var(--rp-fs-sm)]">
+        <span className="shrink-0 text-content-subtle/70 opacity-0 transition-opacity group-hover:opacity-100 [font-size:var(--rp-fs-sm)]">
           {formatRelativeTime(session.updatedAt)}
         </span>
       )}
@@ -611,12 +628,13 @@ function WorktreeGroupNode({
   return (
     <li>
       <div
+        data-sidebar-worktree-row=""
         onMouseEnter={() => void probeMerge()}
         onContextMenu={(e) => {
           e.preventDefault();
           onContext(e.clientX, e.clientY);
         }}
-        className="group flex items-center gap-1 rounded px-1 py-1 [font-size:var(--right-panel-font-size)] text-content-muted hover:bg-surface-hover"
+        className="group flex items-center gap-1 rounded px-1 py-1 [font-size:var(--right-panel-font-size)] text-content-muted hover:bg-surface-hover active:bg-surface-active"
       >
         {/* Expand / collapse toggle */}
         <button
@@ -694,7 +712,7 @@ function WorktreeGroupNode({
       </div>
 
       {expanded && (
-        <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-edge/50 pl-2">
+        <ul data-sidebar-tree-children="" className="ml-3 mt-0.5 space-y-0.5 border-l border-edge/50 pl-2">
           {sessions.map((s) => renderSession(s, true))}
         </ul>
       )}
@@ -836,10 +854,11 @@ export function GroupNode({
   return (
     <li ref={setNodeRef} style={style} {...attributes}>
       <div
+        data-sidebar-group-row=""
         {...listeners}
         className={cn(
           "group flex items-center gap-1 rounded px-1 py-0.5 [font-size:var(--rp-fs-md)]",
-          "text-content-subtle hover:bg-surface-hover",
+          "text-content-subtle hover:bg-surface-hover active:bg-surface-active",
           isOver && "bg-surface-hover ring-1 ring-accent/40",
           isDragging && "opacity-50",
         )}
@@ -946,7 +965,7 @@ export function GroupNode({
         </HoverIconButton>
       </div>
       {!collapsed && (
-        <ul className="ml-3 mt-0.5 space-y-0.5 border-l border-edge/50 pl-2">
+        <ul data-sidebar-tree-children="" className="ml-3 mt-0.5 space-y-0.5 border-l border-edge/50 pl-2">
           {projects.map((p) => renderProject(p))}
         </ul>
       )}

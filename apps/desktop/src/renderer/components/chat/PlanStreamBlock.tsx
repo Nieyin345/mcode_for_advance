@@ -110,7 +110,7 @@ export function PlanStreamBlock({
           "flex min-h-10 w-full items-center justify-center gap-1.5 border-t px-3 py-2 text-body font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent disabled:cursor-default disabled:opacity-50",
           hasApproval
             ? "border-accent/20 bg-accent/5 text-accent hover:bg-accent/10"
-            : "border-edge bg-surface-hover/50 text-content hover:bg-surface-hover",
+            : "border-edge bg-surface-hover/50 text-content hover:bg-surface-hover active:bg-surface-active",
         )}
       >
         <IconRocket size={15} />

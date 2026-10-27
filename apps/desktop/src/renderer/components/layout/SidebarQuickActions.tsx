@@ -1,6 +1,6 @@
 /**
- * Sidebar quick actions — two full-width primary buttons docked directly under
- * the brand logo at the top of the left bar:
+ * Sidebar quick actions — compact full-width entry points near the top of the
+ * left navigation, below the window/sidebar controls:
  *
  *   新建会话 — starts a new thread in the active project (primary, accent CTA).
  *   搜索     — opens the unified Ctrl+K search palette.
@@ -11,9 +11,8 @@
  * does. "新建会话" is disabled when there is no active project (mirrors the
  * `session.new` command's `available` guard).
  *
- * The pair sits above the "项目" header so the two most-used workspace entry
- * points are always visible without scrolling, regardless of how long the
- * project list grows.
+ * The actions sit above the Recents / Pinned / Projects navigation stack so
+ * the most-used workspace entry points remain visible without scrolling.
  *
  * `showSearch` / `showConnectPhone` drop the matching entries — the mobile
  * drawer hides both: there is no Ctrl+K on a phone, and its visitor is
@@ -90,7 +89,7 @@ export function SidebarQuickActions({
           "flex min-h-10 min-w-0 w-full items-center gap-2.5 rounded-[var(--radius-btn-xs)] px-2.5 py-2 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           "[font-size:var(--right-panel-font-size)]",
           canNewSession
-            ? "text-content-muted hover:bg-surface-hover hover:text-content"
+            ? "text-content-muted hover:bg-surface-hover active:bg-surface-active hover:text-content"
             : "cursor-not-allowed text-content-subtle opacity-50",
         )}
       >

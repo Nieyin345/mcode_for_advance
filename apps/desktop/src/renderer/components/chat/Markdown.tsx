@@ -22,7 +22,7 @@ import remarkGfm from "remark-gfm";
 import type { Options as MarkdownOptions } from "react-markdown";
 import { cn } from "@renderer/lib/cn.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { IconCheck, IconChevronDown, IconChevronUp, IconCopy, IconLoader2 } from "@renderer/lib/icons.js";
+import { IconCheck, IconCopy, IconChevronDown, IconChevronUp, IconLoader2 } from "@renderer/lib/icons.js";
 import type { Components } from "react-markdown";
 import { codeCacheKey, getCodeHtml, setCodeHtml } from "@renderer/lib/markdownCache.js";
 import { fileHrefToPath, isAbsolutePath, isLocalFileHref } from "@renderer/lib/fileLink.js";
@@ -31,6 +31,7 @@ import { resolveMarkdownImageRoute } from "@renderer/lib/markdownImageRoute.js";
 import { convertHtmlTables } from "@renderer/lib/htmlTable.js";
 import { api } from "@renderer/lib/api.js";
 import { FileLink } from "./FileLink.js";
+import "./ClaudeCodeBlock.css";
 
 // ── On-demand math (remark-math + rehype-katex) ───────────────────────
 // KaTeX is ~260KB of JS and most replies contain no math, so it is no longer
@@ -198,13 +199,13 @@ function CopyButton({ text }: { text: string }) {
       type="button"
       onClick={() => void handleCopy()}
       className={cn(
-        "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2 py-0.5 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+        "inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2 py-0.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         "text-content-subtle hover:bg-surface-hover/60 hover:text-content-muted",
       )}
       title={copied ? t("common.copied") : t("chatStream.copyCode")}
       aria-label={copied ? t("common.copied") : t("chatStream.copyCode")}
     >
-      {copied ? (<><IconCheck size={10} /> {t("common.copied")}</>) : (<><IconCopy size={10} /> {t("common.copy")}</>)}
+      {copied ? (<><IconCheck size={12} /> {t("common.copied")}</>) : (<><IconCopy size={12} /> {t("chatStream.copyCode")}</>)}
     </button>
   );
 }
@@ -514,7 +515,7 @@ function MarkdownLocalImage({
   }
   if (!dataUrl) {
     return (
-      <span className="my-[var(--chat-md-gap-xs)] inline-flex max-w-full items-center gap-1 rounded border border-edge/60 bg-surface-muted/60 px-1.5 py-0.5 align-middle text-content-muted [font-size:var(--chat-fs-xs)]">
+      <span className="my-[var(--chat-md-gap-xs)] inline-flex max-w-full items-center gap-1 rounded-[var(--radius-btn-xs)] border border-edge/45 bg-surface-muted/40 px-1.5 py-0.5 align-middle text-content-muted [font-size:var(--chat-fs-xs)]">
         <FileLink
           token={filePath}
           projectPath={projectPath}
@@ -527,7 +528,7 @@ function MarkdownLocalImage({
     <img
       src={dataUrl}
       alt={alt}
-      className="my-[var(--chat-md-gap-xs)] max-h-[420px] max-w-full rounded border border-edge/60 align-middle"
+      className="my-[var(--chat-md-gap-xs)] max-h-[420px] max-w-full rounded-[var(--radius-control)] border border-edge/45 align-middle"
     />
   );
 }
@@ -585,7 +586,7 @@ function buildComponents(): Components {
     const isInline = !isFencedCode(className);
     if (isInline) {
       return (
-        <code className="rounded bg-surface-muted/80 px-1 py-0.5 font-mono [font-size:var(--chat-fs-xs)] [color:var(--code-fg)]">
+        <code data-cds="InlineCode" className="rounded-[var(--radius-btn-xs)] bg-surface-muted/70 px-1.5 py-0.5 font-mono [font-size:var(--chat-fs-xs)] [color:var(--code-fg)]">
           <CodeContext.Provider value={true}>{children}</CodeContext.Provider>
         </code>
       );
@@ -683,8 +684,8 @@ function buildComponents(): Components {
     }, [rawCode, lang, ready, html, expanded]);
 
     return (
-      <pre className="my-[var(--chat-md-gap-md)] overflow-hidden rounded-lg border border-edge/60 bg-surface-muted/60">
-        <div className="flex items-center justify-between gap-2 border-b border-edge/60 bg-surface-muted/40 px-2 py-0.5 text-content-subtle [font-size:var(--chat-fs-xxs)]">
+      <div data-cds="CodeBlock" role="group" aria-label={lang} className="claude-code-block my-[var(--chat-md-gap-md)] overflow-hidden">
+        <div data-cds="CodeBlockHeader" className="flex items-center justify-between gap-2 text-content-subtle [font-size:var(--chat-fs-xxs)]">
           <span className="truncate font-mono">{lang}</span>
           <span className="flex shrink-0 items-center gap-1">
             {clippable && expanded && (
@@ -693,16 +694,16 @@ function buildComponents(): Components {
                 onClick={() => setExpanded(false)}
                 aria-expanded={expanded}
                 aria-controls={bodyId}
-                className="inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-xs)] px-2 py-0.5 transition-colors hover:bg-surface-hover/60 hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                className="inline-flex min-h-8 items-center gap-1 rounded-[var(--radius-btn-md)] px-2 py-0.5 text-[11px] transition-colors hover:bg-surface-hover/60 hover:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 title={t("chatStream.code.collapse")}
               >
-                <IconChevronUp size={10} /> {t("chatStream.code.collapse")}
+                <IconChevronUp size={12} /> {t("chatStream.code.collapse")}
               </button>
             )}
             <CopyButton text={rawCode.replace(/\n$/, "")} />
           </span>
         </div>
-        <div className="relative">
+        <div data-cds="CodeBlockBody" className="relative min-w-0">
           <div
             id={bodyId}
             ref={bodyRef}
@@ -710,11 +711,9 @@ function buildComponents(): Components {
             style={{ maxHeight: expanded ? undefined : CODE_COLLAPSE_MAX_PX }}
           >
             {html ? (
-              <div className="px-3 py-2 [font-size:var(--chat-fs-xs)]" dangerouslySetInnerHTML={html} />
+              <div className="min-w-0" dangerouslySetInnerHTML={html} />
             ) : (
-              <code className="block px-3 py-2 font-mono leading-relaxed text-content [font-size:var(--chat-fs-xs)]">
-                {childProps?.children as React.ReactNode}
-              </code>
+              <pre className="claude-code-fallback"><code className="font-mono leading-relaxed text-content [font-size:var(--chat-fs-xs)]">{childProps?.children as React.ReactNode}</code></pre>
             )}
           </div>
           {clippable && !expanded && (
@@ -725,7 +724,7 @@ function buildComponents(): Components {
                 onClick={() => setExpanded(true)}
                 aria-expanded={expanded}
                 aria-controls={bodyId}
-                className="cds-hover-ghost absolute bottom-1.5 left-1/2 inline-flex min-h-8 -translate-x-1/2 items-center gap-1 rounded-full border border-edge bg-surface px-3 py-0.5 text-content-muted shadow-sm transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                className="cds-hover-ghost absolute bottom-1.5 left-1/2 inline-flex min-h-8 -translate-x-1/2 items-center gap-1 rounded-[var(--radius-btn-md)] bg-surface/95 px-2.5 py-1 text-content-muted shadow-none transition-colors hover:bg-surface-hover active:bg-surface-active hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 title={t("chatStream.code.expand")}
               >
                 <IconChevronDown size={12} /> {t("chatStream.code.expand")}
@@ -733,7 +732,7 @@ function buildComponents(): Components {
             </>
           )}
         </div>
-      </pre>
+      </div>
     );
   },
 
@@ -789,7 +788,7 @@ function buildComponents(): Components {
         );
       }
       return (
-        <span className="my-[var(--chat-md-gap-xs)] inline-flex max-w-full items-center gap-1 rounded border border-edge/60 bg-surface-muted/60 px-1.5 py-0.5 align-middle text-content-muted [font-size:var(--chat-fs-xs)]">
+        <span className="my-[var(--chat-md-gap-xs)] inline-flex max-w-full items-center gap-1 rounded-[var(--radius-btn-xs)] border border-edge/45 bg-surface-muted/40 px-1.5 py-0.5 align-middle text-content-muted [font-size:var(--chat-fs-xs)]">
           <FileLink
             token={absolute}
             projectPath={projectPath}
@@ -938,6 +937,7 @@ export const Markdown = memo(function Markdown({
   // are untouched; the container alone controls the outer rhythm.
   return (
     <div
+      data-cds="MarkdownBody"
       className="chat-md break-words text-content [font-size:var(--chat-font-size)] [line-height:var(--chat-md-leading)] [font-weight:var(--chat-font-weight)] [&>p]:my-[var(--chat-md-gap-sm)] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
     >
       <MarkdownProjectContext.Provider value={projectPath ?? null}>

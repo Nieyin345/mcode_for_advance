@@ -162,9 +162,9 @@ export function WorktreeModeChip({
             // carry the affordance so the quiet row above the composer stays
             // visually light.
             "inline-flex select-none items-center gap-1.5 rounded-md px-2 py-1 text-xs outline-none transition-colors duration-100",
-            "hover:bg-surface-hover",
+            "hover:bg-surface-hover active:bg-surface-active",
             on
-              ? "text-accent hover:bg-surface-hover"
+              ? "text-accent hover:bg-surface-hover active:bg-surface-active"
               : "text-content-muted hover:text-content",
           )}
           title={

@@ -236,7 +236,7 @@ function TreeEntryRow({
       onClick={onOpen}
       title={openTitle}
       aria-label={title}
-      className="group flex cursor-pointer items-center gap-2 py-1 pl-[26px] pr-2.5 transition-colors hover:bg-surface-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+      className="group flex cursor-pointer items-center gap-2 py-1 pl-[26px] pr-2.5 transition-colors hover:bg-surface-hover active:bg-surface-active focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
     >
       {favicon}
       <div className="min-w-0 flex-1">

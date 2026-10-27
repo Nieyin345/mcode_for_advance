@@ -513,7 +513,7 @@ function UserStep({ message, onJump }: { message: ChatMessage; onJump: (messageI
     <ClickableRow
       onClick={() => onJump(message.id)}
       title={t("ide.turns.jumpToChat")}
-      className="relative flex cursor-pointer items-start gap-2 rounded-md py-1 pl-0.5 pr-1.5 transition-colors hover:bg-surface-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+      className="relative flex cursor-pointer items-start gap-2 rounded-md py-1 pl-0.5 pr-1.5 transition-colors hover:bg-surface-hover active:bg-surface-active focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
     >
       <StepGlyph className="bg-accent/15 text-accent">
         <IconUser size={11} />
@@ -760,7 +760,7 @@ function StepRow({
         onClick={onClick}
         title={title}
         className={cn(
-          "relative flex cursor-pointer items-start gap-2 rounded-md py-1 pl-0.5 pr-1.5 transition-colors hover:bg-surface-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
+          "relative flex cursor-pointer items-start gap-2 rounded-md py-1 pl-0.5 pr-1.5 transition-colors hover:bg-surface-hover active:bg-surface-active focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
           accent === "danger" && "bg-danger/5 hover:bg-danger/10",
           accent === "attention" && "bg-amber-400/5 hover:bg-amber-400/10",
         )}
@@ -827,7 +827,7 @@ function SubagentLane({
         className={cn(
           "flex items-center gap-1.5 rounded-md px-1 py-0.5",
           snapshot &&
-            "cursor-pointer transition-colors hover:bg-surface-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
+            "cursor-pointer transition-colors hover:bg-surface-hover active:bg-surface-active focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent",
         )}
       >
         <IconGitFork size={10} className="shrink-0 text-content-subtle" />

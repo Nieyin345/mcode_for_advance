@@ -197,7 +197,7 @@ export function ProjectBranchIndicator({
           <Menu.Trigger
             className={cn(
               "flex shrink-0 items-center gap-0.5 rounded bg-surface-muted px-1.5 py-0.5 font-mono text-[11px] text-content-muted transition-colors",
-              "hover:bg-surface-hover hover:text-content",
+              "hover:bg-surface-hover active:bg-surface-active hover:text-content",
             )}
             title={t("chat.branch.switchTitle")}
           >

@@ -87,18 +87,33 @@ function findInBlock(block: string, name: string): string | null {
   return m ? m[1]!.trim() : null;
 }
 
-/** 把 `var(--m-x)` 解到 tokens.cds.css 里的字面量。 */
-function resolveVar(value: string): string {
+/**
+ * 把 `var(--m-x)` 解到 tokens.cds.css 里的字面量。
+ *
+ * 【UI 重建 2026-10-27】**必须按主题解**。`--m-surface-1` 在
+ * `tokens.cds.css` 里定义两次：`:root` 是 `var(--m-gray-10)`（亮），
+ * `.dark` 是 `var(--m-gray-850)`（暗）。原来无条件取第一处，于是
+ * 暗色断言拿到的是**亮色画布** —— `--edge=#3f3f3f` 对白色算出了
+ * 10.26:1（真实是 1.73:1），四条对比度断言结论全不可信。
+ *
+ * 现在从 `.dark` 块读出来的 token 优先在 `.dark` 段里解别名，
+ * 其余按 `:root` 解。这与浏览器的层叠顺序一致：`.dark` 覆盖 `:root`。
+ */
+const DARK_AT = TOKENS_CSS.indexOf(".dark {");
+const DARK_PART = DARK_AT >= 0 ? TOKENS_CSS.slice(DARK_AT) : "";
+
+function resolveVar(value: string, preferDark = false, depth = 0): string {
+  if (depth > 6) return value;
   const m = /^var\(--([a-z0-9-]+)\)$/.exec(value);
   if (!m) return value;
   const re = new RegExp(`--${m[1]}:\\s*([^;]+);`);
-  const hit = re.exec(TOKENS_CSS);
+  const hit = (preferDark ? re.exec(DARK_PART) : null) ?? re.exec(TOKENS_CSS);
   if (!hit) throw new Error(`tokens.cds.css 里找不到 --${m[1]}`);
-  return resolveVar(hit[1]!.trim());
+  return resolveVar(hit[1]!.trim(), preferDark, depth + 1);
 }
 
-function parseTriplet(raw: string): [number, number, number] {
-  const v = resolveVar(raw);
+function parseTriplet(raw: string, preferDark = false): [number, number, number] {
+  const v = resolveVar(raw, preferDark);
   const triple = /^([0-9]+)\s+([0-9]+)\s+([0-9]+)$/.exec(v);
   if (triple) return [Number(triple[1]), Number(triple[2]), Number(triple[3])];
   const hex = /^#([0-9a-fA-F]{6})$/.exec(v);
@@ -123,7 +138,7 @@ function readTriplet(selector: string, name: string): [number, number, number] {
   const block = css.slice(open, blockEnd(css, open) + 1);
   const raw = findInBlock(block, name);
   if (raw === null) throw new Error(`块 ${selector} 内没有 --${name}`);
-  return parseTriplet(raw);
+  return parseTriplet(raw, selector.includes(".dark"));
 }
 
 console.log("[1] 亮色：边框在画布上的可见度");

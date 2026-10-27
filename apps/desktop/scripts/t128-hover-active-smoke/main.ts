@@ -21,6 +21,7 @@
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { stripComments } from "../lib/sourceText.js";
 
 let total = 0;
 let failed = 0;
@@ -85,20 +86,29 @@ function findInBlock(block: string, name: string): string | null {
  *
  * 所以：先在 tokens.cds.css 找，找不到再到 styles.css 本体的 `:root` 块里找。
  * 深度上限防环。
+ *
+ * 【UI 重建 2026-10-27】**必须按主题解**。`--m-surface-1` 之类在
+ * tokens.cds.css 里定义两次（`:root` 亮、`.dark` 暗）。无条件取第一处会让
+ * **暗色断言拿到亮色值** —— 实测 `--dark surface` 解析成 255 255 255
+ * （亮度 0.9728），而 hover/active 是暗色真值，于是「暗色阶梯单调变亮」
+ * 必然失败。这与 surface-layers / t121 是同一个病根，三处一起改。
  */
-function resolveVar(value: string, depth = 0): string {
+const DARK_AT = tokensCss.indexOf(".dark {");
+const DARK_PART = DARK_AT >= 0 ? tokensCss.slice(DARK_AT) : "";
+
+function resolveVar(value: string, preferDark = false, depth = 0): string {
   if (depth > 8) throw new Error(`变量解析层数过深（可能循环）: ${value}`);
   const m = /^var\(--([a-z0-9-]+)\)$/.exec(value);
   if (!m) return value;
   const name = m[1]!;
   const re = new RegExp(`--${name}:\\s*([^;]+);`);
-  const hit = re.exec(tokensCss) ?? re.exec(css);
+  const hit = (preferDark ? re.exec(DARK_PART) : null) ?? re.exec(tokensCss) ?? re.exec(css);
   if (!hit) throw new Error(`两个文件里都找不到 --${name}`);
-  return resolveVar(hit[1]!.trim(), depth + 1);
+  return resolveVar(hit[1]!.trim(), preferDark, depth + 1);
 }
 
-function parseTriplet(raw: string): [number, number, number] {
-  const v = resolveVar(raw);
+function parseTriplet(raw: string, preferDark = false): [number, number, number] {
+  const v = resolveVar(raw, preferDark);
   const triple = /^([0-9]+)\s+([0-9]+)\s+([0-9]+)$/.exec(v);
   if (triple) return [Number(triple[1]), Number(triple[2]), Number(triple[3])];
   const hex = /^#([0-9a-fA-F]{6})$/.exec(v);
@@ -123,7 +133,7 @@ function readTriplet(selector: string, name: string): [number, number, number] {
   const block = css.slice(open, blockEnd(css, open) + 1);
   const raw = findInBlock(block, name);
   if (raw === null) throw new Error(`块 ${selector} 内没有 --${name}`);
-  return parseTriplet(raw);
+  return parseTriplet(raw, selector.includes(".dark"));
 }
 
 /* ══════════════════════════════════════════════════════════════════ */
@@ -230,6 +240,12 @@ console.log("\n[4] 示范组件真的接上了，且旧写法已移除");
     /primary:[\s\S]{0,200}?transition-colors/.test(strippedButton));
 }
 
+const messageBlocks = stripComments(readFileSync(root("src/renderer/components/chat/MessageBlocks.tsx"), "utf8"));
+const toolRowClass = /const TOOL_ROW_CLS\s*=\s*"([^"]+)"/.exec(messageBlocks)?.[1] ?? "";
+check("★ 工具执行行复用统一 hover/active 交互样式",
+  toolRowClass.includes("cds-hover-ghost") && !toolRowClass.includes("hover:bg-surface-muted/50"),
+  { toolRowClass });
+
 console.log("\n[5] tailwind 暴露了 surface.active（否则 bg-surface-active / 类名不可用）");
 {
   const tw = readFileSync(root("tailwind.config.js"), "utf8");
@@ -252,13 +268,32 @@ console.log("\n[6] 迁移进度：裸 hover:bg-surface-hover 的总数只能降�
   };
   const files = walk(root("src/renderer"));
   let raw = 0;
+  let paired = 0;
   let migrated = 0;
   for (const f of files) {
-    const t = readFileSync(f, "utf8");
+    const t = stripComments(readFileSync(f, "utf8"));
+    /* 【UI 重建 2026-10-27】**口径细化：`hover:bg-surface-hover` 后面紧跟
+     * `active:bg-surface-active` 的不再算「裸 hover」。**
+     *
+     * 那正是本卡要的终态之一：悬停和按下分成两档。原来只数 `hover:`，
+     * 于是把「已经配对好」的也记成「没收干净」——44 处里有 44 处是这种。
+     * 真正的 «裸» 只剩「悬停时变色、按下无变化」那一类。
+     *
+     * ⚠️ 两个计数都要打出来。只留一个时，「从 44 降到 0」可能来自
+     * 「换了个计数口径」而不是「真的迁移了」（本仓有过这种假下降）。 */
     raw += (t.match(/hover:bg-surface-hover\b(?!\/)/g) ?? []).length;
+    paired += (t.match(/hover:bg-surface-hover active:bg-surface-active/g) ?? []).length;
     migrated += (t.match(/cds-hover-ghost/g) ?? []).length;
   }
-  console.log(`      裸 hover:bg-surface-hover = ${raw} 处；cds-hover-ghost = ${migrated} 处`);
+  const bare = raw - paired;
+  console.log(`      裸 hover:bg-surface-hover = ${bare} 处（其中已配对 active 的 ${paired} 处，原始计数 ${raw}）；cds-hover-ghost = ${migrated} 处`);
+  const commentProbe = [
+    "/* hover:bg-surface-hover */",
+    "// hover:bg-surface-hover",
+    `<button className="hover:bg-surface-hover" />`,
+  ].join("\n");
+  const countedProbe = stripComments(commentProbe).match(/hover:bg-surface-hover\b(?!\/)/g) ?? [];
+  check("★ 迁移计数忽略注释、保留真实类名", countedProbe.length === 1, { counted: countedProbe.length });
   // 上界随迁移推进而下调。写死一个当前值是为了让「有人把类撤了」立刻红，
   // 而不是悄悄回退。**每次迁移一批就把它改小**，别让它永远宽松。
   //
@@ -272,7 +307,10 @@ console.log("\n[6] 迁移进度：裸 hover:bg-surface-hover 的总数只能降�
   }
   check("★ 这四个文件里不再有 hover:bg-surface-hover/NN alpha 变体（本批收干净了）",
     alphaVariants === 0, { alphaVariants });
-  check("★ 裸 hover:bg-surface-hover（不含 /alpha）不多于 29", raw <= 29, { raw });
+  /* 上界 0：所有「悬停变色」都必须同时有按下态。
+   * 原来是 29（历史遗留的未迁移量），2026-10-27 一次性迁移完 44 处后归零。
+   * 新写代码若只加 hover 不加 active，这里立刻红。 */
+  check("★ 裸 hover:bg-surface-hover（没有配对 active）必须为 0", bare <= 0, { bare, paired, raw });
   check("★ 至少有一处用上了 cds-hover-ghost", migrated > 0, { migrated });
 }
 
@@ -327,6 +365,18 @@ console.log("\n[7] 选中态是换色系，不是更深的灰（上游 Draggable
     selBranch !== null && /font-medium/.test(selBranch[1]!));
   check("★ 选中分支用 bg-selected", selBranch !== null && /bg-selected\b/.test(selBranch[1]!));
   check("★ 选中分支用 text-selectedContent", selBranch !== null && /text-selectedContent/.test(selBranch[1]!));
+
+  // The tree sidebar renders the same session concept through LeftBarParts.
+  // Keep its selected row semantically and accessibly identical to stream mode.
+  const treeSource = stripComments(readFileSync(root("src/renderer/components/layout/LeftBarParts.tsx"), "utf8"));
+  const treeRowStart = treeSource.indexOf("export function SessionRow(");
+  const treeRowEnd = treeRowStart < 0 ? -1 : treeSource.indexOf("\nexport function ", treeRowStart + 1);
+  const treeRow = treeRowStart < 0 ? "" : treeSource.slice(treeRowStart, treeRowEnd < 0 ? undefined : treeRowEnd);
+  const treeSelBranch = /active\s*\n?\s*\?\s*"([^"]*)"\s*\n?\s*:\s*"([^"]*)"/.exec(treeRow);
+  check("★ 树形侧栏选中分支不叠加 hover 底色", treeSelBranch !== null && !/hover:bg-/.test(treeSelBranch[1]!), { selectedBranch: treeSelBranch?.[1] });
+  check("★ 树形侧栏选中分支用 bg-selected", treeSelBranch !== null && /bg-selected\b/.test(treeSelBranch[1]!));
+  check("★ 树形侧栏选中分支用 AA 品牌色 text-selectedContent", treeSelBranch !== null && /text-selectedContent/.test(treeSelBranch[1]!));
+  check("★ 树形侧栏选中分支带 font-medium", treeSelBranch !== null && /font-medium/.test(treeSelBranch[1]!));
 }
 
 console.log("\n[8] .cds-hover-ghost 只能挂在「按钮本体」上，不能挂在行容器上");

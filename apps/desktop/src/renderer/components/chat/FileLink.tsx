@@ -189,7 +189,7 @@ export function FileLink({
           aria-busy={loading}
           className={cn(
             "cursor-pointer rounded-[2px] underline decoration-dotted decoration-accent/60 underline-offset-2",
-            "text-content-muted hover:bg-surface-hover hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+            "text-content-muted hover:bg-surface-hover active:bg-surface-active hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
             loading && "opacity-60",
           )}
         >

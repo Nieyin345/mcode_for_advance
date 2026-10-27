@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type P
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { DndContext, PointerSensor, useDraggable, useSensor, useSensors, type DragEndEvent, type DragMoveEvent } from "@dnd-kit/core";
 import { cn } from "@renderer/lib/cn.js";
+import { IconGripVertical } from "@renderer/lib/icons.js";
 import { Divider } from "./Divider.js";
-import { ModuleViewDock } from "@renderer/components/modules/ModuleContributions.js";
 import { shouldMountRightPane } from "./rightPaneKeepAlive.js";
 import { dockFlexOrder, visibleRightPaneGeometry, PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, type PaneDock } from "./paneDock.js";
 import type { ShellVariant } from "../shell/shellPrefs.js";
@@ -88,15 +88,26 @@ interface Props {
  * overflow-hidden is preserved on xterm ancestors (FitAddon breaks under a
  * scrolling ancestor) — do not change those to overflow-y-auto. */
 /** Separate dnd-kit grip preserves the existing native drag/keyboard handle. */
-function PaneDndHandle({ onStart }: { onStart: (x: number, y: number) => void }) {
+function PaneDndHandle({ onStart, variant }: { onStart: (x: number, y: number) => void; variant: ShellVariant }) {
   const { t } = useI18n();
   const { setNodeRef, listeners, attributes, isDragging } = useDraggable({ id: "mcode-pane-right" });
-  return <button ref={setNodeRef} type="button" data-testid="pane-dnd-handle"
-    aria-label={t("layout.movePane")} title={t("layout.movePane")}
-    {...attributes} {...listeners}
-    onPointerDownCapture={(e) => { if (e.button === 0) onStart(e.clientX, e.clientY); }}
-    className="absolute right-1 top-10 z-30 flex size-8 cursor-grab items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:cursor-grabbing"
-    style={{ opacity: isDragging ? 0.5 : 1 }}>⋮</button>;
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      data-testid="pane-dnd-handle"
+      data-cds="PaneDragHandle"
+      data-dragging={isDragging ? "true" : "false"}
+      aria-label={t("layout.movePane")}
+      title={t("layout.movePane")}
+      {...attributes}
+      {...listeners}
+      onPointerDownCapture={(e) => { if (e.button === 0) onStart(e.clientX, e.clientY); }}
+      className="absolute right-1 top-10 z-30 flex size-8 cursor-grab items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted hover:bg-surface-hover active:bg-surface-active focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:cursor-grabbing"
+    >
+      {variant === "workspace" ? <IconGripVertical size={15} /> : "⋮"}
+    </button>
+  );
 }
 
 export function ThreePaneLayout({
@@ -378,7 +389,7 @@ export function ThreePaneLayout({
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDockPreview(null); }}
         onDropCapture={handleDockDrop}>
         {dockPreview && (
-          <div data-testid="pane-dock-preview" data-dock-preview={dockPreview} aria-hidden="true"
+          <div data-testid="pane-dock-preview" data-cds="PaneDockPreview" data-dock-preview={dockPreview} aria-hidden="true"
             className={cn(
               "pointer-events-none absolute z-50 border-2 border-dashed border-accent bg-accent/10",
               dockPreview === "bottom" ? "bottom-0 h-1/3 w-full" :
@@ -412,7 +423,7 @@ export function ThreePaneLayout({
             </div>
           </>
         )}
-        {bottomTerminal && <div className="max-h-[30vh] shrink-0 overflow-y-auto empty:hidden"><ModuleViewDock location="bottom" /></div>}
+        {bottomTerminal && <div className="max-h-[30vh] shrink-0 overflow-y-auto empty:hidden"></div>}
       </main>
 
       {toolbar && <div data-pane-toolbar="" className={cn("flex shrink-0", rightAtBottom ? "h-[calc(100%-var(--pane-bottom-share))]" : "h-full")} style={{ order: order.toolbar }}>{toolbar}</div>}
@@ -483,7 +494,7 @@ export function ThreePaneLayout({
           }}
         >
           {/* drawer 里不给停靠手柄：拖拽换边是 pane 的能力，抽屉只有贴右一种位置。 */}
-          {!isDrawer && <PaneDndHandle onStart={(x, y) => { dndOrigin.current = { x, y }; }} />}
+          {!isDrawer && onMovePane && <PaneDndHandle variant={variant} onStart={(x, y) => { dndOrigin.current = { x, y }; }} />}
           <div className={cn("min-h-0 flex-1 overflow-hidden border-edge-panel/60",
             isDrawer ? "border-l" : (rightDock === "left" ? "border-r" : "border-l"))}
             style={paneDragging ? { pointerEvents: "none" } : undefined}>{right}</div>

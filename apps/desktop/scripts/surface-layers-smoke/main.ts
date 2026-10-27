@@ -82,7 +82,17 @@ const tokensCss = readFileSync(resolve(ROOT, "src/renderer/tokens.cds.css"), "ut
 
 function resolveVar(name: string, depth = 0): string {
   if (depth > 4) return "";
-  const m = new RegExp(`--${name}:\\s*([^;]+);`).exec(tokensCss) ?? new RegExp(`--${name}:\\s*([^;]+);`).exec(css);
+  /* 【UI 重建 2026-10-27】`--m-surface-N` 在生成物里**定义两次**：
+   * `:root` 里指亮/暗的一端，`.dark` 里指另一端。原来只取第一处，
+   * 于是暗色断言拿到的是**亮色值** —— `raised` 与 `overlay` 都解析成
+   * 同一个 `gray-0`，`dobs > dr` 恒假。
+   *
+   * 现在**先查 `.dark` 段**（暗色断言正是要它），没有再回落到全文。
+   * 这与浏览器里的实际层叠顺序一致：`.dark` 覆盖 `:root`。 */
+  const darkAt = tokensCss.indexOf(".dark {");
+  const darkPart = darkAt >= 0 ? tokensCss.slice(darkAt) : "";
+  const re = new RegExp(`--${name}:\\s*([^;]+);`);
+  const m = re.exec(darkPart) ?? re.exec(tokensCss) ?? re.exec(css);
   if (!m) return "";
   const raw = m[1]!.trim();
   const alias = /^var\(--([\w-]+)\)$/.exec(raw);

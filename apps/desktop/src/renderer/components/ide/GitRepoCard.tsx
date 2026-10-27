@@ -621,7 +621,7 @@ export function GitRepoCard({ repo }: { repo: GitRepo }) {
             <Menu.Trigger
               className={cn(
                 "flex shrink-0 items-center gap-0.5 rounded bg-surface-muted px-1.5 py-0.5 font-mono [font-size:var(--rp-fs-xxs)] text-content-muted transition-colors",
-                "hover:bg-surface-hover hover:text-content",
+                "hover:bg-surface-hover active:bg-surface-active hover:text-content",
               )}
               title={t("ide.git.switchBranch")}
             >

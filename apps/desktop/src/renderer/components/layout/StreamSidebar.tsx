@@ -684,7 +684,7 @@ function StreamSidebarBase() {
             className={cn(
               "flex w-full min-w-0 items-center gap-2 rounded-lg px-1 py-2 text-left transition-colors",
               "[font-size:var(--right-panel-font-size)]",
-              "text-content-muted hover:bg-surface-hover",
+              "text-content-muted hover:bg-surface-hover active:bg-surface-active",
             )}
           >
             {/* Fixed all-projects glyph — the label carries the current scope. */}
@@ -1197,7 +1197,7 @@ function StreamCard({
         "group relative flex cursor-pointer flex-col gap-[3px] rounded-lg px-2.5 py-2 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong",
         active
           ? "bg-selected text-selectedContent font-medium"
-          : "text-content-muted hover:bg-surface-hover",
+          : "text-content-muted hover:bg-surface-hover active:bg-surface-active",
         recede && "opacity-75 transition-opacity hover:opacity-100",
         isDragging && "relative z-20 bg-surface opacity-90 backdrop-blur-sm",
       )}

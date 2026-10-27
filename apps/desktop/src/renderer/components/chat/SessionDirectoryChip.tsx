@@ -134,7 +134,7 @@ export function SessionDirectoryChip({ sessionId }: { sessionId: string | null }
           <Menu.Trigger
             className={cn(
               "inline-flex max-w-[220px] select-none items-center gap-1.5 rounded-md px-2 py-1 text-xs outline-none transition-colors duration-100",
-              "text-content-muted hover:bg-surface-hover hover:text-content",
+              "text-content-muted hover:bg-surface-hover active:bg-surface-active hover:text-content",
             )}
             title={t("chat.directory.chipTitle")}
           >

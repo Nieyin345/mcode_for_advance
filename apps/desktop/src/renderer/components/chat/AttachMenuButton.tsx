@@ -172,7 +172,7 @@ export function AttachMenuButton({
           className={cn(
             segment
               ? "composer-minipill-seg w-7 justify-center"
-              : "inline-flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted transition-colors hover:bg-surface-hover hover:text-content",
+              : "inline-flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted transition-colors hover:bg-surface-hover active:bg-surface-active hover:text-content",
             "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-muted",
           )}
           title={t("chat.attachMenu")}
@@ -185,7 +185,7 @@ export function AttachMenuButton({
             <Menu.Popup
               ref={popupRef}
               className={cn(
-                "z-50 max-h-[calc(100vh-24px)] min-w-[min(200px,calc(100vw-24px))] max-w-[calc(100vw-24px)] overflow-y-auto origin-bottom-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
+                "z-50 max-h-[calc(100vh-24px)] min-w-[min(200px,calc(100vw-24px))] max-w-[calc(100vw-24px)] overflow-y-auto origin-bottom-left rounded-xl border border-edge bg-surface p-1.5 shadow-[var(--shadow-popover)]",
                 "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                 "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                 "transition-[transform,opacity] duration-100",
@@ -194,7 +194,7 @@ export function AttachMenuButton({
               <Menu.Item
                 onClick={onPickFiles}
                 className={cn(
-                  "flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                  "flex min-h-8 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs outline-none select-none",
                   "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
@@ -204,7 +204,7 @@ export function AttachMenuButton({
               <Menu.Item
                 onClick={onPickImages}
                 className={cn(
-                  "flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                  "flex min-h-8 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs outline-none select-none",
                   "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
@@ -218,7 +218,7 @@ export function AttachMenuButton({
               <Menu.Item
                 onClick={onPickLibraries}
                 className={cn(
-                  "flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                  "flex min-h-8 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs outline-none select-none",
                   "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
@@ -241,7 +241,7 @@ export function AttachMenuButton({
                 onClick={openSubChatPicker}
                 disabled={creatingSubChat}
                 className={cn(
-                  "flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                  "flex min-h-8 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs outline-none select-none",
                   "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
@@ -254,7 +254,7 @@ export function AttachMenuButton({
               <Menu.Item
                 onClick={onSlashCommand}
                 className={cn(
-                  "flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left text-[13px] outline-none select-none",
+                  "flex min-h-8 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs outline-none select-none",
                   "text-content-muted data-[highlighted]:bg-surface-muted data-[highlighted]:text-content data-[disabled]:opacity-40",
                 )}
               >
