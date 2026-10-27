@@ -150,8 +150,14 @@ for(const variant of (process.env.MCODE_PANE_U1_ONLY ? [process.env.MCODE_PANE_U
  process.stdout.write(output);
  let checks=[];try{checks=JSON.parse(readFileSync(join(dir,'checks-'+variant+'.json'),'utf8'))}catch{}
  const statuses=Object.fromEntries(checks.map(c=>[c.name,c.status]));
+ /* 【UI 重建 2026-10-27】green 变体允许 SKIP，但只允许**带 NOT-APPLICABLE 理由**
+  * 的那几条，且数量受限（当前 2 条：右侧图标轨在 Claude 壳里不存在）。
+  * 上限写死是为了防「以后又有人用 SKIP 绕过一条真检查」——
+  * 多出来的 SKIP 会让这条期望失败，逼人回来看。 */
+ const skips = checks.filter(c=>c.status==='SKIP');
+ const skipsValid = skips.length<=2 && skips.every(c=>String(c.reason||'').includes('NOT-APPLICABLE'));
  const expected=variant==='green'
-  ? checks.length>=18&&checks.every(c=>c.status==='PASS')&&run.status===0
+  ? checks.length>=18&&skipsValid&&checks.every(c=>c.status==='PASS'||c.status==='SKIP')&&run.status===0
   : variant==='rekey'
   ? statuses.PTY_STABLE==='FAIL'&&statuses.MONACO_STABLE==='FAIL'&&statuses.REOPEN_PTY_AND_MONACO_DRAFT==='FAIL'&&run.status!==0
   : statuses.CORRUPTION_NOTICE==='FAIL'&&statuses.PTY_STABLE==='PASS'&&statuses.MONACO_STABLE==='PASS'&&run.status!==0;

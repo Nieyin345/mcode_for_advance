@@ -64,6 +64,11 @@ export interface ClaudeShellProps {
   expandedTile?: string | null;
   /** 当前是否有会话在加载。 */
   isLoadingThread: boolean;
+  /** 把某一格挪到另一侧（换 dock 边）。透传给 TilePane。 */
+  onMoveTile?: (tileId: string) => void;
+  /** 非 chat 的格（右侧 pane）是否展开。关掉时**不卸载**，只把 flex 归 0
+   *  并标 `aria-hidden` —— PTY/Monaco/草稿保活。 */
+  asideOpen?: boolean;
   /** 中心列是否有内容要画 —— 除「打开了会话」之外的另一种情况：
    *  没有会话但用户直接打开了一个文件（编辑器占中心列）。
    *  为 true 时即使  也渲染 thread 列与 tile 区，
@@ -141,6 +146,8 @@ export function ClaudeShell({
   expandedTile,
   isLoadingThread,
   centerOccupied = false,
+  onMoveTile,
+  asideOpen = true,
 }: ClaudeShellProps) {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const column = chatColumnOf({ hasActiveSession: !!activeSessionId, isLoadingThread });
@@ -207,6 +214,8 @@ export function ClaudeShell({
                     onResize={onResizeTile}
                     onExpand={onExpandTile}
                     expandedTile={expandedTile}
+                    onMoveTile={onMoveTile}
+                    asideOpen={asideOpen}
                     chatColumn={threadColumn}
                   />
                 ) : (

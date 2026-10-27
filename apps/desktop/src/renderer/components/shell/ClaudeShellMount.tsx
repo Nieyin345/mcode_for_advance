@@ -276,6 +276,8 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
    * 新壳的模型是「tile 顺序即位置」，所以左停靠 = 把 aside 排在 chat **前**。
    * 这与旧壳的 `dockFlexOrder` 是同一个语义，只是表达方式不同。 */
   const rightDock = useSessionStore((s) => s.rightDock);
+  // 【UI 重建 2026-10-27】换边走 store 的同一个 action（与设置里的「面板停靠」同源）。
+  const setRightDock = useSessionStore((s) => s.setRightDock);
   const asideFirst = rightDock === "left";
   const tileForTab = (tab: string): PaneTileKind => {
     switch (tab) {
@@ -291,6 +293,15 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   };
   // 放大某一格（Claude 的 expandedTile）：只记 id，不改树 ——
   // 退出放大时布局原样回来。
+  /* 【UI 重建 2026-10-27】**顶栏的「右侧面板」开关必须真的生效。**
+   *
+   * 新壳的 tile 布局本来总是 `[chat, aside]` 两个格，`rightOpen`（顶栏菜单里
+   * 那项开关、以及设置里的默认值）**没有任何作用** —— 关掉之后 panel 还在。
+   * 真机套件 `arc005-pane-electron-smoke` 的 `COLLAPSED_COMPONENTS_PERSIST`
+   * 就是抓这个的（它要求关掉后 `[data-cds-aside]` 带 `aria-hidden="true"`）。
+   *
+   * 关掉的方式**不是卸载**：把 aside 的 flex 归 0 并标 aria-hidden ——
+   * 子树全程挂载，PTY/Monaco/草稿保活（与 terminal 塌高同一个做法）。 */
   const [expandedTile, setExpandedTile] = useState<string | null>(null);
   const [tileLayout, setTileLayout] = useState<TileLayout>((): TileLayout => {
     // 首帧就按 `rightDock` 排好 —— 用 effect 修正会让左停靠的用户看到一次闪动。
@@ -382,6 +393,8 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       tileLayout={tileLayout}
       isLoadingThread={!!loadingMessages}
       centerOccupied={showingDocument && !!centerFilePath}
+      asideOpen={props.rightOpen}
+      onMoveTile={() => setRightDock(rightDock === "left" ? "right" : "left")}
       onResizeTile={(_stack, a, na, b, nb) =>
         setTileLayout((prev) => resizeStack(prev, _stack, a, na, b, nb))}
       onExpandTile={setExpandedTile}

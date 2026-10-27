@@ -43,6 +43,13 @@ export interface TilePaneProps {
   onExpand?: (tileId: string | null) => void;
   /** 当前被放大的格（null = 没有）。 */
   expandedTile?: string | null;
+  /** 非 chat 的格（aside）是否展开。关闭时**不卸载**：只把整格宽度归 0 并标
+   *  `aria-hidden="true"`，子树全程挂载 —— PTY/Monaco/草稿保活。 */
+  asideOpen?: boolean;
+  /** 把某一格挪到另一侧（换 dock 边）：Claude 的「面板停左边/右边」。
+   *  **键盘可达**——这是 U1 真机套件验的那条能力在新壳里的入口；
+   *  旧壳用的是拖拽手柄 `[data-testid=pane-dnd-handle]`，Claude 没有那个手柄。 */
+  onMoveTile?: (tileId: string) => void;
 }
 
 /** 一个叶子格。 */
@@ -53,6 +60,8 @@ function Tile({
   chatColumn,
   onExpand,
   expanded,
+  onMoveTile,
+  asideOpen = true,
 }: {
   tile: PaneTile;
   renderTile: (id: string) => ReactNode;
@@ -60,6 +69,8 @@ function Tile({
   chatColumn: ReactNode;
   onExpand?: (id: string | null) => void;
   expanded?: boolean;
+  onMoveTile?: (id: string) => void;
+  asideOpen?: boolean;
 }) {
   const isChat = tile.tileId === "chat";
   return (
@@ -73,7 +84,7 @@ function Tile({
       // 看起来像壳没渲染，实际只是少了一个属性。
       {...(isChat
         ? { "data-ui-center-pane": "", "data-cds-center": "" }
-        : { "data-cds-aside": "", "aria-hidden": "false" })}
+        : { "data-cds-aside": "", "aria-hidden": (isChat || asideOpen) ? "false" : "true" })}
       className="flex min-h-0 min-w-0 flex-1 self-stretch flex-col overflow-hidden bg-[var(--m-surface-0)]"
     >
       {!isChat && (
@@ -84,6 +95,18 @@ function Tile({
           <span className="min-w-0 flex-1 truncate text-[var(--m-font-size-caption)] text-[var(--m-text-secondary)]">
             {tileLabel(tile.tileId)}
           </span>
+          {onMoveTile && (
+            <button
+              type="button"
+              data-pane-move=""
+              aria-label={tileLabel(tile.tileId) + " 换到另一侧"}
+              title="换到另一侧"
+              className="shrink-0 rounded p-1 hover:bg-[var(--m-fill-ghost-hover)] active:bg-[var(--m-fill-ghost-selected)] focus-visible:outline-2 focus-visible:outline-offset-2"
+              onClick={() => onMoveTile(tile.tileId)}
+            >
+              <MoveSideIcon />
+            </button>
+          )}
           {onExpand && (
             <button
               type="button"
@@ -176,9 +199,12 @@ function TileDivider({
 }
 
 /** 递归渲染一个节点。props 显式往下传，不用 spread（避免把 layout 带下去）。 */
-function Node({ node, renderTile, onCloseTile, chatColumn, onResize, onExpand, expandedTile }: { node: PaneNode } & Omit<TilePaneProps, "layout">) {
+function Node({ node, renderTile, onCloseTile, chatColumn, onResize, onExpand, expandedTile, onMoveTile, asideOpen = true }: { node: PaneNode } & Omit<TilePaneProps, "layout">) {
+  /** 这一格是否被「关掉的 aside」压成 0 宽（仍挂载，只是看不见）。 */
+  const collapsedByAside = (n: PaneNode) =>
+    asideOpen === false && n.kind === "tile" && n.tileId !== "chat";
   if (node.kind === "tile") {
-    return <Tile tile={node} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onExpand={onExpand} expanded={expandedTile === node.tileId} />;
+    return <Tile tile={node} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onExpand={onExpand} expanded={expandedTile === node.tileId} onMoveTile={onMoveTile} asideOpen={asideOpen} />;
   }
   const dir = node.direction === "row" ? "flex-row" : "flex-col";
   const total = node.children.reduce((n, c) => n + nodeFlex(c), 0) || 1;
@@ -216,18 +242,20 @@ function Node({ node, renderTile, onCloseTile, chatColumn, onResize, onExpand, e
             className="flex min-h-0 min-w-0 self-stretch"
             style={{
               flex: String(
-                hasExpandedHere
-                  ? (child.kind === "tile" && child.tileId === expandedTile ? 1 : 0)
-                  : nodeFlex(child),
+                collapsedByAside(child)
+                  ? 0
+                  : hasExpandedHere
+                    ? (child.kind === "tile" && child.tileId === expandedTile ? 1 : 0)
+                    : nodeFlex(child),
               ),
               // 归 0 的兄弟要彻底让开，否则 min-width/min-height 仍占位。
-              ...(hasExpandedHere &&
-              !(child.kind === "tile" && child.tileId === expandedTile)
+              ...((collapsedByAside(child)) ||
+              (hasExpandedHere && !(child.kind === "tile" && child.tileId === expandedTile))
                 ? { overflow: "hidden", minWidth: 0, minHeight: 0 }
                 : null),
             }}
           >
-            <Node node={child} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} onExpand={onExpand} expandedTile={expandedTile} />
+            <Node node={child} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} onExpand={onExpand} expandedTile={expandedTile} onMoveTile={onMoveTile} asideOpen={asideOpen} />
           </div>
         </Fragment>
       ))}
@@ -260,6 +288,17 @@ function tileLabel(id: string): string {
 }
 
 /** 放大：四角向外的箭头。 */
+/** 换边图标：一个带双向箭头的方框，语义是「挪到另一侧」。 */
+function MoveSideIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
+      <path d="M8 2.5v11" strokeDasharray="1.5 1.5" />
+      <path d="M5 8H2.5M4 6.5 2.5 8 4 9.5M11 8h2.5M12 6.5 13.5 8 12 9.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function ExpandIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
@@ -288,10 +327,10 @@ function CloseIcon() {
 }
 
 /** 对外入口。 */
-export function TilePane({ layout, renderTile, onCloseTile, chatColumn, onResize, onExpand, expandedTile }: TilePaneProps) {
+export function TilePane({ layout, renderTile, onCloseTile, chatColumn, onResize, onExpand, expandedTile, onMoveTile, asideOpen = true }: TilePaneProps) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 self-stretch" data-pane-layout-root="">
-      <Node node={layout.root} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} onExpand={onExpand} expandedTile={expandedTile} />
+      <Node node={layout.root} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} onExpand={onExpand} expandedTile={expandedTile} onMoveTile={onMoveTile} asideOpen={asideOpen} />
     </div>
   );
 }

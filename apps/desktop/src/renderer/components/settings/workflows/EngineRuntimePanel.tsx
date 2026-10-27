@@ -896,16 +896,19 @@ export function EngineRuntimePanel({ active: activeTab = true, engineId, editorO
   const refreshDeployState = listRead.refetch;
   /* ⚠️ `data?.engines` —— 可选链必须**一路到底**。
    *
-   * 原来写的是 `listRead.data?.engines.some(...)`：只保护了 `data` 为 null，
-   * 而 `engines` 是数组时才安全。当 Host 返回的载荷不带 `engines`（比如
-   * `{kind:"list", items:[]}` 这种形状，或者读失败后落到的空结果）时，
-   * 这一行抛 `TypeError: Cannot read properties of undefined (reading 'some')`，
-   * **整棵设置页被 React 卸载** —— 用户看到的是「点工作流 → 设置界面整个消失」，
-   * 控制台只有一条 TypeError，看不出是哪一页。
+   * 真实成因是**首帧 `data === undefined`**，不是「Host 漏了 engines」：
+   *   - `useRpc.ts:69` 是 `useState<T | undefined>(undefined)`，第一次请求成功
+   *     之前 `data` 就是 undefined；
+   *   - `workflowEngine.ts:onList` 永远 `return { engines }`（空也是空数组）；
+   *   - 契约 `WorkflowEngineListResult.engines` 是**必填**。
    *
-   * 这类崩溃会被 `settings-layout-smoke` 抓到（`[diag] exceptions=...`），
-   * 但它是运行时才炸的，类型系统看不见（`data` 的声明类型是可信的联合，
-   * 而真实 IPC 载荷不一定满足）。 */
+   * 所以 `listRead.data?.engines.some(...)` 在首帧求值成 `undefined.some()` →
+   * `TypeError: Cannot read properties of undefined (reading 'some')`，
+   * React 卸载整棵设置页 —— 用户看到「点工作流 → 设置界面整个消失」。
+   *
+   * **这个形状在本仓反复出现**（`t49-contributions-undefined-smoke` 整个套件
+   * 就是为 `contributionsOf(undefined)` 的首帧崩溃写的）。凡是「可选链只保护
+   * 了一层、下一层就调方法」的地方，首帧都会炸。 */
   const running = (listRead.data?.engines ?? []).some(
     e => e.engineId === "node-red" && e.state === "running",
   );
