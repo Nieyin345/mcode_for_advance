@@ -138,6 +138,29 @@ if (css.status !== undefined && css.status !== 0) throw Error("tailwind failed")
 // Load the exact production layer as a separate stylesheet in the same order.
 copyFileSync(join(root, "arc005-workspace-surface.css"), join(dir, "arc005-workspace-surface.css"));
 
+/* 【UI 重建 2026-10-28】**组件级 CSS 也要带进来 —— 否则代码块/思考折叠/
+ * 消息操作按钮全是裸的。**
+ *
+ * 生产里 `main.tsx` 走 vite，会处理组件文件里的 `import "./X.css"`。
+ * 而这里的基线**只编译 styles.css**（一个 Tailwind 入口），组件级 CSS
+ * 一个都没进去。
+ *
+ * 后果是实的：代码块在真实 app 里有边框、圆角、底色（`ClaudeCodeBlock.css`
+ * 写得很全），但基线拍出来是**一行灰字**——我把那个当成「代码块渲染坏了」
+ * 查了半天，实际是判据没带样式。
+ *
+ * 这 4 个是 AI 输出的核心样式，逐个 copy 过来（顺序与生产 import 顺序一致）。 */
+for (const cssName of [
+  "components/chat/ClaudeCodeBlock.css",
+  "components/chat/ClaudeThinkingAccordion.css",
+  "components/chat/ClaudeMessageActions.css",
+  "components/chat/ClaudeComposerToolbar.css",
+]) {
+  const src = join(root, cssName);
+  const flat = cssName.replaceAll("/", "__");
+  copyFileSync(src, join(dir, flat));
+}
+
 copyFileSync(join(suite, "api-stub.js"), join(dir, "api-stub.js"));
 copyFileSync(join(suite, "bridge.cjs"), join(dir, "bridge.cjs"));
 copyFileSync(join(suite, "electron-host.cjs"), join(dir, "electron-host.cjs"));
@@ -146,7 +169,7 @@ writeFileSync(
   join(dir, "page.html"),
   `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; worker-src 'none'">
-<title>settings focus electron u1</title><link rel="stylesheet" href="./app.css"><link rel="stylesheet" href="./arc005-workspace-surface.css"></head>
+<title>settings focus electron u1</title><link rel="stylesheet" href="./app.css"><link rel="stylesheet" href="./arc005-workspace-surface.css"><link rel="stylesheet" href="./components__chat__ClaudeCodeBlock.css"><link rel="stylesheet" href="./components__chat__ClaudeThinkingAccordion.css"><link rel="stylesheet" href="./components__chat__ClaudeMessageActions.css"><link rel="stylesheet" href="./components__chat__ClaudeComposerToolbar.css"></head>
 <body style="margin:0"><div id="root" style="height:100vh"></div><script src="./api-stub.js"></script><script src="./bundle.js"></script></body></html>`,
 );
 
