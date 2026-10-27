@@ -103,8 +103,42 @@ function picker() {
   await test('snapshot preserves UTF-8 BOM and restores exact original bytes', async () => {
     const file = path.join(temp, 'bom.txt'); const original = Buffer.from('\ufeff初始内容\r\n', 'utf8'); fs.writeFileSync(file, original); const snapshot = new snapshots.FileSnapshot(); await snapshot.recordPre(temp, file); fs.writeFileSync(file, 'changed'); const entries = await snapshot.freeze(); assert.equal(entries[0].before.charCodeAt(0), 0xfeff); await snapshots.restoreFiles(temp, entries); assert.deepEqual(fs.readFileSync(file), original);
   });
-  await test('snapshot refuses lossy bytes and never captures post-edit state as original', async () => {
-    const file = path.join(temp, 'non-utf8.txt'); fs.writeFileSync(file, Buffer.from([0xff, 0xfe, 0x61])); const snapshot = new snapshots.FileSnapshot(); await snapshot.recordPre(temp, file); fs.writeFileSync(file, 'now utf8'); await snapshot.recordPre(temp, file); assert.equal(snapshot.size, 0); assert.deepEqual(await snapshot.freeze(), []);
+  await test('snapshot surfaces lossy bytes as restorable:false and never uses post-edit state as original', async () => {
+    /* 【2026-10-28 改】原断言是 `size === 0` 且 `freeze()` 为空 —— 那是 **T125 之前**的契约。
+     *
+     * T125（`9821e69c1`）把行为反过来了，理由是产品后果：非 UTF-8 的文件
+     * （.docx / GBK 文本 / 图片）从前**整个从 `turn.files` 消失**，于是
+     * 「改了一份 .docx」在任务中心显示成「这一轮没有产出文件，是问答不是任务」
+     * —— Office 是任务中心唯一看不见的产品路径。
+     *
+     * 现在它们**出现**在 turn.files 里、带 `restorable: false`：
+     * `before` 是空串（我们从来没读到过它的字节）、`adds/dels` 为 0
+     * （没有可数的行）。`restoreFiles` 会在碰任何东西之前跳过它们，
+     * 并把它们报进单独的 `unrestorable` 桶 —— 与 conflicts 分开，因为
+     * 「之后又被改过、没有动它」对这类文件是**假话**（它们从没被再编辑）。
+     *
+     * 这条断言现在守的是 T125 的两件真事：
+     *   1. 有损字节**不得**被当成可还原（`restorable` 必须严格是 `false`）；
+     *   2. `before` 不得取自**编辑之后**的内容（那是把编造的历史当原件）。
+     *
+     * ⚠️ 判据用 `!== false` 的等号形态：T125 的注释写着「旧持久化条目
+     * 压根没有这个字段」，只有 `=== false` 那种写法会把它们放进来。 */
+    const file = path.join(temp, 'non-utf8.txt');
+    fs.writeFileSync(file, Buffer.from([0xff, 0xfe, 0x61]));
+    const snapshot = new snapshots.FileSnapshot();
+    await snapshot.recordPre(temp, file);
+    fs.writeFileSync(file, 'now utf8');
+    await snapshot.recordPre(temp, file);
+    const frozen = await snapshot.freeze();
+    assert.equal(frozen.length, 1, '有损字节必须出现在 turn.files 里（T125：否则任务中心看不见它）');
+    const entry = frozen[0];
+    assert.equal(entry.restorable, false, '有损字节不得被标成可还原');
+    assert.equal(entry.before, '', '`before` 必须是空串 —— 我们从来没读到过它的字节');
+    assert.equal(entry.adds, 0, '没有可数的行');
+    assert.equal(entry.dels, 0, '没有可数的行');
+    assert.equal(entry.kind, 'modified');
+    /* 关键：`before` 不得是**编辑之后**的内容。 */
+    assert.notEqual(entry.before, 'now utf8', '`before` 不得取自编辑之后的状态（那是编造历史）');
   });
   await test('snapshot clear resets excluded paths for a new lifecycle', async () => {
     const file = path.join(temp, 'reset.txt'); fs.writeFileSync(file, Buffer.from([0xff])); const snapshot = new snapshots.FileSnapshot(); await snapshot.recordPre(temp, file); snapshot.clear(); fs.writeFileSync(file, 'valid'); await snapshot.recordPre(temp, file); assert.equal(snapshot.size, 1);
