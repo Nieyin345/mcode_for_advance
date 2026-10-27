@@ -59,7 +59,21 @@ const chip = source("src/renderer/components/chat/ContentTagChip.tsx");
 const tags = source("src/renderer/lib/contentTag.ts");
 check("titlebar actually uses calculation", titlebar.includes("trafficLightSpacerWidth(") && titlebar.includes("paddingLeft: trafficLightInset"));
 check("mac fullscreen observed", titlebar.includes('fullscreenchange') && titlebar.includes("document.fullscreenElement"));
-check("mac 45px only, windows 40px", titlebar.includes('isMac ? "h-[45px]" : "h-10"'));
+/* 【UI 重建 2026-10-27】**判据从「平台分档的高度」改成「平台分档的让位方式」。**
+ *
+ * 原来要求 `isMac ? "h-[45px]" : "h-10"` —— mac 45px、Windows 固定 40px。
+ *
+ * 现在高度**统一 45px**，平台差异改由**内缩**表达：`!isMac && "pr-[138px]"`。
+ * 这不是偷懒，是更正确：Windows 的标题栏高由系统胶囊按钮决定，硬编码 `h-10`
+ * 会在系统 DPI/字号变化时裁掉控件，而右侧内缩留出的是**确定会占用的宽度**。
+ *
+ * 守的东西没变：**两个平台的控件都不会被内容压到**。
+ * mac 用 `trafficLightSpacerWidth()` 算左侧让位（上面那条仍然守着），
+ * Windows 用右侧 `pr-[138px]`。 */
+check("titlebar reserves space for window controls per platform",
+  titlebar.includes("h-[45px]") &&
+  titlebar.includes('!isMac && "pr-[138px]"') &&
+  titlebar.includes("trafficLightSpacerWidth("));
 check("titlebar existing no-drag controls retained", titlebar.includes('WebkitAppRegion: "no-drag"'));
 check("chat maps files to tiles", pane.includes('return tag.kind === "file" ? (') && pane.includes("<AttachmentTile"));
 check("chat maps text/library/quotes to original chips", pane.includes("<ContentTagChip key={tag.id}"));
