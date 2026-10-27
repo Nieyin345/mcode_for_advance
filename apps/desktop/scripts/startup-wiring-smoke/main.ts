@@ -87,6 +87,24 @@ function runAssembly(opts: {
 }): { order: string[]; tokenStore: { get(): string | null; set(t: string): void }; thrown: unknown } {
   const order: string[] = [];
   const tokenStore = opts.tokenStore ?? { get: () => null, set: () => {} };
+  /* 【2026-10-28】**`approval` 注入点已经不存在了。**
+   *
+   * 这里原本有一个「审批端口」注入点，用来验「某一步抛 → 中止后续」。
+   * 而 `StartupAssemblyDeps` 现在只有四个必需项 + 一个可选
+   * （见 `startup/assembleStartup.ts:55`）—— 审批端口早已改成装配内部的一步，
+   * 不再是可注入的依赖。
+   *
+   * 于是三条断言长期红着：
+   *   - 「两个注入点都被调到」→ 期望 `["approval","token"]`，实际只有 `["token"]`
+   *   - 「审批端口先于令牌落盘」→ 同上
+   *   - 「审批端口抛出的错误穿了出来」→ throwAt:"approval" 没有对应实现，抛不出来
+   *
+   * 红因看起来像「装配顺序坏了」，实际是**判据指着一个被删掉的注入点**。
+   *
+   * 修法不是去恢复那个注入点（那是代码重构的决定，不是判据能倒逼的），
+   * 而是**改成守真实存在的那个失败点**：令牌落盘是序列的最后一步，
+   * 让它在 `assembleStartup` 里抛，验「抛点之前的步骤已经生效、抛点如实穿出」。
+   * 这仍然覆盖原意（失败即中止、不半途续装），只是锚点换成真的。 */
   const deps: StartupAssemblyDeps = {
     dataRoot: opts.dataRoot,
     operationLedger: opts.ledger ?? sentinelLedger(),
@@ -170,39 +188,44 @@ function main(): void {
     check("主机 hook 授权落盘到 hooks/host-hook-grants.json", existsSync(join(dr, "hooks", "host-hook-grants.json")));
     check("主机 hook 授权表里有一条(即装配真的把持久化接上了)", listHostHookGrants().length === 1);
 
-    check("两个注入点都被调到", order.includes("approval") && order.includes("token"));
+    check("令牌落盘注入点被调到", order.includes("token"));
   }
 
-  // ── 2. 顺序:注入的 electron 相关装配按声明的先后 ───────────────────────
+  // ── 2. 顺序:注入点恰好被调到一次 ──────────────────────────────────────
   console.log("\n顺序(注入点被调到的先后)");
   {
     const { order } = runAssembly({ dataRoot: freshDataRoot() });
-    // ⚠️ **这条钉的是两个注入点的相对先后,不是全部 8 步的顺序** —— 名字如实这么写。
-    // 那 6 步直接调用彼此**没有依赖**(各装各的单例),把任意两步对调**不会**让任何断言变红
-    // (我实测过:对调「审批端口」与「场景运行期」仍 19/19 全绿)。所以这里不假装钉了
-    // 「整个序列的顺序」—— 那 6 步各自**装成了没有**由上面每步独立的可观察痕迹断言负责。
-    // 这两个注入点之间确实是真先后语义(令牌落盘是这段序列的收尾一步)。
-    check("两个注入点的相对先后:审批端口先于令牌落盘", order.join(",") === "approval,token", order);
+    /* 【2026-10-28】**这条原本钉「审批端口先于令牌落盘」，而审批端口注入点已不存在**
+     *（`StartupAssemblyDeps` 现在只有 `configureExtensionBridgeTokenStore` 一个
+     *  electron 相关注入，见 `startup/assembleStartup.ts:55`）。
+     *
+     * 现在还剩下能钉的真事实：令牌落盘是序列的**收尾一步**，且只该被调一次
+     *（调两次 = 装配跑了两遍）。「序列里那 7 步的相对顺序」不在这里钉 ——
+     * 它们各装各的单例、互不依赖，对调不会让任何断言变红；每一步**装成了没有**
+     * 由上面那些独立的可观察痕迹断言负责。 */
+    check("令牌落盘注入点恰好被调到一次", order.join(",") === "token", order);
   }
 
   // ── 3. 失败恢复:某一步抛 → 中止后续,如实向上抛(不半途续装) ──────────────
   console.log("\n失败恢复(中止,不半途续装)");
   {
+    /* 【2026-10-28】抛点从 `"approval"`（已删除的注入点）换成**真实存在的最后一步**
+     *  令牌落盘。原意（抛点之前装好的东西在、抛点如实穿出、不半途续装）不变。 */
     const dr = freshDataRoot();
     const ledger = sentinelLedger();
     const grantBefore = getGrantStore();
-    const { order, thrown } = runAssembly({ dataRoot: dr, ledger, throwAt: "approval" });
-    check("审批端口抛出的错误穿了出来(不吞)", thrown instanceof Error && /injected approval-port failure/.test((thrown as Error).message));
-    check("抛点之后的步骤被跳过(令牌落盘没被调到)", !order.includes("token"));
+    const { thrown } = runAssembly({ dataRoot: dr, ledger, throwAt: "token" });
+    check("最后一步抛出的错误穿了出来(不吞)", thrown instanceof Error && /injected token-store failure/.test((thrown as Error).message));
     check("抛点之前的落盘 store 已经装好(身份已变 = 半初始化状态真实存在)", getGrantStore() !== grantBefore);
     check("抛点之前的账本也是被注入的那一份", getOperationLedger() === ledger);
+    /* ⚠️ 边界：抛点已移到**最后一步**，所以「抛点之后的步骤被跳过」这条没有对象可验
+     *（没有后续步骤）。原来那条断言守着的是中间抛点，而中间那个注入点已经不存在了。
+     * 如实记在这里，不假装还守着它。 */
   }
   {
-    // 反向:让**最后一步**抛 —— 前面的注入点仍应已跑过。
-    const dr = freshDataRoot();
-    const { order, thrown } = runAssembly({ dataRoot: dr, throwAt: "token" });
-    check("最后一步抛也如实穿出", thrown instanceof Error && /injected token-store failure/.test((thrown as Error).message));
-    check("最后一步抛之前,审批端口已跑过(顺序不受中断回退)", order.join(",") === "approval,token", order);
+    // 正常跑完不抛。
+    const { thrown } = runAssembly({ dataRoot: freshDataRoot() });
+    check("正常装配不抛", thrown === null);
   }
 }
 

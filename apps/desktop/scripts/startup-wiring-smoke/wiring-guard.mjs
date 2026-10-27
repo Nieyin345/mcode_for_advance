@@ -95,7 +95,13 @@ if (!call || call.arguments.length !== 1 || !ts.isObjectLiteralExpression(call.a
     "dataRoot",
     "operationLedger",
     "visionRelay",
-    "assembleModuleApprovalPort",
+    /* 【2026-10-28】**`assembleModuleApprovalPort` 已从必填项删掉。**
+     *
+     * 那个注入点随 ModuleHost 于 2026-10-27 整体删除（`modules/moduleApproval.ts`
+     * 已不存在）。它从前是 shorthand property（`assembleStartup({ …, assembleModuleApprovalPort })`），
+     * 上面那段注释还拿它当例子 —— 一并更新，别让下一个人照着找一个删掉的函数。
+     *
+     * 现在 `StartupAssemblyDeps` 的必需项是这四个 + 可选 `reportCorruption`。 */
     "configureExtensionBridgeTokenStore",
     "bridgeTokenStore",
   ];

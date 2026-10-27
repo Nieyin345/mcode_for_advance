@@ -380,6 +380,21 @@ const DANGER: Record<string, string> = {
   "session.updateSettings": "改对话的模型 / 权限模式",
   "notification.setPrefs": "改通知偏好",
   "workflow.choose": "替用户在工作流岔路口选择",
+  /* 【2026-10-28 补回】`claude.saveSubagents` 曾被**误删**。
+   *
+   * `7e83e40f7`（「清掉十处指向已删方法的引用」）一次性删了四条：
+   * `modules.install` / `modules.installVsix` / `modules.remove` —— 这三个确实
+   * 已随 ModuleHost 删除；**但 `claude.saveSubagents` 没有**，它的 RPC、
+   * handler、`subagentStore.saveSubagents()` 都还在。
+   *
+   * 后果是它从 `danger`（高风险·每次批准）掉到了兜底 `write`（需批准）。
+   * 这个方法的语义是**改子代理定义** —— 那些定义会进后续每一轮的系统提示，
+   * 等于改变 agent 的行为指令。降一档就是「改一次行为不用每次点头」。
+   *
+   * 是 `t45-permission-map-drift-smoke` 的「条数不得减少」抓到的（17→14 里
+   * 的一条）。那条判据的注释写着「删档位是危险信号 —— 意味着有人把一个方法
+   * 从审批表里拿掉了」，正是这件事。 */
+  "claude.saveSubagents": "改子代理定义(会改变 agent 的行为指令)",
 };
 
 /** 动词猜不准、需要钉死的几条。 */

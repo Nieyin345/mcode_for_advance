@@ -13,11 +13,10 @@
  * ## 只抽「electron-free 的装配 + 两个注入口」,不抽运行时接线
  *
  * 这段里只有一部分能无头跑:`setOperationLedger` / `setVisionRelayImpl` / 三个落盘 store
- * 的装配 / `assembleSceneRuntime`。另外两步(`assembleModuleApprovalPort` 弹原生对话框、
- * `configureExtensionBridgeTokenStore` 读写设置表)**碰 electron / db**,不能静态 import
- * 进本模块(那会把 electron 拉进这个无头套件),所以它们**经 deps 注入** —— 断言的
- * 「装上了没有 / 装在第几步」不变。其余接线(工具表 host、run guard、公网 MCP、delegate)
- * 仍留在 `index.ts`,不在本函数的职责里。
+ * 的装配 / `assembleSceneRuntime`。另外一步(`configureExtensionBridgeTokenStore` 读写设置表)
+ * **碰 electron / db**,不能静态 import 进本模块(那会把 electron 拉进这个无头套件),
+ * 所以它**经 deps 注入** —— 断言的「装上了没有 / 装在第几步」不变。其余接线(工具表 host、
+ * run guard、公网 MCP、delegate)仍留在 `index.ts`,不在本函数的职责里。
  *
  * ## 顺序即语义 —— 抽出来时**逐字保留** `index.ts` 原顺序
  *
@@ -26,9 +25,17 @@
  * 3. `assembleGrantStore(dataRoot)`
  * 4. `assembleUnattendedPlanStore(dataRoot)`
  * 5. `assembleHostHookGrantPersist(dataRoot)`
- * 6. `assembleModuleApprovalPort()`(注入)
- * 7. `assembleSceneRuntime()`
- * 8. `configureExtensionBridgeTokenStore(store)`(注入)
+ * 6. `assembleSceneRuntime()`
+ * 7. `configureExtensionBridgeTokenStore(store)`(注入)
+ *
+ * ⚠️ **序列里原本还有第 6 步 `assembleModuleApprovalPort()`（模块 action 的原生审批端口，
+ * MC-060）。它随 ModuleHost 于 2026-10-27 整体删除**（`modules/moduleApproval.ts` 已不存在；
+ * 现行扩展审批走 `modules/extensionApproval.ts`，走的是渲染端审批卡不是这个端口）。
+ * 所以这里是 7 步不是 8 步。
+ *
+ * 删除当时**没同步改这段注释，也没改 `startup-wiring-smoke`** —— 于是那套断言
+ * 「两个注入点都被调到」「审批端口先于令牌落盘」长期红着，红因写着「装配顺序坏了」，
+ * 而实际是**判据指着一个已删除的注入点**。2026-10-28 一并修正。
  *
  * ## 失败即中止(如实穿透,不吞、不半途续装)
  *

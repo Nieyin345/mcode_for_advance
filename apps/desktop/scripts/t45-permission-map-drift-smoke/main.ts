@@ -234,9 +234,29 @@ console.log("\n④ 守卫自检");
     // 而不是让断言自然通过。
     const EXPECTED_MIN: Record<string, number> = {
       BLOCKED: 57,
-      CREDENTIAL_BEARING: 17,
-      DANGER: 94,
-      EXPLICIT: 81,
+      /* 【2026-10-28 下调，逐条核过】基线是「不得减少」的下限，下调是一个显式决定。
+       *
+       * 下面三个数都降了，**每条减少都能追到「那个方法本身已不存在」**，
+       * 不是有人把还在用的方法从审批表里拿掉了（那才是这套要抓的）：
+       *
+       * | 少了 | 原因 |
+       * |---|---|
+       * | `automation.watchTemplates` / `watchStatus` | 长任务守望 2026-10-27 移除，RPC 已删 |
+       * | `automation.watchTemplatesSave` | 同上 |
+       * | `onlyoffice.sessionState` | OnlyOffice 2026-10-24 整体移除 |
+       * | `modules.install` / `modules.remove` | ModuleHost 2026-10-27 下线 |
+       *
+       * 另外**两条不是减少、是搬家**，数了才知道：
+       *   - `workflowEngine.nodeInstall`：DANGER → **BLOCKED**（更严，Agent 通道压根拿不到）；
+       *   - `claude.saveSubagents`：曾被 `7e83e40f7` 连同上面那批**误删**（它没有随
+       *     ModuleHost 消失，RPC 与 `subagentStore.saveSubagents()` 都在），
+       *     已在本轮补回 DANGER —— 这条正是「条数不得减少」抓到的，判据有效。
+       *
+       * 所以：CREDENTIAL 17→14、DANGER 94→93、EXPLICIT 81→79 都是真实的合法删除。
+       * ⚠️ 下次再看到这里红，**先按上表那样逐条查方法还在不在**，别直接改数字。 */
+      CREDENTIAL_BEARING: 14,
+      DANGER: 93,
+      EXPLICIT: 79,
     };
     for (const [name, min] of Object.entries(EXPECTED_MIN)) {
       check(
