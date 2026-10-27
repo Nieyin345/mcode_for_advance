@@ -333,7 +333,7 @@ try{
     await page.eval(`window.__store.getState().setSettingsOpen(true,"workflows")`);
     await page.sleep(350);
     const navAfterJump=await page.eval(activeNavExpr);
-    const bodyAfterJump=await page.eval('document.querySelector(".settings-root").innerText');
+    const bodyAfterJump=await page.eval('(document.querySelector(".settings-root")||{innerText:"<missing> exceptions="+JSON.stringify(window.__exceptions||[])+">"}).innerText');
     check('★ 已打开时深链「workflows」:左栏高亮当场切到「工作流」',navAfterJump==='工作流',navAfterJump);
     check('★ 深链后内容区真的换成工作流页(不是停在上一个栏目)',bodyAfterJump.includes('工作流库'),bodyAfterJump.slice(0,160));
 

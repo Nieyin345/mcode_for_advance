@@ -4,9 +4,27 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 
-const read = (path: string) => readFileSync(resolve(path),"utf8");
-const files = execFileSync("git",["ls-files","-z","--","src","scripts","../../packages/contracts/src"],{encoding:"utf8"})
+/* 【UI 重建 2026-10-27】**`git ls-files` 列的是索引，不是磁盘。**
+ *
+ * 一个文件被 `rm` 掉但那次删除还没提交时，索引里仍然有它 —— 于是这里会拿
+ * 一个**不存在的路径**去 readFileSync，整个套件崩在 ENOENT 上。
+ * 崩溃看起来像「套件坏了」，实际是「有人刚删了文件还没提交」（多会话常见）。
+ *
+ * 所以只扫**磁盘上真存在**的文件。删掉的文件没有文本可查，本来也不在扫描范围里。
+ * ⚠️ 这不是「忽略错误」：`existsSync` 为假的条目**一条都不会被静默跳过而不记录**——
+ * 下面会把它们打出来，让人知道这次扫描少看了什么。 */
+const read = (path: string) => readFileSync(resolve(path), "utf8");
+const tracked = execFileSync("git",["ls-files","-z","--","src","scripts","../../packages/contracts/src"],{encoding:"utf8"})
   .split("\0").filter(Boolean);
+const files: string[] = [];
+const missingOnDisk: string[] = [];
+for (const f of tracked) {
+  try { readFileSync(resolve(f)); files.push(f); }
+  catch { missingOnDisk.push(f); }
+}
+if (missingOnDisk.length > 0) {
+  console.log(`NOTE: ${missingOnDisk.length} 个索引内文件在磁盘上不存在（删除未提交），本次不扫描：${missingOnDisk.slice(0, 5).join(", ")}${missingOnDisk.length > 5 ? " …" : ""}`);
+}
 let count=0,fail=0;
 function check(name:string,pass:boolean) {
  count++;if(!pass)fail++;
