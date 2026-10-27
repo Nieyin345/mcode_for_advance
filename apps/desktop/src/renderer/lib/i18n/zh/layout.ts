@@ -47,7 +47,9 @@ export const zh = {
   "layout.themeToDark": "切换到深色主题",
   "layout.expand": "展开",
   "layout.collapse": "折叠",
-  "layout.newSession": "新建会话",
+  /* 【UI 重建 2026-10-28】对齐 Claude 的图标行 `New` / 英文 `New Chat`。
+   * 「新建会话」→「新建对话」：Claude 用的是 Chat（对话）不是 Session（会话）。 */
+  "layout.newSession": "新建对话",
   "layout.newSessionHere": "在此项目下新建会话",
   "layout.noThreads": "暂无线程",
   "layout.loadMore": "加载更多",

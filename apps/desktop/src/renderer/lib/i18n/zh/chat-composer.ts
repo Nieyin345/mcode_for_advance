@@ -41,7 +41,9 @@ export const zh = {
   // 比不写更让人困惑。
   "chat.placeholderQueued": "排队输入… Enter 排队 · Ctrl+Enter 直接插话",
   "chat.placeholderQueuedPlain": "排队输入…  (Enter 加入队列)",
-  "chat.placeholderIdle": "发送消息…  (@ 引用文件 · / 命令 · 粘贴图片)",
+  /* 【UI 重建 2026-10-28】对齐 Claude 的 `What can I help you with today?`。
+   * 上一版把操作提示塞在占位符里；Claude 只有一句问句。 */
+  "chat.placeholderIdle": "今天有什么可以帮你的？",
   "chat.placeholderQueuedMod": "排队输入… Ctrl+Enter 排队 · Ctrl+Shift+Enter 直接插话",
   "chat.placeholderQueuedPlainMod": "排队输入…  (Ctrl+Enter 加入队列)",
   "chat.placeholderIdleMod": "发送消息…  (Ctrl+Enter 发送 · @ 引用文件 · / 命令)",

@@ -32,7 +32,12 @@ export const en = {
   "chat.jumpToBottom": "Jump to bottom",
   "chat.placeholderQueued": "Queue a message… Enter queues · Ctrl+Enter interjects",
   "chat.placeholderQueuedPlain": "Queue a message…  (Enter to enqueue)",
-  "chat.placeholderIdle": "Send a message…  (@ files · / commands · paste images)",
+  /* 【UI 重建 2026-10-28】Claude 的占位符原文（i18n-ui.txt 输入框组）：
+   * `What can I help you with today?`
+   *
+   * 上一版写的是 `Send a message…` + 一串操作提示。Claude 只写一句问句，
+   * 提示（@ 引用 / 斜杠命令）走输入框上方的 chip 行，不塞在占位符里。 */
+  "chat.placeholderIdle": "What can I help you with today?",
   "chat.placeholderQueuedMod": "Queue a message… Ctrl+Enter queues · Ctrl+Shift+Enter interjects",
   "chat.placeholderQueuedPlainMod": "Queue a message…  (Ctrl+Enter to enqueue)",
   "chat.placeholderIdleMod": "Send a message…  (Ctrl+Enter sends · @ files · / commands)",

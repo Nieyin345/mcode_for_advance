@@ -44,7 +44,9 @@ export const en = {
   "layout.themeToDark": "Switch to dark theme",
   "layout.expand": "Expand",
   "layout.collapse": "Collapse",
-  "layout.newSession": "New session",
+  /* 【UI 重建 2026-10-28】Claude 的原文是 **New Chat**，不是 New session。
+   * 见 i18n-ui.txt 的侧栏组：`New Chat`。 */
+  "layout.newSession": "New Chat",
   "layout.newSessionHere": "New session in this project",
   "layout.noThreads": "No threads yet",
   "layout.loadMore": "Load more",

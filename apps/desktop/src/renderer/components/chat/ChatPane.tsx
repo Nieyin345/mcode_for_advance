@@ -3779,7 +3779,7 @@ function ChatPaneForSession({
                * `data-look="capsule"` + 下面这段控制显隐。 */}
               <div
                 data-cds="ComposerStatusText"
-                className="composer-status-text hidden min-w-0 shrink items-center gap-2 text-[length:var(--cmp-type-size)] text-[var(--m-text-muted)] md:flex"
+                className="composer-status-text hidden min-w-0 shrink items-center gap-2 text-[length:var(--cmp-type-size)] text-[var(--m-text-muted)]"
               >
                 <PermissionText />
               </div>

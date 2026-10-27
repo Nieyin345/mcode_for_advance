@@ -3227,10 +3227,18 @@ button.chat-ledger-head:hover {
  * 显示在那一行左端（见 `ChatPane` 的 `ComposerStatusText`）。
  * 两处都画会让同一句话在一行里出现两次，右端还被截断。
  *
- * 只在**宽屏**（≥768px）隐藏 —— 窄屏时左侧那行是 `hidden md:flex`，
- * 权限选择器在那里是唯一入口，不能藏。用媒体查询而不是容器查询：
- * 判据是「左侧那行在不在」，而它自己就按视口宽度切换 —— 两处必须同一个判据。 */
-@media (min-width: 768px) {
+ * ## 【UI 重建 2026-10-28】**改成容器查询，与 Claude 一致。**
+ *
+ * 原来用的���视口 `@media (min-width: 768px)`，理由是「左侧那行自己就按
+ * 视口宽度切换」。但那是**上一版的问题**，不是理由 —— 逆向报告 §8.7 明确：
+ * Claude 用**命名容器查询**而不是 media query，因为「窗口宽 ≠ 聊天窗格宽」。
+ * 右栏打开、tile 分栏之后，窗口 1280 时聊天窗格可能只有 600。
+ *
+ * 所以两处一起改：左侧那行（`ComposerStatusText`）从 `hidden md:flex`
+ * 改成容器查询，这里也用同一个容器。
+ *
+ * 容器是 `[data-chat-root]`（它已经是 `container-type: inline-size`）。 */
+@container (width >= 34rem) {
   [data-chat-root] .composer-minipill[data-look="capsule"] [data-pill-perm] {
     display: none;
   }
@@ -5211,4 +5219,18 @@ html[data-reduce-motion="true"] [data-ui-shell-variant="workspace"] .composer-se
 /* 减少动效：不做淡入，直接切换 —— 但仍然保持「静态不显示」。 */
 @media (prefers-reduced-motion: reduce) {
   .chat-timeline-rail { transition: none; }
+}
+
+/* 权限状态文字：窄窗格隐藏、宽窗格显示。
+ *
+ * 【UI 重建 2026-10-28】原来是 Tailwind 的 `hidden md:flex`（**视口**断点）。
+ * 改成容器查询 —— 判据应该是「聊天窗格多宽」，不是「窗口多宽」：
+ * 右栏打开、tile 分栏之后，1280 的窗口里聊天只占 600。 */
+.composer-status-text {
+  display: none;
+}
+@container (width >= 34rem) {
+  [data-chat-root] .composer-status-text {
+    display: flex;
+  }
 }
