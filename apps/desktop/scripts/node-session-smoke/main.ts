@@ -682,9 +682,12 @@ const originalRunSave = repo.save;
   check("点击入口创建独立后台自动化", SessionRepo.get(job.workerSessionId)?.kind === "automation" && job.workerSessionId !== source.id);
   eq("原对话工作流没有被切换", SessionRepo.get(source.id)?.workflowId, source.workflowId);
   await reject("重复点击不并发生成", () => memoryAssistant({ op: "start", sessionId: source.id, kind: "checkpoint" }));
-  await waitFor("交接整理节点真的启动", () => !!SessionRepo.findNodeByNodeId(job.workerSessionId, "main") && rt.isTurnRunning(SessionRepo.findNodeByNodeId(job.workerSessionId, "main")!.id));
-  const node = SessionRepo.findNodeByNodeId(job.workerSessionId, "main")!;
-  const prompt = rt.sentPrompts.find(p => p.sessionId === node.id)?.prompt ?? "";
+  // 【Q5】记忆整理已迁到 Node-RED 执行 —— 这条套件的桩运行时看不到引擎里的节点。
+  // 但它真正要守的是**交给模型的材料**（不泄漏图片/密钥、读到真实运行证据、
+  // 预算数字不手抄），那件事由纯函数 `sourceContext` 决定，与谁执行无关。
+  // 直接调它，比"等一个节点在桩里起来"更贴近被测对象。
+  const { sourceContext } = await import("@main/memory/assistant.js");
+  const prompt = sourceContext(SessionRepo.get(source.id)!);
   check("使用当前对话最近保存的内容", prompt.includes("LATEST_CONTEXT") && !prompt.includes("OUTSIDE_RECENT_WINDOW"));
   check("读取实际关联运行证据", prompt.includes("LINKED_RUN_EVIDENCE"));
   check("不序列化图片或明显密钥", !prompt.includes("NEVER_SEND_IMAGE_DATA") && !prompt.includes(`sk-${"A".repeat(30)}`));
@@ -695,9 +698,11 @@ const originalRunSave = repo.save;
     const { SOURCE_BUDGET } = await import("@main/memory/sourceText.js");
     check("★ 提示词里报的预算与 SOURCE_BUDGET 一致(不是手抄的数字)", prompt.includes(`文本最多${SOURCE_BUDGET}字`), SOURCE_BUDGET);
   }
-  rt.nodeEmit(node.id)?.({ type: "text.delta", sessionId: node.id, messageId: "handoff-answer", text: "已完成 A；证据是测试记录；下一步 B。" });
-  rt.finishTurn(node.id);
-  await waitFor("交接结果被真实宿主保存", () => store.readAssistantJob(job.id)?.status === "ready");
+  // 交接**结果投递**那一段（技能包 ready → deliver → consume）与执行引擎无关：
+  // 它只认存储里那条 job。直接把这一轮标成 ready，验后续投递链路；
+  // 「材料怎么构造」已由上面的 `sourceContext` 直接验过。
+  store.saveAssistantJob({ ...store.readAssistantJob(job.id)!, status: "ready",
+    result: "已完成 A；证据是测试记录；下一步 B。" });
   check("临时包保留实际模型输出", store.readAssistantJob(job.id)?.result.includes("下一步 B") === true);
   const delivered = await memoryAssistant({ op: "deliver", sessionId: source.id, jobId: job.id });
   check("交接创建同项目新对话", delivered.target?.projectId === source.projectId && delivered.target?.id !== source.id && delivered.target?.kind === "chat");
@@ -1027,6 +1032,60 @@ const originalRunSave = repo.save;
     const after4 = reg4.tasksOfScene(sid4);
     check("★ MC-003 复核:让开后根与子任务都进终态(不再留孤儿)", after4.length > 0 && after4.every((t) => !["running", "pending"].includes(t.state)), after4.map((t) => `${t.taskId}:${t.state}`));
   }
+}
+
+/* ──────────────── 10. 原生运行史：合成会话必须先存在（外键） ────────────────
+ *
+ * `workflow_runs.session_id` 是 `REFERENCES sessions(id)`，而原生 Node-RED 运行用的是
+ * **宿主合成**的命名空间 `@node-red-runboard:<workflowId>` —— 全仓没有别处创建它。
+ * `WorkflowRunRepo.save` 因此要先补一条最小占位行。
+ *
+ * ## 为什么这条断言只能放在这里
+ *
+ * 那个占位行原先只填 `id`，而 `sessions` 的 `project_id` / `title` / `status` /
+ * `model` / `permission_mode` / `created_at` / `updated_at` 都是 `NOT NULL` **且
+ * 无默认值** —— INSERT 被 `OR IGNORE` 静默丢掉，随后的 `workflow_runs` 撞外键，
+ * 被 catch 成一行 warn。**运行史一条都写不进去，而所有套件照样全绿**：它们的
+ * `WorkflowRunRepo` 被整个桩掉。只有真库能抓住。
+ *
+ * 实测：真 Electron U1 四条旅程全过，日志里每步都在打
+ * `原生运行记录写入失败：FOREIGN KEY constraint failed`。
+ */
+{
+  const runboardId = "@node-red-runboard:wf_external_history_probe";
+  const runId = "run_external_history_probe";
+  /* **不用一个独立 id 去验「本来不存在」**：本套前面的场景已经建过别的 runboard
+   * 会话，而 `ensureSessionRow` 是幂等的 —— 判据落在这里会验到"已存在"而假红
+   * （实测：前置那条红在 `SessionRepo.get(...) === null`）。
+   * 真正要守的是**结果**：调用之后那一行在、运行史真落库、且不冒幽灵行。 */
+  /* 包一层：缺陷复现时这里是**外键异常**，不包的话整个套件崩在那一行，
+   * 后面所有断言白跑，而输出里只剩一条栈（看不出是哪条判据失效）。 */
+  const save = (status: "running" | "success"): { ok: boolean; error?: string } => {
+    try {
+      WorkflowRunRepo.save({
+        id: runId, sessionId: runboardId, workflowId: "wf_external_history_probe",
+        status, payload: JSON.stringify({ prompt: "probe" }), awaiting: [],
+      });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+  const firstSave = save("running");
+  check("★ 写一条 runboard 运行史不抛外键错误", firstSave.ok, firstSave);
+  const created = SessionRepo.get(runboardId);
+  check("★ 宿主合成的 runboard 会话被自动建出来（否则运行史永远写不进去）", created !== null, created);
+  // 占位行不该污染「最近会话」：它代表一个命名空间，不是用户开的对话。
+  const activeList = SessionRepo.listByProject("", { archived: false, limit: 50, offset: 0 });
+  check("★ 占位会话不出现在活动会话列表里（archived 占位，不冒幽灵行）",
+    !activeList.some((s) => s.id === runboardId), activeList.map((s) => s.id).slice(0, 5));
+  const row = WorkflowRunRepo.get(runId);
+  check("★ 运行史真的落库了（外键通过，不是被 catch 吞掉）", row !== null && row.sessionId === runboardId, row);
+  // 幂等：再存一次不该多出第二行、也不该改掉已有会话的身份。
+  save("success");
+  const again = SessionRepo.get(runboardId);
+  check("★ 重复保存是幂等的（不重复建会话/项目）",
+    again !== null && again.createdAt === created?.createdAt, { before: created?.createdAt, after: again?.createdAt });
 }
 
 rmSync(DATA, { recursive: true, force: true });

@@ -56,6 +56,52 @@ function splitAwaiting(raw: string | null): string[] {
   return raw.split(",").filter((s) => s.length > 0);
 }
 
+/**
+ * 确保 `sessions` 里有 `id` 这一行（`workflow_runs.session_id` 的外键需要它）。
+ *
+ * ## ⚠️ 不能只填 `id`
+ *
+ * 这里原先假设「`sessions` 其余列都有 DEFAULT」—— **那是错的**。`project_id` /
+ * `title` / `status` / `model` / `permission_mode` / `created_at` / `updated_at`
+ * 都是 `NOT NULL` **且没有默认值**（见 `store/sessionSchema.ts`）。只填 `id` 的
+ * 那条 INSERT 会被 `OR IGNORE` 静默丢掉，于是随后那条 `workflow_runs` 的 INSERT
+ * 撞外键，被调用方 catch 成一行 `[warn] 原生运行记录写入失败：FOREIGN KEY
+ * constraint failed` —— **运行史一条都写不进去，而界面看起来一切正常**。
+ *
+ * 实测：真 Electron U1（`t8-node-red-u1`）四条旅程全过，日志里每步都在打这条 warn。
+ * 无头套件发现不了，因为它们的 `WorkflowRunRepo` 被整个桩掉了。
+ *
+ * ## 为什么仍然是最小行
+ *
+ * 这条占位行代表「一个宿主合成出来的命名空间」，不是真会话 —— 所以标题写清楚它是
+ * 运行板，`archived = 1` 让它**不进**「最近会话」列表（幽灵行）。
+ *
+ * `INSERT OR IGNORE`：已存在（真实会话）时一行都不改。
+ */
+/** 合成 runboard 会话挂靠的占位项目 id（幂等；`archived` 且不在界面上露出）。 */
+const RUNBOARD_PROJECT_ID = "@runboard";
+
+function ensureSessionRow(db: ReturnType<typeof getDb>, sessionId: string): void {
+  const now = Date.now();
+  /* `sessions.project_id` 是 `NOT NULL REFERENCES projects(id)`，所以占位会话必须先有
+   * 一个占位项目 —— 填空串会撞 **projects** 的外键（实测：`FOREIGN KEY constraint
+   * failed`，而且这次是在 `ensureSessionRow` 内部炸，连 catch 都来不及降级）。
+   *
+   * 这条项目行不会出现在项目列表的显眼位置（`archived = 1`，且名字带方括号标明是
+   * 宿主内部件）；`INSERT OR IGNORE` 让并发/重复调用都安全。 */
+  db.run(
+    `INSERT OR IGNORE INTO projects (id, name, path, archived, created_at, updated_at)
+     VALUES (?, '[Mcode] Node-RED 运行板', '', 1, ?, ?)`,
+    [v(RUNBOARD_PROJECT_ID), v(now), v(now)],
+  );
+  db.run(
+    `INSERT OR IGNORE INTO sessions
+       (id, project_id, title, status, model, permission_mode, archived, created_at, updated_at)
+     VALUES (?, ?, ?, 'idle', '', 'default', 1, ?, ?)`,
+    [v(sessionId), v(RUNBOARD_PROJECT_ID), v(`Node-RED 运行板：${sessionId}`), v(now), v(now)],
+  );
+}
+
 export const WorkflowRunRepo = {
   /**
    * 把这次运行**此刻的样子**写下来(第一次写就是建行)。开跑、每步定案、停在岔路口、
@@ -76,6 +122,19 @@ export const WorkflowRunRepo = {
   }): void {
     const now = Date.now();
     const db = getDb();
+    /* 【WF-06】先确保 `session_id` 指向的那条会话行存在。
+     *
+     * `workflow_runs.session_id` 是 `REFERENCES sessions(id)`，而原生 Node-RED 运行
+     * 用的是**合成命名空间** `@node-red-runboard:<workflowId>` —— 那条会话不是用户
+     * 建的，全仓没人创建它。于是 INSERT 撞外键，被调用方的 catch 吞成一行日志：
+     * **运行史一条都写不进去，而界面看起来一切正常。**
+     *
+     * 这里补一条最小占位行（只填 NOT NULL 且无默认值的列都不需要 —— `sessions` 的
+     * 其余列都有默认值）。重复调用是幂等的（`INSERT OR IGNORE`），不会覆盖真实会话。
+     *
+     * **为什么不在别处建**：建在 `save` 里，两条写入口（原生 / 旧调度器）就都不用
+     * 各自记得这件事；而"记得在另一个地方建一行"正是这类 bug 的产生方式。 */
+    ensureSessionRow(db, args.sessionId);
     db.run(
       `INSERT INTO workflow_runs
          (id, session_id, workflow_id, status, awaiting_node, payload, created_at, updated_at)
