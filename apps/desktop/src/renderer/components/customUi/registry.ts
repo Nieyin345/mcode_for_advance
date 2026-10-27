@@ -96,6 +96,10 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
     // 顺序照 Claude 的顶栏图标行：终端在浏览器之后、预览之前。
     { id: "terminal", labelKey: "layout.tabTerminal", icon: IconTerminal2 },
     { id: "sidechat", labelKey: "layout.tabSideChatPane", icon: IconMessages },
+    // 【UI 重建 2026-10-28】扩展视图与工作流画布 —— 此前是「能渲染但没入口」
+    // 的死格（`mcpapp` / `canvas` 两个分支都写好了，没有页签映射过去）。
+    { id: "extensions", labelKey: "layout.tabExtensions", icon: IconBolt },
+    { id: "canvas", labelKey: "layout.tabCanvas", icon: IconListTree },
     { id: "turns", labelKey: "layout.tabTurns", icon: IconListDetails },
     { id: "flow", labelKey: "layout.tabFlow", icon: IconListTree },
     { id: "tasks", labelKey: "layout.tabTasks", icon: IconTerminal2 },
@@ -115,7 +119,7 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
 };
 
 /** 右栏内置页签的 id(与 `RightPanelTab` 的值一一对应)。 */
-export const BUILTIN_TAB_IDS = ["overview", "files", "git", "browser", "terminal", "sidechat", "turns", "flow", "tasks", "taskcenter", "preview"] as const;
+export const BUILTIN_TAB_IDS = ["overview", "files", "git", "browser", "terminal", "sidechat", "extensions", "canvas", "turns", "flow", "tasks", "taskcenter", "preview"] as const;
 export type BuiltinTabId = (typeof BUILTIN_TAB_IDS)[number];
 export function isBuiltinTabId(id: string): id is BuiltinTabId {
   return (BUILTIN_TAB_IDS as readonly string[]).includes(id);

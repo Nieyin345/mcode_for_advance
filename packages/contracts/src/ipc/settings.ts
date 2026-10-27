@@ -662,6 +662,14 @@ export const RightPanelTabSchema = z.enum([
   "browser",
   "terminal",
   "sidechat",
+  /* 【UI 重建 2026-10-28】扩展视图与工作流画布。
+   *
+   * 两者此前都是**能渲染但没有入口**的死格：`mcpapp` → `ExtensionViewsPane`
+   * 和 `canvas` → Node-RED 画布都写好了，但没有任何页签映射过去。
+   * 事实后果：装了扩展在右栏找不到它；WF-01 写明「画布右栏也可停靠」，
+   * 而停靠入口随旧右栏一起下线了。 */
+  "extensions",
+  "canvas",
   "turns",
   "preview",
   "flow",

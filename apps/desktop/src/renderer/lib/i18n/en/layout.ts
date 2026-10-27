@@ -153,6 +153,8 @@ export const en = {
    *  "Sub-sessions" (a different, left-bar tab). */
   "layout.tabTerminal": "Terminal",
   "layout.tabSideChatPane": "Side Chat",
+  "layout.tabExtensions": "Extensions",
+  "layout.tabCanvas": "Canvas",
   "layout.tabFiles": "Files",
   /** Right-rail "Preview" — click a file on the left to glance at it here. */
   "layout.tabPreview": "Preview",

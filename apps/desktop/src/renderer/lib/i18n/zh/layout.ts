@@ -163,6 +163,8 @@ export const zh = {
    *  （它是左栏页签，语义不同），复用会把两处一起改掉。 */
   "layout.tabTerminal": "终端",
   "layout.tabSideChatPane": "侧聊",
+  "layout.tabExtensions": "扩展",
+  "layout.tabCanvas": "画布",
   "layout.tabFiles": "文件",
   "layout.tabTurns": "轮次流程",
   /** 右栏的**运行看板** —— 这张图现在跑到哪一格、哪几个分身还在干活

@@ -54,7 +54,26 @@ export type PaneTileKind =
    *  Outputs / Changes 卡片堆）—— Claude Code 模式的默认右栏。 */
   | "overview"
   /** 【UI 重建 2026-10-27】侧聊（Claude 的 `Show Side Chat`）。 */
-  | "sidechat";
+  | "sidechat"
+  /** 【UI 重建 2026-10-28】内嵌浏览器。
+   *
+   *  Claude 的 tile 类型集里没有 `browser`，但它的 `paneViews` 里
+   *  **`browserView` 与 `artifactView` 是两个独立字段** —— 浏览器视图在 Claude
+   *  的模型里本来就与其它 pane 并列，只是没被收进那八个 tile 名。
+   *
+   *  这个 tile 的存在是为了**解开一次命名撞车**：`browser` 页签曾被接到
+   *  `mcpapp` 上，而 `mcpapp` 的原义是「扩展贡献的视图」。两者共用一个 tile
+   *  的结果是无论接哪一个，另一个就再也找不到入口（事实：接成浏览器之后，
+   *  扩展视图在右栏彻底消失）。拆成两格，各自按本义接。 */
+  | "browser"
+  /** 【UI 重建 2026-10-28】工作流**画布**（Node-RED 原厂编辑器）。
+   *
+   *  与 `watercolor`（运行看板 `WorkflowBoardPanel`）是两个面板，不是同一格的
+   *  两种形态：看板回答「这张图跑到哪一格」，画布回答「图长什么样、怎么连」。
+   *  功能文档 WF-01 写明画布在「设置 → 工作流 → 引擎页；**右栏也可停靠**」，
+   *  而停靠入口（旧 `RightPanel` 的 `pinnedFlow`）随旧右栏一起下线了。这一格
+   *  就是那个停靠位。 */
+  | "canvas";
 
 /** 一个叶子 tile。 */
 export interface PaneTile {
@@ -93,6 +112,9 @@ const NON_CHAT_KINDS: readonly PaneTileKind[] = [
   "overview",
   // 【UI 重建 2026-10-27】侧聊。
   "sidechat",
+  // 【UI 重建 2026-10-28】浏览器与工作流画布 —— 两个都是独占整格的工具面板。
+  "browser",
+  "canvas",
 ];
 
 export function isNonChatTile(kind: PaneTileKind): boolean {

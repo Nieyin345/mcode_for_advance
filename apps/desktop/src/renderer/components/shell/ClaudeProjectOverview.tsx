@@ -91,25 +91,26 @@ function Card({
     <section
       data-cds="Card"
       data-cds-panel=""
-      // 【UI 重建 2026-10-27】卡片必须有**自己的底色 + 圆角 + 一圈发丝边**，
-      // 三层缺一不可。第一版只给了底色和圆角，而面板底色与卡片底色恰好
-      // 同值（都是 surface-1）—— 于是卡片在视觉上完全消失，整栏看起来是
-      // 一片没有分界的白。真机截图里每张卡是**明确的圆角白块**，靠间隙
-      // 和一圈极淡的边分开。
+      // 【UI 重建 2026-10-28】卡片几何按真机截图（放大到 3 倍逐项对过）：
       //
-      // 描边用 `--m-border`（= 上游 `--cds-border` 的 10% 中性），不用
-      // `--m-panel-shadow` —— 后者在 Mcode 的主题里是 `0 0 0 1px rgb(var(--edge))`，
-      // 而 `--edge` 是 14% 的**有意偏离**（见 `b736c814`），在浅底上比 10% 重。
-      className="flex shrink-0 flex-col overflow-hidden border border-[var(--m-border)] bg-[var(--m-surface-1)]"
+      //   - **不要 `border`。** 截图里的卡片边界是一圈**极淡的描边 + 微阴影**，
+      //     不是一条实的 border 线。上一版用 `border border-[var(--m-border)]`
+      //     （10% 中性），在浅底上读起来像「表格框」。
+      //   - 圆角约 **12px**（截图量：卡片高约 210 物理 px，圆角约占 21 物理 px
+      //     ÷1.75 ≈ 12 css px），比 `--m-panel-radius`(9.41) 大一档。
+      //   - 底色是 `--cds-surface-1`（比画布略亮），靠这个 + 描边和画布分开。
+      className="flex shrink-0 flex-col overflow-hidden bg-[var(--m-surface-1)]"
       style={{
-        borderRadius: "var(--m-panel-radius, 9.41px)",
+        borderRadius: 12,
+        boxShadow:
+          "0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 2px 0 rgb(0 0 0 / 0.04)",
       }}
     >
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 px-3 py-2.5 text-left text-[length:var(--m-fs-body)] font-medium text-[var(--m-text-primary)] hover:bg-[var(--m-fill-ghost-hover)]"
+        className="flex w-full items-center gap-1.5 px-3 py-2.5 text-left text-[length:var(--m-fs-body)] font-semibold text-[var(--m-text-primary)] hover:bg-[var(--m-fill-ghost-hover)]"
       >
         <span className="min-w-0 flex-1 truncate">{title}</span>
         {right}
@@ -208,9 +209,11 @@ export function ClaudeProjectOverview() {
       {/* ── Environment ──────────────────────────────────────────── */}
       <Card title="Environment" open={open.environment} onToggle={toggle("environment")}>
         <Row icon={<MonitorIcon />} trailing={
+          /* 【UI 重建 2026-10-28】截图里 `Save` 是**带下划线的文字链**，
+           * 不是一个带底/带框的按钮。 */
           <button
             type="button"
-            className="rounded-[var(--radius-btn-xs)] px-1.5 py-0.5 text-[length:var(--m-fs-caption)] text-[var(--m-text-muted)] hover:bg-[var(--m-fill-ghost-hover)]"
+            className="text-[length:var(--m-fs-caption)] text-[var(--m-text-muted)] underline underline-offset-2 hover:text-[var(--m-text-secondary)]"
           >
             Save
           </button>
@@ -285,12 +288,18 @@ function ContextMeter() {
   });
   if (pct === null) return null;
   return (
-    <span className="flex shrink-0 items-center gap-1.5 text-[length:var(--m-fs-caption)] text-[var(--m-text-muted)]">
+    <span className="flex shrink-0 items-center gap-2 text-[length:var(--m-fs-caption)] text-[var(--m-text-muted)]">
       {pct}%
-      <span className="relative h-1.5 w-6 overflow-hidden rounded-full bg-[var(--m-fill-ghost-selected)]">
+      {/* 【UI 重建 2026-10-28】进度条形状按截图：一个**实心蓝胶囊**夹在灰轨道里。
+       * 截图放大后能看到：轨道约 24×8 css px、圆角全满，填充是纯 `#2a78d6`
+       * 那种实蓝（不是渐变也不是细线）。
+       *
+       * 上一版是 `h-1.5 w-6` 的 2px 细条 —— 太细，在缩略图里根本看不出是进度。
+       * 这里改成 26×7 的胶囊，填充同宽圆角。 */}
+      <span className="relative h-[7px] w-[26px] overflow-hidden rounded-full bg-[var(--m-fill-ghost-selected)]">
         <span
           className="absolute inset-y-0 left-0 rounded-full bg-[var(--m-accent)]"
-          style={{ width: `${Math.min(100, pct)}%` }}
+          style={{ width: `${Math.min(100, Math.max(4, pct))}%` }}
         />
       </span>
     </span>

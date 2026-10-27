@@ -360,7 +360,17 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       case "flow": return "watercolor";
       case "tasks": return "pr";
       case "taskcenter": return "cr";
-      case "browser": return "mcpapp";
+      // 【UI 重建 2026-10-28】**浏览器与扩展视图拆成两个 tile。**
+      //
+      // 此前 `browser` 映射到 `mcpapp`，而 `mcpapp` 的原义是「扩展贡献的视图」。
+      // 两者共用一个 tile，接哪个另一个就断 —— 事实是接成浏览器之后，
+      // **扩展视图在右栏彻底没有入口了**。
+      // 现在：`browser` 页签 → `browser` tile → `BrowserPane`；
+      //       `mcpapp` 保留给扩展视图（`ExtensionViewsPane`）。
+      case "browser": return "browser";
+      // 【UI 重建 2026-10-28】两个「能渲染但没入口」的死格。
+      case "extensions": return "mcpapp";
+      case "canvas": return "canvas";
       // 【UI 重建 2026-10-27】Claude 六项能力里的两项，此前没有页签能切到：
       //   - `terminal`：`paneContent` 的 `case "terminal"` 早就写好了，
       //     可达路径是**零** —— 终端只在底部横条。

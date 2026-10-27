@@ -50,6 +50,16 @@ export interface TilePaneProps {
    *  **键盘可达**——这是 U1 真机套件验的那条能力在新壳里的入口；
    *  旧壳用的是拖拽手柄 `[data-testid=pane-dnd-handle]`，Claude 没有那个手柄。 */
   onMoveTile?: (tileId: string) => void;
+  /** 【UI 重建 2026-10-28】aside 格标题行里、面板名**左侧**的内容。
+   *
+   *  右栏的页签切换器（`PaneTabSwitcher`）挂在这里。为什么是插槽而不是
+   *  在这里直接 import 它：`TilePane` 是通用渲染器，换一个壳（`ClassicShell`
+   *  的变体）也会用它，而页签清单只属于新壳。
+   *
+   *  只在**第一个**非 chat 格出现 —— 切分后会有多格，每格都挂一份切换器
+   *  会得到两排一样的页签（它们是同一个 store 值的两个视图，点哪排都行，
+   *  但视觉上是重复的）。 */
+  asideHeader?: ReactNode;
 }
 
 /** 一个叶子格。 */
@@ -281,14 +291,19 @@ function tileLabel(id: string): string {
     pr: "合并请求",
     cr: "评审",
     terminal: "终端",
-    watercolor: "画布",
-    mcpapp: "MCP 应用",
+    watercolor: "运行看板",
+    mcpapp: "扩展",
     turns: "轮次",
     // 【UI 重建 2026-10-27】此前**漏了这一项**，于是右栏标题直接显示原始
     // tile id 字符串 `overview` —— 用户在一个全中文界面里看到一个小写英文
     // 单词。`map[id] ?? id` 的兜底让这种遗漏变成静默的，不会报错。
     overview: "概览",
     sidechat: "侧聊",
+    browser: "浏览器",
+    // ⚠️ `watercolor` 与 `canvas` 是两个不同面板：前者是**运行看板**
+    // （这张图跑到哪一格），后者是 **Node-RED 原厂画布**（图怎么连）。
+    // 两者都叫「画布」会让用户分不清，所以上面把 watercolor 改成了「运行看板」。
+    canvas: "画布",
   };
   return map[id] ?? id;
 }
