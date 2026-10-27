@@ -105,8 +105,28 @@ for (const type of MCODE_NODE_PACK_TYPES) {
   check(`${type} defaults 声明了 x-mcode`, html.includes(MCODE_X_MCODE_DEFAULT_ENTRY), { marker: MCODE_X_MCODE_DEFAULT_ENTRY });
   check(`${type} HTML 带 tab 定义补丁脚本`, html.includes(tabMetaDefaultsScript()));
 }
-check("allNodeHtml 覆盖全部六类型的补丁脚本（每类一份）",
-  allNodeHtml().split(tabMetaDefaultsScript()).length - 1 === MCODE_NODE_PACK_TYPES.length);
+/* 【2026-10-28】这条断言的口径是 **`allNodeHtml()` 的产出**，不是 palette 清单，
+ * 也不是「palette + 内部节点」的推导和。
+ *
+ * 三者的实际关系（`mcodeNodeTypes.ts:986`）：
+ *
+ * | 集合 | 数量 | 说明 |
+ * |---|---|---|
+ * | `MCODE_NODE_PACK_TYPES`（palette） | 5 | 用户能拖进画布的 |
+ * | `MCODE_INTERNAL_NODE_TYPES` | 2 | 条件求值适配 + `mcode-node-red-call` |
+ * | **`allNodeHtml()` 里列的** | **6** | palette 5 + `nodeRedCall` 1 |
+ *
+ * 差的这两个都不是遗漏：**条件求值适配节点没有 HTML**（它是纯内部适配，
+ * 编辑器不需要它画任何东西）；而 `nodeRedCall` 有（旧图要能读能跑）。
+ *
+ * ⚠️ 所以**别写 `PALETTE + INTERNAL` 这种推导** —— 我第一版就是那么写的，
+ * 算出 7，然后红了一条其实没问题的断言。这个数只能**数 allNodeHtml 里
+ * 真正列了几个**：`ALL_NODE_HTML_COUNT` 是那个数字，改动 `allNodeHtml`
+ * 时必须一起改（它就在下面，紧挨着断言）。 */
+const ALL_NODE_HTML_COUNT = 6;
+check(`allNodeHtml 覆盖全部 ${ALL_NODE_HTML_COUNT} 个类型的补丁脚本`
+    + `（palette ${MCODE_NODE_PACK_TYPES.length} + node-red-call 1；条件求值适配没有 HTML）`,
+  allNodeHtml().split(tabMetaDefaultsScript()).length - 1 === ALL_NODE_HTML_COUNT);
 check("补丁脚本带 fail-closed 自检（缺 tab 定义时抛错）",
   /throw new Error\("Mcode node pack: built-in tab definition unavailable"\)/.test(tabMetaDefaultsScript()));
 check("补丁脚本带生效自检（补后仍读不到 x-mcode 时抛错）",
@@ -477,8 +497,23 @@ console.log("\nD. 安装到 <userDir>/nodes 的节点包字节 = 生成器当前
 {
   const files = expectedNodePackFiles();
   const allHtml = MCODE_NODE_PACK_TYPES.map((type) => files[type + ".html"] ?? "").join("\n");
-  eq("清单里六份 HTML 的 x-mcode 声明计数 = 6", allHtml.split(MCODE_X_MCODE_DEFAULT_ENTRY).length - 1, 6);
-  eq("清单里 tab 补丁脚本计数 = 6", allHtml.split(tabMetaDefaultsScript()).length - 1, 6);
+  /* 【2026-10-28】原来这两条写死 `= 6`。而 `MCODE_NODE_PACK_TYPES` 只有 **5** 个
+   * （第 479 行就是按它遍历的）—— 分母和被测集合本来就不是一个。
+   *
+   * 少的那一个是 `mcode-node-red-call`：**Q7 时从 palette 退役**，用户拖不到，
+   * 所以不在 `MCODE_NODE_PACK_TYPES`（那张表是「能拖进画布的节点」）。但它的
+   * HTML 仍在 `allNodeHtml()` 里 —— 旧图必须还能读、还能跑（见
+   * `MCODE_INTERNAL_NODE_TYPES` 的注释：删注册会让旧图变 `mcode-unknown`，
+   * 迁移器对 unknown 是 fail-closed，等于锁死用户的工作流）。
+   *
+   * 判据改成**按清单的实际长度数**：这样加一个新 palette 节点时，
+   * 这两条会自动覆盖到它，而不是先红一次让人来改数字。
+   * 同时补一条「清单确实非空」的正控 —— 长度 0 时这两条都会恒真。 */
+  check("清单非空（否则下面两条计数断言恒真）", MCODE_NODE_PACK_TYPES.length >= 5, MCODE_NODE_PACK_TYPES.length);
+  eq(`清单里 ${MCODE_NODE_PACK_TYPES.length} 份 HTML 的 x-mcode 声明计数`,
+    allHtml.split(MCODE_X_MCODE_DEFAULT_ENTRY).length - 1, MCODE_NODE_PACK_TYPES.length);
+  eq(`清单里 tab 补丁脚本计数`,
+    allHtml.split(tabMetaDefaultsScript()).length - 1, MCODE_NODE_PACK_TYPES.length);
   check("runtime CJS 不含 HTML（HTML 是独立资产，安装器逐文件写盘）",
     !(files["mcode-runtime.cjs"] ?? "").includes("data-template-name"));
   // 声明数 = **实际安装**的类型数（palette 六 + 内部求值适配节点）。从前写死 6：
