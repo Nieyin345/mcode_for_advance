@@ -3,7 +3,7 @@ import {writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 
-type Check={name:string;status:'PASS'|'FAIL';error?:string};
+type Check={name:string;status:'PASS'|'FAIL'|'SKIP';error?:string;reason?:string};
 export async function runPaneProbe(dir:string):Promise<boolean>{
  const variant=process.env.MCODE_PANE_VARIANT||'green';
  const checks:Check[]=[];

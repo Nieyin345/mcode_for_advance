@@ -498,12 +498,21 @@ export function clampFontSize(px: number): number {
 export const RIGHT_PANEL_FONT_SIZE_MIN = 10;
 export const RIGHT_PANEL_FONT_SIZE_MAX = 22;
 
-/** Clamp a right-panel font-size value to the allowed slider range. */
+/** 右栏 / 应用外壳的默认字号（= `--right-panel-font-size` 在 styles.css 的值）。
+ *  【UI 重建 2026-10-27】与 `lib/appearance.ts` 的 `DEFAULT_RIGHT_PANEL_FONT_SIZE_PX`
+ *  必须逐字相同，否则默认状态会内联写一次、把样式表默认覆盖掉。 */
+export const RIGHT_PANEL_FONT_SIZE_DEFAULT = 12.24;
+
+/** Clamp a right-panel font-size value to the allowed slider range.
+ *
+ *  ⚠️ **不取整**。默认是 12.24px（非整数）；`Math.round` 会把它变成 12，
+ *  而 12 ≠ 12.24 会让 appearance.ts 走上「写内联覆盖」的分支 ——
+ *  用户拖一下滑块再拖回来，默认外观就被永久改掉了。 */
 export function clampRightPanelFontSize(px: number): number {
-  if (!Number.isFinite(px)) return 14;
+  if (!Number.isFinite(px)) return RIGHT_PANEL_FONT_SIZE_DEFAULT;
   return Math.min(
     RIGHT_PANEL_FONT_SIZE_MAX,
-    Math.max(RIGHT_PANEL_FONT_SIZE_MIN, Math.round(px)),
+    Math.max(RIGHT_PANEL_FONT_SIZE_MIN, px),
   );
 }
 

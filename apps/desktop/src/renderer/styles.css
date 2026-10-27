@@ -587,8 +587,12 @@ div:has(> [role="menu"]) {
    * Settings -> 外观 -> 全局字体大小. Despite the var's legacy name it drives
    * the whole app chrome (left bar, right files/git/terminal, settings page).
    * Overridden at runtime by lib/appearance.ts. The derived --rp-fs-* variants
-   * (below) track this via calc. */
-  --right-panel-font-size: 14px;
+   * (below) track this via calc.
+   *
+   * 【UI 重建 2026-10-27】与亮色同一默认值（12.24px）。
+   * 亮色那边已经改成 Claude 的 body 档，暗色这里还留着旧的 14px ——
+   * 于是**切主题时应用外壳的字号会跳**。亮暗的差别在颜色，不在字号。 */
+  --right-panel-font-size: 12.24px;
 
   /* Must be `dark` (was mistakenly `light`): besides native widgets, Chromium
    * also uses the document's color-scheme when picking light/dark variants of

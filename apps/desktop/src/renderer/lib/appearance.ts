@@ -6,7 +6,7 @@ import type { ChatDensity, ReduceMotion } from "@contracts/ipc";
 // 不必把本文件（→ sessionStore → Monaco worker）整张图拉进 bundle。
 export { applyChatDensity, applyReduceMotion } from "./appearanceAttrs.js";
 import { applyChatDensity as applyChatDensityAttr, applyReduceMotion as applyReduceMotionAttr } from "./appearanceAttrs.js";
-import { CHAT_FONT_SIZE_DEFAULT } from "@renderer/stores/sessionStoreHelpers.js";
+import { CHAT_FONT_SIZE_DEFAULT, RIGHT_PANEL_FONT_SIZE_DEFAULT } from "@renderer/stores/sessionStoreHelpers.js";
 
 /**
  * Runtime application of user-configurable appearance settings.
@@ -55,11 +55,23 @@ import { CHAT_FONT_SIZE_DEFAULT } from "@renderer/stores/sessionStoreHelpers.js"
  *
  *  现在两者都指向 `CHAT_FONT_SIZE_DEFAULT`（12.24），import 同一个常量，
  *  **不再各写一份数字**。 */
-const DEFAULT_FONT_SIZE_PX = CHAT_FONT_SIZE_DEFAULT;
+/* 【UI 重建 2026-10-27】**两个不同的默认值，不能共用一个常量。**
+ *
+ * 我一度把这里统一成 `CHAT_FONT_SIZE_DEFAULT`（12.24，Claude 正文档），
+ * 于是 `applyRightPanelFontSize` 也拿它当「样式表默认」比较 —— 但右栏的
+ * 样式表默认仍是 **14px**（`--right-panel-font-size` 没改）。结果：用户把
+ * 右栏字号调回 14 时，`px === DEFAULT` 为假 → 写内联 `14px` → 永远不 remove
+ * → 「改回默认」这一步再也回不到样式表默认值（`settings-panels-electron-smoke`
+ * 的「全局字号变量移除」超时抓到的就是这个）。
+ *
+ * 现在两个常量各自对应各自的样式表默认。**改哪个字号，就改哪个常量** ——
+ * 判断标准是 `styles.css` 里那个变量在 `:root` 的值。 */
+const DEFAULT_CHAT_FONT_SIZE_PX = CHAT_FONT_SIZE_DEFAULT;   // 12.24 = --chat-font-size
+const DEFAULT_RIGHT_PANEL_FONT_SIZE_PX = RIGHT_PANEL_FONT_SIZE_DEFAULT;
 
 /** Write the chat font size as `--chat-font-size` on <html>. */
 export function applyChatFontSize(px: number): void {
-  if (px === DEFAULT_FONT_SIZE_PX) {
+  if (px === DEFAULT_CHAT_FONT_SIZE_PX) {
     document.documentElement.style.removeProperty("--chat-font-size");
   } else {
     document.documentElement.style.setProperty("--chat-font-size", `${px}px`);
@@ -82,7 +94,7 @@ const applyReduceMotion = applyReduceMotionAttr;
  *  automatically. Also mirrored into the xterm terminal fontSize directly
  *  from the store (see TerminalView). */
 export function applyRightPanelFontSize(px: number): void {
-  if (px === DEFAULT_FONT_SIZE_PX) {
+  if (px === DEFAULT_RIGHT_PANEL_FONT_SIZE_PX) {
     document.documentElement.style.removeProperty("--right-panel-font-size");
   } else {
     document.documentElement.style.setProperty("--right-panel-font-size", `${px}px`);

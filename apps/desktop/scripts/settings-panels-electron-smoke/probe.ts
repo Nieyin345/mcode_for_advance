@@ -478,7 +478,14 @@ export async function runSettingsPanelsProbe(dir: string): Promise<void> {
       const after = await chatFont();
       const afterVar = await js<string>(`document.documentElement.style.getPropertyValue('--chat-font-size')`);
       assert(beforeVar === "", "初始不该有内联 --chat-font-size:" + beforeVar);
-      assert(afterVar === "15px", "--chat-font-size 不是 15px:" + afterVar);
+      /* 【UI 重建 2026-10-27】期望值从 `before` 派生，不写死 15px。
+       *
+       * 写死 15 的前提是「默认 14px，点一下 +1」。默认字号现在是 Claude 的
+       * `--cds-font-size-body` = **12.24px**（非整数），所以 +1 = 13.24。
+       * 判据真正要说的是「**内联变量 = 生效值 + 1**」和「**正文跟着变 +1**」，
+       * 与默认值是多少无关。写死数字会让每次调默认字号都假红一次。 */
+      const expectedVar = `${parseFloat(beforeVar === "" ? String(before) : beforeVar) + 1}px`;
+      assert(parseFloat(afterVar) === parseFloat(expectedVar), `--chat-font-size 不是「原值 +1」:${beforeVar || before} → ${afterVar}`);
       assert(after === before + 1, `聊天正文计算字号没 +1px:${before} → ${after}`);
       // 改回 14px:内联变量应被移除(样式表默认重新生效)。
       await clickStepper("减小", "#setting-fontsize");
@@ -494,7 +501,8 @@ export async function runSettingsPanelsProbe(dir: string): Promise<void> {
       await until("全局字号变量写入", `document.documentElement.style.getPropertyValue('--right-panel-font-size') !== ''`);
       const after = await panelFont();
       const afterVar = await js<string>(`document.documentElement.style.getPropertyValue('--right-panel-font-size')`);
-      assert(afterVar === "15px", "--right-panel-font-size 不是 15px:" + afterVar);
+      /* 同上：从 before 派生，不写死 15px。 */
+      assert(parseFloat(afterVar) === before + 1, `--right-panel-font-size 不是「原值 +1」:${before} → ${afterVar}`);
       assert(after === before + 1, `设置页正文计算字号没 +1px:${before} → ${after}`);
       await clickStepper("减小", "#setting-sidepanel-fontsize");
       await until("全局字号变量移除", `document.documentElement.style.getPropertyValue('--right-panel-font-size') === ''`);
