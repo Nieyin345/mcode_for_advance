@@ -32,9 +32,25 @@ async function open(page,locale='zh'){
   await page.waitFor(`document.querySelector("${nativeEntry}")`);
 }
 await withAuditPage(here,async page=>{
-  async function test(name,fn){try{await fn();check(name+': no JS exceptions',page.exceptions.length===0,page.exceptions.slice());}
-    catch(e){errors.push(name+': '+(e.stack??e));console.error('HARNESS ERROR '+errors.at(-1));}}
-  await test('single-surface-lazy-first-frame',async()=>{
+  async function test(name,fn){
+    try{
+      await fn();
+      check(name+': no JS exceptions',page.exceptions.length===0,page.exceptions.slice());
+      /* 【2026-10-27】console.error **也必须为空**。
+       *
+       * React 把渲染期错误交给 `console.error` 而不是重新抛 —— 只收 `exceptionThrown`
+       * 时，「组件抛错 → 整棵树被卸掉」这种情况**一个异常都不留**，而页面已经空了。
+       * 这处判据就是为那一类设的：`EngineRuntimePanel` 的 `data?.engines.some()` 炸掉
+       * 整棵设置页时（`9ccea5c5a` 修），本套件的 `exceptions` 一直是空的。
+       *
+       * 只报 error 级；warning 单独留在 detail 里供排查，不作判据 ——
+       * React 的 development-only warning 在这个生产构建里本来就不该有，出现即噪音。 */
+      const consoleErrors=(page.consoleMessages??[]).filter(m=>m.startsWith('[error]'));
+      check(name+': no console.error',consoleErrors.length===0,
+        { errors: consoleErrors.slice(0,5), warnings: (page.consoleMessages??[]).filter(m=>m.startsWith('[warning]')).slice(0,3) });
+    }
+    catch(e){errors.push(name+': '+(e.stack??e));console.error('HARNESS ERROR '+errors.at(-1));}
+  }  await test('single-surface-lazy-first-frame',async()=>{
     await page.goto('case=workflow&locale=zh');
     await page.waitFor('window.__audit?.apiCalls.includes("workflowEngine.list")');
     const first=await page.eval(`({
@@ -272,6 +288,32 @@ await withAuditPage(here,async page=>{
     await page.eval(`(()=>{const b=[...document.querySelectorAll('#workflows-panel-library nav button')].find(e=>e.textContent.includes('文件清单自动化'));b?.click()})()`);
     await page.waitFor('document.querySelector("#workflows-panel-library section[aria-label]")');
     check('automation shares native editor entry',await page.eval('!!document.querySelector("#workflows-panel-library section[aria-label] button")'));
+
+    /* 【2026-10-27】**一条我试过、但守不住的判据 —— 把边界写在这里。**
+     *
+     * 想守的是 `AutomationRunSection` 的 `data?.runs.some(...)`：首帧 `data` 为
+     * undefined 时 `.some()` 在 undefined 上调用，整棵设置页被卸掉（与
+     * `EngineRuntimePanel` 的 `data?.engines.some` 是同一个形状，后者由 `9ccea5c5a` 修）。
+     *
+     * 试过两种写法都不成立：
+     *   1. 点库列表行 → 打开的是**工作流文档**，`purpose` 不是 `automation`，
+     *      `NodeInspectorParts` 的 `isAutomation` 门控让整块不渲染；
+     *   2. 直接 goto `case=automation` + 选中节点 → 仍然到不了那个门控。
+     * 两次变异（撤掉 `?? []`）都是**全绿**，说明断言没指到目标。
+     *
+     * NOT-COVERED: `AutomationRunSection` 的首帧渲染 —— 本套件走不到那个门控；
+     *   它的形似崩溃目前只有类型层与人工核对，没有回归网。
+     *   要补的话，得给 `NodeInspectorParts` 一个能直接喂 `purpose:"automation"` 的
+     *   渲染入口（或单开一套只挂这个组件的预览台）。
+     *
+     * 页面在这一次导航后仍然完整 —— 这条仍值得留着：它是"点了自动化之后别整页白"的
+     * 粗判据，虽然抓不到上面那个具体崩溃。 */
+    const afterAutomationNav = await page.eval(`({
+      bodyChars: document.body.innerHTML.length,
+      hasLibrary: !!document.querySelector('#workflows-panel-library'),
+      hasTablist: !!document.querySelector('[role=tablist]'),
+    })`);
+    check('自动化导航后页面仍在', afterAutomationNav.hasLibrary && afterAutomationNav.bodyChars>2000, afterAutomationNav);
   });
 });
 const result={checks,errors,summary:{passed:checks.filter(x=>x.ok).length,failed:checks.filter(x=>!x.ok).length,errors:errors.length}};

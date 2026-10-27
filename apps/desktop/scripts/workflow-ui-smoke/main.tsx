@@ -147,7 +147,21 @@ const impl = {
   },
   runs:{history:async()=>[]},
   project:{list:async()=>({projects:[{id:'audit-project',name:'审查样例项目',path:'C:/audit-fixture'}]})},
-  settings:{get:async()=>({settings:{}})},
+  /*  也必须有桩： 用它批量读设置，兜底返回 Promise 时
+   * `.then(r => r[key])` 在 undefined 上取值 → console.error（被 console 判据抓到）。 */
+  /* 【2026-10-27】设置页里**别的面板**也会在挂载时读这些 namespace。
+   *
+   * 两个坑都是 console 判据抓出来的（2026-10-27 加）：
+   *   - namespace 是 **`setting`（单数）**，不是 `settings` —— 原来那条 `settings:{...}`
+   *     是个**打不中的桩**，真调用落到兜底的 `Promise.resolve(undefined)`；
+   *   - `getMany` 必须单独铺：`TitleGenPanel` 用它批量读，`.then(r => r[key])` 在
+   *     undefined 上取值就抛。
+   *
+   * 本套件挂的是**真** `SettingsPage`，所以这些 namespace 必须有桩 —— 与
+   * `plugins` / `library` 同一条理由。 */
+  setting:{get:async()=>({settings:{}}),getMany:async()=>({})},
+  outputStyle:{list:async()=>({styles:[]})},
+  uiPrefs:{get:async()=>({ui:{titleGenLang:'zh',titleGenModel:'',titleGenEnabled:false}})},
   mcp:{list:async()=>({servers:[]})},
   plugins:{list:async()=>({plugins:[]})},
   library:{collections:async()=>({collections:[]}),listCollections:async()=>({collections:[]})},

@@ -35,7 +35,17 @@ export function AutomationRunSection({ doc, catalog, dirty = false }: {
     return { workflowId: doc.id, runs: result.runs, facts: facts.filter(f => f.workflowId === doc.id), readAt: Date.now() };
   }, [doc.id, doc.updatedAt, doc.nodes], { toastOnError: false });
   const data = read.data?.workflowId === doc.id ? read.data : undefined;
-  const running = data?.runs.some(r => r.status === "running") ?? false;
+  /* ⚠️ `data?.runs.some(...)` —— **可选链必须一路到底**。
+   *
+   * `data` 为 undefined 时（首帧 / 跨文档切换），`?.` 拦住了对 `data` 的访问，
+   * 整个式子求值成 undefined，**然后 `.some()` 在 undefined 上调用** →
+   * `TypeError: Cannot read properties of undefined (reading 'some')` →
+   * React 卸载整棵组件树，用户看到「页面整个消失」，而控制台只剩一条与业务无关的
+   * 类型错误。
+   *
+   * 同一形状在 `EngineRuntimePanel.tsx` 出现过一次（`data?.engines.some`），
+   * 2026-10-27 由 `9ccea5c5a` 修。这是第二处。 */
+  const running = (data?.runs ?? []).some(r => r.status === "running");
   const refresh = useCallback(async () => { if (alive.current) await read.refetch(); }, [read.refetch]);
   const current = useRef({ loading: read.loading, error: read.error });
   current.current = { loading: read.loading, error: read.error };

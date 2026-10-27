@@ -87,6 +87,18 @@ export async function withAuditPage(dir, fn) {
     ws=new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve,reject)=>{ws.addEventListener('open',resolve,{once:true});ws.addEventListener('error',reject,{once:true});});
     let seq=0;const pending=new Map();const exceptions=[];
+    /* 【2026-10-27】**console 也要收。**（与 `settings-layout-smoke/browser.mjs` 同一份做法）
+     *
+     * 从前这里只收 `exceptionThrown`，于是「渲染期抛错 → React 卸载整棵树」这类
+     * **一个异常都收不到**：React 把错误交给 console.error 而不是重新抛，页面还在、
+     * 内容没了，日志干净得像什么都没发生。
+     *
+     * 实测代价：`EngineRuntimePanel` 的 `data?.engines.some()` 在首帧炸掉整棵设置页
+     * （用户看到「点工作流 → 界面消失」），而本套件的 `exceptions` 一直是空的 ——
+     * 那处最后由另一个会话的 `settings-layout-smoke` 抓到（`9ccea5c5a`）。
+     *
+     * 只收 error/warning 两级；其它级别是噪音。 */
+    const consoleMessages=[];
     ws.addEventListener('message',event=>{
       const message=JSON.parse(String(event.data));
       if(message.id && pending.has(message.id)){
@@ -94,6 +106,13 @@ export async function withAuditPage(dir, fn) {
         if(message.error)p.reject(new Error(JSON.stringify(message.error)));else p.resolve(message.result);
       }else if(message.method==='Runtime.exceptionThrown'){
         const d=message.params.exceptionDetails;exceptions.push(d.exception?.description ?? d.text);
+      }else if(message.method==='Runtime.consoleAPICalled'){
+        const type=message.params?.type;
+        if(type==='error'||type==='warning'){
+          const parts=(message.params?.args??[]).map(a=>
+            a?.value!==undefined?String(a.value):(a?.description??a?.type??''));
+          consoleMessages.push(`[${type}] ${parts.join(' ')}`.slice(0,500));
+        }
       }
     });
     const send=(method,params={})=>new Promise((resolve,reject)=>{
@@ -102,11 +121,11 @@ export async function withAuditPage(dir, fn) {
     });
     await send('Runtime.enable');await send('Page.enable');
     const page={
-      exceptions,send,sleep,
+      exceptions,consoleMessages,send,sleep,
       async eval(expression){const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);return r.result?.value;},
       async waitFor(expression,ms=15000){const end=Date.now()+ms;while(Date.now()<end){if(await page.eval(`!!(${expression})`))return true;await sleep(100);}throw new Error('UI wait timeout: '+expression+'; exceptions='+exceptions.join('\n'));},
       async size(width,height){await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});await sleep(200);},
-      async goto(params='',ready='window.__ready && document.querySelector("[role=tablist]")'){await page.eval('window.__ready=false');exceptions.length=0;await send('Page.navigate',{url:base+(params?'?'+params:'')});await page.waitFor(ready);await sleep(250);},
+      async goto(params='',ready='window.__ready && document.querySelector("[role=tablist]")'){await page.eval('window.__ready=false');exceptions.length=0;consoleMessages.length=0;await send('Page.navigate',{url:base+(params?'?'+params:'')});await page.waitFor(ready);await sleep(250);},
       async screenshot(name){const r=await send('Page.captureScreenshot',{format:'png'});if(!r.data)throw new Error('Missing screenshot');writeFileSync(join(dir,name),Buffer.from(r.data,'base64'));},
     };
     await page.size(1440,900);
