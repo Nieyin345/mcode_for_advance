@@ -27,6 +27,7 @@ import "./prelude.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setApiStub, settingSetCalls, resetSettingSetCalls } from "./prelude.js";
+import { sourceHas } from "../lib/sourceText.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import {
   DEFAULT_SHELL_PREF,
@@ -204,7 +205,11 @@ section("B2. ClassicShell.tsx:承重标记必须全部在场");
     "<ThreePaneLayout",
     "<BottomTerminalBar",
   ]) {
-    check(`★ 含 ${JSON.stringify(marker)}`, shell.includes(marker));
+    /* 【UI 重建 2026-10-27】用 `sourceHas` 而不是裸 `includes`：本仓检出是 CRLF，
+     * 而跨行 marker 写的是 LF。裸 includes 会让这类断言**永远为假** ——
+     * 人打开文件看到那两行明明是相邻的，断言却说没有。
+     * `sourceHas` 剥注释并归一化换行，是仓库里为此专门写的工具。 */
+    check(`★ 含 ${JSON.stringify(marker)}`, sourceHas(shell, marker));
   }
   check("导出 ClassicShell 组件", /export function ClassicShell\b/.test(shell));
   check("导出 ClassicShellProps 契约", /export interface ClassicShellProps\b/.test(shell));

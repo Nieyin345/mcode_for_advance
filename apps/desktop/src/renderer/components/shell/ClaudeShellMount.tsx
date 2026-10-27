@@ -41,6 +41,7 @@ import { ChatPane } from "../chat/ChatPane.js";
 import { BottomTerminalBar } from "../layout/BottomTerminalBar.js";
 import { renderPaneContent } from "./paneContent.js";
 import { resizeStack, type PaneTile, type PaneTileKind, type TileLayout } from "./paneTiles.js";
+import { WorkspaceInertShell } from "./ClassicShell.js";
 
 /** Claude 侧栏的固定宽（来自其产物：`--static-sidebar-width: 18rem` = 288px）。 */
 const CLAUDE_SIDEBAR_PX = 288;
@@ -341,6 +342,7 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   }, [rightPanelTab]);
 
   return (
+    <WorkspaceInertShell variant="workspace">
     <ClaudeShell
       sidebar={sidebar}
       projectColumn={projectColumn}
@@ -386,5 +388,6 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       expandedTile={expandedTile}
       renderTile={(tileId) => renderPaneContent(tileId)}
     />
+    </WorkspaceInertShell>
   );
 }

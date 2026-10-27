@@ -13,7 +13,6 @@ import { TheiaStatusStrip } from "./components/modules/TheiaStatusStrip.js";
 import { TheiaDiagnosticsHost } from "./lib/theiaDiagnostics.js";
 import { TheiaWebviewHost } from "./components/modules/TheiaWebviewHost.js";
 import { ClaudeShellMount } from "./components/shell/ClaudeShellMount.js";
-import { WorkspaceInertShell } from "./components/shell/ClassicShell.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
 import { VoiceListeningOverlay } from "./components/layout/VoiceListeningOverlay.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
@@ -310,7 +309,6 @@ export function App() {
           旧的 ClassicShell 暂时保留在仓库里（套件仍引用），但不再由 App 渲染。
           同一条不变量照旧：列切换只做 inert + data-covered，绝不卸载工作区子树
           （终端 PTY / Monaco / 草稿保活）。 */}
-      <WorkspaceInertShell variant="workspace">
       <ClaudeShellMount
         leftOpen={leftOpen}
         leftBarMode={leftBarMode}
@@ -323,7 +321,6 @@ export function App() {
         bottomTerminalOpen={bottomTerminalOpen}
         setBottomTerminalOpen={setBottomTerminalOpen}
       />
-      </WorkspaceInertShell>
       {/* Settings is a full-window surface, mounted at the ROOT (not inside
           the workspace column) so no workspace ancestor's overflow or
           stacking context can clip it. It renders null when closed. */}
