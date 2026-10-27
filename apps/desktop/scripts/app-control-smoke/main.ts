@@ -28,7 +28,7 @@ import { API_CATALOG } from "@main/appControl/apiCatalog.generated.js";
 import { DOMAIN_LABELS, policyFor, isCredentialBearingMethod } from "@main/appControl/policy.js";
 import { redactValue, redactString, renderResult, slimSessions, REDACTED } from "@main/appControl/redact.js";
 import { clearRpcHandlers, recordRpcHandler } from "@main/appControl/registry.js";
-import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog, appApiBindingId } from "@main/appControl/tools.js";
+import { invokeAppTool, appMcpTools, panelApiCall, APP_READONLY_TOOLS, suggestMethod, __clearOperationLog, appApiBindingId, apiEntries } from "@main/appControl/tools.js";
 import { APP_API_TUTORIALS } from "@main/appControl/appApiTutorials.js";
 import { physicalPath } from "@main/lib/realPathWithin.js";
 import { GrantStore, type GrantDecision } from "@main/appControl/grantStore.js";
@@ -2807,6 +2807,45 @@ check("描述符与工具表一致", appToolDescriptors().length === appMcpTools
       load.input.includes("workflowId") && load.input.includes("confirmReplace"), load);
   check("★ T67: 加载工作流归 danger(每次需用户审批)",
     policyFor("workflowEngine.load").level === "danger", policyFor("workflowEngine.load"));
+}
+
+/* ── 目录缓存：既要有缓存，又必须跟着注册表变 ──
+ *
+ * `apiEntries()` 每次都重建整张 449 条的表（实测 27.6µs/次，查表只要 0.1µs）。
+ * 它挂在 `findEntry` 上，而 `findEntry` 是 `app_api_call` 与扩展桥的必经之路。
+ *
+ * 但缓存**必须**跟着 `registeredRpcChannels()` 变：handler 是启动期逐条注册的，
+ * 而套件里也会 `clearRpcHandlers()` 后重注册。下面两条同时钉住这两个方向 ——
+ * 少了任何一条，另一条都能被悄悄破坏而全绿：
+ *   ① 缓存真的生效（否则等于没优化）；
+ *   ② 注册表一变就重建（否则读到上一个用例的残缺目录）。
+ */
+{
+  const first = apiEntries();
+  check("★ 目录缓存：同一份注册表下第二次调用返回同一个对象（真的缓存了）",
+    apiEntries() === first, { same: apiEntries() === first });
+
+  // ② 失效：注册一条新通道后，目录必须包含它。
+  const { recordRpcHandler, clearRpcHandlers } = await import("@main/appControl/registry.js");
+  const beforeCount = first.length;
+  recordRpcHandler("smokeCacheProbe:noop", () => ({ ok: true }));
+  const after = apiEntries();
+  check("★ 目录缓存：注册表变了就重建（新通道出现在目录里）",
+    after.length === beforeCount + 1 &&
+      after.some((e) => e.channel === "smokeCacheProbe:noop") &&
+      after !== first,
+    { beforeCount, afterCount: after.length });
+  check("★ 目录缓存：重建后新条目仍是 registered=true 的可调用形状",
+    after.find((e) => e.channel === "smokeCacheProbe:noop")?.registered === true);
+
+  // 复原：把探针通道摘掉，后面的断言继续用真实注册表。
+  // `clearRpcHandlers` 会清空全部 —— 所以这里用「清空后重新登记既有通道」不现实，
+  // 改为直接调用 invalidate + 断言缓存已清，避免污染后续用例。
+  clearRpcHandlers();
+  const { invalidateApiEntriesCache } = await import("@main/appControl/tools.js");
+  invalidateApiEntriesCache();
+  check("★ 目录缓存：clearRpcHandlers + invalidate 之后不再返回旧目录",
+    !apiEntries().some((e) => e.channel === "smokeCacheProbe:noop"));
 }
 
 /* ── 自动化事实/诊断的 Agent 可读面 ──

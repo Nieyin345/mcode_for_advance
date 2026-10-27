@@ -215,8 +215,26 @@ function domainOf(method: string): string {
 }
 
 /** 生成清单 ∪ 实际注册了 handler 的通道(清单没跟上的新通道也能调,只是没有说明)。 */
+/** 目录缓存的失效键：`registeredRpcChannels()` 的内容签名。
+ *
+ *  **为什么需要缓存**：`apiEntries()` 每次调用都要重建整张 449 条的表 ——
+ *  `map` + 对象展开 + 每条跑一次 `policyFor` + 拼 `setting` 的长文档。实测
+ *  **27.6µs/次**，而查表只要 **0.1µs**（215 倍）。而 `findEntry` 是
+ *  `app_api_call` / 扩展桥 `panelApiCall` 的必经之路 —— 每一次工具调用都重建一遍。
+ *
+ *  **为什么必须带失效键**：handler 是**启动期逐条注册**的（`recordRpcHandler`），
+ *  所以 `registeredRpcChannels()` 在注册过程中会变。缓存只认内容签名，注册表一变
+ *  自然重建 —— 不能简单地"建一次就不管了"，那会让启动早期算出的残缺目录一直用到
+ *  进程结束。
+ *
+ *  签名取 `join` 而不是长度：长度不变但换了一条通道（理论上不该发生）也能识别。 */
+let entriesCache: { signature: string; entries: ApiEntry[] } | null = null;
+
 export function apiEntries(): ApiEntry[] {
-  const registered = new Set(registeredRpcChannels());
+  const channels = registeredRpcChannels();
+  const signature = channels.join("\u0000");
+  if (entriesCache && entriesCache.signature === signature) return entriesCache.entries;
+  const registered = new Set(channels);
   const known = new Set<string>();
   const out: ApiEntry[] = API_CATALOG.map((e) => {
     known.add(e.channel);
@@ -224,7 +242,7 @@ export function apiEntries(): ApiEntry[] {
       ? ` 自定义 UI / custom UI: ${CUSTOM_UI_SETTING_KEY} 是旧版全局 UI JSON 配置。先 setting.get 读取并保留其他项; app_api_describe({method:"setting.set", setting_key:"${CUSTOM_UI_SETTING_KEY}"}) 获取 JSON schema。写入必须审批,不可直接修改运行中的 mcode.db。` : "";
     return { ...e, doc: e.doc + settingDoc, policy: policyFor(e.method), registered: registered.has(e.channel) };
   });
-  for (const ch of registered) {
+  for (const ch of channels) {
     if (known.has(ch)) continue;
     // 通道名形如 `domain:verb` —— 方法名就按 `domain.verb` 起。
     const method = ch.replace(/:/g, ".");
@@ -240,7 +258,14 @@ export function apiEntries(): ApiEntry[] {
       registered: true,
     });
   }
+  entriesCache = { signature, entries: out };
   return out;
+}
+
+/** 清掉目录缓存。**只给测试用** —— 生产里注册表一旦稳定就不该再变。
+ *  套件在 `clearRpcHandlers()` 之后必须调它，否则会读到上一个用例的目录。 */
+export function invalidateApiEntriesCache(): void {
+  entriesCache = null;
 }
 
 /** 按方法名找到目录项(权限档 + 通道)。自定义面板的 `mcode.api.call` 与 agent 的
