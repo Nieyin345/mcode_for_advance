@@ -1,0 +1,16 @@
+/* Claude-style message action visibility.
+ *
+ * Keep the existing accessible hover/focus/touch state selectors in MessageRow,
+ * but use the same short CDS timing and easing for the opacity change. The
+ * attribute-scoped selector deliberately outranks Tailwind's transition utility
+ * without changing the state classes that the existing regression suite guards.
+ */
+.message-actions[data-cds="MessageActions"] {
+  transition: opacity var(--dur-snap) var(--ease-swift);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-reduce-motion="false"]) .message-actions[data-cds="MessageActions"] {
+    transition: none;
+  }
+}

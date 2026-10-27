@@ -1,0 +1,60 @@
+/* Claude-style reasoning disclosure: quiet by default, readable when expanded.
+ * Keep the live-state dots/shimmer from MessageBlocks; this layer only owns
+ * the row geometry, disclosure rail and low-noise action reveal. */
+.claude-thinking-accordion[data-cds="ThinkingAccordion"] {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-cds="ThinkingAccordionHeader"] {
+  min-height: 28px;
+  padding-block: 4px;
+}
+
+[data-cds="ThinkingAccordionHeader"] > button:first-child {
+  min-height: 28px;
+  border-radius: var(--radius-btn-xs);
+}
+
+[data-cds="ThinkingAccordionActions"] {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-snap) var(--ease-swift);
+}
+
+.claude-thinking-accordion:hover [data-cds="ThinkingAccordionActions"],
+.claude-thinking-accordion:focus-within [data-cds="ThinkingAccordionActions"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+[data-cds="ThinkingAccordionContent"] {
+  max-height: 20rem;
+  margin: 4px 0 4px 7px;
+  padding: 8px 12px;
+  border-left: 1px solid rgb(var(--edge) / 0.65);
+  font-size: var(--chat-fs-xs);
+  line-height: 1.55;
+  overscroll-behavior: contain;
+}
+
+[data-cds="ThinkingAccordionContent"] p {
+  margin: 0;
+}
+
+@media (hover: none) {
+  [data-cds="ThinkingAccordionActions"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .claude-thinking-accordion,
+  .claude-thinking-accordion [data-cds="ThinkingAccordionBody"],
+  .claude-thinking-accordion [data-cds="ThinkingAccordionActions"] {
+    transition: none;
+  }
+}

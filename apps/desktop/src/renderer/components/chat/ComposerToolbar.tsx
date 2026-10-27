@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import "./ClaudeComposerToolbar.css";
 import { composerFluidTier } from "./composerFluidTier.js";
 import { ComposerCustomButtons } from "@renderer/components/customUi/CustomSlotHosts.js";
 import { MemoryAssistantButton } from "./MemoryAssistantButton.js";
@@ -8,7 +9,6 @@ import { IconChartBar } from "@renderer/lib/icons.js";
 import { ModelDropdown } from "./ModelDropdown.js";
 import { EffortChip, PermissionChip } from "./EffortPermissionControl.js";
 import { WorkflowDropdown } from "./WorkflowDropdown.js";
-import { WatchSegment } from "./WatchSegment.js";
 import { isElectron } from "@renderer/lib/platform.js";
 import { ContextRing } from "./ContextRing.js";
 import { AttachMenuButton } from "./AttachMenuButton.js";
@@ -131,9 +131,6 @@ export function ComposerToolbar({
         <EffortChip layout="row" />
         <PermissionChip layout="row" />
         <WorkflowDropdown layout="row" />
-        {/* 长任务守望:把一条命令绑到这个会话上起跑。桌面专属(手机 RPC 白名单
-            没有 automation.watch) —— 手机壳里这一行整个不出现。 */}
-        {isElectron && <WatchSegment sessionId={sessionId} layout="row" />}
         {isElectron && <MemoryAssistantButton sessionId={sessionId} />}
         <div className="flex flex-wrap items-center gap-1 px-2 empty:hidden">
           <ComposerCustomButtons />
@@ -160,7 +157,7 @@ export function ComposerToolbar({
   const hasAttach =
     !!onPickFiles && !!onPickImages && !!onPickLibraries && !!onSlashCommand;
   return (
-    <div ref={pillRef} className="composer-minipill min-w-0 max-w-full" role="group" aria-label={t("chat.toolbarToggle")} data-fluid-tier={fluidTier} data-compact={compact ? "1" : "0"}>
+    <div ref={pillRef} className="composer-minipill claude-composer-toolbar min-w-0 max-w-full" role="group" aria-label={t("chat.toolbarToggle")} data-fluid-tier={fluidTier} data-compact={compact ? "1" : "0"}>
       {hasAttach && (
         <>
           <AttachMenuButton
@@ -181,9 +178,6 @@ export function ComposerToolbar({
           绑哪个资料库仍由「+」菜单里的「资料库」负责 —— 药丸上不重复这个入口。 */}
       <span className="composer-minipill-mid" aria-hidden />
       <WorkflowDropdown layout="pill" />
-      {/* 长任务守望(桌面专属):起跑面板里选模板 / 现写命令,把一条长命令绑到当前
-          会话上 —— 与上面那个「跟会话走的工作模式」是两回事,它跑在自动化会话里。 */}
-      {isElectron && <WatchSegment sessionId={sessionId} layout="pill" />}
       {isElectron && <MemoryAssistantButton sessionId={sessionId} />}
       {/* 自定义 UI「输入框工具栏」挂载位(R39):用户加的按钮。没有就什么都不画。 */}
       <ComposerCustomButtons />

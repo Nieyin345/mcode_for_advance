@@ -1,0 +1,80 @@
+/* Claude-style fenced-code surface.
+ *
+ * Keep Shiki's syntax colors intact, but own the frame, toolbar rhythm and
+ * scroll viewport in one place. The outer wrapper is a div (not a pre around
+ * block-level controls); the actual highlighted/fallback source remains a pre.
+ */
+.claude-code-block {
+  min-width: 0;
+  border: 1px solid rgb(var(--edge) / 0.6);
+  border-radius: var(--radius-code, 12px);
+  background: rgb(var(--surface-muted) / 0.6);
+  color: rgb(var(--content));
+}
+
+[data-cds="CodeBlockHeader"] {
+  min-height: 32px;
+  padding-inline: 12px;
+  border-bottom: 1px solid rgb(var(--edge) / 0.6);
+  background: rgb(var(--surface-muted) / 0.4);
+}
+
+[data-cds="CodeBlockHeader"] > span:first-child {
+  min-width: 0;
+  font-weight: 500;
+}
+
+[data-cds="CodeBlockHeader"] button {
+  min-height: 28px;
+  padding-inline: 8px;
+  border-radius: var(--radius-btn-xs);
+}
+
+[data-cds="CodeBlockBody"] {
+  min-width: 0;
+}
+
+[data-cds="CodeBlockBody"] > div.overflow-auto {
+  min-width: 0;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+[data-cds="CodeBlockBody"] .shiki,
+[data-cds="CodeBlockBody"] .claude-code-fallback {
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  padding: 12px;
+  border-radius: 0;
+  font-size: var(--chat-fs-xs);
+  line-height: 1.55;
+  tab-size: 2;
+}
+
+[data-cds="CodeBlockBody"] .shiki {
+  background: transparent !important;
+}
+
+[data-cds="CodeBlockBody"] .claude-code-fallback {
+  background: transparent;
+  white-space: pre;
+}
+
+@media (max-width: 520px) {
+  [data-cds="CodeBlockHeader"] {
+    padding-inline: 8px;
+  }
+
+  [data-cds="CodeBlockBody"] .shiki,
+  [data-cds="CodeBlockBody"] .claude-code-fallback {
+    padding: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .claude-code-block [data-cds="CodeBlockHeader"] button {
+    transition: none;
+  }
+}
