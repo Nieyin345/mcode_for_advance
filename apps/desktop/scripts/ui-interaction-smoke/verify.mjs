@@ -4,7 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {writeFileSync} from 'node:fs';
 const here=dirname(fileURLToPath(import.meta.url)), results=[];
 await withAuditPage(here,async page=>{
- const check=(name,ok,detail)=>{results.push({name,ok:!!ok,detail});console.log(`${ok?'PASS':'FAIL'} ${name}`);};
+ const check=(name,ok,detail)=>{results.push({name,ok:!!ok,detail});console.log(`${ok?'PASS':'FAIL'} ${name}`+(ok||detail===undefined?'':'  → '+String(typeof detail==='string'?detail:JSON.stringify(detail)).slice(0,300)));};
  const go=async mode=>{await page.goto('case='+mode,'document.querySelector("header") && window.labApi');};
  const input=async(selector,value)=>{await page.eval(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('Missing input');e.focus();Object.getOwnPropertyDescriptor(e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`);await page.sleep(60);};
  const click=async selector=>{const rect=await page.eval(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('Missing button: '+${JSON.stringify(selector)});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);await page.send('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',clickCount:1,...rect});await page.send('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',clickCount:1,...rect});await page.sleep(80);};
@@ -44,8 +44,23 @@ await withAuditPage(here,async page=>{
    host.remove();
    return { classic, workspace, restored };
   })()`);
-  check('★ 真实 Chromium: classic Composer 是原版 20px',proof.classic.radius==='20px',proof);
-  check('★ 真实 Chromium: workspace Composer 按 v2 comfortable 为 14px',proof.workspace.radius==='14px',proof);
+  /* 【UI 重建 2026-10-27】composer 圆角不再按 `data-ui-shell-variant` 分档。
+   *
+   * 旧：classic 20px / workspace 14px。现在两处都是 Claude 的
+   * `--cds-radius-composer` = `.875rem × 16/17` ≈ **13.18px**。
+   *
+   * 20px 从来不是 Claude 的值，是 Mcode 自己的旧配方；用户要「外观和 Claude 一样」，
+   * 所以两档合并成一档。**判据守的意图没变**：真 Chromium 里读到的计算值
+   * 必须是那个 token 算出来的数（不是某个写死的 px），且切换 variant 时**不跳变**。
+   *
+   * 用区间而不是等号：浏览器把 `calc(.875rem * 16/17)` 算成 13.176470…px，
+   * 各版本字符串化精度不同；区间容得下舍入，容不下「退回 20 / 14」。
+   * （20 和 14 都不在 [13.0, 13.4] 里，变异仍会红。） */
+  const radiusPx = (s) => parseFloat(String(s ?? ""));
+  check('★ 真实 Chromium: Composer 圆角 = Claude 的 --cds-radius-composer（≈13.18px）',
+    radiusPx(proof.classic.radius) > 13.0 && radiusPx(proof.classic.radius) < 13.4, proof);
+  check('★ 真实 Chromium: 切壳变体不改变 Composer 圆角（已合并成一档）',
+    radiusPx(proof.workspace.radius) === radiusPx(proof.classic.radius), proof);
   check('★ 真实 Chromium: workspace New session 控件不低于 32px',parseFloat(proof.workspace.buttonHeight)>=32,proof);
   check('★ 真实 Chromium: workspace 会话卡压缩 padding 且 classic 保留旧尺寸',parseFloat(proof.workspace.rowPadding) < parseFloat(proof.classic.rowPadding),proof);
   check('★ 真实 Chromium: v2 树行最小 28px 且经典模式不变',parseFloat(proof.workspace.treeMinHeight)>=28 &&
@@ -71,9 +86,19 @@ await withAuditPage(here,async page=>{
  });
  await test('question-scope-ime',async()=>{await go('question');await input('[role=dialog] input','typed');await click('[aria-label="另一个界面的输入框"]');await key('Enter');check('unrelated input cannot submit question',await page.eval('labEvents.length===0'));await page.eval(`document.querySelector('[role=dialog] input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);check('composing Enter does not submit',await page.eval('labEvents.length===0'));await click('[role=dialog] input');await key('Enter');check('local normal Enter submits exactly once',await page.eval('labEvents.filter(x=>x.startsWith("submit:")).length===1'));});
  await test('plan-ime',async()=>{
-  await go('plan');await input('main input','feedback');await page.eval(`document.querySelector('main input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);check('IME cannot approve a plan',await page.eval('labEvents.length===0'));await key('Enter');check('normal Enter approves plan once',await page.eval('labEvents.join()==="approved"'));
+  await go('plan');
+  check('plan primary action starts disabled during the arming window',await page.eval('document.querySelector("[data-cds=PlanApprovalPrimary]")?.disabled===true'));
+  await input('main input','feedback');
+  await page.eval(`document.querySelector('main input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))`);
+  check('IME cannot approve a plan',await page.eval('labEvents.length===0'));
+  await key('Enter');
+  check('fast Enter cannot approve before the arming delay',await page.eval('labEvents.length===0'));
+  await page.sleep(520);
+  check('plan primary action arms after the delay',await page.eval('document.querySelector("[data-cds=PlanApprovalPrimary]")?.disabled===false'));
+  await key('Enter');
+  check('normal Enter approves plan once after arming',await page.eval('labEvents.join()==="approved"'));
  });
- await test('palette-caret',async()=>{await go('palette');await input('[role=combobox]','abc');await key('ArrowLeft','ArrowLeft',37);check('left arrow moves caret',await page.eval('document.querySelector("[role=combobox]").selectionStart===2'));const ax=await page.send('Accessibility.getFullAXTree');check('palette has accessible name',ax.nodes.some(x=>x.role?.value==='dialog'&&x.name?.value));});
+ await test('palette-caret',async()=>{await go('palette');await input('[role=combobox]','abc');await key('ArrowLeft','ArrowLeft',37);check('left arrow moves caret',await page.eval('document.querySelector("[role=combobox]").selectionStart===2'), await page.eval('({sel:document.querySelector("[role=combobox]")?.selectionStart, tag:document.querySelector("[role=combobox]")?.tagName})'));const ax=await page.send('Accessibility.getFullAXTree');check('palette has accessible name',ax.nodes.some(x=>x.role?.value==='dialog'&&x.name?.value));});
  await test('retained-budget',async()=>{await go('budget');await input('#setting-turnbudget-usd','2');await click('[aria-label="离开设置"]');await page.eval('labMount()');await page.waitFor('document.querySelector("#setting-turnbudget-usd")');check('draft survives panel remount',await page.eval('document.querySelector("#setting-turnbudget-usd").value==="2"'));await click('[data-testid="budget-save"]');await page.waitFor('JSON.parse(labSettings["runtime.turnBudget"]).maxUsd===2');check('explicit save persists',true);});
  await test('budget-validation-error',async()=>{await go('budget');await input('#setting-turnbudget-usd','-1');await page.sleep(600);check('invalid value keeps previous cap',await page.eval('JSON.parse(labSettings["runtime.turnBudget"]).maxUsd===5'));check('invalid save disabled',await page.eval('document.querySelector("[data-testid=budget-save]").disabled'));await input('#setting-turnbudget-usd','2');await page.eval('labRejectSave=true');await click('[data-testid="budget-save"]');await page.waitFor('document.body.innerText.includes("mock: 磁盘写入失败")');check('write failure is visible and caught',await page.eval('!labEvents.some(x=>x.startsWith("unhandled:"))'));await page.eval('labRejectSave=false');await click('[data-testid="budget-save"]');await page.waitFor('JSON.parse(labSettings["runtime.turnBudget"]).maxUsd===2');check('failed save can retry',true);});
  await test('policy-save-race',async()=>{

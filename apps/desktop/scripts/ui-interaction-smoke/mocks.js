@@ -6,6 +6,21 @@ window.labPatch=patch=>{window.labState={...window.labState,...patch};listeners.
 window.labState={activeProjectId:'A',projects:[{id:'A',name:'项目 A',path:'/A'},{id:'B',name:'项目 B',path:'/B'}],commandPaletteOpen:true,setCommandPaletteOpen:open=>window.labPatch({commandPaletteOpen:open}),shortcutOverrides:{},openTab:async(id)=>{window.labEvents.push('openTab:'+id);}};
 const blank=async()=>({sessions:[],entries:[],matches:[],items:[],results:[]});
 window.labApi={setting:{get:async({key})=>{const result={value:window.labSettings[key]??null};if(window.labDelayGet===key)await new Promise(resolve=>window.labReleaseGet=resolve);return result;},set:async(args)=>{window.labCalls.push(args);if(window.labDelaySave)await new Promise(resolve=>window.labReleaseSave=resolve);if(window.labRejectSave)throw new Error('mock: 磁盘写入失败');window.labSettings[args.key]=args.value;}},file:{listDir:args=>{window.labCalls.push(args);if(window.labRejectFile)return Promise.reject(new Error('mock: 无权访问'));if(window.labDeferFile)return new Promise((resolve,reject)=>window.labPending.push({args,resolve,reject}));return Promise.resolve({entries:[{name:'src',path:args.projectPath+'/src',isDir:true}]});},search:blank,grep:blank},session:{search:blank,searchBookmarks:blank},bookmark:{search:blank},library:{list:blank,search:blank,fullTextSearch:blank,query:blank}};
+// CommandPalette now queries the installed Theia command list when opened; the fixture has none.
+window.labApi.modules={theiaInstalled:async()=>({kind:'list',items:[]})};
+/* 【UI 重建 2026-10-27】**夹具要提供 `api.on` 命名空间。**
+ *
+ * `CommandPalette`（以及编辑器菜单 / 语言服务）会订阅
+ * `api.on.theiaContributionChanged(...)` 来在扩展贡献变化时刷新。
+ * 这里是**事件订阅**，不是请求 —— mock 里缺了它，组件在挂载期就抛
+ * `Cannot read properties of undefined (reading 'theiaContributionChanged')`，
+ * 于是整个页面起不来，报出来的是「UI wait timeout」，看起来像加载慢。
+ *
+ * 真实的 `lib/webApi.ts` 里同一方法返回一个空的退订函数（`:1179`），
+ * 这里照抄那个形状：**返回 unsubscribe，不返回 undefined**。 */
+window.labApi.on = window.labApi.on ?? new Proxy({}, {
+  get: () => () => () => {},
+});
 window.addEventListener('unhandledrejection',e=>{window.labEvents.push('unhandled: '+e.reason);});
 
 const mode=new URLSearchParams(location.search).get('case');window.labDeferFile=mode==='mobile-defer';window.labRejectFile=mode==='mobile-error';

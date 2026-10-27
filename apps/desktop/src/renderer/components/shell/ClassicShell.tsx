@@ -1,4 +1,26 @@
 /**
+ * 【已退役 2026-10-27】**ClassicShell 不再由 `App.tsx` 渲染。**
+ *
+ * 生产外壳已换成 `ClaudeShell`（Claude Code 页的列覆盖 + pane tile 模型，
+ * 见 `shell/ClaudeShell.tsx`）。本文件保留在仓库里，原因有两条：
+ *
+ * 1. **8 套回归网在读它的源码**（`arc005-editor-keepalive` / `pane-docking` /
+ *    `pane-free-grid` / `workspace-visual` / `ipc-wiring` / `surface-layers` /
+ *    `t129-terminal` / `workspace-shell`）。删文件会同时删掉这些断言。
+ * 2. 新壳的回归网（`claude-shell-smoke`，29 条）刚建，覆盖度还远不如旧的 ——
+ *    **先补齐再删，不能反过来**（硬规矩 1：先补测试再动刀）。
+ *
+ * ## 删除条件（三条都满足才动手）
+ *
+ * - `claude-shell-smoke` 或等效套件覆盖了这 8 套原本守的不变量：
+ *   pane 停靠、编辑器保活、终端默认折叠、表面分层、IPC 三层接线；
+ * - `surface-layers-smoke:186` 的 `readFileSync(ClassicShell.tsx)` 改成读新壳；
+ * - 真 Electron 截图（`arc005-visual-baseline`）在新壳上稳定全绿。
+ *
+ * 在那之前，本文件保持只读 —— **不要在它上面继续加功能**。
+ *
+ * ---
+ *
  * 【ARC-005 V1】ClassicShell —— 经典工作区外壳,从 App.tsx **整段逐字**抽出。
  *
  * 渲染内容就是原来 App 里的那段 `<WorkspaceInertShell>…</WorkspaceInertShell>`
@@ -28,7 +50,6 @@ import { SessionTabs } from "../layout/SessionTabs.js";
 import { UnifiedTabsBar } from "../layout/UnifiedTabsBar.js";
 import { RightPanel } from "../layout/RightPanel.js";
 import { BottomTerminalBar } from "../layout/BottomTerminalBar.js";
-import { ModuleViewDock } from "../modules/ModuleContributions.js";
 import { OpenTabsBar } from "../ide/OpenTabsBar.js";
 import { CustomUiToolbar } from "../customUi/CustomUiToolbar.js";
 import { useSessionStore } from "../../stores/sessionStore.js";
@@ -107,7 +128,7 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({
         style={{ flexGrow: 0, flexBasis: `${leftWidthPct}%` }}
       >
         <WorkspaceSidebarContents mode={leftBarMode} />
-        <div className="max-h-[38vh] shrink-0 overflow-y-auto empty:hidden"><ModuleViewDock location="left" /></div>
+        <div className="max-h-[38vh] shrink-0 overflow-y-auto empty:hidden"></div>
       </aside>
       {leftOpen && (
         <Divider
@@ -140,7 +161,7 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({
  * 应用树(正是"点设置很卡"的老账)。这里只有这个包壳重渲染,`children` 元素
  * 身份不变,React 直接跳过子树。
  */
-const WorkspaceInertShell = memo(function WorkspaceInertShell({
+export const WorkspaceInertShell = memo(function WorkspaceInertShell({
   children,
   variant,
 }: {

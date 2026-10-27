@@ -7,13 +7,13 @@ import { AskChoiceDialog } from "./components/chat/AskChoiceDialog.js";
 import { BrowserPanel } from "./components/browser/BrowserPanel.js";
 import { Toaster } from "./components/layout/Toaster.js";
 import { CustomUiHost } from "./components/customUi/CustomUiHost.js";
-import { ModuleInstallConsentHost } from "./components/modules/ModuleInstallConsentCard.js";
 import { TheiaRuntimeMessageHost } from "./components/modules/TheiaRuntimeMessageHost.js";
 import { TheiaQuickInputHost } from "./components/modules/TheiaQuickInputHost.js";
 import { TheiaStatusStrip } from "./components/modules/TheiaStatusStrip.js";
 import { TheiaDiagnosticsHost } from "./lib/theiaDiagnostics.js";
 import { TheiaWebviewHost } from "./components/modules/TheiaWebviewHost.js";
 import { ClaudeShellMount } from "./components/shell/ClaudeShellMount.js";
+import { WorkspaceInertShell } from "./components/shell/ClassicShell.js";
 import { UpdateNotification } from "./components/layout/UpdateNotification.js";
 import { VoiceListeningOverlay } from "./components/layout/VoiceListeningOverlay.js";
 import { useClaudeEvents } from "./hooks/useClaudeEvents.js";
@@ -296,7 +296,6 @@ export function App() {
       {/* 【T18】安装权限卡（本次运行允许 / 始终允许 / 拒绝）—— 根级挂一个：任何入口
           （设置页清单面板、Agent 回合、以后的工作台按钮）发起安装都要经过它，
           没有待确认安装时渲染 null。 */}
-      <ModuleInstallConsentHost />
       <BrowserPanel mode="overlay" />
       {/* Wide-mode plan dialog - mounts over the wide 3:7 workspace (fixed
           overlay below the titlebar) when a plan tab is open. Mounted here
@@ -311,6 +310,7 @@ export function App() {
           旧的 ClassicShell 暂时保留在仓库里（套件仍引用），但不再由 App 渲染。
           同一条不变量照旧：列切换只做 inert + data-covered，绝不卸载工作区子树
           （终端 PTY / Monaco / 草稿保活）。 */}
+      <WorkspaceInertShell variant="workspace">
       <ClaudeShellMount
         leftOpen={leftOpen}
         leftBarMode={leftBarMode}
@@ -323,6 +323,7 @@ export function App() {
         bottomTerminalOpen={bottomTerminalOpen}
         setBottomTerminalOpen={setBottomTerminalOpen}
       />
+      </WorkspaceInertShell>
       {/* Settings is a full-window surface, mounted at the ROOT (not inside
           the workspace column) so no workspace ancestor's overflow or
           stacking context can clip it. It renders null when closed. */}
