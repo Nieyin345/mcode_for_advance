@@ -21,7 +21,7 @@ import 那些文件，只是依赖图不跟到 vendor 子仓库。
 
 - **S1 vendor 改口**：`genoffice/**` 的输出里**没有**「没有套件覆盖它」，
   且**有**「本工具只回答」。⚠️ 只断言其中一个不够 —— 见下面 A1 的教训。
-- **S2 真结论保留（负控）**：`src/main/modules/moduleApproval.ts` 仍然报
+- **S2 真结论保留（负控）**：`src/main/modules/extensionApproval.ts` 仍然报
   「没有套件覆盖它」。**这条防止为了修 vendor 把真结论也改掉** ——
   过度修正会得到一个从不说「没有」的工具，比说错更坏。
 - **S3 renderer 在索引内**：`src/renderer/components/chat/Markdown.tsx` 有覆盖时
@@ -102,7 +102,7 @@ def main() -> None:
     # ── S2：真结论必须保留（负控，防过度修正）──────────────────────────
     print("\n[S2] src/main 下真没覆盖的文件，仍然说「没有套件覆盖」（负控）")
 
-    r = run("src/main/modules/moduleApproval.ts")
+    r = run("src/main/modules/extensionApproval.ts")
     out = r.stdout
     check("S2 ★ 仍然报「没有套件覆盖它」（这是结论，可查）",
           "没有套件覆盖它" in out, out[:400])
@@ -121,8 +121,8 @@ def main() -> None:
     # ── S4：两种路径写法必须等价 ────────────────────────────────────────
     print("\n[S4] `apps/desktop/src/...` 与 `src/...` 两种写法结果相同")
 
-    rel = "src/main/modules/moduleApproval.ts"
-    rooted = "apps/desktop/src/main/modules/moduleApproval.ts"
+    rel = "src/main/modules/extensionApproval.ts"
+    rooted = "apps/desktop/src/main/modules/extensionApproval.ts"
     a = run(rel)
     b = run(rooted)
     check("S4 ★ `apps/desktop/...` 不再「找不到」（从前拼成 apps/desktop/apps/desktop/…）",

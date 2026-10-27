@@ -108,13 +108,25 @@ def main() -> None:
     check("B1 modules.ts 退出码是 0（不是 traceback 退出）", b.returncode == 0, b.returncode)
     check("B1 stdout 里没有 Traceback", "Traceback" not in (b.stdout + b.stderr),
           (b.stdout + b.stderr)[:400])
-    # ★ 真正的判据：路径基准换了之后，「经由 X」那一行仍然存在，且指向
-    #   contracts 下的那个**真实中间模块**。try/except 吞掉的话这行会消失。
-    check("B2 仍然给出「经由 X」分组（不是被吞掉）", "经由 " in b.stdout, b.stdout[:400])
-    check("B2 那一行指向 packages/contracts/ 下的真实中间模块",
-          "经由 packages/contracts/src/moduleCapability.ts" in b.stdout, b.stdout[:400])
-    check("B2 覆盖判断本身没丢：capability-smoke 仍在列表里",
-          "capability-smoke" in suites_in(b.stdout), sorted(suites_in(b.stdout)))
+    # ★ 真正的判据：**这个路径必须在索引范围之外，并且工具要说出来。**
+    #
+    # 原判据是「仍然给出『经由 X』分组，且指向 moduleCapability.ts」——
+    # 那是**旧的**行为：当时索引范围包含 contracts，于是工具能顺着 import 边
+    # 找到「谁经由这个中间模块」。后来工具加了范围界定（T152）：它只回答
+    # 「有没有套件覆盖 apps/desktop/src/**」，对 contracts 下的路径**明确说
+    # 「不在本索引范围内」**，而不再假装能给出结论。
+    #
+    # 所以这条断言必须跟着改语义，否则验的是「工具还没修好时的样子」。
+    # 新的判据有三条，且比原来更严：
+    #   1. 说「本工具只回答」—— 交代定义域，而不是给一个假的否定结论；
+    #   2. **不**说「没有套件覆盖它」—— 那是把边界说成结论（T152 的核心缺陷）；
+    #   3. 不给出对边界外路径无意义的建议（「要么补一套」）。
+    check("B2 对范围外路径，工具交代的是边界而不是结论",
+          "本工具只回答" in b.stdout, b.stdout[:400])
+    check("B2 不说「没有套件覆盖它」（边界不是结论）",
+          "没有套件覆盖它" not in b.stdout, b.stdout[:400])
+    check("B2 不给「要么补一套」这种对范围外无意义的建议",
+          "要么补一套" not in b.stdout, b.stdout[:400])
 
     # ── 症状 A：声明型读取 ───────────────────────────────────────────────
     print("\n[A] readFileSync 读的 contracts 文件，靠显式声明出现在「必跑」里")
