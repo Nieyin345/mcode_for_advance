@@ -843,13 +843,13 @@ function buildComponents(): Components {
     return <td className="max-w-[32ch] border border-edge px-2 py-1 text-content-muted">{children}</td>;
   },
   h1({ children }) {
-    return <h1 className="mb-[var(--chat-md-gap-md)] mt-[var(--chat-md-gap-lg)] font-bold text-content [font-size:var(--chat-fs-lg)]">{children}</h1>;
+    return <h1 className="mb-0 mt-[var(--chat-md-gap-lg)] font-semibold text-content [font-size:calc(1em_+_0.125rem)]">{children}</h1>;
   },
   h2({ children }) {
-    return <h2 className="mb-[var(--chat-md-gap-sm)] mt-[var(--chat-md-gap-lg)] font-bold text-content [font-size:var(--chat-font-size)]">{children}</h2>;
+    return <h2 className="mb-0 mt-[calc(var(--chat-md-flow)*2.5)] font-semibold text-content [font-size:calc(1em_+_0.125rem)]">{children}</h2>;
   },
   h3({ children }) {
-    return <h3 className="mb-[var(--chat-md-gap-xs)] mt-[var(--chat-md-gap-md)] font-semibold text-content [font-size:var(--chat-font-size)]">{children}</h3>;
+    return <h3 className="mb-0 mt-[calc(var(--chat-md-flow)*2)] font-semibold text-content [font-size:1em]">{children}</h3>;
   },
   };
 }
