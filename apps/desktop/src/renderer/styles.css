@@ -3055,10 +3055,50 @@ button.chat-ledger-head:hover {
   --chat-row-gap-assistant: calc(var(--chat-font-size) * var(--chat-md-leading) * 0.5);
   --chat-row-gap-user: calc(var(--chat-font-size) * var(--chat-md-leading) * 0.75);
   --chat-block-gap: calc(var(--chat-font-size) * var(--chat-md-leading) * 0.5);
-  --chat-md-gap-xs: 0.25rem;         /* 4px  */
-  --chat-md-gap-sm: 0.375rem;        /* 6px  */
-  --chat-md-gap-md: 0.5rem;          /* 8px  */
-  --chat-md-gap-lg: 0.75rem;         /* 12px */
+  /* 【UI 重建 2026-10-28】**块级间距改成 Claude 的公式体系。**
+   *
+   * 上一版是四档写死的 px（4 / 6 / 8 / 12），而 Claude 是**一个基准 × 系数**：
+   *
+   *   .prose{
+   *     --_prose-size:       var(--cds-font-size-prose, 1rem);   → 16px
+   *     --_prose-leading:    var(--cds-leading-prose, 1.5);      → 1.5
+   *     --_prose-flow-base:  .75em;                              → 12px
+   *     --_prose-flow:       var(--_prose-flow-base);            → 12px（默认档）
+   *     --_prose-x-after-heading: .667;
+   *     --_prose-x-break:         2;
+   *     --_prose-x-after-table:   2;
+   *     --_prose-x-li-child:      .333;
+   *     --_prose-x-after-lead:    2.5;
+   *   }
+   *   .prose[data-prose-spacing=lg]{ --_prose-flow: 1em }        → 16px（宽松档）
+   *
+   * 而各元素的 margin 是 `flow × 系数`（全部 `margin-block-start`，
+   * 没有 `margin-block-end` —— 是**单向**间距，不是对称的 my-x）：
+   *
+   *   p / ul / ol / table / blockquote / figure …  flow × 1
+   *   h1                                          flow × x-h-space(3)
+   *   h2                                          flow × x-h-space(2.5)
+   *   h3                                          flow × x-h-space(2)
+   *   h4 / h5 / h6                                flow × x-h-space(1.667)
+   *   li                                          flow × x-li-child(.333)
+   *   hr                                          flow × x-break(2)
+   *
+   * ## 两个实质差异（不只是数值）
+   *
+   * 1. **单向 vs 对称**：Claude 只有 `margin-block-start`，Mcode 用的是
+   *    `my-[...]`（上下都有）。相邻两段的间距因此**翻倍**。
+   * 2. **基准 vs 四档**：改字号时 Claude 整套会跟着缩放（`em` 相对字号），
+   *    而写死的 px 不会。
+   *
+   * 取值口径：Mcode 用**默认档**（`flow = 12px`），不是 `lg`（16px）。
+   * 依据是 `.prose` 本体（无 `data-prose-spacing`）就是 12px，
+   * 而 `lg` 需要显式挂属性。截图里 Claude Code 的正文密度对得上 12。 */
+  --chat-md-flow: 0.75em;            /* = .75em × 16px = 12px */
+  /* 四档改写成 flow 的倍数，保留原名字以免 Markdown.tsx 大改。 */
+  --chat-md-gap-xs: calc(var(--chat-md-flow) * 0.333);  /* li 内层 ≈ 4.0px */
+  --chat-md-gap-sm: var(--chat-md-flow);                /* 段落 / 列表 ≈ 12px */
+  --chat-md-gap-md: var(--chat-md-flow);                /* 代码块 / 引用 / 表格 ≈ 12px */
+  --chat-md-gap-lg: calc(var(--chat-md-flow) * 3);      /* h1 上间距 = 36px */
   /* 【UI 重建 2026-10-27】行高改成 Claude 的真实比例 **1.4286**。
    *
    * 上游直证（`c6a992d55-Che1orl5.css`，`.epitaxy-root .epitaxy-transcript-typography`）：
