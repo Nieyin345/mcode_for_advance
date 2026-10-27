@@ -684,7 +684,7 @@ function buildComponents(): Components {
     }, [rawCode, lang, ready, html, expanded]);
 
     return (
-      <div data-cds="CodeBlock" role="group" aria-label={lang} className="claude-code-block my-[var(--chat-md-gap-md)] overflow-hidden">
+      <div data-cds="CodeBlock" role="group" aria-label={lang} className="claude-code-block mt-[var(--chat-md-gap-md)] mb-0 overflow-hidden">
         <div data-cds="CodeBlockHeader" className="flex items-center justify-between gap-2 text-content-subtle [font-size:var(--chat-fs-xxs)]">
           <span className="truncate font-mono">{lang}</span>
           <span className="flex shrink-0 items-center gap-1">
@@ -800,19 +800,19 @@ function buildComponents(): Components {
     return <img src={src} alt={alt ?? ""} />;
   },
   ul({ children }) {
-    return <ul className="my-[var(--chat-md-gap-sm)] list-disc space-y-[var(--chat-md-gap-xs)] pl-5 text-content-muted marker:text-content-subtle">{children}</ul>;
+    return <ul className="mt-[var(--chat-md-gap-sm)] mb-0 list-disc space-y-[var(--chat-md-gap-xs)] pl-5 text-content-muted marker:text-content-subtle">{children}</ul>;
   },
   ol({ children }) {
-    return <ol className="my-[var(--chat-md-gap-sm)] list-decimal space-y-[var(--chat-md-gap-xs)] pl-5 text-content-muted marker:text-content-subtle">{children}</ol>;
+    return <ol className="mt-[var(--chat-md-gap-sm)] mb-0 list-decimal space-y-[var(--chat-md-gap-xs)] pl-5 text-content-muted marker:text-content-subtle">{children}</ol>;
   },
   blockquote({ children }) {
-    return <blockquote className="my-[var(--chat-md-gap-md)] border-l-2 border-edge pl-3 text-content-muted">{children}</blockquote>;
+    return <blockquote className="mt-[var(--chat-md-gap-md)] mb-0 border-l-2 border-edge pl-3 text-content-muted">{children}</blockquote>;
   },
   hr() {
     // Model-emitted "---". Without an override the browser default renders
     // (border: 1px inset + 0.5em margins) — a faint double line with
     // unpredictable spacing that reads as an unexplained gap on dark surfaces.
-    return <hr className="my-[var(--chat-md-gap-md)] border-0 border-t border-edge" />;
+    return <hr className="my-[calc(var(--chat-md-flow)*2)] border-0 border-t border-edge" />;
   },
   // Bold is full --content: in paragraphs that matches the body color (weight
   // alone marks emphasis); in muted contexts (lists / tables / blockquotes) the
@@ -831,7 +831,7 @@ function buildComponents(): Components {
   // wrapper scrolls whatever still exceeds the pane.
   table({ children }) {
     return (
-      <div className="my-[var(--chat-md-gap-md)] overflow-x-auto">
+      <div className="mt-[var(--chat-md-gap-md)] mb-0 overflow-x-auto">
         <table className="[width:max-content] [min-width:100%] border-collapse [font-size:var(--chat-fs-sm)]">{children}</table>
       </div>
     );
@@ -938,7 +938,19 @@ export const Markdown = memo(function Markdown({
   return (
     <div
       data-cds="MarkdownBody"
-      className="chat-md break-words text-content [font-size:var(--chat-font-size)] [line-height:var(--chat-md-leading)] [font-weight:var(--chat-font-weight)] [&>p]:my-[var(--chat-md-gap-sm)] [&>:first-child]:mt-0 [&>:last-child]:mb-0"
+      /* 【UI 重建 2026-10-28】**段落间距从「上下都有」改成「只有上」。**
+       *
+       * 上一版是 `[&>p]:my-[…]` —— 相邻两段之间 = 上一段的 mb + 下一段的 mt
+       * = **两倍**。而 Claude 全部用 `margin-block-start`，
+       * 相邻段之间只有**一次**间距（见上游 `.prose` 的规则族，
+       * 每条都是 `margin-block-start: …; margin-block-end: 0`）。
+       *
+       * 这一条比数值差异更实质：即使把 flow 调成一样的值，
+       * 对称 margin 也会让整篇正文松一倍。
+       *
+       * `first-child:mt-0` 保留（Claude 也是首个子元素不吃上间距）；
+       * `last-child:mb-0` 在只有上间距之后变得无意义，去掉。 */
+      className="chat-md break-words text-content [font-size:var(--chat-font-size)] [line-height:var(--chat-md-leading)] [font-weight:var(--chat-font-weight)] [&>p]:mt-[var(--chat-md-gap-sm)] [&>p]:mb-0 [&>:first-child]:mt-0"
     >
       <MarkdownProjectContext.Provider value={projectPath ?? null}>
         <MarkdownBaseDirContext.Provider value={baseDir ?? null}>
