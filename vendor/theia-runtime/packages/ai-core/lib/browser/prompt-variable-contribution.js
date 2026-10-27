@@ -1,0 +1,229 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.PromptVariableContribution = exports.PROMPT_VARIABLE = void 0;
+const tslib_1 = require("tslib");
+// *****************************************************************************
+// Copyright (C) 2025 EclipseSource GmbH.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+const core_1 = require("@theia/core");
+const inversify_1 = require("@theia/core/shared/inversify");
+const monaco = require("@theia/monaco-editor-core");
+const prompt_service_1 = require("../common/prompt-service");
+const prompt_text_1 = require("../common/prompt-text");
+exports.PROMPT_VARIABLE = {
+    id: 'prompt-provider',
+    description: core_1.nls.localize('theia/ai/core/promptVariable/description', 'Resolves prompt templates via the prompt service'),
+    name: 'prompt',
+    args: [
+        { name: 'id', description: core_1.nls.localize('theia/ai/core/promptVariable/argDescription', 'The prompt template id to resolve') }
+    ]
+};
+let PromptVariableContribution = class PromptVariableContribution {
+    registerVariables(service) {
+        service.registerResolver(exports.PROMPT_VARIABLE, this);
+        service.registerArgumentPicker(exports.PROMPT_VARIABLE, this.triggerArgumentPicker.bind(this));
+        service.registerArgumentCompletionProvider(exports.PROMPT_VARIABLE, this.provideArgumentCompletionItems.bind(this));
+    }
+    canResolve(request, context) {
+        if (request.variable.name === exports.PROMPT_VARIABLE.name) {
+            return 1;
+        }
+        return -1;
+    }
+    async resolve(request, context, resolveDependency) {
+        if (request.variable.name === exports.PROMPT_VARIABLE.name) {
+            const arg = request.arg?.trim();
+            if (arg) {
+                // Check if this is a command-style reference (contains | separator)
+                const pipeIndex = arg.indexOf('|');
+                const promptIdOrCommandName = pipeIndex >= 0 ? arg.substring(0, pipeIndex) : arg;
+                const commandArgs = pipeIndex >= 0 ? arg.substring(pipeIndex + 1) : '';
+                // Determine the actual fragment ID by looking up the command name first.
+                // This must not be conditional on arguments being present: a customized (file-based)
+                // command has a fragment id that differs from its command name, so `/deploy` without
+                // arguments would otherwise not resolve even though `/deploy prod` does. It also keeps
+                // this lookup aligned with `PromptService.isKnownCommand`, which the chat request
+                // parser uses to decide whether `/deploy` is a command at all.
+                let fragment = this.promptService.getPromptFragmentByCommandName(promptIdOrCommandName);
+                // Fall back to looking up by fragment ID if not found by command name
+                if (!fragment) {
+                    fragment = this.promptService.getRawPromptFragment(promptIdOrCommandName);
+                }
+                // If we still don't have a fragment, we can't resolve
+                if (!fragment) {
+                    this.logger.debug(`Could not find prompt fragment or command '${promptIdOrCommandName}'`);
+                    return undefined;
+                }
+                const fragmentId = fragment.id;
+                // Resolve the prompt fragment normally (this handles {{variables}} and ~{functions})
+                const resolvedPrompt = await this.promptService.getResolvedPromptFragmentWithoutFunctions(fragmentId, undefined, context, resolveDependency);
+                if (resolvedPrompt) {
+                    // If command args were provided, substitute them in the resolved text
+                    // This happens AFTER variable/function resolution, so $ARGUMENTS can be part of the template
+                    // alongside {{variables}} which get resolved first
+                    const isCommand = fragment?.isCommand === true;
+                    const finalText = isCommand && commandArgs
+                        ? this.substituteCommandArguments(resolvedPrompt.text, promptIdOrCommandName, commandArgs)
+                        : resolvedPrompt.text;
+                    return {
+                        variable: request.variable,
+                        value: finalText,
+                        allResolvedDependencies: resolvedPrompt.variables
+                    };
+                }
+            }
+        }
+        // Returning `undefined` rather than an empty resolution keeps the original text in place:
+        // callers fall back to the literal `#prompt:...` / `{{prompt:...}}` placeholder instead of
+        // silently dropping it, which is also how every other unresolvable variable behaves.
+        this.logger.debug(`Could not resolve prompt variable '${request.variable.name}' with arg '${request.arg}'.`);
+        return undefined;
+    }
+    substituteCommandArguments(template, commandName, commandArgs) {
+        // Parse arguments (respecting quotes)
+        const args = this.parseCommandArguments(commandArgs);
+        // Substitute $ARGUMENTS with full arg string
+        let result = template.replace(/\$ARGUMENTS/g, commandArgs);
+        // Substitute $0 with command name
+        result = result.replace(/\$0/g, commandName);
+        // Substitute numbered arguments in reverse order to avoid collision
+        // (e.g., $10 before $1 to prevent $1 from matching the "1" in "$10")
+        for (let i = args.length; i > 0; i--) {
+            const regex = new RegExp(`\\$${i}\\b`, 'g');
+            result = result.replace(regex, args[i - 1]);
+        }
+        return result;
+    }
+    parseCommandArguments(commandArgs) {
+        const args = [];
+        let current = '';
+        let inQuotes = false;
+        let quoteChar = '';
+        for (let i = 0; i < commandArgs.length; i++) {
+            const char = commandArgs[i];
+            // Handle escape sequences within quotes
+            if (char === '\\' && i + 1 < commandArgs.length && inQuotes) {
+                const nextChar = commandArgs[i + 1];
+                if (nextChar === '"' || nextChar === "'" || nextChar === '\\') {
+                    current += nextChar;
+                    i++; // Skip the next character
+                    continue;
+                }
+            }
+            if ((char === '"' || char === "'") && !inQuotes) {
+                inQuotes = true;
+                quoteChar = char;
+            }
+            else if (char === quoteChar && inQuotes) {
+                inQuotes = false;
+                quoteChar = '';
+            }
+            else if (char === ' ' && !inQuotes) {
+                if (current.trim()) {
+                    args.push(current.trim());
+                    current = '';
+                }
+            }
+            else {
+                current += char;
+            }
+        }
+        if (current.trim()) {
+            args.push(current.trim());
+        }
+        return args;
+    }
+    async triggerArgumentPicker() {
+        // Trigger the suggestion command to show argument completions
+        this.commandService.executeCommand('editor.action.triggerSuggest');
+        // Return undefined because we don't actually pick the argument here.
+        // The argument is selected and inserted by the monaco editor's completion mechanism.
+        return undefined;
+    }
+    async provideArgumentCompletionItems(model, position) {
+        const lineContent = model.getLineContent(position.lineNumber);
+        // Only provide completions once the variable argument separator is typed
+        const triggerCharIndex = lineContent.lastIndexOf(prompt_text_1.PromptText.VARIABLE_SEPARATOR_CHAR, position.column - 1);
+        if (triggerCharIndex === -1) {
+            return undefined;
+        }
+        // Check if the text immediately before the trigger is the prompt variable, i.e #prompt
+        const requiredVariable = `${prompt_text_1.PromptText.VARIABLE_CHAR}${exports.PROMPT_VARIABLE.name}`;
+        if (triggerCharIndex < requiredVariable.length ||
+            lineContent.substring(triggerCharIndex - requiredVariable.length, triggerCharIndex) !== requiredVariable) {
+            return undefined;
+        }
+        const range = new monaco.Range(position.lineNumber, triggerCharIndex + 2, position.lineNumber, position.column);
+        const activePrompts = this.promptService.getActivePromptFragments();
+        let builtinPromptCompletions = undefined;
+        if (activePrompts.length > 0) {
+            builtinPromptCompletions = [];
+            activePrompts.forEach(prompt => (builtinPromptCompletions.push({
+                label: prompt.id,
+                kind: (0, prompt_service_1.isCustomizedPromptFragment)(prompt) ? monaco.languages.CompletionItemKind.Enum : monaco.languages.CompletionItemKind.Variable,
+                insertText: prompt.id,
+                range,
+                detail: (0, prompt_service_1.isCustomizedPromptFragment)(prompt) ?
+                    core_1.nls.localize('theia/ai/core/promptVariable/completions/detail/custom', 'Customized prompt fragment') :
+                    core_1.nls.localize('theia/ai/core/promptVariable/completions/detail/builtin', 'Built-in prompt fragment'),
+                sortText: `${prompt.id}`
+            })));
+        }
+        return builtinPromptCompletions;
+    }
+    /**
+     * Resolves multiple prompt fragments in parallel and concatenates their resolved text.
+     */
+    async resolvePromptFragments(fragmentIds, variable, context, resolveDependency) {
+        if (fragmentIds.length === 0) {
+            return { variable, value: '', allResolvedDependencies: [] };
+        }
+        const results = await Promise.all(fragmentIds.map(fragmentId => this.promptService.getResolvedPromptFragmentWithoutFunctions(fragmentId, undefined, context, resolveDependency)
+            .then(resolved => resolved ? { fragmentId, resolved } : undefined)));
+        const resolvedFragments = [];
+        const allDependencies = [];
+        for (const result of results) {
+            if (result) {
+                resolvedFragments.push(`### ${result.fragmentId}\n${result.resolved.text}`);
+                if (result.resolved.variables) {
+                    allDependencies.push(...result.resolved.variables);
+                }
+            }
+        }
+        return {
+            variable,
+            value: resolvedFragments.join('\n\n'),
+            allResolvedDependencies: allDependencies
+        };
+    }
+};
+exports.PromptVariableContribution = PromptVariableContribution;
+tslib_1.__decorate([
+    (0, inversify_1.inject)(core_1.CommandService),
+    tslib_1.__metadata("design:type", Object)
+], PromptVariableContribution.prototype, "commandService", void 0);
+tslib_1.__decorate([
+    (0, inversify_1.inject)(prompt_service_1.PromptService),
+    tslib_1.__metadata("design:type", Object)
+], PromptVariableContribution.prototype, "promptService", void 0);
+tslib_1.__decorate([
+    (0, inversify_1.inject)(core_1.ILogger),
+    (0, inversify_1.named)('ai-core:PromptVariableContribution'),
+    tslib_1.__metadata("design:type", Object)
+], PromptVariableContribution.prototype, "logger", void 0);
+exports.PromptVariableContribution = PromptVariableContribution = tslib_1.__decorate([
+    (0, inversify_1.injectable)()
+], PromptVariableContribution);
+//# sourceMappingURL=prompt-variable-contribution.js.map

@@ -9,6 +9,7 @@ import { EventEmitter } from "node:events";
 import { registerTheiaInstalledHandlers } from "../../src/main/ipc/theiaInstalled.js";
 import { IPC } from "@contracts/ipc";
 import { TheiaInstalledRegistry } from "../../src/main/modules/theiaHost/installedRegistry.js";
+import { resolveTheiaRoot } from "../../src/main/modules/theiaHost/theiaRoot.js";
 import { McodeExtensionState } from "../../src/main/modules/theiaHost/mcodeExtensionState.js";
 import { McodeTheiaTerminalDriver } from "../../src/main/modules/theiaHost/mcodeTerminalDriver.js";
 import { policyFor } from "../../src/main/appControl/policy.js";
@@ -18,7 +19,10 @@ import type { TheiaMonacoEditRequest, TheiaRuntimeMessage, TheiaQuickInputReques
 
 const root=process.env.MCODE_SMOKE_REPO_ROOT;
 if(!root) throw Error("MCODE_SMOKE_REPO_ROOT missing");
-const theia=path.join(root,"vendor/theia");
+// ⚠️ 走 `resolveTheiaRoot`，不要硬编码 `vendor/theia`。
+// 现在仓库随带 `vendor/theia-runtime`（clone 即用），`vendor/theia` 只有要改
+// Theia 源码时才存在。硬编码会让这套件在正常 clone 上直接 `THEIA_BUILD_REQUIRED` 退出。
+const theia=resolveTheiaRoot(undefined, "theia-installed-smoke");
 if(!existsSync(path.join(theia,"packages/plugin-ext/lib/hosted/node/plugin-host.js"))||
    !existsSync(path.join(theia,"packages/plugin-ext-vscode/lib/node/plugin-vscode-init.js"))) {
   console.error("THEIA_BUILD_REQUIRED");process.exit(2);

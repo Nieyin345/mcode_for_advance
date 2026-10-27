@@ -1,0 +1,285 @@
+"use strict";
+// *****************************************************************************
+// Copyright (C) 2026 EclipseSource and others.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+Object.defineProperty(exports, "__esModule", { value: true });
+const chai = require("chai");
+const terminal_ext_1 = require("./terminal-ext");
+const types_impl_1 = require("./types-impl");
+const expect = chai.expect;
+/**
+ * Creates a mock RPCProtocol that returns the given proxy for TERMINAL_MAIN.
+ */
+function createMockRpc(proxy) {
+    return {
+        getProxy(_proxyId) {
+            return proxy;
+        },
+        set(_identifier, instance) {
+            return instance;
+        },
+        dispose() { }
+    };
+}
+/**
+ * Creates a minimal mock Plugin object.
+ */
+function createMockPlugin() {
+    return {
+        pluginPath: '/test',
+        pluginFolder: '/test',
+        pluginUri: 'file:///test',
+        model: { id: 'test.plugin' },
+        rawModel: {},
+        lifecycle: {},
+        isUnderDevelopment: false
+    };
+}
+/**
+ * Creates a stub TerminalServiceMain that records calls.
+ */
+function createMockProxy() {
+    const createdTerminals = [];
+    return {
+        createdTerminals,
+        $createTerminal(id, options) {
+            createdTerminals.push({ id, options });
+            return Promise.resolve(id);
+        },
+        $sendText() { },
+        $write() { },
+        $resize() { },
+        $show() { },
+        $hide() { },
+        $dispose() { },
+        $setName() { },
+        $writeByTerminalId() { },
+        $resizeByTerminalId() { },
+        $disposeByTerminalId() { },
+        $setNameByTerminalId() { },
+        $setEnvironmentVariableCollection() { },
+        $registerTerminalLinkProvider() { },
+        $unregisterTerminalLinkProvider() { },
+        $registerTerminalObserver() { },
+        $unregisterTerminalObserver() { },
+    };
+}
+describe('TerminalServiceExtImpl', () => {
+    let proxy;
+    let service;
+    let plugin;
+    beforeEach(() => {
+        proxy = createMockProxy();
+        const rpc = createMockRpc(proxy);
+        service = new terminal_ext_1.TerminalServiceExtImpl(rpc);
+        plugin = createMockPlugin();
+    });
+    describe('terminals list', () => {
+        it('returns empty array initially', () => {
+            expect(service.terminals).to.deep.equal([]);
+        });
+        it('includes terminals after creation via $terminalCreated', () => {
+            service.$terminalCreated('t1', 'Terminal 1');
+            expect(service.terminals).to.have.length(1);
+        });
+        it('removes terminals after $terminalClosed', () => {
+            service.$terminalCreated('t1', 'Terminal 1');
+            service.$terminalClosed('t1', { code: 0, reason: types_impl_1.TerminalExitReason.Process });
+            expect(service.terminals).to.have.length(0);
+        });
+    });
+    describe('API object identity', () => {
+        it('returns the raw TerminalExtImpl when no wrapper is provided', () => {
+            const terminal = service.createTerminal(plugin, 'Test Terminal');
+            expect(terminal).to.be.instanceOf(terminal_ext_1.TerminalExtImpl);
+        });
+        it('returns the wrapped API object when a wrapper is provided', () => {
+            const wrapper = (t) => ({ ...t, name: 'wrapped' });
+            service.createTerminal(plugin, 'Test Terminal', undefined, undefined, wrapper);
+            const id = proxy.createdTerminals[0].id;
+            service.$terminalCreated(id, 'Test Terminal');
+            const terminal = service.terminals[0];
+            expect(terminal.name).to.equal('wrapped');
+            expect(terminal).to.not.be.instanceOf(terminal_ext_1.TerminalExtImpl);
+        });
+        it('fires onDidOpenTerminal with the API object, not the raw terminal', () => {
+            const apiObject = { marker: 'api-object' };
+            const wrapper = (_t) => apiObject;
+            service.createTerminal(plugin, 'Test Terminal', undefined, undefined, wrapper);
+            const opened = [];
+            service.onDidOpenTerminal(t => opened.push(t));
+            // Get the ID from the proxy call
+            const id = proxy.createdTerminals[0].id;
+            service.$terminalCreated(id, 'Test Terminal');
+            expect(opened).to.have.length(1);
+            expect(opened[0]).to.equal(apiObject);
+        });
+        it('fires onDidCloseTerminal with the API object', () => {
+            const apiObject = { marker: 'api-object' };
+            const wrapper = (_t) => apiObject;
+            service.createTerminal(plugin, 'Test Terminal', undefined, undefined, wrapper);
+            const closed = [];
+            service.onDidCloseTerminal(t => closed.push(t));
+            const id = proxy.createdTerminals[0].id;
+            service.$terminalCreated(id, 'Test Terminal');
+            service.$terminalClosed(id, { code: 0, reason: types_impl_1.TerminalExitReason.Process });
+            expect(closed).to.have.length(1);
+            expect(closed[0]).to.equal(apiObject);
+        });
+        it('fires onDidChangeTerminalState with the API object on interaction', () => {
+            const apiObject = { marker: 'api-object' };
+            const wrapper = (_t) => apiObject;
+            service.createTerminal(plugin, 'Test Terminal', undefined, undefined, wrapper);
+            const stateChanged = [];
+            service.onDidChangeTerminalState(t => stateChanged.push(t));
+            const id = proxy.createdTerminals[0].id;
+            service.$terminalCreated(id, 'Test Terminal');
+            service.$terminalOnInteraction(id);
+            expect(stateChanged).to.have.length(1);
+            expect(stateChanged[0]).to.equal(apiObject);
+        });
+        it('fires onDidChangeTerminalState with the API object on shell type change', () => {
+            const apiObject = { marker: 'api-object' };
+            const wrapper = (_t) => apiObject;
+            service.createTerminal(plugin, 'Test Terminal', undefined, undefined, wrapper);
+            const stateChanged = [];
+            service.onDidChangeTerminalState(t => stateChanged.push(t));
+            const id = proxy.createdTerminals[0].id;
+            service.$terminalCreated(id, 'Test Terminal');
+            service.$terminalShellTypeChanged(id, '/bin/zsh');
+            expect(stateChanged).to.have.length(1);
+            expect(stateChanged[0]).to.equal(apiObject);
+        });
+        it('returns the API object from the terminals list', () => {
+            const apiObject = { marker: 'api-object' };
+            const wrapper = (_t) => apiObject;
+            service.createTerminal(plugin, 'Test Terminal', undefined, undefined, wrapper);
+            const id = proxy.createdTerminals[0].id;
+            service.$terminalCreated(id, 'Test Terminal');
+            const terminals = service.terminals;
+            expect(terminals).to.have.length(1);
+            expect(terminals[0]).to.equal(apiObject);
+        });
+        it('returns the API object as activeTerminal', () => {
+            const apiObject = { marker: 'api-object' };
+            const wrapper = (_t) => apiObject;
+            service.createTerminal(plugin, 'Test Terminal', undefined, undefined, wrapper);
+            const id = proxy.createdTerminals[0].id;
+            service.$terminalCreated(id, 'Test Terminal');
+            service.$currentTerminalChanged(id);
+            expect(service.activeTerminal).to.equal(apiObject);
+        });
+        it('cleans up API object on terminal close', () => {
+            const apiObject = { marker: 'api-object' };
+            const wrapper = (_t) => apiObject;
+            service.createTerminal(plugin, 'Test Terminal', undefined, undefined, wrapper);
+            const id = proxy.createdTerminals[0].id;
+            service.$terminalCreated(id, 'Test Terminal');
+            service.$terminalClosed(id, { code: 0, reason: types_impl_1.TerminalExitReason.Process });
+            expect(service.terminals).to.have.length(0);
+        });
+    });
+    describe('parentTerminal resolution', () => {
+        it('resolves parentTerminal from API proxy objects', () => {
+            const apiObject = { marker: 'parent-api' };
+            const wrapper = (_t) => apiObject;
+            service.createTerminal(plugin, 'Parent', undefined, undefined, wrapper);
+            const parentId = proxy.createdTerminals[0].id;
+            service.$terminalCreated(parentId, 'Parent');
+            // Create a child with parentTerminal set to the API object
+            service.createTerminal(plugin, {
+                name: 'Child',
+                location: { parentTerminal: apiObject }
+            });
+            expect(proxy.createdTerminals).to.have.length(2);
+            // The second createTerminal call should have passed the parent ID
+            // We verify it was called on the proxy (the parentId arg is the 3rd parameter)
+        });
+        it('resolves parentTerminal from raw terminal objects', () => {
+            const rawTerminal = service.createTerminal(plugin, 'Parent');
+            const parentId = proxy.createdTerminals[0].id;
+            service.$terminalCreated(parentId, 'Parent');
+            // Create a child with parentTerminal set to the raw terminal
+            service.createTerminal(plugin, {
+                name: 'Child',
+                location: { parentTerminal: rawTerminal }
+            });
+            expect(proxy.createdTerminals).to.have.length(2);
+        });
+    });
+    describe('events for terminals without wrapper', () => {
+        it('fires onDidOpenTerminal with the raw terminal when no wrapper is used', () => {
+            const opened = [];
+            service.onDidOpenTerminal(t => opened.push(t));
+            service.$terminalCreated('ext-t1', 'External Terminal');
+            expect(opened).to.have.length(1);
+            expect(opened[0]).to.be.instanceOf(terminal_ext_1.TerminalExtImpl);
+            expect(opened[0].name).to.equal('External Terminal');
+        });
+        it('fires onDidCloseTerminal with the raw terminal when no wrapper is used', () => {
+            const closed = [];
+            service.onDidCloseTerminal(t => closed.push(t));
+            service.$terminalCreated('ext-t1', 'External Terminal');
+            service.$terminalClosed('ext-t1', { code: 0, reason: types_impl_1.TerminalExitReason.Process });
+            expect(closed).to.have.length(1);
+            expect(closed[0]).to.be.instanceOf(terminal_ext_1.TerminalExtImpl);
+        });
+    });
+    describe('shell change', () => {
+        it('fires onDidChangeShell when shell changes', async () => {
+            const shells = [];
+            service.onDidChangeShell(s => shells.push(s));
+            await service.$setShell('/bin/zsh');
+            expect(shells).to.deep.equal(['/bin/zsh']);
+            expect(service.defaultShell).to.equal('/bin/zsh');
+        });
+        it('does not fire onDidChangeShell when shell is the same', async () => {
+            const shells = [];
+            await service.$setShell('/bin/zsh');
+            service.onDidChangeShell(s => shells.push(s));
+            await service.$setShell('/bin/zsh');
+            expect(shells).to.deep.equal([]);
+        });
+    });
+    describe('$terminalNameChanged', () => {
+        it('updates the terminal name', () => {
+            service.$terminalCreated('t1', 'Old Name');
+            service.$terminalNameChanged('t1', 'New Name');
+            expect(service.terminals[0].name).to.equal('New Name');
+        });
+    });
+    describe('activeTerminal', () => {
+        it('is undefined initially', () => {
+            expect(service.activeTerminal).to.equal(undefined);
+        });
+        it('reflects the current active terminal', () => {
+            service.$terminalCreated('t1', 'Terminal 1');
+            service.$currentTerminalChanged('t1');
+            expect(service.activeTerminal).to.not.equal(undefined);
+            expect(service.activeTerminal.name).to.equal('Terminal 1');
+        });
+        it('fires onDidChangeActiveTerminal', () => {
+            const changes = [];
+            service.onDidChangeActiveTerminal(t => changes.push(t));
+            service.$terminalCreated('t1', 'Terminal 1');
+            service.$currentTerminalChanged('t1');
+            service.$currentTerminalChanged(undefined);
+            expect(changes).to.have.length(2);
+            expect(changes[0].name).to.equal('Terminal 1');
+            expect(changes[1]).to.equal(undefined);
+        });
+    });
+});
+//# sourceMappingURL=terminal-ext.spec.js.map

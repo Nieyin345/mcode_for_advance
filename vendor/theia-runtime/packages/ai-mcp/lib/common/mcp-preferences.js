@@ -1,0 +1,232 @@
+"use strict";
+// *****************************************************************************
+// Copyright (C) 2024 EclipseSource GmbH.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.McpServersPreferenceSchema = exports.MCP_USE_WORKSPACE_AS_ROOT_PREF = exports.MCP_SERVERS_PREF = void 0;
+const core_1 = require("@theia/core");
+exports.MCP_SERVERS_PREF = 'ai-features.mcp.mcpServers';
+exports.MCP_USE_WORKSPACE_AS_ROOT_PREF = 'ai-features.mcp.useWorkspaceAsRoot';
+exports.McpServersPreferenceSchema = {
+    properties: {
+        [exports.MCP_SERVERS_PREF]: {
+            type: 'object',
+            title: core_1.nls.localize('theia/ai/mcp/servers/title', 'MCP Server Configuration'),
+            markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/mdDescription', 'Configure MCP servers either local with command, \
+arguments and optionally environment variables, \
+or remote with server URL, authentication token, OAuth configuration and optionally an authentication header name. \
+Additionally it is possible to configure autostart (true by default). \
+Each server is identified by a unique key, such as "brave-search" or "filesystem". \
+To start a server, use the "MCP: Start MCP Server" command, which enables you to select the desired server. \
+To stop a server, use the "MCP: Stop MCP Server" command. \
+Please note that autostart will only take effect after a restart, you need to start a server manually for the first time. \
+Servers installed from an AI registry carry an additional `registryMetadata` block that is managed automatically and is not meant to be edited manually.\
+\n\
+Example configuration:\n\
+```\
+{\n\
+  "brave-search": {\n\
+    "command": "npx",\n\
+    "args": [\n\
+      "-y",\n\
+      "@modelcontextprotocol/server-brave-search"\n\
+    ],\n\
+    "env": {\n\
+      "BRAVE_API_KEY": "YOUR_API_KEY"\n\
+    },\n\
+  },\n\
+  "filesystem": {\n\
+    "command": "npx",\n\
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/YOUR_USERNAME/Desktop"],\n\
+    "env": {\n\
+      "CUSTOM_ENV_VAR": "custom-value"\n\
+    },\n\
+    "autostart": false\n\
+  },\n\
+  "jira": {\n\
+    "serverUrl": "YOUR_JIRA_MCP_SERVER_URL",\n\
+    "serverAuthToken": "YOUR_JIRA_MCP_SERVER_TOKEN"\n\
+  },\n\
+  "oauth-protected-server": {\n\
+    "serverUrl": "YOUR_OAUTH_PROTECTED_MCP_SERVER_URL",\n\
+    "oauth": {\n\
+      "clientId": "OPTIONAL_CLIENT_ID",\n\
+      "scopes": ["OPTIONAL_SCOPE"]\n\
+    }\n\
+  }\n\
+  }\n```'),
+            additionalProperties: {
+                type: 'object',
+                properties: {
+                    command: {
+                        type: 'string',
+                        title: core_1.nls.localize('theia/ai/mcp/servers/command/title', 'Command to execute the MCP server'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/command/mdDescription', 'The command used to start the MCP server, e.g., "uvx" or "npx".')
+                    },
+                    args: {
+                        type: 'array',
+                        title: core_1.nls.localize('theia/ai/mcp/servers/args/title', 'Arguments for the command'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/args/mdDescription', 'An array of arguments to pass to the command.'),
+                    },
+                    env: {
+                        type: 'object',
+                        title: core_1.nls.localize('theia/ai/mcp/servers/env/title', 'Environment variables'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/env/mdDescription', 'Optional environment variables to set for the server, such as an API key.'),
+                        additionalProperties: {
+                            type: 'string'
+                        }
+                    },
+                    // `cwd`, `pluginRoot` and `pluginData` are deliberately absent: they are written by
+                    // `@theia/ai-registry` for a server contributed by an Agent Plugin and derived from
+                    // where that plugin was installed, so there is nothing for a user to author here.
+                    // Undeclared rather than documented as read-only, because a declared property is an
+                    // invitation to edit and the preference schema has no read-only affordance. Extra
+                    // properties stay legal, so the values still round-trip through the editor.
+                    autostart: {
+                        type: 'boolean',
+                        title: core_1.nls.localize('theia/ai/mcp/servers/autostart/title', 'Autostart'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/autostart/mdDescription', 'Automatically start this server when the frontend starts. Newly added servers are not immediately auto started, but on restart'),
+                        default: true
+                    },
+                    deferLoading: {
+                        type: 'boolean',
+                        title: core_1.nls.localize('theia/ai/mcp/servers/deferLoading/title', 'Defer Loading'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/deferLoading/mdDescription', 'If enabled, the tools provided by this server are marked as deferred in the generated prompt fragment ' +
+                            '`mcp_<server>_tools`. Deferred tools are not loaded into the model\'s context upfront. Instead, the model ' +
+                            'discovers them on-demand via the provider\'s built-in tool search mechanism (Anthropic, OpenAI) when supported. ' +
+                            'This significantly reduces token overhead for servers that expose many tools.'),
+                        default: false
+                    },
+                    serverUrl: {
+                        type: 'string',
+                        title: core_1.nls.localize('theia/ai/mcp/servers/serverUrl/title', 'Server URL'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/serverUrl/mdDescription', 'The URL of the remote MCP server. If provided, the server will connect to this URL instead of starting a local process.'),
+                    },
+                    serverAuthToken: {
+                        type: 'string',
+                        title: core_1.nls.localize('theia/ai/mcp/servers/serverAuthToken/title', 'Authentication Token'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/serverAuthToken/mdDescription', 'The authentication token for the server, if required. This is stored in preferences as plain text; ' +
+                            'avoid workspace settings if the token is sensitive.'),
+                    },
+                    serverAuthTokenHeader: {
+                        type: 'string',
+                        title: core_1.nls.localize('theia/ai/mcp/servers/serverAuthTokenHeader/title', 'Authentication Header Name'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/serverAuthTokenHeader/mdDescription', 'The header name to use for the server authentication token. If not provided, "Authorization" with "Bearer" will be used.'),
+                    },
+                    headers: {
+                        type: 'object',
+                        title: core_1.nls.localizeByDefault('Headers'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/headers/mdDescription', 'Optional additional headers included with each request to the server. Header values are stored in preferences as plain text; ' +
+                            'avoid workspace settings if they contain sensitive values.'),
+                        additionalProperties: {
+                            type: 'string'
+                        }
+                    },
+                    oauth: {
+                        type: 'object',
+                        title: core_1.nls.localize('theia/ai/mcp/servers/oauth/title', 'OAuth'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/oauth/mdDescription', 'Optional OAuth 2.1 configuration for remote MCP servers that require authorization. ' +
+                            'The presence of this object enables OAuth for the server; remove it to disable OAuth. ' +
+                            'Theia uses public clients with PKCE by default; ' +
+                            'configure a client secret only for servers that require a pre-registered confidential client. ' +
+                            'Changes take effect after restarting the MCP server.'),
+                        properties: {
+                            clientId: {
+                                type: 'string',
+                                title: core_1.nls.localize('theia/ai/mcp/servers/oauth/clientId/title', 'Client ID'),
+                                markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/oauth/clientId/mdDescription', 'Optional static OAuth client ID. If omitted, Theia attempts dynamic client registration.'),
+                            },
+                            clientSecret: {
+                                type: 'string',
+                                title: core_1.nls.localize('theia/ai/mcp/servers/oauth/clientSecret/title', 'Client Secret'),
+                                markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/oauth/clientSecret/mdDescription', 'Optional OAuth client secret for authorization servers that only accept pre-registered confidential clients ' +
+                                    '(no dynamic client registration). Only used together with the client ID. This is stored in preferences as plain text; ' +
+                                    'avoid workspace settings if the secret is sensitive.'),
+                            },
+                            scopes: {
+                                type: 'array',
+                                title: core_1.nls.localize('theia/ai/mcp/servers/oauth/scopes/title', 'Scopes'),
+                                markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/oauth/scopes/mdDescription', 'Optional OAuth scopes to request if the server does not advertise scopes.'),
+                                items: {
+                                    type: 'string'
+                                }
+                            },
+                            authorizationServer: {
+                                type: 'string',
+                                title: core_1.nls.localize('theia/ai/mcp/servers/oauth/authorizationServer/title', 'Authorization Server'),
+                                markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/oauth/authorizationServer/mdDescription', 'Optional authorization server URL override. If omitted, Theia discovers it from the MCP server.'),
+                            },
+                            resource: {
+                                type: 'string',
+                                title: core_1.nls.localize('theia/ai/mcp/servers/oauth/resource/title', 'Resource'),
+                                markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/oauth/resource/mdDescription', 'Optional RFC 8707 resource indicator override for this MCP server.'),
+                            }
+                        }
+                    },
+                    registryMetadata: {
+                        type: 'object',
+                        title: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/title', 'Registry Metadata'),
+                        markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/mdDescription', 'Provenance metadata for a server installed from an AI registry. Written by `@theia/ai-registry`; not user-editable.'),
+                        properties: {
+                            serverId: {
+                                type: 'string',
+                                title: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/serverId/title', 'Registry Server Id'),
+                                markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/serverId/mdDescription', 'Identifies the AI registry entry this server was installed from. Absent for a server contributed by an Agent Plugin, ' +
+                                    'which carries `pluginId` instead.'),
+                            },
+                            pluginId: {
+                                type: 'string',
+                                title: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/pluginId/title', 'Agent Plugin Id'),
+                                markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/pluginId/mdDescription', 'Identifies the installed Agent Plugin that contributed this server. Written by `@theia/ai-registry`; not user-editable.'),
+                            },
+                            version: {
+                                type: 'string',
+                                title: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/version/title', 'Registry Version'),
+                                markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/version/mdDescription', 'The registry-published version recorded at the time of install.'),
+                            },
+                            configHash: {
+                                type: 'string',
+                                title: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/configHash/title', 'Registry Config Hash'),
+                                markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/configHash/mdDescription', 'Content hash of the registry approval used to install this server, or of the Agent Plugin that contributed it.'),
+                            },
+                            installedAt: {
+                                type: 'string',
+                                title: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/installedAt/title', 'Agent Plugin Installed At'),
+                                markdownDescription: core_1.nls.localize('theia/ai/mcp/servers/registryMetadata/installedAt/mdDescription', 'When the Agent Plugin that contributed this server was last written to disk. Changing it restarts the server, '
+                                    + 'which is what makes an update take effect. Written by `@theia/ai-registry`; not user-editable.'),
+                            }
+                        },
+                        // The validator drops a block identifying nothing; requiring one here keeps
+                        // the settings editor from silently accepting what it will throw away.
+                        anyOf: [
+                            { required: ['serverId'] },
+                            { required: ['pluginId'] }
+                        ]
+                    }
+                },
+                required: []
+            }
+        },
+        [exports.MCP_USE_WORKSPACE_AS_ROOT_PREF]: {
+            title: core_1.nls.localize('theia/ai/mcp/useWorkspaceAsRoot/title', 'Use Workspace as Root'),
+            markdownDescription: core_1.nls.localize('theia/ai/mcp/useWorkspaceAsRoot/mdDescription', 'Roots define the boundaries of where servers can operate within the filesystem. \
+If enabled, the workspace folders will be used as roots, otherwise the MCP servers will have access to the entire filesystem. \
+Changing this setting will restart all running MCP servers to apply the new roots configuration.'),
+            type: 'boolean',
+            default: true
+        }
+    }
+};
+//# sourceMappingURL=mcp-preferences.js.map

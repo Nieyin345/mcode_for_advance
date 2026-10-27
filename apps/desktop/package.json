@@ -8,7 +8,7 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
-    "postinstall": "node build/ensure-electron.cjs",
+    "postinstall": "node build/ensure-electron.cjs && node build/link-theia-runtime.cjs",
     "dev": "electron-vite dev",
     "build": "node build/build-node-pack.cjs && node --max-old-space-size=8192 node_modules/electron-vite/bin/electron-vite.js build",
     "preview": "electron-vite preview",
@@ -19,7 +19,7 @@
     "test:runner": "node --test scripts/run-smokes.test.mjs",
     "rebuild:native": "node build/rebuild-native.cjs",
     "pack:pi-runtime": "node build/pack-pi-runtime.cjs",
-    "package": "pnpm run build && node -e \"require('fs').rmSync('../../packages/contracts/dist',{recursive:true,force:true})\" && node build/dereference-workspace-symlinks.cjs && MCODE_INCLUDE_GENOFFICE_BUNDLE=1 MCODE_INCLUDE_GENOFFICE_EDITORS=1 node build/verify-genoffice-upstream.cjs && MCODE_INCLUDE_GENOFFICE_BUNDLE=1 MCODE_INCLUDE_GENOFFICE_EDITORS=1 node build/stage-genoffice-resources.cjs && node build/stage-node-red-resources.cjs && node build/stage-theia-resources.cjs && electron-builder --publish never"
+    "package": "pnpm run build && node -e \"require('fs').rmSync('../../packages/contracts/dist',{recursive:true,force:true})\" && node build/dereference-workspace-symlinks.cjs && MCODE_INCLUDE_GENOFFICE_BUNDLE=1 MCODE_INCLUDE_GENOFFICE_EDITORS=1 node build/verify-genoffice-upstream.cjs && MCODE_INCLUDE_GENOFFICE_BUNDLE=1 MCODE_INCLUDE_GENOFFICE_EDITORS=1 node build/stage-genoffice-resources.cjs && node build/stage-node-red-resources.cjs && node build/link-theia-runtime.cjs && electron-builder --publish never"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.258",

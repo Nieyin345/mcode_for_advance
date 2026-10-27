@@ -1,0 +1,79 @@
+"use strict";
+// *****************************************************************************
+// Copyright (C) 2026 Safi Seid-Ahmad, K2view and others.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+Object.defineProperty(exports, "__esModule", { value: true });
+const chai = require("chai");
+const sinon = require("sinon");
+const temp = require("temp");
+const fs = require("@theia/core/shared/fs-extra");
+const node_1 = require("@theia/core/lib/node");
+const parcel_filesystem_service_1 = require("./parcel-filesystem-service");
+// We require the *same* module object that the production code imports from, so that
+// stubbing its `subscribe` export is observed by `ParcelWatcher`. The `@theia/core/shared`
+// shim simply re-exports `require('@parcel/watcher')`, so this is the identical reference.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const parcel = require('@theia/core/shared/@parcel/watcher');
+const expect = chai.expect;
+const track = temp.track();
+/**
+ * Reproduces the `files.watcherExclude` / exclude leak:
+ *
+ * Excludes flow `files.watcherExclude` -> `WatchOptions.excludes`
+ * -> `disk-file-system-provider` (`{ ignored }`) -> `ParcelWatcherOptions.ignored`.
+ * However `ParcelWatcher.createWatcher()` only uses `ignored` to *filter events after they
+ * arrive* (`isIgnored`/`pushFileChange`). It never passes them to the native `@parcel/watcher`
+ * `subscribe(..., { ignore })` option, so excluded directories are STILL crawled and given
+ * inotify watches. On large workspaces this exhausts `fs.inotify.max_user_watches`
+ * ("Unable to watch for file changes in this large workspace.") even though the user
+ * configured excludes that should have pruned those directories.
+ */
+describe('parcel-filesystem-watcher exclude handling', function () {
+    this.timeout(20000);
+    let root;
+    let service;
+    let subscribeStub;
+    let capturedOptions;
+    beforeEach(() => {
+        const tempPath = temp.mkdirSync('parcel-exclude-root');
+        root = node_1.FileUri.create(fs.realpathSync(tempPath));
+        capturedOptions = [];
+        // Stub the native parcel `subscribe` so we can inspect the options Theia passes to it
+        // (and so the test does not place real OS watches).
+        subscribeStub = sinon.stub(parcel, 'subscribe').callsFake(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        async (_dir, _cb, opts) => {
+            capturedOptions.push(opts);
+            return { unsubscribe: async () => undefined };
+        });
+        service = new parcel_filesystem_service_1.ParcelFileSystemWatcherService({ verbose: false });
+    });
+    afterEach(() => {
+        subscribeStub.restore();
+        service.dispose();
+        track.cleanupSync();
+    });
+    it('passes the configured excludes to the native parcel `ignore` option so excluded directories are not watched', async () => {
+        const excludePattern = '**/node_modules/**';
+        await service.watchFileChanges(0, root.toString(), { ignored: [excludePattern] });
+        // Allow ParcelWatcher.start() (stat + subscribe) to run.
+        await new Promise(resolve => setTimeout(resolve, 300));
+        expect(subscribeStub.called, 'native parcel subscribe should have been called').to.equal(true);
+        const opts = capturedOptions[0] ?? {};
+        expect(opts.ignore, 'parcel subscribe options should carry an `ignore` list built from the excludes').to.not.equal(undefined);
+        expect(opts.ignore, 'the configured exclude pattern should be passed to parcel `ignore`').to.include(excludePattern);
+    });
+});
+//# sourceMappingURL=parcel-watcher-exclude.spec.js.map

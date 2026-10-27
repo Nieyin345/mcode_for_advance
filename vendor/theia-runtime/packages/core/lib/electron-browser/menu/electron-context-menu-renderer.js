@@ -1,0 +1,146 @@
+"use strict";
+// *****************************************************************************
+// Copyright (C) 2017 TypeFox and others.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ElectronContextMenuRenderer = exports.ElectronTextInputContextMenuContribution = exports.ElectronTextInputContextMenu = exports.ElectronContextMenuAccess = void 0;
+const tslib_1 = require("tslib");
+/* eslint-disable @typescript-eslint/no-explicit-any */
+const inversify_1 = require("inversify");
+const browser_1 = require("../../browser");
+const electron_main_menu_factory_1 = require("./electron-main-menu-factory");
+const context_menu_context_1 = require("../../browser/menu/context-menu-context");
+const browser_context_menu_renderer_1 = require("../../browser/menu/browser-context-menu-renderer");
+const context_key_service_1 = require("../../browser/context-key-service");
+const preferences_1 = require("../../common/preferences");
+class ElectronContextMenuAccess extends browser_1.ContextMenuAccess {
+    constructor(menuHandle) {
+        super({
+            dispose: () => menuHandle.then(handle => window.electronTheiaCore.closePopup(handle))
+        });
+        this.menuHandle = menuHandle;
+    }
+}
+exports.ElectronContextMenuAccess = ElectronContextMenuAccess;
+var ElectronTextInputContextMenu;
+(function (ElectronTextInputContextMenu) {
+    ElectronTextInputContextMenu.MENU_PATH = ['electron_text_input'];
+    ElectronTextInputContextMenu.UNDO_REDO_EDIT_GROUP = [...ElectronTextInputContextMenu.MENU_PATH, '0_undo_redo_group'];
+    ElectronTextInputContextMenu.EDIT_GROUP = [...ElectronTextInputContextMenu.MENU_PATH, '1_edit_group'];
+    ElectronTextInputContextMenu.SELECT_GROUP = [...ElectronTextInputContextMenu.MENU_PATH, '2_select_group'];
+})(ElectronTextInputContextMenu || (exports.ElectronTextInputContextMenu = ElectronTextInputContextMenu = {}));
+let ElectronTextInputContextMenuContribution = class ElectronTextInputContextMenuContribution {
+    onStart() {
+        window.document.addEventListener('contextmenu', event => {
+            if (event.target instanceof HTMLElement) {
+                const target = event.target;
+                if (target.nodeName && (target.nodeName.toLowerCase() === 'input' || target.nodeName.toLowerCase() === 'textarea')) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.contextMenuRenderer.render({
+                        anchor: event,
+                        contextKeyService: this.contextKeyService,
+                        menuPath: ElectronTextInputContextMenu.MENU_PATH,
+                        context: event.target,
+                        onHide: () => target.focus()
+                    });
+                }
+            }
+        });
+    }
+    registerMenus(registry) {
+        registry.registerMenuAction(ElectronTextInputContextMenu.UNDO_REDO_EDIT_GROUP, { commandId: browser_1.CommonCommands.UNDO.id });
+        registry.registerMenuAction(ElectronTextInputContextMenu.UNDO_REDO_EDIT_GROUP, { commandId: browser_1.CommonCommands.REDO.id });
+        registry.registerMenuAction(ElectronTextInputContextMenu.EDIT_GROUP, { commandId: browser_1.CommonCommands.CUT.id });
+        registry.registerMenuAction(ElectronTextInputContextMenu.EDIT_GROUP, { commandId: browser_1.CommonCommands.COPY.id });
+        registry.registerMenuAction(ElectronTextInputContextMenu.EDIT_GROUP, { commandId: browser_1.CommonCommands.PASTE.id });
+        registry.registerMenuAction(ElectronTextInputContextMenu.SELECT_GROUP, { commandId: browser_1.CommonCommands.SELECT_ALL.id });
+    }
+};
+exports.ElectronTextInputContextMenuContribution = ElectronTextInputContextMenuContribution;
+tslib_1.__decorate([
+    (0, inversify_1.inject)(browser_1.ContextMenuRenderer),
+    tslib_1.__metadata("design:type", browser_1.ContextMenuRenderer)
+], ElectronTextInputContextMenuContribution.prototype, "contextMenuRenderer", void 0);
+tslib_1.__decorate([
+    (0, inversify_1.inject)(context_key_service_1.ContextKeyService),
+    tslib_1.__metadata("design:type", Object)
+], ElectronTextInputContextMenuContribution.prototype, "contextKeyService", void 0);
+exports.ElectronTextInputContextMenuContribution = ElectronTextInputContextMenuContribution = tslib_1.__decorate([
+    (0, inversify_1.injectable)()
+], ElectronTextInputContextMenuContribution);
+let ElectronContextMenuRenderer = class ElectronContextMenuRenderer extends browser_context_menu_renderer_1.BrowserContextMenuRenderer {
+    constructor() {
+        super();
+        this.useNativeStyle = true;
+    }
+    init() {
+        this.doInit();
+    }
+    async doInit() {
+        this.useNativeStyle = await window.electronTheiaCore.getTitleBarStyleAtStartup() === 'native';
+    }
+    doRender(params) {
+        if (this.useNativeStyle) {
+            const contextMenu = this.electronMenuFactory.createElectronContextMenu(params.menuPath, params.menu, params.contextMatcher, params.args, params.context);
+            const { x, y } = (0, browser_1.coordinateFromAnchor)(params.anchor);
+            const windowName = params.context?.ownerDocument.defaultView?.Window.name;
+            const menuHandle = window.electronTheiaCore.popup(contextMenu, x, y, () => {
+                if (params.onHide) {
+                    params.onHide();
+                }
+            }, windowName);
+            // native context menu stops the event loop, so there is no keyboard events
+            this.context.resetAltPressed();
+            return new ElectronContextMenuAccess(menuHandle);
+        }
+        else {
+            const menuAccess = super.doRender(params);
+            const node = menuAccess.menu.node;
+            const topPanelHeight = document.getElementById('theia-top-panel')?.clientHeight ?? 0;
+            // ensure the context menu is not displayed outside of the main area
+            const menuRect = node.getBoundingClientRect();
+            if (menuRect.top < topPanelHeight) {
+                node.style.top = `${topPanelHeight}px`;
+                node.style.maxHeight = `calc(${node.style.maxHeight} - ${topPanelHeight}px)`;
+            }
+            return menuAccess;
+        }
+    }
+};
+exports.ElectronContextMenuRenderer = ElectronContextMenuRenderer;
+tslib_1.__decorate([
+    (0, inversify_1.inject)(context_menu_context_1.ContextMenuContext),
+    tslib_1.__metadata("design:type", context_menu_context_1.ContextMenuContext)
+], ElectronContextMenuRenderer.prototype, "context", void 0);
+tslib_1.__decorate([
+    (0, inversify_1.inject)(preferences_1.PreferenceService),
+    tslib_1.__metadata("design:type", Object)
+], ElectronContextMenuRenderer.prototype, "preferenceService", void 0);
+tslib_1.__decorate([
+    (0, inversify_1.inject)(electron_main_menu_factory_1.ElectronMainMenuFactory),
+    tslib_1.__metadata("design:type", electron_main_menu_factory_1.ElectronMainMenuFactory)
+], ElectronContextMenuRenderer.prototype, "electronMenuFactory", void 0);
+tslib_1.__decorate([
+    (0, inversify_1.postConstruct)(),
+    tslib_1.__metadata("design:type", Function),
+    tslib_1.__metadata("design:paramtypes", []),
+    tslib_1.__metadata("design:returntype", void 0)
+], ElectronContextMenuRenderer.prototype, "init", null);
+exports.ElectronContextMenuRenderer = ElectronContextMenuRenderer = tslib_1.__decorate([
+    (0, inversify_1.injectable)(),
+    tslib_1.__metadata("design:paramtypes", [])
+], ElectronContextMenuRenderer);
+//# sourceMappingURL=electron-context-menu-renderer.js.map

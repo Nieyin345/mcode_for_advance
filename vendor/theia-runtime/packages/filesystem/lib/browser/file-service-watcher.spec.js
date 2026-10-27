@@ -1,0 +1,686 @@
+"use strict";
+// *****************************************************************************
+// Copyright (C) 2026 Safi Seid-Ahmad, K2view and others.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+Object.defineProperty(exports, "__esModule", { value: true });
+const jsdom_1 = require("@theia/core/lib/browser/test/jsdom");
+let disableJSDOM = (0, jsdom_1.enableJSDOM)();
+const frontend_application_config_provider_1 = require("@theia/core/lib/browser/frontend-application-config-provider");
+frontend_application_config_provider_1.FrontendApplicationConfigProvider.set({});
+const core_1 = require("@theia/core");
+const chai_1 = require("chai");
+const sinon = require("sinon");
+const file_service_1 = require("./file-service");
+disableJSDOM();
+function createMockProvider(caseSensitive = true) {
+    const watchers = [];
+    return {
+        watchers,
+        capabilities: caseSensitive ? 1024 /* FileSystemProviderCapabilities.PathCaseSensitive */ : 0,
+        onDidChangeCapabilities: () => core_1.Disposable.NULL,
+        onDidChangeFile: () => core_1.Disposable.NULL,
+        onFileWatchError: () => core_1.Disposable.NULL,
+        watch(resource, options) {
+            const watcher = {
+                resource,
+                options,
+                disposed: false,
+                disposable: core_1.Disposable.create(() => { watcher.disposed = true; }),
+            };
+            watchers.push(watcher);
+            return watcher.disposable;
+        },
+        stat: () => { throw new Error('not implemented'); },
+        readdir: () => { throw new Error('not implemented'); },
+        readFile: () => { throw new Error('not implemented'); },
+        writeFile: () => { throw new Error('not implemented'); },
+        delete: () => { throw new Error('not implemented'); },
+        mkdir: () => { throw new Error('not implemented'); },
+        rename: () => { throw new Error('not implemented'); },
+    };
+}
+/** Return the number of watchers that are still alive (not disposed). */
+function liveWatcherCount(provider) {
+    return provider.watchers.filter(w => !w.disposed).length;
+}
+describe('FileService watcher deduplication', () => {
+    const sandbox = sinon.createSandbox();
+    let fileService;
+    let mockProvider;
+    before(() => {
+        disableJSDOM = (0, jsdom_1.enableJSDOM)();
+    });
+    after(() => {
+        disableJSDOM();
+    });
+    beforeEach(() => {
+        sandbox.restore();
+        fileService = new file_service_1.FileService();
+        mockProvider = createMockProvider();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        sandbox.stub(fileService, 'withProvider').resolves(mockProvider);
+    });
+    afterEach(() => {
+        sandbox.restore();
+    });
+    // ── (A) Exact-match dedup ──────────────────────────────────────────
+    describe('exact-match dedup', () => {
+        it('should reuse an existing watcher for the same resource and options', async () => {
+            const uri = new core_1.URI('file:///project/src');
+            const opts = { recursive: true, excludes: [] };
+            const d1 = await fileService.doWatch(uri, opts);
+            const d2 = await fileService.doWatch(uri, opts);
+            // Only one real OS watcher should have been created
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // Disposing one handle should NOT dispose the real watcher
+            d2.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // Disposing the last handle should dispose it
+            d1.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(0);
+        });
+        it('should not let a restrictive parent subsume a permissive child at the same URI', async () => {
+            const uri = new core_1.URI('file:///project/src');
+            const opts1 = { recursive: true, excludes: ['**/node_modules'] };
+            const opts2 = { recursive: true, excludes: [] };
+            const d1 = await fileService.doWatch(uri, opts1);
+            const d2 = await fileService.doWatch(uri, opts2);
+            // The first watcher (with excludes) cannot subsume the second (no excludes),
+            // but the second (watching everything) CAN subsume the first via subsumeExistingChildren.
+            // Two real watchers were created, but only the permissive one (d2) remains live.
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(2);
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // Disposing d1 (already subsumed, no real watcher) should have no OS-level effect
+            d1.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            d2.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(0);
+        });
+        it('should subsume a watcher with matching excludes on the same URI', async () => {
+            const uri = new core_1.URI('file:///project/src');
+            const opts1 = { recursive: true, excludes: ['**/node_modules'] };
+            const opts2 = { recursive: true, excludes: ['**/node_modules'] };
+            const d1 = await fileService.doWatch(uri, opts1);
+            const d2 = await fileService.doWatch(uri, opts2);
+            // Same excludes — exact-match dedup applies
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            d2.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            d1.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(0);
+        });
+        it('should subsume a watcher with more excludes (superset) on the same URI', async () => {
+            const uri = new core_1.URI('file:///project/src');
+            const opts1 = { recursive: true, excludes: [] };
+            const opts2 = { recursive: true, excludes: ['**/node_modules'] };
+            const d1 = await fileService.doWatch(uri, opts1);
+            const d2 = await fileService.doWatch(uri, opts2);
+            // Parent has no excludes, so it watches everything the child needs — subsumption is safe
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            d2.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            d1.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(0);
+        });
+        it('should subsume a non-recursive watcher on the same URI as a recursive watcher', async () => {
+            const uri = new core_1.URI('file:///project/src');
+            const opts1 = { recursive: true, excludes: [] };
+            const opts2 = { recursive: false, excludes: [] };
+            const d1 = await fileService.doWatch(uri, opts1);
+            const d2 = await fileService.doWatch(uri, opts2);
+            // The recursive watcher subsumes the non-recursive one on the same URI
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            d2.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            d1.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(0);
+        });
+        it('should support three refs and only dispose when all are gone', async () => {
+            const uri = new core_1.URI('file:///project/src');
+            const opts = { recursive: false, excludes: [] };
+            const d1 = await fileService.doWatch(uri, opts);
+            const d2 = await fileService.doWatch(uri, opts);
+            const d3 = await fileService.doWatch(uri, opts);
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            d1.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            d2.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            d3.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(0);
+        });
+    });
+    // ── (B) Parent subsumption of new child ────────────────────────────
+    describe('parent subsumption', () => {
+        it('should not create an OS watcher when a recursive parent already covers the child', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const childUri = new core_1.URI('file:///project/src');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            // Only the parent's OS watcher should exist
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            (0, chai_1.expect)(mockProvider.watchers[0].resource.toString()).to.equal(parentUri.toString());
+        });
+        it('should not subsume a child that is excluded by the parent', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const childUri = new core_1.URI('file:///project/node_modules/foo');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: ['**/node_modules'] });
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            // The child should get its own real watcher
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(2);
+        });
+        it('should not subsume when the parent is non-recursive', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const childUri = new core_1.URI('file:///project/src');
+            await fileService.doWatch(parentUri, { recursive: false, excludes: [] });
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(2);
+        });
+        it('should subsume a deeply nested child', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const childUri = new core_1.URI('file:///project/src/main/java/com/example');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+        });
+        it('should not subsume a sibling directory', async () => {
+            const parentUri = new core_1.URI('file:///project/src');
+            const siblingUri = new core_1.URI('file:///project/test');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            await fileService.doWatch(siblingUri, { recursive: false, excludes: [] });
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(2);
+        });
+        it('should not subsume a child when it is under an excluded ancestor directory', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            // node_modules is excluded, so anything under it should not be subsumed
+            const childUri = new core_1.URI('file:///project/node_modules/pkg/lib');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: ['**/node_modules'] });
+            await fileService.doWatch(childUri, { recursive: true, excludes: [] });
+            // Child needs its own watcher since it's under an excluded directory
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(2);
+        });
+    });
+    // ── (D) New recursive parent subsumes existing children ────────────
+    describe('child subsumption by new parent', () => {
+        it('should subsume existing non-recursive children when a new recursive parent is created', async () => {
+            const childUri1 = new core_1.URI('file:///project/src');
+            const childUri2 = new core_1.URI('file:///project/test');
+            const parentUri = new core_1.URI('file:///project');
+            await fileService.doWatch(childUri1, { recursive: false, excludes: [] });
+            await fileService.doWatch(childUri2, { recursive: false, excludes: [] });
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(2);
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(2);
+            // Adding a recursive parent should subsume both children
+            await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            // Three watchers created total, but only the parent should remain live
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(3);
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            (0, chai_1.expect)(mockProvider.watchers[0].disposed).to.be.true; // child1 real watcher disposed
+            (0, chai_1.expect)(mockProvider.watchers[1].disposed).to.be.true; // child2 real watcher disposed
+            (0, chai_1.expect)(mockProvider.watchers[2].disposed).to.be.false; // parent alive
+        });
+        it('should subsume existing recursive children and re-parent grandchildren', async () => {
+            const grandchildUri = new core_1.URI('file:///project/src/deep');
+            const childUri = new core_1.URI('file:///project/src');
+            const parentUri = new core_1.URI('file:///project');
+            // Create a recursive child first, then a grandchild under it
+            await fileService.doWatch(childUri, { recursive: true, excludes: [] });
+            await fileService.doWatch(grandchildUri, { recursive: false, excludes: [] });
+            // Grandchild should already be subsumed by the child
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1); // only child has a real watcher
+            // Now create a parent that covers everything
+            await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            // Child's real watcher gets disposed, parent takes over
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            (0, chai_1.expect)(mockProvider.watchers[0].disposed).to.be.true; // child disposed
+            (0, chai_1.expect)(mockProvider.watchers[1].disposed).to.be.false; // parent alive
+        });
+        it('should promote and re-index a recursive grandchild excluded by the new parent', async () => {
+            const childUri = new core_1.URI('file:///project/src');
+            const grandchildUri = new core_1.URI('file:///project/src/vendor');
+            const parentUri = new core_1.URI('file:///project');
+            // Child and grandchild share the same excludes — grandchild is compatible with child.
+            // The pattern '**/src/vendor' does NOT match the relative path from child to grandchild
+            // ('vendor'), so isExcludedByParent(child, grandchild) is false — grandchild is subsumed.
+            await fileService.doWatch(childUri, { recursive: true, excludes: ['**/src/vendor'] });
+            await fileService.doWatch(grandchildUri, { recursive: true, excludes: ['**/src/vendor'] });
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1); // only child has a real watcher
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // Create a parent with the same excludes. The parent subsumes the child
+            // (areExcludesCompatible passes). But the grandchild at /project/src/vendor has
+            // relative path 'src/vendor' from /project, which DOES match '**/src/vendor'.
+            // So isExcludedByParent(parent, grandchild) returns true — grandchild is promoted
+            // with its own real watcher and re-indexed.
+            await fileService.doWatch(parentUri, { recursive: true, excludes: ['**/src/vendor'] });
+            // Parent is live (subsumes child). Grandchild is promoted with its own real watcher.
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(2);
+            // A new watcher under the promoted grandchild should be subsumed by it,
+            // which only works if the grandchild was re-indexed after promotion.
+            const deepUri = new core_1.URI('file:///project/src/vendor/utils');
+            await fileService.doWatch(deepUri, { recursive: false, excludes: [] });
+            // No new OS watcher — the promoted grandchild covers it
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(2);
+        });
+        it('should not delete parent index when subsuming a recursive child at the same URI', async () => {
+            const uri = new core_1.URI('file:///project');
+            const childUri = new core_1.URI('file:///project/src');
+            // Create a recursive watcher with excludes
+            await fileService.doWatch(uri, { recursive: true, excludes: ['**/node_modules'] });
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // Create a new recursive watcher at the SAME URI with no excludes.
+            // Different key (different excludes), so it's a new entry. The new watcher
+            // subsumes the old one via subsumeExistingChildren. The old watcher is recursive,
+            // so removeFromRecursiveIndex is called — but it must NOT delete the new parent's
+            // index entry (they share the same URI).
+            await fileService.doWatch(uri, { recursive: true, excludes: [] });
+            // Old watcher's OS watcher is disposed; new parent is live
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // A child watcher should be subsumed by the new parent. Without the fix,
+            // the parent's index entry was deleted, causing unnecessary OS watchers.
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            // No new OS watcher — parent's index entry is intact
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+        });
+        it('should not subsume excluded children when creating a new parent', async () => {
+            const childUri = new core_1.URI('file:///project/node_modules/pkg');
+            const parentUri = new core_1.URI('file:///project');
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // Parent excludes node_modules
+            await fileService.doWatch(parentUri, { recursive: true, excludes: ['**/node_modules'] });
+            // Child should NOT be subsumed — both watchers should remain live
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(2);
+        });
+    });
+    // ── Disposal and promotion ─────────────────────────────────────────
+    describe('disposal and promotion', () => {
+        it('should promote subsumed children by creating real watchers when the parent is disposed', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const childUri = new core_1.URI('file:///project/src');
+            const parentDisposable = await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            // Only parent watcher is real
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            // Dispose the parent
+            parentDisposable.dispose();
+            // Child should now have its own real watcher
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // The new watcher (index 1) should be for the child
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(2);
+            (0, chai_1.expect)(mockProvider.watchers[0].disposed).to.be.true; // parent
+            (0, chai_1.expect)(mockProvider.watchers[1].disposed).to.be.false; // child promoted
+            (0, chai_1.expect)(mockProvider.watchers[1].resource.toString()).to.equal(childUri.toString());
+        });
+        it('should re-parent children to another existing parent on disposal', async () => {
+            const grandparentUri = new core_1.URI('file:///project');
+            const parentUri = new core_1.URI('file:///project/src');
+            const childUri = new core_1.URI('file:///project/src/components');
+            // Create grandparent, then parent, then child
+            await fileService.doWatch(grandparentUri, { recursive: true, excludes: [] });
+            const parentDisposable = await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            // Grandparent subsumed parent; parent did not get a real watcher.
+            // Child was also subsumed (by grandparent after re-parenting).
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // Dispose the parent
+            parentDisposable.dispose();
+            // Grandparent still covers the child — no new OS watcher needed
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+        });
+        it('should promote multiple children when a parent is disposed', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const child1Uri = new core_1.URI('file:///project/src');
+            const child2Uri = new core_1.URI('file:///project/test');
+            const child3Uri = new core_1.URI('file:///project/docs');
+            const parentDisposable = await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            await fileService.doWatch(child1Uri, { recursive: false, excludes: [] });
+            await fileService.doWatch(child2Uri, { recursive: false, excludes: [] });
+            await fileService.doWatch(child3Uri, { recursive: false, excludes: [] });
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            parentDisposable.dispose();
+            // All three children should now have their own real watchers
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(3);
+        });
+        it('should not corrupt index when disposing a subsumed recursive watcher at the same URI', async () => {
+            const uri = new core_1.URI('file:///project');
+            const childUri = new core_1.URI('file:///project/src');
+            // Watcher A: recursive, no excludes — gets indexed
+            await fileService.doWatch(uri, { recursive: true, excludes: [] });
+            // Watcher B: recursive, with excludes at the same URI — subsumed by A (not indexed)
+            const bDisposable = await fileService.doWatch(uri, { recursive: true, excludes: ['**/node_modules'] });
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // Disposing B must NOT remove A's index entry.
+            // Without the fix, removeFromRecursiveIndex would delete /project from
+            // the tree, causing subsequent child watchers to miss A as a parent.
+            bDisposable.dispose();
+            // A child watcher should still be subsumed by A
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+        });
+        it('should handle disposing a subsumed child cleanly', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const childUri = new core_1.URI('file:///project/src');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            const childDisposable = await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            // Disposing the subsumed child should not affect the parent's watcher
+            childDisposable.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+        });
+        it('should handle dispose-then-rewatch correctly', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const childUri = new core_1.URI('file:///project/src');
+            const parentDisposable = await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            parentDisposable.dispose();
+            // Child is promoted, now re-create the parent
+            const parentDisposable2 = await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            // The child should be subsumed again — its promoted watcher should be disposed
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            parentDisposable2.dispose();
+            // Child promoted again
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+        });
+    });
+    // ── Exclude pattern matching ───────────────────────────────────────
+    describe('exclude pattern matching', () => {
+        it('should exclude with glob patterns using **', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const excludedChild = new core_1.URI('file:///project/dist/bundle.js');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: ['**/dist'] });
+            await fileService.doWatch(excludedChild, { recursive: false, excludes: [] });
+            // Should not be subsumed because dist is excluded
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(2);
+        });
+        it('should handle multiple exclude patterns', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const nmChild = new core_1.URI('file:///project/node_modules/pkg');
+            const distChild = new core_1.URI('file:///project/dist/out');
+            const srcChild = new core_1.URI('file:///project/src/main');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: ['**/node_modules', '**/dist'] });
+            await fileService.doWatch(nmChild, { recursive: false, excludes: [] });
+            await fileService.doWatch(distChild, { recursive: false, excludes: [] });
+            await fileService.doWatch(srcChild, { recursive: false, excludes: [] });
+            // nm and dist children need their own watchers; src is subsumed
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(3); // parent + nm + dist
+        });
+        it('should exclude based on ancestor directory matching', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            // The exclude is for node_modules — anything under it should also be excluded
+            const deepChild = new core_1.URI('file:///project/node_modules/pkg/lib/index.js');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: ['**/node_modules'] });
+            await fileService.doWatch(deepChild, { recursive: false, excludes: [] });
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(2);
+        });
+        it('should not exclude a non-matching path', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            const childUri = new core_1.URI('file:///project/src/node_modules_backup/file.ts');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: ['**/node_modules'] });
+            await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+            // 'node_modules_backup' does not match '**/node_modules', so child should be subsumed
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+        });
+    });
+    // ── Edge cases ─────────────────────────────────────────────────────
+    describe('edge cases', () => {
+        it('should promote a non-recursive watcher when its recursive same-URI subsumer is disposed', async () => {
+            const uri = new core_1.URI('file:///project/src');
+            const recursiveOpts = { recursive: true, excludes: [] };
+            const nonRecursiveOpts = { recursive: false, excludes: [] };
+            const d1 = await fileService.doWatch(uri, recursiveOpts);
+            const d2 = await fileService.doWatch(uri, nonRecursiveOpts);
+            // findSubstr matches exact URIs, so the recursive watcher subsumes the non-recursive one
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            // Disposing the recursive watcher promotes the non-recursive one
+            d1.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            d2.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(0);
+        });
+        it('should handle double dispose gracefully', async () => {
+            const uri = new core_1.URI('file:///project/src');
+            const d1 = await fileService.doWatch(uri, { recursive: false, excludes: [] });
+            d1.dispose();
+            // Double dispose should not throw
+            d1.dispose();
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(0);
+        });
+        it('should handle many watchers under one parent', async () => {
+            const parentUri = new core_1.URI('file:///project');
+            await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+            const childDisposables = [];
+            for (let i = 0; i < 20; i++) {
+                const d = await fileService.doWatch(new core_1.URI(`file:///project/dir${i}`), { recursive: false, excludes: [] });
+                childDisposables.push(d);
+            }
+            // Only the parent's real watcher exists
+            (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+            // Dispose all children — parent still alive
+            for (const d of childDisposables) {
+                d.dispose();
+            }
+            (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+        });
+    });
+});
+/**
+ * Creates a mock provider with a real onDidChangeFile emitter, suitable for
+ * registering with FileService.registerProvider and testing event delivery.
+ */
+function createEventMockProvider(caseSensitive = true) {
+    const watchers = [];
+    const fileChangeEmitter = new core_1.Emitter();
+    const provider = {
+        watchers,
+        fileChangeEmitter,
+        capabilities: caseSensitive ? 1024 /* FileSystemProviderCapabilities.PathCaseSensitive */ : 0,
+        onDidChangeCapabilities: () => core_1.Disposable.NULL,
+        onDidChangeFile: fileChangeEmitter.event,
+        onFileWatchError: () => core_1.Disposable.NULL,
+        watch(resource, options) {
+            const watcher = {
+                resource, options, disposed: false,
+                disposable: core_1.Disposable.create(() => { watcher.disposed = true; }),
+            };
+            watchers.push(watcher);
+            return watcher.disposable;
+        },
+        simulateChange(uri, type = 0 /* FileChangeType.UPDATED */) {
+            fileChangeEmitter.fire([{ resource: uri, type }]);
+        },
+        stat: () => { throw new Error('not implemented'); },
+        readdir: () => { throw new Error('not implemented'); },
+        readFile: () => { throw new Error('not implemented'); },
+        writeFile: () => { throw new Error('not implemented'); },
+        delete: () => { throw new Error('not implemented'); },
+        mkdir: () => { throw new Error('not implemented'); },
+        rename: () => { throw new Error('not implemented'); },
+    };
+    return provider;
+}
+describe('FileService watcher event delivery', () => {
+    let fileService;
+    let provider;
+    let disJSDOM;
+    before(() => {
+        disJSDOM = (0, jsdom_1.enableJSDOM)();
+    });
+    after(() => {
+        disJSDOM();
+    });
+    beforeEach(() => {
+        fileService = new file_service_1.FileService();
+        provider = createEventMockProvider();
+        fileService.registerProvider('file', provider);
+    });
+    it('should deliver events for a subsumed child through the parent watcher', async () => {
+        const received = [];
+        fileService.onDidFilesChange(e => {
+            for (const change of e.changes) {
+                received.push(change.resource);
+            }
+        });
+        const parentUri = new core_1.URI('file:///project');
+        const childUri = new core_1.URI('file:///project/src');
+        await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+        await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+        // Child is subsumed — only parent has a real watcher
+        (0, chai_1.expect)(liveWatcherCount(provider)).to.equal(1);
+        // Simulate a change under the child path — should be delivered through the parent
+        const changedFile = new core_1.URI('file:///project/src/index.ts');
+        provider.simulateChange(changedFile);
+        (0, chai_1.expect)(received).to.have.lengthOf(1);
+        (0, chai_1.expect)(received[0].toString()).to.equal(changedFile.toString());
+    });
+    it('should deliver events after a child is promoted due to parent disposal', async () => {
+        const received = [];
+        fileService.onDidFilesChange(e => {
+            for (const change of e.changes) {
+                received.push(change.resource);
+            }
+        });
+        const parentUri = new core_1.URI('file:///project');
+        const childUri = new core_1.URI('file:///project/src');
+        const parentDisposable = await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+        await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+        // Dispose parent — child gets promoted with its own real watcher
+        parentDisposable.dispose();
+        (0, chai_1.expect)(liveWatcherCount(provider)).to.equal(1);
+        // Simulate a change — should still be delivered
+        const changedFile = new core_1.URI('file:///project/src/index.ts');
+        provider.simulateChange(changedFile);
+        (0, chai_1.expect)(received).to.have.lengthOf(1);
+        (0, chai_1.expect)(received[0].toString()).to.equal(changedFile.toString());
+    });
+    it('should not let a parent with excludes suppress events for a child that needs them', async () => {
+        const received = [];
+        fileService.onDidFilesChange(e => {
+            for (const change of e.changes) {
+                received.push(change.resource);
+            }
+        });
+        const parentUri = new core_1.URI('file:///project');
+        const childUri = new core_1.URI('file:///project/src');
+        await fileService.doWatch(parentUri, { recursive: true, excludes: ['**/node_modules'] });
+        await fileService.doWatch(childUri, { recursive: true, excludes: [] });
+        // Child is recursive with no excludes, parent has excludes — child should NOT be subsumed
+        // Both should have their own real watchers
+        (0, chai_1.expect)(liveWatcherCount(provider)).to.equal(2);
+        // Simulate a change inside node_modules under the child — only the child's watcher would catch it
+        const changedFile = new core_1.URI('file:///project/src/node_modules/pkg/index.js');
+        provider.simulateChange(changedFile);
+        (0, chai_1.expect)(received).to.have.lengthOf(1);
+        (0, chai_1.expect)(received[0].toString()).to.equal(changedFile.toString());
+    });
+    it('should preserve recursive watcher state through subsumption and promotion', async () => {
+        const received = [];
+        fileService.onDidFilesChange(e => {
+            for (const change of e.changes) {
+                received.push(change.resource);
+            }
+        });
+        const grandparentUri = new core_1.URI('file:///project');
+        const parentUri = new core_1.URI('file:///project/src');
+        const childUri = new core_1.URI('file:///project/src/lib');
+        // Create parent (recursive), then child under it
+        await fileService.doWatch(parentUri, { recursive: true, excludes: [] });
+        await fileService.doWatch(childUri, { recursive: false, excludes: [] });
+        (0, chai_1.expect)(liveWatcherCount(provider)).to.equal(1); // only parent has real watcher
+        // Now create a grandparent that subsumes the parent
+        const gpDisposable = await fileService.doWatch(grandparentUri, { recursive: true, excludes: [] });
+        (0, chai_1.expect)(liveWatcherCount(provider)).to.equal(1); // only grandparent is live
+        // Dispose the grandparent — parent should be promoted, child should re-parent to parent
+        gpDisposable.dispose();
+        (0, chai_1.expect)(liveWatcherCount(provider)).to.equal(1); // promoted parent is live
+        // Simulate a change under the child — should still be delivered
+        const changedFile = new core_1.URI('file:///project/src/lib/utils.ts');
+        provider.simulateChange(changedFile);
+        (0, chai_1.expect)(received).to.have.lengthOf(1);
+        (0, chai_1.expect)(received[0].toString()).to.equal(changedFile.toString());
+    });
+});
+// ── files.watcherExclude applied to every watcher (#17247, #10794) ──────────
+describe('FileService applies files.watcherExclude to all watchers', () => {
+    const sandbox = sinon.createSandbox();
+    let disJSDOM;
+    let fileService;
+    let mockProvider;
+    /** `watch()` schedules `doWatch` on a microtask; flush so the provider has been called. */
+    const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+    /** Install a `files.watcherExclude` preference value (other lookups return undefined). */
+    function stubWatcherExclude(value) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        fileService.preferences = {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            get: (name) => (name === 'files.watcherExclude' ? value : undefined)
+        };
+    }
+    before(() => { disJSDOM = (0, jsdom_1.enableJSDOM)(); });
+    after(() => { disJSDOM(); });
+    beforeEach(() => {
+        sandbox.restore();
+        fileService = new file_service_1.FileService();
+        mockProvider = createMockProvider();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        sandbox.stub(fileService, 'withProvider').resolves(mockProvider);
+    });
+    afterEach(() => sandbox.restore());
+    it('merges enabled files.watcherExclude patterns into the watcher and skips disabled ones', async () => {
+        stubWatcherExclude({
+            '**/node_modules/**': true,
+            '**/.git/objects/**': true,
+            '**/disabled/**': false
+        });
+        fileService.watch(new core_1.URI('file:///project'), { recursive: true, excludes: [] });
+        await flush();
+        (0, chai_1.expect)(mockProvider.watchers).to.have.lengthOf(1);
+        const excludes = mockProvider.watchers[0].options.excludes;
+        (0, chai_1.expect)(excludes).to.include('**/node_modules/**');
+        (0, chai_1.expect)(excludes).to.include('**/.git/objects/**');
+        (0, chai_1.expect)(excludes).to.not.include('**/disabled/**');
+        // the temporary-upload exclude is still always applied
+        (0, chai_1.expect)(excludes).to.include('**/theia_upload_*');
+    });
+    it('keeps the caller-supplied excludes alongside the configured ones', async () => {
+        stubWatcherExclude({ '**/node_modules/**': true });
+        fileService.watch(new core_1.URI('file:///project'), { recursive: true, excludes: ['**/custom/**'] });
+        await flush();
+        const excludes = mockProvider.watchers[0].options.excludes;
+        (0, chai_1.expect)(excludes).to.include('**/custom/**');
+        (0, chai_1.expect)(excludes).to.include('**/node_modules/**');
+    });
+    it('still applies the temporary-upload exclude when no files.watcherExclude is configured', async () => {
+        stubWatcherExclude(undefined);
+        fileService.watch(new core_1.URI('file:///project'), { recursive: true, excludes: [] });
+        await flush();
+        (0, chai_1.expect)(mockProvider.watchers[0].options.excludes).to.deep.equal(['**/theia_upload_*']);
+    });
+    it('lets the workspace root watcher subsume an internal child watcher once excludes are consistent', async () => {
+        stubWatcherExclude({ '**/node_modules/**': true });
+        // The workspace root watcher already carries the configured excludes...
+        fileService.watch(new core_1.URI('file:///project'), { recursive: true, excludes: ['**/node_modules/**'] });
+        // ...while an internal recursive watcher (e.g. @theia/ai-core) requests a child directory
+        // with empty excludes. Previously their exclude lists differed, so the child was not
+        // subsumed and produced a second OS watcher (and duplicate change events, see #17247).
+        fileService.watch(new core_1.URI('file:///project/.prompts'), { recursive: true, excludes: [] });
+        await flush();
+        // With files.watcherExclude applied uniformly, the child's excludes now match the parent's,
+        // so the root watcher subsumes it — a single OS watcher instead of two.
+        (0, chai_1.expect)(liveWatcherCount(mockProvider)).to.equal(1);
+    });
+});
+//# sourceMappingURL=file-service-watcher.spec.js.map

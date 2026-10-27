@@ -1,2 +1,11 @@
 # Theia 上游源码是独立 clone（A′ 模式，同 /genoffice/）。上游源码不进本仓库。
 theia/
+
+# 【方案一】Theia 运行时要**入库**（用户要求 clone 即用）。
+# 它是生成物（apps/desktop/build/stage-theia-runtime.cjs 产出），但生成它的源
+# `vendor/theia` 不进 git，所以必须把产物本身存下来。
+# 入库形态：零软链（postinstall 建 junction）。
+!theia-runtime/
+!theia-runtime/**
+# 2026-10-27 重建 vendor/theia 时挪开的损坏检出（1.3 GB），不入库。
+theia.broken/

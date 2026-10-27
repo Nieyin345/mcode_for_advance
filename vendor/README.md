@@ -15,6 +15,54 @@
 > **为什么不 vendor 进 git**：一是仓库体积（55 MB 源码 + 构建产物），
 > 二是「我们改了什么」必须可审计 —— patch 是 diff，vendored copy 是一整份新文件。
 
+## `vendor/theia-runtime/`：随仓库来的运行时（方案一）
+
+**`vendor/theia-runtime/` 入库，`vendor/theia/` 不入库。**
+
+- **`theia-runtime`**（141 MiB，零软链）—— 扩展运行所需的全部文件。
+  `git clone` 之后它就在，**不需要 `npm ci`、不需要 `tsc --build`、不需要联网**。
+- **`theia`**（A′ 独立检出）—— 只有你要**改 Theia 源码**或**重新生成 runtime** 时才需要。
+
+### 首次 clone 之后
+
+`pnpm install` 的 `postinstall` 会自动跑 `apps/desktop/build/link-theia-runtime.cjs`，
+在 `theia-runtime/node_modules/@theia/` 下建 92 个 junction 指向本树 `packages/`。
+**本地执行、不联网、约 1 秒。**
+
+漏了这步的症状是「装了扩展但一条命令都没有」——所以 `theiaRoot.ts` 的
+`hasLinkedPackages` 会在缺失时明确报错并给出修法，不静默失败。
+
+### ⚠️ 为什么必须用链接，不能用目录副本
+
+试过副本，**不行**。实测对照：
+
+| `node_modules/@theia/core` 的形态 | 结果 |
+|---|---|
+| junction → 本树 `packages/core` | 扩展正常激活 ✅ |
+| **真实目录副本**（内容字节一致） | `COMMANDS: []`，**没有任何报错** ❌ |
+
+Theia 在加载扩展时会做路径一致性判断。副本让同一个包出现在两条不同路径下，
+扩展的 `activate()` 就静默不执行 —— 宿主起来了、握手成功、`$activateByEvent`
+也 resolve 了，只有命令表是空的。
+
+### 重新生成 runtime
+
+改了 Theia 源码、或升级上游之后：
+
+```bash
+cd vendor/theia && npm ci --ignore-scripts && ./node_modules/.bin/tsc --build dev-packages/private-re-exports
+(cd packages/core && ../../node_modules/.bin/theia-re-exports generate)
+./node_modules/.bin/tsc --build packages/plugin-ext packages/plugin-ext-vscode
+cd ../.. && node apps/desktop/build/stage-theia-runtime.cjs
+node apps/desktop/build/link-theia-runtime.cjs   # 建链接
+bash apps/desktop/scripts/theia-staging-smoke/run.sh   # 验证（会比对两边内容是否一致）
+```
+
+`theia-staging-smoke` 第 4 节会比对 runtime 与 `vendor/theia` 的运行期文件；
+不一致就红 —— 防生成物静默过期（本仓库为 `apiCatalog.generated.ts` 栽过一次）。
+
+---
+
 ## 锁定身份
 
 | 项 | 值 |

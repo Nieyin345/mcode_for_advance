@@ -1,0 +1,57 @@
+"use strict";
+// *****************************************************************************
+// Copyright (C) 2022 Ericsson and others.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.TabBarToolbarAction = exports.ReactTabBarToolbarAction = exports.TabBarDelegator = exports.TAB_BAR_TOOLBAR_CONTEXT_MENU = exports.NAVIGATION = void 0;
+const common_1 = require("../../../common");
+/** Items whose group is exactly 'navigation' will be rendered inline. */
+exports.NAVIGATION = 'navigation';
+exports.TAB_BAR_TOOLBAR_CONTEXT_MENU = ['TAB_BAR_TOOLBAR_CONTEXT_MENU'];
+var TabBarDelegator;
+(function (TabBarDelegator) {
+    function is(candidate) {
+        return (0, common_1.isObject)(candidate) && (0, common_1.isFunction)(candidate.getTabBarDelegate);
+    }
+    TabBarDelegator.is = is;
+})(TabBarDelegator || (exports.TabBarDelegator = TabBarDelegator = {}));
+var ReactTabBarToolbarAction;
+(function (ReactTabBarToolbarAction) {
+    function is(item) {
+        return (0, common_1.isObject)(item) && typeof item.render === 'function';
+    }
+    ReactTabBarToolbarAction.is = is;
+})(ReactTabBarToolbarAction || (exports.ReactTabBarToolbarAction = ReactTabBarToolbarAction = {}));
+var TabBarToolbarAction;
+(function (TabBarToolbarAction) {
+    /**
+     * Compares the items by `priority` in ascending. Undefined priorities will be treated as `0`.
+     */
+    TabBarToolbarAction.PRIORITY_COMPARATOR = (left, right) => {
+        const leftGroup = left.group ?? exports.NAVIGATION;
+        const rightGroup = right.group ?? exports.NAVIGATION;
+        if (leftGroup === exports.NAVIGATION && rightGroup !== exports.NAVIGATION) {
+            return common_1.ArrayUtils.Sort.LeftBeforeRight;
+        }
+        if (rightGroup === exports.NAVIGATION && leftGroup !== exports.NAVIGATION) {
+            return common_1.ArrayUtils.Sort.RightBeforeLeft;
+        }
+        if (leftGroup !== rightGroup) {
+            return leftGroup.localeCompare(rightGroup);
+        }
+        return (left.priority || 0) - (right.priority || 0);
+    };
+})(TabBarToolbarAction || (exports.TabBarToolbarAction = TabBarToolbarAction = {}));
+//# sourceMappingURL=tab-bar-toolbar-types.js.map

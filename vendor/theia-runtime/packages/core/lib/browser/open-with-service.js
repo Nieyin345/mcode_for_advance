@@ -1,0 +1,110 @@
+"use strict";
+// *****************************************************************************
+// Copyright (C) 2024 TypeFox and others.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.OpenWithService = void 0;
+const tslib_1 = require("tslib");
+const inversify_1 = require("inversify");
+const disposable_1 = require("../common/disposable");
+const nls_1 = require("../common/nls");
+const quick_input_1 = require("./quick-input");
+const opener_service_1 = require("./opener-service");
+const common_1 = require("../common");
+let OpenWithService = class OpenWithService {
+    constructor() {
+        this.handlers = [];
+    }
+    registerHandler(handler) {
+        if (this.handlers.some(h => h.id === handler.id)) {
+            this.logger.warn('Duplicate OpenWithHandler registration: ' + handler.id);
+            return disposable_1.Disposable.NULL;
+        }
+        this.handlers.push(handler);
+        return disposable_1.Disposable.create(() => {
+            const index = this.handlers.indexOf(handler);
+            if (index !== -1) {
+                this.handlers.splice(index, 1);
+            }
+        });
+    }
+    async openWith(uri) {
+        // Clone the object, because all objects returned by the preferences service are frozen.
+        const associations = { ...this.preferenceService.get('workbench.editorAssociations') };
+        const ext = `*${uri.path.ext}`;
+        const handlers = this.getHandlers(uri);
+        const ordered = handlers.slice().sort((a, b) => this.getOrder(b, uri) - this.getOrder(a, uri));
+        const defaultHandler = (0, opener_service_1.getDefaultHandler)(uri, this.preferenceService) ?? handlers[0]?.id;
+        const items = this.getQuickPickItems(ordered, defaultHandler);
+        // Only offer to select a default editor when the file has a file extension
+        const extraItems = uri.path.ext ? [{
+                type: 'separator'
+            }, {
+                label: nls_1.nls.localizeByDefault("Configure default editor for '{0}'...", ext)
+            }] : [];
+        const result = await this.quickInputService.pick([...items, ...extraItems], {
+            placeHolder: nls_1.nls.localizeByDefault("Select editor for '{0}'", uri.path.base)
+        });
+        if (result) {
+            if ('handler' in result) {
+                return result.handler.open(uri);
+            }
+            else if (result.label) {
+                const configureResult = await this.quickInputService.pick(items, {
+                    placeHolder: nls_1.nls.localizeByDefault("Select new default editor for '{0}'", ext)
+                });
+                if (configureResult) {
+                    associations[ext] = configureResult.handler.id;
+                    this.preferenceService.set('workbench.editorAssociations', associations, common_1.PreferenceScope.User);
+                    return configureResult.handler.open(uri);
+                }
+            }
+        }
+        return undefined;
+    }
+    getQuickPickItems(handlers, defaultHandler) {
+        return handlers.map(handler => ({
+            handler,
+            label: handler.label ?? handler.id,
+            detail: handler.providerName ?? '',
+            description: handler.id === defaultHandler ? nls_1.nls.localizeByDefault('Default') : undefined
+        }));
+    }
+    getOrder(handler, uri) {
+        return handler.getOrder ? handler.getOrder(uri) : handler.canHandle(uri);
+    }
+    getHandlers(uri) {
+        const map = new Map(this.handlers.map(handler => [handler, handler.canHandle(uri)]));
+        return this.handlers.filter(handler => map.get(handler) > 0).sort((a, b) => map.get(b) - map.get(a));
+    }
+};
+exports.OpenWithService = OpenWithService;
+tslib_1.__decorate([
+    (0, inversify_1.inject)(quick_input_1.QuickInputService),
+    tslib_1.__metadata("design:type", Object)
+], OpenWithService.prototype, "quickInputService", void 0);
+tslib_1.__decorate([
+    (0, inversify_1.inject)(common_1.PreferenceService),
+    tslib_1.__metadata("design:type", Object)
+], OpenWithService.prototype, "preferenceService", void 0);
+tslib_1.__decorate([
+    (0, inversify_1.inject)(common_1.ILogger),
+    (0, inversify_1.named)('core:OpenWithService'),
+    tslib_1.__metadata("design:type", Object)
+], OpenWithService.prototype, "logger", void 0);
+exports.OpenWithService = OpenWithService = tslib_1.__decorate([
+    (0, inversify_1.injectable)()
+], OpenWithService);
+//# sourceMappingURL=open-with-service.js.map

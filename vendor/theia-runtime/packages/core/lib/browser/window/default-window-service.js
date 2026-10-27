@@ -1,0 +1,205 @@
+"use strict";
+// *****************************************************************************
+// Copyright (C) 2017 TypeFox and others.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DefaultWindowService = void 0;
+const tslib_1 = require("tslib");
+const inversify_1 = require("inversify");
+const common_1 = require("../../common");
+const core_preferences_1 = require("../../common/core-preferences");
+const contribution_provider_1 = require("../../common/contribution-provider");
+const frontend_application_contribution_1 = require("../frontend-application-contribution");
+const window_1 = require("../../common/window");
+const dialogs_1 = require("../dialogs");
+const frontend_application_state_1 = require("../../common/frontend-application-state");
+let DefaultWindowService = class DefaultWindowService {
+    constructor() {
+        this.allowVetoes = true;
+        this.unloaded = false;
+        this.onUnloadEmitter = new common_1.Emitter();
+    }
+    get onUnload() {
+        return this.onUnloadEmitter.event;
+    }
+    onStart(app) {
+        this.frontendApplication = app;
+        this.registerUnloadListeners();
+    }
+    openNewWindow(url) {
+        window.open(url, undefined, 'noopener');
+        return undefined;
+    }
+    async openNewDefaultWindow() {
+        this.openNewWindow(`#${window_1.DEFAULT_WINDOW_HASH}`);
+        return -1;
+    }
+    closeWindow(windowId) {
+        // No-op in browser-only mode
+    }
+    focus() {
+        window.focus();
+    }
+    /**
+     * Returns a list of actions that {@link FrontendApplicationContribution}s would like to take before shutdown
+     * It is expected that this will succeed - i.e. return an empty array - at most once per session. If no vetoes are received
+     * during any cycle, no further checks will be made. In that case, shutdown should proceed unconditionally.
+     */
+    collectContributionUnloadVetoes() {
+        const vetoes = [];
+        if (this.allowVetoes) {
+            const shouldConfirmExit = this.corePreferences['application.confirmExit'];
+            for (const contribution of this.contributions.getContributions()) {
+                const veto = contribution.onWillStop?.(this.frontendApplication);
+                if (veto && shouldConfirmExit !== 'never') { // Ignore vetoes if we should not prompt the user on exit.
+                    if (frontend_application_contribution_1.OnWillStopAction.is(veto)) {
+                        vetoes.push(veto);
+                    }
+                    else {
+                        vetoes.push({ reason: 'No reason given', action: () => false });
+                    }
+                }
+            }
+            vetoes.sort((a, b) => (a.priority ?? -Infinity) - (b.priority ?? -Infinity));
+            if (vetoes.length === 0 && shouldConfirmExit === 'always') {
+                vetoes.push({ reason: 'application.confirmExit preference', action: () => (0, dialogs_1.confirmExit)() });
+            }
+            if (vetoes.length === 0) {
+                this.allowVetoes = false;
+            }
+        }
+        return vetoes;
+    }
+    /**
+     * Implement the mechanism to detect unloading of the page.
+     */
+    registerUnloadListeners() {
+        // If `beforeunload` is cancelled and the user stays, the page is not unloaded, so `pagehide` is not fired.
+        window.addEventListener('beforeunload', event => this.handleBeforeUnloadEvent(event));
+        this.registerPageHideListener();
+        window.addEventListener('pageshow', event => this.handlePageShow(event));
+    }
+    /**
+     * `pagehide` is used instead of the deprecated `unload` event, which Chrome may block
+     * via permissions policy (https://developer.chrome.com/docs/web-platform/deprecating-unload),
+     * silently skipping the handler and thus e.g. losing the layout.
+     */
+    registerPageHideListener() {
+        window.addEventListener('pagehide', () => this.handlePageHide());
+    }
+    /**
+     * `pagehide` also fires when the page enters the back/forward cache, in which case the frontend
+     * has already shut down (state saved, connections closed). Reload to get a working application
+     * again if the page is restored from the cache. That shutdown already happened, so the reload
+     * must not be vetoed by the contributions.
+     */
+    handlePageShow(event) {
+        if (event.persisted) {
+            this.setSafeToShutDown();
+            this.reload();
+        }
+    }
+    /**
+     * Fires {@link onUnload} at most once per document: `pagehide` fires again for the reload that
+     * recovers a page restored from the back/forward cache, but the application is already stopped.
+     */
+    handlePageHide() {
+        if (!this.unloaded) {
+            this.unloaded = true;
+            this.onUnloadEmitter.fire();
+        }
+    }
+    async isSafeToShutDown(stopReason) {
+        const vetoes = this.collectContributionUnloadVetoes();
+        if (vetoes.length === 0) {
+            return true;
+        }
+        const preparedValues = await Promise.all(vetoes.map(e => e.prepare?.(stopReason)));
+        this.logger.debug('Shutdown prevented by', vetoes.map(({ reason }) => reason).join(', '));
+        for (let i = 0; i < vetoes.length; i++) {
+            try {
+                const result = await vetoes[i].action(preparedValues[i], stopReason);
+                if (!result) {
+                    return false;
+                }
+            }
+            catch (e) {
+                this.logger.error(e);
+            }
+        }
+        this.logger.debug('OnWillStop actions resolved; allowing shutdown');
+        this.allowVetoes = false;
+        return true;
+    }
+    setSafeToShutDown() {
+        this.allowVetoes = false;
+    }
+    /**
+     * Called when the `window` is about to `unload` its resources.
+     * At this point, the `document` is still visible and the [`BeforeUnloadEvent`](https://developer.mozilla.org/en-US/docs/Web/API/Window/beforeunload_event)
+     * event will be canceled if the return value of this method is `false`.
+     *
+     * In Electron, handleCloseRequestEvent is is run instead.
+     */
+    handleBeforeUnloadEvent(event) {
+        const vetoes = this.collectContributionUnloadVetoes();
+        if (vetoes.length) {
+            // In the browser, we don't call the functions because this has to finish in a single tick, so we treat any desired action as a veto.
+            this.logger.debug('Shutdown prevented by', vetoes.map(({ reason }) => reason).join(', '));
+            return this.preventUnload(event);
+        }
+        this.logger.debug('Shutdown will proceed.');
+    }
+    /**
+     * Notify the browser that we do not want to unload.
+     *
+     * Notes:
+     *  - Shows a confirmation popup in browsers.
+     *  - Prevents the window from closing without confirmation in electron.
+     *
+     * @param event The beforeunload event
+     */
+    preventUnload(event) {
+        event.returnValue = '';
+        event.preventDefault();
+        return '';
+    }
+    reload() {
+        this.isSafeToShutDown(frontend_application_state_1.StopReason.Reload).then(isSafe => {
+            if (isSafe) {
+                window.location.reload();
+            }
+        });
+    }
+};
+exports.DefaultWindowService = DefaultWindowService;
+tslib_1.__decorate([
+    (0, inversify_1.inject)(core_preferences_1.CorePreferences),
+    tslib_1.__metadata("design:type", Object)
+], DefaultWindowService.prototype, "corePreferences", void 0);
+tslib_1.__decorate([
+    (0, inversify_1.inject)(contribution_provider_1.ContributionProvider),
+    (0, inversify_1.named)(frontend_application_contribution_1.FrontendApplicationContribution),
+    tslib_1.__metadata("design:type", Object)
+], DefaultWindowService.prototype, "contributions", void 0);
+tslib_1.__decorate([
+    (0, inversify_1.inject)(common_1.ILogger),
+    (0, inversify_1.named)('core:DefaultWindowService'),
+    tslib_1.__metadata("design:type", Object)
+], DefaultWindowService.prototype, "logger", void 0);
+exports.DefaultWindowService = DefaultWindowService = tslib_1.__decorate([
+    (0, inversify_1.injectable)()
+], DefaultWindowService);
+//# sourceMappingURL=default-window-service.js.map

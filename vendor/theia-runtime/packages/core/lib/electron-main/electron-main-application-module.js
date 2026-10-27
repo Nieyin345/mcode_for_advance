@@ -1,0 +1,62 @@
+"use strict";
+// *****************************************************************************
+// Copyright (C) 2020 Ericsson and others.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+Object.defineProperty(exports, "__esModule", { value: true });
+const inversify_1 = require("inversify");
+const perf_hooks_1 = require("perf_hooks");
+const uuid_1 = require("../common/uuid");
+const contribution_provider_1 = require("../common/contribution-provider");
+const performance_1 = require("../common/performance");
+const proxy_factory_1 = require("../common/messaging/proxy-factory");
+const electron_token_1 = require("../electron-common/electron-token");
+const electron_main_window_service_1 = require("../electron-common/electron-main-window-service");
+const electron_main_application_1 = require("./electron-main-application");
+const launch_args_store_1 = require("./launch-args-store");
+const electron_main_window_service_impl_1 = require("./electron-main-window-service-impl");
+const theia_electron_window_1 = require("./theia-electron-window");
+const electron_api_main_1 = require("./electron-api-main");
+const electron_messaging_contribution_1 = require("./messaging/electron-messaging-contribution");
+const electron_security_token_service_1 = require("./electron-security-token-service");
+const electron_messaging_service_1 = require("./messaging/electron-messaging-service");
+const electron_connection_handler_1 = require("./messaging/electron-connection-handler");
+const electronSecurityToken = { value: (0, uuid_1.generateUuid)() };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+global[electron_token_1.ElectronSecurityToken] = electronSecurityToken;
+exports.default = new inversify_1.ContainerModule(bind => {
+    bind(performance_1.Stopwatch).toConstantValue(new performance_1.SimpleStopwatch('electron main', () => perf_hooks_1.performance.now()));
+    bind(launch_args_store_1.LaunchArgsStore).toSelf().inSingletonScope();
+    bind(electron_main_application_1.ElectronMainApplication).toSelf().inSingletonScope();
+    bind(electron_messaging_contribution_1.ElectronMessagingContribution).toSelf().inSingletonScope();
+    bind(electron_main_application_1.ElectronMainApplicationContribution).toService(electron_messaging_contribution_1.ElectronMessagingContribution);
+    bind(electron_token_1.ElectronSecurityToken).toConstantValue(electronSecurityToken);
+    bind(electron_security_token_service_1.ElectronSecurityTokenService).toSelf().inSingletonScope();
+    (0, contribution_provider_1.bindRootContributionProvider)(bind, electron_connection_handler_1.ElectronConnectionHandler);
+    (0, contribution_provider_1.bindRootContributionProvider)(bind, electron_messaging_service_1.ElectronMessagingService.Contribution);
+    (0, contribution_provider_1.bindRootContributionProvider)(bind, electron_main_application_1.ElectronMainApplicationContribution);
+    bind(electron_api_main_1.TheiaMainApi).toSelf().inSingletonScope();
+    bind(electron_main_application_1.ElectronMainApplicationContribution).toService(electron_api_main_1.TheiaMainApi);
+    bind(electron_main_window_service_1.ElectronMainWindowService).to(electron_main_window_service_impl_1.ElectronMainWindowServiceImpl).inSingletonScope();
+    bind(electron_connection_handler_1.ElectronConnectionHandler).toDynamicValue(context => new proxy_factory_1.RpcConnectionHandler(electron_main_window_service_1.electronMainWindowServicePath, () => context.container.get(electron_main_window_service_1.ElectronMainWindowService))).inSingletonScope();
+    bind(electron_main_application_1.ElectronMainProcessArgv).toSelf().inSingletonScope();
+    bind(theia_electron_window_1.TheiaElectronWindow).toSelf();
+    bind(theia_electron_window_1.TheiaElectronWindowFactory).toFactory(({ container }) => (options, config) => {
+        const child = container.createChild();
+        child.bind(theia_electron_window_1.TheiaBrowserWindowOptions).toConstantValue(options);
+        child.bind(theia_electron_window_1.WindowApplicationConfig).toConstantValue(config);
+        return child.get(theia_electron_window_1.TheiaElectronWindow);
+    });
+});
+//# sourceMappingURL=electron-main-application-module.js.map
