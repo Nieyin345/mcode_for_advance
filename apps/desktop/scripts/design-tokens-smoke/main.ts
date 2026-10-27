@@ -22,7 +22,7 @@
  *
  * Run: scripts/design-tokens-smoke/run.sh
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { stripComments } from "../lib/sourceText.js";
 import {
@@ -1372,31 +1372,44 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
     check(`★ 无消费方的 @property ${dead} 未被注册`, !registered.includes(dead));
   }
 }
-/* ─────────── 三元组 token 不许被当成颜色直接用 ───────────
+/* 【UI 重建 2026-10-28 加宽】**三元组 token 不许被当成颜色直接用。**
  *
- * 【UI 重建 2026-10-28】真实事故：`bg-[var(--m-surface-1)]`。
+ * ## 真实事故
  *
- * `--m-surface-*` 的值是 **"21 21 21" 这样的 R G B 三元组**（840 处
- * `rgb(var(--surface) / α)` 的 alpha 用法依赖这个形状），**不是颜色**。
- * 把它直接塞进 `background` 是非法值 → 整条声明失效 → 背景透明。
+ * `bg-[var(--m-surface-1)]`。`--m-surface-*` 的值是 **"21 21 21" 这样的
+ * R G B 三元组**（840 处 `rgb(var(--surface) / α)` 依赖这个形状），
+ * **不是颜色**。直接塞进 `background` 是非法值 → 整条声明失效 → 背景透明。
  *
- * 症状：**亮色下看不出来，暗色下整块消失**（因为亮色还有一层写死的黑色
- * 描边兜着）。我当时只看亮色截图，于是「卡片没有边框」被误判成
- * 「border 太重」，改了一轮才发现根本不是那回事。
+ * 症状：**亮色下看不出来，暗色下整块消失**（亮色还有一层写死的黑色描边
+ * 兜着）。全仓扫出 6 处，整个外壳的底色在暗色下都失效过。
  *
- * 全仓扫出 **6 处**同样的写法（Shell / Sidebar ×3 / Titlebar / TilePane），
- * 意味着整个外壳的底色在暗色下都失效过。
+ * ## 覆盖口径（第一版只覆盖了一半）
  *
- * ## 判据
+ * 第一版只扫 6 个硬编码的 shell 组件 `.tsx`，**不扫 `.css` 里手写的
+ * `background: var(--m-x)`**。而 `8a5bf106a` 新加的渐隐带正好属于后者 ——
+ * 它恰好写对了（`rgb(var(--m-surface-1))`），但同样的错误如果出现在
+ * `styles.css` 里，判据会全绿。
  *
- * 扫所有 tsx 里的 `(bg|fill|text|border|ring|shadow)-[var(--m-xxx)]`，
- * 取出 token 名，去 tokens.cds.css 解析它的最终值 —— 如果是三元组就红。
+ * 现在扫**全部** `.tsx` / `.ts` / `.css`（543 个文件），两类位置分开处理：
+ *   - tsx：`(bg|fill|text|border|ring|shadow|outline)-[var(--m-xxx)]`
+ *   - css：`background / color / fill / stroke / border-color / box-shadow`
+ *     等属性值里的 `var(--m-xxx)`
  *
- * 正确的写法是走语义类（`bg-surface` / `bg-surface-muted` …），
- * Tailwind 那边会用 `rgb(var(--surface) / <alpha-value>)` 正确包装。
+ * ## 判据的前提
+ *
+ * 「已经包在 `rgb()` / `hsl()` 里的不算」—— `rgb(var(--surface-1))` 是
+ * **正确**写法，不该红。所以先看 `var(` 前面紧邻的是什么。
+ *
+ * 正控两条（否则判据退化成「永远查不到」时也全绿）：
+ *   - `--m-surface-1` 必须被判为三元组；
+ *   - `--m-border` 必须**不**被判为（它是完整颜色）。
  */
 {
-  const tokenCss = read("src/renderer/tokens.cds.css");
+  /* token 来源是**两个文件** —— `tokens.cds.css` 是生成物，
+   * `styles.css` 里也有手写的 `--m-*`（例如 `--m-scroll-fade-size`）。
+   * 只读前者会让后者的值解不出来（`finalValueOf` 返回 null → 静默跳过）。 */
+  const tokenCss = read("src/renderer/tokens.cds.css") + "\n" + read("src/renderer/styles.css");
+
   /** 解析一个 `--m-*` token 的最终值（跟随 var() 链，最多 6 跳） */
   const finalValueOf = (name: string): string | null => {
     let cur = name;
@@ -1412,26 +1425,71 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   };
   const isTriplet = (v: string | null) => !!v && /^\d{1,3}\s+\d{1,3}\s+\d{1,3}$/.test(v);
 
+  /** 递归列出 renderer 下所有 tsx / ts / css（**不写死文件清单** ——
+   *  写死清单的判据只覆盖它列举的那几个，新增组件天然逃逸）。 */
+  const walkRender = (rel: string, out: string[] = []): string[] => {
+    let entries: string[];
+    try {
+      /* `root` 是 run.sh cd 到的 apps/desktop（与 `read()` 同一基准）——
+       * 不要用 `process.cwd()` 另算一次：两者在别的入口下会分叉，
+       * 分叉的结果是**扫到 0 个文件而断言静默为真**（实测踩过）。 */
+      entries = readdirSync(join(root, rel));
+    } catch {
+      return out;
+    }
+    for (const e of entries) {
+      const child = rel + "/" + e;
+      let st;
+      try {
+        st = statSync(join(root, child));
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) walkRender(child, out);
+      else if (/\.(tsx|ts|css)$/.test(e)) out.push(child);
+    }
+    return out;
+  };
+
+  const files = walkRender("src/renderer");
   const offenders: string[] = [];
-  for (const f of ["ClaudeShell", "ClaudeSidebar", "ClaudeTitlebar", "TilePane", "ClaudeProjectOverview", "paneContent"]) {
-    const src = read(`src/renderer/components/shell/${f}.tsx`);
-    // 只看 className 里真正会被当成「颜色」用的任意值
-    for (const m of src.matchAll(/(?:^|\s)(bg|fill|text|border|ring|shadow|outline)-\[var\(--(m-[a-z0-9-]+)\)\]/g)) {
-      const [, util, token] = m;
-      const v = finalValueOf(token);
-      if (isTriplet(v)) offenders.push(`${f}.tsx: ${util}-[var(--${token})] → "${v}"`);
+
+  /** 一个 `var(--m-xxx)` 是否已被 `rgb()` / `hsl()` 包装（那是正确写法）。 */
+  const wrappedInColorFn = (before: string) => /(?:rgba?|hsla?)\(\s*$/.test(before);
+
+  for (const f of files) {
+    const src = read(f);
+    if (f.endsWith(".css")) {
+      // 只扫「值会被当成颜色」的属性
+      const re = /(?:^|[;{\s])(background|background-color|border-color|color|fill|stroke|outline-color)\s*:\s*([^;{}]+)/g;
+      for (const m of src.matchAll(re)) {
+        const value = m[2];
+        for (const v of value.matchAll(/var\(--(m-[a-z0-9-]+)\)/g)) {
+          if (wrappedInColorFn(value.slice(0, v.index))) continue;
+          const fv = finalValueOf(v[1]);
+          if (isTriplet(fv)) offenders.push(`${f}: ${m[1]} 里的 var(--${v[1]}) → "${fv}"`);
+        }
+      }
+    } else {
+      for (const m of src.matchAll(/(?:^|\s)(bg|fill|text|border|ring|shadow|outline)-\[var\(--(m-[a-z0-9-]+)\)\]/g)) {
+        const [, util, token] = m;
+        const fv = finalValueOf(token);
+        if (isTriplet(fv)) offenders.push(`${f}: ${util}-[var(--${token})] → "${fv}"`);
+      }
     }
   }
+
   check(
     "★ 没有把 R G B 三元组 token 直接当颜色用（暗色下会整块消失）",
     offenders.length === 0,
-    offenders,
+    offenders.slice(0, 20),
   );
 
-  // 正控：这个判据确实能分辨 —— `--m-surface-1` 是三元组、`--m-border` 不是。
-  // 少了这一条，判据退化成「永远查不到东西」时也全绿。
+  // 正控：判据确实能分辨两种 token。
   check("★ 正控：--m-surface-1 被判为三元组", isTriplet(finalValueOf("m-surface-1")));
   check("★ 正控：--m-border 不被判为三元组（它是完整颜色）", !isTriplet(finalValueOf("m-border")));
+  // 覆盖面自检：真的扫到了东西（文件数为 0 时上方断言会假绿）
+  check("★ 覆盖率自检：扫到的渲染端文件数 > 300", files.length > 300, files.length);
 }
 
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
