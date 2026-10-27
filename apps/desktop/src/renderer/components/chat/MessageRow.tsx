@@ -380,48 +380,22 @@ export const MessageRow = memo(function MessageRow({
         className={isUser ? "max-w-[min(92%,48rem)] sm:max-w-[min(var(--m-bubble-max-w,85%),48rem)] min-w-0" : "w-full min-w-0"}
         style={isUser ? ({ "--chat-font-size-base": "var(--chat-font-size)" } as React.CSSProperties) : undefined}
       >
-        {/* 【T139】助手身份头 —— 对齐上游 `ChatMessageBubbles.tsx` 的头部。
+        {/* 【UI 重建 2026-10-27】**助手身份头已移除 —— Claude 没有这个东西。**
          *
-         * 上游每条助手消息顶部都有「✦ + 名字 + 模型角标 + • + 时间」。
+         * 上一版这里有一段 `✦ Mcode • 08:00:10` 的头，注释写着「对齐上游
+         * `ChatMessageBubbles.tsx` 的头部」。**那个说法是错的**，而且我照着它
+         * 又维护了两轮断言（`t139` 里三条）。
          *
-         * ⚠️ **头本身不依赖 `turnMeta`**：那个字段只有回合的首条消息才有，而身份头
-         * 应该每条都有。所以「Mcode」这一行独立渲染；只有模型角标在块内单独判
-         * `msg.turnMeta`（后续块没有回合元数据，就只显示 `[✦] Mcode`）。
+         * 本机 Claude 3.1623.4.0 的实际取值：
+         *   `--cds-assistant-message-text-inset: 0px`  ← 助手正文与左缘对齐，无缩进
+         *   `--cds-message-bubble-item-gap: 1.25rem`   ← 消息之间只有间距
+         * 消息流里**没有**每条的「谁在说话」标记 —— 只有用户气泡是右对齐的，
+         * 其余全宽左对齐，读者靠位置就能分辨。Mcode 每轮顶一行 `✦ Mcode`
+         * 会让一屏出现十几次同样的标记，而这正是不像 Claude 的直接来源之一。
          *
-         * 名字用 "Mcode" 而不是 "Claude"：用户要的是「像 Claude 的样子」，
-         * 不是让产品自称 Claude。
-         *
-         * `tightTop` 的消息（同回合内的后续块）不显示 —— 它们不是一轮的开头，
-         * 每条都顶一个 "Mcode" 会让一屏出现十几次同样的标记。 */}
-        {!isUser && !tightTop && (
-          <div data-cds="AssistantMessageHeader" className="mb-1 flex items-center gap-2 text-xs text-content-subtle select-none">
-            <span
-              data-cds="AssistantAvatar"
-              className="flex size-4 shrink-0 items-center justify-center text-content-muted"
-              aria-hidden
-            >
-              <IconSparkles size={14} />
-            </span>
-            <span data-cds="AssistantMessageName" className="font-medium text-content">Mcode</span>
-            {/* 【T139】模型徽标跟着身份走 —— 上游的头部是 `[✦] Claude [model]`。
-             * 它只在有 `turnMeta` 时才有值（该字段只有回合首条消息带），
-             * 所以后续块的消息头部只显示 `[✦] Mcode`，与「运行状态只在首条」
-             * 是同一套语义。 */}
-            {modelName && (
-              <span data-cds="AssistantModelBadge" className="shrink-0 rounded bg-surface-muted/60 px-1.5 py-0.5 font-mono text-[10px] leading-none text-content-muted">
-                {modelName}
-              </span>
-            )}
-            {!hideTurnStat && (
-              <>
-                <span aria-hidden>•</span>
-                <span className="shrink-0 font-mono text-[11px] tabular-nums">
-                  {fmtClock(msg.turnMeta?.startedAt ?? msg.createdAt)}
-                </span>
-              </>
-            )}
-          </div>
-        )}
+         * **没有删掉的信息**：模型名与时间仍在 `TurnStatRow`（回合首条）里，
+         * 那是「这一轮用了什么、跑了多久」，Claude 在回合级别也有类似信息，
+         * 只是不在每条消息顶部重复。 */}
         {/* Per-turn stat row - only on the first assistant message of a
             turn (the one carrying turnMeta), and not suppressed by a parent
             TurnPanel (hideTurnStat). Sits above the content. */}

@@ -339,7 +339,12 @@ for(const row of manifest) {
 const lines=[
  "# ARC-005 V4：Electron 计算样式逐项比对",
  "",
- "参考：docs/design/claude-code-reference-matrix.md §二/四/五；上游为 open-claude-ui/code-examples/cds-theme.css（第三方逆向产物，非用户安装 Claude 版）。",
+ /* 【UI 重建 2026-10-27】标题原来写「上游为 open-claude-ui/...（第三方逆向产物）」——
+  * 那句话与代码**自相矛盾**：`findClaudeCss()` 读的是本机安装的 Claude
+  * 3.1623.4.0，而 open-claude-ui 目录已经删了。**读报告的人只会看标题**，
+  * 会以为这次比对还是拿第三方 2.x 的逆向当基准 —— 那是错的，而且会让
+  * 「比对通过」这件事看起来不可信。 */
+ "参考：docs/design/claude-code-reference-matrix.md §二/四/五；上游为本机安装的 Claude Desktop（`ion-dist/assets/v1/*.css`，由 `findClaudeCss()` 现场定位；找不到会显式失败）。第三方 `open-claude-ui` 已删除，不再作为基准。",
  "仅判上述已经登记的 surface/content/edge、圆角、动效；差异按矩阵原有判断，不以像素等值代替语义关系。",
  "root token 与窗口实际可见元素的 getComputedStyle 分别存于同名 JSON：snapshot.tokens 和 snapshot.measured（含尺寸、字号、行高、背景、颜色、圆角、padding）。",
  "【T149】正文排版另比对 `measured`：`chat-body` 取 `.chat-md` 的**计算值**（字号/行高）。root token 表看不到它 —— `--chat-md-leading` 是变量，被谁读、读到多高只有计算值知道。本场景没有正文时显式记 present=false。",

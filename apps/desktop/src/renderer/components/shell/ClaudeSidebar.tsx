@@ -102,30 +102,57 @@ export function ClaudeSidebar({
       className="flex h-full flex-col bg-[var(--m-surface-0)] text-[var(--m-text-secondary)]"
       style={{ width: CLAUDE_SIDEBAR_WIDTH }}
     >
-      {/* ── 顶部：折叠 + 品牌 + 新建 ── */}
-      <div className="flex shrink-0 items-center gap-1 px-2 pt-2">
-        <IconButton label={t("layout.collapseSidebar")} onClick={onCollapse}>
-          <CollapseIcon />
-        </IconButton>
-        <span className="min-w-0 flex-1 truncate px-1 text-[var(--m-fs-body)] font-medium text-[var(--m-text-primary)]">
-          {brand}
-        </span>
-        <IconButton label={t("layout.newSession")} onClick={onNewSession}>
-          <PlusIcon />
-        </IconButton>
+      {/* ── 顶部：Cowork / Code 分段切换 ──
+       *
+       * 【UI 重建 2026-10-27 更正】上一版这里是「折叠按钮 + 品牌名 + 加号」，
+       * 而**真实 Claude 的侧栏顶部是一个横跨整栏的分段控件**：左边 `Cowork`、
+       * 右边 `Code`，当前那个是白底凸起、另一个是透明。
+       *
+       * Mcode 只实现 Code（用户明确「我只要 code 部分，不要 cowork」），
+       * 但**分段控件本身要留着**：它是 Claude 侧栏的视觉锚点，去掉之后
+       * 整个左上角就空了，一眼就不像。左段禁用并标注「未实现」，
+       * 而不是假装有个 Cowork。 */}
+      <div className="shrink-0 px-2 pt-2">
+        <div
+          role="tablist"
+          aria-label="工作模式"
+          className="flex h-8 items-center rounded-[8px] bg-[var(--m-surface-1)] p-0.5"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={false}
+            disabled
+            title="Mcode 只实现 Code 模式"
+            className="flex h-full flex-1 cursor-not-allowed items-center justify-center gap-1.5 rounded-[6px] text-[var(--m-fs-body)] text-[var(--m-text-muted)] opacity-50"
+          >
+            <CoworkIcon />
+            Cowork
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected
+            className="flex h-full flex-1 items-center justify-center gap-1.5 rounded-[6px] bg-[var(--m-surface-2)] text-[var(--m-fs-body)] font-medium text-[var(--m-text-primary)] shadow-[var(--m-shadow-sm)]"
+          >
+            <CodeIcon />
+            Code
+          </button>
+        </div>
       </div>
 
-      {/* ── 搜索 ── */}
-      <div className="shrink-0 px-2 pb-2 pt-1">
+      {/* ── New ──
+       * 真实 Claude 这里是 `+ New`（一个横条按钮，不是只有加号）。
+       * 搜索不在顶部 —— 它在侧栏**最底部**的一个图标。 */}
+      <div className="shrink-0 px-2 pt-2">
         <button
           type="button"
-          className="flex w-full items-center gap-2 rounded-[6px] px-2 py-1 text-left text-[var(--m-fs-body)] text-[var(--m-text-muted)] hover:bg-[var(--m-fill-ghost-hover)]"
-          style={{ minHeight: 28 }}
-          onClick={onSearch}
+          className="flex w-full items-center gap-2 rounded-[6px] px-2 text-left text-[var(--m-fs-body)] text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)] active:bg-[var(--m-fill-ghost-selected)]"
+          style={{ minHeight: 30 }}
+          onClick={onNewSession}
         >
-          <SearchIcon />
-          <span className="flex-1">{t("layout.search")}</span>
-          <kbd className="text-[var(--m-fs-caption)] opacity-60">Ctrl K</kbd>
+          <PlusIcon />
+          <span className="flex-1">{t("layout.newSession")}</span>
         </button>
       </div>
 
@@ -138,10 +165,30 @@ export function ClaudeSidebar({
         <Section title={t("layout.recents")} items={recents} activeId={activeSessionId} onSelect={onSelectSession} />
       </div>
 
-      {/* ── 底部：Mcode 自有入口 ── */}
+      {/* ── 底部：Mcode 自有入口 + 搜索 ──
+       *
+       * 【UI 重建 2026-10-27 更正】真实 Claude 的侧栏底部是：
+       *   `Relaunch to update`（有更新时）→ `用户名 · 网关 ⌄` → 🔍
+       * 也就是说**搜索在最底下**，不是顶部。
+       *
+       * Mcode 的资料库/设置仍是自有功能，挂在同一区域（功能文档 UI-04：
+       * 不新开区域，底部入口）。**顺序对齐 Claude**：功能入口在上、
+       * 用户/搜索在最后一行。 */}
       <div className="shrink-0 border-t border-[var(--m-border)] px-2 py-1.5">
         <RowButton onClick={onOpenLibrary} icon={<LibraryIcon />}>{t("layout.library")}</RowButton>
         <RowButton onClick={onOpenSettings} icon={<SettingsIcon />}>{t("layout.settings")}</RowButton>
+        {/* 最后一行：品牌 + 搜索。Claude 那里是「用户名 · 网关」，Mcode 用品牌名。 */}
+        <div className="mt-1 flex items-center gap-1 px-1">
+          <span className="min-w-0 flex-1 truncate text-[var(--m-fs-caption)] text-[var(--m-text-muted)]">
+            {brand}
+          </span>
+          <IconButton label={t("layout.search")} onClick={onSearch}>
+            <SearchIcon />
+          </IconButton>
+          <IconButton label={t("layout.collapseSidebar")} onClick={onCollapse}>
+            <CollapseIcon />
+          </IconButton>
+        </div>
       </div>
     </nav>
   );
@@ -335,6 +382,24 @@ function PlusIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path d="M8 3.5v9M3.5 8h9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+/** Cowork 段：两个重叠的人形（协作语义）。 */
+function CoworkIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="6" cy="5.5" r="2.2" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M2.2 13c0-2.1 1.7-3.5 3.8-3.5s3.8 1.4 3.8 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="11.4" cy="6.4" r="1.7" stroke="currentColor" strokeWidth="1.2" opacity=".7" />
+    </svg>
+  );
+}
+/** Code 段：尖括号（代码语义，与 Claude 的图标同形）。 */
+function CodeIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M5.5 4.5 1.8 8l3.7 3.5M10.5 4.5 14.2 8l-3.7 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

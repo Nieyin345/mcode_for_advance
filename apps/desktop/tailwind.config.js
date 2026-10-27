@@ -35,13 +35,23 @@ export default {
         //   title    1rem                15.06    1.25rem             18.82
         //
         // 写成 `lineHeight` 让 `text-body` 一处同时定死两者。
-        caption: ["11.29px", { lineHeight: "16px" }], // 微型标签、Kbd、时间戳
+        //
+        /* 【UI 重建 2026-10-27】**这一档必须与 `styles.css` 的 `--m-fs-*` / `--m-lh-*`
+         * 逐字相同** —— 它们是同一个 Claude 值的两份表示。
+         *
+         * 我上一版把 caption/prose/title 三档算错了（见 styles.css 里那张对照表），
+         * 而**改一处忘另一处**正是本仓反复出现的形态（第二十八条：「修不一致之前先数
+         * 一共有几处」）。这里已经和第二处对齐。
+         *
+         * 校验：`.tmp/compare-with-claude.mjs` 直接读本机 Claude CSS 的声明，
+         * 按 `Nrem × 16 × (16/17)` 算，和这里逐条比。 */
+        caption: ["10.35px", { lineHeight: "16px" }], // 微型标签、Kbd、时间戳
         footnote: ["11.29px", { lineHeight: "14px" }], // 辅助说明、文件大小
         code: ["11.29px", { lineHeight: "16px" }], // 代码块、行内代码
         body: ["12.24px", { lineHeight: "18.82px" }], // 对话正文、输入框、表单
-        prose: ["13.18px", { lineHeight: "16.94px" }], // 长文段落、Artifacts 正文
+        prose: ["14.00px", { lineHeight: "16.94px" }], // 长文段落、Artifacts 正文（Claude 裸 .875rem）
         heading: ["13.18px", { lineHeight: "16.94px" }], // 卡片小节标题、弹窗标题
-        title: ["15.06px", { lineHeight: "18.82px" }], // 主页面大标题
+        title: ["18.82px", { lineHeight: "18.82px" }], // 主页面大标题
       },
       fontFamily: {
         // Bundled JetBrains Mono Variable woff2 (imported in main.tsx) heads

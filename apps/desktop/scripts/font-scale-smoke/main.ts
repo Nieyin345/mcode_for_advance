@@ -220,10 +220,17 @@ console.log("\n── 三、判据把等价写法算成同一个数 ──");
 //
 // Claude 的算法：`--cds-font-size-X: calc(Nrem × --cds-rem-scale)`，
 // `--cds-rem-scale = calc(16/17) ≈ .9412`，所以实际 px = N×16×.9412：
-//   caption .6875rem→11.29  footnote .75→11.29  code .75→11.29
-//   body .8125→12.24  prose .875→13.18  heading .875→13.18  title 1→15.06
+//   caption .6875rem→10.35  footnote .75→11.29  code .75→11.29
+//   body .8125→12.24  heading .875→13.18  title 1.25→18.82
+//
+// ⚠️ **`prose` 是唯一一条裸 `.875rem`（不乘 rem-scale）→ 14.00px。**
+// 上一版把上面三处算错了（caption 写成 11.29、prose 写成 13.18、title 写成 15.06），
+// 而注释写着「本机 Claude 的真实值」——**写着「我核过」的错数字比没注释更糟**。
+// 现在的值是 `.tmp/font-compare.mjs` 逐条算出来的，那个脚本不解析 CSS，
+// 只做 `rem × 16 × (16/17)` 一次乘法，肉眼可验。
+//
 // 行高来自 `--cds-leading-X`（与字号成对，不是倍数）：
-//   caption 1.0625→16  body 1.25→18.82  prose 1.125→16.94
+//   caption 1.0625→16  body 1.25→18.82  heading 1.125→16.94
 //
 // ⚠️ 正则从 `(\d+)px` 放开到 `([\d.]+)px`：新值是小数，整数正则读不到会
 // 报 "missing" —— 那是正则失效，不是值不对，两者要分得开。
@@ -232,13 +239,13 @@ console.log("\n── 四、CDS 七档字阶（本机 Claude 3.1623.4.0）──
 {
   const tw = readFileSync(join(ROOT, "tailwind.config.js"), "utf8");
   const spec: Array<[string, number, number]> = [
-    ["caption", 11.29, 16],
+    ["caption", 10.35, 16],
     ["footnote", 11.29, 14],
     ["code", 11.29, 16],
     ["body", 12.24, 18.82],
-    ["prose", 13.18, 16.94],
+    ["prose", 14.0, 16.94],
     ["heading", 13.18, 16.94],
-    ["title", 15.06, 18.82],
+    ["title", 18.82, 18.82],
   ];
   for (const [name, size, lh] of spec) {
     const m = tw.match(new RegExp(`${name}:\\s*\\["([\\d.]+)px",\\s*\\{\\s*lineHeight:\\s*"([\\d.]+)px"`));

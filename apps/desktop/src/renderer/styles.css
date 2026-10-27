@@ -871,19 +871,34 @@ body,
  * 逐个迁（按面板切，一次一个面板）。
  */
 :root {
-  /* 七档字号（Claude 的实际 px 值，rem-scale 已乘进去） */
-  --m-fs-caption: 11.29px;   /* --cds-font-size-caption  .6875rem × .9412 */
-  --m-fs-footnote: 11.29px;  /* --cds-font-size-footnote .75rem  × .9412 */
-  --m-fs-code: 11.29px;      /* --cds-font-size-code     .75rem  × .9412 */
-  --m-fs-body: 12.24px;      /* --cds-font-size-body     .8125rem × .9412 */
-  --m-fs-prose: 13.18px;     /* --cds-font-size-heading  .875rem × .9412 */
-  --m-fs-heading: 13.18px;   /* 同上（Claude heading 与 prose 同档） */
-  --m-fs-title: 15.06px;     /* --cds-font-size-title/1rem × .9412 */
+  /* 七档字号 —— **逐条从本机 Claude 3.1623.4.0 的 CSS 算出来的**。
+   *
+   * ⚠️ 上一版有三处算错（而且注释写着「Claude 的实际 px 值」，会让人以为核过）：
+   *
+   *   | token   | Claude 声明                              | 上一版写的 | 正确值 |
+   *   |---------|------------------------------------------|-----------|--------|
+   *   | caption | `calc(.6875rem * var(--cds-rem-scale,1))`| 11.29     | 10.35  |
+   *   | prose   | **`.875rem`（裸值，不吃 rem-scale）**     | 13.18     | 14.00  |
+   *   | title   | `calc(1.25rem * var(--cds-rem-scale,1))` | 15.06     | 18.82  |
+   *
+   * **`prose` 是唯一一条裸 `rem`** —— Claude 在这一档不乘 `--cds-rem-scale`。
+   * 把它也乘上就得到 13.18，差 0.82px；而 `title` 反过来漏乘了 1.25rem → 只写了
+   * 15.06，实际 18.82，**差 20%**。
+   *
+   * 验证方法（.tmp/compare-with-claude.mjs）：直接读本机 CSS 的声明，按
+   * `Nrem × 16 × (16/17)` 算，和这里逐条对。**不要靠记忆里的数字**。 */
+  --m-fs-caption: 10.35px;   /* --cds-font-size-caption  .6875rem × .9412 = 10.35 */
+  --m-fs-footnote: 11.29px;  /* --cds-font-size-footnote .75rem  × .9412 = 11.29 */
+  --m-fs-code: 11.29px;      /* --cds-font-size-code     .75rem  × .9412 = 11.29 */
+  --m-fs-body: 12.24px;      /* --cds-font-size-body     .8125rem × .9412 = 12.24 */
+  --m-fs-prose: 14.00px;     /* --cds-font-size-prose    **.875rem 裸值** = 14.00 */
+  --m-fs-heading: 13.18px;   /* --cds-font-size-heading  .875rem × .9412 = 13.18 */
+  --m-fs-title: 18.82px;     /* --cds-font-size-title    1.25rem × .9412 = 18.82 */
   /* 对应行高，**成对使用** —— Claude 的字号与行高是一对定义的，
    * 只改字号不改行高会让正文挤在一起（这正是很多「字号设置」做残的地方）。 */
-  --m-lh-caption: 16.0px;    /* --cds-leading-caption 1.0625rem × .9412 */
-  --m-lh-body: 18.82px;      /* --cds-leading-body    1.25rem   × .9412 */
-  --m-lh-heading: 16.94px;   /* --cds-leading-heading 1.125rem  × .9412 */
+  --m-lh-caption: 16.0px;    /* --cds-leading-caption 1.0625rem × .9412 = 16.00 */
+  --m-lh-body: 18.82px;      /* --cds-leading-body    1.25rem   × .9412 = 18.82 */
+  --m-lh-heading: 16.94px;   /* --cds-leading-heading 1.125rem  × .9412 = 16.94 */
 
   /* 字重：Claude 用 400 / 500 / 580 三档（不是 Tailwind 的 400/500/600）。
    * ⚠️ **当前唯一的消费点是 `--chat-font-weight`**（Markdown.tsx:941）。
