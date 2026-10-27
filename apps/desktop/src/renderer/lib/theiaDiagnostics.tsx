@@ -72,7 +72,18 @@ export function registerTheiaDiagnosticMarkers(
     touched.set(model,live);
   };
   updateListeners.add(update);
-  const off=editor.onDidChangeModel(update);
+  /* ⚠️ `onDidChangeModel` 不是所有 IStandaloneCodeEditor 实现都有 ——
+   * 无头套件的 mock editor 就是合法的一种（它只需 getModel / onDidChangeModelDecorations
+   * 里的子集）。硬调会让「注册诊断」这一步把整个挂载流程炸掉：
+   * `ide-quote-snapshot-smoke` 就是这么崩的（`editor.onDidChangeModel is not a function`
+   * → onMount 抛错 → 整棵编辑器树不渲染）。
+   *
+   * 没有它就退化成「只在 update() 时刷一次 + 订阅推送时刷」——**功能降级，不是错误**：
+   * 换模型时会由 `receiveTheiaDiagnostics` 的推送路径补上。
+   */
+  const off = typeof editor.onDidChangeModel === "function"
+    ? editor.onDidChangeModel(update)
+    : { dispose() {} };
   update();
   return ()=>{
     off.dispose();updateListeners.delete(update);
