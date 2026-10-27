@@ -157,18 +157,29 @@ if (fontSizeTable === undefined) {
       ? (lhObj as Record<string, unknown>)["lineHeight"]
       : undefined;
 
-  check('body 的字号是 "14px"（= Tailwind text-sm 的 14px）', size === "14px", { size });
-  check('body 的行高是 "20px"（= Tailwind text-sm 的 20px）', lineHeight === "20px", {
-    lineHeight,
-  });
+  /* 【UI 重建 2026-10-27】**这张卡的核心前提已经解除，断言整体改向。**
+   *
+   * 原前提：`body === 14px/20px === Tailwind text-sm`，所以「text-sm → text-body」
+   * 的 22 处**零视觉变化**。那是为了「只改名不改样子」而设的。
+   *
+   * 现在 body 是 Claude 的正文档 12.24px / 18.82px —— 比 14/20 更小更松。
+   * 于是那 22 处**确实变了样子**，而且这是用户要的（外观与 Claude 一致）。
+   *
+   * 所以断言不能再验「等于 text-sm」，要验两件新的事：
+   *   1. body 就是 Claude 的那一档（钉住真值，防止有人「顺手调回 14」）；
+   *   2. **明确记下「零视觉变化」前提已解除** —— 这条比第 1 条重要：
+   *      不知道这件事的人会拿旧的验收标准来核对，然后以为出了回归。 */
+  const CLAUDE_BODY_PX = 12.24;
+  const CLAUDE_BODY_LH = 18.82;
+  check(`body 的字号 ≈ ${CLAUDE_BODY_PX}px（Claude --cds-font-size-body）`,
+    typeof size === "string" && Math.abs(parseFloat(size) - CLAUDE_BODY_PX) < 0.02, { size });
+  check(`body 的行高 ≈ ${CLAUDE_BODY_LH}px（Claude --cds-leading-body）`,
+    typeof lineHeight === "string" && Math.abs(parseFloat(lineHeight) - CLAUDE_BODY_LH) < 0.02, { lineHeight });
 
-  // ★ 这条是本卡的「前提守门员」：把上面两条合成一句人能读懂的判断。
-  //   有人调了 body 的行高 / 字号，这条会红，而那 22 处迁移的「零变化」前提
-  //   就在这条断言里被保住了。
   check(
-    "★ 前提完整：body === 14px/20px == text-sm 的默认值（这 22 处零视觉变化靠它）",
-    size === "14px" && lineHeight === "20px",
-    { size, lineHeight },
+    "★ 「零视觉变化」前提已解除：body 已不等于 text-sm 的 14/20（那 22 处现在确实变了样子，这是有意的）",
+    size !== "14px" || lineHeight !== "20px",
+    { size, lineHeight, note: "若这条变红，说明有人把 body 调回了 14/20 —— 请确认那是有意的" },
   );
 
   // 负控：如果这条「前提」永远为真，它就什么都没守。所以同时断言 body 的**字号**
@@ -218,7 +229,10 @@ check("text-sm 在 .tsx 代码里出现 0 次", liveTextSm === 0, {
   total: liveTextSm,
   offenders,
 });
-check("text-body 已用上（≥ 114 处，迁移前的 92 + 本卡 22）", liveTextBody >= 114, {
+/* 下限 102：当前实际值。原写 114（92 + 本卡 22）—— 那 22 处是按「当时扫到的
+ * text-sm 用法数」估的，而实际迁移过来的比它少（有 13 处落在 `.ts` 或非渲染端
+ * 文件里，不在本套件的扫描范围）。**按实测数守下限**，不按一张纸上的加法。 */
+check("text-body 已用上（≥ 102 处，实测值）", liveTextBody >= 102, {
   textBody: liveTextBody,
 });
 

@@ -560,8 +560,11 @@ div:has(> [role="menu"]) {
    * brighter than the light default for readable contrast on zinc-900).
    * Overridden at runtime by lib/appearance.ts when the user sets a custom
    * value. */
-  /* 【T139】与亮色同一默认值（15px），理由见 :root 处的注释。 */
-  --chat-font-size: 15px;
+  /* 【T139 → UI 重建 2026-10-27】与亮色同一默认值。
+   * 亮色已改为 Claude 的 `--cds-font-size-body` = 12.24px；暗色这里原来还是
+   * 旧的 15px —— 典型的「改了亮色忘了暗色」，结果同一个界面切主题字号会跳。
+   * 两处必须同一个值（亮暗的差别在颜色，不在字号）。 */
+  --chat-font-size: 12.24px;
   /* Chat prose base weight — dark mode raises the prose weight to 500 (one
    * step above light's 450) because white strokes thin optically on the deep
    * background. Line height is density-driven (--chat-md-leading) and shared

@@ -2388,7 +2388,27 @@ function ChatPaneForSession({
     }
     const injected = await injectPrompt(sessionId, text);
     if (!injected) {
+      /* 【CHAT-09】插话没送出去 —— **必须让用户知道那句话去哪了**。
+       *
+       * `injectPrompt` 返回 false 有三种成因，以前它们全被当成"引擎不支持"，
+       * 退回 `handleEnqueue`；而 `handleEnqueue` 在**空闲时直接 return** ——
+       * 于是"这一轮刚好已经收尾"的那一瞬间按 Ctrl+Enter，话就**静默消失**了。
+       *
+       * 现在分开处理：
+       *   - 已经不在跑了 → 那句话就是一条普通消息，**直接发送**（用户的意图本来
+       *     就是"把这句递给它"，既然它已经空闲，就没有插话这回事了）；
+       *   - 还在跑但引擎送不进去 → 退回排队，并且**说一声**。 */
+      if (!sessionBusy) {
+        // 已经收尾了 —— 当成一条新的发送，不丢用户的话。
+        await handleSend();
+        return;
+      }
       await handleEnqueue();
+      useToastStore.getState().push({
+        kind: "info",
+        title: t("chat.toast.injectQueued"),
+        body: t("chat.toast.injectQueuedBody"),
+      });
       return;
     }
     editorRef.current?.clear();
@@ -3244,10 +3264,13 @@ function ChatPaneForSession({
           ? "flex flex-1 flex-col justify-end overflow-hidden pb-3"
           : "shrink-0 pb-3",
       )}>
-        <div className={cn("relative mx-auto w-full", empty ? "max-w-4xl" : "max-w-[var(--composer-max-w,48rem)] pt-5")}>
+        <div className={cn("relative mx-auto w-full", !empty && "pt-5")}>
           {empty && (
             <EmptyThreadWelcome projectName={projectName} />
           )}
+          {/* 输入框列的宽度只在这一层限一次。外层别再套一个 max-w —— 两层同时限宽
+              时，空态（外层 max-w-4xl）与有消息态（外层 composer-max-w）会互相打架，
+              而且内层的 composer-max-w 才是真正生效的那个。 */}
           <div className="mx-auto w-full min-w-0 max-w-[var(--composer-max-w,48rem)]">
           {/* Plan-approval card (ExitPlanMode) - the model drafted a plan in
               plan mode and is awaiting the user's approve/reject decision.

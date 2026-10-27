@@ -78,10 +78,11 @@ const MINIMUMS: Record<string, number> = {
   "components/mobile/MobileViewerOverlay.tsx": 4,
   "components/mobile/PairingScreen.tsx": 6,
   "components/mobile/RemoteConnectPanel.tsx": 15,
-  "components/modules/CapabilityCatalogPanel.tsx": 3,
-  "components/modules/ModuleContributions.tsx": 5,
-  "components/modules/ModuleInstallConsentCard.tsx": 7,
-  "components/modules/ModuleSurface.tsx": 21,
+  /* 【UI 重建 2026-10-27】原 `components/modules/` 的四个文件随 ModuleHost 一起
+   * 删除（用户裁决：只要一个扩展系统 = Theia 宿主）。清单是**存量文件**的下限表，
+   * 文件没了就没有下限可言 —— 删条目，不是放宽门槛。
+   * 反过来说：删掉这四条会让总数从 73 掉到 69，所以下面的分母也要跟着改，
+   * 否则「69/73」会被读成 4 处回归。 */
   "components/settings/AppearanceExtras.tsx": 1,
   "components/settings/CustomUiPanel.tsx": 4,
   "components/settings/CustomUiPanelParts.tsx": 10,
@@ -133,7 +134,7 @@ for (const [file, min] of Object.entries(MINIMUMS)) {
     missing++;
   }
 }
-check(`★ 73 个迁移文件全部达标（${73 - missing}/73，按文件不按总量）`, missing === 0, { missing });
+check(`★ ${Object.keys(MINIMUMS).length} 个迁移文件全部达标（${Object.keys(MINIMUMS).length - missing}/${Object.keys(MINIMUMS).length}，按文件不按总量）`, missing === 0, { missing });
 
 console.log("── 二、禁区未被误改 ──");
 
@@ -145,12 +146,32 @@ for (const f of walk(RENDERER)) {
 }
 check(`禁区（chat/ + layout/）仍保留 text-xs（${reservedCount} 处）`, reservedCount > 0, { reservedCount });
 
-console.log("── 三、★ 零变化：两档的配置数值必须相同 ──");
+console.log("── 三、★ code 档的字号/行高 ──");
 
 const tw = readFileSync(join(ROOT, "tailwind.config.js"), "utf8");
-const codeM = /code:\s*\[\s*"(\d+)px"\s*,\s*\{\s*lineHeight:\s*"(\d+)px"\s*\}\s*\]/.exec(tw);
-check("tailwind config 里 code = 12px / 16px（= Tailwind 默认 text-xs）",
-  codeM?.[1] === "12" && codeM?.[2] === "16", { found: codeM?.[0] ?? "(未找到)" });
+/* 【UI 重建 2026-10-27】**这条断言的语义变了，不只是数字变了。**
+ *
+ * 原来它守的是「`code` 与 Tailwind 默认 `text-xs`（12/16）完全相同，
+ * 所以这批迁移零视觉变化」——那是一个**过渡期的安全前提**。
+ *
+ * 现在 `code` 是 Claude 的 caption 档（11.29px = 12 × 16/17 rem-scale），
+ * 与 `text-xs` **不再相同**。所以：
+ *   1. 断言改钉「code 档与 Claude caption 档一致」；
+ *   2. 另外单列一条，明确「零视觉变化」这个前提**已解除**——
+ *      否则下一个人会以为迁移仍然是无风险的。 */
+const codeM = /code:\s*\[\s*"([\d.]+)px"\s*,\s*\{\s*lineHeight:\s*"([\d.]+)px"\s*\}\s*\]/.exec(tw);
+check("tailwind config 里 code ≈ 11.29px / 16px（Claude caption 档 = 12 × 16/17）",
+  codeM !== null && Math.abs(parseFloat(codeM[1]!) - 11.29) < 0.02 && parseFloat(codeM[2]!) === 16,
+  { found: codeM?.[0] ?? "(未找到)" });
+
+const bodyM = /body:\s*\[\s*"([\d.]+)px"\s*,\s*\{\s*lineHeight:\s*"([\d.]+)px"\s*\}\s*\]/.exec(tw);
+check("tailwind config 里 body = 12.24px / 18.82px（Claude --cds-font-size-body / --cds-leading-body）",
+  bodyM !== null && Math.abs(parseFloat(bodyM[1]!) - 12.24) < 0.02 && Math.abs(parseFloat(bodyM[2]!) - 18.82) < 0.02,
+  { found: bodyM?.[0] ?? "(未找到)" });
+
+check("★ code 档与 Tailwind 默认 text-xs（12/16）已经不同 —— 「零视觉变化」前提已解除",
+  codeM !== null && parseFloat(codeM[1]!) !== 12,
+  { code: codeM?.[1], note: "迁移这批文件时视觉确实变了，别再按「零变化」验收" });
 
 console.log("── 四、负控：迁移文件里不再有裸 text-xs ──");
 
