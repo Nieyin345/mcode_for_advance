@@ -197,7 +197,7 @@ function copyPdfjsAssets(): Plugin {
         //
         // ⚠️ **必须拷到临时名再 rename。** `filter` 救不了「非 ASCII 源 + 目标已有
         // 同名文件」那一格：`cpSync` 会抛 `errno=0` 的错（信息写着 "The operation
-        // completed successfully"）且**实际没拷**（tasks/T107）。而这里的目标
+        // completed successfully"）且**实际没拷**（cpSync 已知缺陷）。而这里的目标
         // `src/renderer/public/pdfjs/<sub>` 在**版本号变化时会已存在** ——
         // 那正是这段代码被触发的时候（上面的 `assetTreeComplete` 早退）。
         // 直接拷会让 `buildStart` 抛错，整个 `pnpm build` 停在这里。

@@ -39,7 +39,7 @@
 | **初始空会话** | 已实现 — `chat/EmptyThreadWelcome.tsx:68`（四块起点：接着聊/工作流/资料/自动化，空的块不画）+ `chat/ChatPane.tsx:3156-3158`（空态贴底、`max-w-4xl`）；全走语义 token，无硬编码色 | 已实现 — 同一组件读 `--content-*`/`--surface` 语义层（`styles.css:111-119,238-243`）；深色对比度观感待截图 | 已实现 — 起点卡片 `grid auto-fit` 窄栏自动一列、高度 ≤640px 整块隐藏（`EmptyThreadWelcome.tsx:136-139`）；Claude 窄窗阈值待测 |
 | **已有消息** | 已实现 — `chat/MessageTimeline.tsx:115`、`chat/MessageRow.tsx:150`；正文阅读宽 `--chat-max-w` 默认 64rem（`ChatPane.tsx:2627`，`lib/uiPrefs.ts:35-40` 四档），用户气泡 `max-w-[85%]`（`MessageRow.tsx:299`） | 已实现 — 用户气泡 fill 按主题换 alpha（`styles.css:816-818`；alpha 0.9/0.55 见 `:205,282`）；深色正文基准字重 500（`:274`） | 已实现 — 侧沟按聊天面板自身宽度走 container query：<28rem 20px、28–44rem 48px、44–64rem 80px、≥64rem 128px（`styles.css:1459-1499`）；Claude 侧正文宽度规则待测 |
 | **工具运行中/完成/失败** | 已实现 — `chat/MessageBlocks.tsx:579`（`StatusIcon`：运行中旋转弧→完成对勾交叉淡入，历史回合不画勾，仅 error 常驻红叉）、`:394` 聚合状态；`chat/CurrentOpTicker.tsx:69`、`chat/ActivityCluster.tsx:48`、`chat/ActivityConsole.tsx:704` | 已实现 — 状态色走 `--danger`/`--accent` 语义 token，无主题分叉；运行中扫光/对勾的观感待截图 | 待测 — 活动簇文字横条上限 280px（`styles.css:1348-1366`），无窄窗专用重排；Claude 窄栏折叠规则未知（需截图） |
-| **权限审批** | 已实现 — `chat/ApprovalPrompt.tsx:44`（`role="alertdialog"`、自动聚焦「允许」、队列位置）；就地渲染在输入框上方（`ChatPane.tsx:3196`），计划审批 `:3165`，AskUserQuestion `:3223`。**差距**：允许键 auto-focus + Enter 即确认，未做「初始 disabled 防回车」输入保护（逆向报告 §4.2 建议项） | 已实现 — 卡片 `bg-surface`/`border-edge-input`/`shadow-2xl` 语义 token；深色对比观感待截图 | 待测 — 卡片无宽度断点；Claude 审批卡在窄窗的形态待截图 |
+| **权限审批** | 已实现 — `ApprovalPrompt` 聚焦卡片而非「允许」按钮，并用 `useApprovalArming` 延迟启用允许；`PlanApprovalPrompt` 的主批准/交接动作也加了 request-scoped 延迟，Enter 路径同步受保护；`QuestionPrompt` 提交按钮在全部问题回答前保持 disabled。就地渲染于输入框上方 | 已实现 — 卡片使用 `bg-surface`/`border-edge-input`/强调与危险语义色；深色对比观感待截图 | 待测 — 卡片窄窗形态与真实 Claude 安装版截图仍待核验 |
 | **代码/文件 Diff** | 已实现 — 消息内 `chat/DiffView.tsx:16`（双行号 + `+`/`−`）；编辑器 Monaco side-by-side（`ide/FileEditor.tsx:2447`）；全屏 `ide/GitDiffDialog.tsx:44`。**差距**：增删色是硬编码 Tailwind（`DiffView.tsx:49-53`：`bg-red-500/15 text-red-600 dark:text-red-400` / green 同构），**无 `--diff-*` token** | 已实现（硬编码深色变体）— `dark:text-red-400`/`dark:text-green-400` 写死，不随主题 token 体系走；与参考观感对照待截图 | 待测 — Monaco 强制 side-by-side（`FileEditor.tsx:2452` `useInlineViewWhenSpaceIsLimited:false`），窄栏下双栏会挤；Claude 窄栏是否转 inline 未知 |
 | **侧聊** | 已实现 — `chat/SideChatPanel.tsx:39`；挂载在右栏「工作流运行」面板下半部（`chat/WorkflowBoardPanel.tsx:461`）；入口 `openSideChatPanel` → 右栏 `flow` 标签（`stores/sessionStore.ts:6384-6392`） | 已实现 — 面板读语义 token；深色观感待截图 | 待测 — 右栏最小宽 240px（`stores/sessionStoreHelpers.ts:541`）；Claude 侧聊在窄窗的呈现待截图 |
 | **终端** | 已实现 — `layout/BottomTerminalBar.tsx:18`（keep-alive：塌高不卸载，PTY/scrollback 保活）+ `ide/TerminalPanel.tsx:79`（按项目 path 分桶，切项目不杀 PTY）+ `ide/TerminalView.tsx:125`（xterm） | 已实现（**主题未迁移**）— `buildTheme()`（`TerminalView.tsx:36`）是两套硬编码 hex 调色板，不读 `styles.css` 语义 token（44 处色值）；「顶栏与边框视觉未迁移」的差距在此坐实 | 待测 — 终端铺满中栏宽度；Claude 终端在窄窗的行为待截图 |
@@ -63,7 +63,7 @@
 |---|---|---|---|
 | `--surface-*` | `--surface`=gray-10 `#fcfcfb`、`--surface-muted`=gray-20 `#f9f9f7`、`--surface-hover`=gray-50 `#f0efec`（`styles.css:111-113`）；暗色 `gray-850 #151515` / `gray-800 #20201f` / `gray-750 #2c2c2a`（`:238-240`） | 报告 §1.1 只给亮色：surface-0 `#f9f9f7`、surface-1 `#fcfcfb`、surface-2 `#fff`；暗色只说「指向灰阶另一端」未给值。上游 E1 暗色：surface-0 `#0b0b0b`、surface-1 `#151515`、surface-2 `#1a1a19`、surface-3 `#20201f` | 亮色对齐（muted↔0、surface↔1）；**缺** surface-2/3/popover 角色档；暗色**不一致（Mcode 侧栏 `--surface-muted`=`#20201f`，上游 surface-0=`#0b0b0b`）**；`--surface-hover` 为实色，上游为 alpha-1 合成（近似，结构不同） |
 | `--text-*` | **家族名缺**（Mcode 等价实现是 `--content` / `--content-muted` / `--content-subtle`，`styles.css:117-119,241-243`） | 报告正文未给 text 色值；上游 E1 亮色 primary `#151515` / secondary `#525252` / muted `#8a8a8a`，暗色 `#f5f5f5` / `#a3a3a3` / `#666666` | 亮色 primary 一致；**不一致（Mcode content-muted=`#52514e`, 上游=`#525252`；content-subtle=`#6d6b67`, 上游=`#8a8a8a`）**；暗色 **不一致（Mcode `#f9f9f7`/`#b4b3a8`/`#97958d`, 上游 `#f5f5f5`/`#a3a3a3`/`#666666`）**（Mcode 为 AA 刻意加深，见 `styles.css:114-119`） |
-| `--border-*` | **家族名缺**；等价 `--edge`=**亮 `217 217 216` `#d9d9d8`（14% 黑合成）/ 暗 `63 63 63` `#3f3f3f`（18% 白合成）**、`--panel-edge`=亮 `227 227 226` / 暗 `--m-gray-750`、`--input-edge`=亮 `--m-gray-250` / 暗 `72 72 72`（`styles.css:181,196,202,410,419,424`） | 报告/上游：`--cds-border`=alpha-2 = `hsla(0,0%,8%,.10)`（亮）/ `hsla(0,0%,100%,.09)`（暗） | **不一致（Mcode `--edge` 实色，上游=10% alpha；合成到 `#fcfcfb` 上约 `#e3e3e2`）**；Mcode 刻意加深一档（亮 1.38:1 / 暗 1.73:1）以让分隔线可读，**且必须与 `--surface-hover` 分得开**（10% alpha 对 hover 填充只有 1.12:1，边框落在悬停行上会消失）——见 `styles.css:168-180` 注释与 `tasks/T121`（`b736c814`，2026-10-24 14:58 重定此档） |
+| `--border-*` | **家族名缺**；等价 `--edge`=**亮 `217 217 216` `#d9d9d8`（14% 黑合成）/ 暗 `63 63 63` `#3f3f3f`（18% 白合成）**、`--panel-edge`=亮 `227 227 226` / 暗 `--m-gray-750`、`--input-edge`=亮 `--m-gray-250` / 暗 `72 72 72`（`styles.css:181,196,202,410,419,424`） | 报告/上游：`--cds-border`=alpha-2 = `hsla(0,0%,8%,.10)`（亮）/ `hsla(0,0%,100%,.09)`（暗） | **不一致（Mcode `--edge` 实色，上游=10% alpha；合成到 `#fcfcfb` 上约 `#e3e3e2`）**；Mcode 刻意加深一档（亮 1.38:1 / 暗 1.73:1）以让分隔线可读，**且必须与 `--surface-hover` 分得开**（10% alpha 对 hover 填充只有 1.12:1，边框落在悬停行上会消失）——见 `styles.css:168-180` 注释（`b736c814`，2026-10-24 14:58 重定此档） |
 | `--accent-*` | **已切换为陶土橙（`370f1799`，2026-10-20）**：亮色 `--accent: 194 81 36` =`#c25124`（4.55:1）、`--accent-strong: 174 70 28`=`#ae461c`（5.54:1）；暗色 `--accent: 236 131 90`=`#ec835a`；sketch 纸面 `#9a4e26`、牛皮纸 `#e2966e`。**不再是 emerald**（那 `5 150 105` 是 2026-10-18 之前的旧值，本行曾据此登记）。`--brand-clay`=`#eb6834` 仍暴露给装饰面 | 报告/上游：`--cds-clay: #d97757`，`--cds-text-accent: var(--cds-clay)`、`--cds-fill-brand` | **刻意偏离，理由已复核成立**：上游 `#d97757` 在亮色底仅 **3.04:1**，而 `text-accent` 有 **342 处**。取同一 orange 色阶里过 AA 的两档（4.55 / 5.54:1），**观感仍是陶土橙**。`design-tokens-smoke` 的守卫已从「保持 emerald」改成「亮/暗各自是过 AA 的 orange 档，且不得直接用 3.04:1 的 #d97757」 |
 | `--diff-*` | **缺** —— 无 `--diff-*` token；增删行硬编码 `DiffView.tsx:49-53`（red/green-600 + 暗色 400） | 报告未给出 diff 色值 | **缺 + 待测**（需用户安装版本真机取色：增删行背景/前景/行号栏） |
 | `--radius-*` | `--radius-panel`=10px、`--composer-radius`=20px、`--radius-control`=`--radius-sm`=.25rem/4px、`--radius-bubble`=`calc(8px + .25rem×1)`≈12px（`styles.css:879-897`；`tokens.cds.css:83-87,102`） | 报告正文未给完整阶梯；上游 E1：panel 10px、composer 20px、message-bubble `calc(8px + .25rem × var(--cds-rem-scale))`、radius-sm 4px、radius-md 6px、radius-lg 8px、radius-xl 12px、btn-xs 6px、btn-md 8px、dialog 16px、code 12px；`--cds-rem-scale` 上游示例为 `16/17`，报告 §1.4 称真实 app 中该变量**运行时写入、文档里不声明** | panel/composer/control 一致；**不一致（Mcode 气泡=`12px`, 上游≈`11.76px`）** —— 生成器把 `--cds-rem-scale` 钉为 1（`gen-cds-tokens.mjs` 的 `VAR_MAP`）；**缺** btn-xs/btn-md/dialog/code/card 档（`GEOMETRY_KEYS` 未收）；Mcode 按钮实际用 Tailwind `rounded`=4px（`components/ui/button.tsx:21`），与上游按钮档 6/8px 不一致 |
@@ -125,14 +125,14 @@ surface-2/3/popover 角色档、radius 的 btn-xs/btn-md/dialog/code/card 档。
 |---|---|---|
 | 项目/会话侧栏 | 有（LeftBar / StreamSidebar 两视图，含 pinned/运行状态） | 分组/过滤的**视觉**仍是旧样式；窄窗无自动折叠 |
 | 新建会话 / 切换 / 恢复 | 有 | 快捷键与焦点顺序未逐项对照 |
-| 聊天流 / 流式输出 / 工具卡 | 有（MessageBlocks / ActivityCluster / CurrentOpTicker） | 工具卡折叠层级与阅读宽度未按 CDS 重排 |
-| 输入框 | 外框圆角/阴影已接 CDS token（`ChatPane.tsx:3248-3255`，V2 切片） | 附件/命令菜单/模型选择器的**视觉**未迁移 |
+| 聊天流 / 流式输出 / 工具卡 | 有（MessageBlocks / ActivityCluster / CurrentOpTicker）；思考块、代码块、工具详情正文与折叠行已做局部对齐 | **部分完成**：工具卡分组层级、全部运行状态、窄窗与真实 Claude 屏幕仍未逐项对照 |
+| 输入框 | 外框圆角/阴影已接 CDS token；composer 迷你工具栏有作用域内的 Claude 风格层；推理档位改为纵向列表，模型菜单/子菜单增加圆角统一、视口宽高限制与内部滚动 | **部分完成**：已保留 provider 分组、网关映射和上下文仪表；仍缺真实 Electron 全屏截图与 Claude 安装版同尺寸/主题逐屏对照 |
 | 拖拽面板 / 分屏 | 有（Divider + 三栏，宽度 clamp：左右栏 12–40%/240px、编辑器 20–80%、右栏占比 ≤80%） | 吸附/浮动窗口未做 |
 | 内置终端 | 有（PTY 按项目保活） | 主题两套硬编码 hex，未接语义 token（`TerminalView.tsx:36`） |
 | 文件编辑 / Diff | 有（Monaco / Milkdown / OnlyOffice / GenOffice 面板） | 文件卡视觉未迁移；diff 无 `--diff-*` token |
 | 预览（HTML/PDF） | PDF/图片/Markdown 有；**HTML 无内嵌预览**（只跳浏览器） | 同上 |
 | 侧聊 / 并行任务 | 有（SideChatPanel 嵌在右栏 workbench 流面板；子代理会话有独立任务列表） | 交互未对齐 |
-| 审批 / 改审阅 | 有（计划审批 / 权限卡 / AskUserQuestion） | 卡片视觉未迁移；无「初始 disabled」输入保护 |
+| 审批 / 改审阅 | 有（计划审批 / 权限卡 / AskUserQuestion）；权限卡保留危险边缘与克制光晕，危险操作仍禁止「始终允许」；计划批准/交接动作已加入延迟武装 | **部分完成**：窄窗形态、真实 Claude 截图与跨主题观感仍待验收 |
 | 设置页 | 有（101 个文件：84 tsx + 17 ts，5 组导航） | 信息架构按「常用/引擎/文档/扩展/系统」重组未做（2026-10-18 核对：原记 94 个文件） |
 
 ## 七、陈旧引用核对（2026-10-18）
@@ -313,3 +313,32 @@ Claude 侧一致性全部**待测**。ARC-005 的「开发完成 / 独立复核�
 | 窗口缩窄浅/深 | 2/2，`stub-editor+real-layout` | 实际 BrowserWindow 1024×640，左右栏展开 + 只读编辑器桩，文件名中的 1280 只表示所属主题条件 |
 
 所有新增 PNG 的同名 JSON 都有顶层 `fixture`；无未注明来源的面板替身。复核 `.tmp/arc005-visual/manifest.json`、`environment.json`、`diff.md`：**T141 之后（2026-10-24 21:10）的实测是 51 格 / 833 一致 / 340 已知差异 / 0 未登记差异**，`run.sh` 退出码 0。上面的 **637 一致 / 247 已知差异 / 13 未登记差异** 是 T136 扩到 51 格之前、且在格数门禁坏掉期间取的旧数据，保留作追溯。恶意改写 `empty-light-1280.json` 的 `--surface` 为 `255 0 255` 后未登记差异会增加，逐字节还原后回到基线，证据在 `.tmp/arc005-visual/mutation-t12.json`。仍**不能**宣称上游 Claude 安装版逐屏相符或侧聊/PTY/Monaco/PDF 等完整用户旅程通过，§一和旧 V4 数据保留原样。
+
+## 十三、2026-10-26 ARC-005 模型与推理菜单对齐（E1/E2，非视觉 U1）
+
+**参考输入**：仓内 `open-claude-ui/code-examples/ModelSelectorEffort.tsx` 与 `ModelSwitcherWithTokenGauge.tsx`。这些是第三方逆向参考代码，不等于用户安装版 Claude 的实测截图。
+
+- `EffortPermissionControl.tsx`：推理档位由 3/4 列卡片改为纵向选项列表；保留 provider 声明的档位、完整提示、短说明和网关实际映射值；选中态使用中性底色、强调边框和勾选标记，增加 `aria-pressed`，长列表限制在视口高度内滚动。
+- 权限模式选项增加 `aria-pressed` 与稳定的 `data-cds` 标记；保留每种权限模式的语义风险色，不改变授权行为。
+- `ModelDropdown.tsx`：主菜单和供应商子菜单统一使用卡片圆角，限制宽度/高度并支持内部滚动；保留 token/context 仪表、provider 分组、模型子菜单和管理入口。
+- `arc005-composer-search-smoke` 增加模型/推理菜单结构、映射值与授权风险色的判据；`memory-injection-ui-smoke` 增加真实 Chromium 交互检查：打开推理菜单并切换档位、打开模型菜单并切换模型，分别检查选中态与视口边界。测试会生成弹窗打开时的截图供人工复核。
+
+**验证**：8 套 ARC-005 专项 smoke **8/8 PASS**；`memory-injection-ui-smoke` **PASS**；`apps/desktop/tsconfig.json` 的 TypeScript `--noEmit` **PASS**；`git diff --check` **PASS**。浏览器交互测试使用隔离 fixture，证明菜单布局与选择行为，不证明真实 Electron 全应用或 Claude 安装版的 U1 视觉相似度。
+
+**仍未验收**：ModelDropdown 的多 provider 实机菜单/子菜单截图，以及浅/深色与不同 DPI 下的真实 Electron 逐屏对照。ARC-005 仍不得标为整体完成。
+
+## 十四、2026-10-26 ARC-005 工具卡折叠行与详情正文对齐（E1/E2，非视觉 U1）
+
+- `MessageBlocks.tsx`：工具卡、文件变更行和批量操作行共享水平内缩；展开正文的发丝边同步内移，形成清晰的「操作行 → 详情区」层级，不改变折叠分组和工具状态逻辑。
+- 新增 `ToolDetailSection` 作为 Edit / Write / 通用工具输入与结果的共享只读正文表面。统一边框、背景、内边距、等宽字体、长行换行与内部滚动；继续保留不同正文的高度上限、原始内容及既有 diff 渲染。
+- `memory-injection-ui-smoke` 扩展为真实 Chromium 组件夹具：使用生产 `MessageBlocks` 渲染 Edit、Write 与 Bash；验证详情内容、共享样式与展开交互，并生成 `tool-detail-expanded.png` 供人工复核。只替身不参与该场景的图片预览组件，其余工具卡渲染为生产代码。
+
+**验证**：工具卡浏览器交互 smoke **PASS**；`arc005-chat-content-smoke`、`arc005-chat-stream-polish-smoke`、`design-tokens-smoke` **3/3 PASS**；TypeScript `--noEmit` 与 `git diff --check` **PASS**。仍需真实 Electron 全应用截图、暗色/不同 DPI 的工具卡逐屏比较；ARC-005 不因此整体结项。
+
+## 十五、2026-10-26 ARC-005 计划审批主动作防误触（E1/E2）
+
+- `PlanApprovalPrompt` 新增可选 `requestId`，由 `ChatPane` 传入真实请求 ID；共享 `useApprovalArming` 在每个请求出现后的 500ms 内保持主批准/交接按钮 disabled。`handlePrimary` 同步检查武装状态，防止通过反馈输入框 Enter 绕过按钮的 disabled；拒绝仍立即可用。
+- `arc005-prompt-card-polish-smoke` 增加 request-scoped arming 与 Enter guard 判据。`ui-interaction-smoke` 的真实 Chromium 用例检查：初始 disabled、IME Enter 不批准、500ms 窗口内的快速 Enter 不批准、武装后 Enter 只批准一次。
+- 修正 `ui-interaction-smoke` 的 CommandPalette 夹具：对生产代码现在调用的 `api.modules.theiaInstalled` 提供空列表 mock；不启动真实 Theia runtime，也不改变生产 API。
+
+**验证**：`ui-interaction-smoke` **PASS**；`arc005-prompt-card-polish-smoke`、`arc005-chat-content-smoke`、`arc005-chat-stream-polish-smoke`、`design-tokens-smoke` **4/4 PASS**；TypeScript `--noEmit` 与 `git diff --check` **PASS**。仍需真实 Electron 全应用截图、暗色/不同 DPI 的审批卡逐屏比较；ARC-005 不因此整体结项。

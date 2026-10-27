@@ -82,7 +82,7 @@ export function documentExtension(path: string): string {
  *  `genoffice` 的路由更窄（`.docm/.dotx/.xltx/.pptm/.potx` 不在其中），但收窄会让这
  *  五种掉进 `text` → 打开时用文本编辑器读二进制。**「是 Office 格式」与「GenOffice
  *  能不能打开」是两件事**，后者由 `genofficeAppForPath` + 能力位回答，不能打开时
- *  上层明确报不支持（见 `tasks/office/O5-remove-onlyoffice.md` §六）。 */
+ *  上层明确报不支持（而不是退回文本编辑器读二进制）。 */
 const OFFICE_EDITABLE: ReadonlySet<string> = new Set([
   "docx", "docm", "dotx", "odt",
   "xlsx", "xlsm", "xltx", "ods",

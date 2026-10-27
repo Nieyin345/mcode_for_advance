@@ -79,11 +79,10 @@ task being completed and accepted.
 
 ## Relationship with Mcode execution tasks
 
-The `tasks/README.md` index is authoritative for formal Mcode execution cards and acceptance evidence.
+**Functional goals live in `docs/功能文档.md`** (numbered entries such as `EDIT-04`). There is no execution-card index: the old `tasks/` tree and `audit-ledgers/` were deleted on 2026-10-26 — do not recreate them, and read progress from the code and the smoke suites instead.
 
-- New execution cards start at `tasks/T0-*.md` and continue with the next unused integer.
-- Legacy cards are preserved unchanged under `tasks/archive/legacy-2026-10-22/`; do not reuse legacy IDs or interpret archived statuses as fresh acceptance.
-- Formal MC/ARC/UXG IDs and statuses in `audit-ledgers/` are not renumbered.
+- Planning tickets live under `.scratch/<feature-slug>/` (`spec.md` + `map.md` + `issues/`).
+- When reporting a gap, cite the `功能文档` entry it belongs to, plus the code location and how to reproduce.
 - Use `.scratch/` when engineering skills need a feature specification, exploratory questions, or a dependency graph.
 - When an approved planning ticket must be delegated to an independent Mcode execution conversation, create a bounded `tasks/T<number>-*.md` card and link the planning spec/ticket path when applicable.
 - Link the planning spec/ticket path from the execution card.

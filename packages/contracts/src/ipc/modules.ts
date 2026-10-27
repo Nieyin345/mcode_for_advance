@@ -96,6 +96,21 @@ export interface ModuleInstallVsixResult {
   ignoredContributions: IgnoredVsixContribution[];
 }
 
+/** 扩展在 `contributes.commands` 里声明的命令。 */
+export interface TheiaCommandContribution { commandId:string; title:string; category?:string }
+
+/** 由 Mcode 自己的界面渲染的扩展动作（标题栏 / 编辑器标题菜单）。 */
+export interface TheiaUiContribution {
+  commandId:string; label:string;
+  placement:"toolbar"|"editor"; group?:string; when?:string;
+}
+
+/** 扩展声明的 Webview 视图（`contributes.views`）。 */
+export interface TheiaWebviewViewContribution { viewType:string; name:string; container?:string }
+
+/** 扩展声明的自定义编辑器（`contributes.customEditors`）。 */
+export interface TheiaCustomEditorContribution { viewType:string; displayName:string; filenamePatterns:string[] }
+
 /** F025: an explicit, temporary Theia compatibility preview, NOT a persistent module install.
  * Inspection performs no extension execution. Start needs a short-lived one-use ticket and a
  * second explicit user gesture. No session or ticket may come from an Agent bridge. */
@@ -152,8 +167,20 @@ export interface TheiaRuntimeMessage {
  */
 export interface TheiaWebviewEvent {
   channel:"modules:theiaWebview";sessionId:string;extensionId:string;
-  handle:string;action:"create"|"html"|"message"|"dispose"|"title";
-  title?:string;html?:string;payload?:unknown;
+  handle:string;
+  /** `options` = 扩展改了 webview 的 options（enableScripts / localResourceRoots）；
+   *  `description` / `badge` / `dirty` 是编辑器标题栏的附属状态。 */
+  action:"create"|"html"|"message"|"dispose"|"title"|"reveal"|"options"|"description"|"badge"|"dirty";
+  title?:string;html?:string;payload?:unknown;state?:unknown;
+  /** `options` 动作：是否允许脚本、允许读哪些本地根。 */
+  enableScripts?:boolean;resourceOrigin?:string;
+  /** 这个 webview 挂在哪：面板 / 侧边视图 / 自定义编辑器。 */
+  surface?:"panel"|"view"|"custom-editor";viewType?:string;
+  description?:string|null;badge?:{value:number;tooltip?:string}|null;
+  /** 自定义编辑器文档状态。 */
+  filePath?:string;editable?:boolean;dirty?:boolean;undoCount?:number;redoCount?:number;
+  /** `reveal` 动作：是否正在前台。 */
+  active?:boolean;
 }
 /** F033: native VS Code diagnostics owned by the active Theia session. */
 export interface TheiaExtensionDiagnostic {
@@ -166,7 +193,7 @@ export interface TheiaDiagnosticsEvent {
 }
 /** F032: status bar entries are ordinary Mcode chrome contributed by VS Code extensions. */
 export interface TheiaEditorMenu {
-  commandId:string;label:string;group?:string;
+  commandId:string;label:string;group?:string;when?:string;
 }
 export interface TheiaContributionChanged {
   channel:"modules:theiaContributionChanged";sessionId:string;
@@ -253,6 +280,12 @@ export const TheiaInstalledInputSchema = z.discriminatedUnion("op", [
   z.object({op:z.literal("messageRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),choice:z.number().int().min(0).max(7).nullable()}).strict(),
   z.object({op:z.literal("quickRespond"),sessionId:z.string().uuid(),requestId:z.string().uuid(),
     choice:z.union([z.string().max(4096),z.array(z.number().int().min(0).max(199)).max(50),z.null()])}).strict(),
+  z.object({op:z.literal("webviewList")}).strict(),
+  z.object({op:z.literal("webviewViewOpen"),sessionId:z.string().uuid(),viewType:z.string().min(1).max(256)}).strict(),
+  z.object({op:z.literal("customEditorOpen"),sessionId:z.string().uuid(),viewType:z.string().min(1).max(256),filePath:z.string().min(1).max(4096)}).strict(),
+  z.object({op:z.literal("customEditorAction"),sessionId:z.string().uuid(),handle:z.string().min(1).max(256),action:z.enum(["save","revert","undo","redo"])}).strict(),
+  z.object({op:z.literal("webviewStateSet"),sessionId:z.string().uuid(),handle:z.string().min(1).max(256),state:z.unknown()}).strict(),
+  z.object({op:z.literal("webviewReveal"),sessionId:z.string().uuid(),handle:z.string().min(1).max(256)}).strict(),
   z.object({op:z.literal("stop"),sessionId:z.string().uuid()}).strict(),
   z.object({op:z.literal("setEnabled"),id:z.string().uuid(),enabled:z.boolean()}).strict(),
   z.object({op:z.literal("configList"),id:z.string().uuid()}).strict(),
@@ -267,7 +300,18 @@ export interface TheiaInstalledEntry {
   /** Metadata-only catalogue is not a security check. Full payload verification occurs before launch. */
   integrity:"not-checked"|"corrupt";
   /** F028: only the desktop sender that owns a live Theia session receives command metadata. Never persisted. */
-  activeSession?: {sessionId:string;commands:string[];editorMenus?:TheiaEditorMenu[];
+  activeSession?: {sessionId:string;commands:string[];
+    /** 命令的显示名（category: title）。 */
+    commandContributions?:TheiaCommandContribution[];
+    editorMenus?:TheiaEditorMenu[];
+    /** 扩展贡献的 Mcode 界面动作（标题栏 / 编辑器标题）。 */
+    uiContributions?:TheiaUiContribution[];
+    /** 扩展贡献的状态栏条目（重挂载时恢复用）。 */
+    statusEntries?:TheiaStatusEntry[];
+    /** 扩展贡献的侧边 Webview 视图。 */
+    webviewViews?:TheiaWebviewViewContribution[];
+    /** 扩展贡献的自定义编辑器。 */
+    customEditors?:TheiaCustomEditorContribution[];
     languageProviders?:Array<{kind:TheiaLanguageProviderKind;language:string;
       triggerCharacters?:string[];retriggerCharacters?:string[];supportsRenameLocation?:boolean}>};
 }
@@ -299,4 +343,5 @@ export type TheiaInstalledResult =
   | {kind:"configurations";settings:TheiaNativeConfigSetting[]}
   | {kind:"configurationUpdated"}
   | {kind:"removed";id:string}
+  | {kind:"webviews";items:TheiaWebviewEvent[]}
   | {kind:"stopped"};

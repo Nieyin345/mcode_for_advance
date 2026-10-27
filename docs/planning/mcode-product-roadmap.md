@@ -2,7 +2,7 @@
 
 > **性质：产品方向决策（D），不是代码交付或功能验收。**
 > 决策来源：用户在 Grilling Q1–Q51 中的分轮选择及最终“全部同意”，以及后续明确的覆盖和补充。可追溯的逐题恢复、证据置信度和决策图见 `../../.scratch/mcode-product-roadmap/`。
-> **审查状态与实施事实：** 以 `../../audit-ledgers/README.md` 和 `../../audit-ledgers/Mcode_统一审查台账.md` 为准；执行卡和依赖以 `../../tasks/README.md` 为准。本文件不改动既有 MC/ARC/UXG 完成状态。
+> **实施事实以代码与套件为准**：旧的 `audit-ledgers/` 与 `tasks/` 已于 2026-10-26 删除。功能目标见 `../../docs/功能文档.md`。
 
 ## 1. 产品定义与目标用户
 
@@ -52,5 +52,5 @@ Mcode 是服务**技术型个人用户与小团队**的本地优先、可高度�
 ## 6. 执行与文档关系
 
 - **Grilling 决策证据：** `../../.scratch/mcode-product-roadmap/spec.md`（含 Q1–Q51 按证据等级复原）、`sources.md` 和 `map.md`。不是逐字 transcript；问题题干无法恢复的部分明示缺口。
-- **任务系统：** 旧任务 98 张归档至 `../../tasks/archive/legacy-2026-10-22/`；新卡 T0–T11 是既有尾项，T12–T15 为 UI、GenOffice、Node-RED、Host/Agent 四方向的只读基线矩阵。先完成证据矩阵，再拆下一批互斥文件范围的实现卡。
-- **最高实现及验收规则：** `../../audit-ledgers/README.md` 和 `../../audit-ledgers/Mcode_统一审查台账.md`；来源、许可、安装器、发行与安全审查状态均由原条目承载，不另造平行完成率。
+- **任务系统：** 执行卡制度已废止。规划票在 `.scratch/<feature-slug>/`；功能目标在 `../../docs/功能文档.md`。
+- **来源、许可、安装器与发行审查：** 见 `arc007-genoffice-source-provenance.md` 与 `../../docs/releases/`；不另造平行完成率。

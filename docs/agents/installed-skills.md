@@ -84,7 +84,7 @@
 | `grill-me` | 只调用 `grilling` 的入口 | ✅ 产出 Q1–Q51 决策 |
 | `grill-with-docs` | 追问同时产出 ADR + 术语表 | 未用（本仓库无 `docs/adr/`） |
 | `to-spec` | 把对话整理成 spec 并发布 | ✅ 产出 `.scratch/mcode-product-roadmap/spec.md` |
-| `to-tickets` | 把 spec 拆成带阻塞边的票 | ✅ 产出 `issues/12-15` + `tasks/T12-T15` |
+| `to-tickets` | 把 spec 拆成带阻塞边的票 | ✅ 产出 `issues/12-15` |
 | `wayfinder` | 跨会话大工程的决策地图 | ✅ 产出 `map.md` |
 | `triage` | 议题状态机、分类、验证 | — |
 | `ask-matt` | 路由到合适的 skill | — |

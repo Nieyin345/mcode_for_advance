@@ -148,7 +148,19 @@ export const MOBILE_TUNNEL_HOSTNAME_SETTING_KEY = "mobile.tunnel.hostname";
 export const MOBILE_TUNNEL_TOKEN_SETTING_KEY = "mobile.tunnel.token";
 export const MOBILE_TUNNEL_AUTOSTART_SETTING_KEY = "mobile.tunnel.autostart";
 
-export type MobileTunnelMode = "off" | "named" | "external";
+/**
+ * 手机隧道模式。
+ *
+ * - `off` —— 不起隧道，只在局域网内用；
+ * - `quick` —— **cloudflared 快速隧道**：一键起，拿到一个随机的 `*.trycloudflare.com`
+ *   域名，不用自己的域名、不用 token。适合"我就想现在用手机连一下"；
+ * - `named` —— 用户自己的域名 + Tunnel Token（域名稳定，重启不变）；
+ * - `external` —— 用户自己在外面跑隧道，这里只显示地址。
+ *
+ * `quick` 之前**只有通用 TunnelManager 支持，手机这条没接出来** ——
+ * 于是手机端想用隧道就必须先有域名和 token。那不是能力缺失，是漏接。
+ */
+export type MobileTunnelMode = "off" | "quick" | "named" | "external";
 
 /** 给「连接手机 → 自有域名」页看的状态。 */
 export interface MobileTunnelStatus {
@@ -168,7 +180,8 @@ export interface MobileTunnelStatus {
 }
 
 export const SetMobileTunnelSchema = z.object({
-  mode: z.enum(["off", "named", "external"]),
+  //  = cloudflared 随机域名，不要 hostname/token（见 MobileTunnelMode 那段）。
+  mode: z.enum(["off", "quick", "named", "external"]),
   hostname: z.string().trim().max(253),
   /** 留空 = 沿用已存的那串。 */
   token: z.string().trim().max(4096).optional(),

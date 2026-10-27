@@ -1,5 +1,7 @@
 # T13｜GenOffice 六原生编辑器功能与接线基线矩阵（只读调查）
 
+> **注（2026-10-26）**：本报告写于台账制度废止之前，文中对 `tasks/` 与 `audit-ledgers/` 的引用是**历史记录**，那两个目录已删除。功能目标见 `docs/功能文档.md`；进度看代码与套件。
+
 > 调查日期：2026-10-23。性质：**只读基线**，不是功能交付、不是验收通过。
 > 证据等级按 `audit-ledgers/README.md` §2.4：E1 隔离动态 / E2 源码调用链 / E3 待证实 / D 设计 / U1 真实用户旅程。
 > 本报告**不修改** `genoffice/`、`patches/`、许可证文件、发布门禁或任何产品源码；结论全部来自读源码、读既有 smoke 日志/产物与 `git` 只读命令。
@@ -262,7 +264,7 @@
 ### 6.6 U1 状态与最大缺口
 
 - **U1(harness) 正控存在于两条路线各自的 harness**；**没有 U1(shipped)**。
-- 最大缺口：① 生产 native 视图的保存走 vendor 直写、**无 Mcode CAS/租约**，与 `slidesExecutor` 的 CAS 语义分叉，双路线打开时序未验证；② 生产 Mcode preload 只桥 2 个编辑操作（`addBlankSlide`/`editText`），其余（动画/备注/版式/图表数据）按 `docs/planning/arc007-genoffice-native-integration-map.md` 所述仍为硬编码空值桩——使用 vendor preload 的 native 路线则绕开这些桩，但代价是保存所有权移交 vendor；③ 无安装包 U1。
+- 最大缺口：① 生产 native 视图的保存走 vendor 直写、**无 Mcode CAS/租约**，与 `slidesExecutor` 的 CAS 语义分叉，双路线打开时序未验证；② 生产 Mcode preload 只桥 2 个编辑操作（`addBlankSlide`/`editText`），其余（动画/备注/版式/图表数据）在旧的最小桥里是硬编码空值桩——但**生产路径不走那个桥**：`kind !== null` 的六编辑器用 vendor 自己的 preload，那些桩只在普通文档视图上挂载，属于死代码；③ 无安装包 U1。
 
 ## 7. Markdown（.md/.markdown；`.txt/.json` 仍走 Mcode 代码源文本）
 
@@ -434,5 +436,5 @@
 - AI Ask `checks.json`：`apps/desktop/.tmp/genoffice-ai-ask-IjVfsP/checks.json`（20/20，2026-10-22）。
 - 构建产物事实：`apps/desktop/out/preload/{index.mjs,browserPicker.*}`、`apps/desktop/out/main/`（无 `documentViewPreload.js`）、`genoffice/apps/*/out/{renderer,preload}`（六家均在，时间戳早于 0013）。
 - 任务卡：T0/T7/T9/T11（当前）、T71/T76/T87/T89/T90/T92（归档）、`tasks/README.md`。
-- 施工地图：`docs/planning/arc007-genoffice-native-integration-map.md`、`docs/planning/genoffice-ai-interaction.md`。
+- 参考：`docs/planning/arc007-genoffice-source-provenance.md`（来源/补丁/打包门禁）、`docs/planning/genoffice-ai-interaction.md`、`docs/功能文档.md` §五（编辑器与文档）。
 - 许可证：`apps/desktop/build/vendor-licenses/genoffice/manifest.json`、`docs/research/genoffice-license/T9-unresolved-evidence.md`。

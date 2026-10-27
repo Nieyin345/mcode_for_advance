@@ -159,7 +159,7 @@ Mcode 的可视化轨是 `DocumentViewHost`（`apps/desktop/src/main/document/do
 5. vendor 用 React **19.2.7**（`genoffice/apps/docs/package.json:44`），`main.tsx` 的根**没有错误边界**（全仓 `componentDidCatch/getDerivedStateFromError` 只命中 React 内部）。
 6. 隔离探针（2026-10-18 实测，用 vendor 自己的 `node_modules/react-dom@19.2.7` 生产构建 + jsdom，复刻上述 effect 形状；临时脚本写在 `.tmp/` 下、运行后已删除，复刻方法：`createRoot` 渲染一个空依赖 effect 里调用 `window.desktop.onRenamedDocx(...)` 的组件，`window.desktop` 用最小 preload 的同一组键）：passive effect 抛错 → `onUncaughtError` 走 `reportGlobalError`，**`createRoot` 容器被清空（`unmounted: true`）**，兄弟节点一并消失。
 
-推论：**按当前源码，真实 docs 页面在 Mcode 最小 preload 下应当整树卸载（白屏），而不是「编辑器起始页」**。这与上一轮台账/面板注释里「视图里是编辑器起始页」的描述矛盾（`audit-ledgers/Mcode_统一审查台账.md` ARC-007 切片记录；`document-view-host-smoke/main.ts:585-587` 也承认「本宿主刻意不给 preload」）。两种可能：① 真机表现与源码推断一致，上一轮没有用真实 vendor 页面做过 U1（`document-view-electron-smoke/probe.ts:7,26` 明确写「套件自己造一个最小 HTML 页面」「不加载 genoffice 真实编辑器」）；② 构建产物还有未读到的 shim。**在动 AI 之前，必须先用真 Electron 加载真实 `apps/docs/out/renderer/index.html` 目视一次**（见第 6 节）。这一步不通过，「保留 AI 交互」无从谈起。
+推论：**按当前源码，真实 docs 页面在 Mcode 最小 preload 下应当整树卸载（白屏），而不是「编辑器起始页」**。这与面板注释里「视图里是编辑器起始页」的描述矛盾（`document-view-host-smoke/main.ts:585-587` 承认「本宿主刻意不给 preload」）。两种可能：① 真机表现与源码推断一致，上一轮没有用真实 vendor 页面做过 U1（`document-view-electron-smoke/probe.ts:7,26` 明确写「套件自己造一个最小 HTML 页面」「不加载 genoffice 真实编辑器」）；② 构建产物还有未读到的 shim。**在动 AI 之前，必须先用真 Electron 加载真实 `apps/docs/out/renderer/index.html` 目视一次**（见第 6 节）。这一步不通过，「保留 AI 交互」无从谈起。
 
 ### 3.4 结论
 
@@ -242,7 +242,7 @@ vendor 的 AI 交互**不是纯渲染端功能**：它依赖 vendor 的 Electron
    > 「文档可作为工作流节点、自动化产物及资料库资源；**不生成另一个“仅 GenOffice AI 才能编辑”的孤岛**。」
    —— **不推翻，转为约束**：C 必须保证同一条 `doc.read/apply/save` 也能被 Mcode Agent（`app_api_call`）与工作流使用，否则就真成了孤岛。
 
-5. `audit-ledgers/Mcode_统一审查台账.md:2927`（ARC-007「不可让步」第 1 条）：
+5. 原 ARC-007「不可让步」第 1 条（台账已删，原话保留）：
    > 「1) 不引入 GenOffice 第二套 Agent loop / 用户/存储/权限；」
    —— **「第二套 Agent loop」被用户需求部分覆盖**：为保留交互，UI 层会出现 vendor 的 tool 循环（C）或完整 Agent+provider（A）。「用户/存储/权限」三项继续不可让步：不得引入 vendor 用户身份、聊天存储与权限模型（C 的第二步把这些全部换回 Mcode）。**这一条需要用户/维护者显式裁决**：若坚持「绝不出现第二 loop」，则只能 B，交互只能等价复刻——本文档推荐 C 的理由是用户原话「**完全的保留下来**」优先于这条构建层纪律。
 

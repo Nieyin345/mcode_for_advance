@@ -586,3 +586,31 @@ export function buildMcpMarketConfig(
     },
   };
 }
+
+/**
+ * 【EXT-03】「测试连接」的结果。
+ *
+ * 三态是必要的 —— 把「连上了」「没连上」「没测」（引擎不支持 / 表格里没这个服务器）
+ * 压成布尔会让界面把"我们不知道"画成"坏了"。
+ */
+export type McpTestConnectionResult =
+  | {
+      ok: true;
+      /** 服务端报告的协议版本 / 服务器名（有就给，方便用户确认连的是对的）。 */
+      serverName?: string;
+      serverVersion?: string;
+      /** 握手 + 列工具各花了多久（用户能据此判断"慢"是网络还是服务端）。 */
+      ms: number;
+      toolCount?: number;
+    }
+  | { ok: false; error: string; /** 进程没起来 / 连不上 / 授权缺失，界面据此给不同的下一步。 */ stage: "spawn" | "connect" | "initialize" | "auth" | "unknown" };
+
+/** 测试连接：按名字测一个已保存的服务器。 */
+export interface McpTestConnectionInput {
+  name: string;
+}
+
+/** 【EXT-03】测试连接的入参校验。 */
+export const McpTestConnectionSchema = z.object({
+  name: z.string().min(1).max(200),
+}).strict();

@@ -76,9 +76,6 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "automation.preflight": [
     "workflow.read"
   ],
-  "automation.rebuildWatchTemplates": [
-    "workflow.run"
-  ],
   "automation.run": [
     "workflow.run"
   ],
@@ -90,18 +87,6 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   ],
   "automation.statusAll": [
     "workflow.read"
-  ],
-  "automation.watch": [
-    "workflow.run"
-  ],
-  "automation.watchStatus": [
-    "workflow.read"
-  ],
-  "automation.watchTemplates": [
-    "workflow.read"
-  ],
-  "automation.watchTemplatesSave": [
-    "workflow.run"
   ],
   "browser.authRespond": null,
   "browser.bookmarkAdd": [
@@ -268,8 +253,15 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   ],
   "documentView.bounds": null,
   "documentView.close": null,
+  "documentView.commentCreate": null,
+  "documentView.commentMutate": null,
+  "documentView.dormantList": null,
   "documentView.focus": null,
   "documentView.hide": null,
+  "documentView.historyList": null,
+  "documentView.historyRestore": [
+    "document.edit"
+  ],
   "documentView.list": [
     "document.read"
   ],
@@ -277,6 +269,11 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "documentView.openPath": [
     "document.edit"
   ],
+  "documentView.revisionDecide": null,
+  "documentView.revisionFocus": null,
+  "documentView.revisionMode": null,
+  "documentView.revisionRewrite": null,
+  "documentView.revisionState": null,
   "documentView.show": null,
   "engineTools.get": [
     "setting.read"
@@ -315,6 +312,9 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
     "files.read"
   ],
   "file.mkdir": [
+    "files.write"
+  ],
+  "file.move": [
     "files.write"
   ],
   "file.pickImages": null,
@@ -667,6 +667,9 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "mcp.scanImport": [
     "mcp.manage"
   ],
+  "mcp.testConnection": [
+    "mcp.manage"
+  ],
   "mcp.toggle": [
     "mcp.manage"
   ],
@@ -736,35 +739,6 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   ],
   "mobile.stopTunnel": [
     "network"
-  ],
-  "modules.cancel": [
-    "modules.install"
-  ],
-  "modules.catalog": [
-    "modules.read"
-  ],
-  "modules.egressConsentGet": null,
-  "modules.egressConsentSet": null,
-  "modules.install": [
-    "modules.install"
-  ],
-  "modules.installVsix": [
-    "modules.install"
-  ],
-  "modules.invoke": [
-    "modules.install"
-  ],
-  "modules.issueWorkflowGrant": null,
-  "modules.remove": [
-    "modules.install"
-  ],
-  "modules.revokeWorkflowGrant": null,
-  "modules.setPermissions": null,
-  "modules.task": [
-    "modules.read"
-  ],
-  "modules.tasks": [
-    "modules.read"
   ],
   "modules.theiaInstalled": null,
   "modules.theiaPreview": null,
@@ -1175,7 +1149,11 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
   "workflow.choose": [
     "workflow.write"
   ],
+  "workflow.confirmMigration": null,
   "workflow.dismissShippedUpdate": [
+    "workflow.write"
+  ],
+  "workflow.duplicate": [
     "workflow.write"
   ],
   "workflow.export": [
@@ -1227,9 +1205,7 @@ export const APP_METHOD_PERMISSIONS: Readonly<Record<string, readonly ModulePerm
     "workflow.read"
   ],
   "workflowEngine.load": null,
-  "workflowEngine.nodeInstall": [
-    "workflow.write"
-  ],
+  "workflowEngine.nodeInstall": null,
   "workflowEngine.nodesList": [
     "workflow.write"
   ],

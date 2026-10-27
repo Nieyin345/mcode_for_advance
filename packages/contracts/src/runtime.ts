@@ -299,6 +299,9 @@ export interface ToolResultEvent {
   isError: boolean;
   /** Raw result content (string or structured). */
   content: unknown;
+  /** 渲染提示：工具结果在对话里怎么展示（文件改动卡片、diff、命令输出……）。
+   *  形状由 provider 决定，消费方按 `kind` 分支；缺省 = 按纯文本渲染。 */
+  display?: ToolDisplay;
 }
 
 /** The agent is requesting permission to run a tool (awaiting user decision). */
@@ -829,6 +832,8 @@ export type TranscriptBlock =
       /** "running" until the tool_result lands (status done/error). */
       status: "running" | "done" | "error";
       result?: unknown;
+      /** 这一条工具结果在对话里怎么展示（图片缩略图等）。缺省 = 纯文本。 */
+      display?: ToolDisplay;
     };
 
 /**
@@ -1573,3 +1578,27 @@ export type RuntimeEvent =
   | TaskChangedEvent
   | CommandsAvailableEvent
   | LocalCommandOutputEvent;
+
+/** 工具结果里附带的可展示附件（图片、文件引用、diff 片段）。
+ *  渲染端按 `kind` 分支；未知 kind 按纯文本降级显示。 */
+/** 只给界面看的工具结果附件。**绝不进模型上下文**。
+ *
+ *  `kind` 决定渲染形态：`images` = 一组图片缩略图；缺省 = 纯文本。
+ *  未知 kind 由渲染端按纯文本降级 —— 不因为一个 provider 加了新形态就整块不显示。 */
+export interface ToolDisplayAttachment {
+  kind: string;
+  /** `kind: "images"` 时的条目。 */
+  items?: ToolDisplayItem[];
+  /** `kind: "text"` 时的正文。 */
+  text?: string;
+}
+
+/** 附件里的一个条目（图片 / 文件引用）。 */
+export interface ToolDisplayItem {
+  url: string;
+  title?: string;
+  mimeType?: string;
+}
+
+/** 兼容别名：早期代码把这个形态叫 `ToolDisplay`。 */
+export type ToolDisplay = ToolDisplayAttachment;

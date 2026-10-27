@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-05T00:27:41Z",
-  "updated_at": "2026-10-18T23:38:08Z",
+  "updated_at": "2026-10-20T09:46:05Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -15545,12 +15545,6 @@
       "sha256": "40921c3f79422bf9d71b012ec8dceb8443b24a0f33853758194db1a530f11ace",
       "size": 15877,
       "normalized_sha256": "40921c3f79422bf9d71b012ec8dceb8443b24a0f33853758194db1a530f11ace"
-    },
-    "audit-ledgers/collaboration/tests/test_coord.py": {
-      "role": "observe",
-      "sha256": "60b406833383f9667dc87c0083b7addc111a4e1d4f1afe774d54c1ae40bd4cda",
-      "size": 5450,
-      "normalized_sha256": "60b406833383f9667dc87c0083b7addc111a4e1d4f1afe774d54c1ae40bd4cda"
     },
     "cask/mcode.rb": {
       "role": "index",

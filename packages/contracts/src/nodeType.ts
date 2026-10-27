@@ -2002,3 +2002,9 @@ export function renderNodeTypeCatalog(entries: NodeTypeEntry[]): string {
   }
   return lines.join("\n");
 }
+
+/** 「这份权限声明里有 network 吗」—— 网络放行判据的**唯一一份**。
+ *  节点清单安装审核与执行期都用它；两处各写一遍 `includes("network")` 迟早漂移。 */
+export function declaresNetwork(permissions: readonly string[]): boolean {
+  return permissions.includes("network");
+}

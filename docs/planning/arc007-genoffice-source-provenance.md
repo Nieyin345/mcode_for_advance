@@ -1,12 +1,12 @@
 # ARC-007 · FULL-0 GenOffice 原版源码锁定与发行前门禁
 
-> 施工边界：此页是 FULL-0 的来源/许可/打包约束证据，**不是另一份完成台账**。正式开发与独立复核状态只在 `audit-ledgers/Mcode_统一审查台账.md` 的 ARC-007 维护。
+> 施工边界：此页是 GenOffice 来源 / 许可 / 打包约束的**证据页**，不是完成台账。功能目标见 `docs/功能文档.md`；进度看代码与套件。
 
 ## 上游来源（L1 直接复用）
 
 - 官方仓库：<https://github.com/genspark-ai/genoffice>（本机 Git remote 经 `ghfast.top` 镜像访问），独立嵌套 Git 仓：`genoffice/`，被 Mcode 顶层 Git 忽略，**不得用主仓 HEAD 替代它的版本**。
 - 当前锁定独立 GenOffice HEAD：`3cb99ab13e1e42989889e15cc338bd6f6c6fff5c`（Mcode 集成补丁系列的第 15 条，tree `5ba6f37b`），固定文件 `apps/desktop/build/genoffice-upstream.lock.json`。已审批基线：`cbec600ace9c930b2646b6739cf6df3741bb9d6a`；在此之上依次叠加 Mcode 的 **15 条 L3 补丁**（`patches/genoffice/0001…0015.patch`），起于一条原厂 PDF 修复 `73ba918`，其余 14 条为 Mcode 集成。门禁额外逐项核实每条补丁 commit 的 parent SHA、changed paths 与 sha256 是否和锁文件相等，并核对 HEAD 与 `HEAD^{tree}`，避免把其它私有改动伪装成这个修复。
-  - **加新补丁的步骤、两个已知会踩的坑、以及「不要另建第二套补丁机制」的理由，写在 `tasks/T115-docx-eastasia-font.md` 第十节末尾**（那一节是为下一个要动 `genoffice/` 的人写的）。
+  - **不要另建第二套补丁机制**：Mcode 对 GenOffice 的所有改动都走 `patches/genoffice/` 这一条系列，按序 `git am`，并由上面的锁文件逐条校验 commit / changed paths / sha256。另建一套会让「用户装上的 vendor」和「我们验过的 vendor」对不上，而症状是运行期行为差异，不是构建失败。
 - 上游许可证：根目录 `genoffice/LICENSE`（Apache-2.0）与 `genoffice/NOTICE`；根 `package.json` / `package-lock.json` 也是原厂构建和依赖版本输入，门禁按源码同等查 Git dirty（已有隔离旧红）；发布的 CLI/PDFium 另由已有 `stage-genoffice-resources.cjs` 搬运第三方许可，不能因原厂页面能运行就跳过下游各依赖许可审查。
 - 原生入口按相同顺序：`genoffice/apps/{docs,sheets,slides,pdf,markdown,html}/src/{main,preload,renderer}`，涉及原版 DOCX 引擎、Univer+Rust XLSX、PPTX 包、PDFium、Markdown/HTML 编辑器，不在 Mcode 中复刻其业务内核。
 

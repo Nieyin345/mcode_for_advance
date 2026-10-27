@@ -38,7 +38,14 @@ const { execFileSync } = require("node:child_process");
 const HERE = __dirname;
 const REPO_ROOT = path.resolve(HERE, "../../..");
 const THEIA_ROOT = path.join(REPO_ROOT, "vendor/theia");
-const OUT = path.join(REPO_ROOT, ".tmp/theia-release");
+// 产物直接落在 `vendor/theia-runtime` —— **这份要进 git**，是「clone 下来扩展就能用」
+// 的唯一依赖。`.tmp` 那种临时目录不适合承载一个长期存在的运行时。
+//
+// `--out=<dir>` 可覆盖（`theia-staging-smoke` 用它做「生成物没过期」比对）。
+const argOut = process.argv.find(a => a.startsWith("--out="));
+const OUT = argOut
+  ? path.resolve(REPO_ROOT, argOut.slice("--out=".length))
+  : path.join(REPO_ROOT, "vendor/theia-runtime");
 
 const ENTRIES = [
   "packages/plugin-ext/lib/hosted/node/plugin-host.js",
@@ -286,7 +293,11 @@ function main() {
         const linkPath = path.join(nmTheia, name);
         if (fs.existsSync(linkPath)) continue;
         try {
-          fs.symlinkSync(path.relative(nmTheia, target), linkPath, "junction");
+          // ⚠️ 必须用 `"dir"` 而不是 `"junction"`。
+          // Windows 的 junction 会**把目标强制解析成绝对路径**（Node 的已知行为），
+          // 于是一棵为 A 机器装配的产物搬到 B 机器后所有软链全部悬空。
+          // 我们这份产物要**入 git** 给别人 clone，绝对路径必炸。
+          fs.symlinkSync(path.relative(nmTheia, target), linkPath, "dir");
           linked++;
         } catch { /* 已存在 */ }
       }
@@ -335,7 +346,7 @@ function main() {
           const nmTheia = path.join(OUT, "node_modules", "@theia");
           const linkPath = path.join(nmTheia, shortName);
           if (!fs.existsSync(linkPath)) {
-            try { fs.symlinkSync(path.relative(nmTheia, path.join(OUT, top, shortName)), linkPath, "junction"); } catch { /* ignore */ }
+            try { fs.symlinkSync(path.relative(nmTheia, path.join(OUT, top, shortName)), linkPath, "dir"); } catch { /* ignore */ }
           }
           break;
         }

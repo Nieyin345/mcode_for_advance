@@ -243,6 +243,36 @@ export const FileCopySchema = z.object({
 });
 export type FileCopyInput = z.infer<typeof FileCopySchema>;
 
+/**
+ * 【EDIT-01】**移动**一个条目到另一个目录（文件树「移动到…」）。
+ *
+ * ## 为什么不复用 `file.rename`
+ *
+ * `file.rename` 的契约**明文只做同目录改名**（主进程也真的按这个拒了跨目录的请求）。
+ * 把跨目录塞进它会破坏那个契约的两条保证：它现在是"重命名，不可能把文件挪走"，
+ * 调用方据此不需要担心路径里的其他引用失效。移动是另一件事。
+ *
+ * ## 目录也可以移动
+ *
+ * 与 `file.copy` 不同（那个只收普通文件 —— 递归复制整个目录是另一个量级的操作，
+ * 中途失败会留下半棵树）。**移动是原子的 `rename`**：同一个文件系统上它一次完成，
+ * 要么全过去要么全没动，所以目录可以安全地走这条。
+ * 跨卷时 Node 的 `rename` 会 `EXDEV` —— 这里**如实报错**，不悄悄退化成"复制+删除"
+ * （那会在失败时留下一半）。
+ *
+ * ## 不覆盖
+ *
+ * 目标目录已有同名条目时拒绝（与 `file.rename` 同一条纪律）。**不自动改名** ——
+ * 移动的语义是"我要它去那儿"，换个名字过去用户会找不到。
+ */
+export const FileMoveSchema = z.object({
+  /** 要移动的条目（文件或目录）的绝对路径。必须落在某个已知项目根内。 */
+  srcPath: z.string(),
+  /** 目标目录的绝对路径。必须落在某个已知项目根内。 */
+  destDir: z.string(),
+});
+export type FileMoveInput = z.infer<typeof FileMoveSchema>;
+
 /** Native multi-file picker (project-external files allowed). Used by the
  *  composer "添加上下文" button to attach files that live outside the active
  *  project root — unlike the project-scoped `file.search`, this surfaces any

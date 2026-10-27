@@ -314,6 +314,6 @@ mcode/
 - GenOffice 文档引擎：https://github.com/genspark-ai/genoffice/tree/main/packages/docx-engine
 - GenOffice Markdown 实现：https://github.com/genspark-ai/genoffice/tree/main/apps/markdown
 - Mcode 既有设置重设计分析：docs/settings-redesign.md
-- Mcode 唯一审查规范（如果进入实施前审查）：audit-ledgers/README.md
+- 功能目标：`docs/功能文档.md` §五（编辑器与文档）
 
 **下一步执行建议**：首先只实施 G0 的技术试验，证明「Mcode 单一宿主内打开一份 GenOffice Markdown 和 DOCX、修改后安全保存、Agent 读取同一版本」成立。试验结果决定后续选 WebContentsView 宿主还是逐个抽纯 React 编辑器；不要先批量移动现有组件。

@@ -35,6 +35,17 @@ export interface ProviderCapabilities {
   supportsAskUserQuestion: boolean;
 
   /**
+   * 【CHAT-21】这个 provider 的**当前模型**能不能读图。
+   *
+   * `true` = 能；`false` = 不能；`undefined` = **没声明**（未知）。
+   *
+   * 三态是必要的：把"不知道"当成"能"会让用户发出去的图被上游静默丢掉
+   * （或报一个看不懂的 API 错）；当成"不能"则明明能用的模型被拦下来。
+   * 所以界面只在**明确 false** 时提示"这个模型看不了图"，未知时不拦。
+   */
+  supportsVision?: boolean;
+
+  /**
    * 能不能**把一段对话分叉成新的一段**(上下文原样带过去,两边之后各走各的)。
    *
    * 只有提供方**真的能复制自己的会话状态**时才为真 —— 这个字段存在的意义就是让界面

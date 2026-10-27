@@ -1,5 +1,7 @@
 # T15｜通用 Agent、Provider 与 Host 能力基线矩阵（只读）
 
+> **注（2026-10-26）**：本报告写于台账制度废止之前，文中对 `tasks/` 与 `audit-ledgers/` 的引用是**历史记录**，那两个目录已删除。功能目标见 `docs/功能文档.md`；进度看代码与套件。
+
 > 2026-10-23 执行。任务卡：`tasks/T15-agent-host-baseline.md`（P1 strategic baseline，只读）。
 > **性质：E2 源码调用链 + 本轮 E1 隔离复跑。不是任何 MC/ARC 的完成声明；不把「目录里有」当成「已实现」。**
 > 正式完成状态以 `audit-ledgers/Mcode_统一审查台账.md` 为准；本文件不改动任何勾选。

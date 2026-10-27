@@ -128,8 +128,6 @@ export interface DocViewSnapshot {
   url: string;
   visible: boolean;
   bounds: DocViewRect;
-  /** Vendor-reported unsaved state; absent until the editor reports dirty state at least once. */
-  dirty?: boolean;
   /** 【ARC-007】最近一次加载/渲染失败（成功后清空）。
    *
    *  为什么要有:vendor 编辑器页依赖 preload 桥（`window.desktop.*`），而本宿主
@@ -153,6 +151,12 @@ export interface DocViewSnapshot {
     at: number;
     source: "document-tool" | "markdown-edit" | "document-edit";
   };
+  /** 【Office 深度集成】打开的文件超过体积提示阈值时存在（不阻止打开）。
+   *
+   *  为什么要暴露:O18 实测一个**空白** Sheets 就要 253 MiB 工作集,几百 MB 的
+   *  工作簿能把整机拖住。用户有权在打开前/后知道"这个文件很大",而不是面对一个
+   *  无声卡住十分钟的编辑器。 */
+  largeFileWarning?: { bytes: number; thresholdBytes: number; at: number };
 }
 
 /**
@@ -162,6 +166,41 @@ export interface DocViewSnapshot {
  */
 export interface DocViewListResult {
   views: DocViewSnapshot[];
+}
+
+/* ─────────────── 【Office 深度集成】后台视图内存治理 ───────────────
+ *
+ * 六个 GenOffice 编辑器同时驻留约 1.70 GiB（O18 实测），其中绝大部分是各自的
+ * renderer。`hide()` 只把视图挪到屏幕外，Chromium 仍保留整页。
+ *
+ * 宿主提供两条**只读**事实，由渲染端（它知道用户在哪些标签之间切换）决定何时
+ * 回收：哪些视图可以无损回收、以及回收前必须保存的重建凭据。销毁本身仍走既有
+ * `documentView:close` —— 不加第二条"销毁"通道，避免出现两个关闭入口。
+ *
+ * ⚠️ 判据只认三种状态：够久没显示、页面自报干净、真的打开过文件。**脏视图永不
+ * 出现在这份清单里**（销毁 = 静默丢掉未保存编辑）。
+ */
+export const DOCUMENT_VIEW_DORMANT_LIST_CHANNEL = "documentView:dormantList";
+
+/** `documentView:dormantList` 的返回。 */
+export interface DocViewDormantListResult {
+  /** 可以**无损**回收的视图：附重建凭据，调用方存下后再 `documentView:close`。 */
+  candidates: DocViewDormantSnapshot[];
+  /** 本轮被排除的数量与原因（诊断用，不参与决策）。 */
+  excluded: { notVisible: number; dirtyOrUnknown: number; tooRecent: number; noDocument: number };
+}
+
+/** 一个可回收视图的完整重建凭据。 */
+export interface DocViewDormantSnapshot {
+  docId: string;
+  url: string;
+  /** 原厂编辑器种类；`null` = 普通文档视图（与 `DocViewOpenInput.editor` 同集）。 */
+  editor: "pdf" | "markdown" | "html" | "sheets" | "slides" | null;
+  filePath: string;
+  bounds: DocViewRect;
+  mcodeSessionId: string | null;
+  /** 隐藏了多久（毫秒），供渲染端排序与诊断。 */
+  hiddenForMs: number;
 }
 
 /* ────────────────────── 【ARC-007】slides 编辑通道（A 方案第一步） ──────────────────────
@@ -253,3 +292,259 @@ export interface DocViewSlidesOpenResult {
 export type DocViewSlidesReadOpenedResult =
   | { ok: true; result: DocViewSlidesOpenResult; hash: string }
   | { ok: false; reason: string };
+
+/* ─────────────── 【Office 深度集成】修订与复核（Overleaf 式） ───────────────
+ *
+ * 产品决定（2026-10-27）：
+ *   - 六种格式先做 **Word 与 Markdown**，其余随后；
+ *   - **AI 默认开复核模式**，人可在界面上切换自己的模式；
+ *   - 人和 AI 走**同一套**机制，只是**颜色不同**；
+ *   - 待审改动与评论都在**左栏**（AI 对话在右栏）。
+ *
+ * 这些类型是**渲染端与主进程之间**的形状；主进程内部的模型见
+ * `main/document/pendingChanges.ts`（多一个 `capabilities` 之类的宿主细节）。
+ */
+
+export type DocRevisionEditor = "docs" | "sheets" | "slides" | "pdf" | "markdown" | "html";
+
+export type DocRevisionKind = "insert" | "delete" | "replace" | "format" | "move" | "structural";
+
+export interface DocRevisionAnchor {
+  kind: "block" | "cell" | "element" | "page" | "range" | "unknown";
+  block?: number;
+  sheet?: string;
+  address?: string;
+  slide?: number;
+  elementId?: string;
+  page?: number;
+  from?: number;
+  to?: number;
+}
+
+export interface DocRevisionLocation {
+  /** 文档内顺序（只在同一编辑器内可比）。 */
+  order: number;
+  /** 给人看的定位描述，例如「第 3 段」「第 12 行」。 */
+  label: string;
+  anchor?: DocRevisionAnchor;
+}
+
+export interface DocRevisionAuthor {
+  id: string;
+  label: string;
+}
+
+/** 一条待审改动。 */
+export interface DocPendingChange {
+  id: string;
+  batchId?: string;
+  location: DocRevisionLocation;
+  kind: DocRevisionKind;
+  /** 摘要文本（可能被截断；**只用于显示**，不用于应用/回滚）。 */
+  before?: string;
+  after?: string;
+  author: DocRevisionAuthor;
+  at: number;
+  /** 只读的改动（例如依赖实时求值）按钮要禁用并给原因。 */
+  readOnlyReason?: string;
+}
+
+/** 一条评论。**resolve 不是删除** —— 移出主列表，仍可查看。 */
+export interface DocRevisionComment {
+  id: string;
+  location: DocRevisionLocation;
+  author: DocRevisionAuthor;
+  text: string;
+  at: number;
+  replies: Array<{ id: string; author: DocRevisionAuthor; text: string; at: number }>;
+  resolved: boolean;
+}
+
+/** 一个文档的复核状态 —— 左栏的数据源。 */
+export interface DocRevisionState {
+  editor: DocRevisionEditor;
+  filePath: string;
+  /** `review` = AI 的改动变成待审条目；`edit` = 直接生效。 */
+  mode: "edit" | "review";
+  changes: DocPendingChange[];
+  comments: DocRevisionComment[];
+}
+
+export const DOC_VIEW_REVISION_STATE_CHANNEL = "documentView:revisionState";
+export const DOC_VIEW_REVISION_DECIDE_CHANNEL = "documentView:revisionDecide";
+export const DOC_VIEW_REVISION_MODE_CHANNEL = "documentView:revisionMode";
+export const DOC_VIEW_COMMENT_MUTATE_CHANNEL = "documentView:commentMutate";
+/** 在当前选区上新建评论（锚点由页面算）。 */
+export const DOC_VIEW_COMMENT_CREATE_CHANNEL = "documentView:commentCreate";
+/**
+ * 【EDIT-06】把编辑器滚到某条修订所在的位置（左栏点条目时用）。
+ *
+ * 锚点的语义由**页面**解释（它才知道 block/cell/element/range 怎么换算成滚动）；
+ * 宿主只负责把锚点原样送过去 —— 这与修订上报的方向正好相反，形状是同一份。
+ */
+export const DOC_VIEW_REVISION_FOCUS_CHANNEL = "documentView:revisionFocus";
+
+export const DocViewRevisionFocusSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+  anchor: z.object({
+    kind: z.enum(["block", "cell", "element", "page", "range", "unknown"]),
+    block: z.number().optional(),
+    sheet: z.string().optional(),
+    address: z.string().optional(),
+    slide: z.number().optional(),
+    elementId: z.string().optional(),
+    page: z.number().optional(),
+    from: z.number().optional(),
+    to: z.number().optional(),
+    text: z.string().optional(),
+  }).strict(),
+}).strict();
+export type DocViewRevisionFocusInput = z.infer<typeof DocViewRevisionFocusSchema>;
+
+/**
+ * 【EDIT-08】**取当前选区，交给 AI 改写**。
+ *
+ * 页面提交的是"用户的指令"（"改简洁点"）与选中的文字 —— 选区只在页面里有。
+ *
+ * ## 它**不发起 AI**
+ *
+ * 这是本契约最容易被读错的地方。名字叫 rewrite，但它**不调模型、不发请求**：
+ * 它只做一件事 —— 把「这段文字 + 这句指令」变成对话草稿里的一个引用。
+ * 用户自己按发送，AI 才动。理由与 EDIT-04 的「交给 Mcode AI」完全一致：
+ * 自动开跑会让用户在一次点击里付出一轮模型费用，而他可能只是想先看看草稿长什么样。
+ *
+ * 写回落在哪种形态由**当前的编辑模式**决定（产品决定）：
+ *   - 复核模式 → 变成待审条目（左栏能看到、能接受/拒绝）；
+ *   - 编辑模式 → 直接替换（可撤销）。
+ * 那一步由 AI 的 `replace_selection` 工具完成，与本契约无关。
+ */
+export const DOC_VIEW_REVISION_REWRITE_CHANNEL = "documentView:revisionRewrite";
+
+export const DocViewRevisionRewriteSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+  /** 用户的指令（「改简洁点」/「翻成英文」）。 */
+  instruction: z.string().min(1).max(4000),
+  /**
+   * 选中的原文。**可选** —— 省略时由页面取**当前选区**。
+   *
+   * 为什么会省略：左栏（发起方）看不到编辑器的选区，而选区只在页面里。
+   * 让页面自己取，比要求调用方先回传一段选区再发命令少一次往返；
+   * 而调用方**确实知道**选区时（比如 AI 从上下文里构造的改写）仍然可以显式给。
+   */
+  selectedText: z.string().min(1).max(200_000).optional(),
+}).strict();
+export type DocViewRevisionRewriteInput = z.infer<typeof DocViewRevisionRewriteSchema>;
+
+/**
+ * 【EDIT-08】改写请求的回包。
+ *
+ * **必须有 `selectedText`**：调用方要拿它做引用块。旧版回的是
+ * `DocViewRevisionResult`（只有 `ok`）—— 那样调用方拿到 `ok` 也不知道该改哪段，
+ * 只能自己再猜一次选区，于是「用户选的是 A、改写的是 B」。
+ * 宁可这次失败，也不要把一个没有选区的请求报成成功。
+ */
+export type DocViewRevisionRewriteResult =
+  | { ok: true; selectedText: string }
+  | { ok: false; reason: string };
+
+/** 【EDIT-09】列出文件的历史版本（从旧到新）。 */
+export const DOC_VIEW_HISTORY_LIST_CHANNEL = "documentView:historyList";
+/** 【EDIT-09】回到某个历史版本。 */
+export const DOC_VIEW_HISTORY_RESTORE_CHANNEL = "documentView:historyRestore";
+
+export const DocViewHistoryListSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+}).strict();
+export type DocViewHistoryListInput = z.infer<typeof DocViewHistoryListSchema>;
+
+export const DocViewHistoryRestoreSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type DocViewHistoryRestoreInput = z.infer<typeof DocViewHistoryRestoreSchema>;
+
+/** 一个历史版本（与主进程的 `DocumentVersion` 同形）。 */
+export interface DocHistoryVersion {
+  sha256: string;
+  savedAt: number;
+  bytes: number;
+  source: "user" | "ai" | "restore";
+}
+
+export type DocViewHistoryListResult =
+  | { ok: true; versions: DocHistoryVersion[] }
+  | { ok: false; reason: string };
+
+export type DocViewHistoryRestoreResult = { ok: true } | { ok: false; reason: string };
+
+/** 页面回报：评论锚点已挂到文档上。 */
+export const DOC_VIEW_COMMENT_CREATED_CHANNEL = "documentView:commentCreated";
+
+export const DocViewRevisionStateSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+}).strict();
+export type DocViewRevisionStateInput = z.infer<typeof DocViewRevisionStateSchema>;
+
+/** 接受/拒绝。`ids` 为空 = 全部（批量按钮用）。 */
+export const DocViewRevisionDecideSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+  action: z.enum(["accept", "reject"]),
+  ids: z.array(z.string().min(1).max(200)).max(500),
+}).strict();
+export type DocViewRevisionDecideInput = z.infer<typeof DocViewRevisionDecideSchema>;
+
+export const DocViewRevisionModeSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+  mode: z.enum(["edit", "review"]),
+}).strict();
+export type DocViewRevisionModeInput = z.infer<typeof DocViewRevisionModeSchema>;
+
+/**
+ * 【Office 深度集成】在**当前选区**上新建一条评论。
+ *
+ * 与 `commentMutate({op:"add"})` 的分工 —— 两者都在左栏建条目，区别是锚点：
+ *
+ *   | | 谁决定位置 | 锚点进文档吗 |
+ *   |---|---|---|
+ *   | `commentCreate` | **页面**（它才知道选区在哪） | ✅ 打评论 mark |
+ *   | `commentMutate({op:"add"})` | 调用方给的 `location` | ❌（可选 anchor 字符串，仅记录） |
+ *
+ * 用户从界面上"对选中文字加评论"走前者；AI 按位置提评论可以走后者。
+ */
+export const DocViewCommentCreateSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+  text: z.string().min(1).max(20_000),
+}).strict();
+export type DocViewCommentCreateInput = z.infer<typeof DocViewCommentCreateSchema>;
+
+export const DocViewCommentMutateSchema = z.discriminatedUnion("op", [
+  z.object({
+    op: z.literal("add"),
+    filePath: z.string().min(1).max(4096),
+    text: z.string().min(1).max(20_000),
+    location: z.object({ order: z.number(), label: z.string().max(200) }).strict(),
+    anchor: z.string().max(4096).optional(),
+  }).strict(),
+  z.object({
+    op: z.literal("edit"),
+    filePath: z.string().min(1).max(4096),
+    commentId: z.string().min(1).max(200),
+    text: z.string().min(1).max(20_000),
+  }).strict(),
+  z.object({
+    op: z.literal("reply"),
+    filePath: z.string().min(1).max(4096),
+    commentId: z.string().min(1).max(200),
+    text: z.string().min(1).max(20_000),
+  }).strict(),
+  z.object({
+    op: z.literal("resolve"),
+    filePath: z.string().min(1).max(4096),
+    commentId: z.string().min(1).max(200),
+    resolved: z.boolean(),
+  }).strict(),
+]);
+export type DocViewCommentMutateInput = z.infer<typeof DocViewCommentMutateSchema>;
+
+/** 三个写操作的统一回包。失败一律带人能读的原因，不静默。 */
+export type DocViewRevisionResult = { ok: true; state?: DocRevisionState } | { ok: false; reason: string };

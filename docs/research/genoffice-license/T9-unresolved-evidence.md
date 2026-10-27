@@ -1,6 +1,6 @@
 # T9｜GenOffice 10 个 blocked 第三方许可证的版本特定证据与载体策略裁决
 
-- 任务卡：`tasks/T9-genoffice-license-provenance.md`
+- 调查范围：GenOffice 许可证来源与未决证据
 - 取证日期：2026-10-23
 - 取证 HEAD（开工时）：`2c93f70ef863084426790c46c11e916644b43904`（工作树保留他人 7 项 dirty，未 reset/clean）
 - 只读证据来源：npm registry 精确版 tarball、GitHub 精确 commit 的 git 对象（`git fetch <sha>` 到隔离 bare 仓库）、GitHub REST API（对象级 SHA 校验）。**没有**执行 npm install/ci，没有解压 tarball 到项目目录，没有修改 manifest/notice/release gate。
