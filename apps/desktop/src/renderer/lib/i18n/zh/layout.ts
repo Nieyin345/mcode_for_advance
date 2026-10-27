@@ -184,6 +184,9 @@ export const zh = {
   "layout.openBrowser": "打开浏览器",
   "layout.movePane": "拖拽移动工作区面板",
   "layout.paneDocument": "把当前 DOCX 停靠到面板",
+  /** 右栏 tile 标题行里那排页签切换器的无障碍名（`PaneTabSwitcher`）。
+   *  用户看到的是图标 + 短名，这串只给辅助技术。 */
+  "layout.paneTabSwitcher": "右栏面板",
   "layout.paneFlow": "Node-RED 编辑器",
   "layout.paneRestore": "返回原有面板",
   "layout.paneDocumentMoved": "文档已在可停靠面板中打开",
@@ -261,6 +264,11 @@ export const zh = {
   "layout.pairDomain": "自有域名",
   "layout.domainWarning":
     "⚠️ 把手机域名指到本机后，任何人都能打开这个地址。挡在前面的是配对码（5 分钟过期、错 5 次作废）和你设置的账号密码（连续输错会锁定）—— 密码请设得足够长。不想再从公网访问时，在 Cloudflare 里删掉这条域名或停掉隧道。",
+  "layout.quickTunnelLabel": "快速隧道（不用域名）",
+  "layout.quickTunnelStart": "一键开启",
+  "layout.quickTunnelRunning": "已开启",
+  "layout.quickTunnelStop": "关闭",
+  "layout.quickTunnelHint": "由 cloudflared 分配一个随机的 trycloudflare.com 域名，几分钟内有效。适合临时用手机连一下；要长期稳定的地址请在下面填自己的域名。",
   "layout.domainLabel": "手机伴侣的公网域名",
   "layout.domainSave": "保存",
   "layout.domainHint":

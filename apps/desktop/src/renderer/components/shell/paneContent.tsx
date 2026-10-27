@@ -17,16 +17,24 @@
  * | `git` | `GitPanel` | 更改 / 历史 / 工作树 |
  * | `browser` | `BrowserPanel` | 内嵌浏览器 |
  * | `turns` | `TurnFlowPanel` | 每轮时间线 |
- * | `flow` | `WorkflowBoardPanel` | 工作流看板 + 侧聊 |
+ * | `flow` | `WorkflowBoardPanel` | 工作流**运行看板** + 侧聊 |
  * | `tasks` | `TaskListPanel` | 此刻在跑什么 |
  * | `taskcenter` | `TaskCenterPanel` | 持久任务表 |
  * | `preview` | `PreviewPanel` | 资料库条目预览 |
  *
- * ## 三条并行线的接入点
+ * ## 三条并行线各自落在哪一格（2026-10-28 定稿）
  *
- * - **Office**：`file` tile 渲染 GenOffice 原生编辑器（`GenofficeViewHostPane`）
- * - **工作流**：`flow` tile 渲染 `WorkflowBoardPanel`
- * - **扩展**：`ModuleViewDock` 作为独立 tile
+ * | 线 | 页签 | tile | 面板 | 为什么是这里 |
+ * |---|---|---|---|---|
+ * | **Office** | `files`（打开文档后） | `artifact` | `GenofficeViewHostPane` | 文档产物 = 原厂编辑器宿主 |
+ * | **扩展** | `extensions` | `mcpapp` | `ExtensionViewsPane` | `mcpapp` 的**原义**就是「扩展贡献的视图」 |
+ * | **工作流** | `flow` | `watercolor` | `WorkflowBoardPanel`（运行看板） | 看板回答「跑到哪一格」 |
+ * | **工作流** | `canvas` | `canvas` | `EngineRuntimePanel`（Node-RED 原厂画布） | 画布回答「图长什么样」 |
+ *
+ * **`browser` 页签不再借 `mcpapp`。** 曾经它被接到 `mcpapp` 上（因为那一支当时
+ * `return null`，用户点浏览器得到空壳），代价是扩展视图永久失去入口 ——
+ * 一个 tile 名同时被两个消费者索取，接谁都会让另一个断线。现在浏览器有自己的
+ * `browser` tile，`mcpapp` 归还给扩展。
  */
 import { lazy, Suspense, type ReactNode } from "react";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
@@ -39,6 +47,8 @@ import { TaskCenterPanel } from "@renderer/components/ide/TaskCenterPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
 import { SideChatPanel } from "@renderer/components/chat/SideChatPanel.js";
+import { ExtensionViewsPane } from "@renderer/components/modules/ExtensionViewsPane.js";
+import { hostedPaneContent } from "@renderer/components/layout/paneLayout.js";
 import { ClaudeProjectOverview } from "./ClaudeProjectOverview.js";
 
 /** Claude 的 tile 类型 → Mcode 的面板。
@@ -47,9 +57,10 @@ import { ClaudeProjectOverview } from "./ClaudeProjectOverview.js";
  *
  * | 线 | tile | 面板 |
  * |---|---|---|
- * | **Office** | `artifact`（文档产物）/ 文档停靠 | `GenofficeViewHostPane` |
- * | **扩展** | `mcpapp` | `ModuleViewDock`（扩展视图） |
- * | **工作流** | `watercolor` | `WorkflowBoardPanel`（Node-RED 看板） |
+ * | **Office** | `artifact` | `GenofficeViewHostPane`（原厂编辑器宿主） |
+ * | **扩展** | `mcpapp` | `ExtensionViewsPane`（扩展视图 + 管理入口） |
+ * | **工作流** | `watercolor` | `WorkflowBoardPanel`（运行看板） |
+ * | **工作流** | `canvas` | `EngineRuntimePanel`（Node-RED 原厂画布） |
  *
  * 三条线各自替换自己那一格，互不覆盖。
  */
@@ -80,21 +91,27 @@ export function renderPaneContent(tileId: string): ReactNode {
       // Mcode 没有评审流，用最接近的「需要人处理的任务」接上。
       return <TaskCenterPanel />;
     case "mcpapp":
-      /* 【UI 重建 2026-10-27】**修一条换壳时断掉的接线。**
+      /* 【扩展线】扩展贡献的视图（VS Code `contributes.views` 那一类）。
        *
-       * `browser` 页签经 `tileForTab` 映射到 `mcpapp`，而这一支此前 `return null`
-       * —— 用户点「浏览器」页签得到一个**空壳**。而正确的 `BrowserPane`
-       * （`mode="sidebar"` 的 `BrowserPanel`）就写在**本文件底部并导出**，
-       * 从来没有被 `renderPaneContent` 调用过。
+       * 这一支曾长期 `return null`，后来被 `browser` 页签借用（那时它 `null` 是
+       * 用户点浏览器拿到空壳的直接原因）。**借用的代价是扩展视图没有入口** ——
+       * 用户装完扩展，在当前外壳里找不到它。
        *
-       * 那个 `null` 的注释说的是「扩展贡献的视图没有渲染端面板」—— 那是
-       * **另一个语义**（扩展视图）。`mcpapp` 这个 tile 名同时被当成
-       * 「扩展视图」和「浏览器」用，是命名撞车；实际只有一个消费者
-       * （`browser` 页签），按它接。 */
-      return <BrowserPane />;
+       * 现在归还本义：`browser` 有自己的 tile（见上面的文件头），这里接
+       * `ExtensionViewsPane` —— 它把**已运行的扩展视图**列出来并内嵌进来，
+       * 没有可显示的视图时给出「去哪装/怎么启动」的明确出口，不是一块空白。 */
+      return <ExtensionViewsPane />;
     case "watercolor":
-      // 【工作流线】Node-RED / 工作流看板。
+      // 【工作流线】**运行看板** —— 这张图跑到哪一格、哪几个分身还在干活。
       return <WorkflowBoardPanel />;
+    case "canvas":
+      // 【工作流线】**画布** —— Node-RED 原厂编辑器（WF-01 写的「右栏也可停靠」）。
+      // 与上面那个看板是两个面板：看板看进度，画布改图。
+      return <CanvasPaneLazy />;
+    case "browser":
+      // 【UI 重建 2026-10-28】**浏览器有了自己的 tile。**
+      // 它此前借 `mcpapp`，现在拆开（否则 `mcpapp` 一接扩展视图，浏览器就断）。
+      return <BrowserPane />;
     case "turns":
       // Mcode 自己新增的 tile 类型：每轮时间线。
       // 它不在 Claude 的原始类型集里，是这个仓库多出来的一类面板。
@@ -113,9 +130,26 @@ export function renderPaneContent(tileId: string): ReactNode {
 
 /** 【Office 线】GenOffice 原生文档编辑器。
  *
- *  `GenofficeViewHostPane` 需要 `filePath`（要打开哪份文档）。右栏那边由
- *  `RightPanel` 从「停靠的文档」状态里传进去；新壳里从同一份 store 读，
- *  保证两条路径指向同一份数据（硬规矩 2）。 */
+ *  ## 读哪一个文档：先看「停靠」，再退回「活动文件」
+ *
+ *  有**两条**会把文档送进右栏的路径，它们的来源不同，必须都接住：
+ *
+ *  1. **停靠（`paneLayout` 的 `document` 内容）** —— `handoffOfficeToMcode`
+ *     干的：用户在 Office 工具栏点「交给 Mcode AI」，文档停靠到右栏、中心列
+ *     让回对话。旧壳 `RightPanel` 直接读 `pinnedDoc` 渲染。
+ *  2. **活动文件** —— 用户从文件树打开一份文档，中心列归编辑器（`FileEditor`），
+ *     右栏此时没有被要求显示它。这里**退回**到活动文件只是为了让 `artifact`
+ *     页签不空着。
+ *
+ *  ⚠️ **这两条在旧壳里是互斥的**：`pinnedDoc` 非空时，内置页签整块被 `hidden`
+ *  盖住（`RightPanel` 里 `pinnedDoc || pinnedFlow ? "hidden"`）。新壳换壳时
+ *  **只接了第 2 条**，于是「交给 Mcode AI」之后文档从界面上消失了 ——
+ *  `paneLayout` 里明明记着它，但没有任何东西读那份记录。
+ *
+ *  ⚠️ 判据用 `hostedPaneContent`（与旧壳**同一个**纯函数），不在这里手写
+ *  「找 id 为 right 的那条 placement」—— 面板停左边时记录挂在另一条 placement 上，
+ *  手写的那版会在用户把面板停到左边时静默读到空（硬规矩 2）。
+ */
 const GenofficeViewHostPane = lazy(() =>
   import("@renderer/components/ide/GenofficeViewHostPane.js").then((m) => ({
     default: m.GenofficeViewHostPane,
@@ -123,14 +157,40 @@ const GenofficeViewHostPane = lazy(() =>
 );
 
 function OfficePaneLazy() {
-  const activeProjectId = useSessionStore((s) => s.activeProjectId);
-  const activeFile = useSessionStore((s) =>
-    activeProjectId ? s.ideActiveFileByProject[activeProjectId] ?? null : null,
-  );
-  if (!activeFile) return null;
+  /* 停靠的文档优先。`hostedPaneContent` 是旧壳用的同一个函数 ——
+   * 它把「面板停哪一侧」「内容挂在谁的 placement 上」都算好了。 */
+  const dockedDoc = useSessionStore((s) => {
+    const content = s.paneLayout ? hostedPaneContent(s.paneLayout) : undefined;
+    return content?.kind === "document" ? content.documentId : null;
+  });
+  const activeFile = useSessionStore((s) => {
+    const pid = s.activeProjectId;
+    return pid ? s.ideActiveFileByProject[pid] ?? null : null;
+  });
+  const filePath = dockedDoc ?? activeFile;
+  if (!filePath) return null;
   return (
     <Suspense fallback={null}>
-      <GenofficeViewHostPane filePath={activeFile} active />
+      <GenofficeViewHostPane filePath={filePath} active />
+    </Suspense>
+  );
+}
+
+/** 【工作流线】Node-RED 原厂画布。
+ *
+ *  `EngineRuntimePanel` 自己管「哪个引擎、起没起、视图往哪开」；这里只给它
+ *  `editorOnly`（不画设置页的引擎清单 —— 那一层属于设置页）与 `active`。
+ *  `engineId` 不传：由它自己取唯一的 Node-RED 引擎（与设置页同一个默认）。 */
+const EngineRuntimePanel = lazy(() =>
+  import("@renderer/components/settings/workflows/EngineRuntimePanel.js").then((m) => ({
+    default: m.EngineRuntimePanel,
+  })),
+);
+
+function CanvasPaneLazy() {
+  return (
+    <Suspense fallback={null}>
+      <EngineRuntimePanel editorOnly />
     </Suspense>
   );
 }

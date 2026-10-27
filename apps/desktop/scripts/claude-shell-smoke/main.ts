@@ -326,5 +326,191 @@ check("★ 侧栏 ⑂ 建会话时显式传了 worktree 意图与项目 id", () 
   );
 });
 
+/* ─────────── § 三条线的「可达性」：加了映射 ≠ 点得到 ───────────
+ *
+ * 【UI 重建 2026-10-28】这一段的由来是一整类**同一个形状**的缺陷：
+ *
+ *   `paneContent` 里写好了分支 → `tileForTab` 映射到了 → **用户点不到**。
+ *
+ * 三条并行线各自撞了一次，症状不同，根是同一条：
+ *   - **Office**：`artifact` 分支能渲染，没有任何页签映射过去；
+ *   - **扩展**：`mcpapp` 被 `browser` 借走后，装了扩展在右栏找不到它；
+ *   - **工作流**：WF-01 写明「画布右栏也可停靠」，停靠入口随旧右栏下线。
+ *
+ * 「映射存在」和「用户点得到」是两件事，而**只有前者会被源码正则看见**。
+ * 所以下面这几条断言各自钉住链条上的不同一环，缺一环就有一条会红：
+ *
+ *   A. 页签在契约枚举里（zod 不会拒）
+ *   B. 页签在 registry 里（设置页能编辑、切换器能列出）
+ *   C. 页签经 `tileForTab` 落到一个**显式** case（不静默落进 default）
+ *   D. 那个 tile 在 `renderPaneContent` 里有分支、且分支**返回 JSX**
+ *   E. **有一个用户真能点的控件**把页签写进 store ← 这一环此前完全没有
+ */
+check("★ 三条线的 tile 都有页签能抵达（Office / 扩展 / 工作流画布）", () => {
+  const read = (rel: string) => readFileSync(resolve(process.cwd(), rel), "utf8");
+  const mount = read("src/renderer/components/shell/ClaudeShellMount.tsx");
+  const pane = read("src/renderer/components/shell/paneContent.tsx");
+  const registry = read("src/renderer/components/customUi/registry.ts");
+  const contracts = read("../../packages/contracts/src/ipc/settings.ts");
+
+  /* 三条线各自的「页签 → tile → 面板」应当是什么。
+   * 这张表是**规格**（改动它等于改产品决定），不是从代码抄的现状。 */
+  const expected: Record<string, { tile: string; component: string }> = {
+    // Office：文档产物 → 原厂编辑器宿主
+    files: { tile: "file", component: "FilesPanel" },
+    // 扩展：`mcpapp` 归还扩展视图（此前被 browser 占用，导致扩展无入口）
+    extensions: { tile: "mcpapp", component: "ExtensionViewsPane" },
+    // 工作流：看板（跑到哪）与画布（怎么连）是两个面板，各有页签
+    flow: { tile: "watercolor", component: "WorkflowBoardPanel" },
+    canvas: { tile: "canvas", component: "EngineRuntimePanel" },
+    // 浏览器：自己的 tile，不再借 mcpapp
+    browser: { tile: "browser", component: "BrowserPane" },
+  };
+
+  const schema = /RightPanelTabSchema\s*=\s*z\.enum\(\[([\s\S]*?)\]\)/.exec(contracts)?.[1] ?? "";
+  const declared = new Set([...schema.matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+
+  const tabBlock = registry.slice(registry.indexOf('"rightPanel.tab": ['));
+  const registered = new Set(
+    [...tabBlock.slice(0, tabBlock.indexOf("],")).matchAll(/id:\s*"([^"]+)"/g)].map((m) => m[1]),
+  );
+
+  const mapSeg = mount.slice(
+    mount.indexOf("const tileForTab"),
+    mount.indexOf("};", mount.indexOf("const tileForTab")),
+  );
+  const tabToTile: Record<string, string> = {};
+  for (const m of mapSeg.matchAll(/case\s+"([^"]+)":\s*return\s+"([^"]+)"/g)) tabToTile[m[1]] = m[2];
+
+  const missing: string[] = [];
+  for (const [tab, want] of Object.entries(expected)) {
+    // A. 契约枚举
+    if (!declared.has(tab)) missing.push(`${tab}: 不在 RightPanelTabSchema（切换会被 zod 拒绝）`);
+    // B. registry（设置页/切换器都读它）
+    if (!registered.has(tab)) missing.push(`${tab}: 不在 registry 的 rightPanel.tab（切换器列不出）`);
+    // C. 显式映射 —— 不能靠 default 兜底
+    if (!(tab in tabToTile)) missing.push(`${tab}: tileForTab 没有显式 case（会静默落进 default）`);
+    else if (tabToTile[tab] !== want.tile) {
+      missing.push(`${tab}: 映射到 ${tabToTile[tab]}，应为 ${want.tile}`);
+    }
+  }
+  assert.deepEqual(missing, [], `这些页签在链条上断了：\n  ${missing.join("\n  ")}`);
+
+  // D. tile → 有一个返回 JSX 的分支，且**指向预期的那个面板**
+  const paneBody = pane.slice(pane.indexOf("export function renderPaneContent"));
+  const branchOf = (tile: string): string | null => {
+    const key = `case "${tile}":`;
+    const at = paneBody.indexOf(key);
+    if (at < 0) return null;
+    const rest = paneBody.slice(at + key.length);
+    const next = rest.search(/\n\s*case\s+"|\n\s*default\s*:/);
+    return next < 0 ? rest : rest.slice(0, next);
+  };
+  /* 从分支里取它 return 的标签名，再顺着 `const XxxLazy = lazy(() => import(...))`
+   * 找回真正被渲染的组件。
+   *
+   * ⚠️ **必须走这一步**：原生视图面板都是 lazy 包装（它们是渲染端最重的那批），
+   * 分支里写的是 `<CanvasPaneLazy />`。只断言「分支提到 EngineRuntimePanel」
+   * 会逼着人往分支里塞一句提到该名字的**注释**——那是拿注释骗断言，
+   * 判据就不再指向被测对象了。 */
+  const resolveLazyTarget = (body: string, tag: string): string => {
+    // ① 分支直接用组件名（非 lazy，如 BrowserPane）
+    const direct = new RegExp(`function\\s+${tag}\\b`).test(body) ? null : tag;
+    // ② `const X = lazy(() => import(...).then((m) => ({ default: m.Y })))`
+    const lazyDecl = new RegExp(
+      `const\\s+${tag}\\s*=\\s*lazy\\([\\s\\S]{0,300}?default:\\s*m\\.([A-Za-z0-9_]+)`,
+    ).exec(body);
+    if (lazyDecl) return lazyDecl[1]!;
+    /* ③ `function XxxPaneLazy() { return <Suspense><YYY …/></Suspense> }`
+     *    —— 常见写法：包装函数自己不是 lazy，里面套一个 lazy 组件。
+     *    顺着它内部渲染的标签再解一层（只解一层，够用且不会无限递归）。 */
+    const wrapper = new RegExp(`function\\s+${tag}\\s*\\([^)]*\\)?[\\s\\S]{0,400}?`).exec(body);
+    if (wrapper) {
+      /* 跳过 `<Suspense fallback=…>` 这类**纯包裹**标签 —— 它们不是面板，
+       * 面板是它里面那个。逐个看包装函数体里的 JSX 标签，取第一个不是
+       * 包裹层的（Suspense / Fragment / div 都不算）。 */
+      const WRAPPERS = new Set(["Suspense", "Fragment", "div", "span", "section"]);
+      const bodySeg = new RegExp(
+        `function\\s+${tag}[\\s\\S]{0,600}?return\\s*\\(([\\s\\S]{0,400}?)\\);?\\s*\\}`,
+      ).exec(body)?.[1] ?? "";
+      const tags = [...bodySeg.matchAll(/<([A-Za-z0-9_]+)/g)].map((m) => m[1]!);
+      const inner = tags.find((t) => !WRAPPERS.has(t) && t !== tag);
+      if (inner) {
+        const innerLazy = new RegExp(
+          `const\\s+${inner}\\s*=\\s*lazy\\([\\s\\S]{0,300}?default:\\s*m\\.([A-Za-z0-9_]+)`,
+        ).exec(body);
+        if (innerLazy) return innerLazy[1]!;
+        return inner;
+      }
+    }
+    return direct ?? tag;
+  };
+
+  for (const [tab, want] of Object.entries(expected)) {
+    const tile = want.tile;
+    const branch = branchOf(tile);
+    assert.ok(branch, `${tab} → tile "${tile}" 在 renderPaneContent 里没有分支`);
+    const returned = /return\s*<([A-Za-z0-9_]+)/.exec(branch!)?.[1];
+    assert.ok(returned, `${tab} → tile "${tile}" 的分支是空壳（没有返回 JSX）`);
+    const actual = resolveLazyTarget(paneBody, returned!);
+    /* 这一条是「接了但接错东西」那一类：`mcpapp` 曾接成 `BrowserPane`，
+     * 断言只看「有没有 JSX」是全绿的，而扩展视图已经没了。 */
+    assert.equal(
+      actual,
+      want.component,
+      `${tab} → tile "${tile}" 应渲染 ${want.component}，实际是 ${actual}（经 ${returned}）`,
+    );
+  }
+});
+
+check("★ 右栏页签有一个用户点得到的入口（切换器真的挂在壳上）", () => {
+  /* 这一条守的是**链条的最后一环**，也是三条线共同断掉的那一环：
+   * 页签能写进 store、tile 能渲染 —— 但界面上没有任何东西让用户去点。
+   *
+   * 判据不是「切换器文件存在」（那只能证明代码写了），而是
+   * **壳把切换器传给了 tile 渲染器**。传错位（比如给了 `titlebar`）
+   * 视觉上也不会报错，所以断言钉在 `<ClaudeShell` 的那一行上。 */
+  const read = (rel: string) => readFileSync(resolve(process.cwd(), rel), "utf8");
+  const mount = read("src/renderer/components/shell/ClaudeShellMount.tsx");
+  const shell = read("src/renderer/components/shell/ClaudeShell.tsx");
+  const pane = read("src/renderer/components/shell/TilePane.tsx");
+
+  assert.match(mount, /asideHeader=\{<PaneTabSwitcher\s*\/>\}/, "ClaudeShellMount 应把 PaneTabSwitcher 作为 asideHeader 传给 ClaudeShell");
+  assert.match(shell, /asideHeader=\{asideHeader\}/, "ClaudeShell 应把 asideHeader 透传给 TilePane");
+  assert.match(shell, /asideHeader/, "TilePane 的 asideHeader 必须来自 ClaudeShell 的 props");
+  const switcher = read("src/renderer/components/shell/PaneTabSwitcher.tsx");
+  assert.match(switcher, /data-pane-tab=/, "切换器的按钮应有 data-pane-tab 标记（探针按它定位）");
+  /* 切换器的清单必须**派生自 registry**，不许在切换器里再抄一份 ——
+   * 抄一份的后果是加页签时只改一处，另一处静默少一项。 */
+  assert.match(switcher, /resolveSlotEntries\(SLOT,/, "切换器应经 resolveSlotEntries 取清单（派生自自定义 UI 配置）");
+  assert.match(switcher, /BUILTINS\[SLOT\]/, "切换器应为每个内置页签提供 runtime（否则它们不显示）");
+});
+
+check("★ 停靠的文档/画布在新壳里可见（两条路都接住）", () => {
+  /* 【Office 线 + 工作流线】旧壳里 `pinnedDoc` / `pinnedFlow` 非空时，
+   * 内置页签整块被盖住。新壳换壳时只接了页签那一半，于是：
+   *
+   *   - 「交给 Mcode AI」→ 写 `paneLayout` 的 document → **文档从界面消失**；
+   *   - 设置页「停靠到右侧」→ 写 flow → 同理。
+   *
+   * 两条都要能显示，且**用的是旧壳同一个纯函数**（`hostedPaneContent`），
+   * 不在这里手写「找 id=right 的 placement」—— 面板停左侧时内容挂在
+   * 另一条 placement 上，手写版会静默读空。 */
+  const read = (rel: string) => readFileSync(resolve(process.cwd(), rel), "utf8");
+  const mount = read("src/renderer/components/shell/ClaudeShellMount.tsx");
+  const pane = read("src/renderer/components/shell/paneContent.tsx");
+
+  // 壳：停靠内容决定 aside 格显示哪个 tile
+  assert.match(mount, /hostedPaneContent\(/, "ClaudeShellMount 应经 hostedPaneContent 读停靠内容");
+  assert.match(mount, /content\?\.kind === "document"\)\s*return "artifact"/, "停靠的文档应落到 artifact tile");
+  assert.match(mount, /content\?\.kind === "flow"\)\s*return "canvas"/, "停靠的画布应落到 canvas tile");
+  assert.match(mount, /dockedTile \?\? tileForTab\(/, "停靠内容优先于页签");
+
+  // 面板：artifact 读停靠文档，且停靠优先于「活动文件」
+  assert.match(pane, /hostedPaneContent\(/, "paneContent 的 Office 分支应读停靠的文档（不只读活动文件）");
+  assert.match(pane, /const filePath = dockedDoc \?\? activeFile/, "停靠的文档优先于活动文件");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
+

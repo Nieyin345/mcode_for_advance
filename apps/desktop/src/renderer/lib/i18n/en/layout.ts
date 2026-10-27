@@ -174,6 +174,8 @@ export const en = {
   "layout.openBrowser": "Open browser",
   "layout.movePane": "Drag to move workspace pane",
   "layout.paneDocument": "Dock current DOCX in pane",
+  /** Accessible name for the right-pane tile tab switcher. */
+  "layout.paneTabSwitcher": "Right pane",
   "layout.paneFlow": "Node-RED editor",
   "layout.paneRestore": "Return to original pane",
   "layout.paneDocumentMoved": "Document is open in the dockable pane",
@@ -251,6 +253,11 @@ export const en = {
   "layout.pairDomain": "Own domain",
   "layout.domainWarning":
     "⚠️ Once your phone domain points at this computer, anyone can open that address. What guards it is the pairing code (5-minute expiry, void after 5 wrong tries) and the login account you set (locks after repeated wrong passwords) — use a long password. To stop public access, delete the hostname or stop the tunnel in Cloudflare.",
+  "layout.quickTunnelLabel": "Quick tunnel (no domain needed)",
+  "layout.quickTunnelStart": "Start",
+  "layout.quickTunnelRunning": "Running",
+  "layout.quickTunnelStop": "Stop",
+  "layout.quickTunnelHint": "cloudflared assigns a random trycloudflare.com address that lasts a short while. Good for connecting your phone right now; use your own domain below for a stable address.",
   "layout.domainLabel": "Public domain for the phone companion",
   "layout.domainSave": "Save",
   "layout.domainHint":

@@ -20,15 +20,24 @@
  * 斜杠命令……重写它等于重写整个产品。**外观重做的对象是「外壳与布局」**，
  * 内部面板按 UI-04 挂进 Claude 的结构里，逐个迁移。
  *
- * ## 三块并行线的接入点
+ * ## 三块并行线的接入点（2026-10-28 实况）
  *
- * Office / 扩展 / 工作流三条线各有自己的对话在做。它们的 UI 从这里接入：
- *  - **Office**：`renderTile("file")` 分支 + 文档 pane
- *  - **工作流**：`renderTile("preview")` 分支（看板）
- *  - **扩展**：右侧 rail 的扩展视图（`ModuleViewDock`）
+ * 三条线各自落在 `paneContent` 的一个 tile 上，**这一层不再各留一个分支**：
  *
- * 每个分支都留了 `TODO(ui-rebuild/<line>)` 标记，三条线各自替换自己那一段，
- * 互不覆盖。
+ * | 线 | 页签 | tile | 面板 |
+ * |---|---|---|---|
+ * | **Office** | （无独立页签） | `artifact` | `GenofficeViewHostPane` |
+ * | **扩展** | `extensions` | `mcpapp` | `ExtensionViewsPane` |
+ * | **工作流** | `flow` / `canvas` | `watercolor` / `canvas` | 运行看板 / 原厂画布 |
+ *
+ * 本文件只负责两件与「三条线都有关」的事：
+ *  1. `tileForTab` —— 页签 id → tile 类型（**必须显式**，靠 default 兜底会静默错位）；
+ *  2. **停靠优先** —— `paneLayout` 里有停靠的文档/画布时，aside 格显示它。
+ *     旧壳有这条规则（`pinnedDoc` 盖住内置页签），换壳时曾漏接 —— 症状是
+ *     「交给 Mcode AI」之后文档从界面上消失、工作流「停靠到右侧」没有反应。
+ *
+ * 上一版这段写的 `ModuleViewDock` / `renderTile("file") 分支` / `TODO` 标记
+ * **都已不存在**（ModuleHost 于 2026-10-27 整体删除）。照着旧注释去找会白跑一趟。
  */
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useSessionStore, selectActiveEnvPath, isCenterShowingDocument } from "../../stores/sessionStore.js";
@@ -40,6 +49,9 @@ import { LeftBar } from "../layout/LeftBar.js";
 import { ChatPane } from "../chat/ChatPane.js";
 import { BottomTerminalBar } from "../layout/BottomTerminalBar.js";
 import { renderPaneContent } from "./paneContent.js";
+import { PaneCustomContent, PaneTabSwitcher } from "./PaneTabSwitcher.js";
+import { useCustomUiStore } from "@renderer/stores/customUiStore.js";
+import { hostedPaneContent } from "@renderer/components/layout/paneLayout.js";
 import { resizeStack, type PaneTile, type PaneTileKind, type TileLayout } from "./paneTiles.js";
 import { WorkspaceInertShell } from "./ClassicShell.js";
 
@@ -117,6 +129,10 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   const startSession = useSessionStore((s) => s.startSession);
   const setSettingsOpen = useSessionStore((s) => s.setSettingsOpen);
   const setCommandPaletteOpen = useSessionStore((s) => s.setCommandPaletteOpen);
+  /* 【UI 重建 2026-10-28】当前是否有自定义右栏页签被选中。订阅它（而不是
+   * 在 `renderTile` 里 `getState()`）：`renderTile` 是渲染期调用，读非响应式
+   * 快照会让「点自定义页签」不触发重渲染，画面停在旧面板上。 */
+  const activeCustomTabId = useCustomUiStore((s) => s.activeTab);
 
   const toRow = (sess: { id: string; title: string }): ClaudeSession => {
     // 侧栏只列 `kind === "chat"` 的会话 —— side（侧聊）/ node（工作流节点）/
@@ -342,6 +358,28 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   // 【UI 重建 2026-10-27】顶栏的 pane 开关要用它。与 `⋯` 菜单、设置页
   // 走的是**同一个** store action，不是各写一份。
   const asideFirst = rightDock === "left";
+  /* 【UI 重建 2026-10-28】**停靠的内容优先于页签。**
+   *
+   * 旧壳里 `pinnedDoc` / `pinnedFlow` 非空时，内置页签整块被 `hidden` 盖住
+   * （`RightPanel` 里那句 `pinnedDoc || pinnedFlow ? "hidden"`）。新壳换壳时
+   * **只接了页签这一半**，于是两条「把东西放进右栏」的路都断了：
+   *
+   *   - **Office**：「交给 Mcode AI」→ `handoffOfficeToMcode` 写 `paneLayout`
+   *     的 `document` 内容 —— 新壳不读它，文档当场从界面消失；
+   *   - **工作流**：设置页的「停靠到右侧」→ 写 `flow` 内容 —— 同理。
+   *
+   * 这里把那条规则接回来：**有停靠内容时，aside 格显示它，而不是页签对应的
+   * tile**。用户点页签要看别的东西时，页签仍然赢（见下面 `tabPinnedAbove`），
+   * 否则停靠一次就再也切不走 —— 那比丢文档更难理解。
+   *
+   * ⚠️ 读 `paneLayout` 走 `hostedPaneContent`（旧壳同一个纯函数），不手写
+   * 「找 id=right 的 placement」：面板停左侧时内容挂在另一条 placement 上。 */
+  const dockedTile = useSessionStore((s): PaneTileKind | null => {
+    const content = s.paneLayout ? hostedPaneContent(s.paneLayout) : undefined;
+    if (content?.kind === "document") return "artifact";
+    if (content?.kind === "flow") return "canvas";
+    return null;
+  });
   const tileForTab = (tab: string): PaneTileKind => {
     switch (tab) {
       // 【UI 重建 2026-10-27】默认右栏是项目概览。**必须显式列出来** ——
@@ -407,8 +445,7 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
     };
   });
   /* `rightDock` 变化 → 把 aside 挪到 chat 的前面或后面。
-   * 只重排，不改 flex —— 用户拖出来的分栏比例要保留。 */
-  useEffect(() => {
+   * 只重排，不改 flex —— 用户拖出来的分栏比例要保留。 */  useEffect(() => {
     setTileLayout((prev) => {
       const root = prev.root;
       if (root.direction !== "row" || root.children.length !== 2) return prev;
@@ -423,24 +460,52 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       return { ...prev, root: { ...root, children: want } };
     });
   }, [asideFirst]);
-  // 右栏页签变了 → 换 tile，但**保留用户拖出来的分栏比例**：
-  // 只换 tileId，不动 flex；两个 tile 时按位置替换右侧那个。
+  /* 右栏页签变了 → **用户点页签 = 主动离开停靠内容。**
+   *
+   * 有停靠文档/画布时 aside 格显示的是它（见下面的 `dockedTile`，那是
+   * 唯一改 aside 格的 effect）。如果这里什么都不做，用户点「文件」会被
+   * 停靠内容继续盖着，看着像没反应。所以点页签这一下**先清掉停靠** ——
+   * 与旧壳那个「×（返回原有面板）」同一语义，只是不用再手动按 ×。
+   *
+   * ⚠️ 这里**不再改 tile 树**：改树只有下面那一条 effect（单一写入口）。
+   * 从前是两条 effect 都往 `setTileLayout` 写，依赖同时变化时结果取决于
+   * 声明顺序 —— 那是「谁跑在后面谁赢」，不是规则。 */
   const prevTab = useRef(rightPanelTab);
   useEffect(() => {
     if (prevTab.current === rightPanelTab) return;
     prevTab.current = rightPanelTab;
-    const want = tileForTab(rightPanelTab);
+    const layout = useSessionStore.getState().paneLayout;
+    if (!layout) return;
+    const content = hostedPaneContent(layout);
+    if (content?.kind === "document" || content?.kind === "flow") {
+      useSessionStore.getState().setLayoutPaneContent("right", undefined);
+    }
+  }, [rightPanelTab]);
+
+  /* 【UI 重建 2026-10-28】停靠内容出现/消失 → aside 格换成它 / 换回页签对应的格。
+   *
+   * 两条路都要走同一个 `setTileLayout`，所以把它们合成一条 effect：
+   * 分成两条的话，「刚停靠完又点页签」会让两条 effect 抢着改同一棵树
+   * （React 批处理下顺序可读，但两个依赖同时变化时的结果取决于声明顺序 ——
+   * 那是「谁跑在后面谁赢」，不是规则）。
+   *
+   * 判据：**当前 aside 格里是哪一个 tile**，而不是「上一次停靠的是什么」。
+   * 这样它天然幂等：值没变就返回原布局，不会因为无关重渲染反复改树。 */
+  useEffect(() => {
+    const want: PaneTileKind = dockedTile ?? tileForTab(rightPanelTab);
     setTileLayout((prev) => {
       const root = prev.root;
       if (root.direction !== "row" || root.children.length !== 2) return prev;
       const [a, b] = root.children;
       if (a.kind !== "tile" || b.kind !== "tile") return prev;
+      const aside = a.tileId === "chat" ? b : a;
+      if (aside.tileId === want) return prev;
       if (a.tileId === "chat") {
         return { ...prev, root: { ...root, children: [a, { ...b, tileId: want }] } };
       }
       return { ...prev, root: { ...root, children: [{ ...a, tileId: want }, b] } };
     });
-  }, [rightPanelTab]);
+  }, [dockedTile, rightPanelTab]);
 
   /** 顶栏 pane 开关的统一动作：**toggle 语义**。
    *
@@ -559,7 +624,31 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
         setTileLayout((prev) => resizeStack(prev, _stack, a, na, b, nb))}
       onExpandTile={setExpandedTile}
       expandedTile={expandedTile}
-      renderTile={(tileId) => renderPaneContent(tileId)}
+      /* 【UI 重建 2026-10-28】**右栏的页签入口**。
+       *
+       * 换壳之后 `rightPanelTab` 只有写入口（顶栏五个开关 + 三条命令），
+       * 而 schema 里有 13 个值 —— `browser` / `extensions` / `canvas` /
+       * `tasks` / `taskcenter` / `flow` 用户**点不到**。三条并行线的症状
+       * （装完扩展找不到、画布没有停靠位、artifact 无页签）根都在这里。
+       *
+       * 挂在 aside 格的标题行上，不新开空间。清单来自 `rightPanel.tab`
+       * 那个自定义 UI 挂载位（顺序/隐藏/自定义项都是它在管），不另抄一份。 */
+      asideHeader={<PaneTabSwitcher />}
+      /* 【UI 重建 2026-10-28】**自定义页签的内容也要能画出来。**
+       *
+       * 旧壳里「切到自定义页签」（`customUiStore.activeTab`）与「画它的内容」
+       * （`CustomTabView`）是两处。只搬切换器会让点自定义页签**高亮变了、
+       * 内容还是上一个内置面板** —— 用户看到的是「点了没反应」。
+       *
+       * 顺序要紧：自定义页签优先于内置 tile。两个状态同时非空时（用户点了
+       * 自定义页签、内置 `rightPanelTab` 还留着旧值），显示的是用户最后点的那个。 */
+      renderTile={(tileId) => {
+        /* ⚠️ 用**组件里订阅的值**，不是 `getState()` —— 后者读得到最新值，
+         * 但它不是响应式的：用户点自定义页签时这里不会重渲染，画面停在
+         * 上一个面板上（「点了没反应」的另一种写法）。 */
+        if (activeCustomTabId) return <PaneCustomContent customId={activeCustomTabId} />;
+        return renderPaneContent(tileId);
+      }}
     />
     </WorkspaceInertShell>
   );
