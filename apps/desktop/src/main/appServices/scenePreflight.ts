@@ -40,6 +40,17 @@ import {
  *
  * 空集对用户是可解释的：「这个场景要的扩展能力本机没登记」；假装存在会让预检判绿、
  * 部署之后才在运行期炸。
+ *
+ * ## ⚠️ 现状（2026-10-27）：**这个注入点还没有任何装配方调用**
+ *
+ * 也就是说：**装了扩展，场景预检仍然报「扩展能力本机不可用」**，因为目录始终是空集。
+ * 这是 fail-closed 的方向（不会误判绿），但**它是缺口不是设计** —— 别把「预检说没有」
+ * 读成「确实没有」。
+ *
+ * 补上它需要先回答一个问题：Theia 扩展怎么声明自己的场景能力？VS Code 扩展模型里
+ * **没有** `capabilities: [{kind: "query"|"action"|"task"}]` 这个概念 —— 所以不能
+ * 直接把 Theia 的 registry 接过来当目录用，得先定一份映射或约定。
+ * 在定下来之前，保持空集比编一份假的映射安全。
  */
 let extensionCatalogSource: (() => { capabilities: readonly { id: string; kind: "query" | "action" | "task" }[] } | undefined) | null = null;
 
