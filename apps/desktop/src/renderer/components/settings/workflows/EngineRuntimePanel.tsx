@@ -894,9 +894,21 @@ export function EngineRuntimePanel({ active: activeTab = true, engineId, editorO
   // Read the Host's acknowledged deploy receipt through the existing list IPC
   // only while this pane is active. A status poll never causes a deploy.
   const refreshDeployState = listRead.refetch;
-  const running = listRead.data?.engines.some(
+  /* ⚠️ `data?.engines` —— 可选链必须**一路到底**。
+   *
+   * 原来写的是 `listRead.data?.engines.some(...)`：只保护了 `data` 为 null，
+   * 而 `engines` 是数组时才安全。当 Host 返回的载荷不带 `engines`（比如
+   * `{kind:"list", items:[]}` 这种形状，或者读失败后落到的空结果）时，
+   * 这一行抛 `TypeError: Cannot read properties of undefined (reading 'some')`，
+   * **整棵设置页被 React 卸载** —— 用户看到的是「点工作流 → 设置界面整个消失」，
+   * 控制台只有一条 TypeError，看不出是哪一页。
+   *
+   * 这类崩溃会被 `settings-layout-smoke` 抓到（`[diag] exceptions=...`），
+   * 但它是运行时才炸的，类型系统看不见（`data` 的声明类型是可信的联合，
+   * 而真实 IPC 载荷不一定满足）。 */
+  const running = (listRead.data?.engines ?? []).some(
     e => e.engineId === "node-red" && e.state === "running",
-  ) ?? false;
+  );
   const [pageVisible, setPageVisible] = useState(() =>
     typeof document === "undefined" || !document.hidden);
   // A minimized/backgrounded Electron window has no visible editor to keep

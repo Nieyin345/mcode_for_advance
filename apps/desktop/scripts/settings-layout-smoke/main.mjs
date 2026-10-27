@@ -333,7 +333,15 @@ try{
     await page.eval(`window.__store.getState().setSettingsOpen(true,"workflows")`);
     await page.sleep(350);
     const navAfterJump=await page.eval(activeNavExpr);
-    const bodyAfterJump=await page.eval('(document.querySelector(".settings-root")||{innerText:"<missing> exceptions="+JSON.stringify(window.__exceptions||[])+">"}).innerText');
+    /* 【UI 重建 2026-10-27】拿不到 `.settings-root` 时，把**控制台与异常**一并报出来。
+     * 「页面还在但内容没了」最常见的两种原因（被错误边界接住、Suspense 永久挂起）
+     * 都只在 console 里留痕，不在 exceptionThrown 里 —— 而 fixture 之前只收后者，
+     * 于是日志干净得像什么都没发生。 */
+    const bodyAfterJump=await page.eval('(document.querySelector(".settings-root")||{innerText:"<missing>"}).innerText');
+    if (bodyAfterJump === "<missing>") {
+      console.log('  [diag] exceptions=', JSON.stringify(page.exceptions ?? []).slice(0, 600));
+      console.log('  [diag] console=', JSON.stringify(page.consoleMessages ?? []).slice(0, 1500));
+    }
     check('★ 已打开时深链「workflows」:左栏高亮当场切到「工作流」',navAfterJump==='工作流',navAfterJump);
     check('★ 深链后内容区真的换成工作流页(不是停在上一个栏目)',bodyAfterJump.includes('工作流库'),bodyAfterJump.slice(0,160));
 

@@ -88,7 +88,7 @@ export async function withAuditPage(dir, fn) {
     if(!target)throw new Error('Owned browser has no page');
     ws=new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve,reject)=>{ws.addEventListener('open',resolve,{once:true});ws.addEventListener('error',reject,{once:true});});
-    let seq=0;const pending=new Map();const exceptions=[];
+    let seq=0;const pending=new Map();const exceptions=[];const consoleMessages=[];
     ws.addEventListener('message',event=>{
       const message=JSON.parse(String(event.data));
       if(message.id && pending.has(message.id)){
@@ -96,6 +96,22 @@ export async function withAuditPage(dir, fn) {
         if(message.error)p.reject(new Error(JSON.stringify(message.error)));else p.resolve(message.result);
       }else if(message.method==='Runtime.exceptionThrown'){
         const d=message.params.exceptionDetails;exceptions.push(d.exception?.description ?? d.text);
+      }else if(message.method==='Runtime.consoleAPICalled'){
+        /* 【UI 重建 2026-10-27】**把 console 也收进来。**
+         *
+         * 这个 fixture 之前只收 `exceptionThrown`。于是「React 抛错被错误边界
+         * 接住 / 组件 console.error 后整棵自卸载」这类情况**一个异常都收不到**，
+         * 表现是「页面还在但内容没了」，而日志干净得像什么都没发生。
+         * React 的很多失败（resolved-to-nothing、hydration mismatch、hook 顺序）
+         * 恰恰是走 console.error 而不是 throw。
+         *
+         * 只收 error/warning 两级 —— 其它级别是噪音。 */
+        const type = message.params?.type;
+        if (type === 'error' || type === 'warning') {
+          const parts = (message.params?.args ?? []).map((a) =>
+            a?.value !== undefined ? String(a.value) : (a?.description ?? a?.type ?? ''));
+          consoleMessages.push(`[${type}] ${parts.join(' ')}`.slice(0, 500));
+        }
       }
     });
     const send=(method,params={})=>new Promise((resolve,reject)=>{
@@ -104,7 +120,7 @@ export async function withAuditPage(dir, fn) {
     });
     await send('Runtime.enable');await send('Page.enable');
     const page={
-      exceptions,send,sleep,
+      exceptions,consoleMessages,send,sleep,
       async eval(expression){const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);return r.result?.value;},
       async waitFor(expression,ms=15000){const end=Date.now()+ms;while(Date.now()<end){if(await page.eval(`!!(${expression})`))return true;await sleep(100);}throw new Error('UI wait timeout: '+expression+'; exceptions='+exceptions.join('\n'));},
       async size(width,height){await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});await sleep(200);},
