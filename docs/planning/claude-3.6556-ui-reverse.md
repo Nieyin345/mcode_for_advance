@@ -647,20 +647,80 @@ Mcode 用 `@media` 的话，缩窗口会同时改变所有区域。
 > ⚠️ 这一条需要真机确认：`data-variant` 到底是不是 `desktop`。
 > 静态能确定的是「有这两个分支」，不能确定「当前走哪一支」。
 
-### 11.5 仍然拿不到的（这一条才是真的）
+### 11.5 图标：一半拿到了，一半没有
 
-| 项 | 状态 |
+**重要发现：Claude 的图标库是开源的。**
+
+`vendor-icons-BplZ6UOJ.js` 是**完整的 Phosphor React 源码**，识别依据：
+
+- `viewBox="0 0 256 256"`（Phosphor 特有，别家是 24/16）
+- `IconBase` 组件 + `weights` Map（regular / bold / fill / duotone …）
+- 每个图标一个组件，带 `displayName="XxxIcon"`
+- 默认 `weight:"regular"` / `size:"1em"` / `color:"currentColor"`
+
+**Phosphor Icons 是 MIT 许可**，可以自由使用。
+
+#### 已经拿到的：文件类型图标（12 个，含 path）
+
+```
+AtomIcon · CodeIcon · FileCodeIcon · FileCsvIcon · FileDocIcon
+FileIcon · FileImageIcon · FilePdfIcon · FileTextIcon · FileVideoIcon
+FileZipIcon · ImageIcon
+```
+
+path 完整，见 `tools/claude-ui-reverse/file-icons.txt` + `.json`。
+其中 6 个还带 `light` 权重（两条 path）。
+
+#### 还没有的：UI 图标（ArrowReturn / StopCircle / CaretDown …）
+
+这些**不是** Phosphor 的固定组件，而是**编译期按名字查表**：
+
+```js
+y(Re, { name: "ArrowReturn", size: "sm" })
+```
+
+`Re` 的内部实现被 minify 改名，名字→path 的表与名字在代码里**不相邻**。
+实测：全仓搜「`Name:"M…"` 连续 3 组以上」= **0 命中**。
+
+**但有个好消息**：既然底层是 Phosphor，**UI 图标极可能也是 Phosphor 里同名/近名的图标**。
+比如 `CaretDown` / `CaretRight` / `ArrowUp` / `ArrowReturn` 都在 Phosphor 里有对应。
+用的时候 `npm i @phosphor-icons/react`，按名字取，形状能对上。
+
+> ⚠️ 这一条是**推断**，不是验证过的。要用之前核对一次形状。
+
+---
+
+### 11.6 三条调试通道：实测都堵死
+
+| 方式 | 结果 |
 |---|---|
-| 图标 SVG path | 编译期组件，名字→path 表被 minify。**只有 276 个名字**（`icon-names.txt`） |
-| `--remote-debugging-port` | Claude **自己拒绝启动**：`refusing to start — a debugging or network-override switch is present on the command line.` |
-| `--inspect` | fuse `EnableNodeCliInspectArguments` 是 **disabled** |
-| 计算后的实际布局 | 需要 layout 引擎。内存转储只给出「组件真的在 DOM 里」的存在性证据 |
+| `--remote-debugging-port=9333` | Claude 拒绝启动：`refusing to start — a debugging or network-override switch is present on the command line.` |
+| `--no-sandbox --remote-debugging-port=9444` | **同样拒绝**（`--no-sandbox` 不能绕过） |
+| `--inspect=9334` | fuse `EnableNodeCliInspectArguments` 是 **disabled**；且新 `--user-data-dir` 下缓存目录被占 |
+| 读渲染进程内存 | **能读**（346 MB），但只能证明「组件真的在 DOM 里」；SVG path 不以字符串存在（Blink 已解析成 C++ path 对象，只捞到 6 条，全是杂项） |
+
+**「把 Claude 关上」没用** —— `--remote-debugging-port` 是**启动参数**，
+必须在启动那一刻带上。关掉再正常打开，参数不会自己出现。
+
+**唯一还剩的路**：复制一份 `app` 目录（702 MB）到可写位置，解开 `app.asar`
+（`asar extract`），在主进程里加 `app.commandLine.appendSwitch("remote-debugging-port")`，
+再重打包。**但有两个硬障碍**：
+
+1. `EnableEmbeddedAsarIntegrityValidation` 是 **enabled** —— 改了 asar 会被完整性校验拦
+2. `OnlyLoadAppFromAsar` 是 **enabled** —— 不能用解包目录代替 asar
+
+绕过得同时改 exe 里的两个 fuse 字节（`claude.exe` 235 MB），**且只影响那份副本**。
+代价大、易碎、且每次 Claude 升级都要重做。
+
+**建议：不做。** 现在已经有的数据够画界面了。
+
+---
 
 ## 12. 数据与脚本在哪
 
 ```
 tools/claude-ui-reverse/           ← 全部脚本 + 3.6556.2.0 快照
-├── README.md                      用法 + 五个坑 + 拿不到的东西
+├── README.md                      用法 + 六个坑 + 拿不到的东西
 ├── extract-tokens.mjs             --cds-* → px（含 rem-scale）
 ├── extract-visual.mjs             颜色/阴影/z-index/动画/字体
 ├── extract-semantic-classes.mjs   shadow-composer 这类语义类
@@ -669,6 +729,10 @@ tools/claude-ui-reverse/           ← 全部脚本 + 3.6556.2.0 快照
 ├── scan-all-classnames.mjs        全量 className 解算
 ├── extract-i18n.mjs               文案按值归类
 ├── icon-names.py                  276 个图标名
+├── extract-file-icons.mjs         **12 个文件类型图标（Phosphor, 含 path）**
+├── extract-svg-from-memory.mjs    尝试从内存抓 path（失败，保留说明）
+├── extract-all-css.mjs            扫全部 25 个 CSS，按前缀报告变量
+├── extract-sidebar-vars.mjs       侧栏 --df-* 分档表
 ├── dump-renderer-memory.mjs       运行时 DOM 存在性佐证
 └── *.txt / *.json                 上述脚本在 3.6556.2.0 上的输出快照
 ```
