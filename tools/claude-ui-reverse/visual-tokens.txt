@@ -1,0 +1,621 @@
+Claude 3.6556.2.0 —— 视觉 token（亮/暗并排）
+
+数据源：ion-dist/assets/v1/c6a992d55-Che1orl5.css
+层：亮色 = :root + .cds-root；暗色 = :root + [data-mode=dark]（含 prefers-color-scheme）
+解引用：var() 递归展开，最多 16 层
+
+
+==============================================================================
+底色 surface  (6)
+==============================================================================
+  --cds-surface-0                          #f9f9f7                                        | dark: #0b0b0b
+  --cds-surface-1                          #fcfcfb                                        | dark: #151515
+  --cds-surface-2                          #fff                                           | dark: #1a1a19
+  --cds-surface-3                          #fff                                           | dark: #20201f
+  --cds-surface-panel                      #fff                                           | dark: #1a1a19
+  --cds-surface-popover                    #fff                                           | dark: #20201f
+
+==============================================================================
+文字 text  (29)
+==============================================================================
+  --cds-text-accent                        #184f95                                        | dark: #6da7ec
+  --cds-text-button-disabled               initial                                        | dark: —
+  --cds-text-danger                        #8e2626                                        | dark: #ec7e7e
+  --cds-text-disabled                      hsl(from #0b0b0b h s l / 35%)                  | dark: hsl(from #fff h s l / 35%)
+  --cds-text-git-added                     —                                              | dark: #32d74b
+  --cds-text-git-closed                    —                                              | dark: #ff6159
+  --cds-text-git-conflicting               —                                              | dark: #fa832e
+  --cds-text-git-draft                     —                                              | dark: #a6a6a6
+  --cds-text-git-merged                    —                                              | dark: #b796ff
+  --cds-text-git-modified                  —                                              | dark: #ffd014
+  --cds-text-git-opened                                                                   | dark: #32d74b
+  --cds-text-git-queued                                                                   | dark: #ffd014
+  --cds-text-git-removed                   —                                              | dark: #ff2c56
+  --cds-text-muted                         #898781                                         （暗色相同）
+  --cds-text-primary                       #0b0b0b                                        | dark: #f0efec
+  --cds-text-pro                           #4a3aa7                                        | dark: #a096eb
+  --cds-text-secondary                     #52514e                                        | dark: #c3c2b7
+  --cds-text-stays-secondary               initial                                         （暗色相同）
+  --cds-text-success                       #006300                                        | dark: #0ca30c
+  --cds-text-tint-aqua                     #065f49                                        | dark: #3bbd8c
+  --cds-text-tint-blue                     #184f95                                        | dark: #6da7ec
+  --cds-text-tint-green                    #006300                                        | dark: #55bf50
+  --cds-text-tint-magenta                  #862a4c                                        | dark: #e87ba4
+  --cds-text-tint-orange                   #863311                                        | dark: #ec835a
+  --cds-text-tint-red                      #8e2626                                        | dark: #ec7e7e
+  --cds-text-tint-violet                   #4a3aa7                                        | dark: #a096eb
+  --cds-text-tint-yellow                   #734500                                        | dark: #db9300
+  --cds-text-user-message-personal         #184f95                                        | dark: #6da7ec
+  --cds-text-warning                       #734500                                        | dark: #db9300
+
+==============================================================================
+填充 fill  (37)
+==============================================================================
+  --cds-fill-accent                        #2a78d6                                        | dark: —
+  --cds-fill-accent-hover                  #3987e5                                        | dark: —
+  --cds-fill-brand                         #c6613f                                        | dark: —
+  --cds-fill-brand-hover                   #d97757                                        | dark: —
+  --cds-fill-button-ghost-hover            initial                                        | dark: —
+  --cds-fill-button-layer                  initial                                        | dark: —
+  --cds-fill-control                       hsl(from #0b0b0b h s l / 10%)                  | dark: hsl(from #fff h s l / 10%)
+  --cds-fill-control-hover                 hsl(from #0b0b0b h s l / 20%)                  | dark: hsl(from #fff h s l / 20%)
+  --cds-fill-danger                        #d03b3b                                        | dark: —
+  --cds-fill-danger-hover                  #e34948                                        | dark: —
+  --cds-fill-disabled                      hsl(from #0b0b0b h s l / 5%)                   | dark: hsl(from #fff h s l / 5%)
+  --cds-fill-field                         #ffffff80                                      | dark: hsl(from #fff h s l / 5%)
+  --cds-fill-field-ring                    hsl(from #0b0b0b h s l / 10%)                  | dark: hsl(from #fff h s l / 10%)
+  --cds-fill-ghost-hover                   hsl(from #0b0b0b h s l / 5%)                   | dark: hsl(from #fff h s l / 7.5%)
+  --cds-fill-ghost-selected                hsl(from #0b0b0b h s l / 10%)                  | dark: hsl(from #fff h s l / 15%)
+  --cds-fill-primary                       #0b0b0b                                        | dark: #fff
+  --cds-fill-primary-hover                 #2c2c2a                                        | dark: #e1e0d9
+  --cds-fill-primary-layer                 initial                                        | dark: —
+  --cds-fill-pro                           #7161e0                                        | dark: —
+  --cds-fill-pro-hover                     #8173e3                                        | dark: —
+  --cds-fill-secondary                     #ffffff1a                                      | dark: hsl(from #fff h s l / 10%)
+  --cds-fill-secondary-hover               hsl(from #0b0b0b h s l / 5%)                   | dark: hsl(from #fff h s l / 14%)
+  --cds-fill-secondary-layer               initial                                        | dark: —
+  --cds-fill-secondary-pressed-ring        hsl(from #0b0b0b h s l / 10%)                  | dark: hsl(from #fff h s l / 10%)
+  --cds-fill-secondary-ring                hsl(from #0b0b0b h s l / 10%)                  | dark: transparent
+  --cds-fill-success                       #009300                                        | dark: —
+  --cds-fill-success-hover                 #0ca30c                                        | dark: —
+  --cds-fill-tint-aqua                     initial                                        | dark: —
+  --cds-fill-tint-blue                     initial                                        | dark: —
+  --cds-fill-tint-green                    initial                                        | dark: —
+  --cds-fill-tint-magenta                  initial                                        | dark: —
+  --cds-fill-tint-orange                   initial                                        | dark: —
+  --cds-fill-tint-red                      initial                                        | dark: —
+  --cds-fill-tint-violet                   initial                                        | dark: —
+  --cds-fill-tint-yellow                   initial                                        | dark: —
+  --cds-fill-warning                       #fab219                                        | dark: —
+  --cds-fill-warning-hover                 #eda100                                        | dark: —
+
+==============================================================================
+边框 border  (21)
+==============================================================================
+  --cds-border                             hsl(from #0b0b0b h s l / 10%)                  | dark: hsl(from #fff h s l / 10%)
+  --cds-border-accent                      #86b6ef                                        | dark: #0d366b
+  --cds-border-danger                      #f09595                                        | dark: #641919
+  --cds-border-editor-comment              #b77700                                        | dark: #db9300
+  --cds-border-editor-comment-open         #a66a00                                        | dark: #fab219
+  --cds-border-editor-comment-target       #a66a00                                        | dark: —
+  --cds-border-git-added                   color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #32d74b 40%, transparent)
+  --cds-border-git-closed                  color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #ff6159 40%, transparent)
+  --cds-border-git-conflicting             color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #fa832e 40%, transparent)
+  --cds-border-git-draft                   color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #a6a6a6 40%, transparent)
+  --cds-border-git-merged                  color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #b796ff 40%, transparent)
+  --cds-border-git-modified                color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #ffd014 40%, transparent)
+  --cds-border-git-opened                  color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #32d74b 40%, transparent)
+  --cds-border-git-queued                  color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #ffd014 40%, transparent)
+  --cds-border-git-removed                 color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #ff2c56 40%, transparent)
+  --cds-border-line                        initial                                        | dark: —
+  --cds-border-pro                         #b0a7f2                                        | dark: #322777
+  --cds-border-strong                      hsl(from #0b0b0b h s l / 20%)                  | dark: hsl(from #fff h s l / 20%)
+  --cds-border-stronger                    hsl(from #0b0b0b h s l / 40%)                  | dark: hsl(from #fff h s l / 40%)
+  --cds-border-success                     #73cb6d                                        | dark: #074506
+  --cds-border-warning                     #eda100                                        | dark: #512e00
+
+==============================================================================
+强调 accent / 状态  (59)
+==============================================================================
+  --cds-prose-axis-wght-heading-serif                                                     | dark: "wght" 480,
+  --cds-prose-weight-heading-serif         520                                            | dark: —
+  --cds-role-accent-100                    #cde2fb                                         （暗色相同）
+  --cds-role-accent-250                    #86b6ef                                         （暗色相同）
+  --cds-role-accent-300                    #6da7ec                                         （暗色相同）
+  --cds-role-accent-400                    #3987e5                                         （暗色相同）
+  --cds-role-accent-450                    #2a78d6                                         （暗色相同）
+  --cds-role-accent-50                     #e7f1fb                                         （暗色相同）
+  --cds-role-accent-600                    #184f95                                         （暗色相同）
+  --cds-role-accent-700                    #0d366b                                         （暗色相同）
+  --cds-role-accent-800                    #032042                                         （暗色相同）
+  --cds-role-accent-850                    #03162c                                         （暗色相同）
+  --cds-role-accent-fill                   #2a78d6                                         （暗色相同）
+  --cds-role-accent-fill-hover             #3987e5                                         （暗色相同）
+  --cds-role-accent-on                     #fff                                            （暗色相同）
+  --cds-role-danger-100                    #fad6d6                                         （暗色相同）
+  --cds-role-danger-250                    #f09595                                         （暗色相同）
+  --cds-role-danger-300                    #ec7e7e                                         （暗色相同）
+  --cds-role-danger-400                    #e34948                                         （暗色相同）
+  --cds-role-danger-450                    #d03b3b                                         （暗色相同）
+  --cds-role-danger-600                    #8e2626                                         （暗色相同）
+  --cds-role-danger-700                    #641919                                         （暗色相同）
+  --cds-role-danger-800                    #3c0e0e                                         （暗色相同）
+  --cds-role-danger-fill                   #d03b3b                                         （暗色相同）
+  --cds-role-danger-fill-hover             #e34948                                         （暗色相同）
+  --cds-role-danger-on                     #fff                                            （暗色相同）
+  --cds-role-pro-100                       #dfdbfd                                         （暗色相同）
+  --cds-role-pro-250                       #b0a7f2                                         （暗色相同）
+  --cds-role-pro-300                       #a096eb                                         （暗色相同）
+  --cds-role-pro-400                       #8173e3                                         （暗色相同）
+  --cds-role-pro-450                       #7161e0                                         （暗色相同）
+  --cds-role-pro-600                       #4a3aa7                                         （暗色相同）
+  --cds-role-pro-700                       #322777                                         （暗色相同）
+  --cds-role-pro-800                       #1d1649                                         （暗色相同）
+  --cds-role-pro-fill                      #7161e0                                         （暗色相同）
+  --cds-role-pro-fill-hover                #8173e3                                         （暗色相同）
+  --cds-role-pro-on                        #fff                                            （暗色相同）
+  --cds-role-success-100                   #caeac7                                         （暗色相同）
+  --cds-role-success-250                   #73cb6d                                         （暗色相同）
+  --cds-role-success-400                   #0ca30c                                         （暗色相同）
+  --cds-role-success-450                   #009300                                         （暗色相同）
+  --cds-role-success-600                   #006300                                         （暗色相同）
+  --cds-role-success-700                   #074506                                         （暗色相同）
+  --cds-role-success-800                   #11260f                                         （暗色相同）
+  --cds-role-success-fill                  #009300                                         （暗色相同）
+  --cds-role-success-fill-hover            #0ca30c                                         （暗色相同）
+  --cds-role-success-on                    #0b0b0b                                         （暗色相同）
+  --cds-role-tooltip-bg                    #0b0b0b                                         （暗色相同）
+  --cds-role-tooltip-fg                    #fff                                            （暗色相同）
+  --cds-role-warning-100                   #f9dca4                                         （暗色相同）
+  --cds-role-warning-200                   #fab219                                         （暗色相同）
+  --cds-role-warning-250                   #eda100                                         （暗色相同）
+  --cds-role-warning-300                   #db9300                                         （暗色相同）
+  --cds-role-warning-600                   #734500                                         （暗色相同）
+  --cds-role-warning-700                   #512e00                                         （暗色相同）
+  --cds-role-warning-800                   #311a00                                         （暗色相同）
+  --cds-role-warning-fill                  #fab219                                         （暗色相同）
+  --cds-role-warning-fill-hover            #eda100                                         （暗色相同）
+  --cds-role-warning-on                    #0b0b0b                                         （暗色相同）
+
+==============================================================================
+git 状态  (36)
+==============================================================================
+  --cds-border-git-added                   color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #32d74b 40%, transparent)
+  --cds-border-git-closed                  color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #ff6159 40%, transparent)
+  --cds-border-git-conflicting             color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #fa832e 40%, transparent)
+  --cds-border-git-draft                   color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #a6a6a6 40%, transparent)
+  --cds-border-git-merged                  color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #b796ff 40%, transparent)
+  --cds-border-git-modified                color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #ffd014 40%, transparent)
+  --cds-border-git-opened                  color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #32d74b 40%, transparent)
+  --cds-border-git-queued                  color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #ffd014 40%, transparent)
+  --cds-border-git-removed                 color-mix(in srgb,  40%, transparent)          | dark: color-mix(in srgb, #ff2c56 40%, transparent)
+  --cds-fill-git-added                     —                                              | dark: #32d74b
+  --cds-fill-git-added-hover               —                                              | dark: #27c840
+  --cds-fill-git-closed                    —                                              | dark: #ff6159
+  --cds-fill-git-closed-hover              —                                              | dark: #ff4940
+  --cds-fill-git-conflicting               —                                              | dark: #fa832e
+  --cds-fill-git-conflicting-hover         —                                              | dark: #f97a1f
+  --cds-fill-git-draft                                                                    | dark: #a6a6a6
+  --cds-fill-git-draft-hover               —                                              | dark: #999
+  --cds-fill-git-merged                    —                                              | dark: #b796ff
+  --cds-fill-git-merged-hover              —                                              | dark: #a67dff
+  --cds-fill-git-modified                  —                                              | dark: #ffd014
+  --cds-fill-git-modified-hover            —                                              | dark: #fac800
+  --cds-fill-git-opened                                                                   | dark: #32d74b
+  --cds-fill-git-opened-hover                                                             | dark: #27c840
+  --cds-fill-git-queued                                                                   | dark: #ffd014
+  --cds-fill-git-queued-hover                                                             | dark: #fac800
+  --cds-fill-git-removed                                                                  | dark: #ff2c56
+  --cds-fill-git-removed-hover             —                                              | dark: #ff1342
+  --cds-text-git-added                     —                                              | dark: #32d74b
+  --cds-text-git-closed                    —                                              | dark: #ff6159
+  --cds-text-git-conflicting               —                                              | dark: #fa832e
+  --cds-text-git-draft                     —                                              | dark: #a6a6a6
+  --cds-text-git-merged                    —                                              | dark: #b796ff
+  --cds-text-git-modified                  —                                              | dark: #ffd014
+  --cds-text-git-opened                                                                   | dark: #32d74b
+  --cds-text-git-queued                                                                   | dark: #ffd014
+  --cds-text-git-removed                   —                                              | dark: #ff2c56
+
+==============================================================================
+调色板 gray/red/blue…  (280)
+==============================================================================
+  --cds-blue-0                             #fff                                            （暗色相同）
+  --cds-blue-10                            #fafcff                                         （暗色相同）
+  --cds-blue-100                           #cde2fb                                         （暗色相同）
+  --cds-blue-150                           #b7d3f6                                         （暗色相同）
+  --cds-blue-20                            #f5f9fe                                         （暗色相同）
+  --cds-blue-200                           #9ec5f4                                         （暗色相同）
+  --cds-blue-250                           #86b6ef                                         （暗色相同）
+  --cds-blue-30                            #f0f7fe                                         （暗色相同）
+  --cds-blue-300                           #6da7ec                                         （暗色相同）
+  --cds-blue-350                           #5598e7                                         （暗色相同）
+  --cds-blue-40                            #ebf4fc                                         （暗色相同）
+  --cds-blue-400                           #3987e5                                         （暗色相同）
+  --cds-blue-450                           #2a78d6                                         （暗色相同）
+  --cds-blue-50                            #e7f1fb                                         （暗色相同）
+  --cds-blue-500                           #256abf                                         （暗色相同）
+  --cds-blue-550                           #1c5cab                                         （暗色相同）
+  --cds-blue-60                            #e2eefa                                         （暗色相同）
+  --cds-blue-600                           #184f95                                         （暗色相同）
+  --cds-blue-650                           #104281                                         （暗色相同）
+  --cds-blue-70                            #ddebfa                                         （暗色相同）
+  --cds-blue-700                           #0d366b                                         （暗色相同）
+  --cds-blue-750                           #062b57                                         （暗色相同）
+  --cds-blue-80                            #d7e8fa                                         （暗色相同）
+  --cds-blue-800                           #032042                                         （暗色相同）
+  --cds-blue-810                           #031e3d                                         （暗色相同）
+  --cds-blue-820                           #021c39                                         （暗色相同）
+  --cds-blue-830                           #021a36                                         （暗色相同）
+  --cds-blue-840                           #021831                                         （暗色相同）
+  --cds-blue-850                           #03162c                                         （暗色相同）
+  --cds-blue-860                           #051426                                         （暗色相同）
+  --cds-blue-870                           #07121f                                         （暗色相同）
+  --cds-blue-880                           #091018                                         （暗色相同）
+  --cds-blue-890                           #0a0d11                                         （暗色相同）
+  --cds-blue-90                            #d2e5fa                                         （暗色相同）
+  --cds-blue-900                           #0b0b0b                                         （暗色相同）
+  --cds-gray-0                             #fff                                            （暗色相同）
+  --cds-gray-10                            #fcfcfb                                         （暗色相同）
+  --cds-gray-100                           #e1e0d9                                         （暗色相同）
+  --cds-gray-150                           #d2d1c7                                         （暗色相同）
+  --cds-gray-20                            #f9f9f7                                         （暗色相同）
+  --cds-gray-200                           #c3c2b7                                         （暗色相同）
+  --cds-gray-250                           #b4b3a8                                         （暗色相同）
+  --cds-gray-30                            #f6f6f4                                         （暗色相同）
+  --cds-gray-300                           #a5a49a                                         （暗色相同）
+  --cds-gray-350                           #97958d                                         （暗色相同）
+  --cds-gray-40                            #f3f3f0                                         （暗色相同）
+  --cds-gray-400                           #898781                                         （暗色相同）
+  --cds-gray-450                           #7b7974                                         （暗色相同）
+  --cds-gray-50                            #f0efec                                         （暗色相同）
+  --cds-gray-500                           #6d6b67                                         （暗色相同）
+  --cds-gray-550                           #5f5e5a                                         （暗色相同）
+  --cds-gray-60                            #edece8                                         （暗色相同）
+  --cds-gray-600                           #52514e                                         （暗色相同）
+  --cds-gray-650                           #454442                                         （暗色相同）
+  --cds-gray-70                            #eae9e4                                         （暗色相同）
+  --cds-gray-700                           #383835                                         （暗色相同）
+  --cds-gray-750                           #2c2c2a                                         （暗色相同）
+  --cds-gray-80                            #e7e6e1                                         （暗色相同）
+  --cds-gray-800                           #20201f                                         （暗色相同）
+  --cds-gray-810                           #1e1e1d                                         （暗色相同）
+  --cds-gray-820                           #1c1c1b                                         （暗色相同）
+  --cds-gray-830                           #1a1a19                                         （暗色相同）
+  --cds-gray-840                           #181817                                         （暗色相同）
+  --cds-gray-850                           #151515                                         （暗色相同）
+  --cds-gray-860                           #131313                                         （暗色相同）
+  --cds-gray-870                           #111                                            （暗色相同）
+  --cds-gray-880                           #0f0f0f                                         （暗色相同）
+  --cds-gray-890                           #0d0d0d                                         （暗色相同）
+  --cds-gray-90                            #e4e3dd                                         （暗色相同）
+  --cds-gray-900                           #0b0b0b                                         （暗色相同）
+  --cds-green-0                            #fff                                            （暗色相同）
+  --cds-green-10                           #fafdfa                                         （暗色相同）
+  --cds-green-100                          #caeac7                                         （暗色相同）
+  --cds-green-150                          #aee0a9                                         （暗色相同）
+  --cds-green-20                           #f5fbf4                                         （暗色相同）
+  --cds-green-200                          #91d68b                                         （暗色相同）
+  --cds-green-250                          #73cb6d                                         （暗色相同）
+  --cds-green-30                           #f0f9ef                                         （暗色相同）
+  --cds-green-300                          #55bf50                                         （暗色相同）
+  --cds-green-350                          #35b231                                         （暗色相同）
+  --cds-green-40                           #ebf7e9                                         （暗色相同）
+  --cds-green-400                          #0ca30c                                         （暗色相同）
+  --cds-green-450                          #009300                                         （暗色相同）
+  --cds-green-50                           #e5f4e4                                         （暗色相同）
+  --cds-green-500                          #008300                                         （暗色相同）
+  --cds-green-550                          #007300                                         （暗色相同）
+  --cds-green-60                           #e0f2de                                         （暗色相同）
+  --cds-green-600                          #006300                                         （暗色相同）
+  --cds-green-650                          #005400                                         （暗色相同）
+  --cds-green-70                           #dbf0d8                                         （暗色相同）
+  --cds-green-700                          #074506                                         （暗色相同）
+  --cds-green-750                          #0f350d                                         （暗色相同）
+  --cds-green-80                           #d5eed3                                         （暗色相同）
+  --cds-green-800                          #11260f                                         （暗色相同）
+  --cds-green-810                          #10230f                                         （暗色相同）
+  --cds-green-820                          #10210f                                         （暗色相同）
+  --cds-green-830                          #101e0f                                         （暗色相同）
+  --cds-green-840                          #101b0f                                         （暗色相同）
+  --cds-green-850                          #0f180e                                         （暗色相同）
+  --cds-green-860                          #0e160e                                         （暗色相同）
+  --cds-green-870                          #0e130d                                         （暗色相同）
+  --cds-green-880                          #0d100d                                         （暗色相同）
+  --cds-green-890                          #0c0e0c                                         （暗色相同）
+  --cds-green-90                           #d0eccd                                         （暗色相同）
+  --cds-green-900                          #0b0b0b                                         （暗色相同）
+  --cds-neutral-0                          #fff                                           | dark: #0b0b0b
+  --cds-neutral-10                         #fcfcfb                                        | dark: #0d0d0d
+  --cds-neutral-100                        #e1e0d9                                        | dark: #20201f
+  --cds-neutral-150                        #d2d1c7                                        | dark: #2c2c2a
+  --cds-neutral-20                         #f9f9f7                                        | dark: #0f0f0f
+  --cds-neutral-200                        #c3c2b7                                        | dark: #383835
+  --cds-neutral-250                        #b4b3a8                                        | dark: #454442
+  --cds-neutral-30                         #f6f6f4                                        | dark: #111
+  --cds-neutral-300                        #a5a49a                                        | dark: #52514e
+  --cds-neutral-350                        #97958d                                        | dark: #5f5e5a
+  --cds-neutral-40                         #f3f3f0                                        | dark: #131313
+  --cds-neutral-400                        #898781                                        | dark: #6d6b67
+  --cds-neutral-450                        #7b7974                                         （暗色相同）
+  --cds-neutral-50                         #f0efec                                        | dark: #151515
+  --cds-neutral-500                        #6d6b67                                        | dark: #898781
+  --cds-neutral-550                        #5f5e5a                                        | dark: #97958d
+  --cds-neutral-60                         #edece8                                        | dark: #181817
+  --cds-neutral-600                        #52514e                                        | dark: #a5a49a
+  --cds-neutral-650                        #454442                                        | dark: #b4b3a8
+  --cds-neutral-70                         #eae9e4                                        | dark: #1a1a19
+  --cds-neutral-700                        #383835                                        | dark: #c3c2b7
+  --cds-neutral-750                        #2c2c2a                                        | dark: #d2d1c7
+  --cds-neutral-80                         #e7e6e1                                        | dark: #1c1c1b
+  --cds-neutral-800                        #20201f                                        | dark: #e1e0d9
+  --cds-neutral-810                        #1e1e1d                                        | dark: #e4e3dd
+  --cds-neutral-820                        #1c1c1b                                        | dark: #e7e6e1
+  --cds-neutral-830                        #1a1a19                                        | dark: #eae9e4
+  --cds-neutral-840                        #181817                                        | dark: #edece8
+  --cds-neutral-850                        #151515                                        | dark: #f0efec
+  --cds-neutral-860                        #131313                                        | dark: #f3f3f0
+  --cds-neutral-870                        #111                                           | dark: #f6f6f4
+  --cds-neutral-880                        #0f0f0f                                        | dark: #f9f9f7
+  --cds-neutral-890                        #0d0d0d                                        | dark: #fcfcfb
+  --cds-neutral-90                         #e4e3dd                                        | dark: #1e1e1d
+  --cds-neutral-900                        #0b0b0b                                        | dark: #fff
+  --cds-orange-0                           #fff                                            （暗色相同）
+  --cds-orange-10                          #fefbfa                                         （暗色相同）
+  --cds-orange-100                         #f7d8cb                                         （暗色相同）
+  --cds-orange-150                         #f3c5b2                                         （暗色相同）
+  --cds-orange-20                          #fdf7f5                                         （暗色相同）
+  --cds-orange-200                         #f4ae94                                         （暗色相同）
+  --cds-orange-250                         #f09978                                         （暗色相同）
+  --cds-orange-30                          #fcf4f0                                         （暗色相同）
+  --cds-orange-300                         #ec835a                                         （暗色相同）
+  --cds-orange-350                         #eb6834                                         （暗色相同）
+  --cds-orange-40                          #faf0ec                                         （暗色相同）
+  --cds-orange-400                         #d95926                                         （暗色相同）
+  --cds-orange-450                         #c25124                                         （暗色相同）
+  --cds-orange-50                          #f9ece7                                         （暗色相同）
+  --cds-orange-500                         #ae461c                                         （暗色相同）
+  --cds-orange-550                         #993d19                                         （暗色相同）
+  --cds-orange-60                          #f8e9e2                                         （暗色相同）
+  --cds-orange-600                         #863311                                         （暗色相同）
+  --cds-orange-650                         #712b0f                                         （暗色相同）
+  --cds-orange-70                          #f7e5dd                                         （暗色相同）
+  --cds-orange-700                         #5d230b                                         （暗色相同）
+  --cds-orange-750                         #4b1b08                                         （暗色相同）
+  --cds-orange-80                          #f7e1d7                                         （暗色相同）
+  --cds-orange-800                         #371407                                         （暗色相同）
+  --cds-orange-810                         #341307                                         （暗色相同）
+  --cds-orange-820                         #301106                                         （暗色相同）
+  --cds-orange-830                         #2d1006                                         （暗色相同）
+  --cds-orange-840                         #290f06                                         （暗色相同）
+  --cds-orange-850                         #240e07                                         （暗色相同）
+  --cds-orange-860                         #1f0e08                                         （暗色相同）
+  --cds-orange-870                         #1a0e09                                         （暗色相同）
+  --cds-orange-880                         #150d0a                                         （暗色相同）
+  --cds-orange-890                         #100c0b                                         （暗色相同）
+  --cds-orange-90                          #f7dcd1                                         （暗色相同）
+  --cds-orange-900                         #0b0b0b                                         （暗色相同）
+  --cds-red-0                              #fff                                            （暗色相同）
+  --cds-red-10                             #fffbfb                                         （暗色相同）
+  --cds-red-100                            #fad6d6                                         （暗色相同）
+  --cds-red-150                            #f7c1c1                                         （暗色相同）
+  --cds-red-20                             #fef7f7                                         （暗色相同）
+  --cds-red-200                            #f4abab                                         （暗色相同）
+  --cds-red-250                            #f09595                                         （暗色相同）
+  --cds-red-30                             #fef3f3                                         （暗色相同）
+  --cds-red-300                            #ec7e7e                                         （暗色相同）
+  --cds-red-350                            #e66767                                         （暗色相同）
+  --cds-red-40                             #fdefef                                         （暗色相同）
+  --cds-red-400                            #e34948                                         （暗色相同）
+  --cds-red-450                            #d03b3b                                         （暗色相同）
+  --cds-red-50                             #fbebeb                                         （暗色相同）
+  --cds-red-500                            #b93535                                         （暗色相同）
+  --cds-red-550                            #a32c2c                                         （暗色相同）
+  --cds-red-60                             #fae7e7                                         （暗色相同）
+  --cds-red-600                            #8e2626                                         （暗色相同）
+  --cds-red-650                            #791e1e                                         （暗色相同）
+  --cds-red-70                             #fae3e3                                         （暗色相同）
+  --cds-red-700                            #641919                                         （暗色相同）
+  --cds-red-750                            #511212                                         （暗色相同）
+  --cds-red-80                             #fadfdf                                         （暗色相同）
+  --cds-red-800                            #3c0e0e                                         （暗色相同）
+  --cds-red-810                            #380d0d                                         （暗色相同）
+  --cds-red-820                            #340c0c                                         （暗色相同）
+  --cds-red-830                            #310b0b                                         （暗色相同）
+  --cds-red-840                            #2d0a0a                                         （暗色相同）
+  --cds-red-850                            #280a0a                                         （暗色相同）
+  --cds-red-860                            #230b0a                                         （暗色相同）
+  --cds-red-870                            #1d0b0a                                         （暗色相同）
+  --cds-red-880                            #170c0b                                         （暗色相同）
+  --cds-red-890                            #110c0b                                         （暗色相同）
+  --cds-red-90                             #fadada                                         （暗色相同）
+  --cds-red-900                            #0b0b0b                                         （暗色相同）
+  --cds-violet-0                           #fff                                            （暗色相同）
+  --cds-violet-10                          #fcfbff                                         （暗色相同）
+  --cds-violet-100                         #dfdbfd                                         （暗色相同）
+  --cds-violet-150                         #cfcafb                                         （暗色相同）
+  --cds-violet-20                          #f8f8ff                                         （暗色相同）
+  --cds-violet-200                         #bfb9f5                                         （暗色相同）
+  --cds-violet-250                         #b0a7f2                                         （暗色相同）
+  --cds-violet-30                          #f5f4ff                                         （暗色相同）
+  --cds-violet-300                         #a096eb                                         （暗色相同）
+  --cds-violet-350                         #9085e9                                         （暗色相同）
+  --cds-violet-40                          #f2f1ff                                         （暗色相同）
+  --cds-violet-400                         #8173e3                                         （暗色相同）
+  --cds-violet-450                         #7161e0                                         （暗色相同）
+  --cds-violet-50                          #efedff                                         （暗色相同）
+  --cds-violet-500                         #6250d6                                         （暗色相同）
+  --cds-violet-550                         #5645be                                         （暗色相同）
+  --cds-violet-60                          #ebeafe                                         （暗色相同）
+  --cds-violet-600                         #4a3aa7                                         （暗色相同）
+  --cds-violet-650                         #3e318e                                         （暗色相同）
+  --cds-violet-70                          #e8e6fe                                         （暗色相同）
+  --cds-violet-700                         #322777                                         （暗色相同）
+  --cds-violet-750                         #271e60                                         （暗色相同）
+  --cds-violet-80                          #e5e2fd                                         （暗色相同）
+  --cds-violet-800                         #1d1649                                         （暗色相同）
+  --cds-violet-810                         #1b1544                                         （暗色相同）
+  --cds-violet-820                         #19133f                                         （暗色相同）
+  --cds-violet-830                         #17123b                                         （暗色相同）
+  --cds-violet-840                         #151036                                         （暗色相同）
+  --cds-violet-850                         #130f32                                         （暗色相同）
+  --cds-violet-860                         #110e2b                                         （暗色相同）
+  --cds-violet-870                         #0f0e23                                         （暗色相同）
+  --cds-violet-880                         #0e0d1b                                         （暗色相同）
+  --cds-violet-890                         #0c0c13                                         （暗色相同）
+  --cds-violet-90                          #e2dffd                                         （暗色相同）
+  --cds-violet-900                         #0b0b0b                                         （暗色相同）
+  --cds-yellow-0                           #fff                                            （暗色相同）
+  --cds-yellow-10                          #fefcf8                                         （暗色相同）
+  --cds-yellow-100                         #f9dca4                                         （暗色相同）
+  --cds-yellow-150                         #f9c868                                         （暗色相同）
+  --cds-yellow-20                          #fcf8f1                                         （暗色相同）
+  --cds-yellow-200                         #fab219                                         （暗色相同）
+  --cds-yellow-250                         #eda100                                         （暗色相同）
+  --cds-yellow-30                          #fbf5ea                                         （暗色相同）
+  --cds-yellow-300                         #db9300                                         （暗色相同）
+  --cds-yellow-350                         #c98500                                         （暗色相同）
+  --cds-yellow-40                          #f9f2e4                                         （暗色相同）
+  --cds-yellow-400                         #b77700                                         （暗色相同）
+  --cds-yellow-450                         #a66a00                                         （暗色相同）
+  --cds-yellow-50                          #f9eeda                                         （暗色相同）
+  --cds-yellow-500                         #945d00                                         （暗色相同）
+  --cds-yellow-550                         #835100                                         （暗色相同）
+  --cds-yellow-60                          #faebce                                         （暗色相同）
+  --cds-yellow-600                         #734500                                         （暗色相同）
+  --cds-yellow-650                         #623900                                         （暗色相同）
+  --cds-yellow-70                          #fae7c2                                         （暗色相同）
+  --cds-yellow-700                         #512e00                                         （暗色相同）
+  --cds-yellow-750                         #412400                                         （暗色相同）
+  --cds-yellow-80                          #fae3b8                                         （暗色相同）
+  --cds-yellow-800                         #311a00                                         （暗色相同）
+  --cds-yellow-810                         #2e1800                                         （暗色相同）
+  --cds-yellow-820                         #2b1700                                         （暗色相同）
+  --cds-yellow-830                         #271500                                         （暗色相同）
+  --cds-yellow-840                         #231402                                         （暗色相同）
+  --cds-yellow-850                         #1f1204                                         （暗色相同）
+  --cds-yellow-860                         #1b1106                                         （暗色相同）
+  --cds-yellow-870                         #171007                                         （暗色相同）
+  --cds-yellow-880                         #130e09                                         （暗色相同）
+  --cds-yellow-890                         #0f0d0a                                         （暗色相同）
+  --cds-yellow-90                          #f9e0b0                                         （暗色相同）
+  --cds-yellow-900                         #0b0b0b                                         （暗色相同）
+
+
+==============================================================================
+阴影 / 焦点环  (16)
+==============================================================================
+  --cds-focus-shadow              
+      light: inset 0 0 0 1px #f9f9f7, 0 0 0 1px #2a78d6, 0 0 6px 1px #cde2fb
+      dark : inset 0 0 0 1px #0b0b0b, 0 0 0 1px , 0 0 6px 1px hsl(from #184f95 h s l / 60%)
+  --cds-focus-shadow-danger       
+      light: inset 0 0 0 1px #f9f9f7, 0 0 0 1px #d03b3b, 0 0 6px 1px #fad6d6
+      dark : inset 0 0 0 1px #0b0b0b, 0 0 0 1px , 0 0 6px 1px hsl(from #8e2626 h s l / 60%)
+  --cds-panel-shadow              
+      light: 0 0 0 1px hsl(from #0b0b0b h s l / 10%), 0 1px 2px 0 hsl(from #0b0b0b h s l / 6%), 0 2px 8px 0 hsl(from #0b0b0b h s l / 8%)
+      dark : 0 0 0 1px hsl(from #fff h s l / 10%), 0 1px 2px 0 hsl(from #0b0b0b h s l / 6%), 0 2px 8px 0 #0000003d
+  --cds-ring-color                
+      light: hsl(from #0b0b0b h s l / 10%)
+      dark : hsl(from #fff h s l / 10%)
+  --cds-segmented-control-thumb-shadow
+      light: initial
+      dark : —
+  --cds-shadow-color              
+      light: hsl(from #0b0b0b h s l / 8%)
+      dark : #0000003d
+  --cds-shadow-drop-glow          
+      light: inset 0 0 24px -2px hsl(from #2a78d6 h s l / 20%)
+  --cds-shadow-drop-glow-danger   
+      light: inset 0 0 24px -2px hsl(from #d03b3b h s l / 20%)
+  --cds-shadow-drop-ring          
+      light: inset 0 0 0 2px #2a78d6
+  --cds-shadow-drop-ring-danger   
+      light: inset 0 0 0 2px #d03b3b
+  --cds-shadow-lg                 
+      light: 0 4px 8px 0 hsl(from #0b0b0b h s l / 8%), 0 12px 28px -2px hsl(from #0b0b0b h s l / 8%)
+      dark : 0 4px 8px 0 hsl(from #0b0b0b h s l / 8%), 0 12px 28px -2px #0000003d
+  --cds-shadow-md                 
+      light: 0 2px 4px 0 hsl(from #0b0b0b h s l / 7%), 0 6px 16px 0 hsl(from #0b0b0b h s l / 8%)
+      dark : 0 2px 4px 0 hsl(from #0b0b0b h s l / 7%), 0 6px 16px 0 #0000003d
+  --cds-shadow-popover            
+      light: 0 8px 24px #0000001f, 0 2px 6px #00000014
+      dark : 0 8px 24px #00000052, 0 2px 6px #0003
+  --cds-shadow-sm                 
+      light: 0 1px 2px 0 hsl(from #0b0b0b h s l / 6%), 0 2px 8px 0 hsl(from #0b0b0b h s l / 8%)
+      dark : 0 1px 2px 0 hsl(from #0b0b0b h s l / 6%), 0 2px 8px 0 #0000003d
+  --cds-slider-handle-shadow-depth
+      light: hsl(from #0b0b0b h s l / 6%)
+      dark : hsl(from #0b0b0b h s l / 24%)
+  --cds-slider-handle-shadow-outer
+      light: hsl(from #0b0b0b h s l / 4%)
+      dark : hsl(from #fff h s l / 0%)
+
+
+==============================================================================
+z-index 层级  (22)
+==============================================================================
+      -1  .hit-row-main:before  ‖  .z-\[-1\]  ‖  [data-cds=Toolbar]>[data-cds-part=toolbar-ground],[data-cds=Page] [data-cds-part=page-head  ‖  .feature-anchor-row-fill:before
+       0  .z-0  ‖  :where([data-cds-dock-masked]) .in-data-cds-dock-masked\:z-0  ‖  .md\:z-0
+       1  :where(.cds-root [data-cds=Card]:has([data-cds=CardLink])) :where(a,button,input,select,te  ‖  :where(.cds-root [data-cds-row]) :where(a,button,input,select,textarea,label,summary,ifram  ‖  .scroll-fade-strip-top  ‖  .scroll-fade-strip-bottom  ‖  .z-1  ‖  .z-\[1\]
+       2  .z-2  ‖  .z-\[2\]  ‖  html.mcp-app-view-transition::view-transition-group(.mcp-app-modal-frame)
+       3  .z-3  ‖  .z-\[3\]  ‖  html.mcp-app-view-transition::view-transition-group(.mcp-app-content)
+       4  .z-\[4\]
+       5  .z-\[5\]
+      10  .z-10  ‖  .z-\[10\]  ‖  .focus-within\:z-10:focus-within  ‖  .hover\:z-10:hover  ‖  .focus-visible\:z-10:focus-visible  ‖  .dock\:z-10
+      11  .z-\[11\]
+      12  .z-\[12\]
+      15  .z-\[15\]
+      19  .\[\&\>tr\:first-child\>th\]\:z-\[19\]>tr:first-child>th
+      20  .z-20  ‖  .z-header  ‖  .max-md\:z-header  ‖  .\[\&_th\]\:z-20 th
+      21  thead>tr>.\[thead\>tr\>\&\]\:z-\[21\]
+      22  .has-\[\>\:focus-visible\]\:after\:z-\[22\]:has(>:focus-visible):after
+      30  .z-30  ‖  .z-sidebar
+      31  .z-\[31\]
+      40  .z-40
+      50  .z-50  ‖  .after\:z-50:after
+      70  .z-\[70\]
+     100  html.mcp-app-view-transition::view-transition-group(mcp-chat-input-container)
+     999  .z-\[999\]
+
+
+==============================================================================
+动画时长  (5)
+==============================================================================
+  --cds-dur-base                               .2s
+  --cds-dur-fast                               60ms
+  --cds-dur-sheet                              .3s
+  --cds-dur-slow                               .45s
+  --cds-dur-snap                               .12s
+
+==============================================================================
+缓动曲线  (5)
+==============================================================================
+  --cds-ease-out                               cubic-bezier(.165, .84, .44, 1)
+  --cds-ease-overshoot                         cubic-bezier(.34, 1.3, .64, 1)
+  --cds-ease-snap                              cubic-bezier(.32, .72, 0, 1)
+  --cds-message-actions-reveal-in-ease         cubic-bezier(.32, .72, 0, 1)
+  --cds-message-actions-reveal-out-ease        cubic-bezier(.32, .72, 0, 1)
+
+
+==============================================================================
+字体  (19)
+==============================================================================
+  --cds-font-axis-wght                         undefined
+  --cds-font-axis-wght-badge                   initial
+  --cds-font-axis-wght-body                    initial
+  --cds-font-axis-wght-bold                    
+  --cds-font-axis-wght-control                 initial
+  --cds-font-axis-wght-header                  initial
+  --cds-font-axis-wght-medium                  
+  --cds-font-axis-wght-regular                 
+  --cds-font-axis-wght-semibold                
+  --cds-font-grad-bold                         200
+  --cds-font-grad-semibold                     180
+  --cds-font-weight-badge                      initial
+  --cds-font-weight-body                       initial
+  --cds-font-weight-bold                       600
+  --cds-font-weight-control                    initial
+  --cds-font-weight-header                     initial
+  --cds-font-weight-medium                     500
+  --cds-font-weight-regular                    400
+  --cds-font-weight-semibold                   580

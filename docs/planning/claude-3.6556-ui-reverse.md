@@ -7,7 +7,7 @@
 
 ---
 
-## 0. 先记三个「上一版逆向踩过的坑」
+## 0. 先记五个「逆向踩过的坑」
 
 这些坑让上一版的结论**整批作废**，记下来免得再犯。
 
@@ -15,7 +15,9 @@
 |---|---|---|
 | 1 | **版本号变了** | 上一版按 `3.1623.4.0` 逆向；现在装的是 **`3.6556.2.0`**。CSS 主文件 hash 从 `Bt_TAkxU` 变成 `Che1orl5`，体积 1446KB → 1493KB。 |
 | 2 | **主题变量不在 `:root` / `.dark`** | 在 **`.cds-root`** 上；暗色走 `[data-mode=dark]` 与 `@media (prefers-color-scheme:dark)`。按 `.dark` 找会得到 0 个变量。 |
-| 3 | **选择器用 `includes` 判会串层** | `.cds-root [data-step="3"]` 也含 `.cds-root`。必须**完全相等**才算 base，否则「文本大小档 3」会覆盖真 base。 |
+| 3 | **选择器用 `includes` 判会串层** | `.cds-root [data-step="3"]` 也含 `.cds-root`。必须**完全相等**才算 base，否则「文本大小档 3」会覆盖真 base。**而且要先按逗号拆开** —— 暗色三层写在同一个逗号组合选择器里，不拆只命中第一段。 |
+| 4 | **调色板在 `:where(:root,:host)` 上** | 只认 `:root` 会让所有 `var(--cds-gray-20)` 解不开，颜色表全空。 |
+| 5 | **`data-cds` 名在 CSS 里≠在 JS 里** | `ChatComposerDock` 在 CSS 出现 10 次，在 JS 出现 **0 次**。输入框的真实 DOM 标识是 `.epitaxy-prompt` / `[data-cds="ChatComposer"]`。 |
 
 还有两个纯计算错误（都在我自己的脚本里，已修）：
 
@@ -317,12 +319,60 @@ UserMessage VideoPlayer
 
 ---
 
-## 9. 与 Mcode 现状的逐条差异
+### 7.1 输入框的完整结构（10 个部件）
+
+`ChatComposer` 拆得比 CSS 里看到的多。全仓扫 `"data-cds":"…"` 得到：
+
+```
+ChatComposer              ← 根
+├── ChatComposerHeader     ← 顶部（附件/引用等）
+├── ChatComposerTray       ← 托盘
+├── ChatComposerEditor     ← 编辑区（ProseMirror，DOM 类 .epitaxy-prompt-input）
+├── ChatComposerOverlay    ← 绝对定位覆盖层（placeholder / 高亮）
+├── ChatComposerActions    ← 底部按钮区（发送 / 停止）
+├── ChatComposerPrimaryAction ← 发送按钮本体
+├── ChatComposerChin       ← 下巴（其下还有一层工具条）
+├── ChatComposerNotices    ← 提示条
+├── ChatComposerQueuedMessages ← 排队消息
+├── ChatComposerDropScrim  ← 拖拽文件的遮罩
+└── ChatComposerDropPanel  ← 拖拽落点面板
+```
+
+**样式**：
+- 底色 `bg-surface-3`
+- 圆角 `rounded-card` = `calc(--cds-radius + .25rem×scale)` ≈ **9.41px**
+- 阴影 `shadow-composer`
+- 编辑区字号下限 `--cds-font-size-text-entry-floor: 16px`（防 iOS 缩放）
+
+**DOM 里另外两个标识**（CSS 里没有，只在 JS 里用）：
+`.epitaxy-prompt`（外层）、`.epitaxy-prompt-input`（编辑区）。
+
+---
+
+### 7.2 CSS 里没有、只在 JS 里出现的组件
+
+扫全仓 `"data-cds":"…"` 得到 60+ 个，其中这些**不在 CSS 的 57 个里**：
+
+```
+Spark · Counter · ContextMenu · RadioGroup · FilterCombobox · Slider
+ChartLegend · FileUpload · BarChart · ScatterChart · StackedMeter
+DropdownButton · LanguagePicker · Dots · TableRowActions · NavigationTabs
+NumberInput · EmojiPicker · CodeView · DropZone · Kbd · WorkingMark
+AnimatedPictogram · ScrollPager · PageHeader · CalendarRange · Calendar
+DateInput · Reactions · CommentPin · CommentComposer · ClaudeLogo
+```
+
+**为什么 CSS 里没有**：这些组件的样式全部由 Tailwind 原子类拼成，
+不需要额外的语义选择器。所以「CSS 里没有」不等于「不存在」。
+
+---
+
+## 8. 与 Mcode 现状的逐条差异
 
 > 这一节是**结论**，不是计划。改不改、怎么改，等用户决定。
 > Mcode 侧的值取自 `apps/desktop/src/renderer/styles.css`（2026-10-27 当前 HEAD）。
 
-### 9.1 字号：Mcode 用的是「基础层」，Claude 真实默认是 comfortable 层
+### 8.1 字号：Mcode 用的是「基础层」，Claude 真实默认是 comfortable 层
 
 | 档 | Mcode 现值 | Claude 基础层 | Claude comfortable（真实默认） | 差 |
 |---|---|---|---|---|
@@ -338,7 +388,7 @@ UserMessage VideoPlayer
 但 `<html data-density="comfortable">` 说明真实首屏用的是 comfortable 层。
 所以**整屏字比真机小 7–12%**，这正是「看着不像」的一个来源。
 
-### 9.2 ★ 正文行高：Mcode 用了 body 的 leading，Claude 用 chat-leading
+### 8.2 ★ 正文行高：Mcode 用了 body 的 leading，Claude 用 chat-leading
 
 | | Mcode | Claude | 差 |
 |---|---|---|---|
@@ -353,7 +403,7 @@ UserMessage VideoPlayer
 **一旦把字号改成 comfortable（13.176），行高会跟着变成 20.26px —— 反而错了。**
 正确做法是**分开定义**：行高跟 `--chat-leading`，字号跟 `--chat-body`。
 
-### 9.3 消息间距：公式对了，数值也碰巧对上
+### 8.3 消息间距：公式对了，数值也碰巧对上
 
 | | Mcode | Claude | 差 |
 |---|---|---|---|
@@ -364,7 +414,7 @@ UserMessage VideoPlayer
 
 **公式对了，数值也碰巧对上** —— 同样是「字号偏小 + 比值偏大」互相抵消。
 
-### 9.4 助手消息左侧缩进：Mcode 是 0，Claude 是 4px
+### 8.4 助手消息左侧缩进：Mcode 是 0，Claude 是 4px
 
 | | Mcode | Claude |
 |---|---|---|
@@ -374,7 +424,7 @@ UserMessage VideoPlayer
 上一版逆向把 inset 报成 0，是抓到了 `[data-variant=bubble]` 那个变体。
 **默认助手消息有 4px 缩进。**
 
-### 9.5 界面文案：核心动词不一样
+### 8.5 界面文案：核心动词不一样
 
 | 位置 | Mcode | Claude | 判 |
 |---|---|---|---|
@@ -383,7 +433,7 @@ UserMessage VideoPlayer
 | 模式切换 | Cowork / **Code** | **Cowork / Code / Design / Claude Code** | Mcode 少两个 |
 | 搜索 | 底部图标 | **`Search…`** 输入框 | 形态不同 |
 
-### 9.6 右侧面板：Claude 是 6 个能力，不是一个 tile
+### 8.6 右侧面板：Claude 是 6 个能力，不是一个 tile
 
 Claude 的右侧可以显示：`Files` / `Terminal` / `Preview` / `Changes` / `Browser` / `Side Chat`。
 
@@ -391,14 +441,14 @@ Mcode 把右侧做成了**单个 tile 容器**，并把「Background tasks」放
 而 **Background tasks 语义在 Claude 里是 `Sessions Waiting for You` / `Needs Your Input`** ——
 那是**会话列表里的一个分区**，不在右侧。
 
-### 9.7 响应式：Claude 用命名容器查询，Mcode 用视口断点
+### 8.7 响应式：Claude 用命名容器查询，Mcode 用视口断点
 
 Claude：`@container feed` / `run` / `titlebar` / `list` / `memory` / `library` / `docbar` / `agents` / `branch-row` / `browser`，断点 400–800px。
 
 **这是结构性差异**：容器查询让「侧栏折叠」和「窗口变窄」解耦。
 Mcode 用 `@media` 的话，缩窗口会同时改变所有区域。
 
-### 9.8 已经对齐的部分（不要改）
+### 8.8 已经对齐的部分（不要改）
 
 | 项 | 状态 |
 |---|---|
@@ -410,49 +460,187 @@ Mcode 用 `@media` 的话，缩窗口会同时改变所有区域。
 
 ---
 
-## 10. 静态分析拿不到的东西（要运行时才有）
+## 9. 颜色 / 阴影 / 层级 / 动画（亮暗并排）
 
-REA 的语义图对 minified bundle 帮助有限：`modules: 0`，549,350 个 AST 节点全在匿名工厂里。
-**以下事实必须跑起来才能拿**：
+完整表在 `tools/claude-ui-reverse/visual-tokens.txt`。这里只列骨架会用到的。
 
-1. **侧栏真实宽度** —— CSS 里没有 `288px`（那是 `MessageAttachments` 的图片宽度上限，
-   上一版把它误当侧栏宽度）。真实宽度是运行时算的。
-2. **标题栏高度与拖拽区**
-3. **输入框完整几何**（实际宽高、按钮排布）
-4. **右面板宽度与默认状态**
-5. **各区块的实际间距**（gap 之外还有 padding / outline）
-6. **图标**（全是 SVG path，静态读不出视觉）
+### 9.1 底色
 
-**两条可行路径**：
-- `--remote-debugging-port=9222` 启动一个独立 profile 的 Claude，CDP 只读量取
-- 主进程打补丁让 `app.commandLine.appendSwitch("remote-debugging-port")` 生效
+| token | 亮 | 暗 |
+|---|---|---|
+| `--cds-surface-0` | `#f9f9f7` | `#0b0b0b` |
+| `--cds-surface-1` | `#fcfcfb` | `#151515` |
+| `--cds-surface-2` | `#fff` | `#1a1a19` |
+| `--cds-surface-3` | `#fff` | `#20201f` |
+| `--cds-surface-panel` | `#fff` | `#1a1a19` |
+| `--cds-surface-popover` | `#fff` | `#20201f` |
+| `--cds-page-bg` | `#f9f9f7` | `#0b0b0b` |
 
-> `inspect_electron_fuses` 结果：`EnableNodeCliInspectArguments` **disabled**、
-> `RunAsNode` **disabled**、`EnableEmbeddedAsarIntegrityValidation` **enabled**、
-> `OnlyLoadAppFromAsar` **enabled**。所以 `--inspect` 走不通，`remote-debugging-port` 仍可能。
+### 9.2 文字
+
+| token | 亮 | 暗 |
+|---|---|---|
+| `--cds-text-primary` | `#0b0b0b` | `#f0efec` |
+| `--cds-text-secondary` | `#52514e` | `#c3c2b7` |
+| `--cds-text-muted` | `#898781` | `#898781`（**不变**） |
+| `--cds-text-accent` | `#184f95` | `#6da7ec` |
+| `--cds-text-danger` | `#8e2626` | `#ec7e7e` |
+| `--cds-text-success` | `#006300` | `#0ca30c` |
+| `--cds-text-warning` | `#734500` | `#db9300` |
+| `--cds-text-disabled` | `hsl(0 0% 4% / 35%)` | `hsl(0 0% 100% / 35%)` |
+
+### 9.3 填充 / 边框
+
+| token | 亮 | 暗 |
+|---|---|---|
+| `--cds-fill-primary` | `#0b0b0b` | `#fff` |
+| `--cds-fill-primary-hover` | `#2c2c2a` | `#e1e0d9` |
+| `--cds-fill-accent` | `#2a78d6` | （继承亮色） |
+| `--cds-fill-brand` | `#c6613f` | （继承亮色） |
+| `--cds-fill-danger` | `#d03b3b` | （继承亮色） |
+| `--cds-fill-success` | `#009300` | （继承亮色） |
+| `--cds-fill-warning` | `#fab219` | （继承亮色） |
+| `--cds-fill-ghost-hover` | `hsl(0 0% 4% / 5%)` | `hsl(0 0% 100% / 7.5%)` |
+| `--cds-fill-ghost-selected` | `hsl(0 0% 4% / 10%)` | `hsl(0 0% 100% / 15%)` |
+| `--cds-border` | `hsl(0 0% 4% / 10%)` | `hsl(0 0% 100% / 10%)` |
+| `--cds-border-strong` | `hsl(0 0% 4% / 20%)` | `hsl(0 0% 100% / 20%)` |
+
+### 9.4 阴影
+
+| 名称 | 值 |
+|---|---|
+| `--cds-focus-shadow` | `inset 0 0 0 1px <表面色>, 0 0 0 1px #2a78d6, 0 0 6px 1px #cde2fb` |
+| `--cds-panel-shadow` | `0 0 0 1px <边框>, 0 1px 2px 0 …, 0 2px 8px 0 …` |
+| `--cds-shadow-sm` | `0 1px 2px 0 hsl(0 0% 4% / 5%)` |
+| `--cds-shadow-md` | `0 2px 4px 0 …/7%, 0 6px 16px 0 …/8%` |
+| `--cds-shadow-lg` | `0 4px 8px 0 …/8%, 0 12px 28px -2px …/8%` |
+| `shadow-composer`（类） | `0 .25rem 1.25rem color-mix(#000 3.5%), inset 0 0 0 0 ring, 0 0 0 1px ring` |
+| `shadow-field-ring`（类） | `inset 0 0 0 1px var(--cds-fill-field-ring)` |
+| `shadow-card-ring`（类） | `inset 0 0 0 0 ring, 0 0 0 1px ring` |
+
+### 9.5 z-index
+
+| 值 | 用途 |
+|---|---|
+| `-1` | toolbar-ground / page-header-ground |
+| `0` | dock-masked |
+| `1` | scroll-fade-strip（上/下） |
+| `20` / `z-header` | 标题栏、表头 |
+| `30` / `z-sidebar` | **侧栏** |
+| `50` | 浮层 |
+| `999` | 最高 |
+
+### 9.6 动画
+
+| token | 值 |
+|---|---|
+| `--cds-dur-fast` | `60ms` |
+| `--cds-dur-snap` | `120ms` |
+| `--cds-dur-base` | `200ms` |
+| `--cds-dur-sheet` | `300ms` |
+| `--cds-dur-slow` | `450ms` |
+| `--cds-ease-out` | `cubic-bezier(.165, .84, .44, 1)` |
+| `--cds-ease-overshoot` | `cubic-bezier(.34, 1.3, .64, 1)` |
+| `--cds-ease-snap` | `cubic-bezier(.32, .72, 0, 1)` |
+
+### 9.7 字体
+
+```
+--font-anthropic-sans:  "anthropic-sans", <系统无衬线 + CJK 回退>
+--font-anthropic-serif: "anthropic-serif", <Georgia/Times 回退>
+--font-anthropic-mono:  "anthropic-mono", ui-monospace, monospace
+--font-sans:            var(--cds-font-sans)
+--font-mono:            var(--cds-font-mono)
+```
+
+字重：regular **400** / medium **500** / semibold **580** / bold **600**。
+`--cds-font-grad-semibold: 180`、`--cds-font-grad-bold: 200`（可变字体的 GRAD 轴）。
+还有 `--font-open-dyslexic` 与 `--font-atkinson-hyperlegible` 两套无障碍字体。
 
 ---
 
-## 9. 原始数据在哪
+## 10. 骨架里**写死**的几何（不含运行时变量）
+
+完整表在 `tools/claude-ui-reverse/hardcoded-geometry.txt`。以下是从 className 解出来的、**确定**的数字。
+
+| 区域 | 关键值 |
+|---|---|
+| **侧栏宽度** | `w-[var(--session-rail-w,17.5rem)]` = **280px**（fallback 就是默认） |
+| **标题栏高度** | `dframe-chrome-bar … h-[36px] z-20` = **36px** |
+| 侧栏项内边距 | `px-2`(8) / `px-3`(12) / `ps-[var(--df-row-px)]` |
+| 侧栏会话区圆角 | `rounded-[var(--df-radius-pill)]`（胶囊形） |
+| 侧栏外层 | `gap-2.5`(10px) + `p-px`(1px) |
+| 搜索框 | `h-control`(22.6px) + `rounded`(5.6px) + `px-sm`(5.6px) |
+| 输入框底色 | `bg-surface-3` |
+| 输入框圆角 | `rounded-card` = `calc(var(--cds-radius) + .25rem×scale)` = **9.41px** |
+| 输入框阴影 | `shadow-composer` |
+| 消息区 | `flex flex-col gap-[var(--chat-turn-gap)] pt-[48px] pb-[32px]` |
+| 用户气泡 | `px-4 py-3 rounded-lg bg-neutral-30 w-fit max-w-lg`（16/12/8/512） |
+
+---
+
+## 11. 静态拿不到 —— **已实测确认，不是推测**
+
+### 11.1 运行时几何：`--df-row-*` 系列
+
+`--df-row-h` / `--df-row-gap` / `--df-row-px` / `--df-row-font` / `--df-row-ctl` /
+`--df-leading-slot` / `--df-icon-size` / `--df-radius-pill` / `--df-footer-btn-size`：
+
+- **CSS 里零定义**（搜遍 1.49 MB 的 `main.css`）
+- **JS 里没有赋值** —— 唯一的出现是**读取并转发**：
+  `shared-46` 里 `t.style.setProperty(e, r.getPropertyValue(e))`
+- **渲染进程内存里 0 命中**（330 MB 转储，`--df-row-h` 出现 0 次）
+
+结论：这些值由运行时按密度 / 字号档算出来后写在元素 style 上。**静态无从得知。**
+
+### 11.2 图标 SVG path
+
+图标是编译期组件（`y(Re,{name:"ArrowReturn",size:"sm"})`），名字→path 的表被 minify 改名。
+`extract-icons.mjs` 试过，只捞到 32 个且**全是误报**（`yMd` 是日期格式串、`d`/`d2` 是变量名）。
+
+**图标名字能拿到 276 个**（`icon-names.txt`），画的时候按名字找近似图形。
+
+### 11.3 运行时调试通道：**两条都堵死**
+
+| 方式 | 实测结果 |
+|---|---|
+| `--remote-debugging-port=9333` | Claude **自己拒绝启动**：<br>`refusing to start — a debugging or network-override switch is present on the command line.` |
+| `--inspect=9334` | fuse `EnableNodeCliInspectArguments` **disabled**；且新 `--user-data-dir` 下缓存目录被占（`Unable to move the cache: 拒绝访问`） |
+
+### 11.4 内存转储能做什么
+
+`dump-renderer-memory.mjs` 跑通了（330 MB，346 MB 上限内），拿到的是**存在性证据**：
 
 ```
-.tmp/rev/main.css          主 CSS（1.49 MB）
-.tmp/rev/shared-styles.css
-.tmp/rev/en-US.json        语言包
-.tmp/rev/tokens.json       全部 1009 个 base + 265 个 dark token
-.tmp/rev/tokens-out.txt    七档 × 每层的人读表
-.tmp/rev/layout-out.txt    按 data-cds 归类的布局规则
-.tmp/rev/classnames.txt    JS 里的组件 className
-.tmp/rev/i18n-ui.txt       UI 文案（按值归类）
-.tmp/rev/i18n-all.json     全部键值
+data-cds 命中 670 次（utf16le 617 / utf8 53）
+MessageActions 74 · Prose 64 · MessageAttachmentsImage 49 · Card 38
+AssistantMessage 38 · ChatComposerDock 23 · Icon 17 · Toolbar 14 · Page 13
+TurnStatusStep 12 · SkeletonGroup 12 · UserMessage 11 · ChatComposerChin 3
+聊天占位符 "What can I help you with today" 命中 1 次
 ```
 
-**脚本**（都可重跑）：
+**不能**拿到父子关系与计算尺寸 —— 那些在 C++ 的 layout 对象里，不是字符串。
+类名碎片也只有 8 种（V8 里 className 多半已被 React 拆分复用，不以整串存在）。
+
+**所以它只做佐证，不能替代 CDP。**
+
+---
+
+## 12. 数据与脚本在哪
 
 ```
-.tmp/rev/extract-tokens.mjs    CSS token → px（含 rem-scale 解析）
-.tmp/rev/extract-layout.mjs    按组件抽布局规则
-.tmp/rev/extract-i18n.mjs      文案按值归类
-.tmp/rev/scan-js-layout.mjs    JS chunk 布局常量
-.tmp/rev/scan-classnames.mjs   JS 组件 className
+tools/claude-ui-reverse/           ← 全部脚本 + 3.6556.2.0 快照
+├── README.md                      用法 + 五个坑 + 拿不到的东西
+├── extract-tokens.mjs             --cds-* → px（含 rem-scale）
+├── extract-visual.mjs             颜色/阴影/z-index/动画/字体
+├── extract-semantic-classes.mjs   shadow-composer 这类语义类
+├── resolve-class.mjs              Tailwind 类名 → 计算 px（共用件）
+├── extract-geometry.mjs           骨架里写死的 px
+├── scan-all-classnames.mjs        全量 className 解算
+├── extract-i18n.mjs               文案按值归类
+├── icon-names.py                  276 个图标名
+├── dump-renderer-memory.mjs       运行时 DOM 存在性佐证
+└── *.txt / *.json                 上述脚本在 3.6556.2.0 上的输出快照
 ```
+
+**快照有保质期**：Claude 版本一变，全部作废。用之前先核对版本号。

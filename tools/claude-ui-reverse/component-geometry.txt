@@ -1,0 +1,613 @@
+Claude 3.6556.2.0 —— UI 骨架的组件几何
+
+⚠️ **静态事实**：源码里写了哪些类、那些类算出来多少 px。
+   **不是**渲染后的实际尺寸 —— 后者受 flex/容器/内容影响，只有跑起来才知道。
+
+⚠️ 分桶依据是「className 前后 2000 字符里出现的骨架特征词」，
+   不是 AST 级组件归属。同一串类名可能同时出现在多个区域，这里记在
+   特异性最高的那个桶里。
+
+图例：
+  gap-sm → gap: 7.5px    表示 `gap-sm` 这个类编译出来是 7.5px
+
+================================================================================
+输入框·外壳   (5 串)
+================================================================================
+  scroll-fade-strip-top [--cds-scroll-fade-size:var(--epitaxy-top-fade-height)] [--cds-scroll-fade-strip-color:var(--epitaxy-transcript-surface,var(--cds-surface-1))]
+      scroll-fade-strip-top(height:,z-index:1.0,top:0.0)
+  scroll-fade-strip-bottom scroll-fade-size-[48px] [--cds-scroll-fade-strip-color:var(--epitaxy-transcript-surface,var(--cds-surface-1))]
+      scroll-fade-strip-bottom(height:,z-index:1.0,bottom:0.0)
+  epitaxy-sticky-prompt-clip hide-focus-ring pointer-events-auto max-w-[85%] min-w-0
+      max-w-[85%](max-width:85%)  min-w-0(min-width:0.0)
+  absolute top-0 inset-x-0 z-[12] pointer-events-none draggable-none
+      top-0(top:0.0)  z-[12](z-index:12.0)
+  flex min-h-0 flex-1 flex-col
+      min-h-0(min-height:0.0)  flex-1(flex:1.0)
+
+================================================================================
+输入框·编辑区   (28 串)
+================================================================================
+  h-4 w-4 overflow-hidden flex items-center justify-center text-xs leading-none [&_div]:contents [&_svg]:w-4 [&_svg]:h-4 [&_img]:max-w-4 [&_img]:max-h-4 [&_img]:object-contain [&_p]:m-0
+      h-4(height:16.0)  w-4(width:16.0)  text-xs(font-size:12.0,line-height:1.3)  leading-none(line-height:1.0)
+  relative flex min-w-0 flex-col rounded-xl border-0.5 border-border-300 bg-surface-3 transition-colors focus-within:border-strong
+      min-w-0(min-width:0.0)  rounded-xl(border-radius:12.0)
+  absolute top-1/2 -translate-y-1/2 mt-0.5 left-0 w-5 h-5 flex items-center justify-center
+      top-1/2(top:50%)  left-0(left:0.0)  w-5(width:20.0)  h-5(height:20.0)
+  absolute top-1/2 left-0 flex size-5 -translate-y-1/2 items-center justify-center
+      top-1/2(top:50%)  left-0(left:0.0)  size-5(width:20.0,height:20.0)
+  min-w-0 text-body font-medium text-primary [overflow-wrap:anywhere]
+      min-w-0(min-width:0.0)  text-body(font-size:12.2,line-height:17.9)
+  pointer-events-none absolute inset-0 z-[1] rounded-[inherit]
+      inset-0(inset:0.0)  z-[1](z-index:1.0)  rounded-[inherit](border-radius:inherit)
+  flex h-control items-center px-1 text-secondary opacity-50
+      h-control(height:22.6)  px-1(padding-inline:4.0)
+  animate-placeholder-reveal flex h-lh min-w-0 items-center
+      h-lh(height:1lh)  min-w-0(min-width:0.0)
+  code-page-root flex flex-col h-screen overflow-hidden
+      h-screen(height:100dvh)
+  cds-reset fixed inset-0 pointer-events-none
+      inset-0(inset:0.0)
+  min-w-0 text-body font-medium text-primary
+      min-w-0(min-width:0.0)  text-body(font-size:12.2,line-height:17.9)
+  absolute end-0 top-0 -me-pad-xs -mt-pad-xs
+      top-0(top:0.0)
+  flex items-center gap-1 px-2.5 pb-2 pt-1
+      gap-1(gap:4.0)  px-2.5(padding-inline:10.0)  pb-2(padding-bottom:8.0)  pt-1(padding-top:4.0)
+  inline-flex relative min-w-0 max-w-full
+      min-w-0(min-width:0.0)  max-w-full(max-width:100%)
+  block min-w-0 [overflow-wrap:anywhere]
+      min-w-0(min-width:0.0)
+  relative flex min-w-0 flex-col gap-1
+      min-w-0(min-width:0.0)  gap-1(gap:4.0)
+  min-h-0 min-w-0 px-1 pt-1 pb-2.5
+      min-h-0(min-height:0.0)  min-w-0(min-width:0.0)  px-1(padding-inline:4.0)  pt-1(padding-top:4.0)  pb-2.5(padding-bottom:10.0)
+  ms-auto flex items-center gap-1
+      gap-1(gap:4.0)
+  relative min-w-0 break-words
+      min-w-0(min-width:0.0)
+  flex min-w-0 flex-col gap-2
+      min-w-0(min-width:0.0)  gap-2(gap:8.0)
+  flex h-[1lh] items-center
+      h-[1lh](height:1lh)
+  relative w-full min-w-0
+      w-full(width:100%)  min-w-0(min-width:0.0)
+  flex items-end gap-md
+      gap-md(gap:11.3)
+  h-3 w-16 rounded-sm
+      h-3(height:12.0)  w-16(width:64.0)  rounded-sm(border-radius:4.0)
+  block rounded-md
+      rounded-md(border-radius:6.0)
+  min-h-0 min-w-0
+      min-h-0(min-height:0.0)  min-w-0(min-width:0.0)
+  h-4 w-4
+      h-4(height:16.0)  w-4(width:16.0)
+  w-54
+      w-54(width:216.0)
+
+================================================================================
+输入框·提示   (3 串)
+================================================================================
+  flex shrink-0 items-center gap-1.5
+      gap-1.5(gap:6.0)
+  shrink-0 px-3 pb-3
+      px-3(padding-inline:12.0)  pb-3(padding-bottom:12.0)
+  px-2 md:px-0
+      px-2(padding-inline:8.0)  md:px-0(padding-inline:0.0)
+
+================================================================================
+消息区·容器   (26 串)
+================================================================================
+  epitaxy-transcript-typography flex w-[360px] shrink-0 flex-col gap-[var(--chat-turn-gap)] rounded-3xl bg-linear-to-b from-surface-0 to-clay/10 px-8 py-14 text-start select-none pointer-events-none
+      epitaxy-transcript-typography(font-size:,line-height:)  w-[360px](width:360.0)  gap-[var(--chat-turn-gap)](gap:)  rounded-3xl(border-radius:24.0)  px-8(padding-inline:32.0)  py-14(padding-block:56.0)
+  scroll-fade-strip-top [--cds-scroll-fade-size:var(--epitaxy-top-fade-height)] [--cds-scroll-fade-strip-color:var(--epitaxy-transcript-surface,var(--cds-surface-1))]
+      scroll-fade-strip-top(height:,z-index:1.0,top:0.0)
+  epitaxy-transcript-typography flex h-full flex-col-reverse overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable_both-edges]
+      epitaxy-transcript-typography(font-size:,line-height:)  h-full(height:100%)
+  inline-flex items-center gap-1.5 rounded focus-visible:outline-hidden hide-focus-ring focus-visible:shadow-focus
+      gap-1.5(gap:6.0)  rounded(border-radius:5.6)
+  pointer-events-none sticky bottom-0 bg-[var(--epitaxy-transcript-surface,var(--cds-surface-1))]
+      bottom-0(bottom:0.0)
+  flex h-9 w-full min-w-0 items-center gap-2 rounded-xl bg-surface-1 px-3 shadow-md
+      h-9(height:36.0)  w-full(width:100%)  min-w-0(min-width:0.0)  gap-2(gap:8.0)  rounded-xl(border-radius:12.0)  px-3(padding-inline:12.0)
+  epitaxy-transcript-typography flex w-full flex-col gap-sm text-body text-primary
+      epitaxy-transcript-typography(font-size:,line-height:)  w-full(width:100%)  gap-sm(gap:7.5)  text-body(font-size:12.2,line-height:17.9)
+  rounded text-footnote text-secondary focus-visible:shadow-focus
+      rounded(border-radius:5.6)  text-footnote(font-size:11.3,line-height:14.1)
+  flex w-full flex-col items-start gap-[var(--chat-item-gap)]
+      w-full(width:100%)  gap-[var(--chat-item-gap)](gap:)
+  max-w-[70%] shrink-0 truncate text-body-medium text-primary
+      max-w-[70%](max-width:70%)  text-body-medium(font-size:12.2,line-height:17.9)
+  absolute bottom-0 start-0 h-px w-full pointer-events-none
+      bottom-0(bottom:0.0)  h-px(height:1.0)  w-full(width:100%)
+  flex items-center gap-1 text-body text-muted-as-secondary
+      gap-1(gap:4.0)  text-body(font-size:12.2,line-height:17.9)
+  max-w-[85%] rounded-2xl bg-surface-1 px-4 py-3 shadow-md
+      max-w-[85%](max-width:85%)  rounded-2xl(border-radius:16.0)  px-4(padding-inline:16.0)  py-3(padding-block:12.0)
+  flex items-center justify-between gap-2 px-3 pt-1.5
+      gap-2(gap:8.0)  px-3(padding-inline:12.0)  pt-1.5(padding-top:6.0)
+  size-[6px] shrink-0 rounded-full bg-fill-accent
+      rounded-full(border-radius:2147483647.0)
+  flex min-w-0 flex-1 items-center gap-1.5
+      min-w-0(min-width:0.0)  flex-1(flex:1.0)  gap-1.5(gap:6.0)
+  flex w-full flex-col items-end gap-3
+      w-full(width:100%)  gap-3(gap:12.0)
+  min-h-4.5 text-footnote leading-4.5
+      min-h-4.5(min-height:18.0)  text-footnote(font-size:11.3,line-height:14.1)  leading-4.5(line-height:18.0)
+  inline-block max-w-80 align-bottom
+      max-w-80(max-width:320.0)
+  m-0 min-h-[2lh] select-text
+      m-0(margin:0.0)
+  min-w-0 truncate text-body
+      min-w-0(min-width:0.0)  text-body(font-size:12.2,line-height:17.9)
+  relative h-full w-full
+      h-full(height:100%)  w-full(width:100%)
+  flex flex-col gap-1.5
+      gap-1.5(gap:6.0)
+  h-full w-full p-lg
+      h-full(height:100%)  w-full(width:100%)  p-lg(padding:11.3)
+  h-full
+      h-full(height:100%)
+  w-80
+      w-80(width:320.0)
+
+================================================================================
+消息区·回合   (21 串)
+================================================================================
+  grid grid-cols-[minmax(0,1fr)] gap-y-[var(--chat-turn-gap,15px)] [&>*]:min-w-0 [&>:empty]:invisible [&>:empty]:[grid-area:1/1] [&>[data-quiet]]:[grid-area:1/1] [&>[data-turn-mark-outlet]]:[grid-area:1/1]
+      gap-y-[var(--chat-turn-gap,15px)](row-gap:15.0)
+  block truncate text-body text-gray-0/80 max-sm:absolute max-sm:inset-x-6 max-sm:bottom-full max-sm:text-center sm:max-w-[calc(50vw-7rem)]
+      text-body(font-size:12.2,line-height:17.9)  max-sm:bottom-full(bottom:100%)  sm:max-w-[calc(50vw-7rem)](max-width:calc(50vw - 7rem))
+  font-sans rounded-[var(--msg-block-radius,0.5rem)] border-0.5 border-strong bg-surface-3 px-3 py-2 text-body text-secondary
+      rounded-[var(--msg-block-radius,0.5rem)](border-radius:8.0)  px-3(padding-inline:12.0)  py-2(padding-block:8.0)  text-body(font-size:12.2,line-height:17.9)
+  order-last ms-auto inline-flex h-[1lh] shrink-0 items-center overflow-visible empty:hidden
+      h-[1lh](height:1lh)
+  pt-1 pb-1 px-3 border-b-0.5 border-strong font-semibold flex justify-between items-center
+      pt-1(padding-top:4.0)  pb-1(padding-bottom:4.0)  px-3(padding-inline:12.0)
+  order-last ms-auto inline-flex h-[1lh] shrink-0 items-center overflow-visible
+      h-[1lh](height:1lh)
+  absolute top-1/2 left-1/2 shrink-0 -translate-x-1/2 -translate-y-1/2
+      top-1/2(top:50%)  left-1/2(left:50%)
+  absolute inset-0 m-auto block rounded-full bg-current
+      inset-0(inset:0.0)  m-auto(margin:auto)  rounded-full(border-radius:2147483647.0)
+  flex items-center gap-2 py-1 text-sm text-secondary
+      gap-2(gap:8.0)  py-1(padding-block:4.0)  text-sm(font-size:14.0,line-height:1.4)
+  h-0 select-none overflow-hidden whitespace-pre-line
+      h-0(height:0.0)
+  flex items-center gap-xs text-footnote font-normal
+      gap-xs(gap:5.6)  text-footnote(font-size:11.3,line-height:14.1)
+  ps-[var(--msg-text-inset,0.5rem)] py-1.5 min-w-0
+      py-1.5(padding-block:6.0)  min-w-0(min-width:0.0)
+  inline-flex min-w-0 items-center text-secondary
+      min-w-0(min-width:0.0)
+  flex h-[1lh] min-w-0 max-w-full items-center
+      h-[1lh](height:1lh)  min-w-0(min-width:0.0)  max-w-full(max-width:100%)
+  group/status flex w-full min-w-0 flex-col
+      w-full(width:100%)  min-w-0(min-width:0.0)
+  flex min-w-0 gap-xs items-center
+      min-w-0(min-width:0.0)  gap-xs(gap:5.6)
+  min-w-0 max-w-full
+      min-w-0(min-width:0.0)  max-w-full(max-width:100%)
+  px-4 pt-2 pb-4
+      px-4(padding-inline:16.0)  pt-2(padding-top:8.0)  pb-4(padding-bottom:16.0)
+  inset-0 m-auto
+      inset-0(inset:0.0)  m-auto(margin:auto)
+  min-w-0
+      min-w-0(min-width:0.0)
+
+================================================================================
+消息区·助手   (52 串)
+================================================================================
+  sticky bottom-0 mt-10 bg-page pb-4 pt-2 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:h-10 before:page-fade-b-soft max-md:px-3 md:px-[var(--chat-list-inset,1rem)] print:hidden
+      bottom-0(bottom:0.0)  pb-4(padding-bottom:16.0)  pt-2(padding-top:8.0)  max-md:px-3(padding-inline:12.0)  md:px-[var(--chat-list-inset,1rem)](padding-inline:16.0)
+  mx-auto mt-2 mb-1 flex w-full max-w-[520px] flex-col items-center gap-4 rounded-card border-[0.5px] border bg-surface-panel p-5 shadow-sm
+      mx-auto(margin-inline:auto)  w-full(width:100%)  max-w-[520px](max-width:520.0)  gap-4(gap:16.0)  rounded-card(border-radius:calc(calc(.375rem * 0.9411764705882353) + calc(.25rem * 0.9411764705882353)))  p-5(padding:20.0)
+  epitaxy-task-card-surface epitaxy-card-outline-inset absolute inset-0 -z-[1] rounded-[inherit] group-hover/btn:bg-fill-ghost-hover
+      inset-0(inset:0.0)  -z-[1](z-index:-1.0)  rounded-[inherit](border-radius:inherit)
+  absolute inset-x-4 bottom-3 rounded bg-danger stacks:bg-page stacks:layers-1-danger px-3 py-2.5 text-body text-danger
+      bottom-3(bottom:12.0)  rounded(border-radius:5.6)  px-3(padding-inline:12.0)  py-2.5(padding-block:10.0)  text-body(font-size:12.2,line-height:17.9)
+  -m-0.75 flex shrink-0 rounded-sm p-0.75 focus-visible:outline-hidden hide-focus-ring focus-visible:shadow-focus
+      -m-0.75(margin:-3.0)  rounded-sm(border-radius:4.0)  p-0.75(padding:3.0)
+  sticky bottom-0 flex flex-col items-center justify-center gap-3 pb-4 pt-4 pointer-events-none print:hidden
+      bottom-0(bottom:0.0)  gap-3(gap:12.0)  pb-4(padding-bottom:16.0)  pt-4(padding-top:16.0)
+  absolute bottom-full start-0 end-0 mb-2 flex justify-center pointer-events-none
+      bottom-full(bottom:100%)
+  flex h-full flex-col items-center justify-center gap-2.5 px-10 text-center
+      h-full(height:100%)  gap-2.5(gap:10.0)  px-10(padding-inline:40.0)
+  mb-4 rounded-lg border border-strong bg-surface-0 px-3 py-2.5 text-xs
+      rounded-lg(border-radius:8.0)  px-3(padding-inline:12.0)  py-2.5(padding-block:10.0)  text-xs(font-size:12.0,line-height:1.3)
+  sticky bottom-0 bg-surface-1 px-3 pb-4 pt-2 md:px-0 print:hidden
+      bottom-0(bottom:0.0)  px-3(padding-inline:12.0)  pb-4(padding-bottom:16.0)  pt-2(padding-top:8.0)  md:px-0(padding-inline:0.0)
+  font-ui-serif text-primary max-w-xl text-center text-[1.75rem]
+      max-w-xl(max-width:576.0)
+  flex items-end w-[68px] relative shrink-0 pointer-events-none
+      w-[68px](width:68.0)
+  hidden h-12 shrink-0 max-[816px]:[[data-collapsed]_&]:block
+      h-12(height:48.0)
+  -mx-[calc(var(--cds-pad-md)-1px)] h-px shrink-0 bg-alpha-2
+      -mx-[calc(var(--cds-pad-md)-1px)](margin-inline:calc(calc(calc(.5rem * 0.9411764705882353) - 1px) * -1))  h-px(height:1.0)
+  min-w-0 truncate text-footnote font-medium text-secondary
+      min-w-0(min-width:0.0)  text-footnote(font-size:11.3,line-height:14.1)
+  flex h-screen flex-col items-center justify-center gap-4
+      h-screen(height:100dvh)  gap-4(gap:16.0)
+  my-2 flex w-full items-center justify-center h-[32rem]
+      my-2(margin-block:8.0)  w-full(width:100%)  h-[32rem](height:512.0)
+  flex h-[52px] flex-shrink-0 items-center gap-1.5 px-6
+      h-[52px](height:52.0)  gap-1.5(gap:6.0)  px-6(padding-inline:24.0)
+  flex size-icon shrink-0 items-center justify-center
+      size-icon(width:15.1,height:15.1)
+  pointer-events-auto flex justify-center py-1
+      py-1(padding-block:4.0)
+  flex items-center gap-2.5 py-1.5 ps-4 pe-2
+      gap-2.5(gap:10.0)  py-1.5(padding-block:6.0)
+  flex items-start justify-between gap-4
+      gap-4(gap:16.0)
+  max-w-[280px] text-muted-as-secondary
+      max-w-[280px](max-width:280.0)
+  relative max-h-80 overflow-y-auto p-5
+      max-h-80(max-height:320.0)  p-5(padding:20.0)
+  flex h-5 min-w-0 items-center gap-sm
+      h-5(height:20.0)  min-w-0(min-width:0.0)  gap-sm(gap:7.5)
+  mb-2 flex items-center gap-4 text-xs
+      gap-4(gap:16.0)  text-xs(font-size:12.0,line-height:1.3)
+  text-secondary max-w-xl text-center
+      max-w-xl(max-width:576.0)
+  flex min-h-0 flex-col max-h-[28rem]
+      min-h-0(min-height:0.0)
+  pointer-events-auto h-2 w-full
+      h-2(height:8.0)  w-full(width:100%)
+  flex min-w-0 flex-col gap-0.5
+      min-w-0(min-width:0.0)  gap-0.5(gap:2.0)
+  flex flex-col w-full gap-0.5
+      w-full(width:100%)  gap-0.5(gap:2.0)
+  flex w-full min-w-0 flex-col
+      w-full(width:100%)  min-w-0(min-width:0.0)
+  flex flex-1 flex-col gap-sm
+      flex-1(flex:1.0)  gap-sm(gap:7.5)
+  group/message-row min-w-0
+      min-w-0(min-width:0.0)
+  flex items-center gap-4
+      gap-4(gap:16.0)
+  flex flex-col gap-1.25
+      gap-1.25(gap:5.0)
+  flex flex-col gap-0.5
+      gap-0.5(gap:2.0)
+  flex flex-col w-full
+      w-full(width:100%)
+  flex flex-col gap-3
+      gap-3(gap:12.0)
+  min-w-0 flex-1
+      min-w-0(min-width:0.0)  flex-1(flex:1.0)
+  h-full isolate
+      h-full(height:100%)
+  size-icon
+      size-icon(width:15.1,height:15.1)
+  w-[280px]
+      w-[280px](width:280.0)
+  min-w-0
+      min-w-0(min-width:0.0)
+  w-[92%]
+      w-[92%](width:92%)
+  w-[98%]
+      w-[98%](width:98%)
+  w-[85%]
+      w-[85%](width:85%)
+  w-[95%]
+      w-[95%](width:95%)
+  w-[60%]
+      w-[60%](width:60%)
+  w-5 h-5
+      w-5(width:20.0)  h-5(height:20.0)
+
+================================================================================
+消息区·用户   (33 串)
+================================================================================
+  px-4 py-3 rounded-lg bg-neutral-30 text-prose w-fit max-w-lg [overflow-wrap:anywhere] whitespace-pre-wrap
+      px-4(padding-inline:16.0)  py-3(padding-block:12.0)  rounded-lg(border-radius:8.0)  text-prose(font-size:14.0,line-height:20.0)  w-fit(width:fit-content)  max-w-lg(max-width:512.0)
+  whitespace-pre-wrap break-words rounded-md border bg-surface-1 p-3 font-mono text-caption text-secondary
+      rounded-md(border-radius:6.0)  p-3(padding:12.0)  text-caption(font-size:10.4,line-height:16.0)
+  flex rounded-[2px] text-secondary outline-none focus-visible:outline-hidden focus-visible:shadow-focus
+      rounded-[2px](border-radius:2.0)
+  flex size-10 shrink-0 items-center justify-center rounded-full bg-alpha-1 text-secondary
+      size-10(width:40.0,height:40.0)  rounded-full(border-radius:2147483647.0)
+  mt-3 flex max-h-[70vh] flex-col gap-3 overflow-y-auto in-data-cds-fizzy:mt-0
+      max-h-[70vh](max-height:70vh)  gap-3(gap:12.0)
+  absolute end-full top-1/2 flex -translate-y-1/2 items-center pe-xs
+      top-1/2(top:50%)
+  grid grid-cols-[repeat(auto-fill,minmax(120px,1fr))] gap-3 p-1
+      gap-3(gap:12.0)  p-1(padding:4.0)
+  flex min-w-0 flex-1 basis-0 items-center justify-end gap-sm
+      min-w-0(min-width:0.0)  flex-1(flex:1.0)  basis-0(flex-basis:0.0)  gap-sm(gap:7.5)
+  absolute inset-0 hidden rounded-card pointer-coarse:block
+      inset-0(inset:0.0)  rounded-card(border-radius:calc(calc(.375rem * 0.9411764705882353) + calc(.25rem * 0.9411764705882353)))
+  flex items-center gap-md py-md border-t first:border-t-0
+      gap-md(gap:11.3)  py-md(padding-block:7.5)
+  absolute inset-0 hidden rounded-xl pointer-coarse:block
+      inset-0(inset:0.0)  rounded-xl(border-radius:12.0)
+  min-w-0 truncate text-footnote font-medium text-primary
+      min-w-0(min-width:0.0)  text-footnote(font-size:11.3,line-height:14.1)
+  group/row mb-1 mt-1 flex w-full flex-col items-end
+      w-full(width:100%)
+  !text-muted-as-secondary hover:!text-primary !w-6
+      !w-6(width:calc(.25rem * 6)!important)
+  -m-2 max-h-[min(28rem,60vh)] overflow-y-auto p-2
+      -m-2(margin:-8.0)  max-h-[min(28rem,60vh)](max-height:min(28rem,60vh))  p-2(padding:8.0)
+  inline-flex items-center gap-md text-caption
+      gap-md(gap:11.3)  text-caption(font-size:10.4,line-height:16.0)
+  absolute -end-8 top-1/2 -translate-y-1/2
+      top-1/2(top:50%)
+  relative flex w-full flex-col items-end
+      w-full(width:100%)
+  relative grid min-w-0 grid-cols-1 gap-2
+      min-w-0(min-width:0.0)  gap-2(gap:8.0)
+  relative flex-1 min-w-0 flex flex-col
+      flex-1(flex:1.0)  min-w-0(min-width:0.0)
+  min-w-0 flex-1 text-body font-medium
+      min-w-0(min-width:0.0)  flex-1(flex:1.0)  text-body(font-size:12.2,line-height:17.9)
+  relative flex h-full min-h-0 flex-1
+      h-full(height:100%)  min-h-0(min-height:0.0)  flex-1(flex:1.0)
+  flex flex-wrap items-center gap-sm
+      gap-sm(gap:7.5)
+  gap-2 flex flex-wrap justify-end
+      gap-2(gap:8.0)
+  inline-flex items-center gap-md
+      gap-md(gap:11.3)
+  flex items-center gap-sm flex-1
+      gap-sm(gap:7.5)  flex-1(flex:1.0)
+  inline-flex items-center gap-1
+      gap-1(gap:4.0)
+  absolute left-0 top-0 size-0
+      left-0(left:0.0)  top-0(top:0.0)  size-0(width:0.0,height:0.0)
+  flex items-center gap-xs
+      gap-xs(gap:5.6)
+  absolute left-0 top-0
+      left-0(left:0.0)  top-0(top:0.0)
+  max-w-xl ms-1 mb-1.5
+      max-w-xl(max-width:576.0)
+  flex flex-col gap-sm
+      gap-sm(gap:7.5)
+  sticky top-0 z-10
+      top-0(top:0.0)  z-10(z-index:10.0)
+
+================================================================================
+消息区·操作   (1 串)
+================================================================================
+  h-control w-px
+      h-control(height:22.6)  w-px(width:1.0)
+
+================================================================================
+正文   (9 串)
+================================================================================
+  flex-1 min-h-0 overflow-hidden [overflow-wrap:anywhere]
+      flex-1(flex:1.0)  min-h-0(min-height:0.0)
+  flex min-w-0 items-baseline gap-xs overflow-hidden
+      min-w-0(min-width:0.0)  gap-xs(gap:5.6)
+  flex flex-wrap gap-x-8 gap-y-3 overflow-hidden
+      gap-x-8(column-gap:32.0)  gap-y-3(row-gap:12.0)
+  absolute end-0 top-0 -translate-y-1/4
+      top-0(top:0.0)
+  relative flex min-w-0 flex-col gap-1
+      min-w-0(min-width:0.0)  gap-1(gap:4.0)
+  !text-sm !leading-relaxed !m-0 !p-0
+      !text-sm(font-size:.875rem!important,line-height:calc(1.25 / .875)!important)  !leading-relaxed(line-height:1.625!important)  !m-0(margin:0!important)  !p-0(padding:0!important)
+  flex items-baseline gap-xs
+      gap-xs(gap:5.6)
+  flex flex-col gap-3
+      gap-3(gap:12.0)
+
+================================================================================
+侧栏   (246 串)
+================================================================================
+  df-invite-btn w-full overflow-hidden rounded-lg bg-surface-0 px-2 py-2.5 text-primary font-medium font-control transition-colors hover:bg-neutral-30 hide-focus-ring focus-visible:shadow-focus stacks:border-transparent! stacks:shadow-none! stacks:focus-visible:shadow-focus! stacks:bg-fill-secondary! stacks:hover:bg-fill-secondary-hover!
+      w-full(width:100%)  rounded-lg(border-radius:8.0)  px-2(padding-inline:8.0)  py-2.5(padding-block:10.0)
+  df-jump-hint pointer-events-none absolute top-[calc(var(--df-row-h)/2)] -translate-y-1/2 start-[calc(var(--df-row-px)+var(--df-rail-shift,0px)+(var(--df-leading-slot)-16px)/2)] flex h-4 min-w-4 items-center justify-center rounded-[3px] border-[0.5px] bg-surface-1 px-[3px] font-sans text-[10px] font-medium leading-none text-secondary
+      top-[calc(var(--df-row-h)/2)](top:0.0)  h-4(height:16.0)  min-w-4(min-width:16.0)  rounded-[3px](border-radius:3.0)  px-[3px](padding-inline:3.0)  leading-none(line-height:1.0)
+  flex h-control w-full items-center gap-sm rounded bg-fill-field ps-sm pe-[calc((var(--cds-h-control)-var(--cds-h-control-nested))/2)] text-body text-muted-as-secondary shadow-field-ring outline-none transition-shadow duration-fast focus-visible:shadow-focus [&:hover:not(:focus-visible)]:shadow-field-hover
+      h-control(height:22.6)  w-full(width:100%)  gap-sm(gap:7.5)  rounded(border-radius:5.6)  text-body(font-size:12.2,line-height:17.9)
+  -mx-pad-xl -mb-pad-xl min-h-0 flex-1 overflow-y-auto rounded-b-[inherit] px-xl pb-xl in-data-cds-fizzy:flex-none in-data-cds-fizzy:overflow-visible focus-visible:outline-hidden focus-visible:-outline-offset-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-fill-accent
+      -mx-pad-xl(margin-inline:calc(calc(1.25rem * 0.9411764705882353) * -1))  min-h-0(min-height:0.0)  flex-1(flex:1.0)  px-xl(padding-inline:18.8)  pb-xl(padding-bottom:18.8)  in-data-cds-fizzy:flex-none(flex:none)
+  df-user-menu-btn cds-reset flex h-[max(28px,var(--df-footer-btn-size))] max-w-full items-center gap-[var(--df-row-gap)] rounded-[var(--df-radius-pill)] ps-[var(--df-row-px)] pe-2 text-start outline-none hover:bg-[var(--df-hover)] focus-visible:shadow-focus
+      h-[max(28px,var(--df-footer-btn-size))](height:max(28px, ))  max-w-full(max-width:100%)  gap-[var(--df-row-gap)](gap:)  rounded-[var(--df-radius-pill)](border-radius:)
+  flex h-[var(--df-row-h)] items-center rounded-[var(--df-radius-pill)] border-[0.5px] bg-[var(--df-web-sidebar-bg,var(--df-sidebar-bg))] [background-image:var(--df-web-sidebar-bg-image,none)] px-2 shadow-[var(--df-shadow-float)]
+      h-[var(--df-row-h)](height:)  rounded-[var(--df-radius-pill)](border-radius:)  px-2(padding-inline:8.0)
+  flex items-center gap-2 w-full text-start px-3 h-10 rounded-lg hover:bg-surface-0 focus-visible:bg-surface-0 focus-visible:outline-none text-primary disabled:opacity-50 disabled:hover:bg-transparent disabled:cursor-not-allowed
+      gap-2(gap:8.0)  w-full(width:100%)  px-3(padding-inline:12.0)  h-10(height:40.0)  rounded-lg(border-radius:8.0)
+  cds-reset mb-4 flex w-full items-center gap-2 rounded-lg px-3 py-1 text-start text-body font-normal font-control text-primary outline-none transition-colors ease-in-out hover:bg-alpha-1 focus-visible:shadow-focus
+      w-full(width:100%)  gap-2(gap:8.0)  rounded-lg(border-radius:8.0)  px-3(padding-inline:12.0)  py-1(padding-block:4.0)  text-body(font-size:12.2,line-height:17.9)
+  flex h-control w-full cursor-text items-center gap-sm rounded px-sm bg-fill-field shadow-field-ring transition duration-fast [&:hover:not(:focus-within)]:shadow-field-hover has-[:focus-visible]:shadow-focus
+      h-control(height:22.6)  w-full(width:100%)  gap-sm(gap:7.5)  rounded(border-radius:5.6)  px-sm(padding-inline:5.6)
+  absolute -end-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border-2 border-[hsl(var(--df-surface-primary))] bg-fill-danger px-1 text-caption font-medium text-on-danger
+      -top-1(top:-4.0)  h-4(height:16.0)  min-w-4(min-width:16.0)  rounded-full(border-radius:2147483647.0)  px-1(padding-inline:4.0)  text-caption(font-size:10.4,line-height:16.0)
+  me-[calc(var(--df-row-ctl-inset,calc((var(--df-row-h)-var(--df-row-ctl))/2))-var(--df-row-px))] ms-auto flex size-[var(--df-row-ctl)] shrink-0 items-center justify-center
+      size-[var(--df-row-ctl)](width:,height:)
+  cds-input hide-focus-ring min-w-0 flex-1 border-0 bg-transparent p-0 text-body text-primary outline-none placeholder:text-muted focus-visible:!shadow-none
+      cds-input(border-radius:0.0,padding:0.0)  min-w-0(min-width:0.0)  flex-1(flex:1.0)  p-0(padding:0.0)  text-body(font-size:12.2,line-height:17.9)
+  absolute -top-0.75 end-px flex rounded-full bg-[var(--df-web-sidebar-bg,var(--df-sidebar-bg))] p-0.5 forced-color-adjust-none forced-colors:bg-[Canvas]
+      -top-0.75(top:-3.0)  rounded-full(border-radius:2147483647.0)  p-0.5(padding:2.0)
+  mx-auto mt-4 flex max-w-md items-start gap-2.5 rounded-lg border border-danger stacks:border-transparent bg-danger px-3 py-2.5 text-start text-body
+      mx-auto(margin-inline:auto)  max-w-md(max-width:448.0)  gap-2.5(gap:10.0)  rounded-lg(border-radius:8.0)  px-3(padding-inline:12.0)  py-2.5(padding-block:10.0)  text-body(font-size:12.2,line-height:17.9)
+  flex h-[var(--df-row-h)] items-center gap-[var(--df-row-gap)] px-[var(--df-row-px)] text-[length:var(--df-row-font)] text-muted-as-secondary
+      h-[var(--df-row-h)](height:)  gap-[var(--df-row-gap)](gap:)  px-[var(--df-row-px)](padding-inline:)  text-[length:var(--df-row-font)](font-size:)
+  w-[var(--session-rail-w,17.5rem)] flex flex-col gap-2.5 p-px [[data-session-rail-flat]_&]:gap-0 [[data-session-rail-flat]_&]:p-0
+      w-[var(--session-rail-w,17.5rem)](width:280.0)  gap-2.5(gap:10.0)  p-px(padding:1.0)  [[data-session-rail-flat]_&]:gap-0(gap:0.0)  [[data-session-rail-flat]_&]:p-0(padding:0.0)
+  pointer-events-none absolute -inset-x-4 bottom-0 top-0 -z-10 bg-gradient-to-b from-transparent via-bg-100 via-[24px] to-bg-100
+      bottom-0(bottom:0.0)  top-0(top:0.0)  -z-10(z-index:-10.0)
+  mx-auto mt-3 max-w-md rounded-lg border border-danger stacks:border-transparent bg-danger px-3 py-2.5 text-start text-body
+      mx-auto(margin-inline:auto)  max-w-md(max-width:448.0)  rounded-lg(border-radius:8.0)  px-3(padding-inline:12.0)  py-2.5(padding-block:10.0)  text-body(font-size:12.2,line-height:17.9)
+  df-label-inset mt-1 flex outline-none h-[var(--df-row-h)] shrink-0 items-center justify-between gap-[var(--df-row-gap)]
+      h-[var(--df-row-h)](height:)  gap-[var(--df-row-gap)](gap:)
+  inline-flex items-center gap-0.5 text-accent-100 bg-surface-3 border-0.5 rounded-full px-2 py-0.5 text-xs ms-1
+      gap-0.5(gap:2.0)  rounded-full(border-radius:2147483647.0)  px-2(padding-inline:8.0)  py-0.5(padding-block:2.0)  text-xs(font-size:12.0,line-height:1.3)
+  ms-[calc(var(--df-rail-shift,0px)/2)] flex size-[var(--df-leading-slot)] shrink-0 items-center justify-center
+      size-[var(--df-leading-slot)](width:,height:)
+  flex-shrink-0 w-6 h-6 flex items-center justify-center bg-surface-3 rounded-md border text-muted-as-secondary
+      h-6(height:24.0)  rounded-md(border-radius:6.0)
+  flex min-h-[200px] select-none flex-col last:flex-1 items-center justify-center gap-4 px-4 pb-10 text-center
+      min-h-[200px](min-height:200.0)  gap-4(gap:16.0)  px-4(padding-inline:16.0)  pb-10(padding-bottom:40.0)
+  flex min-h-[120px] flex-col items-center justify-center gap-sm px-md text-center text-muted-as-secondary
+      min-h-[120px](min-height:120.0)  gap-sm(gap:7.5)  px-md(padding-inline:7.5)
+  pointer-events-none absolute z-20 max-w-[16rem] truncate px-1 py-px font-mono text-[10px] leading-[14px]
+      z-20(z-index:20.0)  max-w-[16rem](max-width:256.0)  px-1(padding-inline:4.0)  py-px(padding-block:1.0)
+  epitaxy-root break-words w-[360px] max-w-[calc(100vw-2rem)] max-h-[min(var(--available-height),640px)]
+      w-[360px](width:360.0)  max-w-[calc(100vw-2rem)](max-width:calc(100vw - 2rem))  max-h-[min(var(--available-height),640px)](max-height:min(, 640px))
+  group/task-chip df-link-card inline-flex min-w-0 rounded-chip outline-none focus-visible:shadow-focus
+      min-w-0(min-width:0.0)  rounded-chip(border-radius:calc(calc(1.125rem * 0.9411764705882353) / 4))
+  bg-transparent border-0 outline-none focus:outline-none focus:ring-0 font-base text-secondary w-full
+      font-base(font-size:12.2,line-height:17.9)  w-full(width:100%)
+  mx-auto mb-3.5 flex size-[52px] items-center justify-center rounded-full bg-surface-3 text-primary
+      mx-auto(margin-inline:auto)  size-[52px](width:52.0,height:52.0)  rounded-full(border-radius:2147483647.0)
+  flex flex-wrap items-center justify-between gap-x-md gap-y-sm rounded-lg bg-alpha-1 px-lg py-2.5
+      gap-x-md(column-gap:11.3)  gap-y-sm(row-gap:7.5)  rounded-lg(border-radius:8.0)  px-lg(padding-inline:11.3)  py-2.5(padding-block:10.0)
+  flex items-center justify-between gap-3 rounded-[10px] border-[0.5px] bg-surface-0 px-4 py-2.5
+      gap-3(gap:12.0)  rounded-[10px](border-radius:10.0)  px-4(padding-inline:16.0)  py-2.5(padding-block:10.0)
+  absolute inset-0 -z-[1] rounded-[inherit] pointer-events-none bg-surface-panel shadow-panel-sm
+      inset-0(inset:0.0)  -z-[1](z-index:-1.0)  rounded-[inherit](border-radius:inherit)
+  can-focus w-full flex items-center justify-between p-3 text-start select-none draggable-none
+      w-full(width:100%)  p-3(padding:12.0)
+  border-0.5 rounded-lg font-ui flex items-center gap-2 px-3 py-2 compact:px-2 compact:py-1.5
+      rounded-lg(border-radius:8.0)  gap-2(gap:8.0)  px-3(padding-inline:12.0)  py-2(padding-block:8.0)
+  pointer-events-none absolute inset-x-0 rounded-lg transition-[background-color,box-shadow] 
+      rounded-lg(border-radius:8.0)
+  dframe-chrome-bar draggable absolute top-0 inset-x-0 h-[36px] flex items-center gap-1 z-20
+      top-0(top:0.0)  h-[36px](height:36.0)  gap-1(gap:4.0)  z-20(z-index:20.0)
+  flex h-full items-center justify-center pe-5 text-center text-body text-muted-as-secondary
+      h-full(height:100%)  text-body(font-size:12.2,line-height:17.9)
+  df-on-rail relative flex w-[var(--df-leading-slot)] shrink-0 items-center justify-center
+      w-[var(--df-leading-slot)](width:)
+  min-w-0 truncate text-[length:var(--df-row-font)] font-medium font-control text-primary
+      min-w-0(min-width:0.0)  text-[length:var(--df-row-font)](font-size:)
+  min-w-0 overflow-x-auto overflow-y-hidden scroll-fade-x scroll-fade-size-16 p-1 -m-1
+      min-w-0(min-width:0.0)  p-1(padding:4.0)  -m-1(margin:-4.0)
+  df-on-rail flex size-[var(--df-leading-slot)] shrink-0 items-center justify-center
+      size-[var(--df-leading-slot)](width:,height:)
+  ms-[34px] flex items-start gap-sm rounded border bg-surface-1 p-2.5 text-secondary
+      gap-sm(gap:7.5)  rounded(border-radius:5.6)  p-2.5(padding:10.0)
+  df-label-inset pe-[var(--df-row-px)] py-1.5 text-footnote text-muted-as-secondary
+      py-1.5(padding-block:6.0)  text-footnote(font-size:11.3,line-height:14.1)
+  -my-1 -ms-1 min-w-0 flex-1 py-1 ps-1 text-[length:var(--df-group-font)] leading-4
+      -my-1(margin-block:-4.0)  min-w-0(min-width:0.0)  flex-1(flex:1.0)  py-1(padding-block:4.0)  text-[length:var(--df-group-font)](font-size:)  leading-4(line-height:16.0)
+  pointer-events-none absolute -top-0.5 -end-0.5 size-2 rounded-full bg-fill-accent
+      -top-0.5(top:-2.0)  size-2(width:8.0,height:8.0)  rounded-full(border-radius:2147483647.0)
+  flex size-11 items-center justify-center rounded-xl border-[1.5px] border-dashed
+      size-11(width:44.0,height:44.0)  rounded-xl(border-radius:12.0)
+  font-heading text-secondary mb-4 flex items-center gap-1.5 text-center md:hidden
+      gap-1.5(gap:6.0)
+  flex font-medium items-center justify-between p-1 hover:bg-neutral-30 rounded-md
+      p-1(padding:4.0)  rounded-md(border-radius:6.0)
+  relative flex items-center justify-center rounded-xl bg-surface-0 p-2 shadow-md
+      rounded-xl(border-radius:12.0)  p-2(padding:8.0)
+  flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-2 text-center
+      flex-1(flex:1.0)  min-h-0(min-height:0.0)  gap-2(gap:8.0)  px-2(padding-inline:8.0)
+
+================================================================================
+标题栏   (57 串)
+================================================================================
+  pointer-events-none flex size-icon shrink-0 items-center justify-center rounded-sm text-muted-as-secondary opacity-0 hover:bg-alpha-2 hover:text-primary pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 [[data-highlighted]_&]:pointer-events-auto [[data-highlighted]_&]:opacity-100
+      size-icon(width:15.1,height:15.1)  rounded-sm(border-radius:4.0)
+  absolute inset-0 [mask-image:linear-gradient(to_right,transparent_0%,black_45%)] dark:[mask-image:linear-gradient(to_right,transparent_0%,black_60%)] dark:mix-blend-plus-lighter dark:opacity-65
+      inset-0(inset:0.0)
+  h-control aspect-square p-0 m-0 text-accent hover:text-accent focus-visible:text-accent data-[popup-open]:text-accent
+      h-control(height:22.6)  p-0(padding:0.0)  m-0(margin:0.0)
+  pointer-events-none absolute end-[var(--titlebar-end-inset,0.5rem)] bottom-2 flex flex-col items-end
+      bottom-2(bottom:8.0)
+  relative -mb-[3px] -ms-[7px] flex rounded-full bg-surface-1 p-[1.5px] has-[>span:empty]:hidden
+      rounded-full(border-radius:2147483647.0)  p-[1.5px](padding:1.5)
+  order-first flex min-h-control shrink-0 touch-none items-center gap-xs px-1 pb-1 select-none
+      min-h-control(min-height:22.6)  gap-xs(gap:5.6)  px-1(padding-inline:4.0)  pb-1(padding-bottom:4.0)
+  df-titlebar-brand -m-1 flex min-w-0 items-center gap-1.5 self-stretch p-1 [overflow:clip]
+      -m-1(margin:-4.0)  min-w-0(min-width:0.0)  gap-1.5(gap:6.0)  p-1(padding:4.0)
+  flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-secondary
+      h-full(height:100%)  gap-3(gap:12.0)  p-6(padding:24.0)
+  -mx-pad-xl flex min-h-0 flex-1 flex-col overflow-y-auto scroll-fade-y px-xl pb-2
+      -mx-pad-xl(margin-inline:calc(calc(1.25rem * 0.9411764705882353) * -1))  min-h-0(min-height:0.0)  flex-1(flex:1.0)  px-xl(padding-inline:18.8)  pb-2(padding-bottom:8.0)
+  min-h-[min(560px,calc(100dvh_-_max(2rem,2*var(--desktop-titlebar-inset,0px))))]
+      min-h-[min(560px,calc(100dvh_-_max(2rem,2*var(--desktop-titlebar-inset,0px))))](min-height:min(560px, calc(100dvh - max(2rem, 2 * 0px))))
+  max-h-[min(80dvh,calc(100dvh-max(2rem,2*var(--desktop-titlebar-inset,0px))))]
+      max-h-[min(80dvh,calc(100dvh-max(2rem,2*var(--desktop-titlebar-inset,0px))))](max-height:min(80dvh, calc(100dvh - max(2rem, 2 * 0px))))
+  flex flex-col gap-4 sm:flex-row items-center sm:justify-between font-medium
+      gap-4(gap:16.0)
+  df-titlebar-brand-col draggable-none ms-2 flex min-w-0 flex-col items-start
+      min-w-0(min-width:0.0)
+  relative z-[1] flex items-center gap-0.5 shrink-0 draggable-none ms-auto
+      z-[1](z-index:1.0)  gap-0.5(gap:2.0)
+  flex min-h-8 shrink-0 touch-none items-center justify-center select-none
+      min-h-8(min-height:32.0)
+  box-border flex h-[37px] w-full shrink-0 items-center px-3.5 pt-3 pb-2
+      h-[37px](height:37.0)  w-full(width:100%)  px-3.5(padding-inline:14.0)  pt-3(padding-top:12.0)  pb-2(padding-bottom:8.0)
+  relative flex flex-col gap-lg bg-surface-0 p-xl outline-none md:pe-xl
+      gap-lg(gap:18.8)  p-xl(padding:18.8)
+  flex size-3 items-center justify-center overflow-hidden rounded-full
+      size-3(width:12.0,height:12.0)  rounded-full(border-radius:2147483647.0)
+  flex flex-wrap items-center justify-center gap-4 sm:justify-end
+      gap-4(gap:16.0)
+  max-w-[720px] mx-auto flex flex-col gap-[32px] px-lg pt-12 pb-8
+      max-w-[720px](max-width:720.0)  mx-auto(margin-inline:auto)  gap-[32px](gap:32.0)  px-lg(padding-inline:11.3)  pt-12(padding-top:48.0)  pb-8(padding-bottom:32.0)
+  py-lg text-center text-footnote text-muted-as-secondary
+      py-lg(padding-block:11.3)  text-footnote(font-size:11.3,line-height:14.1)
+  relative z-[1] flex min-w-0 items-center draggable-none
+      z-[1](z-index:1.0)  min-w-0(min-width:0.0)
+  dframe-content flex h-full w-full flex-col bg-surface-1
+      h-full(height:100%)  w-full(width:100%)
+  draggable-none ms-2 flex min-w-0 items-center gap-1.5
+      min-w-0(min-width:0.0)  gap-1.5(gap:6.0)
+  draggable-none ms-1 flex min-w-0 items-center gap-2
+      min-w-0(min-width:0.0)  gap-2(gap:8.0)
+  absolute inset-0 w-full h-full pointer-events-none
+      inset-0(inset:0.0)  w-full(width:100%)  h-full(height:100%)
+  mt-3 flex flex-col gap-3 text-body text-secondary
+      gap-3(gap:12.0)  text-body(font-size:12.2,line-height:17.9)
+  dframe-root h-full w-full text-body text-primary
+      h-full(height:100%)  w-full(width:100%)  text-body(font-size:12.2,line-height:17.9)
+  flex flex-col gap-1 sm:min-w-48 sm:flex-1
+      gap-1(gap:4.0)  sm:min-w-48(min-width:192.0)  sm:flex-1(flex:1.0)
+  flex h-9 shrink-0 items-center gap-2 px-3
+      h-9(height:36.0)  gap-2(gap:8.0)  px-3(padding-inline:12.0)
+  flex items-center gap-3 justify-self-end
+      gap-3(gap:12.0)
+  col-span-full flex min-w-0 empty:hidden
+      min-w-0(min-width:0.0)
+  flex min-h-0 flex-1 flex-col px-2 pb-2
+      min-h-0(min-height:0.0)  flex-1(flex:1.0)  px-2(padding-inline:8.0)  pb-2(padding-bottom:8.0)
+  draggable absolute inset-x-0 top-0
+      top-0(top:0.0)
+  inline-flex h-4 shrink-0 items-end
+      h-4(height:16.0)
+  flex h-7 items-center gap-5 ps-2.5
+      h-7(height:28.0)  gap-5(gap:20.0)
+  flex min-w-0 flex-1 flex-col gap-2
+      min-w-0(min-width:0.0)  flex-1(flex:1.0)  gap-2(gap:8.0)
+  flex min-w-0 flex-1 items-center
+      min-w-0(min-width:0.0)  flex-1(flex:1.0)
+  inline-flex items-center gap-1
+      gap-1(gap:4.0)
+  absolute end-4 top-4 md:hidden
+      top-4(top:16.0)
+  flex min-h-0 flex-1 flex-col
+      min-h-0(min-height:0.0)  flex-1(flex:1.0)
+  draggable absolute inset-0
+      inset-0(inset:0.0)
+  flex items-center gap-sm
+      gap-sm(gap:7.5)
+  min-w-0 flex-1 truncate
+      min-w-0(min-width:0.0)  flex-1(flex:1.0)
+  flex items-center gap-1
+      gap-1(gap:4.0)
+  flex items-center gap-3
+      gap-3(gap:12.0)
+  relative h-full w-full
+      h-full(height:100%)  w-full(width:100%)
+  fixed inset-x-0 top-0
+      top-0(top:0.0)
+
+================================================================================
+面板   (5 串)
+================================================================================
+  min-h-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable_both-edges]
+      min-h-0(min-height:0.0)  flex-1(flex:1.0)
+  epitaxy-pane-window flex flex-1 min-h-0 flex-col outline-none
+      flex-1(flex:1.0)  min-h-0(min-height:0.0)
+  flex min-h-[10vh] w-full shrink-0 flex-col md:min-h-[25vh]
+      min-h-[10vh](min-height:10vh)  w-full(width:100%)
+  flex flex-1 min-h-0 flex-col outline-none
+      flex-1(flex:1.0)  min-h-0(min-height:0.0)
+  flex flex-col flex-1 min-h-0
+      flex-1(flex:1.0)  min-h-0(min-height:0.0)

@@ -97,34 +97,76 @@ console.error(`扫到 ${entries.length} 条 --cds-* 声明`);
 
 /**
  * 归类。**用「选择器完全相等」判，不用 includes。**
+ *
+ * ⚠️ 但「完全相等」要按**逗号分隔后的每一段**判 —— Claude 把三层暗色写成
+ * **一个**逗号组合的选择器：
+ *
+ *   [data-mode=dark] .cds-root:not([data-mode=light]):not([data-mode=system]),
+ *   .cds-root[data-mode=dark],
+ *   .cds-dark-scope[data-mode=dark] { … }
+ *
+ * 上一版只匹配了第一段，于是 `.cds-root[data-mode=dark]` 这条路径根本没进暗色层。
  */
-const layers = new Map(); // key -> { name: value }
+const layers = new Map();
 const put = (key, e) => {
   if (!layers.has(key)) layers.set(key, {});
   layers.get(key)[e.name] = e.value;
 };
 
+/** 把选择器按顶层逗号拆开（`()` / `[]` 里的逗号不算）。 */
+function splitSelector(sel) {
+  const out = [];
+  let buf = "", depth = 0;
+  for (const ch of sel) {
+    if (ch === "(" || ch === "[") depth++;
+    else if (ch === ")" || ch === "]") depth--;
+    if (ch === "," && depth === 0) { out.push(buf.trim()); buf = ""; continue; }
+    buf += ch;
+  }
+  if (buf.trim()) out.push(buf.trim());
+  return out;
+}
+
+/** 选择器的任意一段满足条件即算命中。 */
+const anySeg = (e, test) => splitSelector(e.sel).some(test);
+
 const LAYER_RULES = [
   // [key, 判定]
-  ["root",          (e) => e.sel === ":root" && !e.mq],
-  ["base",          (e) => e.sel === ".cds-root" && !e.mq],
-  ["base-dark",     (e) => e.sel === ".cds-root[data-mode=dark]" || (e.sel === ".cds-root" && e.mq === "dark")],
-  ["comfortable",   (e) => e.sel === ".cds-root[data-density=comfortable]"],
-  ["compact",       (e) => e.sel === ".cds-root[data-density=compact]"],
-  ...[1, 2, 3, 4, 5].map((n) => [`step${n}`, (e) => e.sel === `.cds-root [data-step="${n}"]`]),
-  ["size-xs",       (e) => e.sel === ".cds-root [data-size=xs]"],
-  ["size-sm",       (e) => e.sel === ".cds-root [data-size=sm]"],
-  ["size-lg",       (e) => e.sel === ".cds-root [data-size=lg]"],
+
+  // ── 全局 ──
+  // `:where(:root,:host)` 是调色板本体（--cds-gray-* / --cds-neutral-* …）。
+  // 上一版只认 `:root`，于是所有 `var(--cds-gray-20)` 都解不开。
+  ["root",  (e) => anySeg(e, (x) => x === ":root" || x === ":where(:root,:host)" || x === ":where(:root, :host)") && !e.mq],
+  ["base",  (e) => anySeg(e, (x) => x === ".cds-root") && !e.mq],
+
+  // ── 暗色 ──
+  // `.cds-root[data-mode=dark]` 与 `.cds-dark-scope[data-mode=dark]` 是显式暗色；
+  // `[data-mode=dark] .cds-root:not(...)` 是「根上有 dark」的继承式。
+  ["dark", (e) => !e.mq && anySeg(e, (x) =>
+    x === ".cds-root[data-mode=dark]" ||
+    x === ".cds-dark-scope[data-mode=dark]" ||
+    /^\[data-mode=dark\]\s+\.cds-root:not\(\[data-mode=light\]\):not\(\[data-mode=system\]\)$/.test(x))],
+  // `@media (prefers-color-scheme: dark)` 下 `data-mode=system` / 无 data-mode 那一组
+  ["dark-media", (e) => e.mq === "dark" && anySeg(e, (x) =>
+    /\.cds-root\[data-mode=system\]/.test(x) || /:not\(\[data-mode\]\)/.test(x))],
+
+  ["theme-claude", (e) => anySeg(e, (x) => x === "[data-theme=claude]") && !e.mq],
+
+  // ── 密度 / 字号档 / 尺寸档 ──
+  ["comfortable", (e) => anySeg(e, (x) => x === ".cds-root[data-density=comfortable]")],
+  ["compact",     (e) => anySeg(e, (x) => x === ".cds-root[data-density=compact]")],
+  ...[1, 2, 3, 4, 5].map((n) => [`step${n}`, (e) => anySeg(e, (x) => x === `.cds-root [data-step="${n}"]`)]),
+  ["size-xs",     (e) => anySeg(e, (x) => x === ".cds-root [data-size=xs]")],
+  ["size-sm",     (e) => anySeg(e, (x) => x === ".cds-root [data-size=sm]")],
+  ["size-lg",     (e) => anySeg(e, (x) => x === ".cds-root [data-size=lg]")],
 
   // ── 组件级变量层 ──
-  // 这些**不在 `.cds-root` 上**，而在组件选择器上，所以上一步会全漏掉。
-  // 上一版把 `--cds-message-bubble-item-gap` 报成 0，就是因为抓到的是
-  // `[data-variant=bubble]` 那个变体，而真正的默认在 AssistantMessage 上。
-  ["cmp-assistant", (e) => e.sel === ".cds-root [data-cds=AssistantMessage]"],
-  ["cmp-user",      (e) => e.sel === ".cds-root [data-cds=UserMessage]"],
-  ["cmp-user-and-bubble", (e) => e.sel === ".cds-root [data-cds=UserMessage],.cds-root [data-cds=AssistantMessage][data-variant=bubble]"],
-  ["cmp-assistant-bubble", (e) => e.sel === ".cds-root [data-cds=AssistantMessage][data-variant=bubble]"],
-  ["cmp-prose",     (e) => e.sel === ".prose"],
+  ["cmp-assistant", (e) => anySeg(e, (x) => x === ".cds-root [data-cds=AssistantMessage]")],
+  ["cmp-user",      (e) => anySeg(e, (x) => x === ".cds-root [data-cds=UserMessage]")],
+  ["cmp-user-and-bubble", (e) => anySeg(e, (x) => x === ".cds-root [data-cds=UserMessage]") &&
+                                     anySeg(e, (x) => x === ".cds-root [data-cds=AssistantMessage][data-variant=bubble]")],
+  ["cmp-assistant-bubble", (e) => anySeg(e, (x) => x === ".cds-root [data-cds=AssistantMessage][data-variant=bubble]")],
+  ["cmp-prose",     (e) => anySeg(e, (x) => x === ".prose")],
 ];
 
 for (const e of entries) {

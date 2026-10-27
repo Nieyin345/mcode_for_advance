@@ -1,0 +1,78 @@
+转储 346234880 字节
+
+data-cds: utf8=53  utf16le=617
+
+=== data-cds 值 ===
+     74  MessageActions
+     64  Prose
+     49  MessageAttachmentsImage
+     38  Card
+     38  AssistantMessage
+     23  ChatComposerDock
+     17  Icon
+     16  MessageAttachments
+     14  Toolbar
+     13  Page
+     12  TurnStatusStep
+     12  SkeletonGroup
+     11  UserMessage
+      9  Pulse
+      5  Skeleton
+      4  ChatCompose
+      4  DataTable
+      4  ButtonGroup
+      3  CardLink
+      3  AccordionHeader
+      3  ChatComposerChin
+      3  Button
+      2  ChatComposerNotices
+      2  TurnStatus
+      2  Ass
+      2  PreviewCard
+      2  Heatmap
+      2  DiffIndicator
+      2  ChatComposerEditor
+      1  ChatComposerQueuedMessages
+      1  Assis
+      1  Surface
+      1  Panel
+      1  Banner
+      1  Aside
+      1  Table
+      1  AskUserQuestion
+      1  CommentCard
+      1  ChartContainer
+      1  PointChartContainer
+      1  Tool
+      1  ModelSelector
+      1  MessageAtt
+      1  MessageA
+      1  Mes
+      1  Messag
+      1  MessageAttachmentsVideo
+      1  MessageAttachmentsFile
+
+epitaxy-: utf8=2  utf16le=2
+  样本: 'olor:color-mix(in lab, red, red))\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00(\\@�����ף�calc(0.1875rem*var(--cds-rem-scale,1))]\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00+\x00\x00\x00\x05�g�py-[calc(0.1875rem*var(--cds-rem-scale,1))]\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00(\\������ף?var(--epitaxy-titlebar-pr,12px)]\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00$\x00\x00\x00\x05�<+pr-[var(--epitaxy-titlebar-pr,12px)]\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00(]@�����ע�-[calc(0.75rem*var(--cds-rem-scale,1))]\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00+\x00\x00\x00\x05��%text-[calc(0.75rem*va'
+
+dframe-: utf8=0  utf16le=0
+
+ChatComposer: utf8=7  utf16le=24
+  样本: '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00 �\t\x01�w\x00\x00ChatComposerChin\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00��\t\x01�w\x00\x00ringring\x00\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00��\t\x01�w\x00\x00--cds-re-red-250\r\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+
+session-rail: utf8=0  utf16le=0
+
+df-row-: utf8=0  utf16le=0
+
+df-leading-slot: utf8=0  utf16le=0
+
+
+=== 类名串（共 8 种，前 60）===
+  x1  r+=" "),r+=t);return r}var m=t(),h=(e="primary")=>p("inline-flex items-center justify-center relative shrink-0 select-none disabled:pointer-events-none disabled:opacity-50 disabled:shadow-none disabled:drop-shadow-none",
+  x1  ata-load-error-overlay":!0,className:"nc-drag absolute z-50 flex flex-col items-center justify-center",style:{top:`${v}px`,left:0,right:0,bottom:0},children:[(0,m.jsxs)("div",{ref:f,"data-compact":h?"":void 0,className:p
+  x1  "":void 0,className:p("group/message nc-no-drag select-none flex items-center justify-center",h?"absolute top-3 max-w-[calc(100%-1.5rem)] flex-row gap-md whitespace-nowrap rounded-card bg-surface-1 shadow-card-ring py-xs
+  x1  ssName:"shrink-0 text-danger"}),(0,m.jsx)("div",{className:"flex items-center justify-center w-16 h-16 rounded-full bg-danger-200/10 text-danger-100 group-data-[compact]/message:hidden",children:(0,m.jsx)(b,{def:l,size:3
+  x1  })}),e.retrying&&(0,m.jsxs)("p",{role:"status",className:p("flex items-center justify-center gap-1.5 text-caption text-secondary",h?"min-w-0 shrink-0":"!mb-2"),children:[(0,m.jsx)(b,{def:c,size:16,className:"shrink-0 ani
+  x1  ng automatically\u2026"})})]}),(0,m.jsxs)("div",{className:"flex shrink-0 items-center justify-center gap-2",children:[!e.hideReload&&(0,m.jsx)(_,{onClick:t,onMouseDown:g,variant:"secondary",size:h?"sm":"default",childre
+  x1  ?v:36)}){if(e)return null;let r=(0,m.jsx)("div",{className:"flex flex-row items-center justify-center select-none nc-drag",style:{height:`${n}px`},children:(0,m.jsx)("h1",{className:"text-xs text-center self-center opaci
+  x1  r,(0,m.jsx)("div",{className:"absolute top-0 left-0 right-0 flex flex-row items-center select-none nc-drag",style:{height:`${n+1}px`,borderBottom:"1px solid rgba(0,0,0,0.1)"},children:(0,m.jsx)("div",{})})]})}var D=()=>{
