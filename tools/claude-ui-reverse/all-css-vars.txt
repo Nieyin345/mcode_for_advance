@@ -1,0 +1,495 @@
+Claude 3.6556.2.0 —— 全部 25 个 CSS 的变量定义
+
+⚠️ 上一轮只解析了主 CSS，导致把 --df-row-h 误判成「运行时才算出来」。
+   它在 shared-styles-*.css 里，而且有多个定义点。见 README。
+
+## 一、每个文件定义了哪些变量
+
+   1591 个变量  c6a992d55-Che1orl5.css
+               --cds(1048) · --tw(94) · --_prose(38) · --font(36) · --_gray(29) · --text(26)
+    110 个变量  shared-styles-D_GJawPO.css
+               --df(91) · --cds(8) · --button(3) · --lightningcss(2) · --epitaxy(2) · --top(2)
+     48 个变量  c4a9ee384-Br-fzuOs.css
+               --hq(47) · --reply(1)
+     29 个变量  c3fde7009-BszyXGym.css
+               --document(17) · --cds(5) · --outline(3) · --rail(2) · --diffs(2)
+     27 个变量  c6059c89c-BTGTtuUf.css
+               --sec(3) · --host(3) · --font(2) · --primary(2) · --lightningcss(2) · --bar(2)
+     16 个变量  c0d1f1ea0-C0kQ5JMB.css
+               --fc(16)
+     15 个变量  c49d37e5f-Ddim5ELZ.css
+               --ob(14) · --cds(1)
+      6 个变量  c5aee9dbd-B55U_qvj.css
+               --vscode(3) · --dropdown(2) · --monaco(1)
+      6 个变量  c6a73f447-LaXKuzWp.css
+               --sheet(6)
+      5 个变量  c673fe961-D0RQbtjQ.css
+               --cds(3) · --_prose(1) · --_text(1)
+      4 个变量  c403c4b83-yqAXiELG.css
+               --urm(3) · --cds(1)
+      3 个变量  c19e90103-CuNz46ca.css
+               --codeblock(1) · --code(1) · --chat(1)
+      3 个变量  c5aee9dbd-cvLUb2-y.css
+               --vscode(2) · --widget(1)
+      2 个变量  frame-window-BEI3vR8Q.css
+               --lightningcss(2)
+      1 个变量  c05b96c7f-B2fCCOZ2.css
+               --timeline(1)
+
+
+## 二、侧栏 --df-* 的分档（99 个变量，每个列出全部定义点）
+
+------------------------------------------------------------------------------
+--df-sidebar-width
+------------------------------------------------------------------------------
+  288px                  ← 1 个选择器
+      .dframe-root
+
+------------------------------------------------------------------------------
+--df-chrome-bar-height
+------------------------------------------------------------------------------
+  0px                    ← 1 个选择器
+      .dframe-root
+  36px                   ← 1 个选择器
+      .dframe-root[data-wco]
+
+------------------------------------------------------------------------------
+--df-header-h
+------------------------------------------------------------------------------
+  0px                    ← 2 个选择器
+      .md\:\[--df-header-h\:0px\]
+      .dframe-root:not([data-web]) .\[\.dframe-root\:not\(\[data-web\]\)_\&\]\:\[--df-header-h\:0px\]
+  48px                   ← 1 个选择器
+      .dframe-root
+
+------------------------------------------------------------------------------
+--df-row-h
+------------------------------------------------------------------------------
+  28px                   ← 1 个选择器
+      .dframe-root:not([data-phone-sheet]) .dframe-sidebar[data-code-list][data-density=compact] .df-session-list
+  26px                   ← 2 个选择器
+      .dframe-root:not([data-phone-sheet]):not([data-web]) .dframe-sidebar[data-code-list][data-density=compact] .df-session-list [data-pinned-list]
+      .dframe-root
+  32px                   ← 1 个选择器
+      .dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+  30px                   ← 1 个选择器
+      .dframe-sidebar[data-variant=desktop][data-density=comfortable],.df-sidebar-geometry[data-variant=desktop][data-density=comfortable]
+  44px                   ← 1 个选择器
+      .dframe-root[data-phone-sheet][data-variant=web][data-collapsed]:not([data-wco]) .dframe-sidebar .dframe-sidebar-body
+
+------------------------------------------------------------------------------
+--df-row-gap
+------------------------------------------------------------------------------
+  4px                    ← 1 个选择器
+      .dframe-root
+  8px                    ← 1 个选择器
+      .dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+
+------------------------------------------------------------------------------
+--df-row-px
+------------------------------------------------------------------------------
+  2px                    ← 2 个选择器
+      .dframe-root
+      .dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+
+------------------------------------------------------------------------------
+--df-leading-slot
+------------------------------------------------------------------------------
+  24px                   ← 1 个选择器
+      .dframe-root
+  28px                   ← 1 个选择器
+      .dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+
+------------------------------------------------------------------------------
+--df-icon-size
+------------------------------------------------------------------------------
+  16px                   ← 1 个选择器
+      .dframe-root
+  20px                   ← 1 个选择器
+      .dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+
+------------------------------------------------------------------------------
+--df-row-font
+------------------------------------------------------------------------------
+  13px                   ← 1 个选择器
+      .dframe-root
+  14px                   ← 1 个选择器
+      .dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+
+------------------------------------------------------------------------------
+--df-group-font
+------------------------------------------------------------------------------
+  12px                   ← 1 个选择器
+      .dframe-root
+  13px                   ← 1 个选择器
+      .dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+
+------------------------------------------------------------------------------
+--df-radius-pill
+------------------------------------------------------------------------------
+  6px                    ← 1 个选择器
+      .dframe-root
+  8px                    ← 1 个选择器
+      .dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+
+------------------------------------------------------------------------------
+--df-footer-btn-size
+------------------------------------------------------------------------------
+  24px                   ← 1 个选择器
+      .dframe-root
+  32px                   ← 1 个选择器
+      .dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+
+------------------------------------------------------------------------------
+--df-group-pt
+------------------------------------------------------------------------------
+  4px                    ← 1 个选择器
+      .\[--df-group-pt\:4px\]
+  6px                    ← 1 个选择器
+      .\[--df-group-pt\:6px\]
+  12px                   ← 1 个选择器
+      .dframe-root
+  16px                   ← 1 个选择器
+      .dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+  14px                   ← 1 个选择器
+      .dframe-sidebar[data-variant=desktop][data-density=comfortable],.df-sidebar-geometry[data-variant=desktop][data-density=comfortable]
+
+------------------------------------------------------------------------------
+--df-row-stack-gap
+------------------------------------------------------------------------------
+  2px                    ← 1 个选择器
+      .df-session-list
+  1.5px                  ← 1 个选择器
+      .dframe-root:not([data-phone-sheet]):not([data-web]) .dframe-sidebar[data-code-list][data-density=compact] .df-session-list [data-pinned-list]
+
+------------------------------------------------------------------------------
+--df-pill-size
+------------------------------------------------------------------------------
+  28px                   ← 1 个选择器
+      .dframe-root[data-collapsed]
+  32px                   ← 1 个选择器
+      .dframe-root[data-collapsed][data-sidebar-density=comfortable]
+
+------------------------------------------------------------------------------
+--df-described-line
+------------------------------------------------------------------------------
+  20px                   ← 1 个选择器
+      .dframe-root:not([data-phone-sheet]) .dframe-sidebar[data-code-list][data-density=compact] .df-session-list
+  24px                   ← 1 个选择器
+      .dframe-root[data-phone-sheet][data-variant=web][data-collapsed]:not([data-wco]) .dframe-sidebar .dframe-sidebar-body
+
+
+## 三、其余 --df-* 变量的全部定义点
+
+--df-bg-page
+    hsl(var(--df-bg-page-hsl))                                     (1)
+
+--df-bg-page-hsl
+    var(--_gray-10)                                                (1)
+    var(--_gray-850)                                               (1)
+    from var(--cds-surface-1) h s l                                (1)
+
+--df-ceded-gutter
+    0px                                                            (1)
+
+--df-chrome-bar-end-gutter
+    0px                                                            (1)
+
+--df-chrome-icon-size
+    16px                                                           (2)
+
+--df-collapsed-chrome-clearance
+    max(0px, calc(var(--df-trigger-right,180px) + 8px - var(--df   (1)
+
+--df-collapsed-left
+    calc(var(--df-traffic-light-spacer-start) + 16px)              (1)
+    8px                                                            (2)
+    calc(var(--df-traffic-light-spacer-start) + 8px)               (1)
+    calc(var(--df-traffic-light-spacer-start) + 10px)              (1)
+
+--df-content-gutter
+    8px                                                            (1)
+    0px                                                            (1)
+
+--df-content-gutter-start
+    var(--df-content-gutter)                                       (1)
+
+--df-described-trim
+    calc(var(--df-described-tuck) / 2)                             (1)
+
+--df-described-tuck
+    4px                                                            (1)
+
+--df-description-pad-end
+    var(--df-iconless-pad,calc((var(--df-leading-slot) - var(--d   (1)
+    0px                                                            (1)
+
+--df-dot-r
+    calc(.1875rem * var(--cds-rem-scale,1))                        (1)
+
+--df-dot-x
+    calc(100% - var(--df-dot-r) + 1px)                             (1)
+    calc(var(--df-dot-r) - 1px)                                    (1)
+
+--df-dur-fast
+    .12s                                                           (1)
+
+--df-dur-slow
+    .3s                                                            (1)
+
+--df-ease-out
+    cubic-bezier(.32, .72, 0, 1)                                   (1)
+
+--df-ease-out-cubic
+    cubic-bezier(.215, .61, .355, 1)                               (1)
+
+--df-ease-out-fast
+    cubic-bezier(.2, 0, 0, 1)                                      (1)
+
+--df-edge-line-max
+    .1                                                             (1)
+    .14                                                            (1)
+
+--df-edge-line-rgb
+    0 0 0                                                          (1)
+    255 255 255                                                    (1)
+
+--df-edge-shade-max
+    .2                                                             (1)
+    .6                                                             (1)
+
+--df-edge-shade-x
+    -3px                                                           (1)
+
+--df-fade-clear
+    calc(var(--df-row-ctl-inset,calc((var(--df-row-h) - var(--df   (2)
+
+--df-fade-to
+    to left                                                        (1)
+
+--df-family-row-gap
+    var(--df-row-stack-gap)                                        (1)
+
+--df-footer-gap
+    3px                                                            (1)
+    6px                                                            (1)
+
+--df-group-band-h
+    var(--df-row-h)                                                (1)
+
+--df-group-band-mt
+    calc(10px - var(--df-row-stack-gap))                           (1)
+    9px                                                            (1)
+    0px                                                            (2)
+
+--df-header-bleed
+    var(--df-content-gutter-start,.5rem)                           (2)
+    var(--title-row-bleed)                                         (1)
+
+--df-header-collapsed-gap
+    0px                                                            (1)
+
+--df-header-end-room
+    max(0px, calc(var(--df-traffic-light-spacer-end) - var(--df-   (1)
+
+--df-heading-button-ink
+    var(--cds-text-primary)                                        (1)
+
+--df-heading-ink
+    var(--cds-text-muted)                                          (1)
+    var(--cds-text-secondary)                                      (1)
+
+--df-hover
+    var(--cds-alpha-1)                                             (2)
+    var(--cds-neutral-50)                                          (1)
+    var(--cds-fill-ghost-hover)                                    (2)
+
+--df-hover-mask
+    linear-gradient(var(--df-fade-to,to right),black calc(100% -   (1)
+    linear-gradient(var(--df-fade-to,to right),var(--df-label-st   (1)
+
+--df-iconless-pad
+    8px                                                            (2)
+    inherit                                                        (1)
+    calc((var(--df-leading-slot) - var(--df-icon-size)) / 2)       (1)
+
+--df-label-fade-angle
+    270deg                                                         (1)
+
+--df-label-start-fade
+    transparent 0,black 24px                                       (2)
+
+--df-new-circle-glyph
+    13px                                                           (1)
+    16px                                                           (1)
+
+--df-new-circle-size
+    18px                                                           (1)
+    22px                                                           (1)
+
+--df-own-mt
+    0px                                                            (1)
+
+--df-page-ground
+    var(--df-bg-page)                                              (1)
+
+--df-pane-row
+    .5                                                             (1)
+
+--df-pane-trailing-gutter
+    8px                                                            (2)
+    calc(8px - var(--df-content-gutter,8px))                       (1)
+
+--df-peek-band
+    44px                                                           (1)
+    0px                                                            (1)
+    46px                                                           (1)
+
+--df-peek-width
+    min(var(--df-sidebar-width), max(100vw, var(--df-sidebar-flo   (1)
+
+--df-pin-tail-mask
+    linear-gradient(to right, black calc(100% - 50px), transpare   (1)
+    linear-gradient(to left, black calc(100% - 50px), transparen   (1)
+
+--df-popout-lights-room
+    calc(68px / var(--df-popout-zoom-out,1))                       (1)
+
+--df-radius-card
+    8px                                                            (1)
+
+--df-rail-shift
+    calc(var(--df-iconless-pad) - (var(--df-leading-slot) - var(   (2)
+    0px                                                            (2)
+
+--df-reveal-end
+    min(4px, max(0px, calc(8px - var(--df-nav-scrollbar-lane,0px   (1)
+
+--df-row-ctl
+    24px                                                           (2)
+    20px                                                           (2)
+    36px                                                           (1)
+
+--df-row-ctl-inset
+    0px                                                            (1)
+    initial                                                        (2)
+
+--df-row-indent
+    calc((var(--df-leading-slot) + var(--df-icon-size)) / 2 + va   (1)
+    calc(var(--df-icon-size) + var(--df-row-gap))                  (1)
+    calc(var(--df-group-indent,0px) + 20px)                        (1)
+    0px                                                            (1)
+
+--df-row-pad-end
+    8px                                                            (1)
+    var(--df-row-px)                                               (1)
+
+--df-selected
+    var(--df-hover)                                                (1)
+    var(--df-selected-base)                                        (1)
+    var(--cds-alpha-2)                                             (1)
+    var(--cds-neutral-60)                                          (1)
+    var(--cds-fill-ghost-selected)                                 (2)
+
+--df-selected-base
+    var(--df-selected)                                             (1)
+
+--df-shadow-card
+    inset 0 0 0 0 transparent, 0 0 0 1px color-mix(in oklab, var   (1)
+    inset 0 0 0 1px #ffffff0f, 0 0 0 0 transparent, 0 4px 24px c   (1)
+    inset 0 0 0 0 transparent, 0 0 0 1px var(--cds-alpha-2), 0 4   (2)
+
+--df-shadow-float
+    0 0 0 .5px #0000000d, 0 2px 8px #0000000a, 0 12px 32px #0000   (1)
+    0 0 0 .5px #ffffff0f, 0 2px 8px #0000004d, 0 12px 32px #0000   (1)
+
+--df-shadow-pop
+    0 0 0 .5px #0000000f, 0 4px 12px #0000000f, 0 16px 40px #000   (1)
+    0 0 0 .5px #ffffff14, 0 4px 12px #0006, 0 16px 40px #0000008   (1)
+
+--df-sidebar-bg
+    var(--cds-gray-10)                                             (1)
+    color-mix(in srgb, hsl(var(--df-bg-page-hsl)) 80%, black)      (1)
+    white                                                          (1)
+    hsl(var(--df-z2))                                              (1)
+
+--df-sidebar-bg-clip
+    border-box                                                     (1)
+
+--df-sidebar-clearance
+    calc(var(--df-sidebar-width) + var(--df-sidebar-left))         (1)
+    0px                                                            (3)
+
+--df-sidebar-edit-scrim-opacity
+    .5                                                             (1)
+
+--df-sidebar-left
+    8px                                                            (1)
+    0px                                                            (1)
+
+--df-sidebar-tint-mixed
+    color-mix(in srgb, var(--df-sidebar-tint,var(--df-web-sideba   (1)
+
+--df-surface-primary
+    var(--df-z0)                                                   (1)
+    var(--df-z1)                                                   (1)
+    var(--df-z2)                                                   (1)
+
+--df-traffic-light-spacer-end
+    0px                                                            (2)
+    var(--df-traffic-light-spacer,74px)                            (1)
+
+--df-traffic-light-spacer-start
+    var(--df-traffic-light-spacer,74px)                            (2)
+    0px                                                            (1)
+
+--df-tray-caret-col
+    calc(8px + var(--df-footer-btn-size) / 2)                      (2)
+
+--df-tray-hairline
+    var(--cds-border)                                              (1)
+
+--df-trigger-right
+    var(--df-trigger-right-derived)                                (1)
+    0px                                                            (1)
+
+--df-trigger-right-derived
+    calc(var(--df-collapsed-left) + var(--df-pill-size))           (1)
+
+--df-web-sidebar-bg
+    color-mix(in srgb, var(--cds-surface-0) 50%, var(--cds-surfa   (1)
+    inherit                                                        (1)
+    color-mix(in srgb, var(--df-bg-page) 80%, black)               (1)
+    var(--cds-surface-popover)                                     (1)
+
+--df-web-sidebar-bg-image
+    none                                                           (3)
+    inherit                                                        (1)
+
+--df-z0
+    0 0% 100%                                                      (1)
+    0 0% 3.9%                                                      (1)
+
+--df-z1
+    0 0% 96.1%                                                     (1)
+    0 0% 10.2%                                                     (1)
+
+--df-z2
+    0 0% 92.2%                                                     (1)
+    0 0% 14.9%                                                     (1)
+
+--df-z3
+    0 0% 87.8%                                                     (1)
+    0 0% 20%                                                       (1)
+
+--df-z4
+    0 0% 83.9%                                                     (1)
+    0 0% 23.9%                                                     (1)
+
+--df-z5
+    0 0% 60%                                                       (1)
+    0 0% 32.2%                                                     (1)
+
+--df-z6
+    0 0% 45.1%                                                     (1)
+    0 0% 65.1%                                                     (1)

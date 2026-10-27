@@ -7,7 +7,7 @@
 
 ---
 
-## 0. 先记五个「逆向踩过的坑」
+## 0. 先记六个「逆向踩过的坑」
 
 这些坑让上一版的结论**整批作废**，记下来免得再犯。
 
@@ -18,6 +18,7 @@
 | 3 | **选择器用 `includes` 判会串层** | `.cds-root [data-step="3"]` 也含 `.cds-root`。必须**完全相等**才算 base，否则「文本大小档 3」会覆盖真 base。**而且要先按逗号拆开** —— 暗色三层写在同一个逗号组合选择器里，不拆只命中第一段。 |
 | 4 | **调色板在 `:where(:root,:host)` 上** | 只认 `:root` 会让所有 `var(--cds-gray-20)` 解不开，颜色表全空。 |
 | 5 | **`data-cds` 名在 CSS 里≠在 JS 里** | `ChatComposerDock` 在 CSS 出现 10 次，在 JS 出现 **0 次**。输入框的真实 DOM 标识是 `.epitaxy-prompt` / `[data-cds="ChatComposer"]`。 |
+| 6 | **只解析了 25 个 CSS 里的 1 个** | 于是把 `--df-row-h` 判成「CSS 里零定义」，写进了文档。它其实在 `shared-styles-*.css` 里，还有 6 个定义点。**「我搜过了」必须写清「搜了哪些文件」。** |
 
 还有两个纯计算错误（都在我自己的脚本里，已修）：
 
@@ -559,7 +560,7 @@ Mcode 用 `@media` 的话，缩窗口会同时改变所有区域。
 
 ---
 
-## 10. 骨架里**写死**的几何（不含运行时变量）
+## 10. 骨架里写死的几何（从 className 解算）
 
 完整表在 `tools/claude-ui-reverse/hardcoded-geometry.txt`。以下是从 className 解出来的、**确定**的数字。
 
@@ -579,52 +580,81 @@ Mcode 用 `@media` 的话，缩窗口会同时改变所有区域。
 
 ---
 
-## 11. 静态拿不到 —— **已实测确认，不是推测**
+## 11. ★ 侧栏几何：上一轮判错了，这里更正
 
-### 11.1 运行时几何：`--df-row-*` 系列
+### 11.1 错误是什么
 
-`--df-row-h` / `--df-row-gap` / `--df-row-px` / `--df-row-font` / `--df-row-ctl` /
-`--df-leading-slot` / `--df-icon-size` / `--df-radius-pill` / `--df-footer-btn-size`：
+上一轮我写：「`--df-row-h` 这些**在 CSS 里完全没有定义**，只能运行时算」。
+**那是错的。** 它在 **`shared-styles-D_GJawPO.css`**（87 KB）里躺着。
 
-- **CSS 里零定义**（搜遍 1.49 MB 的 `main.css`）
-- **JS 里没有赋值** —— 唯一的出现是**读取并转发**：
-  `shared-46` 里 `t.style.setProperty(e, r.getPropertyValue(e))`
-- **渲染进程内存里 0 命中**（330 MB 转储，`--df-row-h` 出现 0 次）
+我只解析了主 CSS（`c6a992d55-Che1orl5.css`，1.49 MB），就下了「CSS 里没有」的结论。
 
-结论：这些值由运行时按密度 / 字号档算出来后写在元素 style 上。**静态无从得知。**
+**教训**：「我搜过了」必须写清**搜了哪些文件**。25 个 CSS 我只看了 1 个。
 
-### 11.2 图标 SVG path
+### 11.2 全部 25 个 CSS 的变量分布
 
-图标是编译期组件（`y(Re,{name:"ArrowReturn",size:"sm"})`），名字→path 的表被 minify 改名。
-`extract-icons.mjs` 试过，只捞到 32 个且**全是误报**（`yMd` 是日期格式串、`d`/`d2` 是变量名）。
+| 文件 | 变量数 | 前缀 |
+|---|---|---|
+| `c6a992d55`（主） | 1591 | `--cds`(1048) · `--tw`(94) · `--prose`(38) · `--font`(36) |
+| **`shared-styles`** | **110** | **`--df`(91)** · `--epitaxy`(2) |
+| `c4a9ee384` | 48 | `--hq`(47)（高亮标记，局部） |
+| `c3fde7009` | 29 | `--document`(17)（文档视图，**会覆盖 `--cds-font-size-prose`**） |
+| `c6059c89c` | 27 | `--bar` `--host-*`（宿主嵌入条） |
+| `c0d1f1ea0` | 16 | `--fc`（查找条） |
+| `c49d37e5f` | 15 | `--ob`（onboarding） |
+| `c6a73f447` | 6 | `--sheet`（卡片光泽） |
 
-**图标名字能拿到 276 个**（`icon-names.txt`），画的时候按名字找近似图形。
+### 11.3 侧栏几何（真实值）
 
-### 11.3 运行时调试通道：**两条都堵死**
+`--df-sidebar-width` **288px**（只有一个定义点，在 `.dframe-root` 上）。
 
-| 方式 | 实测结果 |
+其余变量按条件分档 —— **同一个变量在不同选择器下值不同**：
+
+| 变量 | `.dframe-root` 基准 | 侧栏 comfortable | comfortable + desktop |
+|---|---|---|---|
+| `--df-row-h` 会话行高 | 26px | **32px** | **30px** |
+| `--df-row-gap` 行间距 | 4px | 8px | 8px |
+| `--df-row-px` 行内边距 | 2px | 2px | 2px |
+| `--df-leading-slot` 图标槽 | 24px | 28px | 28px |
+| `--df-icon-size` | 16px | 20px | 20px |
+| `--df-row-font` 字号 | 13px | 14px | 14px |
+| `--df-group-font` 分组标题 | 12px | 13px | 13px |
+| `--df-radius-pill` | 6px | 8px | 8px |
+| `--df-footer-btn-size` | 24px | 32px | 32px |
+| `--df-group-pt` 分组上内边距 | 12px | 14px | 14px |
+
+另有几个条件分支：
+
+| 变量 | 条件 | 值 |
+|---|---|---|
+| `--df-row-h` | 折叠态（web + phone-sheet） | **44px** |
+| `--df-row-h` | code-list compact | 28px |
+| `--df-row-h` | code-list compact + pinned | 26px |
+| `--df-chrome-bar-height` | 默认 / 有 `[data-wco]` | **0px / 36px** |
+| `--df-header-h` | 默认 / 非 web | **48px / 0px** |
+
+### 11.4 当前真实生效的是哪一档
+
+`index.html` 的 `<html … data-density="comfortable" data-variant=? >`。
+
+侧栏密度由 `shared-3` 的 `gt()` 决定：向上找最近的 `[data-density]`，
+**是 `comfortable` 就返回 `comfortable`，否则一律 `compact`**（没有 cozy）。
+因为根节点就是 `comfortable`，所以**侧栏默认走 comfortable 档**。
+
+但 `.dframe-sidebar[data-variant=desktop][data-density=comfortable]` 那条
+给了 `--df-row-h: 30px` —— **桌面版的真实行高是 30px，不是 32px**。
+
+> ⚠️ 这一条需要真机确认：`data-variant` 到底是不是 `desktop`。
+> 静态能确定的是「有这两个分支」，不能确定「当前走哪一支」。
+
+### 11.5 仍然拿不到的（这一条才是真的）
+
+| 项 | 状态 |
 |---|---|
-| `--remote-debugging-port=9333` | Claude **自己拒绝启动**：<br>`refusing to start — a debugging or network-override switch is present on the command line.` |
-| `--inspect=9334` | fuse `EnableNodeCliInspectArguments` **disabled**；且新 `--user-data-dir` 下缓存目录被占（`Unable to move the cache: 拒绝访问`） |
-
-### 11.4 内存转储能做什么
-
-`dump-renderer-memory.mjs` 跑通了（330 MB，346 MB 上限内），拿到的是**存在性证据**：
-
-```
-data-cds 命中 670 次（utf16le 617 / utf8 53）
-MessageActions 74 · Prose 64 · MessageAttachmentsImage 49 · Card 38
-AssistantMessage 38 · ChatComposerDock 23 · Icon 17 · Toolbar 14 · Page 13
-TurnStatusStep 12 · SkeletonGroup 12 · UserMessage 11 · ChatComposerChin 3
-聊天占位符 "What can I help you with today" 命中 1 次
-```
-
-**不能**拿到父子关系与计算尺寸 —— 那些在 C++ 的 layout 对象里，不是字符串。
-类名碎片也只有 8 种（V8 里 className 多半已被 React 拆分复用，不以整串存在）。
-
-**所以它只做佐证，不能替代 CDP。**
-
----
+| 图标 SVG path | 编译期组件，名字→path 表被 minify。**只有 276 个名字**（`icon-names.txt`） |
+| `--remote-debugging-port` | Claude **自己拒绝启动**：`refusing to start — a debugging or network-override switch is present on the command line.` |
+| `--inspect` | fuse `EnableNodeCliInspectArguments` 是 **disabled** |
+| 计算后的实际布局 | 需要 layout 引擎。内存转储只给出「组件真的在 DOM 里」的存在性证据 |
 
 ## 12. 数据与脚本在哪
 

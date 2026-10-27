@@ -22,6 +22,7 @@ Claude 的渲染端是 **minified bundle**（3797 个 chunk，118 MiB），而�
 | 渲染进程内存 | 哪些组件**真的**出现在 DOM 里 | `dump-renderer-memory.mjs` |
 
 `resolve-class.mjs` 是共用件：把 Tailwind 类名解成计算后的 px（含 `var()` 与 `calc()` 展开）。
+`extract-all-css.mjs` 扫**全部 25 个 CSS**，按前缀报告变量分布与分档 —— **别只跑主 CSS**。
 
 ## 用法
 
@@ -53,7 +54,7 @@ node tools/claude-ui-reverse/dump-renderer-memory.mjs      # → renderer-hits.t
 
 ---
 
-## 五个已经踩过的坑
+## 六个已经踩过的坑
 
 ### 一、`rem-scale` 是 `calc(16 / 17)`，不是 `1`
 
@@ -80,7 +81,12 @@ node tools/claude-ui-reverse/dump-renderer-memory.mjs      # → renderer-hits.t
 
 只认 `:root` 会让所有 `var(--cds-gray-20)` 解不开 —— 颜色全空。
 
-### 五、`data-cds` 组件名在 CSS 里≠在 JS 里
+### 五、**只解析了 25 个 CSS 里的 1 个**
+
+我把 `--df-row-h` 判成「CSS 里零定义」写进了文档 —— 它在 `shared-styles-*.css` 里。
+`extract-all-css.mjs` 现在扫全部 25 个，并按前缀告诉你「该看哪个文件」。
+
+### 六、`data-cds` 组件名在 CSS 里≠在 JS 里
 
 `ChatComposerDock` 在 CSS 里出现 10 次，在 JS 里 **0 次**。
 输入框的真实 DOM 标识是 `.epitaxy-prompt` / `.epitaxy-prompt-input` / `[data-cds="ChatComposer"]`。
@@ -106,17 +112,31 @@ node tools/claude-ui-reverse/dump-renderer-memory.mjs      # → renderer-hits.t
 
 ---
 
-## 静态拿不到的东西（**已实测确认**）
+## 静态拿不到的东西（已实测确认）
 
-### 1. 运行时几何：侧栏行高、标题栏实际高度、输入框实际宽高
+### 1. ~~运行时几何~~ —— **这一条上一轮判错了，已更正**
 
-`--df-row-h` / `--df-row-gap` / `--df-row-px` / `--df-leading-slot` 这些变量：
+上一版这里写着：「`--df-row-h` / `--df-row-gap` … CSS 里没有默认值」。
+**那是错的。** 我只解析了主 CSS（`c6a992d55-*.css`），而它们在
+**`shared-styles-D_GJawPO.css`** 里，还有 6 个定义点。
 
-- **CSS 里没有默认值**（搜遍 `main.css` 零定义）
-- **JS 里没有赋值**（唯一的出现是 `getComputedStyle` 转发：`shared-46` 里 `t.style.setProperty(e, r.getPropertyValue(e))`）
-- **渲染进程内存里 0 命中**
+**侧栏真实值**（`.dframe-root` / comfortable / comfortable+desktop）：
 
-它们由运行时根据密度/字号档算出来后写在 style 上。静态无从得知。
+| 变量 | 基准 | comfortable | +desktop |
+|---|---|---|---|
+| `--df-sidebar-width` | **288px**（唯一值） | | |
+| `--df-row-h` | 26px | **32px** | **30px** |
+| `--df-row-gap` | 4px | 8px | 8px |
+| `--df-row-font` | 13px | 14px | 14px |
+| `--df-leading-slot` | 24px | 28px | 28px |
+| `--df-icon-size` | 16px | 20px | 20px |
+| `--df-radius-pill` | 6px | 8px | 8px |
+| `--df-header-h` | **48px** | | |
+| `--df-chrome-bar-height` | 0px / **36px**（有 `[data-wco]`） | | |
+
+用 `extract-all-css.mjs` 可以重跑，它**扫全部 25 个 CSS**。
+
+**教训**：「我搜过了」必须写清「搜了哪些文件」。
 
 ### 2. 图标 SVG path
 

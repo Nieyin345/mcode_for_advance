@@ -1,0 +1,410 @@
+Claude 3.6556.2.0 —— 侧栏变量（--df-*）完整表
+
+数据源：ion-dist/assets/v1/shared-styles-D_GJawPO.css（87 KB）
+⚠️ 上一轮只解析了主 CSS，把 --df-row-h 误判成「运行时才算出来的」。
+   实际它就在这里。见 README「我搜了哪些文件」。
+
+共 71 个规则块，91 个不同变量。
+
+----------------------------------------------------------------------------
+:root
+  --df-sidebar-edit-scrim-opacity    .5
+
+----------------------------------------------------------------------------
+.df-hub-rail
+  --df-iconless-pad                  8px
+  --df-rail-shift                    calc(var(--df-iconless-pad) - (var(--df-leading-slot) - var(--df-icon-size)) / 2)
+
+----------------------------------------------------------------------------
+.df-session-list
+  --df-iconless-pad                  8px
+  --df-row-stack-gap                 2px
+  --df-row-ctl-inset                 0px
+  --df-row-pad-end                   8px
+  --df-group-band-mt                 calc(10px - var(--df-row-stack-gap))
+  --df-group-band-h                  var(--df-row-h)
+  --df-described-trim                calc(var(--df-described-tuck) / 2)
+  --df-selected                      var(--df-hover)
+
+----------------------------------------------------------------------------
+.dframe-sidebar[data-code-list] .df-session-list
+  --df-rail-shift                    0px
+
+----------------------------------------------------------------------------
+.dframe-root:not([data-phone-sheet]) .dframe-sidebar[data-code-list][data-density=compact] .df-session-list
+  --df-row-h                         28px
+  --df-row-ctl                       24px
+  --df-described-line                20px
+
+----------------------------------------------------------------------------
+.dframe-root:not([data-phone-sheet]):not([data-web]) .dframe-sidebar[data-code-list][data-density=compact] .df-session-list [data-pinned-list]
+  --df-row-h                         26px
+  --df-row-ctl                       20px
+  --df-row-ctl-inset                 initial
+  --df-row-pad-end                   var(--df-row-px)
+  --df-row-stack-gap                 1.5px
+  --df-group-band-mt                 9px
+  --df-rail-shift                    calc(var(--df-iconless-pad) - (var(--df-leading-slot) - var(--df-icon-size)) / 2)
+
+----------------------------------------------------------------------------
+.df-session-list:not([data-list-section]) [data-sidebar-group-label]
+  --df-heading-ink                   var(--cds-text-muted)
+  --df-heading-button-ink            var(--cds-text-primary)
+
+----------------------------------------------------------------------------
+.df-session-list [data-flush-heading]
+  --df-group-band-mt                 0px
+
+----------------------------------------------------------------------------
+.df-session-list [data-nested-group]>*
+  --df-group-band-mt                 0px
+  --df-own-mt                        0px
+
+----------------------------------------------------------------------------
+.df-session-list:not([data-list-section]) [data-sidebar-group-label]:hover
+  --df-heading-ink                   var(--cds-text-secondary)
+
+----------------------------------------------------------------------------
+.df-session-list[data-list-section]
+  --df-selected                      var(--df-selected-base)
+
+----------------------------------------------------------------------------
+.df-hub-rail .df-session-list[data-list-section]
+  --df-iconless-pad                  inherit
+
+----------------------------------------------------------------------------
+.df-session-list[data-list-section] [data-row]
+  --df-row-ctl-inset                 initial
+
+----------------------------------------------------------------------------
+.df-row-description
+  --df-description-pad-end           var(--df-iconless-pad,calc((var(--df-leading-slot) - var(--df-icon-size)) / 2))
+
+----------------------------------------------------------------------------
+.df-session-list .df-row-description
+  --df-description-pad-end           0px
+
+----------------------------------------------------------------------------
+.df-session-list .df-accordion-guide
+  --df-row-indent                    calc(var(--df-group-indent,0px) + 20px)
+
+----------------------------------------------------------------------------
+.dframe-sidebar[data-code-list] .df-session-list .df-family
+  --df-family-row-gap                var(--df-row-stack-gap)
+
+----------------------------------------------------------------------------
+.df-bottom-tray
+  --df-tray-hairline                 var(--cds-border)
+  --df-tray-caret-col                calc(8px + var(--df-footer-btn-size) / 2)
+
+----------------------------------------------------------------------------
+.df-sidebar-geometry
+  --df-tray-caret-col                calc(8px + var(--df-footer-btn-size) / 2)
+
+----------------------------------------------------------------------------
+.dframe-root
+  --df-chrome-bar-height             0px
+  --df-z0                            0 0% 100%
+  --df-z1                            0 0% 96.1%
+  --df-z2                            0 0% 92.2%
+  --df-z3                            0 0% 87.8%
+  --df-z4                            0 0% 83.9%
+  --df-z5                            0 0% 60%
+  --df-z6                            0 0% 45.1%
+  --df-surface-primary               var(--df-z0)
+  --df-sidebar-bg                    var(--cds-gray-10)
+  --df-shadow-card                   inset 0 0 0 0 transparent, 0 0 0 1px color-mix(in oklab, var(--cds-gray-900) 6%, transparent), 0 4px 24px color-mix(in oklab, var(--cds-gray-900) 4%, transparent)
+  --df-shadow-float                  0 0 0 .5px #0000000d, 0 2px 8px #0000000a, 0 12px 32px #00000008
+  --df-shadow-pop                    0 0 0 .5px #0000000f, 0 4px 12px #0000000f, 0 16px 40px #00000014
+  --df-radius-card                   8px
+  --df-row-h                         26px
+  --df-row-px                        2px
+  --df-row-ctl                       20px
+  --df-row-gap                       4px
+  --df-row-font                      13px
+  --df-group-font                    12px
+  --df-icon-size                     16px
+  --df-leading-slot                  24px
+  --df-new-circle-size               18px
+  --df-new-circle-glyph              13px
+  --df-row-indent                    0px
+  --df-described-tuck                4px
+  --df-group-pt                      12px
+  --df-radius-pill                   6px
+  --df-chrome-icon-size              16px
+  --df-footer-btn-size               24px
+  --df-footer-gap                    3px
+  --df-ease-out                      cubic-bezier(.32, .72, 0, 1)
+  --df-ease-out-fast                 cubic-bezier(.2, 0, 0, 1)
+  --df-dur-fast                      .12s
+  --df-dur-slow                      .3s
+  --df-hover                         var(--cds-alpha-1)
+  --df-bg-page-hsl                   var(--_gray-10)
+  --df-bg-page                       hsl(var(--df-bg-page-hsl))
+  --df-sidebar-width                 288px
+  --df-sidebar-left                  8px
+  --df-header-h                      48px
+
+----------------------------------------------------------------------------
+.dframe-root[data-wco]
+  --df-chrome-bar-height             36px
+
+----------------------------------------------------------------------------
+.dframe-root
+  --df-traffic-light-spacer-start    var(--df-traffic-light-spacer,74px)
+  --df-traffic-light-spacer-end      0px
+
+----------------------------------------------------------------------------
+:root[dir=rtl] .dframe-root:dir(rtl),:root[data-mac-lights] .dframe-root
+  --df-traffic-light-spacer-start    0px
+  --df-traffic-light-spacer-end      var(--df-traffic-light-spacer,74px)
+
+----------------------------------------------------------------------------
+:root[dir=rtl][data-mac-lights] .dframe-root:dir(rtl)
+  --df-traffic-light-spacer-start    var(--df-traffic-light-spacer,74px)
+  --df-traffic-light-spacer-end      0px
+
+----------------------------------------------------------------------------
+.dframe-chrome-bar:has(>.dframe-chrome-title-slot:not(:empty))
+  --df-chrome-bar-end-gutter         0px
+
+----------------------------------------------------------------------------
+[data-mode=dark] .dframe-root
+  --df-z0                            0 0% 3.9%
+  --df-z1                            0 0% 10.2%
+  --df-z2                            0 0% 14.9%
+  --df-z3                            0 0% 20%
+  --df-z4                            0 0% 23.9%
+  --df-z5                            0 0% 32.2%
+  --df-z6                            0 0% 65.1%
+  --df-surface-primary               var(--df-z1)
+  --df-sidebar-bg                    color-mix(in srgb, hsl(var(--df-bg-page-hsl)) 80%, black)
+  --df-bg-page-hsl                   var(--_gray-850)
+  --df-shadow-card                   inset 0 0 0 1px #ffffff0f, 0 0 0 0 transparent, 0 4px 24px color-mix(in oklab, var(--cds-gray-900) 8%, transparent)
+  --df-shadow-float                  0 0 0 .5px #ffffff0f, 0 2px 8px #0000004d, 0 12px 32px #00000040
+  --df-shadow-pop                    0 0 0 .5px #ffffff14, 0 4px 12px #0006, 0 16px 40px #00000080
+
+----------------------------------------------------------------------------
+.dframe-sidebar
+  --df-hover                         var(--cds-alpha-1)
+  --df-selected                      var(--cds-alpha-2)
+  --df-selected-base                 var(--df-selected)
+
+----------------------------------------------------------------------------
+.dframe-root .dframe-sidebar,.dframe-root .dframe-card
+  --df-sidebar-bg                    white
+  --df-shadow-card                   inset 0 0 0 0 transparent, 0 0 0 1px var(--cds-alpha-2), 0 4px 24px color-mix(in oklab, var(--cds-gray-900) 6%, transparent)
+
+----------------------------------------------------------------------------
+[data-mode=dark] .dframe-root .dframe-sidebar,[data-mode=dark] .dframe-root .dframe-card
+  --df-sidebar-bg                    hsl(var(--df-z2))
+  --df-surface-primary               var(--df-z2)
+  --df-shadow-card                   inset 0 0 0 0 transparent, 0 0 0 1px var(--cds-alpha-2), 0 4px 24px color-mix(in oklab, var(--cds-gray-900) 6%, transparent)
+
+----------------------------------------------------------------------------
+.dframe-content
+  --df-page-ground                   var(--df-bg-page)
+
+----------------------------------------------------------------------------
+.dframe-content-inner
+  --df-sidebar-clearance             calc(var(--df-sidebar-width) + var(--df-sidebar-left))
+  --df-content-gutter                8px
+  --df-content-gutter-start          var(--df-content-gutter)
+  --df-ceded-gutter                  0px
+
+----------------------------------------------------------------------------
+.dframe-root[data-collapsed]:not([data-experiment]) .dframe-content-inner
+  --df-collapsed-chrome-clearance    max(0px, calc(var(--df-trigger-right,180px) + 8px - var(--df-content-gutter-start)))
+
+----------------------------------------------------------------------------
+.dframe-pane-host
+  --df-pane-row                      .5
+
+----------------------------------------------------------------------------
+.dframe-pane
+  --df-pane-trailing-gutter          8px
+
+----------------------------------------------------------------------------
+.dframe-pane[data-col-last]
+  --df-pane-trailing-gutter          calc(8px - var(--df-content-gutter,8px))
+
+----------------------------------------------------------------------------
+.dframe-root[data-collapsed]
+  --df-collapsed-left                calc(var(--df-traffic-light-spacer-start) + 16px)
+  --df-pill-size                     28px
+  --df-trigger-right-derived         calc(var(--df-collapsed-left) + var(--df-pill-size))
+  --df-trigger-right                 var(--df-trigger-right-derived)
+
+----------------------------------------------------------------------------
+.dframe-root[data-collapsed][data-sidebar-density=comfortable]
+  --df-pill-size                     32px
+
+----------------------------------------------------------------------------
+.dframe-root[data-collapsed] .dframe-content-inner
+  --df-sidebar-clearance             0px
+
+----------------------------------------------------------------------------
+.dframe-root[data-experiment] .dframe-content-inner
+  --df-sidebar-clearance             0px
+  --df-content-gutter                0px
+
+----------------------------------------------------------------------------
+:root[dir=rtl]:where(:not([data-mac-lights])) .dframe-root:not([data-experiment]):not([data-wco]):not([data-web]) .dframe-content-inner .dframe-header:where(:not(.dframe-pane:is(:not([data-col-last]),
+  --df-header-end-room               max(0px, calc(var(--df-traffic-light-spacer-end) - var(--df-content-gutter)))
+
+----------------------------------------------------------------------------
+.dframe-root[data-collapsed][data-wco]
+  --df-collapsed-left                8px
+
+----------------------------------------------------------------------------
+.dframe-root[data-collapsed][data-web]
+  --df-collapsed-left                8px
+
+----------------------------------------------------------------------------
+.dframe-root[data-collapsed][data-wco]
+  --df-trigger-right                 0px
+
+----------------------------------------------------------------------------
+.dframe-sidebar-edge-hint[data-magnet],.dframe-root[data-hovering] .dframe-sidebar-edge-hint[data-magnet],.dframe-root[data-resizing] .dframe-sidebar-edge-hint[data-magnet]
+  --df-edge-line-rgb                 0 0 0
+  --df-edge-line-max                 .1
+  --df-edge-shade-max                .2
+
+----------------------------------------------------------------------------
+.dframe-sidebar-edge-hint[data-magnet]:where(:root[dir=rtl] :dir(rtl)),.dframe-root[data-hovering] .dframe-sidebar-edge-hint[data-magnet]:where(:root[dir=rtl] :dir(rtl)),.dframe-root[data-resizing] .d
+  --df-edge-shade-x                  -3px
+
+----------------------------------------------------------------------------
+[data-mode=dark] .dframe-root .dframe-sidebar-edge-hint[data-magnet]
+  --df-edge-line-rgb                 255 255 255
+  --df-edge-line-max                 .14
+  --df-edge-shade-max                .6
+
+----------------------------------------------------------------------------
+:root
+  --df-ease-out-cubic                cubic-bezier(.215, .61, .355, 1)
+
+----------------------------------------------------------------------------
+.dframe-fade-label:where(:root[dir=rtl] *)
+  --df-fade-to                       to left
+
+----------------------------------------------------------------------------
+.df-hover-pin-row:hover .dframe-fade-label
+  --df-fade-clear                    calc(var(--df-row-ctl-inset,calc((var(--df-row-h) - var(--df-row-ctl)) / 2)) + var(--df-row-ctl) - var(--df-row-pad-end,var(--df-row-px)) + 26px)!important
+
+----------------------------------------------------------------------------
+.df-hover-pin-row:has(:focus-visible) .dframe-fade-label,.df-hover-pin-row[data-menu-open=true] .dframe-fade-label
+  --df-fade-clear                    calc(var(--df-row-ctl-inset,calc((var(--df-row-h) - var(--df-row-ctl)) / 2)) + var(--df-row-ctl) - var(--df-row-pad-end,var(--df-row-px)) + 26px)!important
+
+----------------------------------------------------------------------------
+.df-hover-pin-row
+  --df-pin-tail-mask                 linear-gradient(to right, black calc(100% - 50px), transparent calc(100% - 26px))
+
+----------------------------------------------------------------------------
+:root[dir=rtl] .df-hover-pin-row
+  --df-pin-tail-mask                 linear-gradient(to left, black calc(100% - 50px), transparent calc(100% - 26px))
+
+----------------------------------------------------------------------------
+.dframe-root[data-popout=traffic-lights]
+  --df-popout-lights-room            calc(68px / var(--df-popout-zoom-out,1))
+
+----------------------------------------------------------------------------
+:root .dframe-root[data-variant=web]
+  --df-bg-page-hsl                   from var(--cds-surface-1) h s l
+
+----------------------------------------------------------------------------
+.dframe-root[data-variant=web] .dframe-sidebar
+  --df-web-sidebar-bg                color-mix(in srgb, var(--cds-surface-0) 50%, var(--cds-surface-1))
+  --df-web-sidebar-bg-image          none
+  --df-hover                         var(--cds-neutral-50)
+  --df-selected                      var(--cds-neutral-60)
+
+----------------------------------------------------------------------------
+.dframe-sidebar[data-density=comfortable],.df-sidebar-geometry[data-density=comfortable]
+  --df-row-h                         32px
+  --df-row-px                        2px
+  --df-row-ctl                       24px
+  --df-row-gap                       8px
+  --df-row-font                      14px
+  --df-group-font                    13px
+  --df-icon-size                     20px
+  --df-leading-slot                  28px
+  --df-new-circle-size               22px
+  --df-new-circle-glyph              16px
+  --df-group-pt                      16px
+  --df-radius-pill                   8px
+  --df-chrome-icon-size              16px
+  --df-footer-btn-size               32px
+  --df-footer-gap                    6px
+
+----------------------------------------------------------------------------
+.dframe-sidebar[data-variant=desktop][data-density=comfortable],.df-sidebar-geometry[data-variant=desktop][data-density=comfortable]
+  --df-row-h                         30px
+  --df-group-pt                      14px
+
+----------------------------------------------------------------------------
+.dframe-root[data-variant=web]:not([data-collapsed])
+  --df-sidebar-left                  0px
+
+----------------------------------------------------------------------------
+.dframe-root[data-collapsed]
+  --df-peek-width                    min(var(--df-sidebar-width), max(100vw, var(--df-sidebar-floor,0px)))
+
+----------------------------------------------------------------------------
+.dframe-root[data-variant=web][data-collapsed] .dframe-sidebar .dframe-sidebar-body,.dframe-root[data-variant=web][data-collapsed] .dframe-sidebar .dframe-sidebar-body:not(:has(>.df-pills))
+  --df-peek-band                     44px
+
+----------------------------------------------------------------------------
+.dframe-root[data-variant=web][data-collapsed][data-wco] .dframe-sidebar .dframe-sidebar-body
+  --df-peek-band                     0px
+
+----------------------------------------------------------------------------
+.dframe-root[data-phone-sheet][data-variant=web][data-collapsed]:not([data-wco]) .dframe-sidebar .dframe-sidebar-body
+  --df-web-sidebar-bg                inherit
+  --df-web-sidebar-bg-image          inherit
+  --df-row-h                         44px
+  --df-row-ctl                       36px
+  --df-described-line                24px
+
+----------------------------------------------------------------------------
+[data-mode=dark] .dframe-root .dframe-sidebar
+  --df-hover                         var(--cds-fill-ghost-hover)
+  --df-selected                      var(--cds-fill-ghost-selected)
+
+----------------------------------------------------------------------------
+[data-mode=dark] .dframe-root[data-variant=web] .dframe-sidebar
+  --df-web-sidebar-bg                color-mix(in srgb, var(--df-bg-page) 80%, black)
+  --df-web-sidebar-bg-image          none
+
+----------------------------------------------------------------------------
+.dframe-root[data-variant=web][data-collapsed] .dframe-sidebar-body
+  --df-web-sidebar-bg                var(--cds-surface-popover)
+  --df-web-sidebar-bg-image          none
+
+----------------------------------------------------------------------------
+.dframe-root[data-web] .df-hub-rail
+  --df-iconless-pad                  calc((var(--df-leading-slot) - var(--df-icon-size)) / 2)
+  --df-rail-shift                    0px
+
+----------------------------------------------------------------------------
+.dframe-root[data-variant=web]:not([data-web]):not([data-wco])[data-collapsed]
+  --df-collapsed-left                calc(var(--df-traffic-light-spacer-start) + 8px)
+
+----------------------------------------------------------------------------
+.dframe-root[data-variant=web]:not([data-web]):not([data-wco])[data-collapsed] .dframe-sidebar-body
+  --df-peek-band                     46px
+
+----------------------------------------------------------------------------
+.dframe-root[data-variant=web]:not([data-web]):not([data-wco])[data-collapsed][data-sidebar-density=comfortable]
+  --df-collapsed-left                calc(var(--df-traffic-light-spacer-start) + 10px)
+
+----------------------------------------------------------------------------
+html[data-sidebar-vibrancy] .dframe-root[data-variant=web]:not([data-collapsed]) .dframe-sidebar
+  --df-sidebar-tint-mixed            color-mix(in srgb, var(--df-sidebar-tint,var(--df-web-sidebar-bg)) var(--df-sidebar-tint-share,72%), transparent)
+  --df-sidebar-bg-clip               border-box
+  --df-hover                         var(--cds-fill-ghost-hover)
+  --df-selected                      var(--cds-fill-ghost-selected)
+
+----------------------------------------------------------------------------
+html[data-sidebar-vibrancy] .dframe-root[data-variant=web]:not([data-collapsed]) .df-header-backdrop
+  --df-sidebar-clearance             0px
