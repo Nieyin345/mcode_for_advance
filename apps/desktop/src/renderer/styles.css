@@ -5039,3 +5039,107 @@ html[data-reduce-motion="true"] [data-ui-shell-variant="workspace"] .composer-se
     opacity: 0.2857;
   }
 }
+
+/* ───────────── 横向滚动容器的边缘羽化（页签栏） ─────────────
+ *
+ * 【UI 重建 2026-10-28】逆向自 Claude 3.6556.2.0（`c6a992d55-Che1orl5.css`）：
+ *
+ *   .scroll-fade-strip-right {
+ *     width: var(--cds-scroll-fade-size);   // 28px
+ *     pointer-events: none; z-index: 1; opacity: 0;
+ *     background: linear-gradient(to left,
+ *       var(--cds-surface-1),
+ *       rgb(from … r g b / .85) 13%,
+ *       rgb(from … r g b / .5)  40%,
+ *       rgb(from … r g b / .15) 70%,
+ *       transparent);
+ *     position: sticky;
+ *   }
+ *   @supports (animation-timeline: scroll()) {
+ *     .scroll-fade-strip-right {
+ *       opacity: calc(var(--cds-scroll-fade-strip-raw)
+ *                   * var(--cds-scroll-fade-strip-active));
+ *       animation-timeline: scroll();
+ *     }
+ *   }
+ *
+ * ## 为什么 Mcode 需要它
+ *
+ * 右栏的页签切换器是 `overflow-x: auto` + **隐藏滚动条**（Claude 的 pane
+ * 标题行也不显示滚动条）。窄窗格下页签被裁掉,但**没有任何视觉提示说
+ * 「右边还有」** —— 实测 896px 宽时 `侧聊` 只剩一个「侧」字，
+ * `扩展`/`画布` 完全看不到,用户不会知道可以横向滚。
+ *
+ * ## 实现
+ *
+ * Claude 用 `animation-timeline: scroll()` 做**纯 CSS** 的边缘检测
+ * （滚到边就淡出羽化）,不需要 JS 监听 scroll 事件。Mcode 照抄这个机制。
+ *
+ * `--m-scroll-fade-size: 28px` 是上游值,它的**语义**是「渐隐带的宽度」,
+ * 不是影子也不是间距。
+ */
+:root {
+  --m-scroll-fade-size: 28px;
+}
+
+/* 容器：横向滚动 + 隐藏滚动条 + 相对定位（羽化带要绝对定位到两端）。 */
+.pane-tab-scroll {
+  position: relative;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.pane-tab-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* 两端各一条羽化带。`pointer-events: none` 让它们不挡点击。 */
+.pane-tab-scroll::before,
+.pane-tab-scroll::after {
+  content: "";
+  position: sticky;
+  top: 0;
+  align-self: center;
+  width: var(--m-scroll-fade-size);
+  height: 100%;
+  flex: 0 0 var(--m-scroll-fade-size);
+  pointer-events: none;
+  z-index: 1;
+  /* 默认透明 —— 只有 `animation-timeline` 可用时才由滚动驱动出现。 */
+  opacity: 0;
+}
+
+.pane-tab-scroll::before {
+  order: -1;
+  margin-right: calc(var(--m-scroll-fade-size) * -1);
+  background: linear-gradient(to right, rgb(var(--m-surface-1)), transparent);
+}
+
+.pane-tab-scroll::after {
+  margin-left: calc(var(--m-scroll-fade-size) * -1);
+  background: linear-gradient(to left, rgb(var(--m-surface-1)), transparent);
+}
+
+/* 滚动驱动的出现/消失。`scroll()` 时间轴：滚动位置直接映射到 opacity，
+ * 不需要任何 JS。不支持的环境保持 opacity:0（也就是不画羽化）——
+ * 那是安全降级（宁可没有提示，也不要一条常驻的假阴影）。 */
+@supports (animation-timeline: scroll(x)) {
+  .pane-tab-scroll::before {
+    animation: pane-tab-fade-in linear both;
+    animation-timeline: scroll(self inline);
+    animation-range: 0 calc(var(--m-scroll-fade-size) * 2);
+  }
+  .pane-tab-scroll::after {
+    animation: pane-tab-fade-out linear both;
+    animation-timeline: scroll(self inline);
+    animation-range: calc(100% - var(--m-scroll-fade-size) * 2) 100%;
+  }
+}
+
+@keyframes pane-tab-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes pane-tab-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
