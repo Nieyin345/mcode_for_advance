@@ -90,7 +90,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【T109】审批历史（按会话）。签名里没有 taskId —— 见 approval.ts 的说明。",
   "input": "{ sessionId: string // 哪个会话的审批历史。**必填** —— 全局列表没有意义（会混所有会话）。; before?: number | undefined // 游标分页：只取早于这个时间戳的。; limit?: number | undefined // 上限（1–500，默认 200）。 }",
   "inputFull": "{ sessionId: string // 哪个会话的审批历史。**必填** —— 全局列表没有意义（会混所有会话）。; before?: number | undefined // 游标分页：只取早于这个时间戳的。; limit?: number | undefined // 上限（1–500，默认 200）。 }",
-  "output": "{ approvals: { id: string; kind: 'tool' | 'question' | 'plan'; sessionId: string; always: boolean; decidedAt: number; subject: string; decision: 'deny' | 'cancelled' | 'app… }"
+  "output": "{ approvals: { sessionId: string; id: string; kind: 'tool' | 'question' | 'plan'; always: boolean; decidedAt: number; subject: string; decision: 'approved' | 'cancelled' | … }"
  },
  {
   "method": "automation.preflight",
@@ -99,14 +99,6 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "input": "{ workflowId: string; triggerNodeId: string }",
   "inputFull": "{ workflowId: string; triggerNodeId: string }",
   "output": "{ ok: boolean; workflowId: string; triggerKey: string; problem?: AutomationPreflightProblem | undefined; problems: AutomationPreflightProblem[]; capabilities: { required: string[]; available: string[]; } }"
- },
- {
-  "method": "automation.rebuildWatchTemplates",
-  "channel": "automation:rebuildWatchTemplates",
-  "doc": "【MC-054】显式「备份损坏原值 → 校验 → 重建」—— 唯一能吃下损坏状态的操作。",
-  "input": "{ templates?: { id: string; command: string; name: string; }[] | undefined }",
-  "inputFull": "{ templates?: { id: string; command: string; name: string; }[] | undefined }",
-  "output": "{ ok: boolean; error?: string | undefined; backupKey?: string | undefined; kept?: number | undefined }"
  },
  {
   "method": "automation.run",
@@ -139,38 +131,6 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "input": "(无参数)",
   "inputFull": "(无参数)",
   "output": "{ length: number // Gets or sets the length of the array.; toString: () => string // Returns a string representation of an array.; toLocaleString: { (): string; (locales: string | string[], options?: Intl.NumberFormatOptions & Intl.DateTimeFormatOptions): str…"
- },
- {
-  "method": "automation.watch",
-  "channel": "automation:watch",
-  "doc": "以某条会话为发起会话起一次守望。`ok: false` 时 `error` 是给人看的句子(不在跑、 发起会话没了、模板被改坏……),不是异常 —— 点按钮的人该得到解释而不是错误框。",
-  "input": "{ sessionId: string; message?: string | undefined; command?: string | undefined }",
-  "inputFull": "{ sessionId: string; message?: string | undefined; command?: string | undefined }",
-  "output": "{ ok: boolean; error?: string | undefined }"
- },
- {
-  "method": "automation.watchStatus",
-  "channel": "automation:watchStatus",
-  "doc": "这条会话上有没有正在跑的守望(面板提示\"上一次还在跑\"用)。",
-  "input": "{ sessionId: string }",
-  "inputFull": "{ sessionId: string }",
-  "output": "{ active: boolean }"
- },
- {
-  "method": "automation.watchTemplates",
-  "channel": "automation:watchTemplates",
-  "doc": "全部命令模板(守望面板的下拉)。**无参 handler**,同 `workflow.agentProfiles`。",
-  "input": "(无参数)",
-  "inputFull": "(无参数)",
-  "output": "{ templates: { id: string; command: string; name: string; }[]; health: 'valid' | 'absent' | 'corrupt' | 'partial' | 'read_error' // 【MC-054】设置的完整性:absent=没配过 / valid / partial=有条目读不出(problems 列出) / corrupt=整份坏 / read_erro…; problems: string[]; revision?: stri…"
- },
- {
-  "method": "automation.watchTemplatesSave",
-  "channel": "automation:watchTemplatesSave",
-  "doc": "存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。 【MC-054】带 `expectedRevision` 时做原值版本检查:盘上已被别处改动 → `ok:false` 并说明,不覆盖对方刚保存的内容(两端并发编辑不再静默丢更新)。",
-  "input": "{ templates: { id: string; command: string; name: string; }[]; expectedRevision?: string | null | undefined // 【MC-054】保存方上次读到的 revision。 }",
-  "inputFull": "{ templates: { id: string; command: string; name: string; }[]; expectedRevision?: string | null | undefined // 【MC-054】保存方上次读到的 revision。 }",
-  "output": "{ ok: boolean; error?: string | undefined; conflict?: boolean | undefined; currentRevision?: string | undefined }"
  },
  {
   "method": "browser.authRespond",
@@ -344,8 +304,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "claude.approve",
   "channel": "claude:approve",
   "doc": "回应一条待审批的工具调用（`requestId` 对上 `approval.request` 事件）。**认不出这个 id 只记一条 warn、不抛** —— 用户点了过期的审批卡是正常会发生的事。",
-  "input": "{ requestId: string; sessionId: string; granted: boolean; always?: boolean | undefined }",
-  "inputFull": "{ requestId: string; sessionId: string; granted: boolean; always?: boolean | undefined }",
+  "input": "{ sessionId: string; requestId: string; granted: boolean; always?: boolean | undefined }",
+  "inputFull": "{ sessionId: string; requestId: string; granted: boolean; always?: boolean | undefined }",
   "output": "{ status: ApprovalReceiptStatus; requestId: string }"
  },
  {
@@ -384,8 +344,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "claude.respondPlanApproval",
   "channel": "claude:respondPlanApproval",
   "doc": "Submit the user's approve/reject decision on a pending ExitPlanMode plan.",
-  "input": "{ requestId: string; sessionId: string; approved: boolean; reason?: string | undefined; editedPlan?: string | undefined; feedback?: string | undefined }",
-  "inputFull": "{ requestId: string; sessionId: string; approved: boolean; reason?: string | undefined; editedPlan?: string | undefined; feedback?: string | undefined }",
+  "input": "{ sessionId: string; requestId: string; approved: boolean; editedPlan?: string | undefined; reason?: string | undefined; feedback?: string | undefined }",
+  "inputFull": "{ sessionId: string; requestId: string; approved: boolean; editedPlan?: string | undefined; reason?: string | undefined; feedback?: string | undefined }",
   "output": "{ status: ApprovalReceiptStatus; requestId: string }"
  },
  {
@@ -400,8 +360,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "claude.rewindTurn",
   "channel": "claude:rewindTurn",
   "doc": "Rewind a turn: restore the given files to their pre-turn state. Works for the latest turn, any historical turn, or a session reopened after restart (the renderer passes the explicit entries). Returns the paths that were actually restored AND the ones that wer…",
-  "input": "{ sessionId: string; files: { kind: 'modified' | 'created'; filePath: string; adds: number; dels: number; before: string; }[]; targetFiles: string[] }",
-  "inputFull": "{ sessionId: string; files: { kind: 'modified' | 'created'; filePath: string; adds: number; dels: number; before: string; }[]; targetFiles: string[] }",
+  "input": "{ sessionId: string; files: { filePath: string; kind: 'modified' | 'created'; adds: number; dels: number; before: string; }[]; targetFiles: string[] }",
+  "inputFull": "{ sessionId: string; files: { filePath: string; kind: 'modified' | 'created'; adds: number; dels: number; before: string; }[]; targetFiles: string[] }",
   "output": "{ restored: string[]; failed: string[]; conflicts: string[]; unrestorable: string[] }"
  },
  {
@@ -424,8 +384,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "claude.startSession",
   "channel": "claude:startSession",
   "doc": "建会话(或**复用同项目里那份还\"新鲜\"的\"新对话\"行**——同一处空行连着开两次不会留下两条空会话,见 `createOrReuseSession`)。",
-  "input": "{ kind: 'chat' | 'side' // Session role: \"chat\" (default, normal left-bar session) or \"side\" (side-chat Q&A session …; projectId: string; effort: string; permissionMode: string; title?: string | undefined; providerId?: string | undefined // Provider id — which AI backend to use.; model?: string | undefined; customModelId?: string | null | undefined // Id of a custom-model config to bind to this session (omit/null = built-in).; parentSessionId?: string | undefined // For kind=\"side\": the main session this Q&A thread belongs to.; envMode?: 'local' | 'worktree' | undefined // Working-environment intent for the new session.; wtStyle?: 'detached' | 'branch' | undefined // Worktree FORM for envMode=\"worktree\": \"branch\" materializes on a generated `mcode/*` bran…; worktreePath?: string | undefined // BIND to an existing managed worktree directory instead of creating a fresh one: the new s…; ag…",
-  "inputFull": "{ kind: \"chat\" | \"side\" // Session role: \"chat\" (default, normal left-bar session) or \"side\" (side-chat Q&A session …; projectId: string; effort: string; permissionMode: string; title?: string | undefined; providerId?: string | undefined // Provider id — which AI backend to use.; model?: string | undefined; customModelId?: string | null | undefined // Id of a custom-model config to bind to this session (omit/null = built-in).; parentSessionId?: string | undefined // For kind=\"side\": the main session this Q&A thread belongs to.; envMode?: \"local\" | \"worktree\" | undefined // Working-environment intent for the new session.; wtStyle?: \"detached\" | \"branch\" | undefined // Worktree FORM for envMode=\"worktree\": \"branch\" materializes on a generated `mcode/*` bran…; worktreePath?: string | undefined // BIND to an existing managed worktree directory instead of creating a fresh one: the new s…; agentProfileId?: string | undefined // kind=\"side\" + 一份代理档案:这个子对话**是谁**。; memory?: boolean | undefined // kind=\"side\" + 「档案+记忆」:建会话时把记忆库的一份快照挂进去(第一轮带上)。; expectedRevision?: string | undefined // **乐观并发修订号**(ARC-001 步③)—— 可选。要在「复用项目里那条还没发言的 『New session』空壳」上做并发保护时带上它:先从 `session.list*… }",
+  "input": "{ projectId: string; effort: string; permissionMode: string; kind: 'chat' | 'side' // Session role: \"chat\" (default, normal left-bar session) or \"side\" (side-chat Q&A session …; title?: string | undefined; providerId?: string | undefined // Provider id — which AI backend to use.; model?: string | undefined; customModelId?: string | null | undefined // Id of a custom-model config to bind to this session (omit/null = built-in).; parentSessionId?: string | undefined // For kind=\"side\": the main session this Q&A thread belongs to.; envMode?: 'local' | 'worktree' | undefined // Working-environment intent for the new session.; wtStyle?: 'detached' | 'branch' | undefined // Worktree FORM for envMode=\"worktree\": \"branch\" materializes on a generated `mcode/*` bran…; worktreePath?: string | undefined // BIND to an existing managed worktree directory instead of creating a fresh one: the new s…; ag…",
+  "inputFull": "{ projectId: string; effort: string; permissionMode: string; kind: \"chat\" | \"side\" // Session role: \"chat\" (default, normal left-bar session) or \"side\" (side-chat Q&A session …; title?: string | undefined; providerId?: string | undefined // Provider id — which AI backend to use.; model?: string | undefined; customModelId?: string | null | undefined // Id of a custom-model config to bind to this session (omit/null = built-in).; parentSessionId?: string | undefined // For kind=\"side\": the main session this Q&A thread belongs to.; envMode?: \"local\" | \"worktree\" | undefined // Working-environment intent for the new session.; wtStyle?: \"detached\" | \"branch\" | undefined // Worktree FORM for envMode=\"worktree\": \"branch\" materializes on a generated `mcode/*` bran…; worktreePath?: string | undefined // BIND to an existing managed worktree directory instead of creating a fresh one: the new s…; agentProfileId?: string | undefined // kind=\"side\" + 一份代理档案:这个子对话**是谁**。; memory?: boolean | undefined // kind=\"side\" + 「档案+记忆」:建会话时把记忆库的一份快照挂进去(第一轮带上)。; expectedRevision?: string | undefined // **乐观并发修订号**(ARC-001 步③)—— 可选。要在「复用项目里那条还没发言的 『New session』空壳」上做并发保护时带上它:先从 `session.list*… }",
   "output": "{ session: Session }"
  },
  {
@@ -560,8 +520,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "customModel.test",
   "channel": "customModel:test",
   "doc": "连通性测试**单条**模型:走的是真实那一整条链路(binary + env builder),不是捷径 fetch —— \"测得过 = 保存后一定能用\"。",
-  "input": "{ model: string // The single model id to probe in this request.; baseUrl: string; authToken: string; timeoutMs?: number | undefined; authMode?: 'auth_token' | 'api_key' | undefined; protocol?: 'anthropic' | 'openai' | 'web' | undefined; supports1m?: boolean | undefined // Whether to declare 1M context (adds the `[1m]` suffix) — mirrors the model row's toggle.; disableNonEssentialTraffic?: boolean | undefined; customHeaders?: Record<string, string> | undefined // Headers to probe with, so an endpoint that requires one (and would otherwise fail the tes… }",
-  "inputFull": "{ model: string // The single model id to probe in this request.; baseUrl: string; authToken: string; timeoutMs?: number | undefined; authMode?: 'auth_token' | 'api_key' | undefined; protocol?: 'anthropic' | 'openai' | 'web' | undefined; supports1m?: boolean | undefined // Whether to declare 1M context (adds the `[1m]` suffix) — mirrors the model row's toggle.; disableNonEssentialTraffic?: boolean | undefined; customHeaders?: Record<string, string> | undefined // Headers to probe with, so an endpoint that requires one (and would otherwise fail the tes… }",
+  "input": "{ model: string // The single model id to probe in this request.; baseUrl: string; authToken: string; authMode?: 'auth_token' | 'api_key' | undefined; protocol?: 'anthropic' | 'openai' | 'web' | undefined; supports1m?: boolean | undefined // Whether to declare 1M context (adds the `[1m]` suffix) — mirrors the model row's toggle.; disableNonEssentialTraffic?: boolean | undefined; timeoutMs?: number | undefined; customHeaders?: Record<string, string> | undefined // Headers to probe with, so an endpoint that requires one (and would otherwise fail the tes… }",
+  "inputFull": "{ model: string // The single model id to probe in this request.; baseUrl: string; authToken: string; authMode?: 'auth_token' | 'api_key' | undefined; protocol?: 'anthropic' | 'openai' | 'web' | undefined; supports1m?: boolean | undefined // Whether to declare 1M context (adds the `[1m]` suffix) — mirrors the model row's toggle.; disableNonEssentialTraffic?: boolean | undefined; timeoutMs?: number | undefined; customHeaders?: Record<string, string> | undefined // Headers to probe with, so an endpoint that requires one (and would otherwise fail the tes… }",
   "output": "{ ok: boolean; detail?: string | undefined // claude's version string or model echo, when available.; error?: string | undefined // Error message on failure (auth / network / timeout / bad model). }"
  },
  {
@@ -600,8 +560,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "dialog.pickFiles",
   "channel": "dialog:pickFiles",
   "doc": "Native multi-file picker (project-external files allowed). Returns the selected absolute paths; empty array when the user cancels.",
-  "input": "{ title?: string | undefined // Optional dialog title; defaults to a localized \"选择文件\" on the main side.; filters?: { extensions: string[]; name: string; }[] | undefined // 原生选择框的扩展名过滤,如 `[{ name: \"PDF\", extensions: [\"pdf\"] }]`。 }",
-  "inputFull": "{ title?: string | undefined // Optional dialog title; defaults to a localized \"选择文件\" on the main side.; filters?: { extensions: string[]; name: string; }[] | undefined // 原生选择框的扩展名过滤,如 `[{ name: \"PDF\", extensions: [\"pdf\"] }]`。 }",
+  "input": "{ title?: string | undefined // Optional dialog title; defaults to a localized \"选择文件\" on the main side.; filters?: { name: string; extensions: string[]; }[] | undefined // 原生选择框的扩展名过滤,如 `[{ name: \"PDF\", extensions: [\"pdf\"] }]`。 }",
+  "inputFull": "{ title?: string | undefined // Optional dialog title; defaults to a localized \"选择文件\" on the main side.; filters?: { name: string; extensions: string[]; }[] | undefined // 原生选择框的扩展名过滤,如 `[{ name: \"PDF\", extensions: [\"pdf\"] }]`。 }",
   "output": "{ paths: string[] }"
  },
  {
@@ -634,7 +594,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【ARC-007】格式转换(输出路径同样过围栏)。",
   "input": "{ to: string; inputPath: string; outputPath: string // 输出路径；必须同样落在已知工作区内。; force?: boolean | undefined }",
   "inputFull": "{ to: string; inputPath: string; outputPath: string // 输出路径；必须同样落在已知工作区内。; force?: boolean | undefined }",
-  "output": "{ ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null | undefined } | { ok: false; kind: 'failed' | 'unavailable' | 'refused' | 'conflict'; reason: string; code?: string | number | undefined; currentRevision?: string |…"
+  "output": "{ ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null | undefined } | { ok: false; kind: 'unavailable' | 'failed' | 'refused' | 'conflict'; reason: string; code?: string | number | undefined; currentRevision?: string |…"
  },
  {
   "method": "document.edit",
@@ -642,7 +602,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【ARC-007】按 GenOffice ops 编辑并保存。`dryRun` 只演练。路径同样过工作区围栏。",
   "input": "{ filePath: string; ops: unknown[] // GenOffice 的 ops 数组（形状由 CLI 校验）。; expectedRevision?: string | undefined // 【ARC-007】**原值版本检查** —— 与 `file.writeFile` 的 `expectedVersion` 同一算法 （原始字节的 sha256，见 `fileC…; dryRun?: boolean | undefined // 只演练不写盘。; track?: boolean | undefined // docx：把内容编辑记成修订。 }",
   "inputFull": "{ filePath: string; ops: unknown[] // GenOffice 的 ops 数组（形状由 CLI 校验）。; expectedRevision?: string | undefined // 【ARC-007】**原值版本检查** —— 与 `file.writeFile` 的 `expectedVersion` 同一算法 （原始字节的 sha256，见 `fileC…; dryRun?: boolean | undefined // 只演练不写盘。; track?: boolean | undefined // docx：把内容编辑记成修订。 }",
-  "output": "{ ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null | undefined } | { ok: false; kind: 'failed' | 'unavailable' | 'refused' | 'conflict'; reason: string; code?: string | number | undefined; currentRevision?: string |…"
+  "output": "{ ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null | undefined } | { ok: false; kind: 'unavailable' | 'failed' | 'refused' | 'conflict'; reason: string; code?: string | number | undefined; currentRevision?: string |…"
  },
  {
   "method": "document.markdownEdit",
@@ -650,7 +610,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【T24】Markdown 续写/替换/删除；内部经 CLI 转 restricted HTML 后 apply。",
   "input": "{ filePath: string; operations: ({ op: 'insert'; markdown: string; afterBlock: number; } | { op: 'append'; markdown: string; } | { op: 'replace'; markdown: string; startBlock: number; endBloc…; dryRun?: boolean | undefined // 只演练，不写盘。; track?: boolean | undefined // 记成 Word 修订（默认 true）。 }",
   "inputFull": "{ filePath: string; operations: ({ op: 'insert'; markdown: string; afterBlock: number; } | { op: 'append'; markdown: string; } | { op: 'replace'; markdown: string; startBlock: number; endBloc…; dryRun?: boolean | undefined // 只演练，不写盘。; track?: boolean | undefined // 记成 Word 修订（默认 true）。 }",
-  "output": "{ ok: true; applied: number; blocks: number // 写入后的块数（与下一次 markdownRead 的 blocks 一致）。; qa?: DocumentQaReportWire | undefined; revision: string | null; text: string } | { ok: false; kind: 'failed' | 'unavailable' | 'refused' | 'conflict'; reason: string; qa?: …"
+  "output": "{ ok: true; applied: number; blocks: number // 写入后的块数（与下一次 markdownRead 的 blocks 一致）。; qa?: DocumentQaReportWire | undefined; revision: string | null; text: string } | { ok: false; kind: 'unavailable' | 'failed' | 'refused' | 'conflict'; reason: string; qa?: …"
  },
  {
   "method": "document.markdownRead",
@@ -658,15 +618,15 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【T24】带定位符注释的 Markdown 读取（`<!-- b3 -->` 按块定位）。",
   "input": "{ filePath: string; range?: string | undefined // 只读这些块区间（0-based，形如 \"3-7\"）；缺省整篇。 }",
   "inputFull": "{ filePath: string; range?: string | undefined // 只读这些块区间（0-based，形如 \"3-7\"）；缺省整篇。 }",
-  "output": "{ ok: true; filePath: string; markdown: string // 带定位符注释（`<!-- b3 -->`）的 Markdown。; blocks: number; revision: string | null } | { ok: false; kind: 'failed' | 'unavailable' | 'refused'; reason: string }"
+  "output": "{ ok: true; filePath: string; markdown: string // 带定位符注释（`<!-- b3 -->`）的 Markdown。; blocks: number; revision: string | null } | { ok: false; kind: 'unavailable' | 'failed' | 'refused'; reason: string }"
  },
  {
   "method": "document.read",
   "channel": "document:read",
   "doc": "【ARC-007】读文档结构(docx 块 / pptx 页 / xlsx 表)。**只读**,路径必须落在已知工作区内。",
-  "input": "{ filePath: string // 绝对路径；必须落在某个已知工作区根内（主进程复核，不采信调用方）。; full?: boolean | undefined // 仅 docx 有效：返回全文而非预览。; range?: string | undefined // 仅 docx 有效：块索引范围（CLI 语法 `a-b`）。 }",
-  "inputFull": "{ filePath: string // 绝对路径；必须落在某个已知工作区根内（主进程复核，不采信调用方）。; full?: boolean | undefined // 仅 docx 有效：返回全文而非预览。; range?: string | undefined // 仅 docx 有效：块索引范围（CLI 语法 `a-b`）。 }",
-  "output": "{ ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null | undefined } | { ok: false; kind: 'failed' | 'unavailable' | 'refused' | 'conflict'; reason: string; code?: string | number | undefined; currentRevision?: string |…"
+  "input": "{ filePath: string // 绝对路径；必须落在某个已知工作区根内（主进程复核，不采信调用方）。; range?: string | undefined // 仅 docx 有效：块索引范围（CLI 语法 `a-b`）。; full?: boolean | undefined // 仅 docx 有效：返回全文而非预览。 }",
+  "inputFull": "{ filePath: string // 绝对路径；必须落在某个已知工作区根内（主进程复核，不采信调用方）。; range?: string | undefined // 仅 docx 有效：块索引范围（CLI 语法 `a-b`）。; full?: boolean | undefined // 仅 docx 有效：返回全文而非预览。 }",
+  "output": "{ ok: true; command: string; summary: string | null; detail: unknown; revision?: string | null | undefined } | { ok: false; kind: 'unavailable' | 'failed' | 'refused' | 'conflict'; reason: string; code?: string | number | undefined; currentRevision?: string |…"
  },
  {
   "method": "document.render",
@@ -674,7 +634,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【T24】页面出图（PNG）；图落在受控临时目录，路径回给模型。",
   "input": "{ filePath: string; page?: number | undefined // 1-based 页码；缺省整份。; scale?: number | undefined }",
   "inputFull": "{ filePath: string; page?: number | undefined // 1-based 页码；缺省整份。; scale?: number | undefined }",
-  "output": "{ ok: true; files: string[]; note: string } | { ok: false; kind: 'failed' | 'unavailable' | 'refused'; reason: string }"
+  "output": "{ ok: true; files: string[]; note: string } | { ok: false; kind: 'unavailable' | 'failed' | 'refused'; reason: string }"
  },
  {
   "method": "document.toolCall",
@@ -717,6 +677,30 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ ok: true } | { ok: false; reason: string }"
  },
  {
+  "method": "documentView.commentCreate",
+  "channel": "documentView:commentCreate",
+  "doc": "",
+  "input": "unknown",
+  "inputFull": "unknown",
+  "output": "{ ok: true; state?: DocRevisionState | undefined } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.commentMutate",
+  "channel": "documentView:commentMutate",
+  "doc": "",
+  "input": "unknown",
+  "inputFull": "unknown",
+  "output": "{ ok: true; state?: DocRevisionState | undefined } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.dormantList",
+  "channel": "documentView:dormantList",
+  "doc": "【文档修订/历史/批注】这一组由 `main/ipc/documentView.ts` 注册， 渲染端的版本面板、历史面板与批注 UI 消费。**入参一律 `unknown`**： 各 handler 自己解析形状（它们的 payload 是编辑器内部结构，不适合放进共享契约）。 这里只保证「通道存在且可调用」—— 名字与 `ipc/documentView.ts` 的 `DOC_VIEW_*_CHANNEL` 常量逐字对应。",
+  "input": "(无参数)",
+  "inputFull": "(无参数)",
+  "output": "{ candidates: DocViewDormantSnapshot[] // 可以**无损**回收的视图：附重建凭据，调用方存下后再 `documentView:close`。; excluded: { notVisible: number; dirtyOrUnknown: number; tooRecent: number; noDocument: number; } // 本轮被排除的数量与原因（诊断用，不参与决策）。 }"
+ },
+ {
   "method": "documentView.focus",
   "channel": "documentView:focus",
   "doc": "【ARC-007】把键盘焦点交给文档视图的页面。",
@@ -730,6 +714,22 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【ARC-007】隐藏文档视图(移出屏幕、**不销毁** —— 切标签保住编辑状态)。",
   "input": "{ docId: string }",
   "inputFull": "{ docId: string }",
+  "output": "{ ok: true } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.historyList",
+  "channel": "documentView:historyList",
+  "doc": "",
+  "input": "{ filePath: string }",
+  "inputFull": "{ filePath: string }",
+  "output": "{ ok: true; versions: DocHistoryVersion[] } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.historyRestore",
+  "channel": "documentView:historyRestore",
+  "doc": "",
+  "input": "{ filePath: string; sha256: string }",
+  "inputFull": "{ filePath: string; sha256: string }",
   "output": "{ ok: true } | { ok: false; reason: string }"
  },
  {
@@ -755,6 +755,46 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "input": "{ filePath: string; docId: string }",
   "inputFull": "{ filePath: string; docId: string }",
   "output": "{ ok: true } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.revisionDecide",
+  "channel": "documentView:revisionDecide",
+  "doc": "",
+  "input": "unknown",
+  "inputFull": "unknown",
+  "output": "{ ok: true; state?: DocRevisionState | undefined } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.revisionFocus",
+  "channel": "documentView:revisionFocus",
+  "doc": "",
+  "input": "{ filePath: string; anchor: { kind: 'unknown' | 'range' | 'page' | 'block' | 'cell' | 'element'; text?: string | undefined; from?: number | undefined; to?: number | undefined; page?: numb… }",
+  "inputFull": "{ filePath: string; anchor: { kind: 'unknown' | 'range' | 'page' | 'block' | 'cell' | 'element'; text?: string | undefined; from?: number | undefined; to?: number | undefined; page?: numb… }",
+  "output": "{ ok: true; state?: DocRevisionState | undefined } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.revisionMode",
+  "channel": "documentView:revisionMode",
+  "doc": "",
+  "input": "unknown",
+  "inputFull": "unknown",
+  "output": "{ ok: true; state?: DocRevisionState | undefined } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.revisionRewrite",
+  "channel": "documentView:revisionRewrite",
+  "doc": "",
+  "input": "{ filePath: string; instruction: string // 用户的指令（「改简洁点」/「翻成英文」）。; selectedText?: string | undefined // 选中的原文。**可选** —— 省略时由页面取**当前选区**。 }",
+  "inputFull": "{ filePath: string; instruction: string // 用户的指令（「改简洁点」/「翻成英文」）。; selectedText?: string | undefined // 选中的原文。**可选** —— 省略时由页面取**当前选区**。 }",
+  "output": "{ ok: true; selectedText: string } | { ok: false; reason: string }"
+ },
+ {
+  "method": "documentView.revisionState",
+  "channel": "documentView:revisionState",
+  "doc": "",
+  "input": "{ filePath: string }",
+  "inputFull": "{ filePath: string }",
+  "output": "{ ok: true; state?: DocRevisionState | undefined } | { ok: false; reason: string }"
  },
  {
   "method": "documentView.show",
@@ -848,8 +888,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "file.grep",
   "channel": "file:grep",
   "doc": "Grep file contents under a project root (line-level matches).",
-  "input": "{ projectPath: string // Absolute path of the project root.; query: string // Substring to search for inside file contents.; limit?: number | undefined // Max total matches to return.; includeExts?: string[] | undefined // Optional file-extension allow-list (no dots, lowercased).; maxResultsPerFile?: number | undefined // Max matches per single file.; caseSensitive?: boolean | undefined // Case-sensitive match. }",
-  "inputFull": "{ projectPath: string // Absolute path of the project root.; query: string // Substring to search for inside file contents.; limit?: number | undefined // Max total matches to return.; includeExts?: string[] | undefined // Optional file-extension allow-list (no dots, lowercased).; maxResultsPerFile?: number | undefined // Max matches per single file.; caseSensitive?: boolean | undefined // Case-sensitive match. }",
+  "input": "{ query: string // Substring to search for inside file contents.; projectPath: string // Absolute path of the project root.; limit?: number | undefined // Max total matches to return.; includeExts?: string[] | undefined // Optional file-extension allow-list (no dots, lowercased).; maxResultsPerFile?: number | undefined // Max matches per single file.; caseSensitive?: boolean | undefined // Case-sensitive match. }",
+  "inputFull": "{ query: string // Substring to search for inside file contents.; projectPath: string // Absolute path of the project root.; limit?: number | undefined // Max total matches to return.; includeExts?: string[] | undefined // Optional file-extension allow-list (no dots, lowercased).; maxResultsPerFile?: number | undefined // Max matches per single file.; caseSensitive?: boolean | undefined // Case-sensitive match. }",
   "output": "{ matches: FileGrepEntry[]; truncated: boolean // The match cap was reached — more matches likely exist.; incompleteScan: boolean // The tree walk hit its visit/depth budget before finishing. }"
  },
  {
@@ -866,6 +906,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "Create a directory (recursive), scoped to a project root.",
   "input": "{ dirPath: string // Absolute path of the directory to create. }",
   "inputFull": "{ dirPath: string // Absolute path of the directory to create. }",
+  "output": "{ ok: boolean }"
+ },
+ {
+  "method": "file.move",
+  "channel": "file:move",
+  "doc": "【EDIT-01】把条目移动到一个目录。目录也可以移动（原子 rename）。跨卷时报错，不退化。",
+  "input": "{ srcPath: string // 要移动的条目（文件或目录）的绝对路径。必须落在某个已知项目根内。; destDir: string // 目标目录的绝对路径。必须落在某个已知项目根内。 }",
+  "inputFull": "{ srcPath: string // 要移动的条目（文件或目录）的绝对路径。必须落在某个已知项目根内。; destDir: string // 目标目录的绝对路径。必须落在某个已知项目根内。 }",
   "output": "{ ok: boolean }"
  },
  {
@@ -1032,8 +1080,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "git.merge",
   "channel": "git:merge",
   "doc": "Merge `source` into the current branch. Conflicts are reported via `conflict` + `conflictedFiles` (same shape as git.pull).",
-  "input": "{ source: string; repoPath: string }",
-  "inputFull": "{ source: string; repoPath: string }",
+  "input": "{ repoPath: string; source: string }",
+  "inputFull": "{ repoPath: string; source: string }",
   "output": "{ ok: boolean; error?: string | undefined; conflict?: boolean | undefined // Set when the merge stopped with conflicts.; conflictedFiles?: string[] | undefined; upToDate?: boolean | undefined // True when HEAD already contained everything (no merge was execut…"
  },
  {
@@ -1048,8 +1096,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "git.mergePreview",
   "channel": "git:mergePreview",
   "doc": "Preview a merge of `source` into the current branch without touching the working tree (incoming commit count / fast-forward / up-to-date).",
-  "input": "{ source: string; repoPath: string }",
-  "inputFull": "{ source: string; repoPath: string }",
+  "input": "{ repoPath: string; source: string }",
+  "inputFull": "{ repoPath: string; source: string }",
   "output": "{ ok: boolean; error?: string | undefined; upToDate: boolean // True when HEAD already contains every commit of `source` — nothing to do.; fastForward: boolean // True when the merge can fast-forward (HEAD has no commits `source` lacks).; incomingCommits: num…"
  },
  {
@@ -1144,8 +1192,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "hooks.issueHostHookGrant",
   "channel": "hooks:issueHostHookGrant",
   "doc": "【MC-061】**用户真实操作**后签发一份主机 hook 授权(落盘)。`grantId` / 时间 / `revoked` 由主进程签发(schema `.strict()`;agent 经 `app_api_call` 够不到这条 —— blocked)。",
-  "input": "{ version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; command?: string | undefined // 命令**原文** —— 设置页那颗\"授权这条\"按钮把界面上印的那行命令递上来, 宿主用**唯一一份**摘要函数算 `commandDigest`(渲染端算不了 sha256,也不…; matcher?: string | undefined // matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。; pluginId?: string | undefined // 贡献这条 hook 的插件名(manifest name)。; hookId?: string | undefined // T63: a saved user hook; host derives event, kind, and digest, never trusts renderer-suppl…; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
-  "inputFull": "{ version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; command?: string | undefined // 命令**原文** —— 设置页那颗\"授权这条\"按钮把界面上印的那行命令递上来, 宿主用**唯一一份**摘要函数算 `commandDigest`(渲染端算不了 sha256,也不…; matcher?: string | undefined // matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。; pluginId?: string | undefined // 贡献这条 hook 的插件名(manifest name)。; hookId?: string | undefined // T63: a saved user hook; host derives event, kind, and digest, never trusts renderer-suppl…; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
+  "input": "{ command?: string | undefined // 命令**原文** —— 设置页那颗\"授权这条\"按钮把界面上印的那行命令递上来, 宿主用**唯一一份**摘要函数算 `commandDigest`(渲染端算不了 sha256,也不…; version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; matcher?: string | undefined // matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。; pluginId?: string | undefined // 贡献这条 hook 的插件名(manifest name)。; hookId?: string | undefined // T63: a saved user hook; host derives event, kind, and digest, never trusts renderer-suppl…; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
+  "inputFull": "{ command?: string | undefined // 命令**原文** —— 设置页那颗\"授权这条\"按钮把界面上印的那行命令递上来, 宿主用**唯一一份**摘要函数算 `commandDigest`(渲染端算不了 sha256,也不…; version?: string | undefined // 插件版本;省略 = 授权不限版本(升级后旧授权仍覆盖,较宽)。; matcher?: string | undefined // matcher **原文**(同上,宿主算摘要);省略 = 不绑定 matcher。; pluginId?: string | undefined // 贡献这条 hook 的插件名(manifest name)。; hookId?: string | undefined // T63: a saved user hook; host derives event, kind, and digest, never trusts renderer-suppl…; events?: string[] | undefined // 该授权覆盖的原生事件名集合;省略/空 = 不限定事件。; commandDigest?: string | undefined // 命令内容摘要;省略/空 = 不绑定命令(按插件 + 事件放行,较宽)。; matcherDigest?: string | undefined // matcher 摘要;省略/空 = 不绑定 matcher。 }",
   "output": "{ ok: boolean; error?: string | undefined; grant?: HostHookGrant | undefined }"
  },
  {
@@ -1154,7 +1202,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "全部钩子 + 读得见但用不了的条目。**坏条目不静默丢弃** —— 用户写的钩子不生效时, 这一页是唯一能解释为什么的地方。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ hooks: HookSpec[]; problems: { where: string; error: string; }[]; fileHealth: 'valid' | 'corrupt' | 'read_error' | 'missing' }"
+  "output": "{ hooks: HookSpec[]; problems: { where: string; error: string; }[]; fileHealth: 'valid' | 'corrupt' | 'missing' | 'read_error' }"
  },
  {
   "method": "hooks.listHostHookGrants",
@@ -1200,16 +1248,16 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "hooks.save",
   "channel": "hooks:save",
   "doc": "存一条钩子(**整份给过来**,不是\"改哪个字段\")—— 用户从头写的东西局部更新没意义,整份过来让校验只在一处发生。返回 `{ ok, error? }`。",
-  "input": "{ hook: { action: { command: string; kind: 'command'; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
-  "inputFull": "{ hook: { action: { command: string; kind: 'command'; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
+  "input": "{ hook: { action: { kind: 'command'; command: string; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
+  "inputFull": "{ hook: { action: { kind: 'command'; command: string; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
   "method": "hooks.test",
   "channel": "hooks:test",
   "doc": "拿一条**还没存下来**的配置试跑一次,把那一次的结果返回。",
-  "input": "{ hook: { action: { command: string; kind: 'command'; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
-  "inputFull": "{ hook: { action: { command: string; kind: 'command'; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
+  "input": "{ hook: { action: { kind: 'command'; command: string; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
+  "inputFull": "{ hook: { action: { kind: 'command'; command: string; } | { kind: 'agent'; profileId: string; } | { kind: 'workflow'; workflowId: string; }; command: string; id: strin… }",
   "output": "{ run: HookRun }"
  },
  {
@@ -1240,8 +1288,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "library.attachToChat",
   "channel": "library:attachToChat",
   "doc": "把一条附件挂到指定会话的输入框上(左栏右键「添加到当前对话」)。 与 AI 的 `library_attach_to_chat` 共用同一份实现,所以效果一致。",
-  "input": "{ key: string; sessionId: string }",
-  "inputFull": "{ key: string; sessionId: string }",
+  "input": "{ sessionId: string; key: string }",
+  "inputFull": "{ sessionId: string; key: string }",
   "output": "{ ok: boolean; name?: string | undefined; count?: number | undefined; error?: string | undefined }"
  },
  {
@@ -1330,7 +1378,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "全文检索(ripgrep;sql.js 不含 FTS5)。",
   "input": "{ query: string; limit?: number | undefined; collectionIds?: string[] | undefined // 限定在哪些集合内搜;省略则全库。 }",
   "inputFull": "{ query: string; limit?: number | undefined; collectionIds?: string[] | undefined // 限定在哪些集合内搜;省略则全库。 }",
-  "output": "{ matches: FullTextMatch[] }"
+  "output": "{ matches: FullTextMatch[]; indexing?: number | undefined; indexErrors?: number | undefined }"
  },
  {
   "method": "library.get",
@@ -1360,8 +1408,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "library.importFiles",
   "channel": "library:importFiles",
   "doc": "从**本地 PDF 文件**导入。 逐份:校验 → 按 sha256 去重 → 复制进库 → 入库(标题取文件名)→ 可选转 Markdown。",
-  "input": "{ paths: string[] // 用户从文件选择框里挑出来的绝对路径。上限 200 —— 再多就该分批了。; mode?: 'folder' | 'files' | 'explode' | undefined // 导入模式：`\"files\"` = 逐个文件导入（默认）；`\"folder\"` = 把目录作为**一个** linked 条目收进来（不拆开，可展开浏览）；`\"explode\"` …; collectionIds?: string[] | undefined // 导入的文献归入哪些库(null/省略 = 只进总库)。; convert?: boolean | undefined }",
-  "inputFull": "{ paths: string[] // 用户从文件选择框里挑出来的绝对路径。上限 200 —— 再多就该分批了。; mode?: 'folder' | 'files' | 'explode' | undefined // 导入模式：`\"files\"` = 逐个文件导入（默认）；`\"folder\"` = 把目录作为**一个** linked 条目收进来（不拆开，可展开浏览）；`\"explode\"` …; collectionIds?: string[] | undefined // 导入的文献归入哪些库(null/省略 = 只进总库)。; convert?: boolean | undefined }",
+  "input": "{ paths: string[] // 用户从文件选择框里挑出来的绝对路径。上限 200 —— 再多就该分批了。; mode?: 'files' | 'folder' | 'explode' | undefined // 导入模式：`\"files\"` = 逐个文件导入（默认）；`\"folder\"` = 把目录作为**一个** linked 条目收进来（不拆开，可展开浏览）；`\"explode\"` …; collectionIds?: string[] | undefined // 导入的文献归入哪些库(null/省略 = 只进总库)。; convert?: boolean | undefined }",
+  "inputFull": "{ paths: string[] // 用户从文件选择框里挑出来的绝对路径。上限 200 —— 再多就该分批了。; mode?: 'files' | 'folder' | 'explode' | undefined // 导入模式：`\"files\"` = 逐个文件导入（默认）；`\"folder\"` = 把目录作为**一个** linked 条目收进来（不拆开，可展开浏览）；`\"explode\"` …; collectionIds?: string[] | undefined // 导入的文献归入哪些库(null/省略 = 只进总库)。; convert?: boolean | undefined }",
   "output": "{ items: LibraryItem[]; added: number; skipped: number; errors: { path: string; error: string; }[] // 失败原因(路径 + 人话);成功的不出现在这里。; converted: { ok: number; failed: number; } }"
  },
  {
@@ -1600,24 +1648,24 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "lsp.closeDocument",
   "channel": "lsp:closeDocument",
   "doc": "Close a document (textDocument/didClose).",
-  "input": "{ filePath: string; workspacePath: string }",
-  "inputFull": "{ filePath: string; workspacePath: string }",
+  "input": "{ workspacePath: string; filePath: string }",
+  "inputFull": "{ workspacePath: string; filePath: string }",
   "output": "void"
  },
  {
   "method": "lsp.didChange",
   "channel": "lsp:didChange",
   "doc": "Notify the server of a full-content change (textDocument/didChange).",
-  "input": "{ version: number; filePath: string; text: string; workspacePath: string }",
-  "inputFull": "{ version: number; filePath: string; text: string; workspacePath: string }",
+  "input": "{ workspacePath: string; filePath: string; text: string; version: number }",
+  "inputFull": "{ workspacePath: string; filePath: string; text: string; version: number }",
   "output": "void"
  },
  {
   "method": "lsp.didSave",
   "channel": "lsp:didSave",
   "doc": "Notify the server of a save (textDocument/didSave).",
-  "input": "{ filePath: string; text: string; workspacePath: string }",
-  "inputFull": "{ filePath: string; text: string; workspacePath: string }",
+  "input": "{ workspacePath: string; filePath: string; text: string }",
+  "inputFull": "{ workspacePath: string; filePath: string; text: string }",
   "output": "void"
  },
  {
@@ -1656,8 +1704,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "lsp.openDocument",
   "channel": "lsp:openDocument",
   "doc": "Open a document in the server (textDocument/didOpen). Lazily starts the server for (workspacePath, language) on first call.",
-  "input": "{ filePath: string; language: 'typescript' | 'python' | 'go' | 'java'; workspacePath: string }",
-  "inputFull": "{ filePath: string; language: 'typescript' | 'python' | 'go' | 'java'; workspacePath: string }",
+  "input": "{ workspacePath: string; filePath: string; language: 'typescript' | 'python' | 'go' | 'java' }",
+  "inputFull": "{ workspacePath: string; filePath: string; language: 'typescript' | 'python' | 'go' | 'java' }",
   "output": "void"
  },
  {
@@ -1672,16 +1720,16 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "lsp.request",
   "channel": "lsp:request",
   "doc": "Forward an arbitrary LSP request (definition/references/hover/...) to the server and await its response.",
-  "input": "{ language: 'typescript' | 'python' | 'go' | 'java'; workspacePath: string; method: string // LSP method, e.g.; params?: unknown // LSP params object (passed through verbatim). }",
-  "inputFull": "{ language: 'typescript' | 'python' | 'go' | 'java'; workspacePath: string; method: string // LSP method, e.g.; params?: unknown // LSP params object (passed through verbatim). }",
+  "input": "{ workspacePath: string; language: 'typescript' | 'python' | 'go' | 'java'; method: string // LSP method, e.g.; params?: unknown // LSP params object (passed through verbatim). }",
+  "inputFull": "{ workspacePath: string; language: 'typescript' | 'python' | 'go' | 'java'; method: string // LSP method, e.g.; params?: unknown // LSP params object (passed through verbatim). }",
   "output": "{ result: unknown } | { error: { code: number; message: string; } }"
  },
  {
   "method": "lsp.restart",
   "channel": "lsp:restart",
   "doc": "Restart a language server for one workspace (stop + clear the crash-loop guard + immediately relaunch). Clicking a startup-failure notice calls this after the user fixes the environment.",
-  "input": "{ language: 'typescript' | 'python' | 'go' | 'java'; workspacePath: string // Project root the server was started for (must be a known project). }",
-  "inputFull": "{ language: 'typescript' | 'python' | 'go' | 'java'; workspacePath: string // Project root the server was started for (must be a known project). }",
+  "input": "{ workspacePath: string // Project root the server was started for (must be a known project).; language: 'typescript' | 'python' | 'go' | 'java' }",
+  "inputFull": "{ workspacePath: string // Project root the server was started for (must be a known project).; language: 'typescript' | 'python' | 'go' | 'java' }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
@@ -1800,24 +1848,24 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "mcp.projectRemove",
   "channel": "mcp:projectRemove",
   "doc": "Remove one project server from the project file.",
-  "input": "{ projectPath: string; name: string }",
-  "inputFull": "{ projectPath: string; name: string }",
+  "input": "{ name: string; projectPath: string }",
+  "inputFull": "{ name: string; projectPath: string }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
   "method": "mcp.projectSave",
   "channel": "mcp:projectSave",
   "doc": "Add / overwrite one project server (auto-trusted).",
-  "input": "{ projectPath: string; name: string; config: z.objectOutputType<{ type: z.ZodOptional<z.ZodLiteral<'stdio'>>; command: z.ZodString; args: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>; env: z.ZodOptional…; replace?: boolean | undefined }",
-  "inputFull": "{ projectPath: string; name: string; config: z.objectOutputType<{ type: z.ZodOptional<z.ZodLiteral<'stdio'>>; command: z.ZodString; args: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>; env: z.ZodOptional…; replace?: boolean | undefined }",
+  "input": "{ name: string; config: z.objectOutputType<{ type: z.ZodOptional<z.ZodLiteral<'stdio'>>; command: z.ZodString; args: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>; env: z.ZodOptional…; projectPath: string; replace?: boolean | undefined }",
+  "inputFull": "{ name: string; config: z.objectOutputType<{ type: z.ZodOptional<z.ZodLiteral<'stdio'>>; command: z.ZodString; args: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>; env: z.ZodOptional…; projectPath: string; replace?: boolean | undefined }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
   "method": "mcp.projectTrust",
   "channel": "mcp:projectTrust",
   "doc": "Trust / untrust one project server as currently written.",
-  "input": "{ projectPath: string; name: string; trusted: boolean }",
-  "inputFull": "{ projectPath: string; name: string; trusted: boolean }",
+  "input": "{ name: string; projectPath: string; trusted: boolean }",
+  "inputFull": "{ name: string; projectPath: string; trusted: boolean }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
@@ -1845,6 +1893,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "output": "{ sources: McpImportSource[] }"
  },
  {
+  "method": "mcp.testConnection",
+  "channel": "mcp:testConnection",
+  "doc": "【EXT-03】真的起一次这个服务器，报告能不能连上（命令不存在 / 起不来 / 没授权 各自给不同的 stage，界面据此给不同的下一步）。",
+  "input": "{ name: string }",
+  "inputFull": "{ name: string }",
+  "output": "{ ok: true; serverName?: string | undefined // 服务端报告的协议版本 / 服务器名（有就给，方便用户确认连的是对的）。; serverVersion?: string | undefined; ms: number // 握手 + 列工具各花了多久（用户能据此判断\"慢\"是网络还是服务端）。; toolCount?: number | undefined } | { ok: false; error: string; stage: 'unknown' | 'spawn'…"
+ },
+ {
   "method": "mcp.toggle",
   "channel": "mcp:toggle",
   "doc": "Enable/disable a server. User scope moves the config between the config file and the management stash; project/builtin update the management state. Takes effect on the next turn.",
@@ -1864,9 +1920,9 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "memory.assistant",
   "channel": "memory:assistant",
   "doc": "记忆助手:一次 `op`(list/start/cancel/discard/deliver)驱动在**隐藏工作会话**里跑的记忆作业(capture/checkpoint/health)。返回作业列表,并视 op 带上 incoming 作业 / 目标会话 / 注入回执。",
-  "input": "{ op: 'list'; sessionId: string } | { kind: 'capture' | 'checkpoint' | 'health'; op: 'start'; sessionId: string } | { op: 'cancel'; sessionId: string; jobId: string } | { op: 'discard'; sessionId: string; jobId: string } | { op: 'deliver'; sessionId: string; …",
-  "inputFull": "{ op: 'list'; sessionId: string } | { kind: 'capture' | 'checkpoint' | 'health'; op: 'start'; sessionId: string } | { op: 'cancel'; sessionId: string; jobId: string } | { op: 'discard'; sessionId: string; jobId: string } | { op: 'deliver'; sessionId: string; …",
-  "output": "{ jobs: { status: 'running' | 'failed' | 'cancelled' | 'ready' | 'expired' | 'queued' | 'consumed'; id: string; kind: 'capture' | 'checkpoint' | 'health'; result: stri…; incoming?: { status: 'running' | 'failed' | 'cancelled' | 'ready' | 'expired' | 'queued' …"
+  "input": "{ op: 'list'; sessionId: string } | { op: 'start'; sessionId: string; kind: 'capture' | 'checkpoint' | 'health' } | { op: 'cancel'; sessionId: string; jobId: string } | { op: 'discard'; sessionId: string; jobId: string } | { op: 'deliver'; sessionId: string; …",
+  "inputFull": "{ op: 'list'; sessionId: string } | { op: 'start'; sessionId: string; kind: 'capture' | 'checkpoint' | 'health' } | { op: 'cancel'; sessionId: string; jobId: string } | { op: 'discard'; sessionId: string; jobId: string } | { op: 'deliver'; sessionId: string; …",
+  "output": "{ jobs: { status: 'ready' | 'failed' | 'cancelled' | 'expired' | 'running' | 'queued' | 'consumed'; id: string; projectId: string; kind: 'capture' | 'checkpoint' | 'he…; incoming?: { status: 'ready' | 'failed' | 'cancelled' | 'expired' | 'running' | 'queued' …"
  },
  {
   "method": "memory.categories",
@@ -1896,8 +1952,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "memory.manage",
   "channel": "memory:manage",
   "doc": "记忆维护(桌面专用,模型拿不到):按 `action`(list/preview/import/history/restore)操作原生记忆来源。`import`/`restore` 要带 digest + `confirmed:true`。",
-  "input": "{ action: 'list' } | { source: string; action: 'preview' } | { source: string; action: 'import'; global: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' | 'failures' | 'decisions'; digest: string; confirmed: true; projectId?: string | u…",
-  "inputFull": "{ action: 'list' } | { source: string; action: 'preview' } | { source: string; action: 'import'; global: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' | 'failures' | 'decisions'; digest: string; confirmed: true; projectId?: string | u…",
+  "input": "{ action: 'list' } | { action: 'preview'; source: string } | { action: 'import'; source: string; global: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' | 'failures' | 'decisions'; digest: string; confirmed: true; projectId?: string | u…",
+  "inputFull": "{ action: 'list' } | { action: 'preview'; source: string } | { action: 'import'; source: string; global: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' | 'failures' | 'decisions'; digest: string; confirmed: true; projectId?: string | u…",
   "output": "{ ok: boolean; error?: string | undefined; content?: string | undefined; digest?: string | undefined; path?: string | undefined; sources?: { id: string; label: string; }[] | undefined; projects?: { id: string; name: string; }[] | undefined; history?: { id: st…"
  },
  {
@@ -1978,7 +2034,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "手机自有域名的隧道状态(和「远程控制」/ 公网 MCP 无关,单独一份)。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'failed' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
+  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'starting' | 'ready' | 'reconnecting' | 'failed' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
  },
  {
   "method": "mobile.listDevices",
@@ -2008,9 +2064,9 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "mobile.setTunnel",
   "channel": "mobile:setTunnel",
   "doc": "存手机隧道配置(token 留空 = 沿用)。隧道在跑且配置变了会按新配置重起。",
-  "input": "{ mode: 'named' | 'external' | 'off'; hostname: string; token?: string | undefined // 留空 = 沿用已存的那串。; clearToken?: boolean | undefined // 显式删掉已存的 token。 }",
-  "inputFull": "{ mode: 'named' | 'external' | 'off'; hostname: string; token?: string | undefined // 留空 = 沿用已存的那串。; clearToken?: boolean | undefined // 显式删掉已存的 token。 }",
-  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'failed' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
+  "input": "{ mode: 'quick' | 'named' | 'external' | 'off'; hostname: string; token?: string | undefined // 留空 = 沿用已存的那串。; clearToken?: boolean | undefined // 显式删掉已存的 token。 }",
+  "inputFull": "{ mode: 'quick' | 'named' | 'external' | 'off'; hostname: string; token?: string | undefined // 留空 = 沿用已存的那串。; clearToken?: boolean | undefined // 显式删掉已存的 token。 }",
+  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'starting' | 'ready' | 'reconnecting' | 'failed' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
  },
  {
   "method": "mobile.startPairing",
@@ -2026,7 +2082,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "启动手机隧道(named 模式起 cloudflared;并记住下次启动自动开)。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'failed' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
+  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'starting' | 'ready' | 'reconnecting' | 'failed' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
  },
  {
   "method": "mobile.stopTunnel",
@@ -2034,126 +2090,22 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "停止手机隧道(并取消自动开启)。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'failed' | 'starting' | 'ready' | 'reconnecting' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
- },
- {
-  "method": "modules.cancel",
-  "channel": "modules:cancel",
-  "doc": "取消一个在跑的模块任务(abort 那个 job 并标成 `cancelled`)。返回取消后的快照。",
-  "input": "{ moduleId: string; taskId: string }",
-  "inputFull": "{ moduleId: string; taskId: string }",
-  "output": "{ id: string; moduleId: string; contributionId: string; resource: { path: string; projectPath: string; }; view: { title: { zh: string; en: string; }; fields: { title: { zh: string; en: string; }; key: string; }[]; }; status: 'running' | 'completed' | 'failed'…"
- },
- {
-  "method": "modules.catalog",
-  "channel": "modules:catalog",
-  "doc": "全部模块(**内置 + 已装**)的清单:各自的贡献项、宿主能力表、以及内置只读模块能当工作流目标的那几项。",
-  "input": "(无参数)",
-  "inputFull": "(无参数)",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('browser.control' | 'code.execute' | 'document.edit' | 'documen…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
- },
- {
-  "method": "modules.egressConsentGet",
-  "channel": "modules:egressConsentGet",
-  "doc": "MC-035: explicitly acknowledged, revocable JS-only sandbox downgrade. UI only.",
-  "input": "(无参数)",
-  "inputFull": "(无参数)",
-  "output": "{ enabled: boolean; osIsolation: boolean }"
- },
- {
-  "method": "modules.egressConsentSet",
-  "channel": "modules:egressConsentSet",
-  "doc": "",
-  "input": "{ enabled: boolean; acknowledgeRisk: true }",
-  "inputFull": "{ enabled: boolean; acknowledgeRisk: true }",
-  "output": "{ enabled: boolean; osIsolation: boolean }"
- },
- {
-  "method": "modules.install",
-  "channel": "modules:install",
-  "doc": "安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单,以及这次变更取消掉的运行中任务数/失败原因(升级换执行体时为非零)。",
-  "input": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('browser.control' | 'code.execute' | 'document.edit' | 'documen…; confirmReadAccess: true; grantedPermissions?: ('browser.control' | 'code.execute' | 'document.edit' | 'document.read' | 'files.read' | 'files.watch' | 'files.write' | 'git.read' | 'git.write' | 'hooks.mana… // Explicit user-chosen subset of the manifest, including an empty grant.; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。; installConsent?: 'allow-once' | 'allow-always' | 'deny' | undefined // 【T18】安装卡片的选择（见 {@link MODULE_INSTALL_CONSENT_DECISIONS}）。 }",
-  "inputFull": "{ manifest: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('browser.control' | 'code.execute' | 'document.edit' | 'documen…; confirmReadAccess: true; grantedPermissions?: ('browser.control' | 'code.execute' | 'document.edit' | 'document.read' | 'files.read' | 'files.watch' | 'files.write' | 'git.read' | 'git.write' | 'hooks.mana… // Explicit user-chosen subset of the manifest, including an empty grant.; confirmExecutableCode?: true | undefined // 【MC-035】带 `program` 的扩展包**额外**要求一次针对\"会执行代码\"的确认 —— 与只读声明分开:同意\"读我选中的文件\"不等于同意\"在我机器上跑一段程序\"。; installConsent?: 'allow-once' | 'allow-always' | 'deny' | undefined // 【T18】安装卡片的选择（见 {@link MODULE_INSTALL_CONSENT_DECISIONS}）。 }",
-  "output": "{ catalog: ModuleCatalog; cancelledTasks: number; cancelFailures: { taskId: string; reason: string; }[] }"
- },
- {
-  "method": "modules.installVsix",
-  "channel": "modules:installVsix",
-  "doc": "【F006】从一个 `.vsix` 文件安装真实 VS Code 扩展（走 `VscodeL1Bridge`）。 **现状的能力边界（读之前先看这里）**：只有**可执行入口 ≤ 24 KiB**的扩展装得进来。 真实市场扩展普遍 100 KB 以上（`rainbow-csv` 的 `extension.js` 是 136 KB）， 会被这条限额拒绝，错误信息会点名「exceeds the L1 source limit」。 与 `modules.install` 的关系：**同一个宿主能力的另一条入口**。两者…",
-  "input": "{ path: string // 用户从文件选择器里选中的 `.vsix` 路径（绝对路径）。; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】vsix 里带的 `extension.js` 是要在本机跑的程序 —— 与 `modules.install` 同一条规矩：同意\"读我选中的文件\"不等于同意\"在…; installConsent?: 'allow-once' | 'allow-always' | 'deny' | undefined }",
-  "inputFull": "{ path: string // 用户从文件选择器里选中的 `.vsix` 路径（绝对路径）。; confirmReadAccess: true; confirmExecutableCode?: true | undefined // 【MC-035】vsix 里带的 `extension.js` 是要在本机跑的程序 —— 与 `modules.install` 同一条规矩：同意\"读我选中的文件\"不等于同意\"在…; installConsent?: 'allow-once' | 'allow-always' | 'deny' | undefined }",
-  "output": "{ catalog: ModuleCatalog; cancelledTasks: number; cancelFailures: { taskId: string; reason: string; }[]; moduleId: string; ignoredContributions: IgnoredVsixContribution[] }"
- },
- {
-  "method": "modules.invoke",
-  "channel": "modules:invoke",
-  "doc": "触发模块的一个贡献项。按能力 `kind` 分流:非 task 的直接跑出结果,是 task 的立刻返回 `{type:\"task\"}` 句柄(进度靠 `modules.task` 拉)。",
-  "input": "{ moduleId: string; contributionId: string; resource: { path: string; projectPath: string; }; requestId: string }",
-  "inputFull": "{ moduleId: string; contributionId: string; resource: { path: string; projectPath: string; }; requestId: string }",
-  "output": "{ type: 'result'; value: Record<string, string | number | boolean | null>; view: { title: { zh: string; en: string; }; fields: { title: { zh: string; en: string; }; key: string; }[]; } } | { type: 'task'; task: ModuleTask }"
- },
- {
-  "method": "modules.issueWorkflowGrant",
-  "channel": "modules:issueWorkflowGrant",
-  "doc": "【MC-036】给一个已安装的用户模块的只读贡献**签发**工作流运行授权(绑定模块 id/版本/ 贡献/能力/工作区)。由设置页里用户本人的点击发起;Agent 侧钉 blocked(见 `appControl/policy.ts`)—— 自动运行权不能由模型自己给自己升。返回签发后的目录。",
-  "input": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
-  "inputFull": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('browser.control' | 'code.execute' | 'document.edit' | 'documen…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
- },
- {
-  "method": "modules.remove",
-  "channel": "modules:remove",
-  "doc": "卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单与取消诊断。",
-  "input": "{ moduleId: string }",
-  "inputFull": "{ moduleId: string }",
-  "output": "{ catalog: ModuleCatalog; cancelledTasks: number; cancelFailures: { taskId: string; reason: string; }[] }"
- },
- {
-  "method": "modules.revokeWorkflowGrant",
-  "channel": "modules:revokeWorkflowGrant",
-  "doc": "【MC-036】撤销一条工作流运行授权(同一 (模块,版本,贡献,能力,工作区) 幂等键)。",
-  "input": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
-  "inputFull": "{ moduleId: string; contributionId: string; projectPath: string; capabilityId: string; moduleVersion: string }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('browser.control' | 'code.execute' | 'document.edit' | 'documen…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
- },
- {
-  "method": "modules.setPermissions",
-  "channel": "modules:setPermissions",
-  "doc": "",
-  "input": "{ moduleId: string; grantedPermissions: ('browser.control' | 'code.execute' | 'document.edit' | 'document.read' | 'files.read' | 'files.watch' | 'files.write' | 'git.read' | 'git.write' | 'hooks.mana… }",
-  "inputFull": "{ moduleId: string; grantedPermissions: ('browser.control' | 'code.execute' | 'document.edit' | 'document.read' | 'files.read' | 'files.watch' | 'files.write' | 'git.read' | 'git.write' | 'hooks.mana… }",
-  "output": "{ modules: { apiVersion: 1; id: string; version: string; title: { zh: string; en: string; }; permissions: ('browser.control' | 'code.execute' | 'document.edit' | 'documen…; capabilities: { id: string; kind: 'query' | 'action' | 'task'; metadata?: { version: s…"
- },
- {
-  "method": "modules.task",
-  "channel": "modules:task",
-  "doc": "取一个模块任务的当前快照(状态 / 进度 / 结果)。",
-  "input": "{ moduleId: string; taskId: string }",
-  "inputFull": "{ moduleId: string; taskId: string }",
-  "output": "{ id: string; moduleId: string; contributionId: string; resource: { path: string; projectPath: string; }; view: { title: { zh: string; en: string; }; fields: { title: { zh: string; en: string; }; key: string; }[]; }; status: 'running' | 'completed' | 'failed'…"
- },
- {
-  "method": "modules.tasks",
-  "channel": "modules:tasks",
-  "doc": "列某个项目下**仍在内存里**的模块任务(进程重启后为空,不落库)。",
-  "input": "{ projectPath: string }",
-  "inputFull": "{ projectPath: string }",
-  "output": "{ length: number // Gets or sets the length of the array.; toString: () => string // Returns a string representation of an array.; toLocaleString: { (): string; (locales: string | string[], options?: Intl.NumberFormatOptions & Intl.DateTimeFormatOptions): str…"
+  "output": "{ mode: MobileTunnelMode; hostname: string; tokenHint: string // 已存 Tunnel Token 的尾 4 位(`****abcd`);没存过为空串。; phase: 'stopped' | 'starting' | 'ready' | 'reconnecting' | 'failed' // named:cloudflared 进程的状态;external:对 `https://域名/api/health` 的探测结论;off:stopped。; …"
  },
  {
   "method": "modules.theiaInstalled",
   "channel": "modules:theiaInstalled",
   "doc": "F026 Persist installed VSIX separately from L1; explicit human confirmation and no automatic execution.",
-  "input": "{ op: 'list' } | { path: string; op: 'inspect' } | { op: 'cancel'; ticket: string } | { op: 'install'; ticket: string; accepted: true } | { id: string; op: 'start' } | { op: 'execute'; sessionId: string; commandId: string; args?: string[] | undefined } | { op…",
-  "inputFull": "{ op: 'list' } | { path: string; op: 'inspect' } | { op: 'cancel'; ticket: string } | { op: 'install'; ticket: string; accepted: true } | { id: string; op: 'start' } | { op: 'execute'; sessionId: string; commandId: string; args?: string[] | undefined } | { op…",
-  "output": "{ kind: 'list'; items: TheiaInstalledEntry[] } | { kind: 'inspected'; ticket: string; extensionId: string; fileCount: number; prompt: TheiaPreviewPermissionPrompt } | { kind: 'installed' | 'updated'; item: TheiaInstalledEntry } | { kind: 'started'; id: string…"
+  "input": "{ op: 'list' } | { op: 'inspect'; path: string } | { op: 'cancel'; ticket: string } | { op: 'install'; ticket: string; accepted: true } | { op: 'start'; id: string; workspacePath?: string | undefined } | { op: 'execute'; sessionId: string; commandId: string; …",
+  "inputFull": "{ op: 'list' } | { op: 'inspect'; path: string } | { op: 'cancel'; ticket: string } | { op: 'install'; ticket: string; accepted: true } | { op: 'start'; id: string; workspacePath?: string | undefined } | { op: 'execute'; sessionId: string; commandId: string; …",
+  "output": "{ kind: 'list'; items: TheiaInstalledEntry[] } | { kind: 'inspected'; ticket: string; extensionId: string; fileCount: number; prompt: TheiaPreviewPermissionPrompt; upgradeFrom?: string | undefined; newVersion?: string | undefined } | { kind: 'installed' | 'up…"
  },
  {
   "method": "modules.theiaPreview",
   "channel": "modules:theiaPreview",
   "doc": "F025 Temporary Theia VSIX inspect / start / execute / stop; no persistent module registration.",
-  "input": "{ path: string; op: 'inspect' } | { op: 'start'; ticket: string; accepted: true } | { op: 'cancel'; ticket: string } | { op: 'execute'; sessionId: string; commandId: string } | { op: 'stop'; sessionId: string }",
-  "inputFull": "{ path: string; op: 'inspect' } | { op: 'start'; ticket: string; accepted: true } | { op: 'cancel'; ticket: string } | { op: 'execute'; sessionId: string; commandId: string } | { op: 'stop'; sessionId: string }",
+  "input": "{ op: 'inspect'; path: string } | { op: 'start'; ticket: string; accepted: true } | { op: 'cancel'; ticket: string } | { op: 'execute'; sessionId: string; commandId: string } | { op: 'stop'; sessionId: string }",
+  "inputFull": "{ op: 'inspect'; path: string } | { op: 'start'; ticket: string; accepted: true } | { op: 'cancel'; ticket: string } | { op: 'execute'; sessionId: string; commandId: string } | { op: 'stop'; sessionId: string }",
   "output": "{ kind: 'inspection'; ticket: string; extensionId: string; fileCount: number; prompt: TheiaPreviewPermissionPrompt } | { kind: 'started'; sessionId: string; extensionId: string; commands: string[]; activationErrors: string[] } | { kind: 'executed'; result: st…"
  },
  {
@@ -2344,8 +2296,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "plugins.projectSet",
   "channel": "plugins:projectSet",
   "doc": "Set / clear one plugin's per-project override.",
-  "input": "{ projectPath: string; name: string; enabled?: boolean | null | undefined; engines?: { claude?: boolean | undefined; codex?: boolean | undefined; pi?: boolean | undefined; } | null | undefined }",
-  "inputFull": "{ projectPath: string; name: string; enabled?: boolean | null | undefined; engines?: { claude?: boolean | undefined; codex?: boolean | undefined; pi?: boolean | undefined; } | null | undefined }",
+  "input": "{ name: string; projectPath: string; enabled?: boolean | null | undefined; engines?: { claude?: boolean | undefined; codex?: boolean | undefined; pi?: boolean | undefined; } | null | undefined }",
+  "inputFull": "{ name: string; projectPath: string; enabled?: boolean | null | undefined; engines?: { claude?: boolean | undefined; codex?: boolean | undefined; pi?: boolean | undefined; } | null | undefined }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
@@ -2440,8 +2392,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "projectInit.apply",
   "channel": "projectInit:apply",
   "doc": "执行一次初始化(确定性落盘:**从不覆盖**已有文件/记忆、不执行代码、不发模型轮)。逐项报成败、**不回滚**已建成的;需要 AI 生成说明文件时把提示词交回渲染端,由它作普通一轮发出。",
-  "input": "{ command: string; sessionId: string; digest: string }",
-  "inputFull": "{ command: string; sessionId: string; digest: string }",
+  "input": "{ sessionId: string; command: string; digest: string }",
+  "inputFull": "{ sessionId: string; command: string; digest: string }",
   "output": "{ projectId: string; root: string; actions: ProjectInitAction[]; agentPrompt?: string | undefined // 有 AI 生成步骤时:要发给引擎的提示词,由渲染端作为普通一轮对话发出。; agentFilename?: 'AGENTS.md' | 'CLAUDE.md' | undefined }"
  },
  {
@@ -2458,7 +2410,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "按 id 取一份项目初始化模板全文(带 `revision`)。",
   "input": "{ id: string }",
   "inputFull": "{ id: string }",
-  "output": "{ id: string; revision: string; description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; content: string; pinned: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
+  "output": "{ id: string; revision: string; files: { path: string; content: string; }[]; name: string; description: string; directories: string[]; memories: { content: string; title: string; pinned: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
  },
  {
   "method": "projectInit.importPreset",
@@ -2482,23 +2434,23 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【MC-006】列**出厂初始化预设**(装包 `resources/presets/project-init.json`,开发读仓库)。 与 `workflow.listPresets` 同一套分发与三态;不带草稿正文,只有摘要。无参 handler。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ health: 'absent' | 'corrupt' | 'ok' // `absent` = 这个安装没带出厂预设;`corrupt` = 带了但坏了。两者必须分开说,否则都表现成空列表。; reason?: string | undefined; path: string; presets: ProjectInitPresetSummary[]; problems: string[] }"
+  "output": "{ health: 'ok' | 'absent' | 'corrupt' // `absent` = 这个安装没带出厂预设;`corrupt` = 带了但坏了。两者必须分开说,否则都表现成空列表。; reason?: string | undefined; path: string; presets: ProjectInitPresetSummary[]; problems: string[] }"
  },
  {
   "method": "projectInit.preview",
   "channel": "projectInit:preview",
   "doc": "**只看不写**:对当前会话/项目算出模板会建/会跳哪些目录、文件、记忆(逐个查现有内容、拒符号链接),并给出 AI 生成说明文件的计划。返回里带 `digest` 供 apply 复核。",
-  "input": "{ command: string; sessionId: string }",
-  "inputFull": "{ command: string; sessionId: string }",
+  "input": "{ sessionId: string; command: string }",
+  "inputFull": "{ sessionId: string; command: string }",
   "output": "{ templateId: string; name: string; revision: string; sessionId: string; projectId: string; projectName: string; root: string; digest: string; actions: ProjectInitAction[]; agentFile?: ProjectInitAgentPlan | undefined // 模板启用了 AI 生成说明文件时才有。 }"
  },
  {
   "method": "projectInit.save",
   "channel": "projectInit:save",
   "doc": "新建或更新一份模板。带 `id` 时**必须**同时带上原 `expectedRevision`,对不上就抛\"已改动\"(避免并发覆盖);新建受 200 份上限约束。返回存完的模板。",
-  "input": "{ draft: { description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; content: string; pinned: bo…; id?: string | undefined; expectedRevision?: string | undefined }",
-  "inputFull": "{ draft: { description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; content: string; pinned: bo…; id?: string | undefined; expectedRevision?: string | undefined }",
-  "output": "{ id: string; revision: string; description: string; files: { path: string; content: string; }[]; name: string; directories: string[]; memories: { title: string; content: string; pinned: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
+  "input": "{ draft: { files: { path: string; content: string; }[]; name: string; description: string; directories: string[]; memories: { content: string; title: string; pinned: bo…; id?: string | undefined; expectedRevision?: string | undefined }",
+  "inputFull": "{ draft: { files: { path: string; content: string; }[]; name: string; description: string; directories: string[]; memories: { content: string; title: string; pinned: bo…; id?: string | undefined; expectedRevision?: string | undefined }",
+  "output": "{ id: string; revision: string; files: { path: string; content: string; }[]; name: string; description: string; directories: string[]; memories: { content: string; title: string; pinned: boolean; category: 'project' | 'rules' | 'preferences' | 'experiences' |…"
  },
  {
   "method": "projectInit.setDefault",
@@ -2992,8 +2944,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "skills.delete",
   "channel": "skills:delete",
   "doc": "Delete a skill directory (symlink → unlink link only; real dir → recursive remove). Returns ok:false + error on any IO failure.",
-  "input": "{ source: 'global' | 'project'; name: string; projectPath?: string | undefined }",
-  "inputFull": "{ source: 'global' | 'project'; name: string; projectPath?: string | undefined }",
+  "input": "{ name: string; source: 'global' | 'project'; projectPath?: string | undefined }",
+  "inputFull": "{ name: string; source: 'global' | 'project'; projectPath?: string | undefined }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
@@ -3112,16 +3064,16 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "skills.read",
   "channel": "skills:read",
   "doc": "Read one skill's full SKILL.md source (no truncation). Missing file → empty content.",
-  "input": "{ source: 'global' | 'project' | 'plugin' | 'builtin' // Which skills root to read from.; name: string // Discovered logical name (frontmatter name or directory fallback).; projectPath?: string | undefined }",
-  "inputFull": "{ source: 'global' | 'project' | 'plugin' | 'builtin' // Which skills root to read from.; name: string // Discovered logical name (frontmatter name or directory fallback).; projectPath?: string | undefined }",
+  "input": "{ name: string // Discovered logical name (frontmatter name or directory fallback).; source: 'global' | 'project' | 'plugin' | 'builtin' // Which skills root to read from.; projectPath?: string | undefined }",
+  "inputFull": "{ name: string // Discovered logical name (frontmatter name or directory fallback).; source: 'global' | 'project' | 'plugin' | 'builtin' // Which skills root to read from.; projectPath?: string | undefined }",
   "output": "{ content: string }"
  },
  {
   "method": "skills.save",
   "channel": "skills:save",
   "doc": "Create or overwrite a skill's SKILL.md (full content write; creates the skill directory if absent). Returns ok:false + error on any IO failure.",
-  "input": "{ source: 'global' | 'project'; content: string // Full SKILL.md text (frontmatter + body).; name: string; projectPath?: string | undefined; newName?: string | undefined }",
-  "inputFull": "{ source: 'global' | 'project'; content: string // Full SKILL.md text (frontmatter + body).; name: string; projectPath?: string | undefined; newName?: string | undefined }",
+  "input": "{ content: string // Full SKILL.md text (frontmatter + body).; name: string; source: 'global' | 'project'; newName?: string | undefined; projectPath?: string | undefined }",
+  "inputFull": "{ content: string // Full SKILL.md text (frontmatter + body).; name: string; source: 'global' | 'project'; newName?: string | undefined; projectPath?: string | undefined }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
@@ -3138,7 +3090,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "验收通过。**只有用户能调**（执行方路径够不到这两个方法）。",
   "input": "{ id: string; evidence: string // 验收证据 —— **必填**。没有理由的「通过」不算验收。 }",
   "inputFull": "{ id: string; evidence: string // 验收证据 —— **必填**。没有理由的「通过」不算验收。 }",
-  "output": "{ status: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath…"
+  "output": "{ status: 'accepted' | 'failed' | 'pending' | 'running' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'user' | 'session' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath…"
  },
  {
   "method": "task.get",
@@ -3146,15 +3098,15 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "",
   "input": "{ id: string }",
   "inputFull": "{ id: string }",
-  "output": "null | { status: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; proj…"
+  "output": "null | { status: 'accepted' | 'failed' | 'pending' | 'running' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'user' | 'session' | 'agent' | 'workflow' | 'automation'; ref: string; proj…"
  },
  {
   "method": "task.list",
   "channel": "task:list",
   "doc": "",
-  "input": "{ status?: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
-  "inputFull": "{ status?: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
-  "output": "{ tasks: { status: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string; createdAt: number; origin: { kind: 'session' | 'user' | … }"
+  "input": "{ status?: 'accepted' | 'failed' | 'pending' | 'running' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
+  "inputFull": "{ status?: 'accepted' | 'failed' | 'pending' | 'running' | 'blocked' | 'done' | 'rejected' | undefined; sessionId?: string | undefined // 只列某个会话**发起或关联**的任务。省略 = 全部（跨会话）。 }",
+  "output": "{ tasks: { status: 'accepted' | 'failed' | 'pending' | 'running' | 'blocked' | 'done' | 'rejected'; id: string; createdAt: number; origin: { kind: 'user' | 'session' | … }"
  },
  {
   "method": "task.reject",
@@ -3162,14 +3114,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "退回返修。",
   "input": "{ id: string; reason: string // 退回理由 —— **必填**。返修的人要知道改什么。 }",
   "inputFull": "{ id: string; reason: string // 退回理由 —— **必填**。返修的人要知道改什么。 }",
-  "output": "{ status: 'accepted' | 'running' | 'failed' | 'pending' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'session' | 'user' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath…"
+  "output": "{ status: 'accepted' | 'failed' | 'pending' | 'running' | 'blocked' | 'done' | 'rejected'; id: string // 稳定 ID，跨会话、跨重启不变。前缀 `task_`，与其它实体同构。; createdAt: number; origin: { kind: 'user' | 'session' | 'agent' | 'workflow' | 'automation'; ref: string; projectPath…"
  },
  {
   "method": "terminal.create",
   "channel": "terminal:create",
   "doc": "Spawn a PTY in the project cwd (or a subdir).",
-  "input": "{ projectPath: string; cwd?: string | undefined // Optional working directory; must resolve inside projectPath.; cols?: number | undefined; rows?: number | undefined; shell?: string | undefined // Optional shell override for this session only.; origin?: { kind: 'user'; } | { kind: 'session'; sessionId: string; title?: string | undefined; nodeSessionId?: string | undefined; } | undefined // 谁开的。**可选** —— 不传 = 用户手点的(`{ kind: \"user\" }`),所以既有的 调用方一行都不用改,而界面上那一条照样说得出来历。 }",
-  "inputFull": "{ projectPath: string; cwd?: string | undefined // Optional working directory; must resolve inside projectPath.; cols?: number | undefined; rows?: number | undefined; shell?: string | undefined // Optional shell override for this session only.; origin?: { kind: 'user'; } | { kind: 'session'; sessionId: string; title?: string | undefined; nodeSessionId?: string | undefined; } | undefined // 谁开的。**可选** —— 不传 = 用户手点的(`{ kind: \"user\" }`),所以既有的 调用方一行都不用改,而界面上那一条照样说得出来历。 }",
+  "input": "{ projectPath: string; cwd?: string | undefined // Optional working directory; must resolve inside projectPath.; cols?: number | undefined; rows?: number | undefined; shell?: string | undefined // Optional shell override for this session only.; origin?: { kind: 'user'; } | { sessionId: string; kind: 'session'; title?: string | undefined; nodeSessionId?: string | undefined; } | undefined // 谁开的。**可选** —— 不传 = 用户手点的(`{ kind: \"user\" }`),所以既有的 调用方一行都不用改,而界面上那一条照样说得出来历。 }",
+  "inputFull": "{ projectPath: string; cwd?: string | undefined // Optional working directory; must resolve inside projectPath.; cols?: number | undefined; rows?: number | undefined; shell?: string | undefined // Optional shell override for this session only.; origin?: { kind: 'user'; } | { sessionId: string; kind: 'session'; title?: string | undefined; nodeSessionId?: string | undefined; } | undefined // 谁开的。**可选** —— 不传 = 用户手点的(`{ kind: \"user\" }`),所以既有的 调用方一行都不用改,而界面上那一条照样说得出来历。 }",
   "output": "{ ok: true; terminalId: string; pid: number; cwd: string; shell: string } | { ok: false; error: string }"
  },
  {
@@ -3336,8 +3288,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "voice.feed",
   "channel": "voice:feed",
   "doc": "往活动会话喂一块 16kHz 单声道 PCM(听写热路径,约 4 次/秒)。实时结果走 `voice:result` 推送回来。",
-  "input": "{ sessionId: string; pcm: Float32Array<ArrayBuffer> | number[] }",
-  "inputFull": "{ sessionId: string; pcm: Float32Array<ArrayBuffer> | number[] }",
+  "input": "{ sessionId: string; pcm: number[] | Float32Array<ArrayBuffer> }",
+  "inputFull": "{ sessionId: string; pcm: number[] | Float32Array<ArrayBuffer> }",
   "output": "void"
  },
  {
@@ -3418,7 +3370,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "代理档案:一份存下来的**子 agent 配置**(指令 / 技能 / 模型 / 引擎……)。建节点的 时候直接套一份,不用从空白开始填。 它是**值**不是类型 —— 删掉一份档案不会让任何已有的图跑不起来(节点身上已经有参数 了)。见 `@contracts/agentProfile` 的文件头。 ⚠️ 无参 handler,同 `workflow.list`。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ profiles: { params: Record<string, unknown>; type: string; id: string; version: 1; createdAt: number; name: string; updatedAt: number; description?: string | undefined; …; problems: { file: string; error: string; }[] }"
+  "output": "{ profiles: { params: Record<string, unknown>; type: string; id: string; createdAt: number; name: string; version: 1; updatedAt: number; description?: string | undefined; …; problems: { file: string; error: string; }[] }"
  },
  {
   "method": "workflow.applyShippedUpdate",
@@ -3449,7 +3401,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "workflow:confirmMigration",
   "doc": "User-only explicit acknowledgement after the first save reports human-decision migration items.",
   "input": "{ workflow: { id: string; name: string; builtin: boolean; updatedAt: number; nodes: { params: Record<string, unknown>; type: string; id: string; title: string; position: {…; expectedRevision?: string | null | undefined }",
-  "inputFull": "{ workflow: { id: string; name: string // 名称**不能为空** —— 库里一行没有名字,列表、选择器、确认框里都会显示成一片空白。; builtin: boolean // true = 随应用发布的内置工作流(默认版在代码里,用户的修改存表里覆盖它)。; updatedAt: number; nodes: Array<{ params: Record<string, unknown> // 这个类型的参数。**这里只当袋子** —— 值的合法性由该类型的清单校验 (`validateNodeParams`),因为只有清单知道哪些键必填、各自该是什么类型。; type: string // 节点类型的 id,形如 `mcode.agent`。见 `nodeType.ts` 的 `NODE_TYPE_ID_RE`。; id: string // `\"n_\"` 前缀 + 随机。图内唯一。; title: string // 卡片标题。用户可改;留空则显示类型名。; position: { x: number; y: number }; capability?: \"read\" | \"write\" | \"exec\" | \"net\" | undefined // 覆盖类型的默认能力。省略 = 用清单声明的默认值。 }>; edges: Array<{ id: string; from: string; to: string; label?: string | undefined // 分支节点的选项名。留空 = 用目标节点的标题。; note?: string | undefined // 选了这一项之后给下一步的一句说明(会拼进它的提示词)。 }>; icon?: string | undefined // 图标键,渲染端映射成具体图标。; description?: string | undefined; schemaVersion?: string | undefined // 文档的**读写版本**(WF-05)。导出时写上,导入时按兼容规则核对:缺失或等于现值 (见 `workflowValidation.ts` 的 `WORKFLOW_SCHEMA…; inputSchema?: Record<string, unknown> | undefined // 这张图对**输入**的声明(WF-05,宽松形状) —— 描述\"起一次运行该给什么\":参数名、 类型、是否必填之类,JSON-Schema 风格的自由对象。; outputSchema?: Record<string, unknown> | undefined // 同 {@link WorkflowDocSchema.inputSchema },声明的是**产出**端:整张图跑完交什么。; prompt?: string | undefined // 提示词型工作流的正文 —— 就是原来 `COMPOSER_MODE_PROMPTS` 里那段流程文字。; engine?: \"mcode\" | \"node-red\" | undefined; trigger?: \"manual\" | \"schedule\" | \"file\" | \"event\" | \"webhook\" | undefined // 触发方式。**有它就是一条自动化,没有它就是一张工作流。** 用**一个字段的有没有**来区分两者,而不是再加一个 `purpose: \"workflow\" | \"automat…; frameworkNote?: string | undefined // 工作流级的**追加框架说明**(可选)。拼进这张图每个节点提示词的「整条流程」 框架段之后、其余各节之前(见 `main/orchestration/schedulerPromp… }; … }",
+  "inputFull": "{ workflow: { id: string; name: string // 名称**不能为空** —— 库里一行没有名字,列表、选择器、确认框里都会显示成一片空白。; builtin: boolean // true = 随应用发布的内置工作流(默认版在代码里,用户的修改存表里覆盖它)。; updatedAt: number; nodes: Array<{ params: Record<string, unknown> // 这个类型的参数。**这里只当袋子** —— 值的合法性由该类型的清单校验 (`validateNodeParams`),因为只有清单知道哪些键必填、各自该是什么类型。; type: string // 节点类型的 id,形如 `mcode.agent`。见 `nodeType.ts` 的 `NODE_TYPE_ID_RE`。; id: string // `\"n_\"` 前缀 + 随机。图内唯一。; title: string // 卡片标题。用户可改;留空则显示类型名。; position: { x: number; y: number }; capability?: \"read\" | \"write\" | \"exec\" | \"net\" | undefined // 覆盖类型的默认能力。省略 = 用清单声明的默认值。 }>; edges: Array<{ id: string; from: string; to: string; label?: string | undefined // 分支节点的选项名。留空 = 用目标节点的标题。; note?: string | undefined // 选了这一项之后给下一步的一句说明(会拼进它的提示词)。 }>; trigger?: \"manual\" | \"schedule\" | \"file\" | \"event\" | \"webhook\" | undefined // 触发方式。**有它就是一条自动化,没有它就是一张工作流。** 用**一个字段的有没有**来区分两者,而不是再加一个 `purpose: \"workflow\" | \"automat…; prompt?: string | undefined // 提示词型工作流的正文 —— 就是原来 `COMPOSER_MODE_PROMPTS` 里那段流程文字。; engine?: \"mcode\" | \"node-red\" | undefined; description?: string | undefined; icon?: string | undefined // 图标键,渲染端映射成具体图标。; frameworkNote?: string | undefined // 工作流级的**追加框架说明**(可选)。拼进这张图每个节点提示词的「整条流程」 框架段之后、其余各节之前(见 `main/orchestration/schedulerPromp…; schemaVersion?: string | undefined // 文档的**读写版本**(WF-05)。导出时写上,导入时按兼容规则核对:缺失或等于现值 (见 `workflowValidation.ts` 的 `WORKFLOW_SCHEMA…; inputSchema?: Record<string, unknown> | undefined // 这张图对**输入**的声明(WF-05,宽松形状) —— 描述\"起一次运行该给什么\":参数名、 类型、是否必填之类,JSON-Schema 风格的自由对象。; outputSchema?: Record<string, unknown> | undefined // 同 {@link WorkflowDocSchema.inputSchema },声明的是**产出**端:整张图跑完交什么。 }; … }",
   "output": "{ ok: boolean; error?: string | undefined; warnings?: string[] | undefined }"
  },
  {
@@ -3459,6 +3411,14 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "input": "{ id: string }",
   "inputFull": "{ id: string }",
   "output": "{ ok: boolean; error?: string | undefined }"
+ },
+ {
+  "method": "workflow.duplicate",
+  "channel": "workflow:duplicate",
+  "doc": "【WF-09】复制一份工作流：新 id、新名、新节点/边 id，其余原样。",
+  "input": "{ id: string; name?: string | undefined }",
+  "inputFull": "{ id: string; name?: string | undefined }",
+  "output": "{ ok: boolean; error?: string | undefined; id?: string | undefined; name?: string | undefined }"
  },
  {
   "method": "workflow.export",
@@ -3506,7 +3466,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "全部工作流:内置打底 + 用户覆盖 + 自建。**不含 nodes / edges**,画布打开某一项 时才走 `workflow.get` 取完整文档。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ workflows: { id: string; kind: 'prompt' | 'graph'; name: string; builtin: boolean; edited: boolean; updatedAt: number; icon?: string | undefined; description?: string | u… }"
+  "output": "{ workflows: { id: string; kind: 'prompt' | 'graph'; name: string; builtin: boolean; edited: boolean; updatedAt: number; trigger?: 'manual' | 'schedule' | 'file' | 'event' … }"
  },
  {
   "method": "workflow.listPresets",
@@ -3514,7 +3474,7 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "doc": "【MC-007】列出**出厂预置工作流**(装包里 `resources/presets/workflows.json`, 开发时读仓库那份)。这是用户/Agent 发现\"这个版本带了哪些可导入内容\"的唯一入口。 返回摘要,**不含图本体**。`health` 三态必须原样带到调用方:`absent`(这个安装没带) 与 `corrupt`(带了但坏了)要能分开说,否则都表现成\"空列表\"。 ⚠️ 无参 handler,同 `workflow.list`。",
   "input": "(无参数)",
   "inputFull": "(无参数)",
-  "output": "{ health: 'absent' | 'corrupt' | 'ok'; reason?: string | undefined // `health !== \"ok\"` 时的原因(给人和 Agent 看)。; path: string // 命中的文件路径(诊断用;`absent` 时是尝试过的位置)。; presets: { id: string; kind: 'prompt' | 'graph'; name: string; nodeCount: number; sameNameExists: bool…"
+  "output": "{ health: 'ok' | 'absent' | 'corrupt'; reason?: string | undefined // `health !== \"ok\"` 时的原因(给人和 Agent 看)。; path: string // 命中的文件路径(诊断用;`absent` 时是尝试过的位置)。; presets: { id: string; kind: 'prompt' | 'graph'; name: string; nodeCount: number; sameNameExists: bool…"
  },
  {
   "method": "workflow.nodeTypes",
@@ -3569,15 +3529,15 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "channel": "workflow:save",
   "doc": "存一份。**存盘前过 DAG 校验 + 每个节点的参数校验**,有环/悬空边/参数不合法 直接拒绝 —— 有环的图会让调度器永远等不到就绪节点,那不是报错是静默卡死。",
   "input": "{ workflow: { id: string; name: string; builtin: boolean; updatedAt: number; nodes: { params: Record<string, unknown>; type: string; id: string; title: string; position: {…; expectedRevision?: string | null | undefined // Hash returned by workflow.get, or null only when creating a new id. }",
-  "inputFull": "{ workflow: { id: string; name: string // 名称**不能为空** —— 库里一行没有名字,列表、选择器、确认框里都会显示成一片空白。; builtin: boolean // true = 随应用发布的内置工作流(默认版在代码里,用户的修改存表里覆盖它)。; updatedAt: number; nodes: Array<{ params: Record<string, unknown> // 这个类型的参数。**这里只当袋子** —— 值的合法性由该类型的清单校验 (`validateNodeParams`),因为只有清单知道哪些键必填、各自该是什么类型。; type: string // 节点类型的 id,形如 `mcode.agent`。见 `nodeType.ts` 的 `NODE_TYPE_ID_RE`。; id: string // `\"n_\"` 前缀 + 随机。图内唯一。; title: string // 卡片标题。用户可改;留空则显示类型名。; position: { x: number; y: number }; capability?: \"read\" | \"write\" | \"exec\" | \"net\" | undefined // 覆盖类型的默认能力。省略 = 用清单声明的默认值。 }>; edges: Array<{ id: string; from: string; to: string; label?: string | undefined // 分支节点的选项名。留空 = 用目标节点的标题。; note?: string | undefined // 选了这一项之后给下一步的一句说明(会拼进它的提示词)。 }>; icon?: string | undefined // 图标键,渲染端映射成具体图标。; description?: string | undefined; schemaVersion?: string | undefined // 文档的**读写版本**(WF-05)。导出时写上,导入时按兼容规则核对:缺失或等于现值 (见 `workflowValidation.ts` 的 `WORKFLOW_SCHEMA…; inputSchema?: Record<string, unknown> | undefined // 这张图对**输入**的声明(WF-05,宽松形状) —— 描述\"起一次运行该给什么\":参数名、 类型、是否必填之类,JSON-Schema 风格的自由对象。; outputSchema?: Record<string, unknown> | undefined // 同 {@link WorkflowDocSchema.inputSchema },声明的是**产出**端:整张图跑完交什么。; prompt?: string | undefined // 提示词型工作流的正文 —— 就是原来 `COMPOSER_MODE_PROMPTS` 里那段流程文字。; engine?: \"mcode\" | \"node-red\" | undefined; trigger?: \"manual\" | \"schedule\" | \"file\" | \"event\" | \"webhook\" | undefined // 触发方式。**有它就是一条自动化,没有它就是一张工作流。** 用**一个字段的有没有**来区分两者,而不是再加一个 `purpose: \"workflow\" | \"automat…; frameworkNote?: string | undefined // 工作流级的**追加框架说明**(可选)。拼进这张图每个节点提示词的「整条流程」 框架段之后、其余各节之前(见 `main/orchestration/schedulerPromp… }; … }",
+  "inputFull": "{ workflow: { id: string; name: string // 名称**不能为空** —— 库里一行没有名字,列表、选择器、确认框里都会显示成一片空白。; builtin: boolean // true = 随应用发布的内置工作流(默认版在代码里,用户的修改存表里覆盖它)。; updatedAt: number; nodes: Array<{ params: Record<string, unknown> // 这个类型的参数。**这里只当袋子** —— 值的合法性由该类型的清单校验 (`validateNodeParams`),因为只有清单知道哪些键必填、各自该是什么类型。; type: string // 节点类型的 id,形如 `mcode.agent`。见 `nodeType.ts` 的 `NODE_TYPE_ID_RE`。; id: string // `\"n_\"` 前缀 + 随机。图内唯一。; title: string // 卡片标题。用户可改;留空则显示类型名。; position: { x: number; y: number }; capability?: \"read\" | \"write\" | \"exec\" | \"net\" | undefined // 覆盖类型的默认能力。省略 = 用清单声明的默认值。 }>; edges: Array<{ id: string; from: string; to: string; label?: string | undefined // 分支节点的选项名。留空 = 用目标节点的标题。; note?: string | undefined // 选了这一项之后给下一步的一句说明(会拼进它的提示词)。 }>; trigger?: \"manual\" | \"schedule\" | \"file\" | \"event\" | \"webhook\" | undefined // 触发方式。**有它就是一条自动化,没有它就是一张工作流。** 用**一个字段的有没有**来区分两者,而不是再加一个 `purpose: \"workflow\" | \"automat…; prompt?: string | undefined // 提示词型工作流的正文 —— 就是原来 `COMPOSER_MODE_PROMPTS` 里那段流程文字。; engine?: \"mcode\" | \"node-red\" | undefined; description?: string | undefined; icon?: string | undefined // 图标键,渲染端映射成具体图标。; frameworkNote?: string | undefined // 工作流级的**追加框架说明**(可选)。拼进这张图每个节点提示词的「整条流程」 框架段之后、其余各节之前(见 `main/orchestration/schedulerPromp…; schemaVersion?: string | undefined // 文档的**读写版本**(WF-05)。导出时写上,导入时按兼容规则核对:缺失或等于现值 (见 `workflowValidation.ts` 的 `WORKFLOW_SCHEMA…; inputSchema?: Record<string, unknown> | undefined // 这张图对**输入**的声明(WF-05,宽松形状) —— 描述\"起一次运行该给什么\":参数名、 类型、是否必填之类,JSON-Schema 风格的自由对象。; outputSchema?: Record<string, unknown> | undefined // 同 {@link WorkflowDocSchema.inputSchema },声明的是**产出**端:整张图跑完交什么。 }; … }",
   "output": "{ ok: boolean; error?: string | undefined; warnings?: string[] | undefined; requiresConfirmation?: boolean | undefined }"
  },
  {
   "method": "workflow.saveAgentProfile",
   "channel": "workflow:saveAgentProfile",
   "doc": "存一份(按 id 覆盖)。整份给过来 —— 理由同 `hooks.save`。",
-  "input": "{ profile: { params: Record<string, unknown>; type: string; id: string; version: 1; createdAt: number; name: string; updatedAt: number; description?: string | undefined; } }",
-  "inputFull": "{ profile: { params: Record<string, unknown>; type: string; id: string; version: 1; createdAt: number; name: string; updatedAt: number; description?: string | undefined; } }",
+  "input": "{ profile: { params: Record<string, unknown>; type: string; id: string; createdAt: number; name: string; version: 1; updatedAt: number; description?: string | undefined; } }",
+  "inputFull": "{ profile: { params: Record<string, unknown>; type: string; id: string; createdAt: number; name: string; version: 1; updatedAt: number; description?: string | undefined; } }",
   "output": "{ ok: boolean; error?: string | undefined }"
  },
  {
@@ -3600,8 +3560,8 @@ export const API_CATALOG: readonly ApiCatalogEntry[] = [
   "method": "workflowEngine.nodeInstall",
   "channel": "workflowEngine:nodeInstall",
   "doc": "【ARC-006 Gate E】安装一个节点包（本地目录）。审批是**硬前置**：主进程向渲染端 推送审批卡并等待应答，超时/无渲染端一律拒绝。**输入里没有 `approvedByUser`**。",
-  "input": "{ sourceDir: string // 本地目录（已下载/解包后的节点包）。; meta: { version: string; source: string; name: string; sha256: string; license: string; capabilities: string[]; } }",
-  "inputFull": "{ sourceDir: string // 本地目录（已下载/解包后的节点包）。; meta: { version: string; source: string; name: string; sha256: string; license: string; capabilities: string[]; } }",
+  "input": "{ sourceDir: string // 本地目录（已下载/解包后的节点包）。; meta: { name: string; source: string; version: string; sha256: string; license: string; capabilities: string[]; } }",
+  "inputFull": "{ sourceDir: string // 本地目录（已下载/解包后的节点包）。; meta: { name: string; source: string; version: string; sha256: string; license: string; capabilities: string[]; } }",
   "output": "{ ok: true; node: WorkflowEngineNodeView } | { ok: false; reason: string; code: 'invalid' | 'approval_denied' | 'approval_unavailable' | 'duplicate' | 'install_failed' }"
  },
  {
