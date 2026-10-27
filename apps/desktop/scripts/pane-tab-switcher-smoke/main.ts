@@ -85,6 +85,37 @@ check("★ rightPanel.tab 的每个内置页签都进得了清单", () => {
   );
 });
 
+/* 【UI 重建 2026-10-28】**图标必须唯一。**
+ *
+ * 切换器改成「图标常驻、只给选中项展开文字」之后，**图标就是这个按钮的
+ * 全部视觉身份**。两个页签共用一个图标 = 用户看到两个一模一样的按钮，
+ * 只能靠悬停 tooltip 分辨。
+ *
+ * 这是那句改动的**新引入约束**：改之前每个按钮都有文字，图标重复无所谓；
+ * 改之后重复就变成了「两个一样的按钮」。实测有 3 组撞了
+ *（overview/turns、canvas/flow、terminal/tasks）。
+ *
+ * ⚠️ 断言比的是**图标组件的引用**，不是名字 —— `IconListDetails` 与
+ * `IconListTree` 名字不同但语义都可能撞，这里只守「引用不重复」这个
+ * 机器能判的部分（语义是否贴切仍要人看）。 */
+check("★ 每个页签的图标互不重复（icon-only 下图标就是按钮的脸）", () => {
+  const seen = new Map<unknown, string[]>();
+  for (const m of BUILTINS[SLOT]) {
+    if (!m.icon) continue;
+    const arr = seen.get(m.icon) ?? [];
+    arr.push(m.id);
+    seen.set(m.icon, arr);
+  }
+  const dupes = [...seen.values()].filter((ids) => ids.length > 1);
+  assert.deepEqual(
+    dupes,
+    [],
+    `这些页签共用同一个图标，icon-only 下会显示成两个一样的按钮：${dupes
+      .map((g) => g.join(" / "))
+      .join("；")}`,
+  );
+});
+
 check("★ 三条线各自的页签都在清单里（扩展 / 画布 / 浏览器）", () => {
   const shown = new Set(entriesFor());
   for (const id of ["extensions", "canvas", "browser"]) {
