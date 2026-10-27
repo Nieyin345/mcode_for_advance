@@ -487,6 +487,36 @@ export function inspectSceneContent(
       : fail("missing", "流页签没有挂载");
   }
 
+  /* 【UI 重建 2026-10-28】富文本排版：要求六类块级元素**全部渲染出来**。
+   *
+   * 这一格的价值不在断言本身（它只验「有没有」），而在**它让探针拍到了
+   * 富文本** —— 块间距、列表缩进、代码块圆角、表格边框、引用左边线
+   * 此前没有任何截图证据。
+   *
+   * 判据用语义选择器而不是文字内容：文字会随夹具改，结构不会。 */
+  if (scene === "rich-text") {
+    const main = queryVisible(doc, "[data-testid='workspace-main']");
+    if (!main) return fail("missing", "主区不存在");
+    const probeSelectors: Array<[string, string]> = [
+      ["h2", "h2"],
+      ["h3", "h3"],
+      ["ul", "ul"],
+      ["ol", "ol"],
+      ["blockquote", "blockquote"],
+      ["table", "table"],
+      ["hr", "hr"],
+    ];
+    const found: string[] = [];
+    const missing: string[] = [];
+    for (const [name, sel] of probeSelectors) {
+      if (main.querySelector(sel)) found.push(name);
+      else missing.push(name);
+    }
+    return missing.length === 0
+      ? productPass({ blocks: found.join(","), count: found.length })
+      : fail("missing", "富文本有块级元素没有渲染", { found, missing });
+  }
+
   return fail("missing", "unknown or unsupported scene: " + scene);
 }
 

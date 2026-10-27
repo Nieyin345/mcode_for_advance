@@ -16,6 +16,9 @@ import {
 
 const SCREENS = [
   ["empty", "初始空会话"], ["messages", "已有消息"],
+  /* 【UI 重建 2026-10-28】富文本排版 —— 标题 / 列表 / 代码块 / 表格 / 引用。
+   * 此前的场景都只渲染纯文字段落，AI 输出里最复杂的排版完全没有判据。 */
+  ["rich-text", "富文本排版"],
   ["long-chat", "长会话虚拟化压力"],
   ["tab-overflow", "会话标签溢出与焦点"],
   ["tools", "工具运行中/完成/失败"], ["approval", "权限审批"],
@@ -264,6 +267,47 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               }));
               window.__arcLongStart = performance.now();
               st.setState({messagesBySession:{s1:many,s2:[],s3:[]}});
+            }
+            else if (id === 'rich-text') {
+              // Minimal ASCII-only markdown covering block elements.
+              // (Non-ASCII in this template-string payload broke the injected
+              //  script with "Invalid or unexpected token".)
+              const rich = [
+                '## Heading two',
+                '',
+                'A paragraph that measures block spacing. Second line for leading.',
+                '',
+                '### Heading three',
+                '',
+                'Spacing between a heading and a paragraph.',
+                '',
+                '- item one',
+                '- item two',
+                '  - nested item',
+                '',
+                '1. ordered one',
+                '2. ordered two',
+                '',
+                '> blockquote for the left rule and padding.',
+                '',
+                '',
+                '~~~text',
+                'code block content',
+                '~~~',
+                '',
+                '| col A | col B |',
+                '| --- | --- |',
+                '| v1 | v2 |',
+                '',
+                'Inline bold and a [link](https://example.com).',
+                '',
+                '---',
+                '',
+                'Paragraph above the rule.',
+              ].join(String.fromCharCode(10));
+              st.setState({messagesBySession:{s1:[
+                mk('r1','assistant',[{kind:'text',text:rich}]),
+              ],s2:[],s3:[]}});
             }
             else if (id === 'tools') {
               const cases = [
