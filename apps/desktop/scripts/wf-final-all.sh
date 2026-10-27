@@ -66,7 +66,37 @@ SUITES=(
   workflow-engine-electron-smoke
 )
 
-for s in "${SUITES[@]}"; do
+# 【2026-10-27】**再按名字扫一遍，把手写清单漏掉的补进来。**
+#
+# 手写清单的毛病：它列的是"我知道的"，不是"实际相关的"。实测另一个会话说我漏了
+# **37 套**（engine-node-* / scene-* / scheduler-* / flow-* / trigger-* …）——
+# 它们红过一次而我没看见，正是这个缺口造成的。
+#
+# 扫描口径与另一位会话对过（92 套），并集里我再多 13 套。**两边取并集**。
+#
+# ⚠️ 用 `for d in */` 判断 run.sh，**不要 `ls *.sh | sed`** —— `ls` 会把权限标记 `*`
+# 带进文件名，于是每一套都"找不到脚本"（另一个会话踩过，91 套假红）。
+SCANNED=()
+for d in scripts/*/; do
+  n=$(basename "$d")
+  [ -f "$d/run.sh" ] || continue
+  case "$n" in
+    *workflow*|*node-red*|*trigger*|*condition*|*automation*|*scene*|*execution*|*engine*|*scheduler*|*flow*|*wf-*|*node-session*|*node-live*|*host-mcp*|*mcode-node-pack*|*orchestration-ipc*|*app-control*|*mcode-admin*)
+      SCANNED+=("$n") ;;
+  esac
+done
+
+# 并集（去重；保留顺序：先手写清单，再扫描补入）
+declare -A SEEN=()
+ALL=()
+for s in "${SUITES[@]}" "${SCANNED[@]}"; do
+  [ -n "${SEEN[$s]:-}" ] && continue
+  SEEN[$s]=1
+  ALL+=("$s")
+done
+echo "# ${#SUITES[@]} 手写 + ${#SCANNED[@]} 扫描 = ${#ALL[@]} 套（去重后）" >> "$OUT/summary.txt"
+
+for s in "${ALL[@]}"; do
   if [ ! -f "scripts/$s/run.sh" ]; then
     echo "$s MISSING" >> "$OUT/summary.txt"
     continue

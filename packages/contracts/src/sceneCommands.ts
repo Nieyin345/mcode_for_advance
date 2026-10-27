@@ -473,9 +473,21 @@ export function adaptScenePayload(kind: SceneResourceKind, spec: Record<string, 
       // modules.install 是 strict:`{ manifest, confirmReadAccess: true }`。
       // ⚠️ `confirmReadAccess` **必须由声明显式给出**(值是字面量 true)—— 绝不因为「场景被批准」
       //    就自动置真(那是把「场景级授权」冒充「用户已批准模块读取权限」)。
+      //
+      // 【2026-10-27】**`confirmExecutableCode` 也必须转发**，否则带 `program` 的清单
+      // 从这条路**永远装不上**：`ModuleInstallSchema` 的 refine 要求"有代码就必须有
+      // 执行同意"，而这里只传 manifest + confirmReadAccess 时那条 refine 必拒。
+      // 症状是「场景里声明的扩展怎么都装不进去」，而错误信息只说缺同意 —— 看起来像
+      // 用户/模型漏填，实际是这一层把它丢了。
+      //
+      // 同样**不自动置真**：它与 `confirmReadAccess` 是两次独立的同意（一个说"可以读我
+      // 的文件"，一个说"可以跑它的代码"），任一缺席都要在投影时被点名。
       return adaptViaSchema(ModuleInstallSchema, {
         manifest: spec.manifest,
         confirmReadAccess: spec.confirmReadAccess,
+        ...(spec.confirmExecutableCode !== undefined
+          ? { confirmExecutableCode: spec.confirmExecutableCode }
+          : {}),
       });
     case "plugin":
       return {

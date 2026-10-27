@@ -368,11 +368,37 @@ export interface ModuleChangeResult {
   cancelFailures: Array<{ taskId: string; reason: string }>;
 }
 
-/** This example is used by the import editor, docs and tests; no executable code. */
+/**
+ * 导入编辑器 / 文档 / 套件读的**示例扩展清单**。
+ *
+ * ## ⚠️ 它示范的必须是**现在合法**的形状
+ *
+ * 这份示例会被照抄。它原来写着 `capability: "core.file.inspect"` —— 那是**已被删除
+ * 的 ModuleHost** 时代的内置能力 id，而扩展清单的引用只认 `module.<单段短名>`
+ * （见 {@link MODULE_CAPABILITY_PREFIX}）。写成别的形状时
+ * `extensionCapabilityShortName` 返回 `undefined`，`extensionValidate` 的 `.filter`
+ * 把它**静默丢掉** —— 不报错、装得上，但那条贡献永远不会被调用。
+ *
+ * ## 为什么必须带 `program`
+ *
+ * `ModuleManifestSchema` 的 refine：**引用了 `module.*` 能力的清单必须同时声明
+ * `program`**（在形状层就拒，而不是装到一半才发现没有实现）。所以"纯声明式的
+ * 能力贡献"现在是不合法的形状 —— 示例不能示范它。
+ *
+ * 下面这段 `program` 是**内容为示例**的最小工厂：求值出一个对象，键是上面引用的
+ * 短名 `fileReport`，值是 async 函数。它不碰文件系统、不发网络请求（
+ * `no executable code` 那句原注释说的是"这份常量本身不会被执行"，这一点仍然成立：
+ * 只有真的安装时才会求值）。
+ */
 export const EXAMPLE_MODULE: ModuleManifest = {
   apiVersion: 1, id: "user.file-report", version: "1.0.0",
   title: { zh: "我的文件报告", en: "My file report" }, permissions: ["resource.read"],
-  contributions: [{ id: "inspect", slot: "files.context", title: { zh: "生成我的文件报告", en: "Create my file report" }, capability: "core.file.inspect",
+  program: {
+    // 返回的键必须与 `contributions[].capability` 的短名一致（`module.fileReport` → `fileReport`）。
+    source: "() => ({ 'file-report': async (input) => ({ bytes: input.bytes ?? 0, sha256: '…' }) })",
+    timeoutMs: 15_000,
+  },
+  contributions: [{ id: "inspect", slot: "files.context", title: { zh: "生成我的文件报告", en: "Create my file report" }, capability: "module.file-report",
     view: { title: { zh: "文件报告", en: "File report" }, fields: [
       { key: "bytes", title: { zh: "字节数", en: "Bytes" } },
       { key: "sha256", title: { zh: "SHA-256", en: "SHA-256" } },

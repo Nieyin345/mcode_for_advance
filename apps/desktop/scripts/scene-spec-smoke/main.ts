@@ -32,7 +32,7 @@ import { WorkflowSaveSchema, HooksSaveSchema } from "@contracts/ipc/workflow";
 import { SkillsSaveSchema } from "@contracts/ipc/skills";
 import { McpSaveSchema } from "@contracts/ipc/mcp";
 import { ModuleInstallSchema } from "@contracts/ipc/modules";
-import { EXAMPLE_MODULE } from "@contracts/modules";
+import { EXAMPLE_MODULE, extensionCapabilityShortName } from "@contracts/modules";
 import { sceneCapabilityPreflight } from "@contracts/scenePreflight";
 import {
   projectInitToSceneSpec,
@@ -308,7 +308,11 @@ function goodSpec(): unknown {
     eq("★ 能力限定别的引擎 → 不适用(缺)", scoped.ok, false);
     eq("不适用 reason = incompatible", scoped.gaps[0].reason, "incompatible");
 
-    // module 类声明映射到清单的 builtin 类。
+    /* ⚠️ 这里的 `mcode.file.inspect` 是**宿主内置能力**（`HOST_CAPABILITY_DECLARATIONS`
+     * 里的那一项），**不是**扩展能力引用 —— 两套命名空间：
+     *   内置能力 = `mcode.file.*`（宿主自己实现）
+     *   扩展能力 = 清单里写 `module.<短名>`，宿主分配成 `module.<slug>.<短名>`
+     * 这条用例要的正是「声明 module 类 → 映射到清单的 builtin 类」，所以用内置 id。 */
     const moduleCheck = sceneCapabilityPreflight(
       { ...good.spec, capabilities: [{ kind: "module", id: "mcode.file.inspect" }] },
       [{ kind: "builtin", id: "mcode.file.inspect", source: "host" }],
@@ -473,7 +477,8 @@ function goodSpec(): unknown {
       { kind: "plugin", id: "pl", spec: { source: "marketplace", name: "research-pack" } },
       { kind: "mcp", id: "mc", spec: { name: "coverage", config: { url: "http://x" } } },
       { kind: "hook", id: "hk", spec: { event: "post-save", command: "echo" } },
-      { kind: "module", id: "md", spec: { manifest: { id: "mcode.file.inspect" } } },
+      // 残缺的**扩展** id（`user.` 前缀）—— 这里验的是"形状不全 → 明确问题"。
+      { kind: "module", id: "md", spec: { manifest: { id: "user.incomplete" } } },
       { kind: "panel", id: "pn", spec: { html: "<div>面板</div>" } },
       { kind: "scaffold", id: "sc", spec: { entry: "directory", path: "data" } },
     ],
@@ -680,14 +685,42 @@ function goodSpec(): unknown {
 
   // ⑦ module:声明正文 = { manifest, confirmReadAccess:true };须显式给确认。
   {
-    const a = adaptScenePayload("module", { manifest: EXAMPLE_MODULE, confirmReadAccess: true });
-    check("module 声明(带 confirmReadAccess)→ 投影成功", a.ok, a.ok ? undefined : a.problems);
+    /* 【2026-10-27】**示例清单里的能力 id 必须真的合法。**
+     *
+     * `EXAMPLE_MODULE` 会被导入编辑器、文档和本套件读 —— 它示范的写法会被照抄。
+     * 原来那条写着 `core.file.inspect`（ModuleHost 时代的内置能力，已删），而扩展
+     * 清单只认 `module.<短名>`：`extensionCapabilityShortName` 对它返回 undefined，
+     * `extensionValidate` 的 `.filter` 把它**静默丢掉** —— 不报错，装上了，但那条
+     * 贡献永远不会被调。
+     *
+     * 判据用**生产那个判定函数**，不是我另写一条正则（那是抄副本）。 */
+    const caps = EXAMPLE_MODULE.contributions
+      .map(c => extensionCapabilityShortName(c.capability));
+    check("★ EXAMPLE_MODULE 的每条贡献都指向合法的扩展能力 id（module.<短名>）",
+      caps.every(c => c !== undefined), EXAMPLE_MODULE.contributions.map(c => c.capability));
+    check("★ EXAMPLE_MODULE 的扩展 id 带 user. 前缀（扩展清单的命名空间）",
+      EXAMPLE_MODULE.id.startsWith("user."), EXAMPLE_MODULE.id);
+    /* 【2026-10-27】带 `program` 的清单必须同时给 **`confirmExecutableCode`** ——
+     * 那是"执行第三方代码"的独立同意，与读取权限的 `confirmReadAccess` **不是一回事**
+     * （一个说"可以读我的文件"，一个说"可以跑它的代码"）。两条都得显式给，
+     * 任何一条缺席都必须在投影时被点名，绝不自动置真。 */
+    const a = adaptScenePayload("module", {
+      manifest: EXAMPLE_MODULE, confirmReadAccess: true, confirmExecutableCode: true,
+    });
+    check("module 声明(带两个确认)→ 投影成功", a.ok, a.ok ? undefined : a.problems);
     if (a.ok) check("module 投影后的入参过 ModuleInstallSchema", ModuleInstallSchema.safeParse(a.input).success, a.input);
     // ★ confirmReadAccess 缺 → 明确问题(**绝不**自动置真:那是冒充用户已批准读取权限)。
-    const noConfirm = adaptScenePayload("module", { manifest: EXAMPLE_MODULE });
+    const noConfirm = adaptScenePayload("module", { manifest: EXAMPLE_MODULE, confirmExecutableCode: true });
     check("★ module 缺 confirmReadAccess → 明确问题(不替用户确认)", !noConfirm.ok, noConfirm.ok ? noConfirm.input : noConfirm.problems);
+    // ★ 同理：缺 confirmExecutableCode → 明确问题（不替用户同意"跑它的代码"）。
+    const noExec = adaptScenePayload("module", { manifest: EXAMPLE_MODULE, confirmReadAccess: true });
+    check("★ module 缺 confirmExecutableCode → 明确问题(不替用户同意执行代码)",
+      !noExec.ok, noExec.ok ? noExec.input : noExec.problems);
     // manifest 形状不全(只给 id)→ 明确问题。
-    const badManifest = adaptScenePayload("module", { manifest: { id: "mcode.file.inspect" }, confirmReadAccess: true });
+    /* 上面那条 `id` 原来写的是 `mcode.file.inspect` —— 那是**扩展能力的形状**（还带了个
+     * 已删的 `core.` 前缀），而这里要的是**扩展 id**（`user.` 前缀，见 `extensionValidate`）。
+     * 用真实形状：一个 `user.` 前缀的 id，但缺其余必填字段。 */
+    const badManifest = adaptScenePayload("module", { manifest: { id: "user.incomplete" }, confirmReadAccess: true });
     check("★ module manifest 形状不全 → 明确问题", !badManifest.ok, badManifest.ok ? badManifest.input : badManifest.problems);
   }
 
@@ -715,7 +748,8 @@ function goodSpec(): unknown {
         { kind: "skill", id: "sk", spec: { source: "global", name: "coverage", content: "---\nname: coverage\n---\n" } },
         { kind: "mcp", id: "mc", spec: { name: "coverage", config: { type: "http", url: "https://x/mcp" } } },
         { kind: "hook", id: "hk", spec: { id: "hk", name: "保存后", event: "turn.done", command: "echo", enabled: true } },
-        { kind: "module", id: "md", spec: { manifest: EXAMPLE_MODULE, confirmReadAccess: true } },
+        // 带 program 的清单要**两个**确认（读权限 + 执行代码），见 adaptScenePayload 的说明。
+        { kind: "module", id: "md", spec: { manifest: EXAMPLE_MODULE, confirmReadAccess: true, confirmExecutableCode: true } },
       ],
       acceptance: { description: "五类各回读一次", expectResourceIds: ["wf", "sk", "mc", "hk", "md"] },
     });
