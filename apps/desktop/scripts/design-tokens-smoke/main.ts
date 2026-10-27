@@ -1458,7 +1458,10 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   const wrappedInColorFn = (before: string) => /(?:rgba?|hsla?)\(\s*$/.test(before);
 
   for (const f of files) {
-    const src = read(f);
+    /* **两个分支都先剥注释。** CSS 分支也有同样的问题：本文件（以及
+     * styles.css）里写「不要这样写」时会把反例原样引一遍。不剥的话，
+     * 谁写解释性注释谁红。 */
+    const src = stripComments(read(f));
     if (f.endsWith(".css")) {
       // 只扫「值会被当成颜色」的属性
       const re = /(?:^|[;{\s])(background|background-color|border-color|color|fill|stroke|outline-color)\s*:\s*([^;{}]+)/g;
@@ -1471,7 +1474,27 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
         }
       }
     } else {
-      for (const m of src.matchAll(/(?:^|\s)(bg|fill|text|border|ring|shadow|outline)-\[var\(--(m-[a-z0-9-]+)\)\]/g)) {
+      /* 【UI 重建 2026-10-28 再放宽】前缀从 `(?:^|\s)` 改成 `(?:^|[^A-Za-z0-9_-])`。
+       *
+       * 旧写法要求工具类前面是**行首或空白**。但 JSX 里大量写法是
+       * `className="bg-[var(--m-x)] ..."` —— 前面紧贴的是**引号**，
+       * 够不着。这一类全仓有一大批（`cn()` 的多行字符串里几乎每行都是）。
+       *
+       * 是另一会话先用一个不合格的变异撞出这件事的：它在引号后面插
+       * `bg-[var(--m-surface-1)]`，判据全绿，差点被当成「判据有洞」报上来；
+       * 换成插在中间就精确命中。**两次的差别只是前缀字符**。
+       *
+       * 放宽成「前面不是标识符字符」能覆盖 `"` / `` ` `` / `'` / `{` / `(`
+       * 等所有 JSX 与模板字符串的边界，同时仍然排除 `mybg-[…]` 这种
+       * 更长的类名（那是另一个词）。
+       *
+       * ## ⚠️ 必须先剥注释
+       *
+       * 放宽后的第一条命中就是**注释里的反例**（`ClaudeProjectOverview.tsx`
+       * 写这个 bug 时引用了 `bg-[var(--m-surface-1)]` 这个写法本身）。
+       * 不剥注释会得到一个「谁写文档就红谁」的判据 —— 那会教人不要写
+       * 解释性注释。用仓库既有的 `stripComments`（`sourceHas` 同一个）。 */
+      for (const m of stripComments(src).matchAll(/(?:^|[^A-Za-z0-9_-])(bg|fill|text|border|ring|shadow|outline)-\[var\(--(m-[a-z0-9-]+)\)\]/g)) {
         const [, util, token] = m;
         const fv = finalValueOf(token);
         if (isTriplet(fv)) offenders.push(`${f}: ${util}-[var(--${token})] → "${fv}"`);
@@ -1490,6 +1513,37 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
   check("★ 正控：--m-border 不被判为三元组（它是完整颜色）", !isTriplet(finalValueOf("m-border")));
   // 覆盖面自检：真的扫到了东西（文件数为 0 时上方断言会假绿）
   check("★ 覆盖率自检：扫到的渲染端文件数 > 300", files.length > 300, files.length);
+
+  /* 【UI 重建 2026-10-28】**正控：紧贴引号的写法也必须被抓到。**
+   *
+   * 这条不是装饰。前缀从 `(?:^|\s)` 放宽之前，`className="bg-[var(--m-x)]"`
+   * 这种**引号紧贴**的写法是抓不到的。有人在 `FilePreview.tsx` 里用这个
+   * 形状撞变异，判据全绿 —— 差点被当成「判据有洞」报上来（其实是变异
+   * 选在了判据本来就不抓的形状上）。
+   *
+   * 放宽之后，这个形状归判据管了。**这条正控把「归我管」写进套件**：
+   * 下一个人收紧正则时，它会红。 */
+  {
+    const shapeRe = /(?:^|[^A-Za-z0-9_-])(bg|fill|text|border|ring|shadow|outline)-\[var\(--(m-[a-z0-9-]+)\)\]/g;
+    // 三种 JSX 里真实存在的边界：引号、反引号、模板串
+    const samples = [
+      'className="bg-[var(--m-surface-1)] flex"',       // 紧贴双引号
+      "className={`text-[var(--m-surface-1)]`}",         // 模板串
+      "cn('border-[var(--m-surface-1)]', x)",            // 单引号
+    ];
+    const hits = samples.map((s) => [...s.matchAll(shapeRe)].map((m) => m[2]));
+    check(
+      "★ 正控：紧贴引号 / 反引号的三元组写法也能被抓到",
+      hits.every((h) => h.length === 1 && h[0] === "m-surface-1"),
+      hits,
+    );
+    // 负控：更长的标识符不该被当成这个工具类（放宽容易在这里回退）
+    const notAUtility = "mybg-[var(--m-surface-1)]";
+    check(
+      "★ 负控：更长的标识符不被误认为工具类",
+      [...notAUtility.matchAll(shapeRe)].length === 0,
+    );
+  }
 }
 
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
