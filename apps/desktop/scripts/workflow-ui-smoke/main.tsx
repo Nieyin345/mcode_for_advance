@@ -162,6 +162,24 @@ interface AuditWindow {
 }
 const w=window as unknown as AuditWindow;
 w.__apiImpl=apiImpl;
+/* 【场景 `promise-engine-events`】桥上的 `workflowEngine.engineChanged` **返回 Promise**。
+ *
+ * 这不是虚构的桥，而是**手机端 `webApi.ts` 的真实形状**：那是独立组件树，走无 preload
+ * 的 HTTP 桥，每个方法都是 `fetch` → Promise。订阅类方法若没被单独特化成「返回退订
+ * 函数」，就是这里这样。
+ *
+ * 为什么需要这个场景：`api-stub` 的兜底对**任何**订阅器都返回退订函数（否则预览台
+ * 自己就会炸），于是**组件侧那条守卫（返回值不是函数时不许把它当 effect 清理函数）
+ * 永远得不到驱动** —— 实测把守卫撤掉，`workflow-ui-smoke` 仍然 47/47 全绿。
+ *
+ * 为什么是 Promise 而不是 `undefined`：`useEffect` 返回 `undefined` 是合法的
+ * （= 没有清理函数），撤掉守卫也不会崩。真正炸的是**返回一个非函数的东西** ——
+ * React 会照调不误，抛 `destroy_ is not a function` 并把整棵树卸掉。 */
+if (scenario === 'promise-engine-events') {
+  const engineSpace = apiImpl['workflowEngine'] as Record<string, unknown> | undefined;
+  if (!engineSpace) throw new Error('promise-engine-events 场景需要 workflowEngine 命名空间');
+  engineSpace['engineChanged'] = async () => ({ ok: true });
+}
 w.api={platform:'win32',on:{workflowsChanged:(fn)=>{workflowListeners.add(fn);return()=>{workflowListeners.delete(fn);};}}};
 w.__audit={docs,saves,saveAttempts,nativeLoads,nativeLoadEvents,apiCalls,focusId:()=>useSessionStore.getState().settingsFocusWorkflowId,runCalls,completeRun:()=>{status='success';},emitWorkflowChange:()=>{for(const fn of workflowListeners)fn({reason:'node-red:deploy:audit-workflow'});}};
 useSessionStore.setState({

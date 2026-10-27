@@ -205,6 +205,60 @@ await withAuditPage(here,async page=>{
     check('native sync does not overwrite dirty local draft',
       await page.eval('__ui.field("名称").querySelector("input").value==="未保存的用户草稿"'));
   });
+  /* 【Q9d】**桥给出的订阅函数不是函数时，整页不许被 React 卸掉。**
+   *
+   * 现场：`EngineRuntimePanel` 的 `engineChanged` effect 原样 `return api.…engineChanged(…)`。
+   * 手机端 `webApi.ts`（无 preload 的 HTTP 桥）每个方法都返回 Promise —— 于是
+   * `useEffect` 的返回值是一个 Promise，React 卸载时照调不误，抛
+   * `TypeError: destroy_ is not a function`，**React 19 把整棵树卸掉**：点「打开
+   * Node-RED」之后整页空白，控制台只剩一条与业务无关的类型错误。
+   *
+   * ⚠️ **这条必须有独立场景才有效**：`api-stub` 的兜底对任何订阅器都返回退订函数
+   * （否则预览台自己就炸），所以正常场景下撤掉那条守卫，本套件仍然全绿 —— 实测过。
+   * `case=promise-engine-events` 让那个方法真的返回 Promise。
+   *
+   * 判据是「点完之后页面还在」：不是断言某个源码字符串，而是断言用户看到的东西。 */
+  await test('bridge-returns-promise',async()=>{
+    await page.goto('case=promise-engine-events&locale=zh');
+    await page.eval(helper);
+    check('桥返回 Promise 时首屏仍挂载', await page.eval('!!document.querySelector("#workflows-tab-library")'));
+    // 进引擎页 → `EngineRuntimePanel` 挂载 → 那条 effect 执行、拿到 Promise。
+    await page.waitFor('document.querySelector("#workflows-tab-engines")');
+    await page.eval('document.querySelector("#workflows-tab-engines").click()');
+    await page.waitFor('document.querySelector("#workflows-panel-engines")?.classList.contains("flex")');
+    await page.sleep(300);
+    check('桥返回 Promise 时引擎页照常挂载',
+      await page.eval('!!document.querySelector("#workflows-panel-engines")'));
+
+    /* ⚠️ 光切页签**验不到**这条守卫。
+     *
+     * React 只在 effect 的 **cleanup（卸载 / 依赖变化）**时调 `destroy_()`
+     * （实测 react-dom 19.2.8 生产构建里 `destroy_ = destroy; destroy_()`）。
+     * 而工作流各页签是靠 `hidden` **类**隐藏的、从不卸载（见 `WorkflowsPanel`
+     * 里那段注释：`[hidden]{display:none}` 会输给 `.flex`）—— 切页签只让它变不可见，
+     * 清理函数根本没被调过。**实测：撤掉守卫之后本套 51/51 仍然全绿。**
+     *
+     * 真正会触发它的是**离开设置页**（整个 `SettingsPage` 卸掉，连带这个面板）。
+     * 这也是真实用户路径：从设置点回对话 / 关掉设置。 */
+    await page.eval(`(()=>{
+      const leave=[...document.querySelectorAll('aside nav button')]
+        .find(b=>!/^(工作流|自动化)$/.test(b.textContent.trim()));
+      if (leave) leave.click();
+      else document.getElementById('root').innerHTML='';
+    })()`);
+    await page.sleep(400);
+
+    const survived=await page.eval(`({
+      bodyChars: document.body.innerHTML.length,
+      hasNav: !!document.querySelector('aside nav'),
+      hasTablist: !!document.querySelector('[role=tablist]'),
+    })`);
+    // 负控的形状：React 卸掉整棵树时 body 只剩一百来个字符、导航与页签都没了
+    // （实测 `{"ids":[],"tabs":[],"html":102}`）。
+    check('★ 离开设置（卸载面板）之后整棵树还在', survived.hasNav && survived.bodyChars>2000, survived);
+    check('★ 桥返回 Promise → 没有 destroy_ 类异常',
+      !page.exceptions.some(e=>e.includes('destroy_')), page.exceptions.slice());
+  });
   await test('english-and-automation',async()=>{
     await open(page,'en');
     check('English native-entry text',await page.eval(`document.querySelector('${nativeEntry}').textContent.includes('Node-RED')`));
