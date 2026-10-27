@@ -418,13 +418,22 @@ export const MessageRow = memo(function MessageRow({
                 // 基准 `--chat-font-size` 已改成 Claude 的 12.24px。
                 "--chat-font-size": "calc(var(--chat-font-size-base) - 0.5px)",
               } as React.CSSProperties)
-            // 助手正文缩进：Claude 的 `--cds-assistant-message-text-inset` 是 **0px**
-            // （无缩进，正文与卡片左缘对齐）。Mcode 侧的名字是 --m-assistant-inset
-            // （由生成器从 Claude 产物导出到 tokens.cds.css）。
+            // 助手正文缩进：Claude 的 `--cds-assistant-message-text-inset` 是 **4px**
+            // （`[data-cds=AssistantMessage]` 上显式赋值 4px；只有气泡变体才是 0）。
+            // 用户气泡那条走 `[data-cds=UserMessage]` —— 上游在一条并列规则里
+            // **把 UserMessage 的 inset 也显式置 0**：
+            //   `…,[data-cds=FileDiff],[data-cds=UserMessage]){--cds-assistant-message-text-inset:0px;…}`
+            // 所以用户气泡不加缩进（它已被 padding 撑开），只有助手正文加。
+            // Mcode 侧的名字是 --m-assistant-inset。
             : { paddingLeft: "var(--m-assistant-inset, 0px)" }}
           className={
             isUser
-              ? "user-bubble-fill overflow-hidden rounded-[var(--radius-bubble)] border border-edge/45 px-4 py-3 text-content [font-size:var(--chat-font-size)]" +
+              ? // 【UI 重建 2026-10-27】气泡 padding 改回上游值：
+                //   `--cds-message-bubble-pad-x: var(--cds-pad-lg)` = .75rem × scale ≈ 11.29px
+                //   `--cds-message-bubble-pad-y: var(--cds-pad-md)` = .5rem  × scale ≈  7.53px
+                // 上一版是 Tailwind 的 px-4 py-3（16 / 12），比上游宽 42% / 高 59%。
+                // 观感差异很直接：气泡显得「胖」，和 Claude 的紧凑胶囊不是一回事。
+                "user-bubble-fill overflow-hidden rounded-[var(--radius-bubble)] border border-edge/45 px-[var(--m-bubble-pad-x)] py-[var(--m-bubble-pad-y)] text-content [font-size:var(--chat-font-size)]" +
                 (freshBubble ? " chat-bubble-in" : "")
               : "text-content [font-size:var(--chat-font-size)]"
           }

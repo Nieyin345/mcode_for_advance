@@ -170,15 +170,36 @@ const measuredChecks = {
    * 原登记：15px / 24.375px（= 15 × 1.625），依据上游
    * `ChatMessageBubbles.tsx:361` 的 `text-[15px] leading-relaxed`。
    *
-   * 现在：12.24px / 18.82px —— 本机 Claude 3.1623.4.0 的
-   * `--cds-font-size-body` 与 `--cds-leading-body`（≈ 13rem 与 20rem × rem-scale）。
-   * 用户要的是「和当前安装的 Claude 外观一致」，所以以本机产物为准。
+   * 现在：**13.176px / 18.8232px** —— 本机 Claude **3.6556.2.0** 的
+   * `.epitaxy-root .epitaxy-transcript-typography`：
+   *
+   *   --chat-body:    calc(.875rem * var(--cds-rem-scale,1));   → 13.176px
+   *   --chat-leading: 1.4286;
+   *   font-size:      var(--chat-body);
+   *   line-height:    var(--chat-leading);
+   *
+   * ## 为什么不是 12.24 / 18.82（上一版登记值）
+   *
+   * 上一版有两处错，而且**互相抵消**，所以行高看起来对：
+   *
+   *   | | 字号 | × 行高比 | = 行高 |
+   *   |---|---|---|---|
+   *   | 上一版 | 12.24（基础层 body） | 1.5378（= 18.82/12.24） | 18.82 |
+   *   | **正确** | **13.176（comfortable 层 body）** | **1.4286（--chat-leading）** | **18.82** |
+   *
+   * 两个因子各错 7%，乘起来一样。**行高一致不能证明字号正确** —— 这是
+   * CLAUDE.md 第二十八条「代理指标」的镜像：乘积相同 ≠ 因子相同。
+   *
+   * 依据：`tools/claude-ui-reverse/tokens-out.txt`（comfortable 层 body = 13.176）
+   * + 上游 CSS 里 `--chat-leading:1.4286` 的**消费点**
+   * （`line-height:var(--chat-leading,var(--cds-leading-body))`）。
    *
    * ⚠️ 这一格是**判据能看见正文排版**的唯一途径（T149）。改字号/行高必须
-   * 同步改这里 —— 不同步就会报「未登记差异」，那是想要的拦截。 */
+   * 同步改这里 —— 不同步就会报「未登记差异」，那是想要的拦截。
+   * 这次就是被它拦住的：改完 styles.css 之后 9 格报 `13.176px ≠ 12.24px`。 */
   "chat-body": {
-    fontSize: "12.24px",
-    lineHeight: "18.82px",
+    fontSize: "13.176px",
+    lineHeight: "18.8232px",
   },
 };
 /**

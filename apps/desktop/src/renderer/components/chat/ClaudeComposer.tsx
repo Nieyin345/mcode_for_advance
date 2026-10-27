@@ -41,13 +41,27 @@ export const COMPOSER_ATTACHMENT_ROW =
   "flex items-center gap-2 overflow-x-auto px-2 pb-1.5 pt-2";
 
 /** 输入区文字排版。
- *  来源：`ChatComposer.tsx:145`
- *  `text-[15px] leading-[1.4] ... pl-1.5`
  *
- *  ⚠️ 只取排版三项（字号 / 行高 / 左内边距）。上游那一行的
- *  `bg-transparent border-none outline-none resize-none` 是给 `<textarea>` 的，
- *  我们的编辑区是 Tiptap 的 contenteditable，**不适用** —— 照抄会清掉它自己的边框语义。 */
-export const COMPOSER_TEXT = "text-[15px] leading-[1.4]";
+ * 【UI 重建 2026-10-27】**改成读上游变量，不再写死 px。**
+ *
+ * 上一版是 `text-[15px] leading-[1.4]`，注释引的是第三方逆向仓
+ * `ChatComposer.tsx:145`。从本机 Claude 3.6556.2.0 的产物直接读，输入框字号
+ * 不是字面量，而是**一条联立的算式**（`c6a992d55-Che1orl5.css` 的 `--cmp-*` 组）：
+ *
+ *   --cmp-type-size = max(--cds-font-size-text-entry-floor, --cds-font-size-prose)
+ *                   = max(16px, 16px) = **16px**
+ *   --cmp-leading   = round(type-size × 1.4, 1px) = **22px**
+ *
+ * 所以字号是 **16px**，比旧的 15px 大一档 —— 而这**不是**随手调的：16px 是
+ * `--cds-font-size-text-entry-floor`（防 iOS 聚焦自动缩放的下限）与 prose 取大者，
+ * 小的那一半在任何档位都不生效。写 15px 等于绕开了这条地板。
+ *
+ * 行高也不是 `1.4` 的裸比值：`round(16 × 1.4, 1px)` = 22px，即 **1.375** 的等效
+ * 高度。两个值都从 `--cmp-*` 算出来，改字号时行高自动跟着变（这是上游
+ * 「文字变大气泡跟着长」的机制）。`--cmp-type-size` / `--cmp-leading`
+ * 已在 styles.css 的 Composer 段定义好，这里直接引用。 */
+export const COMPOSER_TEXT =
+  "text-[length:var(--cmp-type-size)] leading-[var(--cmp-leading)]";
 
 /** 输入区内边距。来源：`ChatComposer.tsx:102`
  *  外层容器 `p-[0.875rem]`（14px）。

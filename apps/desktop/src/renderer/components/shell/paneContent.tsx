@@ -38,6 +38,7 @@ import { TaskListPanel } from "@renderer/components/ide/TaskListPanel.js";
 import { TaskCenterPanel } from "@renderer/components/ide/TaskCenterPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
+import { ClaudeProjectOverview } from "./ClaudeProjectOverview.js";
 
 /** Claude 的 tile 类型 → Mcode 的面板。
  *
@@ -53,6 +54,11 @@ import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
  */
 export function renderPaneContent(tileId: string): ReactNode {
   switch (tileId) {
+    case "overview":
+      // 【UI 重建 2026-10-27】Claude Code 模式的**项目概览**右栏
+      // （Environment / Context / Connectors / Outputs / Changes 卡片堆）。
+      // 真机截图就是这个形态；它是「没有选中具体能力时」的默认右栏。
+      return <ClaudeProjectOverview />;
     case "file":
       return <FilesPanel />;
     case "diff":

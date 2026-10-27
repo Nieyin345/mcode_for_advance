@@ -32,6 +32,12 @@ import { useSyncExternalStore } from "react";
 import { addCollection, Icon as IconifyIcon } from "@iconify/react";
 import { basename } from "@renderer/lib/path.js";
 import { EXT_ICON, NAME_ICON } from "@renderer/lib/fileIconTables.js";
+import {
+  PHOSPHOR_FILE_ICONS,
+  PHOSPHOR_NAME_MAP,
+  PHOSPHOR_EXT_MAP,
+  type PhosphorIcon,
+} from "@renderer/lib/phosphorFileIcons.js";
 
 // Register the whole collection once, off the startup critical path. After
 // this, icons resolve synchronously via getIcon("material-icon-theme:<name>").
@@ -91,6 +97,77 @@ export function hasFileIcon(filePath: string): boolean {
   return fileIconIdForPath(filePath) !== null;
 }
 
+/**
+ * 【UI 重建 2026-10-27】**解析到 Claude 的 Phosphor 图标**，或有 null。
+ *
+ * ## 为什么需要第二条解析路径
+ *
+ * Mcode 原本的 `fileIconIdForPath` 返回 Material Icon Theme 的 id
+ * （`material-icon-theme:typescript`），那是 **24 视框的彩色实心图标**。
+ * Claude 用的是 **Phosphor**（256 视框的线性图标，MIT 许可），两者形状
+ * 完全不同 —— 这是「一眼看起来不像」的一个真实来源，不是配色差异。
+ *
+ * ## 为什么是「优先」而不是「替换」
+ *
+ * Material 那套覆盖 **1360 个扩展 + 1039 个文件名**；Claude 的产物里只
+ * 抽出 **12 个** 文件类型图标。所以：
+ *
+ *   - 这 12 类能表达的（文档 / 表格 / PDF / 文本 / 图片 / 视频 / 压缩 /
+ *     代码）→ **走 Phosphor**，形状与 Claude 一致；
+ *   - 其余 1300+ 扩展（`.env`、`.proto`、`.graphql`、各种语言方言）
+ *     → 继续走 Material。它们 Claude 根本没有对应图标，砍掉只会让文件树
+ *     变成一片通用文档图标，那比「图标形状不同」更糟。
+ *
+ * **文件名表的优先级高于扩展名表**（与 `fileIconIdForPath` 同一顺序），
+ * 否则 `package.json` 会被 `.json` 抢走。
+ *
+ * 这个函数**不读 collection 的加载状态** —— Phosphor 的 path 是内联在这里的
+ * 静态数据，不需要异步注册。所以它在首帧就能画出来，不像 Material 那条路
+ * 要等 `addCollection` 落地。
+ */
+export function phosphorIconForPath(filePath: string): PhosphorIcon | null {
+  const base = basenameLower(filePath);
+  const byName = PHOSPHOR_NAME_MAP[base];
+  if (byName && PHOSPHOR_FILE_ICONS[byName]) return PHOSPHOR_FILE_ICONS[byName];
+  const ext = extOf(base);
+  if (ext) {
+    const byExt = PHOSPHOR_EXT_MAP[ext];
+    if (byExt && PHOSPHOR_FILE_ICONS[byExt]) return PHOSPHOR_FILE_ICONS[byExt];
+  }
+  return null;
+}
+
+/** 渲染一个 Phosphor 图标（纯内联 SVG，无异步依赖）。
+ *
+ *  `viewBox` 固定 `0 0 256 256` —— 那是 Phosphor 的视框，**不能换**：
+ *  path 的坐标是按 256 网格写的，换成 24 会画出一个巨大的局部。
+ *  `fill="currentColor"` 让图标跟随文字色（Claude 的图标也是这么做的）。 */
+function PhosphorSvg({
+  icon,
+  size,
+  className,
+}: {
+  icon: PhosphorIcon;
+  size: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      viewBox="0 0 256 256"
+      width={size}
+      height={size}
+      fill="currentColor"
+      aria-hidden
+      className={className}
+      style={{ flexShrink: 0, verticalAlign: "-0.125em" }}
+    >
+      {icon.paths.map((d, i) => (
+        <path key={i} d={d} />
+      ))}
+    </svg>
+  );
+}
+
 /** Render the per-type file icon for a path. Falls back to the generic
  *  `document` icon for unknown extensions, so callers need no fallback of
  *  their own. Themed icons carry their own colors.
@@ -108,6 +185,17 @@ export function FileTypeIcon({
   size?: number;
   className?: string;
 }) {
+  /* 【UI 重建 2026-10-27】**Phosphor 优先。**
+   *
+   * 这一分支必须在 `ready` 判断**之前** —— Phosphor 的 path 是内联静态
+   * 数据，不依赖 Material collection 是否加载完。放在后面会让首帧仍画
+   * 空白方框，而 Phosphor 本来就能立刻画。
+   *
+   * 覆盖不到的扩展（1300+）落到下面原有的 Material 路径，行为完全不变。 */
+  const phosphor = phosphorIconForPath(path);
+  if (phosphor) {
+    return <PhosphorSvg icon={phosphor} size={size} className={className} />;
+  }
   const ready = useSyncExternalStore(subscribeCollection, collectionSnapshot);
   if (!ready) {
     return (

@@ -1,5 +1,5 @@
-/* 由 scripts/gen-cds-tokens.mjs 从**本机安装的 Claude Desktop 3.1623.4.0** 生成。
- * 源文件：v1/c6a992d55-Bt_TAkxU.css
+/* 由 scripts/gen-cds-tokens.mjs 从**本机安装的 Claude Desktop 3.6556.2.0** 生成。
+ * 源文件：v1/c6a992d55-Che1orl5.css
  * 不要手改；重跑 `node scripts/gen-cds-tokens.mjs` 即可（Claude 升级后重跑）。
  *
  * 这些是**原始层**（--m-*），Mcode 的语义 token 在 styles.css 里指过来。
@@ -466,6 +466,8 @@
 :root {
   --m-banner-neutral-ring: initial;
   --m-btn-spring: linear(0, .2459, .6526, .9468, 1.0764, 1.0915, 1.0585, 1.0219, .9993, .9914, .9921, .9957, .9988, 1.0004, 1);
+  --m-button-pad-max: transparent!important;
+  --m-button-radius-add: calc(0rem * var(--m-rem-scale));
   --m-checkbox-radius: transparent;
   --m-checkbox-radius--lg: calc(.3125rem * var(--m-rem-scale));
   --m-checkbox-radius--sm: calc(.25rem * var(--m-rem-scale));

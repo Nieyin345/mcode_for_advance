@@ -106,7 +106,16 @@ export function ClaudeTitlebar({
           </button>
         )}
         <div className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="min-w-0 truncate text-[var(--m-fs-prose)] font-medium text-[var(--m-text-primary)]">
+          {/* 【UI 重建 2026-10-27】**标题字号从 `--m-fs-prose`（16px）降到 heading（14.12px）。**
+           *
+           * 真机截图实测：标题字形（cap height）约 **17 物理 px**，
+           * ÷1.75 DPR = 9.7 css px。cap height ≈ 0.70 × font-size
+           * → 字号 ≈ **13.9px**，对得上 `--m-fs-heading` = 14.12px，
+           * 对不上 `--m-fs-prose` = 16px（那个的 cap 会是 11.2 css px = 19.6 物理）。
+           *
+           * 上一版用 prose —— 那是 **Markdown 正文**那一档，不是标题档。
+           * 顶栏标题和正文用同一档，会让标题看起来偏大、和下面正文抢视觉重量。 */}
+          <span className="min-w-0 truncate text-[length:var(--m-fs-heading)] font-medium text-[var(--m-text-primary)]">
             {title}
           </span>
           {subtitle && (
@@ -114,6 +123,14 @@ export function ClaudeTitlebar({
               {subtitle}
             </span>
           )}
+          {/* 会话切换器 chevron —— 真机截图里标题右侧有一个 `⌄`，
+           * 表示「点这里切会话」。Mcode 的标题目前不可点，所以这里**只画
+           * 形状不接交互**：先让布局与 Claude 一致，交互等接上会话切换再补。
+           * 画一个不能点的控件会误导用户，所以带上 `aria-hidden` 且不给
+           * hover 态。 */}
+          <span aria-hidden className="shrink-0 self-center text-[var(--m-text-muted)]">
+            <ChevronDownIcon />
+          </span>
         </div>
 
         {/* `⋯` 溢出菜单：布局开关、面板开关等都收在这里，不在顶栏排一排。 */}
@@ -184,6 +201,21 @@ function SidebarIcon() {
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
       <rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke="currentColor" strokeWidth="1.3" />
       <path d="M6 2.5v11" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  );
+}
+
+/** 标题右侧的会话切换 chevron（`⌄`，Phosphor `CaretDown` 形）。 */
+function ChevronDownIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M3.5 6 8 10.5 12.5 6"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

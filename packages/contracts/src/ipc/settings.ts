@@ -631,7 +631,15 @@ export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
  *
  * 留 `library` / `templates` 这两个旧值会让人以为那两个面板还在，所以直接替掉。
  */
-export const RightPanelTabSchema = z.enum(["files", "git", "browser", "turns", "preview", "flow", "tasks", "taskcenter"]);
+/**
+ * 右栏页签。
+ *
+ * `overview`（【UI 重建 2026-10-27】）是 Claude Code 模式的**项目概览**——
+ * Environment / Context / Connectors / Outputs / Changes 卡片堆。
+ * 真机截图里这是右栏的默认形态；其余八项是 Mcode 自己的面板（Claude 没有
+ * 对应物），全部保留。
+ */
+export const RightPanelTabSchema = z.enum(["overview", "files", "git", "browser", "turns", "preview", "flow", "tasks", "taskcenter"]);
 export type RightPanelTab = z.infer<typeof RightPanelTabSchema>;
 
 /**

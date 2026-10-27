@@ -283,6 +283,11 @@ function tileLabel(id: string): string {
     terminal: "终端",
     watercolor: "画布",
     mcpapp: "MCP 应用",
+    turns: "轮次",
+    // 【UI 重建 2026-10-27】此前**漏了这一项**，于是右栏标题直接显示原始
+    // tile id 字符串 `overview` —— 用户在一个全中文界面里看到一个小写英文
+    // 单词。`map[id] ?? id` 的兜底让这种遗漏变成静默的，不会报错。
+    overview: "概览",
   };
   return map[id] ?? id;
 }

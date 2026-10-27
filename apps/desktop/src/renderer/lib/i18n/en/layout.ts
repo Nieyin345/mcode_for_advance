@@ -145,6 +145,9 @@ export const en = {
   "layout.showEditor": "Show editor",
   "layout.hideEditor": "Hide editor",
   "layout.noOpenFiles": "No open files",
+  /** Right-rail **project overview** (Claude Code's default right pane) —
+   *  Environment / Context / Connectors / Outputs / Changes cards. */
+  "layout.tabOverview": "Overview",
   "layout.tabFiles": "Files",
   /** Right-rail "Preview" — click a file on the left to glance at it here. */
   "layout.tabPreview": "Preview",

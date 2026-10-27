@@ -30,6 +30,10 @@ const SCREENS = [
   ["git-pane", "右栏 Git 面板"],
   ["taskcenter", "任务中心"],
   ["workflow-board", "工作流看板"],
+  // 【UI 重建 2026-10-27】Claude Code 模式的**项目概览**右栏
+  // （Environment / Context / Connectors / Outputs / Changes 卡片堆）。
+  // 它是右栏的新默认形态；没有这一格，改那张面板没有任何画面对照。
+  ["overview-pane", "右栏项目概览"],
 ] as const;
 const CONDITIONS = [
   { id: "light", width: 1280, height: 800, dark: false },
@@ -287,6 +291,11 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
             }
             else if (id === 'workflow-board') {
               st.setState({rightOpen:true,rightPanelTab:'flow'});
+            }
+            else if (id === 'overview-pane') {
+              // 概览面板的卡片里的 MCP 列表走 api.mcp.list() 的桩。
+              // ⚠️ 这里在模板字符串内 —— **不能写反引号**，会提前闭合外层。
+              st.setState({rightOpen:true,rightPanelTab:'overview'});
             }
             await new Promise(r=>setTimeout(r,300));
             return ${buildSceneAssertionScript(screen)};

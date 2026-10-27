@@ -1,32 +1,55 @@
 /**
  * 【UI 重建】**Claude 形态的侧栏** —— 取代 Mcode 现在那棵「项目树」。
  *
- * ## 从本机 Claude 3.1623.4.0 读到的结构
+ * ## 从本机 Claude 3.6556.2.0 读到的结构（以真机截图为准）
  *
- * 纵向自上而下（文案是它自己的原文，不是翻译猜测）：
+ * 纵向自上而下：
  *
  * ```
  * ┌──────────────────────────────┐
- * │ [≡]  Mcode            [+]    │  ← 顶部：折叠 + 品牌 + 新建
- * │ 🔍 Search                    │  ← 搜索（占位，不是按钮）
+ * │  [☰] [▭] [←] [→]             │  ← 顶部图标行（侧栏折叠 / 分栏 / 前进后退）
+ * │ ┌────────────┬─────────────┐ │
+ * │ │  Cowork    │   Code      │ │  ← 分段控件（当前档白底凸起）
+ * │ └────────────┴─────────────┘ │
+ * │  + New                       │
+ * │  ▭ Customize                 │
+ * │  ⋯ More                      │
  * ├──────────────────────────────┤
- * │ Pinned                       │  ← 置顶区（有才显示）
- * │  ▸ 会话标题                  │
- * │ Projects                     │  ← 项目分组
- * │  ▾ 项目名                    │
- * │    ▸ 会话标题   ⎇ feat/x     │  ← 会话行内嵌分支徽章
- * │ Recents                      │  ← 最近（跨项目）
- * │  ▸ 会话标题                  │
+ * │  Pinned  ›                   │  ← 分组标题带 chevron，点开折叠
+ * │   ▸ 会话标题   +             │  ← 会话行右侧一个「新建分栏」+
  * ├──────────────────────────────┤
- * │ [资料库]              [设置] │  ← 底部入口（Mcode 自有功能挂这里）
+ * │  项目名  +                   │  ← 项目分组（同样是 chevron + 悬停 +）
+ * │   ▸ 会话标题                 │
+ * ├──────────────────────────────┤
+ * │  ✳ Nieyin · Gateway      🔍  │  ← 底部：账号 + 网关 + 搜索图标
  * └──────────────────────────────┘
  * ```
  *
- * **证据**（真实产物里的字符串常量）：
- *  - `"New session"` ×26、`"Pinned"` ×10、`"Projects"` ×130、`"Recents"` ×7
- *  - 会话行模型 `{ branch, settled, chatHost }` —— `branch` 是 Git 分支徽章
- *  - 侧栏固定宽 **288px**（`w-72` ×63、`288` 字面量 ×1849）
- *  - 会话行高 **28px**（v2 密度档）
+ * ## 与上一版注释的差异（都是真机纠出来的）
+ *
+ * | 项 | 上一版写的 | 真机 |
+ * |---|---|---|
+ * | 顶部 | 折叠 + 品牌 + 加号 | **图标行 + Cowork/Code 分段 + New/Customize/More** |
+ * | 搜索 | 顶部输入框 | **底部一个图标**，不是输入框 |
+ * | 分组标题 | `Pinned` | `Pinned ›`（带 chevron） |
+ * | 会话行高 | **28px（v2 密度档）** | **32px**（comfortable 档；28 是 compact） |
+ * | 底部 | 资料库 + 设置 | **账号 · 网关 + 搜索**（Mcode 自有入口另挂） |
+ *
+ * ## 几何真值（本机 Claude `--df-*`，comfortable 层）
+ *
+ * | 变量 | 值 |
+ * |---|---|
+ * | 侧栏宽 `--df-sidebar-width` | **288px** |
+ * | 会话行高 `--df-row-h` | **32px** |
+ * | 会话行字号 `--df-row-font` | **14px** |
+ * | 图标 `--df-icon-size` | **20px** |
+ * | 图标槽 `--df-leading-slot` | **28px** |
+ * | 胶囊圆角 `--df-radius-pill` | **8px** |
+ * | 分组标题字号 `--df-group-font` | **13px** |
+ * | 分组上内边距 `--df-group-pt` | **16px** |
+ * | 行间距 `--df-row-gap` | **8px** |
+ *
+ * 这些已经在 styles.css 立成 `--m-sb-*` 语义别名，组件只引用不写死。
  *
  * ## Mcode 自有功能怎么挂（功能文档 UI-04）
  *
@@ -231,15 +254,28 @@ function ProjectGroup({
 }) {
   const [open, setOpen] = useState(true);
   return (
-    <div className="mb-2">
+    <div style={{ marginBottom: "var(--m-sb-row-gap, 8px)" }}>
       <button
         type="button"
-        className="flex w-full items-center gap-1 rounded-[6px] px-2 py-1 text-left text-[var(--m-fs-caption)] font-medium uppercase tracking-wide text-[var(--m-text-muted)] hover:bg-[var(--m-fill-ghost-hover)]"
+        data-sidebar-group-header=""
+        className="group/hdr flex w-full items-center gap-1 rounded-[6px] px-2 text-left font-medium text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)]"
+        style={{
+          height: "var(--m-sb-row-h, 32px)",
+          fontSize: "var(--m-sb-group-font, 13px)",
+        }}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
-        <Caret open={open} />
+        {/* 【UI 重建 2026-10-27】上游真实形态是**非粗体、非大写**的分组名 +
+         * 一个**始终向右**的 `›` chevron，不是上一版的 `▾` 三角 + uppercase。
+         *
+         * 真机截图（裁到 `Pinned ›` 那一行）：chevron 是**固定的向右箭头**，
+         * 展开/折叠时**不旋转**。上一版让它展开时转 90° 朝下 —— 那是常见的
+         * 树形控件做法，但 Claude 不是那样。折叠的是内容，箭头朝向不变。 */}
         <span className="min-w-0 flex-1 truncate">{group.name}</span>
+        <span aria-hidden className="shrink-0 text-[var(--m-text-muted)]">
+          <ChevronRight size={12} />
+        </span>
       </button>
       {open &&
         group.sessions.map((s) => (
@@ -272,24 +308,52 @@ function SessionRow({
       data-session-row={session.id}
       data-active={active ? "" : undefined}
       className={cn(
-        "group flex w-full items-center gap-1.5 rounded-[6px] px-2 text-left",
-        "text-[var(--m-fs-body)]",
+        "group flex w-full items-center gap-1.5 px-2 text-left",
+        "text-[length:var(--m-sb-row-font)]",
         indent && "pl-5",
         active
           ? "bg-[var(--m-fill-ghost-selected)] text-[var(--m-text-primary)] font-medium"
           : "text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)]",
       )}
-      style={{ height: 28 }}
+      // 【UI 重建 2026-10-27】行高与圆角走上游 `--df-row-h` / `--df-radius-pill`
+      // 的 comfortable 档（32 / 8），此前是写死的 28 / 6。见 styles.css
+      // 「侧栏几何」那段的分档表 —— 28/6 是 `.dframe-root` 的**基准**档，
+      // 不是真实默认档。
+      style={{
+        height: "var(--m-sb-row-h, 32px)",
+        borderRadius: "var(--m-sb-radius-pill, 8px)",
+      }}
       onClick={() => onSelect(session.id)}
-      title={session.title}
+      // 分支名不在行内显示（Claude 不显示），但**不能丢** —— 放进 tooltip，
+      // 悬停时仍能看到这个会话跑在哪个 worktree 上。
+      title={session.branch ? `${session.title} · ${session.branch}` : session.title}
     >
       <StatusDot running={session.running} failed={session.failed} unread={session.unread} />
       <span className="min-w-0 flex-1 truncate">{session.title}</span>
-      {session.branch && (
-        <span className="max-w-[80px] shrink-0 truncate font-mono text-[var(--m-fs-caption)] text-[var(--m-text-muted)]">
-          {session.branch}
+      {/* 【UI 重建 2026-10-27】**行尾不是分支徽章，是「+ / ●」。**
+       *
+       * 真机截图（裁到侧栏会话行）：每行右侧只有一个符号 ——
+       *   - 悬停时是 `+`（在这个项目下新建会话）；
+       *   - 非悬停但有未读时是 `●`（一个实心点）。
+       *   **分支名 / worktree 名不在侧栏行里显示。**
+       *
+       * 上一版把 Git 分支塞成等宽徽章 —— 那是 Mcode 自己的信息（Claude 的
+       * Code 模式会话并不都有 worktree），既不是 Claude 的形状，也把每行
+       * 右缘搞得参差不齐。分支信息移到 `title` 提示里保留。
+       *
+       * `+` 与 `●` 共用一个位置：悬停优先显示 `+`（可操作），否则显示点。 */}
+      <span className="flex size-4 shrink-0 items-center justify-center text-[var(--m-text-muted)]">
+        {session.unread ? (
+          // 未读点：`group-hover:hidden` 让位给 +；无未读时整块在悬停前隐藏。
+          <span
+            aria-hidden
+            className={cn("size-1.5 rounded-full bg-[var(--m-text-muted)]", "group-hover:hidden")}
+          />
+        ) : null}
+        <span aria-hidden className="hidden group-hover:inline-flex">
+          <PlusIcon />
         </span>
-      )}
+      </span>
     </button>
   );
 }
@@ -366,6 +430,33 @@ function Caret({ open }: { open: boolean }) {
       style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 120ms" }}
     >
       <path d="M3 1.5L7 5l-4 3.5z" />
+    </svg>
+  );
+}
+
+/**
+ * 分组标题右侧的 chevron —— Claude 真实形状。
+ *
+ * 【UI 重建 2026-10-27】上游用的是 **Phosphor `CaretRight`**
+ * （`viewBox="0 0 256 256"`，见 `tools/claude-ui-reverse/file-icons.txt`
+ * 的同源库）。Mcode 不用 @phosphor-icons（未安装），这里按 Phosphor 的
+ * `CaretRight` 几何手写：一个**细描边的开口箭头**，不是实心三角。
+ *
+ * 与 `Caret` 的区别：`Caret` 是实心三角（v2 的旧形状），这个是描边 V 形。
+ * 截图里 `Pinned ›` / `temp ›` 都是后者。
+ */
+function ChevronRight({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden
+    >
+      <path
+        d="M6 3.5 10.5 8 6 12.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

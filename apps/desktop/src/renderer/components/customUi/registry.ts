@@ -84,6 +84,10 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
   // 右栏自带的那排页签。id 就是 `RightPanelTab` 的值(`builtin:files` 这种键也被工具栏的
   // 「切到页签」动作引用)。「宽屏模式」按钮不在这里 —— 它是布局开关,不是页签。
   "rightPanel.tab": [
+    // 【UI 重建 2026-10-27】`overview` 是 Claude Code 模式的默认右栏
+    // （Environment / Context / Connectors / Outputs / Changes 卡片堆）。
+    // 放在第一位：它是右栏打开时最该先看到的那一屏。
+    { id: "overview", labelKey: "layout.tabOverview", icon: IconListDetails },
     { id: "files", labelKey: "layout.tabFiles", icon: IconFolder },
     { id: "git", labelKey: "customUi.builtin.git", icon: IconGitBranch },
     { id: "browser", labelKey: "customUi.builtin.browser", icon: IconWorld },
@@ -106,7 +110,7 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
 };
 
 /** 右栏内置页签的 id(与 `RightPanelTab` 的值一一对应)。 */
-export const BUILTIN_TAB_IDS = ["files", "git", "browser", "turns", "flow", "tasks", "taskcenter", "preview"] as const;
+export const BUILTIN_TAB_IDS = ["overview", "files", "git", "browser", "turns", "flow", "tasks", "taskcenter", "preview"] as const;
 export type BuiltinTabId = (typeof BUILTIN_TAB_IDS)[number];
 export function isBuiltinTabId(id: string): id is BuiltinTabId {
   return (BUILTIN_TAB_IDS as readonly string[]).includes(id);

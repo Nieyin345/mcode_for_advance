@@ -41,7 +41,7 @@ export interface PanelCaptureRect {
 }
 
 /** 右栏页签(与 `RightPanelTabSchema` 一致,这里不 import 以免把 zod 拖进来)。 */
-export type AppUiRightTab = "files" | "git" | "browser" | "turns" | "preview" | "flow" | "tasks";
+export type AppUiRightTab = "overview" | "files" | "git" | "browser" | "turns" | "preview" | "flow" | "tasks";
 
 /** 能经 `set_pref` 改的界面偏好(都是用户在界面上能直接点的那些)。 */
 export type AppUiPrefKey = "locale" | "themeStyle" | "displayMode" | "chatFontSize" | "chatDensity" | "workflowId" | "permissionMode";

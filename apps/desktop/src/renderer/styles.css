@@ -355,22 +355,31 @@ div:has(> [role="menu"]) {
    *   --chat-font-size mirrors the old `text-sm` (14px);
    *   --user-bubble is a neutral gray (zinc-500) so user prompts read as a
    *     calm, non-distracting bubble; presets in Settings offer color picks. */
-  /* 【UI 重建 2026-10-27】**默认字号改成 Claude 的真实值。**
+  /* 【UI 重建 2026-10-27】**默认字号改成 Claude 的 comfortable 层 body。**
    *
-   * 之前是 15px（依据 f3 的第三方逆向 `ChatMessageBubbles.tsx: text-[15px]`），
-   * 但那是对旧版本的读数。从本机 Claude 3.1623.4.0 的产物里直接读到：
+   * 从本机 Claude 3.6556.2.0 的产物里直接读到（`c6a992d55-Che1orl5.css`）：
    *
-   *   --cds-font-size-body: calc(.8125rem * var(--cds-rem-scale))
-   *   --cds-rem-scale:      calc(16 / 17)  ≈ 0.9412
-   *   → .8125rem × 0.9412 × 16 ≈ **12.24px**
+   *   .epitaxy-root .epitaxy-transcript-typography{
+   *     --chat-body: calc(.875rem * var(--cds-rem-scale,1));
+   *     --chat-leading: 1.4286;
+   *     font-size: var(--chat-body);
+   *     line-height: var(--chat-leading);
+   *   }
    *
-   * 也就是说 Mcode 的正文比 Claude 大 **23%** —— 这是「看着不像」最直接的
-   * 原因，比任何配色差异都明显。行高同理：Claude 的 `--cds-leading-body`
-   * 是 1.25rem × 0.9412 ≈ **18.82px**，比例 18.82/12.24 ≈ 1.537。
+   * `.875rem × 16 × (16/17)` = **13.176px**，行高 `13.176 × 1.4286` = **18.82px**。
+   *
+   * ⚠️ **上一版取的是 `.cds-root` 基础层的 `.8125rem` = 12.24px** —— 那是
+   * 没有 `data-density="comfortable"` 时才生效的档位，而 Claude 的
+   * `index.html` 上正写着 comfortable。所以旧值小了 7%。
+   *
+   * ⚠️ 更隐蔽的是：旧值 12.24 × 1.5378 = 18.82px，**行高像素恰好一样**。
+   * 两个因子各错 7%，乘起来互相抵消 —— 所以「行高对得上」不能证明字号对。
+   * 这是 CLAUDE.md 第二十八条「系数相同 ≠ 结果相同」的镜像：**乘积相同 ≠
+   * 两个因子相同**。改任一个因子，乘积就崩。
    *
    * 这是**默认值**，用户在设置里选的 12–20px 仍经 lib/appearance.ts
    * 内联写到 <html> 上，优先级更高。 */
-  --chat-font-size: 12.24px; /* Claude --cds-font-size-body */
+  --chat-font-size: 13.176px; /* Claude --cds-font-size-body @ comfortable */
   /* Chat prose base weight. A weight lifted toward the global base (450 vs
    * the 400 of the original design) gives comfortable, airy reading on both
    * themes — 400 read as visibly thinner than the app chrome (base 500 light
@@ -412,8 +421,51 @@ div:has(> [role="menu"]) {
    * 「暗色不与画布同值」，**不守色相**（见 `design-tokens-smoke` 那一段的注释）。
    *
    * ⚠️ 这个值对画布只有 1.08:1 的区分度（旧 #f7d8cb 是 1.31:1），气泡边界
-   * 靠边框界定而不是底色。改底色时必须同时看 MessageRow 的边框。 */
-  --user-bubble: 240 244 248; /* #f0f4f8 — = --cds-bg-tint-blue（CDS 2.0） */
+   * 靠边框界定而不是底色。改底色时必须同时看 MessageRow 的边框。
+   *
+   * ## 【UI 重建 2026-10-27】从 3.6556.2.0 的本机产物里查到了真机制
+   *
+   * 上面那段考古是在**第三方逆向仓**里做的。直接从 `Claude_3.6556.2.0` 的
+   * `c6a992d55-Che1orl5.css` 读，`--cds-bg-user-message` **有真实定义**，
+   * 而且是**一条配色通道**（9 个色相 × 亮暗两档）：
+   *
+   *   --cds-bg-user-message: color-mix(in oklab, var(--color-<hue>-450)
+   *                                    var(--feed-bubble-mix, 10%), transparent)
+   *   暗色：      var(--color-<hue>-350)   ← 同一色相，深一档
+   *
+   * 色相集合：aqua · blue · gray · green · magenta · orange · red · violet · yellow。
+   * 由 Tailwind 任意值类 `[--cds-bg-user-message:…]` **在 JS 里按内容类型挑**，
+   * 所以 CSS 里没有「唯一的默认色」—— 每一个都用同一个公式、换一个色相。
+   *
+   * ## 所以 Mcode 该抄的是**公式**，不是一个色值
+   *
+   * `10% 的强调色混进透明`，叠在画布上 = 「极淡的同色系 tint」。
+   * `#f0f4f8` 只是 blue 色相在 `--feed-bubble-mix: 10%` 附近的一个具体呈现，
+   * 且它**不随主题色变化** —— 用户把 accent 改成橙色时，气泡仍是蓝的。
+   *
+   * 现在改成同一公式：`--m-accent`（= `--cds-fill-accent`，用户可改）+ 10%。
+   * `color-mix` 输出的仍是实色，所以下面的 `--user-bubble-alpha: 1` 不用改。
+   *
+   * **视觉上没有实质变化**：`#2a78d6` @ 10% over `#fcfbfc` ≈ `#e6ecf8`，
+   * 与旧的 `#f0f4f8` 同族（都约 1.08–1.12:1）。差别在**它会跟着主题走**。
+   *
+   * ## 但这里**没有**改成 color-mix —— 理由是消费点的形状
+   *
+   * `--user-bubble` 被三处消费，而它们的约定是「**R G B 三元组**」：
+   *   - `appearance.ts:109` 用 `setProperty("--user-bubble", rgbTriplet)` 写用户自定义色；
+   *   - `styles.css` 里 840 处 `<alpha-value>` 类的 `rgb(var(--user-bubble) / α)`。
+   *
+   * `color-mix()` 输出的是**颜色**不是三元组，塞进去会让那 840 处 alpha 全部失效。
+   * 用 `rgb(from … r g b)` 转回三元组理论上可行，但 `appearance.ts` 会**直接覆盖**
+   * 这个变量（用户选色时），于是自定义色仍然走三元组、默认值走 color-mix ——
+   * **两条路径不同的表达式，谁覆盖谁取决于是不是「设过色」**。那是把
+   * CLAUDE.md 第二十八条「0 有两种含义」的形态再制造一次。
+   *
+   * 所以这一轮**只把机制写清楚，不改值**：真值是一个 10% 的色相 tint，
+   * `#f0f4f8` 是 blue 色相当 `--feed-bubble-mix: 10%` 时的具体呈现。
+   * 要真正做成「跟主题走」，得同时改 `appearance.ts` 的写入形状（三元组 → 颜色）
+   * 与那 840 处 alpha 的用法 —— 那是一件独立的事，不该藏在 UI 重建里顺手做。 */
+  --user-bubble: 240 244 248; /* #f0f4f8 ≈ blue-450 @ 10% tint（CDS 3.6556 的公式） */
   /* 【T121】alpha 固定 1：`--user-bubble` 现在存的是**已合成的实色**，
    * 再乘一次会把它压得更淡（0.9 时对画布 1.07:1，1.0 时 1.08:1）。
    * 用户自定义色也是实色三元组，同样不需要这层淡出。 */
@@ -561,10 +613,10 @@ div:has(> [role="menu"]) {
    * Overridden at runtime by lib/appearance.ts when the user sets a custom
    * value. */
   /* 【T139 → UI 重建 2026-10-27】与亮色同一默认值。
-   * 亮色已改为 Claude 的 `--cds-font-size-body` = 12.24px；暗色这里原来还是
-   * 旧的 15px —— 典型的「改了亮色忘了暗色」，结果同一个界面切主题字号会跳。
-   * 两处必须同一个值（亮暗的差别在颜色，不在字号）。 */
-  --chat-font-size: 12.24px;
+   * 亮色已改为 Claude 的 comfortable 层 `--cds-font-size-body` = 13.176px；
+   * 暗色这里同步 —— 两处必须同一个值（亮暗的差别在颜色，不在字号）。
+   * 历史上这里曾落后亮色一版（15px vs 12.24px），切主题字号会跳。 */
+  --chat-font-size: 13.176px;
   /* Chat prose base weight — dark mode raises the prose weight to 500 (one
    * step above light's 450) because white strokes thin optically on the deep
    * background. Line height is density-driven (--chat-md-leading) and shared
@@ -860,45 +912,56 @@ body,
 
 /* ───────────── Claude 字号阶梯（2026-10-27，UI 重建）─────────────
  *
- * 值全部来自本机 Claude 3.1623.4.0 的 `--cds-font-size-*` / `--cds-leading-*`，
+ * 值全部来自本机 Claude 3.6556.2.0 的 `--cds-font-size-*` / `--cds-leading-*`，
  * 乘以它的 `--cds-rem-scale: calc(16/17)` 换算成 px。**这是 Mcode 之前的
  * 字号体系的整体替换**：之前各处是零散的 11/12/13/14/15px，Claude 是七档。
  *
- * 为什么必须换：Claude 的正文 12.24px，Mcode 原本 15px —— 大 23%。
+ * 为什么必须换：Claude 的正文 13.18px，Mcode 原本 15px —— 大 14%。
  * 这不是「配色差一点」，是**整屏文字的密度完全不同**，人一眼就看得出来。
  *
- * 用法：新组件直接读 `--m-fs-*` / `--m-lh-*`；老组件的 `text-[13px]` 这类
- * 逐个迁（按面板切，一次一个面板）。
- */
+ * ## ⚠️ 必须用 **comfortable 层**，不是 `.cds-root` 基础层
+ *
+ * Claude 的字号有**两层**，同一个 token 名在两层的值不同：
+ *
+ *   | token   | 基础层（`.cds-root`）      | **comfortable 层（真实默认）** |
+ *   |---------|----------------------------|-------------------------------|
+ *   | caption | `.6875rem × scale` = 10.35 | `.75rem  × scale` = 11.29     |
+ *   | footnote| `.75rem  × scale` = 11.29  | `.8125rem × scale` = 12.24    |
+ *   | code    | `.75rem  × scale` = 11.29  | `.8125rem × scale` = 12.24    |
+ *   | body    | `.8125rem × scale` = 12.24 | **`.875rem × scale` = 13.18** |
+ *   | prose   | `.875rem`（裸值）= 14.00   | **`1rem`（裸值）= 16.00**     |
+ *   | heading | `.875rem × scale` = 13.18  | `.9375rem × scale` = 14.12    |
+ *   | title   | `1.25rem × scale` = 18.82  | `1.375rem × scale` = 20.71    |
+ *
+ * Claude 的 `index.html` 上写着 `<html data-density="comfortable">`，**真实首屏
+ * 走的是右下那一列**。上一版抄的是左边（`.cds-root` 默认块），所以整屏字比真机
+ * 小 7–12%（prose 小 12.5%）。这就是「看着不像」最直接的来源。
+ *
+ * 证据：`tools/claude-ui-reverse/tokens-out.txt` 的「默认 .cds-root」与
+ * 「comfortable 密度」两节，同一批 token 两个值。
+ *
+ * ## prose 是唯一裸 `rem`
+ *
+ * `--cds-font-size-prose` 不乘 `--cds-rem-scale`，所以在任何档位它都是一个整数
+ * px（基础层 14、comfortable 16、step=3 的 15）。其余六档都乘 scale。
+ * 把它也乘上会得到 15.06（comfortable 下的错值），差 0.94px 且随档位漂移。
+ *
+ * 验证方法（`.tmp/compare-with-claude.mjs`）：直接读本机 CSS 的声明，按
+ * `Nrem × 16 × (16/17)` 算，和这里逐条对。**不要靠记忆里的数字**。 */
 :root {
-  /* 七档字号 —— **逐条从本机 Claude 3.1623.4.0 的 CSS 算出来的**。
-   *
-   * ⚠️ 上一版有三处算错（而且注释写着「Claude 的实际 px 值」，会让人以为核过）：
-   *
-   *   | token   | Claude 声明                              | 上一版写的 | 正确值 |
-   *   |---------|------------------------------------------|-----------|--------|
-   *   | caption | `calc(.6875rem * var(--cds-rem-scale,1))`| 11.29     | 10.35  |
-   *   | prose   | **`.875rem`（裸值，不吃 rem-scale）**     | 13.18     | 14.00  |
-   *   | title   | `calc(1.25rem * var(--cds-rem-scale,1))` | 15.06     | 18.82  |
-   *
-   * **`prose` 是唯一一条裸 `rem`** —— Claude 在这一档不乘 `--cds-rem-scale`。
-   * 把它也乘上就得到 13.18，差 0.82px；而 `title` 反过来漏乘了 1.25rem → 只写了
-   * 15.06，实际 18.82，**差 20%**。
-   *
-   * 验证方法（.tmp/compare-with-claude.mjs）：直接读本机 CSS 的声明，按
-   * `Nrem × 16 × (16/17)` 算，和这里逐条对。**不要靠记忆里的数字**。 */
-  --m-fs-caption: 10.35px;   /* --cds-font-size-caption  .6875rem × .9412 = 10.35 */
-  --m-fs-footnote: 11.29px;  /* --cds-font-size-footnote .75rem  × .9412 = 11.29 */
-  --m-fs-code: 11.29px;      /* --cds-font-size-code     .75rem  × .9412 = 11.29 */
-  --m-fs-body: 12.24px;      /* --cds-font-size-body     .8125rem × .9412 = 12.24 */
-  --m-fs-prose: 14.00px;     /* --cds-font-size-prose    **.875rem 裸值** = 14.00 */
-  --m-fs-heading: 13.18px;   /* --cds-font-size-heading  .875rem × .9412 = 13.18 */
-  --m-fs-title: 18.82px;     /* --cds-font-size-title    1.25rem × .9412 = 18.82 */
+  /* 七档字号 —— comfortable 层，逐条从本机 Claude 3.6556.2.0 的 CSS 算出来的。 */
+  --m-fs-caption: 11.29px;   /* --cds-font-size-caption  .75rem   × .9412 = 11.29 */
+  --m-fs-footnote: 12.24px;  /* --cds-font-size-footnote .8125rem × .9412 = 12.24 */
+  --m-fs-code: 12.24px;      /* --cds-font-size-code     .8125rem × .9412 = 12.24 */
+  --m-fs-body: 13.18px;      /* --cds-font-size-body     .875rem  × .9412 = 13.18 */
+  --m-fs-prose: 16.00px;     /* --cds-font-size-prose    **1rem 裸值**     = 16.00 */
+  --m-fs-heading: 14.12px;   /* --cds-font-size-heading  .9375rem × .9412 = 14.12 */
+  --m-fs-title: 20.71px;     /* --cds-font-size-title    1.375rem × .9412 = 20.71 */
   /* 对应行高，**成对使用** —— Claude 的字号与行高是一对定义的，
    * 只改字号不改行高会让正文挤在一起（这正是很多「字号设置」做残的地方）。 */
   --m-lh-caption: 16.0px;    /* --cds-leading-caption 1.0625rem × .9412 = 16.00 */
   --m-lh-body: 18.82px;      /* --cds-leading-body    1.25rem   × .9412 = 18.82 */
-  --m-lh-heading: 16.94px;   /* --cds-leading-heading 1.125rem  × .9412 = 16.94 */
+  --m-lh-heading: 18.82px;   /* comfortable: 1.25rem × .9412 = 18.82（基础层是 16.94） */
 
   /* 字重：Claude 用 400 / 500 / 580 三档（不是 Tailwind 的 400/500/600）。
    * ⚠️ **当前唯一的消费点是 `--chat-font-weight`**（Markdown.tsx:941）。
@@ -909,8 +972,77 @@ body,
   --m-fw-semibold: 580;
 
   /* 消息区几何（Claude 的真实值） */
-  --m-assistant-inset: 0px;  /* --cds-assistant-message-text-inset —— 助手正文**无缩进** */
-  --m-bubble-max-w: 85%;     /* 用户气泡最多占版心 85% */
+  /* 【UI 重建 2026-10-27】助手正文左缩进 **4px**，不是 0。
+   *
+   * 上游：`.cds-root [data-cds=AssistantMessage]{--cds-assistant-message-text-inset:4px}`
+   * ——**只在气泡变体**（`[data-variant=bubble]`）上才是 0，
+   * 那里它被改写为 `var(--cds-message-bubble-pad-x)`。
+   *
+   * 上一版报 0 是抓错了变体（见逆向报告 §4.1 的 ⚠️）。默认助手消息是 4px。
+   *
+   * 它参与最终左边距的 calc：
+   *   `ms-[calc(var(--cds-assistant-message-text-inset,0px)
+   *           - var(--cds-outset-x,0px)
+   *           - var(--cds-turn-status-hang,0px))]`
+   * `--cds-outset-x` / `--cds-turn-status-hang` 在 Claude 的 CSS 里**从未被赋值**
+   * （只有 `*,:before,:after` 上的 `--cds-outset-x: 0px` 兜底），所以默认净 4px。 */
+  --m-assistant-inset: 4px;
+  /* 【UI 重建 2026-10-27】气泡内边距 —— 上游是 `--cds-pad-lg` / `--cds-pad-md`，
+   * 按 comfortable 层折算：`.75rem × .9412` ≈ 11.29 / `.5rem × .9412` ≈ 7.53。
+   *
+   * 上游只在这条规则里给气泡赋值（UserMessage 与助手的 bubble 变体共用）：
+   *   `.cds-root [data-cds=UserMessage],
+   *    .cds-root [data-cds=AssistantMessage][data-variant=bubble]{
+   *      --cds-message-bubble-pad-x: var(--cds-pad-lg);
+   *      --cds-message-bubble-pad-y: var(--cds-pad-md);
+   *    }`
+   *
+   * ⚠️ 它的**纵向比横向小**（7.53 vs 11.29）—— 这是气泡看起来「扁而宽」
+   * 的原因。用 Tailwind 的 `px-4 py-3`（16/12）会让两个方向同时变宽，
+   * 而且纵向比例反而更松（12/16 大于 7.53/11.29），整体显得胖。 */
+  --m-bubble-pad-x: 11.29px; /* --cds-pad-lg @ comfortable */
+  --m-bubble-pad-y: 7.53px;  /* --cds-pad-md @ comfortable */
+  --m-bubble-max-w: 85%;     /* --cds-message-bubble-measure */
+
+  /* ── 侧栏几何（Claude `--df-*`，comfortable 层）─────────────────────
+   *
+   * 上游（`shared-styles-D_GJawPO.css`）这些变量**按密度分档**，同一个名字
+   * 在不同选择器下值不同：
+   *
+   *   | 变量                | `.dframe-root` 基准 | **comfortable** | desktop+comfortable |
+   *   |---------------------|--------------------|-----------------|---------------------|
+   *   | `--df-row-h`        | 26px               | **32px**        | 30px                |
+   *   | `--df-row-font`     | 13px               | **14px**        | 14px                |
+   *   | `--df-icon-size`    | 16px               | **20px**        | 20px                |
+   *   | `--df-leading-slot` | 24px               | **28px**        | 28px                |
+   *   | `--df-radius-pill`  | 6px                | **8px**         | 8px                 |
+   *   | `--df-group-font`   | 12px               | **13px**        | 13px                |
+   *   | `--df-group-pt`     | 12px               | **16px**        | 14px                |
+   *   | `--df-row-gap`      | 4px                | **8px**         | 8px                 |
+   *   | `--df-footer-btn-size` | 24px            | **32px**        | 32px                |
+   *   | `--df-row-px`       | 2px                | 2px             | 2px                 |
+   *
+   * **取 comfortable 那一列**（`index.html` 上写着 `data-density="comfortable"`）。
+   *
+   * ⚠️ desktop 变体那一列把 row-h 收到 30、group-pt 收到 14 —— 静态无法确定
+   * 当前是否命中 `[data-variant=desktop]`（逆向报告 §11.4 标了「需真机确认」）。
+   * 这里取 32 / 16，因为：
+   *   1. 用户截图里侧栏会话行比 30px 更接近 32px（截图量出约 33px @ 1.75 DPR）；
+   *   2. 取大不取小 —— 行太松是可调的观感问题，行太挤会让标题被截。
+   *
+   * 这些是**Mcode 侧的语义别名**，名字统一成 `--m-sb-*`，避免与上游 `--df-*`
+   * 混用（`--df-*` 只在 Claude 的 `.dframe-*` 组件树里有意义，我们不复用那棵树）。 */
+  --m-sb-row-h: 32px;
+  --m-sb-row-font: 14px;
+  --m-sb-icon-size: 20px;
+  --m-sb-leading-slot: 28px;
+  --m-sb-radius-pill: 8px;
+  --m-sb-group-font: 13px;
+  --m-sb-group-pt: 16px;
+  --m-sb-row-gap: 8px;
+  --m-sb-footer-btn-size: 32px;
+  --m-sb-row-px: 2px;
+  --m-sb-width: 288px;
 
   /* ── Composer 专用（Claude 的 --cmp-* 全套，13 个）──────────────────
    *
@@ -926,9 +1058,23 @@ body,
    */
   --cmp-pad-x: 0.75rem;                       /* 左右内边距 12px */
   --cmp-gap-y: 0.5rem;                        /* 纵向间距 8px */
+  /* 【UI 重建 2026-10-27】**两个 fallback 名此前都是错的。**
+   *
+   * 1. `--cds-font-size-text-entry-floor` —— 这个 token 在 Claude 的产物里
+   *    **存在**（16px，防 iOS 聚焦缩放的下限），但**生成器没导出它**
+   *    （`tokens.cds.css` 里对应的是 `--m-font-size-text-entry-floor: 16px`）。
+   *    所以旧写法永远取 0px fallback，那一半的 `max()` 从不生效 —— 它看起来
+   *    「参与计算」，实际是死代码。
+   *
+   * 2. `--cds-font-size-prose` 的 fallback 写的是 `13.18px` —— 那是**基础层**
+   *    的 prose（`.875rem × .9412`）。comfortable 层的 prose 是 `1rem` = 16px。
+   *    fallback 只在变量缺失时才用，所以平时不出错，但一旦 `tokens.cds.css`
+   *    没加载（例如某个 headless 探针只引 styles.css），输入框字号会掉到 13.18。
+   *
+   * 现在两个都指向**本仓真实存在的名字**，fallback 也是 comfortable 层的真值。 */
   --cmp-type-size: max(
-    var(--cds-font-size-text-entry-floor, 0px),
-    var(--cds-font-size-prose, 13.18px)
+    var(--m-font-size-text-entry-floor, 16px),
+    var(--m-font-size-prose, 1rem)
   );
   --cmp-leading: round(calc(var(--cmp-type-size) * 1.4), 1px);
   --cmp-row-py: max(0px, calc((var(--m-h-control) - var(--cmp-leading)) / 2));
@@ -2761,75 +2907,48 @@ button.chat-ledger-head:hover {
   }
 }
 
-/* ───────────── Chat side gutter (responsive) ─────────────
- * The message stream + composer share a horizontal gutter that scales with
- * the chat pane's own width (NOT the viewport - the pane shrinks when the
- * sidebars are open). The pane's root (`data-chat-root`) is declared a query
- * container, and its descendants read --chat-gutter via `px-[var(...)]`.
+/* ───────────── Chat side gutter ─────────────
+ * 【UI 重建 2026-10-27】**改回上游的固定 32px。**
  *
- * IMPORTANT: a container cannot query ITSELF - @container rules match
- * elements whose ANCESTOR container satisfies the condition, so setting the
- * variable on [data-chat-root] inside @container would never apply. Instead
- * the default (floor) value lives on [data-chat-root] directly, and each
- * @container block overrides --chat-gutter on [data-chat-root]'s descendants
- * (which inherit it). Narrow panes get a tight gutter so text isn't squeezed;
- * wide panes breathe. Stepped (not clamp()) so each breakpoint is a clean,
- * predictable padding.
+ * 上游直证（`c6a992d55-Che1orl5.css`，`.epitaxy-root`）：
  *
- * 【T122】**每一档的增量必须小于它所在的档宽，否则「窗口变宽 → 正文变窄」。**
+ *   .epitaxy-root{--prompt-text-code:.928571em;--prompt-leading-code:1.53846;
+ *                 --chat-gutter:32px; ... }
  *
- * 台阶式的陷阱：内容宽 = pane − 2×gutter。跨过一个断点时 gutter 跳变 G，
- * 而 pane 只增加了 1px，于是内容宽变化 = 1 − 2G。**G > 0.5px 就倒挂。**
+ * 也就是说**聊天区左右的留白是一个常数 32px，不随窗格宽度变化**。唯一的例外
+ * 是一条窄 tile 规则：
  *
- * 旧值（20 / 48 / 80 / 128）在三个断点上都倒挂，实测：
+ *   .epitaxy-chat-panel [@container tile-slot (max-width:560px)]{--chat-gutter:16px}
  *
- *   pane 447 → 448：content 407 → 352（**窄了 40px**）
- *   pane 703 → 704：content 607 → 544（**窄了 48px**）
- *   pane 1023 → 1024：content 863 → 768（**窄了 80px**）
+ * —— 只有「右侧 tile 里的侧聊」在窄到 560px 以下时收成 16px。
  *
- * 用户拖宽 1px，正文突然少 80px —— 可见的抖动，不只是理论问题。
+ * ## 上一版为什么错
  *
- * 现在（20 / 32 / 44 / 56）每档 +12px，仍会倒挂 1 − 2×12 = −23px。
- * **所以本套件不放行「纯台阶」** —— 见下面那条连续 clamp。
+ * 它用的是 `clamp(20px, calc((100cqw - 384px) * .175), 56px)` —— 那个公式属于
+ * **另一个变量**：`--cds-assistant-message-text-stop`，管的是**助手正文右侧**
+ * 的渐隐留白（`clamp(0px, (100% - 384px) * .175, 56px)`）。
  *
- * 上限 56px 有据：上游 `--cds-assistant-message-text-stop:
- * clamp(0px, (100% - 384px) * .175, 56px)` 的饱和值就是 56px，而旧的
- * 128px 是它的 2.3 倍。 */
-
-/* 【T122】连续 gutter —— 用容器查询单位，替掉台阶的倒挂。
+ * 两个变量名字里都有「留白」，但一个管**左右两边**、一个是**右边单侧**，
+ * 数值也差一倍（32 常数 vs 20–56 渐变）。把 stop 的公式套到 gutter 上，
+ * 结果就是「正文左右留白随面板宽度漂移」—— 上游从来没有这个行为。
  *
- * `100cqw` = 最近的 inline-size 容器的宽度，而 [data-chat-root] 就是那个
- * 容器（container-type: inline-size）。公式与上游逐字同型：
+ * 这是 CLAUDE.md 第十五条「同名不同源」的一次：**按名字搜到了，但那句话
+ * 说的不是这个变量**。
  *
- *   上游：clamp(0px,            (100% - 384px) * .175, 56px)
- *   这里：clamp(1.25rem, ... , 3.5rem)  —— 20px 是地板（窄 pane 下正文不能被挤没），
- *                                      56px 是上游的饱和值（天花板）
- *
- * 连续函数意味着 pane 每加 1px，content 增加 1 − 2×0.175 = 0.65px，
- * **永远为正，永不倒挂**。
- *
- * ⚠️ **四个台阶块已删除**（2026-10-24, T122）。留着它们会打架：台阶写在
- * clamp **之后**，声明顺序上后者胜出，于是 clamp 永远不生效。总控核实过
- * 这一点，指示整块删掉而不是"留作兜底"。
- *
- * **为什么不需要兜底**：`@supports (width: 1cqw)` 本身就是能力检测。
- * Electron 44 一定支持容器查询单位（实测 `CSS.supports('width','1cqw')`
- * 为 true），不支持的环境会跳过整块，回落到上面 `[data-chat-root]` 里
- * 那 20px 地板 —— 那正是我们想要的降级行为（贴边但不挤没）。
- *
- * **为什么不靠 rem**：上游的 384 / 56 是像素字面量。rem 依赖根字号 ——
- * 实测过一个 `font: 14px` 的页面里 `24rem` 算出 336px，比 384 少 48px，
- * 公式会静默漂移且没人会发现。 */
-@supports (width: 1cqw) {
-  [data-chat-root] * {
-    --chat-gutter: clamp(20px, calc((100cqw - 384px) * 0.175), 56px);
-  }
-}
+ * 下面保留 `[data-chat-root]` 上的声明，因为**消费点是 `px-[var(--chat-gutter)]`**
+ * （Tailwind 任意值），它需要一个变量名存在；值的来源改回常数。 */
 [data-chat-root] {
   container-type: inline-size;
-  --chat-gutter: 1.25rem; /* 20px floor - always keep >=20px so content never
-                              touches the pane edges, even at the narrowest
-                              width (both sidebars open). */
+  --chat-gutter: 32px;
+}
+
+/* 上游唯一的窄档：tile 里的侧聊窄于 560px 时收到 16px。
+ * 写成容器查询（`[data-chat-root]` 自己就是 inline-size 容器）而不是
+ * `@media` —— 窗口宽不等于聊天窗格宽。 */
+@container (width < 560px) {
+  [data-chat-root] * {
+    --chat-gutter: 16px;
+  }
 }
 
 /* ───────────── Turn-files card: compact title on narrow panes ─────────────
@@ -2944,15 +3063,34 @@ button.chat-ledger-head:hover {
   --chat-md-gap-sm: 0.375rem;        /* 6px  */
   --chat-md-gap-md: 0.5rem;          /* 8px  */
   --chat-md-gap-lg: 0.75rem;         /* 12px */
-  /* 【UI 重建 2026-10-27】行高改成 Claude 的真实比例。
+  /* 【UI 重建 2026-10-27】行高改成 Claude 的真实比例 **1.4286**。
    *
-   * T147 曾写「`--chat-leading: 1.42857` 是没人引用的变量，别用它当依据」——
-   * 那是对**第三方逆向产物**的判断。从本机 Claude 3.1623.4.0 直接读到的是
-   * `--cds-leading-body: calc(1.25rem * rem-scale)` ≈ 18.82px，配
-   * `--cds-font-size-body` ≈ 12.24px → **1.537**。
+   * 上游直证（`c6a992d55-Che1orl5.css`，`.epitaxy-root .epitaxy-transcript-typography`）：
    *
-   * 不是 1.42857，也不是原先的 1.625。18.82/12.24 = 1.5378。 */
-  --chat-md-leading: 1.5378;
+   *   --chat-body:    calc(.875rem * var(--cds-rem-scale,1));
+   *   --chat-leading: 1.4286;
+   *   font-size:      var(--chat-body);
+   *   line-height:    var(--chat-leading);
+   *
+   * 而且它**真的被消费** —— 同文件另一条规则写明
+   * `height:1lh;font-size:var(--chat-body,var(--cds-font-size-body));
+   *  line-height:var(--chat-leading,var(--cds-leading-body))`，
+   * `text-body` 类也走 `font-size:var(--chat-body);line-height:var(--chat-line,var(--chat-leading))`。
+   *
+   * 换算：13.176 × 1.4286 = **18.824px**。
+   *
+   * ⚠️ T147 曾判「`--chat-leading: 1.42857` 是没人引用的变量」，那时读的是
+   * 第三方逆向仓 `open-claude-ui` 的 css（只找到一行注释）。**从本机产物直接读，
+   * 它是被消费的** —— 那个判断的取证范围不够（CLAUDE.md 第三十八条）。
+   *
+   * ⚠️ 上一版取 1.5378 = `--cds-leading-body / --cds-font-size-body`
+   * （18.82 / 12.24）。那个**比值本身**是把 17.882px 的行高记成了 18.824px
+   * 之后的副产物，而且 Claude 的聊天区根本不读 `--cds-leading-body`
+   * —— 它读 `--chat-leading`。见 `tokens.cds.css` 的 `--cds-leading-body`：
+   * 基础层是 `1.25rem × scale` = 18.82，但配的基础层 body 是 12.24，
+   * 而聊天区 body 是 13.176 —— 拿错配对的比值去当行高比，正好差 7%。
+   */
+  --chat-md-leading: 1.4286;
 }
 [data-chat-density="compact"] {
   --chat-row-gap-assistant: 0.25rem; /* 4px */
@@ -3293,6 +3431,31 @@ button.chat-ledger-head:hover {
   [data-chat-root] .composer-q-in {
     animation-duration: 0.01s;
   }
+}
+
+/* ───────────── Composer action row: OUTSIDE the composer card ─────────────
+ *
+ * 【UI 重建 2026-10-27】
+ *
+ * Claude 的输入区是**两层**（真机截图 `reference-screenshot-175pct.webp`）：
+ *
+ *   ┌──────────────────────────────────────┐
+ *   │  +   Type / for commands             │  ← 圆角胶囊，只有输入
+ *   └──────────────────────────────────────┘
+ *     Bypass permissions   flash Max        ← 卡片**外**的一行
+ *
+ * 上一版把 chip 行、模型、权限、发送按钮全塞在卡片里，卡片底部因此多出一条
+ * 控件带 —— 输入框整体比 Claude 高约 30px，而且显得「重」。
+ *
+ * 现在的 DOM 顺序是 `composer-card` → `composer-action-row`（兄弟，不是子级），
+ * 所以这里补上它脱离卡片后需要自己承担的那点几何：左右内边距跟胶囊的
+ * `--composer-pad-x` 同值，两者左缘对齐。
+ *
+ * ⚠️ **这一块必须写在窄档 `@container` 之前** —— 两者特异性相同
+ * （都是 `[data-chat-root] .composer-action-row`），后写的赢。第一版把
+ * 这段放在窄档之后，于是窄档的 0.5rem 内边距永远不生效（被这里覆盖回去）。 */
+[data-chat-root] .composer-action-row {
+  padding-inline: var(--composer-pad-x, 0.75rem);
 }
 
 /* Narrow-pane cosmetics only (gaps/paddings) — the tier decision itself

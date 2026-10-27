@@ -49,7 +49,10 @@ export type PaneTileKind =
   | "terminal"
   | "watercolor"
   | "mcpapp"
-  | "turns";
+  | "turns"
+  /** 【UI 重建 2026-10-27】项目概览（Environment / Context / Connectors /
+   *  Outputs / Changes 卡片堆）—— Claude Code 模式的默认右栏。 */
+  | "overview";
 
 /** 一个叶子 tile。 */
 export interface PaneTile {
@@ -84,6 +87,8 @@ const NON_CHAT_KINDS: readonly PaneTileKind[] = [
   "terminal",
   // Mcode 新增的一类（每轮时间线）。
   "turns",
+  // 【UI 重建 2026-10-27】项目概览 —— 同样是「抢主区」的非 chat tile。
+  "overview",
 ];
 
 export function isNonChatTile(kind: PaneTileKind): boolean {

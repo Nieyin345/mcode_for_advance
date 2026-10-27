@@ -115,6 +115,21 @@ import { useUiPrefsStore } from "@renderer/lib/uiPrefs.js";
  * 改 pb 会与输入框贴合逻辑打架。 */
 const MESSAGE_LIST_TOP_PADDING = 48;
 
+/** 消息列表底部留白。
+ *
+ * 【UI 重建 2026-10-27】**补上这一条。** 上游是 `pb-[32px]`，Mcode 此前
+ * **完全没有底部 padding**（上面那段注释说「由回到底部按钮与 composer 的
+ * 外边距承担」——那是一个自创的替代，不是上游的做法）。
+ *
+ * 后果：滚到底时最后一条消息**直接贴着输入框上沿**，没有任何呼吸。
+ * Claude 在那里留 32px。
+ *
+ * ⚠️ 那段注释担心的「与输入框贴合逻辑打架」要验一下再下结论：
+ * 输入框是 `flex` 的兄弟节点（不在滚动容器里），它的高度由内容决定，
+ * **不读 message list 的 padding** —— 所以加 pb 不会让输入框跳位，
+ * 只会在滚到底时多出 32px 空白。实测见 `long-chat` 基线格。 */
+const MESSAGE_LIST_BOTTOM_PADDING = 32;
+
 /** Picker trigger chars → picker kind. CJK soft keyboards often emit
  *  full-width variants (／ U+FF0F, ＠ U+FF20) for the slash/at keys, so
  *  both forms trigger; the full-width char itself lands inside the replaced
@@ -3143,7 +3158,10 @@ function ChatPaneForSession({
               // The activity cluster is an overlay in the stream's top-right
               // corner (see below), so the list keeps the full pane width and
               // reserves nothing for it.
-              contentContainerStyle={{ paddingTop: MESSAGE_LIST_TOP_PADDING }}
+              contentContainerStyle={{
+                paddingTop: MESSAGE_LIST_TOP_PADDING,
+                paddingBottom: MESSAGE_LIST_BOTTOM_PADDING,
+              }}
               // overscrollBehavior contain: a touch scroll starting at the
               // list's boundaries must not chain to the document (mobile
               // browsers would pan the whole shell — see the document scroll
@@ -3698,11 +3716,51 @@ function ChatPaneForSession({
                 )}
               />
             </RenderErrorBoundary>
-            <div
-              ref={composerActionRowRef}
-              data-cds="ComposerActionRow"
-              className="composer-action-row flex flex-wrap items-center justify-between gap-2 px-2.5 pb-2 pt-1.5"
-            >
+          </div>
+          {/* 【UI 重建 2026-10-27】**操作行移出输入框卡片，落到它下面。**
+           *
+           * ## 为什么
+           *
+           * 真机截图（`tools/claude-ui-reverse/reference-screenshot-175pct.webp`）：
+           * Claude 的输入区是**两层**——
+           *
+           *   ┌────────────────────────────────────────────┐
+           *   │  +   Type / for commands                   │  ← 圆角胶囊，只有输入
+           *   └────────────────────────────────────────────┘
+           *     Bypass permissions        deepseek-v4.1-flash Max  ← 卡片**外**一行
+           *
+           * 上一版把 chip 行 / 模型 / 权限 / 发送按钮全塞进卡片**内部**
+           * （`ComposerActionRow` 在 `composer-card` 的 DOM 里）。结果是卡片底部
+           * 多出一条控件带，整个输入框比 Claude 高 30px 且「重」一倍。
+           *
+           * ## 为什么不是纯 CSS 挪
+           *
+           * 卡片有 `overflow-hidden` + 圆角 —— 放外面的元素会被裁掉。所以必须
+           * 在 DOM 上真的移出去，不能只改定位。
+           *
+           * ## 不变的东西
+           *
+           * `data-cds="ComposerActionRow"` / `ComposerConfigControls` /
+           * `ComposerPrimaryActions` 三个属性全部保留 —— 套件与
+           * `arc005-main-ui-u1-guard-smoke` 按它们定位。
+           *
+           * 该行的间距不再由卡片的 `overflow-hidden` 约束，所以这里显式给
+           * 左右内边距（与胶囊的 `--composer-pad-x` 对齐，看起来是同一条竖线）。 */}
+          <div
+            ref={composerActionRowRef}
+            data-cds="ComposerActionRow"
+            className={cn(
+              "composer-action-row flex flex-wrap items-center justify-between gap-2 pb-1 pt-1.5",
+              // 左右内边距**不写内联**：styles.css 的 `@container (width < 30rem)`
+              // 里有一条更窄的 padding 覆盖（0.5rem），内联样式会赢过它，
+              // 导致窄窗格下按钮贴边。改成类名在 CSS 里给，让容器查询能正常覆盖。
+              // 【UI 重建 2026-10-27】移出卡片之后**必须自己再判一次**
+              // `hasPendingPrompt`：卡片的 `hidden` 只作用于卡片自己，
+              // 外面这一行不受它影响。漏了这条会出现「审批卡占位、输入框
+              // 隐藏了，但下面还挂着一条模型/权限/发送按钮」——比原来更怪。
+              hasPendingPrompt && "hidden",
+            )}
+          >
               <div data-cds="ComposerConfigControls" className="composer-chips flex min-w-0 flex-1 items-center gap-1">
                 {chipsMode === "collapsed" ? (
                   // Narrow hosts (side-chat panel / phone shell): no pill —
@@ -3799,7 +3857,6 @@ function ChatPaneForSession({
                   </button>
                 )}
               </div>
-            </div>
           </div>
           {/* Content-tag preview popover. Fixed-positioned to the clicked
               chip's top-right; rendered outside the composer container so

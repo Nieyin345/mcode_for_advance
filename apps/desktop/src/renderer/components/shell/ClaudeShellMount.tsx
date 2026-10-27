@@ -281,6 +281,10 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   const asideFirst = rightDock === "left";
   const tileForTab = (tab: string): PaneTileKind => {
     switch (tab) {
+      // 【UI 重建 2026-10-27】默认右栏是项目概览。**必须显式列出来** ——
+      // `default` 是 `file`，而 `overview` 一旦漏了就会静默落进文件树
+      // （改了 store 默认值却「看不到变化」的经典形态）。
+      case "overview": return "overview";
       case "git": return "diff";
       case "preview": return "preview";
       case "turns": return "turns";

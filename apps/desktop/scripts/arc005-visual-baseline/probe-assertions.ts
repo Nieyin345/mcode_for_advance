@@ -341,11 +341,31 @@ export function inspectSceneContent(
 
      ⚠️ 这里只用 dom 级证据（文字/元素存在），**不写 visual 断言** —— 第一次
      拍下来的就是基线本身，没有「应该长什么样」可言。 */
-  if (scene === "files-pane" || scene === "git-pane" || scene === "taskcenter" || scene === "workflow-board") {
+  if (scene === "files-pane" || scene === "git-pane" || scene === "taskcenter" || scene === "workflow-board" || scene === "overview-pane") {
     const right = queryVisible(doc, "[data-cds-aside]");
     if (!right) return fail("missing", "右栏没有打开（[data-cds-aside] 不在 DOM 里）");
     if (isInsideFixture(right)) return fail("fixture-only", "右栏是夹具，不是真实面板");
     const rightText = String(right.textContent ?? "");
+
+    if (scene === "overview-pane") {
+      /* 【UI 重建 2026-10-27】项目概览面板。
+       *
+       * 要求五张卡片的标题都在。这几句话是**面板自己的静态文案**
+       * （不是桩数据），所以它们的缺失只可能是「面板没渲染」——
+       * 正是这一格要抓的东西。
+       *
+       * ⚠️ 不要在这里断言「Context 显示 xx%」或「Connectors 有几个」：
+       * 那两个依赖会话/桩数据，空会话下**本来就该是空态**。断言它们
+       * 会把「正确的空」判成失败。 */
+      const cards = ["Environment", "Context", "Connectors", "Outputs", "Changes"];
+      const present = cards.filter((c) => rightText.includes(c));
+      return present.length === cards.length
+        ? productPass({ panel: "overview", cards: present.length })
+        : fail("missing", "概览面板的五张卡片没有全部渲染", {
+            got: present,
+            want: cards,
+          });
+    }
 
     if (scene === "files-pane") {
       // 桩给了两层目录：顶层 src/docs/README.md/package.json。

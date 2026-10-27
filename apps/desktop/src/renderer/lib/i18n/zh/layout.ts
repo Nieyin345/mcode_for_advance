@@ -155,6 +155,9 @@ export const zh = {
   "layout.showEditor": "显示编辑器",
   "layout.hideEditor": "隐藏编辑器",
   "layout.noOpenFiles": "无打开的文件",
+  /** 右栏的**项目概览**（Claude Code 模式的默认右栏）—— Environment /
+   *  Context / Connectors / Outputs / Changes 卡片堆。 */
+  "layout.tabOverview": "概览",
   "layout.tabFiles": "文件",
   "layout.tabTurns": "轮次流程",
   /** 右栏的**运行看板** —— 这张图现在跑到哪一格、哪几个分身还在干活

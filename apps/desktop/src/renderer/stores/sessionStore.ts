@@ -850,7 +850,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // init() hydrates from the settings table. rightPanelTab / ideEditorMode
   // are global user prefs.
   // ─────────────── I 布局（纯 UI） ───────────────
-  rightPanelTab: "files",
+  // 右栏默认页签。【UI 重建 2026-10-27】`files` → **`overview`**：
+  // Claude Code 模式的右栏默认是项目概览（Environment / Context / Connectors /
+  // Outputs / Changes 卡片堆，见真机截图），不是文件树。文件树仍是第一个
+  // 可切换的页签 —— 用户选过的值会经 `UI_RIGHT_PANEL_TAB_SETTING_KEY` 持久化并
+  // 覆盖这个默认，所以只有「从没选过」的用户看到新默认。
+  rightPanelTab: "overview",
   rightPanelTabSeq: 0,
   // ─────────────── M 项目级自定义命令 ───────────────
   customCommandsByProject: {},

@@ -40,6 +40,7 @@ import { nextRailFocusIndex } from "./panelRailNavigation.js";
 import { revealRailItemWithin } from "./panelRailScroll.js";
 import { CACHED_BUILTIN_RIGHT_TABS, prunePanelIds, rememberPanelId, rememberRightTab, shouldMountCachedBuiltin } from "./rightPanelKeepAlive.js";
 import { PANE_DOCK_MIME, RIGHT_PANE_DRAG_ID, paneDockFromKeyboard } from "./paneDock.js";
+import { ClaudeProjectOverview } from "@renderer/components/shell/ClaudeProjectOverview.js";
 
 const NO_MODULES: never[] = [];
 
@@ -454,6 +455,9 @@ export function RightPanel() {
             回合流这些无关面板的异常也吞成一张卡,用户连切走的原因都看不到。
             `moduleViews` 是渲染期直接算出来的(没有 useMemo 托管),而扩展坞是它唯一的
             消费者;把边界收在这一块,坏目录最多让扩展坞显示错误卡,右栏其余部分照常。 */}
+        {/* 【UI 重建 2026-10-27】Claude Code 模式的项目概览（默认右栏）。
+            与 `paneContent.tsx` 的 `overview` 分支**同一个组件**（硬规矩 2）。 */}
+        {!moduleVisible && !activeCustom && tab === "overview" && <ClaudeProjectOverview />}
         {!moduleVisible && !activeCustom && tab === "turns" && <TurnFlowPanel />}
         {!moduleVisible && !activeCustom && tab === "flow" && <WorkflowBoardPanel />}
         {!moduleVisible && !activeCustom && tab === "tasks" && <TaskListPanel />}
