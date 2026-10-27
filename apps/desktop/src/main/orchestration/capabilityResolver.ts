@@ -146,10 +146,15 @@ export function executorCapabilityDescriptors(
 /**
  * **宿主内置能力**(ARC-006 步①)的声明 —— 「这台机器自带、不来自任何插件」的能力。
  *
- * 与 provider / plugin / executor 三类不同,这一类是**宿主自己实现**的(目前是模块系统的
- * 两个只读文件能力 `core.file.inspect` / `core.file.info`,见 `modules/fileCapabilities.ts`)。
- * 它们的实现住在 `ModuleHost`,所以本文件**不 import 它们**(保持可被 smoke 无 DB 打包),
- * 由装配方把「宿主注册了哪几个能力 id」当**数据**喂进来 —— 与 plugins 那条完全同形。
+ * 与 provider / plugin / executor 三类不同,这一类是**宿主自己实现**的(目前是两个只读
+ * 文件能力 `mcode.file.inspect` / `mcode.file.info`,见 `modules/builtinMcCommands.ts`)。
+ *
+ * 【UI 重建 2026-10-27】**id 从 `core.file.*` 改成了 `mcode.file.*`** —— 以
+ * `builtinMcCommands.ts` 为准（宿主内置命令表，桥在派发时**先查它**）。
+ *
+ * 实现**不在本文件**,本文件也**不 import 它们**(保持可被 smoke 无 DB 打包) ——
+ * 由装配方把「宿主注册了哪几个能力 id」当**数据**喂进来，与 plugins 那条完全同形。
+ * `ModuleHost` 已随扩展系统合并删除（只剩 Theia 宿主），所以不要再去那里找实现。
  *
  * **种类映射**:契约 `CapabilityKind` 只有 `builtin` / `executor` / `provider` / `skill` /
  * `mcp` / `plugin` —— 没有模块系统自己的 `query` / `action` / `task`。宿主实现的能力,契约里

@@ -178,7 +178,7 @@ try {
       permissions: [],
       contributions: [{
         id: "v1", slot: "view", title: { zh: "t", en: "t" },
-        capability: "core.file.info", location: "right", view: { kind: "fields", fields: [] },
+        capability: "mcode.file.info", location: "right", view: { kind: "fields", fields: [] },
       }],
     };
     const entries = contributionsOf({ modules: [manifest], capabilities: [] }, "view");

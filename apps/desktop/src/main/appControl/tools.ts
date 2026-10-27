@@ -1683,7 +1683,7 @@ export function appMcpTools(): McpToolSpec[] {
       // 设计目标第 2 条叫 `guide(topic)`,这里照做):describe 的键是**方法名**,它的合同
       // 是"参数格式 / 返回格式 / 权限档";而 guide 的键横跨三种对象 —— 功能域(如
       // `library`)、用户发布的工作流工具(`workflow.run.<名字>`)、扩展能力
-      // (`module.<slug>.<短名>` / `core.file.inspect`)。塞进 describe 会让同一个
+      // (`module.<slug>.<短名>` / `mcode.file.inspect`)。塞进 describe 会让同一个
       // `method` 参数既可能是方法名又可能是域/能力 id,`unknownMethodHint` 的
       // "你是不是要找 X" 也会对着域报错 —— 两个分类混在一个合同里,调用方无从判断
       // 自己拿到的是哪种。独立工具还能整体追加而不改 describe 的既有行为(它不是
@@ -1701,7 +1701,7 @@ export function appMcpTools(): McpToolSpec[] {
         topic: z
           .string()
           .optional()
-          .describe("主题 id:功能域名(如 library / workflow)、workflow.run.<名字>、或扩展能力 id(如 core.file.inspect)"),
+          .describe("主题 id:功能域名(如 library / workflow)、workflow.run.<名字>、或扩展能力 id(如 mcode.file.inspect)"),
       },
       handler: async (args: { topic?: string }) => {
         const topic = args.topic?.trim();

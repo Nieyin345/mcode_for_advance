@@ -1864,7 +1864,7 @@ console.log("\n㉑ MC-058 残余②③:回读/补偿按真实服务身份钉死 
       apiVersion: 1, id: "user.coverage.report", version: "1.0.0",
       title: { zh: "覆盖率报告", en: "Coverage" }, permissions: ["resource.read"],
       contributions: [{
-        id: "inspect", slot: "files.context", title: { zh: "生成", en: "Create" }, capability: "core.file.inspect",
+        id: "inspect", slot: "files.context", title: { zh: "生成", en: "Create" }, capability: "mcode.file.inspect",
         view: { title: { zh: "报告", en: "Report" }, fields: [{ key: "bytes", title: { zh: "字节", en: "Bytes" } }] },
       }],
     };

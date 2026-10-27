@@ -310,8 +310,8 @@ function goodSpec(): unknown {
 
     // module 类声明映射到清单的 builtin 类。
     const moduleCheck = sceneCapabilityPreflight(
-      { ...good.spec, capabilities: [{ kind: "module", id: "core.file.inspect" }] },
-      [{ kind: "builtin", id: "core.file.inspect", source: "host" }],
+      { ...good.spec, capabilities: [{ kind: "module", id: "mcode.file.inspect" }] },
+      [{ kind: "builtin", id: "mcode.file.inspect", source: "host" }],
     );
     eq("★ module 声明映射到清单 builtin 类(就位)", moduleCheck.ok, true);
   } else {
@@ -473,7 +473,7 @@ function goodSpec(): unknown {
       { kind: "plugin", id: "pl", spec: { source: "marketplace", name: "research-pack" } },
       { kind: "mcp", id: "mc", spec: { name: "coverage", config: { url: "http://x" } } },
       { kind: "hook", id: "hk", spec: { event: "post-save", command: "echo" } },
-      { kind: "module", id: "md", spec: { manifest: { id: "core.file.inspect" } } },
+      { kind: "module", id: "md", spec: { manifest: { id: "mcode.file.inspect" } } },
       { kind: "panel", id: "pn", spec: { html: "<div>面板</div>" } },
       { kind: "scaffold", id: "sc", spec: { entry: "directory", path: "data" } },
     ],
@@ -687,7 +687,7 @@ function goodSpec(): unknown {
     const noConfirm = adaptScenePayload("module", { manifest: EXAMPLE_MODULE });
     check("★ module 缺 confirmReadAccess → 明确问题(不替用户确认)", !noConfirm.ok, noConfirm.ok ? noConfirm.input : noConfirm.problems);
     // manifest 形状不全(只给 id)→ 明确问题。
-    const badManifest = adaptScenePayload("module", { manifest: { id: "core.file.inspect" }, confirmReadAccess: true });
+    const badManifest = adaptScenePayload("module", { manifest: { id: "mcode.file.inspect" }, confirmReadAccess: true });
     check("★ module manifest 形状不全 → 明确问题", !badManifest.ok, badManifest.ok ? badManifest.input : badManifest.problems);
   }
 
