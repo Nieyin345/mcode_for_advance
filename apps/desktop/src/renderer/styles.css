@@ -489,14 +489,28 @@ div:has(> [role="menu"]) {
 }
 
 .dark {
-  /* Dark-mode base font weight. White text on a dark background undergoes
-   * optical thinning, so the default 400 reads as low-contrast. The base is
-   * lifted to 600 for crisp, readable UI text. The matching .dark .font-*
-   * ladder shift (in the font-weight ladder section below) keeps relative
-   * hierarchy intact. Light mode uses a 500 base via :root (lighter than
-   * dark because black-on-white needs less help), with its own ladder shift
-   * in the same section. */
-  font-weight: 600;
+  /* 【UI 重建 2026-10-28】**暗色不再整体加粗。**
+   *
+   * 原来这里写 `font-weight: 600`，理由是「白字在深色上视觉变细，
+   * 提到 600 更清晰」。那是 Mcode 自己的判断，**Claude 不是这么做的**。
+   *
+   * 逆向证据（`c6a992d55-Che1orl5.css` 里 `[data-mode=dark]` 块内的字重）：
+   *
+   *   [data-theme=claude][data-mode=dark] .font-base        → 400
+   *   [data-theme=claude][data-mode=dark] .font-large       → 400
+   *   [data-theme=claude][data-mode=dark] .font-small       → 400
+   *   [data-theme=claude][data-mode=dark] .font-heading     → 500
+   *   [data-theme=claude][data-mode=dark] .font-base-bold   → 500
+   *
+   * **暗色的 .font-base 与亮色一样是 400。** Claude 靠的是把文字色
+   * 从 `#0b0b0b` 换成 `#f0efec`（对比度 15:1），而不是加粗笔画。
+   *
+   * 这一条在暗色下影响**所有文字**——正文、标题、列表、代码。实测截图
+   * 里 `Heading two` 看起来比亮色重一档，根因就是它。
+   *
+   * 删掉之后暗色正文与 Claude 一致（400）。字重阶梯（`.font-*` 那一组）
+   * 各自的相对关系不受影响 —— 它们本来就按各自的值走，不该被一个
+   * 全局基重整体抬升。 */
 
   /* Slate-tinted dark ramp (VS Code Dark+ / GitHub Dark style). The whole
    * ramp carries a slight cool bias — the B channel runs a few units above
@@ -775,20 +789,25 @@ html .font-bold {
   font-weight: 800;
 }
 
-/* Dark-mode ladder (.dark base = 600). Must come AFTER the light block so it
- * wins the equal-specificity tie when <html> carries .dark. */
-.dark .font-normal {
-  font-weight: 500;
-}
-.dark .font-medium {
-  font-weight: 600;
-}
-.dark .font-semibold {
-  font-weight: 700;
-}
-.dark .font-bold {
-  font-weight: 800;
-}
+/* 【UI 重建 2026-10-28】**暗色阶梯不再整体 +1 档。**
+ *
+ * 原来暗色比亮色每一档都高 100（normal 500 / medium 600 / semibold 700 /
+ * bold 800），依据是「白字在深色上视觉变细」。那是 Mcode 自己的判断 ——
+ * **Claude 的暗色字重与亮色完全相同**：
+ *
+ *   [data-mode=dark] .font-base        → 400
+ *   [data-mode=dark] .font-base-bold   → 500
+ *   [data-mode=dark] .font-heading     → 500
+ *   [data-mode=dark] .font-large-bold  → 600
+ *
+ * 全部与亮色同名档一模一样。所以这整块**不再是「暗色专用」**，
+ * 而是回到与亮色同一组值 —— 直接删掉覆盖即可（上方亮色块已经定义了这些档）。
+ *
+ * ## 为什么不能只删 `.dark{font-weight:600}`
+ *
+ * 那个只影响**没有显式 font-* 类**的元素。而聊天正文、标题、列表项
+ * 大多带 `font-normal` / `font-medium`，它们走的是这块阶梯 ——
+ * 所以两处都要处理，否则正文仍然是 500。 */
 
 /* ───────────── Derived chat font sizes ─────────────
  * Scaled variants of --chat-font-size so the whole chat surface — prose,
