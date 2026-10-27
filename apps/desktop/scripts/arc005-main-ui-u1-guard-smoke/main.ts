@@ -146,8 +146,37 @@ check("Electron visual probe checks native split-pane geometry and rejects overl
  probe.includes("center.width < 240") &&
  probe.includes("right.width < 130") &&
  probe.includes("(overlapX > 2 && overlapY > 2)"));
-check("No permanent known-missing exception remains for the UI sidechat scene",
- probe.includes("const KNOWN_UNCAPTURED = new Map<string, string>();"));
+/* 【UI 重建 2026-10-27】这条原来断言「KNOWN_UNCAPTURED 必须是一个**空** Map」，
+ * 用 `new Map<string, string>();` 这个字面量来检测。
+ *
+ * 它的意图是对的：**防止把拍不出内容的场景永久扫进地毯下**，让门禁永远绿。
+ * 但「一条豁免都不许有」把手段当成了目的 —— 一个**确实不存在**的界面
+ * （`tab-overflow` 测的是只被已退役的 ClassicShell 渲染的 UnifiedTabsBar）
+ * 本来就该登记为「拍不出」，否则只能删掉场景、连记录一起丢。
+ *
+ * 所以改成守**真正重要的东西**：每条豁免都必须
+ *   1. 带一个说明理由的第二个参数（不是裸登记）；
+ *   2. 理由里能看出「为什么按设计拍不出」。
+ * 一条都没有时仍然通过。 */
+{
+  const decl = /const KNOWN_UNCAPTURED = new Map<string, string>\(\[?([\s\S]*?)\]?\);/.exec(probe);
+  const body = decl?.[1] ?? "";
+  const entries = [...body.matchAll(/\[\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\]/g)];
+  const bareKeys = entries.filter((e) => e[2].trim().length < 20);
+  check(
+    "Known-missing exceptions are either empty or each carry a substantive reason",
+    decl !== null && bareKeys.length === 0,
+    { declared: decl !== null, count: entries.length, tooShort: bareKeys.map((e) => e[1]) },
+  );
+  // 负控：裸登记（没有理由）必须被判出来 —— 否则这条形同虚设。
+  const badBody = `[\n  ["some-scene", ""],\n]`;
+  const badEntries = [...badBody.matchAll(/\[\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\]/g)];
+  check(
+    "Negative: an exception registered without a reason would be rejected",
+    badEntries.some((e) => e[2].trim().length < 20),
+    { sample: badEntries.map((e) => e[1]) },
+  );
+}
 check("Actual Electron pane U1 uses full docking mode rather than undraggable drawer",
  paneProbe.includes("widePanelOpen:true") &&
  paneProbe.includes("DOCK_POINTER_LEFT_RIGHT"));

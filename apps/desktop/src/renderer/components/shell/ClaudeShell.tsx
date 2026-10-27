@@ -170,9 +170,17 @@ export function ClaudeShell({
         <div className="relative flex h-full min-h-0 flex-1 flex-col">
           <div className="relative flex h-full min-h-0 flex-1 items-stretch">
             {/* project 列**始终挂载**：它承载项目首页（会话列表/起点卡片），
-                被 thread 盖住时不卸载，切回来滚动位置与草稿都还在。 */}
+                被 thread 盖住时不卸载，切回来滚动位置与草稿都还在。
+
+                【UI 重建 2026-10-27】它同时是**没有会话时的主内容区**，所以也带
+                `data-cds-center` —— 与 chat tile 上那个是同一个语义「当前主列」。
+                没有它就出现「新装应用（零会话）时主区没有任何标记」，
+                真机探针（`arc005-pane-electron-smoke` 的 REAL_ELECTRON_APP）
+                直接报「real ThreePaneLayout missing」，看起来像壳没渲染。 */}
             <Column column="project" active={column}>
-              {projectColumn}
+              <div data-cds-center="" className="flex min-h-0 min-w-0 flex-1 flex-col">
+                {projectColumn}
+              </div>
             </Column>
             {column !== "project" && (
               <Column column="thread" active={column}>

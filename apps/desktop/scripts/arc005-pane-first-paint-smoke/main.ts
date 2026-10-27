@@ -16,7 +16,31 @@ check("Non-numeric layout fields are dropped instead of coercion",
  (()=>{const v=parseSavedPaneLayout('{"leftPct":"40","right":null,"editor":false,"bottomTerminal":[] }');return !!v&&v.dock==="right"&&Object.keys(v).length===1;})());
 check("Overflow/invalid finite widths are dropped",!Object.hasOwn(parseSavedPaneLayout('{"right":1e999,"editor":1e999}')??{},"right"));
 check("Old unused left px field is not reintroduced",!Object.hasOwn(parseSavedPaneLayout('{"left":999}')??{},"left"));
-check("First paint getMany contains one pane layout key",source.includes("UI_PANE_WIDTHS_SETTING_KEY,\n          UI_COMPOSER_MODEL_SETTING_KEY"));
+/* 【UI 重建 2026-10-27】原来断言的是「这两个 key **相邻**」：
+ *   source.includes("UI_PANE_WIDTHS_SETTING_KEY,\n          UI_COMPOSER_MODEL_SETTING_KEY")
+ *
+ * 那是个**过窄的字面量**。它守的意图是「first-paint 那批 getMany 里，pane 宽度
+ * 只取一次」（取两次会多一轮 IPC，首帧几何会闪）。
+ *
+ * ⚠️ 同时注意：这两个 key 在**第 45 行的 import** 里也出现过一次（单行、空格分隔）。
+ * 直接 `source.includes(...)` 或全局计数都会先命中 import。所以这里只截
+ * `getMany({ ... keys: [ ... ] })` 那一段，在**批内部**数。 */
+const firstPaintBatch = (() => {
+  const start = source.indexOf("keys: [");
+  if (start < 0) return "";
+  const end = source.indexOf("]", start);
+  return end > start ? source.slice(start, end) : "";
+})();
+const countKey = (k: string) => (firstPaintBatch.match(new RegExp(`\\b${k}\\b`, "g")) ?? []).length;
+check("First paint getMany contains each pane layout key exactly once", (() => {
+  const widths = countKey("UI_PANE_WIDTHS_SETTING_KEY");
+  const layout = countKey("UI_PANE_LAYOUT_SETTING_KEY");
+  return firstPaintBatch.length > 0 && widths === 1 && layout === 1;
+})(), {
+  widths: countKey("UI_PANE_WIDTHS_SETTING_KEY"),
+  layout: countKey("UI_PANE_LAYOUT_SETTING_KEY"),
+  batchKeys: firstPaintBatch.length,
+});
 check("Deferred settings no longer re-fetch the pane layout key",!source.includes("UI_SHORTCUTS_SETTING_KEY,\n          UI_PANE_WIDTHS_SETTING_KEY,"));
 check("Pane state is set in init before deferred init schedules",source.includes("const firstPaintLayout = parseSavedPaneLayout(fp[UI_PANE_WIDTHS_SETTING_KEY]);") && source.indexOf("const firstPaintLayout") < source.indexOf("queueMicrotask(() => void get().initDeferred())"));
 check("Only one parser path exists in sessionStore",!source.includes("const paneRaw = ds[UI_PANE_WIDTHS_SETTING_KEY]")&&source.includes("firstPaintLayout"));

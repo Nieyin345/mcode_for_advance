@@ -112,7 +112,18 @@ export function stripComments(source: string): string {
  * 源码里**真的**（非注释）包含某段文本吗？
  *
  * **这是替代 `src.includes("...")` 的正确写法。** 用法完全相同，但注释里的不算。
+ *
+ * 【UI 重建 2026-10-27】**换行统一成 LF 再比。**
+ *
+ * 这个仓库的源文件在工作区里是 **CRLF**（`core.autocrlf` 打开时的检出形态），
+ * 而断言里写的跨行 needle 一律是 `"\n          KEY"` 这种 LF 形态。于是
+ * `sourceHas(store, "A,\n          B")` **永远为假** —— 文件里是 `A,\r\n`。
+ *
+ * 症状特别有迷惑性：断言报「不包含」，但人打开文件一眼就看到那两行是相邻的。
+ * 本轮至少三条断言（pane-first-paint / pane-free-grid / 若干跨行类名）栽在这上面。
+ *
+ * 归一化两边，让「换行风格」不再是判据的一部分 —— 它本来就不是。
  */
 export function sourceHas(source: string, needle: string): boolean {
-  return stripComments(source).includes(needle);
+  return stripComments(source).replace(/\r\n/g, "\n").includes(needle.replace(/\r\n/g, "\n"));
 }

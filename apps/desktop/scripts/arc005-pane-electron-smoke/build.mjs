@@ -26,7 +26,7 @@ const pkg=(prefix,sub)=>{
 mkdirSync(join(desktop,'.tmp'),{recursive:true});
 const dir=mkdtempSync(join(desktop,'.tmp/arc005-pane-electron-'));
 console.log('ARC005 pane U1 evidence: '+dir);
-const originalFiles=['components/layout/ThreePaneLayout.tsx','stores/sessionStore.ts'];
+const originalFiles=['components/shell/ClaudeShellMount.tsx','stores/sessionStore.ts'];
 const hash=p=>createHash('sha256').update(readFileSync(p)).digest('hex');
 const originals=Object.fromEntries(originalFiles.map(f=>[f,hash(join(root,f))]));
 const resolveTs=p=>{
@@ -77,21 +77,32 @@ for(const variant of ['green','rekey','silent']){
     if(!isAlias&&!isRel)return;
     const resolved=resolveTs(isAlias?join(root,raw.slice(10)):resolve(a.resolveDir,raw));
     if(resolved in stubs)return {path:resolved,namespace:'mock'};
-    if(variant==='rekey'&&resolved===abs('components/layout/ThreePaneLayout.tsx'))return {path:resolved,namespace:'mutation'};
+    if(variant==='rekey'&&resolved===abs('components/shell/ClaudeShellMount.tsx'))return {path:resolved,namespace:'mutation'};
     if(variant==='silent'&&resolved===abs('stores/sessionStore.ts'))return {path:resolved,namespace:'mutation'};
     return isAlias?{path:resolved}:undefined;
    });
    b.onLoad({filter:/.*/,namespace:'mock'},a=>({contents:stubs[a.path],loader:'tsx',resolveDir:desktop}));
    b.onLoad({filter:/.*/,namespace:'mutation'},a=>{
     let code=readFileSync(a.path,'utf8');
+    /* 【UI 重建 2026-10-27】**锚点匹配前把 CRLF 归一成 LF。**
+     *
+     * 源文件在工作区里是 CRLF（`core.autocrlf` 的检出形态），而锚点字符串里写的是
+     * `\n`。于是 `code.includes(needle)` 恒假、构建直接抛「mutation target missing」——
+     * 看起来像「实现改了」，实际只是换行风格不同。
+     * 与 `scripts/lib/sourceText.ts` 的 `sourceHas` 是同一处修复。
+     *
+     * ⚠️ `rekey` 变体改成注入到 **chat tile 的宿主**（`TilePane`）上 —— 旧壳的
+     * `ThreePaneLayout` 已不再渲染，它身上的 `<main data-ui-center-pane>` 也不存在了。
+     * 变异守的语义没变：**换 dock 一侧时中心区不能重挂载**（重挂 = Monaco/PTY 全丢）。 */
+    const lf = (s) => s.replace(/\r\n/g, '\n');
     if(variant==='rekey'){
-      const needle='<main data-ui-center-pane="" className={cn(';
-      if(!code.includes(needle))throw Error('rekey mutation target missing');
-      code=code.replace(needle,'<main key={rightDock} data-ui-center-pane="" className={cn(');
+      const needle = 'tileLayout={tileLayout}';
+      if(!lf(code).includes(needle)) throw Error('rekey mutation target missing');
+      code = lf(code).replace(needle, 'key={rightDock} ' + needle);
     }else{
       const needle='if (canonicalCorrupt) {\n      // Corruption must be visible';
-      if(!code.includes(needle))throw Error('silent mutation target missing');
-      code=code.replace(needle,'if (false && canonicalCorrupt) {\n      // Corruption must be visible');
+      if(!lf(code).includes(needle))throw Error('silent mutation target missing');
+      code=lf(code).replace(needle,'if (false && canonicalCorrupt) {\n      // Corruption must be visible');
     }
     return {contents:code,loader:a.path.endsWith('.tsx')?'tsx':'ts',resolveDir:dirname(a.path)};
    });
