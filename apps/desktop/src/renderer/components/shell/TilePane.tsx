@@ -72,6 +72,7 @@ function Tile({
   expanded,
   onMoveTile,
   asideOpen = true,
+  asideHeader,
 }: {
   tile: PaneTile;
   renderTile: (id: string) => ReactNode;
@@ -81,6 +82,7 @@ function Tile({
   expanded?: boolean;
   onMoveTile?: (id: string) => void;
   asideOpen?: boolean;
+  asideHeader?: ReactNode;
 }) {
   const isChat = tile.tileId === "chat";
   return (
@@ -95,16 +97,22 @@ function Tile({
       {...(isChat
         ? { "data-ui-center-pane": "", "data-cds-center": "" }
         : { "data-cds-aside": "", "aria-hidden": (isChat || asideOpen) ? "false" : "true" })}
-      className="flex min-h-0 min-w-0 flex-1 self-stretch flex-col overflow-hidden bg-[var(--m-surface-0)]"
+      className="flex min-h-0 min-w-0 flex-1 self-stretch flex-col overflow-hidden bg-surface-muted"
     >
       {!isChat && (
         <div
           data-pane-title={tile.tileId}
           className="flex h-9 shrink-0 items-center gap-2 border-b border-[var(--m-border)] px-3"
         >
-          <span className="min-w-0 flex-1 truncate text-[var(--m-font-size-caption)] text-[var(--m-text-secondary)]">
-            {tileLabel(tile.tileId)}
-          </span>
+          {/* 【UI 重建 2026-10-28】页签切换器插在这里（面板名左侧）。
+              给了它就不画静态标题 —— 切换器里每一项都带名字，再并排一个
+              「文件」会读成两个不同的东西。没给（切分出的第二格等）才回落到
+              静态标题，保证每一格都有一行能认出来的抬头。 */}
+          {asideHeader ?? (
+            <span className="min-w-0 flex-1 truncate text-[var(--m-font-size-caption)] text-[var(--m-text-secondary)]">
+              {tileLabel(tile.tileId)}
+            </span>
+          )}
           {onMoveTile && (
             <button
               type="button"
@@ -209,12 +217,12 @@ function TileDivider({
 }
 
 /** 递归渲染一个节点。props 显式往下传，不用 spread（避免把 layout 带下去）。 */
-function Node({ node, renderTile, onCloseTile, chatColumn, onResize, onExpand, expandedTile, onMoveTile, asideOpen = true }: { node: PaneNode } & Omit<TilePaneProps, "layout">) {
+function Node({ node, renderTile, onCloseTile, chatColumn, onResize, onExpand, expandedTile, onMoveTile, asideOpen = true, asideHeader, firstAsideTileId }: { node: PaneNode } & Omit<TilePaneProps, "layout"> & { firstAsideTileId?: string | null }) {
   /** 这一格是否被「关掉的 aside」压成 0 宽（仍挂载，只是看不见）。 */
   const collapsedByAside = (n: PaneNode) =>
     asideOpen === false && n.kind === "tile" && n.tileId !== "chat";
   if (node.kind === "tile") {
-    return <Tile tile={node} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onExpand={onExpand} expanded={expandedTile === node.tileId} onMoveTile={onMoveTile} asideOpen={asideOpen} />;
+    return <Tile tile={node} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onExpand={onExpand} expanded={expandedTile === node.tileId} onMoveTile={onMoveTile} asideOpen={asideOpen} asideHeader={node.tileId === firstAsideTileId ? asideHeader : undefined} />;
   }
   const dir = node.direction === "row" ? "flex-row" : "flex-col";
   const total = node.children.reduce((n, c) => n + nodeFlex(c), 0) || 1;
@@ -265,7 +273,7 @@ function Node({ node, renderTile, onCloseTile, chatColumn, onResize, onExpand, e
                 : null),
             }}
           >
-            <Node node={child} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} onExpand={onExpand} expandedTile={expandedTile} onMoveTile={onMoveTile} asideOpen={asideOpen} />
+            <Node node={child} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} onExpand={onExpand} expandedTile={expandedTile} onMoveTile={onMoveTile} asideOpen={asideOpen} asideHeader={asideHeader} firstAsideTileId={firstAsideTileId} />
           </div>
         </Fragment>
       ))}
@@ -348,10 +356,46 @@ function CloseIcon() {
 }
 
 /** 对外入口。 */
-export function TilePane({ layout, renderTile, onCloseTile, chatColumn, onResize, onExpand, expandedTile, onMoveTile, asideOpen = true }: TilePaneProps) {
+export function TilePane({ layout, renderTile, onCloseTile, chatColumn, onResize, onExpand, expandedTile, onMoveTile, asideOpen = true, asideHeader }: TilePaneProps) {
+  /* 【UI 重建 2026-10-28】`asideHeader` **只给树里第一个非 chat 格**。
+   *
+   * 切分之后树里会有多个非 chat tile，每一格都会走到 `Tile` 的标题行。
+   * 全给的话就是两排一样的页签（同一个 store 值的两个视图 —— 点哪排都对，
+   * 但视觉上重复，而且第一眼会以为有第二个独立的页签集合）。
+   *
+   * 判据用一次**纯遍历**算出「第一个非 chat 格的 tileId」，渲染时按 id 比较。
+   * 不用「渲染过程中消费可变标志」—— React 可能重渲染子树或并发渲染，
+   * 那会让同一棵树在不同时机得到不同结果。`tileId` 在树里唯一
+   * （`openTile` 幂等、`closeTile` 移除整格），足以定位。 */
+  const firstAsideTileId = (() => {
+    const find = (node: PaneNode): string | null => {
+      if (node.kind === "tile") return node.tileId === "chat" ? null : node.tileId;
+      for (const child of node.children) {
+        const hit = find(child);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return find(layout.root);
+  })();
   return (
     <div className="flex min-h-0 min-w-0 flex-1 self-stretch" data-pane-layout-root="">
-      <Node node={layout.root} renderTile={renderTile} onCloseTile={onCloseTile} chatColumn={chatColumn} onResize={onResize} onExpand={onExpand} expandedTile={expandedTile} onMoveTile={onMoveTile} asideOpen={asideOpen} />
+      <Node
+        node={layout.root}
+        renderTile={renderTile}
+        onCloseTile={onCloseTile}
+        chatColumn={chatColumn}
+        onResize={onResize}
+        onExpand={onExpand}
+        expandedTile={expandedTile}
+        onMoveTile={onMoveTile}
+        asideOpen={asideOpen}
+        asideHeader={asideHeader}
+        firstAsideTileId={firstAsideTileId}
+      />
+      {/* 占位：`claimFirstAside`/`firstAsideTileId` 的用途见下 —— 静态检查若报
+          「声明了没用」，把它删掉即可；保留注释比删掉更能防下一个人重复引入。 */}
+      {void firstAsideTileId}
     </div>
   );
 }

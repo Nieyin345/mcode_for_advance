@@ -93,17 +93,28 @@ function Card({
       data-cds-panel=""
       // 【UI 重建 2026-10-28】卡片几何按真机截图（放大到 3 倍逐项对过）：
       //
-      //   - **不要 `border`。** 截图里的卡片边界是一圈**极淡的描边 + 微阴影**，
-      //     不是一条实的 border 线。上一版用 `border border-[var(--m-border)]`
-      //     （10% 中性），在浅底上读起来像「表格框」。
-      //   - 圆角约 **12px**（截图量：卡片高约 210 物理 px，圆角约占 21 物理 px
-      //     ÷1.75 ≈ 12 css px），比 `--m-panel-radius`(9.41) 大一档。
-      //   - 底色是 `--cds-surface-1`（比画布略亮），靠这个 + 描边和画布分开。
-      className="flex shrink-0 flex-col overflow-hidden bg-[var(--m-surface-1)]"
+      //   - **不要 `border`。** 截图里的卡片边界是一圈**极淡的描边 + 微阴影**。
+      //   - 圆角约 **12px**。
+      //   - 底色是 surface-1。
+      //
+      // ## ⚠️ 这里踩过一个「亮色能看、暗色消失」的坑
+      //
+      // 第一版写的是 `bg-[var(--m-surface-1)]`。`--m-surface-1` 的值是
+      // **"21 21 21" 这样的 R G B 三元组**（840 处 alpha 类依赖这个形状），
+      // **不是颜色**。直接塞进 `background` 是非法值 → 整条声明失效 →
+      // 背景透明 → 卡片在暗色下与画布同色，**整块看不见**。
+      //
+      // 亮色下为什么「看起来还行」：那是我又叠了 `boxShadow` 的 1px 描边，
+      // 而描边是写死的黑色 6%，在浅底上恰好可见 —— 于是亮色有边框、暗色
+      // 什么都没有。**两个 bug 互相掩护**，只看亮色截图发现不了。
+      //
+      // 现在用 `bg-surface`（`styles.css` 的语义别名，Tailwind 侧会用
+      // `rgb(var(--surface))` 正确包装三元组）+ `shadow-[var(--m-panel-shadow)]`
+      // （上游就是 `0 0 0 1px var(--cds-border), var(--cds-shadow-sm)`，
+      // 描边与阴影都跟着主题走）。
+      className="flex shrink-0 flex-col overflow-hidden bg-surface shadow-[var(--m-panel-shadow)]"
       style={{
         borderRadius: 12,
-        boxShadow:
-          "0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 2px 0 rgb(0 0 0 / 0.04)",
       }}
     >
       <button

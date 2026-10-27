@@ -74,6 +74,12 @@ export interface ClaudeShellProps {
    *  为 true 时即使  也渲染 thread 列与 tile 区，
    *  否则「点文件 → 什么都没发生」。 */
   centerOccupied?: boolean;
+  /** 【UI 重建 2026-10-28】aside 格标题行左侧的内容（右栏页签切换器）。
+   *
+   *  由 `ClaudeShellMount` 传 `PaneTabSwitcher`。放在 props 而不是在这里
+   *  直接 import：`ClaudeShell` 是通用外壳，页签清单属于「新壳接了哪些
+   *  右栏页签」这件业务事实，不属于壳的布局规则。 */
+  asideHeader?: ReactNode;
 }
 
 /**
@@ -148,6 +154,7 @@ export function ClaudeShell({
   centerOccupied = false,
   onMoveTile,
   asideOpen = true,
+  asideHeader,
 }: ClaudeShellProps) {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const column = chatColumnOf({ hasActiveSession: !!activeSessionId, isLoadingThread });
@@ -166,7 +173,7 @@ export function ClaudeShell({
 
   return (
     <div
-      className="flex h-full w-full overflow-hidden bg-[var(--m-surface-0)] text-[var(--m-text-primary)]"
+      className="flex h-full w-full overflow-hidden bg-surface-muted text-[var(--m-text-primary)]"
       data-ui-shell="claude"
       // 【兼容标记】视觉基线探针（`arc005-visual-baseline`）用这个属性判断
       // 「工作区外观层有没有挂上」。新壳沿用同一个值，这样**探针不用改**、
@@ -217,6 +224,7 @@ export function ClaudeShell({
                     onMoveTile={onMoveTile}
                     asideOpen={asideOpen}
                     chatColumn={threadColumn}
+                    asideHeader={asideHeader}
                   />
                 ) : (
                   <div data-ui-center-pane="" className="flex min-h-0 flex-1 flex-col">

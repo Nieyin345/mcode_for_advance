@@ -246,7 +246,7 @@ export function ClaudeTitlebar({
                 <div className="fixed inset-0 z-40" aria-hidden onClick={() => setMenuOpen(false)} />
                 <div
                   role="menu"
-                  className="absolute right-0 top-8 z-50 min-w-[180px] rounded-[var(--radius-md)] border border-[var(--m-border)] bg-[var(--m-surface-3)] py-1 shadow-[var(--m-shadow-popover)]"
+                  className="absolute right-0 top-8 z-50 min-w-[180px] rounded-[var(--radius-md)] border border-[var(--m-border)] bg-surface-overlay py-1 shadow-[var(--m-shadow-popover)]"
                 >
                   {menuItems.map((item) => (
                     <button

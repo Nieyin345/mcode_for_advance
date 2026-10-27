@@ -159,7 +159,7 @@ export function ClaudeSidebar({
   return (
     <nav
       data-cds="Sidebar"
-      className="flex h-full flex-col bg-[var(--m-surface-0)] text-[var(--m-text-secondary)]"
+      className="flex h-full flex-col bg-surface-muted text-[var(--m-text-secondary)]"
       style={{ width: CLAUDE_SIDEBAR_WIDTH }}
     >
       {/* ── 顶部图标行：☰  ▭  ←  → ──
@@ -209,7 +209,7 @@ export function ClaudeSidebar({
         <div
           role="tablist"
           aria-label="工作模式"
-          className="flex h-8 items-center rounded-[8px] bg-[var(--m-surface-1)] p-0.5"
+          className="flex h-8 items-center rounded-[8px] bg-surface p-0.5"
         >
           <button
             type="button"
@@ -226,7 +226,7 @@ export function ClaudeSidebar({
             type="button"
             role="tab"
             aria-selected
-            className="flex h-full flex-1 items-center justify-center gap-1.5 rounded-[6px] bg-[var(--m-surface-2)] text-[var(--m-fs-body)] font-medium text-[var(--m-text-primary)] shadow-[var(--m-shadow-sm)]"
+            className="flex h-full flex-1 items-center justify-center gap-1.5 rounded-[6px] bg-surface-raised text-[var(--m-fs-body)] font-medium text-[var(--m-text-primary)] shadow-[var(--m-shadow-sm)]"
           >
             <CodeIcon />
             Code

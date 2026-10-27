@@ -1372,5 +1372,67 @@ section("17. 【ARC-005】手机端安全区与浏览器栏配色");
     check(`★ 无消费方的 @property ${dead} 未被注册`, !registered.includes(dead));
   }
 }
+/* ─────────── 三元组 token 不许被当成颜色直接用 ───────────
+ *
+ * 【UI 重建 2026-10-28】真实事故：`bg-[var(--m-surface-1)]`。
+ *
+ * `--m-surface-*` 的值是 **"21 21 21" 这样的 R G B 三元组**（840 处
+ * `rgb(var(--surface) / α)` 的 alpha 用法依赖这个形状），**不是颜色**。
+ * 把它直接塞进 `background` 是非法值 → 整条声明失效 → 背景透明。
+ *
+ * 症状：**亮色下看不出来，暗色下整块消失**（因为亮色还有一层写死的黑色
+ * 描边兜着）。我当时只看亮色截图，于是「卡片没有边框」被误判成
+ * 「border 太重」，改了一轮才发现根本不是那回事。
+ *
+ * 全仓扫出 **6 处**同样的写法（Shell / Sidebar ×3 / Titlebar / TilePane），
+ * 意味着整个外壳的底色在暗色下都失效过。
+ *
+ * ## 判据
+ *
+ * 扫所有 tsx 里的 `(bg|fill|text|border|ring|shadow)-[var(--m-xxx)]`，
+ * 取出 token 名，去 tokens.cds.css 解析它的最终值 —— 如果是三元组就红。
+ *
+ * 正确的写法是走语义类（`bg-surface` / `bg-surface-muted` …），
+ * Tailwind 那边会用 `rgb(var(--surface) / <alpha-value>)` 正确包装。
+ */
+{
+  const tokenCss = read("src/renderer/tokens.cds.css");
+  /** 解析一个 `--m-*` token 的最终值（跟随 var() 链，最多 6 跳） */
+  const finalValueOf = (name: string): string | null => {
+    let cur = name;
+    for (let hop = 0; hop < 6; hop++) {
+      const m = new RegExp("--" + cur + ":\\s*([^;}]+)").exec(tokenCss);
+      if (!m) return null;
+      const v = m[1].trim();
+      const inner = /^var\(--([a-z0-9-]+)\)$/.exec(v);
+      if (!inner) return v;
+      cur = inner[1];
+    }
+    return null;
+  };
+  const isTriplet = (v: string | null) => !!v && /^\d{1,3}\s+\d{1,3}\s+\d{1,3}$/.test(v);
+
+  const offenders: string[] = [];
+  for (const f of ["ClaudeShell", "ClaudeSidebar", "ClaudeTitlebar", "TilePane", "ClaudeProjectOverview", "paneContent"]) {
+    const src = read(`src/renderer/components/shell/${f}.tsx`);
+    // 只看 className 里真正会被当成「颜色」用的任意值
+    for (const m of src.matchAll(/(?:^|\s)(bg|fill|text|border|ring|shadow|outline)-\[var\(--(m-[a-z0-9-]+)\)\]/g)) {
+      const [, util, token] = m;
+      const v = finalValueOf(token);
+      if (isTriplet(v)) offenders.push(`${f}.tsx: ${util}-[var(--${token})] → "${v}"`);
+    }
+  }
+  check(
+    "★ 没有把 R G B 三元组 token 直接当颜色用（暗色下会整块消失）",
+    offenders.length === 0,
+    offenders,
+  );
+
+  // 正控：这个判据确实能分辨 —— `--m-surface-1` 是三元组、`--m-border` 不是。
+  // 少了这一条，判据退化成「永远查不到东西」时也全绿。
+  check("★ 正控：--m-surface-1 被判为三元组", isTriplet(finalValueOf("m-surface-1")));
+  check("★ 正控：--m-border 不被判为三元组（它是完整颜色）", !isTriplet(finalValueOf("m-border")));
+}
+
 console.log(`\ndesign-tokens-smoke:${total - failures}/${total} 通过`);
 if (failures > 0) process.exitCode = 1;
