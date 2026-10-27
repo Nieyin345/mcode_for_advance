@@ -239,7 +239,20 @@ console.log("C. per-message caching");
   const treeVoided = (tree.match(/onConfirm=\{\(\) => void handleDelete\(\)\}/g) ?? []).length;
   const treeDirect = (tree.match(/onConfirm=\{handleDelete\}/g) ?? []).length;
   check("★ FileTree 两处删除确认把 promise 交给弹窗(不再单边 void)", treeDirect === 2 && treeVoided === 0, { treeDirect, treeVoided });
-  check("★ FileTree 的 handleDelete 失败时把 {ok:false} 交回弹窗", (tree.match(/return \{ ok: false, error: t\("ide\.tree\.deleteFailed"\) \}/g) ?? []).length === 2, (tree.match(/return \{ ok: false[^}]*\}/g) ?? []));
+  /* 【UI 重建 2026-10-27】**判据从「恰好 2 处」改成「至少 2 处」。**
+   *
+   * 原来钉死 2，是因为当时 FileTree 只有两个删除入口（目录节点 + 文件行）。
+   * 现在实际有 4 处 `return { ok: false, error: ... }` —— 多出来的两处是
+   * `closeBlockedUnsaved`（关闭被未保存草稿拦住时也要把失败交回弹窗），
+   * 那是**同一类正确行为**的另一个分支，不是回归。
+   *
+   * 真正要守的不变量是：**每个删除确认入口都有「失败时交回 {ok:false}」的路径**。
+   * 用 onConfirm 的处数做下限比写死 2 更贴合它。 */
+  {
+    const confirms = (tree.match(/onConfirm=\{handleDelete\}/g) ?? []).length;
+    const failures = (tree.match(/return \{ ok: false, error: t\("ide\.tree\.deleteFailed"\) \}/g) ?? []).length;
+    check("★ FileTree 的每个删除入口在失败时都把 {ok:false} 交回弹窗", confirms >= 2 && failures >= confirms, { confirms, failures, all: (tree.match(/return \{ ok: false[^}]*\}/g) ?? []) });
+  }
 
   // McpPanel: single + bulk delete.
   const mcp = read("src/renderer/components/settings/McpPanel.tsx");
