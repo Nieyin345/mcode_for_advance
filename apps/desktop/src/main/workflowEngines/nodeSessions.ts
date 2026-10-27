@@ -104,6 +104,25 @@ export type NodeSessionRequest = ConversationNodeSessionRequest | WorkflowNodeSe
  * 按身份找到或建出那一步的会话。**幂等**：同一身份反复调用返回同一行。
  *
  * 只在执行配置确实变了时才写库。
+ *
+ * ## ⚠️ 2026-10-28 实测：本函数**没有任何生产调用方**
+ *
+ * `grep -rn "nodeSessionOf" apps/desktop/src` 只命中两处：
+ *   1. 本文件的定义；
+ *   2. `orchestration/runner.ts:390/1154/1821/2309` —— 那是**另一个同名函数**
+ *     （`runner.ts:2855` 的局部版，按 `(父对话, 节点)` 找，只支持 `conversation` 一种身份）。
+ *
+ * 也就是说：Q11 的「按 `(工作流, 节点)` 认回会话」这条能力**写了、有套件守着
+ * （`node-session-smoke` 172/172）、但没接进任何执行路径**。
+ *
+ * 后果可观测：`mcode-conversation-session-smoke` 的 W18 有一条红着 ——
+ * agent 节点没填 sessionId 时，`nodePackProductionPorts.ts:102` 仍然抛
+ * 旧文案 `"Mcode sessionId is required"`，而断言期望的是 Q11 那句
+ * 「不属于任何一张已保存的 Mcode 工作流」。
+ *
+ * **为什么不在这里改**：接上它需要 `(workflowId, node, inheritFrom)` 三样，
+ * 而 `nodePackProductionPorts` 目前拿不到工作流文档与节点对象
+ * —— 那是执行链所有权的问题，不是这个文件能决定的。留给工作流 owner。
  */
 export function nodeSessionOf(request: NodeSessionRequest): Session {
   const anchor = request.kind === "conversation" ? request.conversation : request.inheritFrom;
