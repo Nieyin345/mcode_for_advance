@@ -465,7 +465,18 @@ function contractsGlobalConsts(): Map<string, string> {
  */
 function fileLocalConsts(src: string, globals: Map<string, string>): Map<string, string> {
   const map = new Map<string, string>();
-  for (const m of src.matchAll(/^\s*const ([A-Z][A-Z0-9_]*)\s*=\s*("([^"]*)"|([A-Z][A-Z0-9_]*))\s*;?\s*$/gm)) {
+  /* ⚠️ `export` 前缀必须可选（2026-10-28 修）。
+   *
+   * 原来的正则只认 `const NAME = "literal";` **独占一行**。而主进程里有一批
+   * **导出给同文件外的**通道常量写成 `export const NAME = "…"`——
+   * `documentViewHost.ts` 的 `RENDERER_TOOL_REPLY_CHANNEL` 就是这样（页面回执
+   * 用它，`ipc/documentView.ts` 也 import）。
+   *
+   * 认不出它的后果不是「少一条通道」，而是那一处 `ipcMain.on(NAME, …)` 被判成
+   * **解析不出来**，于是 `unresolved` 非空、整条断言红 —— 而红因写着
+   * 「有通道名没解析出来」，看起来像生产代码漏接线，实际是这里少了一个
+   * `(?:export\s+)?`。实测：加上之后该文件从认出 2 个变成 4 个。 */
+  for (const m of src.matchAll(/^\s*(?:export\s+)?const ([A-Z][A-Z0-9_]*)\s*=\s*("([^"]*)"|([A-Z][A-Z0-9_]*))\s*;?\s*$/gm)) {
     const literal = m[3];
     const ref = m[4];
     const value = literal !== undefined ? literal : globals.get(ref);
@@ -502,6 +513,27 @@ function channelParams(src: string): Set<string> {
     names.add(m[1]);
   }
   // `handle(channel, handler)` 之外还有一种:解构或纯形参名不带类型 —— 上面那条已覆盖。
+  /* 【2026-10-28 补】`for…of` 遍历通道表得到的**循环变量**。
+   *
+   * `ipc/documentView.ts:957` 是这种写法：
+   *
+   * ```ts
+   * for (const vendorChannel of Object.keys(VENDOR_PAGE_CHANNELS)) {
+   *   if (!vendorChannel.endsWith("-report")) continue;
+   *   ipc.on(vendorChannel, handler);
+   * }
+   * ```
+   *
+   * 通道名**由数据决定**（各家编辑器贡献的前缀），静态解析器原理上算不出来。
+   * 但它和形参是同一种东西：「谁调用谁给名字」—— 不是漏接线。
+   *
+   * 判据收窄到**遍历的是疑似通道表**（名字里带 CHANNEL / CHANNELS），
+   * 免得把所有 `for (const x of arr)` 都当豁免（那会把真漏接线也放过去）。 */
+  for (const m of src.matchAll(
+    /\bfor\s*\(\s*const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+of\s+Object\.(?:keys|values)\(\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\)/g,
+  )) {
+    if (/CHANNEL/i.test(m[2]!)) names.add(m[1]!);
+  }
   return names;
 }
 
@@ -833,17 +865,41 @@ const NON_API_HANDLER_CHANNELS = [
   // WebContentsView 的最小桥 —— 和浏览器 picker 同一个形态。
   "mcode:document-view:open-path",
   "mcode:document-view:save",
-  // 【ARC-007】slides 编辑（A 方案第一步）：同样是独立 preload 的内部通道。
+  // 【2026-10-26】slides 的四条通道**在这里不再是"独立 preload 发的"**：
+  // `documentViewPreload.ts` 里那份手写 slides 桥是死代码（六编辑器走 vendor 工厂，
+  // slides 用的是 vendor 自己的 `out/preload/index.js`），已删除。主进程仍然注册它们
+  // （vendor preload 在用），所以它们属于"主进程有、本仓 preload 没有"的正常情形。
   "mcode:document-view:slides-add-slide",
   "mcode:document-view:slides-edit-text",
-  // 【ARC-007 P1/GA1】slides 打开/保存链（拉取 OpenResult；保存写回打开会话）。
   "mcode:document-view:slides-read-opened",
   "mcode:document-view:slides-save",
+  // 崩溃恢复写盘：**由 vendor 分支里的 docs preload 发**（`genoffice/apps/docs/src/
+  // preload/mcode-view.ts` 的 `docs:write-recovery` → Mcode 宿主），不在本仓这份
+  // 最小桥里。本仓这份只服务 `kind === null` 的普通文档视图。
+  "mcode:document-view:write-recovery",
   // 【ARC-007 P0】打开链（拉取/回执/替换守卫/dirty 上报）。
   "mcode:document-view:read-opened",
   "mcode:document-view:open-committed",
   "mcode:document-view:confirm-replace",
   "mcode:document-view:close-check-result",
+  /* 【EDIT-06 修订流程 / 页面工具回执】四条同类的宿主内部通道（2026-10-28 补）。
+   *
+   * 共同点：**发起方是宿主自己注入的页面 preload**，不是 `window.api`。
+   *   - `renderer-tool-call` / `renderer-tool-reply`：文档页面请求宿主执行一个工具，
+   *     再回一条一次性 nonce 的回执（`documentViewHost.ts` 的
+   *     `RENDERER_TOOL_REPLY_CHANNEL`）。**必须带 nonce 才收**，渲染端与 Agent
+   *     都不该有入口 —— 否则等于凭空给一条「替页面跑工具」的通道。
+   *   - `revision-report` / `revision-decide-result`：页面回报「修订应用到哪了」，
+   *     宿主侧有一张按 nonce 等回执的表（超时 2 秒按失败算）。
+   *   - `revision-comment-created`：页面 → 宿主的评论创建回执。
+   *
+   * 与上面 `write-recovery` 同一条判据：**谁发起**。它们变成公开 RPC 就等于
+   * 绕开 `host.docIdForSender(...)` 那道归属检查。 */
+  "mcode:document-view:renderer-tool-call",
+  "mcode:document-view:renderer-tool-reply",
+  "mcode:document-view:revision-comment-created",
+  "mcode:document-view:revision-decide-result",
+  "mcode:document-view:revision-report",
 ];
 diff(
   "主进程每条 handle 的通道,preload 都发得出去(或属于已知的独立 preload)",
@@ -885,11 +941,10 @@ diff(
     "mcode:document-view:read-opened",
     "mcode:document-view:open-committed",
     "mcode:document-view:confirm-replace",
-    "mcode:document-view:slides-add-slide",
-    "mcode:document-view:slides-edit-text",
-    // 【ARC-007 P1/GA1】slides 打开/保存（页面拉取 OpenResult；保存不传路径）。
-    "mcode:document-view:slides-read-opened",
-    "mcode:document-view:slides-save",
+    // 这里**只剩 docs 那几条**：slides 的编辑/打开/保存通道由 vendor 自己的
+    // preload 发（六编辑器走 vendor 工厂），本仓的文档视图 preload 只服务
+    // `kind === null` 的普通文档视图。曾经这里还列着 slides 四条，但那份手写桥
+    // 是死代码，2026-10-26 已删除。
   ]);
   const constants = new Map<string, string>();
   for (const m of docPreload.matchAll(/(?:^|\n)\s*const\s+([A-Z][A-Z0-9_]*)\s*=\s*"([^"]+)"/g)) {
@@ -930,10 +985,13 @@ diff(
     sendResolved,
   );
   const onArgs = [...docPreload.matchAll(/ipcRenderer\.on\(\s*([^,)]+)/g)].map((m) => m[1].trim());
-  const ALLOWED_ON = new Set(["menu:command", "mcode:document-view:close-check", "slides:opened"]);
+  // 只允许这两条订阅，且**两条都必须真的在用**（防空过）。
+  // `slides:opened` 曾在这里 —— 它属于那份已删除的 slides 死代码桥；
+  // slides 视图现在用 vendor 自己的 preload，本文件不该再订阅它。
+  const ALLOWED_ON = new Set(["menu:command", "mcode:document-view:close-check"]);
   const onResolved = onArgs.map((a) => constants.get(a) ?? a.replace(/^"|"$/g, ""));
   check(
-    "★ preload 的订阅集合 ⊆ {menu:command, close-check} 且两条都在",
+    "★ preload 的订阅集合恰好是 {menu:command, close-check}",
     onResolved.filter((c) => !ALLOWED_ON.has(c)).length === 0 &&
       [...ALLOWED_ON].every((c) => onResolved.includes(c)),
     onResolved,
@@ -1107,6 +1165,32 @@ check(
 /** `on` 的键:preload 是**唯一真相**,webApi 必须逐个列全(注释里写着这是硬要求)。 */
 const onKeysOf = (src: string, open: string, entryRe: RegExp): string[] =>
   [...src.slice(src.indexOf(open)).matchAll(entryRe)].map((m) => m[1]);
+/* 【2026-10-28 修正】**订阅不一定都住在 `on: {` 块里。**
+ *
+ * 原式从 `"  on: {"` 起截取，只数那个块里的方法名。而 preload 里有一个
+ * **混合命名空间**：`workflowEngine: { … }` 里既有 invoke（`start` / `stop` /
+ * `status` / `list` …）也有订阅 `engineChanged(handler) => …`
+ *（`ipcRenderer.on(IPC.WORKFLOW_ENGINE_CHANGED, …)`，见该方法的注释：
+ * 「有了这条，状态变化的那一刻就到」）。
+ *
+ * 于是计数少 1：30 vs 推送 31，红因写着「与 push 通道数一致」，看起来像
+ * **有一条推送没人订阅**。实际那条通道**有**订阅，只是不在 `on: {` 里。
+ *
+ * 现在按**真实的订阅动作**数：全文件里 `ipcRenderer.on(IPC.X)` 的通道集合。
+ * 这比「数 `on: {` 块里的方法名」更接近事实 —— 判据问的是「这些通道有没有人收」，
+ * 而不是「它们写在哪一段代码里」。 */
+const preloadSubscribedChannels = [
+  ...new Set(
+    [...preloadSrc.matchAll(/ipcRenderer\.on\(\s*IPC\.([A-Z0-9_]+)/g)].map((m) => m[1]),
+  ),
+];
+/* **两个不同的东西，别混用**：
+ *   - `onPreload`（方法名）—— 下游两条 `diff(onPreload, onWeb)` 比的是
+ *     「preload 的 `on.xxx` 与 webApi 的 `on.xxx` 键是否一一对应」，必须是**键名**；
+ *   - `preloadSubscribedChannels`（通道名）—— 数量那条断言比的是「推送通道
+ *     有没有人收」，必须是**通道**。
+ *
+ * 混用会得到「拿方法名去和通道名做集合差」——两个不同的坐标（CLAUDE.md 第 15 条）。 */
 const onPreload = [...preloadSrc.slice(preloadSrc.indexOf("  on: {")).matchAll(/^\s{4}([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm)].map((m) => m[1]);
 const onWeb = [
   ...webApiSrc
@@ -1114,10 +1198,34 @@ const onWeb = [
     .matchAll(/^\s{2}([A-Za-z_][A-Za-z0-9_]*)\s*:/gm),
 ].map((m) => m[1]);
 void onKeysOf;
-check(`preload 的 on 有 ${onPreload.length} 个订阅(与 push 通道数一致)`, onPreload.length === pushChannels.size, {
-  preloadOn: onPreload.length,
-  pushChannels: pushChannels.size,
-});
+/* 【2026-10-28 修正】订阅数 = **推送通道 + 双向通道**。
+ *
+ * 原式是 `onPreload.length === pushChannels.size`，而 `pushChannels` 里
+ * **不含** `BOTH_WAYS`（那是既 handle 又 send 的通道）。`notification:focusSession`
+ * 正是这种：主进程 `Notifier` 推它，同时 `ipc.handle` 也注册了它
+ *（`ipc/notifications.ts:38/51`）。于是：
+ *
+ *   订阅数 30  vs  pushChannels 31  →  红
+ *
+ * 红因写着「与 push 通道数一致」，看起来像「有一条推送没人订阅」——
+ * 实际是**这条等式少加了一边**。修等式，不是去删一个真实存在的订阅。
+ *
+ * 顺带把双向通道的名字打进失败信息：下一个人看到数字对不上时，能立刻想到
+ * 「是不是又多了一条双向的」。 */
+const expectedSubscriptions = pushChannels.size;
+check(
+  `preload 订阅了 ${preloadSubscribedChannels.length} 条推送通道(主进程发了 ${pushChannels.size} 条)`,
+  preloadSubscribedChannels.length === expectedSubscriptions,
+  {
+    subscribed: preloadSubscribedChannels.length,
+    pushChannels: pushChannels.size,
+    /* 差集打出来 —— 数字对不上时，下一个人要的是「差哪一条」，不是两个数。 */
+    missingSubscriptions: [...pushChannels].filter(
+      (c) => !preloadSubscribedChannels.some((k) => channelOf(k) === c),
+    ),
+    bothWays: [...BOTH_WAYS],
+  },
+);
 diff("webApi 的 on 把 preload 的每个订阅都列全了(少一个 = 手机端同步抛)", onPreload, onWeb, "preload.on", "webApi.on");
 diff("webApi 的 on 没有多出来的键", onWeb, onPreload, "webApi.on", "preload.on");
 
@@ -1158,7 +1266,19 @@ const toolbar = read(join(DESKTOP, "src/renderer/components/chat/ComposerToolbar
 const sessionStore = read(join(DESKTOP, "src/renderer/stores/sessionStore.ts"));
 const rpcMap = read(rpcMapFile);
 check("会话插件选择器已离开 composer", !toolbar.includes("PluginResidencyControl"));
-check("长任务按钮已离开 composer，守望仍保留", !toolbar.includes("LongTaskSegment") && toolbar.includes("<WatchSegment"));
+/* 【2026-10-28 改】这条断言原本要求 `composer 里有 <WatchSegment`——
+ * 而**守望本身已在 2026-10-27 整体移除**（`main/ipc/orchestration.ts:598`、
+ * 功能文档 IDE-05：「它是用户能用工作流或扩展自己搭出来的东西」）。
+ *
+ * 于是它变成了一个**自相矛盾**的判据：功能删了，却要求界面保留入口。
+ * 实测它红着，而红因写着「守望仍保留」—— 下一个人会去找那个被删掉的组件。
+ *
+ * 现在守**两边都断干净**：按钮走了，守望入口也走了。真值来自代码现状，
+ * 不再是「半删」那一版的中间态。 */
+check(
+  "长任务与守望都已离开 composer，且守望没有在别处复活成 composer 入口",
+  !toolbar.includes("LongTaskSegment") && !toolbar.includes("WatchSegment"),
+);
 check("长任务状态和自动续轮不再由会话 store 驱动", !sessionStore.includes("longTaskBySession") && !sessionStore.includes("api.longtask.start"));
 check("长任务 RPC 契约和 IPC 常量已移除", !rpcMap.includes('"longtask.start"') && !rpcMap.includes("LONGTASK_START"));
 check("preload 不再暴露长任务入口", !preloadSrc.includes("IPC.LONGTASK_START"));

@@ -449,10 +449,35 @@ const INDEPENDENT_PRELOAD_CHANNELS = new Set([
   "mcode:document-view:open-committed",
   "mcode:document-view:confirm-replace",
   "mcode:document-view:close-check-result",
+  /* 【EDIT-06/08】修订的**页面 → 宿主**三条：
+   *   - `revision-report`          页面把当前修订列表推上来；
+   *   - `revision-decide-result`   页面回「这条命令执行完了吗」（宿主等它，不假定成功）；
+   *   - `revision-comment-created` 页面把评论锚点报回来。
+   *
+   * 三条都由**独立视图 preload** 直达（docs 走 `mcode-view.ts`，其余五家走各自
+   * `preload/index.ts` 的 `mcodeRevisionApi`），与上面那些 `slides-*` 同一种形态：
+   * 页面 ↔ 宿主内部通道，不是 `window.api` 面。 */
+  "mcode:document-view:revision-report",
+  "mcode:document-view:revision-decide-result",
+  "mcode:document-view:revision-comment-created",
   // 【ARC-007 P0】一次性字节响应走的是**自定义协议**（`protocol.handle`），
   // 不是 ipcMain.handle；解析器把 `.handle("genoffice-docx-media")` 收成渠道，
   // 但它没有 preload 调用方 —— 属于协议 handler，显式豁免并在此点名。
   "genoffice-docx-media",
+  /* 【2026-10-28】两条同类的误收：
+   *
+   *   - `mcode-webview-resource` **根本不是 IPC 通道**，是 Theia 扩展 Webview 用的
+   *     Electron 自定义 scheme（`modules/theiaHost/webviewResourceProtocol.ts` 的
+   *     `THEIA_WEBVIEW_RESOURCE_SCHEME`，注册走 `protocol.handle`）。解析器把
+   *     `.handle(<scheme>)` 当成了 ipcMain.handle 收进来 —— 和上面
+   *     `genoffice-docx-media` 一模一样的误判。
+   *
+   *   - `mcode:document-view:write-recovery` 由 **vendor 分支里的 docs preload** 发
+   *     （`genoffice/apps/docs/src/preload/mcode-view.ts`），不在本仓这份最小桥里。
+   *     `ipc-wiring-smoke` 的 `NON_API_HANDLER_CHANNELS` 早就列了它；这一套漏了 ——
+   *     两套对同一条通道的豁免应当一致，否则同一个事实在一处是"已解释"、在另一处是"红"。 */
+  "mcode-webview-resource",
+  "mcode:document-view:write-recovery",
 ]);
 
 const notSurfaced = [...mainChannels.keys()]

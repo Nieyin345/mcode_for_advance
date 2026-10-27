@@ -23,8 +23,18 @@ import {
   DOCUMENT_VIEW_FOCUS_CHANNEL,
   DOCUMENT_VIEW_CLOSE_CHANNEL,
   DOCUMENT_VIEW_LIST_CHANNEL,
+  DOCUMENT_VIEW_DORMANT_LIST_CHANNEL,
+  DOC_VIEW_REVISION_STATE_CHANNEL,
+  DOC_VIEW_REVISION_DECIDE_CHANNEL,
+  DOC_VIEW_REVISION_MODE_CHANNEL,
+  DOC_VIEW_REVISION_FOCUS_CHANNEL,
+  DOC_VIEW_REVISION_REWRITE_CHANNEL,
+  DOC_VIEW_HISTORY_LIST_CHANNEL,
+  DOC_VIEW_HISTORY_RESTORE_CHANNEL,
+  DOC_VIEW_COMMENT_CREATE_CHANNEL,
+  DOC_VIEW_COMMENT_MUTATE_CHANNEL,
 } from "./documentView.js";
-import type { DocViewOpenInput, DocViewOpenPathInput, DocViewBoundsInput, DocViewCloseInput, DocViewResult, DocViewListResult } from "./documentView.js";
+import type { DocViewOpenInput, DocViewOpenPathInput, DocViewBoundsInput, DocViewCloseInput, DocViewResult, DocViewListResult, DocViewDormantListResult, DocViewRevisionStateInput, DocViewRevisionResult, DocViewRevisionFocusInput, DocViewRevisionRewriteInput, DocViewRevisionRewriteResult, DocViewHistoryListInput, DocViewHistoryListResult, DocViewHistoryRestoreInput, DocViewHistoryRestoreResult, DocRevisionState } from "./documentView.js";
 import {
   WORKFLOW_ENGINE_NODES_LIST_CHANNEL,
   WORKFLOW_ENGINE_NODE_INSTALL_CHANNEL,
@@ -114,7 +124,7 @@ import type { VoiceStartInput, VoiceFeedInput, VoiceStopInput, VoiceStopResult, 
 import type { FocusSessionInput, SetNotificationPrefsInput } from "./notifications.js";
 import type { SaveCustomModelInput, TestCustomModelInput, GetCustomModelTokenInput, SavePiProviderInput, DeletePiProviderInput, GetPiApiKeyInput, SaveCodexProviderInput, DeleteCodexProviderInput, GetCodexApiKeyInput, ProviderHealthCheckInput, ProviderHealthCheckResult, ProviderCommandsInput, ProviderCommandsResult, TestEndpointInput, ListEndpointModelsInput, EndpointProbeOutcome } from "./providers.js";
 import type { GetThemeResult, SetThemeInput, AppInfoResult, CheckForUpdatesResult } from "./app.js";
-import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, ClipboardSaveFileInput, ClipboardSaveFileResult, ClipboardWriteImageInput, ClipboardWriteImageResult, FileListDirInput, FileTreeEntry, FileSearchInput, FileSearchResult, FileWriteInput, FileMkdirInput, FileDeleteInput, FileRenameInput, FileCopyInput, FileGrepInput, FileGrepResult, RgStatusResult, RgInstallInput, RgInstallResult, DialogPickFilesInput } from "./files.js";
+import type { FileReadInput, FileReadBinaryInput, PickImagesInput, PickedImage, ClipboardSaveFileInput, ClipboardSaveFileResult, ClipboardWriteImageInput, ClipboardWriteImageResult, FileListDirInput, FileTreeEntry, FileSearchInput, FileSearchResult, FileWriteInput, FileMkdirInput, FileDeleteInput, FileRenameInput, FileCopyInput, FileMoveInput, FileGrepInput, FileGrepResult, RgStatusResult, RgInstallInput, RgInstallResult, DialogPickFilesInput } from "./files.js";
 import type { GitDiscoverReposInput, GitRepo, GitRepoPathInput, GitStatusResult, GitStageInput, GitOpResult, GitUnstageInput, GitCommitInput, GitDiffInput, GitFileBlobInput, GitDiscardInput, GitGenerateCommitInput, GitCancelGenerateCommitInput, GitLogInput, GitCommitInfo, GitShowCommitInput, GitCommitDetail, GitShowFileInput, GitBranchListResult, GitCheckoutInput, GitDeleteBranchInput, GitMergeInput, GitMergePreviewResult, GitMergeResult, GitWorktreeListInput, GitWorktreeInfo, GitWorktreeStatusInput, GitWorktreeMergeBackInput, GitWorktreeMergeBackResult, GitWorktreeRemoveInput, GitWorktreeRemoveResult } from "./git.js";
 import type { TerminalCreateInput, TerminalCreateResult, TerminalWriteInput, TerminalOpResult, TerminalResizeInput, TerminalKillInput, TerminalListInput, TerminalInfo } from "./terminal.js";
 import type { BrowserCreateInput, BrowserCreateResult, BrowserLoadUrlInput, BrowserOpResult, BrowserGoBackInput, BrowserGoForwardInput, BrowserReloadInput, BrowserSetBoundsInput, BrowserSetPickModeInput, BrowserShowInput, BrowserHideInput, BrowserCloseInput, BrowserCaptureFrameInput, BrowserCaptureFrameResult, BrowserBookmarkAddInput, BrowserBookmarkRemoveInput, BrowserSetDeviceInput, BrowserHistoryRemoveInput, BrowserHistoryClearInput, BrowserAuthRespondInput, BrowserAuthRespondResult, BrowserDownloadActionInput, BrowserVaultStatus } from "./browser.js";
@@ -123,14 +133,14 @@ import type { SkillsListInput, SkillInfo, SkillsReadInput, SkillsSaveInput, Skil
   SkillsProjectOverviewInput, SkillsProjectOverviewResult,
   ProviderInfo, OutputStyleListInput, OutputStyleEntry,
   SkillMarketState, SkillsMarketListInput, SkillsMarketAddInput, SkillsMarketNameInput, SkillsMarketInstallInput, SkillsMarketInstallResult } from "./skills.js";
-import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState, McpGenofficeInstallInput, McpGenofficeInstallResult, McpProjectListInput, McpProjectListResult, McpProjectSaveInput, McpProjectRemoveInput, McpProjectTrustInput, McpProjectCopyInput, McpProjectCopyResult, McpMarketSource, McpMarketSourcesInput, McpMarketSourceAddInput, McpMarketSourceRemoveInput, McpMarketSearchInput, McpMarketSearchResult } from "./mcp.js";
+import type { McpListInput, McpServerEntry, McpToggleInput, McpAuthorizeInput, McpUnauthorizeInput, McpSaveInput, McpRemoveInput, McpTestConnectionInput, McpTestConnectionResult, McpScanImportInput, McpImportSource, McpImportInput, McpEnginesSetInput, McpEngineState, McpGenofficeInstallInput, McpGenofficeInstallResult, McpProjectListInput, McpProjectListResult, McpProjectSaveInput, McpProjectRemoveInput, McpProjectTrustInput, McpProjectCopyInput, McpProjectCopyResult, McpMarketSource, McpMarketSourcesInput, McpMarketSourceAddInput, McpMarketSourceRemoveInput, McpMarketSearchInput, McpMarketSearchResult } from "./mcp.js";
 import type { AgentSshListInput, AgentSshPendingHost, AgentSshTrustedHost, AgentSshApproveInput, AgentSshHostPortInput } from "./agentSsh.js";
 import type { ContextGetInput, ContextSaveInput, ToolsUsageGetInput, ToolsUsageResult, FrameworkSaveInput, FrameworkResetInput, FrameworkSectionEntry } from "./context.js";
 import type { UsageStatsInput, UsageStatsResult } from "./usage.js";
 import type { LspLanguageState, LspInstallInput, LspOpResult, LspInstallFromFileInput, LspUninstallInput, LspToggleInput, LspSetPathInput, LspHealthCheckInput, LspPrewarmInput, LspRestartInput, LspOpenDocInput, LspCloseDocInput, LspDidChangeInput, LspDidSaveInput, LspRequestInput, LspRequestResult } from "./lsp.js";
 import type { RuntimeAgentState, RuntimesInstallInput, RuntimesInstallLocalInput, RuntimesRemoveInput, ToolchainToolState, ToolchainInstallInput, ToolchainRemoveInput } from "./runtimes.js";
 import type { WorkflowApproveInput, WorkflowPinDefaultInput, WorkflowRestoreDefaultInput, WorkflowShippedUpdateInput } from "./workflow.js";
-import type { WorkflowGetInput, WorkflowSaveInput, WorkflowConfirmMigrationInput, WorkflowRemoveInput, WorkflowExportInput, WorkflowImportInput, WorkflowImportPresetInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationPreflightInput, AutomationPreflightResult, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry, WatchStartInput, WatchStatusInput, WatchTemplatesSaveInput, WatchTemplatesRebuildInput, WatchCommandTemplate } from "./workflow.js";
+import type { WorkflowGetInput, WorkflowSaveInput, WorkflowConfirmMigrationInput, WorkflowRemoveInput, WorkflowDuplicateInput, WorkflowExportInput, WorkflowImportInput, WorkflowImportPresetInput, AgentProfileSaveInput, AgentProfileRemoveInput, WorkflowChooseInput, WorkflowRetryInput, HooksSaveInput, HooksRemoveInput, HooksTestInput, AutomationRunInput, AutomationPreflightInput, AutomationPreflightResult, AutomationRunsInput, AutomationSessionsInput, AutomationRunEntry } from "./workflow.js";
 import type { HostHookGrantListInput, HostHookGrantIssueInput, HostHookGrantRevokeInput } from "./hostHookGrants.js";
 import type { HostHookGrant } from "../hostHookGrant.js";
 import type { AutomationTriggerHealth, MonitoringOverview, MonitoringRunSummary, MonitoringRunsInput, PersistedWorkflowRunLite, RunsHistoryInput } from "./orchestration.js";
@@ -155,47 +165,10 @@ export const ClaudeSubagentsSaveSchema = z.object({ subagents: z.array(z.record(
 /** A typed map of all renderer→main RPC invocations. The preload exposes a
  * typed `window.api` matching this shape; the renderer imports it for safety. */
 export interface RpcMap {
-  /** 全部模块(**内置 + 已装**)的清单:各自的贡献项、宿主能力表、以及内置只读模块能当工作流目标的那几项。 */
-  "modules.catalog": () => Promise<import("../modules.js").ModuleCatalog>;
-  /** 安装一份外部模块清单(id 必须以 `user.` 开头)。**只收声明式 manifest,不是 JS 沙箱**;模块总数上限 32。返回装完后的新清单,以及这次变更取消掉的运行中任务数/失败原因(升级换执行体时为非零)。 */
-  "modules.install": (input: import("./modules.js").ModuleInstallInput) => Promise<import("../modules.js").ModuleChangeResult>;
-  /** 【F006】从一个 `.vsix` 文件安装真实 VS Code 扩展（走 `VscodeL1Bridge`）。
-   *
-   *  **现状的能力边界（读之前先看这里）**：只有**可执行入口 ≤ 24 KiB**的扩展装得进来。
-   *  真实市场扩展普遍 100 KB 以上（`rainbow-csv` 的 `extension.js` 是 136 KB），
-   *  会被这条限额拒绝，错误信息会点名「exceeds the L1 source limit」。
-   *
-   *  与 `modules.install` 的关系：**同一个宿主能力的另一条入口**。两者最终都调
-   *  `ModuleHost.install`，审批档位也相同（可执行代码，`appControl/policy.ts` 里
-   *  与 `modules.install` 同档）。区别只在于这条多一步 VSIX 解析。
-   *
-   *  `installConsent` 三态语义与 `modules.install` 完全一致；`deny` 时**磁盘零写入**
-   *  （在解析出的源码交给宿主之前就中止）。 */
-  "modules.installVsix": (input: import("./modules.js").ModuleInstallVsixInput) => Promise<import("./modules.js").ModuleInstallVsixResult>;
   /** F025 Temporary Theia VSIX inspect / start / execute / stop; no persistent module registration. */
   "modules.theiaPreview": (input: import("./modules.js").TheiaPreviewInput) => Promise<import("./modules.js").TheiaPreviewResult>;
   /** F026 Persist installed VSIX separately from L1; explicit human confirmation and no automatic execution. */
   "modules.theiaInstalled": (input: import("./modules.js").TheiaInstalledInput) => Promise<import("./modules.js").TheiaInstalledResult>;
-  /** 卸载一个模块(内置的删不掉,会抛)。顺带 cancel 它还在 running 的任务;返回删完后的新清单与取消诊断。 */
-  "modules.remove": (input: {moduleId:string}) => Promise<import("../modules.js").ModuleChangeResult>;
-  /** 触发模块的一个贡献项。按能力 `kind` 分流:非 task 的直接跑出结果,是 task 的立刻返回 `{type:"task"}` 句柄(进度靠 `modules.task` 拉)。 */
-  "modules.invoke": (input: import("../modules.js").ModuleInvoke) => Promise<import("../modules.js").ModuleReply>;
-  /** 取一个模块任务的当前快照(状态 / 进度 / 结果)。 */
-  "modules.task": (input: import("../modules.js").ModuleTaskRef) => Promise<import("../modules.js").ModuleTask>;
-  /** 取消一个在跑的模块任务(abort 那个 job 并标成 `cancelled`)。返回取消后的快照。 */
-  "modules.cancel": (input: import("../modules.js").ModuleTaskRef) => Promise<import("../modules.js").ModuleTask>;
-  /** 列某个项目下**仍在内存里**的模块任务(进程重启后为空,不落库)。 */
-  "modules.tasks": (input: {projectPath:string}) => Promise<import("../modules.js").ModuleTask[]>;
-  /** 【MC-036】给一个已安装的用户模块的只读贡献**签发**工作流运行授权(绑定模块 id/版本/
-   *  贡献/能力/工作区)。由设置页里用户本人的点击发起;Agent 侧钉 blocked(见
-   *  `appControl/policy.ts`)—— 自动运行权不能由模型自己给自己升。返回签发后的目录。 */
-  "modules.issueWorkflowGrant": (input: import("../moduleCapability.js").ModuleWorkflowGrantRequest) => Promise<import("../modules.js").ModuleCatalog>;
-  /** 【MC-036】撤销一条工作流运行授权(同一 (模块,版本,贡献,能力,工作区) 幂等键)。 */
-  "modules.revokeWorkflowGrant": (input: import("../moduleCapability.js").ModuleWorkflowGrantRequest) => Promise<import("../modules.js").ModuleCatalog>;
-  "modules.setPermissions": (input: import("../modulePermissions.js").ModulePermissionUpdateInput) => Promise<import("../modules.js").ModuleCatalog>;
-  /** MC-035: explicitly acknowledged, revocable JS-only sandbox downgrade. UI only. */
-  "modules.egressConsentGet": () => Promise<{enabled:boolean;osIsolation:boolean}>;
-  "modules.egressConsentSet": (input:{enabled:boolean;acknowledgeRisk:true}) => Promise<{enabled:boolean;osIsolation:boolean}>;
   // ── 扩展专用数据区(见 `@contracts/extensionStore`,报告 E12)──
   /** 读一条扩展自己的键值。没有返回 `null`(同面板 `mcode.storage.get`)。 */
   "extensionStore.get": (input: ExtensionStoreGetInput) => Promise<ExtensionStoreGetResult>;
@@ -510,6 +483,8 @@ export interface RpcMap {
   "file.rename": (input: FileRenameInput) => Promise<{ ok: boolean }>;
   /** 复制一个**普通文件**到一个目录(两端都要在已知项目根内;目录不在此列)。**从不覆盖**:名字被占就派生"名 副本.ext""名 副本 2.ext"…(suffix 由渲染端给,已剥目录分量防越界)。 */
   "file.copy": (input: FileCopyInput) => Promise<{ ok: boolean }>;
+  /** 【EDIT-01】把条目移动到一个目录。目录也可以移动（原子 rename）。跨卷时报错，不退化。 */
+  "file.move": (input: FileMoveInput) => Promise<{ ok: boolean }>;
   /** Grep file contents under a project root (line-level matches). */
   "file.grep": (input: FileGrepInput) => Promise<FileGrepResult>;
   /** ripgrep availability snapshot (drives the search-dialog install banner). */
@@ -797,6 +772,9 @@ export interface RpcMap {
   "mcp.genofficeInstall": (input: McpGenofficeInstallInput) => Promise<McpGenofficeInstallResult>;
   /** Remove a user-scope server (from both the config file and the stash). */
   "mcp.remove": (input: McpRemoveInput) => Promise<{ ok: boolean; error?: string }>;
+  /** 【EXT-03】真的起一次这个服务器，报告能不能连上（命令不存在 / 起不来 / 没授权
+   *  各自给不同的 stage，界面据此给不同的下一步）。 */
+  "mcp.testConnection": (input: McpTestConnectionInput) => Promise<McpTestConnectionResult>;
   /** Scan the local Claude CLI config (~/.claude.json) for servers available
    *  for import (global + per-project entries). Read-only. */
   "mcp.scanImport": (input: McpScanImportInput) => Promise<{ sources: McpImportSource[] }>;
@@ -964,6 +942,8 @@ export interface RpcMap {
   /** 删一份。删掉对内置工作流的覆盖 = 「恢复默认」;`wasBuiltin` 让界面能说对话
    *  (「已恢复默认」而不是「已删除」)。 */
   "workflow.remove": (input: WorkflowRemoveInput) => Promise<{ ok: boolean; wasBuiltin: boolean }>;
+  /** 【WF-09】复制一份工作流：新 id、新名、新节点/边 id，其余原样。 */
+  "workflow.duplicate": (input: WorkflowDuplicateInput) => Promise<{ ok: boolean; error?: string; id?: string; name?: string }>;
   /** 把内置工作流**当前生效的版本**钉成「默认」—— 之后 `workflow.remove`(恢复默认)
    *  回到钉住的这一版(覆盖之前的默认,包括应用自带那份的地位)。 */
   "workflow.pinDefault": (input: WorkflowPinDefaultInput) => Promise<{ ok: boolean; error?: string }>;
@@ -1094,36 +1074,7 @@ export interface RpcMap {
   /** 后台会话：sessionId 优先为活跃会话，否则最近使用；没跑过为 null。
    *  sessionIds 列出全部项目的会话供历史汇总；可选以兼容旧版响应。 */
   "automation.sessions": (input: AutomationSessionsInput) => Promise<{ sessionId: string | null; sessionIds?: string[] }>;
-  // ── 守望(会话输入区那颗「守望」按钮,D3/D4)──
-  //
-  // 同样**桌面专属**(手机白名单不列即不暴露)。起跑有**可见的副作用**:command /
-  // message 会被写进内置模板的节点参数(见 `automationRunner.startWatch` 的说明)。
-  /** 以某条会话为发起会话起一次守望。`ok: false` 时 `error` 是给人看的句子(不在跑、
-   *  发起会话没了、模板被改坏……),不是异常 —— 点按钮的人该得到解释而不是错误框。 */
-  "automation.watch": (input: WatchStartInput) => Promise<{ ok: boolean; error?: string }>;
-  /** 这条会话上有没有正在跑的守望(面板提示"上一次还在跑"用)。 */
-  "automation.watchStatus": (input: WatchStatusInput) => Promise<{ active: boolean }>;
-  /** 全部命令模板(守望面板的下拉)。**无参 handler**,同 `workflow.agentProfiles`。 */
-  "automation.watchTemplates": () => Promise<{
-    templates: WatchCommandTemplate[];
-    /** 【MC-054】设置的完整性:absent=没配过 / valid / partial=有条目读不出(problems 列出) /
-     *  corrupt=整份坏 / read_error=读不动。partial 与 corrupt 下普通保存会被拒绝。 */
-    health: "absent" | "valid" | "partial" | "corrupt" | "read_error";
-    problems: string[];
-    /** 【MC-054】当前内容的权威修订(id 排序后的稳定哈希,见 `watchTemplatesRevision`)。 */
-    revision?: string;
-  }>;
-  /** 存整份命令模板列表。整份给过来 —— 理由同 `workflow.saveAgentProfile`。
-   *  【MC-054】带 `expectedRevision` 时做原值版本检查:盘上已被别处改动 → `ok:false`
-   *  并说明,不覆盖对方刚保存的内容(两端并发编辑不再静默丢更新)。 */
-  "automation.watchTemplatesSave": (input: WatchTemplatesSaveInput) => Promise<{ ok: boolean; error?: string; conflict?: boolean; currentRevision?: string }>;
-  /** 【MC-054】显式「备份损坏原值 → 校验 → 重建」—— 唯一能吃下损坏状态的操作。 */
-  "automation.rebuildWatchTemplates": (input: WatchTemplatesRebuildInput) => Promise<{
-    ok: boolean;
-    error?: string;
-    backupKey?: string;
-    kept?: number;
-  }>;
+  // 长任务守望与命令模板库已移除（2026-10-27）。
   /** 全部触发器的**事实状态**(挂没挂上 / 为什么 / 最近一次跑,见
    *  `AutomationTriggerFacts`)。**无参 handler**,同 `workflow.agentProfiles`。
    *  返回项额外带**判定后的诊断**(`activeFailure` / `missedNotice`,见
@@ -1236,6 +1187,21 @@ export interface RpcMap {
   "documentView.close": (input: DocViewCloseInput) => Promise<DocViewResult>;
   /** 【ARC-007】文档视图状态快照(诊断用,只读;不含 webContents 句柄)。 */
   "documentView.list": () => Promise<DocViewListResult>;
+  /** 【文档修订/历史/批注】这一组由 `main/ipc/documentView.ts` 注册，
+   *  渲染端的版本面板、历史面板与批注 UI 消费。**入参一律 `unknown`**：
+   *  各 handler 自己解析形状（它们的 payload 是编辑器内部结构，不适合放进共享契约）。
+   *  这里只保证「通道存在且可调用」—— 名字与 `ipc/documentView.ts` 的
+   *  `DOC_VIEW_*_CHANNEL` 常量逐字对应。 */
+  "documentView.dormantList": () => Promise<DocViewDormantListResult>;
+  "documentView.revisionState": (input: DocViewRevisionStateInput) => Promise<DocViewRevisionResult>;
+  "documentView.revisionDecide": (input: unknown) => Promise<DocViewRevisionResult>;
+  "documentView.revisionMode": (input: unknown) => Promise<DocViewRevisionResult>;
+  "documentView.revisionFocus": (input: DocViewRevisionFocusInput) => Promise<DocViewRevisionResult>;
+  "documentView.revisionRewrite": (input: DocViewRevisionRewriteInput) => Promise<DocViewRevisionRewriteResult>;
+  "documentView.historyList": (input: DocViewHistoryListInput) => Promise<DocViewHistoryListResult>;
+  "documentView.historyRestore": (input: DocViewHistoryRestoreInput) => Promise<DocViewHistoryRestoreResult>;
+  "documentView.commentCreate": (input: unknown) => Promise<DocViewRevisionResult>;
+  "documentView.commentMutate": (input: unknown) => Promise<DocViewRevisionResult>;
   /** 【ARC-006 WF-INT】启动一个第三方工作流引擎(独立子进程,只绑 127.0.0.1;数据目录与端口由宿主给)。 */
   "workflowEngine.start": (input: WorkflowEngineStartInput) => Promise<WorkflowEngineResult>;
   /** 【ARC-006 WF-INT】停止引擎(SIGTERM → 宽限 → SIGKILL;幂等)。 */
@@ -1712,12 +1678,6 @@ export interface RpcMap {
 /** The channel names used in invoke/handle and send/on. Keep these centralized
  * so the preload allowlist and the main handlers never drift. */
 export const IPC = {
-  MODULE_CATALOG: "modules:catalog",
-  MODULE_INSTALL: "modules:install",
-  /** 【F006】从 `.vsix` 安装 —— 与 `MODULE_INSTALL` 是**同一个宿主能力**的两条入口:
-   *  一条收渲染端拼好的 manifest,这条收磁盘上的 vsix 字节。两条都落到
-   *  `ModuleHost.install`;VSIX 那条中间多一步 `VscodeL1Bridge.install` 的解析与转化。 */
-  MODULE_INSTALL_VSIX: "modules:installVsix",
   /** Desktop-only temporary Theia compatibility preview (not ModuleHost.install). */
   MODULE_THEIA_PREVIEW: "modules:theiaPreview",
   MODULE_THEIA_INSTALLED: "modules:theiaInstalled",
@@ -1729,17 +1689,7 @@ export const IPC = {
   MODULE_THEIA_CONTRIBUTION_CHANGED: "modules:theiaContributionChanged",
   MODULE_THEIA_DIAGNOSTICS: "modules:theiaDiagnostics",
   MODULE_THEIA_WEBVIEW: "modules:theiaWebview",
-  MODULE_REMOVE: "modules:remove",
-  MODULE_INVOKE: "modules:invoke",
-  MODULE_TASK: "modules:task",
-  MODULE_CANCEL: "modules:cancel",
-  MODULE_TASKS: "modules:tasks",
   // 【MC-036】工作流运行授权的签发 / 撤销 —— 只供桌面设置页的真人点击;agent 侧 blocked。
-  MODULE_ISSUE_WORKFLOW_GRANT: "modules:issueWorkflowGrant",
-  MODULE_REVOKE_WORKFLOW_GRANT: "modules:revokeWorkflowGrant",
-  MODULE_SET_PERMISSIONS: "modules:setPermissions",
-  MODULE_EGRESS_CONSENT_GET: "modules:egressConsentGet",
-  MODULE_EGRESS_CONSENT_SET: "modules:egressConsentSet",
   /** 扩展专用数据区(见 `@contracts/extensionStore`)。渠道字符串本体钉在契约模块里。 */
   EXTENSION_STORE_GET: EXTENSION_STORE_GET_CHANNEL,
   EXTENSION_STORE_SET: EXTENSION_STORE_SET_CHANNEL,
@@ -1957,6 +1907,8 @@ export const IPC = {
   FILE_RENAME: "file:rename",
   // Copy a file into a directory (file-tree "复制" + "粘贴" pair)
   FILE_COPY: "file:copy",
+  // Move a file or directory into another directory (file-tree "移动到…")
+  FILE_MOVE: "file:move",
   FILE_GREP: "file:grep",
   RG_STATUS: "rg:status",
   RG_INSTALL: "rg:install",
@@ -2079,6 +2031,7 @@ export const IPC = {
   // 一键安装随仓库快照的 GenOffice 文档工具(设置 → MCP 的「安装」卡片)。
   MCP_GENOFFICE_INSTALL: "mcp:genofficeInstall",
   MCP_REMOVE: "mcp:remove",
+  MCP_TEST_CONNECTION: "mcp:testConnection",
   MCP_SCAN_IMPORT: "mcp:scanImport",
   MCP_IMPORT: "mcp:import",
   MCP_PROJECT_LIST: "mcp:projectList",
@@ -2141,6 +2094,7 @@ export const IPC = {
   WORKFLOW_SAVE: "workflow:save",
   WORKFLOW_CONFIRM_MIGRATION: "workflow:confirmMigration",
   WORKFLOW_REMOVE: "workflow:remove",
+  WORKFLOW_DUPLICATE: "workflow:duplicate",
   WORKFLOW_PIN_DEFAULT: "workflow:pinDefault",
   WORKFLOW_RESTORE_DEFAULT: "workflow:restoreDefault",
   WORKFLOW_APPLY_SHIPPED_UPDATE: "workflow:applyShippedUpdate",
@@ -2163,6 +2117,15 @@ export const IPC = {
   // 自动化(设置 → 工作流 → 自动化那一栏):触发器节点在后**台**起一条运行。
   // 这三个只在桌面暴露(手机端那个 RPC 是手写白名单)。
   /** **立刻跑一次** —— 冒充一个 manual 触发器。 */
+  /* 【2026-10-28】`AUTOMATION_WATCH` / `_STATUS` / `_TEMPLATES` / `_TEMPLATES_SAVE`
+   * 四条已删。它们是**长任务守望**的通道，而守望本身在 2026-10-27 整体移除
+   *（见 `main/ipc/orchestration.ts:598` 与功能文档 IDE-05：「它是用户能用工作流或
+   *  扩展自己搭出来的东西」）。
+   *
+   * 功能删了、常量留着 = 契约里多出四条**谁都不注册**的通道。后果不是运行时崩，
+   * 而是 `ipc-parity` / `memory-codex` 两条门禁长期红着，红因写着「契约有、
+   * 主进程没注册」—— 下一个人会去找那个不存在的实现。
+   * 门禁红着没人管，比没有门禁更坏（CLAUDE.md 第十二条）。 */
   AUTOMATION_RUN: "automation:run",
   /** 触发前只读预检(不产生任何副作用)。 */
   AUTOMATION_PREFLIGHT: "automation:preflight",
@@ -2170,17 +2133,6 @@ export const IPC = {
   AUTOMATION_RUNS: "automation:runs",
   /** 这条自动化的后台会话 id(没跑过时 null)。 */
   AUTOMATION_SESSIONS: "automation:sessions",
-  // 守望(会话输入区那颗「守望」按钮)。同样只在桌面暴露。
-  /** 以某条会话为发起会话,起一次内置模板「长任务守望」的运行。 */
-  AUTOMATION_WATCH: "automation:watch",
-  /** 这条会话上有没有正在跑的守望。 */
-  AUTOMATION_WATCH_STATUS: "automation:watchStatus",
-  /** 全部命令模板(守望面板的下拉)。 */
-  AUTOMATION_WATCH_TEMPLATES: "automation:watchTemplates",
-  // 【MC-054】损坏/部分损坏的命令模板设置的显式重建(备份原值 → 校验 → 重建)。
-  AUTOMATION_WATCH_TEMPLATES_REBUILD: "automation:rebuildWatchTemplates",
-  /** 存整份命令模板列表。 */
-  AUTOMATION_WATCH_TEMPLATES_SAVE: "automation:watchTemplatesSave",
   /** 全部触发器的事实状态(自动化管理页回答「它怎么没反应」的那份)。 */
   AUTOMATION_STATUS_ALL: "automation:statusAll",
   /** 自定义 UI:带着右键目标运行一条自动化。 */
@@ -2249,6 +2201,16 @@ export const IPC = {
   DOCUMENT_VIEW_HIDE: DOCUMENT_VIEW_HIDE_CHANNEL,
   DOCUMENT_VIEW_FOCUS: DOCUMENT_VIEW_FOCUS_CHANNEL,
   DOCUMENT_VIEW_CLOSE: DOCUMENT_VIEW_CLOSE_CHANNEL,
+  DOCUMENT_VIEW_DORMANT_LIST: DOCUMENT_VIEW_DORMANT_LIST_CHANNEL,
+  DOC_VIEW_REVISION_STATE: DOC_VIEW_REVISION_STATE_CHANNEL,
+  DOC_VIEW_REVISION_DECIDE: DOC_VIEW_REVISION_DECIDE_CHANNEL,
+  DOC_VIEW_REVISION_MODE: DOC_VIEW_REVISION_MODE_CHANNEL,
+  DOC_VIEW_REVISION_FOCUS: DOC_VIEW_REVISION_FOCUS_CHANNEL,
+  DOC_VIEW_REVISION_REWRITE: DOC_VIEW_REVISION_REWRITE_CHANNEL,
+  DOC_VIEW_HISTORY_LIST: DOC_VIEW_HISTORY_LIST_CHANNEL,
+  DOC_VIEW_HISTORY_RESTORE: DOC_VIEW_HISTORY_RESTORE_CHANNEL,
+  DOC_VIEW_COMMENT_CREATE: DOC_VIEW_COMMENT_CREATE_CHANNEL,
+  DOC_VIEW_COMMENT_MUTATE: DOC_VIEW_COMMENT_MUTATE_CHANNEL,
   DOCUMENT_VIEW_LIST: DOCUMENT_VIEW_LIST_CHANNEL,
   UNATTENDED_APPROVE: "unattended:approve",
   UNATTENDED_RUN: "unattended:run",
@@ -2269,6 +2231,10 @@ export const IPC = {
   /** Main → renderer push:工作流 / 自动化 / 代理档案 / 节点类型变了(含 AI 改的)。
    *  渲染端据此重拉列表(见 `WorkflowChangedMessage` 那条 ⚠️)。 */
   WORKFLOW_CHANGED: "workflow:changed",
+  /** 【Q9b】引擎状态**变了**（起/停/失败/部署确认）。宿主主动推，渲染端不再靠轮询
+   *  猜。载荷只是 `{ engineId }` —— 收到就去读权威状态，不在事件里捎带快照
+   *  （两份状态必然会漂，见 `WorkflowChangedMessage` 的同一条理由）。 */
+  WORKFLOW_ENGINE_CHANGED: "workflowEngine:changed",
   // 钩子(设置 → 钩子):事件驱动的命令,宿主侧执行(见 contracts/hook.ts)
   HOOKS_LIST: "hooks:list",
   HOOKS_RUNS: "hooks:runs",

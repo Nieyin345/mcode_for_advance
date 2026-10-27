@@ -31,7 +31,10 @@ const kindsAst = ts.createSourceFile(kindsPath, kindsSource, ts.ScriptTarget.Lat
 // ⚠️ 加一个被 `FileEditor` 调用的新函数，**必须同步加到这个列表** ——
 // 下面的 `Missing production AST boundary` 断言只保证「列了的名字在源码里」，
 // 保证不了「源码里被调用的都在列表里」。
-const functions = ["FileEditor", "EditorToolbar", "isMarkdown", "isPdfFile", "isImage", "isUnsupported", "canPreviewHtml", "htmlPreviewDecision", "isGenofficeViewAvailableFor"];
+/* 【2026-10-28】`TheiaCustomEditorButton` 是 `FileEditor` **同文件里的局部组件**
+ *（工具栏第 762 行渲染它）。它必须进抽取名单 —— 否则被抽取的 `EditorToolbar`
+ * 调用它时 vm 里没有这个名字，整套 35 条一起抛 `is not defined`。 */
+const functions = ["FileEditor", "EditorToolbar", "isMarkdown", "isPdfFile", "isImage", "isUnsupported", "canPreviewHtml", "htmlPreviewDecision", "isGenofficeViewAvailableFor", "TheiaCustomEditorButton"];
 const selected = ast.statements.filter(node =>
   ts.isFunctionDeclaration(node) && functions.includes(node.name?.text) ||
   ts.isVariableStatement(node) && node.declarationList.declarations.some(d =>
@@ -98,8 +101,21 @@ const env = {
   useTurnFileFor: () => before === undefined ? undefined : { before },
   useGitDiffPair: () => gitPair,
   useState: (value) => [value, noOp],
+  /* 【EDIT-09】`FileEditor` 新增 `useEffect(() => setHistoryOpen(false), [filePath])`
+   *（切文件收起历史抽屉）。沙箱只提供被提取那段真正用到的 hook，重构加了新的就得跟上，
+   * 否则整段函数在 vm 里抛 `useEffect is not defined` —— 红的是套件不是被测代码。
+   * 桩是空执行：这里没有 React，effect 本就不跑。 */
+  useEffect: () => {},
   useCallback: fn => fn,
   useI18n: () => ({ t: key => key }),
+  /* 【EDIT-06 修订左栏】`EditorWithRevisions` 是**外部导入**的组件（它自带修订栏逻辑，
+   * 不在本套的可测面里 —— 本套验的是「FileEditor 把 office 文件路由到哪一档」，
+   * 修订栏是包在外面的壳）。桩成全等渲染：`<X>{children}</X>` 直接透传子节点。 */
+  EditorWithRevisions: ({ children }) => children,
+  RevisionModeButton: () => null,
+  /* 扩展贡献的工具栏按钮（`modules/TheiaActionToolbar.tsx`）。它读 `api.modules`
+   * 拉已运行的扩展会话 —— 本套验的是**文件路由**，不验扩展工具栏，桩成不渲染。 */
+  TheiaActionToolbar: () => null,
   extname: file => /\.[^./\\]+$/.exec(file)?.[0].toLowerCase() ?? "",
   monacoLanguageToLsp: () => null,
   languageForExt: () => "plaintext",

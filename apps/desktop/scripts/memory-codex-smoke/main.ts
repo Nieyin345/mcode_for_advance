@@ -117,7 +117,20 @@ const PUSH_CHANNELS = [
   "window:focusChanged",
   "workflow:changed",
   // Node installation approval is a main → renderer event, not an invoke handler.
+  "workflowEngine:changed",
   "workflowEngine:nodeInstallApproval",
+  /* 【Theia 扩展宿主】六条单向推送（主进程 `sender.send(...)`，无 handler）。
+   * 2026-10-27 Theia 接入时新增，2026-10-28 补进这份期望名单。
+   * 它们的共同点：都是**扩展宿主的状态变化**，由主进程单向告知渲染端 ——
+   * `TheiaWebviewHost` / `TheiaStatusStrip` / `TheiaRuntimeMessageHost` 用
+   * `api.on.*` 订阅。扩展侧永远不该反过来 invoke 它们。 */
+  "modules:theiaContributionChanged",
+  "modules:theiaDiagnostics",
+  "modules:theiaEditorApply",
+  "modules:theiaQuickInput",
+  "modules:theiaRuntimeMessage",
+  "modules:theiaStatusEntry",
+  "modules:theiaWebview",
 ].sort();
 
 /** 这个路径是不是落在数据根里(`..` 穿不出去的判据)。 */
@@ -984,6 +997,23 @@ console.log("\n总注册表:registerIpcHandlers");
     // Host-only doc preload callbacks: sender's webContents is checked by
     // documentView handlers, and these must not become public Agent RPCs.
     "mcode:document-view:close-check-result",
+    /* 【EDIT-06 修订流程 / 恢复缓存】四条同类的宿主内部通道（2026-10-28 补）。
+     *
+     * 判据与上面那条一致：**谁是发起方**。
+     *   - `revision-report` / `revision-decide-result`：文档页面回报「修订应用到哪了」，
+     *     发起方是宿主自己注入的 preload（`sendToEditor` → 页面回执），渲染端与
+     *     Agent 都不该有入口；
+     *   - `revision-comment-created`：页面 → 宿主的评论创建回执；
+     *   - `write-recovery`：**受限的二进制恢复缓存**，不是按路径选文件的写盘 ——
+     *     处理体第一行就 `host.docIdForSender(...)` 校验发送方，拿不到 docId 直接
+     *     `{ok:false, reason:"无权访问恢复会话"}`。
+     *
+     * 它们**不是漏接线**，是「不该接线」：变成公开 RPC 就等于给 Agent 开了一条
+     * 绕过 docId 归属检查的写盘入口。 */
+    "mcode:document-view:revision-comment-created",
+    "mcode:document-view:revision-decide-result",
+    "mcode:document-view:revision-report",
+    "mcode:document-view:write-recovery",
     "mcode:document-view:confirm-replace",
     "mcode:document-view:open-committed",
     "mcode:document-view:open-path",
