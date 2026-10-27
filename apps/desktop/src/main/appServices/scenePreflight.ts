@@ -28,7 +28,27 @@ import {
   collectCapabilityInventory,
   hostCapabilityDeclarationsFromCatalog,
 } from "@main/orchestration/capabilityResolver.js";
-import { getModuleHost } from "@main/modules/service.js";
+
+/**
+ * **已安装扩展的能力目录** —— 装配层注入。
+ *
+ * ## 为什么是注入而不是在这里取
+ *
+ * 这份目录从前来自 ，而 ModuleHost 已整体删除（扩展统一到 Theia
+ * plugin host）。Theia 侧的「扩展声明了哪些能力」还没有对应物 —— 所以这里**不猜**：
+ * 没有注入时按空集处理（预检对扩展能力一律判缺失，fail-closed），而不是假装它们都在。
+ *
+ * 空集对用户是可解释的：「这个场景要的扩展能力本机没登记」；假装存在会让预检判绿、
+ * 部署之后才在运行期炸。
+ */
+let extensionCatalogSource: (() => { capabilities: readonly { id: string; kind: "query" | "action" | "task" }[] } | undefined) | null = null;
+
+/** 装配层调用：把「本机装了哪些扩展能力」接进来。传 null 解除。 */
+export function setSceneExtensionCatalogSource(
+  source: (() => { capabilities: readonly { id: string; kind: "query" | "action" | "task" }[] } | undefined) | null,
+): void {
+  extensionCatalogSource = source;
+}
 
 /** 把一份 `ScenePlanResult` 的计划部分转成过 IPC 的线格(与 `planScene` 保持一致的一份实现)。 */
 function toPlanWire(plan: ReturnType<typeof compileScenePlan>): ScenePlanWire {
@@ -68,12 +88,14 @@ export async function preflightScene(input: ScenePreflightInput): Promise<SceneP
   }));
   // 【MC-035】已安装扩展的能力进**同一份**清单:从宿主注册表现读(卸载/重装后立刻生效),
   // 与 `modules.catalog` / `app_api_*` / 工作流预检看的是同一张注册表,不另存声明。
-  const moduleCatalog = await (await getModuleHost()).catalog();
   const inventory = collectCapabilityInventory({
     providers: providerRegistry.list(),
     plugins,
     executorKinds: [...executionEngine.kinds()],
-    hostCapabilities: [...HOST_CAPABILITY_DECLARATIONS, ...hostCapabilityDeclarationsFromCatalog(moduleCatalog)],
+    hostCapabilities: [
+      ...HOST_CAPABILITY_DECLARATIONS,
+      ...hostCapabilityDeclarationsFromCatalog(extensionCatalogSource?.()),
+    ],
   });
   const preflight = sceneCapabilityPreflight(validation.spec, inventory);
   return {

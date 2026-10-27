@@ -12,7 +12,8 @@ import { migrateWorkflowDoc, flowToWorkflowDoc } from "@main/workflowEngines/flo
 import { loadWorkflowIntoNative, type NativeLoadPorts } from "@main/workflowEngines/nativeLibraryLoad.js";
 import { triggerNodeHtml, triggerSubscribePayload } from "@main/workflowEngines/mcodeNodeTypes.js";
 import { productionNodePackServices } from "@main/workflowEngines/nodePackProductionPorts.js";
-import { emitEvent, resetRuntime } from "../mcode-node-pack-ports-smoke/stubs/runtimeManager.js";
+import { emitEvent, resetRuntime, runtimeManager as stubRM } from "../mcode-node-pack-ports-smoke/stubs/runtimeManager.js";
+import { runtimeManager as prodRM } from "@main/claude/RuntimeManager.js";
 
 let count = 0, failed = 0;
 function check(name: string, ok: boolean, detail?: unknown): void {
@@ -24,10 +25,21 @@ const fixtures = JSON.parse(readFileSync(join(process.cwd(), "resources/presets/
   workflows: Array<{ id: string; name: string; nodes: WorkflowDoc["nodes"]; edges: WorkflowDoc["edges"] }>;
 };
 const realPreset = fixtures.workflows.find(w => w.id === "wf_auto_download")!;
+/* **夹具要把触发器显式打开。**
+ *
+ * 预设 `wf_auto_download` 自己写着 `enabled: false` —— 那是**对的**：导入的预设默认
+ * 不武装，让用户看过再开。而 AUTO-01 之后执行侧**真的读**这个字段（从前它只是留在
+ * 参数里给人看，原生侧照旧订阅，于是"我关了它它还在跑"）。本套验的是"事件到了要
+ * 触发"，所以夹具必须先把它打开，否则测到的是"关掉的触发器不响"—— 那是另一件事。
+ *
+ * ⚠️ 这条夹具的修改**不是**在放宽判据：「`enabled: false` 时确实不订阅」由
+ * `mcode-node-pack-ports-smoke` 的 AUTO-01 那一组守着，那里验的是相反方向。 */
 const source: WorkflowDoc = {
   id: realPreset.id, name: realPreset.name, description: "", icon: "flow", prompt: "",
   trigger: "manual", schemaVersion: "1", builtin: false, updatedAt: 1,
-  nodes: realPreset.nodes, edges: realPreset.edges,
+  nodes: realPreset.nodes.map(n => n.type === "mcode.trigger"
+    ? { ...n, params: { ...n.params, enabled: true } } : n),
+  edges: realPreset.edges,
 } as WorkflowDoc;
 const types: ReadonlyMap<string, NodeTypeManifest> = new Map([
   ["mcode.trigger", { id: "mcode.trigger", manifestVersion: 1, name: "trigger", runner: { kind: "trigger" }, capability: "read", params: [] }],
@@ -96,10 +108,24 @@ try {
 }
 
 resetRuntime();
+// 身份探针：生产端口用的 runtimeManager 必须就是本套 emit 用的那一份。
+check("生产端口与本套共享同一个 runtimeManager 实例（否则订阅与事件分属两个世界）", prodRM === stubRM);
 const services = productionNodePackServices(() => ({ state: "running", engineId: "node-red", port: 8888, reason: null }), undefined);
 const received: Array<Record<string, unknown>> = [];
-const release = services.subscribe({ ...subscribePayload }, message => received.push(message));
-check("真实生产端口成功注册事件订阅", typeof release === "function");
+/* 【诊断】`subscribe` 在参数不合规时**抛错**（triggerKind 不是 event / events 不是
+ * 合法的 HookEvent / 被关掉）。抛了之后这里没有 listener，后面发什么都收不到 ——
+ * 症状是「生产端口不触发」，而看不出是订阅压根没建起来。所以先把它夹住并断言。 */
+const subscribeResult: { release: (() => void) | null; error: string | null } = (() => {
+  try {
+    return { release: services.subscribe({ ...subscribePayload }, message => received.push(message)), error: null };
+  } catch (err) {
+    return { release: null, error: err instanceof Error ? err.message : String(err) };
+  }
+})();
+const release = subscribeResult.release;
+check("真实生产端口成功注册事件订阅", typeof release === "function",
+  { error: subscribeResult.error, triggerKind: subscribePayload.triggerKind, events: subscribePayload.params?.["events"] });
+if (release !== null) {
 emitEvent({ type: "turn.done", sessionId: "s-test", reason: "end_turn" } as never);
 check("不匹配事件不执行用户工作流", received.length === 0, received);
 emitEvent({ type: "library.item.imported", sessionId: "s-test", itemId: "i-test", title: "Test", pdfPath: "file" } as never);
@@ -113,6 +139,7 @@ check("文献导入会准确传递本次条目 ID，而非猜最新一条",
 release();
 emitEvent({ type: "library.item.imported", sessionId: "s-test", itemId: "i-test2", title: "Test", pdfPath: "file" } as never);
 check("卸载订阅后不再触发", received.length === 1);
+}
 
 const changedReceived: Array<Record<string, unknown>> = [];
 const changedPayload = triggerSubscribePayload(changed.nodes.find(n => n["x-mcode"]?.nodeId === original.id)!);

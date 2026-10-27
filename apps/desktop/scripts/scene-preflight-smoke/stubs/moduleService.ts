@@ -18,6 +18,11 @@ export function resetStubModuleCatalog(): void {
   catalog = { capabilities: [] };
 }
 
+/** 读当前目录 —— 装配层把它包成  的来源函数。 */
+export function stubModuleCatalog(): Pick<ModuleCatalog, "capabilities"> {
+  return catalog;
+}
+
 export async function getModuleHost(): Promise<{ catalog(): Pick<ModuleCatalog, "capabilities"> }> {
   return { catalog: () => catalog };
 }

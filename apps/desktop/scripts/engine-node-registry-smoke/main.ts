@@ -17,7 +17,7 @@
  * Run: bash scripts/engine-node-registry-smoke/run.sh
  */
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -221,19 +221,41 @@ try {
   {
     const { readFileSync } = await import("node:fs");
     const repoRoot = process.cwd().replace(/apps[\\/]desktop$/, "");
-    const host = readFileSync(join(process.cwd(), "src/main/modules/ModuleHost.ts"), "utf8");
     const runner = readFileSync(join(process.cwd(), "src/main/modules/permissionedProcessRunner.ts"), "utf8");
     const registrySrc = readFileSync(join(process.cwd(), "src/main/workflowEngines/engineNodeRegistry.ts"), "utf8");
     const contracts = readFileSync(join(repoRoot, "packages/contracts/src/modules.ts"), "utf8");
     check("contracts 导出 declaresNetwork", /export function declaresNetwork\(/.test(contracts));
-    check("ModuleHost 不再自行 includes(\"network\") 直接判放行（都走 declaresNetwork）",
-      !/permissions\.includes\("network"\)/.test(host.replace(/\/\/[^\n]*/g, "")) && /allowNetwork: declaresNetwork\(/.test(host),
-      host.match(/permissions\.includes\("network"\)/g));
+    /* 【扩展线改动】**`ModuleHost.ts` 已被整体删除**（扩展统一到 Theia plugin host），
+     * 所以这一段不能再读它 —— 那是「断言的对象不存在」，不是「判据失效」。
+     *
+     * 判据本身不变：**network 放行只有一个出口 `declaresNetwork`**。现在消费它的两处
+     * 是执行体清单（`engineNodeRegistry`）与 `permissionedProcessRunner` 的调用方。
+     * 少掉的 `ModuleHost` 那一半不再是本套的职责（它已不存在）；**将来 Theia 侧新增
+     * 读权限短语的地方时，要把那一处补进这段**，否则「只有一份」会悄悄变成两份。 */
     check("可执行体清单用同一个 declaresNetwork", /declaresNetwork\(entry\.capabilities\)/.test(registrySrc));
-    // permissionedProcessRunner 的 allowNetwork 是**布尔入参**，由 ModuleHost 计算；
-    // 它自己不应再读权限短语（那会是第三份判据）。
+    // permissionedProcessRunner 的 allowNetwork 是**布尔入参**，由调用方按共享判据算；
+    // 它自己不应再读权限短语（那会是第二份判据）。
     check("permissionedProcessRunner 不读权限短语（allowNetwork 由调用方按共享判据算）",
       !/includes\("network"\)/.test(runner));
+    // 反向：全仓 `src/main/` 里除 contracts 的定义处外，不该有人自己拼权限短语。
+    // 这条抓的是"新写了一处判据"——比逐文件检查更难绕过。
+    const offenders = (() => {
+      const root = join(process.cwd(), "src/main");
+      const hits: string[] = [];
+      const walk = (dir: string): void => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) { walk(full); continue; }
+          if (!entry.name.endsWith(".ts") || entry.name.endsWith(".generated.ts")) continue;
+          const text = readFileSync(full, "utf8").replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+          if (/\.includes\("network"\)/.test(text)) hits.push(full.slice(root.length + 1));
+        }
+      };
+      walk(root);
+      return hits;
+    })();
+    check("★ src/main 里没有第二处 `includes(\"network\")`（判据只有一份）",
+      offenders.length === 0, offenders);
   }
 
   /* ══════════ 7b. 真实安装入口：字节 / 目录 + 下载期 sha256 ══════════ */

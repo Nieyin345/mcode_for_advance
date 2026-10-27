@@ -493,7 +493,11 @@ console.log("\n6. 生产装配：withConditionEvaluation 包一层");
     subscribe: () => () => {},
   };
   const wrapped = withConditionEvaluation(base as never, { getDoc: () => DOC, resolveWorkflow: () => "wf_w17_bridge" });
-  const passthrough = await wrapped.execute("agent.run" as never, {});
+  /* 【载荷必须有 `params`】`conditionHostPorts` 对五种真实节点动作（agent/conversation/
+   * branch/module/node-red）做 fail-closed 校验：缺 `params` 就是**载荷不合规**，不猜。
+   * 真引擎发的每一条都带它（`basePayload` 里恒有），所以夹具也要按真实形状给。
+   * 用 `{}` 当载荷时这里会抛 —— 那验的是"过简夹具"，不是"透传"。 */
+  const passthrough = await wrapped.execute("agent.run" as never, { params: {} });
   check("★ 其它动作原样交给原服务（不复制它的判据）",
     calls.length === 1 && calls[0] === "agent.run" && JSON.stringify(passthrough) === JSON.stringify({ ran: "agent.run" }));
   // 求值动作走本文件，且**要经归属核对 + 宿主库**。

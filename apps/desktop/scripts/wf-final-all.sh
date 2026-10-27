@@ -51,6 +51,19 @@ SUITES=(
   t3-engine-trigger-gate-smoke
   t10-node-red-pause-license-smoke
   t88-node-red-license-closure-smoke
+  # 【Q5 波及面】下面这些是同一批决策的下游（事件触发 / 条件求值 / 自定义 UI 入口 /
+  # 场景预检 / 执行引擎 / 真 Electron 面板），此前不在本清单里 —— 2026-10-27 由
+  # 另一会话的全量跑发现并补齐。它们红过一次而我没看见，正说明清单本身有缺口。
+  event-vertical-smoke
+  mcode-trigger-events-smoke
+  mcode-trigger-condition-context-smoke
+  mcode-condition-bridge-smoke
+  execution-engine-smoke
+  engine-node-registry-smoke
+  scene-preflight-smoke
+  mcode-custom-ui-native-smoke
+  node-session-smoke
+  workflow-engine-electron-smoke
 )
 
 for s in "${SUITES[@]}"; do

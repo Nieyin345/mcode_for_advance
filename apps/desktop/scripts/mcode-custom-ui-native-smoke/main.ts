@@ -28,8 +28,19 @@ setNativeReady(false);
 const blocked=await runCustomUiAutomation(native);
 check("原生手动入口不可用时不回退旧执行器",!blocked.ok&&nativeCalls.length===1&&legacyCalls.length===0,blocked);
 setEngine("mcode");
+/* 【Q5：旧执行器已退场】**这条判据原来是「旧归属工作流仍走旧入口」** —— 而 Q5 之后
+ * 旧执行器对**用户图**一条监听都不装、手动入口也一律拒绝（功能文档 WF-09：
+ * 「任何仍归旧执行器的用户图都不会被运行」，四个入口给**同一句话**）。
+ *
+ * 所以这里要验的不是"还能跑"，而是**拒绝得对不对**：
+ *   - 不落到旧执行器（`legacyCalls` 不增）—— 否则就是双执行器并存；
+ *   - 也不冒充成原生调用（`nativeCalls` 不增）—— 那是"看起来成功了"；
+ *   - 给的话**是那句共用的迁移指引**，不是"找不到触发器"这种让人无从下手的句子。 */
 const legacy=await runCustomUiAutomation(native);
-check("旧归属工作流仍走旧入口，不受 Node-RED 新路径影响",
- legacy.ok&&legacyCalls.length===1&&nativeCalls.length===1);
+check("★ 旧归属工作流的自定义 UI 运行被拒绝（旧执行器已退场）", !legacy.ok, legacy);
+check("★ 拒绝时没有落到旧执行器（不并存两套执行器）", legacyCalls.length===0, legacyCalls);
+check("★ 拒绝时也没有冒充原生调用", nativeCalls.length===1, nativeCalls);
+check("★ 拒绝话术是**迁移指引**（与手动运行/钩子/自动化同一个说法）",
+  /迁移/.test(String((legacy as { error?: string }).error ?? "")), legacy);
 console.log("mcode-custom-ui-native-smoke: "+(count-failed)+"/"+count);
 if(failed)process.exitCode=1;

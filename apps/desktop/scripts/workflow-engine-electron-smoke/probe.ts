@@ -371,10 +371,31 @@ export async function runWorkflowEngineProbe(dir: string): Promise<void> {
       const panelSrc = await readFile(
         join(process.cwd(), "src/renderer/components/settings/workflows/EngineRuntimePanel.tsx"), "utf8");
       assert(/return `workflow-engine-\$\{engineId\}`/.test(panelSrc), "engineDocId 约定变了（探针的 docId 会失配）");
-      assert(/url === null[\s\S]{0,400}?closeQuietly\(docId\)/.test(panelSrc), "离开 running 时必须关闭视图");
+      /* 【W15 之后】**判据不能再找 `closeQuietly(docId)` 这个字面形状。**
+       *
+       * 同一个 docId 现在有两个宿主（设置页引擎页签 + 右栏停靠位），视图按 docId 复用 ——
+       * 所以「关」不是实例动作：先 `releaseOwnership`，**持有表空了才关**
+       * （`shouldCloseAfterRelease` 的纯函数判据由 `workflow-engine-view-owner-smoke`
+       * 直测，这里不重复验那层语义）。
+       *
+       * 本条要守的是**这个分支确实通向关闭**，而不是它用哪一句话写。所以验整条链：
+       * `url === null` → 释放持有 → 最后一个持有者才关 → 关闭经 `closeIfStillUnowned`
+       * → 它内部调 `closeQuietly`。任一环断了这里都会红。
+       *
+       * ⚠️ 形状仍会被改写绕过（换成别的方式关闭也能通过语义、但过不了这条正则）。
+       * 这条是**源码形状**判据，抓的是"责任划分没漂回无条件 close"，不是完整语义。 */
+      const nullBranch = panelSrc.slice(
+        panelSrc.indexOf("if (url === null)"),
+        panelSrc.indexOf("if (!active)"));
+      assert(nullBranch.length > 0, "找不到 url === null 分支（结构变了，这条判据要重写）");
+      assert(/releaseOwnership\(docId\)/.test(nullBranch), "离开 running 时必须释放持有");
+      assert(/shouldCloseAfterRelease|closeIfStillUnowned/.test(nullBranch),
+        "离开 running 时必须走「持有表空了才关」这条路（不能无条件 close，也不能不关）");
+      assert(/closeIfStillUnowned\(docId\)/.test(panelSrc), "关闭的最终出口变了（closeIfStillUnowned 不见了）");
       assert(/if \(!active\)[\s\S]{0,600}?documentView\.hide\(\{ docId \}\)/.test(panelSrc), "页签切走必须只 hide");
       const inactiveBranch = panelSrc.slice(panelSrc.indexOf("if (!active)"), panelSrc.indexOf("const stage = stageRef.current"));
-      assert(!inactiveBranch.includes("closeQuietly"), "页签切走的分支里不得 close（会丢编辑状态）");
+      assert(!inactiveBranch.includes("closeQuietly") && !inactiveBranch.includes("closeIfStillUnowned"),
+        "页签切走的分支里不得 close（会丢编辑状态）");
     });
 
     await check("引擎 stop：状态 stopped、editorUrl 变 null、端口不再应答", async () => {

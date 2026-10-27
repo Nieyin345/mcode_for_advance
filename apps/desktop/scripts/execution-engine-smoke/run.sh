@@ -9,6 +9,9 @@ source "$HERE/../lib/esbuild-path.sh"
 "$ESBUILD" scripts/execution-engine-smoke/main.ts \
   --bundle --platform=node --format=esm \
   --tsconfig=tsconfig.json \
+  --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
+  --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
+  --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --external:ssh2 \
   --outfile="$OUT/smoke.mjs" --log-level=error
 node "$OUT/smoke.mjs"

@@ -84,6 +84,16 @@ if (existsSync(automationFile) && existsSync(chatFile)) {
 
     if (doc && trigger && yes && no) {
       resetRuns();
+      /* 【Q5】**本套测的是旧执行器那套事件触发机制**（武装 → 事件到达 → 起跑 →
+       * 载荷/会话/项目归属），而 Q5 之后旧执行器对**用户图**一条监听都不装 ——
+       * 用户图统一到 Node-RED（功能文档 WF-09）。
+       *
+       * 那套机制仍在代码里、也仍要守（内部路径的承载），所以用生产里同一个显式
+       * 注入点 `setLegacySchedulingFor` 把本套的图登记进去：测的是**真实的那个
+       * 单例**，生产装配层不调它 → 全部 false → 对任何图都不装监听
+       * （`t3-engine-trigger-gate-smoke` 守着那一半）。 */
+      automationRunner.setLegacySchedulingFor((id) => id === imported.id
+        || (doc !== null && id === doc.id));
       await automationRunner.start();
       try {
         const send = async (id: string, pdfPath: string): Promise<CapturedRun | undefined> => {

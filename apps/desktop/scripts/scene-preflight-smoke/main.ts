@@ -16,8 +16,8 @@
  *
  * Run: scripts/scene-preflight-smoke/run.sh
  */
-import { preflightScene } from "../../src/main/appServices/scenePreflight.js";
-import { resetStubModuleCatalog, setStubModuleCatalog } from "./stubs/moduleService.js";
+import { preflightScene, setSceneExtensionCatalogSource } from "../../src/main/appServices/scenePreflight.js";
+import { resetStubModuleCatalog, setStubModuleCatalog, stubModuleCatalog } from "./stubs/moduleService.js";
 
 let failures = 0;
 let total = 0;
@@ -77,6 +77,9 @@ async function main(): Promise<void> {
   {
     // 对照(防空过):目录为空时,同名扩展能力必须被判缺失。
     resetStubModuleCatalog();
+    /* 把「本机装了哪些扩展能力」接到装配层。生产里这一份还没有供给方（ModuleHost 已删、
+     * Theia 侧未建），所以**不注入时按空集处理**——下面那条对照组钉的就是这一点。 */
+    setSceneExtensionCatalogSource(() => stubModuleCatalog());
     const absent = spec() as Record<string, unknown>;
     absent.capabilities = [{ kind: "module", id: "module.demo.convert", required: true }];
     const before = await preflightScene({ spec: absent });
@@ -99,9 +102,9 @@ async function main(): Promise<void> {
       eq("缺可选能力 → gaps 里有它(coverage)", r.preflight.gaps.some((g) => g.id === "coverage"), true);
       eq("缺可选能力 → requiredGaps 为空", r.preflight.requiredGaps.length, 0);
       eq("gaps 里 coverage 的 required=false", r.preflight.gaps.find((g) => g.id === "coverage")?.required, false);
-      // ★ 清单真的来自宿主:宿主内置能力 core.file.inspect 查得到(声明它 → 就位)。
+      // ★ 清单真的来自宿主:宿主内置能力 mcode.file.inspect 查得到(声明它 → 就位)。
       const hostCheck = spec() as Record<string, unknown>;
-      hostCheck.capabilities = [{ kind: "module", id: "core.file.inspect", required: true }];
+      hostCheck.capabilities = [{ kind: "module", id: "mcode.file.inspect", required: true }];
       const hr = await preflightScene({ spec: hostCheck });
       check("★ 宿主内置能力(module→builtin)在清单里 → 就位", hr.ok && hr.preflight.ok, hr.ok ? hr.preflight : hr);
       eq("预检条数 = 声明的能力数", r.preflight.checkedCapabilities, 2);

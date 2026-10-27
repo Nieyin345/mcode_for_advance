@@ -1085,7 +1085,7 @@ const originalRunSave = repo.save;
   save("success");
   const again = SessionRepo.get(runboardId);
   check("★ 重复保存是幂等的（不重复建会话/项目）",
-    again !== null && again.createdAt === created?.createdAt, { before: created?.createdAt, after: again?.createdAt });
+    again !== null && again !== undefined && again.createdAt === created?.createdAt, { before: created?.createdAt, after: again?.createdAt });
 }
 
 rmSync(DATA, { recursive: true, force: true });
