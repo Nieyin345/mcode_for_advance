@@ -51,7 +51,49 @@ async function registry(options:DataOptions) {
   }
   return registryPromise;
 }
+/** 【EXT-07】给 `app_guide` 读已装扩展清单用。
+ *
+ * **为什么不复用 registry 的 IPC handler**：那个 handler 要求「桌面主框架的渲染端发送方」
+ * （`theiaDesktopSender`），而这里是主进程内部调用、没有 sender。所以单独开一条只读入口。
+ *
+ * **为什么要 senderId**：`registry.list(senderId)` 的 `activeSession.commands` 是按
+ * **窗口所有权**返回的 —— 命令只有那个窗口的会话里才有。主进程内部读时传一个合成 id，
+ * 拿到的就是「已安装清单 + 各扩展是否在跑」，但**命令表可能为空**。
+ * 这是刻意的：guide 的价值是「告诉 agent 有这么个扩展」，命令细节由用户在 UI 里看。
+ */
+let installedOptions: DataOptions | null = null;
+
+export async function readInstalledExtensionsForGuide(): Promise<Array<{
+  id: string; version: string; enabled: boolean; running: boolean; corrupted?: boolean;
+  commands?: readonly string[];
+  commandContributions?: readonly { id: string; title?: string; category?: string }[];
+}>> {
+  if (!installedOptions) throw Error("扩展 registry 还没有装配（registerTheiaInstalledHandlers 未被调用）");
+  const store = await registry(installedOptions);
+  // 0 = 「主进程内部」这个合成发送方；registry 对不认识的 sender 返回无会话的条目。
+  return store.list(0).map((entry) => {
+    const session = entry.activeSession;
+    return {
+      id: entry.id,
+      version: entry.version,
+      enabled: entry.enabled,
+      running: entry.running,
+      ...(entry.corrupted ? { corrupted: true as const } : {}),
+      ...(session?.commands ? { commands: session.commands } : {}),
+      ...(session?.commandContributions
+        ? { commandContributions: session.commandContributions.map((c) => ({
+            id: c.commandId,
+            ...(c.title !== undefined ? { title: c.title } : {}),
+            ...(c.category !== undefined ? { category: c.category } : {}),
+          })) }
+        : {}),
+    };
+  });
+}
+
 export function registerTheiaInstalledHandlers(ipc:IpcMain, options:DataOptions):void {
+  // 记下装配参数：`readInstalledExtensionsForGuide` 也要用它取同一份 registry。
+  installedOptions = options;
   const watched = new Set<number>(), destroyed = new Set<number>();
   const editorBroker = new TheiaEditorApplyBroker();
   const messageBroker = new TheiaRuntimeMessageBroker();

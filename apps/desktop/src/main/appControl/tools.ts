@@ -90,7 +90,6 @@ import { validateExtension } from "./extensionValidate.js";
 // 拖进来；这里只要类型与一个纯函数，按需取即可。
 import type { ExtensionWorkshopReport, ExtensionWorkshopInstallHandoff } from "@contracts/extensionWorkshop";
 // 类型只在编译期存在（`import type` 被 esbuild 原样擦除），不会把工坊模块带进 bundle。
-import type { ExtensionWorkshopOptions } from "@main/modules/extensionWorkshop.js";
 import { APP_API_TUTORIALS, tutorialsMatchingWord } from "./appApiTutorials.js";
 import {
   describeWorkflowToolParams,
@@ -514,25 +513,6 @@ const PLAN_GRANT_TTL_MS = 30 * 60 * 1000;
  * 这正是 ARC-004 的硬判据:**agent / system 不能给自己发授权** —— 只有真人在卡上点的
  * 「允许」才铸得出 grant。
  */
-/**
- * T51: install approval card must be intelligible BEFORE consent. Never grants
- * rights: the existing danger gate still requires the user's fresh decision.
- */
-export function extensionInstallApprovalSummary(input: unknown): string {
-  if (!input || typeof input !== "object") return "\n扩展清单：未提供";
-  const manifest = (input as { manifest?: unknown }).manifest;
-  if (!manifest || typeof manifest !== "object") return "\n扩展清单：未提供";
-  const m = manifest as { id?: unknown; permissions?: unknown; program?: { source?: unknown } };
-  const permissions = Array.isArray(m.permissions)
-    ? m.permissions.filter((p): p is string => typeof p === "string").slice(0, 41)
-    : [];
-  const source = typeof m.program?.source === "string" ? m.program.source : "";
-  const calledApis = [...new Set([...source.matchAll(/(?:mcode\.api\.call|app_api_call)\s*\(\s*["']([^"']+)["']/g)].map(v => v[1]!))].slice(0, 20);
-  return "\n扩展 ID：" + (typeof m.id === "string" ? m.id.slice(0, 100) : "(缺失)") +
-    "\n清单申请权限：" + (permissions.join(", ") || "(无)") +
-    "\n程序静态 API 调用（仅识别字面量，动态调用无法列尽）：" + (calledApis.join(", ") || "(未识别出)") +
-    "\n批准后将安装上述扩展；取消则不安装。";
-}
 
 export async function gateAppAction(
   ctx: ProviderContext,
@@ -1222,49 +1202,6 @@ function documentCliPortsFor(): import("@main/document/documentToolRuntime.js").
   };
 }
 
-/* ───────────────────【T20】扩展工坊的运行时装配 ───────────────────
- *
- * 工坊模块（`modules/extensionWorkshop.ts`）是纯模块：根目录、沙箱工作区、沙箱 RPC 派发
- * 全部注入。这里是**生产装配点**，与 `documentRuntimePortsSync` 同一手法用动态 require ——
- * 数据根（`dataRoot` 拉 electron）、宿主（`service` 拉 sql.js）都不能静态进本文件的
- * import 图，否则无头套件打包时就炸。
- */
-
-/** 工坊的一次运行时装配：根目录 + 注入的选项。失败抛出可读原因（调用方转成 fail）。 */
-async function workshopRuntime(): Promise<{ root: string; options: ExtensionWorkshopOptions }> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { dataRoot } = require("@main/lib/dataRoot.js") as typeof import("@main/lib/dataRoot.js");
-  const root = join(dataRoot(), "extension-workshop");
-  return {
-    root,
-    options: {
-      workshopRoot: root,
-      // 沙箱里的 read 档 RPC 走**与 app_api_call 同一条**既有通道（`callRpc` 直接调
-      // 登记过的 handler，不经过审批 —— 审批在这里是多余的：read 档本来就不弹卡，且
-      // 沙箱桥自己先按 policyFor 把非 read 的方法拒掉了）。这样扩展在安装前就能验证
-      // 「它真的能读到 project.list」而不是装完才发现。
-      sandboxAppCall: async (method, input) => {
-        const entry = findEntry(method);
-        if (!entry || !entry.registered) throw Error(`沙箱里没有这个方法：${method}`);
-        return callRpc(entry, input);
-      },
-    },
-  };
-}
-
-/** 宿主目录里的已装用户模块（`modules.catalog` 的投影）。宿主不可用 → `null`（不猜）。 */
-async function installedModuleFacts(): Promise<Array<{ id: string; version: string }> | null> {
-  try {
-    const { getModuleHost } = await import("@main/modules/service.js");
-    const catalog = (await getModuleHost()).catalog();
-    return catalog.modules
-      .filter((module) => module.id.startsWith("user."))
-      .map((module) => ({ id: module.id, version: module.version }));
-  } catch {
-    return null;
-  }
-}
-
 export function appMcpTools(): McpToolSpec[] {
   return [
     {
@@ -1538,72 +1475,6 @@ export function appMcpTools(): McpToolSpec[] {
       },
     },
     {
-      // 【T20】AI 写扩展的**闭环入口**。六步里本工具做 ①—④：清单草案 → 静态校验（不执行）
-      // → 写进受控草稿目录 → 隔离沙箱真跑一次最小调用。**它不安装**（⑤ 用户确认、⑥ 安装
-      // 与回滚都在 `modules.install` / `modules.remove` 的既有事务上）：成功时返回的
-      // `handoff` 只是「下一步该调什么、带哪些字段」，`requiresUserApproval` 恒为 true，
-      // `installConsent` 永远是 `allow-once` —— AI 拿不到、也构造不出代签。
-      //
-      // 为什么是工具而不是新 RPC：见 `@contracts/extensionWorkshop` 文件头（新 RPC 会强制
-      // 重生成 `apiCatalog.generated.ts` 与 `appPermission.ts`，后者会把 10 条未归类的
-      // 方法一次性收进委托面 —— 放宽方向，且两者是他人卡的边界）。
-      name: "extension_build",
-      description:
-        "AI 写扩展的闭环（写出清单 + 程序 → 静态校验 → 隔离沙箱真跑一次最小调用）。" +
-        "**不安装**：成功返回的是安装交接材料（handoff），必须再调 app_api_call({method:\"modules.install\", input:handoff.input}) " +
-        "由用户在审批卡上本人确认；AI 无权代签。沙箱里只允许 read 档 RPC，write/danger 一律不跑。" +
-        "失败返回可照抄的 issues（stage 说明卡在哪步）；同一扩展连续失败 3 次后会被拒绝，须交还用户。",
-      inputSchema: {
-        draft: z.unknown().describe(
-          "ExtensionWorkshopDraft：{ manifest: ModuleManifest, notes?: string }。" +
-          "manifest 是声明式清单（权限必须是 MODULE_PERMISSION_NAMES 里的 36 个之一；" +
-          "可执行部分是 program.source —— 一个返回 { [能力短名]: async (resource) => ModuleResult } 的函数工厂）。",
-        ),
-      },
-      handler: async (args: { draft: unknown }) => {
-        const runtime = await workshopRuntime();
-        const {
-          buildExtension, summarizeWorkshopReport, extensionWorkshopInstallHandoff, reconcileWorkshopStates,
-        } = await import("@main/modules/extensionWorkshop.js");
-        // ⑥ 对账（best-effort）：以宿主目录为准修正工坊状态（用户装了/卸了都会在这里对齐）。
-        const installed = await installedModuleFacts();
-        const reconciled = installed === null
-          ? { applied: [] as string[], errors: ["宿主目录不可用，本次没有对账（工坊状态可能与实际安装不一致）"] }
-          : await reconcileWorkshopStates(runtime.root, installed);
-        const report = await buildExtension(args.draft, runtime.options);
-        const notes = args.draft && typeof args.draft === "object"
-          ? (args.draft as { notes?: unknown }).notes
-          : undefined;
-        const payload: { report: ExtensionWorkshopReport; handoff: ExtensionWorkshopInstallHandoff | null; reconciled: typeof reconciled } = {
-          report,
-          handoff: report.ok && report.draft !== null
-            ? extensionWorkshopInstallHandoff(report.draft.manifest, typeof notes === "string" ? notes : undefined)
-            : null,
-          reconciled,
-        };
-        return text(summarizeWorkshopReport(report) + "\n\n" + JSON.stringify(payload, null, 2));
-      },
-    },
-    {
-      // 【T20】只读状态投影：工坊记录的修复预算/可回滚点，叠加「宿主目录里现在装没装」。
-      // 不写盘、不对账（对账发生在 extension_build 里）——`pendingRollbackCleanup` 告诉
-      // 调用方哪些目录下次会被清理。
-      name: "extension_workshop_status",
-      description:
-        "列出扩展工坊里的草稿/已装扩展：每个模块的修复次数、可回滚点（上一版）、宿主里当前的版本，" +
-        "以及哪些已卸载模块的草稿还在等待清理。只读；安装状态以宿主目录 modules.catalog 为准。",
-      inputSchema: {},
-      handler: async () => {
-        const runtime = await workshopRuntime();
-        const { projectWorkshopStatus } = await import("@main/modules/extensionWorkshop.js");
-        const installed = await installedModuleFacts();
-        if (installed === null) {
-          return fail("宿主目录不可用，无法确认哪些扩展真的装着（工坊状态不作数）。");
-        }
-        return text(JSON.stringify(projectWorkshopStatus(runtime.root, installed), null, 2));
-      },
-    },
-    {
       name: "app_api_list",
       description:
         "列出 Mcode 的全部功能(主进程接口)。不带参数 = 按功能域列目录;带 domain = 列该域全部方法;" +
@@ -1839,15 +1710,16 @@ export function appMcpTools(): McpToolSpec[] {
           const topics = overview.topics;
           const domains = topics.filter((t) => t.kind === "domain");
           const tools = topics.filter((t) => t.kind === "workflow-tool");
-          const caps = topics.filter((t) => t.kind === "extension-capability");
+          const builtins = topics.filter((t) => t.kind === "builtin-command");
+          const exts = topics.filter((t) => t.kind === "installed-extension");
           const authoring = topics.filter((t) => t.kind === "authoring-guide");
-          // 扩展目录取不到时**如实说**(硬规矩 3):此刻列不出已装扩展能力,不是"没有扩展"。
-          const sources = caps.length === 0 && overview.moduleCatalogError
-            ? `(扩展能力目录此刻取不到:${overview.moduleCatalogError};功能域与工作流工具不受影响)`
+          // 扩展清单取不到时**如实说**(硬规矩 3):此刻列不出已装扩展,不是"没有扩展"。
+          const sources = exts.length === 0 && overview.installedError
+            ? `(已装扩展清单此刻取不到:${overview.installedError};功能域与工作流工具不受影响)`
             : "";
           return text(
             [
-              `共 ${topics.length} 个 topic(功能域 ${domains.length} / 已发布工作流工具 ${tools.length} / 扩展能力 ${caps.length} / 开发指南 ${authoring.length}):`,
+              `共 ${topics.length} 个 topic(功能域 ${domains.length} / 已发布工作流工具 ${tools.length} / 宿主内置命令 ${builtins.length} / 已装扩展 ${exts.length} / 开发指南 ${authoring.length}):`,
               "",
               "一、功能域(方法目录 + 权限档)",
               ...domains.map((t) => `- ${t.id}:${t.summary}`),
@@ -1855,12 +1727,17 @@ export function appMcpTools(): McpToolSpec[] {
               "二、用户发布的工作流工具",
               ...(tools.length > 0 ? tools.map((t) => `- ${t.id}:${t.summary}`) : ["(还没有发布过工作流工具;发布用 app_workflow_publish)"]),
               "",
-              "三、已装扩展能力",
-              ...(caps.length > 0
-                ? caps.map((t) => `- ${t.id}:${t.summary}`)
-                : [sources || "(没有已装的扩展能力;宿主内置能力会列在这里)"]),
+              "三、宿主内置命令(扩展可调,不在 app_api_call 目录里)",
+              ...(builtins.length > 0
+                ? builtins.map((t) => `- ${t.id}:${t.summary}`)
+                : ["(宿主没有内置命令)"]),
               "",
-              "四、扩展开发指南",
+              "四、已装扩展",
+              ...(exts.length > 0
+                ? exts.map((t) => `- ${t.id}:${t.summary}`)
+                : [sources || "(没有已安装的扩展;装扩展用设置 → UI 扩展,或 modules.theiaInstalled({op:\"install\"}) 装 .vsix)"]),
+              "",
+              "五、扩展开发指南",
               ...authoring.map((t) => `- ${t.id}:${t.summary}`),
               "",
               `下一步:app_guide({topic:"<主题 id>"}) 看该主题的权限档与示例;方法级细节用 app_api_describe。`,
@@ -3178,7 +3055,7 @@ export async function invokeAppTool(
               entry.policy.level,
               entry.method,
               args.input,
-              `${entry.method}${entry.policy.reason ? `:${entry.policy.reason}` : entry.doc ? `:${clipLine(entry.doc, 160)}` : ""}${entry.method === "modules.install" ? extensionInstallApprovalSummary(args.input) : ""}`,
+              `${entry.method}${entry.policy.reason ? `:${entry.policy.reason}` : entry.doc ? `:${clipLine(entry.doc, 160)}` : ""}`,
               entry.policy.reason,
               () => signPlanGrantForUserApproval(entry, args, sessionId),
             );
@@ -3335,23 +3212,6 @@ export async function invokeAppTool(
         settle(op.resultKind, op, body);
         return operationToolResult(op, body);
       }
-      case "extension_build": {
-        // 【T20】卡面验收 1：**不经确认不写盘**。工坊的草稿目录也是写盘，而且接下来
-        // 要在隔离进程里真跑一次 AI 生成的代码 —— 这一步必须在用户点头之后。审批卡展示
-        // 清单的权限与静态可见的 API 调用（与 `modules.install` 同一份说明函数）。
-        const manifestLike = args.draft && typeof args.draft === "object"
-          ? (args.draft as { manifest?: unknown }).manifest
-          : undefined;
-        const denied = await gateAppAction(
-          ctx, "write", "extension_build", args,
-          "让 AI 在受控目录写出一个扩展草稿并在隔离沙箱里试跑一次" +
-            (manifestLike !== undefined ? extensionInstallApprovalSummary({ manifest: manifestLike }) : ""),
-        );
-        if (denied) {
-          return operationToolResult(makeOp("REJECTED", "extension_build", randomUUID(), { code: OP_CODE.approvalDenied, reason: denied }));
-        }
-        return await spec.handler(args, { sessionId });
-      }
       case "document_tool_call":
       case "document_md_edit": {
         // 【T24】文档编辑与 `document.edit` 同一条审批判据：**写档门禁在 handler 里**
@@ -3441,23 +3301,3 @@ export async function invokeAppTool(
   }
 }
 
-/** Host-owned ModuleHost identity -> the existing invokeAppTool dispatch and policy. */
-export async function invokeExtensionAppCall(
-  moduleId: string, method: string, input: unknown, signal: AbortSignal,
-): Promise<unknown> {
-  const { getModuleHost } = await import("../modules/service.js");
-  const host = await getModuleHost();
-  let accepted = false;
-  let payload: unknown;
-  const authorize = async (requested: string): Promise<void> => {
-    if (signal.aborted) throw Error("扩展 RPC 已取消");
-    host.authorizeAppMethod(moduleId, requested);
-  };
-  const reply = await invokeAppTool(
-    "app_api_call", { method, input }, "extension:" + moduleId, {} as ProviderContext,
-    { authorize, acceptResult(result) { accepted = true; payload = result; } },
-  );
-  if (signal.aborted) throw Error("扩展 RPC 已取消");
-  if (!accepted) throw Error(textBlocksOf(reply).join("\n") || "扩展 RPC 被拒绝");
-  return payload;
-}

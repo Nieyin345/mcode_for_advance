@@ -21,4 +21,11 @@ source "$HERE/../lib/esbuild-path.sh"
   --outfile="$OUT/sync.mjs" --log-level=error
 
 # 工作目录 = apps/desktop，`presetFile()` 按它拼 `resources/presets/workflows.json`。
+#
+# ⚠️ **不传参数时默认 `--check`**。`run-smokes.mjs` 调套件时不带参数，
+# 而本脚本没有「两者都不做」的模式 —— 空参数会让 main.ts 打印用法后退出（rc=2），
+# 全量跑法里看起来像「套件挂了」。核对是安全的那一档：只读、不改任何文件。
+if [ "$#" -eq 0 ]; then
+  set -- --check
+fi
 node "$OUT/sync.mjs" "$@"

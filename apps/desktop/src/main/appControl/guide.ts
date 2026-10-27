@@ -43,6 +43,7 @@
  * 调用形式并明说参数形状去 `app_api_describe` 看。
  */
 import type { ApiCatalogEntry } from "./apiCatalog.generated.js";
+import { BUILTIN_MCODE_COMMANDS } from "@main/modules/builtinMcCommands.js";
 import { MODULE_PERMISSION_NAMES } from "@contracts/appPermission";
 import { extensionAuthoringGuide } from "./appApiTutorials.js";
 import { API_CATALOG } from "./apiCatalog.generated.js";
@@ -61,13 +62,17 @@ import {
 import {
   extensionCapabilityAssignment,
   extensionCapabilityShortName,
-  type ModuleCatalog,
-  type ModuleManifest,
 } from "@contracts/modules";
-import type { ModuleCapabilityDescriptor } from "@contracts/moduleCapability";
 
-/** topic 的三种来源。`kind` 只用于展示分组与 badge,不参与检索判定。 */
-export type GuideTopicKind = "domain" | "workflow-tool" | "extension-capability" | "authoring-guide";
+/** topic 的来源。`kind` 只用于展示分组与 badge,不参与检索判定。 */
+export type GuideTopicKind =
+  | "domain"
+  | "workflow-tool"
+  /** 宿主内置命令（`mcode.file.*`）—— 扩展能调，agent 通过 guide 才知道。 */
+  | "builtin-command"
+  /** 已安装的 Theia 扩展（清单 + 启动后贡献的命令）。 */
+  | "installed-extension"
+  | "authoring-guide";
 
 export interface GuideTopic {
   /** 稳定 id(域前缀 / `workflow.run.<名字>` / 能力 id)。 */
@@ -103,35 +108,57 @@ export interface GuidePublishedSource {
  * "改一条 DOMAIN_LABELS / 加一条 catalog 项,清单跟着变"(若把它们写死 import,
  * 就只能断言"当前快照长这样",证明不了派生关系)。
  */
+/** 已安装扩展的一条（派生核只吃数据，不碰 registry）。 */
+export interface GuideInstalledExtension {
+  id: string;
+  version: string;
+  enabled: boolean;
+  running: boolean;
+  corrupted?: boolean;
+  /** 启动之后才有 —— 没启动就是 undefined（Theia/VS Code 协议如此，扩展先 activate 才注册命令）。 */
+  commands?: readonly string[];
+  /** 同上，带显示名。 */
+  commandContributions?: readonly { id: string; title?: string; category?: string }[];
+}
+
 export interface GuideSources {
   catalog: readonly ApiCatalogEntry[];
   domainLabels: Record<string, string>;
   published: readonly GuidePublishedSource[];
-  /** 扩展能力目录。`null` = 此刻取不到(无头 / 启动早期 / 宿主故障),主题列表仍可用。 */
-  modules: ModuleCatalog | null;
+  /** 宿主内置命令表（`mcode.file.*`）。扩展能调，所以要能被 agent 发现。 */
+  builtinCommands: readonly { id: string; summary: string }[];
+  /** 已安装的 Theia 扩展。`null` = 此刻取不到（无头 / 宿主故障）。 */
+  installed: readonly GuideInstalledExtension[] | null;
   policy: (method: string) => AppPolicy;
-  /** `modules` 为 null 时的**显式原因**(硬规矩 3:坏了要报出来,不静默当没有扩展)。 */
-  moduleCatalogError?: string;
+  /** `installed` 为 null 时的**显式原因**(硬规矩 3:坏了要报出来,不静默当没有扩展)。 */
+  installedError?: string;
 }
 
 /* ───────────────────────── 取数壳(唯一碰外部状态的地方)───────────────────────── */
 
 /**
- * 从四份权威源取一次数据。扩展能力目录**动态 import、失败不抛出** ——
- * `app_guide` 不该因为宿主此刻取不到扩展目录而连功能域都查不了(与
- * `publishedToolsWithDocs` 在 DB 未就绪时退回空表的同一取向);失败原因写进
- * `moduleCatalogError`,由列表工具如实转告。
+ * 从权威源取一次数据。**失败不抛出** —— `app_guide` 不该因为扩展此刻取不到
+ * 就连功能域都查不了（与 `publishedToolsWithDocs` 在 DB 未就绪时退回空表的同一取向）；
+ * 失败原因写进 `installedError`，由列表工具如实转告。
  */
 export async function currentGuideSources(): Promise<GuideSources> {
-  let modules: ModuleCatalog | null = null;
-  let moduleCatalogError: string | undefined;
+  // 【EXT-07】扩展系统只有 Theia 扩展一套。
+  //
+  // 这里能拿到的、和拿不到的，都是协议决定的：
+  //   - **拿得到**：已装扩展的清单与状态（registry 持久化的）；
+  //   - **拿得到**：**已启动**扩展贡献的命令（`activeSession.commands`）；
+  //   - **拿不到**：未启动扩展的命令 —— VS Code / Theia 协议里，命令是
+  //     `activate()` 之后由扩展自己注册的，没有启动就没有这张表。VS Code 自己也一样。
+  //
+  // 所以「没列出来」有两种含义，输出里必须分开写清楚（见 buildGuideDetail）。
+  let installed: readonly GuideInstalledExtension[] | null = null;
+  let installedError: string | undefined;
   try {
-    // 与 executionEngine / runner 同一条:宿主服务懒加载,import 本模块不碰数据根。
-    const { getModuleHost } = await import("@main/modules/service.js");
-    modules = (await getModuleHost()).catalog();
+    installed = await readInstalledExtensions();
   } catch (error) {
-    moduleCatalogError = error instanceof Error ? error.message : String(error);
+    installedError = error instanceof Error ? error.message : String(error);
   }
+
   const published = publishedToolsWithDocs().map((p) => ({
     workflowId: p.workflowId,
     name: p.name,
@@ -143,10 +170,32 @@ export async function currentGuideSources(): Promise<GuideSources> {
     catalog: API_CATALOG,
     domainLabels: DOMAIN_LABELS,
     published,
-    modules,
+    builtinCommands: BUILTIN_MCODE_COMMANDS.map(c => ({ id: c.id, summary: c.summary })),
+    installed,
     policy: policyFor,
-    ...(moduleCatalogError ? { moduleCatalogError } : {}),
+    ...(installedError ? { installedError } : {}),
   };
+}
+
+/** 已装扩展清单的唯一取数点。
+ *
+ * 抽成单独函数是为了让套件能替换它（`setInstalledExtensionsReader`），
+ * 而派生核 `buildGuideTopics` / `buildGuideDetail` 仍然只吃数据、不取数据。 */
+async function readInstalledExtensions(): Promise<readonly GuideInstalledExtension[]> {
+  const reader = installedReader;
+  if (!reader) {
+    throw new Error("扩展清单读取器没有装配（生产环境由启动期注入；无头套件应为它注入数据）");
+  }
+  return reader();
+}
+
+export type InstalledExtensionsReader = () => Promise<readonly GuideInstalledExtension[]>;
+let installedReader: InstalledExtensionsReader | null = null;
+
+/** 装配入口。生产由 `main/index.ts` 启动期注入（读 Theia registry）；
+ *  套件注入假数据。**不装配 = 明确报错**，不静默返回空清单。 */
+export function setInstalledExtensionsReader(next: InstalledExtensionsReader | null): void {
+  installedReader = next;
 }
 
 /** 全部 topic(不传参数时 `app_guide` 返回的就是它)。 */
@@ -155,7 +204,7 @@ export async function guideTopics(): Promise<GuideTopic[]> {
 }
 
 /** 列表 + 扩展目录取不到时的**显式原因**(列表工具把它原样转告,不静默当"没有扩展")。 */
-export async function guideOverview(): Promise<{ topics: GuideTopic[]; moduleCatalogError?: string }> {
+export async function guideOverview(): Promise<{ topics: GuideTopic[]; installedError?: string }> {
   const sources = await currentGuideSources();
   return {
     // Built-in authoring documentation is not a discovered RPC domain. Keep
@@ -165,7 +214,7 @@ export async function guideOverview(): Promise<{ topics: GuideTopic[]; moduleCat
       // 不列在这里，找「AI 能不能发现工作流节点」的人就会在 app_api_list 里零命中、
       // 然后得出结论「没有这个能力」（实测发生过）。见 WORKFLOW_TOOL_SURFACE 的注释。
       { id: "workflow-tools", kind: "authoring-guide" as const, title: "workflow-tools — 工作流工具面(mcode-workflow)", summary: `看/写工作流本身的那套 MCP 工具(${WORKFLOW_TOOL_SURFACE.length} 个:node_types_list / workflow_save …) — 不是 app_api_call 的方法` }],
-    ...(sources.moduleCatalogError ? { moduleCatalogError: sources.moduleCatalogError } : {}),
+    ...(sources.installedError ? { installedError: sources.installedError } : {}),
   };
 }
 
@@ -206,16 +255,43 @@ export function buildGuideTopics(sources: GuideSources): GuideTopic[] {
     });
   }
 
-  // ③ 已装扩展能力(含宿主内置 core.* —— 它们同样在 catalog().capabilities 里)。
-  if (sources.modules) {
-    for (const cap of [...sources.modules.capabilities].sort((a, b) => a.id.localeCompare(b.id))) {
-      topics.push({
-        id: cap.id,
-        kind: "extension-capability",
-        title: `${cap.id} — 扩展能力(${cap.kind})`,
-        summary: `${cap.metadata?.title.zh ?? cap.id} · ${cap.kind}${cap.metadata?.description.zh ? `:${clip(cap.metadata.description.zh, 60)}` : ""}`,
-      });
-    }
+  // ③ 宿主内置命令（`mcode.file.*`）—— 扩展能调，agent 通过这里才知道有它们。
+  //
+  // 从 `BUILTIN_MCODE_COMMANDS` **现场派生**，不写第二份名单：加一条内置命令，
+  // 这里自动跟上（与本文件顶部「只有派生逻辑，没有第二份名单」同一取向）。
+  for (const cmd of [...sources.builtinCommands].sort((a, b) => a.id.localeCompare(b.id))) {
+    topics.push({
+      id: cmd.id,
+      kind: "builtin-command",
+      title: `${cmd.id} — 宿主内置命令（扩展可调）`,
+      summary: cmd.summary,
+    });
+  }
+
+  // ④ 已安装的 Theia 扩展。
+  //
+  // ⚠️ **命令只有扩展启动之后才有**（VS Code / Theia 协议：扩展 `activate()` 时
+  // 自己注册命令，没有启动就没有这张表）。所以这里如实分两种：
+  //   - 已启动 → 列它贡献的命令；
+  //   - 没启动 → 注明「命令要启动后才有」，不是「它没有命令」。
+  for (const ext of [...(sources.installed ?? [])].sort((a, b) => a.id.localeCompare(b.id))) {
+    const state = ext.corrupted
+      ? "安装已损坏"
+      : !ext.enabled
+        ? "已禁用"
+        : ext.running
+          ? "运行中"
+          : "已装未启动";
+    const cmdCount = ext.commands?.length ?? 0;
+    const cmdNote = ext.running
+      ? `贡献 ${cmdCount} 条命令`
+      : "命令未加载（未启动：Theia 协议要求扩展先激活才注册命令）";
+    topics.push({
+      id: `extension.${ext.id}`,
+      kind: "installed-extension",
+      title: `扩展 ${ext.id} ${ext.version}（${state}）`,
+      summary: `${cmdNote}`,
+    });
   }
 
   return topics;
@@ -310,10 +386,84 @@ export function buildGuideDetail(topic: string, sources: GuideSources): GuideEnt
   const published = sources.published.find((p) => `workflow.run.${p.name}` === id);
   if (published) return publishedDetail(published);
 
-  const capability = sources.modules?.capabilities.find((cap) => cap.id === id);
-  if (capability) return capabilityDetail(capability, sources.modules!);
+  // 宿主内置命令（`mcode.file.*`）
+  const builtin = sources.builtinCommands.find((c) => c.id === id);
+  if (builtin) return builtinDetail(builtin);
+
+  // 已安装扩展（`extension.<id>`）
+  if (id.startsWith("extension.")) {
+    const ext = (sources.installed ?? []).find((e) => `extension.${e.id}` === id);
+    if (ext) return installedExtensionDetail(ext);
+  }
 
   return null;
+}
+
+/* ───────────────────────── 内置命令 / 已安装扩展 ───────────────────────── */
+
+/** 宿主内置命令的正文。**明确写「扩展可调、不走 RPC 表」** ——
+ *  否则 agent 会拿 `mcode.file.inspect` 去 `app_api_call` 撞墙。 */
+function builtinDetail(cmd: { id: string; summary: string }): GuideEntry {
+  return {
+    title: `${cmd.id} — 宿主内置命令`,
+    body: [
+      `**${cmd.id}** — ${cmd.summary}`,
+      "",
+      "## 谁能调",
+      "- **VS Code 扩展**：`vscode.commands.executeCommand(\"" + cmd.id + "\", 入参)`。",
+      "- **不在 `app_api_call` 的方法目录里** —— 它由宿主就地执行（不经 RPC 表），",
+      "  所以 `app_api_list` / `app_api_describe` 按名字都查不到。这是**设计**，不是缺陷。",
+      "",
+      "## 为什么不进 RPC 表",
+      "内置命令**优先于** RPC 表解析（`host.ts` 的 `$executeCommand` 先查内置表再派发），",
+      "这样扩展注册同名命令**劫持不了**它们。把它塞进 RPC 表反而会削弱这条保护。",
+    ].join("\n"),
+    permissions: ["只读（就地执行，不弹审批）"],
+    examples: [`vscode.commands.executeCommand("${cmd.id}", { path: "/path/to/file" })`],
+  };
+}
+
+/** 已安装扩展的正文。**边界写在这里**：命令只有启动后才有。 */
+function installedExtensionDetail(ext: GuideInstalledExtension): GuideEntry {
+  const lines: string[] = [
+    `**${ext.id}** v${ext.version}`,
+    "",
+    "## 状态",
+    `- 启用：${ext.enabled ? "是" : "否"}`,
+    `- 运行：${ext.running ? "是" : "否"}`,
+    ...(ext.corrupted ? ["- **安装已损坏**：需要重装"] : []),
+  ];
+
+  if (ext.running && ext.commands && ext.commands.length > 0) {
+    lines.push("", `## 它贡献的命令（${ext.commands.length} 条）`);
+    const named = new Map((ext.commandContributions ?? []).map((c) => [c.id, c]));
+    for (const id of [...ext.commands].sort((a, b) => a.localeCompare(b))) {
+      const meta = named.get(id);
+      const label = meta?.title ? ` — ${meta.category ? `${meta.category}: ` : ""}${meta.title}` : "";
+      lines.push(`- \`${id}\`${label}`);
+    }
+    lines.push("", "扩展命令用 `vscode.commands.executeCommand(<id>)` 呼出（扩展之间、或 Mcode 命令面板）。");
+  } else if (ext.running) {
+    lines.push("", "## 命令", "它没有贡献任何命令（或命令表还在注册中）。");
+  } else {
+    // ⚠️ 这条边界必须写清楚 —— 否则 agent 会读成「这个扩展没有能力」。
+    lines.push(
+      "",
+      "## 命令",
+      "**未启动，所以看不到它有哪些命令。**",
+      "",
+      "这不是「它没有命令」—— VS Code / Theia 协议里，命令是扩展 `activate()` 时",
+      "**自己注册**的，没有启动就没有这张表（VS Code 自己也一样）。",
+      "要看它的命令：先在「设置 → UI 扩展」里启动它，再回来查。",
+    );
+  }
+
+  return {
+    title: `${ext.id} — 已安装扩展`,
+    body: lines.join("\n"),
+    permissions: ["扩展在自己的子进程里运行；安装时已告知它会起进程/联网"],
+    examples: [],
+  };
 }
 
 /* ───────────────────────── 域 topic ───────────────────────── */
@@ -528,120 +678,6 @@ function publishedDetail(published: GuidePublishedSource): GuideEntry {
     .filter((line): line is string => line !== null)
     .join("\n");
   return { title: `${methodName} — 用户发布的工作流工具`, body, permissions, examples };
-}
-
-/* ───────────────────────── 扩展能力 topic ───────────────────────── */
-
-function capabilityDetail(capability: ModuleCapabilityDescriptor, catalog: ModuleCatalog): GuideEntry {
-  const owner = findOwningModule(capability.id, catalog.modules);
-  const moduleTitle = owner?.title.zh ?? "(未找到所属模块)";
-  const contribution = owner?.contributions.find((c) => resolveContributionCapability(owner, c.capability) === capability.id);
-  const title = capability.metadata?.title.zh ?? contribution?.title.zh ?? capability.id;
-  const meta = capability.metadata;
-  const permissions: string[] = [];
-
-  if (owner) {
-    permissions.push(`模块声明:${owner.permissions.join("、")}`);
-  }
-  if (meta) {
-    permissions.push(`能力自身声明:${meta.permissions.join("、")}`);
-  }
-  // 审批口径**照 ModuleHost.invoke 的真实分支写**,不是泛泛一句"可能弹卡":
-  //   - action(`resource.write`)每次执行前弹一次审批(逐次批准,安装时声明只是资格);
-  //   - 非 action 且声明 `network` 时,每次调用前单独弹联网审批(逐次批准);
-  //   - action 同时声明 network:由同一张"写"审批卡覆盖,但仍然每次都问。
-  const isAction = capability.kind === "action";
-  const hasNetwork = owner?.permissions.includes("network") ?? false;
-  if (isAction) {
-    permissions.push("resource.write:这是 action 能力——每次执行前都会弹审批卡、逐次批准;安装时声明 resource.write 只是一次资格,不是永久放行。");
-  }
-  if (hasNetwork) {
-    permissions.push(
-      isAction
-        ? "network:这个模块同时声明了联网——执行的每一次都会问(与写审批同一张卡,仍然逐次批准)。"
-        : "network:每次调用前单独弹联网审批、逐次批准——装上时声明一次不等于永久出网。",
-    );
-  }
-  if (!isAction && !hasNetwork) {
-    // 「不弹审批」照 ModuleHost.invoke 的真实分支:**只有 action 与 network 会问**。
-    // task 类不是"只读"(它会跑一段时间的任务、可取消)—— 单独说清楚,别让 agent
-    // 以为它和 query 一样瞬时。
-    permissions.push(
-      capability.kind === "task"
-        ? "task 能力:执行不弹审批,但会在宿主里起一个可取消的任务(进度靠 modules.task 拉);仍受工作区根授权与输入校验约束。"
-        : "只读能力:执行不弹审批,但仍受工作区根授权与能力自身输入校验约束。",
-    );
-  }
-
-  const invokeExample = modulesInvokeExample(capability, owner, contribution?.id);
-  const examples = [invokeExample];
-  const body = [
-    `# ${title}(${capability.id})`,
-    "",
-    `所属模块:${moduleTitle}${owner ? ` \`${owner.id}\`` : ""}`,
-    `种类:${capability.kind}`,
-    meta?.description.zh ? `说明:${meta.description.zh}` : contribution?.title.zh ? `说明:${contribution.title.zh}` : null,
-    meta ? `版本:${meta.version}` : "这个能力没有元数据(没有描述/schema;输入形状见 modules.invoke)。",
-    "",
-    "## 权限",
-    ...permissions.map((line) => `- ${line}`),
-    "",
-    "## 调用",
-    "能力 id 本身就是**宿主/工作流**使用的身份,调用入口是 `modules.invoke`(不是 app_api_call 直接调它):",
-    "```text",
-    invokeExample,
-    "```",
-    "参数形状见 app_api_describe({method:\"modules.invoke\"})。resource.projectPath 必须是已登记的工作区根,path 必须是该工作区内的文件。",
-  ]
-    .filter((line): line is string => line !== null)
-    .join("\n");
-
-  return { title: `${title}(${capability.id})`, body, permissions, examples };
-}
-
-/** 找出贡献项指向这个能力的模块(内置 `core.*` 直接比对;扩展的 `module.<短名>`
- *  按宿主分配规则 `module.<slug>.<短名>` 展开后比对 —— 与 ModuleHost 同一份规则)。 */
-function findOwningModule(capabilityId: string, modules: readonly ModuleManifest[]): ModuleManifest | undefined {
-  return modules.find((module) =>
-    module.contributions.some((c) => resolveContributionCapability(module, c.capability) === capabilityId),
-  );
-}
-
-function resolveContributionCapability(module: ModuleManifest, referenced: string): string {
-  const short = extensionCapabilityShortName(referenced);
-  return short === undefined ? referenced : extensionCapabilityAssignment(module.id, short);
-}
-
-/**
- * `modules.invoke` 的调用示例。字段名**从 catalog 的 `input` 形状派生**(与
- * `exampleCall` 同一条解析路),已知字段填上本能力的真实取值;解析失败才退回手写形状
- * (modules.invoke 是固定合同,退化路径不该发生,但也不能因此让整个 topic 空掉)。
- */
-function modulesInvokeExample(
-  capability: ModuleCapabilityDescriptor,
-  owner: ModuleManifest | undefined,
-  contributionId: string | undefined,
-): string {
-  const knownValues: Record<string, unknown> = {
-    moduleId: owner?.id ?? "<模块 id>",
-    contributionId: contributionId ?? "<贡献 id>",
-    resource: { projectPath: "<已登记的工作区根>", path: "<工作区内文件>" },
-    requestId: "<每次调用唯一>",
-  };
-  const entry = API_CATALOG.find((e) => e.method === "modules.invoke");
-  const fields = entry ? parseObjectShape(entry.input) : null;
-  const input: Record<string, unknown> = {};
-  if (fields) {
-    for (const field of fields) {
-      if (!field.required) continue;
-      input[field.name] = knownValues[field.name] ?? placeholderForType(field.type);
-    }
-  } else {
-    Object.assign(input, knownValues);
-  }
-  // 字段集合以 catalog 为准;人读的取值优先(上面 knownValues 覆盖)。能力身份不参与入参。
-  void capability;
-  return `app_api_call({ "method": "modules.invoke", "input": ${JSON.stringify(input)} })`;
 }
 
 /* ───────────────────────── 小工具 ───────────────────────── */

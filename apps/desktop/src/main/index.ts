@@ -1,6 +1,9 @@
 import { app, BrowserWindow, session } from "electron";
 import { createMainWindow } from "@main/window.js";
-import { registerIpcHandlers } from "@main/ipc/index.js";
+import { registerIpcHandlers, runEngineAutostart } from "@main/ipc/index.js";
+import { ensureHostMcpRelay, hostMcpRelayEnv } from "@main/mcp/hostMcpWiring.js";
+import { getWorkflow } from "@main/orchestration/library.js";
+import { setHostMcpRelayEnvPort } from "@main/workflowEngines/registry.js";
 import { initDb, closeDb, awaitDb, flushDb } from "@main/store/db.js";
 import { installDbPersistenceAlerts, showDbOpenError, showDbPersistenceError } from "@main/store/persistenceAlerts.js";
 import { initTheme } from "@main/lib/theme.js";
@@ -29,7 +32,6 @@ import { describeImage, visionRelayConfigured } from "@main/lib/visionRelay.js";
 import { relayManager } from "@main/relay/RelayManager.js";
 import { RELAY_AUTO_START_SETTING_KEY } from "@contracts/relay";
 import { SettingRepo } from "@main/store/repositories.js";
-import { assembleModuleApprovalPort } from "@main/modules/moduleApproval.js";
 import { DurableOperationLedger } from "@main/store/operationLedger.js";
 // 启动装配序列(electron-free 的纯函数,见文件头)—— 抽取自本文件原来那段内联装配。
 import { assembleStartup } from "@main/startup/assembleStartup.js";
@@ -65,6 +67,13 @@ import {
 import { pathToFileURL } from "node:url";
 import { desktopCsp } from "@main/lib/desktopCsp.js";
 import { registerGenofficeNativeScheme, installGenofficeNativeProtocol } from "@main/document/genofficeViewFactories.js";
+import { installTheiaWebviewResourceProtocol } from "@main/modules/theiaHost/webviewResourceProtocol.js";
+import { setInstalledExtensionsReader } from "@main/appControl/guide.js";
+import { configureExtensionBridge, readInstalledExtensionsForGuide } from "@main/ipc/theiaInstalled.js";
+import { panelApiCall } from "@main/appControl/tools.js";
+import { nativeExtensionApprovalPort } from "@main/modules/extensionApproval.js";
+import { findBuiltinMcCommand } from "@main/modules/builtinMcCommands.js";
+import { isKnownWorkspaceRoot } from "@main/lib/pathGuard.js";
 
 // 自定义面板的 `mcode-panel://` 协议(R41)。注册特权 scheme **必须**在 app ready 之前。
 // Electron 的 registerSchemesAsPrivileged 只能注册一次：同时装配既有
@@ -178,6 +187,29 @@ app.whenReady().then(async () => {
   initPanelProtocol();
   // 【ARC-007 P0】挂上一次性字节响应的协议处理（ready 之后）。
   initDocumentHandoffProtocol();
+  // 沙箱化 Webview 的本地资源端点（app ready 之后才可用 protocol.handle）。
+  installTheiaWebviewResourceProtocol();
+  // 【EXT-07】扩展 → Mcode 能力桥的**生产装配**。
+  //
+  // **为什么在这里而不在 `ipc/theiaInstalled.ts`**：那个文件被多个无头 smoke 以
+  // ESM 打包，而 `appControl/tools.js` 会拉进整片主进程图（语音 `.node`、
+  // native cpufeatures …），静态 import 和 `await import()` 都会被 esbuild 跟进。
+  // 这里是真 Electron 主进程，拉多少依赖都无所谓。
+  configureExtensionBridge({
+    // 与 agent `app_api_call`、面板 `mcode.api.call` **完全同源**：
+    // `policyFor` 分档 / `secretSettingRefusal` 拦截 / `redactValue` 打码 / 同一份幂等账本。
+    dispatch: (method, input, approved, label, operationId) =>
+      panelApiCall(method, input, approved, label, operationId),
+    requestApproval: nativeExtensionApprovalPort,
+    builtinLookup: findBuiltinMcCommand,
+    knownRoot: isKnownWorkspaceRoot,
+  });
+  // 【ARC-002】`app_guide` 的「已装扩展」一节从同一份 registry 读。
+  //
+  // 接线在启动期做（不是模块顶层）：registry 是懒建的，而且要在
+  // `registerTheiaInstalledHandlers` 之后才有装配参数。
+  // 不接的后果：`app_guide` 那一节恒报「读取器没有装配」，而不是静默空清单。
+  setInstalledExtensionsReader(() => readInstalledExtensionsForGuide());
   installGenofficeNativeProtocol();
 
   // Kick off DB init in the background (sql.js loads ~6MB asm.js + reads the
@@ -209,7 +241,6 @@ app.whenReady().then(async () => {
       // `lib/visionRelay.ts` 读设置(→ db → electron)与发 SDK query,不能静态 import 进
       // 工具表(纯模块);这里把真实实现登进登记口,`agent_read_image` 才拿得到它。
       visionRelay: { describeImage, configured: visionRelayConfigured },
-      assembleModuleApprovalPort,
       configureExtensionBridgeTokenStore,
       bridgeTokenStore: {
         get: () => SettingRepo.get(BRIDGE_TOKEN_SETTING_KEY),
@@ -373,9 +404,60 @@ app.whenReady().then(async () => {
   void (async () => {
     try {
       await awaitDb();
+      /* 【AUTO-02】把"Node-RED 引擎在不在跑"接给自动化 runner —— 它据此决定
+       * node-red 图的触发器该显示成「已挂上」还是「引擎没在跑」。
+       * 不接的话那条状态恒为 false，界面上每一条正常的自动化都显示成黄色故障。 */
+      automationRunner.setNodeRedEngineProbe(() => {
+        const status = workflowEngineRegistry.statusOf("node-red");
+        // `running` / `starting` 都算"引擎这一侧是活的" —— 启动中就去报红，
+        // 用户会在应用刚起来那两秒看到一片假的故障。
+        return status?.state === "running" || status?.state === "starting";
+      });
       await automationRunner.start();
     } catch (err) {
       log.error(`AutomationRunner failed to start: ${(err as Error).message}`);
+    }
+  })();
+
+  // 【ARC-006 桥 2】引擎能力中继：让 Node-RED 里的节点能调 Mcode 的能力。
+  //
+  // 三块（核心 / stdio 入口 / 回环中继）早已写完，唯独没有生产装配 —— 引擎因此
+  // 拿不到 relay 的地址与令牌，`mcode-host-mcp` 永远起不来。这里补上。
+  //
+  // 与引擎自启并列，但**不随引擎起停**：中继是"引擎能调到宿主"的宿主侧，引擎停着
+  // 它也无害（没有令牌进不来）。审批走引擎自己的 runboard 会话，卡片弹在 Mcode 里。
+  void (async () => {
+    try {
+      await ensureHostMcpRelay(
+        (sessionId) => runtimeManager.makeEngineApprovalHandler(sessionId),
+        (workflowId) => getWorkflow(workflowId) !== null,
+      );
+      // 把中继地址与令牌交给引擎 —— 经注入点，不让 registry 顶层 import 这个模块
+      // （那会把 appControl/tools 的 electron 依赖拖进无头套件的打包图）。
+      setHostMcpRelayEnvPort(() => hostMcpRelayEnv());
+    } catch (err) {
+      log.error(`[host-mcp] 中继装配失败：${(err as Error).message}`);
+    }
+  })();
+
+  // 【Q8】**引擎常驻**：库里有任何归 Node-RED 的图就把引擎拉起来。
+  //
+  // 位置与 AutomationRunner 并列而不是更早：两者都要等 DB 就绪（判断"有没有
+  // node-red 图"要读 workflows 表），而且它们争的是同一批图的执行归属。
+  //
+  // 先迁移旧图再决定起不起：顺序反了的话，只有旧图的新用户第一次启动时引擎不会起
+  // （此刻库里还没有 node-red 图），要等第二次启动才生效。
+  //
+  // **失败必须可见**：引擎起不来时自动化会整片哑掉，这里不能只留一行日志就过去。
+  void (async () => {
+    try {
+      await awaitDb();
+      const result = await runEngineAutostart();
+      if (result.reason !== null) {
+        log.warn(`[workflow-engine:node-red] auto-start skipped: ${result.reason}`);
+      }
+    } catch (err) {
+      log.error(`[workflow-engine:node-red] auto-start failed: ${(err as Error).message}`);
     }
   })();
 

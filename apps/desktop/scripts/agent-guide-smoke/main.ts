@@ -21,11 +21,13 @@ import type { ModuleCapabilityDescriptor } from "@contracts/moduleCapability";
 import { ModuleCatalogSchema } from "@contracts/moduleCapability";
 import { MODULE_CAPABILITY_PREFIX, type ModuleManifest } from "@contracts/modules";
 import { API_CATALOG, type ApiCatalogEntry } from "@main/appControl/apiCatalog.generated.js";
+import { BUILTIN_MCODE_COMMANDS } from "@main/modules/builtinMcCommands.js";
 import { DOMAIN_LABELS, domainOfMethod, policyFor } from "@main/appControl/policy.js";
 import {
   buildGuideDetail,
   buildGuideTopics,
   guideFor,
+  guideOverview,
   guideTopics,
   type GuideSources,
 } from "@main/appControl/guide.js";
@@ -68,7 +70,11 @@ function fixtureSources(over: Partial<GuideSources> = {}): GuideSources {
     ],
     domainLabels: { alpha: "甲域", beta: "乙域" },
     published: [],
-    modules: null,
+    builtinCommands: [
+      { id: "mcode.file.inspect", summary: "读文件的字节数与 SHA-256(只读)" },
+      { id: "mcode.file.info", summary: "读文件的字节数与修改时间(只读)" },
+    ],
+    installed: null,
     policy: policyFor,
     ...over,
   };
@@ -169,19 +175,44 @@ console.log("\n§1 topic 清单从权威源派生(纯函数)");
   check("★ 已发布的工作流工具各一条 topic(workflow.run.<名字>)", tool?.id === "workflow.run.文献整理", tool);
   check("发布工具 topic 的摘要带工作流名", tool?.summary.includes("文献整理流程") === true, tool?.summary);
 
-  const withModules = buildGuideTopics(fixtureSources({ modules: fixtureModules }));
-  const caps = withModules.filter((t) => t.kind === "extension-capability");
+  // 宿主内置命令：从 builtinCommands 现场派生（加一条就多一条，不改本套）
+  const withBuiltins = buildGuideTopics(fixtureSources());
+  const builtins = withBuiltins.filter((t) => t.kind === "builtin-command");
   check(
-    "★ 每个已装扩展能力一条 topic(含 action 与 query)",
-    caps.length === 2 && caps.some((t) => t.id === "module.guide.demo.convert") && caps.some((t) => t.id === "module.guide.demo.probe"),
-    caps.map((t) => t.id),
+    "★ 每条宿主内置命令一条 topic(mcode.file.*)",
+    builtins.length === 2 && builtins.some((t) => t.id === "mcode.file.inspect") && builtins.some((t) => t.id === "mcode.file.info"),
+    builtins.map((t) => t.id),
   );
 
-  const noModules = buildGuideTopics(fixtureSources({ modules: null, moduleCatalogError: "宿主未就绪" }));
+  // 已装扩展：两种状态各一条（运行中 / 未启动），且**摘要要说清命令为何看不到**
+  const withInstalled = buildGuideTopics(fixtureSources({
+    installed: [
+      { id: "pub.alpha", version: "1.0.0", enabled: true, running: true, commands: ["alpha.do", "alpha.undo"],
+        commandContributions: [{ id: "alpha.do", title: "Do it", category: "Alpha" }] },
+      { id: "pub.beta", version: "2.0.0", enabled: true, running: false },
+      { id: "pub.gamma", version: "0.1.0", enabled: false, running: false },
+    ],
+  }));
+  const exts = withInstalled.filter((t) => t.kind === "installed-extension");
+  check("★ 每个已装扩展一条 topic(extension.<id>)", exts.length === 3 &&
+    exts.some((t) => t.id === "extension.pub.alpha") && exts.some((t) => t.id === "extension.pub.beta"),
+    exts.map((t) => t.id));
+  check("★ 运行中的扩展摘要写明它贡献了几条命令",
+    exts.find((t) => t.id === "extension.pub.alpha")?.summary.includes("贡献 2 条命令") === true,
+    exts.find((t) => t.id === "extension.pub.alpha")?.summary);
+  check("★ 未启动的扩展摘要写明「命令未加载」而不是「没有命令」",
+    exts.find((t) => t.id === "extension.pub.beta")?.summary.includes("命令未加载") === true,
+    exts.find((t) => t.id === "extension.pub.beta")?.summary);
+  check("★ 已禁用的扩展状态写对",
+    exts.find((t) => t.id === "extension.pub.gamma")?.title.includes("已禁用") === true,
+    exts.find((t) => t.id === "extension.pub.gamma")?.title);
+
+  const noInstalled = buildGuideTopics(fixtureSources({ installed: null, installedError: "宿主未就绪" }));
   check(
-    "扩展目录取不到时仍返回域 topic(不把整个清单拖垮)",
-    noModules.every((t) => t.kind === "domain") && noModules.length === 2,
-    noModules.map((t) => t.id),
+    "扩展清单取不到时仍返回域 topic(不把整个清单拖垮)",
+    noInstalled.filter((t) => t.kind === "domain").length === 2 &&
+      noInstalled.filter((t) => t.kind === "installed-extension").length === 0,
+    noInstalled.map((t) => t.id),
   );
 }
 
@@ -228,42 +259,53 @@ console.log("\n§2 guideFor 的正文:权限档 + 示例");
   check("未知 topic → null", buildGuideDetail("zzz-not-a-topic", sources) === null);
 }
 
-/* ───────────────────────── §3 扩展能力:逐次批准口径(纯函数)───────────────────────── */
-console.log("\n§3 扩展能力 topic:write / network 逐次批准");
+/* ───────────────────────── §3 内置命令 / 已装扩展的正文(纯函数)───────────────────────── */
+console.log("\n§3 内置命令与已装扩展的正文");
 {
-  // 守卫:夹具必须是**合法目录形状**(否则测的是不可能的目录)。schema 接受 unknown,
-  // 解析通过 = 这份 extensions 目录与生产里 ModuleHost.catalog() 的产物同形。
-  const parsed = ModuleCatalogSchema.safeParse(fixtureModules);
-  check("守卫:扩展目录夹具通过 ModuleCatalogSchema(与生产目录同形)", parsed.success, parsed.success ? "" : parsed.error.issues);
-  check("守卫:能力 id 用的是宿主分配前缀", MODULE_CAPABILITY_PREFIX === "module." && fixtureModules.capabilities[0]!.id.startsWith("module.guide.demo."), fixtureModules.capabilities.map((c) => c.id));
-
-  const sources = fixtureSources({ modules: fixtureModules });
-  const action = buildGuideDetail("module.guide.demo.convert", sources);
-  check("守卫:action 能力有详情", action !== null, action);
+  // 内置命令：正文必须明确「不在 app_api_call 目录里」——
+  // 否则 agent 会拿 mcode.file.inspect 去 app_api_call 撞墙。
+  const builtin = buildGuideDetail("mcode.file.inspect", fixtureSources());
+  check("守卫:mcode.file.inspect 有正文", builtin !== null, builtin);
   check(
-    "★ action 能力点明 resource.write 每次执行都要批准(安装时声明只是资格)",
-    action!.body.includes("resource.write") && action!.body.includes("每次执行前都会弹审批卡") && action!.body.includes("安装时声明"),
-    action!.body,
+    "★ 内置命令正文写明「不在 app_api_call 的方法目录里」",
+    builtin!.body.includes("不在 `app_api_call` 的方法目录里"),
+    builtin!.body.slice(0, 200),
   );
   check(
-    "★ action + network 点明联网也要逐次批准(与写审批同一张卡)",
-    action!.body.includes("network") && action!.body.includes("逐次批准"),
-    action!.permissions,
+    "★ 内置命令正文给出扩展侧的真实调用形式(executeCommand)",
+    builtin!.body.includes("vscode.commands.executeCommand") &&
+      builtin!.examples[0]?.includes("mcode.file.inspect") === true,
+    builtin!.examples,
   );
 
-  const probe = buildGuideDetail("module.guide.demo.probe", sources);
+  // 已装扩展：**启动后**才列命令；**未启动**必须说清边界。
+  const running = buildGuideDetail("extension.pub.alpha", fixtureSources({
+    installed: [{ id: "pub.alpha", version: "1.0.0", enabled: true, running: true,
+      commands: ["alpha.do", "alpha.undo"],
+      commandContributions: [{ id: "alpha.do", title: "Do it", category: "Alpha" }] }],
+  }));
+  check("守卫:运行中的扩展有正文", running !== null, running);
   check(
-    "★ 只读 + network 能力点明「每次调用前单独弹联网审批、逐次批准」",
-    probe !== null && probe.body.includes("每次调用前单独弹联网审批") && probe.body.includes("逐次批准"),
-    probe?.permissions,
+    "★ 运行中的扩展逐条列出命令，并带显示名",
+    running!.body.includes("`alpha.do`") && running!.body.includes("Alpha: Do it") && running!.body.includes("`alpha.undo`"),
+    running!.body,
   );
 
+  const notRunning = buildGuideDetail("extension.pub.beta", fixtureSources({
+    installed: [{ id: "pub.beta", version: "2.0.0", enabled: true, running: false }],
+  }));
+  check("守卫:未启动的扩展有正文", notRunning !== null, notRunning);
+  // ⚠️ 这条是本套最重要的一条：**「没启动」不能写成「没能力」**。
   check(
-    "★ modules.invoke 示例用的是真实模块/贡献身份与工作区占位",
-    action!.examples[0]!.includes('"moduleId":"user.guide.demo"') &&
-      action!.examples[0]!.includes('"contributionId":"convert"') &&
-      action!.examples[0]!.includes("projectPath"),
-    action!.examples,
+    "★ 未启动的扩展明确说「不是它没有命令」而不是留空",
+    notRunning!.body.includes("未启动，所以看不到它有哪些命令") &&
+      notRunning!.body.includes("这不是「它没有命令」"),
+    notRunning!.body,
+  );
+  check(
+    "★ 未启动的扩展给出「怎么才能看到」的具体下一步",
+    notRunning!.body.includes("先在「设置 → UI 扩展」里启动它"),
+    notRunning!.body,
   );
 }
 
@@ -289,12 +331,52 @@ await initDb();
     .filter((t) => t.title !== `${t.id} — ${DOMAIN_LABELS[t.id] ?? "(没有域标签)"}`);
   check("★ 活路径每个域 topic 的标题与 DOMAIN_LABELS 逐字一致", labelMismatch.length === 0, labelMismatch.slice(0, 3));
 
-  const capIds = topics.filter((t) => t.kind === "extension-capability").map((t) => t.id);
+  // 宿主内置命令：从 builtinMcCommands.ts 现场派生（不是另写一份名单）
+  const builtinIds = topics.filter((t) => t.kind === "builtin-command").map((t) => t.id).sort();
   check(
-    "★ 活路径含真 ModuleHost.catalog() 里的内置能力(core.file.inspect / core.file.info)",
-    capIds.includes("core.file.inspect") && capIds.includes("core.file.info"),
-    capIds,
+    "★ 活路径含宿主内置命令(mcode.file.inspect / mcode.file.info)",
+    builtinIds.includes("mcode.file.inspect") && builtinIds.includes("mcode.file.info"),
+    builtinIds,
   );
+  check(
+    "★ 内置命令 topic 集 = BUILTIN_MCODE_COMMANDS(逐条对齐,不是数量近似)",
+    JSON.stringify(builtinIds) === JSON.stringify(BUILTIN_MCODE_COMMANDS.map(c => c.id).sort()),
+    { topic: builtinIds, source: BUILTIN_MCODE_COMMANDS.map(c => c.id).sort() },
+  );
+
+  // ── 装配前后的行为必须有区别，否则「装配」本身没人验 ──
+  //
+  // 本套默认不装配 reader，所以以上跑的是 `installedError` 分支。
+  // **生产路径（真 registry）不验证的话，「没接线」和「接线了但恒空」看不出来。**
+  const before = await guideOverview();
+  check(
+    "★ 未装配 reader 时明确报「没有装配」，不是静默空清单",
+    before.installedError !== undefined && before.installedError.includes("没有装配"),
+    before.installedError,
+  );
+  check(
+    "★ 未装配时其它节不受影响（域与内置命令照常）",
+    before.topics.filter((t) => t.kind === "domain").length > 40 &&
+      before.topics.filter((t) => t.kind === "builtin-command").length === 2,
+    { domains: before.topics.filter((t) => t.kind === "domain").length },
+  );
+
+  // 装一个假 reader，验「装配之后真的会列出来」（正控）
+  const { setInstalledExtensionsReader } = await import("@main/appControl/guide.js");
+  setInstalledExtensionsReader(async () => [
+    { id: "pub.demo", version: "3.1.0", enabled: true, running: true,
+      commands: ["demo.run"],
+      commandContributions: [{ id: "demo.run", title: "Run demo", category: "Demo" }] },
+  ]);
+  const after = await guideOverview();
+  check(
+    "★ 装配 reader 之后，已装扩展真的出现在 topic 里",
+    after.topics.filter((t) => t.kind === "installed-extension").some((t) => t.id === "extension.pub.demo"),
+    after.topics.filter((t) => t.kind === "installed-extension").map((t) => t.id),
+  );
+  check("★ 装配之后不再报 installedError", after.installedError === undefined, after.installedError);
+  // 复位，别影响后面的用例
+  setInstalledExtensionsReader(null);
 
   const setting = await guideFor("setting");
   check("守卫:setting 域有指南", setting !== null, setting);
@@ -342,18 +424,19 @@ await initDb();
   const list = await invokeAppTool("app_guide", {}, "me", ctx);
   const listText = textOf(list);
   check(
-    "★ app_guide 不带参数:列出功能域与扩展能力(含 library 与 core.file.inspect)",
-    !list.isError && listText.includes("library") && listText.includes("core.file.inspect") && listText.includes("workflow.run.指南演示工具"),
+    "★ app_guide 不带参数:列出功能域、宿主内置命令与已发布工具",
+    !list.isError && listText.includes("library") && listText.includes("mcode.file.inspect") &&
+      listText.includes("workflow.run.指南演示工具") && listText.includes("宿主内置命令"),
     listText.slice(0, 400),
   );
 
   const hit = await invokeAppTool("app_guide", { topic: "workflow.run.指南演示工具" }, "me", ctx);
   check("★ app_guide({topic}) 返回该 topic 的正文(参数 + 权限 + 示例)", textOf(hit).includes("paperId") && textOf(hit).includes("## 示例"), textOf(hit).slice(0, 300));
 
-  const builtin = await invokeAppTool("app_guide", { topic: "core.file.inspect" }, "me", ctx);
+  const builtin = await invokeAppTool("app_guide", { topic: "mcode.file.inspect" }, "me", ctx);
   check(
-    "★ app_guide 能展开真宿主里的内置能力(不弹审批口径;它是 task 类,正文点明要起任务)",
-    textOf(builtin).includes("core.file.inspect") && textOf(builtin).includes("执行不弹审批") && textOf(builtin).includes("task 能力"),
+    "★ app_guide 能展开真宿主里的内置命令(正文点明它不在 app_api_call 目录里)",
+    textOf(builtin).includes("mcode.file.inspect") && textOf(builtin).includes("不在 `app_api_call` 的方法目录里"),
     textOf(builtin).slice(0, 300),
   );
 
@@ -361,7 +444,7 @@ await initDb();
   const missText = textOf(miss);
   check(
     "★ 未知 topic:报「没有这个 topic」并附现有 topic 列表",
-    miss.isError === true && missText.includes("没有这个 topic") && missText.includes("library") && missText.includes("core.file.inspect"),
+    miss.isError === true && missText.includes("没有这个 topic") && missText.includes("library") && missText.includes("mcode.file.inspect"),
     missText.slice(0, 300),
   );
 

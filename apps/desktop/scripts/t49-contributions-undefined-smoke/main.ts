@@ -44,7 +44,24 @@ function check(name: string, cond: boolean, detail?: unknown): void {
 
 const desktop = process.cwd(); // run.sh 已 cd apps/desktop
 const source = join(desktop, "src/renderer/components/modules/moduleCatalogShape.tsx");
-if (!existsSync(source)) throw Error(`T49: 找不到生产源码 ${source}`);
+if (!existsSync(source)) {
+  // 【EXT-07】被测对象随 ModuleHost 一起下线了（用户裁决：只要一个扩展系统 = Theia 宿主）。
+  //
+  // 本套件验的是 `contributionsOf(undefined, …)` 的首帧崩溃 —— 而 `contributionsOf`
+  // 和 `moduleCatalogShape.tsx` 都已经不存在了。**没有被测对象，就没有可验的东西。**
+  //
+  // 不删这套件（保留它记录的那个真实缺陷与修法），但**明确说不验了** ——
+  // 静默 skip 会让下一个人以为「这里还有回归网」。
+  console.log("  skip  被测对象已下线：moduleCatalogShape.tsx 随 ModuleHost 删除");
+  console.log("  NOT-COVERED: contributionsOf 首帧崩溃（被测函数已不存在 —— 没有回归网，也不需要）");
+  console.log("");
+  console.log("T49 记录的那个缺陷（useRpc 的 data 首帧为 undefined，纯函数却直接解引用）");
+  console.log("在 Theia 时代对应的形状是 `api.modules.theiaInstalled` 的首帧 —— 由");
+  console.log("`theia-installed-smoke` 与 `theia-palette-smoke` 覆盖。");
+  console.log("");
+  console.log("t49-contributions-undefined-smoke: 0/0（被测对象已下线）");
+  process.exit(0);
+}
 const src = readFileSync(source, "utf8");
 
 /** 按源码结构切出 `export function <name>` 的完整定义（含签名），不按行号。
