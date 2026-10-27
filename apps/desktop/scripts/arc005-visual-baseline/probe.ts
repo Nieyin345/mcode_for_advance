@@ -649,8 +649,29 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
         // 用固定的时间戳而不是「等一秒」——等待只是把相位推到另一个不确定的位置。
         // 值取场景开始时间，这样「时长」类文字仍是有意义的数，而不是 0。
         await js(`globalThis.__MCODE_FREEZE_CLOCK__ = ${sceneStartedAt};`);
+        /* 【UI 重建 2026-10-28】**同时冻结动画。**
+         *
+         * 冻结时钟解决了「秒位重排」，但**没有解决动画**：实测 `long-chat`
+         * 那格的 `MessageRow` 背景是 `rgba(180,83,9,0.173)` —— 那是
+         * `.bookmark-flash` 的 `bookmark-flash-fade` 动画（1.2s）播到第 0 帧
+         * 的样子。而那一格**没有任何书签跳转**，是别处残留的动画正好在
+         * 截图瞬间还在播。
+         *
+         * 后果：整行套一层暖色底，看起来像「消息行有背景色」这个真实缺陷，
+         * 我为此查了半天（`elementFromPoint` → 祖先链 → `--warning` 常量），
+         * 最后才发现是动画起始帧。
+         *
+         * 这里把动画**打到终态**（`animation-delay: -1s` 让它们立即结束），
+         * 而不是 `animation: none` —— 后者会让「本该淡出的元素」停在第 0 帧，
+         * 反而制造另一个幻象。 */
+        await js(`(() => {
+          const st = document.createElement('style');
+          st.id = '__arc005_freeze_anim__';
+          st.textContent = '*,*::before,*::after{animation-delay:-1s!important;animation-duration:1ms!important;transition-delay:0s!important;transition-duration:1ms!important}';
+          document.head.appendChild(st);
+        })()`);
         // 让 React 用冻结值重渲染一帧，再量几何与截图。
-        await sleep(80);
+        await sleep(120);
         const snapshot = await js<unknown>(`(() => {
           const selectors = ${JSON.stringify(SELECTORS)};
           const tokens = ${JSON.stringify(TOKENS)};
