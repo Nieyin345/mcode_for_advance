@@ -240,10 +240,32 @@ function evalSafe(s) {
 }
 
 /**
- * ⚠️ 上一版这里漏了 `calc(16 / 17)` 这种**没有单位也没有 `*`** 的形状，
- * `--cds-rem-scale` 于是解成 null，回落到 1 —— 后面所有 px 都变成
- * 「rem × 16」而不是「rem × 16 × 16/17」，**每一格都偏大约 6%**，
- * 而输出看上去完全正常。所以现在**原始值和计算值一起打**，肉眼能对。
+ * ⚠️ **2026-10-28 重要更正 —— 这个函数的结论在 Windows 上是反的。**
+ *
+ * 它把 `--cds-rem-scale: calc(16 / 17)` 解出来当成通用值用。但那一条声明
+ * **只存在于**：
+ *
+ *   @supports (font:-apple-system-body) and (-webkit-touch-callout:default) {
+ *     :root { --cds-rem-scale: calc(16 / 17) }
+ *   }
+ *
+ * 即 **Apple / iOS 专属分支**。真 Electron on Windows 实测两个子条件都是
+ * false，`--cds-rem-scale` 的计算值是空串，所有
+ * `calc(Nrem * var(--cds-rem-scale, 1))` 取 **1**。
+ *
+ * 本文件是**静态扫描器**，`scan()` 只记 `sel` / `mq`，看不到 `@supports` ——
+ * 于是把这个条件值当成了无条件值，`tokens-out.txt` / `component-geometry.txt`
+ * 里每个 px 都小了 6%（字号、圆角、间距、控件高全套）。
+ *
+ * 原来的注释写着「回落到 1 会让每一格偏大约 6%」——**那是把正确做法写成了错误**。
+ * 在 Windows 上，回落 1 才是对的。
+ *
+ * 修法不是在这里改系数（那会变成「按平台写死」），而是让扫描器知道作用域：
+ * 见 `apps/desktop/scripts/gen-cds-tokens.mjs` 的 `uncondRemScale()` ——
+ * 按花括号配对求块头栈，路径上有 `@supports` 就跳过，找不到无条件定义才回落 1。
+ *
+ * 本函数保留原行为只是为了产物可对比；**不要拿它的输出当 Windows 真值**。
+ * 要真值就用真 Electron 加载 Claude 的 CSS 读 `getComputedStyle`。
  */
 function resolveScale(t) {
   const raw = t["--cds-rem-scale"] ?? "1";

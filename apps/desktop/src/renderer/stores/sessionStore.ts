@@ -5681,8 +5681,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   reloadProviders: async () => {
     try {
-      const { providers } = await api.provider.list();
-      set({ providers });
+      /* 【UI 重建 2026-10-28】**`providers` 解构出来必须校验，否则整个界面白屏。**
+       *
+       * 这里原本直接 `const { providers } = await api.provider.list();`
+       * 然后 `set({ providers })`。只要响应里没有 `providers` 字段
+       * （旧 handler / 桩返回 `{}` / 版本不匹配），`providers` 就是 `undefined`，
+       * `set` 把它**写进 store**。
+       *
+       * 之后 `ClaudeShellMount:246` 的
+       * `s.providers.find((x) => x.id === s.providerId)` 立刻抛
+       * `TypeError: Cannot read properties of undefined (reading 'find')` ——
+       * 而它在 **zustand 选择器里**，抛错会让整棵树卸载，于是侧栏和主区
+       * 一个都渲染不出来，套件只看到 `UI wait timeout`。
+       *
+       * 仓库里这个形态已经第三次了（`9ccea5c5a` optional chain 少一层白屏、
+       * `3e1376afb` 两套件在瞬时条件下崩溃而不是报告）。共同点：
+       * **一个「不该为空」的值变成空时，没人挡在赋值之前。**
+       *
+       * 所以判据放在**写入点**，不是每个读取点：读到非法形状就保留原值，
+       * 并显式报出来（硬规矩 3：坏东西显式报出来，不静默跳过）。 */
+      const res = await api.provider.list();
+      const providers = Array.isArray(res?.providers) ? res.providers : null;
+      if (providers === null) {
+        console.error("reloadProviders: response has no providers array — keeping the previous list", res);
+      } else {
+        set({ providers });
+      }
       // A persisted composer pick for a provider that no longer exists falls
       // back to the default provider + auto.
       validateComposerSelection(set, get);

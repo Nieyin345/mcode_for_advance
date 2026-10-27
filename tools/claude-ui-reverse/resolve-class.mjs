@@ -124,7 +124,8 @@ function buildGlobals() {
       GLOBALS[mm[1]] = mm[2];
     }
   }
-  // `--cds-rem-scale` 在 :root 上是 calc(16 / 17)，单独记
+  // `--cds-rem-scale` 只在 Apple 专属 @supports 里声明；Windows 上未定义，取 1。
+  // 详见 extract-tokens.mjs 的 resolveScale 注释 —— 写 16/17 会让每一项小 6%。
   return GLOBALS;
 }
 
@@ -135,8 +136,9 @@ export function deref(value, depth = 0) {
   let s = String(value);
   if (depth > 12) return s;
 
-  // rem-scale 先换成裸数值，避免造出嵌套 calc
-  s = s.replace(/var\(\s*--cds-rem-scale\s*(?:,\s*[^()]*(?:\([^()]*\)[^()]*)*)?\)/g, String(16 / 17));
+  // rem-scale 先换成裸数值，避免造出嵌套 calc。
+  // ⚠️ 1 而不是 16/17 —— 那个值只存在于 Apple 专属 @supports 里（见文件头）。
+  s = s.replace(/var\(\s*--cds-rem-scale\s*(?:,\s*[^()]*(?:\([^()]*\)[^()]*)*)?\)/g, "1");
 
   s = s.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*(?:\([^()]*\)[^()]*)*))?\)/g, (_, n, fb) => {
     const v = GLOBALS[n];

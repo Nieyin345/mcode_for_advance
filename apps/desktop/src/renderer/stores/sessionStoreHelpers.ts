@@ -470,17 +470,28 @@ export const IDE_BUCKETS_PERSIST_DEBOUNCE_MS = 400;
 export const CHAT_FONT_SIZE_MIN = 12;
 export const CHAT_FONT_SIZE_MAX = 20;
 
-/** 【UI 重建 2026-10-27】**默认值改了，而且这是个必须与两处对齐的常量。**
+/** **默认字号 = 16px，必须与 `styles.css` 的 `--chat-font-size` 一致。**
  *
- * 12.24px = Claude 的 `--cds-font-size-body`（13rem × 16/17）。
- * 这个数**不是整数**，所以：
+ * 【UI 重建 2026-10-28】**12.24 → 16。原值来自两个都不成立的前提：**
  *
- *  1. 下面 `clampFontSize` 里的 `Math.round` 会把 12.24 取成 12 —— 用户拖一下
- *     滑块再拖回来，字号就永久从 12.24 变成 12。改成保留精度。
- *  2. `lib/appearance.ts` 的 `DEFAULT_FONT_SIZE_PX` 必须与本值相同；不同的话
- *     默认状态会**内联写一次**，把样式表的主题默认（含 html.sketch 的 15px）覆盖掉。
- *     这三处（本常量 / clamp / appearance 的 DEFAULT）必须同步，见该文件的注释。 */
-export const CHAT_FONT_SIZE_DEFAULT = 12.24;
+ *   - `.8125rem` 是 `.cds-root` **基础层**的 body；Claude 的 `index.html`
+ *     写着 `data-density="comfortable"`，那一层是 `.875rem`。
+ *   - `× 16/17` 是 `--cds-rem-scale` 的 **Apple 专属 `@supports`** 分支值，
+ *     Windows 上该条件为 false，`var(..., 1)` 取 1。
+ *
+ * 而且 `--chat-font-size` 驱动的是 **AI 正文**，对应上游
+ * `--cds-font-size-prose` = 1rem = **16px**（不是 body 档）。
+ *
+ * ⚠️ **这个常量必须和样式表里那个值完全相等。** 不相等时
+ * `lib/appearance.ts` 的 `applyChatFontSize` 会走「写内联」分支，
+ * 于是启动时就把主题默认覆盖掉。而用户点一次「增大」时，
+ * `setChatFontSize(默认 + 1)` 算出来的也会是错的 ——
+ * `settings-panels-electron` 就是在这里红的：默认 12.24 与样式表 16 不一致，
+ * 点一下就跳到 13.24。
+ *
+ * 现在它是整数 16，`clampFontSize` 的取整问题也随之消失（但那里的注释仍然
+ * 保留精度处理的理由 —— 用户可调区间是 12–20，未来默认值再变时还用得上）。 */
+export const CHAT_FONT_SIZE_DEFAULT = 16;
 
 /** Clamp a font-size value to the allowed slider range.
  *

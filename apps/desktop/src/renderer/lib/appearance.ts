@@ -50,10 +50,10 @@ import { CHAT_FONT_SIZE_DEFAULT, RIGHT_PANEL_FONT_SIZE_DEFAULT } from "@renderer
  *  【UI 重建 2026-10-27】**这个值必须与 store 的默认值逐字相同。**
  *  原来是 14，而 `sessionStore` 的 `chatFontSize` 默认是 15 —— 两者不等，
  *  于是**默认状态每次都会走 else 分支，往 <html> 内联写 15px**，
- *  把样式表的 12.24px 覆盖掉。症状是「样式表改了，界面纹丝不动」，
+ *  把样式表的默认值覆盖掉。症状是「样式表改了，界面纹丝不动」，
  *  而所有读 CSS 的断言全是绿的（它们读的是样式表）。
  *
- *  现在两者都指向 `CHAT_FONT_SIZE_DEFAULT`（12.24），import 同一个常量，
+ *  现在两者都指向 `CHAT_FONT_SIZE_DEFAULT`（**16px**），import 同一个常量，
  *  **不再各写一份数字**。 */
 /* 【UI 重建 2026-10-27】**两个不同的默认值，不能共用一个常量。**
  *
@@ -66,7 +66,7 @@ import { CHAT_FONT_SIZE_DEFAULT, RIGHT_PANEL_FONT_SIZE_DEFAULT } from "@renderer
  *
  * 现在两个常量各自对应各自的样式表默认。**改哪个字号，就改哪个常量** ——
  * 判断标准是 `styles.css` 里那个变量在 `:root` 的值。 */
-const DEFAULT_CHAT_FONT_SIZE_PX = CHAT_FONT_SIZE_DEFAULT;   // 12.24 = --chat-font-size
+const DEFAULT_CHAT_FONT_SIZE_PX = CHAT_FONT_SIZE_DEFAULT;   // 16 = --chat-font-size（styles.css :root）
 const DEFAULT_RIGHT_PANEL_FONT_SIZE_PX = RIGHT_PANEL_FONT_SIZE_DEFAULT;
 
 /** Write the chat font size as `--chat-font-size` on <html>. */

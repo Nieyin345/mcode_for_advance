@@ -56,15 +56,52 @@ node tools/claude-ui-reverse/dump-renderer-memory.mjs      # → renderer-hits.t
 
 ## 六个已经踩过的坑
 
-### 一、`rem-scale` 是 `calc(16 / 17)`，不是 `1`
+### 一、`rem-scale` 在 Windows 上**根本不存在**，`var(..., 1)` 取 **1**
 
-写成「rem × 16」会让**每一格偏大 6.25%**，而输出看上去完全正常。
-`extract-tokens` 里 `toPx` 会先把 `var(--cds-rem-scale)` 换成裸数值再算，并打印 scale 本身。
+> ⚠️ **2026-10-28 更正 —— 这一节的原文写反了，照着它做会错 6%。**
+>
+> 原文说「`rem-scale` 是 `calc(16 / 17)`，不是 `1`，写成 rem × 16 会让每一格偏大
+> 6.25%」。**前半句对，结论错。**
 
-### 二、裸 `rem` 不乘 scale
+`--cds-rem-scale: calc(16 / 17)` 在 25 个 CSS 里**只声明一处**，且落在：
 
-`--cds-font-size-prose: .875rem` 是 **14.00px**，不是 13.18px。
-这是全表**唯一**一条裸值，容易当成笔误「修正」掉。
+```css
+@supports (font:-apple-system-body) and (-webkit-touch-callout:default) {
+  :root { --cds-rem-scale: calc(16 / 17) }
+}
+```
+
+那是 **Apple / iOS 专属分支**。真 Electron 44.4.5 / 45.1.0 on Windows 实测：
+
+```
+CSS.supports("font", "-apple-system-body")                        → false
+CSS.supports("-webkit-touch-callout", "default")                  → false
+getComputedStyle(.cds-root).getPropertyValue("--cds-rem-scale")   → ""（空串）
+```
+
+所以 `calc(Nrem * var(--cds-rem-scale, 1))` 在 Windows 上取 **N × 16**。
+
+**静态解析 CSS 看不见 `@supports` 的作用域。** 一个「找到 `名字:` 就抄值」的
+解析器会把 Apple 专属值当成通用值，导出后每一项都**小 6%** —— 字号、圆角、
+间距、控件高，全套。而输出看上去完全正常，这是最难发现的一类错。
+
+正确做法：**算每个声明是否落在 `@supports` 里**（按花括号配对求块头栈），
+无条件定义不存在时按 CSS 语义回落成 `1`。`gen-cds-tokens.mjs` 的
+`uncondRemScale()` 就是这么做的。
+
+### 二、裸 `rem` 不乘 scale —— 指的是它没有 `calc()` 包装
+
+`--cds-font-size-prose: 1rem` 是 **16px**（comfortable 层）。
+
+> ⚠️ 原文写的是 `.875rem` = 14px，并把「13.18」当成错误值。实际上
+> `.875rem` 是 **`.cds-root` 基础层**的 prose，comfortable 层是 `1rem`；
+> 而 13.18 是「`.875rem` × 16/17」—— 两个错乘出来的。
+>
+> 真值：`.prose` 的计算字号 = **16px**，行高 = **24px**
+> （`--cds-leading-prose: 1.5rem`）。
+
+这一档之所以特殊，是因为它**写成裸 `rem` 而不是 `calc(Nrem * scale)`**，
+所以在任何密度/尺寸档下都是整数 px，不随 `--cds-rem-scale` 变化。
 
 ### 三、选择器要用「完全相等」判，且要**按逗号拆开**
 
