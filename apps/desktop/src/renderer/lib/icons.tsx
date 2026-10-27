@@ -233,6 +233,16 @@ export {
   IconListTree,
   IconInbox,
   IconListCheck,
+  /* 【UI 重建 2026-10-28】断续圆弧 —— 右栏 `tasks` 页签用。
+   *
+   * 为什么不是 `IconList`：它和 `IconListCheck`（`taskcenter`）的**右半部分
+   * 完全相同**（都是三条横线），左半只差「点 vs 勾」，13px 下各占约 1px。
+   * 而这两个页签功能上恰恰最该分开：一个「正在跑什么」（易变），
+   * 一个「持久任务表、哪个等我验收」。
+   *
+   * `IconProgress` 是 5 段弧拼的断续圆环，与任何「横线 + 点」骨架毫无重叠，
+   * 而且「进行中」对「正在跑什么」比列表贴切。 */
+  IconProgress,
   IconSquare,
   IconLanguage,
   IconGlobe,

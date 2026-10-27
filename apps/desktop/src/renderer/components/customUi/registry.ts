@@ -35,8 +35,8 @@ import {
   IconInfoCircle,
   IconLayoutSidebarRightExpand,
   IconLink,
-  IconList,
   IconListCheck,
+  IconProgress,
   IconListDetails,
   IconListTree,
   IconMessage,
@@ -105,7 +105,7 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
     { id: "canvas", labelKey: "layout.tabCanvas", icon: IconListTree },
     { id: "turns", labelKey: "layout.tabTurns", icon: IconClock },
     { id: "flow", labelKey: "layout.tabFlow", icon: IconActivity },
-    { id: "tasks", labelKey: "layout.tabTasks", icon: IconList },
+    { id: "tasks", labelKey: "layout.tabTasks", icon: IconProgress },
     // 【T100】任务中心：`tasks` 那个是「正在跑什么」（终端/子代理/节点），
     // 这个是「有哪些任务、哪个等我验收」。两个页签挨着放，名字要能分开。
     { id: "taskcenter", labelKey: "layout.tabTaskCenter", icon: IconListCheck },
