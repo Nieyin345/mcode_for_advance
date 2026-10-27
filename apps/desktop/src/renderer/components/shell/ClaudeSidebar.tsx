@@ -100,6 +100,29 @@ export interface ClaudeSidebarProps {
   onOpenSettings: () => void;
   /** 折叠侧栏。 */
   onCollapse: () => void;
+
+  /* ── 【UI 重建 2026-10-28】顶部图标行与底部账号行需要的接线 ──
+   *
+   * 这些全部**可选**：可选是为了让已有的调用点（套件夹具、手机端）不必
+   * 一次性补齐。缺省时对应按钮 disabled 而不是崩溃 —— 一个点不动的按钮
+   * 比一个报错的侧栏好，而且 disabled 的样式本身就是 Claude 里「无历史」时
+   * 前进键的样子。
+   */
+
+  /** 右侧 pane 当前是否展开（顶部 `▭` 图标的激活态）。 */
+  panesOpen?: boolean;
+  /** 切换右侧 pane。 */
+  onTogglePanes?: () => void;
+  /** 会话导航：能否后退 / 前进（决定 `←` `→` 是否禁用）。 */
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  onBack?: () => void;
+  onForward?: () => void;
+  /** 底部账号行：显示名与次级标识（Claude 是 `Nieyin · Gateway`）。 */
+  accountName?: string;
+  accountSubtitle?: string;
+  /** 账号行右侧的下拉入口（切换到别的账号/网关）。 */
+  onOpenAccountMenu?: () => void;
 }
 
 /** Claude 侧栏固定宽（`w-72` = 288px）。 */
@@ -117,6 +140,15 @@ export function ClaudeSidebar({
   onOpenLibrary,
   onOpenSettings,
   onCollapse,
+  panesOpen = false,
+  onTogglePanes,
+  canGoBack = false,
+  canGoForward = false,
+  onBack,
+  onForward,
+  accountName,
+  accountSubtitle,
+  onOpenAccountMenu,
 }: ClaudeSidebarProps) {
   const { t } = useI18n();
   return (
@@ -125,7 +157,40 @@ export function ClaudeSidebar({
       className="flex h-full flex-col bg-[var(--m-surface-0)] text-[var(--m-text-secondary)]"
       style={{ width: CLAUDE_SIDEBAR_WIDTH }}
     >
-      {/* ── 顶部：Cowork / Code 分段切换 ──
+      {/* ── 顶部图标行：☰  ▭  ←  → ──
+       *
+       * 【UI 重建 2026-10-28】真机截图最上方是**四个图标**：
+       *   1. `☰`  三横线 —— 折叠/展开侧栏
+       *   2. `▭`  分栏图标 —— 切换「显示右栏 pane」
+       *   3. `←`  后退
+       *   4. `→`  前进（截图里是禁用灰，说明没有前进历史）
+       *
+       * 上一版**完全没有这一行** —— 侧栏从 Cowork/Code 开始，顶部直接是
+       * 分段控件。少了它，左上角看起来是空的，而这是每次看侧栏都会扫到的
+       * 第一眼位置。
+       *
+       * 后退/前进接的是 `navBack` / `navForward`（Mcode 已有这组 action，
+       * 边界状态也从同一处读）。 */}
+      <div className="flex shrink-0 items-center gap-0.5 px-2 pt-2">
+        <SidebarIconButton label="折叠侧栏" onClick={onCollapse}>
+          <MenuIcon />
+        </SidebarIconButton>
+        <SidebarIconButton
+          label="右侧面板"
+          active={panesOpen}
+          onClick={onTogglePanes}
+        >
+          <SplitIcon />
+        </SidebarIconButton>
+        <SidebarIconButton label="后退" disabled={!canGoBack} onClick={onBack}>
+          <ArrowLeftIcon />
+        </SidebarIconButton>
+        <SidebarIconButton label="前进" disabled={!canGoForward} onClick={onForward}>
+          <ArrowRightIcon />
+        </SidebarIconButton>
+      </div>
+
+      {/* ── Cowork / Code 分段切换 ──
        *
        * 【UI 重建 2026-10-27 更正】上一版这里是「折叠按钮 + 品牌名 + 加号」，
        * 而**真实 Claude 的侧栏顶部是一个横跨整栏的分段控件**：左边 `Cowork`、
@@ -164,26 +229,52 @@ export function ClaudeSidebar({
         </div>
       </div>
 
-      {/* ── New ──
-       * 真实 Claude 这里是 `+ New`（一个横条按钮，不是只有加号）。
-       * 搜索不在顶部 —— 它在侧栏**最底部**的一个图标。 */}
+      {/* ── New / Customize / More 三行 ──
+       *
+       * 【UI 重建 2026-10-28】真机截图是**三行**，不是一行：
+       *   `⊕ New`         —— 新建会话（圆圈加号 + 文字）
+       *   `🎨 Customize`  —— 自定义（工具栏图标）
+       *   `⋯ More`        —— 更多（三个点）
+       *
+       * 上一版只有一个 `+ 新建会话`。少两行会让分段控件和会话列表之间
+       * 差出一大块，而那块正是 Claude 侧栏「有地方放功能」的证据。
+       *
+       * Mcode 的映射（**不新造能力**）：
+       *   - New → `startSession`（已有）
+       *   - Customize → 打开设置（Mcode 的自定义入口就在设置里）
+       *   - More → 命令面板（Mcode 的「所有功能都在这」的入口）
+       *
+       * ⚠️ 三行共用同一个行高与左内边距（`--m-sb-row-h`），
+       * 且**不用 uppercase / tracking-wide** —— 截图里它们是普通大小写的
+       * 常规文字，与分组标题同色系但更亮一档。 */}
       <div className="shrink-0 px-2 pt-2">
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 rounded-[6px] px-2 text-left text-[var(--m-fs-body)] text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)] active:bg-[var(--m-fill-ghost-selected)]"
-          style={{ minHeight: 30 }}
-          onClick={onNewSession}
-        >
-          <PlusIcon />
-          <span className="flex-1">{t("layout.newSession")}</span>
-        </button>
+        <SidebarMenuRow icon={<PlusCircleIcon />} onClick={onNewSession}>
+          New
+        </SidebarMenuRow>
+        <SidebarMenuRow icon={<CustomizeIcon />} onClick={onOpenSettings}>
+          Customize
+        </SidebarMenuRow>
+        <SidebarMenuRow icon={<MoreDotsIcon />} onClick={onSearch}>
+          More
+        </SidebarMenuRow>
       </div>
 
       {/* ── 会话区（可滚） ── */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
         <Section title={t("layout.pinned")} items={pinned} activeId={activeSessionId} onSelect={onSelectSession} />
         {projects.map((p) => (
-          <ProjectGroup key={p.id} group={p} activeId={activeSessionId} onSelect={onSelectSession} />
+          <ProjectGroup
+            key={p.id}
+            group={p}
+            activeId={activeSessionId}
+            onSelect={onSelectSession}
+            /* 分组标题右侧的 `+`：在这个项目下新建会话。
+             * 复用 `onNewSession`（与侧栏顶部的 `New` 同一个动作）——
+             * 严格来说 Claude 的「在项目下新建」会预置项目上下文，
+             * 但 Mcode 的 `startSession` 本来就从 `activeProjectId` 读，
+             * 而这里点的是**当前**项目分组，语义对得上。 */
+            onNewSessionIn={() => onNewSession()}
+          />
         ))}
         <Section title={t("layout.recents")} items={recents} activeId={activeSessionId} onSelect={onSelectSession} />
       </div>
@@ -200,16 +291,47 @@ export function ClaudeSidebar({
       <div className="shrink-0 border-t border-[var(--m-border)] px-2 py-1.5">
         <RowButton onClick={onOpenLibrary} icon={<LibraryIcon />}>{t("layout.library")}</RowButton>
         <RowButton onClick={onOpenSettings} icon={<SettingsIcon />}>{t("layout.settings")}</RowButton>
-        {/* 最后一行：品牌 + 搜索。Claude 那里是「用户名 · 网关」，Mcode 用品牌名。 */}
-        <div className="mt-1 flex items-center gap-1 px-1">
-          <span className="min-w-0 flex-1 truncate text-[var(--m-fs-caption)] text-[var(--m-text-muted)]">
-            {brand}
-          </span>
+        {/* ── 账号行 ──
+         *
+         * 【UI 重建 2026-10-28】真机截图最后一行是
+         *   `✳ Nieyin · Gateway ⌄` + 🔍
+         * —— 一个**品牌小标 + 账号名 · 网关 + 下拉箭头**的整体按钮，
+         * 右侧单独一个搜索图标。
+         *
+         * 上一版这里是「品牌名纯文本 + 搜索 + 折叠」。三处不对：
+         *   1. 品牌名是不可点的纯文本 —— 截图里整行是个**菜单按钮**；
+         *   2. `· 网关` 那一截缺失（它说明当前连的是哪个后端）；
+         *   3. 折叠按钮在这里重复了一遍（顶部图标行已经有了）。
+         *
+         * 现在：整行做成一个按钮（打开账号/网关菜单），搜索留最右。
+         * `accountName` / `accountSubtitle` 没传时退回 `brand` —— 不伪造
+         * 一个「· Gateway」，那会显示成假的后端状态。 */}
+        <div className="mt-1 flex items-center gap-1">
+          <button
+            type="button"
+            data-sidebar-account=""
+            onClick={onOpenAccountMenu}
+            disabled={!onOpenAccountMenu}
+            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-[6px] px-1 py-0.5 text-left transition-colors enabled:hover:bg-[var(--m-fill-ghost-hover)] disabled:cursor-default"
+            title={accountName ? `${accountName}${accountSubtitle ? ` · ${accountSubtitle}` : ""}` : brand}
+          >
+            <span className="shrink-0 text-[var(--m-accent)]">
+              <BrandMark />
+            </span>
+            <span className="min-w-0 truncate text-[length:var(--m-sb-group-font)] text-[var(--m-text-secondary)]">
+              {accountName ?? brand}
+              {accountSubtitle ? (
+                <span className="text-[var(--m-text-muted)]"> · {accountSubtitle}</span>
+              ) : null}
+            </span>
+            {onOpenAccountMenu && (
+              <span aria-hidden className="shrink-0 text-[var(--m-text-muted)]">
+                <ChevronDownSmall />
+              </span>
+            )}
+          </button>
           <IconButton label={t("layout.search")} onClick={onSearch}>
             <SearchIcon />
-          </IconButton>
-          <IconButton label={t("layout.collapseSidebar")} onClick={onCollapse}>
-            <CollapseIcon />
           </IconButton>
         </div>
       </div>
@@ -247,39 +369,63 @@ function ProjectGroup({
   group,
   activeId,
   onSelect,
+  onNewSessionIn,
 }: {
   group: ClaudeProjectGroup;
   activeId: string | null;
   onSelect: (id: string) => void;
+  /** 分组标题右侧的 `+`：在这个项目下新建会话。
+   *  用户截图里每个分组标题右边都有它（悬停时出现）。 */
+  onNewSessionIn?: (groupId: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   return (
     <div style={{ marginBottom: "var(--m-sb-row-gap, 8px)" }}>
-      <button
-        type="button"
+      {/* 分组标题行 = 折叠按钮 + 右侧动作。
+       *
+       * 【UI 重建 2026-10-28】**这一行不能是一个大 `<button>`。**
+       * 用户截图里标题右边有独立的 `+`（temp 那一行还有 `⑂` 和 `+` 两个）——
+       * 按钮里套按钮是非法 HTML，浏览器会把内层拆出去，点击行为跟着错乱。
+       * 所以改成：外层 `div` 包两个兄弟按钮。 */}
+      <div
         data-sidebar-group-header=""
         className="group/hdr flex w-full items-center gap-1 rounded-[6px] px-2 text-left font-medium text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)]"
         style={{
           height: "var(--m-sb-row-h, 32px)",
           fontSize: "var(--m-sb-group-font, 13px)",
         }}
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
       >
-        {/* 【UI 重建 2026-10-27】上游真实形态是**非粗体、非大写**的分组名 +
-         * 一个**始终向右**的 `›` chevron，不是上一版的 `▾` 三角 + uppercase。
-         *
-         * 真机截图（裁到 `Pinned ›` 那一行）：chevron 是**固定的向右箭头**，
-         * 展开/折叠时**不旋转**。上一版让它展开时转 90° 朝下 —— 那是常见的
-         * 树形控件做法，但 Claude 不是那样。折叠的是内容，箭头朝向不变。 */}
-        <span className="min-w-0 flex-1 truncate">{group.name}</span>
-        <span aria-hidden className="shrink-0 text-[var(--m-text-muted)]">
-          <ChevronRight size={12} />
-        </span>
-      </button>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-1 text-left"
+        >
+          {/* 上游真实形态是**非粗体、非大写**的分组名 + 一个**始终向右**的
+           * `›` chevron。展开/折叠时**不旋转** —— 折叠的是内容，不是箭头。 */}
+          <span className="min-w-0 flex-1 truncate">{group.name}</span>
+          <span aria-hidden className="shrink-0 text-[var(--m-text-muted)]">
+            <ChevronRight size={12} />
+          </span>
+        </button>
+        {onNewSessionIn && (
+          <button
+            type="button"
+            aria-label={`在 ${group.name} 下新建会话`}
+            title={`在 ${group.name} 下新建会话`}
+            onClick={() => onNewSessionIn(group.id)}
+            className="flex size-5 shrink-0 items-center justify-center rounded-[4px] text-[var(--m-text-muted)] opacity-0 transition-opacity hover:bg-[var(--m-fill-ghost-hover)] hover:text-[var(--m-text-secondary)] group-hover/hdr:opacity-100 focus-visible:opacity-100"
+          >
+            <PlusSmallIcon />
+          </button>
+        )}
+      </div>
       {open &&
         group.sessions.map((s) => (
-          <SessionRow key={s.id} session={s} active={s.id === activeId} onSelect={onSelect} indent />
+          /* ⚠️ **不缩进。** 用户截图里会话名与分组名左对齐（`环境启动问题`
+           * 和 `~` 同一列）—— Claude 用「分组名是灰色小字」来分层，不用缩进。
+           * 之前的 `indent` 会多出 12px，整列看起来右移了一格。 */
+          <SessionRow key={s.id} session={s} active={s.id === activeId} onSelect={onSelect} />
         ))}
     </div>
   );
@@ -328,37 +474,40 @@ function SessionRow({
       // 悬停时仍能看到这个会话跑在哪个 worktree 上。
       title={session.branch ? `${session.title} · ${session.branch}` : session.title}
     >
-      <StatusDot running={session.running} failed={session.failed} unread={session.unread} />
       <span className="min-w-0 flex-1 truncate">{session.title}</span>
-      {/* 【UI 重建 2026-10-27】**行尾不是分支徽章，是「+ / ●」。**
+      {/* 【UI 重建 2026-10-28】**行尾只有一个状态点，没有 `+`。**
        *
-       * 真机截图（裁到侧栏会话行）：每行右侧只有一个符号 ——
-       *   - 悬停时是 `+`（在这个项目下新建会话）；
-       *   - 非悬停但有未读时是 `●`（一个实心点）。
-       *   **分支名 / worktree 名不在侧栏行里显示。**
+       * 用户给的真机截图：每行右端就是一个**圆点**（工作中的会呼吸、
+       * 已结束的是静态点）。悬停时**不换成加号** —— 那是上一版自己发明的。
+       * 新建会话的入口在**分组标题**右侧的 `+`（见 ProjectGroup），
+       * 不在每条会话行上。
        *
-       * 上一版把 Git 分支塞成等宽徽章 —— 那是 Mcode 自己的信息（Claude 的
-       * Code 模式会话并不都有 worktree），既不是 Claude 的形状，也把每行
-       * 右缘搞得参差不齐。分支信息移到 `title` 提示里保留。
-       *
-       * `+` 与 `●` 共用一个位置：悬停优先显示 `+`（可操作），否则显示点。 */}
-      <span className="flex size-4 shrink-0 items-center justify-center text-[var(--m-text-muted)]">
-        {session.unread ? (
-          // 未读点：`group-hover:hidden` 让位给 +；无未读时整块在悬停前隐藏。
-          <span
-            aria-hidden
-            className={cn("size-1.5 rounded-full bg-[var(--m-text-muted)]", "group-hover:hidden")}
-          />
-        ) : null}
-        <span aria-hidden className="hidden group-hover:inline-flex">
-          <PlusIcon />
-        </span>
+       * 分支名仍然不在行内显示（Claude 不显示），保留在 `title` 里。 */}
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        <StatusDot running={session.running} failed={session.failed} unread={session.unread} />
       </span>
     </button>
   );
 }
 
 /** 状态点：运行中 / 失败 / 未读 / 无。 */
+/** 会话行右端的**状态点**。
+ *
+ * 【UI 重建 2026-10-28】**尺寸与动画改成上游真值**（逆向自
+ * `c6a992d55-Che1orl5.css`，见 `tools/claude-ui-reverse/animations.txt`）：
+ *
+ *   --df-dot-r: calc(.1875rem * var(--cds-rem-scale,1))  → 半径 2.82px
+ *   直径 = 5.64px（上一版 `size-1.5` = 6px，差 0.36px —— 一行里看不出来，
+ *   但一行 6 个会话叠起来，整列的圆点大小会比上游「胖一圈」）
+ *
+ * 动画：`cds-dot-pulse`，1.8s linear，`opacity .2857 → 1 → .2857`。
+ * **不是** `animate-pulse`（那是 2s ease 的 1→.5，读起来是闪），
+ * 也**不是**我先前写的 `sidebar-breathe`（scale + opacity 同时动）。
+ * 真身**只有不透明度在变**。
+ *
+ * 为什么单点也要用同一套关键帧：侧栏和聊天区那两个「忙碌指示」在上游
+ * 是**同一个 `.cds-dot`**（同一个 class、同一段 keyframes），只是容器不同。
+ * 这里沿用同一个类名 `.cds-dot`，两处才会永远同步。 */
 function StatusDot({
   running,
   failed,
@@ -369,15 +518,16 @@ function StatusDot({
   unread?: number;
 }) {
   if (running) {
-    return <span className="size-1.5 shrink-0 rounded-full bg-[var(--m-accent)] animate-pulse" />;
+    return <span data-session-status="running" aria-label="正在工作" className="cds-dot shrink-0" />;
   }
   if (failed) {
-    return <span className="size-1.5 shrink-0 rounded-full bg-[var(--m-danger)]" />;
+    return <span data-session-status="failed" aria-label="上次运行失败" className="cds-dot cds-dot--danger shrink-0" />;
   }
   if (unread && unread > 0) {
-    return <span className="size-1.5 shrink-0 rounded-full bg-[var(--m-text-muted)]" />;
+    return <span data-session-status="done" aria-label="有未读" className="cds-dot cds-dot--muted shrink-0" />;
   }
-  return <span className="size-1.5 shrink-0" />;
+  // 无状态也要占位：否则有状态的行会把标题挤窄，整列标题右缘参差不齐。
+  return <span aria-hidden className="cds-dot-slot shrink-0" />;
 }
 
 function RowButton({
@@ -469,6 +619,160 @@ function CollapseIcon() {
     </svg>
   );
 }
+/* ───────── 顶部图标行与 New/Customize/More 的零件（2026-10-28）───────── */
+
+/** 顶部图标行里的一个图标按钮（28×28，圆角 6，激活态有灰底）。 */
+function SidebarIconButton({
+  label,
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={active}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "flex size-7 shrink-0 items-center justify-center rounded-[6px] transition-colors",
+        disabled
+          ? "cursor-not-allowed text-[var(--m-text-muted)] opacity-40"
+          : active
+            ? "bg-[var(--m-fill-ghost-selected)] text-[var(--m-text-primary)]"
+            : "text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)]",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** `New` / `Customize` / `More` 的一行：左图标 + 文字，整行可点。 */
+function SidebarMenuRow({
+  icon,
+  onClick,
+  children,
+}: {
+  icon: ReactNode;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-2.5 rounded-[6px] px-2 text-left text-[var(--m-text-secondary)] transition-colors hover:bg-[var(--m-fill-ghost-hover)] active:bg-[var(--m-fill-ghost-selected)]"
+      // 行高与会话行同一档（截图里三者等高）—— 走同一个 token，
+      // 不在这里另写数字。
+      style={{ height: "var(--m-sb-row-h, 32px)", fontSize: "var(--m-sb-row-font, 14px)" }}
+    >
+      <span className="flex size-[18px] shrink-0 items-center justify-center text-[var(--m-text-muted)]">
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+    </button>
+  );
+}
+
+/** `☰` 三横线（截图第一个图标）。 */
+function MenuIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M2.5 4.2h11M2.5 8h11M2.5 11.8h11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** `▭` 分栏（截图第二个图标：一个带竖分隔的方框）。 */
+function SplitIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect x="2" y="3.5" width="12" height="9" rx="1.6" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M6.6 3.5v9" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+/** `←` 后退。 */
+function ArrowLeftIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M12.5 8H3.8M7 4.3 3.3 8 7 11.7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** `→` 前进。 */
+function ArrowRightIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M3.5 8h8.7M9 4.3 12.7 8 9 11.7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** `⊕` 圆圈加号（`New` 行）。 */
+function PlusCircleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="8" cy="8" r="5.6" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M8 5.6v4.8M5.6 8h4.8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** `🎨` 自定义（`Customize` 行）：调色板形。 */
+function CustomizeIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M8 2.2a5.8 5.8 0 0 0 0 11.6c.8 0 1.3-.6 1.3-1.3 0-.4-.2-.7-.4-1-.2-.2-.4-.5-.4-.9 0-.7.6-1.3 1.3-1.3h1c1.6 0 2.9-1.3 2.9-2.9C13.7 3.9 11.2 2.2 8 2.2Z"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+      <circle cx="5.6" cy="6.2" r=".8" fill="currentColor" />
+      <circle cx="9" cy="5.2" r=".8" fill="currentColor" />
+      <circle cx="5.4" cy="9.4" r=".8" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** `⋯` 三个点（`More` 行）。 */
+function MoreDotsIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <circle cx="3.6" cy="8" r="1.1" />
+      <circle cx="8" cy="8" r="1.1" />
+      <circle cx="12.4" cy="8" r="1.1" />
+    </svg>
+  );
+}
+
+/** 底部账号行左侧的品牌小标（Claude 是一个彩色星芒）。 */
+function BrandMark() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M8 1.6v12.8M1.6 8h12.8M3.5 3.5l9 9M12.5 3.5l-9 9"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function PlusIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -514,6 +818,24 @@ function SettingsIcon() {
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
       <circle cx="7" cy="7" r="2.2" stroke="currentColor" strokeWidth="1.2" />
       <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.2" strokeDasharray="1.6 1.6" />
+    </svg>
+  );
+}
+
+/** 账号行右端的小 `⌄`（会话切换器同形，只是更小）。 */
+function ChevronDownSmall() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M3.5 6 8 10.5 12.5 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** 分组标题右侧的 `+`（新建会话）—— 比行首图标的加号小一档。 */
+function PlusSmallIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M8 3.5v9M3.5 8h9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }

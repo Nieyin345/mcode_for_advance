@@ -1265,40 +1265,33 @@ body {
  * instead of Tailwind arbitrary values because they need staggered per-child
  * delays. */
 
-/* Equalizer glyph — three staggered bars. data-tempo swaps the perceived
-   energy: slow while no tool is executing (waiting for the model /
-   thinking / streaming), brisk while a tool runs. */
+/* `.live-eq` —— 三个 `.cds-dot` 的**容器**（不再自己定义点的形状）。
+ *
+ * 【UI 重建 2026-10-28】上游的忙碌指示是**一个 class 复用两处**：
+ * 侧栏单点、聊天区三点，都是 `.cds-dot`。所以这里只保留「把三个点排成一行」
+ * 的布局，形状 / 颜色 / 动画全部由上面的 `.cds-dot` 负责。
+ *
+ * 上一版这里自己写了一套 `width:2.5px;height:100%;scaleY` 的竖条 ——
+ * 既不是上游的形状，也和侧栏那个点没有共享实现（硬规矩 2）。 */
 .live-eq {
   display: inline-flex;
-  align-items: flex-end;
-  gap: 2px;
+  align-items: center;
+  gap: 3px;
   height: 12px;
 }
 
-.live-eq > span {
-  width: 2.5px;
-  height: 100%;
-  border-radius: 1px;
-  background: rgb(var(--accent));
-  transform-origin: bottom;
-  animation: live-eq-bounce 1s ease-in-out infinite;
-}
-
-.live-eq > span:nth-child(2) {
-  animation-delay: 0.16s;
-}
-
-.live-eq > span:nth-child(3) {
-  animation-delay: 0.32s;
-}
-
-.live-eq[data-tempo="slow"] > span {
-  animation-duration: 2.2s;
+/* 「等模型」时放慢一倍 —— 上游没有这一档（它只有一个 1.8s），这是 Mcode
+ * 多出来的表达：没有工具在跑时节奏慢下来会读成「在思考/在等」，
+ * 与正在执行工具时的密节奏区分开。**只改 duration，关键帧比例不变。** */
+.live-eq[data-tempo="slow"] .cds-dot {
+  animation-duration: 3.6s;
 }
 
 /* T20: connecting uses the existing equalizer animation; active is driven by
    microphone FFT via requestAnimationFrame, idle is static. Explicit Mcode
-   reduced-motion overrides and OS reduced-motion both stop the pulse. */
+   reduced-motion overrides and OS reduced-motion both stop the pulse.
+   ⚠️ 麦克风那三条仍是**竖条**（它是音量表的语义，不是忙碌指示），
+   所以它**不用** `.cds-dot`，继续用 `live-eq-bounce`。 */
 .live-mic-bars[data-mode="connecting"][data-reduced="false"] .live-mic-bar {
   transform-origin: center;
   animation: live-eq-bounce 1.8s ease-in-out infinite;
@@ -1331,20 +1324,23 @@ body {
   }
 }
 
-/* Reduced motion: the bars hold fixed heights, the badge pops no more —
-   the strip stays informative, just calm. */
+/* Reduced motion: the dots hold fixed opacities, the badge pops no more —
+   the strip stays informative, just calm.
+   【UI 重建 2026-10-28】形状改成圆点之后，这里**不能再写 `scaleY`** ——
+   对一个小圆点纵向压缩只会把它变成一条扁线，看起来像渲染坏了。
+   改成不同不透明度（仍然能读出「三个点」，只是不跳）。 */
 @media (prefers-reduced-motion: reduce) {
   .live-eq > span {
     animation: none;
-    transform: scaleY(0.6);
+    opacity: 0.45;
   }
 
   .live-eq > span:nth-child(2) {
-    transform: scaleY(1);
+    opacity: 1;
   }
 
   .live-eq > span:nth-child(3) {
-    transform: scaleY(0.4);
+    opacity: 0.7;
   }
 
   @keyframes live-badge-in {
@@ -4906,4 +4902,104 @@ html[data-reduce-motion="true"] [data-ui-shell-variant="workspace"] .composer-se
   .cds-hover-ghost:not(:disabled):active { transform: none; }
   .cds-card-interactive { transition: box-shadow var(--dur-base) var(--ease-snap); }
   .cds-card-interactive:hover { transform: none; }
+}
+
+/* ───────────── `.cds-dot` —— 忙碌指示点（上游同名同形） ─────────────
+ *
+ * 【UI 重建 2026-10-28】**逆向自 Claude 3.6556.2.0**，不是凭印象写的。
+ * 见 `tools/claude-ui-reverse/animations.txt`。上游原文：
+ *
+ *   .cds-dot {
+ *     width:  calc(.1875rem * var(--cds-rem-scale,1));   → 2.82px
+ *     height: calc(.1875rem * var(--cds-rem-scale,1));   → 2.82px
+ *     background: var(--cds-alpha-7);                    → hsl(中性900 / 70%)
+ *     opacity: .2857;
+ *     border-radius: 9999px;
+ *     animation: 1.8s linear infinite cds-dot-pulse;
+ *   }
+ *   .cds-dot:nth-child(2) { animation-delay: .2s }
+ *   .cds-dot:nth-child(3) { animation-delay: .4s }
+ *
+ * **同一个 class 在两个地方用**：
+ *   - 侧栏会话行右端（单个点，表示那个会话在跑）；
+ *   - 聊天回合状态行开头（三个点，表示这一轮在跑）。
+ * 上游就是这么复用的（同一个选择器），Mcode 也照做 —— 两处永远同步，
+ * 不会出现「侧栏的点跳得比聊天区快」这种分叉。
+ *
+ * ## 三件我写错过的事，都记在这里
+ *
+ * 1. **形状**：不是竖条（上一版 `width:2.5px; height:100%` + `scaleY`），
+ *    是**正方形 + `border-radius:9999px`** 的正圆点。
+ * 2. **动画**：不是位移（`translateY`）也不是缩放，**只有 `opacity`**。
+ *    关键帧三段：暗(.2857) → 亮(1) → 暗(.2857)，其中**亮的窗口只有
+ *    周期的 10%**（15%–25%），这才是「依次点亮」的来源。
+ * 3. **颜色**：不是 accent 蓝，是 `--cds-alpha-7` = **70% 中性深色**。
+ *
+ * Reduce-motion：上游自己也会 `animation:none`（它有两条覆盖规则）。
+ * 这里关掉动画并保持 `.2857` 的静默态 —— 点仍然在，只是不动。 */
+.cds-dot {
+  width: 2.82px;
+  height: 2.82px;
+  border-radius: 9999px;
+  /* 上游原文就是 `var(--cds-alpha-7)`，而 `tokens.cds.css` 已经把同一条
+   * 导出成 `--m-alpha-7: hsl(from var(--m-neutral-900) h s l / 70%)`。
+   * **直接用它，不要用 `--m-text-primary` 近似** —— 那是我上一版的将就写法，
+   * 它在暗色主题下取值不同（`--m-text-primary` 在暗色是近白，而
+   * `--m-neutral-900` 恒为近黑），会让暗色模式的点变成一个白块。 */
+  background: var(--m-alpha-7);
+  opacity: 0.2857;
+  animation: cds-dot-pulse 1.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.cds-dot--danger {
+  background: rgb(var(--m-danger));
+}
+
+.cds-dot--muted {
+  background: rgb(var(--m-text-muted));
+}
+
+/* 依次点亮的**错开**（上游逐字：.2s / .4s）。
+ *
+ * ⚠️ 用 `.cds-dot:nth-child(n)` 而不是 `.live-eq > span:nth-child(n)` ——
+ *  侧栏那个单点也是 `.cds-dot`，但它通常是它父容器里**唯一**的子元素，
+ *  `:nth-child(2)` 对它不成立，所以不会误伤。写成 `.live-eq > span` 就把
+ *  错开锁死在聊天区，两处不再是同一份实现。 */
+.cds-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.cds-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* 无状态时的占位：与 `.cds-dot` **同宽**，但不画、不动画。
+ * 少了它，有状态的会话行会把标题挤窄 2.82px，整列标题右缘参差不齐。 */
+.cds-dot-slot {
+  width: 2.82px;
+  height: 2.82px;
+  flex-shrink: 0;
+}
+
+@keyframes cds-dot-pulse {
+  0%,
+  5% {
+    opacity: 0.2857;
+  }
+  15%,
+  25% {
+    opacity: 1;
+  }
+  65%,
+  100% {
+    opacity: 0.2857;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cds-dot {
+    animation: none;
+    opacity: 0.2857;
+  }
 }

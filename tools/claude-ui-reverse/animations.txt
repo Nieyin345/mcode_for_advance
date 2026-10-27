@@ -1,0 +1,322 @@
+# Claude 3.6556.2.0 —— 动画与转场（逆向）
+
+来源：`ion-dist/assets/v1/*.css`（25 个文件）的 `@keyframes` 与 `animation:` 声明。
+生成脚本：`re-all-anim.mjs`。
+
+**这份数据此前不存在** —— 逆向报告只覆盖了 token / 几何 / 颜色 / 图标，
+动画层完全空白。Mcode 的 `live-eq`（回合状态行的三个点）就是凭印象写的：
+上一版是竖条 + scaleY，真身是 2.82px 圆点 + 纯不透明度三段式。
+
+共 209 个 keyframes。
+
+## 状态指示器相关的（逐条全文）
+
+### `blink`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes blink {0%,to{opacity:1}50%{opacity:0}}
+```
+
+### `byline-sent-pulse`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes byline-sent-pulse {0%{opacity:0}12%,35%{opacity:1}to{opacity:0}}
+```
+
+### `byline-sent-pulse-fg`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes byline-sent-pulse-fg {0%,35%{color:var(--cds-text-accent)}}
+```
+
+### `cds-dot-pulse`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-dot-pulse {0%,5%{opacity:.2857;animation-timing-function:cubic-bezier(.165,.84,.44,1)}15%,25%{opacity:1;animation-timing-function:cubic-bezier(.165,.84,.44,1)}65%,to{opacity:.2857}}
+```
+
+### `cds-shimmer`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-shimmer {0%{transform:translate(-100%)}to{transform:translate(100%)}}
+```
+
+### `cds-shimmer-text-band`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-shimmer-text-band {0%,15%{animation-timing-function:cubic-bezier(.714,.121,.211,.888);translate:-62.5%}85%,to{translate:-12.5%}}
+```
+
+### `cds-shimmer-text-band-rtl`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-shimmer-text-band-rtl {0%,15%{animation-timing-function:cubic-bezier(.714,.121,.211,.888);translate:-12.5%}85%,to{translate:-62.5%}}
+```
+
+### `cds-shimmer-text-band-strong`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-shimmer-text-band-strong {0%,5%{animation-timing-function:cubic-bezier(.4,.15,.6,.85);translate:-62.5%}95%,to{translate:-12.5%}}
+```
+
+### `cds-shimmer-text-band-strong-rtl`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-shimmer-text-band-strong-rtl {0%,5%{animation-timing-function:cubic-bezier(.4,.15,.6,.85);translate:-12.5%}95%,to{translate:-62.5%}}
+```
+
+### `cds-shimmer-text-shine`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-shimmer-text-shine {0%,15%{background-position:83.333% 0;animation-timing-function:cubic-bezier(.714,.121,.211,.888)}85%,to{background-position:16.667% 0}}
+```
+
+### `cds-shimmer-text-shine-rtl`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-shimmer-text-shine-rtl {0%,15%{background-position:16.667% 0;animation-timing-function:cubic-bezier(.714,.121,.211,.888)}85%,to{background-position:83.333% 0}}
+```
+
+用在：
+- `.\[\&\:where\(\:root\[dir\=rtl\]_\*\)\]\:\[animation-name\:cds-shimmer-text-shine-rtl\]:where(:root[dir=rtl] *)` → `animation: cds-shimmer-text-shine-rtl`
+- `mmer-text-shine-rtl\]:not(:where([data-reduce-motion=true],[data-reduce-motion=true] *)):where(:root[dir=rtl] :dir(rtl))` → `animation: cds-shimmer-text-shine-rtl`
+
+### `cds-shimmer-text-shine-strong`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-shimmer-text-shine-strong {0%,5%{background-position:83.333% 0;animation-timing-function:cubic-bezier(.4,.15,.6,.85)}95%,to{background-position:16.667% 0}}
+```
+
+### `cds-shimmer-text-shine-strong-rtl`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-shimmer-text-shine-strong-rtl {0%,5%{background-position:16.667% 0;animation-timing-function:cubic-bezier(.4,.15,.6,.85)}95%,to{background-position:83.333% 0}}
+```
+
+用在：
+- `xt-shine-strong-rtl\]:not(:where([data-reduce-motion=true],[data-reduce-motion=true] *)):where(:root[dir=rtl] :dir(rtl))` → `animation: cds-shimmer-text-shine-strong-rtl`
+
+### `cds-skeleton-breathe`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-skeleton-breathe {0%,to{opacity:1}50%{opacity:.6}}
+```
+
+### `cds-working-dot-halo`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-working-dot-halo {50%{opacity:.3;transform:scale(1.5)}}
+```
+
+### `cds-working-dot-lands`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-working-dot-lands {0%{clip-path:circle(calc(.25rem * var(--cds-rem-scale,1)))}to{clip-path:circle(50%)}}
+```
+
+### `cds-working-dot-veil`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes cds-working-dot-veil {0%{opacity:1}}
+```
+
+### `codeSpinnerSpin`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes codeSpinnerSpin {0%{transform:translateY(0)}10%{transform:translateY(-2em)}20%{transform:translateY(-4em)}30%{transform:translateY(-6em)}40%{transform:translateY(-8em)}50%{transform:translateY(-8em)}60%{transform:translateY(-6em)}70%{transform:translateY(-4em)}80%{transform:translateY(-2em)}90%{transform:translateY(0)}}
+```
+
+### `codicon-spin`
+
+来源：`c5aee9dbd-cvLUb2-y.css`
+
+```css
+@keyframes codicon-spin {to{transform:rotate(360deg)}}
+```
+
+### `dframe-clay-breathe`
+
+来源：`shared-styles-D_GJawPO.css`
+
+```css
+@keyframes dframe-clay-breathe {0%,to{filter:brightness(.96);transform:scale(.86)}50%{filter:brightness(1.06);transform:scale(1)}}
+```
+
+### `dframe-dot-blink`
+
+来源：`shared-styles-D_GJawPO.css`
+
+```css
+@keyframes dframe-dot-blink {0%,to{opacity:.3}50%{opacity:1}}
+```
+
+### `dframe-dot-pulse`
+
+来源：`shared-styles-D_GJawPO.css`
+
+```css
+@keyframes dframe-dot-pulse {0%,5%{opacity:.3;animation-timing-function:cubic-bezier(.165,.84,.44,1)}15%,25%{opacity:1;animation-timing-function:cubic-bezier(.165,.84,.44,1)}65%,to{opacity:.3}}
+```
+
+### `epitaxy-pill-pulse`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes epitaxy-pill-pulse {0%{transform:scale(1)}35%{transform:scale(1.05)}to{transform:scale(1)}}
+```
+
+### `file-thumbnail-upload-pulse`
+
+来源：`shared-styles-D_GJawPO.css`
+
+```css
+@keyframes file-thumbnail-upload-pulse {50%{opacity:.5}}
+```
+
+### `guest-pass-shimmer`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes guest-pass-shimmer {0%,10%{transform:translate(-100%)}60%,to{transform:translate(200%)}}
+```
+
+### `icon-ghost-blink`
+
+来源：`shared-styles-D_GJawPO.css`
+
+```css
+@keyframes icon-ghost-blink {0%,8%{opacity:0}10%,12%{opacity:1}14%,30%{opacity:0}32%,34%{opacity:1}36%,to{opacity:0}}
+```
+
+### `monaco-cursor-expand`
+
+来源：`c5aee9dbd-B55U_qvj.css`
+
+```css
+@keyframes monaco-cursor-expand {0%,20%{transform:scaleY(1)}80%,to{transform:scaleY(0)}}
+```
+
+### `monaco-cursor-phase`
+
+来源：`c5aee9dbd-B55U_qvj.css`
+
+```css
+@keyframes monaco-cursor-phase {0%,20%{opacity:1}90%,to{opacity:0}}
+```
+
+### `monaco-cursor-smooth`
+
+来源：`c5aee9dbd-B55U_qvj.css`
+
+```css
+@keyframes monaco-cursor-smooth {0%,20%{opacity:1}60%,to{opacity:0}}
+```
+
+### `pulse`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes pulse {50%{opacity:.5}}
+```
+
+### `pulse-dot`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes pulse-dot {0%,to{transform:scale(.75)}50%{transform:scale(1)}}
+```
+
+### `sheet-card-blink`
+
+来源：`c6a73f447-LaXKuzWp.css`
+
+```css
+@keyframes sheet-card-blink {0%,50%,to{opacity:1}25%,75%{opacity:0}}
+```
+
+### `shimmer`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes shimmer {0%{transform:translate(-100%)}60%,to{transform:translate(100%)}}
+```
+
+### `shimmertext`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes shimmertext {0%{background-position:100% 0}65%,to{background-position:0 0}}
+```
+
+用在：
+- `.\[animation-name\:shimmertext\]` → `animation: shimmertext`
+
+### `spin`
+
+来源：`c6059c89c-BTGTtuUf.css`
+
+```css
+@keyframes spin {to{transform:rotate(360deg)}}
+```
+
+### `todo-rail-shimmer`
+
+来源：`c6a992d55-Che1orl5.css`
+
+```css
+@keyframes todo-rail-shimmer {0%{transform:translateY(-100%)}to{transform:translateY(100%)}}
+```
+
+### `urm-breath`
+
+来源：`c403c4b83-yqAXiELG.css`
+
+```css
+@keyframes urm-breath {50%{transform:scale(1.0384)}}
+```
+
+## 全部 keyframes 名（按字母序）
+
+`_fadeInText_4za3l_1` · `_grapheme-reveal_1plog_1` · `ant-tools-pop` · `ant-tools-push` · `appInstallSlideUp` · `artifact-list-row` · `bannerSlideUp` · `blink` · `byline-sent-bump` · `byline-sent-pulse` · `byline-sent-pulse-fg` · `cds-anim-loop` · `cds-attachment-out` · `cds-chip-in` · `cds-dot-pulse` · `cds-drop-icon-rise` · `cds-drop-ring-in` · `cds-editor-comment-working` · `cds-fade-in` · `cds-flipbook` · `cds-grid-rows-in` · `cds-morph-in` · `cds-page-tabs-arrive` · `cds-page-title-leaves` · `cds-pill-dip-down` · `cds-pill-dip-up` · `cds-pill-in` · `cds-pill-out` · `cds-pill-pop-down` · `cds-pill-pop-up` · `cds-pill-roll-in-down` · `cds-pill-roll-in-up` · `cds-pill-roll-out` · `cds-placeholder-reveal` · `cds-resolve-glyph` · `cds-resolve-square` · `cds-reveal-in` · `cds-reveal-out` · `cds-scroll-fade-bottom` · `cds-scroll-fade-left` · `cds-scroll-fade-right` · `cds-scroll-fade-strip-active` · `cds-scroll-fade-strip-in` · `cds-scroll-fade-strip-out` · `cds-scroll-fade-top` · `cds-scroll-fade-x-active` · `cds-scroll-fade-y-active` · `cds-shimmer` · `cds-shimmer-text-band` · `cds-shimmer-text-band-rtl` · `cds-shimmer-text-band-strong` · `cds-shimmer-text-band-strong-rtl` · `cds-shimmer-text-shine` · `cds-shimmer-text-shine-rtl` · `cds-shimmer-text-shine-strong` · `cds-shimmer-text-shine-strong-rtl` · `cds-skeleton-breathe` · `cds-skeleton-sweep` · `cds-slide-in-end` · `cds-slide-in-start` · `cds-sticky-edge-active` · `cds-sticky-edge-end` · `cds-sticky-edge-start` · `cds-um-enter` · `cds-working-dot-halo` · `cds-working-dot-lands` · `cds-working-dot-veil` · `chip-in` · `click-ring` · `code-approval-promote` · `code-reply-flash` · `code-reply-flash-accent` · `code-user-bubble-enter` · `codeSpinnerSpin` · `codicon-spin` · `cxdir-banner-fill` · `df-body-fade-in` · `df-pill-pending` · `df-placeholder-fade` · `df-placeholder-fade-uncovered` · `dframe-clay-breathe` · `dframe-dot-blink` · `dframe-dot-pulse` · `drop-in-10` · `epitaxy-band-exit` · `epitaxy-check-draw` · `epitaxy-document-changed-a` · `epitaxy-document-changed-b` · `epitaxy-document-landed` · `epitaxy-document-rail-in` · `epitaxy-linear-sweep` · `epitaxy-linear-sweep-rtl` · `epitaxy-pill-pulse` · `epitaxy-session-chip-flash` · `epitaxy-sticky-prompt-enter` · `expand-rows` · `expand-rows-clip` · `extra-usage-plus-in` · `fade` · `fade-in` · `fade-in-to-current` · `fade-out` · `fadeIn` · `fadeInTextReveal` · `fadeOut` · `fadein` · `favicon-in` · `fc-arrive` · `fc-arrive-ring` · `fc-fade-in` · `fc-fade-out` · `fc-reveal` · `fc-rise` · `feature-anchor-highlight-underline` · `feature-anchor-highlight-underline-rtl` · `feature-anchor-row-fill-wash` · `file-thumbnail-fade-in` · `file-thumbnail-grow-in` · `file-thumbnail-upload-pulse` · `greeting-fade-in` · `guest-pass-shimmer` · `hide-after-hold` · `icon-ghost-blink` · `icon-ghost-look-around` · `idle-activity-bar-ripple` · `knob-in` · `lazy-pictogram-fade-in` · `lf-drain` · `lf-enter` · `lf-tick` · `login-hero-in` · `message-fade-up` · `monaco-cursor-expand` · `monaco-cursor-phase` · `monaco-cursor-smooth` · `monaco-findInput-highlight-0` · `monaco-findInput-highlight-1` · `monaco-findInput-highlight-dark-0` · `monaco-findInput-highlight-dark-1` · `new-task-shake` · `overflow-scroll` · `palette-card-in` · `palette-card-morph` · `palette-card-unfold` · `palette-thumb-return` · `ph-fade-in` · `pill-capsule-march` · `ping` · `placement-fade-in` · `placement-rise-in` · `pop-in-99` · `progress` · `prose-review-bar-icon-in` · `prose-review-bar-in` · `pulse` · `pulse-dot` · `rail-grow` · `review-scroll-flash` · `scale-in` · `selectionTooltipFadeOut` · `sent-chip-tick` · `shake` · `sheet-card-appear` · `sheet-card-blink` · `sheet-card-dash` · `sheet-card-draw-x` · `sheet-card-draw-y` · `sheet-card-pop` · `sheet-card-reveal-x` · `sheet-card-ride` · `sheet-card-stamp` · `sheet-card-sweep` · `sheet-card-tighten` · `shimmer` · `shimmertext` · `side-panel-in` · `slide-in-from-left` · `slide-in-from-right` · `spin` · `static-composer-actions-fade-in` · `step-in` · `task-grid-clip-reveal` · `task-grid-fade-in` · `ticket-sheen` · `ticket-shimmy` · `ticket-ticker` · `timeline-block-enter` · `timeline-expand` · `timeline-fade-in` · `timeline-fade-out` · `timeline-spark-depart` · `todo-rail-shimmer` · `todo-reveal-decay` · `urm-arc-sweep` · `urm-beat-critical` · `urm-beat-critical-glow` · `urm-beat-limit` · `urm-beat-limit-glow` · `urm-beat-warning` · `urm-beat-warning-glow` · `urm-breath` · `urm-comet-fade` · `urm-comet-travel` · `urm-draw-glow` · `urm-fade-in` · `vt-image-preview-decoration-in` · `vt-image-preview-decoration-out` · `vt-image-preview-fade-out` · `zoom`

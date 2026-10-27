@@ -19,6 +19,8 @@ export const en = {
   "chatStream.stepCount": "{n} steps",
   "chatStream.filesChanged": "{n} files changed",
   "chatStream.waitingModel": "Waiting for model…",
+  /** Usage unit at the end of the turn-status line (`10.5k tokens`). */
+  "chatStream.tokens": "{count} tokens",
 
   // ── Running ledger (borderless form) header ──
   "chatStream.ledgerRunning": "Running",

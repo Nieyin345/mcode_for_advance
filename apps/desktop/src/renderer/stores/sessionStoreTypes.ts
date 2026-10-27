@@ -333,6 +333,32 @@ export interface TurnMeta {
    *  Undefined for turns that predate this field (they render without it) and
    *  for turns opened by something other than a send (resumed/legacy). */
   model?: string;
+  /**
+   * 【CHAT-15】**这一轮花了多少美元**（只有当轮的提供方上报了才有）。
+   *
+   * 为什么可缺：Claude 与 Pi 报，**Codex 不报**（它的 token 快照里没有金额）。
+   * 缺就**不显示** —— 显示一个猜出来的数字比不显示更糟（用户会拿它做预算判断）。
+   *
+   * 来源是当轮 `context.usage` 快照的 `costUsd`，在 turn.done 时落到这里
+   * （`SessionRepo.updateUsageHistory` 记的是同一份值，两边不会分叉）。
+   */
+  costUsd?: number;
+  /**
+   * 【UI 重建 2026-10-28】**这一轮用掉多少 token**（提供方上报了才有）。
+   *
+   * 用户给的真机截图里，回合状态行是：
+   *   `••• Typechecking and rebuilding…   21s · 10.5k tokens`
+   * —— 耗时之后跟的是 **token 数**，不是美元。Mcode 此前只有 `costUsd`。
+   *
+   * 取值是当轮 `context.usage` 快照的 **`usedTokens`**（上下文已用量）——
+   * 因为截图上那个数字就是「这次对话现在占了多少上下文」，与 `ContextRing`
+   * 读的是**同一个字段**（硬规矩 2）。不用 `outputTokens`：那只是本轮的
+   * 输出，和 Claude 显示的量级差一个数量级。
+   *
+   * 为什么可缺：Codex / 部分引擎不报 usage。缺就**不显示**那一截，
+   * 与 `costUsd` 同一策略 —— 编一个数字比不显示更糟。
+   */
+  tokens?: number;
 }
 
 /** One queued prompt: a fully-prepared turn payload held back while the

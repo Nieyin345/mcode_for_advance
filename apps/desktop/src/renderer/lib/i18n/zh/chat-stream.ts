@@ -24,6 +24,8 @@ export const zh = {
   "chatStream.stepCount": "{n} 步",
   "chatStream.filesChanged": "改 {n} 个文件",
   "chatStream.waitingModel": "等待模型…",
+  /** 回合状态行末尾的用量单位（`10.5k tokens`）。{count} 由 fmtTokenCount 给出。 */
+  "chatStream.tokens": "{count} tokens",
 
   // ── 运行台账（无框形态）台头 ──
   "chatStream.ledgerRunning": "运行中",

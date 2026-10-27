@@ -4251,6 +4251,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
            * 必须与 `endedAt` 同一次 map：分开写会让"已结束但没有花费"的中
            * 间态被 `endedAt === undefined` 的判据跳过。 */
           const turnCost = get().contextSnapshotBySession[sid]?.costUsd;
+          /* 【UI 重建 2026-10-28】同时落 token 数 —— 与 `turnCost` **同一次
+           * 读取、同一次 map**。分开写会出现「已结束但 token 还没写」的中间态，
+           * 而 `endedAt === undefined` 的判据会把它跳过（与上面那条注释
+           * 说的 costUsd 同一个坑）。 */
+          const turnTokens = get().contextSnapshotBySession[sid]?.usedTokens;
           next = next.map((m) =>
             m.turnMeta && m.turnMeta.endedAt === undefined
               ? {
@@ -4259,6 +4264,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
                     ...m.turnMeta,
                     endedAt,
                     ...(turnCost !== undefined ? { costUsd: turnCost } : {}),
+                    ...(turnTokens !== undefined ? { tokens: turnTokens } : {}),
                   },
                 }
               : m,

@@ -166,6 +166,35 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   // 有并行数据时用它，否则用新的 Claude 侧栏。
   const streamHasData = useSessionStore((s) => s.streamSessions.length > 0);
 
+  const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
+
+  /* 【UI 重建 2026-10-28】侧栏顶部 `←` `→` 与底部账号行要的数据。
+   *
+   * ⚠️ 全部**从 store 派生**，不新增状态：
+   *   - `navBackByProject` / `navForwardByProject` 是既有的导航栈，
+   *     用**当前项目**的桶（和浏览器的前进后退同一个概念）；
+   *   - `activeProviderName` 是当前引擎名 —— 它是 Claude 那截「· Gateway」
+   *     的语义对应物（「你连的是哪个后端」）。
+   *
+   * 第一版这里写了 `canGoBack` / `accountName` 两个**不存在的**变量，
+   * 是凭印象写的。tsc 当场报错才去查 store —— 又一次「猜字段名」。 */
+  const navCanGoBack = useSessionStore((s) => {
+    const pid = s.activeProjectId;
+    return pid ? (s.navBackByProject[pid]?.length ?? 0) > 0 : false;
+  });
+  const navCanGoForward = useSessionStore((s) => {
+    const pid = s.activeProjectId;
+    return pid ? (s.navForwardByProject[pid]?.length ?? 0) > 0 : false;
+  });
+  const navBack = useSessionStore((s) => s.navigateBack);
+  const navForward = useSessionStore((s) => s.navigateForward);
+  /* 当前引擎名 —— 与 `ChatPane:744` 用**同一份**派生（硬规矩 2）：
+   * `providers.find(id)` 的 `displayName`，缺了退回 id。 */
+  const activeProviderName = useSessionStore((s) => {
+    const p = s.providers.find((x) => x.id === s.providerId);
+    return p?.displayName ?? s.providerId ?? "";
+  });
+
   const sidebar =
     // **tree 是用户显式选的「项目树」视图，尊重它。**
     leftBarMode === "tree" ? (
@@ -191,6 +220,27 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
         }}
         onOpenSettings={() => setSettingsOpen(true)}
         onCollapse={() => props.setLeftOpen(false)}
+        /* 【UI 重建 2026-10-28】顶部图标行与底部账号行的接线。
+         *
+         * 全部读现有 store，没有新增状态：
+         *   - `panesOpen`  = `props.rightOpen`（顶栏的「右侧面板」开关同源）
+         *   - `canGoBack`  = store 的 nav 栈是否有上一条
+         *   - 账号行右侧的 `· Gateway` 只有设置里真配了后端时才显示 ——
+         *     没配就不显示那一截，不伪造一个「Gateway」。 */
+        panesOpen={props.rightOpen}
+        onTogglePanes={() => props.setRightOpen(!props.rightOpen)}
+        canGoBack={navCanGoBack}
+        canGoForward={navCanGoForward}
+        onBack={() => navBack()}
+        onForward={() => navForward()}
+        /* 账号行的两截各是什么（**不伪造**）：
+         *   - 左边：Mcode 没有「登录账号」这个概念，用品牌名；
+         *   - `· 右侧`：Claude 那里是网关名。Mcode 的对应物是**当前引擎**
+         *     （Claude Code / Pi / Codex / 网页模型）—— 那确实是「你连的是哪个
+         *     后端」，与 Claude 的 Gateway 同一个语义位置。
+         *   没有可用引擎名时**整截不显示**，而不是写一个占位的 "Gateway"。 */
+        accountSubtitle={activeProviderName || undefined}
+        onOpenAccountMenu={() => setSettingsOpen(true)}
       />
     );
 
@@ -280,7 +330,6 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   const setRightDock = useSessionStore((s) => s.setRightDock);
   // 【UI 重建 2026-10-27】顶栏的 pane 开关要用它。与 `⋯` 菜单、设置页
   // 走的是**同一个** store action，不是各写一份。
-  const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
   const asideFirst = rightDock === "left";
   const tileForTab = (tab: string): PaneTileKind => {
     switch (tab) {
@@ -426,6 +475,19 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
               active: props.rightOpen && rightPanelTab === "terminal",
               onSelect: () => pickRightTab("terminal"),
             },
+            /* 【UI 重建 2026-10-28】截图里终端之后还有**第四个图标**：
+             * 一个方框内加号（`⊞`）—— 语义是「在这个会话里再开一个 pane」。
+             * 之前整个漏掉了，五格变成四格。
+             *
+             * Mcode 的对应动作：开一个**侧聊** pane（与 Claude 的
+             * 「新开一格」最接近，且是真实存在的能力）。 */
+            {
+              id: "new-pane",
+              label: "新建侧聊",
+              icon: <AddPaneIcon />,
+              active: false,
+              onSelect: () => pickRightTab("sidechat"),
+            },
             {
               id: "preview",
               label: "预览",
@@ -510,8 +572,17 @@ function TerminalIcon() {
   );
 }
 
-/** 预览：播放三角（截图第四个）。 */
-function PreviewIcon() {
+/** 新建 pane：方框内加号（截图第三个，`⊞`）。 */
+function AddPaneIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect x="2" y="2.6" width="12" height="10.8" rx="1.8" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M8 5.9v4.2M5.9 8h4.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** 预览：播放三角（截图第四个）。 */function PreviewIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path d="M5.5 3.8 12 8l-6.5 4.2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />

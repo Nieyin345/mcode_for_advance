@@ -62,6 +62,26 @@ export function fmtDuration(ms: number): string {
   return `${h}h ${String(mm).padStart(2, "0")}m`;
 }
 
+/** Format a token count the way the turn-status line shows it.
+ *
+ *  【UI 重建 2026-10-28】用户给的真机截图是 `10.5k tokens` ——
+ *  一位小数 + `k`，不是 `10500`，也不是 `10k`。
+ *
+ *  分档：
+ *    < 1000      → 原样整数（`842 tokens`）
+ *    < 10_000    → 一位小数 k（`1.2k` / `9.8k`）—— 这个区间精度有意义
+ *    < 1_000_000 → 整数 k（`12k` / `345k`）—— 这时小数位是噪音
+ *    ≥ 1_000_000 → 一位小数 M（`1.2M`）
+ *
+ *  单位 `tokens` 由调用方拼（它与 i18n 无关，是通用词），这里只出数字部分。 */
+export function fmtTokenCount(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n < 1000) return String(Math.round(n));
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
 /** Per-turn runtime row shown ABOVE the first assistant message of a turn:
  *  "12.3s" plus the live operation while streaming. The clock moved into the
  *  assistant identity header to match Claude. While the turn is still streaming
@@ -126,15 +146,37 @@ function TurnStatContent({
        * 负边距和内侧 padding 一起让运行状态行与正文左缘齐平，保持原有视觉脊线。 */}
       {live && (
         <span className="live-eq shrink-0" data-tempo={op ? undefined : "slow"} aria-hidden>
-          <span />
-          <span />
-          <span />
+          {/* 三个点用**上游同一个 class** `.cds-dot` —— 侧栏那个单点也是它。
+           * 形状/颜色/动画全部由 styles.css 的 `.cds-dot` 负责；这里只提供
+           * 三个兄弟节点，`:nth-child(2)/(3)` 的 0.2s/0.4s 错开自动生效。 */}
+          <span className="cds-dot" />
+          <span className="cds-dot" />
+          <span className="cds-dot" />
         </span>
       )}
+      {/* 【UI 重建 2026-10-28】**顺序改成「动作 → 耗时 → token」，与截图一致。**
+       *
+       * 用户给的真机截图：
+       *   `••• Typechecking and rebuilding to check titlebar layout  21s · 10.5k tokens`
+       *
+       * 上一版是「点 · 耗时 · 费用 · 动作」—— 动作被挤到最后，而它恰恰是
+       * 用户最先要看的那一截（「它现在在干嘛」）。耗时和用量是**注解**，
+       * 排在动作后面才是阅读顺序。
+       *
+       * 动作来源：
+       *   - 有 `op`（正在跑的工具）→ `CurrentOpTicker`（它自己带 slot 滚动）；
+       *   - 没有 op（等模型首字）→ 「等待模型」。 */}
+      {live &&
+        (op ? (
+          <CurrentOpTicker op={op} turnActive />
+        ) : (
+          <span className="min-w-0 truncate text-content-subtle">
+            {t("chatStream.waitingModel")}
+          </span>
+        ))}
       <span className="shrink-0 tabular-nums">{fmtDuration(duration)}</span>
-      {/* 【CHAT-15】这一轮花了多少（提供方上报了才显示）。
-          缺省不画 —— 显示一个猜出来的数字比不显示更糟（用户会拿它做预算判断）。
-          分隔点用 `·`，与身份头里的时钟行同一个视觉语汇。 */}
+      {/* 【CHAT-15】花费（提供方上报了才显示）。保留 —— 它是 Mcode 比 Claude
+          多出来的一层信息，不占位置时自动消失。 */}
       {meta.costUsd !== undefined && meta.costUsd > 0 && (
         <>
           <span aria-hidden className="shrink-0 text-content-subtle">·</span>
@@ -143,20 +185,17 @@ function TurnStatContent({
           </span>
         </>
       )}
-      {/* Live current-operation ticker — rolls like a slot machine as the agent
-          moves between commands. This is the ONE surface carrying live progress
-          in the flat streaming layout, so the ticker belongs here (not only
-          inside the process card). Between commands (and before the first one)
-          the ticker renders nothing, so a placeholder keeps the row from
-          looking like it dropped a field. Phrasing content only, inline. */}
-      {live &&
-        (op ? (
-          <CurrentOpTicker op={op} turnActive />
-        ) : (
-          <span className="min-w-0 truncate border-l border-edge pl-2 text-content-subtle">
-            {t("chatStream.waitingModel")}
+      {/* 【UI 重建 2026-10-28】token 数 —— 与截图同位置（耗时之后）。
+       * 用 `·` 分隔，与身份头里的时钟行同一视觉语汇。
+       * 引擎不报 usage 时整截不画（`tokens` 缺席），不显示猜的数字。 */}
+      {meta.tokens !== undefined && meta.tokens > 0 && (
+        <>
+          <span aria-hidden className="shrink-0 text-content-subtle">·</span>
+          <span className="shrink-0 tabular-nums" data-turn-tokens="">
+            {t("chatStream.tokens", { count: fmtTokenCount(meta.tokens) })}
           </span>
-        ))}
+        </>
+      )}
     </div>
   );
 }
