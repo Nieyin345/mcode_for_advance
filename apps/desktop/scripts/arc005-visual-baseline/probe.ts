@@ -34,6 +34,11 @@ const SCREENS = [
   // （Environment / Context / Connectors / Outputs / Changes 卡片堆）。
   // 它是右栏的新默认形态；没有这一格，改那张面板没有任何画面对照。
   ["overview-pane", "右栏项目概览"],
+  // 【UI 重建 2026-10-27】Claude 六项能力里此前**没有页签能切到**的两项：
+  // 终端只在底部横条、`SideChatPanel` 自称右栏页签却没人挂。
+  // 这两格拍的是「右栏里它们真的画出来了」。
+  ["terminal-pane", "右栏终端"],
+  ["sidechat-pane", "右栏侧聊"],
 ] as const;
 const CONDITIONS = [
   { id: "light", width: 1280, height: 800, dark: false },
@@ -296,6 +301,17 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               // 概览面板的卡片里的 MCP 列表走 api.mcp.list() 的桩。
               // ⚠️ 这里在模板字符串内 —— **不能写反引号**，会提前闭合外层。
               st.setState({rightOpen:true,rightPanelTab:'overview'});
+            }
+            else if (id === 'terminal-pane') {
+              // 右栏终端（不是底部横条那个）。组件与底部共用 TerminalPanel。
+              st.setState({rightOpen:true,rightPanelTab:'terminal'});
+            }
+            else if (id === 'sidechat-pane') {
+              // 右栏侧聊。桩里给一个父会话的侧聊列表，让面板有内容可画。
+              st.setState({
+                rightOpen:true,rightPanelTab:'sidechat',
+                sideChatsByParent:{s1:a.sideChats},
+              });
             }
             await new Promise(r=>setTimeout(r,300));
             return ${buildSceneAssertionScript(screen)};

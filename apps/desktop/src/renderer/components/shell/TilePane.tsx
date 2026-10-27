@@ -288,6 +288,7 @@ function tileLabel(id: string): string {
     // tile id 字符串 `overview` —— 用户在一个全中文界面里看到一个小写英文
     // 单词。`map[id] ?? id` 的兜底让这种遗漏变成静默的，不会报错。
     overview: "概览",
+    sidechat: "侧聊",
   };
   return map[id] ?? id;
 }

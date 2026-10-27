@@ -278,6 +278,9 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   const rightDock = useSessionStore((s) => s.rightDock);
   // 【UI 重建 2026-10-27】换边走 store 的同一个 action（与设置里的「面板停靠」同源）。
   const setRightDock = useSessionStore((s) => s.setRightDock);
+  // 【UI 重建 2026-10-27】顶栏的 pane 开关要用它。与 `⋯` 菜单、设置页
+  // 走的是**同一个** store action，不是各写一份。
+  const setRightPanelTab = useSessionStore((s) => s.setRightPanelTab);
   const asideFirst = rightDock === "left";
   const tileForTab = (tab: string): PaneTileKind => {
     switch (tab) {
@@ -285,6 +288,12 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       // `default` 是 `file`，而 `overview` 一旦漏了就会静默落进文件树
       // （改了 store 默认值却「看不到变化」的经典形态）。
       case "overview": return "overview";
+      // 【UI 重建 2026-10-27】`files` 此前**没有显式 case**，靠
+      // `default: return "file"` 兜底 —— 它碰巧是对的（default 恰好是 file），
+      // 但那是巧合不是设计：把 default 改成别的，文件页签会**静默**跳到
+      // 另一个面板，而没有任何东西会红。`claude-shell-smoke` 的
+      // 「Claude 能力页签必须有显式映射」那条断言就是抓这个的。
+      case "files": return "file";
       case "git": return "diff";
       case "preview": return "preview";
       case "turns": return "turns";
@@ -292,6 +301,13 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       case "tasks": return "pr";
       case "taskcenter": return "cr";
       case "browser": return "mcpapp";
+      // 【UI 重建 2026-10-27】Claude 六项能力里的两项，此前没有页签能切到：
+      //   - `terminal`：`paneContent` 的 `case "terminal"` 早就写好了，
+      //     可达路径是**零** —— 终端只在底部横条。
+      //   - `sidechat`：`SideChatPanel` 文件头自称「right panel's quick ask tab」，
+      //     同样没有任何页签指向它。
+      case "terminal": return "terminal";
+      case "sidechat": return "sidechat";
       default: return "file";
     }
   };
@@ -356,6 +372,24 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
     });
   }, [rightPanelTab]);
 
+  /** 顶栏 pane 开关的统一动作：**toggle 语义**。
+   *
+   * 与 Claude 一致 —— 点已显示的那个 pane 会收起右栏，不是「什么都不做」。
+   * 实现里没有本地状态：`rightOpen` 从 store 读、`setRightPanelTab` 也是
+   * store action，所以顶栏 / `⋯` 菜单 / 设置三处永远同步。
+   *
+   * ⚠️ 顺序要紧：**先判「是不是同一个 pane」再判开关**。反过来的话，
+   * 「右栏关着但 tab 已经是 terminal」时点终端会走 `!rightOpen` 分支去展开，
+   * 而用户看到的是「点了没反应」（因为 tab 本来就对）。 */
+  const pickRightTab = (tab: string) => {
+    if (props.rightOpen && rightPanelTab === tab) {
+      props.setRightOpen(false);
+      return;
+    }
+    if (rightPanelTab !== tab) setRightPanelTab(tab as never);
+    props.setRightOpen(true);
+  };
+
   return (
     <WorkspaceInertShell variant="workspace">
     <ClaudeShell
@@ -368,6 +402,45 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
           subtitle={projectName ?? undefined}
           sidebarOpen={props.leftOpen}
           onToggleSidebar={() => props.setLeftOpen(true)}
+          /* 【UI 重建 2026-10-27】顶栏的 pane 开关行（Claude 的真实形态）。
+           *
+           * 顺序照真机截图的图标行：概览 → 终端 → 预览 → 文件。
+           * 每个按钮做两件事，**与 `⋯` 菜单走同一个 store action**：
+           *   - 该 pane 已显示 → 再点收起右栏（Claude 的 toggle 语义）；
+           *   - 该 pane 未显示 → 切到它并展开右栏。
+           *
+           * 都是读 `rightPanelTab` / `rightOpen` 派生，没有本地状态 ——
+           * 顶栏与菜单不会各记一份而分叉（硬规矩 2）。 */
+          paneToggles={[
+            {
+              id: "overview",
+              label: "概览",
+              icon: <OverviewIcon />,
+              active: props.rightOpen && rightPanelTab === "overview",
+              onSelect: () => pickRightTab("overview"),
+            },
+            {
+              id: "terminal",
+              label: "终端",
+              icon: <TerminalIcon />,
+              active: props.rightOpen && rightPanelTab === "terminal",
+              onSelect: () => pickRightTab("terminal"),
+            },
+            {
+              id: "preview",
+              label: "预览",
+              icon: <PreviewIcon />,
+              active: props.rightOpen && rightPanelTab === "preview",
+              onSelect: () => pickRightTab("preview"),
+            },
+            {
+              id: "files",
+              label: "文件",
+              icon: <FilesIcon />,
+              active: props.rightOpen && rightPanelTab === "files",
+              onSelect: () => pickRightTab("files"),
+            },
+          ]}
           menuItems={[
             {
               id: "toggle-sidebar",
@@ -406,5 +479,56 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       renderTile={(tileId) => renderPaneContent(tileId)}
     />
     </WorkspaceInertShell>
+  );
+}
+
+/* ───────── 顶栏 pane 开关的图标（Phosphor 形，1.5 描边）─────────
+ *
+ * 真机截图里这一排是**线性图标、约 1.5px 描边、16 视框**。Mcode 已有
+ * `lib/icons.tsx`（Tabler 那一套），但那批是 24 视框、2px 描边，摆在 28px
+ * 按钮里偏粗。这里按 Phosphor 的几何手写四个 —— 与 `ClaudeSidebar` 的
+ * `ChevronRight` 同一个做法（未装 @phosphor-icons，形状照抄）。
+ */
+
+/** 概览：清单（截图里第一个、激活态那个）。 */
+function OverviewIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <rect x="2" y="3" width="12" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M4.6 6.2h.01M4.6 8.4h.01M4.6 10.6h.01M7 6.2h4.4M7 8.4h4.4M7 10.6h2.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** 终端：`>_`（截图第二个）。 */
+function TerminalIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M3.2 5.2 5.8 8l-2.6 2.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M7.6 11.2h5.2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** 预览：播放三角（截图第四个）。 */
+function PreviewIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M5.5 3.8 12 8l-6.5 4.2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** 文件：文件夹（截图第五个）。 */
+function FilesIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M1.8 4.4c0-.7.5-1.2 1.2-1.2h3l1.4 1.6h5.6c.7 0 1.2.5 1.2 1.2v6c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2V4.4Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }

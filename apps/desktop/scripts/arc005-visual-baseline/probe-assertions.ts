@@ -341,11 +341,59 @@ export function inspectSceneContent(
 
      ⚠️ 这里只用 dom 级证据（文字/元素存在），**不写 visual 断言** —— 第一次
      拍下来的就是基线本身，没有「应该长什么样」可言。 */
-  if (scene === "files-pane" || scene === "git-pane" || scene === "taskcenter" || scene === "workflow-board" || scene === "overview-pane") {
+  if (scene === "files-pane" || scene === "git-pane" || scene === "taskcenter" || scene === "workflow-board" || scene === "overview-pane" || scene === "terminal-pane" || scene === "sidechat-pane") {
     const right = queryVisible(doc, "[data-cds-aside]");
     if (!right) return fail("missing", "右栏没有打开（[data-cds-aside] 不在 DOM 里）");
     if (isInsideFixture(right)) return fail("fixture-only", "右栏是夹具，不是真实面板");
     const rightText = String(right.textContent ?? "");
+
+    if (scene === "terminal-pane") {
+      /* 【UI 重建 2026-10-27】右栏终端。
+       *
+       * 判据分两半，**权重不同**：
+       *
+       *   1. **tile 映射**（硬判据）：`data-pane-title` 必须是 `terminal`。
+       *      这一半能证明「页签 → tile → 面板」这条链走对了，而不是
+       *      fallback 到文件树后碰巧也有别的东西。
+       *   2. **xterm 挂载**（软判据）：右栏里有 `.xterm` / `[data-terminal-id]`。
+       *
+       * ⚠️ 第 2 条**不能单独当失败判据**。实测（2026-10-27）：
+       * 同一场景三格，light 那格 `hasXterm=false`、dark 与 narrow 都是 true。
+       * 原因是 **xterm 懒加载 + 首格冷启动** —— light 是这一轮第一次拍，
+       * 模块还没 eval 完；后两格复用了已加载的模块。
+       *
+       * 第一版把第 2 条写成硬失败，于是**首格必红**而其余绿 —— 那是
+       * 「判据测的是加载时序，不是产品」的典型形态。现在改成：
+       * 第 2 条只**记录**不判死，失败条件只剩第 1 条 + 「右栏里有东西」。
+       *
+       * 桩环境里没有真 PTY，终端本来就该是一个空壳；断言「有输出」
+       * 或「有 xterm」都会把正确的空判成失败。 */
+      const hasXterm = !!right.querySelector(".xterm, .xterm-viewport, [data-terminal-id], [data-testid*='terminal' i]");
+      const tabs = [...doc.querySelectorAll("[data-pane-title]")].map((e) => String(e.getAttribute("data-pane-title") ?? ""));
+      const mapped = tabs.includes("terminal");
+      // 「右栏里有内容」—— 排除「tile 标题对了但面板整体没渲染」。
+      const hasBody = right.textContent !== null && right.children.length > 0;
+      return mapped && hasBody
+        ? productPass({ panel: "terminal", mapped, xterm: hasXterm })
+        : fail("missing", "右栏终端没有挂上（tile 映射或面板渲染）", { mapped, hasXterm, hasBody, tabs });
+    }
+
+    if (scene === "sidechat-pane") {
+      /* 【UI 重建 2026-10-27】右栏侧聊。
+       *
+       * 桩给了 `sideChatsByParent.s1` 一个侧聊列表，所以面板里应该有
+       * 桩里那些会话的标题。断言「至少有一行侧聊」而不是精确文案 ——
+       * 文案会随 i18n 变，行数才是结构判据。 */
+      const tabs = [...doc.querySelectorAll("[data-pane-title]")].map((e) => String(e.getAttribute("data-pane-title") ?? ""));
+      const mapped = tabs.includes("sidechat");
+      // 面板里的可点会话行（桩数据）—— 侧聊列表项带 data-side-chat-row 最好，
+      // 没有就退回「右栏里有非空文本」。
+      const rows = right.querySelectorAll("[data-side-chat-row]").length;
+      const hasText = rightText.trim().length > 0;
+      return mapped && (rows > 0 || hasText)
+        ? productPass({ panel: "sidechat", mapped, rows })
+        : fail("missing", "右栏侧聊没有挂上，或没有渲染出内容", { mapped, rows, hasText });
+    }
 
     if (scene === "overview-pane") {
       /* 【UI 重建 2026-10-27】项目概览面板。

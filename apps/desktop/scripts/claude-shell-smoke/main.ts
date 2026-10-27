@@ -203,5 +203,98 @@ check("★ App.tsx 渲染 ClaudeShellMount（新壳真的在用）", () => {
   assert.ok(!/<ClassicShell\b/.test(app), "App 不应再渲染 ClassicShell");
 });
 
+/* ─────────── § 右栏页签的完整链路：能切到 → 切到后看得见 ───────────
+ *
+ * 【UI 重建 2026-10-27】加这一段的原因是一个**真实的缺陷**：
+ * `browser` 页签经 `tileForTab` 映射到 `mcpapp`，而 `mcpapp` 分支
+ * `return null` —— 用户点「浏览器」得到一个**空壳**。同时 `terminal` 与
+ * `sidechat` 两个 tile 能渲染，却**没有任何页签指向它们**（终端只在底部
+ * 横条，`SideChatPanel` 自称「right panel's quick ask tab」却没人挂）。
+ *
+ * 三处都没抛异常、没红、没日志 —— 「能切到」和「切到后看得见」是两件事，
+ * 而此前**没有任何东西同时守这两件事**。
+ *
+ * 判据分三段，缺一不可：
+ *   A. 契约枚举 ⊇ registry 里的每个页签 id（否则切换会被 schema 拒绝）；
+ *   B. 每个页签经 `tileForTab` 得到的 tile **有对应的渲染物**，且不是 null；
+ *   C. 每个渲染分支里的组件**真的被 import 了**（防「写了 return <X /> 但
+ *      X 没导入」——那会 tsc 报错，但防的是有人把它改成字符串/null 绕过）。
+ *
+ * ⚠️ 这是**源码级**判据，不证明画面对；画面对由 `arc005-visual-baseline`
+ * 的 overview-pane 等格负责。两道分开，各守一层。 */
+check("★ 右栏每个页签都能切到、且切到后有东西渲染", () => {
+  const read = (rel: string) => readFileSync(resolve(process.cwd(), rel), "utf8");
+  const registry = read("src/renderer/components/customUi/registry.ts");
+  const mount = read("src/renderer/components/shell/ClaudeShellMount.tsx");
+  const pane = read("src/renderer/components/shell/paneContent.tsx");
+  const contracts = read("../../packages/contracts/src/ipc/settings.ts");
+
+  // ── A. 契约枚举覆盖 registry 的每个页签 ──
+  const schema = /RightPanelTabSchema\s*=\s*z\.enum\(\[([\s\S]*?)\]\)/.exec(contracts)?.[1] ?? "";
+  const declared = new Set([...schema.matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+  assert.ok(declared.size > 0, "抽不到 RightPanelTabSchema 的枚举值");
+
+  const tabBlock = registry.slice(registry.indexOf('"rightPanel.tab": ['));
+  const tabBlockEnd = tabBlock.indexOf("],");
+  const tabIds = [...tabBlock.slice(0, tabBlockEnd).matchAll(/id:\s*"([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(tabIds.length >= 10, `registry 的右栏页签太少（${tabIds.length}）`);
+
+  const notInSchema = tabIds.filter((t) => !declared.has(t));
+  assert.deepEqual(
+    notInSchema, [],
+    `这些页签不在 RightPanelTabSchema 里，切换会被 zod 拒绝：${notInSchema.join(", ")}`,
+  );
+
+  // ── B. 每个页签映射到的 tile 都有非 null 的渲染分支 ──
+  const mapSeg = mount.slice(mount.indexOf("const tileForTab"), mount.indexOf("};", mount.indexOf("const tileForTab")));
+  const tabToTile: Record<string, string> = {};
+  for (const m of mapSeg.matchAll(/case\s+"([^"]+)":\s*return\s+"([^"]+)"/g)) tabToTile[m[1]] = m[2];
+  const fallback = /default:\s*return\s+"([^"]+)"/.exec(mapSeg)?.[1];
+  assert.ok(fallback, "tileForTab 应有 default 兜底");
+
+  const paneBody = pane.slice(pane.indexOf("export function renderPaneContent"));
+  /** 取出某个 case 分支的源码（到下一个 case/default 为止）。
+   *  ⚠️ 必须按 `case "x":` 精确切 —— 上一版探针用「找下一个 case」时，
+   *  最后一个 case 会吞进后面的代码，把 sidechat 误判成 BrowserPane。 */
+  const branchOf = (tile: string): string | null => {
+    const key = `case "${tile}":`;
+    const at = paneBody.indexOf(key);
+    if (at < 0) return null;
+    const rest = paneBody.slice(at + key.length);
+    const next = rest.search(/\n\s*case\s+"|\n\s*default\s*:/);
+    return next < 0 ? rest : rest.slice(0, next);
+  };
+
+  const emptyShells: string[] = [];
+  const missingBranches: string[] = [];
+  for (const tab of tabIds) {
+    const tile = tabToTile[tab] ?? fallback;
+    const branch = branchOf(tile);
+    if (!branch) {
+      missingBranches.push(`${tab} → ${tile}`);
+      continue;
+    }
+    // 「看得见」= 分支里 return 了一个 JSX 元素（return null 是空壳）。
+    if (!/return\s*<[A-Z]/.test(branch)) emptyShells.push(`${tab} → ${tile}`);
+  }
+  assert.deepEqual(missingBranches, [], `这些页签映射到的 tile 在 renderPaneContent 里没有分支：${missingBranches.join(", ")}`);
+  assert.deepEqual(
+    emptyShells, [],
+    `这些页签切过去是空壳（分支 return null 或非 JSX）：${emptyShells.join(", ")}`,
+  );
+
+  // ── C. 每个 tab 都能真的落到一个 tile（不许静默落进 default）──
+  /* 只查「有没有 case」不够 —— `default: return "file"` 会让任何漏写的页签
+   * **静默变成文件树**，看起来完全正常。这正是 overview 当初踩过的形态
+   *（改了 store 默认值却没生效）。所以对 Claude 那六项能力逐个要求
+   * **显式** case。 */
+  const claudeCapabilities = ["files", "git", "preview", "browser", "terminal", "sidechat"];
+  const implicit = claudeCapabilities.filter((t) => !(t in tabToTile));
+  assert.deepEqual(
+    implicit, [],
+    `这些 Claude 能力页签没有显式映射，会静默落进 default（文件树）：${implicit.join(", ")}`,
+  );
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

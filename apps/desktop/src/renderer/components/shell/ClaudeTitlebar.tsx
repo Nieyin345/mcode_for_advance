@@ -1,34 +1,60 @@
 /**
  * 【UI 重建】**Claude 形态的顶栏** —— 取代旧 `Titlebar` 那排图标按钮。
  *
- * ## 从本机 Claude 3.1623.4.0 读到的结构
+ * ## 从本机 Claude 读到的结构
  *
- * 它的顶栏不是一条塞满按钮的横条，而是**两层**：
+ * 顶栏是**两层**：
  *
  * ```
- * ┌─ 标题行 (titlebar) ────────────────────────────────┐
- * │ [折叠侧栏]   ← 会话标题 · 项目        [⋯] [设置]    │  高 45px
- * ├─ 页面头 (data-cds=PageHeader) ─────────────────────┤
- * │ 分支 · 工作树 · 运行状态                            │  有内容时才出现
- * └────────────────────────────────────────────────────┘
+ * ┌─ 标题行 ───────────────────────────────────────────────────┐
+ * │ [折叠] ← 会话标题 ⌄    [📋][>_][＋][▷][📁] ⋯  ─ □ ✕      │ 高 48px
+ * ├─ 页面头 ───────────────────────────────────────────────────┤
+ * │ 分支 · 工作树 · 运行状态                                    │  有内容时才出现
+ * └────────────────────────────────────────────────────────────┘
  * ```
  *
- * 证据：
- *  - `data-cds="PageHeader"` 出现在其 bundle 里，并且被显式测量
- *    （`classList.contains(…querySelector("[data-cds=PageHeader]").getBoundingClientRect())`）
- *  - 布局变体枚举 `"chin" | "row" | "titlebar" | "rail" | "composer"`
- *    —— 同一套 parts 系统在五种区域里用，说明顶栏是其中一种「parts」
- *  - `underTitleRow: { top: 48 }` / `underPageHeader: { top: 64 }`
- *    —— 这是它自己写的吸附偏移，说明标题行约 48px、页面头在 64px 处
+ * ## ⚠️ 上一版注释写错了，已被真机截图推翻
  *
- * ## 与旧 Titlebar 的区别
+ * 上一版写「Claude 把这些收进 `⋯` 溢出菜单，顶栏只留一个主入口」，
+ * 并据此把**所有**布局开关塞进 `⋯`。**那是错的。**
  *
- * 旧版把「布局预设 / 编辑器开关 / 终端开关 / 右栏开关」全塞在顶栏右侧，
- * 一排 6 个图标。Claude 把这些收进 `⋯` 溢出菜单，顶栏只留**一个主入口**和
- * **必要状态**。这是「看着干净」与「看着拥挤」的分界。
+ * 真机截图（`tools/claude-ui-reverse/reference-screenshot-175pct.webp`，
+ * 裁顶栏右半）里，标题右侧是**一排五个图标按钮**：
+ *
+ * | 图标 | 语义（对应 Claude 的 `Show …` 文案） |
+ * |---|---|
+ * | 📋 列表 | Show …（当前激活 —— 有灰底圆角，是**选中态**） |
+ * | `>_` | Show Terminal |
+ * | ＋ | 新建 pane / 新侧聊 |
+ * | ▷ | Show Preview |
+ * | 📁 | Show Files |
+ *
+ * 之后才是 `⋯`，再之后是窗口按钮（─ □ ✕）。
+ *
+ * **所以「收进溢出菜单」是 Mcode 自己的做法，不是 Claude 的。**
+ * 判据是**激活态**：截图里第一个图标有 `--cds-fill-ghost-selected` 那样的
+ * 灰底 —— 一排只能有一个选中，这正是「pane 开关」的表现，菜单项不会这样。
+ *
+ * `changes` / `browser` 两个开关不在这一排里（Claude 按上下文显示），
+ * 但它们仍在 `⋯` 里可达，不丢功能。
+ *
+ * 证据补充：`data-cds="PageHeader"` 在其 bundle 里被显式测量；
+ * 布局变体枚举 `"chin" | "row" | "titlebar" | "rail" | "composer"`
+ * 说明顶栏是 parts 系统里的一种。
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
+
+/** 顶栏右侧的一个 pane 开关。 */
+export interface PaneToggle {
+  id: string;
+  /** 无障碍标签与 tooltip（Claude 自己也只用图标 + tooltip）。 */
+  label: string;
+  icon: ReactNode;
+  /** 该 pane 当前是否显示。 */
+  active: boolean;
+  onSelect: () => void;
+}
 
 export interface ClaudeTitlebarProps {
   /** 会话标题（无会话时显示项目名）。 */
@@ -40,6 +66,12 @@ export interface ClaudeTitlebarProps {
   sidebarOpen: boolean;
   /** 页面头里的状态胶囊（分支 / 工作树 / 运行状态）。 */
   statusChips?: ReactNode;
+  /** 标题右侧的 **pane 开关行**（Claude 的顶栏形态）。
+   *
+   *  ⚠️ 这**不是**菜单项的替代 —— 菜单项仍在 `⋯` 里，两处共用同一个
+   *  store action（硬规矩 2：共享实现只有一份）。这里只是把最常用的
+   *  五个提到台面上，与截图一致。 */
+  paneToggles?: PaneToggle[];
   /** `⋯` 溢出菜单里的条目。 */
   menuItems: Array<{ id: string; label: string; onSelect: () => void; checked?: boolean }>;
   /** 右侧固定入口（设置等）。 */
@@ -55,6 +87,7 @@ export function ClaudeTitlebar({
   onToggleSidebar,
   sidebarOpen,
   statusChips,
+  paneToggles,
   menuItems,
   actions,
 }: ClaudeTitlebarProps) {
@@ -105,7 +138,17 @@ export function ClaudeTitlebar({
             <SidebarIcon />
           </button>
         )}
-        <div className="flex min-w-0 flex-1 items-baseline gap-2">
+        {/* 【UI 重建 2026-10-27】**标题组不能 `flex-1`。**
+         *
+         * 真机截图里布局是：
+         *   `[折叠] 标题 ⌄   [📋 >_ ▷ 📁] —————— 空隙 —————— ⋯ ─ □ ✕`
+         * 也就是说 pane 开关**紧跟在标题后面**，右边缘留给窗口控制。
+         *
+         * 上一版给标题组 `flex-1`，它把开关行一路推到最右边、紧贴窗口按钮，
+         * 看起来像「窗口控制的一部分」而不是「会话的 pane 开关」。
+         * 现在标题组按内容宽（`min-w-0` 允许截断），开关行紧随其后，
+         * 由后面那个 `flex-1` 的空隙把它们与 ⋯ 分开。 */}
+        <div className="flex min-w-0 shrink items-baseline gap-2">
           {/* 【UI 重建 2026-10-27】**标题字号从 `--m-fs-prose`（16px）降到 heading（14.12px）。**
            *
            * 真机截图实测：标题字形（cap height）约 **17 物理 px**，
@@ -133,7 +176,60 @@ export function ClaudeTitlebar({
           </span>
         </div>
 
-        {/* `⋯` 溢出菜单：布局开关、面板开关等都收在这里，不在顶栏排一排。 */}
+        {/* ── pane 开关行 ──
+         *
+         * 【UI 重建 2026-10-27】真机截图里标题右侧就是**一排图标按钮**
+         * （📋 `>_` ＋ ▷ 📁），不是菜单。当前显示的 pane 那个有灰底圆角。
+         *
+         * 每个按钮三个可观测状态，缺一不可：
+         *   - `data-pane-toggle` / `data-active` —— 给套件定位；
+         *   - `aria-pressed` —— 给辅助技术（这是**开关**，不是普通按钮）；
+         *   - 视觉上的 `--m-fill-ghost-selected` 底 —— 给眼睛。
+         *
+         * 尺寸照截图：字形约 13px、按钮 28×28、圆角 6px、间距 2px。
+         * Claude 的图标是线性、1.5 描边；这里用同一几何。 */}
+        {paneToggles && paneToggles.length > 0 && (
+          <div
+            data-cds="PaneToggles"
+            className="flex shrink-0 items-center gap-0.5"
+            role="group"
+            aria-label="面板开关"
+          >
+            {paneToggles.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                data-pane-toggle={t.id}
+                data-active={t.active ? "" : undefined}
+                aria-pressed={t.active}
+                aria-label={t.label}
+                title={t.label}
+                onClick={t.onSelect}
+                className={cn(
+                  "flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] transition-colors",
+                  t.active
+                    ? "bg-[var(--m-fill-ghost-selected)] text-[var(--m-text-primary)]"
+                    : "text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)]",
+                )}
+              >
+                {t.icon}
+              </button>
+            ))}
+            {/* 分隔线：截图里开关行与 `⋯` 之间有一条极淡的竖线。 */}
+            <span aria-hidden className="mx-0.5 h-4 w-px bg-[var(--m-border)]" />
+          </div>
+        )}
+
+        {/* 空隙：把 `⋯` 与窗口控制推到右边缘（截图里开关行之后是一大片空白）。
+         * **无条件渲染** —— 没有 paneToggles 的调用点同样需要它，否则
+         * 标题靠左、`⋯` 紧贴标题，中间没有呼吸。
+         * 用空元素而不是给前面某段加 `flex-1` —— 后者会把开关行本身拉宽。 */}
+        <div className="min-w-0 flex-1" aria-hidden />
+
+        {/* `⋯` 溢出菜单：其余布局开关与设置入口。
+         * 【UI 重建 2026-10-27】上一版把**所有** pane 开关都塞在这里，
+         * 理由是「Claude 收进溢出菜单」——真机截图否证了那个结论。
+         * 常用的五个已经提到上面的 `paneToggles`，这里保留其余可达性。 */}
         {menuItems.length > 0 && (
           <div className="relative shrink-0" ref={menuRef}>
             <button

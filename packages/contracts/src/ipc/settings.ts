@@ -634,12 +634,40 @@ export const UI_RIGHT_PANEL_TAB_SETTING_KEY = "ui.rightPanelTab";
 /**
  * 右栏页签。
  *
- * `overview`（【UI 重建 2026-10-27】）是 Claude Code 模式的**项目概览**——
- * Environment / Context / Connectors / Outputs / Changes 卡片堆。
- * 真机截图里这是右栏的默认形态；其余八项是 Mcode 自己的面板（Claude 没有
- * 对应物），全部保留。
+ * ## 与 Claude 的六项能力对齐（2026-10-27）
+ *
+ * Claude 的右侧能力是 **Files / Terminal / Preview / Changes / Browser / Side Chat**
+ * （逆向报告 §6.5），顶栏一排图标直接切，不是菜单。对应关系：
+ *
+ * | Claude | Mcode 页签 | 说明 |
+ * |---|---|---|
+ * | Show Files | `files` | 项目文件树 |
+ * | Show Changes | `git` | 改动 / 历史 / 工作树 |
+ * | Show Preview | `preview` | 资料库条目预览 |
+ * | Show Browser | `browser` | 内嵌浏览器 |
+ * | Show Terminal | `terminal` | **【新增】右栏终端** |
+ * | Show Side Chat | `sidechat` | **【新增】侧聊** |
+ *
+ * `overview` 是 Mcode 的原型页（Claude Code 模式的卡片堆），其余
+ * （`turns` / `flow` / `tasks` / `taskcenter`）是 Mcode 自有面板，Claude 没有对应物。
+ *
+ * ⚠️ **`terminal` 与底部终端是同一个组件、不同的 PTY 归属。** 见
+ * `paneContent.tsx` 的 `TerminalPaneLazy` —— 它和 `BottomTerminalBar` 共用
+ * `TerminalPanel`（按项目分桶保活），所以两处不会被拆成两个 shell。
  */
-export const RightPanelTabSchema = z.enum(["overview", "files", "git", "browser", "turns", "preview", "flow", "tasks", "taskcenter"]);
+export const RightPanelTabSchema = z.enum([
+  "overview",
+  "files",
+  "git",
+  "browser",
+  "terminal",
+  "sidechat",
+  "turns",
+  "preview",
+  "flow",
+  "tasks",
+  "taskcenter",
+]);
 export type RightPanelTab = z.infer<typeof RightPanelTabSchema>;
 
 /**

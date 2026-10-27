@@ -37,6 +37,7 @@ import {
   IconListDetails,
   IconListTree,
   IconMessage,
+  IconMessages,
   IconNotebook,
   IconQuote,
   IconRobot,
@@ -91,6 +92,10 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
     { id: "files", labelKey: "layout.tabFiles", icon: IconFolder },
     { id: "git", labelKey: "customUi.builtin.git", icon: IconGitBranch },
     { id: "browser", labelKey: "customUi.builtin.browser", icon: IconWorld },
+    // 【UI 重建 2026-10-27】Claude 六项能力里此前缺失的两项。
+    // 顺序照 Claude 的顶栏图标行：终端在浏览器之后、预览之前。
+    { id: "terminal", labelKey: "layout.tabTerminal", icon: IconTerminal2 },
+    { id: "sidechat", labelKey: "layout.tabSideChatPane", icon: IconMessages },
     { id: "turns", labelKey: "layout.tabTurns", icon: IconListDetails },
     { id: "flow", labelKey: "layout.tabFlow", icon: IconListTree },
     { id: "tasks", labelKey: "layout.tabTasks", icon: IconTerminal2 },
@@ -110,7 +115,7 @@ export const BUILTINS: Record<CustomUiSlot, readonly BuiltinMeta[]> = {
 };
 
 /** 右栏内置页签的 id(与 `RightPanelTab` 的值一一对应)。 */
-export const BUILTIN_TAB_IDS = ["overview", "files", "git", "browser", "turns", "flow", "tasks", "taskcenter", "preview"] as const;
+export const BUILTIN_TAB_IDS = ["overview", "files", "git", "browser", "terminal", "sidechat", "turns", "flow", "tasks", "taskcenter", "preview"] as const;
 export type BuiltinTabId = (typeof BUILTIN_TAB_IDS)[number];
 export function isBuiltinTabId(id: string): id is BuiltinTabId {
   return (BUILTIN_TAB_IDS as readonly string[]).includes(id);

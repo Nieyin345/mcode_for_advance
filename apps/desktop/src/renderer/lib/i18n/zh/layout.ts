@@ -158,6 +158,11 @@ export const zh = {
   /** 右栏的**项目概览**（Claude Code 模式的默认右栏）—— Environment /
    *  Context / Connectors / Outputs / Changes 卡片堆。 */
   "layout.tabOverview": "概览",
+  /** Claude 六项能力里的两项（顶栏图标行的「终端」与「侧聊」）。
+   *  ⚠️ 侧聊用 `tabSideChatPane`：`layout.tabSideChat` 已被「子会话」占用
+   *  （它是左栏页签，语义不同），复用会把两处一起改掉。 */
+  "layout.tabTerminal": "终端",
+  "layout.tabSideChatPane": "侧聊",
   "layout.tabFiles": "文件",
   "layout.tabTurns": "轮次流程",
   /** 右栏的**运行看板** —— 这张图现在跑到哪一格、哪几个分身还在干活

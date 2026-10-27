@@ -38,6 +38,7 @@ import { TaskListPanel } from "@renderer/components/ide/TaskListPanel.js";
 import { TaskCenterPanel } from "@renderer/components/ide/TaskCenterPanel.js";
 import { WorkflowBoardPanel } from "@renderer/components/chat/WorkflowBoardPanel.js";
 import { PreviewPanel } from "@renderer/components/library/PreviewPanel.js";
+import { SideChatPanel } from "@renderer/components/chat/SideChatPanel.js";
 import { ClaudeProjectOverview } from "./ClaudeProjectOverview.js";
 
 /** Claude 的 tile 类型 → Mcode 的面板。
@@ -79,10 +80,18 @@ export function renderPaneContent(tileId: string): ReactNode {
       // Mcode 没有评审流，用最接近的「需要人处理的任务」接上。
       return <TaskCenterPanel />;
     case "mcpapp":
-      // 【扩展线】扩展贡献的视图走 Theia 宿主（ModuleHost 已随 2026-10-27
-      // 的「一个扩展系统」裁决删除）。当前没有对应的渲染端面板，
-      // 返回 null 让 tile 显示为空壳，而不是崩掉。
-      return null;
+      /* 【UI 重建 2026-10-27】**修一条换壳时断掉的接线。**
+       *
+       * `browser` 页签经 `tileForTab` 映射到 `mcpapp`，而这一支此前 `return null`
+       * —— 用户点「浏览器」页签得到一个**空壳**。而正确的 `BrowserPane`
+       * （`mode="sidebar"` 的 `BrowserPanel`）就写在**本文件底部并导出**，
+       * 从来没有被 `renderPaneContent` 调用过。
+       *
+       * 那个 `null` 的注释说的是「扩展贡献的视图没有渲染端面板」—— 那是
+       * **另一个语义**（扩展视图）。`mcpapp` 这个 tile 名同时被当成
+       * 「扩展视图」和「浏览器」用，是命名撞车；实际只有一个消费者
+       * （`browser` 页签），按它接。 */
+      return <BrowserPane />;
     case "watercolor":
       // 【工作流线】Node-RED / 工作流看板。
       return <WorkflowBoardPanel />;
@@ -90,6 +99,13 @@ export function renderPaneContent(tileId: string): ReactNode {
       // Mcode 自己新增的 tile 类型：每轮时间线。
       // 它不在 Claude 的原始类型集里，是这个仓库多出来的一类面板。
       return <TurnFlowPanel />;
+    case "sidechat":
+      // 【UI 重建 2026-10-27】Claude 的 `Show Side Chat`。
+      //
+      // `SideChatPanel` 的文件头第一行就写着「the right panel's quick ask
+      // tab」—— 它**本来就是为右栏写的**，但换壳之后没有任何页签指向它。
+      // 现在接上：`sidechat` 页签 → 这个 tile → 面板。
+      return <SideChatPanel />;
     default:
       return null;
   }

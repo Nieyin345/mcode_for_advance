@@ -148,6 +148,11 @@ export const en = {
   /** Right-rail **project overview** (Claude Code's default right pane) —
    *  Environment / Context / Connectors / Outputs / Changes cards. */
   "layout.tabOverview": "Overview",
+  /** Claude's six right-pane capabilities: Terminal and Side Chat.
+   *  ⚠️ The pane uses `tabSideChatPane`; `layout.tabSideChat` already means
+   *  "Sub-sessions" (a different, left-bar tab). */
+  "layout.tabTerminal": "Terminal",
+  "layout.tabSideChatPane": "Side Chat",
   "layout.tabFiles": "Files",
   /** Right-rail "Preview" — click a file on the left to glance at it here. */
   "layout.tabPreview": "Preview",
