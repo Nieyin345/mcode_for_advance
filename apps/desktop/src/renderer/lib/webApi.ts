@@ -625,6 +625,7 @@ const agentSsh: Api["agentSsh"] = {
  *  ⚠️ 少列一个方法 = 一次 `undefined is not a function`(见文件头那条 React 19 规矩)。 */
 const mcp: Api["mcp"] = {
   list: () => webUnsupported("mcp.list"),
+  testConnection: () => webUnsupported("mcp.testConnection"),
   toggle: () => webUnsupported("mcp.toggle"),
   enginesSet: () => webUnsupported("mcp.enginesSet"),
   authorize: () => webUnsupported("mcp.authorize"),
@@ -667,6 +668,7 @@ const piModels: Api["piModels"] = {
 const workflow: Api["workflow"] = {
   list: () => rpc("workflow:list"),
   get: () => webUnsupported("workflow.get"),
+  duplicate: () => webUnsupported("workflow.duplicate"),
   approve: () => webUnsupported("workflow.approve"),
   nodeTypes: () => webUnsupported("workflow.nodeTypes"),
   save: () => webUnsupported("workflow.save"),
@@ -743,6 +745,11 @@ const file: Api["file"] = {
   delete: () => webUnsupported("file.delete"),
   rename: () => webUnsupported("file.rename"),
   copy: () => webUnsupported("file.copy"),
+  /* 【EDIT-01】移动与其余文件写操作一样是桌面专属：手机端走 HTTP 桥，
+   * 没有工作区围栏与系统回收站语义，所以显式不可用（同 `file.delete` 那条）。
+   * **不能漏**：漏一项会让 `const file: Api["file"] = {...}` 在启动时类型失败，
+   * 而 React 19 会把整棵树卸载 —— 手机端白屏。 */
+  move: () => webUnsupported("file.move"),
 };
 
 const git: Api["git"] = {
@@ -864,6 +871,17 @@ const documentView: Api["documentView"] = {
   focus: () => webUnsupported("documentView.focus"),
   close: () => webUnsupported("documentView.close"),
   list: () => webUnsupported("documentView.list"),
+  // 【文档修订/历史/批注】手机端没有原生文档视图，这些一律不支持。
+  dormantList: () => webUnsupported("documentView.dormantList"),
+  revisionState: () => webUnsupported("documentView.revisionState"),
+  revisionDecide: () => webUnsupported("documentView.revisionDecide"),
+  revisionMode: () => webUnsupported("documentView.revisionMode"),
+  revisionFocus: () => webUnsupported("documentView.revisionFocus"),
+  revisionRewrite: () => webUnsupported("documentView.revisionRewrite"),
+  historyList: () => webUnsupported("documentView.historyList"),
+  historyRestore: () => webUnsupported("documentView.historyRestore"),
+  commentCreate: () => webUnsupported("documentView.commentCreate"),
+  commentMutate: () => webUnsupported("documentView.commentMutate"),
 };
 
 /**
@@ -906,6 +924,9 @@ const workflowEngine: Api["workflowEngine"] = {
   status: () => webUnsupported("workflowEngine.status"),
   list: () => webUnsupported("workflowEngine.list"),
   load: () => webUnsupported("workflowEngine.load"),
+  // 【Q9b】引擎状态推送只在桌面有意义（手机端根本起不了引擎）。返回一个空的退订
+  // 函数而不是抛 —— 订阅是"可选增强"，调用方不该因为手机端没有它而整棵卸载。
+  engineChanged: () => () => {},
   // 【ARC-006 Gate E】节点包安装是**桌面机器上的可执行代码**,手机端不做(与整个
   // workflowEngine 命名空间同一取舍);审批卡也只画在桌面设置页。
   nodesList: () => webUnsupported("workflowEngine.nodesList"),
@@ -937,11 +958,6 @@ const automation: Api["automation"] = {
   preflight: () => webUnsupported("automation.preflight"),
   runs: () => webUnsupported("automation.runs"),
   sessions: () => webUnsupported("automation.sessions"),
-  watch: () => webUnsupported("automation.watch"),
-  watchStatus: () => webUnsupported("automation.watchStatus"),
-  watchTemplates: () => webUnsupported("automation.watchTemplates"),
-  saveWatchTemplates: () => webUnsupported("automation.saveWatchTemplates"),
-  rebuildWatchTemplates: () => webUnsupported("automation.rebuildWatchTemplates"),
   statusAll: () => webUnsupported("automation.statusAll"),
 };
 
@@ -1253,27 +1269,8 @@ export function createWebApi(): Api {
     // Module installation/execution is desktop-only in v1. Reject explicitly;
     // no new mobile whitelist or paired-device capability is implied.
     modules: {
-      catalog: async () => webUnsupported("modules.catalog"),
-      install: async () => webUnsupported("modules.install"),
-      remove: async () => webUnsupported("modules.remove"),
-      invoke: async () => webUnsupported("modules.invoke"),
-      task: async () => webUnsupported("modules.task"),
-      cancel: async () => webUnsupported("modules.cancel"),
-      tasks: async () => webUnsupported("modules.tasks"),
-      // 【MC-036】授权签发 / 撤销是**坐在那台机器前的真人**的动作(只经桌面设置页),
-      // 网页壳明确 unsupported,不是忘了接(与整个 modules 面同一取舍)。
-      issueWorkflowGrant: async () => webUnsupported("modules.issueWorkflowGrant"),
-      revokeWorkflowGrant: async () => webUnsupported("modules.revokeWorkflowGrant"),
-      setPermissions: async () => webUnsupported("modules.setPermissions"),
-      // 【F006】从 .vsix 装扩展同样是桌面专属动作:它要选本机文件、并让用户对
-      // 「在本机跑一段程序」当面确认。网页壳明确 unsupported,不是忘了接
-      // (与整个 modules 面同一取舍)。
-      installVsix: async () => webUnsupported("modules.installVsix"),
       theiaPreview: async () => webUnsupported("modules.theiaPreview"),
       theiaInstalled: async () => webUnsupported("modules.theiaInstalled"),
-      // Desktop-only user risk acknowledgment: never expose it through mobile/web.
-      egressConsentGet: async () => webUnsupported("modules.egressConsentGet"),
-      egressConsentSet: async () => webUnsupported("modules.egressConsentSet"),
     } satisfies Api["modules"],
     project,
     session,

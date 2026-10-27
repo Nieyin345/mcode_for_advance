@@ -37,6 +37,8 @@ export function ClickableRow({
   title,
   style,
   disabled = false,
+  /** Override sequential keyboard focus order for virtualized roving-focus lists. */
+  tabIndex = 0,
   /** 渲染成什么标签。默认 `div`;列表行用 `li` 保住 `ul > li` 结构。 */
   as: Tag = "div",
   /** 输入框 blur 保持(`onMouseDown preventDefault`)这类宿主行为原样透传。 */
@@ -55,6 +57,7 @@ export function ClickableRow({
   title?: string;
   style?: CSSProperties;
   disabled?: boolean;
+  tabIndex?: number;
   as?: "div" | "li";
   onMouseDown?: MouseEventHandler<HTMLElement>;
   onMouseEnter?: MouseEventHandler<HTMLElement>;
@@ -66,7 +69,7 @@ export function ClickableRow({
   return (
     <Tag
       role="button"
-      tabIndex={disabled ? -1 : 0}
+      tabIndex={disabled ? -1 : tabIndex}
       aria-disabled={disabled || undefined}
       aria-label={ariaLabel}
       title={title}

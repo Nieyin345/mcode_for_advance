@@ -60,8 +60,8 @@ export const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set([
    *  ⚠️ **O5 批二（2026-10-24）删掉了 OnlyOffice 功能，但这个键名必须留着。**
    *  用户盘上可能还存着这条设置（值里是明文的 JWT 密钥）。把它从名单里删掉不会
    *  让旧值消失，只会让它**不再被当密钥** —— `setting.get` 能把它交给模型、导出
-   *  设置能把它写进分享出去的文件。清理旧值是另一件事（数据迁移），见
-   *  `tasks/office/O5-remove-onlyoffice.md` §四之3。 */
+   *  设置能把它写进分享出去的文件。清理旧值是另一件事（数据迁移），在迁移脚本里做，
+   *  不在这里做：这里一旦漏掉，风险是密钥外泄，而迁移晚做只是多留一份旧值。 */
   "onlyoffice.config",
   /** 每条项目链接的 `/mcp/<secret>` 明文密钥(见 `publicMcpSession.ts`)。 */
   "publicMcp.projectLinks",

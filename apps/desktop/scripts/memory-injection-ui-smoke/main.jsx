@@ -4,6 +4,8 @@ import {MemoryAssistantButton} from '../../src/renderer/components/chat/MemoryAs
 import {MemoryExplorerPanel} from '../../src/renderer/components/memory/MemoryExplorerPanel.tsx';
 import {NewSubChatPicker} from '../../src/renderer/components/chat/NewSubChatPicker.tsx';
 import {EffortChip,PermissionChip} from '../../src/renderer/components/chat/EffortPermissionControl.tsx';
+import {ModelDropdown} from '../../src/renderer/components/chat/ModelDropdown.tsx';
+import {MessageBlocks} from '../../src/renderer/components/chat/MessageBlocks.tsx';
 import MarkdownPreviewPane from '../../src/renderer/components/library/MarkdownPreviewPane.tsx';
 import {ParamField} from '../../src/renderer/components/settings/workflows/ParamField.tsx';
 function Lab(){
@@ -11,7 +13,7 @@ function Lab(){
  const [value,setValue]=useState(q.get('value')==='false'?false:q.get('value')??true);
  const view=q.get('view');
  return <main className="h-screen bg-surface p-8 text-content"><div className="mx-auto max-w-3xl">
-  {view==='library'?<MemoryExplorerPanel/>:view==='mref'?<ParamField spec={{key:'skills',kind:'ref',from:'skills',multiple:true,label:'技能'}} value={['pdf','docx']} onChange={()=>{}}/>:view==='chips'?<div data-chip-fixture className="flex gap-2 p-2"><EffortChip/><PermissionChip/></div>:view==='mdpreview'?<div data-md-preview><MarkdownPreviewPane markdown={'# T\n\n![fig](images/missing.png)\n'} filePath={'C:/lib/paper/full.md'}/></div>:view==='param'?<ParamField spec={{key:'memory',kind:'boolean',label:'注入记忆',help:'Old generic help'}} value={value} onChange={v=>{setValue(v);window.labValue=v;}}/>:view==='picker'?<NewSubChatPicker open anchorRect={new DOMRect(450,200,32,32)} onClose={()=>{}} onPick={choice=>labPicks.push({id:choice.profile?.id,memory:choice.memory})}/>:<MemoryAssistantButton sessionId={state.sessionId}/>}
+  {view==='library'?<MemoryExplorerPanel/>:view==='mref'?<ParamField spec={{key:'skills',kind:'ref',from:'skills',multiple:true,label:'技能'}} value={['pdf','docx']} onChange={()=>{}}/>:view==='model'?<div data-model-fixture className="p-2"><ModelDropdown/></div>:view==='toolcards'?<div data-tool-fixture className="space-y-4 p-2"><MessageBlocks projectPath={null} blocks={[{kind:'tool_use',toolCallId:'edit-1',toolName:'Edit',input:{file_path:'src/example.ts',old_string:'const old = 1;',new_string:'const next = 2;'},status:'done',result:'Applied patch successfully'},{kind:'tool_use',toolCallId:'write-1',toolName:'Write',input:{file_path:'src/generated.ts',content:'export const generated = true;\\n'},status:'done',result:'File written'},{kind:'tool_use',toolCallId:'bash-1',toolName:'Bash',input:{command:'pnpm test --filter desktop'},status:'done',result:'Tests passed\\n12 suites passed'}]}/></div>:view==='chips'?<div data-chip-fixture className="flex gap-2 p-2"><EffortChip/><PermissionChip/></div>:view==='mdpreview'?<div data-md-preview><MarkdownPreviewPane markdown={'# T\n\n![fig](images/missing.png)\n'} filePath={'C:/lib/paper/full.md'}/></div>:view==='param'?<ParamField spec={{key:'memory',kind:'boolean',label:'注入记忆',help:'Old generic help'}} value={value} onChange={v=>{setValue(v);window.labValue=v;}}/>:view==='picker'?<NewSubChatPicker open anchorRect={new DOMRect(450,200,32,32)} onClose={()=>{}} onPick={choice=>labPicks.push({id:choice.profile?.id,memory:choice.memory})}/>:<MemoryAssistantButton sessionId={state.sessionId}/>}
  </div></main>;
 }
 const root=createRoot(document.getElementById('root'));window.labRemount=()=>root.render(<Lab/>);window.labRemount();window.__ready=true;

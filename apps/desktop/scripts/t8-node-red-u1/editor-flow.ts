@@ -1133,3 +1133,84 @@ export function deployRequestNames(body: string): { ok: boolean; names: string[]
     return { ok: false, names: [], types: [], parseError: err instanceof Error ? err.message : String(err) };
   }
 }
+
+/**
+ * Wait for the actual WebContents used by the U1 driver's screenshot step to
+ * produce a non-empty native capture. A loaded DOM does not guarantee that
+ * Chromium has allocated a capturable surface yet, so retry the real operation
+ * instead of sleeping. `liveEditor` is the current host lookup; comparing IDs
+ * guards against probing one view while the driver later screenshots another.
+ */
+export async function waitForCaptureReady(
+  captureTarget: WebContents,
+  liveEditor?: WebContents,
+  timeoutMs = 10_000,
+  intervalMs = 250,
+): Promise<{
+  ok: boolean;
+  observed: {
+    attempts: number;
+    lastAttemptAt: string | null;
+    lastError: string | null;
+    captureTargetWebContentsId: number;
+    captureTargetUrl: string | null;
+    liveEditorWebContentsId: number | null;
+    liveEditorUrl: string | null;
+    sameWebContents: boolean | null;
+    elapsedMs: number;
+    timeoutMs: number;
+  };
+  detail?: string;
+}> {
+  let attempts = 0;
+  let lastAttemptAt: string | null = null;
+  let lastError: string | null = null;
+  let captureTargetUrl: string | null = null;
+  let liveEditorUrl: string | null = null;
+  const captureTargetWebContentsId = captureTarget.id;
+  const liveEditorWebContentsId = liveEditor?.id ?? null;
+  const sameWebContents = liveEditor === undefined ? null : captureTargetWebContentsId === liveEditor.id;
+  try { if (!captureTarget.isDestroyed()) captureTargetUrl = captureTarget.getURL(); } catch { /* keep identity diagnostics */ }
+  try { if (liveEditor && !liveEditor.isDestroyed()) liveEditorUrl = liveEditor.getURL(); } catch { /* keep identity diagnostics */ }
+  const startedAt = Date.now();
+  const surfaceReady = await waitFor(async () => {
+    attempts += 1;
+    lastAttemptAt = new Date().toISOString();
+    try {
+      if (captureTarget.isDestroyed()) throw new Error(`capture target WebContents ${captureTargetWebContentsId} 已销毁`);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let captured: Awaited<ReturnType<WebContents["capturePage"]>>;
+      try {
+        captured = await Promise.race([
+          captureTarget.capturePage(),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("capturePage 超过 1000ms")), 1000); }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      if (captured.isEmpty()) {
+        lastError = "capturePage returned an empty image";
+        return false;
+      }
+      lastError = null;
+      return true;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      return false;
+    }
+  }, timeoutMs, intervalMs);
+  const elapsedMs = Date.now() - startedAt;
+  const ok = surfaceReady && sameWebContents !== false;
+  return {
+    ok,
+    observed: {
+      attempts, lastAttemptAt, lastError, captureTargetWebContentsId, captureTargetUrl,
+      liveEditorWebContentsId, liveEditorUrl, sameWebContents, elapsedMs, timeoutMs,
+    },
+    ...(ok ? {} : {
+      detail: sameWebContents === false
+        ? `截图预探针的 WebContents(${captureTargetWebContentsId}) 与当前编辑器 WebContents(${liveEditorWebContentsId}) 不一致；driver 的截图目标是 setup 捕获的对象`
+        : `编辑器视图未获得可截图 surface，尝试 ${attempts} 次；最后错误：${String(lastError)}`,
+    }),
+  };
+}

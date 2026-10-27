@@ -71,6 +71,8 @@ export const en = {
   // What this step cost. `{cost}` is "—" when the engine reported no cost (not $0.00).
   "chatStream.workflowStep.usage": "{tokens} tokens · {cost}",
   // The button on a failed card — resume from this step (see RetryNodeDialog).
+  "chatStream.workflowStep.retryWholeFlow": "Re-run the whole flow",
+  "chatStream.workflowStep.retryWholeFlowHint": "Node-RED cannot resume from a step — a retry runs the entire flow again",
   "chatStream.workflowStep.retry": "Try again",
   // The dialog. `desc` states the re-run scope; `scope` says who the note is
   // for — users assume it instructs the whole graph, which is the easy mix-up.
@@ -225,8 +227,10 @@ export const en = {
   "chatStream.attachment.collapseImage": "Collapse image",
   "chatStream.attachment.collapseContent": "Collapse content",
 
-  // ── Markdown ──
+  // ── Message actions / Markdown ──
+  "chatStream.messageActions": "Message actions",
   "chatStream.copyCode": "Copy code",
+  "chatStream.copyQuote": "Copy as quote",
   "chatStream.code.expand": "Expand",
   "chatStream.code.collapse": "Collapse",
 

@@ -162,17 +162,19 @@ async function callAsync(channel: string, raw?: unknown): Promise<unknown> {
 /** 把 `unknown` 收成能点属性的形状 —— 断言里读返回值的字段用。 */
 const obj = (v: unknown): Record<string, unknown> => v as Record<string, unknown>;
 
-/* ──────────────── 1. 33 条 handler 一条不少、一条不多 ──────────────── */
+/* ──────────────── 1. 28 条 handler 一条不少、一条不多 ──────────────── */
 
 console.log("\n注册面");
 
-// 33 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
+// 28 这个数字是**数出来的**(下面按名字逐条对),不是抄的。少一条 = 渲染端某个按钮
 // 点了没反应;多一条 = 白名单那边没跟上(renderer 根本调不到,但说明有人改了这里
 // 却没改契约那一份)。
+//
+// 2026-10-27：长任务守望与命令模板库移除，33 → 28；随后工作流复制（duplicate）加入，28 → 29。
 const registered = [...handlers.keys()].sort();
 check(
-  `注册了 33 条 handler(实际 ${registered.length})`,
-  registered.length === 33,
+  `注册了 29 条 handler(实际 ${registered.length})`,
+  registered.length === 29,
   registered,
 );
 
@@ -184,6 +186,7 @@ const expectedChannels: Array<[string, string]> = [
   ["节点类型清单", IPC.WORKFLOW_NODE_TYPES],
   ["存一份工作流", IPC.WORKFLOW_SAVE],
   ["用户明确确认迁移旧工作流", IPC.WORKFLOW_CONFIRM_MIGRATION],
+  ["复制工作流", IPC.WORKFLOW_DUPLICATE],
   ["删/恢复默认", IPC.WORKFLOW_REMOVE],
   ["导出", IPC.WORKFLOW_EXPORT],
   ["导入(文本)", IPC.WORKFLOW_IMPORT],
@@ -201,11 +204,6 @@ const expectedChannels: Array<[string, string]> = [
   ["自动化的后台会话", IPC.AUTOMATION_SESSIONS],
   ["全部触发器事实", IPC.AUTOMATION_STATUS_ALL],
   ["某个对话的图运行历史", IPC.RUNS_HISTORY],
-  ["守望起跑", IPC.AUTOMATION_WATCH],
-  ["守望活跃状态", IPC.AUTOMATION_WATCH_STATUS],
-  ["命令模板(读)", IPC.AUTOMATION_WATCH_TEMPLATES],
-  ["命令模板(存)", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE],
-  ["命令模板(显式重建)", IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD],
   ["钉住默认工作流", IPC.WORKFLOW_PIN_DEFAULT],
   ["恢复默认", IPC.WORKFLOW_RESTORE_DEFAULT],
   ["应用出厂版更新", IPC.WORKFLOW_APPLY_SHIPPED_UPDATE],
@@ -213,7 +211,7 @@ const expectedChannels: Array<[string, string]> = [
   ["自定义 UI 运行自动化", IPC.CUSTOM_UI_RUN_AUTOMATION],
 ];
 const missing = expectedChannels.filter(([, ch]) => !handlers.has(ch)).map(([name]) => name);
-same("包括「命令模板(显式重建)」在内的 32 条一条不缺", missing, []);
+same("29 条一条不缺", missing, []);
 
 /* ──────────────── 2. 种子铺出来的目录 ──────────────── */
 
@@ -1111,278 +1109,7 @@ console.log("\n删一份工作流");
 }
 
 /* ──────────────── 9. 守望模板:健康态、拒写与显式重建(MC-054) ──────────────── */
-
-console.log("\n守望命令模板");
-
-{
-  // 存一份**好坏混在一起**的列表 —— 这正是用户手改过 setting 之后的样子。
-  const mixed = [
-    { id: "a", name: "好的", command: "echo 1" },
-    { id: "b", name: "缺 command" },
-    { id: "c" },
-    { id: "d", name: "也好的", command: "echo 2" },
-  ];
-  SettingRepo.set("automation.watch.templates", JSON.stringify(mixed));
-  const got = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  same(
-    "坏条目不进面板,好的照常显示",
-    (got.templates as Array<{ id: string }>).map((t) => t.id),
-    ["a", "d"],
-  );
-  // 【MC-054】返回值把**完整性**带出来了 —— 从前只有日志,界面拿不到。
-  eq("★ MC-054:返回值带 health=partial(有一条读不出)", got.health, "partial");
-  same(
-    "★ MC-054:problems 列出坏了几条(界面能说「有几条读不出来」)",
-    (got.problems as string[]).length,
-    2,
-  );
-
-  // 丢掉的那几条同时要在日志里说话(这条以前就有,钉住别退化)。
-  const before = logLines.length;
-  SettingRepo.set("automation.watch.templates", JSON.stringify(mixed));
-  obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  const newLines = logLines.slice(before);
-  check(
-    "丢掉坏条目时日志里说了话(以前一个字都不报)",
-    newLines.some((l) => l.includes("命令模板") && l.includes("跳过")),
-    newLines,
-  );
-  check(
-    "而且说出了丢了几条(用户能对上自己改过的那几条)",
-    newLines.some((l) => /里有 2 条读不了/.test(l)),
-    newLines,
-  );
-
-  // 【MC-054】partial 状态下**普通全量保存被拒绝** —— 界面没看见那些坏条目,照写
-  // 就是替用户把它们抹掉(台账点名的「新保存会覆盖原始设置」)。
-  const refusedPartial = obj(
-    await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-      templates: [{ id: "a", name: "好的", command: "echo 1" }],
-      // 显式 null = "我知道自己在整表覆盖";这一条测的是**健康态守卫**先拒,
-      // 不是 revision 缺失(后者是另一条断言)。
-      expectedRevision: null,
-    }),
-  );
-  eq("★ MC-054:partial 时普通保存被拒绝(不静默抹掉读不出的条目)", refusedPartial.ok, false);
-  check(
-    "★ MC-054:拒绝语点名了「读不出来的条目」与恢复路径",
-    typeof refusedPartial.error === "string" &&
-      refusedPartial.error.includes("读不出来的条目") &&
-      refusedPartial.error.includes("备份并重建"),
-    refusedPartial.error,
-  );
-  // 被拒后原值逐字节还在(没有被覆盖)。
-  eq(
-    "★ MC-054:被拒后原 setting 逐字节还在",
-    SettingRepo.get("automation.watch.templates"),
-    JSON.stringify(mixed),
-  );
-
-  // 整个 setting 是坏 JSON → health=corrupt,保存也被拒。
-  SettingRepo.set("automation.watch.templates", "{坏 JSON");
-  const corrupt = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  same("整个 setting 是坏 JSON → 当没有模板,不抛", corrupt.templates, []);
-  eq("★ MC-054:坏 JSON → health=corrupt", corrupt.health, "corrupt");
-  const refusedCorrupt = obj(
-    await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-      templates: [{ id: "a", name: "好的", command: "echo 1" }],
-      expectedRevision: null,
-    }),
-  );
-  eq("★ MC-054:corrupt 时普通保存被拒绝", refusedCorrupt.ok, false);
-  eq(
-    "★ MC-054:被拒后坏 JSON 原文逐字节还在",
-    SettingRepo.get("automation.watch.templates"),
-    "{坏 JSON",
-  );
-
-  // 存的是合法 JSON 但不是数组 → 同样 corrupt(一条都读不出来)。
-  SettingRepo.set("automation.watch.templates", JSON.stringify({ 不是: "数组" }));
-  const notArray = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  same("存的是个对象不是数组 → 当没有模板", notArray.templates, []);
-  eq("★ MC-054:不是数组 → health=corrupt", notArray.health, "corrupt");
-
-  // 【MC-054】显式重建:备份原值 → 校验 → 重建(部分损坏的常用法:保住读得出的好条目)。
-  SettingRepo.set("automation.watch.templates", JSON.stringify(mixed));
-  // 【MC-054】真实隔离 SettingRepo 已有历史备份，模拟两个修复恰好发生在同一毫秒。
-  // 旧实现仅用 Date.now() 作为键，会静默覆盖之前已有的不可逆坏档原文字节。
-  const fixedBackupNow = 1760849999123;
-  const priorBackupKey = "automation.watch.templates.corrupt-" + fixedBackupNow;
-  const priorBackupBytes = "OLD_BACKUP_MUST_NOT_BE_OVERWRITTEN\\n{legacy raw bytes}";
-  SettingRepo.set(priorBackupKey, priorBackupBytes);
-  const restoreClock = Date.now;
-  let rebuilt: Record<string, unknown>;
-  try {
-    Date.now = () => fixedBackupNow;
-    rebuilt = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
-  } finally {
-    Date.now = restoreClock;
-  }
-  eq("★ MC-054:同毫秒已有备份不能被显式修复覆盖", SettingRepo.get(priorBackupKey), priorBackupBytes);
-  check("★ MC-054:重建返回新且不与旧备份冲突的键", typeof rebuilt.backupKey === "string" && rebuilt.backupKey !== priorBackupKey, rebuilt.backupKey);
-  eq("★ MC-054:显式重建成功", rebuilt.ok, true);
-  check(
-    "★ MC-054:重建返回备份键",
-    typeof rebuilt.backupKey === "string" && rebuilt.backupKey.startsWith("automation.watch.templates.corrupt-"),
-    rebuilt.backupKey,
-  );
-  eq(
-    "★ MC-054:备份内容逐字节等于损坏原值",
-    SettingRepo.get(rebuilt.backupKey as string),
-    JSON.stringify(mixed),
-  );
-  eq("★ MC-054:重建保住了读得出的好条目(2 条)", rebuilt.kept, 2);
-  const afterRebuild = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  eq("★ MC-054:重建后健康态翻回 valid", afterRebuild.health, "valid");
-  same(
-    "★ MC-054:重建后剩下的就是那两条好的",
-    (afterRebuild.templates as Array<{ id: string }>).map((t) => t.id),
-    ["a", "d"],
-  );
-  SettingRepo.delete(rebuilt.backupKey as string);
-  SettingRepo.delete(priorBackupKey);
-
-  // 没坏的时候「重建」要拒绝(不静默做用户没要的事)。
-  const noNeed = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
-  eq("★ MC-054:文件没坏时显式重建拒绝(不做多余动作)", noNeed.ok, false);
-
-  // 【MC-054】首读遭临时 IO 错误，随后真实原件又能读到：这不等于原件真的
-  // corrupt。旧代码把 read_error 也视作可重建，省略 templates 时清空整表。
-  const healthyBeforeGlitch = JSON.stringify([{ id: "stable", name: "原健康模板", command: "echo keep" }]);
-  SettingRepo.set("automation.watch.templates", healthyBeforeGlitch);
-  const realGetBeforeGlitch = SettingRepo.get;
-  let faultCount = 0;
-  (SettingRepo as { get: (key: string) => string | null }).get = (key: string) => {
-    if (key === "automation.watch.templates" && faultCount++ === 0) {
-      throw new Error("MC054_TRANSIENT_READ_ERROR_TEST_ONLY");
-    }
-    return realGetBeforeGlitch(key);
-  };
-  let rebuildOnReadError: Record<string, unknown>;
-  try {
-    rebuildOnReadError = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
-  } finally {
-    (SettingRepo as { get: (key: string) => string | null }).get = realGetBeforeGlitch;
-  }
-  eq("★ MC-054:瞬时读错不能触发显式重建并清空原本健康模板", rebuildOnReadError.ok, false);
-  eq("★ MC-054:读错之后现存健康模板原始字节不变", SettingRepo.get("automation.watch.templates"), healthyBeforeGlitch);
-
-  // MC-054 并发窗口：先读到部分损坏旧数据，在备份前另一写入者已修成健康
-  // 新版本；旧实现会备份新的原件，却根据旧 partial 列表回写，丢掉对方更新。
-  const partialBeforeConcurrentUpdate = JSON.stringify(mixed);
-  const concurrentHealthyRaw = JSON.stringify([{ id: "newer", name: "并发恢复的新模板", command: "echo newest" }]);
-  SettingRepo.set("automation.watch.templates", partialBeforeConcurrentUpdate);
-  const originalGetForConcurrent = SettingRepo.get;
-  let matchedReads = 0;
-  (SettingRepo as { get: (key: string) => string | null }).get = (key: string) => {
-    if (key === "automation.watch.templates" && matchedReads++ === 1) {
-      SettingRepo.set("automation.watch.templates", concurrentHealthyRaw);
-    }
-    return originalGetForConcurrent(key);
-  };
-  let rebuildWithStalePartial: Record<string, unknown>;
-  try {
-    rebuildWithStalePartial = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD, {}));
-  } finally {
-    (SettingRepo as { get: (key: string) => string | null }).get = originalGetForConcurrent;
-  }
-  eq("★ MC-054:重建期间原模板被并发修改应拒绝过期快照", rebuildWithStalePartial.ok, false);
-  eq("★ MC-054:过期快照被拒后并发更新的原始字节保持不变",
-    SettingRepo.get("automation.watch.templates"), concurrentHealthyRaw);
-
-  // 健康状态下正常保存照旧(没被上面的拒写卡死)。【MC-054 第十七轮】现在必须带
-  // revision —— 否则连健康态也拒(那正是修复:旧调用方不再被静默放行)。
-  const healthyRev = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES)).revision;
-  const saveRes = obj(
-    await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-      templates: [{ id: "a", name: "好的", command: "echo 1" }],
-      expectedRevision: healthyRev,
-    }),
-  );
-  eq("健康时存模板返回 ok", saveRes.ok, true);
-  const back = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  same("存进去的读得回来", (back.templates as Array<{ id: string }>).map((t) => t.id), ["a"]);
-  eq("正常读的 health=valid", back.health, "valid");
-
-  /* ── 【MC-054】原值版本检查:两端并发编辑不许静默丢更新 ──────────────────
-     台账第十六轮红例:两个客户端都读了健康空表,各存 [A]、[B],两次都 ok:true,
-     最后只剩 [B](第一个人的保存无声消失)。现在保存方带回读到的 revision,
-     盘上已变 → 拒绝 + 带回 currentRevision,由界面重读。 */
-  SettingRepo.set("automation.watch.templates", JSON.stringify([]));
-  const readA = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  const readB = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  check("★ MC-054:读返回 revision", typeof readA.revision === "string" && (readA.revision as string).length > 0, readA.revision);
-  eq("★ MC-054:同内容两次读 revision 相同(判的是内容)", readA.revision, readB.revision);
-  const saveA = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-    templates: [{ id: "A", name: "甲", command: "echo A" }],
-    expectedRevision: readA.revision,
-  }));
-  eq("客户端 A 用当前 revision 保存成功", saveA.ok, true);
-  const saveB = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-    templates: [{ id: "B", name: "乙", command: "echo B" }],
-    expectedRevision: readB.revision,
-  }));
-  eq("★ MC-054:A 已保存后,B 用旧 revision 保存被拒(不覆盖 A 的)", saveB.ok, false);
-  eq("★ MC-054:拒绝标了 conflict", saveB.conflict, true);
-  check("★ MC-054:带回盘上当前 revision 供界面重读", typeof saveB.currentRevision === "string", saveB.currentRevision);
-  same(
-    "★ MC-054:盘上仍是 A 的内容(第一个人的保存没有无声消失)",
-    (JSON.parse(SettingRepo.get("automation.watch.templates") ?? "[]") as Array<{ id: string }>).map((t) => t.id),
-    ["A"],
-  );
-  // 【MC-054 第十七轮复核】不带 expectedRevision 的旧调用方**必须被拒**:
-  // 上一版把"没给 = 整表覆盖"当兼容,结果是两条旧快照各存 [A]/[B]、最后只剩 [B]。
-  // 现在缺字段即冲突,并带回当前 revision 供调用方重读。
-  const legacySave = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-    templates: [{ id: "L", name: "旧", command: "echo L" }],
-  }));
-  eq("★ MC-054:不带 revision 的旧调用方被拒(不再静默整表覆盖)", legacySave.ok, false);
-  // ⚠️ 只看 ok:false 会假绿:把"缺字段"改成放行后,`undefined !== revision` 仍成立,
-  // 同一笔调用会被**冲突分支**接住 —— 结果同样是 ok:false。判据必须落到**拒绝语**
-  // 上:缺字段要明确说"没有带原值版本(revision)",而不是一句"已被别处改动"。
-  check("★ MC-054:拒绝理由点明「没有带 expectedRevision」(不是冲突误报)",
-    typeof legacySave.error === "string" && legacySave.error.includes("没有带原值版本"),
-    legacySave.error);
-  eq("★ MC-054:拒绝标了 conflict", legacySave.conflict, true);
-  check("★ MC-054:拒绝带回当前 revision 供重读", typeof legacySave.currentRevision === "string", legacySave.currentRevision);
-  // 盘上必须没有写进 [L] —— 拒绝是真的没写。
-  const afterLegacy = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  check("★ MC-054:被拒后盘上没有 [L](拒绝真的不写)",
-    !(afterLegacy.templates as Array<{ id?: string }>).some((t) => t.id === "L"), afterLegacy.templates);
-  // 【MC-054】显式 null 也绝不能绕过普通保存的 CAS。重建有专用 RPC
-  // 且原值先备份；普通 save 即使收到 "null" 也必须保留 A 已提交的数据。
-  const beforeNull = SettingRepo.get("automation.watch.templates");
-  const explicitNull = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-    templates: [{ id: "N", name: "显式覆盖", command: "echo N" }], expectedRevision: null,
-  }));
-  eq("★ MC-054:显式 null 不能绕过普通保存 CAS", explicitNull.ok, false);
-  eq("★ MC-054:null 版本拒写仍有冲突诊断", explicitNull.conflict, true);
-  eq("★ MC-054:null 版本被拒后原值逐字节保全", SettingRepo.get("automation.watch.templates"), beforeNull);
-  // 复原成一条干净的健康表,后续断言按自己的路径继续。
-  await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-    templates: [], expectedRevision: obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES)).revision,
-  });
-  // 同一个版本连续保存两次(自撞):第二次必须用第一次之后的新 revision。
-  const r1 = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  const s1 = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-    templates: [{ id: "X", name: "一", command: "echo 1" }], expectedRevision: r1.revision,
-  }));
-  eq("第一次保存成功", s1.ok, true);
-  const staleAgain = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-    templates: [{ id: "Y", name: "二", command: "echo 2" }], expectedRevision: r1.revision,
-  }));
-  eq("★ MC-054:用旧 revision 再存一次被拒(自己撞自己也要挡)", staleAgain.ok, false);
-  const r2 = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES));
-  const s2 = obj(await callAsync(IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, {
-    templates: [{ id: "Y", name: "二", command: "echo 2" }], expectedRevision: r2.revision,
-  }));
-  eq("★ MC-054:重读后的新 revision 保存通过", s2.ok, true);
-  // 顺序无关:同一批模板换顺序 → revision 不变(判内容,不判写法)。
-  const ordered = [{ id: "a", name: "甲", command: "echo 1" }, { id: "b", name: "乙", command: "echo 2" }];
-  const reversed = [...ordered].reverse();
-  eq("★ MC-054:模板顺序不同但内容相同 → revision 相同", watchTemplatesRevision(ordered), watchTemplatesRevision(reversed));
-  eq("★ MC-054:内容改一个字节 → revision 变", watchTemplatesRevision(ordered) === watchTemplatesRevision([{ ...ordered[0], command: "echo 1 " }, ordered[1]]), false);
-}
+/* ──────────────── 9. 守望与命令模板库已移除（2026-10-27）──────────────── */
 
 /* ──────────────── 10. 自动化运行历史:存档坏掉的那些 ──────────────── */
 
@@ -1943,7 +1670,6 @@ for (const [name, ch] of [
   ["节点类型清单", IPC.WORKFLOW_NODE_TYPES],
   ["代理档案列表", IPC.WORKFLOW_AGENT_PROFILES],
   ["全部触发器事实", IPC.AUTOMATION_STATUS_ALL],
-  ["命令模板", IPC.AUTOMATION_WATCH_TEMPLATES],
 ] as Array<[string, string]>) {
   let err = "";
   try {
@@ -1969,12 +1695,6 @@ for (const [name, ch, raw] of [
   ["导出:没给 id", IPC.WORKFLOW_EXPORT, {}],
   ["自动化历史:没给 workflowId", IPC.AUTOMATION_RUNS, {}],
   ["自动化的后台会话:没给 workflowId", IPC.AUTOMATION_SESSIONS, {}],
-  ["守望起跑:没给 sessionId", IPC.AUTOMATION_WATCH, {}],
-  ["守望状态:没给 sessionId", IPC.AUTOMATION_WATCH_STATUS, {}],
-  // 【MC-054】expectedRevision 现在必填 —— 这两条要测的是**别的**字段错,
-  // 所以显式给 null,否则 Zod 先在 revision 上报错,断言测不到目标。
-  ["存模板:templates 不是数组", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, { templates: "不是数组", expectedRevision: null }],
-  ["存模板:模板里缺 command", IPC.AUTOMATION_WATCH_TEMPLATES_SAVE, { templates: [{ id: "a", name: "甲" }], expectedRevision: null }],
   ["存档案:没给 profile", IPC.WORKFLOW_SAVE_AGENT_PROFILE, {}],
   ["删档案:没给 id", IPC.WORKFLOW_REMOVE_AGENT_PROFILE, {}],
   ["岔路口:没给参数", IPC.WORKFLOW_CHOOSE, {}],

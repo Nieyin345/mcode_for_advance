@@ -112,6 +112,55 @@ await withAuditPage(dir,async page=>{
   // 中文界面里**不许**再漏出那句英文原话。
   assert.doesNotMatch(zh.join('|'),/Reasoning effort for the next session/);
  });
+ await test('composer-effort-menu-opens-with-selected-state-and-keeps-selection-interactive',async()=>{
+  await go('?view=chips');
+  // Give this interaction test two real provider-declared options; the shared
+  // tooltip fixture intentionally uses one level and cannot exercise switching.
+  await page.eval(`labPatchState({providers:[{id:'mock',displayName:'Mock',capabilities:{thinkingLevels:[{value:'low',label:'Low',hint:'quick'},{value:'high',label:'High',hint:'deep'}],permissionModes:[{value:'default',label:'Default',hint:'ask'}]}}],providerId:'mock',effort:'low'})`);
+  await click(`[...document.querySelectorAll('[data-chip-fixture] [title]')].find(e=>e.title==='下一个会话的思考级别')`);
+  await page.waitFor(`document.querySelectorAll('[data-cds="EffortOption"]').length > 0`);
+  const before=await page.eval(`document.querySelector('[data-cds="EffortOption"][aria-pressed="true"]')?.textContent.trim()`);
+  const next=await page.eval(`document.querySelector('[data-cds="EffortOption"][aria-pressed="false"]')?.textContent.trim()`);
+  assert.ok(before&&next&&before!==next,'expected distinct selected and unselected effort options');
+  const bounds=await page.eval(`(()=>{const p=document.querySelector('[data-cds="ModelSelectorEffort"]')?.parentElement; if(!p)return null;const r=p.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:innerWidth,height:innerHeight}})()`);
+  assert.ok(bounds,'effort popup should be mounted');
+  assert.ok(bounds.top>=-1&&bounds.left>=-1&&bounds.bottom<=bounds.height+1&&bounds.right<=bounds.width+1,'effort popup must remain inside the viewport');
+  await click(`[...document.querySelectorAll('[data-cds="EffortOption"]')].find(e=>e.getAttribute('aria-pressed')==='false')`);
+  await page.waitFor(`document.querySelector('[data-cds="EffortOption"][aria-pressed="true"]')?.textContent.trim()===${JSON.stringify(next)}`);
+  assert.equal(await page.eval(`document.querySelector('[data-cds="EffortOption"][aria-pressed="true"]')?.textContent.trim()`),next);
+ });
+ await test('composer-model-menu-opens-with-provider-models-and-stays-in-viewport',async()=>{
+  await go('?view=model');
+  await click(`[...document.querySelectorAll('[data-model-fixture] [title]')].find(e=>e.title==='选择模型')`);
+  await page.waitFor(`document.querySelector('[data-cds="ModelSwitcher"]')`);
+  const state=await page.eval(`(()=>{const p=document.querySelector('[data-cds="ModelSwitcher"]');if(!p)return null;const r=p.getBoundingClientRect();return {text:p.innerText,top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:innerWidth,height:innerHeight}})()`);
+  assert.ok(state,'model popup should be mounted');
+  assert.match(state.text,/Model A/);assert.match(state.text,/Model B/);
+  assert.ok(state.top>=-1&&state.left>=-1&&state.bottom<=state.height+1&&state.right<=state.width+1,'model popup must remain inside the viewport');
+  await page.screenshot('composer-model-menu-open.png');
+  await click(`[...document.querySelectorAll('[data-cds="ModelSwitcher"] [role="menuitem"]')].find(e=>e.textContent.includes('Model B'))`);
+  await page.waitFor(`[...document.querySelectorAll('[data-model-fixture] button[title="选择模型"]')].some(e=>e.textContent.includes('Model B'))`);
+  assert.match(await page.eval(`document.querySelector('[data-model-fixture] button[title="选择模型"]')?.textContent||''`),/Model B/);
+ });
+ await test('tool-details-share-bounded-code-surfaces-and-keep-file-actions-readable',async()=>{
+  await go('?view=toolcards');
+  const rows=await page.eval(`[...document.querySelectorAll('[data-tool-fixture] [data-ui-tool-row]')].map(e=>e.textContent.trim())`);
+  assert.ok(rows.some(s=>s.includes('Edit'))&&rows.some(s=>s.includes('Write'))&&rows.some(s=>s.includes('Bash')),'fixture should render Edit, Write and grouped Bash tools');
+  await click(`[...document.querySelectorAll('[data-tool-fixture] [data-ui-tool-row]')].find(e=>e.textContent.includes('Edit'))`);
+  await page.waitFor(`[...document.querySelectorAll('[data-cds="ToolDetailSection"]')].some(e=>e.textContent.includes('Applied patch successfully'))`);
+  const detail=await page.eval(`(()=>{const s=[...document.querySelectorAll('[data-cds="ToolDetailSection"]')].find(e=>e.textContent.includes('Applied patch successfully'));const p=s?.querySelector('pre');return {text:s?.innerText,classes:p?.className,scroll:p?.scrollHeight,client:p?.clientHeight}})()`);
+  assert.match(detail.text,/Applied patch successfully/);
+  assert.match(detail.classes,/border border-edge\/60 bg-surface-muted\/40 p-3 font-mono leading-relaxed/);
+  await page.screenshot('tool-detail-expanded.png');
+  await click(`[...document.querySelectorAll('[data-tool-fixture] [data-ui-tool-row]')].find(e=>e.textContent.includes('Write'))`);
+  await page.waitFor(`[...document.querySelectorAll('[data-cds="ToolDetailSection"]')].some(e=>e.textContent.includes('export const generated'))`);
+  const writeText=await page.eval(`[...document.querySelectorAll('[data-cds="ToolDetailSection"]')].map(e=>e.innerText).join('\\n')`);
+  assert.match(writeText,/export const generated/);
+  await click(`[...document.querySelectorAll('[data-tool-fixture] [data-ui-tool-row]')].find(e=>e.textContent.includes('Bash')&&!e.textContent.includes('pnpm'))`);
+  await click(`[...document.querySelectorAll('[data-tool-fixture] [data-ui-tool-row]')].find(e=>e.textContent.includes('Bash')&&e.textContent.includes('pnpm'))`);
+  await page.waitFor(`[...document.querySelectorAll('[data-cds="ToolDetailSection"]')].some(e=>e.textContent.includes('Tests passed'))`);
+  assert.match(await page.eval(`[...document.querySelectorAll('[data-cds="ToolDetailSection"]')].map(e=>e.innerText).join('\\n')`),/Tests passed/);
+ });
  await test('markdown-preview-banners-follow-locale-not-bilingual-hardcode',async()=>{
   // 资料库 Markdown 预览的两条横幅此前是**硬编码中英双语**拼在一起
   // (`"Markdown 预览失败 / Preview failed: …"` 与 `"部分图片无法读取（文件缺失或读取受限）

@@ -17,11 +17,14 @@ import type { FileViewMode } from "@contracts/ipc";
 import { documentKindOf, isOfficeDocumentKind } from "@contracts/documentKind";
 import { genofficeAppForPath } from "@contracts/genofficeFileRoute";
 import { GenofficeDocumentPane } from "./GenofficeDocumentPane.js";
-import { GenofficeViewHostPane, stableDocId } from "./GenofficeViewHostPane.js";
+import { GenofficeViewHostPane } from "./GenofficeViewHostPane.js";
+import { EditorWithRevisions, RevisionModeButton } from "./EditorWithRevisions.js";
+import { FileHistoryPanel } from "./FileHistoryPanel.js";
+import { closeNativeEditorBeforeTabRemoval } from "./nativeEditorClose.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
-import { IconEye, IconEdit, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3, IconPhotoOff, IconArrowLeft, IconArrowRight, IconWorld } from "@renderer/lib/icons.js";
+import { IconEye, IconEdit, IconClock, IconLoader2, IconAlertTriangle, IconSquare, IconColumns3, IconPhotoOff, IconArrowLeft, IconArrowRight, IconWorld } from "@renderer/lib/icons.js";
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { ChunkedMarkdown } from "../chat/ChunkedMarkdown.js";
 import { PdfPreview } from "../library/PdfPreview.js";
@@ -32,6 +35,7 @@ import { makeQuoteTag } from "@renderer/lib/contentTag.js";
 import { captureMonacoCitationSelection, subscribeMonacoCitationChanges } from "./monacoCitationSelection.js";
 import { registerTheiaMonacoOwner, subscribeTheiaMonacoEdits } from "@renderer/lib/theiaMonacoOwner.js";
 import { registerTheiaEditorMenus } from "@renderer/lib/theiaEditorMenus.js";
+import { TheiaActionToolbar } from "@renderer/components/modules/TheiaActionToolbar.js";
 import { registerTheiaDiagnosticMarkers } from "@renderer/lib/theiaDiagnostics.js";
 import { registerTheiaLanguageProviders } from "@renderer/lib/theiaLanguageProviders.js";
 // LSP provider bridge: registers definition/references/hover providers, syncs
@@ -224,6 +228,15 @@ export function FileEditor({
   const editorMode = useSessionStore((s) => s.ideEditorMode);
   const setEditorMode = useSessionStore((s) => s.setIdeEditorMode);
 
+  /* 【EDIT-09】历史抽屉：**每个文件各自记开关**没必要（同一时刻只看一个文件），
+   * 所以用组件内 state；切文件时自动收起（否则在新文件上看到旧文件的"打开"状态）。 */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  /* 回滚之后编辑器里还是旧内容（页面不知道磁盘变了）。**用 key 重挂**是最稳的做法：
+   * 比给六家编辑器各发一条"重新读盘"命令可靠得多，而且回滚是低频动作，
+   * 重挂的代价（丢滚动位置）可以接受。 */
+  const [reloadEpoch, setReloadEpoch] = useState(0);
+  useEffect(() => { setHistoryOpen(false); }, [filePath]);
+
   // Resolve the before-snapshot for diff mode. Three sources, in priority:
   //  1. Turn-files card override - the card's frozen `before` (passed when
   //     the user clicks a file to review). Works for HISTORICAL turns whose
@@ -279,7 +292,7 @@ export function FileEditor({
   const htmlPreviewable = canPreviewHtml(filePath, projectPath);
 
   return (
-    <div className="flex h-full flex-col">
+    <div data-cds="FileEditor" className="flex h-full flex-col">
       <EditorToolbar
         filePath={filePath}
         projectPath={projectPath}
@@ -303,18 +316,17 @@ export function FileEditor({
             setViewMode(filePath, "genoffice-view");
             return;
           }
-          // Preflight close before changing React mode. If the native editor's
-          // save/discard guard is cancelled, keep the view mounted and visible.
-          void api.documentView.close({ docId: stableDocId(filePath) }).then((result) => {
-            if (!result.ok) return;
-            ideDirtyTracker.setNative(filePath, false);
+          // Ask the vendor close guard before changing React mode. A cancelled
+          // save/discard prompt keeps the native view mounted and reachable.
+          // Capture the project so a slow prompt cannot mutate another project's mode.
+          if (!pid) return;
+          void closeNativeEditorBeforeTabRemoval(filePath, pid).then((canClose) => {
+            if (useSessionStore.getState().activeProjectId !== pid) return;
+            if (!canClose) {
+              useSessionStore.getState().reportBlockedIdeClose([filePath]);
+              return;
+            }
             setViewMode(filePath, genofficeViewFallbackMode);
-          }).catch((err: unknown) => {
-            useToastStore.getState().push({
-              kind: "error",
-              title: t("ide.genoffice.viewHostCloseFailed"),
-              body: err instanceof Error ? err.message : String(err),
-            });
           });
         }}
         isImage={image}
@@ -335,13 +347,28 @@ export function FileEditor({
         }
         editorMode={editorMode}
         onToggleEditorMode={() => setEditorMode(editorMode === "tabs" ? "replace" : "tabs")}
+        canShowHistory={!image && !unsupported}
+        historyOpen={historyOpen}
+        onToggleHistory={() => setHistoryOpen((open) => !open)}
       />
-      <div className="min-h-0 flex-1">
+      <div data-cds="FileEditorViewport" className="flex min-h-0 flex-1">
+        {/* 【EDIT-09】历史抽屉在视图区最左：只在用户主动打开时出现，固定宽度 + shrink-0，
+            不与编辑器抢空间。回滚成功后 +epoch 重挂编辑器（见 reloadEpoch 的注释）。 */}
+        {historyOpen && !image && !unsupported && (
+          <FileHistoryPanel
+            filePath={filePath}
+            onClose={() => setHistoryOpen(false)}
+            onRestored={() => setReloadEpoch((value) => value + 1)}
+          />
+        )}
+        <div key={reloadEpoch} className="min-h-0 min-w-0 flex-1">
         {effectiveMode === "diff" && diffBefore != null ? (
           <DiffPane filePath={filePath} before={diffBefore} after={diffAfter} />
         ) : effectiveMode === "genoffice" ? (
           <GenofficeDocumentPane key={filePath} filePath={filePath} />
         ) : effectiveMode === "genoffice-view" ? (
+          /* 【Office 深度集成】修订左栏：有 AI/人的待审改动时出现在编辑器左侧。
+             没有待处理事项时整栏收起（见 EditorWithRevisions）。 */
           documentDocked ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 p-3 text-content-muted" data-document-docked="">
               <span>{t("layout.paneDocumentMoved")}</span>
@@ -349,13 +376,17 @@ export function FileEditor({
                 <button
                   type="button"
                   onClick={() => setRightOpen(true)}
-                  className="rounded-[var(--radius-btn-xs)] border border-edge px-2.5 py-1 text-[11px] font-medium text-content transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent"
+                  className="rounded-[var(--radius-btn-xs)] border border-edge px-2.5 py-1 text-[11px] font-medium text-content transition-colors hover:bg-surface-hover active:bg-surface-active focus-visible:outline-2 focus-visible:outline-accent"
                 >
                   {t("layout.showDockedDocument")}
                 </button>
               )}
             </div>
-          ) : <GenofficeViewHostPane key={filePath} filePath={filePath} />
+          ) : (
+            <EditorWithRevisions filePath={filePath}>
+              <GenofficeViewHostPane key={filePath} filePath={filePath} />
+            </EditorWithRevisions>
+          )
         ) : effectiveMode === "wysiwyg" ? (
           <MarkdownEditorPane key={filePath} filePath={filePath} projectPath={projectPath} />
         ) : effectiveMode === "preview" ? (
@@ -375,6 +406,7 @@ export function FileEditor({
         ) : (
           <EditPane filePath={filePath} projectPath={projectPath} />
         )}
+        </div>
       </div>
     </div>
   );
@@ -451,6 +483,119 @@ export function HtmlPreviewButton({ filePath, projectPath }: { filePath: string;
   );
 }
 
+interface TheiaCustomEditorOption {
+  sessionId:string;
+  extensionId:string;
+  viewType:string;
+  displayName:string;
+  filenamePatterns:string[];
+}
+
+function customEditorGlobMatches(candidate:string,pattern:string):boolean {
+  if(!pattern||pattern.length>200)return false;
+  const glob=pattern.replace(/\\/g,"/");
+  let expression="^";
+  for(let index=0;index<glob.length;index++){
+    const char=glob[index];
+    if(char==="*"&&glob[index+1]==="*"){
+      index++;
+      if(glob[index+1]==="/"){index++;expression+="(?:.*/)?";}
+      else expression+=".*";
+    }else if(char==="*")expression+="[^/]*";
+    else if(char==="?")expression+="[^/]";
+    else expression+=".+^$()|[]{}\\".includes(char)?"\\"+char:char;
+  }
+  try{return new RegExp(expression+"$","i").test(candidate.replace(/\\/g,"/"));}
+  catch{return false;}
+}
+
+/** Opens a contributed CustomDocument editor from the actual active Mcode file,
+ * rather than making the user pick the same file again from a native dialog. */
+function TheiaCustomEditorButton({filePath,projectPath}:{filePath:string;projectPath:string}) {
+  const [open,setOpen]=useState(false);
+  const [loading,setLoading]=useState(false);
+  const [opening,setOpening]=useState<string|null>(null);
+  const [options,setOptions]=useState<TheiaCustomEditorOption[]>([]);
+  const requestRevision=useRef(0);
+  const normalizedRoot=projectPath.replace(/[\\/]+$/,"").replace(/\\/g,"/").toLowerCase();
+  const normalizedFile=filePath.replace(/\\/g,"/").toLowerCase();
+  const inWorkspace=!!normalizedRoot&&(normalizedFile===normalizedRoot||normalizedFile.startsWith(normalizedRoot+"/"));
+  useEffect(()=>{
+    requestRevision.current++;setOpen(false);setOptions([]);
+    return ()=>{requestRevision.current++;};
+  },[filePath,projectPath]);
+  const refresh=async()=>{
+    if(!inWorkspace){
+      useToastStore.getState().push({kind:"error",title:"扩展编辑器",body:"当前文件不在已打开的 Mcode 工作区内。"});
+      return;
+    }
+    const revision=++requestRevision.current;
+    setOpen(value=>!value);
+    setLoading(true);
+    try{
+      const result=await api.modules.theiaInstalled({op:"list"});
+      if(revision!==requestRevision.current)return;
+      if(result.kind!=="list")throw Error("无法读取已运行的扩展");
+      const candidates=result.items.flatMap(item=>{
+        const session=item.activeSession;
+        if(!item.running||!session)return [];
+        return (session.customEditors??[]).map(editor=>({
+          sessionId:session.sessionId,extensionId:item.extensionId,viewType:editor.viewType,
+          displayName:editor.displayName,filenamePatterns:editor.filenamePatterns??[],
+        }));
+      }).filter(editor=>{
+        if(!editor.filenamePatterns.length)return true;
+        const relative=filePath.slice(projectPath.length).replace(/^[\\/]+/,"").replace(/\\/g,"/");
+        return editor.filenamePatterns.some(pattern=>{
+          const candidate=pattern.includes("/")?relative:basename(filePath);
+          return customEditorGlobMatches(candidate,pattern);
+        });
+      }).slice(0,100);
+      setOptions(candidates);
+    }catch(error){
+      if(revision===requestRevision.current){
+        useToastStore.getState().push({kind:"error",title:"扩展编辑器",
+          body:error instanceof Error?error.message:String(error)});
+        setOpen(false);
+      }
+    }finally{if(revision===requestRevision.current)setLoading(false);}
+  };
+  const openWith=async(option:TheiaCustomEditorOption)=>{
+    if(opening)return;
+    setOpening(option.viewType);
+    try{
+      const result=await api.modules.theiaInstalled({
+        op:"customEditorOpen",sessionId:option.sessionId,viewType:option.viewType,filePath,
+      });
+      if(result.kind!=="webviewAcknowledged")throw Error("扩展编辑器未能打开当前文件");
+      setOpen(false);
+    }catch(error){
+      useToastStore.getState().push({kind:"error",title:option.displayName,
+        body:error instanceof Error?error.message:String(error)});
+    }finally{setOpening(null);}
+  };
+  return <div className="relative">
+    <button type="button" disabled={!inWorkspace||loading}
+      onClick={()=>void refresh()}
+      className={cn("flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
+        "cds-hover-ghost text-content-muted hover:text-content disabled:cursor-default disabled:opacity-40")}
+      title="使用已运行的 VSIX 扩展编辑器打开当前工作区文件" aria-expanded={open}>
+      扩展编辑器{loading?"…":"⌄"}
+    </button>
+    {open&&<div className="absolute right-0 top-full z-50 mt-1 min-w-52 max-w-80 rounded border border-edge bg-surface p-1 shadow-[var(--shadow-popover)]"
+      role="menu" aria-label="选择扩展编辑器">
+      {loading?<p className="px-2 py-1.5 text-code text-content-muted">正在读取扩展…</p>:
+        options.length?options.map(option=><button key={option.sessionId+":"+option.viewType}
+          type="button" role="menuitem" disabled={opening!==null}
+          onClick={()=>void openWith(option)}
+          className="flex w-full flex-col items-start rounded px-2 py-1.5 text-left text-code hover:bg-surface-muted disabled:opacity-50">
+          <span>{opening===option.viewType?"正在打开…":option.displayName}</span>
+          <span className="max-w-72 truncate text-[10px] text-content-muted">{option.extensionId} · {option.viewType}</span>
+        </button>):<p className="px-2 py-1.5 text-code text-content-muted">没有已运行且匹配当前文件的扩展编辑器。</p>}
+    </div>}
+  </div>;
+}
+
 function EditorToolbar({
   filePath,
   projectPath,
@@ -467,6 +612,9 @@ function EditorToolbar({
   onToggleGenofficeView,
   editorMode,
   onToggleEditorMode,
+  canShowHistory,
+  historyOpen,
+  onToggleHistory,
 }: {
   filePath: string;
   projectPath: string;
@@ -486,6 +634,10 @@ function EditorToolbar({
   onToggleGenofficeView: () => void;
   editorMode: "tabs" | "replace";
   onToggleEditorMode: () => void;
+  /** 【EDIT-09】这个文件能不能看历史（图片/不支持的类型没有"保存过的版本"）。 */
+  canShowHistory: boolean;
+  historyOpen: boolean;
+  onToggleHistory: () => void;
 }) {
   const { t } = useI18n();
   // Navigation-history (Alt+←/→) back/forward state — enabled iff the active
@@ -571,7 +723,7 @@ function EditorToolbar({
       ? filePath.slice(projectPath.length).replace(/^[/\\]/, "")
       : filePath;
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-edge bg-surface-muted/40 px-2.5 py-1">
+    <div data-cds="FileEditorToolbar" className="flex shrink-0 items-center gap-2 border-b border-edge bg-surface-muted/40 px-2.5 py-1">
       {/* Back/forward (navigation history) — disabled when the stacks are
           empty. Mirrors the Alt+←/→ global shortcuts. */}
       <div className="flex items-center gap-0.5">
@@ -607,6 +759,9 @@ function EditorToolbar({
         {rel}
       </span>
       <div className="ml-auto flex items-center gap-1">
+        <TheiaCustomEditorButton filePath={filePath} projectPath={projectPath} />
+        {mode === "edit" && !isImage && !isUnsupported && <TheiaActionToolbar
+          placement="editor" filePath={filePath} languageId={languageForExt(extname(filePath))} />}
         {/* Language-server startup indicator: spinner while the server's
             initialize handshake is in flight, a failure notice (click →
             settings) when it couldn't start. Requests made while starting
@@ -681,6 +836,32 @@ function EditorToolbar({
           >
             <IconWorld size={12} />
             {t(genofficeViewActive ? "ide.genoffice.viewHostReturn" : "ide.genoffice.viewHost")}
+          </button>
+        )}
+        {/* 【Office 深度集成】修订模式开关 —— 只在原厂编辑器视图中出现。
+            产品决定：人和 AI 都能选"直接改"或"记录修订"，AI 默认记录，
+            人用这个按钮切换。docs/markdown 之外的四个格式暂不支持修订
+            （组件自己判 kind，不支持的格式不画）。 */}
+        {genofficeViewActive && (
+          <RevisionModeButton filePath={filePath} />
+        )}
+        {/* 【EDIT-09】文件历史入口 —— 所有可编辑文件都有（不只 office），
+            因为历史记录的是"每次保存"，对纯文本同样成立。 */}
+        {canShowHistory && (
+          <button
+            type="button"
+            data-history-open=""
+            onClick={onToggleHistory}
+            className={cn(
+              "flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors",
+              "cds-hover-ghost text-content-muted hover:text-content",
+              historyOpen && "text-accent",
+            )}
+            aria-pressed={historyOpen}
+            title={t("history.openHint")}
+          >
+            <IconClock size={12} />
+            {t("history.open")}
           </button>
         )}
         {/* 【ARC-005】HTML 本地预览入口 —— 仅工作区内的 .html/.htm 出现。

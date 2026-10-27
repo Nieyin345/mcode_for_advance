@@ -18,10 +18,13 @@ import { TerminalPanel } from "@renderer/components/ide/TerminalPanel.js";
 export function BottomTerminalBar({ active }: { active: boolean }) {
   return (
     <div
+      data-cds="BottomTerminalBar"
       className={cn(
         "flex h-full min-h-0 flex-col border-t border-edge bg-surface",
         // Keep the DOM mounted even when collapsed so PTYs survive, but hide
         // visually so nothing bleeds into the chat area above while hidden.
+        // ⚠️ 折叠靠**父级给 0 高度**（见 ThreePaneLayout / ClaudeShell 的包装层），
+        // 本组件始终 `h-full` —— 直接放进 flex-col 会吃掉全部剩余高度。
         !active && "invisible",
       )}
       aria-hidden={!active}

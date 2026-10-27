@@ -485,6 +485,37 @@ class RuntimeManager {
   }
 
   /**
+   * 【ARC-006 桥 2】**给「没有 Agent 回合」的调用方造一个审批通道。**
+   *
+   * Node-RED 引擎调 Mcode 能力时没有回合，但审批必须照样弹卡 —— 那是
+   * `invokeAppTool` 用 `ctx.requestApproval` 做的事。这里把同一条桥按 sessionId
+   * 借出去：卡片走 `emitExternal`，与 Agent 的审批卡**同一条通道、同一个界面**。
+   *
+   * `sessionId` 用引擎那条 runboard 会话（`@node-red-runboard:<workflowId>`），
+   * 于是审批卡落在用户看得见的那条运行下面，事后也查得出是谁调的。
+   *
+   * **不新造审批路径**：`approvalBridge` 仍是唯一实现，`resolve` 仍走
+   * `ipc/claude.ts` 的 `CLAUDE_APPROVE` handler —— 用户点的还是那张卡。
+   */
+  makeEngineApprovalHandler(sessionId: string): (req: {
+    requestId: string; toolName: string; input: unknown; description?: string;
+  }) => Promise<{ approved: boolean; reason?: string }> {
+    const handler = approvalBridge.makeApprovalHandler(sessionId, (e) => this.emitExternal(e));
+    return async (req) => {
+      const decision = await handler({
+        requestId: req.requestId, toolName: req.toolName,
+        input: req.input as Record<string, unknown>,
+        ...(req.description === undefined ? {} : { description: req.description }),
+      } as Parameters<typeof handler>[0]);
+      // `ProviderApprovalDecision` 的拒绝带原因；批准不带。**原样转述**，
+      // 不在这里把"用户点了否"改写成"没有通道"——那会让审计看不出是谁拒的。
+      return decision.allow
+        ? { approved: true }
+        : { approved: false, ...(decision.reason === undefined ? {} : { reason: decision.reason }) };
+    };
+  }
+
+  /**
    * Echo a user message to every client (phone ⇄ desktop).
    *
    * Shared by both send paths on purpose: a normal turn echoes inside

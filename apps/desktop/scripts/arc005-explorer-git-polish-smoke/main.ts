@@ -102,9 +102,13 @@ ck("Explorer: refresh and search icons have accessible names and visible focus",
   sourceHas(files, 'aria-label={t("ide.files.refreshDir")}') &&
   sourceHas(files, 'aria-label={t("ide.files.searchFiles")}') &&
   (files.match(/focus-visible:outline-offset-2 focus-visible:outline-accent/g)||[]).length >= 2);
-ck("Explorer: header and tree use actual session environment without remounting other UI",
-  sourceHas(files, '<ModuleSurface key={projectPath} projectPath={projectPath}>') &&
-  sourceHas(files, '<FileTree key={`${projectPath}:${refreshNonce}`} projectPath={projectPath} />'));
+/* 【UI 重建 / 扩展合并 2026-10-27】`ModuleSurface` 随 ModuleHost 一起删除
+ *（用户裁决：只要一个扩展系统 = Theia 宿主）。文件树不再包在它里面，
+ * 但**这条断言真正守的东西没变**：文件树按 projectPath 重建、刷新时按
+ * `projectPath:refreshNonce` 重新挂载 —— 换项目不串、点刷新真的重扫。 */
+ck("Explorer: tree keys on actual project environment and remounts on refresh only",
+  sourceHas(files, "key={`${projectPath}:${refreshNonce}`}") &&
+  sourceHas(files, "projectPath={projectPath}"));
 
 ck("Negative: removing repo scope check would not satisfy Git render contract",
   !sourceHas(git.replace("gitScanMatchesProject(scannedPath, projectPath)", "true"),

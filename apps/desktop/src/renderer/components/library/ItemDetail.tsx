@@ -430,7 +430,7 @@ export function ItemDetail({ item, onChanged }: Props) {
   // 从"显示挂转录/笔记两块"变成"不显示"—— 那是用户可见的行为变更，本卡不许改。
   // 谁对？**契约层那条才对**（adoptMarkdown 接受 `.MD` 并原样保留文件名，所以大写
   // mdPath 真实可达；同页另一处判据也早就按 `/i` 算）。这是一条**既有 bug**，
-  // 已作为候选 B1 记进 `tasks/T17-unified-file-routing.md` 的回写区，留给单独的卡。
+  // 已记为候选方案，留给单独的改动，不在此处顺手做。
   const isMdOnly = !item.pdfPath && Boolean(item.mdPath?.endsWith(".md"));
   const fileState = fileStateOf(item);
 

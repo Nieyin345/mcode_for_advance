@@ -35,6 +35,7 @@ import { isMac } from "@renderer/lib/platform.js";
 import { DEFAULT_SHORTCUTS } from "@renderer/lib/shortcuts.js";
 import { voiceHandleFor } from "@renderer/lib/voiceController.js";
 import { translate, type MessageId } from "@renderer/lib/i18n/core.js";
+import { closeFileInIdeSafely } from "@renderer/components/ide/nativeEditorClose.js";
 import {
   IconPlus,
   IconMessage,
@@ -210,9 +211,12 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
       if (target === "file" && s.activeProjectId) {
         const file = s.ideActiveFileByProject[s.activeProjectId];
         if (file) {
-          // 有未保存改动时这个关闭**不会发生**(见 store 的 closeFileInIde)—— 静默
-          // 无反应比丢改动更糟,所以显式报一声。
-          s.reportBlockedIdeClose(s.closeFileInIde(file).blocked);
+          // Native editors own their save/discard/cancel dialog. Do not remove
+          // the tab until that guard approves; Monaco dirty state remains guarded
+          // by the store action reached after the native preflight.
+          void closeFileInIdeSafely(file, s.activeProjectId).then((result) => {
+            s.reportBlockedIdeClose(result.blocked);
+          });
           return;
         }
       }
@@ -244,7 +248,9 @@ const STATIC_COMMANDS: StaticCommandDef[] = [
       if (target === "file" && s.activeProjectId) {
         const file = s.ideActiveFileByProject[s.activeProjectId];
         if (file) {
-          s.reportBlockedIdeClose(s.closeFileInIde(file).blocked);
+          void closeFileInIdeSafely(file, s.activeProjectId).then((result) => {
+            s.reportBlockedIdeClose(result.blocked);
+          });
           return;
         }
       }

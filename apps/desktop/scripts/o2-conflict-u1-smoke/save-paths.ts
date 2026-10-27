@@ -20,24 +20,52 @@
  *
  * 这不是「跑一遍看看」，是**结论的机器化**：路径一变，这里红，卡就得重核。
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 /**
  * 仓库根。**不用 `__dirname`**：本模块会被 esbuild 打进 journeys bundle
  * （`__dirname` 变成构建目录）也可能被单独打包（变成临时目录）——
- * 两种情况下相对路径都不指向仓库。用**启动器保证的 cwd**（`apps/desktop`，
- * `electron-u1/build.mjs` 与 `run.mjs` 都以它为 cwd），并**显式校验**根目录
- * 里有标志文件：找不到就报错，而不是静默读到别处的同名文件。
+ * 两种情况下相对路径都不指向仓库。
+ *
+ * 【2026-10-27 修复】**也不能写死 `cwd/../..`。**
+ *
+ * 从前这里假定 cwd 一定是 `apps/desktop`（`run.mjs` 早期版本如此）。而
+ * `run.sh` 现在按 T145 的规矩从**仓库根**调用，于是 `cwd/../..` 落到了
+ * `work_space/`（不是仓库根）：
+ *
+ *     O2 save-paths: 读不到 D:\...\work_space\apps\desktop\src\...\documentViewHost.ts
+ *
+ * 报错文本说"根路径假设不成立"—— 它是对的，但那个假设本身就不该在。
+ *
+ * 现在：从 cwd **向上逐级找** `packages/contracts/src/ipc/rpcMap.ts` 这个标志
+ * 文件。从哪个目录调用都行，找不到才报错（仍然 fail-closed，不静默读别处的
+ * 同名文件）。
  */
-const REPO = join(process.cwd(), "..", "..");
+function findRepoRoot(): string {
+  let dir = process.cwd();
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (existsSync(join(dir, "packages", "contracts", "src", "ipc", "rpcMap.ts"))
+      && existsSync(join(dir, "apps", "desktop", "package.json"))) {
+      return dir;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break; // 到盘符根了
+    dir = parent;
+  }
+  throw new Error(
+    `O2 save-paths: 从 cwd=${process.cwd()} 向上找不到仓库根`
+    + `（标志：packages/contracts/src/ipc/rpcMap.ts + apps/desktop/package.json）`,
+  );
+}
+const REPO = findRepoRoot();
 
 function read(relative: string): string {
   const absolute = join(REPO, relative);
   try {
     return readFileSync(absolute, "utf8");
   } catch {
-    throw new Error(`O2 save-paths: 读不到 ${absolute}（cwd=${process.cwd()}）—— 归类的根路径假设不成立`);
+    throw new Error(`O2 save-paths: 读不到 ${absolute}（cwd=${process.cwd()}，repo=${REPO}）—— 归类的根路径假设不成立`);
   }
 }
 

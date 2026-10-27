@@ -48,10 +48,13 @@ import {
   js,
   waitEditorReady,
   waitFor,
+  waitForCaptureReady,
 } from "../editor-flow.js";
 
 interface W1Runtime {
   harness: T8Harness;
+  /** Exact pageFromView handle captured by the U1 driver at setup. */
+  setupWebContents: WebContents;
   enginePort: number;
 }
 
@@ -102,7 +105,7 @@ export const nodeRedBuildFromScratchJourney = defineU1Journey({
       const wc = harness.editorWebContents();
       if (wc === null) throw new Error("W1 setup: 编辑器视图没有 webContents");
       wc.focus();
-      const runtime: W1Runtime = { harness, enginePort: started.port };
+      const runtime: W1Runtime = { harness, setupWebContents: wc, enginePort: started.port };
       return { pageFromView: wc, runtime, dispose: () => harness.dispose() };
     },
   },
@@ -317,15 +320,19 @@ export const nodeRedBuildFromScratchJourney = defineU1Journey({
       const idsMatch = state.injectId === snapshot.injectId && state.debugId === snapshot.debugId;
       const wireKept = state.injectWires !== null && state.injectWires.includes(snapshot.debugId) && state.linkCount > 0;
       const bytesUnchanged = shaNow !== null && shaNow === snapshot.shaAfterDeploy;
-      const ok = ready && rendered && state.nonTab === 2 && idsMatch && wireKept && bytesUnchanged;
+      // step-09-screenshot previously failed in generation 2 even though the
+      // DOM and persisted flow were ready. Probe the exact WebContents captured
+      // by the driver, bounded per capture call and retried until non-empty.
+      const captureReady = await waitForCaptureReady(rt.setupWebContents, wc);
+      const ok = ready && rendered && state.nonTab === 2 && idsMatch && wireKept && bytesUnchanged && captureReady.ok;
       return {
         ok,
         observed: {
           engineState: rt.harness.engineState(), port: rt.enginePort, ready, rendered,
-          state, expected: snapshot, shaNow, bytesUnchanged,
+          state, expected: snapshot, shaNow, bytesUnchanged, captureReady,
         },
         ...(ok ? {} : {
-          detail: `重开后画布没有保住拖出来的工作流（nonTab=${state.nonTab}, idsMatch=${idsMatch}, wireKept=${wireKept}, bytesUnchanged=${bytesUnchanged}）`,
+          detail: `重开后画布或截图 surface 未满足验收（nonTab=${state.nonTab}, idsMatch=${idsMatch}, wireKept=${wireKept}, bytesUnchanged=${bytesUnchanged}, captureReady=${captureReady.ok}${captureReady.detail ? `；${captureReady.detail}` : ""}）`,
         }),
       };
     }, "reopen-keeps-nodes-and-wire", { assert: true }),

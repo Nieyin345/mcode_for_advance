@@ -126,7 +126,7 @@ function App(){
   </main>}
   {mode==='question'&&<main className="p-6 mx-auto max-w-3xl"><QuestionPrompt providerName="Agent" questions={questions} onSubmit={a=>emit('submit: '+JSON.stringify(a))} onDismiss={()=>emit('dismiss')}/><input aria-label="另一个界面的输入框" placeholder="与提问卡无关的输入框" className="border p-2"/><pre>{ev.join('\n')}</pre></main>}
   {mode==='memory'&&<main className="p-6 h-full">{shown&&<MemoryExplorerPanel/>}<button aria-label="离开设置" onClick={()=>setShown(false)}>Unmount test panel</button></main>}
-  {mode==='plan'&&<main className="p-6"><PlanApprovalPrompt sessionId="A" plan="A plan" onViewPlan={()=>{}} onApprove={()=>emit('approved')} onReject={()=>emit('rejected')} onHandoff={()=>emit('handoff')}/></main>}
+  {mode==='plan'&&<main className="p-6"><PlanApprovalPrompt sessionId="A" requestId="plan-request-1" plan="A plan" onViewPlan={()=>{}} onApprove={()=>emit('approved')} onReject={()=>emit('rejected')} onHandoff={()=>emit('handoff')}/></main>}
   {mode==='palette' &&<CommandPalette/>}
   {mode==='budget'&&<main className="p-6 mx-auto max-w-3xl space-y-4"><h1 className="text-lg">运行策略设置</h1>{shown&&<><TurnBudgetPanel/><FallbackModelsPanel/></>}<button onClick={()=>setShown(false)} className="border p-2" aria-label="离开设置">模拟立即切换设置页</button></main>}
   {mode.startsWith('mobile')&&<div style={{height:'calc(100vh - 40px)'}}><MobileFilesScreen/></div>}

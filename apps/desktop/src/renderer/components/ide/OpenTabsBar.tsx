@@ -39,6 +39,11 @@ import { useToastStore } from "@renderer/stores/toastStore.js";
 import { sessionTabMenuPosition } from "../layout/sessionTabContextActions.js";
 import { fileTabMenuActionPath, liveFileTabMenu, type ProjectFileTabMenu } from "./fileTabMenuSafety.js";
 import type { IdeCloseResult } from "@renderer/lib/ideDirty.js";
+import {
+  closeAllFilesInIdeSafely,
+  closeFileInIdeSafely,
+  closeOtherFilesInIdeSafely,
+} from "./nativeEditorClose.js";
 
 /** Stable empty array so the selector never returns a fresh [] (Zustand
  *  Object.is rule — a new [] every render causes an infinite loop). */
@@ -104,9 +109,6 @@ export function OpenTabsBar() {
     pid ? s.ideActiveFileByProject[pid] ?? null : null,
   );
   const setActive = useSessionStore((s) => s.setIdeActiveFile);
-  const close = useSessionStore((s) => s.closeFileInIde);
-  const closeOthers = useSessionStore((s) => s.closeOtherFilesInIde);
-  const closeAll = useSessionStore((s) => s.closeAllFilesInIde);
   const reorderFile = useSessionStore((s) => s.reorderIdeFile);
   const clearIdeActiveFile = useSessionStore((s) => s.clearIdeActiveFile);
   const enqueueChatFile = useSessionStore((s) => s.enqueueChatFile);
@@ -276,7 +278,7 @@ export function OpenTabsBar() {
   const sortStrategy = multiRow ? rectSortingStrategy : horizontalListSortingStrategy;
 
   return (
-    <div className="flex shrink-0 items-center gap-0.5 border-b border-edge bg-surface/40 px-2 py-1.5">
+    <div data-cds="OpenTabsBar" className="flex shrink-0 items-center gap-0.5 border-b border-edge bg-surface/40 px-2 py-1.5">
       {/* Left chevron — only when there's content scrolled off the left edge. */}
       {canScrollLeft && (
         <TabBarChevronButton
@@ -292,6 +294,7 @@ export function OpenTabsBar() {
       <div className="relative min-w-0 flex-1">
         <div
           ref={scrollRef}
+          data-cds="OpenTabsTrack"
           role="tablist"
           aria-label={t("ide.editor.openTabs")}
           aria-orientation="horizontal"
@@ -337,7 +340,9 @@ export function OpenTabsBar() {
                       setPlanTabActive(activeSessionId, false);
                     }
                   }}
-                  onClose={() => close(path)}
+                  onClose={() => {
+                    void closeFileInIdeSafely(path, pid).then((result) => reportBlocked(result.blocked));
+                  }}
                   onKeyboardReorder={(key) => {
                     const from = openFiles.indexOf(path);
                     const target = keyboardReorderTarget(key, from, openFiles.length);
@@ -359,6 +364,8 @@ export function OpenTabsBar() {
               the × closes the plan tab entirely. */}
           {hasPlanTab && (
             <div
+              data-cds="PlanEditorTab"
+              data-active={planTabActive ? "true" : "false"}
               ref={(node) => {
                 if (node) tabNodes.current.set(PLAN_TAB_KEY, node);
                 else tabNodes.current.delete(PLAN_TAB_KEY);
@@ -476,9 +483,9 @@ export function OpenTabsBar() {
         dirtySet={dirtySet}
         reportBlocked={reportBlocked}
         actions={{
-          close: (p) => close(p),
-          closeOthers: (p) => closeOthers(p),
-          closeAll: () => closeAll(),
+          close: (p) => closeFileInIdeSafely(p, pid),
+          closeOthers: (p) => closeOtherFilesInIdeSafely(p, pid),
+          closeAll: () => closeAllFilesInIdeSafely(pid),
           activate: (p) => setActive(p),
           addToChat: (p) => enqueueChatFile(p),
         }}
@@ -582,6 +589,8 @@ export function SortableFileTab({
       }}
       onMouseDown={onMouseDown}
       onContextMenu={onContextMenu}
+      data-cds="EditorFileTab"
+      data-active={isActive ? "true" : "false"}
       role="tab"
       aria-selected={isActive}
       aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
@@ -646,9 +655,9 @@ export function SortableFileTab({
  *  presentational. The close* actions return what actually got closed vs.
  *  blocked on unsaved edits, so the menu can report the skipped ones. */
 export interface FileTabContextMenuActions {
-  close: (path: string) => IdeCloseResult;
-  closeOthers: (keepPath: string) => IdeCloseResult;
-  closeAll: () => IdeCloseResult;
+  close: (path: string) => IdeCloseResult | Promise<IdeCloseResult>;
+  closeOthers: (keepPath: string) => IdeCloseResult | Promise<IdeCloseResult>;
+  closeAll: () => IdeCloseResult | Promise<IdeCloseResult>;
   activate: (path: string) => void;
   addToChat: (path: string) => void;
 }
@@ -711,21 +720,29 @@ export function FileTabContextMenu({
             <Menu.Item
               disabled={targetDirty}
               title={targetDirty ? t("ide.editor.closeBlockedUnsaved") : undefined}
-              onClick={() => { const p = currentMenuPath(); if (p) actions.close(p); }}
+              onClick={() => {
+                const p = currentMenuPath();
+                if (p) void Promise.resolve(actions.close(p)).then((result) => reportBlocked(result.blocked));
+              }}
               className={MENU_ITEM_CLASS}
             >
               <IconX size={14} className="shrink-0" />
               <span>{t("common.close")}</span>
             </Menu.Item>
             <Menu.Item
-              onClick={() => { const p = currentMenuPath(); if (p) reportBlocked(actions.closeOthers(p).blocked); }}
+              onClick={() => {
+                const p = currentMenuPath();
+                if (p) void Promise.resolve(actions.closeOthers(p)).then((result) => reportBlocked(result.blocked));
+              }}
               className={MENU_ITEM_CLASS}
             >
               <IconX size={14} className="shrink-0 opacity-50" />
               <span>{t("ide.editor.closeOthers")}</span>
             </Menu.Item>
             <Menu.Item
-              onClick={() => { if (currentMenuPath()) reportBlocked(actions.closeAll().blocked); }}
+              onClick={() => {
+                if (currentMenuPath()) void Promise.resolve(actions.closeAll()).then((result) => reportBlocked(result.blocked));
+              }}
               className={MENU_ITEM_CLASS}
             >
               <IconStack2 size={14} className="shrink-0" />

@@ -77,6 +77,8 @@ export const zh = {
   // 这一步的开销。`{cost}` 在引擎没报花费时是 "—"（不是 $0.00）。
   "chatStream.workflowStep.usage": "花了 {tokens} tokens · {cost}",
   // 失败卡片上那个按钮 —— 从这一步接着往下跑(见 `RetryNodeDialog`)。
+  "chatStream.workflowStep.retryWholeFlow": "重跑整条流程",
+  "chatStream.workflowStep.retryWholeFlowHint": "Node-RED 不支持从某一步续跑，重试会把整条流再跑一遍",
   "chatStream.workflowStep.retry": "再试一次",
   // 那个窗口里的四句话。`desc` 说清白重跑范围,`scope` 说清那句话给谁看 ——
   // 用户会以为它在给整张图下指令,而那正是最容易搞错的一处。
@@ -215,8 +217,10 @@ export const zh = {
   "chatStream.attachment.collapseImage": "收起图片",
   "chatStream.attachment.collapseContent": "收起内容",
 
-  // ── Markdown ──
+  // ── 消息操作 / Markdown ──
+  "chatStream.messageActions": "消息操作",
   "chatStream.copyCode": "复制代码",
+  "chatStream.copyQuote": "复制为引用",
   "chatStream.code.expand": "展开",
   "chatStream.code.collapse": "收起",
 

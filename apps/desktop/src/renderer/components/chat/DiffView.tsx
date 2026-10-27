@@ -23,8 +23,7 @@ export function DiffView({
   /** Class controlling the scroll container's height. Overridable so
    *  full-screen consumers (the mobile viewer overlay) can fill the screen;
    *  defaults to the inline card height. */
-  scrollClassName?: string;
-}) {
+  scrollClassName?: string;}) {
   const { t } = useI18n();
   // REA StreamingDiffViewer: retain completed row identities as the streaming
   // tail grows; any changed tail is replaced without touching stable rows.
@@ -33,7 +32,7 @@ export function DiffView({
   lastRowsRef.current = rows;
   if (diff.length === 0) {
     return (
-      <div className="rounded-[var(--radius-code)] bg-surface-muted/60 p-2 text-content-subtle [font-size:var(--chat-fs-xs)]">
+      <div data-cds="DiffView" className="rounded-[var(--radius-code)] border border-edge/45 bg-surface-muted/40 p-2 text-content-subtle [font-size:var(--chat-fs-xs)]">
         {t("chatStream.diff.noChanges")}
       </div>
     );
@@ -45,7 +44,7 @@ export function DiffView({
 
   return (
     // 【ARC-005 V2】代码/Diff 圆角走 CDS 的 --radius-code（12px），与代码块一致。
-    <div className={cn("overflow-auto rounded-[var(--radius-code)] bg-surface-muted/60 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]", scrollClassName)}>
+    <div data-cds="DiffView" className={cn("overflow-auto overscroll-contain rounded-[var(--radius-code)] border border-edge/45 bg-surface-muted/40 font-mono leading-relaxed [font-size:var(--chat-fs-xs)]", scrollClassName)}>
       {rows.map((d, i) => {
         // 【ARC-005】Diff 行色走 --diff-* token（styles.css 的 .diff-add /
         // .diff-del / .diff-context）：原先这里硬编码 `bg-red-500/15
@@ -63,11 +62,11 @@ export function DiffView({
           ? inlineDiffParts(d.op === "delete" ? d.text : paired.text, d.op === "insert" ? d.text : paired.text)
           : null;
         return (
-          <div key={i} className={cn("flex items-start whitespace-pre", opBg)}>
-            <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right tabular-nums text-content-subtle">
+          <div key={i} data-cds="DiffLine" data-diff-op={d.op} className={cn("flex items-start whitespace-pre", opBg)}>
+            <span className="w-8 shrink-0 select-none border-r border-edge/40 px-1 text-right tabular-nums text-content-subtle [font-size:var(--chat-fs-xxs)]">
               {d.oldNo ?? ""}
             </span>
-            <span className="w-10 shrink-0 select-none border-r border-edge/40 px-1.5 text-right tabular-nums text-content-subtle">
+            <span className="w-8 shrink-0 select-none border-r border-edge/40 px-1 text-right tabular-nums text-content-subtle [font-size:var(--chat-fs-xxs)]">
               {d.newNo ?? ""}
             </span>
             <span className="w-3 shrink-0 select-none pl-1 text-content-subtle">

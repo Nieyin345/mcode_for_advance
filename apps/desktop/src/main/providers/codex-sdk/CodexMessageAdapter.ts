@@ -556,14 +556,32 @@ export class CodexMessageAdapter {
         this.handleImageGeneration(item, completed);
         break;
       case "imageView":
-        // Model viewed a local image (codex view_image tool). Lightweight
-        // card with the path only — viewed ≠ generated, and the same file
-        // may already be visible elsewhere in the conversation.
+        /* Model viewed a local image (codex view_image tool).
+         *
+         * 【CHAT-20】之前这里只给路径卡 —— 用户看得到"它读了某个文件"，
+         * 但**看不到它到底看到了什么**。产品要求是像 Claude 那样把那张图缩略图
+         * 显示出来（"看得见 AI 看了什么"）。
+         *
+         * 走 `browser.image`：那条通道已经能把图挂到工具卡片上（生图与截图都走它），
+         * 所以不需要再开一条。读文件失败**不静默** —— 但也不让整轮失败：
+         * 卡片仍然显示路径，只是没有缩略图（可读性比完整性重要）。
+         *
+         * 上限 8 MB：再大的图在对话里缩略也没有意义，而 base64 会撑爆事件体积。 */
         if (!completed) {
           this.imageItemsSeen.add(item.id);
           this.emitToolUse(item.id, "view_image", { path: item.path ?? "" });
         } else {
           this.ensureImageCard(item.id, "view_image", { path: item.path ?? "" });
+          const viewed = this.readLocalImage(item.path);
+          if (viewed !== null) {
+            this.emit({
+              type: "browser.image",
+              sessionId: this.sessionId,
+              toolCallId: item.id,
+              data: viewed.data,
+              mimeType: viewed.mimeType,
+            });
+          }
           this.emit({
             type: "tool.result",
             sessionId: this.sessionId,
@@ -666,6 +684,31 @@ export class CodexMessageAdapter {
         item.revisedPrompt ??
         (img ? item.status ?? "" : typeof item.result === "string" && item.result.length <= 200 ? item.result : item.status ?? ""),
     });
+  }
+
+  /**
+   * 读一张本地图片变成 `browser.image` 的载荷（CHAT-20）。
+   *
+   * 返回 null = 这个路径读不出来 / 不是图片 / 太大。**不抛**：缩略图是补充信息，
+   * 拿不到就只显示路径卡，不该让整轮失败。
+   */
+  private readLocalImage(path: unknown): { data: string; mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif" } | null {
+    if (typeof path !== "string" || path === "") return null;
+    const ext = path.toLowerCase().split(".").pop() ?? "";
+    const mimeType = ext === "png" ? "image/png"
+      : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+        : ext === "webp" ? "image/webp"
+          : ext === "gif" ? "image/gif"
+            : null;
+    if (mimeType === null) return null;
+    try {
+      const bytes = readFileSync(path);
+      // 8 MB 上限：base64 会再涨三分之一，而对话里的缩略图不需要原图。
+      if (bytes.byteLength === 0 || bytes.byteLength > 8 * 1024 * 1024) return null;
+      return { data: bytes.toString("base64"), mimeType };
+    } catch {
+      return null;
+    }
   }
 
   /** Emit the synthetic tool-use card for an image item if `item/started`

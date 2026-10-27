@@ -38,7 +38,6 @@ import { useCustomUiStore } from "@renderer/stores/customUiStore.js";
 import { selectActiveEnvPath, useSessionStore } from "@renderer/stores/sessionStore.js";
 import { Button, ErrorNote, HintLabel, Input, Switch } from "@renderer/components/ui/index.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
-import { ModuleSurface, ModuleToolsButton } from "@renderer/components/modules/ModuleSurface.js";
 import { useWorkspaceTarget } from "../customUi/useWorkspaceTarget.js";
 import { SettingsSection } from "./SettingsSection.js";
 import {
@@ -770,13 +769,7 @@ export function AdvancedSection() {
       </SettingsSection>
       <SettingsSection title={t("customUi.advanced.modules")} desc={t("customUi.advanced.modulesHint")}>
         <div className="p-3">
-          {projectPath ? (
-            <ModuleSurface key={projectPath} projectPath={projectPath}>
-              <ModuleToolsButton />
-            </ModuleSurface>
-          ) : (
-            <p className="text-code text-content-subtle">{t("customUi.advanced.modulesNoProject")}</p>
-          )}
+          <p className="text-code text-content-subtle">{t("customUi.advanced.modulesNoProject")}</p>
         </div>
       </SettingsSection>
     </div>

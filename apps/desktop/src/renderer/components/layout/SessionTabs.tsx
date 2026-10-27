@@ -163,7 +163,7 @@ export function SessionTabs() {
   const sortStrategy = multiRow ? rectSortingStrategy : horizontalListSortingStrategy;
 
   return (
-    <div className="flex shrink-0 items-center gap-0.5 border-b border-edge/60 bg-surface/40 px-2 py-1.5">
+    <div data-cds="SessionTabBar" className="flex shrink-0 items-center gap-0.5 border-b border-edge/60 bg-surface/40 px-2 py-1.5">
       {/* Left chevron — only when there's content scrolled off the left edge. */}
       {canScrollLeft && (
         <TabBarChevronButton
@@ -401,6 +401,8 @@ export function SortableSessionTab({
       }}
       onMouseDown={onMouseDown}
       onContextMenu={onContextMenu}
+      data-cds="SessionTab"
+      data-active={isActive ? "true" : "false"}
       role="tab"
       aria-selected={isActive}
       aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
@@ -408,13 +410,13 @@ export function SortableSessionTab({
       aria-setsize={setSize}
       title={title}
       className={cn(
-        // Uniform chip style shared with editor file tabs. In the unified tab
-        // strip the two kinds are told apart by the vertical divider between
-        // the groups, not by shape.
-        // 【ARC-005 V2】圆角走 CDS 控件档；激活态从 accent 淡底改成
-        // surface-hover + 发丝环 —— 与侧栏会话行、终端标签、分段控件同一
-        // 语言（accent 只留给"正在运行/需要注意"的信号，不再标记选中态）。
-        "group flex max-w-[200px] cursor-pointer select-none items-center gap-1.5 rounded-[var(--radius-btn-xs)] px-2.5 py-1 text-[11px] transition-colors",
+        // 【UI 对齐 Claude / ClaudeDesktopHeader.tsx:65-82】上游顶栏是
+        // 「一条 45px 的带细底边的横条，左侧一个标题文字」，**没有把每个会话画成
+        // 独立的胶囊**。我们原来给每个标签 `bg-surface-muted/60 + ring-1 + 图标 + 状态点`，
+        // 一排标签像一排按钮。
+        // 改成：静止无底色、无环；只有激活态给一档 `surface-hover`。
+        // 这样标签之间的分隔来自文字间距与底边，而不是每个块自己的框。
+        "group flex max-w-[220px] cursor-pointer select-none items-center gap-1.5 rounded-[var(--radius-btn-md)] px-2.5 py-1.5 text-xs transition-colors",
         // Multi-row: flex-1 (basis 0 + grow) lets tabs stretch between the
         // shared 170px min floor and the max cap above — line-breaking uses
         // the floor, so tabs share one line whenever they can fit shrunk,
@@ -422,8 +424,8 @@ export function SortableSessionTab({
         // fixed natural-width chips inside the horizontally scrolling strip.
         multiRow ? "min-w-[170px] flex-1" : "min-w-0 shrink-0",
         isActive
-          ? "bg-surface-hover font-medium text-content ring-1 ring-inset ring-edge/70"
-          : "bg-surface-muted/60 text-content-muted hover:bg-surface-hover/70 hover:text-content",
+          ? "bg-surface-hover font-medium text-content"
+          : "text-content-muted hover:bg-surface-hover/60 hover:text-content",
         isDragging && "shadow-lg",
       )}
     >
@@ -432,20 +434,10 @@ export function SortableSessionTab({
         const { Icon, color } = getProviderIcon(session?.providerId);
         return <Icon size={13} className={cn("shrink-0", color)} />;
       })()}
-      {/* Running indicator: spinner while a turn is in flight (matches the
-          app-wide loading-icon convention), static dot when idle. Lets the
-          user see at a glance which background tabs are still working. */}
-      {running ? (
-        <SpinnerIcon size={12} className="shrink-0 animate-spin text-accent" />
-      ) : (
-        <span
-          aria-hidden
-          className={cn(
-            "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
-            isActive ? "bg-accent/70" : "bg-content-subtle/50",
-          )}
-        />
-      )}
+      {/* Only active work is marked in the tab strip. Idle dots duplicate the
+          provider icon and make the row noisy; the spinner remains visible for
+          running turns, while unread work has its own count badge below. */}
+      {running && <SpinnerIcon size={12} className="shrink-0 animate-spin text-accent" />}
       {/* Title fills every free pixel of the chip (flex-1) — on inactive
           tabs the close button leaves the layout entirely until hover, so
           the title owns the full tab width. */}

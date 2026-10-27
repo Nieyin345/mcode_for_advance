@@ -93,6 +93,9 @@ export function foldTranscript(
         ...target,
         status: e.isError ? "error" : "done",
         result: e.content,
+        // 只给界面看的附件（截图/生图/思维导图）。**必须显式搬过来**：
+        // 少这一行，工具带了图也传不到渲染端，而块本身看起来完全正常。
+        ...(e.display !== undefined ? { display: e.display } : {}),
       };
       return { blocks, broadcast: PUSH_NOW.has(e.type) };
     }

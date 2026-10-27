@@ -94,7 +94,7 @@ import { withOsFileLease } from "@main/lib/osFileLease.js";
 // 本模块不能 import `pathGuard`（它会拉进 repositories → db → electron），
 // `realPathWithin` 就是为这种场景拆出来的零依赖叶子（已经给了 fileSnapshot 用）。
 import { physicalPath } from "@main/lib/realPathWithin.js";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { link, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -106,6 +106,14 @@ import type { DocsPrivilegedPorts } from "./docsPrivilegedPorts.js";
 import type { DocsAiPorts } from "./docsAiPorts.js";
 import type { DocViewOpenInput, DocViewRect, DocViewResult, DocViewSnapshot } from "@contracts/ipc";
 import type { EditorCredentialPort } from "./documentViewCredentialBroker.js";
+import { rendererToolDispatch } from "./rendererToolDispatch.js";
+import {
+  selectDormantViews,
+  snapshotCanRestore,
+  DEFAULT_DORMANCY_POLICY,
+  type DormancyPolicy,
+  type DormantSnapshot,
+} from "./documentViewDormancy.js";
 
 /** webPreferences 的**完整**形状 —— 三项安全开关是字面量类型，改一处都过不了 typecheck。 */
 export interface DocumentViewWebPreferences {
@@ -211,12 +219,50 @@ function offscreenBounds(bounds: DocViewRect): DocViewRect {
  * `("open-path", path)` 才走 `openRecent(path)`（`App.tsx` 的 `case "open-path"`）。
  * 换名字等于发到没人收的通道上：`openPath` 返回 ok、文档却不打开。
  */
+/** 【Office 深度集成】宿主 → 编辑器页的**工具调用**通道。
+ *
+ *  与 `menu:command` / `slides:opened` 一样，这是**内部通道**（不进 RpcMap 的
+ *  renderer 面，Agent 够不到），只能由我们注入的 preload 订阅。
+ *  请求体带一次性 nonce，回执走 `RENDERER_TOOL_REPLY_CHANNEL`。 */
+export const RENDERER_TOOL_CALL_CHANNEL = "mcode:document-view:renderer-tool-call";
+/** 编辑器页 → 宿主的工具回执（单向 send）。 */
+export const RENDERER_TOOL_REPLY_CHANNEL = "mcode:document-view:renderer-tool-reply";
+
+/**
+ * 各原厂编辑器的**页面侧通道名** → 宿主统一的 `mcode:document-view:*`。
+ *
+ * ## 为什么需要这张表
+ *
+ * 六家编辑器各有自己的通道命名（docs 走 `docs:*` 经 `mcode-view.ts` 的
+ * `MCODE_DOCS_CHANNEL_POLICY` 映射，markdown 直接 `markdown:*`）。修订与工具派发
+ * 在**宿主**只有一个入口（`mcode:document-view:revision-report` /
+ * `renderer-tool-reply`），所以页面报上来的名字必须转一次。
+ *
+ * **docs 不在这张表里**：它已经在 preload 策略里转过了
+ * （`'docs:revision-report': { to: 'mcode:document-view:revision-report' }`），
+ * 再转一次会变成两次转换 —— 宿主收到的名字里已经没有 `docs:` 前缀了。
+ *
+ * 表里没有的通道名 → 原样监听（向后兼容：未来的编辑器可以不转）。
+ */
+export const VENDOR_PAGE_CHANNELS: Readonly<Record<string, string>> = Object.freeze({
+  "markdown:revision-report": "mcode:document-view:revision-report",
+  "markdown:revision-comment-created": "mcode:document-view:revision-comment-created",
+  "markdown:renderer-tool-reply": "mcode:document-view:renderer-tool-reply",
+});
+
 const VENDOR_MENU_COMMAND_CHANNEL = "menu:command";
 const VENDOR_OPEN_PATH_COMMAND = "open-path";
 
 /** 【ARC-007】保存通道的单次上限（256 MiB）。真实办公文档远小于它；超过基本可以
  *  确定是页面算错或投毒，放任它会一次性把内存和磁盘撑满。 */
 const DOC_VIEW_SAVE_MAX_BYTES = 256 * 1024 * 1024;
+
+/** 打开时的体积提示阈值。
+ *
+ *  取 64 MiB 的依据：O18 的样本是**空白**文档就要 100–250 MiB 工作集，文档内容的
+ *  解析开销还要再加；64 MiB 的 docx/xlsx 在真实项目里已经属于"要等一会儿"的量级。
+ *  它**不是拒绝线** —— 只是让面板能提前说一句"这个文件很大"。 */
+const DOC_VIEW_LARGE_FILE_BYTES = 64 * 1024 * 1024;
 
 /**
  * 【ARC-007 P0】坏档预检：docx 是 zip，前两字节必须是 `PK`。
@@ -321,6 +367,12 @@ interface LiveDocumentView {
     at: number;
     source: DocumentMutationNotice["source"];
   };
+  /** 【Office 深度集成】打开时的**体积提示**（只在超过阈值时存在）。
+   *
+   *  为什么不直接拒绝：大文件有时确实要打开。但 O18 实测一个空白 Sheets 就要
+   *  253 MiB 工作集，几百 MB 的工作簿能把整机拖死 —— 用户有权提前知道自己在
+   *  打开什么。面板据此显示一条提示，而不是让编辑器在无声中卡住十分钟。 */
+  largeFileWarning?: { bytes: number; thresholdBytes: number; at: number };
   /** 【ARC-006 Gate A 缺口】这个视图加载的是哪个工作流引擎的编辑器页
    *  （`open` 时由 `workflowEngineId` 记下）。换引擎/换回普通文档视图时要摘旧凭据绑定。 */
   workflowEngineId: string | null;
@@ -337,6 +389,8 @@ interface LiveDocumentView {
   slidesOpen?: { result: unknown; hash: string } | null;
   /** 【ARC-007 P0】页面经 `reportCloseCheck` 上报的脏标记（vendor 每次编辑/保存
    *  后都报）。`confirmDocumentReplace` 的真实来源。 */
+  /** 隐藏时刻；`null` = 当前可见（或从未隐藏过）。休眠策略按它算宽限期。 */
+  hiddenAt: number | null;
   pageDirty: boolean;
   /** Each new dirty report invalidates a pending human discard confirmation. */
   pageDirtyEpoch: number;
@@ -496,6 +550,10 @@ export class DocumentViewHost {
   private disposed = false;
 
   constructor(ports: DocumentViewHostPorts) {
+    // 派发通道靠"路径 → docId"找编辑器页；宿主是唯一知道这个映射的地方，
+    // 所以在这里登记（`document_tool_call` 那边只查 `rendererToolDispatch`，
+    // 不 import 宿主 —— 否则两个模块会互相依赖）。
+    rendererToolDispatch.setPathResolver((filePath) => this.docIdForOpenPath(filePath));
     this.getWindow = ports.getMainWindow;
     this.createView = typeof ports.createView === "function" ? ports.createView : defaultCreateView;
     this.vendorCreateView = ports.createView && typeof ports.createView !== "function" ? ports.createView.vendor : null;
@@ -662,6 +720,7 @@ export class DocumentViewHost {
       editor: input.editor ?? null,
       pendingOpen: null,
       slidesOpen: null,
+      hiddenAt: null,
       pageDirty: false,
       pageDirtyEpoch: 0,
     };
@@ -695,6 +754,17 @@ export class DocumentViewHost {
     this.watchFailures(live);
     this.views.set(input.docId, live);
     if (kind !== null) {
+      // 【Office 深度集成】大文件提示：**只记录，不拒绝**（大文件有时确实要打开，
+      // 但用户有权知道自己在打开什么）。用 statSync 而不是异步：这条路径本来
+      // 就是同步返回的，而且只读一个 size。
+      const sizeOfOpened = (() => {
+        try { return statSync(input.filePath!, { throwIfNoEntry: false })?.size ?? null; }
+        catch { return null; }
+      })();
+      if (sizeOfOpened !== null && sizeOfOpened >= DOC_VIEW_LARGE_FILE_BYTES) {
+        live.largeFileWarning = { bytes: sizeOfOpened, thresholdBytes: DOC_VIEW_LARGE_FILE_BYTES, at: Date.now() };
+        log.info(`document view large file: ${input.docId} ${sizeOfOpened} bytes`);
+      }
       // 原厂构造器已经装载原版 preload、授权指定路径并发起导航；不重复 loadURL。
       const claim = this.claimOpenedPath(input.docId, input.filePath!, view.webContents);
       if (!claim.ok) { this.close(input.docId); return { ok: false, reason: claim.reason }; }
@@ -709,6 +779,10 @@ export class DocumentViewHost {
     } else {
       this.parkOffscreen(live);
     }
+    // 【Office 深度集成】登记这条"宿主 → 编辑器页"的工具派发通道。
+    // 它让**普通对话**（不是编辑器里那轮 AI 请求）也能执行 editor-only 工具：
+    // 请求级绑定只在文档 AI 请求进行中存在，而用户最常走的是"在聊天里让它改文档"。
+    this.registerRendererToolChannel(input.docId, view);
     log.info(`document view opened: ${input.docId} visible=${input.visible}${engineId !== null ? ` engine=${engineId}` : ""}`);
     return { ok: true };
   }
@@ -760,18 +834,87 @@ export class DocumentViewHost {
       return { ok: false, reason: `显示文档视图失败：${err instanceof Error ? err.message : String(err)}` };
     }
     live.visible = true;
+    live.hiddenAt = null;
     this.applyBounds(live);
     return { ok: true };
   }
 
-  /** 移出屏幕但**不销毁** —— 切标签/收面板时编辑状态要保住（与 BrowserManager.hide 同）。 */
+  /** 移出屏幕但**不销毁** —— 切标签/收面板时编辑状态要保住（与 BrowserManager.hide 同）。
+   *
+   *  同时记下隐藏时刻：`documentViewDormancy.ts` 的宽限期以此为准，而不是
+   *  "最后一次操作时间"那种会随任何 IPC 重置的量 —— 用户在别的标签里编辑
+   *  不应该让这个后台视图显得"刚用过"。 */
   hide(docId: string): DocViewResult {
     const live = this.views.get(docId);
     if (!live) return { ok: false, reason: "文档视图不存在或已关闭" };
     if (!live.visible) return { ok: true };
     live.visible = false;
+    live.hiddenAt = Date.now();
     this.parkOffscreen(live);
     return { ok: true };
+  }
+
+  /**
+   * 【Office 深度集成】本机后台文档视图的**内存治理入口**。
+   *
+   * 返回那些可以**无损回收**的 docId（判据见 `documentViewDormancy.ts`：够久没
+   * 显示、页面自报干净、且真的打开过文件）。调用方拿到之后应当：
+   *   1. 先 `dormantSnapshot(docId)` 存下重建所需的状态；
+   *   2. 再 `close(docId)`（它摘会话、释放 renderer）；
+   *   3. 用户切回时用同一条 `open()` 入参把视图建回来。
+   *
+   * ⚠️ **这份方法只回答"谁可以回收"，不自己动手**：销毁是不可逆的，把它和
+   * "该不该"绑在一起会让调用方失去"先存快照再销毁"的顺序保证。
+   */
+  dormancyCandidates(now = Date.now(), policy: DormancyPolicy = DEFAULT_DORMANCY_POLICY): string[] {
+    const candidates = [...this.views.values()].map((live) => ({
+      docId: live.docId,
+      visible: live.visible,
+      dirty: live.pageDirtyEpoch > 0 ? live.pageDirty : undefined,
+      hiddenAt: live.hiddenAt,
+      hasDocument: live.openedFilePath !== null,
+    }));
+    return selectDormantViews(candidates, now, policy);
+  }
+
+  /**
+   * 回收前必须留下的重建凭据。`snapshotCanRestore` 为 false 时返回 null ——
+   * 调用方**不该**回收那种视图（少一项就意味着恢复出来不是同一份状态）。
+   */
+  dormantSnapshot(docId: string, now = Date.now()): DormantSnapshot | null {
+    const live = this.views.get(docId);
+    if (!live) return null;
+    const editor =
+      live.editor === "pdf" || live.editor === "markdown" || live.editor === "html" ||
+      live.editor === "sheets" || live.editor === "slides"
+        ? live.editor
+        : null;
+    const snapshot: DormantSnapshot = {
+      docId,
+      url: live.url,
+      editor,
+      filePath: live.openedFilePath,
+      bounds: { ...live.bounds },
+      mcodeSessionId: live.mcodeSessionId,
+      dormantAt: now,
+      hiddenAt: live.hiddenAt,
+    };
+    return snapshotCanRestore(snapshot) ? snapshot : null;
+  }
+
+  /** 把休眠快照还原成一条 `open()` 入参 —— 保证"回收再打开"走的是同一条路径，
+   *  而不是渲染端自己拼一份（拼错一处就换了编辑器或丢了会话绑定）。 */
+  static openInputFromDormant(snapshot: DormantSnapshot): DocViewOpenInput {
+    return {
+      docId: snapshot.docId,
+      url: snapshot.url,
+      bounds: snapshot.bounds,
+      // 回收时它是隐藏的；恢复后是否立刻可见由调用方决定（用户切回来时才 show）。
+      visible: false,
+      ...(snapshot.editor !== null ? { editor: snapshot.editor } : {}),
+      ...(snapshot.filePath !== null ? { filePath: snapshot.filePath } : {}),
+      ...(snapshot.mcodeSessionId !== null ? { mcodeSessionId: snapshot.mcodeSessionId } : {}),
+    };
   }
 
   /** 把键盘焦点交给文档页（渲染端点进占位区时调用）。 */
@@ -850,9 +993,18 @@ export class DocumentViewHost {
       return physicalPath(filePath) !== null && physicalPath(filePath) === physicalPath(live.openedFilePath ?? "")
         ? { ok: true } : { ok: false, reason: "原厂视图仅能打开初始授权的文件" };
     }
-    if (typeof live.view.webContents.send !== "function") {
-      return { ok: false, reason: "当前视图不支持接收打开请求" };
-    }
+    // Re-activating a hidden native Docs tab must reuse its committed in-memory
+    // document instead of sending open-path again (which would invoke the vendor
+    // replace/save guard and reload the same file). Explicit reload has its own path.
+    //
+    // ⚠️ **仍然要准备 `pendingOpen`**：`readOpened` 的唯一数据源就是它。只返回
+    // `{ok:true}` 而什么也不登记，会让页面这次拉取拿到「没有待打开的文档」——
+    // 调用方看到 openPath 成功、随后却读不到字节，属于"成功"与"事实"不一致。
+    // 所以这里只决定**发不发通知**，不决定要不要准备。
+    const reopeningSameFile =
+      live.editor === null && live.workflowEngineId === null && live.openedFilePath !== null &&
+      physicalPath(live.openedFilePath) !== null &&
+      physicalPath(live.openedFilePath) === physicalPath(filePath);
     // 【ARC-007 P0】**一条单向通知 + 一条单向拉取**，不再有回环。
     //
     // 旧实现：`openPath` 推 `menu:command("open-path")` → 页面 `openRecent` →
@@ -883,6 +1035,19 @@ export class DocumentViewHost {
       };
     }
     live.pendingOpen = { docId, filePath, requestedAt: Date.now() };
+    if (reopeningSameFile) {
+      // 同一份文件被重新激活：登记好待打开请求（让 readOpened 能正确应答），
+      // 但**不再推** open-path —— 页面里的那份文档还是活的，重推会触发 vendor
+      // 的替换/保存守卫并重新加载同一个文件。
+      log.info(`document view open-path: reuse committed document ${docId} ${filePath}`);
+      return { ok: true };
+    }
+    // 只有"要发通知"这条路才需要 webContents.send；假视图/受限视图没有它时
+    // 显式拒绝（上面的复用分支不需要它，所以检查放在这里而不是更早）。
+    if (typeof live.view.webContents.send !== "function") {
+      live.pendingOpen = null;
+      return { ok: false, reason: "当前视图不支持接收打开请求" };
+    }
     try {
       live.view.webContents.send?.(VENDOR_MENU_COMMAND_CHANNEL, VENDOR_OPEN_PATH_COMMAND, filePath);
       // A second open request supersedes unclaimed bytes from this view.
@@ -1190,6 +1355,11 @@ export class DocumentViewHost {
   }
 
   /** 【ARC-007 P1/GA1】只读诊断：这个视图的编辑器域（未声明 = null）。 */
+  /** 这个文档有没有未保存的修改（页面上报的 dirty）。 */
+  isDirtyOf(docId: string): boolean {
+    return this.views.get(docId)?.pageDirty === true;
+  }
+
   editorOf(docId: string): LiveDocumentView["editor"] {
     return this.views.get(docId)?.editor ?? null;
   }
@@ -2032,16 +2202,56 @@ export class DocumentViewHost {
   }
 
   /** 诊断快照（不含 webContents 句柄 —— 那些不越过这一层）。 */
+  /**
+   * 【Office 深度集成】按**物理路径**找当前打开它的 docId（找不到回 null）。
+   *
+   * 为什么需要它：`document_tool_call` 拿到的是路径，而渲染端派发通道按 docId 登记。
+   * 路径比较走 `physicalPath`（折叠大小写 / `.` `..` / junction），与打开会话表同一条判据 ——
+   * 用字符串比会让 `D:\WS\a.docx` 与 `d:/ws/a.docx` 各开各的视图对不上。
+   *
+   * **只回答"有没有开着"，不回答"该不该允许"**：授权仍由调用方（工具层）决定。
+   */
+  /** 这个 docId 打开的物理路径（反查上报来源用）；没打开文档时为 null。 */
+  pathOfDocId(docId: string): string | null {
+    return this.views.get(docId)?.openedFilePath ?? null;
+  }
+
+  /** 向编辑器页发一条**宿主 → 页面**的内部消息。视图不存在/已销毁/无 send 时返回 false
+   *  （调用方据此显式失败，而不是假装发到了）。 */
+  sendToEditor(docId: string, channel: string, payload: unknown): boolean {
+    const live = this.views.get(docId);
+    if (live === undefined) return false;
+    if (live.view.webContents.isDestroyed?.() === true) return false;
+    if (typeof live.view.webContents.send !== "function") return false;
+    try {
+      live.view.webContents.send(channel, payload);
+      return true;
+    } catch (err) {
+      log.warn(`document view send failed: ${docId} ${channel} ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  docIdForOpenPath(filePath: string): string | null {
+    const target = physicalPath(filePath);
+    if (target === null) return null;
+    for (const live of this.views.values()) {
+      if (live.openedFilePath === null) continue;
+      if (physicalPath(live.openedFilePath) === target) return live.docId;
+    }
+    return null;
+  }
+
   list(): DocViewSnapshot[] {
     return [...this.views.values()].map((live) => ({
       docId: live.docId,
       url: live.url,
       visible: live.visible,
       bounds: { ...live.bounds },
-      ...(live.pageDirtyEpoch > 0 ? { dirty: live.pageDirty } : {}),
       ...(live.lastFailure !== undefined ? { lastFailure: { ...live.lastFailure } } : {}),
       ...(live.lastSaveConflict !== undefined ? { lastSaveConflict: { ...live.lastSaveConflict } } : {}),
       ...(live.lastExternalMutation !== undefined ? { lastExternalMutation: { ...live.lastExternalMutation } } : {}),
+      ...(live.largeFileWarning !== undefined ? { largeFileWarning: { ...live.largeFileWarning } } : {}),
     }));
   }
 
@@ -2138,7 +2348,66 @@ export class DocumentViewHost {
     this.applyNativeBounds(live, offscreenBounds(live.bounds), "park");
   }
 
+  /** 把一条"宿主 → 编辑器页"的工具派发通道挂到这个 docId 上。
+   *
+   *  只对**原厂编辑器视图**有意义（`kind !== null`）：普通文档视图没有编辑器工具表。
+   *  通道用一个独立的内部 IPC 名字，页面侧由文档视图 preload 订阅
+   *  （见 `documentViewPreload.ts` 的 `onRendererToolCall`）。 */
+  private registerRendererToolChannel(docId: string, view: DocumentViewLike): void {
+    const webContents = view.webContents;
+    // 页面回执 → `acceptReply`（按 callId + nonce 配对）。
+    // 订阅一次即可：`ipcMain.on` 在应用生命周期内常驻，回执照 callId 找在飞调用，
+    // 不属于任何 docId 的会被 `acceptReply` 返回 false 丢弃（不向页面报错）。
+    this.ensureRendererToolReplyListener();
+    rendererToolDispatch.register({
+      docId,
+      isAlive: () => webContents.isDestroyed?.() !== true,
+      send: (request) => {
+        // `send` 在假视图/受限视图上可能是可选的；没有它就无法派发，
+        // 由 `invoke` 的 try/catch 转成显式失败（而不是静默吞掉）。
+        if (typeof webContents.send !== "function") {
+          throw new Error("当前文档视图没有派发通道");
+        }
+        webContents.send(RENDERER_TOOL_CALL_CHANNEL, request);
+      },
+    });
+  }
+
+  /** 回执监听只装一次（多次装会让同一回执被处理多遍）。 */
+  private rendererToolReplyListenerInstalled = false;
+  private ensureRendererToolReplyListener(): void {
+    if (this.rendererToolReplyListenerInstalled) return;
+    this.rendererToolReplyListenerInstalled = true;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { ipcMain } = require("electron") as typeof import("electron");
+      ipcMain.on(RENDERER_TOOL_REPLY_CHANNEL, (event: unknown, raw: unknown) => {
+        const payload = raw as { nonce?: unknown; callId?: unknown; status?: unknown; output?: unknown } | null;
+        if (payload === null || typeof payload !== "object") return;
+        if (typeof payload.nonce !== "string" || typeof payload.callId !== "string") return;
+        const status = payload.status;
+        if (status !== "ok" && status !== "error" && status !== "cancelled") return;
+        // **sender 校验**：只接受来自某个已登记编辑器页的回执。没有这一条，
+        // 同进程里任何页面都能伪造一次工具回执（nonce 是宿主发的，但它可被读到）。
+        const senderDocId = this.docIdForSender((event as { sender?: unknown } | null)?.sender);
+        if (senderDocId === null) return;
+        if (!payload.nonce.startsWith(`${senderDocId}:`)) return;
+        rendererToolDispatch.acceptReply({
+          nonce: payload.nonce,
+          callId: payload.callId,
+          status,
+          ...(typeof payload.output === "string" ? { output: payload.output } : {}),
+        });
+      });
+    } catch (err) {
+      this.rendererToolReplyListenerInstalled = false;
+      log.error(`renderer tool reply listener not installed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private detachAndDestroy(live: LiveDocumentView): void {
+    // 先摘派发通道：销毁后再派发会向已销毁的 webContents 发消息。
+    rendererToolDispatch.unregister(live.docId);
     const win = this.liveWindow();
     try {
       win?.contentView.removeChildView(live.view);

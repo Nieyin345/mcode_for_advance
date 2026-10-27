@@ -86,6 +86,7 @@ export function MobileConnectButton() {
     <>
       <button
         type="button"
+        data-sidebar-quick-action="connect-phone"
         onClick={() => setOpen(true)}
         className={cn(
           "flex w-full items-center gap-2 rounded-lg px-1 py-2 transition-colors",
@@ -95,7 +96,7 @@ export function MobileConnectButton() {
         )}
         title={t("layout.connectPhone")}
       >
-        <IconDeviceMobile size={16} className="shrink-0" />
+        <IconDeviceMobile size={14} className="shrink-0" />
         <span className="flex-1 text-left font-medium">{t("layout.connectPhone")}</span>
         {activeCount > 0 && (
           <span

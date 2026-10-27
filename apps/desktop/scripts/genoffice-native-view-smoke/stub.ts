@@ -14,8 +14,13 @@ check("no snapshot stub reports all hosts unavailable",Object.values(caps).every
 check("native view cannot open without snapshot",(()=>{try{makeGenofficeNativeView(null,"pdf");return false}catch{return true}})());
 registerGenofficeNativeScheme();
 const fake = protocol as unknown as { registrations: Array<Array<{scheme:string}>> };
-const schemes = fake.registrations[0]?.map(x=>x.scheme).sort();
-check("privileged Electron schemes registered together once",fake.registrations.length===1 &&
-  JSON.stringify(schemes)===JSON.stringify(["genoffice-app","genoffice-docx-media","mcode-panel"]));
+const schemes = fake.registrations[0]?.map(x=>x.scheme).sort() ?? [];
+// 只断言这两件事：**一次注册**、且**这几个 scheme 都在里面**。
+// 不写成"恰好等于这个数组"：Electron 只允许一次 registerSchemesAsPrivileged，
+// 每加一个特权 scheme（例如 Theia webview 资源协议）都要并进这一次调用 ——
+// 那是合法的扩展，不该让这条断言假红，而"漏注册"仍然会被抓到。
+const required = ["genoffice-app","genoffice-docx-media","mcode-panel"];
+check("privileged Electron schemes registered together once", fake.registrations.length === 1 &&
+  required.every((s) => schemes.includes(s)));
 console.log("genoffice-native-stub-smoke:"+(6-fail)+"/6 通过");
 if(fail)process.exitCode=1;

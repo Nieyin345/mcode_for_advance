@@ -71,7 +71,7 @@
  *   （见上面的 `unsupportedHost` 分支）——不装空白面板。
  * - 原生视图永远盖在 DOM 之上：错误条只占占位区**上方**的一条，不试图浮在视图上。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@renderer/lib/api.js";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { useRpc } from "@renderer/hooks/useRpc.js";
@@ -82,7 +82,16 @@ import { genofficeAppForPath, type GenofficeApp } from "@contracts/genofficeFile
 import { FileTypeIcon } from "@renderer/lib/fileIcon.js";
 import { IconLoader2 } from "@renderer/lib/icons.js";
 import { handoffOfficeToMcode } from "./officeChatHandoff.js";
+import { makeQuoteTag } from "@renderer/lib/contentTag.js";
+import { useToastStore } from "@renderer/stores/toastStore.js";
 import { ideDirtyTracker } from "@renderer/lib/ideDirty.js";
+import { stableDocId } from "./documentViewIdentity.js";
+
+/** 文档视图身份的唯一实现已搬到 `documentViewIdentity.ts`（关闭守卫 `nativeEditorClose.ts`
+ *  也要用它，而它不该为此 import 整个面板组件）。这里**重新导出**保持既有调用方
+ *  （RightPanel 的 focus、document-view-renderer-smoke 的冲突测试）不变；
+ *  这不是第二份实现 —— 导出的是同一个函数。 */
+export { stableDocId };
 
 /** GenOffice 编辑器 module 名（与 vendor 的 `rendererUrl` host 同名）。 */
 export type GenofficeEditorHost = GenofficeApp;
@@ -162,23 +171,6 @@ export function editorPageUrl(cliPath: string, host: GenofficeEditorHost): strin
  * This is not an authorization mechanism: the host must still validate the
  * requested path. Keep the complete result within the contract's 200 chars.
  */
-export function stableDocId(filePath: string): string {
-  const mask = 0xffff_ffff_ffff_ffffn;
-  const prime = 0x100000001b3n;
-  let first = 0xcbf29ce484222325n;
-  let second = 0x84222325cbf29ce4n;
-  for (let i = 0; i < filePath.length; i++) {
-    const code = filePath.charCodeAt(i);
-    const lo = BigInt(code & 0xff);
-    const hi = BigInt(code >>> 8);
-    first = ((first ^ lo) * prime) & mask;
-    first = ((first ^ hi) * prime) & mask;
-    second = ((second ^ lo) * prime) & mask;
-    second = ((second ^ hi) * prime) & mask;
-  }
-  const hex = (value: bigint): string => value.toString(16).padStart(16, "0");
-  return `genoffice-view-${hex(first)}${hex(second)}-${filePath.length}`;
-}
 
 /** 占位矩形的窗口坐标 → 契约 bounds（整数、非负、尺寸至少 1）。 */
 function measureBounds(el: HTMLElement): DocViewRect | null {
@@ -198,12 +190,11 @@ function measureBounds(el: HTMLElement): DocViewRect | null {
 }
 
 /**
- * 关闭视图并吞掉一切失败。
+ * 在标签/模式已经移除时关闭原生视图，并吞掉卸载路径的传输失败。
  *
- * 卸载 / 迟到 open 这两条路径上**没有界面可报错**，静默是正确取舍；但两种拒绝
- * 形态都要兜住：桌面 preload 回一个 rejected Promise（`.catch` 接得住），手机端
- * `webApi` 的 `webUnsupported` 是**同步抛出**的（`.catch` 接不住，必须 try/catch）。
- * 留一个 unhandled rejection 或同步异常会让 React 19 整棵卸载。
+ * 标签仍打开且只是切换焦点时必须 hide 而不是 close；真正的标签关闭由
+ * nativeEditorClose.ts 先执行原厂保存守卫。两种拒绝形态都要兜住：桌面 preload
+ * 回 rejected Promise，webApi 的 webUnsupported 则可能同步抛出。
  */
 /** A file's docId is intentionally stable across tabs and re-mounts.
  * A previous component's delayed open acknowledgement must not destroy a
@@ -211,19 +202,134 @@ function measureBounds(el: HTMLElement): DocViewRect | null {
  * from the durable host identity; the Host stays sole file/revision owner. */
 const activeNativePaneOwners = new Map<string, symbol>();
 
-function closeQuietly(docId: string, filePath?: string): void {
+function hideQuietly(docId: string): void {
   try {
-    void api.documentView.close({ docId }).then((result) => {
-      if (result.ok && filePath) ideDirtyTracker.setNative(filePath, false);
-    }).catch(() => {});
+    void api.documentView.hide({ docId }).catch(() => {});
   } catch {
-    /* web 传输同步拒绝 —— 卸载路径无事可做 */
+    /* Web transport may not expose native document views. */
   }
 }
+
+function shouldRetainNativeView(filePath: string, routeAvailable: boolean): boolean {
+  if (!routeAvailable) return false;
+  const state = useSessionStore.getState();
+  // store 里这两个映射在"还没有任何项目/还没打开过文件"时可能不存在，也可能
+  // 来自一个没有这些键的旧快照。缺它们时按「没有别的标签持有这个文件」处理 ——
+  // 也就是**不保留**（可以正常关闭），而不是抛 TypeError 让调用方整棵卸载。
+  const filesByProject = state.ideOpenFilesByProject ?? {};
+  const modeByProject = state.ideFileViewModeByProject ?? {};
+  return Object.entries(filesByProject).some(([projectId, paths]) => {
+    if (!Array.isArray(paths) || !paths.includes(filePath)) return false;
+    const mode = modeByProject[projectId]?.[filePath];
+    return mode === undefined || mode === "genoffice-view";
+  });
+}
+
+function closeQuietly(docId: string, filePath?: string): void {
+  const retainHiddenView = (): void => {
+    // If the native close was cancelled after the owning tab disappeared, keep
+    // the document recoverable but never leave an orphan WebContentsView floating
+    // above the newly active tab. A newer mount owns visibility once it appears.
+    if (!activeNativePaneOwners.has(docId)) hideQuietly(docId);
+  };
+  try {
+    void api.documentView.close({ docId }).then((result) => {
+      if (filePath) {
+        ideDirtyTracker.setNative(filePath, !result.ok);
+        ideDirtyTracker.setNativeOpen(filePath, !result.ok);
+      }
+      if (!result.ok) retainHiddenView();
+    }).catch(() => {
+      if (filePath) {
+        ideDirtyTracker.setNative(filePath, true);
+        ideDirtyTracker.setNativeOpen(filePath, true);
+      }
+      retainHiddenView();
+    });
+  } catch {
+    if (filePath) {
+      ideDirtyTracker.setNative(filePath, true);
+      ideDirtyTracker.setNativeOpen(filePath, true);
+    }
+    retainHiddenView();
+  }
+}
+
+/**
+ * 只取选区、不真要改写时塞进 `instruction` 的占位。
+ *
+ * 契约要求 `instruction` 非空（`min(1)`），而「引用一段进对话」这件事本身
+ * 没有指令 —— 用户自己会写。这个值**不会到达用户或模型**：
+ * `revisionRewrite` 只把它透传给页面，而页面的 `read-selection` 分支根本不读它。
+ */
+const QUOTE_ONLY_INSTRUCTION = "（只取选区）";
 
 export function GenofficeViewHostPane({ filePath, active = true }: { filePath: string; active?: boolean }) {
   const { t } = useI18n();
   const mcodeSessionId = useSessionStore((s) => s.activeSessionId);
+  /**
+   * 【EDIT-07】把编辑器里选中的那一段引用进对话草稿。
+   *
+   * ## 为什么要经过主进程
+   *
+   * 原厂编辑器在 `WebContentsView` 里（OS 级子视图，不属于 React 的 DOM），
+   * 宿主的 `window.getSelection()` 拿不到它。所以只能走 `revisionRewrite` 那条
+   * 通道问页面要选区 —— 它内部就是 `action: 'read-selection'` 的往返。
+   *
+   * ## 为什么复用 `revisionRewrite` 而不是新加一条 RPC
+   *
+   * 那条 RPC 需要的正是「把当前选区文字取回来」，与引用要的东西完全一样。
+   * 新加一条会让「取选区」有两份实现、两个超时、两条失败文案。
+   * 它的名字里带着 rewrite 只是历史原因（见契约注释）—— 它不调模型。
+   *
+   * ## 指令框里放的是什么
+   *
+   * **空指令**：引用就是引用 —— 用户自己决定要问什么，我们不替他写。
+   * 这正是「交给 Mcode AI」那条的产品取向（不自动发送、不自动生成问题）。
+   */
+  const quoteSelectionToChat = useCallback(async () => {
+    const sessionId = useSessionStore.getState().activeSessionId;
+    if (!sessionId) return;
+    try {
+      const result = await api.documentView.revisionRewrite({
+        filePath,
+        // 留一句无内容占位：契约要求指令非空，而这里真正要做的是"取选区"。
+        instruction: QUOTE_ONLY_INSTRUCTION,
+      });
+      if (!result.ok) {
+        useToastStore.getState().push({
+          kind: "info",
+          title: t("ide.genoffice.quoteSelectionEmpty"),
+          body: result.reason,
+          sessionId,
+          dedupeKey: `office-quote-${filePath}`,
+        });
+        return;
+      }
+      const store = useSessionStore.getState();
+      const current = store.composerDraftBySession[sessionId];
+      store.deliverComposerDraft(sessionId, {
+        text: current?.text ?? "",
+        html: current?.html ?? "",
+        tags: [
+          ...(current?.tags ?? []),
+          makeQuoteTag({
+            text: result.selectedText,
+            origin: { kind: "file", filePath, name: filePath.replace(/^.*[\\/]/, "") },
+          }),
+        ],
+      });
+      // 引用进了草稿，把对话推到眼前（否则用户看不到刚加的东西）。
+      store.setCenterTabFocus("chat");
+    } catch (err) {
+      useToastStore.getState().push({
+        kind: "error",
+        title: t("ide.genoffice.quoteSelectionFailed"),
+        body: err instanceof Error ? err.message : String(err),
+        sessionId,
+      });
+    }
+  }, [filePath, t]);
   // A dock may translate the stage without changing its width/height.
   // ResizeObserver alone does not report pure translations.
   const dockSide = useSessionStore((s) => s.paneLayout?.placements?.find(p =>
@@ -239,17 +345,28 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
   /** 【ARC-007】保存冲突（宿主侧乐观锁拦下的保存）。与 pageFailure 分开显示：
    *  页面没坏，只是**保存被拒**，用户需要先重新载入再改。 */
   const [saveConflict, setSaveConflict] = useState<{ message: string; at: number } | null>(null);
-  /** null means the vendor has not reported its dirty state yet. */
-  const [dirty, setDirty] = useState<boolean | null>(null);
+
   /** A document tool wrote a newer disk revision while this editor retained its in-memory copy. */
   const [externalMutation, setExternalMutation] = useState<{
     at: number;
     source: "document-tool" | "markdown-edit" | "document-edit";
   } | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
+  /** 打开的文件超过体积阈值时的提示（不阻止打开，只是提前说一句）。 */
+  const [largeFile, setLargeFile] = useState<{ bytes: number; thresholdBytes: number } | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef(active);
   activeRef.current = active;
+  /** 这一次「视图消失」是不是我们自己回收的（内存治理）。用于区分主动回收与
+   *  别处 close —— 两者都重建，但只有前者需要把 reclaimPending 清掉。 */
+  const reclaimPendingRef = useRef(false);
+  /** 这个 docId **真的在 list() 里出现过**。判断"视图消失"必须靠它，不能只看
+   *  open 的 Promise 是否 resolve —— open 与首次 list() 可能并行，那时视图还没进表。 */
+  const seenInListRef = useRef(false);
+  /** 已经排过一次重建、但新的 open 还没成功。tick 每 2 秒跑一次，而重建要走完
+   *  整个 open → openPath 流程；没有这个标记，中间那几轮 tick 会各自再排一次，
+   *  形成 open 风暴（实测过：一次挂载打出 880 次 open）。 */
+  const rebuildScheduledRef = useRef(false);
 
   const docId = useMemo(() => stableDocId(filePath), [filePath]);
   const host = editorHostForPath(filePath);
@@ -271,6 +388,12 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
       : null;
   /** 没有打开对端的编辑器页：**显式降级**分支（与"未构建"是两回事，文案与原因也分开）。 */
   const unsupportedHost = host === undefined ? "unrecognized" : hasHostOpenChannel(host, slidesHostAvailable, nativeHosts) ? null : host;
+  // Effects clean up before a file-tab switch commits. Keep the native view
+  // hidden (not destroyed) while its file tab still exists, so switching tabs
+  // does not trigger a save prompt or orphan a cancelled close. This ref tracks
+  // capability changes that turn the native route off during the same commit.
+  const currentUrlRef = useRef(url);
+  currentUrlRef.current = url;
 
   useEffect(() => {
     if (url === null) {
@@ -308,12 +431,17 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
       void pending.then(
         (result) => {
           if (disposed) {
-            // open 在路上的时候组件卸载了：立即关一次，否则视图会被创建出来
-            // 变成没人管得到的孤儿（原生视图不随 DOM 卸载，见文件头）。
-            // Cleanup has already issued close. The *only* case requiring
-            // another close is an orphan where no newer component owns this
-            // docId. Closing unconditionally would destroy the fresh view.
-            if (!activeNativePaneOwners.has(docId)) closeQuietly(docId, filePath);
+            // A late open acknowledgement must follow the same lifecycle rule as
+            // cleanup: preserve a still-open native tab by hiding it, but close
+            // the view if its tab/mode was removed. Never destroy a newer owner.
+            if (!activeNativePaneOwners.has(docId)) {
+              if (result.ok && shouldRetainNativeView(filePath, currentUrlRef.current !== null)) {
+                ideDirtyTracker.setNativeOpen(filePath, true);
+                hideQuietly(docId);
+              } else {
+                closeQuietly(docId, filePath);
+              }
+            }
             return;
           }
           if (!result.ok) {
@@ -321,6 +449,7 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
             setOpenError(result.reason);
             return;
           }
+          ideDirtyTracker.setNativeOpen(filePath, true);
           // Switching away while open is in flight must not leave an OS child
           // view floating above another pane.
           if (!activeRef.current) void api.documentView.hide({ docId }).catch(() => {});
@@ -405,11 +534,12 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
       cancelAnimationFrame(raf);
       observer?.disconnect();
       window.removeEventListener("resize", schedule);
-      // **原生视图不随 DOM 卸载**；only the latest mount can close
-      // this stable docId. A stale cleanup/ack must not close a replacement.
+      // **原生视图不随 DOM 卸载**；only the latest mount owns its lifecycle.
+      // A still-open native tab is hidden, while a removed tab/mode is closed.
       if (activeNativePaneOwners.get(docId) === owner) {
         activeNativePaneOwners.delete(docId);
-        closeQuietly(docId, filePath);
+        if (shouldRetainNativeView(filePath, currentUrlRef.current !== null)) hideQuietly(docId);
+        else closeQuietly(docId, filePath);
       }
     };
     // url/docId 变了要重建视图；retryNonce 是显式重试。t 只影响错误文案。
@@ -447,20 +577,35 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
         (result) => {
           if (cancelled) return;
           const mine = result.views.find((v) => v.docId === docId);
-          // A deliberate reload closes and recreates this native view. Preserve
-          // the warning during that gap; the new snapshot clears it after open commits.
           if (mine === undefined) {
-            setDirty(null);
-            ideDirtyTracker.setNative(filePath, false);
+            // 视图已不在宿主里。**只有当它真的在这里出现过**才算"消失"——
+            // 这是判断「被回收 / 被别处关闭」与「还没建好」的唯一可靠依据。
+            //
+            // ⚠️ 这一条不能省：`open()` 是异步的，首次 tick 完全可能与它并行，
+            // 那时 list() 里本来就没有这个 docId。仅凭"open 的 Promise 已 resolve"
+            // 判断会把它误读成"被回收"，于是排一次重建 → 又一次 open →
+            // 套件里表现为「挂载后 open 了 2 次」。
+            if (
+              seenInListRef.current &&
+              !reclaimPendingRef.current &&
+              !rebuildScheduledRef.current
+            ) {
+              rebuildScheduledRef.current = true;
+              seenInListRef.current = false;
+              setRetryNonce((n) => n + 1);
+            }
+            reclaimPendingRef.current = false;
             return;
           }
-          setDirty(typeof mine.dirty === "boolean" ? mine.dirty : null);
-          ideDirtyTracker.setNative(filePath, mine.dirty === true);
+          // 视图在：记住"确实见过它"，并解除"已排重建"标记。
+          seenInListRef.current = true;
+          rebuildScheduledRef.current = false;
           setPageFailure(mine.lastFailure ?? null);
           // 【ARC-007】保存冲突走同一张快照（宿主在成功保存后清空它）。
           const conflict = mine?.lastSaveConflict;
           setSaveConflict(conflict !== undefined ? { message: conflict.message, at: conflict.at } : null);
           setExternalMutation(mine?.lastExternalMutation ?? null);
+          setLargeFile(mine?.largeFileWarning ?? null);
         },
         () => { /* 读不到快照不该刷错误条 */ },
       );
@@ -477,34 +622,60 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
     <div className="flex h-full min-h-0 flex-col">
       {/* The AI belongs to Mcode, not the embedded editor. Keep this action in
           the React host (outside the OS-level WebContentsView). Its height is
-          excluded from the native view's measured bounds by stageRef. */}
+          excluded from the native view's measured bounds by stageRef.
+
+          Claude-style chrome: the bar is the pane's own header (`data-cds`
+          tokens, same radius/edge as the rest of the right panel), the file
+          name is the primary line, and the editor's own save state is a
+          subdued label rather than a coloured badge — the native editor
+          already shows dirty state in its own status bar, and a second loud
+          indicator here reads as a second application. */}
       {url !== null && active && (
-        <div className="flex h-8 shrink-0 items-center justify-end gap-2 border-b border-edge bg-surface px-2" data-office-mcode-toolbar="" data-office-dirty-state={dirty === null ? "unknown" : dirty ? "dirty" : "clean"}>
-          <span className="mr-auto flex min-w-0 items-center truncate text-[11px] text-content-muted" title={filePath}>
-            <FileTypeIcon path={filePath} size={13} className="mr-1 shrink-0" />
-            <span className="truncate">{filePath.replace(/^.*[\\/]/, "")}</span>
+        <div
+          data-cds="OfficePaneToolbar"
+          data-office-mcode-toolbar=""
+          className="flex h-9 shrink-0 items-center gap-2 border-b border-edge-panel bg-surface px-2.5"
+        >
+          <span className="flex min-w-0 items-center gap-1.5" title={filePath}>
+            <FileTypeIcon path={filePath} size={14} className="shrink-0 text-content-muted" />
+            <span data-cds="OfficePaneFileName" className="truncate text-[length:var(--chat-fs-xs)] font-medium text-content">
+              {filePath.replace(/^.*[\\/]/, "")}
+            </span>
           </span>
-          {dirty === true && (
-            <span data-office-unsaved="" className="flex shrink-0 items-center gap-1 text-[10px] font-medium text-warning" title={t("ide.genoffice.unsavedChanges")}>
-              <span aria-hidden="true" className="size-1.5 rounded-full bg-warning" />
-              {t("ide.genoffice.unsavedChanges")}
-            </span>
-          )}
-          {opening && (
-            <span role="status" aria-label={t("common.loading")} title={t("common.loading")} className="shrink-0 text-content-muted">
-              <IconLoader2 size={12} className="animate-spin" />
-            </span>
-          )}
-          <button
-            type="button"
-            data-office-ask-mcode=""
-            disabled={!mcodeSessionId}
-            title={mcodeSessionId ? t("ide.genoffice.askMcodeHint") : t("ide.genoffice.askMcodeNoSession")}
-            className="flex shrink-0 items-center gap-1 rounded-[var(--radius-btn-xs)] border border-edge px-2 py-0.5 text-[11px] font-medium text-content transition-colors hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
-            onClick={() => handoffOfficeToMcode(filePath, mcodeSessionId, useSessionStore.getState())}
-          >
-            {t("ide.genoffice.askMcode")}
-          </button>
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            {opening && (
+              <span role="status" aria-label={t("common.loading")} title={t("common.loading")} className="text-content-muted">
+                <IconLoader2 size={12} className="animate-spin" />
+              </span>
+            )}
+            {/* 【EDIT-07】把编辑器里选中的这一段引用进对话。
+                为什么必须有这个按钮（而不是照 ChatPane/Monaco 那样弹选区工具条）：
+                原厂编辑器跑在 **WebContentsView** 里 —— 那是叠在窗口上的 OS 级子视图，
+                不属于 React 的 DOM 树，宿主的 `window.getSelection()` 永远返回空。
+                所以宿主只能**问页面**要选区，而这个动作需要一个宿主侧的触发器。
+                它与「交给 Mcode AI」的区别：那个带整个文件，这个带选中的那一段。 */}
+            <button
+              type="button"
+              data-office-quote-selection=""
+              disabled={!mcodeSessionId}
+              title={mcodeSessionId ? t("ide.genoffice.quoteSelectionHint") : t("ide.genoffice.askMcodeNoSession")}
+              className="rounded-[var(--cds-radius-btn-xs)] border border-edge px-2 py-[3px] text-[length:var(--chat-fs-xs)] font-medium text-content transition-colors hover:bg-surface-hover active:bg-surface-active focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => void quoteSelectionToChat()}
+            >
+              {t("ide.genoffice.quoteSelection")}
+            </button>
+            <button
+              type="button"
+              data-office-ask-mcode=""
+              data-cds="OfficePaneAskMcode"
+              disabled={!mcodeSessionId}
+              title={mcodeSessionId ? t("ide.genoffice.askMcodeHint") : t("ide.genoffice.askMcodeNoSession")}
+              className="rounded-[var(--cds-radius-btn-xs)] border border-edge px-2 py-[3px] text-[length:var(--chat-fs-xs)] font-medium text-content transition-colors hover:bg-surface-hover active:bg-surface-active focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => handoffOfficeToMcode(filePath, mcodeSessionId, useSessionStore.getState())}
+            >
+              {t("ide.genoffice.askMcode")}
+            </button>
+          </span>
         </div>
       )}
       {caps.loading && <LoadingNote label={t("common.loading")} />}
@@ -564,6 +735,20 @@ export function GenofficeViewHostPane({ filePath, active = true }: { filePath: s
           >
             <div className="break-words">{pageFailure.reason}</div>
           </ErrorNote>
+        </div>
+      )}
+      {/* 大文件提示：不阻止打开，只在工具栏下方说一句。用 muted 而不是 warning ——
+          它不是错误，用户大概率仍然要打开它；把常态操作染成警告色会训练用户忽略警告。 */}
+      {largeFile !== null && (
+        <div
+          data-office-large-file=""
+          data-office-large-file-bytes={largeFile.bytes}
+          className="flex shrink-0 items-center gap-1.5 border-b border-edge bg-surface-muted/40 px-2.5 py-1 text-[length:var(--chat-fs-xs)] text-content-muted"
+        >
+          <FileTypeIcon path={filePath} size={12} className="shrink-0" />
+          <span>{t("ide.genoffice.largeFileHint", {
+            size: `${(largeFile.bytes / (1024 * 1024)).toFixed(0)} MB`,
+          })}</span>
         </div>
       )}
       {externalMutation !== null && saveConflict === null && (

@@ -60,6 +60,17 @@ export const en = {
   "common.moduleApprovalAllow": "Allow this action",
   "common.moduleApprovalDeny": "Deny",
   "common.moduleApprovalDenied": "You denied this module write action; nothing was executed.",
+  // 【EXT-07】An installed VS Code extension wants to use an Mcode capability.
+  // Same native dialog and discipline as moduleApproval; only the subject differs.
+  "common.extensionApprovalTitle": "VS Code extension wants to use an Mcode capability",
+  "common.extensionApprovalMessage": "Extension \"{extension}\" asks to call {method}. {description}",
+  "common.extensionApprovalDetail": "The call runs only if you approve. If you deny it, nothing happens and you can safely retry. Read-only capabilities never show this dialog.",
+  "common.extensionApprovalAllow": "Allow this call",
+  "common.extensionApprovalDeny": "Deny",
+  "common.extensionDangerApprovalTitle": "VS Code extension wants a high-risk operation",
+  "common.extensionDangerApprovalMessage": "Extension \"{extension}\" asks to call high-risk method {method}. {description}",
+  "common.extensionDangerApprovalDetail": "High-risk operations are approved one call at a time: install-time grants cannot substitute for this dialog, and there is no \"always allow\". You will be asked again next time.",
+  "common.extensionDangerApprovalAllow": "Allow just this once",
   // 【MC-035】Per-invocation network approval: same native dialog, but it states
   // what is being approved (network access, not a file write).
   "common.moduleNetworkApprovalTitle": "Extension module wants network access",
@@ -76,5 +87,5 @@ export const en = {
   "common.moduleDangerApprovalMessage": "Module \"{module}\" asks to call the high-risk method {method}.\nResource bound to this run: {path}",
   "common.moduleDangerApprovalDetail": "Each high-risk call is approved on its own: install-time grants cannot substitute for this dialog, and there is no \"always allow\". The next call asks again. If you deny it, nothing happens and you can safely retry.",
   "common.moduleDangerApprovalAllow": "Allow just this once",
-  "common.moduleDangerApprovalDenied": "You denied this high-risk action; nothing was executed.",
+
 } as const;

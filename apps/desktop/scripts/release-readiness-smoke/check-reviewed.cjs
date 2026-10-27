@@ -13,7 +13,7 @@ function load(rel, bindings = {}) {
   const exports = {};
   new Function('require', 'exports', compile(read(rel)))(name => {
     if (Object.hasOwn(bindings, name)) return bindings[name];
-    if (name === 'zod' || name.startsWith('node:')) return req(name);
+    if (name === 'zod' || name.startsWith('node:') || name === 'fs/promises') return req(name);
     throw Error('Unstubbed import: ' + name);
   }, exports);
   return exports;
@@ -96,6 +96,9 @@ function picker() {
     // fileSnapshot 现在也 import 了零依赖叶子的 @main/lib/realPathWithin.js(MC-001 的
     // 物理包含性判据)。它是真模块、只 import node:*,直接 load 进来即可。
     '@main/lib/realPathWithin.js': load('src/main/lib/realPathWithin.ts'),
+    // T10 给 atomicFile 加了同步孪生(atomicReplaceFileSync)，fileSnapshot 随之
+    // 真的引用了它。它同样是零依赖叶子(只 import node:*)，直接 load 真模块。
+    '@main/lib/atomicFile.js': load('src/main/lib/atomicFile.ts'),
   });
   await test('snapshot preserves UTF-8 BOM and restores exact original bytes', async () => {
     const file = path.join(temp, 'bom.txt'); const original = Buffer.from('\ufeff初始内容\r\n', 'utf8'); fs.writeFileSync(file, original); const snapshot = new snapshots.FileSnapshot(); await snapshot.recordPre(temp, file); fs.writeFileSync(file, 'changed'); const entries = await snapshot.freeze(); assert.equal(entries[0].before.charCodeAt(0), 0xfeff); await snapshots.restoreFiles(temp, entries); assert.deepEqual(fs.readFileSync(file), original);

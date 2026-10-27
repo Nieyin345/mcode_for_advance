@@ -26,13 +26,13 @@ export function genofficeLibraryReader(cliPath: string | null): IndexReader {
     };
     const result=await readAnyDocument(ports, source);
     if (!result.ok) throw new Error("Native parser: "+result.reason.slice(0,300));
-    const detail=result.envelope.detail as { items?:unknown; truncated?:boolean; sheetDetail?:unknown };
+    const detail=result.envelope.detail as { items?:unknown; truncated?:boolean; sheetDetail?:unknown; sheetLedger?:unknown };
     const raw=Array.isArray(detail?.items)?detail.items:[];
     if (!raw.length) throw new Error("No extractable text; scanned PDF may require OCR");
     const blocks=raw.filter((x): x is {type?:unknown;text?:unknown;index?:unknown}=>Boolean(x&&typeof x==="object"));
     const extracted=flattenDocumentBlocks(blocks,input.kind,detail);
-    // Preserve honest partial-index status: spreadsheet CLI currently exposes
-    // its active sheet rather than claiming whole-workbook completeness.
+    // `coverage` 由账目决定（见 flattenDocumentBlocks）：xlsx 只有把每张表都读到
+    // 且没被截断时才是 complete；账目缺失时如实回 partial，不猜。
     const coverage=extracted.coverage;
     return {sections:extracted.sections as IndexSection[],coverage};
   };

@@ -91,10 +91,6 @@ function runAssembly(opts: {
     dataRoot: opts.dataRoot,
     operationLedger: opts.ledger ?? sentinelLedger(),
     visionRelay: opts.vision ?? visionImpl(),
-    assembleModuleApprovalPort: () => {
-      order.push("approval");
-      if (opts.throwAt === "approval") throw new Error("injected approval-port failure");
-    },
     configureExtensionBridgeTokenStore: (store) => {
       order.push("token");
       if (store !== tokenStore) throw new Error("传给令牌落盘的存取对象不是装配方给的那一个");

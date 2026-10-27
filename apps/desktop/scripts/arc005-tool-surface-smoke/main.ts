@@ -21,7 +21,10 @@ const count = (s: string) => (src.match(new RegExp(s, "g")) || []).length;
 
 ck("shared tool row has visible keyboard focus and enough minimum height",
   sourceHas(src, "const TOOL_ROW_CLS =") &&
-  /TOOL_ROW_CLS\s*=\s*\n?\s*"[^"]*min-h-8[^"]*focus-visible:outline-2/.test(src));
+  // 【UI 重建 2026-10-27】工具行高度从写死 min-h-8（32px）改成
+  // min-h-[var(--m-h-control,26px)]（Claude 的控件档）。断言认变量，
+  // 密度档切换时不必再改。
+  /TOOL_ROW_CLS\s*=\s*\n?\s*"[^"]*min-h-\[var\(--m-h-control[^"]*focus-visible:outline-2/.test(src));
 ck("four existing tool-row cards preserve their common style token",
   count("className=\\{TOOL_ROW_CLS\\}") === 4);
 ck("tool batch, Edit, Write and generic cards expose native expanded state",

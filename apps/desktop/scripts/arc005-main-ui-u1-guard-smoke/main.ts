@@ -166,15 +166,14 @@ check("Electron visual probe checks native split-pane geometry and rejects overl
   check(
     "Known-missing exceptions are either empty or each carry a substantive reason",
     decl !== null && bareKeys.length === 0,
-    { declared: decl !== null, count: entries.length, tooShort: bareKeys.map((e) => e[1]) },
   );
+  if (bareKeys.length > 0) console.log("  too short: " + JSON.stringify(bareKeys.map((e) => e[1])));
   // 负控：裸登记（没有理由）必须被判出来 —— 否则这条形同虚设。
   const badBody = `[\n  ["some-scene", ""],\n]`;
   const badEntries = [...badBody.matchAll(/\[\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\]/g)];
   check(
     "Negative: an exception registered without a reason would be rejected",
     badEntries.some((e) => e[2].trim().length < 20),
-    { sample: badEntries.map((e) => e[1]) },
   );
 }
 check("Actual Electron pane U1 uses full docking mode rather than undraggable drawer",

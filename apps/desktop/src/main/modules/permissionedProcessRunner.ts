@@ -49,7 +49,10 @@ import { spawnRun } from "@main/lib/spawnRun.js";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { ResultSchema, type ModuleResult } from "@contracts/modules";
-import { ISOLATION_FAILURE_CODES, ISOLATION_FAILURE_MARKER } from "./isolatedActionRunner.js";
+/** 隔离执行失败的结构化码 —— 定义在唯一使用者这里（原在已删除的 `isolatedActionRunner.ts`）。 */
+export const ISOLATION_FAILURE_CODES = ["isolated_timeout", "isolated_cancelled", "isolated_crash", "isolated_spawn_failed"] as const;
+export type IsolationFailureCode = (typeof ISOLATION_FAILURE_CODES)[number];
+export const ISOLATION_FAILURE_MARKER = "mcodeModuleIsolationFailure" as const;
 
 export interface PermissionedProcessOptions {
   /** 工厂源码(清单 `program.source`):求值为 `{ [短名]: async (resource) => result }`。 */

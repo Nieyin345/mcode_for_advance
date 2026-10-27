@@ -30,6 +30,7 @@ import { NavEntry } from "@renderer/lib/editorNav.js";
 import { Project, Session, SessionBookmark } from "@contracts/session";
 import { ThemeStyle } from "@contracts/theme";
 import { TurnFileEntry } from "@renderer/lib/turnFiles.js";
+import type { ToolDisplayAttachment } from "@contracts/runtime";
 import type { PaneDock } from "@renderer/components/layout/paneDock.js";
 import type { PaneLayout, DockSide, PaneContent } from "@renderer/components/layout/paneLayout.js";
 
@@ -83,7 +84,17 @@ export type Block =
     *  for plain-text messages. */
     skillNames?: string[] }
   | { kind: "thinking"; text: string }
-  | { kind: "tool_use"; toolCallId: string; toolName: string; input: unknown; status: "running" | "done" | "error"; result?: unknown }
+  | {
+      kind: "tool_use";
+      toolCallId: string;
+      toolName: string;
+      input: unknown;
+      status: "running" | "done" | "error";
+      result?: unknown;
+      /** 【CHAT-20】只给界面看的附件（截图/生图/链接）。**绝不进模型上下文** ——
+       *  见 @contracts 的 `ToolDisplayAttachment`。 */
+      display?: ToolDisplayAttachment;
+    }
   | { kind: "error"; message: string }
   | { kind: "turn-incomplete"; /** Mirrors TurnIncompleteEvent.kind —
     * "dangling-tools" = the turn closed with unanswered tool_use;
@@ -194,6 +205,16 @@ export type Block =
       /** 哪一次运行(`WorkflowNodeResultEvent.runId`)。带上它是为了**同一张图的卡片
        *  能归到一起** —— 一张图跑几轮,节点 id 会重复。 */
       runId: string;
+      /**
+       * 【WF-06】这张图的 id（`WorkflowNodeResultEvent.workflowId`）。
+       *
+       * **重试需要它**：`retryNativeFlow(docId)` 按图 id 找那份文档。
+       * 以前归约时把它丢了，于是原生运行的失败卡**没有重试入口** ——
+       * 而"那一步失败了、我改一下再试"正是运行史存在的理由。
+       *
+       * 可缺席（老事件没带）：缺席时卡片不画重试按钮，而不是画一个点了报错的。
+       */
+      workflowId?: string;
       nodeId: string;
       /** 跑这一步的那个隐藏会话 id —— 卡片靠它去 `nodeTranscriptsBySession` 里取
        *  "这一步的过程"。**可缺席**:`skipped` / `cancelled` 的节点根本没跑过。 */

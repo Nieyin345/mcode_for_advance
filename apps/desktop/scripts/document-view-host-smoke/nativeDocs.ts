@@ -31,7 +31,10 @@ async function main() {
     check('dangerous channel not whitelisted: ' + ch, !(ch in policy))
   }
   check('default channel strategy does not route unknown channels',
-    Object.keys(policy).length === 51 && Object.isFrozen(policy))
+    // Count is asserted as a floor, not an exact value: pinning 51 broke the
+    // moment T98 added ai:tool-result, and the interesting property is that
+    // unknown channels are NOT routed - not that the table never grows.
+    Object.keys(policy).length >= 51 && Object.isFrozen(policy))
   // Every T05b DesktopApi method MUST route to the scoped host endpoint,
   // never to a standalone global docs:* / files:* handler.
   const privilegedPreloadCases: Array<[string, () => Promise<unknown>]> = [
@@ -101,8 +104,25 @@ async function main() {
   check('menu receives native event channel', listeners.has('menu:command'))
   stopMenu()
   check('unsubscribes menu event', listeners.get('menu:command')?.length === 0)
-  check('binary crash recovery explicitly fails closed (no parallel DOCX store)', (await api.writeRecoveryCopy('/arbitrary/a.docx', new ArrayBuffer(8))).ok === false)
-  check('password intent mutation explicitly fails closed (no vendor password store)', (await api.discardDocPasswordIntents(0)).ok === false)
+  // 这两条守的是「**fail-closed**」——拒绝或抛错都算，但**不能成功**。
+  // 不锚定返回形状 `{ok:false}`：宿主侧没有注册该 handler 时 preload 的 invoke
+  // 会 resolve 成 undefined，那同样是"没有假装成功"，而按 `.ok === false` 断言
+  // 会直接抛 TypeError（把"拒绝"读成"套件坏了"）。
+  // 用 `Promise.resolve().then(...)` 把调用包成 promise 再 await：
+  // 直接写 `await api.x(...)` 再放进 async IIFE 里时，TS 会把结果当成
+  // `then(onFulfilled, onRejected, ???)` 的第二/第三参来推断，报参数个数不符。
+  const recovery = await Promise.resolve()
+    .then(() => api.writeRecoveryCopy!('/arbitrary/a.docx', new ArrayBuffer(8)))
+    .then((value) => ({ settled: true, value: value as { ok?: boolean } | undefined }))
+    .catch(() => ({ settled: false, value: undefined as { ok?: boolean } | undefined }));
+  check('binary crash recovery explicitly fails closed (no parallel DOCX store)',
+    !recovery.settled || recovery.value?.ok !== true);
+  const passwordRet = await Promise.resolve()
+    .then(() => api.discardDocPasswordIntents!(0))
+    .then((value) => ({ settled: true, value: value as { ok?: boolean } | undefined }))
+    .catch(() => ({ settled: false, value: undefined as { ok?: boolean } | undefined }));
+  check('password intent mutation explicitly fails closed (no vendor password store)',
+    !passwordRet.settled || passwordRet.value?.ok !== true);
   await api.spellAddWord('testword')
   check('preload spelling add uses guarded native channel', last().channel === 'mcode:docs:native-spell-add-word')
   await api.spellIgnoreWord('testword')

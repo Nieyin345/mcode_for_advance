@@ -41,6 +41,7 @@ import {
   IconDownload,
   IconExternalLink,
   IconLockOpen,
+  IconActivity,
   IconPencil,
   IconServer,
   IconFileText,
@@ -190,6 +191,75 @@ function EngineVisibilityChips({
  *  sign-out (a stored token exists), or 「待授权」badge + browser login (the
  *  CLI flagged the server as requiring OAuth with no token). Renders nothing
  *  for local servers or remote ones with no known OAuth history. */
+/**
+ * 【EXT-03】「测试连接」按钮 + 结果。
+ *
+ * 为什么单独一个组件：它要在**每一行**出现（不分 user/project/builtin、
+ * 不分 stdio/远端），而 OAuth 那块只对远端有 OAuth 史的服务器画。
+ *
+ * 结果是**行内**显示的（不弹窗）：用户点完就地看到「连上了 · 320ms」或者
+ * 「找不到命令 xxx」—— 后者正是「保存成功但根本跑不起来」的那个场景。
+ */
+function TestConnectionAction({ entry, disabled }: { entry: McpServerEntry; disabled: boolean }) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<
+    | { kind: "ok"; text: string }
+    | { kind: "fail"; text: string; stage: string }
+    | null
+  >(null);
+
+  const run = async (): Promise<void> => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.mcp.testConnection({ name: entry.name });
+      if (r.ok) {
+        setResult({
+          kind: "ok",
+          text: t("settings.mcp.testOk", { ms: String(r.ms), name: r.serverName ?? entry.name }),
+        });
+      } else {
+        setResult({ kind: "fail", text: r.error, stage: r.stage });
+      }
+    } catch (err) {
+      setResult({ kind: "fail", text: err instanceof Error ? err.message : String(err), stage: "unknown" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="gap-1"
+        disabled={disabled || busy}
+        onClick={() => void run()}
+        title={t("settings.mcp.testHint")}
+        data-mcp-test={entry.name}
+      >
+        {busy ? <Spinner size="xs" /> : <IconActivity size={12} />}
+        {t("settings.mcp.test")}
+      </Button>
+      {result !== null && (
+        <span
+          data-mcp-test-result={result.kind}
+          title={result.kind === "fail" ? result.text : undefined}
+          className={
+            result.kind === "ok"
+              ? "shrink-0 rounded bg-emerald-500/15 px-1 text-[9px] leading-tight text-emerald-500"
+              : "min-w-0 max-w-[280px] truncate rounded bg-rose-500/15 px-1 text-[9px] leading-tight text-rose-500"
+          }
+        >
+          {result.text}
+        </span>
+      )}
+    </>
+  );
+}
+
 function OAuthRowActions({
   s,
   busy,
@@ -711,6 +781,7 @@ export function McpPanel() {
               }
               desc={<span className="font-mono">{s.detail}</span>}
             >
+              <TestConnectionAction entry={s} disabled={busyKey === rowKey(s)} />
               <OAuthRowActions
                 s={s}
                 busy={busyKey === rowKey(s)}
@@ -800,6 +871,7 @@ export function McpPanel() {
               }
               desc={<span className="font-mono">{s.detail}</span>}
             >
+              <TestConnectionAction entry={s} disabled={busyKey === rowKey(s)} />
               <OAuthRowActions
                 s={s}
                 busy={busyKey === rowKey(s)}

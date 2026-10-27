@@ -81,6 +81,9 @@ import { providerRegistry } from "@main/providers/registry.js";
 import { getEnabledPlugins } from "@main/plugins/pluginManager.js";
 import { decoratePresetCatalog, readPresetCatalog, readPresetWorkflow } from "@main/orchestration/presetWorkflows.js";
 import { SessionRepo, SettingRepo, WorkflowRepo, WorkflowRunRepo } from "@main/store/repositories.js";
+import { duplicateWorkflowDoc } from "@main/orchestration/workflowDuplicate.js";
+import { requireWorkflowReview } from "@main/orchestration/workflowTrust.js";
+import { uniqueWorkflowName, WorkflowDuplicateSchema } from "@contracts/workflow";
 
 /**
  * 把「建议的文件名」洗成一个能落盘的名字。
@@ -223,6 +226,27 @@ export function registerWorkflowHandlers(ipcMain: IpcMain, workflowEngineDataDir
       requestWorkflowReload(input.workflow.id);
     }
     return res;
+  });
+
+  /* 【WF-09】复制一份工作流。
+   *
+   * 与「导出再导入」的区别：复制留在本机，engine/trigger/提示词原样保留。
+   * 副本按**新导入**处理（要重新过审查）—— 原图审过不代表副本审过。 */
+  ipcMain.handle(IPC.WORKFLOW_DUPLICATE, async (_evt, raw) => {
+    const input = WorkflowDuplicateSchema.parse(raw);
+    const source = getWorkflow(input.id);
+    if (source === null) return { ok: false as const, error: `找不到这份工作流` };
+    const { doc } = duplicateWorkflowDoc(source, {
+      ...(input.name !== undefined ? { name: input.name } : {}),
+    });
+    const others = listWorkflows().map((entry) => entry.name);
+    const saved = { ...doc, name: uniqueWorkflowName(doc.name, others) };
+    // **审查标记先写**：与导入同一条纪律（`requireWorkflowReview`），
+    // 副本在用户确认之前不可执行。
+    requireWorkflowReview(saved.id, `duplicate`);
+    WorkflowRepo.save(saved);
+    notifyWorkflowsChanged(`ipc:workflow_duplicate:` + saved.id);
+    return { ok: true as const, id: saved.id, name: saved.name };
   });
 
   ipcMain.handle(IPC.WORKFLOW_REMOVE, async (_evt, raw) => {

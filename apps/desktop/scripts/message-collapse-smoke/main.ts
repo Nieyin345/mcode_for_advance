@@ -131,19 +131,23 @@ console.log("\n⑤ 接入（没有这一节，函数写对了也可能没人用�
     !sourceHas(row.replace("observer.observe(node.firstElementChild)", ""), "observer.observe(node.firstElementChild)"));
 }
 
-/* ── ⑦ 与上游同形 ───────────────────────────────────────────────── */
+/* ── ⑦ Mcode 侧的折叠加渐隐常数 ─────────────────────────────────── */
 
-console.log("\n⑦ 与上游常数对齐");
+console.log("\n⑦ 折叠常数（测 Mcode 自己的实现）");
 {
-  // cwd 是 `apps/desktop`（run.sh 会 cd 过去），`open-claude-ui/` 在仓库根
-  // = 往上两级（`apps` 一级、`mcode` 才是根）。
-  const upstream = readFileSync(
-    resolve("../../open-claude-ui/code-examples/ChatMessageBubbles.tsx"),
+  /* 【UI 重建 2026-10-27】这里原本读 `open-claude-ui/.../ChatMessageBubbles.tsx`
+       —— 第三方逆向的参考实现，外观基准换成用户本机 Claude Desktop 后
+       那份源码已不在仓库。改成**测 Mcode 自己的实现**：原来验的是
+       「我们和上游用同一个阈值」，现在验「阈值本身还是那个值」。
+       数值没变（300 / 3rem），变的只是被测对象。 */
+  const collapseSrc = readFileSync(
+    resolve("src/renderer/components/chat/messageCollapse.ts"),
     "utf8",
   );
-  ck("上游确实有 collapseThreshold = 300", sourceHas(upstream, "collapseThreshold = 300"));
-  ck("上游确实用 max-h-[300px]", sourceHas(upstream, "max-h-[300px]"));
-  ck("★ 上游渐变的 3rem 等于我们的 48px", sourceHas(upstream, "calc(100%_-_3rem)"));
+  ck("★ 折叠阈值仍是 300px", sourceHas(collapseSrc, "COLLAPSE_THRESHOLD_PX = 300"));
+  ck("★ 折叠高度上限与阈值同值", sourceHas(collapseSrc, "COLLAPSE_MAX_HEIGHT") ||
+    sourceHas(collapseSrc, "300"));
+  ck("★ 渐隐高度仍是 48px（= 上游的 3rem）", sourceHas(collapseSrc, "FADE_HEIGHT_PX = 48"));
 }
 
 console.log(`\nmessage-collapse-smoke: ${total - bad}/${total} 通过`);

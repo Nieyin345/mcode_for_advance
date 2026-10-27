@@ -277,8 +277,10 @@ export function ModelDropdown({
         >
           <Menu.Popup
             ref={popupRef}
+            data-cds="ModelSwitcher"
+            aria-label={t("chat.model.selectTitle")}
             className={cn(
-              "z-50 min-w-[260px] rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
+              "z-50 w-[min(320px,calc(100vw-16px))] max-h-[min(70vh,560px)] overflow-y-auto overscroll-contain rounded-[var(--radius-card)] border border-edge bg-surface p-2 shadow-[var(--shadow-popover)]",
               cascade ? "origin-top-left" : "origin-bottom-left",
               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
@@ -366,7 +368,7 @@ export function ModelDropdown({
                           <Menu.Popup
                             ref={subPopupRef}
                             className={cn(
-                              "z-50 min-w-[220px] origin-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
+                              "z-50 w-[min(280px,calc(100vw-16px))] max-h-[min(60vh,480px)] overflow-y-auto overscroll-contain origin-left rounded-[var(--radius-card)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
                               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                               "transition-[transform,opacity] duration-100",
@@ -442,7 +444,7 @@ export function ModelDropdown({
                           <Menu.Popup
                             ref={subPopupRef}
                             className={cn(
-                              "z-50 min-w-[220px] origin-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
+                              "z-50 w-[min(280px,calc(100vw-16px))] max-h-[min(60vh,480px)] overflow-y-auto overscroll-contain origin-left rounded-[var(--radius-card)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
                               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                               "transition-[transform,opacity] duration-100",
@@ -535,7 +537,7 @@ export function ModelDropdown({
                           <Menu.Popup
                             ref={subPopupRef}
                             className={cn(
-                              "z-50 min-w-[220px] origin-left rounded-[var(--radius-btn-xs)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
+                              "z-50 w-[min(280px,calc(100vw-16px))] max-h-[min(60vh,480px)] overflow-y-auto overscroll-contain origin-left rounded-[var(--radius-card)] border border-edge bg-surface py-1.5 shadow-[var(--shadow-popover)]",
                               "data-[ending-style]:scale-95 data-[ending-style]:opacity-0",
                               "data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
                               "transition-[transform,opacity] duration-100",

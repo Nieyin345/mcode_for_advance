@@ -36,11 +36,7 @@ check("First paint getMany contains each pane layout key exactly once", (() => {
   const widths = countKey("UI_PANE_WIDTHS_SETTING_KEY");
   const layout = countKey("UI_PANE_LAYOUT_SETTING_KEY");
   return firstPaintBatch.length > 0 && widths === 1 && layout === 1;
-})(), {
-  widths: countKey("UI_PANE_WIDTHS_SETTING_KEY"),
-  layout: countKey("UI_PANE_LAYOUT_SETTING_KEY"),
-  batchKeys: firstPaintBatch.length,
-});
+})());
 check("Deferred settings no longer re-fetch the pane layout key",!source.includes("UI_SHORTCUTS_SETTING_KEY,\n          UI_PANE_WIDTHS_SETTING_KEY,"));
 check("Pane state is set in init before deferred init schedules",source.includes("const firstPaintLayout = parseSavedPaneLayout(fp[UI_PANE_WIDTHS_SETTING_KEY]);") && source.indexOf("const firstPaintLayout") < source.indexOf("queueMicrotask(() => void get().initDeferred())"));
 check("Only one parser path exists in sessionStore",!source.includes("const paneRaw = ds[UI_PANE_WIDTHS_SETTING_KEY]")&&source.includes("firstPaintLayout"));

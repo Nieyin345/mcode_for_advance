@@ -454,7 +454,12 @@ section("4. open 失败：显示原因，重试真的再 open");
   __plan("open", { ok: false, reason: "主窗口尚未就绪，无法创建文档视图" });
   await mountPane(OFFICE_FILE);
   const text = uiText();
-  check("★ 失败时显示「GenOffice 编辑视图打开失败」", text.includes("GenOffice 编辑视图打开失败"), text);
+  // 标题里**不该出现 vendor 品牌**：用户在 Mcode 里打开的是"这个文档"，不是
+  // "GenOffice 这个应用"。断言守"确实显示了打开失败 + 用了中性的说法"，
+  // 而不是某个具体措辞 —— 措辞可以改，品牌不该回来。
+  check("★ 失败时显示打开失败（且不暴露 vendor 品牌）",
+    text.includes("打开失败") && !text.includes("GenOffice 编辑视图"),
+    text);
   check("★ 显示宿主给的原因原文", text.includes("主窗口尚未就绪"), text);
   const retry = clickableByText("重试");
   check("失败态里有重试按钮", retry !== undefined, clickables().length);
@@ -701,27 +706,33 @@ section("5. FileEditor：默认档不变、切换项可进入可视化视图");
     {},
   );
 
-  // 工具栏：能力就绪 → 有「编辑视图」按钮；点击 = 写偏好 "genoffice-view"。
+  // 工具栏：能力就绪 → 有「编辑视图」按钮，且**默认就是激活的**（默认档即原生视图）。
   check("工具栏拿到 canUseGenofficeView", first.toolbar?.canUseGenofficeView === true, first.toolbar?.canUseGenofficeView);
-  eq("工具栏初始 genofficeViewActive=false", first.toolbar?.genofficeViewActive, false);
+  eq("工具栏初始 genofficeViewActive=true（默认档就是原生视图）", first.toolbar?.genofficeViewActive, true);
+
+  // 点一次 = **关掉**原生视图，回到该格式的结构化回退档（docs → "genoffice"）。
   (first.toolbar?.onToggleGenofficeView as (() => void) | undefined)?.();
+  await __flush();
   eq(
-    "★ 点「编辑视图」写入偏好 genoffice-view",
+    "★ 点「编辑视图」把偏好切回结构化回退档",
+    storeState.ideFileViewModeByProject["project-a"]?.[OFFICE_FILE],
+    "genoffice",
+  );
+  const second = await renderEditor(OFFICE_FILE);
+  eq("★ 切回后渲染结构化面板（不再是原生视图）", second.pane?.type?.name, "GenofficeDocumentPane");
+  eq("该面板拿到 filePath prop", second.pane?.props.filePath, OFFICE_FILE);
+  eq("切回后 genofficeViewActive=false", second.toolbar?.genofficeViewActive, false);
+
+  // 再点一次 → 回到原生视图（双向切换）。
+  (second.toolbar?.onToggleGenofficeView as (() => void) | undefined)?.();
+  await __flush();
+  eq(
+    "再点一次回到 genoffice-view",
     storeState.ideFileViewModeByProject["project-a"]?.[OFFICE_FILE],
     "genoffice-view",
   );
-  const second = await renderEditor(OFFICE_FILE);
-  eq("★ 偏好 genoffice-view 时渲染 GenofficeViewHostPane", second.pane?.type?.name, "GenofficeViewHostPane");
-  eq("该面板拿到 filePath prop", second.pane?.props.filePath, OFFICE_FILE);
-
-  // 再点一次 → 回到结构化视图（默认档），不再是已删的 OnlyOffice。
-  eq("偏好生效后 genofficeViewActive=true", second.toolbar?.genofficeViewActive, true);
-  (second.toolbar?.onToggleGenofficeView as (() => void) | undefined)?.();
-  eq(
-    "再点一次回到 wysiwyg",
-    storeState.ideFileViewModeByProject["project-a"]?.[OFFICE_FILE],
-    "wysiwyg",
-  );
+  const backToNative = await renderEditor(OFFICE_FILE);
+  eq("★ 再点一次重新渲染 GenofficeViewHostPane", backToNative.pane?.type?.name, "GenofficeViewHostPane");
 
   // 结构化视图与可视化视图互斥：偏好为 genoffice 时仍是旧面板。
   storeState.ideFileViewModeByProject["project-a"] = { [OFFICE_FILE]: "genoffice" };
@@ -785,7 +796,13 @@ section("7. 源码断言：接线与错误分支没有旁路");
 
     check("面板的能力读取走 useRpc（硬规矩 7）", /useRpc\(\(\) => api\.document\.capabilities\(\)/.test(paneSrc));
     check("面板使用 ResizeObserver", paneSrc.includes("new ResizeObserver("));
-    check("面板卸载 cleanup 里 close", /return \(\) => \{[\s\S]*?closeQuietly\(docId\)/.test(paneSrc));
+    // 守行为：cleanup 必须处理视图的生命周期，**不能什么都不做**（原生视图不随
+    // DOM 卸载，什么都不做就是孤儿）。实现可以在"标签还在 → 保留"与"标签关了 →
+    // 关闭"之间分支，所以这里接受 close 与 hide 两种收尾，只要 cleanup 真的管了。
+    check("面板卸载 cleanup 里处理视图生命周期",
+      /return \(\) => \{[\s\S]*?(closeQuietly|hideQuietly)\(docId/.test(paneSrc));
+    check("★ cleanup 只在标签真的消失时才 close（仍在的标签保留视图）",
+      paneSrc.includes("shouldRetainNativeView(") && paneSrc.includes("closeQuietly(docId, filePath)"));
     check(
       "closeQuietly 同时兜住异步拒绝与同步抛错（手机端 webUnsupported 是同步抛）",
       /try \{[\s\S]*?\.catch\(\(\) => \{\}\)[\s\S]*?\} catch \{/.test(paneSrc),
@@ -799,10 +816,18 @@ section("7. 源码断言：接线与错误分支没有旁路");
     // 「逐字未变」——**那个"未变"正是被用户裁决推翻的东西**。改成钉住新形状：
     // markdown → wysiwyg；office → 按能力退化的三档；其余 → preview / edit。
     // 真正的行为判据在 `markdown-mode-smoke` 的「default opens the GenOffice NATIVE view」。
+    // 守行为，不守写法：默认档的**语义**是
+    //   ① 有原生视图能力 → 直接进 genoffice-view；
+    //   ② 没有时按类型退化：markdown → wysiwyg，office → 结构化视图，pdf → preview，
+    //      其余 → edit。
+    // 实现从单个三元表达式改成了 `genofficeViewFallbackMode` + `defaultMode` 两段
+    //（更好读、且能复用 fallback），断言不该因此假红。
     check(
-      "FileEditor 默认档：md 仍是 wysiwyg，office 走 GenOffice 三档，其余 preview/edit",
-      /const defaultMode: FileViewMode = markdown\s*\? "wysiwyg"\s*: office\s*\? genofficeViewForOffice\s*\? "genoffice-view"/.test(editorSrc)
-        && /: isPdfFile\(filePath\)\s*\? "preview"\s*: "edit";/.test(editorSrc),
+      "FileEditor 默认档：有原生视图就走它，否则按类型退化（md wysiwyg / pdf preview / 其余 edit）",
+      /genofficeViewAvailable\s*\?\s*"genoffice-view"\s*:\s*genofficeViewFallbackMode/.test(editorSrc)
+        && /markdown\s*\?\s*"wysiwyg"/.test(editorSrc)
+        && /isPdfFile\(filePath\)\s*\?\s*"preview"/.test(editorSrc)
+        && /:\s*"edit"/.test(editorSrc),
     );
     check("工具栏按钮接的是 onToggleGenofficeView", editorSrc.includes("onClick={onToggleGenofficeView}"));
 

@@ -20,6 +20,7 @@
  *  - `file:delete`    — trash a file or directory (file-tree 删除, recoverable)
  *  - `file:rename`    — in-place rename, same parent dir (file-tree 重命名)
  *  - `file:copy`      — copy a file into a dir, auto-rename on clash (file-tree 复制/粘贴)
+ *  - `file:move`      — move a file or directory into a dir (file-tree 移动到…)
  */
 import type { IpcMain } from "electron";
 import { app, clipboard, ClipboardItem, nativeImage, shell } from "electron";
@@ -38,6 +39,7 @@ import {
   FileDeleteSchema,
   FileRenameSchema,
   FileCopySchema,
+  FileMoveSchema,
   FileGrepSchema,
   ClipboardSaveFileSchema,
   ClipboardWriteImageSchema,
@@ -784,6 +786,90 @@ export function registerFileHandlers(ipcMain: IpcMain): void {
       log.error(
         `file.copy failed for ${input.srcPath} -> ${input.destDir}: ${(err as Error).message}`,
       );
+      return { ok: false };
+    }
+  });
+
+  /* ── file:move — move an entry (file OR directory) into another directory ──
+   *
+   * 【EDIT-01】「移动」与「重命名」是两件事，所以是两条通道：
+   * `file:rename` 的契约明文只做同目录改名，把跨目录塞进它会让那个保证失效。
+   *
+   * 目录在这里是**允许**的（与 `file.copy` 相反）：移动走一次原子 `rename`，
+   * 要么全过去要么全没动；而复制目录要在失败时留下半棵树。
+   *
+   * 跨卷时 `rename` 会 `EXDEV` —— **如实报错**，不悄悄退化成"复制+删除"：
+   * 那会在中途失败时留下半棵树，而用户以为"移动"是个原子动作。
+   * 目标已存在则拒绝（不覆盖、也不自动改名 —— 换个名字过去用户会找不到）。 */
+  ipcMain.handle(IPC.FILE_MOVE, async (_evt, raw) => {
+    const input = FileMoveSchema.parse(raw);
+    const srcRoot = findContainingWorkspaceRoot(input.srcPath);
+    if (!srcRoot) {
+      log.warn(`file.move refused — srcPath outside any project root: ${input.srcPath}`);
+      return { ok: false };
+    }
+    const destRoot = findContainingWorkspaceRoot(input.destDir);
+    if (!destRoot) {
+      log.warn(`file.move refused — destDir outside any project root: ${input.destDir}`);
+      return { ok: false };
+    }
+    const target = join(input.destDir, basename(input.srcPath));
+    /* 挪到原地 = 什么都没做。回成功比报错好（用户可能只是把行拖回了同一层）。
+     *
+     * ⚠️ **大小写不可信**：Windows / macOS 的大小写不敏感文件系统上，
+     * `D:\WS\a` 与 `d:\ws\a` 是同一处。所以下面所有路径比较都走
+     * `samePath()`（它按平台规则归一化），**不能直接比字符串** —— 直接比会让
+     * 「把目录移进自己」这个致命操作在大写混写下被放行，见下一段。 */
+    const caseOnlySamePath = samePath(input.srcPath, target);
+    /* 把目录挪进它自己的子树里会让整棵树从磁盘上消失（`rename` 之后两边都指向
+     * 一个不存在的位置）。必须在动手前判掉 —— 这个守卫在 `file:rename` 里不需要
+     * （它只改同目录的名字），是移动独有的。
+     *
+     * 判据用 `samePath` 逐级比，不用 `startsWith`：后者在大小写不敏感的文件系统上
+     * 会把 `d:\ws\a\sub` 当成**不是** `D:\WS\a` 的子路径，于是放行一次会毁树的移动。
+     * （实测：`guard('D:\WS\a', 'd:\ws\a\sub')` 用 `startsWith` 返回 false = 放行。） */
+    if (caseOnlySamePath) return { ok: true };
+    /* `pathWithin(src, target)` = 「target 落在 src 里面」。它已经是大小写不敏感
+     * （Windows/macOS）且会解析符号链接/junction —— 正是这个守卫需要的那条判据。
+     * 不要自己拼 `src + sep` 再 `startsWith`：实测那在大写混写的路径上会放行。 */
+    if (pathWithin(input.srcPath, target)) {
+      log.warn(`file.move refused — cannot move a directory into itself: ${input.srcPath} -> ${target}`);
+      return { ok: false };
+    }
+    try {
+      await stat(input.srcPath);
+    } catch {
+      log.warn(`file.move failed — source does not exist: ${input.srcPath}`);
+      return { ok: false };
+    }
+    try {
+      await access(target);
+      // 目标已存在 —— 不覆盖，也不自动改名。见上面的注释。
+      log.warn(`file.move refused — destination already exists: ${target}`);
+      return { ok: false };
+    } catch (existsErr) {
+      const code = (existsErr as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        log.error(`file.move failed while checking destination ${target}: ${String(code)}`);
+        return { ok: false };
+      }
+    }
+    try {
+      await rename(input.srcPath, target);
+      log.info(
+        `file.move: ${relative(srcRoot, input.srcPath) || input.srcPath} -> ${relative(destRoot, target) || target}`,
+      );
+      return { ok: true };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EXDEV") {
+        log.warn(
+          `file.move refused — cross-device move (EXDEV): ${input.srcPath} -> ${target}. ` +
+            "不自动退化成复制+删除：那会在失败时留下半棵树。",
+        );
+        return { ok: false };
+      }
+      log.error(`file.move failed for ${input.srcPath} -> ${target}: ${(err as Error).message}`);
       return { ok: false };
     }
   });

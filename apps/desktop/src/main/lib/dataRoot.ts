@@ -160,11 +160,11 @@ function moveIfNeeded(from: string, to: string, label: string): void {
       //   2. 非 ASCII 目标 → 不加 filter 静默不复制，加了正常。
       // **第三种救不了**：非 ASCII 源 + 目标里**已有同名文件** → 加了 filter 仍然抛错
       // （`errno=0`，信息甚至是 "The operation completed successfully"），且**实际没复制**。
-      // 详见 tasks/T107 与 `t107-cpsync-preexisting-smoke`。
+      // 回归判据：`t107-cpsync-preexisting-smoke`。
       //
       // **本函数不受第三种影响**：上面 `if (!existsSync(from) || existsSync(to)) return;`
       // 已经保证目标不存在，所以下面的 `cpSync` 永远打不到「目标已有同名文件」那一格。
-      // **动这个守卫之前先读 tasks/T107** —— 去掉它就会踩进第三格。
+      // **动这个守卫之前先看上面那三格** —— 去掉它就会踩进第三格。
       log.warn(`dataRoot: rename ${label} failed (${(err as Error).message}); copying instead`);
       // `filter` 在这里的作用：选 JS 实现，绕开 native fast path（见上方完整说明）。
       cpSync(from, to, { recursive: true, filter: () => true });
@@ -216,7 +216,7 @@ export function copyDataRootTo(target: string): string | null {
   }
   try {
     // ⚠️ 同 `:150` 上方注释：路径含非 ASCII 时 `cpSync` 会 native 崩溃，`catch` 接不住。
-    // 同一个 `filter` 修法 —— 见文件头与 tasks/T90。
+    // 同一个 `filter` 修法 —— 见文件头。
     cpSync(from, to, { recursive: true, filter: () => true });
     log.info(`dataRoot: copied ${from} -> ${to}`);
     return null;

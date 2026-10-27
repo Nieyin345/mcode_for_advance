@@ -12,6 +12,7 @@ import { DOCUMENT_HANDOFF_SCHEME } from "./documentViewHandoff.js";
 import { PANEL_SCHEME } from "@contracts/customUiPanel";
 import type { DocumentViewLike } from "./documentViewHost.js";
 import { resolveSafeGenofficeAsset } from "./genofficeAssetPath.js";
+import { THEIA_WEBVIEW_RESOURCE_SCHEME } from "@main/modules/theiaHost/webviewResourceProtocol.js";
 
 export type NativeKind = "pdf" | "markdown" | "html" | "sheets" | "slides";
 export type NativeHostStatus = Record<NativeKind, boolean>;
@@ -89,6 +90,9 @@ export function registerGenofficeNativeScheme(): void {
     } },
     { scheme: "genoffice-app", privileges: {
       standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true, codeCache: true,
+    } },
+    { scheme: THEIA_WEBVIEW_RESOURCE_SCHEME, privileges: {
+      standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true,
     } },
   ]);
 }

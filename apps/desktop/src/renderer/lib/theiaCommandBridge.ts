@@ -23,15 +23,18 @@ export function collectTheiaPaletteCommands(
     if (!item.enabled || item.corrupted || !item.running || !item.activeSession) continue;
     const {sessionId, commands} = item.activeSession;
     if (!sessionId || !Array.isArray(commands)) continue;
+    const metadata = new Map((item.activeSession.commandContributions??[]).map(command=>[command.commandId,command] as const));
     for (const commandId of commands) {
       if (typeof commandId !== "string" || !commandId || commandId.length > 256) continue;
       const id = "theia:" + item.id + ":" + commandId;
       if (seen.has(id)) continue;
       seen.add(id);
-      const title = commandId + " · " + item.extensionId;
+      const contribution = metadata.get(commandId);
+      const label = contribution?.title || commandId;
+      const title = label + " · " + item.extensionId;
       out.push({
         id, label:title, group:"view",
-        keywords:[commandId,item.extensionId,"VS Code","Theia","扩展"],
+        keywords:[commandId,item.extensionId,contribution?.title??"",contribution?.category??"","VS Code","Theia","扩展"],
         perform:async()=>{
           try {
             const response = await executeTheiaWithMonaco(invoke,sessionId,commandId);

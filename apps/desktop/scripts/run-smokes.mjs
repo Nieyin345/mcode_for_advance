@@ -14,6 +14,7 @@ export const CRITICAL_SUITES = Object.freeze([
   "run-store-smoke", "session-store-smoke",
   // 调度器拆成三套(A5,2026-10-07):核心/数据/控制流。都是核心逻辑,一起算关键集。
   "scheduler-smoke", "scheduler-data-smoke", "scheduler-flow-smoke",
+  "mcode-branch-context-smoke", // Mcode branch labels/notes reach only the selected downstream node.
   "ipc-wiring-smoke", "path-guard-smoke",
   // 【MC-010】PR 门禁此前只覆盖上面这 10 套 —— 三引擎、插件、公网 MCP、回滚快照
   // 这些**高风险面**都要等 master push 之后的全量跑才会被发现,太晚。下面这几套

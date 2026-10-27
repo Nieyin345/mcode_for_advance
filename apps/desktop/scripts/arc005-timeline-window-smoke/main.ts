@@ -25,20 +25,44 @@ check("All dash identities and bookmark grouping are assembled before virtual sl
 check("Original exact message/bookmark jump remains intact",
  timeline.includes("onJumpItem(d.message.id, d.index, d.excerpt)")&&
  timeline.includes("group[0].excerpt")&&timeline.includes("bm-${item.bookmarkId}"));
-check("Virtual window keeps timeline keyboard-scrollable without hiding navigation",
- timeline.includes('tabIndex={windowed ? 0 : undefined}')&&
- timeline.includes('aria-label={t("chatStream.timeline.navigation")}')&&
+check("Virtualized markers use a single roving tab stop instead of tabbing only mounted rows",
+ timeline.includes("tabIndex={windowed ? (ordinal === rovingDashIndex ? 0 : -1) : 0}") &&
+ timeline.includes("firstFocusableOffset") &&
+ !timeline.includes("tabIndex={windowed ? 0 : undefined}"));
+check("Virtualized timeline supports ArrowUp/Down, PageUp/Down and Home/End",
+ timeline.includes('["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"]') &&
+ timeline.includes("setFocusedDashKey(dashes[target]!.key)") &&
+ timeline.includes("track.scrollTop = Math.max(0, nextTop)"));
+check("Focused marker remains mounted when scrolling away from its virtual window",
+ timeline.includes("If the user scrolls the timeline with a focused marker") &&
+ timeline.includes("indices.push(validFocusedDashIndex)") &&
+ timeline.includes("data-ui-timeline-dash-key={d.key}") &&
+ timeline.includes("new Map(dashes.map((dash, index) => [dash.key, index] as const))") &&
+ timeline.includes("dashIndexByKey.get(focusedDashKey)") &&
+ timeline.includes('target?.focus({ preventScroll: true })'));
+check("Timeline container delegates focus to actual dash controls",
+ timeline.includes("onFocusCapture={windowed ?") &&
+ timeline.includes("onBlurCapture={windowed ?") &&
+ timeline.includes("onKeyDownCapture={windowed ?") &&
+ !timeline.includes("tabIndex={windowed ? 0 : undefined}"));
+check("Virtual window keeps timeline navigation labeled and visibly focused",
+ timeline.includes('aria-label={t("chatStream.timeline.navigation")}') &&
  timeline.includes("focus-visible:outline-2"));
 check("Scroll position and viewport height are observed and cleaned up",
- timeline.includes("onScroll={windowed ? (event) => setScrollTop(event.currentTarget.scrollTop)")&&
- timeline.includes("observer.observe(track)")&&timeline.includes("observer.disconnect()"));
+ timeline.includes("onScroll={windowed ? (event) => {")&&timeline.includes("scrollFrameRef.current = window.requestAnimationFrame")&&
+ timeline.includes("observer?.observe(track)")&&timeline.includes("observer?.disconnect()") &&
+ timeline.includes("window.requestAnimationFrame(() =>") &&
+ timeline.includes("window.cancelAnimationFrame(scrollFrameRef.current)"));
 check("Timeline tooltips remain offscreen portal only while hovered",
  timeline.includes("hovered && createPortal(")&&timeline.includes("document.body"));
 check("Real Electron long-chat verifies BOTH LegendList and timeline scrolling separately",
  probe.includes("!el.closest('[data-ui-timeline-strip]')")&&
  probe.includes("timelineMountedBefore > 90")&&
  probe.includes("timelineScrolled")&&
- probe.includes("firstDashBefore !== firstDashAfter"));
+ probe.includes("firstDashBefore !== firstDashAfter")&&
+ probe.includes("timelineJumpWorked")&&
+ probe.includes("[data-ui-timeline-dash-index=\"20\"]")&&
+ probe.includes('[data-message-id="stress-40"]'));
 check("Negative: disabling bounded window would be caught by guard",
  !timeline.replace("dashes.slice(range.start, range.end)","dashes").includes("dashes.slice(range.start, range.end)"));
 console.log("arc005-timeline-window-smoke: "+(n-fail)+"/"+n);

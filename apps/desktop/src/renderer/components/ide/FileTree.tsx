@@ -8,12 +8,17 @@ import { cn } from "@renderer/lib/cn.js";
 import { basename, dirname, isPathWithin, joinPath, relativePath } from "@renderer/lib/path.js";
 import type { FileTreeEntry } from "@contracts/ipc";
 import { useSessionStore } from "@renderer/stores/sessionStore.js";
+import {
+  closeNativeEditorsForFileOperation,
+  restoreNativeEditorsAfterFileOperation,
+} from "./nativeEditorClose.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
 import { FILE_DRAG_MIME } from "@renderer/lib/contentTag.js";
 import {
   IconChevronRight,
   IconChevronDown,
   IconFolderOpen,
+  IconArrowsExchange,
   IconLoader2,
   IconExternalLink,
   IconClipboard,
@@ -81,15 +86,26 @@ const NewInParentContext = createContext<StartNewInParent | null>(null);
  *  falls back to server-side rejection. */
 const SiblingNamesContext = createContext<Set<string> | null>(null);
 
-/** Tree-scoped clipboard for the file "复制/粘贴" pair. The FileTree root owns
- *  the copied path; file rows call `copyFile` from their right-click menu,
- *  while file rows, directory rows and the blank-area menu read `copiedFile`
- *  to surface a 粘贴 item (hidden when nothing is stashed). Scoped to one tree
- *  instance, so the clipboard never leaks across projects. Null when rendered
- *  outside a FileTree — the copy item is then hidden and paste never applies. */
+/** Tree-scoped clipboard for the file 复制/移动 + 粘贴 pair. The FileTree root
+ *  owns the stashed path; file rows call `copyFile` / `moveFile` from their
+ *  right-click menu, while file rows, directory rows and the blank-area menu
+ *  read it to surface a 粘贴 item (hidden when nothing is stashed). Scoped to
+ *  one tree instance, so the clipboard never leaks across projects. Null when
+ *  rendered outside a FileTree — the copy item is then hidden and paste never
+ *  applies.
+ *
+ *  【EDIT-01】**为什么复制与移动共用一份剪贴板**：两者的用户动作是同一个 ——
+ *  「先指认一个条目，再指认一个去处」。分成两份要在粘贴时问"你要哪个"，
+ *  而用户刚刚已经用菜单说过了。所以存的是 `{path, mode}`，粘贴按 mode 分派。
+ *  这也保证两者**不会同时挂着一个待粘贴**（两次暂存 = 后者覆盖前者，与
+ *  操作系统的文件管理器一致）。 */
 interface FileClipboardValue {
+  /** 暂存的条目路径；null = 剪贴板空。 */
   copiedFile: string | null;
+  /** 这条是「复制过去」还是「移过去」。只在 `copiedFile !== null` 时有意义。 */
+  mode: "copy" | "move";
   copyFile: (path: string) => void;
+  moveFile: (path: string) => void;
 }
 const FileClipboardContext = createContext<FileClipboardValue | null>(null);
 
@@ -367,6 +383,8 @@ function InlineRenameRow({
   excludeSelf,
   onCancel,
   onRenamed,
+  onBeforeRename,
+  onRenameFailed,
 }: {
   depth: number;
   /** Current basename of the entry being renamed (pre-fills the input). */
@@ -381,6 +399,10 @@ function InlineRenameRow({
    *  renaming to the same name (or a case-only change) is permitted. */
   excludeSelf: string;
   onCancel: () => void;
+  /** Native editors must approve closure before the filesystem path changes. */
+  onBeforeRename?: (oldPath: string, newPath: string) => Promise<boolean>;
+  /** Called when the disk rename fails after native editors were preflighted. */
+  onRenameFailed?: (oldPath: string, newPath: string) => void;
   /** Called with the new absolute path on success. */
   onRenamed: (newPath: string) => void;
 }) {
@@ -425,14 +447,26 @@ function InlineRenameRow({
     submittingRef.current = true;
     const oldPath = joinPath(parentPath, initialName);
     const newPath = joinPath(parentPath, name);
-    const result = await api.file.rename({ oldPath, newPath });
-    submittingRef.current = false;
-    if (!result.ok) {
+    try {
+      if (onBeforeRename && !(await onBeforeRename(oldPath, newPath))) {
+        setError(t("ide.editor.closeBlockedUnsaved"));
+        submittingRef.current = false;
+        return;
+      }
+      const result = await api.file.rename({ oldPath, newPath });
+      submittingRef.current = false;
+      if (!result.ok) {
+        onRenameFailed?.(oldPath, newPath);
+        setError(t("ide.tree.renameFailed"));
+        return;
+      }
+      onRenamed(newPath);
+    } catch {
+      submittingRef.current = false;
+      onRenameFailed?.(oldPath, newPath);
       setError(t("ide.tree.renameFailed"));
-      return;
     }
-    onRenamed(newPath);
-  }, [value, initialName, isDir, parentPath, existingNames, excludeSelf, onCancel, onRenamed, t]);
+  }, [value, initialName, isDir, parentPath, existingNames, excludeSelf, onCancel, onRenamed, onBeforeRename, onRenameFailed, t]);
 
   return (
     <div
@@ -456,7 +490,10 @@ function InlineRenameRow({
             void commit();
           } else if (e.key === "Escape") {
             e.preventDefault();
-            onCancel();
+            // A native editor's save/discard prompt may be in flight. Do not
+            // unmount the rename row while its awaited filesystem operation can
+            // still commit; let that operation settle first.
+            if (!submittingRef.current) onCancel();
           }
         }}
         onBlur={() => {
@@ -546,25 +583,50 @@ export function FileTree({ projectPath }: { projectPath: string }) {
     [bumpReload, creating, openFileInIde],
   );
 
-  // Tree-scoped clipboard for the 复制/粘贴 pair (see FileClipboardContext).
-  const [copiedFile, setCopiedFile] = useState<string | null>(null);
+  // Tree-scoped clipboard for the 复制/移动 + 粘贴 pair (see FileClipboardContext).
+  const [stashed, setStashed] = useState<{ path: string; mode: "copy" | "move" } | null>(null);
+  const copiedFile = stashed?.path ?? null;
   const fileClipboard = useMemo(
-    () => ({ copiedFile, copyFile: setCopiedFile }),
-    [copiedFile],
+    () => ({
+      copiedFile,
+      mode: stashed?.mode ?? "copy" as const,
+      copyFile: (path: string) => setStashed({ path, mode: "copy" }),
+      moveFile: (path: string) => setStashed({ path, mode: "move" }),
+    }),
+    [copiedFile, stashed?.mode],
   );
   const { reportFailure: reportPasteFailed, toast: pasteFailedToast } = useRowFailure("ide.tree.pasteFailed");
-  // Paste the stashed file into the project root. Name clashes are resolved
-  // main-side ("name 副本.ext", never overwrites); failure pins a danger toast.
+  /**
+   * 把暂存的条目放进 `destDir`：**复制还是移动，由暂存时选的 mode 决定**。
+   *
+   * 两条 RPC 的语义差别是刻意的（见 `docs/功能文档.md` EDIT-01 与两个契约的注释）：
+   *   - `file.copy` 名字撞了就派生成「名 副本.ext」，**绝不覆盖**；
+   *   - `file.move` 名字撞了就**拒绝** —— 移动的语义是"我要它去那儿"，
+   *     换个名字过去用户会找不到。
+   * 所以两种模式下"目标有同名"的用户可见结果不同，而这不是 bug。
+   */
+  const pasteInto = useCallback(async (destDir: string) => {
+    if (stashed === null) return;
+    const result = stashed.mode === "move"
+      ? await api.file.move({ srcPath: stashed.path, destDir })
+      : await api.file.copy({
+          srcPath: stashed.path,
+          destDir,
+          suffix: t("ide.tree.copyNameSuffix"),
+        });
+    if (result.ok) {
+      // 移动完成后剪贴板就该空了（那个条目已经不在原处）；复制保留，
+      // 用户可以继续往别处粘（与操作系统的行为一致）。
+      if (stashed.mode === "move") setStashed(null);
+      bumpReload();
+    } else {
+      reportPasteFailed();
+    }
+  }, [stashed, bumpReload, reportPasteFailed, t]);
+  // Paste the stashed entry into the project root.
   const handlePasteRoot = useCallback(async () => {
-    if (!copiedFile) return;
-    const result = await api.file.copy({
-      srcPath: copiedFile,
-      destDir: projectPath,
-      suffix: t("ide.tree.copyNameSuffix"),
-    });
-    if (result.ok) bumpReload();
-    else reportPasteFailed();
-  }, [copiedFile, projectPath, bumpReload, reportPasteFailed, t]);
+    await pasteInto(projectPath);
+  }, [pasteInto, projectPath]);
 
   // Registry of mounted file-node buttons, used by the reveal effect below.
   // useRef (not state) so register/unregister never triggers a re-render; the
@@ -672,7 +734,7 @@ export function FileTree({ projectPath }: { projectPath: string }) {
   // project can still create its first entry via right-click. The body is
   // `relative` so the paste-failure toast can pin to its top-right.
   const treeBody = (
-    <div className="relative min-h-full py-1 [font-size:var(--right-panel-font-size)]">
+    <div data-cds="FileTree" className="relative min-h-full py-1 [font-size:var(--right-panel-font-size)]">
       {pasteFailedToast}
       {creating && (
         <InlineNewEntryRow
@@ -911,6 +973,8 @@ function DirNode({
   const renamePathInIde = useSessionStore((s) => s.renamePathInIde);
   // In-flight delete guard so a double-confirm can't fire twice.
   const deletingRef = useRef(false);
+  const nativePathsBeforeRenameRef = useRef<string[]>([]);
+  const nativeRenameProjectIdRef = useRef<string | null>(null);
 
   // Track the last reload signal we acted on so we can diff and force a
   // re-load even when `children` is already cached (the normal guard would
@@ -993,11 +1057,44 @@ function DirNode({
   // Rename the directory. On success: exit rename mode, re-scan the tree, and
   // migrate any editor state (open tabs / expanded dirs) keyed under the old
   // path to the new one so nothing dangles.
+  const handleBeforeRename = useCallback(async (oldPath: string) => {
+    const state = useSessionStore.getState();
+    const projectId = state.activeProjectId;
+    const openFiles = projectId ? state.ideOpenFilesByProject[projectId] ?? [] : [];
+    const affected = openFiles.filter((path) => isPathWithin(oldPath, path));
+    const result = await closeNativeEditorsForFileOperation(affected, projectId);
+    nativePathsBeforeRenameRef.current = result.closedPaths;
+    nativeRenameProjectIdRef.current = projectId;
+    if (!result.ok) {
+      restoreNativeEditorsAfterFileOperation(result.closedPaths, projectId);
+      nativePathsBeforeRenameRef.current = [];
+      nativeRenameProjectIdRef.current = null;
+      if (result.blockedPath) useSessionStore.getState().reportBlockedIdeClose([result.blockedPath]);
+      return false;
+    }
+    return true;
+  }, []);
+
+  const handleRenameFailed = useCallback(() => {
+    restoreNativeEditorsAfterFileOperation(nativePathsBeforeRenameRef.current, nativeRenameProjectIdRef.current);
+    nativePathsBeforeRenameRef.current = [];
+    nativeRenameProjectIdRef.current = null;
+  }, []);
+
   const handleRenamed = useCallback(
     (newPath: string) => {
       setRenaming(false);
       actions?.bumpReload();
-      renamePathInIde(endPath, newPath, true);
+      const oldPath = endPath;
+      const closedNativePaths = nativePathsBeforeRenameRef.current;
+      const projectId = nativeRenameProjectIdRef.current;
+      renamePathInIde(oldPath, newPath, true);
+      restoreNativeEditorsAfterFileOperation(
+        closedNativePaths.map((path) => path === oldPath ? newPath : newPath + path.slice(oldPath.length)),
+        projectId,
+      );
+      nativePathsBeforeRenameRef.current = [];
+      nativeRenameProjectIdRef.current = null;
     },
     [actions, endPath, renamePathInIde],
   );
@@ -1009,12 +1106,28 @@ function DirNode({
   const handleDelete = useCallback(async () => {
     if (deletingRef.current) return;
     deletingRef.current = true;
+    let nativePathsToRestore: string[] = [];
+    let nativeProjectId: string | null = null;
     try {
+      const state = useSessionStore.getState();
+      nativeProjectId = state.activeProjectId;
+      const openFiles = nativeProjectId ? state.ideOpenFilesByProject[nativeProjectId] ?? [] : [];
+      const affected = openFiles.filter((path) => isPathWithin(endPath, path));
+      const preflight = await closeNativeEditorsForFileOperation(affected, nativeProjectId);
+      nativePathsToRestore = preflight.closedPaths;
+      if (!preflight.ok) {
+        restoreNativeEditorsAfterFileOperation(nativePathsToRestore, nativeProjectId);
+        nativePathsToRestore = [];
+        if (preflight.blockedPath) useSessionStore.getState().reportBlockedIdeClose([preflight.blockedPath]);
+        return { ok: false, error: t("ide.editor.closeBlockedUnsaved") };
+      }
       const result = await api.file.delete({ targetPath: endPath });
       // 失败要显式报出来:主进程在"路径不在任何项目里 / 目标是项目根 / 系统回收站抛错"
       // 三种情况下回 `{ok:false}`,从前这里直接 return —— 菜单关了、行还在,用户完全
       // 不知道为什么没删掉(与粘贴失败同一条纪律)。
       if (!result.ok) {
+        restoreNativeEditorsAfterFileOperation(nativePathsToRestore, nativeProjectId);
+        nativePathsToRestore = [];
         reportDeleteFailed();
         // Surface it to the dialog too, so the modal stays open with the reason
         // instead of vanishing as if the folder were gone.
@@ -1022,7 +1135,12 @@ function DirNode({
       }
       actions?.bumpReload();
       closeFilesUnderDir(endPath);
+      nativePathsToRestore = [];
       return result;
+    } catch {
+      restoreNativeEditorsAfterFileOperation(nativePathsToRestore, nativeProjectId);
+      reportDeleteFailed();
+      return { ok: false, error: t("ide.tree.deleteFailed") };
     } finally {
       // Also on rejection: an IPC failure must not leave the guard stuck (the
       // dialog shows the thrown error; a later retry has to be able to run).
@@ -1030,19 +1148,21 @@ function DirNode({
     }
   }, [actions, endPath, closeFilesUnderDir, reportDeleteFailed, t]);
 
-  // Paste the tree's stashed file into this directory. On success the row is
+  // Paste the tree's stashed entry into this directory. On success the row is
   // expanded (a collapsed dir would otherwise swallow the result silently)
   // and the tree re-scans; on failure a danger toast pins to the row. The
   // destination uses `endPath` so a compact-folders row pastes into the real
-  // (deepest) dir it displays.
+  // (deepest) dir it displays. **复制还是移动由暂存时选的 mode 决定** —— 见 FileClipboardValue。
   const handlePaste = useCallback(async () => {
-    const src = fileClipboard?.copiedFile;
-    if (!src) return;
-    const result = await api.file.copy({
-      srcPath: src,
-      destDir: endPath,
-      suffix: t("ide.tree.copyNameSuffix"),
-    });
+    const stash = fileClipboard;
+    if (!stash?.copiedFile) return;
+    const result = stash.mode === "move"
+      ? await api.file.move({ srcPath: stash.copiedFile, destDir: endPath })
+      : await api.file.copy({
+          srcPath: stash.copiedFile,
+          destDir: endPath,
+          suffix: t("ide.tree.copyNameSuffix"),
+        });
     if (!result.ok) {
       reportPasteFailed();
       return;
@@ -1080,6 +1200,8 @@ function DirNode({
             existingNames={siblingNames ?? EMPTY_NAMES}
             excludeSelf={basename(endPath).toLowerCase()}
             onCancel={() => setRenaming(false)}
+            onBeforeRename={handleBeforeRename}
+            onRenameFailed={handleRenameFailed}
             onRenamed={handleRenamed}
           />
         ) : (
@@ -1088,6 +1210,8 @@ function DirNode({
             render={
               <button
                 type="button"
+                data-cds="FileTreeDirectoryRow"
+                data-expanded={isOpen ? "true" : "false"}
                 onClick={onToggle}
                 aria-expanded={isOpen}
                 aria-label={label}
@@ -1138,6 +1262,17 @@ function DirNode({
                     icon={<IconClipboardText size={12} />}
                     label={t("ide.tree.paste")}
                     onClick={() => void handlePaste()}
+                  />
+                )}
+                {/* 【EDIT-01】移动：目录也可以移（移动是原子 rename，见 `file.move` 契约）。
+                    暂存后在目标目录点「粘贴」完成。
+                    **已经暂存的就是这一行时不画** —— 把它"移动到自己"没有意义，
+                    而且那正是 `file.move` 里「不能挪进自己的子树」那条守卫最容易撞上的形态。 */}
+                {fileClipboard && fileClipboard.copiedFile !== endPath && (
+                  <MenuItem
+                    icon={<IconArrowsExchange size={12} />}
+                    label={t("ide.tree.moveFile")}
+                    onClick={() => fileClipboard.moveFile(endPath)}
                   />
                 )}
                 <MenuSeparator />
@@ -1253,13 +1388,44 @@ function FileNodeRow({
   const [pendingDelete, setPendingDelete] = useState(false);
   // In-flight delete guard so a double-confirm can't fire twice.
   const deletingRef = useRef(false);
+  const nativePathBeforeRenameRef = useRef<string[]>([]);
+  const nativeRenameProjectIdRef = useRef<string | null>(null);
   const { reportFailure: reportDeleteFailed, toast: deleteFailedToast } = useRowFailure("ide.tree.deleteFailed");
+
+  const handleBeforeRename = useCallback(async (oldPath: string) => {
+    const projectId = useSessionStore.getState().activeProjectId;
+    const result = await closeNativeEditorsForFileOperation([oldPath], projectId);
+    nativePathBeforeRenameRef.current = result.closedPaths;
+    nativeRenameProjectIdRef.current = projectId;
+    if (!result.ok) {
+      restoreNativeEditorsAfterFileOperation(result.closedPaths, projectId);
+      nativePathBeforeRenameRef.current = [];
+      nativeRenameProjectIdRef.current = null;
+      if (result.blockedPath) useSessionStore.getState().reportBlockedIdeClose([result.blockedPath]);
+      return false;
+    }
+    return true;
+  }, []);
+
+  const handleRenameFailed = useCallback(() => {
+    restoreNativeEditorsAfterFileOperation(nativePathBeforeRenameRef.current, nativeRenameProjectIdRef.current);
+    nativePathBeforeRenameRef.current = [];
+    nativeRenameProjectIdRef.current = null;
+  }, []);
 
   const handleRenamed = useCallback(
     (newPath: string) => {
       setRenaming(false);
       actions?.bumpReload();
+      const closedNativePaths = nativePathBeforeRenameRef.current;
+      const projectId = nativeRenameProjectIdRef.current;
       renamePathInIde(path, newPath, false);
+      restoreNativeEditorsAfterFileOperation(
+        closedNativePaths.map((oldPath) => oldPath === path ? newPath : oldPath),
+        projectId,
+      );
+      nativePathBeforeRenameRef.current = [];
+      nativeRenameProjectIdRef.current = null;
     },
     [actions, path, renamePathInIde],
   );
@@ -1267,9 +1433,22 @@ function FileNodeRow({
   const handleDelete = useCallback(async () => {
     if (deletingRef.current) return;
     deletingRef.current = true;
+    let nativePathsToRestore: string[] = [];
+    let nativeProjectId: string | null = null;
     try {
+      nativeProjectId = useSessionStore.getState().activeProjectId;
+      const preflight = await closeNativeEditorsForFileOperation([path], nativeProjectId);
+      nativePathsToRestore = preflight.closedPaths;
+      if (!preflight.ok) {
+        restoreNativeEditorsAfterFileOperation(nativePathsToRestore, nativeProjectId);
+        nativePathsToRestore = [];
+        if (preflight.blockedPath) useSessionStore.getState().reportBlockedIdeClose([preflight.blockedPath]);
+        return { ok: false, error: t("ide.editor.closeBlockedUnsaved") };
+      }
       const result = await api.file.delete({ targetPath: path });
       if (!result.ok) {
+        restoreNativeEditorsAfterFileOperation(nativePathsToRestore, nativeProjectId);
+        nativePathsToRestore = [];
         // 与 DirNode 的删除同一条纪律:失败要显式报出来(见那边的注释)。
         reportDeleteFailed();
         // 交给 ConfirmDialog:失败时保留弹窗并显示原因,不假装已删除(UI-001)。
@@ -1278,24 +1457,33 @@ function FileNodeRow({
       actions?.bumpReload();
       // force:文件已经被删掉了,留着它的标签只会指向空气 —— 未保存的守卫在这里无意义。
       closeFileInIde(path, true);
+      nativePathsToRestore = [];
       return result;
+    } catch {
+      restoreNativeEditorsAfterFileOperation(nativePathsToRestore, nativeProjectId);
+      reportDeleteFailed();
+      return { ok: false, error: t("ide.tree.deleteFailed") };
     } finally {
       deletingRef.current = false; // 见 DirNode 的说明:拒绝也不能把闸卡死。
     }
   }, [actions, path, closeFileInIde, reportDeleteFailed, t]);
 
-  // Paste the tree's stashed file into this file's parent dir (VS Code parity:
+  // Paste the tree's stashed entry into this file's parent dir (VS Code parity:
   // pasting on a file targets its containing folder). The parent is necessarily
   // expanded — this row is rendered inside it — so the pasted entry appears as
   // soon as the tree re-scans; failure pins a danger toast to the row.
+  // **复制还是移动由暂存时选的 mode 决定**（见 FileClipboardValue）。
   const handlePaste = useCallback(async () => {
-    const src = fileClipboard?.copiedFile;
-    if (!src) return;
-    const result = await api.file.copy({
-      srcPath: src,
-      destDir: dirname(path),
-      suffix: t("ide.tree.copyNameSuffix"),
-    });
+    const stash = fileClipboard;
+    if (!stash?.copiedFile) return;
+    const destDir = dirname(path);
+    const result = stash.mode === "move"
+      ? await api.file.move({ srcPath: stash.copiedFile, destDir })
+      : await api.file.copy({
+          srcPath: stash.copiedFile,
+          destDir,
+          suffix: t("ide.tree.copyNameSuffix"),
+        });
     if (!result.ok) {
       reportPasteFailed();
       return;
@@ -1314,6 +1502,8 @@ function FileNodeRow({
           existingNames={siblingNames ?? EMPTY_NAMES}
           excludeSelf={name.toLowerCase()}
           onCancel={() => setRenaming(false)}
+          onBeforeRename={handleBeforeRename}
+          onRenameFailed={handleRenameFailed}
           onRenamed={handleRenamed}
         />
       ) : (
@@ -1322,6 +1512,8 @@ function FileNodeRow({
           render={
             <button
               type="button"
+              data-cds="FileTreeFileRow"
+              data-active={active ? "true" : "false"}
               ref={registerNode ? (el) => registerNode(path, el) : undefined}
               draggable
               onDragStart={(e) => {
@@ -1396,6 +1588,19 @@ function FileNodeRow({
                     fileClipboard.copyFile(path);
                     // Same inline confirmation as the path copies — the file
                     // itself goes to the tree's clipboard, not the OS one.
+                    flashCopied();
+                  }}
+                />
+              )}
+              {/* 【EDIT-01】移动：暂存路径并把 mode 记成 move，下一步在目标目录点
+                  「粘贴」即完成。与「复制」共用同一份剪贴板 —— 用户动作是同一个
+                  （先指认条目、再指认去处），分两份要在粘贴时反问"你要哪个"。 */}
+              {fileClipboard && (
+                <MenuItem
+                  icon={<IconArrowsExchange size={12} />}
+                  label={t("ide.tree.moveFile")}
+                  onClick={() => {
+                    fileClipboard.moveFile(path);
                     flashCopied();
                   }}
                 />

@@ -385,230 +385,26 @@ const api = {
    *  这里不写 `undefined` —— 对象上没有这些键，`typeof window.desktop.X` 即为
    *  `"undefined"`，与"没装 preload"的降级路径一致。 */
 };
-
-/**
- * 【ARC-007】**slides 页的桥（`window.slidesApi`）** —— 与 docs 的 `window.desktop`
- * 是**两个命名空间**：slides 渲染端读 `window.slidesApi`
- * （`genoffice/apps/slides/src/preload/index.ts:485`），而 docs 读 `window.desktop`。
- * 只挂 desktop 时 slides 页第一帧就抛 `Cannot read properties of undefined`
- * （真 Electron 实测），`#root` 整树卸载。
+/*
+ * 【2026-10-26】这里曾有一份 `window.slidesApi` 的手写最小桥（约 220 行）。
  *
- * 这里同样只回答**首帧**会问的问题（真机逐级实测，缺一个就白屏），不是完整
- * vendor preload：文件对话框、附件、字体安装/下载、AI 流式、知识库、剪贴板、
- * 打印/导出、演示放映控制……一律不给。**打开/保存**与 docs 共用同一组宿主
- * 通道（`openDocxPath`/`saveDocx`/`saveDocxNew`/`onMenuCommand`），身份由宿主从
- * `event.sender` 反查，路径围栏在宿主。
+ * **它已经删掉了，因为它从来没被用过**：六种 GenOffice 编辑器走的是
+ * `kind !== null` 的 vendor 工厂（`documentViewHost.open()`），由 vendor 自己
+ * 的 `out/preload/index.js` 建立 `window.slidesApi`（见 `genofficeNativeVendor.ts`
+ * 的 `createNativeView`）。本文件只在 `kind === null` —— 即**非 GenOffice 的普通
+ * 文档视图** —— 才被挂载。
  *
- * 每个桩的「真实数据将来从哪来」：
- *  - `newBlank`：诚实空 deck（16:9 空白页，与 vendor `createBlankPptx()` 同尺寸）。
- *    将来接 Mcode 的新建流程时，由宿主返回真实 `OpenResult`；
- *  - `consumePendingOpen`/`consumeHeadlessExport`/`onOpened`：无排队项/无无头导出/
- *    无推送源；将来接系统级打开时复用 `menu:command`，不另造推送；
- *  - `getAiSettings`/`onAiSettingsChanged`/`aiGskStatus`：AI 未配置（Mcode 的 AI
- *    由三引擎驱动，本视图不接 vendor 后端）；将来由宿主 RPC 返回真实模型配置；
- *  - `getTransition`/`getAnimations`/`getNotes`/`getComments`/`getSections`/
- *    `getChartData`：deck 的只读旁路数据；本宿主目前没有 deck 会话存储，
- *    回空值 = "这个 deck 没有这些内容"。将来由 Mcode 的 deck 服务提供；
- *  - `isDirty`/`clipboardProbe`/`onRenamed`/`getRecentFiles`/`confirmDocumentReplace`：
- *    无脏标记/无剪贴板探测/无重命名推送/无 recent 列表/不替换当前文档。
+ * 那份桥里的 `getTransition`/`getAnimations`/`getNotes`/`getComments`/
+ * `getSections`/`getChartData` 全部返回硬编码空值，看起来像"功能缺失"，
+ * 实际是**永远走不到的代码**：读代码的人会以为宿主在用空数据冒充 deck 内容。
+ * 那正是「注释与死代码一起撒谎」的形态。
+ *
+ * 如果将来真的要把普通文档视图渲染成 slides 页（目前没有这个需求），
+ * **不要恢复这份桥**：走 vendor 工厂那条路，让原厂 preload 提供真实数据。
  */
-const slidesApi = {
-  // ── 与 docs 共用同一组宿主通道 ──
-  openDocxPath: api.openDocxPath,
-  confirmDocumentReplace: api.confirmDocumentReplace,
-  onCloseCheck: api.onCloseCheck,
-  reportCloseCheck: api.reportCloseCheck,
-  saveDocx: api.saveDocx,
-  saveDocxNew: api.saveDocxNew,
-  onMenuCommand: api.onMenuCommand,
-
-  // ── 首帧只读默认值（与 docs 同一组） ──
-  getLanguage: api.getLanguage,
-  getTheme: api.getTheme,
-  getDocumentTheme: api.getDocumentTheme,
-  getAutoSaveDefault: api.getAutoSaveDefault,
-  onThemeChanged: api.onThemeChanged,
-  onLanguageChanged: api.onLanguageChanged,
-  onDocumentThemeChanged: api.onDocumentThemeChanged,
-  getSystemLocale: (): Promise<string> => Promise.resolve("zh-CN"),
-
-  /** vendor `newBlank(fitWidthPx): Promise<OpenResult>`（slides/shared/ipc.ts:1725 附近，
-   *  实现在 main/slides-main.ts:2213）。**诚实的空 deck**：一页 16:9 空白，
-   *  几何与 vendor `createBlankPptx()` 的 12192000×6858000 EMU 一致；不是伪造
-   *  用户文件。将来由 Mcode 的新建流程返回真实 deck。 */
-  newBlank: (fitWidthPx: number): Promise<unknown> => {
-    const widthPx = Number(fitWidthPx) > 0 ? Number(fitWidthPx) : 1280;
-    return Promise.resolve({
-      path: "",
-      slides: [
-        {
-          widthPx,
-          heightPx: Math.round((widthPx * 6858000) / 12192000),
-          scale: widthPx / 1280,
-          background: { kind: "solid", color: "FFFFFF" },
-          nodes: [],
-        },
-      ],
-      size: { cx: 12192000, cy: 6858000 },
-      defaultFont: "Calibri",
-    });
-  },
-
-  /** 【ARC-007】slides 编辑（A 方案第一步）—— vendor `addBlankSlide(op)`
-   *  （preload:240 / shared/ipc.ts:1477）与 `editText(op)`（preload:183 /
-   *  shared/ipc.ts:199）的**宿主重接**版本。
-   *
-   *  页面不传 identity：`docId` 由宿主从 `event.sender` 反查（与打开/保存同一
-   *  纪律）。宿主只接受这两个操作，其余编辑继续是诚实桩。vendor 主进程未装配时
-   *  宿主回 `{ ok:false, reason }`，preload 转为 vendor 的 null 失败值，
-   *  防止原版 Slides 页面把 truthy 拒绝信封误当成功的渲染树。
-   *
-   *  原厂 UI 的 sourceIndex/before 是插入位置语义，必须保留；
-   *  fitWidthPx 则由宿主固定为 1280，页面给的值不参与决策；
-   *  `slideIndex`/`elementId`/`text`
-   *  原样转发给 vendor 执行器。 */
-  addBlankSlide: (op: { sourceIndex?: number; fitWidthPx?: number; before?: boolean }): Promise<{
-    slides: unknown[];
-    index: number;
-  } | null> => {
-    return (ipcRenderer.invoke(SLIDES_ADD_SLIDE_CHANNEL, {
-      ...(op?.sourceIndex !== undefined ? { sourceIndex: op.sourceIndex } : {}),
-      ...(op?.before !== undefined ? { before: op.before } : {}),
-    }) as Promise<{
-      ok?: boolean;
-      slides?: unknown[];
-      index?: number;
-    }>).then((reply) => {
-      if (reply?.ok !== true || !Array.isArray(reply.slides) ||
-          !Number.isInteger(reply.index) || reply.index! < 0 || reply.index! >= reply.slides.length) return null;
-      return { slides: reply.slides, index: reply.index! };
-    }).catch(() => null);
-  },
-  editText: (op: { slideIndex: number; sourceId: string; paragraphs?: unknown[] }): Promise<{
-    nodes: unknown[];
-  } | null> => {
-    // vendor 的 `EditParagraph[]` 在本宿主只接受单 run 纯文本（见契约
-    // `DocViewSlidesEditTextSchema.text`）；段落结构不转发。
-    const paragraphs = Array.isArray(op?.paragraphs) ? op.paragraphs : [];
-    const text = paragraphs
-      .map((paragraph) => {
-        const runs = (paragraph as { runs?: Array<{ text?: unknown }> }).runs;
-        return Array.isArray(runs) ? runs.map((run) => String(run?.text ?? "")).join("") : "";
-      })
-      .join("\n");
-    return (ipcRenderer.invoke(SLIDES_EDIT_TEXT_CHANNEL, {
-      slideIndex: op?.slideIndex,
-      elementId: op?.sourceId,
-      text,
-    }) as Promise<{ ok?: boolean; nodes?: unknown[] }>).then((reply) =>
-      reply?.ok === true && Array.isArray(reply.nodes) ? reply as { nodes: unknown[] } : null,
-    ).catch(() => null);
-  },
-
-  /** 【ARC-007 P1/GA1】vendor `openPptxPath(path, fitWidthPx)`（preload:149 /
-   *  `slides:open-path`）的**宿主重接**版本。
-   *
-   *  ⚠️ 页面给的 `path` 只作一致性提示：宿主以自己 `pendingOpen` 里的路径为准，
-   *  页面给什么路径都改不了读哪份文件（与 docs 的 `openDocxPath` 同一条纪律）。
-   *  返回值是 vendor `OpenResult`（`{ path, slides[], size, defaultFont? }`）或
-   *  null —— 与 vendor 的契约逐字对齐，页面代码无需分支。 */
-  openPptxPath: (path: string, fitWidthPx?: number): Promise<unknown> => {
-    void path;
-    void fitWidthPx;
-    return (ipcRenderer.invoke(SLIDES_READ_OPENED_CHANNEL, {}) as Promise<{
-      ok?: boolean;
-      result?: unknown;
-    }>).then((reply) => (reply && reply.ok === true ? reply.result : null));
-  },
-
-  /** 【ARC-007 P1/GA1】vendor `consumePendingOpen(fitWidthPx)`（preload:150）的
-   *  宿主对端：挂载时拉取（与 `openPptxPath` 同一条通道；重拉由宿主缓存结果，
-   *  不重复解析）。 */
-  consumePendingOpen: (fitWidthPx?: number): Promise<unknown> => {
-    void fitWidthPx;
-    return (ipcRenderer.invoke(SLIDES_READ_OPENED_CHANNEL, {}) as Promise<{
-      ok?: boolean;
-      result?: unknown;
-    }>).then((reply) => (reply && reply.ok === true ? reply.result : null));
-  },
-
-  /** 【ARC-007 P1/GA1】vendor `onOpened(handler)`（preload:389）的宿主对端：
-   *  宿主在 `openPath` 解析成功后推 `slides:opened`（与 vendor 主进程同一形状）。 */
-  onOpened: (handler: (result: unknown) => void): (() => void) => {
-    const listener = (_event: unknown, result: unknown): void => handler(result);
-    ipcRenderer.on(SLIDES_OPENED_CHANNEL, listener);
-    return () => {
-      ipcRenderer.removeListener(SLIDES_OPENED_CHANNEL, listener);
-    };
-  },
-
-  /** 【ARC-007 P1/GA1】保存只写宿主当前会话文件，页面不传路径。
-   *  IPC 失败返回 `.reason`，vendor 只读 `.error`；统一翻译避免错误失声。 */
-  save: (): Promise<{ ok: boolean; path?: string; error?: string; slides?: unknown[]; bytes?: number }> =>
-    (ipcRenderer.invoke(SLIDES_SAVE_CHANNEL, {}) as Promise<{
-      ok: boolean;
-      path?: string;
-      error?: string;
-      reason?: string;
-      slides?: unknown[];
-      bytes?: number;
-    }>).then((reply) => reply?.ok === true ? reply : {
-      ok: false,
-      error: reply?.error ?? reply?.reason ?? "演示文稿保存失败",
-    }).catch((err: unknown) => ({
-      ok: false,
-      error: err instanceof Error ? err.message : "演示文稿保存失败",
-    })),
-
-  // ── 空订阅 / 空数据（见上方注释的真实来源） ──
-  onFontsChanged: noopUnsubscribe,
-  onRenamed: noopUnsubscribe,
-  onAiSettingsChanged: noopUnsubscribe,
-  onAiPanelPrefsChanged: noopUnsubscribe,
-  onAutoSaveDefaultChanged: noopUnsubscribe,
-  onChromePressed: noopUnsubscribe,
-  onCloseSaveRequest: noopUnsubscribe,
-  onDeckChanged: noopUnsubscribe,
-  onContextMenuRequest: noopUnsubscribe,
-  armContextMenu: (): void => {},
-  reportCloseSaveResult: (): void => {},
-  reportViewMenuState: (): void => {},
-  setShowFullScreen: (): Promise<void> => Promise.resolve(),
-  setAutoSavePref: (): Promise<void> => Promise.resolve(),
-
-  clipboardProbe: (): Promise<boolean> => Promise.resolve(false),
-  consumeHeadlessExport: (): Promise<null> => Promise.resolve(null),
-  headlessExportDone: (): void => {},
-  isDirty: (): Promise<boolean> => Promise.resolve(false),
-  /** 【ARC-007 P1/GA1】vendor slides 成功路径同样会调 `getRecentFiles()`
-   *  （`App.tsx:1281-1283` 的 start screen 最近列表；打开成功后它被调用），
-   *  但**它不在打开成功链上**（`applyOpen` 不依赖它）—— 因此这里不再兼任回执点；
-   *  slides 的回执在 `slides-read-opened`（宿主拿到页面拉取即提交，见该 handler）。
-   *  返回值仍是空表（Mcode 不维护 vendor 的最近文件列表）。 */
-  getRecentFiles: (): Promise<string[]> => Promise.resolve([]),
-  getAiSettings: api.getAiSettings,
-  getAiPanelPrefs: (): Promise<unknown> => Promise.resolve({}),
-  setAiPanelPrefs: (): Promise<unknown> => Promise.resolve({}),
-  aiGskStatus: (): Promise<{ loggedIn: boolean }> => Promise.resolve({ loggedIn: false }),
-
-  getTransition: (): Promise<string> => Promise.resolve("none"),
-  getAnimations: (): Promise<unknown[]> => Promise.resolve([]),
-  getNotes: (): Promise<string> => Promise.resolve(""),
-  getComments: (): Promise<unknown[]> => Promise.resolve([]),
-  getSections: (): Promise<unknown[]> => Promise.resolve([]),
-  getChartData: (): Promise<null> => Promise.resolve(null),
-  /** 【ARC-007 P1/GA1】vendor `getLayouts()`（preload:243 / shared/ipc.ts:1836）。
-   *  **不是可选的**：`applyOpen` 成功路径上无条件调它（`App.tsx:891`），
-   *  缺失会抛 `is not a function`（实测在页面里留一条未捕获错误）。
-   *  宿主当前没有布局目录服务（`slides:get-layouts` 需要 vendor 会话的
-   *  archive）—— 回 `null` = "这个 deck 没有可列出的布局"，页面按 vendor 的
-   *  空分支处理（不显示布局选择器）。将来接布局服务时换成真实数据。 */
-  getLayouts: (): Promise<null> => Promise.resolve(null),
-};
 
 // ARC-007: the native Docs view preload now lives in the GenOffice git branch.
 // Only when that ignored snapshot is missing do we retain the legacy restricted
-// bridge. Slides stays on its pre-existing path until its own migration.
+// bridge.
 if (mcodeDocsViewAvailable) installMcodeDocsViewPreload();
 else contextBridge.exposeInMainWorld("desktop", Object.freeze(api));
-contextBridge.exposeInMainWorld("slidesApi", Object.freeze(slidesApi));

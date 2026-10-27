@@ -1,4 +1,3 @@
-import { ModuleSurface } from "../modules/ModuleSurface.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EMPTY_TURN_FILES, useSessionStore, selectActiveEnvPath } from "@renderer/stores/sessionStore.js";
 import type { TurnFileEntry } from "@renderer/lib/turnFiles.js";
@@ -92,11 +91,11 @@ export function FilesPanel() {
   }
 
   return (
-    <ModuleSurface key={projectPath} projectPath={projectPath}><div role="region" aria-label={projectName ?? projectPath} className="flex h-full min-h-0 flex-col">
+    <><div data-cds="FilesPanel" role="region" aria-label={projectName ?? projectPath} className="flex h-full min-h-0 flex-col">
       {/* Compact header: the active project's folder name on the left (mirrors
           the explorer header in VS Code), refresh + search buttons on the
           right. The tree gets the full panel height below. */}
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-edge px-2 py-1.5">
+      <div data-cds="FilesPanelHeader" className="flex shrink-0 items-center justify-between gap-2 border-b border-edge px-2 py-1.5">
         <span
           className="flex min-w-0 flex-1 items-center gap-1 px-1 text-[12px] font-medium text-content-muted"
           title={projectPath}
@@ -135,10 +134,10 @@ export function FilesPanel() {
           Keyed on projectPath so switching projects fully remounts (clears
           stale expanded state / cached children); refreshNonce remounts for a
           manual re-scan of the same project. */}
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+      <div data-cds="FilesTreeViewport" className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
         <FileTree key={`${projectPath}:${refreshNonce}`} projectPath={projectPath} />
       </div>
-    </div></ModuleSurface>
+    </div></>
   );
 }
 
@@ -147,7 +146,7 @@ export function FilesPanel() {
 function EmptyState() {
   const { t } = useI18n();
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+    <div data-cds="FilesEmptyState" className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
       <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-muted text-content-subtle">
         <IconFolderPlus size={20} />
       </div>

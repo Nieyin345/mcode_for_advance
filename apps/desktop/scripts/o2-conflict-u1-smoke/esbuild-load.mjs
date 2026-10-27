@@ -7,12 +7,33 @@
  * `electron-u1/build.mjs` 的解析方式同源（`readdirSync` 取最新 `esbuild@`）。
  */
 import { readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+/* 【2026-10-27 修复】**绝对不能**用 `process.cwd()` 算仓库根。
+ *
+ * 从前这里是 `resolve(process.cwd(), "../../node_modules/.pnpm")` —— 它假定
+ * 调用方的工作目录正好是 `apps/desktop/scripts/o2-conflict-u1-smoke`。而
+ * `run.sh` 会 `cd` 到 `apps/desktop` 再调本文件，于是 `../..` 落到了
+ * `work_space/`（不是仓库根），报：
+ *
+ *     ENOENT: no such file or directory, scandir 'D:\...\work_space\node_modules\.pnpm'
+ *
+ * 症状看起来像"环境没装依赖"，实际是**算错了根**。仓库里其它套件（如
+ * `electron-u1/build.mjs:42-44`）都是从**模块自身位置**推：
+ *
+ *     const suite   = dirname(fileURLToPath(import.meta.url));
+ *     const desktop = resolve(suite, "../..");
+ *     const repo    = resolve(desktop, "../..");
+ *
+ * 照抄它 —— 这样不论从哪个目录调用都能找到同一份 esbuild。 */
+const suite = dirname(fileURLToPath(import.meta.url));
+const desktop = resolve(suite, "../..");
+const repo = resolve(desktop, "../..");
 
 /** 解析已安装的 esbuild（与 `electron-u1/build.mjs` 的 `pkgPath` 同一做法）。 */
 async function loadEsbuild() {
-  const pnpm = resolve(process.cwd(), "../../node_modules/.pnpm");
+  const pnpm = resolve(repo, "node_modules/.pnpm");
   const dir = readdirSync(pnpm).filter((n) => n.startsWith("esbuild@")).sort().at(-1);
   if (!dir) throw new Error(`O2: 找不到已安装的 esbuild（${pnpm}）`);
   const entry = join(pnpm, dir, "node_modules/esbuild/lib/main.js");

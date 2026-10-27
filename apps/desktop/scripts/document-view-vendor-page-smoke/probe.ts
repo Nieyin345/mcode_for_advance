@@ -254,13 +254,51 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
           checks[checks.length - 1].detail = { markers: summary.markers, bodyTextSample: summary.bodyTextSample };
         });
         await check(`${label}: 首帧零未捕获异常（CDP + 页面钩子）`, () => {
+          /* ⚠️ **白名单不是放宽，是分清两件事。**
+           *
+           * 本断言要抓的是「挂载阶段同步抛错 → React 19 无错误边界 → `#root`
+           * 整树清空」。而下面这一类**不是**：
+           *
+           *     Error invoking remote method 'slides:clipboard-probe':
+           *     Error: No handler registered for 'slides:clipboard-probe'
+           *
+           * 它是**异步 IPC**：页面已经挂载完了（上面两条 `#root` / 编辑器特征
+           * 就是证据），只是这个探针 harness 没给 slides 装齐那几十个 `ai:*` /
+           * `slides:*` handler。页面在宿主缺能力时如实报错 —— 那是**降级**，
+           * 不是崩溃。把它们算成"首帧异常"会让这条断言永远红，而红的时候页面
+           * 其实是好的（假红训练人忽略它，见 `false-warnings-teach-users-to-ignore-warnings`）。
+           *
+           * 判据的**边界**写在这里，不含糊：本断言只管同步挂载期异常。异步能力
+           * 缺失由「`#root` 非空 + 编辑器特征出现」间接保证（真崩了那两条会先红）。
+           *
+           * 若将来某条**同步**异常被这条豁免吞掉，那它一定会让上面两条之一变红 ——
+           * 这就是为什么豁免只认这一个精确形状，不用正则放宽到「任何 IPC 错误」。 */
+          /* ⚠️ 两个数组的元素形状**不一样**：`exceptions` 是纯字符串（CDP 取的
+           * 第一行），`pageErrors` 是 `{type, message}`（页面钩子记的）。
+           * 统一取成字符串再判，否则 `text.includes is not a function`。 */
+          const asText = (e: string | { message?: string }): string =>
+            typeof e === "string" ? e : (e.message ?? "");
+          const isHostCapabilityMiss = (entry: string | { message?: string }): boolean => {
+            const text = asText(entry);
+            return text.includes("No handler registered for '")
+              && (text.includes("slides:") || text.includes("ai:"));
+          };
+
+          const realExceptions = exceptions.filter((e) => !isHostCapabilityMiss(e));
+          const realPageErrors = pageErrors.filter((e) => !isHostCapabilityMiss(e));
           assert(
-            exceptions.length === 0 && pageErrors.length === 0,
-            `CDP 异常 ${exceptions.length} 条 / 页面钩子 ${pageErrors.length} 条: ${JSON.stringify([
-              ...exceptions.slice(0, 3),
-              ...pageErrors.slice(0, 3),
+            realExceptions.length === 0 && realPageErrors.length === 0,
+            `CDP 异常 ${realExceptions.length} 条 / 页面钩子 ${realPageErrors.length} 条: ${JSON.stringify([
+              ...realExceptions.slice(0, 3),
+              ...realPageErrors.slice(0, 3).map((e) => e.message),
             ])}`,
           );
+          /* 豁免了几条要**打出来**：不打印的话，下一个人看到这条 PASS 会以为
+           * "宿主能力齐全"，而实际是 harness 没装。边界要出现在输出里。 */
+          const skipped = exceptions.length + pageErrors.length - realExceptions.length - realPageErrors.length;
+          if (skipped > 0) {
+            console.log(`  note  ${label}: 豁免 ${skipped} 条「宿主未提供该 IPC handler」（异步降级，非挂载崩溃）`);
+          }
         });
       } finally {
         if (debuggerAttached) {
@@ -288,6 +326,19 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
   // 源码级安全断言：补桩不得越界。放在窗口销毁之后 —— 它不需要页面。
   await check("★ preload 仍未暴露 ipcRenderer / 文件对话框（源码级，docs 与 slides 两个命名空间）", async () => {
     const { readFileSync } = await import("node:fs");
+    /* 【2026-10-27 修复】这里**只能**查 `documentViewPreload.ts`，而且只查它。
+     *
+     * 从前 slides 与 docs 共用同一份断言，但两边跑的根本不是同一个 preload：
+     * docs 走 `documentViewPreload.js`（本文件防它越界），slides 走 vendor 自己的
+     * `genoffice/apps/slides/out/preload/index.js`（那份**本来就要**有
+     * `slides-add-slide` 等通道 —— 它是 GenOffice 自己的页面桥）。
+     *
+     * 混在一起的后果是：白名单里那四条 slides 通道在 `documentViewPreload.ts` 里
+     * 永远找不到（那些实现在 2026-10-26 随 `window.slidesApi` 一起删了），于是这条
+     * **恒红**——而它红的原因不是"preload 暴露太多"，是"查错了文件"。
+     *
+     * 现在：本断言守 `documentViewPreload.ts` 的**能力面**（它必须只有 docs 那几条）；
+     * slides 的 preload 归 vendor 自己，不在本文件的安全边界内。 */
     const raw = readFileSync(join(process.cwd(), "src/main/document/documentViewPreload.ts"), "utf8");
     // 去注释后再查 —— 文件头会**点名**这些能力来说明"不提供"，不能把说明当实现。
     const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
@@ -306,20 +357,20 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
      *
      * 白名单的语义（不是"允许任意 IPC"）：
      *  - 两条**页面 → 宿主**的写入/读请求：`open-path`、`save`；
-     *  - 两条 slides 编辑（A 方案第一步）：`slides-add-slide`、`slides-edit-text`。
-     *  四条都是**内部通道**：只能被本 preload 调用，不进 `RpcMap` 的 renderer 面，
+     *  - 打开链的三条：`read-opened`、`open-committed`、`confirm-replace`。
+     *  全是**内部通道**：只能被本 preload 调用，不进 `RpcMap` 的 renderer 面，
      *  页面拿不到 `ipcRenderer` 本身。白名单是**通道级**授权，不是数量授权。
+     *
+     * ⚠️ **这里不放 slides 的通道**：`slides-add-slide` / `slides-edit-text` /
+     * `slides-read-opened` / `slides-save` 的实现在 2026-10-26 随
+     * `window.slidesApi` 一起删掉了，它们现在住在 vendor 自己的 preload 里
+     * （`genoffice/apps/slides/out/preload/index.js`，生产同一个文件）。
+     * 把不存在的通道留在白名单里 = 一条永远红、理由却不是它想守的东西的断言。
      */
     const ALLOWED_INVOKE_CHANNELS = new Set([
       // `mcode:document-view:open-path` **不在**白名单里：P0 起页面不再向它
       // invoke（那是回环的根源），打开只经 read-opened 拉取 + open-committed 回执。
       "mcode:document-view:save",
-      "mcode:document-view:slides-add-slide",
-      "mcode:document-view:slides-edit-text",
-      // 【ARC-007 P1/GA1】slides 打开/保存链：页面拉取 OpenResult（openPptxPath/
-      // consumePendingOpen）与保存（save()）都只经这两条内部通道。
-      "mcode:document-view:slides-read-opened",
-      "mcode:document-view:slides-save",
       // 【ARC-007 P0】打开链：页面只**拉取**宿主已准备的响应；回执与替换守卫
       // 是两条独立内部通道（不再反向触发 open-path）。
       "mcode:document-view:read-opened",
@@ -371,7 +422,9 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
     }
     // 订阅口白名单：menu:command（宿主推送）+ close-check（P0 的 dirty 查询，
     // 页面经 reportCloseCheck 回答）。任何其它 on 都是新增能力面。
-    const ALLOWED_ON_CHANNELS = new Set(["menu:command", "mcode:document-view:close-check", "slides:opened"]);
+    /* ⚠️ **不放 `slides:opened`**：那条通道是 slides 桥的（2026-10-26 随
+     * `window.slidesApi` 一起删掉了）。留在白名单里 = 一条永远红的断言。 */
+    const ALLOWED_ON_CHANNELS = new Set(["menu:command", "mcode:document-view:close-check"]);
     const onArgs = [...src.matchAll(/ipcRenderer\.on\(\s*([^,)]+)/g)].map((m) => m[1].trim());
     const onResolved = onArgs.map((a) => {
       const literal = /^"([^"]+)"$/.exec(a);
@@ -382,8 +435,23 @@ export async function runVendorPageProbe(dir: string): Promise<void> {
         [...ALLOWED_ON_CHANNELS].every((c) => onResolved.includes(c)),
       `ipcRenderer.on 只允许 ${JSON.stringify([...ALLOWED_ON_CHANNELS])}，实际：${JSON.stringify(onResolved)}`,
     );
-    // 两个命名空间都必须暴露（docs 读 desktop、slides 读 slidesApi）。
+    /* 只要求 `window.desktop`。
+     *
+     * 【2026-10-27 修复】从前这里还要求 `exposeInMainWorld("slidesApi")`，
+     * 注释写的是「slides 页会白屏」。**那个判断在 2026-10-26 之后就不成立了**：
+     * 那份 `window.slidesApi` 手写桥已经随死代码一起删掉
+     * （`documentViewPreload.ts` 里有一段专门说明 —— 六种编辑器走 vendor 工厂，
+     * 各自用 vendor 的 `out/preload/index.js` 建立自己的全局名）。
+     *
+     * 现在的正确形态：**本文件只暴露 `desktop`**；slides 的 `slidesApi` 由
+     * `genoffice/apps/slides/out/preload/index.js` 提供 —— 上面那两条
+     * 「slides: #root 非空 / 编辑器特征出现」就是在验那件事**真的发生了**
+     * （用运行时行为验，而不是用源码正则猜）。 */
     assert(/exposeInMainWorld\(\s*"desktop"/.test(src), "缺少 window.desktop 暴露");
-    assert(/exposeInMainWorld\(\s*"slidesApi"/.test(src), "缺少 window.slidesApi 暴露（slides 页会白屏）");
+    assert(
+      !/exposeInMainWorld\(\s*"slidesApi"/.test(src),
+      "documentViewPreload 又暴露了 slidesApi —— slides 该用 vendor 自己的 preload，" +
+        "两份同时存在会让'页面拿到哪一份'变成隐式的（见 documentViewPreload.ts 的删除说明）",
+    );
   });
 }

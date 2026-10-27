@@ -59,7 +59,7 @@ const nonDelegableOverrides = new Set([
   // 放进来,所以这里先留空、不硬塞 —— 等 T33 落地后由它一并加。
   //
   // 在那之前,扩展拿到 `setting.write` 仍可调 `framework.save/reset`。这是**已知的、
-  // 有意的缺口**,不是遗漏:见 `tasks/T34-permission-generator-fixes.md` 回写。
+  // 有意的缺口**,不是遗漏。
 
   // 【T34】T33 把这两条提到了 `danger` —— 注释里写明理由是「扩展拿到 document.edit
   // 权限后改调 document.toolCall,就绕开逐次审批」。**如果生成器仍把它们映射成

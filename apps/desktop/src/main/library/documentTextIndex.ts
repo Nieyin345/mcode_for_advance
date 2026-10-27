@@ -60,9 +60,22 @@ export function flattenDocumentBlocks(
 ): { sections: IndexSection[]; coverage: "complete" | "partial" } {
   const sections: IndexSection[] = [];
   let budget = MAX_CHARS;
-  let partial = kind === "xlsx"; // native sheet read currently covers one active worksheet
+  // 覆盖判定必须来自**真实账目**，不是一个按格式写死的常量。
+  // 从前这里是 `partial = kind === "xlsx"` —— 那是「旧读取器只读活动表」的
+  // 代理指标：无论读到了几张表，xlsx 永远报 partial，于是「真的全读了」和
+  // 「只读到一张」在输出上长得一模一样。现在读取器给出 `sheetLedger`，
+  // 判据换成「账目说还有没读的表 / 被截断的表」。
+  let partial = false;
   const meta = detail && typeof detail === "object" ? detail as Record<string, unknown> : {};
   if (meta.truncated === true) partial = true;
+  const ledger = xlsxSheetLedgerOf(meta.sheetLedger);
+  if (kind === "xlsx") {
+    // 没有账目就不能声称完整：旧缓存快照/旧读取器产出的 detail 里没有
+    // `sheetLedger`，那时我们**不知道**覆盖多少 —— 如实报 partial。
+    if (ledger === null) partial = true;
+    else if (ledger.unreadSheets.length > 0 || ledger.truncatedSheets.length > 0) partial = true;
+  }
+  const sheetByBlock = ledger === null ? null : xlsxSheetNamesByBlock(blocks, ledger);
   for (const block of blocks) {
     if (sections.length >= MAX_SECTIONS || budget <= 0) { partial = true; break; }
     if (typeof block.text !== "string" || !block.text.trim()) continue;
@@ -76,13 +89,57 @@ export function flattenDocumentBlocks(
     if (kind === "pptx" && slide) location.slide = Number(slide[1]);
     if (kind === "xlsx") {
       location.row = n + 1;
-      const sheet = (meta.sheetDetail as { sheet?: unknown } | undefined)?.sheet;
+      // 表名优先取块自带的 `[sheet X]` 前缀（工作簿级读取给每行都盖上表名），
+      // 退回旧信封的 `sheetDetail.sheet`（单表读取那一代的形状）。
+      const fromBlock = sheetByBlock?.get(n);
+      const legacy = (meta.sheetDetail as { sheet?: unknown } | undefined)?.sheet;
+      const sheet = fromBlock ?? (typeof legacy === "string" ? legacy : undefined);
       if (typeof sheet === "string") location.sheet = sheet;
     }
     sections.push({ text, location });
     budget -= text.length;
   }
   return { sections, coverage: partial ? "partial" : "complete" };
+}
+
+/** 工作簿读取账目的**结构校验** —— 形状不对就当作"没有账目"，
+ *  绝不用半截数据冒充覆盖事实。 */
+function xlsxSheetLedgerOf(raw: unknown): {
+  sheets: string[];
+  readSheets: string[];
+  unreadSheets: string[];
+  truncatedSheets: string[];
+} | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const strings = (input: unknown): string[] | null =>
+    Array.isArray(input) && input.every((entry) => typeof entry === "string") ? input as string[] : null;
+  const sheets = strings(value.sheets);
+  const readSheets = strings(value.readSheets);
+  const unreadSheets = strings(value.unreadSheets);
+  const truncatedSheets = strings(value.truncatedSheets);
+  if (sheets === null || readSheets === null || unreadSheets === null || truncatedSheets === null) return null;
+  return { sheets, readSheets, unreadSheets, truncatedSheets };
+}
+
+/** 块 index → 表名。只认块文本开头的 `[sheet <name>] **，且该名字在账目里
+ *  真的读过 —— 一个页面里碰巧写了 `[sheet foo]` 不会被当成表名归因。 */
+function xlsxSheetNamesByBlock(
+  blocks: readonly { text?: unknown; index?: unknown }[],
+  ledger: { readSheets: string[] },
+): Map<number, string> {
+  const known = new Set(ledger.readSheets);
+  const out = new Map<number, string>();
+  blocks.forEach((block, position) => {
+    if (typeof block.text !== "string") return;
+    const match = /^\[sheet\s+([^\]]+)\]/i.exec(block.text);
+    if (match === null) return;
+    const name = match[1]!.trim();
+    if (!known.has(name)) return;
+    const index = typeof block.index === "number" ? block.index : position;
+    out.set(index, name);
+  });
+  return out;
 }
 
 function cacheFile(root: string, id: string): string {

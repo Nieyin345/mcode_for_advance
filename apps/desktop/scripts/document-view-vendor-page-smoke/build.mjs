@@ -106,13 +106,34 @@ await build({
 });
 
 copyFileSync(join(suite, "electron-host.cjs"), join(dir, "electron-host.cjs"));
+/* 每个 kind 用自己的 preload —— **这不是可选的**。
+ *
+ * 【2026-10-27 修复】此前所有页面都硬编码 `documentViewPreload.js`，而那份桥
+ * 只暴露 `window.desktop`：`window.slidesApi` 在 2026-10-26 就删掉了
+ * （`documentViewPreload.ts` 里那段注释写明了理由 —— 六种编辑器走 `kind !== null`
+ * 的 vendor 工厂，由 vendor 自己的 `out/preload/index.js` 建立各自的全局名；
+ * 本桥只在 `kind === null` 的普通文档视图上挂载）。
+ *
+ * 后果是 slides 那三条断言**永远红**（`window.slidesApi` 是 undefined →
+ * `onFontsChanged` 抛 TypeError → React 19 无错误边界 → `#root` 整树清空）。
+ * 它看起来像"slides 白屏"的产品缺陷，实际是**套件测了一个不存在的架构**。
+ *
+ * 真实装配见 `genofficeViewFactories.ts:55`：`join(dirs[kind], "preload", "index.js")`。
+ * 这里照抄那条规则，让套件和生产用同一份 preload。 */
+const VENDOR_OUT = join(repoRoot, "genoffice", "apps");
+const preloadFor = (kind) =>
+  kind === "docs"
+    // docs 是唯一仍走 `documentViewPreload` 的（它编译进 vendor 的 mcode-view.ts）。
+    ? join(dir, "documentViewPreload.js")
+    // 其余五种用 vendor 自己构建出来的 preload —— 与生产同一个文件。
+    : join(VENDOR_OUT, kind, "out", "preload", "index.js");
 writeFileSync(
   join(dir, "config.json"),
   JSON.stringify(
     {
       pages: presentPages.map((p) => ({
         pagePath: p.path,
-        preloadPath: join(dir, "documentViewPreload.js"),
+        preloadPath: preloadFor(p.kind),
         waitMs: 10000,
         // 与 renderer 套件里的 editorPageUrl() 形状一致（apps 以 ?mode=tab 启动）。
         urlSuffix: "?mode=tab",

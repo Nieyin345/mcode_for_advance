@@ -168,6 +168,7 @@ export function QuestionPrompt({
     // than pushing the stream entirely out of view (vh is used because the
     // in-flow parent has no explicit height, so % wouldn't resolve).
     <div
+      data-cds="QuestionPrompt"
       onKeyDown={onKeyDown}
       role="dialog"
       aria-modal="false"
@@ -212,7 +213,7 @@ export function QuestionPrompt({
             onClick={() => { if (promptActive) onDismiss(); }}
             title={t("chat.question.dismiss")}
             aria-label={t("chat.question.dismiss")}
-            className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-xs)] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <IconX size={14} />
           </button>
@@ -244,7 +245,7 @@ export function QuestionPrompt({
                     onClick={() => toggle(step, opt.label)}
                     aria-pressed={selected}
                     className={cn(
-                      "flex min-h-10 w-full items-start gap-2.5 rounded-[var(--radius-btn-xs)] border px-2.5 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                      "flex min-h-10 w-full items-start gap-2.5 rounded-[var(--radius-btn-md)] border px-2.5 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                       selected
                         ? "border-accent bg-accent/10"
                         : "cds-hover-ghost border-edge bg-surface",

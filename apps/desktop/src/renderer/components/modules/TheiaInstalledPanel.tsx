@@ -3,7 +3,7 @@
  * Main process owns host lifetime; window destruction and explicit Stop dispose it.
  */
 import { useEffect, useRef, useState } from "react";
-import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaNativeConfigSetting } from "@contracts/ipc/modules.js";
+import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaNativeConfigSetting } from "@contracts/ipc/theia.js";
 import { api } from "@renderer/lib/api.js";
 import { Button, ErrorNote } from "@renderer/components/ui/index.js";
 import { executeTheiaWithMonaco } from "@renderer/lib/theiaMonacoOwner.js";
@@ -96,6 +96,21 @@ export function TheiaInstalledPanel() {
     if(result.kind!=="executed")throw Error("命令执行失败");
     if(alive.current)setOutputs(previous=>({...previous,[item.id]:result.result}));
   });
+  const openWebviewView=(item:TheiaInstalledEntry,viewType:string)=>task(async()=>{
+    const sessionId=item.activeSession?.sessionId;
+    if(!sessionId)throw Error("扩展运行会话已失效");
+    const result=await api.modules.theiaInstalled({op:"webviewViewOpen",sessionId,viewType});
+    if(result.kind!=="webviewAcknowledged")throw Error("扩展视图打开失败");
+  });
+  const openCustomEditor=(item:TheiaInstalledEntry,viewType:string)=>task(async()=>{
+    const sessionId=item.activeSession?.sessionId;
+    if(!sessionId)throw Error("扩展运行会话已失效");
+    const selection=await api.pickFiles({title:"选择要使用扩展自定义编辑器打开的文件"});
+    const filePath=selection.paths[0];
+    if(!filePath)return;
+    const result=await api.modules.theiaInstalled({op:"customEditorOpen",sessionId,viewType,filePath});
+    if(result.kind!=="webviewAcknowledged")throw Error("自定义编辑器打开失败");
+  });
   const showConfig=(item:TheiaInstalledEntry)=>task(async()=>{
     if(configId===item.id){setConfigId(null);return;}
     const result=await api.modules.theiaInstalled({op:"configList",id:item.id});
@@ -130,10 +145,30 @@ export function TheiaInstalledPanel() {
     <section className="space-y-2 rounded border border-edge p-3" data-testid="theia-installed-panel">
       <p className="text-body font-semibold">Mcode 扩展管理（VSIX）</p>
       <p className="text-code text-content-muted">
-        扩展安装后会保留，启动需手动确认。离开这个页面不会停止已启动的扩展；
-        你可以在 Mcode 命令面板调用它们，停止请使用每个扩展自己的「停止」按钮。
-        第三方扩展运行于未隔离的 Node.js 进程，能够访问本机资源。
+        扩展安装后会保留，启动需手动确认。已启动的扩展可以把按钮加入 Mcode 顶部栏，
+        向编辑器贡献右键菜单、状态栏操作，并通过 Mcode 命令面板提供功能；扩展也可以打开受限的内嵌 Webview、声明式侧边栏视图和基于 CustomDocument 的自定义编辑器。CustomTextEditor 与另存为尚未接入。离开设置页面不会停止扩展；
+        停止请使用对应扩展的「停止」按钮。第三方扩展运行于未隔离的 Node.js 进程，能够访问本机资源；Webview 则运行在独立沙箱中。
       </p>
+      <p className="text-code text-content-muted">
+        UI 贡献入口：<code>contributes.menus["mcode/toolbar"]</code> 添加主界面按钮；
+        <code>contributes.menus["editor/title"]</code> 添加编辑器操作；
+        <code>contributes.menus["editor/context"]</code> 添加编辑器右键菜单。支持常用文件/语言上下文和布尔条件；无法识别的 <code>when</code> 会隐藏对应入口。按钮只声明入口，执行仍由已启动的扩展宿主处理；添加按钮不会授予额外权限。
+      </p>
+      <details className="rounded border border-edge/70 px-2 py-1.5" data-testid="theia-ui-contribution-example">
+        <summary className="cursor-pointer text-code font-medium">查看主界面按钮的 package.json 示例</summary>
+        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-code text-content-muted">{`"activationEvents": ["onCommand:sample.runTask"],
+"contributes": {
+  "commands": [
+    { "command": "sample.runTask", "title": "执行任务" }
+  ],
+  "menus": {
+    "mcode/toolbar": [
+      { "command": "sample.runTask" }
+    ]
+  }
+}`}</pre>
+        <p className="mt-1 text-code text-content-muted">扩展需要在 activate() 中注册 <code>sample.runTask</code>；激活后按钮会出现在 Mcode 顶部栏，点击时执行该命令。</p>
+      </details>
       <Button disabled={busy} onClick={inspect}>选择 VSIX 安装或升级</Button>
       {pending&&(
         <div className="space-y-2 rounded border border-edge p-2" data-testid="theia-installed-consent">
@@ -172,9 +207,41 @@ export function TheiaInstalledPanel() {
             <p className="text-code font-semibold">{item.extensionId} · {item.version}</p>
             <p className="text-code text-content-muted">
               {item.corrupted?"安装记录损坏，禁止启动":item.running?
-                (session?"运行中，可通过 Mcode 命令面板调用":"其他桌面窗口正在运行"):
+                (session?"运行中，命令面板和已声明的 Mcode UI 按钮可用":"其他桌面窗口正在运行"):
                 item.enabled?"已安装，启动前会完整校验":"已禁用"}
             </p>
+            {!!session?.uiContributions?.length&&<div className="space-y-1" data-testid="theia-ui-contributions">
+              <p className="text-code font-medium">已向 Mcode UI 贡献 {session.uiContributions.length} 个按钮</p>
+              <div className="flex flex-wrap gap-1">{session.uiContributions.map(contribution=><span
+                key={contribution.placement+":"+contribution.commandId}
+                className="rounded border border-edge px-2 py-0.5 text-code text-content-muted"
+                title={contribution.commandId}>
+                {contribution.label} · {contribution.placement==="editor"?"编辑器标题栏":"主界面工具栏"}
+              </span>)}</div>
+            </div>}
+            {!!session?.editorMenus?.length&&<div className="space-y-1" data-testid="theia-editor-menu-contributions">
+              <p className="text-code font-medium">编辑器右键菜单 · {session.editorMenus.length}</p>
+              <div className="flex flex-wrap gap-1">{session.editorMenus.map(menu=><span key={menu.commandId+":"+(menu.group??"")}
+                className="rounded border border-edge/70 px-2 py-0.5 text-code text-content-muted" title={menu.commandId}>
+                {menu.label}
+              </span>)}</div>
+            </div>}
+            {!!session?.customEditors?.length&&<div className="space-y-1" data-testid="theia-custom-editor-contributions">
+              <p className="text-code font-medium">自定义编辑器 · {session.customEditors.length}</p>
+              <div className="flex flex-wrap gap-1">{session.customEditors.map(editor=><Button key={editor.viewType}
+                disabled={busy} onClick={()=>openCustomEditor(item,editor.viewType)}>{editor.displayName}</Button>)}</div>
+            </div>}
+            {!!session?.webviewViews?.length&&<div className="space-y-1" data-testid="theia-webview-view-contributions">
+              <p className="text-code font-medium">扩展视图 · {session.webviewViews.length}</p>
+              <div className="flex flex-wrap gap-1">{session.webviewViews.map(view=><Button key={view.viewType}
+                disabled={busy} onClick={()=>openWebviewView(item,view.viewType)}>{view.name}</Button>)}</div>
+            </div>}
+            {!!session?.statusEntries?.length&&<div className="space-y-1" data-testid="theia-status-contributions">
+              <p className="text-code font-medium">状态栏项目 · {session.statusEntries.length}</p>
+              <div className="flex flex-wrap gap-1">{session.statusEntries.map(entry=><span key={entry.id}
+                className="max-w-48 truncate rounded border border-edge/70 px-2 py-0.5 text-code text-content-muted"
+                title={entry.tooltip??entry.name??entry.id}>{entry.text??entry.name??entry.id}</span>)}</div>
+            </div>}
             <div className="flex flex-wrap gap-2">
               {!item.running&&<Button disabled={busy||!item.enabled||!!item.corrupted} onClick={()=>start(item)}>启动</Button>}
               {session&&<Button disabled={busy} onClick={()=>stop(item)}>停止</Button>}
@@ -206,7 +273,9 @@ export function TheiaInstalledPanel() {
                 {commands.length>0&&<>
                   <select value={command} onChange={e=>setSelected(previous=>({...previous,[item.id]:e.target.value}))}
                     className="w-full rounded border border-edge bg-surface p-1 text-code">
-                    {commands.map(id=><option key={id} value={id}>{id}</option>)}
+                    {commands.map(id=><option key={id} value={id}>
+                      {session.commandContributions?.find(command=>command.commandId===id)?.title??id}
+                    </option>)}
                   </select>
                   <Button disabled={busy||!command} onClick={()=>execute(item,command)}>执行命令</Button>
                 </>}

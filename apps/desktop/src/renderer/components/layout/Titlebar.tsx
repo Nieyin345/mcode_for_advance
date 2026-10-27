@@ -10,6 +10,7 @@ import {
   IconLayoutSidebarRightExpand,
   IconTerminal2,
   IconCode,
+  IconColumns3,
   IconFolder,
   IconGitFork,
 } from "@renderer/lib/icons.js";
@@ -18,6 +19,7 @@ import { useSessionStore } from "@renderer/stores/sessionStore.js";
 import { worktreeDisplayName } from "@renderer/lib/worktree.js";
 import { ProjectBranchIndicator } from "@renderer/components/chat/ProjectBranchIndicator.js";
 import { WorktreeMergeToolbarButton } from "@renderer/components/chat/WorktreeMergeBack.js";
+import { TheiaActionToolbar } from "@renderer/components/modules/TheiaActionToolbar.js";
 import { resolveShortcut, acceleratorToDisplayString } from "@renderer/lib/shortcuts.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 // 解析"活动会话那一行"—— 与标签条共用**同一个** `findSession`,不要在这儿手抄一份。
@@ -154,7 +156,7 @@ export function Titlebar({
     >
       <div
         className={cn(
-          "flex min-w-0 flex-1 items-center bg-inherit px-3",
+          "flex min-w-0 flex-1 items-center bg-inherit px-4",
           !isMac && "pr-[138px]",
           // macOS traffic lights sit at the window's top-left. They overlay
           // the full-height sidebar while it's visible (LeftBar's header
@@ -253,7 +255,8 @@ export function Titlebar({
                 gap (the component returns null). */}
             <ActiveWorktreeChip />
             </div>
-            <div data-arc005-titlebar-actions="" className="flex shrink-0 items-center gap-0.5">
+            <div data-arc005-titlebar-actions="" className="flex shrink-0 items-center gap-2">
+            {!isBrowserOverlay && !isBrowserMode && <TheiaActionToolbar />}
             {/* Editor column toggle - shows/hides the center-pane editor column
                 without closing the open file. Sits right of the branch pill. */}
             {!isBrowserOverlay && <PanePresetMenu />}
@@ -327,21 +330,23 @@ function PanePresetMenu() {
   const apply = useSessionStore((s) => s.applyPaneLayoutPreset);
   const choose = (preset: "chat" | "editor" | "balanced" | "default") =>
     withViewTransition(() => apply(preset));
-  const itemClass = "flex w-full cursor-default items-center px-3 py-2 text-left text-xs text-content outline-none data-[highlighted]:bg-surface-hover";
+  const itemClass = "flex min-h-8 w-full cursor-default items-center rounded-lg px-2.5 py-1.5 text-left text-xs text-content outline-none data-[highlighted]:bg-surface-hover";
   return (
     <Menu.Root>
       <Menu.Trigger
         data-testid="pane-layout-presets"
-        className="cds-hover-ghost rounded px-2 py-1 text-xs text-content-muted hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        data-cds="PanePresetsButton"
+        className="cds-hover-ghost flex size-8 shrink-0 items-center justify-center rounded-[var(--radius-btn-md)] text-content-muted hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         aria-label={t("layout.panePresets")}
         title={t("layout.panePresets")}
       >
-        {t("layout.panePresets")}
+        <IconColumns3 data-cds="PanePresetsIcon" size={16} />
+        <span data-cds="PanePresetsLabel">{t("layout.panePresets")}</span>
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner side="bottom" align="end" sideOffset={6}>
-          <Menu.Popup className="z-50 min-w-[170px] rounded-lg border border-edge bg-surface py-1 shadow-[var(--shadow-popover)]">
+          <Menu.Popup className="z-50 min-w-[170px] rounded-xl border border-edge bg-surface p-1.5 shadow-[var(--shadow-popover)]">
             <Menu.Item className={itemClass} onClick={() => choose("chat")}>{t("layout.presetChat")}</Menu.Item>
             <Menu.Item className={itemClass} onClick={() => choose("editor")}>{t("layout.presetEditor")}</Menu.Item>
             <Menu.Item className={itemClass} onClick={() => choose("balanced")}>{t("layout.presetBalanced")}</Menu.Item>
@@ -383,7 +388,7 @@ function ActiveThreadTitle() {
   if (!title) return null;
   const { Icon, color } = getProviderIcon(providerId);
   return (
-    <div className="flex min-w-0 max-w-[320px] flex-[2_1_60px] items-center gap-2 px-1 text-[13px] font-medium text-content">
+    <div data-titlebar-thread-title="" className="flex min-w-0 max-w-[320px] flex-[2_1_60px] items-center gap-2 px-1 text-[13px] font-medium text-content">
       <Icon size={13} className={cn("shrink-0", color)} />
       <span className="truncate" title={title}>
         {title}
@@ -408,6 +413,7 @@ function ActiveProjectChip() {
   if (!activeSessionId || !project) return null;
   return (
     <div
+      data-titlebar-project-chip=""
       className="flex min-w-0 max-w-[180px] flex-[1_1_45px] items-center gap-1 px-1 text-xs text-content-subtle"
       title={project.path}
     >
@@ -435,6 +441,7 @@ function ActiveWorktreeChip() {
   if (!worktreePath) return null;
   return (
     <div
+      data-titlebar-worktree-chip=""
       className="flex min-w-0 max-w-[160px] flex-[1_1_50px] items-center gap-1 px-1 text-xs text-accent"
       title={worktreePath}
     >
@@ -459,6 +466,7 @@ function ToolbarBranchIndicator() {
   if (!projectPath) return null;
   return (
     <div
+      data-titlebar-branch=""
       style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       className="shrink-0"
     >

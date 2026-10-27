@@ -293,11 +293,17 @@ export function WorkflowBoardPanel() {
   const boardWorkflowId = boardWorkflowIdOf(run, workflowId);
   // History already exposes runId; do not ship full snapshots or pretend
   // persisted outcomes are live events merely to enable the existing retry RPC.
+  // 【WF-06】原生运行的运行史存在 `@node-red-runboard:<workflowId>` 那条命名空间下
+  // （见 `main/workflowEngines/nativeRunHistory.ts`）。没有对话时（纯 Node-RED 图被
+  // 触发/手动跑）以前这里传空串，历史永远读不到 —— 用户看得见结果卡，却看不到
+  // "它跑过几次、上次成没成"。
+  const historySessionId = sessionId
+    ?? (workflowId ? `@node-red-runboard:${workflowId}` : null);
   const { data: history } = useRpc(
-    () => api.runs.history({ sessionId: sessionId ?? "", limit: 1 }),
-    [sessionId, run?.runId],
+    () => api.runs.history({ sessionId: historySessionId ?? "", limit: 1 }),
+    [historySessionId, run?.runId],
     // Mobile has no runs.history namespace yet; retain its explicit capability boundary.
-    { enabled: isElectron && !!sessionId && !run },
+    { enabled: isElectron && !!historySessionId && !run },
   );
   const continuationRunId = boardContinuationRunId(run, history ?? [], sessionId, boardWorkflowId);
 

@@ -91,6 +91,8 @@ import { listKnownWorkspaceRoots } from "@main/lib/pathGuard.js";
 import { resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
 import { documentRepoRoot } from "@main/ipc/document.js";
 import { buildGenofficeMcpConfig, GENOFFICE_MCP_SERVER_NAME } from "@main/mcp/genofficeMcp.js";
+import { testMcpConnection } from "@main/mcp/testConnection.js";
+import { McpTestConnectionSchema } from "@contracts/ipc";
 
 /** Description line for the built-in browser server row. */
 const BUILTIN_DETAIL = "browser_navigate / browser_snapshot / browser_click 等应用内浏览器工具";
@@ -949,6 +951,45 @@ export function registerMcpHandlers(ipcMain: IpcMain): void {
   }));
 
   // ── Remove a user-scope server (truth layer + stash) ──
+  /* 【EXT-03】测试连接：真的起一次，把"命令不存在 / 起不来 / 没授权"分开报。
+   *
+   * **只读**：不改配置、不留进程（探针自己 kill）。
+   * 名字按三项匹配（user / project / builtin）—— 用户在列表里点哪一行就测哪一行。 */
+  ipcMain.handle(IPC.MCP_TEST_CONNECTION, async (_evt, raw) => {
+    const input = McpTestConnectionSchema.parse(raw);
+    const state = await getMcpTruth();
+    const user = parseMcpConfig(state.userServers?.[input.name]);
+    if (user) {
+      // 显式分支（不用展开式三元）：TS 靠 `user.type` 的判别收窄联合类型，
+      // 展开式写法在 `url: unknown` 上收不窄，会让这里的类型静默变宽。
+      if (user.type === "stdio") {
+        return await testMcpConnection({
+          kind: "stdio",
+          command: user.command,
+          ...(user.args ? { args: user.args } : {}),
+          ...(user.env ? { env: user.env } : {}),
+        });
+      }
+      const url = typeof user.url === "string" ? user.url : "";
+      if (url === "") {
+        return { ok: false as const, error: `服务器「${input.name}」的配置里没有地址`, stage: "connect" as const };
+      }
+      // `headers` 在 config 里是 unknown（用户可编辑的 JSON），逐值收窄成 string 表。
+      const headers: Record<string, string> = {};
+      if (user.headers !== null && typeof user.headers === "object" && !Array.isArray(user.headers)) {
+        for (const [key, value] of Object.entries(user.headers as Record<string, unknown>)) {
+          if (typeof value === "string") headers[key] = value;
+        }
+      }
+      return await testMcpConnection({
+        kind: user.type === "http" ? "http" : "sse",
+        url,
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      });
+    }
+    return { ok: false as const, error: `配置里没有服务器「${input.name}」`, stage: "unknown" as const };
+  });
+
   ipcMain.handle(IPC.MCP_REMOVE, (_evt, raw) => serializeMcpMutation(async () => {
     const input = McpRemoveSchema.parse(raw);
     try {

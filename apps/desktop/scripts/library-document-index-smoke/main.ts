@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { LibraryItem } from "@contracts/library";
 import { LibraryDocumentIndex, documentIndexKind, flattenDocumentBlocks } from "../../src/main/library/documentTextIndex.js";
 import { genofficeLibraryReader } from "../../src/main/library/documentIndexReader.js";
+import { blocksToMarkdown } from "../../src/main/document/documentToolSurface.js";
 
 let total=0,fail=0;
 function ck(label:string,yes:boolean) { total++;if(!yes)fail++;console.log((yes?"PASS ":"FAIL ")+label); }
@@ -52,10 +53,50 @@ try {
  ck("PDF extract gives exact original page locators",pdf.sections[0]?.location.page===12 && pdf.sections[1]?.location.page===13);
  const ppt=flattenDocumentBlocks([{index:4,text:"[slide 5] slide text"}],"pptx",{});
  ck("PPT extraction retains slide locator",ppt.sections[0]?.location.slide===5);
- const xlsx=flattenDocumentBlocks([{index:2,text:"row data"}],"xlsx",{sheetDetail:{sheet:"Sheet 2"}});
- ck("Workbook index is honestly partial and includes row/sheet",xlsx.coverage==="partial"&&xlsx.sections[0]?.location.row===3&&xlsx.sections[0]?.location.sheet==="Sheet 2");
+ const xlsxLegacy=flattenDocumentBlocks([{index:2,text:"row data"}],"xlsx",{sheetDetail:{sheet:"Sheet 2"}});
+ ck("Workbook index without a sheet ledger reports partial (unknown coverage, not a guess)",
+   xlsxLegacy.coverage==="partial"&&xlsxLegacy.sections[0]?.location.row===3&&xlsxLegacy.sections[0]?.location.sheet==="Sheet 2");
+ // ── 工作簿级账目：覆盖判定必须来自「读了哪几张」，不是写死的 kind === "xlsx" ──
+ const ledgerAll = { sheets:["Summary","Detail"], activeSheet:"Summary", readSheets:["Summary","Detail"], unreadSheets:[], truncatedSheets:[] };
+ const ledgerPartial = { ...ledgerAll, readSheets:["Summary"], unreadSheets:["Detail"] };
+ const bookBlocks = [
+   {index:0,text:"[sheet Summary] SUMMARY_ONLY_TOKEN"},
+   {index:1,text:"[sheet Detail] DETAIL_ONLY_TOKEN"},
+ ];
+ const bookFull = flattenDocumentBlocks(bookBlocks,"xlsx",{sheetLedger:ledgerAll});
+ ck("All worksheets read ⇒ workbook coverage is complete, not a fixed partial",
+   bookFull.coverage==="complete");
+ ck("Every row block is attributed to its own worksheet",
+   bookFull.sections[0]?.location.sheet==="Summary"&&bookFull.sections[1]?.location.sheet==="Detail");
+ const bookPartial = flattenDocumentBlocks(bookBlocks,"xlsx",{sheetLedger:ledgerPartial});
+ ck("An unread worksheet keeps coverage partial even though every block parsed",
+   bookPartial.coverage==="partial");
+ const bookTruncated = flattenDocumentBlocks(bookBlocks,"xlsx",
+   {sheetLedger:{...ledgerAll, truncatedSheets:["Detail"]}});
+ ck("A row-truncated worksheet keeps coverage partial",bookTruncated.coverage==="partial");
+ const malformed = flattenDocumentBlocks(bookBlocks,"xlsx",{sheetLedger:{sheets:"not-an-array"}});
+ ck("A malformed ledger is treated as unknown coverage rather than complete",
+   malformed.coverage==="partial");
+ ck("A block whose [sheet X] name is absent from the ledger gets no sheet attribution",
+   flattenDocumentBlocks([{index:0,text:"[sheet Ghost] data"}],"xlsx",{sheetLedger:ledgerAll})
+     .sections[0]?.location.sheet===undefined);
  const word=flattenDocumentBlocks([{index:3,text:"a block"}],"docx",{});
  ck("Word extraction keeps stable document block offset",word.sections[0]?.location.block===3);
+ // ── 模型侧的 Markdown 载体：多表必须分节，不能连成一张表 ──
+ const md=blocksToMarkdown({items:[
+   {index:0,type:"tableRow",text:"[sheet Summary] SUMMARY_ONLY_TOKEN"},
+   {index:1,type:"tableRow",text:"[sheet Detail] DETAIL_ONLY_TOKEN"},
+ ]});
+ ck("★ Multi-sheet Markdown separates worksheets instead of merging their rows",
+   md!==null && md.markdown.includes("### Summary") && md.markdown.includes("### Detail") &&
+   md.markdown.includes("SUMMARY_ONLY_TOKEN") && md.markdown.includes("DETAIL_ONLY_TOKEN"));
+ ck("Worksheet heading is emitted once per sheet, not once per row",
+   (md!.markdown.match(/### Summary/g)??[]).length===1);
+ ck("The [sheet X] prefix is consumed by the heading, not duplicated in the row text",
+   md!.markdown.includes("SUMMARY_ONLY_TOKEN") && !md!.markdown.includes("[sheet Summary] SUMMARY_ONLY_TOKEN"));
+ const plain=blocksToMarkdown({items:[{index:0,type:"tableRow",text:"plain row"}]});
+ ck("Rows without a sheet prefix keep their previous Markdown shape",
+   plain!==null && !plain.markdown.includes("###") && plain.markdown.includes("plain row"));
  const cli=join(process.cwd(),"../../genoffice/packages/cli/dist/genoffice.cjs");
  const fixture=join(process.cwd(),"scripts/fixtures/sample-paper.pdf");
  if(existsSync(cli)&&existsSync(fixture)) {
@@ -75,9 +116,23 @@ try {
    if(existsSync(excelPath)) {
      const xlsx=await reader({item:item("xlsx-fixture"),path:excelPath,kind:"xlsx"});
      ck("Real GenOffice Excel indexed cells with sheet and row mapping",
-       xlsx.coverage==="partial"&&xlsx.sections.some(x=>x.text.includes("Excel Index Sample") &&
+       xlsx.sections.some(x=>x.text.includes("Excel Index Sample") &&
          x.location.sheet==="Research"&&x.location.row===1));
+     ck("Single-worksheet workbook is indexed as complete, not permanently partial",
+       xlsx.coverage==="complete");
    }
+   // ── 多工作表：真 CLI 驱动，证明「全表读完」与「漏读」在输出上分得开 ──
+   const multiSheet=join(process.cwd(),"scripts/library-document-index-smoke/fixtures/multi-sheet.xlsx");
+   if(existsSync(multiSheet)) {
+     const book=await reader({item:item("xlsx-multi"),path:multiSheet,kind:"xlsx"});
+     ck("★ Every worksheet's text reaches the index, not just the active one",
+       book.sections.some(x=>x.text.includes("SUMMARY_ONLY_TOKEN")) &&
+       book.sections.some(x=>x.text.includes("DETAIL_ONLY_TOKEN")));
+     ck("★ Multi-worksheet hits carry the worksheet they came from",
+       book.sections.find(x=>x.text.includes("DETAIL_ONLY_TOKEN"))?.location.sheet==="Detail");
+     ck("★ A fully read workbook is honestly complete (the old fixed partial is gone)",
+       book.coverage==="complete");
+   } else console.log("SKIP multi-sheet fixture missing (run multi-sheet-fixture.py)");
    if(existsSync(slidesPath)) {
      const slides=await reader({item:item("pptx-fixture"),path:slidesPath,kind:"pptx"});
      ck("Real GenOffice PPT indexed original slide text",

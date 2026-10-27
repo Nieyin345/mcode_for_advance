@@ -61,7 +61,7 @@ function migrateFromPublicMcp(): void {
 function readMode(): MobileTunnelMode {
   migrateFromPublicMcp();
   const raw = SettingRepo.get(MOBILE_TUNNEL_MODE_SETTING_KEY)?.trim();
-  return raw === "named" || raw === "external" ? raw : "off";
+  return raw === "quick" || raw === "named" || raw === "external" ? raw : "off";
 }
 
 function readHost(): string {
@@ -173,9 +173,17 @@ export async function mobileTunnelStatus(): Promise<MobileTunnelStatus> {
     autostart: SettingRepo.get(MOBILE_TUNNEL_AUTOSTART_SETTING_KEY) === "1",
   };
   if (mode === "external" && hostname) return { ...base, ...externalView(hostname, port) };
-  if (mode === "named") {
+  if (mode === "named" || mode === "quick") {
     const s = tunnel.status();
-    return { ...base, phase: s.phase, error: s.error, note: null };
+    /* quick 模式下 `hostname` 由 cloudflared 分配（trycloudflare 随机域名），
+     * 从 status 里读回来给界面显示 —— 写死一个空串会让用户看不到该连哪里。 */
+    // `TunnelStatus.url` 已经是不含路径的域名（见它的注释）。
+    const liveHost = typeof s.url === "string" ? s.url : "";
+    return {
+      ...base,
+      ...(mode === "quick" && liveHost !== "" ? { hostname: liveHost } : {}),
+      phase: s.phase, error: s.error, note: null,
+    };
   }
   return { ...base, phase: "stopped", error: null, note: null };
 }
@@ -183,7 +191,14 @@ export async function mobileTunnelStatus(): Promise<MobileTunnelStatus> {
 /** 起 cloudflared(只有 named 模式需要)。 */
 export async function startMobileTunnel(): Promise<MobileTunnelStatus> {
   await awaitDb();
-  if (readMode() === "named") {
+  const mode = readMode();
+  if (mode === "quick") {
+    /* 【MOB-01】快速隧道：一条命令起，拿随机域名。**不需要 token / 域名** ——
+     * 这正是它存在的理由："我就想现在用手机连一下"。
+     * 用一个固定的 _host 占位（named 才需要真域名）。 */
+    SettingRepo.set(MOBILE_TUNNEL_AUTOSTART_SETTING_KEY, "1");
+    tunnel.start(mobilePort(), false, { mode: "quick" });
+  } else if (mode === "named") {
     SettingRepo.set(MOBILE_TUNNEL_AUTOSTART_SETTING_KEY, "1");
     tunnel.start(mobilePort(), false, { mode: "named", token: readToken(), hostname: readHost() });
   }
@@ -216,8 +231,14 @@ export async function setMobileTunnelConfig(input: SetMobileTunnelInput): Promis
   const phase = tunnel.status().phase;
   const active = phase === "starting" || phase === "ready" || phase === "reconnecting";
   const now = { mode: readMode(), host: readHost(), token: readToken() };
-  if (now.mode !== "named") {
+  if (now.mode === "off" || now.mode === "external") {
     if (active) tunnel.stop();
+  } else if (now.mode === "quick") {
+    // 从别的模式切过来就重起；已经在 quick 就不动它（避免换一次配置重连一次）。
+    if (before.mode !== "quick") {
+      if (active) tunnel.stop();
+      tunnel.start(mobilePort(), false, { mode: "quick" });
+    }
   } else if (active && (before.mode !== now.mode || before.host !== now.host || before.token !== now.token)) {
     tunnel.stop();
     tunnel.start(mobilePort(), false, { mode: "named", token: now.token, hostname: now.host });
@@ -228,10 +249,12 @@ export async function setMobileTunnelConfig(input: SetMobileTunnelInput): Promis
 /** 应用启动时调:上次开着(autostart=1)且是 named,就自动拉起。 */
 export async function autoStartMobileTunnel(): Promise<void> {
   await awaitDb();
-  if (readMode() !== "named" || SettingRepo.get(MOBILE_TUNNEL_AUTOSTART_SETTING_KEY) !== "1") return;
-  if (!readToken() || !readHost()) return;
-  log.info("mobile tunnel: auto-starting (was on last time)");
-  tunnel.start(mobilePort(), false, { mode: "named", token: readToken(), hostname: readHost() });
+  const mode = readMode();
+  if ((mode !== "named" && mode !== "quick") || SettingRepo.get(MOBILE_TUNNEL_AUTOSTART_SETTING_KEY) !== "1") return;
+  if (mode === "named" && (!readToken() || !readHost())) return;
+  log.info(`mobile tunnel: auto-starting (was on last time, mode=${mode})`);
+  if (mode === "quick") tunnel.start(mobilePort(), false, { mode: "quick" });
+  else tunnel.start(mobilePort(), false, { mode: "named", token: readToken(), hostname: readHost() });
 }
 
 export function disposeMobileTunnel(): void {

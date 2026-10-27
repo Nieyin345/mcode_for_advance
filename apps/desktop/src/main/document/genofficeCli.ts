@@ -370,7 +370,7 @@ export async function slidesRead(
 
 export async function sheetRead(
   ports: GenofficePorts, file: string, signal?: AbortSignal,
-  options: { sheet?: string; range?: string; maxRows?: number } = {},
+  options: { sheet?: string; range?: string; maxRows?: number; stats?: boolean } = {},
 ): Promise<GenofficeResult> {
   const refusal = requireWorkspacePath(ports, file, "表格路径");
   if (refusal !== null) return { ok: false, kind: "refused", envelope: null, reason: refusal };
@@ -378,6 +378,9 @@ export async function sheetRead(
   if (options.sheet !== undefined) args.push("--sheet", options.sheet);
   if (options.range !== undefined) args.push("--range", options.range);
   if (options.maxRows !== undefined) args.push("--max-rows", String(options.maxRows));
+  // `--stats` 是**唯一**能拿到全部工作表清单的读取形态（`detail.stats.sheets`）；
+  // 不带它时信封里只有当前那张表的名字。工作簿级读取靠它列全表名。
+  if (options.stats === true) args.push("--stats");
   return invoke(ports, args, signal ? { signal } : {});
 }
 
@@ -695,21 +698,207 @@ function sheetRowsToBlocks(envelope: GenofficeEnvelope): { blocks: number; items
   return { blocks: items.length, items };
 }
 
-/** pptx `slides read` 的信封 → 块形状（每页一块，含该页全部文本）。 */
+/** 工作簿层面读取的账目 —— **哪些表读了、哪些没读**必须能被调用方看见。
+ *
+ *  为什么单列类型而不是塞进 `detail`：这个账目同时被 library 索引（决定
+ *  `coverage` 是 complete 还是 partial）和模型（决定要不要再读别的表）消费，
+ *  两者的判据必须来自同一份事实，不能让各自从 `detail` 里猜。 */
+export interface WorkbookSheetLedger {
+  /** 工作簿里全部 worksheet 名（来自 CLI `--stats` 的 `detail.stats.sheets`）。 */
+  sheets: string[];
+  /** 活动表的表名（CLI 的 `detail.sheet`）。 */
+  activeSheet: string | null;
+  /** 真正读到了行数据的表名，按读取顺序。 */
+  readSheets: string[];
+  /** 没读的表名 —— 本次读取没有覆盖它们。空数组 = 全表读完。 */
+  unreadSheets: string[];
+  /** 表名清单本身不完整时的原因（例如 CLI 没回 `stats.sheets`）。 */
+  sheetsUnknownReason?: string;
+  /** 读这些表时撞上可读性上限（行数被 CLI 截断等）的表名。 */
+  truncatedSheets: string[];
+}
+
+/** 单本工作簿一次读取最多再补读多少张非活动表。
+ *
+ *  为什么要有上限：库索引是**后台**任务（`MAX_CONCURRENT=1`），一本几十个表的
+ *  工作簿逐个 `sheet read` 会把队列堵住；而模型侧读取还挂着
+ *  `documentReadGate`（并发 4）。上限之外的表**显式记为未读**，不静默丢掉。 */
+const MAX_EXTRA_SHEETS_PER_READ = 6;
+
+/** 单张表最多读多少行 —— 与 CLI 自己的 `READ_ROW_CAP`(500) 同一口径。
+ *
+ *  不传 `--max-rows` 时 CLI 默认就是 500 行并被 `truncated` 标出；这里显式传，
+ *  是为了让「读到的行数」在账目里可解释，而不是依赖 CLI 的隐含默认。 */
+const SHEET_READ_MAX_ROWS = 500;
+
+/** 工作簿级读取的价格上限：补读的表数 × 每表一次子进程。
+ *
+ *  与 `MAX_EXTRA_SHEETS_PER_READ` 是同一个约束的两面（前者是次数，后者是原因）；
+ *  单列一个常量是为了在日志/账目里能说出"为什么只读了这几张"。 */
+export const SHEET_FANOUT_LIMIT = MAX_EXTRA_SHEETS_PER_READ;
+
+/** `sheet read --stats` 只用来拿表名清单，不要行数据。
+ *
+ *  为什么单独一次调用：CLI 只有在 `--stats` 时才把 `stats.sheets`（全部表名 +
+ *  每表行列数）放进信封；普通 `sheet read` 的信封里只有**当前那一张**表的名字
+ *  （`detail.sheet`）。没有这一步就只能读活动表，其余表既读不到、也数不出名字。 */
+export async function workbookSheetList(
+  ports: GenofficePorts,
+  file: string,
+  signal?: AbortSignal,
+): Promise<string[] | null> {
+  const listed = await workbookSheetNames(ports, file, signal);
+  return listed.sheets.length > 0 ? listed.sheets : null;
+}
+
+async function workbookSheetNames(
+  ports: GenofficePorts,
+  file: string,
+  signal: AbortSignal | undefined,
+): Promise<{ sheets: string[]; activeSheet: string | null; reason?: string }> {
+  const stats = await sheetRead(ports, file, signal, { stats: true });
+  if (!stats.ok) {
+    return { sheets: [], activeSheet: null, reason: stats.reason };
+  }
+  const detail = stats.envelope.detail as {
+    sheet?: unknown;
+    stats?: { sheets?: Array<{ name?: unknown }> };
+  } | null;
+  const listed = Array.isArray(detail?.stats?.sheets) ? detail.stats.sheets : [];
+  const sheets = listed
+    .map((entry) => (typeof entry?.name === "string" ? entry.name : null))
+    .filter((name): name is string => name !== null && name !== "");
+  const activeSheet = typeof detail?.sheet === "string" ? detail.sheet : null;
+  if (sheets.length === 0) {
+    return { sheets: [], activeSheet, reason: "CLI 的 sheet read --stats 没有给出工作表清单" };
+  }
+  return { sheets, activeSheet };
+}
+
+/**
+ * 【工作簿级读取】把一本 xlsx **所有工作表**的文本读成与 `docs read` 同形的块数组。
+ *
+ * ## 它修的是什么
+ *
+ * 从前 `readAnyDocument` 对 xlsx 只调一次 `sheetRead(ports, file)`（不传 `--sheet`），
+ * 于是只读到**活动的那一张表**。多表工作簿（预算表、月报、汇总+明细）的其余工作表
+ * 既没进 library 全文索引，也没进 `document.read` 给模型的 Markdown —— 而模型会
+ * 把"读到的那张表"当成整本工作簿，这是**静默漏读**，比报错更坏。
+ *
+ * ## 账目先于数据
+ *
+ * 每张表的读没读、为什么没读，都写进 {@link WorkbookSheetLedger}，并随信封的
+ * `detail` 一起交给调用方。没读完时**绝不**把 block 数组伪装成完整正文。
+ *
+ * ## 边界（如实）
+ *
+ * - 补读上限 {@link MAX_EXTRA_SHEETS_PER_READ}：超出的表显式记为 `unreadSheets`；
+ * - 每表行数上限 {@link SHEET_READ_MAX_ROWS}：CLI 自己标 `truncated`，这里原样转成
+ *   `truncatedSheets`；
+ * - 表名清单来自 `--stats`；它失败时**不猜**表名（`sheetsUnknownReason`），只读活动表。
+ */
+export async function readWorkbookSheets(
+  ports: GenofficePorts,
+  file: string,
+  signal?: AbortSignal,
+): Promise<{
+  ok: true;
+  ledger: WorkbookSheetLedger;
+  items: unknown[];
+  blocks: number;
+  via: "sheet read";
+} | { ok: false; kind: "unavailable" | "failed" | "refused"; reason: string }> {
+  const listed = await workbookSheetNames(ports, file, signal);
+  // 活动表先读：即使表名清单拿不到，也总要把能读的那张读出来（与改动前行为一致）。
+  const first = await sheetRead(ports, file, signal, { maxRows: SHEET_READ_MAX_ROWS });
+  if (!first.ok) {
+    return { ok: false, kind: first.kind, reason: first.reason };
+  }
+  const firstDetail = first.envelope.detail as { sheet?: unknown; truncated?: unknown } | null;
+  const activeName = typeof firstDetail?.sheet === "string" && firstDetail.sheet !== ""
+    ? firstDetail.sheet
+    : listed.activeSheet;
+  const items: unknown[] = [];
+  const readSheets: string[] = [];
+  const truncatedSheets: string[] = [];
+  const appendSheet = (sheetName: string, envelope: GenofficeEnvelope): void => {
+    const converted = sheetRowsToBlocks(envelope);
+    // 每行块带表名前缀：多表拼在一起时，一条命中必须能说出**来自哪张表**，
+    // 否则 library 搜索命中「1200」无法分辨它是预算还是实际支出。
+    for (const item of converted.items) {
+      const block = item as { index?: number; type?: string; text?: string };
+      const shifted = { ...block, index: items.length, text: `[sheet ${sheetName}] ${block.text ?? ""}` };
+      items.push(shifted);
+    }
+    readSheets.push(sheetName);
+    const detail = envelope.detail as { truncated?: unknown } | null;
+    if (detail?.truncated === true) truncatedSheets.push(sheetName);
+  };
+  if (activeName !== null) appendSheet(activeName, first.envelope);
+
+  const known = listed.sheets.filter((name) => name !== activeName);
+  const budget = Math.max(0, MAX_EXTRA_SHEETS_PER_READ);
+  const attempted = known.slice(0, budget);
+  for (const sheetName of attempted) {
+    const read = await sheetRead(ports, file, signal, { sheet: sheetName, maxRows: SHEET_READ_MAX_ROWS });
+    // 单表失败不吞掉整本工作簿：该表记为未读，其余表仍会被读到。
+    if (!read.ok) continue;
+    appendSheet(sheetName, read.envelope);
+  }
+
+  const unreadSheets = listed.sheets.filter((name) => !readSheets.includes(name));
+  const ledger: WorkbookSheetLedger = {
+    sheets: listed.sheets,
+    activeSheet: activeName,
+    readSheets,
+    unreadSheets,
+    ...(listed.reason !== undefined ? { sheetsUnknownReason: listed.reason } : {}),
+    truncatedSheets,
+  };
+  return { ok: true, ledger, items, blocks: items.length, via: "sheet read" };
+}
+
+/** pptx `slides read` 的信封 → 块形状（每页一块，含该页全部文本与备注）。
+ *
+ *  ## 为什么备注要单独一块
+ *
+ *  `slides read --full` 把演讲者备注放在**页对象的 `notes` 字段**上，而页正文在
+ *  `elements[].text` 里。早期版本只取 elements，于是备注**整段被丢掉**，而输出
+ *  看起来完全正常（每页都有文本）—— 这是静默漏读，比报错更坏：模型会回答
+ *  「这份演示文稿没有讲稿」。
+ *
+ *  备注单独成一页块（`type: "notes"`）而不是拼进正文：两者在 deck 里是不同的事实，
+ *  拼在一起后模型会分不清某句话是观众看到的还是讲者备注。定位符仍是同一页号，
+ *  所以「第 3 页讲稿」可以被准确引用。 */
 function slidesToBlocks(envelope: GenofficeEnvelope): { blocks: number; items: unknown[] } {
-  const detail = envelope.detail as { pages?: Array<{ index?: number; elements?: Array<{ type?: string; text?: string }> }> } | null;
+  const detail = envelope.detail as {
+    pages?: Array<{
+      index?: number;
+      elements?: Array<{ type?: string; text?: string }>;
+      notes?: string;
+    }>;
+  } | null;
   const pages = Array.isArray(detail?.pages) ? detail.pages : [];
   const items: unknown[] = [];
   let index = 0;
   for (const page of pages) {
+    const slideNo = (page.index ?? 0) + 1;
     const texts = (page.elements ?? [])
       .map((element) => (typeof element.text === "string" ? element.text : ""))
       .filter((text) => text.trim() !== "");
     items.push({
       index, type: "slide", level: 1,
-      text: `[slide ${(page.index ?? 0) + 1}] ${texts.join(" · ")}`,
+      text: `[slide ${slideNo}] ${texts.join(" · ")}`,
     });
     index += 1;
+    const notes = typeof page.notes === "string" ? page.notes.trim() : "";
+    if (notes !== "") {
+      items.push({
+        index, type: "notes", level: 2,
+        text: `[slide ${slideNo} notes] ${notes}`,
+      });
+      index += 1;
+    }
   }
   return { blocks: items.length, items };
 }
@@ -788,15 +977,28 @@ export async function readAnyDocument(
   }
 
   if (kind === "xlsx") {
-    const read = await sheetRead(ports, file, options.signal);
-    if (!read.ok) return read;
-    const converted = sheetRowsToBlocks(read.envelope);
+    // 【工作簿级】所有工作表的文本，不只是活动那张 —— 账目（读了哪些、哪些没读）
+    // 必须随信封一起走，否则调用方无法区分「整本读完」与「只读到一张」。
+    const book = await readWorkbookSheets(ports, file, options.signal);
+    if (!book.ok) return { ok: false, kind: book.kind, envelope: null, reason: book.reason };
+    const summary = `${basename(file)}（${book.ledger.readSheets.length}/${book.ledger.sheets.length} 张工作表，${book.blocks} 个非空行）`;
     return {
       ok: true,
       envelope: {
-        ...read.envelope,
-        summary: `${read.envelope.summary ?? basename(file)}（${converted.blocks} 个非空行）`,
-        detail: { ...converted, via: "sheet read", structured: false, sheetDetail: read.envelope.detail },
+        status: "ok",
+        summary,
+        detail: {
+          blocks: book.blocks,
+          items: book.items,
+          via: book.via,
+          structured: false,
+          sheetLedger: book.ledger,
+          // 部分覆盖必须让下游看得见：`truncated` 是 blocksToMarkdown 头部注释与
+          // library `coverage` 共用的既有信号，不新造第二个真相。
+          ...(book.ledger.unreadSheets.length > 0 || book.ledger.truncatedSheets.length > 0
+            ? { truncated: true }
+            : {}),
+        },
       },
     };
   }

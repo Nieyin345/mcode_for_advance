@@ -3,7 +3,7 @@
  *
  * 来源：genoffice/ 快照里各编辑器 renderer 的 AGENT_TOOLS / WORKBOOK_TOOLS / slides TOOLS
  * 及其组合的伴随 skill（files/search/image/merge/knowledge-base）。生成脚本与实测命令见
- * tasks/T24 回写区；重新生成：node .tmp/t24/gen/make-catalog-ts.mjs（快照更新后）。
+ * 重新生成：node .tmp/t24/gen/make-catalog-ts.mjs（快照更新后）。
  *
  * 只保存名称、截断到 160 字的一句说明与是否带参数表；**完整 JSON Schema 不进目录**，
  * 由 document_tool_describe 按需取（CLI 承载的 op 直接读 `genoffice guide <domain> <op>`，

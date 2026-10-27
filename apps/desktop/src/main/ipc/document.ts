@@ -47,6 +47,18 @@ import {
   type DocumentSurfacePorts,
 } from "@main/document/documentToolRuntime.js";
 import { activeRendererBindingFor } from "@main/document/documentToolRendererBinding.js";
+import { rendererToolDispatch } from "@main/document/rendererToolDispatch.js";
+/* 【CHAT-20】文档预览图归档到**与浏览器截图同一套存储**。
+ *
+ * 以前它落在 `renderTempRoot()`（可清理的临时目录），而截图落在用户配的截图目录 ——
+ * 同一类东西（"AI 看到的画面"）分两处：用户去翻截图目录找不到文档预览，
+ * 清理临时目录时又把它悄悄删了。 */
+import { savePngArtifact } from "@main/lib/screenshotStore.js";
+import { BROWSER_SCREENSHOT_DIR_SETTING_KEY } from "@contracts/ipc";
+import { SettingRepo } from "@main/store/repositories.js";
+import { app } from "electron";
+import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 /**
  * 仓库根的**可注入解析** —— 默认惰性 `require("electron").app.getAppPath()`
@@ -355,6 +367,16 @@ function registerDocumentToolSurface(ipc: IpcMain, p: ReturnType<typeof ports>):
       cliPath: p.ok ? p.ports.cliPath : "",
       withinWorkspace: p.ok ? p.ports.withinWorkspace : () => false,
       rendererOpen: () => binding.ok,
+      /* 普通对话借编辑器：请求级绑定缺席时的兜底（见 `rendererToolDispatch.ts` 文件头）。
+       * 路径 → docId 的解析器由装配层登记（`DocumentViewHost` 创建时调
+       * `rendererToolDispatch.setPathResolver`）—— 本层不 import 宿主。 */
+      dispatchRendererTool: (path: string) => {
+        const docId = rendererToolDispatch.resolveDocId(path);
+        if (docId === null || !rendererToolDispatch.has(docId)) return null;
+        return {
+          invoke: (call) => rendererToolDispatch.invoke(docId, call),
+        };
+      },
       ...(binding.ok ? {
         invokeRendererTool: (call, definition) => binding.invoke(call, definition),
         rendererToolDefinition: (tool) => binding.definitionOf(tool),
@@ -363,6 +385,26 @@ function registerDocumentToolSurface(ipc: IpcMain, p: ReturnType<typeof ports>):
         const dir = join(dataRoot(), "docs", "export-tmp", "t24-render");
         mkdirSync(dir, { recursive: true });
         return dir;
+      },
+      /* 【CHAT-20】把渲染出的预览图归档到统一截图目录。
+       *
+       * 失败一律返回 null（调用方保留原路径）——归档是附加价值，
+       * 不该让"图已经渲染出来了"这件事变成失败。 */
+      archiveRender: (file: string): string | null => {
+        try {
+          const baseDir = SettingRepo.get(BROWSER_SCREENSHOT_DIR_SETTING_KEY)?.trim()
+            || app.getPath("pictures");
+          const png = readFileSync(file).toString("base64");
+          return savePngArtifact(png, {
+            baseDir,
+            sessionId: "document-render",
+            // 没有"轮"的概念时与面板截图一致：记 0。
+            turnNumber: 0,
+            toolCallId: `render-${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+          });
+        } catch {
+          return null;
+        }
       },
     };
   };

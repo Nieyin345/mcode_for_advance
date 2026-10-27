@@ -22,7 +22,10 @@ const files = read("chat/FileMentionPicker.tsx");
 const slash = read("chat/SlashCommandPicker.tsx");
 const chip = read("chat/ContentTagChip.tsx");
 const toolbar = read("chat/ComposerToolbar.tsx");
+const toolbarCss = read("chat/ClaudeComposerToolbar.css");
 const toggle = read("chat/ComposerToolbarToggle.tsx");
+const effort = read("chat/EffortPermissionControl.tsx");
+const model = read("chat/ModelDropdown.tsx");
 
 // Pure production function behavior: these checks execute the very functions
 // wired to the dialog, not a duplicated source-text approximation.
@@ -83,12 +86,46 @@ check("Composer: narrower settings list never hard-overflows the phone screen",
   sourceHas(toolbar, 'w-[min(18rem,calc(100vw-24px))] max-w-full min-w-0'));
 check("Composer: pill remains one accessible grouped control surface",
   sourceHas(toolbar, 'role="group" aria-label={t("chat.toolbarToggle")}'));
+check("Composer: inline toolbar uses the scoped Claude visual-parity layer",
+  sourceHas(toolbar, 'import "./ClaudeComposerToolbar.css";') &&
+  sourceHas(toolbar, 'className="composer-minipill claude-composer-toolbar min-w-0 max-w-full"') &&
+  sourceHas(toolbarCss, "height: 2rem;") &&
+  sourceHas(toolbarCss, ".composer-minipill-mid") &&
+  sourceHas(toolbarCss, "display: none;") &&
+  sourceHas(toolbarCss, "background-color: rgb(var(--surface-hover));") &&
+  !sourceHas(toolbarCss, "background-color: rgb(var(--accent) / 0.11);"));
 check("Composer: compact settings popup is viewport-capped",
   sourceHas(toggle, 'max-w-[calc(100vw-16px)]') &&
   sourceHas(toggle, 'focus-visible:outline-offset-2 focus-visible:outline-accent'));
 check("Composer: context snapshot stays bound to local session, not global selected tab",
   sourceHas(toolbar, "s.contextSnapshotBySession[sessionId]") &&
   sourceHas(toolbar, "s.usageHistoryBySession[sessionId]"));
+check("Composer: effort selector uses Claude-like vertical options with selected-state semantics and bounded height",
+  sourceHas(effort, 'data-cds="ModelSelectorEffort"') &&
+  sourceHas(effort, 'data-cds="EffortOption"') &&
+  sourceHas(effort, "aria-pressed={active}") &&
+  sourceHas(effort, "max-h-[min(65vh,480px)] overflow-y-auto overscroll-contain") &&
+  sourceHas(effort, 'className="space-y-1"') &&
+  !sourceHas(effort, 'levels.length > 6 ? "grid-cols-4" : "grid-cols-3"'));
+check("Composer: effort selector continues showing gateway-mapped values without dropping level captions",
+  sourceHas(effort, "const mappedValue = mappedValueOf(m.value);") &&
+  sourceHas(effort, "const caption = tileOf(m);") &&
+  sourceHas(effort, "{mappedValue}"));
+check("Composer: model switcher menu is rounded, viewport-capped and keyboard-scrollable",
+  sourceHas(model, 'data-cds="ModelSwitcher"') &&
+  sourceHas(model, 'aria-label={t("chat.model.selectTitle")}') &&
+  sourceHas(model, "w-[min(320px,calc(100vw-16px))]") &&
+  sourceHas(model, "max-h-[min(70vh,560px)] overflow-y-auto overscroll-contain") &&
+  sourceHas(model, "<ModelTokenGauge snapshot={snapshot} />"));
+check("Composer: model provider grouping and nested model choices remain intact",
+  sourceHas(model, "Menu.SubmenuRoot") &&
+  sourceHas(model, "Menu.SubmenuTrigger") &&
+  sourceHas(model, "pickCustomModel(m.id, entry.id)") &&
+  sourceHas(model, "setModel(b.id)"));
+check("Composer: permission modes expose pressed state without removing risk-specific selection colors",
+  sourceHas(effort, 'data-cds="PermissionOption"') &&
+  sourceHas(effort, "active && !cVar && \"border-accent bg-accent/8\"") &&
+  sourceHas(effort, "borderColor: `rgb(${cVar})`, background: `rgb(${cVar} / 0.06)`"));
 check("Composer: attach, model, workflow, effort, permission and context remain mounted",
   ["<AttachMenuButton", "<ModelDropdown", "<WorkflowDropdown", "<EffortChip", "<PermissionChip", "<ContextRing"]
     .every((tag) => sourceHas(toolbar, tag)));

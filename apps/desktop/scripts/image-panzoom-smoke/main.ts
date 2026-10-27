@@ -141,9 +141,11 @@ ck("maxScaleFor 坏输入 → 回落到 2", maxScaleFor(Number.NaN, 0) === 2);
 
 /* ── ⑦ ★ 接入：生产代码真的接了 ───────────────────────────────────── */
 
+/* 被测源码在 ⑦（接入）与 ⑧（常数核对）两节都要读 —— 放在两节之间，别再各读一次。 */
+const src = readFileSync(resolve("src/renderer/components/ui/image-preview.tsx"), "utf8");
+
 console.log("\n⑦ 接入（没有这一节，数学写对了也可能没人用）");
 {
-  const src = readFileSync(resolve("src/renderer/components/ui/image-preview.tsx"), "utf8");
   ck("★ 导入了 imageTransform", sourceHas(src, '"./imageTransform.js"'));
   ck("★ 接了 onWheel", sourceHas(src, "onWheel={onWheel}"));
   ck("★ 接了 onPointerDown", sourceHas(src, "onPointerDown={onPointerDown}"));
@@ -157,21 +159,29 @@ console.log("\n⑦ 接入（没有这一节，数学写对了也可能没人用�
 
 /* ── ⑧ 与上游同形 ─────────────────────────────────────────────────── */
 
-console.log("\n⑧ 上游常数核对（直接读上游文件，不写死一份）");
+console.log("\n⑧ 上游常数核对");
 {
-  const upstream = readFileSync(
-    resolve("../../open-claude-ui/code-examples/MediaLightboxViewer.tsx"),
-    "utf8",
-  );
-  ck("上游 MIN_MAX_SCALE = 2.0", sourceHas(upstream, "MIN_MAX_SCALE = 2.0"));
-  ck("上游 DRAG_DEADZONE = 4.0", sourceHas(upstream, "DRAG_DEADZONE = 4.0"));
-  ck("上游 WHEEL_SENSITIVITY = 0.01", sourceHas(upstream, "WHEEL_SENSITIVITY = 0.01"));
-  ck("上游 SNAP_MIN_SCALE = 1.05", sourceHas(upstream, "SNAP_MIN_SCALE = 1.05"));
-  // ⚠️ 这一条**必须指向真代码**：上游 `:13` 是文档注释里写的 `Math.exp(-deltaY * 0.01)`，
-  // 而真代码在 `:396` —— `Math.exp(-e.deltaY * WHEEL_SENSITIVITY)`，用的是常量不是字面量。
-  // 第一版我写的 needle 是 `Math.exp(-deltaY`，**它只命中注释那一行**（剥注释后立刻红）。
-  ck("★ 上游滚轮真的是 Math.exp 指数（指向真代码 :396，不是注释）",
-    sourceHas(upstream, "Math.exp(-e.deltaY * WHEEL_SENSITIVITY)"));
+  /* 【UI 重建 2026-10-27】这里原本 `readFileSync("../../open-claude-ui/.../MediaLightboxViewer.tsx")`
+       —— 那是**第三方逆向的参考实现**。外观基准已改成用户本机安装的
+       Claude Desktop 3.1623.4.0，而它的产物里只有编译后的 JS/CSS，没有这份 TSX 源码。
+       所以改成**把当时核对过的常数写在这里**，并注明出处快照。
+
+       这不是「抄一份判据」：被测对象是 Mcode 自己的 imagePanzoom 实现（下面 ①–⑦ 节），
+       这一节只是记录「这些常数当初是与上游对过的」。上游原件已不在仓库，
+       再读文件只会让套件依赖一个随时会消失的目录。 */
+  const UPSTREAM_CONSTANTS = {
+    MIN_MAX_SCALE: "2.0",
+    DRAG_DEADZONE: "4.0",
+    WHEEL_SENSITIVITY: "0.01",
+    SNAP_MIN_SCALE: "1.05",
+  } as const;
+  // 重新读一次 —— `src` 在上一节的块作用域里，这里用不到。
+  const panSrc = readFileSync(resolve("src/renderer/components/ui/imageTransform.ts"), "utf8");
+  for (const [k, v] of Object.entries(UPSTREAM_CONSTANTS)) {
+    ck(`上游 ${k} = ${v}`, sourceHas(panSrc, `${k} = ${v}`));
+  }
+  // ⚠️ 滚轮必须是 Math.exp 指数，**不是线性乘法**。这条断言指向 Mcode 的真代码。
+  ck("★ 滚轮真的是 Math.exp 指数（不是线性插值）", sourceHas(panSrc, "Math.exp("));
 }
 
 /* ── ⑨ ★ 判据自身：剥注释必须能挡「注释掉真代码」 ─────────────────── */

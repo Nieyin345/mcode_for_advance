@@ -114,6 +114,35 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
   const queued = useQueuedNode(block.runId, block.nodeId);
   /** 失败卡片上那个「再试一次」窗口的开关。**按卡片持有** —— 两张失败卡各弹各的。 */
   const [retryOpen, setRetryOpen] = useState(false);
+  /** 【WF-06】原生整条重跑的进行中标志（按钮禁用，避免连点起两次）。 */
+  const [retryingNative, setRetryingNative] = useState(false);
+  /** 【WF-06】重跑失败的原因。**显示出来** —— 静默什么都不发生是最坏的形式。 */
+  const [nativeRetryError, setNativeRetryError] = useState<string | null>(null);
+
+  /**
+   * 【WF-06】原生运行整条重跑。
+   *
+   * 服务端按 sessionId 的 `@node-red-runboard:` 前缀认出这是原生运行并走
+   * `retryNativeFlow`（整条流重跑）。这里传**合成会话 id** 而不是当前会话 ——
+   * 那条前缀是这条路上唯一的判据，传错会被送去旧执行器。
+   */
+  const retryNative = async (): Promise<void> => {
+    if (block.workflowId === undefined) return;
+    setRetryingNative(true);
+    setNativeRetryError(null);
+    try {
+      const result = await api.workflow.retry({
+        sessionId: `@node-red-runboard:${block.workflowId}`,
+        runId: block.runId,
+        nodeId: block.nodeId,
+      });
+      if (!result.ok) setNativeRetryError(result.error ?? t("settings.workflows.actionFailed", { error: "" }));
+    } catch (err) {
+      setNativeRetryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRetryingNative(false);
+    }
+  };
 
   /**
    * 这一步**跑的过程** —— 它在那个隐藏子会话里搜了什么、调了哪些工具、中间说了什么。
@@ -208,6 +237,31 @@ export function WorkflowStepCard({ block }: { block: WorkflowStepBlock }) {
             <IconRefresh size={12} />
             {t("chatStream.workflowStep.retry")}
           </Button>
+        </div>
+      )}
+      {/* 【WF-06】**原生运行**（Node-RED）的失败卡：**整条重跑**，不是从这一步续跑。
+          两种重试的区别是硬事实，所以按钮文案也不同 —— 说成"再试一次"会让用户以为
+          只重跑这一步，结果整条流又跑了一遍。
+          判据是 `workflowId` 在、且这一步**没有** `nodeSessionId`（原生节点不建隐藏会话）。 */}
+      {block.status === "failed" && block.workflowId !== undefined && !block.nodeSessionId && (
+        <div className="mt-2 flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={retryingNative}
+            onClick={() => void retryNative()}
+          >
+            <IconRefresh size={12} />
+            {t("chatStream.workflowStep.retryWholeFlow")}
+          </Button>
+          <span className="text-[0.7143em] text-content-subtle">
+            {t("chatStream.workflowStep.retryWholeFlowHint")}
+          </span>
+        </div>
+      )}
+      {nativeRetryError !== null && (
+        <div className="mt-1 text-[0.7143em] text-danger" data-native-retry-error="">
+          {nativeRetryError}
         </div>
       )}
       {retryOpen && sessionId && (

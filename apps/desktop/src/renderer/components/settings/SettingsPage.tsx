@@ -24,6 +24,7 @@ import {
   IconActivity,
   IconArrowsSplit,
   IconBook,
+  IconFileText,
   McpIcon,
   IconNotebook,
   IconAdjustmentsHorizontal,
@@ -60,11 +61,12 @@ const PANEL_LOADERS = {
   AgentSshTrustPanel: () => import("./AgentSshTrustPanel.js"),
   EngineToolsPanel: () => import("./EngineToolsPanel.js"),
   PluginsPanel: () => import("./PluginsPanel.js"),
-  ModuleSettingsPanel: () => import("../modules/ModuleContributions.js"),
+  ExtensionSettingsPanel: () => import("./ExtensionSettingsPanel.js"),
   AppearancePanel: () => import("./AppearancePanel.js"),
   ShortcutsPanel: () => import("./ShortcutsPanel.js"),
   GesturesPanel: () => import("./GesturesPanel.js"),
   GeneralPanel: () => import("./GeneralPanel.js"),
+  GenofficePanel: () => import("./GenofficePanel.js"),
   SettingsGitPanel: () => import("./SettingsGitPanel.js"),
   SettingsTerminalPanel: () => import("./SettingsTerminalPanel.js"),
   SettingsBrowserPanel: () => import("./SettingsBrowserPanel.js"),
@@ -113,11 +115,12 @@ const McpPanel = lazy(() => PANEL_LOADERS.McpPanel().then((m) => ({ default: m.M
 const AgentSshTrustPanel = lazy(() => PANEL_LOADERS.AgentSshTrustPanel().then((m) => ({ default: m.AgentSshTrustPanel })));
 const EngineToolsPanel = lazy(() => PANEL_LOADERS.EngineToolsPanel().then((m) => ({ default: m.EngineToolsPanel })));
 const PluginsPanel = lazy(() => PANEL_LOADERS.PluginsPanel().then((m) => ({ default: m.PluginsPanel })));
-const ModuleSettingsPanel = lazy(() => PANEL_LOADERS.ModuleSettingsPanel().then((m) => ({ default: m.ModuleSettingsPanel })));
+const ExtensionSettingsPanel = lazy(() => PANEL_LOADERS.ExtensionSettingsPanel().then((m) => ({ default: m.ExtensionSettingsPanel })));
 const AppearancePanel = lazy(() => PANEL_LOADERS.AppearancePanel().then((m) => ({ default: m.AppearancePanel })));
 const ShortcutsPanel = lazy(() => PANEL_LOADERS.ShortcutsPanel().then((m) => ({ default: m.ShortcutsPanel })));
 const GesturesPanel = lazy(() => PANEL_LOADERS.GesturesPanel().then((m) => ({ default: m.GesturesPanel })));
 const GeneralPanel = lazy(() => PANEL_LOADERS.GeneralPanel().then((m) => ({ default: m.GeneralPanel })));
+const GenofficePanel = lazy(() => PANEL_LOADERS.GenofficePanel().then((m) => ({ default: m.GenofficePanel })));
 const SettingsGitPanel = lazy(() => PANEL_LOADERS.SettingsGitPanel().then((m) => ({ default: m.SettingsGitPanel })));
 const SettingsTerminalPanel = lazy(() => PANEL_LOADERS.SettingsTerminalPanel().then((m) => ({ default: m.SettingsTerminalPanel })));
 const SettingsBrowserPanel = lazy(() => PANEL_LOADERS.SettingsBrowserPanel().then((m) => ({ default: m.SettingsBrowserPanel })));
@@ -157,7 +160,7 @@ function PanelLoading() {
  * Note: the legacy “Claude CLI 路径” panel was removed - the Agent SDK bundles
  * its own claude binary, so an externally-configured path is no longer used.
  */
-type SectionId = "general" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "skills" | "workflows" | "automation" | "hooks" | "scene-deploy" | "mcp" | "agent-ssh" | "engine-tools" | "memory" | "plugins" | "extension-settings" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
+type SectionId = "general" | "genoffice" | "library-types" | "custom-ui" | "runtimes" | "custom-models" | "skills" | "workflows" | "automation" | "hooks" | "scene-deploy" | "mcp" | "agent-ssh" | "engine-tools" | "memory" | "plugins" | "extension-settings" | "appearance" | "shortcuts" | "gestures" | "voice" | "notifications" | "git" | "terminal" | "browser" | "lsp-languages" | "monitoring" | "usage" | "about";
 
 interface NavItem {
   id: SectionId;
@@ -239,6 +242,10 @@ const NAV_GROUPS: NavGroup[] = [
       // 数据根与资料库设置合并在同一个入口;入口名保留「文档管理」,内容先显示
       // 数据位置,再配置文档如何供 AI 使用。旧 data-root 深链在初始化时映射到这里。
       { id: "library-types", labelKey: "settings.nav.libraryTypes", icon: IconBook },
+      // 文档编辑器（GenOffice 六格式）紧跟文档管理:它回答的是"这些文件怎么打开、
+      // 用什么编辑、AI 走哪条链"。原本这些事实散落在编辑器的错误提示里，
+      // 用户在设置里找不到入口。
+      { id: "genoffice", labelKey: "settings.nav.genoffice", icon: IconFileText },
       // 自定义 UI 紧跟文档管理:资料库右键菜单的功能项、Files 文件右键都在这里配置
       // (主界面只放入口,点了做什么、显示什么在这一页定义)。
       { id: "custom-ui", labelKey: "customUi.nav", icon: IconAdjustmentsHorizontal },
@@ -434,6 +441,7 @@ export function SettingsPage() {
         >
           <Suspense key={active} fallback={<PanelLoading />}>
             {active === "general" && <GeneralPanel />}
+            {active === "genoffice" && <GenofficePanel />}
             {active === "appearance" && <AppearancePanel />}
             {active === "custom-models" && <CustomModelsPanel />}
             {active === "library-types" && (
@@ -458,7 +466,7 @@ export function SettingsPage() {
             {active === "engine-tools" && <EngineToolsPanel />}
             {active === "memory" && <MemoryExplorerPanel />}
             {active === "plugins" && <PluginsPanel />}
-            {active === "extension-settings" && <ModuleSettingsPanel />}
+            {active === "extension-settings" && <ExtensionSettingsPanel />}
             {active === "notifications" && <NotificationsPanel />}
             {active === "git" && <SettingsGitPanel />}
             {active === "terminal" && <SettingsTerminalPanel />}

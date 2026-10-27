@@ -10,6 +10,7 @@ const read = (file: string) => readFileSync(resolve("src/renderer/components/cha
 const picker = read("NewSubChatPicker.tsx");
 const menu = read("AttachMenuButton.tsx");
 const toolbar = read("ComposerToolbar.tsx");
+const toolbarCss = read("ClaudeComposerToolbar.css");
 let count = 0;
 let failures = 0;
 function ck(name: string, ok: boolean, actual?: unknown) {
@@ -92,12 +93,24 @@ ck("Attachment: menu retains all project-file/image/library/command entry points
   sourceHas(menu, "onClick={onPickLibraries}") &&
   sourceHas(menu, "onClick={onSlashCommand}"));
 ck("Attachment: menu minimum targets and wide-window cap follow composer tokens",
-  sourceHas(menu, "min-h-9 w-full") &&
+  sourceHas(menu, "min-h-8 w-full") &&
   sourceHas(menu, "max-w-[calc(100vw-24px)]"));
+ck("Attachment: popup and rows use Claude-like rounded, compact menu geometry",
+  sourceHas(menu, "rounded-xl border border-edge bg-surface p-1.5 shadow-[var(--shadow-popover)]") &&
+  sourceHas(menu, "rounded-lg px-2.5 py-1.5 text-left text-xs"));
 ck("Composer toolbar: one attach entry preserves full downstream callback plumbing",
   sourceHas(toolbar, "<AttachMenuButton") &&
   sourceHas(toolbar, "onNewSubChat={onNewSubChat}") &&
   sourceHas(toolbar, "onSlashCommand={onSlashCommand}"));
+ck("Composer toolbar: Claude parity CSS is imported and scoped to the inline pill",
+  sourceHas(toolbar, 'import "./ClaudeComposerToolbar.css";') &&
+  sourceHas(toolbarCss, ".composer-minipill.claude-composer-toolbar"));
+ck("Composer toolbar: narrow widths retain all four container-query compression tiers",
+  sourceHas(toolbarCss, "@container composer-toolbar (width < 576px)") &&
+  sourceHas(toolbarCss, "@container composer-toolbar (width < 480px)") &&
+  sourceHas(toolbarCss, "@container composer-toolbar (width < 384px)") &&
+  sourceHas(toolbarCss, "@container composer-toolbar (width < 320px)") &&
+  sourceHas(toolbarCss, "grid-template-columns: 0fr"));
 ck("Negative: removing geometry usage from picker fails wiring assertion",
   !sourceHas(picker.replace("subChatPickerPlacement(anchorRect, window.innerWidth, window.innerHeight)", "oldPosition()"), "subChatPickerPlacement(anchorRect, window.innerWidth, window.innerHeight)"));
 ck("Negative: removing mounted state fence fails rejection guard",

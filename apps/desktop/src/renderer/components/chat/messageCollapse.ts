@@ -3,7 +3,7 @@
  *
  * ## 为什么加这个
  *
- * 2026-10-24 把 `open-claude-ui` 的 36 个组件逐个对过（`tasks/T120-open-claude-ui-adoption.md`）。
+ * 2026-10-24 把 `open-claude-ui` 的 36 个组件逐个对过。
  * 上游 `ChatMessageBubbles.tsx` 对**用户消息**做了这件事（`:85` `collapseThreshold = 300`，
  * `:99-101` 量 `scrollHeight` 决定，`:156` 上 `max-h-[300px]` + `mask-image` 渐变，
  * `:163` 给展开/收起按钮）。**Mcode 的 `MessageRow.tsx:330` 用户气泡只有 `overflow-hidden`，

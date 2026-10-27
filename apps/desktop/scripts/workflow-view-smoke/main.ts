@@ -1290,6 +1290,7 @@ function renderInspector(
         onRestoreDefault: () => {},
         pinned,
         onImported: () => {},
+        onDuplicateWorkflow: () => {},
       }),
     ),
   );

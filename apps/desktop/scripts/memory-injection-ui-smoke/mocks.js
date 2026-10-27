@@ -8,12 +8,17 @@ window.labState = { locale: query.get('lang') || 'zh', sessionId: 'chat-A', acti
 window.labPatchState = patch => { window.labState = {...window.labState,...patch}; for(const fn of subscribers)fn(); };
 // Composer reasoning/permission chips: a single mock provider declaring one
 // level + one mode, plus the persisted selections the chips read from the store.
-window.labState.providers = [{id:'mock',displayName:'Mock',capabilities:{thinkingLevels:[{value:'low',label:'Low',hint:'quick'}],permissionModes:[{value:'default',label:'Default',hint:'ask'}]}}];
+window.labState.providers = [{id:'mock',displayName:'Mock',capabilities:{thinkingLevels:[{value:'low',label:'Low',hint:'quick'}],permissionModes:[{value:'default',label:'Default',hint:'ask'}],builtinModels:[{id:'model-a',label:'Model A',hint:'Fast'},{id:'model-b',label:'Model B',hint:'Deep'}]}}];
 window.labState.providerId = 'mock';
+window.labState.model = 'model-a';
+window.labState.customModelId = null;
+window.labState.customModels = [];
 window.labState.effort = 'low';
 window.labState.permissionMode = 'default';
 window.labState.setEffort = v => labPatchState({effort:v});
 window.labState.setPermissionMode = v => labPatchState({permissionMode:v});
+window.labState.setCustomModel = (cfgId, modelId) => labPatchState({customModelId:cfgId,model:modelId});
+window.labState.setModel = modelId => labPatchState({model:modelId});
 window.labToasts=[];window.labCalls=[];window.labFailRead=query.has('fail');window.labHold=new Set();window.labHolds=[];window.labPicks=[];
 // Markdown 预览:?crepefail 让替身的 create() 抛错(触发「预览失败」横幅)。
 window.labCrepeFail=query.has('crepefail');

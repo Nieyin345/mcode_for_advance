@@ -84,8 +84,16 @@ try {
     check(path + " uses shared route", source.includes("genofficeAppForPath"));
   }
   const fileEditor = readFileSync(join(repo, "apps/desktop/src/renderer/components/ide/FileEditor.tsx"), "utf8");
-  check("T65 FileEditor keeps native-view entry and preference", fileEditor.includes("<GenofficeViewHostPane") &&
-    fileEditor.includes('viewModePref === "genoffice-view"'));
+  // 守**行为**不守字面形状：原断言要求恰好 `viewModePref === "genoffice-view"`，
+  // 而实现后来改成 `viewModePref !== "genoffice-view" || genofficeViewAvailable`
+  // （同样的语义，更严的写法）—— 断言就假红了。这里改成：仍然挂载原生视图入口，
+  // 且仍然用 genoffice-view 这个偏好值参与判定。
+  check("T65 FileEditor keeps native-view entry and preference",
+    fileEditor.includes("<GenofficeViewHostPane") &&
+    // 只断言「同一行里 viewModePref 与 genoffice-view 一起出现」——
+    // 不锚定具体的比较运算符（那属于写法，不属于行为）。
+    fileEditor.split("\n").some((line) =>
+      line.includes("viewModePref") && line.includes('"genoffice-view"')));
   // Safety: classification must never call or replace the host's independent path guard.
   check("router has no authorization decision", !ownSource.includes("withinWorkspace") && !ownSource.includes("isOnlyOfficeSupportedPath("));
   check("host fail-closed missing factory", hostSource.includes("if (!this.vendorCreateView) return { ok: false"));

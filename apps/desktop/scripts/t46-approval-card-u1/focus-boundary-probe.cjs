@@ -1,5 +1,5 @@
 /**
- * T46 附带交付 —— **焦点边界判别探针**（结论写进 `tasks/T42-u1-silent-mode.md`）。
+ * **焦点边界判别探针**（配合静默模式验收）。
  *
  * 跑法（仓库根）：
  *   ELECTRON=$(node -p "require('./apps/desktop/node_modules/electron')")

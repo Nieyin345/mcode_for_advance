@@ -76,6 +76,7 @@ import {
   sheetApply,
   sheetCheck,
   sheetRead,
+  workbookSheetList,
   slidesApply,
   slidesAudit,
   slidesRead,
@@ -106,8 +107,35 @@ export interface DocumentSurfacePorts extends GenofficePorts {
   rendererToolDefinition?(tool: string, filePath: string): GenOfficeNativeToolDefinition | null;
   /** 该文件此刻是否有可借用的受信渲染端绑定（宿主从真实请求登记簿计算）。 */
   rendererOpen(filePath: string): boolean;
+  /**
+   * **普通对话借用编辑器**的派发通道（`rendererToolDispatch`）。
+   *
+   * 与上面三个渲染端端口的区别 —— 这条不要求"该文件正有一轮文档 AI 请求"：
+   *
+   *   | | 请求级（`rendererOpen`） | 派发通道（本项） |
+   *   |---|---|---|
+   *   | 何时可用 | 编辑器自己发起的 AI 请求期间 | 文档开在编辑器里就一直可用 |
+   *   | 工具定义 | 页面在该轮 `ai:stream` 里声明，做 canonical 比对 | **宿主随请求下发**，页面按名执行 |
+   *   | 审批 | 该轮 AI 请求的用户确认 | Mcode 既有的工具审批（在进本层之前） |
+   *
+   * 没有它，用户在**聊天区**让 AI 改一个开着的文档时，50 个 editor-only 工具
+   * 全部回「需要先打开这个文档」—— 而文档明明就开着。
+   *
+   * **不与请求级通道抢**：请求级优先（它有更严的校验）；这条只在没有请求绑定时兜底。
+   * 返回 `null` = 这个文件没有可派发的编辑器页。
+   */
+  dispatchRendererTool?(filePath: string): {
+    invoke(call: { callId: string; name: string; input: Record<string, unknown> }): Promise<{ ok: true; output: string } | { ok: false; reason: string }>;
+  } | null;
   /** 渲染输出目录（工作区外、可清理）。 */
   renderTempRoot(): string;
+  /**
+   * 【CHAT-20】把渲染出的预览图归档到**统一存储**（与浏览器截图同一套目录规则）。
+   *
+   * 返回归档后的路径；返回 `null` = 这次没归档（没配统一目录 / 写失败）——
+   * 调用方保留临时目录里的原路径，不把"没归档"当成失败。
+   */
+  archiveRender?(file: string): string | null;
   /** 目录写用。 */
   fs?: { mkdirSync: typeof mkdirSync; writeFileSync: typeof writeFileSync; readFileSync: typeof readFileSync; rmSync: typeof rmSync; existsSync: typeof existsSync };
   signal?: AbortSignal;
@@ -394,6 +422,12 @@ export async function documentToolDescribe(
     parts.push(`执行路线：CLI 承载（文件没开在编辑器里也能用）`);
   } else {
     parts.push(`执行路线：仅编辑器（要求该文件已在 Mcode 编辑器里打开并持有受信绑定）`);
+  }
+  if (entry.app === "sheets" && cliOp === "read") {
+    // 单表读工具的默认范围是**活动表**：不说这句，模型会把一张表当成整本工作簿。
+    // 返回信封的 `detail.workbookSheets` 给出全部表名；`document.read` 才是全表读。
+    parts.push("范围：默认只读**活动工作表**；返回信封的 detail.workbookSheets 列出全部表名，" +
+      "要别的表就传 input.sheet，要整本工作簿用 document.read。");
   }
   if (cliOp === "apply" && domain !== null) {
     const guide = await guideOps(ports, domain === "sheet" ? "sheet" : domain, entry.name, ports.signal);
@@ -735,7 +769,8 @@ async function executeCliTool(
       const sheet = typeof input.sheet === "string" ? input.sheet : undefined;
       const range = typeof input.range === "string" ? input.range : undefined;
       const maxRows = typeof input.maxRows === "number" ? input.maxRows : undefined;
-      return { result: await sheetRead(ports, filePath, ports.signal, { ...(sheet ? { sheet } : {}), ...(range ? { range } : {}), ...(maxRows ? { maxRows } : {}) }), mutated: false };
+      const result = await sheetRead(ports, filePath, ports.signal, { ...(sheet ? { sheet } : {}), ...(range ? { range } : {}), ...(maxRows ? { maxRows } : {}) });
+      return { result: await annotateSheetList(result, ports, filePath), mutated: false };
     }
     if (route === "create") {
       // 【T43】create_document：sheets → xlsx。
@@ -1147,6 +1182,34 @@ export async function documentToolCall(
     };
   }
 
+  /* 兜底：文件开在编辑器里、但没有一轮文档 AI 请求 → 借派发通道执行。
+   *
+   * **放在 CLI 之前**：编辑器页能执行的能力比 CLI 多（CLI 只承载得了一部分），
+   * 而且用户看到的是"文档开着"，从编辑器里改才符合直觉（也才有实时上下文）。
+   *
+   * 失败**不静默落到 CLI**：那会让同一个操作在两条不同的实现上跑出不同结果。
+   * 明确报原因，让调用方决定要不要显式要求走 CLI。 */
+  if (!useRenderer && typeof ports.dispatchRendererTool === "function") {
+    const channel = ports.dispatchRendererTool(filePath);
+    if (channel !== null && channel !== undefined) {
+      const callId = `t24d-${randomUUID()}`;
+      const dispatched = await channel.invoke({ callId, name: entry.name, input });
+      if (!dispatched.ok) {
+        return { ok: false, kind: "failed", reason: dispatched.reason };
+      }
+      const qa = mutating && args.dryRun !== true ? await runQaGate(ports, entry.app, filePath) : null;
+      const revision = mutating && args.dryRun !== true ? await fileContentVersion(filePath).catch(() => null) : undefined;
+      return {
+        ok: true,
+        route: "renderer",
+        text: [dispatched.output, qa ? formatQaReport(entry.app, qa) : ""].filter(Boolean).join("\n\n"),
+        mutated: mutating && args.dryRun !== true,
+        ...(qa ? { qa: qaToWire(qa) } : {}),
+        ...(revision !== undefined ? { revision } : {}),
+      };
+    }
+  }
+
   const { result, mutated } = await executeCliTool(ports, entry.app, entry.name, filePath, input, {
     ...(args.dryRun !== undefined ? { dryRun: args.dryRun } : {}),
     ...(args.track !== undefined ? { track: args.track } : {}),
@@ -1179,6 +1242,41 @@ function qaToWire(qa: DocumentQaReport): { gate: "check" | "audit" | "render-pro
 
 /* ───────────────────────── Markdown 载体 ───────────────────────── */
 
+/**
+ * 单表 `sheet read` 的返回里补一份「本工作簿有哪些表」。
+ *
+ * 为什么必须补：`sheets.read_range` / `read_cells` 默认只读活动表，模型读到一行
+ * 数据就会认为这就是工作簿的全部。补一次 `--stats`（只取表名清单，**不读单元格**）
+ * 让回复里带上 `detail.workbookSheets`，模型才知道「还有别的表可以读」。
+ *
+ * 三条纪律：
+ *  1. 取不到清单时**什么都不加** —— 不编造表名，也不让这次读取失败（要紧的行数据
+ *     已经在信封里）；
+ *  2. 已经有了清单（CLI 自己带 `--stats` 的那次）就**不再发第二次调用**；
+ *  3. 这一路只读表名，不读内容 —— 它是「还有哪些」的提示，不是「读过哪些」的账目。
+ *     账目在 `readWorkbookSheets` 的 `sheetLedger` 里，两个尺度不能混。
+ */
+async function annotateSheetList(
+  result: GenofficeResult,
+  ports: DocumentSurfacePorts,
+  filePath: string,
+): Promise<GenofficeResult> {
+  if (!result.ok) return result;
+  const detail = result.envelope.detail;
+  if (detail === null || typeof detail !== "object") return result;
+  const existing = (detail as { stats?: { sheets?: unknown } }).stats?.sheets;
+  if (Array.isArray(existing) && existing.length > 0) return result;
+  const listed = await workbookSheetList(ports, filePath, ports.signal);
+  if (listed === null || listed.length === 0) return result;
+  return {
+    ok: true,
+    envelope: {
+      ...result.envelope,
+      detail: { ...(detail as object), workbookSheets: listed },
+    },
+  };
+}
+
 export async function documentMarkdownRead(
   ports: DocumentSurfacePorts,
   args: { filePath: string; range?: string },
@@ -1197,7 +1295,9 @@ export async function documentMarkdownRead(
   const converted = blocksToMarkdown(read.envelope.detail);
   if (converted === null) return { ok: false, kind: "failed", reason: "读取结果的信封里没有 detail.items；无法生成带定位符的 Markdown。" };
   const revision = await fileContentVersion(args.filePath).catch(() => null);
-  const detail = read.envelope.detail as { via?: unknown; structured?: unknown; truncated?: unknown } | null;
+  const detail = read.envelope.detail as {
+    via?: unknown; structured?: unknown; truncated?: unknown; sheetLedger?: unknown;
+  } | null;
   const via = typeof detail?.via === "string" ? detail.via : "unknown";
   const structured = detail?.structured === true;
   // 【T43】「怎么读的 / 是不是结构读 / 有没有截断」必须让模型看见 —— 否则它会把
@@ -1206,6 +1306,7 @@ export async function documentMarkdownRead(
   const header = [
     `<!-- read via ${via}${structured ? " (structured)" : " (linear)"}${detail?.truncated === true ? ", TRUNCATED" : ""} -->`,
     ...(detail?.truncated === true ? ["<!-- 文件超过 2 MiB，只读了前面一部分 -->"] : []),
+    ...workbookCoverageNotes(detail?.sheetLedger),
   ].join("\n");
   return {
     ok: true,
@@ -1214,6 +1315,47 @@ export async function documentMarkdownRead(
     blocks: converted.blocks,
     revision,
   };
+}
+
+/**
+ * 工作簿读取账目 → 让模型看得见的注释行。
+ *
+ * 为什么必须有：多表工作簿的正文里，模型只看得到读到的那些行。如果没读到的表
+ * 不出现在头部，模型会**默认它看到的是整本工作簿** —— 于是「预算表在哪」这类问题
+ * 会得到「文件里没有」这种自信的错误答案。这是静默漏读，比报错更坏。
+ *
+ * 形状不对（没有账目 / 字段缺失）时返回空数组而不是猜：旧读取器与旧缓存没有这份
+ * 账目，那时正文本身也没有多表内容，加一条空注释只会制造噪音。
+ */
+function workbookCoverageNotes(raw: unknown): string[] {
+  if (raw === null || typeof raw !== "object") return [];
+  const ledger = raw as Record<string, unknown>;
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value as string[] : [];
+  const sheets = strings(ledger.sheets);
+  const readSheets = strings(ledger.readSheets);
+  const unreadSheets = strings(ledger.unreadSheets);
+  const truncatedSheets = strings(ledger.truncatedSheets);
+  if (sheets.length === 0 && readSheets.length === 0) return [];
+  const notes: string[] = [
+    `<!-- workbook: ${readSheets.length}/${sheets.length} sheets read` +
+      `${readSheets.length > 0 ? ` (${readSheets.join(", ")})` : ""} -->`,
+  ];
+  if (unreadSheets.length > 0) {
+    notes.push(
+      `<!-- NOT READ: ${unreadSheets.join(", ")} — 这些工作表的内容不在下面的正文里；` +
+        `回答涉及它们的问题前，先按表名单独读取 -->`,
+    );
+  }
+  if (truncatedSheets.length > 0) {
+    notes.push(`<!-- PARTIAL SHEETS: ${truncatedSheets.join(", ")} — 行数超过单表读取上限 -->`);
+  }
+  const unknownReason = typeof ledger.sheetsUnknownReason === "string" ? ledger.sheetsUnknownReason : "";
+  if (unknownReason !== "" && sheets.length === 0) {
+    // 表名清单都拿不到时，连"一共几张表"都不能说 —— 必须让模型知道这一点。
+    notes.push(`<!-- workbook sheet list unavailable: ${unknownReason} — 只读到活动工作表，不代表整本 -->`);
+  }
+  return notes;
 }
 
 /** 内部：把一段 Markdown 变成 restricted HTML 片段（CLI 的 md→html，再剥出 body）。
@@ -1343,7 +1485,26 @@ export async function documentRender(
   if (!parsed.ok) {
     return { ok: false, kind: output.ok ? "failed" : output.kind === "refused" ? "refused" : output.kind === "unavailable" ? "unavailable" : "failed", reason: parsed.note };
   }
-  return { ok: true, files: [...parsed.files], note: parsed.note };
+  /* 【CHAT-20】把渲染出的预览图**归档到统一存储**（与浏览器截图、面板截图同一套规则）。
+   *
+   * 为什么必须归档：`renderTempRoot()` 是**可清理的临时目录**，文档预览与浏览器截图
+   * 本是同一类东西（"AI 看到的画面"），却落两处 —— 用户去翻截图目录时找不到文档预览，
+   * 清理临时目录时又把它悄悄删了。
+   *
+   * 归档是**尽力而为**：`archiveRender` 没注入 / 写失败时**保留临时目录里的那份**
+   * （路径仍在 `files` 里，模型和用户都还能用），绝不因为归档失败而让渲染失败。 */
+  const archived: string[] = [];
+  if (typeof ports.archiveRender === "function") {
+    for (const file of parsed.files) {
+      const moved = ports.archiveRender(file);
+      if (moved !== null) archived.push(moved);
+    }
+  }
+  return {
+    ok: true,
+    files: archived.length > 0 ? archived : [...parsed.files],
+    note: parsed.note,
+  };
 }
 
 /** 兼容导出：给 IPC 层一个 `existsSync` 注入点（无头套件可换成假的）。 */

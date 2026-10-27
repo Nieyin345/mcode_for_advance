@@ -316,7 +316,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
 
   if (!projectPath) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+      <div data-cds="TerminalEmptyState" className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
         <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface text-content-subtle">
           <IconTerminal2 size={20} />
         </div>
@@ -346,10 +346,10 @@ export function TerminalPanel({ active }: { active: boolean }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div data-cds="TerminalPanel" className="flex h-full min-h-0 flex-col">
       {/* Session tab strip + actions */}
-      <div className="flex min-h-9 shrink-0 items-center gap-0.5 border-b border-edge px-1">
-        <div ref={tabListRef} role="tablist" aria-label={t("ide.term.tabs")}
+      <div data-cds="TerminalToolbar" className="flex min-h-9 shrink-0 items-center gap-0.5 border-b border-edge px-1">
+        <div ref={tabListRef} data-cds="TerminalTabList" role="tablist" aria-label={t("ide.term.tabs")}
           onKeyDown={(e) => {
             if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
             if (!(e.target instanceof Element)) return;
@@ -373,6 +373,8 @@ export function TerminalPanel({ active }: { active: boolean }) {
             return (
               <div
                 key={s.key}
+                data-cds="TerminalTab"
+                data-active={isActive ? "true" : "false"}
                 className={cn(
                   "group flex max-w-[11rem] shrink-0 items-center gap-0.5 rounded-[var(--radius-btn-xs)] px-1.5 py-0.5 text-[11px] transition-colors",
                   isActive
@@ -443,7 +445,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
           <IconPlus size={13} />
         </button>
 
-        <div className="flex shrink-0 items-center gap-0.5 border-l border-edge pl-1">
+        <div data-cds="TerminalActions" className="flex shrink-0 items-center gap-0.5 border-l border-edge pl-1">
           <TerminalCommandsMenu onRun={runCommand} onRunInNewTerminal={runCommandInNewTerminal} />
           <IconBtn
             title={t("ide.term.clearScreen")}
@@ -476,7 +478,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
       {/* Status line for exited/error */}
       {activeSession &&
         (activeSession.status === "exited" || activeSession.status === "error") && (
-          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-edge bg-surface px-2 py-1 text-[11px] text-content-muted">
+          <div data-cds="TerminalStatusLine" className="flex shrink-0 items-center justify-between gap-2 border-b border-edge bg-surface px-2 py-1 text-[11px] text-content-muted">
             <span className="truncate">
               {activeSession.detail ??
                 (activeSession.status === "error" ? t("ide.term.startFailed") : t("ide.term.exited"))}
@@ -496,7 +498,7 @@ export function TerminalPanel({ active }: { active: boolean }) {
           inter-project switches. Only the current project's active tab is
           visible; everything else is hidden via CSS (invisible) and its
           TerminalView is fed active=false so it skips fit/focus. */}
-      <div className="relative min-h-0 flex-1 bg-surface">
+      <div data-cds="TerminalViewport" className="relative min-h-0 flex-1 bg-surface">
         {allTermEntries.map(({ s, path: p }) => {
           const st = termsRef.current.get(p);
           const isActive = p === projectPath && s.key === st?.activeKey;

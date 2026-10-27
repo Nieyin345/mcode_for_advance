@@ -26,7 +26,10 @@ function fileReferenceKey(path: string): string {
 export function officeDraftWithFile(path: string, previous: ComposerDraft | undefined): ComposerDraft {
   const tags: ContentTag[] = previous?.tags ?? [];
   const targetKey = fileReferenceKey(path);
-  if (tags.some((tag) => tag.kind === "file" && fileReferenceKey(tag.filePath) === targetKey)) {
+  // `filePath` 是可选字段（只有 kind === "file" 才设）：缺它的 tag 无法参与
+  // 「同一路径已存在」的判定，如实按"不匹配"处理，而不是拿 undefined 去比。
+  if (tags.some((tag) => tag.kind === "file" && typeof tag.filePath === "string" &&
+      fileReferenceKey(tag.filePath) === targetKey)) {
     return { text: previous?.text ?? "", html: previous?.html ?? "", tags };
   }
   return {

@@ -157,6 +157,22 @@ export function MobileDomainPanel() {
         ? { tone: "warn", text: t("layout.domainTunnelFailed", { error: status.error }) }
         : { tone: "info", text: t("layout.domainTunnelProbing") };
 
+  /* 【MOB-01】快速隧道的"正在跑"判据：模式是 quick 且阶段不是 stopped/failed。
+   * 只看 mode 不够 —— 用户点了启动但 cloudflared 还没起来时，按钮不该显示成"已在运行"。 */
+  const quickLive = status?.mode === "quick"
+    && (status.phase === "starting" || status.phase === "ready" || status.phase === "reconnecting");
+
+  /** 起快速隧道（随机 trycloudflare 域名，不要域名、不要 token）。 */
+  const setQuickTunnel = async (): Promise<void> => {
+    const next = await run(() => api.mobile.setTunnel({ mode: "quick", hostname: "", token: "", clearToken: true }));
+    if (next) setDraft("");
+  };
+
+  /** 停掉快速隧道（回到 off：只在局域网用）。 */
+  const stopQuickTunnel = async (): Promise<void> => {
+    await run(() => api.mobile.setTunnel({ mode: "off", hostname: "", token: "", clearToken: true }));
+  };
+
   const savedHost = status && status.mode !== "off" ? status.hostname : "";
   const dirty = !!status && draft.trim() !== savedHost;
 
@@ -198,6 +214,36 @@ export function MobileDomainPanel() {
           </Button>
         </div>
         <p className="text-[0.6875rem] leading-relaxed text-content-subtle">{t("layout.domainLocalHint")}</p>
+      </div>
+
+      {/* 【MOB-01】**一键快速隧道** —— 不需要域名、不需要 token。
+          放在域名输入框**之前**：绝大多数用户想的是"我现在就用手机连一下"，
+          而不是"我有一个域名要配"。把它放在后面等于默认引导去配域名。
+          起来之后 cloudflared 会给一个随机的 `*.trycloudflare.com` 域名，
+          下面那段 URL 会显示它。 */}
+      <div className="space-y-1.5 rounded border border-edge bg-surface/40 p-2.5">
+        <span className="block text-code font-medium text-content-muted">
+          {t("layout.quickTunnelLabel")}
+        </span>
+        <div className="flex items-center gap-1.5">
+          <Button
+            variant={status?.mode === "quick" && quickLive ? "ghost" : "outline"}
+            size="sm"
+            disabled={busy || !status || (status.mode === "quick" && quickLive)}
+            onClick={() => void setQuickTunnel()}
+          >
+            {busy ? <IconLoader2 size={12} className="mr-1 animate-spin" /> : null}
+            {status?.mode === "quick" && quickLive
+              ? t("layout.quickTunnelRunning")
+              : t("layout.quickTunnelStart")}
+          </Button>
+          {status?.mode === "quick" && quickLive && (
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void stopQuickTunnel()}>
+              {t("layout.quickTunnelStop")}
+            </Button>
+          )}
+        </div>
+        <p className="text-[0.6875rem] leading-relaxed text-content-subtle">{t("layout.quickTunnelHint")}</p>
       </div>
 
       <div className="space-y-1.5">

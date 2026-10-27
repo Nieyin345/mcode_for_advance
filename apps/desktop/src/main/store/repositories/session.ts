@@ -565,8 +565,34 @@ export const SessionRepo = {
     });
   },
 
-  /** Persist claude's own session id so future turns can --resume. */
-  updateClaudeSessionId(id: string, claudeSessionId: string | null): void {
+  /**
+   * 【Q11 / WF-07】**按 `(工作流, 节点)` 找那一步的会话。**
+   *
+   * `findNodeByNodeId` 的身份是 `(父对话, 节点)` —— 它服务的是"用户在某个对话里
+   * 选了一张图跑"那条路。原生 Node-RED 路径没有父对话：图由 inject/watch/事件
+   * 触发，或由用户在画布上手动点，运行时不存在"用户此刻正在看的那个对话"。
+   * 它需要的是 `(工作流, 节点)`。
+   *
+   * 判据是 `workflow_id = ? AND node_id = ?`，且只认 `kind = 'node'` 的行
+   * （父对话本身不是节点会话）。同一份图被从两个对话各跑一次时，这两次共享
+   * **同一个**节点会话 —— 与"这一步的会话属于图上的这一格"一致。
+   */
+  findNodeByWorkflowNode(workflowId: string, nodeId: string): Session | undefined {
+    const db = getDb();
+    const stmt = db.prepare(
+      `SELECT * FROM sessions
+       WHERE kind = 'node' AND workflow_id = ? AND node_id = ?
+       ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+    );
+    return withStatement(stmt, (query) => {
+      query.bind([v(workflowId), v(nodeId)]);
+      const found = query.step();
+      const row = found ? (query.getAsObject() as unknown as SessionRow) : undefined;
+      return row ? rowToSession(row) : undefined;
+    });
+  },
+
+  /** Persist claude's own session id so future turns can --resume. */  updateClaudeSessionId(id: string, claudeSessionId: string | null): void {
     getDb().run("UPDATE sessions SET claude_session_id = ?, updated_at = ? WHERE id = ?", [
       v(claudeSessionId),
       v(Date.now()),
@@ -576,7 +602,7 @@ export const SessionRepo = {
   },
 
   /**
-   * 把一条自动化会话的发起会话记下来(守望起跑,见 `automationRunner.startWatch`)。
+   * 把一条自动化会话的发起会话记下来（自动化起跑时写一次）。
    *
    * 传 null = 抹掉 —— 与删除发起会话时那趟 `parent_session_id = NULL`(见本文件
    * 「主会话已删除」那段)是同一个语义:解析不到发起会话时,「注入到发起会话」
@@ -599,10 +625,10 @@ export const SessionRepo = {
   },
 
   /**
-   * 以某条会话为发起会话的那条自动化会话(`kind='automation'`)。守望面板的
-   * 「上一次还在跑」按它查(见 `automationRunner.activeWatchOf`)。
+   * 以某条会话为发起会话的那条自动化会话(`kind='automation'`)。
+   * 「上一次还在跑」按它查。
    *
-   * 只有守望起跑会把发起会话写到自动化会话上,所以这一查今天最多命中一条 ——
+   * 只有自动化起跑会把发起会话写到自动化会话上,所以这一查今天最多命中一条 ——
    * 按 `parent_session_id` 建不了索引也不碍事(全表扫一条 kind 过滤,同
    * `findAutomationByWorkflow`)。
    */

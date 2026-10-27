@@ -31,6 +31,11 @@ import {
   FileTabContextMenu,
 } from "../ide/OpenTabsBar.js";
 import { useDirtyFiles } from "@renderer/hooks/useDirtyFiles.js";
+import {
+  closeAllFilesInIdeSafely,
+  closeFileInIdeSafely,
+  closeOtherFilesInIdeSafely,
+} from "@renderer/components/ide/nativeEditorClose.js";
 import { liveFileTabMenu, type ProjectFileTabMenu } from "../ide/fileTabMenuSafety.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
@@ -89,9 +94,6 @@ export function UnifiedTabsBar() {
     pid ? s.ideActiveFileByProject[pid] ?? null : null,
   );
   const setActiveFile = useSessionStore((s) => s.setIdeActiveFile);
-  const closeFile = useSessionStore((s) => s.closeFileInIde);
-  const closeOthers = useSessionStore((s) => s.closeOtherFilesInIde);
-  const closeAllFiles = useSessionStore((s) => s.closeAllFilesInIde);
   const reorderIdeFile = useSessionStore((s) => s.reorderIdeFile);
   const clearIdeActiveFile = useSessionStore((s) => s.clearIdeActiveFile);
   const enqueueChatFile = useSessionStore((s) => s.enqueueChatFile);
@@ -293,7 +295,7 @@ export function UnifiedTabsBar() {
   const sortStrategy = multiRow ? rectSortingStrategy : horizontalListSortingStrategy;
 
   return (
-    <div className="flex shrink-0 items-center gap-0.5 border-b border-edge-panel/60 bg-surface/40 px-2 py-1.5">
+    <div data-cds="UnifiedTabsBar" className="flex shrink-0 items-center gap-0.5 border-b border-edge-panel/60 bg-surface/40 px-2 py-1.5">
       {/* Left chevron — only when there's content scrolled off the left edge. */}
       {canScrollLeft && (
         <TabBarChevronButton
@@ -308,6 +310,7 @@ export function UnifiedTabsBar() {
       <div className="relative min-w-0 flex-1">
         <div
           ref={scrollRef}
+          data-cds="UnifiedTabsTrack"
           role="tablist"
           aria-label={t("ide.editor.openTabs")}
           aria-orientation="horizontal"
@@ -395,7 +398,9 @@ export function UnifiedTabsBar() {
                       setPlanTabActive(activeId, false);
                     }
                   }}
-                  onClose={() => closeFile(path)}
+                  onClose={() => {
+                    void closeFileInIdeSafely(path, pid).then((result) => reportBlocked(result.blocked));
+                  }}
                   onKeyboardReorder={(key) => {
                     const from = openFiles.indexOf(path);
                     const target = keyboardReorderTarget(key, from, openFiles.length);
@@ -422,6 +427,8 @@ export function UnifiedTabsBar() {
                 if (node) tabNodes.current.set(PLAN_TAB_KEY, node);
                 else tabNodes.current.delete(PLAN_TAB_KEY);
               }}
+              data-cds="UnifiedPlanTab"
+              data-active={planTabActive && editorFocused ? "true" : "false"}
               role="tab"
               tabIndex={0}
               aria-selected={planTabActive && editorFocused}
@@ -480,6 +487,8 @@ export function UnifiedTabsBar() {
           {fileView !== null && (
             <div
               ref={fileViewTabNode}
+              data-cds="UnifiedPreviewTab"
+              data-active={fileViewFocused ? "true" : "false"}
               role="tab"
               tabIndex={0}
               aria-selected={fileViewFocused}
@@ -628,9 +637,9 @@ export function UnifiedTabsBar() {
         dirtySet={dirtySet}
         reportBlocked={reportBlocked}
         actions={{
-          close: (p) => closeFile(p),
-          closeOthers: (p) => closeOthers(p),
-          closeAll: () => closeAllFiles(),
+          close: (p) => closeFileInIdeSafely(p, pid),
+          closeOthers: (p) => closeOtherFilesInIdeSafely(p, pid),
+          closeAll: () => closeAllFilesInIdeSafely(pid),
           activate: (p) => setActiveFile(p),
           addToChat: (p) => enqueueChatFile(p),
         }}

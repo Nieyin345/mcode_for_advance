@@ -72,3 +72,27 @@ apps/desktop/build/pi-runtime-dist/
 /node-red/
 # open-claude-ui(ARC-005 的 CDS 令牌与组件参考;MIT;token 由 apps/desktop/scripts/gen-cds-tokens.mjs 提取)
 /open-claude-ui/
+
+# ── 以下三条是 2026-10-28 逐项核实后加的（不是批量正则）──
+
+# 第三方仓库克隆：orca/ 是 github.com/stablyai/orca 的完整检出
+#（501 MB、38966 个文件、自带 .git）。它和 genoffice/ node-red/ 一样是
+#「参考/复用来源」，不是本仓源码 —— 进版本库会把仓库撑爆。
+/orca/
+
+# 构建误产物掉在仓库根：KaTeX 的 60 个字体文件本该落在
+# apps/desktop/out/renderer/assets/（那里有正确的一份），
+# 这 60 个是构建时 cwd 不对留下的。已在根目录逐个确认后才写这条。
+/KaTeX_*.woff
+/KaTeX_*.woff2
+/KaTeX_*.ttf
+# `> nul` 重定向打错留下的 CSS 副本（106 KB，内容是 ClaudeCodeBlock.css）。
+# \`nul\` 是 Windows 保留设备名，正常构建不可能产出它。
+/nul.css
+
+# 一次性探针脚本（`.tmp-` 前缀是本仓既有约定，见 CLAUDE.md 硬规矩 5：
+# 临时脚本先写文件再执行）。它们散落在 apps/desktop 与 scripts/ 下，
+# 逐个确认都是调试用的一次性脚本，不是套件。
+/apps/desktop/.tmp-*
+/apps/desktop/scripts/.tmp-*
+

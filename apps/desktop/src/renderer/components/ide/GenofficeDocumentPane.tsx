@@ -61,10 +61,12 @@ export function GenofficeDocumentPane({ filePath, searchLocation, searchText }: 
   }, [doc.data,searchLocation?.block]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-edge px-3 py-1.5 text-code text-content-muted">
-        <span className="font-medium text-content">GenOffice</span>
-        <span className="truncate font-mono" title={filePath}>{filePath}</span>
+    <div data-cds="DocumentStructurePane" className="flex h-full min-h-0 flex-col">
+      {/* 结构化视图是**打开失败时的降级**，不是第二个应用。头部只放文档与状态；
+          vendor 品牌名不出现在宿主界面上 —— 用户在 Mcode 里打开的是"这个文档"，
+          不是"GenOffice"。同一条理由见 GenofficeViewHostPane 的工具栏注释。 */}
+      <div data-cds="DocumentStructureToolbar" className="flex shrink-0 items-center gap-2 border-b border-edge-panel px-3 py-1.5 text-code text-content-muted">
+        <span data-cds="DocumentStructureFileName" className="truncate font-mono text-content" title={filePath}>{filePath}</span>
         <span className="ml-auto flex items-center gap-2">
           {caps.data !== undefined && (
             <span className={caps.data.cli.available ? "text-success" : "text-warning"}>

@@ -38,7 +38,7 @@ import { useI18n } from "@renderer/lib/i18n/index.js";
 import { cn } from "@renderer/lib/cn.js";
 import { api } from "@renderer/lib/api.js";
 import { Button, Checkbox, ErrorNote, HintLabel, Input, Spinner } from "@renderer/components/ui/index.js";
-import { IconBook, IconX } from "@renderer/lib/icons.js";
+import { IconBook, IconChevronDown, IconChevronUp, IconX } from "@renderer/lib/icons.js";
 import { PanelHeader } from "./PanelHeader.js";
 import { SettingsSection } from "./SettingsSection.js";
 import { PANEL_MAX_W } from "./panelWidth.js";
@@ -51,6 +51,9 @@ function PromptRow({
   value,
   onChange,
   placeholder,
+  onMove,
+  canMoveUp,
+  canMoveDown,
 }: {
   label: string;
   /** 行尾的归属说明(如「文档 › 精读队列」),分类列表用。 */
@@ -58,12 +61,51 @@ function PromptRow({
   value: string;
   onChange: (next: string) => void;
   placeholder?: string;
+  /**
+   * 【LIB-01】上移 / 下移。**大类的顺序就是数组顺序**（没有独立的 order 字段），
+   * 所以重排 = 重排数组，保存时随 `groupsSave` 一起写。
+   *
+   * 用按钮而不是拖拽：这个列表在设置页里只有七八行，拖拽要处理指针捕获、
+   * 自动滚动、跨行占位，收益不抵成本；而按钮天然键盘可达。
+   * **不传就不画** —— 分类提示词那一段的顺序由左栏树决定，不该在这里改。
+   */
+  onMove?: (direction: "up" | "down") => void;
+  /** 已经在第一个/最后一个时禁用对应方向的按钮（按钮留在原地，不做消失/出现）。 */
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-1 px-4 py-2.5">
       <div className="flex items-center gap-2">
         <span className="min-w-0 truncate text-code font-medium text-content">{label}</span>
-        {sub && <span className="ml-auto min-w-0 truncate text-[0.7857em] text-content-subtle">{sub}</span>}
+        {sub && !onMove && <span className="ml-auto min-w-0 truncate text-[0.7857em] text-content-subtle">{sub}</span>}
+        {onMove !== undefined && (
+          <span className="ml-auto flex shrink-0 items-center gap-0.5">
+            <button
+              type="button"
+              data-group-move="up"
+              disabled={canMoveUp !== true}
+              onClick={() => onMove("up")}
+              title={t("settings.libraryTypes.moveUp")}
+              aria-label={t("settings.libraryTypes.moveUp")}
+              className="rounded p-0.5 text-content-subtle hover:bg-surface-hover active:bg-surface-active hover:text-content disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <IconChevronUp size={12} />
+            </button>
+            <button
+              type="button"
+              data-group-move="down"
+              disabled={canMoveDown !== true}
+              onClick={() => onMove("down")}
+              title={t("settings.libraryTypes.moveDown")}
+              aria-label={t("settings.libraryTypes.moveDown")}
+              className="rounded p-0.5 text-content-subtle hover:bg-surface-hover active:bg-surface-active hover:text-content disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <IconChevronDown size={12} />
+            </button>
+          </span>
+        )}
       </div>
       <Textarea
         value={value}
@@ -93,7 +135,7 @@ function SuppressCheck({
 }) {
   return (
     <label
-      className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-code hover:bg-surface-hover"
+      className="flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-code hover:bg-surface-hover active:bg-surface-active"
       style={{ paddingLeft: `${8 + depth * 16}px` }}
     >
       <Checkbox
@@ -238,11 +280,33 @@ export function LibraryTypesPanel() {
   );
 
   /**
+   * 【LIB-01】**重排大类**。
+   *
+   * 大类的顺序**就是数组顺序**（`LibraryGroupMeta` 没有独立的 order 字段）——
+   * 左栏、AI 清单、这里的提示词列表全都按这个数组render。所以重排 = 换两个位置，
+   * 保存时随 `groupsSave` 一起写。
+   *
+   * **只换相邻两个**（上移一格/下移一格），不实现"拖到任意位置"：这个列表通常
+   * 只有七八行，一格格挪足够；而任意拖拽要处理指针捕获、自动滚动、跨行占位，
+   * 收益不抵成本。
+   */
+  const moveGroup = (index: number, direction: "up" | "down"): void => {
+    if (groups === null) return;
+    const target = direction === "up" ? index - 1 : index + 1;
+    if (target < 0 || target >= groups.length) return;
+    const next = [...groups];
+    const [moved] = next.splice(index, 1);
+    if (moved === undefined) return;
+    next.splice(target, 0, moved);
+    setGroups(next);
+    setSaved(false);
+  };
+
+  /**
    * 勾/取消一个屏蔽节点。**只动这一条**,不替用户"顺手"展开它下面的节点:
    * 向下继承是**判定时**算的(主进程查祖先链,见 `main/library/suppress.ts`),
    * 不是存的时候展开的 —— 存的是用户真正勾的那几个,层级以后怎么挪,继承自己跟上。
-   */
-  const toggleNode = (key: string): void => {
+   */  const toggleNode = (key: string): void => {
     setSaved(false);
     setSuppress((prev) => {
       if (!prev) return prev;
@@ -361,7 +425,7 @@ export function LibraryTypesPanel() {
             <Spinner size="xs" />
           </div>
         ) : (
-          groups.map((g) => (
+          groups.map((g, index) => (
             <PromptRow
               key={g.id}
               label={g.name}
@@ -371,6 +435,9 @@ export function LibraryTypesPanel() {
                 setGroupPrompts((prev) => ({ ...prev, [g.id]: next }));
               }}
               placeholder={t("settings.libraryTypes.promptPh")}
+              onMove={(direction) => moveGroup(index, direction)}
+              canMoveUp={index > 0}
+              canMoveDown={index < groups.length - 1}
             />
           ))
         )}

@@ -65,7 +65,17 @@ import {
   DOCUMENT_VIEW_FOCUS_CHANNEL,
   DOCUMENT_VIEW_CLOSE_CHANNEL,
   DOCUMENT_VIEW_LIST_CHANNEL,
+  DOCUMENT_VIEW_DORMANT_LIST_CHANNEL,
   DOCUMENT_VIEW_OPEN_PATH_CHANNEL,
+  DOC_VIEW_REVISION_STATE_CHANNEL,
+  DOC_VIEW_REVISION_DECIDE_CHANNEL,
+  DOC_VIEW_REVISION_MODE_CHANNEL,
+  DOC_VIEW_REVISION_FOCUS_CHANNEL,
+  DOC_VIEW_REVISION_REWRITE_CHANNEL,
+  DOC_VIEW_COMMENT_CREATE_CHANNEL,
+  DOC_VIEW_COMMENT_MUTATE_CHANNEL,
+  DOC_VIEW_HISTORY_LIST_CHANNEL,
+  DOC_VIEW_HISTORY_RESTORE_CHANNEL,
   type DocViewResult,
 } from "@contracts/ipc";
 import {
@@ -234,7 +244,7 @@ function openAndCommit(
   if (!prepared.ok) return prepared;
   return host.settlePendingOpen(docId, true, within);
 }
-const FILE_URL = "file:///D:/destop/work_space/work_for_reseach/mcode/genoffice/apps/docs/dist/index.html";
+const FILE_URL = "file:///genoffice/apps/docs/dist/index.html";
 
 /* ══════════════════ 1. open 复用与 bounds 更新 ══════════════════ */
 
@@ -581,8 +591,25 @@ section("6. IPC：八条 documentView 通道注册齐全、入 zod、登记进 r
     DOCUMENT_VIEW_CLOSE_CHANNEL,
     DOCUMENT_VIEW_LIST_CHANNEL,
     DOCUMENT_VIEW_OPEN_PATH_CHANNEL,
+    // 【Office 深度集成】内存治理：只读地列出可无损回收的后台视图。
+    DOCUMENT_VIEW_DORMANT_LIST_CHANNEL,
+    /* 【Office 深度集成】修订与复核、文件历史。
+     *
+     * 这些**一直是注册的**，只是这张清单没跟上（`internalChannels` 只收
+     * `mcode:` 前缀的页面通道，而它们走 `documentView:*` 的 RPC 面）。
+     * 清单漏项会让「不多不漏」那条断言用 `actual` 的红掩盖真正的漏注册 ——
+     * 所以补全它本身就是在修一条假判据。 */
+    DOC_VIEW_REVISION_STATE_CHANNEL,
+    DOC_VIEW_REVISION_DECIDE_CHANNEL,
+    DOC_VIEW_REVISION_MODE_CHANNEL,
+    DOC_VIEW_REVISION_FOCUS_CHANNEL,
+    DOC_VIEW_REVISION_REWRITE_CHANNEL,
+    DOC_VIEW_COMMENT_CREATE_CHANNEL,
+    DOC_VIEW_COMMENT_MUTATE_CHANNEL,
+    DOC_VIEW_HISTORY_LIST_CHANNEL,
+    DOC_VIEW_HISTORY_RESTORE_CHANNEL,
   ];
-  eq("★ 八条 documentView:* 通道全注册上了", channels.filter((c) => !handlers.has(c)), []);
+  eq("★ 全部 documentView:* 通道都注册上了", channels.filter((c) => !handlers.has(c)), []);
   // 另有多条**内部通道**：它们不挂成 RPC，但主进程必须注册，供页面打开、保存、
   // dirty/替换守卫、恢复写盘和 Slides 编辑链使用。
   // 【ARC-007】内部通道清单也用于保证这些页面能力不会意外漏进 Agent RPC 表。
@@ -592,6 +619,11 @@ section("6. IPC：八条 documentView 通道注册齐全、入 zod、登记进 r
     "mcode:document-view:open-committed",
     "mcode:document-view:confirm-replace",
     "mcode:document-view:close-check-result",
+    // 【EDIT-06/08】修订的三条页面通道：上报改动、上报评论锚点、**回报命令执行完了**
+    // （第三条是新的：宿主等它，不假定发出去就成功）。
+    "mcode:document-view:revision-report",
+    "mcode:document-view:revision-comment-created",
+    "mcode:document-view:revision-decide-result",
     "mcode:document-view:save",
     "mcode:document-view:write-recovery",
     "mcode:document-view:slides-add-slide",
@@ -602,7 +634,7 @@ section("6. IPC：八条 documentView 通道注册齐全、入 zod、登记进 r
     "mcode:document-view:slides-save",
   ];
   for (const ch of internalChannels) check(`内部通道已注册：${ch}`, handlers.has(ch));
-  check("注册的通道就是这八条 + 十一条内部通道（不多不漏）",
+  check("注册的通道就是这张清单（不多不漏）",
     JSON.stringify([...handlers.keys()].sort()) ===
       JSON.stringify([...channels, ...internalChannels].sort()),
     {
@@ -611,7 +643,7 @@ section("6. IPC：八条 documentView 通道注册齐全、入 zod、登记进 r
     });
 
   const rpc = new Set(registeredRpcChannels());
-  eq("★ 八条通道全登记进 recordRpcHandler（app_api_call 看得见）", channels.filter((c) => !rpc.has(c)), []);
+  eq("★ 全部通道都登记进 recordRpcHandler（app_api_call 看得见）", channels.filter((c) => !rpc.has(c)), []);
   // 内部通道**不该**出现在 RPC 表里 —— 那是给页面的，不是给 Agent 的。
   const leakedInternal = internalChannels.filter((c) => rpc.has(c));
   eq("★ 所有内部通道都不在 RPC 表（不扩大 Agent 能力面）", leakedInternal, []);
@@ -2629,6 +2661,289 @@ section("15. 引擎编辑器页凭据注入（令牌不出主进程，按 webCon
 
   host.dispose();
   rmSync(root29, { recursive: true, force: true });
+}
+
+/* ═══════ 18.【EDIT-06/08】**发出去 ≠ 做完了**：接受/拒绝与取选区都必须等回执 ═══════
+ *
+ * ## 这一节防的是什么
+ *
+ * 修复前 `setDecider` 只要 `sendToEditor` 成功就回 `ok: true`，接着
+ * `revisionSessions.decide` 会把条目从缓存里摘掉。于是「页面通道死了 / 页面不认识
+ * 这条命令 / 页面拒绝执行」三种情况下，用户看到的都是**「处理成功了」而正文一个字
+ * 没变** —— 那是 `revisionSessions` 文件头点名过的最坏不一致，而它发生在**发送侧**。
+ *
+ * `revisionRewrite` 更彻底：它下发 `action: "rewrite"`，而**五家桥一条都不处理**
+ * 这个 action（它们的联合类型里根本没有）。页面静默丢掉，渲染端拿到 `ok` 只清草稿 ——
+ * 点一下、显示成功、AI 从未被唤起。
+ *
+ * ## 变异怎么验（本节的断言就是为此写的）
+ *
+ * 把 `sendAndAwaitRevision` 换回「`sendToEditor` 成功就 resolve({ok:true})」：
+ *    - 「页面拒绝时透传页面的原因」必红（会变成 `ok:true`）；
+ *    - 「页面不回时超时报失败」必红（会变成立即成功）；
+ *    - 「取选区时把文字带回来」必红（selectedText 缺失）。
+ * 这三条各自指向一个具体的失败模式，不是同一条的三种说法。
+ */
+section("18. 修订命令等页面回执（发出去 ≠ 做完了）");
+{
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const root18 = mkdtempSync(join(tmpdir(), "mcode-dv18-"));
+  /* 会话按**物理路径**归键（`normalizePath`），而 `physicalPath` 对不存在的路径
+     返回 null、于是原样保留 —— 那也能用，但那是"靠失败也恰好能用"。
+     建一份真文件，让归一化走它该走的那条路。 */
+  const FILE_PATH_18 = join(root18, "revision.md");
+  writeFileSync(FILE_PATH_18, "x");
+  /* 【EDIT-06/08】被测对象是「宿主等页面回执」，而修订上报与命令派发都只在
+     **原厂视图**上有意义（普通视图不认识文档格式）。所以这里装一个假 vendor 工厂。 */
+  const host = new DocumentViewHost({
+    getMainWindow: () => makeFakeWindow(),
+    createView: { vendor: () => makeFakeView({} as DocumentViewWebPreferences) },
+    withinWorkspace: (x: string) => x.startsWith(root18),
+  });
+  clearRpcHandlers();
+
+  /* `handle` 的监听器有两种签名：多数是 `(event, raw)`，而修订/历史那几条
+     只收 `raw`（它们不读 event —— 身份已经从别处拿到了）。类型放宽成 `(...a: unknown[])`，
+     调用点按各自的形状传参。 */
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  /** 捕获注册的 `on` 监听器 —— 页面回执走这条（`ipcRenderer.send` 的对端）。 */
+  const listeners = new Map<string, (event: unknown, raw: unknown) => void>();
+  const fakeIpc18 = {
+    handle(channel: string, listener: (...args: unknown[]) => unknown): void {
+      handlers.set(channel, listener);
+    },
+    on(channel: string, listener: (event: unknown, raw: unknown) => void): void {
+      listeners.set(channel, listener);
+    },
+  } as unknown as IpcMain;
+
+  registerDocumentViewHandlers(fakeIpc18, host, () => true, undefined, () => true);
+
+  /* 视图与其「发给页面的消息」的对应：fakeView 的 `send` 会写进该视图的 `log.sends`，
+     而 `created[]` 按创建顺序记着每个 log。开一个视图取一次索引，之后就固定了。 */
+  let viewLog: FakeViewLog | null = null;
+  /** 读这个视图收到过哪些 `revision-command`。 */
+  const commandsOf = (): Array<{ nonce?: string; action?: string }> => {
+    return (viewLog?.sends ?? [])
+      .filter((m) => m.channel === "mcode:document-view:revision-command")
+      .map((m) => (m.args[0] ?? {}) as { nonce?: string; action?: string });
+  };
+  /** 这个视图的 webContents —— 页面消息的 `sender`（`docIdForSender` 按对象身份反查）。 */
+  const senderOf = (): unknown => {
+    const v = (host as unknown as { views: Map<string, { view: { webContents: unknown } }> })
+      .views.get("rv-ok");
+    return v?.view.webContents ?? {};
+  };
+
+  /* 会话按**文件路径**归键，所以要用 `openPath` 那条链（它把 filePath 绑上），
+     而不是 `open`（那个对普通视图明确拒绝 filePath —— 见宿主 open() 的分支）。
+     `openAndCommit` 就是"准备 + 回执"两步的合写，套件里其它节都用它。 */
+  const openDoc = (docId: string): void => {
+    /* **必须是原厂视图**：`revision-report` 的第一句就是 `host.editorOf(docId)`，
+       而普通视图的 editor 是 null（它只承载任意 URL，不认识文档格式）。
+       原厂视图一次 open 就把 filePath 绑上（不需要再走 openPath 那一链）。
+       选 markdown 而不是 slides —— 后者的打开链要过 vendor 执行器，
+       与本节被测的"等回执"无关。 */
+    const res = host.open({
+      docId,
+      url: "genoffice-app://markdown/index.html",
+      editor: "markdown",
+      filePath: FILE_PATH_18,
+      bounds: BOUNDS,
+      visible: true,
+    });
+    eq(`18. 视图 ${docId} 打开`, res, { ok: true });
+    eq(`18. 视图 ${docId} 认识自己的格式（revision 上报的前提）`, host.editorOf(docId), "markdown");
+    eq(`18. 视图 ${docId} 绑上了文件`, host.pathOfDocId(docId), FILE_PATH_18);
+    viewLog = created[created.length - 1] ?? null;
+  };
+
+  /* ── 18a. 页面回 ok:true → decide 成功，条目被摘掉 ── */
+  {
+    openDoc("rv-ok");
+    /* 先让宿主有一个会话（页面上报一条改动）。
+       ⚠️ 查询侧用 `physicalPath` 归一化的那个键 —— 这正是被测的约定：
+       上报与查询**必须用同一个键**，否则左栏永远读不到（而链路上不报任何错）。 */
+    const stateKey = physicalPath(FILE_PATH_18) ?? FILE_PATH_18;
+    listeners.get("mcode:document-view:revision-report")?.(
+      { sender: senderOf() },
+      { changes: [{
+        id: "c1", kind: "replace", before: "旧", after: "新",
+        location: { order: 0, label: "第 1 段" }, author: { id: "ai", label: "AI" }, at: 1,
+      }] },
+    );
+    /* ★ 这一条**单独立出来**：上报之后左栏必须立刻读得到。
+       它是"两个键"那个 bug 唯一的直接判据 —— 后面那些断言都会因为
+       "会话压根没建起来"而红，红的理由却不是这一条。
+       变异验证：把 `onRevisionReport` 里的 `normalizePath(rawPath)` 改回 `rawPath`，
+       这一条单独红（报错说会话不存在），其余几条跟着红。 */
+    check("★ 18a-pre. 上报之后左栏读得到（上报与查询是同一个键）",
+      handlers.get(DOC_VIEW_REVISION_STATE_CHANNEL)!({ filePath: stateKey }) !== null,
+      { queried: stateKey });
+    const deciding = handlers.get(DOC_VIEW_REVISION_DECIDE_CHANNEL)!({
+      filePath: FILE_PATH_18, action: "accept", ids: ["c1"],
+    }) as Promise<{ ok?: boolean; reason?: string }>;
+    // 页面回执：非 c1 的那条命令（nonce 取自刚才发出去的那一条）。
+    const sent = commandsOf();
+    const last = sent[sent.length - 1];
+    check("18a. 宿主真的把 accept 发到了页面", last?.action === "accept", { sent });
+    listeners.get("mcode:document-view:revision-decide-result")?.(
+      { sender: senderOf() },
+      { nonce: last?.nonce, ok: true, applied: 1 },
+    );
+    const outcome = await deciding;
+    eq("18a. 页面回 ok → decide 成功", outcome.ok, true);
+    const state = handlers.get(DOC_VIEW_REVISION_STATE_CHANNEL)!({ filePath: FILE_PATH_18 }) as
+      | { changes?: unknown[] } | null;
+    eq("18a. 条目已从待审列表摘掉", state?.changes?.length, 0);
+  }
+
+  /* ── 18b. 页面回 ok:false → **透传页面的原因**，条目留着 ── */
+  {
+    listeners.get("mcode:document-view:revision-report")?.(
+      { sender: senderOf() },
+      { changes: [{
+        id: "c2", kind: "replace", before: "旧", after: "新",
+        location: { order: 0, label: "第 1 段" }, author: { id: "ai", label: "AI" }, at: 1,
+      }] },
+    );
+    const deciding = handlers.get(DOC_VIEW_REVISION_DECIDE_CHANNEL)!({
+      filePath: FILE_PATH_18, action: "reject", ids: ["c2"],
+    }) as Promise<{ ok?: boolean; reason?: string }>;
+    const sent = commandsOf();
+    listeners.get("mcode:document-view:revision-decide-result")?.(
+      { sender: senderOf() },
+      { nonce: sent[sent.length - 1]?.nonce, ok: false, reason: "页面的原话：这段范围挂不上" },
+    );
+    const outcome = await deciding;
+    /* ★ 这条是本节的核心：**页面的原话要透传**。
+       弱写法是只断言 `ok === false` —— 一句 "编辑器没有执行这条命令" 也能满足它，
+       而那句话会让用户不知道到底为什么（选区空了？id 过期了？）。 */
+    check("★ 18b. 页面拒绝 → 失败原因是页面给的那句，不是宿主兜底",
+      outcome.ok === false && outcome.reason === "页面的原话：这段范围挂不上", outcome);
+    const state = handlers.get(DOC_VIEW_REVISION_STATE_CHANNEL)!({ filePath: FILE_PATH_18 }) as
+      | { changes?: Array<{ id: string }> } | null;
+    eq("★ 18b. 失败时条目**不许**被摘掉（否则左栏显示处理完了而正文没变）",
+      state?.changes?.map((c) => c.id), ["c2"]);
+  }
+  // 清掉，别让下面几段的会话状态互相干扰。
+  listeners.get("mcode:document-view:revision-report")?.(
+    { sender: senderOf() }, { changes: [] },
+  );
+
+  /* ── 18c. 页面**完全不回** → 超时后报失败，不假定成功 ── */
+  {
+    listeners.get("mcode:document-view:revision-report")?.(
+      { sender: senderOf() },
+      { changes: [{
+        id: "c3", kind: "replace", before: "旧", after: "新",
+        location: { order: 0, label: "第 1 段" }, author: { id: "ai", label: "AI" }, at: 1,
+      }] },
+    );
+    const started = Date.now();
+    const outcome = (await handlers.get(DOC_VIEW_REVISION_DECIDE_CHANNEL)!({
+      filePath: FILE_PATH_18, action: "accept", ids: ["c3"],
+    })) as { ok?: boolean; reason?: string };
+    const waited = Date.now() - started;
+    check("★ 18c. 页面不回 → 超时报失败（不假定成功）", outcome.ok === false, outcome);
+    check("★ 18c. 失败原因明说没有回应（用户能据此重试）",
+      String(outcome.reason).includes("没有回应"), outcome);
+    // 超时确实等了（不是立刻失败）：2 秒的下限放宽到 1 秒，避免 CI 抖动误红。
+    check("★ 18c. 真的等了页面（不是立即返回失败）", waited >= 900, { waited });
+    const state = handlers.get(DOC_VIEW_REVISION_STATE_CHANNEL)!({ filePath: FILE_PATH_18 }) as
+      | { changes?: Array<{ id: string }> } | null;
+    eq("★ 18c. 超时后条目仍在", state?.changes?.map((c) => c.id), ["c3"]);
+  }
+  listeners.get("mcode:document-view:revision-report")?.(
+    { sender: senderOf() }, { changes: [] },
+  );
+
+  /* ── 18d. `revisionRewrite`：页面给回选区文字 → 原样带回给调用方 ── */
+  {
+    const rewriting = handlers.get(DOC_VIEW_REVISION_REWRITE_CHANNEL)!({
+      filePath: FILE_PATH_18, instruction: "改简洁点",
+    }) as Promise<{ ok?: boolean; reason?: string; selectedText?: string }>;
+    const sent = commandsOf();
+    const last = sent[sent.length - 1];
+    /* ★ 宿主必须发 **read-selection**，不是历史那个没人处理的 `rewrite`。
+       五家桥的联合类型里从来就没有 `rewrite`，发它等于静默丢弃。 */
+    eq("★ 18d. 宿主发的是 read-selection（不是没人处理的 rewrite）", last?.action, "read-selection");
+    listeners.get("mcode:document-view:revision-decide-result")?.(
+      { sender: senderOf() },
+      { nonce: last?.nonce, ok: true, applied: 0, selectedText: "要被改写的那一段" },
+    );
+    const outcome = await rewriting;
+    /* ★ 回包里**必须有**选区文字。旧契约只回 `{ok:true}`，调用方拿到也不知道改哪段，
+       只能自己猜一次 —— 猜错就会改写用户没看的地方，而他看不出来。 */
+    eq("★ 18d. 选区文字原样带回给调用方", outcome, { ok: true, selectedText: "要被改写的那一段" });
+  }
+
+  /* ── 18e. `revisionRewrite`：页面说没选中 → 失败，不回空串 ── */
+  {
+    const rewriting = handlers.get(DOC_VIEW_REVISION_REWRITE_CHANNEL)!({
+      filePath: FILE_PATH_18, instruction: "改简洁点",
+    }) as Promise<{ ok?: boolean; reason?: string; selectedText?: string }>;
+    const sent = commandsOf();
+    listeners.get("mcode:document-view:revision-decide-result")?.(
+      { sender: senderOf() },
+      { nonce: sent[sent.length - 1]?.nonce, ok: false, reason: "没有选中任何文字" },
+    );
+    const outcome = await rewriting;
+    /* ★ 三条都要：失败、带原因、**不许带 selectedText**。
+       只断言"失败"会让一个 "ok:false + selectedText:''" 的返回值蒙混过关，
+       而调用方一旦把空串当有效选区，就会生成一条空引用。 */
+    check("★ 18e. 没选中 → 失败且不带选区文字",
+      outcome.ok === false && outcome.selectedText === undefined
+        && String(outcome.reason).includes("没有选中"), outcome);
+  }
+
+  /* ── 18f. 调用方**自己带了**选区 → 不发命令，直接回（少一次往返） ── */
+  {
+    const before = commandsOf().length;
+    const outcome = (await handlers.get(DOC_VIEW_REVISION_REWRITE_CHANNEL)!({
+      filePath: FILE_PATH_18, instruction: "翻成英文", selectedText: "调用方给的原话",
+    })) as { ok?: boolean; selectedText?: string };
+    eq("18f. 带选区时不发命令，直接回", outcome, { ok: true, selectedText: "调用方给的原话" });
+    eq("18f. 确实一条命令都没发", commandsOf().length, before);
+  }
+
+  /* ── 18g. 文档没开 → 明确失败（不是"发了就成功"） ── */
+  {
+    const outcome = (await handlers.get(DOC_VIEW_REVISION_REWRITE_CHANNEL)!({
+      filePath: join(root18, "nobody-has-this-open.docx"), instruction: "改",
+    })) as { ok?: boolean; reason?: string };
+    check("18g. 文档没开 → 失败且点名",
+      outcome.ok === false && String(outcome.reason).includes("没有打开"), outcome);
+  }
+
+  /* ── 18h. 迟到的回执不许重复唤醒（一次命令只能结束一次） ── */
+  {
+    listeners.get("mcode:document-view:revision-report")?.(
+      { sender: senderOf() },
+      { changes: [{
+        id: "c4", kind: "replace", before: "旧", after: "新",
+        location: { order: 0, label: "第 1 段" }, author: { id: "ai", label: "AI" }, at: 1,
+      }] },
+    );
+    const deciding = handlers.get(DOC_VIEW_REVISION_DECIDE_CHANNEL)!({
+      filePath: FILE_PATH_18, action: "accept", ids: ["c4"],
+    }) as Promise<{ ok?: boolean; reason?: string }>;
+    const sent = commandsOf();
+    const nonce = sent[sent.length - 1]?.nonce;
+    const reply = listeners.get("mcode:document-view:revision-decide-result")!;
+    // 先回 false，再回 true —— 第二个必须被当成"迟到的回执"丢掉。
+    reply({ sender: senderOf() }, { nonce, ok: false, reason: "第一次就失败了" });
+    reply({ sender: senderOf() }, { nonce, ok: true, applied: 1 });
+    const outcome = await deciding;
+    /* ★ 若第二次回执改写了结果，用户会看到"失败"却又发现条目被摘掉 ——
+       一个已经结束的命令不许被后来的消息重新裁决。 */
+    check("★ 18h. 迟到的回执不改写已结束的命令",
+      outcome.ok === false && outcome.reason === "第一次就失败了", outcome);
+  }
+
+  host.dispose();
+  rmSync(root18, { recursive: true, force: true });
 }
 
 console.log(`\ndocument-view-host-smoke:${total - failures}/${total} 通过`);

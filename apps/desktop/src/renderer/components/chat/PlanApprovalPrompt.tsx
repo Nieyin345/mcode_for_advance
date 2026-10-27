@@ -5,6 +5,7 @@ import { Segmented } from "@renderer/components/ui/cds/Segmented.js";
 import { useI18n } from "@renderer/lib/i18n/index.js";
 import { Button, Input, Select } from "@renderer/components/ui/index.js";
 import { useSuppressBrowserView } from "@renderer/hooks/useSuppressBrowserView.js";
+import { useApprovalArming } from "@renderer/hooks/useApprovalArming.js";
 import {
   IconRocket,
   IconEye,
@@ -42,8 +43,9 @@ type HandoffModelOption = {
  *     model pickable) seeded with the plan as its first prompt; context
  *     rebuilds from the plan document.
  * Both alternatives interrupt the turn WITHOUT answering the ExitPlanMode
- * dialog (see `handoffPlanApproval` in the store). The primary button's label
- * follows the mode; Enter in the feedback input triggers it.
+ * dialog (see `handoffPlanApproval` in the store). The primary action remains
+ * disabled for the shared 500ms arming window after each request; Enter in the
+ * feedback input follows the same guard and triggers it only after arming.
  *
  * Feedback semantics (意见随按钮走): whatever the user types in the
  * adjustment-feedback input rides along with whichever decision they make -
@@ -72,6 +74,7 @@ type HandoffModelOption = {
  */
 export function PlanApprovalPrompt({
   sessionId,
+  requestId,
   active = true,
   plan,
   onViewPlan,
@@ -80,6 +83,8 @@ export function PlanApprovalPrompt({
   onHandoff,
 }: {
   sessionId: string;
+  /** Approval request identity; changing it must re-arm the primary action. */
+  requestId?: string;
   active?: boolean;
   plan: string;
   /** Open the plan tab in the editor column (PlanViewer read view). The parent
@@ -100,6 +105,9 @@ export function PlanApprovalPrompt({
   );
   const settingsOpen = useSessionStore((s) => s.settingsOpen);
   const promptActive = active && !settingsOpen;
+  // The primary action can approve execution or hand a plan to another session.
+  // Re-arm for every new approval request; rejection remains immediately available.
+  const primaryArmed = useApprovalArming(requestId ?? sessionId);
   const { t } = useI18n();
   const [feedback, setFeedback] = useState("");
 
@@ -198,7 +206,7 @@ export function PlanApprovalPrompt({
   };
 
   const handlePrimary = () => {
-    if (!promptActive) return;
+    if (!promptActive || !primaryArmed) return;
     if (exec === "current") {
       handleApprove();
       return;
@@ -248,7 +256,7 @@ export function PlanApprovalPrompt({
           : hasFeedback
             ? t("chat.planApproval.approveFeedbackTitle")
             : t("chat.planApproval.approveTitle");
-  const primaryDisabled = exec !== "current" && !(exec === "remodel" ? remodelSelected : newSessionSelected);
+  const primaryDisabled = !primaryArmed || (exec !== "current" && !(exec === "remodel" ? remodelSelected : newSessionSelected));
 
   // 【ARC-005 V2】三选一改用共享 CDS 分段控件（同一套几何/磁吸/键盘）。
   // 说明文字仍走每项的 title：分段控件内部按钮带 title 透传。
@@ -295,6 +303,7 @@ export function PlanApprovalPrompt({
 
   return (
     <div
+      data-cds="PlanApprovalPrompt"
       role="region"
       aria-label={t("chat.planApproval.title")}
       className={cn(
@@ -315,7 +324,7 @@ export function PlanApprovalPrompt({
           thread, in place. The alternatives end the blocked turn and re-fire
           the plan with a different executor (see component docs). */}
       <div className="mb-2.5 flex flex-wrap items-center gap-2">
-        <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-content-subtle">
+        <span data-cds="PlanApprovalMetaLabel" className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-content-subtle">
           {t("chat.planApproval.execLabel")}
         </span>
         <Segmented
@@ -409,6 +418,7 @@ export function PlanApprovalPrompt({
             {t("chat.planApproval.reject")}
           </Button>
           <Button
+            data-cds="PlanApprovalPrimary"
             variant="primary"
             size="sm"
             onClick={handlePrimary}

@@ -66,6 +66,17 @@ export const zh = {
   "common.moduleApprovalAllow": "允许这次操作",
   "common.moduleApprovalDeny": "拒绝",
   "common.moduleApprovalDenied": "用户拒绝了这次模块写操作,未执行。",
+  // 【EXT-07】已安装的 VS Code 扩展要调 Mcode 的功能（工作流 / 资料库 / 记忆 …）。
+  // 与 moduleApproval 同一套原生框、同一条纪律，只是被批准的对象不同。
+  "common.extensionApprovalTitle": "VS Code 扩展请求使用 Mcode 功能",
+  "common.extensionApprovalMessage": "扩展「{extension}」请求调用 {method}。{description}",
+  "common.extensionApprovalDetail": "批准后这次调用才会执行。拒绝则该操作不会发生，可以安全重来。只读功能不会弹这个框。",
+  "common.extensionApprovalAllow": "允许这次调用",
+  "common.extensionApprovalDeny": "拒绝",
+  "common.extensionDangerApprovalTitle": "VS Code 扩展请求执行高风险操作",
+  "common.extensionDangerApprovalMessage": "扩展「{extension}」请求调用高风险方法 {method}。{description}",
+  "common.extensionDangerApprovalDetail": "高风险操作每次都只批准这一次：安装扩展时授予的权限不能替代本框，也没有「始终允许」。下次调用会再次询问。",
+  "common.extensionDangerApprovalAllow": "仅允许这一次",
   // 【MC-035】网络权限的逐次审批:同一套原生框,但**说清楚在批什么** ——
   // 用户批准的是"这次可以让它联网",不是"这次可以改文件"。
   "common.moduleNetworkApprovalTitle": "扩展模块请求联网",
@@ -84,5 +95,5 @@ export const zh = {
   "common.moduleDangerApprovalMessage": "模块「{module}」请求调用高风险方法 {method}。\n本次执行绑定的资源:{path}",
   "common.moduleDangerApprovalDetail": "高风险操作每次都只批准这一次:安装时授予的权限不能替代本框,也没有「始终允许」。下次调用会再次询问。拒绝则该操作不会发生,可以安全重来。",
   "common.moduleDangerApprovalAllow": "仅允许这一次",
-  "common.moduleDangerApprovalDenied": "用户拒绝了这次高风险操作,未执行。",
+
 } as const;

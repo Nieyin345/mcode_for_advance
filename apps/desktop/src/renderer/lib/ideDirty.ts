@@ -19,23 +19,16 @@
  */
 
 const dirtyFiles = new Set<string>();
-/** Dirty state reported by native document editors (Docs/Sheets/Slides/PDF/Markdown/HTML). */
+/** Conservative native close-blockers set when a vendor close is cancelled or fails. */
 const nativeDirtyFiles = new Set<string>();
+/** Live native views must go through their asynchronous vendor close guard before store removal. */
+const nativeOpenFiles = new Set<string>();
 const listeners = new Set<() => void>();
-/** The UI snapshot is the union; the close guard checks both sources. */
+/** The tab-dot snapshot represents editor-owned text changes only. */
 let dirtySnapshot: ReadonlySet<string> = new Set();
 
-function setDirtySource(source: Set<string>, filePath: string, dirty: boolean): void {
-  const had = source.has(filePath);
-  if (dirty === had) return;
-  const wasDirty = dirtyFiles.has(filePath) || nativeDirtyFiles.has(filePath);
-  if (dirty) source.add(filePath);
-  else source.delete(filePath);
-  const isDirty = dirtyFiles.has(filePath) || nativeDirtyFiles.has(filePath);
-  // If the other editor source still marks this path dirty, the public snapshot
-  // is unchanged and there is no reason to re-render every file tab.
-  if (wasDirty === isDirty) return;
-  dirtySnapshot = new Set([...dirtyFiles, ...nativeDirtyFiles]);
+function publishEditorDirty(): void {
+  dirtySnapshot = new Set(dirtyFiles);
   // Snapshot the observer set: one tab can unsubscribe a sibling while a dirty
   // update is being delivered. Every listener present at notification start
   // must get one chance; a crashing observer must not block the rest.
@@ -48,21 +41,51 @@ function setDirtySource(source: Set<string>, filePath: string, dirty: boolean): 
 export const ideDirtyTracker = {
   /** Dirty state owned by the Monaco/Mcode text editor. */
   set(filePath: string, dirty: boolean) {
-    setDirtySource(dirtyFiles, filePath, dirty);
+    const had = dirtyFiles.has(filePath);
+    if (dirty === had) return;
+    if (dirty) dirtyFiles.add(filePath);
+    else dirtyFiles.delete(filePath);
+    publishEditorDirty();
   },
-  /** Dirty state reported by the embedded native Office/document editor. */
+  /** Remember a cancelled/failed native close so direct store actions still fail closed. */
   setNative(filePath: string, dirty: boolean) {
-    setDirtySource(nativeDirtyFiles, filePath, dirty);
+    if (dirty) nativeDirtyFiles.add(filePath);
+    else nativeDirtyFiles.delete(filePath);
   },
-  /** Combined dirty state for tab close guards and file-tab indicators. */
+  /** Register a live native editor; even a clean one must pass its async close guard. */
+  setNativeOpen(filePath: string, open: boolean) {
+    if (open) nativeOpenFiles.add(filePath);
+    else nativeOpenFiles.delete(filePath);
+  },
+  /** Clear editor dirtiness and native close blockers when the underlying file no longer exists. */
+  clear(filePath: string) {
+    const editorChanged = dirtyFiles.delete(filePath);
+    nativeDirtyFiles.delete(filePath);
+    nativeOpenFiles.delete(filePath);
+    if (editorChanged) publishEditorDirty();
+  },
+  /** Move editor dirtiness and native close blockers when a file path is renamed. */
+  move(oldPath: string, newPath: string) {
+    if (oldPath === newPath) return;
+    const editorChanged = dirtyFiles.delete(oldPath);
+    if (editorChanged) dirtyFiles.add(newPath);
+    if (nativeDirtyFiles.delete(oldPath)) nativeDirtyFiles.add(newPath);
+    if (nativeOpenFiles.delete(oldPath)) nativeOpenFiles.add(newPath);
+    if (editorChanged) publishEditorDirty();
+  },
+  /** Combined close-blocker state for store-level guards (editor dirty or native view still open). */
   has(filePath: string) {
-    return dirtyFiles.has(filePath) || nativeDirtyFiles.has(filePath);
+    return dirtyFiles.has(filePath) || nativeDirtyFiles.has(filePath) || nativeOpenFiles.has(filePath);
   },
-  /** Monaco-only dirty state for editor model reconciliation; native dirty must not block disk refresh logic. */
+  /** Monaco-only dirty state for editor model reconciliation and native-mode preflight. */
   hasEditor(filePath: string) {
     return dirtyFiles.has(filePath);
   },
-  /** 订阅用的联合快照 —— 每次可见脏状态变化都换新引用。 */
+  /** Whether this renderer has registered a live native view for the file. */
+  hasNativeOpen(filePath: string) {
+    return nativeOpenFiles.has(filePath);
+  },
+  /** Tab UI snapshot — native editors manage their own unsaved indicator. */
   snapshot(): ReadonlySet<string> {
     return dirtySnapshot;
   },
@@ -78,7 +101,7 @@ export const ideDirtyTracker = {
 export interface IdeCloseResult {
   /** 真被关掉的路径（顺序与请求一致）。 */
   closed: readonly string[];
-  /** 因为**有未保存改动**被拦下的路径 —— 调用方据此提示用户。 */
+  /** 因为未保存改动或原生关闭守卫尚未通过而被拦下的路径。 */
   blocked: readonly string[];
 }
 

@@ -48,7 +48,6 @@ import { useTheme, applyThemeClass } from "@renderer/lib/theme.js";
 import { isMac } from "@renderer/lib/platform.js";
 import { getProviderIcon } from "@renderer/lib/providerIcon.js";
 import { ConfirmDialog } from "@renderer/components/ui/index.js";
-import { BrandLogo } from "./BrandLogo.js";
 import { SidebarQuickActions } from "./SidebarQuickActions.js";
 import { RenameDialog, SessionContextMenu, ArchivedRow } from "./SidebarShared.js";
 import { LeftBarModeSwitch } from "./StreamSidebar.js";
@@ -87,19 +86,15 @@ import { useToastStore } from "@renderer/stores/toastStore.js";
  * unpaginated archived rows), so expanding a project is instant.
  *
  * Layout sketch:
- *   EXPLORER                       [+ 添加项目]
- *   ▾ 📁 mcode                 + 🗑
- *       💬 P2会话持久化         📦 🗑
- *       💬 自定义模型     ✓    📦 🗑
- *       加载更多（还有 3 条）
- *   ▸ 📁 blog-site             + 🗑
- *   ─────────────────────────────
- *   ▾ 已归档 (4)
- *       📁 old-project     [恢复] [删]
- *       📁 side-project
- *         💬 old-thread       [恢复] [删]
- *   ─────────────────────────────
- *   ⚙ 设置
+ *   New session / Search / Connect phone
+ *   Recents
+ *     💬 Recent thread             project
+ *   Pinned
+ *     💬 Saved thread
+ *   Projects                       [view] [+]
+ *     ▾ 📁 project                 +
+ *       💬 session
+ *   Library / Trash / Settings
  */
 function LeftBarBase({
   showSearch = true,
@@ -133,6 +128,22 @@ function LeftBarBase({
    */
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
   const pinnedSessions = useSessionStore((s) => s.pinnedSessions);
+  const [recentOpen, setRecentOpen] = useState(true);
+  const recentSessions = useMemo(() => {
+    const byId = new Map<string, Session>();
+    for (const list of Object.values(sessionsByProject)) {
+      for (const session of list) {
+        if (session.kind !== "chat" || session.pinnedAt != null) continue;
+        const previous = byId.get(session.id);
+        if (!previous || session.updatedAt > previous.updatedAt) byId.set(session.id, session);
+      }
+    }
+    return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6);
+  }, [sessionsByProject]);
+  const projectNameById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project.name] as const)),
+    [projects],
+  );
 
   const addProject = useSessionStore((s) => s.addProjectFromFolder);
   const toggleProjectExpanded = useSessionStore((s) => s.toggleProjectExpanded);
@@ -227,6 +238,11 @@ function LeftBarBase({
   const locateActiveSession = useCallback((center = false) => {
     const id = useSessionStore.getState().activeSessionId;
     if (!id) return;
+    // Recent rows are intentionally not registered as tree anchors; reveal the
+    // tree before locating so the canonical row remains the scroll target.
+    if (!useSessionStore.getState().pinnedSessions.some((session) => session.id === id)) {
+      setProjectsCollapsed(false);
+    }
 
     const tryScroll = () => {
       const el = rowNodes.current.get(id);
@@ -386,6 +402,18 @@ function LeftBarBase({
   const [pinnedOpen, setPinnedOpen] = useState(true);
   // Same pattern for the pinned-PROJECTS section above the project tree.
   const [pinnedProjectsOpen, setPinnedProjectsOpen] = useState(true);
+  const ignoreRowRegistration = useCallback(() => {}, []);
+  const isSessionVisibleInProjectTree = useCallback((session: Session) => {
+    // A recent entry should own the selected state whenever its canonical row
+    // is hidden by any ancestor disclosure, including a collapsed pinned
+    // project. Keep the rule aligned with the actual tree hierarchy.
+    if (projectsCollapsed || !expandedProjects[session.projectId]) return false;
+    const project = projects.find((candidate) => candidate.id === session.projectId);
+    if (!project || project.archived) return false;
+    if (project.pinnedAt != null) return pinnedProjectsOpen;
+    if (projectView === "grouped" && project.group && collapsedGroups[project.group]) return false;
+    return true;
+  }, [projectsCollapsed, expandedProjects, projects, pinnedProjectsOpen, projectView, collapsedGroups]);
 
   // Split into active vs archived. Active projects show in the tree;
   // archived projects (whole-project archive) show as their own rows in
@@ -615,7 +643,7 @@ function LeftBarBase({
   );
 
   return (
-    <div className="flex h-full flex-col px-2 py-2 [font-size:var(--right-panel-font-size)]">
+    <div data-cds="SidebarNavigation" className="flex h-full flex-col px-2 py-2 [font-size:var(--right-panel-font-size)]">
       {/* Top strip. mac: the brand header (logo + name) was removed — the
           strip now hosts the sidebar-collapse toggle, moved up from the
           footer, sitting right of the traffic lights (trafficLightPosition
@@ -647,127 +675,45 @@ function LeftBarBase({
           <LeftBarModeSwitch />
         </div>
       ) : (
-        <div className="mb-2" style={{ WebkitAppRegion: "drag" } as React.CSSProperties}>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setLeftOpen(false)}
-              className={cn(
-                "group flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors",
-                "cds-hover-ghost ",
-              )}
+        // 【UI 对齐 Claude / DraggableSessionList.tsx:183-201】
+        // 上游左栏顶部**没有品牌区**：它直接从「New / Customize / More」三行
+        // 快捷入口开始（`px-3 h-11` 的 header 里只有一个 "Sessions" 标题 +
+        // 一个 New 按钮）。原来这里是 BrandLogo + 产品名 + 标语三层，
+        // 占掉侧栏顶部 ~46px，而且把「这是 Mcode」这个信息重复了 ——
+        // 窗口标题栏已经写着它。
+        // 现在只保留折叠按钮（功能必需）和视图切换，其余交给快捷入口。
+        <div
+          data-cds="SidebarTopStrip"
+          className="mb-1 flex h-8 items-center gap-1"
+          style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+        >
+          <button
+            type="button"
+            onClick={() => setLeftOpen(false)}
+            className={cn(
+              "flex h-7 w-7 items-center justify-center rounded text-content-muted transition-colors",
+              "cds-hover-ghost hover:text-content",
+            )}
             style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
             title={t("layout.hideLeftPanel")}
           >
-            <BrandLogo size={30} />
-            <span className="flex min-w-0 flex-col leading-tight">
-              <span className="truncate text-[1.07em] font-semibold tracking-tight text-content">
-                Mcode
-              </span>
-              <span className="truncate text-content-subtle [font-size:var(--rp-fs-sm)]">
-                {t("layout.tagline")}
-              </span>
-            </span>
-            </button>
-            {/* Tree ↔ stream view switch (same spot in both sidebars). */}
-            <LeftBarModeSwitch />
-          </div>
+            <IconLayoutSidebarLeftExpand size={18} className="shrink-0" />
+          </button>
+          <LeftBarModeSwitch />
         </div>
       )}
 
-      {/* Quick actions — 新建会话 / 搜索 / 连接手机. Full-width buttons
-          docked directly under the brand logo so the most-used workspace
-          entry points are always visible without scrolling. */}
+      {/* Quick actions — 新建会话 / 搜索 / 连接手机. Keep the entry points
+          above Recents / Pinned / Projects so they stay reachable without scrolling. */}
       <SidebarQuickActions
         showSearch={showSearch}
         showConnectPhone={showConnectPhone}
       />
 
-      {/* Header */}
-      <div className="group mb-1 flex items-center justify-between px-1">
-        <div className="flex min-w-0 items-center">
-          {/* 折叠箭头 —— 与文档大类那一个**逐字同一套**（w-3 槽 + 10px chevron +
-              rotate-90）。两段是同级的，箭头错开半格就很明显。 */}
-          <button
-            onClick={() => setProjectsCollapsed((v) => !v)}
-            title={projectsCollapsed ? t("layout.expand") : t("layout.collapse")}
-            aria-label={projectsCollapsed ? t("layout.expand") : t("layout.collapse")}
-            className="flex w-3 shrink-0 items-center justify-center text-content-subtle hover:text-content"
-          >
-            <IconChevronRight
-              size={10}
-              className={cn("transition-transform", !projectsCollapsed && "rotate-90")}
-            />
-          </button>
-          <h3 className="truncate font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--left-section-title-fs)]">
-            {t("layout.projects")}
-          </h3>
-        </div>
-        <div className="flex items-center gap-1">
-          {/* View-mode toggle: flat list vs grouped under headers. Hover-
-              revealed (mirrors the add-project button below) to keep the
-              header clean; the active segment still highlights on hover so
-              the current mode is discoverable. */}
-          <div
-            className={cn(
-              "flex items-center rounded border border-edge transition-all",
-              "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
-            )}
-            role="group"
-            aria-label={t("layout.projectViewMode")}
-          >
-            <button
-              onClick={() => void setProjectView("flat")}
-              className={cn(
-                "flex items-center rounded-l px-1 py-0.5 transition-colors",
-                projectView === "flat"
-                  ? "bg-surface-hover text-content"
-                  : "cds-hover-ghost text-content-subtle hover:text-content",
-              )}
-              title={t("layout.viewFlat")}
-              aria-label={t("layout.viewFlat")}
-              aria-pressed={projectView === "flat"}
-            >
-              <IconList size={13} />
-            </button>
-            <button
-              onClick={() => void setProjectView("grouped")}
-              className={cn(
-                "flex items-center rounded-r border-l border-edge px-1 py-0.5 transition-colors",
-                projectView === "grouped"
-                  ? "bg-surface-hover text-content"
-                  : "cds-hover-ghost text-content-subtle hover:text-content",
-              )}
-              title={t("layout.viewGrouped")}
-              aria-label={t("layout.viewGrouped")}
-              aria-pressed={projectView === "grouped"}
-            >
-              <IconCategoryFilled size={13} />
-            </button>
-          </div>
-          <button
-            onClick={() => void addProject()}
-            className={cn(
-              "flex items-center rounded px-1 py-0.5 text-content-muted transition-all",
-              // Always visible when there are no projects so the user has a
-              // clear entry point to add one (no empty placeholder row anymore).
-              projects.length === 0
-                ? "opacity-100 hover:text-content"
-                : "opacity-0 hover:text-content group-hover:opacity-100 group-focus-within:opacity-100",
-            )}
-            title={t("layout.addProject")}
-            aria-label={t("layout.addProject")}
-          >
-            <IconPlus size={12} />
-          </button>
-        </div>
-      </div>
-
-      {/* Project → session tree. A single DndContext wraps both view modes:
-          flat list reorders in place; grouped view reorders within the
-          flattened display order AND supports cross-group drag-to-reassign
-          (handled live in onDragOver). Group headers are droppable targets
-          (not draggable) so dropping a project on a header moves it there. */}
+      {/* Scrollable navigation stack: Recents, Pinned, then Projects.
+          The project/session tree keeps one DndContext across both view modes:
+          flat list reorders in place; grouped view also supports cross-group
+          drag-to-reassign. Group headers are drop targets, not draggable rows. */}
       <ScrollFade className="min-h-0 flex-1">
         {/* ── 折起来之后**项目树整块收掉**（2026-09-21）──
             ⚠️ 上一版的箭头**只转向、不折内容**：`projectsCollapsed` 只用在那个
@@ -776,70 +722,73 @@ function LeftBarBase({
 
             这一段（置顶项目 + 项目树）就是"项目"那一段的内容，与大类那边
             `collapsed ? null : (...)` 是同一个做法。 */}
-        {projectsCollapsed ? null : (
-        <>
-        {/* Pinned projects — the project-level counterpart of the pinned
-            sessions section below: pinned projects leave the flat list /
-            their group and live here until unpinned. Rows are full
-            ProjectNodes (expandable, context menu, delete) rendered OUTSIDE
-            the DndContext — dragging is the unpinned list's ordering tool,
-            pinning is this section's. Rendered ABOVE the pinned-sessions
-            section (project-before-thread mirrors the tree's hierarchy).
-            Hidden entirely when nothing is pinned. */}
-        {pinnedProjects.length > 0 && (
-          <div className="mb-2">
+        {recentSessions.length > 0 && (
+          <div data-sidebar-recent-section="" data-cds="SidebarRecentSection" className="mb-2">
             <button
-              onClick={() => setPinnedProjectsOpen(!pinnedProjectsOpen)}
+              data-sidebar-section-heading=""
+              onClick={() => setRecentOpen(!recentOpen)}
+              aria-expanded={recentOpen}
               className={cn(
-                "flex w-full items-center gap-1 rounded px-1 py-0.5 font-medium uppercase tracking-wide [font-size:var(--rp-fs-md)]",
+                "flex min-h-7 w-full items-center gap-1.5 rounded px-1.5 py-1 font-medium [font-size:var(--rp-fs-md)]",
                 "cds-hover-ghost text-content-subtle transition-colors",
               )}
             >
               <IconChevronRight
                 size={12}
-                className={cn(
-                  "shrink-0 transition-transform",
-                  pinnedProjectsOpen && "rotate-90",
-                )}
+                className={cn("shrink-0 transition-transform", recentOpen && "rotate-90")}
               />
-              <IconPin size={12} className="shrink-0 text-accent/70" />
-              {t("layout.pinnedProjectsSection", { n: pinnedProjects.length })}
+              {t("layout.recentSection")}
             </button>
-            {pinnedProjectsOpen && (
-              <ul className="mt-1 space-y-0.5">
-                {pinnedProjects.map((p) => renderProjectNode(p, false))}
+            {recentOpen && (
+              <ul className="mt-0.5 space-y-px">
+                {recentSessions.map((s) => (
+                  <SessionRow
+                    key={`recent-${s.id}`}
+                    session={s}
+                    active={s.id === activeSessionId && !isSessionVisibleInProjectTree(s)}
+                    contextLabel={projectNameById.get(s.projectId)}
+                    isRunning={!!runningBySession[s.id]}
+                    unreadCount={unreadBySession[s.id] ?? 0}
+                    onSelect={() => void openTab(s.id)}
+                    onTogglePin={() => void setSessionPinned(s.id, !s.pinnedAt)}
+                    onArchive={() => void archiveSession(s.id, true)}
+                    onDelete={() => void deleteSession(s.id)}
+                    onNewWorktreeSession={
+                      s.worktreePath
+                        ? () => void startSession(s.projectId, { worktreePath: s.worktreePath ?? undefined })
+                        : undefined
+                    }
+                    registerNode={ignoreRowRegistration}
+                    onContext={(x, y) => setCtxMenu({ session: s, x, y })}
+                  />
+                ))}
               </ul>
             )}
           </div>
         )}
-        {/* Pinned sessions — a global section collecting the pinned threads
-            of every project (pinned rows leave their project's list and live
-            here until unpinned). Rendered INSIDE the scroll region, above the
-            project tree, so it scrolls together with the grouped projects
-            instead of staying fixed while the tree scrolls under it. Mirrors
-            the archived bin's collapsible-header pattern, but defaults open.
-            Hidden entirely when nothing is pinned. */}
+
+        {/* Pinned sessions stay independent of the Projects disclosure, so
+            collapsing the project tree never hides a user's saved shortcuts. */}
         {pinnedSessions.length > 0 && (
-          <div className="mb-2">
+          <div data-cds="SidebarPinnedSessionsSection" className="mb-2">
             <button
+              data-sidebar-section-heading=""
               onClick={() => setPinnedOpen(!pinnedOpen)}
+              aria-expanded={pinnedOpen}
               className={cn(
-                "flex w-full items-center gap-1 rounded px-1 py-0.5 font-medium uppercase tracking-wide [font-size:var(--rp-fs-md)]",
+                "flex w-full items-center gap-1.5 rounded px-1.5 py-1 font-medium [font-size:var(--rp-fs-md)]",
                 "cds-hover-ghost text-content-subtle transition-colors",
               )}
             >
               <IconChevronRight
                 size={12}
-                className={cn(
-                  "shrink-0 transition-transform",
-                  pinnedOpen && "rotate-90",
-                )}
+                className={cn("shrink-0 transition-transform", pinnedOpen && "rotate-90")}
               />
               <IconPin size={12} className="shrink-0 text-accent/70" />
               {t("layout.pinnedSection", { n: pinnedSessions.length })}
             </button>
             {pinnedOpen && (
-              <ul className="mt-1 space-y-0.5">
+              <ul className="mt-0.5 space-y-px">
                 {pinnedSessions.map((s) => (
                   <SessionRow
                     key={s.id}
@@ -864,6 +813,117 @@ function LeftBarBase({
             )}
           </div>
         )}
+
+        <div data-sidebar-project-section-header="" className="group mb-1 flex items-center justify-between px-1">
+          <div className="flex min-w-0 items-center">
+            <button
+              onClick={() => setProjectsCollapsed((v) => !v)}
+              title={projectsCollapsed ? t("layout.expand") : t("layout.collapse")}
+              aria-label={projectsCollapsed ? t("layout.expand") : t("layout.collapse")}
+              aria-expanded={!projectsCollapsed}
+              className="flex w-3 shrink-0 items-center justify-center text-content-subtle hover:text-content"
+            >
+              <IconChevronRight
+                size={10}
+                className={cn("transition-transform", !projectsCollapsed && "rotate-90")}
+              />
+            </button>
+            <h3 className="truncate font-semibold uppercase tracking-wide text-content-subtle [font-size:var(--left-section-title-fs)]">
+              {t("layout.projects")}
+            </h3>
+          </div>
+          <div className="flex items-center gap-1">
+            <div
+              className={cn(
+                "flex items-center rounded border border-edge transition-all",
+                "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+              )}
+              role="group"
+              aria-label={t("layout.projectViewMode")}
+            >
+              <button
+                onClick={() => void setProjectView("flat")}
+                className={cn(
+                  "flex items-center rounded-l px-1 py-0.5 transition-colors",
+                  projectView === "flat"
+                    ? "bg-surface-hover text-content"
+                    : "cds-hover-ghost text-content-subtle hover:text-content",
+                )}
+                title={t("layout.viewFlat")}
+                aria-label={t("layout.viewFlat")}
+                aria-pressed={projectView === "flat"}
+              >
+                <IconList size={13} />
+              </button>
+              <button
+                onClick={() => void setProjectView("grouped")}
+                className={cn(
+                  "flex items-center rounded-r border-l border-edge px-1 py-0.5 transition-colors",
+                  projectView === "grouped"
+                    ? "bg-surface-hover text-content"
+                    : "cds-hover-ghost text-content-subtle hover:text-content",
+                )}
+                title={t("layout.viewGrouped")}
+                aria-label={t("layout.viewGrouped")}
+                aria-pressed={projectView === "grouped"}
+              >
+                <IconCategoryFilled size={13} />
+              </button>
+            </div>
+            <button
+              onClick={() => void addProject()}
+              className={cn(
+                "flex items-center rounded px-1 py-0.5 text-content-muted transition-all",
+                projects.length === 0
+                  ? "opacity-100 hover:text-content"
+                  : "opacity-0 hover:text-content group-hover:opacity-100 group-focus-within:opacity-100",
+              )}
+              title={t("layout.addProject")}
+              aria-label={t("layout.addProject")}
+            >
+              <IconPlus size={12} />
+            </button>
+          </div>
+        </div>
+
+        {projectsCollapsed ? null : (
+        <>
+        {/* Pinned projects — the project-level counterpart of the pinned
+            sessions section below: pinned projects leave the flat list /
+            their group and live here until unpinned. Rows are full
+            ProjectNodes (expandable, context menu, delete) rendered OUTSIDE
+            the DndContext — dragging is the unpinned list's ordering tool,
+            pinning is this section's. Rendered ABOVE the pinned-sessions
+            section (project-before-thread mirrors the tree's hierarchy).
+            Hidden entirely when nothing is pinned. */}
+        {pinnedProjects.length > 0 && (
+          <div data-cds="SidebarPinnedProjectsSection" className="mb-2">
+            <button
+              data-sidebar-section-heading=""
+              onClick={() => setPinnedProjectsOpen(!pinnedProjectsOpen)}
+              className={cn(
+                "flex w-full items-center gap-1 rounded px-1 py-0.5 font-medium uppercase tracking-wide [font-size:var(--rp-fs-md)]",
+                "cds-hover-ghost text-content-subtle transition-colors",
+              )}
+            >
+              <IconChevronRight
+                size={12}
+                className={cn(
+                  "shrink-0 transition-transform",
+                  pinnedProjectsOpen && "rotate-90",
+                )}
+              />
+              <IconPin size={12} className="shrink-0 text-accent/70" />
+              {t("layout.pinnedProjectsSection", { n: pinnedProjects.length })}
+            </button>
+            {pinnedProjectsOpen && (
+              <ul className="mt-1 space-y-0.5">
+                {pinnedProjects.map((p) => renderProjectNode(p, false))}
+              </ul>
+            )}
+          </div>
+        )}
+
         {projects.length === 0 ? null : (
           <DndContext
             sensors={sensors}
@@ -932,7 +992,7 @@ function LeftBarBase({
             段落按**大类**走(一段一个组,组表来自主进程、设置页可编辑):
             旧的独立模版段不再单独挂 —— 它那五类已由主进程启动时自动迁移进
             统一库,现在就是「模版」这个组。 */}
-        <div className="mt-3">
+        <div data-cds="SidebarLibrarySection" className="mt-3">
           <LibrarySections />
         </div>
       </ScrollFade>
@@ -948,8 +1008,9 @@ function LeftBarBase({
       {/* Archived bin — archived projects first, then archived sessions
           grouped by their parent project. */}
       {archivedCount > 0 && (
-        <div className="mt-2 border-t border-edge pt-2">
+        <div data-cds="SidebarArchivedSection" className="mt-2 border-t border-edge pt-2">
           <button
+            data-sidebar-section-heading=""
             onClick={() => setArchivedViewOpen(!archivedViewOpen)}
             className={cn(
               "flex w-full items-center gap-1 rounded px-1 py-0.5 font-medium uppercase tracking-wide [font-size:var(--rp-fs-md)]",
@@ -1014,7 +1075,7 @@ function LeftBarBase({
           scrolls. The two compact square buttons right of 设置: locate
           (scroll the project tree to the active session, centering it) and
           theme (sun while dark → light, moon while light → dark). */}
-      <div className="mt-2 flex shrink-0 items-center gap-1 border-t border-edge pt-1.5">
+      <div data-cds="SidebarFooter" className="mt-2 flex shrink-0 items-center gap-1 border-t border-edge pt-1.5">
         <button
           onClick={() => setSettingsOpen(true)}
           className={cn(

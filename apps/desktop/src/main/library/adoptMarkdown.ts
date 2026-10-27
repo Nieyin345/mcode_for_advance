@@ -244,14 +244,14 @@ function copyReferencedAssets(
       // ⚠️ **`filter` 不是多余的。** Node 22 在 Windows 上，`cpSync` 的 native
       // copyDir fast path 在路径含非 ASCII 字符时会 native 崩（`0xC0000409` /
       // `0xC0000005`），`catch` 接不住 —— 进程直接死。传任何 `filter` 都会强制走
-      // JS 实现，那条路不受影响。见 nodejs/node#54476、#63970 与 `tasks/T90`。
+      // JS 实现，那条路不受影响。见 nodejs/node#54476、#63970。
       //
       // 只有**目录**会触发：单文件复制（带不带 `recursive`）实测正常。
       //
       // ⚠️ **拷到临时名再 rename，不能直接 cpSync 到 dest。**
       // `filter` 救不了这一格：**非 ASCII 源 + 目标里已有同名文件** 时，`cpSync`
       // 会抛一个 `errno=0` 的错（信息写着 "The operation completed successfully"），
-      // **且实际一个字节都没拷**（tasks/T107）。而这里的目标**很容易已存在** ——
+      // **且实际一个字节都没拷**（cpSync 已知缺陷）。而这里的目标**很容易已存在** ——
       // 同一份 Markdown 里 `![](图表/)` 和 `![](图表/a.png)` 就是两次复制同一个
       // 目标；第二遍会撞上，然后被下面的 `catch` 记成「缺文件」，而用户看到的是
       // `ok: true` + 一张本来存在的图被列为 missing。

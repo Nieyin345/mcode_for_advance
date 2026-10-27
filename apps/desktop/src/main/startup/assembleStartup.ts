@@ -59,8 +59,6 @@ export interface StartupAssemblyDeps {
   operationLedger: OperationLedger;
   /** 视觉中继的真实实现(读设置 + 发 SDK query)。 */
   visionRelay: VisionRelayImpl;
-  /** Electron 相关:原生审批端口装配(`modules/moduleApproval.ts` 的 `assembleModuleApprovalPort`)。 */
-  assembleModuleApprovalPort: () => void;
   /** Electron 相关:扩展桥令牌落盘装配(`providers/bridge/extensionBridge.ts` 的 `configureExtensionBridgeTokenStore`)。 */
   configureExtensionBridgeTokenStore: (store: BridgeTokenStore) => void;
   /** 令牌存取实现(生产由 `SettingRepo` 读写 `web.bridgeToken`)。 */
@@ -99,8 +97,6 @@ export function assembleStartup(deps: StartupAssemblyDeps): void {
       "host-hook-grants.json 读不懂(可能写入中断被截断)—— 已停用该存档的写入以免覆盖原字节;原文件保留在 <数据根>/hooks/ 下,修复或删除后重启即可。",
     );
   }
-  // 扩展模块 action 能力的审批端口(MC-060):把 Electron 原生对话框接到 fail-closed 注入口上。
-  deps.assembleModuleApprovalPort();
   // 场景任务注册表(ARC-013 步②):装配一份全新的进程内运行期(注册表 + 总账一起重置)。
   assembleSceneRuntime();
   // 扩展桥配对令牌持久化(必须跨重启稳定,否则浏览器扩展每次启动静默掉线)。

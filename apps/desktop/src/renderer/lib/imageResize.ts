@@ -43,7 +43,18 @@ const ALLOWED_MIME = new Set([
 ]);
 
 export type ImagePrepResult =
-  | { ok: true; image: PromptImage }
+  | {
+      ok: true;
+      image: PromptImage;
+      /**
+       * 【CHAT-21】这张图**被缩过**（尺寸或体积超限，重编码成 JPEG）。
+       *
+       * 为什么要在结果里带出来：产品要求「图片过大时按需降采样，并在对话里
+       * 说明已缩小，不静默改变模型看到的内容」。**静默缩小是欺骗** ——
+       * 用户以为模型看的是原图，实际是压过的。调用方据此在消息里加一句说明。
+       */
+      downscaled?: { fromWidth: number; fromHeight: number; toWidth: number; toHeight: number }
+    }
   | { ok: false; error: string };
 
 /** Load a data URL into an HTMLImageElement (rejects on corrupt bytes). */
@@ -110,5 +121,20 @@ export async function prepareImageForSend(
   if (outMatch[1].length > MAX_SEND_CHARS) {
     return { ok: false, error: translate(locale, "lib.image.stillTooLarge", { name }) };
   }
-  return { ok: true, image: { data: outMatch[1], mimeType: "image/jpeg" } };
+  return {
+    ok: true,
+    image: { data: outMatch[1], mimeType: "image/jpeg" },
+    // 只在**真的变小了**时标记（同尺寸但被重编码成 JPEG 不算"缩小"，
+    // 那种情形用户看到的内容没变，不需要提示）。
+    ...(img.naturalWidth > canvas.width || img.naturalHeight > canvas.height
+      ? {
+          downscaled: {
+            fromWidth: img.naturalWidth,
+            fromHeight: img.naturalHeight,
+            toWidth: canvas.width,
+            toHeight: canvas.height,
+          },
+        }
+      : {}),
+  };
 }

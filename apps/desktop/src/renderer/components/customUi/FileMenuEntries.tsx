@@ -12,7 +12,6 @@
 import { useMemo, type ReactNode } from "react";
 import { moduleKey, type CustomUiTarget } from "@contracts/customUi";
 import { useI18n } from "@renderer/lib/i18n/index.js";
-import { useModuleSurface } from "@renderer/components/modules/ModuleSurface.js";
 import { CustomUiMenuEntries, type BuiltinRuntime, type ModuleEntryRuntime } from "./CustomUiMenuItems.js";
 
 export function FileMenuEntries({
@@ -31,28 +30,12 @@ export function FileMenuEntries({
   after?: ReactNode;
 }) {
   const { locale } = useI18n();
-  const surface = useModuleSurface();
-  const modules = useMemo<ModuleEntryRuntime[]>(() => {
-    if (!surface?.catalog) return [];
-    const lower = path.toLowerCase();
-    return surface.catalog.modules.flatMap((module) =>
-      module.contributions
-        .filter((c) => c.slot === "files.context" && (!c.extensions || c.extensions.some((ext) => lower.endsWith(ext))))
-        .map((contribution) => ({
-          key: moduleKey(module.id, contribution.id),
-          label: contribution.title[locale],
-          disabled: surface.busy,
-          run: () => void surface.invoke(module, contribution, path),
-        })),
-    );
-  }, [surface, path, locale]);
   const target = useMemo<CustomUiTarget>(() => ({ kind: "file", projectPath, path }), [projectPath, path]);
   return (
     <CustomUiMenuEntries
       slot="files.context"
       target={target}
       builtins={builtins}
-      modules={modules}
       itemClass={itemClass}
       before={before}
       after={after}

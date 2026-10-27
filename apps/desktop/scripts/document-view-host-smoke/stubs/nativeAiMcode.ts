@@ -19,3 +19,15 @@ export const runtimeManager = {
 }
 export const getMainWindow = () => ({ isDestroyed: () => false })
 export const dialog = { showMessageBox: async () => ({ response: 1 }) }
+
+// Some transitive imports of the AI adapter reach `electron.app` (paths, versions).
+// The suite never boots a real Electron main process, so expose the minimum that
+// keeps those modules loadable without pretending to implement them.
+export const app = {
+  getPath: (_name: string) => "C:/sandbox",
+  getVersion: () => "0.0.0-test",
+  isPackaged: false,
+  on: () => {},
+  once: () => {},
+  whenReady: () => Promise.resolve(),
+}

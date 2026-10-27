@@ -4,7 +4,7 @@
 import {useEffect,useRef,useState} from "react";
 import {api} from "@renderer/lib/api.js";
 import {useFocusTrap} from "@renderer/hooks/useFocusTrap.js";
-import type {TheiaQuickInputRequest} from "@contracts/ipc/modules.js";
+import type {TheiaQuickInputRequest} from "@contracts/ipc/theia.js";
 
 export function TheiaQuickInputHost(){
   const [queue,setQueue]=useState<TheiaQuickInputRequest[]>([]);

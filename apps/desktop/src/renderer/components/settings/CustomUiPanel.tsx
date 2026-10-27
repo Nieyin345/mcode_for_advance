@@ -52,7 +52,6 @@ import { useCustomUiStore } from "@renderer/stores/customUiStore.js";
 import { selectActiveEnvPath, useSessionStore } from "@renderer/stores/sessionStore.js";
 import { Badge, Button, ConfirmDialog, EmptyState, ErrorNote, HintLabel, LoadingNote, Switch } from "@renderer/components/ui/index.js";
 import { Dialog } from "@renderer/components/ui/dialog.js";
-import { ModuleSurface, ModuleToolsButton } from "@renderer/components/modules/ModuleSurface.js";
 import {
   IconAdjustmentsHorizontal,
   IconArrowDown,
@@ -547,7 +546,7 @@ export function CustomUiPanel() {
   }, [focusSlot, setFocusSlot]);
   useEffect(() => setTemplateOpen(false), [slot]);
 
-  const catalog = useRpc(() => api.modules.catalog(), [], { toastOnError: false });
+  const catalog = { data: undefined as { modules?: Array<{ id: string }> } | undefined, loading: false, error: undefined, refetch: async () => {} };
   // 失效徽标（B3）：自定义项引用的自动化被删后，列表要标出来，而不是点击才报错。
   // 对齐模块平台的既有原则：「既有选择从目录消失时显示失效状态，不偷偷换成另一项」。
   const workflowsAll = useRpc(() => api.workflow.list(), [], { toastOnError: false });
@@ -565,12 +564,8 @@ export function CustomUiPanel() {
       byKey.set(builtinKey(b.id), { key: builtinKey(b.id), source: "builtin", label: t(b.labelKey), icon: b.icon, hidden: false });
     }
     if (slot === "files.context") {
-      for (const m of catalog.data?.modules ?? []) {
-        for (const c of m.contributions) {
-          const key = moduleKey(m.id, c.id);
-          byKey.set(key, { key, source: "module", label: c.title[locale], icon: DEFAULT_ACTION_ICON.view, hidden: false });
-        }
-      }
+      // ModuleHost 已下线：没有模块来源的贡献项了（VS Code 扩展走 Theia 面板）。
+      void catalog;
     }
     for (const item of config.items) {
       if (item.slot !== slot) continue;

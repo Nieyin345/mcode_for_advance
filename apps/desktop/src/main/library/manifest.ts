@@ -205,6 +205,36 @@ export function writeCollectionManifest(collectionId: string): ManifestResult {
   // 查（kind 退役,不再是"从条目反查类型"）。哪层没写就跳过。
   const groupPrompt = collection?.groupId ? groupPromptOf(collection.groupId) : undefined;
   if (groupPrompt?.trim()) lines.push(`> ${groupPrompt.trim()}`, "");
+  /* 【LIB-01】嵌套集合：**先注父集合的说明，从最外层往里**。
+   *
+   * 集合支持嵌套（`parentId`），而以前只注入自身的 prompt —— 用户在一个
+   * 「综述」父集合下建了「2024 年」子集合，把子集合挂进对话时，
+   * 父集合那句「这些写的都是综述，引用要核对年份」**读不到**。
+   *
+   * 顺序是**从根到叶**：先读大范围的处理要求，再读这一层的。
+   * 深度上限 8：`parentId` 是用户可编辑的数据，一个环会让这里死循环。
+   * 遇到环/超深就**停在那里**（已注入的保留），不抛 —— 挂清单不该因为
+   * 一个坏数据整份失败。 */
+  const ancestors: string[] = [];
+  {
+    // 一次读出全部集合再走链 —— `parentId` 链很短（深度上限 8），
+    // 逐层查库不划算，而 `list()` 本来就在同一个函数里被用过（见上面 `collection`）。
+    const byId = new Map(CollectionRepo.list().map((c) => [c.id, c] as const));
+    let cursor = collection.parentId;
+    let depth = 0;
+    const seen = new Set<string>([collection.id]);
+    while (cursor !== null && depth < 8 && !seen.has(cursor)) {
+      seen.add(cursor);
+      const parent = byId.get(cursor);
+      if (!parent) break;
+      const text = parent.prompt?.trim();
+      if (text) ancestors.push(text);
+      cursor = parent.parentId;
+      depth += 1;
+    }
+  }
+  // 收集时是从叶往根走的，注入要反过来（根 → 叶）。
+  for (const text of ancestors.reverse()) lines.push(`> ${text}`, "");
   // **这一组的说明**(用户按集合写的)紧跟其后 —— 模型一打开清单就先读到"这组东西
   // 该怎么处理"。没有就不注这一段。
   const prompt = collection?.prompt?.trim();

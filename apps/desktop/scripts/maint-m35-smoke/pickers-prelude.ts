@@ -10,7 +10,13 @@ const globalTarget = globalThis as unknown as Record<string, unknown>;
 export {};
 
 if (typeof globalTarget.window === "undefined") {
-  globalTarget.window = { api: {}, confirm: () => true };
+  // 【ARC-005】FileMentionPicker 现在用 `window.setTimeout` 做关闭后的焦点恢复，
+  // 无头 window 得带上计时器（直接转全局，避免替身与真计时器行为不一致）。
+  globalTarget.window = {
+    api: {}, confirm: () => true,
+    setTimeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+  };
 }
 if (typeof globalTarget.document === "undefined") {
   globalTarget.document = {

@@ -2016,9 +2016,12 @@ console.log("\n[16] 回滚契约:缺 cwd / 缺会话都必须显式拒绝(不许
   );
   // store 侧:没有 sessionId → failed 是 files 的路径,不是空数组。
   const ss = readFileSync(join(root, "src/renderer/stores/sessionStore.ts"), "utf8").replace(/\/\/[^\n]*/g, "");
+  // 守行为：没有 sessionId 时 **failed 里是每个目标文件**（空数组会被卡片当成成功）。
+  // 不锚定整行字面量 —— 契约后来加了 `unrestorable`（「不可还原」与「没变化」要分开
+  // 表达），行尾因此变了；那条修复是对的，断言不该逼它回退。
   check(
     "★ sessionStore: 无 activeSessionId 时 return failed: files.map(...)（不是空数组）",
-    /if \(!sessionId\) return \{ restored: \[\], failed: files\.map\(\(f\) => f\.filePath\), conflicts: \[\] \};/.test(ss),
+    /if \(!sessionId\) return \{ restored: \[\], failed: files\.map\(\(f\) => f\.filePath\)/.test(ss),
   );
 }
 

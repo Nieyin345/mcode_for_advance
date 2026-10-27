@@ -225,6 +225,7 @@ export function SelectionQuoteMenu({
   return createPortal(
     <div
       ref={panelRef}
+      data-cds="SelectionQuoteMenu"
       style={style}
       // ⚠️ 行内元素上的宽高是零宽的:这个容器是 `position: fixed` 的块级盒子,
       // 量出来才是真尺寸(与 SelectionToolbar 同款)。

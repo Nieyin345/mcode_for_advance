@@ -150,6 +150,7 @@ export function SelectionToolbar({
   return createPortal(
     <div
       ref={barRef}
+      data-cds="SelectionToolbar"
       style={style}
       role="toolbar"
       aria-label={t("chatStream.selection.toolbar")}
@@ -171,7 +172,7 @@ export function SelectionToolbar({
       // reaches for a button — without it the click collapses the selection
       // and the selectionchange close above fires before the click lands.
       onMouseDown={(e) => e.preventDefault()}
-      className="animate-[bookmark-bar-in_120ms_ease-out] z-50 flex max-h-[calc(100vh-16px)] max-w-[calc(100vw-16px)] flex-wrap items-center gap-0.5 overflow-y-auto rounded-[var(--radius-btn-xs)] border border-edge bg-surface px-1 py-0.5 shadow-[var(--shadow-popover)]"
+      className="animate-[bookmark-bar-in_120ms_ease-out] z-50 flex max-h-[calc(100vh-16px)] max-w-[calc(100vw-16px)] flex-wrap items-center gap-0.5 overflow-y-auto rounded-[var(--radius-panel)] border border-edge bg-surface px-1 py-0.5 shadow-[var(--shadow-popover)]"
     >
       <button
         type="button"
@@ -179,12 +180,12 @@ export function SelectionToolbar({
         title={copied ? t("common.copied") : t("common.copy")}
         aria-label={copied ? t("common.copied") : t("common.copy")}
         className={cn(
-          "flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-xs)] px-1.5 py-1 text-[10px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+          "flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-md)] px-1.5 py-1 text-[10px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           "cds-hover-ghost text-content-subtle hover:text-content-muted",
           copied && "text-accent",
         )}
       >
-        {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
+        {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
       </button>
       {onAddBookmark && (
         <>
@@ -194,9 +195,9 @@ export function SelectionToolbar({
             onClick={() => onAddBookmark(state)}
             title={t("chatStream.bookmark.add")}
             aria-label={t("chatStream.bookmark.add")}
-            className="cds-hover-ghost flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-xs)] px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-warning focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="cds-hover-ghost flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-md)] px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-warning focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
-            <IconBookmark size={12} />
+            <IconBookmark size={14} />
           </button>
         </>
       )}
@@ -208,9 +209,9 @@ export function SelectionToolbar({
         onClick={() => onAskSideChat(state)}
         title={t("chatStream.bookmark.askSideChat")}
         aria-label={t("chatStream.bookmark.askSideChat")}
-        className="cds-hover-ghost flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-xs)] px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="cds-hover-ghost flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-md)] px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
-        <IconMessages size={12} />
+        <IconMessages size={14} />
       </button>
       </>
       )}
@@ -220,9 +221,9 @@ export function SelectionToolbar({
         onClick={() => onQuote(state)}
         title={t("chatStream.quote.action")}
         aria-label={t("chatStream.quote.action")}
-        className="cds-hover-ghost flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-xs)] px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="cds-hover-ghost flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-[var(--radius-btn-md)] px-1.5 py-1 text-[10px] text-content-subtle transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
-        <IconQuote size={12} />
+        <IconQuote size={14} />
       </button>
       {/* The displayed excerpt and the quote sent to the composer use the
           same capped snapshot; never silently truncate a large selection. */}

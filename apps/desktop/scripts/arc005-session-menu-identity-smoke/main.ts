@@ -19,7 +19,7 @@ import type { ProjectSessionTabMenu } from "../../src/renderer/components/layout
  *      这是比字符串匹配更强的判据：它在**类型系统**里成立，不是"某段文本出现过"。
  *
  * 明确不做什么：不再用 `includes(源码)` 假装在验行为。组件接线的运行时行为
- * 属于真实 Electron U1 的范围（见 tasks/T16），不是无头 smoke 能覆盖的。
+ * 属于真实 Electron U1 的范围，不是无头 smoke 能覆盖的。
  */
 
 let pass = 0, fail = 0;

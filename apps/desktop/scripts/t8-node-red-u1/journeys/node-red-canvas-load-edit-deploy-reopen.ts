@@ -63,6 +63,7 @@ import {
   switchToTab,
   waitEditorReady,
   waitFor,
+  waitForCaptureReady,
 } from "../editor-flow.js";
 import { loadNodeTypes } from "@main/orchestration/nodeTypes.js";
 import { getWorkflow } from "@main/orchestration/library.js";
@@ -76,65 +77,106 @@ const SHA_FILE = "t8-flows-sha-after-deploy.txt";
 const BASELINE_SHA_FILE = "t8-flows-sha-baseline.txt";
 const TAB_LABEL = "T8 Node-RED 夹具自动化";
 
+/** Bound Electron calls too: a closed-but-not-destroyed WebContents can leave executeJavaScript pending. */
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** W29: labels are repainted asynchronously after a tray commit or page reload.
  * Poll the actual DOM assertion, not an arbitrary sleep or the in-memory model.
  * Include the last observed labels on timeout so a real regression is diagnosable. */
-async function awaitCanvasLabel(wc: WebContents, expected: string): Promise<{
+async function awaitCanvasLabel(
+  wc: WebContents,
+  expected: string,
+  setupWebContentsId?: number,
+): Promise<{
   ok: boolean;
-  observed: { expected: string; labels: string[]; attempts: number; timeoutMs: number };
+  observed: {
+    expected: string;
+    labels: string[];
+    firstLabels: string[];
+    firstSampleAt: string | null;
+    lastAttemptAt: string | null;
+    lastSampleAt: string | null;
+    lastError: string | null;
+    webContentsId: number;
+    webContentsUrl: string | null;
+    setupWebContentsId: number | null;
+    matchesSetupWebContents: boolean | null;
+    attempts: number;
+    elapsedMs: number;
+    timeoutMs: number;
+  };
   detail?: string;
 }> {
   let labels: string[] = [];
-  let attempts = 0;
-  const timeoutMs = 10_000;
-  const ok = await waitFor(async () => {
-    attempts += 1;
-    labels = await js<string[]>(wc,
-      `[...document.querySelectorAll('.red-ui-flow-node-label-text')].map(n => n.textContent || '')`);
-    return labels.some((label) => label.includes(expected));
-  }, timeoutMs);
-  return {
-    ok,
-    observed: { expected, labels, attempts, timeoutMs },
-    ...(ok ? {} : { detail: `画布标签在 ${timeoutMs}ms 内未包含「${expected}」；最后实际标签：${JSON.stringify(labels)}` }),
-  };
-}
-
-/** A newly attached WebContentsView may have loaded its DOM before Chromium
- * has allocated a capturable display surface. Probe capture readiness ahead
- * of the DSL screenshot without modifying the shared Electron U1 driver. */
-async function awaitCanvasCapture(wc: WebContents): Promise<{
-  ok: boolean;
-  observed: { attempts: number; lastError: string | null; timeoutMs: number };
-  detail?: string;
-}> {
-  const timeoutMs = 10_000;
-  let attempts = 0;
+  let firstLabels: string[] = [];
+  let firstSampleAt: string | null = null;
+  let lastAttemptAt: string | null = null;
+  let lastSampleAt: string | null = null;
   let lastError: string | null = null;
+  let webContentsUrl: string | null = null;
+  let attempts = 0;
+  const webContentsId = wc.id;
+  const matchesSetupWebContents = setupWebContentsId === undefined ? null : webContentsId === setupWebContentsId;
+  try { if (!wc.isDestroyed()) webContentsUrl = wc.getURL(); } catch { /* preserve identity even if URL is unavailable */ }
+  const startedAt = Date.now();
+  const timeoutMs = 10_000;
   const ok = await waitFor(async () => {
     attempts += 1;
+    lastAttemptAt = new Date().toISOString();
     try {
-      const captured = await wc.capturePage();
-      if (captured.isEmpty()) {
-        lastError = "capturePage returned an empty image";
-        return false;
-      }
+      if (wc.isDestroyed()) throw new Error(`WebContents ${webContentsId} 已销毁`);
+      labels = await withTimeout(
+        js<string[]>(wc,
+          `[...document.querySelectorAll('.red-ui-flow-node-label-text')].map(n => n.textContent || '')`),
+        1000,
+        "executeJavaScript 标签查询超过 1000ms",
+      );
       lastError = null;
-      return true;
+      const sampledAt = new Date().toISOString();
+      if (firstSampleAt === null) {
+        firstSampleAt = sampledAt;
+        firstLabels = [...labels];
+      }
+      lastSampleAt = sampledAt;
+      return labels.some((label) => label.includes(expected));
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
       return false;
     }
-  }, timeoutMs, 250);
+  }, timeoutMs);
+  const elapsedMs = Date.now() - startedAt;
+  const labelFound = labels.some((label) => label.includes(expected));
+  const identityMatches = matchesSetupWebContents !== false;
+  const resultOk = ok && labelFound && identityMatches;
+  const detailParts: string[] = [];
+  if (!labelFound) detailParts.push(`最后实际标签：${JSON.stringify(labels)}`);
+  if (lastError !== null) detailParts.push(`最后读取错误：${lastError}`);
+  if (matchesSetupWebContents === false) detailParts.push(`当前编辑器 WebContents(${webContentsId}) 与 runner 捕获的 setup WebContents(${setupWebContentsId}) 不一致`);
   return {
-    ok,
-    observed: { attempts, lastError, timeoutMs },
-    ...(ok ? {} : { detail: `编辑器视图未获得可截图 surface，尝试 ${attempts} 次；最后错误：${String(lastError)}` }),
+    ok: resultOk,
+    observed: {
+      expected, labels, firstLabels, firstSampleAt, lastAttemptAt, lastSampleAt, lastError,
+      webContentsId, webContentsUrl, setupWebContentsId: setupWebContentsId ?? null,
+      matchesSetupWebContents, attempts, elapsedMs, timeoutMs,
+    },
+    ...(resultOk ? {} : { detail: `画布标签条件或视图身份未通过（${timeoutMs}ms）；${detailParts.join("；")}` }),
   };
 }
 
 interface T8Runtime {
   harness: T8Harness;
+  /** The exact WebContents returned as pageFromView to the U1 driver at setup time. */
+  setupWebContents: WebContents;
   enginePort: number;
   projectDir: string;
   repoRoot: string;
@@ -176,6 +218,7 @@ export const nodeRedCanvasJourney = defineU1Journey({
 
       const runtime: T8Runtime = {
         harness,
+        setupWebContents: wc,
         enginePort: started.port,
         projectDir: ctx.projectDir,
         repoRoot,
@@ -278,8 +321,11 @@ export const nodeRedCanvasJourney = defineU1Journey({
     }, "canvas-renders-fixture", { assert: true }),
 
     step.run(async ({ runtime }) => {
-      const wc = (runtime as T8Runtime).harness.editorWebContents();
-      return wc === null ? { ok: false, detail: "首次画布截图前，编辑器视图不存在" } : await awaitCanvasCapture(wc);
+      const rt = runtime as T8Runtime;
+      const liveWc = rt.harness.editorWebContents();
+      return liveWc === null
+        ? { ok: false, detail: "首次画布截图前，编辑器视图不存在" }
+        : await waitForCaptureReady(rt.setupWebContents, liveWc);
     }, "canvas-loaded-capture-ready", { assert: true }),
     step.screenshot("canvas-loaded"),
 
@@ -537,12 +583,15 @@ export const nodeRedCanvasJourney = defineU1Journey({
       };
     }, "rename-node-via-tray", { assert: true }),
 
-    // The tray commit precedes the asynchronous Node-RED label redraw.
-    // Check the same DOM labels as the former assertEvaluated, but wait for
-    // the render rather than sampling a single frame (W29).
+    // The driver captures pageFromView once at setup; production host.open may
+    // navigate the existing view after an engine-port change. Check the live view
+    // and record whether it is still the same WebContents the driver will assert/screenshot.
     step.run(async ({ runtime }) => {
-      const wc = (runtime as T8Runtime).harness.editorWebContents();
-      return wc === null ? { ok: false, detail: "改名后编辑器视图不存在" } : await awaitCanvasLabel(wc, RENAME);
+      const rt = runtime as T8Runtime;
+      const liveWc = rt.harness.editorWebContents();
+      return liveWc === null
+        ? { ok: false, detail: "改名后编辑器视图不存在" }
+        : await awaitCanvasLabel(liveWc, RENAME, rt.setupWebContents.id);
     }, "canvas-label-shows-rename", { assert: true }),
 
     step.screenshot("canvas-edited"),
@@ -712,21 +761,31 @@ export const nodeRedCanvasJourney = defineU1Journey({
       const ready = await waitEditorReady(wc, 60_000);
       await dismissFirstRunOverlays(wc);
       const switched = await switchToTab(wc, TAB_LABEL);
-      const rendered = await waitFor(async () => (await js<number>(wc, `document.querySelectorAll('#red-ui-workspace-chart .red-ui-flow-node-group').length`)) >= 3, 20_000);
-      const dom = await js<{ labels: string[]; types: string[] }>(wc, `(() => {
-        const groups = [...document.querySelectorAll('#red-ui-workspace-chart .red-ui-flow-node-group')];
-        return { labels: groups.map((g) => (g.__data__ && typeof g.__data__.name === 'string' ? g.__data__.name : '')), types: groups.map((g) => (g.__data__ ? g.__data__.type : '')) };
-      })()`);
+      let dom: { count: number; labels: string[]; types: string[] } = { count: 0, labels: [], types: [] };
+      let renderAttempts = 0;
+      const rendered = await waitFor(async () => {
+        renderAttempts += 1;
+        dom = await js<{ count: number; labels: string[]; types: string[] }>(wc, `(() => {
+          const groups = [...document.querySelectorAll('#red-ui-workspace-chart .red-ui-flow-node-group')];
+          return { count: groups.length, labels: groups.map((g) => (g.__data__ && typeof g.__data__.name === 'string' ? g.__data__.name : '')), types: groups.map((g) => (g.__data__ ? g.__data__.type : '')) };
+        })()`);
+        // Node count alone is not enough: the node's model can be loaded before
+        // its label has been painted. Wait for the original name criterion too.
+        return dom.count >= 3 && dom.labels.includes(RENAME);
+      }, 20_000);
       return {
-        ok: ready && switched && rendered && dom.labels.includes(RENAME),
-        observed: { engineState: rt.harness.engineState(), port: rt.enginePort, ready, switched, rendered, dom },
-        ...(ready && rendered && dom.labels.includes(RENAME) ? {} : { detail: `重开后画布未显示改后的名字（labels=${JSON.stringify(dom.labels)}）` }),
+        ok: ready && switched && rendered,
+        observed: { engineState: rt.harness.engineState(), port: rt.enginePort, ready, switched, rendered, renderAttempts, dom },
+        ...(ready && switched && rendered ? {} : { detail: `重开后画布未在 20s 内显示改后的名字（count=${dom.count}, attempts=${renderAttempts}, labels=${JSON.stringify(dom.labels)}）` }),
       };
     }, "reopen-canvas-shows-rename", { assert: true }),
 
     step.run(async ({ runtime }) => {
-      const wc = (runtime as T8Runtime).harness.editorWebContents();
-      return wc === null ? { ok: false, detail: "重开后编辑器视图不存在" } : await awaitCanvasLabel(wc, RENAME);
+      const rt = runtime as T8Runtime;
+      const liveWc = rt.harness.editorWebContents();
+      return liveWc === null
+        ? { ok: false, detail: "重开后编辑器视图不存在" }
+        : await awaitCanvasLabel(liveWc, RENAME, rt.setupWebContents.id);
     }, "reopen-dom-label", { assert: true }),
 
     step.run(async ({ runtime }) => {
@@ -754,8 +813,11 @@ export const nodeRedCanvasJourney = defineU1Journey({
     }, "reopen-ownership-and-ledger", { assert: true }),
 
     step.run(async ({ runtime }) => {
-      const wc = (runtime as T8Runtime).harness.editorWebContents();
-      return wc === null ? { ok: false, detail: "重开截图前编辑器视图不存在" } : await awaitCanvasCapture(wc);
+      const rt = runtime as T8Runtime;
+      const liveWc = rt.harness.editorWebContents();
+      return liveWc === null
+        ? { ok: false, detail: "重开截图前编辑器视图不存在" }
+        : await waitForCaptureReady(rt.setupWebContents, liveWc);
     }, "reopen-capture-ready", { assert: true }),
     step.screenshot("canvas-reopened-final"),
   ],

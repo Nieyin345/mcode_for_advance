@@ -1145,49 +1145,9 @@ async function main(): Promise<void> {
   {
     const byId = new Map(BUILTIN_WORKFLOWS.map((w) => [w.id, w]));
     const typeIds = new Set((await loadNodeTypes()).entries.map((e) => e.id));
-    const watch = byId.get("watch");
-    check("内置的 watch 还在", watch !== undefined, [...byId.keys()]);
-    if (watch) {
-      check("watch 是图型(有节点)", watch.nodes.length > 0, watch.nodes.length);
-      eq("watch 没有 prompt(它不进对话模式下拉)", watch.prompt, undefined);
-      deepEq(
-        "watch:引用的类型都装了",
-        watch.nodes.filter((n) => !typeIds.has(n.type)).map((n) => n.type),
-        [],
-      );
-      const trigger = watch.nodes.find((n) => n.type === "mcode.trigger");
-      const command = watch.nodes.find((n) => n.type === "mcode.command");
-      const conversation = watch.nodes.find((n) => n.type === "mcode.conversation");
-      check(
-        "三步齐全:触发器 → 命令 → 对话",
-        trigger !== undefined && command !== undefined && conversation !== undefined,
-        watch.nodes.map((n) => n.type),
-      );
-      eq("触发器是手动", trigger?.params["triggerKind"], "manual");
-      eq("触发器的项目留空(起跑时补)", trigger?.params["project"], "");
-      check(
-        "命令写死在参数里",
-        typeof command?.params["command"] === "string" &&
-          (command.params["command"] as string).length > 0,
-        command?.params,
-      );
-      eq("命令不限时(0 = 不限)", command?.params["timeoutMs"], 0);
-      eq("对话节点是发完即走", conversation?.params["injectMode"], "auto");
-      eq("对话节点注回发起会话", conversation?.params["injectTarget"], "origin");
-
-      // **起跑通道**:startWatch 把发起会话的项目写进触发器参数再存盘(命令/说明
-      // 同理,给了才写)。这一步必须过得了存盘校验 —— task 模板里已带默认值,所以
-      // 只补 project。
-      const patched: WorkflowDoc = {
-        ...watch,
-        nodes: watch.nodes.map((n) =>
-          n.type === "mcode.trigger"
-            ? { ...n, params: { ...n.params, project: "prj_smoke" } }
-            : n,
-        ),
-      };
-      check("补上项目后过得了存盘校验", (await saveWorkflow(patched)).ok, await saveWorkflow(patched));
-    }
+    // 长任务守望已移除（2026-10-27）：它是用户能用工作流自己搭出来的东西，
+    // 不再做成内置模板。这里只断言它**真的不在了**（防止有人误加回来）。
+    check("内置工作流里没有 watch（已移除）", byId.get("watch") === undefined, [...byId.keys()]);
   }
 
   console.log("\n提示词里的「完成判据」");

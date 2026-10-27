@@ -59,8 +59,12 @@ if [[ -f "$VENDOR_DOCS" && -f "$VENDOR_IPC" ]]; then
   MCODE_SMOKE_DATA_ROOT="$DATA" node "$OUT/nativeDocs.mjs"
   # T05c: exercise REAL Docs AI → Mcode RuntimeManager adapter with three
   # fake registered SDK identities. No network, no real user DB/credentials.
+  # The AI adapter pulls the voice stack in transitively, and sherpa-onnx ships
+  # prebuilt .node binaries that esbuild has no loader for. This suite never
+  # speaks, so keep every native addon external instead of bundling it.
   "$ESBUILD" scripts/document-view-host-smoke/nativeAiSdk.ts \
     --bundle --platform=node --format=esm --tsconfig=tsconfig.json \
+    --external:sherpa-onnx-node --external:*.node \
     --alias:@main/claude/RuntimeManager.js=./scripts/document-view-host-smoke/stubs/nativeAiMcode.ts \
     --alias:@main/store/repositories.js=./scripts/document-view-host-smoke/stubs/nativeAiMcode.ts \
     --alias:@main/providers/registry.js=./scripts/document-view-host-smoke/stubs/nativeAiMcode.ts \

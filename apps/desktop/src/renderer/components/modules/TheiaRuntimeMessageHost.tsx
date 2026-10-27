@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useFocusTrap } from "@renderer/hooks/useFocusTrap.js";
 import { api } from "@renderer/lib/api.js";
 import { useToastStore } from "@renderer/stores/toastStore.js";
-import type { TheiaRuntimeMessage } from "@contracts/ipc/modules.js";
+import type { TheiaRuntimeMessage } from "@contracts/ipc/theia.js";
 
 export function TheiaRuntimeMessageHost() {
   const [pending,setPending]=useState<TheiaRuntimeMessage[]>([]);

@@ -226,8 +226,8 @@ html:not(.sketch) [data-ui-shell-variant="workspace"] [data-sidebar-quick-action
 }
 html:not(.sketch) [data-ui-shell-variant="workspace"] [data-sidebar-quick-actions] > button {
   min-width: 0;
-  min-height: 2.5rem;
-  border-radius: var(--radius-btn-xs);
+  min-height: 2rem;
+  border-radius: var(--radius-btn-md);
 }
 html:not(.sketch) [data-ui-shell-variant="workspace"] [data-sidebar-quick-actions] > button:focus-visible,
 html:not(.sketch) [data-ui-shell-variant="workspace"] [data-tree-session-row]:focus-visible,

@@ -297,7 +297,12 @@ if (cliPath === null) {
       const docHandler = readFileSync(join(repoRoot, "apps/desktop/src/main/ipc/document.ts"), "utf8");
       check("★ handler 在编辑前比对 expectedRevision", docHandler.includes("fileContentVersion(") && docHandler.includes("input.expectedRevision"));
       check("★ 冲突带 currentRevision 返回", docHandler.includes('kind: "conflict"') && docHandler.includes("currentRevision: current"));
-      check("★ 成功编辑回传新 revision", docHandler.includes("revision: await fileContentVersion"));
+      // 守行为：成功编辑必须**算出**新版本并**回传**它。不锚定
+      // `revision: await fileContentVersion(...)` 这种写法 —— 实现改成先算变量
+      // 再 `{ ...wire, revision }` 是同样的语义（而且更清楚），不该假红。
+      check("★ 成功编辑回传新 revision",
+        docHandler.includes("fileContentVersion(input.filePath)") &&
+        /return \{ \.\.\.wire, revision \}/.test(docHandler));
       const docContract = readFileSync(join(repoRoot, "packages/contracts/src/ipc/document.ts"), "utf8");
       check("契约有 expectedRevision 字段", docContract.includes("expectedRevision: z.string()"));
       check("结果类型有 conflict 档", docContract.includes('"conflict"'));

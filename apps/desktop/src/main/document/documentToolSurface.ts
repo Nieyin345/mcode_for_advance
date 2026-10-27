@@ -519,12 +519,26 @@ export function blocksToMarkdown(detail: unknown): { markdown: string; blocks: n
   const items = (detail as { items?: unknown }).items;
   if (!Array.isArray(items)) return null;
   const lines: string[] = [];
+  // 工作簿的行块以 `[sheet <name>] ` 开头（见 genofficeCli 的 readWorkbookSheets）。
+  // 多表拼在一起时正文必须能分节，否则「A 表的表头 + B 表的数据」在 Markdown 里
+  // 连成一片，模型会把跨表的相邻行当成同一张表的连续行。
+  let lastSheet: string | null = null;
   for (const raw of items) {
     if (raw === null || typeof raw !== "object") continue;
     const block = raw as { index?: unknown; type?: unknown; level?: unknown; text?: unknown; table?: { rows?: number; cols?: number } };
     const index = typeof block.index === "number" ? block.index : lines.length;
-    const text = typeof block.text === "string" ? block.text : "";
+    const rawText = typeof block.text === "string" ? block.text : "";
     const anchor = `<!-- b${index} -->`;
+    const sheetTag = /^\[sheet\s+([^\]]+)\]\s?/.exec(rawText);
+    let text = rawText;
+    if (sheetTag !== null) {
+      const sheetName = sheetTag[1]!.trim();
+      text = rawText.slice(sheetTag[0].length);
+      if (sheetName !== lastSheet) {
+        lastSheet = sheetName;
+        lines.push(`### ${sheetName}`);
+      }
+    }
     switch (block.type) {
       case "heading":
         lines.push(`${anchor}${"#".repeat(Math.min(6, Math.max(1, Number(block.level) || 1)))} ${text}`);

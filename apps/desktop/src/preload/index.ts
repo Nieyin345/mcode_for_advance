@@ -9,25 +9,10 @@ import type { MainToRendererMessage } from "@contracts/ipc";
  */
 const api = {
   modules: {
-    catalog: (() => ipcRenderer.invoke(IPC.MODULE_CATALOG)) as RpcMap["modules.catalog"],
-    install: ((input) => ipcRenderer.invoke(IPC.MODULE_INSTALL,input)) as RpcMap["modules.install"],
-    /** 【F006】从 `.vsix` 装真实 VS Code 扩展。与 `install` 是同一个宿主能力的另一条入口
-     *  （那条收渲染端拼好的 manifest，这条收磁盘上的 vsix 字节），审批同档。 */
-    installVsix: ((input) => ipcRenderer.invoke(IPC.MODULE_INSTALL_VSIX,input)) as RpcMap["modules.installVsix"],
+    /** Theia 扩展宿主：临时试运行（不持久化）。 */
     theiaPreview: ((input) => ipcRenderer.invoke(IPC.MODULE_THEIA_PREVIEW, input)) as RpcMap["modules.theiaPreview"],
+    /** Theia 扩展宿主：唯一的扩展安装 / 启停 / 执行入口。 */
     theiaInstalled: ((input) => ipcRenderer.invoke(IPC.MODULE_THEIA_INSTALLED, input)) as RpcMap["modules.theiaInstalled"],
-    remove: ((input) => ipcRenderer.invoke(IPC.MODULE_REMOVE,input)) as RpcMap["modules.remove"],
-    invoke: ((input) => ipcRenderer.invoke(IPC.MODULE_INVOKE,input)) as RpcMap["modules.invoke"],
-    task: ((input) => ipcRenderer.invoke(IPC.MODULE_TASK,input)) as RpcMap["modules.task"],
-    cancel: ((input) => ipcRenderer.invoke(IPC.MODULE_CANCEL,input)) as RpcMap["modules.cancel"],
-    tasks: ((input) => ipcRenderer.invoke(IPC.MODULE_TASKS,input)) as RpcMap["modules.tasks"],
-    // 【MC-036】真人授权入口(设置页的点按)。Agent 侧同一对方法名在 `appControl/policy.ts`
-    // 钉 blocked,`app_api_call` 到不了 —— 这两条不是模型可用的自动化授权通道。
-    issueWorkflowGrant: ((input) => ipcRenderer.invoke(IPC.MODULE_ISSUE_WORKFLOW_GRANT,input)) as RpcMap["modules.issueWorkflowGrant"],
-    revokeWorkflowGrant: ((input) => ipcRenderer.invoke(IPC.MODULE_REVOKE_WORKFLOW_GRANT,input)) as RpcMap["modules.revokeWorkflowGrant"],
-    setPermissions: ((input) => ipcRenderer.invoke(IPC.MODULE_SET_PERMISSIONS,input)) as RpcMap["modules.setPermissions"],
-    egressConsentGet: (() => ipcRenderer.invoke(IPC.MODULE_EGRESS_CONSENT_GET)) as RpcMap["modules.egressConsentGet"],
-    egressConsentSet: ((input) => ipcRenderer.invoke(IPC.MODULE_EGRESS_CONSENT_SET,input)) as RpcMap["modules.egressConsentSet"],
   },
   /** 扩展专用数据区(报告 E12):一个扩展一块私有键值存储,坐落在
    *  `<数据根>/extensions/<扩展 id>/store.json`(见 `@contracts/extensionStore`)。 */
@@ -473,6 +458,9 @@ const api = {
     /** Copy a file into a directory (auto-renames on name clash). Returns ok. */
     copy: ((input) =>
       ipcRenderer.invoke(IPC.FILE_COPY, input)) as RpcMap["file.copy"],
+    /** Move an entry (file or directory) into another directory. Never overwrites. */
+    move: ((input) =>
+      ipcRenderer.invoke(IPC.FILE_MOVE, input)) as RpcMap["file.move"],
   },
 
   /** ripgrep availability + one-click install (search dialog banner). */
@@ -725,6 +713,9 @@ const api = {
       ipcRenderer.invoke(IPC.MCP_GENOFFICE_INSTALL, input)) as RpcMap["mcp.genofficeInstall"],
     remove: ((input) =>
       ipcRenderer.invoke(IPC.MCP_REMOVE, input)) as RpcMap["mcp.remove"],
+    /* 【EXT-03】真的起一次这个服务器 —— 保存成功不代表连得上。 */
+    testConnection: ((input) =>
+      ipcRenderer.invoke(IPC.MCP_TEST_CONNECTION, input)) as RpcMap["mcp.testConnection"],
     scanImport: ((input) =>
       ipcRenderer.invoke(IPC.MCP_SCAN_IMPORT, input)) as RpcMap["mcp.scanImport"],
     import: ((input) =>
@@ -878,6 +869,9 @@ const api = {
     confirmMigration: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_CONFIRM_MIGRATION, input)) as RpcMap["workflow.confirmMigration"],
     remove: ((input) =>
       ipcRenderer.invoke(IPC.WORKFLOW_REMOVE, input)) as RpcMap["workflow.remove"],
+    /* 【WF-09】复制一份工作流：新 id / 新节点 id，其余原样。 */
+    duplicate: ((input) =>
+      ipcRenderer.invoke(IPC.WORKFLOW_DUPLICATE, input)) as RpcMap["workflow.duplicate"],
     pinDefault: ((input) =>
       ipcRenderer.invoke(IPC.WORKFLOW_PIN_DEFAULT, input)) as RpcMap["workflow.pinDefault"],
     restoreDefault: ((input) =>
@@ -940,25 +934,7 @@ const api = {
       ipcRenderer.invoke(IPC.AUTOMATION_RUNS, input)) as RpcMap["automation.runs"],
     sessions: ((input) =>
       ipcRenderer.invoke(IPC.AUTOMATION_SESSIONS, input)) as RpcMap["automation.sessions"],
-    // 守望(会话输入区那颗按钮):起跑 / 活跃查询 / 命令模板两件。同上,桌面专属。
-    watch: ((input) =>
-      ipcRenderer.invoke(IPC.AUTOMATION_WATCH, input)) as RpcMap["automation.watch"],
-    watchStatus: ((input) =>
-      ipcRenderer.invoke(IPC.AUTOMATION_WATCH_STATUS, input)) as RpcMap["automation.watchStatus"],
-    watchTemplates: (() =>
-      ipcRenderer.invoke(
-        IPC.AUTOMATION_WATCH_TEMPLATES,
-      )) as RpcMap["automation.watchTemplates"],
-    saveWatchTemplates: ((input) =>
-      ipcRenderer.invoke(
-        IPC.AUTOMATION_WATCH_TEMPLATES_SAVE,
-        input,
-      )) as RpcMap["automation.watchTemplatesSave"],
-    rebuildWatchTemplates: ((input) =>
-      ipcRenderer.invoke(
-        IPC.AUTOMATION_WATCH_TEMPLATES_REBUILD,
-        input,
-      )) as RpcMap["automation.rebuildWatchTemplates"],
+    // 长任务守望与命令模板库已移除（2026-10-27）。
     // 全部触发器的事实状态(自动化管理页回答「它怎么没反应」的那份)。
     statusAll: (() =>
       ipcRenderer.invoke(IPC.AUTOMATION_STATUS_ALL)) as RpcMap["automation.statusAll"],
@@ -1053,6 +1029,17 @@ const api = {
     focus: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_FOCUS, input)) as RpcMap["documentView.focus"],
     close: ((input) => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_CLOSE, input)) as RpcMap["documentView.close"],
     list: (() => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_LIST)) as RpcMap["documentView.list"],
+    // 【文档修订/历史/批注】主进程侧已有 handler；这里补上渲染端入口。
+    dormantList: (() => ipcRenderer.invoke(IPC.DOCUMENT_VIEW_DORMANT_LIST)) as RpcMap["documentView.dormantList"],
+    revisionState: ((input) => ipcRenderer.invoke(IPC.DOC_VIEW_REVISION_STATE, input)) as RpcMap["documentView.revisionState"],
+    revisionDecide: ((input) => ipcRenderer.invoke(IPC.DOC_VIEW_REVISION_DECIDE, input)) as RpcMap["documentView.revisionDecide"],
+    revisionMode: ((input) => ipcRenderer.invoke(IPC.DOC_VIEW_REVISION_MODE, input)) as RpcMap["documentView.revisionMode"],
+    revisionFocus: ((input) => ipcRenderer.invoke(IPC.DOC_VIEW_REVISION_FOCUS, input)) as RpcMap["documentView.revisionFocus"],
+    revisionRewrite: ((input) => ipcRenderer.invoke(IPC.DOC_VIEW_REVISION_REWRITE, input)) as RpcMap["documentView.revisionRewrite"],
+    historyList: ((input) => ipcRenderer.invoke(IPC.DOC_VIEW_HISTORY_LIST, input)) as RpcMap["documentView.historyList"],
+    historyRestore: ((input) => ipcRenderer.invoke(IPC.DOC_VIEW_HISTORY_RESTORE, input)) as RpcMap["documentView.historyRestore"],
+    commentCreate: ((input) => ipcRenderer.invoke(IPC.DOC_VIEW_COMMENT_CREATE, input)) as RpcMap["documentView.commentCreate"],
+    commentMutate: ((input) => ipcRenderer.invoke(IPC.DOC_VIEW_COMMENT_MUTATE, input)) as RpcMap["documentView.commentMutate"],
   },
   workflowEngine: {
     start: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_START, input)) as RpcMap["workflowEngine.start"],
@@ -1065,6 +1052,22 @@ const api = {
     nodesList: (() => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_NODES_LIST)) as RpcMap["workflowEngine.nodesList"],
     nodeInstall: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_NODE_INSTALL, input)) as RpcMap["workflowEngine.nodeInstall"],
     respondNodeInstallApproval: ((input) => ipcRenderer.invoke(IPC.WORKFLOW_ENGINE_NODE_INSTALL_RESPOND, input)) as RpcMap["workflowEngine.respondNodeInstallApproval"],
+    /** 【Q9b】工作流引擎**状态变了**（起/停/失败/部署确认）。
+     *
+     *  以前这里没有推送，界面只能每 2.5 秒轮询 `workflowEngine.list` 才知道引擎起来
+     *  没有 —— 用户点「启动」之后那几秒是空转的。有了这条，状态变化的那一刻就到。
+     *
+     *  载荷只带 `{ engineId, state }`，**不带状态快照**：收到就重读一次权威状态，
+     *  两份快照必然会漂（同 `workflowsChanged` 的取舍）。 */
+    engineChanged(handler: (msg: Extract<MainToRendererMessage, { channel: "workflowEngine:changed" }>) => void): () => void {
+      const listener = (_e: unknown, msg: MainToRendererMessage) => {
+        if (msg.channel === IPC.WORKFLOW_ENGINE_CHANGED) handler(msg);
+      };
+      ipcRenderer.on(IPC.WORKFLOW_ENGINE_CHANGED, listener);
+      return () => {
+        ipcRenderer.off(IPC.WORKFLOW_ENGINE_CHANGED, listener);
+      };
+    },
   },
   unattended: {
     // 无人值守任务计划:用户签发计划级授权 + 正式执行。**只有桌面渲染端**够得到
