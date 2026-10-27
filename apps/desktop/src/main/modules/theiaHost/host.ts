@@ -47,6 +47,8 @@ import { McodeWorkspaceWatcher } from "./mcodeWorkspaceWatcher.js";
 import { prepareTheiaEdits, type EditorEditTransaction, type TheiaTextEdit, type TheiaEditOptions } from "./editorTransactions.js";
 import type { TheiaLanguageLocation, TheiaLanguageProviderKind, TheiaLanguageSymbol, TheiaSignatureHelp, TheiaLanguageCodeAction, TheiaLanguageTextEdit } from "@contracts/ipc/modules.js";
 import { formattingEdits, documentSymbols, signatureHelp, languageRange, localWorkspaceTextEdits } from "./languageResults.js";
+import { createMcodeBridge, isMcodeCommand, type McodeApprovalPort, type McodeDispatch } from "./mcodeBridge.js";
+import type { BuiltinMcCommand } from "../builtinMcCommands.js";
 
 /* ───────────────────────── 依赖定位 ───────────────────────── */
 
@@ -105,8 +107,13 @@ export interface TheiaHostOptions {
   /** Mcode-native Quick Pick / Input Box dialog, never a second Theia UI. */
   onStatus?: (input:{id:string;removed?:boolean;text?:string;name?:string;tooltip?:string;command?:string;priority?:number;alignment?:number})=>void;
   terminalDriver?:TheiaNativeTerminalDriver;
-  onWebview?:(event:{handle:string;action:"create"|"html"|"message"|"dispose"|"title";
-    title?:string;html?:string;payload?:unknown})=>void;
+  onWebview?:(event:{handle:string;action:"create"|"html"|"message"|"dispose"|"title"|"options";
+    title?:string;html?:string;payload?:unknown;
+    /** 【F034 补】扩展是否要求在这个 Webview 里跑脚本。
+     *  VS Code 协议里 `WebviewOptions.enableScripts` **默认 false**；扩展传 true
+     *  即声明「我的 webview 里有脚本」。渲染端据此决定 iframe 的 `sandbox` 放不放
+     *  `allow-scripts` —— 缺了这个字段，所有扩展的 webview 脚本都会被静默禁用。 */
+    enableScripts?:boolean})=>void;
   onDiagnostics?: (collectionId:string,resource:string,markers:Array<{
     severity:1|2|4|8;message:string;source?:string;code?:string;
     startLineNumber:number;startColumn:number;endLineNumber:number;endColumn:number;
@@ -119,6 +126,14 @@ export interface TheiaHostOptions {
   onHostOutput?: (stream: "stdout" | "stderr", text: string) => void;
   /** 握手超时（毫秒）。默认 15 s。 */
   handshakeTimeoutMs?: number;
+  /** 【EXT-07】扩展 → Mcode 能力派发器。不传 = 不接桥。 */
+  mcodeDispatch?: McodeDispatch;
+  /** 【EXT-07】审批端口。缺省 = 写/danger 档一律拒。 */
+  mcodeRequestApproval?: McodeApprovalPort;
+  /** 【EXT-07】内置 Mcode 命令表（`mcode.file.*`）。 */
+  builtinLookup?: (id: string) => BuiltinMcCommand | undefined;
+  /** 【EXT-07】已知工作区根的判定（内置文件命令的围栏）。 */
+  knownRoot?: (path: string) => boolean;
 }
 
 export interface TheiaHostLogEntry {
@@ -397,6 +412,8 @@ export class TheiaHost {
   private readonly activationErrorLog: TheiaHostLogEntry[] = [];
   /** 扩展 id（`publisher.name`，小写）。 */
   private extensionId = "";
+  /** 【EXT-07】扩展 → Mcode 能力桥。由 `start()` 按选项装配；缺省 = 不接桥。 */
+  private mcodeBridge: ReturnType<typeof createMcodeBridge> | null = null;
   private declaredCommands: string[] = [];
   private exitReason: string | undefined;
   private activeEditorSession: EditorSession | null = null;
@@ -628,6 +645,18 @@ export class TheiaHost {
     const publisher = typeof manifest.publisher === "string" ? manifest.publisher : "unpublished";
     const name = typeof manifest.name === "string" ? manifest.name : path.basename(extensionDir);
     this.extensionId = `${publisher}.${name}`.toLowerCase();
+    // 【EXT-07】装桥。必须在任何一次扩展调用 `$executeCommand` 之前 —— 那发生在
+    // 握手后的 `$start` 期间，所以放在这里（解析完扩展身份、起进程之前）是安全的。
+    this.mcodeBridge = this.options.mcodeDispatch
+      ? createMcodeBridge({
+          dispatch: this.options.mcodeDispatch,
+          ...(this.options.mcodeRequestApproval === undefined ? {} : { requestApproval: this.options.mcodeRequestApproval }),
+          extensionId: () => this.extensionId,
+          ...(this.options.builtinLookup === undefined ? {} : { builtinLookup: this.options.builtinLookup }),
+          ...(this.options.knownRoot === undefined ? {} : { knownRoot: this.options.knownRoot }),
+          log: (entry) => this.log({ level: entry.level, source: "mcode-bridge", message: entry.message }),
+        })
+      : null;
     const contributes = manifest.contributes as { commands?: unknown } | undefined;
     this.declaredCommands = Array.isArray(contributes?.commands)
       ? (contributes.commands as { command?: unknown }[])
@@ -1115,6 +1144,14 @@ export class TheiaHost {
        * 说明的就是这件事的边界。
        */
       $executeCommand: async (id: string, ...args: unknown[]) => {
+        // 【EXT-07】`mcode.` 前缀 → 转给 Mcode 主进程（见 mcodeBridge.ts）。
+        //
+        // ⚠️ **顺序是安全属性**：这一段必须在 `registeredCommands` 判断**之前**，
+        // 否则扩展注册一个同名 `mcode.*` 命令就能劫持真正的 Mcode 能力
+        // （扩展能注册任意 id）。
+        if (isMcodeCommand(id) && this.mcodeBridge) {
+          return await this.mcodeBridge.invoke(id, args) as never;
+        }
         const ext = rpc.getProxy<{ $executeCommand<T>(id: string, ...a: unknown[]): Promise<T> }>(
           modules.MAIN_RPC_CONTEXT.COMMAND_REGISTRY_EXT,
         );
@@ -1169,13 +1206,23 @@ export class TheiaHost {
     // React DOM or give it Node/Electron access. Full vscode-resource schemes
     // are intentionally NOT emulated until a secure resolver exists.
     setProxyHandler(P.WEBVIEWS_MAIN, {
-      $createWebviewPanel:(handle:string,_viewType:string,title:string)=>{
+      // 【F034 补】签名必须与 `plugin-api-rpc.ts` 的 `WebviewsMain.$createWebviewPanel`
+      // 一致 —— Theia 的插件侧传 **5 个**参数，第 5 个是 `WebviewOptions`
+      // （`vendor/theia/.../plugin/webviews.ts:124`）。
+      //
+      // 之前这里只声明了前 3 个，于是 `options.enableScripts` 被**静默丢弃**，
+      // 渲染端拿不到它 → iframe 恒为 `sandbox=""`（脚本禁用）→ **所有扩展的
+      // webview 里的脚本都不执行，而且不报错**。VS Code 协议里默认值是 false，
+      // 所以「不传」和「丢了」在协议层看起来一样，只有真要脚本的扩展会坏。
+      $createWebviewPanel:(handle:string,_viewType:string,title:string,
+        _showOptions?:unknown,options?:{enableScripts?:boolean})=>{
         if(!this.options.onWebview)throw Error("此扩展会话未接入 Mcode 原生 Webview");
         if(typeof handle!=="string"||handle.length>256||this.webviewHandles.size>=4)
           throw Error("扩展 Webview 数量/标识不合法");
         if(this.webviewHandles.has(handle))throw Error("扩展 Webview 重复创建");
         this.webviewHandles.add(handle);
-        this.options.onWebview?.({handle,action:"create",title:String(title).slice(0,180)});
+        this.options.onWebview?.({handle,action:"create",title:String(title).slice(0,180),
+          enableScripts:options?.enableScripts===true});
       },
       $setHtml:(handle:string,html:string)=>{
         if(!this.webviewHandles.has(handle))throw Error("扩展 Webview 已失效");
@@ -1196,8 +1243,20 @@ export class TheiaHost {
       },
       $disposeWebview:(handle:string)=>this.disposeWebview(handle),
       $reveal:async()=>undefined,
-      $setOptions:async()=>undefined,
+      // 【F034 补】扩展调 `webview.options = { enableScripts: true }`（运行时改）
+      // 走这里。以前是空实现 —— 改了 options 的扩展会发现自己被无声无视。
+      $setOptions:async(handle:string,options?:{enableScripts?:boolean})=>{
+        if(!this.webviewHandles.has(handle))return;
+        this.options.onWebview?.({handle,action:"options",
+          enableScripts:options?.enableScripts===true});
+      },
       $setIconPath:async()=>undefined,
+      // 【F034 补】`registerWebviewPanelSerializer` 是「面板被用户关掉后能恢复」
+      // 的注册点。我们不发恢复流程（没有跨会话的面板持久化），但**必须实现**：
+      // 缺失时 `registerSerializer()` 会在扩展 activate 期间 reject，
+      // 把整个扩展带崩 —— 而它只是想注册一个「将来能恢复」的回调。
+      $registerSerializer:async()=>undefined,
+      $unregisterSerializer:async()=>undefined,
     } as never);
     setProxyHandler(P.TERMINAL_MAIN, {
       $createTerminal:(id:string,opts:{name?:string;cwd?:string;shellPath?:string;shellArgs?:unknown},_parent?:string,isPseudo=false)=>{

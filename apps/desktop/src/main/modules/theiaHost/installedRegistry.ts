@@ -7,6 +7,7 @@ import { buildExtensionPermissionReport } from "../theiaPermissionReport.js";
 import { buildInstallConsentPrompt } from "./installConsent.js";
 import { parseTheiaVsix } from "./theiaVsixPreview.js";
 import { TheiaHost, type TheiaExtensionHandle, type TheiaNativeTerminalDriver } from "./host.js";
+import type { McodeApprovalPort, McodeDispatch } from "./mcodeBridge.js";
 import { McodeWorkspaceFs } from "./mcodeWorkspaceFs.js";
 import { McodeExtensionPreferences } from "./mcodeExtensionPreferences.js";
 import type { TheiaInstalledEntry, TheiaInstalledResult, TheiaMonacoEditorSnapshot, TheiaEditorMenu, TheiaNativeConfigSetting, TheiaExtensionDiagnostic, TheiaLanguageProviderKind } from "@contracts/ipc/modules.js";
@@ -63,12 +64,39 @@ export class TheiaInstalledRegistry {
   /** One session per installed extension. Different extensions may run together; no automatic startup. */
   private readonly running = new Map<string, Running>();
   private readonly maxActive = 8;
+  /** 【EXT-07】装配后再注入端口（IPC 先注册、装配后到）。 */
+  setExtensionBridge(bridge?: {
+    dispatch?: McodeDispatch; requestApproval?: McodeApprovalPort;
+    builtinLookup?: (id: string) => unknown; knownRoot?: (p: string) => boolean;
+  }): void {
+    this.mcodeDispatch = bridge?.dispatch;
+    this.mcodeRequestApproval = bridge?.requestApproval;
+    this.mcodeBuiltinLookup = bridge?.builtinLookup;
+    this.mcodeKnownRoot = bridge?.knownRoot;
+  }
   private findSession(sessionId: string): Running | undefined {
     for (const run of this.running.values()) if (run.sessionId === sessionId) return run;
     return undefined;
   }
   private closed = new Set<number>();
-  constructor(private readonly root: string, private readonly theiaRoot: string) {
+  /** 【EXT-07】扩展 → Mcode 能力桥的端口。由 IPC 层注入；缺省 = 不接桥。
+   *  **不是 readonly**：IPC 可能先注册、装配后到（`setExtensionBridge`）。 */
+  private mcodeDispatch: McodeDispatch | undefined;
+  private mcodeRequestApproval: McodeApprovalPort | undefined;
+  private mcodeBuiltinLookup: ((id: string) => unknown) | undefined;
+  private mcodeKnownRoot: ((path: string) => boolean) | undefined;
+  constructor(
+    private readonly root: string,
+    private readonly theiaRoot: string,
+    bridge?: {
+      dispatch?: McodeDispatch; requestApproval?: McodeApprovalPort;
+      builtinLookup?: (id: string) => unknown; knownRoot?: (p: string) => boolean;
+    },
+  ) {
+    this.mcodeDispatch = bridge?.dispatch;
+    this.mcodeRequestApproval = bridge?.requestApproval;
+    this.mcodeBuiltinLookup = bridge?.builtinLookup;
+    this.mcodeKnownRoot = bridge?.knownRoot;
     if (!path.isAbsolute(root)) deny("扩展数据根必须是绝对路径");
     this.installed = path.join(root,"installed");
     this.staging = path.join(root,"staging");
@@ -355,8 +383,11 @@ export class TheiaInstalledRegistry {
     markers:TheiaExtensionDiagnostic[],removed?:boolean
   )=>void,makeTerminalDriver?:(sessionId:string,root:string)=>TheiaNativeTerminalDriver,
     onWebview?:(sessionId:string,extensionId:string,event:{
-      handle:string;action:"create"|"html"|"message"|"dispose"|"title";
-      title?:string;html?:string;payload?:unknown
+      handle:string;action:"create"|"html"|"message"|"dispose"|"title"|"options";
+      title?:string;html?:string;payload?:unknown;
+      /** 扩展要求在这个 Webview 里跑脚本（VS Code 协议默认 false）。
+       *  渲染端据此决定 iframe 放不放 `allow-scripts`。 */
+      enableScripts?:boolean
     })=>void):Promise<TheiaInstalledResult>{
     if(this.closed.has(senderId)||this.starting||this.running.has(id)) deny("该扩展已启动或正在启动");
     if(this.running.size>=this.maxActive) deny("同时运行的扩展已达资源上限");
@@ -374,6 +405,12 @@ export class TheiaInstalledRegistry {
       workspaceRoot:workspaceFs?.root,workspaceFs,
       ...(workspaceFs&&makeTerminalDriver?{terminalDriver:makeTerminalDriver(sessionId,workspaceFs.root)}:{}),
       storageRoot:path.join(this.dir(id),"storage"),
+      // 【EXT-07】扩展 → Mcode 能力桥。缺省（undefined）时 host 不建桥，
+      // 扩展调 `mcode.*` 得到「未实现命令」，而不是「被拒绝」。
+      ...(this.mcodeDispatch===undefined?{}:{mcodeDispatch:this.mcodeDispatch}),
+      ...(this.mcodeRequestApproval===undefined?{}:{mcodeRequestApproval:this.mcodeRequestApproval}),
+      ...(this.mcodeBuiltinLookup===undefined?{}:{builtinLookup:this.mcodeBuiltinLookup as never}),
+      ...(this.mcodeKnownRoot===undefined?{}:{knownRoot:this.mcodeKnownRoot}),
       onMessage: onMessage?(input)=>onMessage(sessionId,rec.extensionId,input):undefined,
       onQuickInput: onQuickInput?(input)=>onQuickInput(sessionId,rec.extensionId,input):undefined,
       onStatus: onStatus?(item)=>onStatus(sessionId,rec.extensionId,item):undefined,

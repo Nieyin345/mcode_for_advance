@@ -160,8 +160,7 @@ try{
   manager.setEnabled(id,true);
   const workspace=path.join(dir,"mcode-project");
   mkdirSync(workspace,{recursive:true});
-  const webviewEvents:Array<{handle:string;action:string;html?:string;payload?:unknown}>=[];
-  const terminalEvents:string[]=[];
+  const webviewEvents:Array<{handle:string;action:string;html?:string;payload?:unknown;enableScripts?:boolean}>=[];  const terminalEvents:string[]=[];
   const terminalDriver=(sessionId:string,root:string)=>{
     check("扩展终端和真实 Mcode 工作区与扩展会话绑定",!!sessionId&&root===workspace);
     return {
@@ -195,6 +194,17 @@ try{
     !!webview&&webviewEvents.some(e=>e.action==="html"&&e.html?.includes("Mcode isolated Webview"))&&
     webviewEvents.some(e=>e.action==="message"),webviewEvents);
   if(webview){
+    /* ⚠️ 这一条守的是「`createWebviewPanel` 的第 5 个参数有没有被丢」。
+     *
+     * Theia 插件侧传 **5 个**参数，第 5 个是 `WebviewOptions`
+     * （`vendor/theia/.../plugin/webviews.ts:124`）。宿主代理以前只声明前 3 个，
+     * 于是 `enableScripts` 被静默丢弃 —— 渲染端的 iframe 恒为 `sandbox=""`，
+     * **所有扩展 webview 里的脚本都不执行，而且一条错误都不报**。
+     *
+     * 夹具（`fixtures/spawn-ext/extension.js`）明确传了 `enableScripts:true`，
+     * 所以这条断言在修复前必须红。 */
+    check("★ 扩展声明的 enableScripts 真的传到宿主（不再是静默丢弃）",
+      webview.enableScripts===true,{event:webview,all:webviewEvents});
     await rejects("其他窗口不能给本窗口 VS Code Webview 发消息",
       ()=>manager!.webviewMessage(52,run.sessionId,webview.handle,{stolen:true}));
     const acknowledged=await manager.webviewMessage(51,run.sessionId,webview.handle,{from:"mcode-ui"});
