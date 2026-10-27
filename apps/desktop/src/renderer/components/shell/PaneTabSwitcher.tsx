@@ -135,14 +135,21 @@ export function PaneTabSwitcher() {
       aria-label={t("layout.paneTabSwitcher")}
       /* 横向滚动而不是换行：tile 并排时只有半宽，换行会把标题行撑成两层。
        *
-       * 【UI 重建 2026-10-28】滚动条隐藏（Claude 的 pane 标题行也不显示），
-       * 但**只隐藏滚动条会让窄格下的裁切无法察觉** —— 实测 896px 宽时
-       * `侧聊` 只剩一个「侧」字，`扩展` / `画布` 完全看不到，而界面上
-       * 没有任何提示说「右边还有」。
+       * 【UI 重建 2026-10-28】滚动条隐藏（Claude 的 pane 标题行也不显示）。
        *
-       * `.pane-tab-scroll` 提供上游那套 `scroll-fade-strip` 机制：
-       * 两端各一条 28px 的渐隐带，由 `animation-timeline: scroll()` 驱动
-       * **纯 CSS** 地随滚动位置出现/消失（不需要 JS 监听 scroll）。 */
+       * ⚠️ **「只隐藏滚动条」本身是个缺陷的温床**：内容溢出时裁切毫无提示。
+       * 那件事在本组件上真的发生过 —— `ddb0ff28a` 之前 13 个页签全带文字
+       * （约 866px），窄格下 `侧聊` 只剩一个「侧」字、`扩展` / `画布` 整个
+       * 看不到。**那一版已经不是现状**：现在只有选中项画文字，13 个约 260px，
+       * 常规宽度排得开（这条由 `pane-tab-switcher-smoke` 的宽度账断言守）。
+       *
+       * `.pane-tab-scroll` 是**兜底**：真到了要滚的宽度（更窄的格、将来又加
+       * 页签），两端各一条 28px 渐隐带由 `animation-timeline: scroll()` 驱动
+       * **纯 CSS** 地随滚动位置出现/消失 —— 让「右边还有」看得见，而不是
+       * 对着切掉半个字的按钮。
+       *
+       * 所以这一层服务的场景是「已经排不开了」，不是「常态」。
+       * 别拿它当「排不开也没关系」的许可 —— 常态排不开仍然要修布局本身。 */
       className="pane-tab-scroll flex min-w-0 flex-1 items-center gap-0.5"
     >
       {entries.map((entry) => {
