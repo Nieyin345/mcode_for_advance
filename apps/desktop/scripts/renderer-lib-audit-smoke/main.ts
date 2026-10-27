@@ -20,6 +20,7 @@
  */
 import "./prelude.js";
 import { collectCommands } from "../../src/renderer/lib/commands.js";
+import { useSessionStore } from "../../src/renderer/stores/sessionStore.js";
 import type { SessionState } from "../../src/renderer/stores/sessionStore.js";
 import { isPathWithin, relativePath, resolveRelativePath, dirname, basename } from "../../src/renderer/lib/path.js";
 import { checkoutArgsFor, remoteShortName } from "../../src/renderer/lib/branchRef.js";
@@ -106,11 +107,47 @@ function runClose(id: string, initial: Partial<SessionState>) {
 }
 
 {
-  // 正控：非宽屏、编辑器聚焦且有活动文件 → 两条都该关**文件**。
+  /* 正控：非宽屏、编辑器聚焦且有活动文件 → 两条都该关**文件**。
+   *
+   * 【UI 重建 2026-10-27】这条原来断言 `calls.includes("closeFile:/p/a.ts")` ——
+   * 假定命令**同步**调夹具上的 `closeFileInIde`。而实现改成了
+   * `closeFileInIdeSafely(file, projectId)`（异步：先问原厂编辑器要不要保存，
+   * 放行后才调 `closeFileInIde`）。于是：
+   *
+   *   1. 调用是异步的，同步读 `calls` 永远是空；
+   *   2. 它内部读**真实 store** 的 `activeProjectId`，夹具造的假 state 对它不可见 —
+   *      项目 id 对不上会直接返回 `{closed:[], blocked:[file]}`，一个动作都不调。
+   *
+   * 判据因此改成守**意图**：把真实的 store 状态摆好，等异步链跑完，再看它到底
+   * 动了什么。用 `useSessionStore.setState` 而不是假对象 —— 因为被测代码就是这么读的，
+   * 用假对象验的是「我以为它怎么读」。 */
+  const store = useSessionStore;
   for (const id of ["tab.close", "session.close"]) {
-    const { calls } = runClose(id, { widePanelOpen: false, centerTabFocus: "editor" } as Partial<SessionState>);
+    const calls: string[] = [];
+    const prev = store.getState();
+    store.setState({
+      activeProjectId: "p1",
+      activeSessionId: "s1",
+      displayMode: "tabs",
+      widePanelOpen: false,
+      centerTabFocus: "editor",
+      ideActiveFileByProject: { p1: "/p/a.ts" },
+      planTabActiveBySession: {},
+      openTabs: ["s1"],
+      closeFileInIde: ((f: string) => {
+        calls.push(`closeFile:${f}`);
+        return { closed: [f], blocked: [] as string[] };
+      }) as never,
+      closeTab: ((sid: string) => calls.push(`closeTab:${sid}`)) as never,
+      reportBlockedIdeClose: (() => {}) as never,
+    } as never);
+    const cmd = collectCommands(store.getState()).find((c) => c.id === id);
+    cmd?.perform(store.getState());
+    // 等 closeFileInIdeSafely 的异步链（原生编辑器守卫是微任务/promise）
+    await new Promise((r) => setTimeout(r, 30));
     check(`正控 ${id}:编辑器聚焦时关文件`, calls.includes("closeFile:/p/a.ts"), calls);
     check(`正控 ${id}:此时不关会话`, !calls.includes("closeTab:s1"), calls);
+    store.setState(prev as never);
   }
 }
 

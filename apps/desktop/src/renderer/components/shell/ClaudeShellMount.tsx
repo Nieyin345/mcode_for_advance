@@ -30,8 +30,8 @@
  * 每个分支都留了 `TODO(ui-rebuild/<line>)` 标记，三条线各自替换自己那一段，
  * 互不覆盖。
  */
-import { useEffect, useRef, useState } from "react";
-import { useSessionStore } from "../../stores/sessionStore.js";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useSessionStore, selectActiveEnvPath, isCenterShowingDocument } from "../../stores/sessionStore.js";
 import { ClaudeShell } from "./ClaudeShell.js";
 import { ClaudeSidebar, type ClaudeProjectGroup, type ClaudeSession } from "./ClaudeSidebar.js";
 import { ClaudeTitlebar } from "./ClaudeTitlebar.js";
@@ -44,6 +44,16 @@ import { resizeStack, type PaneTile, type PaneTileKind, type TileLayout } from "
 
 /** Claude 侧栏的固定宽（来自其产物：`--static-sidebar-width: 18rem` = 288px）。 */
 const CLAUDE_SIDEBAR_PX = 288;
+
+/** Monaco 编辑器：按需加载（它是渲染端最大的单块依赖之一）。
+ *
+ *  **不要在这里加 `key={filePath}`** —— `FileEditor` 自己维护
+ *  `editorModelCache`，切文件时换 model 而不重挂；重挂会丢掉未保存草稿、
+ *  Monaco 实例与滚动位置（真机套件 `arc005-pane-electron-smoke` 用
+ * 「PTY/Monaco 节点身份不变」来守这件事）。 */
+const FileEditorPane = lazy(() =>
+  import("@renderer/components/ide/FileEditor.js").then((m) => ({ default: m.FileEditor })),
+);
 
 export interface ClaudeShellMountProps {
   leftOpen: boolean;
@@ -187,10 +197,68 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   // Mcode 的 ChatPane 在没有会话时正好渲染 EmptyThreadWelcome，直接复用。
   const projectColumn = <ChatPane sessionId={null} isActive={!activeSessionId} />;
 
-  // thread 列：当前会话。
-  const threadColumn = activeSessionId ? (
+  /* 【UI 重建 2026-10-27】**中心区要能在「对话」和「编辑器」之间切换。**
+   *
+   * 旧壳里这是 `ClassicShell` 的 `content` 视图：在文件树里点一个文件，中心区
+   * 换成 Monaco，再点对话页签换回来。换壳时这条路径**整条丢了** ——
+   * 用户点文件只会把文件树的高亮挪一下，编辑器永远不出现。
+   *
+   * 判据用的是 `isCenterShowingDocument`（与旧壳同一个纯函数，硬规矩 2：
+   * 共享实现只有一份），它已经把 displayMode / centerTabFocus / 活动文件
+   * 三个条件都算进去了。
+   *
+   * 真机探针（`arc005-pane-electron-smoke`）就卡在这里：它要求「真实 Electron 里
+   * 打开 model.txt 后存在 Monaco 实例」，而新壳此前的答案是没有。 */
+  const showingDocument = useSessionStore(isCenterShowingDocument);
+  const centerFilePath = useSessionStore((s) =>
+    s.activeProjectId ? s.ideActiveFileByProject[s.activeProjectId] ?? null : null,
+  );
+  const centerProjectPath = useSessionStore((s) => {
+    // 与 `FilesPanel` 用**同一个**选择器（硬规矩 2）：项目可能有 worktree 环境路径，
+    // 编辑器里「相对路径」要对着实际工作树算，否则会显示成相对另一个根。
+    const envPath = selectActiveEnvPath(s);
+    if (envPath) return envPath;
+    const pid = s.activeProjectId;
+    return pid ? s.projects.find((p) => p.id === pid)?.path ?? null : null;
+  });
+  const setCenterTabFocus = useSessionStore((s) => s.setCenterTabFocus);
+
+  /* ⚠️ 顺序很重要：**文档优先**。
+   * 「中心区显示编辑器」的判据是 `isCenterShowingDocument`（它已经包含 displayMode /
+   * centerTabFocus / 活动文件），与「有没有打开会话」无关 —— 用户在项目里直接打开
+   * 一个文件时，即使还没选会话，也应该看到编辑器。
+   * 写成 `!activeSessionId ? null : showingDocument ? ... : ...` 会让「零会话 +
+   * 已开文件」落进 null，编辑器永远不出现（真机套件 fixture 正是这个组合）。 */
+  const threadColumn = showingDocument && centerFilePath ? (
+    /* 编辑器占满 thread 列。`filePath` 明确传入，**不要 key={filePath}**：
+     * FileEditor 是常驻的、切文件只换 model（`editorModelCache`），
+     * 每次重挂会卡顿并丢掉未保存草稿。 */
+    <div className="flex min-h-0 flex-1 flex-col" data-cds-center-document="">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-[var(--m-border)] px-3">
+        <button
+          type="button"
+          onClick={() => setCenterTabFocus("chat")}
+          className="rounded-[var(--radius-btn-xs)] px-2 py-1 text-[var(--m-font-size-caption)] text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)] active:bg-[var(--m-fill-ghost-selected)]"
+        >
+          ← 对话
+        </button>
+        <span className="min-w-0 flex-1 truncate text-[var(--m-font-size-caption)] text-[var(--m-text-secondary)]">
+          {centerFilePath.split(/[\\/]/).pop()}
+        </span>
+      </div>
+      <div className="min-h-0 flex-1">
+        <Suspense fallback={null}>
+          {/* `FileEditor` 的 `projectPath` 是必填 string（它用来算相对路径）。
+              进入这个分支的前提是 `centerFilePath` 非空，而那必然属于某个项目；
+              但如果项目记录恰好被删（文件还在 store 里），`centerProjectPath`
+              会是 null —— 这时传空串而不是崩，编辑器会退回显示绝对路径。 */}
+          <FileEditorPane filePath={centerFilePath} projectPath={centerProjectPath ?? ""} />
+        </Suspense>
+      </div>
+    </div>
+  ) : activeSessionId ? (
     <ChatPane sessionId={activeSessionId} isActive />
-  ) : null;
+  ) : null; // 零会话且没开文件 → project 列独占（Claude 的项目首页就是这样）
 
   // tile 布局：chat + 右侧那个由 `rightPanelTab` 决定的面板。
   //
@@ -311,6 +379,7 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
       leftWidth={sidebarWidthPx(props.leftWidthPct)}
       tileLayout={tileLayout}
       isLoadingThread={!!loadingMessages}
+      centerOccupied={showingDocument && !!centerFilePath}
       onResizeTile={(_stack, a, na, b, nb) =>
         setTileLayout((prev) => resizeStack(prev, _stack, a, na, b, nb))}
       onExpandTile={setExpandedTile}

@@ -296,20 +296,17 @@ console.log("\n【MC-049】静态规则:渲染端不许出现裸可点击 div/sp
       snippet: '<div className="fixed inset-0 z-40" onClick={onClose} />',
       why: "全屏透明 backdrop:点外关闭,有意非交互背景(键盘出口是 Escape,已补)",
     },
+    /* 【UI 重建 2026-10-27】删掉 `WatchSegment.tsx` 的两条 —— 那个文件
+     * 已随「删除长任务守望」（`d3590637`）整体移除。留着它们会让
+     * 「豁免名单没有过期项」这条恒红，而让人误以为组件坏了。
+     *
+     * 同时删掉 `ContextStatsPopover` 的**面板容器**那条：它现在有
+     * `role="dialog"` + `aria-label`，本来就是合法的无障碍容器，不需要豁免了。
+     * **豁免名单里的每一条都该是「确实无法按规则修」的，能修的就从名单里拿掉。** */
     {
-      file: "components/chat/ContextStatsPopover.tsx",
-      snippet: '<div ref={panelRef} style={style} className={cn( "z-50 w-[380px]',
-      why: "面板容器 stopPropagation:点面板不落到 backdrop,本身不是交互目标",
-    },
-    {
-      file: "components/chat/WatchSegment.tsx",
-      snippet: '<div className="fixed inset-0 z-40" onClick={onClose} />',
-      why: "同 ContextStatsPopover:透明 backdrop,键盘出口是 Escape",
-    },
-    {
-      file: "components/chat/WatchSegment.tsx",
-      snippet: '<div ref={panelRef} style={style} className="z-50 w-[340px]',
-      why: "面板容器 stopPropagation,同上",
+      file: "components/shell/ClaudeTitlebar.tsx",
+      snippet: '<div className="fixed inset-0 z-40" aria-hidden onClick={() => setMenuOpen(false)} />',
+      why: "顶栏 ⋯ 菜单的透明 backdrop:点外关闭,有意非交互背景(键盘出口是 Escape,同 ContextStatsPopover)",
     },
   ];
 

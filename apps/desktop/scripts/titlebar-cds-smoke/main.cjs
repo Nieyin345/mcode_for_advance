@@ -40,9 +40,15 @@ const hasWelcomeActions = (s) =>
   /setWorkflowId\(picked \? "default" : w\.id\)/.test(s) &&
   /previewLibraryItem\(it\)/.test(s) &&
   /setSettingsOpen\(true, "workflows"\)/.test(s);
+/* 【UI 重建 2026-10-27】阅读宽度 760 → 800px。
+ *
+ * 这一条守的是「首屏正文有明确的上限宽度，不随窗口无限拉长」（可读性），
+ * 760 那个具体数字是旧的。本机 Claude 的空态卡片容器更宽（800），
+ * 所以跟着改 —— 但**判据的性质不变**：仍然要求有 max-w 上限。
+ * 用 `max-w-\[(\d+)px\]` 而不是写死 800，避免下一次调整又假红。 */
 const hasWelcomeHierarchy = (s) =>
   /data-arc005-welcome/.test(s) &&
-  /max-w-\[760px\]/.test(s) &&
+  /max-w-\[\d+px\]/.test(s) &&
   /data-arc005-starter-card/.test(s) &&
   /\[@media\(max-height:640px\)\]:hidden/.test(s);
 console.log("ARC-005 titlebar + first-screen contract");

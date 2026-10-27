@@ -64,6 +64,11 @@ export interface ClaudeShellProps {
   expandedTile?: string | null;
   /** 当前是否有会话在加载。 */
   isLoadingThread: boolean;
+  /** 中心列是否有内容要画 —— 除「打开了会话」之外的另一种情况：
+   *  没有会话但用户直接打开了一个文件（编辑器占中心列）。
+   *  为 true 时即使  也渲染 thread 列与 tile 区，
+   *  否则「点文件 → 什么都没发生」。 */
+  centerOccupied?: boolean;
 }
 
 /**
@@ -135,12 +140,22 @@ export function ClaudeShell({
   onExpandTile,
   expandedTile,
   isLoadingThread,
+  centerOccupied = false,
 }: ClaudeShellProps) {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const column = chatColumnOf({ hasActiveSession: !!activeSessionId, isLoadingThread });
 
-  // 右侧 pane 只在 thread 列里出现 —— 没有会话就没有「会话的 pane」。
-  const showTiles = column === "thread";
+  /* 【UI 重建 2026-10-27】**「中心区有内容」不只等于「有一个会话」。**
+   *
+   * Claude 的三列模型里 project 列是「项目首页」，thread 列是「当前这个会话」。
+   * 但 Mcode 多一个状态：**用户可以在没有会话时直接打开一个文件**（在文件树里点）。
+   * 那时 thread 列应该显示编辑器，而不是整列不渲染 —— 否则点文件什么都不会发生。
+   *
+   * 由宿主显式告诉壳「中心列有东西要画」（`centerOccupied`），不在这里猜 store 的形状。 */
+  const showThread = column !== "project" || centerOccupied;
+
+  // 右侧 pane 只在 thread 列里出现 —— 没有会话（也没有文档）就没有「会话的 pane」。
+  const showTiles = column === "thread" || centerOccupied;
 
   return (
     <div
@@ -182,7 +197,7 @@ export function ClaudeShell({
                 {projectColumn}
               </div>
             </Column>
-            {column !== "project" && (
+            {showThread && (
               <Column column="thread" active={column}>
                 {showTiles ? (
                   <TilePane

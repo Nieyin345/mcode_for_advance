@@ -27,7 +27,7 @@
  * 一排 6 个图标。Claude 把这些收进 `⋯` 溢出菜单，顶栏只留**一个主入口**和
  * **必要状态**。这是「看着干净」与「看着拥挤」的分界。
  */
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@renderer/lib/cn.js";
 
 export interface ClaudeTitlebarProps {
@@ -59,6 +59,29 @@ export function ClaudeTitlebar({
   actions,
 }: ClaudeTitlebarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  /* 【UI 重建 2026-10-27】**菜单要有键盘出口。**
+   *
+   * 透明 backdrop 只服务鼠标（点外关闭）。键盘用户切不出去 —— 这是真实的
+   * 可访问性缺陷，被 clickable-row-a11y-smoke 的静态规则抓到了
+   *（「div 带 onClick 而无 role/tabIndex/onKeyDown」）。同族组件
+   *（ContextStatsPopover / WatchSegment）都有 Escape 出口，这里对齐。
+   *
+   * 焦点也要还回去：Escape 之后如果焦点留在已被卸载的菜单项上，浏览器会把它
+   * 丢到 body —— 用户的 Tab 序就断了。 */
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      setMenuOpen(false);
+      // 把焦点还给触发按钮（它是这个 div 里的那个 ⋯ 按钮）
+      menuRef.current?.querySelector<HTMLButtonElement>("button[aria-haspopup]")?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
 
   return (
     <div className="shrink-0">
@@ -95,10 +118,11 @@ export function ClaudeTitlebar({
 
         {/* `⋯` 溢出菜单：布局开关、面板开关等都收在这里，不在顶栏排一排。 */}
         {menuItems.length > 0 && (
-          <div className="relative shrink-0">
+          <div className="relative shrink-0" ref={menuRef}>
             <button
               type="button"
               aria-label="更多"
+              aria-haspopup="menu"
               aria-expanded={menuOpen}
               className="flex h-7 w-7 items-center justify-center rounded-[6px] text-[var(--m-text-secondary)] hover:bg-[var(--m-fill-ghost-hover)]"
               onClick={() => setMenuOpen((v) => !v)}
@@ -107,7 +131,9 @@ export function ClaudeTitlebar({
             </button>
             {menuOpen && (
               <>
-                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+                {/* 透明 backdrop：只服务鼠标点外关闭；键盘出口是上面的 Escape。
+                   让它不进无障碍树 —— 它不是控件。 */}
+                <div className="fixed inset-0 z-40" aria-hidden onClick={() => setMenuOpen(false)} />
                 <div
                   role="menu"
                   className="absolute right-0 top-8 z-50 min-w-[180px] rounded-[var(--radius-md)] border border-[var(--m-border)] bg-[var(--m-surface-3)] py-1 shadow-[var(--m-shadow-popover)]"

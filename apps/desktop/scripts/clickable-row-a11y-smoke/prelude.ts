@@ -35,8 +35,31 @@ if (typeof globalTarget.window === "undefined") {
   win.innerHeight = 900;
   win.setTimeout = (fn: () => void, ms?: number) => setTimeout(fn, ms) as unknown as number;
   win.clearTimeout = (h: number) => clearTimeout(h as unknown as NodeJS.Timeout);
+  /* 【UI 重建 2026-10-27】**假键盘事件要补齐 KeyboardEvent 的常用面。**
+   *
+   * 原来只给 `{ key }`。生产里的 window keydown handler 会调
+   * `preventDefault`（吞掉宿主默认行为，比如 Esc 关闭浮层时别连带退出全屏）
+   * 和 `stopPropagation`（不让同一个键被别的监听器再吃一次）。
+   * 缺了它们，一处 `e.preventDefault()` 就让整个套件**崩在运行时**，
+   * 而看起来像「组件坏了」。
+   *
+   * 补成一套完整的假事件：能被读 `key` / `defaultPrevented`，也能被调用这两个方法。
+   * **不改被测行为** —— 只是让假事件长得更像真的。 */
   globalTarget.__fireWindowKey = (key: string) => {
-    for (const fn of listeners.get("keydown") ?? []) fn({ key });
+    for (const fn of listeners.get("keydown") ?? []) {
+      const event = {
+        key,
+        defaultPrevented: false,
+        propagationStopped: false,
+        preventDefault() { event.defaultPrevented = true; },
+        stopPropagation() { event.propagationStopped = true; },
+        target: win.document ?? null,
+        currentTarget: win,
+        shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
+        nativeEvent: { isComposing: false, keyCode: 0 },
+      };
+      fn(event);
+    }
   };
   globalTarget.__windowListenerCount = (type: string) => listeners.get(type)?.size ?? 0;
 }

@@ -147,12 +147,28 @@ section("A5. 水合:下一次启动 init() 从设置表读回");
 
 /* ═══════════════════ B. 抽取:App ⇄ ClassicShell ═══════════════════ */
 
-section("B1. App.tsx:ClassicShell 恰好一次,工作区 JSX 不再内联");
+section("B1. App.tsx:恰好挂一个壳,工作区 JSX 不再内联");
 {
   const app = read("src/renderer/App.tsx");
-  const appClassic = app.match(/<ClassicShell[\s>]/g) ?? [];
-  eq("★ App.tsx 渲染 <ClassicShell 恰好一次", appClassic.length, 1);
-  check("App.tsx 导入了 ClassicShell", app.includes('from "./components/shell/ClassicShell.js"'));
+  /* 【UI 重建 2026-10-27】App 现在挂的是 `ClaudeShellMount`（Claude 外观的
+   * 装配层），不再是 `ClassicShell`。本节守的东西**一个字都没变**：
+   *
+   *   「App 里恰好挂**一个**壳组件，工作区 JSX 不内联在 App 里。」
+   *
+   * 所以断言从「认死 ClassicShell 这个名字」改成「认这两个壳中的一个，且恰好一个」。
+   * 认死名字会让换壳这件事本身变成红 —— 而换壳正是这个仓库现在要做的事。
+   *
+   * ⚠️ **ClassicShell.tsx 仍然存在且必须保持完整**（下面那段反查照旧）：
+   * 它是回退路径与承重标记的定义处，不是死代码。 */
+  const mounts = [...app.matchAll(/<(ClassicShell|ClaudeShellMount)[\s>]/g)].map((m) => m[1]);
+  eq("★ App.tsx 恰好挂一个壳组件", mounts.length, 1);
+  check(
+    "App.tsx 导入了那个壳",
+    mounts[0] === "ClaudeShellMount"
+      ? app.includes('from "./components/shell/ClaudeShellMount.js"')
+      : app.includes('from "./components/shell/ClassicShell.js"'),
+    mounts,
+  );
   check(
     "★ App.tsx 不再内联 <WorkspaceInertShell>",
     !app.includes("<WorkspaceInertShell"),
@@ -194,41 +210,52 @@ section("B2. ClassicShell.tsx:承重标记必须全部在场");
   check("导出 ClassicShellProps 契约", /export interface ClassicShellProps\b/.test(shell));
 }
 
-section("B3. 挂载点不在条件分支里(壳偏好怎么翻都不卸载子树)");
+section("B3. 挂载点不在条件分支里(切壳/切偏好都不卸载子树)");
 {
   const app = read("src/renderer/App.tsx");
-  const at = app.search(/<ClassicShell[\s>]/);
-  if (at < 0) throw new Error("App.tsx no longer renders ClassicShell");
-  const before = app.slice(0, at);
-  // 1) `<WidePlanDialog />` 与 `<ClassicShell` 之间只许是空行与 JSX 注释
-  //    (跨行 /* … */ 的内容行也算注释)。
-  const between = before.slice(before.lastIndexOf("<WidePlanDialog />") + "<WidePlanDialog />".length);
-  const betweenCode = between
-    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "") // JSX block comments (multi-line)
-    .trim();
-  eq("★ <ClassicShell 前最近代码行是兄弟挂载 <WidePlanDialog />(隔着仅注释)", betweenCode, "");
+  /* 【UI 重建 2026-10-27】**本节的意图没变，被测结构变了。**
+   *
+   * 原来：App 里用 `variant={shellVariantOf(shellPref)}` 让 ClassicShell 换外观，
+   * 判据要证明「不许用元素级三元换组件类型」（那会卸载整棵工作区 → PTY/Monaco 丢）。
+   *
+   * 现在：只有 `ClaudeShellMount` 一个壳，`shellPref` 不再决定组件类型 ——
+   * **那个风险在这种结构下根本不存在**。但同一类风险还留着另一条路：
+   * 「App 在某个条件分支里挂壳」（比如 `{ready && <ClaudeShellMount…>}`），
+   * 一样会卸载子树。所以判据改为直接守那一条。
+   *
+   * 仍然保留的：
+   *   - 壳与 `SettingsOverlay` **并列**挂载（覆盖层不是三元替换）；
+   *   - App 里没有任何「按偏好三元切壳元素」的写法。 */
+  const at = app.search(/<(ClassicShell|ClaudeShellMount)[\s>]/);
+  if (at < 0) throw new Error("App.tsx 不再挂载任何壳组件");
+
   check(
-    "★ 前一个真实元素确实是 <WidePlanDialog />",
-    before.trimEnd().endsWith("*/}"),
-    before.trimEnd().slice(-40),
+    "★ 壳与 SettingsOverlay 并列挂载(覆盖层不是三元替换)",
+    /<(ClassicShell|ClaudeShellMount)[\s\S]{0,1600}<SettingsOverlay/.test(app),
   );
+
+  // ① 壳元素**不在任何 `?` / `&&` 三元里**：取它所在的那一行与上一行，
+  //    出现 `cond ? <Shell` 或 `cond && <Shell` 即为卸载风险。
+  const lines = app.split(String.fromCharCode(10));
+  const shellLineIdx = lines.findIndex((l) => /<(ClassicShell|ClaudeShellMount)[\s>]/.test(l));
+  const shellLine = shellLineIdx >= 0 ? lines[shellLineIdx]! : "";
+  const prevLine = shellLineIdx > 0 ? lines[shellLineIdx - 1]! : "";
   check(
-    "★ ClassicShell 与 SettingsOverlay 并列挂载(覆盖层不是三元替换)",
-    /<ClassicShell[\s\S]{0,1600}<SettingsOverlay/.test(app),
+    "★ 壳元素不在条件分支里（三元 / && 短路都会卸载子树）",
+    !/[?&]{1}\s*$/.test(prevLine.trimEnd()) && !/\?\s*$/.test(prevLine.trimEnd()) && !/\?[^?]*$/.test(shellLine),
+    { prevLine: prevLine.trim().slice(-60), shellLine: shellLine.trim().slice(0, 60) },
   );
-  // 【ARC-005 V2】壳偏好只许经 `variant` prop 进入,**不许**在 App 里换组件类型。
-  // 判据两条:
-  //   ① `variant={shellVariantOf(shellPref)}` 真的挂在 ClassicShell 上;
-  //   ② App 里不存在 `x === "workspace" ? <SomeShell` 这类元素级三元 ——
-  //      那会让 React 卸载整棵工作区子树(PTY cleanup → api.terminal.kill)。
-  check(
-    "★ App 把 shellPref 经 variant prop 传入(不换组件类型)",
-    /<ClassicShell[\s\S]{0,200}variant=\{shellVariantOf\(shellPref\)\}/.test(app),
+
+  // ② App 里没有「按偏好三元切壳」的写法。
+  const ternaryShellLines = lines.filter((line) =>
+    line.includes("shellPref") &&
+    line.includes("?") &&
+    (/<(ClassicShell|ClaudeShellMount|WorkspaceShell)/.test(line) || /<(ClassicShell|ClaudeShellMount)/.test(lines[lines.indexOf(line) + 1] ?? "")),
   );
-  // 逐行扫:不许同一行里既有 shellPref 的三元又有壳元素(三元换类型 = 卸载子树)。
-  const ternaryShellLines = app.split(String.fromCharCode(10)).filter((line) =>
-    line.includes("shellPref") && line.includes("?") && (line.includes("<ClassicShell") || line.includes("<WorkspaceShell")));
   eq("★ App 里没有壳偏好的元素级三元(三元会卸载工作区子树)", ternaryShellLines.length, 0);
+
+  /* ClassicShell 仍是回退路径的定义处，它的 variant 契约必须完好
+   *（删它 = 回退能力没了，而且下面 B2 的承重标记也会跟着丢）。 */
   const shellSrc = read("src/renderer/components/shell/ClassicShell.tsx");
   check("ClassicShellProps 有 variant", /variant\?:\s*ShellVariant/.test(shellSrc));
   check("默认 variant 是 classic(不传 = 原样)", /variant = "classic"/.test(shellSrc));
@@ -268,9 +295,19 @@ section("D. 复用本机 Claude Desktop v2 逆向：密度 token 仅作用于 wo
   check("★ 同一挂载工作区拥有 shell variant 数据作用域（不覆盖其他页面）",
     /<WorkspaceInertShell\s+variant=\{variant\}/.test(shell) &&
     /data-ui-shell-variant=\{variant\}/.test(shell));
-  check("★ 新版逆向 comfortable Composer 14px 只在 workspace 生效，classic 保留 v1 20px",
-    /\[data-ui-shell-variant="workspace"\]\s*\{[^}]*--composer-radius:\s*14px/.test(css) &&
-    /--composer-radius:\s*var\(--m-radius-composer\)/.test(css));
+  /* 【UI 重建 2026-10-27】composer 圆角不再按壳变体分两档。
+   *
+   * 旧：`[data-ui-shell-variant="workspace"]` 下 14px，classic 保留 v1 的 20px。
+   * 现在：两处都 `var(--m-radius-composer)` —— 生成本机 Claude 产物的
+   * `--cds-radius-composer`（`.875rem × 16/17 ≈ 13.18px`）。**20px 从来就不是
+   * Claude 的值**，它只是 Mcode 自己的旧配方；用户要外观一致，所以统一。
+   *
+   * 断言因此守「两处都走同一个 token」而不是「分档正确」——
+   * 分档这件事本身已经不存在了，再钉它就是钉一个已废的设计。 */
+  check("★ Composer 圆角两处都走 --m-radius-composer（Claude 真值，不分壳变体）",
+    (css.match(/--composer-radius:\s*var\(--m-radius-composer\)/g) ?? []).length >= 2 &&
+    !/--composer-radius:\s*20px/.test(css) &&
+    !/--composer-radius:\s*14px/.test(css));
   check("★ 侧栏快捷入口有独立可测试的元素钩子，动作仍共用 store",
     actions.includes('data-sidebar-quick-actions') &&
     actions.includes('data-sidebar-quick-action="new"') &&
@@ -291,6 +328,19 @@ section("D. 复用本机 Claude Desktop v2 逆向：密度 token 仅作用于 wo
   check("★ 会话树仍保留原生键盘选择、未读、运行图标、工作树与主进程事件",
     tree.includes('tabIndex={0}') && tree.includes('showUnreadBadge') &&
     tree.includes('isRunning') && tree.includes('session.worktreePath') && tree.includes('onSelect();'));
+}
+
+section("E. Claude Desktop Header / 弹出菜单几何对齐");
+{
+  const titlebar = read("src/renderer/components/layout/Titlebar.tsx");
+  check("★ 顶栏沿用 Claude 45px 高度与 16px 水平留白",
+    titlebar.includes("h-[45px]") &&
+    titlebar.includes("bg-inherit px-4"));
+  check("★ 顶栏右侧操作采用上游 8px 控件间距",
+    titlebar.includes('data-arc005-titlebar-actions="" className="flex shrink-0 items-center gap-2"'));
+  check("★ 布局菜单使用 12px 浮层圆角、8px 行圆角与紧凑内边距",
+    titlebar.includes('rounded-xl border border-edge bg-surface p-1.5 shadow-[var(--shadow-popover)]') &&
+    titlebar.includes('min-h-8 w-full cursor-default items-center rounded-lg px-2.5 py-1.5 text-left text-xs'));
 }
 
 console.log(`\nworkspace-shell-smoke: ${total - failures}/${total} 通过`);
