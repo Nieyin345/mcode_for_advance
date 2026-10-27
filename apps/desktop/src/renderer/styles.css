@@ -26,7 +26,7 @@
  * a future base-ui upgrade or non-StrictMode build), the selector simply stops
  * matching and the normal styles take over. */
 [data-starting-style] {
-  opacity: 1 !important;
+  opacity: 1;
   transform: none !important;
 }
 
@@ -5142,4 +5142,33 @@ html[data-reduce-motion="true"] [data-ui-shell-variant="workspace"] .composer-se
 @keyframes pane-tab-fade-out {
   from { opacity: 1; }
   to   { opacity: 0; }
+}
+
+/* ───────────── 消息时间轴：静态静音，悬停才出现 ─────────────
+ *
+ * 【UI 重建 2026-10-28】真机截图里 Claude 的 AI 输出左侧**什么都没有** ——
+ * 没有这排刻度。而 Mcode 这排 `—` 一直挂着，贴着正文左缘形成一条干扰竖线。
+ *
+ * 它不是装饰：每条灰 dash 是一个用户消息、金色是书签，点一下能跳过去。
+ * 这是 Mcode 比 Claude 多的导航能力，不能删。按「Claude 有的照 Claude，
+ * 没有的保留但先不抢视觉」——**功能保留，静态静音**。
+ *
+ * ⚠️ 不能用 Tailwind 的 `group-hover/stream:opacity-100`：
+ * 实测那个命名 group 的 CSS **没被生成**（`grep app.css` 零命中），
+ * 于是 `opacity-0` 生效了但悬停永不恢复，刻度会永久消失。
+ * 写成普通 CSS，判据能直接看到这条规则。
+ *
+ * 命中区用 `[data-chat-root]:hover` 而不是 nav 自己 —— nav 是
+ * `pointer-events-none`，它自己收不到 hover。 */
+.chat-timeline-rail {
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+[data-chat-root]:hover .chat-timeline-rail,
+.chat-timeline-rail:focus-within {
+  opacity: 1 !important;
+}
+/* 减少动效：不做淡入，直接切换 —— 但仍然保持「静态不显示」。 */
+@media (prefers-reduced-motion: reduce) {
+  .chat-timeline-rail { transition: none; }
 }

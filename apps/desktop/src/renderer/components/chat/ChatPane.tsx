@@ -3088,7 +3088,7 @@ function ChatPaneForSession({
       <div
         ref={streamAreaRef}
         onMouseUp={handleStreamMouseUp}
-        className={cn("relative flex min-h-0", empty ? "h-0" : "flex-1")}
+        className={cn("group/stream relative flex min-h-0", empty ? "h-0" : "flex-1")}
       >
       {/* Left-edge timeline of user messages */}
       {!empty && (

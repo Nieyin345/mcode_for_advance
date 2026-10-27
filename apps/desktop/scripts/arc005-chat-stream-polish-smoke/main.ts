@@ -64,15 +64,43 @@ ck("Timeline: dark/light hover card stays within small viewport",
   sourceHas(timeline, "max-h-[calc(100vh-16px)]") &&
   sourceHas(timeline, "w-[min(18rem,calc(100vw-16px))]"));
 
-ck("Message: user/assistant alignment and Claude-style identity/runtime metadata remain distinct",
-  // 【UI 重建 2026-10-27】用户气泡宽度改成读 --m-bubble-max-w（默认 85%，
-  // 与 Claide 一致）。用变量而不是写死，密度档切换时能跟着调。
+ck("Message: 助手正文没有身份头，模型与时间不重复出现",
+  /* 【UI 重建 2026-10-28】**这条断言跟着设计决定改了。**
+   *
+   * 原来断言的是「身份头存在且与运行元数据分开」：
+   *   `modelName &&`、`fmtClock(msg.turnMeta?.startedAt ?? msg.createdAt)`
+   *
+   * 但 `4a8e32381`「the assistant header isn't Claude's」**故意删掉了它** ——
+   * 真机截图（`reference-screenshot-175pct.webp`）里 Claude 的 AI 回复
+   * **直接就是内容，没有任何「谁在说话」的标记，也没有时钟**。
+   * 用户气泡右对齐本身就承担了「这是谁说的」。
+   *
+   * 而 Mcode 原先每条回复都挂一行 `✦ Mcode • 08:00:10`，一屏重复十几次。
+   *
+   * ## 为什么断言必须跟着改，而不是删掉
+   *
+   * 删掉会丢掉「不许再加回来」这条保护。现在断言的是**相反的事**：
+   * 助手侧不得出现身份头、不得出现 per-message 时钟。
+   *
+   * ## 那条提交信息里有一句不实，这里记下来
+   *
+   * 它写「Model and timing still live in TurnStatRow」。**实际不在** ——
+   * `TurnStatRow` 只有时长 / 花费 / token，没有模型名也没有时钟。
+   * `modelName` 与 `fmtClock` 现在是**死代码**（定义着没人调）。
+   *
+   * 这与 Claude 的行为一致（截图里也没有），所以**代码不用改**；
+   * 但「信息还在」这句话是错的，别让下一个人按它去找。
+   *
+   * TODO（留给产品判断）：`modelName` / `fmtClock` 已无人使用，
+   * 要么接到别处、要么删掉。现在它们只是躺在文件里。 */
   sourceHas(row, 'isUser ? "max-w-[min(92%,48rem)] sm:max-w-[min(var(--m-bubble-max-w,85%),48rem)] min-w-0"') &&
   sourceHas(row, "<TurnStatRow meta={msg.turnMeta}") &&
-  sourceHas(row, "modelName &&") &&
-  sourceHas(row, "fmtClock(msg.turnMeta?.startedAt ?? msg.createdAt)") &&
+  // 运行元数据仍在（时长 + token）—— 这是 Mcode 比 Claude 多的那层，保留。
   sourceHas(row, "fmtDuration(duration)") &&
-  !sourceHas(row, "fmtClock(meta.startedAt"));
+  sourceHas(row, "data-turn-tokens") &&
+  // 助手侧**不得**再出现 per-message 身份头 / 时钟（Claude 没有）。
+  !sourceHas(row, "fmtClock(msg.turnMeta?.startedAt ?? msg.createdAt)") &&
+  !sourceHas(row, "✦ Mcode"));
 ck("Message: long bubble clips independently and accessible show more remains",
   sourceHas(row, 'aria-expanded={collapseState === "expanded"}') &&
   sourceHas(row, 'aria-controls={bubbleContentId}') &&

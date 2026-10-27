@@ -75,6 +75,30 @@ export const ARC005_MEASURE_SELECTORS: ReadonlyArray<readonly [string, string]> 
   ["chat-body", "[data-testid='workspace-main'] [data-message-id]:not([data-cds='UserBubble']) .chat-md"],
   ["tool-row", ARC005_PROBE_TARGETS["tool-row"].measurementSelector],
   ["composer", ARC005_PROBE_TARGETS.composer.measurementSelector],
+  /* 【UI 重建 2026-10-28】**`composer` 量的是编辑区，不是卡片外壳。**
+   *
+   * 上面那条选择器 `.composer-prose[contenteditable]` 命中的是
+   * **ProseMirror 编辑区** —— 它本来就该透明、无圆角（圆角和底色在
+   * `data-cds="ComposerCard"` 那层）。
+   *
+   * 结果是：**输入框的圆角和底色从来没被量过**。实测 `composer.radius=0px`、
+   * `backgroundColor=rgba(0,0,0,0)` 看着像 bug，其实是量错了元素。
+   *
+   * 单独加一条量外壳。逆向真值（`--cds-radius-composer`）：
+   * `calc(.875rem × rem-scale)` ≈ **13.18px**。 */
+  ["composer-card", "[data-cds='ComposerCard']"],
+  /* 【UI 重建 2026-10-28】**用户气泡从来没被量过。**
+   *
+   * 18 个 measured 项里没有一个是 `UserBubble` —— 也就是说它的底色、
+   * 圆角、尺寸**全部在判据盲区里**。而它是 AI 输出旁边最显眼的那一块。
+   *
+   * 直接后果：`long-chat` 截图里气泡实测是 `rgb(237,220,206)`（暖棕），
+   * 而 `--user-bubble` 的定义是 `240 244 248`（冷蓝）—— 两者完全不符，
+   * 而 `unregistered` 一直是 0。
+   *
+   * ⚠️ 这条选择器量的是**气泡本体**（`MessageRow` 上的 `data-cds`），
+   * 不是它内部的 `.chat-md`（那是 `chat-body` 那条在量的）。 */
+  ["user-bubble", "[data-cds='UserBubble']"],
   ["approval", "[role='alertdialog']"],
   /* 【UI 重建 2026-10-28】**这条选择器量错了元素。**
    *

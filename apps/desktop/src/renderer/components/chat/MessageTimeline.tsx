@@ -164,8 +164,10 @@ export function MessageTimeline({
   // and per-row memo hooks in a 70vh strip. Keep every target in the scroll
   // range while only mounting the markers near the visible viewport.
   const stripRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(720);
+  const [focusedDashKey, setFocusedDashKey] = useState<string | null>(null);
   const windowed = dashes.length > TIMELINE_WINDOW_THRESHOLD;
   useLayoutEffect(() => {
     if (!windowed) return;
@@ -177,52 +179,168 @@ export function MessageTimeline({
       setScrollTop(previous => previous !== track.scrollTop ? track.scrollTop : previous);
     };
     measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(track);
-    return () => observer.disconnect();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(track);
+    return () => {
+      observer?.disconnect();
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    };
   }, [windowed, dashes.length]);
 
   const range = timelineDashWindow(dashes.length, scrollTop, viewportHeight);
-  const renderDash = (d: DashEntry) => (
-    <TimelineDash
+  const dashIndexByKey = useMemo(
+    () => new Map(dashes.map((dash, index) => [dash.key, index] as const)),
+    [dashes],
+  );
+  const focusedDashIndex = focusedDashKey === null ? null : dashIndexByKey.get(focusedDashKey) ?? null;
+  const validFocusedDashIndex = focusedDashIndex !== null &&
+    focusedDashIndex >= 0 && focusedDashIndex < dashes.length &&
+    dashes[focusedDashIndex]?.index >= 0 ? focusedDashIndex : null;
+  const firstFocusableOffset = dashes.slice(range.start, range.end).findIndex(d => d.index >= 0);
+  const rovingDashIndex = validFocusedDashIndex ??
+    (firstFocusableOffset >= 0 ? range.start + firstFocusableOffset : null);
+
+  // If the user scrolls the timeline with a focused marker, pin that one
+  // marker in the DOM even when it leaves the visible virtual window. This
+  // keeps browser focus alive; the rest of the offscreen history stays
+  // unmounted.
+  const visibleDashIndices = useMemo(() => {
+    const indices = Array.from({ length: Math.max(0, range.end - range.start) }, (_, i) => range.start + i);
+    if (windowed && validFocusedDashIndex !== null &&
+        (validFocusedDashIndex < range.start || validFocusedDashIndex >= range.end)) {
+      indices.push(validFocusedDashIndex);
+      indices.sort((a, b) => a - b);
+    }
+    return indices;
+  }, [range.start, range.end, windowed, validFocusedDashIndex]);
+
+  useLayoutEffect(() => {
+    if (!windowed || validFocusedDashIndex === null) return;
+    const track = stripRef.current;
+    const target = track?.querySelector<HTMLElement>(
+      `[data-ui-timeline-dash-index="${validFocusedDashIndex}"] [role="button"]`,
+    );
+    target?.focus({ preventScroll: true });
+  }, [windowed, validFocusedDashIndex, range.start, range.end]);
+
+  const renderDash = (d: DashEntry, ordinal: number) => (
+    <div
       key={d.key}
+      data-ui-timeline-dash-index={ordinal}
+      data-ui-timeline-dash-key={d.key}
+      className={windowed ? "absolute left-0 top-0 w-6" : "relative w-6 shrink-0"}
+      style={windowed ? { transform: `translateY(${ordinal * range.pitch}px)` } : undefined}
+    >
+    <TimelineDash
       message={d.message}
       active={d.message.id === activeId}
       bookmarked={d.bookmarked}
       excerpt={d.excerpt}
       title={d.title}
       canJump={d.index >= 0 && !!onJumpItem}
+      tabIndex={windowed ? (ordinal === rovingDashIndex ? 0 : -1) : 0}
       onJump={() => {
         if (d.index >= 0 && onJumpItem) onJumpItem(d.message.id, d.index, d.excerpt);
       }}
     />
+    </div>
   );
 
   if (dashes.length === 0) return null;
 
   return (
+    /* 【UI 重建 2026-10-28】**静态时不可见，悬停聊天区才淡入。**
+     *
+     * 真机截图（`reference-screenshot-175pct.webp` 的正文左侧）**什么都没有** ——
+     * Claude 的 AI 输出左边干干净净，没有这排刻度。
+     *
+     * 而 Mcode 这排 `—` 一直挂着，在深色/浅色下都形成一条干扰竖线，
+     * 贴着正文左缘。这是「UI 全盘模仿 Claude」最直接的一处违背。
+     *
+     * ## 为什么是「隐藏」而不是「删除」
+     *
+     * 它不是装饰 —— 每条灰色 dash 是一个用户消息、金色是书签，
+     * 点一下能跳过去。这是 Mcode 比 Claude 多出来的**导航能力**，
+     * 删掉会丢功能。
+     *
+     * 按「Claude 有的照 Claude，没有的保留但先不抢视觉」这条规矩：
+     * **功能保留，静态静音，悬停才出现**。
+     *
+     * 用 `group` + `group-hover` 而不是加 JS 状态：这条 nav 是
+     * `absolute` + `pointer-events-none`（不占布局宽度），
+     * 纯 CSS 就能做到零状态、零重渲染。 */
     <nav
       aria-label={t("chatStream.timeline.navigation")}
-      className="pointer-events-none absolute left-0 top-1/2 z-10 -translate-y-1/2"
+      className="chat-timeline-rail pointer-events-none absolute left-0 top-1/2 z-10 -translate-y-1/2"
     >
       <div
         ref={stripRef}
         data-ui-timeline-strip=""
         data-ui-timeline-windowed={windowed ? "true" : "false"}
-        tabIndex={windowed ? 0 : undefined}
-        onScroll={windowed ? (event) => setScrollTop(event.currentTarget.scrollTop) : undefined}
-        className="pointer-events-auto flex max-h-[70vh] flex-col items-center justify-start gap-1.5 overflow-y-auto overflow-x-visible py-1 [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        onScroll={windowed ? (event) => {
+          const track = event.currentTarget;
+          if (scrollFrameRef.current !== null) return;
+          scrollFrameRef.current = window.requestAnimationFrame(() => {
+            scrollFrameRef.current = null;
+            setScrollTop(previous => previous !== track.scrollTop ? track.scrollTop : previous);
+          });
+        } : undefined}
+        onFocusCapture={windowed ? (event) => {
+          const wrapper = (event.target as HTMLElement).closest<HTMLElement>("[data-ui-timeline-dash-index]");
+          const key = wrapper?.dataset.uiTimelineDashKey;
+          if (wrapper && key) setFocusedDashKey(key);
+        } : undefined}
+        onBlurCapture={windowed ? (event) => {
+          const next = event.relatedTarget as Node | null;
+          if (!next || !event.currentTarget.contains(next)) setFocusedDashKey(null);
+        } : undefined}
+        onKeyDownCapture={windowed ? (event) => {
+          const wrapper = (event.target as HTMLElement).closest<HTMLElement>("[data-ui-timeline-dash-index]");
+          const current = Number(wrapper?.dataset.uiTimelineDashIndex);
+          if (!wrapper || !Number.isInteger(current)) return;
+          const key = event.key;
+          if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(key)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const track = event.currentTarget;
+          const pageStep = Math.max(1, Math.floor((track.clientHeight || viewportHeight) / range.pitch) - 2);
+          let target = current;
+          let direction = 0;
+          if (key === "Home") target = 0;
+          else if (key === "End") target = dashes.length - 1;
+          else if (key === "ArrowUp") { target = current - 1; direction = -1; }
+          else if (key === "ArrowDown") { target = current + 1; direction = 1; }
+          else if (key === "PageUp") { target = current - pageStep; direction = -1; }
+          else if (key === "PageDown") { target = current + pageStep; direction = 1; }
+          target = Math.max(0, Math.min(dashes.length - 1, target));
+          if (dashes[target]?.index < 0) {
+            const step = direction || (key === "Home" ? 1 : -1);
+            while (target >= 0 && target < dashes.length && dashes[target]?.index < 0) target += step;
+            target = Math.max(0, Math.min(dashes.length - 1, target));
+          }
+          if (dashes[target]?.index < 0) return;
+          setFocusedDashKey(dashes[target]!.key);
+          const targetTop = target * range.pitch;
+          let nextTop = track.scrollTop;
+          if (targetTop < track.scrollTop) nextTop = targetTop;
+          else if (targetTop + range.pitch > track.scrollTop + track.clientHeight) {
+            nextTop = targetTop + range.pitch - track.clientHeight;
+          }
+          if (nextTop !== track.scrollTop) {
+            track.scrollTop = Math.max(0, nextTop);
+            setScrollTop(track.scrollTop);
+          }
+        } : undefined}
+        className="pointer-events-auto flex max-h-[70vh] flex-col items-center justify-start gap-1.5 overflow-y-auto overflow-x-visible py-1 [scrollbar-width:thin]"
       >
         {windowed ? (
           <div className="relative w-6 shrink-0" style={{ height: range.totalHeight }}>
-            {dashes.slice(range.start, range.end).map((d, index) => (
-              <div key={d.key} className="absolute left-0 top-0 w-6" style={{ transform: `translateY(${(range.start + index) * range.pitch}px)` }}>
-                {renderDash(d)}
-              </div>
-            ))}
+            {visibleDashIndices.map(index => renderDash(dashes[index]!, index))}
           </div>
-        ) : dashes.map(renderDash)}
+        ) : dashes.map((d, index) => renderDash(d, index))}
       </div>
     </nav>
   );
@@ -236,6 +354,7 @@ function TimelineDash({
   excerpt,
   title,
   canJump,
+  tabIndex,
   onJump,
 }: {
   message: ChatMessage;
@@ -247,6 +366,7 @@ function TimelineDash({
   /** Renamed bookmark's display title (hover card headline). */
   title?: string | null;
   canJump: boolean;
+  tabIndex: number;
   onJump: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -297,6 +417,7 @@ function TimelineDash({
     <ClickableRow
       className="relative flex min-h-6 min-w-6 shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-btn-xs)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       disabled={!canJump}
+      tabIndex={tabIndex}
       aria-label={t("chatStream.timeline.jumpTo", { time: fmtClock(message.createdAt), text: summary })}
       onMouseEnter={(e) => { anchorRef.current = e.currentTarget; setHovered(true); }}
       onMouseLeave={() => setHovered(false)}
