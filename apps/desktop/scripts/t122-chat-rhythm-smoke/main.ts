@@ -246,8 +246,26 @@ const gapBlock = evalLength(comfortable.get("--chat-block-gap"), comfortable);
  * 这里用**独立常量**（从本机产物抄下来的原始值），并额外断言它俩与
  * styles.css 里 `--chat-font-size` / `--chat-md-leading` 一致（见下面 §一末），
  * 后者守的是「公式用的基数和样式表里的一致」，前者守的是「间距确实按公式算」。 */
-const CLAUDE_BODY_PX = 12.24;        // 本机 Claude --cds-font-size-body
-const CLAUDE_LEADING = 1.5378;       // 本机 Claude --cds-leading-body / body
+/* 【UI 重建 2026-10-28】**常数换成真 Electron 实测值。上一版两个都是错的。**
+ *
+ * 上一版 `12.24` / `1.5378`：
+ *   - 12.24 = `.8125rem × 16 × 16/17` —— **双重错误**：取了 `.cds-root` 基础层
+ *     （comfortable 层是 `.875rem`），又乘了 `16/17`（Windows 上
+ *     `--cds-rem-scale` 未定义，应取 1）。
+ *   - 1.5378 是拿 `18.82 / 12.24` 反推的比值，而 18.82 本身也是错的。
+ *
+ * 实测（`.tmp/claude-css-probe/`，真 Electron + Claude 自己的 25 个 CSS，
+ * `<div class="cds-root" data-density="comfortable">`）：
+ *
+ *   `--cds-font-size-body` → **14px**       (.875rem × 1)
+ *   `--cds-leading-body`   → **20px**       (1.25rem × 1)
+ *   比值                   → **1.428571**
+ *
+ * 这一层是 **transcript 层**（时间线 / tool 行 / 用户气泡），
+ * `--chat-turn-gap` 与 `--chat-item-gap` 都写在这一层上 ——
+ * 注意**不是** AI 正文的 `.prose`（那是 16px / 1.5，见 t147）。 */
+const CLAUDE_BODY_PX = 14;           // 本机 Claude --cds-font-size-body @ comfortable
+const CLAUDE_LEADING = 20 / 14;      // = --cds-leading-body / body = 1.428571
 const UPSTREAM_TURN_GAP = CLAUDE_BODY_PX * CLAUDE_LEADING * 0.75;
 const UPSTREAM_ITEM_GAP = CLAUDE_BODY_PX * CLAUDE_LEADING * 0.5;
 
@@ -272,11 +290,32 @@ const styleBody = evalLength(rootBlock().get("--chat-font-size"), rootBlock());
  * 不在真 `:root`。所以要和间距用同一个声明表查 —— 用 `rootBlock()` 会得到 null，
  * 而 null 只会让这条断言红，不会让上面三条间距断言红（它们是另一条路径）。 */
 const styleLeading = evalLength(comfortable.get("--chat-md-leading"), comfortable);
+/* 【UI 重建 2026-10-28】**这条原来比错了对象。**
+ *
+ * `styleBody` / `styleLeading` 取的是 `--chat-font-size` / `--chat-md-leading`，
+ * 那是 **AI 正文**的 16px / 1.5；而上面那三条对照用的 `CLAUDE_BODY_PX` /
+ * `CLAUDE_LEADING` 是 **transcript 层**的 14px / 1.4286 —— 间距公式现在读的是
+ * 后者（`--m-transcript-body` / `--m-transcript-leading`）。
+ *
+ * 拿正文的值去比 transcript 的常数，必然红，而且红得没有信息量。
+ * 现在分别守两条：
+ *   a) 间距公式的基数（新变量）== transcript 层真值
+ *   b) 正文档确实是 16 / 1.5（防止有人把正文改成 14 来"对齐"间距）
+ */
+const styleTBody = evalLength(comfortable.get("--m-transcript-body"), comfortable);
+const styleTLeadingRaw = comfortable.get("--m-transcript-leading");
+const styleTLeading = styleTLeadingRaw ? parseFloat(styleTLeadingRaw) : null;
 check(
-  "★ 参照基数与 styles.css 一致（--chat-font-size / --chat-md-leading）",
+  "★ 间距公式的基数 = transcript 层真值（--m-transcript-body / --m-transcript-leading）",
+  styleTBody !== null && styleTLeading !== null &&
+    Math.abs(styleTBody - CLAUDE_BODY_PX) < 0.005 && Math.abs(styleTLeading - CLAUDE_LEADING) < 0.005,
+  { styleTBody, styleTLeading, expected: [CLAUDE_BODY_PX, Number(CLAUDE_LEADING.toFixed(6))] },
+);
+check(
+  "★ 正文档仍是 16 / 1.5（不许为了对齐间距把正文压成 14）",
   styleBody !== null && styleLeading !== null &&
-    Math.abs(styleBody - CLAUDE_BODY_PX) < 0.005 && Math.abs(styleLeading - CLAUDE_LEADING) < 0.005,
-  { styleBody, styleLeading, expected: [CLAUDE_BODY_PX, CLAUDE_LEADING] },
+    Math.abs(styleBody - 16) < 0.005 && Math.abs(styleLeading - 1.5) < 0.005,
+  { styleBody, styleLeading, expected: [16, 1.5] },
 );
 
 // ★ 对照组：上游换算值与我们的值同时给出。没有这一组时，「都等于 10」
@@ -378,117 +417,65 @@ check(
 console.log("\n== 四、★ gutter 不倒挂：窗口变宽，正文不许变窄 ==");
 
 /**
- * 从 styles.css 里读出 gutter 规则，用纯算术复算「内容宽 = pane − 2×gutter」。
+ * gutter 从**连续 clamp 公式**换成了**上游真值：常数 32px + 窄容器降 16px**。
  *
- * 这是对**源码声明的复算**，不是浏览器实测（无头 Node 里没有布局引擎）。
- * 浏览器实测在 `.tmp/t122-cqprobe/` 的预览页做过，结论一致（0 处倒挂，
- * 饱和点 704px）。两处都给，是因为纯算术能被变异打断，而实测不能自动化。
+ * 【UI 重建 2026-10-28】上一版守的是
+ * `clamp(0px, calc((100cqw - 384px) * .175), 56px)` —— 那个公式出自
+ * 第三方逆向仓 `open-claude-ui`，其中 384 / .175 / 56 是
+ * `--cds-assistant-message-text-stop` 的参数，**不是 gutter 的**。
+ *
+ * 上游真值（`.tmp/upstream.css`，逐条取出每个 `--chat-gutter` 定义及其作用域）：
+ *
+ *   .epitaxy-root                                   { --chat-gutter: 32px }
+ *   @container tile-slot (width<=560px)
+ *     .epitaxy-chat-panel …                          { --chat-gutter: 16px }
+ *   [--chat-gutter:0px]  （工具类，非默认）
+ *
+ * 也就是说 Claude 的正文左右留白是**常数 32px**，只在容器窄于 560px 时降到 16px。
+ * 连续性那套论证（斜率、饱和点、逐像素扫描）是为 clamp 准备的，**对常数没有意义** ——
+ * 常数天然单调，不会倒挂。
+ *
+ * 所以这一节改成守真正决定视觉的三件事：
+ *   1. 默认值就是 32px（上游常数，不是公式算出来的）
+ *   2. 窄容器下确实降到 16px（否则窄屏正文会被吃掉 64px）
+ *   3. 消费点存在（定义了没人读 = 假的体系）
  */
 
-// 读出 @supports 块里的 clamp 公式。
-const supportsBlock = /@supports\s*\(width:\s*1cqw\)\s*\{[\s\S]*?--chat-gutter:\s*([^;]+);/.exec(css);
+/* 这两个值都是裸 px，没有 `var()` 需要展开 —— 传空表即可。 */
+const gutterBase = evalLength(
+  /\.epitaxy-root\s*\{[^}]*?--chat-gutter:\s*([^;}]+)/.exec(css)?.[1] ??
+    /--chat-gutter:\s*([\d.]+px)/.exec(css)?.[1] ?? "",
+  new Map<string, string>(),
+);
+/* 从我们自己的 styles.css 读默认值 —— 上游那份只是参照。 */
+const oursGutterRaw = /\[data-chat-root\][^{]*\{[^}]*?--chat-gutter:\s*([^;}]+)/.exec(css)?.[1]
+  ?? /--chat-gutter:\s*([\d.]+px)/.exec(css)?.[1] ?? "";
+const oursGutter = evalLength(oursGutterRaw, new Map<string, string>());
+const UP_GUTTER = 32;
+const UP_GUTTER_NARROW = 16;
+
+console.log(`
+== 四、★ gutter = 上游常数（${UP_GUTTER}px / 窄容器 ${UP_GUTTER_NARROW}px）==`);
 
 check(
-  "存在 clamp() 形式的 gutter（台阶式必然倒挂，只有连续函数不会）",
-  supportsBlock !== null && /clamp\(/.test(supportsBlock[1]),
-  { raw: supportsBlock?.[1]?.trim() },
+  `★ 默认 gutter = 上游常数 ${UP_GUTTER}px（不是 clamp 公式）`,
+  oursGutter !== null && Math.abs(oursGutter - UP_GUTTER) < 0.01,
+  { ours: oursGutter, upstream: UP_GUTTER, raw: oursGutterRaw },
 );
-
-/** 解析 `clamp(A, calc((100cqw - B) * C), D)` 这四个数。 */
-function parseGutterClamp(src: string): { floor: number; ref: number; k: number; ceil: number } | null {
-  const m = /clamp\(\s*(-?[\d.]+)px\s*,\s*calc\(\s*\(100cqw\s*-\s*(-?[\d.]+)px\)\s*\*\s*(-?[\d.]+)\s*\)\s*,\s*(-?[\d.]+)px\s*\)/.exec(src);
-  if (!m) return null;
-  return { floor: parseFloat(m[1]), ref: parseFloat(m[2]), k: parseFloat(m[3]), ceil: parseFloat(m[4]) };
-}
-
-const clamp = supportsBlock ? parseGutterClamp(supportsBlock[1]) : null;
-
-check("gutter clamp 能解析出四个参数（floor / ref / k / ceil）", clamp !== null, { raw: supportsBlock?.[1]?.trim() });
-
-/**
- * ⚠️ clamp 解析不出来时，**不能只是跳过下面的断言**。
- *
- * 第一版把整段包在 `if (clamp) { ... }` 里，结果「删掉 clamp」的变异只红了
- * 3 条（存在性 / 解析 / 跳过提示），而对照、扫描、斜率、饱和点这 4 条**根本没跑**。
- * **跳过的断言和通过的断言在输出里长得一样** —— 这是本仓反复踩的形态
- * （T119 的「套件全绿但没覆盖到」）。
- *
- * 所以这里改成：clamp 缺失时，**逐条显式 FAIL**，让「没跑」在输出里是红的。
- */
-function checkOrFailWhenNoClamp(label: string, fn: () => boolean, detail?: () => unknown): void {
-  if (!clamp) {
-    check(label, false, { reason: "clamp 未能解析 —— 这条断言没有执行" });
-    return;
-  }
-  check(label, fn(), detail?.());
-}
-
-if (clamp) {
-  console.log(`  · 解析: floor=${clamp.floor}px ref=${clamp.ref}px k=${clamp.k} ceil=${clamp.ceil}px`);
-}
-
-// 上游同型公式（cds-theme.css:174）—— 对照，不是硬编码。
-const UP_REF = 384;
-const UP_K = 0.175;
-const UP_CEIL = 56;
-
-checkOrFailWhenNoClamp(
-  "★ 对照：clamp 的参照值与上游一致（384px / .175 / 56px）",
-  () => clamp!.ref === UP_REF && Math.abs(clamp!.k - UP_K) < 1e-9 && clamp!.ceil === UP_CEIL,
-  () => ({ ours: { ref: clamp!.ref, k: clamp!.k, ceil: clamp!.ceil }, upstream: { ref: UP_REF, k: UP_K, ceil: UP_CEIL } }),
+/* 窄档写成容器查询，选择器是 `[data-chat-root] *` —— 只按 `--chat-gutter: 16px`
+ * 匹配正文，不要假设选择器形状。 */
+check(
+  `★ 窄容器（<=560px）降为 ${UP_GUTTER_NARROW}px —— 否则窄屏正文被吃掉 64px`,
+  /* 用 `[ ]*` 而不是 `\\s*`：模板字符串里 `\s` 会被当成转义序列吃掉，
+   * 正则剩成 `--chat-gutter:s*16px`，永远不命中（实测踩过）。 */
+  new RegExp(`--chat-gutter:[ ]*${UP_GUTTER_NARROW}px`).test(css) &&
+    /@container[^{]*560px/.test(css),
+  { wanted: `${UP_GUTTER_NARROW}px`, hasContainerQuery: /@container[^{]*560px/.test(css) },
 );
-
-function gutterAt(pane: number): number {
-  const mid = (pane - clamp!.ref) * clamp!.k;
-  return Math.min(Math.max(clamp!.floor, mid), clamp!.ceil);
-}
-function contentAt(pane: number): number {
-  return pane - 2 * gutterAt(pane);
-}
-
-// 逐像素扫 300..1700，收集所有倒挂点。
-function scanInversions(): Array<{ from: number; to: number; delta: number }> {
-  const found: Array<{ from: number; to: number; delta: number }> = [];
-  let prev = contentAt(300);
-  for (let pane = 301; pane <= 1700; pane++) {
-    const now = contentAt(pane);
-    if (now < prev - 1e-9) found.push({ from: pane - 1, to: pane, delta: Number((now - prev).toFixed(3)) });
-    prev = now;
-  }
-  return found;
-}
-
-const inversions = clamp ? scanInversions() : [];
-
-checkOrFailWhenNoClamp(
-  "★ 300–1700px 逐像素扫描：正文宽度单调不减（0 处倒挂）",
-  () => inversions.length === 0,
-  () => ({ count: inversions.length, first: inversions.slice(0, 5) }),
-);
-if (clamp) console.log(`  · 扫描结果：倒挂 ${inversions.length} 处（300–1700px，1400 个宽度）`);
-
-// 单调不减在数学上等价于「斜率处处 >= 0」。斜率 = 1 - 2·k，
-// 所以只要 k <= 0.5 就永不倒挂。这一条是上一条的独立佐证
-// （pixel sweep 只覆盖扫过的区间，斜率覆盖全部实数）。
-checkOrFailWhenNoClamp(
-  "斜率 1 − 2k >= 0（k <= 0.5）—— 覆盖整个实数域，不只扫描区间",
-  () => clamp!.k <= 0.5,
-  () => ({ k: clamp!.k, slope: Number((1 - 2 * clamp!.k).toFixed(4)) }),
-);
-
-// 饱和点：gutter 到达上限的那个 pane 宽。上游的 56px 上限应在那附近生效。
-checkOrFailWhenNoClamp(
-  "饱和点 = ref + ceil/k（704px），与上游同型公式一致",
-  () => Math.abs(clamp!.ref + clamp!.ceil / clamp!.k - (UP_REF + UP_CEIL / UP_K)) < 1e-6,
-  () => ({ ours: Number((clamp!.ref + clamp!.ceil / clamp!.k).toFixed(2)), upstream: UP_REF + UP_CEIL / UP_K }),
-);
-if (clamp) console.log(`  · 饱和点：pane >= ${(clamp.ref + clamp.ceil / clamp.k).toFixed(0)}px 之后 gutter 恒为 ${clamp.ceil}px`);
-
-// 地板：最窄的 pane 下正文不能被挤没。
-checkOrFailWhenNoClamp(
-  "地板 20px：pane=300 时正文仍有 >= 200px（窄 pane 不把正文挤没）",
-  () => contentAt(300) >= 200,
-  () => ({ content: contentAt(300) }),
+check(
+  "gutter 不再写成 clamp()（上游是常数，clamp 会让宽度随 pane 漂移）",
+  !/--chat-gutter:\s*clamp\(/.test(css),
+  { hit: /--chat-gutter:\s*clamp\([^;}]*/.exec(css)?.[0] ?? null },
 );
 
 /* ══════════════════════════════════════════════════════════════════════

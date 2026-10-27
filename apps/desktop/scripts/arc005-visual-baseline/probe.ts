@@ -824,6 +824,15 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               fontSize:st.fontSize,lineHeight:st.lineHeight,color:st.color,
               backgroundColor:st.backgroundColor,borderRadius:st.borderRadius,
               padding:st.padding,
+              paddingBlockStart:st.paddingBlockStart, paddingBlockEnd:st.paddingBlockEnd,
+              paddingInlineStart:st.paddingInlineStart, paddingInlineEnd:st.paddingInlineEnd,
+              marginBlockStart:st.marginBlockStart,
+              marginInlineStart:st.marginInlineStart,
+              borderInlineStartWidth:st.borderInlineStartWidth,
+              borderBlockStartWidth:st.borderBlockStartWidth,
+              borderBlockEndWidth:st.borderBlockEndWidth,
+              borderTopWidth:st.borderTopWidth, borderBottomWidth:st.borderBottomWidth,
+              fontWeight:st.fontWeight,
               bounds:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}};
           });
           return {measured,workspaceSkin,paneGeometry,tokens:Object.fromEntries(tokens.map(k=>[k,root.getPropertyValue(k).trim()])),

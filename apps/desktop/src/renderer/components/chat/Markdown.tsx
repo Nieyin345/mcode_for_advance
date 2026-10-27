@@ -800,27 +800,53 @@ function buildComponents(): Components {
     return <img src={src} alt={alt ?? ""} />;
   },
   ul({ children }) {
-    return <ul className="mt-[var(--chat-md-gap-sm)] mb-0 list-disc space-y-[var(--chat-md-gap-xs)] pl-5 text-content-muted marker:text-content-subtle">{children}</ul>;
+    /* Claude：`li { margin-block-start: calc(flow * .333); padding-inline-start: .5em }`
+     * 列表本身的 margin 由通用规则给 `margin-block-start: flow`，**没有** padding。
+     * `::marker { color: text-secondary; font-size: .7em }`。
+     * 上一版额外写了 `padding-inline-start: 1.2em` —— 上游列表本体没有这个，
+     * 会让整个列表比 Claude 更靠右。 */
+    return <ul className="mt-[var(--chat-md-gap-sm)] mb-0 list-disc marker:text-content-muted [&::marker]:text-[0.7em]">{children}</ul>;
   },
   ol({ children }) {
-    return <ol className="mt-[var(--chat-md-gap-sm)] mb-0 list-decimal space-y-[var(--chat-md-gap-xs)] pl-5 text-content-muted marker:text-content-subtle">{children}</ol>;
+    return <ol className="mt-[var(--chat-md-gap-sm)] mb-0 list-decimal marker:text-content-muted [&::marker]:text-[0.7em]">{children}</ol>;
+  },
+  li({ children }) {
+    /* Claude `.prose li{ margin-block-start:calc(var(--_prose-flow)*var(--_prose-x-li-child)); margin-block-end:0; padding-inline-start:.5em }`
+     *   flow 12px × 0.333 = 4px；padding-inline-start: .5em = 8px。 */
+    return <li className="mb-0 mt-[var(--chat-md-gap-xs)] [padding-inline-start:0.5em]">{children}</li>;
   },
   blockquote({ children }) {
-    return <blockquote className="mt-[var(--chat-md-gap-md)] mb-0 border-l-2 border-edge pl-3 text-content-muted">{children}</blockquote>;
+    /* Claude `.prose blockquote{ border-inline-start:4px solid var(--cds-border);
+     *   color:var(--cds-text-secondary); margin-inline:.5em 0; padding-inline-start:1em }`
+     *   4px 边线 / .5em=8px 左右外边距 / 1em=16px 内缩 / 次要文字色。
+     * 上一版是 2px 边线 + pl-3(12px) + 无 margin-inline。 */
+    return (
+      <blockquote className="mt-[var(--chat-md-gap-md)] mb-0 border-l-4 border-edge [margin-inline:0.5em_0] [padding-inline-start:1em] text-content-muted">
+        {children}
+      </blockquote>
+    );
   },
   hr() {
-    // Model-emitted "---". Without an override the browser default renders
-    // (border: 1px inset + 0.5em margins) — a faint double line with
-    // unpredictable spacing that reads as an unexplained gap on dark surfaces.
-    return <hr className="my-[calc(var(--chat-md-flow)*2)] border-0 border-t border-edge" />;
+    /* Claude `.prose hr{ border:0; border-block-start:.5px solid var(--cds-border);
+     *   margin-block:calc(var(--_prose-flow)*2) 0; margin-inline:.375em }`
+     *   —— 只有上边线，上间距 flow×2=24px、**下间距 0**（单向间距体系）。 */
+    return <hr className="mt-[calc(var(--chat-md-gap-sm)*2)] mb-0 [margin-inline:0.375em] border-0 border-t-[0.5px] border-edge" />;
   },
   // Bold is full --content: in paragraphs that matches the body color (weight
   // alone marks emphasis); in muted contexts (lists / tables / blockquotes) the
   // extra brightness keeps emphasized words legible. Dark chat lists soften
   // that jump via the `.dark .chat-md li strong` rule in styles.css — see the
   // "Chat markdown list lift" block there for the rationale.
+  //
+  // 【UI 重建 2026-10-28】Claude 的 `<strong>` 在 reply 上下文是
+  // `font-weight: calc(--cds-font-weight-medium + 1)` = **501**（实测），
+  // 不是 700/600。字色的提亮仍然保留 —— 那是 Mcode 在深色下的可读性取舍，
+  // 上游没有对应规则，但也不会把字重推离 501。
   strong({ children }) {
-    return <strong className="text-content">{children}</strong>;
+    /* `[font-weight:501]` = 上游 `calc(var(--cds-font-weight-medium,500) + 1)`。
+     * 写死 501 而不是 `font-semibold`(580)：Claude 的加粗只比正文重 1 档，
+     * 580 会让整段文字的节奏明显变硬。 */
+    return <strong className="text-content [font-weight:501]">{children}</strong>;
   },
   // Table sizing is content-first: `w-full` + auto layout squeezed text-heavy
   // columns to per-word vertical strips on narrow panes (and stretched sparse
@@ -829,18 +855,54 @@ function buildComponents(): Components {
   // look), and the per-cell max-width cap makes long prose wrap at a readable
   // measure instead of rendering one enormous unbroken line. The overflow-x-auto
   // wrapper scrolls whatever still exceeds the pane.
+  //
+  // 【UI 重建 2026-10-28】**表格样式全部换成 Claude 的 reply 上下文真值。**
+  //
+  // 上游两条规则叠加，第二条是 reply 专用的覆盖：
+  //
+  //   .prose table{ border:1px solid var(--cds-border); border-collapse:separate;
+   //       border-spacing:0; border-radius:var(--cds-radius); width:100%; text-align:start }
+   //     .prose th,td{ vertical-align:top; padding:.4375em .75em }
+   //     .prose th{ font-weight:500; background:var(--cds-alpha-1) }
+   //     :is(th,td):where(thead>tr>*){ border-block-end:1px solid var(--cds-border) }
+   //     :is(td,th):where(tbody>tr+tr>*, tbody+tbody>tr:first-child>*){
+   //       border-block-start:1px solid var(--cds-border) }
+   //  
+   //     /* reply 上下文（[data-cds-reply-type]）把上面整层抹掉：
+   //     ... .prose-scroll :is(th,td){ background:0 0; border-radius:0;
+   //       padding-block:calc(.4375em + 1px); padding-inline:0 }
+   //     ... :is(li,blockquote,details) .prose-scroll{ border-width:0; border-radius:0 }
+   //  
+   //   真 Electron 实测（`.tmp/claude-css-probe/`）：在 reply 里表格
+   //   **没有外框、没有圆角、没有行分隔线、表头没有底色**，单元格只有
+   //   纵向 `8px`（`.4375em + 1px` @16px）内边距、横向 `0`，表头字重 `580`。
+   //  
+   //   ⚠️ **这和 `<table>` 在正文以外的形态完全不同** —— 上游给那套边框是给
+   //   独立文档表格用的，聊天回复里全部被 reply 选择器覆盖掉了。
+   //   只看 `.prose table{...}` 那一条会把它做得满屏网格线。 */
   table({ children }) {
     return (
-      <div className="mt-[var(--chat-md-gap-md)] mb-0 overflow-x-auto">
-        <table className="[width:max-content] [min-width:100%] border-collapse [font-size:var(--chat-fs-sm)]">{children}</table>
+      /* `.prose-scroll`：`overflow-x:auto` + 子元素 `margin-block:0`。
+       * Claude 用一层 wrapper 承担横向滚动，表格本体 `width:100%`。 */
+      <div className="prose-scroll mt-[var(--chat-md-gap-md)] mb-0 overflow-x-auto [&>*]:my-0">
+        <table className="w-full border-separate border-spacing-0 text-start [font:inherit]">{children}</table>
       </div>
     );
   },
   th({ children }) {
-    return <th className="max-w-[32ch] border border-edge bg-surface-muted/50 px-2 py-1 text-left font-semibold text-content">{children}</th>;
+    /* 实测：reply 上下文 th 的 font-weight 是 **580**（`--cds-font-weight-header`
+     * 的默认链走到 `--cds-font-weight-semibold`），不是基础 `.prose th` 的 500。
+     * 纵向 padding 8px（.4375em + 1px @16px）、横向 0。 */
+    return (
+      <th className="max-w-[32ch] border-0 bg-transparent px-0 py-2 text-left font-semibold align-top text-content">
+        {children}
+      </th>
+    );
   },
   td({ children }) {
-    return <td className="max-w-[32ch] border border-edge px-2 py-1 text-content-muted">{children}</td>;
+    return (
+      <td className="max-w-[32ch] border-0 px-0 py-2 align-top text-content">{children}</td>
+    );
   },
   h1({ children }) {
     return <h1 className="mb-0 mt-[var(--chat-md-gap-lg)] font-semibold text-content [font-size:calc(1em_+_0.125rem)]">{children}</h1>;

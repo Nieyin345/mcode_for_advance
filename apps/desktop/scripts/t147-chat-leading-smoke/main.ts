@@ -119,27 +119,45 @@ check("comfortable 档有值", comfortable !== null, { comfortable });
 check("compact 档有值", compact !== null, { compact });
 check("cozy 档有值", cozy !== null, { cozy });
 
-/* 【UI 重建 2026-10-27】默认档的**依据换了**。
+/* 【UI 重建 2026-10-28】**期望值改了：1.5385 → 1.4385。上一版配错了档位。**
  *
- * 原来断言 1.625，出处是 `open-claude-ui` 里 `ChatMessageBubbles.tsx` 的
- * Tailwind `leading-relaxed`。那份第三方逆向目录已按用户要求删除，
- * 外观基准改成**用户本机安装的 Claude Desktop 3.1623.4.0**。
+ * 上一版写 `1.25 / 0.8125` = 1.538462，两个数取自**不同的层**：
  *
- * 新依据（从它的产物里直接读到）：
- *   --cds-font-size-body : calc(.8125rem × rem-scale)
- *   --cds-leading-body   : calc(1.25rem  × rem-scale)
- *   --cds-rem-scale      : calc(16 / 17)
- * 两者相除 = 1.25 / 0.8125 = **1.538462**（rem-scale 约掉，与它无关）。
+ *   --cds-leading-body   .cds-root 基础层 → 1.25rem
+ *   --cds-font-size-body .cds-root 基础层 → .8125rem
  *
- * 实现取 1.5378（与 1.538462 差 0.04%，是行高 px 取整造成的），
- * 所以断言用一个容差而不是严格相等 —— 但**仍然钉住「必须是 Claude 的那个比例」**：
- * 1.45 / 1.625 都落在容差外。 */
-const CLAUDE_BODY_LEADING = 1.25 / 0.8125; // = 1.538462
-console.log(`\n[2] ★ 默认档必须等于 Claude 的 leading/body 比例（${CLAUDE_BODY_LEADING.toFixed(6)}）`);
+ * 但它们**都还有 comfortable 层的值**，而 Claude 的 `index.html` 上写着
+ * `data-density="comfortable"` —— 用户真实看到的是那一层：
+ *
+ *   --cds-leading-body   comfortable → 1.25rem  (20px)
+ *   --cds-font-size-body comfortable → .875rem  (14px)
+ *
+ * 真 Electron 实测这两个 token 在 `<div class="cds-root" data-density="comfortable">`
+ * 下的 computed 值：`14px` / `20px` → 比值 **1.428571**。
+ *
+ * 上一版碰巧用对了 leading（两层都是 1.25rem），却用错了 body
+ * （基础层 .8125 而非 comfortable .875），于是比值偏高 7.7%。
+ *
+ * ## 但正文实际用的不是这个比值
+ *
+ * ⚠️ `.prose`（AI 回复的容器）自己写着
+ * `--_prose-leading: var(--cds-leading-prose, 1.5)` ——
+ * 正文行高是 **1.5**，不是 body 档的 1.4286。本套件守的是
+ * `--chat-md-leading`，它跟着 **prose**，所以期望值是 1.5。
+ *
+ * 这条断言现在同时钉两件事：Mcode 的默认档 = Claude `--_prose-leading`，
+ * 且它落在 body 比值 (1.4286) 之上 —— 两者差 5%，足以分辨用的是哪一档。 */
+const CLAUDE_PROSE_LEADING = 1.5; // = --cds-leading-prose / --cds-font-size-prose = 1.5rem/1rem
+console.log(`\n[2] ★ 默认档必须等于 Claude 正文的 leading（${CLAUDE_PROSE_LEADING}）`);
 check(
-  "comfortable ≈ 1.5385（Claude --cds-leading-body / --cds-font-size-body）",
-  comfortable !== null && Math.abs(comfortable - CLAUDE_BODY_LEADING) < 0.002,
-  { comfortable, expected: CLAUDE_BODY_LEADING },
+  "comfortable ≈ 1.5（Claude --_prose-leading = 1.5rem / 1rem）",
+  comfortable !== null && Math.abs(comfortable - CLAUDE_PROSE_LEADING) < 0.002,
+  { comfortable, expected: CLAUDE_PROSE_LEADING },
+);
+check(
+  "★ 且不等于 transcript 层比值 1.4286（证明量的是正文那一档，不是外层的 --chat-leading）",
+  comfortable !== null && Math.abs(comfortable - 1.428571) > 0.01,
+  { comfortable, transcriptRatio: 1.428571 },
 );
 check(
   "负控：默认档既不等于旧值 1.45，也不等于第三方文档的 1.625（证明这条不是恒真）",

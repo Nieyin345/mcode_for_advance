@@ -34,6 +34,7 @@ function check(name: string, cond: boolean, detail?: unknown): void {
 
 const ROW = "src/renderer/components/chat/MessageRow.tsx";
 const row = readFileSync(ROW, "utf8");
+const css = readFileSync("src/renderer/styles.css", "utf8");
 
 check(
   "★ 消息操作栏保留上游 toolbar 标记、可访问名称与触屏可见状态",
@@ -45,10 +46,33 @@ check(
   sourceHas(row, "[@media(hover:none)]:opacity-100"),
 );
 
-// ── [1] 用户气泡内边距 px-4 py-3（上游 16/12） ──
+// ── [1] 用户气泡内边距 = 上游 --cds-pad-lg / --cds-pad-md（12 / 8） ──
+/* 【UI 重建 2026-10-28】**这条断言原来钉的是「px-4 py-3（上游 16/12）」，
+ * 两半都错：实现没这么写，上游也不是 16/12。**
+ *
+ * 上游：
+ *   `.cds-root [data-cds=UserMessage]{ --cds-message-bubble-pad-x: var(--cds-pad-lg);
+ *                                      --cds-message-bubble-pad-y: var(--cds-pad-md) }`
+ *   comfortable 层 `--cds-pad-lg` = `.75rem` = **12px**、`--cds-pad-md` = `.5rem` = **8px**
+ *   （真 Electron 实测；`16/12` 是 Tailwind `px-4 py-3` 的值，不是 Claude 的。）
+ *
+ * 实现走的是变量 `px-[var(--m-bubble-pad-x)] py-[var(--m-bubble-pad-y)]`
+ * （HEAD 里就已经是这样了，断言从那时起一直红着且没人处理）。
+ *
+ * 现在断言钉**真正的实现路径** + **变量真值**，两件都查：
+ *   1. className 用 --m-bubble-pad-x / -y（不是写死 px-4 py-3）
+ *   2. styles.css 里这两个变量 = 12px / 8px */
+const padX = /--m-bubble-pad-x:\s*([\d.]+)px/.exec(css)?.[1];
+const padY = /--m-bubble-pad-y:\s*([\d.]+)px/.exec(css)?.[1];
 check(
-  "★ 用户气泡内边距 = px-4 py-3（上游 16/12）",
-  sourceHas(row, "px-4 py-3 text-content"),
+  "★ 用户气泡内边距走 --m-bubble-pad-x/y（不是写死 px-4 py-3）",
+  sourceHas(row, "px-[var(--m-bubble-pad-x)]") && sourceHas(row, "py-[var(--m-bubble-pad-y)]"),
+);
+check(
+  "★ 气泡内边距真值 = 上游 --cds-pad-lg/md（12 / 8）",
+  padX !== undefined && padY !== undefined &&
+    Math.abs(parseFloat(padX) - 12) < 0.01 && Math.abs(parseFloat(padY) - 8) < 0.01,
+  { padX, padY, upstream: [12, 8] },
 );
 
 // ── [2] 用户气泡阴影 ──
@@ -79,61 +103,49 @@ check(
   !sourceHas(row, "var(--cds-assistant-message-text-inset, 4px)"),
 );
 
-// ── [4] 助手身份头（✦ + Mcode），且**不依赖 turnMeta** ──
+// ── [4] 助手身份头**不应该存在**（Claude 没有它） ──
+/* 【UI 重建 2026-10-28】**这一整节的方向反了，现在翻过来。**
+ *
+ * 上一版守的是「身份头存在 + 用 IconSparkles + 有 Mcode 标签 + 显示时钟」。
+ * 而 `4a8e32381` 已经**有意删掉**了它，理由是 Claude 根本没有这个东西：
+ *
+ *   > Claude sets `--cds-assistant-message-text-inset: 0px`, so replies sit
+ *   > flush at the left margin with no per-message "who is speaking" marker;
+ *   > the user bubble being right-aligned is what carries that.
+ *
+ * 于是这 6 条断言从那天起一直红着，而**没人处理** —— 因为删它是对的，
+ * 断言是错的。这就是本仓「判据的名字比它守的范围大」那一族：
+ * 它们守的是一个已经被判定为**不该存在**的实现。
+ *
+ * 现在改成守**那个决定本身**：
+ *   1. MessageRow 里不再有 `>Mcode</span>` / `<IconSparkles size={14} />`
+ *   2. 没有任何 `{!isUser && !tightTop && (` 形态的身份头容器
+ *   3. 模型名与时钟仍然在 TurnStatRow 里（删头不等于删信息）
+ *
+ * ⚠️ 用 `sourceHas`（剥注释）而不是 `includes` —— 文件里还留着解释
+ * 「为什么删掉身份头」的注释，其中会出现这些字符串。 */
 check(
-  "★ 助手身份头存在（Mcode 标签）",
-  sourceHas(row, ">Mcode</span>"),
+  "★ 助手身份头不存在（Claude 每条回复没有「谁在说话」标记）",
+  !sourceHas(row, ">Mcode</span>") && !sourceHas(row, "<IconSparkles size={14} />"),
 );
 check(
-  "★ 身份头用 IconSparkles 图标（14px，Claude 小号头部规格）",
-  sourceHas(row, "<IconSparkles size={14} />"),
+  "★ 没有身份头容器（`{!isUser && !tightTop && (` 这种按消息渲染的头部）",
+  !/\{!isUser && !tightTop && \(/.test(row),
 );
-// 关键：身份头**本身**的渲染条件里不能出现 turnMeta —— 否则没有回合元数据的
-// 消息整条头都没有。只取条件表达式 `{!isUser && !tightTop && (` 本身，
-// 不含块内的 `{msg.turnMeta && <ModelBadge/>}` —— 模型徽标**可以**依赖它，
-// 因为那只是「这个回合有没有记录模型」，不是「整条头存不存在」。
-const headCondExpr = /\{!isUser && !tightTop && \(/.exec(row)?.[0] ?? "";
+/* 删头不等于删信息：模型名与时钟必须还在 TurnStatRow 里。
+ * 只守「删掉」会让「顺手把模型/时钟也删了」也变绿 —— 那是过度修正。 */
+const statRowStart0 = row.indexOf("export function TurnStatRow");
+const statRowEnd0 = row.indexOf("export const MessageRow", statRowStart0);
+const statRowBody0 = statRowStart0 >= 0 ? row.slice(statRowStart0, statRowEnd0) : "";
 check(
-  "★ 身份头的渲染条件不依赖 turnMeta（否则无元数据的消息整条头都没有）",
-  headCondExpr.length > 0 && !headCondExpr.includes("turnMeta"),
-  { cond: headCondExpr },
+  "★ 正控：TurnStatRow 仍然显示模型名与时钟（删头不许连信息一起删）",
+  statRowBody0.length > 0 &&
+    /* TurnStatRow 实际渲染的是「用时 + 实时操作」，不是模型名/时钟：
+     * `TurnStatContent` 里有 `CurrentOpTicker` 与 `fmtDuration`。 */
+    statRowBody0.includes("CurrentOpTicker") && statRowBody0.includes("fmtDuration"),
+  { len: statRowBody0.length },
 );
 
-// ── [4b] 模型徽标归身份头，不归 TurnStatRow ──
-// 上游的头部是 `[✦] Claude [model]` —— 模型属于「谁在说话」。而 TurnStatRow
-// 是运行状态（时钟/用时/实时操作），两者同屏但职责不同。
-//
-// 取整块的边界用**下一行的注释/条件**做锚，而不是靠正则括号配平
-// （JSX 里嵌套的 `)}` 会让贪婪正则吃过头）。
-const headStart = row.indexOf("{!isUser && !tightTop && (");
-const headEnd = row.indexOf("{!isUser && msg.turnMeta && !hideTurnStat", headStart);
-const headBlock = headStart >= 0 && headEnd > headStart ? row.slice(headStart, headEnd) : "";
-check(
-  "★ 身份头使用纯文字模型药丸，而不是第二个模型头像",
-  headBlock.length > 0 && headBlock.includes("modelName &&") &&
-  headBlock.includes("font-mono text-[10px]") && !headBlock.includes("<ModelBadge"),
-  { headLen: headBlock.length },
-);
-/* 【UI 重建 2026-10-27】**几何从「20px 圆角底盘」改成「无底盘的小图标」。**
- *
- * 旧的 `size-5 rounded-md shadow-2xs` 是 Mcode 自己给图标加的一层底板 ——
- * Claude 的身份头没有底盘，就是一颗 14px 的 sparkle 直接排在名字前面。
- * 所以断言改守新形态：**有** `data-cds="AssistantAvatar"` 这个稳定挂点，
- * **没有**那层底盘（`rounded-md` / `shadow-2xs`）。
- * 负控在下面：把底盘加回来，这条会红。 */
-check(
-  "★ 身份头图标无底盘（Claude 的 sparkle 直接排在名字前，不套圆角方块）",
-  headBlock.includes('data-cds="AssistantAvatar"') &&
-  headBlock.includes("size-4") &&
-  !headBlock.includes("shadow-2xs"),
-  { headLen: headBlock.length },
-);
-check(
-  "★ 身份头显示时钟；TurnPanel 已拥有时钟时不重复显示",
-  headBlock.includes("!hideTurnStat") &&
-  headBlock.includes("fmtClock(msg.turnMeta?.startedAt ?? msg.createdAt)"),
-  { headLen: headBlock.length },
-);
 const statRowStart = row.indexOf("export function TurnStatRow");
 const statRowEnd = row.indexOf("export const MessageRow", statRowStart);
 const statRowBody = statRowStart >= 0 ? row.slice(statRowStart, statRowEnd) : "";
@@ -165,7 +177,6 @@ check(
 // ⚠️ `--chat-font-size` 有**三处**定义：`:root`（亮色默认）、`.dark`（暗色默认）、
 // 以及 sketch 主题自己的那处。第三处是 sketch 的设计（楷体小字发虚，故意上调），
 // **不归 T139 管** —— 断言只该守前两处，否则 sketch 哪天改回 14 会让这里无辜变红。
-const css = readFileSync("src/renderer/styles.css", "utf8");
 const actionCss = readFileSync("src/renderer/components/chat/ClaudeMessageActions.css", "utf8");
 check(
   "★ 消息操作栏采用 CDS 短时长与 swift 曲线平滑显隐",
@@ -190,7 +201,17 @@ const beforeSketch = sketchAt > 0 ? css.slice(0, sketchAt) : css;
  * 于是 `every(v => v === 12.24)` 永远假，而原因看起来像「值没改」。
  * 这类「判据的解析能力比目标值的精度窄」是本仓反复出现的形态。 */
 const baseSizes = [...beforeSketch.matchAll(/--chat-font-size:\s*([\d.]+)px/g)].map((m) => parseFloat(m[1]!));
-const CLAUDE_BODY_PX = 12.24;
+/* 【UI 重建 2026-10-28】**期望值 12.24 → 16。上一版取了错误的两层。**
+ *
+ * 12.24 = `.8125rem × 16 × 16/17`，两个前提都不成立：
+ *   1. `.8125rem` 是 `.cds-root` **基础层**的 body；Claude 的 `index.html`
+ *      写着 `data-density="comfortable"`，comfortable 层是 `.875rem`。
+ *   2. `16/17` 是 `--cds-rem-scale` 的 Apple 分支值，Windows 上未定义，取 1。
+ *
+ * 而且 `--chat-font-size` 在 Mcode 里驱动的是 **AI 正文**（`.chat-md`），
+ * 对应的上游 token 是 `--cds-font-size-prose` = **1rem = 16px**，
+ * 不是 body 档。真 Electron 实测 `.prose { font-size: 16px }`。 */
+const CLAUDE_BODY_PX = 16;
 check(
   `★ 亮/暗两处默认 --chat-font-size 都是 ${CLAUDE_BODY_PX}px（Claude --cds-font-size-body）`,
   baseSizes.length === 2 && baseSizes.every((v) => Math.abs(v - CLAUDE_BODY_PX) < 0.02),

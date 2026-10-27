@@ -133,10 +133,25 @@ const expected = {
  * 判据侧同时补了 `evalLength`（见 `normalized`）：原来只认 `Npx`/`Nrem`，
  * 读不懂 `calc(.625rem * calc(16 / 17))`，于是这 3 个 token × 57 格
  * 全部报「未登记差异」—— 那是**判据看不懂写法**，不是值不对。 */
+/* 【UI 重建 2026-10-28】**三个半径的登记值重新按真机实测取值。**
+ *
+ * 上一版 9.4118 / 13.1765 / 11.7647 全部按 `rem × 16 × 16/17` 算 —— 那个
+ * `16/17` 是 `--cds-rem-scale` 的 Apple 分支值，Windows 上不存在
+ * （详见 `styles.css` 里 `--chat-font-size` 那段）。
+ *
+ * 真 Electron 在一个 400×400 的探针盒上量 `border-radius`：
+ *   `--cds-panel-radius`      = **12px** (.75rem × 1)
+ *   `--cds-radius-composer`   = **14px** (.875rem × 1)
+ *   `--radius-card`           = **8px**
+ *   `--cds-radius`            = **8px** (.5rem × 1)
+ *
+ * ⚠️ `--cds-message-bubble-radius` 在 Claude 的 CSS 里**没有定义** ——
+ * 气泡圆角是 `--radius-card`（8px + .25rem = 12px）这一族。Mcode 用它当
+ * 气泡档，值随 `--m-rem-scale` 变成 12px。 */
 const geometry = {
-  "--radius-panel":["9.4118px","--cds-panel-radius","一致"],
-  "--composer-radius":["13.1765px","--cds-radius-composer","一致"],
-  "--radius-bubble":["11.7647px","--cds-message-bubble-radius","一致"],
+  "--radius-panel":["12px","--cds-panel-radius","一致"],
+  "--composer-radius":["14px","--cds-radius-composer","一致"],
+  "--radius-bubble":["12px","--cds-message-bubble-radius","一致"],
   "--radius-control":["4px","--radius-sm","一致"],
   "--radius-btn-xs":["6px","--cds-radius-btn-xs","一致"],
   "--radius-btn-md":["8px","--cds-radius-btn-md","一致"],
@@ -165,41 +180,72 @@ const motion = {
 // 这里登记的是**期望的计算值**，不是 token 值。改动正文排版时同步改这里；
 // 改了而不同步，会出现「未登记差异」—— 那是想要的行为（它拦住了静默变化）。
 const measuredChecks = {
-  /* 【UI 重建 2026-10-27】正文排版换成 Claude 的真值。
+  /* 【UI 重建 2026-10-28】**正文真值：16px / 24px。上一版登记的
+   * 13.176 / 18.8232 是错的，两个因子各有各的错。**
    *
-   * 原登记：15px / 24.375px（= 15 × 1.625），依据上游
-   * `ChatMessageBubbles.tsx:361` 的 `text-[15px] leading-relaxed`。
+   * ## 错在哪
    *
-   * 现在：**13.176px / 18.8232px** —— 本机 Claude **3.6556.2.0** 的
-   * `.epitaxy-root .epitaxy-transcript-typography`：
+   * 上一版依据 `--chat-body: calc(.875rem * var(--cds-rem-scale,1))` 与
+   * `--chat-leading: 1.4286`，乘出 13.176 / 18.8232。
    *
-   *   --chat-body:    calc(.875rem * var(--cds-rem-scale,1));   → 13.176px
-   *   --chat-leading: 1.4286;
-   *   font-size:      var(--chat-body);
-   *   line-height:    var(--chat-leading);
+   * 两个前提都不成立：
    *
-   * ## 为什么不是 12.24 / 18.82（上一版登记值）
+   * 1. **`--cds-rem-scale` 在 Windows 上未定义。** 全仓 25 个 Claude CSS 里
+   *    只有一处声明它，落在
+   *    `@supports (font:-apple-system-body) and (-webkit-touch-callout:default)`
+   *    —— Apple 专属分支。真 Electron 实测该条件为 false，
+   *    `var(--cds-rem-scale, 1)` 取 **1**。
+   * 2. **AI 回复不读 `--chat-body`。** Claude 的回复走 `typography:"prose"`
+   *    → 组件 `tx` 渲染 `<div data-cds="Prose" class="prose">`，而 `.prose`
+   *    自己写着 `font-size: var(--_prose-size)` =
+   *    `var(--cds-font-size-prose)` = **1rem**，
+   *    `line-height: var(--_prose-leading)` = **1.5rem**。
+   *    `--chat-body`（14/20）是时间线、tool 行、用户气泡的档位，**不进入正文**。
    *
-   * 上一版有两处错，而且**互相抵消**，所以行高看起来对：
+   * ## 怎么确认的
    *
-   *   | | 字号 | × 行高比 | = 行高 |
-   *   |---|---|---|---|
-   *   | 上一版 | 12.24（基础层 body） | 1.5378（= 18.82/12.24） | 18.82 |
-   *   | **正确** | **13.176（comfortable 层 body）** | **1.4286（--chat-leading）** | **18.82** |
+   * 把 Claude 自己的 25 个 CSS 加载进真 Electron，在
+   * `<div class="cds-root" data-density="comfortable">` 下读 `getComputedStyle`：
+   * `.prose` → `font-size: 16px; line-height: 24px`。复现脚本见
+   * `.tmp/claude-css-probe/`。
    *
-   * 两个因子各错 7%，乘起来一样。**行高一致不能证明字号正确** —— 这是
-   * CLAUDE.md 第二十八条「代理指标」的镜像：乘积相同 ≠ 因子相同。
+   * ## 为什么值得单列一条注释
    *
-   * 依据：`tools/claude-ui-reverse/tokens-out.txt`（comfortable 层 body = 13.176）
-   * + 上游 CSS 里 `--chat-leading:1.4286` 的**消费点**
-   * （`line-height:var(--chat-leading,var(--cds-leading-body))`）。
-   *
-   * ⚠️ 这一格是**判据能看见正文排版**的唯一途径（T149）。改字号/行高必须
-   * 同步改这里 —— 不同步就会报「未登记差异」，那是想要的拦截。
-   * 这次就是被它拦住的：改完 styles.css 之后 9 格报 `13.176px ≠ 12.24px`。 */
+   * 上一版那条注释写着「行高一致不能证明字号正确 —— 乘积相同 ≠ 因子相同」，
+   * 那句话本身是对的，**但它是从一个错的前提出发的**：两个因子都错了，
+   * 而且错的方向相反（字号偏小 21%、行高比偏小 5%），乘起来才刚好接近。
+   * 这提醒一件事：**「我怀疑过这个数」不等于「这个数是对的」**。 */
   "chat-body": {
-    fontSize: "13.176px",
-    lineHeight: "18.8232px",
+    fontSize: "16px",
+    lineHeight: "24px",
+  },
+  /* 【UI 重建 2026-10-28】**富文本的块级元素进判据。**
+   *
+   * 在此之前基线只量 `.chat-md` 容器自己的字号/行高 —— 表格边框、引用块左边线、
+   * 列表缩进**全在盲区里**。我这一轮把表格从「满屏网格线」改成 Claude reply
+   * 上下文的无边框形态、引用边线 2px→4px、列表去掉多余的 1.2em 缩进，
+   * 全靠肉眼看 PNG 确认，判据一个字都没说。
+   *
+   * 期望值来自真 Electron 实测（`.tmp/claude-css-probe/`：Claude 自己的
+   * 25 个 CSS + `data-density="comfortable"` + `data-cds-reply-type`）。
+   *
+   * 只在 `rich-text` 场景出现；其他场景 `present:false`，显式计入 known。 */
+  "rich-blockquote": {
+    borderInlineStartWidth: "4px",
+    paddingInlineStart: "16px",
+    marginInlineStart: "8px",
+  },
+  "rich-list-item": {
+    paddingInlineStart: "8px",
+  },
+  "rich-table-cell": {
+    /* reply 上下文把表格边框/底色/圆角全抹掉，单元格只剩纵向内边距。 */
+    borderBlockEndWidth: "0px",
+    borderBlockStartWidth: "0px",
+    borderTopWidth: "0px",
+    paddingInlineStart: "0px",
+    paddingBlockStart: "8px",
+    fontWeight: "580",
   },
 };
 

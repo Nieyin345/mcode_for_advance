@@ -118,6 +118,25 @@ export const ARC005_MEASURE_SELECTORS: ReadonlyArray<readonly [string, string]> 
   ["terminal", ".xterm, [data-testid='bottom-terminal-bar']"],
   ["editor", ".monaco-editor"],
   ["preview", "[data-testid='arc005-real-markdown'], [data-testid*='preview'], [class*='pdf-preview']"],
+  /* 【UI 重建 2026-10-28】**富文本的块级元素从来没被量过。**
+   *
+   * `chat-body` 那条只量 `.chat-md` 容器本身的 `fontSize` / `lineHeight`。
+   * 所以表格边框、引用块左边线、列表缩进这些**块级样式改错了也不会红**
+   * —— 我这次把表格从「满屏网格线」改成上游 reply 上下文的无边框形态，
+   * 靠的只是肉眼看 PNG，判据一个字都没说。
+   *
+   * 下面三条补上这个盲区，只在 `rich-text` 场景出现（其他场景没有这些元素，
+   * `present: false` 显式缺席，不是静默跳过）。
+   *
+   * 上游真值来自 `.tmp/claude-css-probe/`（Claude 的 25 个 CSS 装进真 Electron，
+   * 在 `<div class="cds-root" data-density="comfortable">` 下 getComputedStyle）：
+   *
+   *   blockquote  4px 左线 / padding-inline-start 16px / margin-inline-start 8px
+   *   li          padding-inline-start 8px / margin-block-start 4px
+   *   table       无外框、无圆角；单元格 padding-block 8px, padding-inline 0 */
+  ["rich-blockquote", "[data-testid='workspace-main'] .chat-md blockquote"],
+  ["rich-list-item", "[data-testid='workspace-main'] .chat-md ul > li"],
+  ["rich-table-cell", "[data-testid='workspace-main'] .chat-md table th"],
   ["fixture", "[data-testid='arc005-fixture-panel']"],
 ];
 

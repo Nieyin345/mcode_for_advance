@@ -45,7 +45,17 @@ function contrast(a: readonly [number, number, number], b: readonly [number, num
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
 }
 
-const css = readFileSync(resolve(process.cwd(), "src/renderer/styles.css"), "utf8");
+/* 【UI 重建 2026-10-28】**读之前必须剥注释。**
+ *
+ * 注释里常写「下面的 `--user-bubble-alpha: 1` 不用改」这种**引用式说明**，
+ * 而 `findInBlock` 是按 `名字:` 找第一个 —— 会命中注释里那一段，值变成
+ * `1` 后面跟着一整句中文，`Number()` 得 NaN 并抛错。
+ *
+ * 这个失败形态很坑：套件不是「断言红了」，是**整个崩掉**，
+ * 输出里只有一行 Node 栈，看不到是哪条判据在守什么。
+ * 本仓已有 `stripCssComments` 的先例（t122），这里复用同样的做法。 */
+const stripCssComments = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, "");
+const css = stripCssComments(readFileSync(resolve(process.cwd(), "src/renderer/styles.css"), "utf8"));
 
 /**
  * 取某个 token 在指定主题块里的值。

@@ -165,8 +165,33 @@ function isDark(entry) {
   return /@media\s+screen\s*(\||$)/.test(scope) && !/prefers-color-scheme|min-width|max-width/.test(scope);
 }
 
-/** 取一个 token 的默认（亮色）值：外层、非暗色、非密度作用域里的第一处。 */
+/** 取一个 token 的默认值。
+ *
+ * 【UI 重建 2026-10-28】**「默认 = .cds-root 基础层」这个前提是错的。**
+ *
+ * Claude 的 `ion-dist/index.html` 里首行就写着
+ * `<html … data-density="comfortable" class="cds-root …">` ——
+ * **用户真实看到的界面走 comfortable 档**，不是 `.cds-root` 裸块。
+ *
+ * 两者是**两层不同的值**，而且差得不小：
+ *
+ *   --cds-panel-radius    .cds-root → .625rem   |  comfortable → .75rem
+ *   --cds-font-size-body  .cds-root → .8125rem  |  comfortable → .875rem
+ *   --cds-radius          .cds-root → .375rem   |  comfortable → .5rem
+ *
+ * 旧实现把 `data-density=comfortable` 当成「非默认档」（`isAmbientSelector`
+ * 里 `data-density` 是被排除的词），于是每个 token 都取到**基础层**的值 ——
+ * 整套界面比真机小一档。这和抄 `@supports` 里那个 `--cds-rem-scale`
+ * 是同一个形态：**读对了值，读错了作用域**。
+ *
+ * 现在的优先级：
+ *   1. comfortable 层（真实默认）
+ *   2. 不带任何档位标记的裸块
+ *   3. 其余非暗色的第一处（兜底，不静默跳过）
+ */
 function defaultValue(entries) {
+  const comfy = entries.find((e) => /data-density=["']?comfortable/.test(e.at + " " + e.sel) && !isDark(e));
+  if (comfy) return comfy.value;
   const ambient = entries.find((e) => isAmbientSelector(e.sel) && !isDark(e));
   return (ambient ?? entries.find((e) => !isDark(e)) ?? entries[0]).value;
 }
@@ -375,7 +400,74 @@ function firstRaw(name) {
   const end = rest.search(/[;}]/);
   return end > 0 ? rest.slice(0, end).trim() : undefined;
 }
-const baseRemScale = firstRaw("--cds-rem-scale");
+
+/* 【UI 重建 2026-10-28】**`--cds-rem-scale` 在 Windows 上不存在，不能抄。**
+ *
+ * 全仓 25 个 Claude CSS 里它只有一处声明，且落在：
+ *
+ *   @supports (font:-apple-system-body) and (-webkit-touch-callout:default) {
+ *     :root { --cds-rem-scale: calc(16 / 17) }
+ *   }
+ *
+ * 那是 **Apple / iOS 专属分支**。真 Electron 44.4.5 on Windows 11 实测两个
+ * 子条件都是 false（`CSS.supports("font","-apple-system-body")` → false），
+ * `--cds-rem-scale` 为空，所有 `calc(Nrem * var(--cds-rem-scale, 1))` 取 **1**。
+ *
+ * `firstRaw()` 只按 `name:` 扫原文，**看不见 `@supports` 的作用域** ——
+ * 于是把这个 Apple 专属值当成通用值导出，产物里每个字号/圆角/间距都小了 6%。
+ *
+ * 判据：**`@supports` 里的声明只在条件成立时生效，静态解析必须知道这件事。**
+ * 找不到无条件定义就按 CSS 语义回落成 1，而不是抄那个条件分支里的值。
+ *
+ * 实现：按花括号配对算出每个位置的**嵌套块头栈**（跳过字符串与注释），
+ * 栈里出现 `@supports` 就说明这条声明是条件性的。
+ *
+ * ⚠️ 栈必须**累积**：`@supports ... { :root { --cds-rem-scale: … } }` 里，
+ * 命中的那一层块头是 `:root`，`@supports` 在**上一层**。第一版写成
+ * `heads[depth] = …; depth++` 又会用 `heads.length = depth` 把它截断 ——
+ * 于是只看得到最内层的 `:root`，探针回报「不是条件分支」，值照抄不误。
+ * 判据必须是「**路径上任何一层**是 @supports」，不是「最内层是」。
+ *
+ * ⚠️ **必须处理反斜杠转义。** Tailwind 的选择器里写着
+ * `.\[font-feature-settings\:\'liga\'_1\]` —— 那是**转义的单引号**，不是字符串
+ * 分隔符。第一版没有 `if (ch === "\\") i++`，于是把它当成字符串开头，
+ * 之后所有的 `{` / `}` 全被吞进「字符串」里，栈内只剩一层 `@layer utilities`
+ * —— 探针**安静地回到「不是条件分支」**，值照抄不误。
+ * 这个形态的可怕之处是它不报错：扫完不抛异常，只是答案错了。 */
+function blockHeadsAt(css, pos) {
+  const stack = [];
+  let lastBoundary = 0, inStr = null, inComment = false;
+  for (let i = 0; i < pos; i++) {
+    const ch = css[i], nx = css[i + 1];
+    if (inComment) { if (ch === "*" && nx === "/") { inComment = false; i++; } continue; }
+    if (ch === "\\") { i++; continue; }            // 转义：`\'` 在选择器里是字面引号
+    if (inStr) { if (ch === inStr) inStr = null; continue; }
+    if (ch === "/" && nx === "*") { inComment = true; i++; continue; }
+    if (ch === '"' || ch === "'") { inStr = ch; continue; }
+    if (ch === "{") { stack.push(css.slice(lastBoundary, i).trim()); lastBoundary = i + 1; }
+    else if (ch === "}") { stack.pop(); lastBoundary = i + 1; }
+    else if (ch === ";" && stack.length === 0) { lastBoundary = i + 1; }
+  }
+  return stack.filter(Boolean);
+}
+function uncondRemScale() {
+  let idx = 0;
+  while ((idx = css.indexOf("--cds-rem-scale:", idx)) !== -1) {
+    const heads = blockHeadsAt(css, idx);
+    // 只要路径上任何一层是 `@supports`，这条声明就是设备能力分支 —— 跳过。
+    if (!heads.some((h) => h.startsWith("@supports"))) {
+      const rest = css.slice(idx + "--cds-rem-scale:".length);
+      const end = rest.search(/[;}]/);
+      if (end > 0) return rest.slice(0, end).trim();
+    }
+    idx += "--cds-rem-scale:".length;
+  }
+  return undefined;
+}
+const baseRemScaleRaw = uncondRemScale();
+/* 无条件定义不存在 → CSS 语义就是 `var(..., 1)` 取 1。
+ * **不要把它导成别的值**：导 16/17 是 Windows 上的错值，导 "1" 才对。 */
+const baseRemScale = baseRemScaleRaw ?? "1";
 const baseSpacing = firstRaw("--spacing");
 
 // ── 输出 ────────────────────────────────────────────────────────────────
