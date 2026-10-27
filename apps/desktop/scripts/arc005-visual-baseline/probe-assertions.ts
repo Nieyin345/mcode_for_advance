@@ -48,7 +48,9 @@ export type ProbeTargetName = keyof typeof ARC005_PROBE_TARGETS;
 export const ARC005_MEASURE_SELECTORS: ReadonlyArray<readonly [string, string]> = [
   ["titlebar", ARC005_PROBE_TARGETS.titlebar.measurementSelector],
   ["sidebar", "[data-testid='workspace-sidebar']"],
-  ["sidebar-row", "[data-testid='workspace-sidebar'] button"],
+  /* 【UI 重建 2026-10-28】同上：`button` 命中的是**第一个按钮**（顶部图标
+   * 行里的 `☰`，28×28），不是会话行。会话行有显式属性 `data-session-row`。 */
+  ["sidebar-row", "[data-testid='workspace-sidebar'] [data-session-row]"],
   ["main", "[data-testid='workspace-main']"],
   ["message", "[data-testid='workspace-main'] .prose, [data-testid='workspace-main'] [data-message-id]"],
   // 【T149】`message` 命中的是**外层容器**（`.prose` 容器，16px/24px 继承值），
@@ -74,7 +76,18 @@ export const ARC005_MEASURE_SELECTORS: ReadonlyArray<readonly [string, string]> 
   ["tool-row", ARC005_PROBE_TARGETS["tool-row"].measurementSelector],
   ["composer", ARC005_PROBE_TARGETS.composer.measurementSelector],
   ["approval", "[role='alertdialog']"],
-  ["card", "[data-testid='workspace-main'] [class*='rounded']"],
+  /* 【UI 重建 2026-10-28】**这条选择器量错了元素。**
+   *
+   * 原来写 `[data-testid='workspace-main'] [class*='rounded']` —— 任何带
+   * `rounded` 的元素都命中，第一个是**按钮**。实测 `card` 报 `28×28`，
+   * 而卡片应该是几百 px 宽。
+   *
+   * 这是第三十三条规定的那种失效（判据在跑、返回了合理的数字，但量的
+   * 不是它声称的那个元素）。改用**显式语义属性** `data-cds="Card"` ——
+   * `ClaudeProjectOverview` 里每张概览卡片都有它。
+   *
+   * 场景里没有卡片（对话态）时 `present: false`，显式缺席而不是静默跳过。 */
+  ["card", "[data-cds='Card']"],
   ["button", "button"],
   ["panel", "[data-testid='workspace-sidebar'], [data-testid='right-panel']"],
   ["settings", ".settings-root"],

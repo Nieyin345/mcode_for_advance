@@ -88,10 +88,46 @@ export interface ClaudeShellMountProps {
  * 宽度跟窗口大小无关。旧 Mcode 用百分比（12%–40%），窗口一宽就变成 500px+，
  * 这正是「看起来不像」的一个直接来源。
  */
+/**
+ * 侧栏宽度 —— **固定 288px**，不按窗口百分比。
+ *
+ * 【UI 重建 2026-10-28】**这个函数之前是坏的：`CLAUDE_SIDEBAR_PX` 从未生效。**
+ *
+ * 旧实现：
+ *
+ *   const px = (pct / 100) * win;
+ *   return Math.round(Math.min(420, Math.max(240, px || CLAUDE_SIDEBAR_PX)));
+ *
+ * `px` 只有在 `pct === 0` 时才是 0，那时才 `||` 到 288。而 `leftWidthPct`
+ * 默认 **20%**（`LEFT_WIDTH_PCT_DEFAULT`），窗口 1280 时算出 **256px** ——
+ * 于是常量 288 **一次也没被用过**。
+ *
+ * 实测证据（`messages-light-1280.json` 的 `measured.sidebar.bounds`）：
+ *
+ *   sidebar 宽   逆向真值 288   Mcode 实测 **256.0**   ← 差 32px
+ *
+ * 逆向数据（`tools/claude-ui-reverse/hardcoded-geometry.txt` 与
+ * `sidebar-vars.txt`）写明：`--df-sidebar-width: 288px`，**只有一个定义点，
+ * 是固定值**。Claude 的侧栏是会话列表，宽度跟窗口大小无关。
+ *
+ * ## 为什么必须固定
+ *
+ * 按百分比的话，窗口一宽侧栏就变成 400px+ —— 会话标题被撑得老长、
+ * 右栏被挤窄，整屏比例全变。而 Claude 在任何窗口宽度下都是 288。
+ *
+ * 拖拽仍然有效（用户主动拖是另一回事），只是**初始值**和**上限语义**
+ * 改成围绕 288 的合理区间。
+ */
 function sidebarWidthPx(pct: number): number {
+  /* 用户**没拖过**时（pct 落在默认档附近）用固定的 288；
+   * 拖过之后按 pct 折算，但仍钳在 [240, 420]。
+   *
+   * `18`–`22` 是默认 20% 附近的死区：窗口 1280 时 20% = 256，
+   * 与 288 差 32px；不设死区的话「默认值」会盖掉固定宽。 */
+  if (pct >= 18 && pct <= 22) return CLAUDE_SIDEBAR_PX;
   const win = typeof window === "undefined" ? 1440 : window.innerWidth;
   const px = (pct / 100) * win;
-  return Math.round(Math.min(420, Math.max(240, px || CLAUDE_SIDEBAR_PX)));
+  return Math.round(Math.min(420, Math.max(240, px)));
 }
 
 export function ClaudeShellMount(props: ClaudeShellMountProps) {

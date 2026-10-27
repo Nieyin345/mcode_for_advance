@@ -202,6 +202,45 @@ const measuredChecks = {
     lineHeight: "18.8232px",
   },
 };
+
+/* ─────────── 几何断言：尺寸，不比绝对坐标 ───────────
+ *
+ * 【UI 重建 2026-10-28】**这里补的是「采集了但不比对」的缺口。**
+ *
+ * 探针一直在采 `bounds { x, y, width, height }`（`probe.ts` 的 `measured`），
+ * 但 `compare.mjs` **只读 `fontSize` / `lineHeight`** —— 几何字段一个都没比。
+ * 这正是仓库第三十四条那个形态：数据在 JSON 里，门禁全绿。
+ *
+ * 后果是实的：侧栏宽度一直是 **256px** 而 Claude 是 **288px**，
+ * 差 32px，`unregistered: 0` 完全看不见。这条差异是**量出来**才发现的，
+ * 靠肉眼看截图根本看不出来。
+ *
+ * ## 为什么只比宽高，不比 x / y
+ *
+ * `x` / `y` 是**绝对坐标**，它会跟着窗口尺寸、侧栏是否展开、面板分栏
+ * 比例漂移。而这些恰恰是用户可调的东西 —— 拿它们当判据会让基线
+ * 在每次抓取时随机报差异（README §3 已经记录过窗口尺寸抖动：
+ * `2218x1292` vs `2240x1357`）。
+ *
+ * **宽高**是设计常量（侧栏 288、会话行 32、卡片圆角…），不随用户操作变。
+ * 所以只比 `width` / `height`。
+ *
+ * ## 容差为什么是 1.5px
+ *
+ * 浏览器亚像素布局会把 288 算成 287.98 或 288.02。1.5px 能吸收这个，
+ * 又小于任何有意义的设计差（最小的可辨差是侧栏那 32px）。
+ */
+const geometryChecks = {
+  /* 侧栏 —— 逆向 `sidebar-vars.txt` 的 `--df-sidebar-width: 288px`
+   * （只有一个定义点，是**固定值**，不随窗口变）。
+   *
+   * ⚠️ 高度不登记：它是视口高减去标题栏，随窗口高度变。 */
+  "sidebar": { width: 288 },
+  /* 会话行 —— 逆向 comfortable 层的 `--df-row-h: 32px`
+   * （`.dframe-root` 基础层是 26px，desktop 变体是 30px；
+   *  这里取 comfortable 的 32，理由见 `styles.css` 的侧栏几何那段）。 */
+  "sidebar-row": { height: 32 },
+};
 /**
  * 求值 `calc()` / `Npx` / `Nrem` 表达式，返回像素数字；求不出返回 null。
  *
@@ -354,6 +393,34 @@ for(const row of manifest) {
         })();
       if (!ok) unknown++; else equal++;
       fileRows.push(`| ↳ measured:${name}.${field} | Mcode=${String(actualValue ?? "(缺失)").replaceAll("|","/")} | 期望=${expectedValue} | ${ok ? "一致" : "未登记差异"} |`);
+    }
+  }
+
+  /* ─────────── 几何：只比宽高 ───────────
+   *
+   * 与上面 measured 循环分开写，因为语义不同：
+   *   - measured 比的是**计算样式**（字号/行高/颜色）；
+   *   - 这里比的是**布局盒尺寸**（元素实际占多宽多高）。
+   *
+   * 两者失效方式也不同：样式对但布局错（父容器 padding 吃掉了宽度）
+   * 只有这一层能发现。侧栏 256 vs 288 就是这一类 —— 它的 `backgroundColor`
+   * / `borderRadius` 全对，只有 `width` 错。 */
+  for (const [name, want] of Object.entries(geometryChecks)) {
+    const hit = measured.find((m) => m?.name === name);
+    if (!hit || !hit.present) {
+      /* 该场景没有这个元素（例如对话态没有概览卡片）。
+       * 与 measured 同样处理：**显式缺席，计入 known**，不是静默跳过。 */
+      known++;
+      fileRows.push(`| ↳ geometry:${name} | ${row.condition} | 本场景无此元素（present=false）| 已知（场景不适用）|`);
+      continue;
+    }
+    for (const [field, expectedPx] of Object.entries(want)) {
+      const actualPx = hit.bounds?.[field];
+      const ok = typeof actualPx === "number" && Math.abs(actualPx - expectedPx) <= 1.5;
+      if (ok) equal++; else unknown++;
+      fileRows.push(
+        `| ↳ geometry:${name}.${field} | Mcode=${typeof actualPx === "number" ? actualPx.toFixed(1) + "px" : "(缺失)"} | 期望=${expectedPx}px | ${ok ? "一致" : "未登记差异"} |`,
+      );
     }
   }
 }
