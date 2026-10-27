@@ -40,7 +40,7 @@ import { LeftBar } from "../layout/LeftBar.js";
 import { ChatPane } from "../chat/ChatPane.js";
 import { BottomTerminalBar } from "../layout/BottomTerminalBar.js";
 import { renderPaneContent } from "./paneContent.js";
-import { resizeStack, type PaneTileKind, type TileLayout } from "./paneTiles.js";
+import { resizeStack, type PaneTile, type PaneTileKind, type TileLayout } from "./paneTiles.js";
 
 /** Claude 侧栏的固定宽（来自其产物：`--static-sidebar-width: 18rem` = 288px）。 */
 const CLAUDE_SIDEBAR_PX = 288;
@@ -200,6 +200,14 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   //
   // 映射：`rightPanelTab` → tile 类型（见 paneContent 的 switch）。
   const rightPanelTab = useSessionStore((s) => s.rightPanelTab);
+  /* 【UI 重建 2026-10-27】**`rightDock` 必须接回来。**
+   *
+   * 这是用户可设的「右栏停在哪一侧」（设置里能把它挪到左边）。
+   * 换壳时它掉了 —— 症状是设置在 Claude 壳下完全无效，而没有任何报错。
+   * 新壳的模型是「tile 顺序即位置」，所以左停靠 = 把 aside 排在 chat **前**。
+   * 这与旧壳的 `dockFlexOrder` 是同一个语义，只是表达方式不同。 */
+  const rightDock = useSessionStore((s) => s.rightDock);
+  const asideFirst = rightDock === "left";
   const tileForTab = (tab: string): PaneTileKind => {
     switch (tab) {
       case "git": return "diff";
@@ -215,17 +223,36 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
   // 放大某一格（Claude 的 expandedTile）：只记 id，不改树 ——
   // 退出放大时布局原样回来。
   const [expandedTile, setExpandedTile] = useState<string | null>(null);
-  const [tileLayout, setTileLayout] = useState<TileLayout>({
-    version: 2,
-    root: {
-      kind: "stack",
-      direction: "row",
-      children: [
-        { kind: "tile", tileId: "chat", flex: 1 },
-        { kind: "tile", tileId: tileForTab(rightPanelTab), flex: 1 },
-      ],
-    },
+  const [tileLayout, setTileLayout] = useState<TileLayout>((): TileLayout => {
+    // 首帧就按 `rightDock` 排好 —— 用 effect 修正会让左停靠的用户看到一次闪动。
+    const chatTile: PaneTile = { kind: "tile", tileId: "chat", flex: 1 };
+    const asideTile: PaneTile = { kind: "tile", tileId: tileForTab(rightPanelTab), flex: 1 };
+    return {
+      version: 2,
+      root: {
+        kind: "stack",
+        direction: "row",
+        children: asideFirst ? [asideTile, chatTile] : [chatTile, asideTile],
+      },
+    };
   });
+  /* `rightDock` 变化 → 把 aside 挪到 chat 的前面或后面。
+   * 只重排，不改 flex —— 用户拖出来的分栏比例要保留。 */
+  useEffect(() => {
+    setTileLayout((prev) => {
+      const root = prev.root;
+      if (root.direction !== "row" || root.children.length !== 2) return prev;
+      const [a, b] = root.children;
+      if (a.kind !== "tile" || b.kind !== "tile") return prev;
+      const chatIdx = a.tileId === "chat" ? 0 : b.tileId === "chat" ? 1 : -1;
+      if (chatIdx < 0) return prev;
+      const chat = chatIdx === 0 ? a : b;
+      const aside = chatIdx === 0 ? b : a;
+      const want = asideFirst ? [aside, chat] : [chat, aside];
+      if (want[0] === root.children[0] && want[1] === root.children[1]) return prev;
+      return { ...prev, root: { ...root, children: want } };
+    });
+  }, [asideFirst]);
   // 右栏页签变了 → 换 tile，但**保留用户拖出来的分栏比例**：
   // 只换 tileId，不动 flex；两个 tile 时按位置替换右侧那个。
   const prevTab = useRef(rightPanelTab);

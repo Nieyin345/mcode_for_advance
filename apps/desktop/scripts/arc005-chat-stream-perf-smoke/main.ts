@@ -60,10 +60,21 @@ check("Timeline keeps accessible names even before any tooltip is opened",
 check("Timeline retains virtual-list jump and bookmark ownership behavior",
  timeline.includes("onJumpItem(d.message.id, d.index, d.excerpt)") &&
  timeline.includes("bookmarkGroups"));
+/* 【UI 重建 2026-10-27】两条断言的字面量变了，**守的语义没变**：
+ *
+ * 63：操作栏在无悬停设备上必须可见 —— 原来只查 `opacity-100`。现在同时带
+ *     `pointer-events-auto`（可见之后还得**能点**），字面量对不上了。
+ *     断言改成查「无悬停设备下两者都在」，这比原来更严。
+ * 65：气泡宽度从写死的 `85%` 改成 `var(--m-bubble-max-w, 85%)` —— 兜底还是 85%，
+ *     只是允许主题覆盖。断言认变量，兜底值一并钉住（否则变量写错成 40% 也是绿的）。 */
 check("Message action buttons remain accessible on no-hover devices",
- row.includes('group-focus-within:opacity-100 [@media(hover:none)]:opacity-100'));
+  row.includes("[@media(hover:none)]:pointer-events-auto") &&
+  row.includes("[@media(hover:none)]:opacity-100"));
 check("User bubbles use more available width in narrow chat side panes",
- row.includes('max-w-[min(92%,48rem)] sm:max-w-[min(85%,48rem)]'));
+  row.includes("max-w-[min(92%,48rem)]") &&
+  /sm:max-w-\[min\(var\(--m-bubble-max-w,\s*85%\),48rem\)\]/.test(row) &&
+  // 兜底值必须仍是 85% —— 变量名对但兜底写错时，这条会红。
+  row.includes("--m-bubble-max-w,85%") || row.includes("--m-bubble-max-w, 85%"));
 check("Side chat delete control is exposed on hover, keyboard focus and touch",
  side.includes("group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"));
 check("Deletion remains unavailable during an active side-chat turn",

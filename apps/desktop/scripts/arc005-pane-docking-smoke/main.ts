@@ -26,7 +26,22 @@ check("Persisted layout includes dock beside existing width fields",sourceHas(st
 check("Hydration validates dock field strictly",sourceHas(store, "parseSavedPaneLayout(fp[UI_PANE_WIDTHS_SETTING_KEY])")&&sourceHas(store, "rightDock: firstPaintLayout.dock"));
 check("Initial dock defaults right and setter persists",sourceHas(store, 'rightDock: "right"')&&sourceHas(store, "setRightDock: (dock)")&&sourceHas(store, 'schedulePaneWidthPersist(get, "rightDock")'));
 check("Store type includes right dock and action",sourceHas(types, "rightDock: PaneDock")&&sourceHas(types, "setRightDock: (dock: PaneDock) => void"));
-check("App subscribes and forwards dock store state",sourceHas(app, "const rightDock = useSessionStore")&&sourceHas(app, "rightDock={rightDock}"));
+/* 【UI 重建 2026-10-27】转发点从 `App.tsx` 挪到了 `ClaudeShellMount`。
+ *
+ * 守的东西没变：**用户在设置里把右栏挪到左边，界面真的跟着挪。**
+ * 换壳时这一处掉了 —— 设置在 Claude 壳下完全无效，而且没有任何报错
+ * （旧壳的 `dockFlexOrder` 整个不再渲染，所以它「看起来还在」）。
+ * 新壳的模型是「tile 顺序即位置」，所以断言改读那边的实现：
+ * 订阅 store、并按 `rightDock === "left"` 决定 aside 排在 chat 前还是后。 */
+const mount = readFileSync("src/renderer/components/shell/ClaudeShellMount.tsx", "utf8");
+check("Shell mount subscribes to dock store state",
+  sourceHas(mount, "const rightDock = useSessionStore((s) => s.rightDock)"));
+check("Left dock really puts the aside tile before the chat tile",
+  sourceHas(mount, 'const asideFirst = rightDock === "left"') &&
+  sourceHas(mount, "children: asideFirst ? [asideTile, chatTile] : [chatTile, asideTile]"));
+check("Dock change reorders without touching flex (user's split ratio survives)",
+  sourceHas(mount, "const want = asideFirst ? [aside, chat] : [chat, aside]") &&
+  !/asideFirst[\s\S]{0,200}flex:\s*[0-9]/.test(mount.slice(mount.indexOf("const want = asideFirst"), mount.indexOf("const want = asideFirst") + 400)));
 check("Shell forwards saved dock, layout uses the visible dock without remounting center",sourceHas(shell, "rightDock={rightDock}")&&sourceHas(layout, "dockFlexOrder(visibleDock)")&&sourceHas(layout, "visibleRightPaneGeometry(rightSurface, rightOpen, rightDock, rightPlacement?.side === \"bottom\")")&&visibleRightPaneGeometry("drawer",true,"left",false).visibleDock==="right");
 check("DOM order only, not ternary swapping pane component identities",sourceHas(layout, "style={{ order: order.center }}")&&sourceHas(layout, "order: order.aside,")&&sourceHas(layout, "style={{ order: order.toolbar }}"));
 check("Divider stays direct flex child so its ResizeObserver measures full row",

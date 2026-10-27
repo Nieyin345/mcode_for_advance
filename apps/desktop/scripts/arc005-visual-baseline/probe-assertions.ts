@@ -60,7 +60,17 @@ export const ARC005_MEASURE_SELECTORS: ReadonlyArray<readonly [string, string]> 
   //
   // 场景里没有正文（空态/设置/纯面板）时这一项是 `present: false`，**显式缺席**，
   // 不是静默跳过 —— 见 compare.mjs 的 measured 比对。
-  ["chat-body", "[data-testid='workspace-main'] .chat-md"],
+  /* 【UI 重建 2026-10-27】**这条选择器原本量错了元素。**
+   *
+   * 原来写 `[data-testid='workspace-main'] .chat-md` —— 取**第一个** `.chat-md`。
+   * 而用户气泡自己也有 `.chat-md`（MessageRow 的 `data-cds="UserBubble"` 里），
+   * 并且它把 `--chat-font-size` 覆盖成 `calc(base - 0.5px)`（气泡文字略小）。
+   * 场景里 user/assistant 交替，第一个常常是用户气泡 —— 于是量到 11.74px，
+   * 而期望是助手的 12.24px，报「未登记差异」。
+   *
+   * **这是第三十三条规定的那种失效**：判据在跑、返回了合理的数字，
+   * 但量的不是它声称的那个元素。所以显式排除用户气泡，量真正的助手正文。 */
+  ["chat-body", "[data-testid='workspace-main'] [data-message-id]:not([data-cds='UserBubble']) .chat-md"],
   ["tool-row", ARC005_PROBE_TARGETS["tool-row"].measurementSelector],
   ["composer", ARC005_PROBE_TARGETS.composer.measurementSelector],
   ["approval", "[role='alertdialog']"],

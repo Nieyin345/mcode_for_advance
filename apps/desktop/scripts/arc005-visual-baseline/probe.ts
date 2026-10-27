@@ -53,7 +53,18 @@ if (!captureScreens.length || !captureConditions.length) throw Error("Empty ARC0
  * Currently empty: sidechat now mounts the real RightPanel → WorkflowBoardPanel
  * → SideChatPanel, and exercises actual child-session selection using isolated
  * API/store rows. Real workflow execution/IPC remains outside this visual U1. */
-const KNOWN_UNCAPTURED = new Map<string, string>();
+const KNOWN_UNCAPTURED = new Map<string, string>([
+  /* 【UI 重建 2026-10-27】`tab-overflow` 测的是**中心区的会话页签溢出**
+   *（`[data-ui-center-pane] [role='tablist']` 里 32+ 个会话页签）。
+   *
+   * 那个组件是 `UnifiedTabsBar`，只被 `ClassicShell` 渲染；换 Claude 壳之后
+   * 它不再挂载 —— Claude 的会话列表在左栏，中心区没有会话页签条。
+   * 所以这一格**按设计拍不出内容**，不是回归。
+   *
+   * **不删场景**：留着的是「这个能力不存在了」的记录。哪天要把多会话页签
+   * 加回中心区，把这条删掉，断言会立刻告诉你新实现是否满足 32 页签溢出。 */
+  ["tab-overflow", "Claude 壳的会话列表在左栏，中心区没有会话页签条（UnifiedTabsBar 仅 ClassicShell 渲染）"],
+]);
 const SELECTORS = ARC005_MEASURE_SELECTORS;
 const TOKENS = [
  "--surface", "--surface-muted", "--surface-hover", "--content",
@@ -358,12 +369,33 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               const firstDashAfter = timeline?.querySelector('[aria-label]')?.getAttribute('aria-label')??'';
               const timelineAfterTop = timeline?.scrollTop ?? 0;
               const timelineScrolled = !!timeline && Math.abs(timelineAfterTop - timelineBeforeTop) > 30 && firstDashBefore !== firstDashAfter;
-              const focusedDash = timeline?.querySelector('[aria-label]');
+              /* 【UI 重建 2026-10-27】**必须选一个真正可聚焦的 dash。**
+               *
+               * 原来取 timeline.querySelector('[aria-label]') —— 第一个带标签的元素。
+               * 但刻度里有些是 disabled（对应消息已不在虚拟列表窗口内，
+               * ClickableRow 给 tabIndex={-1}），focus() 对它们**静默无效**，
+               * 于是 onFocus 不触发、preview 不出现，报「聚焦无预览」。
+               * 组件本身没问题，是探针挑错了元素。
+               *
+               * 现在优先挑 [tabindex="0"]（roving 焦点指示的那个，一定可聚焦），
+               * 退而求其次才用「非 disabled」的。 */
+              const focusedDash = timeline?.querySelector('[data-ui-timeline-dash-index] [role="button"][tabindex="0"]')
+                ?? timeline?.querySelector('[data-ui-timeline-dash-index] [role="button"]:not([aria-disabled="true"])');
               focusedDash?.focus({preventScroll:true});
-              await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+              /* 【UI 重建 2026-10-27】preview 是 **portal**，要过一次 React commit
+               * 才进 DOM。固定等 2 帧在单独跑这格时够用，全量连拍时会错过 ——
+               * 于是「聚焦有预览」这条假红，而组件没坏。轮询到它出现（最多 40 帧）。 */
+              for (let i = 0; i < 40; i++) {
+                if (document.querySelector('[data-ui-timeline-preview]')) break;
+                await new Promise(resolve=>requestAnimationFrame(resolve));
+              }
               const timelineFocusPreview=!!document.querySelector('[data-ui-timeline-preview]');
               focusedDash?.blur();
-              await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+              /* 反向也一样：消失也要等 commit。这里轮询到它真的没了。 */
+              for (let i = 0; i < 40; i++) {
+                if (!document.querySelector('[data-ui-timeline-preview]')) break;
+                await new Promise(resolve=>requestAnimationFrame(resolve));
+              }
               const timelineBlurClearsPreview=!document.querySelector('[data-ui-timeline-preview]');
 
               // Keyboard access must span the whole virtualized timeline, not
@@ -372,11 +404,43 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               const tabStop=timeline?.querySelector('[data-ui-timeline-dash-index] [role="button"][tabindex="0"]');
               tabStop?.focus({preventScroll:true});
               await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+              /* 【UI 重建 2026-10-27】**这里需要等 React 把「焦点落在哪个 dash」记下来。**
+               *
+               * MessageTimeline 的 pin 逻辑依赖 onFocusCapture → setFocusedDashKey
+               * → 重算 → useLayoutEffect 把焦点钉回。中间要过一次 React commit。
+               * 固定等 2 帧在单独跑这格时够用，但全量 57 格连拍时前一格留下的
+               * 长任务会把 commit 推后 —— 于是「滚动 → 元素被卸载 → 焦点丢失」，
+               * timelineFocusPinned 变 false，而组件本身没问题。
+               *
+               * 现在**轮询到状态真的落定**（最多 40 帧 ≈ 660ms）。
+               * 这比「把判据改宽」正确：它等的是一件应该发生的事，不是接受它没发生。 */
+              {
+                const wanted = tabStop?.closest('[data-ui-timeline-dash-index]')?.getAttribute('data-ui-timeline-dash-index');
+                for (let i = 0; i < 40; i++) {
+                  const now = document.activeElement?.closest('[data-ui-timeline-dash-index]')?.getAttribute('data-ui-timeline-dash-index');
+                  if (now === wanted && document.activeElement === tabStop) break;
+                  await new Promise(resolve=>requestAnimationFrame(resolve));
+                }
+              }
               const pinnedIndex=Number(tabStop?.closest('[data-ui-timeline-dash-index]')?.getAttribute('data-ui-timeline-dash-index'));
               if (timeline) {
                 timeline.scrollTop=Math.max(0,timeline.scrollHeight-timeline.clientHeight);
                 timeline.dispatchEvent(new Event('scroll',{bubbles:true}));
-                await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+                /* 【UI 重建 2026-10-27】滚动之后也要**等到 pin 真的生效**。
+                 *
+                 * 组件收到 scroll → setScrollTop → 重算 range → visibleDashIndices
+                 * 把被聚焦的 ordinal 加回列表 → 重新挂载 → useLayoutEffect 把焦点钉回。
+                 * 这是一条**多帧的链**：单帧等待在单独跑这格时够用，全量连拍时
+                 * 前一格留下的长任务会让它错过，于是焦点丢了而组件没坏。
+                 *
+                 * 判据本身不放宽 —— 后面那条 timelineFocusPinned 仍然要求
+                 * 「焦点还在同一个 ordinal 上，且节点仍然连着 DOM」。这里只是
+                 * 给它足够的时间。 */
+                for (let i = 0; i < 40; i++) {
+                  const stillThere = document.activeElement?.closest('[data-ui-timeline-dash-index]')?.getAttribute('data-ui-timeline-dash-index');
+                  if (stillThere !== null && stillThere !== undefined && Number(stillThere) === pinnedIndex) break;
+                  await new Promise(resolve=>requestAnimationFrame(resolve));
+                }
               }
               const timelineFocusPinned=!!tabStop && document.activeElement===tabStop &&
                 tabStop.isConnected && Number(tabStop.closest('[data-ui-timeline-dash-index]')?.getAttribute('data-ui-timeline-dash-index'))===pinnedIndex;
@@ -571,6 +635,20 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
           };
           const measured = selectors.map(([name,sel]) => {
             let el; try { el = [...document.querySelectorAll(sel)].find(e => e.getClientRects().length > 0); } catch {}
+            /* 【UI 重建 2026-10-27】chat-body 要的是**助手正文**，不是用户气泡。
+             *
+             * 用户气泡自己也有 .chat-md，并且它把 --chat-font-size 覆盖成
+             * calc(base - 0.5px)（气泡文字略小）。而 CSS 选择器**没法表达**
+             * 「没有 UserBubble 祖先」这件事 —— :not() 里不能带后代组合符。
+             * 于是纯选择器方案永远会先命中用户气泡，量到 11.74px 而不是 12.24px。
+             *
+             * 这里改成在 JS 侧过滤：挑第一个「祖先里没有 [data-cds='UserBubble']」的。 */
+            if (name === "chat-body") {
+              try {
+                el = [...document.querySelectorAll(sel)].find((e) =>
+                  e.getClientRects().length > 0 && !e.closest("[data-cds='UserBubble']"));
+              } catch {}
+            }
             const targetSpec = targetSpecs[name];
             const classification = targetSpec ? inspectVisualProbeTarget(document, targetSpec) : null;
             const provenance = classification ? {

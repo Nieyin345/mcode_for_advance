@@ -17,15 +17,24 @@ const chrome = read("src/renderer/components/layout/TabBarChrome.tsx");
 check("Right rail is one labeled keyboard toolbar, not a partially labeled inner region",
   sourceHas(right, 'role="toolbar"') &&
   sourceHas(right, 'aria-label={t("customUi.slot.rightPanel.tab")}'));
+/* 【UI 重建 2026-10-27】两条断言的字面量跟着实现变了，**守的语义没变**。
+ *
+ * 20：容器多了一个 `flex-1`（rail 要吃掉剩余宽度再横向滚动），
+ *     原来的整串类名匹配对不上。改成认「同一组关键类都在」而不是逐字相等 ——
+ *     逐字相等会让「加一个合法的布局类」也红，那是矫枉过正。
+ * 27：`focus()` 改成 `focus({ preventScroll: true })` —— 因为紧接着自己调
+ *     `revealRailItemWithin` 精确滚动，让浏览器再滚一次会打架。
+ *     这比原来更好，但字符串变了。断言改为「focus 被调用、click 不被调用」。 */
 check("Right rail arrow handler on parent encompasses built-in, custom, module, DOC and wide controls",
   /role="toolbar"[\s\S]{0,800}onKeyDown=\{\(e\) =>/.test(right) &&
-  /<div[\s\S]{0,400}className="flex min-w-0 flex-row items-center gap-1 overflow-x-auto/.test(right));
+  // 横向滚动在**内层 track** 上（外层是边框/内距容器），所以这里查的是 track。
+  /data-pane-rail-track[\s\S]{0,400}className="[^"]*flex min-w-0 flex-1 flex-row items-center gap-1 overflow-x-auto/.test(right));
 check("Keyboard nav filters native disabled rail buttons",
   sourceHas(right, 'button[data-pane-rail-button]:not(:disabled)') &&
   sourceHas(right, "const index = buttons.indexOf(currentButton)") &&
   sourceHas(right, "if (index < 0) return;"));
 check("Navigation never activates a rail entry as a side effect of focus",
-  sourceHas(right, "nextButton.focus()") && !sourceHas(right, "nextButton.click()"));
+  /nextButton\.focus\(/.test(right) && !sourceHas(right, "nextButton.click()"));
 check("Builtin tab reports selected only when its content, not DOC/flow/custom/module, is visible",
   sourceHas(right, "active={!activeCustom && !moduleVisible && !pinnedDoc && !pinnedFlow && tab === id}"));
 check("Selecting a custom panel restores custom content over cached DOC/flow",

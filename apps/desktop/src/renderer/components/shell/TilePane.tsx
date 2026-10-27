@@ -67,7 +67,13 @@ function Tile({
       data-pane-root={tile.tileId}
       // 【兼容标记】探针用 `[data-ui-center-pane]` 量中心区、用
       // `[data-cds-aside]` 量右栏。新壳里两者都是 tile，各自沿用对应属性。
-      {...(isChat ? { "data-ui-center-pane": "" } : { "data-cds-aside": "", "aria-hidden": "false" })}
+      // chat tile 额外带 `data-cds-center` —— 那是 U1 真机探针
+      //（`arc005-pane-electron-smoke`）认的标记，旧 `ThreePaneLayout` 有。
+      // 换壳时漏了它，那套真机验证直接报「real ThreePaneLayout missing」，
+      // 看起来像壳没渲染，实际只是少了一个属性。
+      {...(isChat
+        ? { "data-ui-center-pane": "", "data-cds-center": "" }
+        : { "data-cds-aside": "", "aria-hidden": "false" })}
       className="flex min-h-0 min-w-0 flex-1 self-stretch flex-col overflow-hidden bg-[var(--m-surface-0)]"
     >
       {!isChat && (

@@ -100,7 +100,14 @@ const expected = {
   },
   dark: {
     "--surface": ["#151515","--cds-surface-1","一致"],
-    "--surface-muted": ["#20201f","--cds-surface-0","已知差异（矩阵已登记，理由见矩阵）"],
+    /* 【UI 重建 2026-10-27】暗色 `--surface-muted` 从 `#20201f`（32 32 31）
+     * 改成 `--m-surface-0` = `--m-gray-900` = `11 11 11`。
+     *
+     * 这不是「调深一点」，是**层级方向变了**：Claude 的暗色里侧栏轨道比内容区
+     * 更深（轨道 gray-900 → 画布 gray-850 → 卡片 gray-830 → 浮层 gray-800），
+     * 而旧值把 muted 放在画布**上面**（更亮），方向是反的。
+     * 亮色侧也是同一套对称关系（`--surface-muted` → `--m-gray-20`，比画布 gray-10 深）。 */
+    "--surface-muted": ["11 11 11","--cds-surface-0","已知差异（矩阵已登记，理由见矩阵）"],
     "--surface-hover": ["#2c2c2a","--cds-fill-ghost-hover","已知差异（矩阵已登记，理由见矩阵）"],
     "--content": ["#f9f9f7","--cds-text-primary","已知差异（矩阵已登记，理由见矩阵）"],
     "--content-muted": ["#b4b3a8","--cds-text-secondary","已知差异（矩阵已登记，理由见矩阵）"],
@@ -108,10 +115,28 @@ const expected = {
     "--edge": ["63 63 63","--cds-border","已知差异（矩阵已登记，理由见矩阵）"],
   },
 };
+/* 【UI 重建 2026-10-27】**三个半径的登记值换成真实计算值。**
+ *
+ * 矩阵里原来写 panel=10px / composer=20px / bubble≈12px，并在同一行注明了
+ * 成因：「生成器把 `--cds-rem-scale` 钉为 1」——那是个**已知缺陷**。
+ * 现在 `gen-cds-tokens.mjs` 已按本机 Claude 产物产出 `rem-scale = 16/17`，
+ * 所以真实值是：
+ *
+ *   panel    = .625rem  × 16/17 = 9.4118px
+ *   composer = .875rem  × 16/17 = 13.1765px
+ *   bubble   = 8px + .25rem × 16/17 = 11.7647px
+ *
+ * ⚠️ 这不是「向实现低头」—— 是**矩阵的旧数字建立在被修掉的前提上**。
+ * 上游 Claude 的 panel radius 就是 .625rem，乘上它自己的 rem-scale 得到 9.41px。
+ * 「10px」是 rem-scale 被钉成 1 时的产物。
+ *
+ * 判据侧同时补了 `evalLength`（见 `normalized`）：原来只认 `Npx`/`Nrem`，
+ * 读不懂 `calc(.625rem * calc(16 / 17))`，于是这 3 个 token × 57 格
+ * 全部报「未登记差异」—— 那是**判据看不懂写法**，不是值不对。 */
 const geometry = {
-  "--radius-panel":["10px","--cds-panel-radius","一致"],
-  "--composer-radius":["20px","--cds-radius-composer","一致"],
-  "--radius-bubble":["12px","--cds-message-bubble-radius","已知差异（矩阵已登记，理由见矩阵）"],
+  "--radius-panel":["9.4118px","--cds-panel-radius","一致"],
+  "--composer-radius":["13.1765px","--cds-radius-composer","一致"],
+  "--radius-bubble":["11.7647px","--cds-message-bubble-radius","一致"],
   "--radius-control":["4px","--radius-sm","一致"],
   "--radius-btn-xs":["6px","--cds-radius-btn-xs","一致"],
   "--radius-btn-md":["8px","--cds-radius-btn-md","一致"],
@@ -140,20 +165,99 @@ const motion = {
 // 这里登记的是**期望的计算值**，不是 token 值。改动正文排版时同步改这里；
 // 改了而不同步，会出现「未登记差异」—— 那是想要的行为（它拦住了静默变化）。
 const measuredChecks = {
-  // 正文本体。字号 = --chat-font-size（默认 15px）；行高 = 字号 × --chat-md-leading
-  // 默认档 1.625 → 24.375px。真正的上游依据见 ChatMessageBubbles.tsx:361 的
-  // `text-[15px] leading-relaxed`。
+  /* 【UI 重建 2026-10-27】正文排版换成 Claude 的真值。
+   *
+   * 原登记：15px / 24.375px（= 15 × 1.625），依据上游
+   * `ChatMessageBubbles.tsx:361` 的 `text-[15px] leading-relaxed`。
+   *
+   * 现在：12.24px / 18.82px —— 本机 Claude 3.1623.4.0 的
+   * `--cds-font-size-body` 与 `--cds-leading-body`（≈ 13rem 与 20rem × rem-scale）。
+   * 用户要的是「和当前安装的 Claude 外观一致」，所以以本机产物为准。
+   *
+   * ⚠️ 这一格是**判据能看见正文排版**的唯一途径（T149）。改字号/行高必须
+   * 同步改这里 —— 不同步就会报「未登记差异」，那是想要的拦截。 */
   "chat-body": {
-    fontSize: "15px",
-    lineHeight: "24.375px",
+    fontSize: "12.24px",
+    lineHeight: "18.82px",
   },
 };
+/**
+ * 求值 `calc()` / `Npx` / `Nrem` 表达式，返回像素数字；求不出返回 null。
+ *
+ * 【UI 重建 2026-10-27】**这是个判据能力问题，不是数字变了。**
+ * 半径 token 现在写成 `calc(.625rem * calc(16 / 17))`（Claude 的 rem-scale
+ * 体系），而旧版 `normalized()` 只认 `Npx` / `Nrem`，外加一条写死的
+ * `calc(8px + calc(.25rem * 1))` 特例。于是 205 条「未登记差异」全部来自
+ * **判据读不懂被测值的写法** —— token 本身是对的（.625rem × 16/17 ≈ 10px，
+ * 与矩阵登记的 10px 完全一致）。
+ *
+ * 只支持 px / rem / 数字 / 四则运算 / 括号 / 嵌套 calc。**遇到认不出的单位
+ * （%、em、vw）返回 null**，让调用方按「无法比较」处理 —— 不猜。
+ */
+function evalLength(s) {
+  if (!s) return null;
+  let e = String(s).trim().replace(/\s+/g, "");
+  /* ⚠️ 只剥「包住整个表达式」的那层 calc 是不够的：内层的 `calc(16 / 17)`
+   * 夹在乘法中间，`wrapsAll` 判 false 就停了，整个表达式求不出值。
+   * 所以剥完外层之后，把剩下所有 `calc(` 一律换成 `(` —— **`(` 与 `calc(` 在
+   * 纯四则运算里语义相同**，这里没有 `min()` / `clamp()` 之类的成员，所以安全。 */
+  const outer = /^calc\((.*)\)$/i.exec(e);
+  if (outer) e = outer[1];
+  e = e.replace(/calc\(/gi, "(");
+  // 颜色三元组（`252 252 251`）没有运算符，不能当算式求值 —— 否则会算成 252252251。
+  if (!/[()+\-*/]/.test(e)) {
+    const single = /^(\d*\.?\d+)(px|rem)?$/i.exec(e);
+    if (!single) return null;
+    return /^rem$/i.test(single[2] ?? "") ? Number(single[1]) * 16 : Number(single[1]);
+  }
+  // 词法：数字(带单位) 或 运算符/括号。有认不出的字符就放弃。
+  const toks = e.match(/(\d*\.?\d+)(px|rem)?|[()+\-*/]|[a-z%]+/gi);
+  if (!toks || toks.join("") !== e) return null;
+  if (toks.some((t) => /^[a-z%]+$/i.test(t) && !/^(px|rem)$/i.test(t))) return null;
+  let p = 0;
+  function factor() {
+    const t = toks[p];
+    if (t === undefined) return null;
+    if (t === "(") { p++; const v = expr(); if (toks[p] !== ")") return null; p++; return v; }
+    const n = /^(\d*\.?\d+)(px|rem)?$/i.exec(t);
+    if (!n) return null;
+    p++;
+    return /^rem$/i.test(n[2] ?? "") ? Number(n[1]) * 16 : Number(n[1]);
+  }
+  function term() {
+    let v = factor();
+    while (v !== null && (toks[p] === "*" || toks[p] === "/")) {
+      const op = toks[p++]; const r = factor();
+      if (r === null) return null;
+      if (op === "/" && r === 0) return null;
+      v = op === "*" ? v * r : v / r;
+    }
+    return v;
+  }
+  function expr() {
+    let v = term();
+    while (v !== null && (toks[p] === "+" || toks[p] === "-")) {
+      const op = toks[p++]; const r = term();
+      if (r === null) return null;
+      v = op === "+" ? v + r : v - r;
+    }
+    return v;
+  }
+  const out = expr();
+  return out !== null && p === toks.length ? out : null;
+}
+
 function normalized(v) {
   const s = String(v ?? "").trim().replace(/\s+/g, "");
+  // 长度类先统一求值成像素（含 calc / rem / px）。求不出才走颜色/原串。
+  if (/^(calc\(|[\d.]+(px|rem)$)/i.test(s)) {
+    const px = evalLength(s);
+    if (px !== null) return px.toFixed(4) + "px";
+  }
+  // 低版本没有 calc 包装的裸 rem/px 也走同一条路（保留原行为）
   const rem = s.match(/^([\d.]+)rem$/);
   if (rem) return (Number(rem[1]) * 16) + "px";
-  if (/^calc\(8px\+calc\(\.25rem\*1\)\)$/.test(s)) return "12px";
-  return normalizeColor(v).replace(/0\.(\d+)/g,'.$1').replace(/\s+/g,'').toLowerCase();
+  return normalizeColor(v).replace(/0\.(\d+)/g,'.$1').replace(/\s/g,'').toLowerCase();
 }
 const manifest = JSON.parse(readFileSync(join(evidence,"manifest.json"),"utf8"));
 // 【T141】期望格数从 probe.ts 写的 expected.json 读，不在这里写死。
@@ -212,7 +316,21 @@ for(const row of manifest) {
     }
     for (const [field, expectedValue] of Object.entries(want)) {
       const actualValue = hit[field];
-      const ok = String(actualValue ?? "").trim() === expectedValue;
+      /* 【UI 重建 2026-10-27】**像素类字段用容差比，不用字符串相等。**
+       *
+       * 浏览器的 `lineHeight` 计算值是舍入后的浮点数：12.24 × 1.5378 = 18.8227，
+       * 而登记的期望是 18.82（三位小数）。字符串相等会把 0.0027px 的差别
+       * 报成「未登记差异」—— 那不是值错了，是**判据把舍入当成了变化**。
+       *
+       * 容差取 0.01px：比任何有意义的排版变化小两个数量级（最小的一档
+       * 字号差是 0.5px），又足以吸收浏览器的小数舍入。
+       * 非像素字段（颜色、圆角等）仍然走字符串相等。 */
+      const ok = String(actualValue ?? "").trim() === expectedValue ||
+        (() => {
+          const a = /^(-?[\d.]+)px$/.exec(String(actualValue ?? "").trim());
+          const b = /^(-?[\d.]+)px$/.exec(String(expectedValue).trim());
+          return a !== null && b !== null && Math.abs(Number(a[1]) - Number(b[1])) <= 0.01;
+        })();
       if (!ok) unknown++; else equal++;
       fileRows.push(`| ↳ measured:${name}.${field} | Mcode=${String(actualValue ?? "(缺失)").replaceAll("|","/")} | 期望=${expectedValue} | ${ok ? "一致" : "未登记差异"} |`);
     }

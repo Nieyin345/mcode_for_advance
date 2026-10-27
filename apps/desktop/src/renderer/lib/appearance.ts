@@ -6,6 +6,7 @@ import type { ChatDensity, ReduceMotion } from "@contracts/ipc";
 // 不必把本文件（→ sessionStore → Monaco worker）整张图拉进 bundle。
 export { applyChatDensity, applyReduceMotion } from "./appearanceAttrs.js";
 import { applyChatDensity as applyChatDensityAttr, applyReduceMotion as applyReduceMotionAttr } from "./appearanceAttrs.js";
+import { CHAT_FONT_SIZE_DEFAULT } from "@renderer/stores/sessionStoreHelpers.js";
 
 /**
  * Runtime application of user-configurable appearance settings.
@@ -44,8 +45,17 @@ import { applyChatDensity as applyChatDensityAttr, applyReduceMotion as applyRed
  *  When the store value equals it we REMOVE the inline property instead of
  *  writing it, so a theme-scoped stylesheet default can differ — html.sketch
  *  raises the base to 15px for the handwriting face (kaiti smears below
- *  ~13px). An explicit user choice still wins via the inline write. */
-const DEFAULT_FONT_SIZE_PX = 14;
+ *  ~13px). An explicit user choice still wins via the inline write.
+ *
+ *  【UI 重建 2026-10-27】**这个值必须与 store 的默认值逐字相同。**
+ *  原来是 14，而 `sessionStore` 的 `chatFontSize` 默认是 15 —— 两者不等，
+ *  于是**默认状态每次都会走 else 分支，往 <html> 内联写 15px**，
+ *  把样式表的 12.24px 覆盖掉。症状是「样式表改了，界面纹丝不动」，
+ *  而所有读 CSS 的断言全是绿的（它们读的是样式表）。
+ *
+ *  现在两者都指向 `CHAT_FONT_SIZE_DEFAULT`（12.24），import 同一个常量，
+ *  **不再各写一份数字**。 */
+const DEFAULT_FONT_SIZE_PX = CHAT_FONT_SIZE_DEFAULT;
 
 /** Write the chat font size as `--chat-font-size` on <html>. */
 export function applyChatFontSize(px: number): void {

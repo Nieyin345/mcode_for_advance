@@ -470,10 +470,26 @@ export const IDE_BUCKETS_PERSIST_DEBOUNCE_MS = 400;
 export const CHAT_FONT_SIZE_MIN = 12;
 export const CHAT_FONT_SIZE_MAX = 20;
 
-/** Clamp a font-size value to the allowed slider range. */
+/** 【UI 重建 2026-10-27】**默认值改了，而且这是个必须与两处对齐的常量。**
+ *
+ * 12.24px = Claude 的 `--cds-font-size-body`（13rem × 16/17）。
+ * 这个数**不是整数**，所以：
+ *
+ *  1. 下面 `clampFontSize` 里的 `Math.round` 会把 12.24 取成 12 —— 用户拖一下
+ *     滑块再拖回来，字号就永久从 12.24 变成 12。改成保留精度。
+ *  2. `lib/appearance.ts` 的 `DEFAULT_FONT_SIZE_PX` 必须与本值相同；不同的话
+ *     默认状态会**内联写一次**，把样式表的主题默认（含 html.sketch 的 15px）覆盖掉。
+ *     这三处（本常量 / clamp / appearance 的 DEFAULT）必须同步，见该文件的注释。 */
+export const CHAT_FONT_SIZE_DEFAULT = 12.24;
+
+/** Clamp a font-size value to the allowed slider range.
+ *
+ *  ⚠️ **不要取整**。默认字号是 12.24px（非整数），`Math.round` 会让
+ *  `setChatFontSize(12.24)` 变成 12，而 12 ≠ 12.24 会让 appearance.ts
+ *  走上「写内联覆盖」的分支 —— 于是默认外观被一次滑块拖动永久改掉。 */
 export function clampFontSize(px: number): number {
-  if (!Number.isFinite(px)) return 14;
-  return Math.min(CHAT_FONT_SIZE_MAX, Math.max(CHAT_FONT_SIZE_MIN, Math.round(px)));
+  if (!Number.isFinite(px)) return CHAT_FONT_SIZE_DEFAULT;
+  return Math.min(CHAT_FONT_SIZE_MAX, Math.max(CHAT_FONT_SIZE_MIN, px));
 }
 
 /** Min/max right-panel (files / git / terminal) base font size (px). The
@@ -1365,6 +1381,48 @@ export function hasSelectableModel(
     return s.customModels.some((cfg) => cfg.models.some((m) => m.id.trim()));
   }
   return (provider?.capabilities.builtinModels?.length ?? 0) > 0;
+}
+
+/**
+ * 【CHAT-21】**当前选中的模型**能不能读图。三态：`true` / `false` / `undefined`（没声明）。
+ *
+ * ## 为什么按模型查而不是按 provider 查
+ *
+ * 能不能看图是**模型级**的事：同一个 provider 下 DeepSeek 不能、Claude 能。
+ * `ProviderCapabilities` 是 provider 级的**只读常量**，按它判会在用户混用自定义
+ * 模型时判错 —— 而"混用自定义模型"恰恰是这个客户端的主要用法。
+ *
+ * ## 为什么不知道时返回 undefined 而不是 false
+ *
+ * 没声明 ≠ 不能。当成 `false` 会让明明能看图的模型每次都被提示；当成 `true` 会让
+ * 真正看不了图的模型静默丢图。所以如实返回三态，由调用方只在**明确 false** 时提示。
+ *
+ * ## 数据从哪来
+ *
+ * 只有**自定义模型**带这个声明（`CustomModelConfig.models[].supportsVision`，
+ * 用户在设置里勾）。内置模型（`builtinModels`）没有这个字段 —— 那是 provider 的
+ * 常量表，加一列要改契约，而它现在没有消费方。所以：
+ *   - 选中自定义模型 → 用它的 `supportsVision`（未勾 = `false`，用户明确没声明）；
+ *   - 选中内置模型 → `undefined`（不提示）。
+ */
+export function resolveModelSupportsVision(
+  s: Pick<SessionState, "model" | "customModelId" | "providerId" | "providers" | "customModels" | "piAvailableModels" | "codexAvailableModels">,
+): boolean | undefined {
+  // 自定义模型：按 id 在清单里找。找不到（配置刚被删）→ 不知道。
+  if (s.customModelId) {
+    for (const cfg of s.customModels) {
+      const hit = cfg.models.find((m) => m.id === s.customModelId);
+      if (hit) return hit.supportsVision === true;
+    }
+    return undefined;
+  }
+  // Pi / Codex 的可用模型表里没有视觉位 → 不知道。
+  const provider = s.providers.find((p) => p.id === s.providerId);
+  if (provider?.id === "pi-sdk" || provider?.id === "codex-sdk") return undefined;
+  // Claude 的内置模型：全部支持视觉（这是模型的固有属性，不是可选能力）。
+  // 但**只有选中内置模型时**才成立 —— 上面已经排除了自定义模型的分支。
+  if (provider?.id === "claude-sdk" && s.model !== "default") return true;
+  return undefined;
 }
 
 /** Snapshot of the composer's per-provider remembered config — the value
@@ -2972,6 +3030,8 @@ ctx.set((s) => {
           kind: "workflow-node-result",
           runId: e.runId,
           nodeId: e.nodeId,
+          // 【WF-06】带上图 id —— 失败卡的重试按钮靠它（见 Block 类型那段注释）。
+          ...(e.workflowId !== undefined ? { workflowId: e.workflowId } : {}),
           ...(e.round !== undefined ? { round: e.round } : {}),
           ...(e.nodeSessionId ? { nodeSessionId: e.nodeSessionId } : {}),
           ...(archived && archived.length > 0 ? { nodeTranscript: archived } : {}),
