@@ -359,6 +359,11 @@ export function normalizeAgentConfig(config: McodeAgentNodeConfig): {
   // exposed by the upstream Node-RED node form and present in the native node.
   for (const key of [
     "decider", "note", "triggerKind", "task", "events", "eventFilter", "cron",
+    // 【EXT-07】扩展命令坐标。**必须在列表里** —— 用户在原厂表单里填的扩展 id /
+    // 命令 id 只有经过这一步回读才会进 `effectiveParams`，而执行端只认它们。
+    // 少了这两项时，用户在编辑器里填什么都跑不起来（节点会报"缺 extensionId"），
+    // 而旧图里的 moduleId 又能读出来 —— 症状是"看起来配好了但不工作"。
+    "extensionId", "commandId",
     "moduleId", "contributionId", "path",
     "enginePath", "engineMethod", "engineBody", "sessionId", "projectPath",
   ]) {

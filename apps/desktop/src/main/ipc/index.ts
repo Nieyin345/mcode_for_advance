@@ -7,7 +7,7 @@ import { registerDocumentViewHandlers, isApprovedDocumentViewOpen } from "./docu
 import { resolveGenofficeCliPath } from "@main/document/genofficeCli.js";
 import { registerWorkflowEngineHandlers } from "./workflowEngine.js";
 import { workflowEngineRegistry } from "@main/workflowEngines/registry.js";
-import { startEngineIfNeeded, type EngineAutostartPorts, type EngineAutostartResult } from "@main/workflowEngines/engineAutostart.js";
+import { startEngineIfNeeded, ensureEngineStarted, type EngineAutostartPorts, type EngineAutostartResult } from "@main/workflowEngines/engineAutostart.js";
 import { setPendingMigrationProvider } from "./workflowEngine.js";
 import { migrateLegacyWorkflows, describeMigrationReport, pendingMigrationNoticeOf, MIGRATION_REPORT_SETTING_KEY } from "@main/workflowEngines/legacyMigration.js";
 import { evaluateWorkflowMigration } from "@main/workflowEngines/workflowMigrationGate.js";
@@ -381,6 +381,27 @@ export function registerIpcHandlers(): void {  const ipc = createDbGuardedIpc(ip
     },
     beforeStart: async (engineId) => {
       if (engineId === "node-red") await ensureEngineNodesReady();
+    },
+    /* 【Q9e】**打开工作流界面就把引擎拉起来** —— 判据是"用户在用它"，不是
+     * "库里已经有 node-red 图"（那一条是启动期的 `startEngineIfNeeded` 用的）。
+     *
+     * 没有这一条时，全新用户第一次点开工作流看到的是「引擎未就绪」，必须先按一次
+     * 「启动」才能画第一张图 —— 与"下载就能用"直接冲突。
+     *
+     * 走的是与 UI 按钮**完全相同**的 `startWorkflowEngine`（`beforeStart` 的节点包
+     * 校验、`launchSpec` 的完整性与版本校验一个都不跳）；这里只改"什么时候起"。 */
+    ensureStarted: async (engineId) => {
+      await awaitDb();
+      return ensureEngineStarted({
+        hasNativeWorkflows: () => listWorkflows().some((entry) => entry.engine === "node-red"),
+        engine: {
+          registry: workflowEngineRegistry,
+          launchSpec: (id) => workflowEngineRegistry.launchSpec(id),
+          beforeStart: async (id) => {
+            if (id === "node-red") await ensureEngineNodesReady();
+          },
+        },
+      }, engineId as "node-red");
     },
     nodes: {
       list: async () => {

@@ -74,6 +74,34 @@ export async function startEngineIfNeeded(
   engineId: "node-red" = "node-red",
 ): Promise<EngineAutostartResult> {
   if (!ports.hasNativeWorkflows()) return { started: false, reason: null };
+  return ensureEngineStarted(ports, engineId);
+}
+
+/**
+ * **不管库里有没有图，都确保引擎在跑** —— 用户正在用工作流界面时调它。
+ *
+ * ## 与 {@link startEngineIfNeeded} 的分工
+ *
+ * | 时机 | 用哪个 | 判据 |
+ * |---|---|---|
+ * | 应用启动 | `startEngineIfNeeded` | 有 node-red 图才起（不为用不到的功能付常驻内存） |
+ * | **用户打开工作流面板 / 新建第一张图** | **本函数** | **用户要用了就起** |
+ *
+ * ## 为什么需要这一条（产品要求：下载即可用）
+ *
+ * 全新用户的库里一张图都没有，`startEngineIfNeeded` 会判定「不需要」而静默返回 ——
+ * 于是用户第一次点开工作流，看到的是「引擎未就绪」，必须先按一次「启动」才能画。
+ * 那不是「下载就能用」。
+ *
+ * 这里**不改变**启动时机上的内存取舍（面板打开那一刻才起，不是开机就起），
+ * 只是把「用户已经走到这一页」当成明确的使用信号。
+ *
+ * **失败不抛**：界面要把原因显示出来，而不是让一次列表查询炸掉整页。
+ */
+export async function ensureEngineStarted(
+  ports: EngineAutostartPorts,
+  engineId: "node-red" = "node-red",
+): Promise<EngineAutostartResult> {
   const runtime = ports.engine.registry.get(engineId);
   if (runtime === null) return { started: false, reason: `未知工作流引擎：${engineId}` };
   const state = runtime.status().state;

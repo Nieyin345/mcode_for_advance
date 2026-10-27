@@ -12,7 +12,7 @@
  * | `conversation` | `mcode-conversation` | 一轮主对话；经 port 跑，产出 `{text,artifacts}` | 1 入 1 出 |
  * | `branch` | `mcode-branch` | **端口 = 出边顺序**（与迁移器 sourcePort 同一规则）；由 `msg.mcode.branchPort`（人工点选/上游指定）或 port 决定 | 1 入 N 出 |
  * | `trigger` | `mcode-trigger` | **无输入**；只保留「Mcode 应用事件订阅」——手动/定时已并入内置 `inject`、文件变化并入内置 `watch`（节点统一，见 `docs/planning/arc-006-node-unification.md`） | 0 入 1 出 |
- * | `module-capability` | `mcode-module-capability` | 把 moduleId/contributionId/path 交给 port | 1 入 1 出 |
+ * | `module-capability` | `mcode-module-capability` | 把 extensionId/commandId/path（旧 moduleId 一并带上）交给 port | 1 入 1 出 |
  * | `node-red-call` | `mcode-node-red-call` | 把 enginePath/engineMethod/engineBody 交给 port | 1 入 1 出 |
  *
  * **不注册**（迁移器映射到原生节点，由 Node-RED 自己提供）：
@@ -407,7 +407,15 @@ export function triggerSubscribePayload(config: Cfg): McodeNodeBasePayload & { t
 /* ── module-capability ── */
 
 export interface McodeModuleCapabilityPort {
-  run(payload: McodeNodeBasePayload & { moduleId: string; contributionId: string; path: string }): Promise<{
+  /**
+   * 【EXT-07】执行坐标是**扩展命令**（`extensionId` + `commandId`）；`moduleId` /
+   * `contributionId` 是旧 ModuleHost 坐标，仍原样带上（旧图要能读、能看出它原来是
+   * 什么），但**不再驱动执行** —— 执行端只认扩展坐标，缺了就显式拒绝。
+   */
+  run(payload: McodeNodeBasePayload & {
+    extensionId: string; commandId: string;
+    moduleId: string; contributionId: string; path: string;
+  }): Promise<{
     text: string;
     artifacts: Array<Record<string, unknown>>;
     runId?: string;
@@ -422,10 +430,15 @@ export async function runModuleCapabilityNode(
 ): Promise<{ msg: Record<string, unknown> }> {
   const invocation = snapshotMcodeNodeInvocation(inputMsg, config);
   const base = basePayload(invocation, config);
-  const moduleId = typeof base.params["moduleId"] === "string" ? (base.params["moduleId"] as string) : "";
-  const contributionId = typeof base.params["contributionId"] === "string" ? (base.params["contributionId"] as string) : "";
-  const path = typeof base.params["path"] === "string" ? (base.params["path"] as string) : "";
-  const result = await port.run({ ...base, moduleId, contributionId, path });
+  const str = (key: string): string => typeof base.params[key] === "string" ? (base.params[key] as string) : "";
+  const result = await port.run({
+    ...base,
+    extensionId: str("extensionId"),
+    commandId: str("commandId"),
+    moduleId: str("moduleId"),
+    contributionId: str("contributionId"),
+    path: str("path"),
+  });
   return { msg: outputMsg(invocation, result) };
 }
 
@@ -814,9 +827,9 @@ const nodeEditorUi: Record<string, {
   },
   [MCODE_MODULE_CAPABILITY_NODE_TYPE]: {
     icon: "fa-puzzle-piece",
-    input: "Input: msg.payload and module ID, contribution ID, path and authorized project path go to the Host module invocation.",
+    input: "Input: msg.payload and the extension id + command id (plus path and authorized project path) go to the Host extension invocation.",
     output: "Output: Host result becomes msg.payload with { text, artifacts }.",
-    approval: "Approval: module capability permission is checked by the Mcode Host; missing or denied grants block execution.",
+    approval: "Approval: the Mcode Host authorizes each extension command; missing or denied grants block execution.",
   },
   [MCODE_NODE_RED_CALL_NODE_TYPE]: {
     icon: "fa-retweet",
@@ -903,10 +916,14 @@ export function triggerNodeHtml(): string {
 }
 export function moduleCapabilityNodeHtml(): string {
   return htmlFor(MCODE_MODULE_CAPABILITY_NODE_TYPE, [
-    { id: "moduleId", label: "Module id", kind: "text" },
-    { id: "contributionId", label: "Contribution id", kind: "text" },
+    // 【EXT-07】执行坐标是扩展命令；旧 moduleId/contributionId 仍在表单里（标出
+    // "已退役"），因为**旧图上那两个字段要能被看到**，而不是被悄悄抹掉。
+    { id: "extensionId", label: "Extension id (e.g. publisher.name)", kind: "text" },
+    { id: "commandId", label: "Command id", kind: "text" },
     { id: "path", label: "Path", kind: "text" },
     { id: "projectPath", label: "Authorized project path", kind: "text" },
+    { id: "moduleId", label: "Legacy module id (retired; ignored when executing)", kind: "text" },
+    { id: "contributionId", label: "Legacy contribution id (retired)", kind: "text" },
   ]);
 }
 export function nodeRedCallNodeHtml(): string {

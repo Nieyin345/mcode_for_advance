@@ -47,6 +47,7 @@ node build/build-node-pack.cjs --check
   --alias:@main/lib/dataRoot.js=./scripts/run-store-smoke/stubs/dataRoot.ts \
   --alias:@main/lib/logger.js=./scripts/run-store-smoke/stubs/logger.ts \
   --alias:@main/workflowEngines/nodePackProductionPorts.js=./scripts/mcode-node-pack-smoke/productionPortsStub.ts \
+  --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" \
   --external:sherpa-onnx-node \
   --external:cpu-features \
   --external:ssh2 \

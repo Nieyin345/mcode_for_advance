@@ -51,7 +51,7 @@
  * Run: bash scripts/node-red-e2e-smoke/run.sh
  */
 import { createHash, randomUUID } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { connect } from "node:net";
 import { join } from "node:path";
@@ -73,6 +73,11 @@ import {
 import { isBlockedPort } from "@main/lib/loopbackPort.js";
 import { migrateWorkflowDoc } from "@main/workflowEngines/flowMigration.js";
 import { builtinManifestById } from "@main/orchestration/nodeTypes.js";
+// 【Q9d】本套在 W25 段会把真 flow 部署进引擎，而 `mcode-agent` 的宿主执行体
+// 会读库（会话 / 工作流）。没有 initDb 时那边抛 `getDb() called before initDb()
+// resolved` —— 实测 3 条 W25 断言因此红，而红因与它们声称要验的东西无关。
+// 数据根由 run.sh 的 `MCODE_SMOKE_DATA_ROOT` 指到 mktemp 目录。
+import { initDb } from "@main/store/db.js";
 import type { WorkflowDoc } from "@contracts/workflow";
 import type { NodeTypeManifest } from "@contracts/nodeType";
 
@@ -104,6 +109,47 @@ const NR_ROOT = process.env.MCODE_NR_E2E_ROOT ?? join(APP, ".tmp", "nr-e2e");
 const SHARED_ENGINE_DIR = join(NR_ROOT, "workflow-engines", NODE_RED_ENGINE_ID);
 const SHARED_NODE_MODULES = join(SHARED_ENGINE_DIR, "node_modules");
 const NODE_RED_PKG = join(SHARED_NODE_MODULES, "node-red", "package.json");
+
+/* 【Q9e】**仓库里已经有 vendor 时，自动用它 —— 不需要用户/CI 额外 `npm install`。**
+ *
+ * 生产从 `<resources>/node-red` 读（`resolveNodeRedPackage`），而那棵树就是仓库根的
+ * `node-red/`（`stage-node-red-resources.cjs` 从它装配）。所以"验生产路径"最直接的做法
+ * 是把同一棵树接进来，而不是另装一份 106MB 的 npm 副本。
+ *
+ * 生产用的是**两级 NODE_PATH**（`<vendor>/packages/node_modules` 与 `<vendor>/node_modules`），
+ * 而本套把 `node_modules` 整个当安装树 —— 所以这里把两级**合并**成一个目录，
+ * 前一层优先（与 NODE_PATH 的解析顺序一致）。逐项建 junction，不复制真实文件。
+ *
+ * 已显式设了 `MCODE_NR_E2E_ROOT` 或该目录里已经有 node-red 时**不动它**：
+ * 显式配置优先于自动发现。 */
+const VENDOR_TREE = join(APP, "..", "..", "node-red");
+function linkVendorInto(target: string): boolean {
+  const layers = [join(VENDOR_TREE, "packages", "node_modules"), join(VENDOR_TREE, "node_modules")];
+  if (!existsSync(join(layers[0]!, "node-red", "package.json"))) return false;
+  mkdirSync(target, { recursive: true });
+  for (const layer of layers) {
+    if (!existsSync(layer)) continue;
+    for (const name of readdirSync(layer)) {
+      const to = join(target, name);
+      if (existsSync(to)) continue; // 前一层优先（与 NODE_PATH 顺序一致）
+      try { symlinkSync(join(layer, name), to, "junction"); } catch { /* 占用/权限：跳过该项 */ }
+    }
+  }
+  return existsSync(join(target, "node-red", "package.json"));
+}
+// ⚠️ **判据只看"目标里有没有 node-red"，不看是否设了 MCODE_NR_E2E_ROOT。**
+// `run.sh` 自己会导出那个变量（默认指 .tmp/nr-e2e），所以"显式配置优先"会让自动
+// 发现永远不触发。真正的优先级应该是"那里已经有就尊重它，没有才补上"。
+if (!existsSync(NODE_RED_PKG)) {
+  if (linkVendorInto(SHARED_NODE_MODULES)) {
+    console.log(`node-red-e2e-smoke: 用仓库 vendor 树 ${VENDOR_TREE}（未额外安装）`);
+  } else {
+    // 自动发现失败时说清是哪一步 —— 静默 SKIP 会让人以为"这台机器就是没装"，
+    // 而可能只是 vendor 树不完整或路径变了。
+    console.log(`  [autodiscover] vendor=${VENDOR_TREE} exists=${existsSync(VENDOR_TREE)} `
+      + `pkg=${existsSync(join(VENDOR_TREE, "packages", "node_modules", "node-red", "package.json"))}`);
+  }
+}
 
 /**
  * 【并行隔离】数据目录 = 本套**私有**目录，`node_modules` 用 junction 指回共享安装树。
@@ -142,6 +188,9 @@ if (!existsSync(NODE_RED_PKG)) {
 }
 const installedVersion = (JSON.parse(readFileSync(NODE_RED_PKG, "utf8")) as { version?: string }).version ?? "?";
 console.log(`node-red-e2e-smoke: node-red@${installedVersion} @ ${INSTALLED}`);
+// 库就绪是后面 W25 段（真 flow 跑 mcode-agent → 宿主执行体读库）的前提。
+// 放在 SKIP 之后：没装引擎时不该因为建库失败而红。
+await initDb();
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
@@ -934,12 +983,26 @@ try {
   {
     const specB = portsB.specs[0];
     const specKeys = Object.keys(specB?.env ?? {}).sort();
-    const expectedSpec = [
-      "HOST", "NODE_RED_CREDENTIAL_SECRET", "MCODE_ENGINE_ADMIN_TOKEN", "MCODE_ENGINE_THEME_CSS", "MCODE_ENGINE_TRUSTED", "NODE_PATH", "PATH", "PORT",
+    /* 【Q9b/Q9c】这两个是**可选**的展示增强：徽标脚本与画布外壳样式缺省时不设。
+     * 所以判据分两层：
+     *   ① **必需**的那几个必须一字不差地在（缺了就起不来 / 不安全）；
+     *   ② `MCODE_ENGINE_*` 这一族**只允许**白名单里的名字 —— 新增一个变量必须
+     *      同时改这里，而不是让 `env 完全替换` 这条断言悄悄失效。 */
+    const requiredSpec = [
+      "HOST", "NODE_RED_CREDENTIAL_SECRET", "MCODE_ENGINE_ADMIN_TOKEN",
+      "MCODE_ENGINE_THEME_CSS", "MCODE_ENGINE_TRUSTED", "NODE_PATH", "PATH", "PORT",
       ...(process.platform === "win32" ? ["SystemRoot"] : []),
     ].sort();
+    const allowedEngineVars = new Set([
+      "MCODE_ENGINE_ADMIN_TOKEN", "MCODE_ENGINE_THEME_CSS", "MCODE_ENGINE_TRUSTED",
+      "MCODE_ENGINE_BADGES_JS", "MCODE_ENGINE_CHROME_CSS",
+    ]);
+    const missing = requiredSpec.filter((k) => !specKeys.includes(k));
+    const unexpected = specKeys.filter((k) =>
+      !requiredSpec.includes(k)
+      && !(k.startsWith("MCODE_ENGINE_") && allowedEngineVars.has(k)));
     check("★ env 在 spawn spec 里**完全替换**：宿主白名单 + 引擎凭据/控制面令牌（无宿主密钥）",
-      deepEqual(specKeys, expectedSpec), { actual: specKeys, expected: expectedSpec });
+      missing.length === 0 && unexpected.length === 0, { missing, unexpected, actual: specKeys });
     check("★【T19】NODE_PATH 只能是空 npm fallback 或经过版本校验的 vendor 路径",
       specB?.env?.NODE_PATH === "" || Boolean(specB?.env?.NODE_PATH?.includes("node-red")));
     check("★ 宿主自定义变量没有泄漏进 spawn spec（canary 缺席）",

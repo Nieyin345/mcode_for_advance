@@ -64,6 +64,14 @@ import { migrateWorkflowDoc } from "@main/workflowEngines/flowMigration.js";
 import { checkPaletteResources } from "./paletteChecks.js";
 import { expectedNodePackFiles } from "@main/workflowEngines/nodePackManifest.js";
 import { builtinManifestById } from "@main/orchestration/nodeTypes.js";
+// 【Q9d】**运行历史要读库**（`nativeRunHistory` 把每次原生运行写进 workflow_runs）。
+// 本套跑的是真 Node-RED 子进程 + 真节点包，节点执行完会走那条持久化 —— 没有
+// initDb 时它抛 `getDb() called before initDb() resolved`，被 `[warn] 原生运行记录
+// 写入失败` 吞掉，而**下游节点的派发会跟着断**（实测 MERGE-2 里只有 trigger 执行，
+// 其余 4 个 port 全 0 次）。数据根是 run.sh 给的本套私有 mktemp 目录。
+import { initDb } from "@main/store/db.js";
+import { ProjectRepo, SessionRepo, WorkflowRepo } from "@main/store/repositories.js";
+import { getWorkflow } from "@main/orchestration/library.js";
 
 let failures = 0;
 let total = 0;
@@ -718,6 +726,15 @@ console.log("\nB. 纯逻辑：conversation / branch / trigger / code / module-ca
       moduleId:"new.module",contributionId:"edited",path:"new.txt"}, {
       run:async p=>{modulePayload.current=p;return {text:"ok",artifacts:[]};},
     });
+    /* 【EXT-07】扩展坐标同样要回读 —— 用户在原厂表单里填的扩展/命令 id 只有
+     * 经过这一步才进得了 `effectiveParams`，而执行端只认它们。 */
+    const extPayload: {current: {extensionId?:unknown,commandId?:unknown}|null}={current:null};
+    await runModuleCapabilityNode({}, {...cfg({extensionId:"old.ext",commandId:"old.cmd"}),
+      extensionId:"pub.native",commandId:"pub.native.run"}, {
+      run:async p=>{extPayload.current=p;return {text:"ok",artifacts:[]};},
+    });
+    eq("★【EXT-07】原生画布 extensionId 更新对 Host 实际生效",extPayload.current?.extensionId,"pub.native");
+    eq("★【EXT-07】原生画布 commandId 更新对 Host 实际生效",extPayload.current?.commandId,"pub.native.run");
     eq("★ 原生画布 moduleId 更新对 Host 实际生效",modulePayload.current?.moduleId,"new.module");
     eq("★ 原生画布 contributionId 更新对 Host 实际生效",modulePayload.current?.contributionId,"edited");
     eq("★ 原生画布 path 更新对 Host 实际生效",modulePayload.current?.path,"new.txt");
@@ -910,11 +927,11 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
     nodes: [
       { id: "k_trigger", type: "mcode.trigger", title: "触发", params: { triggerKind: "event", task: "跑一遍" }, position: { x: 10, y: 10 } },
       { id: "k_conv", type: "mcode.conversation", title: "对话", params: { instruction: "聊一句" }, position: { x: 110, y: 10 } },
-      { id: "k_agent", type: "mcode.agent", title: "子 agent", params: { instruction: "查资料" }, position: { x: 210, y: 10 } },
+      { id: "k_agent", type: "mcode.agent", title: "子 agent", params: { instruction: "查资料", sessionId: "s_pack_fixture" }, position: { x: 210, y: 10 } },
       { id: "k_branch", type: "mcode.branch", title: "岔路", params: { decider: "user" }, position: { x: 310, y: 10 } },
       { id: "k_cond", type: "mcode.condition", title: "条件", params: { expression: { logic: "and", rules: [] } }, position: { x: 410, y: 10 } },
       { id: "k_code", type: "mcode.code", title: "代码", params: { code: "print(1)", language: "python" }, position: { x: 510, y: 10 } },
-      { id: "k_module", type: "mcode.module-capability", title: "模块", params: { moduleId: "core.file-report", contributionId: "inspect", path: "a.txt" }, position: { x: 610, y: 10 } },
+      { id: "k_module", type: "mcode.module-capability", title: "模块", params: { extensionId: "mcode.core", commandId: "mcode.core.fileReport", moduleId: "core.file-report", contributionId: "inspect", path: "a.txt" }, position: { x: 610, y: 10 } },
       { id: "k_cmd", type: "mcode.command", title: "命令", params: { command: "echo hi" }, position: { x: 410, y: 110 } },
       { id: "k_nr", type: "mcode.node-red", title: "NR 调用", params: { enginePath: "/api/x", engineMethod: "POST", engineBody: "{}" }, position: { x: 510, y: 110 } },
     ],
@@ -954,6 +971,59 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
 
   // 临时 userDir：节点包 = 一个 js + 一个 html。
   const userDir = mkdtempSync(join(tmpdir(), "mcode-node-pack-user-"));
+  // 库必须在真引擎跑起来**之前**就绪（见上面 initDb 的说明）。
+  await initDb();
+  /* 【图必须在库里】`conditionHostPorts` 派发 `module.invoke` 时要向库要这张图，
+   * 从它的上游 agent/对话节点推出**授权工作区**（产品设计：模块调用不能凭节点参数
+   * 自己声明目录）。本套的图是内存夹具，不写库就得到
+   * 「宿主工作流库里没有「wf_all_kinds」」，而症状是该 kind 一次都不出现在 port
+   * 调用里 —— 看起来像"节点没被派发"。
+   *
+   * ⚠️ 必须在 `await initDb()` **之后**：`WorkflowRepo.get/save` 都要真库。 */
+  {
+    if (WorkflowRepo.get("wf_all_kinds") === null) WorkflowRepo.save(doc as never);
+    // 自检走**生产那条读路径**（`getWorkflow` = `WorkflowRepo.get(id)?.doc`），
+    // 而不是直接读 repo —— 要验的正是"节点派发时能读到这张图"。
+    const after = getWorkflow("wf_all_kinds");
+    if (after === null) {
+      throw new Error("夹具自检失败：wf_all_kinds 写库之后仍读不到（module 节点会因此被拒）");
+    }
+    if (after.nodes.length !== doc.nodes.length) {
+      throw new Error("夹具自检失败：写库后的节点数与内存图不一致");
+    }
+  }
+
+  /* 【EXT-07】**扩展命令节点需要一条授权工作区**，而那条工作区是从**上游**的
+   * agent/对话节点绑定的会话 → 项目推出来的（见 `conditionHostPorts` 的
+   * `workflowProjectPathForNode`）。这是产品设计：模块调用必须落在一个用户授权过
+   * 的目录里，不能凭节点参数自己声明。
+   *
+   * 少了这套夹具，节点会在派发时抛「无法从上游 agent/对话节点确定工作区」，
+   * 而症状是**该 kind 一次都没出现在 port 调用里** —— 看起来像"节点没被派发到"。
+   */
+  const packProjectId = "p_pack_fixture";
+  if (ProjectRepo.get(packProjectId) === undefined) {
+    const now = Date.now();
+    ProjectRepo.create({
+      id: packProjectId, name: "节点包夹具项目", path: userDir,
+      archived: false, group: null, sortOrder: 0, pinnedAt: null, createdAt: now, updatedAt: now,
+    });
+  }
+  const packSessionId = "s_pack_fixture";
+  if (SessionRepo.get(packSessionId) === undefined) {
+    const now = Date.now();
+    SessionRepo.create({
+      id: packSessionId, projectId: packProjectId,
+      providerId: "claude-sdk", claudeSessionId: null,
+      kind: "chat", parentSessionId: null, nodeId: null,
+      title: "节点包夹具会话", status: "idle", model: "", effort: "default",
+      permissionMode: "default", workflowId: "default", customModelId: null,
+      envMode: "local", worktreePath: null, archived: false, pinnedAt: null,
+      contextSnapshot: null, todos: null, subagents: null, planDraft: null,
+      turnFiles: null, usageHistory: null, bookmarks: null, subagentTranscripts: null,
+      createdAt: now, updatedAt: now,
+    });
+  }
 
   // ── 并行隔离（与 node-red-e2e-smoke 可同跑）──
   // 本套的数据根是 run.sh 用 mktemp 建的**私有目录**（MCODE_SMOKE_DATA_ROOT），
@@ -1082,6 +1152,13 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
         return () => clearTimeout(timer);
       },
     };
+    /* 【不传 `lookupDoc`】**生产里它就是 `undefined`**（回落真库 `getWorkflow`），
+     * 所以这里也保持不传 —— 传一个内存替身会让 `assertNativeEngineSelection` 那条
+     * 只在"有 lookupDoc"时才跑的校验突然生效，走的是生产从不会走的路（实测在那条
+     * 路上 `startDeployMirror` 的空指针会炸）。
+     *
+     * 图必须**在库里**：`conditionHostPorts` 派发 `module.invoke` 时要向库要它，
+     * 用来从上游 agent/对话节点推出授权工作区。见下面 `WorkflowRepo.save`。 */
     const runtime = new OwnedNodeRedRuntime("node-red", ports, nativeOwnership, hostServices,
       undefined, undefined, (event) => nativeBoardEvents.push(event as unknown as Record<string, unknown>));
     try {
@@ -1142,12 +1219,36 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
         headers: { ...auth, accept: "text/html" }, signal: AbortSignal.timeout(8_000),
       });
       const paletteHtml = await htmlRes.text();
-      check("★【T42】真 Node-RED 编辑器返回 6 种 Mcode 节点表单、调色板分组和图标",
-        htmlRes.status === 200 && MCODE_NODE_PACK_TYPES.every((type) =>
-          paletteHtml.includes(`data-template-name="${type}"`))
-        && (paletteHtml.match(/category: "mcode"/g) ?? []).length >= 6
-        && (paletteHtml.match(/icon: "font-awesome\//g) ?? []).length >= 6,
-        { status: htmlRes.status, templateCount: (paletteHtml.match(/data-template-name="mcode-/g) ?? []).length });
+      /* 【T42 + EXT-07】判据按**类型清单**，不按魔法数字。
+       *
+       * 从前这里写 `>= 6`：那时 `mcode-node-red-call` 还在 palette 里。它退役到
+       * `MCODE_INTERNAL_NODE_TYPES`（不给 category，用户拖不到新的，但**仍完整注册**
+       * ——旧图要能读能跑）之后，palette 类型变 5 个、而 HTML 模板仍是 7 个
+       * （5 palette + 2 内部）。所以：
+       *   - **每个已注册类型都要有模板**（内部节点也要，否则旧图在编辑器里变 unknown）；
+       *   - **palette 类型要带 category**，内部类型**不许**带 —— 否则用户能拖到不该拖的。
+       * 三条一起，才既不误伤退役又不放过漏注册。 */
+      /** 内部类型清单（`mcode-node-red-call` / `mcode-condition-eval`）——
+       *  必须在**这个作用域**里再 import 一次：上面那段 IIFE 里的同名绑定到 600 行就结束了。 */
+      const { MCODE_INTERNAL_NODE_TYPES: internalTypes } =
+        await import("@main/workflowEngines/mcodeNodeTypes.js");
+      const paletteHtmlTemplates = (type: string): boolean =>
+        paletteHtml.includes(`data-template-name="${type}"`);
+      const missingTemplates = [
+        ...MCODE_NODE_PACK_TYPES, ...internalTypes,
+      ].filter((type) => !paletteHtmlTemplates(type));
+      check("★【T42】真 Node-RED 编辑器为**每个已注册类型**返回节点表单",
+        htmlRes.status === 200 && missingTemplates.length === 0, { status: htmlRes.status, missingTemplates });
+      check("★【T42】palette 分组的图标数覆盖全部 palette 类型",
+        (paletteHtml.match(/category: "mcode"/g) ?? []).length >= MCODE_NODE_PACK_TYPES.length
+        && (paletteHtml.match(/icon: "font-awesome\//g) ?? []).length >= MCODE_NODE_PACK_TYPES.length,
+        {
+          status: htmlRes.status,
+          palettes: (paletteHtml.match(/category: "mcode"/g) ?? []).length,
+          icons: (paletteHtml.match(/icon: "font-awesome\//g) ?? []).length,
+          expected: MCODE_NODE_PACK_TYPES.length,
+          templateCount: (paletteHtml.match(/data-template-name="mcode-/g) ?? []).length,
+        });
 
 
       // ② 部署整张迁移流 + 一条原生 HTTP-in 活体探针（同一份部署）。
@@ -1193,8 +1294,8 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
         if (probeStatus === 200) break;
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
-      if (probeStatus !== 200) {
-        console.log("  [evidence] engine tail:", (tailBox.get === null ? "(no child)" : tailBox.get()).slice(-2000));
+      if (probeStatus !== 200 || process.env.MCODE_DUMP_TAIL === "1") {
+        console.log("  [evidence] engine tail:", (tailBox.get === null ? "(no child)" : tailBox.get()).slice(-4000));
       }
       check("★【MERGE-2】迁移流整组真的启动（HTTP-in 200；missing-types 闸不再触发）", probeStatus === 200, { probeStatus });
 
@@ -1223,7 +1324,16 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
       check("★【MERGE-2】conversation 收到 instruction", byKind("conversation")?.instruction === "聊一句", byKind("conversation"));
       check("★【MERGE-2】agent 收到 instruction", byKind("agent")?.instruction === "查资料", byKind("agent"));
       check("★【MERGE-2】branch 收到端口数 = 2", byKind("branch")?.portCount === 2, byKind("branch"));
-      check("★【MERGE-2】module-capability 收到 moduleId", byKind("module-capability")?.moduleId === "core.file-report", byKind("module-capability"));
+      /* 【EXT-07】这个节点的执行坐标换成了扩展命令（`extensionId` + `commandId`）；
+       * 旧的 `moduleId`/`contributionId` 在执行端被**显式拒绝**（旧坐标已不再支持）。
+       * 判据跟着走新坐标，同时保留一条「旧字段仍被带过去」的正控 —— 参数声明里
+       * 它们还在（旧图要能读），只是不再驱动执行。 */
+      check("★【MERGE-2】module-capability 收到扩展命令坐标",
+        byKind("module-capability")?.extensionId === "mcode.core"
+          && byKind("module-capability")?.commandId === "mcode.core.fileReport",
+        byKind("module-capability"));
+      check("★【MERGE-2】module-capability 仍带着旧 moduleId（旧图可读）",
+        byKind("module-capability")?.moduleId === "core.file-report", byKind("module-capability"));
       check("★【MERGE-2】trigger 收到 triggerKind", byKind("trigger")?.triggerKind === "event", byKind("trigger"));
 
       // T60: Native runtime hook filter must not send mcode-agent/conversation
@@ -1456,6 +1566,11 @@ if (!existsSync(NODE_RED_PKG) || !existsSync(PACK_BUNDLE) || !existsSync(TYPES_B
         /* 已停 */
       }
       try {
+        // 【诊断】`MCODE_KEEP_NODE_RUNS=1` 时把真引擎那一轮 port 调用留到 .tmp/ 下：
+        // "某个 kind 0 次"这种失败，光看断言输出分不出是"没派发到"还是"派发了但被拒"。
+        if (process.env.MCODE_KEEP_NODE_RUNS === "1") {
+          cpSync(join(userDir, "node-runs.jsonl"), join(APP_DIR, ".tmp", "node-runs-last.jsonl"), { force: true });
+        }
         rmSync(userDir, { recursive: true, force: true });
       } catch {
         /* 清理失败不影响结论 */

@@ -69,6 +69,18 @@ export interface WorkflowEngineHandlerPorts {
   /** 【ARC-006 Gate E】启动前验证可执行节点清单、处理可信的崩溃备份并恢复撤权。
    *  抛错必须阻断 spawn；纯状态机测试可不装配。 */
   beforeStart?(engineId: string): Promise<void>;
+  /**
+   * 【Q9e】**用户打开工作流界面时按需启动引擎。**
+   *
+   * 与启动期的 `startEngineIfNeeded`（有 node-red 图才起）不同：这里的判据是
+   * **用户已经走到要用它的地方**。全新用户库里一张图都没有，启动期那条会静默跳过，
+   * 于是第一次点开工作流看到「引擎未就绪」，必须先按一次「启动」才能画 ——
+   * 那不是"下载就能用"。
+   *
+   * **可选**：纯状态机套件不装配时，`onList` 仍是纯读（不给测试带来进程启动）。
+   * 失败**不影响列表返回** —— 界面要能看到状态与原因，而不是整页炸掉。
+   */
+  ensureStarted?(engineId: string): Promise<{ started: boolean; reason: string | null }>;
   /** 【ARC-006 Gate E】节点包清单（`engineNodeRegistry.ts` 的实例）。缺省 = 不提供
    *  安装面（`nodesList` 回空 + `nodeInstall` 显式拒绝，fail-closed）。 */
   nodes?: {
@@ -210,7 +222,22 @@ export function registerWorkflowEngineHandlers(ipc: IpcMain, ports: WorkflowEngi
   recordRpcHandler(IPC.WORKFLOW_ENGINE_STATUS, onStatus);
   ipc.handle(IPC.WORKFLOW_ENGINE_STATUS, onStatus);
 
-  const onList = (): WorkflowEngineListResult => {
+  const onList = async (): Promise<WorkflowEngineListResult> => {
+    /* 【Q9e】用户打开了工作流界面 —— 这是明确的使用信号，引擎该在跑。
+     *
+     * 放在 `list` 而不是渲染端另调一个 start：面板一打开就会 list，用户看到的
+     * 第一个状态就已经是"启动中"，不需要一个一闪而过的「未就绪 + 请点启动」。
+     *
+     * **失败不抛**：起不来的原因要经由下面的 status 如实透出（`state: "failed"` +
+     * `reason`），而不是让整页变成一条异常。 */
+    if (ports.ensureStarted !== undefined) {
+      try {
+        const result = await ports.ensureStarted("node-red");
+        if (result.reason !== null) log.warn(`[workflow-engine:node-red] 打开工作流界面时启动失败：${result.reason}`);
+      } catch (err) {
+        log.warn(`[workflow-engine:node-red] 打开工作流界面时启动抛错：${(err as Error).message}`);
+      }
+    }
     const engines: WorkflowEngineStatusView[] = [];
     for (const id of ports.registry.ids()) {
       const runtime = ports.registry.get(id);

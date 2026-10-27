@@ -102,6 +102,48 @@ function verifyNodeRedResource(inputRoot) {
     "packages/node_modules/@node-red/editor-api/package.json",
   ]) required(root, relative);
 
+  /* 【Q9e】**光"文件在"不等于"Node 能 require 到它"。**
+   *
+   * 生产 bootstrap 里是裸 `require("express")`（`registry.ts` 的引导脚本），靠
+   * `NODE_PATH = <vendor>/packages/node_modules + <vendor>/node_modules` 解析。
+   * 这个布局一旦变了（依赖被挪层、vendor 少一级），产物里仍然**每个文件都在、
+   * 摘要全对**，而引擎一起来就是 `Error: Cannot find module 'express'` ——
+   * 实测在 e2e 里正是这么挂的。
+   *
+   * 判据用**真的 `require.resolve`**，验的是"解析得到"，不是"我以为该有的文件在"。
+   *
+   * ⚠️ **摘要/清单类套件（t10/t88）用的是最小化假树**：它们的目的是验摘要与许可
+   * 账本，不带真实依赖。这里按「树里到底有没有 node_modules/express」决定跑不跑，
+   * 并在返回值里**如实标出**有没有验过 —— 不静默假装验了。
+   */
+  /* 判据用「**真依赖在不在**」而不是「package.json 在不在」：t10/t88 的假树会写一个
+   * 只有 `{}` 的 `express/package.json` 占位，靠它判会误以为这是真实树。
+   * `express/lib/express.js` 是真包的实际入口 —— 假树不会有。 */
+  const looksReal = fs.existsSync(path.join(root, "node_modules", "express", "lib", "express.js"));
+  let runtimeResolvable = false;
+  if (looksReal) {
+    const nodePath = [
+      path.join(root, "packages", "node_modules"),
+      path.join(root, "node_modules"),
+    ].join(path.delimiter);
+    const saved = process.env.NODE_PATH;
+    process.env.NODE_PATH = nodePath;
+    // Node 只在启动时读 NODE_PATH；运行时改完必须让 module 子系统重新算一次。
+    require("node:module").Module._initPaths();
+    try {
+      // 引擎引导脚本里真正 require 的那几个（见 registry.ts 的 bootstrap 常量）。
+      for (const id of ["express", "node-red", "@node-red/runtime"]) require.resolve(id);
+      runtimeResolvable = true;
+    } catch (error) {
+      throw new Error("Packaged Node-RED runtime cannot resolve " + String(error && error.message)
+        + " with NODE_PATH=" + nodePath);
+    } finally {
+      if (saved === undefined) delete process.env.NODE_PATH;
+      else process.env.NODE_PATH = saved;
+      require("node:module").Module._initPaths();
+    }
+  }
+
   // Do not let a symlinked package root or nested dependency escape the copied
   // release tree; the source staging check alone cannot prove post-pack paths.
   const dependenciesRoot = requiredDirectory(root, "node_modules");
@@ -146,6 +188,10 @@ function verifyNodeRedResource(inputRoot) {
     version: pkg.version,
     sourceCommit: marker.sourceCommit,
     licenseCoverage: inventory.summary,
+    /* 【Q9e】**如实标出这一棵树有没有验过"能 require"**。
+     * 真实发布树里必须为 `true`；最小化假树（t10/t88）为 `false`。
+     * 消费方可以据此区分「验过且通过」与「没验」—— 而不是把两者都读成"没问题"。 */
+    runtimeResolvable,
   };
 }
 function verifyAfterPack(context) {
