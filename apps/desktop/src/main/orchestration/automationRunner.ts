@@ -170,6 +170,41 @@ class AutomationRunner {
   setNodeRedEngineProbe(probe: (() => boolean) | null): void {
     this.nodeRedEngineRunning = probe;
   }
+  /**
+   * **仍然由旧执行器调度的图**（白名单）。
+   *
+   * ## 为什么要有这个白名单，而不是"归 mcode 就归旧执行器"
+   *
+   * Q5 之后用户图统一到 Node-RED，旧执行器的 cron / fs.watch / 事件订阅对**任何**
+   * 图都不装。但旧执行器那套机制本身还完好（去重跨重启、durable 领取账本、文件批次
+   * 合并、忙时背压、崩溃恢复……），而它们**只有这套机制能测**。
+   *
+   * 于是把它做成显式注入：
+   *
+   *   - **生产里是空集** —— 装配层不调它就是空集，旧执行器对任何图都不装监听；
+   *   - **套件里传自己的夹具 id** —— `automation-smoke` 用它驱动同一份真实代码。
+   *
+   * ⚠️ **不要为了让某个功能跑起来往这里加 id。** 加进去等于让那张图永远留在旧执行器上，
+   * 而产品方向是全部迁到 Node-RED（记忆助手那三张内置图也一样，见功能文档 MEM-04）。
+   * 这条白名单存在的唯一理由是"测试仍然存在的机制"，不是"放行某个功能"。
+   */
+  private legacySchedulingFor: (workflowId: string) => boolean = () => false;
+
+  /**
+   * 装配层/套件注入：哪些图仍由旧执行器调度（生产不调 = 全部 false）。
+   *
+   * 收**判定函数**而不是 id 集合：套件会在用例中途继续建图，传一份快照集合会让
+   * 后建的图落回"不归旧执行器"（实测 `automation-smoke` 剩 19 条红，全是后半段
+   * 才建的文件触发器）。判定函数让调用方自己决定是快照还是实时集合。
+   */
+  setLegacySchedulingFor(ids: Iterable<string> | ((workflowId: string) => boolean)): void {
+    if (typeof ids === "function") {
+      this.legacySchedulingFor = ids;
+      return;
+    }
+    const snapshot = new Set(ids);
+    this.legacySchedulingFor = (id) => snapshot.has(id);
+  }
   /** 已经解好的触发条件:`workflowId → 该自动化的全部触发器`。 */
   private entries = new Map<string, LoadedTrigger[]>();
   /** 每个项目目录一个监听(见 `rebuildWatchers`)。 */
@@ -522,7 +557,20 @@ class AutomationRunner {
    * 走到这里的 doc 一般已带显式值；这里仍按 `effectiveWorkflowEngine` 判，是为了
    * 与其它三处保持同一判据，而不是读一份可能被别处改过的 `doc.engine`。
    */
-  private legacyTriggerOwnerOf(doc: Pick<WorkflowDoc, "engine">): { legacy: true } | { legacy: false; owner: WorkflowEngine | "unknown" } {
+  private legacyTriggerOwnerOf(
+    doc: Pick<WorkflowDoc, "engine">,
+    workflowId?: string,
+  ): { legacy: true } | { legacy: false; owner: WorkflowEngine | "unknown" } {
+    /* ⚠️ **不给记忆助手那三张内置图做例外。** 功能文档 MEM-04 写明它们与用户工作流
+     * 一样**归 Node-RED 执行**：引擎没起或那张图没部署时按钮给可照做的说明，不回退旧执行器。
+     *
+     * 我一度按"它们至今只在旧 runner 里有触发实现"加了 id 例外 —— 那是**把现状当规格**：
+     * 现状（旧 runner 挂监听）是这条迁移还没做完，不是它应该留在这里。加了例外，
+     * 这三张图就永远留在旧执行器上，MEM-04 那句"不回退旧执行器"永远无法成立。
+     *
+     * `workflowId` 参数保留，判据走 {@link legacySchedulingFor}：生产里是空集（旧执行器
+     * 对任何图都不装监听）；套件用它驱动**仍然存在**的那套调度机制。 */
+    if (workflowId !== undefined && this.legacySchedulingFor(workflowId)) return { legacy: true };
     const raw: unknown = doc.engine;
     if (raw !== undefined && raw !== "mcode" && raw !== "node-red") return { legacy: false, owner: "unknown" };
     const owner = effectiveWorkflowEngine(doc);
@@ -548,7 +596,7 @@ class AutomationRunner {
   private foreignOwnerOf(workflowId: string): string | null {
     const doc = getWorkflow(workflowId);
     if (doc === null) return null;
-    const owner = this.legacyTriggerOwnerOf(doc);
+    const owner = this.legacyTriggerOwnerOf(doc, workflowId);
     return owner.legacy ? null : AutomationRunner.foreignTriggerDetail(owner.owner, doc.name);
   }
 
@@ -564,7 +612,7 @@ class AutomationRunner {
     const pendingReview = workflowReviewError(doc);
     // 【T3】装监听**之前**先看引擎归属。Node-RED 拥有的图 / 权威不明的图：一个监听都不装，
     // 但每条触发器仍在事实表里留一行「由谁管」—— 不静默消失（AUTO-09 同一条立场）。
-    const owner = this.legacyTriggerOwnerOf(doc);
+    const owner = this.legacyTriggerOwnerOf(doc, workflowId);
     /** 这次 reload 里**还在**的触发器(挂上的 + 挂不上的),reload 完拿它清事实表。 */
     const seen = new Set<string>();
     for (const node of doc.nodes) {
@@ -602,15 +650,23 @@ class AutomationRunner {
          * 与"这条触发器到底有没有在工作"是两件事。 */
         const engineRunning = this.nodeRedEngineRunning?.() === true;
         const enabled = triggerEnabledOf(node.params);
-        this.facts.recordSetup(
-          seed,
-          enabled && engineRunning,
-          enabled
+        /* 话术按**归属**分三支，不能合并成一句：
+         *
+         *   - `mcode`（历史/用户图还没迁）→ **请迁移**。这句话是用户唯一能看到的
+         *     行动指引；被「引擎没在跑」盖掉之后，用户会去重启一个它不是问题的地方。
+         *     实测：AUTO-02 第一版就把它盖了，t3 当场红两条。
+         *   - `node-red` → 引擎侧状态（跑着 / 没跑）。
+         *   - `unknown` → fail-closed 那句（`foreignTriggerDetail` 已经写好）。
+         *
+         * 「用户关掉了」优先于以上所有：那是最强、最具体的一条信息。 */
+        const detail = !enabled
+          ? "这条触发器已关闭（手动运行仍然可用）"
+          : owner.owner === "node-red"
             ? (engineRunning
               ? "由 Node-RED 引擎管理：触发在引擎侧，引擎正在运行"
               : "由 Node-RED 引擎管理，但引擎当前没有运行 —— 部署并启动引擎后它才会触发")
-            : "这条触发器已关闭（手动运行仍然可用）",
-        );
+            : AutomationRunner.foreignTriggerDetail(owner.owner, doc.name);
+        this.facts.recordSetup(seed, enabled && engineRunning, detail);
         continue;
       }
       if (pendingReview !== null) {
@@ -2311,7 +2367,7 @@ class AutomationRunner {
       // mcode（切换前它确实是旧图），**在这里释放**：这幅图今后不归旧 runner，占着
       // owner 只会挡住 Node-RED 接管（与 `apply()` 里"触发器没了就释放"同一条路径）。
       // 自身从未登记过时释放是 no-op —— 绝不会去动 Node-RED 的登记。
-      const engineOwner = this.legacyTriggerOwnerOf(current);
+      const engineOwner = this.legacyTriggerOwnerOf(current, trigger.workflowId);
       if (!engineOwner.legacy) {
         this.releaseExecutorOwner(trigger.workflowId);
         settleClaim();

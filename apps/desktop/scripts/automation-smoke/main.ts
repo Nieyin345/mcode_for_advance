@@ -78,8 +78,6 @@ import { approveWorkflowRevision, requireWorkflowReview, workflowRevision } from
 import type { AutomationFactsSeed } from "@main/orchestration/automationStatus.js";
 import { builtinTriggerManifest } from "@main/orchestration/nodeTypes.js";
 import {
-  WATCH_WORKFLOW_ID,
-  WATCH_TRIGGER_NODE_ID,
   getBuiltinWorkflow,
 } from "@main/orchestration/builtins.js";
 
@@ -130,6 +128,9 @@ import { failNextExclusiveCreate, disarmExclusiveCreate } from "./stubs/fsSync.j
 import { boundSessionIds, runtimeManager } from "./stubs/runtimeManager.js";
 
 let failures = 0;
+/* 【Q5】仍由旧执行器调度的图（白名单）。模块级：本套有多个作用域各自建图
+ * （§场景 / MERGE-3 owner 段），共享同一份登记。见 `newRunner` 的说明。 */
+const legacyIds = new Set<string>();
 let total = 0;
 
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -157,6 +158,16 @@ if (process.argv.includes("--verify-self-budget")) {
   const session = SessionRepo.findAutomationByWorkflow(workflowId);
   if (session === undefined) throw new Error("Missing self-budget session");
   eq("新进程从磁盘读回已耗尽的额度", SettingRepo.get(key), "10");
+  /* 【Q5】这一段在**新进程**里跑生产单例。生产装配层不设白名单（旧执行器对用户图
+   * 一条监听都不装），而本套要验的恰恰是旧执行器那套自触发预算在跨重启之后仍然成立。
+   * 所以把这两份夹具显式声明成"仍由旧执行器调度"—— 与主进程里 `makeAutomation`
+   * 登记的是同一份判据（`setLegacySchedulingFor`），不是另抄一条规则。 */
+  const crossWf = (() => {
+    const raw = SettingRepo.get("smoke.crossWorkflowChain");
+    if (raw === null) throw new Error("Missing cross-workflow restart fixture");
+    return (JSON.parse(raw) as { workflowId: string }).workflowId;
+  })();
+  automationRunner.setLegacySchedulingFor((id) => id === workflowId || id === crossWf);
   await automationRunner.start();
   check("新进程在收到事件之前就显示保存的暂停原因", automationRunner.statusOf(workflowId)[0]?.lastError?.includes("手动") === true);
   const crossRaw = SettingRepo.get("smoke.crossWorkflowChain");
@@ -1837,10 +1848,7 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
     [AGENT.id, AGENT],
   ]);
 
-  // ⚠️ **守望不在这一轮里**,而这不是漏了:它的触发器**故意**是"项目没填"的
-  // (见 `WATCH_NODES` 那段注释)—— 起跑时由 `startWatch` 把发起会话的项目写进去,
-  // 在那之前它本来就该是"挂不上"的。硬把它塞进来只会逼着模板去编一个项目 id。
-  //
+  // （长任务守望已移除，2026-10-27；它原本因"触发器故意不填项目"而不在这一轮里。）
   // 这两条自动化**已从内置摘出**(2026-10-10,release 不内置、用户按需导入),所以
   // 从**预置文件**读 —— 内容没消失,只是换了住处。判据不变:预置里的图必须过存盘那一关。
   for (const [id, what] of [
@@ -1858,8 +1866,6 @@ console.log("\n内置自动化 · 参数解得开、项目留空也挂得上");
     // 触发器节点在 → `trigger` 字段必须被反推出来(反推不出来 = 它在列表里会被分错栏)。
     eq(`「${what}」的 trigger 字段反推出来了`, derived.doc.trigger !== undefined, true);
   }
-
-  check("内置工作流「守望」还在", getBuiltinWorkflow(WATCH_WORKFLOW_ID) !== undefined);
 
   // 本地导入与后续下载都由配置的自动化接手；无本地文件的占位项由脚本跳过。
   const convertDoc = presetById(AUTO_CONVERT_WORKFLOW_ID);
@@ -2090,12 +2096,28 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     /** 第三个参是 `protectedMinute`(实现的默认值 = 当前分钟);测试显式传,好把
      *  "当前分钟"与要灌的历史分钟分开。 */
     rememberLastMinute(key: string, minute: number | null, protectedMinute?: number): void;
+    /** 【Q5】仍由旧执行器调度的图（白名单）。生产不设 = 全部 false。 */
+    setLegacySchedulingFor(ids: Iterable<string> | ((workflowId: string) => boolean)): void;
   }
   // 单例是由同一个类 `new` 出来的,只是没导出那个类。拿到原型上的构造器 = 拿到类本身
   // (这样被测的是**真实的那个类**,不是另抄一份)。
   const RunnerCtor = Object.getPrototypeOf(automationRunner).constructor as new () => RunnerInternals;
 
-  const newRunner = (): RunnerInternals => new RunnerCtor();
+  /* 【Q5】**这个套件测的是旧执行器的调度机制本身**（定时去重跨重启、文件批次合并、
+   * durable 领取账本、忙时背压、崩溃恢复…）。这些机制在 Q5 之后**对用户图不再启用**
+   * （用户图统一到 Node-RED），但代码仍然保留并需要被守住 —— 它们是内部路径的承载，
+   * 而且删掉它们要等到那些路径一起迁完。
+   *
+   * 所以夹具走生产里同一个显式注入点 `setLegacySchedulingFor`：把本套自己建的图 id
+   * 放进去，测的就是**真实的那个类**。生产装配层不调它 → 空集 → 旧执行器对任何图
+   * 都不装监听（`t3-engine-trigger-gate-smoke` 守着那一半）。 */
+  const newRunner = (): RunnerInternals => {
+    const r = new RunnerCtor();
+    // 传**判定函数**而不是集合快照：本套会在用例中途继续建图（②b 之后才建的那些
+    // 文件触发器），快照会让它们落回"不归旧执行器"，于是后半段全红。
+    r.setLegacySchedulingFor((id) => legacyIds.has(id));
+    return r;
+  };
 
   /** 把 `Date` 冻结在这一刻(毫秒),跑完 `fn` 再装回去。见上面那段注释。 */
   function withClock<T>(ms: number, fn: () => T): T {
@@ -2174,6 +2196,10 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
     nodeId: string;
     params: Record<string, unknown>;
   }): void => {
+    // 凡是由本套建出来的自动化，都放进「仍由旧执行器调度」白名单 —— 本套测的就是
+    // 那套调度机制（见 `newRunner` 的说明）。放在这里而不是 `nextId()`：夹具里还有
+    // 一批字面量 id（`wf_trim` / `wfA` / `wfCancel`…），逐个去改是不可靠的。
+    legacyIds.add(args.workflowId);
     WorkflowRepo.save({
       id: args.workflowId,
       name: `执行器冒烟 ${args.workflowId}`,
@@ -3417,30 +3443,9 @@ console.log("\nAutomationRunner · 定时去重跨重启(①)+ 删掉的文件�
       eq("最新会话空闲也不能掩盖旧项目运行", (await runner.runNow(wf, nodeId)).ok, false);
       setRunBusy(a, false);
 
-      WorkflowRepo.save(getBuiltinWorkflow(WATCH_WORKFLOW_ID)!);
-      const originA = "s_watch_origin_A", originB = "s_watch_origin_B";
-      SessionRepo.create({ ...SessionRepo.get(a)!, id: originA, kind: "chat", workflowId: "", parentSessionId: null });
-      SessionRepo.create({ ...SessionRepo.get(b)!, id: originB, projectId: projectB, kind: "chat", workflowId: "", parentSessionId: null });
-      eq("A 守望启动", (await runner.startWatch({ originSessionId: originA, command: "echo A" })).ok, true);
-      const watchA = runs.at(-1)!.sessionId;
-      setRunBusy(watchA, true);
-      try {
-        SessionRepo.create({ ...SessionRepo.get(watchA)!, id: "s_watch_newer_idle", projectId: PROJ_ID, parentSessionId: null, updatedAt: Date.now() + 99999 });
-        const before = JSON.stringify(getWorkflow(WATCH_WORKFLOW_ID));
-        eq("旧项目守望仍运行时拒绝 B", (await runner.startWatch({ originSessionId: originB, command: "echo B" })).ok, false);
-        eq("拒绝 B 前不改写守望模板", JSON.stringify(getWorkflow(WATCH_WORKFLOW_ID)), before);
-        eq("拒绝 B 不改写 A 的发起会话", SessionRepo.get(watchA)?.parentSessionId, originA);
-        eq("A 面板仍能看到守望正在运行", runner.activeWatchOf(originA), true);
-      } finally { setRunBusy(watchA, false); }
-      eq("A 结束后 B 守望可启动", (await runner.startWatch({ originSessionId: originB, command: "echo B" })).ok, true);
-      const watchB = runs.at(-1)!.sessionId;
-      check("跨项目守望使用不同后台会话", watchA !== watchB, {watchA,watchB});
-      eq("B 守望项目归属", SessionRepo.get(watchB)?.projectId, projectB);
-      eq("B 守望发起会话", SessionRepo.get(watchB)?.parentSessionId, originB);
-      eq("B 守望工作目录", runs.at(-1)?.cwd, dirB);
-      await runner.reloadAll();
-      eq("普通手动入口可在守望完成后起跑", (await runner.runNow(WATCH_WORKFLOW_ID, WATCH_TRIGGER_NODE_ID)).ok, true);
-      eq("普通手动入口不沿用上一次守望发起人", SessionRepo.get(runs.at(-1)!.sessionId)?.parentSessionId, null);
+      // 长任务守望已移除（2026-10-27）：它是"用户能用工作流自己搭出来"的东西。
+      // 这一段原本验它的跨项目会话归属、模板改写保护与面板可见性，随功能一并删除。
+
 
     } finally { setRunBusy(a, false); setRunBusy(b, false); runner.dispose(); }
   }
@@ -4916,11 +4921,27 @@ console.log("\nMERGE-3 · executor owner：同一 flow 只能一端执行（自�
     dispose(): void;
     statusOf(workflowId: string): Array<{ lastError?: string; detail?: string }>;
   }
-  const RunnerCtor = Object.getPrototypeOf(automationRunner).constructor as new () => OwnershipSurface;
+  const RawRunnerCtor = Object.getPrototypeOf(automationRunner).constructor as new () => OwnershipSurface & {
+    setLegacySchedulingFor(ids: (workflowId: string) => boolean): void;
+  };
+  /** owner 那一段同样用真实类 + 同一份白名单判定（见 `newRunner` 的说明）。 */
+  /* ⚠️ 类型写成 `() => OwnershipSurface`（**不是** `new () =>`）：下面所有调用点都是
+   * `RunnerCtor()`，写成构造器签名会让 tsc 报 TS2348（esbuild 不做类型检查，所以套件
+   * 跑绿而双包 typecheck 红 —— 那种"绿着但门禁红"最难查）。 */
+  const RunnerCtor = (): OwnershipSurface => {
+    const r = new RawRunnerCtor();
+    r.setLegacySchedulingFor((id) => legacyIds.has(id));
+    return r;
+  };
 
   // 独立工作流 id（不与 §13 的场景共用）。
   let oseq = 0;
-  const nextOwnershipId = (): string => `wf_owner_${(oseq += 1)}`;
+  const nextOwnershipId = (): string => {
+    const id = `wf_owner_${(oseq += 1)}`;
+    // owner 账本那一段同样测旧执行器（claim / 派发），白名单要一起登记。
+    legacyIds.add(id);
+    return id;
+  };
   const PROJ_DIR_OWNERSHIP = join(process.env.MCODE_SMOKE_DATA_ROOT ?? ".", "owner-project");
   mkdirSync(PROJ_DIR_OWNERSHIP, { recursive: true });
   const OWNER_PROJ_ID = "p_owner";
@@ -4959,7 +4980,7 @@ console.log("\nMERGE-3 · executor owner：同一 flow 只能一端执行（自�
     makeOwnerAutomation(wf, "t_own_ok");
     const store = new InMemoryExecutorOwnershipStore();
     const registry = new ExecutorOwnershipRegistry(store);
-    const r = new RunnerCtor();
+    const r = RunnerCtor();
     r.setExecutorOwnership(registry);
     resetRuns();
     try {
@@ -4980,7 +5001,7 @@ console.log("\nMERGE-3 · executor owner：同一 flow 只能一端执行（自�
     const store = new InMemoryExecutorOwnershipStore();
     const registry = new ExecutorOwnershipRegistry(store);
     registry.claim(wf, "node-red", { reason: "迁移产物已部署给引擎" });
-    const r = new RunnerCtor();
+    const r = RunnerCtor();
     r.setExecutorOwnership(registry);
     resetRuns();
     try {
@@ -5004,7 +5025,7 @@ console.log("\nMERGE-3 · executor owner：同一 flow 只能一端执行（自�
     makeOwnerAutomation(wf, "t_own_switch");
     const store = new InMemoryExecutorOwnershipStore();
     const registry = new ExecutorOwnershipRegistry(store);
-    const r1 = new RunnerCtor();
+    const r1 = RunnerCtor();
     r1.setExecutorOwnership(registry);
     resetRuns();
     try {
@@ -5020,7 +5041,7 @@ console.log("\nMERGE-3 · executor owner：同一 flow 只能一端执行（自�
     check("★ 释放后 node-red 可登记", nodeRedClaim.ok === true, nodeRedClaim);
     // 再切回 mcode：先由 node-red 释放，再让 mcode 运行。
     eq("★ node-red 释放成功", registry.release(wf, "node-red").ok, true);
-    const r2 = new RunnerCtor();
+    const r2 = RunnerCtor();
     r2.setExecutorOwnership(registry);
     resetRuns();
     try {
@@ -5038,7 +5059,7 @@ console.log("\nMERGE-3 · executor owner：同一 flow 只能一端执行（自�
   {
     const wf = nextOwnershipId();
     makeOwnerAutomation(wf, "t_own_default");
-    const r = new RunnerCtor(); // 不调 setExecutorOwnership
+    const r = RunnerCtor(); // 不调 setExecutorOwnership
     resetRuns();
     try {
       await r.start();
@@ -5054,7 +5075,7 @@ console.log("\nMERGE-3 · executor owner：同一 flow 只能一端执行（自�
   {
     const wf = nextOwnershipId();
     makeOwnerAutomation(wf, "t_gate_d_default");
-    const r = new RunnerCtor();
+    const r = RunnerCtor();
     check("★ Gate D: native engine owns default automation's flow", sharedExecutorOwnership.claim(wf, "node-red").ok);
     resetRuns();
     try {
@@ -5078,7 +5099,7 @@ console.log("\nMERGE-3 · executor owner：同一 flow 只能一端执行（自�
     makeOwnerAutomation(wf, "t_own_removed");
     const store = new InMemoryExecutorOwnershipStore();
     const registry = new ExecutorOwnershipRegistry(store);
-    const r = new RunnerCtor();
+    const r = RunnerCtor();
     r.setExecutorOwnership(registry);
     resetRuns();
     try {
