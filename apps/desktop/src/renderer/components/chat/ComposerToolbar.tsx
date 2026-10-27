@@ -157,7 +157,7 @@ export function ComposerToolbar({
   const hasAttach =
     !!onPickFiles && !!onPickImages && !!onPickLibraries && !!onSlashCommand;
   return (
-    <div ref={pillRef} className="composer-minipill claude-composer-toolbar min-w-0 max-w-full" role="group" aria-label={t("chat.toolbarToggle")} data-fluid-tier={fluidTier} data-compact={compact ? "1" : "0"}>
+    <div ref={pillRef} className="composer-minipill claude-composer-toolbar min-w-0 max-w-full" role="group" aria-label={t("chat.toolbarToggle")} data-fluid-tier={fluidTier} data-compact={compact ? "1" : "0"} data-look="capsule">
       {hasAttach && (
         <>
           <AttachMenuButton
@@ -190,7 +190,20 @@ export function ComposerToolbar({
       {hasPerm && (
         <>
           <span className="composer-minipill-mid" aria-hidden />
-          <PermissionChip layout="pill" />
+          {/* 【UI 重建 2026-10-28】**胶囊形态下不重复显示权限。**
+           *
+           * 真机截图的胶囊里只有「模型名 + effort」两段：
+           *   `[ 4.1-flash   Max ]`
+           * 而权限状态（`Bypass permissions`）在**左边那一行纯文本**里。
+           *
+           * 上一版两处都画 → 同一句话在一行里出现两次，右端还被截成
+           * 「Bypass permissi…」，看起来像溢出的 bug。
+           *
+           * `layout="row"`（窄窗格折叠态）仍然显示它 —— 那时左侧那行
+           * 不存在（`md:flex` 在小屏收起），权限选择器是唯一入口。 */}
+          <span data-pill-perm="" className="contents">
+            <PermissionChip layout="pill" />
+          </span>
         </>
       )}
       {/* 上下文占用。**不判空** —— 理由同上面 row 那一处。 */}

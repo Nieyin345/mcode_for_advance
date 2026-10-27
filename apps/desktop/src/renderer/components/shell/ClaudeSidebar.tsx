@@ -93,6 +93,10 @@ export interface ClaudeSidebarProps {
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
+  /** 【UI 重建 2026-10-28】在某个项目下**开分支工作树**新建会话
+   *  （分组标题的 `⑂`）。底层是 `startSession({ envMode:"worktree",
+   *  wtStyle:"branch" })`，能力早就有，之前只缺渲染端入口。 */
+  onNewSessionInWorktree: (projectId: string) => void;
   onSearch: () => void;
   /** 底部入口：资料库。 */
   onOpenLibrary: () => void;
@@ -136,6 +140,7 @@ export function ClaudeSidebar({
   activeSessionId,
   onSelectSession,
   onNewSession,
+  onNewSessionInWorktree,
   onSearch,
   onOpenLibrary,
   onOpenSettings,
@@ -274,6 +279,7 @@ export function ClaudeSidebar({
              * 但 Mcode 的 `startSession` 本来就从 `activeProjectId` 读，
              * 而这里点的是**当前**项目分组，语义对得上。 */
             onNewSessionIn={() => onNewSession()}
+            onNewWorktreeIn={() => onNewSessionInWorktree(p.id)}
           />
         ))}
         <Section title={t("layout.recents")} items={recents} activeId={activeSessionId} onSelect={onSelectSession} />
@@ -370,6 +376,7 @@ function ProjectGroup({
   activeId,
   onSelect,
   onNewSessionIn,
+  onNewWorktreeIn,
 }: {
   group: ClaudeProjectGroup;
   activeId: string | null;
@@ -377,6 +384,10 @@ function ProjectGroup({
   /** 分组标题右侧的 `+`：在这个项目下新建会话。
    *  用户截图里每个分组标题右边都有它（悬停时出现）。 */
   onNewSessionIn?: (groupId: string) => void;
+  /** 分组标题右侧的 `⑂`：在这个项目下**开一个分支工作树**新建会话。
+   *  `session.create` 的 `envMode:"worktree"` + `wtStyle:"branch"` 早就支持，
+   *  这里只是补渲染端入口。 */
+  onNewWorktreeIn?: (groupId: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   return (
@@ -417,6 +428,26 @@ function ProjectGroup({
             className="flex size-5 shrink-0 items-center justify-center rounded-[4px] text-[var(--m-text-muted)] opacity-0 transition-opacity hover:bg-[var(--m-fill-ghost-hover)] hover:text-[var(--m-text-secondary)] group-hover/hdr:opacity-100 focus-visible:opacity-100"
           >
             <PlusSmallIcon />
+          </button>
+        )}
+        {/* 【UI 重建 2026-10-28】`⑂` —— 在这个项目下**开一个分支工作树**新建会话。
+         *
+         * 用户截图里 `temp` 那一行有两个按钮：`⑂` 和 `+`。
+         *
+         * 底层能力**早就存在**（`session.create` 的 `envMode:"worktree"` +
+         * `wtStyle:"branch"`，意图先行、首次发送时才物化），之前只是渲染端
+         * 没有入口 —— 所以这一处不需要新的主进程能力。
+         *
+         * 顺序照截图：`⑂` 在左、`+` 在右。 */}
+        {onNewWorktreeIn && (
+          <button
+            type="button"
+            aria-label={`在 ${group.name} 下新建分支工作树`}
+            title={`在 ${group.name} 下新建分支工作树`}
+            onClick={() => onNewWorktreeIn(group.id)}
+            className="flex size-5 shrink-0 items-center justify-center rounded-[4px] text-[var(--m-text-muted)] opacity-0 transition-opacity hover:bg-[var(--m-fill-ghost-hover)] hover:text-[var(--m-text-secondary)] group-hover/hdr:opacity-100 focus-visible:opacity-100"
+          >
+            <BranchSmallIcon />
           </button>
         )}
       </div>
@@ -836,6 +867,19 @@ function PlusSmallIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
       <path d="M8 3.5v9M3.5 8h9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** 分组标题的 `⑂` —— 「在此项目下开分支工作树」。
+ *  形状照 Phosphor 的 `GitBranch`：两个端点 + 一条分叉。 */
+function BranchSmallIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="4.6" cy="3.2" r="1.5" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="4.6" cy="12.8" r="1.5" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="11.4" cy="5.4" r="1.5" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M4.6 4.7v6.6M11.4 6.9c0 2.1-2.2 3-4.6 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   );
 }

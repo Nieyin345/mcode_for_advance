@@ -355,38 +355,48 @@ export function EffortChip({
         )}
       </Popover.Trigger>
       <PanelPopup popupRef={popupRef} cascade={cascade}>
-        <div className="w-72 select-none px-3.5 pb-2.5 pt-2">
+        <div data-cds="ModelSelectorEffort" className="w-72 max-h-[min(65vh,480px)] overflow-y-auto overscroll-contain select-none px-3 pb-2.5 pt-2">
           <SectionHeader
             title={t("chat.effort.section")}
             value={effortLabel}
             icon={<IconBolt size={11} />}
           />
-          {/* block grid: >6 levels switch 3→4 columns so the panel keeps a
-              constant width (codex's 8 levels) */}
-          <div className={cn("grid gap-1", levels.length > 6 ? "grid-cols-4" : "grid-cols-3")}>
+          <div className="space-y-1">
             {levels.map((m) => {
               const active = m.value === effort;
+              const mappedValue = mappedValueOf(m.value);
+              const caption = tileOf(m);
               return (
                 <button
                   key={m.value}
+                  data-cds="EffortOption"
                   type="button"
+                  aria-pressed={active}
                   onClick={() => setEffort(m.value)}
                   title={fullHintOf(m)}
                   className={cn(
-                    "relative flex min-w-0 flex-col items-start gap-0.5 rounded-lg border px-2.5 py-1.5 text-left outline-none transition-colors duration-100",
-                    "border-edge bg-surface hover:border-input-edge hover:bg-surface-hover/45",
-                    active && "border-accent bg-accent/8",
+                    "flex w-full min-w-0 items-center justify-between gap-3 rounded-lg border border-transparent px-2.5 py-2 text-left outline-none transition-colors duration-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                    active ? "border-accent/50 bg-surface-muted text-accent" : "text-content hover:bg-surface-muted",
                   )}
                 >
-                  <span className="max-w-full truncate text-[11.5px] leading-tight font-semibold text-content">
-                    {m.label}
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="max-w-full truncate text-xs leading-tight font-semibold">
+                      {m.label}
+                    </span>
+                    {caption && (
+                      <span className="max-w-full truncate text-[11px] leading-tight text-content-subtle">
+                        {caption}
+                      </span>
+                    )}
                   </span>
-                  <span className="max-w-full truncate text-[9.5px] leading-tight text-content-subtle">
-                    {mappedValueOf(m.value) ?? tileOf(m)}
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {mappedValue && (
+                      <span className="max-w-[96px] truncate rounded-md bg-surface-muted px-1.5 py-0.5 font-mono text-[10px] text-content-subtle">
+                        {mappedValue}
+                      </span>
+                    )}
+                    {active && <IconCheck size={14} className="shrink-0 text-accent-strong" />}
                   </span>
-                  {active && (
-                    <IconCheck size={11} className="absolute top-1 right-1 text-accent-strong" />
-                  )}
                 </button>
               );
             })}
@@ -398,6 +408,36 @@ export function EffortChip({
 }
 
 /** Permission-mode block picker. */
+/** 【UI 重建 2026-10-28】权限状态的**纯文本**形态 —— 输入框下方那一行的左端。
+ *
+ * 真机截图：`Bypass permissions          [ 4.1-flash  Max ]  ◯`
+ * 左边只有一行灰字：**无边框、无背景、无图标、不可点**。
+ *
+ * 为什么要和 `PermissionChip` 分开：
+ *   - `PermissionChip` 是**可点的选择器**（点开一个 6 宫格选模式）；
+ *   - 这个是**只读状态**。
+ * 两者数据源同一份（`permissionMode` + provider 的 `capabilities.permissionModes`），
+ * 但一个是控件、一个是文字。硬把只读状态做成可点胶囊，会让整行看起来
+ * 是「一排控件」——那正是这一版要修掉的观感。
+ *
+ * 不显示 provider 没声明权限模式的情况（与 chip 同一判据）—— 画一个
+ * 「默认」而实际没有选择器，会让人以为那里能点。 */
+export function PermissionText() {
+  const permissionMode = useSessionStore((s) => s.permissionMode);
+  const providerId = useSessionStore((s) => s.providerId);
+  const providers = useSessionStore((s) => s.providers);
+  const provider = providers.find((p) => p.id === providerId);
+  const modes = provider?.capabilities.permissionModes;
+  if (!modes || modes.length === 0) return null;
+  const activeMode = modes.find((m) => m.value === permissionMode);
+  const label = activeMode?.label ?? FALLBACK_LABEL[permissionMode] ?? permissionMode;
+  return (
+    <span data-permission-text="" title={activeMode?.hint ?? label} className="truncate">
+      {label}
+    </span>
+  );
+}
+
 export function PermissionChip({
   layout = "pill",
 }: {
@@ -498,7 +538,9 @@ export function PermissionChip({
               return (
                 <button
                   key={m.value}
+                  data-cds="PermissionOption"
                   type="button"
+                  aria-pressed={active}
                   onClick={() => setPermissionMode(m.value)}
                   title={fullHintOf(m)}
                   className={cn(

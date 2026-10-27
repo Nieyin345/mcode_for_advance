@@ -213,6 +213,17 @@ export function ClaudeShellMount(props: ClaudeShellMountProps) {
         activeSessionId={activeSessionId}
         onSelectSession={(id) => void selectSession(id)}
         onNewSession={() => void startSession()}
+        /* 【UI 重建 2026-10-28】分组标题的 `⑂`：在该项目下开一个**分支工作树**
+         * 新建会话。
+         *
+         * 底层能力早就存在（`session.create` 的 `envMode:"worktree"` +
+         * `wtStyle:"branch"`，意图先行、首次发送时才物化 —— 所以点了不发送
+         * 不会留下空工作树）。这里只是补渲染端入口。
+         *
+         * ⚠️ 必须**显式传 projectId**，不能靠 `startSession()` 的
+         * 「缺省用 activeProjectId」—— 用户点的可能是另一个分组。 */
+        onNewSessionInWorktree={(projectId) =>
+          void startSession(projectId, { envMode: "worktree", wtStyle: "branch" })}
         onSearch={() => setCommandPaletteOpen(true)}
         onOpenLibrary={() => {
           // 资料库挂在「右栏 pane」里（功能文档 UI-04 的挂载方式）。

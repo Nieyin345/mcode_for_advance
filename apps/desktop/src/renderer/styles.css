@@ -3149,15 +3149,51 @@ button.chat-ledger-head:hover {
 [data-chat-root] .composer-minipill {
   display: inline-flex;
   align-items: center;
-  height: 1.75rem;            /* 28px — matches the chip row's visual height */
+  height: 1.75rem;            /* 28px */
   padding: 0 0.1875rem;
   border: none;
-  /* 【ARC-005 V2】圆角走 CDS 控件档（与 Segmented 轨道同源），不再是
-   * 9px 的一次性字面量。 */
   border-radius: var(--radius-btn-xs);
   background: transparent;
   flex: none;
   min-width: 0;
+}
+
+/* 【UI 重建 2026-10-28】**胶囊本体：一层浅灰底 + 大圆角，没有内部分隔线。**
+ *
+ * 用户给的真机截图（放大右端）：
+ *
+ *   `[ 4.1-flash   Max ]  ◯`
+ *    └── 一个灰底圆角胶囊 ──┘  └ 环形在**外面**
+ *
+ * 两段文字之间只有空格，**没有竖线分隔**。上一版每个 segment 各是一个
+ * 独立可点区域，中间插 `composer-minipill-mid`（1px 竖线）——
+ * 那是 Mcode 自己的发明，读起来像「工具条」，不像一个整体控件。
+ *
+ * 现在：胶囊底给**容器**，segment 自己不画底（只有 hover 时露出一层更深的 tint）。
+ * 视觉上是一块，交互上仍是多段。 */
+[data-chat-root] .composer-minipill[data-look="capsule"] {
+  background: rgb(var(--surface-hover));
+  padding: 0 0.125rem;
+}
+
+/* 分隔线在胶囊形态下**不画** —— 截图里没有。中间那片仍然保留（它是 flex
+ * 里的一个宽度单位），只是透明。 */
+[data-chat-root] .composer-minipill[data-look="capsule"] .composer-minipill-mid {
+  background: transparent;
+  width: 2px;
+}
+
+/* 【UI 重建 2026-10-28】**胶囊形态下隐藏权限段** —— 它已经作为纯文本
+ * 显示在那一行左端（见 `ChatPane` 的 `ComposerStatusText`）。
+ * 两处都画会让同一句话在一行里出现两次，右端还被截断。
+ *
+ * 只在**宽屏**（≥768px）隐藏 —— 窄屏时左侧那行是 `hidden md:flex`，
+ * 权限选择器在那里是唯一入口，不能藏。用媒体查询而不是容器查询：
+ * 判据是「左侧那行在不在」，而它自己就按视口宽度切换 —— 两处必须同一个判据。 */
+@media (min-width: 768px) {
+  [data-chat-root] .composer-minipill[data-look="capsule"] [data-pill-perm] {
+    display: none;
+  }
 }
 [data-chat-root] .composer-minipill-seg {
   display: inline-flex;

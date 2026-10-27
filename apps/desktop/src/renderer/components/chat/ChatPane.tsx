@@ -58,6 +58,7 @@ import type { TurnUsageRecord } from "@contracts/runtime";
 import { RenderErrorBoundary } from "./RenderErrorBoundary.js";
 import { MicButton } from "./MicButton.js";
 import { ComposerToolbar } from "./ComposerToolbar.js";
+import { PermissionText } from "./EffortPermissionControl.js";
 import { WorktreeModeChip } from "./WorktreeModeChip.js";
 import { SessionDirectoryChip } from "./SessionDirectoryChip.js";
 import { ComposerToolbarToggle } from "./ComposerToolbarToggle.js";
@@ -3761,7 +3762,28 @@ function ChatPaneForSession({
               hasPendingPrompt && "hidden",
             )}
           >
-              <div data-cds="ComposerConfigControls" className="composer-chips flex min-w-0 flex-1 items-center gap-1">
+              {/* ── 左端：权限状态**纯文本** ──
+               *
+               * 【UI 重建 2026-10-28】真机截图（放大输入框下方那一行）：
+               *
+               *   `Bypass permissions          [ 4.1-flash  Max ]  ◯`
+               *    └─ 无框纯文本 ─┘            └─ 灰底胶囊 ─┘
+               *
+               * 左边那个权限状态是**一行灰字，没有边框、没有背景、没有图标**。
+               * 上一版把它做进 pill 的某一段（有 hover 底、带图标），
+               * 于是整行看起来是「一排控件」而不是「一句状态 + 一个设置」。
+               *
+               * 这里用 `PermissionText` 单独渲染；pill 里那一段**仍然保留**
+               * （窄窗格 `chipsMode === "collapsed"` 时它是唯一入口），
+               * 只是宽屏下不再重复显示 —— 由 `ComposerToolbar` 的
+               * `data-look="capsule"` + 下面这段控制显隐。 */}
+              <div
+                data-cds="ComposerStatusText"
+                className="composer-status-text hidden min-w-0 shrink items-center gap-2 text-[length:var(--cmp-type-size)] text-[var(--m-text-muted)] md:flex"
+              >
+                <PermissionText />
+              </div>
+              <div data-cds="ComposerConfigControls" className="composer-chips ml-auto flex min-w-0 flex-1 items-center justify-end gap-1">
                 {chipsMode === "collapsed" ? (
                   // Narrow hosts (side-chat panel / phone shell): no pill —
                   // the single-icon entry popping the vertical settings list

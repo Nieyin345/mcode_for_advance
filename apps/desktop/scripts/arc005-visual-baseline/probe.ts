@@ -211,7 +211,35 @@ export async function runArc005VisualProbe(dir: string): Promise<void> {
               mk('m1','user',[{kind:'text',text:'请解释视觉基线测试的用途'}]),
               mk('m2','assistant',[{kind:'text',text:'视觉基线记录真实界面字体、颜色、几何和组件状态。'}])
             ];
-            if (id === 'messages') st.setState({messagesBySession:{s1:msg,s2:[],s3:[]}});
+            if (id === 'messages') st.setState({
+              messagesBySession:{s1:msg,s2:[],s3:[]},
+              // ---- 【UI 重建 2026-10-28】给这一格注入带权限模式的 provider ----
+              // 夹具的 provider.list 返回空数组，所以整条权限/模型链在所有格子里
+              // 都是空的，输入框下方那一行只剩一个「+」。用户要的那一行是
+              //   Bypass permissions   [4.1-flash Max]   (环形)
+              // 没有 provider 就永远拍不到左半：PermissionText 在
+              // modes.length === 0 时正确地返回 null。
+              //
+              // 只给 messages 这一格注入，其余格子保持空 —— 空态本身也是要守的
+              // （没声明权限模式的引擎不该画出那个文字）。
+              //
+              // 注意：这段在模板字符串内，不能用块注释，反引号与星号斜杠都会
+              // 提前闭合外层。
+              providers:[{
+                id:'p-claude', displayName:'Claude', kind:'claude',
+                capabilities:{
+                  permissionModes:[
+                    {value:'default', label:'Default'},
+                    {value:'acceptEdits', label:'Edit Auto'},
+                    {value:'plan', label:'Plan'},
+                    {value:'bypassPermissions', label:'Bypass permissions'},
+                  ],
+                  thinkingLevels:[{value:'medium',label:'Medium'}],
+                },
+              }],
+              providerId:'p-claude',
+              permissionMode:'bypassPermissions',
+            });
             else if (id === 'tab-overflow') {
               const many = Array.from({length:36},(_,i)=>({
                 ...a.sessions[0], id:'overflow-'+i,

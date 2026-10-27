@@ -1412,7 +1412,26 @@ export interface SessionState {
    *  between. No-op when the project's cache isn't loaded (init brings both
    *  sections together). */
   loadWorktreeSessions: (projectId: string) => Promise<void>;
-  startSession: (projectId?: string, overrides?: { providerId?: string; model?: string; customModelId?: string | null; worktreePath?: string; /** Force the working-environment intent (bypasses the composer's env chip — e.g. a conflict-resolution session must stay in the real checkout). */ envMode?: "local" | "worktree" }) => Promise<void>;
+  startSession: (projectId?: string, overrides?: {
+    providerId?: string;
+    model?: string;
+    customModelId?: string | null;
+    worktreePath?: string;
+    /** Force the working-environment intent (bypasses the composer's env chip
+     *  — e.g. a conflict-resolution session must stay in the real checkout). */
+    envMode?: "local" | "worktree";
+    /** 【UI 重建 2026-10-28】worktree 的**形态**。
+     *
+     *  `"branch"` 在一个生成的 `mcode/*` 分支上物化（留下具名提交，适合特性开发）；
+     *  `"detached"` 是经典的游离检出（适合试验性验证）。
+     *
+     *  为什么加这个字段：侧栏分组标题上的 `⑂`（Claude 的「在此项目下开一个
+     *  分支工作」）需要**明确要求 branch 形态** —— 否则会跟着用户的
+     *  `envChoice` 芯片走，而那个芯片可能是 `local`，于是点了 `⑂` 却得到一个
+     *  本地会话（静默不生效）。`session.create` 的契约早就支持 `wtStyle`，
+     *  这里只是把它透出来。 */
+    wtStyle?: "detached" | "branch";
+  }) => Promise<void>;
   /** 把一段对话复制成新的一段(带着一模一样的历史与上下文)。`title` 由调用方给 ——
    *  新对话叫什么是一句界面文案,主进程那侧没有 i18n。 */
   forkSession: (sessionId: string, title: string) => Promise<void>;

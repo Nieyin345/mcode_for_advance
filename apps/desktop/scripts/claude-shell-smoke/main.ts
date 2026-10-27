@@ -296,5 +296,35 @@ check("★ 右栏每个页签都能切到、且切到后有东西渲染", () => 
   );
 });
 
+/* ─────────── 侧栏 `⑂`：按钮必须真的传 worktree 意图 ───────────
+ *
+ * 【UI 重建 2026-10-28】分组标题的 `⑂` 是「在此项目下开分支工作树」。
+ * 最容易的失效形态不是崩溃，而是**按钮画了但不生效**：
+ *   - 忘了把 `envMode` / `wtStyle` 传给 `startSession` → 建出来的是本地会话；
+ *   - 传了但没传 `projectId` → 建在**当前激活**的项目下，而不是用户点的那个；
+ *   - `wtStyle` 没透传 → 跟着 composer 的 envChoice 芯片走，可能是 local。
+ *
+ * 三种都不抛异常、不报错，用户只看到「点了一下，好像建了，但不是我要的」。
+ * 这条断言钉住三个参数都在。
+ */
+check("★ 侧栏 ⑂ 建会话时显式传了 worktree 意图与项目 id", () => {
+  const mount = readFileSync(resolve(process.cwd(), "src/renderer/components/shell/ClaudeShellMount.tsx"), "utf8");
+  const at = mount.indexOf("onNewSessionInWorktree=");
+  assert.ok(at >= 0, "ClaudeShellMount 应把 onNewSessionInWorktree 接到侧栏");
+  const seg = mount.slice(at, at + 400);
+  assert.ok(
+    /startSession\(\s*projectId/.test(seg),
+    "必须把点中分组的 projectId 显式传给 startSession（否则会建在当前激活项目下）",
+  );
+  assert.ok(
+    /envMode:\s*"worktree"/.test(seg),
+    '必须显式传 envMode:"worktree"（否则建成本地会话）',
+  );
+  assert.ok(
+    /wtStyle:\s*"branch"/.test(seg),
+    '必须显式传 wtStyle:"branch"（否则跟随 envChoice 芯片，可能是 detached 或 local）',
+  );
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

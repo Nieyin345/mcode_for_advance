@@ -1864,11 +1864,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         overrides?.envMode ??
         (overrides?.worktreePath || get().envChoice !== "local" ? "worktree" : "local"),
       wtStyle:
-        !overrides?.envMode &&
+        // 【UI 重建 2026-10-28】`overrides.wtStyle` 优先 —— 侧栏分组标题的 `⑂`
+        // 明确要求 branch 形态，不能跟着 `envChoice` 芯片走。
+        overrides?.wtStyle ??
+        (!overrides?.envMode &&
         !overrides?.worktreePath &&
         get().envChoice !== "local"
           ? get().envChoice === "wt-branch" ? "branch" : "detached"
-          : undefined,
+          : undefined),
       worktreePath: overrides?.worktreePath,
       customModelId:
         overrides?.customModelId !== undefined ? overrides.customModelId : get().customModelId,
