@@ -288,9 +288,12 @@ console.log("\nA · chooseBranch 模型选路:两条 fail-closed + 正控");
 
   // 模型选路也要过会话校验(它复用 runSelectedSession):缺 sessionId 必须拒
   resetAll();
+  /* 【2026-10-28】期望串从 `"Mcode sessionId is required"` 换成可操作的那句。
+   * **拒绝行为没变**（缺配置就该拒），变的是文案：旧那句是内部字段名，
+   * 用户在节点编辑器里看到的是「Mcode 会话 ID」，对不上号。 */
   await throws("模型选路缺 sessionId → 拒绝(复用 runSelectedSession 的会话守卫)",
     () => branch({ portCount: 2, decider: "model", params: {} }),
-    "Mcode sessionId is required");
+    "此节点尚未绑定 Mcode 会话（缺少 sessionId）");
 }
 
 /* ═════════════════════════ B. runSelectedSession 的守卫 ═════════════════════════ */
@@ -302,9 +305,10 @@ console.log("\nB · runSelectedSession:会话 / 提示词 / 事件守卫");
     services(resolve).execute("agent.run", payload);
 
   resetAll();
+  /* 【2026-10-28】同上：拒绝行为不变，文案换成可操作的那句。 */
   await throws("缺 sessionId → 拒绝",
     () => run({ params: {} }),
-    "Mcode sessionId is required");
+    "此节点尚未绑定 Mcode 会话（缺少 sessionId）");
 
   resetAll();
   await throws("sessionId 不存在 → 拒绝",

@@ -93,13 +93,37 @@ async function runSelectedSession(
   const params = paramsOf(payload);
   const sessionId = asString(params.sessionId);
   if (!sessionId) {
-    // W18: migrated main/conversation nodes have no implicit chat identity.
-    // Keep the established error contract for agent/branch callers (covered
-    // by mcode-node-pack-ports-smoke); give conversation users an actionable
-    // message rather than an internal field name.
+    /* W18 / 【2026-10-28】**这一句同时服务三种调用方，文案要一次说清三件事。**
+     *
+     * 谁都会走到这里（它们共用 `runSelectedSession`）：
+     *   1. **对话节点**（`mcode-conversation`）—— 有自己的专门说法，见下面；
+     *   2. **agent 节点**（`mcode-agent`）—— 用户在画布上拖的那一步具体活儿；
+     *   3. **模型选路**（`branch.decide` 的 model 模式）—— AI 挑一条分支走，
+     *      **用户从没给它选过会话**，所以缺 sessionId 是画布配置的问题。
+     *
+     * ## 旧文案为什么不够
+     *
+     * `"Mcode sessionId is required"` 是**内部字段名**。用户在节点编辑器里
+     * 看到的是一个叫「Mcode 会话 ID」的输入框，两句话对不上号，他不知道自己
+     * 该做什么 —— 这正是 W18 当初要修的东西。
+     *
+     * ## 现在这一句要同时满足
+     *
+     * - **可操作**：告诉用户去节点编辑器填哪个字段、填完要重新部署；
+     * - **说得准**：这是「没绑定会话」，不是「会话找不到」（那是下一道守卫）；
+     * - **保留旧关键词**：`node-pack-ports-smoke` 的两条断言钉着
+     *   「模型选路」与「agent 缺 sessionId」必须**拒绝**，它们的期望串是
+     *   旧那句话。**拒绝行为本身是对的**（配置不全会跑出错误结果），
+     *   只是文案该换成人话 —— 所以新文案里保留了 `sessionId` 这个词，
+     *   断言跟着改（见同批提交）。
+     *
+     * ⚠️ Q11 设计的「不填就按 (工作流, 节点) 自动认回会话」**还没接**
+     *（实现在 `nodeSessions.ts`，有 172 条套件守着，但没接进执行路径）。
+     * 接上它需要先定「引擎触发的节点继承谁的 provider/model」—— 产品决定。
+     * 在那之前，这里**如实要求用户填**，不假装系统会自己找。 */
     throw Error(nodeType === "mcode-conversation"
       ? "此对话节点尚未绑定 Mcode 聊天会话：请在 Node-RED 节点编辑器填写现有可见的「Mcode 会话 ID」，保存后重新部署。"
-      : "Mcode sessionId is required");
+      : "此节点尚未绑定 Mcode 会话（缺少 sessionId）：请在 Node-RED 节点编辑器的「Mcode 会话 ID」里选择一个现有会话，保存后重新部署。");
   }
   const session = SessionRepo.get(sessionId);
   if (!session || session.kind !== "chat") {

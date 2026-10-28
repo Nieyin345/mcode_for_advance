@@ -30,7 +30,15 @@ await checkReject("对话节点绑定了不存在的会话时中文拒绝", "con
 // 【Q11】agent 节点不再要求手填 sessionId：没填就按 `(工作流, 节点)` 认回那一步的
 // 会话。这里 payload 没有 tabId，认不回来 —— 契约是**明确拒绝并说明原因**，而不是
 // 旧的那句 "Mcode sessionId is required"（用户根本不知道那是什么）。
-await checkReject("Agent 缺绑定且无法认回时明确拒绝", "agent.run", {}, "不属于任何一张已保存的 Mcode 工作流");
+//
+// 【2026-10-28】期望串跟着新文案改。**「不属于任何一张已保存的 Mcode 工作流」
+// 那句话现在是错的**：Q11 的自动认回**从来没接进执行路径**（实现在
+// `nodeSessions.ts`，172 条套件守着它本身是对的，但没有调用方），所以系统
+// 现在**不会**去「找一张已保存的工作流」—— 它只是要求用户手填。
+// 断言如果继续要那句话，等于要求代码撒谎。
+//
+// 现在守的是**真的会发生的事**：拒绝，且给出可操作的中文（不是内部字段名）。
+await checkReject("Agent 缺绑定且无法认回时明确拒绝", "agent.run", {}, "此节点尚未绑定 Mcode 会话");
 await checkReject("Agent 找不到会话的原有错误契约不回退", "agent.run", { sessionId: "not-visible-session" }, "Mcode Host session missing or not user-visible");
 console.log("W18 production-port errors: " + (count - failed) + "/" + count);
 if (failed) process.exitCode = 1;
