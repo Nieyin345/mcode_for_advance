@@ -123,6 +123,25 @@ export type NodeSessionRequest = ConversationNodeSessionRequest | WorkflowNodeSe
  * **为什么不在这里改**：接上它需要 `(workflowId, node, inheritFrom)` 三样，
  * 而 `nodePackProductionPorts` 目前拿不到工作流文档与节点对象
  * —— 那是执行链所有权的问题，不是这个文件能决定的。留给工作流 owner。
+ *
+ * ## ⚠️ 2026-10-28 追加：**两条断言对同一行代码要相反的东西**
+ *
+ * 想修那条红断言时撞上的墙 —— 不是「不好改」，是**两条套件互斥**：
+ *
+ * | 套件 | 要求 `agent.run` 缺 sessionId 时抛的话 |
+ * |---|---|
+ * | `mcode-conversation-session-smoke`（W18） | **不要**是 `"Mcode sessionId is required"`，要「不属于任何一张已保存的 Mcode 工作流」 |
+ * | `mcode-node-pack-ports-smoke`（两条） | **必须**是 `"Mcode sessionId is required"` |
+ *
+ * 实测：把消息换成 W18 要的那句 → conversation-session 4/4 通过，但
+ * node-pack-ports 从 **180/180 掉到 178/180**（「模型选路缺 sessionId」与
+ * 「缺 sessionId → 拒绝」两条红）。改回来则相反。**没有一份文案能同时满足。**
+ *
+ * 所以这不是「写错了一句话」，是**两套件对同一个契约的期望已经分叉**。
+ * 要修必须先裁决：agent 节点缺 sessionId 时的正确文案是哪一句、
+ * 旧那句的「established contract」还成不成立。那是产品/契约决定。
+ * 在那之前**不要**去改 `nodePackProductionPorts` 里那句消息 —— 改了必然
+ * 打破另一套，而且我试过两次、两次都只能回滚。
  */
 export function nodeSessionOf(request: NodeSessionRequest): Session {
   const anchor = request.kind === "conversation" ? request.conversation : request.inheritFrom;
