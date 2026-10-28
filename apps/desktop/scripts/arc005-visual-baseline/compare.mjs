@@ -237,6 +237,20 @@ const measuredChecks = {
   },
   "rich-list-item": {
     paddingInlineStart: "8px",
+    /* 首项的 margin-block-start 是 0（Claude `@scope` 的 `:first-child` 规则）。
+     * 选择器 `.chat-md ul > li` 取到的正是首项，所以这里登记 0 而不是 4。 */
+    marginBlockStart: "0px",
+  },
+  /* 【UI 重建 2026-10-28】**`ul` 的缩进必须单独量 —— 它曾经没被量过。**
+   *
+   * 我把 `padding-inline-start: 2em` 从 `<ul>` 上删掉时，判据全绿：
+   * `rich-list-item` 量的是 `li`（8px，正确），而 `ul` 的 padding
+   * **从来没有任何一条在守**。后果是圆点被推到内容列外面，
+   * 在截图里看起来像完全没渲染列表符号。
+   *
+   * 上游真值：`:is(ul,ol){ padding-inline-start: 2em }`（@16px = 32px）。 */
+  "rich-list": {
+    paddingInlineStart: "32px",
   },
   "rich-table-cell": {
     /* reply 上下文把表格边框/底色/圆角全抹掉，单元格只剩纵向内边距。 */

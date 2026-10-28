@@ -135,6 +135,7 @@ export const ARC005_MEASURE_SELECTORS: ReadonlyArray<readonly [string, string]> 
    *   li          padding-inline-start 8px / margin-block-start 4px
    *   table       无外框、无圆角；单元格 padding-block 8px, padding-inline 0 */
   ["rich-blockquote", "[data-testid='workspace-main'] .chat-md blockquote"],
+  ["rich-list", "[data-testid='workspace-main'] .chat-md ul"],
   ["rich-list-item", "[data-testid='workspace-main'] .chat-md ul > li"],
   ["rich-table-cell", "[data-testid='workspace-main'] .chat-md table th"],
   ["fixture", "[data-testid='arc005-fixture-panel']"],

@@ -745,6 +745,19 @@ div:has(> [role="menu"]) {
   color: color-mix(in srgb, rgb(var(--content)) 70%, rgb(var(--content-muted)));
 }
 
+/* Claude `@scope(.prose)` 里的 `:first-child{ margin-block-start: 0 }`。
+ *
+ * 实测（真 Electron）：列表首项的 margin-block-start 是 **0**，第二项起才是
+ * `flow × .333` = 3.996px。Tailwind 的 `mt-[…]` 表达不了「首项为 0」，
+ * 而 `[&>p]:mt…` 那一族只覆盖 p。
+ *
+ * 没有这一条时的症状很轻但可辨：列表第一项和它上面那段之间多 4px，
+ * 整块内容看起来「浮」了一点 —— 属于那种说得出不对、说不出哪不对的差异。
+ * 量得到它的判据是 `rich-list-item`（`.chat-md ul > li` 取到的是首项）。 */
+.chat-md li:first-child {
+  margin-block-start: 0;
+}
+
 /* ───────────── 行间公式在窄容器里的排版 ─────────────
  * KaTeX 的 `.katex-display` 默认是「居中 + white-space:nowrap + 编号绝对定位到右边缘」。
  * 这在对话那种宽容器里没问题;一放进右栏文献原**文预览**这种 ~400px 的窄栏,长公式

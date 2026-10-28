@@ -800,19 +800,37 @@ function buildComponents(): Components {
     return <img src={src} alt={alt ?? ""} />;
   },
   ul({ children }) {
-    /* Claude：`li { margin-block-start: calc(flow * .333); padding-inline-start: .5em }`
-     * 列表本身的 margin 由通用规则给 `margin-block-start: flow`，**没有** padding。
-     * `::marker { color: text-secondary; font-size: .7em }`。
-     * 上一版额外写了 `padding-inline-start: 1.2em` —— 上游列表本体没有这个，
-     * 会让整个列表比 Claude 更靠右。 */
-    return <ul className="mt-[var(--chat-md-gap-sm)] mb-0 list-disc marker:text-content-muted [&::marker]:text-[0.7em]">{children}</ul>;
+    /* 【UI 重建 2026-10-28】**`padding-inline-start: 2em` 必须留着 —— 我上一版删错了。**
+     *
+     * 上一版的理由是「`.prose` 的 `li` 才是那个有 padding 的，`ul` 没有」。
+     * 那只读了 `@scope` 块里 `li{…padding-inline-start:.5em}` 一条，
+     * **漏了紧挨着的** `:is(ul,ol){padding-inline-start:2em}`。
+     *
+     * 实测（真 Electron，Claude 自己的 3 个 CSS 按 `index.html` 的真实顺序加载）：
+     *
+     *   ul  padding-inline-start = **32px**（2em @16px）
+     *   li  padding-inline-start = **8px**（.5em）
+     *   ul  margin-block-start   = **12px**（flow × 1）
+     *
+     * 删掉的后果不是「少一点缩进」，是**圆点被推到内容列外面、在截图里看就像
+     * 完全没有列表符号**。判据当时只量了 `li` 的 padding（8px，对），
+     * 而 `ul` 的 padding 从来没被量过 —— 又一次「量到了，但不是目标那一个」。
+     *
+     * `list-disc` / `marker` 保持原样：两者实测都正确。 */
+    return <ul className="mt-[var(--chat-md-gap-sm)] mb-0 list-disc pl-[2em] marker:text-content-muted [&::marker]:text-[0.7em]">{children}</ul>;
   },
   ol({ children }) {
-    return <ol className="mt-[var(--chat-md-gap-sm)] mb-0 list-decimal marker:text-content-muted [&::marker]:text-[0.7em]">{children}</ol>;
+    return <ol className="mt-[var(--chat-md-gap-sm)] mb-0 list-decimal pl-[2em] marker:text-content-muted [&::marker]:text-[0.7em]">{children}</ol>;
   },
   li({ children }) {
-    /* Claude `.prose li{ margin-block-start:calc(var(--_prose-flow)*var(--_prose-x-li-child)); margin-block-end:0; padding-inline-start:.5em }`
-     *   flow 12px × 0.333 = 4px；padding-inline-start: .5em = 8px。 */
+    /* Claude `.prose li{ margin-block-start:calc(var(--_prose-flow)*var(--_prose-x-li-child));
+     *   margin-block-end:0; padding-inline-start:.5em }`
+     *   flow 12px × 0.333 = 4px；padding-inline-start: .5em = 8px。
+     *
+     * ⚠️ 但 `@scope` 里还有一条 `:first-child{ margin-block-start: 0 }` ——
+     * 实测 Claude 的**首个** li 是 0px、后续才是 3.996px。Tailwind 的
+     * `mt-[...]` 没法表达「首项为 0」，用 CSS 的 `:first-child` 覆盖更直接，
+     * 见 styles.css 的 `.chat-md li:first-child`。 */
     return <li className="mb-0 mt-[var(--chat-md-gap-xs)] [padding-inline-start:0.5em]">{children}</li>;
   },
   blockquote({ children }) {
