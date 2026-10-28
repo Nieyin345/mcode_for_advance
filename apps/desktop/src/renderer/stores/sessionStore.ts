@@ -5203,7 +5203,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Ready = a model is selected AND its files are actually on disk
       // (modelList rescans the root). A selection pointing at a removed
       // download keeps the mic hidden instead of failing on click.
-      set({ voiceModelReady: !!res.selected && res.downloaded.includes(res.selected) });
+      /* 【2026-10-28】形状守卫。`res.downloaded` 缺席时 `.includes` 抛 TypeError，
+       * 被下面的 catch 吞成一条 console —— 语音标志停在旧值，用户看不到原因。 */
+      if (typeof res?.selected !== "string" && res?.selected !== null) {
+        console.error("voice.modelList: response shape is not a voice model list", res);
+        return;
+      }
+      set({ voiceModelReady: !!res.selected && (Array.isArray(res.downloaded) ? res.downloaded.includes(res.selected) : false) });
     } catch (err) {
       // Desktop voice engine not ready — keep the previous flag (boot default
       // false hides the mic, which is the safe side).
@@ -5543,8 +5549,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    *  返回值,行为不变。 */
   reloadCustomModels: async (): Promise<string | null> => {
     try {
-      const { models, storeInvalid } = await api.customModel.list();
-      set({ customModels: models, customModelsStoreInvalid: storeInvalid });
+      const res = await api.customModel.list();
+      /* 【2026-10-28】形状守卫，同族成因见 `reloadProviders` 的注释。
+       * 自定义模型列表为空不是错误，但**形状不对**是 —— 后者会把 undefined
+       * 写进 store，然后 `.map` 崩在渲染期。两者必须分开。 */
+      if (!Array.isArray(res?.models)) {
+        console.error("reloadCustomModels: response has no models array — keeping the previous list", res);
+        return "自定义模型列表返回的形状不对（可能版本错配）";
+      }
+      set({ customModels: res.models, customModelsStoreInvalid: res.storeInvalid });
       // A persisted composer pick whose custom config was deleted falls back
       // to auto.
       validateComposerSelection(set, get);
@@ -5723,8 +5736,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   reloadPiAvailableModels: async () => {
     try {
-      const { models } = await api.piModels.listAvailable();
-      set({ piAvailableModels: models });
+      const res = await api.piModels.listAvailable();
+      /* 【2026-10-28】解构前先验形状 —— 与 `reloadProviders` 的写入点守卫同一姿势
+       *（`e05f7b938`）。`const { models } = undefined` 抛的是 TypeError，而它在
+       * `try` 里**已经被 catch 了**，所以真机上只留一条 console 红字、列表永远是空的。
+       * 这里改成：形状不对就报出来并**保留原列表**，不把 undefined 写进 store。 */
+      if (!Array.isArray(res?.models)) {
+        console.error("reloadPiAvailableModels: response has no models array — keeping the previous list", res);
+        return;
+      }
+      set({ piAvailableModels: res.models });
       // A persisted composer pick whose pi model was deleted falls back
       // to auto.
       validateComposerSelection(set, get);
@@ -5735,9 +5756,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   reloadCodexAvailableModels: async () => {
     try {
-      const { providers } = await api.codexModels.list();
-      const models = providers.flatMap((p) =>
-        p.models.map((m) => ({
+      const res = await api.codexModels.list();
+      if (!Array.isArray(res?.providers)) {
+        console.error("reloadCodexAvailableModels: response has no providers array — keeping the previous list", res);
+        return;
+      }
+      const models = res.providers.flatMap((p) =>
+        (Array.isArray(p?.models) ? p.models : []).map((m) => ({
           id: `${p.id}/${m.id}`,
           label: m.label ?? m.id,
           hint: m.hint,
@@ -5756,7 +5781,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   // ─────────────── F 编辑器 / IDE ───────────────
   reloadLspLanguages: async () => {
     try {
-      const { languages } = await api.lsp.list();
+      const res = await api.lsp.list();
+      /* 【2026-10-28】形状守卫，同 `reloadPiAvailableModels` 那条的由来。 */
+      if (!Array.isArray(res?.languages)) {
+        console.error("reloadLspLanguages: response has no languages array — keeping the previous list", res);
+        set({ lspLoadError: "LSP 状态返回的形状不对（可能版本错配）" });
+        return;
+      }
+      const languages = res.languages;
       // 清错误与写列表放在同一次 set 里:成功即恢复,面板的「加载失败」横幅随
       // 之消失(重试路径就靠这一句)。
       set({ lspLanguages: languages, lspLoadError: null });
@@ -5790,8 +5822,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   reloadRuntimes: async () => {
     if (!isElectron) return;
     try {
-      const { runtimes } = await api.runtimes.list();
-      set({ runtimes });
+      const res = await api.runtimes.list();
+      /* 【2026-10-28】形状守卫，同族。`runtimes` 是右栏/设置里的列表，
+       * 写成 undefined 会让读取点（`.map`）崩在渲染期。 */
+      if (!Array.isArray(res?.runtimes)) {
+        console.error("reloadRuntimes: response has no runtimes array — keeping the previous list", res);
+        return;
+      }
+      set({ runtimes: res.runtimes });
     } catch (err) {
       console.error("reloadRuntimes failed:", err);
     }
@@ -6307,6 +6345,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         code: "probe_failed",
         checkedAt: Date.now(),
         error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    /* 【2026-10-28】**`try` 只挡「抛异常」，挡不住「返回了形状不对的东西」。**
+     *
+     * 这是 `e05f7b938` 修 `reloadProviders` 时同一族的剩余面：那次修的是
+     * 「`const { providers } = await …` 把 `undefined` 写进 store」；这里是
+     * 「`await` 解出一个 `undefined`，然后 `.ok` 崩」。
+     *
+     * 触发条件一样平常：旧版 handler、stub 返回 `{}`、版本错配。而这个方法
+     * 常在**事件处理器**里被 void 调用（`:4489` 的 `void get().refreshProviderHealth(...)`），
+     * 抛出去的异常不会有人接 —— 真机上表现为控制台一条红字，界面上健康状态
+     * 永远停在 `loading`。
+     *
+     * 判据放在**使用点**（写进 store 之前），与 `reloadProviders` 的写入点守卫同一姿势：
+     * 形状不对就转成一条明确的 `probe_failed`，而不是让 `undefined` 往下流。 */
+    if (health === null || typeof health !== "object" || typeof health.ok !== "boolean") {
+      console.error(
+        "refreshProviderHealth: response is not a ProviderHealthCheckResult — reporting probe_failed",
+        health,
+      );
+      health = {
+        providerId,
+        ok: false,
+        code: "probe_failed",
+        checkedAt: Date.now(),
+        error: "主进程返回的健康检查结果形状不对（可能版本错配）",
       };
     }
     if (!providerHealthRequestGate.isLatest(providerId, requestGeneration)) return;
