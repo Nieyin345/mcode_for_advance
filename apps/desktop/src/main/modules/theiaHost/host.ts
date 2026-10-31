@@ -694,6 +694,9 @@ export class TheiaHost {
     child.on("exit", (code, signal) => {
       this.exitReason = `宿主进程退出（code=${code ?? "null"} signal=${signal ?? "null"}）`;
       this.started = false;
+      this.workspaceWatcher?.dispose();
+      this.workspaceWatcher = undefined;
+      this.closeWorkspaceFs();
     });
 
     const pipe = child.stdio[4];
@@ -784,7 +787,7 @@ export class TheiaHost {
         modules.MAIN_RPC_CONTEXT.ExtHostFileSystemEventService);
       this.workspaceWatcher=new McodeWorkspaceWatcher(this.options.workspaceFs.root,events=>{
         try{void sink.$onFileEvent(events);}catch{/* A crashed child must not crash Mcode. */}
-      });
+      },relativePath=>this.options.workspaceFs!.watchState(relativePath));
       this.workspaceWatcher.start();
       const proxy=rpc.getProxy<{ $onWorkspaceFoldersChanged(event:{roots:string[]}):Promise<void>|void }>(
         modules.MAIN_RPC_CONTEXT.WORKSPACE_EXT);
@@ -1006,11 +1009,20 @@ export class TheiaHost {
     };
   }
 
+  private closeWorkspaceFs(): void {
+    try {
+      this.options.workspaceFs?.close();
+    } catch (error) {
+      this.log({ level: "warn", source: "theia-host", message: `关闭原生工作区句柄失败：${error instanceof Error ? error.message : String(error)}` });
+    }
+  }
+
   /** 释放：先礼貌地让宿主自己退（`ProcessTerminateMessage`），超时就杀。 */
   async dispose(): Promise<void> {
     this.disposed = true;
     this.activeEditorSession = null;
     this.workspaceWatcher?.dispose();this.workspaceWatcher=undefined;
+    this.closeWorkspaceFs();
     for(const handle of this.webviewHandles)this.options.onWebview?.({handle,action:"dispose"});
     this.webviewHandles.clear();
     await this.options.terminalDriver?.disposeAll();

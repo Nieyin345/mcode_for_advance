@@ -110,6 +110,14 @@ jobs:
           MCODE_ARCH: ${{ matrix.arch }}
         run: pnpm --filter @mcode/desktop rebuild:native
 
+      - name: Build and exercise native filesystem module
+        shell: bash
+        env:
+          MCODE_ARCH: ${{ matrix.arch }}
+        run: |
+          pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+          pnpm test:smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+
       # Derive the release version from the git tag (e.g. "v0.1.4" -> "0.1.4")
       # and write it into the desktop package.json. electron-builder reads the
       # version from there to name the installers + populate latest.yml, so the

@@ -1,141 +1,263 @@
-/** F032: native VS Code file: URI operations on the selected Mcode project.
- * This is a bounded project adapter, not a security sandbox: Node extensions
- * still have direct process filesystem access unless OS sandboxing is added.
- */
+/** F032: VS Code file: operations rooted in one native, handle-pinned workspace. */
 import * as path from "node:path";
-import {fileURLToPath, pathToFileURL} from "node:url";
-import * as fs from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { openNativeFsRoot, type NativeFsRoot } from "@main/lib/nativeFs.js";
 
-export interface FileResource {scheme:string;path:string;authority?:string}
-function fail(reason:string):never {throw Error("THEIA_WORKSPACE_FS: "+reason);}
-export function fileResource(value:string):FileResource {
-  const url=pathToFileURL(value);
-  return {scheme:"file",path:decodeURIComponent(url.pathname),authority:""};
+export interface FileResource { scheme: string; path: string; authority?: string }
+function fail(reason: string): never { throw Error("THEIA_WORKSPACE_FS: " + reason); }
+
+const workspaceMutationTails = new Map<string, Promise<void>>();
+async function withWorkspaceMutationLock<T>(root: string, work: () => Promise<T>): Promise<T> {
+  const key = process.platform === "win32" ? root.toLocaleLowerCase("en-US") : root;
+  const previous = workspaceMutationTails.get(key) ?? Promise.resolve();
+  let unlock!: () => void;
+  const current = new Promise<void>((resolve) => { unlock = resolve; });
+  const tail = previous.then(() => current);
+  workspaceMutationTails.set(key, tail);
+  await previous;
+  try {
+    return await work();
+  } finally {
+    unlock();
+    if (workspaceMutationTails.get(key) === tail) workspaceMutationTails.delete(key);
+  }
 }
+
+export function fileResource(value: string): FileResource {
+  const url = pathToFileURL(value);
+  return { scheme: "file", path: decodeURIComponent(url.pathname), authority: "" };
+}
+
 export class McodeWorkspaceFs {
-  private constructor(readonly root:string){}
-  static async open(root:string):Promise<McodeWorkspaceFs>{
-    if(!path.isAbsolute(root))fail("未选择有效的 Mcode 工作区");
-    const full=await fs.realpath(root);
-    if(!(await fs.stat(full)).isDirectory())fail("工作区不是目录");
-    return new McodeWorkspaceFs(full);
+  private active = 0;
+  private closing = false;
+  private closed = false;
+
+  private constructor(
+    readonly root: string,
+    private readonly native: NativeFsRoot,
+    private readonly rootDevice: string,
+    private readonly rootInode: string,
+  ) {}
+
+  static async open(root: string): Promise<McodeWorkspaceFs> {
+    if (!path.isAbsolute(root)) fail("未选择有效的 Mcode 工作区");
+    const full = await realpath(root);
+    const before = await lstat(full, { bigint: true });
+    if (!before.isDirectory() || before.isSymbolicLink()) fail("工作区不是独立普通目录");
+    const native = openNativeFsRoot(full);
+    try {
+      const info = await native.stat([]);
+      const after = await lstat(full, { bigint: true });
+      if (info.type !== "directory" || !after.isDirectory() || after.isSymbolicLink() ||
+          before.dev !== after.dev || before.ino !== after.ino ||
+          BigInt(info.device) !== after.dev || BigInt(info.inode) !== after.ino) {
+        fail("工作区根目录在打开期间已被替换");
+      }
+      return new McodeWorkspaceFs(full, native, info.device, info.inode);
+    } catch (error) {
+      native.close();
+      throw error;
+    }
   }
-  private within(file:string):boolean {
-    const relative=path.relative(this.root,file);
-    return relative===""||(!relative.startsWith(".."+path.sep)&&relative!==".."&&!path.isAbsolute(relative));
+
+  private async assertRootIdentity(): Promise<void> {
+    const current = await lstat(this.root, { bigint: true }).catch(() => null);
+    if (!current || !current.isDirectory() || current.isSymbolicLink() ||
+        BigInt(this.rootDevice) !== current.dev || BigInt(this.rootInode) !== current.ino) {
+      fail("工作区根目录在打开后已被移除或替换");
+    }
   }
-  /** Check EVERY existing component, rather than only the final file.
-   * This rejects symlink escapes; final writes still are not a sandbox/TOCTOU proof.
-   */
-  async resolve(uri:FileResource,create=false):Promise<string>{
-    if(!uri||uri.scheme!=="file"||typeof uri.path!=="string"||
-      (uri.authority&&uri.authority!=="localhost"))fail("仅支持本机 file URI");
-    const u="file://"+(uri.authority??"")+encodeURI(uri.path);
-    let absolute:string;
-    try{absolute=path.resolve(fileURLToPath(new URL(u)));}
-    catch{fail("非法文件 URI");}
-    if(!this.within(absolute))fail("文件不属于当前 Mcode 工作区");
-    const rel=path.relative(this.root,absolute);
-    let cursor=this.root;
-    for(const component of rel.split(path.sep).filter(Boolean)){
-      cursor=path.join(cursor,component);
-      try{
-        const st=await fs.lstat(cursor);
-        if(st.isSymbolicLink())fail("不允许访问符号链接路径");
-      }catch(error){
-        if(create&&(error as NodeJS.ErrnoException).code==="ENOENT")continue;
-        throw error;
+
+  private async run<T>(work: () => Promise<T>): Promise<T> {
+    if (this.closing || this.closed) fail("工作区文件句柄已关闭");
+    this.active++;
+    try {
+      await this.assertRootIdentity();
+      return await work();
+    } finally {
+      this.active--;
+      if (this.closing && this.active === 0 && !this.closed) {
+        this.native.close();
+        this.closed = true;
       }
     }
-    return absolute;
   }
-  async stat(uri:FileResource){
-    const st=await fs.stat(await this.resolve(uri));
-    return {type:st.isDirectory()?2:st.isFile()?1:0,ctime:st.birthtimeMs,mtime:st.mtimeMs,size:st.size};
-  }
-  async readdir(uri:FileResource):Promise<Array<[string,number]>>{
-    const dir=await this.resolve(uri);
-    const items=await fs.readdir(dir,{withFileTypes:true});
-    if(items.length>5000)fail("目录文件数超过安全上限");
-    return items.map(v=>[v.name,v.isDirectory()?2:v.isFile()?1:0]);
-  }
-  async readFile(uri:FileResource):Promise<Uint8Array>{
-    const filename=await this.resolve(uri),stat=await fs.stat(filename);
-    if(!stat.isFile()||stat.size>8*1024*1024)fail("只支持读取 8 MiB 以内的文件");
-    return new Uint8Array(await fs.readFile(filename));
-  }
-  async writeFile(uri:FileResource,content:Uint8Array):Promise<void>{
-    if(!(content instanceof Uint8Array)||content.length>8*1024*1024)fail("文件写入超过 8 MiB");
-    const filename=await this.resolve(uri,true);
-    await fs.writeFile(filename,content,{flag:"w"});
-  }
-  async mkdir(uri:FileResource):Promise<void>{await fs.mkdir(await this.resolve(uri,true),{recursive:true});}
-  async rename(from:FileResource,to:FileResource,overwrite=false):Promise<void>{
-    const src=await this.resolve(from),dst=await this.resolve(to,true);
-    if(src===this.root||dst===this.root)fail("不可修改工作区根");
-    if(!overwrite){
-      try{await fs.lstat(dst);fail("目标已存在");}
-      catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
+
+  close(): void {
+    if (this.closing || this.closed) return;
+    this.closing = true;
+    if (this.active === 0) {
+      this.native.close();
+      this.closed = true;
     }
-    await fs.rename(src,dst);
   }
-  async copy(from:FileResource,to:FileResource,overwrite=false):Promise<void>{
-    const src=await this.resolve(from),dst=await this.resolve(to,true);
-    if(src===this.root||dst===this.root)fail("不可复制覆盖工作区根");
-    if((await fs.stat(src)).size>8*1024*1024)fail("复制文件超过 8 MiB");
-    await fs.copyFile(src,dst,overwrite?0:1);
+
+  private segments(uri: FileResource): string[] {
+    if (!uri || uri.scheme !== "file" || typeof uri.path !== "string" ||
+        (uri.authority && uri.authority !== "localhost")) {
+      fail("仅支持本机 file URI");
+    }
+    // Theia/vscode-uri exposes a decoded URI path. Encode each path component
+    // independently so literal '%' sequences, '#', '?', spaces and Unicode are
+    // preserved as filename bytes instead of being interpreted as URL syntax.
+    const pathParts = uri.path.split("/");
+    const encoded = pathParts.map((part, index) =>
+      index === 1 && uri.path.startsWith("/") && /^[A-Za-z]:$/.test(part)
+        ? part
+        : encodeURIComponent(part),
+    ).join("/");
+    let absolute: string;
+    try {
+      absolute = path.resolve(fileURLToPath(new URL("file://" + (uri.authority ?? "") + encoded)));
+    } catch {
+      fail("非法文件 URI");
+    }
+    const relative = path.relative(this.root, absolute);
+    if (relative === "") return [];
+    if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(".." + path.sep)) {
+      fail("文件不属于当前 Mcode 工作区");
+    }
+    const segments = relative.split(path.sep);
+    if (segments.some((part) => !part || part === "." || part === "..")) {
+      fail("工作区路径包含非法组件");
+    }
+    return segments;
   }
-  /** Bounded async workspace file search for VS Code workspace.findFiles.
-   * Supports normal VS Code glob wildcards (*, ?, **); ignores heavy metadata dirs
-   * and caps both traversed entries and returned matches to avoid UI stalls.
-   */
-  async findFiles(include:string,exclude?:string,maxResults=200,folder?:FileResource):Promise<FileResource[]>{
-    if(!include||include.length>300||exclude&&exclude.length>300)fail("搜索规则无效");
-    const toPattern=(glob:string):RegExp=>{
-      const normal=glob.replace(/\\\\/g,"/");
-      let out="^";
-      for(let i=0;i<normal.length;i++){
-        const c=normal[i];
-        if(c==="*"&&normal[i+1]==="*"){
-          i++;
-          if(normal[i+1]==="/"){i++;out+="(?:.*/)?";}
-          else out+=".*";
-        }else if(c==="*")out+="[^/]*";
-        else if(c==="?")out+="[^/]";
-        else out+=c.replace(/[.*+?^$${}()|[\]\\]/g,"\\$&");
-      }
-      return new RegExp(out+"$","i");
+
+  /** Resolve is retained for Theia's watcher registration only; actual I/O never uses this path. */
+  async resolve(uri: FileResource): Promise<string> {
+    const segments = this.segments(uri);
+    await this.run(() => this.native.stat(segments));
+    return path.join(this.root, ...segments);
+  }
+
+  async watchState(relativePath: string): Promise<"file" | "missing" | "ignore"> {
+    const segments = relativePath.replace(/\\/g, "/").split("/").filter(Boolean);
+    if (!segments.length || segments.some((part) => part === "." || part === "..")) return "ignore";
+    try {
+      return (await this.run(() => this.native.stat(segments))).type === "file" ? "file" : "ignore";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "ignore";
+    }
+  }
+
+  async stat(uri: FileResource) {
+    const info = await this.run(() => this.native.stat(this.segments(uri)));
+    return {
+      type: info.type === "directory" ? 2 : info.type === "file" ? 1 : 0,
+      ctime: info.birthtimeMs,
+      mtime: info.mtimeMs,
+      size: info.size,
     };
-    const accepted=toPattern(include),rejected=exclude?toPattern(exclude):null;
-    const limit=Math.min(500,Math.max(1,Math.floor(maxResults)));
-    const results:FileResource[]=[];
-    const queue=[folder?await this.resolve(folder):this.root];let visited=0;
-    while(queue.length&&results.length<limit){
-      const dir=queue.shift()!;
-      const entries=await fs.readdir(dir,{withFileTypes:true});
-      for(const item of entries){
-        if(++visited>10000)fail("工作区搜索超过安全遍历上限");
-        if(item.isSymbolicLink())continue;
-        const absolute=path.join(dir,item.name);
-        const relative=path.relative(this.root,absolute).split(path.sep).join("/");
-        if(item.isDirectory()){
-          if(![".git","node_modules",".tmp",".cache"].includes(item.name))queue.push(absolute);
-          continue;
-        }
-        if(item.isFile()&&accepted.test(relative)&&!rejected?.test(relative)){
-          results.push(fileResource(absolute));
-          if(results.length>=limit)break;
+  }
+
+  async readdir(uri: FileResource): Promise<Array<[string, number]>> {
+    const entries = await this.run(() => this.native.readdir(this.segments(uri), 5000));
+    return entries.map((entry) => [entry.name, entry.type]);
+  }
+
+  async readFile(uri: FileResource): Promise<Uint8Array> {
+    return this.run(() => this.native.readFile(this.segments(uri), 8 * 1024 * 1024));
+  }
+
+  async writeFile(uri: FileResource, content: Uint8Array): Promise<void> {
+    if (!(content instanceof Uint8Array) || content.byteLength > 8 * 1024 * 1024) {
+      fail("文件写入超过 8 MiB");
+    }
+    return withWorkspaceMutationLock(this.root, () =>
+      this.run(() => this.native.writeFile(this.segments(uri), Buffer.from(content), false)));
+  }
+
+  async mkdir(uri: FileResource): Promise<void> {
+    return withWorkspaceMutationLock(this.root, () => this.run(async () => {
+      const segments = this.segments(uri);
+      for (let i = 1; i <= segments.length; i++) {
+        await this.native.mkdir(segments.slice(0, i));
+      }
+    }));
+  }
+
+  async rename(from: FileResource, to: FileResource, overwrite = false): Promise<void> {
+    const source = this.segments(from);
+    const destination = this.segments(to);
+    if (source.length === destination.length && source.every((part, index) => part === destination[index])) {
+      fail("不可重命名为同一路径");
+    }
+    return withWorkspaceMutationLock(this.root, () =>
+      this.run(() => this.native.rename(source, destination, overwrite)));
+  }
+
+  async copy(from: FileResource, to: FileResource, overwrite = false): Promise<void> {
+    const source = this.segments(from);
+    const destination = this.segments(to);
+    if (source.length === destination.length && source.every((part, index) => part === destination[index])) {
+      fail("不可复制文件到自身");
+    }
+    return withWorkspaceMutationLock(this.root, () =>
+      this.run(() => this.native.copy(source, destination, overwrite)));
+  }
+
+  async delete(uri: FileResource, recursive = false): Promise<void> {
+    if (recursive) fail("扩展递归删除暂不支持，请使用 Mcode 原生文件管理器");
+    return withWorkspaceMutationLock(this.root, () =>
+      this.run(() => this.native.remove(this.segments(uri))));
+  }
+
+  /** Bounded VS Code glob search. Every directory and file is reached through the pinned root handle. */
+  async findFiles(include: string, exclude?: string, maxResults = 200,
+                  folder?: FileResource): Promise<FileResource[]> {
+    if (typeof include !== "string" || !include || include.length > 300 ||
+        (exclude !== undefined && (typeof exclude !== "string" || exclude.length > 300))) {
+      fail("搜索规则无效");
+    }
+    const toPattern = (glob: string): RegExp => {
+      const normal = glob.replace(/\\/g, "/");
+      let out = "^";
+      for (let i = 0; i < normal.length; i++) {
+        const c = normal[i];
+        if (c === "*" && normal[i + 1] === "*") {
+          i++;
+          if (normal[i + 1] === "/") { i++; out += "(?:.*/)?"; }
+          else out += ".*";
+        } else if (c === "*") out += "[^/]*";
+        else if (c === "?") out += "[^/]";
+        else out += /[.*+?^$()|[\]\\]/.test(c) ? "\\" + c : c;
+      }
+      return new RegExp(out + "$", "i");
+    };
+    const accepted = toPattern(include);
+    const rejected = exclude ? toPattern(exclude) : null;
+    const requestedLimit = typeof maxResults === "number" && Number.isFinite(maxResults)
+      ? Math.floor(maxResults) : 200;
+    const limit = Math.min(500, Math.max(1, requestedLimit));
+    const base = folder ? this.segments(folder) : [];
+    const queue: string[][] = [base];
+    return this.run(async () => {
+      const results: FileResource[] = [];
+      let visited = 0;
+      let queueCursor = 0;
+
+      // An index cursor avoids repeated O(n) Array.shift() work on wide workspaces.
+      while (queueCursor < queue.length && results.length < limit) {
+        const directory = queue[queueCursor++]!;
+        const entries = await this.native.readdir(directory, 5000);
+        for (const entry of entries) {
+          if (++visited > 10000) fail("工作区搜索超过安全遍历上限");
+          const child = [...directory, entry.name];
+          const relative = child.join("/");
+          if (entry.type === 2) {
+            if (![".git", "node_modules", ".tmp", ".cache"].includes(entry.name)) queue.push(child);
+            continue;
+          }
+          if (entry.type === 1 && accepted.test(relative) && !rejected?.test(relative)) {
+            results.push(fileResource(path.join(this.root, ...child)));
+            if (results.length >= limit) break;
+          }
         }
       }
-    }
-    return results;
-  }
-  async delete(uri:FileResource,recursive=false):Promise<void>{
-    const file=await this.resolve(uri);
-    if(file===this.root)fail("不可删除工作区根");
-    if(recursive)fail("扩展递归删除暂不支持，请使用 Mcode 原生文件管理器");
-    const stat=await fs.lstat(file);
-    if(stat.isDirectory())await fs.rmdir(file);
-    else await fs.unlink(file);
+      return results;
+    });
   }
 }

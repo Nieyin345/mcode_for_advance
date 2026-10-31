@@ -17,6 +17,7 @@ pnpm typecheck                                 # 双包类型检查
 - 全量动态发现目录；空集合、未知名称、缺少入口、启动错误、子进程非零状态、超时都令命令失败。每套默认 240 秒；T52 为包含大量真实触发器和子进程的 `automation-smoke` 单独设置有界 600 秒，避免 Windows 上 240 秒误杀。普通失败继续收集其他套件结果；中断停止剩余套件。超时终止该测试的进程组（Windows 用 `taskkill /T`），不做系统范围的 Node/Electron 清理。
 - 日志保留在 `apps/desktop/.tmp/smoke-runs/<唯一运行目录>/`，并发运行不覆盖彼此日志。Turbo 的 `test` 不缓存，不能把历史绿灯当成新执行结果。
 - GitHub CI：PR 运行双包 typecheck 与关键回归；master push 另跑全量；手动触发可选全量。保留原有 `Typecheck` job 名以兼容 required-check 规则。CI 配置不是已在 GitHub 执行过的证明。
+- B-02/B-05 原生文件系统另有独立 `native-fs-linux`、`native-fs-windows` jobs，分别在 Ubuntu/Windows 2022 构建 Electron N-API addon 并执行三套安全 smoke；macOS PR matrix 在 arm64 (`macos-latest`) 与 x64 (`macos-15-intel`) 上执行相同构建和回归。原生门禁不依赖 Typecheck 或 broad Windows smoke，避免无关失败跳过安全验证。
 - `pnpm lint` 仍无包级实现，暂不能作为有效 lint 门禁。
 
 ## 本轮重点回归

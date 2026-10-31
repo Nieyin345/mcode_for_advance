@@ -21,6 +21,9 @@ export const CRITICAL_SUITES = Object.freeze([
   // 补的是"用户数据安全 + 三家引擎关键链路 + 外部端点",都是真实行为断言、跑得快,
   // 适合进 PR 门禁(不必把全部几十套都塞进来 —— 那只是让 PR 变慢,不是变稳)。
   "file-snapshot-smoke",        // 快照/回滚:符号链接越界、冲突检测、大文件、并发(MC-001/002/003/005/006/008)
+  "native-fs-smoke",             // B-02/B-05: handle-relative filesystem primitives and reparse/symlink rejection
+  "workspace-copy-boundary-smoke", // B-05: Theia workspace operations use the pinned native root
+  "markdown-preview-security-smoke", // B-02: Markdown/image reads stay inside the pinned library root
   "engine-regressions-smoke",   // 三引擎回归:Pi/Codex 取消/审批/库只读/用量与 turn 收尾
   "claude-ipc-smoke",           // Claude 会话/turn/审批/fork/中断的 IPC 全链
   "plugins-ipc-smoke",          // 插件安装/卸载/路径围栏/运行中拒绝卸载

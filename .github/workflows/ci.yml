@@ -65,9 +65,119 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # The smoke suites are authored and maintained on Windows (hard-coded drive
-  # paths, cmd.exe / Windows services / case-insensitive FS assertions, the
-  # owned-Chrome DevTools handshake). The app ships for Windows and macOS only,
+  # Keep the native filesystem security gate independent from application
+  # typecheck and the broad Windows-only smoke suite. Unrelated TypeScript or
+  # platform-specific smoke failures must not suppress POSIX validation.
+  native-fs-linux:
+    name: Native FS (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build POSIX native filesystem addon
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem security regressions
+        run: pnpm test:smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Upload native filesystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-smoke-linux
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Keep the Windows native filesystem gate independent from the broad
+  # application smoke suite, whose unrelated failures must not hide this result.
+  native-fs-windows:
+    name: Native FS (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      MSYS: winsymlinks:nativestrict
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Setup MSVC dev cmd
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build Windows native filesystem addon
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem security regressions
+        run: pnpm test:smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Upload native filesystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-smoke-windows
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Native B-02/B-05 security code is also shipped on macOS. Catch macOS
+  # compilation and filesystem-semantic regressions on PRs, not only tags.
+  native-fs-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    name: Native FS (macOS ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build native filesystem addon
+        env:
+          MCODE_ARCH: ${{ matrix.arch }}
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem security regressions
+        run: pnpm test:smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Upload native filesystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-smoke-macos-${{ matrix.arch }}
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The broad application smoke suites are authored and maintained on Windows
+  # (hard-coded drive paths, cmd.exe / Windows services / case-insensitive FS
+  # assertions, the owned-Chrome DevTools handshake). The app ships for Windows and macOS only,
   # so the broad gates run on the same Windows image the release job packages on.
   # On ubuntu 38 of 173 suites failed purely on platform assumptions (2026-09-30).
   smoke-windows:
