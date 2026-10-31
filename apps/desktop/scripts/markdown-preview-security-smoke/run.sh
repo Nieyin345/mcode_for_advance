@@ -1,0 +1,1 @@
+node scripts/markdown-preview-security-smoke/run.cjs

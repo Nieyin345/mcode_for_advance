@@ -42,14 +42,40 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: pnpm typecheck
+        # GenOffice is intentionally gitignored. CI typechecks the no-vendor
+        # build surface and all independent smoke fixtures; local pnpm typecheck
+        # also checks vendor-coupled suites when the snapshot is installed.
+        run: |
+          pnpm --filter @mcode/contracts typecheck
+          pnpm --filter @mcode/desktop exec tsc --noEmit -p tsconfig.ci.json
 
       - name: Setup virtual display for isolated Electron host
         run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      # The critical set includes native-FS, Markdown preview and document-tool
+      # fixtures. Provision the same runtime dependencies used by the focused
+      # platform gates instead of letting environment omissions masquerade as
+      # product regressions.
+      - name: Build POSIX native filesystem addon
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+
+      - name: Python packages for document fixtures
+        run: python -m pip install --disable-pip-version-check setuptools openpyxl pypdf python-pptx
+
+      - name: Setup pandoc
+        uses: r-lib/actions/setup-pandoc@v2
+
+      - name: Setup TinyTeX (xelatex)
+        uses: r-lib/actions/setup-tinytex@v2
 
       - name: Critical regression gate
         run: pnpm test
@@ -65,9 +91,125 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # The smoke suites are authored and maintained on Windows (hard-coded drive
-  # paths, cmd.exe / Windows services / case-insensitive FS assertions, the
-  # owned-Chrome DevTools handshake). The app ships for Windows and macOS only,
+  # Native-FS jobs compile against Electron headers and run Node-based smokes;
+  # none launches the Electron runtime. Skip the platform Electron binary
+  # download here (node-gyp still fetches the matching headers separately).
+  # Keep these gates independent from application typecheck and broad smokes.
+  native-fs-linux:
+    name: Native FS (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build POSIX native filesystem addon
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem security and packaging regressions
+        run: pnpm test:smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Upload native filesystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-smoke-linux
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Keep the Windows native filesystem gate independent from the broad
+  # application smoke suite, whose unrelated failures must not hide this result.
+  native-fs-windows:
+    name: Native FS (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      MSYS: winsymlinks:nativestrict
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Setup MSVC dev cmd
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build Windows native filesystem addon
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem security and packaging regressions
+        run: pnpm test:smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Upload native filesystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-smoke-windows
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Native B-02/B-05 security code is also shipped on macOS. Catch macOS
+  # compilation and filesystem-semantic regressions on PRs, not only tags.
+  native-fs-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    name: Native FS (macOS ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build native filesystem addon
+        env:
+          MCODE_ARCH: ${{ matrix.arch }}
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem security and packaging regressions
+        run: pnpm test:smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Upload native filesystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-smoke-macos-${{ matrix.arch }}
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The broad application smoke suites are authored and maintained on Windows
+  # (hard-coded drive paths, cmd.exe / Windows services / case-insensitive FS
+  # assertions, the owned-Chrome DevTools handshake). The app ships for Windows and macOS only,
   # so the broad gates run on the same Windows image the release job packages on.
   # On ubuntu 38 of 173 suites failed purely on platform assumptions (2026-09-30).
   smoke-windows:

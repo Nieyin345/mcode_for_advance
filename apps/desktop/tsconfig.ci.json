@@ -1,0 +1,27 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@contracts/*": ["../../packages/contracts/src/*"],
+      "@main/*": ["src/main/*"],
+      "@renderer/*": ["src/renderer/*"],
+      "@main/document/genofficeViewAiVendor.js": ["src/main/document/genofficeViewAiVendorStub.ts"],
+      "@main/document/genofficeNativeVendor.js": ["src/main/document/genofficeNativeVendorStub.ts"]
+    }
+  },
+  // GenOffice is an intentionally gitignored upstream snapshot. These suites
+  // import its source files directly and are typechecked by the full local
+  // tsconfig when the snapshot is present; PR CI checks the no-vendor build
+  // surface and all other smoke fixtures instead.
+  "exclude": [
+    "src/**/*.conflict-*.ts",
+    "scripts/document-view-host-smoke/**/*",
+    "scripts/genoffice-native-view-smoke/**/*",
+    "scripts/genoffice-pane-fence-smoke/**/*",
+    "scripts/o2-conflict-u1-smoke/**/*",
+    "scripts/t0-genoffice-native-tool-roundtrip-smoke/**/*",
+    "scripts/t83-mcode-editor-tool-bridge-smoke/**/*",
+    "scripts/t84-slides-ai-boundary-smoke/**/*",
+    "scripts/t98-docs-tool-result-ack-smoke/**/*"
+  ]
+}
