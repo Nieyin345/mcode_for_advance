@@ -277,25 +277,34 @@ async function rejects(name, action, code) {
       check("readdir preserves valid Unicode UTF-8 filenames",
         (await root.readdir([], 5000)).some((entry) => entry.name === unicodeName));
       fs.unlinkSync(path.join(workspace, unicodeName));
-      const invalidUtf8Sequences = [
-        [0xFF],                 // illegal leading byte
-        [0xC0, 0xAF],           // overlong two-byte encoding
-        [0xE0, 0x80, 0xAF],     // overlong three-byte encoding
-        [0xED, 0xA0, 0x80],     // UTF-16 surrogate code point
-        [0xF4, 0x90, 0x80, 0x80], // above U+10FFFF
-        [0xE2, 0x82],           // truncated sequence
-      ];
-      const invalidUtf8Paths = invalidUtf8Sequences.map((bytes, index) => Buffer.concat([
-        Buffer.from(workspace + path.sep + `invalid-${index}-`), Buffer.from(bytes),
-      ]));
-      try {
-        for (const invalidPath of invalidUtf8Paths) fs.writeFileSync(invalidPath, "non-utf8");
-        check("readdir hides POSIX filenames with malformed UTF-8 sequences",
-          !(await root.readdir([], 5000)).some((entry) => entry.name.startsWith("invalid-")));
-      } finally {
-        for (const invalidPath of invalidUtf8Paths) {
-          try { fs.unlinkSync(invalidPath); } catch { /* cleanup must not mask the assertion */ }
+      if (process.platform === "linux") {
+        // Linux filesystems permit arbitrary filename bytes, so exercise the
+        // native readdir UTF-8 filter with malformed byte sequences here.
+        // macOS pathname APIs reject these byte strings with EILSEQ before
+        // they reach the filesystem; that is an OS constraint, not an addon
+        // regression, so this byte-level fixture is Linux-only.
+        const invalidUtf8Sequences = [
+          [0xFF],                 // illegal leading byte
+          [0xC0, 0xAF],           // overlong two-byte encoding
+          [0xE0, 0x80, 0xAF],     // overlong three-byte encoding
+          [0xED, 0xA0, 0x80],     // UTF-16 surrogate code point
+          [0xF4, 0x90, 0x80, 0x80], // above U+10FFFF
+          [0xE2, 0x82],           // truncated sequence
+        ];
+        const invalidUtf8Paths = invalidUtf8Sequences.map((bytes, index) => Buffer.concat([
+          Buffer.from(workspace + path.sep + `invalid-${index}-`), Buffer.from(bytes),
+        ]));
+        try {
+          for (const invalidPath of invalidUtf8Paths) fs.writeFileSync(invalidPath, "non-utf8");
+          check("readdir hides POSIX filenames with malformed UTF-8 sequences",
+            !(await root.readdir([], 5000)).some((entry) => entry.name.startsWith("invalid-")));
+        } finally {
+          for (const invalidPath of invalidUtf8Paths) {
+            try { fs.unlinkSync(invalidPath); } catch { /* cleanup must not mask the assertion */ }
+          }
         }
+      } else if (process.platform === "darwin") {
+        skipped.push("macOS rejects malformed UTF-8 path bytes with EILSEQ before filesystem lookup");
       }
     }
 
