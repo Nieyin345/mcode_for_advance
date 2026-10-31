@@ -61,12 +61,18 @@ function runNodeGyp() {
     });
   }
 
-  const programFiles = env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
-  const candidates = [
-    path.join(programFiles, "Microsoft Visual Studio", "2022", "BuildTools", "Common7", "Tools", "VsDevCmd.bat"),
-    path.join(programFiles, "Microsoft Visual Studio", "2022", "Community", "Common7", "Tools", "VsDevCmd.bat"),
-    path.join(programFiles, "Microsoft Visual Studio", "2022", "Professional", "Common7", "Tools", "VsDevCmd.bat"),
-  ];
+  // VS 2022 installs under either Program Files root depending on the
+  // installer channel and machine image. Search both, plus Enterprise.
+  const installRoots = [...new Set([
+    env.ProgramFiles,
+    env["ProgramFiles(x86)"],
+    "C:\\Program Files",
+    "C:\\Program Files (x86)",
+  ].filter(Boolean))];
+  const editions = ["BuildTools", "Community", "Professional", "Enterprise"];
+  const candidates = installRoots.flatMap((root) => editions.map((edition) =>
+    path.join(root, "Microsoft Visual Studio", "2022", edition, "Common7", "Tools", "VsDevCmd.bat"),
+  ));
   const devCmd = candidates.find((candidate) => fs.existsSync(candidate));
   if (!devCmd) {
     return spawnSync(process.execPath, [nodeGypCli, ...args], {
@@ -89,5 +95,9 @@ if (result.error) {
   process.exit(1);
 }
 if (result.status !== 0) process.exit(result.status ?? 1);
+if (!fs.existsSync(output) || !fs.lstatSync(output).isFile()) {
+  console.error("[native-fs] node-gyp exited successfully but did not produce the addon: " + output);
+  process.exit(1);
+}
 fs.mkdirSync(path.dirname(metadata), { recursive: true });
 fs.writeFileSync(metadata, JSON.stringify(expected, null, 2) + "\n", "utf8");

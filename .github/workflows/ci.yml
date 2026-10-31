@@ -111,8 +111,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build POSIX native filesystem addon
         run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
-      - name: Native filesystem security regressions
-        run: pnpm test:smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Native filesystem security and packaging regressions
+        run: pnpm test:smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
       - name: Upload native filesystem logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -148,8 +148,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build Windows native filesystem addon
         run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
-      - name: Native filesystem security regressions
-        run: pnpm test:smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Native filesystem security and packaging regressions
+        run: pnpm test:smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
       - name: Upload native filesystem logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -189,8 +189,8 @@ jobs:
         env:
           MCODE_ARCH: ${{ matrix.arch }}
         run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
-      - name: Native filesystem security regressions
-        run: pnpm test:smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Native filesystem security and packaging regressions
+        run: pnpm test:smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
       - name: Upload native filesystem logs
         if: always()
         uses: actions/upload-artifact@v4

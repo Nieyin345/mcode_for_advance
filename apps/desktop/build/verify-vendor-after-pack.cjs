@@ -7,7 +7,7 @@
  *
  *   1. `restorePackedNodeModules` —— 产物里 `__mcode_node_modules` → `node_modules`
  *      （`extraResources` 不能复制根本 `node_modules`，见 shim 文件头）；
- *   2. GenOffice / Node-RED 两道验证 —— 它们要的是 `node_modules` 这个名字；
+ *   2. GenOffice / Node-RED / native-FS / Theia 验证 —— 它们检查安装包里的真实资源；
  *   3. `restoreSourceNodeModules` —— **无论第 2 步成功与否**都要把源目录改回去，
  *      否则 `.tmp/node-red-release` 会停在一棵被改过名的树上，让 t19/t88 那些
  *      直接读它的套件看到缺 `node_modules` 的假象。
@@ -17,6 +17,7 @@
 const verifyGenoffice = require("./verify-genoffice-editors-after-pack.cjs");
 const verifyNodeRed = require("./verify-node-red-after-pack.cjs");
 const verifyTheia = require("./verify-theia-after-pack.cjs");
+const verifyNativeFs = require("./verify-native-fs-after-pack.cjs");
 const { restorePackedNodeModules, restoreSourceNodeModules } = require("./node-red-nodemodules-shim.cjs");
 
 module.exports = async function verifyVendorAfterPack(context) {
@@ -24,6 +25,7 @@ module.exports = async function verifyVendorAfterPack(context) {
   try {
     await verifyGenoffice(context);
     await verifyNodeRed(context);
+    await verifyNativeFs(context);
     // 【EXT-07】Theia 是扩展系统的唯一运行时。它不在产物里 = 所有扩展装不上，
     // 而那个症状在开发态永远复现不了（开发态读 vendor/theia）。
     return await verifyTheia(context);
