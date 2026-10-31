@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, linkSync, symlinkSync, existsSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, linkSync, symlinkSync, existsSync, renameSync, rmSync, realpathSync } from "node:fs";
 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -20,6 +20,13 @@ try {
  writeFileSync(specialUriFile,"URI_PATH_BYTES");
  check("file URI round-trip preserves literal percent, hash, spaces and Unicode",
    (await ws.readFile(fileResource(specialUriFile))).toString()==="URI_PATH_BYTES");
+ if(process.platform==="win32"){
+   const canonicalRoot=realpathSync(root);
+   if(canonicalRoot!==root){
+     check("file URI from the canonical long-path alias maps to the same pinned workspace",
+       (await ws.readFile(fileResource(join(canonicalRoot,"literal%20# name-量子.txt")))).toString()==="URI_PATH_BYTES");
+   }
+ }
  const specialUriWrite=join(root,"created%2F-not-a-slash.txt");
  await ws.writeFile(fileResource(specialUriWrite),Buffer.from("URI_WRITE_BYTES"));
  check("file URI writes preserve encoded-looking literal percent sequences",

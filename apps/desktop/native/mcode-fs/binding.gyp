@@ -12,7 +12,8 @@
         "<!(node -p \"require('node-addon-api').gyp\")"
       ],
       "defines": [
-        "NAPI_VERSION=8"
+        "NAPI_VERSION=8",
+        "NAPI_CPP_EXCEPTIONS"
       ],
       "msvs_settings": {
         "VCCLCompilerTool": {
@@ -33,7 +34,11 @@
           {
             "sources": [ "src/fs_posix.cc" ],
             "defines": [ "_DARWIN_C_SOURCE" ],
-            "cflags_cc": [ "-std=c++17" ]
+            "cflags_cc!": [ "-fno-exceptions" ],
+            "cflags_cc": [ "-std=c++17", "-fexceptions" ],
+            "xcode_settings": {
+              "GCC_ENABLE_CPP_EXCEPTIONS": "YES"
+            }
           }
         ],
         [
@@ -41,7 +46,8 @@
           {
             "sources": [ "src/fs_posix.cc" ],
             "defines": [ "_GNU_SOURCE" ],
-            "cflags_cc": [ "-std=c++17" ]
+            "cflags_cc!": [ "-fno-exceptions" ],
+            "cflags_cc": [ "-std=c++17", "-fexceptions" ]
           }
         ]
       ]

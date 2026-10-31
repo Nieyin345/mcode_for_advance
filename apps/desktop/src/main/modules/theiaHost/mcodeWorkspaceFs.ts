@@ -1,5 +1,6 @@
 /** F032: VS Code file: operations rooted in one native, handle-pinned workspace. */
 import * as path from "node:path";
+import { realpathSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { openNativeFsRoot, type NativeFsRoot } from "@main/lib/nativeFs.js";
@@ -36,6 +37,7 @@ export class McodeWorkspaceFs {
 
   private constructor(
     readonly root: string,
+    private readonly canonicalRoot: string,
     private readonly native: NativeFsRoot,
     private readonly rootDevice: string,
     private readonly rootInode: string,
@@ -43,19 +45,26 @@ export class McodeWorkspaceFs {
 
   static async open(root: string): Promise<McodeWorkspaceFs> {
     if (!path.isAbsolute(root)) fail("未选择有效的 Mcode 工作区");
-    const full = await realpath(root);
-    const before = await lstat(full, { bigint: true });
+    // Keep the spelling supplied by the workspace/URI layer for lexical
+    // containment. On Windows realpath() expands 8.3 paths (RUNNER~1 -> the
+    // long user profile name); comparing a file URI made from the original
+    // path against that canonical spelling incorrectly classifies it as
+    // outside the workspace. The native root itself is still opened by its
+    // canonical path and pinned to the same device/inode.
+    const rootPath = path.resolve(root);
+    const before = await lstat(rootPath, { bigint: true });
     if (!before.isDirectory() || before.isSymbolicLink()) fail("工作区不是独立普通目录");
-    const native = openNativeFsRoot(full);
+    const canonicalRoot = await realpath(rootPath);
+    const native = openNativeFsRoot(canonicalRoot);
     try {
       const info = await native.stat([]);
-      const after = await lstat(full, { bigint: true });
+      const after = await lstat(rootPath, { bigint: true });
       if (info.type !== "directory" || !after.isDirectory() || after.isSymbolicLink() ||
           before.dev !== after.dev || before.ino !== after.ino ||
           BigInt(info.device) !== after.dev || BigInt(info.inode) !== after.ino) {
         fail("工作区根目录在打开期间已被替换");
       }
-      return new McodeWorkspaceFs(full, native, info.device, info.inode);
+      return new McodeWorkspaceFs(rootPath, canonicalRoot, native, info.device, info.inode);
     } catch (error) {
       native.close();
       throw error;
@@ -94,6 +103,40 @@ export class McodeWorkspaceFs {
     }
   }
 
+  private relativePath(absolute: string): string {
+    const isContained = (relative: string): boolean =>
+      relative === "" ||
+      (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
+
+    const relative = path.relative(this.root, absolute);
+    if (isContained(relative)) return relative;
+
+    if (process.platform === "win32") {
+      const rootParts = path.parse(this.root);
+      const targetParts = path.parse(absolute);
+      if (rootParts.root.toLocaleLowerCase("en-US") === targetParts.root.toLocaleLowerCase("en-US")) {
+        const rootComponents = path.relative(rootParts.root, this.root).split(path.sep).filter(Boolean);
+        const targetComponents = path.relative(targetParts.root, absolute).split(path.sep).filter(Boolean);
+        if (targetComponents.length >= rootComponents.length) {
+          // Resolve only the path prefix that names the workspace root. Do not
+          // realpath child components: doing so would follow an in-workspace
+          // junction before the native handle-relative layer can reject it.
+          const candidateRoot = path.join(targetParts.root, ...targetComponents.slice(0, rootComponents.length));
+          try {
+            const canonicalCandidate = realpathSync.native(candidateRoot);
+            if (path.relative(this.canonicalRoot, canonicalCandidate) === "") {
+              return targetComponents.slice(rootComponents.length).join(path.sep);
+            }
+          } catch {
+            // An unresolvable root prefix cannot be authorized.
+          }
+        }
+      }
+    }
+
+    fail("文件不属于当前 Mcode 工作区");
+  }
+
   private segments(uri: FileResource): string[] {
     if (!uri || uri.scheme !== "file" || typeof uri.path !== "string" ||
         (uri.authority && uri.authority !== "localhost")) {
@@ -114,11 +157,8 @@ export class McodeWorkspaceFs {
     } catch {
       fail("非法文件 URI");
     }
-    const relative = path.relative(this.root, absolute);
+    const relative = this.relativePath(absolute);
     if (relative === "") return [];
-    if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(".." + path.sep)) {
-      fail("文件不属于当前 Mcode 工作区");
-    }
     const segments = relative.split(path.sep);
     if (segments.some((part) => !part || part === "." || part === "..")) {
       fail("工作区路径包含非法组件");
@@ -166,12 +206,12 @@ export class McodeWorkspaceFs {
     if (!(content instanceof Uint8Array) || content.byteLength > 8 * 1024 * 1024) {
       fail("文件写入超过 8 MiB");
     }
-    return withWorkspaceMutationLock(this.root, () =>
+    return withWorkspaceMutationLock(this.canonicalRoot, () =>
       this.run(() => this.native.writeFile(this.segments(uri), Buffer.from(content), false)));
   }
 
   async mkdir(uri: FileResource): Promise<void> {
-    return withWorkspaceMutationLock(this.root, () => this.run(async () => {
+    return withWorkspaceMutationLock(this.canonicalRoot, () => this.run(async () => {
       const segments = this.segments(uri);
       for (let i = 1; i <= segments.length; i++) {
         await this.native.mkdir(segments.slice(0, i));
@@ -185,7 +225,7 @@ export class McodeWorkspaceFs {
     if (source.length === destination.length && source.every((part, index) => part === destination[index])) {
       fail("不可重命名为同一路径");
     }
-    return withWorkspaceMutationLock(this.root, () =>
+    return withWorkspaceMutationLock(this.canonicalRoot, () =>
       this.run(() => this.native.rename(source, destination, overwrite)));
   }
 
@@ -195,13 +235,13 @@ export class McodeWorkspaceFs {
     if (source.length === destination.length && source.every((part, index) => part === destination[index])) {
       fail("不可复制文件到自身");
     }
-    return withWorkspaceMutationLock(this.root, () =>
+    return withWorkspaceMutationLock(this.canonicalRoot, () =>
       this.run(() => this.native.copy(source, destination, overwrite)));
   }
 
   async delete(uri: FileResource, recursive = false): Promise<void> {
     if (recursive) fail("扩展递归删除暂不支持，请使用 Mcode 原生文件管理器");
-    return withWorkspaceMutationLock(this.root, () =>
+    return withWorkspaceMutationLock(this.canonicalRoot, () =>
       this.run(() => this.native.remove(this.segments(uri))));
   }
 

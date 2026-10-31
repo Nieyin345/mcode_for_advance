@@ -231,7 +231,7 @@ export function registerIpcHandlers(): void {  const ipc = createDbGuardedIpc(ip
   const registryWrappedDocsAiPorts = withRendererToolRegistry(docsAiPorts);
   if (Object.values(nativeHostStatus()).some(Boolean)) {
     // AI never trusts a renderer-provided project, file path, engine, or session.
-    registerGenofficeViewAiIpc(ipcMain, (sender) => {
+    registerGenofficeViewAiIpc(ipcMain, (sender: unknown) => {
       const context = documentViewHost.vendorAiContextForSender(sender);
       return context ? { context, ports: registryWrappedDocsAiPorts } : null;
     });

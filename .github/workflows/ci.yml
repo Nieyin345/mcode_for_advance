@@ -46,7 +46,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: pnpm typecheck
+        # GenOffice is intentionally gitignored. CI typechecks the no-vendor
+        # build surface and all independent smoke fixtures; local pnpm typecheck
+        # also checks vendor-coupled suites when the snapshot is installed.
+        run: |
+          pnpm --filter @mcode/contracts typecheck
+          pnpm --filter @mcode/desktop exec tsc --noEmit -p tsconfig.ci.json
 
       - name: Setup virtual display for isolated Electron host
         run: sudo apt-get update && sudo apt-get install -y xvfb
