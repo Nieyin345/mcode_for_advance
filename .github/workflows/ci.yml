@@ -91,13 +91,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Keep the native filesystem security gate independent from application
-  # typecheck and the broad Windows-only smoke suite. Unrelated TypeScript or
-  # platform-specific smoke failures must not suppress POSIX validation.
+  # Native-FS jobs compile against Electron headers and run Node-based smokes;
+  # none launches the Electron runtime. Skip the platform Electron binary
+  # download here (node-gyp still fetches the matching headers separately).
+  # Keep these gates independent from application typecheck and broad smokes.
   native-fs-linux:
     name: Native FS (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Setup pnpm
@@ -131,6 +134,7 @@ jobs:
     timeout-minutes: 45
     env:
       MSYS: winsymlinks:nativestrict
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Setup pnpm
@@ -174,6 +178,8 @@ jobs:
     name: Native FS (macOS ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Setup pnpm
