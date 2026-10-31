@@ -88,6 +88,12 @@ Isolated integration verification on 2026-10-31 (latest `origin/master` baseline
 - Smoke runner self-tests: 15/15; desktop, `packages/contracts`, and `packages/vscode-compat` TypeScript checks all pass.
 - The clean integration worktree typecheck passes. The shared primary worktree's full typecheck still reports independent parallel UI/API integration errors in `theia-webview-resource-smoke/main.ts`, `renderer/App.tsx`, `renderer/components/settings/PluginsPanelParts.tsx`, and `renderer/lib/webApi.ts`; these files are outside this native-filesystem change and were not modified by this branch.
 
+Additional verification on the isolated native-filesystem branch:
+- Windows reparse protection mutation check: temporarily removed both `OBJ_DONT_REPARSE` and `FILE_OPEN_REPARSE_POINT`, forced an Electron 44.4.5 native rebuild, and confirmed `native-fs-smoke` failed at `directory symlink/junction cannot be enumerated`. Restored both protections, rebuilt, and reran the full six-suite gate successfully (6/6). The source was byte-for-byte restored to the committed implementation before final verification.
+- Production desktop build: `build-node-pack.cjs` and `electron-vite build` completed successfully (main, preload, renderer). The `pnpm --filter @mcode/desktop build` wrapper itself stopped before build because pnpm refused to purge the shared symlinked `node_modules` without a TTY; invoking the exact underlying build scripts avoided any dependency-directory mutation.
+- Final checks: desktop, contracts, and vscode-compat TypeScript checks passed; smoke-runner tests passed 15/15.
+- The local WSL Ubuntu distribution does not currently have Node.js or a C++ toolchain installed, so it cannot substitute for hosted Linux CI without modifying the user's WSL environment. Hosted Linux Electron-target and macOS arm64/x64 runs remain pending.
+
 A green Windows run does not prove POSIX; a Linux run does not prove Windows or macOS. Hosted CI must still confirm the Electron-target Linux build and both macOS architectures. The app currently packages Windows and macOS; Linux remains a supported native backend/test target, not a promise of a Linux release artifact.
 
 The module does not claim to defend against an attacker who already has the same OS identity and can arbitrarily mutate the authorized directory tree or replace the selected root itself. The guarantee is that a path supplied below an opened root cannot escape through path traversal, symlink/junction/reparse traversal, or a path re-resolution race.
