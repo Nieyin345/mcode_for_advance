@@ -225,6 +225,100 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Expensive, non-publishing release dry-run for the isolated B-02/B-05 PR only.
+  # Mirrors the real tag release build on all shipping desktop architectures,
+  # then audits the bytes inside the final NSIS / DMG / updater ZIP artifacts.
+  # It deliberately does NOT run the publish job, create a tag, or upload binaries.
+  native-fs-full-release-package:
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'validation/b02b05-native-ci-')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: win
+            arch: x64
+          - os: macos-latest
+            platform: mac
+            arch: arm64
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+    name: Full Mcode release package (\${{ matrix.platform }} \${{ matrix.arch }})
+    runs-on: \${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Setup Rust toolchain for GenOffice Sheets sidecar
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install setuptools (distutils shim for node-gyp)
+        if: runner.os == 'macOS'
+        run: python3 -m pip install --user --break-system-packages setuptools
+      - name: Install setuptools (distutils shim for node-gyp)
+        if: runner.os == 'Windows'
+        run: python -m pip install setuptools
+      - name: Setup MSVC dev cmd (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Rebuild native modules for Electron
+        shell: bash
+        env:
+          MCODE_ARCH: \${{ matrix.arch }}
+        run: pnpm --filter @mcode/desktop rebuild:native
+      - name: Build and exercise native filesystem module
+        shell: bash
+        env:
+          MCODE_ARCH: \${{ matrix.arch }}
+        run: |
+          pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+          pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Exercise real Windows UNC security boundary
+        if: runner.os == 'Windows'
+        run: pnpm test:smoke native-fs-unc-smoke
+      - name: Prepare pinned GenOffice fork and build six native editors
+        shell: bash
+        run: node apps/desktop/build/prepare-genoffice-release.cjs
+      - name: Build and package full Mcode application
+        shell: bash
+        run: pnpm --filter @mcode/desktop package
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+      - name: Verify actual Windows NSIS and native addon bytes
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem apps/desktop/release -Filter *.exe -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one complete Mcode NSIS installer" }
+          & "$env:ProgramFiles/7-Zip/7z.exe" t $installers[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "Complete Mcode NSIS archive integrity failed" }
+          $env:MCODE_OFFICE_7ZA = "$env:ProgramFiles/7-Zip/7z.exe"
+          node apps/desktop/scripts/native-fs-release-audit/verify.cjs nsis $installers[0].FullName apps/desktop/native/mcode-fs/build/Release/mcode_fs.node apps/desktop/release/win-unpacked/resources/native-fs/mcode_fs.node
+          if ($LASTEXITCODE -ne 0) { throw "Complete Mcode NSIS native addon audit failed" }
+      - name: Verify actual macOS DMG, updater ZIP and native addon bytes
+        if: runner.os == 'macOS'
+        shell: bash
+        run: node apps/desktop/scripts/native-fs-release-audit/verify.cjs mac apps/desktop/release apps/desktop/native/mcode-fs/build/Release/mcode_fs.node
+      - name: Upload release dry-run smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-full-release-\${{ matrix.platform }}-\${{ matrix.arch }}-logs
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
   # The broad application smoke suites are authored and maintained on Windows
   # (hard-coded drive paths, cmd.exe / Windows services / case-insensitive FS
   # assertions, the owned-Chrome DevTools handshake). The app ships for Windows and macOS only,
