@@ -285,17 +285,25 @@ async function rejects(name, action, code) {
         [0xF4, 0x90, 0x80, 0x80], // above U+10FFFF
         [0xE2, 0x82],           // truncated sequence
       ];
-      const invalidUtf8Paths = invalidUtf8Sequences.map((bytes, index) => Buffer.concat([
-        Buffer.from(workspace + path.sep + `invalid-${index}-`), Buffer.from(bytes),
-      ]));
-      try {
-        for (const invalidPath of invalidUtf8Paths) fs.writeFileSync(invalidPath, "non-utf8");
-        check("readdir hides POSIX filenames with malformed UTF-8 sequences",
-          !(await root.readdir([], 5000)).some((entry) => entry.name.startsWith("invalid-")));
-      } finally {
-        for (const invalidPath of invalidUtf8Paths) {
-          try { fs.unlinkSync(invalidPath); } catch { /* cleanup must not mask the assertion */ }
+      if (process.platform === "linux") {
+        // Linux filesystems permit arbitrary non-NUL filename bytes, so exercise
+        // the addon's strict UTF-8 filtering there. APFS rejects these names at
+        // creation time with EILSEQ; that is a filesystem constraint, not an
+        // addon failure, and the Linux gate remains the malformed-byte oracle.
+        const invalidUtf8Paths = invalidUtf8Sequences.map((bytes, index) => Buffer.concat([
+          Buffer.from(workspace + path.sep + `invalid-${index}-`), Buffer.from(bytes),
+        ]));
+        try {
+          for (const invalidPath of invalidUtf8Paths) fs.writeFileSync(invalidPath, "non-utf8");
+          check("readdir hides POSIX filenames with malformed UTF-8 sequences",
+            !(await root.readdir([], 5000)).some((entry) => entry.name.startsWith("invalid-")));
+        } finally {
+          for (const invalidPath of invalidUtf8Paths) {
+            try { fs.unlinkSync(invalidPath); } catch { /* cleanup must not mask the assertion */ }
+          }
         }
+      } else {
+        skipped.push("macOS filesystem rejects malformed UTF-8 filenames with EILSEQ; Linux covers raw-byte enumeration");
       }
     }
 
