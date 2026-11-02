@@ -276,13 +276,16 @@ jobs:
         env:
           MCODE_ARCH: ${{ matrix.arch }}
         run: pnpm --filter @mcode/desktop rebuild:native
-      - name: Build and exercise native filesystem module
+      - name: Build native filesystem module
         shell: bash
         env:
           MCODE_ARCH: ${{ matrix.arch }}
-        run: |
-          pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
-          pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Exercise native filesystem security regressions
+        shell: bash
+        env:
+          MSYS: ${{ runner.os == 'Windows' && 'winsymlinks:nativestrict' || '' }}
+        run: pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
       - name: Exercise real Windows UNC security boundary
         if: runner.os == 'Windows'
         run: pnpm test:smoke native-fs-unc-smoke

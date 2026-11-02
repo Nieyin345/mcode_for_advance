@@ -43,6 +43,9 @@ try {
    symlinkSync(secret,join(docs,"escape.png"),"file");
    record("image-link","markdown/refs.md");
    const imageEsc=await readMarkdownForPreview("image-link");
+   console.log("DEBUG Markdown image symlink result "+JSON.stringify({
+     ok:imageEsc.ok,error:imageEsc.error,images:Object.keys(imageEsc.images),skipped:imageEsc.skipped,
+   }));
    check("symlinked image target outside Markdown root refused",imageEsc.ok&&!imageEsc.images["escape.png"]&&imageEsc.skipped.includes("escape.png"));
  } catch(error) {
    if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;

@@ -380,6 +380,25 @@ async function rejects(name, action, code) {
       }
     }
 
+    // The leaf must remain protected when reached through a separately opened
+    // parent-directory handle, not only when it is directly under the root.
+    const nestedLinkDir = path.join(workspace, "nested-file-symlink");
+    fs.mkdirSync(nestedLinkDir);
+    try {
+      fs.symlinkSync(path.join(outside, "secret.txt"),
+        path.join(nestedLinkDir, "outside-file-link"), "file");
+      await rejects("nested file symlink cannot be read",
+        () => root.readFile(["nested-file-symlink", "outside-file-link"], 128));
+    } catch (error) {
+      if (error && (error.code === "EPERM" || error.code === "EACCES")) {
+        skipped.push("nested file symlink creation unavailable");
+      } else {
+        throw error;
+      }
+    } finally {
+      fs.rmSync(nestedLinkDir, { recursive: true, force: true });
+    }
+
     const junction = path.join(workspace, "outside-junction");
     try {
       fs.symlinkSync(outside, junction, process.platform === "win32" ? "junction" : "dir");
