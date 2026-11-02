@@ -114,6 +114,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build POSIX native filesystem addon
         run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem distributable audit unit tests
+        run: node --test apps/desktop/scripts/native-fs-release-audit/verify.test.cjs
       - name: Native filesystem security and packaging regressions
         run: pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
       - name: Upload native filesystem logs
@@ -152,6 +154,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build Windows native filesystem addon
         run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem distributable audit unit tests
+        run: node --test apps/desktop/scripts/native-fs-release-audit/verify.test.cjs
       - name: Native filesystem security, UNC and packaging regressions
         run: pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke native-fs-package-smoke native-fs-unc-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
       - name: Install real Electron binary for disposable package verification
@@ -201,6 +205,8 @@ jobs:
         env:
           MCODE_ARCH: ${{ matrix.arch }}
         run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem distributable audit unit tests
+        run: node --test apps/desktop/scripts/native-fs-release-audit/verify.test.cjs
       - name: Native filesystem security and packaging regressions
         run: pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
       - name: Install real Electron binary for disposable package verification

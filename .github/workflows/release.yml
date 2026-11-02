@@ -193,6 +193,18 @@ jobs:
           node apps/desktop/scripts/office-release-audit/verify-nsis.cjs $installers[0].FullName apps/desktop/release/win-unpacked/resources/genoffice/availability.json
           if ($LASTEXITCODE -ne 0) { throw "Actual NSIS payload does not contain approved six GenOffice editors" }
 
+      # B-02/B-05: afterPack inspects the unpacked tree; this independently
+      # inspects the actual signed distributable and compares N-API addon bytes.
+      - name: Verify actual NSIS contains approved native filesystem addon
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem apps/desktop/release -Filter *.exe -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one NSIS installer" }
+          $env:MCODE_OFFICE_7ZA = "$env:ProgramFiles/7-Zip/7z.exe"
+          node apps/desktop/scripts/native-fs-release-audit/verify.cjs nsis $installers[0].FullName apps/desktop/native/mcode-fs/build/Release/mcode_fs.node apps/desktop/release/win-unpacked/resources/native-fs/mcode_fs.node
+          if ($LASTEXITCODE -ne 0) { throw "NSIS native filesystem addon bytes differ or are missing" }
+
       # Exercise negative controls before inspecting either Mac release file.
       - name: Run macOS Office artifact verifier unit tests
         if: runner.os == 'macOS'
@@ -209,6 +221,13 @@ jobs:
           set -euo pipefail
           node apps/desktop/scripts/office-release-audit/verify-macos-artifacts.cjs \
             apps/desktop/release apps/desktop/.tmp/genoffice-release/availability.json
+
+      # Both distributables must include exactly the native addon compiled for
+      # this runner architecture; afterPack alone cannot prove DMG/ZIP parity.
+      - name: Verify actual macOS DMG and ZIP contain approved native filesystem addon
+        if: runner.os == 'macOS'
+        shell: bash
+        run: node apps/desktop/scripts/native-fs-release-audit/verify.cjs mac apps/desktop/release apps/desktop/native/mcode-fs/build/Release/mcode_fs.node
 
       - name: Verify packaged Windows runtime (isolated)
         if: runner.os == 'Windows'
