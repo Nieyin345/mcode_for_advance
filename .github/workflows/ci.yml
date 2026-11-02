@@ -289,7 +289,27 @@ jobs:
       - name: Exercise real Windows UNC security boundary
         if: runner.os == 'Windows'
         run: pnpm test:smoke native-fs-unc-smoke
-      - name: Prepare pinned GenOffice fork and build six native editors
+      - name: Prepare pinned GenOffice fork and build six native editors (Windows/MSVC)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not $env:VCToolsInstallDir) { throw "MSVC toolchain environment is missing" }
+          $linkerDir = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64"
+          $linker = Join-Path $linkerDir "link.exe"
+          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw "MSVC linker not found: $linker" }
+          # Git Bash's usr/bin/link.exe is GNU link, not the MSVC linker. Put
+          # the exact VS linker first and tell Cargo explicitly for xlsx-sidecar.
+          $env:PATH = "$linkerDir;$env:PATH"
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
+          Add-Content -Path $env:GITHUB_PATH -Value $linkerDir
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker"
+          $resolved = (Get-Command link.exe -CommandType Application | Select-Object -First 1).Source
+          if ($resolved -ine $linker) { throw "Wrong link.exe resolved: $resolved (expected $linker)" }
+          Write-Host "Using MSVC linker: $resolved"
+          node apps/desktop/build/prepare-genoffice-release.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Pinned GenOffice release build failed with exit $LASTEXITCODE" }
+      - name: Prepare pinned GenOffice fork and build six native editors (macOS)
+        if: runner.os == 'macOS'
         shell: bash
         run: node apps/desktop/build/prepare-genoffice-release.cjs
       - name: Build and package full Mcode application
