@@ -5,6 +5,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const { createHash } = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 const { createRequire } = require("node:module");
@@ -30,13 +31,26 @@ const sourceFiles = [
   path.join(nativeDir, "src", "fs_posix.cc"),
   path.join(nativeDir, "src", "fs_win32.cc"),
 ];
-const expected = { platform: process.platform, arch, electronVersion, napiVersion: 8 };
+// A timestamp can survive checkout, copying or archive extraction even when
+// the bytes change. Cache reuse requires exact source and addon fingerprints.
+const hashFile = (file) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+const sourceDigest = createHash("sha256");
+for (const file of sourceFiles) {
+  sourceDigest.update(path.relative(nativeDir, file)).update(Buffer.from([0]));
+  sourceDigest.update(fs.readFileSync(file)).update(Buffer.from([0]));
+}
+const expected = {
+  platform: process.platform, arch, electronVersion, napiVersion: 8,
+  sourceSha256: sourceDigest.digest("hex"),
+};
 if (!process.env.MCODE_FORCE_NATIVE_FS && fs.existsSync(output) && fs.existsSync(metadata)) {
   try {
     const previous = JSON.parse(fs.readFileSync(metadata, "utf8"));
-    const outputTime = fs.statSync(output).mtimeMs;
-    const sourcesFresh = sourceFiles.every((file) => fs.statSync(file).mtimeMs <= outputTime);
-    if (JSON.stringify(previous) === JSON.stringify(expected) && sourcesFresh) {
+    const outputStat = fs.lstatSync(output);
+    const { binarySha256, ...previousBuild } = previous;
+    if (outputStat.isFile() && !outputStat.isSymbolicLink() && outputStat.size > 0 &&
+        JSON.stringify(previousBuild) === JSON.stringify(expected) &&
+        typeof binarySha256 === "string" && binarySha256 === hashFile(output)) {
       console.log("[native-fs] binary is current: " + output);
       process.exit(0);
     }
@@ -95,9 +109,9 @@ if (result.error) {
   process.exit(1);
 }
 if (result.status !== 0) process.exit(result.status ?? 1);
-if (!fs.existsSync(output) || !fs.lstatSync(output).isFile()) {
+if (!fs.existsSync(output) || !fs.lstatSync(output).isFile() || fs.lstatSync(output).size === 0) {
   console.error("[native-fs] node-gyp exited successfully but did not produce the addon: " + output);
   process.exit(1);
 }
 fs.mkdirSync(path.dirname(metadata), { recursive: true });
-fs.writeFileSync(metadata, JSON.stringify(expected, null, 2) + "\n", "utf8");
+fs.writeFileSync(metadata, JSON.stringify({ ...expected, binarySha256: hashFile(output) }, null, 2) + "\n", "utf8");
