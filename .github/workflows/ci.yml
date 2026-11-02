@@ -154,6 +154,12 @@ jobs:
         run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
       - name: Native filesystem security, UNC and packaging regressions
         run: pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke native-fs-package-smoke native-fs-unc-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Install real Electron binary for disposable package verification
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: ""
+        run: pnpm --filter @mcode/desktop exec node build/ensure-electron.cjs
+      - name: Real Windows electron-builder addon copy and missing-resource gate
+        run: pnpm --filter @mcode/desktop exec node scripts/native-fs-package-smoke/real-pack.cjs
       - name: Upload native filesystem logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -197,6 +203,12 @@ jobs:
         run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
       - name: Native filesystem security and packaging regressions
         run: pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Install real Electron binary for disposable package verification
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: ""
+        run: pnpm --filter @mcode/desktop exec node build/ensure-electron.cjs
+      - name: Real macOS electron-builder addon copy and missing-resource gate
+        run: pnpm --filter @mcode/desktop exec node scripts/native-fs-package-smoke/real-pack.cjs
       - name: Upload native filesystem logs
         if: always()
         uses: actions/upload-artifact@v4

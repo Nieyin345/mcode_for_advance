@@ -1,19 +1,18 @@
 "use strict";
 /**
- * Real Windows electron-builder integration check for the B-02/B-05 addon.
+ * Real Windows/macOS electron-builder integration check for the B-02/B-05 addon.
  * The regular native-fs-package-smoke stays fast/cross-platform; this opt-in
  * test exercises electron-builder's actual extraResources copy and afterPack.
  * It builds a tiny disposable Electron app: NEVER the user's Mcode release.
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-if (process.platform !== "win32") {
-  console.error("native-fs-real-package: this integration test requires Windows");
-  process.exit(2);
+if (process.platform !== "win32" && process.platform !== "darwin") {
+  console.log("SKIP native-fs-real-package: Windows/macOS Electron package required");
+  process.exit(0);
 }
 
 const desktop = path.resolve(__dirname, "../..");
@@ -28,12 +27,13 @@ const config = `"use strict";
 const path = require("node:path");
 const desktop = ${JSON.stringify(desktop)};
 const omitNative = process.env.MCODE_NATIVE_PACKAGE_NEGATIVE === "1";
-const electronBinary = require(path.join(desktop, "node_modules", "electron"));
 module.exports = {
   appId: "com.mcode.native-fs-fixture",
-  productName: "McodeNativeFsProbe",
+  // Use the real macOS bundle name. afterPack must inspect Mcode.app, never a
+  // similarly named decoy bundle in the output directory.
+  productName: "Mcode",
   electronVersion: require(path.join(desktop, "node_modules", "electron", "package.json")).version,
-  electronDist: path.dirname(electronBinary),
+  electronDist: path.join(desktop, "node_modules", "electron", "dist"),
   npmRebuild: false,
   asar: false,
   files: ["main.js", "package.json"],
@@ -44,12 +44,13 @@ module.exports = {
   }],
   afterPack: path.join(desktop, "build", "verify-native-fs-after-pack.cjs"),
   win: { target: ["dir"], executableName: "McodeNativeFsProbe" },
+  mac: { target: ["dir"], identity: null },
 };
 `;
 
 function build(negative) {
   const child = spawnSync(process.execPath, [
-    builder, "--win", "--dir", "--projectDir", fixture,
+    builder, process.platform === "darwin" ? "--mac" : "--win", "--dir", "--projectDir", fixture,
     "--config", "electron-builder.config.cjs", "--publish", "never",
   ], {
     cwd: desktop,
@@ -73,9 +74,17 @@ try {
   fs.writeFileSync(path.join(fixture, "electron-builder.config.cjs"), config);
 
   const success = build(false);
-  assert.equal(success.status, 0, "Real Windows packaging must succeed: " + success.output.slice(-2500));
+  assert.equal(success.status, 0, "Real " + process.platform + " packaging must succeed: " + success.output.slice(-2500));
   assert.match(success.output, /\[verify-native-fs\] PASS/);
-  const packed = path.join(fixture, "out", "win-unpacked", "resources", "native-fs", "mcode_fs.node");
+  let packed;
+  if (process.platform === "darwin") {
+    const out = path.join(fixture, "out");
+    const macDir = fs.readdirSync(out).find(name => name === "mac" || name.startsWith("mac-"));
+    assert.ok(macDir, "electron-builder must create a macOS output directory");
+    packed = path.join(out, macDir, "Mcode.app", "Contents", "Resources", "native-fs", "mcode_fs.node");
+  } else {
+    packed = path.join(fixture, "out", "win-unpacked", "resources", "native-fs", "mcode_fs.node");
+  }
   assert.ok(fs.statSync(packed).isFile(), "Real appOutDir must contain native-fs/mcode_fs.node");
   console.log("  ok real electron-builder copies and probes the packed native addon");
 
@@ -86,6 +95,6 @@ try {
 
   console.log("native-fs-real-package: 2/2 PASS");
 } finally {
-  // The child-process probe doesn't keep a Windows .node DLL locked after exit.
+  // The child-process probe does not keep the packaged .node module loaded.
   fs.rmSync(fixture, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
