@@ -58,6 +58,9 @@ jobs:
           pnpm --filter @mcode/contracts typecheck
           pnpm --filter @mcode/desktop exec tsc --noEmit -p tsconfig.ci.json
 
+      - name: GenOffice release command and platform-license regressions
+        run: node --test apps/desktop/build/run-genoffice-step.test.cjs apps/desktop/build/stage-genoffice-license-platform.test.cjs
+
       - name: Setup virtual display for isolated Electron host
         run: sudo apt-get update && sudo apt-get install -y xvfb
 
