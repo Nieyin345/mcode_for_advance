@@ -298,10 +298,13 @@ const REQUIRED_GENOFFICE_LICENSE_PACKAGES = Object.freeze([
   ["unicount", "1.1.0", "ISC"],
 ].map(([name, version, spdx]) => Object.freeze({ name, version, spdx })));
 
-function npmPlatformConstraintMatches(constraint, actual) {
+function npmPlatformConstraintMatches(constraint, actual, label) {
   if (constraint === undefined) return true;
   if (!Array.isArray(constraint) || constraint.length === 0
-      || !constraint.every(value => typeof value === "string" && value.length > 0)) return false;
+      || !constraint.every(value => typeof value === "string" && value.length > 0
+        && (!value.startsWith("!") || value.length > 1))) {
+    throw new Error("GenOffice optional package lock has malformed " + label + " constraint");
+  }
   const denied = constraint.some(value => value === "!" + actual);
   const allowed = constraint.filter(value => !value.startsWith("!"));
   return !denied && (allowed.length === 0 || allowed.includes(actual));
@@ -323,8 +326,8 @@ function assertMissingOptionalPackageIsPlatformExcluded(vendorRoot, item) {
       || entry.optional !== true) {
     throw new Error("GenOffice missing optional package lock identity differs from reviewed license manifest: " + item.name);
   }
-  const osMatches = npmPlatformConstraintMatches(entry.os, platform);
-  const cpuMatches = npmPlatformConstraintMatches(entry.cpu, arch);
+  const osMatches = npmPlatformConstraintMatches(entry.os, platform, "OS");
+  const cpuMatches = npmPlatformConstraintMatches(entry.cpu, arch, "CPU");
   if (osMatches && cpuMatches) {
     throw new Error("GenOffice installed package missing on a compatible platform: " + item.name);
   }
