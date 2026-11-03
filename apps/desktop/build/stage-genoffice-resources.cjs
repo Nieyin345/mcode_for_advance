@@ -582,10 +582,12 @@ function buildCompleteThirdPartyNotice(sourceText, validation) {
   let found = 0;
   let cursor = 0;
   let replaced = "";
+  const foundTitles = new Set();
   for (const section of noticeSections(sourceText)) {
     const excused = excusedByTitle.get(section.title);
     if (excused) {
       found++;
+      foundTitles.add(section.title);
       replaced += sourceText.slice(cursor, section.bodyStart);
       replaced +=
         "NO LICENSE TEXT WAS SHIPPED WITH THIS VERSION.\n\n" +
@@ -601,6 +603,7 @@ function buildCompleteThirdPartyNotice(sourceText, validation) {
     const item = byTitle.get(section.title);
     if (!item) continue;
     found++;
+    foundTitles.add(section.title);
     replaced += sourceText.slice(cursor, section.bodyStart);
     replaced += item.licenseText.trimEnd() + "\n\nSource: " + item.licenseSourceUrl +
       "\nSource version: " + item.licenseSourceVersion +
