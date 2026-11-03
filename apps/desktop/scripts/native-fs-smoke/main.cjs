@@ -404,15 +404,8 @@ async function rejects(name, action, code) {
       fs.symlinkSync(outside, junction, process.platform === "win32" ? "junction" : "dir");
       await rejects("directory symlink/junction cannot be traversed",
         () => root.readFile(["outside-junction", "secret.txt"], 128));
-      let junctionEntries = null;
-      try {
-        junctionEntries = await root.readdir(["outside-junction"], 10);
-      } catch (error) {
-        if (!error || !["ELOOP", "EACCES", "ENOTDIR", "EINVAL"].includes(error.code)) throw error;
-      }
-      check("directory symlink/junction cannot expose target entries",
-        junctionEntries === null || junctionEntries.length === 0,
-        junctionEntries?.map((entry) => entry.name).join(", "));
+      await rejects("directory symlink/junction cannot be enumerated",
+        () => root.readdir(["outside-junction"], 10));
       await rejects("directory symlink/junction cannot be renamed into the workspace",
         () => root.rename(["outside-junction"], ["moved-junction"], false));
       await rejects("directory symlink/junction cannot be removed as an ordinary directory",
