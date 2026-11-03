@@ -84,6 +84,31 @@ function linkPackages(root) {
   return made;
 }
 
+function buildProbeScript(root) {
+  return `
+    const path = require("node:path");
+    const root = ${JSON.stringify(root)};
+    const entry = path.join(root, "packages/plugin-ext/lib/hosted/node/plugin-host.js");
+    try {
+      require(entry);
+      // Theia's setupPluginHostLogger replaces console.log/info/warn/error
+      // with RPC-backed methods. Write the probe sentinel directly to stdout
+      // so a healthy plugin host cannot swallow its own success signal.
+      process.stdout.write("PROBE_OK\\n");
+    } catch (error) {
+      const message = String(error && error.message);
+      // On Windows the standalone probe may lack the parent IPC descriptor.
+      // Reaching this known runtime boundary still proves imports resolved.
+      if (/Unsupported fd type|process\\.exit\\(\\) and it was prevented/.test(message)) {
+        process.stdout.write("PROBE_OK\\n");
+      } else {
+        process.stderr.write("PROBE_FAIL " + message.split("\\n")[0] + "\\n");
+        process.exit(1);
+      }
+    }
+  `;
+}
+
 module.exports = async function verifyTheiaAfterPack(context) {
   const root = theiaRootIn(context);
   console.log(`[verify-theia] 产物里的 Theia: ${root}`);
@@ -105,24 +130,7 @@ module.exports = async function verifyTheiaAfterPack(context) {
   console.log(`[verify-theia] 建了 ${linked} 个包链接`);
 
   // ★ 真的 require 一次：缺传递依赖会当场抛。
-  const probe = `
-    const path = require("node:path");
-    const root = ${JSON.stringify(root)};
-    const entry = path.join(root, "packages/plugin-ext/lib/hosted/node/plugin-host.js");
-    try {
-      require(entry);
-      console.log("PROBE_OK");
-    } catch (error) {
-      const message = String(error && error.message);
-      // 「跑进业务逻辑」= 依赖齐了（缺 RPC 通道是正常的，那 5 个 fd 由主进程给）
-      if (/Unsupported fd type|process\\.exit\\(\\) and it was prevented/.test(message)) {
-        console.log("PROBE_OK");
-      } else {
-        console.error("PROBE_FAIL " + message.split("\\n")[0]);
-        process.exit(1);
-      }
-    }
-  `;
+  const probe = buildProbeScript(root);
   let output = "";
   try {
     output = execFileSync(process.execPath, ["-e", probe], { encoding: "utf8", stdio: "pipe" });
@@ -135,3 +143,4 @@ module.exports = async function verifyTheiaAfterPack(context) {
   console.log("[verify-theia] ✓ 运行时完整可用");
 };
 module.exports.theiaRootIn = theiaRootIn;
+module.exports.buildProbeScript = buildProbeScript;
