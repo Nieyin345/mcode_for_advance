@@ -155,7 +155,7 @@ extraResources:
   # compiled `lib/` trees plus the `package.json` of the packages that are actually
   # loaded at runtime. `build/stage-theia-resources.cjs` produces that minimal tree
   # under `.tmp/`, and `afterPack` verifies the entry points survived.
-  - from: vendor/theia-runtime
+  - from: ../../vendor/theia-runtime
     to: theia
     filter:
       - "**/*"
