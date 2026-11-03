@@ -9,6 +9,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 const { openRoot } = require("../../native/mcode-fs/build/Release/mcode_fs.node");
 
 if (process.platform !== "win32") {
@@ -83,7 +84,22 @@ const rejects = async (message, action) => {
       // Remove only the reparse entry, never recursively follow its target.
       try { if (fs.lstatSync(link).isSymbolicLink()) fs.rmdirSync(link); } catch {}
     }
-    console.log("native-fs-unc-smoke: " + passed + "/" + passed + " PASS (real SMB)");
+    const adapterRunner = path.resolve(__dirname, "../workspace-copy-boundary-smoke/run.cjs");
+    const adapter = spawnSync(process.execPath, [adapterRunner], {
+      encoding: "utf8",
+      cwd: path.resolve(__dirname, "../.."),
+      timeout: 90000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, MCODE_TEST_UNC_ROOT: target },
+    });
+    process.stdout.write(adapter.stdout || "");
+    process.stderr.write(adapter.stderr || "");
+    if (adapter.error) throw adapter.error;
+    if (adapter.status !== 0) {
+      throw new Error("Theia Workspace FS UNC adapter smoke failed with status " + adapter.status);
+    }
+    ok("Theia Workspace FS adapter passed real SMB/UNC read-write, search and authority checks");
+    console.log("native-fs-unc-smoke: " + passed + "/" + passed + " PASS (real SMB + Theia Workspace FS)");
   } finally {
     root?.close();
     if (createdOnShare) fs.rmSync(target, { recursive: true, force: true });

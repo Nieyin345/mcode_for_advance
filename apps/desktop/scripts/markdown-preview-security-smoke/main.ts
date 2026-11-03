@@ -35,9 +35,6 @@ try {
    symlinkSync(join(outside,"private.md"),mdLink,"file");
    record("link","markdown/escape.md");
    const markdownLinkResult = await readMarkdownForPreview("link");
-   console.log("DEBUG Markdown file symlink result "+JSON.stringify({
-     ok:markdownLinkResult.ok,error:markdownLinkResult.error,
-   }));
    check("symlinked Markdown target outside library rejected",!markdownLinkResult.ok);
  } catch(error) {
    if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
@@ -48,51 +45,45 @@ try {
  try {
    const imageLink = join(docs,"escape.png");
    symlinkSync(secret,imageLink,"file");
+   record("image-link","markdown/refs.md");
+   // Exercise the production preview immediately after link creation, before
+   // lstat/readlink or a direct native read can warm the filesystem metadata.
+   const immediateImageEsc = await readMarkdownForPreview("image-link");
    const linkInfo = lstatSync(imageLink);
-   console.log("DEBUG image symlink fixture "+JSON.stringify({
-     isSymbolicLink:linkInfo.isSymbolicLink(),target:readlinkSync(imageLink),
-   }));
+   check("image fixture is a real file symlink to the outside target",
+     linkInfo.isSymbolicLink() && readlinkSync(imageLink) === secret);
    const canonicalRootPath = await realpath(root);
-   console.log("DEBUG Markdown root path forms "+JSON.stringify({root,canonicalRootPath}));
-   for (const candidate of [
-     { label: "lexical", path: root },
-     { label: "canonical", path: canonicalRootPath },
-   ]) {
+   const candidates = canonicalRootPath === root
+     ? [{ label: "root", path: root }]
+     : [{ label: "lexical", path: root }, { label: "canonical", path: canonicalRootPath }];
+   for (const candidate of candidates) {
      const directRoot = openNativeFsRoot(candidate.path);
      try {
-       let directStat = "rejected";
-       let statError = "";
+       let statCode = "";
        try {
          await directRoot.stat(["markdown","escape.png"]);
-         directStat = "succeeded";
        } catch(error) {
-         const value = error as NodeJS.ErrnoException;
-         statError = String(value.code ?? "") + ": " + value.message;
+         statCode = (error as NodeJS.ErrnoException).code ?? "";
        }
-       let directRead = "rejected";
-       let readError = "";
+       let readCode = "";
        try {
          await directRoot.readFile(["markdown","escape.png"],8 * 1024 * 1024);
-         directRead = "succeeded";
        } catch(error) {
-         const value = error as NodeJS.ErrnoException;
-         readError = String(value.code ?? "") + ": " + value.message;
+         readCode = (error as NodeJS.ErrnoException).code ?? "";
        }
-       console.log("DEBUG direct native image symlink "+JSON.stringify({
-         rootKind:candidate.label,stat:directStat,statError,read:directRead,readError,
-       }));
        check("native handle refuses image symlink via "+candidate.label+" root",
-         directStat === "rejected" && directRead === "rejected");
+         statCode === "ELOOP" && readCode === "ELOOP");
      } finally {
        directRoot.close();
      }
    }
-   record("image-link","markdown/refs.md");
-   const imageEsc=await readMarkdownForPreview("image-link");
-   console.log("DEBUG Markdown image symlink result "+JSON.stringify({
-     ok:imageEsc.ok,error:imageEsc.error,images:Object.keys(imageEsc.images),skipped:imageEsc.skipped,
-   }));
-   check("symlinked image target outside Markdown root refused",imageEsc.ok&&!imageEsc.images["escape.png"]&&imageEsc.skipped.includes("escape.png"));
+   const repeatedImageEsc = await readMarkdownForPreview("image-link");
+   const imageRefused = (result: Awaited<ReturnType<typeof readMarkdownForPreview>>) =>
+     result.ok && !result.images["escape.png"] && result.skipped.includes("escape.png");
+   check("immediate Markdown preview refuses an external file symlink",
+     imageRefused(immediateImageEsc));
+   check("repeated Markdown preview continues to refuse the external file symlink",
+     imageRefused(repeatedImageEsc));
  } catch(error) {
    if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
    console.log("SKIP Windows account does not permit file symlink creation (image)");

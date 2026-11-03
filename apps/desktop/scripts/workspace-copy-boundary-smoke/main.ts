@@ -27,6 +27,7 @@ try {
        (await ws.readFile(fileResource(join(canonicalRoot,"literal%20# name-量子.txt")))).toString()==="URI_PATH_BYTES");
    }
  }
+
  const specialUriWrite=join(root,"created%2F-not-a-slash.txt");
  await ws.writeFile(fileResource(specialUriWrite),Buffer.from("URI_WRITE_BYTES"));
  check("file URI writes preserve encoded-looking literal percent sequences",
@@ -34,6 +35,29 @@ try {
  const specialMatches=await ws.findFiles("**/literal%20# name-量子.txt");
  check("findFiles results round-trip through URI encoding without changing the filename",
    specialMatches.length===1&&(await ws.readFile(specialMatches[0])).toString()==="URI_PATH_BYTES");
+ const wrongAuthority = { ...fileResource(specialUriFile), authority: "other-host" };
+ check("local workspace rejects a file URI redirected to another network authority",
+   await rejected(() => ws.stat(wrongAuthority)));
+ if (process.platform === "win32") {
+   const uncResource = fileResource(String.raw`\\server\share\project\literal%20# name.txt`);
+   check("UNC file resources preserve the network authority and decoded filename path",
+     uncResource.authority === "server" &&
+     uncResource.path === "/share/project/literal%20# name.txt");
+   const localhostUnc = fileResource(String.raw`\\localhost\C$\project\literal%20# name.txt`);
+   check("localhost administrative-share URIs retain their UNC authority",
+     localhostUnc.authority === "localhost" &&
+     localhostUnc.path === "/C$/project/literal%20# name.txt");
+ } else {
+   console.log("SKIP Windows-only UNC file URI");
+ }
+ if (process.platform !== "win32") {
+   const backslashName = "literal\\backslash.txt";
+   writeFileSync(join(root, backslashName), "POSIX_BACKSLASH_NAME");
+   check("POSIX watcher validation preserves a literal backslash in one filename",
+     await ws.watchState(backslashName) === "file");
+ } else {
+   console.log("SKIP POSIX-only literal-backslash filename");
+ }
  const concurrentWrite=join(root,"concurrent-write.bin");
  const payloadA=Buffer.alloc(8*1024*1024,0x41),payloadB=Buffer.alloc(8*1024*1024,0x42);
  await Promise.all([
@@ -169,5 +193,28 @@ try {
  ws.close();
  check("closed workspace rejects subsequent operations",
    await rejected(()=>ws.stat(fileResource(root))));
+ const uncRoot = process.env.MCODE_TEST_UNC_ROOT?.trim();
+ if (uncRoot) {
+   const uncWorkspace = await McodeWorkspaceFs.open(uncRoot);
+   openWorkspaces.push(uncWorkspace);
+   const uncRootAuthority = fileResource(uncRoot).authority ?? "";
+   const uncFile = join(uncRoot,"external.txt");
+   const uncFileUri = fileResource(uncFile);
+   check("Theia workspace adapter preserves the real UNC root authority",
+     uncRootAuthority.length > 0 && uncFileUri.authority === uncRootAuthority);
+   check("Theia workspace adapter reads a file over the SMB share",
+     (await uncWorkspace.readFile(uncFileUri)).toString() === "smb-read");
+   const uncCreated = join(uncRoot,"workspace-adapter-created.txt");
+   await uncWorkspace.writeFile(fileResource(uncCreated),Buffer.from("adapter-write"));
+   check("Theia workspace adapter writes through the UNC root handle",
+     readFileSync(uncCreated,"utf8") === "adapter-write");
+   const uncMatches = await uncWorkspace.findFiles("**/external.txt");
+   check("Theia workspace adapter returns a readable UNC file URI",
+     uncMatches.length === 1 && (await uncWorkspace.readFile(uncMatches[0])).toString() === "smb-read");
+   check("Theia workspace adapter rejects a forged UNC authority",
+     await rejected(()=>uncWorkspace.readFile({...uncFileUri,authority:"attacker-host"})));
+   await uncWorkspace.delete(fileResource(uncCreated));
+   check("Theia workspace adapter removes only its own UNC test file",!existsSync(uncCreated));
+ }
  console.log("workspace-copy-boundary-smoke: "+pass+"/"+pass+" PASS");
 }finally{for(const workspace of openWorkspaces)workspace.close();rmSync(temp,{recursive:true,force:true})}

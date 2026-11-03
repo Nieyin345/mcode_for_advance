@@ -8,6 +8,17 @@ import { openNativeFsRoot, type NativeFsRoot } from "@main/lib/nativeFs.js";
 export interface FileResource { scheme: string; path: string; authority?: string }
 function fail(reason: string): never { throw Error("THEIA_WORKSPACE_FS: " + reason); }
 
+function windowsUncParts(value: string): { host: string; share: string; rest: string } | undefined {
+  if (process.platform !== "win32") return undefined;
+  const normalized = value.replace(/^\\\\\?\\UNC\\/i, "\\\\");
+  const match = /^\\\\([^\\]+)\\([^\\]+)(?:\\(.*))?$/.exec(normalized);
+  return match ? { host: match[1]!, share: match[2]!, rest: match[3] ?? "" } : undefined;
+}
+
+function fileAuthority(value: string): string {
+  return windowsUncParts(value)?.host.toLowerCase() ?? pathToFileURL(value).host.toLowerCase();
+}
+
 const workspaceMutationTails = new Map<string, Promise<void>>();
 async function withWorkspaceMutationLock<T>(root: string, work: () => Promise<T>): Promise<T> {
   const key = process.platform === "win32" ? root.toLocaleLowerCase("en-US") : root;
@@ -26,8 +37,17 @@ async function withWorkspaceMutationLock<T>(root: string, work: () => Promise<T>
 }
 
 export function fileResource(value: string): FileResource {
+  const unc = windowsUncParts(value);
+  if (unc) {
+    const parts = [unc.share, ...unc.rest.split("\\").filter(Boolean)];
+    return { scheme: "file", path: "/" + parts.join("/"), authority: unc.host.toLowerCase() };
+  }
   const url = pathToFileURL(value);
-  return { scheme: "file", path: decodeURIComponent(url.pathname), authority: "" };
+  return {
+    scheme: "file",
+    path: decodeURIComponent(url.pathname),
+    authority: url.host,
+  };
 }
 
 export class McodeWorkspaceFs {
@@ -41,16 +61,14 @@ export class McodeWorkspaceFs {
     private readonly native: NativeFsRoot,
     private readonly rootDevice: string,
     private readonly rootInode: string,
+    private readonly rootBirthtimeNs: bigint,
+    private readonly rootAuthority: string,
   ) {}
 
   static async open(root: string): Promise<McodeWorkspaceFs> {
     if (!path.isAbsolute(root)) fail("未选择有效的 Mcode 工作区");
-    // Keep the spelling supplied by the workspace/URI layer for lexical
-    // containment. On Windows realpath() expands 8.3 paths (RUNNER~1 -> the
-    // long user profile name); comparing a file URI made from the original
-    // path against that canonical spelling incorrectly classifies it as
-    // outside the workspace. The native root itself is still opened by its
-    // canonical path and pinned to the same device/inode.
+    // Preserve the caller's lexical spelling (including Windows 8.3 aliases)
+    // for URI round-trips, while opening the physical directory as the native root.
     const rootPath = path.resolve(root);
     const before = await lstat(rootPath, { bigint: true });
     if (!before.isDirectory() || before.isSymbolicLink()) fail("工作区不是独立普通目录");
@@ -61,10 +79,14 @@ export class McodeWorkspaceFs {
       const after = await lstat(rootPath, { bigint: true });
       if (info.type !== "directory" || !after.isDirectory() || after.isSymbolicLink() ||
           before.dev !== after.dev || before.ino !== after.ino ||
+          before.birthtimeNs !== after.birthtimeNs ||
           BigInt(info.device) !== after.dev || BigInt(info.inode) !== after.ino) {
         fail("工作区根目录在打开期间已被替换");
       }
-      return new McodeWorkspaceFs(rootPath, canonicalRoot, native, info.device, info.inode);
+      return new McodeWorkspaceFs(
+        rootPath, canonicalRoot, native, info.device, info.inode, after.birthtimeNs,
+        fileAuthority(rootPath),
+      );
     } catch (error) {
       native.close();
       throw error;
@@ -74,7 +96,8 @@ export class McodeWorkspaceFs {
   private async assertRootIdentity(): Promise<void> {
     const current = await lstat(this.root, { bigint: true }).catch(() => null);
     if (!current || !current.isDirectory() || current.isSymbolicLink() ||
-        BigInt(this.rootDevice) !== current.dev || BigInt(this.rootInode) !== current.ino) {
+        BigInt(this.rootDevice) !== current.dev || BigInt(this.rootInode) !== current.ino ||
+        current.birthtimeNs !== this.rootBirthtimeNs) {
       fail("工作区根目录在打开后已被移除或替换");
     }
   }
@@ -118,13 +141,11 @@ export class McodeWorkspaceFs {
         const rootComponents = path.relative(rootParts.root, this.root).split(path.sep).filter(Boolean);
         const targetComponents = path.relative(targetParts.root, absolute).split(path.sep).filter(Boolean);
         if (targetComponents.length >= rootComponents.length) {
-          // Resolve only the path prefix that names the workspace root. Do not
-          // realpath child components: doing so would follow an in-workspace
-          // junction before the native handle-relative layer can reject it.
+          // Resolve only the prefix naming the workspace root. Never realpath
+          // child components here: the native no-follow walk must reject them.
           const candidateRoot = path.join(targetParts.root, ...targetComponents.slice(0, rootComponents.length));
           try {
-            const canonicalCandidate = realpathSync.native(candidateRoot);
-            if (path.relative(this.canonicalRoot, canonicalCandidate) === "") {
+            if (path.relative(this.canonicalRoot, realpathSync.native(candidateRoot)) === "") {
               return targetComponents.slice(rootComponents.length).join(path.sep);
             }
           } catch {
@@ -138,22 +159,41 @@ export class McodeWorkspaceFs {
   }
 
   private segments(uri: FileResource): string[] {
-    if (!uri || uri.scheme !== "file" || typeof uri.path !== "string" ||
-        (uri.authority && uri.authority !== "localhost")) {
+    if (!uri || uri.scheme !== "file" || typeof uri.path !== "string") {
       fail("仅支持本机 file URI");
+    }
+    const authority = (uri.authority ?? "").toLowerCase();
+    if (this.rootAuthority) {
+      if (authority !== this.rootAuthority) fail("文件不属于当前工作区网络主机");
+    } else if (authority && authority !== "localhost") {
+      fail("仅支持当前本机工作区");
     }
     // Theia/vscode-uri exposes a decoded URI path. Encode each path component
     // independently so literal '%' sequences, '#', '?', spaces and Unicode are
     // preserved as filename bytes instead of being interpreted as URL syntax.
-    const pathParts = uri.path.split("/");
-    const encoded = pathParts.map((part, index) =>
-      index === 1 && uri.path.startsWith("/") && /^[A-Za-z]:$/.test(part)
-        ? part
-        : encodeURIComponent(part),
-    ).join("/");
     let absolute: string;
     try {
-      absolute = path.resolve(fileURLToPath(new URL("file://" + (uri.authority ?? "") + encoded)));
+      if (process.platform === "win32" && this.rootAuthority === "localhost" && authority === "localhost") {
+        // WHATWG file URLs canonicalize the special host "localhost" to an
+        // empty authority. That is correct for local drive paths but loses a
+        // real UNC path such as \\\\localhost\\C$\\... . Rebuild this
+        // one authorized UNC root explicitly instead of treating C$ as a drive.
+        const uncParts = uri.path.replace(/^\/+/, "").split("/").filter(Boolean);
+        const share = uncParts.shift();
+        if (!share || share === "." || share === ".." || uncParts.some(part => part === "." || part === "..")) {
+          fail("非法 UNC file URI 路径");
+        }
+        const uncRoot = "\\\\localhost\\" + share + "\\";
+        absolute = path.win32.resolve(uncRoot, ...uncParts);
+      } else {
+        const pathParts = uri.path.split("/");
+        const encoded = pathParts.map((part, index) =>
+          index === 1 && uri.path.startsWith("/") && /^[A-Za-z]:$/.test(part)
+            ? part
+            : encodeURIComponent(part),
+        ).join("/");
+        absolute = path.resolve(fileURLToPath(new URL("file://" + (uri.authority ?? "") + encoded)));
+      }
     } catch {
       fail("非法文件 URI");
     }
@@ -174,7 +214,11 @@ export class McodeWorkspaceFs {
   }
 
   async watchState(relativePath: string): Promise<"file" | "missing" | "ignore"> {
-    const segments = relativePath.replace(/\\/g, "/").split("/").filter(Boolean);
+    // The watcher already normalizes platform separators to '/'. On POSIX,
+    // backslash is a valid filename byte and must not be reinterpreted as a
+    // path separator (Windows filenames cannot contain it).
+    const normalized = process.platform === "win32" ? relativePath.replace(/\\/g, "/") : relativePath;
+    const segments = normalized.split("/").filter(Boolean);
     if (!segments.length || segments.some((part) => part === "." || part === "..")) return "ignore";
     try {
       return (await this.run(() => this.native.stat(segments))).type === "file" ? "file" : "ignore";
