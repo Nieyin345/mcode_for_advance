@@ -22,13 +22,13 @@ using RtlNtStatusToDosErrorFn = ULONG (WINAPI*)(NTSTATUS);
 using NtSetInformationFileFn = NTSTATUS (NTAPI*)(
     HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
 constexpr ULONG kFileRenameInformation = 10;
+constexpr NTSTATUS kStatusReparsePointEncountered = static_cast<NTSTATUS>(0xC000050B);
 
 constexpr ULONG kObjCaseInsensitive = 0x00000040;
 constexpr ULONG kObjDontReparse = 0x00001000;
 constexpr ULONG kFileDirectoryFile = 0x00000001;
 constexpr ULONG kFileSynchronousIoNonAlert = 0x00000020;
 constexpr ULONG kFileNonDirectoryFile = 0x00000040;
-constexpr ULONG kFileOpenReparsePoint = 0x00200000;
 constexpr ULONG kFileOpen = 0x00000001;
 constexpr ULONG kFileCreate = 0x00000002;
 constexpr ULONG kFileOpenIf = 0x00000003;
@@ -117,6 +117,9 @@ std::string Win32Code(DWORD error) {
 }
 
 [[noreturn]] void ThrowNtStatus(const char* operation, NTSTATUS status) {
+  if (status == kStatusReparsePointEncountered) {
+    throw FsError("ELOOP", std::string(operation) + ": reparse points are not allowed");
+  }
   auto convert = NtStatusToDosErrorProc();
   const DWORD error = convert ? static_cast<DWORD>(convert(status)) : ERROR_GEN_FAILURE;
   ThrowWindows(operation, error);
@@ -262,10 +265,15 @@ HANDLE OpenRelative(HANDLE parent, const std::wstring& component, ACCESS_MASK ac
   attributes.Attributes = kObjCaseInsensitive | kObjDontReparse;
   NativeIoStatusBlock io{};
   HANDLE handle = INVALID_HANDLE_VALUE;
+  // OBJ_DONT_REPARSE is the fail-on-reparse policy for this handle-relative
+  // lookup. FILE_OPEN_REPARSE_POINT has different semantics: it asks NT to
+  // open the link object itself. Do not combine the two; on Windows Server
+  // runners that combination can let a directory junction become a traversal
+  // handle before VerifyDirectory inspects it.
   const NTSTATUS status = create(&handle, access | SYNCHRONIZE,
       reinterpret_cast<POBJECT_ATTRIBUTES>(&attributes), reinterpret_cast<PIO_STATUS_BLOCK>(&io),
       nullptr, FILE_ATTRIBUTE_NORMAL, kShareAll, disposition,
-      options | kFileOpenReparsePoint | kFileSynchronousIoNonAlert, nullptr, 0);
+      options | kFileSynchronousIoNonAlert, nullptr, 0);
   if (status < 0) ThrowNtStatus("open path relative to directory handle", status);
   if (!handle || handle == INVALID_HANDLE_VALUE) throw FsError("EIO", "NtCreateFile returned no handle");
   return handle;
