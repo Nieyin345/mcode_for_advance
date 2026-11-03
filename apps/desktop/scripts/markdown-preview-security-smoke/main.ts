@@ -1,9 +1,11 @@
 /** B-02: actual markdownPreview through stubbed library DB/paths; no user files. */
 import { strict as assert } from "node:assert";
-import { mkdtempSync, mkdirSync, rmSync, renameSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, renameSync, writeFileSync, symlinkSync, lstatSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { realpath } from "node:fs/promises";
 import { readMarkdownForPreview } from "../../src/main/library/markdownPreview.js";
+import { openNativeFsRoot } from "../../src/main/lib/nativeFs.js";
 import { setRoot, putItem } from "./stubs.js";
 const work=mkdtempSync(join(tmpdir(),"mcode-md-secure-preview-"));
 const root=join(work,"library");
@@ -32,7 +34,11 @@ try {
  try {
    symlinkSync(join(outside,"private.md"),mdLink,"file");
    record("link","markdown/escape.md");
-   check("symlinked Markdown target outside library rejected",!(await readMarkdownForPreview("link")).ok);
+   const markdownLinkResult = await readMarkdownForPreview("link");
+   console.log("DEBUG Markdown file symlink result "+JSON.stringify({
+     ok:markdownLinkResult.ok,error:markdownLinkResult.error,
+   }));
+   check("symlinked Markdown target outside library rejected",!markdownLinkResult.ok);
  } catch(error) {
    if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
    console.log("SKIP Windows account does not permit file symlink creation (Markdown)");
@@ -40,7 +46,47 @@ try {
  const links=join(docs,"refs.md");
  writeFileSync(links,"![x](escape.png)\n");
  try {
-   symlinkSync(secret,join(docs,"escape.png"),"file");
+   const imageLink = join(docs,"escape.png");
+   symlinkSync(secret,imageLink,"file");
+   const linkInfo = lstatSync(imageLink);
+   console.log("DEBUG image symlink fixture "+JSON.stringify({
+     isSymbolicLink:linkInfo.isSymbolicLink(),target:readlinkSync(imageLink),
+   }));
+   const canonicalRootPath = await realpath(root);
+   console.log("DEBUG Markdown root path forms "+JSON.stringify({root,canonicalRootPath}));
+   for (const candidate of [
+     { label: "lexical", path: root },
+     { label: "canonical", path: canonicalRootPath },
+   ]) {
+     const directRoot = openNativeFsRoot(candidate.path);
+     try {
+       let directStat = "rejected";
+       let statError = "";
+       try {
+         await directRoot.stat(["markdown","escape.png"]);
+         directStat = "succeeded";
+       } catch(error) {
+         const value = error as NodeJS.ErrnoException;
+         statError = String(value.code ?? "") + ": " + value.message;
+       }
+       let directRead = "rejected";
+       let readError = "";
+       try {
+         await directRoot.readFile(["markdown","escape.png"],8 * 1024 * 1024);
+         directRead = "succeeded";
+       } catch(error) {
+         const value = error as NodeJS.ErrnoException;
+         readError = String(value.code ?? "") + ": " + value.message;
+       }
+       console.log("DEBUG direct native image symlink "+JSON.stringify({
+         rootKind:candidate.label,stat:directStat,statError,read:directRead,readError,
+       }));
+       check("native handle refuses image symlink via "+candidate.label+" root",
+         directStat === "rejected" && directRead === "rejected");
+     } finally {
+       directRoot.close();
+     }
+   }
    record("image-link","markdown/refs.md");
    const imageEsc=await readMarkdownForPreview("image-link");
    console.log("DEBUG Markdown image symlink result "+JSON.stringify({
