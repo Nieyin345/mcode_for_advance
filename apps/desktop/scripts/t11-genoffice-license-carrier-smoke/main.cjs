@@ -102,22 +102,22 @@ try {
     requireComplete: false,
   });
   pass("real reviewed manifest validates against the pinned inventory and its SHA-256 pin");
-  assert.equal(validation.verifiedCount, 14);
+  assert.equal(validation.verifiedCount, 16);
   // 【T117】四个上游缺文本的包现在走「逐条签字的例外」，不再进 blockedPackages。
   // 断言改成同时钉住**两边**：blocked 必须是 0（没有未签字的），excused 必须是那四个。
   // 如果哪天有人把 disposition 删了，`blockedPackages` 会变回 4，这条立刻红。
   assert.equal(validation.blockedCount, 0);
   assert.equal(validation.excusedCount, 4);
   assert.deepEqual(validation.excusedPackages.map(entry => entry.name).sort(), [...STILL_BLOCKED].sort());
-  assert.equal(real.expectedPackageCount, 18);
-  assert.equal(real.resolvedCount, 14);
+  assert.equal(real.expectedPackageCount, 20);
+  assert.equal(real.resolvedCount, 16);
   assert.equal(real.blockedCount, 4);
   assert.equal(real.excusedCount, 4);
   // `releaseEligible` 的语义在 T117 之后是「没有**未签字**的阻塞」——
   // 四个 blocked 全部逐个签了 disposition，所以它是 true。而 `resolvedCount`
-  // 仍是 14：那四个包**没有**完整原文，这个事实不能被例外抹掉。
+  // 仍是 16：那四个包**没有**完整原文，这个事实不能被例外抹掉。
   assert.equal(real.releaseEligible, true);
-  pass("manifest summary is 14 verified / 4 excused / 0 unexcused; releaseEligible true via signed exceptions");
+  pass("manifest summary is 16 verified / 4 excused / 0 unexcused; releaseEligible true via signed exceptions");
 
   assert.equal(stage.GENOFFICE_LICENSE_MANIFEST_SHA256, sha256(fs.readFileSync(manifestPath)));
   pass("gate's pinned manifest SHA-256 equals the reviewed manifest bytes");
@@ -337,7 +337,7 @@ try {
   fs.unlinkSync(path.join(missingFixture.licenses, strictdomEntry.licenseFile));
   rejects("withdrawing one verified package's material turns validation red", () =>
     validateFixture(missingFixture), /missing|license source|ENOENT/i);
-  pass("withdrawn material is detected (release cannot proceed with fewer than 14 texts)");
+  pass("withdrawn material is detected (release cannot proceed with fewer than 16 texts)");
 
   // Demote the same package to blocked the way the review process would: no
   // material, no source record, explicit missingEvidence. The strict release
@@ -350,7 +350,7 @@ try {
     entry.licenseTextSha256 = null;
     entry.licenseSourceUrl = null;
     entry.missingEvidence = "Fixture: material withdrawn to prove the gate returns to blocked.";
-    object.resolvedCount = 13;
+    object.resolvedCount = 15;
     object.blockedCount = 5;
     // 【T117】demote 之后 excused 仍是 4（那四条 disposition 没动），
     // blocked 总数 = excused + 未签字，所以要从 4 改成 5；否则红在 summary
@@ -369,7 +369,7 @@ try {
   rejects("demoting a package to blocked re-blocks the strict release and names it", () =>
     validateFixture(demoteFixture, true), /strictdom@1\.0\.1/);
   restoreDemote();
-  pass("demoted fixture restored to 14 verified / 4 excused / 0 unexcused");
+  pass("demoted fixture restored to 16 verified / 4 excused / 0 unexcused");
 
   // ---- Mutation: wrong licenseTextSha256 must redden, restore must be exact -
   const mutationFixture = copyFixture("hash-mutation");
@@ -383,7 +383,7 @@ try {
     validateFixture(mutationFixture), /range hash differs|SHA-256 mismatch: fastdom/);
   restoreMutation();
   assert.equal(sha256(fs.readFileSync(mutationFixture.manifest)), originalHash);
-  assert.deepEqual(validateFixture(mutationFixture).items.map(entry => entry.name).length, 14);
+  assert.deepEqual(validateFixture(mutationFixture).items.map(entry => entry.name).length, 16);
   pass("manifest bytes restored exactly (hash equal) and validation is green again");
 
   const materialMutationFixture = copyFixture("material-mutation");
@@ -482,7 +482,7 @@ try {
   const noticeFixture = copyFixture("notice-regeneration");
   const noticeSource = fs.readFileSync(path.join(root, "genoffice/apps/shell/build/THIRD-PARTY-NOTICES.txt"), "utf8");
   const restoreNotice = saveAndWrite(noticeFixture, (object) => {
-    const index = { "@electron-internal/extract-zip": 0, "lazy-val": 10, "ot-text-unicode": 12, "react-remove-scroll-bar": 14 };
+    const index = { "@electron-internal/extract-zip": 0, "lazy-val": 12, "ot-text-unicode": 14, "react-remove-scroll-bar": 16 };
     for (const [name, body] of Object.entries(noticeFixtureTexts)) {
       const entry = item(object, name);
       const file = name.replace(/[@/]/g, "_") + "-fixture.txt";
@@ -501,13 +501,13 @@ try {
       assert.equal(object.items[0], item(object, "@electron-internal/extract-zip"));
       assert.equal(index[name] !== undefined, true);
     }
-    object.resolvedCount = 18;
+    object.resolvedCount = 20;
     object.blockedCount = 0;
     object.excusedCount = 0;
     object.releaseEligible = true;
   });
   const completeFixture = validateFixture(noticeFixture, true);
-  assert.equal(completeFixture.verifiedCount, 18);
+  assert.equal(completeFixture.verifiedCount, 20);
   assert.equal(completeFixture.blockedCount, 0);
   const notice = stage.buildCompleteThirdPartyNotice(noticeSource, completeFixture);
   assertThirdPartySection(notice, "fastdom", "50c0de64f5cd5e39859b43f7eca7f5843fb3c3d5ac7e34a453e27419ad51e08c");
@@ -515,8 +515,8 @@ try {
   assert.equal((notice.match(/T11 TEST FIXTURE LICENSE/g) || []).length, 4);
   stage.assertThirdPartyNoticeTextComplete(notice);
   stage.assertThirdPartyNoticeMatchesManifest(notice, completeFixture);
-  pass("notice generator embeds manifest material + Source + License SHA-256 for all 18 (fixture-only)");
-  // 【T117】原来这条断言是「拒绝真实 14/18 清单」——那在**写死阻塞**的策略下是对的。
+  pass("notice generator embeds manifest material + Source + License SHA-256 for all 20 (fixture-only)");
+  // 【T117】原来这条断言是「拒绝真实 16/20 清单」——那在**写死阻塞**的策略下是对的。
   // 方向 A 之后，带签字的例外本身就是一种完整状态，真实清单**可以**出通知了；
   // 继续断言「拒绝」等于要求门禁永远不能放行 GenOffice，与已批准的方案相反。
   //
@@ -526,8 +526,8 @@ try {
   //   2. 未签字的清单仍然出不了通知（fail-closed 没被放宽）。
   const realNotice = stage.buildCompleteThirdPartyNotice(noticeSource, validation);
   stage.assertThirdPartyNoticeTextComplete(realNotice);
-  // 【T117】这条断言守的是产品里改过的判据：完整性 = 14 原文 + 4 签字例外。
-  // 改回 `verifiedCount === 18` 时它必须红 —— 我把判据换成 `verified+excused`
+  // 【T117】这条断言守的是产品里改过的判据：完整性 = 16 原文 + 4 签字例外。
+  // 改回 `verifiedCount === 20` 时它必须红 —— 我把判据换成 `verified+excused`
   // 时，正是 t87 的 afterPack 路径先撞出「带签字清单永远出不了合法通知」。
   stage.assertThirdPartyNoticeMatchesManifest(realNotice, validation);
   // 反向对照：把 exception 去掉（= 未签字），同一份通知必须被拒。
@@ -535,7 +535,7 @@ try {
     () => stage.assertThirdPartyNoticeMatchesManifest(realNotice, { ...validation, blockedCount: 1 }),
     /incomplete license source manifest/i,
   );
-  pass("complete-notice verifier accepts 14+signed-4 and rejects any unexcused blockage");
+  pass("complete-notice verifier accepts 16+signed-4 and rejects any unexcused blockage");
   for (const name of STILL_BLOCKED) {
     // 按**标题行**切分（72 个短横线在每节标题上下各有一条，用它切会把正文切掉）。
     const start = realNotice.indexOf("\n" + name + " v");
@@ -550,14 +550,14 @@ try {
     assert.doesNotMatch(section, /License SHA-256:/);
   }
   assert.equal((realNotice.match(/NO LICENSE TEXT WAS SHIPPED WITH THIS VERSION/g) || []).length, 4);
-  pass("real manifest now produces a complete notice: 14 texts + 4 signed, labelled exceptions");
+  pass("real manifest now produces a complete notice: 16 texts + 4 signed, labelled exceptions");
 
   const unsignedValidationForNotice = stage.validateGenofficeLicenseManifest({
     manifestPath: unsignedPath, licenseRoot, vendorRoot: path.join(root, "genoffice"), repoRoot: root,
     requireComplete: false, expectedManifestSha256: unsignedSha,
   });
   assert.throws(() => stage.buildCompleteThirdPartyNotice(noticeSource, unsignedValidationForNotice), /unresolved/i);
-  pass("the same generator still refuses an unsigned 14/18 manifest — no exception without a signature");
+  pass("the same generator still refuses an unsigned 16/20 manifest — no exception without a signature");
   try { fs.rmSync(unsignedPath, { force: true }); } catch { /* 清不掉不影响结论 */ }
   restoreNotice();
   for (const entry of completeFixture.items) {
@@ -698,7 +698,7 @@ try {
   }
 
   console.log("T11 license carrier smoke: " + total + "/" + total + " PASS");
-  console.log("Release status: ELIGIBLE — 14 verified texts + 4 signed upstream-omission exceptions (18/18 accounted for).");
+  console.log("Release status: ELIGIBLE — 16 verified texts + 4 signed upstream-omission exceptions (20/20 accounted for).");
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });
 }
