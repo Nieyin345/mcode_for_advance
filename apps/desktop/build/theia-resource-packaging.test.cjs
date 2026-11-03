@@ -2,9 +2,13 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { assertTheiaExtraResourceSource } = require("./link-theia-runtime.cjs");
+const { theiaRootIn } = require("./verify-theia-after-pack.cjs");
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), "mcode-theia-resource-root-"));
+test.after(() => fs.rmSync(temp, { recursive: true, force: true }));
 
 const repoRoot = path.resolve(__dirname, "../../..");
 const runtimeRoot = path.join(repoRoot, "vendor/theia-runtime");
@@ -22,6 +26,20 @@ test("Theia extraResources explicitly includes node_modules before the pack shim
   const block = config.slice(start, next === -1 ? config.length : next);
   assert.ok(block.includes("to: theia"));
   assert.ok(block.includes('"**/node_modules/**"'));
+});
+
+test("Theia afterPack resolves macOS appOutDir parent to Mcode.app/Contents/Resources", () => {
+  const out = path.join(temp, "mac-arm64");
+  const root = path.join(out, "Mcode.app", "Contents", "Resources", "theia");
+  fs.mkdirSync(root, { recursive: true });
+  assert.equal(theiaRootIn({ appOutDir: out }), root);
+});
+
+test("Theia afterPack rejects ambiguous Windows and macOS resource roots", () => {
+  const out = path.join(temp, "ambiguous");
+  fs.mkdirSync(path.join(out, "resources", "theia"), { recursive: true });
+  fs.mkdirSync(path.join(out, "Mcode.app", "Contents", "Resources", "theia"), { recursive: true });
+  assert.throws(() => theiaRootIn({ appOutDir: out }), /multiple packaged Theia resource roots/);
 });
 
 test("complete checkout contains the pinned Theia runtime package root", {

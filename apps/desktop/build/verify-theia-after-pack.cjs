@@ -33,11 +33,23 @@ const { execFileSync } = require("node:child_process");
 
 /** 产物里 Theia 应该在哪（`electron-builder.yml` 的 `extraResources: to: theia`）。 */
 function theiaRootIn(context) {
-  const out = context.appOutDir;
-  return [
+  const out = path.resolve(context.appOutDir);
+  const candidates = [
     path.join(out, "resources", "theia"),
     path.join(out, "Contents", "Resources", "theia"),
-  ].find(c => fs.existsSync(c)) ?? path.join(out, "resources", "theia");
+  ];
+  let entries = [];
+  try { entries = fs.readdirSync(out, { withFileTypes: true }); } catch { /* the main verifier reports a missing resource */ }
+  for (const entry of entries) {
+    if (entry.isDirectory() && entry.name.toLowerCase().endsWith(".app")) {
+      candidates.push(path.join(out, entry.name, "Contents", "Resources", "theia"));
+    }
+  }
+  const roots = [...new Set(candidates.filter(candidate => fs.existsSync(candidate)))];
+  if (roots.length > 1) {
+    throw new Error("[verify-theia] multiple packaged Theia resource roots found: " + roots.join("; "));
+  }
+  return roots[0] ?? path.join(out, "resources", "theia");
 }
 
 const REQUIRED = [
@@ -122,3 +134,4 @@ module.exports = async function verifyTheiaAfterPack(context) {
 
   console.log("[verify-theia] ✓ 运行时完整可用");
 };
+module.exports.theiaRootIn = theiaRootIn;

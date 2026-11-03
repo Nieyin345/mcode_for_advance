@@ -15,7 +15,21 @@ const path = require("node:path");
 const THEIA_RUNTIME = path.resolve(__dirname, "../../../vendor/theia-runtime");
 const ORIGINAL = path.join(THEIA_RUNTIME, "node_modules");
 const RENAMED = path.join(THEIA_RUNTIME, "__mcode_node_modules");
-const PACKED_RESOURCE_ROOTS = ["resources/theia", "Contents/Resources/theia"];
+function packagedTheiaRoots(appOutDir) {
+  const out = path.resolve(appOutDir);
+  const candidates = [
+    path.join(out, "resources", "theia"),
+    path.join(out, "Contents", "Resources", "theia"),
+  ];
+  let entries = [];
+  try { entries = fs.readdirSync(out, { withFileTypes: true }); } catch { return []; }
+  for (const entry of entries) {
+    if (entry.isDirectory() && entry.name.toLowerCase().endsWith(".app")) {
+      candidates.push(path.join(out, entry.name, "Contents", "Resources", "theia"));
+    }
+  }
+  return [...new Set(candidates.filter(candidate => fs.existsSync(candidate)))];
+}
 
 function hideTheiaNodeModules(runtimeRoot = THEIA_RUNTIME) {
   const root = path.resolve(runtimeRoot);
@@ -54,10 +68,7 @@ function restoreTheiaSourceNodeModules(runtimeRoot = THEIA_RUNTIME) {
 }
 
 function restorePackedTheiaNodeModules(appOutDir) {
-  const out = path.resolve(appOutDir);
-  const roots = PACKED_RESOURCE_ROOTS
-    .map(relative => path.join(out, relative))
-    .filter(root => fs.existsSync(root));
+  const roots = packagedTheiaRoots(appOutDir);
   if (roots.length > 1) {
     throw new Error("[Theia node_modules shim] multiple packaged Theia roots found: " + roots.join("; "));
   }
@@ -82,5 +93,5 @@ module.exports = {
   THEIA_RUNTIME,
   ORIGINAL,
   RENAMED,
-  PACKED_RESOURCE_ROOTS,
+  packagedTheiaRoots,
 };

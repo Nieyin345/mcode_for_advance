@@ -41,12 +41,21 @@ function inspectNsis(exe, sourceBinary, unpackedBinary, options = {}) {
   const run = options.run || ((args, maxBuffer) => execFileSync(sevenZip, args, {
     windowsHide: true, timeout: 180000, maxBuffer, encoding: null,
   }));
-  const listing = run(["l", "-ba", "-slt", archive, "resources\\native-fs\\*"], 2 * 1024 * 1024).toString("utf8");
-  const matches = listing.split(/\r?\n/).flatMap(line => {
+  // NSIS is a self-extracting wrapper. Avoid wildcard filtering here: some 7-Zip
+  // builds apply it to wrapper metadata instead of the embedded application tree.
+  const listing = run(["l", "-ba", "-slt", archive], 64 * 1024 * 1024).toString("utf8");
+  const paths = listing.split(/\r?\n/).flatMap(line => {
     const m = /^Path = (.+)$/.exec(line);
     return m ? [m[1].replace(/\\/g, "/").toLowerCase()] : [];
-  }).filter(p => p === RELATIVE_BINARY);
-  if (matches.length !== 1) throw Error("NSIS must contain exactly one native-fs/mcode_fs.node: found " + matches.length);
+  });
+  const matches = paths.filter(p => p === RELATIVE_BINARY);
+  if (matches.length !== 1) {
+    const related = paths.filter(p => p.includes("native-fs") || p.endsWith("mcode_fs.node")).slice(0, 20);
+    const sample = paths.filter(p => p.includes("/")).slice(0, 12);
+    throw Error("NSIS must contain exactly one native-fs/mcode_fs.node: found " + matches.length
+      + (related.length ? "; related entries: " + related.join(", ") : "; no native-fs paths in archive listing")
+      + (sample.length ? "; archive path sample: " + sample.join(", ") : ""));
+  }
   const data = run(["e", "-so", archive, RELATIVE_BINARY.replace(/\//g, "\\")], expected.size + 1024 * 1024);
   if (!Buffer.isBuffer(data)) throw Error("NSIS binary extraction did not return bytes");
   const packed = { size: data.length, sha256: createHash("sha256").update(data).digest("hex") };

@@ -41,9 +41,9 @@ test("Windows packaged resources restore __mcode_node_modules to resources/theia
   assert.equal(restorePackedTheiaNodeModules(out), false);
 });
 
-test("macOS packaged resources restore __mcode_node_modules inside Contents/Resources", () => {
-  const out = path.join(temp, "Mcode.app");
-  const root = path.join(out, "Contents", "Resources", "theia");
+test("macOS appOutDir parent restores __mcode_node_modules inside Mcode.app/Contents/Resources", () => {
+  const out = path.join(temp, "mac-arm64");
+  const root = path.join(out, "Mcode.app", "Contents", "Resources", "theia");
   fs.mkdirSync(path.join(root, "__mcode_node_modules", "@theia"), { recursive: true });
   fs.writeFileSync(path.join(root, "__mcode_node_modules", "@theia", "marker.txt"), "mac");
   assert.equal(restorePackedTheiaNodeModules(out), true);

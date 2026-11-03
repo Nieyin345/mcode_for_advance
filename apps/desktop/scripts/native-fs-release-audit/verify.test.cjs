@@ -24,7 +24,11 @@ function fakeSevenZip(payload, paths = ["resources\\native-fs\\mcode_fs.node"]) 
   return {
     sevenZip: "fake-7z",
     run(args) {
-      if (args[0] === "l") return Buffer.from(paths.map(p => "Path = " + p).join("\n"));
+      if (args[0] === "l") {
+        assert.deepEqual(args.slice(0, 3), ["l", "-ba", "-slt"]);
+        assert.equal(args.length, 4, "NSIS listing must inspect the archive without a wildcard filter");
+        return Buffer.from(paths.map(p => "Path = " + p).join("\n"));
+      }
       if (args[0] === "e") return Buffer.from(payload);
       throw Error("unexpected 7z args");
     },

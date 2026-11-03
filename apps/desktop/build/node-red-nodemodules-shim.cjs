@@ -34,9 +34,22 @@ const path = require("node:path");
 const STAGED = path.resolve(__dirname, "..", ".tmp", "node-red-release");
 const ORIGINAL = path.join(STAGED, "node_modules");
 const RENAMED = path.join(STAGED, "__mcode_node_modules");
-/** 产物里的同名目录（electron-builder 会按 extraResources 的 to: node-red 放）。 */
-const PACKED_RENAMED = "resources/node-red/__mcode_node_modules";
-const PACKED_ORIGINAL = "resources/node-red/node_modules";
+/** Resolve the packaged resource root for Windows and macOS appOutDir layouts. */
+function packagedNodeRedRoots(appOutDir) {
+  const out = path.resolve(appOutDir);
+  const candidates = [
+    path.join(out, "resources", "node-red"),
+    path.join(out, "Contents", "Resources", "node-red"),
+  ];
+  let entries = [];
+  try { entries = fs.readdirSync(out, { withFileTypes: true }); } catch { return []; }
+  for (const entry of entries) {
+    if (entry.isDirectory() && entry.name.toLowerCase().endsWith(".app")) {
+      candidates.push(path.join(out, entry.name, "Contents", "Resources", "node-red"));
+    }
+  }
+  return [...new Set(candidates.filter(candidate => fs.existsSync(candidate)))];
+}
 
 function renameIfPossible(from, to, label) {
   if (!fs.existsSync(from)) {
@@ -65,11 +78,17 @@ async function hideNodeModules() {
  * 验证器自己会给出正确的结论（它会报缺资源）。
  */
 function restorePackedNodeModules(appOutDir) {
-  const packedRenamed = path.join(appOutDir, PACKED_RENAMED);
-  const packedOriginal = path.join(appOutDir, PACKED_ORIGINAL);
+  const roots = packagedNodeRedRoots(appOutDir);
+  if (roots.length > 1) {
+    throw new Error("[T118] afterPack: multiple packaged Node-RED resource roots found: " + roots.join("; "));
+  }
+  if (roots.length === 0) return false;
+  const root = roots[0];
+  const packedRenamed = path.join(root, "__mcode_node_modules");
+  const packedOriginal = path.join(root, "node_modules");
   if (!fs.existsSync(packedRenamed)) return false;
   renameIfPossible(packedRenamed, packedOriginal, "afterPack(packed)");
-  console.log("[T118] afterPack: packed node_modules renamed to node_modules");
+  console.log("[T118] afterPack: packed node_modules renamed to node_modules at " + root);
   return true;
 }
 
@@ -82,4 +101,4 @@ function restoreSourceNodeModules() {
   }
 }
 
-module.exports = { hideNodeModules, restorePackedNodeModules, restoreSourceNodeModules, STAGED, ORIGINAL, RENAMED };
+module.exports = { hideNodeModules, restorePackedNodeModules, restoreSourceNodeModules, packagedNodeRedRoots, STAGED, ORIGINAL, RENAMED };
