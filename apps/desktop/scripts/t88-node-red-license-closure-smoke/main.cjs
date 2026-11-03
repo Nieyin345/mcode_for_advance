@@ -288,6 +288,19 @@ try {
     assert.equal(tampered.summary.releaseEligible, false);
   });
 
+  verify("malformed npm platform constraints never authorize a license-manifest exclusion", () => {
+    const root = path.join(base, "malformed-platform-constraint");
+    makeFixture(root);
+    removePackage(root, "@node-rs/bcrypt-win32-x64-msvc");
+    removePackage(root, "@node-rs/bcrypt-darwin-x64");
+    const lockPath = path.join(root, "package-lock.json");
+    const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    lock.packages["node_modules/@node-rs/bcrypt-darwin-x64"].cpu = ["x64", null];
+    put(lockPath, JSON.stringify(lock, null, 2) + "\n");
+    assert.throws(() => createNodeRedLicenseInventory(root, { platform: "darwin", arch: "arm64" }),
+      /Invalid npm platform constraint/);
+  });
+
   verify("unknown license metadata stays a release blocker even when a reviewed mapping covers every other package", () => {
     const root = path.join(base, "pause-unknown-license");
     const inventory = makeFixture(root, { includePauseUnknown: true });

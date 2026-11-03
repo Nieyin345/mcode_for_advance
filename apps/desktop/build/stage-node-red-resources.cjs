@@ -572,10 +572,14 @@ function collectPackageEntries(root, modulesRelative, lock, licenseManifestConte
   return found;
 }
 function platformConstraintExcludes(values, current) {
-  if (!Array.isArray(values) || values.length === 0) return false;
-  const constraints = values.filter(value => typeof value === "string" && value.length > 0);
-  if (constraints.some(value => value.startsWith("!") && value.slice(1) === current)) return true;
-  const included = constraints.filter(value => !value.startsWith("!"));
+  if (values === undefined) return false;
+  if (!Array.isArray(values) || values.length === 0
+      || values.some(value => typeof value !== "string"
+        || !/^(?:!?[a-z0-9][a-z0-9_-]*)$/.test(value))) {
+    throw new Error("Invalid npm platform constraint in Node-RED package-lock");
+  }
+  if (values.some(value => value.startsWith("!") && value.slice(1) === current)) return true;
+  const included = values.filter(value => !value.startsWith("!"));
   return included.length > 0 && !included.includes(current);
 }
 function isExpectedPlatformExcludedLicenseEntry(entry, lock, platform, arch) {
@@ -586,8 +590,9 @@ function isExpectedPlatformExcludedLicenseEntry(entry, lock, platform, arch) {
   if (!lockEntry || lockEntry.optional !== true || lockEntry.version !== entry.version
       || lockEntry.resolved !== entry.packageSource.tarballUrl
       || lockEntry.integrity !== entry.packageSource.tarballIntegrity) return false;
-  return platformConstraintExcludes(lockEntry.os, platform)
-      || platformConstraintExcludes(lockEntry.cpu, arch);
+  const osExcluded = platformConstraintExcludes(lockEntry.os, platform);
+  const cpuExcluded = platformConstraintExcludes(lockEntry.cpu, arch);
+  return osExcluded || cpuExcluded;
 }
 function createNodeRedLicenseInventory(root, options = {}) {
   const lockPath = path.join(root, "package-lock.json");
