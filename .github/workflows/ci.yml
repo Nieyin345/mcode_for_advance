@@ -319,6 +319,8 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: node apps/desktop/build/prepare-genoffice-release.cjs
+      - name: Verify pinned GenOffice license manifest and generated notice
+        run: node apps/desktop/scripts/t11-genoffice-license-carrier-smoke/main.cjs
       - name: Build and package full Mcode application
         shell: bash
         run: pnpm --filter @mcode/desktop package
