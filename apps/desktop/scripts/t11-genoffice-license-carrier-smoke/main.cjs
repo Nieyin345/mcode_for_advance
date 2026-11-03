@@ -509,6 +509,32 @@ try {
   const completeFixture = validateFixture(noticeFixture, true);
   assert.equal(completeFixture.verifiedCount, 20);
   assert.equal(completeFixture.blockedCount, 0);
+  // The notice source is generated on the actual CI host, so npm omits the
+  // other two optional Canvas platform packages. Mark those lock-proven
+  // platform exclusions on this synthetic all-verified fixture as the real
+  // release validator does; the notice builder must restore their sections.
+  const canvasPlatformPackages = [
+    { name: "@napi-rs/canvas-win32-x64-msvc", platform: "win32", arch: "x64" },
+    { name: "@napi-rs/canvas-darwin-arm64", platform: "darwin", arch: "arm64" },
+    { name: "@napi-rs/canvas-darwin-x64", platform: "darwin", arch: "x64" },
+  ];
+  const hostCanvasPackage = canvasPlatformPackages.find(entry =>
+    entry.platform === process.platform && entry.arch === process.arch);
+  const omittedCanvasPackages = canvasPlatformPackages.filter(entry => entry !== hostCanvasPackage);
+  for (const entry of omittedCanvasPackages) {
+    const packageItem = completeFixture.items.find(item => item.name === entry.name);
+    assert.ok(packageItem, "reviewed Canvas platform package " + entry.name);
+    packageItem.platformExcluded = true;
+    packageItem.platformExclusion = { platform: process.platform, arch: process.arch };
+  }
+  completeFixture.platformExcludedCount = omittedCanvasPackages.length;
+  completeFixture.platformExcludedPackages = omittedCanvasPackages.map(entry => {
+    const packageItem = completeFixture.items.find(item => item.name === entry.name);
+    return {
+      name: packageItem.name, version: packageItem.version, spdx: packageItem.spdx,
+      status: "verified", platform: process.platform, arch: process.arch,
+    };
+  });
   const notice = stage.buildCompleteThirdPartyNotice(noticeSource, completeFixture);
   assertThirdPartySection(notice, "fastdom", "50c0de64f5cd5e39859b43f7eca7f5843fb3c3d5ac7e34a453e27419ad51e08c");
   assertThirdPartySection(notice, "lazy-val", sha256(Buffer.from(MIT_FIXTURE, "utf8")));
