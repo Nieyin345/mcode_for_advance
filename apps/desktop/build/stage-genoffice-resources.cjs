@@ -37,7 +37,7 @@ const EDITOR_APPS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown"
 const NATIVE_PRELOAD_KINDS = Object.freeze(["pdf", "markdown", "html", "sheets", "slides"]);
 const GENOFFICE_UPSTREAM_REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const GENOFFICE_UPSTREAM_NOTICE = "genoffice/apps/shell/build/THIRD-PARTY-NOTICES.txt";
-const GENOFFICE_LICENSE_MANIFEST_SHA256 = "394d3467ae45450d2a41bbb44c72e3386fc501d9eab3bc41ea3edfecc9025108";
+const GENOFFICE_LICENSE_MANIFEST_SHA256 = "cf774da7ab61763bf2b174748829ba94d87d6f601cf84ba2cd2a040179069a7c";
 const GENOFFICE_LICENSE_MANIFEST_FORMAT = "mcode.genoffice.third-party-license-sources.v2";
 /**
  * T11 carrier policy (roadmap: T9 evidence). A license text is admissible only
@@ -249,7 +249,7 @@ function assertThirdPartyNoticeComplete(file) {
  * |---|---|
  * | 上游 `THIRD-PARTY-NOTICES.txt` 里的包（25581 行，其中 521 段带完整条款） | 570 |
  * | 上游 notice 里**正文不足一行**的段落 | **15** |
- * | 本清单 | **18** |
+ * | 本清单 | **20** |
  *
  * 两个集合**互不包含**：
  *  - 本清单里 `fastdom` / `hash.js` / `isarray` / `lazy-val` / `strictdom` **在上游
@@ -280,6 +280,8 @@ function assertThirdPartyNoticeComplete(file) {
 const REQUIRED_GENOFFICE_LICENSE_PACKAGES = Object.freeze([
   ["@electron-internal/extract-zip", "1.0.5", "BSD-2-Clause"],
   ["@napi-rs/canvas-win32-x64-msvc", "1.0.3", "MIT"],
+  ["@napi-rs/canvas-darwin-arm64", "1.0.3", "MIT"],
+  ["@napi-rs/canvas-darwin-x64", "1.0.3", "MIT"],
   ["@nodable/entities", "3.0.0", "MIT"],
   ["@univerjs/protocol", "0.25.1", "Apache-2.0"],
   ["emoji-regex", "8.0.0", "MIT"],
@@ -544,8 +546,8 @@ function findNoticeSection(text, title) {
   return null;
 }
 function assertThirdPartyNoticeMatchesManifest(text, validation) {
-  // 【T117】完整性的判据是「18 个包**全部有交代**」：14 份原文 + 4 条签字例外。
-  // 原来要求 `verifiedCount === 18`，那会让带签字的清单永远出不了合法通知 ——
+  // 【T117】完整性的判据是「20 个包**全部有交代**」：16 份原文 + 4 条签字例外。
+  // 原来要求 `verifiedCount === 20`，那会让带签字的清单永远出不了合法通知 ——
   // 也就等于 T117 的方案根本无法发布。改成 verified + excused 覆盖全量，
   // 且**没有任何未签字的阻塞**。
   if (!validation || validation.blockedCount !== 0
@@ -1082,11 +1084,11 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
           // 这写的是**清单覆盖的包数**，与 `licenseSourceManifestSha256`
           // 配对 —— 不是「这次验证到几份原文」。
           //
-          // 原来写的是 `verifiedCount`，在 T117 之前两者恰好相等（18 = 18）所以没暴露。
-          // 四个包改成签字例外之后 verified 恒为 14，`afterPack` 的
+          // 原来写的是 `verifiedCount`，在 T117 之前两者恰好相等（20 = 20）所以没暴露。
+          // 四个包改成签字例外之后 verified 恒为 16，`afterPack` 的
           // `verify-genoffice-editors-after-pack.cjs:128` 要它等于
-          // `REQUIRED_GENOFFICE_LICENSE_PACKAGES.length`（18），于是打包必红。
-          // 14 和 18 都不是随便写的：14 是原文数，18 是包数，这个字段要的是后者。
+          // `REQUIRED_GENOFFICE_LICENSE_PACKAGES.length`（20），于是打包必红。
+          // 16 和 20 都不是随便写的：16 是原文数，20 是包数，这个字段要的是后者。
           licenseSourcePackageCount: REQUIRED_GENOFFICE_LICENSE_PACKAGES.length,
         } : {}),
         ...(completeLicenseBundle && !licenseValidation && isTestFixtureRoot ? { licenseBundleTestFixture: true } : {}),
