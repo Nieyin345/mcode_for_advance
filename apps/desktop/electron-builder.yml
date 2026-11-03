@@ -150,11 +150,10 @@ extraResources:
   # where Theia lives. It looks at `<resources>/theia` when packaged
   # (`app.isPackaged`), and at `vendor/theia` in development.
   #
-  # Source is `vendor/theia` (A′ checkout, pinned by `vendor/theia.lock.json`),
-  # but electron-builder must not walk the whole 1.3 GB checkout: we only need the
-  # compiled `lib/` trees plus the `package.json` of the packages that are actually
-  # loaded at runtime. `build/stage-theia-resources.cjs` produces that minimal tree
-  # under `.tmp/`, and `afterPack` verifies the entry points survived.
+  # The release source is the curated, tracked `vendor/theia-runtime` snapshot:
+  # compiled Theia package trees, package manifests, and the external npm runtime
+  # dependencies required by those packages. `link-theia-runtime.cjs` rebuilds
+  # the monorepo's `node_modules/@theia/*` junctions after checkout.
   # electron-builder hard-excludes a source-root node_modules directory before
   # applying filters. The beforePack shim renames it to __mcode_node_modules;
   # this explicit pattern disables the global exclusion and keeps that tree.
