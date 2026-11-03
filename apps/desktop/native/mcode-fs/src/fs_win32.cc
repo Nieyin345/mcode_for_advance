@@ -267,9 +267,9 @@ HANDLE OpenRelative(HANDLE parent, const std::wstring& component, ACCESS_MASK ac
   HANDLE handle = INVALID_HANDLE_VALUE;
   // Open the component itself when it is a reparse point. VerifyDirectory /
   // VerifyLeaf then reject it before any later component is resolved. Use
-  // FILE_OPEN_REPARSE_POINT without OBJ_DONT_REPARSE: the latter is not part of
-  // the narrowly documented user-mode NtCreateFile Attributes contract, and
-  // combining both flags was observed to follow a directory junction.
+  // FILE_OPEN_REPARSE_POINT without OBJ_DONT_REPARSE; directory enumeration
+  // additionally cross-checks a traversal-only handle because some Windows
+  // runners resolve a junction when FILE_LIST_DIRECTORY is requested.
   const NTSTATUS status = create(&handle, access | SYNCHRONIZE,
       reinterpret_cast<POBJECT_ATTRIBUTES>(&attributes), reinterpret_cast<PIO_STATUS_BLOCK>(&io),
       nullptr, FILE_ATTRIBUTE_NORMAL, kShareAll, disposition,
@@ -289,6 +289,33 @@ void VerifyDirectory(HANDLE handle, const char* operation) {
   }
 }
 
+bool SameFileIdentity(HANDLE left, HANDLE right) {
+  FILE_ID_INFO left_info{};
+  FILE_ID_INFO right_info{};
+  if (!GetFileInformationByHandleEx(left, FileIdInfo, &left_info, sizeof(left_info)) ||
+      !GetFileInformationByHandleEx(right, FileIdInfo, &right_info, sizeof(right_info))) {
+    ThrowWindows("verify directory identity across enumeration handle");
+  }
+  return left_info.VolumeSerialNumber == right_info.VolumeSerialNumber &&
+      std::memcmp(&left_info.FileId, &right_info.FileId, sizeof(left_info.FileId)) == 0;
+}
+
+void VerifyDirectoryForListing(HANDLE parent, const std::wstring& name, HANDLE listed) {
+  VerifyDirectory(listed, "open directory for enumeration");
+
+  // Some Windows/NTFS runner combinations resolve a directory junction when
+  // FILE_LIST_DIRECTORY is requested, even with FILE_OPEN_REPARSE_POINT. Open
+  // the same entry a second time with only traversal/attribute rights: this
+  // access mask returns the reparse point itself. Reject it, and compare file
+  // identities so a path swap between the two opens cannot redirect listing.
+  ScopedHandle identity(OpenRelative(parent, name, FILE_TRAVERSE | FILE_READ_ATTRIBUTES,
+      kFileOpen, kFileDirectoryFile));
+  VerifyDirectory(identity.value, "recheck directory before enumeration");
+  if (!SameFileIdentity(listed, identity.value)) {
+    throw FsError("ELOOP", "directory changed or a reparse point was followed while opening for enumeration");
+  }
+}
+
 HANDLE OpenDirectoryAt(HANDLE parent, const std::wstring& name, bool list = false,
                         ACCESS_MASK extra_access = 0) {
   const ACCESS_MASK base_access = FILE_TRAVERSE | FILE_READ_ATTRIBUTES |
@@ -296,7 +323,8 @@ HANDLE OpenDirectoryAt(HANDLE parent, const std::wstring& name, bool list = fals
   try {
     ScopedHandle handle(OpenRelative(parent, name, base_access | extra_access,
         kFileOpen, kFileDirectoryFile));
-    VerifyDirectory(handle.value, "open directory component");
+    if (list) VerifyDirectoryForListing(parent, name, handle.value);
+    else VerifyDirectory(handle.value, "open directory component");
     return handle.release();
   } catch (const FsError& error) {
     // A selected read-only workspace must remain browseable. Keep the directory
@@ -304,7 +332,8 @@ HANDLE OpenDirectoryAt(HANDLE parent, const std::wstring& name, bool list = fals
     // operations still fail at the handle-relative filesystem call.
     if (!extra_access || error.code() != "EACCES") throw;
     ScopedHandle read_only(OpenRelative(parent, name, base_access, kFileOpen, kFileDirectoryFile));
-    VerifyDirectory(read_only.value, "open read-only directory component");
+    if (list) VerifyDirectoryForListing(parent, name, read_only.value);
+    else VerifyDirectory(read_only.value, "open read-only directory component");
     return read_only.release();
   }
 }

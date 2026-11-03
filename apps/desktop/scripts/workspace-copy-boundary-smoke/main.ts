@@ -53,8 +53,10 @@ try {
  if (process.platform !== "win32") {
    const backslashName = "literal\\backslash.txt";
    writeFileSync(join(root, backslashName), "POSIX_BACKSLASH_NAME");
-   check("POSIX watcher validation preserves a literal backslash in one filename",
-     await ws.watchState(backslashName) === "file");
+   check("POSIX watcher does not reinterpret a non-portable backslash as a path separator",
+     await ws.watchState(backslashName) === "ignore");
+   check("POSIX workspace enumeration omits names that cannot round-trip on Windows",
+     !(await ws.readdir(fileResource(root))).some(([name]) => name === backslashName));
  } else {
    console.log("SKIP POSIX-only literal-backslash filename");
  }
@@ -211,10 +213,20 @@ try {
    const uncMatches = await uncWorkspace.findFiles("**/external.txt");
    check("Theia workspace adapter returns a readable UNC file URI",
      uncMatches.length === 1 && (await uncWorkspace.readFile(uncMatches[0])).toString() === "smb-read");
+   const uncNestedDir = join(uncRoot,"workspace-adapter-nested");
+   await uncWorkspace.mkdir(fileResource(uncNestedDir));
+   const uncNestedFile = join(uncNestedDir,"nested.txt");
+   await uncWorkspace.writeFile(fileResource(uncNestedFile),Buffer.from("nested-adapter-write"));
+   const nestedMatches = await uncWorkspace.findFiles("**/nested.txt");
+   check("Theia workspace adapter safely enumerates nested directories over SMB",
+     nestedMatches.length === 1 && (await uncWorkspace.readFile(nestedMatches[0])).toString() === "nested-adapter-write");
    check("Theia workspace adapter rejects a forged UNC authority",
      await rejected(()=>uncWorkspace.readFile({...uncFileUri,authority:"attacker-host"})));
+   await uncWorkspace.delete(fileResource(uncNestedFile));
+   await uncWorkspace.delete(fileResource(uncNestedDir));
    await uncWorkspace.delete(fileResource(uncCreated));
-   check("Theia workspace adapter removes only its own UNC test file",!existsSync(uncCreated));
+   check("Theia workspace adapter removes only its own UNC test files",
+     !existsSync(uncCreated) && !existsSync(uncNestedDir));
  }
  console.log("workspace-copy-boundary-smoke: "+pass+"/"+pass+" PASS");
 }finally{for(const workspace of openWorkspaces)workspace.close();rmSync(temp,{recursive:true,force:true})}

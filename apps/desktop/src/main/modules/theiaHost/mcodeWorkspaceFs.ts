@@ -215,8 +215,9 @@ export class McodeWorkspaceFs {
 
   async watchState(relativePath: string): Promise<"file" | "missing" | "ignore"> {
     // The watcher already normalizes platform separators to '/'. On POSIX,
-    // backslash is a valid filename byte and must not be reinterpreted as a
-    // path separator (Windows filenames cannot contain it).
+    // backslash is a valid filesystem byte but is non-portable under the shared
+    // workspace policy. Preserve it as one component so native validation
+    // rejects/ignores it instead of reinterpreting it as a path separator.
     const normalized = process.platform === "win32" ? relativePath.replace(/\\/g, "/") : relativePath;
     const segments = normalized.split("/").filter(Boolean);
     if (!segments.length || segments.some((part) => part === "." || part === "..")) return "ignore";
