@@ -408,6 +408,52 @@
           "sha256": "d568e8932b83f0ae0799a3ff43b2ddd8940b5afd0ad33e70d9226a63c3a8505d"
         }
       ]
+    },
+    {
+      "packageName": "@node-rs/bcrypt-darwin-arm64",
+      "version": "1.10.7",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/@node-rs%2fbcrypt-darwin-arm64/1.10.7",
+        "tarballUrl": "https://registry.npmjs.org/@node-rs/bcrypt-darwin-arm64/-/bcrypt-darwin-arm64-1.10.7.tgz",
+        "tarballIntegrity": "sha512-DgzFdAt455KTuiJ/zYIyJcKFobjNDR/hnf9OS7pK5NRS13Nq4gLcSIIyzsgHwZHxsJWbLpHmFc1H23Y7IQoQBw==",
+        "tarballSha1": "f4cf60bd5950c7c92f6363e359d67cf4d1759693",
+        "repositoryUrl": "https://github.com/napi-rs/node-rs",
+        "revision": "83ca124b3e3968c945708136d6ff68d0e0549582"
+      },
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/napi-rs/node-rs/blob/83ca124b3e3968c945708136d6ff68d0e0549582/LICENSE",
+          "sourceRevision": "83ca124b3e3968c945708136d6ff68d0e0549582",
+          "sourceFileName": "LICENSE",
+          "path": "materials/@node-rs/bcrypt-darwin-arm64/1.10.7/LICENSE",
+          "sha256": "c748f2e7f93fadae76fcb1ccf6b4199e2a4013611871b5fa61000d11a50011c7"
+        }
+      ]
+    },
+    {
+      "packageName": "@node-rs/bcrypt-darwin-x64",
+      "version": "1.10.7",
+      "licenseExpression": "MIT",
+      "packageSource": {
+        "registryMetadataUrl": "https://registry.npmjs.org/@node-rs%2fbcrypt-darwin-x64/1.10.7",
+        "tarballUrl": "https://registry.npmjs.org/@node-rs/bcrypt-darwin-x64/-/bcrypt-darwin-x64-1.10.7.tgz",
+        "tarballIntegrity": "sha512-SPWVfQ6sxSokoUWAKWD0EJauvPHqOGQTd7CxmYatcsUgJ/bruvEHxZ4bIwX1iDceC3FkOtmeHO0cPwR480n/xA==",
+        "tarballSha1": "c894d67a0ee783fe776964ed0e65b2b1521b5171",
+        "repositoryUrl": "https://github.com/napi-rs/node-rs",
+        "revision": "83ca124b3e3968c945708136d6ff68d0e0549582"
+      },
+      "materials": [
+        {
+          "licenseId": "MIT",
+          "sourceUrl": "https://github.com/napi-rs/node-rs/blob/83ca124b3e3968c945708136d6ff68d0e0549582/LICENSE",
+          "sourceRevision": "83ca124b3e3968c945708136d6ff68d0e0549582",
+          "sourceFileName": "LICENSE",
+          "path": "materials/@node-rs/bcrypt-darwin-x64/1.10.7/LICENSE",
+          "sha256": "c748f2e7f93fadae76fcb1ccf6b4199e2a4013611871b5fa61000d11a50011c7"
+        }
+      ]
     }
   ],
   "blockers": []

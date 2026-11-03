@@ -12,6 +12,7 @@ const { execFileSync } = require("node:child_process");
 const { find7za } = require("../office-release-audit/nsis-inspector.cjs");
 
 const MAX_BINARY_BYTES = 128 * 1024 * 1024;
+const MAX_EMBEDDED_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 const RELATIVE_BINARY = "resources/native-fs/mcode_fs.node";
 
 function regularBinary(file) {
@@ -41,26 +42,68 @@ function inspectNsis(exe, sourceBinary, unpackedBinary, options = {}) {
   const run = options.run || ((args, maxBuffer) => execFileSync(sevenZip, args, {
     windowsHide: true, timeout: 180000, maxBuffer, encoding: null,
   }));
-  // NSIS is a self-extracting wrapper. Avoid wildcard filtering here: some 7-Zip
-  // builds apply it to wrapper metadata instead of the embedded application tree.
-  const listing = run(["l", "-ba", "-slt", archive], 64 * 1024 * 1024).toString("utf8");
-  const paths = listing.split(/\r?\n/).flatMap(line => {
+  // NSIS is a self-extracting wrapper. The outer archive contains the actual
+  // application payload as $pluginsdir/app-64.7z; listing the wrapper alone
+  // cannot prove that resources/native-fs/mcode_fs.node is distributed.
+  const outerListing = run(["l", "-ba", "-slt", archive], 64 * 1024 * 1024).toString("utf8");
+  const outerPaths = outerListing.split(/\r?\n/).flatMap(line => {
     const m = /^Path = (.+)$/.exec(line);
-    return m ? [m[1].replace(/\\/g, "/").toLowerCase()] : [];
+    return m ? [m[1].replace(/\\/g, "/")] : [];
   });
-  const matches = paths.filter(p => p === RELATIVE_BINARY);
-  if (matches.length !== 1) {
-    const related = paths.filter(p => p.includes("native-fs") || p.endsWith("mcode_fs.node")).slice(0, 20);
-    const sample = paths.filter(p => p.includes("/")).slice(0, 12);
-    throw Error("NSIS must contain exactly one native-fs/mcode_fs.node: found " + matches.length
-      + (related.length ? "; related entries: " + related.join(", ") : "; no native-fs paths in archive listing")
-      + (sample.length ? "; archive path sample: " + sample.join(", ") : ""));
+  const innerArchives = outerPaths.filter(p => p.toLowerCase() === "$pluginsdir/app-64.7z");
+  if (innerArchives.length !== 1) {
+    throw Error("NSIS must contain exactly one $pluginsdir/app-64.7z payload archive: found " + innerArchives.length);
   }
-  const data = run(["e", "-so", archive, RELATIVE_BINARY.replace(/\//g, "\\")], expected.size + 1024 * 1024);
-  if (!Buffer.isBuffer(data)) throw Error("NSIS binary extraction did not return bytes");
-  const packed = { size: data.length, sha256: createHash("sha256").update(data).digest("hex") };
-  assertExpected(packed, expected, "NSIS embedded addon");
-  return { ok: true, archive, addonSha256: packed.sha256, addonSize: packed.size };
+  const innerEntry = innerArchives[0];
+  const innerSegments = innerEntry.split("/");
+  if (innerSegments.length !== 2 || innerSegments.some(part =>
+    !part || part === "." || part === ".." || part.includes(":") || part.includes(String.fromCharCode(0)))) {
+    throw Error("Unsafe NSIS embedded payload path: " + innerEntry);
+  }
+
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mcode-nativefs-nsis-"));
+  try {
+    // Extract only the fixed, previously listed app payload archive. Never
+    // execute the installer or extract its complete application tree.
+    run(["x", "-y", "-bd", "-o" + temporaryRoot, archive, innerEntry.replace(/\//g, "\\")], 16 * 1024 * 1024);
+    let parent = temporaryRoot;
+    for (const segment of innerSegments.slice(0, -1)) {
+      parent = path.join(parent, segment);
+      const parentStat = fs.lstatSync(parent);
+      if (!parentStat.isDirectory() || parentStat.isSymbolicLink())
+        throw Error("NSIS embedded payload parent is missing, unsafe or symlinked: " + parent);
+    }
+    const innerArchive = path.join(temporaryRoot, ...innerSegments);
+    const innerStat = fs.lstatSync(innerArchive);
+    if (!innerStat.isFile() || innerStat.isSymbolicLink() || innerStat.size < 1
+        || innerStat.size > MAX_EMBEDDED_ARCHIVE_BYTES) {
+      throw Error("NSIS embedded app-64.7z is missing, unsafe or exceeds 2 GiB");
+    }
+
+    const innerListing = run(["l", "-ba", "-slt", innerArchive], 64 * 1024 * 1024).toString("utf8");
+    const innerPaths = innerListing.split(/\r?\n/).flatMap(line => {
+      const m = /^Path = (.+)$/.exec(line);
+      return m ? [m[1].replace(/\\/g, "/").toLowerCase()] : [];
+    });
+    const matches = innerPaths.filter(p => p === RELATIVE_BINARY);
+    if (matches.length !== 1) {
+      const related = innerPaths.filter(p => p.includes("native-fs") || p.endsWith("mcode_fs.node")).slice(0, 20);
+      const sample = innerPaths.filter(p => p.includes("/")).slice(0, 12);
+      throw Error("NSIS app-64.7z must contain exactly one native-fs/mcode_fs.node: found " + matches.length
+        + (related.length ? "; related entries: " + related.join(", ") : "; no native-fs paths in inner archive listing")
+        + (sample.length ? "; inner archive path sample: " + sample.join(", ") : ""));
+    }
+    const data = run(["e", "-so", innerArchive, RELATIVE_BINARY.replace(/\//g, "\\")], expected.size + 1024 * 1024);
+    if (!Buffer.isBuffer(data)) throw Error("NSIS embedded binary extraction did not return bytes");
+    const packed = { size: data.length, sha256: createHash("sha256").update(data).digest("hex") };
+    assertExpected(packed, expected, "NSIS embedded addon");
+    return {
+      ok: true, archive, embeddedArchive: innerEntry, embeddedArchiveSize: innerStat.size,
+      addonSha256: packed.sha256, addonSize: packed.size,
+    };
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 4, retryDelay: 150 });
+  }
 }
 function realDir(directory) {
   const st = fs.lstatSync(directory);

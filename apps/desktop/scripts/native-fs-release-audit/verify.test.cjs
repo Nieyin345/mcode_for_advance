@@ -20,16 +20,35 @@ function fixture(t) {
     nsis: file("Mcode-1.2.3.exe", "fake-install"), dmg: file("Mcode-1.2.3.dmg", "fake-dmg"),
     zip: file("Mcode-1.2.3.zip", "fake-zip") };
 }
-function fakeSevenZip(payload, paths = ["resources\\native-fs\\mcode_fs.node"]) {
+function fakeSevenZip(payload, paths = ["resources\\native-fs\\mcode_fs.node"],
+  outerPaths = ["$pluginsdir\\app-64.7z"]) {
   return {
     sevenZip: "fake-7z",
     run(args) {
-      if (args[0] === "l") {
+      if (args[0] === "l" && args[3]?.toLowerCase().endsWith(".exe")) {
         assert.deepEqual(args.slice(0, 3), ["l", "-ba", "-slt"]);
-        assert.equal(args.length, 4, "NSIS listing must inspect the archive without a wildcard filter");
+        assert.equal(args.length, 4, "NSIS wrapper listing must not use a wildcard filter");
+        return Buffer.from(outerPaths.map(p => "Path = " + p).join("\n"));
+      }
+      if (args[0] === "x") {
+        assert.deepEqual(args.slice(0, 3), ["x", "-y", "-bd"]);
+        assert.equal(args.length, 6, "extract only the fixed inner app-64.7z payload");
+        assert.equal(args[5], "$pluginsdir\\app-64.7z");
+        const output = args[3].slice(2);
+        const innerArchive = path.join(output, "$pluginsdir", "app-64.7z");
+        fs.mkdirSync(path.dirname(innerArchive), { recursive: true });
+        fs.writeFileSync(innerArchive, "FAKE_APP_64");
+        return Buffer.from("");
+      }
+      if (args[0] === "l" && args[3]?.toLowerCase().endsWith(".7z")) {
+        assert.deepEqual(args.slice(0, 3), ["l", "-ba", "-slt"]);
+        assert.equal(args.length, 4, "inspect the extracted inner app archive");
         return Buffer.from(paths.map(p => "Path = " + p).join("\n"));
       }
-      if (args[0] === "e") return Buffer.from(payload);
+      if (args[0] === "e") {
+        assert.ok(args[2].toLowerCase().endsWith(".7z"), "extract the addon from app-64.7z, not the NSIS wrapper");
+        return Buffer.from(payload);
+      }
       throw Error("unexpected 7z args");
     },
   };
@@ -58,13 +77,20 @@ test("NSIS: compares exact addon bytes with source and afterPack staging", t => 
   const f = fixture(t);
   const result = inspectNsis(f.nsis, f.source, f.unpacked, fakeSevenZip("NATIVE_BINARY_TEST"));
   assert.equal(result.ok, true);
+  assert.equal(result.embeddedArchive, "$pluginsdir/app-64.7z");
+  assert.ok(result.embeddedArchiveSize > 0);
   assert.equal(result.addonSize, Buffer.byteLength("NATIVE_BINARY_TEST"));
 });
 test("NSIS: tampered addon fails closed even if present", t => {
   const f = fixture(t);
   assert.throws(() => inspectNsis(f.nsis, f.source, f.unpacked, fakeSevenZip("CORRUPTED_BYTES")), /differs/);
 });
-test("NSIS: missing and duplicate entries fail closed", t => {
+test("NSIS: missing embedded app-64.7z fails closed", t => {
+  const f = fixture(t);
+  assert.throws(() => inspectNsis(f.nsis, f.source, f.unpacked,
+    fakeSevenZip("NATIVE_BINARY_TEST", undefined, [])), /exactly one/);
+});
+test("NSIS: missing and duplicate inner addon entries fail closed", t => {
   const f = fixture(t);
   for (const names of [[], ["resources/native-fs/mcode_fs.node", "resources\\native-fs\\mcode_fs.node"]]) {
     assert.throws(() => inspectNsis(f.nsis, f.source, f.unpacked, fakeSevenZip("NATIVE_BINARY_TEST", names)),

@@ -571,9 +571,29 @@ function collectPackageEntries(root, modulesRelative, lock, licenseManifestConte
   scanModules(rootModules, modulesRelative);
   return found;
 }
-function createNodeRedLicenseInventory(root) {
+function platformConstraintExcludes(values, current) {
+  if (!Array.isArray(values) || values.length === 0) return false;
+  const constraints = values.filter(value => typeof value === "string" && value.length > 0);
+  if (constraints.some(value => value.startsWith("!") && value.slice(1) === current)) return true;
+  const included = constraints.filter(value => !value.startsWith("!"));
+  return included.length > 0 && !included.includes(current);
+}
+function isExpectedPlatformExcludedLicenseEntry(entry, lock, platform, arch) {
+  // npm may omit an optional package when its lockfile OS/CPU constraints do
+  // not match the current build host. Only accept that absence when the exact
+  // package version, tarball URL and integrity remain pinned in package-lock.
+  const lockEntry = lock.packages?.["node_modules/" + entry.packageName];
+  if (!lockEntry || lockEntry.optional !== true || lockEntry.version !== entry.version
+      || lockEntry.resolved !== entry.packageSource.tarballUrl
+      || lockEntry.integrity !== entry.packageSource.tarballIntegrity) return false;
+  return platformConstraintExcludes(lockEntry.os, platform)
+      || platformConstraintExcludes(lockEntry.cpu, arch);
+}
+function createNodeRedLicenseInventory(root, options = {}) {
   const lockPath = path.join(root, "package-lock.json");
   const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  const platform = typeof options.platform === "string" && options.platform ? options.platform : process.platform;
+  const arch = typeof options.arch === "string" && options.arch ? options.arch : process.arch;
   const licenseManifestContext = readNodeRedLicenseManifest(root);
   const packages = [
     ...collectPackageEntries(root, "node_modules", lock, licenseManifestContext),
@@ -586,8 +606,11 @@ function createNodeRedLicenseInventory(root) {
   const lockVersionMismatches = packages.filter(item => item.lockVersionMismatch).length;
   const packageSourceLockMismatches = packages.filter(item => item.packageSourceLockMismatch).length;
   const unknownSpdxExpressions = packages.filter(item => item.unknownSpdxExpression).length;
-  const unmatchedLicenseManifestEntries = licenseManifestContext
-    ? [...licenseManifestContext.entryByKey.keys()].filter(key => !licenseManifestContext.usedEntries.has(key)).length : 0;
+  const unusedLicenseEntries = licenseManifestContext
+    ? [...licenseManifestContext.entryByKey.entries()].filter(([key]) => !licenseManifestContext.usedEntries.has(key)) : [];
+  const platformExcludedLicenseManifestEntries = unusedLicenseEntries
+    .filter(([, entry]) => isExpectedPlatformExcludedLicenseEntry(entry, lock, platform, arch)).length;
+  const unmatchedLicenseManifestEntries = unusedLicenseEntries.length - platformExcludedLicenseManifestEntries;
   const unmatchedReleaseBlockers = licenseManifestContext
     ? [...licenseManifestContext.blockerByKey.keys()].filter(key => !licenseManifestContext.usedBlockers.has(key)).length : 0;
   const releaseBlockers = packages.filter(item => item.releaseBlocker).length + unmatchedReleaseBlockers;
@@ -605,6 +628,9 @@ function createNodeRedLicenseInventory(root) {
     packages,
     summary: {
       packageCount: packages.length,
+      targetPlatform: platform,
+      targetArch: arch,
+      platformExcludedLicenseManifestEntries,
       unknownLicenseMetadata,
       missingLicenseText,
       conflictingLicenseMetadata,
