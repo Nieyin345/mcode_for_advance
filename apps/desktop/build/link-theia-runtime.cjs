@@ -46,7 +46,7 @@ const NM_THEIA = path.join(RUNTIME, "node_modules", "@theia");
 
 function assertTheiaExtraResourceSource() {
   const config = fs.readFileSync(BUILDER_CONFIG, "utf8");
-  const matches = [...config.matchAll(/^\\s*-\\s*from:\\s*(.*?)\\s*\\r?\\n\\s*to:\\s*theia\\s*$/gm)];
+  const matches = [...config.matchAll(/^\s*-\s*from:\s*(.*?)\s*\r?\n\s*to:\s*theia\s*$/gm)];
   if (matches.length !== 1) {
     throw new Error("[theia-runtime] electron-builder.yml must declare exactly one Theia extraResources source");
   }
