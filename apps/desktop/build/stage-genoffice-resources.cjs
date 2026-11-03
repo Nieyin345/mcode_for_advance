@@ -185,7 +185,7 @@ function assertVendorTreeSafe(repo, dir) {
  * also point to unreviewed sibling directories inside the *Mcode* repo, which
  * the old assertWithin(repo, realpath) erroneously accepted. Check physical
  * identity for both, not just resolved path containment or nested children. */
-function assertNativeVendorPath(vendor, input) {
+function assertNativeVendorPath(vendor, input, { allowMissingTail = false } = {}) {
   assertWithin(vendor, input);
   const rootInfo = fs.lstatSync(vendor);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
@@ -198,6 +198,7 @@ function assertNativeVendorPath(vendor, input) {
     let s;
     try { s = fs.lstatSync(current); }
     catch (err) {
+      if (err?.code === "ENOENT" && allowMissingTail) return;
       if (err?.code === "ENOENT") throw new Error("GenOffice original renderer/resource missing: " + current);
       throw err;
     }
@@ -297,6 +298,39 @@ const REQUIRED_GENOFFICE_LICENSE_PACKAGES = Object.freeze([
   ["unicount", "1.1.0", "ISC"],
 ].map(([name, version, spdx]) => Object.freeze({ name, version, spdx })));
 
+function npmPlatformConstraintMatches(constraint, actual) {
+  if (constraint === undefined) return true;
+  if (!Array.isArray(constraint) || constraint.length === 0
+      || !constraint.every(value => typeof value === "string" && value.length > 0)) return false;
+  const denied = constraint.some(value => value === "!" + actual);
+  const allowed = constraint.filter(value => !value.startsWith("!"));
+  return !denied && (allowed.length === 0 || allowed.includes(actual));
+}
+
+function assertMissingOptionalPackageIsPlatformExcluded(vendorRoot, item) {
+  const platform = process.platform;
+  const arch = process.arch;
+  const lockPath = resolve(vendorRoot, "package-lock.json");
+  assertNativeVendorPath(resolve(vendorRoot), lockPath);
+  const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  if (lock.lockfileVersion !== 3 || !lock.packages || typeof lock.packages !== "object"
+      || Array.isArray(lock.packages)) {
+    throw new Error("GenOffice missing optional package requires an npm v3 package-lock with package metadata: " + item.name);
+  }
+  const entry = lock.packages["node_modules/" + item.name];
+  if (!entry || entry.version !== item.version || entry.resolved !== item.npmTarballUrl
+      || entry.integrity !== item.npmTarballIntegrity || entry.license !== item.spdx
+      || entry.optional !== true) {
+    throw new Error("GenOffice missing optional package lock identity differs from reviewed license manifest: " + item.name);
+  }
+  const osMatches = npmPlatformConstraintMatches(entry.os, platform);
+  const cpuMatches = npmPlatformConstraintMatches(entry.cpu, arch);
+  if (osMatches && cpuMatches) {
+    throw new Error("GenOffice installed package missing on a compatible platform: " + item.name);
+  }
+  return { platformExcluded: true, package: item.name, platform, arch };
+}
+
 function validateGenofficeLicenseManifest({
   manifestPath, licenseRoot, vendorRoot, repoRoot, requireComplete = true,
   expectedManifestSha256 = GENOFFICE_LICENSE_MANIFEST_SHA256,
@@ -350,12 +384,30 @@ function validateGenofficeLicenseManifest({
       throw new Error("GenOffice license source identity/version/SPDX mismatch at package index " + (index + 1));
     }
     if (vendorRoot) {
-      const packageFile = resolve(vendorRoot, item.packagePath);
-      assertNativeVendorPath(resolve(vendorRoot), packageFile);
-      const pkg = JSON.parse(fs.readFileSync(packageFile, "utf8"));
-      const actualSpdx = typeof pkg.license === "string" ? pkg.license : pkg.license?.type;
-      if (pkg.name !== item.name || pkg.version !== item.version || actualSpdx !== item.spdx) {
-        throw new Error("GenOffice installed package metadata differs from license source manifest: " + item.name);
+      const vendor = resolve(vendorRoot);
+      const packageFile = resolve(vendor, item.packagePath);
+      let installed = true;
+      try {
+        fs.lstatSync(packageFile);
+      } catch (err) {
+        if (err?.code !== "ENOENT") throw err;
+        installed = false;
+      }
+      if (installed) {
+        assertNativeVendorPath(vendor, packageFile);
+        const pkg = JSON.parse(fs.readFileSync(packageFile, "utf8"));
+        const actualSpdx = typeof pkg.license === "string" ? pkg.license : pkg.license?.type;
+        if (pkg.name !== item.name || pkg.version !== item.version || actualSpdx !== item.spdx) {
+          throw new Error("GenOffice installed package metadata differs from license source manifest: " + item.name);
+        }
+      } else {
+        // npm ci omits OS/CPU-specific optional packages on other hosts. Keep
+        // the exact-version/license gate strict by proving the omitted package
+        // from the pinned npm v3 lock entry, and only permit absence when that
+        // entry excludes this runner. Existing ancestors are still checked for
+        // symlink/junction substitution before accepting the omission.
+        assertNativeVendorPath(vendor, packageFile, { allowMissingTail: true });
+        assertMissingOptionalPackageIsPlatformExcluded(vendor, item);
       }
     }
     if (item.status === "blocked") {
