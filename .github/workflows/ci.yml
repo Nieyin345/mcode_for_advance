@@ -233,7 +233,11 @@ jobs:
   # then audits the bytes inside the final NSIS / DMG / updater ZIP artifacts.
   # It deliberately does NOT run the publish job, create a tag, or upload binaries.
   native-fs-full-release-package:
-    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'validation/b02b05-native-ci-')
+    # Run the expensive full package matrix for the dedicated validation PR,
+    # or opt into the same matrix explicitly with workflow_dispatch full=true.
+    if: >-
+      (github.event_name == 'pull_request' && startsWith(github.head_ref, 'validation/b02b05-native-ci-')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.full == true && startsWith(github.ref_name, 'validation/b02b05-native-ci-'))
     strategy:
       fail-fast: false
       matrix:
