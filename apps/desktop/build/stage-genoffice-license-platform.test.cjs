@@ -73,6 +73,15 @@ function validate() {
     requireComplete: false,
   });
 }
+function validateWithoutVendor() {
+  return stage.validateGenofficeLicenseManifest({
+    manifestPath,
+    licenseRoot,
+    repoRoot,
+    expectedManifestSha256: sha256(fs.readFileSync(manifestPath)),
+    requireComplete: false,
+  });
+}
 
 test("the platform-filtered optional package follows the actual host platform", () => {
   if (process.platform === "win32" && process.arch === "x64") {
@@ -84,6 +93,90 @@ test("the platform-filtered optional package follows the actual host platform", 
   assert.equal(result.verifiedCount, 14);
   assert.equal(result.excusedCount, 4);
   assert.equal(result.blockedCount, 0);
+});
+
+test("the generated third-party notice restores the full license section omitted by npm platform filtering", () => {
+  // Exercise the notice builder independently from the host-specific package
+  // installation gate. The validator's real-host behavior is covered above.
+  const validation = validateWithoutVendor();
+  const canvas = validation.items.find(item => item.name === canvasName);
+  assert.ok(canvas);
+  canvas.platformExcluded = true;
+  canvas.platformExclusion = { platform: "darwin", arch: "arm64" };
+  validation.platformExcludedCount = 1;
+  validation.platformExcludedPackages = [{
+    name: canvasName, version: canvas.version, spdx: canvas.spdx, status: "verified",
+    platform: "darwin", arch: "arm64",
+  }];
+
+  const section = title => "\n" + "-".repeat(72) + "\n" + title +
+    "\n" + "-".repeat(72) + "\nupstream placeholder notice body\n";
+  const sourceText = "GenOffice upstream notices\n" +
+    validation.items.filter(item => !item.platformExcluded)
+      .map(item => section(item.name + " v" + item.version + " — " + item.spdx)).join("") +
+    validation.excusedPackages
+      .map(item => section(item.name + " v" + item.version + " — " + item.spdx)).join("");
+  const generated = stage.buildCompleteThirdPartyNotice(sourceText, validation);
+  stage.assertThirdPartyNoticeMatchesManifest(generated, validation);
+  const title = canvas.name + " v" + canvas.version + " — " + canvas.spdx;
+  assert.equal(generated.split(title).length - 1, 1);
+  assert.ok(generated.includes(canvas.licenseText.trimEnd()));
+  assert.ok(generated.includes("Source: " + canvas.licenseSourceUrl));
+  assert.ok(generated.includes("License SHA-256: " + canvas.licenseTextSha256));
+});
+
+test("the generated notice restores a signed exception section omitted by npm platform filtering", () => {
+  const validation = validateWithoutVendor();
+  const canvas = validation.items.find(item => item.name === canvasName);
+  const excused = validation.excusedPackages[0];
+  assert.ok(canvas && excused);
+  canvas.platformExcluded = true;
+  canvas.platformExclusion = { platform: "darwin", arch: "arm64" };
+  excused.platformExcluded = true;
+  excused.platformExclusion = { platform: "darwin", arch: "arm64" };
+  validation.platformExcludedCount = 2;
+  validation.platformExcludedPackages = [canvas, excused].map(item => ({
+    name: item.name, version: item.version, spdx: item.spdx,
+    platform: item.platformExclusion.platform, arch: item.platformExclusion.arch,
+  }));
+
+  const excluded = new Set([
+    canvas.name + " v" + canvas.version + " — " + canvas.spdx,
+    excused.name + " v" + excused.version + " — " + excused.spdx,
+  ]);
+  const section = title => "\n" + "-".repeat(72) + "\n" + title +
+    "\n" + "-".repeat(72) + "\nupstream placeholder notice body\n";
+  const sourceText = "GenOffice upstream notices\n" +
+    validation.items.filter(item => !excluded.has(item.name + " v" + item.version + " — " + item.spdx))
+      .map(item => section(item.name + " v" + item.version + " — " + item.spdx)).join("") +
+    validation.excusedPackages.filter(item => !excluded.has(item.name + " v" + item.version + " — " + item.spdx))
+      .map(item => section(item.name + " v" + item.version + " — " + item.spdx)).join("");
+  const generated = stage.buildCompleteThirdPartyNotice(sourceText, validation);
+  stage.assertThirdPartyNoticeMatchesManifest(generated, validation);
+  const excusedSection = stage.findNoticeSection(generated,
+    excused.name + " v" + excused.version + " — " + excused.spdx);
+  assert.ok(excusedSection);
+  assert.ok(excusedSection.body.includes("NO LICENSE TEXT WAS SHIPPED WITH THIS VERSION."));
+  assert.ok(excusedSection.body.includes(excused.evidence));
+  assert.ok(excusedSection.body.includes("Reviewed: " + excused.disposition.reviewedAt));
+  assert.ok(excusedSection.body.includes("Platform note: npm omitted this optional package on darwin/arm64."));
+});
+
+test("a missing ordinary package notice section remains a hard failure", () => {
+  const validation = validateWithoutVendor();
+  const canvas = validation.items.find(item => item.name === canvasName);
+  const ordinary = validation.items.find(item => item.name !== canvasName);
+  assert.ok(canvas && ordinary);
+  canvas.platformExcluded = true;
+  const section = title => "\n" + "-".repeat(72) + "\n" + title +
+    "\n" + "-".repeat(72) + "\nupstream placeholder notice body\n";
+  const sourceText = "GenOffice upstream notices\n" +
+    validation.items.filter(item => item !== canvas && item !== ordinary)
+      .map(item => section(item.name + " v" + item.version + " — " + item.spdx)).join("") +
+    validation.excusedPackages
+      .map(item => section(item.name + " v" + item.version + " — " + item.spdx)).join("");
+  assert.throws(() => stage.buildCompleteThirdPartyNotice(sourceText, validation),
+    /GenOffice third-party notice package sections do not match the verified source manifest/);
 });
 
 test("a missing optional package is rejected when lock constraints include the current host", () => {
