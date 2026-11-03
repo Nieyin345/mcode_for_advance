@@ -133,6 +133,21 @@ test("a missing package is not excused when the lock entry is not optional", () 
   assert.deepEqual(fs.readFileSync(lockPath), original);
 });
 
+test("malformed npm OS/CPU constraints cannot be treated as proof of platform exclusion", () => {
+  const lockPath = path.join(vendorRoot, "package-lock.json");
+  const original = fs.readFileSync(lockPath);
+  const changed = JSON.parse(original.toString("utf8"));
+  changed.packages["node_modules/" + canvasName].os = [""];
+  fs.writeFileSync(lockPath, JSON.stringify(changed, null, 2) + "\n");
+  try {
+    assert.throws(() => validate(),
+      /GenOffice optional package lock has malformed OS constraint/);
+  } finally {
+    fs.writeFileSync(lockPath, original);
+  }
+  assert.deepEqual(fs.readFileSync(lockPath), original);
+});
+
 test("the fixture preserves the reviewed package and license inventories", () => {
   const source = JSON.parse(fs.readFileSync(sourceManifest, "utf8"));
   assert.equal(source.items.length, stage.REQUIRED_GENOFFICE_LICENSE_PACKAGES.length);
