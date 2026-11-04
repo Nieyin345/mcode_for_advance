@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { buildProbeScript } = require("./verify-theia-after-pack.cjs");
+const { buildProbeScript, runProbe } = require("./verify-theia-after-pack.cjs");
 
 function makeTheiaRoot(t, pluginHostSource) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mcode-theia-probe-"));
@@ -63,4 +63,15 @@ test("Theia probe accepts the known standalone IPC descriptor boundary", t => {
     timeout: 5000,
   });
   assert.match(output, /PROBE_OK/);
+});
+
+test("probe stops a lingering event loop after the synchronous Theia import succeeds", t => {
+  const root = makeTheiaRoot(t, 'setInterval(() => {}, 1000);');
+  const output = runProbe(root, 200);
+  assert.match(output, /PROBE_OK/);
+});
+
+test("probe fails closed when the child times out before the success sentinel", t => {
+  const root = makeTheiaRoot(t, 'while (true) {}');
+  assert.throws(() => runProbe(root, 200), /产物里的 Theia 起不来/);
 });

@@ -129,18 +129,49 @@ module.exports = async function verifyTheiaAfterPack(context) {
   const linked = linkPackages(root);
   console.log(`[verify-theia] 建了 ${linked} 个包链接`);
 
-  // ★ 真的 require 一次：缺传递依赖会当场抛。
-  const probe = buildProbeScript(root);
-  let output = "";
-  try {
-    output = execFileSync(process.execPath, ["-e", probe], { encoding: "utf8", stdio: "pipe" });
-  } catch (error) {
-    output = String(error.stdout ?? "") + String(error.stderr ?? "");
-    throw new Error(`[verify-theia] 产物里的 Theia 起不来：\n${output}`);
-  }
-  if (!/PROBE_OK/.test(output)) throw new Error(`[verify-theia] 探针没有报成功：\n${output}`);
+  // ★ 真的 require 一次：缺传递依赖会当场抛。Theia plugin host 可能在
+  // 同步加载成功后留下 IPC/timer 句柄；探针是一次性子进程，不能让这些句柄
+  // 把 electron-builder 的 afterPack 永久挂住。超时前必须已经输出 PROBE_OK，
+  // 否则仍然 fail closed。
+  runProbe(root);
 
   console.log("[verify-theia] ✓ 运行时完整可用");
 };
+
+const PROBE_TIMEOUT_MS = 30_000;
+
+function runProbe(root, timeoutMs = PROBE_TIMEOUT_MS) {
+  const probe = buildProbeScript(root);
+  let output = "";
+  try {
+    output = execFileSync(process.execPath, ["-e", probe], {
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: timeoutMs,
+    });
+  } catch (error) {
+    output = String(error.stdout ?? "") + String(error.stderr ?? "");
+    const timedOut =
+      error?.code === "ETIMEDOUT" ||
+      (error?.killed === true && error?.signal === "SIGTERM");
+    // A success sentinel is written only after require(entry) returns (or the
+    // explicitly accepted standalone IPC boundary is reached). A lingering
+    // event loop after that point is not a failed import; stop the disposable
+    // child and accept the already-completed synchronous probe.
+    if (!(timedOut && /PROBE_OK/.test(output))) {
+      throw new Error(`[verify-theia] 产物里的 Theia 起不来：\n${output}`);
+    }
+    console.log(
+      `[verify-theia] 同步加载已通过；探针保留事件循环，达到 ${timeoutMs}ms 上限后已终止`,
+    );
+  }
+  if (!/PROBE_OK/.test(output)) {
+    throw new Error(`[verify-theia] 探针没有报成功：\n${output}`);
+  }
+  return output;
+}
+
 module.exports.theiaRootIn = theiaRootIn;
 module.exports.buildProbeScript = buildProbeScript;
+module.exports.runProbe = runProbe;
+module.exports.PROBE_TIMEOUT_MS = PROBE_TIMEOUT_MS;
