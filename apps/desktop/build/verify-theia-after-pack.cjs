@@ -148,12 +148,15 @@ function runProbe(root, timeoutMs = PROBE_TIMEOUT_MS) {
       encoding: "utf8",
       stdio: "pipe",
       timeout: timeoutMs,
+      // Theia installs SIGTERM handlers for graceful shutdown. The disposable
+      // probe must still have a hard upper bound, so use an uncatchable signal.
+      killSignal: "SIGKILL",
     });
   } catch (error) {
     output = String(error.stdout ?? "") + String(error.stderr ?? "");
     const timedOut =
       error?.code === "ETIMEDOUT" ||
-      (error?.killed === true && error?.signal === "SIGTERM");
+      (error?.killed === true && (error?.signal === "SIGTERM" || error?.signal === "SIGKILL"));
     // A success sentinel is written only after require(entry) returns (or the
     // explicitly accepted standalone IPC boundary is reached). A lingering
     // event loop after that point is not a failed import; stop the disposable

@@ -65,8 +65,11 @@ test("Theia probe accepts the known standalone IPC descriptor boundary", t => {
   assert.match(output, /PROBE_OK/);
 });
 
-test("probe stops a lingering event loop after the synchronous Theia import succeeds", t => {
-  const root = makeTheiaRoot(t, 'setInterval(() => {}, 1000);');
+test("probe force-stops a child that catches SIGTERM after the synchronous Theia import succeeds", t => {
+  const root = makeTheiaRoot(
+    t,
+    'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);',
+  );
   const output = runProbe(root, 200);
   assert.match(output, /PROBE_OK/);
 });
