@@ -17,6 +17,11 @@ const SOURCE_MANIFEST = JSON.parse(fs.readFileSync(path.join(SOURCE_ROOT, "manif
 const base = fs.mkdtempSync(path.join(os.tmpdir(), "mcode-t88-node-red-license-"));
 const positiveManifest = JSON.parse(JSON.stringify(SOURCE_MANIFEST));
 positiveManifest.blockers = [];
+const PLATFORM_OPTIONAL_PACKAGES = {
+  "@node-rs/bcrypt-darwin-arm64": { os: ["darwin"], cpu: ["arm64"] },
+  "@node-rs/bcrypt-darwin-x64": { os: ["darwin"], cpu: ["x64"] },
+  "@node-rs/bcrypt-win32-x64-msvc": { os: ["win32"], cpu: ["x64"] },
+};
 let total = 0;
 
 function put(file, content) {
@@ -66,6 +71,9 @@ function makePackage(root, relative, name, version, license, licenseText = true)
   put(path.join(dir, "package.json"), JSON.stringify(metadata, null, 2) + "\n");
   if (licenseText) put(path.join(dir, "LICENSE"), "Fixture license text for " + name + "@" + version + ".\n");
   return dir;
+}
+function removePackage(root, name) {
+  fs.rmSync(path.join(root, "node_modules", ...name.split("/")), { recursive: true, force: true });
 }
 function hashManifest(root) {
   const inventory = writeNodeRedLicenseInventory(root);
@@ -130,6 +138,8 @@ function makeFixture(root, {
       resolved: entry.packageSource.tarballUrl,
       integrity: entry.packageSource.tarballIntegrity,
     };
+    const platformConstraints = PLATFORM_OPTIONAL_PACKAGES[entry.packageName];
+    if (platformConstraints) Object.assign(lockEntry, { optional: true, ...platformConstraints });
     if (!isOverride) lockEntry.license = entry.licenseExpression;
     lockPackages[relative] = lockEntry;
     if (isOverride) {
@@ -165,8 +175,8 @@ try {
   verify("source manifest binds exact package versions, SPDX expressions, upstream revisions and file SHA-256 values", () => {
     assert.equal(SOURCE_MANIFEST.nodeRedVersion, VERSION);
     assert.equal(SOURCE_MANIFEST.nodeRedSourceCommit, BASE_COMMIT);
-    assert.equal(SOURCE_MANIFEST.entries.length, 16);
-    assert.equal(SOURCE_MANIFEST.entries.reduce((sum, entry) => sum + entry.materials.length, 0), 17);
+    assert.equal(SOURCE_MANIFEST.entries.length, 18);
+    assert.equal(SOURCE_MANIFEST.entries.reduce((sum, entry) => sum + entry.materials.length, 0), 19);
     assert.equal(SOURCE_MANIFEST.blockers.length, 0);
     for (const entry of SOURCE_MANIFEST.entries) {
       assert.ok(entry.packageName && entry.version && entry.licenseExpression);
@@ -180,6 +190,13 @@ try {
         assert.ok(fs.statSync(file).size > 0);
       }
     }
+    const bcryptArm64 = SOURCE_MANIFEST.entries.find(entry => entry.packageName === "@node-rs/bcrypt-darwin-arm64" && entry.version === "1.10.7");
+    const bcryptX64 = SOURCE_MANIFEST.entries.find(entry => entry.packageName === "@node-rs/bcrypt-darwin-x64" && entry.version === "1.10.7");
+    assert.equal(bcryptArm64.packageSource.revision, "83ca124b3e3968c945708136d6ff68d0e0549582");
+    assert.equal(bcryptArm64.packageSource.tarballSha1, "f4cf60bd5950c7c92f6363e359d67cf4d1759693");
+    assert.equal(bcryptX64.packageSource.tarballSha1, "c894d67a0ee783fe776964ed0e65b2b1521b5171");
+    assert.equal(bcryptArm64.materials[0].sha256, "c748f2e7f93fadae76fcb1ccf6b4199e2a4013611871b5fa61000d11a50011c7");
+    assert.equal(bcryptX64.materials[0].sha256, bcryptArm64.materials[0].sha256);
     const typeFest = SOURCE_MANIFEST.entries.find(entry => entry.packageName === "type-fest" && entry.version === "4.41.0");
     assert.deepEqual(typeFest.materials.map(material => material.licenseId).sort(), ["CC0-1.0", "MIT"]);
     const cliTable = SOURCE_MANIFEST.entries.find(entry => entry.packageName === "cli-table" && entry.version === "0.3.11");
@@ -197,14 +214,16 @@ try {
     assert.match(notice, /Apache License/);
     assert.match(notice, /Creative Commons Legal Code/);
     assert.match(notice, /Package: pause@0\.0\.1/);
+    assert.match(notice, /Package: @node-rs\/bcrypt-darwin-arm64@1\.10\.7/);
+    assert.match(notice, /Package: @node-rs\/bcrypt-darwin-x64@1\.10\.7/);
     assert.doesNotMatch(notice, /RELEASE BLOCKER/);
   });
 
   const positiveRoot = path.join(base, "positive");
   const positiveInventory = makeFixture(positiveRoot);
   verify("complete exact-version mappings supply all license texts and afterPack accepts a blocker-free fixture", () => {
-    assert.equal(positiveInventory.summary.packageCount, 21);
-    assert.equal(positiveInventory.summary.reviewedExternalLicenseMappings, 16);
+    assert.equal(positiveInventory.summary.packageCount, 23);
+    assert.equal(positiveInventory.summary.reviewedExternalLicenseMappings, 18);
     assert.equal(positiveInventory.summary.unmatchedLicenseManifestEntries, 0);
     assert.equal(positiveInventory.summary.packageSourceLockMismatches, 0);
     assert.equal(positiveInventory.summary.unknownSpdxExpressions, 0);
@@ -223,6 +242,63 @@ try {
     assert.equal(pause.license, "MIT");
     assert.equal(pause.licenseMetadataOverride.reviewed, true);
     assert.equal(verifyNodeRed.verifyNodeRedResource(positiveRoot).licenseCoverage.releaseEligible, true);
+  });
+
+  verify("platform-specific optional license mappings are excluded only when exact lock metadata proves OS/CPU incompatibility", () => {
+    const armRoot = path.join(base, "darwin-arm64-platform");
+    makeFixture(armRoot);
+    removePackage(armRoot, "@node-rs/bcrypt-win32-x64-msvc");
+    removePackage(armRoot, "@node-rs/bcrypt-darwin-x64");
+    const arm64 = createNodeRedLicenseInventory(armRoot, { platform: "darwin", arch: "arm64" });
+    assert.equal(arm64.summary.reviewedExternalLicenseMappings, 16);
+    assert.equal(arm64.summary.platformExcludedLicenseManifestEntries, 2);
+    assert.equal(arm64.summary.unmatchedLicenseManifestEntries, 0);
+    assert.equal(arm64.summary.releaseEligible, true);
+
+    const x64Root = path.join(base, "darwin-x64-missing-compatible-package");
+    makeFixture(x64Root);
+    removePackage(x64Root, "@node-rs/bcrypt-win32-x64-msvc");
+    removePackage(x64Root, "@node-rs/bcrypt-darwin-arm64");
+    removePackage(x64Root, "@node-rs/bcrypt-darwin-x64");
+    const x64 = createNodeRedLicenseInventory(x64Root, { platform: "darwin", arch: "x64" });
+    assert.equal(x64.summary.platformExcludedLicenseManifestEntries, 2);
+    assert.equal(x64.summary.unmatchedLicenseManifestEntries, 1);
+    assert.equal(x64.summary.releaseEligible, false);
+
+    const winRoot = path.join(base, "win32-x64-platform");
+    makeFixture(winRoot);
+    removePackage(winRoot, "@node-rs/bcrypt-darwin-arm64");
+    removePackage(winRoot, "@node-rs/bcrypt-darwin-x64");
+    const win = createNodeRedLicenseInventory(winRoot, { platform: "win32", arch: "x64" });
+    assert.equal(win.summary.platformExcludedLicenseManifestEntries, 2);
+    assert.equal(win.summary.unmatchedLicenseManifestEntries, 0);
+    assert.equal(win.summary.releaseEligible, true);
+
+    const tamperedRoot = path.join(base, "darwin-arm64-tampered-platform-lock");
+    makeFixture(tamperedRoot);
+    removePackage(tamperedRoot, "@node-rs/bcrypt-win32-x64-msvc");
+    removePackage(tamperedRoot, "@node-rs/bcrypt-darwin-x64");
+    const tamperedLockPath = path.join(tamperedRoot, "package-lock.json");
+    const tamperedLock = JSON.parse(fs.readFileSync(tamperedLockPath, "utf8"));
+    tamperedLock.packages["node_modules/@node-rs/bcrypt-darwin-x64"].integrity = "sha512-tampered-fixture-integrity";
+    put(tamperedLockPath, JSON.stringify(tamperedLock, null, 2) + "\n");
+    const tampered = createNodeRedLicenseInventory(tamperedRoot, { platform: "darwin", arch: "arm64" });
+    assert.equal(tampered.summary.platformExcludedLicenseManifestEntries, 1);
+    assert.equal(tampered.summary.unmatchedLicenseManifestEntries, 1);
+    assert.equal(tampered.summary.releaseEligible, false);
+  });
+
+  verify("malformed npm platform constraints never authorize a license-manifest exclusion", () => {
+    const root = path.join(base, "malformed-platform-constraint");
+    makeFixture(root);
+    removePackage(root, "@node-rs/bcrypt-win32-x64-msvc");
+    removePackage(root, "@node-rs/bcrypt-darwin-x64");
+    const lockPath = path.join(root, "package-lock.json");
+    const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+    lock.packages["node_modules/@node-rs/bcrypt-darwin-x64"].cpu = ["x64", null];
+    put(lockPath, JSON.stringify(lock, null, 2) + "\n");
+    assert.throws(() => createNodeRedLicenseInventory(root, { platform: "darwin", arch: "arm64" }),
+      /Invalid npm platform constraint/);
   });
 
   verify("unknown license metadata stays a release blocker even when a reviewed mapping covers every other package", () => {
@@ -397,6 +473,7 @@ try {
       // 存在性证明。换成下界后，「目录在但被清空」会静默通过。
       assert.equal(inventory.summary.packageCount, 420);
       assert.equal(inventory.summary.reviewedExternalLicenseMappings, 16);
+      assert.equal(inventory.summary.platformExcludedLicenseManifestEntries, 2);
       assert.equal(inventory.summary.unmatchedLicenseManifestEntries, 0);
       assert.equal(inventory.summary.unknownSpdxExpressions, 0);
       assert.equal(inventory.summary.unknownLicenseMetadata, 0);

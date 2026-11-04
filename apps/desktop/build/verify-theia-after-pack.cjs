@@ -33,11 +33,23 @@ const { execFileSync } = require("node:child_process");
 
 /** 产物里 Theia 应该在哪（`electron-builder.yml` 的 `extraResources: to: theia`）。 */
 function theiaRootIn(context) {
-  const out = context.appOutDir;
-  return [
+  const out = path.resolve(context.appOutDir);
+  const candidates = [
     path.join(out, "resources", "theia"),
     path.join(out, "Contents", "Resources", "theia"),
-  ].find(c => fs.existsSync(c)) ?? path.join(out, "resources", "theia");
+  ];
+  let entries = [];
+  try { entries = fs.readdirSync(out, { withFileTypes: true }); } catch { /* the main verifier reports a missing resource */ }
+  for (const entry of entries) {
+    if (entry.isDirectory() && entry.name.toLowerCase().endsWith(".app")) {
+      candidates.push(path.join(out, entry.name, "Contents", "Resources", "theia"));
+    }
+  }
+  const roots = [...new Set(candidates.filter(candidate => fs.existsSync(candidate)))];
+  if (roots.length > 1) {
+    throw new Error("[verify-theia] multiple packaged Theia resource roots found: " + roots.join("; "));
+  }
+  return roots[0] ?? path.join(out, "resources", "theia");
 }
 
 const REQUIRED = [
@@ -72,6 +84,31 @@ function linkPackages(root) {
   return made;
 }
 
+function buildProbeScript(root) {
+  return `
+    const path = require("node:path");
+    const root = ${JSON.stringify(root)};
+    const entry = path.join(root, "packages/plugin-ext/lib/hosted/node/plugin-host.js");
+    try {
+      require(entry);
+      // Theia's setupPluginHostLogger replaces console.log/info/warn/error
+      // with RPC-backed methods. Write the probe sentinel directly to stdout
+      // so a healthy plugin host cannot swallow its own success signal.
+      process.stdout.write("PROBE_OK\\n");
+    } catch (error) {
+      const message = String(error && error.message);
+      // On Windows the standalone probe may lack the parent IPC descriptor.
+      // Reaching this known runtime boundary still proves imports resolved.
+      if (/Unsupported fd type|process\\.exit\\(\\) and it was prevented/.test(message)) {
+        process.stdout.write("PROBE_OK\\n");
+      } else {
+        process.stderr.write("PROBE_FAIL " + message.split("\\n")[0] + "\\n");
+        process.exit(1);
+      }
+    }
+  `;
+}
+
 module.exports = async function verifyTheiaAfterPack(context) {
   const root = theiaRootIn(context);
   console.log(`[verify-theia] 产物里的 Theia: ${root}`);
@@ -92,33 +129,52 @@ module.exports = async function verifyTheiaAfterPack(context) {
   const linked = linkPackages(root);
   console.log(`[verify-theia] 建了 ${linked} 个包链接`);
 
-  // ★ 真的 require 一次：缺传递依赖会当场抛。
-  const probe = `
-    const path = require("node:path");
-    const root = ${JSON.stringify(root)};
-    const entry = path.join(root, "packages/plugin-ext/lib/hosted/node/plugin-host.js");
-    try {
-      require(entry);
-      console.log("PROBE_OK");
-    } catch (error) {
-      const message = String(error && error.message);
-      // 「跑进业务逻辑」= 依赖齐了（缺 RPC 通道是正常的，那 5 个 fd 由主进程给）
-      if (/Unsupported fd type|process\\.exit\\(\\) and it was prevented/.test(message)) {
-        console.log("PROBE_OK");
-      } else {
-        console.error("PROBE_FAIL " + message.split("\\n")[0]);
-        process.exit(1);
-      }
-    }
-  `;
-  let output = "";
-  try {
-    output = execFileSync(process.execPath, ["-e", probe], { encoding: "utf8", stdio: "pipe" });
-  } catch (error) {
-    output = String(error.stdout ?? "") + String(error.stderr ?? "");
-    throw new Error(`[verify-theia] 产物里的 Theia 起不来：\n${output}`);
-  }
-  if (!/PROBE_OK/.test(output)) throw new Error(`[verify-theia] 探针没有报成功：\n${output}`);
+  // ★ 真的 require 一次：缺传递依赖会当场抛。Theia plugin host 可能在
+  // 同步加载成功后留下 IPC/timer 句柄；探针是一次性子进程，不能让这些句柄
+  // 把 electron-builder 的 afterPack 永久挂住。超时前必须已经输出 PROBE_OK，
+  // 否则仍然 fail closed。
+  runProbe(root);
 
   console.log("[verify-theia] ✓ 运行时完整可用");
 };
+
+const PROBE_TIMEOUT_MS = 30_000;
+
+function runProbe(root, timeoutMs = PROBE_TIMEOUT_MS) {
+  const probe = buildProbeScript(root);
+  let output = "";
+  try {
+    output = execFileSync(process.execPath, ["-e", probe], {
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: timeoutMs,
+      // Theia installs SIGTERM handlers for graceful shutdown. The disposable
+      // probe must still have a hard upper bound, so use an uncatchable signal.
+      killSignal: "SIGKILL",
+    });
+  } catch (error) {
+    output = String(error.stdout ?? "") + String(error.stderr ?? "");
+    const timedOut =
+      error?.code === "ETIMEDOUT" ||
+      (error?.killed === true && (error?.signal === "SIGTERM" || error?.signal === "SIGKILL"));
+    // A success sentinel is written only after require(entry) returns (or the
+    // explicitly accepted standalone IPC boundary is reached). A lingering
+    // event loop after that point is not a failed import; stop the disposable
+    // child and accept the already-completed synchronous probe.
+    if (!(timedOut && /PROBE_OK/.test(output))) {
+      throw new Error(`[verify-theia] 产物里的 Theia 起不来：\n${output}`);
+    }
+    console.log(
+      `[verify-theia] 同步加载已通过；探针保留事件循环，达到 ${timeoutMs}ms 上限后已终止`,
+    );
+  }
+  if (!/PROBE_OK/.test(output)) {
+    throw new Error(`[verify-theia] 探针没有报成功：\n${output}`);
+  }
+  return output;
+}
+
+module.exports.theiaRootIn = theiaRootIn;
+module.exports.buildProbeScript = buildProbeScript;
+module.exports.runProbe = runProbe;
+module.exports.PROBE_TIMEOUT_MS = PROBE_TIMEOUT_MS;

@@ -42,14 +42,43 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: pnpm typecheck
+        # GenOffice is intentionally gitignored. CI typechecks the no-vendor
+        # build surface and all independent smoke fixtures; local pnpm typecheck
+        # also checks vendor-coupled suites when the snapshot is installed.
+        run: |
+          pnpm --filter @mcode/contracts typecheck
+          pnpm --filter @mcode/desktop exec tsc --noEmit -p tsconfig.ci.json
+
+      - name: GenOffice, Node-RED and Theia packaging regressions
+        run: node --test apps/desktop/build/run-genoffice-step.test.cjs apps/desktop/build/stage-genoffice-license-platform.test.cjs apps/desktop/build/node-red-nodemodules-shim.test.cjs apps/desktop/build/theia-nodemodules-shim.test.cjs apps/desktop/build/theia-resource-packaging.test.cjs
 
       - name: Setup virtual display for isolated Electron host
         run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      # The critical set includes native-FS, Markdown preview and document-tool
+      # fixtures. Provision the same runtime dependencies used by the focused
+      # platform gates instead of letting environment omissions masquerade as
+      # product regressions.
+      - name: Build POSIX native filesystem addon
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+
+      - name: Python packages for document fixtures
+        run: python -m pip install --disable-pip-version-check setuptools openpyxl pypdf python-pptx
+
+      - name: Setup pandoc
+        uses: r-lib/actions/setup-pandoc@v2
+
+      - name: Setup TinyTeX (xelatex)
+        uses: r-lib/actions/setup-tinytex@v2
 
       - name: Critical regression gate
         run: pnpm test
@@ -65,9 +94,268 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # The smoke suites are authored and maintained on Windows (hard-coded drive
-  # paths, cmd.exe / Windows services / case-insensitive FS assertions, the
-  # owned-Chrome DevTools handshake). The app ships for Windows and macOS only,
+  # Native-FS jobs compile against Electron headers and run Node-based smokes;
+  # none launches the Electron runtime. Skip the platform Electron binary
+  # download here (node-gyp still fetches the matching headers separately).
+  # Keep these gates independent from application typecheck and broad smokes.
+  native-fs-linux:
+    name: Native FS (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build POSIX native filesystem addon
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem distributable audit unit tests
+        run: node --test apps/desktop/scripts/native-fs-release-audit/verify.test.cjs
+      - name: Native filesystem security and packaging regressions
+        run: pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Upload native filesystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-smoke-linux
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Keep the Windows native filesystem gate independent from the broad
+  # application smoke suite, whose unrelated failures must not hide this result.
+  native-fs-windows:
+    name: Native FS (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      MSYS: winsymlinks:nativestrict
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Setup MSVC dev cmd
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build Windows native filesystem addon
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem distributable audit unit tests
+        run: node --test apps/desktop/scripts/native-fs-release-audit/verify.test.cjs
+      - name: Native filesystem security, UNC and packaging regressions
+        run: pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke native-fs-package-smoke native-fs-unc-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Install real Electron binary for disposable package verification
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: ""
+        run: pnpm --filter @mcode/desktop exec node build/ensure-electron.cjs
+      - name: Real Windows electron-builder addon copy and missing-resource gate
+        run: pnpm --filter @mcode/desktop exec node scripts/native-fs-package-smoke/real-pack.cjs
+      - name: Upload native filesystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-smoke-windows
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Native B-02/B-05 security code is also shipped on macOS. Catch macOS
+  # compilation and filesystem-semantic regressions on PRs, not only tags.
+  native-fs-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    name: Native FS (macOS ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build native filesystem addon
+        env:
+          MCODE_ARCH: ${{ matrix.arch }}
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Native filesystem distributable audit unit tests
+        run: node --test apps/desktop/scripts/native-fs-release-audit/verify.test.cjs
+      - name: Native filesystem security and packaging regressions
+        run: pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke native-fs-package-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Install real Electron binary for disposable package verification
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: ""
+        run: pnpm --filter @mcode/desktop exec node build/ensure-electron.cjs
+      - name: Real macOS electron-builder addon copy and missing-resource gate
+        run: pnpm --filter @mcode/desktop exec node scripts/native-fs-package-smoke/real-pack.cjs
+      - name: Upload native filesystem logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-smoke-macos-${{ matrix.arch }}
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Expensive, non-publishing release dry-run for the isolated B-02/B-05 PR only.
+  # Mirrors the real tag release build on all shipping desktop architectures,
+  # then audits the bytes inside the final NSIS / DMG / updater ZIP artifacts.
+  # It deliberately does NOT run the publish job, create a tag, or upload binaries.
+  native-fs-full-release-package:
+    # Run the expensive full package matrix for the dedicated validation PR,
+    # or opt into the same matrix explicitly with workflow_dispatch full=true.
+    if: >-
+      (github.event_name == 'pull_request' && startsWith(github.head_ref, 'validation/b02b05-native-ci-')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.full == true && startsWith(github.ref_name, 'validation/b02b05-native-ci-'))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: win
+            arch: x64
+          - os: macos-latest
+            platform: mac
+            arch: arm64
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+    name: Full Mcode release package (${{ matrix.platform }} ${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Setup Rust toolchain for GenOffice Sheets sidecar
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install setuptools (distutils shim for node-gyp)
+        if: runner.os == 'macOS'
+        run: python3 -m pip install --user --break-system-packages setuptools
+      - name: Install setuptools (distutils shim for node-gyp)
+        if: runner.os == 'Windows'
+        run: python -m pip install setuptools
+      - name: Setup MSVC dev cmd (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Rebuild native modules for Electron
+        shell: bash
+        env:
+          MCODE_ARCH: ${{ matrix.arch }}
+        run: pnpm --filter @mcode/desktop rebuild:native
+      - name: Build native filesystem module
+        shell: bash
+        env:
+          MCODE_ARCH: ${{ matrix.arch }}
+        run: pnpm --filter @mcode/desktop exec node build/build-native-fs.cjs
+      - name: Exercise native filesystem security regressions
+        shell: bash
+        env:
+          MSYS: ${{ runner.os == 'Windows' && 'winsymlinks:nativestrict' || '' }}
+        run: pnpm test:smoke native-fs-build-cache-smoke native-fs-smoke workspace-copy-boundary-smoke markdown-preview-security-smoke
+      - name: Exercise Theia afterPack probe regression
+        run: node --test apps/desktop/build/verify-theia-after-pack.test.cjs
+      - name: Exercise real Windows UNC security boundary
+        if: runner.os == 'Windows'
+        run: pnpm test:smoke native-fs-unc-smoke
+      - name: Prepare pinned GenOffice fork and build six native editors (Windows/MSVC)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not $env:VCToolsInstallDir) { throw "MSVC toolchain environment is missing" }
+          $linkerDir = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64"
+          $linker = Join-Path $linkerDir "link.exe"
+          if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw "MSVC linker not found: $linker" }
+          # Git Bash's usr/bin/link.exe is GNU link, not the MSVC linker. Put
+          # the exact VS linker first and tell Cargo explicitly for xlsx-sidecar.
+          $env:PATH = "$linkerDir;$env:PATH"
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
+          Add-Content -Path $env:GITHUB_PATH -Value $linkerDir
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker"
+          $resolved = (Get-Command link.exe -CommandType Application | Select-Object -First 1).Source
+          if ($resolved -ine $linker) { throw "Wrong link.exe resolved: $resolved (expected $linker)" }
+          Write-Host "Using MSVC linker: $resolved"
+          node apps/desktop/build/prepare-genoffice-release.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Pinned GenOffice release build failed with exit $LASTEXITCODE" }
+      - name: Prepare pinned GenOffice fork and build six native editors (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: node apps/desktop/build/prepare-genoffice-release.cjs
+      - name: Verify pinned GenOffice license manifest and generated notice
+        run: node apps/desktop/scripts/t11-genoffice-license-carrier-smoke/main.cjs
+      - name: Build and package full Mcode application
+        shell: bash
+        run: pnpm --filter @mcode/desktop package
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+      - name: Verify actual Windows NSIS and native addon bytes
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem apps/desktop/release -Filter *.exe -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one complete Mcode NSIS installer" }
+          & "$env:ProgramFiles/7-Zip/7z.exe" t $installers[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw "Complete Mcode NSIS archive integrity failed" }
+          $env:MCODE_OFFICE_7ZA = "$env:ProgramFiles/7-Zip/7z.exe"
+          node apps/desktop/scripts/native-fs-release-audit/verify.cjs nsis $installers[0].FullName apps/desktop/native/mcode-fs/build/Release/mcode_fs.node apps/desktop/release/win-unpacked/resources/native-fs/mcode_fs.node
+          if ($LASTEXITCODE -ne 0) { throw "Complete Mcode NSIS native addon audit failed" }
+      - name: Verify actual macOS DMG, updater ZIP and native addon bytes
+        if: runner.os == 'macOS'
+        shell: bash
+        run: node apps/desktop/scripts/native-fs-release-audit/verify.cjs mac apps/desktop/release apps/desktop/native/mcode-fs/build/Release/mcode_fs.node
+      - name: Upload release dry-run smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fs-full-release-${{ matrix.platform }}-${{ matrix.arch }}-logs
+          path: apps/desktop/.tmp/smoke-runs/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The broad application smoke suites are authored and maintained on Windows
+  # (hard-coded drive paths, cmd.exe / Windows services / case-insensitive FS
+  # assertions, the owned-Chrome DevTools handshake). The app ships for Windows and macOS only,
   # so the broad gates run on the same Windows image the release job packages on.
   # On ubuntu 38 of 173 suites failed purely on platform assumptions (2026-09-30).
   smoke-windows:

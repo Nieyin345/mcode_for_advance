@@ -37,7 +37,7 @@ const EDITOR_APPS = Object.freeze(["docs", "sheets", "slides", "pdf", "markdown"
 const NATIVE_PRELOAD_KINDS = Object.freeze(["pdf", "markdown", "html", "sheets", "slides"]);
 const GENOFFICE_UPSTREAM_REPOSITORY = "https://github.com/genspark-ai/genoffice";
 const GENOFFICE_UPSTREAM_NOTICE = "genoffice/apps/shell/build/THIRD-PARTY-NOTICES.txt";
-const GENOFFICE_LICENSE_MANIFEST_SHA256 = "394d3467ae45450d2a41bbb44c72e3386fc501d9eab3bc41ea3edfecc9025108";
+const GENOFFICE_LICENSE_MANIFEST_SHA256 = "cf774da7ab61763bf2b174748829ba94d87d6f601cf84ba2cd2a040179069a7c";
 const GENOFFICE_LICENSE_MANIFEST_FORMAT = "mcode.genoffice.third-party-license-sources.v2";
 /**
  * T11 carrier policy (roadmap: T9 evidence). A license text is admissible only
@@ -185,7 +185,7 @@ function assertVendorTreeSafe(repo, dir) {
  * also point to unreviewed sibling directories inside the *Mcode* repo, which
  * the old assertWithin(repo, realpath) erroneously accepted. Check physical
  * identity for both, not just resolved path containment or nested children. */
-function assertNativeVendorPath(vendor, input) {
+function assertNativeVendorPath(vendor, input, { allowMissingTail = false } = {}) {
   assertWithin(vendor, input);
   const rootInfo = fs.lstatSync(vendor);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
@@ -198,6 +198,7 @@ function assertNativeVendorPath(vendor, input) {
     let s;
     try { s = fs.lstatSync(current); }
     catch (err) {
+      if (err?.code === "ENOENT" && allowMissingTail) return;
       if (err?.code === "ENOENT") throw new Error("GenOffice original renderer/resource missing: " + current);
       throw err;
     }
@@ -248,7 +249,7 @@ function assertThirdPartyNoticeComplete(file) {
  * |---|---|
  * | 上游 `THIRD-PARTY-NOTICES.txt` 里的包（25581 行，其中 521 段带完整条款） | 570 |
  * | 上游 notice 里**正文不足一行**的段落 | **15** |
- * | 本清单 | **18** |
+ * | 本清单 | **20** |
  *
  * 两个集合**互不包含**：
  *  - 本清单里 `fastdom` / `hash.js` / `isarray` / `lazy-val` / `strictdom` **在上游
@@ -279,6 +280,8 @@ function assertThirdPartyNoticeComplete(file) {
 const REQUIRED_GENOFFICE_LICENSE_PACKAGES = Object.freeze([
   ["@electron-internal/extract-zip", "1.0.5", "BSD-2-Clause"],
   ["@napi-rs/canvas-win32-x64-msvc", "1.0.3", "MIT"],
+  ["@napi-rs/canvas-darwin-arm64", "1.0.3", "MIT"],
+  ["@napi-rs/canvas-darwin-x64", "1.0.3", "MIT"],
   ["@nodable/entities", "3.0.0", "MIT"],
   ["@univerjs/protocol", "0.25.1", "Apache-2.0"],
   ["emoji-regex", "8.0.0", "MIT"],
@@ -296,6 +299,42 @@ const REQUIRED_GENOFFICE_LICENSE_PACKAGES = Object.freeze([
   ["strictdom", "1.0.1", "MIT"],
   ["unicount", "1.1.0", "ISC"],
 ].map(([name, version, spdx]) => Object.freeze({ name, version, spdx })));
+
+function npmPlatformConstraintMatches(constraint, actual, label) {
+  if (constraint === undefined) return true;
+  if (!Array.isArray(constraint) || constraint.length === 0
+      || !constraint.every(value => typeof value === "string" && value.length > 0
+        && (!value.startsWith("!") || value.length > 1))) {
+    throw new Error("GenOffice optional package lock has malformed " + label + " constraint");
+  }
+  const denied = constraint.some(value => value === "!" + actual);
+  const allowed = constraint.filter(value => !value.startsWith("!"));
+  return !denied && (allowed.length === 0 || allowed.includes(actual));
+}
+
+function assertMissingOptionalPackageIsPlatformExcluded(vendorRoot, item) {
+  const platform = process.platform;
+  const arch = process.arch;
+  const lockPath = resolve(vendorRoot, "package-lock.json");
+  assertNativeVendorPath(resolve(vendorRoot), lockPath);
+  const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+  if (lock.lockfileVersion !== 3 || !lock.packages || typeof lock.packages !== "object"
+      || Array.isArray(lock.packages)) {
+    throw new Error("GenOffice missing optional package requires an npm v3 package-lock with package metadata: " + item.name);
+  }
+  const entry = lock.packages["node_modules/" + item.name];
+  if (!entry || entry.version !== item.version || entry.resolved !== item.npmTarballUrl
+      || entry.integrity !== item.npmTarballIntegrity || entry.license !== item.spdx
+      || entry.optional !== true) {
+    throw new Error("GenOffice missing optional package lock identity differs from reviewed license manifest: " + item.name);
+  }
+  const osMatches = npmPlatformConstraintMatches(entry.os, platform, "OS");
+  const cpuMatches = npmPlatformConstraintMatches(entry.cpu, arch, "CPU");
+  if (osMatches && cpuMatches) {
+    throw new Error("GenOffice installed package missing on a compatible platform: " + item.name);
+  }
+  return { platformExcluded: true, package: item.name, platform, arch };
+}
 
 function validateGenofficeLicenseManifest({
   manifestPath, licenseRoot, vendorRoot, repoRoot, requireComplete = true,
@@ -349,13 +388,32 @@ function validateGenofficeLicenseManifest({
         || !["npm-gitHead", "release-tag-plus-source-commit"].includes(item.upstreamRevisionKind)) {
       throw new Error("GenOffice license source identity/version/SPDX mismatch at package index " + (index + 1));
     }
+    let platformExclusion = null;
     if (vendorRoot) {
-      const packageFile = resolve(vendorRoot, item.packagePath);
-      assertNativeVendorPath(resolve(vendorRoot), packageFile);
-      const pkg = JSON.parse(fs.readFileSync(packageFile, "utf8"));
-      const actualSpdx = typeof pkg.license === "string" ? pkg.license : pkg.license?.type;
-      if (pkg.name !== item.name || pkg.version !== item.version || actualSpdx !== item.spdx) {
-        throw new Error("GenOffice installed package metadata differs from license source manifest: " + item.name);
+      const vendor = resolve(vendorRoot);
+      const packageFile = resolve(vendor, item.packagePath);
+      let installed = true;
+      try {
+        fs.lstatSync(packageFile);
+      } catch (err) {
+        if (err?.code !== "ENOENT") throw err;
+        installed = false;
+      }
+      if (installed) {
+        assertNativeVendorPath(vendor, packageFile);
+        const pkg = JSON.parse(fs.readFileSync(packageFile, "utf8"));
+        const actualSpdx = typeof pkg.license === "string" ? pkg.license : pkg.license?.type;
+        if (pkg.name !== item.name || pkg.version !== item.version || actualSpdx !== item.spdx) {
+          throw new Error("GenOffice installed package metadata differs from license source manifest: " + item.name);
+        }
+      } else {
+        // npm ci omits OS/CPU-specific optional packages on other hosts. Keep
+        // the exact-version/license gate strict by proving the omitted package
+        // from the pinned npm v3 lock entry, and only permit absence when that
+        // entry excludes this runner. Existing ancestors are still checked for
+        // symlink/junction substitution before accepting the omission.
+        assertNativeVendorPath(vendor, packageFile, { allowMissingTail: true });
+        platformExclusion = assertMissingOptionalPackageIsPlatformExcluded(vendor, item);
       }
     }
     if (item.status === "blocked") {
@@ -382,6 +440,7 @@ function validateGenofficeLicenseManifest({
         excused.push({
           name: item.name, version: item.version, spdx: item.spdx,
           evidence: item.missingEvidence, disposition,
+          platformExcluded: Boolean(platformExclusion), platformExclusion,
         });
         continue;
       }
@@ -414,7 +473,10 @@ function validateGenofficeLicenseManifest({
     if (actualHash !== item.licenseTextSha256) {
       throw new Error("GenOffice license source SHA-256 mismatch: " + item.name);
     }
-    verified.push({ ...item, licensePath: licenseFile, licenseText: text });
+    verified.push({
+      ...item, licensePath: licenseFile, licenseText: text,
+      platformExcluded: Boolean(platformExclusion), platformExclusion,
+    });
   }
   // 【T117】`blockedCount` 仍是清单里 status=blocked 的**总数**（verified + excused + blocked
   // 三者之和要覆盖它），而 `releaseEligible` 现在说的是「没有**未签字**的阻塞」。
@@ -449,6 +511,12 @@ function validateGenofficeLicenseManifest({
   return {
     manifest, manifestPath: manifestFile, licenseRoot: root,
     items: verified, verifiedCount: verified.length,
+    platformExcludedPackages: [...verified, ...excused].filter(item => item.platformExcluded).map(item => ({
+      name: item.name, version: item.version, spdx: item.spdx,
+      status: item.status ?? "blocked",
+      platform: item.platformExclusion.platform, arch: item.platformExclusion.arch,
+    })),
+    platformExcludedCount: [...verified, ...excused].filter(item => item.platformExcluded).length,
     blockedPackages: blocked, blockedCount: blocked.length,
     excusedPackages: excused, excusedCount: excused.length,
   };
@@ -478,8 +546,8 @@ function findNoticeSection(text, title) {
   return null;
 }
 function assertThirdPartyNoticeMatchesManifest(text, validation) {
-  // 【T117】完整性的判据是「18 个包**全部有交代**」：14 份原文 + 4 条签字例外。
-  // 原来要求 `verifiedCount === 18`，那会让带签字的清单永远出不了合法通知 ——
+  // 【T117】完整性的判据是「20 个包**全部有交代**」：16 份原文 + 4 条签字例外。
+  // 原来要求 `verifiedCount === 20`，那会让带签字的清单永远出不了合法通知 ——
   // 也就等于 T117 的方案根本无法发布。改成 verified + excused 覆盖全量，
   // 且**没有任何未签字的阻塞**。
   if (!validation || validation.blockedCount !== 0
@@ -516,10 +584,12 @@ function buildCompleteThirdPartyNotice(sourceText, validation) {
   let found = 0;
   let cursor = 0;
   let replaced = "";
+  const foundTitles = new Set();
   for (const section of noticeSections(sourceText)) {
     const excused = excusedByTitle.get(section.title);
     if (excused) {
       found++;
+      foundTitles.add(section.title);
       replaced += sourceText.slice(cursor, section.bodyStart);
       replaced +=
         "NO LICENSE TEXT WAS SHIPPED WITH THIS VERSION.\n\n" +
@@ -535,16 +605,59 @@ function buildCompleteThirdPartyNotice(sourceText, validation) {
     const item = byTitle.get(section.title);
     if (!item) continue;
     found++;
+    foundTitles.add(section.title);
     replaced += sourceText.slice(cursor, section.bodyStart);
     replaced += item.licenseText.trimEnd() + "\n\nSource: " + item.licenseSourceUrl +
       "\nSource version: " + item.licenseSourceVersion +
       "\nLicense SHA-256: " + item.licenseTextSha256 + "\n";
     cursor = section.bodyEnd;
   }
-  if (found !== byTitle.size + excusedByTitle.size) {
-    throw new Error("GenOffice third-party notice package sections do not match the verified source manifest");
+  let text = replaced + sourceText.slice(cursor);
+  // npm omits host-incompatible optional packages from its generated notice
+  // file. The source manifest still carries their reviewed evidence. Synthesize
+  // the exact section for both verified licenses and signed upstream-omission
+  // exceptions, but only after the npm v3 lock proves the package is optional
+  // and excludes this runner's OS/CPU.
+  const platformExcludedTitles = new Set((validation.platformExcludedPackages ?? []).map(item =>
+    item.name + " v" + item.version + " — " + item.spdx));
+  for (const title of platformExcludedTitles) {
+    if (foundTitles.has(title)) continue;
+    const item = byTitle.get(title);
+    if (item) {
+      text += "\n\n" + "-".repeat(72) + "\n" + title + "\n" + "-".repeat(72) + "\n" +
+        item.licenseText.trimEnd() + "\n\nSource: " + item.licenseSourceUrl +
+        "\nSource version: " + item.licenseSourceVersion +
+        "\nLicense SHA-256: " + item.licenseTextSha256 +
+        "\nPlatform note: npm omitted this optional package on " +
+        item.platformExclusion.platform + "/" + item.platformExclusion.arch + ".\n";
+      found++;
+      foundTitles.add(title);
+      continue;
+    }
+    const excused = excusedByTitle.get(title);
+    if (excused) {
+      text += "\n\n" + "-".repeat(72) + "\n" + title + "\n" + "-".repeat(72) + "\n" +
+        "NO LICENSE TEXT WAS SHIPPED WITH THIS VERSION.\n\n" +
+        "This package declares " + excused.spdx + " in its own package.json, but the SRI-verified " +
+        excused.version + " npm tarball and its upstream tree contain no license file, and no text from a " +
+        "later release may be substituted for it.\n\n" +
+        "Why the upstream text could not be used: " + excused.evidence + "\n\n" +
+        "Basis: " + excused.disposition.basis + "\n" +
+        "Reviewed: " + excused.disposition.reviewedAt + "\n" +
+        "Platform note: npm omitted this optional package on " +
+        excused.platformExclusion.platform + "/" + excused.platformExclusion.arch + ".\n";
+      found++;
+      foundTitles.add(title);
+      continue;
+    }
+    throw new Error("GenOffice platform-excluded package has no reviewed license manifest entry: " + title);
   }
-  const text = replaced + sourceText.slice(cursor);
+  if (found !== byTitle.size + excusedByTitle.size) {
+    const missingTitles = [...byTitle.keys(), ...excusedByTitle.keys()].filter(title => !foundTitles.has(title));
+    throw new Error("GenOffice third-party notice package sections do not match the verified source manifest"
+      + " (found " + found + "/" + (byTitle.size + excusedByTitle.size) + "; missing: "
+      + (missingTitles.length ? missingTitles.join(", ") : "none") + ")");
+  }
   const missing = noticePackagesWithoutLicenseText(text);
   if (missing.length) throw new Error("GenOffice generated notice still has incomplete package license sections: " + missing.join(", "));
   for (const item of validation.items) {
@@ -971,11 +1084,11 @@ function prepareGenofficeResources({ appDir, repoRoot, include = false, includeE
           // 这写的是**清单覆盖的包数**，与 `licenseSourceManifestSha256`
           // 配对 —— 不是「这次验证到几份原文」。
           //
-          // 原来写的是 `verifiedCount`，在 T117 之前两者恰好相等（18 = 18）所以没暴露。
-          // 四个包改成签字例外之后 verified 恒为 14，`afterPack` 的
+          // 原来写的是 `verifiedCount`，在 T117 之前两者恰好相等（20 = 20）所以没暴露。
+          // 四个包改成签字例外之后 verified 恒为 16，`afterPack` 的
           // `verify-genoffice-editors-after-pack.cjs:128` 要它等于
-          // `REQUIRED_GENOFFICE_LICENSE_PACKAGES.length`（18），于是打包必红。
-          // 14 和 18 都不是随便写的：14 是原文数，18 是包数，这个字段要的是后者。
+          // `REQUIRED_GENOFFICE_LICENSE_PACKAGES.length`（20），于是打包必红。
+          // 16 和 20 都不是随便写的：16 是原文数，20 是包数，这个字段要的是后者。
           licenseSourcePackageCount: REQUIRED_GENOFFICE_LICENSE_PACKAGES.length,
         } : {}),
         ...(completeLicenseBundle && !licenseValidation && isTestFixtureRoot ? { licenseBundleTestFixture: true } : {}),

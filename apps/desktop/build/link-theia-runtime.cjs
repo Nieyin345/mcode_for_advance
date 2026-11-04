@@ -39,10 +39,27 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const REPO_ROOT = path.resolve(__dirname, "../../..");
+const APP_DIR = path.resolve(REPO_ROOT, "apps/desktop");
 const RUNTIME = path.join(REPO_ROOT, "vendor/theia-runtime");
+const BUILDER_CONFIG = path.join(APP_DIR, "electron-builder.yml");
 const NM_THEIA = path.join(RUNTIME, "node_modules", "@theia");
 
+function assertTheiaExtraResourceSource() {
+  const config = fs.readFileSync(BUILDER_CONFIG, "utf8");
+  const matches = [...config.matchAll(/^\s*-\s*from:\s*(.*?)\s*\r?\n\s*to:\s*theia\s*$/gm)];
+  if (matches.length !== 1) {
+    throw new Error("[theia-runtime] electron-builder.yml must declare exactly one Theia extraResources source");
+  }
+  const configuredSource = path.resolve(APP_DIR, matches[0][1].trim());
+  if (configuredSource !== RUNTIME) {
+    throw new Error("[theia-runtime] electron-builder Theia resource source resolves to " +
+      configuredSource + " instead of tracked runtime " + RUNTIME);
+  }
+  return configuredSource;
+}
+
 function main() {
+  assertTheiaExtraResourceSource();
   if (!fs.existsSync(path.join(RUNTIME, "package.json"))) {
     console.error(
       `[theia-runtime] 找不到 ${RUNTIME}。\n` +
@@ -102,4 +119,6 @@ function main() {
   console.log(`[theia-runtime] ✓ ${made} 个新建 / ${kept} 个已存在（共 ${made + kept}）`);
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { assertTheiaExtraResourceSource, main, REPO_ROOT, APP_DIR, RUNTIME, BUILDER_CONFIG };

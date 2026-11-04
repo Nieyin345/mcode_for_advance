@@ -69,6 +69,10 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1);
 }
 
+// Build the handle-relative N-API filesystem module for the same Electron
+// version and target architecture before packaging.
+require(resolve(__dirname, "build-native-fs.cjs"));
+
 // Run the conpty fixer. require()-ing it executes its top-level code (it's a
 // plain script that calls process.exit). Resolve relative to this file so it
 // works regardless of cwd.

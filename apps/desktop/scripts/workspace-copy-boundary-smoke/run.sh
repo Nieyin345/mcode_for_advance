@@ -1,0 +1,1 @@
+node scripts/workspace-copy-boundary-smoke/run.cjs

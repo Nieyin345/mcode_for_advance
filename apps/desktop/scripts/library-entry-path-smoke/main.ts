@@ -316,7 +316,7 @@ console.log("\n7. readMarkdown 认全三种图片引用写法（行内 / 引用�
   );
   const item = LibraryRepo.upsert({ title: "三种图片写法的一篇" });
   await setMdPath(item.id, join(mdDirRel, "full.md"));
-  const preview = readMarkdownForPreview(item.id);
+  const preview = await readMarkdownForPreview(item.id);
   check("预览成功", preview.ok, preview);
   check("★ 行内式内联", preview.images["images/inline.png"]?.startsWith("data:image/png") === true, Object.keys(preview.images));
   // ★ 症结:只扫行内式 + HTML 的那份实现,认不出引用式 —— 这一张内联不进来。

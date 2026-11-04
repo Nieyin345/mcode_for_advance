@@ -671,7 +671,11 @@ check("…错误里点名市场和条目", (r4.error ?? "").includes("marketplac
 
 const r5 = asOk(await call(IPC.PLUGINS_INSTALL_GIT, { url: path.join(base, "definitely-not-a-repo") }));
 eq("git 地址不通 → ok:false(不是把 git 的报错抛出去)", r5.ok, false);
-check("…错误里带上了 git 的原话", (r5.error ?? "").includes("git"), r5);
+check(
+  "…错误里保留了 Git 的原始 fatal 输出",
+  (r5.error ?? "").includes("fatal:") && (r5.error ?? "").includes("definitely-not-a-repo"),
+  r5,
+);
 
 const r6 = asOk(await call(IPC.PLUGINS_MARKETPLACE_REFRESH, { name: "never-added-mp" }));
 eq("刷新没加过的市场 → ok:false", r6.ok, false);

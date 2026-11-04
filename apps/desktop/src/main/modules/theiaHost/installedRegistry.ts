@@ -399,8 +399,10 @@ export class TheiaInstalledRegistry {
     // sender/session-scoped even before the extension reaches Running.
     const sessionId=randomUUID();
     let host:TheiaHost|undefined;
+    let workspaceFs:McodeWorkspaceFs|undefined;
     try{
-    const workspaceFs=workspacePath?await McodeWorkspaceFs.open(workspacePath):undefined;
+    workspaceFs=workspacePath?await McodeWorkspaceFs.open(workspacePath):undefined;
+    if(this.closed.has(senderId)) deny("启动期间窗口已关闭");
     host=new TheiaHost({theiaRoot:this.theiaRoot,extensionDir:path.join(this.dir(id),"extension"),
       workspaceRoot:workspaceFs?.root,workspaceFs,
       ...(workspaceFs&&makeTerminalDriver?{terminalDriver:makeTerminalDriver(sessionId,workspaceFs.root)}:{}),
@@ -436,7 +438,11 @@ export class TheiaInstalledRegistry {
         }));
       this.running.set(id,{id,senderId,sessionId,host,handle,commands:new Set(commands),editorMenus,languageProviders:host.getLanguageDescriptors()});
       return {kind:"started",id,sessionId,commands,activationErrors:handle.activationErrors.map(e=>e.message).slice(0,8)};
-    }catch(error){await host?.dispose();throw error;}
+    }catch(error){
+      try{await host?.dispose();}catch{/* preserve the original startup failure */}
+      try{workspaceFs?.close();}catch{/* cleanup must not mask the startup failure */}
+      throw error;
+    }
     finally{this.starting=false;this.startingSender=null;this.startingId=null;}
   }
   /** Sync one REAL Mcode editor snapshot on user command invocation, not on every keystroke.
